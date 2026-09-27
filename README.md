@@ -12,7 +12,7 @@ WUMFix is a single `WUMFix.asi` plugin loaded by [Ultimate ASI Loader](https://g
    - If you already use WUMPatch or Renewation HD, you already have `dinput8.dll`. Just add `WUMFix.asi` and `WUMFix.ini`.
 2. Play as normal.
    - Logs and crash or hang dumps go to `WormsXHD\WUMFix\`.
-   - If something goes wrong, send `WUMFix\WUMFix.log`, and `WUMFix.prev.log` from the previous run.
+   - If something goes wrong, press `Ctrl+Shift+F11` in the game to save one zip with all the logs, and send that. Or send `WUMFix\WUMFix.log`, and `WUMFix.prev.log` from the previous run.
 
 To uninstall, delete `WUMFix.asi` and `WUMFix.ini`, and also `dinput8.dll` if no other `.asi` mods remain. Or run `uninstall.ps1`.
 
@@ -29,6 +29,8 @@ Each module is one file under `src/` (`core/`, `render/`, `gameplay/`, `net/` or
 | **SteamTrace** | on | Logs every Steam lobby, P2P and callback call. |
 | **EngineLog** | on | Mirrors the engine's own log into `WUMFix.log`. |
 | **EventBus** | on | Hooks the engine's message Post and Deliver so modules can subscribe to engine messages by name (`wumfix/bus.h`). Changes nothing in the game. `DumpRegistry=1` writes every message name to `WUMFix\messages.tsv`. Replaces the Probe's message hooks, so only one of the two can hook them. |
+| **Logging** | on | Structured JSONL event log, one folder per game session in `Documents\WUMFix\logs`: WUMFix and engine log lines, engine messages (minus a noisy deny-list) and game events (turns, shots, deaths, damage, explosions). The overlay's *Log* and *Events* panels show it. |
+| **LogExport** | on | `Ctrl+Shift+F11`, or the overlay's *File > Save logs as...*, saves one zip of the recent JSONL sessions, `WUMFix.log`, engine logs, dumps, ini files and system info. Your user name and computer name are replaced, and Steam ids and IP addresses are hashed. In fullscreen it saves to `Documents\WUMFix\exports` instead of opening a dialog. |
 | **NetTrace** | on | Logs raw Winsock usage. |
 | **WindowTag** | on | Shows `[WUMFix x.y.z]` in the window title. |
 | **FrameInterval** | off | Engine frame cap in ms (example of a fixed-address patch). |
