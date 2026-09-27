@@ -107,9 +107,12 @@ std::wstring WriteMiniDump(const char* tag, EXCEPTION_POINTERS* ep, DWORD crashi
     CreateDirectoryW(dir.c_str(), nullptr);
     SYSTEMTIME st;
     GetLocalTime(&st);
-    wchar_t name[128];
-    swprintf(name, 128, L"\\%04u%02u%02u_%02u%02u%02u_%S.dmp", st.wYear, st.wMonth, st.wDay, st.wHour, st.wMinute,
-             st.wSecond, tag);
+    // "-full" is a real, load-bearing part of the name (not decoration): WriteMiniDump() is the only place that
+    // knows whether a dump used MiniDumpWithFullMemory, so the log exporter (which must only bundle full dumps
+    // when the user opted in, docs/m0-design.md SS5.1 Q4) tells them apart by this suffix instead of by content.
+    wchar_t name[144];
+    swprintf(name, 144, L"\\%04u%02u%02u_%02u%02u%02u_%S%s.dmp", st.wYear, st.wMonth, st.wDay, st.wHour, st.wMinute,
+             st.wSecond, tag, full ? L"-full" : L"");
     std::wstring path = dir + name;
     HANDLE f = CreateFileW(path.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
     if (f == INVALID_HANDLE_VALUE) return {};

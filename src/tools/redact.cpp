@@ -40,7 +40,12 @@ std::string HashIdsAndIps(std::string_view text, std::string_view salt) {
     std::string in(text);
     static const std::regex kIpv4(
         R"((?:(?:25[0-5]|2[0-4][0-9]|1?[0-9]{1,2})\.){3}(?:25[0-5]|2[0-4][0-9]|1?[0-9]{1,2})(?::[0-9]{1,5})?)");
-    static const std::regex kSteamId64(R"(\b7656119[0-9]{10}\b)");
+    // Any 64-bit SteamID printed in decimal is 17 digits, but the high bits (and so the leading digits) depend
+    // on the account TYPE: individual accounts start "7656119...", but lobby/chat CSteamIDs (SteamTrace's Id(),
+    // LocalNet's JoinLobby/LobbyEnter/LobbyChatUpdate logging) start "1097752...". Matching any 17-digit run
+    // catches every SteamID64 variant instead of only individual accounts; a coincidental unrelated 17-digit
+    // number is vanishingly unlikely to appear in these logs (see docs/m0-design.md SS3 "D" privacy note).
+    static const std::regex kSteamId64(R"(\b[0-9]{17}\b)");
 
     // A match must be a whole token: not preceded by a digit or '.', and not followed by a digit or ".<digit>".
     // Otherwise version strings such as a GL driver's "26.8.1.260810" would be hashed as the IP "26.8.1.26".

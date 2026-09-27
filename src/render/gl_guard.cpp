@@ -310,6 +310,14 @@ Guard::Guard() {
     glPushMatrix();
     pushed_ = true;
 
+    // Depths right after our own push, so Restore() can pop down to exactly these even if ImGui's draw leaves
+    // its own, unpopped push(es) on top (see gl_guard.h).
+    attribDepth_ = GetI(GL_ATTRIB_STACK_DEPTH);
+    clientAttribDepth_ = GetI(kCLIENT_ATTRIB_STACK_DEPTH);
+    texMatrixDepth_ = GetI(GL_TEXTURE_STACK_DEPTH);
+    projMatrixDepth_ = GetI(GL_PROJECTION_STACK_DEPTH);
+    mvMatrixDepth_ = GetI(GL_MODELVIEW_STACK_DEPTH);
+
     // 2. ARB programs (glDisable only)
     if (c.arbVp) glDisable(kVERTEX_PROGRAM_ARB);
     if (c.arbFp) glDisable(kFRAGMENT_PROGRAM_ARB);
@@ -378,16 +386,21 @@ void Guard::Restore() {
     if (!pushed_) return;
     pushed_ = false;
     const Caps& c = Load();
-    // 8. pop in reverse order
+    // 8. pop in reverse order, down to (not just one level below) the depth recorded right after our own push:
+    // ImGui's GL2 backend pushes its own attrib/projection/modelview levels around the draw and normally pops
+    // them itself, but if it faulted mid-draw (caught by SehCall in overlay.cpp) those pushes are still there.
+    // A bounded loop (any single leftover push is at most one or two levels; the cap just guards against a
+    // driver that never reports the depth going down) pops through them instead of leaving them - and this
+    // Guard's own push - stuck on the stack forever.
     glMatrixMode(GL_MODELVIEW);
-    glPopMatrix();
+    for (int guardCount = 0; GetI(GL_MODELVIEW_STACK_DEPTH) >= mvMatrixDepth_ && guardCount < 8; ++guardCount) glPopMatrix();
     glMatrixMode(GL_PROJECTION);
-    glPopMatrix();
+    for (int guardCount = 0; GetI(GL_PROJECTION_STACK_DEPTH) >= projMatrixDepth_ && guardCount < 8; ++guardCount) glPopMatrix();
     if (c.ActiveTexture) c.ActiveTexture(kTEXTURE0);
     glMatrixMode(GL_TEXTURE);
-    glPopMatrix();
-    glPopClientAttrib();
-    glPopAttrib();
+    for (int guardCount = 0; GetI(GL_TEXTURE_STACK_DEPTH) >= texMatrixDepth_ && guardCount < 8; ++guardCount) glPopMatrix();
+    for (int guardCount = 0; GetI(kCLIENT_ATTRIB_STACK_DEPTH) >= clientAttribDepth_ && guardCount < 8; ++guardCount) glPopClientAttrib();
+    for (int guardCount = 0; GetI(GL_ATTRIB_STACK_DEPTH) >= attribDepth_ && guardCount < 8; ++guardCount) glPopAttrib();
     // not (reliably) covered by the attrib stacks
     if (c.vbo) {
         c.BindBuffer(kARRAY_BUFFER, static_cast<GLuint>(arrayBuf_));

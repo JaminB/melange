@@ -209,6 +209,33 @@ std::string ExcludeComputerName(std::string_view text) {
     return wf::redact::ReplaceName(text, ComputerName(), "%COMPUTERNAME%");
 }
 
+// The last component of the profile folder (%USERPROFILE%, e.g. "C:\Users\<name>"), read via
+// SHGetKnownFolderPath so it is not spoofable through the environment. GetUserNameW() (the account name) is
+// what CurrentUserName() redacts, but after an account rename the *folder* on disk keeps the old name, and every
+// path under it (session dirs, WUMFix.log, jsonl files, manifest "source" entries) still carries that old name.
+// Redacting both names covers both spellings without needing to know which one shows up where.
+const std::string& ProfileFolderName() {
+    static const std::string name = [] {
+        PWSTR path = nullptr;
+        std::string out;
+        if (SUCCEEDED(SHGetKnownFolderPath(FOLDERID_Profile, 0, nullptr, &path)) && path) {
+            std::wstring w = path;
+            size_t p = w.find_last_of(L"\\/");
+            out = Narrow(p == std::wstring::npos ? w : w.substr(p + 1));
+            CoTaskMemFree(path);
+        }
+        return out;
+    }();
+    return name;
+}
+
+std::string RedactUserNames(std::string_view text, std::string_view userName) {
+    std::string out = wf::redact::RedactUserName(text, userName);
+    const std::string& profile = ProfileFolderName();
+    if (!profile.empty()) out = wf::redact::RedactUserName(out, profile);
+    return out;
+}
+
 void AddEntry(ZipBuilder& zip, std::vector<ManifestEntry>& manifest, const std::string& archivePathIn, std::string data,
               const std::wstring& sourcePath, bool truncated, bool isText, bool redactUserPaths,
               std::string_view userName, std::string_view salt) {
@@ -216,19 +243,26 @@ void AddEntry(ZipBuilder& zip, std::vector<ManifestEntry>& manifest, const std::
         // Generated entries (system.json) hold no IPs or Steam ids, only version numbers like "7.1.0.0" that the
         // IPv4 pattern would hash.
         if (sourcePath != L"(generated)") data = wf::redact::HashIdsAndIps(data, salt);
-        if (redactUserPaths && !userName.empty()) data = wf::redact::RedactUserName(data, userName);
+        if (redactUserPaths) data = RedactUserNames(data, userName);
         data = ExcludeComputerName(data);
     }
     const std::string archivePath = ExcludeComputerName(archivePathIn);
+    // Check the result before recording it in the manifest: an entry mz_zip_writer_add_mem() failed to add
+    // (out of memory building the zip's own buffers, a duplicate/invalid name, ...) must not be listed as if it
+    // were actually in the zip, or a reader trusting manifest.json would look for a file that is not there.
+    if (!zip.Add(archivePath, data.data(), data.size())) {
+        WF_WARN("[LogExport] could not add zip entry '%s' (%zu bytes); omitted from the export", archivePath.c_str(),
+                data.size());
+        return;
+    }
     ManifestEntry e;
     e.archivePath = archivePath;
     e.size = data.size();
     e.sha256 = wf::hashutil::Sha256Hex(data.data(), data.size());
     e.source = Narrow(sourcePath);
-    if (redactUserPaths && !userName.empty()) e.source = wf::redact::RedactUserName(e.source, userName);
+    if (redactUserPaths) e.source = RedactUserNames(e.source, userName);
     e.source = ExcludeComputerName(e.source);
     e.truncated = truncated;
-    zip.Add(archivePath, data.data(), data.size());
     manifest.push_back(std::move(e));
 }
 
@@ -406,16 +440,25 @@ bool DoExport(const std::wstring& zipPath, const Options& opt, std::string* erro
                                                 opt.redactUserPaths, userName, salt);
     }
 
-    // dumps/*.dmp - newest 3, from <DataDir>\dumps (core/debug.h). includeFullDumps only raises the
-    // per-file cap: WriteMiniDump() does not encode full-vs-mini in the file name, so a real distinction
-    // would need a core/debug.h change, which this component did not make (see report).
+    // dumps/*.dmp - newest 3, from <DataDir>\dumps (core/debug.h). WriteMiniDump() names a MiniDumpWithFullMemory
+    // dump "..._<tag>-full.dmp", so a full dump can be told apart from an ordinary minidump by name and left out
+    // entirely when includeFullDumps=0, rather than always being bundled with only its per-file cap raised (a
+    // full dump can hold chat text, persona names and other process memory the user did not opt to export).
     if (opt.includeDumps) {
-        std::wstring dumpDir = wf::game::DataDir() + L"\\dumps";
-        auto dumps = NewestMatching(dumpDir, L"*.dmp", 3);
+        // Gather more than 3 candidates: full dumps may need to be filtered out before picking "newest 3".
+        auto allDumps = NewestMatching(wf::game::DataDir() + L"\\dumps", L"*.dmp", 64);
+        std::vector<std::wstring> dumps;
+        for (const auto& f : allDumps) {
+            if (HasSuffixCI(f, L"-full.dmp") && !opt.includeFullDumps) continue;
+            dumps.push_back(f);
+            if (dumps.size() >= 3) break;
+        }
         if (dumps.empty()) absent.push_back("dumps (none found)");
-        for (const auto& f : dumps)
-            AddFileEntry(zip, manifest, "dumps/" + Narrow(BaseNameW(f)), f,
-                         opt.includeFullDumps ? kFullDumpCap : kCap, opt.redactUserPaths, userName, salt);
+        for (const auto& f : dumps) {
+            bool isFull = HasSuffixCI(f, L"-full.dmp");
+            AddFileEntry(zip, manifest, "dumps/" + Narrow(BaseNameW(f)), f, isFull ? kFullDumpCap : kCap,
+                         opt.redactUserPaths, userName, salt);
+        }
     } else {
         absent.push_back("dumps (IncludeDumps=0)");
     }
@@ -503,6 +546,26 @@ bool DoExport(const std::wstring& zipPath, const Options& opt, std::string* erro
     WF_INFO("[LogExport] export %s: %s (%zu entries, frame %llu -> %llu)", ok ? "OK" : "FAILED", Narrow(zipPath).c_str(),
             manifest.size(), static_cast<unsigned long long>(frameStart), static_cast<unsigned long long>(frameEnd));
     return ok;
+}
+
+// DoExport() loads every exported file whole (up to 64/256 MB each) and copies each text file several times
+// (redaction passes, the zip's own heap buffers, Finalize()'s outBytes->assign). In this 32-bit process that can
+// add up to several hundred MB of short-lived allocations, and neither worker thread below had a try/catch, so
+// std::bad_alloc (or std::length_error from an oversized std::string) used to escape the thread's entry point -
+// which terminates the whole process (see the report). Wrap the one call both threads make so an export that
+// runs out of memory fails gracefully (State::Failed, logged) instead of crashing the game.
+bool SafeDoExport(const std::wstring& zipPath, const Options& opt, std::string* error) {
+    try {
+        return DoExport(zipPath, opt, error);
+    } catch (const std::exception& e) {
+        WF_ERROR("[LogExport] export threw an exception: %s", e.what());
+        if (error) *error = std::string("export failed: ") + e.what();
+        return false;
+    } catch (...) {
+        WF_ERROR("[LogExport] export threw an unknown exception");
+        if (error) *error = "export failed: unknown exception";
+        return false;
+    }
 }
 
 // -------------------------------------------------------------------------------------- fullscreen + dialog
@@ -679,7 +742,7 @@ DWORD WINAPI SaveAsWorkerProc(LPVOID) {
     if (haveDialog) {
         SetState(State::Writing);
         std::string err;
-        bool ok = DoExport(path, DefaultOptions(), &err);
+        bool ok = SafeDoExport(path, DefaultOptions(), &err);
         if (ok) {
             SetDone(path);
             if (fullscreen) ShowToast(L"WUMFix: logs saved to " + path);
@@ -713,7 +776,7 @@ bool OnSaveLogsVerb(std::string_view args, void*) {
         [](LPVOID param) -> DWORD {
             std::unique_ptr<std::wstring> p(static_cast<std::wstring*>(param));
             std::string err;
-            bool ok = DoExport(*p, DefaultOptions(), &err);
+            bool ok = SafeDoExport(*p, DefaultOptions(), &err);
             if (ok) {
                 SetDone(*p);
                 WF_INFO("[auto] savelogs: wrote %s", Narrow(*p).c_str());
@@ -807,7 +870,7 @@ bool ExportTo(const std::wstring& zipPath, const Options& opt, std::string* erro
         return false;
     }
     SetState(State::Writing);
-    bool ok = DoExport(zipPath, opt, error);
+    bool ok = SafeDoExport(zipPath, opt, error);
     if (ok)
         SetDone(zipPath);
     else

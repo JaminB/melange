@@ -13,6 +13,7 @@
 #include <cmath>
 #include <condition_variable>
 #include <cstdio>
+#include <cwctype>
 #include <deque>
 #include <mutex>
 #include <unordered_map>
@@ -96,6 +97,10 @@ struct LevelFilter {
 
 // Set once at Init(); read-mostly afterwards, so a raw atomic pointer (no reader lock) is enough.
 std::atomic<LevelFilter*> g_filter{nullptr};
+// True once Init() has given up for good (fallback root also unwritable). Distinct from "g_filter is still
+// null because Init() hasn't run yet", which intentionally keeps Enabled() permissive so early-boot records
+// are not lost. See wumfix's internal contract: a failed Init() must make logging inert (jlog_internal.h).
+std::atomic<bool> g_initFailed{false};
 
 LevelFilter* ParseLevelsSpec(std::string_view spec) {
     auto* f = new LevelFilter();
@@ -138,6 +143,12 @@ std::vector<QueuedLine> g_queue;
 std::condition_variable g_wakeWriter;
 bool g_wantExit = false;
 std::atomic<bool> g_running{false};
+// Set by FlushFromCrash() before it does anything else. The writer thread checks this and stops touching the
+// file once it is set, so the crash-time flush and the writer thread are not both writing/rotating the same
+// file handle at once (see docs/m0-design.md SS3 "C" "Crash flush" and the report's finding on log corruption).
+// This narrows the race a great deal but cannot close it completely: WriteLines()/Rotate() already under way on
+// the writer thread when the crash lands will still finish that one call.
+std::atomic<bool> g_crashing{false};
 
 std::mutex g_flushMx;
 std::condition_variable g_flushCv;
@@ -208,8 +219,32 @@ std::wstring FormatSessionId(const SYSTEMTIME& st, DWORD pid) {
     return buf;
 }
 
-// Lists immediate subdirectories of `root` whose name looks like a session folder (has an underscore, so we
-// don't trip over an unrelated file a user dropped in there), oldest first.
+// True only for the exact "YYYY-MM-DD_HH-MM-SS_pid<digits>" shape FormatSessionId() produces. Deliberately
+// strict: PruneOldSessions recursively DELETES whatever this accepts, so a loose test (e.g. "name contains an
+// underscore") would let a misconfigured `[Logging] Dir=` (pointed at Documents, a project folder, ...) delete
+// unrelated user folders that merely happen to have an underscore in their name.
+bool LooksLikeSessionDirName(const std::wstring& name) {
+    auto digits = [&](size_t pos, size_t n) {
+        if (pos + n > name.size()) return false;
+        for (size_t i = 0; i < n; ++i)
+            if (!iswdigit(name[pos + i])) return false;
+        return true;
+    };
+    // 0         1         2
+    // 0123456789012345678901
+    // YYYY-MM-DD_HH-MM-SS_pid<digits>
+    if (name.size() < 24) return false;
+    if (!digits(0, 4) || name[4] != L'-' || !digits(5, 2) || name[7] != L'-' || !digits(8, 2) || name[10] != L'_' ||
+        !digits(11, 2) || name[13] != L'-' || !digits(14, 2) || name[16] != L'-' || !digits(17, 2) ||
+        name[19] != L'_')
+        return false;
+    if (name.compare(20, 3, L"pid") != 0) return false;
+    for (size_t i = 23; i < name.size(); ++i)
+        if (!iswdigit(name[i])) return false;
+    return true;
+}
+
+// Lists immediate subdirectories of `root` that are genuine WUMFix session folders, oldest first.
 std::vector<std::wstring> ListSessionDirsOldestFirst(const std::wstring& root) {
     std::vector<std::wstring> out;
     WIN32_FIND_DATAW fd{};
@@ -219,7 +254,7 @@ std::vector<std::wstring> ListSessionDirsOldestFirst(const std::wstring& root) {
         if (!(fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)) continue;
         std::wstring name = fd.cFileName;
         if (name == L"." || name == L"..") continue;
-        if (name.find(L'_') == std::wstring::npos) continue;
+        if (!LooksLikeSessionDirName(name)) continue;
         out.push_back(name);
     } while (FindNextFileW(h, &fd));
     FindClose(h);
@@ -240,7 +275,16 @@ uint64_t DirSizeBytes(const std::wstring& dir) {
     return total;
 }
 
+// Never follows a junction/symlink: a reparse point is unlinked as itself, and its target's contents are left
+// untouched. Without this, a session folder (or, before LooksLikeSessionDirName(), any folder we were pointed
+// at) that is or contains a reparse point would have DeleteDirRecursive walk into and delete whatever it points
+// at, which can be arbitrary user data outside the logs directory entirely.
 void DeleteDirRecursive(const std::wstring& dir) {
+    DWORD attrs = GetFileAttributesW(dir.c_str());
+    if (attrs != INVALID_FILE_ATTRIBUTES && (attrs & FILE_ATTRIBUTE_REPARSE_POINT)) {
+        RemoveDirectoryW(dir.c_str());
+        return;
+    }
     WIN32_FIND_DATAW fd{};
     HANDLE h = FindFirstFileW((dir + L"\\*").c_str(), &fd);
     if (h != INVALID_HANDLE_VALUE) {
@@ -248,10 +292,14 @@ void DeleteDirRecursive(const std::wstring& dir) {
             std::wstring name = fd.cFileName;
             if (name == L"." || name == L"..") continue;
             std::wstring path = dir + L"\\" + name;
-            if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)
-                DeleteDirRecursive(path);
-            else
+            if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) {
+                if (fd.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT)
+                    RemoveDirectoryW(path.c_str());
+                else
+                    DeleteDirRecursive(path);
+            } else {
                 DeleteFileW(path.c_str());
+            }
         } while (FindNextFileW(h, &fd));
         FindClose(h);
     }
@@ -339,13 +387,14 @@ void WriteLines(const std::vector<QueuedLine>& lines) {
 
 DWORD WINAPI WriterMain(LPVOID) {
     for (;;) {
+        if (g_crashing.load(std::memory_order_acquire)) break;  // let FlushFromCrash own the file from here on
         std::vector<QueuedLine> local;
         uint64_t flushTarget = 0;
         uint64_t dropped = 0, droppedSeq = 0;
         {
             std::unique_lock lk(g_queueMx);
             g_wakeWriter.wait_for(lk, std::chrono::milliseconds(100), [] { return g_wantExit || !g_queue.empty(); });
-            if (g_wantExit && g_queue.empty()) {
+            if ((g_wantExit && g_queue.empty()) || g_crashing.load(std::memory_order_acquire)) {
                 lk.unlock();
                 break;
             }
@@ -512,6 +561,21 @@ void Rec::Emit() {
     std::string line;
     const uint64_t capBytes = static_cast<uint64_t>(g_maxFileMB) * 1024ull * 1024ull;
     g_recordsAccepted.fetch_add(1, std::memory_order_relaxed);
+    // Re-entrancy guard: g_queueMx is not recursive. If this thread is already inside the critical section below
+    // (a fault interrupted it there, with no C++ unwind since it's an SEH exception - the thread-local flag below
+    // stays set), a WF_ tap call made while handling that same fault (the crash filter logs before it can flush,
+    // see docs/m0-design.md SS3 "C" risks) must not try to take the lock again: that would deadlock the crashing
+    // thread forever, so neither a crash minidump nor a hang snapshot would ever get written. Drop the record.
+    thread_local bool tl_inQueueSection = false;
+    if (tl_inQueueSection) {
+        g_droppedTotal.fetch_add(1, std::memory_order_relaxed);
+        return;
+    }
+    struct ReentryGuard {
+        bool& flag;
+        ReentryGuard(bool& f) : flag(f) { flag = true; }
+        ~ReentryGuard() { flag = false; }
+    } reentryGuard(tl_inQueueSection);
     {
         std::lock_guard lk(g_queueMx);
         seq = g_seq.fetch_add(1, std::memory_order_relaxed);
@@ -552,6 +616,7 @@ void Rec::Emit() {
 }
 
 bool Enabled(std::string_view category, Level lvl) {
+    if (g_initFailed.load(std::memory_order_acquire)) return false;  // Init() gave up for good: stay inert
     LevelFilter* f = g_filter.load(std::memory_order_acquire);
     if (!f) return lvl >= Level::Info;  // logging not started yet (e.g. very early boot): keep Info+ silently
     auto it = f->perCategory.find(std::string(category));
@@ -563,6 +628,7 @@ const Session& CurrentSession() { return g_session; }
 
 std::vector<std::wstring> RecentSessionDirs(size_t max) {
     std::vector<std::wstring> out;
+    if (g_sessionRoot.empty()) return out;  // never initialised (Enabled=0 or Init() failed): nothing to scan
     auto dirs = ListSessionDirsOldestFirst(g_sessionRoot);
     for (auto it = dirs.rbegin(); it != dirs.rend() && out.size() < max; ++it) out.push_back(g_sessionRoot + L"\\" + *it);
     return out;
@@ -583,6 +649,7 @@ bool Flush(uint32_t timeoutMs) {
 // No lock acquisition beyond a try_lock, and no heap allocation: safe to call from the crash filter.
 void FlushFromCrash() {
     if (!g_running.load()) return;
+    g_crashing.store(true, std::memory_order_release);  // tell the writer thread to stop competing for the file
     std::vector<QueuedLine> local;
     {
         std::unique_lock<std::mutex> lk(g_queueMx, std::try_to_lock);
@@ -632,6 +699,7 @@ double EmitP95Us(uint64_t* samples) {
 }
 
 bool Init(const Options& opt) {
+    g_initFailed.store(false, std::memory_order_relaxed);  // a fresh attempt; cleared again below if it fails
     {
         LARGE_INTEGER f;
         QueryPerformanceFrequency(&f);
@@ -648,7 +716,15 @@ bool Init(const Options& opt) {
     if (root.empty() || !DirWritable(root)) {
         root = opt.fallbackRoot;
         usedFallback = true;
-        if (root.empty() || !DirWritable(root)) return false;
+        if (root.empty() || !DirWritable(root)) {
+            // Match the documented contract (jlog_internal.h): once this returns false, logging stays inert
+            // instead of quietly following the "not started yet" Info+ default forever (see the report's finding
+            // on unbounded direct Rec() use, e.g. net_session.cpp, and RecentSessionDirs() scanning the wrong
+            // directory when g_sessionRoot was never set).
+            delete g_filter.exchange(nullptr);
+            g_initFailed.store(true, std::memory_order_release);
+            return false;
+        }
     }
     g_sessionRoot = root;
     // The current session's folder is created right after this, so keep one fewer old folder: MaxSessions counts
@@ -689,6 +765,8 @@ bool Init(const Options& opt) {
 
 void ShutdownForTests() {
     if (!g_running.exchange(false)) return;
+    g_crashing.store(false, std::memory_order_relaxed);
+    g_initFailed.store(false, std::memory_order_relaxed);
     {
         std::lock_guard lk(g_queueMx);
         g_wantExit = true;

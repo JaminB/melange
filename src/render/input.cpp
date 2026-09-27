@@ -73,10 +73,13 @@ struct DevVt {
     GetDeviceData_t data = nullptr;
     GetDeviceState_t state = nullptr;
 };
+using Release_t = ULONG(WINAPI*)(void*);
+
 std::mutex g_devMx;
 std::map<void**, DevVt> g_devVts;             // per device vtable (A and W interfaces differ)
 std::map<void**, CreateDevice_t> g_diVts;     // per IDirectInput8 vtable
-std::map<void*, bool> g_isKeyboard;           // device object -> keyboard?
+std::map<void**, Release_t> g_releaseVts;     // per device vtable, so each is hooked once (see HookRelease)
+std::map<void*, bool> g_isKeyboard;           // device object -> keyboard? erased by HookRelease at refcount 0
 DI8Create_t g_origDI8Create = nullptr;
 
 std::mutex g_filterMx;  // the filter and its scratch buffers (the poll runs on the main thread; this is belt and braces)
@@ -159,6 +162,26 @@ HRESULT WINAPI HookGetDeviceState(void* self, DWORD cb, void* data) {
     return hr;
 }
 
+// g_isKeyboard gains one entry per CreateDevice call (re-notes SS9: while the game is unfocused, the engine
+// recreates its DirectInput manager and devices roughly every 250 ms) and, before this hook, never lost one:
+// hours unfocused (or a windowed Save-As dialog left open) grew it without bound. IUnknown::Release is shared by
+// every device that uses this vtable, so it - like GetDeviceData/GetDeviceState - is hooked once per vtable and
+// erases this device's entry once the real refcount reaches 0.
+ULONG WINAPI HookRelease(void* self) {
+    Release_t orig;
+    {
+        std::lock_guard lk(g_devMx);
+        auto it = g_releaseVts.find(*static_cast<void***>(self));
+        orig = it != g_releaseVts.end() ? it->second : nullptr;
+    }
+    ULONG rc = orig ? orig(self) : 0;
+    if (rc == 0) {
+        std::lock_guard lk(g_devMx);
+        g_isKeyboard.erase(self);
+    }
+    return rc;
+}
+
 HRESULT WINAPI HookCreateDevice(void* self, REFGUID guid, void** out, IUnknown* outer) {
     CreateDevice_t orig;
     {
@@ -175,6 +198,11 @@ HRESULT WINAPI HookCreateDevice(void* self, REFGUID guid, void** out, IUnknown* 
     {
         std::lock_guard lk(g_devMx);
         g_isKeyboard[*out] = kb;
+        if (!g_releaseVts.count(vt)) {
+            Release_t orel = nullptr;
+            wf::mem::HookVTable(*out, 2, reinterpret_cast<void*>(&HookRelease), reinterpret_cast<void**>(&orel));
+            g_releaseVts[vt] = orel;
+        }
         if (kb && !g_devVts.count(vt)) {
             wf::mem::HookVTable(*out, 10, reinterpret_cast<void*>(&HookGetDeviceData), reinterpret_cast<void**>(&o.data));
             wf::mem::HookVTable(*out, 9, reinterpret_cast<void*>(&HookGetDeviceState), reinterpret_cast<void**>(&o.state));

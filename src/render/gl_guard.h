@@ -73,5 +73,10 @@ private:
     int fbo_ = 0, setupErrors_ = 0, restoreErrors_ = 0;
     int activeTex_ = 0, clientActiveTex_ = 0, matrixMode_ = 0, program_ = 0, arrayBuf_ = 0, elemBuf_ = 0,
         unpackBuf_ = 0;
+    // Stack depths right after this Guard's own push (see gl_guard.cpp). ImGui's GL2 backend does its own
+    // glPushAttrib + matrix pushes around the draw; if it faults mid-draw those pushes are never popped, so a
+    // single unconditional glPopAttrib()/glPopMatrix() in Restore() would remove ImGui's level instead of ours
+    // and leave the guard's own push permanently on the stack. Restore() instead pops down to these depths.
+    int attribDepth_ = 0, clientAttribDepth_ = 0, texMatrixDepth_ = 0, projMatrixDepth_ = 0, mvMatrixDepth_ = 0;
 };
 }  // namespace wf::render::gl
