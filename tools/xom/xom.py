@@ -30,8 +30,14 @@ The JSON model
 }
 Field values: numbers / bools; strings as text; object references as
 {"ref": n} (n = 1-based object index, 0 = null); math structs (Vector3f,
-Color4ub, Matrix4f, ...) as lists; arrays as lists.  Non-finite floats are
-written as {"f32": "<hex bits>"} so the round trip stays exact.
+Color4ub, Matrix4f, ...) as lists; arrays as lists, except u8 arrays (texture
+data, voxel masks) which are {"hex": "..."}.  Non-finite floats are written as
+{"f32": "<hex bits>"} and bool bytes other than 0/1 as ints, so the round trip
+stays exact.  Non-container classes (XGraphSet, X*Descriptor, XAnimClipLibrary)
+have no iflags/uflags/dxcount; their fields follow the engine's hand-written
+readers (see CUSTOM).  Objects that cannot be decoded keep their bytes in "raw"
+(or, if they cannot be delimited, the rest of the file goes to "tail_raw" and the
+remaining objects are listed with "in_tail": true).
 """
 import json
 import math
@@ -667,6 +673,10 @@ def to_json(doc):
 
 
 def _main(argv):
+    try:
+        sys.stdout.reconfigure(encoding='utf-8', errors='replace')
+    except (AttributeError, ValueError):
+        pass
     if len(argv) < 2:
         print(__doc__)
         return 1

@@ -55,6 +55,24 @@ def check(path):
     return out == orig, len(doc['objects']), raw, (orig, out)
 
 
+def edit_test(path):
+    """Change kWeaponBazooka's damage in the JSON model, write, re-read, compare."""
+    with open(path, 'rb') as f:
+        orig = f.read()
+    doc = xom.loads(orig)
+    bank = xom.obj(doc, doc['root'])
+    entry = next(xom.obj(doc, r) for r in bank['fields']['ContainerResources']
+                 if xom.obj(doc, r)['fields']['Name'] == 'kWeaponBazooka')
+    ref = entry['fields']['Value']['ref']
+    before = doc['objects'][ref - 1]['fields']['WormDamageMagnitude']
+    doc['objects'][ref - 1]['fields']['WormDamageMagnitude'] = 75.0
+    out = xom.dumps(doc)
+    after = xom.loads(out)['objects'][ref - 1]['fields']['WormDamageMagnitude']
+    diff = sum(a != b for a, b in zip(orig, out))
+    print('edit test: kWeaponBazooka WormDamageMagnitude %g -> %g, %d byte(s) changed' % (before, after, diff))
+    return len(out) == len(orig) and after == 75.0 and 0 < diff <= 4
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--game', default=DEFAULT_GAME)
@@ -76,6 +94,8 @@ def main():
             nerr += 1
             print('ERROR  %s: %s' % (name, e))
             continue
+        if os.path.basename(f).upper() == 'WEAPTWK.XOM' and not edit_test(f):
+            ok = False
         nobj += n
         rawtypes.update(raw)
         if not raw:
