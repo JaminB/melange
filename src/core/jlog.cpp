@@ -142,7 +142,13 @@ std::deque<Line> g_tailRing;
 size_t g_tailCapacity = 5000;
 
 std::atomic<uint64_t> g_recordsAccepted{0};
-std::atomic<uint64_t> g_recordsDropped{0};
+std::atomic<uint64_t> g_recordsDropped{0};  // pending note for the writer (reset when written)
+std::atomic<uint64_t> g_droppedTotal{0};    // since session start, for GetStats()
+// Main-thread record cost (Rec construction to the end of Emit), 0.25 us buckets up to 200 us; the last bucket
+// collects everything slower. Read by internal::EmitP95Us() for the jlog.stats verb (docs/m0-design.md SS3 C8).
+constexpr int kEmitBuckets = 801;
+std::atomic<uint32_t> g_emitHist[kEmitBuckets];
+double g_qpcToUs = 0;
 std::atomic<uint64_t> g_bytesWritten{0};
 std::atomic<uint64_t> g_filesRotated{0};
 
@@ -366,6 +372,7 @@ DWORD WINAPI WriterMain(LPVOID) {
 
 // ------------------------------------------------------------------------------------------------- Rec
 struct Rec::Impl {
+    int64_t t0 = 0;  // QPC at construction (main thread only), for the emit-cost histogram
     bool enabled = false;
     bool emitted = false;
     std::string category;
@@ -379,6 +386,11 @@ struct Rec::Impl {
 Rec::Rec(std::string_view category, Level lvl, std::string_view msg) : p_(new Impl()) {
     p_->enabled = Enabled(category, lvl);
     if (!p_->enabled) return;
+    if (GetCurrentThreadId() == wf::events::MainThreadId()) {
+        LARGE_INTEGER q;
+        QueryPerformanceCounter(&q);
+        p_->t0 = q.QuadPart;
+    }
     p_->level = lvl;
     p_->category.assign(category);
     p_->msg.assign(msg);
@@ -495,11 +507,19 @@ void Rec::Emit() {
         std::lock_guard lk(g_queueMx);
         if (g_queue.size() >= 65536) {
             g_recordsDropped.fetch_add(1, std::memory_order_relaxed);
+            g_droppedTotal.fetch_add(1, std::memory_order_relaxed);
         } else {
             g_queue.push_back({std::move(line), p_->level});
         }
     }
     if (urgent) g_wakeWriter.notify_one();
+    if (p_->t0 && g_qpcToUs > 0) {
+        LARGE_INTEGER q;
+        QueryPerformanceCounter(&q);
+        double us = (q.QuadPart - p_->t0) * g_qpcToUs;
+        int b = static_cast<int>(us * 4.0);
+        g_emitHist[b < 0 ? 0 : (b >= kEmitBuckets ? kEmitBuckets - 1 : b)].fetch_add(1, std::memory_order_relaxed);
+    }
 }
 
 bool Enabled(std::string_view category, Level lvl) {
@@ -563,13 +583,31 @@ size_t Tail(uint64_t afterSeq, std::vector<Line>& out, size_t max) {
 }
 
 Stats GetStats() {
-    return Stats{g_recordsAccepted.load(), g_recordsDropped.load(), g_bytesWritten.load(), g_filesRotated.load()};
+    return Stats{g_recordsAccepted.load(), g_droppedTotal.load(), g_bytesWritten.load(), g_filesRotated.load()};
 }
 
 // ------------------------------------------------------------------------------------------------- internal
 namespace internal {
 
+double EmitP95Us(uint64_t* samples) {
+    uint64_t n = 0;
+    for (auto& b : g_emitHist) n += b.load(std::memory_order_relaxed);
+    if (samples) *samples = n;
+    if (!n) return 0.0;
+    uint64_t want = (n * 95 + 99) / 100, acc = 0;
+    for (int i = 0; i < kEmitBuckets; ++i) {
+        acc += g_emitHist[i].load(std::memory_order_relaxed);
+        if (acc >= want) return (i + 1) / 4.0;  // upper edge of the bucket
+    }
+    return kEmitBuckets / 4.0;
+}
+
 bool Init(const Options& opt) {
+    {
+        LARGE_INTEGER f;
+        QueryPerformanceFrequency(&f);
+        g_qpcToUs = f.QuadPart ? 1e6 / static_cast<double>(f.QuadPart) : 0.0;
+    }
     g_maxFileMB = opt.maxFileMB;
     g_maxSessions = opt.maxSessions;
     g_maxTotalMB = opt.maxTotalMB;
@@ -642,6 +680,8 @@ void ShutdownForTests() {
     g_seq.store(1);
     g_recordsAccepted.store(0);
     g_recordsDropped.store(0);
+    g_droppedTotal.store(0);
+    for (auto& b : g_emitHist) b.store(0);
     g_bytesWritten.store(0);
     g_filesRotated.store(0);
     g_session = Session{};

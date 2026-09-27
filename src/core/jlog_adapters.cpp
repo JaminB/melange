@@ -1,11 +1,7 @@
 // Component C's adapters: the WF_ log tap, the raw event-bus -> "event" mirror, the semantic game-event
 // mapper, the net lifecycle mirror, and the Logging module that wires all of it up plus the viewer panels.
 // Public contract: src/sdk/wumfix/jlog.h. See docs/m0-design.md SS2.5, SS3 "C".
-//
-// Written against the frozen wumfix/bus.h (B) and wumfix/overlay.h (A) contracts; this file implements
-// neither B nor A. In this worktree bus.cpp/overlay.cpp are still no-op stand-ins (see the notes at the top of
-// those two files), so SubscribeAll/SubscribeName/AddPanel below never actually fire at runtime here - they
-// will once this branch merges after B and A, per docs/m0-design.md SS4.
+
 #include <windows.h>
 
 #include <atomic>
@@ -20,6 +16,7 @@
 #include "core/jlog_bus_filter.h"
 #include "core/jlog_internal.h"
 #include "core/log.h"
+#include "core/mem.h"
 #include "core/module.h"
 #include "tools/log_viewer.h"
 #include "version.h"
@@ -130,21 +127,36 @@ void OnBusDeliver(const wf::bus::MessageView& m, void*) {
 std::atomic<int> g_turnNumber{0};
 std::atomic<uint64_t> g_lastTurnEndTick{0};
 
-// Weapon.Fired is always posted from the same call site inside the shared helper (see docs/m0-design.md
-// SS1.3), so m.caller never distinguishes which weapon fired. The caller's caller - the actual weapon-class
-// function - is one frame further up our own stack when this handler runs. [I] like the spec's own note, this
-// may be off by one frame; it is not exercised in this offline build (bus.cpp is a stub) and should be
-// checked against the real game before relying on it (see the M0 report for component C).
+// Weapon.Fired is always posted from the same call site inside the shared helper 0x549bb0 (see
+// docs/m0-design.md SS1.3), so m.caller never distinguishes which weapon fired. The weapon-class function is the
+// helper's caller. Our own frames (bus hook, dispatch, this handler) may omit frame pointers, so instead of a
+// frame walk this scans the raw stack upward: first for the Post return address 0x549cc2, then for the first
+// dword that is the return address of a direct `call 0x549bb0` (E8 rel32) in the exe. [I] indirect calls to
+// the helper would be missed ("via" then stays 0).
 constexpr uintptr_t kWeaponFiredPostSite = 0x549cc2;
+constexpr uintptr_t kWeaponFiredHelper = 0x549bb0;
 
-std::string CaptureShotVia() {
-    void* frames[4] = {};
-    USHORT n = CaptureStackBackTrace(2, 4, frames, nullptr);
-    for (USHORT i = 0; i < n; ++i) {
-        auto addr = reinterpret_cast<uintptr_t>(frames[i]);
-        if (addr) return wf::game::DescribeAddress(addr);
+uintptr_t CaptureShotVia() {
+    auto* tib = reinterpret_cast<NT_TIB*>(NtCurrentTeb());
+    const auto base = reinterpret_cast<uintptr_t>(tib->StackBase);
+    uintptr_t here = 0;
+    uintptr_t p = reinterpret_cast<uintptr_t>(&here) & ~uintptr_t(3);
+    const uintptr_t end = (base - p > 0x8000) ? p + 0x8000 : base;
+    bool seenPostSite = false;
+    for (; p + 4 <= end; p += 4) {
+        uintptr_t v = *reinterpret_cast<const uintptr_t*>(p);
+        if (!seenPostSite) {
+            seenPostSite = (v == kWeaponFiredPostSite);
+            continue;
+        }
+        if (v < 0x401005 || v >= 0x800000) continue;  // WormsMayhem.exe code range
+        uint8_t op = 0;
+        int32_t rel = 0;
+        if (!wf::mem::SafeRead(v - 5, &op, 1) || op != 0xE8) continue;
+        if (!wf::mem::SafeRead(v - 4, &rel, 4)) continue;
+        if (v + static_cast<uintptr_t>(rel) == kWeaponFiredHelper) return v;
     }
-    return "unknown";
+    return 0;
 }
 
 void ResetTurnCounter() {
@@ -162,7 +174,7 @@ void OnTurnEnded(const wf::bus::MessageView&, void*) {
     Rec("game", Level::Info, "turn_end").Int("turn", g_turnNumber.load()).Emit();
 }
 void OnWeaponFired(const wf::bus::MessageView&, void*) {
-    Rec("game", Level::Info, "shot").Hex("caller", kWeaponFiredPostSite).Str("via", CaptureShotVia()).Emit();
+    Rec("game", Level::Info, "shot").Hex("caller", kWeaponFiredPostSite).Hex("via", CaptureShotVia()).Emit();
 }
 void OnDeathQueue(const wf::bus::MessageView& m, void*) {
     uint32_t taskId = 0;
@@ -170,9 +182,11 @@ void OnDeathQueue(const wf::bus::MessageView& m, void*) {
     Rec("game", Level::Info, "death").Uint("taskId", taskId).Emit();
 }
 void OnWormDied(const wf::bus::MessageView& m, void*) {
-    // Worm.Died's payload is not decoded by the spec; the Deliver target handle identifies the worm entity
-    // instead. [I] approximation, noted in the M0 report for component C.
-    Rec("game", Level::Info, "worm_cleanup").Int("taskId", m.handle).Bool("teardown", true).Emit();
+    // Worm.Died is a TaskIDMessage (+8 = the worm's task id), seen at runtime; on the Post path m.handle is
+    // always the post target (7) and says nothing about the worm.
+    uint32_t taskId = 0;
+    m.Get<uint32_t>(8, taskId);
+    Rec("game", Level::Info, "worm_cleanup").Uint("taskId", taskId).Bool("teardown", true).Emit();
 }
 void OnWormDamaged(const wf::bus::MessageView&, void*) { Rec("game", Level::Info, "damage").Emit(); }
 void OnExplosion(const wf::bus::MessageView& m, void*) {
@@ -194,6 +208,23 @@ void InstallNetTap() {
     wf::events::Subscribe(Event::LobbyLeave, [] { Rec("net", Level::Info, "lobby_leave").Emit(); });
 }
 
+// -------------------------------------------------------------------------------------- frame gaps
+// docs/m0-design.md SS3 "D" acceptance 2: "C records the frame gaps". Every frame-to-frame interval above
+// 100 ms becomes one "core"/"frame_gap" record (loading screens produce some; an export must not).
+LARGE_INTEGER g_qpcFreq{};
+LARGE_INTEGER g_lastFrameQpc{};
+
+void OnFrameForGaps() {
+    LARGE_INTEGER now;
+    QueryPerformanceCounter(&now);
+    if (g_lastFrameQpc.QuadPart && g_qpcFreq.QuadPart) {
+        double ms = (now.QuadPart - g_lastFrameQpc.QuadPart) * 1000.0 / static_cast<double>(g_qpcFreq.QuadPart);
+        if (ms > 100.0 && wf::jlog::Enabled("core", Level::Info))
+            Rec("core", Level::Info, "frame_gap").Float("ms", ms).Uint("frame", wf::events::FrameCount()).Emit();
+    }
+    g_lastFrameQpc = now;
+}
+
 // -------------------------------------------------------------------------------------- test verbs
 bool g_allowCrashTest = false;
 
@@ -202,6 +233,16 @@ bool CmdMark(std::string_view args, void*) {
     return true;
 }
 bool CmdFlush(std::string_view, void*) { return wf::jlog::Flush(2000); }
+bool CmdStats(std::string_view, void*) {
+    auto st = wf::jlog::GetStats();
+    uint64_t samples = 0;
+    double p95 = wf::jlog::internal::EmitP95Us(&samples);
+    WF_INFO("[jlog] stats: records=%llu dropped=%llu bytes=%llu filesRotated=%llu mainEmitP95Us=%.2f (n=%llu)",
+            static_cast<unsigned long long>(st.records), static_cast<unsigned long long>(st.dropped),
+            static_cast<unsigned long long>(st.bytes), static_cast<unsigned long long>(st.filesRotated), p95,
+            static_cast<unsigned long long>(samples));
+    return true;
+}
 bool CmdCrashTest(std::string_view, void*) {
     if (!g_allowCrashTest) {
         WF_WARN("[jlog] jlog.crashtest blocked: [Logging] AllowCrashTest=0");
@@ -280,10 +321,14 @@ public:
 
         InstallNetTap();  // adapter 4 (net_session.cpp itself carries the "state" record, see its own edit)
 
+        QueryPerformanceFrequency(&g_qpcFreq);
+        wf::events::Subscribe(wf::events::Event::Frame, &OnFrameForGaps);
+
         wf::logviewer::Install();  // adapter 5
 
         wf::testcmd::Register("jlog.mark", &CmdMark);
         wf::testcmd::Register("jlog.flush", &CmdFlush);
+        wf::testcmd::Register("jlog.stats", &CmdStats);
         wf::testcmd::Register("jlog.crashtest", &CmdCrashTest);
 
         WF_INFO("logging: session %s, root %s", wf::jlog::CurrentSession().id.c_str(),

@@ -26,4 +26,7 @@ bool Init(const Options& opt);
 // same process. The plugin itself never calls this (the process just exits).
 void ShutdownForTests();
 
+// p95 of the main-thread record cost (Rec construction to end of Emit) in microseconds, and the sample count.
+double EmitP95Us(uint64_t* samples);
+
 }  // namespace wf::jlog::internal
