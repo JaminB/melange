@@ -27,6 +27,7 @@ Each module is one file under `src/` (`core/`, `render/`, `gameplay/`, `net/` or
 | **Diagnostics** | on | Crash handler and hang watchdog: stack trace plus minidump. `Ctrl+Shift+F12` takes a manual snapshot. |
 | **SteamTrace** | on | Logs every Steam lobby, P2P and callback call. |
 | **EngineLog** | on | Mirrors the engine's own log into `WUMFix.log`. |
+| **EventBus** | on | Hooks the engine's message Post and Deliver so modules can subscribe to engine messages by name (`wumfix/bus.h`). Changes nothing in the game. `DumpRegistry=1` writes every message name to `WUMFix\messages.tsv`. Replaces the Probe's message hooks, so only one of the two can hook them. |
 | **NetTrace** | on | Logs raw Winsock usage. |
 | **WindowTag** | on | Shows `[WUMFix x.y.z]` in the window title. |
 | **FrameInterval** | off | Engine frame cap in ms (example of a fixed-address patch). |
@@ -48,6 +49,8 @@ Requirements:
 ```
 
 SafetyHook (with Zydis) is fetched by CMake.
+
+`.\scripts\selftest.ps1` builds and runs the offline self-tests (`tests/`), which need no game.
 
 ## Writing a module
 
@@ -80,6 +83,7 @@ Building blocks:
 |---|---|
 | `core/mem.h` | Patching, pattern scan, IAT and vtable hooks |
 | `<safetyhook.hpp>` | Inline hooks and mid-function hooks (register context) |
+| `wumfix/bus.h` | Engine message bus: subscribe to engine messages by name, registry names, payload decoders |
 | `core/events.h` | Per-frame callback, plus MatchStart/MatchEnd/LobbyEnter/LobbyLeave events fired by NetSession |
 | `net/steam.h` | Steam callback base and callback ids |
 | `net/net.h` | Typed accessors for NetService, NetThrottle, the session and players |
@@ -102,5 +106,6 @@ Modules that return `RequiresKnownBuild() == true` are skipped automatically on 
 | `docs/netcode.md` | Root-cause writeup of the back-to-back match bug |
 | `docs/localnet.md` | The two-instance test harness |
 | `re/` | Ghidra scripts, helper tools and RE notes. The decompiled corpus `re/out` is regenerated with `re/ghidra.sh ExportAll.java`. |
+| `tests/` | Offline self-tests, built by `scripts/selftest.ps1` (not part of the plugin) |
 | `scripts/` | Test automation: `auto.ps1` (input), `ui.ps1` (screenshots), `e2e.ps1` |
 | `tools/` | Downloaded toolchain and RE tools; gitignored |

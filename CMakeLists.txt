@@ -63,3 +63,17 @@ target_compile_definitions(WUMFix PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX _CRT_SECU
 target_compile_options(WUMFix PRIVATE /W4 /utf-8 /permissive- /Zi /wd4100)
 target_link_options(WUMFix PRIVATE /DEBUG /OPT:REF /OPT:ICF /SAFESEH:NO)
 target_link_libraries(WUMFix PRIVATE safetyhook::safetyhook dbghelp bcrypt ws2_32 imgui miniz)
+
+# Offline self-test for the event bus (component B): runs the real registry/dispatch/decoder code against a
+# fake name table and fake messages, no game needed. Not part of the default build; scripts\selftest.ps1
+# builds and runs it.
+add_executable(bus_selftest EXCLUDE_FROM_ALL
+    tests/bus_selftest.cpp
+    src/core/bus.cpp src/core/bus_registry.cpp src/core/bus_decoders.cpp
+    src/core/events.cpp src/core/game.cpp src/core/mem.cpp src/core/log.cpp src/core/config.cpp
+    src/core/testcmd.cpp src/core/module.cpp)
+target_include_directories(bus_selftest PRIVATE src src/sdk ${CMAKE_BINARY_DIR}/generated)
+target_compile_definitions(bus_selftest PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX _CRT_SECURE_NO_WARNINGS)
+target_compile_options(bus_selftest PRIVATE /W4 /utf-8 /permissive- /Zi /wd4100)
+target_link_options(bus_selftest PRIVATE /DEBUG /SAFESEH:NO)
+target_link_libraries(bus_selftest PRIVATE safetyhook::safetyhook bcrypt)

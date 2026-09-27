@@ -1,4 +1,5 @@
 #pragma once
+#include <cstddef>
 #include <cstdint>
 #include <string_view>
 namespace wf::bus {
@@ -47,6 +48,14 @@ MsgId IdOf(std::string_view name);        // kInvalidId if not registered
 const char* NameOf(MsgId id);             // as MessageView::name
 template <class F> void ForEachName(F&& f);  // f(MsgId, const char*) for every non-null slot (inline in header)
 size_t Capacity();
+namespace detail {
+const char* RegistrySlot(size_t slot);  // name in registry slot `slot` (id = 0x8000 | slot), or nullptr if empty
+}
+template <class F> void ForEachName(F&& f) {
+    const size_t n = Capacity();
+    for (size_t i = 0; i < n && i < 0x8000; ++i)
+        if (const char* s = detail::RegistrySlot(i)) f(static_cast<MsgId>(0x8000 | i), s);
+}
 
 // Typed payload decoders, keyed by message vtable. Writes JSON object members (no braces) into `out`.
 struct JsonOut {  // minimal writer; implemented by C's jlog, declared here to keep B independent
