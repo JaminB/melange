@@ -1,0 +1,23 @@
+{
+  "version": 6,
+  "configurePresets": [
+    {
+      "name": "x86-release",
+      "displayName": "x86 RelWithDebInfo (Ninja)",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build/x86-release",
+      "cacheVariables": { "CMAKE_BUILD_TYPE": "RelWithDebInfo" }
+    },
+    {
+      "name": "x86-debug",
+      "displayName": "x86 Debug (Ninja)",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build/x86-debug",
+      "cacheVariables": { "CMAKE_BUILD_TYPE": "Debug" }
+    }
+  ],
+  "buildPresets": [
+    { "name": "x86-release", "configurePreset": "x86-release" },
+    { "name": "x86-debug", "configurePreset": "x86-debug" }
+  ]
+}
