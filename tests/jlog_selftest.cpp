@@ -261,6 +261,28 @@ void TestCrashFlush() {
     RemoveTree(dir);
 }
 
+void TestBadPathFallback() {
+    // '?' is never valid in a Windows path, so this reliably fails regardless of which drive letters exist
+    // (docs/m0-design.md SS3 "C" acceptance item 11: "Dir=Q:\nope falls back ... with a Warn record").
+    std::wstring badRoot = L"C:\\wumfix_selftest_??_invalid";
+    std::wstring fallback = TempDir(L"fallback");
+    wf::jlog::internal::Options opt;
+    opt.rootOverride = badRoot;
+    opt.fallbackRoot = fallback;
+    opt.levelsSpec = "*:info";
+    Check(wf::jlog::internal::Init(opt), "badpath: Init succeeds via the fallback root");
+    Check(wf::jlog::CurrentSession().root == fallback, "badpath: CurrentSession().root is the fallback, not the bad one");
+    Check(wf::jlog::Flush(2000), "badpath: Flush completes");
+
+    auto lines = ReadLines(wf::jlog::CurrentSession().dir + L"\\events.jsonl");
+    Check(!lines.empty() && lines.front().find("\"lvl\":\"warn\"") != std::string::npos &&
+              lines.front().find("fallback") != std::string::npos,
+          "badpath: the first record is a warn about the fallback");
+
+    wf::jlog::internal::ShutdownForTests();
+    RemoveTree(fallback);
+}
+
 void TestBusFilter() {
     wf::jlog::busfilter::Init("Camera.HasUpdated,Land.CheckVoxel", "");
     Check(!wf::jlog::busfilter::ShouldLog("Camera.HasUpdated"), "busfilter: default deny list blocks a listed name");
@@ -285,6 +307,7 @@ int main() {
     TestRotation();
     TestSessionPruning();
     TestCrashFlush();
+    TestBadPathFallback();
     TestBusFilter();
 
     std::cout << (g_checks - g_failures) << "/" << g_checks << " checks passed\n";
