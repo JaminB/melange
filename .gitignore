@@ -1,5 +1,6 @@
 build/
-/tools/
+/tools/*
+!/tools/xom/
 re/ghidra_proj/
 re/*.exe
 re/out/
@@ -10,3 +11,4 @@ dist/*.dll
 testenv/
 .claude/
 docs/findings/*.dmp
+__pycache__/
