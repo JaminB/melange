@@ -2,6 +2,7 @@
 
 #include <windows.h>
 
+#include <atomic>
 #include <cstdarg>
 #include <cstdio>
 #include <cstring>
@@ -11,6 +12,7 @@ namespace {
 HANDLE g_file = INVALID_HANDLE_VALUE;
 SRWLOCK g_lock = SRWLOCK_INIT;
 ULONGLONG g_start = 0;
+std::atomic<Tap> g_tap{nullptr};
 
 void Append(const char* s, size_t n) {
     if (g_file == INVALID_HANDLE_VALUE) return;
@@ -36,6 +38,8 @@ void Write(const char* level, const char* fmt, ...) {
     va_start(ap, fmt);
     vsnprintf(msg, sizeof(msg), fmt, ap);
     va_end(ap);
+
+    if (Tap tap = g_tap.load(std::memory_order_acquire)) tap(level, msg);
 
     SYSTEMTIME st;
     GetLocalTime(&st);
@@ -65,4 +69,6 @@ void HexDump(const char* title, const void* data, size_t len, size_t max) {
     buf[o] = 0;
     Write("TRACE", "%s (%zu bytes): %s%s", title, len, buf, len > max ? "..." : "");
 }
+
+void SetTap(Tap fn) { g_tap.store(fn, std::memory_order_release); }
 }  // namespace wf::log

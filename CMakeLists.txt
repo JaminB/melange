@@ -62,4 +62,20 @@ target_include_directories(WUMFix PRIVATE src src/sdk ${CMAKE_BINARY_DIR}/genera
 target_compile_definitions(WUMFix PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX _CRT_SECURE_NO_WARNINGS)
 target_compile_options(WUMFix PRIVATE /W4 /utf-8 /permissive- /Zi /wd4100)
 target_link_options(WUMFix PRIVATE /DEBUG /OPT:REF /OPT:ICF /SAFESEH:NO)
-target_link_libraries(WUMFix PRIVATE safetyhook::safetyhook dbghelp bcrypt ws2_32 imgui miniz)
+target_link_libraries(WUMFix PRIVATE safetyhook::safetyhook dbghelp bcrypt ws2_32 shell32 imgui miniz)
+
+# Offline self-test for component C (structured JSONL logging): exercises src/core/jlog.cpp directly - session
+# folders, rotation, the tail ring, JSON schema/validity and crash-flush - without the game or the .asi. See
+# docs/m0-design.md SS3 "C" acceptance items 1, 6 and 7, and the M0 report for component C.
+add_executable(jlog_selftest
+    tests/jlog_selftest.cpp
+    src/core/jlog.cpp
+    src/core/jlog_bus_filter.cpp
+    src/core/events.cpp
+    src/core/game.cpp
+    src/core/mem.cpp
+    src/core/log.cpp)
+target_include_directories(jlog_selftest PRIVATE src src/sdk ${CMAKE_BINARY_DIR}/generated)
+target_compile_definitions(jlog_selftest PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX _CRT_SECURE_NO_WARNINGS)
+target_compile_options(jlog_selftest PRIVATE /W4 /utf-8 /permissive- /wd4100)
+target_link_libraries(jlog_selftest PRIVATE bcrypt psapi shell32 ole32)

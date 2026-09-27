@@ -18,6 +18,7 @@
 #include "core/mem.h"
 #include "core/module.h"
 #include "net/net.h"
+#include "wumfix/jlog.h"  // component C's only edit to NetSession: mirror state transitions into the JSONL log
 
 namespace {
 namespace A = wf::wum::addr;
@@ -151,6 +152,7 @@ uintptr_t g_lastState = 0;
 
 void OnStateChange(uintptr_t from, uintptr_t to) {
     WF_INFO("[net] state %s -> %s", wf::wum::StateName(from), wf::wum::StateName(to));
+    wf::jlog::Rec("net", wf::jlog::Level::Info, "state").Int("from", static_cast<int64_t>(from)).Int("to", static_cast<int64_t>(to)).Emit();
     using wf::events::Event;
     if (to == S::WaitingGameStart) {
         if (from == S::WaitingUnload) {
