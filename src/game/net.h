@@ -8,10 +8,11 @@ namespace addr {
 constexpr uintptr_t NetServicePtr = 0x979ddc;        // NetService* singleton
 constexpr uintptr_t AbortGame = 0x70864c;            // __thiscall(ns, HRESULT), ret 4
 constexpr uintptr_t SurrenderPlayer = 0x708a97;      // __thiscall(ns, player), ret 4
-constexpr uintptr_t TurnStarted = 0x709827;          // __thiscall(ns, player), ret 4
+constexpr uintptr_t TurnStarted = 0x709827;          // __thiscall(ns, event msg); looks the player up itself
 constexpr uintptr_t CheckViability = 0x4190ac;       // __thiscall(session, nOffset), ret 4
 constexpr uintptr_t PlayerCount = 0x67cb62;          // __thiscall(container) -> int
 constexpr uintptr_t PlayerAt = 0x67c982;             // __thiscall(container, idx) -> NetPlayer*, ret 4
+constexpr uintptr_t CurrentPlayer = 0x706432;        // __thiscall(ns) -> NetPlayer* of CurrentTeamIndex, or 0
 constexpr uintptr_t SteamConnCtor = 0x78613e;        // XSteamConnection::XSteamConnection (ecx = this)
 constexpr uintptr_t SteamConnDtor = 0x785c85;        // XSteamConnection::~XSteamConnection
 constexpr uintptr_t SteamConnNewSender = 0x785ee7;   // packet from unknown SteamID -> new connection
@@ -40,7 +41,7 @@ namespace off {
 constexpr uintptr_t State = 0x20;
 constexpr uintptr_t ViabilityArmed = 0x89;
 constexpr uintptr_t Session = 0x8c;
-constexpr uintptr_t Players = 0x4a8;  // container object (embedded)
+constexpr uintptr_t Players = 0x4a8;  // pointer to the player container
 constexpr uintptr_t BeginGameDone = 0x4bc;
 constexpr uintptr_t InGameFlag = 0x4bd;
 constexpr uintptr_t GameEnded = 0x4be;
@@ -73,6 +74,7 @@ uintptr_t CurrentState();
 const char* StateName(uintptr_t fn);
 int PlayerCount(uintptr_t ns);
 uintptr_t PlayerAt(uintptr_t ns, int idx);
+uintptr_t CurrentPlayer(uintptr_t ns);  // NetPlayer whose turn it is (0 between turns)
 
 template <class T>
 T Read(uintptr_t addr, T def = T{});

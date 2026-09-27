@@ -158,14 +158,16 @@ void OnStateChange(uintptr_t from, uintptr_t to) {
             ResetStaleMatchState("return-to-lobby", true);
         }
         wf::events::Fire(Event::LobbyEnter);
-    } else if (to == S::WaitingConnections) {
+    } else if (to == S::WaitingConnections || (to == S::WaitingLoad && from != S::WaitingConnections)) {
+        // WaitingConnections can finish within one frame (seen on the joiner), so the poll may go straight to WaitingLoad.
         ++g_matchNumber;
         DumpState("match starting");
         ResetStaleMatchState("match-start", false);
     } else if (to == S::InGame) {
         WF_INFO("[net] ===== match %d in progress =====", g_matchNumber);
         wf::events::Fire(Event::MatchStart);
-    } else if (to == S::ProcessWinOrDraw) {
+    } else if (to == S::ProcessWinOrDraw || (to == S::WaitingUnload && from != S::ProcessWinOrDraw)) {
+        // ProcessWinOrDraw usually runs within one frame, so the poll often sees InGame -> WaitingUnload.
         DumpState("match over");
         wf::events::Fire(Event::MatchEnd);
     } else if (to == 0 && from != 0) {
@@ -253,8 +255,11 @@ void OnSurrender(safetyhook::Context& c) {
 }
 
 void OnTurnStarted(safetyhook::Context& c) {
-    uint32_t p = Arg(c, 0);
-    WF_INFO("[net] turn started: player %08x surrenderNext=%u", p, p ? Read<uint8_t>(p + O::PlayerSurrenderNext) : 0);
+    // 0x709827 is an event handler (arg = event message); it looks the player up with CurrentPlayer itself.
+    uintptr_t p = wf::wum::CurrentPlayer(c.ecx);
+    WF_INFO("[net] turn started: player %08x %s surrenderNext=%u", static_cast<unsigned>(p),
+            !p ? "(none)" : Read<uint8_t>(p + O::PlayerIsLocal) ? "local" : "remote",
+            p ? Read<uint8_t>(p + O::PlayerSurrenderNext) : 0);
 }
 
 void OnCheckViability(safetyhook::Context& c) {

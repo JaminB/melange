@@ -74,6 +74,22 @@ uintptr_t SafeAt(uintptr_t c, int i) {
 }
 }  // namespace
 
-int PlayerCount(uintptr_t ns) { return ns ? SafeCount(ns + off::Players) : 0; }
-uintptr_t PlayerAt(uintptr_t ns, int idx) { return ns ? SafeAt(ns + off::Players, idx) : 0; }
+// ns+0x4a8 holds a POINTER to the player container (0x706432: mov ecx,[ebx+0x4a8]; call 0x67cb62).
+uintptr_t PlayerContainer(uintptr_t ns) { return ns ? Read<uint32_t>(ns + off::Players) : 0; }
+int PlayerCount(uintptr_t ns) {
+    uintptr_t c = PlayerContainer(ns);
+    return c ? SafeCount(c) : 0;
+}
+uintptr_t PlayerAt(uintptr_t ns, int idx) {
+    uintptr_t c = PlayerContainer(ns);
+    return c ? SafeAt(c, idx) : 0;
+}
+uintptr_t CurrentPlayer(uintptr_t ns) {
+    if (!ns) return 0;
+    __try {
+        return reinterpret_cast<uintptr_t(__thiscall*)(uintptr_t)>(addr::CurrentPlayer)(ns);
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return 0;
+    }
+}
 }  // namespace wf::wum

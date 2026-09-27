@@ -2,6 +2,8 @@
 // messages (including the netcode's "Session no longer viable..." lines) interleave with our traces.
 #include <safetyhook.hpp>
 
+#include <cstdarg>
+#include <cstdio>
 #include <cstring>
 #include <string>
 
@@ -13,6 +15,25 @@ namespace {
 // void __cdecl XDebugOutSink(const char* line) - the final sink behind XDebugOutStream::Write (see re-notes §5).
 constexpr uintptr_t kSink = 0x645c39;
 SafetyHookInline g_hook;
+SafetyHookMid g_onlineHook;
+
+// void __cdecl XomOnlineLog(obj, const char* tag, int level, const char* fmt, va_list) (0x41e3fd, re-notes §5).
+// Retail only enables the stream carrying the level marker ("*** FAILURE ***"); the tag and message go to a
+// disabled stream, so they are reconstructed here.
+constexpr uintptr_t kOnlineLog = 0x41e3fd;
+
+void OnOnlineLog(safetyhook::Context& c) {
+    auto arg = [&](int i) { return *reinterpret_cast<uintptr_t*>(c.esp + 4 + 4 * i); };
+    const char* tag = reinterpret_cast<const char*>(arg(1));
+    int level = static_cast<int>(arg(2));
+    const char* fmt = reinterpret_cast<const char*>(arg(3));
+    // Per-packet chatter (several lines a second while connected).
+    if (level < 2 && tag && (!strcmp(tag, "FlushSendStore") || !strcmp(tag, "ProcessHeartBeat"))) return;
+    char msg[1024] = "";
+    if (fmt) _vsnprintf_s(msg, sizeof(msg), _TRUNCATE, fmt, reinterpret_cast<va_list>(arg(4)));
+    static const char* kLevel[] = {"info", "info", "WARNING", "FAILURE"};
+    wf::log::Write("ENG  ", "XomOnline[%s] %s: %s", kLevel[level & 3], tag ? tag : "", msg);
+}
 std::string g_filter;  // empty = everything
 
 // The engine streams a line in fragments ("  14 | ", "+ ", text, "\n"); reassemble per thread.
@@ -55,9 +76,14 @@ public:
         wf::config::EnsureKey(Name(), "Filter", "");
         if (!wf::mem::Expect(kSink, {0x55, 0x8b, 0xec, 0x83, 0xec, 0x1c})) return false;
         g_hook = safetyhook::create_inline(kSink, &HookSink);
+        if (Bool("OnlineLog", true) && wf::mem::Expect(kOnlineLog, {0x55, 0x8b, 0xec, 0x81, 0xec, 0x30, 0x04}))
+            g_onlineHook = safetyhook::create_mid(kOnlineLog, &OnOnlineLog);
         return static_cast<bool>(g_hook);
     }
-    void Uninstall() override { g_hook = {}; }
+    void Uninstall() override {
+        g_onlineHook = {};
+        g_hook = {};
+    }
 };
 }  // namespace
 
