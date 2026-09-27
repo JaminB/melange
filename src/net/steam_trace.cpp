@@ -14,7 +14,7 @@
 #include "core/log.h"
 #include "core/mem.h"
 #include "core/module.h"
-#include "core/steam.h"
+#include "net/steam.h"
 
 namespace {
 using wf::steam::SteamAPICall;

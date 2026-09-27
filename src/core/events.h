@@ -26,4 +26,9 @@ uint64_t FrameCount();
 uint64_t LastFrameTick();  // GetTickCount64() of the last frame
 unsigned long MainThreadId();
 void* GameWindow();  // HWND
+
+// Called inside the SwapBuffers hook, after Event::Frame subscribers, immediately before the real SwapBuffers,
+// on the main thread with the game's GL context current. One slot, owned by render/overlay.
+using PresentHook = void (*)(void* hdc);
+void SetPresentHook(PresentHook fn);
 }  // namespace wf::events

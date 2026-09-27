@@ -22,6 +22,8 @@ std::atomic<HWND> g_window{nullptr};
 using SwapBuffers_t = BOOL(WINAPI*)(HDC);
 SwapBuffers_t g_origSwapBuffers = nullptr;
 
+std::atomic<PresentHook> g_presentHook{nullptr};
+
 BOOL WINAPI HookSwapBuffers(HDC dc) {
     if (g_frames.load(std::memory_order_relaxed) == 0) {
         g_mainThread = GetCurrentThreadId();
@@ -31,6 +33,7 @@ BOOL WINAPI HookSwapBuffers(HDC dc) {
     g_frames.fetch_add(1, std::memory_order_relaxed);
     g_lastFrame.store(GetTickCount64(), std::memory_order_relaxed);
     Fire(Event::Frame);
+    if (PresentHook hook = g_presentHook.load(std::memory_order_acquire)) hook(dc);
     return g_origSwapBuffers(dc);
 }
 }  // namespace
@@ -63,4 +66,6 @@ uint64_t FrameCount() { return g_frames.load(); }
 uint64_t LastFrameTick() { return g_lastFrame.load(); }
 unsigned long MainThreadId() { return g_mainThread.load(); }
 void* GameWindow() { return g_window.load(); }
+
+void SetPresentHook(PresentHook fn) { g_presentHook.store(fn, std::memory_order_release); }
 }  // namespace wf::events

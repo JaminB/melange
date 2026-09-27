@@ -18,7 +18,7 @@ To uninstall, delete `WUMFix.asi` and `WUMFix.ini`, and also `dinput8.dll` if no
 
 ## Modules
 
-Each module is one file in `src/modules/` with its own `[Section]` in `WUMFix.ini`.
+Each module is one file under `src/` (`core/`, `render/`, `gameplay/`, `net/` or `tools/`, by what it touches) with its own `[Section]` in `WUMFix.ini`.
 
 | Module | Default | What it does |
 |---|---|---|
@@ -52,7 +52,7 @@ SafetyHook (with Zydis) is fetched by CMake.
 ## Writing a module
 
 ```cpp
-// src/modules/my_fix.cpp  (picked up automatically by the build)
+// src/gameplay/my_fix.cpp  (any .cpp under src/ is picked up automatically by the build)
 #include "core/module.h"
 #include "core/mem.h"
 #include "core/log.h"
@@ -81,8 +81,8 @@ Building blocks:
 | `core/mem.h` | Patching, pattern scan, IAT and vtable hooks |
 | `<safetyhook.hpp>` | Inline hooks and mid-function hooks (register context) |
 | `core/events.h` | Per-frame callback, plus MatchStart/MatchEnd/LobbyEnter/LobbyLeave events fired by NetSession |
-| `core/steam.h` | Steam callback base and callback ids |
-| `game/net.h` | Typed accessors for NetService, NetThrottle, the session and players |
+| `net/steam.h` | Steam callback base and callback ids |
+| `net/net.h` | Typed accessors for NetService, NetThrottle, the session and players |
 | `core/debug.h` | Stack scans, minidumps, RTTI names |
 | `core/game.h` | Exe identity guard, paths |
 
@@ -92,9 +92,12 @@ Modules that return `RequiresKnownBuild() == true` are skipped automatically on 
 
 | Path | Contents |
 |---|---|
-| `src/core/` | Plugin entry, logging, ini, exe guard, memory/hook helpers, events, debug |
-| `src/game/` | Game structure knowledge (addresses and offsets for build #1077) |
-| `src/modules/` | One module per file (LocalNet and Automation in subfolders) |
+| `src/core/` | Plugin entry, logging, ini, exe guard, memory/hook helpers, events, debug, testcmd registry |
+| `src/render/` | Overlay, GL state guard, input capture (component A; a stub until it lands) |
+| `src/gameplay/` | Gameplay-facing tweaks and fixes |
+| `src/net/` | Game structure knowledge for networking (build #1077), Steam and net modules (LocalNet in its own subfolder) |
+| `src/tools/` | In-plugin dev/test tools: Automation, Probe, log export (component D; a stub until it lands) |
+| `src/sdk/wumfix/` | Frozen public headers for mods and other components (`wumfix/<name>.h`) |
 | `docs/re-notes.md` | Reverse-engineering reference: classes, Steam usage, match lifecycle, input |
 | `docs/netcode.md` | Root-cause writeup of the back-to-back match bug |
 | `docs/localnet.md` | The two-instance test harness |

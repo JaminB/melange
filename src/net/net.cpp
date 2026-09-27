@@ -1,4 +1,4 @@
-#include "game/net.h"
+#include "net/net.h"
 
 #include <windows.h>
 

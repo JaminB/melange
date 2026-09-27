@@ -21,7 +21,7 @@
 #include "core/log.h"
 #include "core/mem.h"
 #include "core/module.h"
-#include "game/net.h"
+#include "net/net.h"
 
 namespace {
 using wf::wum::Read;

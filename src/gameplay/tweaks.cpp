@@ -19,6 +19,10 @@ class WindowTag final : public wf::Module {
 public:
     const char* Name() const override { return "WindowTag"; }
     const char* Description() const override { return "appends [WUMFix x.y.z] to the game window title"; }
+    // Pinned explicitly (was the implicit default 100, tied with FrameInterval): the repo restructure
+    // changes translation-unit link order, so the two can no longer rely on that to install in the
+    // order this file registers them. These values keep today's order (WindowTag, then FrameInterval).
+    int Order() const override { return 100; }
 
     bool Install() override {
         wf::events::Subscribe(wf::events::Event::Frame, [] {
@@ -42,6 +46,7 @@ public:
     const char* Description() const override { return "engine frame interval in ms (16 = ~60 fps, 8 = ~120 fps)"; }
     bool DefaultEnabled() const override { return false; }
     bool RequiresKnownBuild() const override { return true; }
+    int Order() const override { return 101; }  // see WindowTag::Order()
 
     bool Install() override {
         int ms = Int("IntervalMs", 16);
