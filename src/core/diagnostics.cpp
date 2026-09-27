@@ -12,6 +12,7 @@
 #include "core/log.h"
 #include "core/mem.h"
 #include "core/module.h"
+#include "wumfix/jlog.h"  // component C's only edit to Diagnostics: flush the JSONL queue from the crash filter
 
 namespace {
 using SetUEF_t = LPTOP_LEVEL_EXCEPTION_FILTER(WINAPI*)(LPTOP_LEVEL_EXCEPTION_FILTER);
@@ -85,6 +86,7 @@ private:
         std::string detail = wf::debug::FormatRegisters(*ep->ContextRecord) +
                              wf::debug::ScanStack(ep->ContextRecord->Eip, ep->ContextRecord->Esp);
         wf::log::WriteRaw(detail.c_str());
+        wf::jlog::FlushFromCrash();
         auto path = wf::debug::WriteMiniDump("crash", ep, GetCurrentThreadId(), s_self && s_self->fullDumps_);
         WF_ERROR("     minidump: %s", path.empty() ? "(failed)" : wf::game::Narrow(path).c_str());
         return s_prevFilter ? s_prevFilter(ep) : EXCEPTION_CONTINUE_SEARCH;
