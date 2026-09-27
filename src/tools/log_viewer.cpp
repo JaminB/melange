@@ -1,7 +1,6 @@
 // Overlay panels for component C: "Log" (Tail() with filters) and "Events" (top bus ids by rate, with
 // allow/deny toggles). Public overlay contract: src/sdk/wumfix/overlay.h (A). See docs/m0-design.md SS3 "C",
-// adapter 5. Written against A's frozen header; A's real backend is not implemented here (see the note at the
-// top of src/render/overlay.cpp) so these panels are registered but never actually drawn in this worktree.
+// adapter 5. Written against A's frozen header; panels draw only their contents (the overlay owns Begin/End).
 #include "tools/log_viewer.h"
 
 #include <windows.h>
@@ -76,11 +75,20 @@ void DrawLogPanel(void*) {
     ImGui::InputText("Text", g_textFilter, sizeof(g_textFilter));
 
     ImGui::BeginChild("##loglines", ImVec2(0, 0), true);
-    for (const auto& l : g_lines) {
-        if (!PassesFilter(l)) continue;
-        ImGui::PushID(static_cast<int>(l.seq));
-        if (ImGui::Selectable(l.json.c_str())) ImGui::SetClipboardText(l.json.c_str());
-        ImGui::PopID();
+    // Only the visible rows are submitted (up to 20000 kept lines cost several ms per frame otherwise).
+    static std::vector<int> visible;
+    visible.clear();
+    for (int i = 0; i < static_cast<int>(g_lines.size()); ++i)
+        if (PassesFilter(g_lines[i])) visible.push_back(i);
+    ImGuiListClipper clipper;
+    clipper.Begin(static_cast<int>(visible.size()));
+    while (clipper.Step()) {
+        for (int r = clipper.DisplayStart; r < clipper.DisplayEnd; ++r) {
+            const auto& l = g_lines[visible[r]];
+            ImGui::PushID(static_cast<int>(l.seq));
+            if (ImGui::Selectable(l.json.c_str())) ImGui::SetClipboardText(l.json.c_str());
+            ImGui::PopID();
+        }
     }
     if (g_autoscroll && ImGui::GetScrollY() >= ImGui::GetScrollMaxY()) ImGui::SetScrollHereY(1.0f);
     ImGui::EndChild();
@@ -91,33 +99,55 @@ struct EventRow {
     wf::bus::MsgId id;
     std::string name;
     uint32_t count;
+    double rate;  // messages/s (Post + Deliver) over the last sampling window
 };
 
-std::vector<EventRow> TopEvents(size_t max) {
+// Registry ids are 0x8000 | slot (docs/m0-design.md SS1.2), so iterate the registry itself rather than
+// 0..Capacity(), plus the system ids the probe saw at runtime. Rates are sampled once a second.
+std::vector<EventRow> g_rows;
+std::vector<uint32_t> g_prevCount;  // indexed by id & 0x7fff for registry ids
+uint32_t g_prevSys[3] = {};
+ULONGLONG g_lastSample = 0;
+constexpr wf::bus::MsgId kSysIds[3] = {0x103, 0x104, 0x1004};
+
+uint32_t TotalCount(wf::bus::MsgId id) {
+    return wf::bus::CountOf(id, wf::bus::Path::Post) + wf::bus::CountOf(id, wf::bus::Path::Deliver);
+}
+
+void SampleEvents(size_t max) {
+    ULONGLONG now = GetTickCount64();
+    if (g_lastSample && now - g_lastSample < 1000) return;
+    double dt = g_lastSample ? (now - g_lastSample) / 1000.0 : 0.0;
+    g_lastSample = now;
     std::vector<EventRow> rows;
-    size_t cap = wf::bus::Capacity();
-    rows.reserve(cap);
-    for (size_t id = 0; id < cap; ++id) {
-        const char* name = wf::bus::NameOf(static_cast<wf::bus::MsgId>(id));
-        if (!name) continue;
-        uint32_t count =
-            wf::bus::CountOf(static_cast<wf::bus::MsgId>(id), wf::bus::Path::Post) +
-            wf::bus::CountOf(static_cast<wf::bus::MsgId>(id), wf::bus::Path::Deliver);
-        if (count == 0) continue;
-        rows.push_back({static_cast<wf::bus::MsgId>(id), name, count});
-    }
-    std::sort(rows.begin(), rows.end(), [](const EventRow& a, const EventRow& b) { return a.count > b.count; });
+    if (g_prevCount.size() < wf::bus::Capacity()) g_prevCount.resize(wf::bus::Capacity(), 0);
+    auto add = [&](wf::bus::MsgId id, const char* name, uint32_t& prev) {
+        uint32_t count = TotalCount(id);
+        double rate = dt > 0 ? (count - prev) / dt : 0.0;
+        prev = count;
+        if (count) rows.push_back({id, name, count, rate});
+    };
+    wf::bus::ForEachName([&](wf::bus::MsgId id, const char* name) {
+        size_t slot = id & 0x7fff;
+        if (slot < g_prevCount.size()) add(id, name, g_prevCount[slot]);
+    });
+    for (int i = 0; i < 3; ++i) add(kSysIds[i], wf::bus::NameOf(kSysIds[i]), g_prevSys[i]);
+    std::sort(rows.begin(), rows.end(), [](const EventRow& a, const EventRow& b) {
+        return a.rate != b.rate ? a.rate > b.rate : a.count > b.count;
+    });
     if (rows.size() > max) rows.resize(max);
-    return rows;
+    g_rows = std::move(rows);
 }
 
 void DrawEventsPanel(void*) {
     ImGui::TextUnformatted(wf::bus::RegistryReady() ? "registry ready" : "registry not ready");
     ImGui::Separator();
-    auto rows = TopEvents(30);
-    if (ImGui::BeginTable("##events", 4, ImGuiTableFlags_RowBg | ImGuiTableFlags_Borders)) {
+    SampleEvents(30);
+    const auto& rows = g_rows;
+    if (ImGui::BeginTable("##events", 5, ImGuiTableFlags_RowBg | ImGuiTableFlags_Borders)) {
         ImGui::TableSetupColumn("Name");
-        ImGui::TableSetupColumn("Count");
+        ImGui::TableSetupColumn("Rate/s");
+        ImGui::TableSetupColumn("Total");
         ImGui::TableSetupColumn("Allow");
         ImGui::TableSetupColumn("Deny");
         ImGui::TableHeadersRow();
@@ -126,6 +156,8 @@ void DrawEventsPanel(void*) {
             ImGui::TableNextRow();
             ImGui::TableNextColumn();
             ImGui::TextUnformatted(r.name.c_str());
+            ImGui::TableNextColumn();
+            ImGui::Text("%.1f", r.rate);
             ImGui::TableNextColumn();
             ImGui::Text("%u", r.count);
             ImGui::TableNextColumn();
