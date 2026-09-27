@@ -4,3 +4,7 @@ re/ghidra_proj/
 re/*.exe
 re/out/
 *.user
+dist/*.asi
+dist/*.pdb
+dist/*.dll
+testenv/
