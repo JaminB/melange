@@ -25,6 +25,7 @@ Each module is one file under `src/` (`core/`, `render/`, `gameplay/`, `net/` or
 | **NetTransport** | on | Fixes the game's reliable-UDP layer. The original retransmits only the first two packets of a connection. After that, a lost packet stalls both machines forever, which is the freeze. Also re-ACKs duplicates so a lost ACK can't stall the peer. |
 | **NetSession** | on | Clears per-match state the game never resets between matches: stale surrender flags, the throttle mask, the viability offset, and a network pause left over from the previous match. Also traces the whole match lifecycle: state machine, turns, surrenders, aborts with call site, and throttle/pause changes. |
 | **Diagnostics** | on | Crash handler and hang watchdog: stack trace plus minidump. `Ctrl+Shift+F12` takes a manual snapshot. |
+| **Overlay** | on (hidden) | In-game Dear ImGui overlay, hidden until you press the `` ` `` key (`ToggleKey`). While it is open it takes the mouse and keyboard from the game; `` Shift+` `` (`PassthroughKey`) shows it without taking input. Hosts the panels and menus of the other tools. |
 | **SteamTrace** | on | Logs every Steam lobby, P2P and callback call. |
 | **EngineLog** | on | Mirrors the engine's own log into `WUMFix.log`. |
 | **EventBus** | on | Hooks the engine's message Post and Deliver so modules can subscribe to engine messages by name (`wumfix/bus.h`). Changes nothing in the game. `DumpRegistry=1` writes every message name to `WUMFix\messages.tsv`. Replaces the Probe's message hooks, so only one of the two can hook them. |
@@ -97,7 +98,7 @@ Modules that return `RequiresKnownBuild() == true` are skipped automatically on 
 | Path | Contents |
 |---|---|
 | `src/core/` | Plugin entry, logging, ini, exe guard, memory/hook helpers, events, debug, testcmd registry |
-| `src/render/` | Overlay, GL state guard, input capture (component A; a stub until it lands) |
+| `src/render/` | Overlay: Dear ImGui host and panel/menu/hotkey API (`wumfix/overlay.h`), GL state guard, input capture |
 | `src/gameplay/` | Gameplay-facing tweaks and fixes |
 | `src/net/` | Game structure knowledge for networking (build #1077), Steam and net modules (LocalNet in its own subfolder) |
 | `src/tools/` | In-plugin dev/test tools: Automation, Probe, log export (component D; a stub until it lands) |
@@ -106,6 +107,6 @@ Modules that return `RequiresKnownBuild() == true` are skipped automatically on 
 | `docs/netcode.md` | Root-cause writeup of the back-to-back match bug |
 | `docs/localnet.md` | The two-instance test harness |
 | `re/` | Ghidra scripts, helper tools and RE notes. The decompiled corpus `re/out` is regenerated with `re/ghidra.sh ExportAll.java`. |
-| `tests/` | Offline self-tests, built by `scripts/selftest.ps1` (not part of the plugin) |
-| `scripts/` | Test automation: `auto.ps1` (input), `ui.ps1` (screenshots), `e2e.ps1` |
+| `scripts/` | Test automation: `auto.ps1` (input), `ui.ps1` (screenshots), `e2e.ps1`; offline tests: `selftest.ps1` (event bus), `test-overlay.ps1` |
+| `tests/` | Offline test programs (no game needed, not part of the plugin), e.g. `tests/bus_selftest.cpp`, `tests/overlay` |
 | `tools/` | Downloaded toolchain and RE tools; gitignored |
