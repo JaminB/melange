@@ -230,7 +230,8 @@ void TestSessionPruning() {
     int survivors = 0;
     for (auto* name : fake)
         if (GetFileAttributesW((dir + L"\\" + name).c_str()) != INVALID_FILE_ATTRIBUTES) ++survivors;
-    Check(survivors == 3, "prune: exactly MaxSessions old folders survive");
+    // MaxSessions counts the current session (3.C acceptance 6: 5 launches with MaxSessions=3 leave 3 folders).
+    Check(survivors == 2, "prune: MaxSessions-1 old folders survive next to the current one");
     Check(GetFileAttributesW(wf::jlog::CurrentSession().dir.c_str()) != INVALID_FILE_ATTRIBUTES,
           "prune: the new current session folder exists on top of the kept old ones");
 

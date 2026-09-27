@@ -651,7 +651,9 @@ bool Init(const Options& opt) {
         if (root.empty() || !DirWritable(root)) return false;
     }
     g_sessionRoot = root;
-    PruneOldSessions(root, g_maxSessions, g_maxTotalMB);
+    // The current session's folder is created right after this, so keep one fewer old folder: MaxSessions counts
+    // the current session too (3.C acceptance 6: MaxSessions=3 and 5 launches leave exactly 3 folders).
+    PruneOldSessions(root, g_maxSessions > 0 ? g_maxSessions - 1 : 0, g_maxTotalMB);
 
     SYSTEMTIME st{};
     GetLocalTime(&st);
