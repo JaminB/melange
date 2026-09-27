@@ -196,9 +196,18 @@ CUSTOM = {
     'XTextDescriptor': _DESC_BASE + [('TextGroup', 'ref'),                                # FUN_006b1710
                                      ('Chars', ('array', 'u32', [('Index', 'u16'), ('MappedVal', 'u16'),
                                                                  ('Unicode', 'u16')]))],
+    # FUN_007afee0 (+ FUN_007b2468 for names starting "XCULLED"): see _read_animlib
+    'XAnimClipLibrary': 'animlib',
 }
-# XGraphSet GUID 64bf3d0b-..., used to recognise truncated TYPE names as well
-CUSTOM_GUIDS = {}
+
+# XAnimClipLibrary records. Names of the packed members are neutral because their
+# meaning is not decoded; the engine stores the four bools as bits 0/3/2/1 of one
+# flags byte and BitsA/BitsB as a 3-bit pair (<<3 and &7).  [V layout, I names]
+_ANIM_CHANNEL = [('Byte4', 'u8'), ('Word6', 'u16'), ('Byte5', 'u8'), ('Name', 'string')]
+_ANIM_TRACK_HEAD = [('Flag1', 'bool'), ('Flag8', 'bool'), ('Flag4', 'bool'), ('Flag2', 'bool')]
+_ANIM_TRACK_TAIL = [('BitsA', 'u32'), ('BitsB', 'u32'), ('Keys', ('array', 'u32', 'f32x6'))]
+_ANIM_TRACK_CULLED = _ANIM_TRACK_HEAD + [('Channel', 'u16')] + _ANIM_TRACK_TAIL
+_ANIM_TRACK_FULL = _ANIM_TRACK_HEAD + _ANIM_TRACK_TAIL
 
 
 def is_container(cname):
@@ -231,6 +240,17 @@ class _Reader:
             for k, t in ty:
                 out[k], o = self.value(t, o)
             return out, o
+        if ty == 'animlib':
+            return self._animlib(o)
+        if ty == 'f32x6':
+            if o + 24 > len(d):
+                raise XomError('short read')
+            return [_f_to_json(x, 'f32') for x in struct.unpack_from('<6f', d, o)], o + 24
+        if ty == 'bool':
+            if o >= len(d):
+                raise XomError('short read')
+            b = d[o]
+            return (b == 1 if b in (0, 1) else b), o + 1   # keep non-0/1 bytes exact
         if ty == 'string':
             i, o = read_varint(d, o)
             if i >= len(self.strings):
@@ -263,7 +283,41 @@ class _Reader:
             return v, o + n
         raise XomError('cannot decode type %s' % (ty,))
 
+    def _animlib(self, o):
+        # XAnimClipLibrary::Read (vtable slot 5, FUN_007afee0). A name starting with
+        # "XCULLED" selects the culled layout (FUN_007b2468), in which every clip lists
+        # only its animated channels, each with an explicit channel index.  [V]
+        d = self.d
+        out = {}
+        out['Name'], o = self.value('string', o)
+        culled = out['Name'].startswith('XCULLED')
+        out['Channels'], o = self.value(('array', 'u32', _ANIM_CHANNEL), o)
+        n = struct.unpack_from('<I', d, o)[0]
+        o += 4
+        clips = []
+        for _ in range(n):
+            c = {}
+            c['Duration'], o = self.value('f32', o)
+            c['Name'], o = self.value('string', o)
+            if culled:
+                c['Tracks'], o = self.value(('array', 'u32', _ANIM_TRACK_CULLED), o)
+            else:
+                tr = []
+                for _ in range(len(out['Channels'])):
+                    t, o = self.value(_ANIM_TRACK_FULL, o)
+                    tr.append(t)
+                c['Tracks'] = tr
+            clips.append(c)
+        out['Clips'] = clips
+        return out, o
+
     def field(self, f, o):
+        if f['array'] and f['type'] == 'u8':
+            # byte arrays (texture data, voxel grids, ...) are kept as one hex string
+            n, o = read_varint(self.d, o)
+            if o + n > len(self.d):
+                raise XomError('short read')
+            return {'hex': self.d[o:o + n].hex()}, o + n
         if f['array']:
             # XMF*Descriptor (FUN_006c5bf4): varint count, then elements  [V]
             n, o = read_varint(self.d, o)
@@ -299,6 +353,12 @@ class _Writer:
         elif isinstance(ty, list):
             for k, t in ty:
                 self.value(t, v[k], out)
+        elif ty == 'animlib':
+            self._animlib(v, out)
+        elif ty == 'f32x6':
+            out += struct.pack('<6f', *[_f_from_json(x) for x in v])
+        elif ty == 'bool':
+            out.append(int(v))
         elif ty == 'string':
             out += write_varint(self.string_id(v))
         elif ty == 'ref':
@@ -320,7 +380,28 @@ class _Writer:
         else:
             raise XomError('cannot encode type %s' % (ty,))
 
+    def _animlib(self, v, out):
+        self.value('string', v['Name'], out)
+        culled = v['Name'].startswith('XCULLED')
+        self.value(('array', 'u32', _ANIM_CHANNEL), v['Channels'], out)
+        out += struct.pack('<I', len(v['Clips']))
+        for c in v['Clips']:
+            self.value('f32', c['Duration'], out)
+            self.value('string', c['Name'], out)
+            if culled:
+                self.value(('array', 'u32', _ANIM_TRACK_CULLED), c['Tracks'], out)
+            else:
+                if len(c['Tracks']) != len(v['Channels']):
+                    raise XomError('XAnimClipLibrary: non-culled clip needs one track per channel')
+                for t in c['Tracks']:
+                    self.value(_ANIM_TRACK_FULL, t, out)
+
     def field(self, f, v, out):
+        if f['array'] and f['type'] == 'u8' and isinstance(v, dict):
+            b = bytes.fromhex(v['hex'])
+            out += write_varint(len(b))
+            out += b
+            return
         if f['array']:
             out += write_varint(len(v))
             for x in v:

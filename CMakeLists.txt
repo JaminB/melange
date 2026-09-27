@@ -21,6 +21,9 @@ FetchContent_MakeAvailable(safetyhook)
 
 # Every .cpp under src/ is compiled into the plugin. Adding a module = dropping a file in src/modules/.
 file(GLOB_RECURSE WUMFIX_SOURCES CONFIGURE_DEPENDS src/*.cpp)
+# src/xom is the portable XOM library: its own targets, not part of the plugin.
+list(FILTER WUMFIX_SOURCES EXCLUDE REGEX "/src/xom/")
+add_subdirectory(src/xom EXCLUDE_FROM_ALL)
 configure_file(src/core/version.h.in ${CMAKE_BINARY_DIR}/generated/version.h @ONLY)
 
 add_library(WUMFix SHARED ${WUMFIX_SOURCES} src/core/version.rc)

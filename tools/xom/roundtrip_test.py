@@ -51,7 +51,7 @@ def check(path):
     text = xom.to_json(doc)
     doc2 = json.loads(text)
     out = xom.dumps(doc2)
-    raw = collections.Counter(o['type'] for o in doc['objects'] if 'raw' in o)
+    raw = collections.Counter(o['type'] for o in doc['objects'] if 'raw' in o or o.get('in_tail'))
     return out == orig, len(doc['objects']), raw, (orig, out)
 
 
