@@ -9,3 +9,4 @@ dist/*.pdb
 dist/*.dll
 testenv/
 .claude/
+docs/findings/*.dmp
