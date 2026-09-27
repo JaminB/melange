@@ -64,13 +64,36 @@ struct Fixes {
     bool resetSurrender = true;
     bool resetThrottleMask = true;
     bool resetViabilityOffset = true;
+    bool releaseStuckPause = true;
 } g_fix;
 
 int g_matchNumber = 0;
 
 // Called on every return to the lobby and again as the next match begins: clears per-match state
 // that the game only resets when the process restarts.
-void ResetStaleMatchState(const char* when) {
+// Candidate D (re/notes/freeze.md): a NetThrottle pause taken after ProcessWinOrDraw (turn-start or
+// host-migration pause) survives into the lobby because WaitingConnections turns autopause off without
+// unpausing - the app pause refcount stays >0 and the next match's task manager never runs.
+// Mirrors what AbortGame (0x70864c) does: release the throttle, then drain the pause refcount.
+int ReleaseStuckPause(uintptr_t ns, const char* when) {
+    int changes = 0;
+    uintptr_t thr = Read<uint32_t>(ns + O::Throttle);
+    if (thr && Read<uint8_t>(thr + O::ThrottlePaused)) {
+        WF_WARN("[fix] %s: NetThrottle still paused -> SetPaused(0)", when);
+        reinterpret_cast<void(__thiscall*)(uintptr_t, bool)>(A::ThrottleSetPaused)(thr, false);
+        ++changes;
+    }
+    uintptr_t tm = Read<uint32_t>(A::TaskManagerPtr);
+    for (int i = 0; i < 16 && tm && Read<uint8_t>(tm + 0x3c); ++i) {
+        WF_WARN("[fix] %s: task manager still paused (app refcount %d) -> Unpause()", when,
+                Read<int32_t>(Read<uint32_t>(A::AppPtr) + 0x70));
+        reinterpret_cast<void(__cdecl*)()>(A::Unpause)();
+        ++changes;
+    }
+    return changes;
+}
+
+void ResetStaleMatchState(const char* when, bool inLobby) {
     uintptr_t ns = wf::wum::NetService();
     if (!ns) return;
     int changes = 0;
@@ -119,6 +142,7 @@ void ResetStaleMatchState(const char* when) {
             ++changes;
         }
     }
+    if (g_fix.releaseStuckPause && inLobby) changes += ReleaseStuckPause(ns, when);
     WF_INFO("[net] %s: stale-state reset done (%d fields repaired)", when, changes);
 }
 
@@ -131,13 +155,13 @@ void OnStateChange(uintptr_t from, uintptr_t to) {
     if (to == S::WaitingGameStart) {
         if (from == S::WaitingUnload) {
             DumpState("back in lobby after match");
-            ResetStaleMatchState("return-to-lobby");
+            ResetStaleMatchState("return-to-lobby", true);
         }
         wf::events::Fire(Event::LobbyEnter);
     } else if (to == S::WaitingConnections) {
         ++g_matchNumber;
         DumpState("match starting");
-        ResetStaleMatchState("match-start");
+        ResetStaleMatchState("match-start", false);
     } else if (to == S::InGame) {
         WF_INFO("[net] ===== match %d in progress =====", g_matchNumber);
         wf::events::Fire(Event::MatchStart);
@@ -147,6 +171,37 @@ void OnStateChange(uintptr_t from, uintptr_t to) {
     } else if (to == 0 && from != 0) {
         DumpState("net session closed");
         wf::events::Fire(Event::LobbyLeave);
+    }
+}
+
+// Logs every change of the values that decide whether a networked match can make progress
+// (throttle pause/mask, task-manager pause, surrender flags...). One line per change, so a freeze
+// shows exactly which value got stuck.
+void WatchProgressState() {
+    static std::string last;
+    uintptr_t ns = wf::wum::NetService();
+    if (!ns) return;
+    uintptr_t thr = Read<uint32_t>(ns + O::Throttle), tm = Read<uint32_t>(A::TaskManagerPtr),
+              app = Read<uint32_t>(A::AppPtr);
+    char b[256];
+    snprintf(b, sizeof(b),
+             "throttle paused=%u auto=%u mask=%02x | TM paused=%u appPauseRef=%d | curSurrendered=%u ended=%u "
+             "ingame=%u",
+             Read<uint8_t>(thr + O::ThrottlePaused), Read<uint8_t>(thr + O::ThrottleAuto),
+             Read<uint8_t>(thr + O::ThrottleMask), Read<uint8_t>(tm + 0x3c), Read<int32_t>(app + 0x70),
+             Read<uint8_t>(ns + O::CurrentSurrendered), Read<uint8_t>(ns + O::GameEnded),
+             Read<uint8_t>(ns + O::InGameFlag));
+    std::string cur = b;
+    int n = wf::wum::PlayerCount(ns);
+    for (int i = 0; i < n && i < 8; ++i) {
+        uintptr_t p = wf::wum::PlayerAt(ns, i);
+        snprintf(b, sizeof(b), " | p%d loaded=%u surr=%u", i, Read<uint8_t>(p + O::PlayerLoaded),
+                 Read<uint8_t>(p + O::PlayerSurrenderNext));
+        cur += b;
+    }
+    if (cur != last) {
+        last = cur;
+        WF_INFO("[watch] %s", cur.c_str());
     }
 }
 
@@ -250,6 +305,9 @@ public:
         g_fix.resetViabilityOffset = Bool("FixViabilityOffset", true);
         bool trace = Bool("Trace", true);
         bool traceTransport = Bool("TraceTransport", true);
+        g_fix.releaseStuckPause = Bool("FixStuckPause", true);
+        static bool watch = Bool("Watch", true);
+        static bool forceNetLog = Bool("ForceEngineNetLog", true);
 
         // Instrumentation. Entry prologues verified in re-notes; SafetyHook relocates them safely.
         bool ok = Mid(A::AbortGame, &OnAbortGame, "AbortGame");
@@ -276,6 +334,11 @@ public:
 
         wf::events::Subscribe(wf::events::Event::Frame, [] {
             PollState();
+            if (watch && g_lastState) WatchProgressState();
+            if (forceNetLog) {  // same as launching with /LOG ALL: the engine's own NetThrottle/NetService logging
+                uintptr_t cfg = Read<uint32_t>(A::ConfigPtr);
+                if (cfg && !(Read<uint8_t>(cfg + 0x9a) & 2)) wf::wum::WriteByte(cfg + 0x9a, Read<uint8_t>(cfg + 0x9a) | 2);
+            }
             if ((GetAsyncKeyState(VK_F11) & 1) && (GetAsyncKeyState(VK_CONTROL) & 0x8000) &&
                 (GetAsyncKeyState(VK_SHIFT) & 0x8000))
                 DumpState("manual (Ctrl+Shift+F11)");

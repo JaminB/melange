@@ -16,6 +16,11 @@ constexpr uintptr_t SteamConnCtor = 0x78613e;        // XSteamConnection::XSteam
 constexpr uintptr_t SteamConnDtor = 0x785c85;        // XSteamConnection::~XSteamConnection
 constexpr uintptr_t SteamConnNewSender = 0x785ee7;   // packet from unknown SteamID -> new connection
 constexpr uintptr_t DeadChannelBranch = 0x70a7e5;    // ja 0x70abf6 (surrender path) in NetService::Update
+constexpr uintptr_t ThrottleSetPaused = 0x7059f2;    // __thiscall NetThrottle::SetPaused(bool), ret 4
+constexpr uintptr_t Unpause = 0x4d76f0;              // void __cdecl AppDataService Unpause()
+constexpr uintptr_t AppPtr = 0x96d1cc;               // XomApp* (XomGetApp); +0x1c timescale, +0x70 pause refcount
+constexpr uintptr_t TaskManagerPtr = 0x96d030;       // TM*; +0x38 sim clock, +0x3c paused
+constexpr uintptr_t ConfigPtr = 0x95a100;            // g_Config*; +0x9a bit 2 = verbose net logging (/LOG ALL)
 }  // namespace addr
 
 // NetService state machine: ns+0x20 holds the current state function.
@@ -40,9 +45,13 @@ constexpr uintptr_t BeginGameDone = 0x4bc;
 constexpr uintptr_t InGameFlag = 0x4bd;
 constexpr uintptr_t GameEnded = 0x4be;
 constexpr uintptr_t CurrentSurrendered = 0x4c0;
+constexpr uintptr_t ValidationFifoCount = 0x4dc;
 constexpr uintptr_t Throttle = 0x4d8;  // NetThrottle*
 // NetThrottle
+constexpr uintptr_t ThrottlePaused = 0x20;
+constexpr uintptr_t ThrottleAuto = 0x21;
 constexpr uintptr_t ThrottleMask = 0x22;  // 0x3f = all six NetStored types received
+constexpr uintptr_t ThrottleLead = 0x24;
 // XomOnlineSession
 constexpr uintptr_t SessionStateBits = 0x18;
 constexpr uintptr_t SessionPlayerCount = 0x4c;
