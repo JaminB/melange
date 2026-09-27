@@ -21,6 +21,7 @@
 #include "core/events.h"
 #include "core/game.h"
 #include "core/jlog_internal.h"
+#include "version.h"
 
 namespace wf::jlog {
 namespace {
@@ -124,7 +125,13 @@ std::atomic<uint64_t> g_startTick{0};  // GetTickCount64() at session start
 struct QueuedLine {
     std::string text;  // one full JSON line, no trailing newline
     Level lvl;
+    bool startsFile = false;  // the writer rolls the file over before writing this line (a session header)
 };
+
+// Bytes queued for the current file, counted where seq is assigned (under g_queueMx) so the rollover decision
+// and the session header that opens each new file keep seq strictly increasing within every file.
+uint64_t g_queuedFileBytes = 0;
+uint32_t g_filePart = 0;
 
 std::mutex g_queueMx;
 std::vector<QueuedLine> g_queue;
@@ -291,9 +298,8 @@ std::string FormatWall() {
 }
 
 // ------------------------------------------------------------------------------------------------- writer thread
-void RotateIfNeeded(size_t incoming) {
-    uint64_t capBytes = static_cast<uint64_t>(g_maxFileMB) * 1024ull * 1024ull;
-    if (g_fileBytes + incoming <= capBytes || g_fileHandle.load() == INVALID_HANDLE_VALUE) return;
+void Rotate() {
+    if (g_fileHandle.load() == INVALID_HANDLE_VALUE) return;
     HANDLE old = g_fileHandle.exchange(INVALID_HANDLE_VALUE);
     if (old != INVALID_HANDLE_VALUE) CloseHandle(old);
     std::wstring base = g_session.dir + L"\\events.jsonl";
@@ -311,7 +317,7 @@ void WriteLines(const std::vector<QueuedLine>& lines) {
     bool needFlush = false;
     std::string batch;
     for (const auto& l : lines) {
-        RotateIfNeeded(l.text.size() + 1);
+        if (l.startsFile) Rotate();
         batch.clear();
         batch.reserve(l.text.size() + 1);
         batch += l.text;
@@ -335,6 +341,7 @@ DWORD WINAPI WriterMain(LPVOID) {
     for (;;) {
         std::vector<QueuedLine> local;
         uint64_t flushTarget = 0;
+        uint64_t dropped = 0, droppedSeq = 0;
         {
             std::unique_lock lk(g_queueMx);
             g_wakeWriter.wait_for(lk, std::chrono::milliseconds(100), [] { return g_wantExit || !g_queue.empty(); });
@@ -344,10 +351,12 @@ DWORD WINAPI WriterMain(LPVOID) {
             }
             local.swap(g_queue);
             flushTarget = g_flushRequest.load(std::memory_order_acquire);
+            // Taken under the queue lock: every swapped line has a smaller seq, every later one a larger seq.
+            dropped = g_recordsDropped.exchange(0, std::memory_order_acq_rel);
+            if (dropped) droppedSeq = g_seq.fetch_add(1, std::memory_order_relaxed);
         }
-        uint64_t dropped = g_recordsDropped.exchange(0, std::memory_order_acq_rel);
         if (dropped) {
-            std::string note = "{\"v\":1,\"seq\":" + std::to_string(g_seq.fetch_add(1, std::memory_order_relaxed)) +
+            std::string note = "{\"v\":1,\"seq\":" + std::to_string(droppedSeq) +
                                ",\"t\":0,\"wall\":\"" + FormatWall() +
                                "\",\"frame\":0,\"tid\":0,\"main\":false,\"lvl\":\"warn\",\"cat\":\"session\","
                                "\"msg\":\"dropped\",\"data\":{\"count\":" + std::to_string(dropped) + "}}";
@@ -462,57 +471,77 @@ void Rec::Emit() {
     if (!p_->enabled || p_->emitted) return;
     p_->emitted = true;
 
-    uint64_t seq = g_seq.fetch_add(1, std::memory_order_relaxed);
     uint64_t nowTick = GetTickCount64();
     double t = (nowTick - g_startTick.load(std::memory_order_relaxed)) / 1000.0;
     uint64_t frame = wf::events::FrameCount();
     DWORD tid = GetCurrentThreadId();
     bool main = tid == wf::events::MainThreadId();
 
-    std::string line;
-    line.reserve(160 + p_->msg.size() + p_->data.size());
-    line += "{\"v\":1,\"seq\":";
-    line += std::to_string(seq);
-    line += ",\"t\":";
-    AppendNumber(line, t);
-    line += ",\"wall\":";
-    AppendEscaped(line, FormatWall());
-    line += ",\"frame\":";
-    line += std::to_string(frame);
-    line += ",\"tid\":";
-    line += std::to_string(tid);
-    line += ",\"main\":";
-    line += main ? "true" : "false";
-    line += ",\"lvl\":";
-    AppendEscaped(line, LevelName(p_->level));
-    line += ",\"cat\":";
-    AppendEscaped(line, p_->category);
-    line += ",\"msg\":";
-    AppendEscaped(line, p_->msg);
-    if (!p_->data.empty()) {
-        line += ",\"data\":{";
-        line += p_->data;
-        line += '}';
-    }
-    line += '}';
+    // Everything after the seq; the seq itself is assigned under g_queueMx so that file order == seq order.
+    auto tailFields = [&](Level lvl, std::string_view cat, std::string_view msg, std::string_view data) {
+        std::string s;
+        s.reserve(160 + msg.size() + data.size());
+        s += ",\"t\":";
+        AppendNumber(s, t);
+        s += ",\"wall\":";
+        AppendEscaped(s, FormatWall());
+        s += ",\"frame\":";
+        s += std::to_string(frame);
+        s += ",\"tid\":";
+        s += std::to_string(tid);
+        s += ",\"main\":";
+        s += main ? "true" : "false";
+        s += ",\"lvl\":";
+        AppendEscaped(s, LevelName(lvl));
+        s += ",\"cat\":";
+        AppendEscaped(s, cat);
+        s += ",\"msg\":";
+        AppendEscaped(s, msg);
+        if (!data.empty()) {
+            s += ",\"data\":{";
+            s += data;
+            s += '}';
+        }
+        s += '}';
+        return s;
+    };
+    std::string rest = tailFields(p_->level, p_->category, p_->msg, p_->data);
+    auto withSeq = [](uint64_t seq, const std::string& r) { return "{\"v\":1,\"seq\":" + std::to_string(seq) + r; };
 
+    uint64_t seq = 0;
+    std::string line;
+    const uint64_t capBytes = static_cast<uint64_t>(g_maxFileMB) * 1024ull * 1024ull;
     g_recordsAccepted.fetch_add(1, std::memory_order_relaxed);
     {
-        std::lock_guard lk(g_tailMx);
-        g_tailRing.push_back(Line{seq, p_->level, p_->category, line});
-        if (g_tailRing.size() > g_tailCapacity) g_tailRing.pop_front();
-    }
-    bool urgent = p_->level >= Level::Warn;
-    {
         std::lock_guard lk(g_queueMx);
+        seq = g_seq.fetch_add(1, std::memory_order_relaxed);
+        line = withSeq(seq, rest);
         if (g_queue.size() >= 65536) {
             g_recordsDropped.fetch_add(1, std::memory_order_relaxed);
             g_droppedTotal.fetch_add(1, std::memory_order_relaxed);
         } else {
-            g_queue.push_back({std::move(line), p_->level});
+            if (capBytes && g_queuedFileBytes && g_queuedFileBytes + line.size() + 1 > capBytes) {
+                // Roll over: the new file opens with its own session record (schema v1: "the first record of
+                // every file is session/start"), numbered just before this line.
+                std::string data = "\"version\":\"" WUMFIX_VERSION "\",\"exeSha256\":\"" + wf::game::Exe().sha256 +
+                                   "\",\"pid\":" + std::to_string(GetCurrentProcessId()) +
+                                   ",\"part\":" + std::to_string(++g_filePart);
+                std::string hdr = withSeq(seq, tailFields(Level::Info, "session", "start", data));
+                seq = g_seq.fetch_add(1, std::memory_order_relaxed);
+                line = withSeq(seq, rest);
+                g_queuedFileBytes = hdr.size() + 1;
+                g_queue.push_back({std::move(hdr), Level::Info, true});
+            }
+            g_queuedFileBytes += line.size() + 1;
+            g_queue.push_back({line, p_->level});
         }
     }
-    if (urgent) g_wakeWriter.notify_one();
+    {
+        std::lock_guard lk(g_tailMx);
+        g_tailRing.push_back(Line{seq, p_->level, p_->category, std::move(line)});
+        if (g_tailRing.size() > g_tailCapacity) g_tailRing.pop_front();
+    }
+    bool urgent = p_->level >= Level::Warn;    if (urgent) g_wakeWriter.notify_one();
     if (p_->t0 && g_qpcToUs > 0) {
         LARGE_INTEGER q;
         QueryPerformanceCounter(&q);
@@ -640,6 +669,8 @@ bool Init(const Options& opt) {
     g_startTick.store(GetTickCount64(), std::memory_order_relaxed);
     g_rotateIndex = 0;
     g_fileBytes = 0;
+    g_queuedFileBytes = 0;
+    g_filePart = 0;
     std::wstring file = g_session.dir + L"\\events.jsonl";
     HANDLE h = CreateFileW(file.c_str(), GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr,
                           CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
