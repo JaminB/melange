@@ -194,19 +194,37 @@ private:
 
 // Redacts (if requested/always, per field) then adds one entry, tracking it in the manifest. `redactText`
 // gates username replacement (opt.redactUserPaths); id/IP hashing always runs on text entries.
-void AddEntry(ZipBuilder& zip, std::vector<ManifestEntry>& manifest, const std::string& archivePath, std::string data,
+// §5.1 Q4 "exclude the computer name": it appears in the engine's log file names (XOM0-<NAME>.log) and
+// contents, so it is always replaced, in text, entry names and manifest source paths. Binary entries (dumps)
+// are not rewritten.
+const std::string& ComputerName() {
+    static const std::string name = [] {
+        wchar_t buf[MAX_COMPUTERNAME_LENGTH + 1];
+        DWORD n = MAX_COMPUTERNAME_LENGTH + 1;
+        return GetComputerNameW(buf, &n) ? Narrow(buf) : std::string();
+    }();
+    return name;
+}
+std::string ExcludeComputerName(std::string_view text) {
+    return wf::redact::ReplaceName(text, ComputerName(), "%COMPUTERNAME%");
+}
+
+void AddEntry(ZipBuilder& zip, std::vector<ManifestEntry>& manifest, const std::string& archivePathIn, std::string data,
               const std::wstring& sourcePath, bool truncated, bool isText, bool redactUserPaths,
               std::string_view userName, std::string_view salt) {
     if (isText) {
         data = wf::redact::HashIdsAndIps(data, salt);
         if (redactUserPaths && !userName.empty()) data = wf::redact::RedactUserName(data, userName);
+        data = ExcludeComputerName(data);
     }
+    const std::string archivePath = ExcludeComputerName(archivePathIn);
     ManifestEntry e;
     e.archivePath = archivePath;
     e.size = data.size();
     e.sha256 = wf::hashutil::Sha256Hex(data.data(), data.size());
     e.source = Narrow(sourcePath);
     if (redactUserPaths && !userName.empty()) e.source = wf::redact::RedactUserName(e.source, userName);
+    e.source = ExcludeComputerName(e.source);
     e.truncated = truncated;
     zip.Add(archivePath, data.data(), data.size());
     manifest.push_back(std::move(e));
@@ -249,7 +267,7 @@ std::string BuildReadme(std::string_view wumfixVersion) {
     s += "  - IP addresses and ports (replaced the same way as Steam ids)\n";
     s += "  - chat text, if chat logging was on\n";
     s += "  - crash minidumps, which contain parts of the game's memory\n";
-    s += "Your computer name is not redacted (it can appear in the engine's own log file names/contents).\n\n";
+    s += "Your computer name is replaced with %COMPUTERNAME% in text files and file names.\n\n";
     s += "Nothing here is uploaded anywhere. This zip is only written to the place you chose.\n";
     return s;
 }
@@ -643,7 +661,10 @@ DWORD WINAPI SaveAsWorkerProc(LPVOID) {
         DialogResult r = ShowSaveDialogCOM(&path);
         if (r == DialogResult::ApiUnavailable) r = ShowSaveDialogLegacy(&path);
         haveDialog = r == DialogResult::Ok;
-        if (!haveDialog) SetCancelled();
+        if (!haveDialog) {
+            SetCancelled();
+            WF_INFO("[LogExport] save dialog cancelled (state Cancelled, nothing written)");
+        }
     }
 
     if (haveDialog) {

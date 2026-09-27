@@ -11,6 +11,10 @@ char Lower(char c) { return static_cast<char>(std::tolower(static_cast<unsigned 
 }  // namespace
 
 std::string RedactUserName(std::string_view text, std::string_view userName) {
+    return ReplaceName(text, userName, "%USERNAME%");
+}
+
+std::string ReplaceName(std::string_view text, std::string_view userName, std::string_view token) {
     if (userName.size() < 3) return std::string(text);  // too short: more likely to false-positive than help
     std::string out;
     out.reserve(text.size());
@@ -20,7 +24,7 @@ std::string RedactUserName(std::string_view text, std::string_view userName) {
             bool match = true;
             for (size_t k = 0; k < userName.size() && match; ++k) match = Lower(text[i + k]) == Lower(userName[k]);
             if (match) {
-                out += "%USERNAME%";
+                out += token;
                 i += userName.size();
                 continue;
             }
@@ -38,6 +42,17 @@ std::string HashIdsAndIps(std::string_view text, std::string_view salt) {
         R"((?:(?:25[0-5]|2[0-4][0-9]|1?[0-9]{1,2})\.){3}(?:25[0-5]|2[0-4][0-9]|1?[0-9]{1,2})(?::[0-9]{1,5})?)");
     static const std::regex kSteamId64(R"(\b7656119[0-9]{10}\b)");
 
+    // A match must be a whole token: not preceded by a digit or '.', and not followed by a digit or ".<digit>".
+    // Otherwise version strings such as a GL driver's "26.8.1.260810" would be hashed as the IP "26.8.1.26".
+    auto isDigit = [](char c) { return c >= '0' && c <= '9'; };
+    auto wholeToken = [&](const std::string& s, size_t pos, size_t len) {
+        if (pos > 0 && (isDigit(s[pos - 1]) || s[pos - 1] == '.')) return false;
+        size_t e = pos + len;
+        if (e < s.size() && isDigit(s[e])) return false;
+        if (e + 1 < s.size() && s[e] == '.' && isDigit(s[e + 1])) return false;
+        return true;
+    };
+
     auto replaceAll = [&](std::string s, const std::regex& re) {
         std::string result;
         result.reserve(s.size());
@@ -46,6 +61,7 @@ std::string HashIdsAndIps(std::string_view text, std::string_view salt) {
         size_t last = 0;
         for (auto it = begin; it != end; ++it) {
             auto m = *it;
+            if (!wholeToken(s, static_cast<size_t>(m.position()), static_cast<size_t>(m.length()))) continue;
             result.append(s, last, static_cast<size_t>(m.position()) - last);
             result += "hash:" + hashutil::ShortSaltedHash(salt, m.str());
             last = static_cast<size_t>(m.position() + m.length());
