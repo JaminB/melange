@@ -213,7 +213,9 @@ void AddEntry(ZipBuilder& zip, std::vector<ManifestEntry>& manifest, const std::
               const std::wstring& sourcePath, bool truncated, bool isText, bool redactUserPaths,
               std::string_view userName, std::string_view salt) {
     if (isText) {
-        data = wf::redact::HashIdsAndIps(data, salt);
+        // Generated entries (system.json) hold no IPs or Steam ids, only version numbers like "7.1.0.0" that the
+        // IPv4 pattern would hash.
+        if (sourcePath != L"(generated)") data = wf::redact::HashIdsAndIps(data, salt);
         if (redactUserPaths && !userName.empty()) data = wf::redact::RedactUserName(data, userName);
         data = ExcludeComputerName(data);
     }
@@ -420,10 +422,17 @@ bool DoExport(const std::wstring& zipPath, const Options& opt, std::string* erro
 
     // config/*.ini - WUMFix.ini plus any sibling .ini next to the game exe.
     {
-        auto inis = NewestMatching(wf::game::GameDir(), L"*.ini", 64);
-        if (inis.empty()) absent.push_back("config (no .ini files found)");
-        for (const auto& f : inis)
-            AddFileEntry(zip, manifest, "config/" + Narrow(BaseNameW(f)), f, kCap, opt.redactUserPaths, userName, salt);
+        // Plus plugins\ and scripts\, where Ultimate ASI Loader plugins keep theirs (WUMPatch: plugins\WUM.Patch.ini).
+        bool any = false;
+        for (const wchar_t* sub : {L"", L"plugins", L"scripts"}) {
+            std::wstring dir = wf::game::GameDir() + (*sub ? L"\\" + std::wstring(sub) : std::wstring());
+            std::string arcDir = *sub ? "config/" + Narrow(sub) + "/" : "config/";
+            for (const auto& f : NewestMatching(dir, L"*.ini", 64)) {
+                AddFileEntry(zip, manifest, arcDir + Narrow(BaseNameW(f)), f, kCap, opt.redactUserPaths, userName, salt);
+                any = true;
+            }
+        }
+        if (!any) absent.push_back("config (no .ini files found)");
     }
 
     // mods/modules.json - every currently-installed WUMFix module. wf::modules::Installed() only lists

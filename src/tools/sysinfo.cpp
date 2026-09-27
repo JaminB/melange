@@ -7,6 +7,7 @@
 
 #pragma comment(lib, "version.lib")
 
+#include <cctype>
 #include <cstdio>
 
 #include "core/game.h"
@@ -91,23 +92,28 @@ uint32_t FileSizeOf(const std::wstring& path) {
 
 std::vector<PluginFile> DetectPlugins() {
     std::vector<PluginFile> out;
-    const std::wstring& dir = wf::game::GameDir();
-    if (dir.empty()) return out;
-    for (const wchar_t* pattern : {L"\\*.asi", L"\\dinput8.dll"}) {
+    const std::wstring& root = wf::game::GameDir();
+    if (root.empty()) return out;
+    // Ultimate ASI Loader also loads from plugins\ and scripts\ (WUMPatch installs WUM.Patch.asi in plugins\).
+    for (const wchar_t* sub : {L"", L"plugins\\", L"scripts\\"}) {
+      for (const wchar_t* pattern : {L"*.asi", L"dinput8.dll"}) {
+        if (*sub && pattern[0] == L'd') continue;  // the loader itself only counts next to the exe
+        std::wstring dir = root + L"\\" + sub;
         WIN32_FIND_DATAW fd{};
         HANDLE h = FindFirstFileW((dir + pattern).c_str(), &fd);
         if (h == INVALID_HANDLE_VALUE) continue;
         do {
             if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) continue;
-            std::wstring full = dir + L"\\" + fd.cFileName;
+            std::wstring full = dir + fd.cFileName;
             PluginFile p;
-            p.name = NarrowLocal(fd.cFileName);
+            p.name = NarrowLocal(std::wstring(sub) + fd.cFileName);
             p.size = FileSizeOf(full);
             p.version = FileVersionOf(full);
             p.sha256 = hashutil::Sha256HexFile(full);
             out.push_back(std::move(p));
         } while (FindNextFileW(h, &fd));
         FindClose(h);
+      }
     }
     return out;
 }
@@ -177,6 +183,17 @@ std::string CollectJson() {
 
     jsonmini::Obj mods;
     mods.Raw("plugins", PluginsJson());
+    // Other known mods (docs/m0-design.md SS3 "D" system.json: "detected WUMPatch/Renewation HD files").
+    bool wumpatch = false, renewation = false;
+    for (const auto& p : DetectPlugins()) {
+        std::string n = p.name;
+        for (auto& c : n) c = static_cast<char>(tolower(static_cast<unsigned char>(c)));
+        if (n.find("wum.patch") != std::string::npos || n.find("wumpatch") != std::string::npos) wumpatch = true;
+        if (n.find("renewation") != std::string::npos) renewation = true;
+    }
+    jsonmini::Obj detected;
+    detected.Bool("wumpatch", wumpatch).Bool("renewationHD", renewation);
+    mods.Raw("detected", detected.End());
 
     jsonmini::Obj root;
     root.Str("wumfixVersion", WUMFIX_VERSION)
