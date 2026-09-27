@@ -32,6 +32,7 @@ Each module is one file in `src/modules/` with its own `[Section]` in `WUMFix.in
 | **FrameInterval** | off | Engine frame cap in ms (example of a fixed-address patch). |
 | **LocalNet** | off | *Test only.* Emulates Steam lobbies and P2P over localhost so two instances on one PC can play each other. `LossPercent` simulates packet loss. See `docs/localnet.md`. |
 | **Automation** | off | *Test only.* Keeps the game running while unfocused and injects input from `WUMFix\automation[.<pid>].txt`. See `scripts/auto.ps1`. |
+| **Probe** | off | *Test only (M0 scouting).* Logs GL state at Present, draws a test quad, counts engine messages by name, and toggles input capture (F10). See `docs/re-notes.md` §15. |
 
 The fixes only change local state and the sender side of the protocol; nothing on the wire changes. They therefore help even when only one player has WUMFix, although both players should install it.
 
