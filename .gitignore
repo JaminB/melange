@@ -8,3 +8,4 @@ dist/*.asi
 dist/*.pdb
 dist/*.dll
 testenv/
+.claude/
