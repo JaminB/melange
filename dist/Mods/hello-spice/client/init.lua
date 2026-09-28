@@ -33,15 +33,15 @@ end)
 
 wum.draw.on("hud", function()
   if not wum.game.inMatch() or not wum.config.get("showHud") then return end
-  wum.draw.hudRect(16, 120, 196, 164, {0, 0, 0, 0.6}, true)
-  wum.draw.hudRect(16, 120, 196, 164, color, false, 2)
-  wum.draw.hudText(28, 132, "hello-spice: turn " .. turn, color, 18)
+  wum.draw.hudRect(16, 280, 236, 324, {0, 0, 0, 0.6}, true)
+  wum.draw.hudRect(16, 280, 236, 324, color, false, 2)
+  wum.draw.hudText(28, 292, "hello-spice: turn " .. turn, color, 18)
 end)
 
 wum.draw.on("world", function()
   local cam = wum.render.camera()
   if not cam or not wum.game.inMatch() then return end
-  local d = 400
+  local d = 150
   local p = {cam.pos.x + cam.fwd.x * d, cam.pos.y + cam.fwd.y * d, cam.pos.z + cam.fwd.z * d}
   wum.draw.text(p, wum.config.get("label"), color, 20)
 end)
