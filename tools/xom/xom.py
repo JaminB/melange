@@ -2,7 +2,7 @@
 """
 xom.py - reader/writer for Worms Ultimate Mayhem "MOIK" XOM container files.
 
-Pure Python 3, no dependencies.  Format reference: re/notes/framework/xom-format.md.
+Pure Python 3, no dependencies.
 
     python xom.py xom2json <in.xom> [out.json]
     python xom.py json2xom <in.json> <out.xom>
@@ -105,7 +105,7 @@ class XomError(Exception):
 # ---------------------------------------------------------------- varint
 
 def read_varint(d, o):
-    """7-bit little-endian groups, high bit = continue (engine FUN_0063e939). [V]"""
+    """7-bit little-endian groups, high bit = continue (FUN_0063e939)."""
     v = 0
     sh = 0
     while True:
@@ -164,7 +164,7 @@ def class_chain(name):
 
 
 def field_present(f, version):
-    """Replicates the version gate in FUN_006c72b4. [V]"""
+    """Version gate from FUN_006c72b4."""
     if f['transient']:
         return False
     fv = None
@@ -182,11 +182,8 @@ def field_present(f, version):
 
 # ---------------------------------------------------------------- custom classes
 
-# Non-XContainer XomObjects with hand-written serialisers (no "CTNR" tag, no
-# InternalFlags/UserFlags/DxFieldCount prefix). Field order follows the engine's
-# read functions (object vtable slot 5); base-class fields first.  [V decomp]
-#   stream reads: 0x1c ref(varint), 0x28 16 bytes, 0x2c string(varint),
-#                 0x40 u32, 0x48 u16, 0xa0 varint count
+# Non-XContainer XomObjects with hand-written serialisers (no CTNR header). Field
+# order follows the engine's read functions (vtable slot 5), base-class fields first.
 _DESC_BASE = [('ResourceId', 'string'), ('SectionId', 'u16')]   # FUN_006b53e0
 CUSTOM = {
     # FUN_006df234: varint count x {GUID, ref Graph, string name}
@@ -206,9 +203,7 @@ CUSTOM = {
     'XAnimClipLibrary': 'animlib',
 }
 
-# XAnimClipLibrary records. Names of the packed members are neutral because their
-# meaning is not decoded; the engine stores the four bools as bits 0/3/2/1 of one
-# flags byte and BitsA/BitsB as a 3-bit pair (<<3 and &7).  [V layout, I names]
+# XAnimClipLibrary records. Member names are placeholders: their meaning is unknown.
 _ANIM_CHANNEL = [('Byte4', 'u8'), ('Word6', 'u16'), ('Byte5', 'u8'), ('Name', 'string')]
 _ANIM_TRACK_HEAD = [('Flag1', 'bool'), ('Flag8', 'bool'), ('Flag4', 'bool'), ('Flag2', 'bool')]
 _ANIM_TRACK_TAIL = [('BitsA', 'u32'), ('BitsB', 'u32'), ('Keys', ('array', 'u32', 'f32x6'))]
@@ -290,9 +285,8 @@ class _Reader:
         raise XomError('cannot decode type %s' % (ty,))
 
     def _animlib(self, o):
-        # XAnimClipLibrary::Read (vtable slot 5, FUN_007afee0). A name starting with
-        # "XCULLED" selects the culled layout (FUN_007b2468), in which every clip lists
-        # only its animated channels, each with an explicit channel index.  [V]
+        # FUN_007afee0. A name starting "XCULLED" selects the culled layout (FUN_007b2468):
+        # each clip lists only its animated channels, with an explicit channel index.
         d = self.d
         out = {}
         out['Name'], o = self.value('string', o)
@@ -325,7 +319,7 @@ class _Reader:
                 raise XomError('short read')
             return {'hex': self.d[o:o + n].hex()}, o + n
         if f['array']:
-            # XMF*Descriptor (FUN_006c5bf4): varint count, then elements  [V]
+            # XMF*Descriptor (FUN_006c5bf4): varint count, then elements
             n, o = read_varint(self.d, o)
             out = []
             for _ in range(n):
@@ -446,7 +440,7 @@ def _decode_object(rd, tname, versions, o):
     o += 4
     if o + 3 > len(d):
         raise XomError('short object header')
-    # XContainer read FUN_006c4199: tag, InternalFlags, UserFlags, DxFieldCount [V]
+    # XContainer header (FUN_006c4199): tag, InternalFlags, UserFlags, DxFieldCount
     obj = {'type': tname, 'iflags': d[o], 'uflags': d[o + 1], 'dxcount': d[o + 2]}
     o += 3
     if obj['dxcount']:
@@ -533,7 +527,7 @@ def loads(data, strict=False):
            'strings': strings, 'root': root, 'objects': []}
     if _strs_bytes(strings) != d[s0:o]:
         doc['strs_raw'] = d[s0:o].hex()
-    # object type sequence: TYPE order, count instances each (FUN_0063f535) [V]
+    # object types by position: TYPE order, count instances each (FUN_0063f535)
     seq = []
     for t in types:
         seq += [t.get('class', t['name'])] * t['count']
@@ -585,9 +579,7 @@ def _next_ctnr(d, o):
 
 
 def _strs_bytes(strings):
-    """Canonical STRS: blob = "\\0" + sorted unique non-empty strings (what the
-    engine's red-black-tree walk in FUN_0063cc92 produces; true for every
-    shipped file)."""
+    """Canonical STRS: blob = "\\0" + sorted unique non-empty strings (FUN_0063cc92)."""
     enc = [s.encode('latin1') for s in strings]
     uniq = sorted(set(s for s in enc if s))
     pos = {b'': 0}
@@ -608,9 +600,7 @@ def dumps(doc):
     wr = _Writer(strings)
     versions = {t.get('class', t['name']): t['version'] for t in doc['types']}
     objs = [_encode_object(wr, ob, versions) for ob in doc['objects'] if not ob.get('in_tail')]
-    # Recount instances per type from the object list (keeps the TYPE table
-    # consistent). Objects must be grouped in TYPE-table order, because the
-    # reader assigns each object its type purely by position (FUN_0063f535).
+    # Objects must be grouped in TYPE-table order: the reader assigns types by position.
     order = [t.get('class', t['name']) for t in doc['types']]
     counts = {}
     pos = 0

@@ -1,7 +1,5 @@
-// xom_roundtrip - byte-identical round-trip check for the C++ XOM library
-// (same file set and report shape as tools/xom/roundtrip_test.py).
-//
-//   xom_roundtrip [--game <WormsXHD dir>] [--bundles] [--maps] [-v] [files...]
+// xom_roundtrip - byte-identical round-trip check for the C++ XOM library.
+// Usage: xom_roundtrip (--game <game dir> [--bundles] [--maps] | files...) [-v]
 #include "xom.h"
 
 #include <algorithm>
@@ -60,7 +58,7 @@ static bool editTest(const std::vector<uint8_t>& bytes) {
 }
 
 int main(int argc, char** argv) {
-    fs::path game = "C:/Program Files (x86)/Steam/steamapps/common/WormsXHD";
+    fs::path game;
     bool bundles = false, maps = false, verbose = false;
     std::vector<fs::path> files;
     for (int i = 1; i < argc; ++i) {
@@ -70,6 +68,10 @@ int main(int argc, char** argv) {
         else if (a == "--maps") maps = true;
         else if (a == "-v") verbose = true;
         else files.push_back(a);
+    }
+    if (files.empty() && game.empty()) {
+        std::fprintf(stderr, "usage: xom_roundtrip (--game <game dir> [--bundles] [--maps] | files...) [-v]\n");
+        return 2;
     }
     if (files.empty()) {
         fs::path data = game / "Data";

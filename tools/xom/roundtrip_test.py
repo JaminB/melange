@@ -3,18 +3,12 @@
 roundtrip_test.py - byte-identical round-trip check for xom.py.
 
 For every file: bytes -> xom.loads -> JSON text -> json.loads -> xom.dumps -> bytes,
-then compare with the original.  Going through JSON text on purpose, so the
-float / string / ref encodings in the JSON model are exercised too.
+then compare with the original.
 
-    python roundtrip_test.py [--game <WormsXHD dir>] [--bundles] [--maps] [-v] [files...]
+    python roundtrip_test.py (--game <game dir> [--bundles] [--maps] | files...) [-v]
 
-Default file set: Data/Tweak/*.XOM (includes DEFSAVE.XOM and LVLSETUP.XOM) and
-every level/mission XOM directly under Data/ (Data/*.XOM).  --bundles adds
-Data/Bundles/*.xom, --maps adds Data/Maps/*.xan / *.xom (mesh-bearing files;
-see xom-format.md for what is and is not decoded there).
-
-Reports: files byte-identical, and how many objects were fully decoded vs
-kept opaque (raw bytes) because no schema matched.
+Default file set: Data/Tweak/*.XOM and Data/*.XOM. --bundles adds Data/Bundles/*.xom,
+--maps adds Data/Maps/*.xan and *.xom.
 """
 import argparse
 import collections
@@ -26,9 +20,6 @@ import sys
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 import xom  # noqa: E402
-
-DEFAULT_GAME = r'C:\Program Files (x86)\Steam\steamapps\common\WormsXHD'
-
 
 def collect(game, bundles, maps):
     data = os.path.join(game, 'Data')
@@ -75,12 +66,14 @@ def edit_test(path):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument('--game', default=DEFAULT_GAME)
+    ap.add_argument('--game')
     ap.add_argument('--bundles', action='store_true')
     ap.add_argument('--maps', action='store_true')
     ap.add_argument('-v', '--verbose', action='store_true')
     ap.add_argument('files', nargs='*')
     a = ap.parse_args()
+    if not a.files and not a.game:
+        ap.error('pass --game <game dir> or one or more files')
     files = a.files or collect(a.game, a.bundles, a.maps)
     npass = nfail = nerr = 0
     nobj = 0

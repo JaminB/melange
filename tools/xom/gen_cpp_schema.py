@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 """
-gen_cpp_schema.py - turn tools/xom/schema.json into src/xom/xom_schema.inc for
-the C++ library (so the C++ side has no JSON dependency).
+gen_cpp_schema.py - generate src/xom/xom_schema.inc from tools/xom/schema.json.
 
     python gen_cpp_schema.py [schema.json] [out.inc]
 """
@@ -12,7 +11,7 @@ import sys
 HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.normpath(os.path.join(HERE, '..', '..'))
 sys.path.insert(0, HERE)
-import xom  # noqa: E402  (MATH_FMT is the single source of truth for math layouts)
+import xom  # noqa: E402  (source of MATH_FMT)
 
 TYPE_ENUM = {
     'bool': 'Bool', 'u8': 'U8', 'i8': 'I8', 'u16': 'U16', 'i16': 'I16', 'u32': 'U32', 'i32': 'I32',
