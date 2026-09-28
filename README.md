@@ -46,7 +46,8 @@ Every module has its own section in `Melange.ini`, and `Enabled=0` turns a modul
 | `WindowTag` | on | Shows the Melange version in the window title |
 | `FrameInterval` | off | Sets the engine frame interval (`IntervalMs=16` is about 60 fps) |
 | `Mirage` | on | Graphics layer core: renderer access, scene stages for mods, mod folders |
-| `MirageTrace`, `MirageShaders`, `MiragePostFX`, `MirageDraw` | on | Graphics layer components (in development: they do nothing yet) |
+| `MiragePostFX` | on | Post-processing effects from mods, applied to the world or the whole frame (`ToggleKey` bypasses them) |
+| `MirageTrace`, `MirageShaders`, `MirageDraw` | on | Graphics layer components (in development: they do nothing yet) |
 | `MirageDebug` | off | Optional OpenGL debug context (in development) |
 
 ## Logs and bug reports
@@ -106,7 +107,8 @@ The public SDK headers are in `src/sdk/melange/`:
 | `melange/export.h` | Start a "Save logs" export, or write one to a given path |
 | `melange/testcmd.h` | Register named text commands for scripted testing |
 | `melange/render.h` | Renderer access: camera, window size, frame timing, scene stages, GL state save and restore |
-| `melange/gltrace.h`, `shaders.h`, `postfx.h`, `draw.h`, `gldebug.h` | Graphics layer APIs (in development) |
+| `melange/postfx.h` | List, enable, order and tune post-processing effects; add a full-screen pass from C++ |
+| `melange/gltrace.h`, `shaders.h`, `draw.h`, `gldebug.h` | Graphics layer APIs (in development) |
 
 ## Graphics layer (Mirage)
 
@@ -123,6 +125,79 @@ Mirage lets modules and mods draw inside the game's own frame. `melange/render.h
 Callbacks run in the main render pass only, with the game's framebuffer bound. Wrap your GL work in `render::PushState()` / `PopState()`. With no callbacks registered, Mirage patches nothing and every frame is identical to the game without it.
 
 Mods live in `<game>\Mods\<id>\`. When two mods provide the same file, the later folder name wins. `[Mirage] DisabledMods=a,b` switches mods off, and `ModsDir` moves the folder.
+
+### Post-processing effects
+
+An effect is a folder `<game>\Mods\<id>\postfx\<effect>\` with an `effect.ini` and GLSL fragment shaders. Its id is `<id>/<effect>`. Effects run at one of two stages:
+
+- `PostWorld` changes the world only: worm labels and the HUD are drawn on top afterwards.
+- `Final` changes the whole frame, just before the game copies it to the screen. The game's own FXAA and sepia still apply afterwards.
+
+Open the overlay's *Mirage/Post-FX* panel to switch effects on, change their order, drag their parameters and see what each one costs on the GPU. *Split compare* shows the left half of the screen without the effects. `Ctrl+Shift+F8` (`[MiragePostFX] ToggleKey`) bypasses the whole stack. Your choices are saved in `[MiragePostFX]` in `Melange.ini`. Editing an effect's files while the game runs reloads it. A shader that fails to compile is reported in the panel and the log, and the other effects keep running.
+
+```ini
+[effect]
+title=Bloom
+stage=PostWorld          ; PostWorld | Final
+order=300                ; lower runs first; ties by id
+enabled=0                ; the default until the player changes it
+
+[param.threshold]        ; uniform float p_threshold
+type=float               ; float | vec2 | vec3 | color | int | bool
+default=0.8
+min=0
+max=2
+label=Threshold
+
+[texture.lut]            ; uniform sampler2D t_lut, a PNG from the effect folder
+file=lut.png
+filter=linear            ; linear | nearest
+wrap=clamp               ; clamp | repeat
+
+[pass.extract]
+shader=extract.frag
+scale=0.5                ; size relative to the scene
+format=rgba16f           ; rgba8 | rgba16f | r8 | rg8
+inputs=scene             ; scene, depth, prev, pass.<name>, texture.<name>
+
+[pass.blurh]
+shader=blur.frag
+defines=HORIZONTAL=1     ; prepended as #define lines
+scale=0.5
+inputs=prev
+
+[pass.combine]           ; the last pass writes the effect's output at scene size
+shader=combine.frag
+inputs=scene,pass.blurh
+```
+
+Shader rules:
+
+- Fragment shaders only. The file's own `#version` is used, or `#version 120` if there is none. Mirage supplies a full-screen vertex shader that writes `vec2 mg_uv` (0..1, origin bottom-left). Declare it as `varying vec2 mg_uv;` in GLSL 1.20, or `in vec2 mg_uv;` in 1.30 and later.
+- Samplers are named after the inputs: `mg_scene`, `mg_depth`, `mg_prev` (the previous pass, or the scene for the first pass), `mg_pass_<name>` and `t_<name>`. Every sampler a shader uses must be listed in that pass's `inputs=`.
+- `mg_depth` is the game's depth buffer, in [0,1] as stored.
+- Parameters are `uniform <type> p_<name>`. Optional built-in uniforms:
+  - `vec4 mg_resolution`: width, height, 1/width and 1/height of this pass's target;
+  - `vec4 mg_sceneResolution`: the same for the scene;
+  - `float mg_time`, `float mg_frame`;
+  - `mat4 mg_proj`, `mat4 mg_invProj`, `mat4 mg_view`: the main camera;
+  - `vec2 mg_nearFar`: the near and far clip distances.
+- `#include "file"` pastes a file from the effect folder.
+- Textures are uploaded top row first, so `v = 0` is the top row of the PNG.
+
+C++ modules can add a pass of their own with `postfx::AddCodePass`. It draws a full-screen pass that reads `ctx.srcColor` (and `ctx.srcDepth`) into the framebuffer already bound.
+
+The `mirage-samples` mod in `dist\Mods\` has five example effects, all switched off by default:
+
+| Effect | Stage | What it does |
+|---|---|---|
+| `smaa` | Final | SMAA 1x anti-aliasing ([iryoku/smaa](https://github.com/iryoku/smaa), MIT). Use it instead of `/FXAA`, not with it. |
+| `sharpen` | Final | AMD FidelityFX Contrast Adaptive Sharpening ([FidelityFX-CAS](https://github.com/GPUOpen-Effects/FidelityFX-CAS), MIT) |
+| `ssao` | PostWorld | Ambient occlusion from the depth buffer |
+| `bloom` | PostWorld | Glow around bright areas |
+| `tonemap` | PostWorld | A filmic curve plus exposure, contrast, saturation and a colour-grading LUT (`lut.png`) |
+
+The SMAA and CAS folders carry their licence files.
 
 ## Building from source
 
@@ -143,7 +218,7 @@ You need:
 
 ## Roadmap
 
-Coming next: the rest of the graphics layer (GL trace, shader overrides, post-processing, a draw API), Lua mods, a mod loader and a map editor.
+Coming next: the rest of the graphics layer (GL trace, shader overrides, a draw API), Lua mods, a mod loader and a map editor.
 
 ## License
 

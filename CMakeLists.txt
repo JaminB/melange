@@ -84,6 +84,16 @@ target_compile_options(bus_selftest PRIVATE /W4 /utf-8 /permissive- /Zi /wd4100)
 target_link_options(bus_selftest PRIVATE /DEBUG /SAFESEH:NO)
 target_link_libraries(bus_selftest PRIVATE safetyhook::safetyhook bcrypt)
 
+add_executable(postfx_selftest EXCLUDE_FROM_ALL
+    tests/postfx_selftest.cpp
+    src/render/mirage/postfx_effect.cpp
+    src/render/mirage/postfx_gl.cpp)
+target_include_directories(postfx_selftest PRIVATE src src/sdk ${stb_SOURCE_DIR})
+target_compile_definitions(postfx_selftest PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX _CRT_SECURE_NO_WARNINGS
+    MELANGE_SOURCE_DIR="${CMAKE_SOURCE_DIR}")
+target_compile_options(postfx_selftest PRIVATE /W4 /utf-8 /permissive- /wd4100)
+target_link_libraries(postfx_selftest PRIVATE opengl32 gdi32 user32)
+
 add_executable(jlog_selftest
     tests/jlog_selftest.cpp
     src/core/jlog.cpp
