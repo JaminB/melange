@@ -70,7 +70,7 @@ std::wstring StatePath() {
 State& Live() { return g_state; }
 
 bool Load() {
-    std::wstring primary = mods::ModsDir() + L"\\thumper-state.json";
+    std::wstring primary = std::wstring(mods::ModsDir()) + L"\\thumper-state.json";
     json::Value v;
     json::Error e;
     bool found = json::ParseFile(primary, &v, &e);
