@@ -6,19 +6,19 @@ Melange is a single `melange.asi` plugin loaded by [Ultimate ASI Loader](https:/
 
 ## Features
 
-- **Netcode fixes.** Back-to-back online matches in the same lobby no longer freeze or end with *"This session is no longer available"*. Lost packets are now always retransmitted.
+- **Netcode fixes** targeting back-to-back online matches that freeze or end with *"This session is no longer available"*: lost packets are always retransmitted, and match state left over from the previous game is reset.
 - **Crash and hang diagnostics.** Stack traces and minidumps on a crash or a hang. `Ctrl+Shift+F12` takes a snapshot by hand.
 - **In-game overlay.** Press `` ` `` to show or hide it. Modules add their own panels, menus and hotkeys to it.
 - **Event bus.** Subscribe to the engine's own messages by name.
 - **Structured session logs.** Every session is logged as JSONL: log lines, engine messages and game events such as turns, shots and damage.
 - **Save logs.** `Ctrl+Shift+F11` saves one zip with everything a bug report needs. User names are redacted, and Steam IDs and IP addresses are hashed.
 - **Steam and network tracing.** Logs lobby, P2P and socket activity.
-- **Compatible** with WUMPatch and Renewation HD.
+- **Works alongside WUMPatch.**
 
 ## Install
 
-1. Get `melange.asi` and `Melange.ini` from the [latest release](../../releases/latest).
-2. Get `dinput8.dll` from the x86 build of [Ultimate ASI Loader](https://github.com/ThirteenAG/Ultimate-ASI-Loader/releases/latest) (`Ultimate-ASI-Loader.zip`). If you already use WUMPatch or Renewation HD, you have it already.
+1. Build `melange.asi` (see [Building from source](#building-from-source)); prebuilt releases are coming. `Melange.ini` is in `dist/`.
+2. Get `dinput8.dll` from the x86 build of [Ultimate ASI Loader](https://github.com/ThirteenAG/Ultimate-ASI-Loader/releases/latest) (`Ultimate-ASI-Loader.zip`). If you already use WUMPatch, you have it already.
 3. Copy these files into the game folder, next to `WormsMayhem.exe` (`...\steamapps\common\WormsXHD`). Start the game. The window title now shows `[Melange x.y.z]`.
 
 Both players should install Melange, but the fixes also help when only one of them has it.
