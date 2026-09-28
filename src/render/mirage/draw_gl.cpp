@@ -37,9 +37,103 @@ Vec3 TransformPoint(const float m[16], Vec3 p) {
 
 int g_windowW = 0, g_windowH = 0;
 render::Camera g_cam{};
-bool g_haveCam = false;
 
 void UnpackColor(draw::Rgba c, float rgba[4]) { drawqueue::Unpack(c, rgba); }
+
+// GL state already set in this stage, so consecutive primitives skip redundant calls and thick lines share one
+// glBegin(GL_QUADS). Every change ends the open batch first.
+enum class Space { Unset, ViewSpace, World, Screen };
+struct Cache {
+    Space space = Space::Unset;
+    int additive = -1, depthTest = -1, depthWrite = -1, cull = -1;
+    unsigned texture = ~0u;
+    float lineWidth = -1;
+    bool quads = false;
+} g_c;
+
+void EndQuads() {
+    if (!g_c.quads) return;
+    glEnd();
+    g_c.quads = false;
+}
+
+void BeginQuads() {
+    if (g_c.quads) return;
+    glBegin(GL_QUADS);
+    g_c.quads = true;
+}
+
+void SetSpace(Space s) {
+    if (g_c.space == s) return;
+    EndQuads();
+    g_c.space = s;
+    glMatrixMode(GL_PROJECTION);
+    if (s == Space::Screen) {
+        glLoadIdentity();
+        glOrtho(0, g_windowW, g_windowH, 0, -1, 1);
+    } else {
+        glLoadMatrixf(g_cam.proj);
+    }
+    glMatrixMode(GL_MODELVIEW);
+    if (s == Space::World) glLoadMatrixf(g_cam.view);
+    else glLoadIdentity();
+}
+
+void SetBlend(bool additive) {
+    if (g_c.additive == static_cast<int>(additive)) return;
+    EndQuads();
+    g_c.additive = additive;
+    glBlendFunc(GL_SRC_ALPHA, additive ? GL_ONE : GL_ONE_MINUS_SRC_ALPHA);
+}
+
+void SetDepth(bool test, bool write) {
+    if (g_c.depthTest != static_cast<int>(test)) {
+        EndQuads();
+        g_c.depthTest = test;
+        if (test) {
+            glEnable(GL_DEPTH_TEST);
+            glDepthFunc(GL_LEQUAL);
+        } else {
+            glDisable(GL_DEPTH_TEST);
+        }
+    }
+    if (g_c.depthWrite != static_cast<int>(write)) {
+        EndQuads();
+        g_c.depthWrite = write;
+        glDepthMask(write ? GL_TRUE : GL_FALSE);
+    }
+}
+
+void SetCull(bool cull) {
+    if (g_c.cull == static_cast<int>(cull)) return;
+    EndQuads();
+    g_c.cull = cull;
+    if (cull) {
+        glEnable(GL_CULL_FACE);
+        glCullFace(GL_BACK);
+    } else {
+        glDisable(GL_CULL_FACE);
+    }
+}
+
+void SetTexture(unsigned tex) {
+    if (g_c.texture == tex) return;
+    EndQuads();
+    g_c.texture = tex;
+    if (tex) {
+        glEnable(GL_TEXTURE_2D);
+        glBindTexture(GL_TEXTURE_2D, tex);
+    } else {
+        glDisable(GL_TEXTURE_2D);
+    }
+}
+
+void SetLineWidth(float w) {
+    if (g_c.lineWidth == w) return;
+    EndQuads();
+    g_c.lineWidth = w;
+    glLineWidth(w);
+}
 
 // View-space half width of `widthPx` pixels at view depth -viewZ, from the projection's Y scale proj[5].
 float HalfWidthAt(float viewZ, float widthPx) {
@@ -48,32 +142,18 @@ float HalfWidthAt(float viewZ, float widthPx) {
     return (widthPx * depth) / (yScale * (g_windowH > 0 ? g_windowH : 1)) * 0.5f;
 }
 
-// Thick line as a camera-facing quad, so widthPx holds on drivers that cap glLineWidth.
-void ThickLineViewSpace(Vec3 a, Vec3 b, float halfWidth, const float rgba[4]) {
-    Vec3 dir = Sub(b, a);
-    Vec3 mid = Scale(Add(a, b), 0.5f);
-    Vec3 perp = Scale(Norm(Cross(dir, mid)), halfWidth);
+// Thick line as a camera-facing quad in view space, so widthPx holds on drivers that cap glLineWidth.
+void WorldLineTo(Vec3 aWorld, Vec3 bWorld, float widthPx, const float rgba[4], uint32_t& verts) {
+    Vec3 a = TransformPoint(g_cam.view, aWorld), b = TransformPoint(g_cam.view, bWorld);
+    Vec3 perp = Scale(Norm(Cross(Sub(b, a), Scale(Add(a, b), 0.5f))), HalfWidthAt((a.z + b.z) * 0.5f, widthPx));
     Vec3 a0 = Sub(a, perp), a1 = Add(a, perp), b0 = Sub(b, perp), b1 = Add(b, perp);
+    BeginQuads();
     glColor4fv(rgba);
-    glBegin(GL_QUADS);
     glVertex3f(a0.x, a0.y, a0.z);
     glVertex3f(a1.x, a1.y, a1.z);
     glVertex3f(b1.x, b1.y, b1.z);
     glVertex3f(b0.x, b0.y, b0.z);
-    glEnd();
-}
-
-void WorldLineTo(Vec3 aWorld, Vec3 bWorld, float widthPx, const float rgba[4], uint32_t& verts) {
-    Vec3 a = TransformPoint(g_cam.view, aWorld), b = TransformPoint(g_cam.view, bWorld);
-    ThickLineViewSpace(a, b, HalfWidthAt((a.z + b.z) * 0.5f, widthPx), rgba);
     verts += 4;
-}
-
-void SetupWorldViewIdentity() {
-    glMatrixMode(GL_MODELVIEW);
-    glLoadIdentity();
-    glMatrixMode(GL_PROJECTION);
-    glLoadMatrixf(g_cam.proj);
 }
 
 void DrawBox(const Primitive& p, const float rgba[4], uint32_t& verts) {
@@ -116,41 +196,14 @@ void DrawAxes(const Primitive& p, uint32_t& verts) {
     WorldLineTo(o, Add(o, {0, 0, L}), p.widthPx, kBlue, verts);
 }
 
-void DrawQuad(const Primitive& p, const float rgba[4], bool noCull, uint32_t& verts) {
-    glMatrixMode(GL_MODELVIEW);
-    glLoadMatrixf(g_cam.view);
-    glMatrixMode(GL_PROJECTION);
-    glLoadMatrixf(g_cam.proj);
-    if (noCull) glDisable(GL_CULL_FACE);
-    else {
-        glEnable(GL_CULL_FACE);
-        glCullFace(GL_BACK);
-    }
-    glDisable(GL_TEXTURE_2D);
-    glColor4fv(rgba);
-    glBegin(GL_QUADS);
-    for (const auto& pt : p.p) glVertex3fv(pt);
-    glEnd();
-    verts += 4;
-}
-
-void DrawMesh(const Primitive& p, bool noCull, uint32_t& verts) {
+void DrawMesh(const Primitive& p, uint32_t& verts) {
     if (p.meshV.empty()) return;
-    glMatrixMode(GL_MODELVIEW);
-    glLoadMatrixf(g_cam.view);
-    if (p.hasModel) glMultMatrixf(p.model);
-    glMatrixMode(GL_PROJECTION);
-    glLoadMatrixf(g_cam.proj);
-    if (noCull) glDisable(GL_CULL_FACE);
-    else {
-        glEnable(GL_CULL_FACE);
-        glCullFace(GL_BACK);
-    }
-    if (p.texture) {
-        glEnable(GL_TEXTURE_2D);
-        glBindTexture(GL_TEXTURE_2D, p.texture);
-    } else {
-        glDisable(GL_TEXTURE_2D);
+    SetTexture(p.texture);
+    EndQuads();
+    if (p.hasModel) {
+        glMatrixMode(GL_MODELVIEW);
+        glMultMatrixf(p.model);
+        g_c.space = Space::Unset;
     }
     glEnableClientState(GL_VERTEX_ARRAY);
     glEnableClientState(GL_COLOR_ARRAY);
@@ -169,125 +222,79 @@ void DrawMesh(const Primitive& p, bool noCull, uint32_t& verts) {
     verts += static_cast<uint32_t>(p.meshV.size());
 }
 
-void DrawGlyphs(const std::vector<drawfont::GlyphQuad>& glyphs, const float rgba[4]) {
-    if (glyphs.empty()) return;
-    glEnable(GL_TEXTURE_2D);
-    glBindTexture(GL_TEXTURE_2D, drawfont::Texture());
-    glColor4fv(rgba);
-    glBegin(GL_QUADS);
+void EmitGlyphs(const std::vector<drawfont::GlyphQuad>& glyphs, float z) {
     for (const auto& g : glyphs) {
         glTexCoord2f(g.u0, g.v0);
-        glVertex2f(g.x0, g.y0);
+        glVertex3f(g.x0, g.y0, z);
         glTexCoord2f(g.u1, g.v0);
-        glVertex2f(g.x1, g.y0);
+        glVertex3f(g.x1, g.y0, z);
         glTexCoord2f(g.u1, g.v1);
-        glVertex2f(g.x1, g.y1);
+        glVertex3f(g.x1, g.y1, z);
         glTexCoord2f(g.u0, g.v1);
-        glVertex2f(g.x0, g.y1);
+        glVertex3f(g.x0, g.y1, z);
     }
-    glEnd();
 }
 
-void DrawWorldText(const Primitive& p, uint32_t& verts) {
-    if (!drawfont::Init()) return;
+std::vector<drawfont::GlyphQuad> g_glyphs;
+
+void DrawWorldText(const Primitive& p, const float rgba[4], uint32_t& verts) {
+    if (!drawfont::Texture()) return;
     float sx = 0, sy = 0, depth = 0;
     if (!render::WorldToScreen(p.p[0], &sx, &sy, &depth)) return;
-
-    std::vector<drawfont::GlyphQuad> glyphs;
-    drawfont::Extent ext = drawfont::Layout(p.text.c_str(), p.sizePx, 0, 0, glyphs);
+    g_glyphs.clear();
+    drawfont::Extent ext = drawfont::Layout(p.text.c_str(), p.sizePx, 0, 0, g_glyphs);
     float dx = sx - ext.w * 0.5f, dy = sy - ext.h;  // centred above the anchor
-    for (auto& g : glyphs) {
+    for (auto& g : g_glyphs) {
         g.x0 += dx;
         g.x1 += dx;
         g.y0 += dy;
         g.y1 += dy;
     }
-
-    glMatrixMode(GL_MODELVIEW);
-    glLoadIdentity();
-    glMatrixMode(GL_PROJECTION);
-    glLoadIdentity();
-    // glOrtho(..., -1, 1) maps z to NDC -z, so z = 1 - 2*depth lands on the anchor's depth-buffer value.
-    glOrtho(0, g_windowW, g_windowH, 0, -1, 1);
-    glDisable(GL_CULL_FACE);
-    glEnable(GL_DEPTH_TEST);
-    glDepthFunc(GL_LEQUAL);
-    glDepthMask(GL_FALSE);
-    float zParam = 1.f - 2.f * depth;
-    glEnable(GL_BLEND);
-    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
-    float rgba[4];
-    UnpackColor(p.color, rgba);
-    glEnable(GL_TEXTURE_2D);
-    glBindTexture(GL_TEXTURE_2D, drawfont::Texture());
+    SetSpace(Space::Screen);
+    SetTexture(drawfont::Texture());
+    BeginQuads();
     glColor4fv(rgba);
-    glBegin(GL_QUADS);
-    for (const auto& g : glyphs) {
-        glTexCoord2f(g.u0, g.v0);
-        glVertex3f(g.x0, g.y0, zParam);
-        glTexCoord2f(g.u1, g.v0);
-        glVertex3f(g.x1, g.y0, zParam);
-        glTexCoord2f(g.u1, g.v1);
-        glVertex3f(g.x1, g.y1, zParam);
-        glTexCoord2f(g.u0, g.v1);
-        glVertex3f(g.x0, g.y1, zParam);
-    }
-    glEnd();
-    verts += static_cast<uint32_t>(glyphs.size()) * 4;
+    // glOrtho(..., -1, 1) maps z to NDC -z, so z = 1 - 2*depth lands on the anchor's depth-buffer value.
+    EmitGlyphs(g_glyphs, 1.f - 2.f * depth);
+    verts += static_cast<uint32_t>(g_glyphs.size()) * 4;
 }
 
 void DrawWorldOne(const Primitive& p, uint32_t& prims, uint32_t& verts) {
-    bool depthTest = (p.flags & draw::kDepthTest) != 0;
-    bool depthWrite = (p.flags & draw::kDepthWrite) != 0;
-    bool additive = (p.flags & draw::kAdditive) != 0;
-    bool noCull = (p.flags & draw::kNoCull) != 0;
-
-    glEnable(GL_BLEND);
-    glBlendFunc(GL_SRC_ALPHA, additive ? GL_ONE : GL_ONE_MINUS_SRC_ALPHA);
-    if (depthTest) {
-        glEnable(GL_DEPTH_TEST);
-        glDepthFunc(GL_LEQUAL);
-    } else {
-        glDisable(GL_DEPTH_TEST);
-    }
-    glDepthMask(depthWrite ? GL_TRUE : GL_FALSE);
-
+    SetBlend((p.flags & draw::kAdditive) != 0);
+    SetDepth((p.flags & draw::kDepthTest) != 0, (p.flags & draw::kDepthWrite) != 0);
     float rgba[4];
     UnpackColor(p.color, rgba);
     ++prims;
     switch (p.kind) {
         case Kind::Line:
-            SetupWorldViewIdentity();
-            glDisable(GL_TEXTURE_2D);
-            glDisable(GL_CULL_FACE);
-            WorldLineTo(FromArr(p.p[0]), FromArr(p.p[1]), p.widthPx, rgba, verts);
-            break;
         case Kind::Box:
-            SetupWorldViewIdentity();
-            glDisable(GL_TEXTURE_2D);
-            glDisable(GL_CULL_FACE);
-            DrawBox(p, rgba, verts);
-            break;
         case Kind::Sphere:
-            SetupWorldViewIdentity();
-            glDisable(GL_TEXTURE_2D);
-            glDisable(GL_CULL_FACE);
-            DrawSphere(p, rgba, verts);
-            break;
         case Kind::Axes:
-            SetupWorldViewIdentity();
-            glDisable(GL_TEXTURE_2D);
-            glDisable(GL_CULL_FACE);
-            DrawAxes(p, verts);
+            SetSpace(Space::ViewSpace);
+            SetTexture(0);
+            SetCull(false);
+            if (p.kind == Kind::Line) WorldLineTo(FromArr(p.p[0]), FromArr(p.p[1]), p.widthPx, rgba, verts);
+            else if (p.kind == Kind::Box) DrawBox(p, rgba, verts);
+            else if (p.kind == Kind::Sphere) DrawSphere(p, rgba, verts);
+            else DrawAxes(p, verts);
             break;
         case Kind::Quad:
-            DrawQuad(p, rgba, noCull, verts);
+            SetSpace(Space::World);
+            SetTexture(0);
+            SetCull((p.flags & draw::kNoCull) == 0);
+            BeginQuads();
+            glColor4fv(rgba);
+            for (const auto& pt : p.p) glVertex3fv(pt);
+            verts += 4;
             break;
         case Kind::Mesh:
-            DrawMesh(p, noCull, verts);
+            SetSpace(Space::World);
+            SetCull((p.flags & draw::kNoCull) == 0);
+            DrawMesh(p, verts);
             break;
         case Kind::Text:
-            DrawWorldText(p, verts);
+            SetCull(false);
+            DrawWorldText(p, rgba, verts);
             break;
         default:
             break;
@@ -295,89 +302,75 @@ void DrawWorldOne(const Primitive& p, uint32_t& prims, uint32_t& verts) {
 }
 
 void DrawHudOne(const Primitive& p, uint32_t& prims, uint32_t& verts) {
-    glEnable(GL_BLEND);
-    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
-    glDisable(GL_DEPTH_TEST);
-    glDepthMask(GL_FALSE);
-    glDisable(GL_CULL_FACE);
     float rgba[4];
     UnpackColor(p.color, rgba);
     ++prims;
+    float x0 = p.p[0][0], y0 = p.p[0][1], x1 = p.p[1][0], y1 = p.p[1][1];
     switch (p.kind) {
-        case Kind::HudLine: {
-            glDisable(GL_TEXTURE_2D);
+        case Kind::HudLine:
+            SetTexture(0);
+            SetLineWidth(p.widthPx > 0 ? p.widthPx : 1.f);
+            EndQuads();
             glColor4fv(rgba);
-            glLineWidth(p.widthPx > 0 ? p.widthPx : 1.f);
             glBegin(GL_LINES);
-            glVertex2f(p.p[0][0] + 0.375f, p.p[0][1] + 0.375f);
-            glVertex2f(p.p[1][0] + 0.375f, p.p[1][1] + 0.375f);
+            glVertex2f(x0 + 0.375f, y0 + 0.375f);
+            glVertex2f(x1 + 0.375f, y1 + 0.375f);
             glEnd();
             verts += 2;
             break;
-        }
-        case Kind::HudRect: {
-            glDisable(GL_TEXTURE_2D);
-            glColor4fv(rgba);
-            float x0 = p.p[0][0], y0 = p.p[0][1], x1 = p.p[1][0], y1 = p.p[1][1];
+        case Kind::HudRect:
+            SetTexture(0);
             if (p.filled) {
-                glBegin(GL_QUADS);
+                BeginQuads();
+                glColor4fv(rgba);
                 glVertex2f(x0, y0);
                 glVertex2f(x1, y0);
                 glVertex2f(x1, y1);
                 glVertex2f(x0, y1);
-                glEnd();
-                verts += 4;
             } else {
-                glLineWidth(p.widthPx > 0 ? p.widthPx : 1.f);
+                SetLineWidth(p.widthPx > 0 ? p.widthPx : 1.f);
+                EndQuads();
+                glColor4fv(rgba);
                 glBegin(GL_LINE_LOOP);
                 glVertex2f(x0 + 0.375f, y0 + 0.375f);
                 glVertex2f(x1 + 0.375f, y0 + 0.375f);
                 glVertex2f(x1 + 0.375f, y1 + 0.375f);
                 glVertex2f(x0 + 0.375f, y1 + 0.375f);
                 glEnd();
-                verts += 4;
             }
+            verts += 4;
             break;
-        }
         case Kind::HudText: {
-            if (!drawfont::Init()) break;
-            std::vector<drawfont::GlyphQuad> glyphs;
-            drawfont::Layout(p.text.c_str(), p.sizePx, p.p[0][0], p.p[0][1], glyphs);
-            DrawGlyphs(glyphs, rgba);
-            verts += static_cast<uint32_t>(glyphs.size()) * 4;
+            if (!drawfont::Texture()) break;
+            g_glyphs.clear();
+            drawfont::Layout(p.text.c_str(), p.sizePx, x0, y0, g_glyphs);
+            SetTexture(drawfont::Texture());
+            BeginQuads();
+            glColor4fv(rgba);
+            EmitGlyphs(g_glyphs, 0.f);
+            verts += static_cast<uint32_t>(g_glyphs.size()) * 4;
             break;
         }
         case Kind::HudImage: {
             if (!p.texture) break;
-            glEnable(GL_TEXTURE_2D);
-            glBindTexture(GL_TEXTURE_2D, p.texture);
             float t[4];
             UnpackColor(p.color2, t);
+            SetTexture(p.texture);
+            BeginQuads();
             glColor4fv(t);
-            glBegin(GL_QUADS);
             glTexCoord2f(0, 0);
-            glVertex2f(p.p[0][0], p.p[0][1]);
+            glVertex2f(x0, y0);
             glTexCoord2f(1, 0);
-            glVertex2f(p.p[1][0], p.p[0][1]);
+            glVertex2f(x1, y0);
             glTexCoord2f(1, 1);
-            glVertex2f(p.p[1][0], p.p[1][1]);
+            glVertex2f(x1, y1);
             glTexCoord2f(0, 1);
-            glVertex2f(p.p[0][0], p.p[1][1]);
-            glEnd();
+            glVertex2f(x0, y1);
             verts += 4;
             break;
         }
         default:
             break;
-    }
-}
-
-void DrawList(render::Stage stage, std::vector<Primitive>& list, FrameStats& stats) {
-    for (auto& p : list) {
-        if (stage == render::Stage::Hud)
-            DrawHudOne(p, stats.primitives, stats.vertices);
-        else
-            DrawWorldOne(p, stats.primitives, stats.vertices);
     }
 }
 }  // namespace
@@ -387,22 +380,32 @@ FrameStats DrawStage(render::Stage stage, std::vector<Primitive>& a, std::vector
     if (a.empty() && b.empty()) return stats;
 
     render::WindowSize(&g_windowW, &g_windowH);
-    g_haveCam = render::GetCamera(&g_cam);
-    if (stage != render::Stage::Hud && !g_haveCam) return stats;
+    bool haveCam = render::GetCamera(&g_cam);
+    if (stage != render::Stage::Hud && !haveCam) return stats;
 
     uint32_t token = render::PushState();
     if (!token) return stats;
-
+    // The atlas upload must happen outside a glBegin/glEnd batch.
+    for (const auto* list : {&a, &b})
+        for (const auto& p : *list)
+            if (p.kind == Kind::Text || p.kind == Kind::HudText) {
+                drawfont::Init();
+                break;
+            }
+    g_c = Cache{};
+    glEnable(GL_BLEND);
     if (stage == render::Stage::Hud) {
-        glMatrixMode(GL_PROJECTION);
-        glLoadIdentity();
-        glOrtho(0, g_windowW, g_windowH, 0, -1, 1);
-        glMatrixMode(GL_MODELVIEW);
-        glLoadIdentity();
+        SetSpace(Space::Screen);
+        SetBlend(false);
+        SetDepth(false, false);
+        SetCull(false);
+        for (auto& p : a) DrawHudOne(p, stats.primitives, stats.vertices);
+        for (auto& p : b) DrawHudOne(p, stats.primitives, stats.vertices);
+    } else {
+        for (auto& p : a) DrawWorldOne(p, stats.primitives, stats.vertices);
+        for (auto& p : b) DrawWorldOne(p, stats.primitives, stats.vertices);
     }
-    DrawList(stage, a, stats);
-    DrawList(stage, b, stats);
-
+    EndQuads();
     render::PopState(token);
     return stats;
 }
