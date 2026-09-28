@@ -10,10 +10,12 @@
 #include <cstdio>
 #include <filesystem>
 #include <mutex>
+#include <set>
 #include <string>
 #include <thread>
 #include <vector>
 
+#include "core/events.h"
 #include "core/game.h"
 #include "core/log.h"
 #include "lua/engine50.h"
@@ -129,21 +131,27 @@ uint64_t StatSig(const fs::path& p) {
     return (static_cast<uint64_t>(sz) * 1099511628211ULL) ^ static_cast<uint64_t>(t.time_since_epoch().count());
 }
 
-// The default contentHash.include: spice.json, the sim folder and assets/**.
-std::vector<WalkedFile> WalkModFileList(const fs::path& dir, uint64_t* aggSig) {
+// The default contentHash.include convention: spice.json, entry.sim's actual file (wherever it is, not just
+// under sim/, since a manifest may point it anywhere inside the mod folder) and assets/**. §2.10 of the design
+// notes this convention instead of the manifest's real contentHash.include glob list; entry.sim is covered
+// explicitly here so a mod whose entry.sim sits outside sim/ still changes the hash when its code does.
+std::vector<WalkedFile> WalkModFileList(const fs::path& dir, const std::string& entrySimRel, uint64_t* aggSig) {
     std::vector<WalkedFile> list;
     uint64_t agg = 0;
     std::error_code ec;
+    std::set<std::string> seenRel;
     auto add = [&](const fs::path& file) {
         std::error_code e2;
         if (!fs::is_regular_file(file, e2)) return;
-        uint64_t sig = StatSig(file);
-        agg ^= sig;
         std::string rel = fs::relative(file, dir, e2).generic_string();
         std::transform(rel.begin(), rel.end(), rel.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+        if (!seenRel.insert(rel).second) return;  // entry.sim may already sit under sim/: don't hash it twice
+        uint64_t sig = StatSig(file);
+        agg ^= sig;
         list.push_back({file, rel, sig});
     };
     add(dir / "spice.json");
+    if (!entrySimRel.empty()) add(dir / entrySimRel);
     for (const char* sub : {"assets", "sim"}) {
         fs::path root = dir / sub;
         if (!fs::is_directory(root, ec)) continue;
@@ -156,10 +164,10 @@ std::vector<WalkedFile> WalkModFileList(const fs::path& dir, uint64_t* aggSig) {
 }
 
 // Cached by a size/mtime signature per mod. Never runs on the main thread.
-std::vector<ContentFile> FilesForMod(const std::string& id, const std::wstring& dirW) {
+std::vector<ContentFile> FilesForMod(const std::string& id, const std::wstring& dirW, const std::string& entrySimRel) {
     fs::path dir(dirW);
     uint64_t agg = 0;
-    std::vector<WalkedFile> list = WalkModFileList(dir, &agg);
+    std::vector<WalkedFile> list = WalkModFileList(dir, entrySimRel, &agg);
     std::lock_guard lk(g_mx);
     for (auto& c : g_fileCache) {
         if (c.id != id) continue;
@@ -202,7 +210,7 @@ mods::ContentId ComputeContent() {
     std::vector<ContentMod> contentMods;
     contentMods.reserve(enabled.size());
     for (const thumper::Entry& m : enabled)
-        contentMods.push_back({m.manifest.id, m.manifest.version, FilesForMod(m.manifest.id, m.dir)});
+        contentMods.push_back({m.manifest.id, m.manifest.version, FilesForMod(m.manifest.id, m.dir, m.manifest.entrySim)});
     return BuildContentId(std::move(contentMods), RegisteredModMessages());
 }
 
@@ -394,6 +402,13 @@ public:
         new Listener(melange::steam::kLobbyKicked, 24);
         melange::mods::OnChange(&OnModsChanged, nullptr);
         melange::simbridge::SetGate(&HandshakeGate);
+        // Steam's own LeaveLobby has no callback of its own (unlike a kick), so the only other signal that we
+        // left is the engine's net session closing: NetSession fires this generically, independent of Handshake.
+        melange::events::Subscribe(melange::events::Event::LobbyLeave, [] {
+            g_lobby = 0;
+            g_simAllowedThisMatch = false;
+            melange::jlog::Rec("handshake", melange::jlog::Level::Info, "left_lobby").Emit();
+        });
         RegisterPanel();
         RecomputeAsync();
         return true;

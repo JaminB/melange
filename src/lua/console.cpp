@@ -11,6 +11,7 @@
 #include <vector>
 
 #include "core/config.h"
+#include "core/events.h"
 #include "core/game.h"
 #include "core/log.h"
 #include "core/module.h"
@@ -48,8 +49,11 @@ Target g_target = Target::Client;
 std::string g_targetMod;
 bool g_matchConsoleOnline = false;
 bool g_knownBuild = false;
+// mods::Peers() is only ever nonzero once Handshake has joined a lobby, so [Handshake] Enabled=0 made every
+// online match look offline here. NetSession's MatchStart/MatchEnd fire independently of Handshake.
+bool g_online = false;
 
-bool Online() { return melange::mods::Peers(nullptr, 0) > 0; }
+bool Online() { return g_online; }
 
 std::string TargetLabel(Target t, const std::string& mod) {
     switch (t) {
@@ -120,12 +124,10 @@ LogEntry RunEval(Target kind, const std::string& modId, const std::string& rawCo
     }
     std::string code = melange::console::ExpandShorthand(rawCode);
     auto t0 = std::chrono::steady_clock::now();
+    // sandbox::Eval / simbridge::EvalMatch already try "return <code>" before falling back to raw code (so a
+    // bare expression works); retrying that here on a runtime failure would just run code that already ran once
+    // a second time.
     EvalOut out = RunTarget(kind, modId, code);
-    // A bare expression is not a valid statement; retry it as "return <expr>", as the standalone Lua REPL does.
-    if (!out.ok && code.rfind("return", 0) != 0) {
-        EvalOut retry = RunTarget(kind, modId, "return " + code);
-        if (retry.ok) out = retry;
-    }
     e.ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
     e.ok = out.ok;
     e.text = out.text;
@@ -395,6 +397,8 @@ public:
             LOG_WARN("[console] [LuaConsole] Hotkey=%s not understood", hotkey.c_str());
         }
 
+        melange::events::Subscribe(melange::events::Event::MatchStart, [] { g_online = true; });
+        melange::events::Subscribe(melange::events::Event::MatchEnd, [] { g_online = false; });
         melange::overlay::AddPanel(kPanelId, "Lua/Console", &DrawPanel, nullptr);
         melange::testcmd::Register("console.open", &VerbOpen);
         melange::testcmd::Register("console.run", &VerbRun);

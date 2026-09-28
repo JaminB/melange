@@ -8,6 +8,7 @@
 #include <cstring>
 #include <set>
 
+#include "core/events.h"
 #include "core/game.h"
 #include "core/log.h"
 #include "core/mem.h"
@@ -31,6 +32,9 @@ constexpr size_t kSsL = 0x38;
 
 bool g_installed = false;
 melange::simbridge::Gate g_gate = nullptr;
+// Fired by NetSession regardless of whether Handshake is installed, so the fallback below can tell offline
+// from online even with [Handshake] Enabled=0 (no g_gate registered at all).
+bool g_inLobby = false;
 std::vector<std::string> g_modIds;
 std::vector<std::string> g_forwarded;
 SafetyHookInline g_hInit, g_hMessage, g_hUpdate;
@@ -72,7 +76,11 @@ int __fastcall HkInit(uintptr_t ss, void*, uintptr_t a1, uintptr_t a2, uintptr_t
     if (!Ours(ss)) return r;
     try {
         bool open = true;
-        if (core::SourceCount() && g_gate) open = g_gate();
+        if (core::SourceCount()) {
+            if (g_gate) open = g_gate();
+            // No Handshake to agree with peers on content: fail closed online, same as an unmatched hash would.
+            else if (g_inLobby) open = false;
+        }
         core::Init(Forwarded(), open);
     } catch (...) {
         LOG_ERROR("[sim] loading the sim mods threw");
@@ -276,6 +284,8 @@ public:
         core::SetLogSink(&Sink);
         core::SetHooksChanged(&RefreshInitHook);
         l5::OnContext(&OnContext, nullptr);
+        melange::events::Subscribe(melange::events::Event::LobbyEnter, [] { g_inLobby = true; });
+        melange::events::Subscribe(melange::events::Event::LobbyLeave, [] { g_inLobby = false; });
         melange::testcmd::Register("sim.stats", &VerbStats);
         melange::testcmd::Register("sim.mods", &VerbMods);
         g_installed = true;
