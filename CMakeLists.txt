@@ -108,6 +108,10 @@ target_compile_definitions(postfx_selftest PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX 
 target_compile_options(postfx_selftest PRIVATE /W4 /utf-8 /permissive- /wd4100)
 target_link_libraries(postfx_selftest PRIVATE opengl32 gdi32 user32)
 
+add_executable(draw_queue_selftest EXCLUDE_FROM_ALL tests/draw_queue_selftest.cpp)
+target_include_directories(draw_queue_selftest PRIVATE src src/sdk)
+target_compile_options(draw_queue_selftest PRIVATE /W4 /utf-8 /permissive-)
+
 add_executable(jlog_selftest
     tests/jlog_selftest.cpp
     src/core/jlog.cpp

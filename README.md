@@ -50,7 +50,7 @@ Every module has its own section in `Melange.ini`, and `Enabled=0` turns a modul
 | `MirageTrace` | on | OpenGL call statistics (`Mode=count`), frame capture (`CaptureHotkey`), texture dumper, GPU compatibility report |
 | `MirageShaders` | on | Shader mods: replacements, patches, live reload, sliders; fixes the game's FXAA on AMD and Intel (`FixFxaa`) |
 | `MiragePostFX` | on | Post-processing effects from mods, applied to the world or the whole frame (`ToggleKey` bypasses them) |
-| `MirageDraw` | on | Graphics layer component (in development: it does nothing yet) |
+| `MirageDraw` | on | Drawing API for modules: world-space lines, boxes, spheres and text, and HUD shapes, text and images |
 | `MirageDebug` | off | OpenGL debug context: driver errors and warnings go to the logs and the *Mirage/GL debug* panel |
 
 ## Logs and bug reports
@@ -116,7 +116,8 @@ The public SDK headers are in `src/sdk/melange/`:
 | `melange/compat.h` | Report what your module loaded or skipped on this GPU, for the compatibility report |
 | `melange/postfx.h` | List, enable, order and tune post-processing effects; add a full-screen pass from C++ |
 | `melange/shaders.h` | List the game's shader programs, reload them, set their parameters, add shader folders |
-| `melange/draw.h`, `gldebug.h` | Graphics layer APIs (in development) |
+| `melange/draw.h` | Draw lines, boxes, spheres, meshes and text in the world, and shapes, text and images on the HUD |
+| `melange/gldebug.h` | Whether the debug context is on, its message counts, and debug groups and labels for your GL work |
 
 ## Graphics layer (Mirage)
 
