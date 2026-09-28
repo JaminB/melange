@@ -177,9 +177,12 @@ std::string BuildText(const Snapshot& s, const std::vector<Entry>& reports) {
     }
     t += Line("\nPost-FX: %zu effects%s%s", s.effects.size(), s.postfxBypassed ? ", BYPASSED: " : "",
               s.postfxBypassed ? s.bypassReason.c_str() : "");
-    for (const EffectRow& e : s.effects)
-        t += Line("  %-8s %s (%s, %s)", e.failed ? "FAILED" : e.enabled ? "loaded" : "skipped", e.id.c_str(), e.title.c_str(),
-                  e.stage.c_str());
+    for (const EffectRow& e : s.effects) {
+        const Entry* r = FindReport(reports, Kind::Effect, e.id);
+        std::string reason = r ? r->reason : e.failed ? "" : !e.enabled ? "disabled" : "";
+        t += Line("  %-8s %s (%s, %s)%s", e.failed ? "FAILED" : e.enabled ? "loaded" : "skipped", e.id.c_str(), e.title.c_str(),
+                  e.stage.c_str(), reason.empty() ? "" : (" - " + reason).c_str());
+    }
     t += "\nStages:\n";
     for (const StageRow& st : s.stages)
         t += Line("  %-9s %s[%d] installed=%d calls=%llu", st.name.c_str(), st.post ? "post" : "pre", st.bucket, st.installed,
