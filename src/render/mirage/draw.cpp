@@ -327,6 +327,7 @@ void RemoveDrawCallback(int handle) {
 
 Stats GetStats() {
     Stats s = g_stats;
+    if (render::GetTiming().frames > g_statsFrame + 1) s.primitives = s.vertices = 0;
     for (int i = 0; i < kNumStages; ++i) s.callbacks += static_cast<uint32_t>(g_stage[i].callbacks.size());
     return s;
 }
