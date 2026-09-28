@@ -10,6 +10,7 @@
 namespace melange::mirage::drawfont {
 namespace {
 constexpr float kSizes[3] = {13.f, 16.f, 24.f};
+constexpr ImWchar kFirstChar = 0x20, kLastChar = 0xFF;
 
 struct State {
     ImFontAtlas* atlas = nullptr;
@@ -33,7 +34,7 @@ int NearestSizeIndex(float sizePx) {
     return best;
 }
 
-// BMP only (16-bit ImWchar); malformed input yields U+FFFD and always consumes at least one byte.
+// Malformed input yields U+FFFD and always consumes at least one byte.
 int DecodeUtf8(const char* s, uint32_t* out) {
     const unsigned char c0 = static_cast<unsigned char>(s[0]);
     if (c0 < 0x80) {
@@ -69,9 +70,13 @@ bool Init() {
     cfg.FontDataOwnedByAtlas = true;
     snprintf(cfg.Name, sizeof cfg.Name, "MirageDraw");
     g_state.font = g_state.atlas->AddFontDefaultBitmap(&cfg);
-    if (!g_state.font) return false;
-    for (int i = 0; i < 3; ++i) g_state.baked[i] = g_state.font->GetFontBaked(kSizes[i]);
-    if (!g_state.baked[0] || !g_state.baked[1] || !g_state.baked[2] || !g_state.atlas->Build()) return false;
+    if (!g_state.font || !g_state.atlas->Build()) return false;
+    // ImGui 1.92 bakes glyphs on first lookup, so every glyph Layout can use is loaded before the one upload.
+    for (int i = 0; i < 3; ++i) {
+        g_state.baked[i] = g_state.font->GetFontBaked(kSizes[i]);
+        if (!g_state.baked[i]) return false;
+        for (ImWchar c = kFirstChar; c <= kLastChar; ++c) g_state.baked[i]->FindGlyph(c);
+    }
 
     unsigned char* pixels = nullptr;
     int w = 0, h = 0;
@@ -110,6 +115,8 @@ Extent Layout(const char* utf8, float sizePx, float originX, float originY, std:
             originY += baked->Size * scale;
             continue;
         }
+        if (cp < kFirstChar) continue;
+        if (cp > kLastChar) cp = '?';
         const ImFontGlyph* g = baked->FindGlyph(static_cast<ImWchar>(cp));
         if (!g) continue;
         if (g->Visible) {
