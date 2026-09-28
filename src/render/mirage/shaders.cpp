@@ -23,6 +23,7 @@
 #include "render/mirage/engine.h"
 #include "render/mirage/modfs.h"
 #include "render/mirage/shaders_internal.h"
+#include "render/mirage/stages.h"
 
 namespace melange::mirage::shaders {
 namespace src = shadersrc;
@@ -545,6 +546,7 @@ public:
     int Order() const override { return 43; }
 
     bool Install() override {
+        if (!melange::mirage::stages::CoreEnabled(Name())) return false;
         g_cfg.fixFxaa = Bool("FixFxaa", true);
         g_cfg.glsl = Bool("GlslReplace", true);
         g_cfg.glslProfile = Bool("GlslProfile", false);

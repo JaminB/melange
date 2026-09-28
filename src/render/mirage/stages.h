@@ -16,6 +16,9 @@ bool Configure(const std::string& overrides);  // "World=pre50,Hud=post163"; fal
 void Enable();
 void OnFrame();  // main thread: installs wanted slots, re-asserts installed ones, restores emptied ones
 
+// Components skip installing when the Mirage module is switched off in the ini.
+bool CoreEnabled(const char* who);
+
 struct Stats { uint64_t reasserts, mainPasses, otherPasses, faults, removed; };
 Stats GetStats();
 // Our scene-func objects, for the audit.

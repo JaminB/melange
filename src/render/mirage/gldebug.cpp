@@ -20,6 +20,7 @@
 #include "melange/testcmd.h"
 #include "render/mirage/gldebug_logic.h"
 #include "render/mirage/hub.h"
+#include "render/mirage/stages.h"
 
 namespace melange::gldebug {
 namespace {
@@ -250,6 +251,7 @@ public:
     int Order() const override { return 42; }
 
     bool Install() override {
+        if (!melange::mirage::stages::CoreEnabled(Name())) return false;
         g_synchronous = Bool("Synchronous", true);
         g_minSeverity = ParseSeverity(String("MinSeverity", "low"));
 

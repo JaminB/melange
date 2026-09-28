@@ -10,6 +10,7 @@
 #include <mutex>
 #include <vector>
 
+#include "core/config.h"
 #include "core/events.h"
 #include "core/log.h"
 #include "core/mem.h"
@@ -250,6 +251,12 @@ bool Configure(const std::string& overrides) {
 }
 
 void Enable() { g_enabled = true; }
+
+bool CoreEnabled(const char* who) {
+    if (config::GetBool("Mirage", "Enabled", true)) return true;
+    LOG_INFO("[mirage] %s off: [Mirage] Enabled=0", who);
+    return false;
+}
 
 void OnFrame() {
     if (!g_enabled || !engine::Sort() || engine::BucketCount() == 0) return;

@@ -17,6 +17,7 @@
 #include "render/mirage/engine.h"
 #include "render/mirage/modfs.h"
 #include "render/mirage/postfx_internal.h"
+#include "render/mirage/stages.h"
 #include "melange/gldebug.h"
 #include "melange/jlog.h"
 #include "melange/overlay.h"
@@ -481,6 +482,7 @@ public:
     int Order() const override { return 44; }
 
     bool Install() override {
+        if (!melange::mirage::stages::CoreEnabled(Name())) return false;
         melange::config::EnsureKey(kSection, "ToggleKey", "Ctrl+Shift+F8");
         melange::config::EnsureKey(kSection, "Stack", "");
         std::string toggle = melange::config::GetString(kSection, "ToggleKey", "Ctrl+Shift+F8");

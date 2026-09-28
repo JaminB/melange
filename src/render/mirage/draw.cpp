@@ -18,6 +18,7 @@
 #include "melange/testcmd.h"
 #include "render/mirage/draw_gl.h"
 #include "render/mirage/draw_queue.h"
+#include "render/mirage/stages.h"
 
 namespace {
 class MirageDraw final : public melange::Module {
@@ -339,6 +340,7 @@ bool VerbStats(std::string_view, void*) {
 }
 
 bool MirageDraw::Install() {
+    if (!melange::mirage::stages::CoreEnabled(Name())) return false;
     melange::testcmd::Register("draw.stats", &VerbStats);
     return true;
 }

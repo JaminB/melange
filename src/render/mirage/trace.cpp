@@ -27,6 +27,7 @@
 #include "melange/testcmd.h"
 #include "render/mirage/compat.h"
 #include "render/mirage/hub.h"
+#include "render/mirage/stages.h"
 #include "render/mirage/trace_internal.h"
 
 namespace melange::mirage::trace {
@@ -349,6 +350,7 @@ public:
     int Order() const override { return 41; }
 
     bool Install() override {
+        if (!melange::mirage::stages::CoreEnabled(Name())) return false;
         std::string modeText = String("Mode", "count");
         gltrace::Mode mode = gltrace::Mode::Count;
         if (!ParseMode(modeText, &mode)) LOG_WARN("[mirage] [MirageTrace] Mode=%s unknown; using count", modeText.c_str());
