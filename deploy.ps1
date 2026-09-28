@@ -13,6 +13,21 @@ if ((Test-Path $d8) -and ((Get-FileHash $d8).Hash -ne (Get-FileHash "$dist\dinpu
     if (-not (Test-Path $bak)) { Copy-Item $d8 $bak; Write-Host "Backed up existing dinput8.dll -> $bak" }
 }
 Copy-Item "$dist\dinput8.dll" $GameDir -Force
+
+if (Test-Path "$GameDir\WUMFix.asi") {
+    Copy-Item "$GameDir\WUMFix.asi" "$GameDir\WUMFix.asi.old" -Force
+    Remove-Item "$GameDir\WUMFix.asi" -Force
+    Write-Host "Removed stale WUMFix.asi (backed up to WUMFix.asi.old)"
+}
+if (Test-Path "$GameDir\WUMFix.pdb") {
+    Copy-Item "$GameDir\WUMFix.pdb" "$GameDir\WUMFix.pdb.old" -Force
+    Remove-Item "$GameDir\WUMFix.pdb" -Force
+}
+if ((Test-Path "$GameDir\WUMFix.ini") -and -not (Test-Path "$GameDir\Melange.ini")) {
+    Copy-Item "$GameDir\WUMFix.ini" "$GameDir\Melange.ini"
+    Write-Host "Migrated WUMFix.ini -> Melange.ini"
+}
+
 Copy-Item "$dist\melange.asi" $GameDir -Force
 if (Test-Path "$dist\Melange.pdb") { Copy-Item "$dist\Melange.pdb" $GameDir -Force }
 if (-not (Test-Path "$GameDir\Melange.ini")) { Copy-Item "$dist\Melange.ini" $GameDir }
