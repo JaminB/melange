@@ -310,6 +310,14 @@ void RegisterModMessagesOnce() {
     }
     sim::FreezeModMessages();
     LOG_INFO("[thumper] mod message registration done: %d name(s) registered", registered);
+    if (registered) {
+        std::vector<ChangeSub> subs;
+        {
+            std::lock_guard lk(g_mx);
+            subs = g_onChange;
+        }
+        for (const ChangeSub& s : subs) s.fn(s.user);
+    }
 }
 
 void OnFrame() {
