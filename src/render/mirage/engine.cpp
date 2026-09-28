@@ -145,6 +145,14 @@ bool FxaaOn() {
     return o && Rd8(o + 0x74) != 0;
 }
 
+// Composite reads the flag every frame and picks CopyFxaa at 1x1 SSAA; other SSAA factors resize the targets.
+bool SetFxaa(bool on) {
+    uintptr_t o = Check() ? Rd(kAppOptionsPtr) : 0;
+    if (!o || Rd(o + 0x6c) != 1 || Rd(o + 0x70) != 1) return false;
+    *reinterpret_cast<volatile uint8_t*>(o + 0x74) = on ? 1 : 0;
+    return true;
+}
+
 bool MsaaOn() {
     uintptr_t pp = PostProcess();
     return pp && Rd8(pp + 0x7a) != 0;

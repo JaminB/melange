@@ -20,5 +20,6 @@ bool MarkReload(uintptr_t cgprog);   // +0x44 = 1, +0x45 = 0
 uintptr_t CgContext();               // *(mgr+0x14)
 int CgProfile(int type);             // mgr+0x18 / +0x1c
 bool FxaaOn();                       // *(0x95a100)+0x74
+bool SetFxaa(bool on);               // writes it; refused unless SSAA is 1x1 (+0x6c/+0x70)
 bool MsaaOn();                       // pp+0x7a
 }

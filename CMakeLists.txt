@@ -96,3 +96,12 @@ target_include_directories(jlog_selftest PRIVATE src src/sdk ${CMAKE_BINARY_DIR}
 target_compile_definitions(jlog_selftest PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX _CRT_SECURE_NO_WARNINGS)
 target_compile_options(jlog_selftest PRIVATE /W4 /utf-8 /permissive- /wd4100)
 target_link_libraries(jlog_selftest PRIVATE bcrypt psapi shell32 ole32)
+
+add_executable(shaders_selftest
+    tests/shaders_selftest.cpp
+    src/render/mirage/shaders_source.cpp
+    src/render/mirage/shaders_fixes.cpp)
+target_include_directories(shaders_selftest PRIVATE src)
+target_compile_definitions(shaders_selftest PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX _CRT_SECURE_NO_WARNINGS
+    MELANGE_SOURCE_DIR="${CMAKE_SOURCE_DIR}")
+target_compile_options(shaders_selftest PRIVATE /W4 /utf-8 /permissive- /wd4100)

@@ -46,7 +46,8 @@ Every module has its own section in `Melange.ini`, and `Enabled=0` turns a modul
 | `WindowTag` | on | Shows the Melange version in the window title |
 | `FrameInterval` | off | Sets the engine frame interval (`IntervalMs=16` is about 60 fps) |
 | `Mirage` | on | Graphics layer core: renderer access, scene stages for mods, mod folders |
-| `MirageTrace`, `MirageShaders`, `MiragePostFX`, `MirageDraw` | on | Graphics layer components (in development: they do nothing yet) |
+| `MirageShaders` | on | Shader mods: replacements, patches, live reload, sliders; fixes the game's FXAA on AMD and Intel (`FixFxaa`) |
+| `MirageTrace`, `MiragePostFX`, `MirageDraw` | on | Graphics layer components (in development: they do nothing yet) |
 | `MirageDebug` | off | Optional OpenGL debug context (in development) |
 
 ## Logs and bug reports
@@ -123,6 +124,29 @@ Mirage lets modules and mods draw inside the game's own frame. `melange/render.h
 Callbacks run in the main render pass only, with the game's framebuffer bound. Wrap your GL work in `render::PushState()` / `PopState()`. With no callbacks registered, Mirage patches nothing and every frame is identical to the game without it.
 
 Mods live in `<game>\Mods\<id>\`. When two mods provide the same file, the later folder name wins. `[Mirage] DisabledMods=a,b` switches mods off, and `ModsDir` moves the folder.
+
+### Shader mods
+
+The game's shaders are the Cg files in `<game>\CG\`. A mod changes them from its `shaders\` folder, without shipping the game's files:
+
+- `shaders\<file>` replaces a whole file, such as `Landscape.cg`, or a file it includes, such as `Fxaa3_9.h`.
+- `shaders\<file>.patch` edits the game's file with find/replace blocks. Each `find` block must match exactly once; otherwise the patch is skipped and the error is logged. An optional first line `@@ entry <pattern>` limits the patch to some programs (`*` and `?` wildcards).
+
+  ```
+  @@ entry *FragmentMain
+  @@ find
+  	const float specularPower = 20.0f;
+  @@ replace
+  	const float specularPower = 40.0f;
+  @@ end
+  ```
+- `shaders\params.ini` turns uniforms into sliders in the overlay's *Mirage/Shaders* panel. A section names the file and the programs, `[Landscape.cg:*FragmentMain]`, and each line is `name=type,default,min,max,label` with the type `float`, `vec2`, `vec3`, `vec4` or `color`. Modules set the same values with `melange::shaders::SetParam`, and add folders of shader files with `AddOverrideRoot`.
+
+Saving a file reloads the shaders that use it while the game runs. The new source is compiled first: if it has errors, the game keeps the running shader, and the errors go to the log and the panel.
+
+`[MirageShaders] FixFxaa=1` (the default) fixes the game's own FXAA pass (the `/FXAA` launch option), which does not compile on AMD and Intel GPUs. The panel also switches FXAA on and off while the game runs.
+
+`Mods\mirage-samples\shaders\` is a sample: it adds tunables to the landscape lighting and softens the shadow edges. Experimental: a file `shaders\<File>.<Entry>.glsl` replaces one program with GLSL, keeping the Cg parameter names (`GlslReplace=1`, read at start). `Mods\mirage-samples\extras\` has a GLSL version of the landscape pixel shader.
 
 ## Building from source
 
