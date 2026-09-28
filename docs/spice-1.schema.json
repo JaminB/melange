@@ -1,0 +1,139 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://melange.dev/schema/spice-1.json",
+  "title": "Spice manifest",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["spiceVersion", "id", "version", "name", "melange", "kind", "entry"],
+  "properties": {
+    "spiceVersion": {
+      "const": 1,
+      "description": "Manifest schema version. Thumper refuses a manifest with a spiceVersion it doesn't know, rather than guessing."
+    },
+    "id": {
+      "type": "string",
+      "pattern": "^[a-z0-9](?:[a-z0-9_-]{0,62}[a-z0-9])?$",
+      "description": "Globally unique, lowercase, stable forever. Must equal the Mods/<id>/ folder name."
+    },
+    "version": {
+      "type": "string",
+      "pattern": "^\\d+\\.\\d+\\.\\d+(-[0-9A-Za-z.-]+)?(\\+[0-9A-Za-z.-]+)?$",
+      "description": "Semver of this mod."
+    },
+    "name": { "type": "string", "minLength": 1, "maxLength": 80, "description": "Display name." },
+    "authors": { "type": "array", "items": { "type": "string", "minLength": 1, "maxLength": 80 }, "default": [] },
+    "description": { "type": "string", "maxLength": 400, "default": "" },
+    "website": { "type": "string", "format": "uri", "default": "" },
+
+    "melange": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["range"],
+      "properties": {
+        "range": { "type": "string", "description": "npm/Cargo-style semver range, e.g. '>=0.2.0 <0.3.0'." }
+      }
+    },
+
+    "kind": {
+      "type": "string",
+      "enum": ["client-only", "content"],
+      "description": "client-only: never affects simulated state, the wire format, or Data/Tweak/*; no online handshake needed. content: does at least one of those; every peer in an online match must have a matching content hash."
+    },
+
+    "dependencies": { "type": "array", "items": { "$ref": "#/$defs/depString" }, "default": [] },
+    "optional": { "type": "array", "items": { "$ref": "#/$defs/depString" }, "default": [] },
+    "conflicts": { "type": "array", "items": { "$ref": "#/$defs/depString" }, "default": [] },
+    "loadAfter": { "type": "array", "items": { "type": "string" }, "default": [] },
+
+    "permissions": {
+      "type": "object",
+      "additionalProperties": false,
+      "default": {},
+      "properties": {
+        "unsafe": {
+          "type": "boolean", "default": false,
+          "description": "Deep Desert: raw memory read/write and calling game functions from wum.unsafe.*, client VM only. Shown to the user on enable."
+        },
+        "filesystem": {
+          "type": "string", "enum": ["none", "own-folder", "own-folder-write"], "default": "none"
+        },
+        "network": {
+          "type": "boolean", "default": false,
+          "description": "Reserved for a later milestone (Oasis). Accepted and ignored, with a warning, by this build's Thumper."
+        }
+      }
+    },
+
+    "entry": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "client": { "type": "string", "description": "Path, relative to the mod folder, loaded into the always-on Sandbox VM." },
+        "sim": { "type": "string", "description": "Path registered into the match VM at match start. Requires kind: \"content\"." }
+      }
+    },
+
+    "assets": {
+      "type": "object",
+      "additionalProperties": false,
+      "default": {},
+      "properties": {
+        "root": { "type": "string", "default": "assets" },
+        "shaders": { "type": "string", "default": "shaders" },
+        "effects": { "type": "string", "default": "effects" }
+      }
+    },
+
+    "contentHash": {
+      "type": "object",
+      "additionalProperties": false,
+      "default": {},
+      "properties": {
+        "include": {
+          "type": "array", "items": { "type": "string" },
+          "default": ["entry.sim", "assets/**", "*.spice.json"],
+          "description": "Glob list of files that feed the online content hash. Never computed for a client-only mod."
+        }
+      }
+    },
+
+    "messages": {
+      "type": "array",
+      "maxItems": 16,
+      "items": { "type": "string", "pattern": "^[A-Z][A-Za-z0-9]*(\\.[A-Za-z0-9_]+){1,5}$" },
+      "description": "Engine message names this mod registers (content mods only). Checked against the live vanilla registry at start-up, not against a fixed list here; a name that collides is skipped and logged."
+    },
+
+    "settings": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["key", "type"],
+        "properties": {
+          "key": { "type": "string", "minLength": 1 },
+          "type": { "type": "string", "enum": ["bool", "int", "float", "string", "enum"] },
+          "default": {},
+          "min": { "type": "number" },
+          "max": { "type": "number" },
+          "options": { "type": "array", "items": { "type": "string" } },
+          "label": { "type": "string" }
+        }
+      },
+      "default": [],
+      "description": "Drives wum.config and the Mods page's per-mod settings widgets."
+    },
+
+    "defaultEnabled": {
+      "type": "boolean", "default": true,
+      "description": "Honoured only the first time Thumper sees this mod id. Shipped samples set this to false."
+    }
+  },
+  "$defs": {
+    "depString": {
+      "type": "string",
+      "pattern": "^[a-z0-9](?:[a-z0-9_-]{0,62}[a-z0-9])?(\\s*(=|>=|<=|>|<|\\^|~)\\s*\\d+\\.\\d+\\.\\d+)?$",
+      "description": "A mod id, optionally followed by a semver comparator, e.g. 'thumper-extras >= 1.2.0'."
+    }
+  }
+}

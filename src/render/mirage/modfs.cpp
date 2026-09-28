@@ -2,23 +2,24 @@
 
 #include <windows.h>
 
-#include <algorithm>
-#include <atomic>
 #include <map>
-#include <memory>
 #include <mutex>
 #include <string>
 #include <vector>
 
 #include "core/game.h"
 #include "core/log.h"
+#include "melange/mods.h"
+#include "mods/thumper_internal.h"
 
+// Reimplemented for M2: an "enabled root" used to mean "every subfolder of Mods\ not named in
+// [Mirage] DisabledMods" (M1). It now means "every mod Thumper's spice.json resolution says is active
+// this session" (melange::thumper::ActiveRoots()) - Roots()/Resolve()/Watch() keep their exact M1
+// signatures, so no caller (Mirage's shaders/postfx, B, C, D) needs to change. `disabled` from
+// Configure() is no longer used for filtering: Thumper migrates it into thumper-state.json once, at
+// Thumper's own Install() (src/mods/thumper.cpp), before this file's Configure() is even called.
 namespace melange::mirage::modfs {
 namespace {
-struct Entry {
-    std::string id;
-    std::wstring dir;
-};
 struct Watcher {
     int handle;
     std::wstring subdir;
@@ -26,62 +27,48 @@ struct Watcher {
     void* user;
 };
 
-constexpr size_t kMaxGenerations = 8;
-
 std::mutex g_mx;
 std::wstring g_modsDir;
-std::vector<std::string> g_disabled;
-// Old generations stay alive so pointers handed out by Roots() never dangle; every caller (Scan()/Watch() users)
-// copies id/dir out immediately rather than holding them across a rescan, so trimming to a handful is safe.
-std::vector<std::unique_ptr<std::vector<Entry>>> g_generations;
-std::vector<Entry> g_emptyRoots;
-std::vector<Entry>* g_roots = &g_emptyRoots;
-bool g_scanned = false;
-bool g_configured = false;  // Configure() was called with a non-empty mods dir
-std::atomic<bool> g_dirty{false};
+bool g_configured = false;
 std::vector<Watcher> g_watchers;
-std::map<std::wstring, uint64_t> g_pending;  // path -> tick of the last change
+std::map<std::wstring, uint64_t> g_pending;
 int g_nextHandle = 1;
 bool g_threadStarted = false;
+bool g_onChangeRegistered = false;
 
-std::string Lower(std::string s) {
-    for (char& c : s) c = static_cast<char>(tolower(static_cast<unsigned char>(c)));
-    return s;
-}
+// Copies of Thumper's active-root strings, refreshed only when melange::mods::OnChange fires - so a
+// Root pointer handed out by Roots()/Resolve() stays valid exactly as long as the header promises.
+struct RootStorage {
+    std::vector<std::string> ids;
+    std::vector<std::wstring> dirs;
+};
+RootStorage g_roots;
 
-bool IsDisabled(const std::string& id) {
-    std::string l = Lower(id);
-    return std::find(g_disabled.begin(), g_disabled.end(), l) != g_disabled.end();
-}
-
-void ScanLocked() {
-    auto list = std::make_unique<std::vector<Entry>>();
-    WIN32_FIND_DATAW fd;
-    HANDLE h = FindFirstFileW((g_modsDir + L"\\*").c_str(), &fd);
-    if (h != INVALID_HANDLE_VALUE) {
-        do {
-            if (!(fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) || fd.cFileName[0] == L'.') continue;
-            std::string id = game::Narrow(fd.cFileName);
-            if (IsDisabled(id)) continue;
-            list->push_back({id, g_modsDir + L"\\" + fd.cFileName});
-        } while (FindNextFileW(h, &fd));
-        FindClose(h);
+void RefreshRootsLocked() {
+    std::vector<melange::thumper::SessionRoot> active = melange::thumper::ActiveRoots();
+    RootStorage next;
+    next.ids.reserve(active.size());
+    next.dirs.reserve(active.size());
+    for (melange::thumper::SessionRoot& r : active) {
+        next.ids.push_back(std::move(r.id));
+        next.dirs.push_back(std::move(r.dir));
     }
-    std::sort(list->begin(), list->end(), [](const Entry& a, const Entry& b) { return _stricmp(a.id.c_str(), b.id.c_str()) < 0; });
-    g_roots = list.get();
-    g_generations.push_back(std::move(list));
-    if (g_generations.size() > kMaxGenerations) g_generations.erase(g_generations.begin(), g_generations.end() - kMaxGenerations);
-    g_scanned = true;
+    g_roots = std::move(next);
 }
 
-void EnsureScanned() {
-    // Without a real mods dir, FindFirstFileW(L"\\*") would list the current drive's root as if every top-level
-    // folder (Windows, Program Files, ...) were a mod.
-    if (!g_configured) return;
-    if (!g_scanned || g_dirty.exchange(false)) ScanLocked();
+void OnModsChanged(void*) {
+    std::lock_guard lk(g_mx);
+    RefreshRootsLocked();
 }
 
-// "<id>\<subdir>\..." relative to the mods folder
+void EnsureOnChangeRegistered() {
+    if (g_onChangeRegistered) return;
+    g_onChangeRegistered = true;
+    melange::mods::OnChange(&OnModsChanged, nullptr);
+    RefreshRootsLocked();  // Thumper (Order 36) already resolved once before Mirage (Order 40) gets here.
+}
+
+// "<id>\<subdir>\..." relative to the mods folder.
 bool SplitRel(const std::wstring& rel, std::wstring* id, std::wstring* sub) {
     size_t a = rel.find(L'\\');
     if (a == std::wstring::npos) return false;
@@ -90,6 +77,13 @@ bool SplitRel(const std::wstring& rel, std::wstring* id, std::wstring* sub) {
     *id = rel.substr(0, a);
     *sub = rel.substr(a + 1, b - a - 1);
     return true;
+}
+
+bool IsManifestChange(const std::wstring& rel) {
+    size_t a = rel.find(L'\\');
+    if (a == std::wstring::npos) return false;
+    std::wstring rest = rel.substr(a + 1);
+    return rest.find(L'\\') == std::wstring::npos && _wcsicmp(rest.c_str(), L"spice.json") == 0;
 }
 
 DWORD WINAPI WatchThread(void*) {
@@ -110,25 +104,29 @@ DWORD WINAPI WatchThread(void*) {
             Sleep(2000);
             continue;
         }
-        g_dirty = true;
         DWORD got = 0;
         while (ReadDirectoryChangesW(h, buf, sizeof(buf), TRUE,
                                      FILE_NOTIFY_CHANGE_FILE_NAME | FILE_NOTIFY_CHANGE_DIR_NAME |
                                          FILE_NOTIFY_CHANGE_LAST_WRITE | FILE_NOTIFY_CHANGE_SIZE,
                                      &got, nullptr, nullptr)) {
             uint64_t now = GetTickCount64();
-            std::lock_guard lk(g_mx);
-            if (got == 0) {  // overflow: rescan, nothing precise to report
-                g_dirty = true;
-                continue;
+            bool rescan = got == 0;  // overflow: safest is a full rescan
+            std::vector<std::pair<std::wstring, uint64_t>> pend;
+            if (got != 0) {
+                auto* r = reinterpret_cast<FILE_NOTIFY_INFORMATION*>(buf);
+                for (;;) {
+                    std::wstring rel(r->FileName, r->FileNameLength / sizeof(wchar_t));
+                    if (rel.find(L'\\') == std::wstring::npos || IsManifestChange(rel)) rescan = true;
+                    else pend.emplace_back(dir + L"\\" + rel, now);
+                    if (!r->NextEntryOffset) break;
+                    r = reinterpret_cast<FILE_NOTIFY_INFORMATION*>(reinterpret_cast<uint8_t*>(r) + r->NextEntryOffset);
+                }
             }
-            for (auto* r = reinterpret_cast<FILE_NOTIFY_INFORMATION*>(buf);;
-                 r = reinterpret_cast<FILE_NOTIFY_INFORMATION*>(reinterpret_cast<uint8_t*>(r) + r->NextEntryOffset)) {
-                std::wstring rel(r->FileName, r->FileNameLength / sizeof(wchar_t));
-                if (rel.find(L'\\') == std::wstring::npos) g_dirty = true;
-                else g_pending[dir + L"\\" + rel] = now;
-                if (!r->NextEntryOffset) break;
+            {
+                std::lock_guard lk(g_mx);
+                for (auto& p : pend) g_pending[p.first] = p.second;
             }
+            if (rescan) melange::thumper::Rescan();  // fires mods::OnChange, which refreshes g_roots
         }
         CloseHandle(h);
         Sleep(500);
@@ -136,47 +134,42 @@ DWORD WINAPI WatchThread(void*) {
 }
 }  // namespace
 
-void Configure(const std::wstring& modsDir, const std::string& disabled) {
+void Configure(const std::wstring& modsDir, const std::string& /*disabled*/) {
     std::lock_guard lk(g_mx);
     g_modsDir = modsDir;
     while (!g_modsDir.empty() && (g_modsDir.back() == L'\\' || g_modsDir.back() == L'/')) g_modsDir.pop_back();
     g_configured = !g_modsDir.empty();
-    g_disabled.clear();
-    size_t p = 0;
-    while (p <= disabled.size()) {
-        size_t q = disabled.find(',', p);
-        if (q == std::string::npos) q = disabled.size();
-        std::string s = disabled.substr(p, q - p);
-        s.erase(0, s.find_first_not_of(" \t"));
-        s.erase(s.find_last_not_of(" \t") + 1);
-        if (!s.empty()) g_disabled.push_back(Lower(s));
-        p = q + 1;
+    EnsureOnChangeRegistered();
+    // The watcher drives melange::thumper::Rescan() on any Mods\ change (folder add/remove, spice.json
+    // edit), so it must run even if nothing ever calls Watch() for a shaders/effects subfolder.
+    if (!g_threadStarted) {
+        g_threadStarted = true;
+        if (HANDLE t = CreateThread(nullptr, 0, &WatchThread, nullptr, 0, nullptr)) CloseHandle(t);
     }
-    g_scanned = false;
 }
 
 int Roots(Root* out, int max) {
     std::lock_guard lk(g_mx);
-    EnsureScanned();
+    EnsureOnChangeRegistered();
     int n = 0;
-    for (const Entry& e : *g_roots) {
+    for (size_t i = 0; i < g_roots.ids.size(); ++i) {
         if (n >= max) break;
-        if (out) out[n] = {e.id.c_str(), e.dir.c_str()};
+        if (out) out[n] = {g_roots.ids[i].c_str(), g_roots.dirs[i].c_str()};
         ++n;
     }
-    return out ? n : static_cast<int>(g_roots->size());
+    return out ? n : static_cast<int>(g_roots.ids.size());
 }
 
 std::wstring Resolve(const wchar_t* relPath, const char** owner) {
     if (owner) *owner = "";
     if (!relPath) return {};
     std::lock_guard lk(g_mx);
-    EnsureScanned();
-    for (auto it = g_roots->rbegin(); it != g_roots->rend(); ++it) {
-        std::wstring p = it->dir + L"\\" + relPath;
+    EnsureOnChangeRegistered();
+    for (size_t i = g_roots.ids.size(); i-- > 0;) {
+        std::wstring p = g_roots.dirs[i] + L"\\" + relPath;
         DWORD a = GetFileAttributesW(p.c_str());
         if (a != INVALID_FILE_ATTRIBUTES && !(a & FILE_ATTRIBUTE_DIRECTORY)) {
-            if (owner) *owner = it->id.c_str();
+            if (owner) *owner = g_roots.ids[i].c_str();
             return p;
         }
     }
@@ -205,7 +198,6 @@ void OnFrame() {
     std::vector<Call> calls;
     {
         std::lock_guard lk(g_mx);
-        if (g_scanned && g_dirty.exchange(false)) ScanLocked();
         if (g_pending.empty()) return;
         uint64_t now = GetTickCount64();
         size_t base = g_modsDir.size() + 1;
@@ -215,7 +207,7 @@ void OnFrame() {
                 continue;
             }
             std::wstring id, sub;
-            if (it->first.size() > base && SplitRel(it->first.substr(base), &id, &sub) && !IsDisabled(game::Narrow(id)))
+            if (it->first.size() > base && SplitRel(it->first.substr(base), &id, &sub))
                 for (const Watcher& w : g_watchers)
                     if (_wcsicmp(w.subdir.c_str(), sub.c_str()) == 0) calls.push_back({w.fn, w.user, it->first});
             it = g_pending.erase(it);

@@ -1,0 +1,13 @@
+{
+  "spiceVersion": 1,
+  "id": "sim-sampler",
+  "version": "1.0.0",
+  "name": "Sim Sampler",
+  "authors": ["Melange"],
+  "description": "Sample content mod: an entry.sim that ticks, sends its own registered message, and a client-side HUD readout of the pings.",
+  "melange": { "range": ">=0.2.0 <0.3.0" },
+  "kind": "content",
+  "entry": { "client": "client/panel.lua", "sim": "sim/entry.lua" },
+  "messages": ["Melange.Sample.Ping"],
+  "defaultEnabled": false
+}

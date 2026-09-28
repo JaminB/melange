@@ -98,6 +98,15 @@ add_executable(lua54_selftest tests/lua54_selftest.cpp)
 target_compile_options(lua54_selftest PRIVATE /W4 /utf-8 /permissive- /EHsc)
 target_link_libraries(lua54_selftest PRIVATE lua54)
 
+add_executable(thumper_selftest
+    tests/thumper_selftest.cpp
+    src/mods/spice.cpp
+    src/tools/json_read.cpp
+    src/core/log.cpp)
+target_include_directories(thumper_selftest PRIVATE src src/sdk)
+target_compile_definitions(thumper_selftest PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX _CRT_SECURE_NO_WARNINGS)
+target_compile_options(thumper_selftest PRIVATE /W4 /utf-8 /permissive-)
+
 # Offline self-tests (no game needed).
 add_executable(bus_selftest EXCLUDE_FROM_ALL
     tests/bus_selftest.cpp

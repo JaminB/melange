@@ -118,7 +118,7 @@ The public SDK headers are in `src/sdk/melange/`:
 | `melange/shaders.h` | List the game's shader programs, reload them, set their parameters, add shader folders |
 | `melange/draw.h` | Draw lines, boxes, spheres, meshes and text in the world, and shapes, text and images on the HUD |
 | `melange/gldebug.h` | Whether the debug context is on, its message counts, and debug groups and labels for your GL work |
-| `melange/mods.h` | The mod list, load order and enable state, and the content identity used in online lobbies (interface only for now) |
+| `melange/mods.h` | The mod list, load order and enable state (Thumper); the content identity used in online lobbies is interface only for now |
 | `melange/lua.h` | Extend the Lua 5.4 client VM from C++ (interface only for now) |
 | `melange/sim.h` | The simulation side: match tick, deterministic random numbers, sends from sim mods (interface only for now) |
 
@@ -239,6 +239,43 @@ The `mirage-samples` mod in `dist\Mods\` has five example effects, all switched 
 | `tonemap` | PostWorld | A filmic curve plus exposure, contrast, saturation and a colour-grading LUT (`lut.png`) |
 
 The SMAA and CAS folders carry their licence files.
+
+## Mods (Thumper)
+
+Thumper discovers mods under `<game>\Mods\<id>\`. A folder with a `spice.json` manifest is a Spice mod
+(schema in [docs/spice.md](docs/spice.md), machine-readable as [docs/spice-1.schema.json](docs/spice-1.schema.json));
+a folder without one still loads, unchanged, as a client-only mod named after its folder — every M1-era
+`Mods\` folder (shaders, post-FX) keeps working with no changes.
+
+```json
+{
+  "spiceVersion": 1, "id": "hello-spice", "version": "1.0.0", "name": "Hello Spice",
+  "melange": { "range": ">=0.2.0 <0.3.0" }, "kind": "client-only",
+  "entry": { "client": "client/init.lua" }
+}
+```
+
+- **`kind`** is `client-only` (never touches the simulation or the wire) or `content` (adds simulation
+  behaviour or engine message names; must match on every peer in an online match).
+- **Dependencies, conflicts and load order** come from `dependencies`, `optional`, `conflicts` and
+  `loadAfter`, each a mod id with an optional semver range (`weapon-toolkit >=2.0.0 <3.0.0`). A missing
+  or version-mismatched dependency blocks the mod and names the fix; a dependency on a blocked mod is
+  blocked too ("blocked because X is blocked"); a cycle blocks every mod in it with one shared reason.
+  Ties between mods with no ordering edge between them are broken by id, ascending — the same input
+  always resolves to the same order.
+- **`permissions.unsafe: true`** asks for Deep Desert: raw memory read/write and calling game functions
+  from `wum.unsafe` (client VM only). Enabling such a mod opens a consent modal; declining still loads
+  the mod, just with `wum.unsafe` raising instead of working. A small "Deep Desert active" marker stays
+  on screen, even with the overlay hidden, while any granted unsafe mod is enabled.
+- **Client-only mods toggle live.** A content mod's message names are registered once per launch and
+  never unregistered, so enabling or disabling one takes effect at the next launch (the Mods page shows
+  "restart required" until then).
+- Choices are saved to `Mods\thumper-state.json` (falling back to `Documents\Melange` if the game folder
+  is read-only). The overlay's *Thumper/Mods* panel lists every mod with its state and reason, and
+  *Thumper/Deep Desert* lists every grant.
+
+`dist\Mods\` includes `hello-spice` and `sim-sampler` as disabled samples (`defaultEnabled: false`); a
+newly discovered mod without that flag starts enabled.
 
 ## Building from source
 

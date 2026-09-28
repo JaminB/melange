@@ -1,0 +1,15 @@
+{
+  "spiceVersion": 1,
+  "id": "hello-spice",
+  "version": "1.0.0",
+  "name": "Hello Spice",
+  "authors": ["Melange"],
+  "description": "Sample client-only mod: events, a HUD widget, an overlay panel with a setting, and hot reload.",
+  "melange": { "range": ">=0.2.0 <0.3.0" },
+  "kind": "client-only",
+  "entry": { "client": "client/init.lua" },
+  "settings": [
+    { "key": "greeting", "type": "string", "default": "Hello, Worms!", "label": "Greeting" }
+  ],
+  "defaultEnabled": false
+}
