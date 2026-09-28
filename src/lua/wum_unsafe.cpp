@@ -125,11 +125,11 @@ bool SehCall(CallReq* r, DWORD* code) {
     }
 }
 
-void Record(jlog::Level lvl, const char* msg, const char* fn, uintptr_t addr) {
+void Record(jlog::Level lvl, const char* msg, const char* fn, uintptr_t addr, bool withAddr = false) {
     ModRec* m = Current();
     jlog::Rec r("thumper", lvl, msg);
     r.Str("mod", m ? m->id : "console").Str("fn", fn);
-    if (addr) r.Hex("addr", addr);
+    if (addr || withAddr) r.Hex("addr", addr);
     r.Emit();
 }
 
@@ -157,7 +157,7 @@ const TyName& CheckType(lua_State* L, int idx) {
 }
 
 [[noreturn]] void Fault(lua_State* L, const char* fn, uintptr_t addr) {
-    Record(jlog::Level::Error, "wum.unsafe fault", fn, addr ? addr : 1);
+    Record(jlog::Level::Error, "wum.unsafe fault", fn, addr, true);
     char msg[96];
     snprintf(msg, sizeof(msg), "wum.unsafe.%s: access violation at 0x%08x", fn, static_cast<unsigned>(addr));
     luaL_error(L, "%s", msg);
@@ -290,7 +290,7 @@ int Call(lua_State* L) {
     }
     DWORD code = 0;
     if (!SehCall(&r, &code)) {
-        Record(jlog::Level::Error, "wum.unsafe fault", "call", r.fn ? r.fn : 1);
+        Record(jlog::Level::Error, "wum.unsafe fault", "call", r.fn, true);
         char msg[96];
         snprintf(msg, sizeof(msg), "wum.unsafe.call: exception 0x%08x in the call to 0x%08x", static_cast<unsigned>(code),
                  static_cast<unsigned>(r.fn));
