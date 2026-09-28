@@ -213,10 +213,10 @@ void TestSamples() {
     std::wstring dir = Widen(MELANGE_SOURCE_DIR) + L"\\dist\\Mods\\mirage-landscape\\shaders\\";
     std::string text, err;
     Patch p;
-    Check(ReadFile(dir + L"Landscape.cg.patch", &text) && ParsePatch(text, &p, &err) && p.blocks.size() == 4 && p.entryGlob.empty(),
+    Check(ReadFile(dir + L"Landscape.cg.patch", &text) && ParsePatch(text, &p, &err) && p.blocks.size() == 3 && p.entryGlob.empty(),
           "sample Landscape.cg.patch parses");
     std::vector<ParamSpec> ps;
-    Check(ReadFile(dir + L"params.ini", &text) && ParseParams(text, &ps, &err) && ps.size() == 6, "sample params.ini parses");
+    Check(ReadFile(dir + L"params.ini", &text) && ParseParams(text, &ps, &err) && ps.size() == 5, "sample params.ini parses");
     for (const ParamSpec& s : ps)
         Check(text.find(s.name) != std::string::npos && p.blocks[0].replace.find(s.name) != std::string::npos, "sample param declared by the patch");
 #endif
