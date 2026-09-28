@@ -343,8 +343,14 @@ ContentId LocalContent() {
 int Peers(Peer* out, int max) {
     using namespace melange::handshake;
     SteamID lobby = g_lobby.load();
-    if (!lobby || max <= 0) return 0;
+    if (!lobby) return 0;
     SteamID me = MySteamId();
+    if (!out || max <= 0) {
+        int others = 0;
+        for (int i = 0, n = NumLobbyMembers(lobby); i < n; ++i)
+            if (LobbyMemberByIndex(lobby, i) != me) ++others;
+        return others;
+    }
     ContentId c;
     { std::lock_guard lk(g_mx); c = g_content; }
     std::string ourHash16 = Hash16(c);
