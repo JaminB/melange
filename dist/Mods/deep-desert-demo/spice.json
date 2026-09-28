@@ -1,0 +1,13 @@
+{
+  "spiceVersion": 1,
+  "id": "deep-desert-demo",
+  "version": "1.0.0",
+  "name": "Deep Desert demo",
+  "authors": ["Melange"],
+  "description": "Shows the Deep Desert consent flow: with permission it reads the game's build stamp and the logic RNG (read-only) through wum.unsafe.",
+  "melange": { "range": ">=0.2.0" },
+  "kind": "client-only",
+  "defaultEnabled": false,
+  "permissions": { "unsafe": true },
+  "entry": { "client": "client/init.lua" }
+}

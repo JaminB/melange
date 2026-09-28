@@ -119,7 +119,7 @@ The public SDK headers are in `src/sdk/melange/`:
 | `melange/draw.h` | Draw lines, boxes, spheres, meshes and text in the world, and shapes, text and images on the HUD |
 | `melange/gldebug.h` | Whether the debug context is on, its message counts, and debug groups and labels for your GL work |
 | `melange/mods.h` | The mod list, load order and enable state (Thumper); the content identity used in online lobbies is interface only for now |
-| `melange/lua.h` | Extend the Lua 5.4 client VM from C++ (interface only for now) |
+| `melange/lua.h` | Extend the Lua 5.4 client VM from C++: add `wum.*` namespaces, post events to mods, read Sandbox statistics |
 | `melange/sim.h` | The simulation side: match tick, deterministic random numbers, sends from sim mods (interface only for now) |
 
 ## Graphics layer (Mirage)
@@ -276,6 +276,18 @@ a folder without one still loads, unchanged, as a client-only mod named after it
 
 `dist\Mods\` includes `hello-spice` and `sim-sampler` as disabled samples (`defaultEnabled: false`); a
 newly discovered mod without that flag starts enabled.
+## Lua scripting
+
+A mod folder can carry a Lua 5.4 script for the client side, named by `entry.client` in its `spice.json`. Melange runs it in the Sandbox: each mod has its own globals, the standard library is limited (no files, no `load`, no `debug`), and a runaway script is stopped by an instruction and memory budget without stopping the game. Scripts reach the game through the `wum` table: engine and mod events, timers, settings, per-mod storage, overlay panels, world and HUD drawing, the camera, and post-FX parameters. When a script file changes, the mod reloads; if the new version fails, the old one keeps running. The full reference is [docs/lua-api.md](docs/lua-api.md).
+
+Two sample mods in `dist\Mods\` ship switched off:
+
+| Mod | What it shows |
+|---|---|
+| `hello-spice` | Events, logging, a HUD widget, a world label, an overlay panel with a setting, timers, storage and hot reload |
+| `deep-desert-demo` | The Deep Desert permission: with the player's consent it reads the game's build stamp through `wum.unsafe` |
+
+`wum.unsafe` (raw memory reads and writes, native calls) exists only for mods whose manifest asks for it, and raises an error until the player allows it.
 
 ## Building from source
 

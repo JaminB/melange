@@ -1,6 +1,63 @@
--- hello-spice (client-only sample): placeholder pending component B (Sandbox).
--- Intended shape, against the wum.* surface in docs/lua-api.md once it exists:
---   wum.events.on("GameLogic.Turn.Started", function(msg) ... end)
---   wum.ui.panel("hello-spice", "Hello Spice", function() ... a checkbox bound to wum.config ... end)
---   wum.draw.hudText(...), wum.timers.every(...), wum.storage.get/set(...)
-wum.log.info("hello-spice loaded: " .. wum.config.get("greeting", "Hello, Worms!"))
+-- hello-spice: a small tour of the client API (docs/lua-api.md). Edit this file while the game runs to see hot reload.
+local color = "#ffd166"
+local turn = 0
+local frames = wum.storage.get("frames") or 0
+
+local function describe(t)
+  local parts = {}
+  for k, v in pairs(t) do
+    if type(v) == "table" then v = "{" .. table.concat(v, ", ") .. "}" end
+    parts[#parts + 1] = k .. "=" .. tostring(v)
+  end
+  table.sort(parts)
+  return "{" .. table.concat(parts, ", ") .. "}"
+end
+
+wum.events.on("GameLogic.Turn.Started", function(payload, name)
+  turn = turn + 1
+  wum.mod.keep.turn = turn
+  wum.log.info(name, "turn", turn, describe(payload))
+end)
+
+wum.events.on("melange.match.start", function()
+  turn = 0
+end)
+
+wum.events.on("melange.frame", function()
+  frames = frames + 1
+end)
+
+wum.timers.every(1, function()
+  wum.storage.set("frames", frames)
+end)
+
+wum.draw.on("hud", function()
+  if not wum.game.inMatch() or not wum.config.get("showHud") then return end
+  wum.draw.hudRect(16, 120, 196, 164, {0, 0, 0, 0.6}, true)
+  wum.draw.hudRect(16, 120, 196, 164, color, false, 2)
+  wum.draw.hudText(28, 132, "hello-spice: turn " .. turn, color, 18)
+end)
+
+wum.draw.on("world", function()
+  local cam = wum.render.camera()
+  if not cam or not wum.game.inMatch() then return end
+  local d = 400
+  local p = {cam.pos.x + cam.fwd.x * d, cam.pos.y + cam.fwd.y * d, cam.pos.z + cam.fwd.z * d}
+  wum.draw.text(p, wum.config.get("label"), color, 20)
+end)
+
+wum.ui.panel("main", "Hello Spice", function()
+  local show, changed = wum.ui.checkbox("Show the HUD widget", wum.config.get("showHud"))
+  if changed then wum.config.set("showHud", show) end
+  wum.ui.text("Scene: " .. wum.game.scene())
+  wum.ui.text("Turn: " .. turn)
+  wum.ui.text("Frames counted (kept in wum.storage): " .. frames)
+end)
+
+wum.mod.onReload = function(prev)
+  turn = prev and prev.turn or 0
+  wum.mod.keep.turn = turn
+  wum.log.info("hello-spice reloaded at turn", turn)
+end
+
+wum.log.info("hello-spice loaded; frames so far:", frames)

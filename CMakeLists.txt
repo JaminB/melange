@@ -106,6 +106,17 @@ add_executable(thumper_selftest
 target_include_directories(thumper_selftest PRIVATE src src/sdk)
 target_compile_definitions(thumper_selftest PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX _CRT_SECURE_NO_WARNINGS)
 target_compile_options(thumper_selftest PRIVATE /W4 /utf-8 /permissive-)
+# The Sandbox without the game: Thumper, the overlay, draw, config and jlog are faked in the test.
+add_executable(sandbox_selftest
+    tests/sandbox_selftest.cpp
+    src/lua/sandbox.cpp src/lua/sandbox_limits.cpp
+    src/lua/wum_core.cpp src/lua/wum_ui.cpp src/lua/wum_render.cpp src/lua/wum_unsafe.cpp
+    src/tools/json_read.cpp)
+target_include_directories(sandbox_selftest PRIVATE src src/sdk)
+target_compile_definitions(sandbox_selftest PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX _CRT_SECURE_NO_WARNINGS
+    MELANGE_SOURCE_DIR="${CMAKE_SOURCE_DIR}")
+target_compile_options(sandbox_selftest PRIVATE /W4 /utf-8 /permissive- /EHsc /wd4100)
+target_link_libraries(sandbox_selftest PRIVATE lua54 imgui)
 
 # Offline self-tests (no game needed).
 add_executable(bus_selftest EXCLUDE_FROM_ALL

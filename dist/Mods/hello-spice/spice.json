@@ -4,12 +4,13 @@
   "version": "1.0.0",
   "name": "Hello Spice",
   "authors": ["Melange"],
-  "description": "Sample client-only mod: events, a HUD widget, an overlay panel with a setting, and hot reload.",
-  "melange": { "range": ">=0.2.0 <0.3.0" },
+  "description": "A tour of the client Lua API: events, logging, a HUD widget, a world label, an overlay panel, settings, timers and storage.",
+  "melange": { "range": ">=0.2.0" },
   "kind": "client-only",
+  "defaultEnabled": false,
   "entry": { "client": "client/init.lua" },
   "settings": [
-    { "key": "greeting", "type": "string", "default": "Hello, Worms!", "label": "Greeting" }
-  ],
-  "defaultEnabled": false
+    { "key": "showHud", "type": "bool", "default": true, "label": "Show the HUD widget" },
+    { "key": "label", "type": "string", "default": "hello, spice", "label": "World label text" }
+  ]
 }
