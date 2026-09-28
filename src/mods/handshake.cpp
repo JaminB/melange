@@ -214,7 +214,7 @@ void PublishOwnMemberData() {
     SetLobbyMemberDataRaw(lobby, "mlg", BuildMlgValue(MELANGE_VERSION, c).c_str());
     std::vector<ContentMod> ids;
     for (const thumper::Entry& m : EnabledContentMods()) ids.push_back({m.manifest.id, m.manifest.version, {}});
-    SetLobbyMemberDataRaw(lobby, "mlg.mods", BuildModsValue(ids).c_str());
+    if (!ids.empty()) SetLobbyMemberDataRaw(lobby, "mlg.mods", BuildModsValue(ids).c_str());
     jlog::Rec("handshake", jlog::Level::Info, "publish").Str("hash16", Hash16(c)).Uint("contentMods", c.contentMods).Emit();
 }
 
