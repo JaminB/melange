@@ -120,7 +120,7 @@ bool RouteLogs(const core::Request& rq, core::Response* out, void*) {
 void InstallLog() {
     ChannelOptions opt;
     opt.overflow = Overflow::DropOldest;
-    opt.maxQueueKB = 64;
+    opt.maxQueueKB = 256;
     g_ch = AddChannel("log", opt);
     if (!g_ch) return;
     OnSubscribe(g_ch, &OnSub, nullptr);

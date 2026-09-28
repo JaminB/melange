@@ -24,23 +24,24 @@ bool InScope(const jlog::Line& l) { return l.category == "net" || l.category == 
 ChannelId g_ch = 0;
 std::mutex g_mx;
 uint64_t g_lastSeq = 0;
-std::unordered_map<int, streams::LogFilter> g_filters;
+struct Sub {
+    streams::LogFilter filter;
+    uint64_t from = 0;  // records up to this seq went out as this client's backlog
+};
+std::unordered_map<int, Sub> g_subs;
 
 void OnSub(ChannelId, int client, std::string_view filterJson, bool subscribed, void*) {
     if (!subscribed) {
         std::lock_guard lk(g_mx);
-        g_filters.erase(client);
+        g_subs.erase(client);
         return;
     }
     streams::LogFilter f = streams::ParseLogFilter(filterJson);
+    std::lock_guard lk(g_mx);
     std::vector<jlog::Line> lines;
     jlog::Tail(0, lines, 1u << 20);
     const uint64_t head = lines.empty() ? 0 : lines.back().seq;
-    {
-        std::lock_guard lk(g_mx);
-        g_filters[client] = f;
-        if (head > g_lastSeq) g_lastSeq = head;
-    }
+    g_subs[client] = Sub{f, head};
     std::vector<const jlog::Line*> matched;
     for (auto it = lines.rbegin(); it != lines.rend() && matched.size() < kBacklogMax; ++it)
         if (InScope(*it) && streams::MatchesLog(f, *it)) matched.push_back(&*it);
@@ -56,8 +57,8 @@ void PollFrame() {
     g_lastSeq = lines.back().seq;
     for (const auto& l : lines) {
         if (!InScope(l)) continue;
-        for (const auto& [client, f] : g_filters)
-            if (streams::MatchesLog(f, l)) PublishTo(g_ch, client, streams::BuildLogPayload(l));
+        for (const auto& [client, s] : g_subs)
+            if (l.seq > s.from && streams::MatchesLog(s.filter, l)) PublishTo(g_ch, client, streams::BuildLogPayload(l));
     }
 }
 
@@ -66,7 +67,7 @@ void PollFrame() {
 void InstallNet() {
     ChannelOptions opt;
     opt.overflow = Overflow::DropOldest;
-    opt.maxQueueKB = 64;
+    opt.maxQueueKB = 256;
     g_ch = AddChannel("net", opt);
     if (!g_ch) return;
     OnSubscribe(g_ch, &OnSub, nullptr);
