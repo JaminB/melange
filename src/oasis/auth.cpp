@@ -49,7 +49,7 @@ bool FailureLimiter::Note() {
     }
     ++count_;
     const bool over = count_ > kThreshold;
-    if (now - lastLog_ >= kWindowMs) {
+    if (over && now - lastLog_ >= kWindowMs) {
         lastLog_ = now;
         LOG_WARN("[oasis] %d auth failure(s) in the last minute", count_);
     }
