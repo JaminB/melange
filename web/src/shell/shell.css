@@ -75,7 +75,7 @@ button { font: inherit; color: inherit; }
 .notice { padding: 8px 16px; font-size: 13px; border-bottom: 1px solid var(--border); background: var(--accent-soft); }
 .notice-offline { color: var(--bad); }
 
-.body { display: grid; grid-template-columns: 184px minmax(0, 1fr); min-height: 0; }
+.body { display: grid; grid-template-columns: 184px minmax(0, 1fr); min-height: 0; grid-row: 3; }
 .tabs { display: flex; flex-direction: column; gap: 2px; padding: 12px 8px; border-right: 1px solid var(--border); background: var(--surface); overflow: auto; }
 .tab { text-align: left; background: none; border: 0; border-radius: 6px; padding: 7px 10px; cursor: pointer; color: var(--text); }
 .tab:hover:not(:disabled) { background: var(--surface-2); }
