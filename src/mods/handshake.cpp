@@ -245,7 +245,7 @@ void RewriteMlgSimIfOwner() {
             memberHashes.push_back("v");  // no (or malformed) mlg key: never matches, as a vanilla member should
     }
     std::string sim = BuildMlgSim(ourHash16, c.vanilla, memberHashes);
-    if (!sim.empty()) SetLobbyDataRaw(lobby, "mlg.sim", sim.c_str());
+    if (!sim.empty() && LobbyData(lobby, "mlg.sim") != sim) SetLobbyDataRaw(lobby, "mlg.sim", sim.c_str());
 }
 
 std::atomic<uint32_t> g_computeGen{0};
