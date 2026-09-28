@@ -1,6 +1,7 @@
 #include "net/steam.h"
 
 #include "core/log.h"
+#include "core/mem.h"
 
 namespace melange::steam {
 namespace {
@@ -12,10 +13,17 @@ T Resolve(const char* name) {
     HMODULE api = GetModuleHandleW(L"steam_api.dll");
     return api ? reinterpret_cast<T>(GetProcAddress(api, name)) : nullptr;
 }
+
+// Through the game's own import slot when it has one, so whatever the game's Steam calls go through sees ours too.
+template <class T>
+T ResolveAsGame(const char* name) {
+    void** slot = mem::FindIAT("steam_api.dll", name);
+    return slot && *slot ? reinterpret_cast<T>(*slot) : Resolve<T>(name);
+}
 }  // namespace
 
 void RegisterCallback(CallbackBase* cb, int id) {
-    static auto fn = Resolve<Register_t>("SteamAPI_RegisterCallback");
+    auto fn = ResolveAsGame<Register_t>("SteamAPI_RegisterCallback");
     if (!fn) {
         LOG_ERROR("steam: SteamAPI_RegisterCallback not found");
         return;
@@ -24,7 +32,7 @@ void RegisterCallback(CallbackBase* cb, int id) {
 }
 
 void UnregisterCallback(CallbackBase* cb) {
-    static auto fn = Resolve<Unregister_t>("SteamAPI_UnregisterCallback");
+    auto fn = ResolveAsGame<Unregister_t>("SteamAPI_UnregisterCallback");
     if (fn) fn(cb);
 }
 
