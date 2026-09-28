@@ -15,6 +15,11 @@ namespace {
 constexpr size_t kStorageCap = 1u << 20;
 constexpr size_t kReadFileCap = 8u << 20;
 constexpr int kMaxJsonDepth = 32;
+// A depth cap alone doesn't bound a DAG built from shared sub-tables (t = {a=prev, b=prev} repeated N times is
+// only N tables, none of them a cycle, but walking it as a tree visits about 2^N nodes): this node budget bounds
+// the total work of one top-level ToJson call regardless of how it branches.
+constexpr int kMaxJsonNodes = 200000;
+constexpr size_t kMaxLogChars = 8192;
 
 ModRec* NeedMod(lua_State* L) {
     ModRec* m = Current();
@@ -54,13 +59,14 @@ bool ValidUtf8(const char* s, size_t n) {
 std::string Join(lua_State* L, int from) {
     std::string s;
     const int n = lua_gettop(L);
-    for (int i = from; i <= n; ++i) {
+    for (int i = from; i <= n && s.size() < kMaxLogChars; ++i) {
         size_t len;
         const char* p = luaL_tolstring(L, i, &len);
         if (i > from) s += '\t';
-        s.append(p, len);
+        s.append(p, std::min(len, kMaxLogChars - s.size()));
         lua_pop(L, 1);
     }
+    if (s.size() >= kMaxLogChars) s += " ...(truncated)";
     return s;
 }
 
@@ -187,6 +193,7 @@ int ConfigSet(lua_State* L) {
         text = luaL_checkstring(L, 2);
         if (std::find(d->options.begin(), d->options.end(), text) == d->options.end())
             return luaL_error(L, "wum.config: '%s' is not an option of %s", text.c_str(), key.c_str());
+        if (text.find_first_of("\r\n") != std::string::npos) return luaL_error(L, "wum.config: line breaks are not allowed");
     } else {
         text = luaL_checkstring(L, 2);
         if (text.find_first_of("\r\n") != std::string::npos) return luaL_error(L, "wum.config: line breaks are not allowed");
@@ -359,9 +366,15 @@ const LibRegistrar g_reg(&Shared, &PerEnv);
 
 // ---------------------------------------------------------------- JSON <-> Lua
 bool ToJson(lua_State* L, int idx, json::Value* out, std::string* err, int depth) {
+    static int s_nodesLeft = 0;
+    if (depth == 0) s_nodesLeft = kMaxJsonNodes;
     idx = lua_absindex(L, idx);
     if (depth > kMaxJsonDepth) {
         *err = "nested too deeply (or a cycle)";
+        return false;
+    }
+    if (--s_nodesLeft <= 0) {
+        *err = "too many values (a shared sub-table may be expanding exponentially)";
         return false;
     }
     *out = {};

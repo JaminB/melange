@@ -145,10 +145,17 @@ int HudImage(lua_State* L) {
     return 0;
 }
 
+constexpr int kMaxTexturesPerGen = 256;
+
 int Texture(lua_State* L) {
     ModRec* m = Current();
     Gen* g = CurrentGen();
     if (!m || !g) return luaL_error(L, "wum.draw.texture needs a mod context");
+    if (g->textureCount >= kMaxTexturesPerGen) {
+        lua_pushnil(L);
+        lua_pushliteral(L, "too many textures loaded");
+        return 2;
+    }
     const std::string rel = luaL_checkstring(L, 1);
     if (!SafeRelPath(rel)) return luaL_argerror(L, 1, "relative path inside the mod folder expected");
     std::wstring w = Widen(rel);
@@ -159,6 +166,7 @@ int Texture(lua_State* L) {
         lua_pushfstring(L, "cannot load %s", rel.c_str());
         return 2;
     }
+    ++g->textureCount;
     g->cleanups.push_back([tex] { draw::FreeTexture(tex); });
     lua_pushinteger(L, tex);
     return 1;

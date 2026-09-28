@@ -146,6 +146,35 @@ int SafeSetmetatable(lua_State* L) {
     return 1;
 }
 
+// table.move and string.rep run their whole loop in one C call, so the count hook never gets a chance to fire
+// partway through: a huge count freezes the game rather than faulting the mod. These wrappers bound the amount
+// of work before delegating to the real function (upvalue 1), closing the two cases the private probe confirmed
+// still hang lua54.lib (table.move({},1,math.maxinteger,1) and string.rep('',math.maxinteger)).
+// Above any legitimate repeat count (ModMemoryMB's default 16 MB already bounds a non-empty string well below
+// this), but far enough below math.maxinteger to turn an unbounded hang into a sub-second one.
+constexpr lua_Integer kMaxRepeat = 50'000'000;
+constexpr lua_Integer kMaxMoveSpan = 10'000'000;
+
+int CallReal(lua_State* L) {
+    lua_pushvalue(L, lua_upvalueindex(1));
+    lua_insert(L, 1);
+    lua_call(L, lua_gettop(L) - 1, LUA_MULTRET);
+    return lua_gettop(L);
+}
+
+int BoundedRep(lua_State* L) {
+    const lua_Integer n = luaL_optinteger(L, 2, 0);
+    if (n > kMaxRepeat) return luaL_error(L, "string.rep: count too large (max %lld)", static_cast<long long>(kMaxRepeat));
+    return CallReal(L);
+}
+
+int BoundedMove(lua_State* L) {
+    const lua_Integer f = luaL_checkinteger(L, 2), e = luaL_checkinteger(L, 3);
+    if (e >= f && e - f + 1 > kMaxMoveSpan)
+        return luaL_error(L, "table.move: range too large (max %lld elements)", static_cast<long long>(kMaxMoveSpan));
+    return CallReal(L);
+}
+
 int SafeCollect(lua_State* L) {
     const std::string opt = luaL_optstring(L, 1, "collect");
     if (opt == "collect") {
@@ -165,16 +194,19 @@ int SafeCollect(lua_State* L) {
     return luaL_error(L, "collectgarbage: only \"collect\", \"count\" and \"step\" are allowed");
 }
 
+constexpr size_t kMaxPrintChars = 8192;
+
 std::string JoinArgs(lua_State* L) {
     std::string s;
     const int n = lua_gettop(L);
-    for (int i = 1; i <= n; ++i) {
+    for (int i = 1; i <= n && s.size() < kMaxPrintChars; ++i) {
         size_t len;
         const char* p = luaL_tolstring(L, i, &len);
         if (i > 1) s += '\t';
-        s.append(p, len);
+        s.append(p, std::min(len, kMaxPrintChars - s.size()));
         lua_pop(L, 1);
     }
+    if (s.size() >= kMaxPrintChars) s += " ...(truncated)";
     return s;
 }
 
@@ -361,6 +393,16 @@ void BuildGlobals(lua_State* L) {
             lua_setfield(L, -2, "wrap");
             lua_pushvalue(L, boot + 2);
             lua_setfield(L, -2, "close");
+        }
+        if (strcmp(lo.name, "string") == 0) {
+            lua_getfield(L, -2, "rep");
+            lua_pushcclosure(L, &BoundedRep, 1);
+            lua_setfield(L, -2, "rep");
+        }
+        if (strcmp(lo.name, "table") == 0) {
+            lua_getfield(L, -2, "move");
+            lua_pushcclosure(L, &BoundedMove, 1);
+            lua_setfield(L, -2, "move");
         }
         PushFrozen(L, -1);
         lua_setfield(L, g, lo.name);
@@ -874,13 +916,22 @@ bool CallbackLive(const Callback* cb) {
     return cb && !cb->dead && !cb->disabled && cb->gen->committed && cb->gen->mod->gen == cb->gen;
 }
 
+// A mod can have up to kMaxHandlesPerGen callbacks, each individually under InstrPerCall: with no aggregate
+// check, thousands of near-budget callbacks in one frame (e.g. every(0) timers) never fault individually but
+// still freeze the frame. This bounds one mod's total instructions across every callback in a single frame to a
+// generous multiple of its per-call budget; callbacks beyond it are skipped (not faulted) for the rest of the
+// frame, so a mod that is merely busy isn't disabled, only throttled.
+constexpr int64_t kFrameInstrMultiplier = 50;
+
 bool Invoke(Callback* cb, const std::function<int(lua_State*)>& pushArgs, int nresults,
             const std::function<void(lua_State*)>& onResults) {
     if (!g_L || !CallbackLive(cb)) return false;
     ModRec* m = cb->gen->mod;
+    if (m->frameInstructions >= static_cast<uint64_t>(GetLimits().instrPerCall * kFrameInstrMultiplier)) return false;
     bool ok = false;
     std::string err;
     const double t0 = NowMs();
+    const uint64_t instr0 = m->instructions;
     const bool ran = Protected("callback", [&](lua_State* L) {
         lua_pushcfunction(L, &Traceback);
         const int h = lua_gettop(L);
@@ -901,6 +952,7 @@ bool Invoke(Callback* cb, const std::function<int(lua_State*)>& pushArgs, int nr
     const double dt = NowMs() - t0;
     g_msAccum += dt;
     m->msAccum += dt;
+    m->frameInstructions += m->instructions - instr0;
     if (!ok && !cb->dead) Fault(cb, ran ? err : "internal error");
     return ok;
 }
@@ -1073,6 +1125,7 @@ void Frame() {
     for (auto& [id, m] : g_mods) {
         m->msFrame = m->msAccum;
         m->msAccum = 0;
+        m->frameInstructions = 0;
     }
     std::vector<std::pair<std::string, std::string>> posted;
     {

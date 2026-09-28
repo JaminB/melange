@@ -40,6 +40,7 @@ struct ModRec {
     std::string error;
     uint32_t faults = 0;
     uint64_t instructions = 0;
+    uint64_t frameInstructions = 0;  // reset every Frame(): bounds one mod's total work across all its callbacks
     double msFrame = 0, msAccum = 0;
     // wum.log rate limit
     uint64_t logWindow = 0;
@@ -75,6 +76,7 @@ struct Gen {
     int modTableRef = LUA_NOREF;  // this environment's wum.mod
     std::set<std::string> panelIds;
     std::vector<std::function<void()>> cleanups;  // run when the generation is revoked
+    int textureCount = 0;  // wum.draw.texture: capped separately from kMaxHandlesPerGen (not a Callback)
 };
 
 // ---- VM and calls (sandbox.cpp)
