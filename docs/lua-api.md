@@ -193,7 +193,8 @@ Every effect can be read; only the mod's own effects (`<mod id>/<effect>`) can b
 ## `wum.unsafe` (Deep Desert)
 
 Only for mods whose `spice.json` has `permissions.unsafe: true`. Until the player allows it in the consent dialog, every function
-raises "Deep Desert not granted". Every refusal and every fault is logged. Mods with this permission count as content mods online.
+raises "Deep Desert not granted". Every refusal and every fault is logged. A mod only counts as a content mod online once its
+Deep Desert grant is actually allowed; declining ("Keep sandboxed") keeps it out of the online content hash.
 Libraries that C++ modules add with the Deep Desert flag are also visible only to granted mods.
 
 | Name | Description |
