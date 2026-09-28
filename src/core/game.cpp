@@ -88,6 +88,13 @@ std::string Narrow(const std::wstring& w) {
     return s;
 }
 
+std::wstring Widen(const std::string& s) {
+    int n = MultiByteToWideChar(CP_UTF8, 0, s.c_str(), -1, nullptr, 0);
+    std::wstring w(n ? n - 1 : 0, L'\0');
+    if (n) MultiByteToWideChar(CP_UTF8, 0, s.c_str(), -1, w.data(), n);
+    return w;
+}
+
 std::string DescribeAddress(uintptr_t addr) {
     HMODULE mod = nullptr;
     char out[MAX_PATH + 64];

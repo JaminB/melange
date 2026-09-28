@@ -6,6 +6,7 @@
 #include <string>
 
 #include "core/events.h"
+#include "core/game.h"
 #include "melange/draw.h"
 #include "melange/jlog.h"
 #include "melange/render.h"
@@ -27,16 +28,20 @@ std::string NowIso() {
 }
 }  // namespace
 
-// grantHash: sha256(permissions fields || sha256(entry.client's bytes)). Any change to what code runs
-// with Deep Desert, or to the declared permissions, changes this and drops an existing grant.
+// grantHash: sha256(a per-install salt || permissions fields || authors || sha256(entry.client's bytes)). Any
+// change to what code runs with Deep Desert, to the declared permissions, or to the authors, changes this and
+// drops an existing grant. The salt (kept in Melange.ini, never under Mods\) stops a mod archive from shipping
+// a pre-computed grant record for itself in a dropped thumper-state.json.
 std::string GrantHash(const spice::Manifest& m) {
     std::string clientHash;
     if (!m.entryClient.empty()) {
-        std::wstring path = m.dir + L"\\" + std::wstring(m.entryClient.begin(), m.entryClient.end());
+        std::wstring path = m.dir + L"\\" + melange::game::Widen(m.entryClient);
         clientHash = hashutil::Sha256HexFile(path);
     }
-    std::string text = "unsafe=" + std::string(m.unsafe ? "1" : "0") + ";filesystem=" + m.filesystem +
-                        ";entryClient=" + clientHash;
+    std::string authors;
+    for (const std::string& a : m.authors) authors += (authors.empty() ? "" : ",") + a;
+    std::string text = "salt=" + GrantSalt() + ";unsafe=" + std::string(m.unsafe ? "1" : "0") +
+                        ";filesystem=" + m.filesystem + ";authors=" + authors + ";entryClient=" + clientHash;
     return hashutil::Sha256Hex(text.data(), text.size());
 }
 

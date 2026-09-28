@@ -43,8 +43,13 @@ void Rescan();
 bool SetEnabled(const std::string& id, bool on);
 bool SetDeepDesert(const std::string& id, bool granted);
 
+// A random value generated once per install and kept in Melange.ini, outside Mods\: mixed into GrantHash so a
+// mod archive cannot ship a pre-computed grant record for itself (thumper_state.cpp lives under Mods\, which a
+// mod's own files can reach; Melange.ini does not).
+const std::string& GrantSalt();
+
 // Deep Desert consent (consent.cpp).
-std::string GrantHash(const spice::Manifest& m);  // sha256 of permissions + entry.client's bytes
+std::string GrantHash(const spice::Manifest& m);  // sha256 of the salt + permissions + entry.client's bytes + authors
 bool IsGranted(const Entry& e);                    // granted AND the stored hash still matches
 void DrawConsentModals();                          // called once per frame by mods_page.cpp
 void RequestConsent(const std::string& id);         // opens the modal for `id` (Deep Desert, on enable)

@@ -11,6 +11,7 @@
 #include <atomic>
 #include <cctype>
 #include <mutex>
+#include <random>
 #include <set>
 #include <string>
 #include <vector>
@@ -53,6 +54,7 @@ int g_nextChangeHandle = 1;
 bool g_messagesAttempted = false;
 uint32_t g_lastRegistryCapacity = 0;
 int g_stableFrames = 0;
+std::string g_grantSalt;
 
 std::string Narrow(const std::wstring& w) {
     std::string s;
@@ -75,7 +77,12 @@ std::string Join(const std::vector<std::string>& v, const char* sep) {
     return s;
 }
 
-bool IsContentRelevant(const spice::Manifest& m) { return m.content || !m.entrySim.empty() || !m.messages.empty() || m.unsafe; }
+// Decision 4 counts a *granted* Deep Desert mod as content, not merely one that declares `unsafe` and was
+// declined ("Keep sandboxed"): a declined mod never gets wum.unsafe, so it cannot affect the sim or diverge
+// between peers, and must not force a hash mismatch against a peer who also declined or doesn't have it.
+bool IsContentRelevant(const spice::Manifest& m, bool deepDesertGranted) {
+    return m.content || !m.entrySim.empty() || !m.messages.empty() || (m.unsafe && deepDesertGranted);
+}
 
 bool FindEntryLocked(const std::string& id, Entry* out) {
     for (const Entry& e : g_entries)
@@ -203,7 +210,8 @@ void DoRescan() {
         e.manifest = *m;
         e.dir = m->dir;
         e.order = r.order;
-        e.contentRelevant = IsContentRelevant(*m);
+        e.deepDesertGranted = IsGranted(e);  // only needs e.manifest/e.dir, both set above
+        e.contentRelevant = IsContentRelevant(*m, e.deepDesertGranted);
         e.authorsJoined = Join(m->authors, ", ");
         bool loadsNow = r.state == mods::State::Enabled || r.state == mods::State::PendingConsent;
 
@@ -213,7 +221,14 @@ void DoRescan() {
             std::lock_guard lk(g_mx);
             hadPrev = FindEntryLocked(r.id, &prev);
         }
-        if (e.contentRelevant && g_sessionFrozen && hadPrev) {
+        if (e.contentRelevant && g_sessionFrozen && !hadPrev) {
+            // A content-relevant mod that appeared after the session's content set was already frozen (dropped
+            // into Mods\ while the game runs): it must not go live until a restart (decision 3), even though
+            // nothing was active before to compare against.
+            e.sessionActive = false;
+            e.state = loadsNow ? mods::State::RestartRequired : r.state;
+            e.reason = loadsNow ? "new content mod: restart required" : r.reason;
+        } else if (e.contentRelevant && g_sessionFrozen && hadPrev) {
             e.sessionActive = prev.sessionActive;  // frozen: content-relevant mods don't change mid-session
             e.state = loadsNow == e.sessionActive ? r.state : mods::State::RestartRequired;
             e.reason = loadsNow == e.sessionActive ? r.reason : "enable/disable takes effect next launch";
@@ -222,7 +237,6 @@ void DoRescan() {
             e.state = r.state;
             e.reason = r.reason;
         }
-        e.deepDesertGranted = IsGranted(e);
         if (e.deepDesertGranted && e.state == mods::State::PendingConsent) {
             e.state = mods::State::Enabled;
             e.reason.clear();
@@ -236,6 +250,7 @@ void DoRescan() {
                 Live().deepDesert[m->id] = dr;
                 stateChanged = true;
                 e.deepDesertGranted = true;
+                e.contentRelevant = true;
                 e.state = mods::State::Enabled;
                 e.sessionActive = true;
             } else if (!hadPrev || prev.state != mods::State::PendingConsent) {
@@ -423,6 +438,8 @@ void DrawMarkerCallback(render::Stage, void*) { DrawDeepDesertMarker(); }
 // ---------------------------------------------------------------------------------------------
 // Public (to the rest of A) plumbing, declared in thumper_internal.h.
 // ---------------------------------------------------------------------------------------------
+const std::string& GrantSalt() { return g_grantSalt; }
+
 std::vector<Entry> Snapshot() {
     std::lock_guard lk(g_mx);
     return g_entries;
@@ -544,6 +561,14 @@ public:
         std::string modsDirCfg = String("ModsDir", "Mods");
         g_maxModMessages = Int("MaxModMessages", 48);
         g_autoGrantDeepDesert = Bool("AutoGrantDeepDesert", false);
+        g_grantSalt = String("GrantSalt", "");
+        if (g_grantSalt.empty()) {
+            std::random_device rd;
+            char buf[33];
+            for (int i = 0; i < 16; ++i) snprintf(buf + i * 2, 3, "%02x", static_cast<unsigned>(rd()) & 0xffu);
+            g_grantSalt = buf;
+            melange::config::SetString(Name(), "GrantSalt", g_grantSalt.c_str());
+        }
         std::wstring dir(modsDirCfg.begin(), modsDirCfg.end());
         if (dir.size() < 2 || (dir[1] != L':' && dir[0] != L'\\')) dir = melange::game::GameDir() + L"\\" + dir;
         {

@@ -86,6 +86,21 @@ bool IsManifestChange(const std::wstring& rel) {
     return rest.find(L'\\') == std::wstring::npos && _wcsicmp(rest.c_str(), L"spice.json") == 0;
 }
 
+// A file change deep inside a mod folder (e.g. client/init.lua) normally only wakes that mod's own hot-reload
+// watcher, not a full Thumper rescan. That leaves a granted Deep Desert mod's cached grant unrevalidated: the
+// grant hash covers entry.client's bytes, but only Rescan() (via Thumper::IsGranted) recomputes it. So a swap
+// of a granted mod's code must also force a rescan, the same as a manifest change would.
+bool TouchesGrantedMod(const std::wstring& fullPath) {
+    for (const melange::thumper::Entry& e : melange::thumper::Snapshot()) {
+        if (!e.deepDesertGranted) continue;
+        const std::wstring& d = e.dir;
+        if (fullPath.size() > d.size() && _wcsnicmp(fullPath.c_str(), d.c_str(), d.size()) == 0 &&
+            (fullPath[d.size()] == L'\\' || fullPath[d.size()] == L'/'))
+            return true;
+    }
+    return false;
+}
+
 DWORD WINAPI WatchThread(void*) {
     alignas(DWORD) static uint8_t buf[64 * 1024];
     for (;;) {
@@ -122,6 +137,12 @@ DWORD WINAPI WatchThread(void*) {
                     r = reinterpret_cast<FILE_NOTIFY_INFORMATION*>(reinterpret_cast<uint8_t*>(r) + r->NextEntryOffset);
                 }
             }
+            if (!rescan)
+                for (auto& p : pend)
+                    if (TouchesGrantedMod(p.first)) {
+                        rescan = true;
+                        break;
+                    }
             {
                 std::lock_guard lk(g_mx);
                 for (auto& p : pend) g_pending[p.first] = p.second;

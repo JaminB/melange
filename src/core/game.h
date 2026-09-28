@@ -22,4 +22,5 @@ const std::wstring& PluginDir();  // folder containing melange.asi
 const std::wstring& DataDir();    // <PluginDir>\Melange  (logs, dumps)
 std::string DescribeAddress(uintptr_t addr);  // "00401234 WormsMayhem.exe+0x1234"
 std::string Narrow(const std::wstring& w);
+std::wstring Widen(const std::string& s);  // UTF-8 -> UTF-16
 }  // namespace melange::game
