@@ -9,6 +9,11 @@
 
 using namespace melange::tweak;
 
+namespace melange::simbridge {
+bool AddSimFunction(const char*, lua50::CFunction) { return true; }
+bool InTopLevelChunk() { return true; }
+}
+
 namespace {
 int g_pass = 0, g_fail = 0;
 

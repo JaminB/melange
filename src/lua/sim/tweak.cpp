@@ -9,6 +9,7 @@
 #include "core/log.h"
 #include "core/mem.h"
 #include "core/module.h"
+#include "lua/sim/bridge_internal.h"
 
 namespace melange::tweak {
 namespace {
@@ -80,6 +81,7 @@ void OnMatchEvent(bool created, lua50::State*, void*) {
 constexpr int UpvalueIndex(int i) { return lua50::kGlobals - i; }
 
 thread_local char g_errbuf[256];
+bool (*g_setAllowed)() = nullptr;
 
 bool DoGet(const char* weapon, const char* field, float* out) {
     const TweakError e = Get(weapon, field, out);
@@ -120,6 +122,10 @@ int LSet(lua50::State* L) {
     }
     if (!A.isnumber(L, 3)) {
         A.pushstring(L, "weapon:set(field, value): value must be a number");
+        A.error(L);
+    }
+    if (g_setAllowed && !g_setAllowed()) {
+        A.pushstring(L, "weapon:set(field, value): only allowed in the sim script's top-level chunk at match start");
         A.error(L);
     }
     const char* weapon = A.tostring(L, UpvalueIndex(1));
@@ -282,6 +288,9 @@ public:
             return true;
         }
         melange::tweak::Init();
+        melange::tweak::g_setAllowed = &melange::simbridge::InTopLevelChunk;
+        if (!melange::simbridge::AddSimFunction("weapon", &melange::tweak::LWeapon))
+            LOG_WARN("[tweak] could not add wum.sim.weapon");
         return true;
     }
 };
