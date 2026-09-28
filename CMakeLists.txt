@@ -218,3 +218,21 @@ target_include_directories(shaders_selftest PRIVATE src)
 target_compile_definitions(shaders_selftest PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX _CRT_SECURE_NO_WARNINGS
     MELANGE_SOURCE_DIR="${CMAKE_SOURCE_DIR}")
 target_compile_options(shaders_selftest PRIVATE /W4 /utf-8 /permissive- /wd4100)
+
+# Component F (in-memory WEAPTWK tweaks): pure schema/Engine logic, plus FindContainer's
+# unknown-build guard. The live memory path and the Lua binding need the running game (left to the
+# integrator; see m2-design.md §3.F acceptance).
+add_executable(tweak_selftest
+    tests/tweak_selftest.cpp
+    src/lua/sim/tweak.cpp
+    src/lua/engine50.cpp
+    src/core/mem.cpp
+    src/core/game.cpp
+    src/core/log.cpp
+    src/core/config.cpp
+    src/core/module.cpp)
+target_include_directories(tweak_selftest PRIVATE src src/sdk ${CMAKE_BINARY_DIR}/generated)
+target_compile_definitions(tweak_selftest PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX _CRT_SECURE_NO_WARNINGS)
+target_compile_options(tweak_selftest PRIVATE /W4 /utf-8 /permissive- /Zi /wd4100)
+target_link_options(tweak_selftest PRIVATE /DEBUG /SAFESEH:NO)
+target_link_libraries(tweak_selftest PRIVATE safetyhook::safetyhook bcrypt psapi)

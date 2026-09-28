@@ -1,0 +1,12 @@
+{
+  "spiceVersion": 1,
+  "id": "bazooka-plus",
+  "name": "Bazooka Plus",
+  "version": "1.0.0",
+  "authors": ["Melange"],
+  "description": "Multiplies the Bazooka's worm damage by 1.5x, live, using wum.sim.weapon (component F).",
+  "kind": "content",
+  "defaultEnabled": false,
+  "entry": { "sim": "sim/init.lua" },
+  "permissions": { "filesystem": "none" }
+}
