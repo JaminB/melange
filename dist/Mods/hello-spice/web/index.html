@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Hello Spice</title>
+<style>
+  body { font: 14px/1.5 system-ui, sans-serif; margin: 16px; background: #14161a; color: #e7e9ee; }
+  dt { color: #9aa3af; }
+  dd { margin: 0 0 8px; font-size: 20px; }
+</style>
+</head>
+<body>
+<h1>Hello Spice</h1>
+<p>A sample Oasis web panel, published from <code>client/init.lua</code> with <code>wum.web</code>.</p>
+<dl>
+  <dt>Turn</dt><dd id="turn">-</dd>
+  <dt>Frames (wum.storage)</dt><dd id="frames">-</dd>
+</dl>
+<script src="/app/ext.js"></script>
+<script>
+  OasisExt.subscribe("mod.hello-spice.ticks", undefined, function (msg) {
+    document.getElementById("turn").textContent = msg.turn;
+    document.getElementById("frames").textContent = msg.frames;
+  });
+</script>
+</body>
+</html>

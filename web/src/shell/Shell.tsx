@@ -5,6 +5,8 @@ import { useEffect, useMemo, useRef, useState } from "preact/hooks";
 import { createClient, type Client, type ClientState, type OasisClient, type Welcome } from "../sdk/client";
 import { onPanelsChanged, panels, unmetReason, type PanelDef } from "../sdk/panels";
 import { SplitPane } from "../sdk/ui";
+import type { PanelInfo } from "../sdk/protocol";
+import { ExtPanel } from "./ext/host";
 import { Palette, type Command } from "./Palette";
 import { closeSecondary, loadLayout, openPanel, resolve, saveLayout, type Layout, type Theme } from "./layout";
 
@@ -48,6 +50,12 @@ const STATE_TEXT: Record<ClientState, string> = {
   closed: "Reconnecting",
   offline: "Offline",
 };
+
+type Tab = PanelDef & { ext?: PanelInfo };
+
+function extTab(p: PanelInfo): Tab {
+  return { id: p.id, title: p.title, order: 1000, needs: [], load: () => Promise.reject(new Error("web panel")), ext: p };
+}
 
 const THEME_TEXT: Record<Theme, string> = { system: "Theme: system", light: "Theme: light", dark: "Theme: dark" };
 const NEXT_THEME: Record<Theme, Theme> = { system: "light", light: "dark", dark: "system" };
@@ -104,14 +112,16 @@ function App({ client }: { client: OasisClient }) {
     return () => window.removeEventListener("keydown", onKey);
   }, []);
 
-  const view = resolve(layout, list.map((p) => p.id));
-  const byId = (id?: string) => list.find((p) => p.id === id);
+  const localIds = new Set(list.map((p) => p.id));
+  const all: Tab[] = [...list, ...(welcome?.panels ?? []).filter((p) => !localIds.has(p.id)).map(extTab)];
+  const view = resolve(layout, all.map((p) => p.id));
+  const byId = (id?: string) => all.find((p) => p.id === id);
   const primary = byId(view.primary);
   const secondary = byId(view.secondary);
 
   const commands = useMemo<Command[]>(() => {
     const out: Command[] = [];
-    for (const p of list) {
+    for (const p of all) {
       const why = unmetReason(p, welcome, inMatch);
       out.push({ id: `open:${p.id}`, label: `Open ${p.title}`, hint: why, disabled: !!why, run: () => setLayout(openPanel(layout, p.id)) });
       out.push({ id: `beside:${p.id}`, label: `Open ${p.title} beside`, hint: why, disabled: !!why || p.id === view.primary,
@@ -153,7 +163,7 @@ function App({ client }: { client: OasisClient }) {
       {state !== "open" ? <ConnectionNotice state={state} client={client} /> : null}
       <div class="body">
         <nav class="tabs" aria-label="Panels">
-          {list.map((p) => {
+          {all.map((p) => {
             const why = unmetReason(p, welcome, inMatch);
             const where = view.primary === p.id ? "main" : view.secondary === p.id ? "side" : undefined;
             return (
@@ -208,7 +218,7 @@ function ConnectionNotice({ state, client }: { state: ClientState; client: Oasis
 }
 
 interface FrameProps {
-  def: PanelDef; client: Client; welcome?: Welcome; inMatch?: boolean;
+  def: Tab; client: Client; welcome?: Welcome; inMatch?: boolean;
   titled?: boolean; onClose?: () => void; onSwap?: () => void;
 }
 
@@ -227,6 +237,8 @@ function PanelFrame({ def, client, welcome, inMatch, titled, onClose, onSwap }: 
         <div class="unavailable" data-unavailable={def.id}><p><strong>Game not running.</strong> {def.title} {why}.</p></div>
       ) : why ? (
         <div class="unavailable" data-unavailable={def.id}><p>{def.title} {why}.</p></div>
+      ) : def.ext ? (
+        <ExtPanel info={def.ext} client={client} />
       ) : (
         <PanelHost def={def} client={client} />
       )}

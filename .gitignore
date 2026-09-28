@@ -1,5 +1,6 @@
 build/
 dist/*.asi
+dist/*.exe
 dist/*.pdb
 dist/*.dll
 /tools/*

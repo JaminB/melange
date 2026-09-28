@@ -733,6 +733,7 @@ const char* KindName(CbKind k) {
         case CbKind::Hotkey: return "hotkey";
         case CbKind::Draw: return "draw";
         case CbKind::Reload: return "reload";
+        case CbKind::WebMethod: return "web method";
     }
     return "?";
 }

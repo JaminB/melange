@@ -210,6 +210,22 @@ Libraries that C++ modules add with the Deep Desert flag are also visible only t
 A memory fault inside these functions becomes a Lua error instead of a crash. Writes that change the simulation are the mod's
 responsibility.
 
+## `wum.web` (Oasis)
+
+Lets a client mod push its own data into [Oasis](oasis.md) and add a panel to it. Everything a mod adds is named
+`mod.<its id>.<x>`, so mods never collide with each other or with the core channels and methods.
+
+| Name | Description |
+|---|---|
+| `wum.web.channel(name)` | Registers `mod.<id>.<name>` and returns `ch`. `ch:publish(tbl)` sends one JSON value to every subscriber (a no-op when nobody is subscribed); `ch:subscribers()` is the current subscriber count. Removed automatically on hot reload or disable. |
+| `wum.web.method(name, fn)` | Registers `mod.<id>.<name>` as an RPC method. `fn(params)` gets the call's parameters as a table and must return a table (or raise, which the caller sees as an error); it runs on the main thread under the same instruction budget as any other callback, so a runaway `fn` is stopped and the call fails, it does not hang the page. |
+| `wum.web.panel{title=, entry="web/index.html"}` | Serves the folder containing `entry` (so its assets travel with it) in a sandboxed iframe at `/ext/<id>/`, listed in the page's tab bar. One panel per mod. Removed on hot reload or disable, which also closes its channels. |
+
+A panel page has no cookie and cannot reach `/ws` or `document` outside its own frame (`sandbox="allow-scripts"`, no
+`allow-same-origin`); it talks to the shell only through `/app/ext.js`, which exposes `OasisExt.call(method, params)`
+and `OasisExt.subscribe(channel, filter, fn)` restricted to the mod's own `mod.<id>.*` names plus read-only `state`
+and `log`.
+
 ## Extending the API from C++
 
 C++ modules can add namespaces with `melange::lua::AddLibrary("name", open)` (`melange/lua.h`). They appear as `wum.<name>` in

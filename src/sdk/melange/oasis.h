@@ -25,6 +25,7 @@ using ChannelId = uint32_t;           // 0 = failure
 ChannelId AddChannel(const char* name, const ChannelOptions& opt = {});  // any thread
 void RemoveChannel(ChannelId ch);                                         // any thread
 bool HasSubscribers(ChannelId ch);    // any thread, lock-free; producers skip work when false
+uint32_t SubscriberCount(ChannelId ch);  // any thread; exact count (wum.web.channel():subscribers())
 // Copies `jsonData` (one JSON value) into every subscribed client's queue. Any thread. Never blocks.
 // Returns false when nobody is subscribed or the channel is gone (not an error).
 bool Publish(ChannelId ch, std::string_view jsonData);

@@ -52,7 +52,7 @@ struct ModRec {
     double storageWritten = 0;
 };
 
-enum class CbKind : uint8_t { Event, Timer, Panel, Menu, Hotkey, Draw, Reload };
+enum class CbKind : uint8_t { Event, Timer, Panel, Menu, Hotkey, Draw, Reload, WebMethod };
 const char* KindName(CbKind k);
 
 struct Callback {
