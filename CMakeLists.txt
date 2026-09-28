@@ -84,6 +84,16 @@ target_compile_options(bus_selftest PRIVATE /W4 /utf-8 /permissive- /Zi /wd4100)
 target_link_options(bus_selftest PRIVATE /DEBUG /SAFESEH:NO)
 target_link_libraries(bus_selftest PRIVATE safetyhook::safetyhook bcrypt)
 
+add_executable(trace_selftest EXCLUDE_FROM_ALL
+    tests/trace_selftest.cpp
+    src/render/mirage/trace_decode.cpp src/render/mirage/trace_mcap.cpp src/render/mirage/compat_report.cpp
+    src/core/events.cpp src/core/game.cpp src/core/mem.cpp src/core/log.cpp)
+target_include_directories(trace_selftest PRIVATE src src/sdk ${CMAKE_BINARY_DIR}/generated ${stb_SOURCE_DIR})
+target_compile_definitions(trace_selftest PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX _CRT_SECURE_NO_WARNINGS)
+target_compile_options(trace_selftest PRIVATE /W4 /utf-8 /permissive- /Zi /wd4100)
+target_link_options(trace_selftest PRIVATE /DEBUG /SAFESEH:NO)
+target_link_libraries(trace_selftest PRIVATE safetyhook::safetyhook bcrypt miniz)
+
 add_executable(jlog_selftest
     tests/jlog_selftest.cpp
     src/core/jlog.cpp
