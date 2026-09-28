@@ -21,6 +21,7 @@
 #include "lua/sandbox_core.h"
 #include "lua/sandbox_internal.h"
 #include "melange/draw.h"
+#include "melange/gamestate.h"
 #include "melange/jlog.h"
 #include "melange/lua.h"
 #include "melange/mods.h"
@@ -214,6 +215,15 @@ bool GetParam(const char*, const char*, float* v, int n) {
     return true;
 }
 }  // namespace postfx
+namespace gamestate {
+Snapshot g_snapshot{};
+bool g_readable = false;
+bool Read(Snapshot* s) {
+    if (!g_readable) return false;
+    *s = g_snapshot;
+    return true;
+}
+}  // namespace gamestate
 namespace sandbox {
 double NowSeconds() { return fake::g_clock; }
 void EngineSubscribe(const std::string& name, bool on) {
@@ -765,6 +775,47 @@ void TestSamples() {
     sandbox::UnloadMod("deep-desert-demo");
 }
 
+void TestGame() {
+    gamestate::g_readable = false;
+    ExpectEq(Eval(nullptr, "return select('#', wum.game.worms()), select(2, wum.game.worms())"), "2\tunavailable",
+             "worms unavailable without the readers");
+    ExpectEq(Eval(nullptr, "return wum.game.activeWorm()"), "nil", "no active worm without the readers");
+    gamestate::Snapshot& s = gamestate::g_snapshot;
+    s = {};
+    s.match.inMatch = true;
+    s.match.activeWorm = 5;
+    s.teamCount = 1;
+    s.teams[0] = {};
+    s.teams[0].slot = 1;
+    s.teams[0].active = s.teams[0].ai = true;
+    strcpy(s.teams[0].name, "Sandworms");
+    s.wormCount = 2;
+    s.worms[0] = {};
+    s.worms[0].slot = 5;
+    s.worms[0].team = 1;
+    s.worms[0].health = 87;
+    s.worms[0].alive = s.worms[0].active = true;
+    s.worms[0].weapon = 1;
+    s.worms[0].pos = {1.5f, -2.f, 300.f};
+    strcpy(s.worms[0].name, "Paul");
+    s.worms[1] = {};
+    s.worms[1].slot = 6;
+    s.worms[1].weapon = -1;
+    strcpy(s.worms[1].name, "Leto");
+    gamestate::g_readable = true;
+    ExpectEq(Eval(nullptr, "local w = wum.game.worms() return #w, w[1].slot, w[1].team, w[1].name, w[1].health, "
+                           "w[1].alive, w[1].weapon, w[1].pos.x, w[1].pos.y, w[1].pos.z"),
+             "2\t5\t1\tPaul\t87\ttrue\t1\t1.5\t-2\t300", "worms fields");
+    ExpectEq(Eval(nullptr, "local w = wum.game.worms()[2] return w.name, w.alive, w.weapon"), "Leto\tfalse\tnil",
+             "a dead worm without a weapon");
+    ExpectEq(Eval(nullptr, "local t = wum.game.teams() return #t, t[1].slot, t[1].name, t[1].active, t[1].ai, t[1][\"local\"]"),
+             "1\t1\tSandworms\ttrue\ttrue\tfalse", "teams fields");
+    ExpectEq(Eval(nullptr, "return wum.game.activeWorm()"), "5", "active worm slot");
+    s.match.activeWorm = -1;
+    ExpectEq(Eval(nullptr, "return wum.game.activeWorm()"), "nil", "no active worm between turns");
+    gamestate::g_readable = false;
+}
+
 void TestDocs() {
     const std::string doc = ReadText(W(MELANGE_SOURCE_DIR) + L"\\docs\\lua-api.md");
     Expect(!doc.empty(), "docs/lua-api.md exists");
@@ -811,7 +862,7 @@ int main() {
         {"events", TestEvents},   {"timers", TestTimers},   {"reload", TestReload},
         {"config/storage", TestConfigStorage},              {"console", TestConsole},
         {"unsafe", TestUnsafe},   {"panels", TestPanels},   {"samples", TestSamples},
-        {"docs", TestDocs}};
+        {"game", TestGame},       {"docs", TestDocs}};
     for (const auto& [name, fn] : tests) {
         const int before = g_fail;
         fn();

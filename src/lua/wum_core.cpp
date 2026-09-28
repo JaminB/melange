@@ -8,6 +8,7 @@
 #include "core/config.h"
 #include "core/game.h"
 #include "lua/sandbox_core.h"
+#include "melange/gamestate.h"
 #include "tools/json_mini.h"
 
 namespace melange::sandbox {
@@ -317,10 +318,72 @@ int GameTick(lua_State* L) {
     lua_pushinteger(L, Game().tick);
     return 1;
 }
-int GameWorms(lua_State* L) {
+void SetInt(lua_State* L, const char* k, lua_Integer v) {
+    lua_pushinteger(L, v);
+    lua_setfield(L, -2, k);
+}
+void SetBool(lua_State* L, const char* k, bool v) {
+    lua_pushboolean(L, v);
+    lua_setfield(L, -2, k);
+}
+
+// The same snapshot as Oasis's state.get in the same frame (gamestate::Read is cached per frame).
+bool ReadSnapshot(lua_State* L, gamestate::Snapshot* s) {
+    if (gamestate::Read(s)) return true;
     lua_pushnil(L);
     lua_pushliteral(L, "unavailable");
-    return 2;
+    return false;
+}
+
+int GameWorms(lua_State* L) {
+    gamestate::Snapshot s;
+    if (!ReadSnapshot(L, &s)) return 2;
+    lua_createtable(L, s.wormCount, 0);
+    for (int i = 0; i < s.wormCount; ++i) {
+        const gamestate::Worm& w = s.worms[i];
+        lua_createtable(L, 0, 7);
+        SetInt(L, "slot", w.slot);
+        SetInt(L, "team", w.team);
+        lua_pushstring(L, w.name);
+        lua_setfield(L, -2, "name");
+        SetInt(L, "health", w.health);
+        SetBool(L, "alive", w.alive);
+        lua_createtable(L, 0, 3);
+        const float p[3] = {w.pos.x, w.pos.y, w.pos.z};
+        for (int k = 0; k < 3; ++k) {
+            lua_pushnumber(L, p[k]);
+            lua_setfield(L, -2, k == 0 ? "x" : k == 1 ? "y" : "z");
+        }
+        lua_setfield(L, -2, "pos");
+        if (w.weapon >= 0) SetInt(L, "weapon", w.weapon);
+        lua_rawseti(L, -2, i + 1);
+    }
+    return 1;
+}
+
+int GameTeams(lua_State* L) {
+    gamestate::Snapshot s;
+    if (!ReadSnapshot(L, &s)) return 2;
+    lua_createtable(L, s.teamCount, 0);
+    for (int i = 0; i < s.teamCount; ++i) {
+        const gamestate::Team& t = s.teams[i];
+        lua_createtable(L, 0, 5);
+        SetInt(L, "slot", t.slot);
+        lua_pushstring(L, t.name);
+        lua_setfield(L, -2, "name");
+        SetBool(L, "active", t.active);
+        SetBool(L, "ai", t.ai);
+        SetBool(L, "local", t.local);
+        lua_rawseti(L, -2, i + 1);
+    }
+    return 1;
+}
+
+int GameActiveWorm(lua_State* L) {
+    gamestate::Snapshot s;
+    if (gamestate::Read(&s) && s.match.activeWorm >= 0) lua_pushinteger(L, s.match.activeWorm);
+    else lua_pushnil(L);
+    return 1;
 }
 
 void Shared(lua_State* L, int wum) {
@@ -330,7 +393,8 @@ void Shared(lua_State* L, int wum) {
     static const luaL_Reg kConfig[] = {{"get", ConfigGet}, {"set", ConfigSet}, {nullptr, nullptr}};
     static const luaL_Reg kStorage[] = {{"get", StorageGet}, {"set", StorageSet}, {"remove", StorageRemove}, {"keys", StorageKeys}, {nullptr, nullptr}};
     static const luaL_Reg kGame[] = {{"scene", GameScene}, {"inMatch", GameInMatch}, {"online", GameOnline},
-                                     {"turn", GameTurn}, {"tick", GameTick}, {"worms", GameWorms}, {nullptr, nullptr}};
+                                     {"turn", GameTurn}, {"tick", GameTick}, {"worms", GameWorms}, {"teams", GameTeams},
+                                     {"activeWorm", GameActiveWorm}, {nullptr, nullptr}};
     struct Ns {
         const char* name;
         const luaL_Reg* fns;

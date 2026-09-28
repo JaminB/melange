@@ -159,6 +159,13 @@ target_compile_options(oasis_core_selftest PRIVATE /W4 /utf-8 /permissive- /Zi)
 target_link_options(oasis_core_selftest PRIVATE /DEBUG)
 target_link_libraries(oasis_core_selftest PRIVATE oasis_core bcrypt)
 
+# Game-state readers without the game: fake containers, descriptors, RTTI and task table; JSON and Oasis parameters.
+add_executable(gamestate_selftest tests/gamestate_selftest.cpp src/game/state/gamestate_logic.cpp
+    src/game/state/gamestate_json.cpp src/tools/json_read.cpp)
+target_include_directories(gamestate_selftest PRIVATE src src/sdk)
+target_compile_definitions(gamestate_selftest PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX _CRT_SECURE_NO_WARNINGS)
+target_compile_options(gamestate_selftest PRIVATE /W4 /utf-8 /permissive-)
+
 add_executable(json_read_selftest tests/json_read_selftest.cpp src/tools/json_read.cpp)
 target_include_directories(json_read_selftest PRIVATE src)
 target_compile_definitions(json_read_selftest PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX _CRT_SECURE_NO_WARNINGS)

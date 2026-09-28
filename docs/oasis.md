@@ -163,3 +163,35 @@ Close codes: 4000 closed by the game (the page reconnects), 4001 protocol versio
 | `sys.ping` | `{frame, ms}`: the game's frame counter and the server's clock |
 
 The streams (`log`, `bus`, `state`, ...) and the other methods are listed in `welcome` as their providers load.
+
+### Game state
+
+The *Game state* panel shows the worms and teams of the current match (the active worm and team highlighted), the
+live entities by kind (worms, projectiles with their weapon, crates, barrels, everything else by class name), a
+top-down or side map of their positions, the game's data variables, and an inspector with the known fields of an
+entity and a read-only hex view of its memory. Everything is read on the game's main thread, at most at the rate a
+client asks for; nothing is ever written. The readers need build #1077 and `[GameState] Enabled=1`; otherwise the
+`state` channel says `available: false` and the methods answer `-32001`.
+
+| Channel | Payload | Filter | Overflow |
+|---|---|---|---|
+| `state` | a snapshot: `{available, frame, matchSerial, match, teams, worms}` | `hz` 1-10 (default 5) | Coalesce |
+| `entities` | `[{handle, object, vtable, kind, type, label, pos, vel}]`; `[]` outside a match | `hz` 1-5 (default 2), `kinds` | Coalesce |
+
+- `match`: `{inMatch, online, currentTeam, activeWorm, turnMs, turnMsLeft, roundMs, roundMsLeft, windSpeed,
+  windDir, waterLevel, turnsStarted, suddenDeath, theme}` (times in ms, `-1` for no team or worm, wind direction in
+  radians). `turnsStarted` and `suddenDeath` come from the engine's message counters for this match.
+- `teams[]`: `{slot, name, active, ai, local, colour, alliance, roundsWon, score}`.
+- `worms[]`: `{slot, team, posInTeam, name, active, alive, health, physicsState, weapon, pos, vel}`; positions are
+  world units with +Y up, `weapon` is `-1` for none.
+- Outside a match `teams` and `worms` are empty. `kind` is one of `Worm`, `Projectile`, `Crate`, `Barrel`, `Other`;
+  `pos` and `vel` are `{x, y, z}` or `null` when the class's position is not known.
+
+| Method | Params → result | Notes |
+|---|---|---|
+| `state.get` | `{}` → a snapshot | the same snapshot as `wum.game.worms()` in the same frame |
+| `state.vars` | `{prefix?}` → `[{name, type, value}]` | every data variable (about two thousand), `value` as JSON; containers as `{addr, class}`; one call per second per client (`-32002`) |
+| `entities.list` | `{kinds?}` → the `entities` payload | `-32001` outside a match |
+| `entity.inspect` | `{handle, len?}` or `{addr, len?}` → `{addr, len, vtable, type, kind?, handle?, fields, hex}` | `len` 1-4096 (default 256); `hex` has two characters per byte, `??` where memory is not readable; `{addr}` and `hex` need `[Oasis] RawInspect=1` (`-32000` / `null` otherwise) |
+
+The raw view reads committed, readable pages only (never a guard page) and copies under a fault guard.

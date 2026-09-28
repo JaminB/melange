@@ -36,9 +36,10 @@ struct Snapshot {
     Team teams[4]; uint8_t teamCount;
     Worm worms[16]; uint8_t wormCount;  // only slots with a valid container
 };
-bool Read(Snapshot* out);             // main thread; fault-guarded; false when !Available()
+bool Read(Snapshot* out);             // main thread; fault-guarded; false when !Available(); one read per frame
 bool Latest(Snapshot* out);           // any thread: a copy of the last snapshot taken (at most StateHz)
-void Want(uint32_t hz);               // ask for periodic snapshots (max over callers, 0..10); main thread
+void Want(uint32_t hz);               // ask for periodic snapshots (max over callers, 0..10); main thread;
+                                      // a request lasts 1-2 s, so renew it at least once a second
 
 enum class EntityKind : uint8_t { Worm, Projectile, Crate, Barrel, Other };
 struct Entity {

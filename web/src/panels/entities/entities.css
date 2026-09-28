@@ -1,0 +1,94 @@
+.gs { display: grid; grid-template-rows: auto 1fr; height: 100%; min-height: 0; }
+.gs-notice, .gs-empty, .gs-pad { padding: 16px; margin: 0; }
+.gs-note { margin: 0; padding: 6px 12px; font-size: 12px; color: var(--muted); border-bottom: 1px solid var(--border); }
+.gs-bar { display: flex; align-items: center; flex-wrap: wrap; gap: 6px 16px; padding: 8px 12px; border-bottom: 1px solid var(--border); background: var(--surface); font-size: 13px; }
+.gs-pill { border: 1px solid var(--border); border-radius: 999px; padding: 1px 10px; font-size: 12px; color: var(--muted); }
+.gs-pill.on { color: var(--ok); border-color: var(--ok); }
+.gs-pill.warn { color: var(--warn); border-color: var(--warn); }
+.gs-fact { display: inline-flex; align-items: baseline; gap: 6px; }
+.gs-fact .k { color: var(--muted); font-size: 12px; }
+.gs-fact .v { font-family: var(--mono); }
+.gs-wind { display: inline-block; color: var(--accent); }
+
+.gs-main, .gs-list, .gs-insp { display: flex; flex-direction: column; height: 100%; min-height: 0; min-width: 0; }
+.gs-main > *, .gs-list > *, .gs-insp > * { flex: none; }
+.gs-main > .gs-view, .gs-list > .vt, .gs-insp > .gs-insp-body { flex: 1 1 0; min-height: 0; height: auto; }
+.gs-tabs { display: flex; gap: 2px; padding: 6px 8px 0; border-bottom: 1px solid var(--border); overflow-x: auto; }
+.gs-tab { background: none; border: 0; border-bottom: 2px solid transparent; padding: 6px 10px; cursor: pointer; color: var(--muted); white-space: nowrap; }
+.gs-tab.on { color: var(--text); border-bottom-color: var(--accent); font-weight: 600; }
+.gs-view { min-height: 0; overflow: hidden; }
+.gs-scroll { height: 100%; overflow: auto; padding: 8px 12px 16px; }
+
+.gs-table { border-collapse: collapse; width: 100%; font-size: 13px; margin-bottom: 16px; }
+.gs-table th { text-align: left; font-weight: 500; font-size: 12px; color: var(--muted); padding: 4px 8px; border-bottom: 1px solid var(--border); white-space: nowrap; }
+.gs-table td { padding: 4px 8px; border-bottom: 1px solid var(--surface-2); white-space: nowrap; }
+.gs-table tbody tr { cursor: default; }
+.gs-table[data-gs="worms"] tbody tr { cursor: pointer; }
+.gs-table tbody tr:hover { background: var(--surface-2); }
+.gs-table tr.cur { background: var(--accent-soft); font-weight: 600; }
+.gs-table tr.dead td { color: var(--muted); }
+.gs-swatch { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 6px; vertical-align: -1px; }
+.gs-health { display: inline-block; width: 48px; height: 6px; margin-right: 6px; background: var(--surface-2); border-radius: 3px; overflow: hidden; vertical-align: 1px; }
+.gs-health > span { display: block; height: 100%; background: var(--ok); }
+.mono { font-family: var(--mono); font-size: 12.5px; }
+
+.gs-kind { display: inline-block; font-size: 11px; padding: 0 6px; border-radius: 4px; background: var(--surface-2); margin-left: 6px; }
+.vt-row .gs-kind { margin-left: 0; }
+.gs-kind.k-Worm { color: var(--accent); }
+.gs-kind.k-Projectile { color: var(--bad); }
+.gs-kind.k-Crate { color: var(--ok); }
+.gs-kind.k-Barrel { color: var(--warn); }
+.vt-row { cursor: pointer; }
+
+.gs-map { display: grid; grid-template-rows: auto 1fr auto; height: 100%; min-height: 0; padding: 8px 12px; gap: 6px; }
+.gs-map-bar { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+.gs-seg { display: inline-flex; border: 1px solid var(--border); border-radius: 6px; overflow: hidden; }
+.gs-seg button { background: var(--surface); border: 0; padding: 3px 10px; cursor: pointer; font-size: 12px; color: var(--muted); }
+.gs-seg button.on { background: var(--accent-soft); color: var(--text); }
+.gs-svg { width: 100%; height: 100%; min-height: 200px; }
+.gs-svg-bg { fill: var(--surface); stroke: var(--border); }
+.gs-water { fill: var(--focus); opacity: 0.15; }
+.gs-dot { cursor: pointer; }
+.gs-dot circle, .gs-dot rect { stroke-width: 1.5; }
+.gs-dot.k-Projectile circle { fill: var(--bad); }
+.gs-dot.k-Crate rect { fill: var(--ok); }
+.gs-dot.k-Barrel rect { fill: var(--warn); }
+.gs-ring { fill: none; stroke: var(--accent); stroke-width: 2.5; }
+.gs-label { font-size: 11px; fill: var(--text); pointer-events: none; }
+.gs-dot.dead .gs-label { fill: var(--muted); }
+.gs-legend { display: flex; flex-wrap: wrap; gap: 12px; }
+.lg { display: inline-block; width: 10px; height: 10px; border-radius: 50%; vertical-align: -1px; margin-right: 4px; }
+.lg.worm { background: var(--accent); }
+.lg.k-Projectile { background: var(--bad); }
+.lg.k-Crate { background: var(--ok); border-radius: 1px; }
+.lg.k-Barrel { background: var(--warn); border-radius: 2px; }
+.lg.water { background: var(--focus); opacity: 0.4; border-radius: 1px; }
+
+.gs-vars-bar, .gs-insp-bar { display: flex; align-items: center; gap: 6px; padding: 6px 8px; border-bottom: 1px solid var(--border); flex-wrap: wrap; }
+.gs-vars-bar .fb-text { flex: 1 1 180px; }
+.gs-link { color: var(--accent); }
+
+.gs-insp { container-type: inline-size; background: var(--surface); }
+.gs-insp-bar .fb-text { flex: 1 1 110px; min-width: 0; }
+.gs-select { background: var(--surface); color: var(--text); border: 1px solid var(--border); border-radius: 6px; padding: 4px; font: inherit; font-size: 12px; }
+.gs-check { font-size: 12px; color: var(--muted); display: inline-flex; align-items: center; gap: 4px; }
+.gs-insp-body { overflow: auto; padding: 8px 12px 16px; min-height: 0; }
+.gs-insp-title { font-size: 14px; margin: 0 0 6px; overflow-wrap: anywhere; }
+.gs-facts { display: grid; grid-template-columns: max-content 1fr; gap: 2px 12px; margin: 0 0 8px; font-size: 12.5px; }
+.gs-facts dt { color: var(--muted); }
+.gs-facts dd { margin: 0; }
+.gs-values { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 12px; margin: 10px 0 6px; font-family: var(--mono); font-size: 12px; }
+.btn.small { padding: 1px 8px; font-size: 12px; }
+.gs-hex { font-family: var(--mono); font-size: 12px; line-height: 1.5; }
+.gs-hex-row { display: flex; gap: 12px; white-space: pre; }
+.gs-hex-addr { color: var(--muted); }
+.gs-hex-bytes { display: inline-flex; gap: 0 4px; }
+.gs-byte { cursor: pointer; border-radius: 2px; }
+.gs-byte:hover { background: var(--surface-2); }
+.gs-byte.sel { background: var(--accent-soft); outline: 1px solid var(--accent); }
+.gs-byte.na { color: var(--muted); }
+.gs-hex-ascii { color: var(--muted); }
+
+@container (max-width: 560px) { .gs-hex-ascii { display: none; } }
+@container (max-width: 400px) { .gs-hex { font-size: 11px; } .gs-hex-row { gap: 6px; } }
+@media (max-width: 720px) { .gs-bar { gap: 4px 10px; } }
