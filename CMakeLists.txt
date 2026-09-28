@@ -187,7 +187,7 @@ target_link_libraries(oasis_rpc_selftest PRIVATE oasis_core)
 add_executable(oasis_standalone
     src/oasis/standalone/main.cpp src/oasis/standalone/ini_edit.cpp src/oasis/standalone/mods_provider.cpp
     src/oasis/standalone/json_write.cpp src/oasis/standalone/game_lock.cpp
-    src/oasis/auth.cpp src/oasis/webpanels.cpp src/mods/spice.cpp src/tools/json_read.cpp src/core/log.cpp
+    src/oasis/auth.cpp src/oasis/webpanels.cpp src/oasis/rpc/ini_edit.cpp src/mods/spice.cpp src/tools/json_read.cpp src/core/log.cpp
     ${CMAKE_BINARY_DIR}/generated/oasis_web.rc)
 add_dependencies(oasis_standalone oasis_web)
 set_target_properties(oasis_standalone PROPERTIES OUTPUT_NAME "oasis")

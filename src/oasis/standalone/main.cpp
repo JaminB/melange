@@ -22,6 +22,7 @@
 #include "oasis/core/router.h"
 #include "oasis/core/server.h"
 #include "oasis/providers.h"
+#include "oasis/rpc/ini_edit.h"
 #include "oasis/standalone/game_lock.h"
 #include "oasis/standalone/ini_edit.h"
 #include "oasis/standalone/mods_provider.h"
@@ -232,6 +233,9 @@ void ModsSetEnabled(const oa::Call& c, oa::Result& r, void*) {
 void IniGetMethod(const oa::Call&, oa::Result& r, void*) {
     std::string text;
     ReadWhole(IniPath(), &text);
+    for (const auto& e : melange::oasis::ini::Parse(text))
+        if (_stricmp(e.section.c_str(), "Thumper") == 0 && _stricmp(e.key.c_str(), "GrantSalt") == 0)
+            text = melange::oasis::ini::Set(text, e.section, e.key, "********");
     r.json = jsonmini::Obj().Str("path", Narrow(IniPath())).Str("text", text).Raw("keys", "[]").End();
 }
 
@@ -255,6 +259,12 @@ void IniSetMethod(const oa::Call& c, oa::Result& r, void*) {
         r.ok = false;
         r.code = -32602;
         r.message = "expected {section, key, value}";
+        return;
+    }
+    if (std::string why; melange::oasis::ini::Protected(section->string, key->string, value->string, &why)) {
+        r.ok = false;
+        r.code = -32000;
+        r.message = why;
         return;
     }
     std::string text;
