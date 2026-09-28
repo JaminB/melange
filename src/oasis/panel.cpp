@@ -37,6 +37,7 @@ constexpr char kSection[] = "Oasis";
 bool g_userOpenPending = false;
 bool g_wasRunning = false;
 bool g_showToken = false;
+bool g_lastStartFailed = false;  // e.g. every port in Port..Port+PortRange-1 is taken; see Melange.log
 
 std::string MaskUrl(const std::string& url) {
     const size_t k = url.find("k=");
@@ -93,8 +94,10 @@ void WriteUrlFile() {
 // Starts the server if needed and opens exactly one browser tab: the hotkey, the menu item and the panel's own
 // button all go through here. The AutoStart+AutoOpen combination (no user action at all) goes through OnFrame.
 void OpenOasisNow() {
-    if (!oasis::Running()) g_userOpenPending = true;
-    oasis::Start();
+    const bool wasRunning = oasis::Running();
+    if (!wasRunning) g_userOpenPending = true;
+    g_lastStartFailed = !oasis::Start();
+    if (g_lastStartFailed) return;  // nothing to open; the panel shows why
     const std::string url = oasis::Url();
     OpenBrowser(url);
     LOG_INFO("[oasis] opened %s", MaskUrl(url).c_str());
@@ -144,9 +147,15 @@ void Draw(void*) {
     if (!running) {
         ImGui::SameLine();
         if (ImGui::Button("Open Oasis")) OpenOasisNow();
-        ImGui::TextDisabled("Nothing listens until Oasis is opened.");
+        if (g_lastStartFailed)
+            ImGui::TextColored(ImVec4(1.f, 0.45f, 0.35f, 1.f),
+                                "Could not start: no free port in %d..%d (see Melange.log).", config::GetInt(kSection, "Port", 8765),
+                                config::GetInt(kSection, "Port", 8765) + config::GetInt(kSection, "PortRange", 10) - 1);
+        else
+            ImGui::TextDisabled("Nothing listens until Oasis is opened.");
         return;
     }
+    g_lastStartFailed = false;
     ImGui::SameLine();
     ImGui::TextDisabled("port %d", core::Port());
 
