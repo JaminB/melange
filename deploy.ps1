@@ -40,5 +40,9 @@ if ($LoaderPath) {
 
 Copy-Item "$dist\melange.asi" $GameDir -Force
 if (Test-Path "$dist\Melange.pdb") { Copy-Item "$dist\Melange.pdb" $GameDir -Force }
+if (Test-Path "$dist\Mods") {
+    New-Item -ItemType Directory -Force "$GameDir\Mods" | Out-Null
+    Copy-Item "$dist\Mods\*" "$GameDir\Mods" -Recurse -Force
+}
 if (-not (Test-Path "$GameDir\Melange.ini")) { Copy-Item "$PSScriptRoot\dist\Melange.ini" $GameDir }
 Write-Host "Melange deployed to $GameDir"

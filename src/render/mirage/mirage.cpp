@@ -141,7 +141,7 @@ public:
 
     bool Install() override {
         if (!engine::Check()) return false;
-        std::string modsDir = String("ModsDir", "Mods"), disabled = String("DisabledMods", ""), ids = String("StageIds", "");
+        std::string modsDir = String("ModsDir", "Mods"), disabled = String("DisabledMods", "mirage-landscape"), ids = String("StageIds", "");
         std::wstring dir(modsDir.begin(), modsDir.end());
         if (dir.size() < 2 || (dir[1] != L':' && dir[0] != L'\\')) dir = melange::game::GameDir() + L"\\" + dir;
         melange::mirage::modfs::Configure(dir, disabled);

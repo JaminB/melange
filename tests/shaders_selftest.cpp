@@ -210,7 +210,7 @@ void TestSources() {
 
 void TestSamples() {
 #ifdef MELANGE_SOURCE_DIR
-    std::wstring dir = Widen(MELANGE_SOURCE_DIR) + L"\\dist\\Mods\\mirage-samples\\shaders\\";
+    std::wstring dir = Widen(MELANGE_SOURCE_DIR) + L"\\dist\\Mods\\mirage-landscape\\shaders\\";
     std::string text, err;
     Patch p;
     Check(ReadFile(dir + L"Landscape.cg.patch", &text) && ParsePatch(text, &p, &err) && p.blocks.size() == 4 && p.entryGlob.empty(),

@@ -162,7 +162,7 @@ Saving a file reloads the shaders that use it while the game runs. The new sourc
 
 `[MirageShaders] FixFxaa=1` (the default) fixes the game's own FXAA pass (the `/FXAA` launch option), which does not compile on AMD and Intel GPUs. The panel also switches FXAA on and off while the game runs.
 
-`Mods\mirage-samples\shaders\` is a sample: it adds tunables to the landscape lighting and softens the shadow edges. Experimental: a file `shaders\<File>.<Entry>.glsl` replaces one program with GLSL, keeping the Cg parameter names (`GlslReplace=1`, read at start). `Mods\mirage-samples\extras\` has a GLSL version of the landscape pixel shader.
+`Mods\mirage-landscape\` is a sample: it adds tunables to the landscape lighting and softens the shadow edges. It is listed in `DisabledMods` by default; remove it from that list to try it. Experimental: a file `shaders\<File>.<Entry>.glsl` replaces one program with GLSL, keeping the Cg parameter names (`GlslReplace=1`, read at start). `Mods\mirage-landscape\extras\` has a GLSL version of the landscape pixel shader.
 
 ### Post-processing effects
 
