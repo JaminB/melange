@@ -1,0 +1,41 @@
+@@ find
+void
+LandscapeVertexMain(
+@@ replace
+// Tunables (set from params.ini and the overlay sliders).
+uniform float mirageLightSpaceFix = 1;
+uniform float mirageSpecularPower = 20;
+uniform float3 mirageSpecularCol = float3( 0.6, 0.6, 0.6 );
+uniform float3 mirageFresnelCol = float3( 0.2, 0.275, 0.175 );
+uniform float mirageFresnelPower = 1.5;
+uniform float mirageShadowSoftness = 1.5;
+
+void
+LandscapeVertexMain(
+@@ end
+
+# The normals are in eye space; the light direction arrives untransformed. 1 moves it into eye space as well.
+@@ find
+	outLightVector = -globalLightDir;
+@@ replace
+	outLightVector = -lerp( globalLightDir, mul( float4( globalLightDir, 0 ), view ).xyz, mirageLightSpaceFix );
+@@ end
+
+@@ find
+	const float3 materialFresnelCol = float3( 0.2f, 0.275f, 0.175f );
+	const float3 materialSpecularCol = float3( 0.6f, 0.6f, 0.6f );
+	const float materialFresnelPower = 1.5f;
+	const float specularPower = 20.0f;
+@@ replace
+	float3 materialFresnelCol = mirageFresnelCol;
+	float3 materialSpecularCol = mirageSpecularCol;
+	float materialFresnelPower = mirageFresnelPower;
+	float specularPower = mirageSpecularPower;
+@@ end
+
+# The 9-tap PCF samples one shadow-map texel apart; a wider spacing softens the shadow edge.
+@@ find
+		float2 vPixelSize = float2( 1, 1 ) / shadowSize.xy;
+@@ replace
+		float2 vPixelSize = float2( mirageShadowSoftness, mirageShadowSoftness ) / shadowSize.xy;
+@@ end
