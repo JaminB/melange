@@ -1,6 +1,7 @@
 #pragma once
 // Post-FX internals shared by the module, the GL runner, the panel and the offline self-test.
 #include <array>
+#include <atomic>
 #include <cstdint>
 #include <memory>
 #include <mutex>
@@ -110,6 +111,10 @@ struct Effect {
     melange::postfx::PassFn fn = nullptr;
     void* user = nullptr;
     int handle = 0;
+    // Set by RemoveCodePass under g_mx; checked without the lock in Run() right before calling fn, so a pass
+    // removed by an earlier pass's own callback (same frame, same chain snapshot) is not invoked with a `user`
+    // the caller may already have freed.
+    std::atomic<bool> removed{false};
 
     bool enabled = false, missing = false, failed = false;
     bool dirty = true;     // (re)compile before the next run
@@ -143,6 +148,11 @@ struct RunResult {
     uint32_t passes = 0, effects = 0;
     int glErrors = 0;
 };
+
+// The code pass handle/thread currently inside CallCode (postfx_gl.cpp), so RemoveCodePass (postfx.cpp) can wait
+// for a call already in flight before returning, the same way stages::RemoveStageCallback does.
+extern std::atomic<int> g_activeCodeHandle;
+extern std::atomic<unsigned long> g_activeCodeThread;
 
 // The first context we run in owns our GL objects. Another context current (the engine's screenshot path) is
 // skipped; one that stays current for 30 calls is adopted: every GL name is forgotten and the generation bumps.

@@ -388,7 +388,9 @@ void Guard::Restore() {
         c.BindBuffer(kELEMENT_ARRAY_BUFFER, static_cast<GLuint>(elemBuf_));
     }
     if (c.pbo) c.BindBuffer(kPIXEL_UNPACK_BUFFER, static_cast<GLuint>(unpackBuf_));
-    if (c.glsl && program_ != 0) c.UseProgram(static_cast<GLuint>(program_));
+    // Always restore, even to 0: a callback that binds a GLSL program on top of ARB program 0 would otherwise
+    // leave it bound, and GLSL takes precedence over ARB programs in the engine's following draws.
+    if (c.glsl) c.UseProgram(static_cast<GLuint>(program_));
     if (c.ActiveTexture) c.ActiveTexture(static_cast<GLenum>(activeTex_));
     if (c.ClientActiveTexture) c.ClientActiveTexture(static_cast<GLenum>(clientActiveTex_));
     glMatrixMode(static_cast<GLenum>(matrixMode_));

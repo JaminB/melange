@@ -33,6 +33,13 @@ void PopState(uint32_t token) {
     if (level < 1 || level > g_depth) return;
     while (g_depth >= level) Slot(--g_depth)->~Guard();
 }
+
+int StateDepth() { return g_depth; }
+
+void ForceStateDepth(int depth) {
+    if (depth < 0) depth = 0;
+    while (g_depth > depth) Slot(--g_depth)->~Guard();
+}
 }  // namespace melange::render
 
 namespace melange::gldebug {

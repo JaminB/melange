@@ -71,7 +71,7 @@ public:
 
     bool Install() override {
         on_ = Bool("On", false);
-        Apply(on_);
+        if (on_ && !Apply(true)) on_ = false;
         melange::events::Subscribe(melange::events::Event::Frame, [this] { EnsureVsync(); });
         melange::overlay::AddMenuItem("Game/Smooth 60 (toggle)",
                                       [](void* self) { static_cast<SmoothSixty*>(self)->Toggle(); }, this);
@@ -79,44 +79,67 @@ public:
         return true;
     }
 
-    void Uninstall() override { Apply(false); }
+    void Uninstall() override {
+        Apply(false);
+        RestoreVsync();
+    }
 
 private:
     static constexpr uintptr_t kCmp = 0x4D919B, kMov = 0x4D919F;
     bool on_ = false;
     bool patched_ = false;
     uint8_t saved_ = 0x10;
+    bool vsyncSaved_ = false;
+    int savedInterval_ = 0;
 
     void Toggle() {
-        on_ = !on_;
+        bool want = !on_;
+        bool ok = Apply(want);
+        on_ = want && ok;
         melange::config::SetString(Name(), "On", on_ ? "1" : "0");
-        Apply(on_);
-        LOG_INFO("SmoothSixty: %s", on_ ? "on" : "off");
+        if (want && !ok) {
+            LOG_WARN("SmoothSixty: refused (limiter site already patched by another module); staying off");
+        } else {
+            LOG_INFO("SmoothSixty: %s", on_ ? "on" : "off");
+            if (!on_) RestoreVsync();
+        }
     }
 
-    void Apply(bool lift) {
+    // Returns whether the limiter is now in the requested state.
+    bool Apply(bool lift) {
         if (lift) {
-            if (patched_) return;
+            if (patched_) return true;
             uint8_t cur = 0x10;
-            if (!melange::mem::SafeRead(kCmp, &cur, 1)) return;
+            if (!melange::mem::SafeRead(kCmp, &cur, 1)) return false;
             if (cur != 0x10) {
                 LOG_WARN("SmoothSixty: limiter byte is already 0x%02x (another module patched it); leaving it alone",
                          cur);
-                return;
+                return false;
             }
             if (!melange::mem::Expect(kCmp, {0x10, 0x73}) || !melange::mem::Expect(kMov, {0x10, 0x00, 0x00, 0x00})) {
                 LOG_WARN("SmoothSixty: limiter site does not match the expected bytes; not patching");
-                return;
+                return false;
             }
             saved_ = cur;
             melange::mem::Put<uint8_t>(kCmp, static_cast<uint8_t>(1));
             melange::mem::Put<uint8_t>(kMov, static_cast<uint8_t>(1));
             patched_ = true;
-        } else if (patched_) {
+            return true;
+        }
+        if (patched_) {
             melange::mem::Put<uint8_t>(kCmp, saved_);
             melange::mem::Put<uint8_t>(kMov, saved_);
             patched_ = false;
         }
+        return true;
+    }
+
+    void RestoreVsync() {
+        if (!vsyncSaved_ || !wglGetCurrentContext()) return;
+        using SetFn = BOOL(WINAPI*)(int);
+        auto set = reinterpret_cast<SetFn>(wglGetProcAddress("wglSwapIntervalEXT"));
+        if (set) set(savedInterval_);
+        vsyncSaved_ = false;
     }
 
     void EnsureVsync() {
@@ -125,7 +148,12 @@ private:
         using SetFn = BOOL(WINAPI*)(int);
         static auto get = reinterpret_cast<GetFn>(wglGetProcAddress("wglGetSwapIntervalEXT"));
         static auto set = reinterpret_cast<SetFn>(wglGetProcAddress("wglSwapIntervalEXT"));
-        if (get && set && get() != 1) set(1);
+        if (!get || !set) return;
+        if (!vsyncSaved_) {
+            savedInterval_ = get();
+            vsyncSaved_ = true;
+        }
+        if (get() != 1) set(1);
     }
 };
 }  // namespace

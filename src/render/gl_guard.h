@@ -78,3 +78,10 @@ private:
     int attribDepth_ = 0, clientAttribDepth_ = 0, texMatrixDepth_ = 0, projMatrixDepth_ = 0, mvMatrixDepth_ = 0;
 };
 }  // namespace melange::render::gl
+
+namespace melange::render {
+// Internal to melange::render::PushState/PopState (melange/render.h), used by stages.cpp to recover a Stage::Guard
+// nesting left unbalanced by a callback that faulted between PushState() and PopState().
+int StateDepth();
+void ForceStateDepth(int depth);  // pops down to `depth`, rebinding the scene framebuffer like a normal PopState
+}  // namespace melange::render

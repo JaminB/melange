@@ -12,6 +12,7 @@
 #include "core/log.h"
 #include "core/mem.h"
 #include "core/module.h"
+#include "render/mirage/compat.h"
 #include "render/mirage/engine.h"
 #include "render/mirage/hub.h"
 #include "render/mirage/modfs.h"
@@ -147,6 +148,8 @@ public:
         melange::mirage::modfs::Configure(dir, disabled);
         if (!stages::Configure(ids)) LOG_WARN("[mirage] StageIds='%s' ignored; using the built-in table", ids.c_str());
         stages::Enable();
+        // Independent of MirageTrace, so a Save-logs export still gets a real gpu/compat.* with it disabled.
+        melange::mirage::compat::Install();
 
         QueryPerformanceFrequency(&g_freq);
         if (!melange::mem::HookIAT("GDI32.dll", "SwapBuffers", reinterpret_cast<void*>(&TimedSwapBuffers),

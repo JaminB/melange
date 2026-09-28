@@ -19,6 +19,8 @@
 #include "render/mirage/postfx_internal.h"
 
 namespace melange::mirage::postfx {
+std::atomic<int> g_activeCodeHandle{0};
+std::atomic<unsigned long> g_activeCodeThread{0};
 namespace {
 constexpr GLenum kFRAGMENT_SHADER = 0x8B30, kVERTEX_SHADER = 0x8B31, kCOMPILE_STATUS = 0x8B81, kLINK_STATUS = 0x8B82,
                  kINFO_LOG_LENGTH = 0x8B84, kACTIVE_UNIFORMS = 0x8B86, kSHADING_LANGUAGE_VERSION = 0x8B8C,
@@ -640,6 +642,12 @@ RunResult Run(const std::vector<Effect*>& chain, const FrameInput& in) {
         double t0 = Now();
         BeginTimer(e, in.gpuTimers);
         if (e.code) {
+            // Removed by an earlier pass's own callback in this same chain (AddCodePass/RemoveCodePass are code,
+            // not effect.ini, so `chain` was snapshotted once per stage and may already be stale mid-loop).
+            if (e.removed.load(std::memory_order_acquire)) {
+                EndTimer(e, in.gpuTimers);
+                continue;
+            }
             p.BindFramebuffer(kFRAMEBUFFER, dst->fbo);
             glViewport(0, 0, in.w, in.h);
             if (lastEffect && in.splitCompare) {
@@ -650,8 +658,12 @@ RunResult Run(const std::vector<Effect*>& chain, const FrameInput& in) {
             p.ActiveTexture(kTEXTURE0);
             melange::postfx::PassContext ctx{cur->tex, in.sceneDepth, dst->fbo, in.w, in.h, in.proj, in.invProj,
                                              in.timeSec, in.frame};
+            g_activeCodeHandle.store(e.handle, std::memory_order_release);
+            g_activeCodeThread.store(GetCurrentThreadId(), std::memory_order_release);
             unsigned long code = 0;
-            if (!CallCode(e.fn, ctx, e.user, &code)) {
+            bool ok = CallCode(e.fn, ctx, e.user, &code);
+            g_activeCodeHandle.store(0, std::memory_order_release);
+            if (!ok) {
                 char b[64];
                 snprintf(b, sizeof b, "raised exception 0x%08lx", code);
                 e.failed = true;

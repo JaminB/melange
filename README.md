@@ -131,7 +131,7 @@ Mirage lets modules and mods draw inside the game's own frame. `melange/render.h
 | `Hud` | after the HUD, before the final copy to the screen |
 | `Final` | just before the final copy to the screen |
 
-Callbacks run in the main render pass only, with the game's framebuffer bound. Wrap your GL work in `render::PushState()` / `PopState()`. With no callbacks registered, Mirage patches nothing and every frame is identical to the game without it.
+Callbacks run in the main render pass only, with the game's framebuffer bound. Wrap your GL work in `render::PushState()` / `PopState()`. With no stage callbacks or mods asking for one, the scene stages themselves patch nothing and the frame is pixel-identical to the game without Mirage. The GL trace hub is separate and installs its call-counting thunks whenever `[MirageTrace] Mode` is `count` (the default) or `log`; set it to `off` for a frame with no Mirage hooks at all.
 
 Mods live in `<game>\Mods\<id>\`. When two mods provide the same file, the later folder name wins. `[Mirage] DisabledMods=a,b` switches mods off, and `ModsDir` moves the folder.
 
@@ -256,7 +256,7 @@ You need:
 
 ## Roadmap
 
-Coming next: the rest of the graphics layer (GL trace, shader overrides, a draw API), Lua mods, a mod loader and a map editor.
+Shipped: the Mirage graphics layer (GL trace and frame capture, shader overrides and hot reload, a post-FX stack, and a world/HUD draw API). Coming next: Lua mods, a mod loader and a map editor.
 
 ## License
 

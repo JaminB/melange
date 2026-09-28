@@ -675,14 +675,27 @@ int AddCodePass(const char* id, render::Stage stage, int order, PassFn fn, void*
 
 void RemoveCodePass(int handle) {
     if (!handle) return;
-    std::lock_guard lk(g_mx);
-    for (auto it = g_effects.begin(); it != g_effects.end(); ++it)
-        if ((*it)->code && (*it)->handle == handle) {
-            LOG_INFO("[postfx] code pass %s removed", (*it)->id.c_str());
-            g_graveyard.push_back(*it);
-            g_effects.erase(it);
-            return;
-        }
+    bool found = false;
+    {
+        std::lock_guard lk(g_mx);
+        for (auto it = g_effects.begin(); it != g_effects.end(); ++it)
+            if ((*it)->code && (*it)->handle == handle) {
+                LOG_INFO("[postfx] code pass %s removed", (*it)->id.c_str());
+                (*it)->removed.store(true, std::memory_order_release);
+                g_graveyard.push_back(*it);
+                g_effects.erase(it);
+                found = true;
+                break;
+            }
+    }
+    if (!found) return;
+    // A chain already snapshotted this frame may still be about to call fn(..., user), or be calling it right now
+    // on the main thread; wait so the caller can safely free `user` once this returns. Skip the wait if we ARE
+    // that thread (a code pass removing itself, or another pass in the same chain, must not block on itself).
+    unsigned long self = GetCurrentThreadId();
+    while (pfx::g_activeCodeHandle.load(std::memory_order_acquire) == handle &&
+           pfx::g_activeCodeThread.load(std::memory_order_acquire) != self)
+        Sleep(0);
 }
 
 Stats GetStats() {

@@ -360,7 +360,8 @@ public:
         int texAtStart = Int("TexDumpAtStart", 0);
         std::string texFilter = String("TexDumpFilter", "");
 
-        compat::Install();
+        // compat::Install() runs from Mirage::Install() (mirage.cpp) so the GPU report exists even with
+        // MirageTrace disabled; only the trace-specific compat::Report() calls belong here.
         if (mode != gltrace::Mode::Off) {
             if (hub::Require(Name())) {
                 hub::SetMode(ToHub(mode));

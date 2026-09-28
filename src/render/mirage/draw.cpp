@@ -53,6 +53,7 @@ struct DrawCb {
     int order;
     DrawFn fn;
     void* user;
+    int faults = 0;
 };
 
 struct StageState {
@@ -72,6 +73,30 @@ uint64_t g_statsFrame = 0;
 Stats g_stats{};
 Stats g_frameAccum{};
 
+// A user draw callback faulting must not count against the Enter/Exit stage callbacks themselves (that would get
+// them removed by stages::Fault after 3 faults from any mod, wedging the whole stage; see MaybeUnregister/
+// EnsureRegistered below), so each one is isolated here instead of relying on stages.cpp's own fault handling.
+bool InvokeDrawCb(DrawFn fn, render::Stage stage, void* user, unsigned long* code) {
+    __try {
+        fn(stage, user);
+        return true;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        *code = GetExceptionCode();
+        return false;
+    }
+}
+
+void FaultDrawCb(StageState* s, int handle, render::Stage stage, unsigned long code) {
+    auto it = std::find_if(s->callbacks.begin(), s->callbacks.end(), [&](const DrawCb& c) { return c.handle == handle; });
+    if (it == s->callbacks.end()) return;
+    ++it->faults;
+    LOG_ERROR("[draw] %s draw callback %d raised exception 0x%08lx (%d/3)", mirage::stages::Name(stage), handle, code, it->faults);
+    if (it->faults >= 3) {
+        LOG_ERROR("[draw] %s draw callback %d removed after 3 faults", mirage::stages::Name(stage), handle);
+        s->callbacks.erase(it);
+    }
+}
+
 void EnterCb(render::Stage stage, void* user) {
     StageState* s = static_cast<StageState*>(user);
     g_insideStage = true;
@@ -79,14 +104,21 @@ void EnterCb(render::Stage stage, void* user) {
     s->activePass = &s->queue.BeginPass();
     std::vector<DrawCb> sorted = s->callbacks;
     std::stable_sort(sorted.begin(), sorted.end(), [](const DrawCb& a, const DrawCb& b) { return a.order < b.order; });
-    for (auto& cb : sorted) cb.fn(stage, cb.user);
+    for (auto& cb : sorted) {
+        unsigned long code = 0;
+        if (!InvokeDrawCb(cb.fn, stage, cb.user, &code)) FaultDrawCb(s, cb.handle, stage, code);
+    }
 }
 
 void MaybeUnregister(int idx);
 
 void ExitCb(render::Stage stage, void* user) {
     StageState* s = static_cast<StageState*>(user);
-    mirage::drawgl::FrameStats fs = mirage::drawgl::DrawStage(stage, *s->activePass, s->queue.Immediate());
+    // activePass is null if EnterCb did not run this frame (e.g. its stage callback was itself removed after
+    // faulting); draw whatever was queued for immediate drawing and otherwise treat the pass as empty.
+    static std::vector<Primitive> kEmptyPass;
+    std::vector<Primitive>& pass = s->activePass ? *s->activePass : kEmptyPass;
+    mirage::drawgl::FrameStats fs = mirage::drawgl::DrawStage(stage, pass, s->queue.Immediate());
 
     uint64_t frame = render::GetTiming().frames;
     if (frame != g_statsFrame) {
@@ -122,6 +154,9 @@ void MaybeUnregister(int idx) {
 }
 
 void Submit(Kind kind, uint32_t flags, Primitive p) {
+    // Mirage off (ini or an unrecognised exe) means AddStageCallback can never succeed; queuing anyway would grow
+    // without bound for a mod that keeps drawing every frame (EnsureRegistered just retries and fails again).
+    if (!mirage::stages::Enabled()) return;
     render::Stage stage = RouteStage(kind, flags);
     int idx = IndexOf(stage);
     if (idx < 0) return;

@@ -14,6 +14,7 @@
 #include "core/events.h"
 #include "core/log.h"
 #include "core/mem.h"
+#include "render/gl_guard.h"
 #include "render/mirage/engine.h"
 
 namespace melange::mirage::stages {
@@ -62,6 +63,11 @@ Stats g_stats{};
 std::atomic<bool> g_enabled{false};
 int g_reassertLogs = 0;
 
+// The handle/thread of the callback currently executing inside Invoke, so RemoveStageCallback (any thread) can
+// wait for a call already in flight instead of returning while the callback's `user` is still being read.
+std::atomic<int> g_activeHandle{0};
+std::atomic<unsigned long> g_activeThread{0};
+
 uintptr_t Rd(uintptr_t a) {
     uintptr_t v = 0;
     mem::SafeRead(a, &v, 4);
@@ -98,14 +104,20 @@ void BuildSlots() {
     }
 }
 
-bool Invoke(render::StageFn fn, Stage s, void* user, unsigned long* code) {
+bool Invoke(render::StageFn fn, Stage s, void* user, unsigned long* code, int handle) {
+    g_activeHandle.store(handle, std::memory_order_release);
+    g_activeThread.store(GetCurrentThreadId(), std::memory_order_release);
+    int depth = render::StateDepth();
+    bool ok = true;
     __try {
         fn(s, user);
-        return true;
     } __except (EXCEPTION_EXECUTE_HANDLER) {
         *code = GetExceptionCode();
-        return false;
+        ok = false;
     }
+    if (!ok) render::ForceStateDepth(depth);  // unwind a PushState() the callback never matched with PopState()
+    g_activeHandle.store(0, std::memory_order_release);
+    return ok;
 }
 
 bool CallSceneFunc(uintptr_t obj, void* a1, unsigned long* code) {
@@ -144,7 +156,7 @@ void RunStage(Stage s) {
     g_calls[static_cast<int>(s)].fetch_add(1, std::memory_order_relaxed);
     for (int i = 0; i < n; ++i) {
         unsigned long code = 0;
-        if (!Invoke(local[i].fn, s, local[i].user, &code)) Fault(local[i].handle, s, code);
+        if (!Invoke(local[i].fn, s, local[i].user, &code, local[i].handle)) Fault(local[i].handle, s, code);
     }
 }
 
@@ -205,9 +217,15 @@ void Reassert(SlotState& s) {
 }
 
 void Restore(SlotState& s) {
-    engine::SetBucketFunc(s.bucket, s.post, s.saved);
+    // The engine may have already rewritten this slot to something other than our object (e.g. a scene rebuild
+    // between the last Reassert and this call); overwriting that with our stale `saved` chain would lose it.
+    if (engine::BucketFunc(s.bucket, s.post) == s.obj) {
+        engine::SetBucketFunc(s.bucket, s.post, s.saved);
+        LOG_INFO("[mirage] stage slot %s restored to %08x", SlotText(s), static_cast<unsigned>(s.saved));
+    } else {
+        LOG_WARN("[mirage] stage slot %s not restored: the engine already holds it", SlotText(s));
+    }
     Release(s.saved);
-    LOG_INFO("[mirage] stage slot %s restored to %08x", SlotText(s), static_cast<unsigned>(s.saved));
     s.saved = 0;
     s.installed = false;
 }
@@ -251,6 +269,8 @@ bool Configure(const std::string& overrides) {
 }
 
 void Enable() { g_enabled = true; }
+
+bool Enabled() { return g_enabled; }
 
 bool CoreEnabled(const char* who) {
     if (config::GetBool("Mirage", "Enabled", true)) return true;
@@ -408,8 +428,17 @@ int AddStageCallback(Stage stage, StageFn fn, void* user, int order) {
 
 void RemoveStageCallback(int handle) {
     using namespace mirage::stages;
-    std::lock_guard lk(g_mx);
-    g_cbs.erase(std::remove_if(g_cbs.begin(), g_cbs.end(), [&](const Cb& c) { return c.handle == handle; }), g_cbs.end());
+    {
+        std::lock_guard lk(g_mx);
+        g_cbs.erase(std::remove_if(g_cbs.begin(), g_cbs.end(), [&](const Cb& c) { return c.handle == handle; }), g_cbs.end());
+    }
+    // RunStage copies callbacks out before invoking them, so the one being removed may already be running (or
+    // about to run from that copy) on the main thread. Wait for it so the caller can safely free `user` right
+    // after this returns; skip the wait if we ARE that thread (a callback removing a handle from within itself
+    // must not block on itself).
+    unsigned long self = GetCurrentThreadId();
+    while (g_activeHandle.load(std::memory_order_acquire) == handle && g_activeThread.load(std::memory_order_acquire) != self)
+        Sleep(0);
 }
 
 StageInfo GetStageInfo(Stage stage) {

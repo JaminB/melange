@@ -26,13 +26,18 @@ struct Watcher {
     void* user;
 };
 
+constexpr size_t kMaxGenerations = 8;
+
 std::mutex g_mx;
 std::wstring g_modsDir;
 std::vector<std::string> g_disabled;
-// Old generations stay alive so pointers handed out by Roots() never dangle.
+// Old generations stay alive so pointers handed out by Roots() never dangle; every caller (Scan()/Watch() users)
+// copies id/dir out immediately rather than holding them across a rescan, so trimming to a handful is safe.
 std::vector<std::unique_ptr<std::vector<Entry>>> g_generations;
-std::vector<Entry>* g_roots = nullptr;
+std::vector<Entry> g_emptyRoots;
+std::vector<Entry>* g_roots = &g_emptyRoots;
 bool g_scanned = false;
+bool g_configured = false;  // Configure() was called with a non-empty mods dir
 std::atomic<bool> g_dirty{false};
 std::vector<Watcher> g_watchers;
 std::map<std::wstring, uint64_t> g_pending;  // path -> tick of the last change
@@ -65,10 +70,14 @@ void ScanLocked() {
     std::sort(list->begin(), list->end(), [](const Entry& a, const Entry& b) { return _stricmp(a.id.c_str(), b.id.c_str()) < 0; });
     g_roots = list.get();
     g_generations.push_back(std::move(list));
+    if (g_generations.size() > kMaxGenerations) g_generations.erase(g_generations.begin(), g_generations.end() - kMaxGenerations);
     g_scanned = true;
 }
 
 void EnsureScanned() {
+    // Without a real mods dir, FindFirstFileW(L"\\*") would list the current drive's root as if every top-level
+    // folder (Windows, Program Files, ...) were a mod.
+    if (!g_configured) return;
     if (!g_scanned || g_dirty.exchange(false)) ScanLocked();
 }
 
@@ -89,7 +98,11 @@ DWORD WINAPI WatchThread(void*) {
         std::wstring dir;
         {
             std::lock_guard lk(g_mx);
-            dir = g_modsDir;
+            if (g_configured) dir = g_modsDir;
+        }
+        if (dir.empty()) {
+            Sleep(2000);
+            continue;
         }
         HANDLE h = CreateFileW(dir.c_str(), FILE_LIST_DIRECTORY, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
                                nullptr, OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS, nullptr);
@@ -127,6 +140,7 @@ void Configure(const std::wstring& modsDir, const std::string& disabled) {
     std::lock_guard lk(g_mx);
     g_modsDir = modsDir;
     while (!g_modsDir.empty() && (g_modsDir.back() == L'\\' || g_modsDir.back() == L'/')) g_modsDir.pop_back();
+    g_configured = !g_modsDir.empty();
     g_disabled.clear();
     size_t p = 0;
     while (p <= disabled.size()) {

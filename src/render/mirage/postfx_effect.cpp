@@ -33,6 +33,13 @@ bool IEq(std::string_view a, std::string_view b) {
     return a.size() == b.size() && _strnicmp(a.data(), b.data(), a.size()) == 0;
 }
 
+// Rejects a relative path that could climb out of the effect's own folder (mirrors the #include check below);
+// used for every effect.ini value that is later joined onto e.dir and opened (shader=, file=, #include "...").
+bool StaysInFolder(std::string_view name) {
+    return !name.empty() && name.find("..") == std::string_view::npos && name.find(':') == std::string_view::npos &&
+           name.front() != '/' && name.front() != '\\';
+}
+
 bool IsIdent(std::string_view s) {
     if (s.empty() || isdigit(static_cast<unsigned char>(s[0]))) return false;
     for (char c : s)
@@ -269,6 +276,7 @@ struct Parser {
             PassDesc& p = d->passes[i];
             line = inputLines[i];
             if (p.shader.empty()) return Fail("[pass." + p.name + "] has no shader=");
+            if (!StaysInFolder(p.shader)) return Fail("[pass." + p.name + "] shader= must stay in the effect folder");
             for (std::string_view item : Split(rawInputs[i], ',')) {
                 Input in;
                 std::string l = Lower(item);
@@ -301,8 +309,10 @@ struct Parser {
                 if (!dup) p.inputs.push_back(in);
             }
         }
-        for (const TextureDesc& t : d->textures)
+        for (const TextureDesc& t : d->textures) {
             if (t.file.empty()) return Fail("[texture." + t.name + "] has no file=");
+            if (!StaysInFolder(t.file)) return Fail("[texture." + t.name + "] file= must stay in the effect folder");
+        }
         if (d->title.empty()) d->title = "(untitled)";
         return true;
     }
@@ -353,8 +363,7 @@ bool Expand(std::string_view text, int source, int version, int depth, IncludeFn
                     *err = out->files[source] + "(" + std::to_string(lineNo) + "): #include nested too deep";
                     return false;
                 }
-                if (name.find("..") != std::string::npos || name.find(':') != std::string::npos || name[0] == '/' ||
-                    name[0] == '\\') {
+                if (!StaysInFolder(name)) {
                     *err = out->files[source] + "(" + std::to_string(lineNo) + "): #include must stay in the effect folder";
                     return false;
                 }
@@ -500,6 +509,41 @@ int ParseGlslVersion(const char* s) {
     return major * 100 + minor;
 }
 
+// Effect ids are "<owner>/<folder>", and both come from user-chosen Windows folder names that may contain ',' or
+// ';' (both valid in a folder name, but ',' is our field separator and "; " starts a comment in ReadStack; ':' is
+// NOT escaped, since ParseStack already tolerates it in an id by taking only the last two colons as separators,
+// and Windows folder names cannot contain one anyway). Escape them (and '%' itself) so an id with either round-
+// trips through the Stack= value unchanged.
+std::string EscapeStackId(const std::string& id) {
+    std::string out;
+    out.reserve(id.size());
+    for (unsigned char c : id) {
+        if (c == '%' || c == ',' || c == ';') {
+            char b[4];
+            snprintf(b, sizeof b, "%%%02X", c);
+            out += b;
+        } else {
+            out += static_cast<char>(c);
+        }
+    }
+    return out;
+}
+
+std::string UnescapeStackId(std::string_view s) {
+    std::string out;
+    out.reserve(s.size());
+    for (size_t i = 0; i < s.size(); ++i) {
+        if (s[i] == '%' && i + 2 < s.size() && isxdigit(static_cast<unsigned char>(s[i + 1])) &&
+            isxdigit(static_cast<unsigned char>(s[i + 2]))) {
+            out += static_cast<char>(std::stoi(std::string(s.substr(i + 1, 2)), nullptr, 16));
+            i += 2;
+        } else {
+            out += s[i];
+        }
+    }
+    return out;
+}
+
 std::vector<StackEntry> ParseStack(std::string_view s) {
     std::vector<StackEntry> out;
     for (std::string_view item : Split(s, ',')) {
@@ -511,7 +555,7 @@ std::vector<StackEntry> ParseStack(std::string_view s) {
         std::string_view en = Trim(item.substr(b + 1));
         if (!ToInt(item.substr(a + 1, b - a - 1), &e.order) || (en != "0" && en != "1")) continue;
         e.enabled = en == "1";
-        e.id = Trim(item.substr(0, a));
+        e.id = UnescapeStackId(Trim(item.substr(0, a)));
         bool dup = false;
         for (StackEntry& x : out)
             if (x.id == e.id) {
@@ -527,7 +571,7 @@ std::string FormatStack(const std::vector<StackEntry>& v) {
     std::string s;
     for (const StackEntry& e : v) {
         if (!s.empty()) s += ',';
-        s += e.id + ":" + std::to_string(e.order) + ":" + (e.enabled ? "1" : "0");
+        s += EscapeStackId(e.id) + ":" + std::to_string(e.order) + ":" + (e.enabled ? "1" : "0");
     }
     return s;
 }
