@@ -248,13 +248,22 @@ void RewriteMlgSimIfOwner() {
     if (!sim.empty()) SetLobbyDataRaw(lobby, "mlg.sim", sim.c_str());
 }
 
-void Recompute() {
+std::atomic<uint32_t> g_computeGen{0};
+
+void Recompute(uint32_t gen) {
     mods::ContentId c = ComputeContent();
-    { std::lock_guard lk(g_mx); g_content = c; }
+    {
+        std::lock_guard lk(g_mx);
+        if (gen != g_computeGen.load()) return;  // a newer computation superseded this one
+        g_content = c;
+    }
     PublishOwnMemberData();
     RewriteMlgSimIfOwner();
 }
-void RecomputeAsync() { std::thread([] { Recompute(); }).detach(); }
+void RecomputeAsync() {
+    const uint32_t gen = ++g_computeGen;
+    std::thread([gen] { Recompute(gen); }).detach();
+}
 
 bool HandshakeGate() {
     mods::ContentId c;
