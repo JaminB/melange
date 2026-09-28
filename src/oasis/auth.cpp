@@ -73,7 +73,8 @@ class AuthImpl final : public core::Auth {
         // A sandboxed panel iframe (no allow-same-origin) has an opaque origin, so its own requests never carry
         // the session cookie (the ancestor-chain same-site check fails). Its content is the same non-secret
         // bundle already inside melange.asi; only /ws and the RPCs it can reach stay behind the token/cookie.
-        if (rq.path.starts_with("/ext/")) return true;
+        // The frame's bridge script, /app/ext.js, is loaded the same way.
+        if (rq.path.starts_with("/ext/") || rq.path == "/app/ext.js") return true;
         const std::string k = rq.Query("k");
         if (!k.empty()) {
             if (!SecretEq(k, token_)) return Deny(out);

@@ -561,6 +561,8 @@ void TestLive(oc::Files* files) {
     Expect(Status(r) == 200 && r.find("Content-Encoding") == std::string::npos && r.find("Content-Length: 3000") != std::string::npos, "plain when gzip is not accepted");
     Expect(Status(Get("/app/nope.js", ck)) == 404 && Status(Get("/app/../build.txt", ck)) == 404 && Status(Get("/build.txt", ck)) == 404,
            "unknown and traversal paths are 404");
+    Expect(Status(Get("/app/main.js")) == 403 && Status(Get("/app/ext.js")) != 403,
+           "only the panel bridge script is served without the cookie");
 
     const std::vector<std::pair<std::string, int>> neg = {
         {"GET / HTTP/1.1\r\nHost: " + host + "\r\n\r\n", 403},
