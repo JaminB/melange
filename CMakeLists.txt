@@ -54,6 +54,13 @@ FetchContent_MakeAvailable(miniz)
 file(GLOB_RECURSE MELANGE_SOURCES CONFIGURE_DEPENDS src/*.cpp)
 # src/xom is the portable XOM library: its own targets, not part of the plugin.
 list(FILTER MELANGE_SOURCES EXCLUDE REGEX "/src/xom/")
+
+set(MELANGE_PRIVATE_DIR "" CACHE PATH "Optional folder with extra modules (modules/*.cpp)")
+if(MELANGE_PRIVATE_DIR)
+    file(GLOB_RECURSE MELANGE_PRIVATE_SOURCES CONFIGURE_DEPENDS ${MELANGE_PRIVATE_DIR}/modules/*.cpp)
+    list(FILTER MELANGE_PRIVATE_SOURCES EXCLUDE REGEX "/overlay_tests/")
+    list(APPEND MELANGE_SOURCES ${MELANGE_PRIVATE_SOURCES})
+endif()
 add_subdirectory(src/xom EXCLUDE_FROM_ALL)
 configure_file(src/core/version.h.in ${CMAKE_BINARY_DIR}/generated/version.h @ONLY)
 
