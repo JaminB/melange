@@ -117,6 +117,29 @@ target_compile_definitions(sandbox_selftest PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX
     MELANGE_SOURCE_DIR="${CMAKE_SOURCE_DIR}")
 target_compile_options(sandbox_selftest PRIVATE /W4 /utf-8 /permissive- /EHsc /wd4100)
 target_link_libraries(sandbox_selftest PRIVATE lua54 imgui)
+# Stock Lua 5.0.1 with float numbers, a stand-in for the engine's match VM in sim_selftest (never linked into the plugin).
+FetchContent_Declare(lua50
+    URL https://www.lua.org/ftp/lua-5.0.1.tar.gz
+    URL_HASH SHA256=7a09d0e70dcaff7feae97cf9c154da05b1e5b92eaea2df7150b54bcaf8f3b9c6
+    DOWNLOAD_EXTRACT_TIMESTAMP TRUE
+    SOURCE_SUBDIR not-a-cmake-project)
+FetchContent_MakeAvailable(lua50)
+file(GLOB LUA50_SOURCES ${lua50_SOURCE_DIR}/src/*.c ${lua50_SOURCE_DIR}/src/lib/*.c)
+list(FILTER LUA50_SOURCES EXCLUDE REGEX "/(ltests|liolib|loadlib)\\.c$")
+add_library(lua50_ref STATIC EXCLUDE_FROM_ALL ${LUA50_SOURCES})
+target_include_directories(lua50_ref PUBLIC ${lua50_SOURCE_DIR}/include PRIVATE ${lua50_SOURCE_DIR}/src)
+target_compile_definitions(lua50_ref PUBLIC LUA_NUMBER=float PRIVATE _CRT_SECURE_NO_WARNINGS)
+target_compile_options(lua50_ref PRIVATE /W0 /FI${CMAKE_SOURCE_DIR}/tests/lua50_noopt.h)
+
+add_executable(sim_selftest EXCLUDE_FROM_ALL
+    tests/sim_selftest.cpp
+    src/lua/sim/sim_env.cpp src/lua/sim/sim_api.cpp src/lua/sim/sim_events.cpp src/lua/sim/sim_rng.cpp
+    src/core/log.cpp)
+target_include_directories(sim_selftest PRIVATE src src/sdk)
+target_compile_definitions(sim_selftest PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX _CRT_SECURE_NO_WARNINGS
+    MELANGE_SOURCE_DIR="${CMAKE_SOURCE_DIR}")
+target_compile_options(sim_selftest PRIVATE /W4 /utf-8 /permissive- /EHsc)
+target_link_libraries(sim_selftest PRIVATE lua50_ref)
 
 # Offline self-tests (no game needed).
 add_executable(bus_selftest EXCLUDE_FROM_ALL

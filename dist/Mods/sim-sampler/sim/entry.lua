@@ -1,4 +1,0 @@
--- sim-sampler (content sample): placeholder pending component C (the sim bridge).
--- Intended shape, against the wum.sim.* surface once it exists:
---   wum.sim.every(50, function() wum.sim.sendInt("Melange.Sample.Ping", wum.sim.random(1, 100)) end)
---   wum.events.on("GameLogic.Turn.Ended", function() ... end)

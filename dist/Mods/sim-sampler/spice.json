@@ -2,12 +2,12 @@
   "spiceVersion": 1,
   "id": "sim-sampler",
   "version": "1.0.0",
-  "name": "Sim Sampler",
+  "name": "Sim sampler",
+  "description": "Sample content mod: a Lua 5.0 sim script that counts ticks, draws deterministic random numbers and sends its own message each turn.",
   "authors": ["Melange"],
-  "description": "Sample content mod: an entry.sim that ticks, sends its own registered message, and a client-side HUD readout of the pings.",
-  "melange": { "range": ">=0.2.0 <0.3.0" },
+  "melange": { "range": ">=0.2.0" },
   "kind": "content",
-  "entry": { "client": "client/panel.lua", "sim": "sim/entry.lua" },
-  "messages": ["Melange.Sample.Ping"],
-  "defaultEnabled": false
+  "defaultEnabled": false,
+  "entry": { "client": "client/init.lua", "sim": "sim/main.lua" },
+  "messages": ["Melange.Sample.Ping"]
 }

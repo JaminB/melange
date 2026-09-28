@@ -120,7 +120,25 @@ The public SDK headers are in `src/sdk/melange/`:
 | `melange/gldebug.h` | Whether the debug context is on, its message counts, and debug groups and labels for your GL work |
 | `melange/mods.h` | The mod list, load order and enable state (Thumper); the content identity used in online lobbies is interface only for now |
 | `melange/lua.h` | Extend the Lua 5.4 client VM from C++: add `wum.*` namespaces, post events to mods, read Sandbox statistics |
-| `melange/sim.h` | The simulation side: match tick, deterministic random numbers, sends from sim mods (interface only for now) |
+| `melange/sim.h` | The simulation side: match tick, C++ tick hooks, deterministic random numbers, pre-checked message sends, mod message names |
+
+### Sim scripts
+
+A content mod's `entry.sim` runs inside the match's own Lua VM, which is Lua 5.0 with float numbers: no `#` (use `table.getn`), no `%` (use `math.mod`), and integers are exact only up to 2^24. Each mod gets its own environment, so the level script's globals are never changed. The environment has the safe base functions, `math`, `string`, `table` and `wum`:
+
+| Name | Purpose |
+|---|---|
+| `wum.mod.id`, `wum.mod.version` | The mod's identity |
+| `wum.log.debug/info/warn/error(...)` | Log lines tagged with the mod and the simulation tick (`print` is `wum.log.info`) |
+| `wum.events.on(name, fn)`, `off(handle)` | The engine messages the match script receives (`GameLogic.Turn.Ended`, `Weapon.Fired`, ...), registered mod messages (`fn(name, value)`), and `"tick"` |
+| `wum.sim.after/every(ticks, fn)`, `cancel(handle)` | Timers in simulation ticks (50 per second) |
+| `wum.sim.tick()` | Ticks since the match started |
+| `wum.sim.random([m[, n]])`, `randomFloat()` | A random stream per mod, seeded by the match; `math.random` is the same stream |
+| `wum.sim.send(name[, v])`, `sendInt/sendFloat/sendString` | Send an engine message; returns `true`, or `nil` and a reason, and never stops the match script |
+| `wum.sim.getData(id)`, `setData(id, v)` | Read and write the game's data values, checked the same way |
+| `wum.sim.storage` | A table for the mod's own state during the match |
+
+Every call from the game into a sim script has an instruction budget (`[SimBridge] InstrPerCall`). A callback that fails or runs out of budget three times is switched off. `dist\Mods\sim-sampler` is an example (shipped disabled).
 
 ## Graphics layer (Mirage)
 
