@@ -5,6 +5,7 @@
   "version": "1.0.0",
   "authors": ["Melange"],
   "description": "Multiplies the Bazooka's worm damage by 1.5x, live, using wum.sim.weapon (component F).",
+  "melange": { "range": ">=0.2.0" },
   "kind": "content",
   "defaultEnabled": false,
   "entry": { "sim": "sim/init.lua" },
