@@ -52,8 +52,8 @@ std::string DiffModsValues(const std::string& ours, const std::string& theirs);
 // against ours (mismatched when we ourselves are vanilla and they are not, or vice versa).
 mods::PeerStatus ClassifyPeer(bool hasMlg, const std::string& theirHash16, const std::string& ourHash16);
 
-// The lobby owner's "mlg.sim" value. "" means: do not write the key at all (we are vanilla; §5's guarantee that
-// a vanilla host leaves no extra lobby-visible trace beyond its own "mlg" member key).
+// The lobby owner's "mlg.sim" value. "" means: do not write the key at all (we are vanilla: a vanilla host must
+// leave no extra lobby-visible trace beyond its own "mlg" member key).
 std::string BuildMlgSim(const std::string& ourHash16, bool weAreVanilla, const std::vector<std::string>& memberHash16s);
 
 // May a sim mod run this match? Offline/local: always. Online: only if the lobby's "mlg.sim" is our hash16.
