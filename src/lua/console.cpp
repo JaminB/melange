@@ -16,6 +16,7 @@
 #include "core/log.h"
 #include "core/module.h"
 #include "lua/console_history.h"
+#include "lua/console_policy.h"
 #include "lua/console_repl.h"
 #include "lua/engine50.h"
 #include "lua/sandbox_internal.h"
@@ -89,7 +90,7 @@ bool SplitFirst(std::string_view args, std::string* first, std::string_view* res
     return true;
 }
 
-bool MatchAllowed(std::string* reason) {
+bool MatchAllowedImpl(std::string* reason) {
     if (!melange::sim::InMatch()) {
         *reason = "not in a match";
         return false;
@@ -116,7 +117,7 @@ LogEntry RunEval(Target kind, const std::string& modId, const std::string& rawCo
     e.code = rawCode;
     if (kind == Target::Match) {
         std::string reason;
-        if (!MatchAllowed(&reason)) {
+        if (!MatchAllowedImpl(&reason)) {
             e.ok = false;
             e.text = reason;
             return e;
@@ -288,7 +289,7 @@ void DrawTargetSelector() {
     }
     if (g_target == Target::Match) {
         std::string reason;
-        if (!MatchAllowed(&reason)) {
+        if (!MatchAllowedImpl(&reason)) {
             ImGui::SameLine();
             ImGui::TextColored(ImVec4(1.f, .7f, .3f, 1.f), "(%s)", reason.c_str());
         }
@@ -414,5 +415,7 @@ private:
     }
 };
 }  // namespace
+
+bool melange::console::MatchAllowed(std::string* reason) { return MatchAllowedImpl(reason); }
 
 MELANGE_MODULE(LuaConsole);
