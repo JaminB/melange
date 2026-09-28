@@ -1,5 +1,6 @@
 #pragma once
 // Minimal JSON object/array builder.
+#include <cmath>
 #include <cstdio>
 #include <string>
 #include <string_view>
@@ -57,6 +58,17 @@ public:
         s_ += Escape(k);
         s_ += "\":";
         s_ += std::to_string(v);
+        return *this;
+    }
+    // %.17g round-trips a double; a non-finite value is written as 0 (JSON has no NaN/Infinity).
+    Obj& Float(std::string_view k, double v) {
+        Sep();
+        s_ += '"';
+        s_ += Escape(k);
+        s_ += "\":";
+        char buf[48];
+        snprintf(buf, sizeof(buf), "%.17g", std::isfinite(v) ? v : 0.0);
+        s_ += buf;
         return *this;
     }
     Obj& Bool(std::string_view k, bool v) {

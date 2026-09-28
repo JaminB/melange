@@ -35,5 +35,6 @@ ContentId LocalContent();
 enum class PeerStatus : uint8_t { Unknown, Vanilla, MelangeVanilla, Match, Mismatch };
 struct Peer { uint64_t steamId; char name[64]; PeerStatus status; char hash16[17]; char version[16]; };
 int Peers(Peer* out, int max);  // current lobby members other than us; 0 outside a lobby
+bool InLobby();                 // a Steam lobby is joined (distinguishes "alone in a lobby" from Peers() == 0)
 bool SimAllowedThisMatch();     // decided once per match VM; true offline when content mods exist
 }

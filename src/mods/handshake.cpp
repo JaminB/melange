@@ -384,6 +384,7 @@ int Peers(Peer* out, int max) {
 }
 
 bool SimAllowedThisMatch() { return handshake::g_simAllowedThisMatch.load(); }
+bool InLobby() { return handshake::g_lobby.load() != 0; }
 }  // namespace melange::mods
 
 namespace {

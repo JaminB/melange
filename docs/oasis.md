@@ -169,5 +169,21 @@ Close codes: 4000 closed by the game (the page reconnects), 4001 protocol versio
 | Method | Result |
 |---|---|
 | `sys.ping` | `{frame, ms}`: the game's frame counter and the server's clock |
+| `bus.names` | `[{id, name, posts, deliveries}]`: every registered engine message name and its counts |
 
 The streams (`log`, `bus`, `state`, ...) and the other methods are listed in `welcome` as their providers load.
+
+### Streams (`log`, `bus`, `net`, `lobby`, `stats`)
+
+| Channel | Payload (`d`/`b`) | Filter | Overflow |
+|---|---|---|---|
+| `log` | `{seq, lvl, cat, ts, j}` (`j`: the raw jlog line); backlog of the last 500 matching records on subscribe | `minLevel`, `cats` (list), `text` (substring, matched against the raw line) | DropOldest + `drop` |
+| `net` | as `log`, restricted to the `net` and `handshake` categories | as `log` | DropOldest + `drop` |
+| `bus` | `{seq, frame, name, cls, path, handle, d?}` (`d`: `bus::Decode`'s fields, when the filter asks for it and a decoder exists) | `names` (required: exact name or `Prefix.*`), `path` (`"post"`; only Post is hooked), `decode` | DropOldest + `drop` |
+| `bus.counts` | `{name: delta}` for every name whose post+deliver count changed, once a second | - | Coalesce |
+| `lobby` | `{inLobby, local: {hash, contentMods, modMessages, vanilla}, peers: [{steamId, name, status, hash16, version}]}`, on change and at least once a second | - | Coalesce |
+| `stats` | `oasis::GetStats()` plus `render::GetTiming()` (`busyMsP50`, `busyMsP95`, `fps`, `frames`), once a second | - | Coalesce |
+
+The `bus` channel's hook is installed only while at least one client subscribes to it, and only messages named by
+some subscriber's filter reach it at all (`Camera.HasUpdated` included). `bus.counts` reads the bus module's own
+always-on counters, so it costs nothing extra to keep the hook installed or not.

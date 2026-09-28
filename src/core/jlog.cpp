@@ -12,7 +12,6 @@
 #include <condition_variable>
 #include <cstdio>
 #include <cwctype>
-#include <deque>
 #include <mutex>
 #include <unordered_map>
 #include <vector>
@@ -20,6 +19,7 @@
 #include "core/events.h"
 #include "core/game.h"
 #include "core/jlog_internal.h"
+#include "core/jlog_ring.h"
 #include "version.h"
 
 namespace melange::jlog {
@@ -67,18 +67,6 @@ void AppendNumber(std::string& out, double v) {
 }
 
 // ---- Level filter
-const char* LevelName(Level l) {
-    switch (l) {
-        case Level::Trace: return "trace";
-        case Level::Debug: return "debug";
-        case Level::Info: return "info";
-        case Level::Warn: return "warn";
-        case Level::Error: return "error";
-        case Level::Fatal: return "fatal";
-    }
-    return "?";
-}
-
 Level ParseLevel(std::string_view s) {
     if (s == "trace") return Level::Trace;
     if (s == "debug") return Level::Debug;
@@ -147,9 +135,6 @@ std::condition_variable g_flushCv;
 std::atomic<uint64_t> g_flushRequest{0};
 std::atomic<uint64_t> g_flushDone{0};
 
-std::mutex g_tailMx;
-std::deque<Line> g_tailRing;
-size_t g_tailCapacity = 5000;
 
 std::atomic<uint64_t> g_recordsAccepted{0};
 std::atomic<uint64_t> g_recordsDropped{0};  // pending note for the writer (reset when written)
@@ -578,11 +563,7 @@ void Rec::Emit() {
             g_queue.push_back({line, p_->level});
         }
     }
-    {
-        std::lock_guard lk(g_tailMx);
-        g_tailRing.push_back(Line{seq, p_->level, p_->category, std::move(line)});
-        if (g_tailRing.size() > g_tailCapacity) g_tailRing.pop_front();
-    }
+    ring::Push(Line{seq, p_->level, p_->category, std::move(line), t});
     bool urgent = p_->level >= Level::Warn;    if (urgent) g_wakeWriter.notify_one();
     if (p_->t0 && g_qpcToUs > 0) {
         LARGE_INTEGER q;
@@ -645,16 +626,7 @@ void FlushFromCrash() {
     if (h != INVALID_HANDLE_VALUE) FlushFileBuffers(h);
 }
 
-size_t Tail(uint64_t afterSeq, std::vector<Line>& out, size_t max) {
-    std::lock_guard lk(g_tailMx);
-    size_t added = 0;
-    for (const auto& l : g_tailRing) {
-        if (l.seq <= afterSeq) continue;
-        out.push_back(l);
-        if (++added >= max) break;
-    }
-    return added;
-}
+size_t Tail(uint64_t afterSeq, std::vector<Line>& out, size_t max) { return ring::Since(afterSeq, out, max); }
 
 Stats GetStats() {
     return Stats{g_recordsAccepted.load(), g_droppedTotal.load(), g_bytesWritten.load(), g_filesRotated.load()};
@@ -686,7 +658,7 @@ bool Init(const Options& opt) {
     g_maxFileMB = opt.maxFileMB;
     g_maxSessions = opt.maxSessions;
     g_maxTotalMB = opt.maxTotalMB;
-    g_tailCapacity = opt.tailCapacity ? opt.tailCapacity : 5000;
+    ring::SetCapacity(opt.tailCapacity ? opt.tailCapacity : 5000);
     g_filter.store(ParseLevelsSpec(opt.levelsSpec), std::memory_order_release);
 
     std::wstring root = !opt.rootOverride.empty() ? opt.rootOverride : DocumentsLogsDefault();
@@ -758,10 +730,7 @@ void ShutdownForTests() {
         std::lock_guard lk(g_queueMx);
         g_queue.clear();
     }
-    {
-        std::lock_guard lk(g_tailMx);
-        g_tailRing.clear();
-    }
+    ring::Clear();
     g_seq.store(1);
     g_recordsAccepted.store(0);
     g_recordsDropped.store(0);

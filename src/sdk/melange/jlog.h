@@ -5,6 +5,17 @@
 #include <vector>
 namespace melange::jlog {
 enum class Level : uint8_t { Trace, Debug, Info, Warn, Error, Fatal };
+inline const char* LevelName(Level lvl) {
+    switch (lvl) {
+        case Level::Trace: return "trace";
+        case Level::Debug: return "debug";
+        case Level::Info: return "info";
+        case Level::Warn: return "warn";
+        case Level::Error: return "error";
+        case Level::Fatal: return "fatal";
+    }
+    return "?";
+}
 
 // Builder for one JSONL record. Cheap when the category/level is filtered out (Enabled() is checked first).
 // Thread-safe; never blocks on I/O (a writer thread owns the file). Never calls melange::log (no recursion).
@@ -40,8 +51,8 @@ bool Flush(uint32_t timeoutMs = 2000);
 void FlushFromCrash();
 
 // In-memory tail for the viewer (last N records as formatted JSON lines).
-struct Line { uint64_t seq; Level lvl; std::string category; std::string json; };
-size_t Tail(uint64_t afterSeq, std::vector<Line>& out, size_t max);
+struct Line { uint64_t seq; Level lvl; std::string category; std::string json; double t = 0; };  // t: seconds since session start, as written into json's own "t"
+size_t Tail(uint64_t afterSeq, std::vector<Line>& out, size_t max);  // backed by a seq-indexed ring: O(new lines)
 
 struct Stats { uint64_t records, dropped, bytes, filesRotated; };
 Stats GetStats();
