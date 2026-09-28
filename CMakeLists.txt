@@ -94,6 +94,15 @@ target_include_directories(json_read_selftest PRIVATE src)
 target_compile_definitions(json_read_selftest PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX _CRT_SECURE_NO_WARNINGS)
 target_compile_options(json_read_selftest PRIVATE /W4 /utf-8 /permissive-)
 
+add_executable(handshake_selftest
+    tests/handshake_selftest.cpp
+    src/mods/handshake_internal.cpp
+    src/tools/hash.cpp)
+target_include_directories(handshake_selftest PRIVATE src src/sdk)
+target_compile_definitions(handshake_selftest PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX _CRT_SECURE_NO_WARNINGS)
+target_compile_options(handshake_selftest PRIVATE /W4 /utf-8 /permissive-)
+target_link_libraries(handshake_selftest PRIVATE bcrypt)
+
 add_executable(lua54_selftest tests/lua54_selftest.cpp)
 target_compile_options(lua54_selftest PRIVATE /W4 /utf-8 /permissive- /EHsc)
 target_link_libraries(lua54_selftest PRIVATE lua54)
