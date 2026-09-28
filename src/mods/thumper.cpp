@@ -258,8 +258,10 @@ void DoRescan() {
     }
 
     std::vector<ChangeSub> subs;
+    std::vector<Entry> previous;  // kept until the notifications ran: mods::List pointers stay valid until then
     {
         std::lock_guard lk(g_mx);
+        previous.swap(g_entries);
         g_entries = std::move(next);
         g_sessionFrozen = true;
         subs = g_onChange;  // copy so a handler adding/removing a subscription is safe
@@ -471,10 +473,11 @@ bool SetDeepDesert(const std::string& id, bool granted) {
 // ---------------------------------------------------------------------------------------------
 namespace melange::mods {
 int List(ModInfo* out, int max) {
-    std::vector<thumper::Entry> snap = thumper::Snapshot();
-    if (!out) return static_cast<int>(snap.size());
+    std::lock_guard lk(thumper::g_mx);
+    const std::vector<thumper::Entry>& all = thumper::g_entries;
+    if (!out) return static_cast<int>(all.size());
     int n = 0;
-    for (const thumper::Entry& e : snap) {
+    for (const thumper::Entry& e : all) {
         if (n >= max) break;
         thumper::ToModInfo(e, &out[n]);
         ++n;
@@ -484,10 +487,13 @@ int List(ModInfo* out, int max) {
 
 bool Find(const char* id, ModInfo* out) {
     if (!id || !out) return false;
-    thumper::Entry e;
-    if (!thumper::FindEntry(id, &e)) return false;
-    thumper::ToModInfo(e, out);
-    return true;
+    std::lock_guard lk(thumper::g_mx);
+    for (const thumper::Entry& e : thumper::g_entries)
+        if (e.manifest.id == id) {
+            thumper::ToModInfo(e, out);
+            return true;
+        }
+    return false;
 }
 
 bool SetEnabled(const char* id, bool on) { return id && thumper::SetEnabled(id, on); }
