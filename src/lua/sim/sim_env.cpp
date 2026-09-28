@@ -14,11 +14,19 @@ int g_depth = 0;
 
 namespace {
 constexpr char kBudgetMsg[] = "melange: instruction budget exceeded";
+// xpcall is deliberately not in this list: the engine's own xpcall runs its handler as the pcall's message
+// handler, which fires *before* the stack unwinds and hooks are re-armed. A handler that loops there can never
+// be stopped. XpcallSim below runs the handler through its own, later pcall instead, by which point the budget
+// hook is back on.
 constexpr const char* kBase[] = {"assert", "error", "ipairs", "next", "pairs", "pcall", "rawequal", "rawget",
-                                 "rawset", "setmetatable", "getmetatable", "tonumber", "tostring", "type", "unpack",
-                                 "xpcall"};
+                                 "rawset", "setmetatable", "getmetatable", "tonumber", "tostring", "type", "unpack"};
 l5::Hook g_prevHook = nullptr;
 int g_prevMask = 0;
+// Every nested level used to get its own fresh Chunks() budget, so a mod that resends its own message from a
+// handler on that message could multiply its work by its fan-out at every one of the 8 depth levels (about
+// fanout^depth handler calls from one top-level send). g_chainLeft is a whole-chain budget, shared by every
+// frame of one top-level dispatch, that bounds the total work regardless of fan-out.
+int g_chainLeft = 0;
 
 int Chunks() { return std::max(1, (g_cfg.instrPerCall + 999) / 1000); }
 
@@ -26,7 +34,8 @@ void __cdecl BudgetHook(l5::State* L, void*) {
     if (g_depth <= 0) return;
     Frame& f = g_frames[g_depth - 1];
     if (f.suspended) return;
-    if (--f.left > 0 && !f.exhausted) return;
+    --g_chainLeft;
+    if (--f.left > 0 && !f.exhausted && g_chainLeft > 0) return;
     if (!f.exhausted) {
         f.exhausted = true;
         l5::A().sethook(L, &BudgetHook, l5::kMaskCount, 1);
@@ -49,8 +58,10 @@ bool PushFrame(int mod, bool topLevel) {
     if (g_depth == 0) {
         g_prevHook = l5::A().gethook(L);
         g_prevMask = l5::A().gethookmask(L);
+        g_chainLeft = Chunks() * kMaxDepth;
     }
-    g_frames[g_depth++] = {mod, Chunks(), false, false, topLevel};
+    if (g_chainLeft <= 0) return false;
+    g_frames[g_depth++] = {mod, std::min(Chunks(), g_chainLeft), false, false, topLevel};
     ArmTop(L);
     return true;
 }
@@ -82,6 +93,35 @@ int __cdecl RandomSeedRaises(l5::State* L) {
     return 0;
 }
 
+// xpcall(f, h, ...): f runs under an ordinary pcall; on error, h runs under a *separate* later pcall, by which
+// point the budget hook has been re-armed, so a handler that loops is still stopped.
+int __cdecl XpcallSim(l5::State* L) {
+    const auto& a = l5::A();
+    const int n = a.gettop(L);
+    if (n < 2) {
+        a.pushstring(L, "xpcall: expected (f, h, ...)");
+        a.error(L);
+    }
+    a.pushvalue(L, 2);
+    int href = TakeRef();
+    a.remove(L, 2);
+    constexpr int kMultret = -1;  // LUA_MULTRET, stable across Lua versions
+    const int rc = a.pcall(L, n - 2, kMultret, 0);
+    if (rc == 0) {
+        DropRef(href);
+        a.pushboolean(L, 1);
+        a.insert(L, 1);
+        return a.gettop(L);
+    }
+    a.rawgeti(L, l5::kRegistry, href);
+    DropRef(href);
+    a.insert(L, -2);
+    a.pcall(L, 1, 1, 0);  // its own success/failure both just become the second return value, as sandbox.cpp does
+    a.pushboolean(L, 0);
+    a.insert(L, -2);
+    return 2;
+}
+
 // Protected: arg 1 = lightuserdata(int* mod). Returns the new environment.
 int __cdecl BuildEnvK(l5::State* L) {
     const auto& a = l5::A();
@@ -93,6 +133,9 @@ int __cdecl BuildEnvK(l5::State* L) {
         a.rawget(L, l5::kGlobals);
         a.rawset(L, 2);
     }
+    a.pushstring(L, "xpcall");
+    a.pushcclosure(L, &XpcallSim, 0);
+    a.rawset(L, 2);
     PushWum(mod);   // 3: wum
     a.newtable(L);  // 4: math, a copy of the engine's with random/randomseed replaced
     a.pushstring(L, "math");
