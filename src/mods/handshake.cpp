@@ -1,4 +1,4 @@
-// Handshake: content identity, lobby member data and the host's sim switch (m2-design.md §3.E).
+// Handshake: content identity, lobby member data and the host's sim switch.
 #include "core/module.h"
 #include "melange/mods.h"
 
@@ -32,10 +32,7 @@ namespace {
 
 using SteamID = uint64_t;
 
-// Calls the real ISteamMatchmaking008 / ISteamUser016 / ISteamFriends009 vtables at the slots re-verified in
-// melange-private/re/ISteamMatchmaking008.h. This never installs a hook: LocalNet (private, test-only) patches the
-// interface OBJECT's vtable in place (see net/steam_trace.cpp's HookMatchmaking), so a plain call through the
-// normal accessor sees LocalNet's answers during tests and the real Steam client otherwise.
+// Calls the ISteamMatchmaking008 / ISteamUser016 / ISteamFriends009 vtables directly; installs no hook.
 void* Accessor(const char* name) {
     HMODULE api = GetModuleHandleW(L"steam_api.dll");
     if (!api) return nullptr;
@@ -132,10 +129,7 @@ uint64_t StatSig(const fs::path& p) {
     return (static_cast<uint64_t>(sz) * 1099511628211ULL) ^ static_cast<uint64_t>(t.time_since_epoch().count());
 }
 
-// Default contentHash.include (m2-design.md §3.E): spice.json, the entry.sim folder, assets/**. ModInfo (frozen)
-// does not carry the manifest's actual entrySim path or its hashInclude override, so this walks the conventional
-// "sim/" folder in its place; see the "API deviations" note in the task report for the follow-up once Thumper (A)
-// can hand E the real per-mod include list.
+// The default contentHash.include: spice.json, the sim folder and assets/**.
 std::vector<WalkedFile> WalkModFileList(const fs::path& dir, uint64_t* aggSig) {
     std::vector<WalkedFile> list;
     uint64_t agg = 0;
@@ -161,8 +155,7 @@ std::vector<WalkedFile> WalkModFileList(const fs::path& dir, uint64_t* aggSig) {
     return list;
 }
 
-// Cached by aggregate size/mtime signature (m2-design.md: "cached by file size and mtime"): file contents are
-// only re-hashed for a mod whose signature changed since the last call. Never runs on the main thread.
+// Cached by a size/mtime signature per mod. Never runs on the main thread.
 std::vector<ContentFile> FilesForMod(const std::string& id, const std::wstring& dirW) {
     fs::path dir(dirW);
     uint64_t agg = 0;
@@ -185,8 +178,8 @@ std::vector<ContentFile> FilesForMod(const std::string& id, const std::wstring& 
     return files;
 }
 
-// The content set (m2-design.md §3.E): mods active this session that are content, have entry.sim or messages, or
-// declare unsafe, in load order. Thumper freezes it at launch.
+// The content set: mods active this session that are content, have entry.sim or messages, or declare unsafe, in
+// load order. Thumper freezes it at launch.
 std::vector<thumper::Entry> EnabledContentMods() {
     std::vector<thumper::Entry> out;
     for (thumper::Entry& e : thumper::Snapshot())
@@ -331,6 +324,14 @@ private:
 }  // namespace
 
 void RegisterPanel();  // handshake_panel.cpp
+
+std::string PeerModsDiff(uint64_t steamId) {
+    SteamID lobby = g_lobby.load();
+    if (!lobby) return "";
+    std::vector<ContentMod> ids;
+    for (const thumper::Entry& m : EnabledContentMods()) ids.push_back({m.manifest.id, m.manifest.version, {}});
+    return DiffModsValues(BuildModsValue(ids), LobbyMemberData(lobby, steamId, "mlg.mods"));
+}
 
 }  // namespace melange::handshake
 

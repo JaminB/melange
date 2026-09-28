@@ -113,6 +113,11 @@ int main() {
         Expect(v.find(",,") == std::string::npos, "mods value: truncation lands on an entry boundary");
     }
 
+    Expect(DiffModsValues("a@1.0.0,b@2.0.0", "b@2.0.0,a@1.0.0").empty(), "mods diff: same set in another order");
+    Expect(DiffModsValues("a@1.0.0,b@2.0.0", "a@1.0.1,c@3.0.0") == "missing b@2.0.0, extra c@3.0.0, a 1.0.0 vs 1.0.1",
+           "mods diff: missing, extra and another version");
+    Expect(DiffModsValues("a@1.0.0", "a@1.0.0,\xE2\x80\xA6").empty(), "mods diff: a truncated list's ellipsis is ignored");
+
     Expect(ClassifyPeer(false, "", "abcd") == PeerStatus::Vanilla, "classify: no mlg key is Vanilla");
     Expect(ClassifyPeer(true, "v", "abcd") == PeerStatus::MelangeVanilla, "classify: peer hash16 v is MelangeVanilla");
     Expect(ClassifyPeer(true, "abcd", "abcd") == PeerStatus::Match, "classify: equal hash16 is Match");

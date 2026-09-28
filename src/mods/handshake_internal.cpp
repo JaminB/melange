@@ -1,6 +1,7 @@
 #include "mods/handshake_internal.h"
 
 #include <algorithm>
+#include <utility>
 #include <cstdlib>
 
 #include "tools/hash.h"
@@ -85,6 +86,48 @@ std::string BuildModsValue(const std::vector<ContentMod>& modsInLoadOrder, size_
         out += piece;
     }
     out += ellipsis;
+    return out;
+}
+
+namespace {
+std::vector<std::pair<std::string, std::string>> ParseModsValue(std::string v) {
+    const std::string ellipsis = "\xE2\x80\xA6";
+    if (v.size() >= ellipsis.size() && v.compare(v.size() - ellipsis.size(), ellipsis.size(), ellipsis) == 0)
+        v.resize(v.size() - ellipsis.size());
+    std::vector<std::pair<std::string, std::string>> out;
+    size_t start = 0;
+    while (start < v.size()) {
+        size_t end = v.find(',', start);
+        if (end == std::string::npos) end = v.size();
+        std::string entry = v.substr(start, end - start);
+        size_t at = entry.rfind('@');
+        if (!entry.empty()) out.emplace_back(entry.substr(0, at), at == std::string::npos ? "" : entry.substr(at + 1));
+        start = end + 1;
+    }
+    return out;
+}
+}  // namespace
+
+std::string DiffModsValues(const std::string& ours, const std::string& theirs) {
+    const auto a = ParseModsValue(ours), b = ParseModsValue(theirs);
+    auto find = [](const auto& list, const std::string& id) -> const std::string* {
+        for (const auto& [i, v] : list)
+            if (i == id) return &v;
+        return nullptr;
+    };
+    std::string missing, extra, versions;
+    auto add = [](std::string& s, const std::string& item) { s += (s.empty() ? "" : ", ") + item; };
+    for (const auto& [id, v] : a) {
+        const std::string* t = find(b, id);
+        if (!t) add(missing, id + "@" + v);
+        else if (*t != v) add(versions, id + " " + v + " vs " + *t);
+    }
+    for (const auto& [id, v] : b)
+        if (!find(a, id)) add(extra, id + "@" + v);
+    std::string out;
+    if (!missing.empty()) add(out, "missing " + missing);
+    if (!extra.empty()) add(out, "extra " + extra);
+    if (!versions.empty()) add(out, versions);
     return out;
 }
 

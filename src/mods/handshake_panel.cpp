@@ -1,10 +1,15 @@
-// Overlay panel "Thumper/Lobby" (m2-design.md §3.E): each lobby member's handshake status.
+// Overlay panel "Thumper/Lobby": each lobby member's handshake status.
 #include <imgui.h>
+
+#include <cstdint>
+#include <string>
 
 #include "melange/mods.h"
 #include "melange/overlay.h"
 
 namespace melange::handshake {
+std::string PeerModsDiff(uint64_t steamId);  // handshake.cpp
+
 namespace {
 
 const char* StatusText(mods::PeerStatus s) {
@@ -50,6 +55,10 @@ void DrawPanel(void*) {
             ImGui::Text("%s", p.name[0] ? p.name : "?");
             ImGui::TableNextColumn();
             ImGui::TextColored(StatusColor(p.status), "%s", StatusText(p.status));
+            if (p.status == mods::PeerStatus::Mismatch) {
+                const std::string diff = PeerModsDiff(p.steamId);
+                if (!diff.empty()) ImGui::TextWrapped("%s", diff.c_str());
+            }
             ImGui::TableNextColumn();
             ImGui::Text("%s", p.version[0] ? p.version : "-");
             ImGui::TableNextColumn();

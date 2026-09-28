@@ -11,8 +11,7 @@
 namespace melange::handshake {
 
 constexpr int kSimApiVersion = 1;
-// Every vanilla name is registered by frame 4 and none are added later (m2-design.md S1.5, [V]); the registry
-// only grows past this once Thumper freezes mod message names, so the overhang is exactly modMessages.
+// Vanilla names in the message registry; anything past this is a mod message name.
 constexpr uint32_t kVanillaMessageCount = 1227;
 constexpr size_t kModsValueMaxBytes = 2000;
 
@@ -44,6 +43,10 @@ bool ParseMlgValue(const std::string& value, std::string* version, std::string* 
 // "id@version,..." in load order, truncated to `maxBytes` (never mid-entry) with a trailing "…" when it does not
 // all fit.
 std::string BuildModsValue(const std::vector<ContentMod>& modsInLoadOrder, size_t maxBytes = kModsValueMaxBytes);
+
+// What differs between two "mlg.mods" values, for the lobby panel: "missing a@1, extra b@2, c 1.0.0 vs 1.1.0";
+// "" when the lists name the same mods at the same versions.
+std::string DiffModsValues(const std::string& ours, const std::string& theirs);
 
 // Vanilla: no "mlg" key at all. MelangeVanilla: "mlg" present with hash16 "v". Match/Mismatch: hash16 compared
 // against ours (mismatched when we ourselves are vanilla and they are not, or vice versa).
