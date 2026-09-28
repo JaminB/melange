@@ -94,6 +94,10 @@ target_compile_options(trace_selftest PRIVATE /W4 /utf-8 /permissive- /Zi /wd410
 target_link_options(trace_selftest PRIVATE /DEBUG /SAFESEH:NO)
 target_link_libraries(trace_selftest PRIVATE safetyhook::safetyhook bcrypt miniz)
 
+add_executable(gldebug_selftest EXCLUDE_FROM_ALL tests/gldebug_selftest.cpp)
+target_include_directories(gldebug_selftest PRIVATE src)
+target_compile_options(gldebug_selftest PRIVATE /W4 /utf-8 /permissive-)
+
 add_executable(jlog_selftest
     tests/jlog_selftest.cpp
     src/core/jlog.cpp

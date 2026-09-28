@@ -45,10 +45,11 @@ Every module has its own section in `Melange.ini`, and `Enabled=0` turns a modul
 | `NetTrace` | on | Logs raw Winsock calls |
 | `WindowTag` | on | Shows the Melange version in the window title |
 | `FrameInterval` | off | Sets the engine frame interval (`IntervalMs=16` is about 60 fps) |
+| `SmoothSixty` | on (`On=0`) | "Smooth 60": lifts the engine's frame limiter and uses vsync. Toggle in the overlay menu *Game* |
 | `Mirage` | on | Graphics layer core: renderer access, scene stages for mods, mod folders |
 | `MirageTrace` | on | OpenGL call statistics (`Mode=count`), frame capture (`CaptureHotkey`), texture dumper, GPU compatibility report |
 | `MirageShaders`, `MiragePostFX`, `MirageDraw` | on | Graphics layer components (in development: they do nothing yet) |
-| `MirageDebug` | off | Optional OpenGL debug context (in development) |
+| `MirageDebug` | off | OpenGL debug context: driver errors and warnings go to the logs and the *Mirage/GL debug* panel |
 
 ## Logs and bug reports
 
