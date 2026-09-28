@@ -49,4 +49,8 @@ void EnsureKey(const char* section, const char* key, const char* def) {
     GetPrivateProfileStringW(W(section).c_str(), W(key).c_str(), L"\x1", buf, 8, g_path.c_str());
     if (buf[0] == L'\x1') WritePrivateProfileStringW(W(section).c_str(), W(key).c_str(), W(def).c_str(), g_path.c_str());
 }
+
+void SetString(const char* section, const char* key, const char* value) {
+    WritePrivateProfileStringW(W(section).c_str(), W(key).c_str(), W(value ? value : "").c_str(), g_path.c_str());
+}
 }  // namespace melange::config

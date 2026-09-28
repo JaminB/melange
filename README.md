@@ -45,6 +45,9 @@ Every module has its own section in `Melange.ini`, and `Enabled=0` turns a modul
 | `NetTrace` | on | Logs raw Winsock calls |
 | `WindowTag` | on | Shows the Melange version in the window title |
 | `FrameInterval` | off | Sets the engine frame interval (`IntervalMs=16` is about 60 fps) |
+| `Mirage` | on | Graphics layer core: renderer access, scene stages for mods, mod folders |
+| `MirageTrace`, `MirageShaders`, `MiragePostFX`, `MirageDraw` | on | Graphics layer components (in development: they do nothing yet) |
+| `MirageDebug` | off | Optional OpenGL debug context (in development) |
 
 ## Logs and bug reports
 
@@ -102,6 +105,24 @@ The public SDK headers are in `src/sdk/melange/`:
 | `melange/jlog.h` | Write structured records to the session log, and read the in-memory tail |
 | `melange/export.h` | Start a "Save logs" export, or write one to a given path |
 | `melange/testcmd.h` | Register named text commands for scripted testing |
+| `melange/render.h` | Renderer access: camera, window size, frame timing, scene stages, GL state save and restore |
+| `melange/gltrace.h`, `shaders.h`, `postfx.h`, `draw.h`, `gldebug.h` | Graphics layer APIs (in development) |
+
+## Graphics layer (Mirage)
+
+Mirage lets modules and mods draw inside the game's own frame. `melange/render.h` gives the main camera, window size and frame timing, and runs callbacks at fixed points of the engine's draw list:
+
+| Stage | Where it runs |
+|---|---|
+| `World` | after the landscape, sea and worms, before particles (the depth buffer holds the world) |
+| `WorldLate` | after particles, before worm labels and the HUD |
+| `PostWorld` | same point, after the `WorldLate` callbacks: post-processing that leaves labels and HUD alone |
+| `Hud` | after the HUD, before the final copy to the screen |
+| `Final` | just before the final copy to the screen |
+
+Callbacks run in the main render pass only, with the game's framebuffer bound. Wrap your GL work in `render::PushState()` / `PopState()`. With no callbacks registered, Mirage patches nothing and every frame is identical to the game without it.
+
+Mods live in `<game>\Mods\<id>\`. When two mods provide the same file, the later folder name wins. `[Mirage] DisabledMods=a,b` switches mods off, and `ModsDir` moves the folder.
 
 ## Building from source
 
@@ -122,7 +143,7 @@ You need:
 
 ## Roadmap
 
-Coming next: a graphics layer, Lua mods, a mod loader and a map editor.
+Coming next: the rest of the graphics layer (GL trace, shader overrides, post-processing, a draw API), Lua mods, a mod loader and a map editor.
 
 ## License
 

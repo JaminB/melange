@@ -44,6 +44,11 @@ FetchContent_Declare(miniz
     GIT_SHALLOW TRUE)
 FetchContent_MakeAvailable(miniz)
 
+# Header-only stb_image for PNG loading.
+FetchContent_Declare(stb
+    URL https://github.com/nothings/stb/archive/2c980bb59875b0d32144a71867fbdebb2f77cd20.tar.gz)
+FetchContent_MakeAvailable(stb)
+
 # Every .cpp under src/ is compiled into the plugin.
 file(GLOB_RECURSE MELANGE_SOURCES CONFIGURE_DEPENDS src/*.cpp)
 list(FILTER MELANGE_SOURCES EXCLUDE REGEX "/src/xom/")
@@ -61,7 +66,7 @@ configure_file(src/core/version.h.in ${CMAKE_BINARY_DIR}/generated/version.h @ON
 add_library(melange SHARED ${MELANGE_SOURCES} src/core/version.rc)
 set_target_properties(melange PROPERTIES SUFFIX ".asi" PREFIX "")
 # src/sdk is on the include path so public headers include as "melange/<name>.h".
-target_include_directories(melange PRIVATE src src/sdk ${CMAKE_BINARY_DIR}/generated)
+target_include_directories(melange PRIVATE src src/sdk ${CMAKE_BINARY_DIR}/generated ${stb_SOURCE_DIR})
 target_compile_definitions(melange PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX _CRT_SECURE_NO_WARNINGS)
 target_compile_options(melange PRIVATE /W4 /utf-8 /permissive- /Zi /wd4100)
 target_link_options(melange PRIVATE /DEBUG /OPT:REF /OPT:ICF /SAFESEH:NO)

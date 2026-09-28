@@ -22,6 +22,7 @@ struct Caps {
     void(__stdcall* BlendEquation)(unsigned) = nullptr;
     void(__stdcall* DisableVertexAttribArray)(unsigned) = nullptr;
     void(__stdcall* GetProgramivARB)(unsigned, unsigned, int*) = nullptr;
+    void(__stdcall* BindFramebuffer)(unsigned, unsigned) = nullptr;
 };
 
 // Resolves (once per context) and returns the caps of the current context; `loaded` is false without one.
@@ -51,10 +52,12 @@ Snapshot Read();
 int Diff(const Snapshot& before, const Snapshot& after, std::string* out);
 
 // RAII: saves all state and neutralises the game's leftovers; the destructor restores everything.
-// If a framebuffer object is bound nothing is touched and Ok() is false.
+// Overlay: if a framebuffer object is bound nothing is touched and Ok() is false.
+// Stage: works inside the engine's scene FBO (restored on exit), keeps depth test, also disables client arrays.
+enum class Flavor { Overlay, Stage };
 class Guard {
 public:
-    Guard();
+    explicit Guard(Flavor flavor = Flavor::Overlay);
     ~Guard();
     void Restore();
     Guard(const Guard&) = delete;
@@ -65,6 +68,7 @@ public:
     int RestoreErrors() const { return restoreErrors_; }  // GL errors raised while drawing/restoring (0 expected)
 
 private:
+    Flavor flavor_;
     bool ok_ = false, pushed_ = false;
     int fbo_ = 0, setupErrors_ = 0, restoreErrors_ = 0;
     int activeTex_ = 0, clientActiveTex_ = 0, matrixMode_ = 0, program_ = 0, arrayBuf_ = 0, elemBuf_ = 0,

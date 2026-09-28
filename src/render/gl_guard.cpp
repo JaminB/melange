@@ -82,6 +82,7 @@ const Caps& Load() {
     Proc(c.BlendEquation, {"glBlendEquation", "glBlendEquationEXT"});
     Proc(c.DisableVertexAttribArray, {"glDisableVertexAttribArray", "glDisableVertexAttribArrayARB"});
     Proc(c.GetProgramivARB, {"glGetProgramivARB"});
+    Proc(c.BindFramebuffer, {"glBindFramebuffer", "glBindFramebufferEXT"});
 
     c.arbVp = HasExt(ext, "GL_ARB_vertex_program");
     c.arbFp = HasExt(ext, "GL_ARB_fragment_program");
@@ -260,13 +261,14 @@ int Diff(const Snapshot& a, const Snapshot& b, std::string* out) {
     return diffs;
 }
 
-Guard::Guard() {
+Guard::Guard(Flavor flavor) : flavor_(flavor) {
     const Caps& c = Load();
     if (!c.loaded) return;
+    const bool stage = flavor == Flavor::Stage;
     DrainErrors();  // don't attribute the game's pending errors to us
     if (c.fbo) {
         fbo_ = GetI(kFRAMEBUFFER_BINDING);
-        if (fbo_ != 0) return;  // skip the frame, never rebind
+        if (fbo_ != 0 && !stage) return;  // skip the frame, never rebind
     }
     if (c.ActiveTexture) {
         activeTex_ = GetI(kACTIVE_TEXTURE);
@@ -306,7 +308,9 @@ Guard::Guard() {
     for (GLenum e : {GL_STENCIL_TEST, GL_DEPTH_TEST, GL_ALPHA_TEST, GL_CULL_FACE, GL_LIGHTING, GL_FOG, GL_SCISSOR_TEST,
                      GL_COLOR_LOGIC_OP, GL_POLYGON_OFFSET_FILL, GL_POLYGON_STIPPLE, GL_COLOR_MATERIAL, GL_DITHER,
                      GL_CLIP_PLANE0, GL_CLIP_PLANE1, GL_CLIP_PLANE2, GL_CLIP_PLANE3, GL_CLIP_PLANE4, GL_CLIP_PLANE5})
-        glDisable(e);
+        if (!stage || e != GL_DEPTH_TEST) glDisable(e);
+    if (stage)
+        for (GLenum a : {GL_VERTEX_ARRAY, GL_NORMAL_ARRAY, GL_COLOR_ARRAY, GL_TEXTURE_COORD_ARRAY}) glDisableClientState(a);
     if (c.multisample) {
         glDisable(kMULTISAMPLE);
         glDisable(kSAMPLE_ALPHA_TO_COVERAGE);
@@ -365,6 +369,8 @@ void Guard::Restore() {
     if (!pushed_) return;
     pushed_ = false;
     const Caps& c = Load();
+    if (flavor_ == Flavor::Stage && c.BindFramebuffer && GetI(kFRAMEBUFFER_BINDING) != fbo_)
+        c.BindFramebuffer(0x8D40 /*GL_FRAMEBUFFER*/, static_cast<GLuint>(fbo_));
     // pop down to the depth recorded after our push (ImGui may have left pushes after a fault); bounded in
     // case a driver never reports the depth going down.
     glMatrixMode(GL_MODELVIEW);

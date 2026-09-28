@@ -11,4 +11,5 @@ float GetFloat(const char* section, const char* key, float def);
 std::string GetString(const char* section, const char* key, const char* def);
 // Writes the key only if it is missing, so a fresh ini documents every option with its default.
 void EnsureKey(const char* section, const char* key, const char* def);
+void SetString(const char* section, const char* key, const char* value);
 }  // namespace melange::config
