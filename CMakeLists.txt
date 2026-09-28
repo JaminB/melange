@@ -174,6 +174,14 @@ target_include_directories(gamestate_selftest PRIVATE src src/sdk)
 target_compile_definitions(gamestate_selftest PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX _CRT_SECURE_NO_WARNINGS)
 target_compile_options(gamestate_selftest PRIVATE /W4 /utf-8 /permissive-)
 
+# Oasis panel RPCs without the game: the Melange.ini editor (ini.get/ini.set) and the lua.* parameter rules.
+add_executable(oasis_rpc_selftest tests/oasis_rpc_selftest.cpp src/oasis/rpc/ini.cpp src/oasis/rpc/ini_edit.cpp
+    src/core/config.cpp src/core/config_schema.cpp src/core/log.cpp src/tools/json_read.cpp)
+target_include_directories(oasis_rpc_selftest PRIVATE src src/sdk)
+target_compile_definitions(oasis_rpc_selftest PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX _CRT_SECURE_NO_WARNINGS)
+target_compile_options(oasis_rpc_selftest PRIVATE /W4 /utf-8 /permissive-)
+target_link_libraries(oasis_rpc_selftest PRIVATE oasis_core)
+
 add_executable(json_read_selftest tests/json_read_selftest.cpp src/tools/json_read.cpp)
 target_include_directories(json_read_selftest PRIVATE src)
 target_compile_definitions(json_read_selftest PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX _CRT_SECURE_NO_WARNINGS)

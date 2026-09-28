@@ -22,6 +22,21 @@ Oasis is Melange's local web app: a page in your browser that talks to the runni
 - The overlay panel also lists connected clients with a *Kick* button, and the server's own stats (clients,
   channels, methods, RPC calls, auth failures).
 
+### The panels
+
+| Panel | What it does |
+|---|---|
+| **Logs** | The live log (the `log` stream) in a virtualised table of up to 50 000 records: filter by level, category and text, pause, follow the newest, open a record as a JSON tree. The source menu opens a past session's `events.jsonl`. |
+| **Events** | Pick bus messages by name or `Prefix.*` and watch them arrive with their decoded payloads. Nothing is streamed until you pick something. The Counts view shows every message's rate from `bus.counts`. |
+| **Console** | Lua, as the overlay console: the client environment, a mod's environment or the match. Enter runs, Shift+Enter adds a line, Tab completes, Up and Down recall your history (kept in the browser). Match code follows the console's rule: refused online unless `[LuaConsole] MatchConsoleOnline=1`. |
+| **Mods** | Enable and disable mods (content mods take effect after a restart), see load errors, and revoke Deep Desert. **Deep Desert is never granted from the browser**: a mod waiting for consent asks in the game's overlay. |
+| **Settings** | Every `Melange.ini` key a module declares, with its default and whether it applies live or after a restart, plus the file as raw text. Saving changes that one line in place and keeps every comment and other byte. `[Thumper] GrantSalt` is hidden and cannot be changed, and `[Thumper] AutoGrantDeepDesert` can only be set to `0`. |
+| **About** | Versions, the protocol, and the channels and methods the server offers. |
+
+Tabs can be opened side by side (the ⧉ button next to a tab, or the command palette, `Ctrl+K`). The layout and the
+colour theme (system, light or dark) are remembered by the browser. With `ReadOnly=1` every control that changes
+something is disabled, the console included.
+
 ### Settings (`[Oasis]` in `Melange.ini`)
 
 | Key | Default | Meaning |
@@ -45,7 +60,11 @@ portable and needs no npm:
 .\scripts\web\fetch.ps1     # once: Node.js and esbuild into tools\, the packages of web\web.lock.json into web\node_modules
 .\build.ps1                 # type-checks, bundles and embeds the web app
 .\scripts\web\test.ps1      # unit tests; add -Url <launch url> for the browser tests against a running game
+.\scripts\web\test.ps1 -Panels   # plus every panel in headless Edge against a mock server (no game needed)
 ```
+
+`web/test/e2e/mock-server.mjs` is a stand-in for the game's server that serves a built app and fakes the streams and
+methods; `node web/test/e2e/mock-server.mjs --root web/dist` prints a link you can open by hand.
 
 - `web/toolchain.lock.json` pins Node.js and esbuild by SHA-256. `web/web.lock.json` lists every package,
   transitive ones included, with its registry tarball, `sha512` integrity and licence.
@@ -170,6 +189,20 @@ Close codes: 4000 closed by the game (the page reconnects), 4001 protocol versio
 |---|---|
 | `sys.ping` | `{frame, ms}`: the game's frame counter and the server's clock |
 | `bus.names` | `[{id, name, posts, deliveries}]`: every registered engine message name and its counts |
+
+### Console, mods and settings
+
+| Method | Params → result | Notes |
+|---|---|---|
+| `lua.eval` | `{target: "client"\|"match"\|"mod", mod?, code}` → `{ok, text}` | Main thread, one per frame across clients; `code` at most 64 KB; `=expr` is shorthand for `return expr`. A Lua error is `ok:false` with the message. `match` outside a match is `-32001`, and refused online (`-32000`, the console's reason) unless `[LuaConsole] MatchConsoleOnline=1`. Refused with `ReadOnly=1`. |
+| `lua.complete` | `{target, mod?, prefix}` → `[string]` | The names that can follow the last `.` or `:` of `prefix`. |
+| `mods.list` | `{}` → `[ModInfo]` | `ModInfo`: `{id, name, version, authors, dir, kind: "client"\|"content", state, reason, on, restartRequired, implicitManifest, hasClient, hasSim, deepDesert: {declared, granted}, order, sandbox?: {loaded, error, callbacks, disabledCallbacks, faults, bytes}}`. `state` is `enabled`, `disabled`, `blocked`, `pending-consent`, `incompatible` or `restart-required`. |
+| `mods.setEnabled` | `{id, on}` → `ModInfo` | As the overlay's checkbox: persisted; client-only mods apply at once, content mods at the next launch. Enabling a Deep Desert mod does not grant it: the consent prompt appears in the game. |
+| `mods.revokeDeepDesert` | `{id}` → `ModInfo` | There is no method to grant Deep Desert. |
+| `ini.get` | `{}` → `{path, encoding, text, keys}` | `keys`: `[{section, key, def, live, declared, current, line?}]`, every declared key plus the undeclared ones in the file; `def` is `null` for undeclared keys and `current` is `null` for keys missing from the file. The grant salt reads `********`. |
+| `ini.set` | `{section, key, value}` → `{live, restart, changed}` | One line is changed in place (indentation, spacing, key spelling and an inline `; comment` kept) or added after the section's last key, and the file is replaced atomically in its own encoding. The key must be declared, present in the file, or in a `[Mod.<id>]` section. Values cannot contain line breaks or `;` or start or end with a space. `[Thumper] GrantSalt`, and `[Thumper] AutoGrantDeepDesert` other than `0`, are refused (`-32000`). |
+
+The `mods` channel sends the whole `mods.list` result to a new subscriber and again on every change (Coalesce).
 
 The streams (`log`, `bus`, `state`, ...) and the other methods are listed in `welcome` as their providers load.
 
