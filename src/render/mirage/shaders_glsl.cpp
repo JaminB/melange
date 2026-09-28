@@ -578,6 +578,11 @@ bool Active(const std::string& file, const std::string& entry) {
     return false;
 }
 
+std::string Owner(const std::string& file, const std::string& entry) {
+    auto f = g_files.find(Key(file, entry));
+    return f != g_files.end() ? f->second.owner : std::string();
+}
+
 uint32_t ActiveCount() {
     uint32_t n = 0;
     for (const auto& [p, prog] : g_progs)

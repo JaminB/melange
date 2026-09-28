@@ -699,6 +699,7 @@ size_t ListPrograms(ProgramInfo* out, size_t max) {
                     p.overridden = it->second.overridden;
                     p.owner = it->second.owner;
                 }
+                if (p.glsl) p.owner = ms::Intern(ms::glsl::Owner(file, entry));
             }
             ++x.n;
         },

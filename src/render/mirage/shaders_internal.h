@@ -33,6 +33,7 @@ void OnCreate(CGprogram p, const std::string& file, const std::string& entry, in
 void OnBind(CGprogram p);  // after the real cgGLBindProgram
 void OnFileChanged(const std::wstring& path);
 bool Active(const std::string& file, const std::string& entry);
+std::string Owner(const std::string& file, const std::string& entry);
 uint32_t ActiveCount();
 bool Installed();
 }  // namespace glsl
