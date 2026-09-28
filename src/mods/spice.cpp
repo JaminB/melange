@@ -531,8 +531,9 @@ bool ParseManifestJson(const json::Value& v, const std::string& folderId, Manife
                 }
                 Setting s;
                 const json::Value* keyv = item.Get("key");
-                if (!keyv || !keyv->IsString() || keyv->string.empty() || !keys.insert(keyv->string).second) {
-                    AddError(errs, keyv, "settings.key", "setting key must be a unique, non-empty string");
+                if (!keyv || !keyv->IsString() || keyv->string.empty() ||
+                    keyv->string.find_first_of("\r\n") != std::string::npos || !keys.insert(keyv->string).second) {
+                    AddError(errs, keyv, "settings.key", "setting key must be a unique, non-empty string with no line breaks");
                     ok = false;
                     continue;
                 }
@@ -549,7 +550,7 @@ bool ParseManifestJson(const json::Value& v, const std::string& folderId, Manife
                 if (const json::Value* opts = item.Get("options")) {
                     if (opts->IsArray())
                         for (const json::Value& o : opts->items)
-                            if (o.IsString()) s.options.push_back(o.string);
+                            if (o.IsString() && o.string.find_first_of("\r\n") == std::string::npos) s.options.push_back(o.string);
                 }
                 if (s.type == "enum" && s.options.empty()) {
                     AddError(errs, typev, "settings.options", "an enum setting needs a non-empty options list");
