@@ -20,6 +20,7 @@
 #include "lua/sim/bridge_internal.h"
 #include "melange/jlog.h"
 #include "mods/handshake_internal.h"
+#include "mods/thumper_internal.h"
 #include "net/steam.h"
 #include "tools/hash.h"
 #include "version.h"
@@ -184,18 +185,12 @@ std::vector<ContentFile> FilesForMod(const std::string& id, const std::wstring& 
     return files;
 }
 
-// Enabled mods that count as content (m2-design.md §3.E): Thumper is expected to have already folded "has
-// entry.sim", "declares messages" and "unsafe" into Kind::Content when it resolves the manifest (§2.5), so a
-// plain Kind check here is enough and needs no extra per-mod flags from the frozen ModInfo.
-std::vector<mods::ModInfo> EnabledContentMods() {
-    std::vector<mods::ModInfo> all(256);
-    int n = mods::List(all.data(), static_cast<int>(all.size()));
-    n = std::min(n, static_cast<int>(all.size()));
-    std::vector<mods::ModInfo> out;
-    for (int i = 0; i < n; ++i) {
-        const mods::ModInfo& m = all[static_cast<size_t>(i)];
-        if (m.state == mods::State::Enabled && m.kind == mods::Kind::Content) out.push_back(m);
-    }
+// The content set (m2-design.md §3.E): mods active this session that are content, have entry.sim or messages, or
+// declare unsafe, in load order. Thumper freezes it at launch.
+std::vector<thumper::Entry> EnabledContentMods() {
+    std::vector<thumper::Entry> out;
+    for (thumper::Entry& e : thumper::Snapshot())
+        if (e.sessionActive && e.contentRelevant) out.push_back(std::move(e));
     return out;
 }
 
@@ -210,13 +205,11 @@ uint32_t RegisteredModMessages() {
 }
 
 mods::ContentId ComputeContent() {
-    std::vector<mods::ModInfo> enabled = EnabledContentMods();
+    std::vector<thumper::Entry> enabled = EnabledContentMods();
     std::vector<ContentMod> contentMods;
     contentMods.reserve(enabled.size());
-    for (const mods::ModInfo& m : enabled) {
-        std::string id = m.id ? m.id : "";
-        contentMods.push_back({id, m.version ? m.version : "", FilesForMod(id, m.dir ? m.dir : L"")});
-    }
+    for (const thumper::Entry& m : enabled)
+        contentMods.push_back({m.manifest.id, m.manifest.version, FilesForMod(m.manifest.id, m.dir)});
     return BuildContentId(std::move(contentMods), RegisteredModMessages());
 }
 
@@ -227,7 +220,7 @@ void PublishOwnMemberData() {
     { std::lock_guard lk(g_mx); c = g_content; }
     SetLobbyMemberDataRaw(lobby, "mlg", BuildMlgValue(MELANGE_VERSION, c).c_str());
     std::vector<ContentMod> ids;
-    for (const mods::ModInfo& m : EnabledContentMods()) ids.push_back({m.id ? m.id : "", m.version ? m.version : "", {}});
+    for (const thumper::Entry& m : EnabledContentMods()) ids.push_back({m.manifest.id, m.manifest.version, {}});
     SetLobbyMemberDataRaw(lobby, "mlg.mods", BuildModsValue(ids).c_str());
     jlog::Rec("handshake", jlog::Level::Info, "publish").Str("hash16", Hash16(c)).Uint("contentMods", c.contentMods).Emit();
 }
