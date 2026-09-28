@@ -49,6 +49,23 @@ FetchContent_Declare(stb
     URL https://github.com/nothings/stb/archive/2c980bb59875b0d32144a71867fbdebb2f77cd20.tar.gz)
 FetchContent_MakeAvailable(stb)
 
+# Lua 5.4.7 for the Sandbox VM, compiled as C++ so that lua_error throws and destructors in bindings run.
+FetchContent_Declare(lua
+    GIT_REPOSITORY https://github.com/lua/lua.git
+    GIT_TAG v5.4.7
+    GIT_SHALLOW TRUE
+    SOURCE_SUBDIR not-a-cmake-project)
+FetchContent_MakeAvailable(lua)
+file(GLOB LUA_SOURCES ${lua_SOURCE_DIR}/*.c)
+list(FILTER LUA_SOURCES EXCLUDE REGEX "/(lua|luac|onelua)\\.c$")
+set_source_files_properties(${LUA_SOURCES} PROPERTIES LANGUAGE CXX)
+add_library(lua54 STATIC ${LUA_SOURCES})
+# Upstream lua.hpp wraps the headers in extern "C", which does not match a C++ build of Lua.
+file(WRITE ${CMAKE_BINARY_DIR}/lua-include/lua.hpp
+    "#pragma once\n#include \"lua.h\"\n#include \"lualib.h\"\n#include \"lauxlib.h\"\n")
+target_include_directories(lua54 PUBLIC ${lua_SOURCE_DIR} ${CMAKE_BINARY_DIR}/lua-include)
+target_compile_options(lua54 PRIVATE /TP /EHsc /W1 /wd4244 /wd4267 /wd4334)
+
 # Every .cpp under src/ is compiled into the plugin.
 file(GLOB_RECURSE MELANGE_SOURCES CONFIGURE_DEPENDS src/*.cpp)
 list(FILTER MELANGE_SOURCES EXCLUDE REGEX "/src/xom/")
@@ -70,7 +87,16 @@ target_include_directories(melange PRIVATE src src/sdk ${CMAKE_BINARY_DIR}/gener
 target_compile_definitions(melange PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX _CRT_SECURE_NO_WARNINGS)
 target_compile_options(melange PRIVATE /W4 /utf-8 /permissive- /Zi /wd4100)
 target_link_options(melange PRIVATE /DEBUG /OPT:REF /OPT:ICF /SAFESEH:NO)
-target_link_libraries(melange PRIVATE safetyhook::safetyhook dbghelp bcrypt ws2_32 shell32 imgui miniz)
+target_link_libraries(melange PRIVATE safetyhook::safetyhook dbghelp bcrypt ws2_32 shell32 imgui miniz lua54)
+
+add_executable(json_read_selftest tests/json_read_selftest.cpp src/tools/json_read.cpp)
+target_include_directories(json_read_selftest PRIVATE src)
+target_compile_definitions(json_read_selftest PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX _CRT_SECURE_NO_WARNINGS)
+target_compile_options(json_read_selftest PRIVATE /W4 /utf-8 /permissive-)
+
+add_executable(lua54_selftest tests/lua54_selftest.cpp)
+target_compile_options(lua54_selftest PRIVATE /W4 /utf-8 /permissive- /EHsc)
+target_link_libraries(lua54_selftest PRIVATE lua54)
 
 # Offline self-tests (no game needed).
 add_executable(bus_selftest EXCLUDE_FROM_ALL

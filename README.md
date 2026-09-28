@@ -118,6 +118,9 @@ The public SDK headers are in `src/sdk/melange/`:
 | `melange/shaders.h` | List the game's shader programs, reload them, set their parameters, add shader folders |
 | `melange/draw.h` | Draw lines, boxes, spheres, meshes and text in the world, and shapes, text and images on the HUD |
 | `melange/gldebug.h` | Whether the debug context is on, its message counts, and debug groups and labels for your GL work |
+| `melange/mods.h` | The mod list, load order and enable state, and the content identity used in online lobbies (interface only for now) |
+| `melange/lua.h` | Extend the Lua 5.4 client VM from C++ (interface only for now) |
+| `melange/sim.h` | The simulation side: match tick, deterministic random numbers, sends from sim mods (interface only for now) |
 
 ## Graphics layer (Mirage)
 

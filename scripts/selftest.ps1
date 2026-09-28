@@ -7,9 +7,9 @@ Push-Location $repo
 try {
     # Dot-sourced so the x86 developer environment stays set for the extra targets.
     . "$repo\build.ps1" -Config $Config
-    cmake --build --preset $Config --target bus_selftest jlog_selftest trace_selftest gldebug_selftest shaders_selftest postfx_selftest draw_queue_selftest
+    cmake --build --preset $Config --target bus_selftest jlog_selftest trace_selftest gldebug_selftest shaders_selftest postfx_selftest draw_queue_selftest json_read_selftest lua54_selftest
     if ($LASTEXITCODE) { exit $LASTEXITCODE }
-    foreach ($t in "bus_selftest", "jlog_selftest", "trace_selftest", "gldebug_selftest", "shaders_selftest", "postfx_selftest", "draw_queue_selftest") {
+    foreach ($t in "bus_selftest", "jlog_selftest", "trace_selftest", "gldebug_selftest", "shaders_selftest", "postfx_selftest", "draw_queue_selftest", "json_read_selftest", "lua54_selftest") {
         & "$repo\build\$Config\$t.exe"
         if ($LASTEXITCODE) { Write-Host "$t FAILED"; exit $LASTEXITCODE }
     }
