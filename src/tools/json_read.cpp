@@ -2,8 +2,9 @@
 
 #include <charconv>
 #include <cmath>
-#include <cstdio>
 #include <cstdint>
+#include <cstdio>
+#include <unordered_set>
 
 namespace melange::json {
 namespace {
@@ -96,13 +97,13 @@ private:
             Advance(1);
             return true;
         }
+        std::unordered_set<std::string> seen;
         for (;;) {
             if (End() || Peek() != '"') return End() ? Fail("unexpected end of input") : Fail("expected a string key");
             const int kl = line_, kc = Col();
             std::string key;
             if (!ParseString(&key)) return false;
-            for (auto& m : v->members)
-                if (m.first == key) return FailAt(kl, kc, "duplicate key \"" + key + "\"");
+            if (!seen.insert(key).second) return FailAt(kl, kc, "duplicate key \"" + key + "\"");
             Ws();
             if (End() || Peek() != ':') return End() ? Fail("unexpected end of input") : Fail("expected ':'");
             Advance(1);
