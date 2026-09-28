@@ -152,12 +152,36 @@ target_link_options(melange PRIVATE /DEBUG /OPT:REF /OPT:ICF /SAFESEH:NO)
 target_link_libraries(melange PRIVATE safetyhook::safetyhook dbghelp bcrypt ws2_32 shell32 imgui miniz lua54 oasis_core)
 
 # Oasis core without the game: HTTP/WS corpus against a live server on 127.0.0.1, protocol and queue cases.
-add_executable(oasis_core_selftest tests/oasis_core_selftest.cpp src/oasis/auth_min.cpp src/tools/json_read.cpp src/core/log.cpp)
+add_executable(oasis_core_selftest tests/oasis_core_selftest.cpp src/oasis/auth_min.cpp src/oasis/webpanels.cpp
+    src/tools/json_read.cpp src/core/log.cpp)
 target_include_directories(oasis_core_selftest PRIVATE src src/sdk)
 target_compile_definitions(oasis_core_selftest PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX _CRT_SECURE_NO_WARNINGS)
 target_compile_options(oasis_core_selftest PRIVATE /W4 /utf-8 /permissive- /Zi)
 target_link_options(oasis_core_selftest PRIVATE /DEBUG)
 target_link_libraries(oasis_core_selftest PRIVATE oasis_core bcrypt)
+
+# oasis.exe: the standalone server (Component F). Embeds the same web bundle as melange.asi.
+add_executable(oasis_standalone
+    src/oasis/standalone/main.cpp src/oasis/standalone/ini_edit.cpp src/oasis/standalone/mods_provider.cpp
+    src/oasis/standalone/json_write.cpp src/oasis/standalone/game_lock.cpp
+    src/oasis/auth_min.cpp src/oasis/webpanels.cpp src/mods/spice.cpp src/tools/json_read.cpp src/core/log.cpp
+    ${CMAKE_BINARY_DIR}/generated/oasis_web.rc)
+add_dependencies(oasis_standalone oasis_web)
+set_target_properties(oasis_standalone PROPERTIES OUTPUT_NAME "oasis")
+target_include_directories(oasis_standalone PRIVATE src src/sdk ${CMAKE_BINARY_DIR}/generated)
+target_compile_definitions(oasis_standalone PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX _CRT_SECURE_NO_WARNINGS)
+target_compile_options(oasis_standalone PRIVATE /W4 /utf-8 /permissive- /Zi)
+target_link_options(oasis_standalone PRIVATE /DEBUG)
+target_link_libraries(oasis_standalone PRIVATE oasis_core bcrypt shell32 ole32)
+
+# Offline self-test for F's standalone-only file logic (ini editing, mods.list/setEnabled): no game, no server.
+add_executable(oasis_standalone_selftest
+    tests/oasis_standalone_selftest.cpp
+    src/oasis/standalone/ini_edit.cpp src/oasis/standalone/mods_provider.cpp src/oasis/standalone/json_write.cpp
+    src/mods/spice.cpp src/tools/json_read.cpp src/core/log.cpp)
+target_include_directories(oasis_standalone_selftest PRIVATE src src/sdk)
+target_compile_definitions(oasis_standalone_selftest PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX _CRT_SECURE_NO_WARNINGS)
+target_compile_options(oasis_standalone_selftest PRIVATE /W4 /utf-8 /permissive-)
 
 add_executable(json_read_selftest tests/json_read_selftest.cpp src/tools/json_read.cpp)
 target_include_directories(json_read_selftest PRIVATE src)

@@ -51,6 +51,38 @@ portable and needs no npm:
 - The build is deterministic: the same sources and lock give the same bundle, and the bundle's build id is a hash of
   its inputs.
 
+## Standalone: `oasis.exe`
+
+`oasis.exe` ships next to `melange.asi` and serves the same app and protocol with the game closed: past session
+logs, captures, and the mods and settings of the game folder it sits in.
+
+```
+oasis.exe [--web-root <dir>] [--no-open]
+```
+
+- It finds the game folder from its own location, opens a browser itself (nothing else will), and exits once every
+  client has been gone for 10 minutes, or on Ctrl+C.
+- `welcome.server` is `"standalone"`; `state`, `entities` and the other game-only channels and methods are absent
+  (a live panel that needs them shows "game not running").
+- **While a real Melange instance is running** (detected by the same `Local\Melange-<hash>` mutex the .asi holds),
+  `mods.setEnabled` and `ini.set` are refused with `-32003`: the running game owns those files. With the game
+  closed, `oasis.exe` writes them itself (`Mods\thumper-state.json`, `Melange.ini`) the same way the overlay would.
+- `--web-root <dir>` serves a folder instead of the embedded bundle (development); `--no-open` skips the browser
+  (scripted or headless use).
+- `mods.list` reads every `Mods\<id>\spice.json` and resolves them exactly as the game would (`spice::Resolve`); a
+  Deep Desert mod already granted in-game still shows Enabled, but granting it is not possible from here (Decision
+  4: the browser can revoke Deep Desert but never grant it, and standalone has no consent dialog to show).
+
+## Web panels from modules and mods
+
+A C++ module (`melange::oasis::AddWebPanel`) or a client mod (`wum.web.panel`, see `lua-api.md`) can add a page of
+its own, served at `/ext/<id>/` and embedded by the shell in `<iframe sandbox="allow-scripts">`. That frame has an
+opaque origin: no cookie, and no same-origin `fetch`, so it cannot reach `/ws` or anything else in the app directly
+(`/ext/*` therefore does not itself require the token or cookie either — the frame could never present them, and
+its content is the same non-secret bundle already inside `melange.asi`). Its own JSON API goes through
+`/app/ext.js` and `postMessage` to the shell, which allows only the panel's own `mod.<id>.*` channels and methods
+plus read-only `state` and `log`, and enforces that from the trusted side, not from inside the frame.
+
 ## Writing a panel
 
 Panels are TypeScript modules under `web/src/panels/<name>/`. Each registers itself and is loaded on first open:
@@ -110,7 +142,7 @@ headers or 16 KB of them with 431 or 413.
 | `GET /`, `/app/*` | cookie | the app; `ETag`, `Cache-Control: no-cache`; `.gz` copies sent as-is to clients that accept gzip |
 | `GET /ws` (upgrade) | cookie + Origin, or `?k=` with no Origin | WebSocket |
 | `GET /captures/<name>.mcap` * | cookie | a capture file, `Range` supported |
-| `GET /ext/<panel>/*` * | cookie | a module's or mod's web panel, sandboxed |
+| `GET /ext/<panel>/*` * | none (see below) | a module's or mod's web panel, sandboxed |
 | `GET /logs/<session>/<file>` * | cookie | past session logs |
 | anything else | - | 404 |
 

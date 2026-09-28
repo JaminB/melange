@@ -31,6 +31,7 @@
 #include "oasis/core/server.h"
 #include "oasis/core/ws.h"
 #include "oasis/providers.h"
+#include "oasis/webpanels.h"
 
 namespace oc = melange::oasis::core;
 namespace oa = melange::oasis;
@@ -245,7 +246,9 @@ void TestRouter() {
     const oa::ChannelId st = oa::AddChannel("t.state", co);
     oa::OnSubscribe(log, &OnSub, nullptr);
     oa::OnSubscribe(st, &OnSub, nullptr);
-    Expect(oa::AddMethod("noarea", &Echo, nullptr) == 0 && oa::AddMethod("T.x", &Echo, nullptr) == 0, "method names checked");
+    Expect(oa::AddMethod("noarea", &Echo, nullptr) == 0 && oa::AddMethod("t.x!", &Echo, nullptr) == 0 &&
+               oa::AddMethod(".x", &Echo, nullptr) == 0 && oa::AddMethod("x.", &Echo, nullptr) == 0,
+           "method names checked");
     Expect(oa::AddMethod("t.echo", &Echo, nullptr) != 0 && oa::AddMethod("t.echo", &Echo, nullptr) == 0, "method added once");
     oa::AddMethod("t.now", &Echo, nullptr, oa::kRpcServerThread);
     oa::AddMethod("t.crash", &Crash, nullptr, oa::kRpcServerThread);
@@ -686,6 +689,80 @@ void TestLive(oc::Files* files) {
     Expect(after.Open() && after.Hello(), "server still answers after the corpus");
 }
 
+// ---------------------------------------------------------------- F: web panels (component F)
+std::wstring MakePanelDir(const char* indexBody) {
+    wchar_t tmp[MAX_PATH];
+    GetTempPathW(MAX_PATH, tmp);
+    wchar_t dir[MAX_PATH];
+    swprintf(dir, MAX_PATH, L"%soasis_f_selftest_%lu", tmp, GetCurrentProcessId());
+    CreateDirectoryW(dir, nullptr);
+    std::wstring index = std::wstring(dir) + L"\\index.html";
+    FILE* f = _wfopen(index.c_str(), L"wb");
+    fputs(indexBody, f);
+    fclose(f);
+    return dir;
+}
+
+void TestWebPanels() {
+    oa::providers::InstallWebPanels();
+    const std::wstring dir = MakePanelDir("<html>panel-ok</html>");
+    const std::string ck = "Cookie: " + g_cookie + "\r\n";
+    const int handle = oa::providers::AddPanel("f-selftest", "F selftest", dir.c_str());
+    Expect(handle != 0, "AddPanel registers a panel");
+    Expect(oa::providers::AddPanel("f-selftest", "dup", dir.c_str()) == 0, "AddPanel refuses a duplicate id");
+
+    std::string r = Get("/ext/f-selftest/index.html", ck);
+    Expect(Status(r) == 200 && r.find("panel-ok") != std::string::npos, "panel file served", r.substr(0, 60));
+    Expect(r.find("Content-Security-Policy: sandbox allow-scripts") != std::string::npos &&
+               r.find("default-src") == std::string::npos,
+           "panel response carries the sandbox CSP, not the default one");
+    r = Get("/ext/f-selftest/", ck);
+    Expect(Status(r) == 200 && r.find("panel-ok") != std::string::npos, "empty path serves the entry file");
+    Expect(Status(Get("/ext/f-selftest/index.html")) == 200,
+           "a sandboxed panel frame has no cookie to send, so /ext/ does not require one");
+    Expect(Status(Get("/ext/f-selftest/../build.txt", ck)) == 404, "traversal inside a panel is refused");
+    Expect(Status(Get("/ext/no-such-panel/index.html", ck)) == 404, "unknown panel id is 404");
+
+    WsClient w;
+    w.Open();
+    w.Hello();
+    w.Text(R"({"t":"call","id":1,"m":"web.panels","p":{}})");
+    std::string p;
+    w.ReadText(&p);
+    Expect(p.find("\"id\":\"f-selftest\"") != std::string::npos && p.find("/ext/f-selftest/index.html") != std::string::npos,
+           "web.panels lists the registered panel", p);
+
+    oa::providers::RemovePanel(handle);
+    Expect(Status(Get("/ext/f-selftest/index.html", ck)) == 404, "removed panel is gone");
+    DeleteFileW((dir + L"\\index.html").c_str());
+    RemoveDirectoryW(dir.c_str());
+}
+
+void TestMethodNameCase() {
+    // The protocol's own verbs are camelCase (mods.setEnabled, mods.revokeDeepDesert): AddMethod must accept them.
+    const int h = oa::AddMethod("f.selftest.setEnabled", [](const oa::Call&, oa::Result&, void*) {}, nullptr);
+    Expect(h != 0, "AddMethod accepts a camelCase verb");
+    if (h) oa::RemoveMethod(h);
+}
+
+void TestSubscriberCount() {
+    const oa::ChannelId ch = oa::AddChannel("f.selftest.count");
+    Expect(ch != 0, "channel for the subscriber-count test");
+    Expect(oa::SubscriberCount(ch) == 0, "no subscribers yet");
+    {
+        WsClient w;
+        w.Open();
+        w.Hello();
+        w.Text(R"({"t":"sub","ch":"f.selftest.count"})");
+        Sleep(100);
+        Expect(oa::SubscriberCount(ch) == 1, "one subscriber while the socket is open",
+               std::to_string(oa::SubscriberCount(ch)));
+    }
+    Sleep(300);
+    Expect(oa::SubscriberCount(ch) == 0, "back to zero once the socket closes");
+    oa::RemoveChannel(ch);
+}
+
 // ---------------------------------------------------------------- mutation run
 std::vector<std::string> Corpus() {
     const std::string host = "127.0.0.1:" + std::to_string(g_port);
@@ -802,6 +879,9 @@ int main(int argc, char** argv) {
     _CrtMemCheckpoint(&s0);
 #endif
     TestLive(files.get());
+    TestWebPanels();
+    TestMethodNameCase();
+    TestSubscriberCount();
     if (mutate > 0) MutationRun(mutate);
     oc::Stop();
     Expect(!oc::Running() && oc::Port() == 0, "server stopped");

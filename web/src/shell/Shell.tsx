@@ -3,6 +3,8 @@ import { render } from "preact";
 import { useEffect, useRef, useState } from "preact/hooks";
 import { createClient, type Client, type ClientState, type OasisClient, type Welcome } from "../sdk/client";
 import { onPanelsChanged, panels, unmetReason, type PanelDef } from "../sdk/panels";
+import type { PanelInfo } from "../sdk/protocol";
+import { ExtPanel } from "./ext/host";
 
 const STORE_KEY = "oasis.panel";
 
@@ -74,10 +76,14 @@ function App({ client }: { client: OasisClient }) {
     return () => window.removeEventListener("hashchange", onHash);
   }, []);
 
-  const current = list.find((p) => p.id === selected) ?? list[0];
-  const select = (p: PanelDef) => {
-    setSelected(p.id);
-    remember(p.id);
+  const localIds = new Set(list.map((p) => p.id));
+  const extPanels: PanelInfo[] = (welcome?.panels ?? []).filter((p) => !localIds.has(p.id));
+  const tabs: Array<{ id: string; title: string }> = [...list, ...extPanels];
+  const current = tabs.find((p) => p.id === selected) ?? tabs[0];
+  const currentExt = current ? extPanels.find((p) => p.id === current.id) : undefined;
+  const select = (id: string) => {
+    setSelected(id);
+    remember(id);
   };
 
   return (
@@ -108,16 +114,33 @@ function App({ client }: { client: OasisClient }) {
                 disabled={!!why}
                 title={why}
                 data-panel={p.id}
-                onClick={() => select(p)}
+                onClick={() => select(p.id)}
               >
                 {p.title}
                 {why ? <span class="tab-why">{why}</span> : null}
               </button>
             );
           })}
+          {extPanels.map((p) => (
+            <button
+              key={p.id}
+              class={`tab${current?.id === p.id ? " active" : ""}`}
+              aria-current={current?.id === p.id ? "page" : undefined}
+              data-panel={p.id}
+              onClick={() => select(p.id)}
+            >
+              {p.title}
+            </button>
+          ))}
         </nav>
         <main class="panel" aria-label={current?.title}>
-          {current ? <PanelHost key={current.id} def={current} client={client} /> : <p class="muted">No panels.</p>}
+          {currentExt ? (
+            <ExtPanel key={currentExt.id} info={currentExt} client={client} />
+          ) : current ? (
+            <PanelHost key={current.id} def={current as PanelDef} client={client} />
+          ) : (
+            <p class="muted">No panels.</p>
+          )}
         </main>
       </div>
     </div>

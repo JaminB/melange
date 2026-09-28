@@ -72,10 +72,14 @@ struct Counters {
     std::atomic<uint64_t> framesOut{0}, bytesOut{0}, bytesIn{0}, dropped{0}, authFailures{0}, rpcCalls{0};
 } g_ct;
 
-bool ValidName(std::string_view n, size_t max, bool needDot) {
+// Channels and panel ids are lowercase per melange/oasis.h ("[a-z0-9._-]{1,48}"). Methods are "<area>.<verb>":
+// the protocol table's own verbs (setEnabled, revokeDeepDesert) are camelCase, so methods also allow A-Z.
+bool ValidName(std::string_view n, size_t max, bool needDot, bool allowUpper = false) {
     if (n.empty() || n.size() > max) return false;
     for (char c : n)
-        if (!((c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '.' || c == '_' || c == '-')) return false;
+        if (!((c >= 'a' && c <= 'z') || (allowUpper && c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '.' ||
+              c == '_' || c == '-'))
+            return false;
     return !needDot || (n.find('.') != std::string_view::npos && n.front() != '.' && n.back() != '.');
 }
 
@@ -589,6 +593,12 @@ bool HasSubscribers(ChannelId ch) {
     return s && s->subs.load(std::memory_order_relaxed) > 0;
 }
 
+uint32_t SubscriberCount(ChannelId ch) {
+    const core::ChannelSlot* s = core::LiveSlot(ch);
+    const int n = s ? s->subs.load(std::memory_order_relaxed) : 0;
+    return n > 0 ? static_cast<uint32_t>(n) : 0;
+}
+
 namespace {
 bool PublishImpl(ChannelId ch, int only, std::string_view json) {
     using namespace core;
@@ -625,7 +635,7 @@ int OnSubscribe(ChannelId ch, SubscribeFn fn, void* user) {
 
 int AddMethod(const char* name, RpcFn fn, void* user, uint32_t flags) {
     using namespace core;
-    if (!name || !fn || !ValidName(name, 64, true)) return 0;
+    if (!name || !fn || !ValidName(name, 64, true, true)) return 0;
     std::unique_lock lk(g_reg);
     for (const auto& m : g_methods)
         if (m.name == name) return 0;

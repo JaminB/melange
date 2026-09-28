@@ -31,6 +31,15 @@ wum.timers.every(1, function()
   wum.storage.set("frames", frames)
 end)
 
+-- Oasis: a channel the web panel below subscribes to, and the panel itself (web/index.html).
+local ticks = wum.web and wum.web.channel("ticks")
+if wum.web then
+  wum.web.panel({ title = "Hello Spice", entry = "web/index.html" })
+  wum.timers.every(1, function()
+    ticks:publish({ turn = turn, frames = frames })
+  end)
+end
+
 wum.draw.on("hud", function()
   if not wum.game.inMatch() or not wum.config.get("showHud") then return end
   wum.draw.hudRect(16, 280, 236, 324, {0, 0, 0, 0.6}, true)

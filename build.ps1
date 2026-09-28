@@ -19,4 +19,6 @@ if ($LASTEXITCODE) { exit $LASTEXITCODE }
 New-Item -ItemType Directory -Force "$root\dist" | Out-Null
 Copy-Item "$root\build\$Config\melange.asi" "$root\dist\" -Force
 Copy-Item "$root\build\$Config\Melange.pdb" "$root\dist\" -Force -ErrorAction SilentlyContinue
-Write-Host "Built dist\melange.asi"
+Copy-Item "$root\build\$Config\oasis.exe" "$root\dist\" -Force -ErrorAction SilentlyContinue
+Copy-Item "$root\build\$Config\oasis.pdb" "$root\dist\" -Force -ErrorAction SilentlyContinue
+Write-Host "Built dist\melange.asi and dist\oasis.exe"
