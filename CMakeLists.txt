@@ -66,9 +66,70 @@ file(WRITE ${CMAKE_BINARY_DIR}/lua-include/lua.hpp
 target_include_directories(lua54 PUBLIC ${lua_SOURCE_DIR} ${CMAKE_BINARY_DIR}/lua-include)
 target_compile_options(lua54 PRIVATE /TP /EHsc /W1 /wd4244 /wd4267 /wd4334)
 
+# civetweb (MIT) for the Oasis server: C, x86, no TLS, no CGI/Lua/Duktape, no file serving (NO_FILES). The patch makes the
+# parser reject obs-fold and oversized header sets and the WebSocket reader reject unmasked or oversized frames.
+FetchContent_Declare(civetweb
+    URL https://github.com/civetweb/civetweb/archive/refs/tags/v1.16.tar.gz
+    URL_HASH SHA256=f0e471c1bf4e7804a6cfb41ea9d13e7d623b2bcc7bc1e2a4dd54951a24d60285
+    DOWNLOAD_EXTRACT_TIMESTAMP TRUE
+    PATCH_COMMAND ${CMAKE_COMMAND} -DSRC=<SOURCE_DIR> -P ${CMAKE_SOURCE_DIR}/cmake/civetweb_patch.cmake
+    SOURCE_SUBDIR not-a-cmake-project)
+FetchContent_MakeAvailable(civetweb)
+add_library(civetweb STATIC ${civetweb_SOURCE_DIR}/src/civetweb.c)
+target_include_directories(civetweb PUBLIC ${civetweb_SOURCE_DIR}/include)
+target_compile_definitions(civetweb PRIVATE NO_SSL USE_WEBSOCKET NO_CGI NO_FILES NO_THREAD_NAME NO_CACHING
+    MG_MAX_UNANSWERED_PING=1 MG_OASIS_MAX_FRAME=1048576 _CRT_SECURE_NO_WARNINGS WIN32_LEAN_AND_MEAN)
+target_compile_options(civetweb PRIVATE /W0)
+target_link_libraries(civetweb PUBLIC ws2_32)
+
+# The Oasis server core (no game dependency). Users also link src/tools/json_read.cpp and src/core/log.cpp.
+add_library(oasis_core STATIC
+    src/oasis/core/server.cpp src/oasis/core/router.cpp src/oasis/core/http.cpp src/oasis/core/ws.cpp
+    src/oasis/core/queue.cpp src/oasis/core/files_zip.cpp src/oasis/core/files_dir.cpp)
+target_include_directories(oasis_core PUBLIC src src/sdk)
+target_compile_definitions(oasis_core PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX _CRT_SECURE_NO_WARNINGS)
+target_compile_options(oasis_core PRIVATE /W4 /utf-8 /permissive- /Zi)
+target_link_libraries(oasis_core PUBLIC civetweb miniz ws2_32)
+
+# The web bundle: scripts/web/build.ps1 (tsc + esbuild from tools\) into a deterministic zip, embedded as RCDATA.
+# Without the toolchain (scripts\web\fetch.ps1) or with -DMELANGE_WEB=OFF, a placeholder page is embedded.
+option(MELANGE_WEB "Build the Oasis web app into melange.asi" ON)
+add_executable(oasis_pack src/oasis/pack/main.cpp)
+target_compile_options(oasis_pack PRIVATE /W4 /utf-8 /permissive-)
+target_link_libraries(oasis_pack PRIVATE miniz)
+set(OASIS_WEB_ZIP ${CMAKE_BINARY_DIR}/oasis-web.zip)
+set(OASIS_WEB_READY ${MELANGE_WEB})
+foreach(f tools/node/node.exe tools/esbuild/esbuild.exe web/node_modules/typescript/package.json web/node_modules/preact/package.json)
+    if(NOT EXISTS ${CMAKE_SOURCE_DIR}/${f})
+        set(OASIS_WEB_READY OFF)
+    endif()
+endforeach()
+if(OASIS_WEB_READY)
+    file(GLOB_RECURSE OASIS_WEB_SOURCES CONFIGURE_DEPENDS web/src/* web/public/*)
+    add_custom_command(OUTPUT ${OASIS_WEB_ZIP}
+        COMMAND powershell -NoProfile -ExecutionPolicy Bypass -File ${CMAKE_SOURCE_DIR}/scripts/web/build.ps1
+                -Out ${CMAKE_BINARY_DIR}/web-dist
+        COMMAND oasis_pack ${CMAKE_BINARY_DIR}/web-dist ${OASIS_WEB_ZIP}
+        DEPENDS oasis_pack ${OASIS_WEB_SOURCES} ${CMAKE_SOURCE_DIR}/web/web.lock.json ${CMAKE_SOURCE_DIR}/web/tsconfig.json
+                ${CMAKE_SOURCE_DIR}/scripts/web/build.ps1 ${CMAKE_SOURCE_DIR}/THIRD_PARTY.md
+        COMMENT "Building the Oasis web app" VERBATIM)
+else()
+    message(STATUS "Oasis web app: toolchain not fetched or MELANGE_WEB=OFF, embedding the placeholder page")
+    add_custom_command(OUTPUT ${OASIS_WEB_ZIP}
+        COMMAND oasis_pack ${CMAKE_SOURCE_DIR}/web/placeholder ${OASIS_WEB_ZIP}
+        DEPENDS oasis_pack ${CMAKE_SOURCE_DIR}/web/placeholder/index.html ${CMAKE_SOURCE_DIR}/web/placeholder/build.txt
+        COMMENT "Packing the Oasis placeholder page" VERBATIM)
+endif()
+add_custom_target(oasis_web DEPENDS ${OASIS_WEB_ZIP})
+file(TO_NATIVE_PATH ${OASIS_WEB_ZIP} OASIS_WEB_ZIP_NATIVE)
+string(REPLACE "\\" "\\\\" OASIS_WEB_ZIP_RC "${OASIS_WEB_ZIP_NATIVE}")
+file(CONFIGURE OUTPUT ${CMAKE_BINARY_DIR}/generated/oasis_web.rc CONTENT "OASIS_WEB RCDATA \"${OASIS_WEB_ZIP_RC}\"\n")
+set_source_files_properties(${CMAKE_BINARY_DIR}/generated/oasis_web.rc PROPERTIES OBJECT_DEPENDS ${OASIS_WEB_ZIP})
+
 # Every .cpp under src/ is compiled into the plugin.
 file(GLOB_RECURSE MELANGE_SOURCES CONFIGURE_DEPENDS src/*.cpp)
 list(FILTER MELANGE_SOURCES EXCLUDE REGEX "/src/xom/")
+list(FILTER MELANGE_SOURCES EXCLUDE REGEX "/src/oasis/(core|pack|standalone)/")
 
 # Optional out-of-tree modules (<dir>/modules/*.cpp), e.g. build.ps1 -PrivateDir <dir>.
 set(MELANGE_PRIVATE_DIR "" CACHE PATH "Optional folder with extra modules (modules/*.cpp)")
@@ -80,14 +141,23 @@ endif()
 add_subdirectory(src/xom EXCLUDE_FROM_ALL)
 configure_file(src/core/version.h.in ${CMAKE_BINARY_DIR}/generated/version.h @ONLY)
 
-add_library(melange SHARED ${MELANGE_SOURCES} src/core/version.rc)
+add_library(melange SHARED ${MELANGE_SOURCES} src/core/version.rc ${CMAKE_BINARY_DIR}/generated/oasis_web.rc)
+add_dependencies(melange oasis_web)
 set_target_properties(melange PROPERTIES SUFFIX ".asi" PREFIX "")
 # src/sdk is on the include path so public headers include as "melange/<name>.h".
 target_include_directories(melange PRIVATE src src/sdk ${CMAKE_BINARY_DIR}/generated ${stb_SOURCE_DIR})
 target_compile_definitions(melange PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX _CRT_SECURE_NO_WARNINGS)
 target_compile_options(melange PRIVATE /W4 /utf-8 /permissive- /Zi /wd4100)
 target_link_options(melange PRIVATE /DEBUG /OPT:REF /OPT:ICF /SAFESEH:NO)
-target_link_libraries(melange PRIVATE safetyhook::safetyhook dbghelp bcrypt ws2_32 shell32 imgui miniz lua54)
+target_link_libraries(melange PRIVATE safetyhook::safetyhook dbghelp bcrypt ws2_32 shell32 imgui miniz lua54 oasis_core)
+
+# Oasis core without the game: HTTP/WS corpus against a live server on 127.0.0.1, protocol and queue cases.
+add_executable(oasis_core_selftest tests/oasis_core_selftest.cpp src/oasis/auth_min.cpp src/tools/json_read.cpp src/core/log.cpp)
+target_include_directories(oasis_core_selftest PRIVATE src src/sdk)
+target_compile_definitions(oasis_core_selftest PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX _CRT_SECURE_NO_WARNINGS)
+target_compile_options(oasis_core_selftest PRIVATE /W4 /utf-8 /permissive- /Zi)
+target_link_options(oasis_core_selftest PRIVATE /DEBUG)
+target_link_libraries(oasis_core_selftest PRIVATE oasis_core bcrypt)
 
 add_executable(json_read_selftest tests/json_read_selftest.cpp src/tools/json_read.cpp)
 target_include_directories(json_read_selftest PRIVATE src)
@@ -154,7 +224,7 @@ target_link_libraries(sim_selftest PRIVATE lua50_ref)
 add_executable(bus_selftest EXCLUDE_FROM_ALL
     tests/bus_selftest.cpp
     src/core/bus.cpp src/core/bus_registry.cpp src/core/bus_decoders.cpp
-    src/core/events.cpp src/core/game.cpp src/core/mem.cpp src/core/log.cpp src/core/config.cpp
+    src/core/events.cpp src/core/game.cpp src/core/mem.cpp src/core/log.cpp src/core/config.cpp src/core/config_schema.cpp
     src/core/testcmd.cpp src/core/module.cpp)
 target_include_directories(bus_selftest PRIVATE src src/sdk ${CMAKE_BINARY_DIR}/generated)
 target_compile_definitions(bus_selftest PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX _CRT_SECURE_NO_WARNINGS)
@@ -228,6 +298,7 @@ add_executable(tweak_selftest
     src/core/game.cpp
     src/core/log.cpp
     src/core/config.cpp
+    src/core/config_schema.cpp
     src/core/module.cpp)
 target_include_directories(tweak_selftest PRIVATE src src/sdk ${CMAKE_BINARY_DIR}/generated)
 target_compile_definitions(tweak_selftest PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX _CRT_SECURE_NO_WARNINGS)

@@ -1,0 +1,42 @@
+{
+  "lockfileVersion": 1,
+  "registry": "https://registry.npmjs.org",
+  "roots": [
+    "preact@^10.29.8",
+    "@tanstack/virtual-core@^3.17.11",
+    "--dev typescript@5.9.3",
+    "--dev playwright-core@1.63.0"
+  ],
+  "packages": [
+    {
+      "name": "@tanstack/virtual-core",
+      "version": "3.17.11",
+      "tarball": "https://registry.npmjs.org/@tanstack/virtual-core/-/virtual-core-3.17.11.tgz",
+      "integrity": "sha512-+ILjvtHup6Y2hzQ6YzwMgX1Q+oQpxEGOXCEsCNaPoIP0VxMbizIBTmYTDtkerkIQS8/CbP1BRuyt8V/8BCsy1g==",
+      "license": "MIT"
+    },
+    {
+      "name": "playwright-core",
+      "version": "1.63.0",
+      "tarball": "https://registry.npmjs.org/playwright-core/-/playwright-core-1.63.0.tgz",
+      "integrity": "sha512-rYCsBF/M5HjUch52bbtVONEFjv6Xu8sm8h72dNlR5bzIE1fvC/bxgspzkjSfU+MweEMmPM8KJebG6nnyxo5mCg==",
+      "license": "Apache-2.0",
+      "dev": true
+    },
+    {
+      "name": "preact",
+      "version": "10.29.8",
+      "tarball": "https://registry.npmjs.org/preact/-/preact-10.29.8.tgz",
+      "integrity": "sha512-ej2aVZ+vZ8WO7tvlQWRM9N63A0KzF9q4mWJfDUHgYaIofWY9hu74QdnQrjoPMmZi2/nZ5gN0bJCQF49xQqx09Q==",
+      "license": "MIT"
+    },
+    {
+      "name": "typescript",
+      "version": "5.9.3",
+      "tarball": "https://registry.npmjs.org/typescript/-/typescript-5.9.3.tgz",
+      "integrity": "sha512-jl1vZzPDinLr9eUt3J/t7V6FgNEw9QjvBPdysz9KfQDD41fQrC2Y4vKQdiaUpFT4bXlb1RHhLpp8wtm6M5TgSw==",
+      "license": "Apache-2.0",
+      "dev": true
+    }
+  ]
+}

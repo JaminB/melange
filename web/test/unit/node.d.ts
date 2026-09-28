@@ -1,0 +1,14 @@
+// The few Node built-ins the unit tests use (no @types/node in the lock).
+declare module "node:test" {
+  export function test(name: string, fn: () => void | Promise<void>): void;
+}
+declare module "node:assert/strict" {
+  const assert: {
+    (value: unknown, message?: string): void;
+    equal(a: unknown, b: unknown, message?: string): void;
+    deepEqual(a: unknown, b: unknown, message?: string): void;
+    ok(value: unknown, message?: string): void;
+    rejects(p: Promise<unknown>, check?: (e: unknown) => boolean): Promise<void>;
+  };
+  export default assert;
+}

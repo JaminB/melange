@@ -1,0 +1,7 @@
+{
+  "name": "oasis-web",
+  "private": true,
+  "description": "Oasis, the Melange web app. Metadata only: dependencies are pinned in web.lock.json and fetched by scripts/web/fetch.ps1; npm is never run.",
+  "license": "MIT",
+  "type": "module"
+}

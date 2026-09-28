@@ -8,11 +8,13 @@ try {
     # Dot-sourced so the x86 developer environment stays set for the extra targets.
     . "$repo\build.ps1" -Config $Config
     $tests = @("bus_selftest", "jlog_selftest", "trace_selftest", "gldebug_selftest", "shaders_selftest", "postfx_selftest",
-        "draw_queue_selftest", "json_read_selftest", "lua54_selftest", "thumper_selftest", "sandbox_selftest", "sim_selftest", "console_selftest", "handshake_selftest", "tweak_selftest")
+        "draw_queue_selftest", "json_read_selftest", "lua54_selftest", "thumper_selftest", "sandbox_selftest", "sim_selftest", "console_selftest", "handshake_selftest", "tweak_selftest", "oasis_core_selftest")
     cmake --build --preset $Config --target $tests
     if ($LASTEXITCODE) { exit $LASTEXITCODE }
     foreach ($t in $tests) {
-        & "$repo\build\$Config\$t.exe"
+        # The Oasis core also gets a 60 s randomized run of mutated HTTP requests and WebSocket frames.
+        $targs = if ($t -eq "oasis_core_selftest") { @("--mutate", "60") } else { @() }
+        & "$repo\build\$Config\$t.exe" @targs
         if ($LASTEXITCODE) { Write-Host "$t FAILED"; exit $LASTEXITCODE }
     }
     exit 0

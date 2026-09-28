@@ -1,5 +1,7 @@
 #include "core/config.h"
 
+#include "core/config_schema.h"
+
 #include <windows.h>
 
 #include <cstdlib>
@@ -45,6 +47,7 @@ float GetFloat(const char* section, const char* key, float def) {
 }
 
 void EnsureKey(const char* section, const char* key, const char* def) {
+    schema::Record(section, key, def);
     wchar_t buf[8];
     GetPrivateProfileStringW(W(section).c_str(), W(key).c_str(), L"\x1", buf, 8, g_path.c_str());
     if (buf[0] == L'\x1') WritePrivateProfileStringW(W(section).c_str(), W(key).c_str(), W(def).c_str(), g_path.c_str());

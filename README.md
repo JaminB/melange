@@ -53,6 +53,7 @@ Every module has its own section in `Melange.ini`, and `Enabled=0` turns a modul
 | `MirageDraw` | on | Drawing API for modules: world-space lines, boxes, spheres and text, and HUD shapes, text and images |
 | `MirageDebug` | off | OpenGL debug context: driver errors and warnings go to the logs and the *Mirage/GL debug* panel |
 | `LuaConsole` | on | Overlay Lua REPL (`Ctrl+Shift+F10`, *Lua/Console*) for the client VM and, in a match, the match VM (off online unless `MatchConsoleOnline=1`) |
+| `Oasis` | on | The local web app on 127.0.0.1 ([docs/oasis.md](docs/oasis.md)); nothing listens until you open it |
 
 ## Logs and bug reports
 
@@ -122,6 +123,8 @@ The public SDK headers are in `src/sdk/melange/`:
 | `melange/mods.h` | The mod list, load order and enable state (Thumper), and the content identity and lobby handshake used online |
 | `melange/lua.h` | Extend the Lua 5.4 client VM from C++: add `wum.*` namespaces, post events to mods, read Sandbox statistics |
 | `melange/sim.h` | The simulation side: match tick, C++ tick hooks, deterministic random numbers, pre-checked message sends, mod message names |
+| `melange/oasis.h` | Oasis: push data to the web app on channels, add RPC methods and web panels |
+| `melange/gamestate.h` | Read-only game state: worms, teams, match values, entities, data variables (the interface only for now: `Available()` is false until the readers land) |
 
 ### Sim scripts
 
@@ -309,6 +312,10 @@ Two sample mods in `dist\Mods\` ship switched off:
 
 `wum.unsafe` (raw memory reads and writes, native calls) exists only for mods whose manifest asks for it, and raises an error until the player allows it.
 
+## Oasis (web app)
+
+Oasis is a web page for the running game, served by `melange.asi` on `127.0.0.1` only. Open it from the overlay or with `Ctrl+Shift+O`; the link carries a secret token that the page swaps for a session cookie, and nothing listens until then. Modules add channels, methods and panels through `melange/oasis.h`. The user guide, the security model and the protocol are in [docs/oasis.md](docs/oasis.md).
+
 ## Building from source
 
 You need:
@@ -322,6 +329,7 @@ You need:
 .\deploy.ps1                     # installs into the Steam game folder (-GameDir <path> for another folder)
 .\uninstall.ps1                  # removes it again (-Purge also deletes logs and dumps)
 .\scripts\selftest.ps1           # offline self-tests, no game needed
+.\scripts\web\fetch.ps1          # once: the portable Node.js + esbuild toolchain and the web app's pinned packages (no npm)
 ```
 
 `deploy.ps1` keeps an existing `dinput8.dll`. If there is none, it downloads the latest Ultimate ASI Loader, or uses the one you give with `-LoaderPath <dinput8.dll>`. `build.ps1 -PrivateDir <dir>` also compiles the modules in `<dir>\modules\*.cpp`.
