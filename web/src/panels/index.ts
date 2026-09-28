@@ -6,3 +6,4 @@ import "./mods";
 import "./ini";
 import "./about";
 import "./entities";
+import "./capture";
