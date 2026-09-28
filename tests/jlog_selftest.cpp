@@ -12,6 +12,7 @@
 
 #include "core/jlog_bus_filter.h"
 #include "core/jlog_internal.h"
+#include "core/jlog_ring.h"
 #include "melange/jlog.h"
 
 namespace {
@@ -273,6 +274,51 @@ void TestBadPathFallback() {
     RemoveTree(fallback);
 }
 
+void TestTailRing() {
+    using melange::jlog::Level;
+    using melange::jlog::Line;
+    namespace ring = melange::jlog::ring;
+
+    ring::SetCapacity(8);  // already a power of two
+    Check(ring::Head() == 0, "ring: Head() is 0 before anything is pushed");
+    std::vector<Line> out;
+    Check(ring::Since(0, out, 100) == 0, "ring: Since(0) is empty before anything is pushed");
+
+    for (uint64_t s = 1; s <= 5; ++s) ring::Push(Line{s, Level::Info, "test", "line" + std::to_string(s), 0.0});
+    Check(ring::Head() == 5, "ring: Head() tracks the last pushed seq");
+    out.clear();
+    Check(ring::Since(0, out, 100) == 5, "ring: Since(0) returns everything pushed so far");
+    for (size_t i = 0; i < out.size(); ++i) Check(out[i].seq == i + 1, "ring: Since(0) is in seq order from 1");
+    out.clear();
+    Check(ring::Since(3, out, 100) == 2 && out.size() == 2 && out[0].seq == 4 && out[1].seq == 5,
+          "ring: Since(afterSeq) returns only the newer lines, in order");
+    out.clear();
+    Check(ring::Since(5, out, 100) == 0, "ring: Since(head) returns nothing further");
+    out.clear();
+    Check(ring::Since(2, out, 1) == 1 && out[0].seq == 3, "ring: Since(...) respects max");
+
+    // Push past capacity: older entries wrap and are overwritten; Since() must skip them, not misreport them.
+    for (uint64_t s = 6; s <= 20; ++s) ring::Push(Line{s, Level::Info, "test", "line" + std::to_string(s), 0.0});
+    Check(ring::Head() == 20, "ring: Head() after wrapping past capacity");
+    out.clear();
+    size_t n = ring::Since(0, out, 100);
+    Check(n == 8, "ring: Since(0) after wraparound returns only what the ring still retains (its capacity)");
+    if (n == 8) {
+        Check(out.front().seq == 13, "ring: the oldest retained line is head - capacity + 1");
+        for (size_t i = 0; i < out.size(); ++i) Check(out[i].seq == 13 + i, "ring: retained lines are contiguous and in order");
+    }
+    out.clear();
+    Check(ring::Since(10, out, 100) == 8 && out.front().seq == 13,
+          "ring: Since() below the retention floor is clamped up to the oldest retained line, not a gap");
+
+    ring::Clear();
+    Check(ring::Head() == 0, "ring: Clear() resets Head()");
+    out.clear();
+    Check(ring::Since(0, out, 100) == 0, "ring: Clear() empties the ring");
+
+    ring::SetCapacity(5000);  // restore jlog's own default before the remaining tests run through jlog::Tail
+}
+
 void TestBusFilter() {
     melange::jlog::busfilter::Init("Camera.HasUpdated,Land.CheckVoxel", "");
     Check(!melange::jlog::busfilter::ShouldLog("Camera.HasUpdated"), "busfilter: default deny list blocks a listed name");
@@ -293,6 +339,7 @@ void TestBusFilter() {
 
 int main() {
     TestSchemaAndTail();
+    TestTailRing();
     TestLevelFilter();
     TestRotation();
     TestSessionPruning();

@@ -164,6 +164,15 @@ target_include_directories(json_read_selftest PRIVATE src)
 target_compile_definitions(json_read_selftest PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX _CRT_SECURE_NO_WARNINGS)
 target_compile_options(json_read_selftest PRIVATE /W4 /utf-8 /permissive-)
 
+# Component C's pure wire logic (filters, bus name patterns, channel payloads) -- no game, no bus::, no Steam.
+add_executable(oasis_streams_selftest
+    tests/oasis_streams_selftest.cpp
+    src/oasis/streams/wire.cpp
+    src/tools/json_read.cpp)
+target_include_directories(oasis_streams_selftest PRIVATE src src/sdk)
+target_compile_definitions(oasis_streams_selftest PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX _CRT_SECURE_NO_WARNINGS)
+target_compile_options(oasis_streams_selftest PRIVATE /W4 /utf-8 /permissive-)
+
 add_executable(handshake_selftest
     tests/handshake_selftest.cpp
     src/mods/handshake_internal.cpp
@@ -270,6 +279,7 @@ target_compile_options(console_selftest PRIVATE /W4 /utf-8 /permissive-)
 add_executable(jlog_selftest
     tests/jlog_selftest.cpp
     src/core/jlog.cpp
+    src/core/jlog_ring.cpp
     src/core/jlog_bus_filter.cpp
     src/core/events.cpp
     src/core/game.cpp
