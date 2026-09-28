@@ -105,8 +105,9 @@ A C++ module (`melange::oasis::AddWebPanel`) or a client mod (`wum.web.panel`, s
 its own, served at `/ext/<id>/` and embedded by the shell in `<iframe sandbox="allow-scripts">`. That frame has an
 opaque origin: no cookie, and no same-origin `fetch`, so it cannot reach `/ws` or anything else in the app directly
 (`/ext/*` therefore does not itself require the token or cookie either — the frame could never present them, and
-its content is the same non-secret bundle already inside `melange.asi`). Its own JSON API goes through
-`/app/ext.js` and `postMessage` to the shell, which allows only the panel's own `mod.<id>.*` channels and methods
+its content is the same non-secret bundle already inside `melange.asi`; the same goes for the bridge script
+`/app/ext.js`). Its own JSON API goes through that script and `postMessage` to the shell, which allows only the
+panel's own `mod.<id>.*` channels and methods
 plus read-only `state` and `log`, and enforces that from the trusted side, not from inside the frame.
 
 ## Writing a panel
@@ -165,7 +166,7 @@ headers or 16 KB of them with 431 or 413.
 | Route | Auth | Response |
 |---|---|---|
 | `GET /?k=<token>` | token | sets the session cookie, `303 /` |
-| `GET /`, `/app/*` | cookie | the app; `ETag`, `Cache-Control: no-cache`; `.gz` copies sent as-is to clients that accept gzip |
+| `GET /`, `/app/*` | cookie (`/app/ext.js`: none) | the app; `ETag`, `Cache-Control: no-cache`; `.gz` copies sent as-is to clients that accept gzip |
 | `GET /ws` (upgrade) | cookie + Origin, or `?k=` with no Origin | WebSocket |
 | `GET /captures/<name>.mcap` * | cookie | a capture file, `Range` supported |
 | `GET /ext/<panel>/*` * | none (see below) | a module's or mod's web panel, sandboxed |
@@ -221,6 +222,7 @@ Close codes: 4000 closed by the game (the page reconnects), 4001 protocol versio
 |---|---|
 | `sys.ping` | `{frame, ms}`: the game's frame counter and the server's clock |
 | `bus.names` | `[{id, name, posts, deliveries}]`: every registered engine message name and its counts |
+| `log.sessions` | `[{id, files, bytes}]`: the 20 most recent log sessions, newest first, the current one included; their files are served at `/logs/<id>/<file>` |
 
 ### Console, mods and settings
 
