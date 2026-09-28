@@ -13,7 +13,7 @@
 #include "core/bus_internal.h"
 #include "core/mem.h"
 
-namespace wf::bus {
+namespace melange::bus {
 namespace {
 detail::RegistrySource g_src;
 
@@ -176,4 +176,4 @@ MsgId IdOf(std::string_view name) {
     }
     return kInvalidId;
 }
-}  // namespace wf::bus
+}  // namespace melange::bus

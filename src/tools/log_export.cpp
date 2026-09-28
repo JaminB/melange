@@ -1,6 +1,6 @@
-// Component D: "Save logs as..." export. Public API: src/sdk/wumfix/export.h.
+// Component D: "Save logs as..." export. Public API: src/sdk/melange/export.h.
 // See docs/m0-design.md §3 "D: 'Save logs as...' export" and §5.1 (Q2-Q4 override the proposals).
-#include "wumfix/export.h"
+#include "melange/export.h"
 
 #include <windows.h>
 
@@ -33,16 +33,16 @@
 #include "tools/redact.h"
 #include "tools/sysinfo.h"
 #include "version.h"
-#include "wumfix/jlog.h"
-#include "wumfix/overlay.h"
-#include "wumfix/testcmd.h"
+#include "melange/jlog.h"
+#include "melange/overlay.h"
+#include "melange/testcmd.h"
 
-namespace wf::exporter {
+namespace melange::exporter {
 namespace {
 
 // -------------------------------------------------------------------------------------------- basics
 
-std::string Narrow(const std::wstring& w) { return wf::game::Narrow(w); }
+std::string Narrow(const std::wstring& w) { return melange::game::Narrow(w); }
 
 std::wstring Widen(std::string_view s) {
     if (s.empty()) return {};
@@ -99,7 +99,7 @@ std::wstring DefaultZipName() {
     SYSTEMTIME st;
     GetLocalTime(&st);
     wchar_t buf[64];
-    swprintf(buf, 64, L"WUMFix-logs-%04u%02u%02u-%02u%02u%02u.zip", st.wYear, st.wMonth, st.wDay, st.wHour, st.wMinute,
+    swprintf(buf, 64, L"Melange-logs-%04u%02u%02u-%02u%02u%02u.zip", st.wYear, st.wMonth, st.wDay, st.wHour, st.wMinute,
              st.wSecond);
     return buf;
 }
@@ -206,13 +206,13 @@ const std::string& ComputerName() {
     return name;
 }
 std::string ExcludeComputerName(std::string_view text) {
-    return wf::redact::ReplaceName(text, ComputerName(), "%COMPUTERNAME%");
+    return melange::redact::ReplaceName(text, ComputerName(), "%COMPUTERNAME%");
 }
 
 // The last component of the profile folder (%USERPROFILE%, e.g. "C:\Users\<name>"), read via
 // SHGetKnownFolderPath so it is not spoofable through the environment. GetUserNameW() (the account name) is
 // what CurrentUserName() redacts, but after an account rename the *folder* on disk keeps the old name, and every
-// path under it (session dirs, WUMFix.log, jsonl files, manifest "source" entries) still carries that old name.
+// path under it (session dirs, Melange.log, jsonl files, manifest "source" entries) still carries that old name.
 // Redacting both names covers both spellings without needing to know which one shows up where.
 const std::string& ProfileFolderName() {
     static const std::string name = [] {
@@ -230,9 +230,9 @@ const std::string& ProfileFolderName() {
 }
 
 std::string RedactUserNames(std::string_view text, std::string_view userName) {
-    std::string out = wf::redact::RedactUserName(text, userName);
+    std::string out = melange::redact::RedactUserName(text, userName);
     const std::string& profile = ProfileFolderName();
-    if (!profile.empty()) out = wf::redact::RedactUserName(out, profile);
+    if (!profile.empty()) out = melange::redact::RedactUserName(out, profile);
     return out;
 }
 
@@ -242,7 +242,7 @@ void AddEntry(ZipBuilder& zip, std::vector<ManifestEntry>& manifest, const std::
     if (isText) {
         // Generated entries (system.json) hold no IPs or Steam ids, only version numbers like "7.1.0.0" that the
         // IPv4 pattern would hash.
-        if (sourcePath != L"(generated)") data = wf::redact::HashIdsAndIps(data, salt);
+        if (sourcePath != L"(generated)") data = melange::redact::HashIdsAndIps(data, salt);
         if (redactUserPaths) data = RedactUserNames(data, userName);
         data = ExcludeComputerName(data);
     }
@@ -258,7 +258,7 @@ void AddEntry(ZipBuilder& zip, std::vector<ManifestEntry>& manifest, const std::
     ManifestEntry e;
     e.archivePath = archivePath;
     e.size = data.size();
-    e.sha256 = wf::hashutil::Sha256Hex(data.data(), data.size());
+    e.sha256 = melange::hashutil::Sha256Hex(data.data(), data.size());
     e.source = Narrow(sourcePath);
     if (redactUserPaths) e.source = RedactUserNames(e.source, userName);
     e.source = ExcludeComputerName(e.source);
@@ -282,20 +282,20 @@ void AddFileEntry(ZipBuilder& zip, std::vector<ManifestEntry>& manifest, const s
              salt);
 }
 
-std::string BuildReadme(std::string_view wumfixVersion) {
+std::string BuildReadme(std::string_view melangeVersion) {
     std::string s;
-    s += "WUMFix logs export\n";
-    s += "WUMFix " + std::string(wumfixVersion) + "\n\n";
+    s += "Melange logs export\n";
+    s += "Melange " + std::string(melangeVersion) + "\n\n";
     s += "This zip contains:\n";
     s += "  README.txt        this file\n";
     s += "  manifest.json     every file below, its size and SHA-256 checksum\n";
     s += "  system.json       OS, CPU, GPU/GL and exe identification\n";
     s += "  logs/sessions/*   structured JSONL event logs (recent sessions)\n";
-    s += "  logs/WUMFix.log, logs/WUMFix.prev.log   the plain text log\n";
+    s += "  logs/Melange.log, logs/Melange.prev.log   the plain text log\n";
     s += "  logs/engine/*     the engine's own XOM/Net log files, if found\n";
     s += "  dumps/*.dmp       crash/hang minidumps, if any were found\n";
-    s += "  config/*.ini      WUMFix.ini and any other .ini next to the game exe\n";
-    s += "  mods/*.json       installed WUMFix modules and detected .asi plugins\n\n";
+    s += "  config/*.ini      Melange.ini and any other .ini next to the game exe\n";
+    s += "  mods/*.json       installed Melange modules and detected .asi plugins\n\n";
     s += "Privacy note - this zip can contain:\n";
     s += "  - your Windows user name in file paths (replaced with %USERNAME% by default)\n";
     s += "  - Steam ids, persona names and lobby ids (ids are replaced with a short hash unique to\n";
@@ -335,7 +335,7 @@ std::string BuildManifestJson(const Options& opt, const std::vector<ManifestEntr
              st.wSecond);
 
     jsonmini::Obj root;
-    root.Str("wumfixVersion", WUMFIX_VERSION)
+    root.Str("melangeVersion", MELANGE_VERSION)
         .Str("generatedAtUtc", ts)
         .Raw("options", optsJson.End())
         .Raw("entries", entriesJson.End())
@@ -384,24 +384,24 @@ void SetCancelled() {
 // The actual work behind both ExportTo() and RequestSaveAs(). Never touches the main thread: file and
 // registry reads only, plus miniz (pure computation). See docs/m0-design.md §3 "D", "Zip" and "Layout".
 bool DoExport(const std::wstring& zipPath, const Options& opt, std::string* error) {
-    uint64_t frameStart = wf::events::FrameCount();
-    if (GetCurrentThreadId() == wf::events::MainThreadId())
+    uint64_t frameStart = melange::events::FrameCount();
+    if (GetCurrentThreadId() == melange::events::MainThreadId())
         WF_WARN("[LogExport] ExportTo called on the main thread; this blocks rendering until it's done");
 
-    wf::jlog::Flush();
+    melange::jlog::Flush();
 
     ZipBuilder zip;
     std::vector<ManifestEntry> manifest;
     std::vector<std::string> sessionIds;
     std::vector<std::string> absent;
-    std::string salt = wf::hashutil::RandomSalt();
+    std::string salt = melange::hashutil::RandomSalt();
     std::string userName = CurrentUserName();
     constexpr uint64_t kCap = 64ull * 1024 * 1024;
     constexpr uint64_t kFullDumpCap = 256ull * 1024 * 1024;
 
     // logs/sessions/<id>/events*.jsonl - newest opt.sessions folders (§2.5 CurrentSession/RecentSessionDirs).
-    sessionIds.push_back(wf::jlog::CurrentSession().id);
-    auto sessionDirs = wf::jlog::RecentSessionDirs(static_cast<size_t>(std::max(1, opt.sessions)));
+    sessionIds.push_back(melange::jlog::CurrentSession().id);
+    auto sessionDirs = melange::jlog::RecentSessionDirs(static_cast<size_t>(std::max(1, opt.sessions)));
     if (sessionDirs.empty()) {
         absent.push_back("logs/sessions (no session folders found)");
     } else {
@@ -415,22 +415,22 @@ bool DoExport(const std::wstring& zipPath, const Options& opt, std::string* erro
         }
     }
 
-    // logs/WUMFix.log, logs/WUMFix.prev.log (§5.1 Q2: these stay in <game>\WUMFix\).
+    // logs/Melange.log, logs/Melange.prev.log (§5.1 Q2: these stay in <game>\Melange\).
     {
-        std::wstring dataDir = wf::game::DataDir();
+        std::wstring dataDir = melange::game::DataDir();
         bool any = false;
-        for (const wchar_t* name : {L"WUMFix.log", L"WUMFix.prev.log"}) {
+        for (const wchar_t* name : {L"Melange.log", L"Melange.prev.log"}) {
             std::wstring p = dataDir + L"\\" + name;
             size_t before = manifest.size();
             AddFileEntry(zip, manifest, "logs/" + Narrow(name), p, kCap, opt.redactUserPaths, userName, salt);
             any = any || manifest.size() > before;
         }
-        if (!any) absent.push_back("logs/WUMFix.log (not found)");
+        if (!any) absent.push_back("logs/Melange.log (not found)");
     }
 
     // logs/engine/XOM*-*.log, Net_*.log - newest 3 each, from the game's own working directory.
     {
-        std::wstring gameDir = wf::game::GameDir();
+        std::wstring gameDir = melange::game::GameDir();
         auto xom = NewestMatching(gameDir, L"XOM*-*.log", 3);
         auto net = NewestMatching(gameDir, L"Net_*.log", 3);
         if (xom.empty() && net.empty()) absent.push_back("logs/engine (no engine log files found)");
@@ -446,7 +446,7 @@ bool DoExport(const std::wstring& zipPath, const Options& opt, std::string* erro
     // full dump can hold chat text, persona names and other process memory the user did not opt to export).
     if (opt.includeDumps) {
         // Gather more than 3 candidates: full dumps may need to be filtered out before picking "newest 3".
-        auto allDumps = NewestMatching(wf::game::DataDir() + L"\\dumps", L"*.dmp", 64);
+        auto allDumps = NewestMatching(melange::game::DataDir() + L"\\dumps", L"*.dmp", 64);
         std::vector<std::wstring> dumps;
         for (const auto& f : allDumps) {
             if (HasSuffixCI(f, L"-full.dmp") && !opt.includeFullDumps) continue;
@@ -463,12 +463,12 @@ bool DoExport(const std::wstring& zipPath, const Options& opt, std::string* erro
         absent.push_back("dumps (IncludeDumps=0)");
     }
 
-    // config/*.ini - WUMFix.ini plus any sibling .ini next to the game exe.
+    // config/*.ini - Melange.ini plus any sibling .ini next to the game exe.
     {
         // Plus plugins\ and scripts\, where Ultimate ASI Loader plugins keep theirs (WUMPatch: plugins\WUM.Patch.ini).
         bool any = false;
         for (const wchar_t* sub : {L"", L"plugins", L"scripts"}) {
-            std::wstring dir = wf::game::GameDir() + (*sub ? L"\\" + std::wstring(sub) : std::wstring());
+            std::wstring dir = melange::game::GameDir() + (*sub ? L"\\" + std::wstring(sub) : std::wstring());
             std::string arcDir = *sub ? "config/" + Narrow(sub) + "/" : "config/";
             for (const auto& f : NewestMatching(dir, L"*.ini", 64)) {
                 AddFileEntry(zip, manifest, arcDir + Narrow(BaseNameW(f)), f, kCap, opt.redactUserPaths, userName, salt);
@@ -478,12 +478,12 @@ bool DoExport(const std::wstring& zipPath, const Options& opt, std::string* erro
         if (!any) absent.push_back("config (no .ini files found)");
     }
 
-    // mods/modules.json - every currently-installed WUMFix module. wf::modules::Installed() only lists
+    // mods/modules.json - every currently-installed Melange module. melange::modules::Installed() only lists
     // modules that installed successfully; core/module.h keeps no record of ones skipped/disabled (see
     // report: this is a scope limit of the shared header, not something D changed).
     {
         jsonmini::Arr arr;
-        for (const auto* m : wf::modules::Installed()) {
+        for (const auto* m : melange::modules::Installed()) {
             jsonmini::Obj o;
             o.Str("name", m->Name()).Str("description", m->Description()).Int("order", m->Order())
                 .Bool("enabled", true)
@@ -497,14 +497,14 @@ bool DoExport(const std::wstring& zipPath, const Options& opt, std::string* erro
 
     // mods/plugins.json - every *.asi / dinput8.dll detected next to the game exe.
     {
-        std::string data = wf::sysinfo::PluginsJson();
+        std::string data = melange::sysinfo::PluginsJson();
         AddEntry(zip, manifest, "mods/plugins.json", data, L"(generated)", false, false, opt.redactUserPaths,
                  userName, salt);
     }
 
     // system.json
     {
-        std::string data = wf::sysinfo::CollectJson();
+        std::string data = melange::sysinfo::CollectJson();
         AddEntry(zip, manifest, "system.json", data, L"(generated)", false, true, opt.redactUserPaths, userName, salt);
     }
 
@@ -512,7 +512,7 @@ bool DoExport(const std::wstring& zipPath, const Options& opt, std::string* erro
     std::string manifestJson = BuildManifestJson(opt, manifest, sessionIds, absent);
     zip.Add("manifest.json", manifestJson.data(), manifestJson.size());
 
-    std::string readme = BuildReadme(WUMFIX_VERSION);
+    std::string readme = BuildReadme(MELANGE_VERSION);
     zip.Add("README.txt", readme.data(), readme.size());
 
     std::string zipBytes;
@@ -542,7 +542,7 @@ bool DoExport(const std::wstring& zipPath, const Options& opt, std::string* erro
     CloseHandle(out);
     if (!ok && error) *error = "write failed part-way through " + Narrow(zipPath);
 
-    uint64_t frameEnd = wf::events::FrameCount();
+    uint64_t frameEnd = melange::events::FrameCount();
     WF_INFO("[LogExport] export %s: %s (%zu entries, frame %llu -> %llu)", ok ? "OK" : "FAILED", Narrow(zipPath).c_str(),
             manifest.size(), static_cast<unsigned long long>(frameStart), static_cast<unsigned long long>(frameEnd));
     return ok;
@@ -573,7 +573,7 @@ bool SafeDoExport(const std::wstring& zipPath, const Options& opt, std::string* 
 // [I] heuristic, not yet verified in-game (see report): a window with no caption/frame whose bounds
 // cover its whole monitor. Exclusive and borderless fullscreen both look like this on this engine.
 bool IsFullscreen() {
-    HWND h = static_cast<HWND>(wf::events::GameWindow());
+    HWND h = static_cast<HWND>(melange::events::GameWindow());
     if (!h) return false;
     LONG style = GetWindowLongW(h, GWL_STYLE);
     if (style & (WS_CAPTION | WS_THICKFRAME)) return false;
@@ -643,7 +643,7 @@ DialogResult ShowSaveDialogLegacy(std::wstring* outPath) {
 
 // -------------------------------------------------------------------------------------------- toast
 
-// §5.1 Q3(b): "in fullscreen, auto-save ... and show the path as an overlay toast." wumfix/overlay.h (A's
+// §5.1 Q3(b): "in fullscreen, auto-save ... and show the path as an overlay toast." melange/overlay.h (A's
 // frozen contract) has no notification/toast primitive, so rather than invent one on A's behalf, D shows
 // its own small topmost, click-through popup over the game window. This has no dependency on the real
 // overlay ever landing, and is fully exercisable offline (see report).
@@ -675,7 +675,7 @@ LRESULT CALLBACK ToastWndProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
 DWORD WINAPI ToastThreadProc(LPVOID param) {
     std::unique_ptr<std::wstring> text(static_cast<std::wstring*>(param));
     static std::atomic<bool> s_classRegistered{false};
-    const wchar_t* kClassName = L"WUMFixExportToast";
+    const wchar_t* kClassName = L"MelangeExportToast";
     if (!s_classRegistered.exchange(true)) {
         WNDCLASSW wc{};
         wc.lpfnWndProc = &ToastWndProc;
@@ -686,7 +686,7 @@ DWORD WINAPI ToastThreadProc(LPVOID param) {
         RegisterClassW(&wc);
     }
     RECT area{0, 0, GetSystemMetrics(SM_CXSCREEN), GetSystemMetrics(SM_CYSCREEN)};
-    if (HWND game = static_cast<HWND>(wf::events::GameWindow())) GetWindowRect(game, &area);
+    if (HWND game = static_cast<HWND>(melange::events::GameWindow())) GetWindowRect(game, &area);
     int w = 560, h = 56;
     int x = area.left + ((area.right - area.left) - w) / 2;
     int y = area.top + 36;
@@ -725,7 +725,7 @@ DWORD WINAPI SaveAsWorkerProc(LPVOID) {
 
     if (fullscreen) {
         std::wstring dir = DocumentsDir();
-        dir = (dir.empty() ? std::wstring(L".") : dir) + L"\\WUMFix\\exports";
+        dir = (dir.empty() ? std::wstring(L".") : dir) + L"\\Melange\\exports";
         EnsureDirectoryRecursive(dir);
         path = dir + L"\\" + DefaultZipName();
     } else {
@@ -745,7 +745,7 @@ DWORD WINAPI SaveAsWorkerProc(LPVOID) {
         bool ok = SafeDoExport(path, DefaultOptions(), &err);
         if (ok) {
             SetDone(path);
-            if (fullscreen) ShowToast(L"WUMFix: logs saved to " + path);
+            if (fullscreen) ShowToast(L"Melange: logs saved to " + path);
         } else {
             SetFailed(err);
         }
@@ -795,12 +795,12 @@ bool OnSaveLogsVerb(std::string_view args, void*) {
         return false;
     }
     CloseHandle(th);
-    return true;  // accepted; result is logged asynchronously (handlers must not block, per wumfix/testcmd.h)
+    return true;  // accepted; result is logged asynchronously (handlers must not block, per melange/testcmd.h)
 }
 
 void OnHotkeyOrMenu(void*) { RequestSaveAs(); }
 
-class LogExport final : public wf::Module {
+class LogExport final : public melange::Module {
 public:
     const char* Name() const override { return "LogExport"; }
     const char* Description() const override {
@@ -810,38 +810,38 @@ public:
 
     bool Install() override {
         // DefaultOptions() reads its own [LogExport] keys directly (it is a free function, not a Module
-        // method, since wumfix/export.h's Options/DefaultOptions() are called by code that has no Module
+        // method, since melange/export.h's Options/DefaultOptions() are called by code that has no Module
         // instance); the hotkey text lives in the same section for the same reason.
-        wf::config::EnsureKey(Name(), "Hotkey", "Ctrl+Shift+F11");
-        std::string hotkeyText = wf::config::GetString(Name(), "Hotkey", "Ctrl+Shift+F11");
+        melange::config::EnsureKey(Name(), "Hotkey", "Ctrl+Shift+F11");
+        std::string hotkeyText = melange::config::GetString(Name(), "Hotkey", "Ctrl+Shift+F11");
 
         uint8_t dik = 0, mods = 0;
         if (!hotkeyText.empty()) {
-            if (wf::overlay::ParseHotkey(hotkeyText.c_str(), &dik, &mods))
-                wf::overlay::AddHotkey(dik, mods, &OnHotkeyOrMenu, nullptr);
+            if (melange::overlay::ParseHotkey(hotkeyText.c_str(), &dik, &mods))
+                melange::overlay::AddHotkey(dik, mods, &OnHotkeyOrMenu, nullptr);
             else
                 WF_WARN("[LogExport] Hotkey '%s' not understood, no hotkey registered", hotkeyText.c_str());
         }
-        wf::overlay::AddMenuItem("File/Save logs as...", &OnHotkeyOrMenu, nullptr, hotkeyText.c_str());
-        wf::testcmd::Register("savelogs", &OnSaveLogsVerb);
+        melange::overlay::AddMenuItem("File/Save logs as...", &OnHotkeyOrMenu, nullptr, hotkeyText.c_str());
+        melange::testcmd::Register("savelogs", &OnSaveLogsVerb);
         WF_INFO("[LogExport] ready (hotkey %s)", hotkeyText.empty() ? "(none)" : hotkeyText.c_str());
         return true;
     }
 };
 }  // namespace
 
-WUMFIX_MODULE(LogExport);
+MELANGE_MODULE(LogExport);
 
 Options DefaultOptions() {
     Options o;
-    wf::config::EnsureKey("LogExport", "Sessions", "3");
-    o.sessions = wf::config::GetInt("LogExport", "Sessions", 3);
-    wf::config::EnsureKey("LogExport", "IncludeDumps", "1");
-    o.includeDumps = wf::config::GetBool("LogExport", "IncludeDumps", true);
-    wf::config::EnsureKey("LogExport", "IncludeFullDumps", "0");
-    o.includeFullDumps = wf::config::GetBool("LogExport", "IncludeFullDumps", false);
-    wf::config::EnsureKey("LogExport", "RedactUserPaths", "1");
-    o.redactUserPaths = wf::config::GetBool("LogExport", "RedactUserPaths", true);
+    melange::config::EnsureKey("LogExport", "Sessions", "3");
+    o.sessions = melange::config::GetInt("LogExport", "Sessions", 3);
+    melange::config::EnsureKey("LogExport", "IncludeDumps", "1");
+    o.includeDumps = melange::config::GetBool("LogExport", "IncludeDumps", true);
+    melange::config::EnsureKey("LogExport", "IncludeFullDumps", "0");
+    o.includeFullDumps = melange::config::GetBool("LogExport", "IncludeFullDumps", false);
+    melange::config::EnsureKey("LogExport", "RedactUserPaths", "1");
+    o.redactUserPaths = melange::config::GetBool("LogExport", "RedactUserPaths", true);
     return o;
 }
 
@@ -885,4 +885,4 @@ State Status(std::wstring* lastPath, std::string* lastError) {
     if (lastError) *lastError = g_lastError;
     return g_state;
 }
-}  // namespace wf::exporter
+}  // namespace melange::exporter

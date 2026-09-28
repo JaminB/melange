@@ -17,8 +17,8 @@
 #include "net/steam.h"
 
 namespace {
-using wf::steam::SteamAPICall;
-using wf::steam::SteamID;
+using melange::steam::SteamAPICall;
+using melange::steam::SteamID;
 
 // ---------------------------------------------------------------- state
 std::mutex g_lock;
@@ -49,7 +49,7 @@ std::string Id(SteamID id) {
 }
 
 // Caller of a hooked Steam method, to map traffic back to game code.
-#define CALLER wf::game::DescribeAddress(reinterpret_cast<uintptr_t>(_ReturnAddress())).c_str()
+#define CALLER melange::game::DescribeAddress(reinterpret_cast<uintptr_t>(_ReturnAddress())).c_str()
 
 // ---------------------------------------------------------------- ISteamNetworking005
 void** g_netVt = nullptr;
@@ -58,7 +58,7 @@ using Send_t = bool(__thiscall*)(void*, SteamID, const void*, uint32_t, int, int
 using Read_t = bool(__thiscall*)(void*, void*, uint32_t, uint32_t*, SteamID*, int);
 using Id_t = bool(__thiscall*)(void*, SteamID);
 using IdInt_t = bool(__thiscall*)(void*, SteamID, int);
-using GetState_t = bool(__thiscall*)(void*, SteamID, wf::steam::P2PSessionState*);
+using GetState_t = bool(__thiscall*)(void*, SteamID, melange::steam::P2PSessionState*);
 using CreateListen_t = uint32_t(__thiscall*)(void*, int, uint32_t, uint16_t, bool);
 using CreateP2PConn_t = uint32_t(__thiscall*)(void*, SteamID, int, int, bool);
 using Destroy_t = bool(__thiscall*)(void*, uint32_t, bool);
@@ -84,7 +84,7 @@ bool __fastcall hkSend(void* self, void*, SteamID to, const void* data, uint32_t
     if (g_verbose) {
         char t[96];
         snprintf(t, sizeof(t), "P2P send -> %s ch%d type%d ok=%d", Id(to).c_str(), ch, type, r);
-        wf::log::HexDump(t, data, n, 24);
+        melange::log::HexDump(t, data, n, 24);
     }
     if (!r) WF_WARN("SendP2PPacket FAILED to %s ch%d (%u bytes) from %s", Id(to).c_str(), ch, n, CALLER);
     return r;
@@ -97,7 +97,7 @@ bool __fastcall hkRead(void* self, void*, void* dest, uint32_t cub, uint32_t* si
         if (g_verbose) {
             char t[96];
             snprintf(t, sizeof(t), "P2P recv <- %s ch%d", from ? Id(*from).c_str() : "?", ch);
-            wf::log::HexDump(t, dest, *size, 24);
+            melange::log::HexDump(t, dest, *size, 24);
         }
     }
     return r;
@@ -152,7 +152,7 @@ bool __fastcall hkSendSock(void* self, void*, uint32_t s, void* data, uint32_t n
     if (g_verbose) {
         char t[64];
         snprintf(t, sizeof(t), "sock send %u rel=%d ok=%d", s, reliable, r);
-        wf::log::HexDump(t, data, n, 24);
+        melange::log::HexDump(t, data, n, 24);
     }
     if (!r) WF_WARN("SendDataOnSocket FAILED sock=%u (%u bytes) from %s", s, n, CALLER);
     return r;
@@ -177,7 +177,7 @@ void HookNetworking(void* obj) {
     if (vt == g_netVt) return;
     g_netVt = vt;
     g_netObj = obj;
-    auto H = [&](int slot, void* hook, void* orig) { wf::mem::HookVTable(obj, slot, hook, static_cast<void**>(orig)); };
+    auto H = [&](int slot, void* hook, void* orig) { melange::mem::HookVTable(obj, slot, hook, static_cast<void**>(orig)); };
     H(0, reinterpret_cast<void*>(&hkSend), &oSend);
     H(2, reinterpret_cast<void*>(&hkRead), &oRead);
     H(3, reinterpret_cast<void*>(&hkAccept), &oAccept);
@@ -259,7 +259,7 @@ bool __fastcall hkChatMsg(void* self, void*, SteamID lobby, const void* body, in
     bool r = oChatMsg(self, lobby, body, n);
     char t[80];
     snprintf(t, sizeof(t), "SendLobbyChatMsg(%s) = %d", Id(lobby).c_str(), r);
-    wf::log::HexDump(t, body, n > 0 ? n : 0, 32);
+    melange::log::HexDump(t, body, n > 0 ? n : 0, 32);
     return r;
 }
 bool __fastcall hkSetType(void* self, void*, SteamID lobby, int type) {
@@ -279,7 +279,7 @@ void HookMatchmaking(void* obj) {
     void** vt = *static_cast<void***>(obj);
     if (vt == g_mmVt) return;
     g_mmVt = vt;
-    auto H = [&](int slot, void* hook, void* orig) { wf::mem::HookVTable(obj, slot, hook, static_cast<void**>(orig)); };
+    auto H = [&](int slot, void* hook, void* orig) { melange::mem::HookVTable(obj, slot, hook, static_cast<void**>(orig)); };
     H(4, reinterpret_cast<void*>(&hkRequestLobbyList), &oRequestLobbyList);
     H(12, reinterpret_cast<void*>(&hkCreateLobby), &oCreateLobby);
     H(13, reinterpret_cast<void*>(&hkJoinLobby), &oJoinLobby);
@@ -308,38 +308,38 @@ void* __cdecl hkSteamMatchmaking() {
     return p;
 }
 
-using RegCb_t = void(__cdecl*)(wf::steam::CallbackBase*, int);
-using UnregCb_t = void(__cdecl*)(wf::steam::CallbackBase*);
-using RegCr_t = void(__cdecl*)(wf::steam::CallbackBase*, SteamAPICall);
-using UnregCr_t = void(__cdecl*)(wf::steam::CallbackBase*, SteamAPICall);
+using RegCb_t = void(__cdecl*)(melange::steam::CallbackBase*, int);
+using UnregCb_t = void(__cdecl*)(melange::steam::CallbackBase*);
+using RegCr_t = void(__cdecl*)(melange::steam::CallbackBase*, SteamAPICall);
+using UnregCr_t = void(__cdecl*)(melange::steam::CallbackBase*, SteamAPICall);
 RegCb_t oRegCb;
 UnregCb_t oUnregCb;
 RegCr_t oRegCr;
 UnregCr_t oUnregCr;
 
-void __cdecl hkRegCb(wf::steam::CallbackBase* cb, int id) {
-    WF_INFO("RegisterCallback(%p %s, %d %s)  [%s]", static_cast<void*>(cb), wf::debug::RttiName(cb).c_str(), id,
-            wf::steam::CallbackName(id), CALLER);
+void __cdecl hkRegCb(melange::steam::CallbackBase* cb, int id) {
+    WF_INFO("RegisterCallback(%p %s, %d %s)  [%s]", static_cast<void*>(cb), melange::debug::RttiName(cb).c_str(), id,
+            melange::steam::CallbackName(id), CALLER);
     oRegCb(cb, id);
 }
-void __cdecl hkUnregCb(wf::steam::CallbackBase* cb) {
-    WF_INFO("UnregisterCallback(%p %s)  [%s]", static_cast<void*>(cb), wf::debug::RttiName(cb).c_str(), CALLER);
+void __cdecl hkUnregCb(melange::steam::CallbackBase* cb) {
+    WF_INFO("UnregisterCallback(%p %s)  [%s]", static_cast<void*>(cb), melange::debug::RttiName(cb).c_str(), CALLER);
     oUnregCb(cb);
 }
-void __cdecl hkRegCr(wf::steam::CallbackBase* cb, SteamAPICall call) {
-    WF_INFO("RegisterCallResult(%p %s, call %llu)  [%s]", static_cast<void*>(cb), wf::debug::RttiName(cb).c_str(), call,
+void __cdecl hkRegCr(melange::steam::CallbackBase* cb, SteamAPICall call) {
+    WF_INFO("RegisterCallResult(%p %s, call %llu)  [%s]", static_cast<void*>(cb), melange::debug::RttiName(cb).c_str(), call,
             CALLER);
     oRegCr(cb, call);
 }
-void __cdecl hkUnregCr(wf::steam::CallbackBase* cb, SteamAPICall call) {
+void __cdecl hkUnregCr(melange::steam::CallbackBase* cb, SteamAPICall call) {
     WF_INFO("UnregisterCallResult(%p, call %llu)  [%s]", static_cast<void*>(cb), call, CALLER);
     oUnregCr(cb, call);
 }
 
 // ---------------------------------------------------------------- our own callback listeners
-class Listener final : public wf::steam::CallbackBase {
+class Listener final : public melange::steam::CallbackBase {
 public:
-    explicit Listener(int id, int size) : size_(size) { wf::steam::RegisterCallback(this, id); }
+    explicit Listener(int id, int size) : size_(size) { melange::steam::RegisterCallback(this, id); }
     void Run(void* p) override { Log(p); }
     void Run(void* p, bool, SteamAPICall) override { Log(p); }
     int GetCallbackSizeBytes() override { return size_; }
@@ -350,29 +350,29 @@ private:
         const auto* u64 = static_cast<const uint64_t*>(p);
         const auto* u32 = static_cast<const uint32_t*>(p);
         switch (callbackId_) {
-            case wf::steam::kLobbyChatUpdate:
+            case melange::steam::kLobbyChatUpdate:
                 WF_INFO("cb LobbyChatUpdate lobby=%s changed=%s by=%s state=0x%x", Id(u64[0]).c_str(), Id(u64[1]).c_str(),
                         Id(u64[2]).c_str(), u32[6]);
                 break;
-            case wf::steam::kLobbyEnter:
+            case melange::steam::kLobbyEnter:
                 WF_INFO("cb LobbyEnter lobby=%s perms=%u locked=%u response=%u", Id(u64[0]).c_str(), u32[2], u32[3] & 0xff,
                         u32[4]);
                 break;
-            case wf::steam::kLobbyDataUpdate:
+            case melange::steam::kLobbyDataUpdate:
                 if (g_verbose) WF_INFO("cb LobbyDataUpdate lobby=%s member=%s", Id(u64[0]).c_str(), Id(u64[1]).c_str());
                 break;
-            case wf::steam::kP2PSessionRequest:
+            case melange::steam::kP2PSessionRequest:
                 WF_INFO("cb P2PSessionRequest from %s", Id(u64[0]).c_str());
                 break;
-            case wf::steam::kP2PSessionConnectFail:
+            case melange::steam::kP2PSessionConnectFail:
                 WF_WARN("cb P2PSessionConnectFail %s error=%u", Id(u64[0]).c_str(), u32[2] & 0xff);
                 break;
-            case wf::steam::kSocketStatus:
+            case melange::steam::kSocketStatus:
                 WF_INFO("cb SocketStatus sock=%u listen=%u remote=%s state=%d", u32[0], u32[1], Id(u64[1]).c_str(),
                         static_cast<int>(u32[4]));
                 break;
             default:
-                wf::log::HexDump((std::string("cb ") + wf::steam::CallbackName(callbackId_)).c_str(), p, size_, 32);
+                melange::log::HexDump((std::string("cb ") + melange::steam::CallbackName(callbackId_)).c_str(), p, size_, 32);
         }
     }
 };
@@ -395,7 +395,7 @@ void LogSummary() {
     if (g_netObj && oCloseSession) {  // session state of every peer we have talked to
         auto getState = reinterpret_cast<GetState_t>(g_netVt[6]);
         for (SteamID p : peers) {
-            wf::steam::P2PSessionState st{};
+            melange::steam::P2PSessionState st{};
             bool ok = getState(g_netObj, p, &st);
             WF_INFO("  peer %s: session=%d active=%u connecting=%u err=%u relay=%u queued=%d pkts/%d B", Id(p).c_str(), ok,
                     st.connectionActive, st.connecting, st.p2pSessionError, st.usingRelay, st.packetsQueuedForSend,
@@ -404,7 +404,7 @@ void LogSummary() {
     }
 }
 
-class SteamTrace final : public wf::Module {
+class SteamTrace final : public melange::Module {
 public:
     const char* Name() const override { return "SteamTrace"; }
     const char* Description() const override { return "logs Steam lobby / P2P / callback activity"; }
@@ -414,26 +414,26 @@ public:
         g_verbose = Bool("VerbosePackets", false);
         g_summarySeconds = Int("SummarySeconds", 5);
         bool ok = true;
-        ok &= wf::mem::HookIAT("steam_api.dll", "SteamNetworking", reinterpret_cast<void*>(&hkSteamNetworking),
+        ok &= melange::mem::HookIAT("steam_api.dll", "SteamNetworking", reinterpret_cast<void*>(&hkSteamNetworking),
                                reinterpret_cast<void**>(&oSteamNetworking));
-        ok &= wf::mem::HookIAT("steam_api.dll", "SteamMatchmaking", reinterpret_cast<void*>(&hkSteamMatchmaking),
+        ok &= melange::mem::HookIAT("steam_api.dll", "SteamMatchmaking", reinterpret_cast<void*>(&hkSteamMatchmaking),
                                reinterpret_cast<void**>(&oSteamMatchmaking));
-        ok &= wf::mem::HookIAT("steam_api.dll", "SteamAPI_RegisterCallback", reinterpret_cast<void*>(&hkRegCb),
+        ok &= melange::mem::HookIAT("steam_api.dll", "SteamAPI_RegisterCallback", reinterpret_cast<void*>(&hkRegCb),
                                reinterpret_cast<void**>(&oRegCb));
-        ok &= wf::mem::HookIAT("steam_api.dll", "SteamAPI_UnregisterCallback", reinterpret_cast<void*>(&hkUnregCb),
+        ok &= melange::mem::HookIAT("steam_api.dll", "SteamAPI_UnregisterCallback", reinterpret_cast<void*>(&hkUnregCb),
                                reinterpret_cast<void**>(&oUnregCb));
-        ok &= wf::mem::HookIAT("steam_api.dll", "SteamAPI_RegisterCallResult", reinterpret_cast<void*>(&hkRegCr),
+        ok &= melange::mem::HookIAT("steam_api.dll", "SteamAPI_RegisterCallResult", reinterpret_cast<void*>(&hkRegCr),
                                reinterpret_cast<void**>(&oRegCr));
-        ok &= wf::mem::HookIAT("steam_api.dll", "SteamAPI_UnregisterCallResult", reinterpret_cast<void*>(&hkUnregCr),
+        ok &= melange::mem::HookIAT("steam_api.dll", "SteamAPI_UnregisterCallResult", reinterpret_cast<void*>(&hkUnregCr),
                                reinterpret_cast<void**>(&oUnregCr));
 
-        using namespace wf::steam;
+        using namespace melange::steam;
         for (auto [id, size] : {std::pair{kLobbyEnter, 24}, {kLobbyDataUpdate, 16}, {kLobbyChatUpdate, 32},
                                 {kLobbyKicked, 24}, {kP2PSessionRequest, 8}, {kP2PSessionConnectFail, 16},
                                 {kSocketStatus, 24}, {kSteamServersDisconnected, 4}, {kGameLobbyJoinRequested, 16}})
             new Listener(id, size);  // lives for the whole process
 
-        wf::events::Subscribe(wf::events::Event::Frame, [] {
+        melange::events::Subscribe(melange::events::Event::Frame, [] {
             static ULONGLONG last = 0;
             ULONGLONG now = GetTickCount64();
             if (now - last >= static_cast<ULONGLONG>(g_summarySeconds) * 1000) {
@@ -441,9 +441,9 @@ public:
                 LogSummary();
             }
         });
-        for (auto e : {wf::events::Event::MatchStart, wf::events::Event::MatchEnd, wf::events::Event::LobbyEnter,
-                       wf::events::Event::LobbyLeave})
-            wf::events::Subscribe(e, [] {
+        for (auto e : {melange::events::Event::MatchStart, melange::events::Event::MatchEnd, melange::events::Event::LobbyEnter,
+                       melange::events::Event::LobbyLeave})
+            melange::events::Subscribe(e, [] {
                 { std::lock_guard lk(g_lock); g_countersDirty = true; }
                 LogSummary();
             });
@@ -452,4 +452,4 @@ public:
 };
 }  // namespace
 
-WUMFIX_MODULE(SteamTrace);
+MELANGE_MODULE(SteamTrace);

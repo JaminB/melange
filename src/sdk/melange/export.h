@@ -1,13 +1,13 @@
 #pragma once
 #include <string>
-namespace wf::exporter {
+namespace melange::exporter {
 struct Options {
     int sessions = 3;              // newest N session folders
     bool includeDumps = true;      // minidumps from DataDir (newest 3)
     bool includeFullDumps = false; // FullMemoryDumps=1 dumps can be hundreds of MB and hold process memory
     bool redactUserPaths = true;   // replace the Windows user name in paths/text with %USERNAME%
 };
-Options DefaultOptions();  // from [LogExport] in WUMFix.ini
+Options DefaultOptions();  // from [LogExport] in Melange.ini
 // Opens the Save-As dialog on a dedicated worker thread and writes the zip there. Non-blocking; returns false
 // if an export is already running. Callable from any thread (hotkey, overlay button).
 bool RequestSaveAs();

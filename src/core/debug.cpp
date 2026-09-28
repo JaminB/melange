@@ -8,7 +8,7 @@
 #include "core/log.h"
 #include "core/mem.h"
 
-namespace wf::debug {
+namespace melange::debug {
 namespace {
 bool IsExecutable(uintptr_t addr) {
     MEMORY_BASIC_INFORMATION mbi;
@@ -130,4 +130,4 @@ std::wstring WriteMiniDump(const char* tag, EXCEPTION_POINTERS* ep, DWORD crashi
     }
     return path;
 }
-}  // namespace wf::debug
+}  // namespace melange::debug

@@ -1,5 +1,5 @@
 // Overlay panels for component C: "Log" (Tail() with filters) and "Events" (top bus ids by rate, with
-// allow/deny toggles). Public overlay contract: src/sdk/wumfix/overlay.h (A). See docs/m0-design.md SS3 "C",
+// allow/deny toggles). Public overlay contract: src/sdk/melange/overlay.h (A). See docs/m0-design.md SS3 "C",
 // adapter 5. Written against A's frozen header; panels draw only their contents (the overlay owns Begin/End).
 #include "tools/log_viewer.h"
 
@@ -13,18 +13,18 @@
 
 #include "core/game.h"
 #include "core/jlog_bus_filter.h"
-#include "wumfix/bus.h"
-#include "wumfix/jlog.h"
-#include "wumfix/overlay.h"
+#include "melange/bus.h"
+#include "melange/jlog.h"
+#include "melange/overlay.h"
 
 #include <imgui.h>
 
-namespace wf::logviewer {
+namespace melange::logviewer {
 namespace {
 
 // ---------------------------------------------------------------------------------------------- Log panel
 uint64_t g_afterSeq = 0;
-std::vector<wf::jlog::Line> g_lines;
+std::vector<melange::jlog::Line> g_lines;
 constexpr size_t kMaxKept = 20000;
 
 char g_catFilter[64] = {};
@@ -37,15 +37,15 @@ const char* kLevelNames[] = {"trace", "debug", "info", "warn", "error", "fatal"}
 
 void Pull() {
     if (g_paused) return;
-    std::vector<wf::jlog::Line> fresh;
-    wf::jlog::Tail(g_afterSeq, fresh, 4000);
+    std::vector<melange::jlog::Line> fresh;
+    melange::jlog::Tail(g_afterSeq, fresh, 4000);
     if (fresh.empty()) return;
     g_afterSeq = fresh.back().seq;
     for (auto& l : fresh) g_lines.push_back(std::move(l));
     if (g_lines.size() > kMaxKept) g_lines.erase(g_lines.begin(), g_lines.begin() + (g_lines.size() - kMaxKept));
 }
 
-bool PassesFilter(const wf::jlog::Line& l) {
+bool PassesFilter(const melange::jlog::Line& l) {
     if (static_cast<int>(l.lvl) < g_minLevel) return false;
     if (g_catFilter[0] && l.category.find(g_catFilter) == std::string::npos) return false;
     if (g_textFilter[0] && l.json.find(g_textFilter) == std::string::npos) return false;
@@ -53,7 +53,7 @@ bool PassesFilter(const wf::jlog::Line& l) {
 }
 
 void OpenLogFolder() {
-    const auto& dir = wf::jlog::CurrentSession().dir;
+    const auto& dir = melange::jlog::CurrentSession().dir;
     if (!dir.empty()) ShellExecuteW(nullptr, L"open", dir.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
 }
 
@@ -96,7 +96,7 @@ void DrawLogPanel(void*) {
 
 // ---------------------------------------------------------------------------------------------- Events panel
 struct EventRow {
-    wf::bus::MsgId id;
+    melange::bus::MsgId id;
     std::string name;
     uint32_t count;
     double rate;  // messages/s (Post + Deliver) over the last sampling window
@@ -108,10 +108,10 @@ std::vector<EventRow> g_rows;
 std::vector<uint32_t> g_prevCount;  // indexed by id & 0x7fff for registry ids
 uint32_t g_prevSys[3] = {};
 ULONGLONG g_lastSample = 0;
-constexpr wf::bus::MsgId kSysIds[3] = {0x103, 0x104, 0x1004};
+constexpr melange::bus::MsgId kSysIds[3] = {0x103, 0x104, 0x1004};
 
-uint32_t TotalCount(wf::bus::MsgId id) {
-    return wf::bus::CountOf(id, wf::bus::Path::Post) + wf::bus::CountOf(id, wf::bus::Path::Deliver);
+uint32_t TotalCount(melange::bus::MsgId id) {
+    return melange::bus::CountOf(id, melange::bus::Path::Post) + melange::bus::CountOf(id, melange::bus::Path::Deliver);
 }
 
 void SampleEvents(size_t max) {
@@ -120,18 +120,18 @@ void SampleEvents(size_t max) {
     double dt = g_lastSample ? (now - g_lastSample) / 1000.0 : 0.0;
     g_lastSample = now;
     std::vector<EventRow> rows;
-    if (g_prevCount.size() < wf::bus::Capacity()) g_prevCount.resize(wf::bus::Capacity(), 0);
-    auto add = [&](wf::bus::MsgId id, const char* name, uint32_t& prev) {
+    if (g_prevCount.size() < melange::bus::Capacity()) g_prevCount.resize(melange::bus::Capacity(), 0);
+    auto add = [&](melange::bus::MsgId id, const char* name, uint32_t& prev) {
         uint32_t count = TotalCount(id);
         double rate = dt > 0 ? (count - prev) / dt : 0.0;
         prev = count;
         if (count) rows.push_back({id, name, count, rate});
     };
-    wf::bus::ForEachName([&](wf::bus::MsgId id, const char* name) {
+    melange::bus::ForEachName([&](melange::bus::MsgId id, const char* name) {
         size_t slot = id & 0x7fff;
         if (slot < g_prevCount.size()) add(id, name, g_prevCount[slot]);
     });
-    for (int i = 0; i < 3; ++i) add(kSysIds[i], wf::bus::NameOf(kSysIds[i]), g_prevSys[i]);
+    for (int i = 0; i < 3; ++i) add(kSysIds[i], melange::bus::NameOf(kSysIds[i]), g_prevSys[i]);
     std::sort(rows.begin(), rows.end(), [](const EventRow& a, const EventRow& b) {
         return a.rate != b.rate ? a.rate > b.rate : a.count > b.count;
     });
@@ -140,7 +140,7 @@ void SampleEvents(size_t max) {
 }
 
 void DrawEventsPanel(void*) {
-    ImGui::TextUnformatted(wf::bus::RegistryReady() ? "registry ready" : "registry not ready");
+    ImGui::TextUnformatted(melange::bus::RegistryReady() ? "registry ready" : "registry not ready");
     ImGui::Separator();
     SampleEvents(30);
     const auto& rows = g_rows;
@@ -161,11 +161,11 @@ void DrawEventsPanel(void*) {
             ImGui::TableNextColumn();
             ImGui::Text("%u", r.count);
             ImGui::TableNextColumn();
-            bool allow = wf::jlog::busfilter::IsAllowed(r.name);
-            if (ImGui::Checkbox("##allow", &allow)) wf::jlog::busfilter::SetAllow(r.name, allow);
+            bool allow = melange::jlog::busfilter::IsAllowed(r.name);
+            if (ImGui::Checkbox("##allow", &allow)) melange::jlog::busfilter::SetAllow(r.name, allow);
             ImGui::TableNextColumn();
-            bool deny = wf::jlog::busfilter::IsDenied(r.name);
-            if (ImGui::Checkbox("##deny", &deny)) wf::jlog::busfilter::SetDeny(r.name, deny);
+            bool deny = melange::jlog::busfilter::IsDenied(r.name);
+            if (ImGui::Checkbox("##deny", &deny)) melange::jlog::busfilter::SetDeny(r.name, deny);
             ImGui::PopID();
         }
         ImGui::EndTable();
@@ -175,8 +175,8 @@ void DrawEventsPanel(void*) {
 }  // namespace
 
 void Install() {
-    wf::overlay::AddPanel("log", "Log", &DrawLogPanel, nullptr, wf::overlay::kPanelNone);
-    wf::overlay::AddPanel("events", "Events", &DrawEventsPanel, nullptr, wf::overlay::kPanelNone);
+    melange::overlay::AddPanel("log", "Log", &DrawLogPanel, nullptr, melange::overlay::kPanelNone);
+    melange::overlay::AddPanel("events", "Events", &DrawEventsPanel, nullptr, melange::overlay::kPanelNone);
 }
 
-}  // namespace wf::logviewer
+}  // namespace melange::logviewer

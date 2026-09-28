@@ -9,7 +9,7 @@
 #include "core/log.h"
 #include "core/mem.h"
 
-namespace wf::events {
+namespace melange::events {
 namespace {
 std::vector<Callback> g_subs[static_cast<int>(Event::Count)];
 std::recursive_mutex g_mutex;
@@ -68,4 +68,4 @@ unsigned long MainThreadId() { return g_mainThread.load(); }
 void* GameWindow() { return g_window.load(); }
 
 void SetPresentHook(PresentHook fn) { g_presentHook.store(fn, std::memory_order_release); }
-}  // namespace wf::events
+}  // namespace melange::events

@@ -4,7 +4,7 @@
 
 #include <cstdlib>
 
-namespace wf::config {
+namespace melange::config {
 namespace {
 std::wstring g_path;
 
@@ -49,4 +49,4 @@ void EnsureKey(const char* section, const char* key, const char* def) {
     GetPrivateProfileStringW(W(section).c_str(), W(key).c_str(), L"\x1", buf, 8, g_path.c_str());
     if (buf[0] == L'\x1') WritePrivateProfileStringW(W(section).c_str(), W(key).c_str(), W(def).c_str(), g_path.c_str());
 }
-}  // namespace wf::config
+}  // namespace melange::config

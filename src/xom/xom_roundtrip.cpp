@@ -15,7 +15,7 @@
 #include <vector>
 
 namespace fs = std::filesystem;
-using namespace wumfix::xom;
+using namespace melange::xom;
 
 static bool readFile(const fs::path& p, std::vector<uint8_t>& out) {
     std::ifstream f(p, std::ios::binary);

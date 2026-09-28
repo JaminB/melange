@@ -6,7 +6,7 @@
 #include <string>
 #include <string_view>
 
-namespace wf::hashutil {
+namespace melange::hashutil {
 // Full lowercase hex SHA-256 of a buffer / file. Returns "" on failure (missing file, BCrypt error).
 std::string Sha256Hex(const void* data, size_t len);
 std::string Sha256HexFile(const std::wstring& path);
@@ -18,4 +18,4 @@ std::string ShortSaltedHash(std::string_view salt, std::string_view value);
 
 // A fresh random salt for one export run, hex-encoded.
 std::string RandomSalt();
-}  // namespace wf::hashutil
+}  // namespace melange::hashutil

@@ -1,9 +1,9 @@
 // Offline self-test for component C's structured logging core (src/core/jlog.cpp). Runs standalone, without
-// the game or WUMFix.asi: exercises the writer thread, session folders, rotation, the level filter, the tail
+// the game or melange.asi: exercises the writer thread, session folders, rotation, the level filter, the tail
 // ring and the crash-flush path against a scratch directory under %TEMP%. See docs/m0-design.md SS3 "C"
 // acceptance items 1, 5, 6, 7, and the M0 report for component C ("offline tests" section).
 //
-// Not a frozen contract; only wumfix/jlog.h (the public API under test) and two small internal headers used to
+// Not a frozen contract; only melange/jlog.h (the public API under test) and two small internal headers used to
 // start/stop sessions in-process (jlog_internal.h) and to test the bus deny/allow list in isolation from the
 // event bus itself (jlog_bus_filter.h).
 #include <windows.h>
@@ -18,7 +18,7 @@
 
 #include "core/jlog_bus_filter.h"
 #include "core/jlog_internal.h"
-#include "wumfix/jlog.h"
+#include "melange/jlog.h"
 
 namespace {
 
@@ -91,7 +91,7 @@ std::wstring TempDir(const wchar_t* tag) {
     wchar_t base[MAX_PATH];
     GetTempPathW(MAX_PATH, base);
     wchar_t dir[MAX_PATH];
-    swprintf(dir, MAX_PATH, L"%swumfix_selftest_%s_%lu", base, tag, GetTickCount());
+    swprintf(dir, MAX_PATH, L"%smelange_selftest_%s_%lu", base, tag, GetTickCount());
     return dir;
 }
 
@@ -127,30 +127,30 @@ std::vector<std::string> ReadLines(const std::wstring& path) {
 // ------------------------------------------------------------------------------------------- test groups
 void TestSchemaAndTail() {
     std::wstring dir = TempDir(L"schema");
-    wf::jlog::internal::Options opt;
-    opt.rootOverride = dir;  // force the sandbox, not the real Documents\WUMFix\logs (see internal::Init())
+    melange::jlog::internal::Options opt;
+    opt.rootOverride = dir;  // force the sandbox, not the real Documents\Melange\logs (see internal::Init())
     opt.levelsSpec = "*:trace";
-    Check(wf::jlog::internal::Init(opt), "schema: Init succeeds");
+    Check(melange::jlog::internal::Init(opt), "schema: Init succeeds");
 
     for (int i = 0; i < 5; ++i) {
-        wf::jlog::Rec("test", wf::jlog::Level::Info, "hello")
+        melange::jlog::Rec("test", melange::jlog::Level::Info, "hello")
             .Int("i", i)
             .Str("s", "a\"b\\c\nd")
             .Float("f", 1.5)
             .Bool("b", true)
             .Emit();
     }
-    Check(wf::jlog::Flush(2000), "schema: Flush completes");
+    Check(melange::jlog::Flush(2000), "schema: Flush completes");
 
-    std::vector<wf::jlog::Line> tail;
-    size_t n = wf::jlog::Tail(0, tail, 100);
+    std::vector<melange::jlog::Line> tail;
+    size_t n = melange::jlog::Tail(0, tail, 100);
     Check(n == 5, "schema: Tail(0) returns all 5 records");
     if (n == 5) {
-        std::vector<wf::jlog::Line> more;
-        Check(wf::jlog::Tail(tail.back().seq, more, 100) == 0, "schema: Tail(lastSeq) returns nothing further");
+        std::vector<melange::jlog::Line> more;
+        Check(melange::jlog::Tail(tail.back().seq, more, 100) == 0, "schema: Tail(lastSeq) returns nothing further");
     }
 
-    auto lines = ReadLines(wf::jlog::CurrentSession().dir + L"\\events.jsonl");
+    auto lines = ReadLines(melange::jlog::CurrentSession().dir + L"\\events.jsonl");
     Check(lines.size() == 5, "schema: events.jsonl has 5 lines");
     uint64_t lastSeq = 0;
     bool first = true;
@@ -167,48 +167,48 @@ void TestSchemaAndTail() {
         first = false;
     }
 
-    auto stats = wf::jlog::GetStats();
+    auto stats = melange::jlog::GetStats();
     Check(stats.records == 5, "schema: GetStats().records == 5");
     Check(stats.dropped == 0, "schema: GetStats().dropped == 0");
 
-    wf::jlog::internal::ShutdownForTests();
+    melange::jlog::internal::ShutdownForTests();
     RemoveTree(dir);
 }
 
 void TestLevelFilter() {
     std::wstring dir = TempDir(L"levels");
-    wf::jlog::internal::Options opt;
-    opt.rootOverride = dir;  // force the sandbox, not the real Documents\WUMFix\logs (see internal::Init())
+    melange::jlog::internal::Options opt;
+    opt.rootOverride = dir;  // force the sandbox, not the real Documents\Melange\logs (see internal::Init())
     opt.levelsSpec = "*:info,verbose:trace,quiet:error";
-    Check(wf::jlog::internal::Init(opt), "levels: Init succeeds");
+    Check(melange::jlog::internal::Init(opt), "levels: Init succeeds");
 
-    Check(wf::jlog::Enabled("other", wf::jlog::Level::Info), "levels: default category allows info");
-    Check(!wf::jlog::Enabled("other", wf::jlog::Level::Debug), "levels: default category blocks debug");
-    Check(wf::jlog::Enabled("verbose", wf::jlog::Level::Trace), "levels: per-category override allows trace");
-    Check(!wf::jlog::Enabled("quiet", wf::jlog::Level::Warn), "levels: per-category override blocks warn");
-    Check(wf::jlog::Enabled("quiet", wf::jlog::Level::Error), "levels: per-category override allows error");
+    Check(melange::jlog::Enabled("other", melange::jlog::Level::Info), "levels: default category allows info");
+    Check(!melange::jlog::Enabled("other", melange::jlog::Level::Debug), "levels: default category blocks debug");
+    Check(melange::jlog::Enabled("verbose", melange::jlog::Level::Trace), "levels: per-category override allows trace");
+    Check(!melange::jlog::Enabled("quiet", melange::jlog::Level::Warn), "levels: per-category override blocks warn");
+    Check(melange::jlog::Enabled("quiet", melange::jlog::Level::Error), "levels: per-category override allows error");
 
-    wf::jlog::internal::ShutdownForTests();
+    melange::jlog::internal::ShutdownForTests();
     RemoveTree(dir);
 }
 
 void TestRotation() {
     std::wstring dir = TempDir(L"rotate");
-    wf::jlog::internal::Options opt;
-    opt.rootOverride = dir;  // force the sandbox, not the real Documents\WUMFix\logs (see internal::Init())
+    melange::jlog::internal::Options opt;
+    opt.rootOverride = dir;  // force the sandbox, not the real Documents\Melange\logs (see internal::Init())
     opt.levelsSpec = "*:trace";
     opt.maxFileMB = 1;
-    Check(wf::jlog::internal::Init(opt), "rotate: Init succeeds");
+    Check(melange::jlog::internal::Init(opt), "rotate: Init succeeds");
 
     std::string filler(120, 'x');
-    for (int i = 0; i < 12000; ++i) wf::jlog::Rec("test", wf::jlog::Level::Info, "filler").Str("pad", filler).Emit();
-    Check(wf::jlog::Flush(5000), "rotate: Flush completes");
+    for (int i = 0; i < 12000; ++i) melange::jlog::Rec("test", melange::jlog::Level::Info, "filler").Str("pad", filler).Emit();
+    Check(melange::jlog::Flush(5000), "rotate: Flush completes");
 
-    Check(GetFileAttributesW((wf::jlog::CurrentSession().dir + L"\\events.1.jsonl").c_str()) != INVALID_FILE_ATTRIBUTES,
+    Check(GetFileAttributesW((melange::jlog::CurrentSession().dir + L"\\events.1.jsonl").c_str()) != INVALID_FILE_ATTRIBUTES,
           "rotate: events.1.jsonl exists after exceeding MaxFileMB");
-    Check(wf::jlog::GetStats().filesRotated >= 1, "rotate: GetStats().filesRotated >= 1");
+    Check(melange::jlog::GetStats().filesRotated >= 1, "rotate: GetStats().filesRotated >= 1");
 
-    wf::jlog::internal::ShutdownForTests();
+    melange::jlog::internal::ShutdownForTests();
     RemoveTree(dir);
 }
 
@@ -220,84 +220,84 @@ void TestSessionPruning() {
                              L"2020-01-04_00-00-00_pid1", L"2020-01-05_00-00-00_pid1"};
     for (auto* name : fake) CreateDirectoryW((dir + L"\\" + name).c_str(), nullptr);
 
-    wf::jlog::internal::Options opt;
-    opt.rootOverride = dir;  // force the sandbox, not the real Documents\WUMFix\logs (see internal::Init())
+    melange::jlog::internal::Options opt;
+    opt.rootOverride = dir;  // force the sandbox, not the real Documents\Melange\logs (see internal::Init())
     opt.levelsSpec = "*:info";
     opt.maxSessions = 3;
     opt.maxTotalMB = 512;
-    Check(wf::jlog::internal::Init(opt), "prune: Init succeeds");
+    Check(melange::jlog::internal::Init(opt), "prune: Init succeeds");
 
     int survivors = 0;
     for (auto* name : fake)
         if (GetFileAttributesW((dir + L"\\" + name).c_str()) != INVALID_FILE_ATTRIBUTES) ++survivors;
     // MaxSessions counts the current session (3.C acceptance 6: 5 launches with MaxSessions=3 leave 3 folders).
     Check(survivors == 2, "prune: MaxSessions-1 old folders survive next to the current one");
-    Check(GetFileAttributesW(wf::jlog::CurrentSession().dir.c_str()) != INVALID_FILE_ATTRIBUTES,
+    Check(GetFileAttributesW(melange::jlog::CurrentSession().dir.c_str()) != INVALID_FILE_ATTRIBUTES,
           "prune: the new current session folder exists on top of the kept old ones");
 
-    wf::jlog::internal::ShutdownForTests();
+    melange::jlog::internal::ShutdownForTests();
     RemoveTree(dir);
 }
 
 void TestCrashFlush() {
     std::wstring dir = TempDir(L"crash");
-    wf::jlog::internal::Options opt;
-    opt.rootOverride = dir;  // force the sandbox, not the real Documents\WUMFix\logs (see internal::Init())
+    melange::jlog::internal::Options opt;
+    opt.rootOverride = dir;  // force the sandbox, not the real Documents\Melange\logs (see internal::Init())
     opt.levelsSpec = "*:info";
-    Check(wf::jlog::internal::Init(opt), "crash: Init succeeds");
+    Check(melange::jlog::internal::Init(opt), "crash: Init succeeds");
 
-    wf::jlog::Rec("test", wf::jlog::Level::Info, "before-crash").Emit();
+    melange::jlog::Rec("test", melange::jlog::Level::Info, "before-crash").Emit();
     // FlushFromCrash() only try-locks the queue (see jlog.cpp), so it races the normal writer thread's own
     // 100ms tick; retry briefly rather than assume our call is the one that won the race.
     bool found = false;
     for (int attempt = 0; attempt < 20 && !found; ++attempt) {
-        wf::jlog::FlushFromCrash();
-        for (auto& l : ReadLines(wf::jlog::CurrentSession().dir + L"\\events.jsonl"))
+        melange::jlog::FlushFromCrash();
+        for (auto& l : ReadLines(melange::jlog::CurrentSession().dir + L"\\events.jsonl"))
             if (l.find("before-crash") != std::string::npos) found = true;
         if (!found) Sleep(10);
     }
     Check(found, "crash: FlushFromCrash() writes the pending record without a normal Flush()");
 
-    wf::jlog::internal::ShutdownForTests();
+    melange::jlog::internal::ShutdownForTests();
     RemoveTree(dir);
 }
 
 void TestBadPathFallback() {
     // '?' is never valid in a Windows path, so this reliably fails regardless of which drive letters exist
     // (docs/m0-design.md SS3 "C" acceptance item 11: "Dir=Q:\nope falls back ... with a Warn record").
-    std::wstring badRoot = L"C:\\wumfix_selftest_??_invalid";
+    std::wstring badRoot = L"C:\\melange_selftest_??_invalid";
     std::wstring fallback = TempDir(L"fallback");
-    wf::jlog::internal::Options opt;
+    melange::jlog::internal::Options opt;
     opt.rootOverride = badRoot;
     opt.fallbackRoot = fallback;
     opt.levelsSpec = "*:info";
-    Check(wf::jlog::internal::Init(opt), "badpath: Init succeeds via the fallback root");
-    Check(wf::jlog::CurrentSession().root == fallback, "badpath: CurrentSession().root is the fallback, not the bad one");
-    Check(wf::jlog::Flush(2000), "badpath: Flush completes");
+    Check(melange::jlog::internal::Init(opt), "badpath: Init succeeds via the fallback root");
+    Check(melange::jlog::CurrentSession().root == fallback, "badpath: CurrentSession().root is the fallback, not the bad one");
+    Check(melange::jlog::Flush(2000), "badpath: Flush completes");
 
-    auto lines = ReadLines(wf::jlog::CurrentSession().dir + L"\\events.jsonl");
+    auto lines = ReadLines(melange::jlog::CurrentSession().dir + L"\\events.jsonl");
     Check(!lines.empty() && lines.front().find("\"lvl\":\"warn\"") != std::string::npos &&
               lines.front().find("fallback") != std::string::npos,
           "badpath: the first record is a warn about the fallback");
 
-    wf::jlog::internal::ShutdownForTests();
+    melange::jlog::internal::ShutdownForTests();
     RemoveTree(fallback);
 }
 
 void TestBusFilter() {
-    wf::jlog::busfilter::Init("Camera.HasUpdated,Land.CheckVoxel", "");
-    Check(!wf::jlog::busfilter::ShouldLog("Camera.HasUpdated"), "busfilter: default deny list blocks a listed name");
-    Check(wf::jlog::busfilter::ShouldLog("GameLogic.Turn.Started"), "busfilter: an unlisted name is logged");
+    melange::jlog::busfilter::Init("Camera.HasUpdated,Land.CheckVoxel", "");
+    Check(!melange::jlog::busfilter::ShouldLog("Camera.HasUpdated"), "busfilter: default deny list blocks a listed name");
+    Check(melange::jlog::busfilter::ShouldLog("GameLogic.Turn.Started"), "busfilter: an unlisted name is logged");
 
-    wf::jlog::busfilter::SetAllow("Camera.HasUpdated", true);
-    Check(wf::jlog::busfilter::ShouldLog("Camera.HasUpdated"), "busfilter: allow overrides deny");
+    melange::jlog::busfilter::SetAllow("Camera.HasUpdated", true);
+    Check(melange::jlog::busfilter::ShouldLog("Camera.HasUpdated"), "busfilter: allow overrides deny");
 
-    wf::jlog::busfilter::SetAllow("Camera.HasUpdated", false);
-    Check(!wf::jlog::busfilter::ShouldLog("Camera.HasUpdated"), "busfilter: removing the allow restores the deny");
+    melange::jlog::busfilter::SetAllow("Camera.HasUpdated", false);
+    Check(!melange::jlog::busfilter::ShouldLog("Camera.HasUpdated"), "busfilter: removing the allow restores the deny");
 
-    wf::jlog::busfilter::Init("EventDeny,from,ini", "EventAllow,from,ini");
-    Check(wf::jlog::busfilter::IsDenied("from"), "busfilter: Init() parses comma-separated deny list");
-    Check(wf::jlog::busfilter::IsAllowed("from"), "busfilter: Init() parses comma-separated allow list");
+    melange::jlog::busfilter::Init("EventDeny,from,ini", "EventAllow,from,ini");
+    Check(melange::jlog::busfilter::IsDenied("from"), "busfilter: Init() parses comma-separated deny list");
+    Check(melange::jlog::busfilter::IsAllowed("from"), "busfilter: Init() parses comma-separated allow list");
 }
 
 }  // namespace

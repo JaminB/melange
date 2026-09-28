@@ -1,4 +1,4 @@
-// WUMFix entry point. Loaded by Ultimate ASI Loader (dinput8.dll) as WUMFix.asi.
+// Melange entry point. Loaded by Ultimate ASI Loader (dinput8.dll) as melange.asi.
 #include <windows.h>
 
 #include "core/config.h"
@@ -10,23 +10,23 @@
 
 namespace {
 void Init(HMODULE self) {
-    wf::game::Init(self);
-    wf::log::Init(wf::game::DataDir() + L"\\WUMFix.log");
-    wf::config::Init(wf::game::PluginDir() + L"\\WUMFix.ini");
+    melange::game::Init(self);
+    melange::log::Init(melange::game::DataDir() + L"\\Melange.log");
+    melange::config::Init(melange::game::PluginDir() + L"\\Melange.ini");
 
-    const auto& exe = wf::game::Exe();
-    WF_INFO("WUMFix " WUMFIX_VERSION " starting (pid %lu)", GetCurrentProcessId());
-    WF_INFO("game dir : %s", wf::game::Narrow(wf::game::GameDir()).c_str());
-    WF_INFO("ini      : %s", wf::game::Narrow(wf::config::Path()).c_str());
+    const auto& exe = melange::game::Exe();
+    WF_INFO("Melange " MELANGE_VERSION " starting (pid %lu)", GetCurrentProcessId());
+    WF_INFO("game dir : %s", melange::game::Narrow(melange::game::GameDir()).c_str());
+    WF_INFO("ini      : %s", melange::game::Narrow(melange::config::Path()).c_str());
     WF_INFO("exe      : size=%u timestamp=%08x sha256=%s", exe.fileSize, exe.timestamp, exe.sha256.c_str());
     if (exe.known)
         WF_INFO("exe guard: recognised build %s - all modules available", exe.build);
     else
         WF_WARN("exe guard: UNRECOGNISED build - modules using fixed addresses are disabled");
 
-    wf::events::InstallCore();
-    wf::modules::InstallAll();
-    WF_INFO("startup complete, %zu modules active", wf::modules::Installed().size());
+    melange::events::InstallCore();
+    melange::modules::InstallAll();
+    WF_INFO("startup complete, %zu modules active", melange::modules::Installed().size());
 }
 }  // namespace
 
@@ -35,7 +35,7 @@ BOOL APIENTRY DllMain(HMODULE module, DWORD reason, LPVOID reserved) {
         DisableThreadLibraryCalls(module);
         Init(module);
     } else if (reason == DLL_PROCESS_DETACH && reserved == nullptr) {
-        wf::modules::UninstallAll();
+        melange::modules::UninstallAll();
     }
     return TRUE;
 }

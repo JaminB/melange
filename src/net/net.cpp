@@ -4,7 +4,7 @@
 
 #include "core/mem.h"
 
-namespace wf::wum {
+namespace melange::wum {
 template <class T>
 T Read(uintptr_t addr, T def) {
     T v;
@@ -92,4 +92,4 @@ uintptr_t CurrentPlayer(uintptr_t ns) {
         return 0;
     }
 }
-}  // namespace wf::wum
+}  // namespace melange::wum

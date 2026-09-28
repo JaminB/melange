@@ -1,12 +1,12 @@
 #pragma once
 // Minimal Steamworks declarations matching the SDK the game shipped with
 // (steam_api.dll 01.10.01.46: SteamNetworking005, SteamMatchMaking008, SteamUser016).
-// We do not ship the Steamworks SDK; only what WUMFix needs is declared here.
+// We do not ship the Steamworks SDK; only what Melange needs is declared here.
 #include <windows.h>
 
 #include <cstdint>
 
-namespace wf::steam {
+namespace melange::steam {
 using SteamID = uint64_t;
 using SteamAPICall = uint64_t;
 
@@ -61,4 +61,4 @@ struct P2PSessionState {
 void RegisterCallback(CallbackBase* cb, int id);
 void UnregisterCallback(CallbackBase* cb);
 const char* CallbackName(int id);
-}  // namespace wf::steam
+}  // namespace melange::steam

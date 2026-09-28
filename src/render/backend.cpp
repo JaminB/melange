@@ -6,7 +6,7 @@
 #include <imgui_impl_opengl2.h>
 #include <imgui_impl_win32.h>
 
-namespace wf::render::backend {
+namespace melange::render::backend {
 namespace {
 bool g_ready = false;
 void* g_hwnd = nullptr;
@@ -57,4 +57,4 @@ void Shutdown(bool contextLost) {
 
 bool Ready() { return g_ready; }
 void* Hwnd() { return g_hwnd; }
-}  // namespace wf::render::backend
+}  // namespace melange::render::backend

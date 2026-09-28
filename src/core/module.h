@@ -3,12 +3,12 @@
 
 #include "core/config.h"
 
-// A WUMFix module is one self-contained fix/feature. To add one:
+// A Melange module is one self-contained fix/feature. To add one:
 //   1. create src/modules/<name>.cpp
-//   2. derive from wf::Module, implement Name/Description/Install
-//   3. put WUMFIX_MODULE(YourClass) at the bottom of the file
-// It gets its own [Name] section in WUMFix.ini with at least "Enabled".
-namespace wf {
+//   2. derive from melange::Module, implement Name/Description/Install
+//   3. put MELANGE_MODULE(YourClass) at the bottom of the file
+// It gets its own [Name] section in Melange.ini with at least "Enabled".
+namespace melange {
 class Module {
 public:
     virtual ~Module() = default;
@@ -36,7 +36,7 @@ void InstallAll();
 void UninstallAll();
 const std::vector<Module*>& Installed();
 }  // namespace modules
-}  // namespace wf
+}  // namespace melange
 
-#define WUMFIX_MODULE(T) \
-    static const bool wumfix_registered_##T = ::wf::modules::Register([]() -> ::wf::Module* { return new T(); })
+#define MELANGE_MODULE(T) \
+    static const bool melange_registered_##T = ::melange::modules::Register([]() -> ::melange::Module* { return new T(); })

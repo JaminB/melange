@@ -24,8 +24,8 @@
 
 #include "core/keys.h"
 
-namespace wf::render {
-// Same values as wf::overlay::Mods (wumfix/overlay.h).
+namespace melange::render {
+// Same values as melange::overlay::Mods (melange/overlay.h).
 enum : uint8_t { kModCtrl = 1, kModShift = 2, kModAlt = 4 };
 
 constexpr uint8_t kDikLCtrl = 0x1D, kDikRCtrl = 0x9D, kDikLShift = 0x2A, kDikRShift = 0x36, kDikLAlt = 0x38,
@@ -73,7 +73,7 @@ inline bool ParseHotkeyText(const char* text, uint8_t* dik, uint8_t* mods) {
         if (!end || *end || v == 0 || v > 0xFF) return false;
         code = static_cast<uint8_t>(v);
     } else {
-        const wf::automation::KeyDef* k = wf::automation::FindKey(key.c_str());
+        const melange::automation::KeyDef* k = melange::automation::FindKey(key.c_str());
         if (!k) return false;
         code = k->dik;
     }
@@ -84,7 +84,7 @@ inline bool ParseHotkeyText(const char* text, uint8_t* dik, uint8_t* mods) {
 
 // First keys.h name for a DIK code ("?" if none).
 inline const char* DikName(uint8_t dik) {
-    for (const auto& k : wf::automation::kKeys)
+    for (const auto& k : melange::automation::kKeys)
         if (k.dik == dik) return k.name;
     return "?";
 }
@@ -242,4 +242,4 @@ private:
     DWORD lastSeq_ = 0;
     uint64_t dropped_ = 0, synthetic_ = 0;
 };
-}  // namespace wf::render
+}  // namespace melange::render

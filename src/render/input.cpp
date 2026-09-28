@@ -30,23 +30,23 @@
 #include "core/mem.h"
 #include "render/input_logic.h"
 #include "render/internal.h"
-#include "wumfix/overlay.h"
+#include "melange/overlay.h"
 
 extern IMGUI_IMPL_API LRESULT ImGui_ImplWin32_WndProcHandler(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam);
 
-namespace wf::render {
+namespace melange::render {
 bool SehCall(void (*fn)(void*), void* arg, unsigned long* code);  // overlay.cpp
 }
 
 namespace {
-using wf::render::HotkeyDef;
-using wf::render::KeyFilter;
+using melange::render::HotkeyDef;
+using melange::render::KeyFilter;
 
 // ---------------------------------------------------------------- hotkey registry
 struct Hotkey {
     int handle;
     uint8_t dik, mods;
-    wf::overlay::ActionFn fn;
+    melange::overlay::ActionFn fn;
     void* user;
 };
 std::mutex g_hkMx;
@@ -113,7 +113,7 @@ HRESULT WINAPI HookGetDeviceData(void* self, DWORD cb, DIDEVICEOBJECTDATA* rgdod
     }
     if (!rgdod || !inOut || cb != sizeof(DIDEVICEOBJECTDATA) || (flags & DIGDD_PEEK)) return hr;
     ++g_diPolls;
-    const bool capturing = wf::overlay::Capturing();
+    const bool capturing = melange::overlay::Capturing();
     std::vector<int> fired;
     std::vector<uint8_t> released;
     {
@@ -137,7 +137,7 @@ HRESULT WINAPI HookGetDeviceData(void* self, DWORD cb, DIDEVICEOBJECTDATA* rgdod
         std::string names;
         for (uint8_t d : released) {
             if (!names.empty()) names += ' ';
-            names += wf::render::DikName(d);
+            names += melange::render::DikName(d);
         }
         WF_INFO("[overlay] capture on: synthetic key release sent to the game for %s", names.c_str());
     }
@@ -157,7 +157,7 @@ HRESULT WINAPI HookGetDeviceState(void* self, DWORD cb, void* data) {
     HRESULT hr = o.state(self, cb, data);
     if (kb && SUCCEEDED(hr) && data) {
         std::lock_guard lk(g_filterMx);
-        g_filter.FilterState(static_cast<uint8_t*>(data), cb, wf::overlay::Capturing());
+        g_filter.FilterState(static_cast<uint8_t*>(data), cb, melange::overlay::Capturing());
     }
     return hr;
 }
@@ -200,12 +200,12 @@ HRESULT WINAPI HookCreateDevice(void* self, REFGUID guid, void** out, IUnknown* 
         g_isKeyboard[*out] = kb;
         if (!g_releaseVts.count(vt)) {
             Release_t orel = nullptr;
-            wf::mem::HookVTable(*out, 2, reinterpret_cast<void*>(&HookRelease), reinterpret_cast<void**>(&orel));
+            melange::mem::HookVTable(*out, 2, reinterpret_cast<void*>(&HookRelease), reinterpret_cast<void**>(&orel));
             g_releaseVts[vt] = orel;
         }
         if (kb && !g_devVts.count(vt)) {
-            wf::mem::HookVTable(*out, 10, reinterpret_cast<void*>(&HookGetDeviceData), reinterpret_cast<void**>(&o.data));
-            wf::mem::HookVTable(*out, 9, reinterpret_cast<void*>(&HookGetDeviceState), reinterpret_cast<void**>(&o.state));
+            melange::mem::HookVTable(*out, 10, reinterpret_cast<void*>(&HookGetDeviceData), reinterpret_cast<void**>(&o.data));
+            melange::mem::HookVTable(*out, 9, reinterpret_cast<void*>(&HookGetDeviceState), reinterpret_cast<void**>(&o.state));
             g_devVts[vt] = o;
             hookedNow = true;
         }
@@ -229,7 +229,7 @@ HRESULT WINAPI HookDI8Create(HINSTANCE inst, DWORD ver, REFIID riid, void** out,
         void** vt = *static_cast<void***>(*out);
         if (!g_diVts.count(vt)) {
             CreateDevice_t o = nullptr;
-            wf::mem::HookVTable(*out, 3, reinterpret_cast<void*>(&HookCreateDevice), reinterpret_cast<void**>(&o));
+            melange::mem::HookVTable(*out, 3, reinterpret_cast<void*>(&HookCreateDevice), reinterpret_cast<void**>(&o));
             g_diVts[vt] = o;
         }
     }
@@ -241,7 +241,7 @@ using SetCursorPos_t = BOOL(WINAPI*)(int, int);
 SetCursorPos_t g_origSetCursorPos = nullptr;
 
 BOOL WINAPI HookSetCursorPos(int x, int y) {
-    if (wf::overlay::Capturing()) {
+    if (melange::overlay::Capturing()) {
         ++g_cursorBlocked;
         return TRUE;
     }
@@ -269,9 +269,9 @@ bool IsHotkeyKeyMsg(LPARAM lp) {
     bool ext = ((lp >> 24) & 1) != 0;
     uint8_t dik = static_cast<uint8_t>((scan & 0x7F) | (ext ? 0x80 : 0));
     uint8_t mods = 0;
-    if (GetKeyState(VK_CONTROL) < 0) mods |= wf::render::kModCtrl;
-    if (GetKeyState(VK_SHIFT) < 0) mods |= wf::render::kModShift;
-    if (GetKeyState(VK_MENU) < 0) mods |= wf::render::kModAlt;
+    if (GetKeyState(VK_CONTROL) < 0) mods |= melange::render::kModCtrl;
+    if (GetKeyState(VK_SHIFT) < 0) mods |= melange::render::kModShift;
+    if (GetKeyState(VK_MENU) < 0) mods |= melange::render::kModAlt;
     std::lock_guard lk(g_hkMx);
     for (const Hotkey& h : g_hotkeys)
         if (h.dik == dik && h.mods == mods) return true;
@@ -308,7 +308,7 @@ LRESULT CALLBACK OverlayWndProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
         ++g_keyMsgsDropped;
         return 0;
     }
-    if (g_imguiReady.load(std::memory_order_relaxed) && wf::overlay::Capturing()) {
+    if (g_imguiReady.load(std::memory_order_relaxed) && melange::overlay::Capturing()) {
         if (ForImGui(msg)) {
             // Automation posts button messages with client coordinates while the real cursor may be elsewhere (and
             // TrackMouseEvent then reports a leave): take the position from the click itself.
@@ -328,12 +328,12 @@ LRESULT CALLBACK OverlayWndProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
 }
 }  // namespace
 
-namespace wf::render {
+namespace melange::render {
 bool InstallInput() {
     if (g_installed.exchange(true)) return true;
-    bool di = wf::mem::HookIAT("DINPUT8.dll", "DirectInput8Create", reinterpret_cast<void*>(&HookDI8Create),
+    bool di = melange::mem::HookIAT("DINPUT8.dll", "DirectInput8Create", reinterpret_cast<void*>(&HookDI8Create),
                                reinterpret_cast<void**>(&g_origDI8Create));
-    bool cur = wf::mem::HookIAT("USER32.dll", "SetCursorPos", reinterpret_cast<void*>(&HookSetCursorPos),
+    bool cur = melange::mem::HookIAT("USER32.dll", "SetCursorPos", reinterpret_cast<void*>(&HookSetCursorPos),
                                 reinterpret_cast<void**>(&g_origSetCursorPos));
     g_cursorHooked = cur;
     if (!di) WF_WARN("[overlay] DINPUT8!DirectInput8Create import not hooked: hotkeys and keyboard capture will not work");
@@ -419,19 +419,19 @@ std::vector<HotkeyInfo> ListHotkeys() {
     for (const Hotkey& h : g_hotkeys) out.push_back({h.handle, HotkeyLabel(h.dik, h.mods)});
     return out;
 }
-}  // namespace wf::render
+}  // namespace melange::render
 
-namespace wf::overlay {
+namespace melange::overlay {
 int AddHotkey(uint8_t dik, uint8_t mods, ActionFn fn, void* user) {
     if (!dik || !fn || (mods & ~(kCtrl | kShift | kAlt))) return 0;
     std::lock_guard lk(g_hkMx);
     for (const Hotkey& h : g_hotkeys)
         if (h.dik == dik && h.mods == mods)
-            WF_WARN("[overlay] hotkey %s registered twice; both actions will run", wf::render::HotkeyLabel(dik, mods).c_str());
+            WF_WARN("[overlay] hotkey %s registered twice; both actions will run", melange::render::HotkeyLabel(dik, mods).c_str());
     int handle = g_nextHotkey++;
     g_hotkeys.push_back({handle, dik, mods, fn, user});
     return handle;
 }
 
-bool ParseHotkey(const char* text, uint8_t* dik, uint8_t* mods) { return wf::render::ParseHotkeyText(text, dik, mods); }
-}  // namespace wf::overlay
+bool ParseHotkey(const char* text, uint8_t* dik, uint8_t* mods) { return melange::render::ParseHotkeyText(text, dik, mods); }
+}  // namespace melange::overlay

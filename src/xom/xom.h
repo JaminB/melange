@@ -1,4 +1,4 @@
-// wumfix::xom - portable reader/writer for Worms Ultimate Mayhem "MOIK" XOM files.
+// melange::xom - portable reader/writer for Worms Ultimate Mayhem "MOIK" XOM files.
 //
 // C++17, standard library only, no exceptions required, no OS calls: builds for
 // Win32, Linux and WebAssembly (Emscripten) alike. Mirrors tools/xom/xom.py; see
@@ -15,7 +15,7 @@
 #include <utility>
 #include <vector>
 
-namespace wumfix::xom {
+namespace melange::xom {
 
 enum class Type : uint8_t {
     Void, Bool, U8, I8, U16, I16, U32, I32, U64, I64, F32, F64, Enum, Bitfield32, Bitfield64,
@@ -144,4 +144,4 @@ bool parse(const uint8_t* data, size_t size, Document& out, std::string* error =
 // grouped in TYPE-table order, missing fields).
 bool serialize(const Document& doc, std::vector<uint8_t>& out, std::string* error = nullptr);
 
-}  // namespace wumfix::xom
+}  // namespace melange::xom

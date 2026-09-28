@@ -4,7 +4,7 @@
 #include <string>
 #include <unordered_set>
 
-namespace wf::jlog::busfilter {
+namespace melange::jlog::busfilter {
 namespace {
 std::mutex g_mx;
 std::unordered_set<std::string> g_deny;
@@ -63,4 +63,4 @@ void SetDeny(std::string_view name, bool on) {
         g_deny.erase(std::string(name));
 }
 
-}  // namespace wf::jlog::busfilter
+}  // namespace melange::jlog::busfilter

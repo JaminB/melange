@@ -16,7 +16,7 @@ Library use:
 The JSON model
 --------------
 {
-  "format": "wumfix-xom/1",
+  "format": "melange-xom/1",
   "header": {...fields that are not recomputed...},
   "types": [ {"name", "version", "guid", "extra"}, ... ],   # file TYPE table, in order
   "guid_rec": [a, b, c], "schm_rec": [a, b, c],
@@ -46,7 +46,7 @@ import struct
 import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-FORMAT = 'wumfix-xom/1'
+FORMAT = 'melange-xom/1'
 
 # ---------------------------------------------------------------- schema
 

@@ -2,7 +2,7 @@
 
 #include "core/log.h"
 
-namespace wf::steam {
+namespace melange::steam {
 namespace {
 using Register_t = void(__cdecl*)(CallbackBase*, int);
 using Unregister_t = void(__cdecl*)(CallbackBase*);
@@ -48,4 +48,4 @@ const char* CallbackName(int id) {
         default: return "?";
     }
 }
-}  // namespace wf::steam
+}  // namespace melange::steam

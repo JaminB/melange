@@ -22,7 +22,7 @@
 #include <cstdio>
 #include <cstring>
 
-namespace wf::render::gl {
+namespace melange::render::gl {
 namespace {
 // Enums beyond the GL 1.1 header.
 constexpr GLenum kTEXTURE0 = 0x84C0, kACTIVE_TEXTURE = 0x84E0, kCLIENT_ACTIVE_TEXTURE = 0x84E1,
@@ -413,4 +413,4 @@ void Guard::Restore() {
     glMatrixMode(static_cast<GLenum>(matrixMode_));
     restoreErrors_ = DrainErrors();
 }
-}  // namespace wf::render::gl
+}  // namespace melange::render::gl

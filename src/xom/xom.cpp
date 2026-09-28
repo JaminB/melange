@@ -1,4 +1,4 @@
-// wumfix::xom - see xom.h. Mirrors tools/xom/xom.py.
+// melange::xom - see xom.h. Mirrors tools/xom/xom.py.
 #include "xom.h"
 
 #include <algorithm>
@@ -8,7 +8,7 @@
 #include <set>
 #include <unordered_map>
 
-namespace wumfix::xom {
+namespace melange::xom {
 
 #include "xom_schema.inc"
 
@@ -828,4 +828,4 @@ bool serialize(const Document& doc, std::vector<uint8_t>& out, std::string* erro
     return true;
 }
 
-}  // namespace wumfix::xom
+}  // namespace melange::xom

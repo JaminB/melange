@@ -1,5 +1,5 @@
 // Event bus (component B): hooks on the engine's message Post (0x6910e4) and Deliver (0x68cb82), the subscriber
-// table, stats, and the EventBus module with its Automation test verbs. Public API: src/sdk/wumfix/bus.h.
+// table, stats, and the EventBus module with its Automation test verbs. Public API: src/sdk/melange/bus.h.
 // Spec: docs/m0-design.md §1.2 and §3 "B: event bus".
 //
 // Hot path (every Post/Deliver, ~4000/s in a match): read the u16 id, bump counters, test a 64K-bit "has
@@ -36,9 +36,9 @@
 #include "core/log.h"
 #include "core/mem.h"
 #include "core/module.h"
-#include "wumfix/testcmd.h"
+#include "melange/testcmd.h"
 
-namespace wf::bus {
+namespace melange::bus {
 namespace {
 constexpr int kPaths = 2;
 constexpr uint32_t kMaxFaults = 3;
@@ -749,5 +749,5 @@ public:
 };
 }  // namespace
 
-WUMFIX_MODULE(EventBus);
-}  // namespace wf::bus
+MELANGE_MODULE(EventBus);
+}  // namespace melange::bus

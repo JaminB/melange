@@ -1,4 +1,4 @@
-# Builds WUMFix.asi (x86). Usage: .\build.ps1 [-Config x86-release|x86-debug]
+# Builds melange.asi (x86). Usage: .\build.ps1 [-Config x86-release|x86-debug]
 param([string]$Config = "x86-release")
 $ErrorActionPreference = "Stop"
 $root = $PSScriptRoot
@@ -16,6 +16,6 @@ if ($LASTEXITCODE) { exit $LASTEXITCODE }
 cmake --build --preset $Config
 if ($LASTEXITCODE) { exit $LASTEXITCODE }
 New-Item -ItemType Directory -Force "$root\dist" | Out-Null
-Copy-Item "$root\build\$Config\WUMFix.asi" "$root\dist\" -Force
-Copy-Item "$root\build\$Config\WUMFix.pdb" "$root\dist\" -Force -ErrorAction SilentlyContinue
-Write-Host "Built dist\WUMFix.asi"
+Copy-Item "$root\build\$Config\melange.asi" "$root\dist\" -Force
+Copy-Item "$root\build\$Config\Melange.pdb" "$root\dist\" -Force -ErrorAction SilentlyContinue
+Write-Host "Built dist\melange.asi"

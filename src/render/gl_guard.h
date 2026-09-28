@@ -5,7 +5,7 @@
 #include <cstdint>
 #include <string>
 
-namespace wf::render::gl {
+namespace melange::render::gl {
 // Per-context capabilities and extension entry points (resolved with wglGetProcAddress).
 struct Caps {
     bool loaded = false;
@@ -79,4 +79,4 @@ private:
     // and leave the guard's own push permanently on the stack. Restore() instead pops down to these depths.
     int attribDepth_ = 0, clientAttribDepth_ = 0, texMatrixDepth_ = 0, projMatrixDepth_ = 0, mvMatrixDepth_ = 0;
 };
-}  // namespace wf::render::gl
+}  // namespace melange::render::gl

@@ -15,7 +15,7 @@
 #include "core/bus_internal.h"
 #include "core/log.h"
 
-using namespace wf::bus;
+using namespace melange::bus;
 
 namespace {
 int g_checks = 0, g_failed = 0;
@@ -158,7 +158,7 @@ int main() {
     GetModuleFileNameW(nullptr, exe, MAX_PATH);
     std::wstring logPath = exe;
     logPath = logPath.substr(0, logPath.find_last_of(L"\\/")) + L"\\bus_selftest.log";
-    wf::log::Init(logPath);
+    melange::log::Init(logPath);
 
     FillRegistry();
     detail::SetRegistrySource({reinterpret_cast<uintptr_t>(&g_tableVar), reinterpret_cast<uintptr_t>(&g_sizeVar),

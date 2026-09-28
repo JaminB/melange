@@ -13,15 +13,15 @@
 #include "core/game.h"
 #include "tools/hash.h"
 #include "tools/json_mini.h"
-#include "wumfix/overlay.h"
+#include "melange/overlay.h"
 
-// generated/version.h (WUMFIX_VERSION*) is on the include path via CMakeLists.txt's ${CMAKE_BINARY_DIR}/generated.
+// generated/version.h (MELANGE_VERSION*) is on the include path via CMakeLists.txt's ${CMAKE_BINARY_DIR}/generated.
 #include "version.h"
 
-namespace wf::sysinfo {
+namespace melange::sysinfo {
 namespace {
 
-std::string NarrowLocal(const std::wstring& w) { return wf::game::Narrow(w); }
+std::string NarrowLocal(const std::wstring& w) { return melange::game::Narrow(w); }
 
 // RtlGetVersion bypasses the GetVersionEx() app-compat shims that would otherwise report Windows 8.
 std::string OsBuildString() {
@@ -92,7 +92,7 @@ uint32_t FileSizeOf(const std::wstring& path) {
 
 std::vector<PluginFile> DetectPlugins() {
     std::vector<PluginFile> out;
-    const std::wstring& root = wf::game::GameDir();
+    const std::wstring& root = melange::game::GameDir();
     if (root.empty()) return out;
     // Ultimate ASI Loader also loads from plugins\ and scripts\ (WUMPatch installs WUM.Patch.asi in plugins\).
     for (const wchar_t* sub : {L"", L"plugins\\", L"scripts\\"}) {
@@ -157,7 +157,7 @@ std::string CollectJson() {
 
     // Only meaningful once the real overlay component (A) has created a GL context on the first Present;
     // gl.valid stays false in a build where Overlay hasn't installed yet (see report: A/C stub gap).
-    wf::overlay::GlInfo gl = wf::overlay::Gl();
+    melange::overlay::GlInfo gl = melange::overlay::Gl();
     jsonmini::Obj glj;
     glj.Bool("valid", gl.valid)
         .Str("vendor", gl.vendor)
@@ -167,8 +167,8 @@ std::string CollectJson() {
         .Int("viewportW", gl.viewportW)
         .Int("viewportH", gl.viewportH);
 
-    const wf::game::ExeInfo& exe = wf::game::Exe();
-    std::wstring exePath = wf::game::GameDir().empty() ? std::wstring() : wf::game::GameDir() + L"\\WormsMayhem.exe";
+    const melange::game::ExeInfo& exe = melange::game::Exe();
+    std::wstring exePath = melange::game::GameDir().empty() ? std::wstring() : melange::game::GameDir() + L"\\WormsMayhem.exe";
     jsonmini::Obj exej;
     exej.Str("path", NarrowLocal(exePath))
         .UInt("size", exe.fileSize)
@@ -177,7 +177,7 @@ std::string CollectJson() {
         .Str("build", exe.build)
         .Bool("known", exe.known);
 
-    std::wstring dinput = wf::game::GameDir().empty() ? std::wstring() : wf::game::GameDir() + L"\\dinput8.dll";
+    std::wstring dinput = melange::game::GameDir().empty() ? std::wstring() : melange::game::GameDir() + L"\\dinput8.dll";
     jsonmini::Obj ual;
     ual.Str("dinput8Version", FileVersionOf(dinput));
 
@@ -196,7 +196,7 @@ std::string CollectJson() {
     mods.Raw("detected", detected.End());
 
     jsonmini::Obj root;
-    root.Str("wumfixVersion", WUMFIX_VERSION)
+    root.Str("melangeVersion", MELANGE_VERSION)
         .Raw("os", os.End())
         .Raw("cpu", cpu.End())
         .Raw("ram", ram.End())
@@ -208,4 +208,4 @@ std::string CollectJson() {
         .Raw("mods", mods.End());
     return root.End();
 }
-}  // namespace wf::sysinfo
+}  // namespace melange::sysinfo

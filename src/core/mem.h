@@ -4,7 +4,7 @@
 #include <initializer_list>
 
 // Low-level memory patching helpers. Inline/mid-function hooks use SafetyHook directly (<safetyhook.hpp>).
-namespace wf::mem {
+namespace melange::mem {
 bool Write(uintptr_t addr, const void* data, size_t n);
 template <class T>
 bool Put(uintptr_t addr, T value) {
@@ -27,4 +27,4 @@ bool HookVTable(void* object, int index, void* hook, void** original);
 
 // SEH-guarded reads for diagnostics code poking at game memory.
 bool SafeRead(uintptr_t addr, void* out, size_t n);
-}  // namespace wf::mem
+}  // namespace melange::mem

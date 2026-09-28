@@ -3,7 +3,7 @@
 // Everything here is read with SEH-guarded reads, so a wrong guess logs garbage instead of crashing.
 #include <cstdint>
 
-namespace wf::wum {
+namespace melange::wum {
 namespace addr {
 constexpr uintptr_t NetServicePtr = 0x979ddc;        // NetService* singleton
 constexpr uintptr_t AbortGame = 0x70864c;            // __thiscall(ns, HRESULT), ret 4
@@ -80,4 +80,4 @@ template <class T>
 T Read(uintptr_t addr, T def = T{});
 bool WriteByte(uintptr_t addr, uint8_t v);
 bool WriteInt(uintptr_t addr, int32_t v);
-}  // namespace wf::wum
+}  // namespace melange::wum

@@ -3,7 +3,7 @@
 // paths). Run in-game by the Automation verb `overlay.selftest` and offline by scripts/test-overlay.ps1.
 #include <string>
 
-namespace wf::render {
+namespace melange::render {
 // Returns the number of failed checks; `report` receives one line per failure plus a summary line.
 int RunLogicSelfTests(std::string* report);
-}  // namespace wf::render
+}  // namespace melange::render

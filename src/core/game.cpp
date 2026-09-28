@@ -7,7 +7,7 @@
 #include <cstdio>
 #include <vector>
 
-namespace wf::game {
+namespace melange::game {
 namespace {
 ExeInfo g_exe;
 std::wstring g_gameDir, g_pluginDir, g_dataDir;
@@ -58,7 +58,7 @@ void Init(void* pluginModule) {
     g_gameDir = DirOf(exePath);
     GetModuleFileNameW(static_cast<HMODULE>(pluginModule), buf, MAX_PATH);
     g_pluginDir = DirOf(buf);
-    g_dataDir = g_pluginDir + L"\\WUMFix";
+    g_dataDir = g_pluginDir + L"\\Melange";
     CreateDirectoryW(g_dataDir.c_str(), nullptr);
 
     auto base = reinterpret_cast<const unsigned char*>(GetModuleHandleW(nullptr));
@@ -103,4 +103,4 @@ std::string DescribeAddress(uintptr_t addr) {
     }
     return out;
 }
-}  // namespace wf::game
+}  // namespace melange::game

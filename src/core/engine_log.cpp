@@ -1,4 +1,4 @@
-// EngineLog: mirrors every line the engine writes to XOM<n>-<PC>.log into WUMFix.log, so engine
+// EngineLog: mirrors every line the engine writes to XOM<n>-<PC>.log into Melange.log, so engine
 // messages (including the netcode's "Session no longer viable..." lines) interleave with our traces.
 #include <safetyhook.hpp>
 
@@ -32,7 +32,7 @@ void OnOnlineLog(safetyhook::Context& c) {
     char msg[1024] = "";
     if (fmt) _vsnprintf_s(msg, sizeof(msg), _TRUNCATE, fmt, reinterpret_cast<va_list>(arg(4)));
     static const char* kLevel[] = {"info", "info", "WARNING", "FAILURE"};
-    wf::log::Write("ENG  ", "XomOnline[%s] %s: %s", kLevel[level & 3], tag ? tag : "", msg);
+    melange::log::Write("ENG  ", "XomOnline[%s] %s: %s", kLevel[level & 3], tag ? tag : "", msg);
 }
 std::string g_filter;  // empty = everything
 
@@ -46,7 +46,7 @@ void Emit(std::string& line) {
         if (line.compare(a, 2, "+ ") == 0) a += 2;
     }
     if (a != std::string::npos && a < line.size() && (g_filter.empty() || line.find(g_filter) != std::string::npos))
-        wf::log::Write("ENG  ", "%s", line.c_str() + a);
+        melange::log::Write("ENG  ", "%s", line.c_str() + a);
     line.clear();
 }
 
@@ -64,19 +64,19 @@ void __cdecl HookSink(const char* text) {
     if (line.size() > 4096) Emit(line);
 }
 
-class EngineLog final : public wf::Module {
+class EngineLog final : public melange::Module {
 public:
     const char* Name() const override { return "EngineLog"; }
-    const char* Description() const override { return "mirrors the engine's XOM log into WUMFix.log"; }
+    const char* Description() const override { return "mirrors the engine's XOM log into Melange.log"; }
     bool RequiresKnownBuild() const override { return true; }
     int Order() const override { return 12; }
 
     bool Install() override {
-        g_filter = wf::config::GetString(Name(), "Filter", "");
-        wf::config::EnsureKey(Name(), "Filter", "");
-        if (!wf::mem::Expect(kSink, {0x55, 0x8b, 0xec, 0x83, 0xec, 0x1c})) return false;
+        g_filter = melange::config::GetString(Name(), "Filter", "");
+        melange::config::EnsureKey(Name(), "Filter", "");
+        if (!melange::mem::Expect(kSink, {0x55, 0x8b, 0xec, 0x83, 0xec, 0x1c})) return false;
         g_hook = safetyhook::create_inline(kSink, &HookSink);
-        if (Bool("OnlineLog", true) && wf::mem::Expect(kOnlineLog, {0x55, 0x8b, 0xec, 0x81, 0xec, 0x30, 0x04}))
+        if (Bool("OnlineLog", true) && melange::mem::Expect(kOnlineLog, {0x55, 0x8b, 0xec, 0x81, 0xec, 0x30, 0x04}))
             g_onlineHook = safetyhook::create_mid(kOnlineLog, &OnOnlineLog);
         return static_cast<bool>(g_hook);
     }
@@ -87,4 +87,4 @@ public:
 };
 }  // namespace
 
-WUMFIX_MODULE(EngineLog);
+MELANGE_MODULE(EngineLog);

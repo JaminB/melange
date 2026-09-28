@@ -9,7 +9,7 @@
 #include "core/game.h"
 #include "core/log.h"
 
-namespace wf::mem {
+namespace melange::mem {
 bool Write(uintptr_t addr, const void* data, size_t n) {
     DWORD old;
     if (!VirtualProtect(reinterpret_cast<void*>(addr), n, PAGE_EXECUTE_READWRITE, &old)) return false;
@@ -125,4 +125,4 @@ bool SafeRead(uintptr_t addr, void* out, size_t n) {
         return false;
     }
 }
-}  // namespace wf::mem
+}  // namespace melange::mem

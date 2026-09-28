@@ -1,11 +1,11 @@
 #pragma once
 // Private seams of the event bus (component B), shared by src/core/bus*.cpp and the offline self-test
-// (tests/bus_selftest.cpp). Not part of the public SDK: mods use wumfix/bus.h only.
+// (tests/bus_selftest.cpp). Not part of the public SDK: mods use melange/bus.h only.
 #include <cstdint>
 
-#include "wumfix/bus.h"
+#include "melange/bus.h"
 
-namespace wf::bus::detail {
+namespace melange::bus::detail {
 // ---- registry source (bus_registry.cpp)
 // Addresses of the engine globals the registry is read from. Defaults: table *0x96d094, slot count *0x96d08c,
 // post-target service *0x96d090 (the Post handle is *(svc + 0x14)). The self-test points them at fakes.
@@ -37,4 +37,4 @@ void Tick();
 size_t PendingNames();  // SubscribeName()s not resolved yet
 // Size of the engine object from the arena header at raw-4, or 0 if the header looks bogus.
 uint32_t ObjectSize(const uint8_t* raw);
-}  // namespace wf::bus::detail
+}  // namespace melange::bus::detail

@@ -3,7 +3,7 @@
 #include <string>
 
 // Identity of the running game executable and well-known paths.
-namespace wf::game {
+namespace melange::game {
 struct ExeInfo {
     uint32_t fileSize = 0;
     uint32_t timestamp = 0;  // PE TimeDateStamp
@@ -18,8 +18,8 @@ const ExeInfo& Exe();
 inline bool IsKnownBuild() { return Exe().known; }
 uintptr_t Base();                 // image base of WormsMayhem.exe
 const std::wstring& GameDir();
-const std::wstring& PluginDir();  // folder containing WUMFix.asi
-const std::wstring& DataDir();    // <PluginDir>\WUMFix  (logs, dumps)
+const std::wstring& PluginDir();  // folder containing melange.asi
+const std::wstring& DataDir();    // <PluginDir>\Melange  (logs, dumps)
 std::string DescribeAddress(uintptr_t addr);  // "00401234 WormsMayhem.exe+0x1234"
 std::string Narrow(const std::wstring& w);
-}  // namespace wf::game
+}  // namespace melange::game

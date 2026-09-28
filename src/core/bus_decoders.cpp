@@ -12,7 +12,7 @@
 #include "core/bus_internal.h"
 #include "core/log.h"
 
-namespace wf::bus {
+namespace melange::bus {
 namespace {
 struct Entry {
     const char* name;  // static lifetime (literal or leaked copy)
@@ -204,4 +204,4 @@ bool Decode(const MessageView& m, JsonOut& out) {
                 static_cast<unsigned>(m.vtable), code);
     return false;
 }
-}  // namespace wf::bus
+}  // namespace melange::bus

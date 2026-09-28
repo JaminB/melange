@@ -9,7 +9,7 @@
 #include <utility>
 #include <vector>
 
-namespace wf::hashutil {
+namespace melange::hashutil {
 namespace {
 std::string HexOf(const unsigned char* dig, size_t n) {
     std::string s(n * 2, '0');
@@ -91,4 +91,4 @@ std::string RandomSalt() {
     }
     return HexOf(buf, sizeof(buf));
 }
-}  // namespace wf::hashutil
+}  // namespace melange::hashutil

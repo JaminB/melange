@@ -1,6 +1,6 @@
 #pragma once
 #include <string_view>
-namespace wf::testcmd {
+namespace melange::testcmd {
 // Handler for an Automation command line "<verb> <args>". Runs on the main thread (inside the Frame event).
 // Return false to log "[auto] <verb> failed". Handlers must not block for more than a frame.
 using Handler = bool (*)(std::string_view args, void* user);

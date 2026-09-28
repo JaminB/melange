@@ -8,7 +8,7 @@
 #include "core/game.h"
 #include "core/log.h"
 
-namespace wf {
+namespace melange {
 int Module::Int(const char* key, int def) const {
     char buf[32];
     snprintf(buf, sizeof(buf), "%d", def);
@@ -87,4 +87,4 @@ void UninstallAll() {
 
 const std::vector<Module*>& Installed() { return InstalledList(); }
 }  // namespace modules
-}  // namespace wf
+}  // namespace melange

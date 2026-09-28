@@ -3,11 +3,11 @@
 #include <string>
 #include <string_view>
 #include <vector>
-namespace wf::jlog {
+namespace melange::jlog {
 enum class Level : uint8_t { Trace, Debug, Info, Warn, Error, Fatal };
 
 // Builder for one JSONL record. Cheap when the category/level is filtered out (Enabled() is checked first).
-// Thread-safe; never blocks on I/O (a writer thread owns the file). Never calls wf::log (no recursion).
+// Thread-safe; never blocks on I/O (a writer thread owns the file). Never calls melange::log (no recursion).
 class Rec {
   public:
     Rec(std::string_view category, Level lvl, std::string_view msg);
@@ -27,7 +27,7 @@ class Rec {
 bool Enabled(std::string_view category, Level lvl);
 
 struct Session {
-    std::wstring root;     // e.g. %USERPROFILE%\Documents\WUMFix\logs
+    std::wstring root;     // e.g. %USERPROFILE%\Documents\Melange\logs
     std::wstring dir;      // root\2026-09-27_14-03-22_pid1234
     std::string id;        // "2026-09-27_14-03-22_pid1234"
 };

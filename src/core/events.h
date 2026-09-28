@@ -3,7 +3,7 @@
 #include <functional>
 
 // Game-wide events modules can subscribe to. The core installs the hooks that fire them.
-namespace wf::events {
+namespace melange::events {
 enum class Event {
     Frame,       // once per presented frame (gdi32!SwapBuffers), on the main thread
     Shutdown,    // process is exiting
@@ -31,4 +31,4 @@ void* GameWindow();  // HWND
 // on the main thread with the game's GL context current. One slot, owned by render/overlay.
 using PresentHook = void (*)(void* hdc);
 void SetPresentHook(PresentHook fn);
-}  // namespace wf::events
+}  // namespace melange::events

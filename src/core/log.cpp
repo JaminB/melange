@@ -7,7 +7,7 @@
 #include <cstdio>
 #include <cstring>
 
-namespace wf::log {
+namespace melange::log {
 namespace {
 HANDLE g_file = INVALID_HANDLE_VALUE;
 SRWLOCK g_lock = SRWLOCK_INIT;
@@ -71,4 +71,4 @@ void HexDump(const char* title, const void* data, size_t len, size_t max) {
 }
 
 void SetTap(Tap fn) { g_tap.store(fn, std::memory_order_release); }
-}  // namespace wf::log
+}  // namespace melange::log

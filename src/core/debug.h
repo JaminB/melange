@@ -4,7 +4,7 @@
 #include <string>
 
 // Crash/hang forensics helpers shared by the diagnostics module and any module that wants a snapshot.
-namespace wf::debug {
+namespace melange::debug {
 // Heuristic call-stack: scans the stack for values that are return addresses (preceded by a CALL).
 // Works without symbols and through frame-pointer-omitted game code.
 std::string ScanStack(uintptr_t eip, uintptr_t esp, size_t maxBytes = 0x2000, int maxFrames = 40);
@@ -19,4 +19,4 @@ std::string FormatRegisters(const CONTEXT& c);
 
 // MSVC RTTI class name of a polymorphic object (e.g. "XSteamConnection"), or "" if unavailable.
 std::string RttiName(const void* object);
-}  // namespace wf::debug
+}  // namespace melange::debug

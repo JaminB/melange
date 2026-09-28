@@ -4,7 +4,7 @@
 // Internal to component C: not part of any frozen contract.
 #include <string_view>
 
-namespace wf::jlog::busfilter {
+namespace melange::jlog::busfilter {
 
 // Seeds the allow/deny sets from "a,b,c"-style ini values (see [Logging] EventDeny=/EventAllow=). Call once,
 // at Install().
@@ -19,4 +19,4 @@ bool IsDenied(std::string_view name);
 void SetAllow(std::string_view name, bool on);
 void SetDeny(std::string_view name, bool on);
 
-}  // namespace wf::jlog::busfilter
+}  // namespace melange::jlog::busfilter

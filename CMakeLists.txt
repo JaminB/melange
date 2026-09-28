@@ -1,8 +1,8 @@
 cmake_minimum_required(VERSION 3.25)
-project(WUMFix VERSION 0.1.0 LANGUAGES C CXX)
+project(Melange VERSION 0.2.0 LANGUAGES C CXX)
 
 if(NOT CMAKE_SIZEOF_VOID_P EQUAL 4)
-    message(FATAL_ERROR "WUMFix must be built for 32-bit x86 (WormsMayhem.exe is a 32-bit process). Use build.ps1.")
+    message(FATAL_ERROR "Melange must be built for 32-bit x86 (WormsMayhem.exe is a 32-bit process). Use build.ps1.")
 endif()
 
 set(CMAKE_CXX_STANDARD 23)
@@ -51,21 +51,21 @@ FetchContent_Declare(miniz
 FetchContent_MakeAvailable(miniz)
 
 # Every .cpp under src/ is compiled into the plugin. Adding a module = dropping a file under src/.
-file(GLOB_RECURSE WUMFIX_SOURCES CONFIGURE_DEPENDS src/*.cpp)
+file(GLOB_RECURSE MELANGE_SOURCES CONFIGURE_DEPENDS src/*.cpp)
 # src/xom is the portable XOM library: its own targets, not part of the plugin.
-list(FILTER WUMFIX_SOURCES EXCLUDE REGEX "/src/xom/")
+list(FILTER MELANGE_SOURCES EXCLUDE REGEX "/src/xom/")
 add_subdirectory(src/xom EXCLUDE_FROM_ALL)
 configure_file(src/core/version.h.in ${CMAKE_BINARY_DIR}/generated/version.h @ONLY)
 
-add_library(WUMFix SHARED ${WUMFIX_SOURCES} src/core/version.rc)
-set_target_properties(WUMFix PROPERTIES SUFFIX ".asi" PREFIX "")
-# src/sdk is on the include path in its own right so frozen public headers include as "wumfix/<name>.h"
-# (src/sdk/wumfix/<name>.h) rather than "sdk/wumfix/<name>.h".
-target_include_directories(WUMFix PRIVATE src src/sdk ${CMAKE_BINARY_DIR}/generated)
-target_compile_definitions(WUMFix PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX _CRT_SECURE_NO_WARNINGS)
-target_compile_options(WUMFix PRIVATE /W4 /utf-8 /permissive- /Zi /wd4100)
-target_link_options(WUMFix PRIVATE /DEBUG /OPT:REF /OPT:ICF /SAFESEH:NO)
-target_link_libraries(WUMFix PRIVATE safetyhook::safetyhook dbghelp bcrypt ws2_32 shell32 imgui miniz)
+add_library(melange SHARED ${MELANGE_SOURCES} src/core/version.rc)
+set_target_properties(melange PROPERTIES SUFFIX ".asi" PREFIX "")
+# src/sdk is on the include path in its own right so frozen public headers include as "melange/<name>.h"
+# (src/sdk/melange/<name>.h) rather than "sdk/melange/<name>.h".
+target_include_directories(melange PRIVATE src src/sdk ${CMAKE_BINARY_DIR}/generated)
+target_compile_definitions(melange PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX _CRT_SECURE_NO_WARNINGS)
+target_compile_options(melange PRIVATE /W4 /utf-8 /permissive- /Zi /wd4100)
+target_link_options(melange PRIVATE /DEBUG /OPT:REF /OPT:ICF /SAFESEH:NO)
+target_link_libraries(melange PRIVATE safetyhook::safetyhook dbghelp bcrypt ws2_32 shell32 imgui miniz)
 
 # Offline self-test for the event bus (component B): runs the real registry/dispatch/decoder code against a
 # fake name table and fake messages, no game needed. Not part of the default build; scripts\selftest.ps1

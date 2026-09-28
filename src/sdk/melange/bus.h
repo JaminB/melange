@@ -2,7 +2,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <string_view>
-namespace wf::bus {
+namespace melange::bus {
 using MsgId = uint16_t;
 constexpr MsgId kInvalidId = 0xffff;
 
@@ -23,7 +23,7 @@ struct MessageView {
     uint16_t depth;         // nesting depth of our hooks on this thread (1 = outermost)
     uintptr_t caller;       // return address into WormsMayhem.exe of the Post/Deliver call
     uint64_t seq;           // monotonically increasing per observed call
-    uint64_t frame;         // wf::events::FrameCount()
+    uint64_t frame;         // melange::events::FrameCount()
 
     // Bounds-checked, SEH-guarded payload reads (return false past `size` or on fault).
     bool Read(uint32_t offset, void* out, uint32_t n) const;

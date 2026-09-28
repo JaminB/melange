@@ -5,7 +5,7 @@
 #include <string>
 #include <string_view>
 
-namespace wf::jsonmini {
+namespace melange::jsonmini {
 
 // Escapes a string for use inside a JSON string literal (quotes not included).
 inline std::string Escape(std::string_view s) {
@@ -119,4 +119,4 @@ private:
     bool first_ = true;
 };
 
-}  // namespace wf::jsonmini
+}  // namespace melange::jsonmini

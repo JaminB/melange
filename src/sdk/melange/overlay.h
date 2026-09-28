@@ -1,7 +1,7 @@
 #pragma once
 #include <cstdint>
 #include <string>
-namespace wf::overlay {
+namespace melange::overlay {
 // Everything here is called on the main thread inside the ImGui frame unless stated otherwise.
 // Panels may call ImGui:: directly (#include <imgui.h>; one ImGui context, owned by the overlay).
 using DrawFn = void (*)(void* user);

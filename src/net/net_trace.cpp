@@ -11,7 +11,7 @@
 #include "core/module.h"
 
 namespace {
-#define CALLER wf::game::DescribeAddress(reinterpret_cast<uintptr_t>(_ReturnAddress())).c_str()
+#define CALLER melange::game::DescribeAddress(reinterpret_cast<uintptr_t>(_ReturnAddress())).c_str()
 
 using socket_t = SOCKET(WINAPI*)(int, int, int);
 using bind_t = int(WINAPI*)(SOCKET, const sockaddr*, int);
@@ -72,7 +72,7 @@ hostent* WINAPI hkGetHost(const char* name) {
     return oGetHost(name);
 }
 
-class NetTrace final : public wf::Module {
+class NetTrace final : public melange::Module {
 public:
     const char* Name() const override { return "NetTrace"; }
     const char* Description() const override { return "logs raw Winsock socket/bind/connect/sendto/DNS calls"; }
@@ -80,15 +80,15 @@ public:
 
     bool Install() override {
         // WSOCK32 is imported by ordinal: 23 socket, 2 bind, 4 connect, 3 closesocket, 20 sendto, 52 gethostbyname
-        wf::mem::HookIAT("WSOCK32.dll", "#23", reinterpret_cast<void*>(&hkSocket), reinterpret_cast<void**>(&oSocket));
-        wf::mem::HookIAT("WSOCK32.dll", "#2", reinterpret_cast<void*>(&hkBind), reinterpret_cast<void**>(&oBind));
-        wf::mem::HookIAT("WSOCK32.dll", "#4", reinterpret_cast<void*>(&hkConnect), reinterpret_cast<void**>(&oConnect));
-        wf::mem::HookIAT("WSOCK32.dll", "#3", reinterpret_cast<void*>(&hkClose), reinterpret_cast<void**>(&oClose));
-        wf::mem::HookIAT("WSOCK32.dll", "#20", reinterpret_cast<void*>(&hkSendto), reinterpret_cast<void**>(&oSendto));
-        wf::mem::HookIAT("WSOCK32.dll", "#52", reinterpret_cast<void*>(&hkGetHost), reinterpret_cast<void**>(&oGetHost));
+        melange::mem::HookIAT("WSOCK32.dll", "#23", reinterpret_cast<void*>(&hkSocket), reinterpret_cast<void**>(&oSocket));
+        melange::mem::HookIAT("WSOCK32.dll", "#2", reinterpret_cast<void*>(&hkBind), reinterpret_cast<void**>(&oBind));
+        melange::mem::HookIAT("WSOCK32.dll", "#4", reinterpret_cast<void*>(&hkConnect), reinterpret_cast<void**>(&oConnect));
+        melange::mem::HookIAT("WSOCK32.dll", "#3", reinterpret_cast<void*>(&hkClose), reinterpret_cast<void**>(&oClose));
+        melange::mem::HookIAT("WSOCK32.dll", "#20", reinterpret_cast<void*>(&hkSendto), reinterpret_cast<void**>(&oSendto));
+        melange::mem::HookIAT("WSOCK32.dll", "#52", reinterpret_cast<void*>(&hkGetHost), reinterpret_cast<void**>(&oGetHost));
         return oSocket != nullptr;
     }
 };
 }  // namespace
 
-WUMFIX_MODULE(NetTrace);
+MELANGE_MODULE(NetTrace);

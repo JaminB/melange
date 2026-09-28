@@ -6,7 +6,7 @@
 
 #include "render/input_logic.h"
 
-namespace wf::render {
+namespace melange::render {
 namespace {
 struct Ctx {
     int checks = 0, failed = 0;
@@ -165,4 +165,4 @@ int RunLogicSelfTests(std::string* report) {
     }
     return c.failed;
 }
-}  // namespace wf::render
+}  // namespace melange::render

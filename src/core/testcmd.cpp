@@ -1,13 +1,13 @@
-// Automation test-command registry (wumfix/testcmd.h): lets any module register verbs that
+// Automation test-command registry (melange/testcmd.h): lets any module register verbs that
 // src/tools/automation.cpp's command file can invoke, without automation.cpp knowing about them.
-#include "wumfix/testcmd.h"
+#include "melange/testcmd.h"
 
 #include <mutex>
 #include <unordered_map>
 
 #include "core/log.h"
 
-namespace wf::testcmd {
+namespace melange::testcmd {
 namespace {
 struct Entry {
     Handler fn;
@@ -55,4 +55,4 @@ bool Dispatch(std::string_view verb, std::string_view args) {
     if (!e.fn(args, e.user)) WF_WARN("[auto] %.*s failed", static_cast<int>(verb.size()), verb.data());
     return true;
 }
-}  // namespace wf::testcmd
+}  // namespace melange::testcmd

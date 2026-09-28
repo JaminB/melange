@@ -3,7 +3,7 @@
 #include <cstdint>
 #include <cstring>
 
-namespace wf::automation {
+namespace melange::automation {
 struct KeyDef {
     const char* name;
     uint8_t dik;
@@ -78,4 +78,4 @@ inline const KeyDef* KeyForChar(char c, bool* shift) {
     }
     return nullptr;
 }
-}  // namespace wf::automation
+}  // namespace melange::automation

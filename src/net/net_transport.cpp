@@ -24,7 +24,7 @@
 #include "net/net.h"
 
 namespace {
-using wf::wum::Read;
+using melange::wum::Read;
 
 constexpr uintptr_t kOnAck = 0x785b69;       // __thiscall XSteamConnection::OnAck(uint ackedSeq), ret 4
 constexpr uintptr_t kOnPacket = 0x785d9a;    // __thiscall XSteamConnection::OnPacket(uint* pkt, uint len), ret 8
@@ -61,13 +61,13 @@ void OnAck(safetyhook::Context& c) {
     uint32_t acked = Read<uint32_t>(c.esp + 4);
     uint32_t base = Read<uint32_t>(conn + kRetryBase);
     if (acked + 1 > base && acked <= Read<uint32_t>(conn + kSendSeq)) {
-        wf::wum::WriteInt(conn + kRetryBase, static_cast<int32_t>(acked + 1));
+        melange::wum::WriteInt(conn + kRetryBase, static_cast<int32_t>(acked + 1));
         g_retryFixes++;
     }
     // Keep the retransmit timer running while packets newer than this ACK are still outstanding.
     if (!Read<uint8_t>(conn + kRetryArmed) && HasUnackedAfter(conn, acked)) {
-        wf::wum::WriteByte(conn + kRetryArmed, 1);
-        wf::wum::WriteInt(conn + kRetryAt, static_cast<int32_t>(Now() + kRetryMs));
+        melange::wum::WriteByte(conn + kRetryArmed, 1);
+        melange::wum::WriteInt(conn + kRetryAt, static_cast<int32_t>(Now() + kRetryMs));
     }
     if (g_logEachAck)
         WF_TRACE("[transport] conn %08x ack %u (send %u) retryBase %u -> %u", static_cast<unsigned>(conn), acked,
@@ -97,7 +97,7 @@ void OnPacket(safetyhook::Context& c) {
                 static_cast<unsigned long long>(peer), delivered);
 }
 
-class NetTransport final : public wf::Module {
+class NetTransport final : public melange::Module {
 public:
     const char* Name() const override { return "NetTransport"; }
     const char* Description() const override { return "fixes lost-packet recovery in the game's P2P reliability layer"; }
@@ -109,13 +109,13 @@ public:
         bool ok = true;
         if (Bool("FixRetransmit", true)) {
             // push esi / lea esi,[ecx+0x1c]
-            if (!wf::mem::Expect(kOnAck, {0x56, 0x8d, 0x71, 0x1c})) return false;
+            if (!melange::mem::Expect(kOnAck, {0x56, 0x8d, 0x71, 0x1c})) return false;
             auto h = safetyhook::create_mid(kOnAck, &OnAck);
             ok &= static_cast<bool>(h);
             g_hooks.push_back(std::move(h));
         }
         if (Bool("ReAckDuplicates", true)) {
-            if (!wf::mem::Expect(kOnPacket, {0x55, 0x8b, 0xec, 0x56, 0x57})) return false;
+            if (!melange::mem::Expect(kOnPacket, {0x55, 0x8b, 0xec, 0x56, 0x57})) return false;
             auto h = safetyhook::create_mid(kOnPacket, &OnPacket);
             ok &= static_cast<bool>(h);
             g_hooks.push_back(std::move(h));
@@ -131,4 +131,4 @@ public:
 };
 }  // namespace
 
-WUMFIX_MODULE(NetTransport);
+MELANGE_MODULE(NetTransport);

@@ -5,7 +5,7 @@
 
 #include "tools/hash.h"
 
-namespace wf::redact {
+namespace melange::redact {
 namespace {
 char Lower(char c) { return static_cast<char>(std::tolower(static_cast<unsigned char>(c))); }
 }  // namespace
@@ -79,4 +79,4 @@ std::string HashIdsAndIps(std::string_view text, std::string_view salt) {
     in = replaceAll(std::move(in), kIpv4);
     return in;
 }
-}  // namespace wf::redact
+}  // namespace melange::redact

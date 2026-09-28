@@ -1,8 +1,8 @@
 // Structured JSONL logging core: session folders, the writer thread, rotation, level filters and the
-// in-memory tail ring. Public contract: src/sdk/wumfix/jlog.h (frozen; see docs/m0-design.md SS2.5, SS3 "C").
+// in-memory tail ring. Public contract: src/sdk/melange/jlog.h (frozen; see docs/m0-design.md SS2.5, SS3 "C").
 //
-// Never calls wf::log (that would recurse through the WF_ tap in jlog_adapters.cpp).
-#include "wumfix/jlog.h"
+// Never calls melange::log (that would recurse through the WF_ tap in jlog_adapters.cpp).
+#include "melange/jlog.h"
 
 #include <windows.h>
 #include <shlobj.h>
@@ -24,7 +24,7 @@
 #include "core/jlog_internal.h"
 #include "version.h"
 
-namespace wf::jlog {
+namespace melange::jlog {
 namespace {
 
 // ------------------------------------------------------------------------------------------------- JSON helpers
@@ -99,7 +99,7 @@ struct LevelFilter {
 std::atomic<LevelFilter*> g_filter{nullptr};
 // True once Init() has given up for good (fallback root also unwritable). Distinct from "g_filter is still
 // null because Init() hasn't run yet", which intentionally keeps Enabled() permissive so early-boot records
-// are not lost. See wumfix's internal contract: a failed Init() must make logging inert (jlog_internal.h).
+// are not lost. See melange's internal contract: a failed Init() must make logging inert (jlog_internal.h).
 std::atomic<bool> g_initFailed{false};
 
 LevelFilter* ParseLevelsSpec(std::string_view spec) {
@@ -195,7 +195,7 @@ bool MakeDirRecursive(const std::wstring& dir) {
 
 bool DirWritable(const std::wstring& dir) {
     if (!MakeDirRecursive(dir)) return false;
-    std::wstring probe = dir + L"\\.wumfix_write_test";
+    std::wstring probe = dir + L"\\.melange_write_test";
     HANDLE h = CreateFileW(probe.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_TEMPORARY, nullptr);
     if (h == INVALID_HANDLE_VALUE) return false;
     CloseHandle(h);
@@ -209,7 +209,7 @@ std::wstring DocumentsLogsDefault() {
     if (SUCCEEDED(SHGetKnownFolderPath(FOLDERID_Documents, 0, nullptr, &docs)) && docs) out = docs;
     if (docs) CoTaskMemFree(docs);
     if (out.empty()) return L"";
-    return out + L"\\WUMFix\\logs";
+    return out + L"\\Melange\\logs";
 }
 
 std::wstring FormatSessionId(const SYSTEMTIME& st, DWORD pid) {
@@ -244,7 +244,7 @@ bool LooksLikeSessionDirName(const std::wstring& name) {
     return true;
 }
 
-// Lists immediate subdirectories of `root` that are genuine WUMFix session folders, oldest first.
+// Lists immediate subdirectories of `root` that are genuine Melange session folders, oldest first.
 std::vector<std::wstring> ListSessionDirsOldestFirst(const std::wstring& root) {
     std::vector<std::wstring> out;
     WIN32_FIND_DATAW fd{};
@@ -444,7 +444,7 @@ struct Rec::Impl {
 Rec::Rec(std::string_view category, Level lvl, std::string_view msg) : p_(new Impl()) {
     p_->enabled = Enabled(category, lvl);
     if (!p_->enabled) return;
-    if (GetCurrentThreadId() == wf::events::MainThreadId()) {
+    if (GetCurrentThreadId() == melange::events::MainThreadId()) {
         LARGE_INTEGER q;
         QueryPerformanceCounter(&q);
         p_->t0 = q.QuadPart;
@@ -522,9 +522,9 @@ void Rec::Emit() {
 
     uint64_t nowTick = GetTickCount64();
     double t = (nowTick - g_startTick.load(std::memory_order_relaxed)) / 1000.0;
-    uint64_t frame = wf::events::FrameCount();
+    uint64_t frame = melange::events::FrameCount();
     DWORD tid = GetCurrentThreadId();
-    bool main = tid == wf::events::MainThreadId();
+    bool main = tid == melange::events::MainThreadId();
 
     // Everything after the seq; the seq itself is assigned under g_queueMx so that file order == seq order.
     auto tailFields = [&](Level lvl, std::string_view cat, std::string_view msg, std::string_view data) {
@@ -587,7 +587,7 @@ void Rec::Emit() {
             if (capBytes && g_queuedFileBytes && g_queuedFileBytes + line.size() + 1 > capBytes) {
                 // Roll over: the new file opens with its own session record (schema v1: "the first record of
                 // every file is session/start"), numbered just before this line.
-                std::string data = "\"version\":\"" WUMFIX_VERSION "\",\"exeSha256\":\"" + wf::game::Exe().sha256 +
+                std::string data = "\"version\":\"" MELANGE_VERSION "\",\"exeSha256\":\"" + melange::game::Exe().sha256 +
                                    "\",\"pid\":" + std::to_string(GetCurrentProcessId()) +
                                    ",\"part\":" + std::to_string(++g_filePart);
                 std::string hdr = withSeq(seq, tailFields(Level::Info, "session", "start", data));
@@ -759,7 +759,7 @@ bool Init(const Options& opt) {
     g_writerThread = CreateThread(nullptr, 0, &WriterMain, nullptr, 0, nullptr);
 
     if (usedFallback)
-        Rec("session", Level::Warn, "primary log directory unavailable, using fallback").Str("dir", wf::game::Narrow(root)).Emit();
+        Rec("session", Level::Warn, "primary log directory unavailable, using fallback").Str("dir", melange::game::Narrow(root)).Emit();
     return true;
 }
 
@@ -799,4 +799,4 @@ void ShutdownForTests() {
 }
 
 }  // namespace internal
-}  // namespace wf::jlog
+}  // namespace melange::jlog

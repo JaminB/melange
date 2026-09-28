@@ -4,7 +4,7 @@
 // context-reset path (Shutdown(true) + Init on a new context) without the game.
 #include <string>
 
-namespace wf::render::backend {
+namespace melange::render::backend {
 // Creates the ImGui context on first use (io.IniFilename = iniUtf8, nullptr/empty = no ini; onCreate runs once
 // right after creation, before any frame, e.g. to register settings handlers), then initialises the Win32 and
 // OpenGL2 backends for `hwnd`. False if a backend failed.
@@ -14,4 +14,4 @@ bool Init(void* hwnd, const char* iniUtf8, void (*onCreate)() = nullptr);
 void Shutdown(bool contextLost);
 bool Ready();
 void* Hwnd();
-}  // namespace wf::render::backend
+}  // namespace melange::render::backend

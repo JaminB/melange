@@ -6,7 +6,7 @@
 #include <string>
 #include <vector>
 
-namespace wf::render {
+namespace melange::render {
 // ---- input.cpp
 // IAT hooks on WormsMayhem.exe: DINPUT8!DirectInput8Create (keyboard filter chained after Automation) and
 // USER32!SetCursorPos (no-op while capturing). Called once from Overlay::Install.
@@ -42,4 +42,4 @@ void SetPanelDefaultRect(int handle, float x, float y, float w, float h);
 std::string HotkeyText(int which);  // 0 = toggle key, 1 = pass-through key (display text)
 double Fps();                       // engine frames per second over the last second
 bool VerifyStateOn();
-}  // namespace wf::render
+}  // namespace melange::render
