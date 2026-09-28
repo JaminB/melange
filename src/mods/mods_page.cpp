@@ -60,15 +60,15 @@ void DrawModsPanel(void*) {
         ImGui::TextColored(ImVec4(1.f, 0.75f, 0.3f, 1.f), "Restart required for at least one content mod to take effect.");
 
     constexpr ImGuiTableFlags kFlags =
-        ImGuiTableFlags_RowBg | ImGuiTableFlags_Borders | ImGuiTableFlags_Resizable | ImGuiTableFlags_ScrollY;
+        ImGuiTableFlags_RowBg | ImGuiTableFlags_Borders | ImGuiTableFlags_Resizable | ImGuiTableFlags_ScrollY | ImGuiTableFlags_ScrollX;
     if (!ImGui::BeginTable("mods", 7, kFlags, ImVec2(0, 360))) return;
     ImGui::TableSetupScrollFreeze(0, 1);
     ImGui::TableSetupColumn("On", ImGuiTableColumnFlags_WidthFixed, 28);
-    ImGui::TableSetupColumn("Name");
+    ImGui::TableSetupColumn("Name", ImGuiTableColumnFlags_WidthFixed, 170);
     ImGui::TableSetupColumn("Version", ImGuiTableColumnFlags_WidthFixed, 70);
     ImGui::TableSetupColumn("Kind", ImGuiTableColumnFlags_WidthFixed, 70);
     ImGui::TableSetupColumn("Deep Desert", ImGuiTableColumnFlags_WidthFixed, 90);
-    ImGui::TableSetupColumn("State");
+    ImGui::TableSetupColumn("State", ImGuiTableColumnFlags_WidthFixed, 300);
     ImGui::TableSetupColumn("", ImGuiTableColumnFlags_WidthFixed, 130);
     ImGui::TableHeadersRow();
 
@@ -105,6 +105,13 @@ void DrawModsPanel(void*) {
         if (!e.reason.empty()) {
             ImGui::SameLine();
             ImGui::TextDisabled("(%s)", e.reason.c_str());
+        }
+        sandbox::ModStatus st;
+        if (sandbox::Status(e.manifest.id.c_str(), &st)) {
+            if (!st.error.empty()) ImGui::TextColored(ImVec4(1.f, 0.4f, 0.4f, 1.f), "%s", st.error.c_str());
+            if (st.disabledCallbacks)
+                ImGui::TextColored(ImVec4(1.f, 0.75f, 0.3f, 1.f), "%u callback(s) disabled after faults", st.disabledCallbacks);
+            if (st.loaded) ImGui::TextDisabled("%u callbacks, %.2f ms last frame", st.callbacks, st.msLastFrame);
         }
         ImGui::TableNextColumn();
         if (ImGui::SmallButton("Open folder")) OpenFolder(e.dir);
