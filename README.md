@@ -1,24 +1,26 @@
-# WUMFix
+# Melange
 
-WUMFix is a modular fix and mod framework for **Worms Ultimate Mayhem**: Steam app 70600, exe build #1077.
+*(formerly WUMFix)*
+
+Melange is a modular fix and mod framework for **Worms Ultimate Mayhem**: Steam app 70600, exe build #1077.
 
 Its main target is the long-standing multiplayer bug where **a second online match started back-to-back in the same lobby freezes**. Other players report the same bug as *"This session is no longer available"* when the second player's turn begins.
 
-WUMFix is a single `WUMFix.asi` plugin loaded by [Ultimate ASI Loader](https://github.com/ThirteenAG/Ultimate-ASI-Loader) (`dinput8.dll`). It uses the same mechanism as WUMPatch and Renewation HD, so it can be installed alongside them.
+Melange is a single `melange.asi` plugin loaded by [Ultimate ASI Loader](https://github.com/ThirteenAG/Ultimate-ASI-Loader) (`dinput8.dll`). It uses the same mechanism as WUMPatch and Renewation HD, so it can be installed alongside them.
 
 ## Install (players)
 
-1. Copy `dinput8.dll`, `WUMFix.asi` and `WUMFix.ini` into the game folder (`...\steamapps\common\WormsXHD`).
-   - If you already use WUMPatch or Renewation HD, you already have `dinput8.dll`. Just add `WUMFix.asi` and `WUMFix.ini`.
+1. Copy `dinput8.dll`, `melange.asi` and `Melange.ini` into the game folder (`...\steamapps\common\WormsXHD`).
+   - If you already use WUMPatch or Renewation HD, you already have `dinput8.dll`. Just add `melange.asi` and `Melange.ini`.
 2. Play as normal.
-   - Logs and crash or hang dumps go to `WormsXHD\WUMFix\`.
-   - If something goes wrong, press `Ctrl+Shift+F11` in the game to save one zip with all the logs, and send that. Or send `WUMFix\WUMFix.log`, and `WUMFix.prev.log` from the previous run.
+   - Logs and crash or hang dumps go to `WormsXHD\Melange\`.
+   - If something goes wrong, press `Ctrl+Shift+F11` in the game to save one zip with all the logs, and send that. Or send `Melange\Melange.log`, and `Melange.prev.log` from the previous run.
 
-To uninstall, delete `WUMFix.asi` and `WUMFix.ini`, and also `dinput8.dll` if no other `.asi` mods remain. Or run `uninstall.ps1`.
+To uninstall, delete `melange.asi` and `Melange.ini`, and also `dinput8.dll` if no other `.asi` mods remain. Or run `uninstall.ps1`.
 
 ## Modules
 
-Each module is one file under `src/` (`core/`, `render/`, `gameplay/`, `net/` or `tools/`, by what it touches) with its own `[Section]` in `WUMFix.ini`.
+Each module is one file under `src/` (`core/`, `render/`, `gameplay/`, `net/` or `tools/`, by what it touches) with its own `[Section]` in `Melange.ini`.
 
 | Module | Default | What it does |
 |---|---|---|
@@ -27,18 +29,18 @@ Each module is one file under `src/` (`core/`, `render/`, `gameplay/`, `net/` or
 | **Diagnostics** | on | Crash handler and hang watchdog: stack trace plus minidump. `Ctrl+Shift+F12` takes a manual snapshot. |
 | **Overlay** | on (hidden) | In-game Dear ImGui overlay, hidden until you press the `` ` `` key (`ToggleKey`). While it is open it takes the mouse and keyboard from the game; `` Shift+` `` (`PassthroughKey`) shows it without taking input. Hosts the panels and menus of the other tools. |
 | **SteamTrace** | on | Logs every Steam lobby, P2P and callback call. |
-| **EngineLog** | on | Mirrors the engine's own log into `WUMFix.log`. |
-| **EventBus** | on | Hooks the engine's message Post and Deliver so modules can subscribe to engine messages by name (`wumfix/bus.h`). Changes nothing in the game. `DumpRegistry=1` writes every message name to `WUMFix\messages.tsv`. Replaces the Probe's message hooks, so only one of the two can hook them. |
-| **Logging** | on | Structured JSONL event log, one folder per game session in `Documents\WUMFix\logs`: WUMFix and engine log lines, engine messages (minus a noisy deny-list) and game events (turns, shots, deaths, damage, explosions). The overlay's *Log* and *Events* panels show it. |
-| **LogExport** | on | `Ctrl+Shift+F11`, or the overlay's *File > Save logs as...*, saves one zip of the recent JSONL sessions, `WUMFix.log`, engine logs, dumps, ini files and system info. Your user name and computer name are replaced, and Steam ids and IP addresses are hashed. In fullscreen it saves to `Documents\WUMFix\exports` instead of opening a dialog. |
+| **EngineLog** | on | Mirrors the engine's own log into `Melange.log`. |
+| **EventBus** | on | Hooks the engine's message Post and Deliver so modules can subscribe to engine messages by name (`melange/bus.h`). Changes nothing in the game. `DumpRegistry=1` writes every message name to `Melange\messages.tsv`. Replaces the Probe's message hooks, so only one of the two can hook them. |
+| **Logging** | on | Structured JSONL event log, one folder per game session in `Documents\Melange\logs`: Melange and engine log lines, engine messages (minus a noisy deny-list) and game events (turns, shots, deaths, damage, explosions). The overlay's *Log* and *Events* panels show it. |
+| **LogExport** | on | `Ctrl+Shift+F11`, or the overlay's *File > Save logs as...*, saves one zip of the recent JSONL sessions, `Melange.log`, engine logs, dumps, ini files and system info. Your user name and computer name are replaced, and Steam ids and IP addresses are hashed. In fullscreen it saves to `Documents\Melange\exports` instead of opening a dialog. |
 | **NetTrace** | on | Logs raw Winsock usage. |
-| **WindowTag** | on | Shows `[WUMFix x.y.z]` in the window title. |
+| **WindowTag** | on | Shows `[Melange x.y.z]` in the window title. |
 | **FrameInterval** | off | Engine frame cap in ms (example of a fixed-address patch). |
 | **LocalNet** | off | *Test only.* Emulates Steam lobbies and P2P over localhost so two instances on one PC can play each other. `LossPercent` simulates packet loss. See `docs/localnet.md`. |
-| **Automation** | off | *Test only.* Keeps the game running while unfocused and injects input from `WUMFix\automation[.<pid>].txt`. See `scripts/auto.ps1`. |
+| **Automation** | off | *Test only.* Keeps the game running while unfocused and injects input from `Melange\automation[.<pid>].txt`. See `scripts/auto.ps1`. |
 | **Probe** | off | *Test only (M0 scouting).* Logs GL state at Present, draws a test quad, counts engine messages by name, and toggles input capture (F10). See `docs/re-notes.md` §15. |
 
-The fixes only change local state and the sender side of the protocol; nothing on the wire changes. They therefore help even when only one player has WUMFix, although both players should install it.
+The fixes only change local state and the sender side of the protocol; nothing on the wire changes. They therefore help even when only one player has Melange, although both players should install it.
 
 ## Building
 
@@ -47,8 +49,8 @@ Requirements:
 - CMake 3.25+ and Ninja. The portable copies in `tools/` are used automatically.
 
 ```powershell
-.\build.ps1          # -> dist\WUMFix.asi (x86, static CRT)
-.\deploy.ps1         # installs UAL + WUMFix into the Steam game folder
+.\build.ps1          # -> dist\melange.asi (x86, static CRT)
+.\deploy.ps1         # installs UAL + Melange into the Steam game folder
 ```
 
 SafetyHook (with Zydis) is fetched by CMake.
@@ -64,20 +66,20 @@ SafetyHook (with Zydis) is fetched by CMake.
 #include "core/log.h"
 
 namespace {
-class MyFix final : public wf::Module {
+class MyFix final : public melange::Module {
 public:
     const char* Name() const override { return "MyFix"; }            // = ini section
     const char* Description() const override { return "what it does"; }
     bool RequiresKnownBuild() const override { return true; }         // uses fixed addresses
     bool Install() override {
         int v = Int("SomeValue", 42);                                  // ini key, default auto-written
-        if (!wf::mem::Expect(0x4D919B, {0x10})) return false;          // verify bytes before patching
-        wf::mem::Put<uint8_t>(0x4D919B, static_cast<uint8_t>(v));
+        if (!melange::mem::Expect(0x4D919B, {0x10})) return false;          // verify bytes before patching
+        melange::mem::Put<uint8_t>(0x4D919B, static_cast<uint8_t>(v));
         return true;
     }
 };
 }
-WUMFIX_MODULE(MyFix);
+MELANGE_MODULE(MyFix);
 ```
 
 Building blocks:
@@ -86,7 +88,7 @@ Building blocks:
 |---|---|
 | `core/mem.h` | Patching, pattern scan, IAT and vtable hooks |
 | `<safetyhook.hpp>` | Inline hooks and mid-function hooks (register context) |
-| `wumfix/bus.h` | Engine message bus: subscribe to engine messages by name, registry names, payload decoders |
+| `melange/bus.h` | Engine message bus: subscribe to engine messages by name, registry names, payload decoders |
 | `core/events.h` | Per-frame callback, plus MatchStart/MatchEnd/LobbyEnter/LobbyLeave events fired by NetSession |
 | `net/steam.h` | Steam callback base and callback ids |
 | `net/net.h` | Typed accessors for NetService, NetThrottle, the session and players |
@@ -100,11 +102,11 @@ Modules that return `RequiresKnownBuild() == true` are skipped automatically on 
 | Path | Contents |
 |---|---|
 | `src/core/` | Plugin entry, logging, ini, exe guard, memory/hook helpers, events, debug, testcmd registry |
-| `src/render/` | Overlay: Dear ImGui host and panel/menu/hotkey API (`wumfix/overlay.h`), GL state guard, input capture |
+| `src/render/` | Overlay: Dear ImGui host and panel/menu/hotkey API (`melange/overlay.h`), GL state guard, input capture |
 | `src/gameplay/` | Gameplay-facing tweaks and fixes |
 | `src/net/` | Game structure knowledge for networking (build #1077), Steam and net modules (LocalNet in its own subfolder) |
 | `src/tools/` | In-plugin dev/test tools: Automation, Probe, log export (component D; a stub until it lands) |
-| `src/sdk/wumfix/` | Frozen public headers for mods and other components (`wumfix/<name>.h`) |
+| `src/sdk/melange/` | Frozen public headers for mods and other components (`melange/<name>.h`) |
 | `docs/re-notes.md` | Reverse-engineering reference: classes, Steam usage, match lifecycle, input |
 | `docs/netcode.md` | Root-cause writeup of the back-to-back match bug |
 | `docs/localnet.md` | The two-instance test harness |
