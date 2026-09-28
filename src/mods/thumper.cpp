@@ -223,6 +223,10 @@ void DoRescan() {
             e.reason = r.reason;
         }
         e.deepDesertGranted = IsGranted(e);
+        if (e.deepDesertGranted && e.state == mods::State::PendingConsent) {
+            e.state = mods::State::Enabled;
+            e.reason.clear();
+        }
         if (m->unsafe && e.state == mods::State::PendingConsent && !e.deepDesertGranted) {
             if (g_autoGrantDeepDesert) {
                 DeepDesertRecord dr;
