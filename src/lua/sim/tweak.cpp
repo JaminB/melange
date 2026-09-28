@@ -1,4 +1,4 @@
-// SimTweak: in-memory WEAPTWK field overrides from sim mods (component F, m2-design.md §3.F).
+// SimTweak: in-memory WEAPTWK field overrides from sim mods (wum.sim.weapon).
 #include "lua/sim/tweak.h"
 
 #include <cstdio>
@@ -58,8 +58,7 @@ constexpr WeaponClass kWeaponClasses[] = {
      static_cast<int>(std::size(kPayloadFields))},
 };
 
-// RE-verified byte offsets only (the F0/U6 spike, m2-design.md §2.7). Extending this to more
-// fields or weapons needs the same runtime verification; do not guess an offset here.
+// Offsets verified at runtime only; do not guess one here.
 constexpr VerifiedOffset kVerifiedOffsets[] = {
     {"PayloadWeaponPropertiesContainer", "WormDamageMagnitude", 0x15c},
 };
@@ -175,7 +174,7 @@ const VerifiedOffset* FindVerifiedOffset(const char* containerClass, const char*
 
 uintptr_t FindContainer(const char* weaponName) {
     if (!weaponName || !*weaponName || !game::IsKnownBuild()) return 0;
-    // First bytes of 0x50b8b0 on build #1077 (the private F0/U6 spike verified this call).
+    // First bytes of 0x50b8b0 on build #1077.
     if (!mem::Expect(kContainerLookup, {0xe8, 0x68, 0xe2, 0x12, 0x00, 0x8b, 0x08})) return 0;
     uintptr_t obj = 0;
     reinterpret_cast<void(__cdecl*)(const char**, uintptr_t*)>(kContainerLookup)(&weaponName, &obj);

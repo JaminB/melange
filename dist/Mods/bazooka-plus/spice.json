@@ -4,7 +4,7 @@
   "name": "Bazooka Plus",
   "version": "1.0.0",
   "authors": ["Melange"],
-  "description": "Multiplies the Bazooka's worm damage by 1.5x, live, using wum.sim.weapon (component F).",
+  "description": "Multiplies the Bazooka's worm damage by 1.5x, live, using wum.sim.weapon.",
   "melange": { "range": ">=0.2.0" },
   "kind": "content",
   "defaultEnabled": false,

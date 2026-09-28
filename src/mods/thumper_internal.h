@@ -1,7 +1,7 @@
 #pragma once
 // Plumbing shared between Thumper's own files (thumper.cpp, spice.cpp is pure and doesn't need this,
 // thumper_state.cpp, consent.cpp, mods_page.cpp) and render/mirage/modfs.cpp, which A also reimplements.
-// Not a frozen M2 contract: only code inside component A depends on it.
+// Thumper-internal: not a public contract.
 #include <cstdint>
 #include <map>
 #include <string>

@@ -219,9 +219,7 @@ target_compile_definitions(shaders_selftest PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX
     MELANGE_SOURCE_DIR="${CMAKE_SOURCE_DIR}")
 target_compile_options(shaders_selftest PRIVATE /W4 /utf-8 /permissive- /wd4100)
 
-# Component F (in-memory WEAPTWK tweaks): pure schema/Engine logic, plus FindContainer's
-# unknown-build guard. The live memory path and the Lua binding need the running game (left to the
-# integrator; see m2-design.md §3.F acceptance).
+# Weapon tweaks without the game: schema lookup, snapshot/restore and the unknown-build guard.
 add_executable(tweak_selftest
     tests/tweak_selftest.cpp
     src/lua/sim/tweak.cpp

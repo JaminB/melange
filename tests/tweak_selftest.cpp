@@ -1,4 +1,4 @@
-// Offline self-test for component F (src/lua/sim/tweak.*). No game needed: FindContainer() must
+// Offline self-test for src/lua/sim/tweak.*. No game needed: FindContainer() must
 // safely return 0 outside the game (game::IsKnownBuild() is false here), so every Get/Set case
 // below either stops at a schema error or ends at TweakError::NoContainer. The Engine class is
 // exercised directly with a fake in-process "container" buffer.
@@ -47,7 +47,7 @@ int main() {
     Check(FindVerifiedOffset("PayloadWeaponPropertiesContainer", "WormDamageMagnitude") != nullptr,
           "WormDamageMagnitude has a verified offset");
     Check(FindVerifiedOffset("PayloadWeaponPropertiesContainer", "WormDamageMagnitude")->offset == 0x15c,
-          "the verified offset is +0x15c (F0/U6)");
+          "the verified offset is +0x15c");
     Check(FindVerifiedOffset("PayloadWeaponPropertiesContainer", "Scale") == nullptr,
           "a schema-numeric field with no spike result has no verified offset");
     Check(FindVerifiedOffset("GunWeaponPropertiesContainer", "WormDamageMagnitude") == nullptr,
@@ -107,7 +107,7 @@ int main() {
 
         eng.RestoreAll([](const char*, void*) -> uintptr_t { return 0; }, nullptr);
         Check(eng.ReadField(container, kOff, &got) && got == 90.0f,
-              "RestoreAll leaves the value alone when the container cannot be re-resolved (U6)");
+              "RestoreAll leaves the value alone when the container cannot be re-resolved");
         Check(eng.PendingCount() == 0, "RestoreAll always drops the snapshot, restored or not");
     }
     {
@@ -141,7 +141,7 @@ int main() {
         float got = 0;
         eng.ReadField(containerA, kOff, &got);
         Check(got == 75.0f,
-              "RestoreAll skips the write when the re-resolved container differs (a stale-pointer guard, U6)");
+              "RestoreAll skips the write when the re-resolved container differs (a stale-pointer guard)");
     }
 
     std::printf("%d passed, %d failed\n", g_pass, g_fail);
