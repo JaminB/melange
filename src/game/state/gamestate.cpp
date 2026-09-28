@@ -33,7 +33,7 @@ uint64_t g_bucketStart = 0, g_lastPeriodic = 0;
 uint32_t g_wantCur = 0, g_wantPrev = 0;
 void* g_vm = nullptr;
 bus::MsgId g_turnId = bus::kInvalidId, g_sdId = bus::kInvalidId;
-uint32_t g_turnBase = 0, g_sdBase = 0;
+uint32_t g_turnBase = 0, g_sdBase = 0, g_prevTurns = 0, g_prevSd = 0;
 Snapshot g_cache{};
 uint64_t g_cacheFrame = 0;
 bool g_cacheOk = false, g_inVars = false;
@@ -146,12 +146,18 @@ void TrackMatch() {
         g_turnId = bus::IdOf("GameLogic.Turn.Started");
         g_sdId = bus::IdOf("GameLogic.ActivateSuddenDeath");
     }
+    // The first turn can start in the very frame the VM appears, so rebase on the counts seen one frame earlier.
+    const uint32_t turns = g_turnId == bus::kInvalidId ? 0 : bus::CountOf(g_turnId, bus::Path::Post), sd = Count(g_sdId);
     void* vm = lua50::MatchState();
-    if (vm == g_vm) return;
-    g_vm = vm;
-    if (!vm) return;
-    g_turnBase = g_turnId == bus::kInvalidId ? 0 : bus::CountOf(g_turnId, bus::Path::Post);
-    g_sdBase = Count(g_sdId);
+    if (vm != g_vm) {
+        g_vm = vm;
+        if (vm) {
+            g_turnBase = g_prevTurns;
+            g_sdBase = g_prevSd;
+        }
+    }
+    g_prevTurns = turns;
+    g_prevSd = sd;
 }
 
 detail::MatchInfo Info() {
