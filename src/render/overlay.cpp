@@ -691,6 +691,17 @@ int AddPanel(const char* id, const char* title, DrawFn fn, void* user, uint32_t 
     return g_panels.back().handle;
 }
 
+bool OpenPanel(const char* id, bool open) {
+    if (!id) return false;
+    std::lock_guard lk(g_regMx);
+    for (Panel& p : g_panels) {
+        if (p.id != id) continue;
+        p.open = open;
+        return true;
+    }
+    return false;
+}
+
 void RemovePanel(int handle) {
     {
         std::lock_guard lk(g_regMx);

@@ -8,6 +8,7 @@ using DrawFn = void (*)(void* user);
 enum PanelFlags : uint32_t { kPanelNone = 0, kPanelOpenByDefault = 1 };
 int AddPanel(const char* id, const char* title, DrawFn fn, void* user, uint32_t flags = kPanelNone);  // any thread
 void RemovePanel(int handle);                                                                         // any thread
+bool OpenPanel(const char* id, bool open = true);  // any thread; force a panel shown/hidden by id (e.g. a hotkey)
 // Main-menu-bar item, e.g. "File/Save logs as...". `shortcut` is display text only.
 using ActionFn = void (*)(void* user);
 int AddMenuItem(const char* path, ActionFn fn, void* user, const char* shortcut = nullptr);  // any thread

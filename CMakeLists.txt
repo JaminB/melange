@@ -181,6 +181,13 @@ add_executable(draw_queue_selftest EXCLUDE_FROM_ALL tests/draw_queue_selftest.cp
 target_include_directories(draw_queue_selftest PRIVATE src src/sdk)
 target_compile_options(draw_queue_selftest PRIVATE /W4 /utf-8 /permissive-)
 
+add_executable(console_selftest EXCLUDE_FROM_ALL
+    tests/console_selftest.cpp
+    src/lua/console_repl.cpp
+    src/lua/console_history.cpp)
+target_include_directories(console_selftest PRIVATE src)
+target_compile_options(console_selftest PRIVATE /W4 /utf-8 /permissive-)
+
 add_executable(jlog_selftest
     tests/jlog_selftest.cpp
     src/core/jlog.cpp
