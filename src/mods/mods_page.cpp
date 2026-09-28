@@ -61,7 +61,7 @@ void DrawModsPanel(void*) {
 
     constexpr ImGuiTableFlags kFlags =
         ImGuiTableFlags_RowBg | ImGuiTableFlags_Borders | ImGuiTableFlags_Resizable | ImGuiTableFlags_ScrollY | ImGuiTableFlags_ScrollX;
-    if (!ImGui::BeginTable("mods", 7, kFlags, ImVec2(0, 360))) return;
+    if (!ImGui::BeginTable("modlist", 7, kFlags, ImVec2(0, 360))) return;
     ImGui::TableSetupScrollFreeze(0, 1);
     ImGui::TableSetupColumn("On", ImGuiTableColumnFlags_WidthFixed, 28);
     ImGui::TableSetupColumn("Name", ImGuiTableColumnFlags_WidthFixed, 170);
