@@ -1,10 +1,6 @@
 // melange::xom - portable reader/writer for Worms Ultimate Mayhem "MOIK" XOM files.
-//
-// C++17, standard library only, no exceptions required, no OS calls: builds for
-// Win32, Linux and WebAssembly (Emscripten) alike. Mirrors tools/xom/xom.py; see
-// tools/xom/CPP_PORT.md for the design and re/notes/framework/xom-format.md for
-// the format. The class schemas are compiled in (xom_schema.inc, generated from
-// tools/xom/schema.json by tools/xom/gen_cpp_schema.py).
+// C++17, standard library only, no OS calls (builds for Win32, Linux and WebAssembly).
+// Mirrors tools/xom/xom.py. Class schemas are compiled in from xom_schema.inc.
 #pragma once
 
 #include <array>
@@ -82,10 +78,8 @@ struct Value {
     void setComponents(const std::vector<double>& v);
     const Value* member(std::string_view name) const;
 
-    // Arrays. Elements of fixed-size types (numbers, bools, enums, math structs)
-    // are stored packed in `raw` (a 4 MB texture would otherwise cost ~500 MB as
-    // individual Values); String/Ref/Struct elements live in `items`. These
-    // accessors hide the difference.
+    // Arrays of fixed-size elements are stored packed in `raw` (a 4 MB texture would
+    // cost ~500 MB as individual Values); others live in `items`. These hide the difference.
     bool packed() const;
     size_t size() const;
     Value at(size_t i) const;

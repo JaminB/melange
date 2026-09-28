@@ -17,7 +17,6 @@ std::string HexOf(const unsigned char* dig, size_t n) {
     return s;
 }
 
-// One-shot BCrypt SHA-256 over an arbitrary sequence of buffers.
 bool HashBuffers(const std::pair<const void*, size_t>* parts, size_t count, unsigned char out[32]) {
     BCRYPT_ALG_HANDLE alg{};
     BCRYPT_HASH_HANDLE h{};
@@ -46,8 +45,7 @@ std::string Sha256Hex(const void* data, size_t len) {
 }
 
 std::string Sha256HexFile(const std::wstring& path) {
-    // FILE_SHARE_DELETE so a file the game or jlog's writer thread still has open can still be read
-    // and exported (the zip layout note says the same about the copies themselves).
+    // Full sharing so files the game or the log writer still has open can be read.
     HANDLE f = CreateFileW(path.c_str(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr,
                            OPEN_EXISTING, 0, nullptr);
     if (f == INVALID_HANDLE_VALUE) return {};
@@ -75,13 +73,13 @@ std::string ShortSaltedHash(std::string_view salt, std::string_view value) {
     unsigned char dig[32];
     std::pair<const void*, size_t> parts[2] = {{salt.data(), salt.size()}, {value.data(), value.size()}};
     if (!HashBuffers(parts, 2, dig)) return "00000000";
-    return HexOf(dig, 4);  // first 4 bytes = 8 hex chars: enough to be stable-looking, not to be reversed
+    return HexOf(dig, 4);
 }
 
 std::string RandomSalt() {
     unsigned char buf[16];
     if (BCryptGenRandom(nullptr, buf, sizeof(buf), BCRYPT_USE_SYSTEM_PREFERRED_RNG) != 0) {
-        // Extremely unlikely; fall back to something still unique per process/run rather than failing the export.
+        // Fall back to something unique per run rather than failing the export.
         LARGE_INTEGER c;
         QueryPerformanceCounter(&c);
         DWORD mix[4] = {GetCurrentProcessId(), GetTickCount(), static_cast<DWORD>(c.QuadPart),

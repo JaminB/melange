@@ -1,5 +1,5 @@
 #pragma once
-// Key-name tables for the Automation module: name -> DirectInput scan code (DIK_*) + Win32 virtual key.
+// Key names -> DirectInput scan code (DIK_*) and Win32 virtual key.
 #include <cstdint>
 #include <cstring>
 

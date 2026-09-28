@@ -1,6 +1,4 @@
-// Built-in overlay panels: "About / Stats" (open by default; its first widget is the "Test" button used by the
-// capture acceptance test, which logs "overlay: test button") and the Dear ImGui demo window behind
-// [Overlay] Demo=1.
+// Built-in overlay panels: "About / Stats" and the Dear ImGui demo window ([Overlay] Demo=1).
 #include <imgui.h>
 
 #include "core/game.h"
@@ -14,7 +12,7 @@ bool g_demoEnabled = false;
 bool g_demoOpen = false;
 
 void DrawAbout(void*) {
-    if (ImGui::Button("Test")) WF_INFO("overlay: test button");
+    if (ImGui::Button("Test")) LOG_INFO("overlay: test button");
     ImGui::SameLine();
     ImGui::TextDisabled("logs 'overlay: test button'");
 
@@ -66,7 +64,7 @@ void RegisterBuiltinPanels(bool demo) {
     g_demoEnabled = demo;
     g_demoOpen = demo;
     int about = melange::overlay::AddPanel("melange.about", "About / Stats", &DrawAbout, nullptr, melange::overlay::kPanelOpenByDefault);
-    SetPanelDefaultRect(about, 24.f, 40.f, 460.f, 360.f);  // fixed spot: the Test button's centre is at about (50, 76)
+    SetPanelDefaultRect(about, 24.f, 40.f, 460.f, 360.f);
     if (demo) melange::overlay::AddMenuItem("View/Dear ImGui demo", &ToggleDemo, nullptr);
 }
 

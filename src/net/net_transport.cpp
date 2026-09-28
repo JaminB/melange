@@ -1,16 +1,7 @@
-// NetTransport: fixes the game's hand-rolled reliable-UDP layer on top of Steam P2P (XSteamConnection).
-//
-// Bug (see docs/netcode.md): the retry window base XSteamConnection+0x2c is set to 1 in the ctor and never
-// advanced, so only sequence numbers 1 and 2 are ever retransmitted on a timer. After that a lost packet is
-// only recovered if a *later* packet makes the receiver notice the gap. When the last packet before a
-// waiting phase is lost (load-complete, turn hand-off, time sync...) both machines wait on each other forever:
-// the match freezes, and eventually the channel times out -> "This session is no longer available".
-//
-// Fix (sender side, compatible with unmodified peers - wire protocol unchanged):
-//   on every cumulative ACK, advance +0x2c past the acked sequence and keep the retry timer armed while
-//   anything is still unacknowledged, so the two oldest unacked packets are resent every 250 ms.
-// Fix (receiver side): a duplicate of an already-delivered packet is re-ACKed (the game drops it silently),
-//   so a lost ACK can't make the peer retransmit forever.
+// NetTransport: fixes lost-packet recovery in the game's reliable-UDP layer over Steam P2P.
+// The retry window base is never advanced, so only seqs 1 and 2 are ever resent; a later lost packet
+// before a waiting phase freezes both machines. Sender: advance the base on each ACK and keep the retry
+// timer armed. Receiver: re-ACK duplicates so a lost ACK can't stall the peer. Wire format unchanged.
 #include <windows.h>
 
 #include <safetyhook.hpp>
@@ -35,7 +26,7 @@ constexpr uintptr_t kAddr = 0x14;       // XSteamAddress* (CSteamID at +0x14/+0x
 constexpr uintptr_t kUnacked = 0x1c;    // list of sent-unacked packets: node {uint* buf, uint len, node* next}
 constexpr uintptr_t kSendSeq = 0x24;
 constexpr uintptr_t kRecvSeq = 0x28;
-constexpr uintptr_t kRetryBase = 0x2c;  // first seq the retry timer resends (stuck at 1 in the original game)
+constexpr uintptr_t kRetryBase = 0x2c;  // first seq the retry timer resends (stuck at 1 in retail)
 constexpr uintptr_t kRetryArmed = 0x3c;
 constexpr uintptr_t kRetryAt = 0x40;
 constexpr uint32_t kRetryMs = 250;
@@ -70,7 +61,7 @@ void OnAck(safetyhook::Context& c) {
         melange::wum::WriteInt(conn + kRetryAt, static_cast<int32_t>(Now() + kRetryMs));
     }
     if (g_logEachAck)
-        WF_TRACE("[transport] conn %08x ack %u (send %u) retryBase %u -> %u", static_cast<unsigned>(conn), acked,
+        LOG_TRACE("[transport] conn %08x ack %u (send %u) retryBase %u -> %u", static_cast<unsigned>(conn), acked,
                  Read<uint32_t>(conn + kSendSeq), base, Read<uint32_t>(conn + kRetryBase));
 }
 
@@ -82,7 +73,7 @@ void OnPacket(safetyhook::Context& c) {
     if (hdr & 3) return;  // ACK or resend-request, not data
     uint32_t seq = hdr >> 2, delivered = Read<uint32_t>(conn + kRecvSeq);
     if (seq == 0 || seq > delivered) return;  // new data: the game handles it
-    // Duplicate of something we already delivered: our ACK was probably lost. Re-ACK cumulatively.
+    // Duplicate of delivered data: our ACK was probably lost, so re-ACK cumulatively.
     uintptr_t addr = Read<uint32_t>(conn + kAddr);
     uint64_t peer = static_cast<uint64_t>(Read<uint32_t>(addr + 0x18)) << 32 | Read<uint32_t>(addr + 0x14);
     HMODULE api = GetModuleHandleW(L"steam_api.dll");
@@ -93,7 +84,7 @@ void OnPacket(safetyhook::Context& c) {
     auto send = reinterpret_cast<Send_t>((*static_cast<void***>(net))[0]);
     send(net, peer, &ack, 4, 0, 0);
     if (g_dupAcks++ < 50)
-        WF_INFO("[transport] duplicate seq %u from %llu (delivered %u) -> re-ACK", seq,
+        LOG_INFO("[transport] duplicate seq %u from %llu (delivered %u) -> re-ACK", seq,
                 static_cast<unsigned long long>(peer), delivered);
 }
 
@@ -124,7 +115,7 @@ public:
     }
 
     void Uninstall() override {
-        WF_INFO("[transport] session totals: %u retry-window advances, %u duplicate re-ACKs", g_retryFixes.load(),
+        LOG_INFO("[transport] session totals: %u retry-window advances, %u duplicate re-ACKs", g_retryFixes.load(),
                 g_dupAcks.load());
         g_hooks.clear();
     }

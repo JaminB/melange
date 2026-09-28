@@ -1,7 +1,5 @@
-// Structured JSONL logging core: session folders, the writer thread, rotation, level filters and the
-// in-memory tail ring. Public contract: src/sdk/melange/jlog.h (frozen; see docs/m0-design.md SS2.5, SS3 "C").
-//
-// Never calls melange::log (that would recurse through the WF_ tap in jlog_adapters.cpp).
+// Structured JSONL logging core: session folders, writer thread, rotation, level filters and the tail ring.
+// Never calls melange::log (that would recurse through the log tap).
 #include "melange/jlog.h"
 
 #include <windows.h>
@@ -27,7 +25,7 @@
 namespace melange::jlog {
 namespace {
 
-// ------------------------------------------------------------------------------------------------- JSON helpers
+// ---- JSON helpers
 void AppendEscaped(std::string& out, std::string_view s) {
     out += '"';
     for (unsigned char c : s) {
@@ -63,12 +61,12 @@ double Finite(double v) { return std::isfinite(v) ? v : 0.0; }
 
 void AppendNumber(std::string& out, double v) {
     char buf[48];
-    // %.17g round-trips a double; trim is unnecessary for JSON validity.
+    // %.17g round-trips a double.
     snprintf(buf, sizeof(buf), "%.17g", Finite(v));
     out += buf;
 }
 
-// ------------------------------------------------------------------------------------------------- level filter
+// ---- Level filter
 const char* LevelName(Level l) {
     switch (l) {
         case Level::Trace: return "trace";
@@ -95,11 +93,10 @@ struct LevelFilter {
     std::unordered_map<std::string, Level> perCategory;
 };
 
-// Set once at Init(); read-mostly afterwards, so a raw atomic pointer (no reader lock) is enough.
+// Set once at Init(), so a raw atomic pointer is enough.
 std::atomic<LevelFilter*> g_filter{nullptr};
-// True once Init() has given up for good (fallback root also unwritable). Distinct from "g_filter is still
-// null because Init() hasn't run yet", which intentionally keeps Enabled() permissive so early-boot records
-// are not lost. See melange's internal contract: a failed Init() must make logging inert (jlog_internal.h).
+// Init() failed for good: logging is inert. Distinct from "not initialised yet", where Enabled() stays
+// permissive so early-boot records are not lost.
 std::atomic<bool> g_initFailed{false};
 
 LevelFilter* ParseLevelsSpec(std::string_view spec) {
@@ -121,20 +118,18 @@ LevelFilter* ParseLevelsSpec(std::string_view spec) {
     return f;
 }
 
-// ------------------------------------------------------------------------------------------------- state
-// Starts at 1, not 0, so that Tail(0, ...) - "everything since the beginning" - never has to special-case the
-// very first record: seq 0 is reserved as the "nothing seen yet" sentinel an incremental reader starts from.
+// ---- State
+// seq 0 is the "nothing seen yet" sentinel for Tail(0, ...).
 std::atomic<uint64_t> g_seq{1};
-std::atomic<uint64_t> g_startTick{0};  // GetTickCount64() at session start
+std::atomic<uint64_t> g_startTick{0};
 
 struct QueuedLine {
     std::string text;  // one full JSON line, no trailing newline
     Level lvl;
-    bool startsFile = false;  // the writer rolls the file over before writing this line (a session header)
+    bool startsFile = false;  // roll the file over before writing this line (a session header)
 };
 
-// Bytes queued for the current file, counted where seq is assigned (under g_queueMx) so the rollover decision
-// and the session header that opens each new file keep seq strictly increasing within every file.
+// Counted under g_queueMx where seq is assigned, so seq stays strictly increasing within every file.
 uint64_t g_queuedFileBytes = 0;
 uint32_t g_filePart = 0;
 
@@ -143,11 +138,8 @@ std::vector<QueuedLine> g_queue;
 std::condition_variable g_wakeWriter;
 bool g_wantExit = false;
 std::atomic<bool> g_running{false};
-// Set by FlushFromCrash() before it does anything else. The writer thread checks this and stops touching the
-// file once it is set, so the crash-time flush and the writer thread are not both writing/rotating the same
-// file handle at once (see docs/m0-design.md SS3 "C" "Crash flush" and the report's finding on log corruption).
-// This narrows the race a great deal but cannot close it completely: WriteLines()/Rotate() already under way on
-// the writer thread when the crash lands will still finish that one call.
+// Set first thing by FlushFromCrash(); the writer thread then stops touching the file. A write or rotate
+// already under way still finishes, so this narrows the race rather than closing it.
 std::atomic<bool> g_crashing{false};
 
 std::mutex g_flushMx;
@@ -161,9 +153,8 @@ size_t g_tailCapacity = 5000;
 
 std::atomic<uint64_t> g_recordsAccepted{0};
 std::atomic<uint64_t> g_recordsDropped{0};  // pending note for the writer (reset when written)
-std::atomic<uint64_t> g_droppedTotal{0};    // since session start, for GetStats()
-// Main-thread record cost (Rec construction to the end of Emit), 0.25 us buckets up to 200 us; the last bucket
-// collects everything slower. Read by internal::EmitP95Us() for the jlog.stats verb (docs/m0-design.md SS3 C8).
+std::atomic<uint64_t> g_droppedTotal{0};
+// Main-thread record cost, 0.25 us buckets up to 200 us; the last bucket collects everything slower.
 constexpr int kEmitBuckets = 801;
 std::atomic<uint32_t> g_emitHist[kEmitBuckets];
 double g_qpcToUs = 0;
@@ -171,20 +162,19 @@ std::atomic<uint64_t> g_bytesWritten{0};
 std::atomic<uint64_t> g_filesRotated{0};
 
 Session g_session;
-std::wstring g_sessionRoot;  // root actually in use (after fallback resolution)
+std::wstring g_sessionRoot;  // after fallback resolution
 uint32_t g_maxFileMB = 32;
 uint32_t g_maxSessions = 20;
 uint32_t g_maxTotalMB = 512;
 
-// The active file. Only the writer thread touches the HANDLE for writing; FlushFromCrash reads it via an
-// atomic snapshot so it never races a rotate that closes/reopens it out from under a normal write.
+// Only the writer thread writes through it; FlushFromCrash takes an atomic snapshot.
 std::atomic<HANDLE> g_fileHandle{INVALID_HANDLE_VALUE};
 uint64_t g_fileBytes = 0;
 uint32_t g_rotateIndex = 0;
 
 HANDLE g_writerThread = nullptr;
 
-// ------------------------------------------------------------------------------------------------- filesystem
+// ---- Filesystem
 bool MakeDirRecursive(const std::wstring& dir) {
     if (dir.empty() || CreateDirectoryW(dir.c_str(), nullptr) || GetLastError() == ERROR_ALREADY_EXISTS) return true;
     size_t slash = dir.find_last_of(L"\\/");
@@ -219,10 +209,8 @@ std::wstring FormatSessionId(const SYSTEMTIME& st, DWORD pid) {
     return buf;
 }
 
-// True only for the exact "YYYY-MM-DD_HH-MM-SS_pid<digits>" shape FormatSessionId() produces. Deliberately
-// strict: PruneOldSessions recursively DELETES whatever this accepts, so a loose test (e.g. "name contains an
-// underscore") would let a misconfigured `[Logging] Dir=` (pointed at Documents, a project folder, ...) delete
-// unrelated user folders that merely happen to have an underscore in their name.
+// Exactly "YYYY-MM-DD_HH-MM-SS_pid<digits>". Deliberately strict: PruneOldSessions deletes whatever this
+// accepts, and a misconfigured [Logging] Dir= must not lose unrelated folders.
 bool LooksLikeSessionDirName(const std::wstring& name) {
     auto digits = [&](size_t pos, size_t n) {
         if (pos + n > name.size()) return false;
@@ -275,10 +263,7 @@ uint64_t DirSizeBytes(const std::wstring& dir) {
     return total;
 }
 
-// Never follows a junction/symlink: a reparse point is unlinked as itself, and its target's contents are left
-// untouched. Without this, a session folder (or, before LooksLikeSessionDirName(), any folder we were pointed
-// at) that is or contains a reparse point would have DeleteDirRecursive walk into and delete whatever it points
-// at, which can be arbitrary user data outside the logs directory entirely.
+// Never follows a junction/symlink: a reparse point is unlinked itself and its target left untouched.
 void DeleteDirRecursive(const std::wstring& dir) {
     DWORD attrs = GetFileAttributesW(dir.c_str());
     if (attrs != INVALID_FILE_ATTRIBUTES && (attrs & FILE_ATTRIBUTE_REPARSE_POINT)) {
@@ -306,8 +291,7 @@ void DeleteDirRecursive(const std::wstring& dir) {
     RemoveDirectoryW(dir.c_str());
 }
 
-// Keeps the newest maxSessions folders and total <= maxTotalMB, deleting the oldest first. Called once at
-// startup, before the current session's own folder exists, so nothing "current" can be deleted.
+// Deletes the oldest folders beyond maxSessions / maxTotalMB. Runs before the current session's folder exists.
 void PruneOldSessions(const std::wstring& root, uint32_t maxSessions, uint32_t maxTotalMB) {
     auto dirs = ListSessionDirsOldestFirst(root);
     while (dirs.size() > maxSessions) {
@@ -329,7 +313,7 @@ void PruneOldSessions(const std::wstring& root, uint32_t maxSessions, uint32_t m
     }
 }
 
-// ------------------------------------------------------------------------------------------------- wall clock
+// ---- Wall clock
 std::string FormatWall() {
     SYSTEMTIME st{};
     GetLocalTime(&st);
@@ -345,7 +329,7 @@ std::string FormatWall() {
     return buf;
 }
 
-// ------------------------------------------------------------------------------------------------- writer thread
+// ---- Writer thread
 void Rotate() {
     if (g_fileHandle.load() == INVALID_HANDLE_VALUE) return;
     HANDLE old = g_fileHandle.exchange(INVALID_HANDLE_VALUE);
@@ -428,9 +412,9 @@ DWORD WINAPI WriterMain(LPVOID) {
 
 }  // namespace
 
-// ------------------------------------------------------------------------------------------------- Rec
+// ---- Rec
 struct Rec::Impl {
-    int64_t t0 = 0;  // QPC at construction (main thread only), for the emit-cost histogram
+    int64_t t0 = 0;  // QPC at construction (main thread only)
     bool enabled = false;
     bool emitted = false;
     std::string category;
@@ -439,8 +423,6 @@ struct Rec::Impl {
     std::string data;  // accumulated "key":val fragments, no surrounding braces
 };
 
-// Only Rec's own members may name its private Impl type, so the "is this record filtered out" fast path lives
-// here rather than in a free helper: still just one small allocation and no string copying when disabled.
 Rec::Rec(std::string_view category, Level lvl, std::string_view msg) : p_(new Impl()) {
     p_->enabled = Enabled(category, lvl);
     if (!p_->enabled) return;
@@ -561,11 +543,8 @@ void Rec::Emit() {
     std::string line;
     const uint64_t capBytes = static_cast<uint64_t>(g_maxFileMB) * 1024ull * 1024ull;
     g_recordsAccepted.fetch_add(1, std::memory_order_relaxed);
-    // Re-entrancy guard: g_queueMx is not recursive. If this thread is already inside the critical section below
-    // (a fault interrupted it there, with no C++ unwind since it's an SEH exception - the thread-local flag below
-    // stays set), a WF_ tap call made while handling that same fault (the crash filter logs before it can flush,
-    // see docs/m0-design.md SS3 "C" risks) must not try to take the lock again: that would deadlock the crashing
-    // thread forever, so neither a crash minidump nor a hang snapshot would ever get written. Drop the record.
+    // g_queueMx is not recursive. If a fault interrupted this thread inside the section below (SEH, no unwind),
+    // the crash filter's own logging must not take the lock again and deadlock the crash dump: drop the record.
     thread_local bool tl_inQueueSection = false;
     if (tl_inQueueSection) {
         g_droppedTotal.fetch_add(1, std::memory_order_relaxed);
@@ -585,8 +564,7 @@ void Rec::Emit() {
             g_droppedTotal.fetch_add(1, std::memory_order_relaxed);
         } else {
             if (capBytes && g_queuedFileBytes && g_queuedFileBytes + line.size() + 1 > capBytes) {
-                // Roll over: the new file opens with its own session record (schema v1: "the first record of
-                // every file is session/start"), numbered just before this line.
+                // Roll over: every file starts with a session/start record, numbered just before this line.
                 std::string data = "\"version\":\"" MELANGE_VERSION "\",\"exeSha256\":\"" + melange::game::Exe().sha256 +
                                    "\",\"pid\":" + std::to_string(GetCurrentProcessId()) +
                                    ",\"part\":" + std::to_string(++g_filePart);
@@ -682,7 +660,7 @@ Stats GetStats() {
     return Stats{g_recordsAccepted.load(), g_droppedTotal.load(), g_bytesWritten.load(), g_filesRotated.load()};
 }
 
-// ------------------------------------------------------------------------------------------------- internal
+// ---- Internal
 namespace internal {
 
 double EmitP95Us(uint64_t* samples) {
@@ -699,7 +677,7 @@ double EmitP95Us(uint64_t* samples) {
 }
 
 bool Init(const Options& opt) {
-    g_initFailed.store(false, std::memory_order_relaxed);  // a fresh attempt; cleared again below if it fails
+    g_initFailed.store(false, std::memory_order_relaxed);
     {
         LARGE_INTEGER f;
         QueryPerformanceFrequency(&f);
@@ -717,18 +695,14 @@ bool Init(const Options& opt) {
         root = opt.fallbackRoot;
         usedFallback = true;
         if (root.empty() || !DirWritable(root)) {
-            // Match the documented contract (jlog_internal.h): once this returns false, logging stays inert
-            // instead of quietly following the "not started yet" Info+ default forever (see the report's finding
-            // on unbounded direct Rec() use, e.g. net_session.cpp, and RecentSessionDirs() scanning the wrong
-            // directory when g_sessionRoot was never set).
+            // Stay inert rather than falling back to the "not started yet" Info+ default forever.
             delete g_filter.exchange(nullptr);
             g_initFailed.store(true, std::memory_order_release);
             return false;
         }
     }
     g_sessionRoot = root;
-    // The current session's folder is created right after this, so keep one fewer old folder: MaxSessions counts
-    // the current session too (3.C acceptance 6: MaxSessions=3 and 5 launches leave exactly 3 folders).
+    // MaxSessions includes the session about to be created.
     PruneOldSessions(root, g_maxSessions > 0 ? g_maxSessions - 1 : 0, g_maxTotalMB);
 
     SYSTEMTIME st{};

@@ -1,11 +1,5 @@
-// Offline self-test for component C's structured logging core (src/core/jlog.cpp). Runs standalone, without
-// the game or melange.asi: exercises the writer thread, session folders, rotation, the level filter, the tail
-// ring and the crash-flush path against a scratch directory under %TEMP%. See docs/m0-design.md SS3 "C"
-// acceptance items 1, 5, 6, 7, and the M0 report for component C ("offline tests" section).
-//
-// Not a frozen contract; only melange/jlog.h (the public API under test) and two small internal headers used to
-// start/stop sessions in-process (jlog_internal.h) and to test the bus deny/allow list in isolation from the
-// event bus itself (jlog_bus_filter.h).
+// Offline self-test for the structured logging core (src/core/jlog.cpp): writer thread, session folders,
+// rotation, level filter, tail ring and crash flush, against a scratch directory under %TEMP%.
 #include <windows.h>
 
 #include <cstdio>
@@ -32,9 +26,7 @@ void Check(bool cond, const char* what) {
     std::cerr << "FAIL: " << what << "\n";
 }
 
-// ------------------------------------------------------------------------------------------- tiny JSON reader
-// Just enough to validate our own output: balanced objects/arrays, correctly-escaped strings, and extraction
-// of top-level "key":value fields as raw substrings. Not a general-purpose parser.
+// Minimal JSON reader, just enough to validate our own output and extract top-level fields as raw substrings.
 size_t SkipString(const std::string& s, size_t i) {  // s[i] == '"'; returns index just past the closing quote
     ++i;
     while (i < s.size() && s[i] != '"') {
@@ -124,11 +116,10 @@ std::vector<std::string> ReadLines(const std::wstring& path) {
     return lines;
 }
 
-// ------------------------------------------------------------------------------------------- test groups
 void TestSchemaAndTail() {
     std::wstring dir = TempDir(L"schema");
     melange::jlog::internal::Options opt;
-    opt.rootOverride = dir;  // force the sandbox, not the real Documents\Melange\logs (see internal::Init())
+    opt.rootOverride = dir;  // never the real Documents\Melange\logs
     opt.levelsSpec = "*:trace";
     Check(melange::jlog::internal::Init(opt), "schema: Init succeeds");
 
@@ -178,7 +169,7 @@ void TestSchemaAndTail() {
 void TestLevelFilter() {
     std::wstring dir = TempDir(L"levels");
     melange::jlog::internal::Options opt;
-    opt.rootOverride = dir;  // force the sandbox, not the real Documents\Melange\logs (see internal::Init())
+    opt.rootOverride = dir;  // never the real Documents\Melange\logs
     opt.levelsSpec = "*:info,verbose:trace,quiet:error";
     Check(melange::jlog::internal::Init(opt), "levels: Init succeeds");
 
@@ -195,7 +186,7 @@ void TestLevelFilter() {
 void TestRotation() {
     std::wstring dir = TempDir(L"rotate");
     melange::jlog::internal::Options opt;
-    opt.rootOverride = dir;  // force the sandbox, not the real Documents\Melange\logs (see internal::Init())
+    opt.rootOverride = dir;  // never the real Documents\Melange\logs
     opt.levelsSpec = "*:trace";
     opt.maxFileMB = 1;
     Check(melange::jlog::internal::Init(opt), "rotate: Init succeeds");
@@ -215,13 +206,13 @@ void TestRotation() {
 void TestSessionPruning() {
     std::wstring dir = TempDir(L"prune");
     CreateDirectoryW(dir.c_str(), nullptr);
-    // Five fake old session folders, oldest-looking names first (date-prefixed, like the real ones).
+    // Five fake old session folders, oldest first.
     const wchar_t* fake[] = {L"2020-01-01_00-00-00_pid1", L"2020-01-02_00-00-00_pid1", L"2020-01-03_00-00-00_pid1",
                              L"2020-01-04_00-00-00_pid1", L"2020-01-05_00-00-00_pid1"};
     for (auto* name : fake) CreateDirectoryW((dir + L"\\" + name).c_str(), nullptr);
 
     melange::jlog::internal::Options opt;
-    opt.rootOverride = dir;  // force the sandbox, not the real Documents\Melange\logs (see internal::Init())
+    opt.rootOverride = dir;  // never the real Documents\Melange\logs
     opt.levelsSpec = "*:info";
     opt.maxSessions = 3;
     opt.maxTotalMB = 512;
@@ -230,7 +221,7 @@ void TestSessionPruning() {
     int survivors = 0;
     for (auto* name : fake)
         if (GetFileAttributesW((dir + L"\\" + name).c_str()) != INVALID_FILE_ATTRIBUTES) ++survivors;
-    // MaxSessions counts the current session (3.C acceptance 6: 5 launches with MaxSessions=3 leave 3 folders).
+    // MaxSessions counts the current session.
     Check(survivors == 2, "prune: MaxSessions-1 old folders survive next to the current one");
     Check(GetFileAttributesW(melange::jlog::CurrentSession().dir.c_str()) != INVALID_FILE_ATTRIBUTES,
           "prune: the new current session folder exists on top of the kept old ones");
@@ -242,13 +233,12 @@ void TestSessionPruning() {
 void TestCrashFlush() {
     std::wstring dir = TempDir(L"crash");
     melange::jlog::internal::Options opt;
-    opt.rootOverride = dir;  // force the sandbox, not the real Documents\Melange\logs (see internal::Init())
+    opt.rootOverride = dir;  // never the real Documents\Melange\logs
     opt.levelsSpec = "*:info";
     Check(melange::jlog::internal::Init(opt), "crash: Init succeeds");
 
     melange::jlog::Rec("test", melange::jlog::Level::Info, "before-crash").Emit();
-    // FlushFromCrash() only try-locks the queue (see jlog.cpp), so it races the normal writer thread's own
-    // 100ms tick; retry briefly rather than assume our call is the one that won the race.
+    // FlushFromCrash() only try-locks the queue, so it can race the writer thread's 100ms tick; retry briefly.
     bool found = false;
     for (int attempt = 0; attempt < 20 && !found; ++attempt) {
         melange::jlog::FlushFromCrash();
@@ -263,8 +253,7 @@ void TestCrashFlush() {
 }
 
 void TestBadPathFallback() {
-    // '?' is never valid in a Windows path, so this reliably fails regardless of which drive letters exist
-    // (docs/m0-design.md SS3 "C" acceptance item 11: "Dir=Q:\nope falls back ... with a Warn record").
+    // '?' is never valid in a Windows path, so this always fails and must fall back with a Warn record.
     std::wstring badRoot = L"C:\\melange_selftest_??_invalid";
     std::wstring fallback = TempDir(L"fallback");
     melange::jlog::internal::Options opt;

@@ -15,7 +15,7 @@ std::string RedactUserName(std::string_view text, std::string_view userName) {
 }
 
 std::string ReplaceName(std::string_view text, std::string_view userName, std::string_view token) {
-    if (userName.size() < 3) return std::string(text);  // too short: more likely to false-positive than help
+    if (userName.size() < 3) return std::string(text);  // too many false positives
     std::string out;
     out.reserve(text.size());
     size_t i = 0;
@@ -35,20 +35,13 @@ std::string ReplaceName(std::string_view text, std::string_view userName, std::s
 }
 
 std::string HashIdsAndIps(std::string_view text, std::string_view salt) {
-    // std::regex works on std::string; the exporter only ever calls this on already-loaded, size-capped
-    // text file contents (see export.h's 64 MB per-file cap), so a full copy here is not a hot path.
     std::string in(text);
     static const std::regex kIpv4(
         R"((?:(?:25[0-5]|2[0-4][0-9]|1?[0-9]{1,2})\.){3}(?:25[0-5]|2[0-4][0-9]|1?[0-9]{1,2})(?::[0-9]{1,5})?)");
-    // Any 64-bit SteamID printed in decimal is 17 digits, but the high bits (and so the leading digits) depend
-    // on the account TYPE: individual accounts start "7656119...", but lobby/chat CSteamIDs (SteamTrace's Id(),
-    // LocalNet's JoinLobby/LobbyEnter/LobbyChatUpdate logging) start "1097752...". Matching any 17-digit run
-    // catches every SteamID64 variant instead of only individual accounts; a coincidental unrelated 17-digit
-    // number is vanishingly unlikely to appear in these logs (see docs/m0-design.md SS3 "D" privacy note).
+    // Any 17-digit run: user ids start 7656119..., lobby ids 1097752..., so no fixed prefix.
     static const std::regex kSteamId64(R"(\b[0-9]{17}\b)");
 
-    // A match must be a whole token: not preceded by a digit or '.', and not followed by a digit or ".<digit>".
-    // Otherwise version strings such as a GL driver's "26.8.1.260810" would be hashed as the IP "26.8.1.26".
+    // Whole tokens only, so version strings like "26.8.1.260810" aren't hashed as IPs.
     auto isDigit = [](char c) { return c >= '0' && c <= '9'; };
     auto wholeToken = [&](const std::string& s, size_t pos, size_t len) {
         if (pos > 0 && (isDigit(s[pos - 1]) || s[pos - 1] == '.')) return false;

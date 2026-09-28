@@ -1,5 +1,4 @@
-// Automation test-command registry (melange/testcmd.h): lets any module register verbs that
-// src/tools/automation.cpp's command file can invoke, without automation.cpp knowing about them.
+// Test-command registry (melange/testcmd.h): modules register verbs that an automation driver can invoke.
 #include "melange/testcmd.h"
 
 #include <mutex>
@@ -36,7 +35,7 @@ bool Register(const char* verb, Handler fn, void* user) {
     std::lock_guard lk(Mutex());
     auto [it, inserted] = Table().try_emplace(key, Entry{fn, user});
     if (!inserted) {
-        WF_WARN("[testcmd] verb '%s' already registered, ignoring", verb);
+        LOG_WARN("[testcmd] verb '%s' already registered, ignoring", verb);
         return false;
     }
     return true;
@@ -50,9 +49,8 @@ bool Dispatch(std::string_view verb, std::string_view args) {
         if (it == Table().end()) return false;  // no handler exists: let the caller warn
         e = it->second;
     }
-    // The verb is recognised either way; a failing handler logs its own warning rather than
-    // making the caller treat a known verb as "unknown command".
-    if (!e.fn(args, e.user)) WF_WARN("[auto] %.*s failed", static_cast<int>(verb.size()), verb.data());
+    // A known verb whose handler fails is still "handled", so the caller doesn't report it as unknown.
+    if (!e.fn(args, e.user)) LOG_WARN("[auto] %.*s failed", static_cast<int>(verb.size()), verb.data());
     return true;
 }
 }  // namespace melange::testcmd

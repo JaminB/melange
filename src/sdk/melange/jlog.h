@@ -22,7 +22,7 @@ class Rec {
     void Emit();                                     // also called by the destructor if not emitted
     ~Rec();
   private:
-    struct Impl; Impl* p_;  // (layout is C's choice; header may change privately)
+    struct Impl; Impl* p_;
 };
 bool Enabled(std::string_view category, Level lvl);
 

@@ -1,9 +1,5 @@
-// NetSession: instruments the online match lifecycle and repairs state the game forgets to reset
-// between back-to-back matches in the same lobby (the "second game freezes / session no longer
-// available" bug). Analysis and addresses: docs/re-notes.md, docs/netcode.md.
-//
-// Every fix is a separate ini switch so they can be A/B tested; all default on except the
-// behaviour-changing DeadPeerForfeit.
+// NetSession: traces the online match lifecycle and repairs state the game forgets to reset
+// between back-to-back matches in the same lobby.
 #include <windows.h>
 
 #include <safetyhook.hpp>
@@ -18,7 +14,7 @@
 #include "core/mem.h"
 #include "core/module.h"
 #include "net/net.h"
-#include "melange/jlog.h"  // component C's only edit to NetSession: mirror state transitions into the JSONL log
+#include "melange/jlog.h"
 
 namespace {
 namespace A = melange::wum::addr;
@@ -26,7 +22,6 @@ namespace S = melange::wum::state;
 namespace O = melange::wum::off;
 using melange::wum::Read;
 
-// ---------------------------------------------------------------- state dump
 std::string DescribePlayers(uintptr_t ns) {
     std::string out;
     int n = melange::wum::PlayerCount(ns);
@@ -45,12 +40,12 @@ std::string DescribePlayers(uintptr_t ns) {
 void DumpState(const char* why) {
     uintptr_t ns = melange::wum::NetService();
     if (!ns) {
-        WF_INFO("[net] %s: NetService not created", why);
+        LOG_INFO("[net] %s: NetService not created", why);
         return;
     }
     uintptr_t session = Read<uint32_t>(ns + O::Session);
     uintptr_t throttle = Read<uint32_t>(ns + O::Throttle);
-    WF_INFO("[net] %s: state=%s viabilityArmed=%u begin=%u ingame=%u ended=%u curSurrendered=%u throttleMask=%02x "
+    LOG_INFO("[net] %s: state=%s viabilityArmed=%u begin=%u ingame=%u ended=%u curSurrendered=%u throttleMask=%02x "
             "session=%08x(bits=%04x players=%d nOffset=%d) players=%d%s",
             why, melange::wum::StateName(Read<uint32_t>(ns + O::State)), Read<uint8_t>(ns + O::ViabilityArmed),
             Read<uint8_t>(ns + O::BeginGameDone), Read<uint8_t>(ns + O::InGameFlag), Read<uint8_t>(ns + O::GameEnded),
@@ -60,7 +55,6 @@ void DumpState(const char* why) {
             melange::wum::PlayerCount(ns), DescribePlayers(ns).c_str());
 }
 
-// ---------------------------------------------------------------- fixes
 struct Fixes {
     bool resetSurrender = true;
     bool resetThrottleMask = true;
@@ -70,23 +64,20 @@ struct Fixes {
 
 int g_matchNumber = 0;
 
-// Called on every return to the lobby and again as the next match begins: clears per-match state
-// that the game only resets when the process restarts.
-// Candidate D (re/notes/freeze.md): a NetThrottle pause taken after ProcessWinOrDraw (turn-start or
-// host-migration pause) survives into the lobby because WaitingConnections turns autopause off without
-// unpausing - the app pause refcount stays >0 and the next match's task manager never runs.
-// Mirrors what AbortGame (0x70864c) does: release the throttle, then drain the pause refcount.
+// A NetThrottle pause taken late in a match survives into the lobby (WaitingConnections turns autopause
+// off without unpausing), so the next match's task manager never runs. Mirrors AbortGame: release the
+// throttle, then drain the app pause refcount.
 int ReleaseStuckPause(uintptr_t ns, const char* when) {
     int changes = 0;
     uintptr_t thr = Read<uint32_t>(ns + O::Throttle);
     if (thr && Read<uint8_t>(thr + O::ThrottlePaused)) {
-        WF_WARN("[fix] %s: NetThrottle still paused -> SetPaused(0)", when);
+        LOG_WARN("[fix] %s: NetThrottle still paused -> SetPaused(0)", when);
         reinterpret_cast<void(__thiscall*)(uintptr_t, bool)>(A::ThrottleSetPaused)(thr, false);
         ++changes;
     }
     uintptr_t tm = Read<uint32_t>(A::TaskManagerPtr);
     for (int i = 0; i < 16 && tm && Read<uint8_t>(tm + 0x3c); ++i) {
-        WF_WARN("[fix] %s: task manager still paused (app refcount %d) -> Unpause()", when,
+        LOG_WARN("[fix] %s: task manager still paused (app refcount %d) -> Unpause()", when,
                 Read<int32_t>(Read<uint32_t>(A::AppPtr) + 0x70));
         reinterpret_cast<void(__cdecl*)()>(A::Unpause)();
         ++changes;
@@ -100,58 +91,55 @@ void ResetStaleMatchState(const char* when, bool inLobby) {
     int changes = 0;
 
     if (g_fix.resetSurrender) {
-        // Hypothesis #1: NetPlayer+0x52 "surrender at next turn" survives into the next match; at that
-        // player's first turn only some machines force a surrender -> desync -> OutOfSynch / stall.
+        // A leftover "surrender at next turn" flag makes only some machines surrender -> desync.
         int n = melange::wum::PlayerCount(ns);
         for (int i = 0; i < n && i < 16; ++i) {
             uintptr_t p = melange::wum::PlayerAt(ns, i);
             if (!p) continue;
             for (uintptr_t f : {O::PlayerSurrenderNext, O::PlayerSurrender2}) {
                 if (Read<uint8_t>(p + f)) {
-                    WF_WARN("[fix] %s: player[%d] stale surrender flag +0x%02x=1 -> 0", when, i, static_cast<unsigned>(f));
+                    LOG_WARN("[fix] %s: player[%d] stale surrender flag +0x%02x=1 -> 0", when, i, static_cast<unsigned>(f));
                     melange::wum::WriteByte(p + f, 0);
                     ++changes;
                 }
             }
         }
         if (Read<uint8_t>(ns + O::CurrentSurrendered)) {
-            WF_WARN("[fix] %s: stale currentSurrendered=1 -> 0", when);
+            LOG_WARN("[fix] %s: stale currentSurrendered=1 -> 0", when);
             melange::wum::WriteByte(ns + O::CurrentSurrendered, 0);
             ++changes;
         }
     }
 
     if (g_fix.resetThrottleMask) {
-        // Hypothesis #6: a host-migration discard zeroes the NetThrottle received-types mask and nothing
-        // restores it, so the throttle pauses every tick of the next match.
+        // Host migration zeroes the received-types mask and nothing restores it, so the throttle pauses every tick.
         uintptr_t t = Read<uint32_t>(ns + O::Throttle);
         uint8_t mask = Read<uint8_t>(t + O::ThrottleMask, 0x3f);
         if (t && mask != 0x3f) {
-            WF_WARN("[fix] %s: NetThrottle mask %02x -> 3f", when, mask);
+            LOG_WARN("[fix] %s: NetThrottle mask %02x -> 3f", when, mask);
             melange::wum::WriteByte(t + O::ThrottleMask, 0x3f);
             ++changes;
         }
     }
 
     if (g_fix.resetViabilityOffset) {
-        // Hypothesis #3: session nOffset stays -1 after a host loss, making CheckViability fail forever.
+        // nOffset stays -1 after a host loss, making CheckViability fail forever.
         uintptr_t s = Read<uint32_t>(ns + O::Session);
         int32_t off = Read<int32_t>(s + O::SessionNOffset);
         if (s && off != 0) {
-            WF_WARN("[fix] %s: session nOffset %d -> 0", when, off);
+            LOG_WARN("[fix] %s: session nOffset %d -> 0", when, off);
             melange::wum::WriteInt(s + O::SessionNOffset, 0);
             ++changes;
         }
     }
     if (g_fix.releaseStuckPause && inLobby) changes += ReleaseStuckPause(ns, when);
-    WF_INFO("[net] %s: stale-state reset done (%d fields repaired)", when, changes);
+    LOG_INFO("[net] %s: stale-state reset done (%d fields repaired)", when, changes);
 }
 
-// ---------------------------------------------------------------- state machine tracking (polled per frame)
 uintptr_t g_lastState = 0;
 
 void OnStateChange(uintptr_t from, uintptr_t to) {
-    WF_INFO("[net] state %s -> %s", melange::wum::StateName(from), melange::wum::StateName(to));
+    LOG_INFO("[net] state %s -> %s", melange::wum::StateName(from), melange::wum::StateName(to));
     melange::jlog::Rec("net", melange::jlog::Level::Info, "state").Int("from", static_cast<int64_t>(from)).Int("to", static_cast<int64_t>(to)).Emit();
     using melange::events::Event;
     if (to == S::WaitingGameStart) {
@@ -166,7 +154,7 @@ void OnStateChange(uintptr_t from, uintptr_t to) {
         DumpState("match starting");
         ResetStaleMatchState("match-start", false);
     } else if (to == S::InGame) {
-        WF_INFO("[net] ===== match %d in progress =====", g_matchNumber);
+        LOG_INFO("[net] ===== match %d in progress =====", g_matchNumber);
         melange::events::Fire(Event::MatchStart);
     } else if (to == S::ProcessWinOrDraw || (to == S::WaitingUnload && from != S::ProcessWinOrDraw)) {
         // ProcessWinOrDraw usually runs within one frame, so the poll often sees InGame -> WaitingUnload.
@@ -178,9 +166,7 @@ void OnStateChange(uintptr_t from, uintptr_t to) {
     }
 }
 
-// Logs every change of the values that decide whether a networked match can make progress
-// (throttle pause/mask, task-manager pause, surrender flags...). One line per change, so a freeze
-// shows exactly which value got stuck.
+// One log line per change of the values that gate match progress, so a freeze shows which one got stuck.
 void WatchProgressState() {
     static std::string last;
     uintptr_t ns = melange::wum::NetService();
@@ -205,7 +191,7 @@ void WatchProgressState() {
     }
     if (cur != last) {
         last = cur;
-        WF_INFO("[watch] %s", cur.c_str());
+        LOG_INFO("[watch] %s", cur.c_str());
     }
 }
 
@@ -218,7 +204,6 @@ void PollState() {
     }
 }
 
-// ---------------------------------------------------------------- instrumentation hooks (mid-function, at entry)
 std::vector<SafetyHookMid> g_hooks;
 
 uint32_t Arg(const safetyhook::Context& c, int i) { return Read<uint32_t>(c.esp + 4 + 4 * i); }
@@ -247,19 +232,19 @@ const char* AbortCode(uint32_t hr) {
 
 void OnAbortGame(safetyhook::Context& c) {
     uint32_t hr = Arg(c, 0), ret = RetAddr(c);
-    WF_ERROR("[net] ===== AbortGame(%08x %s) from %s  [site %s] match %d", hr, AbortCode(hr),
+    LOG_ERROR("[net] ===== AbortGame(%08x %s) from %s  [site %s] match %d", hr, AbortCode(hr),
              melange::game::DescribeAddress(ret).c_str(), AbortSite(ret), g_matchNumber);
     DumpState("at abort");
 }
 
 void OnSurrender(safetyhook::Context& c) {
-    WF_INFO("[net] SurrenderPlayer(player %08x) from %s", Arg(c, 0), melange::game::DescribeAddress(RetAddr(c)).c_str());
+    LOG_INFO("[net] SurrenderPlayer(player %08x) from %s", Arg(c, 0), melange::game::DescribeAddress(RetAddr(c)).c_str());
 }
 
 void OnTurnStarted(safetyhook::Context& c) {
-    // 0x709827 is an event handler (arg = event message); it looks the player up with CurrentPlayer itself.
+    // An event handler: the arg is the event message, so look the player up ourselves.
     uintptr_t p = melange::wum::CurrentPlayer(c.ecx);
-    WF_INFO("[net] turn started: player %08x %s surrenderNext=%u", static_cast<unsigned>(p),
+    LOG_INFO("[net] turn started: player %08x %s surrenderNext=%u", static_cast<unsigned>(p),
             !p ? "(none)" : Read<uint8_t>(p + O::PlayerIsLocal) ? "local" : "remote",
             p ? Read<uint8_t>(p + O::PlayerSurrenderNext) : 0);
 }
@@ -271,28 +256,28 @@ void OnCheckViability(safetyhook::Context& c) {
     if (nOffset != lastOff || count != lastCount) {
         lastOff = nOffset;
         lastCount = count;
-        WF_INFO("[net] CheckViability(session %08x, nOffset=%d) sessionPlayers=%d", static_cast<unsigned>(c.ecx), nOffset,
+        LOG_INFO("[net] CheckViability(session %08x, nOffset=%d) sessionPlayers=%d", static_cast<unsigned>(c.ecx), nOffset,
                 count);
     }
 }
 
 void OnConnCtor(safetyhook::Context& c) {
-    WF_INFO("[net] XSteamConnection created %08x from %s", static_cast<unsigned>(c.ecx),
+    LOG_INFO("[net] XSteamConnection created %08x from %s", static_cast<unsigned>(c.ecx),
             melange::game::DescribeAddress(RetAddr(c)).c_str());
 }
 
 void OnConnDtor(safetyhook::Context& c) {
     uintptr_t t = c.ecx;
-    WF_INFO("[net] XSteamConnection destroyed %08x sendSeq=%u recvSeq=%u state=%u", static_cast<unsigned>(t),
+    LOG_INFO("[net] XSteamConnection destroyed %08x sendSeq=%u recvSeq=%u state=%u", static_cast<unsigned>(t),
             Read<uint32_t>(t + O::ConnSendSeq), Read<uint32_t>(t + O::ConnRecvSeq), Read<uint32_t>(t + O::ConnState));
 }
 
-void OnNewSender(safetyhook::Context&) { WF_WARN("[net] P2P packet from unknown SteamID -> new XSteamConnection"); }
+void OnNewSender(safetyhook::Context&) { LOG_WARN("[net] P2P packet from unknown SteamID -> new XSteamConnection"); }
 
 bool Mid(uintptr_t addr, safetyhook::MidHookFn fn, const char* what) {
     auto h = safetyhook::create_mid(addr, fn);
     if (!h) {
-        WF_ERROR("[net] failed to hook %s at %08x", what, static_cast<unsigned>(addr));
+        LOG_ERROR("[net] failed to hook %s at %08x", what, static_cast<unsigned>(addr));
         return false;
     }
     g_hooks.push_back(std::move(h));
@@ -316,7 +301,6 @@ public:
         static bool watch = Bool("Watch", true);
         static bool forceNetLog = Bool("ForceEngineNetLog", true);
 
-        // Instrumentation. Entry prologues verified in re-notes; SafetyHook relocates them safely.
         bool ok = Mid(A::AbortGame, &OnAbortGame, "AbortGame");
         if (trace) {
             ok &= Mid(A::SurrenderPlayer, &OnSurrender, "SurrenderPlayer");
@@ -329,13 +313,12 @@ public:
             ok &= Mid(A::SteamConnNewSender, &OnNewSender, "unknown-sender path");
         }
 
-        // Behaviour change (off by default): a dead peer in a 2-player game forfeits instead of aborting
-        // the whole session with "This session is no longer available".
+        // A dead peer in a 2-player game forfeits instead of aborting with "session no longer available".
         if (Bool("DeadPeerForfeit", false)) {
             if (melange::mem::Expect(A::DeadChannelBranch, {0x0f, 0x87, 0x0b, 0x04, 0x00, 0x00})) {
                 const uint8_t jmp[] = {0xe9, 0x0c, 0x04, 0x00, 0x00, 0x90};  // jmp 0x70abf6
                 melange::mem::Write(A::DeadChannelBranch, jmp, sizeof(jmp));
-                WF_INFO("[net] DeadPeerForfeit enabled");
+                LOG_INFO("[net] DeadPeerForfeit enabled");
             }
         }
 

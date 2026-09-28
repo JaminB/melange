@@ -1,12 +1,5 @@
 # melange::xom - portable XOM reader/writer (C++17, no platform dependencies).
-#
-# Built two ways:
-#   * from the root project: targets `melange_xom` (static lib) and `xom_roundtrip`
-#     (test tool). Added with EXCLUDE_FROM_ALL, so the default build (melange.asi)
-#     does not build or link it:  cmake --build --preset x86-release --target xom_roundtrip
-#   * standalone, e.g. native 64-bit or WebAssembly:
-#         cmake -S src/xom -B build/xom && cmake --build build/xom
-#         emcmake cmake -S src/xom -B build/xom-wasm && cmake --build build/xom-wasm --target melange_xom
+# Excluded from the default build; build standalone with: cmake -S src/xom -B build/xom
 cmake_minimum_required(VERSION 3.16)
 if(NOT DEFINED PROJECT_NAME)
     project(melange_xom LANGUAGES CXX)

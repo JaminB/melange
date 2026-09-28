@@ -15,7 +15,6 @@
 #include "tools/json_mini.h"
 #include "melange/overlay.h"
 
-// generated/version.h (MELANGE_VERSION*) is on the include path via CMakeLists.txt's ${CMAKE_BINARY_DIR}/generated.
 #include "version.h"
 
 namespace melange::sysinfo {
@@ -55,7 +54,6 @@ std::string CpuBrand() {
     __cpuid(regs[2], 0x80000004);
     char brand[65] = {};
     memcpy(brand, regs, sizeof(regs));
-    // Trim to the actual string plus collapse the CPU's own leading padding spaces.
     std::string s(brand);
     size_t start = s.find_first_not_of(' ');
     return start == std::string::npos ? "unknown" : s.substr(start);
@@ -67,7 +65,6 @@ std::string Locale() {
     return "unknown";
 }
 
-// FileVersion ("a.b.c.d") from a PE's version resource, or "" if it has none.
 std::string FileVersionOf(const std::wstring& path) {
     DWORD handle = 0;
     DWORD sz = GetFileVersionInfoSizeW(path.c_str(), &handle);
@@ -155,8 +152,7 @@ std::string CollectJson() {
     dm.dmSize = sizeof(dm);
     if (EnumDisplaySettingsW(nullptr, ENUM_CURRENT_SETTINGS, &dm)) display.UInt("hz", dm.dmDisplayFrequency);
 
-    // Only meaningful once the real overlay component (A) has created a GL context on the first Present;
-    // gl.valid stays false in a build where Overlay hasn't installed yet (see report: A/C stub gap).
+    // gl.valid stays false until the overlay has seen a GL context.
     melange::overlay::GlInfo gl = melange::overlay::Gl();
     jsonmini::Obj glj;
     glj.Bool("valid", gl.valid)
@@ -183,7 +179,6 @@ std::string CollectJson() {
 
     jsonmini::Obj mods;
     mods.Raw("plugins", PluginsJson());
-    // Other known mods (docs/m0-design.md SS3 "D" system.json: "detected WUMPatch/Renewation HD files").
     bool wumpatch = false, renewation = false;
     for (const auto& p : DetectPlugins()) {
         std::string n = p.name;

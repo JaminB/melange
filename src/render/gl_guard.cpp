@@ -1,19 +1,3 @@
-// GL guard for the overlay: see gl_guard.h and docs/m0-design.md section 3.A.
-//
-// Recipe (the save/restore part is the probe's, verified in every scene [V]; the neutralising part is [I]):
-//   1. push GL_ALL_ATTRIB_BITS, GL_CLIENT_ALL_ATTRIB_BITS and the texture (unit 0), projection and modelview
-//      matrix stacks;
-//   2. disable the ARB vertex/fragment programs with glDisable (never cgGLDisableProfile: the Cg runtime caches
-//      the profile state at mgr+0x398);
-//   3. glUseProgram(0) only when a GLSL program is current (it never was at Present [V]);
-//   4. disable stencil, depth, alpha test, cull, lighting, fog (+ everything else fixed-function that would tint
-//      or clip ImGui's triangles: texture targets on every unit, texgen, clip planes, logic op, color sum...);
-//   5. texture unit 0 active, client arrays and buffer objects (VBO/IBO/PBO) out of the way: ImGui's GL2
-//      backend draws from client memory, so a bound VBO would turn its pointers into offsets;
-//   6. a bound FBO means "skip the frame" (never rebind);
-//   7. ImGui draws with its own viewport and ortho projection;
-//   8. pop everything in reverse order, then restore what the attrib stacks do not cover (buffer bindings,
-//      program) explicitly.
 #include "render/gl_guard.h"
 
 #include <windows.h>
@@ -279,10 +263,10 @@ int Diff(const Snapshot& a, const Snapshot& b, std::string* out) {
 Guard::Guard() {
     const Caps& c = Load();
     if (!c.loaded) return;
-    DrainErrors();  // do not attribute earlier (game) errors to us
+    DrainErrors();  // don't attribute the game's pending errors to us
     if (c.fbo) {
         fbo_ = GetI(kFRAMEBUFFER_BINDING);
-        if (fbo_ != 0) return;  // 6. skip the frame, never rebind
+        if (fbo_ != 0) return;  // skip the frame, never rebind
     }
     if (c.ActiveTexture) {
         activeTex_ = GetI(kACTIVE_TEXTURE);
@@ -296,7 +280,6 @@ Guard::Guard() {
     }
     if (c.pbo) unpackBuf_ = GetI(kPIXEL_UNPACK_BUFFER_BINDING);
 
-    // 1. save
     glPushAttrib(GL_ALL_ATTRIB_BITS);
     glPushClientAttrib(GL_CLIENT_ALL_ATTRIB_BITS);
     if (c.ActiveTexture) c.ActiveTexture(kTEXTURE0);
@@ -310,20 +293,16 @@ Guard::Guard() {
     glPushMatrix();
     pushed_ = true;
 
-    // Depths right after our own push, so Restore() can pop down to exactly these even if ImGui's draw leaves
-    // its own, unpopped push(es) on top (see gl_guard.h).
     attribDepth_ = GetI(GL_ATTRIB_STACK_DEPTH);
     clientAttribDepth_ = GetI(kCLIENT_ATTRIB_STACK_DEPTH);
     texMatrixDepth_ = GetI(GL_TEXTURE_STACK_DEPTH);
     projMatrixDepth_ = GetI(GL_PROJECTION_STACK_DEPTH);
     mvMatrixDepth_ = GetI(GL_MODELVIEW_STACK_DEPTH);
 
-    // 2. ARB programs (glDisable only)
+    // glDisable only: cgGLDisableProfile would desync the Cg runtime's cached profile state
     if (c.arbVp) glDisable(kVERTEX_PROGRAM_ARB);
     if (c.arbFp) glDisable(kFRAGMENT_PROGRAM_ARB);
-    // 3. GLSL program only when one is current
     if (c.glsl && program_ != 0) c.UseProgram(0);
-    // 4. fixed-function state the game leaves on at Present
     for (GLenum e : {GL_STENCIL_TEST, GL_DEPTH_TEST, GL_ALPHA_TEST, GL_CULL_FACE, GL_LIGHTING, GL_FOG, GL_SCISSOR_TEST,
                      GL_COLOR_LOGIC_OP, GL_POLYGON_OFFSET_FILL, GL_POLYGON_STIPPLE, GL_COLOR_MATERIAL, GL_DITHER,
                      GL_CLIP_PLANE0, GL_CLIP_PLANE1, GL_CLIP_PLANE2, GL_CLIP_PLANE3, GL_CLIP_PLANE4, GL_CLIP_PLANE5})
@@ -336,7 +315,7 @@ Guard::Guard() {
     if (c.secondaryColor) glDisable(kCOLOR_SUM);
     glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
     if (c.BlendEquation) c.BlendEquation(kFUNC_ADD);
-    // 5. texture units: only 2D on unit 0 (ImGui enables it), nothing on the others
+    // only 2D on unit 0 (ImGui enables it), nothing on the others
     for (int u = c.maxTexUnits - 1; u >= 0; --u) {
         if (c.ActiveTexture) c.ActiveTexture(kTEXTURE0 + static_cast<GLenum>(u));
         else if (u != 0) continue;
@@ -347,7 +326,6 @@ Guard::Guard() {
         if (c.rect) glDisable(kTEXTURE_RECTANGLE);
         for (GLenum g : {GL_TEXTURE_GEN_S, GL_TEXTURE_GEN_T, GL_TEXTURE_GEN_R, GL_TEXTURE_GEN_Q}) glDisable(g);
     }
-    // client arrays: ImGui enables vertex/texcoord(unit 0)/color and disables normal itself
     if (c.ClientActiveTexture) {
         for (int u = c.maxTexCoords - 1; u >= 1; --u) {
             c.ClientActiveTexture(kTEXTURE0 + static_cast<GLenum>(u));
@@ -361,6 +339,7 @@ Guard::Guard() {
     if (c.fogCoord) glDisableClientState(kFOG_COORD_ARRAY);
     // generic attribute 0 aliases the vertex position on some drivers
     for (int i = 0; i < c.maxVertexAttribs; ++i) c.DisableVertexAttribArray(static_cast<GLuint>(i));
+    // ImGui's GL2 backend draws from client memory; a bound VBO would turn its pointers into offsets
     if (c.vbo) {
         c.BindBuffer(kARRAY_BUFFER, 0);
         c.BindBuffer(kELEMENT_ARRAY_BUFFER, 0);
@@ -386,12 +365,8 @@ void Guard::Restore() {
     if (!pushed_) return;
     pushed_ = false;
     const Caps& c = Load();
-    // 8. pop in reverse order, down to (not just one level below) the depth recorded right after our own push:
-    // ImGui's GL2 backend pushes its own attrib/projection/modelview levels around the draw and normally pops
-    // them itself, but if it faulted mid-draw (caught by SehCall in overlay.cpp) those pushes are still there.
-    // A bounded loop (any single leftover push is at most one or two levels; the cap just guards against a
-    // driver that never reports the depth going down) pops through them instead of leaving them - and this
-    // Guard's own push - stuck on the stack forever.
+    // pop down to the depth recorded after our push (ImGui may have left pushes after a fault); bounded in
+    // case a driver never reports the depth going down.
     glMatrixMode(GL_MODELVIEW);
     for (int guardCount = 0; GetI(GL_MODELVIEW_STACK_DEPTH) >= mvMatrixDepth_ && guardCount < 8; ++guardCount) glPopMatrix();
     glMatrixMode(GL_PROJECTION);
@@ -401,7 +376,7 @@ void Guard::Restore() {
     for (int guardCount = 0; GetI(GL_TEXTURE_STACK_DEPTH) >= texMatrixDepth_ && guardCount < 8; ++guardCount) glPopMatrix();
     for (int guardCount = 0; GetI(kCLIENT_ATTRIB_STACK_DEPTH) >= clientAttribDepth_ && guardCount < 8; ++guardCount) glPopClientAttrib();
     for (int guardCount = 0; GetI(GL_ATTRIB_STACK_DEPTH) >= attribDepth_ && guardCount < 8; ++guardCount) glPopAttrib();
-    // not (reliably) covered by the attrib stacks
+    // not reliably covered by the attrib stacks
     if (c.vbo) {
         c.BindBuffer(kARRAY_BUFFER, static_cast<GLuint>(arrayBuf_));
         c.BindBuffer(kELEMENT_ARRAY_BUFFER, static_cast<GLuint>(elemBuf_));

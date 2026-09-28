@@ -1,5 +1,4 @@
-// NetTrace: logs the game's raw Winsock usage (WSOCK32 ordinal imports + WS2_32 overlapped I/O).
-// Steam P2P carries the game traffic; this exists to catch anything else (legacy GameSpy/HTTP/XomOnline code).
+// NetTrace: logs the game's raw Winsock usage. Game traffic goes over Steam P2P; this catches anything else.
 #include <winsock2.h>
 #include <windows.h>
 
@@ -39,23 +38,23 @@ const char* Addr(const sockaddr* a, char* buf, size_t n) {
 
 SOCKET WINAPI hkSocket(int af, int type, int proto) {
     SOCKET s = oSocket(af, type, proto);
-    WF_INFO("socket(af=%d type=%d proto=%d) = %u  [%s]", af, type, proto, static_cast<unsigned>(s), CALLER);
+    LOG_INFO("socket(af=%d type=%d proto=%d) = %u  [%s]", af, type, proto, static_cast<unsigned>(s), CALLER);
     return s;
 }
 int WINAPI hkBind(SOCKET s, const sockaddr* a, int n) {
     int r = oBind(s, a, n);
     char b[64];
-    WF_INFO("bind(%u, %s) = %d  [%s]", static_cast<unsigned>(s), Addr(a, b, sizeof(b)), r, CALLER);
+    LOG_INFO("bind(%u, %s) = %d  [%s]", static_cast<unsigned>(s), Addr(a, b, sizeof(b)), r, CALLER);
     return r;
 }
 int WINAPI hkConnect(SOCKET s, const sockaddr* a, int n) {
     int r = oConnect(s, a, n);
     char b[64];
-    WF_INFO("connect(%u, %s) = %d  [%s]", static_cast<unsigned>(s), Addr(a, b, sizeof(b)), r, CALLER);
+    LOG_INFO("connect(%u, %s) = %d  [%s]", static_cast<unsigned>(s), Addr(a, b, sizeof(b)), r, CALLER);
     return r;
 }
 int WINAPI hkClose(SOCKET s) {
-    WF_INFO("closesocket(%u)  [%s]", static_cast<unsigned>(s), CALLER);
+    LOG_INFO("closesocket(%u)  [%s]", static_cast<unsigned>(s), CALLER);
     return oClose(s);
 }
 int WINAPI hkSendto(SOCKET s, const char* d, int len, int flags, const sockaddr* a, int n) {
@@ -63,12 +62,12 @@ int WINAPI hkSendto(SOCKET s, const char* d, int len, int flags, const sockaddr*
     if (logged < 50) {
         ++logged;
         char b[64];
-        WF_INFO("sendto(%u, %d bytes, %s)  [%s]", static_cast<unsigned>(s), len, Addr(a, b, sizeof(b)), CALLER);
+        LOG_INFO("sendto(%u, %d bytes, %s)  [%s]", static_cast<unsigned>(s), len, Addr(a, b, sizeof(b)), CALLER);
     }
     return oSendto(s, d, len, flags, a, n);
 }
 hostent* WINAPI hkGetHost(const char* name) {
-    WF_INFO("gethostbyname(\"%s\")  [%s]", name ? name : "", CALLER);
+    LOG_INFO("gethostbyname(\"%s\")  [%s]", name ? name : "", CALLER);
     return oGetHost(name);
 }
 

@@ -40,9 +40,7 @@ void Shutdown(bool contextLost) {
     if (!g_ready) return;
     g_ready = false;
     if (contextLost) {
-        // The textures belong to a context that is gone: forget the ids so that the backend's destroy pass deletes
-        // nothing (glDeleteTextures of id 0 is ignored) and the next render uploads them again. Status Destroyed
-        // with pixels still in memory turns into WantCreate (ImTextureData::SetStatus).
+        // Zero the ids so the destroy pass deletes nothing; textures with pixels still in memory re-upload.
         for (ImTextureData* tex : ImGui::GetPlatformIO().Textures) {
             if (tex->Status == ImTextureStatus_Destroyed) continue;
             tex->SetTexID(ImTextureID_Invalid);

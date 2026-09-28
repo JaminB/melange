@@ -1,9 +1,6 @@
-// Event bus (component B): the engine's message-name registry, read directly from memory.
-//
-// The registry is a char*[*0x96d08c] at *0x96d094 (capacity 1300, ~1227 used after start-up); a registered name
-// in slot s has message id 0x8000 | s. We never call the engine's lookup 0x690d44: it logs "Unable to find
-// message" on every miss. Ids depend on registration order, so everything resolves them by name at run time.
-// See docs/m0-design.md §1.2 and §3.B.
+// Event bus: the engine's message-name registry, read directly from memory.
+// The registry is a char*[*0x96d08c] at *0x96d094; slot s has message id 0x8000 | s. Ids depend on registration
+// order, so everything resolves them by name. The engine's own lookup is avoided: it logs every miss.
 #include <windows.h>
 
 #include <atomic>
@@ -17,10 +14,8 @@ namespace melange::bus {
 namespace {
 detail::RegistrySource g_src;
 
-// Per-id name cache. Registry names have static lifetime [I: every observed name pointer is in .rdata or a
-// static table], so a non-null slot pointer is cached for good. A null slot is not cached: mods (M5) may
-// register it later. System names and the "?xxxx" placeholders are generated once and leaked (static lifetime
-// is part of the contract of MessageView::name).
+// Per-id name cache. Registry names have static lifetime, so non-null slots are cached for good; null slots are
+// not, since they may be registered later. Generated names are leaked: MessageView::name must be static.
 std::atomic<const char*> g_names[0x10000];
 std::atomic<const char*> g_unknown[0x8000];
 std::atomic<bool> g_ready{false};
@@ -71,8 +66,7 @@ struct SysName {
     MsgId id;
     const char* name;
 };
-// [V] 0x103/0x104 from XomWndProc 0x7c43f2, 0x1004 Win32MouseEvent (0x701ae6). 0x40/0x41/0x42 are entity-internal
-// (0x68b79e sets or clears entity+0x14) and keep the generic "sys:0x40" form [I].
+// Posted by XomWndProc (0x103/0x104) and the Win32 mouse handler (0x1004). Other system ids stay "sys:0x..".
 constexpr SysName kSysNames[] = {
     {0x103, "WindowLoseFocus"},
     {0x104, "WindowGainFocus"},
@@ -160,8 +154,7 @@ const char* NameOf(MsgId id) {
 
 MsgId IdOf(std::string_view name) {
     if (name.empty()) return kInvalidId;
-    // System ids are not in the registry but have fixed names; accept them so NameOf/IdOf round-trip for every
-    // id a MessageView can carry (C's deny-list names "sys:0x1004").
+    // System ids aren't in the registry; accept their fixed names so NameOf/IdOf round-trip.
     if (name.size() > 6 && name.substr(0, 6) == "sys:0x") {
         uint32_t v = 0;
         return ParseHex(name.substr(6), v) && v < 0x8000 ? static_cast<MsgId>(v) : kInvalidId;

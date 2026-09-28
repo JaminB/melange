@@ -19,10 +19,7 @@ FetchContent_Declare(safetyhook
     GIT_SHALLOW TRUE)
 FetchContent_MakeAvailable(safetyhook)
 
-# Dear ImGui: no upstream CMakeLists, so populate the source only (SOURCE_SUBDIR points at a
-# directory that doesn't exist in the checkout, which stops FetchContent from trying to
-# add_subdirectory() it) and build a small static-library target ourselves. Pinned to a release
-# tag, not the docking branch (see docs/m0-design.md U1). Linked but unused until component A.
+# Dear ImGui has no CMakeLists; the bogus SOURCE_SUBDIR stops FetchContent from add_subdirectory()-ing it.
 FetchContent_Declare(imgui
     GIT_REPOSITORY https://github.com/ocornut/imgui.git
     GIT_TAG v1.92.9b
@@ -41,20 +38,17 @@ target_include_directories(imgui PUBLIC ${imgui_SOURCE_DIR} ${imgui_SOURCE_DIR}/
 target_compile_definitions(imgui PUBLIC IMGUI_IMPL_WIN32_DISABLE_GAMEPAD)
 target_link_libraries(imgui PUBLIC opengl32)
 
-# miniz: has its own CMakeLists.txt, so FetchContent_MakeAvailable builds it directly (a static
-# "miniz" target; BUILD_EXAMPLES/BUILD_TESTS/INSTALL_PROJECT default off because PROJECT_NAME is
-# already defined when its CMakeLists runs). Pinned to a release tag. Linked but unused until D.
 FetchContent_Declare(miniz
     GIT_REPOSITORY https://github.com/richgel999/miniz.git
     GIT_TAG 3.1.2
     GIT_SHALLOW TRUE)
 FetchContent_MakeAvailable(miniz)
 
-# Every .cpp under src/ is compiled into the plugin. Adding a module = dropping a file under src/.
+# Every .cpp under src/ is compiled into the plugin.
 file(GLOB_RECURSE MELANGE_SOURCES CONFIGURE_DEPENDS src/*.cpp)
-# src/xom is the portable XOM library: its own targets, not part of the plugin.
 list(FILTER MELANGE_SOURCES EXCLUDE REGEX "/src/xom/")
 
+# Optional out-of-tree modules (<dir>/modules/*.cpp), e.g. build.ps1 -PrivateDir <dir>.
 set(MELANGE_PRIVATE_DIR "" CACHE PATH "Optional folder with extra modules (modules/*.cpp)")
 if(MELANGE_PRIVATE_DIR)
     file(GLOB_RECURSE MELANGE_PRIVATE_SOURCES CONFIGURE_DEPENDS ${MELANGE_PRIVATE_DIR}/modules/*.cpp)
@@ -66,17 +60,14 @@ configure_file(src/core/version.h.in ${CMAKE_BINARY_DIR}/generated/version.h @ON
 
 add_library(melange SHARED ${MELANGE_SOURCES} src/core/version.rc)
 set_target_properties(melange PROPERTIES SUFFIX ".asi" PREFIX "")
-# src/sdk is on the include path in its own right so frozen public headers include as "melange/<name>.h"
-# (src/sdk/melange/<name>.h) rather than "sdk/melange/<name>.h".
+# src/sdk is on the include path so public headers include as "melange/<name>.h".
 target_include_directories(melange PRIVATE src src/sdk ${CMAKE_BINARY_DIR}/generated)
 target_compile_definitions(melange PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX _CRT_SECURE_NO_WARNINGS)
 target_compile_options(melange PRIVATE /W4 /utf-8 /permissive- /Zi /wd4100)
 target_link_options(melange PRIVATE /DEBUG /OPT:REF /OPT:ICF /SAFESEH:NO)
 target_link_libraries(melange PRIVATE safetyhook::safetyhook dbghelp bcrypt ws2_32 shell32 imgui miniz)
 
-# Offline self-test for the event bus (component B): runs the real registry/dispatch/decoder code against a
-# fake name table and fake messages, no game needed. Not part of the default build; scripts\selftest.ps1
-# builds and runs it.
+# Offline self-tests (no game needed).
 add_executable(bus_selftest EXCLUDE_FROM_ALL
     tests/bus_selftest.cpp
     src/core/bus.cpp src/core/bus_registry.cpp src/core/bus_decoders.cpp
@@ -88,9 +79,6 @@ target_compile_options(bus_selftest PRIVATE /W4 /utf-8 /permissive- /Zi /wd4100)
 target_link_options(bus_selftest PRIVATE /DEBUG /SAFESEH:NO)
 target_link_libraries(bus_selftest PRIVATE safetyhook::safetyhook bcrypt)
 
-# Offline self-test for component C (structured JSONL logging): exercises src/core/jlog.cpp directly - session
-# folders, rotation, the tail ring, JSON schema/validity and crash-flush - without the game or the .asi. See
-# docs/m0-design.md SS3 "C" acceptance items 1, 6 and 7, and the M0 report for component C.
 add_executable(jlog_selftest
     tests/jlog_selftest.cpp
     src/core/jlog.cpp

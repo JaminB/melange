@@ -3,11 +3,8 @@
 
 #include "core/config.h"
 
-// A Melange module is one self-contained fix/feature. To add one:
-//   1. create src/modules/<name>.cpp
-//   2. derive from melange::Module, implement Name/Description/Install
-//   3. put MELANGE_MODULE(YourClass) at the bottom of the file
-// It gets its own [Name] section in Melange.ini with at least "Enabled".
+// A module is one self-contained fix or feature: a .cpp anywhere under src/ that derives from melange::Module
+// and ends with MELANGE_MODULE(YourClass). It gets its own [Name] section in Melange.ini with at least "Enabled".
 namespace melange {
 class Module {
 public:

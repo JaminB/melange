@@ -17,7 +17,7 @@ T Resolve(const char* name) {
 void RegisterCallback(CallbackBase* cb, int id) {
     static auto fn = Resolve<Register_t>("SteamAPI_RegisterCallback");
     if (!fn) {
-        WF_ERROR("steam: SteamAPI_RegisterCallback not found");
+        LOG_ERROR("steam: SteamAPI_RegisterCallback not found");
         return;
     }
     fn(cb, id);  // sets callbackId_ and the registered flag itself

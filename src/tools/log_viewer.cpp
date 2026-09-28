@@ -1,6 +1,4 @@
-// Overlay panels for component C: "Log" (Tail() with filters) and "Events" (top bus ids by rate, with
-// allow/deny toggles). Public overlay contract: src/sdk/melange/overlay.h (A). See docs/m0-design.md SS3 "C",
-// adapter 5. Written against A's frozen header; panels draw only their contents (the overlay owns Begin/End).
+// Overlay panels "Log" (filtered log tail) and "Events" (busiest engine messages, with log allow/deny toggles).
 #include "tools/log_viewer.h"
 
 #include <windows.h>
@@ -22,7 +20,6 @@
 namespace melange::logviewer {
 namespace {
 
-// ---------------------------------------------------------------------------------------------- Log panel
 uint64_t g_afterSeq = 0;
 std::vector<melange::jlog::Line> g_lines;
 constexpr size_t kMaxKept = 20000;
@@ -75,7 +72,7 @@ void DrawLogPanel(void*) {
     ImGui::InputText("Text", g_textFilter, sizeof(g_textFilter));
 
     ImGui::BeginChild("##loglines", ImVec2(0, 0), true);
-    // Only the visible rows are submitted (up to 20000 kept lines cost several ms per frame otherwise).
+    // Clip to visible rows: submitting all 20000 lines costs several ms per frame.
     static std::vector<int> visible;
     visible.clear();
     for (int i = 0; i < static_cast<int>(g_lines.size()); ++i)
@@ -94,16 +91,14 @@ void DrawLogPanel(void*) {
     ImGui::EndChild();
 }
 
-// ---------------------------------------------------------------------------------------------- Events panel
 struct EventRow {
     melange::bus::MsgId id;
     std::string name;
     uint32_t count;
-    double rate;  // messages/s (Post + Deliver) over the last sampling window
+    double rate;  // Post + Deliver per second
 };
 
-// Registry ids are 0x8000 | slot (docs/m0-design.md SS1.2), so iterate the registry itself rather than
-// 0..Capacity(), plus the system ids the probe saw at runtime. Rates are sampled once a second.
+// Registry ids are 0x8000 | slot, so walk the registry plus the few system ids. Sampled once a second.
 std::vector<EventRow> g_rows;
 std::vector<uint32_t> g_prevCount;  // indexed by id & 0x7fff for registry ids
 uint32_t g_prevSys[3] = {};

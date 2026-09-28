@@ -42,7 +42,7 @@ bool SafeInstall(Module* m) {
     __try {
         return m->Install();
     } __except (EXCEPTION_EXECUTE_HANDLER) {
-        WF_ERROR("module %s raised exception 0x%08lx during install", m->Name(), GetExceptionCode());
+        LOG_ERROR("module %s raised exception 0x%08lx during install", m->Name(), GetExceptionCode());
         return false;
     }
 }
@@ -61,20 +61,20 @@ void InstallAll() {
     for (Module* m : all) {
         config::EnsureKey(m->Name(), "Enabled", m->DefaultEnabled() ? "1" : "0");
         if (!config::GetBool(m->Name(), "Enabled", m->DefaultEnabled())) {
-            WF_INFO("module %-16s disabled in ini", m->Name());
+            LOG_INFO("module %-16s disabled in ini", m->Name());
             delete m;
             continue;
         }
         if (m->RequiresKnownBuild() && !game::IsKnownBuild()) {
-            WF_WARN("module %-16s skipped: needs exe build #1077, this exe is unrecognised", m->Name());
+            LOG_WARN("module %-16s skipped: needs exe build #1077, this exe is unrecognised", m->Name());
             delete m;
             continue;
         }
         if (SafeInstall(m)) {
-            WF_INFO("module %-16s installed  - %s", m->Name(), m->Description());
+            LOG_INFO("module %-16s installed  - %s", m->Name(), m->Description());
             InstalledList().push_back(m);
         } else {
-            WF_ERROR("module %-16s FAILED to install", m->Name());
+            LOG_ERROR("module %-16s FAILED to install", m->Name());
             delete m;
         }
     }

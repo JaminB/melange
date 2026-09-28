@@ -19,7 +19,7 @@ int AddHotkey(uint8_t dik, uint8_t mods, ActionFn fn, void* user);  // any threa
 bool ParseHotkey(const char* text, uint8_t* dik, uint8_t* mods);    // "Ctrl+Shift+F11"
 
 bool Visible();
-void SetVisible(bool v);     // showing the overlay turns capture on (see §3.A input rules)
+void SetVisible(bool v);     // showing the overlay also turns input capture on
 bool Capturing();
 void SetCapture(bool on);
 

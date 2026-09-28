@@ -1,17 +1,13 @@
 #pragma once
-// Shared allow/deny state for the bus->event adapter (jlog_adapters.cpp) and the Events viewer panel
-// (log_viewer.cpp), so a toggle in the overlay takes effect on the next message without restarting anything.
-// Internal to component C: not part of any frozen contract.
+// Allow/deny state shared by the bus->event log adapter and the overlay's Events panel; toggles apply immediately.
 #include <string_view>
 
 namespace melange::jlog::busfilter {
 
-// Seeds the allow/deny sets from "a,b,c"-style ini values (see [Logging] EventDeny=/EventAllow=). Call once,
-// at Install().
+// Seeds the sets from the comma-separated [Logging] EventDeny/EventAllow values. Call once.
 void Init(std::string_view denyList, std::string_view allowList);
 
-// True if a message with this registry name should be turned into a jlog "event" record. Allow wins over deny;
-// anything in neither list is logged (matches docs/m0-design.md SS3 "C", adapter 2).
+// Allow wins over deny; a name in neither list is logged.
 bool ShouldLog(std::string_view name);
 
 bool IsAllowed(std::string_view name);

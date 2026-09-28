@@ -1,6 +1,6 @@
 #pragma once
-// Typed access to the game's network objects for build #1077 (addresses: docs/re-notes.md).
-// Everything here is read with SEH-guarded reads, so a wrong guess logs garbage instead of crashing.
+// Typed access to the game's network objects for build #1077.
+// All reads are SEH-guarded: a bad address yields a default value instead of a crash.
 #include <cstdint>
 
 namespace melange::wum {
@@ -15,7 +15,7 @@ constexpr uintptr_t PlayerAt = 0x67c982;             // __thiscall(container, id
 constexpr uintptr_t CurrentPlayer = 0x706432;        // __thiscall(ns) -> NetPlayer* of CurrentTeamIndex, or 0
 constexpr uintptr_t SteamConnCtor = 0x78613e;        // XSteamConnection::XSteamConnection (ecx = this)
 constexpr uintptr_t SteamConnDtor = 0x785c85;        // XSteamConnection::~XSteamConnection
-constexpr uintptr_t SteamConnNewSender = 0x785f44;   // in listener read 0x785ee7: lookup 0x785bea found no connection -> create one
+constexpr uintptr_t SteamConnNewSender = 0x785f44;   // listener: packet from an unknown sender -> new connection
 constexpr uintptr_t DeadChannelBranch = 0x70a7e5;    // ja 0x70abf6 (surrender path) in NetService::Update
 constexpr uintptr_t ThrottleSetPaused = 0x7059f2;    // __thiscall NetThrottle::SetPaused(bool), ret 4
 constexpr uintptr_t Unpause = 0x4d76f0;              // void __cdecl AppDataService Unpause()

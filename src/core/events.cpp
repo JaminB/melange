@@ -28,7 +28,7 @@ BOOL WINAPI HookSwapBuffers(HDC dc) {
     if (g_frames.load(std::memory_order_relaxed) == 0) {
         g_mainThread = GetCurrentThreadId();
         g_window = WindowFromDC(dc);
-        WF_INFO("first frame: main thread %lu, window %p", GetCurrentThreadId(), static_cast<void*>(g_window.load()));
+        LOG_INFO("first frame: main thread %lu, window %p", GetCurrentThreadId(), static_cast<void*>(g_window.load()));
     }
     g_frames.fetch_add(1, std::memory_order_relaxed);
     g_lastFrame.store(GetTickCount64(), std::memory_order_relaxed);
@@ -45,7 +45,7 @@ void Subscribe(Event e, Callback cb) {
 
 void Fire(Event e) {
     std::lock_guard lk(g_mutex);
-    if (e != Event::Frame) WF_INFO("event %s", NameOf(e));
+    if (e != Event::Frame) LOG_INFO("event %s", NameOf(e));
     for (auto& cb : g_subs[static_cast<int>(e)]) cb();
 }
 
@@ -57,9 +57,9 @@ const char* NameOf(Event e) {
 void InstallCore() {
     if (mem::HookIAT("GDI32.dll", "SwapBuffers", reinterpret_cast<void*>(&HookSwapBuffers),
                      reinterpret_cast<void**>(&g_origSwapBuffers)))
-        WF_INFO("core: frame hook installed (gdi32!SwapBuffers)");
+        LOG_INFO("core: frame hook installed (gdi32!SwapBuffers)");
     else
-        WF_ERROR("core: frame hook FAILED - watchdog and per-frame modules will not work");
+        LOG_ERROR("core: frame hook FAILED - watchdog and per-frame modules will not work");
 }
 
 uint64_t FrameCount() { return g_frames.load(); }

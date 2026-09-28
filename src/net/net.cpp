@@ -74,7 +74,7 @@ uintptr_t SafeAt(uintptr_t c, int i) {
 }
 }  // namespace
 
-// ns+0x4a8 holds a POINTER to the player container (0x706432: mov ecx,[ebx+0x4a8]; call 0x67cb62).
+// ns+0x4a8 holds a pointer to the player container, not the container itself.
 uintptr_t PlayerContainer(uintptr_t ns) { return ns ? Read<uint32_t>(ns + off::Players) : 0; }
 int PlayerCount(uintptr_t ns) {
     uintptr_t c = PlayerContainer(ns);

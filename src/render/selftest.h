@@ -1,6 +1,5 @@
 #pragma once
-// Offline-capable self-tests of the overlay's pure logic (hotkey parsing, the DirectInput keyboard filter, menu
-// paths). Run in-game by the Automation verb `overlay.selftest` and offline by scripts/test-overlay.ps1.
+// Self-tests of the overlay's pure logic (hotkey parsing, keyboard filter, menu paths); verb `overlay.selftest`.
 #include <string>
 
 namespace melange::render {

@@ -1,15 +1,5 @@
-// Overlay input (component A, docs/m0-design.md section 3.A "Input rules"), built on the probe's hook points [V]:
-//  - DirectInput keyboard: DINPUT8!DirectInput8Create is IAT-hooked at install; the keyboard device's vtable slot 10
-//    (GetDeviceData) and 9 (GetDeviceState) are hooked when it is created. Overlay installs after Automation
-//    (Order 35 > 30), so its hooks wrap Automation's and see injected keys too. The buffer goes through
-//    render::KeyFilter (input_logic.h): hotkeys on key-down, drop-all while capturing, synthetic key-ups for keys
-//    the game saw down when capture starts.
-//  - Window: the game HWND is subclassed. While capturing, mouse/keyboard messages go to
-//    ImGui_ImplWin32_WndProcHandler first and WM_MOUSEFIRST..WM_MOUSELAST, WM_INPUT, WM_KEYDOWN/UP and WM_CHAR are
-//    swallowed for the game. Key messages whose scan code and modifiers match a hotkey are always swallowed, so
-//    the toggle key never types into an ImGui text field either.
-//  - Cursor: the game re-centres the OS cursor with SetCursorPos every frame (re-notes section 9); the exe's
-//    USER32!SetCursorPos IAT entry becomes a no-op while capturing (io.MouseDrawCursor is set by overlay.cpp).
+// Overlay input: DirectInput keyboard hooks (vtable slots 9 GetDeviceState, 10 GetDeviceData), a subclassed game
+// window that feeds ImGui while capturing, and a SetCursorPos no-op (the game re-centres the cursor every frame).
 #include <windows.h>
 #include <windowsx.h>
 #ifndef DIRECTINPUT_VERSION
@@ -42,7 +32,6 @@ namespace {
 using melange::render::HotkeyDef;
 using melange::render::KeyFilter;
 
-// ---------------------------------------------------------------- hotkey registry
 struct Hotkey {
     int handle;
     uint8_t dik, mods;
@@ -57,12 +46,10 @@ std::mutex g_pendMx;
 std::vector<int> g_pending;
 std::atomic<bool> g_hasPending{false};
 
-// ---------------------------------------------------------------- stats
 std::atomic<uint64_t> g_keysDropped{0}, g_synthetic{0}, g_mouseDropped{0}, g_keyMsgsDropped{0}, g_cursorBlocked{0},
     g_hotkeysFired{0}, g_diPolls{0};
 std::atomic<bool> g_diHooked{false}, g_cursorHooked{false}, g_installed{false};
 
-// ---------------------------------------------------------------- DirectInput
 using GetDeviceData_t = HRESULT(WINAPI*)(void*, DWORD, DIDEVICEOBJECTDATA*, DWORD*, DWORD);
 using GetDeviceState_t = HRESULT(WINAPI*)(void*, DWORD, void*);
 using CreateDevice_t = HRESULT(WINAPI*)(void*, REFGUID, void**, IUnknown*);
@@ -78,11 +65,11 @@ using Release_t = ULONG(WINAPI*)(void*);
 std::mutex g_devMx;
 std::map<void**, DevVt> g_devVts;             // per device vtable (A and W interfaces differ)
 std::map<void**, CreateDevice_t> g_diVts;     // per IDirectInput8 vtable
-std::map<void**, Release_t> g_releaseVts;     // per device vtable, so each is hooked once (see HookRelease)
+std::map<void**, Release_t> g_releaseVts;     // per device vtable
 std::map<void*, bool> g_isKeyboard;           // device object -> keyboard? erased by HookRelease at refcount 0
 DI8Create_t g_origDI8Create = nullptr;
 
-std::mutex g_filterMx;  // the filter and its scratch buffers (the poll runs on the main thread; this is belt and braces)
+std::mutex g_filterMx;  // the filter and its scratch buffers
 KeyFilter g_filter;
 std::vector<HotkeyDef> g_defs;
 std::vector<int> g_fired;
@@ -100,7 +87,7 @@ bool Lookup(void* self, DevVt* vt) {
 HRESULT WINAPI HookGetDeviceData(void* self, DWORD cb, DIDEVICEOBJECTDATA* rgdod, DWORD* inOut, DWORD flags) {
     DevVt o;
     bool kb = Lookup(self, &o);
-    if (!o.data) return DIERR_GENERIC;  // cannot happen: the slot is only ours after the original was recorded
+    if (!o.data) return DIERR_GENERIC;
     DWORD capacity = inOut ? *inOut : 0;
     HRESULT hr = o.data(self, cb, rgdod, inOut, flags);
     if (!kb) return hr;
@@ -139,7 +126,7 @@ HRESULT WINAPI HookGetDeviceData(void* self, DWORD cb, DIDEVICEOBJECTDATA* rgdod
             if (!names.empty()) names += ' ';
             names += melange::render::DikName(d);
         }
-        WF_INFO("[overlay] capture on: synthetic key release sent to the game for %s", names.c_str());
+        LOG_INFO("[overlay] capture on: synthetic key release sent to the game for %s", names.c_str());
     }
     if (!fired.empty()) {
         g_hotkeysFired += fired.size();
@@ -162,11 +149,8 @@ HRESULT WINAPI HookGetDeviceState(void* self, DWORD cb, void* data) {
     return hr;
 }
 
-// g_isKeyboard gains one entry per CreateDevice call (re-notes SS9: while the game is unfocused, the engine
-// recreates its DirectInput manager and devices roughly every 250 ms) and, before this hook, never lost one:
-// hours unfocused (or a windowed Save-As dialog left open) grew it without bound. IUnknown::Release is shared by
-// every device that uses this vtable, so it - like GetDeviceData/GetDeviceState - is hooked once per vtable and
-// erases this device's entry once the real refcount reaches 0.
+// While unfocused the engine recreates its DirectInput devices every ~250 ms, so drop each device's g_isKeyboard
+// entry when its refcount reaches 0. Hooked once per vtable.
 ULONG WINAPI HookRelease(void* self) {
     Release_t orig;
     {
@@ -216,7 +200,7 @@ HRESULT WINAPI HookCreateDevice(void* self, REFGUID guid, void** out, IUnknown* 
     }
     if (hookedNow) {
         g_diHooked = true;
-        WF_INFO("[overlay] DI keyboard %p vtable %p hooked (chained GetDeviceData=%p)", *out, static_cast<void*>(vt),
+        LOG_INFO("[overlay] DI keyboard %p vtable %p hooked (chained GetDeviceData=%p)", *out, static_cast<void*>(vt),
                 reinterpret_cast<void*>(o.data));
     }
     return hr;
@@ -236,7 +220,6 @@ HRESULT WINAPI HookDI8Create(HINSTANCE inst, DWORD ver, REFIID riid, void** out,
     return hr;
 }
 
-// ---------------------------------------------------------------- cursor
 using SetCursorPos_t = BOOL(WINAPI*)(int, int);
 SetCursorPos_t g_origSetCursorPos = nullptr;
 
@@ -248,7 +231,6 @@ BOOL WINAPI HookSetCursorPos(int x, int y) {
     return g_origSetCursorPos(x, y);
 }
 
-// ---------------------------------------------------------------- window subclass
 struct Sub {
     HWND hwnd;
     WNDPROC orig;
@@ -310,8 +292,7 @@ LRESULT CALLBACK OverlayWndProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
     }
     if (g_imguiReady.load(std::memory_order_relaxed) && melange::overlay::Capturing()) {
         if (ForImGui(msg)) {
-            // Automation posts button messages with client coordinates while the real cursor may be elsewhere (and
-            // TrackMouseEvent then reports a leave): take the position from the click itself.
+            // Posted clicks may not match the real cursor position: take the position from the click itself.
             if (IsButtonMsg(msg))
                 ImGui::GetIO().AddMousePosEvent(static_cast<float>(GET_X_LPARAM(lp)), static_cast<float>(GET_Y_LPARAM(lp)));
             ImGui_ImplWin32_WndProcHandler(h, msg, wp, lp);
@@ -336,8 +317,8 @@ bool InstallInput() {
     bool cur = melange::mem::HookIAT("USER32.dll", "SetCursorPos", reinterpret_cast<void*>(&HookSetCursorPos),
                                 reinterpret_cast<void**>(&g_origSetCursorPos));
     g_cursorHooked = cur;
-    if (!di) WF_WARN("[overlay] DINPUT8!DirectInput8Create import not hooked: hotkeys and keyboard capture will not work");
-    if (!cur) WF_WARN("[overlay] USER32!SetCursorPos import not hooked: the game will keep re-centring the cursor");
+    if (!di) LOG_WARN("[overlay] DINPUT8!DirectInput8Create import not hooked: hotkeys and keyboard capture will not work");
+    if (!cur) LOG_WARN("[overlay] USER32!SetCursorPos import not hooked: the game will keep re-centring the cursor");
     return di;
 }
 
@@ -360,10 +341,10 @@ void RunPendingHotkeys() {
                 if (k.handle == handle) h = k;
         }
         if (!h.fn) continue;
-        WF_INFO("[overlay] hotkey %s", HotkeyLabel(h.dik, h.mods).c_str());
+        LOG_INFO("[overlay] hotkey %s", HotkeyLabel(h.dik, h.mods).c_str());
         unsigned long code = 0;
         if (!SehCall(h.fn, h.user, &code))
-            WF_ERROR("[overlay] hotkey %s action raised exception 0x%08lx", HotkeyLabel(h.dik, h.mods).c_str(), code);
+            LOG_ERROR("[overlay] hotkey %s action raised exception 0x%08lx", HotkeyLabel(h.dik, h.mods).c_str(), code);
     }
 }
 
@@ -392,7 +373,7 @@ void SubclassGameWindow(HWND hwnd) {
     LONG_PTR old = s.unicode ? SetWindowLongPtrW(hwnd, GWLP_WNDPROC, proc) : SetWindowLongPtrA(hwnd, GWLP_WNDPROC, proc);
     g_subs.back().orig = reinterpret_cast<WNDPROC>(old);
     g_subHwnd = hwnd;
-    WF_INFO("[overlay] window %p subclassed (orig wndproc %p, %s)", static_cast<void*>(hwnd), reinterpret_cast<void*>(old),
+    LOG_INFO("[overlay] window %p subclassed (orig wndproc %p, %s)", static_cast<void*>(hwnd), reinterpret_cast<void*>(old),
             s.unicode ? "unicode" : "ansi");
 }
 
@@ -427,7 +408,7 @@ int AddHotkey(uint8_t dik, uint8_t mods, ActionFn fn, void* user) {
     std::lock_guard lk(g_hkMx);
     for (const Hotkey& h : g_hotkeys)
         if (h.dik == dik && h.mods == mods)
-            WF_WARN("[overlay] hotkey %s registered twice; both actions will run", melange::render::HotkeyLabel(dik, mods).c_str());
+            LOG_WARN("[overlay] hotkey %s registered twice; both actions will run", melange::render::HotkeyLabel(dik, mods).c_str());
     int handle = g_nextHotkey++;
     g_hotkeys.push_back({handle, dik, mods, fn, user});
     return handle;

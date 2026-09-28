@@ -1,18 +1,8 @@
-// Event bus (component B): hooks on the engine's message Post (0x6910e4) and Deliver (0x68cb82), the subscriber
-// table, stats, and the EventBus module with its Automation test verbs. Public API: src/sdk/melange/bus.h.
-// Spec: docs/m0-design.md §1.2 and §3 "B: event bus".
-//
-// Hot path (every Post/Deliver, ~4000/s in a match): read the u16 id, bump counters, test a 64K-bit "has
-// subscribers" bitmap plus the SubscribeAll count, forward. No lock, no allocation, no SEH frame.
-// Slow path (someone listens): build a MessageView and call each handler under an SEH guard.
-//
-// Subscribers live in an immutable Table that is replaced copy-on-write under a mutex and published with an
-// atomic pointer swap, so Subscribe/Unsubscribe work from any thread and from inside a handler. A replaced
-// table is freed only when no dispatch is reading any table (g_readers == 0); otherwise it waits for the
-// next rebuild or the per-frame Tick.
-//
-// MESSAGE LIFETIME: the engine's message arena (0x691705) is reset when its dispatch depth returns to 0, so a
-// MessageView (and m.raw) is valid only during the callback. Copy anything you keep.
+// Event bus: hooks on the engine's message Post and Deliver, the subscriber table, stats and test verbs.
+// The hot path (thousands of messages a second) takes no lock, allocates nothing and has no SEH frame;
+// handlers run under an SEH guard only when someone subscribes.
+// The subscriber Table is immutable and replaced copy-on-write; a retired table is freed only once g_readers == 0.
+// The engine's message arena is reset after dispatch, so a MessageView is valid only during the callback.
 #include <windows.h>
 
 #include <intrin.h>
@@ -67,7 +57,7 @@ struct Table {
     std::vector<Sub*> all[kPaths];
 };
 
-// ---- subscriber state (writers hold g_mu)
+// Writers hold g_mu.
 std::mutex g_mu;
 std::vector<std::shared_ptr<Sub>> g_subs;
 SubId g_nextId = 1;
@@ -76,7 +66,7 @@ std::atomic<Table*> g_table{nullptr};
 std::atomic<int> g_readers{0};
 std::atomic<uint32_t> g_pending{0};
 
-// ---- hot-path state (written on the main thread only; racy reads from other threads are acceptable for stats)
+// Written on the main thread only; racy reads from other threads are fine for stats.
 std::atomic<uint32_t> g_bits[kPaths][0x10000 / 32];
 std::atomic<uint32_t> g_allCount[kPaths];
 std::atomic<uint32_t> g_count[kPaths][0x10000];
@@ -88,7 +78,7 @@ uint64_t g_sampleCycles = 0;
 uint64_t g_samples = 0;
 std::atomic<bool> g_installed{false};
 
-// TSC calibration for avgHookUs: the rate is measured over the whole run (start stamp taken at load).
+// TSC rate for avgHookUs, measured from load time.
 struct Calibration {
     LARGE_INTEGER qpc0{}, freq{};
     uint64_t tsc0 = 0;
@@ -113,7 +103,7 @@ struct Calibration {
 };
 const Calibration g_cal;
 
-// ---- per-thread hook state: nesting depth and the stack of messages currently inside Post (fromPost)
+// Per-thread nesting depth and the messages currently inside Post (for fromPost).
 struct Tls {
     uint16_t depth;
     uint16_t postN;  // may exceed kMaxPostStack; only the first kMaxPostStack entries are stored
@@ -128,7 +118,7 @@ bool OnPostStack(const Tls& t, const void* msg) {
     return false;
 }
 
-// ---- table maintenance (g_mu held)
+// g_mu held.
 void FreeRetiredLocked() {
     if (g_retired.empty() || g_readers.load(std::memory_order_seq_cst) != 0) return;
     for (Table* t : g_retired) delete t;
@@ -180,10 +170,10 @@ bool ResolvePendingLocked() {
         if (id != kInvalidId) {
             s->msg.store(id);
             changed = true;
-            WF_INFO("[bus] SubscribeName('%s') resolved to id %04x (sub %u)", s->pendingName.c_str(), id, s->id);
+            LOG_INFO("[bus] SubscribeName('%s') resolved to id %04x (sub %u)", s->pendingName.c_str(), id, s->id);
         } else if (!s->warnedUnresolved) {
             s->warnedUnresolved = true;
-            WF_WARN("[bus] SubscribeName('%s'): name not in the registry yet (sub %u); still waiting for it",
+            LOG_WARN("[bus] SubscribeName('%s'): name not in the registry yet (sub %u); still waiting for it",
                     s->pendingName.c_str(), s->id);
         }
     }
@@ -200,7 +190,6 @@ SubId Add(std::shared_ptr<Sub> s) {
     return s->id;
 }
 
-// ---- dispatch
 bool CallGuarded(Handler fn, const MessageView& m, void* user, DWORD* code, uintptr_t* addr) {
     __try {
         fn(m, user);
@@ -216,12 +205,12 @@ void OnFault(Sub* s, const MessageView& m, DWORD code, uintptr_t addr) {
     ++g_handlerFaults;
     const uint32_t n = s->faults.fetch_add(1) + 1;
     if (n <= kMaxFaults)
-        WF_WARN("[bus] handler %p (sub %u) faulted on %s (%s): exception %08lx at %s [%u/%u]",
+        LOG_WARN("[bus] handler %p (sub %u) faulted on %s (%s): exception %08lx at %s [%u/%u]",
                 reinterpret_cast<void*>(s->fn), s->id, m.name, PathName(m.path), code,
                 game::DescribeAddress(addr).c_str(), n, kMaxFaults);
     if (n == kMaxFaults) {
         s->live.store(false);
-        WF_WARN("[bus] handler %p (sub %u) DISABLED after %u faults", reinterpret_cast<void*>(s->fn), s->id, kMaxFaults);
+        LOG_WARN("[bus] handler %p (sub %u) DISABLED after %u faults", reinterpret_cast<void*>(s->fn), s->id, kMaxFaults);
         std::lock_guard lk(g_mu);
         RebuildLocked();  // drop it from the table; the table we are iterating stays alive (g_readers > 0)
     }
@@ -284,10 +273,9 @@ void AddSample(uint64_t cycles) {
 }
 }  // namespace
 
-// ================================================================ internal seams
 namespace detail {
 uint32_t ObjectSize(const uint8_t* raw) {
-    // Arena header at raw-4 = align4(object size) + 4 (allocator 0x691705). An object is at least vtable + id.
+    // Arena header at raw-4 = align4(object size) + 4. An object is at least vtable + id.
     uint32_t h = 0;
     if (!raw || !mem::SafeRead(reinterpret_cast<uintptr_t>(raw) - 4, &h, sizeof(h))) return 0;
     if (h < 12 || h > 0x4000 || (h & 3)) return 0;
@@ -330,7 +318,7 @@ void Tick() {
 size_t PendingNames() { return g_pending.load(); }
 }  // namespace detail
 
-// ================================================================ public API
+// ---- Public API
 bool MessageView::Read(uint32_t offset, void* out, uint32_t n) const {
     if (!raw || !out || offset > size || n > size - offset) return false;
     if (n == 0) return true;
@@ -354,8 +342,7 @@ SubId SubscribeName(const char* name, Path path, Handler fn, void* user) {
     s->pendingName = name;
     s->fn = fn;
     s->user = user;
-    // Resolve now if we can; otherwise the per-frame Tick keeps trying (registry not ready, or a name that a
-    // later registration adds).
+    // If it doesn't resolve yet, the per-frame Tick keeps trying.
     s->msg = IdOf(name);
     return Add(std::move(s));
 }
@@ -396,7 +383,7 @@ uint32_t CountOf(MsgId id, Path path) { return g_count[PathIndex(path)][id].load
 
 bool Installed() { return g_installed.load(); }
 
-// ================================================================ module, hooks and test verbs
+// ---- Module, hooks and test verbs
 namespace {
 constexpr uintptr_t kPost = 0x6910e4;     // int __cdecl Post(Message*)
 constexpr uintptr_t kDeliver = 0x68cb82;  // int __thiscall EntityTable::Deliver(Message*, int handle, char bcast)
@@ -415,7 +402,7 @@ int __fastcall HookDeliver(void* table, void* /*edx*/, void* msg, int handle, ch
                               nullptr);
 }
 
-// ---- JsonOut into a flat text line (test verbs only)
+// JsonOut into a flat text line, for the test verbs.
 class TextOut final : public JsonOut {
 public:
     std::string text;
@@ -447,7 +434,7 @@ private:
     }
 };
 
-// ---- counting subscribers for "bus.sub <name> [post|deliver]"
+// Counting subscribers for "bus.sub <name> [post|deliver]".
 struct Counter {
     std::string name;
     Path path = Path::Post;
@@ -457,8 +444,8 @@ struct Counter {
     uint32_t lastReported = 0;
 };
 std::mutex g_verbMu;
-std::map<std::string, Counter*> g_counters;  // key: "<lower name>/<path>"; Counters are never freed (a retired
-                                             // table may still hold their pointer as `user`)
+// Key "<lower name>/<path>". Counters are never freed: a retired table may still hold one as `user`.
+std::map<std::string, Counter*> g_counters;
 std::map<std::string, SubId> g_faulters;
 uint64_t g_lastCounterLog = 0;
 int* volatile g_nullTarget = nullptr;
@@ -469,7 +456,7 @@ void CountHandler(const MessageView& m, void* user) {
     if (c->logged.fetch_add(1) >= 3) return;  // decode the first three to the log
     TextOut out;
     const bool decoded = Decode(m, out);
-    WF_INFO("[bus] sub %s #%u: id=%04x class=%s size=%u %s handle=%d fromPost=%d depth=%u caller=%s seq=%llu frame=%llu "
+    LOG_INFO("[bus] sub %s #%u: id=%04x class=%s size=%u %s handle=%d fromPost=%d depth=%u caller=%s seq=%llu frame=%llu "
             "payload={%s}%s%s",
             m.name, n, m.id, m.className, m.size, PathName(m.path), m.handle, m.fromPost, m.depth,
             game::DescribeAddress(m.caller).c_str(), static_cast<unsigned long long>(m.seq),
@@ -478,7 +465,7 @@ void CountHandler(const MessageView& m, void* user) {
 }
 
 void FaultHandler(const MessageView&, void*) {
-    *g_nullTarget = 1;  // deliberate access violation (bus.fault)
+    *g_nullTarget = 1;  // deliberate access violation
 }
 
 std::string Lower(std::string_view s) {
@@ -510,13 +497,13 @@ bool VerbSub(std::string_view args, void*) {
     std::string name;
     Path path;
     if (!ParseNamePath(args, name, path)) {
-        WF_WARN("[bus] usage: bus.sub <name> [post|deliver]");
+        LOG_WARN("[bus] usage: bus.sub <name> [post|deliver]");
         return false;
     }
     std::lock_guard lk(g_verbMu);
     std::string key = Lower(name) + "/" + PathName(path);
     if (g_counters.count(key)) {
-        WF_INFO("[bus] sub %s (%s) already active", name.c_str(), PathName(path));
+        LOG_INFO("[bus] sub %s (%s) already active", name.c_str(), PathName(path));
         return true;
     }
     auto* c = new Counter;
@@ -528,7 +515,7 @@ bool VerbSub(std::string_view args, void*) {
         return false;
     }
     g_counters[key] = c;
-    WF_INFO("[bus] sub %s (%s): counting subscriber %u added (id %04x%s)", name.c_str(), PathName(path), c->sub,
+    LOG_INFO("[bus] sub %s (%s): counting subscriber %u added (id %04x%s)", name.c_str(), PathName(path), c->sub,
             IdOf(name), IdOf(name) == kInvalidId ? ", pending" : "");
     return true;
 }
@@ -540,11 +527,11 @@ bool VerbUnsub(std::string_view args, void*) {
     std::lock_guard lk(g_verbMu);
     auto it = g_counters.find(Lower(name) + "/" + PathName(path));
     if (it == g_counters.end()) {
-        WF_WARN("[bus] unsub %s (%s): no such counting subscriber", name.c_str(), PathName(path));
+        LOG_WARN("[bus] unsub %s (%s): no such counting subscriber", name.c_str(), PathName(path));
         return false;
     }
     Unsubscribe(it->second->sub);
-    WF_INFO("[bus] unsub %s (%s): final count=%u", name.c_str(), PathName(path), it->second->count.load());
+    LOG_INFO("[bus] unsub %s (%s): final count=%u", name.c_str(), PathName(path), it->second->count.load());
     g_counters.erase(it);  // the Counter itself is leaked on purpose (see g_counters)
     return true;
 }
@@ -557,20 +544,19 @@ bool VerbFault(std::string_view args, void*) {
     if (!id) return false;
     std::lock_guard lk(g_verbMu);
     g_faulters[Lower(name)] = id;
-    WF_INFO("[bus] fault %s (%s): faulting subscriber %u added; expect %u faults then DISABLED", name.c_str(),
+    LOG_INFO("[bus] fault %s (%s): faulting subscriber %u added; expect %u faults then DISABLED", name.c_str(),
             PathName(path), id, kMaxFaults);
     return true;
 }
 
-// "bus.stats [name ...]": totals, plus per-id Post/Deliver deltas since the previous bus.stats (top 10 by
-// posts when no names are given).
+// "bus.stats [name ...]": totals plus per-id deltas since the previous call (top 10 by posts if no names).
 uint32_t g_prevCount[kPaths][0x10000];
 uint64_t g_prevStatsTick = 0;
 bool VerbStats(std::string_view args, void*) {
     const uint64_t now = GetTickCount64();
     const double secs = g_prevStatsTick ? static_cast<double>(now - g_prevStatsTick) / 1000.0 : 0.0;
     const Stats s = GetStats();
-    WF_INFO("[bus] stats: posts=%llu deliveries=%llu handlerCalls=%llu handlerFaults=%llu avgHookUs=%.3f "
+    LOG_INFO("[bus] stats: posts=%llu deliveries=%llu handlerCalls=%llu handlerFaults=%llu avgHookUs=%.3f "
             "registry=%s names=%zu capacity=%zu pendingNames=%zu interval=%.1fs",
             static_cast<unsigned long long>(s.posts), static_cast<unsigned long long>(s.deliveries),
             static_cast<unsigned long long>(s.handlerCalls), static_cast<unsigned long long>(s.handlerFaults), s.avgHookUs,
@@ -578,7 +564,7 @@ bool VerbStats(std::string_view args, void*) {
     auto line = [&](MsgId id) {
         const uint32_t p = CountOf(id, Path::Post) - g_prevCount[0][id];
         const uint32_t d = CountOf(id, Path::Deliver) - g_prevCount[1][id];
-        WF_INFO("[bus] stats %-32s id=%04x posts=%u deliveries=%u ratio=%.2f (totals %u/%u)", NameOf(id), id, p, d,
+        LOG_INFO("[bus] stats %-32s id=%04x posts=%u deliveries=%u ratio=%.2f (totals %u/%u)", NameOf(id), id, p, d,
                 p ? static_cast<double>(d) / p : 0.0, CountOf(id, Path::Post), CountOf(id, Path::Deliver));
     };
     std::string_view rest = args;
@@ -593,7 +579,7 @@ bool VerbStats(std::string_view args, void*) {
         named = true;
         MsgId id = IdOf(tok);
         if (id == kInvalidId) {
-            WF_WARN("[bus] stats: '%.*s' is not a registered name", static_cast<int>(tok.size()), tok.data());
+            LOG_WARN("[bus] stats: '%.*s' is not a registered name", static_cast<int>(tok.size()), tok.data());
             continue;
         }
         line(id);
@@ -613,7 +599,7 @@ bool VerbStats(std::string_view args, void*) {
     return true;
 }
 
-// Registry round trip: IdOf(NameOf(id)) == id for every non-null slot (acceptance B1).
+// Registry round trip: IdOf(NameOf(id)) == id for every non-null slot.
 bool VerbSelfTest(std::string_view, void*) {
     const bool ready = RegistryReady();
     size_t names = 0, mismatches = 0;
@@ -635,7 +621,7 @@ bool VerbSelfTest(std::string_view, void*) {
     for (MsgId id : {MsgId{0x40}, MsgId{0x103}, MsgId{0x104}, MsgId{0x1004}})
         if (IdOf(NameOf(id)) != id) ++sysBad;
     const bool pass = ready && names > 0 && mismatches == 0 && sysBad == 0;
-    WF_INFO("[bus] selftest %s: ready=%d names=%zu (expect >=1227) capacity=%zu (expect 1300) roundtrip mismatches=%zu%s%s "
+    LOG_INFO("[bus] selftest %s: ready=%d names=%zu (expect >=1227) capacity=%zu (expect 1300) roundtrip mismatches=%zu%s%s "
             "sysName mismatches=%zu",
             pass ? "PASS" : "FAIL", ready, names, Capacity(), mismatches, mismatches ? " first: " : "", first.c_str(),
             sysBad);
@@ -646,7 +632,7 @@ size_t WriteRegistryTsv() {
     std::wstring path = game::DataDir() + L"\\messages.tsv";
     FILE* f = _wfopen(path.c_str(), L"w");
     if (!f) {
-        WF_WARN("[bus] cannot write %s", game::Narrow(path).c_str());
+        LOG_WARN("[bus] cannot write %s", game::Narrow(path).c_str());
         return 0;
     }
     size_t n = 0;
@@ -656,13 +642,12 @@ size_t WriteRegistryTsv() {
         ++n;
     });
     fclose(f);
-    WF_INFO("[bus] wrote %zu names (capacity %zu) to %s", n, Capacity(), game::Narrow(path).c_str());
+    LOG_INFO("[bus] wrote %zu names (capacity %zu) to %s", n, Capacity(), game::Narrow(path).c_str());
     return n;
 }
 
 bool VerbDump(std::string_view, void*) { return WriteRegistryTsv() > 0; }
 
-// ---- per-frame work
 bool g_dumpRegistry = false;
 bool g_dumped = false;
 std::atomic<bool> g_matchStarted{false};
@@ -677,7 +662,7 @@ void OnFrame() {
     if (!g_readyTick && RegistryReady()) {
         g_readyTick = now;
         g_turnStarted = IdOf("GameLogic.Turn.Started");
-        WF_INFO("[bus] registry ready at frame %llu: %zu names, capacity %zu",
+        LOG_INFO("[bus] registry ready at frame %llu: %zu names, capacity %zu",
                 static_cast<unsigned long long>(events::FrameCount()), detail::UsedSlots(), Capacity());
     }
     // DumpRegistry: once, at the first match start (MatchStart or the first turn) or after 5 s in the menu.
@@ -688,13 +673,12 @@ void OnFrame() {
             WriteRegistryTsv();
         }
     }
-    // Counting subscribers report every 5 s.
     if (now - g_lastCounterLog >= 5000) {
         g_lastCounterLog = now;
         std::lock_guard lk(g_verbMu);
         for (auto& [key, c] : g_counters) {
             const uint32_t n = c->count.load();
-            WF_INFO("[bus] sub %s (%s): count=%u (+%u)", c->name.c_str(), PathName(c->path), n, n - c->lastReported);
+            LOG_INFO("[bus] sub %s (%s): count=%u (+%u)", c->name.c_str(), PathName(c->path), n, n - c->lastReported);
             c->lastReported = n;
         }
     }
@@ -711,25 +695,25 @@ public:
         g_dumpRegistry = Bool("DumpRegistry", false);
         // 0x6910e4: push ebp; mov ebp,esp; push ecx; push ecx; cmp dword [0x96d090],0
         if (!mem::Expect(kPost, {0x55, 0x8b, 0xec, 0x51, 0x51, 0x83, 0x3d, 0x90, 0xd0, 0x96, 0x00, 0x00})) {
-            WF_ERROR("[bus] Post 0x6910e4: unexpected bytes (another mod hooked it?)");
+            LOG_ERROR("[bus] Post 0x6910e4: unexpected bytes (another mod hooked it?)");
             return false;
         }
         // 0x68cb82: push ebp; mov ebp,esp; sub esp,0x4a4 ... ret 0xc
         if (!mem::Expect(kDeliver, {0x55, 0x8b, 0xec, 0x81, 0xec, 0xa4, 0x04, 0x00, 0x00})) {
-            WF_ERROR("[bus] Deliver 0x68cb82: unexpected bytes (another mod hooked it?)");
+            LOG_ERROR("[bus] Deliver 0x68cb82: unexpected bytes (another mod hooked it?)");
             return false;
         }
         g_postHook = safetyhook::create_inline(kPost, &HookPost);
         g_deliverHook = safetyhook::create_inline(kDeliver, &HookDeliver);
         if (!g_postHook || !g_deliverHook) {
-            WF_ERROR("[bus] hook install failed: Post %s, Deliver %s", g_postHook ? "ok" : "FAILED",
+            LOG_ERROR("[bus] hook install failed: Post %s, Deliver %s", g_postHook ? "ok" : "FAILED",
                      g_deliverHook ? "ok" : "FAILED");
             g_deliverHook = {};
             g_postHook = {};
             return false;
         }
         g_installed = true;
-        WF_INFO("[bus] hooks installed: Post 0x6910e4, Deliver 0x68cb82 (DumpRegistry=%d)", g_dumpRegistry);
+        LOG_INFO("[bus] hooks installed: Post 0x6910e4, Deliver 0x68cb82 (DumpRegistry=%d)", g_dumpRegistry);
 
         events::Subscribe(events::Event::Frame, [] { OnFrame(); });
         events::Subscribe(events::Event::MatchStart, [] { g_matchStarted = true; });

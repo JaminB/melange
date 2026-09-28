@@ -1,5 +1,4 @@
-// Component D: "Save logs as..." export. Public API: src/sdk/melange/export.h.
-// See docs/m0-design.md §3 "D: 'Save logs as...' export" and §5.1 (Q2-Q4 override the proposals).
+// LogExport: the "Save logs as..." zip export. Public API: melange/export.h.
 #include "melange/export.h"
 
 #include <windows.h>
@@ -39,8 +38,6 @@
 
 namespace melange::exporter {
 namespace {
-
-// -------------------------------------------------------------------------------------------- basics
 
 std::string Narrow(const std::wstring& w) { return melange::game::Narrow(w); }
 
@@ -104,10 +101,8 @@ std::wstring DefaultZipName() {
     return buf;
 }
 
-// Reads a whole file, or (if it is larger than capBytes) only its last capBytes ("tail"), which keeps
-// the most recent - and most relevant to a hang/crash - part of a long-running log. `*truncated` is set
-// when the tail path was taken. Opened with FILE_SHARE_DELETE so a file jlog's writer thread or the
-// engine still has open can still be exported (see docs/m0-design.md §3 "D", Zip).
+// Reads the whole file, or only its last capBytes if larger (the newest part matters most).
+// Full sharing so files the game or the log writer still has open can be read.
 bool ReadCappedTail(const std::wstring& path, uint64_t capBytes, std::string& out, bool* truncated) {
     *truncated = false;
     HANDLE f = CreateFileW(path.c_str(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr,
@@ -140,7 +135,6 @@ bool ReadCappedTail(const std::wstring& path, uint64_t capBytes, std::string& ou
     return true;
 }
 
-// Newest `max` files under `dir` matching a FindFirstFile-style pattern, by last-write time.
 std::vector<std::wstring> NewestMatching(const std::wstring& dir, const wchar_t* pattern, size_t max) {
     std::vector<std::pair<FILETIME, std::wstring>> found;
     if (dir.empty()) return {};
@@ -159,13 +153,13 @@ std::vector<std::wstring> NewestMatching(const std::wstring& dir, const wchar_t*
     return out;
 }
 
-// -------------------------------------------------------------------------------------------- zip + manifest
+// Zip and manifest
 
 struct ManifestEntry {
     std::string archivePath;
-    uint64_t size = 0;    // bytes actually written into the zip entry (post redaction/truncation)
-    std::string sha256;   // of those same bytes, so "manifest sha256 matches the entry" always holds
-    std::string source;   // original disk path, redacted the same way opt.redactUserPaths says text is
+    uint64_t size = 0;    // bytes in the zip, after redaction/truncation
+    std::string sha256;   // of those bytes
+    std::string source;   // original path, redacted
     bool truncated = false;
 };
 
@@ -178,7 +172,7 @@ public:
     bool Add(const std::string& archivePath, const void* data, size_t n) {
         return mz_zip_writer_add_mem(&zip_, archivePath.c_str(), data, n, 6 /* deflate level */) != 0;
     }
-    // Finalizes and returns the whole zip as bytes. The builder must not be used again afterwards.
+    // The builder must not be used after this.
     bool Finalize(std::string* outBytes) {
         void* buf = nullptr;
         size_t sz = 0;
@@ -192,11 +186,7 @@ private:
     mz_zip_archive zip_{};
 };
 
-// Redacts (if requested/always, per field) then adds one entry, tracking it in the manifest. `redactText`
-// gates username replacement (opt.redactUserPaths); id/IP hashing always runs on text entries.
-// §5.1 Q4 "exclude the computer name": it appears in the engine's log file names (XOM0-<NAME>.log) and
-// contents, so it is always replaced, in text, entry names and manifest source paths. Binary entries (dumps)
-// are not rewritten.
+// The computer name appears in engine log names (XOM0-<NAME>.log) and contents, so it is always replaced.
 const std::string& ComputerName() {
     static const std::string name = [] {
         wchar_t buf[MAX_COMPUTERNAME_LENGTH + 1];
@@ -209,11 +199,7 @@ std::string ExcludeComputerName(std::string_view text) {
     return melange::redact::ReplaceName(text, ComputerName(), "%COMPUTERNAME%");
 }
 
-// The last component of the profile folder (%USERPROFILE%, e.g. "C:\Users\<name>"), read via
-// SHGetKnownFolderPath so it is not spoofable through the environment. GetUserNameW() (the account name) is
-// what CurrentUserName() redacts, but after an account rename the *folder* on disk keeps the old name, and every
-// path under it (session dirs, Melange.log, jsonl files, manifest "source" entries) still carries that old name.
-// Redacting both names covers both spellings without needing to know which one shows up where.
+// Profile folder name. After an account rename it differs from the account name, so both are redacted.
 const std::string& ProfileFolderName() {
     static const std::string name = [] {
         PWSTR path = nullptr;
@@ -240,18 +226,15 @@ void AddEntry(ZipBuilder& zip, std::vector<ManifestEntry>& manifest, const std::
               const std::wstring& sourcePath, bool truncated, bool isText, bool redactUserPaths,
               std::string_view userName, std::string_view salt) {
     if (isText) {
-        // Generated entries (system.json) hold no IPs or Steam ids, only version numbers like "7.1.0.0" that the
-        // IPv4 pattern would hash.
+        // Generated entries hold no ids, only version numbers the IPv4 pattern would hash.
         if (sourcePath != L"(generated)") data = melange::redact::HashIdsAndIps(data, salt);
         if (redactUserPaths) data = RedactUserNames(data, userName);
         data = ExcludeComputerName(data);
     }
     const std::string archivePath = ExcludeComputerName(archivePathIn);
-    // Check the result before recording it in the manifest: an entry mz_zip_writer_add_mem() failed to add
-    // (out of memory building the zip's own buffers, a duplicate/invalid name, ...) must not be listed as if it
-    // were actually in the zip, or a reader trusting manifest.json would look for a file that is not there.
+    // Never list an entry in the manifest that failed to go into the zip.
     if (!zip.Add(archivePath, data.data(), data.size())) {
-        WF_WARN("[LogExport] could not add zip entry '%s' (%zu bytes); omitted from the export", archivePath.c_str(),
+        LOG_WARN("[LogExport] could not add zip entry '%s' (%zu bytes); omitted from the export", archivePath.c_str(),
                 data.size());
         return;
     }
@@ -271,11 +254,9 @@ void AddFileEntry(ZipBuilder& zip, std::vector<ManifestEntry>& manifest, const s
                    std::string_view salt) {
     std::string data;
     bool truncated = false;
-    if (!ReadCappedTail(sourcePath, capBytes, data, &truncated)) return;  // missing/unreadable: silently absent
+    if (!ReadCappedTail(sourcePath, capBytes, data, &truncated)) return;
     bool isText = IsTextExtension(sourcePath);
     if (truncated && isText) {
-        // Keep the note out of the hashed/redacted region's byte-exactness story: it is added before
-        // redaction runs, so the manifest hash still matches exactly what a reader will open.
         data = "...[truncated, showing only the end of a larger file]...\n" + data;
     }
     AddEntry(zip, manifest, archivePath, std::move(data), sourcePath, truncated, isText, redactUserPaths, userName,
@@ -351,7 +332,7 @@ std::string CurrentUserName() {
     return {};
 }
 
-// ------------------------------------------------------------------------------------- state / Status()
+// Status
 
 std::mutex g_statusMx;
 State g_state = State::Idle;
@@ -379,14 +360,11 @@ void SetCancelled() {
     g_state = State::Cancelled;
 }
 
-// ------------------------------------------------------------------------------------------- the export
-
-// The actual work behind both ExportTo() and RequestSaveAs(). Never touches the main thread: file and
-// registry reads only, plus miniz (pure computation). See docs/m0-design.md §3 "D", "Zip" and "Layout".
+// Export. Runs on a worker thread; touches no main-thread state.
 bool DoExport(const std::wstring& zipPath, const Options& opt, std::string* error) {
     uint64_t frameStart = melange::events::FrameCount();
     if (GetCurrentThreadId() == melange::events::MainThreadId())
-        WF_WARN("[LogExport] ExportTo called on the main thread; this blocks rendering until it's done");
+        LOG_WARN("[LogExport] ExportTo called on the main thread; this blocks rendering until it's done");
 
     melange::jlog::Flush();
 
@@ -399,7 +377,7 @@ bool DoExport(const std::wstring& zipPath, const Options& opt, std::string* erro
     constexpr uint64_t kCap = 64ull * 1024 * 1024;
     constexpr uint64_t kFullDumpCap = 256ull * 1024 * 1024;
 
-    // logs/sessions/<id>/events*.jsonl - newest opt.sessions folders (§2.5 CurrentSession/RecentSessionDirs).
+    // logs/sessions/<id>/events*.jsonl
     sessionIds.push_back(melange::jlog::CurrentSession().id);
     auto sessionDirs = melange::jlog::RecentSessionDirs(static_cast<size_t>(std::max(1, opt.sessions)));
     if (sessionDirs.empty()) {
@@ -415,7 +393,7 @@ bool DoExport(const std::wstring& zipPath, const Options& opt, std::string* erro
         }
     }
 
-    // logs/Melange.log, logs/Melange.prev.log (§5.1 Q2: these stay in <game>\Melange\).
+    // logs/Melange.log, logs/Melange.prev.log
     {
         std::wstring dataDir = melange::game::DataDir();
         bool any = false;
@@ -428,7 +406,7 @@ bool DoExport(const std::wstring& zipPath, const Options& opt, std::string* erro
         if (!any) absent.push_back("logs/Melange.log (not found)");
     }
 
-    // logs/engine/XOM*-*.log, Net_*.log - newest 3 each, from the game's own working directory.
+    // logs/engine/XOM*-*.log, Net_*.log from the game folder
     {
         std::wstring gameDir = melange::game::GameDir();
         auto xom = NewestMatching(gameDir, L"XOM*-*.log", 3);
@@ -440,12 +418,8 @@ bool DoExport(const std::wstring& zipPath, const Options& opt, std::string* erro
                                                 opt.redactUserPaths, userName, salt);
     }
 
-    // dumps/*.dmp - newest 3, from <DataDir>\dumps (core/debug.h). WriteMiniDump() names a MiniDumpWithFullMemory
-    // dump "..._<tag>-full.dmp", so a full dump can be told apart from an ordinary minidump by name and left out
-    // entirely when includeFullDumps=0, rather than always being bundled with only its per-file cap raised (a
-    // full dump can hold chat text, persona names and other process memory the user did not opt to export).
+    // dumps/*.dmp, newest 3. Full-memory dumps ("-full.dmp") can hold private data, so they are opt-in.
     if (opt.includeDumps) {
-        // Gather more than 3 candidates: full dumps may need to be filtered out before picking "newest 3".
         auto allDumps = NewestMatching(melange::game::DataDir() + L"\\dumps", L"*.dmp", 64);
         std::vector<std::wstring> dumps;
         for (const auto& f : allDumps) {
@@ -463,9 +437,8 @@ bool DoExport(const std::wstring& zipPath, const Options& opt, std::string* erro
         absent.push_back("dumps (IncludeDumps=0)");
     }
 
-    // config/*.ini - Melange.ini plus any sibling .ini next to the game exe.
+    // config/*.ini from the game folder and the ASI loader's plugins\ and scripts\ folders.
     {
-        // Plus plugins\ and scripts\, where Ultimate ASI Loader plugins keep theirs (WUMPatch: plugins\WUM.Patch.ini).
         bool any = false;
         for (const wchar_t* sub : {L"", L"plugins", L"scripts"}) {
             std::wstring dir = melange::game::GameDir() + (*sub ? L"\\" + std::wstring(sub) : std::wstring());
@@ -478,9 +451,7 @@ bool DoExport(const std::wstring& zipPath, const Options& opt, std::string* erro
         if (!any) absent.push_back("config (no .ini files found)");
     }
 
-    // mods/modules.json - every currently-installed Melange module. melange::modules::Installed() only lists
-    // modules that installed successfully; core/module.h keeps no record of ones skipped/disabled (see
-    // report: this is a scope limit of the shared header, not something D changed).
+    // mods/modules.json: installed modules only; skipped/disabled ones are not tracked.
     {
         jsonmini::Arr arr;
         for (const auto* m : melange::modules::Installed()) {
@@ -495,20 +466,18 @@ bool DoExport(const std::wstring& zipPath, const Options& opt, std::string* erro
                  userName, salt);
     }
 
-    // mods/plugins.json - every *.asi / dinput8.dll detected next to the game exe.
     {
         std::string data = melange::sysinfo::PluginsJson();
         AddEntry(zip, manifest, "mods/plugins.json", data, L"(generated)", false, false, opt.redactUserPaths,
                  userName, salt);
     }
 
-    // system.json
     {
         std::string data = melange::sysinfo::CollectJson();
         AddEntry(zip, manifest, "system.json", data, L"(generated)", false, true, opt.redactUserPaths, userName, salt);
     }
 
-    // manifest.json is built last (it needs every other entry's hash) and is not itself listed in it.
+    // Last: it needs every other entry's hash.
     std::string manifestJson = BuildManifestJson(opt, manifest, sessionIds, absent);
     zip.Add("manifest.json", manifestJson.data(), manifestJson.size());
 
@@ -543,35 +512,30 @@ bool DoExport(const std::wstring& zipPath, const Options& opt, std::string* erro
     if (!ok && error) *error = "write failed part-way through " + Narrow(zipPath);
 
     uint64_t frameEnd = melange::events::FrameCount();
-    WF_INFO("[LogExport] export %s: %s (%zu entries, frame %llu -> %llu)", ok ? "OK" : "FAILED", Narrow(zipPath).c_str(),
+    LOG_INFO("[LogExport] export %s: %s (%zu entries, frame %llu -> %llu)", ok ? "OK" : "FAILED", Narrow(zipPath).c_str(),
             manifest.size(), static_cast<unsigned long long>(frameStart), static_cast<unsigned long long>(frameEnd));
     return ok;
 }
 
-// DoExport() loads every exported file whole (up to 64/256 MB each) and copies each text file several times
-// (redaction passes, the zip's own heap buffers, Finalize()'s outBytes->assign). In this 32-bit process that can
-// add up to several hundred MB of short-lived allocations, and neither worker thread below had a try/catch, so
-// std::bad_alloc (or std::length_error from an oversized std::string) used to escape the thread's entry point -
-// which terminates the whole process (see the report). Wrap the one call both threads make so an export that
-// runs out of memory fails gracefully (State::Failed, logged) instead of crashing the game.
+// An export can need hundreds of MB in this 32-bit process; an exception escaping a worker thread would
+// terminate the game, so catch everything here.
 bool SafeDoExport(const std::wstring& zipPath, const Options& opt, std::string* error) {
     try {
         return DoExport(zipPath, opt, error);
     } catch (const std::exception& e) {
-        WF_ERROR("[LogExport] export threw an exception: %s", e.what());
+        LOG_ERROR("[LogExport] export threw an exception: %s", e.what());
         if (error) *error = std::string("export failed: ") + e.what();
         return false;
     } catch (...) {
-        WF_ERROR("[LogExport] export threw an unknown exception");
+        LOG_ERROR("[LogExport] export threw an unknown exception");
         if (error) *error = "export failed: unknown exception";
         return false;
     }
 }
 
-// -------------------------------------------------------------------------------------- fullscreen + dialog
+// Save dialog
 
-// [I] heuristic, not yet verified in-game (see report): a window with no caption/frame whose bounds
-// cover its whole monitor. Exclusive and borderless fullscreen both look like this on this engine.
+// Heuristic: no caption/frame and the window covers its monitor (exclusive and borderless alike).
 bool IsFullscreen() {
     HWND h = static_cast<HWND>(melange::events::GameWindow());
     if (!h) return false;
@@ -602,7 +566,7 @@ DialogResult ShowSaveDialogCOM(std::wstring* outPath) {
         dlg->SetFolder(folder);
         folder->Release();
     }
-    HRESULT hr = dlg->Show(nullptr);  // owner = null: the game keeps its own message loop and rendering
+    HRESULT hr = dlg->Show(nullptr);  // no owner, so the game keeps rendering
     DialogResult result = DialogResult::Cancelled;
     if (SUCCEEDED(hr)) {
         IShellItem* item = nullptr;
@@ -616,7 +580,7 @@ DialogResult ShowSaveDialogCOM(std::wstring* outPath) {
             item->Release();
         }
     } else if (hr != HRESULT_FROM_WIN32(ERROR_CANCELLED)) {
-        result = DialogResult::ApiUnavailable;  // something other than a plain cancel: try the legacy dialog
+        result = DialogResult::ApiUnavailable;  // not a cancel: fall back to the legacy dialog
     }
     dlg->Release();
     return result;
@@ -641,12 +605,7 @@ DialogResult ShowSaveDialogLegacy(std::wstring* outPath) {
     return DialogResult::Cancelled;
 }
 
-// -------------------------------------------------------------------------------------------- toast
-
-// §5.1 Q3(b): "in fullscreen, auto-save ... and show the path as an overlay toast." melange/overlay.h (A's
-// frozen contract) has no notification/toast primitive, so rather than invent one on A's behalf, D shows
-// its own small topmost, click-through popup over the game window. This has no dependency on the real
-// overlay ever landing, and is fully exercisable offline (see report).
+// Toast: a topmost click-through popup showing where a fullscreen export was saved.
 LRESULT CALLBACK ToastWndProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
     switch (msg) {
         case WM_PAINT: {
@@ -682,7 +641,7 @@ DWORD WINAPI ToastThreadProc(LPVOID param) {
         wc.hInstance = GetModuleHandleW(nullptr);
         wc.lpszClassName = kClassName;
         wc.hbrBackground = CreateSolidBrush(RGB(24, 24, 24));
-        wc.hCursor = LoadCursorW(nullptr, MAKEINTRESOURCEW(32512));  // IDC_ARROW, forced to the W form
+        wc.hCursor = LoadCursorW(nullptr, MAKEINTRESOURCEW(32512));  // IDC_ARROW
         RegisterClassW(&wc);
     }
     RECT area{0, 0, GetSystemMetrics(SM_CXSCREEN), GetSystemMetrics(SM_CYSCREEN)};
@@ -715,8 +674,6 @@ void ShowToast(const std::wstring& text) {
         delete data;
 }
 
-// --------------------------------------------------------------------------------------- worker thread
-
 DWORD WINAPI SaveAsWorkerProc(LPVOID) {
     HRESULT coHr = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
     bool fullscreen = IsFullscreen();
@@ -735,7 +692,7 @@ DWORD WINAPI SaveAsWorkerProc(LPVOID) {
         haveDialog = r == DialogResult::Ok;
         if (!haveDialog) {
             SetCancelled();
-            WF_INFO("[LogExport] save dialog cancelled (state Cancelled, nothing written)");
+            LOG_INFO("[LogExport] save dialog cancelled (state Cancelled, nothing written)");
         }
     }
 
@@ -756,17 +713,15 @@ DWORD WINAPI SaveAsWorkerProc(LPVOID) {
     return 0;
 }
 
-// --------------------------------------------------------------------------------------- testcmd + module
-
 bool OnSaveLogsVerb(std::string_view args, void*) {
     std::string path = Trim(std::string(args));
     if (path.empty()) {
-        WF_WARN("[auto] savelogs: usage: savelogs <path.zip>");
+        LOG_WARN("[auto] savelogs: usage: savelogs <path.zip>");
         return false;
     }
     bool expected = false;
     if (!g_busy.compare_exchange_strong(expected, true)) {
-        WF_WARN("[auto] savelogs: an export is already running");
+        LOG_WARN("[auto] savelogs: an export is already running");
         return false;
     }
     SetState(State::Writing);
@@ -779,23 +734,23 @@ bool OnSaveLogsVerb(std::string_view args, void*) {
             bool ok = SafeDoExport(*p, DefaultOptions(), &err);
             if (ok) {
                 SetDone(*p);
-                WF_INFO("[auto] savelogs: wrote %s", Narrow(*p).c_str());
+                LOG_INFO("[auto] savelogs: wrote %s", Narrow(*p).c_str());
             } else {
                 SetFailed(err);
-                WF_ERROR("[auto] savelogs: failed: %s", err.c_str());
+                LOG_ERROR("[auto] savelogs: failed: %s", err.c_str());
             }
             g_busy = false;
             return 0;
         },
         pathCopy, 0, nullptr);
     if (!th) {
-        WF_ERROR("[auto] savelogs: CreateThread failed");
+        LOG_ERROR("[auto] savelogs: CreateThread failed");
         delete pathCopy;
         g_busy = false;
         return false;
     }
     CloseHandle(th);
-    return true;  // accepted; result is logged asynchronously (handlers must not block, per melange/testcmd.h)
+    return true;  // result is logged asynchronously; testcmd handlers must not block
 }
 
 void OnHotkeyOrMenu(void*) { RequestSaveAs(); }
@@ -809,9 +764,6 @@ public:
     int Order() const override { return 60; }
 
     bool Install() override {
-        // DefaultOptions() reads its own [LogExport] keys directly (it is a free function, not a Module
-        // method, since melange/export.h's Options/DefaultOptions() are called by code that has no Module
-        // instance); the hotkey text lives in the same section for the same reason.
         melange::config::EnsureKey(Name(), "Hotkey", "Ctrl+Shift+F11");
         std::string hotkeyText = melange::config::GetString(Name(), "Hotkey", "Ctrl+Shift+F11");
 
@@ -820,11 +772,11 @@ public:
             if (melange::overlay::ParseHotkey(hotkeyText.c_str(), &dik, &mods))
                 melange::overlay::AddHotkey(dik, mods, &OnHotkeyOrMenu, nullptr);
             else
-                WF_WARN("[LogExport] Hotkey '%s' not understood, no hotkey registered", hotkeyText.c_str());
+                LOG_WARN("[LogExport] Hotkey '%s' not understood, no hotkey registered", hotkeyText.c_str());
         }
         melange::overlay::AddMenuItem("File/Save logs as...", &OnHotkeyOrMenu, nullptr, hotkeyText.c_str());
         melange::testcmd::Register("savelogs", &OnSaveLogsVerb);
-        WF_INFO("[LogExport] ready (hotkey %s)", hotkeyText.empty() ? "(none)" : hotkeyText.c_str());
+        LOG_INFO("[LogExport] ready (hotkey %s)", hotkeyText.empty() ? "(none)" : hotkeyText.c_str());
         return true;
     }
 };
@@ -848,7 +800,7 @@ Options DefaultOptions() {
 bool RequestSaveAs() {
     bool expected = false;
     if (!g_busy.compare_exchange_strong(expected, true)) {
-        WF_WARN("[LogExport] an export is already running, ignoring request");
+        LOG_WARN("[LogExport] an export is already running, ignoring request");
         return false;
     }
     SetState(State::Dialog);
@@ -866,7 +818,7 @@ bool ExportTo(const std::wstring& zipPath, const Options& opt, std::string* erro
     bool expected = false;
     if (!g_busy.compare_exchange_strong(expected, true)) {
         if (error) *error = "an export is already running";
-        WF_WARN("[LogExport] ExportTo: an export is already running");
+        LOG_WARN("[LogExport] ExportTo: an export is already running");
         return false;
     }
     SetState(State::Writing);

@@ -23,7 +23,7 @@ void Append(const char* s, size_t n) {
 }  // namespace
 
 void Init(const std::wstring& path) {
-    // Keep the previous session's log: after a crash/hang the user restarts the game and we must not lose evidence.
+    // Keep the previous session's log so a restart after a crash doesn't lose it.
     std::wstring prev = path;
     prev.insert(prev.rfind(L'.'), L".prev");
     MoveFileExW(path.c_str(), prev.c_str(), MOVEFILE_REPLACE_EXISTING);

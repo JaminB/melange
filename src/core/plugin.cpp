@@ -15,18 +15,18 @@ void Init(HMODULE self) {
     melange::config::Init(melange::game::PluginDir() + L"\\Melange.ini");
 
     const auto& exe = melange::game::Exe();
-    WF_INFO("Melange " MELANGE_VERSION " starting (pid %lu)", GetCurrentProcessId());
-    WF_INFO("game dir : %s", melange::game::Narrow(melange::game::GameDir()).c_str());
-    WF_INFO("ini      : %s", melange::game::Narrow(melange::config::Path()).c_str());
-    WF_INFO("exe      : size=%u timestamp=%08x sha256=%s", exe.fileSize, exe.timestamp, exe.sha256.c_str());
+    LOG_INFO("Melange " MELANGE_VERSION " starting (pid %lu)", GetCurrentProcessId());
+    LOG_INFO("game dir : %s", melange::game::Narrow(melange::game::GameDir()).c_str());
+    LOG_INFO("ini      : %s", melange::game::Narrow(melange::config::Path()).c_str());
+    LOG_INFO("exe      : size=%u timestamp=%08x sha256=%s", exe.fileSize, exe.timestamp, exe.sha256.c_str());
     if (exe.known)
-        WF_INFO("exe guard: recognised build %s - all modules available", exe.build);
+        LOG_INFO("exe guard: recognised build %s - all modules available", exe.build);
     else
-        WF_WARN("exe guard: UNRECOGNISED build - modules using fixed addresses are disabled");
+        LOG_WARN("exe guard: UNRECOGNISED build - modules using fixed addresses are disabled");
 
     melange::events::InstallCore();
     melange::modules::InstallAll();
-    WF_INFO("startup complete, %zu modules active", melange::modules::Installed().size());
+    LOG_INFO("startup complete, %zu modules active", melange::modules::Installed().size());
 }
 }  // namespace
 

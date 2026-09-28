@@ -1,25 +1,21 @@
 #pragma once
-// System/GPU info for the "Save logs as..." export (component D). Not a frozen sdk header: private to
-// src/tools/, built for melange::exporter's system.json (docs/m0-design.md §3 "D", Layout).
+// System, GPU and plugin info for the log export.
 #include <cstdint>
 #include <string>
 #include <vector>
 
 namespace melange::sysinfo {
-// One `mods/plugins.json` entry: every *.asi / dinput8.dll found next to the game exe.
+// Every *.asi / dinput8.dll next to the game exe.
 struct PluginFile {
-    std::string name;      // file name only
+    std::string name;
     uint32_t size = 0;
-    std::string version;   // FileVersion from the version resource, or "" if none
+    std::string version;   // FileVersion resource, or ""
     std::string sha256;
 };
 std::vector<PluginFile> DetectPlugins();
 
-// Returns a complete JSON object (with braces) for system.json: OS, CPU, RAM, display, GL (from
-// melange::overlay::Gl(), which is only meaningful once the real overlay component has created a GL
-// context; until then gl.valid is false), exe identity, locale and detected sibling plugins.
+// system.json as a complete JSON object. GL info is only valid once the overlay has seen a GL context.
 std::string CollectJson();
 
-// Same shape as system.json's "mods.plugins" array, exposed separately for mods/plugins.json.
 std::string PluginsJson();
 }  // namespace melange::sysinfo

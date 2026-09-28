@@ -18,7 +18,7 @@ struct KnownProfile {
     const char* sha256;
     const char* name;
 };
-// Steam depot build 64890 == the exe WUMPatch calls "Steam/GOG #1077".
+// Steam depot build 64890, the exe WUMPatch calls "Steam/GOG #1077".
 constexpr KnownProfile kProfiles[] = {
     {5713408, 1367508505, "041c8c6eb3b9f4fbaf367748f713ccb8f7bef68d13e825472c88c1ecf711ab7d", "Steam/GOG #1077"},
 };

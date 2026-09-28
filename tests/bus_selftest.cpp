@@ -1,8 +1,5 @@
-// Offline self-test for the event bus (component B, docs/m0-design.md §3.B). No game needed: it points the
-// registry reader at a fake name table, builds fake engine messages (with the arena size header at msg-4), and
-// drives the same dispatch code the inline hooks use (detail::RunPost / RunDeliver) with a fake "original".
-//
-// Run: scripts\selftest.ps1   (builds the bus_selftest target and runs it; exit code 0 = all checks passed)
+// Offline event bus self-test: fake name table and fake engine messages (size header at msg-4), driven through
+// the same dispatch code the hooks use (detail::RunPost / RunDeliver). Run via scripts\selftest.ps1.
 #include <windows.h>
 
 #include <cmath>
@@ -30,7 +27,6 @@ int g_checks = 0, g_failed = 0;
 
 void Section(const char* s) { printf("[%s]\n", s); }
 
-// ---------------------------------------------------------------- fake engine globals
 constexpr uint32_t kCap = 1300;
 std::vector<std::string> g_nameStore;
 const char* g_table[kCap] = {};
@@ -59,7 +55,6 @@ void FillRegistry() {
     for (uint32_t i = 0; i < kCap; ++i) g_table[i] = g_nameStore[i].empty() ? nullptr : g_nameStore[i].c_str();
 }
 
-// ---------------------------------------------------------------- fake messages
 struct FakeMsg {
     alignas(8) uint8_t buf[256] = {};
     uint8_t* raw() { return buf + 4; }
@@ -75,7 +70,6 @@ struct FakeMsg {
     void SetHeader(uint32_t h) { memcpy(buf, &h, 4); }
 };
 
-// ---------------------------------------------------------------- recording subscribers
 struct Seen {
     MsgId id;
     Path path;
@@ -125,7 +119,6 @@ int PostFanOut(void* msg, void*) {
 }
 int PostNoop(void*, void*) { return 1; }
 
-// ---------------------------------------------------------------- JsonOut collector
 class Collect final : public JsonOut {
 public:
     std::map<std::string, double> num;
@@ -164,7 +157,6 @@ int main() {
     detail::SetRegistrySource({reinterpret_cast<uintptr_t>(&g_tableVar), reinterpret_cast<uintptr_t>(&g_sizeVar),
                                reinterpret_cast<uintptr_t>(&g_svcVar)});
 
-    // ------------------------------------------------------------ registry not ready yet
     Section("registry: before the engine fills it");
     CHECK(!RegistryReady());
     CHECK(IdOf("Camera.HasUpdated") == kInvalidId);
@@ -176,7 +168,6 @@ int main() {
     CHECK(Subscribe(kInvalidId, Path::Post, &Record) == 0);
     CHECK(SubscribeName("", Path::Post, &Record) == 0);
 
-    // ------------------------------------------------------------ registry ready
     Section("registry: names and ids");
     g_tableVar = reinterpret_cast<uintptr_t>(g_table);
     CHECK(RegistryReady());
@@ -230,7 +221,6 @@ int main() {
     for (MsgId id : {MsgId{0x40}, MsgId{0x41}, MsgId{0x42}, MsgId{0x103}, MsgId{0x104}, MsgId{0x1004}, MsgId{0x7ffe}})
         CHECK(IdOf(NameOf(id)) == id);
 
-    // ------------------------------------------------------------ dispatch: Post fan-out, fromPost, depth, handle
     Section("dispatch: Post -> 3 Deliveries of the same object");
     const MsgId turn = Id(kSlotTurn);
     Recorder postRec, delRec;
@@ -292,7 +282,6 @@ int main() {
     Unsubscribe(delSub);  // twice: harmless
     Unsubscribe(0);
 
-    // ------------------------------------------------------------ subscribe / unsubscribe inside a handler
     Section("dispatch: (un)subscribe from inside a handler");
     FakeMsg exMsg(0x854184, Id(kSlotExplosion), 0x4c);
     g_selfSub = Subscribe(Id(kSlotExplosion), Path::Post, &SelfUnsub);
@@ -310,7 +299,6 @@ int main() {
     Unsubscribe(g_lateSub);
     detail::Tick();  // frees retired tables (no dispatch in flight)
 
-    // ------------------------------------------------------------ faults
     Section("faults: a handler that faults 3 times is disabled");
     const Stats s0 = GetStats();
     Recorder survivor;
@@ -324,7 +312,6 @@ int main() {
     Unsubscribe(faultSub);
     Unsubscribe(survSub);
 
-    // ------------------------------------------------------------ SubscribeAll
     Section("SubscribeAll");
     Recorder allRec;
     SubId allSub = SubscribeAll(Path::Deliver, &Record, &allRec);
@@ -337,7 +324,6 @@ int main() {
     CHECK(allRec.seen.empty());
     Unsubscribe(camSub);
 
-    // ------------------------------------------------------------ MessageView::Read bounds
     Section("MessageView::Read bounds and size header");
     {
         FakeMsg m(0x8850d4, Id(20), 12);  // IntMessage: +8 i32
@@ -358,7 +344,6 @@ int main() {
         CHECK(!v.Get(8, x));
     }
 
-    // ------------------------------------------------------------ decoders
     Section("decoders");
     {
         const float dmg[3] = {1.5f, 2.5f, -3.0f}, imp[3] = {4, 5, 6}, dir[3] = {0, 1, 0};
@@ -425,7 +410,6 @@ int main() {
         CHECK(!RegisterDecoder(0, "x", nullptr));
     }
 
-    // ------------------------------------------------------------ hot path cost with no subscribers
     Section("performance: hot path with nothing subscribed");
     {
         FakeMsg quiet(0x81aa14, Id(40), 8);

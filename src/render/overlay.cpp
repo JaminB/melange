@@ -1,18 +1,6 @@
-// Overlay (component A, docs/m0-design.md section 3.A): Dear ImGui on the Present path, panel / menu / hotkey
-// registration (melange/overlay.h), GL state guard (gl_guard.*), input capture (input.cpp).
-//
-// Present path: events::SetPresentHook(&OnPresent) runs inside the existing gdi32!SwapBuffers IAT hook, after the
-// Frame subscribers and right before the real SwapBuffers, on the main thread with the game's context current
-// (no second hook at 0x795540). On the first Present with a context the ImGui context and both backends are
-// created and GlInfo is captured. While the overlay is hidden a frame costs a couple of branches.
-//
-// States: hidden (no capture, only hotkeys are swallowed) -> ToggleKey -> visible + capturing; PassthroughKey ->
-// visible without capture (drawn, not interactive, the game gets all input). ToggleKey from pass-through makes
-// the overlay interactive; ToggleKey while interactive hides it; PassthroughKey while in pass-through hides it.
-//
-// Context changes: if wglGetCurrentContext() or the window differ from the ones at init, both backends are shut
-// down without deleting GL objects, re-initialised, the window is re-subclassed and Stats.contextResets counts it.
-// Any fault inside the ImGui frame or the draw disables the overlay with an error in the log (the game goes on).
+// Dear ImGui overlay, drawn from the SwapBuffers hook on the main thread with the game's GL context current.
+// ToggleKey: hidden <-> interactive (captures input). PassthroughKey: drawn but the game keeps all input.
+// A context or window change re-initialises the backends; any fault disables the overlay, the game goes on.
 #include <windows.h>
 #include <GL/gl.h>
 
@@ -104,7 +92,6 @@ int g_sampleCount = 0, g_sampleIdx = 0;
 uint32_t g_verifyChecks = 0, g_glErrors = 0, g_mismatchLogs = 0;
 uint64_t g_lastVerifyLog = 0;
 
-// fps from the engine frame counter (sampled by the About panel and the stats verb)
 std::atomic<double> g_fps{0};
 uint64_t g_fpsTick = 0, g_fpsFrame = 0;
 
@@ -207,10 +194,10 @@ void DrawMenuBar() {
     }
     ImGui::EndMainMenuBar();
     if (clicked.fn) {
-        WF_INFO("[overlay] menu: %s", clicked.what.c_str());
+        LOG_INFO("[overlay] menu: %s", clicked.what.c_str());
         unsigned long code = 0;
         if (!SehCall(clicked.fn, clicked.user, &code))
-            WF_ERROR("[overlay] menu item '%s' raised exception 0x%08lx", clicked.what.c_str(), code);
+            LOG_ERROR("[overlay] menu item '%s' raised exception 0x%08lx", clicked.what.c_str(), code);
     }
 }
 
@@ -285,7 +272,7 @@ void DrawPanels() {
                 }
                 if (!ok) {
                     p.disabled = true;
-                    WF_ERROR("[overlay] panel '%s' raised exception 0x%08lx while drawing; panel disabled", p.id.c_str(), code);
+                    LOG_ERROR("[overlay] panel '%s' raised exception 0x%08lx while drawing; panel disabled", p.id.c_str(), code);
                 }
             }
         }
@@ -327,7 +314,7 @@ void Disable(const char* why, unsigned long code) {
     melange::render::SetImGuiInputReady(false);
     g_visible = false;
     g_capture = false;
-    WF_ERROR("[overlay] %s (exception 0x%08lx): overlay disabled for this session, the game continues", why, code);
+    LOG_ERROR("[overlay] %s (exception 0x%08lx): overlay disabled for this session, the game continues", why, code);
 }
 
 void CaptureGlInfo(HWND hwnd) {
@@ -352,7 +339,7 @@ void CaptureGlInfo(HWND hwnd) {
         std::lock_guard lk(g_glMx);
         g_gl = gi;
     }
-    WF_INFO("[overlay] GL: %s | %s | %s | GLSL %s | viewport %dx%d | window %p", gi.vendor.c_str(), gi.renderer.c_str(),
+    LOG_INFO("[overlay] GL: %s | %s | %s | GLSL %s | viewport %dx%d | window %p", gi.vendor.c_str(), gi.renderer.c_str(),
             gi.version.c_str(), gi.glsl.empty() ? "-" : gi.glsl.c_str(), gi.viewportW, gi.viewportH,
             static_cast<void*>(hwnd));
 }
@@ -360,7 +347,7 @@ void CaptureGlInfo(HWND hwnd) {
 bool InitBackends(HWND hwnd) {
     std::string ini = Utf8(melange::game::DataDir() + L"\\imgui.ini");
     if (!melange::render::backend::Init(hwnd, ini.c_str(), &OnImGuiCreated)) {
-        WF_ERROR("[overlay] ImGui backend init failed (window %p): overlay disabled", static_cast<void*>(hwnd));
+        LOG_ERROR("[overlay] ImGui backend init failed (window %p): overlay disabled", static_cast<void*>(hwnd));
         g_disabled = true;
         return false;
     }
@@ -379,12 +366,12 @@ void FirstPresent(HDC dc) {
     melange::render::SubclassGameWindow(hwnd);
     g_ctx = ctx;
     g_hwnd = hwnd;
-    if (InitBackends(hwnd)) WF_INFO("[overlay] ImGui %s ready (opengl2 + win32 backends), ini %s", IMGUI_VERSION, ImGui::GetIO().IniFilename ? ImGui::GetIO().IniFilename : "-");
+    if (InitBackends(hwnd)) LOG_INFO("[overlay] ImGui %s ready (opengl2 + win32 backends), ini %s", IMGUI_VERSION, ImGui::GetIO().IniFilename ? ImGui::GetIO().IniFilename : "-");
 }
 
 void HandleContextChange(HGLRC ctx, HWND hwnd) {
     const bool lost = ctx != g_ctx;
-    WF_WARN("[overlay] %s changed (context %p -> %p, window %p -> %p): re-initialising the ImGui backends",
+    LOG_WARN("[overlay] %s changed (context %p -> %p, window %p -> %p): re-initialising the ImGui backends",
             lost ? "GL context" : "game window", static_cast<void*>(g_ctx), static_cast<void*>(ctx),
             static_cast<void*>(g_hwnd), static_cast<void*>(hwnd));
     melange::render::SetImGuiInputReady(false);
@@ -480,7 +467,7 @@ void RenderOverlay(HDC dc) {
             static bool logged = false;
             if (!logged) {
                 logged = true;
-                WF_WARN("[overlay] framebuffer object %d bound at Present: overlay frame skipped (never rebinds; logged once)",
+                LOG_WARN("[overlay] framebuffer object %d bound at Present: overlay frame skipped (never rebinds; logged once)",
                         guard.Fbo());
             }
         }
@@ -491,7 +478,7 @@ void RenderOverlay(HDC dc) {
     if (setupErr || restoreErr) {
         static int logged = 0;
         if (logged++ < 10)
-            WF_WARN("[overlay] glGetError during the overlay frame: %d while neutralising, %d while drawing/restoring",
+            LOG_WARN("[overlay] glGetError during the overlay frame: %d while neutralising, %d while drawing/restoring",
                     setupErr, restoreErr);
     }
     if (verify) {
@@ -507,11 +494,11 @@ void RenderOverlay(HDC dc) {
             checks = g_verifyChecks;
             mismatches = g_stats.stateMismatches;
         }
-        if (d && g_mismatchLogs++ < 20) WF_WARN("[overlay] VerifyState: %d value(s) changed across the overlay draw: %s", d, diff.c_str());
+        if (d && g_mismatchLogs++ < 20) LOG_WARN("[overlay] VerifyState: %d value(s) changed across the overlay draw: %s", d, diff.c_str());
         uint64_t now = GetTickCount64();
         if (now - g_lastVerifyLog >= 10000 || checks == 1) {
             g_lastVerifyLog = now;
-            WF_INFO("[overlay] VerifyState: checks=%u stateMismatches=%u frames with glGetError=%u (values/check=%d)",
+            LOG_INFO("[overlay] VerifyState: checks=%u stateMismatches=%u frames with glGetError=%u (values/check=%d)",
                     checks, mismatches, g_glErrors, before.n);
         }
     }
@@ -575,12 +562,12 @@ bool VerbStats(std::string_view, void*) {
     melange::overlay::Stats s = melange::overlay::GetStats();
     melange::overlay::GlInfo g = melange::overlay::Gl();
     melange::render::InputStats in = melange::render::GetInputStats();
-    WF_INFO("[overlay] stats: installed=%d visible=%d capturing=%d frames=%llu lastUs=%.1f p95Us=%.1f stateMismatches=%u "
+    LOG_INFO("[overlay] stats: installed=%d visible=%d capturing=%d frames=%llu lastUs=%.1f p95Us=%.1f stateMismatches=%u "
             "contextResets=%u fps=%.1f | GL valid=%d %s | %s | %s | viewport %dx%d",
             melange::overlay::Installed(), melange::overlay::Visible(), melange::overlay::Capturing(),
             static_cast<unsigned long long>(s.frames), s.lastUs, s.p95Us, s.stateMismatches, s.contextResets,
             melange::render::Fps(), g.valid, g.vendor.c_str(), g.renderer.c_str(), g.version.c_str(), g.viewportW, g.viewportH);
-    WF_INFO("[overlay] input: diHooked=%d cursorHooked=%d subclassed=%d polls=%llu keysDropped=%llu synthetic=%llu "
+    LOG_INFO("[overlay] input: diHooked=%d cursorHooked=%d subclassed=%d polls=%llu keysDropped=%llu synthetic=%llu "
             "keyMsgsDropped=%llu mouseMsgsDropped=%llu cursorBlocked=%llu hotkeys=%llu",
             in.diHooked, in.cursorHooked, in.subclassed, static_cast<unsigned long long>(in.diPolls),
             static_cast<unsigned long long>(in.keysDropped), static_cast<unsigned long long>(in.syntheticReleases),
@@ -596,13 +583,13 @@ bool VerbSelftest(std::string_view, void*) {
         size_t nl = report.find('\n', p);
         std::string line = report.substr(p, nl == std::string::npos ? std::string::npos : nl - p);
         if (failed)
-            WF_ERROR("[overlay] %s", line.c_str());
+            LOG_ERROR("[overlay] %s", line.c_str());
         else
-            WF_INFO("[overlay] %s", line.c_str());
+            LOG_INFO("[overlay] %s", line.c_str());
         if (nl == std::string::npos) break;
         p = nl + 1;
     }
-    WF_INFO("[overlay] SELFTEST %s", failed ? "FAIL" : "PASS");
+    LOG_INFO("[overlay] SELFTEST %s", failed ? "FAIL" : "PASS");
     return failed == 0;
 }
 
@@ -611,7 +598,7 @@ class Overlay final : public melange::Module {
 public:
     const char* Name() const override { return "Overlay"; }
     const char* Description() const override { return "ImGui overlay (hidden until the toggle key), panels, input capture"; }
-    int Order() const override { return 35; }  // after Automation (30): our DirectInput hooks wrap its injection
+    int Order() const override { return 35; }  // after input-injection modules (30), so our DirectInput hooks wrap theirs
 
     bool Install() override {
         g_demo = Bool("Demo", false);
@@ -619,9 +606,9 @@ public:
         ParseKey("ToggleKey", "GRAVE", &g_toggleDik, &g_toggleMods);
         ParseKey("PassthroughKey", "Shift+GRAVE", &g_passDik, &g_passMods);
         if (g_toggleDik == g_passDik && g_toggleMods == g_passMods)
-            WF_WARN("[overlay] ToggleKey and PassthroughKey are the same key; pass-through is unreachable");
+            LOG_WARN("[overlay] ToggleKey and PassthroughKey are the same key; pass-through is unreachable");
         if (melange::config::GetBool("Probe", "Enabled", false))
-            WF_WARN("[overlay] [Probe] Enabled=1: Probe and Overlay both hook input and Present; do not run them together");
+            LOG_WARN("[overlay] [Probe] Enabled=1: Probe and Overlay both hook input and Present; do not run them together");
 
         melange::render::InstallInput();
         melange::overlay::AddHotkey(g_toggleDik, g_toggleMods, &ToggleAction, nullptr);
@@ -637,7 +624,7 @@ public:
 
         melange::events::SetPresentHook(&OnPresent);
         g_installed = true;
-        WF_INFO("[overlay] installed, hidden (ToggleKey=%s PassthroughKey=%s Demo=%d VerifyState=%d)",
+        LOG_INFO("[overlay] installed, hidden (ToggleKey=%s PassthroughKey=%s Demo=%d VerifyState=%d)",
                 melange::render::HotkeyText(0).c_str(), melange::render::HotkeyText(1).c_str(), g_demo, g_verify);
         return true;
     }
@@ -650,9 +637,9 @@ public:
 private:
     void ParseKey(const char* key, const char* def, uint8_t* dik, uint8_t* mods) const {
         melange::config::EnsureKey(Name(), key, def);
-        std::string v = melange::config::GetString(Name(), key, def);  // inline '; comments' already stripped
+        std::string v = melange::config::GetString(Name(), key, def);
         if (!melange::render::ParseHotkeyText(v.c_str(), dik, mods)) {
-            WF_WARN("[overlay] %s=%s is not a valid hotkey, using %s", key, v.c_str(), def);
+            LOG_WARN("[overlay] %s=%s is not a valid hotkey, using %s", key, v.c_str(), def);
             melange::render::ParseHotkeyText(def, dik, mods);
         }
     }
@@ -688,7 +675,7 @@ int AddPanel(const char* id, const char* title, DrawFn fn, void* user, uint32_t 
     std::lock_guard lk(g_regMx);
     for (const Panel& p : g_panels) {
         if (p.id == id) {
-            WF_WARN("[overlay] AddPanel: id '%s' already registered", id);
+            LOG_WARN("[overlay] AddPanel: id '%s' already registered", id);
             return 0;
         }
     }
@@ -733,12 +720,12 @@ bool Visible() { return g_visible.load(); }
 void SetVisible(bool v) {
     if (v && g_disabled) {
         static std::atomic<bool> logged{false};
-        if (!logged.exchange(true)) WF_WARN("[overlay] disabled for this session (see the error above); not showing it");
+        if (!logged.exchange(true)) LOG_WARN("[overlay] disabled for this session (see the error above); not showing it");
         return;
     }
     bool was = g_visible.exchange(v);
-    g_capture = v;  // showing turns capture on, hiding turns it off
-    if (was != v) WF_INFO("[overlay] %s", v ? "shown (capturing input)" : "hidden");
+    g_capture = v;
+    if (was != v) LOG_INFO("[overlay] %s", v ? "shown (capturing input)" : "hidden");
 }
 
 bool Capturing() {
@@ -748,7 +735,7 @@ bool Capturing() {
 
 void SetCapture(bool on) {
     bool was = g_capture.exchange(on);
-    if (was != on && g_visible) WF_INFO("[overlay] capture %s", on ? "on" : "off (pass-through)");
+    if (was != on && g_visible) LOG_INFO("[overlay] capture %s", on ? "on" : "off (pass-through)");
 }
 
 GlInfo Gl() {

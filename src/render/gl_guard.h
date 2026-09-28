@@ -1,7 +1,5 @@
 #pragma once
-// GL state save / neutralise / restore around the overlay draw (docs/m0-design.md section 3.A "GL guard").
-// Self-contained (windows.h + opengl32 only) so the offline test runner can drive it against a real context.
-// Everything here must be called on the thread that owns the current GL context.
+// GL state save / neutralise / restore around the overlay draw. Call only on the thread owning the GL context.
 #include <cstdint>
 #include <string>
 
@@ -34,8 +32,7 @@ void Reset();
 // Drains glGetError. Returns how many errors were pending; the first one goes to *first.
 int DrainErrors(unsigned* first = nullptr);
 
-// About 50 read-back values that the overlay must leave untouched (used by [Overlay] VerifyState=1 and the
-// offline test). Reading drains glGetError before and after (queries of unsupported enums are skipped).
+// Read-back values the overlay must leave untouched ([Overlay] VerifyState=1). Drains glGetError around the read.
 struct Snapshot {
     static constexpr int kMax = 80;
     int n = 0;
@@ -53,13 +50,12 @@ Snapshot Read();
 // Number of differing values; a readable list of the first few goes to *out.
 int Diff(const Snapshot& before, const Snapshot& after, std::string* out);
 
-// RAII guard: the constructor saves all state (attrib + client attrib stacks, the three matrix stacks, buffer and
-// program bindings) and neutralises the game's leftovers; the destructor restores everything.
-// If a framebuffer object is bound (never seen, docs/m0-design.md U1) nothing is touched and Ok() is false.
+// RAII: saves all state and neutralises the game's leftovers; the destructor restores everything.
+// If a framebuffer object is bound nothing is touched and Ok() is false.
 class Guard {
 public:
     Guard();
-    ~Guard();  // calls Restore() if it has not run yet
+    ~Guard();
     void Restore();
     Guard(const Guard&) = delete;
     Guard& operator=(const Guard&) = delete;
@@ -73,10 +69,8 @@ private:
     int fbo_ = 0, setupErrors_ = 0, restoreErrors_ = 0;
     int activeTex_ = 0, clientActiveTex_ = 0, matrixMode_ = 0, program_ = 0, arrayBuf_ = 0, elemBuf_ = 0,
         unpackBuf_ = 0;
-    // Stack depths right after this Guard's own push (see gl_guard.cpp). ImGui's GL2 backend does its own
-    // glPushAttrib + matrix pushes around the draw; if it faults mid-draw those pushes are never popped, so a
-    // single unconditional glPopAttrib()/glPopMatrix() in Restore() would remove ImGui's level instead of ours
-    // and leave the guard's own push permanently on the stack. Restore() instead pops down to these depths.
+    // Stack depths right after our own push. Restore() pops down to these, so pushes ImGui left behind after a
+    // mid-draw fault are removed too.
     int attribDepth_ = 0, clientAttribDepth_ = 0, texMatrixDepth_ = 0, projMatrixDepth_ = 0, mvMatrixDepth_ = 0;
 };
 }  // namespace melange::render::gl

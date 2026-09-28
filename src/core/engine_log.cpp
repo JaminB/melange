@@ -1,5 +1,4 @@
-// EngineLog: mirrors every line the engine writes to XOM<n>-<PC>.log into Melange.log, so engine
-// messages (including the netcode's "Session no longer viable..." lines) interleave with our traces.
+// EngineLog: mirrors every line the engine writes to XOM<n>-<PC>.log into Melange.log.
 #include <safetyhook.hpp>
 
 #include <cstdarg>
@@ -12,14 +11,13 @@
 #include "core/module.h"
 
 namespace {
-// void __cdecl XDebugOutSink(const char* line) - the final sink behind XDebugOutStream::Write (see re-notes §5).
+// void __cdecl XDebugOutSink(const char* line), the final sink behind XDebugOutStream::Write.
 constexpr uintptr_t kSink = 0x645c39;
 SafetyHookInline g_hook;
 SafetyHookMid g_onlineHook;
 
-// void __cdecl XomOnlineLog(obj, const char* tag, int level, const char* fmt, va_list) (0x41e3fd, re-notes §5).
-// Retail only enables the stream carrying the level marker ("*** FAILURE ***"); the tag and message go to a
-// disabled stream, so they are reconstructed here.
+// void __cdecl XomOnlineLog(obj, const char* tag, int level, const char* fmt, va_list).
+// Retail sends the tag and message to a disabled stream, so they are reconstructed here.
 constexpr uintptr_t kOnlineLog = 0x41e3fd;
 
 void OnOnlineLog(safetyhook::Context& c) {
@@ -34,7 +32,7 @@ void OnOnlineLog(safetyhook::Context& c) {
     static const char* kLevel[] = {"info", "info", "WARNING", "FAILURE"};
     melange::log::Write("ENG  ", "XomOnline[%s] %s: %s", kLevel[level & 3], tag ? tag : "", msg);
 }
-std::string g_filter;  // empty = everything
+std::string g_filter;
 
 // The engine streams a line in fragments ("  14 | ", "+ ", text, "\n"); reassemble per thread.
 void Emit(std::string& line) {

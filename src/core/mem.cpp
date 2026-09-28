@@ -39,7 +39,7 @@ bool Expect(uintptr_t addr, std::initializer_list<int> bytes) {
     for (int b : bytes) {
         if (i >= n) break;
         if (b >= 0 && actual[i] != static_cast<unsigned char>(b)) {
-            WF_WARN("byte mismatch at %08x+%zu: expected %02x got %02x", static_cast<unsigned>(addr), i, b, actual[i]);
+            LOG_WARN("byte mismatch at %08x+%zu: expected %02x got %02x", static_cast<unsigned>(addr), i, b, actual[i]);
             return false;
         }
         ++i;
@@ -102,7 +102,7 @@ void** FindIAT(const char* dll, const char* func) {
 bool HookIAT(const char* dll, const char* func, void* hook, void** original) {
     void** slot = FindIAT(dll, func);
     if (!slot) {
-        WF_WARN("IAT hook: %s!%s is not imported by the game", dll, func);
+        LOG_WARN("IAT hook: %s!%s is not imported by the game", dll, func);
         return false;
     }
     if (*slot == hook) return true;

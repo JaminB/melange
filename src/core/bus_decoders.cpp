@@ -1,5 +1,4 @@
-// Event bus (component B): message classes (vtable -> name) and the built-in typed payload decoders.
-// Vtables and layouts: docs/m0-design.md §1.2 (re/out/vtables.tsv; ExplosionMessage from ctor 0x518ce0).
+// Event bus: message classes (vtable -> name) and the built-in payload decoders.
 // Offsets are from the start of the message object (+0 vtable, +4 u16 id, +8 payload).
 #include <windows.h>
 
@@ -28,7 +27,6 @@ std::unordered_map<uintptr_t, Entry>& Map() {
     return m;
 }
 
-// ---- guarded reads
 // Copies a NUL-terminated engine string (at most cap-1 chars). Stops at the first unreadable byte.
 size_t ReadCString(uintptr_t p, char* buf, size_t cap) {
     size_t n = 0;
@@ -67,8 +65,7 @@ void FloatField(const MessageView& m, uint32_t off, const char* key, JsonOut& o)
     if (m.Get(off, f)) o.Float(key, f);
 }
 
-// ---- built-in decoders
-void DecMessage(const MessageView&, JsonOut&) {}  // bare Message: no payload
+void DecMessage(const MessageView&, JsonOut&) {}
 
 void DecInt(const MessageView& m, JsonOut& o) {
     int32_t v;
@@ -200,7 +197,7 @@ bool Decode(const MessageView& m, JsonOut& out) {
     if (CallDecoder(fn, m, out, &code)) return true;
     static std::atomic<int> s_logged{0};
     if (s_logged.fetch_add(1) < 5)
-        WF_WARN("[bus] decoder for %s (vtable %08x) faulted with %08lx; output may be partial", m.className,
+        LOG_WARN("[bus] decoder for %s (vtable %08x) faulted with %08lx; output may be partial", m.className,
                 static_cast<unsigned>(m.vtable), code);
     return false;
 }

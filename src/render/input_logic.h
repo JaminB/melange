@@ -1,14 +1,5 @@
 #pragma once
-// Pure input logic of the overlay (component A), kept free of game, log and ImGui dependencies so that
-// src/render/selftest.cpp can exercise it both in-game (the overlay.selftest verb) and in the offline test
-// runner (tests/overlay, scripts/test-overlay.ps1).
-//
-//  - ParseHotkeyText: "Ctrl+Shift+F11" -> DIK code + modifier mask (key names: src/core/keys.h).
-//  - KeyFilter: the per-poll DirectInput keyboard buffer filter. It matches hotkeys on key-down and removes
-//    them (and their key-up), drops everything while the overlay captures input, and, when capture starts,
-//    appends synthetic key-up records for every key the game last saw down (docs/m0-design.md section 3.A,
-//    "Stuck keys").
-//  - SplitMenuPath: "File/Save logs as..." -> {"File", "Save logs as..."}.
+// Pure input logic of the overlay, free of game, log and ImGui dependencies so it can be self-tested.
 #include <windows.h>
 #ifndef DIRECTINPUT_VERSION
 #define DIRECTINPUT_VERSION 0x0800
@@ -25,7 +16,7 @@
 #include "core/keys.h"
 
 namespace melange::render {
-// Same values as melange::overlay::Mods (melange/overlay.h).
+// Same values as melange::overlay::Mods.
 enum : uint8_t { kModCtrl = 1, kModShift = 2, kModAlt = 4 };
 
 constexpr uint8_t kDikLCtrl = 0x1D, kDikRCtrl = 0x9D, kDikLShift = 0x2A, kDikRShift = 0x36, kDikLAlt = 0x38,
@@ -130,13 +121,9 @@ struct HotkeyDef {
 // Keyboard-buffer filter. Not thread-safe: the DirectInput poll runs on the game's main thread.
 class KeyFilter {
 public:
-    // Filters `buf[0..n)` in place and returns the new record count (<= capacity).
-    //  - A key-down whose DIK and current modifiers exactly match a hotkey is removed and its handle appended to
-    //    `fired`; its matching key-up is removed later as well.
-    //  - While `capturing`, every other record is removed too.
-    //  - On the first poll with `capturing` after a poll without it, a synthetic key-up is appended for every key
-    //    the game last saw down (as far as `capacity` allows; the rest follow on the next polls). Their DIKs go to
-    //    `released` if given.
+    // Filters `buf[0..n)` in place and returns the new count. Hotkey key-downs (and their key-ups) are removed
+    // and reported in `fired`; while capturing everything is removed. When capture starts, synthetic key-ups are
+    // appended for every key the game last saw down, so it doesn't see stuck keys.
     DWORD Process(DIDEVICEOBJECTDATA* buf, DWORD n, DWORD capacity, bool capturing, const HotkeyDef* hk, size_t nhk,
                   std::vector<int>* fired, std::vector<uint8_t>* released, DWORD nowTick) {
         if (capturing && !wasCapturing_) releasePending_ = true;
@@ -145,7 +132,7 @@ public:
         for (DWORD i = 0; i < n; ++i) {
             const DIDEVICEOBJECTDATA d = buf[i];
             if (d.dwSequence > lastSeq_) lastSeq_ = d.dwSequence;
-            if (d.dwOfs > 0xFF) {  // not a keyboard key (never seen on a keyboard device)
+            if (d.dwOfs > 0xFF) {  // not a keyboard key
                 if (!capturing && out < capacity) buf[out++] = d;
                 continue;
             }

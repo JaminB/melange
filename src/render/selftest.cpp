@@ -1,4 +1,3 @@
-// Self-tests for src/render/input_logic.h. No game, log or ImGui dependencies (see selftest.h).
 #include "render/selftest.h"
 
 #include <cstdio>

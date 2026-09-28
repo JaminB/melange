@@ -1,13 +1,11 @@
 #pragma once
-// Minimal JSON object/array builder shared by log_export.cpp and sysinfo.cpp. Not a frozen sdk header:
-// it is a private helper local to src/tools/, not included by any other component.
+// Minimal JSON object/array builder.
 #include <cstdio>
 #include <string>
 #include <string_view>
 
 namespace melange::jsonmini {
 
-// Escapes a string for use inside a JSON string literal (quotes not included).
 inline std::string Escape(std::string_view s) {
     std::string out;
     out.reserve(s.size() + 8);
@@ -33,8 +31,6 @@ inline std::string Escape(std::string_view s) {
     return out;
 }
 
-// Builds one JSON object. Values that are themselves JSON (nested objects/arrays already serialized by a
-// nested Obj/Arr) are added with Raw(); everything else is escaped and quoted as needed.
 class Obj {
 public:
     Obj() { s_ = "{"; }
@@ -71,7 +67,7 @@ public:
         s_ += v ? "true" : "false";
         return *this;
     }
-    // v already fully-formed JSON (object, array, string, number, null): inserted verbatim.
+    // v is already JSON; inserted verbatim.
     Obj& Raw(std::string_view k, std::string_view v) {
         Sep();
         s_ += '"';
@@ -101,7 +97,6 @@ public:
         s_ += '"';
         return *this;
     }
-    // v already fully-formed JSON.
     Arr& Raw(std::string_view v) {
         Sep();
         s_ += v;

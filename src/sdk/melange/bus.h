@@ -8,8 +8,8 @@ constexpr MsgId kInvalidId = 0xffff;
 
 enum class Path : uint8_t { Post, Deliver };
 
-// A read-only view of an in-flight engine message. Valid ONLY during the callback (the engine's message arena
-// is reset when dispatch depth returns to 0, see §1.2). Copy anything you keep.
+// Read-only view of an in-flight engine message. Valid only during the callback (the engine resets its message
+// arena when dispatch returns); copy anything you keep.
 struct MessageView {
     const uint8_t* raw;     // the Message object (+0 vtable, +4 id, +8 payload)
     MsgId id;
@@ -37,16 +37,15 @@ using SubId = uint32_t;  // 0 = failure
 // throw across the boundary, or keep `m`. A handler that faults 3 times is disabled (logged).
 // Subscribe/Unsubscribe are safe from any thread and from inside a handler (takes effect for the next message).
 SubId Subscribe(MsgId id, Path path, Handler fn, void* user = nullptr);
-SubId SubscribeName(const char* name, Path path, Handler fn, void* user = nullptr);  // resolves lazily if the
-                                                                                     // registry is not ready yet
+SubId SubscribeName(const char* name, Path path, Handler fn, void* user = nullptr);  // resolves once the registry is ready
 SubId SubscribeAll(Path path, Handler fn, void* user = nullptr);  // every id; keep it cheap
 void Unsubscribe(SubId id);
 
-// Registry (read directly from *0x96d094 / *0x96d08c; never calls 0x690d44).
+// Message-name registry.
 bool RegistryReady();                     // table pointer non-null and >= 1 name
 MsgId IdOf(std::string_view name);        // kInvalidId if not registered
 const char* NameOf(MsgId id);             // as MessageView::name
-template <class F> void ForEachName(F&& f);  // f(MsgId, const char*) for every non-null slot (inline in header)
+template <class F> void ForEachName(F&& f);  // f(MsgId, const char*) for every registered name
 size_t Capacity();
 namespace detail {
 const char* RegistrySlot(size_t slot);  // name in registry slot `slot` (id = 0x8000 | slot), or nullptr if empty
@@ -58,7 +57,7 @@ template <class F> void ForEachName(F&& f) {
 }
 
 // Typed payload decoders, keyed by message vtable. Writes JSON object members (no braces) into `out`.
-struct JsonOut {  // minimal writer; implemented by C's jlog, declared here to keep B independent
+struct JsonOut {
     virtual void Int(const char* k, int64_t v) = 0;
     virtual void Uint(const char* k, uint64_t v) = 0;
     virtual void Hex(const char* k, uint64_t v) = 0;

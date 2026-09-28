@@ -1,16 +1,12 @@
 #pragma once
-// Dear ImGui context + Win32/OpenGL2 backend lifetime for the overlay (component A). Main thread only, with the
-// game's GL context current. Kept separate from overlay.cpp so the offline test runner can exercise the
-// context-reset path (Shutdown(true) + Init on a new context) without the game.
+// Dear ImGui context and Win32/OpenGL2 backend lifetime. Main thread only, with the game's GL context current.
 #include <string>
 
 namespace melange::render::backend {
-// Creates the ImGui context on first use (io.IniFilename = iniUtf8, nullptr/empty = no ini; onCreate runs once
-// right after creation, before any frame, e.g. to register settings handlers), then initialises the Win32 and
-// OpenGL2 backends for `hwnd`. False if a backend failed.
+// Creates the ImGui context on first use (empty iniUtf8 = no imgui.ini; onCreate runs once after creation),
+// then initialises both backends for `hwnd`.
 bool Init(void* hwnd, const char* iniUtf8, void (*onCreate)() = nullptr);
-// Shuts both backends down. contextLost = the GL context the ImGui textures live in is gone (or not current):
-// their ids are forgotten without glDeleteTextures, and they are re-created on the next render.
+// contextLost: the textures' GL context is gone, so forget their ids instead of deleting them.
 void Shutdown(bool contextLost);
 bool Ready();
 void* Hwnd();

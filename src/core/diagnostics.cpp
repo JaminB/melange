@@ -1,5 +1,4 @@
 // Diagnostics: crash handler, main-thread hang watchdog and manual snapshot hotkey.
-// This is what turns "the game froze" into a stack trace + minidump we can analyse.
 #include <windows.h>
 
 #include <atomic>
@@ -12,7 +11,7 @@
 #include "core/log.h"
 #include "core/mem.h"
 #include "core/module.h"
-#include "melange/jlog.h"  // component C's only edit to Diagnostics: flush the JSONL queue from the crash filter
+#include "melange/jlog.h"
 
 namespace {
 using SetUEF_t = LPTOP_LEVEL_EXCEPTION_FILTER(WINAPI*)(LPTOP_LEVEL_EXCEPTION_FILTER);
@@ -40,11 +39,11 @@ public:
             melange::events::Subscribe(melange::events::Event::Frame, [this] {
                 auto f = melange::events::FrameCount();
                 if (selfTestCrashFrame_ && f == static_cast<uint64_t>(selfTestCrashFrame_)) {
-                    WF_WARN("self-test: forcing an access violation");
+                    LOG_WARN("self-test: forcing an access violation");
                     *reinterpret_cast<volatile int*>(0) = 1;
                 }
                 if (selfTestHangFrame_ && f == static_cast<uint64_t>(selfTestHangFrame_)) {
-                    WF_WARN("self-test: freezing main thread for %d s", hangSeconds_ + 5);
+                    LOG_WARN("self-test: freezing main thread for %d s", hangSeconds_ + 5);
                     Sleep((hangSeconds_ + 5) * 1000);
                 }
             });
@@ -69,7 +68,7 @@ private:
     static LPTOP_LEVEL_EXCEPTION_FILTER WINAPI HookSetUEF(LPTOP_LEVEL_EXCEPTION_FILTER f) {
         LPTOP_LEVEL_EXCEPTION_FILTER old = s_prevFilter;
         if (f != &OnUnhandledException) {
-            WF_INFO("game installed its own crash filter %p - chaining it behind Melange", reinterpret_cast<void*>(f));
+            LOG_INFO("game installed its own crash filter %p - chaining it behind Melange", reinterpret_cast<void*>(f));
             s_prevFilter = f;
         }
         return old;
@@ -78,17 +77,17 @@ private:
     static LONG WINAPI OnUnhandledException(EXCEPTION_POINTERS* ep) {
         if (s_inCrash.exchange(true)) return EXCEPTION_CONTINUE_SEARCH;
         auto* rec = ep->ExceptionRecord;
-        WF_ERROR("==== CRASH: exception %08lx at %s", rec->ExceptionCode,
+        LOG_ERROR("==== CRASH: exception %08lx at %s", rec->ExceptionCode,
                  melange::game::DescribeAddress(reinterpret_cast<uintptr_t>(rec->ExceptionAddress)).c_str());
         if (rec->ExceptionCode == EXCEPTION_ACCESS_VIOLATION && rec->NumberParameters >= 2)
-            WF_ERROR("     %s of address %08lx", rec->ExceptionInformation[0] ? "write" : "read",
+            LOG_ERROR("     %s of address %08lx", rec->ExceptionInformation[0] ? "write" : "read",
                      static_cast<unsigned long>(rec->ExceptionInformation[1]));
         std::string detail = melange::debug::FormatRegisters(*ep->ContextRecord) +
                              melange::debug::ScanStack(ep->ContextRecord->Eip, ep->ContextRecord->Esp);
         melange::log::WriteRaw(detail.c_str());
         melange::jlog::FlushFromCrash();
         auto path = melange::debug::WriteMiniDump("crash", ep, GetCurrentThreadId(), s_self && s_self->fullDumps_);
-        WF_ERROR("     minidump: %s", path.empty() ? "(failed)" : melange::game::Narrow(path).c_str());
+        LOG_ERROR("     minidump: %s", path.empty() ? "(failed)" : melange::game::Narrow(path).c_str());
         return s_prevFilter ? s_prevFilter(ep) : EXCEPTION_CONTINUE_SEARCH;
     }
 
@@ -106,12 +105,12 @@ private:
     }
 
     void Snapshot(const char* tag, DWORD tid) {
-        WF_WARN("==== %s snapshot of main thread %lu (frame %llu)", tag, tid,
+        LOG_WARN("==== %s snapshot of main thread %lu (frame %llu)", tag, tid,
                 static_cast<unsigned long long>(melange::events::FrameCount()));
         melange::log::WriteRaw(melange::debug::DescribeThread(tid).c_str());
         SampleMainThread(tid);
         auto path = melange::debug::WriteMiniDump(tag, nullptr, 0, fullDumps_);
-        WF_WARN("     minidump: %s", path.empty() ? "(failed)" : melange::game::Narrow(path).c_str());
+        LOG_WARN("     minidump: %s", path.empty() ? "(failed)" : melange::game::Narrow(path).c_str());
     }
 
     static DWORD WINAPI WatchdogThread(LPVOID param) {
@@ -135,14 +134,14 @@ private:
             if (!hung && since > static_cast<ULONGLONG>(self->hangSeconds_) * 1000) {
                 hung = true;
                 hangStart = lastReport = now;
-                WF_ERROR("==== HANG: no frame presented for %llu ms", since);
+                LOG_ERROR("==== HANG: no frame presented for %llu ms", since);
                 self->Snapshot("hang", tid);
             } else if (hung && since < 1000) {
-                WF_WARN("==== HANG recovered after %llu ms", now - hangStart);
+                LOG_WARN("==== HANG recovered after %llu ms", now - hangStart);
                 hung = false;
             } else if (hung && now - lastReport > 30000) {
                 lastReport = now;
-                WF_ERROR("==== still hung (%llu s)", (now - hangStart) / 1000);
+                LOG_ERROR("==== still hung (%llu s)", (now - hangStart) / 1000);
                 melange::log::WriteRaw(melange::debug::DescribeThread(tid).c_str());
             }
         }

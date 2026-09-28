@@ -1,5 +1,5 @@
 #pragma once
-// Internal interfaces between the overlay's translation units (not part of the public SDK).
+// Internal interfaces between the overlay's translation units.
 #include <windows.h>
 
 #include <cstdint>
@@ -7,17 +7,15 @@
 #include <vector>
 
 namespace melange::render {
-// ---- input.cpp
-// IAT hooks on WormsMayhem.exe: DINPUT8!DirectInput8Create (keyboard filter chained after Automation) and
-// USER32!SetCursorPos (no-op while capturing). Called once from Overlay::Install.
+// input.cpp
+// IAT hooks: DINPUT8!DirectInput8Create (keyboard filter) and USER32!SetCursorPos (no-op while capturing).
 bool InstallInput();
 bool InputInstalled();
-// Hotkey actions are queued by the DirectInput poll and run from the Present hook (main thread).
+// Hotkey actions are queued by the DirectInput poll and run from the Present hook.
 bool HotkeysPending();
 void RunPendingHotkeys();
 // (Re)subclasses the game window; a no-op when `hwnd` is already subclassed.
 void SubclassGameWindow(HWND hwnd);
-// Set by overlay.cpp while the ImGui context and backends are ready to receive window messages.
 void SetImGuiInputReady(bool ready);
 
 struct InputStats {
@@ -32,14 +30,14 @@ struct HotkeyInfo {
 };
 std::vector<HotkeyInfo> ListHotkeys();
 
-// ---- panels_builtin.cpp
+// panels_builtin.cpp
 void RegisterBuiltinPanels(bool demo);
-void DrawBuiltinExtras();  // inside the ImGui frame (the demo window)
+void DrawBuiltinExtras();
 
-// ---- overlay.cpp
-// First-use position/size of a panel window (otherwise panels cascade). imgui.ini wins once it has an entry.
+// overlay.cpp
+// First-use rect of a panel window; imgui.ini wins once it has an entry.
 void SetPanelDefaultRect(int handle, float x, float y, float w, float h);
-std::string HotkeyText(int which);  // 0 = toggle key, 1 = pass-through key (display text)
-double Fps();                       // engine frames per second over the last second
+std::string HotkeyText(int which);  // 0 = toggle key, 1 = pass-through key
+double Fps();
 bool VerifyStateOn();
 }  // namespace melange::render

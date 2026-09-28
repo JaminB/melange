@@ -1,6 +1,5 @@
 #pragma once
-// Internal wiring between the Logging module (jlog_adapters.cpp) and the writer core (jlog.cpp).
-// NOT part of the frozen public contract (that is melange/jlog.h); other components must never include this.
+// Internal wiring between the Logging module (jlog_adapters.cpp) and the writer (jlog.cpp). Mods use melange/jlog.h.
 #include <cstddef>
 #include <cstdint>
 #include <string>
@@ -17,16 +16,13 @@ struct Options {
     size_t tailCapacity = 5000;
 };
 
-// Starts the session folder, the writer thread and the level filter. Call exactly once, before anything calls
-// melange::jlog::Rec(...). Returns false only if even the fallback root could not be made writable (logging is then
-// inert: Enabled() returns false for everything and Rec() is a cheap no-op).
+// Call exactly once, before any Rec(). Returns false if no root is writable; logging is then an inert no-op.
 bool Init(const Options& opt);
 
-// Test-only: stops the writer thread after a final flush and resets all state so Init() can run again in the
-// same process. The plugin itself never calls this (the process just exits).
+// Test only: flushes, stops the writer and resets state so Init() can run again.
 void ShutdownForTests();
 
-// p95 of the main-thread record cost (Rec construction to end of Emit) in microseconds, and the sample count.
+// p95 main-thread cost of one record (Rec construction to end of Emit), in microseconds.
 double EmitP95Us(uint64_t* samples);
 
 }  // namespace melange::jlog::internal
