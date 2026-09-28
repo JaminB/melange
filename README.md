@@ -1,116 +1,131 @@
 # Melange
 
-*(formerly WUMFix)*
+**A modding framework for Worms Ultimate Mayhem.**
 
-Melange is a modular fix and mod framework for **Worms Ultimate Mayhem**: Steam app 70600, exe build #1077.
+Melange is a single `melange.asi` plugin loaded by [Ultimate ASI Loader](https://github.com/ThirteenAG/Ultimate-ASI-Loader). It targets the Steam version of the game, build #1077, and refuses to patch any other build.
 
-Its main target is the long-standing multiplayer bug where **a second online match started back-to-back in the same lobby freezes**. Other players report the same bug as *"This session is no longer available"* when the second player's turn begins.
+## Features
 
-Melange is a single `melange.asi` plugin loaded by [Ultimate ASI Loader](https://github.com/ThirteenAG/Ultimate-ASI-Loader) (`dinput8.dll`). It uses the same mechanism as WUMPatch and Renewation HD, so it can be installed alongside them.
+- **Netcode fixes.** Back-to-back online matches in the same lobby no longer freeze or end with *"This session is no longer available"*. Lost packets are now always retransmitted.
+- **Crash and hang diagnostics.** Stack traces and minidumps on a crash or a hang. `Ctrl+Shift+F12` takes a snapshot by hand.
+- **In-game overlay.** Press `` ` `` to show or hide it. Modules add their own panels, menus and hotkeys to it.
+- **Event bus.** Subscribe to the engine's own messages by name.
+- **Structured session logs.** Every session is logged as JSONL: log lines, engine messages and game events such as turns, shots and damage.
+- **Save logs.** `Ctrl+Shift+F11` saves one zip with everything a bug report needs. User names are redacted, and Steam IDs and IP addresses are hashed.
+- **Steam and network tracing.** Logs lobby, P2P and socket activity.
+- **Compatible** with WUMPatch and Renewation HD.
 
-## Install (players)
+## Install
 
-1. Copy `dinput8.dll`, `melange.asi` and `Melange.ini` into the game folder (`...\steamapps\common\WormsXHD`).
-   - If you already use WUMPatch or Renewation HD, you already have `dinput8.dll`. Just add `melange.asi` and `Melange.ini`.
-2. Play as normal.
-   - Logs and crash or hang dumps go to `WormsXHD\Melange\`.
-   - If something goes wrong, press `Ctrl+Shift+F11` in the game to save one zip with all the logs, and send that. Or send `Melange\Melange.log`, and `Melange.prev.log` from the previous run.
+1. Get `melange.asi` and `Melange.ini` from the [latest release](../../releases/latest).
+2. Get `dinput8.dll` from the x86 build of [Ultimate ASI Loader](https://github.com/ThirteenAG/Ultimate-ASI-Loader/releases/latest) (`Ultimate-ASI-Loader.zip`). If you already use WUMPatch or Renewation HD, you have it already.
+3. Copy these files into the game folder, next to `WormsMayhem.exe` (`...\steamapps\common\WormsXHD`). Start the game. The window title now shows `[Melange x.y.z]`.
 
-To uninstall, delete `melange.asi` and `Melange.ini`, and also `dinput8.dll` if no other `.asi` mods remain. Or run `uninstall.ps1`.
+Both players should install Melange, but the fixes also help when only one of them has it.
 
-## Modules
+## Uninstall
 
-Each module is one file under `src/` (`core/`, `render/`, `gameplay/`, `net/` or `tools/`, by what it touches) with its own `[Section]` in `Melange.ini`.
+Delete `melange.asi`, `Melange.ini` and the `Melange` folder from the game folder. Delete `dinput8.dll` too, unless other `.asi` mods still need it.
+
+## Configuration
+
+Every module has its own section in `Melange.ini`, and `Enabled=0` turns a module off. Missing keys are added with their default values the first time the game runs.
 
 | Module | Default | What it does |
 |---|---|---|
-| **NetTransport** | on | Fixes the game's reliable-UDP layer. The original retransmits only the first two packets of a connection. After that, a lost packet stalls both machines forever, which is the freeze. Also re-ACKs duplicates so a lost ACK can't stall the peer. |
-| **NetSession** | on | Clears per-match state the game never resets between matches: stale surrender flags, the throttle mask, the viability offset, and a network pause left over from the previous match. Also traces the whole match lifecycle: state machine, turns, surrenders, aborts with call site, and throttle/pause changes. |
-| **Diagnostics** | on | Crash handler and hang watchdog: stack trace plus minidump. `Ctrl+Shift+F12` takes a manual snapshot. |
-| **Overlay** | on (hidden) | In-game Dear ImGui overlay, hidden until you press the `` ` `` key (`ToggleKey`). While it is open it takes the mouse and keyboard from the game; `` Shift+` `` (`PassthroughKey`) shows it without taking input. Hosts the panels and menus of the other tools. |
-| **SteamTrace** | on | Logs every Steam lobby, P2P and callback call. |
-| **EngineLog** | on | Mirrors the engine's own log into `Melange.log`. |
-| **EventBus** | on | Hooks the engine's message Post and Deliver so modules can subscribe to engine messages by name (`melange/bus.h`). Changes nothing in the game. `DumpRegistry=1` writes every message name to `Melange\messages.tsv`. Replaces the Probe's message hooks, so only one of the two can hook them. |
-| **Logging** | on | Structured JSONL event log, one folder per game session in `Documents\Melange\logs`: Melange and engine log lines, engine messages (minus a noisy deny-list) and game events (turns, shots, deaths, damage, explosions). The overlay's *Log* and *Events* panels show it. |
-| **LogExport** | on | `Ctrl+Shift+F11`, or the overlay's *File > Save logs as...*, saves one zip of the recent JSONL sessions, `Melange.log`, engine logs, dumps, ini files and system info. Your user name and computer name are replaced, and Steam ids and IP addresses are hashed. In fullscreen it saves to `Documents\Melange\exports` instead of opening a dialog. |
-| **NetTrace** | on | Logs raw Winsock usage. |
-| **WindowTag** | on | Shows `[Melange x.y.z]` in the window title. |
-| **FrameInterval** | off | Engine frame cap in ms (example of a fixed-address patch). |
-| **LocalNet** | off | *Test only.* Emulates Steam lobbies and P2P over localhost so two instances on one PC can play each other. `LossPercent` simulates packet loss. See `docs/localnet.md`. |
-| **Automation** | off | *Test only.* Keeps the game running while unfocused and injects input from `Melange\automation[.<pid>].txt`. See `scripts/auto.ps1`. |
-| **Probe** | off | *Test only (M0 scouting).* Logs GL state at Present, draws a test quad, counts engine messages by name, and toggles input capture (F10). See `docs/re-notes.md` §15. |
+| `NetTransport` | on | Retransmits any lost packet, and re-acknowledges duplicates so a lost ACK can't stall the peer |
+| `NetSession` | on | Resets the match state the game leaves behind, and traces the match lifecycle |
+| `Diagnostics` | on | Crash handler, hang watchdog and minidumps |
+| `Overlay` | on | The in-game overlay (`ToggleKey`, `PassthroughKey`) |
+| `EventBus` | on | The engine message bus for modules |
+| `Logging` | on | Structured JSONL session logs |
+| `LogExport` | on | "Save logs" zip export (`Hotkey`) |
+| `EngineLog` | on | Copies the engine's own log into `Melange.log` |
+| `SteamTrace` | on | Logs Steam lobby, P2P and callback activity |
+| `NetTrace` | on | Logs raw Winsock calls |
+| `WindowTag` | on | Shows the Melange version in the window title |
+| `FrameInterval` | off | Sets the engine frame interval (`IntervalMs=16` is about 60 fps) |
 
-The fixes only change local state and the sender side of the protocol; nothing on the wire changes. They therefore help even when only one player has Melange, although both players should install it.
+## Logs and bug reports
 
-## Building
+| Where | What |
+|---|---|
+| `<game>\Melange\Melange.log` | Plain-text log of the current run (`Melange.prev.log` is the run before) |
+| `<game>\Melange\dumps\` | Crash and hang minidumps |
+| `Documents\Melange\logs\<session>\` | Structured session log (`events.jsonl`) |
 
-Requirements:
-- Visual Studio 2022+ Build Tools with the C++ x86 toolset.
-- CMake 3.25+ and Ninja. The portable copies in `tools/` are used automatically.
-
-```powershell
-.\build.ps1          # -> dist\melange.asi (x86, static CRT)
-.\deploy.ps1         # installs UAL + Melange into the Steam game folder
-```
-
-SafetyHook (with Zydis) is fetched by CMake.
-
-`.\scripts\selftest.ps1` builds and runs the offline self-tests (`tests/`), which need no game.
+To report a bug, press `Ctrl+Shift+F11` in the game, or choose *File > Save logs as...* in the overlay, and attach the zip. In fullscreen, the zip goes to `Documents\Melange\exports` instead of opening a save dialog.
 
 ## Writing a module
 
+A module is one `.cpp` file anywhere under `src/`. The build picks it up automatically.
+
 ```cpp
-// src/gameplay/my_fix.cpp  (any .cpp under src/ is picked up automatically by the build)
-#include "core/module.h"
-#include "core/mem.h"
+#include <imgui.h>
+
 #include "core/log.h"
+#include "core/module.h"
+#include "melange/bus.h"
+#include "melange/overlay.h"
 
 namespace {
-class MyFix final : public melange::Module {
+int g_shots = 0;
+
+class ShotCounter final : public melange::Module {
 public:
-    const char* Name() const override { return "MyFix"; }            // = ini section
-    const char* Description() const override { return "what it does"; }
-    bool RequiresKnownBuild() const override { return true; }         // uses fixed addresses
+    const char* Name() const override { return "ShotCounter"; }  // [ShotCounter] in Melange.ini
+    const char* Description() const override { return "counts weapon shots"; }
     bool Install() override {
-        int v = Int("SomeValue", 42);                                  // ini key, default auto-written
-        if (!melange::mem::Expect(0x4D919B, {0x10})) return false;          // verify bytes before patching
-        melange::mem::Put<uint8_t>(0x4D919B, static_cast<uint8_t>(v));
+        bool announce = Bool("Announce", true);  // added to Melange.ini with its default
+        melange::bus::SubscribeName("Weapon.Fired", melange::bus::Path::Post,
+            [](const melange::bus::MessageView&, void* user) {
+                ++g_shots;
+                if (*static_cast<bool*>(user)) LOG_INFO("[shots] %d", g_shots);
+            }, new bool(announce));
+        melange::overlay::AddPanel("shots", "Shots", [](void*) { ImGui::Text("Shots: %d", g_shots); }, nullptr);
         return true;
     }
 };
-}
-MELANGE_MODULE(MyFix);
+}  // namespace
+
+MELANGE_MODULE(ShotCounter);
 ```
 
-Building blocks:
+A module reads its settings with `Int`, `Bool` and `Float`. Each key is written to its section in `Melange.ini` on the first run, so every option can be found there. Override `DefaultEnabled()` to ship a module switched off. A module that patches fixed addresses must return `true` from `RequiresKnownBuild()`, so that it is skipped on unknown builds.
 
-| Header | Provides |
+The public SDK headers are in `src/sdk/melange/`:
+
+| Header | Purpose |
 |---|---|
-| `core/mem.h` | Patching, pattern scan, IAT and vtable hooks |
-| `<safetyhook.hpp>` | Inline hooks and mid-function hooks (register context) |
-| `melange/bus.h` | Engine message bus: subscribe to engine messages by name, registry names, payload decoders |
-| `core/events.h` | Per-frame callback, plus MatchStart/MatchEnd/LobbyEnter/LobbyLeave events fired by NetSession |
-| `net/steam.h` | Steam callback base and callback ids |
-| `net/net.h` | Typed accessors for NetService, NetThrottle, the session and players |
-| `core/debug.h` | Stack scans, minidumps, RTTI names |
-| `core/game.h` | Exe identity guard, paths |
+| `melange/bus.h` | Subscribe to engine messages by name or id, read their payloads, and register payload decoders |
+| `melange/overlay.h` | Add overlay panels, menu items and hotkeys |
+| `melange/jlog.h` | Write structured records to the session log, and read the in-memory tail |
+| `melange/export.h` | Start a "Save logs" export, or write one to a given path |
+| `melange/testcmd.h` | Register named text commands for scripted testing |
 
-Modules that return `RequiresKnownBuild() == true` are skipped automatically on any exe other than #1077, which is checked by SHA-256.
+## Building from source
 
-## Repository layout
+You need:
 
-| Path | Contents |
-|---|---|
-| `src/core/` | Plugin entry, logging, ini, exe guard, memory/hook helpers, events, debug, testcmd registry |
-| `src/render/` | Overlay: Dear ImGui host and panel/menu/hotkey API (`melange/overlay.h`), GL state guard, input capture |
-| `src/gameplay/` | Gameplay-facing tweaks and fixes |
-| `src/net/` | Game structure knowledge for networking (build #1077), Steam and net modules (LocalNet in its own subfolder) |
-| `src/tools/` | In-plugin dev/test tools: Automation, Probe, log export (component D; a stub until it lands) |
-| `src/sdk/melange/` | Frozen public headers for mods and other components (`melange/<name>.h`) |
-| `docs/re-notes.md` | Reverse-engineering reference: classes, Steam usage, match lifecycle, input |
-| `docs/netcode.md` | Root-cause writeup of the back-to-back match bug |
-| `docs/localnet.md` | The two-instance test harness |
-| `re/` | Ghidra scripts, helper tools and RE notes. The decompiled corpus `re/out` is regenerated with `re/ghidra.sh ExportAll.java`. |
-| `scripts/` | Test automation: `auto.ps1` (input), `ui.ps1` (screenshots), `e2e.ps1`; offline tests: `selftest.ps1` (event bus), `test-overlay.ps1` |
-| `tests/` | Offline test programs (no game needed, not part of the plugin), e.g. `tests/bus_selftest.cpp`, `tests/overlay` |
-| `tools/` | Downloaded toolchain and RE tools; gitignored |
+- Visual Studio 2022 or later, or the Build Tools, with the C++ x86 toolset;
+- CMake 3.25 or later;
+- Ninja.
+
+```powershell
+.\build.ps1                      # builds dist\melange.asi (-Config x86-debug for a debug build)
+.\deploy.ps1                     # installs into the Steam game folder (-GameDir <path> for another folder)
+.\uninstall.ps1                  # removes it again (-Purge also deletes logs and dumps)
+.\scripts\selftest.ps1           # offline self-tests, no game needed
+```
+
+`deploy.ps1` keeps an existing `dinput8.dll`. If there is none, it downloads the latest Ultimate ASI Loader, or uses the one you give with `-LoaderPath <dinput8.dll>`. `build.ps1 -PrivateDir <dir>` also compiles the modules in `<dir>\modules\*.cpp`.
+
+## Roadmap
+
+Coming next: a graphics layer, Lua mods, a mod loader and a map editor.
+
+## License
+
+[MIT](LICENSE).
+
+Melange is an unofficial fan project. It is not affiliated with or endorsed by Team17. You need your own copy of Worms Ultimate Mayhem to use it.
