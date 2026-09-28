@@ -152,12 +152,20 @@ target_link_options(melange PRIVATE /DEBUG /OPT:REF /OPT:ICF /SAFESEH:NO)
 target_link_libraries(melange PRIVATE safetyhook::safetyhook dbghelp bcrypt ws2_32 shell32 imgui miniz lua54 oasis_core)
 
 # Oasis core without the game: HTTP/WS corpus against a live server on 127.0.0.1, protocol and queue cases.
-add_executable(oasis_core_selftest tests/oasis_core_selftest.cpp src/oasis/auth_min.cpp src/tools/json_read.cpp src/core/log.cpp)
+add_executable(oasis_core_selftest tests/oasis_core_selftest.cpp src/oasis/auth.cpp src/tools/json_read.cpp src/core/log.cpp)
 target_include_directories(oasis_core_selftest PRIVATE src src/sdk)
 target_compile_definitions(oasis_core_selftest PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX _CRT_SECURE_NO_WARNINGS)
 target_compile_options(oasis_core_selftest PRIVATE /W4 /utf-8 /permissive- /Zi)
 target_link_options(oasis_core_selftest PRIVATE /DEBUG)
 target_link_libraries(oasis_core_selftest PRIVATE oasis_core bcrypt)
+
+# A: the full Auth (token, per-port cookie, Host/Origin, the failure rate limiter), driven directly with
+# synthetic Request/Response values -- no live server needed.
+add_executable(oasis_auth_selftest tests/oasis_auth_selftest.cpp src/oasis/auth.cpp src/tools/json_read.cpp src/core/log.cpp)
+target_include_directories(oasis_auth_selftest PRIVATE src src/sdk)
+target_compile_definitions(oasis_auth_selftest PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX _CRT_SECURE_NO_WARNINGS)
+target_compile_options(oasis_auth_selftest PRIVATE /W4 /utf-8 /permissive- /Zi)
+target_link_libraries(oasis_auth_selftest PRIVATE oasis_core bcrypt)
 
 add_executable(json_read_selftest tests/json_read_selftest.cpp src/tools/json_read.cpp)
 target_include_directories(json_read_selftest PRIVATE src)

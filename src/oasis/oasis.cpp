@@ -24,6 +24,7 @@
 #include "oasis/core/files.h"
 #include "oasis/core/router.h"
 #include "oasis/core/server.h"
+#include "oasis/panel.h"
 #include "oasis/providers.h"
 #include "tools/json_mini.h"
 #include "version.h"
@@ -154,6 +155,7 @@ class Oasis final : public Module {
         providers::InstallIni();
         providers::InstallCapture();
         providers::InstallWebPanels();
+        panel::Install();  // A: overlay panel, hotkey/menu, AutoOpen, oasis_url.txt
 
         testcmd::Register("oasis.start", &VerbStart);
         testcmd::Register("oasis.url", &VerbUrl);

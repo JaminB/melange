@@ -5,15 +5,22 @@ Oasis is Melange's local web app: a page in your browser that talks to the runni
 
 ## Using it
 
-- **Open it** with `AutoStart=1` (the overlay button and `Ctrl+Shift+O` are on the way). The link has the form
-  `http://127.0.0.1:8765/?k=...`.
+- **Open it** from the overlay's *Oasis* panel ("Open Oasis"), the `Ctrl+Shift+O` hotkey, or the *Oasis/Open* menu
+  item; `AutoStart=1` starts the server without any of that. The link has the form `http://127.0.0.1:8765/?k=...`.
 - **The link carries a secret token.** The first visit swaps it for a session cookie and removes it from the address
   bar. Anyone with the link can use Oasis while the game runs, so do not share it. A new game session makes a new
-  token.
+  token. The overlay panel hides it behind a "Show" checkbox and has "Copy URL"; it is also written unmasked to
+  `Documents\Melange\oasis_url.txt` for test scripts (deleted at the next start) and only ever masked (`k=abcd...`)
+  in `Melange.log`.
 - **Nothing outside this computer can connect.** The server binds `127.0.0.1` only, answers only requests whose
   `Host` is `127.0.0.1:<port>` or `localhost:<port>`, and accepts a WebSocket only from its own page's origin.
   It never sends CORS headers, so other web sites you visit cannot read from it.
+- **Repeated bad tokens are slowed down.** After 10 failed requests in a minute, every further bad request in that
+  window waits a second before it is answered, and one warning line a minute records the count. This is for
+  visibility only; the token's 128 bits of entropy are the real control.
 - If port 8765 is taken, the next free port up to `Port + PortRange - 1` is used.
+- The overlay panel also lists connected clients with a *Kick* button, and the server's own stats (clients,
+  channels, methods, RPC calls, auth failures).
 
 ### Settings (`[Oasis]` in `Melange.ini`)
 
@@ -21,13 +28,13 @@ Oasis is Melange's local web app: a page in your browser that talks to the runni
 |---|---|---|
 | `Enabled` | `1` | Load the Oasis module. With `0`, nothing of Oasis runs. |
 | `AutoStart` | `0` | Start the server when the game starts instead of on first open. |
-| `AutoOpen` | `0` | Open a browser tab when the server starts. |
 | `Port`, `PortRange` | `8765`, `10` | The first port to try and how many to try. |
 | `MaxClients` | `4` | Browser tabs (WebSocket clients) at once. |
 | `ReadOnly` | `0` | Refuse every call that changes something (ini, mods, captures). |
 | `RawInspect` | `1` | Allow the read-only memory view in the entity inspector. |
 | `WebRoot` | *(empty)* | Serve the web app from this folder instead of the copy built into `melange.asi` (development; relative to the game folder). |
-| `Hotkey` | `Ctrl+Shift+O` | Opens Oasis (reserved; not active yet). |
+| `AutoOpen` | `0` | Also open a browser tab the moment the server starts (otherwise only the overlay button, hotkey and menu item open one). |
+| `Hotkey` | `Ctrl+Shift+O` | Opens Oasis (starts the server if needed and opens exactly one browser tab); also *Oasis/Open* in the overlay menu. |
 
 ## Building the web app
 
@@ -118,7 +125,8 @@ Routes marked * are added by the providers that serve them.
 
 Every response carries `Content-Security-Policy` (`default-src 'self'`, `frame-ancestors 'none'`, ...),
 `X-Content-Type-Options: nosniff` and `Referrer-Policy: no-referrer`, and never any `Access-Control-*` header. The
-session cookie is `oasis_s`, `HttpOnly; SameSite=Strict; Path=/`.
+session cookie is `oasis_s_<port>` (named per port, since 127.0.0.1 has no per-port cookie jar and two Oasis
+processes would otherwise overwrite each other's cookie), `HttpOnly; SameSite=Strict; Path=/`.
 
 ### WebSocket
 

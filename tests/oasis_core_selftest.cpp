@@ -537,7 +537,9 @@ void TestLive(oc::Files* files) {
     std::string r = Get("/?k=" + g_token);
     Expect(Status(r) == 303 && r.find("\r\nLocation: /\r\n") != std::string::npos && r.find("HttpOnly; SameSite=Strict; Path=/") != std::string::npos,
            "token exchanged for a cookie", r.substr(0, 80));
-    const size_t cp = r.find("oasis_s=");
+    // A: the cookie is named per port (oasis_s_<port>), since 127.0.0.1 has no per-port cookie jar.
+    const std::string cookiePrefix = "oasis_s_" + std::to_string(g_port) + "=";
+    const size_t cp = r.find(cookiePrefix);
     g_cookie = cp == std::string::npos ? "" : r.substr(cp, r.find(';', cp) - cp);
     const std::string ck = "Cookie: " + g_cookie + "\r\n";
     r = Get("/", ck);

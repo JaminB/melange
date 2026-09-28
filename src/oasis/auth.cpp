@@ -1,15 +1,19 @@
-// Minimal authentication: launch token in the URL, exchanged for a session cookie; Host allowlist on every
-// request; Origin on the upgrade.
+// Full authentication (M3 design doc, section 3.2): launch token in the URL, exchanged for a per-port session
+// cookie; Host allowlist on every request; Origin on the upgrade; a visibility rate limit on repeated failures.
+// Replaces auth_min.cpp, S's placeholder version.
+#include "oasis/auth.h"
+
 #include <windows.h>
 #include <bcrypt.h>
 
 #include <string>
 
+#include "core/log.h"
 #include "oasis/core/http.h"
 #include "oasis/providers.h"
 
-namespace melange::oasis::providers {
-namespace {
+namespace melange::oasis::auth {
+
 std::string Random128() {
     unsigned char b[16];
     BCryptGenRandom(nullptr, b, sizeof b, BCRYPT_USE_SYSTEM_PREFERRED_RNG);
@@ -32,9 +36,37 @@ bool SecretEq(std::string_view a, const std::string& b) {
     return d == 0;
 }
 
-class MinAuth final : public core::Auth {
+std::string CookieName(int port) { return "oasis_s_" + std::to_string(port); }
+
+uint64_t FailureLimiter::DefaultClock() { return GetTickCount64(); }
+
+bool FailureLimiter::Note() {
+    std::lock_guard lk(mx_);
+    const uint64_t now = clock_();
+    if (now - windowStart_ >= kWindowMs) {
+        windowStart_ = now;
+        count_ = 0;
+    }
+    ++count_;
+    const bool over = count_ > kThreshold;
+    if (now - lastLog_ >= kWindowMs) {
+        lastLog_ = now;
+        LOG_WARN("[oasis] %d auth failure(s) in the last minute", count_);
+    }
+    return over;
+}
+
+}  // namespace melange::oasis::auth
+
+namespace melange::oasis::providers {
+namespace {
+using auth::CookieName;
+using auth::Random128;
+using auth::SecretEq;
+
+class AuthImpl final : public core::Auth {
   public:
-    MinAuth() : token_(Random128()), session_(Random128()) {}
+    AuthImpl() : token_(Random128()), session_(Random128()) {}
 
     bool CheckHttp(const core::Request& rq, core::Response* out) override {
         if (!HostOk(rq)) return Deny(out);
@@ -44,19 +76,25 @@ class MinAuth final : public core::Auth {
             if (rq.path != "/") return true;
             out->status = 303;
             out->body.clear();
-            out->headers.emplace_back("Set-Cookie", "oasis_s=" + session_ + "; HttpOnly; SameSite=Strict; Path=/");
+            out->headers.emplace_back("Set-Cookie", CookieName(rq.port) + "=" + session_ + "; HttpOnly; SameSite=Strict; Path=/");
             out->headers.emplace_back("Location", "/");
             return false;
         }
-        if (SecretEq(rq.Cookie("oasis_s"), session_)) return true;
+        if (SecretEq(rq.Cookie(CookieName(rq.port)), session_)) return true;
         return Deny(out);
     }
 
     bool CheckUpgrade(const core::Request& rq) override {
         const std::string_view origin = rq.Header("origin");
-        if (origin.empty()) return SecretEq(rq.Query("k"), token_);
-        const std::string p = std::to_string(rq.port);
-        return core::IEquals(origin, "http://127.0.0.1:" + p) || core::IEquals(origin, "http://localhost:" + p);
+        bool ok;
+        if (origin.empty()) {
+            ok = SecretEq(rq.Query("k"), token_);
+        } else {
+            const std::string p = std::to_string(rq.port);
+            ok = core::IEquals(origin, "http://127.0.0.1:" + p) || core::IEquals(origin, "http://localhost:" + p);
+        }
+        if (!ok && limiter_.Note()) Sleep(1000);
+        return ok;
     }
 
     std::string LaunchUrl(int port) const override {
@@ -69,19 +107,21 @@ class MinAuth final : public core::Auth {
         const std::string p = std::to_string(rq.port);
         return core::IEquals(h, "127.0.0.1:" + p) || core::IEquals(h, "localhost:" + p);
     }
-    static bool Deny(core::Response* out) {
+    bool Deny(core::Response* out) {
         core::NoteAuthFailure();
+        if (limiter_.Note()) Sleep(1000);
         out->status = 403;
         out->body = "Forbidden\n";
         out->close = true;
         return false;
     }
     std::string token_, session_;
+    auth::FailureLimiter limiter_;
 };
 }  // namespace
 
 core::Auth* MakeAuth() {
-    static MinAuth a;
+    static AuthImpl a;
     return &a;
 }
 }  // namespace melange::oasis::providers

@@ -539,6 +539,14 @@ int OpenClients() {
     for (const auto& [id, c] : g_clients) n += !c->gone && !c->refused && c->hello;
     return n;
 }
+
+std::vector<int> ListClients() {
+    std::shared_lock lk(g_reg);
+    std::vector<int> out;
+    for (const auto& [id, c] : g_clients)
+        if (!c->gone && !c->refused && c->hello) out.push_back(id);
+    return out;
+}
 }  // namespace router
 }  // namespace core
 

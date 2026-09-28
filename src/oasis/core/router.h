@@ -45,5 +45,6 @@ void CloseAll(uint16_t code, const char* reason);
 void CountIo(uint64_t framesOut, uint64_t bytesOut, uint64_t bytesIn);
 void CountAuthFailure();
 int OpenClients();
+std::vector<int> ListClients();  // A: connected (helloed) client ids, for the overlay panel's kick list
 }  // namespace router
 }  // namespace melange::oasis::core
