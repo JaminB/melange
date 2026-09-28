@@ -27,6 +27,7 @@
 #include "core/log.h"
 #include "core/module.h"
 #include "miniz.h"
+#include "render/mirage/compat.h"
 #include "tools/hash.h"
 #include "tools/json_mini.h"
 #include "tools/redact.h"
@@ -271,6 +272,7 @@ std::string BuildReadme(std::string_view melangeVersion) {
     s += "  README.txt        this file\n";
     s += "  manifest.json     every file below, its size and SHA-256 checksum\n";
     s += "  system.json       OS, CPU, GPU/GL and exe identification\n";
+    s += "  gpu/compat.*      GPU compatibility report: driver, GL extensions, Cg profiles, shaders and passes\n";
     s += "  logs/sessions/*   structured JSONL event logs (recent sessions)\n";
     s += "  logs/Melange.log, logs/Melange.prev.log   the plain text log\n";
     s += "  logs/engine/*     the engine's own XOM/Net log files, if found\n";
@@ -476,6 +478,11 @@ bool DoExport(const std::wstring& zipPath, const Options& opt, std::string* erro
         std::string data = melange::sysinfo::CollectJson();
         AddEntry(zip, manifest, "system.json", data, L"(generated)", false, true, opt.redactUserPaths, userName, salt);
     }
+
+    AddEntry(zip, manifest, "gpu/compat.json", melange::mirage::compat::Json(), L"(generated)", false, true,
+             opt.redactUserPaths, userName, salt);
+    AddEntry(zip, manifest, "gpu/compat.txt", melange::mirage::compat::Text(), L"(generated)", false, true,
+             opt.redactUserPaths, userName, salt);
 
     // Last: it needs every other entry's hash.
     std::string manifestJson = BuildManifestJson(opt, manifest, sessionIds, absent);

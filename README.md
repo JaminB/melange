@@ -46,7 +46,8 @@ Every module has its own section in `Melange.ini`, and `Enabled=0` turns a modul
 | `WindowTag` | on | Shows the Melange version in the window title |
 | `FrameInterval` | off | Sets the engine frame interval (`IntervalMs=16` is about 60 fps) |
 | `Mirage` | on | Graphics layer core: renderer access, scene stages for mods, mod folders |
-| `MirageTrace`, `MirageShaders`, `MiragePostFX`, `MirageDraw` | on | Graphics layer components (in development: they do nothing yet) |
+| `MirageTrace` | on | OpenGL call statistics (`Mode=count`), frame capture (`CaptureHotkey`), texture dumper, GPU compatibility report |
+| `MirageShaders`, `MiragePostFX`, `MirageDraw` | on | Graphics layer components (in development: they do nothing yet) |
 | `MirageDebug` | off | Optional OpenGL debug context (in development) |
 
 ## Logs and bug reports
@@ -58,6 +59,8 @@ Every module has its own section in `Melange.ini`, and `Enabled=0` turns a modul
 | `Documents\Melange\logs\<session>\` | Structured session log (`events.jsonl`) |
 
 To report a bug, press `Ctrl+Shift+F11` in the game, or choose *File > Save logs as...* in the overlay, and attach the zip. In fullscreen, the zip goes to `Documents\Melange\exports` instead of opening a save dialog.
+
+The zip includes a GPU compatibility report (`gpu/compat.txt`): graphics card, driver, OpenGL version and extensions, the Cg shader profiles your card supports, and which shaders and effects loaded or were skipped and why. The overlay panel *Mirage/GPU* shows the same report.
 
 ## Writing a module
 
@@ -106,7 +109,9 @@ The public SDK headers are in `src/sdk/melange/`:
 | `melange/export.h` | Start a "Save logs" export, or write one to a given path |
 | `melange/testcmd.h` | Register named text commands for scripted testing |
 | `melange/render.h` | Renderer access: camera, window size, frame timing, scene stages, GL state save and restore |
-| `melange/gltrace.h`, `shaders.h`, `postfx.h`, `draw.h`, `gldebug.h` | Graphics layer APIs (in development) |
+| `melange/gltrace.h` | OpenGL call statistics, frame capture and texture dumps |
+| `melange/compat.h` | Report what your module loaded or skipped on this GPU, for the compatibility report |
+| `melange/shaders.h`, `postfx.h`, `draw.h`, `gldebug.h` | Graphics layer APIs (in development) |
 
 ## Graphics layer (Mirage)
 
@@ -123,6 +128,12 @@ Mirage lets modules and mods draw inside the game's own frame. `melange/render.h
 Callbacks run in the main render pass only, with the game's framebuffer bound. Wrap your GL work in `render::PushState()` / `PopState()`. With no callbacks registered, Mirage patches nothing and every frame is identical to the game without it.
 
 Mods live in `<game>\Mods\<id>\`. When two mods provide the same file, the later folder name wins. `[Mirage] DisabledMods=a,b` switches mods off, and `ModsDir` moves the folder.
+
+### GL trace and frame capture
+
+`MirageTrace` counts every OpenGL call the game and its Cg runtime make. The overlay panel *Mirage/GL* shows calls, draw calls, shader switches and frame time per frame, and the busiest functions. `[MirageTrace] Mode` is `count` (the default: one counter per call), `log` (records every call), or `off` (no hooks at all; switching back needs a restart).
+
+*Capture frame* (or `Ctrl+Shift+F9`) records one frame into `Documents\Melange\captures\*.mcap`: every call with decoded arguments, the GL state, the compiled shaders, the bound textures and the final image. The format is a plain zip, described in [docs/capture-format.md](docs/capture-format.md). *Dump next 50 textures* writes the next textures the game loads to `Documents\Melange\textures\` as PNG. Captures and dumps contain the game's textures, so they stay on your PC and are never part of a logs export.
 
 ## Building from source
 
