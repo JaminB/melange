@@ -21,6 +21,7 @@
 #include "core/log.h"
 #include "core/module.h"
 #include "lua/sandbox_internal.h"
+#include "lua/sim/bridge_internal.h"
 #include "melange/bus.h"
 #include "melange/draw.h"
 #include "melange/jlog.h"
@@ -246,6 +247,15 @@ void DoRescan() {
         if (ap) return a.order < b.order;
         return a.manifest.id < b.manifest.id;
     });
+
+    std::vector<std::string> simIds;
+    for (const Entry& e : next)
+        if (e.sessionActive && e.contentRelevant && !e.manifest.entrySim.empty()) simIds.push_back(e.manifest.id);
+    static std::vector<std::string> s_lastSimIds;
+    if (simIds != s_lastSimIds) {
+        s_lastSimIds = simIds;
+        simbridge::SetModList(simIds);
+    }
 
     std::vector<ChangeSub> subs;
     {
