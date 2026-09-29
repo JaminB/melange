@@ -37,7 +37,7 @@ bool WriteSubIcon(uint8_t* atlasRgb256, size_t atlasSize, int sub, const uint8_t
         return false;
     const int row = 3 - sub / 4, col = sub % 4;
     // The atlas is bottom-up but the PNG (after Downscale) is top-down, so row 0 of the icon (its visual top) must
-    // land at the top of its cell, i.e. the highest buffer row within the band: flip locally (§1.9 item 6).
+    // land at the top of its cell, i.e. the highest buffer row within the band: flip locally.
     for (int pngRow = 0; pngRow < kSize; ++pngRow) {
         const int destRow = row * kSize + (kSize - 1 - pngRow);
         for (int pngCol = 0; pngCol < kSize; ++pngCol) {

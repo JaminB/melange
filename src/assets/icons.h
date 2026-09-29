@@ -4,8 +4,8 @@
 #include <string>
 
 // Panel icons: a mod's PNG goes into one of atlas 3's free sub-icons (9..15), written at every upload of
-// "Weapon Panel Icons3" (§1.6, §1.9 item 6: the atlas is stored bottom-up, RGB8, sub-icon k at file row 3-k/4,
-// column k%4, 64x64 each in a 256x256 image).
+// "Weapon Panel Icons3". The atlas is stored bottom-up, RGB8: sub-icon k is file row 3-k/4, column k%4, 64x64
+// each in a 256x256 image.
 namespace melange::assets::icons {
 constexpr int kSize = 64, kFirstSub = 9, kLastSub = 15, kSubCount = kLastSub - kFirstSub + 1;
 
@@ -14,8 +14,8 @@ constexpr int kSize = 64, kFirstSub = 9, kLastSub = 15, kSubCount = kLastSub - k
 bool Downscale(const uint8_t* rgba, int w, int h, uint8_t out[kSize * kSize * 4], std::string* err);
 
 // Alpha-blends a 64x64 RGBA8 icon into sub-icon `sub` (9..15) of a 256x256 RGB8 atlas buffer (196608 bytes),
-// flipping the icon's row order so it lands upright in the bottom-up buffer, exactly as the A0 probe screenshot
-// showed. Pure; touches only that sub-icon's 64x64 region, leaving the rest of atlasRgb256 untouched.
+// flipping the icon's row order so it lands upright in the bottom-up buffer. Pure; touches only that sub-icon's
+// 64x64 region, leaving the rest of atlasRgb256 untouched.
 bool WriteSubIcon(uint8_t* atlasRgb256, size_t atlasSize, int sub, const uint8_t rgba64[kSize * kSize * 4]);
 
 // Decodes relPng under assetsDir (a PNG, RGBA, <= 4096^2, box-filtered to 64x64 if larger), and reserves the next

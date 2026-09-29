@@ -1,6 +1,5 @@
-// Offline self-test for Component C's runtime enforcement layer (no game): the CRC-collision check, the loose-root
-// naming rule, the bank path safety and size cap, and the panel-icon pixel math (downscale + atlas placement).
-// Exit code 0 = all passed.
+// Offline self-test for mod-asset safety (no game): the CRC-collision check, the loose-root naming rule, the bank
+// path safety and size cap, and the panel-icon pixel math (downscale + atlas placement). Exit code 0 = all passed.
 #include <windows.h>
 
 #include <cstdio>

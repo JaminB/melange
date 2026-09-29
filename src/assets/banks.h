@@ -4,8 +4,8 @@
 
 #include "assets/crcsafe.h"
 
-// LoadBank of a mod's assets/data/<rel> file (§3.3): rel must stay inside the mod's own data folder, name a real
-// file no larger than 64 MiB, and not collide with a CRC-listed path.
+// LoadBank of a mod's assets/data/<rel> file: rel must stay inside the mod's own data folder, name a real file no
+// larger than 64 MiB, and not collide with a CRC-listed path.
 namespace melange::assets::banks {
 // rel is safe if it has no leading slash or drive letter, no "." or ".." segment, and ends in ".xom". Pure aside
 // from the size stat, which needs absDataDir; callers pass either the real CRC table or a synthetic one in tests.

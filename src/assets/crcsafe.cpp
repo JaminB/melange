@@ -9,8 +9,8 @@ namespace melange::assets::crcsafe {
 namespace {
 namespace engine = weapons::engine;
 
-// [V] docs/framework-feasibility.md C1: CrcCheckService walks 0x922508, 89 x {char* path, u32 crc32}, entry 0's
-// crc reads 0xed888fb8. A mismatch here means the table moved or the build differs, so nothing below is trusted.
+// The table is 89 x {char* path, u32 crc32}; entry 0's crc is known to read 0xed888fb8 on the supported build. A
+// mismatch here means the table moved or the build differs, so nothing below is trusted.
 constexpr uintptr_t kTable = 0x922508;
 constexpr uint32_t kFirstCrc = 0xed888fb8;
 constexpr int kExpectedCount = 89;

@@ -4,8 +4,8 @@
 
 #include "assets/crcsafe.h"
 
-// A mod's assets/loose/ folder as an engine search path (§3.3): every file in it must be named "<modId>.*" and
-// none may collide with a CRC-listed path, so a mod file can never shadow a vanilla one by bare name.
+// A mod's assets/loose/ folder as an engine search path: every file in it must be named "<modId>.*" and none may
+// collide with a CRC-listed path, so a mod file can never shadow a vanilla one by bare name.
 namespace melange::assets::roots {
 // fileNames are the loose directory's direct children (bare names, no path). Pure: callers pass either the live
 // CRC table (crcsafe::Entries()) or a synthetic one in a self-test.

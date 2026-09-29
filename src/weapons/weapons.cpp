@@ -103,8 +103,8 @@ bool VerbField(std::string_view a, void*) {
     return c != 0;
 }
 
-// Every enabled content mod with an assets/loose/ folder gets a search path, once per launch (§3.3). Panel icons
-// and banks are per-clone and per-match, so they stay with A's registry (asks C's ReservePanelIcon/LoadModBank).
+// Every enabled content mod with an assets/loose/ folder gets a search path, once per launch. Panel icons and
+// banks are per-clone and per-match, so they stay with the registry (it asks ReservePanelIcon/LoadModBank).
 void AddModRoots() {
     for (auto& e : melange::thumper::Snapshot()) {
         if (!e.sessionActive || !e.contentRelevant) continue;
