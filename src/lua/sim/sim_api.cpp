@@ -78,6 +78,7 @@ int __cdecl LEventsOn(l5::State* L) {
         return Fail(L, "wum.events.on: expected (name, function)");
     const char* name = a.tostring(L, 1);
     if (!KnownEvent(name)) return NilReason(L, "unknown event");
+    if (std::strncmp(name, "sim.weapon.", 11) == 0 && !WeaponsAllowed(ModOf(L))) return NilReason(L, "no weapons");
     a.pushvalue(L, 2);
     int ref = TakeRef();
     const uint32_t h = AddSub(ModOf(L), name, ref);
@@ -249,8 +250,6 @@ int __cdecl LSetData(l5::State* L) {
     return 1;
 }
 
-int __cdecl LWeaponsRaise(l5::State* L) { return Fail(L, "wum.sim.weapons is available in M5"); }
-
 void SetFn(l5::State* L, int t, const char* name, l5::CFunction fn, int mod, int up2 = -2) {
     const auto& a = l5::A();
     a.pushstring(L, name);
@@ -347,15 +346,7 @@ void PushWum(int mod) {
     a.newtable(L);
     a.rawset(L, sim);
     a.pushstring(L, "weapons");
-    a.newtable(L);
-    a.newtable(L);
-    a.pushstring(L, "__index");
-    a.pushcclosure(L, &LWeaponsRaise, 0);
-    a.rawset(L, -3);
-    a.pushstring(L, "__newindex");
-    a.pushcclosure(L, &LWeaponsRaise, 0);
-    a.rawset(L, -3);
-    a.setmetatable(L, -2);
+    PushWeapons(mod);
     a.rawset(L, sim);
     for (int i = 0; i < g_extraCount; ++i) SetFn(L, sim, g_extra[i].name, g_extra[i].fn, mod);
     a.rawset(L, wum);

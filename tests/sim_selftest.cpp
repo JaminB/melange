@@ -22,8 +22,10 @@ extern "C" {
 #include "lua/sim/bridge_internal.h"
 #include "lua/sim/sim_core.h"
 #include "lua/sim/sim_hash.h"
+#include "lua/sim/sim_weapons.h"
 #include "melange/sim.h"
 #include "melange/wormsign.h"
+#include "weapons/behaviour.h"
 #include "wormsign/contrib.h"
 
 namespace l5 = melange::lua50;
@@ -432,7 +434,7 @@ RunResult RunMatch(uint32_t seed, bool full) {
         Expect(Storage("alpha", "unknown") == "nil", "unknown event refused");
         Expect(Storage("alpha", "top") == "top:alpha", "InTopLevelChunk/CurrentMod in the chunk: " + Storage("alpha", "top"));
         Expect(Storage("alpha", "id") == "alpha@1.2.3", "wum.mod id and version");
-        Expect(Storage("alpha", "weapons") == "false", "wum.sim.weapons raises");
+        Expect(Storage("alpha", "weapons") == "true", "wum.sim.weapons is a table without clones");
         Expect(GlobalNil("leak") && GlobalNil("wum") && GlobalNil("string") && GlobalNil("table"),
                "mod globals stay in its environment");
         Expect(Storage("sender", "unreg") == "nil:not registered", "unregistered send: " + Storage("sender", "unreg"));
@@ -799,6 +801,172 @@ void TestDesyncProbe() {
            "desync-probe rng: equal before the tick, the stream differs from it on");
 }
 
+// wum.sim.weapons and the sim.weapon.* events, against a fake clone registry and the real explosion queue.
+namespace wpn {
+using melange::weapons::CloneInfo;
+CloneInfo g_clones[2];
+int g_active = -1;
+int Declared(CloneInfo* out, int max) {
+    for (int i = 0; i < 2 && i < max; ++i) out[i] = g_clones[i];
+    return 2;
+}
+int Active() { return g_active; }
+bool Allowed(const char* id) {
+    return std::strcmp(id, "wpn") == 0 || std::strcmp(id, "dep") == 0 || std::strcmp(id, "loop") == 0;
+}
+const char* BaseName(int id) { return id == 1 ? "kWeaponBazooka" : id == 2 ? "kWeaponGrenade" : nullptr; }
+const melange::simweapons::Api kApi = {&Declared, &Active, &melange::weapons::QueueExplosion, &Allowed, &BaseName};
+
+const char kWpn[] = R"(
+local s = wum.sim.storage
+local W = wum.sim.weapons
+s.log = ""
+local function add(t) s.log = s.log .. t .. ";" end
+local l = W.list()
+s.list = table.getn(l) .. ":" .. l[1].name .. ":" .. l[1].base .. ":" .. l[1].cell .. ":" .. l[1].k .. ":" ..
+  tostring(l[1].live) .. ":" .. l[2].base .. ":" .. tostring(l[2].live)
+local h, why = W.on("boom", "*", function() end)
+s.badEvent = tostring(h) .. ":" .. why
+h, why = W.on("fire", "kWeaponNope", function() end)
+s.badName = tostring(h) .. ":" .. why
+local ok
+ok, why = W.explode(1, 2, 3)
+s.outside = tostring(ok) .. ":" .. why
+s.badArgs = tostring(pcall(W.explode, "x"))
+s.active = tostring(W.active())
+W.on("fire", "kWeaponMega", function(ev, name, tick, ...) add(ev .. "|" .. name .. "|" .. tick .. "|" .. arg.n) end)
+W.on("tick", "*", function(ev, name, tick, ...) add(ev .. "|" .. name .. "|" .. tick .. "|" .. arg.n) end)
+W.on("impact", "kWeaponMega", function(ev, name, tick, msg) add(ev .. "|" .. name .. "|" .. tick .. "|" .. msg) end)
+W.on("explosion", "kWeaponMega", function(ev, name, tick, x, y, z)
+  add(ev .. "|" .. name .. "|" .. tick .. "|" .. x .. "," .. y .. "," .. z)
+  local r = ""
+  for i = 1, 4 do local a, b = W.explode(90 * i, 0, -1) r = r .. tostring(a) .. ":" .. tostring(b) .. "," end
+  local a, b = W.explode(2001, 0, 0)
+  s.explode = r .. tostring(a) .. ":" .. tostring(b)
+end)
+W.on("explosion", "kWeaponOther", function() s.other = (s.other or 0) + 1 end)
+local off = W.on("fire", "*", function() s.offFired = true end)
+s.off = tostring(W.off(off))
+wum.events.on("sim.weapon.fire", function(ev, name, tick) s.raw = ev .. "|" .. name .. "|" .. tick end)
+)";
+const char kDep[] = R"(
+local s = wum.sim.storage
+s.sub = tostring(wum.sim.weapons.on("fire", "*", function() s.fired = (s.fired or 0) + 1 end) ~= nil)
+)";
+const char kNoWpn[] = R"(
+local s = wum.sim.storage
+local h, why = wum.sim.weapons.on("fire", "*", function() end)
+s.why = tostring(h) .. ":" .. why
+h, why = wum.events.on("sim.weapon.fire", function() end)
+s.why2 = tostring(h) .. ":" .. why
+s.list = table.getn(wum.sim.weapons.list())
+)";
+const char kLoop[] = R"(
+local s = wum.sim.storage
+s.calls = 0
+wum.sim.weapons.on("explosion", "*", function() s.calls = s.calls + 1 while true do end end)
+)";
+
+melange::weapons::EventArgs Ev(melange::weapons::Event e, uint32_t tick) {
+    melange::weapons::EventArgs a{};
+    a.ev = e;
+    a.tick = tick;
+    return a;
+}
+}  // namespace wpn
+
+void TestWeapons() {
+    using melange::weapons::Event;
+    namespace sw = melange::simweapons;
+    namespace bh = melange::weapons::behaviour;
+    for (int i = 0; i < 2; ++i) {
+        wpn::g_clones[i] = {};
+        wpn::g_clones[i].k = static_cast<uint16_t>(i);
+        wpn::g_clones[i].vid = 0x100 + i;
+        wpn::g_clones[i].base = i + 1;
+        wpn::g_clones[i].cell = static_cast<int8_t>(i ? 39 : 29);
+        wpn::g_clones[i].live = i == 0;
+        snprintf(wpn::g_clones[i].name, sizeof wpn::g_clones[i].name, "%s", i ? "kWeaponOther" : "kWeaponMega");
+    }
+    wpn::g_active = 0;
+    sw::SetApi(&wpn::kApi);
+    bh::SetExtraLimit(3);
+
+    fake::runState = 1;
+    fake::L = fake::NewMatchVM();
+    lua_State* S = fake::L;
+    core::SetSources({{"wpn", "1.0.0", "@wpn/sim.lua", wpn::kWpn},
+                      {"dep", "1.0.0", "@dep/sim.lua", wpn::kDep},
+                      {"nowpn", "1.0.0", "@nowpn/sim.lua", wpn::kNoWpn},
+                      {"loop", "1.0.0", "@loop/sim.lua", wpn::kLoop}});
+    core::ContextCreated(S);
+    Expect(core::Init({"GameLogic.Turn.Ended"}, true) && melange::simbridge::LoadedMods().size() == 4,
+           "weapon mods load");
+    const uint32_t faults0 = melange::sim::GetStats().faults;
+    Expect(Storage("wpn", "list") == "2:kWeaponMega:kWeaponBazooka:29:0:true:kWeaponGrenade:false",
+           "list(): " + Storage("wpn", "list"));
+    Expect(Storage("wpn", "badEvent") == "nil:unknown event", "on() refuses an unknown event");
+    Expect(Storage("wpn", "badName") == "nil:unknown weapon", "on() refuses an unknown clone name");
+    Expect(Storage("wpn", "outside") == "nil:not in explosion", "explode() outside a handler");
+    Expect(Storage("wpn", "badArgs") == "false", "explode() without numbers raises");
+    Expect(Storage("wpn", "active") == "kWeaponMega", "active(): " + Storage("wpn", "active"));
+    Expect(Storage("wpn", "off") == "true", "off() removes a subscription");
+    Expect(Storage("dep", "sub") == "true", "a mod depending on a weapons mod may subscribe");
+    Expect(Storage("nowpn", "why") == "nil:no weapons" && Storage("nowpn", "why2") == "nil:no weapons",
+           "other mods get no weapon events: " + Storage("nowpn", "why") + " " + Storage("nowpn", "why2"));
+    Expect(Storage("nowpn", "list") == "2", "list() is open to every mod");
+
+    sw::Dispatch(wpn::Ev(Event::Fire, 5), "kWeaponMega", nullptr);
+    sw::Dispatch(wpn::Ev(Event::Fire, 6), "kWeaponOther", nullptr);
+    sw::Dispatch(wpn::Ev(Event::Tick, 7), "kWeaponMega", nullptr);
+    auto withPos = wpn::Ev(Event::Tick, 8);
+    withPos.hasPos = true;
+    withPos.pos[0] = 1;
+    sw::Dispatch(withPos, "kWeaponOther", nullptr);
+    sw::Dispatch(wpn::Ev(Event::Impact, 9), "kWeaponMega", "Payload.CollideWithLand");
+    sw::Dispatch(wpn::Ev(Event::Impact, 9), "kWeaponOther", "Payload.CollideWithLand");
+    Expect(Storage("wpn", "log") ==
+               "fire|kWeaponMega|5|0;tick|kWeaponMega|7|0;tick|kWeaponOther|8|3;impact|kWeaponMega|9|Payload.CollideWithLand;",
+           "events reach on() by name, in order: " + Storage("wpn", "log"));
+    Expect(Storage("wpn", "raw") == "sim.weapon.fire|kWeaponOther|6", "wum.events.on sees sim.weapon.fire");
+    Expect(Storage("dep", "fired") == "2" && Storage("wpn", "offFired") == "nil", "'*' matches every clone; off() held");
+
+    float extra[8][3] = {};
+    for (int round = 0; round < 4; ++round) {
+        const float origin[3] = {10, 20, 30};
+        auto ex = wpn::Ev(Event::Explosion, 20 + round);
+        std::memcpy(ex.pos, origin, sizeof origin);
+        ex.hasPos = true;
+        bh::OpenExplosion(origin);
+        sw::Dispatch(ex, "kWeaponMega", nullptr);
+        const int n = bh::CloseExplosion(extra, 8);
+        Expect(n == 3, "three extras queued in round " + std::to_string(round));
+    }
+    Expect(Storage("wpn", "explode") == "true:nil,true:nil,true:nil,nil:full,nil:range",
+           "explode() results: " + Storage("wpn", "explode"));
+    Expect(extra[0][0] == 100 && extra[1][0] == 190 && extra[2][0] == 280 && extra[2][1] == 20 && extra[2][2] == 29,
+           "extras are absolute: origin + d");
+    Expect(Storage("wpn", "log").find("explosion|kWeaponMega|20|10,20,30;") != std::string::npos,
+           "explosion carries x, y, z");
+    Expect(Storage("loop", "calls") == "3", "a runaway explosion handler is stopped and disabled after 3 faults: " +
+                                                Storage("loop", "calls"));
+    Expect(melange::sim::GetStats().faults - faults0 == 3, "three budget faults");
+    Expect(!bh::InExplosion() && melange::weapons::QueueExplosion(extra[0]) ==
+                                     melange::weapons::QueueResult::NotInExplosion,
+           "the window closes");
+    bh::OpenExplosion(extra[0]);
+    sw::Dispatch(wpn::Ev(Event::Explosion, 30), "kWeaponOther", nullptr);
+    Expect(bh::CloseExplosion(extra, 8) == 0 && Storage("wpn", "other") == "1", "a handler for the other clone only");
+    Expect(lua_gettop(S) == 0 && lua_gethookmask(S) == 0 && fake::runState == 1, "stack and hook clean after events");
+
+    core::ContextClosing(S);
+    lua_close(S);
+    fake::L = nullptr;
+    sw::Dispatch(wpn::Ev(Event::Fire, 1), "kWeaponMega", nullptr);
+    sw::SetApi(nullptr);
+    bh::SetExtraLimit(bh::kMaxExtraCap);
+}
+
 int main() {
     melange::log::SetTap(&Tap);
     {
@@ -839,6 +1007,7 @@ int main() {
     TestSample();
     TestModHash();
     TestDesyncProbe();
+    TestWeapons();
     printf("sim_selftest: %d passed, %d failed\n", g_pass, g_fail);
     return g_fail ? 1 : 0;
 }

@@ -277,6 +277,30 @@ target_compile_definitions(weapons_registry_selftest PRIVATE WIN32_LEAN_AND_MEAN
 target_compile_options(weapons_registry_selftest PRIVATE /W4 /utf-8 /permissive-)
 target_link_libraries(weapons_registry_selftest PRIVATE melange_xom)
 
+# Clone behaviour without the game: event observers, the extra-explosion window and limits, and the melange.weapons
+# Wormsign contributor over fake containers.
+add_executable(weapons_behaviour_selftest
+    tests/weapons_behaviour_selftest.cpp
+    src/weapons/behaviour_core.cpp
+    src/weapons/contrib.cpp
+    src/weapons/manifest.cpp
+    src/weapons/schema.cpp
+    src/lua/sim/tweak.cpp
+    src/lua/engine50.cpp
+    src/mods/spice.cpp
+    src/tools/json_read.cpp
+    src/core/mem.cpp
+    src/core/game.cpp
+    src/core/log.cpp
+    src/core/config.cpp
+    src/core/config_schema.cpp
+    src/core/module.cpp)
+target_include_directories(weapons_behaviour_selftest PRIVATE src src/sdk ${CMAKE_BINARY_DIR}/generated)
+target_compile_definitions(weapons_behaviour_selftest PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX _CRT_SECURE_NO_WARNINGS)
+target_compile_options(weapons_behaviour_selftest PRIVATE /W4 /utf-8 /permissive- /wd4100)
+target_link_options(weapons_behaviour_selftest PRIVATE /SAFESEH:NO)
+target_link_libraries(weapons_behaviour_selftest PRIVATE safetyhook::safetyhook melange_xom bcrypt psapi)
+
 add_executable(lua54_selftest tests/lua54_selftest.cpp)
 target_compile_options(lua54_selftest PRIVATE /W4 /utf-8 /permissive- /EHsc)
 target_link_libraries(lua54_selftest PRIVATE lua54)
@@ -317,7 +341,7 @@ target_compile_options(lua50_ref PRIVATE /W0 /FI${CMAKE_SOURCE_DIR}/tests/lua50_
 add_executable(sim_selftest EXCLUDE_FROM_ALL
     tests/sim_selftest.cpp
     src/lua/sim/sim_env.cpp src/lua/sim/sim_api.cpp src/lua/sim/sim_events.cpp src/lua/sim/sim_rng.cpp
-    src/lua/sim/sim_hash.cpp src/wormsign/contrib.cpp
+    src/lua/sim/sim_hash.cpp src/lua/sim/sim_weapons.cpp src/weapons/behaviour_core.cpp src/wormsign/contrib.cpp
     src/core/jlog.cpp src/core/jlog_ring.cpp src/core/jlog_bus_filter.cpp
     src/core/events.cpp src/core/game.cpp src/core/mem.cpp src/core/log.cpp)
 target_include_directories(sim_selftest PRIVATE src src/sdk ${CMAKE_BINARY_DIR}/generated)
