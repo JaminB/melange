@@ -153,6 +153,8 @@ class Oasis final : public Module {
         providers::InstallLua();
         providers::InstallMods();
         providers::InstallIni();
+        providers::InstallLevels();
+        providers::InstallErgAssets();
         providers::InstallCapture();
         providers::InstallWebPanels();
         providers::InstallWormsign();

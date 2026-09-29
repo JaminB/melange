@@ -1,0 +1,137 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://melange.dev/schema/erg-scene-1.json",
+  "title": "Erg scene (erg-scene/1)",
+  "description": "The editable scene the level service sends to the Erg editor, followed by one binary frame per blob. Positions, scales and voxel coordinates are .xan units as stored; the editor shows world units (x20). Never written into a pack.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["format", "stem", "title", "base", "registry", "databank", "water", "spawns", "hmp", "units", "frames", "details", "blobs"],
+  "properties": {
+    "format": { "const": "erg-scene/1" },
+    "stem": { "type": "string", "minLength": 1, "maxLength": 48, "pattern": "^[^.]+$" },
+    "title": { "type": "string", "minLength": 1, "maxLength": 40, "pattern": "^[ -~]+$" },
+    "base": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["key", "source", "file", "sha256"],
+      "properties": {
+        "key": { "type": "string", "minLength": 1, "maxLength": 79, "description": "Registry name, e.g. Multi.DinerMight." },
+        "source": { "enum": ["game", "pack"] },
+        "file": { "type": "string", "minLength": 1, "maxLength": 63, "description": "Level file stem of the base." },
+        "sha256": { "$ref": "#/$defs/sha256" }
+      }
+    },
+    "registry": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["levelType", "themeType", "scripts"],
+      "properties": {
+        "levelType": { "type": "integer", "minimum": 0, "maximum": 16 },
+        "themeType": { "type": "integer", "minimum": 0, "maximum": 11, "description": "5 = the databank's theme." },
+        "scripts": { "type": "array", "minItems": 1, "maxItems": 8, "items": { "type": "string", "minLength": 1, "maxLength": 63, "pattern": "^[^,]+$" } },
+        "previewType": { "type": "integer", "minimum": 0, "maximum": 16 }
+      }
+    },
+    "databank": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "theme": { "anyOf": [{ "const": "" }, { "$ref": "#/$defs/theme" }] },
+        "timeOfDay": { "enum": ["", "DAY", "EVENING", "NIGHT"] },
+        "materialFile": { "type": "string", "maxLength": 120 },
+        "heightmapBase": { "type": "string", "maxLength": 64 },
+        "heightmapSecond": { "type": "string", "maxLength": 64 }
+      }
+    },
+    "water": { "$ref": "#/$defs/water" },
+    "spawns": { "$ref": "#/$defs/spawns" },
+    "hmp": { "$ref": "#/$defs/hmp" },
+    "units": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["worldPerXan"],
+      "properties": { "worldPerXan": { "const": 20 } }
+    },
+    "frames": {
+      "type": "array",
+      "maxItems": 4096,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "parent", "name", "pos", "rot", "scale", "size", "voxels", "heightMap", "folder"],
+        "properties": {
+          "id": { "$ref": "#/$defs/index" },
+          "parent": { "anyOf": [{ "$ref": "#/$defs/index" }, { "type": "null" }], "description": "null for the root only." },
+          "name": { "type": "string", "maxLength": 127 },
+          "pos": { "$ref": "#/$defs/vec3" },
+          "rot": { "$ref": "#/$defs/rot3" },
+          "scale": { "$ref": "#/$defs/vec3" },
+          "size": { "type": "array", "minItems": 3, "maxItems": 3, "items": { "type": "integer", "minimum": 0, "maximum": 255 }, "description": "X, Y, Z voxels; at most 262144 in all." },
+          "voxels": { "anyOf": [{ "$ref": "#/$defs/ref" }, { "type": "null" }], "description": "Blob of X*Y*Z u32 LE words, index (z*X + x)*Y + y." },
+          "heightMap": { "anyOf": [{ "$ref": "#/$defs/ref" }, { "type": "null" }], "description": "Blob of (X+1)*(Z+1) f32 LE corner offsets, index z*(X+1) + x." },
+          "folder": { "type": "boolean", "description": "1x1x1 with identity rotation and scale." }
+        }
+      }
+    },
+    "details": {
+      "type": "array",
+      "maxItems": 65536,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "src", "frame", "name", "resource", "pos", "rot", "scale", "voxelPos", "role"],
+        "properties": {
+          "id": { "$ref": "#/$defs/index" },
+          "src": { "anyOf": [{ "$ref": "#/$defs/index" }, { "type": "null" }], "description": "Object index in the base .xan; null for an added detail." },
+          "frame": { "$ref": "#/$defs/index" },
+          "name": { "type": "string", "maxLength": 127 },
+          "resource": { "type": "string", "maxLength": 127 },
+          "pos": { "$ref": "#/$defs/vec3" },
+          "rot": { "$ref": "#/$defs/rot3" },
+          "scale": { "$ref": "#/$defs/vec3" },
+          "voxelPos": { "$ref": "#/$defs/vec3" },
+          "role": { "enum": ["scenery", "spawn", "object", "camera", "light", "emitter", "sound", "collision", "marker", "other"], "description": "Derived by the server; read-only." }
+        }
+      }
+    },
+    "blobs": {
+      "type": "array",
+      "maxItems": 8192,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["ref", "kind", "frame", "bytes"],
+        "properties": {
+          "ref": { "$ref": "#/$defs/ref" },
+          "kind": { "enum": ["voxels", "heightMap"] },
+          "frame": { "$ref": "#/$defs/index" },
+          "bytes": { "type": "integer", "minimum": 0, "maximum": 1048576 }
+        }
+      }
+    }
+  },
+  "$defs": {
+    "index": { "type": "integer", "minimum": 1, "maximum": 16777216 },
+    "ref": { "type": "integer", "minimum": 0, "maximum": 16777216 },
+    "vec3": { "type": "array", "minItems": 3, "maxItems": 3, "items": { "type": "number", "minimum": -1000000, "maximum": 1000000 } },
+    "rot3": { "type": "array", "minItems": 3, "maxItems": 3, "items": { "type": "number", "minimum": -1000, "maximum": 1000 }, "description": "Euler angles in radians." },
+    "sha256": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["xan", "xom"],
+      "properties": {
+        "xan": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+        "xom": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+        "hmp": { "anyOf": [{ "type": "string", "pattern": "^[0-9a-f]{64}$" }, { "type": "null" }] }
+      }
+    },
+    "theme": { "enum": ["ARABIAN", "WILDWEST", "CAMELOT", "PREHISTORIC", "BUILDING", "ARCTIC", "ENGLAND", "HORROR", "LUNAR", "PIRATE", "WAR"] },
+    "water": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": { "level": { "anyOf": [{ "type": "number", "minimum": -1000, "maximum": 1000 }, { "type": "null" }], "description": "World units, sea level 0; null keeps the default." } }
+    },
+    "spawns": { "type": "object", "additionalProperties": false, "required": ["mode"], "properties": { "mode": { "enum": ["random", "knots"] } } },
+    "hmp": { "type": "object", "additionalProperties": false, "required": ["mode"], "properties": { "mode": { "enum": ["copy", "none", "flat"] } } }
+  }
+}

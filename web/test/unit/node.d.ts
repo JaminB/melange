@@ -13,3 +13,6 @@ declare module "node:assert/strict" {
   };
   export default assert;
 }
+declare module "node:fs" {
+  export function readFileSync(path: string | URL, encoding: "utf8"): string;
+}
