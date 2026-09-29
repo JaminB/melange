@@ -3,9 +3,18 @@
 
 #include "melange/weapons.h"
 
+namespace melange::weapons::core {
+class Registry;
+}
+
 // The clone registry (Declared/Live/ActiveClone behind melange/weapons.h).
 namespace melange::weapons::registry {
 void OnInit();                                  // from simbridge::OnBeforeModsLoad
 void OnMatchEnd();
 const CloneInfo* ByDesc(uintptr_t desc);        // nullptr unless desc is a live clone's descriptor
+
+// Additive: the Weapons module calls Install once clones are declared (creates the hooks disabled, subscribes to
+// GameLogic.Turn.Ended); the hooks reach the registry through Core().
+bool Install();
+core::Registry& Core();
 }  // namespace melange::weapons::registry

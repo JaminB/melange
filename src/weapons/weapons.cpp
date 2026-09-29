@@ -77,6 +77,11 @@ bool VerbState(std::string_view, void*) {
                  kVidBase + d.k, d.name.c_str(), d.base.c_str(), d.baseId, d.cell, d.mod.c_str(), d.bank.c_str(),
                  d.panelIcon.c_str(), d.hudIcon.c_str(), set.empty() ? " -" : set.c_str());
     }
+    CloneInfo info[kMaxClones] = {};
+    const int n = Declared(info, kMaxClones);
+    for (int k = 0; k < n && k < kMaxClones; ++k)
+        LOG_INFO("[weapons]   k=%d live=%d container %08x desc %08x iconCode %x", k, info[k].live,
+                 static_cast<unsigned>(info[k].container), static_cast<unsigned>(info[k].descriptor), info[k].iconCode);
     for (int c : kFreeCells)
         LOG_INFO("[weapons]   cell %d = {%x,%x}", c, Rd<uint32_t>(eng::kPanel + 8 * c), Rd<uint32_t>(eng::kPanel + 8 * c + 4));
     for (int id : {1, 2, 6, 7, 16})
@@ -128,7 +133,7 @@ public:
         melange::testcmd::Register("weapons.state", &VerbState);
         melange::testcmd::Register("weapons.field", &VerbField);
         const size_t n = wm::Frozen().size();
-        if (g_weapons && n) {
+        if (g_weapons && n && melange::weapons::registry::Install()) {
             melange::simbridge::OnBeforeModsLoad(&BeforeMods, nullptr);
             melange::lua50::OnContext(&OnContext, nullptr);
         }
