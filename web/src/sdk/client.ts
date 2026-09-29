@@ -12,6 +12,9 @@ export interface Client {
   call<T>(method: string, params?: object, timeoutMs?: number): Promise<T>;  // rejects with RpcError
   has(methodOrChannel: string): boolean;                                     // feature detection
   onState(fn: (s: Client["state"]) => void): () => void;
+  // Binary frames (announced by a `bin` message; the first 4 bytes are the ref). A frame that arrives before its
+  // handler is kept until one registers (the newest 256), and is then delivered asynchronously.
+  onBinary(ref: number, fn: (data: ArrayBuffer, meta: unknown) => void): () => void;
 }
 
 export class RpcError extends Error {
@@ -25,6 +28,7 @@ interface Sub { channel: string; filter?: object; fn: (msg: unknown, seq: number
 interface Pending { resolve: (v: unknown) => void; reject: (e: RpcError) => void; timer: ReturnType<typeof setTimeout>; }
 
 type SocketLike = Pick<WebSocket, "send" | "close" | "readyState"> & {
+  binaryType?: string;
   onopen: ((ev: Event) => void) | null;
   onclose: ((ev: CloseEvent) => void) | null;
   onmessage: ((ev: MessageEvent) => void) | null;
@@ -62,6 +66,10 @@ export function createClient(opts: ClientOptions = {}): OasisClient {
   const subs = new Set<Sub>();
   const pending = new Map<number, Pending>();
   const listeners = new Set<(s: ClientState) => void>();
+  const binHandlers = new Map<number, Set<(data: ArrayBuffer, meta: unknown) => void>>();
+  const binMeta = new Map<number, unknown>();
+  const binPending = new Map<number, ArrayBuffer>();
+  const MAX_PENDING_BIN = 256;
 
   const setState = (s: ClientState) => {
     if (s === state) return;
@@ -104,6 +112,9 @@ export function createClient(opts: ClientOptions = {}): OasisClient {
         else deliver(m.d, m.seq);
         break;
       }
+      case "bin":
+        if (typeof m.ref === "number") binMeta.set(m.ref, m.meta);
+        break;
       case "drop":
         for (const s of [...subs]) if (s.channel === m.ch) s.onDrop?.(m.n);
         break;
@@ -132,8 +143,17 @@ export function createClient(opts: ClientOptions = {}): OasisClient {
       return;
     }
     ws = sock;
+    try {
+      sock.binaryType = "arraybuffer";
+    } catch {
+      // fake sockets in tests may not take it
+    }
     sock.onopen = () => send({ t: "hello", proto: PROTOCOL, build, client: "oasis-web" });
     sock.onmessage = (ev) => {
+      if (ev.data instanceof ArrayBuffer) {
+        binary(ev.data);
+        return;
+      }
       let m: ServerMessage;
       try {
         m = JSON.parse(typeof ev.data === "string" ? ev.data : "");
@@ -148,6 +168,8 @@ export function createClient(opts: ClientOptions = {}): OasisClient {
       ws = undefined;
       last = { code: ev.code, reason: ev.reason };
       failAll(ErrorCode.Disconnected, "disconnected");
+      binPending.clear();
+      binMeta.clear();
       if (stopped || ev.code === CloseCode.Protocol || ev.code === CloseCode.Auth) {
         setState("offline");
         return;
@@ -155,6 +177,23 @@ export function createClient(opts: ClientOptions = {}): OasisClient {
       setState("closed");
       schedule();
     };
+  };
+
+  const binary = (buf: ArrayBuffer) => {
+    if (buf.byteLength < 4) return;
+    const ref = new DataView(buf).getUint32(0, true);
+    const data = buf.slice(4);
+    const meta = binMeta.get(ref);
+    binMeta.delete(ref);
+    const hs = binHandlers.get(ref);
+    if (hs && hs.size) {
+      for (const fn of [...hs]) fn(data, meta);
+      return;
+    }
+    binPending.delete(ref);
+    binPending.set(ref, data);
+    if (meta !== undefined) binMeta.set(ref, meta);
+    while (binPending.size > MAX_PENDING_BIN) binPending.delete(binPending.keys().next().value as number);
   };
 
   const schedule = () => {
@@ -173,6 +212,24 @@ export function createClient(opts: ClientOptions = {}): OasisClient {
     onState(fn) {
       listeners.add(fn);
       return () => listeners.delete(fn);
+    },
+    onBinary(ref, fn) {
+      let set = binHandlers.get(ref);
+      if (!set) binHandlers.set(ref, (set = new Set()));
+      set.add(fn);
+      const early = binPending.get(ref);
+      if (early) {
+        binPending.delete(ref);
+        const meta = binMeta.get(ref);
+        binMeta.delete(ref);
+        queueMicrotask(() => {
+          if (set!.has(fn)) fn(early, meta);
+        });
+      }
+      return () => {
+        set!.delete(fn);
+        if (!set!.size) binHandlers.delete(ref);
+      };
     },
     subscribe<T>(channel: string, filter: object | undefined, fn: (msg: T, seq: number) => void, onDrop?: (n: number) => void) {
       const s: Sub = { channel, filter, fn: fn as Sub["fn"], onDrop };
