@@ -1,6 +1,7 @@
 #pragma once
 #include <cstdint>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "melange/mods.h"
@@ -11,8 +12,6 @@
 namespace melange::handshake {
 
 constexpr int kSimApiVersion = 1;
-// Vanilla names in the message registry; anything past this is a mod message name.
-constexpr uint32_t kVanillaMessageCount = 1227;
 constexpr size_t kModsValueMaxBytes = 2000;
 
 struct ContentFile {
@@ -23,14 +22,35 @@ struct ContentMod {
     std::string id, version;
     std::vector<ContentFile> files;  // any order in; BuildContentId sorts by relPath before hashing
 };
+struct ModMessage {
+    std::string name;
+    uint16_t id = 0;
+};
+struct CloneSpec {
+    uint16_t k = 0;
+    int32_t vid = 0;
+    std::string name, base, mod;
+    int cell = -1;
+    std::string bankSha256;                                  // "" when the clone has no bank
+    std::vector<std::pair<std::string, std::string>> set;    // field, canonical value (SetNumber/SetBool/SetString)
+};
 
-// Deterministic text: the same mod set (in load order), the same file hashes and the same message count give
-// the same text on every peer, independent of directory-walk order.
-std::string CanonicalText(const std::vector<ContentMod>& modsInLoadOrder, uint32_t modMessages);
+std::string SetNumber(double v);
+std::string SetBool(bool v);
+std::string SetString(const std::string& v);   // percent-encodes anything outside [A-Za-z0-9._/-]
+
+// "clone <k> <vid> <name> <base> <cell> <bank sha256 or -> <set as sorted key=value, space separated, or ->".
+std::string CloneLine(const CloneSpec& c);
+
+// Deterministic text, version 2: the mod set (in load order) with its file hashes, the mod messages as name=id in
+// registration order, and one line per declared clone in k order.
+std::string CanonicalText(const std::vector<ContentMod>& modsInLoadOrder, const std::vector<ModMessage>& messages,
+                          const std::vector<CloneSpec>& clones);
 std::string HashOfCanonicalText(const std::string& canonical);  // sha256 hex, "" only on a hashing failure
 
-// Sorts each mod's files by relPath, then builds the ContentId this peer would publish for this mod set.
-mods::ContentId BuildContentId(std::vector<ContentMod> modsInLoadOrder, uint32_t modMessages);
+// Sorts each mod's files by relPath, then builds the ContentId this peer would publish for this content.
+mods::ContentId BuildContentId(std::vector<ContentMod> modsInLoadOrder, const std::vector<ModMessage>& messages,
+                               const std::vector<CloneSpec>& clones);
 
 // First 16 hex chars of ContentId.hash, or "v" for the vanilla (empty-hash) case.
 std::string Hash16(const mods::ContentId& c);
@@ -58,5 +78,46 @@ std::string BuildMlgSim(const std::string& ourHash16, bool weAreVanilla, const s
 
 // May a sim mod run this match? Offline/local: always. Online: only if the lobby's "mlg.sim" is our hash16.
 bool GateAllowsSim(bool online, const std::string& ourHash16, const std::string& lobbySim);
+
+// Clone keys. "mlg.wpn" (member) = "1;<hash16 of the clone lines>;<count>", "" when there are no clones.
+std::string CloneHash16(const std::vector<CloneSpec>& clones);
+std::string BuildWpnValue(const std::vector<CloneSpec>& clones);
+bool ParseWpnValue(const std::string& value, std::string* hash16, uint32_t* clones);
+// "mlg.req" (lobby, owner only) = "wpn1;<hash16 of the owner's content>", "" (removed) without clones.
+std::string BuildReqValue(const std::string& ourHash16, bool haveClones);
+bool ParseReqValue(const std::string& value, std::string* hash16);
+
+// "mlg.msg" (member) = "name=id,..." in registration order, truncated like mlg.mods; "" without mod messages.
+std::string BuildMsgValue(const std::vector<ModMessage>& messages, size_t maxBytes = kModsValueMaxBytes);
+// "message ids differ: A.B 1104 vs 1105, missing C.D, extra E.F", or "" when both name the same pairs in the
+// same order. An order-only difference is reported as "message order differs: ...".
+std::string DiffMsgValues(const std::string& ours, const std::string& theirs);
+
+// The messages whose live registry id no longer equals the hashed one (lookup returns 0xffff when unregistered).
+std::vector<std::string> ChangedMessageIds(const std::vector<ModMessage>& hashed, uint16_t (*lookup)(const char*));
+
+// The clone lobby policy of the weapon handshake.
+struct LobbyMember {
+    std::string name;
+    bool hasMlg = false;
+    std::string hash16;     // from "mlg"
+    std::string diff;       // what differs from us (mods, then messages), "" if unknown
+};
+struct CloneLobbyInput {
+    bool inLobby = false, weAreOwner = false, haveClones = false;
+    std::string ourHash16;
+    std::string lobbyReq;           // the lobby's "mlg.req" ("" when absent)
+    std::string hostMods;           // the owner's "mlg.mods"
+    std::string diffToHost;         // what differs between us and the owner
+    std::vector<LobbyMember> members;   // everyone but us
+};
+struct CloneVerdict {
+    bool ok = true;                 // clones may be live with these members
+    bool hostHeld = false;          // we host with clones and a member does not match: refuse or suspend
+    bool joinerMismatch = false;    // we joined a clone lobby our content does not match: the modal
+    std::string why;
+    std::vector<std::string> members;   // "<name>: <reason>" per offending member (host side)
+};
+CloneVerdict EvaluateCloneLobby(const CloneLobbyInput& in);
 
 }  // namespace melange::handshake

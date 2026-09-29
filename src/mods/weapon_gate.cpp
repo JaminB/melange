@@ -1,0 +1,294 @@
+// The weapon handshake at runtime: the clone lobby policy, the host's start refusal, the lobby banner and the
+// joiner's Leave lobby action. Nothing here kicks anyone.
+#include "mods/weapon_gate.h"
+
+#include <windows.h>
+
+#include <safetyhook.hpp>
+
+#include <algorithm>
+#include <atomic>
+#include <string>
+
+#include "core/events.h"
+#include "core/game.h"
+#include "core/log.h"
+#include "melange/draw.h"
+#include "melange/jlog.h"
+#include "melange/mods.h"
+#include "melange/overlay.h"
+#include "melange/render.h"
+#include "melange/testcmd.h"
+#include "melange/weapons.h"
+#include "mods/handshake_internal.h"
+#include "mods/lobby.h"
+#include "net/net.h"
+#include "weapons/engine.h"
+#include "weapons/manifest.h"
+
+namespace melange::handshake::wpngate {
+namespace {
+constexpr uint32_t kLeaveCode = 0x8021012D;  // Net.NotViable, the code the engine uses when the host is lost in the lobby
+constexpr int kEvalEvery = 15;
+
+Policy g_policy = Policy::Refuse;
+bool g_leaveButton = true;
+bool g_installed = false;
+
+SafetyHookMid g_startHook;
+bool g_hookFailed = false;
+std::atomic<bool> g_refuse{false};
+std::atomic<uint32_t> g_refusedFrames{0};
+uint32_t g_loggedFrames = 0;
+uint64_t g_lastRefuseLog = 0;
+
+View g_view;
+bool g_wasHeld = false;
+std::string g_modalKey;
+bool g_modalPending = false;
+bool g_openedOverlay = false;
+std::atomic<bool> g_leaveRequested{false};
+
+std::string Diff(uint64_t member) {
+    std::string d = PeerModsDiff(member);
+    const std::string m = PeerMsgDiff(member);
+    if (!m.empty()) d += (d.empty() ? "" : "; ") + m;
+    return d;
+}
+
+CloneLobbyInput Gather() {
+    CloneLobbyInput in;
+    const uint64_t l = lobby::Current();
+    in.inLobby = l != 0;
+    if (!in.inLobby) return in;
+    const uint64_t me = lobby::Me(), owner = lobby::Owner();
+    in.weAreOwner = owner != 0 && owner == me;
+    in.haveClones = LocalClones();
+    in.ourHash16 = Hash16(mods::LocalContent());
+    in.lobbyReq = lobby::Data("mlg.req");
+    if (!in.weAreOwner && owner && (in.haveClones || !in.lobbyReq.empty())) {
+        in.hostMods = lobby::MemberData(owner, "mlg.mods");
+        in.diffToHost = Diff(owner);
+    }
+    if (in.weAreOwner && in.haveClones) {
+        for (uint64_t m : lobby::Members()) {
+            LobbyMember lm;
+            lm.name = lobby::Name(m);
+            std::string version;
+            uint32_t n = 0;
+            lm.hasMlg = ParseMlgValue(lobby::MemberData(m, "mlg"), &version, &lm.hash16, &n);
+            if (lm.hasMlg && lm.hash16 != in.ourHash16 && lm.hash16 != "v") lm.diff = Diff(m);
+            in.members.push_back(std::move(lm));
+        }
+    }
+    return in;
+}
+
+View Evaluate() {
+    const CloneLobbyInput in = Gather();
+    const CloneVerdict v = EvaluateCloneLobby(in);
+    View out;
+    out.inLobby = in.inLobby;
+    out.owner = in.weAreOwner;
+    out.hostHeld = v.hostHeld;
+    out.refusing = v.hostHeld && g_policy == Policy::Refuse && g_startHook;
+    out.joinerMismatch = v.joinerMismatch;
+    out.why = v.why;
+    out.members = v.members;
+    return out;
+}
+
+bool InLobbyScreen() {
+    return game::IsKnownBuild() && wum::CurrentState() == wum::state::WaitingGameStart;
+}
+
+// WaitingGameStart compares the players that have a team with all players before it posts the begin-game message.
+// While refusing, that compare is made to fail, so the host's start waits and nothing is sent.
+void OnStartCheck(safetyhook::Context& c) {
+    if (!g_refuse.load(std::memory_order_relaxed) || c.edi != c.eax || c.edi <= 1) return;
+    c.eax = c.edi + 1;
+    g_refusedFrames.fetch_add(1, std::memory_order_relaxed);
+}
+
+void UpdateStartHook(bool want, bool refuse) {
+    if (want && !g_startHook && !g_hookFailed) {
+        if (!weapons::engine::Mid(g_startHook, weapons::engine::kStartCheck, &OnStartCheck, "start refusal")) {
+            g_hookFailed = true;
+            LOG_ERROR("[handshake] the start refusal is unavailable: a mismatched lobby falls back to clones off");
+        }
+    }
+    g_refuse = want && refuse && g_startHook;
+    if (g_startHook) weapons::engine::Enable(g_startHook, want);
+}
+
+void LogRefusals() {
+    const uint32_t n = g_refusedFrames.load(std::memory_order_relaxed);
+    if (n == g_loggedFrames) return;
+    const uint64_t now = GetTickCount64();
+    if (now - g_lastRefuseLog < 2000) return;
+    g_lastRefuseLog = now;
+    LOG_INFO("[handshake] match start held for clone weapons (%u frames so far): %s", n, g_view.why.c_str());
+    g_loggedFrames = n;
+}
+
+void OpenModal() {
+    g_modalPending = true;
+    if (!overlay::Visible()) {
+        overlay::SetVisible(true);
+        g_openedOverlay = true;
+    }
+    overlay::OpenPanel("thumper.lobby", true);
+}
+
+bool CallAbort(uintptr_t ns) {
+    __try {
+        reinterpret_cast<void(__thiscall*)(uintptr_t, uint32_t)>(wum::addr::AbortGame)(ns, kLeaveCode);
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return false;
+    }
+    return true;
+}
+
+void Tick() {
+    if (g_leaveRequested.exchange(false)) {
+        const uintptr_t ns = game::IsKnownBuild() ? wum::NetService() : 0;
+        const bool joiner = lobby::Current() && lobby::Owner() != lobby::Me();
+        if (ns && joiner && InLobbyScreen()) {
+            LOG_INFO("[handshake] leaving the lobby at the player's request (clone weapons differ)");
+            jlog::Rec("handshake", jlog::Level::Info, "leave_lobby").Str("why", g_view.why).Emit();
+            if (!CallAbort(ns)) LOG_ERROR("[handshake] leaving the lobby failed");
+        }
+    }
+    if (events::FrameCount() % kEvalEvery) return;
+    g_view = Evaluate();
+    const bool want = g_policy == Policy::Refuse && g_view.inLobby && g_view.owner && LocalClones();
+    UpdateStartHook(want, g_view.hostHeld);
+    g_view.refusing = g_refuse.load();
+    if (g_view.hostHeld != g_wasHeld) {
+        g_wasHeld = g_view.hostHeld;
+        if (g_view.hostHeld)
+            LOG_WARN("[handshake] clone weapons: %s %s", g_view.refusing ? "the match start is refused:" : "clones will be off:",
+                     g_view.why.c_str());
+        jlog::Rec("handshake", g_view.hostHeld ? jlog::Level::Warn : jlog::Level::Info, "clone_lobby")
+            .Bool("held", g_view.hostHeld).Bool("refusing", g_view.refusing).Str("why", g_view.why).Emit();
+    }
+    LogRefusals();
+    if (!g_view.inLobby) {
+        g_modalKey.clear();
+        return;
+    }
+    if (g_view.joinerMismatch) {
+        const std::string key = std::to_string(lobby::Current()) + "|" + lobby::Data("mlg.req");
+        if (key != g_modalKey) {
+            g_modalKey = key;
+            LOG_WARN("[handshake] clone weapons: %s", g_view.why.c_str());
+            jlog::Rec("handshake", jlog::Level::Warn, "clone_lobby_joined").Str("why", g_view.why).Emit();
+            OpenModal();
+        }
+    }
+}
+
+float DrawLines(float x, float y, const std::string& text, draw::Rgba color) {
+    constexpr size_t kWidth = 110;
+    size_t i = 0;
+    while (i < text.size()) {
+        size_t n = std::min(kWidth, text.size() - i);
+        if (i + n < text.size()) {
+            const size_t sp = text.rfind(' ', i + n);
+            if (sp != std::string::npos && sp > i) n = sp - i;
+        }
+        draw::HudText(x, y, text.substr(i, n).c_str(), color, 15.f);
+        y += 18.f;
+        i += n;
+        while (i < text.size() && text[i] == ' ') ++i;
+    }
+    return y;
+}
+
+void DrawBanner(render::Stage, void*) {
+    const View& v = g_view;
+    if (!v.inLobby || !(v.hostHeld || v.joinerMismatch) || !InLobbyScreen()) return;
+    constexpr draw::Rgba kAmber = 0xff30a0ffu, kText = 0xffe0e0e0u;
+    const float x = 24.f;
+    float y = 20.f;
+    if (v.hostHeld) {
+        draw::HudText(x, y,
+                      v.refusing ? "Clone weapons: the match cannot start until every player has the same mods."
+                                 : "Clone weapons will be off this match: not every player has the same mods.",
+                      kAmber, 16.f);
+        y += 22.f;
+        for (const auto& m : v.members) y = DrawLines(x + 12.f, y, m, kText);
+    } else {
+        draw::HudText(x, y, "Clone weapons: your mods differ from the host's.", kAmber, 16.f);
+        DrawLines(x + 12.f, y + 22.f, v.why, kText);
+    }
+}
+
+bool VerbState(std::string_view, void*) {
+    const View v = Evaluate();
+    LOG_INFO("[handshake] wpn: policy=%s clones=%d inLobby=%d owner=%d held=%d refusing=%d joinerMismatch=%d hook=%d "
+             "refusedFrames=%u req='%s' why='%s'",
+             g_policy == Policy::Refuse ? "refuse" : "suspend", LocalClones(), v.inLobby, v.owner, v.hostHeld,
+             g_refuse.load(), v.joinerMismatch, g_startHook ? static_cast<int>(g_startHook.enabled()) : -1,
+             g_refusedFrames.load(), lobby::Data("mlg.req").c_str(), v.why.c_str());
+    for (uint64_t m : lobby::Members())
+        LOG_INFO("[handshake]   %s mlg='%s' wpn='%s'", lobby::Name(m).c_str(), lobby::MemberData(m, "mlg").c_str(),
+                 lobby::MemberData(m, "mlg.wpn").c_str());
+    return true;
+}
+
+bool VerbLeave(std::string_view, void*) {
+    if (!LeaveAvailable()) return false;
+    RequestLeave();
+    return true;
+}
+}  // namespace
+
+void Install(Policy policy, bool leaveButton) {
+    if (g_installed) return;
+    g_installed = true;
+    g_policy = policy;
+    g_leaveButton = leaveButton;
+    events::Subscribe(events::Event::Frame, [] { Tick(); });
+    draw::AddDrawCallback(render::Stage::Hud, &DrawBanner, nullptr);
+    testcmd::Register("handshake.wpn", &VerbState);
+    testcmd::Register("handshake.leave", &VerbLeave);
+    LOG_INFO("[handshake] weapon gate: %s, %d clone(s) declared", policy == Policy::Refuse ? "refuse" : "suspend",
+             LocalClones() ? static_cast<int>(weapons::manifest::Frozen().size()) : 0);
+}
+
+Policy CurrentPolicy() { return g_policy; }
+
+bool LocalClones() {
+    return weapons::Enabled() && weapons::manifest::IsFrozen() && !weapons::manifest::Frozen().empty();
+}
+
+View Current() { return g_view; }
+
+bool TakeModalRequest() {
+    const bool r = g_modalPending;
+    g_modalPending = false;
+    return r;
+}
+
+bool LeaveAvailable() {
+    return g_leaveButton && game::IsKnownBuild() && lobby::Current() && lobby::Owner() != lobby::Me() && InLobbyScreen();
+}
+
+void RequestLeave() { g_leaveRequested = true; }
+
+void ModalClosed() {
+    if (g_openedOverlay) overlay::SetVisible(false);
+    g_openedOverlay = false;
+}
+}  // namespace melange::handshake::wpngate
+
+namespace melange::mods {
+bool CloneLobbyOk(std::string* why) {
+    const handshake::CloneVerdict v = handshake::EvaluateCloneLobby(handshake::wpngate::Gather());
+    if (why) *why = v.why;
+    if (!v.ok)
+        jlog::Rec("handshake", jlog::Level::Warn, "clone_gate").Str("why", v.why).Bool("hostHeld", v.hostHeld).Emit();
+    return v.ok;
+}
+}  // namespace melange::mods

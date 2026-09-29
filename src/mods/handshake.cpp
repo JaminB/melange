@@ -21,12 +21,15 @@
 #include "lua/engine50.h"
 #include "lua/sim/bridge_internal.h"
 #include "melange/jlog.h"
+#include "melange/weapons.h"
 #include "mods/handshake_internal.h"
 #include "mods/lobby.h"
 #include "mods/thumper_internal.h"
+#include "mods/weapon_gate.h"
 #include "net/steam.h"
 #include "tools/hash.h"
 #include "version.h"
+#include "weapons/manifest.h"
 
 namespace fs = std::filesystem;
 
@@ -49,6 +52,7 @@ using GetNumMembers_t = int(__thiscall*)(void*, SteamID);
 using MemberByIndex_t = SteamID*(__thiscall*)(void*, SteamID*, SteamID, int);
 using GetData_t = const char*(__thiscall*)(void*, SteamID, const char*);
 using SetData_t = bool(__thiscall*)(void*, SteamID, const char*, const char*);
+using DeleteData_t = bool(__thiscall*)(void*, SteamID, const char*);
 using GetMemberData_t = const char*(__thiscall*)(void*, SteamID, SteamID, const char*);
 using SetMemberData_t = void(__thiscall*)(void*, SteamID, const char*, const char*);
 using GetOwner_t = SteamID*(__thiscall*)(void*, SteamID*, SteamID);
@@ -84,6 +88,11 @@ bool SetLobbyDataRaw(SteamID lobby, const char* key, const char* value) {
     void** vt = VTable(obj);
     return vt && reinterpret_cast<SetData_t>(vt[19])(obj, lobby, key, value);
 }
+bool DeleteLobbyDataRaw(SteamID lobby, const char* key) {
+    void* obj = Accessor("SteamMatchmaking");
+    void** vt = VTable(obj);
+    return vt && reinterpret_cast<DeleteData_t>(vt[22])(obj, lobby, key);
+}
 std::string LobbyData(SteamID lobby, const char* key) {
     void* obj = Accessor("SteamMatchmaking");
     void** vt = VTable(obj);
@@ -116,6 +125,8 @@ std::string FriendName(SteamID id) {
 // ---------------------------------------------------------------- state
 std::mutex g_mx;
 mods::ContentId g_content{};  // vanilla-initialised until the first background compute finishes
+std::vector<ModMessage> g_hashedMessages;  // what g_content hashed, guarded by g_mx
+std::string g_wpnValue, g_msgValue;        // guarded by g_mx
 std::atomic<uint64_t> g_lobby{0};
 std::atomic<bool> g_simAllowedThisMatch{false};
 bool g_publish = true;
@@ -196,35 +207,99 @@ std::vector<thumper::Entry> EnabledContentMods() {
     return out;
 }
 
-// Deviation (documented): the spec's canonical text folds "every registered mod message as name=id in
-// registration order". No frozen contract yet hands a non-registering component that ordered (name, id) list —
-// only Thumper (A) knows it, at the moment it calls sim::RegisterModMessage. Until then this folds the overhang
-// past the known vanilla floor as a count, which still changes the hash whenever the message set does.
-uint32_t RegisteredModMessages() {
-    if (!melange::game::IsKnownBuild()) return 0;
-    uint32_t count = melange::lua50::RegistryCount();
-    return count > kVanillaMessageCount ? count - kVanillaMessageCount : 0;
+// Taken on the thread that asks for a recompute (the main thread): the message list and the clone table are
+// written there, and the background compute only reads these copies.
+struct ComputeInputs {
+    std::vector<ModMessage> messages;
+    std::vector<weapons::manifest::CloneDecl> clones;
+};
+
+ComputeInputs TakeInputs() {
+    ComputeInputs in;
+    for (auto& [name, id] : simbridge::ModMessages()) in.messages.push_back({name, id});
+    if (wpngate::LocalClones()) in.clones = weapons::manifest::Frozen();
+    return in;
 }
 
-mods::ContentId ComputeContent() {
+std::string SetValueText(const weapons::manifest::SetValue& v) {
+    using weapons::FieldType;
+    switch (v.type) {
+        case FieldType::Bool: return SetBool(v.boolean);
+        case FieldType::String: return SetString(v.string);
+        default: return SetNumber(v.number);
+    }
+}
+
+std::string LowerSlashes(std::string s) {
+    for (char& c : s) c = c == '\\' ? '/' : static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+    return s;
+}
+
+std::vector<CloneSpec> CloneSpecs(const std::vector<weapons::manifest::CloneDecl>& decls,
+                                  const std::vector<ContentMod>& mods) {
+    std::vector<CloneSpec> out;
+    for (const auto& d : decls) {
+        CloneSpec c;
+        c.k = d.k;
+        c.vid = weapons::kVidBase + d.k;
+        c.name = d.name;
+        c.base = d.base;
+        c.mod = d.mod;
+        c.cell = d.cell;
+        if (!d.bank.empty()) {
+            c.bankSha256 = "missing";
+            const std::string rel = "assets/data/" + LowerSlashes(d.bank);
+            for (const auto& m : mods)
+                if (m.id == d.mod)
+                    for (const auto& f : m.files)
+                        if (f.relPath == rel) c.bankSha256 = f.sha256Hex;
+        }
+        for (const auto& v : d.set) c.set.emplace_back(v.field, SetValueText(v));
+        out.push_back(std::move(c));
+    }
+    return out;
+}
+
+struct Computed {
+    mods::ContentId id{};
+    std::vector<ModMessage> messages;
+    std::string wpn, msg;
+};
+
+Computed ComputeContent(const ComputeInputs& in) {
     std::vector<thumper::Entry> enabled = EnabledContentMods();
     std::vector<ContentMod> contentMods;
     contentMods.reserve(enabled.size());
     for (const thumper::Entry& m : enabled)
         contentMods.push_back({m.manifest.id, m.manifest.version, FilesForMod(m.manifest.id, m.dir, m.manifest.entrySim)});
-    return BuildContentId(std::move(contentMods), RegisteredModMessages());
+    const std::vector<CloneSpec> clones = CloneSpecs(in.clones, contentMods);
+    Computed out;
+    out.id = BuildContentId(std::move(contentMods), in.messages, clones);
+    out.messages = in.messages;
+    out.wpn = BuildWpnValue(clones);
+    out.msg = BuildMsgValue(in.messages);
+    return out;
 }
 
 void PublishOwnMemberData() {
     SteamID lobby = g_lobby.load();
     if (!lobby || !g_publish) return;
     mods::ContentId c;
-    { std::lock_guard lk(g_mx); c = g_content; }
+    std::string wpn, msg;
+    {
+        std::lock_guard lk(g_mx);
+        c = g_content;
+        wpn = g_wpnValue;
+        msg = g_msgValue;
+    }
     SetLobbyMemberDataRaw(lobby, "mlg", BuildMlgValue(MELANGE_VERSION, c).c_str());
     std::vector<ContentMod> ids;
     for (const thumper::Entry& m : EnabledContentMods()) ids.push_back({m.manifest.id, m.manifest.version, {}});
     if (!ids.empty()) SetLobbyMemberDataRaw(lobby, "mlg.mods", BuildModsValue(ids).c_str());
-    jlog::Rec("handshake", jlog::Level::Info, "publish").Str("hash16", Hash16(c)).Uint("contentMods", c.contentMods).Emit();
+    if (!msg.empty()) SetLobbyMemberDataRaw(lobby, "mlg.msg", msg.c_str());
+    if (!wpn.empty()) SetLobbyMemberDataRaw(lobby, "mlg.wpn", wpn.c_str());
+    jlog::Rec("handshake", jlog::Level::Info, "publish").Str("hash16", Hash16(c)).Uint("contentMods", c.contentMods)
+        .Uint("messages", c.modMessages).Str("wpn", wpn).Emit();
 }
 
 void RewriteMlgSimIfOwner() {
@@ -248,23 +323,47 @@ void RewriteMlgSimIfOwner() {
     }
     std::string sim = BuildMlgSim(ourHash16, c.vanilla, memberHashes);
     if (!sim.empty() && LobbyData(lobby, "mlg.sim") != sim) SetLobbyDataRaw(lobby, "mlg.sim", sim.c_str());
+    std::string wpn;
+    { std::lock_guard lk(g_mx); wpn = g_wpnValue; }
+    const std::string req = BuildReqValue(ourHash16, !wpn.empty());
+    const std::string have = LobbyData(lobby, "mlg.req");
+    if (!req.empty() && have != req) SetLobbyDataRaw(lobby, "mlg.req", req.c_str());
+    else if (req.empty() && !have.empty()) DeleteLobbyDataRaw(lobby, "mlg.req");
 }
 
 std::atomic<uint32_t> g_computeGen{0};
 
-void Recompute(uint32_t gen) {
-    mods::ContentId c = ComputeContent();
+void Recompute(uint32_t gen, const ComputeInputs& in) {
+    Computed c = ComputeContent(in);
     {
         std::lock_guard lk(g_mx);
         if (gen != g_computeGen.load()) return;  // a newer computation superseded this one
-        g_content = c;
+        g_content = c.id;
+        g_hashedMessages = std::move(c.messages);
+        g_wpnValue = std::move(c.wpn);
+        g_msgValue = std::move(c.msg);
     }
     PublishOwnMemberData();
     RewriteMlgSimIfOwner();
 }
 void RecomputeAsync() {
     const uint32_t gen = ++g_computeGen;
-    std::thread([gen] { Recompute(gen); }).detach();
+    std::thread([gen, in = TakeInputs()] { Recompute(gen, in); }).detach();
+}
+
+// At Init: every hashed mod message must still have the id the content text names.
+bool MessageIdsUnchanged() {
+    if (!melange::game::IsKnownBuild()) return true;
+    std::vector<ModMessage> hashed;
+    { std::lock_guard lk(g_mx); hashed = g_hashedMessages; }
+    const std::vector<std::string> changed = ChangedMessageIds(hashed, &melange::lua50::Lookup);
+    if (changed.empty()) return true;
+    std::string names;
+    for (const auto& n : changed) names += (names.empty() ? "" : ", ") + n;
+    LOG_ERROR("[handshake] message ids changed since the content hash (%s): content mods are off for this match",
+              names.c_str());
+    jlog::Rec("handshake", jlog::Level::Error, "message_ids_changed").Str("names", names).Emit();
+    return false;
 }
 
 bool HandshakeGate() {
@@ -278,10 +377,16 @@ bool HandshakeGate() {
         allowed = false;
     else
         allowed = GateAllowsSim(true, Hash16(c), LobbyData(lobby, "mlg.sim"));
+    std::string why;
+    const bool clonesOk = mods::CloneLobbyOk(&why);
+    const bool idsOk = MessageIdsUnchanged();
+    if (allowed && !clonesOk) LOG_WARN("[handshake] content mods are off for this match: %s", why.c_str());
+    allowed = allowed && clonesOk && idsOk;
     g_simAllowedThisMatch = allowed;
     if (!allowed && !c.vanilla)
         LOG_WARN("[handshake] content mods are suspended for this online match (lobby content does not match)");
-    jlog::Rec("handshake", jlog::Level::Info, "gate").Bool("allowed", allowed).Bool("online", lobby != 0).Emit();
+    jlog::Rec("handshake", jlog::Level::Info, "gate").Bool("allowed", allowed).Bool("online", lobby != 0)
+        .Bool("clones", clonesOk).Bool("messageIds", idsOk).Emit();
     return allowed;
 }
 
@@ -340,6 +445,14 @@ std::string PeerModsDiff(uint64_t steamId) {
     std::vector<ContentMod> ids;
     for (const thumper::Entry& m : EnabledContentMods()) ids.push_back({m.manifest.id, m.manifest.version, {}});
     return DiffModsValues(BuildModsValue(ids), LobbyMemberData(lobby, steamId, "mlg.mods"));
+}
+
+std::string PeerMsgDiff(uint64_t steamId) {
+    SteamID lobby = g_lobby.load();
+    if (!lobby) return "";
+    std::string ours;
+    { std::lock_guard lk(g_mx); ours = g_msgValue; }
+    return DiffMsgValues(ours, LobbyMemberData(lobby, steamId, "mlg.msg"));
 }
 
 }  // namespace melange::handshake
@@ -415,6 +528,10 @@ std::string Name(uint64_t member) {
     const std::string n = FriendName(member);
     return n.empty() ? std::to_string(member) : n;
 }
+std::string Data(const char* key) {
+    const SteamID l = g_lobby.load();
+    return l ? LobbyData(l, key) : std::string();
+}
 }  // namespace melange::handshake::lobby
 
 namespace {
@@ -427,6 +544,10 @@ public:
         using namespace melange::handshake;
         g_publish = Bool("Publish", true);
         g_simOnline = Bool("SimOnline", true);
+        melange::config::EnsureKey("Handshake", "WeaponGate", "refuse");
+        const std::string policy = melange::config::GetString("Handshake", "WeaponGate", "refuse");
+        wpngate::Install(policy == "suspend" ? wpngate::Policy::Suspend : wpngate::Policy::Refuse,
+                         Bool("LeaveButton", true));
         new Listener(melange::steam::kLobbyEnter, 24);
         new Listener(melange::steam::kLobbyDataUpdate, 24);
         new Listener(melange::steam::kLobbyChatUpdate, 32);
