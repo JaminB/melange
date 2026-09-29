@@ -265,13 +265,15 @@ void OnTickEndCb(const TickHash& h, void*) {
         if (g_detlTo - g_detlFrom + 1 >= kTickChunkTicks) FlushDetl();
     }
 
-    if (g_ticks.Count() >= kTickChunkTicks) {
+    // Every 500 ticks (10 s) all streams go to the writer, so a crash loses at most that much of any of them.
+    const bool chunkEnd = g_ticks.Count() >= kTickChunkTicks;
+    if (chunkEnd) {
         FlushTick();
         FlushCtrb();
     }
-    if (g_inptBuf.size() >= kFlushBytes) FlushInpt();
-    if (g_rmtiBuf.size() >= kFlushBytes) FlushRmti();
-    if (g_dispBuf.size() >= kFlushBytes) FlushDisp();
+    if (chunkEnd || g_inptBuf.size() >= kFlushBytes) FlushInpt();
+    if (chunkEnd || g_rmtiBuf.size() >= kFlushBytes) FlushRmti();
+    if (chunkEnd || g_dispBuf.size() >= kFlushBytes) FlushDisp();
 }
 
 void OnDivergenceCb(const Divergence& d, void*) {
