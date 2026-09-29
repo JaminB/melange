@@ -1,0 +1,182 @@
+// The six ReplayMessageStore sender hooks and five insert hooks that feed the recorder's input stream, matching
+// the addresses verified at runtime against build #1077 (0x542740..0x543130 senders, 0x53e970..0x53ec00 inserts,
+// remote callers 0x68a9f0..0x68b200).
+#include "wormsign/capture.h"
+#include "wormsign/capture_internal.h"
+
+#include <intrin.h>
+#include <safetyhook.hpp>
+
+#include <atomic>
+#include <cstring>
+
+#include "core/log.h"
+#include "core/mem.h"
+#include "melange/wormsign.h"
+#include "wormsign/clock.h"
+#include "wormsign/session.h"
+
+namespace melange::wormsign::capture {
+namespace {
+// __cdecl(id, [a], [b], time); type 5 (string) takes an XString* in place of a/value.
+constexpr uintptr_t kSend[6] = {0x542740, 0x5427f0, 0x5428b0, 0x542970, 0x542a30, 0x543130};
+// __thiscall(ReplayMessageStore*, Info*) ret 4, one per NetStored{,Int,TwoInt,Float,TwoFloat} type (the string
+// type has no insert: it never replicates over the network).
+constexpr uintptr_t kIns[5] = {0x53e970, 0x53ea10, 0x53eae0, 0x53eb80, 0x53ec00};
+// NetStored*Array::Handle callers: an insert whose return address falls here delivered a remote record.
+constexpr uintptr_t kRemoteLo = 0x68a9f0, kRemoteHi = 0x68b200;
+// The local-only message-id exclusion list bsearch'd by 0x539c00 (HUD/menu/chat/camera names), 55 sorted u16 ids.
+constexpr uintptr_t kLocalOnlyTable = 0x91eef8;
+constexpr size_t kLocalOnlyCount = 55;
+
+std::atomic<GateFn> g_gate{nullptr};
+std::atomic<SendSink> g_sendSink{nullptr};
+std::atomic<InsertSink> g_insertSink{nullptr};
+std::atomic<void*> g_sendUser{nullptr}, g_insertUser{nullptr};
+thread_local bool t_injecting = false;
+std::atomic<bool> g_installed{false};
+
+SafetyHookInline g_send[6];
+SafetyHookInline g_ins[5];
+
+bool PassGate(int type, uint16_t id) {
+    if (GateFn fn = g_gate.load(std::memory_order_relaxed)) return fn(type, id, t_injecting) == Gate::Pass;
+    return true;
+}
+
+void Emit(int type, uint16_t id, uint32_t a, uint32_t b, uint32_t time, uintptr_t caller, const char* str) {
+    if (session::Open()) session::CountInput();
+    if (SendSink fn = g_sendSink.load(std::memory_order_relaxed))
+        fn(SendEvent{type, id, a, b, time, melange::wormsign::LogicTimeMs(), static_cast<uint32_t>(caller),
+                     str ? str : "", t_injecting},
+           g_sendUser.load(std::memory_order_relaxed));
+}
+
+void __cdecl OnSend0(uint32_t id, uint32_t time) {
+    if (!PassGate(0, static_cast<uint16_t>(id))) return;
+    Emit(0, static_cast<uint16_t>(id), 0, 0, time, reinterpret_cast<uintptr_t>(_ReturnAddress()), nullptr);
+    g_send[0].ccall<void>(id, time);
+}
+void __cdecl OnSend1(uint32_t id, uint32_t a, uint32_t time) {
+    if (!PassGate(1, static_cast<uint16_t>(id))) return;
+    Emit(1, static_cast<uint16_t>(id), a, 0, time, reinterpret_cast<uintptr_t>(_ReturnAddress()), nullptr);
+    g_send[1].ccall<void>(id, a, time);
+}
+void __cdecl OnSend2(uint32_t id, uint32_t a, uint32_t b, uint32_t time) {
+    if (!PassGate(2, static_cast<uint16_t>(id))) return;
+    Emit(2, static_cast<uint16_t>(id), a, b, time, reinterpret_cast<uintptr_t>(_ReturnAddress()), nullptr);
+    g_send[2].ccall<void>(id, a, b, time);
+}
+void __cdecl OnSend3(uint32_t id, uint32_t a, uint32_t time) {
+    if (!PassGate(3, static_cast<uint16_t>(id))) return;
+    Emit(3, static_cast<uint16_t>(id), a, 0, time, reinterpret_cast<uintptr_t>(_ReturnAddress()), nullptr);
+    g_send[3].ccall<void>(id, a, time);
+}
+void __cdecl OnSend4(uint32_t id, uint32_t a, uint32_t b, uint32_t time) {
+    if (!PassGate(4, static_cast<uint16_t>(id))) return;
+    Emit(4, static_cast<uint16_t>(id), a, b, time, reinterpret_cast<uintptr_t>(_ReturnAddress()), nullptr);
+    g_send[4].ccall<void>(id, a, b, time);
+}
+void __cdecl OnSend5(uint32_t id, uintptr_t xstr, uint32_t time) {
+    if (!PassGate(5, static_cast<uint16_t>(id))) return;
+    char s[128] = "";
+    uintptr_t p = 0;
+    if (mem::SafeRead(xstr, &p, sizeof p) && p) mem::SafeRead(p, s, sizeof s - 1);
+    Emit(5, static_cast<uint16_t>(id), static_cast<uint32_t>(xstr), 0, time, reinterpret_cast<uintptr_t>(_ReturnAddress()), s);
+    g_send[5].ccall<void>(id, xstr, time);
+}
+
+template <int N>
+void __fastcall OnInsert(uintptr_t store, void* /*edx*/, uintptr_t info) {
+    const uintptr_t ret = reinterpret_cast<uintptr_t>(_ReturnAddress());
+    if (ret >= kRemoteLo && ret < kRemoteHi && session::Open()) {
+        InsertEvent e{};
+        mem::SafeRead(info + 4, &e.id, sizeof e.id);
+        mem::SafeRead(info + 8, &e.time, sizeof e.time);
+        mem::SafeRead(info + 0xc, &e.a, sizeof e.a);
+        e.arrivedT = melange::wormsign::LogicTimeMs();
+        if (InsertSink fn = g_insertSink.load(std::memory_order_relaxed))
+            fn(e, g_insertUser.load(std::memory_order_relaxed));
+    }
+    g_ins[N].thiscall<void>(store, info);
+}
+
+template <class F>
+bool Inline(SafetyHookInline& h, uintptr_t a, F fn, const char* what) {
+    h = safetyhook::create_inline(a, fn);
+    if (!h) LOG_ERROR("[wormsign] capture hook %s at %08x failed", what, static_cast<unsigned>(a));
+    return static_cast<bool>(h);
+}
+}  // namespace
+
+void SetGate(GateFn fn) { g_gate = fn; }
+
+bool InjectSend(int type, uint16_t id, uint32_t a, uint32_t b, const char* str, uint32_t time) {
+    if (!g_installed || type < 0 || type > 5) return false;
+    if (type == 5) return false;  // the string sender needs an engine XString; that is C's job (inject.cpp)
+    t_injecting = true;
+    switch (type) {
+        case 0: g_send[0].ccall<void>(id, time); break;
+        case 1: g_send[1].ccall<void>(id, a, time); break;
+        case 2: g_send[2].ccall<void>(id, a, b, time); break;
+        case 3: g_send[3].ccall<void>(id, a, time); break;
+        case 4: g_send[4].ccall<void>(id, a, b, time); break;
+        default: break;
+    }
+    (void)str;
+    t_injecting = false;
+    return true;
+}
+
+bool LocalOnly(uint16_t id) {
+    uint16_t tbl[kLocalOnlyCount];
+    if (!mem::SafeRead(kLocalOnlyTable, tbl, sizeof tbl)) return false;
+    size_t lo = 0, hi = kLocalOnlyCount;
+    while (lo < hi) {
+        const size_t mid = (lo + hi) / 2;
+        if (tbl[mid] == id) return true;
+        if (tbl[mid] < id) lo = mid + 1;
+        else hi = mid;
+    }
+    return false;
+}
+
+void SetSendSink(SendSink fn, void* user) {
+    g_sendUser = user;
+    g_sendSink = fn;
+}
+void SetInsertSink(InsertSink fn, void* user) {
+    g_insertUser = user;
+    g_insertSink = fn;
+}
+
+bool Install() {
+    if (g_installed) return true;
+    // The scheduler's own #1077 prologue check already guards the tick clock; require it installed first, since
+    // the send/insert sites are only ever exercised together with it and the probe does not byte-check them either.
+    if (!clock::Installed()) {
+        LOG_ERROR("[wormsign] capture: the tick clock is not installed, refusing to hook the input path");
+        return false;
+    }
+    bool ok = true;
+    ok &= Inline(g_send[0], kSend[0], &OnSend0, "send msg");
+    ok &= Inline(g_send[1], kSend[1], &OnSend1, "send int");
+    ok &= Inline(g_send[2], kSend[2], &OnSend2, "send int2");
+    ok &= Inline(g_send[3], kSend[3], &OnSend3, "send float");
+    ok &= Inline(g_send[4], kSend[4], &OnSend4, "send float2");
+    ok &= Inline(g_send[5], kSend[5], &OnSend5, "send string");
+    ok &= Inline(g_ins[0], kIns[0], &OnInsert<0>, "insert msg");
+    ok &= Inline(g_ins[1], kIns[1], &OnInsert<1>, "insert int");
+    ok &= Inline(g_ins[2], kIns[2], &OnInsert<2>, "insert int2");
+    ok &= Inline(g_ins[3], kIns[3], &OnInsert<3>, "insert float");
+    ok &= Inline(g_ins[4], kIns[4], &OnInsert<4>, "insert float2");
+    if (!ok) {
+        for (auto& h : g_send) h = {};
+        for (auto& h : g_ins) h = {};
+        return false;
+    }
+    g_installed = true;
+    return true;
+}
+bool Installed() { return g_installed; }
+}  // namespace melange::wormsign::capture
