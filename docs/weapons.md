@@ -139,9 +139,9 @@ clone's `name`.
   other player update) and start again.
 - If you join a lobby that uses clone weapons you don't have (or have a different version of), you get a
   choice, never an automatic kick: a modal names the mods and lets you leave.
-- A replay recorded with an older, non-clone build of Melange plays back fine; a replay recorded with a
-  *different version* of your weapon content is refused as "content differs", the same as any other content
-  mismatch.
+- A clone match replays like any other. A replay with no content mods plays back fine; one recorded with
+  content mods by an older Melange, or with a *different version* of your weapon content, is refused as
+  "content differs", the same as any other content mismatch.
 
 ## Troubleshooting
 
