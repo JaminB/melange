@@ -307,9 +307,11 @@ void DetailRpc(const Call& c, Result& r, void*) {
 }
 
 bool RouteReplays(const core::Request& rq, core::Response* out, void*) {
-    constexpr size_t kPrefixLen = 10;  // "/replays/"
+    constexpr size_t kPrefixLen = 9;  // "/replays/"
     const std::string name = rq.path.substr(kPrefixLen);
-    if (!ValidReplayName(name)) {
+    bool known = name.rfind("desync-", 0) == 0 && name.size() > 4 && name.substr(name.size() - 4) == ".zip";
+    for (const auto& e : ReadLibrary()) known |= BaseName(e.path) == name;
+    if (!ValidReplayName(name) || !known) {
         out->status = 404;
         out->body = "Not Found\n";
         return true;
