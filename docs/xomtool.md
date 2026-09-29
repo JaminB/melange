@@ -173,7 +173,7 @@ against it for the whole shipped asset set (`tools/xom/parity_test.py`, 943/943 
   <path to xomtool.exe> --bundles --maps` runs both builds over the same 943 files plus the
   `bank`/`convert` fixtures and compares outputs (see the note on PNG bytes above).
 
-## Deviations from the design doc
+## Limitations
 
 - `unpack --split` writes one file per **object** (numbered by position), not one file per
   **named** resource - not every object has a name, and per-object is simpler while staying fully
