@@ -342,6 +342,7 @@ void PushWum(int mod) {
     SetFn(L, sim, "sendString", &LSend, mod, 3);
     SetFn(L, sim, "getData", &LGetData, mod);
     SetFn(L, sim, "setData", &LSetData, mod);
+    SetFn(L, sim, "hash", &LHash, mod);
     a.pushstring(L, "storage");
     a.newtable(L);
     a.rawset(L, sim);

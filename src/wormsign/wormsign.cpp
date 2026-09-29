@@ -1,16 +1,25 @@
 // Wormsign: the tick clock and the per-tick engine hash; recordings, replays and the desync detector build on it.
-//   wormsign.stats         session, tick and hash cost
+//   wormsign.stats                 session, tick and hash cost
+//   wormsign.contrib               hash contributors, their state and the mod environment digest cost
+//   wormsign.detail [tick]         the detail record of a tick (default: the last) and its diff against the tick before
+//   wormsign.fpu                   the FPU watch
 #include <lua.hpp>
 
 #include <cstdio>
+#include <cstdlib>
+#include <string>
 
 #include "core/config.h"
 #include "core/log.h"
 #include "core/module.h"
+#include "lua/sim/sim_hash.h"
 #include "melange/lua.h"
 #include "melange/testcmd.h"
 #include "melange/wormsign.h"
 #include "wormsign/clock.h"
+#include "wormsign/contrib.h"
+#include "wormsign/detail.h"
+#include "wormsign/fpu.h"
 #include "wormsign/session.h"
 
 namespace ws = melange::wormsign;
@@ -54,6 +63,56 @@ bool VerbStats(std::string_view, void*) {
     return true;
 }
 
+bool VerbContrib(std::string_view, void*) {
+    ws::contrib::Info list[64];
+    const size_t n = ws::contrib::List(list, 64);
+    LOG_INFO("[wormsign] %zu contributors, list hash %016llx", n, ws::contrib::ListHash());
+    for (size_t i = 0; i < n; ++i)
+        LOG_INFO("[wormsign]   %s v%u%s: %s, %llu calls, last p95 %u.%u us", list[i].name, list[i].version,
+                 list[i].inReplayCompare ? "" : " (not in replay compare)", ws::contrib::Describe(list[i]).c_str(),
+                 list[i].calls, list[i].lastP95Us10 / 10, list[i].lastP95Us10 % 10);
+    const auto c = melange::simhash::GetCost();
+    LOG_INFO("[wormsign] mod environment digests: %llu, %llu values, p50 %u.%u us, p95 %u.%u us, max %u.%u us",
+             c.digests, c.entries, c.p50Us10 / 10, c.p50Us10 % 10, c.p95Us10 / 10, c.p95Us10 % 10, c.maxUs10 / 10,
+             c.maxUs10 % 10);
+    return true;
+}
+
+bool VerbDetail(std::string_view a, void*) {
+    const std::string s(a);
+    const uint32_t tick = s.empty() ? ws::Tick() : static_cast<uint32_t>(strtoul(s.c_str(), nullptr, 10));
+    ws::detail::DetailRec cur, prev;
+    if (!ws::detail::Get(tick, &cur)) {
+        LOG_INFO("[wormsign] detail: tick %u is not in the ring", tick);
+        return true;
+    }
+    melange::log::WriteRaw(("[wormsign] detail " + ws::detail::ToJson(cur) + "\r\n").c_str());
+    ws::TickHash th{};
+    if (ws::TickAt(tick, &th)) {
+        uint64_t c[ws::kEngineComps] = {};
+        const uint8_t mask = ws::detail::Recompute(cur, c);
+        std::string bad;
+        for (int i = 0; i < ws::kEngineComps; ++i)
+            if ((mask >> i & 1) && c[i] != th.c[i]) bad += " c" + std::to_string(i);
+        LOG_INFO("[wormsign] detail %u against its tick hash: %s", tick, bad.empty() ? "c0 c1 c2 c4 c5 match" : bad.c_str());
+    }
+    if (tick && ws::detail::Get(tick - 1, &prev)) {
+        const std::string d = ws::detail::Diff(prev, cur);
+        melange::log::WriteRaw(("[wormsign] diff " + std::to_string(tick - 1) + " -> " + std::to_string(tick) +
+                                ":\r\n" + (d.empty() ? "(none)\n" : d))
+                                   .c_str());
+    }
+    melange::simhash::EnvChange ch[32];
+    const size_t k = melange::simhash::EnvChanges(tick, tick, ch, 32);
+    for (size_t i = 0; i < k; ++i) LOG_INFO("[wormsign]   %s", melange::simhash::Format(ch[i]).c_str());
+    return true;
+}
+
+bool VerbFpu(std::string_view, void*) {
+    LOG_INFO("[wormsign] %s", ws::fpu::NoteJson().c_str());
+    return true;
+}
+
 class Wormsign final : public melange::Module {
   public:
     const char* Name() const override { return "Wormsign"; }
@@ -68,14 +127,21 @@ class Wormsign final : public melange::Module {
         Bool("Exchange", true);
         melange::config::EnsureKey(Name(), "OnDesync", "report");
         Bool("ReplayAnyContent", false);
+        melange::config::EnsureKey(Name(), "EnvDigest", "changed");
+        const auto mode = melange::simhash::ParseMode(melange::config::GetString(Name(), "EnvDigest", "changed").c_str());
         melange::testcmd::Register("wormsign.stats", &VerbStats);
+        melange::testcmd::Register("wormsign.contrib", &VerbContrib);
+        melange::testcmd::Register("wormsign.detail", &VerbDetail);
+        melange::testcmd::Register("wormsign.fpu", &VerbFpu);
         if (!ws::clock::Install()) return true;
         ws::session::SetEnabled(true);
+        melange::simhash::Install(mode);
         melange::lua::AddLibrary("wormsign", &OpenLib);
-        LOG_INFO("[wormsign] tick clock installed");
+        LOG_INFO("[wormsign] tick clock installed (mod environment digest: %s)", melange::simhash::ModeName(mode));
         return true;
     }
     void Uninstall() override {
+        melange::simhash::Uninstall();
         ws::clock::Uninstall();
         ws::session::SetEnabled(false);
     }

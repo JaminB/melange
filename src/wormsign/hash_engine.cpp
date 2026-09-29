@@ -6,6 +6,7 @@
 
 #include "core/mem.h"
 #include "game/state/gamestate_internal.h"
+#include "wormsign/detail.h"
 
 namespace melange::wormsign {
 namespace {
@@ -70,7 +71,7 @@ bool IsProjectile(uintptr_t vt) {
 
 uint32_t g_queue[kQueueBytesMax / 4];
 
-void HashTasks(uint64_t& ht, uint64_t& hp, const PoppedTask& popped) {
+void HashTasks(uint64_t& ht, uint64_t& hp, const PoppedTask& popped, detail::DetailRec* rec) {
     const uintptr_t inner = Rd<uintptr_t>(Rd<uintptr_t>(kTM) + 0x1c);
     for (int cat = 1; cat <= 2 && inner; ++cat) {
         const uintptr_t q = Rd<uintptr_t>(inner + 0x28 + cat * 0xc);
@@ -87,7 +88,14 @@ void HashTasks(uint64_t& ht, uint64_t& hp, const PoppedTask& popped) {
             ht = FnvV(vt, FnvV(time, ht));
             if (vt && IsProjectile(vt)) {
                 float pv[6];
-                if (mem::SafeRead(obj + 0x28, pv, sizeof pv)) hp = Fnv(pv, sizeof pv, FnvV(vt, hp));
+                if (mem::SafeRead(obj + 0x28, pv, sizeof pv)) {
+                    hp = Fnv(pv, sizeof pv, FnvV(vt, hp));
+                    if (rec && rec->projCount < 64) {
+                        detail::ProjDetail& d = rec->proj[rec->projCount++];
+                        d.vt = static_cast<uint32_t>(vt), d.time = time, d.cat = static_cast<uint8_t>(cat);
+                        memcpy(d.pv, pv, sizeof pv);
+                    }
+                }
             }
         };
         if (popped.cat == cat) one(popped.time, popped.obj);
@@ -104,13 +112,18 @@ void HashTasks(uint64_t& ht, uint64_t& hp, const PoppedTask& popped) {
 }
 }  // namespace
 
-void ComputeEngine(uint32_t t, TickHash* out, const PoppedTask& popped) {
+void ComputeEngine(uint32_t t, TickHash* out, const PoppedTask& popped, detail::DetailRec* rec) {
     out->tick = t / kTickMs;
     out->rngLogic = Rd<uint32_t>(kRngLogicAddr);
     out->rng2 = Rd<uint32_t>(kRng2Addr);
     out->c[kTimeRng] = FnvV(out->rngLogic, FnvV(t));
     const int cur = GetInt("CurrentTeamIndex"), act = GetInt("ActiveWormIndex");
     out->c[kTurn] = FnvV(act, FnvV(cur));
+    if (rec) {
+        rec->tick = out->tick;
+        rec->rng = out->rngLogic, rec->rng2 = out->rng2;
+        rec->curTeam = cur, rec->activeWorm = act;
+    }
 
     uint64_t hw = kFnvBasis;
     for (int i = 0; i < 16; ++i) {
@@ -119,11 +132,20 @@ void ComputeEngine(uint32_t t, TickHash* out, const PoppedTask& popped) {
         uint8_t b[128];
         const size_t n = WormBytes(c, b);
         hw = Fnv(b, n, FnvV(i, hw));
+        if (rec && rec->wormCount < 16) {
+            detail::WormDetail& d = rec->worms[rec->wormCount++];
+            const bool whole = n == detail::kWormBytes;
+            d.slot = static_cast<uint8_t>(whole ? i : i | detail::kSlotUnreadable);
+            if (whole)
+                memcpy(d.bytes, b, n);
+            else
+                memset(d.bytes, 0, sizeof d.bytes);
+        }
     }
     out->c[kWorms] = hw;
 
     uint64_t ht = kFnvBasis, hp = kFnvBasis;
-    HashTasks(ht, hp, popped);
+    HashTasks(ht, hp, popped, rec);
     out->c[kTasks] = ht;
     out->c[kProjectiles] = hp;
 
@@ -131,7 +153,10 @@ void ComputeEngine(uint32_t t, TickHash* out, const PoppedTask& popped) {
     for (int i = 0; i < 4; ++i) {
         const uintptr_t c = gamestate::detail::Container(kTeamHandles, i, kTeamVt);
         if (!c) continue;
-        hteam = FnvV(Rd<uint32_t>(c + 0x48), FnvV(Rd<uint8_t>(c + 0x68), FnvV(i, hteam)));
+        const uint8_t active = Rd<uint8_t>(c + 0x68);
+        const uint32_t score = Rd<uint32_t>(c + 0x48);
+        hteam = FnvV(score, FnvV(active, FnvV(i, hteam)));
+        if (rec) rec->teams[i] = {static_cast<uint8_t>(i), active, score};
     }
     out->c[kTeams] = hteam;
 

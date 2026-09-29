@@ -269,12 +269,14 @@ target_compile_options(lua50_ref PRIVATE /W0 /FI${CMAKE_SOURCE_DIR}/tests/lua50_
 add_executable(sim_selftest EXCLUDE_FROM_ALL
     tests/sim_selftest.cpp
     src/lua/sim/sim_env.cpp src/lua/sim/sim_api.cpp src/lua/sim/sim_events.cpp src/lua/sim/sim_rng.cpp
-    src/core/log.cpp)
-target_include_directories(sim_selftest PRIVATE src src/sdk)
+    src/lua/sim/sim_hash.cpp src/wormsign/contrib.cpp
+    src/core/jlog.cpp src/core/jlog_ring.cpp src/core/jlog_bus_filter.cpp
+    src/core/events.cpp src/core/game.cpp src/core/mem.cpp src/core/log.cpp)
+target_include_directories(sim_selftest PRIVATE src src/sdk ${CMAKE_BINARY_DIR}/generated)
 target_compile_definitions(sim_selftest PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX _CRT_SECURE_NO_WARNINGS
     MELANGE_SOURCE_DIR="${CMAKE_SOURCE_DIR}")
 target_compile_options(sim_selftest PRIVATE /W4 /utf-8 /permissive- /EHsc)
-target_link_libraries(sim_selftest PRIVATE lua50_ref)
+target_link_libraries(sim_selftest PRIVATE lua50_ref bcrypt psapi shell32 ole32)
 
 # Offline self-tests (no game needed).
 add_executable(bus_selftest EXCLUDE_FROM_ALL
@@ -372,3 +374,16 @@ target_include_directories(wormsign_format_selftest PRIVATE src src/sdk)
 target_compile_definitions(wormsign_format_selftest PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX _CRT_SECURE_NO_WARNINGS)
 target_compile_options(wormsign_format_selftest PRIVATE /W4 /utf-8 /permissive-)
 target_link_libraries(wormsign_format_selftest PRIVATE miniz)
+
+# Hash contributors, detail records and the FPU watch without the game: registry order, demotion, faults, the detail
+# codec (with a timed mutation run) and the FPU change log.
+add_executable(wormsign_contrib_selftest
+    tests/wormsign_contrib_selftest.cpp
+    src/wormsign/contrib.cpp src/wormsign/detail.cpp src/wormsign/fpu.cpp
+    src/tools/json_read.cpp
+    src/core/jlog.cpp src/core/jlog_ring.cpp src/core/jlog_bus_filter.cpp
+    src/core/events.cpp src/core/game.cpp src/core/mem.cpp src/core/log.cpp)
+target_include_directories(wormsign_contrib_selftest PRIVATE src src/sdk ${CMAKE_BINARY_DIR}/generated)
+target_compile_definitions(wormsign_contrib_selftest PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX _CRT_SECURE_NO_WARNINGS)
+target_compile_options(wormsign_contrib_selftest PRIVATE /W4 /utf-8 /permissive- /wd4100)
+target_link_libraries(wormsign_contrib_selftest PRIVATE bcrypt psapi shell32 ole32)

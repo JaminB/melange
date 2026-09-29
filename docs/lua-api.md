@@ -236,6 +236,15 @@ its replay) that agree on a tick's hash agree on the game state at that tick.
 |---|---|
 | `wum.wormsign.tick()` | `{tick, engine, mods}` for the last completed tick: `tick` is a number, `engine` and `mods` are 16-digit hex strings (`mods` is `"0000000000000000"` when no mod contributes). `nil` outside a match or before the first tick. |
 
+`mods` covers every sim mod of the match. Sim scripts are not covered by this page, but two things feed `mods` from them:
+
+| Name (sim VM) | Description |
+|---|---|
+| automatic, `mod.<id>.env` | A digest of the mod's globals and `wum.sim.storage`, three tables deep and independent of key order. Numbers count by their stored bits, strings and booleans by value, functions, userdata and deeper tables by type only. `[Wormsign] EnvDigest` chooses when it runs: `changed` (default, after the mod's code ran), `always` or `off`. |
+| `wum.sim.hash(v, ...)`, `mod.<id>.hash` | Adds numbers (their stored bits), strings, booleans or `nil` to this tick's hash; any other type raises an error. For state kept in locals, which the digest cannot see. |
+
+C++ modules add their own contributors with `melange::wormsign::AddContributor` (`melange/wormsign.h`). A contributor that takes over 20 µs at the 95th percentile over 500 ticks is hashed only every 10 ticks from then on, and the log says so.
+
 ## Extending the API from C++
 
 C++ modules can add namespaces with `melange::lua::AddLibrary("name", open)` (`melange/lua.h`). They appear as `wum.<name>` in
