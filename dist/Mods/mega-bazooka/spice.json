@@ -1,0 +1,31 @@
+{
+  "spiceVersion": 1,
+  "id": "mega-bazooka",
+  "version": "1.0.0",
+  "name": "Mega Bazooka",
+  "authors": ["Melange"],
+  "description": "Sample weapon clone: an oversized Bazooka with a bigger blast and three extra explosions, built on the M5 weapon clone and mod-asset APIs.",
+  "melange": { "range": ">=0.2.0" },
+  "kind": "content",
+  "defaultEnabled": false,
+  "entry": { "sim": "sim/main.lua" },
+  "weapons": [
+    {
+      "name": "kWeaponMegaBazooka",
+      "base": "kWeaponBazooka",
+      "cell": 29,
+      "set": {
+        "WormDamageMagnitude": 120,
+        "WormDamageRadius": 123.75,
+        "LandDamageRadius": 90,
+        "ImpulseRadius": 165,
+        "PayloadGraphicsResourceID": "Grenade.Payload",
+        "Scale": 10,
+        "LaunchSfx": "weapons/SheepBaa"
+      },
+      "panelIcon": "icons/megabazooka.png",
+      "hudIcon": "mega-bazooka.hud.tga",
+      "text": { "name": "Mega Bazooka", "help": "Like a bazooka, only more so." }
+    }
+  ]
+}

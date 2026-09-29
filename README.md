@@ -145,6 +145,7 @@ A content mod's `entry.sim` runs inside the match's own Lua VM, which is Lua 5.0
 | `wum.sim.getData(id)`, `setData(id, v)` | Read and write the game's data values, checked the same way |
 | `wum.sim.storage` | A table for the mod's own state during the match |
 | `wum.sim.weapon(name):get(field)`, `:set(field, v)` | Read and change a weapon's data for this match; `set` works only while the script's top-level chunk runs at match start |
+| `wum.sim.weapons.list()`, `.on(event, name, fn)`/`.off(h)`, `.explode(dx, dy, dz)`, `.active()` | Weapon clones (M5): subscribe to a clone's `fire`/`tick`/`impact`/`explosion` events and queue extra explosions. Full reference: [docs/weapons.md](docs/weapons.md) |
 | `wum.sim.hash(v, ...)` | Adds numbers, strings, booleans or `nil` to this tick's state hash, for state the mod keeps in locals |
 
 Every call from the game into a sim script has an instruction budget (`[SimBridge] InstrPerCall`). A callback that fails or runs out of budget three times is switched off. `dist\Mods\sim-sampler` and `dist\Mods\bazooka-plus` are examples (shipped disabled). `dist\Mods\desync-probe`, also disabled, shows how to test a mod's determinism with the desync detector ([docs/wormsign.md](docs/wormsign.md)).
@@ -318,6 +319,24 @@ Two sample mods in `dist\Mods\` ship switched off:
 
 `wum.unsafe` (raw memory reads and writes, native calls) exists only for mods whose manifest asks for it, and raises an error until the player allows it.
 
+## Weapon mods
+
+A `kind: "content"` mod can add up to 3 **weapon clones**: a new, independently named weapon that reuses one of
+a handful of vanilla weapons' own code and stats, with its own icon and Lua behaviour. Add a `weapons` array to
+`spice.json` (schema: [docs/spice-1.schema.json](docs/spice-1.schema.json)), react to its events with
+`wum.sim.weapons` from `entry.sim`, and it shows in the weapon panel with no other wiring. The full field
+reference, the base whitelist, the Lua events and what does and doesn't work yet are in
+[docs/weapons.md](docs/weapons.md); `dist\Mods\mega-bazooka` (shipped disabled) is a complete example: an
+oversized Bazooka with a bigger blast and three extra explosions.
+
+## Sieve (`xomtool`)
+
+The game's data files (weapon stats, meshes, textures, sound banks) are one container format, `.xom`. Sieve is
+Melange's toolchain for it: a portable C++/Python reader-writer library (already used by Melange itself for
+weapon field offsets and types) and, once Component D ships, a command-line tool (`xomtool`) for
+inspecting, converting and diffing `.xom` files and building weapon-clone banks. See
+[docs/xomtool.md](docs/xomtool.md) for what already works today and what's still planned.
+
 ## Oasis (web app)
 
 Oasis is a web page for the running game, served by `melange.asi` on `127.0.0.1` only. Open it from the overlay or with `Ctrl+Shift+O`; the link carries a secret token that the page swaps for a session cookie, and nothing listens until then. Its panels show the live log and bus events, run Lua like the overlay console, enable and disable mods, and edit `Melange.ini`. The page can change what the overlay can, with one exception: it can revoke a mod's Deep Desert access but never grant it. Modules add channels, methods and panels through `melange/oasis.h`, and a client mod can do the same with `wum.web` (see `docs/lua-api.md`). `oasis.exe`, next to `melange.asi`, serves the same app with the game closed (past logs, captures, mods and settings). The user guide, the security model and the protocol are in [docs/oasis.md](docs/oasis.md).
@@ -342,7 +361,7 @@ You need:
 
 ## Roadmap
 
-Shipped: the Mirage graphics layer (GL trace and frame capture, shader overrides and hot reload, a post-FX stack, and a world/HUD draw API). Coming next: Lua mods, a mod loader and a map editor.
+Shipped: the Mirage graphics layer (GL trace and frame capture, shader overrides and hot reload, a post-FX stack, and a world/HUD draw API), Lua mods and Thumper, Oasis, Wormsign, and M5's weapon clones and mod assets (`wum.sim.weapons`, [docs/weapons.md](docs/weapons.md)) with the Sieve toolchain's `.xom` library ([docs/xomtool.md](docs/xomtool.md); the `xomtool` command-line front-end is still coming). Coming next: a map editor.
 
 ## License
 
