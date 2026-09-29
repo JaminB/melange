@@ -86,7 +86,7 @@ void FlushDisp() {
 }
 void FlushTick() {
     if (g_ticks.Empty()) return;
-    g_contribNote = contrib::NoteJson();
+    if (contrib::Count()) g_contribNote = contrib::NoteJson();
     const uint32_t from = g_ticks.FirstTick(), to = g_ticks.LastTick();
     const std::vector<uint8_t> b = g_ticks.Take();
     g_w->Enqueue(wsr::kTICK, b.data(), b.size(), true, from, to);
