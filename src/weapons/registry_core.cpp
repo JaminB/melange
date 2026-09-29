@@ -158,6 +158,13 @@ void Registry::RegisterText(Clone& c) {
     const std::string& help = c.decl.text.help;
     if (name.empty() && !e_.GetText(("Text." + c.decl.base).c_str(), &name)) name.clear();
     c.text = !name.empty() && e_.AddText(c.textKey, name.c_str()) == 0;
+    if (c.text) {
+        bool own = false;
+        for (auto& s : c.decl.set) own |= s.field == "DisplayName";
+        uint32_t off = 0;
+        if (!own && e_.Field(c.info.container, "DisplayName", &off) == FieldType::String)
+            e_.AssignString(c.info.container + off, c.textKey);
+    }
     c.help = false;
     if (!help.empty()) {
         c.help = e_.AddText(("HelpText." + c.decl.name + "0").c_str(), help.c_str()) == 0;
