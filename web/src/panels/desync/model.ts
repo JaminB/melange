@@ -9,6 +9,9 @@ function isPlainObject(x: unknown): x is Record<string, unknown> {
 
 export function deepDiff(a: unknown, b: unknown, path = ""): DiffRow[] {
   if (a === b) return [];
+  // A side without the member: compare against an empty one, so each leaf is named as diff.txt names it.
+  if (a === undefined && (isPlainObject(b) || Array.isArray(b))) a = Array.isArray(b) ? [] : {};
+  if (b === undefined && (isPlainObject(a) || Array.isArray(a))) b = Array.isArray(a) ? [] : {};
   if (isPlainObject(a) && isPlainObject(b)) {
     const keys = [...new Set([...Object.keys(a), ...Object.keys(b)])].sort();
     return keys.flatMap((k) => deepDiff(a[k], b[k], path ? `${path}.${k}` : k));

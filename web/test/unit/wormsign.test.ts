@@ -136,3 +136,8 @@ test("turnStarts marks each tick where the turn component changes", () => {
     ({ tick, engine: "", mods: "", c: ["0", turn, "0", "0", "0", "0"], rngLogic: 0, rng2: 0, fpucw: 0x027f, inputs: 0 });
   assert.deepEqual(turnStarts([mk(0, "a"), mk(1, "a"), mk(2, "b"), mk(3, "b"), mk(4, "c")]), [2, 4]);
 });
+
+test("deepDiff names each leaf of a member only one side has", () => {
+  const rows = deepDiff({ env: { "mod.x.env global a": "0 -> 1" } }, {});
+  assert.deepEqual(rows.map((r) => r.path), ["env.mod.x.env global a"]);
+});
