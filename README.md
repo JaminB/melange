@@ -35,6 +35,7 @@ Press `Ctrl+Shift+F11` in the game (or *File > Save logs as...* in the overlay) 
 
 - [Creating a plugin](docs/creating-plugins.md): write your first mod or C++ module.
 - [Developer guide](docs/developer-guide.md): settings, logs, the SDK and every subsystem, and building from source.
+- [Map editor (Erg)](docs/erg.md): build, test and share your own Versus maps from Oasis.
 
 ## License
 

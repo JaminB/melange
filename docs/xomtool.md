@@ -147,6 +147,22 @@ the named container, with any `--set` overrides applied) from a container alread
 (refused, exit 2, if the field does not exist or is a type `--set` cannot write, such as a `ref`
 or an array); the field's own type decides how `value` is parsed.
 
+### `level`
+
+```
+xomtool level unpack <in.xan> [--xom <level.xom>] [--hmp <in.hmp>] -o <scene.json> [--blobs <dir>]
+xomtool level build --patch <patch.ergpatch.json> --game <dir> --out <dir>
+xomtool level diff <a.json> <b.json>
+```
+
+The C++-only counterpart to Erg's own scene model (`src/erg/scene.h`, `patch.h`): `unpack` reads a base map's
+`.xan` (plus its level `.XOM` and `.hmp` when given) into the same `erg-scene/1` JSON [erg.md](erg.md) works with,
+with voxel and height-map blobs as separate files next to it; `build` applies an `erg-patch/1` file to its pinned
+base and writes the map files a pack needs under `--out` (this is exactly what an exported Source-form pack's
+`build.ps1` runs); `diff` prints the field-by-field differences between two scene JSON files. There is no Python
+build of `level` — `src/erg` (not `tools/xom`) is the reference implementation, since it also has to run inside
+the game and `oasis.exe`.
+
 ### `report`
 
 `xomtool report <file.xom> -o <out.md>` writes a short Markdown table of an `XDataBank`'s named

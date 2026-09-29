@@ -9,6 +9,7 @@ How Melange works for mod and module authors: settings, logs, the SDK, and each 
 | Weapon clones | [weapons.md](weapons.md) |
 | Oasis web app | [oasis.md](oasis.md) |
 | Replays and desync detection | [wormsign.md](wormsign.md) |
+| Map editor (Erg) | [erg.md](erg.md) |
 | `xomtool` | [xomtool.md](xomtool.md) |
 | Frame capture format | [capture-format.md](capture-format.md) |
 
@@ -39,6 +40,7 @@ Every module has its own section in `Melange.ini`, and `Enabled=0` turns a modul
 | `MirageDebug` | off | OpenGL debug context: driver errors and warnings go to the logs and the *Mirage/GL debug* panel |
 | `LuaConsole` | on | Overlay Lua REPL (`Ctrl+Shift+F10`, *Lua/Console*) for the client VM and, in a match, the match VM (off online unless `MatchConsoleOnline=1`) |
 | `GameState` | on | Read-only game-state readers for Oasis and `wum.game.worms()` (worms, teams, match values, entities); build #1077 only |
+| `Levels` | on | Map packs from content mods, Erg Test levels and the online map gate (`Online`, `RandomPool`, `DevWater`); installs nothing until a mod map or a Test level exists; build #1077 only |
 | `Oasis` | on | The local web app on 127.0.0.1 ([oasis.md](oasis.md)); nothing listens until you open it |
 | `Wormsign` | on | The match's tick clock and a per-tick state hash (`wum.wormsign.tick()`); records a rolling library of recent matches to `Documents\Melange\replays` (last 20 / 200 MB by default, `wum.wormsign.library()`), match replays checked tick by tick (*Wormsign/Replay*); online, it compares the hashes with other Melange players and reports the first tick where they disagree ([wormsign.md](wormsign.md)); build #1077 only |
 
@@ -244,6 +246,16 @@ and from glTF) and building weapon-clone banks. See [xomtool.md](xomtool.md).
 ## Oasis (web app)
 
 Oasis is a web page for the running game, served by `melange.asi` on `127.0.0.1` only. Open it from the overlay or with `Ctrl+Shift+O`; the link carries a secret token that the page swaps for a session cookie, and nothing listens until then. Its panels show the live log and bus events, run Lua like the overlay console, enable and disable mods, and edit `Melange.ini`. The page can change what the overlay can, with one exception: it can revoke a mod's Deep Desert access but never grant it. Modules add channels, methods and panels through `melange/oasis.h`, and a client mod can do the same with `wum.web` (see [lua-api.md](lua-api.md)). `oasis.exe`, next to `melange.asi`, serves the same app with the game closed (past logs, captures, mods and settings). The user guide, the security model and the protocol are in [oasis.md](oasis.md).
+
+## Map editor (Erg)
+
+Erg is an Oasis panel for building Versus maps from the game's own levels: move spawns, place mines and oil drums,
+set water and theme, sculpt terrain, and export the result as a mod (a shareable patch, or the full built files for
+your own machine). A *Test* button plays your changes in a private, offline-only copy before you export anything.
+The RPC surface (`level.*`, the `erg` channel and the `/erg/assets/` route) is in [oasis.md](oasis.md); the user
+guide, the `spice.json` `levels` array and the exported pack layout are in [erg.md](erg.md) and [spice.md](spice.md).
+The wire formats are [erg-scene-1.schema.json](erg-scene-1.schema.json) (the full editable scene, server/browser
+only) and [erg-patch-1.schema.json](erg-patch-1.schema.json) (a saved or exported edit against a pinned base).
 
 ## SDK headers
 

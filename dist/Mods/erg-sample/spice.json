@@ -1,0 +1,14 @@
+{
+  "spiceVersion": 1,
+  "id": "erg-sample",
+  "version": "1.0.0",
+  "name": "Erg Sample",
+  "authors": ["Melange"],
+  "description": "A Versus map built with Erg: Diner Might's own spawns turned into knots (and raised a little) and the water raised to 25. Ships as a patch, not built files; run build.ps1 (or press Build in Erg) against your own install before enabling.",
+  "melange": { "range": ">=0.2.0" },
+  "kind": "content",
+  "defaultEnabled": false,
+  "levels": [
+    { "slug": "sample", "title": "Erg Sample: High Water", "type": "multi", "chunk": true, "source": "src/sample.ergpatch.json" }
+  ]
+}

@@ -262,6 +262,19 @@ target_compile_definitions(erg_scene_selftest PRIVATE WIN32_LEAN_AND_MEAN NOMINM
 target_compile_options(erg_scene_selftest PRIVATE /W4 /utf-8 /permissive-)
 target_link_libraries(erg_scene_selftest PRIVATE melange_xom)
 
+# E: the generated level chunk (luagen) and the pack writer (pack) over synthetic scenes and a scratch temp dir;
+# also checks that dist\Mods\erg-sample (G) parses and applies as a real spice.json + erg-patch/1 would.
+add_executable(erg_pack_selftest
+    tests/erg_pack_selftest.cpp
+    src/erg/pack.cpp src/erg/names.cpp src/erg/scene.cpp src/erg/patch.cpp src/erg/jsonio.cpp
+    src/levels/manifest.cpp src/mods/spice.cpp
+    src/tools/json_read.cpp src/core/log.cpp)
+target_include_directories(erg_pack_selftest PRIVATE src src/sdk)
+target_compile_definitions(erg_pack_selftest PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX _CRT_SECURE_NO_WARNINGS
+    MELANGE_SOURCE_DIR="${CMAKE_SOURCE_DIR}")
+target_compile_options(erg_pack_selftest PRIVATE /W4 /utf-8 /permissive-)
+target_link_libraries(erg_pack_selftest PRIVATE melange_xom)
+
 # xomtool: the Sieve CLI (unpack/pack/inspect/diff/convert/bank/report). PNG I/O only here -
 # src/xom itself stays platform-free.
 add_executable(xomtool tools/xomtool/main.cpp)
