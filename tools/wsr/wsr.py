@@ -4,6 +4,7 @@
   python wsr.py ticks <file.wsr> [from] [to] one line per tick: tick engine mods c0..c5 rng inputs
   python wsr.py inputs <file.wsr>            one line per recorded input
   python wsr.py diff <a.wsr> <b.wsr>         first tick whose hashes differ, and which parts
+  python wsr.py energy <file.wsr>            every worm energy change in the detail records, with the position
 """
 import json
 import struct
@@ -82,8 +83,45 @@ class Wsr:
                 yield {"type": typ, "id": mid, "a": a, "b": b, "time": time, "callT": call_t, "caller": caller, "str": s}
                 at += 24 + n
 
+    def details(self):
+        """Yields (tick, worms) per DETL record; worms maps slot -> {pos, energy, energySrc, weapon}."""
+        for typ, _, p in self.chunks:
+            if typ != "DETL":
+                continue
+            prev, at = b"", 0
+            while at + 3 <= len(p):
+                kind, n = p[at], struct.unpack_from("<H", p, at + 1)[0]
+                at += 3
+                if kind == 0:
+                    cur = p[at:at + n]
+                    at += n
+                else:
+                    buf, i = bytearray(prev), 0
+                    while i < n:
+                        same, diff = struct.unpack_from("<HH", p, at)
+                        at += 4
+                        i += same
+                        for k in range(diff):
+                            buf[i + k] ^= p[at + k]
+                        at += diff
+                        i += diff
+                    cur = bytes(buf)
+                prev = cur
+                yield unpack_detail(cur)
+
     def fixed(self, typ, size):
         return sum(len(p) // size for p in self.of(typ))
+
+
+def unpack_detail(r):
+    tick = struct.unpack_from("<I", r, 0)[0]
+    n, at, worms = r[20], 21, {}
+    for _ in range(n):
+        slot, w = r[at], r[at + 1:at + 94]
+        worms[slot & 0x7f] = {"pos": struct.unpack_from("<3f", w, 24), "energySrc": struct.unpack_from("<H", w, 75)[0],
+                              "weapon": struct.unpack_from("<i", w, 81)[0], "energy": struct.unpack_from("<H", w, 89)[0]}
+        at += 94
+    return tick, worms
 
 
 def info(path):
@@ -129,6 +167,16 @@ def main(argv):
         for i in Wsr(argv[2]).inputs():
             print(SEND_TYPES[i["type"]] if i["type"] < 6 else i["type"], f"{i['id']:04x}", f"{i['a']:08x}",
                   f"{i['b']:08x}", i["time"], i["callT"], f"{i['caller']:08x}", i["str"])
+    elif cmd == "energy":
+        last = {}
+        for tick, worms in Wsr(argv[2]).details():
+            for slot, w in worms.items():
+                e = (w["energy"], w["energySrc"])
+                if slot in last and last[slot][0] != e:
+                    p0, p1 = last[slot][1], w["pos"]
+                    print(f"tick {tick} worm[{slot}] energy {last[slot][0][0]} -> {e[0]} (source {last[slot][0][1]} -> "
+                          f"{e[1]}), pos {p0[0]:.2f},{p0[1]:.2f},{p0[2]:.2f} -> {p1[0]:.2f},{p1[1]:.2f},{p1[2]:.2f}")
+                last[slot] = (e, w["pos"])
     elif cmd == "diff":
         a = {t["tick"]: t for t in Wsr(argv[2]).ticks()}
         b = {t["tick"]: t for t in Wsr(argv[3]).ticks()}
