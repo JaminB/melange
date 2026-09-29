@@ -247,6 +247,19 @@ target_compile_definitions(weapons_manifest_selftest PRIVATE WIN32_LEAN_AND_MEAN
 target_compile_options(weapons_manifest_selftest PRIVATE /W4 /utf-8 /permissive-)
 target_link_libraries(weapons_manifest_selftest PRIVATE melange_xom)
 
+# Component C's runtime enforcement layer without the game: CRC-collision matching, the loose-root naming rule, bank
+# path safety/size cap, and the panel-icon pixel math. Each source here is the pure half of a pair split from its
+# engine-touching sibling (crcsafe.cpp, roots.cpp, banks_load.cpp, icons.cpp), which only the game can exercise.
+add_executable(assets_selftest
+    tests/assets_selftest.cpp
+    src/assets/crcsafe_math.cpp
+    src/assets/roots_math.cpp
+    src/assets/banks.cpp
+    src/assets/icons_math.cpp)
+target_include_directories(assets_selftest PRIVATE src src/sdk)
+target_compile_definitions(assets_selftest PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX _CRT_SECURE_NO_WARNINGS)
+target_compile_options(assets_selftest PRIVATE /W4 /utf-8 /permissive-)
+
 add_executable(lua54_selftest tests/lua54_selftest.cpp)
 target_compile_options(lua54_selftest PRIVATE /W4 /utf-8 /permissive- /EHsc)
 target_link_libraries(lua54_selftest PRIVATE lua54)
