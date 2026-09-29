@@ -1,8 +1,8 @@
 // Turns a desync bundle .zip into what the panel renders. Reuses the capture viewer's dependency-free ZipReader
-// (web/src/panels/capture/zip.ts) rather than a second zip implementation; the bundle writer has not shipped
-// yet, so every field here is read defensively and nothing is assumed about report.json or the detail-*.json
-// shape beyond "valid JSON" -- diff.txt (a plain field-level diff, one line per field) is shown verbatim
-// regardless, so the viewer is useful even if the JSON shapes change once a writer exists.
+// (web/src/panels/capture/zip.ts) rather than a second zip implementation. Every field here is still read
+// defensively and nothing is assumed about report.json or the detail-*.json shape beyond "valid JSON" --
+// diff.txt (a plain field-level diff, one line per field) is shown verbatim regardless, so the viewer keeps
+// working even if those JSON shapes change later.
 import { ZipReader } from "../capture/zip";
 
 export interface LoadedBundle {

@@ -188,8 +188,10 @@ void MakeRecording(const std::wstring& path, long long fakeSteamId, bool flagged
         w.Chunk(wsr::kNOTE, note, strlen(note), true);
     }
     if (flagged) {
-        const char* dvrg = "\x01\x02\x03\x04";
-        w.Chunk(wsr::kDVRG, dvrg, 4, false);
+        // A peer-sourced divergence, matching what OnDivergenceCb (recorder.cpp) actually writes: retention
+        // exempts this (a real cross-machine desync), never a replay's own "source":"replay" DVRG.
+        const char* dvrg = "{\"source\":\"peer\",\"tick\":5}";
+        w.Chunk(wsr::kDVRG, dvrg, strlen(dvrg), false);
     }
     w.Close();
 }

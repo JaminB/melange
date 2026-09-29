@@ -365,9 +365,14 @@ std::wstring Resolve(const std::wstring& p) {
 }
 
 void ParseSkip(uint16_t* id, uint32_t* time) {
-    const std::string s = config::GetString("Wormsign", "ReplaySkip", "");
     *id = 0;
     *time = 0;
+#ifdef NDEBUG
+    // Test builds only, as the ini comment says: a shipped (NDEBUG) build never drops a recorded input on
+    // purpose, so a leftover ReplaySkip= line in someone's ini can't silently break their own replays.
+    return;
+#else
+    const std::string s = config::GetString("Wormsign", "ReplaySkip", "");
     if (s.empty()) return;
     char* e = nullptr;
     const unsigned long v = strtoul(s.c_str(), &e, 0);
@@ -375,6 +380,7 @@ void ParseSkip(uint16_t* id, uint32_t* time) {
     *id = static_cast<uint16_t>(v);
     if (e && *e == '@') *time = strtoul(e + 1, nullptr, 10);
     LOG_WARN("[wormsign] replay: ReplaySkip drops input id %04x%s (test setting)", *id, *time ? " at one time" : "");
+#endif
 }
 
 // ---------------------------------------------------------------- test verbs

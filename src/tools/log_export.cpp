@@ -33,6 +33,7 @@
 #include "tools/redact.h"
 #include "tools/sysinfo.h"
 #include "version.h"
+#include "wormsign/library.h"
 #include "melange/jlog.h"
 #include "melange/overlay.h"
 #include "melange/testcmd.h"
@@ -123,6 +124,34 @@ bool ReadCappedTail(const std::wstring& path, uint64_t capBytes, std::string& ou
         seekTo.QuadPart = static_cast<LONGLONG>(total - capBytes);
         SetFilePointerEx(f, seekTo, nullptr, FILE_BEGIN);
     }
+    out.resize(static_cast<size_t>(toRead));
+    size_t got = 0;
+    while (got < out.size()) {
+        DWORD chunk = 0;
+        DWORD want = static_cast<DWORD>(std::min<size_t>(out.size() - got, 1u << 22));
+        if (!ReadFile(f, out.data() + got, want, &chunk, nullptr) || chunk == 0) break;
+        got += chunk;
+    }
+    out.resize(got);
+    CloseHandle(f);
+    return true;
+}
+
+// Reads the file from its start, up to capBytes (unlike ReadCappedTail: the .wsr reader needs the HEAD chunk at
+// the front to parse anything at all, and a cut-off tail is already the format's normal "incomplete" case).
+bool ReadCappedHead(const std::wstring& path, uint64_t capBytes, std::string& out, bool* truncated) {
+    *truncated = false;
+    HANDLE f = CreateFileW(path.c_str(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr,
+                           OPEN_EXISTING, 0, nullptr);
+    if (f == INVALID_HANDLE_VALUE) return false;
+    LARGE_INTEGER size{};
+    if (!GetFileSizeEx(f, &size)) {
+        CloseHandle(f);
+        return false;
+    }
+    const uint64_t total = static_cast<uint64_t>(size.QuadPart);
+    const uint64_t toRead = total > capBytes ? capBytes : total;
+    *truncated = total > capBytes;
     out.resize(static_cast<size_t>(toRead));
     size_t got = 0;
     while (got < out.size()) {
@@ -262,6 +291,30 @@ void AddFileEntry(ZipBuilder& zip, std::vector<ManifestEntry>& manifest, const s
     }
     AddEntry(zip, manifest, archivePath, std::move(data), sourcePath, truncated, isText, redactUserPaths, userName,
              salt);
+}
+
+// A .wsr recording can carry a peer's raw SteamID (its DVRG chunk) and the case is exactly the one this export
+// exists for, so it gets the same redaction as everything else here rather than going in verbatim: rewritten
+// through the library's redactor (SteamID-shaped numbers and IPs salted-hashed, the Windows user name replaced)
+// into a temp file, then capped from its start so the HEAD chunk a reader needs survives the cap.
+bool AddRedactedWsrEntry(ZipBuilder& zip, std::vector<ManifestEntry>& manifest, const std::string& archivePath,
+                         const std::wstring& sourcePath, uint64_t capBytes, bool redactUserPaths,
+                         std::string_view userName, std::string_view salt) {
+    wchar_t tmpDir[MAX_PATH], tmpPath[MAX_PATH];
+    if (!GetTempPathW(MAX_PATH, tmpDir) || !GetTempFileNameW(tmpDir, L"wsx", 0, tmpPath)) return false;
+    std::string err;
+    if (!melange::wormsign::library::ExportRedacted(sourcePath, tmpPath, &err, std::string(salt))) {
+        DeleteFileW(tmpPath);
+        return false;
+    }
+    std::string data;
+    bool truncated = false;
+    const bool ok = ReadCappedHead(tmpPath, capBytes, data, &truncated);
+    DeleteFileW(tmpPath);
+    if (!ok) return false;
+    AddEntry(zip, manifest, archivePath, std::move(data), sourcePath, truncated, /*isText=*/false, redactUserPaths,
+             userName, salt);
+    return true;
 }
 
 std::string BuildReadme(std::string_view melangeVersion) {
@@ -440,15 +493,20 @@ bool DoExport(const std::wstring& zipPath, const Options& opt, std::string* erro
         absent.push_back("dumps (IncludeDumps=0)");
     }
 
-    // replays/: the newest desync bundle and the newest match recording.
+    // replays/: the newest desync bundle (already redacted when it was written) and the newest match recording
+    // (redacted here, since .wsr is not a text extension and AddFileEntry only redacts those).
     {
         const std::wstring docs = DocumentsDir();
         size_t before = manifest.size();
-        if (!docs.empty())
-            for (const wchar_t* pattern : {L"desync-*.zip", L"*.wsr"})
-                for (const auto& f : NewestMatching(docs + L"\\Melange\\replays", pattern, 1))
-                    AddFileEntry(zip, manifest, "replays/" + Narrow(BaseNameW(f)), f, kCap, opt.redactUserPaths, userName,
-                                 salt);
+        if (!docs.empty()) {
+            for (const auto& f : NewestMatching(docs + L"\\Melange\\replays", L"desync-*.zip", 1))
+                AddFileEntry(zip, manifest, "replays/" + Narrow(BaseNameW(f)), f, kCap, opt.redactUserPaths, userName,
+                             salt);
+            for (const auto& f : NewestMatching(docs + L"\\Melange\\replays", L"*.wsr", 1))
+                if (!AddRedactedWsrEntry(zip, manifest, "replays/" + Narrow(BaseNameW(f)), f, kCap, opt.redactUserPaths,
+                                        userName, salt))
+                    LOG_WARN("[LogExport] could not redact %ls for the export; omitted", f.c_str());
+        }
         if (manifest.size() == before) absent.push_back("replays (no desync bundle or recording found)");
     }
 

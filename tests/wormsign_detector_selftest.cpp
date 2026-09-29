@@ -536,8 +536,8 @@ void Bundle() {
     in.contributors = {{"mod.desync-probe.env", 1, 5, 5, true, true}};
     in.detailLocal = R"({"worms":[{"slot":3,"energy":100}]})";
     in.detailPeer = R"({"worms":[{"slot":3,"energy":1}]})";
-    in.melangeLog = "12:00:00.000 [+   1.000] [ 1] INFO C:\\Users\\Jamin\\Documents peer 76561198012345678 ip 10.1.2.3\r\n";
-    in.userName = "Jamin";
+    in.melangeLog = "12:00:00.000 [+   1.000] [ 1] INFO C:\\Users\\Tester\\Documents peer 76561198012345678 ip 10.1.2.3\r\n";
+    in.userName = "Tester";
     in.computerName = "DESKTOP-XYZ";
     in.sysinfo = R"({"computer":"DESKTOP-XYZ"})";
     in.recording = {'W', 'S', 'R', '1'};
@@ -560,7 +560,7 @@ void Bundle() {
     Expect(diff.find("# component worms") != std::string::npos && diff.find("reason 5") != std::string::npos,
            "diff.txt has the component and the engine correlation");
     const std::string log = ZipEntry(zip, "logs/Melange.log");
-    Expect(log.find("Jamin") == std::string::npos && log.find("76561198012345678") == std::string::npos &&
+    Expect(log.find("Tester") == std::string::npos && log.find("76561198012345678") == std::string::npos &&
                log.find("10.1.2.3") == std::string::npos,
            "the log is redacted");
     Expect(ZipEntry(zip, "sysinfo.txt").find("DESKTOP-XYZ") == std::string::npos, "the computer name is replaced");

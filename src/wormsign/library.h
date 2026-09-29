@@ -20,6 +20,10 @@ void SetReplaysDirForTests(const std::wstring& dir);
 // retention (KeepMatches / MaxMB from ini; pinned and flagged files are exempt from both).
 void OnRecordingClosed(const std::wstring& path, bool complete);
 
+// Called once a desync bundle zip has been written. Bundles share the same KeepMatches/MaxMB budget as
+// recordings, but are never pinned or exempted, since nothing else ever prunes them.
+void OnBundleWritten(const std::wstring& path);
+
 // Rescans ReplaysDir() from disk (headers + trailers, tail-recovery for incomplete files). Safe to call anytime;
 // Install() calls it once at startup so Library() has data before the first match closes.
 void Rescan();

@@ -345,7 +345,10 @@ bool Install() {
     melange::wormsign::OnSession(&OnSessionCb, nullptr);
     melange::wormsign::OnTickEnd(&OnTickEndCb, nullptr, 10);
     melange::wormsign::OnDivergence(&OnDivergenceCb, nullptr);
-    library::Rescan();
+    // Off the main thread: a large or crafted replays folder can mean gigabytes of inflate work (up to 64 MB per
+    // chunk, every chunk of every file), and the main thread never waits on disk (the same rule the writer and
+    // detector follow). Library() simply returns nothing for this session's matches until the scan finishes.
+    std::thread(&library::Rescan).detach();
     return true;
 }
 

@@ -82,8 +82,10 @@ std::string FallbackDetail(uint32_t tick) {
     jsonmini::Obj c;
     for (int i = 0; i < kEngineComps; ++i) c.Str(detect::CompName(i), Hex(h.c[i]));
     jsonmini::Obj o;
+    // rng2 is left out, as DetailJson (detail::ToJson minus rng2) does for the normal detail path: it is never
+    // simulation state and always differs between machines, so it would misname itself as the differing field.
     o.UInt("tick", h.tick).Str("engine", Hex(h.engine)).Str("mods", Hex(h.mods)).Raw("components", c.End())
-        .UInt("rngLogic", h.rngLogic).UInt("rng2", h.rng2).UInt("fpucw", h.fpucw).UInt("inputs", h.inputs);
+        .UInt("rngLogic", h.rngLogic).UInt("fpucw", h.fpucw).UInt("inputs", h.inputs);
     return o.End();
 }
 
@@ -272,6 +274,7 @@ void WriteBundle(const BundleJob& job) {
                 else DeleteFileW(path.c_str());
             }
         }
+        if (!result.empty()) library::OnBundleWritten(result);
         std::lock_guard lk(g_bundleMx);
         g_bundleDone.push_back(result);
     }).detach();

@@ -35,9 +35,10 @@ struct C {
     ContribFn fn;
     void* user;
     ContribOptions opt;
-    bool dead = false, demoted = false, faulted = false;
+    bool dead = false, demoted = false, faulted = false, everComputed = false;
     uint32_t demotedAt = 0, faultedAt = 0, lastP95 = 0, winN = 0;
     uint64_t calls = 0;
+    uint64_t lastHash = 0;
     uint16_t win[contrib::kDemoteWindow];
     Slot ring[contrib::kRingTicks];
 };
@@ -202,7 +203,18 @@ uint64_t HashTick(uint32_t tick) {
         any = true;
         Slot& s = c.ring[tick % kRingTicks];
         s = {tick, 0, false};
-        if (c.faulted || (c.demoted && tick % c.opt.demoteEvery)) continue;
+        if (c.faulted) continue;
+        if (c.demoted && tick % c.opt.demoteEvery) {
+            // Skipped this tick by demotion, which each machine decides from its own local timing: folding in
+            // nothing here (as if the contributor did not exist) would make the aggregate depend on which ticks
+            // each side happened to demote on, not on whether the contributor's state actually differs. Folding
+            // in its last computed hash instead keeps the aggregate identical across machines whenever the
+            // underlying state hasn't changed, and only delays detection (same as any demoted tick) when it has.
+            if (!c.everComputed) continue;
+            all = FnvV(c.lastHash, FnvV(c.nameHash, all));
+            if (c.opt.inReplayCompare) rep = FnvV(c.lastHash, FnvV(c.nameHash, rep));
+            continue;
+        }
         FnvHasher h;
         const int64_t t0 = g_qpc();
         const bool ok = Call(c.fn, h, tick, c.user);
@@ -217,6 +229,8 @@ uint64_t HashTick(uint32_t tick) {
         ++c.calls;
         s.hash = h.h;
         s.computed = true;
+        c.lastHash = h.h;
+        c.everComputed = true;
         Sample(c, dt, tick);
         all = FnvV(h.h, FnvV(c.nameHash, all));
         if (c.opt.inReplayCompare) rep = FnvV(h.h, FnvV(c.nameHash, rep));

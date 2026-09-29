@@ -11,6 +11,7 @@
 #include <mutex>
 
 #include "core/log.h"
+#include "core/mem.h"
 #include "melange/wormsign.h"
 #include "wormsign/session.h"
 
@@ -100,10 +101,25 @@ bool Mk(SafetyHookInline& h, uintptr_t a, F fn, const char* what) {
     if (!h) LOG_ERROR("[wormsign] rngtap hook %s at %08x failed", what, static_cast<unsigned>(a));
     return static_cast<bool>(h);
 }
+
+// Prologues of the four draw wrappers and two seed setters, verified at runtime against build #1077 (same rule
+// as the scheduler hooks in clock.cpp: refuse rather than hook on top of a byte pattern that isn't this build's).
+bool ProloguesOriginal() {
+    return mem::Expect(kSeedLogic, {0x55, 0x8b, 0xec, 0x8b, 0x45, 0x08, 0xa3, 0x34, 0xd0, 0x96, 0x00, 0x0f, 0xb6, 0x05}) &&
+           mem::Expect(kSeed2, {0x55, 0x8b, 0xec, 0x8b, 0x45, 0x08, 0xa3, 0x40, 0xd0, 0x96, 0x00, 0x0f, 0xb6, 0x05}) &&
+           mem::Expect(kDrawU, {0x55, 0x8b, 0xec, 0xb9, 0x34, 0xd0, 0x96, 0x00, 0xe8}) &&
+           mem::Expect(kDrawF, {0x55, 0x8b, 0xec, 0x83, 0xec, 0x0c, 0xb9, 0x34, 0xd0, 0x96, 0x00, 0xe8}) &&
+           mem::Expect(kDraw2F, {0x55, 0x8b, 0xec, 0x83, 0xec, 0x0c, 0xb9, 0x40, 0xd0, 0x96, 0x00, 0xe8}) &&
+           mem::Expect(kDraw2U, {0x55, 0x8b, 0xec, 0xb9, 0x40, 0xd0, 0x96, 0x00, 0xe8});
+}
 }  // namespace
 
 bool Install() {
     if (g_installed) return true;
+    if (!ProloguesOriginal()) {
+        LOG_ERROR("[wormsign] rngtap: code bytes differ from build #1077 at a draw or seed site, refusing to hook");
+        return false;
+    }
     bool ok = true;
     ok &= Mk(g_seedL, kSeedLogic, &HkSeedL, "seed logic");
     ok &= Mk(g_seed2, kSeed2, &HkSeed2, "seed second");

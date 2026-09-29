@@ -59,8 +59,14 @@ class ReplayCore {
 template <class Send>
 void ReplayCore::Due(uint32_t timeMs, Send&& send) {
     if (!rec_) return;
+    // A crafted recording could pack an unbounded run of inputs at one call time; PreTickFn runs inline in the
+    // scheduler's own loop (clock.cpp), so draining all of them in one call here would hang or exhaust memory
+    // there. Capping means only spreading the rest over the following calls, normally just this tick's own.
+    constexpr size_t kMaxPerCall = 1024;
     const auto& in = rec_->inputs;
-    while (next_ < in.size() && in[next_].callT <= timeMs) {
+    size_t n = 0;
+    while (next_ < in.size() && in[next_].callT <= timeMs && n < kMaxPerCall) {
+        ++n;
         const rec::Input& i = in[next_++];
         if (skipId_ && i.id == skipId_ && (!skipTime_ || i.time == skipTime_)) {
             ++n_.skipped;

@@ -2,15 +2,13 @@
 // chunk headers, CRC32, raw deflate, the INDX/trailer and the same tail-recovery rule a truncated file gets from
 // the C++ reader (walk chunks until the first bad one, mark the file incomplete).
 //
-// Chunk *payloads* are a mix of what has already shipped and what a later writer still owns:
-//   - HEAD and NOTE are JSON; decoded as such.
+// Chunk payloads:
+//   - HEAD, NOTE, ENGV, SETP, SEED and DVRG are JSON; decoded as such.
 //   - TICK is `u32 firstTick` then tagged records: 0 + a `TickHash` without its `tick` (76 bytes), or 1 + `u32 n`
 //     for n missing ticks.
-//   - INPT's layout is given explicitly by the design (u8/u16/u32 fields, a trailing string); decoded on that
-//     basis, but no writer has shipped for it yet, so treat this as best-effort until a real recording confirms it.
-//   - SEED, PDRW, SETP, RMTI, DISP, ENGV and DVRG have no shipped writer at all yet. They are decoded generically:
-//     JSON if the payload parses as JSON, otherwise left as raw bytes. Nothing here assumes a specific layout for
-//     them, so this reader keeps working once a writer lands, whichever encoding it picks.
+//   - INPT is `u8 type, u16 id, u32 a, u32 b, u32 time, u32 callT, u32 caller, u8 strLen, [str]` records.
+//   - PDRW is `u8 rng, u32 ret, u32 stateAfter, u32 bits` records.
+//   - RMTI, DISP, DETL and CTRB have no decoder here yet: rawChunksOf() returns their raw bytes.
 export class WsrFormatError extends Error {}
 
 const MAGIC = "WSR1";
@@ -20,6 +18,7 @@ const INDEX_ENTRY_BYTES = 20;
 const TRAILER_BYTES = 12;
 const FLAG_DEFLATE = 1;
 const FORMAT_SUPPORTED = 1;
+const MAX_CHUNK_BYTES = 64 * 1024 * 1024; // matches the C++ reader's cap (src/wormsign/format.h kMaxChunkBytes)
 const TICK_RECORD_BYTES = 76; // engine(8) mods(8) c[6](48) rngLogic(4) rng2(4) fpucw(2) inputs(2)
 const INPT_FIXED_BYTES = 24; // type(1) id(2) a(4) b(4) time(4) callT(4) caller(4) strLen(1)
 
@@ -209,7 +208,7 @@ function parseContainer(bytes: Uint8Array): { chunks: ChunkRef[]; index: IndexEn
   while (pos + CHUNK_HEADER_BYTES <= bytes.length) {
     const type = dv.getUint32(pos, true), flags = dv.getUint32(pos + 4, true);
     const rawLen = dv.getUint32(pos + 8, true), storedLen = dv.getUint32(pos + 12, true), crc = dv.getUint32(pos + 16, true);
-    if ((flags & ~FLAG_DEFLATE) !== 0 || storedLen > bytes.length - pos - CHUNK_HEADER_BYTES) break;
+    if ((flags & ~FLAG_DEFLATE) !== 0 || rawLen > MAX_CHUNK_BYTES || storedLen > bytes.length - pos - CHUNK_HEADER_BYTES) break;
     if (!(flags & FLAG_DEFLATE) && storedLen !== rawLen) break;
     const stored = bytes.subarray(pos + CHUNK_HEADER_BYTES, pos + CHUNK_HEADER_BYTES + storedLen);
     if (crc32(stored) !== crc) break;

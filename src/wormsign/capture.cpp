@@ -107,6 +107,23 @@ void __fastcall OnInsert(uintptr_t store, void* /*edx*/, uintptr_t info) {
     g_ins[N].thiscall<void>(store, info);
 }
 
+// Prologues of the six senders and five inserts, verified at runtime against build #1077 (same rule and method
+// as the scheduler hooks in clock.cpp: refuse rather than hook on top of a byte pattern that isn't this build's,
+// for instance because another ASI already patched the same address first).
+bool ProloguesOriginal() {
+    return mem::Expect(kSend[0], {0xa1, 0x30, 0xd0, 0x96, 0x00, 0x83, 0xec, 0x0c, 0x56, 0x8b, 0x74, 0x24, 0x18}) &&
+           mem::Expect(kSend[1], {0xa1, 0x30, 0xd0, 0x96, 0x00, 0x83, 0xec, 0x10, 0x56, 0x8b, 0x74, 0x24, 0x20}) &&
+           mem::Expect(kSend[2], {0xa1, 0x30, 0xd0, 0x96, 0x00, 0x83, 0xec, 0x14, 0x56, 0x8b, 0x74, 0x24, 0x28}) &&
+           mem::Expect(kSend[3], {0xa1, 0x30, 0xd0, 0x96, 0x00, 0x83, 0xec, 0x10, 0x56, 0x8b, 0x74, 0x24, 0x20}) &&
+           mem::Expect(kSend[4], {0xa1, 0x30, 0xd0, 0x96, 0x00, 0x83, 0xec, 0x14, 0x56, 0x8b, 0x74, 0x24, 0x28}) &&
+           mem::Expect(kSend[5], {0x64, 0xa1, 0x00, 0x00, 0x00, 0x00, 0x6a, 0xff, 0x68, 0x28, 0x2b, 0x7d, 0x00}) &&
+           mem::Expect(kIns[0], {0x83, 0xec, 0x08, 0x53, 0x56, 0x8b, 0xf1, 0x8b, 0x5e, 0x0c, 0x57, 0x85, 0xdb, 0x75}) &&
+           mem::Expect(kIns[1], {0x83, 0xec, 0x08, 0x56, 0x8b, 0xf1, 0x8b, 0x4e, 0x0c, 0x57, 0x85, 0xc9, 0x75, 0x04}) &&
+           mem::Expect(kIns[2], {0x83, 0xec, 0x08, 0x53, 0x56, 0x8b, 0xf1, 0x8b, 0x5e, 0x0c, 0x57, 0x85, 0xdb, 0x75}) &&
+           mem::Expect(kIns[3], {0x83, 0xec, 0x08, 0x56, 0x8b, 0xf1, 0x8b, 0x4e, 0x0c, 0x57, 0x85, 0xc9, 0x75, 0x04}) &&
+           mem::Expect(kIns[4], {0x83, 0xec, 0x08, 0x53, 0x56, 0x8b, 0xf1, 0x8b, 0x5e, 0x0c, 0x57, 0x85, 0xdb, 0x75});
+}
+
 template <class F>
 bool Inline(SafetyHookInline& h, uintptr_t a, F fn, const char* what) {
     h = safetyhook::create_inline(a, fn);
@@ -123,6 +140,9 @@ bool InjectSend(int type, uint16_t id, uint32_t a, uint32_t b, const char* str, 
     using F3 = void(__cdecl*)(uint32_t, uint32_t, uint32_t);
     using F4 = void(__cdecl*)(uint32_t, uint32_t, uint32_t, uint32_t);
     if (!g_installed || type < 0 || type > 5) return false;
+    // Every id the game itself sends through these senders is a registered message name (0x8000 | slot), never a
+    // raw system id below it; refuse anything else rather than trust a recording's id unchecked.
+    if (!(id & 0x8000) || !bus::detail::RegistrySlot(id & 0x7fff)) return false;
     if (type == 5) {
         inject::EngineString s(str);
         if (!s.Ok()) return false;
@@ -182,9 +202,14 @@ void SetInsertSink(InsertSink fn, void* user) {
 bool Install() {
     if (g_installed) return true;
     // The scheduler's own #1077 prologue check already guards the tick clock; require it installed first, since
-    // the send/insert sites are only ever exercised together with it and the probe does not byte-check them either.
+    // the send/insert sites are only ever exercised together with it.
     if (!clock::Installed()) {
         LOG_ERROR("[wormsign] capture: the tick clock is not installed, refusing to hook the input path");
+        return false;
+    }
+    if (!ProloguesOriginal()) {
+        LOG_ERROR("[wormsign] capture: code bytes differ from build #1077 at a sender or insert site, refusing to "
+                  "hook the input path");
         return false;
     }
     bool ok = true;

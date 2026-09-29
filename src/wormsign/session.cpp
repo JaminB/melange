@@ -35,6 +35,20 @@ struct Obs {
     Fn fn;
     void* user;
 };
+
+// Third-party modules subscribe here too (OnTickEnd is public SDK), so one observer's fault or bad_alloc must not
+// take the whole tick-end call chain (and the game) down with it. A plain function, not a member or lambda, so
+// the __try lives in a scope with no C++ objects needing unwinding.
+template <class Fn, class... A>
+bool CallGuarded(Fn fn, A... a) {
+    __try {
+        fn(a...);
+        return true;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return false;
+    }
+}
+
 template <class Fn>
 struct ObsList {
     std::vector<Obs<Fn>> v;
@@ -62,7 +76,8 @@ struct ObsList {
         ++depth;
         for (size_t i = 0; i < v.size(); ++i) {
             const Obs<Fn> e = v[i];
-            if (e.fn) e.fn(a..., e.user);
+            if (e.fn && !CallGuarded(e.fn, a..., e.user))
+                LOG_ERROR("[wormsign] an observer (handle %d) faulted and was skipped this tick", e.handle);
         }
         if (!--depth) Compact();
     }

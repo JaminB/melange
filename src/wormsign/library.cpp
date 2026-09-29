@@ -34,10 +34,17 @@ struct Entry {
     FILETIME mtime{};
 };
 
+struct BundleEntry {
+    std::wstring path;
+    uint64_t bytes = 0;
+    FILETIME mtime{};
+};
+
 // Not in an unnamed namespace: melange::wormsign::Library()/Pin() (declared outside this namespace, directly in
 // melange/wormsign.h) need to reach these by qualified name.
 std::mutex g_mu;
 std::vector<Entry> g_entries;  // newest first, g_mu held
+std::vector<BundleEntry> g_bundles;  // desync-*.zip; not pinnable, share the same KeepMatches/MaxMB budget
 int g_keepMatches = 20;
 uint32_t g_maxMB = 200;
 bool g_configured = false;
@@ -94,6 +101,25 @@ bool AnyChunk(const wsr::Reader& r, uint32_t type) {
     return false;
 }
 
+// True only for a divergence reported against a peer: the case retention exempts a recording for, so it can be
+// pulled up as evidence of a real cross-machine desync. A replay's own DVRG (source "replay", from testing or
+// re-checking a file offline) says nothing about another machine and would otherwise pin every replayed
+// recording in the library forever.
+bool HasPeerDivergence(const wsr::Reader& r) {
+    bool found = false;
+    r.ForEach(wsr::kDVRG, [&](const wsr::ChunkRef&, const std::vector<uint8_t>& p) {
+        if (found || p.empty()) return;
+        melange::json::Value v;
+        melange::json::Error e;
+        const auto text = std::string_view(reinterpret_cast<const char*>(p.data()), p.size());
+        if (melange::json::Parse(text, &v, &e)) {
+            const auto* s = v.Get("source");
+            if (s && s->IsString() && s->string == "peer") found = true;
+        }
+    });
+    return found;
+}
+
 std::string FirstPayload(const wsr::Reader& r, uint32_t type) {
     std::string out;
     r.ForEach(type, [&](const wsr::ChunkRef&, const std::vector<uint8_t>& p) {
@@ -111,7 +137,7 @@ bool BuildEntry(const std::wstring& path, const WIN32_FIND_DATAW& fd, Entry* out
     CopyPath(info.path, 260, path);
     info.bytes = (static_cast<uint64_t>(fd.nFileSizeHigh) << 32) | fd.nFileSizeLow;
     info.complete = r.Complete();
-    info.flagged = AnyChunk(r, wsr::kDVRG);
+    info.flagged = HasPeerDivergence(r);
     info.ticks = CountTicks(r);
     const int64_t in = CountRecords(r, wsr::kINPT, false);
     const int64_t rin = CountRecords(r, wsr::kRMTI, true);
@@ -183,6 +209,46 @@ void EnforceRetentionLocked() {
     }
     g_entries.swap(survivors);
 }
+
+// Bundles are desync evidence, not rolling recordings, but nothing else ever removes them: without this they
+// grow without bound (each up to 256 MB) whenever a peer keeps reporting mismatches. They share the recording
+// budget rather than a separate ini key, and are never pinned or exempted the way a flagged recording is.
+// Called with g_mu held.
+void EnforceBundleRetentionLocked() {
+    std::vector<size_t> idx(g_bundles.size());
+    for (size_t i = 0; i < idx.size(); ++i) idx[i] = i;
+    std::sort(idx.begin(), idx.end(),
+              [](size_t a, size_t b) { return CompareFileTime(&g_bundles[a].mtime, &g_bundles[b].mtime) > 0; });
+
+    const uint64_t capBytes = static_cast<uint64_t>(g_maxMB) * 1024 * 1024;
+    uint64_t totalBytes = 0;
+    for (size_t i : idx) totalBytes += g_bundles[i].bytes;
+
+    std::vector<bool> toDelete(g_bundles.size(), false);
+    size_t kept = 0;
+    for (size_t i : idx) {
+        const bool overCount = kept >= static_cast<size_t>(g_keepMatches);
+        const bool overBytes = totalBytes > capBytes;
+        if (overCount || overBytes) {
+            toDelete[i] = true;
+            totalBytes -= g_bundles[i].bytes;
+        } else {
+            ++kept;
+        }
+    }
+    std::vector<BundleEntry> survivors;
+    for (size_t i = 0; i < g_bundles.size(); ++i) {
+        if (toDelete[i]) {
+            if (!DeleteFileW(g_bundles[i].path.c_str()))
+                LOG_WARN("[wormsign] library: could not delete %ls (bundle retention)", g_bundles[i].path.c_str());
+            else
+                LOG_INFO("[wormsign] library: pruned %ls (bundle retention)", g_bundles[i].path.c_str());
+        } else {
+            survivors.push_back(std::move(g_bundles[i]));
+        }
+    }
+    g_bundles.swap(survivors);
+}
 }  // namespace
 
 std::wstring g_testDir;
@@ -210,6 +276,7 @@ void Configure(int keepMatches, uint32_t maxMB) {
     g_maxMB = (std::max)(1u, maxMB);
     g_configured = true;
     EnforceRetentionLocked();
+    EnforceBundleRetentionLocked();
 }
 
 void Rescan() {
@@ -228,9 +295,30 @@ void Rescan() {
     }
     std::sort(found.begin(), found.end(),
               [](const Entry& a, const Entry& b) { return CompareFileTime(&a.mtime, &b.mtime) > 0; });
+
+    std::vector<BundleEntry> foundBundles;
+    h = FindFirstFileW((dir + L"\\desync-*.zip").c_str(), &fd);
+    if (h != INVALID_HANDLE_VALUE) {
+        do {
+            if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) continue;
+            BundleEntry b;
+            b.path = dir + L"\\" + fd.cFileName;
+            b.bytes = (static_cast<uint64_t>(fd.nFileSizeHigh) << 32) | fd.nFileSizeLow;
+            b.mtime = fd.ftLastWriteTime;
+            foundBundles.push_back(std::move(b));
+        } while (FindNextFileW(h, &fd));
+        FindClose(h);
+    }
+    std::sort(foundBundles.begin(), foundBundles.end(),
+              [](const BundleEntry& a, const BundleEntry& b) { return CompareFileTime(&a.mtime, &b.mtime) > 0; });
+
     std::lock_guard<std::mutex> lk(g_mu);
     g_entries.swap(found);
-    if (g_configured) EnforceRetentionLocked();
+    g_bundles.swap(foundBundles);
+    if (g_configured) {
+        EnforceRetentionLocked();
+        EnforceBundleRetentionLocked();
+    }
 }
 
 void OnRecordingClosed(const std::wstring& path, bool complete) {
@@ -244,6 +332,27 @@ void OnRecordingClosed(const std::wstring& path, bool complete) {
     std::lock_guard<std::mutex> lk(g_mu);
     g_entries.insert(g_entries.begin(), std::move(e));
     EnforceRetentionLocked();
+}
+
+void OnBundleWritten(const std::wstring& path) {
+    WIN32_FIND_DATAW fd{};
+    HANDLE h = FindFirstFileW(path.c_str(), &fd);
+    if (h == INVALID_HANDLE_VALUE) return;
+    FindClose(h);
+    BundleEntry b;
+    b.path = path;
+    b.bytes = (static_cast<uint64_t>(fd.nFileSizeHigh) << 32) | fd.nFileSizeLow;
+    b.mtime = fd.ftLastWriteTime;
+    std::lock_guard<std::mutex> lk(g_mu);
+    // The engine-correlation follow-up rewrites the same bundle path once the engine's own check fails, so this
+    // can run twice for one bundle: replace rather than duplicate.
+    auto it = std::find_if(g_bundles.begin(), g_bundles.end(), [&](const BundleEntry& e) { return e.path == path; });
+    if (it != g_bundles.end()) {
+        *it = std::move(b);
+    } else {
+        g_bundles.insert(g_bundles.begin(), std::move(b));
+    }
+    EnforceBundleRetentionLocked();
 }
 
 bool ExportRedacted(const std::wstring& path, const std::wstring& outPath, std::string* error, const std::string& saltIn) {

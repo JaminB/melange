@@ -349,7 +349,9 @@ void Detector::OnPacket(uint64_t from, const uint8_t* data, size_t n) {
                          h.contribHash == contribHash_ ? "same contributors" : "mod contributors differ");
                 env_.Note(false, b);
             }
-            if (!h.seenYou) SendHello(p);
+            // Rate limited like the COMPS/DETAIL answers below: without this, a peer that keeps sending HELLO
+            // with seenYou=0 gets a fresh reply (up to ~1.1 KB) every single time, with nothing else pacing it.
+            if (!h.seenYou && (!p.helloSentMs || env_.NowMs() - p.helloSentMs >= kHelloEarlyMs)) SendHello(p);
             break;
         }
         case wire::Kind::Hashes:

@@ -1,5 +1,7 @@
 #include "wormsign/clock.h"
 
+#include <windows.h>
+
 #include <safetyhook.hpp>
 
 #include <atomic>
@@ -27,6 +29,18 @@ uint32_t g_curB = 0, g_lastT = 0;
 std::atomic<PreTickFn> g_preTick{nullptr};
 std::atomic<NowFn> g_nowFilter{nullptr};
 
+// This runs inline inside the game's own scheduler loop, so a fault here (the player's injector, the only owner
+// of PreTickFn) must not unwind through the hooked function itself. A plain function, not a lambda, so the
+// __try lives in a scope with no C++ objects needing unwinding.
+bool CallPreTickGuarded(PreTickFn fn, uint32_t b, uint32_t t) {
+    __try {
+        fn(b, t);
+        return true;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return false;
+    }
+}
+
 void OnPreTask(safetyhook::Context& c) {
     if (!session::Open()) return;
     const uintptr_t task = *reinterpret_cast<uintptr_t*>(c.ebp - 0x2c);
@@ -36,7 +50,8 @@ void OnPreTask(safetyhook::Context& c) {
     if (g_haveB && b == g_curB) {
         if (t == g_lastT) return;
         g_lastT = t;
-        if (PreTickFn fn = g_preTick.load(std::memory_order_relaxed)) fn(b, t);
+        if (PreTickFn fn = g_preTick.load(std::memory_order_relaxed))
+            if (!CallPreTickGuarded(fn, b, t)) LOG_ERROR("[wormsign] the replay injector faulted at tick %u", b);
         return;
     }
     if (g_haveB && b > g_curB) session::EndTick(g_curB, PoppedTask{cat, t, task});
@@ -44,7 +59,8 @@ void OnPreTask(safetyhook::Context& c) {
     g_haveB = true;
     g_lastT = t;
     g_bucket.store(b, std::memory_order_relaxed);
-    if (PreTickFn fn = g_preTick.load(std::memory_order_relaxed)) fn(b, t);
+    if (PreTickFn fn = g_preTick.load(std::memory_order_relaxed))
+        if (!CallPreTickGuarded(fn, b, t)) LOG_ERROR("[wormsign] the replay injector faulted at tick %u", b);
 }
 
 int __stdcall HkTmUpdate(uintptr_t tm, int* now) {
