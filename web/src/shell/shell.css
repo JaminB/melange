@@ -283,6 +283,44 @@ kbd { font-family: var(--mono); font-size: 11px; border: 1px solid var(--border)
 
 .cap-calls { display: grid; grid-template-rows: auto 1fr; height: 100%; min-height: 0; }
 .cap-program-select { background: var(--surface); color: var(--text); border: 1px solid var(--border); border-radius: 6px; padding: 3px 6px; font: inherit; }
+
+/* panels/replays, panels/timeline, panels/desync */
+.rp-root { height: 100%; min-height: 0; display: grid; grid-template-rows: auto 1fr; }
+.rp-notices { display: flex; flex-direction: column; }
+.rp-notice { padding: 6px 16px; font-size: 13px; background: var(--accent-soft); border-bottom: 1px solid var(--border); }
+.rp-browse { height: 100%; min-height: 0; display: grid; grid-template-rows: auto 1fr auto; position: relative; }
+.rp-toolbar { padding: 10px 0; }
+.rp-file-input { position: absolute; width: 1px; height: 1px; opacity: 0; overflow: hidden; }
+.rp-detail { padding: 8px 0; border-top: 1px solid var(--border); background: var(--surface); }
+.rp-badge { display: inline-block; font-size: 11px; padding: 1px 7px; border-radius: 999px; border: 1px solid var(--border); color: var(--muted); }
+.rp-badge.accent { color: var(--accent); border-color: var(--accent); }
+.rp-badge.bad { color: var(--bad); border-color: var(--bad); }
+.rp-badge.warn { color: var(--warn); border-color: var(--warn); }
+.rp-browse.dragging, .ds-browse.dragging { outline: 2px dashed var(--accent); outline-offset: -8px; }
+.rp-drop-overlay { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; background: color-mix(in srgb, var(--bg) 85%, transparent); font-weight: 600; pointer-events: none; }
+
+.tl { height: 100%; min-height: 0; display: grid; grid-template-rows: auto 1fr auto; }
+.tl-toolbar { padding: 8px 0; border-bottom: 1px solid var(--border); }
+.tl-canvas-wrap { min-height: 0; position: relative; cursor: grab; touch-action: none; }
+.tl-canvas-wrap canvas { display: block; width: 100%; height: 100%; }
+.tl-detail { min-height: 32px; padding: 8px 0; border-top: 1px solid var(--border); background: var(--surface); }
+.tl-detail .row > span { margin-right: 4px; }
+
+.ds-browse { max-width: 900px; padding: 20px 24px 32px; height: 100%; overflow: auto; position: relative; }
+.ds-browse h1 { font-size: 20px; margin: 0 0 4px; }
+.ds-viewer { height: 100%; min-height: 0; display: grid; grid-template-rows: auto 1fr; }
+.ds-toolbar { padding: 8px 0; border-bottom: 1px solid var(--border); }
+.ds-body { overflow: auto; }
+.ds-body section { margin-bottom: 24px; }
+.ds-h { font-size: 13px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted); margin: 0 0 8px; }
+.ds-h3 { font-size: 12px; color: var(--muted); margin: 0 0 6px; }
+.ds-table { border-collapse: collapse; font-size: 12.5px; width: 100%; }
+.ds-table th, .ds-table td { text-align: left; padding: 3px 10px 3px 0; border-bottom: 1px solid var(--border); }
+.ds-before { color: var(--bad); }
+.ds-after { color: var(--ok); }
+.ds-pre { font-family: var(--mono); font-size: 12px; white-space: pre-wrap; background: var(--surface-2); padding: 10px; border-radius: 6px; max-height: 320px; overflow: auto; }
+.ds-files { list-style: none; margin: 0; padding: 0; }
+.ds-files li { padding: 2px 0; }
 .cap-detail { padding: 10px 12px; overflow: auto; border-left: 1px solid var(--border); }
 
 .cap-summary { max-width: 800px; padding: 16px 20px; }

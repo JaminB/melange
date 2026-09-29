@@ -1,6 +1,7 @@
 // Offline self-test for the standalone-only file logic: no game, no server, no network.
 //   ini_edit: reading and rewriting one key of Melange.ini without disturbing the rest of the file.
 //   mods_provider: mods.list / mods.setEnabled against real spice.json files and thumper-state.json.
+//   wormsign_provider: wormsign.library against real .wsr files, written with the same wsr::Writer the game uses.
 // Exit code 0 = all passed.
 #include <windows.h>
 
@@ -9,10 +10,14 @@
 
 #include "oasis/standalone/ini_edit.h"
 #include "oasis/standalone/mods_provider.h"
+#include "oasis/standalone/wormsign_provider.h"
 #include "tools/json_read.h"
+#include "wormsign/format.h"
 
 namespace ini = melange::oasis::standalone::ini;
 namespace modsprov = melange::oasis::standalone::modsprov;
+namespace wormsignprov = melange::oasis::standalone::wormsignprov;
+namespace wsr = melange::wormsign::wsr;
 namespace json = melange::json;
 
 namespace {
@@ -122,11 +127,89 @@ void TestMods() {
     const json::Value* betaVal = en ? en->Get("beta") : nullptr;
     Expect(betaVal && betaVal->IsBool() && betaVal->boolean, "the persisted state has enabled.beta = true");
 }
+// ---------------------------------------------------------------- wormsign_provider
+std::wstring MakeReplaysFixture() {
+    wchar_t tmp[MAX_PATH];
+    GetTempPathW(MAX_PATH, tmp);
+    wchar_t root[MAX_PATH];
+    swprintf(root, MAX_PATH, L"%soasis_f_replays_%lu", tmp, GetCurrentProcessId());
+    CreateDirectoryW(root, nullptr);
+    const std::wstring dir = root;
+
+    const std::string head =
+        "{\"format\":1,\"engineHash\":1,\"exeBuild\":\"1077\",\"melange\":\"0.0.0-test\",\"startUnix\":1700000000,"
+        "\"online\":false,\"contentHash\":\"deadbeef\"}";
+    const std::vector<uint8_t> ticks(76 * 100, 0);  // a stand-in for 100 TickHash records; content is not decoded here
+
+    wsr::Writer complete;
+    complete.Open(dir + L"\\a.wsr");
+    complete.Chunk(wsr::kHEAD, head.data(), head.size(), false);
+    complete.Chunk(wsr::kTICK, ticks.data(), ticks.size(), true, 0, 99);
+    complete.Close();
+
+    wsr::Writer flagged;
+    flagged.Open(dir + L"\\b.wsr");
+    flagged.Chunk(wsr::kHEAD, head.data(), head.size(), false);
+    flagged.Chunk(wsr::kTICK, ticks.data(), 76 * 50, true, 0, 49);
+    const std::string dvrg = "{\"tick\":37}";  // the payload's shape isn't decoded here; only its presence is checked
+    flagged.Chunk(wsr::kDVRG, dvrg.data(), dvrg.size(), false);
+    flagged.Close();
+
+    wsr::Writer truncated;
+    truncated.Open(dir + L"\\c.wsr");
+    truncated.Chunk(wsr::kHEAD, head.data(), head.size(), false);
+    truncated.Chunk(wsr::kTICK, ticks.data(), 76 * 10, true, 0, 9);
+    truncated.Abandon();  // no INDX, no trailer: a crash or Stop-Process would leave exactly this
+
+    WriteFile_(dir + L"\\junk.wsr", "not a wsr file at all");
+    return dir;
+}
+
+void TestWormsign() {
+    const std::wstring root = MakeReplaysFixture();
+    const std::string list = wormsignprov::ListJson(root);
+    json::Value v;
+    json::Error e;
+    Expect(json::Parse(list, &v, &e) && v.IsArray(), "ListJson is a JSON array", list);
+
+    auto entry = [&](const char* name) -> const json::Value* {
+        for (const json::Value& x : v.items) {
+            const json::Value* n = x.Get("name");
+            if (n && n->IsString() && n->string == name) return &x;
+        }
+        return nullptr;
+    };
+
+    Expect(v.items.size() == 3, "junk.wsr (bad magic) is skipped, not crashed on", list);
+
+    const json::Value* a = entry("a.wsr");
+    Expect(a != nullptr, "a.wsr is listed");
+    if (a) {
+        Expect(a->Get("complete")->boolean, "a.wsr: complete (INDX and trailer present)");
+        Expect(static_cast<int>(a->Get("ticks")->number) == 100, "a.wsr: ticks from the index's tickTo", list);
+        Expect(!a->Get("flagged")->boolean, "a.wsr: not flagged (no DVRG chunk)");
+        Expect(a->Get("exeBuild")->string == "1077", "a.wsr: exeBuild from HEAD");
+        Expect(a->Get("melange")->string == "0.0.0-test", "a.wsr: melange version from HEAD");
+        Expect(!a->Get("pinned")->boolean, "a.wsr: pinned is always false standalone (no live library)");
+    }
+
+    const json::Value* b = entry("b.wsr");
+    Expect(b != nullptr, "b.wsr is listed");
+    if (b) Expect(b->Get("flagged")->boolean, "b.wsr: flagged (has a DVRG chunk)");
+
+    const json::Value* c = entry("c.wsr");
+    Expect(c != nullptr, "c.wsr is listed even without a trailer");
+    if (c) {
+        Expect(!c->Get("complete")->boolean, "c.wsr: incomplete (no INDX/trailer)");
+        Expect(static_cast<int>(c->Get("ticks")->number) == 0, "c.wsr: ticks unknown without an index", list);
+    }
+}
 }  // namespace
 
 int main() {
     TestIni();
     TestMods();
+    TestWormsign();
     printf("oasis_standalone_selftest: %d passed, %d failed\n", g_pass, g_fail);
     return g_fail ? 1 : 0;
 }
