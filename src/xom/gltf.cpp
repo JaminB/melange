@@ -89,6 +89,11 @@ bool ReadAccessorFloats(const Accessor& a, const Json& bufferViews, const std::v
     if (!compSize) return fail("accessor: unsupported componentType");
     size_t stride = byteStride ? size_t(byteStride) : compSize * size_t(nc);
     size_t base = size_t(byteOffset + a.byteOffset);
+    if (a.count <= 0) return fail("accessor: bad count");
+    // Bound the read against the buffer's real size before allocating `out`, so a forged huge
+    // count is refused instead of attempting a huge allocation first.
+    size_t need = base + size_t(a.count - 1) * stride + compSize * size_t(nc);
+    if (need > bin.size()) return fail("accessor reads past the end of the buffer");
     out.resize(size_t(a.count) * size_t(nc));
     for (int64_t i = 0; i < a.count; ++i) {
         for (int c = 0; c < nc; ++c) {
