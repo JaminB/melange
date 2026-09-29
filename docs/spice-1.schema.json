@@ -129,6 +129,24 @@
       }
     },
 
+    "levels": {
+      "type": "array",
+      "maxItems": 32,
+      "description": "Map pack levels (content mods only). Built files live in assets/levels/ as <prefix>_<slug>.*, where the prefix is the mod id with '-' replaced by '_'. At most 128 levels across all enabled mods.",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["slug", "title"],
+        "properties": {
+          "slug": { "type": "string", "pattern": "^[a-z0-9]{1,24}$", "description": "Unique in the mod; the level stem is <prefix>_<slug>." },
+          "title": { "type": "string", "minLength": 1, "maxLength": 40, "pattern": "^[ -~]+$", "description": "The name shown in the level list (printable ASCII)." },
+          "type": { "type": "string", "enum": ["multi"], "default": "multi", "description": "Multiplayer (Versus) levels only in this version." },
+          "chunk": { "type": "boolean", "default": false, "description": "True when the pack ships assets/levels/<stem>.lub; the level's scripts become stdvs,wormpot,<stem>." },
+          "source": { "type": "string", "description": "The erg-patch/1 file the level was built from, relative to the mod folder." }
+        }
+      }
+    },
+
     "settings": {
       "type": "array",
       "items": {

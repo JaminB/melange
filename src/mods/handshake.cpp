@@ -161,6 +161,7 @@ std::vector<WalkedFile> WalkModFileList(const fs::path& dir, const std::string& 
         if (!fs::is_regular_file(file, e2)) return;
         std::string rel = fs::relative(file, dir, e2).generic_string();
         std::transform(rel.begin(), rel.end(), rel.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+        if (rel.size() >= 4 && rel.compare(rel.size() - 4, 4, ".csh") == 0) return;  // shadow caches differ per machine
         if (!seenRel.insert(rel).second) return;  // entry.sim may already sit under sim/: don't hash it twice
         uint64_t sig = StatSig(file);
         agg ^= sig;

@@ -1,0 +1,119 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://melange.dev/schema/erg-patch-1.json",
+  "title": "Erg patch (erg-patch/1)",
+  "description": "An edit against a pinned base level: the Erg project file, the payload of level.save and what a source map pack ships in src/. It holds only identifiers and the author's own values. The server applies the ops in order and refuses a patch whose base hashes differ.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["format", "stem", "title", "base", "ops"],
+  "properties": {
+    "format": { "const": "erg-patch/1" },
+    "stem": { "type": "string", "pattern": "^[a-z0-9_]{1,48}$", "description": "<prefix>_<slug>; never a vanilla level stem." },
+    "title": { "type": "string", "minLength": 1, "maxLength": 40, "pattern": "^[ -~]+$" },
+    "base": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["key", "source", "sha256"],
+      "properties": {
+        "key": { "type": "string", "minLength": 1, "maxLength": 79 },
+        "source": { "enum": ["game", "pack"] },
+        "sha256": { "$ref": "erg-scene-1.schema.json#/$defs/sha256" }
+      }
+    },
+    "databank": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Only the keys that differ from the base.",
+      "properties": {
+        "theme": { "$ref": "erg-scene-1.schema.json#/$defs/theme" },
+        "timeOfDay": { "enum": ["DAY", "EVENING", "NIGHT"] },
+        "materialFile": { "type": "string", "minLength": 5, "maxLength": 120, "pattern": "\\.[tT][xX][tT]$", "description": "A relative path that must exist in the install." },
+        "heightmapBase": { "type": "string", "minLength": 1, "maxLength": 64 },
+        "heightmapSecond": { "type": "string", "minLength": 1, "maxLength": 64 }
+      }
+    },
+    "water": { "$ref": "erg-scene-1.schema.json#/$defs/water" },
+    "spawns": { "$ref": "erg-scene-1.schema.json#/$defs/spawns" },
+    "hmp": { "$ref": "erg-scene-1.schema.json#/$defs/hmp" },
+    "ops": {
+      "type": "array",
+      "maxItems": 20000,
+      "items": {
+        "oneOf": [
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["op", "src"],
+            "minProperties": 3,
+            "properties": {
+              "op": { "const": "set" },
+              "src": { "$ref": "erg-scene-1.schema.json#/$defs/index" },
+              "name": { "$ref": "#/$defs/label" },
+              "resource": { "$ref": "#/$defs/label" },
+              "pos": { "$ref": "erg-scene-1.schema.json#/$defs/vec3" },
+              "rot": { "$ref": "erg-scene-1.schema.json#/$defs/rot3" },
+              "scale": { "$ref": "erg-scene-1.schema.json#/$defs/vec3" },
+              "voxelPos": { "$ref": "erg-scene-1.schema.json#/$defs/vec3" }
+            }
+          },
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["op", "frame", "detail"],
+            "properties": {
+              "op": { "const": "add" },
+              "frame": { "$ref": "erg-scene-1.schema.json#/$defs/index", "description": "A folder frame (1x1x1, identity rotation and scale)." },
+              "detail": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["name", "resource", "pos"],
+                "properties": {
+                  "name": { "$ref": "#/$defs/label" },
+                  "resource": { "$ref": "#/$defs/label" },
+                  "pos": { "$ref": "erg-scene-1.schema.json#/$defs/vec3" },
+                  "rot": { "$ref": "erg-scene-1.schema.json#/$defs/rot3" },
+                  "scale": { "$ref": "erg-scene-1.schema.json#/$defs/vec3" },
+                  "voxelPos": { "$ref": "erg-scene-1.schema.json#/$defs/vec3" }
+                }
+              }
+            }
+          },
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["op", "src"],
+            "properties": { "op": { "const": "remove" }, "src": { "$ref": "erg-scene-1.schema.json#/$defs/index" } }
+          },
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["op", "frame", "runs"],
+            "description": "Terrain: runs of voxel words over the frame's index order, at most 2000 per frame. Accepted only by servers with terrain sculpting.",
+            "properties": {
+              "op": { "const": "voxels" },
+              "frame": { "$ref": "erg-scene-1.schema.json#/$defs/index" },
+              "runs": {
+                "type": "array",
+                "minItems": 1,
+                "maxItems": 2000,
+                "items": {
+                  "type": "array",
+                  "minItems": 3,
+                  "maxItems": 3,
+                  "prefixItems": [
+                    { "type": "integer", "minimum": 0, "maximum": 262143 },
+                    { "type": "integer", "minimum": 1, "maximum": 262144 },
+                    { "type": "integer", "minimum": 0, "maximum": 16777215, "description": "Bits 24-31 clear; bits 0-1 are 0 (empty) or 3 (solid)." }
+                  ]
+                }
+              }
+            }
+          }
+        ]
+      }
+    }
+  },
+  "$defs": {
+    "label": { "type": "string", "minLength": 1, "maxLength": 63, "pattern": "^[ -~]+$" }
+  }
+}

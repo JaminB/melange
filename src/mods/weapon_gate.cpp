@@ -4,8 +4,6 @@
 
 #include <windows.h>
 
-#include <safetyhook.hpp>
-
 #include <algorithm>
 #include <atomic>
 #include <string>
@@ -22,6 +20,7 @@
 #include "melange/weapons.h"
 #include "mods/handshake_internal.h"
 #include "mods/lobby.h"
+#include "mods/starthold.h"
 #include "net/net.h"
 #include "weapons/engine.h"
 #include "weapons/manifest.h"
@@ -35,10 +34,8 @@ Policy g_policy = Policy::Refuse;
 bool g_leaveButton = true;
 bool g_installed = false;
 
-SafetyHookMid g_startHook;
-bool g_hookFailed = false;
-std::atomic<bool> g_refuse{false};
-std::atomic<uint32_t> g_refusedFrames{0};
+int g_holdHandle = 0;
+bool g_hookFailLogged = false;
 uint32_t g_loggedFrames = 0;
 uint64_t g_lastRefuseLog = 0;
 
@@ -91,7 +88,7 @@ View Evaluate() {
     out.inLobby = in.inLobby;
     out.owner = in.weAreOwner;
     out.hostHeld = v.hostHeld;
-    out.refusing = v.hostHeld && g_policy == Policy::Refuse && g_startHook;
+    out.refusing = v.hostHeld && g_policy == Policy::Refuse && mods::starthold::Available();
     out.joinerMismatch = v.joinerMismatch;
     out.why = v.why;
     out.members = v.members;
@@ -102,27 +99,16 @@ bool InLobbyScreen() {
     return game::IsKnownBuild() && wum::CurrentState() == wum::state::WaitingGameStart;
 }
 
-// WaitingGameStart compares the players that have a team with all players before it posts the begin-game message.
-// While refusing, that compare is made to fail, so the host's start waits and nothing is sent.
-void OnStartCheck(safetyhook::Context& c) {
-    if (!g_refuse.load(std::memory_order_relaxed) || c.edi != c.eax || c.edi <= 1) return;
-    c.eax = c.edi + 1;
-    g_refusedFrames.fetch_add(1, std::memory_order_relaxed);
-}
+bool Wanted() { return g_policy == Policy::Refuse && g_view.inLobby && g_view.owner && LocalClones(); }
 
-void UpdateStartHook(bool want, bool refuse) {
-    if (want && !g_startHook && !g_hookFailed) {
-        if (!weapons::engine::Mid(g_startHook, weapons::engine::kStartCheck, &OnStartCheck, "start refusal")) {
-            g_hookFailed = true;
-            LOG_ERROR("[handshake] the start refusal is unavailable: a mismatched lobby falls back to clones off");
-        }
-    }
-    g_refuse = want && refuse && g_startHook;
-    if (g_startHook) weapons::engine::Enable(g_startHook, want);
+bool HoldReason(std::string* why, void*) {
+    if (!Wanted() || !g_view.hostHeld) return false;
+    if (why) *why = g_view.why;
+    return true;
 }
 
 void LogRefusals() {
-    const uint32_t n = g_refusedFrames.load(std::memory_order_relaxed);
+    const uint32_t n = mods::starthold::HeldFrames("weapons");
     if (n == g_loggedFrames) return;
     const uint64_t now = GetTickCount64();
     if (now - g_lastRefuseLog < 2000) return;
@@ -161,9 +147,12 @@ void Tick() {
     }
     if (events::FrameCount() % kEvalEvery) return;
     g_view = Evaluate();
-    const bool want = g_policy == Policy::Refuse && g_view.inLobby && g_view.owner && LocalClones();
-    UpdateStartHook(want, g_view.hostHeld);
-    g_view.refusing = g_refuse.load();
+    const bool refusing = Wanted() && g_view.hostHeld && mods::starthold::Available();
+    if (Wanted() && g_view.hostHeld && !mods::starthold::Available() && !g_hookFailLogged) {
+        g_hookFailLogged = true;
+        LOG_ERROR("[handshake] the start refusal is unavailable: a mismatched lobby falls back to clones off");
+    }
+    g_view.refusing = refusing;
     if (g_view.hostHeld != g_wasHeld) {
         g_wasHeld = g_view.hostHeld;
         if (g_view.hostHeld)
@@ -224,13 +213,19 @@ void DrawBanner(render::Stage, void*) {
     }
 }
 
+int HookState() {
+    int st = -1;
+    mods::starthold::HookEnabled(&st);
+    return st;
+}
+
 bool VerbState(std::string_view, void*) {
     const View v = Evaluate();
     LOG_INFO("[handshake] wpn: policy=%s clones=%d inLobby=%d owner=%d held=%d refusing=%d joinerMismatch=%d hook=%d "
              "refusedFrames=%u req='%s' why='%s'",
              g_policy == Policy::Refuse ? "refuse" : "suspend", LocalClones(), v.inLobby, v.owner, v.hostHeld,
-             g_refuse.load(), v.joinerMismatch, g_startHook ? static_cast<int>(g_startHook.enabled()) : -1,
-             g_refusedFrames.load(), lobby::Data("mlg.req").c_str(), v.why.c_str());
+             g_view.refusing, v.joinerMismatch, HookState(), mods::starthold::HeldFrames("weapons"),
+             lobby::Data("mlg.req").c_str(), v.why.c_str());
     for (uint64_t m : lobby::Members())
         LOG_INFO("[handshake]   %s mlg='%s' wpn='%s'", lobby::Name(m).c_str(), lobby::MemberData(m, "mlg").c_str(),
                  lobby::MemberData(m, "mlg.wpn").c_str());
@@ -250,6 +245,7 @@ void Install(Policy policy, bool leaveButton) {
     g_policy = policy;
     g_leaveButton = leaveButton;
     events::Subscribe(events::Event::Frame, [] { Tick(); });
+    g_holdHandle = mods::starthold::Add("weapons", &HoldReason, nullptr);
     draw::AddDrawCallback(render::Stage::Hud, &DrawBanner, nullptr);
     testcmd::Register("handshake.wpn", &VerbState);
     testcmd::Register("handshake.leave", &VerbLeave);
