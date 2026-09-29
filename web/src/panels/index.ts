@@ -7,3 +7,4 @@ import "./ini";
 import "./about";
 import "./entities";
 import "./capture";
+import "./replays";

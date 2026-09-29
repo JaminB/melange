@@ -26,6 +26,7 @@
 #include "oasis/standalone/game_lock.h"
 #include "oasis/standalone/ini_edit.h"
 #include "oasis/standalone/mods_provider.h"
+#include "oasis/standalone/wormsign_provider.h"
 #include "tools/json_mini.h"
 #include "tools/json_read.h"
 
@@ -210,6 +211,35 @@ bool RouteCaptures(const oc::Request& rq, oc::Response* out, void*) {
     return true;
 }
 
+// ---------------------------------------------------------------- wormsign.library, /replays/
+std::wstring ReplaysDir() {
+    PWSTR docs = nullptr;
+    std::wstring out;
+    if (SUCCEEDED(SHGetKnownFolderPath(FOLDERID_Documents, 0, nullptr, &docs)) && docs) out = std::wstring(docs) + L"\\Melange\\replays";
+    if (docs) CoTaskMemFree(docs);
+    return out.empty() ? g_gameDir + L"\\Melange\\replays" : out;
+}
+
+void WormsignLibrary(const oa::Call&, oa::Result& r, void*) { r.json = standalone::wormsignprov::ListJson(ReplaysDir()); }
+
+// /replays/<name>.wsr|.zip: flat, no subfolders, as /captures/. arm/control/pin/detail are not offered here (no
+// live session to arm): the library and the timeline/diff viewers work from the file alone.
+bool RouteReplays(const oc::Request& rq, oc::Response* out, void*) {
+    constexpr size_t kPrefixLen = 9;  // "/replays/"
+    if (rq.path.size() <= kPrefixLen) return false;
+    const std::string name = rq.path.substr(kPrefixLen);
+    if (name.find('/') != std::string::npos || name.size() < 5) return false;
+    const std::string ext = name.substr(name.size() - 4);
+    if ((ext != ".wsr" && ext != ".zip") || !oc::SafePath(name)) return false;
+    const std::wstring full = ReplaysDir() + L"\\" + Widen(name);
+    const DWORD attr = GetFileAttributesW(full.c_str());
+    if (attr == INVALID_FILE_ATTRIBUTES || (attr & FILE_ATTRIBUTE_DIRECTORY)) return false;
+    out->status = 200;
+    out->contentType = ext == ".zip" ? "application/zip" : "application/octet-stream";
+    out->file = full;
+    return true;
+}
+
 // ---------------------------------------------------------------- mods.list, mods.setEnabled
 void ModsList(const oa::Call&, oa::Result& r, void*) { r.json = standalone::modsprov::ListJson(g_gameDir, MELANGE_VERSION); }
 
@@ -376,6 +406,8 @@ int main(int argc, char** argv) {
     oc::AddRoute("/logs/", &RouteLogs, nullptr);
     MustAddMethod("capture.list", &CaptureList, oa::kRpcServerThread);
     oc::AddRoute("/captures/", &RouteCaptures, nullptr);
+    MustAddMethod("wormsign.library", &WormsignLibrary, oa::kRpcServerThread);
+    oc::AddRoute("/replays/", &RouteReplays, nullptr);
     MustAddMethod("mods.list", &ModsList, oa::kRpcServerThread);
     MustAddMethod("mods.setEnabled", &ModsSetEnabled, oa::kRpcServerThread | oa::kRpcMutating);
     MustAddMethod("ini.get", &IniGetMethod, oa::kRpcServerThread);
