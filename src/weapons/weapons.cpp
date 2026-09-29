@@ -6,6 +6,7 @@
 #include "assets/searchpath.h"
 #include "assets/upload.h"
 #include "core/config.h"
+#include "core/events.h"
 #include "core/log.h"
 #include "core/mem.h"
 #include "core/module.h"
@@ -26,7 +27,7 @@
 namespace {
 namespace eng = melange::weapons::engine;
 namespace wm = melange::weapons::manifest;
-bool g_weapons = false, g_assets = false;
+bool g_weapons = false, g_assets = false, g_rootsPending = false;
 
 template <class T>
 T Rd(uintptr_t a) {
@@ -179,7 +180,14 @@ public:
     bool Install() override {
         g_assets = melange::assets::upload::Available() && eng::SitesOk();
         melange::testcmd::Register("assets.stats", &VerbAssets);
-        if (g_assets) AddModRoots();
+        if (g_assets) {
+            g_rootsPending = true;
+            melange::events::Subscribe(melange::events::Event::Frame, [] {
+                if (!g_rootsPending || !eng::AppReady()) return;
+                g_rootsPending = false;
+                AddModRoots();
+            });
+        }
         LOG_INFO("[assets] installed: %s", g_assets ? "ok" : "code bytes differ, inert");
         return true;
     }

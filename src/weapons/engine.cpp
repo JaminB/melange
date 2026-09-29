@@ -293,6 +293,8 @@ bool AddSearchPath(const char* gameRelDir) {
     return s.p && RawAddPath(app, &s.p);
 }
 
+bool AppReady() { return game::IsKnownBuild() && Rd<uintptr_t>(kApp) != 0; }
+
 std::string ReadCString(uintptr_t p, size_t max) {
     std::string s;
     char c = 0;
