@@ -100,6 +100,10 @@ bool VerbState(std::string_view, void*) {
     const auto b = behaviour::GetCounters();
     LOG_INFO("[weapons]   behaviour hooks=%d extras/explosion=%d fires=%u ticks=%u impacts=%u explosions=%u extras=%u",
              behaviour::HooksEnabled(), behaviour::ExtraLimit(), b.fires, b.ticks, b.impacts, b.explosions, b.extras);
+    for (Event e : {Event::Fire, Event::Tick, Event::Impact, Event::Explosion}) {
+        const auto c = behaviour::EventCost(e);
+        if (c.n) LOG_INFO("[weapons]   cost %d: n=%u p50=%.1f us p95=%.1f us max=%.1f us", static_cast<int>(e), c.n, c.p50Us, c.p95Us, c.maxUs);
+    }
     for (auto& h : eng::Hooks())
         LOG_INFO("[weapons]   hook %s @%08x created=%d wanted=%d enabled=%d", h.name.c_str(), static_cast<unsigned>(h.site),
                  h.created, h.wanted, h.enabled);
@@ -195,9 +199,10 @@ public:
                     melange::assets::PreloadPanelIcon(d.mod.c_str(), d.panelIcon.c_str());
                     ++n;
                 }
-                if (n)
-                    LOG_INFO("[assets] %zu panel icon(s) decoded in %.3f ms", n,
-                             std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count());
+                if (!n) return;
+                LOG_INFO("[assets] %zu panel icon(s) decoded in %.3f ms", n,
+                         std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count());
+                melange::assets::upload::Prepare();
             });
         }
         LOG_INFO("[assets] installed: %s", g_assets ? "ok" : "code bytes differ, inert");

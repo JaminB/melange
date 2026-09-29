@@ -1,5 +1,8 @@
 // The clone behaviour hooks: LaunchPayload (fire), the payload Update entries (tick), the payload HandleMessage
 // entries (impact) and CreateExplosion (explosion and the queued extras).
+#include <windows.h>
+
+#include <algorithm>
 #include <cstring>
 #include <string>
 
@@ -47,7 +50,24 @@ EventArgs Args(Event ev, const CloneInfo& c, uintptr_t entity) {
     return a;
 }
 
+struct Samples {
+    float us[256];
+    uint32_t n;
+};
+Samples g_cost[4] = {};
+
+double UsPerTick() {
+    static const double v = [] {
+        LARGE_INTEGER f;
+        QueryPerformanceFrequency(&f);
+        return 1e6 / static_cast<double>(f.QuadPart);
+    }();
+    return v;
+}
+
 void Emit(const EventArgs& a, const CloneInfo& c, const char* msgName) {
+    LARGE_INTEGER t0, t1;
+    QueryPerformanceCounter(&t0);
     CountEvent(a.ev);
     if (g_log) {
         if (a.ev == Event::Impact)
@@ -64,6 +84,9 @@ void Emit(const EventArgs& a, const CloneInfo& c, const char* msgName) {
     } catch (...) {
         LOG_ERROR("[weapons] the %s event of %s threw at tick %u", simweapons::EventName(a.ev), c.name, a.tick);
     }
+    QueryPerformanceCounter(&t1);
+    Samples& s = g_cost[static_cast<int>(a.ev) & 3];
+    s.us[s.n++ % 256] = static_cast<float>((t1.QuadPart - t0.QuadPart) * UsPerTick());
 }
 
 struct Nest {
@@ -200,4 +223,17 @@ void OnMatchEnd() {
 }
 
 bool HooksEnabled() { return g_enabled; }
+Cost EventCost(Event e) {
+    const Samples& s = g_cost[static_cast<int>(e) & 3];
+    const uint32_t n = std::min<uint32_t>(s.n, 256);
+    Cost c{s.n, 0, 0, 0};
+    if (!n) return c;
+    float v[256];
+    std::copy(s.us, s.us + n, v);
+    std::sort(v, v + n);
+    c.p50Us = v[n / 2];
+    c.p95Us = v[std::min<uint32_t>(n - 1, n * 95 / 100)];
+    c.maxUs = v[n - 1];
+    return c;
+}
 }  // namespace melange::weapons::behaviour

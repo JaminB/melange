@@ -33,4 +33,6 @@ bool Install(int extraLimit, bool logEvents);
 void OnMatchBegin();
 void OnMatchEnd();
 bool HooksEnabled();
+struct Cost { uint32_t n; float p50Us, p95Us, maxUs; };
+Cost EventCost(Event e);                        // observers + Lua per event, over the last 256 events of that kind
 }  // namespace melange::weapons::behaviour

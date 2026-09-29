@@ -86,6 +86,8 @@ void Refresh() {
 
 bool Available() { return engine::SiteIntact(engine::kUpload) || static_cast<bool>(g_hook); }
 
+bool Prepare() { return g_hook || engine::Mid(g_hook, engine::kUpload, &OnUpload, "texture upload"); }
+
 int AddPatcher(const char* imageName, PatchFn fn, void* user) {
     if (!imageName || !*imageName || !fn) return 0;
     if (!g_hook && !engine::Mid(g_hook, engine::kUpload, &OnUpload, "texture upload")) return 0;

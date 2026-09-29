@@ -8,6 +8,7 @@ using PatchFn = void (*)(const char* name, uint16_t w, uint16_t h, uint32_t fmt,
 // a patcher exists. Returns a handle (0 on failure).
 int AddPatcher(const char* imageName, PatchFn fn, void* user);
 void RemovePatcher(int handle);
+bool Prepare();  // creates the hook (disabled) ahead of the first patcher
 struct Stats { uint32_t patchers, uploadsSeen, uploadsPatched; double msLastPatch; bool hooked; };
 Stats GetStats();
 bool Available();  // the site has its #1077 bytes
