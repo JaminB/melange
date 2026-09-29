@@ -235,6 +235,7 @@ its replay) that agree on a tick's hash agree on the game state at that tick.
 | Name | Description |
 |---|---|
 | `wum.wormsign.tick()` | `{tick, engine, mods}` for the last completed tick: `tick` is a number, `engine` and `mods` are 16-digit hex strings (`mods` is `"0000000000000000"` when no mod contributes). `nil` outside a match or before the first tick. |
+| `wum.wormsign.library()` | An array of the recorded matches (newest first): `{path, bytes, ticks, land, online, complete, pinned, flagged}` per entry. Empty when `[Wormsign] Record=0` or nothing has been recorded yet. |
 
 `mods` covers every sim mod of the match. Sim scripts are not covered by this page, but two things feed `mods` from them:
 

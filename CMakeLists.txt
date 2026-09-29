@@ -387,3 +387,20 @@ target_include_directories(wormsign_contrib_selftest PRIVATE src src/sdk ${CMAKE
 target_compile_definitions(wormsign_contrib_selftest PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX _CRT_SECURE_NO_WARNINGS)
 target_compile_options(wormsign_contrib_selftest PRIVATE /W4 /utf-8 /permissive- /wd4100)
 target_link_libraries(wormsign_contrib_selftest PRIVATE bcrypt psapi shell32 ole32)
+
+# The rolling recorder's writer and library without the game: the writer thread, retention, pin/flag exemption and
+# the export redaction policy, all against synthetic recordings.
+add_executable(wormsign_recorder_selftest
+    tests/wormsign_recorder_selftest.cpp
+    src/wormsign/format.cpp
+    src/wormsign/writer.cpp
+    src/wormsign/library.cpp
+    src/tools/json_read.cpp
+    src/tools/redact.cpp
+    src/tools/hash.cpp
+    src/core/game.cpp
+    src/core/log.cpp)
+target_include_directories(wormsign_recorder_selftest PRIVATE src src/sdk)
+target_compile_definitions(wormsign_recorder_selftest PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX _CRT_SECURE_NO_WARNINGS)
+target_compile_options(wormsign_recorder_selftest PRIVATE /W4 /utf-8 /permissive- /wd4100)
+target_link_libraries(wormsign_recorder_selftest PRIVATE miniz bcrypt psapi shell32 ole32)
