@@ -168,6 +168,16 @@ void CloneTests(const std::vector<ContentMod>& a) {
         second.cell = 39;
         Expect(CloneHash16({mega, second}) != CloneHash16({second, mega}), "clone hash: k order matters");
     }
+    {
+        // ExtraPerExplosion is a per-machine ini setting, not a mod file, but it changes clone sim behaviour, so a
+        // peer with a different value must hash and gate differently once clones are declared.
+        Expect(CloneHash16({mega}, 8) != CloneHash16({mega}, 2), "clone hash: local ExtraPerExplosion is covered");
+        Expect(CloneHash16({}, 8) == CloneHash16({}, 2), "no clones: ExtraPerExplosion is irrelevant");
+        Expect(std::string(BuildContentId(a, none, {mega}, 8).hash) != BuildContentId(a, none, {mega}, 2).hash,
+               "content hash: local ExtraPerExplosion is covered once clones are declared");
+        Expect(std::string(BuildContentId(a, none, {}, 8).hash) == BuildContentId(a, none, {}, 2).hash,
+               "content hash without clones: ExtraPerExplosion does not affect unrelated mods");
+    }
 
     const std::string h = CloneHash16({mega});
     Expect(h.size() == 16, "clone hash16 is 16 characters");

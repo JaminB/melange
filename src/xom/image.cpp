@@ -9,19 +9,22 @@ namespace {
 
 int BppForFormat(uint32_t fmt) { return fmt == 1 ? 4 : 3; }
 
-// The layout formula, validated against every shipped XImage: levels are back-to-back, no padding.
-void ComputeLayout(uint16_t width, uint16_t height, int bpp, int levels, std::vector<uint32_t>& strides,
-                    std::vector<uint32_t>& offsets, uint32_t& total) {
+// The layout formula, validated against every shipped XImage: levels are back-to-back, no padding. `levels` must
+// already be bounded to at most 32 by the caller: a shift count of 32 or more on a 32-bit value is undefined
+// behaviour, and 64-bit accumulation (rather than the on-disk field's own uint32_t) keeps `total` from wrapping
+// back into a small, plausible-looking size for a caller-supplied MipLevels this formula didn't actually produce.
+void ComputeLayout(uint16_t width, uint16_t height, int bpp, int levels, std::vector<uint64_t>& strides,
+                    std::vector<uint64_t>& offsets, uint64_t& total) {
     strides.assign(size_t(levels), 0);
     offsets.assign(size_t(levels), 0);
-    uint32_t off = 0;
+    uint64_t off = 0;
     for (int i = 0; i < levels; ++i) {
         uint32_t w = std::max<uint32_t>(1, uint32_t(width) >> i);
         uint32_t h = std::max<uint32_t>(1, uint32_t(height) >> i);
-        uint32_t stride = w * uint32_t(bpp);
+        uint64_t stride = uint64_t(w) * uint64_t(bpp);
         strides[size_t(i)] = stride;
         offsets[size_t(i)] = off;
-        off += stride * h;
+        off += stride * uint64_t(h);
     }
     total = off;
 }
@@ -70,23 +73,24 @@ std::vector<std::pair<std::string, Value>> FieldsFromPixelsBottomUp(const Pixels
         lh = nh;
     }
     uint32_t levels = uint32_t(levelsTopDown.size());
-    std::vector<uint32_t> strides, offsets;
-    uint32_t total;
+    std::vector<uint64_t> strides, offsets;
+    uint64_t total;
     ComputeLayout(px.width, px.height, bpp, int(levels), strides, offsets, total);
-    dataOut.assign(total, 0);
+    dataOut.assign(size_t(total), 0);
     for (uint32_t i = 0; i < levels; ++i) {
         uint32_t w = std::max<uint32_t>(1, uint32_t(px.width) >> i);
         uint32_t h = std::max<uint32_t>(1, uint32_t(px.height) >> i);
-        FlipRows(levelsTopDown[i].data(), dataOut.data() + offsets[i], w, h, bpp);
+        FlipRows(levelsTopDown[i].data(), dataOut.data() + size_t(offsets[i]), w, h, bpp);
     }
     mipsOut = levels;
 
     std::vector<std::pair<std::string, Value>> out;
     auto pushStr = [&](const char* k, const std::string& s) { Value v; v.type = Type::String; v.str = s; out.emplace_back(k, v); };
     auto pushU16 = [&](const char* k, uint16_t n) { Value v; v.type = Type::U16; v.bits = n; out.emplace_back(k, v); };
-    auto pushU32Arr = [&](const char* k, const std::vector<uint32_t>& a) {
+    auto pushU32Arr = [&](const char* k, const std::vector<uint64_t>& a) {
         Value v; v.type = Type::U32; v.array = true;
-        for (auto x : a) { v.raw.push_back(uint8_t(x)); v.raw.push_back(uint8_t(x >> 8)); v.raw.push_back(uint8_t(x >> 16)); v.raw.push_back(uint8_t(x >> 24)); }
+        for (auto x64 : a) { uint32_t x = uint32_t(x64);
+            v.raw.push_back(uint8_t(x)); v.raw.push_back(uint8_t(x >> 8)); v.raw.push_back(uint8_t(x >> 16)); v.raw.push_back(uint8_t(x >> 24)); }
         out.emplace_back(k, v);
     };
     (void)pushStr;
@@ -119,12 +123,17 @@ bool ExtractMip(const Object& ximage, int level, Pixels& out, std::string* error
     uint16_t width = uint16_t(wf->asUInt()), height = uint16_t(hf->asUInt());
     uint32_t fmt = uint32_t(ff->asUInt());
     int mips = int(mf->asUInt());
+    // MipLevels comes straight off the file. Above 32, `width >> i` (i is the loop index below) would shift a
+    // 32-bit value by 32 or more, which is undefined behaviour; ComputeLayout also assumes its caller already
+    // bounded `levels` this way.
+    if (mips <= 0 || mips > 32) return fail("MipLevels out of range");
     if (level < 0 || level >= mips) return fail("mip level out of range");
     if (width == 0 || height == 0) return fail("zero-sized XImage");
     int bpp = BppForFormat(fmt);
-    std::vector<uint32_t> strides, offsets;
-    uint32_t total;
+    std::vector<uint64_t> strides, offsets;
+    uint64_t total;
     ComputeLayout(width, height, bpp, mips, strides, offsets, total);
+    if (total > (1ull << 32)) return fail("XImage.Data would be implausibly large for its Width/Height/MipLevels");
     if (!df->packed() || df->raw.size() != total)
         return fail("XImage.Data length does not match the Width/Height/Format/MipLevels formula");
     uint32_t w = std::max<uint32_t>(1, uint32_t(width) >> level), h = std::max<uint32_t>(1, uint32_t(height) >> level);
@@ -132,7 +141,7 @@ bool ExtractMip(const Object& ximage, int level, Pixels& out, std::string* error
     out.height = uint16_t(h);
     out.channels = bpp;
     out.data.assign(size_t(w) * h * uint32_t(bpp), 0);
-    FlipRows(df->raw.data() + offsets[size_t(level)], out.data.data(), w, h, bpp);
+    FlipRows(df->raw.data() + size_t(offsets[size_t(level)]), out.data.data(), w, h, bpp);
     return true;
 }
 

@@ -43,14 +43,16 @@ std::string SetString(const std::string& v);   // percent-encodes anything outsi
 std::string CloneLine(const CloneSpec& c);
 
 // Deterministic text, version 2: the mod set (in load order) with its file hashes, the mod messages as name=id in
-// registration order, and one line per declared clone in k order.
+// registration order, one line per declared clone in k order, and (only with clones) the local [Weapons]
+// ExtraPerExplosion: a per-machine setting, but one that changes how many extra explosions a clone can queue, so
+// peers whose clones went live must agree on it too. Defaults to 8, the ini default, for callers that don't care.
 std::string CanonicalText(const std::vector<ContentMod>& modsInLoadOrder, const std::vector<ModMessage>& messages,
-                          const std::vector<CloneSpec>& clones);
+                          const std::vector<CloneSpec>& clones, int extraPerExplosion = 8);
 std::string HashOfCanonicalText(const std::string& canonical);  // sha256 hex, "" only on a hashing failure
 
 // Sorts each mod's files by relPath, then builds the ContentId this peer would publish for this content.
 mods::ContentId BuildContentId(std::vector<ContentMod> modsInLoadOrder, const std::vector<ModMessage>& messages,
-                               const std::vector<CloneSpec>& clones);
+                               const std::vector<CloneSpec>& clones, int extraPerExplosion = 8);
 
 // First 16 hex chars of ContentId.hash, or "v" for the vanilla (empty-hash) case.
 std::string Hash16(const mods::ContentId& c);
@@ -79,9 +81,10 @@ std::string BuildMlgSim(const std::string& ourHash16, bool weAreVanilla, const s
 // May a sim mod run this match? Offline/local: always. Online: only if the lobby's "mlg.sim" is our hash16.
 bool GateAllowsSim(bool online, const std::string& ourHash16, const std::string& lobbySim);
 
-// Clone keys. "mlg.wpn" (member) = "1;<hash16 of the clone lines>;<count>", "" when there are no clones.
-std::string CloneHash16(const std::vector<CloneSpec>& clones);
-std::string BuildWpnValue(const std::vector<CloneSpec>& clones);
+// Clone keys. "mlg.wpn" (member) = "1;<hash16 of the clone lines and ExtraPerExplosion>;<count>", "" when there are
+// no clones. extraPerExplosion defaults to 8, the ini default, for callers that don't care.
+std::string CloneHash16(const std::vector<CloneSpec>& clones, int extraPerExplosion = 8);
+std::string BuildWpnValue(const std::vector<CloneSpec>& clones, int extraPerExplosion = 8);
 bool ParseWpnValue(const std::string& value, std::string* hash16, uint32_t* clones);
 // "mlg.req" (lobby, owner only) = "wpn1;<hash16 of the owner's content>", "" (removed) without clones.
 std::string BuildReqValue(const std::string& ourHash16, bool haveClones);

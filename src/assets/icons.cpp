@@ -5,7 +5,16 @@
 #include <cstdio>
 #include <vector>
 
+// A private, PNG-only stb_image build (mirrors postfx_gl.cpp): panelIcon is documented as a PNG, and mod content
+// should never reach the other format decoders (PSD, GIF, HDR, PIC, ...) that the shared, all-formats build linked
+// into draw.cpp exposes under the same symbol names. STB_IMAGE_STATIC keeps these definitions private to this
+// translation unit, so the two builds coexist without a link conflict.
+#pragma warning(push, 0)
+#define STB_IMAGE_STATIC
+#define STB_IMAGE_IMPLEMENTATION
+#define STBI_ONLY_PNG
 #include "stb_image.h"
+#pragma warning(pop)
 
 #include "assets/upload.h"
 #include "core/game.h"

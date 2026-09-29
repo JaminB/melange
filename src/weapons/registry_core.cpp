@@ -188,17 +188,24 @@ bool Registry::Init(std::string* why) {
     why->clear();
     if (live_ || swapped_ >= 0 || std::any_of(std::begin(cellWritten_), std::end(cellWritten_), [](bool b) { return b; })) {
         LOG_WARN("[weapons] the previous match was not closed: its clone state is dropped");
-        Drop();
+        Reset();
     }
     if (n_ == 0) {
         *why = "no clones declared";
+        return false;
+    }
+    // Init runs only while the gate is open for this match, so every peer with clones declared reaches this point.
+    // The id guards stay enabled for as long as that holds, mapping any vid to its base, even if this peer's own
+    // clones fail to go live below: a peer whose clones did go live can still select one and send its vid across.
+    if (!e_.EnableHooks(true)) {
+        *why = "the selection hooks could not be enabled";
         return false;
     }
     for (int k = 0; k < n_; ++k) {
         const int b = clones_[k].info.base;
         if (b <= 0 || b >= kEnumCount || !orig_[b] || U32(SlotAddr(b)) != orig_[b]) {
             *why = std::string(clones_[k].info.name) + ": the name slot of its base is not the original";
-            Drop();
+            Reset();
             return false;
         }
     }
@@ -207,7 +214,7 @@ bool Registry::Init(std::string* why) {
         c.info.container = c.info.descriptor = 0;
         c.info.live = false;
         if (!Create(c, why)) {
-            Drop();
+            Reset();
             return false;
         }
     }
@@ -228,7 +235,7 @@ bool Registry::Init(std::string* why) {
         const int cell = clones_[k].info.cell;
         if (cell < 0 || cell >= kPanelCells || U32(CellAddr(cell)) != kUndefined || U32(CellAddr(cell) + 4) != 0) {
             *why = std::string(clones_[k].info.name) + ": panel cell " + std::to_string(cell) + " is not free";
-            Drop();
+            Reset();
             return false;
         }
     }
@@ -239,14 +246,9 @@ bool Registry::Init(std::string* why) {
         cellWritten_[k] = true;
         if (!PutU32(a + 4, icon) || !PutU32(a, static_cast<uint32_t>(c.info.vid))) {
             *why = std::string(c.info.name) + ": writing panel cell " + std::to_string(c.info.cell) + " failed";
-            Drop();
+            Reset();
             return false;
         }
-    }
-    if (!e_.EnableHooks(true)) {
-        *why = "the selection hooks could not be enabled";
-        Drop();
-        return false;
     }
     live_ = true;
     active_ = -1;
@@ -285,8 +287,7 @@ void Registry::RestoreCells() {
     }
 }
 
-void Registry::Drop() {
-    e_.EnableHooks(false);
+void Registry::Reset() {
     Unswap();
     RestoreCells();
     live_ = false;
@@ -299,7 +300,8 @@ void Registry::Drop() {
 
 void Registry::MatchEnd() {
     const bool was = live_;
-    Drop();
+    Reset();
+    e_.EnableHooks(false);
     if (was) LOG_INFO("[weapons] match end: panel cells and name slots restored");
 }
 

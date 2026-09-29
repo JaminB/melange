@@ -109,11 +109,14 @@ void Feed(wormsign::Hasher& h) {
         h.Val(c[i].base);
         h.Val(swapped);
     }
+    if (!live) return;
+    // Only while this match is live: the counters carry over from whatever match last had live clones (they reset
+    // at the next one's OnMatchBegin, not at this one's end), so hashing them in a gate-closed match would compare
+    // each peer's unrelated history instead of anything that happened here.
     const auto count = behaviour::GetCounters();
     h.Val(count.fires);
     h.Val(count.explosions);
     h.Val(count.extras);
-    if (!live) return;
     if (Stale(c, n)) Build(c, n);
     for (int i = 0; i < g_plan.n; ++i) {
         const ReadOp& op = g_plan.ops[i];

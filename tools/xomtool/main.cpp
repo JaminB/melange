@@ -577,17 +577,26 @@ int CmdBank(const Args& a) {
     if (cr)
         for (size_t i = 0; i < cr->size(); ++i) {
             const Object* det = doc.object(cr->at(i).asRef());
-            if (det && det->field("Name") && det->field("Name")->str == object) {
-                baseRef = det->field("Value")->asRef();
-                templateDetail = det;  // keep *this* entry's own Flags, not some other resource's
-                break;
+            if (!det || !det->field("Name") || det->field("Name")->str != object) continue;
+            const Value* valueF = det->field("Value");
+            if (!valueF) {
+                std::fprintf(stderr, "xomtool: \"%s\"'s resource-details entry has no Value field in %s\n", object.c_str(),
+                             from.c_str());
+                return 2;
             }
+            baseRef = valueF->asRef();
+            templateDetail = det;  // keep *this* entry's own Flags, not some other resource's
+            break;
         }
     if (!baseRef || !templateDetail) {
         std::fprintf(stderr, "xomtool: no container resource named \"%s\" in %s\n", object.c_str(), from.c_str());
         return 2;
     }
     const Object* baseObj = doc.object(baseRef);
+    if (!baseObj) {
+        std::fprintf(stderr, "xomtool: \"%s\"'s Value ref does not point to a real object in %s\n", object.c_str(), from.c_str());
+        return 2;
+    }
     std::string cls = baseObj->type;
 
     Object cont = *baseObj;

@@ -13,6 +13,21 @@
 namespace melange::xom::gltf {
 namespace {
 
+// No leading slash or drive letter, and no "." or ".." segment: a buffer uri can never read a file outside binDir.
+// Mirrors weapons/manifest.cpp's SafeRel (the same check on the same kind of untrusted relative path).
+bool SafeRel(const std::string& p) {
+    if (p.empty() || p.size() > 4096 || p[0] == '/' || p[0] == '\\' || p.find(':') != std::string::npos) return false;
+    size_t i = 0;
+    while (i <= p.size()) {
+        size_t j = p.find_first_of("/\\", i);
+        if (j == std::string::npos) j = p.size();
+        const std::string seg = p.substr(i, j - i);
+        if (seg.empty() || seg == "." || seg == "..") return false;
+        i = j + 1;
+    }
+    return true;
+}
+
 using mesh::Mat4;
 
 Mat4 QuatToMatrix(float x, float y, float z, float w) {
@@ -76,6 +91,19 @@ struct Accessor {
     bool normalized = false;
 };
 
+// a*b -> r; false on a 64-bit overflow. a+b -> r; false on a 64-bit overflow. Every accessor size below is combined
+// through these, in uint64_t regardless of the build's pointer width, so a forged count, stride or offset is
+// refused instead of wrapping size_t (32-bit on this x86 build) into a small allocation that the fill loop below
+// then runs past.
+bool Mul64(uint64_t a, uint64_t b, uint64_t* r) {
+    *r = a * b;
+    return a == 0 || *r / a == b;
+}
+bool Add64(uint64_t a, uint64_t b, uint64_t* r) {
+    *r = a + b;
+    return *r >= a;
+}
+
 bool ReadAccessorFloats(const Accessor& a, const Json& bufferViews, const std::vector<uint8_t>& bin,
                          std::vector<double>& out, int expectComponents, std::string* error) {
     auto fail = [&](const std::string& e) { if (error) *error = e; return false; };
@@ -85,35 +113,43 @@ bool ReadAccessorFloats(const Accessor& a, const Json& bufferViews, const std::v
     int64_t byteStride = bv.find("byteStride") ? bv.find("byteStride")->asInt64() : 0;
     int nc = TypeCount(a.type);
     if (nc == 0 || nc != expectComponents) return fail("accessor: unexpected type " + a.type);
-    size_t compSize = ComponentSize(a.componentType);
+    uint64_t compSize = ComponentSize(a.componentType);
     if (!compSize) return fail("accessor: unsupported componentType");
-    size_t stride = byteStride ? size_t(byteStride) : compSize * size_t(nc);
-    size_t base = size_t(byteOffset + a.byteOffset);
     if (a.count <= 0) return fail("accessor: bad count");
-    // Bound the read against the buffer's real size before allocating `out`, so a forged huge
-    // count is refused instead of attempting a huge allocation first.
-    size_t need = base + size_t(a.count - 1) * stride + compSize * size_t(nc);
-    if (need > bin.size()) return fail("accessor reads past the end of the buffer");
-    out.resize(size_t(a.count) * size_t(nc));
-    for (int64_t i = 0; i < a.count; ++i) {
-        for (int c = 0; c < nc; ++c) {
-            size_t off = base + size_t(i) * stride + size_t(c) * compSize;
-            if (off + compSize > bin.size()) return fail("accessor reads past the end of the buffer");
+    if (byteOffset < 0 || a.byteOffset < 0 || byteStride < 0) return fail("accessor: negative offset or stride");
+    const uint64_t count = uint64_t(a.count), ncU = uint64_t(nc);
+    uint64_t compNc, stride, base, countMinus1Stride, need;
+    if (!Mul64(compSize, ncU, &compNc)) return fail("accessor: bad component size");
+    stride = byteStride ? uint64_t(byteStride) : compNc;
+    // Bound the read against the buffer's real size before allocating `out`, so a forged huge count, stride or
+    // offset is refused instead of attempting a huge allocation or wrapping past `out`'s real size.
+    if (!Add64(uint64_t(byteOffset), uint64_t(a.byteOffset), &base) || !Mul64(count - 1, stride, &countMinus1Stride) ||
+        !Add64(base, countMinus1Stride, &need) || !Add64(need, compNc, &need))
+        return fail("accessor: offset, stride or count overflows");
+    if (need > uint64_t(bin.size())) return fail("accessor reads past the end of the buffer");
+    uint64_t total;
+    if (!Mul64(count, ncU, &total) || total > out.max_size()) return fail("accessor: count overflows");
+    out.resize(size_t(total));
+    for (uint64_t i = 0; i < count; ++i) {
+        for (uint64_t c = 0; c < ncU; ++c) {
+            const uint64_t off = base + i * stride + c * compSize;
+            if (off + compSize > uint64_t(bin.size())) return fail("accessor reads past the end of the buffer");
             double v = 0;
+            const uint8_t* p = bin.data() + off;
             if (a.componentType == 5126) {
-                float f; std::memcpy(&f, bin.data() + off, 4); v = double(f);
+                float f; std::memcpy(&f, p, 4); v = double(f);
             } else if (a.componentType == 5125) {
-                uint32_t u; std::memcpy(&u, bin.data() + off, 4); v = double(u);
+                uint32_t u; std::memcpy(&u, p, 4); v = double(u);
             } else if (a.componentType == 5123) {
-                uint16_t u; std::memcpy(&u, bin.data() + off, 2); v = double(u);
+                uint16_t u; std::memcpy(&u, p, 2); v = double(u);
             } else if (a.componentType == 5121) {
-                v = double(bin[off]);
+                v = double(*p);
             } else if (a.componentType == 5122) {
-                int16_t s16; std::memcpy(&s16, bin.data() + off, 2); v = double(s16);
+                int16_t s16; std::memcpy(&s16, p, 2); v = double(s16);
             } else if (a.componentType == 5120) {
-                v = double(int8_t(bin[off]));
+                v = double(int8_t(*p));
             }
-            out[size_t(i) * size_t(nc) + size_t(c)] = v;
+            out[size_t(i * ncU + c)] = v;
         }
     }
     return true;
@@ -130,8 +166,12 @@ bool ReadAccessorIndices(const Accessor& a, const Json& bufferViews, const std::
 
 void WalkNode(const Json& root, const Json& nodes, const Json& meshes, const Json& accessors, const Json& bufferViews,
               const std::vector<uint8_t>& bin, int64_t nodeIdx, const Mat4& parent, std::vector<mesh::Primitive>& out,
-              bool& failed, std::string* error) {
+              bool& failed, std::string* error, std::vector<bool>& visited) {
     if (failed || nodeIdx < 0 || nodeIdx >= int64_t(nodes.arr.size())) return;
+    // glTF's node graph is a tree: a node reached a second time, whether through a cycle or a shared child, would
+    // otherwise recurse without end or blow up the primitive count. Refuse instead of walking it again.
+    if (visited[size_t(nodeIdx)]) { failed = true; if (error) *error = "node graph is not a tree (a node repeats)"; return; }
+    visited[size_t(nodeIdx)] = true;
     const Json& node = nodes.arr[size_t(nodeIdx)];
     Mat4 local;
     NodeMatrix(node, local);
@@ -151,37 +191,43 @@ void WalkNode(const Json& root, const Json& nodes, const Json& meshes, const Jso
                     const Json* posIdx = attrs->find("POSITION");
                     if (!posIdx) { failed = true; if (error) *error = "primitive has no POSITION attribute"; return; }
                     auto getAccessor = [&](int64_t idx, Accessor& a) {
+                        if (idx < 0 || idx >= int64_t(accessors.arr.size())) return false;
                         const Json& aj = accessors.arr[size_t(idx)];
                         a.bufferView = aj.find("bufferView") ? aj.find("bufferView")->asInt64() : -1;
                         a.byteOffset = aj.find("byteOffset") ? aj.find("byteOffset")->asInt64() : 0;
                         a.componentType = aj.find("componentType") ? aj.find("componentType")->asInt64() : 0;
                         a.count = aj.find("count") ? aj.find("count")->asInt64() : 0;
                         a.type = aj.find("type") ? aj.find("type")->str : "";
+                        return true;
                     };
+                    auto badAccessor = [&] { failed = true; if (error) *error = "primitive references an out-of-range accessor"; };
                     mesh::Primitive prim;
                     prim.matrix = world;
                     if (const Json* n = m.find("name")) prim.name = n->str;
                     Accessor posA;
-                    getAccessor(posIdx->asInt64(), posA);
+                    if (!getAccessor(posIdx->asInt64(), posA)) { badAccessor(); return; }
                     std::vector<double> pos;
                     if (!ReadAccessorFloats(posA, bufferViews, bin, pos, 3, error)) { failed = true; return; }
                     for (size_t i = 0; i + 2 < pos.size(); i += 3)
                         prim.positions.push_back({float(pos[i]), float(pos[i + 1]), float(pos[i + 2])});
                     if (const Json* nrmIdx = attrs->find("NORMAL")) {
-                        Accessor a; getAccessor(nrmIdx->asInt64(), a);
+                        Accessor a;
+                        if (!getAccessor(nrmIdx->asInt64(), a)) { badAccessor(); return; }
                         std::vector<double> nrm;
                         if (!ReadAccessorFloats(a, bufferViews, bin, nrm, 3, error)) { failed = true; return; }
                         for (size_t i = 0; i + 2 < nrm.size(); i += 3)
                             prim.normals.push_back({float(nrm[i]), float(nrm[i + 1]), float(nrm[i + 2])});
                     }
                     if (const Json* uvIdx = attrs->find("TEXCOORD_0")) {
-                        Accessor a; getAccessor(uvIdx->asInt64(), a);
+                        Accessor a;
+                        if (!getAccessor(uvIdx->asInt64(), a)) { badAccessor(); return; }
                         std::vector<double> uv;
                         if (!ReadAccessorFloats(a, bufferViews, bin, uv, 2, error)) { failed = true; return; }
                         for (size_t i = 0; i + 1 < uv.size(); i += 2) prim.uvs.push_back({float(uv[i]), float(uv[i + 1])});
                     }
                     if (const Json* idxIdx = p.find("indices")) {
-                        Accessor a; getAccessor(idxIdx->asInt64(), a);
+                        Accessor a;
+                        if (!getAccessor(idxIdx->asInt64(), a)) { badAccessor(); return; }
                         if (!ReadAccessorIndices(a, bufferViews, bin, prim.indices, error)) { failed = true; return; }
                     } else {
                         for (uint32_t i = 0; i < prim.positions.size(); ++i) prim.indices.push_back(i);
@@ -191,7 +237,8 @@ void WalkNode(const Json& root, const Json& nodes, const Json& meshes, const Jso
         }
     }
     if (const Json* children = node.find("children"))
-        for (auto& c : children->arr) WalkNode(root, nodes, meshes, accessors, bufferViews, bin, c.asInt64(), world, out, failed, error);
+        for (auto& c : children->arr)
+            WalkNode(root, nodes, meshes, accessors, bufferViews, bin, c.asInt64(), world, out, failed, error, visited);
 }
 
 }  // namespace
@@ -209,7 +256,9 @@ bool ReadGltf(const std::vector<uint8_t>& fileBytes, bool isGlb, const std::stri
             std::memcpy(&len, fileBytes.data() + o, 4);
             std::memcpy(&type, fileBytes.data() + o + 4, 4);
             o += 8;
-            if (o + len > fileBytes.size()) return fail(".glb chunk runs past the end of the file");
+            // Checked in 64-bit regardless of the build's pointer width: o + len must not wrap size_t (32-bit on
+            // this x86 build) back into a small, in-range value.
+            if (uint64_t(o) + uint64_t(len) > uint64_t(fileBytes.size())) return fail(".glb chunk runs past the end of the file");
             if (type == 0x4E4F534Au) jsonText.assign(reinterpret_cast<const char*>(fileBytes.data() + o), len);
             else if (type == 0x004E4942u) bin.assign(fileBytes.begin() + long(o), fileBytes.begin() + long(o + len));
             o += len;
@@ -232,6 +281,7 @@ bool ReadGltf(const std::vector<uint8_t>& fileBytes, bool isGlb, const std::stri
         if (!buffers || buffers->arr.empty()) return fail("glTF file has no buffer");
         const Json* uri = buffers->arr[0].find("uri");
         if (!uri || uri->str.compare(0, 5, "data:") == 0) return fail("only a file-referenced buffer is supported (no data: URIs)");
+        if (!SafeRel(uri->str)) return fail("the buffer uri must be a relative path with no '..' and no drive letter");
         std::string path = binDir.empty() ? uri->str : binDir + "/" + uri->str;
         std::ifstream f(path, std::ios::binary);
         if (!f) return fail("cannot open the glTF buffer file: " + path);
@@ -249,7 +299,8 @@ bool ReadGltf(const std::vector<uint8_t>& fileBytes, bool isGlb, const std::stri
         for (size_t i = 0; i < nodes->arr.size(); ++i) roots.push_back(int64_t(i));
     }
     bool failed = false;
-    for (auto r : roots) WalkNode(root, *nodes, *meshes, *accessors, *bufferViews, bin, r, mesh::Identity(), out, failed, error);
+    std::vector<bool> visited(nodes->arr.size(), false);
+    for (auto r : roots) WalkNode(root, *nodes, *meshes, *accessors, *bufferViews, bin, r, mesh::Identity(), out, failed, error, visited);
     if (failed) return false;
     if (out.empty()) return fail("no triangle mesh primitives found");
     return true;

@@ -82,7 +82,7 @@ private:
     void Swap(int k);
     void Unswap();
     void RestoreCells();
-    void Drop();
+    void Reset();
     uint32_t U32(uintptr_t a);
     bool PutU32(uintptr_t a, uint32_t v);
 

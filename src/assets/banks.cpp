@@ -7,9 +7,17 @@
 #include <cctype>
 #include <cstring>
 
+#include "xom/xom.h"
+
 namespace melange::assets::banks {
 namespace {
 constexpr uint64_t kMaxBankBytes = 64ull << 20;
+
+// Every field of XDataBank (src/xom/xom_schema.inc) that lists resource entries by name; each entry is a Ref to an
+// XResourceDetails subclass (Name: String, Flags: U32, plus its own Value field), mirrored from tools/xom/xomtool.py.
+constexpr const char* kResourceLists[] = {"IntResources",       "UintResources",       "StringResources",
+                                           "FloatResources",     "VectorResources",     "ContainerResources",
+                                           "StringTableResources", "ColorResources"};
 
 // A small local UTF-8 -> UTF-16 helper (rather than core/game.h's Widen) so this pure-logic file has no dependency
 // beyond the Win32 API; banks_load.cpp and assets.cpp already pull in the rest of the engine glue.
@@ -50,6 +58,28 @@ std::wstring ToBackslash(std::wstring s) {
     return s;
 }
 }  // namespace
+
+bool BankResourceNames(const std::vector<uint8_t>& bytes, std::vector<std::string>* names, std::string* err) {
+    xom::Document doc;
+    if (!xom::parse(bytes.data(), bytes.size(), doc, err)) return false;
+    const xom::Object* bank = nullptr;
+    for (auto& o : doc.objects)
+        if (o.type == "XDataBank" && !o.opaque && !o.inTail) { bank = &o; break; }
+    if (!bank) {
+        if (err) *err = "the file has no XDataBank";
+        return false;
+    }
+    for (const char* list : kResourceLists) {
+        const xom::Value* v = bank->field(list);
+        if (!v) continue;
+        for (size_t i = 0; i < v->size(); ++i) {
+            const xom::Object* det = doc.object(v->at(i).asRef());
+            const xom::Value* nm = det ? det->field("Name") : nullptr;
+            if (nm && nm->type == xom::Type::String) names->push_back(nm->str);
+        }
+    }
+    return true;
+}
 
 bool CheckPath(const std::wstring& absDataDir, const std::string& rel, const std::vector<crcsafe::Entry>& crcTable,
                std::string* err) {

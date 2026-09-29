@@ -1,4 +1,4 @@
-# Weapon mods (M5)
+# Weapon mods
 
 A **weapon clone** is a new weapon that reuses one of a small set of vanilla weapons' code, with its own name,
 icon, stats and Lua behaviour. `dist\Mods\mega-bazooka` (shipped disabled) is a complete, working example; this

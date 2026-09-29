@@ -323,7 +323,8 @@ void Refusals() {
         r.Configure({d});
         std::string why;
         Expect(!r.Init(&why) && why.find("already a resource") != std::string::npos, "vanilla name refused: " + why);
-        Expect(e.adds == 0 && e.CellId(29) == core::kUndefined && !e.hooksOn, "nothing changed");
+        Expect(e.adds == 0 && e.CellId(29) == core::kUndefined, "no cell or resource change");
+        Expect(e.hooksOn && r.GuardId(0x100) == 2, "the id guards stay on and keep mapping this peer's vid to its base");
     }
     {
         Fake e;
@@ -362,6 +363,10 @@ void Refusals() {
         e.failAdd = true;
         std::string why;
         Expect(!r.Init(&why) && why.find("AddResource") != std::string::npos, "AddResource failure");
+        // A peer whose own clone failed to go live (e.g. a local CRC or hook problem) must still guard any vid a
+        // live peer sends it: the content hash only covers what is declared, not whether it went live here.
+        Expect(e.hooksOn && !r.Live() && r.GuardId(0x100) == 1 && r.Select(0x100) == 1 && r.Active() == -1,
+               "no live clone here: the guards still map the vid to its base");
     }
     {
         Fake e;

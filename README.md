@@ -145,7 +145,7 @@ A content mod's `entry.sim` runs inside the match's own Lua VM, which is Lua 5.0
 | `wum.sim.getData(id)`, `setData(id, v)` | Read and write the game's data values, checked the same way |
 | `wum.sim.storage` | A table for the mod's own state during the match |
 | `wum.sim.weapon(name):get(field)`, `:set(field, v)` | Read and change a weapon's data for this match; `set` works only while the script's top-level chunk runs at match start |
-| `wum.sim.weapons.list()`, `.on(event, name, fn)`/`.off(h)`, `.explode(dx, dy, dz)`, `.active()` | Weapon clones (M5): subscribe to a clone's `fire`/`tick`/`impact`/`explosion` events and queue extra explosions. Full reference: [docs/weapons.md](docs/weapons.md) |
+| `wum.sim.weapons.list()`, `.on(event, name, fn)`/`.off(h)`, `.explode(dx, dy, dz)`, `.active()` | Weapon clones: subscribe to a clone's `fire`/`tick`/`impact`/`explosion` events and queue extra explosions. Full reference: [docs/weapons.md](docs/weapons.md) |
 | `wum.sim.hash(v, ...)` | Adds numbers, strings, booleans or `nil` to this tick's state hash, for state the mod keeps in locals |
 
 Every call from the game into a sim script has an instruction budget (`[SimBridge] InstrPerCall`). A callback that fails or runs out of budget three times is switched off. `dist\Mods\sim-sampler` and `dist\Mods\bazooka-plus` are examples (shipped disabled). `dist\Mods\desync-probe`, also disabled, shows how to test a mod's determinism with the desync detector ([docs/wormsign.md](docs/wormsign.md)).
@@ -361,7 +361,7 @@ You need:
 
 ## Roadmap
 
-Shipped: the Mirage graphics layer (GL trace and frame capture, shader overrides and hot reload, a post-FX stack, and a world/HUD draw API), Lua mods and Thumper, Oasis, Wormsign, and M5's weapon clones and mod assets (`wum.sim.weapons`, [docs/weapons.md](docs/weapons.md)) with the Sieve toolchain, `xomtool` ([docs/xomtool.md](docs/xomtool.md)). Coming next: a map editor.
+Shipped: the Mirage graphics layer (GL trace and frame capture, shader overrides and hot reload, a post-FX stack, and a world/HUD draw API), Lua mods and Thumper, Oasis, Wormsign, weapon clones and mod assets (`wum.sim.weapons`, [docs/weapons.md](docs/weapons.md)), and the Sieve toolchain, `xomtool` ([docs/xomtool.md](docs/xomtool.md)). Coming next: a map editor.
 
 ## License
 

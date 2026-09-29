@@ -313,6 +313,7 @@ add_executable(assets_selftest
 target_include_directories(assets_selftest PRIVATE src src/sdk)
 target_compile_definitions(assets_selftest PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX _CRT_SECURE_NO_WARNINGS)
 target_compile_options(assets_selftest PRIVATE /W4 /utf-8 /permissive-)
+target_link_libraries(assets_selftest PRIVATE melange_xom)
 
 add_executable(lua54_selftest tests/lua54_selftest.cpp)
 target_compile_options(lua54_selftest PRIVATE /W4 /utf-8 /permissive- /EHsc)

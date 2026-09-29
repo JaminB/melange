@@ -104,6 +104,51 @@ void ImageTests(const fs::path& game) {
     Check(allMips, "every mip level of the panel icon extracts without error");
 }
 
+// ---------------------------------------------------------------- image safety (no game needed)
+
+// A crafted MipLevels, entirely offline: ExtractMip must refuse rather than shift a 32-bit value by 32 or more
+// (undefined behaviour) or read past a Data buffer whose length happened to match a wrapped total.
+void ImageSafetyTests() {
+    Object o;
+    o.type = "XImage";
+    auto push16 = [&](const char* k, Type t, uint16_t v) { Value val; val.type = t; val.bits = v; o.fields.emplace_back(k, val); };
+    push16("Width", Type::U16, 4);
+    push16("Height", Type::U16, 4);
+    push16("Format", Type::Enum, 0);
+    push16("MipLevels", Type::U16, 40);
+    { Value v; v.type = Type::U8; v.array = true; v.raw.assign(4 * 4 * 3, 0); o.fields.emplace_back("Data", v); }
+
+    image::Pixels px;
+    std::string err;
+    bool ok1 = image::ExtractMip(o, 0, px, &err);
+    Check(!ok1 && err.find("MipLevels") != std::string::npos,
+          "ExtractMip refuses an implausible MipLevels instead of shifting a 32-bit value by 32+: " + err);
+
+    for (auto& [k, v] : o.fields)
+        if (k == "MipLevels") v.bits = 20;  // in range now, but still not the real formula for a 4x4 image
+    err.clear();
+    bool ok2 = image::ExtractMip(o, 0, px, &err);
+    Check(!ok2 && err.find("does not match") != std::string::npos,
+          "ExtractMip still rejects a Data length that doesn't match the (now safely computed) formula: " + err);
+}
+
+// A primitive whose index array names a vertex past its own position count: WriteMesh must refuse it rather than
+// truncate the index to u16 and silently write a mesh that reads out of bounds in the game.
+void MeshSafetyTests() {
+    mesh::Primitive p;
+    p.name = "Bad";
+    p.positions = {{0, 0, 0}, {1, 0, 0}, {0, 1, 0}};
+    p.indices = {0, 1, 70000};  // only 3 vertices; 70000 also wraps to a small, plausible-looking u16
+    mesh::Mesh m;
+    m.resourceId = "Test.Payload";
+    m.primitives = {p};
+    Document doc;
+    std::string err;
+    const uint32_t ref = mesh::WriteMesh(doc, m, 0, &err);
+    Check(ref == 0 && err.find("out of range") != std::string::npos,
+          "WriteMesh refuses an index out of range for its vertex count: " + err);
+}
+
 // ---------------------------------------------------------------- mesh round trip
 
 void MeshTests(const fs::path& game, const fs::path& outDir) {
@@ -241,6 +286,8 @@ int main(int argc, char** argv) {
     fs::path outDir = fs::temp_directory_path() / "xom_convert_selftest";
 
     ImageTests(game);
+    ImageSafetyTests();
+    MeshSafetyTests();
     MeshTests(game, outDir);
     BankTests(game, outDir);
 

@@ -64,6 +64,9 @@ void PreloadPanelIcon(const char* modId, const char* relPng) {
 
 bool ReservePanelIcon(const char* modId, const char* relPng, uint32_t* iconCode, char* err, size_t errLen) {
     if (iconCode) *iconCode = 0;
+    // Reserving one installs the upload hook (icons::Reserve), which must never happen with assets off: a hook is
+    // installed only when a mod declares weapons or assets.
+    if (!Enabled()) return Fail(err, errLen, "[Assets] is disabled");
     if (!relPng || !*relPng) return Fail(err, errLen, "no icon path");
     thumper::Entry e;
     if (!FindMod(modId, &e, err, errLen)) return false;

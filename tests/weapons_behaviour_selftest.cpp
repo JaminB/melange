@@ -245,12 +245,14 @@ void TestContributor() {
     Expect(ct::Register(), "a second Register() is a no-op");
 
     const std::string off = Hash();
-    Expect(off.size() == 1 + 4 + 4 + 1 + 12, "not live: state, slot and counters only (" + std::to_string(off.size()) + ")");
+    // Not live: the counters are skipped entirely, since they carry over from whatever match last had live clones
+    // and would otherwise compare each peer's unrelated history instead of anything that happened in this one.
+    Expect(off.size() == 1 + 4 + 4 + 1, "not live: state and slot only (" + std::to_string(off.size()) + ")");
     Expect(Hash() == off, "deterministic");
     g_live = true;
     const std::string on = Hash();
-    Expect(on != off && on.size() == off.size() + 4 + 4 + 15, "live: the set fields are hashed (" +
-                                                                  std::to_string(on.size()) + ")");
+    Expect(on != off && on.size() == off.size() + 12 + 4 + 4 + 15,
+           "live: the counters and set fields are hashed (" + std::to_string(on.size()) + ")");
     g_clone.bytes[4] = 9;
     Expect(Hash() == on, "a field no one set is not hashed");
     const float poked = 121;
@@ -291,6 +293,12 @@ void TestContributor() {
     Expect(Hash() == on, "a new match drops the Lua-set fields from the plan");
     g_live = false;
     Expect(Hash() == off, "not live again");
+    // A stale, unreset counter from an earlier live match (e.g. an offline clone match played before an online
+    // one whose gate closes) must not leak into this gate-closed match's hash.
+    bh::CountEvent(Event::Fire);
+    bh::CountExtra();
+    Expect(Hash() == off, "a leftover counter from an earlier match is ignored while not live");
+    bh::ResetCounters();
     ct::Unregister();
     Expect(g_removed == 1 && !g_fn, "Unregister() removes it");
 }

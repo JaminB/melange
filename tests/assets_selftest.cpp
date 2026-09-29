@@ -2,7 +2,9 @@
 // path safety and size cap, and the panel-icon pixel math (downscale + atlas placement). Exit code 0 = all passed.
 #include <windows.h>
 
+#include <array>
 #include <cstdio>
+#include <cstring>
 #include <string>
 #include <vector>
 
@@ -10,11 +12,13 @@
 #include "assets/crcsafe.h"
 #include "assets/icons.h"
 #include "assets/roots.h"
+#include "xom/xom.h"
 
 namespace crcsafe = melange::assets::crcsafe;
 namespace roots = melange::assets::roots;
 namespace banks = melange::assets::banks;
 namespace icons = melange::assets::icons;
+namespace xom = melange::xom;
 
 namespace {
 int g_fail = 0, g_pass = 0;
@@ -128,6 +132,114 @@ void TestBanksSizeCap() {
 }
 
 // ---------------------------------------------------------------------------------------------
+// banks: the names an XDataBank declares (BankResourceNames), which banks_load.cpp checks against the live
+// engine before ever calling LoadBank. A from-scratch fixture, built by hand from the field lists in
+// src/xom/xom_schema.inc (XDataBank: Section then the 8 *Resources lists; XContainerResourceDetails' own Value
+// first, most-derived first, then XResourceDetails' Name and Flags), mirroring tools/xom/xomtool.py's reader for
+// the same classes.
+// ---------------------------------------------------------------------------------------------
+std::array<uint8_t, 16> HexGuid(const char* hex) {
+    std::array<uint8_t, 16> g{};
+    for (int i = 0; i < 16; ++i) {
+        auto v = [](char c) { return c <= '9' ? c - '0' : (c | 0x20) - 'a' + 10; };
+        g[size_t(i)] = uint8_t((v(hex[2 * i]) << 4) | v(hex[2 * i + 1]));
+    }
+    return g;
+}
+xom::TypeEntry MakeType(const char* cls) {
+    xom::TypeEntry t;
+    t.name = cls;
+    t.guid = HexGuid(xom::findClass(cls)->guid);
+    std::string padded = t.name;
+    padded.resize(32, '\0');
+    std::memcpy(t.rawName.data(), padded.data(), 32);
+    return t;
+}
+xom::Value RefArray(std::initializer_list<uint32_t> refs = {}) {
+    xom::Value v;
+    v.type = xom::Type::Ref;
+    v.array = true;
+    for (auto r : refs) {
+        xom::Value item;
+        item.type = xom::Type::Ref;
+        item.bits = r;
+        v.items.push_back(item);
+    }
+    return v;
+}
+xom::Object MakeDetails(const std::string& name, uint32_t valueRef) {
+    xom::Object o;
+    o.type = "XContainerResourceDetails";
+    xom::Value nameV;
+    nameV.type = xom::Type::String;
+    nameV.str = name;
+    xom::Value flagsV;
+    flagsV.type = xom::Type::U32;
+    xom::Value valueV;
+    valueV.type = xom::Type::Ref;
+    valueV.bits = valueRef;
+    o.fields = {{"Value", valueV}, {"Name", nameV}, {"Flags", flagsV}};
+    return o;
+}
+xom::Object MakeBank(std::initializer_list<uint32_t> containerRefs) {
+    xom::Object o;
+    o.type = "XDataBank";
+    xom::Value section;
+    section.type = xom::Type::U8;
+    o.fields = {{"Section", section},
+                {"IntResources", RefArray()},          {"UintResources", RefArray()},
+                {"StringResources", RefArray()},        {"FloatResources", RefArray()},
+                {"VectorResources", RefArray()},        {"ContainerResources", RefArray(containerRefs)},
+                {"StringTableResources", RefArray()},   {"ColorResources", RefArray()}};
+    return o;
+}
+std::vector<uint8_t> BuildBank(std::vector<xom::Object> objects) {
+    xom::Document doc;
+    doc.types = {MakeType("XContainerResourceDetails"), MakeType("XDataBank")};
+    doc.objects = std::move(objects);
+    doc.root = uint32_t(doc.objects.size());
+    for (auto& o : doc.objects)
+        for (auto& t : doc.types) t.count += (t.className() == o.type);
+    std::vector<uint8_t> bytes;
+    std::string err;
+    if (!xom::serialize(doc, bytes, &err)) printf("FAIL: BuildBank fixture: %s\n", err.c_str());
+    return bytes;
+}
+
+void TestBankResourceNames() {
+    std::string err;
+    std::vector<std::string> names;
+    Expect(!banks::BankResourceNames({}, &names, &err), "bank names: empty bytes are refused");
+
+    // A valid document (two details entries referencing each other, since the target class is unused here) with no
+    // XDataBank at all.
+    {
+        auto bytes = BuildBank({MakeDetails("kWeaponSomething", 1)});
+        names.clear();
+        Expect(!bytes.empty() && !banks::BankResourceNames(bytes, &names, &err) && err.find("XDataBank") != std::string::npos,
+               "bank names: a file with no XDataBank is refused (" + err + ")");
+    }
+    {
+        auto d1 = MakeDetails("kWeaponMegaBazooka", 0);
+        auto d2 = MakeDetails("kWeaponBazooka", 0);
+        auto bank = MakeBank({1, 2});
+        auto bytes = BuildBank({d1, d2, bank});
+        names.clear();
+        Expect(!bytes.empty() && banks::BankResourceNames(bytes, &names, &err) && names.size() == 2 &&
+                   names[0] == "kWeaponMegaBazooka" && names[1] == "kWeaponBazooka",
+               "bank names: every ContainerResources entry's Name, in order (" + err + ")");
+    }
+    {
+        // A bank with no resource entries at all: an empty, valid result.
+        auto bank = MakeBank({});
+        auto bytes = BuildBank({bank});
+        names.clear();
+        Expect(!bytes.empty() && banks::BankResourceNames(bytes, &names, &err) && names.empty(),
+               "bank names: an empty bank names nothing");
+    }
+}
+
+// ---------------------------------------------------------------------------------------------
 // icons: the box filter and the bottom-up, flipped, alpha-blended atlas write.
 // ---------------------------------------------------------------------------------------------
 void TestIconsDownscale() {
@@ -220,6 +332,7 @@ int main() {
     TestRootsNaming();
     TestBanksCheckPath();
     TestBanksSizeCap();
+    TestBankResourceNames();
     TestIconsDownscale();
     TestIconsWriteSubIcon();
     TestIconsAlphaBlend();

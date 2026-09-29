@@ -29,6 +29,7 @@
 #include "net/steam.h"
 #include "tools/hash.h"
 #include "version.h"
+#include "weapons/behaviour.h"
 #include "weapons/manifest.h"
 
 namespace fs = std::filesystem;
@@ -144,10 +145,13 @@ uint64_t StatSig(const fs::path& p) {
 }
 
 // The default contentHash.include convention: spice.json, entry.sim's actual file (wherever it is, not just
-// under sim/, since a manifest may point it anywhere inside the mod folder) and assets/**. §2.10 of the design
-// notes this convention instead of the manifest's real contentHash.include glob list; entry.sim is covered
-// explicitly here so a mod whose entry.sim sits outside sim/ still changes the hash when its code does.
-std::vector<WalkedFile> WalkModFileList(const fs::path& dir, const std::string& entrySimRel, uint64_t* aggSig) {
+// under sim/, since a manifest may point it anywhere inside the mod folder) and <assetsRoot>/**, the mod's own
+// assets folder, whatever the mod renames it to with "assets":{"root":...} (weapon banks under it change sim
+// data and must be hashed too). This convention stands in for the manifest's real contentHash.include glob list;
+// entry.sim is covered explicitly here so a mod whose entry.sim sits outside sim/ still changes the hash when its
+// code does.
+std::vector<WalkedFile> WalkModFileList(const fs::path& dir, const std::string& entrySimRel, const std::string& assetsRoot,
+                                        uint64_t* aggSig) {
     std::vector<WalkedFile> list;
     uint64_t agg = 0;
     std::error_code ec;
@@ -164,7 +168,7 @@ std::vector<WalkedFile> WalkModFileList(const fs::path& dir, const std::string& 
     };
     add(dir / "spice.json");
     if (!entrySimRel.empty()) add(dir / entrySimRel);
-    for (const char* sub : {"assets", "sim"}) {
+    for (const std::string& sub : {assetsRoot, std::string("sim")}) {
         fs::path root = dir / sub;
         if (!fs::is_directory(root, ec)) continue;
         for (auto it = fs::recursive_directory_iterator(root, fs::directory_options::skip_permission_denied, ec);
@@ -176,10 +180,11 @@ std::vector<WalkedFile> WalkModFileList(const fs::path& dir, const std::string& 
 }
 
 // Cached by a size/mtime signature per mod. Never runs on the main thread.
-std::vector<ContentFile> FilesForMod(const std::string& id, const std::wstring& dirW, const std::string& entrySimRel) {
+std::vector<ContentFile> FilesForMod(const std::string& id, const std::wstring& dirW, const std::string& entrySimRel,
+                                     const std::string& assetsRoot) {
     fs::path dir(dirW);
     uint64_t agg = 0;
-    std::vector<WalkedFile> list = WalkModFileList(dir, entrySimRel, &agg);
+    std::vector<WalkedFile> list = WalkModFileList(dir, entrySimRel, assetsRoot, &agg);
     std::lock_guard lk(g_mx);
     for (auto& c : g_fileCache) {
         if (c.id != id) continue;
@@ -212,12 +217,18 @@ std::vector<thumper::Entry> EnabledContentMods() {
 struct ComputeInputs {
     std::vector<ModMessage> messages;
     std::vector<weapons::manifest::CloneDecl> clones;
+    int extraPerExplosion = 8;
 };
 
 ComputeInputs TakeInputs() {
     ComputeInputs in;
     for (auto& [name, id] : simbridge::ModMessages()) in.messages.push_back({name, id});
-    if (wpngate::LocalClones()) in.clones = weapons::manifest::Frozen();
+    if (wpngate::LocalClones()) {
+        in.clones = weapons::manifest::Frozen();
+        // A per-machine [Weapons] setting, but one that changes clone sim behaviour (how many extra explosions a
+        // clone's Lua handler may queue), so it goes into the content text alongside the clones themselves.
+        in.extraPerExplosion = weapons::behaviour::ExtraLimit();
+    }
     return in;
 }
 
@@ -236,7 +247,8 @@ std::string LowerSlashes(std::string s) {
 }
 
 std::vector<CloneSpec> CloneSpecs(const std::vector<weapons::manifest::CloneDecl>& decls,
-                                  const std::vector<ContentMod>& mods) {
+                                  const std::vector<ContentMod>& mods,
+                                  const std::vector<thumper::Entry>& enabled) {
     std::vector<CloneSpec> out;
     for (const auto& d : decls) {
         CloneSpec c;
@@ -248,7 +260,10 @@ std::vector<CloneSpec> CloneSpecs(const std::vector<weapons::manifest::CloneDecl
         c.cell = d.cell;
         if (!d.bank.empty()) {
             c.bankSha256 = "missing";
-            const std::string rel = "assets/data/" + LowerSlashes(d.bank);
+            std::string root = "assets";
+            for (const auto& e : enabled)
+                if (e.manifest.id == d.mod) root = e.manifest.assetsRoot;
+            const std::string rel = LowerSlashes(root) + "/data/" + LowerSlashes(d.bank);
             for (const auto& m : mods)
                 if (m.id == d.mod)
                     for (const auto& f : m.files)
@@ -271,12 +286,13 @@ Computed ComputeContent(const ComputeInputs& in) {
     std::vector<ContentMod> contentMods;
     contentMods.reserve(enabled.size());
     for (const thumper::Entry& m : enabled)
-        contentMods.push_back({m.manifest.id, m.manifest.version, FilesForMod(m.manifest.id, m.dir, m.manifest.entrySim)});
-    const std::vector<CloneSpec> clones = CloneSpecs(in.clones, contentMods);
+        contentMods.push_back(
+            {m.manifest.id, m.manifest.version, FilesForMod(m.manifest.id, m.dir, m.manifest.entrySim, m.manifest.assetsRoot)});
+    const std::vector<CloneSpec> clones = CloneSpecs(in.clones, contentMods, enabled);
     Computed out;
-    out.id = BuildContentId(std::move(contentMods), in.messages, clones);
+    out.id = BuildContentId(std::move(contentMods), in.messages, clones, in.extraPerExplosion);
     out.messages = in.messages;
-    out.wpn = BuildWpnValue(clones);
+    out.wpn = BuildWpnValue(clones, in.extraPerExplosion);
     out.msg = BuildMsgValue(in.messages);
     return out;
 }

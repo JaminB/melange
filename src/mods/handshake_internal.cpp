@@ -90,7 +90,7 @@ std::string CloneLine(const CloneSpec& c) {
 }
 
 std::string CanonicalText(const std::vector<ContentMod>& modsInLoadOrder, const std::vector<ModMessage>& messages,
-                          const std::vector<CloneSpec>& clones) {
+                          const std::vector<CloneSpec>& clones, int extraPerExplosion) {
     std::string t = "melange-content/2\nsim=" + std::to_string(kSimApiVersion) + "\n";
     for (const auto& m : modsInLoadOrder) {
         t += "mod=" + m.id + "@" + m.version + "\n";
@@ -99,13 +99,14 @@ std::string CanonicalText(const std::vector<ContentMod>& modsInLoadOrder, const 
     t += "messages=" + std::to_string(messages.size()) + "\n";
     for (const auto& m : messages) t += "message=" + m.name + "=" + std::to_string(m.id) + "\n";
     for (const auto& c : clones) t += CloneLine(c) + "\n";
+    if (!clones.empty()) t += "extras=" + std::to_string(extraPerExplosion) + "\n";
     return t;
 }
 
 std::string HashOfCanonicalText(const std::string& canonical) { return hashutil::Sha256Hex(canonical.data(), canonical.size()); }
 
 mods::ContentId BuildContentId(std::vector<ContentMod> modsInLoadOrder, const std::vector<ModMessage>& messages,
-                               const std::vector<CloneSpec>& clones) {
+                               const std::vector<CloneSpec>& clones, int extraPerExplosion) {
     for (auto& m : modsInLoadOrder)
         std::sort(m.files.begin(), m.files.end(), [](const ContentFile& a, const ContentFile& b) { return a.relPath < b.relPath; });
     mods::ContentId c{};
@@ -113,7 +114,7 @@ mods::ContentId BuildContentId(std::vector<ContentMod> modsInLoadOrder, const st
     c.modMessages = static_cast<uint32_t>(messages.size());
     c.vanilla = modsInLoadOrder.empty() && messages.empty() && clones.empty();
     if (!c.vanilla) {
-        std::string hash = HashOfCanonicalText(CanonicalText(modsInLoadOrder, messages, clones));
+        std::string hash = HashOfCanonicalText(CanonicalText(modsInLoadOrder, messages, clones, extraPerExplosion));
         size_t n = std::min<size_t>(hash.size(), sizeof(c.hash) - 1);
         std::copy(hash.begin(), hash.begin() + static_cast<long>(n), c.hash);
         c.hash[n] = '\0';
@@ -207,16 +208,17 @@ bool GateAllowsSim(bool online, const std::string& ourHash16, const std::string&
     return !ourHash16.empty() && ourHash16 != "v" && lobbySim == ourHash16;
 }
 
-std::string CloneHash16(const std::vector<CloneSpec>& clones) {
+std::string CloneHash16(const std::vector<CloneSpec>& clones, int extraPerExplosion) {
     if (clones.empty()) return "";
     std::string text;
     for (const auto& c : clones) text += CloneLine(c) + "\n";
+    text += "extras=" + std::to_string(extraPerExplosion) + "\n";
     return HashOfCanonicalText(text).substr(0, 16);
 }
 
-std::string BuildWpnValue(const std::vector<CloneSpec>& clones) {
+std::string BuildWpnValue(const std::vector<CloneSpec>& clones, int extraPerExplosion) {
     if (clones.empty()) return "";
-    return "1;" + CloneHash16(clones) + ";" + std::to_string(clones.size());
+    return "1;" + CloneHash16(clones, extraPerExplosion) + ";" + std::to_string(clones.size());
 }
 
 bool ParseWpnValue(const std::string& value, std::string* hash16, uint32_t* clones) {

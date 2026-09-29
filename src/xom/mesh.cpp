@@ -152,8 +152,12 @@ bool ReadTransform(const Object& xf, Mat4& out) {
     return true;
 }
 
-void WalkNode(const Document& doc, uint32_t ref, const Mat4& accum, Mesh& out, bool& failed, std::string* error) {
+void WalkNode(const Document& doc, uint32_t ref, const Mat4& accum, Mesh& out, bool& failed, std::string* error,
+              std::unordered_set<uint32_t>& visited) {
     if (!ref || failed) return;
+    // A self- or mutually-referencing XGroup/XInteriorNode chain would otherwise recurse without end
+    // (FindMeshShader below already guards the same graph shape with a seen-set).
+    if (!visited.insert(ref).second) return;
     const Object* o = doc.object(ref);
     if (!o) return;
     if (o->type == "XShape") {
@@ -216,13 +220,15 @@ void WalkNode(const Document& doc, uint32_t ref, const Mat4& accum, Mesh& out, b
         Mat4 next = Multiply(accum, local);
         const Value* children = o->field("Children");
         if (children)
-            for (size_t i = 0; i < children->size(); ++i) WalkNode(doc, children->at(i).asRef(), next, out, failed, error);
+            for (size_t i = 0; i < children->size(); ++i)
+                WalkNode(doc, children->at(i).asRef(), next, out, failed, error, visited);
         return;
     }
     if (o->type == "XInteriorNode") {
         const Value* children = o->field("Children");
         if (children)
-            for (size_t i = 0; i < children->size(); ++i) WalkNode(doc, children->at(i).asRef(), accum, out, failed, error);
+            for (size_t i = 0; i < children->size(); ++i)
+                WalkNode(doc, children->at(i).asRef(), accum, out, failed, error, visited);
         return;
     }
     // any other node type under "world" (rare) is simply not mesh geometry; skip it.
@@ -271,7 +277,8 @@ bool ReadMesh(const Document& doc, const std::string& resourceId, Mesh& out, std
     out.resourceId = resourceId;
     out.sectionId = secF ? uint16_t(secF->asUInt()) : 0;
     bool failed = false;
-    WalkNode(doc, graphRef->asRef(), Identity(), out, failed, error);
+    std::unordered_set<uint32_t> visited;
+    WalkNode(doc, graphRef->asRef(), Identity(), out, failed, error, visited);
     if (failed) return false;
     if (out.primitives.empty()) return fail(resourceId + ": no XShape found in its \"world\" graph");
     return true;
@@ -440,6 +447,10 @@ uint32_t WriteMesh(Document& doc, const Mesh& mesh, uint32_t materialFromShaderR
         if (!p.uvs.empty() && p.uvs.size() != p.positions.size())
             return fail(p.name + ": UV count does not match position count");
         if (p.indices.size() % 3) return fail(p.name + ": index count is not a multiple of 3");
+        for (auto i : p.indices)
+            if (i >= p.positions.size())
+                return fail(p.name + ": index " + std::to_string(i) + " is out of range for " +
+                            std::to_string(p.positions.size()) + " vertices");
     }
 
     static const std::vector<std::string> kNeeded = {

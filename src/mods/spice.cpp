@@ -300,6 +300,21 @@ bool GetStr(const json::Value& obj, const char* key, std::string* out, const cha
     return true;
 }
 
+// No leading slash or drive letter, and no "." or ".." segment: a value can never point outside the mod folder it
+// is joined to. Mirrors weapons/manifest.cpp's SafeRel (the same check on the same kind of field).
+bool SafeRelRoot(const std::string& p) {
+    if (p.empty() || p.size() > 200 || p[0] == '/' || p[0] == '\\' || p.find(':') != std::string::npos) return false;
+    size_t i = 0;
+    while (i <= p.size()) {
+        size_t j = p.find_first_of("/\\", i);
+        if (j == std::string::npos) j = p.size();
+        const std::string seg = p.substr(i, j - i);
+        if (seg.empty() || seg == "." || seg == "..") return false;
+        i = j + 1;
+    }
+    return true;
+}
+
 bool ValidMessageName(const std::string& s) {
     // ^[A-Z][A-Za-z0-9]*(\.[A-Za-z0-9_]+){1,5}$
     size_t p = 0;
@@ -596,6 +611,11 @@ bool ParseManifestJson(const json::Value& v, const std::string& folderId, Manife
             ok = false;
         } else {
             GetStr(*assets, "root", &out->assetsRoot, "assets");
+            if (!SafeRelRoot(out->assetsRoot)) {
+                AddError(errs, assets->Get("root"), "assets.root",
+                          "assets.root must be a relative path with no '..' or drive letter");
+                ok = false;
+            }
             GetStr(*assets, "shaders", &out->shaders, "shaders");
             GetStr(*assets, "effects", &out->effects, "effects");
         }

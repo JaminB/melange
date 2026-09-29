@@ -227,6 +227,8 @@ struct JsonParser {
     std::string_view s;
     size_t o = 0;
     std::string err;
+    int depth = 0;
+    static constexpr int kMaxDepth = 512;  // deep enough for any real document, shallow enough to never overflow the stack
 
     bool fail(const std::string& e) {
         if (err.empty()) err = e + " at byte " + std::to_string(o);
@@ -244,8 +246,13 @@ struct JsonParser {
         skipWs();
         if (o >= s.size()) return fail("unexpected end of input");
         char c = s[o];
-        if (c == '{') return parseObject(out);
-        if (c == '[') return parseArray(out);
+        if (c == '{' || c == '[') {
+            if (depth >= kMaxDepth) return fail("nesting too deep");
+            ++depth;
+            bool ok = c == '{' ? parseObject(out) : parseArray(out);
+            --depth;
+            return ok;
+        }
         if (c == '"') return parseString(out);
         if (c == 't') { if (!lit("true")) return fail("bad literal"); out = Json::Bool(true); return true; }
         if (c == 'f') { if (!lit("false")) return fail("bad literal"); out = Json::Bool(false); return true; }

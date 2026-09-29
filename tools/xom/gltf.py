@@ -447,6 +447,14 @@ def _read_accessor(doc, bin_bytes, acc, expect_components):
     return out
 
 
+def _safe_rel(p):
+    """No leading slash or drive letter, and no '.' or '..' segment: a buffer uri can never read a
+    file outside bin_dir. Mirrors src/xom/gltf.cpp's SafeRel (the same check, C++ side)."""
+    if not p or len(p) > 4096 or p[0] in ('/', '\\') or ':' in p:
+        return False
+    return all(seg not in ('', '.', '..') for seg in p.replace('\\', '/').split('/'))
+
+
 def read_gltf(file_bytes, is_glb, bin_dir):
     if is_glb:
         if file_bytes[:4] != b'glTF':
@@ -471,6 +479,8 @@ def read_gltf(file_bytes, is_glb, bin_dir):
         uri = doc['buffers'][0]['uri']
         if uri.startswith('data:'):
             raise xom.XomError('only a file-referenced buffer is supported (no data: URIs)')
+        if not _safe_rel(uri):
+            raise xom.XomError('the buffer uri must be a relative path with no ".." and no drive letter')
         with open(os.path.join(bin_dir, uri) if bin_dir else uri, 'rb') as f:
             bin_bytes = f.read()
 
