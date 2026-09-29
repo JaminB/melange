@@ -15,6 +15,8 @@
 #include "melange/jlog.h"
 #include "melange/testcmd.h"
 #include "melange/weapons.h"
+#include "weapons/behaviour.h"
+#include "weapons/contrib.h"
 #include "weapons/engine.h"
 #include "weapons/fields.h"
 #include "weapons/manifest.h"
@@ -60,10 +62,15 @@ bool BasesOk() {
 }
 
 void OnContext(bool created, melange::lua50::State*, void*) {
-    if (!created) melange::weapons::registry::OnMatchEnd();
+    if (created) return;
+    melange::weapons::behaviour::OnMatchEnd();
+    melange::weapons::registry::OnMatchEnd();
 }
 
-void BeforeMods(void*) { melange::weapons::registry::OnInit(); }
+void BeforeMods(void*) {
+    melange::weapons::registry::OnInit();
+    melange::weapons::behaviour::OnMatchBegin();
+}
 
 bool VerbState(std::string_view, void*) {
     using namespace melange::weapons;
@@ -81,6 +88,9 @@ bool VerbState(std::string_view, void*) {
         LOG_INFO("[weapons]   cell %d = {%x,%x}", c, Rd<uint32_t>(eng::kPanel + 8 * c), Rd<uint32_t>(eng::kPanel + 8 * c + 4));
     for (int id : {1, 2, 6, 7, 16})
         LOG_INFO("[weapons]   slot %d = %s", id, eng::ReadCString(reinterpret_cast<uintptr_t>(eng::EnumName(id)), 64).c_str());
+    const auto b = behaviour::GetCounters();
+    LOG_INFO("[weapons]   behaviour hooks=%d extras/explosion=%d fires=%u ticks=%u impacts=%u explosions=%u extras=%u",
+             behaviour::HooksEnabled(), behaviour::ExtraLimit(), b.fires, b.ticks, b.impacts, b.explosions, b.extras);
     for (auto& h : eng::Hooks())
         LOG_INFO("[weapons]   hook %s @%08x created=%d wanted=%d enabled=%d", h.name.c_str(), static_cast<unsigned>(h.site),
                  h.created, h.wanted, h.enabled);
@@ -128,7 +138,10 @@ public:
         melange::testcmd::Register("weapons.state", &VerbState);
         melange::testcmd::Register("weapons.field", &VerbField);
         const size_t n = wm::Frozen().size();
+        if (g_weapons) melange::weapons::behaviour::InstallLua();
         if (g_weapons && n) {
+            melange::weapons::behaviour::Install(Int("ExtraPerExplosion", 8), Bool("LogEvents", false));
+            melange::weapons::contrib::Register();
             melange::simbridge::OnBeforeModsLoad(&BeforeMods, nullptr);
             melange::lua50::OnContext(&OnContext, nullptr);
         }

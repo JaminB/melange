@@ -124,6 +124,10 @@ struct SendArgs {
 sim::SendResult DoSend(const SendArgs& a);
 const char* SendResultText(sim::SendResult r);
 
+// sim_weapons.cpp
+void PushWeapons(int mod);                 // pushes the mod's wum.sim.weapons table
+bool WeaponsAllowed(int mod) noexcept;    // the mod may subscribe to weapon events
+
 // sim_hash.cpp
 int __cdecl LHash(l5::State* L);  // wum.sim.hash (upvalue 1 = mod)
 void NoteModRuns(int mod);        // mod code is about to run (-1: any mod's environment may change)
