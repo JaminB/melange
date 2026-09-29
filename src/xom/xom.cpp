@@ -515,6 +515,11 @@ const ClassDef* findClassByGuid(std::string_view g) {
     return nullptr;
 }
 const MathDef& mathDef(uint16_t i) { return kMath[i < kNumMath ? i : 0]; }
+int findMathIndex(std::string_view name) {
+    for (size_t i = 0; i < kNumMath; ++i)
+        if (name == kMath[i].name) return int(i);
+    return -1;
+}
 const FieldDef* classFields(const ClassDef& c) { return &kFields[c.firstField]; }
 const ClassDef* classParent(const ClassDef& c) { return c.parent < 0 ? nullptr : &kClasses[c.parent]; }
 

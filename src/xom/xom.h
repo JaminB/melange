@@ -49,6 +49,7 @@ struct ClassDef {
 const ClassDef* findClass(std::string_view name);
 const ClassDef* findClassByGuid(std::string_view guidHex);
 const MathDef& mathDef(uint16_t index);
+int findMathIndex(std::string_view name);  // -1 if unknown; added for src/xom/mesh.cpp
 const FieldDef* classFields(const ClassDef& c);
 const ClassDef* classParent(const ClassDef& c);
 

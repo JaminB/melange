@@ -5,7 +5,7 @@ if(NOT DEFINED PROJECT_NAME)
     project(melange_xom LANGUAGES CXX)
 endif()
 
-add_library(melange_xom STATIC xom.cpp xom.h xom_schema.inc)
+add_library(melange_xom STATIC xom.cpp xom.h xom_schema.inc json.cpp json.h image.cpp image.h mesh.cpp mesh.h gltf.cpp gltf.h)
 target_include_directories(melange_xom PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 set_target_properties(melange_xom PROPERTIES CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON CXX_EXTENSIONS OFF)
 if(MSVC)

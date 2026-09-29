@@ -17,8 +17,10 @@ if ($LASTEXITCODE) { exit $LASTEXITCODE }
 cmake --build --preset $Config
 if ($LASTEXITCODE) { exit $LASTEXITCODE }
 New-Item -ItemType Directory -Force "$root\dist" | Out-Null
+New-Item -ItemType Directory -Force "$root\dist\tools" | Out-Null
 Copy-Item "$root\build\$Config\melange.asi" "$root\dist\" -Force
 Copy-Item "$root\build\$Config\Melange.pdb" "$root\dist\" -Force -ErrorAction SilentlyContinue
 Copy-Item "$root\build\$Config\oasis.exe" "$root\dist\" -Force -ErrorAction SilentlyContinue
 Copy-Item "$root\build\$Config\oasis.pdb" "$root\dist\" -Force -ErrorAction SilentlyContinue
-Write-Host "Built dist\melange.asi and dist\oasis.exe"
+Copy-Item "$root\build\$Config\xomtool.exe" "$root\dist\tools\" -Force -ErrorAction SilentlyContinue
+Write-Host "Built dist\melange.asi, dist\oasis.exe and dist\tools\xomtool.exe"
