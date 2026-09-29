@@ -26,7 +26,7 @@ enum class Event : uint8_t { Fire, Tick, Impact, Explosion };
 struct EventArgs {
     Event ev; uint16_t k; uint32_t tick;     // tick = sim::Tick()
     uintptr_t entity;                        // weapon logic entity (Fire) or payload (others)
-    float pos[3]; bool hasPos;               // Explosion: CreateExplosion's position; Tick: only once B0 lands
+    float pos[3]; bool hasPos;               // Explosion: CreateExplosion's position; Tick: no position yet
     uint16_t msgId;                          // Impact: the Payload.* message id
 };
 using EventFn = void (*)(const EventArgs& a, void* user);

@@ -1,10 +1,8 @@
 """
 ximage.py - XImage <-> PNG conversion for xomtool's Python parity CLI.
 
-Layout formula validated exhaustively against every shipped XImage (docs/m5-assets-research.md
-S1.1): levels are back-to-back, no padding. Row order and channel order were settled by the M5
-scaffold's runtime check on the weapon panel atlas (docs/m5-design.md S1.9#6): XImage rows are
-stored bottom-up, RGB order kept; PNG (like every other image tool) is top-down, so converting
+Layout formula validated against every shipped XImage: levels are back-to-back, no padding.
+XImage rows are stored bottom-up, RGB order kept; PNG (like every other image tool) is top-down, so converting
 either way flips rows. Mirrors src/xom/image.{h,cpp}.
 """
 import os
@@ -75,7 +73,7 @@ def ximage_to_png_bytes(fields, level=0):
 
 def box_downsample(raw, w, h, bpp):
     """2x2 box filter (average, integer-truncated): the mip-generation policy for PNG ->
-    XImage (docs/m5-assets-research.md S1.4), matching what every conventional texture-authoring
+    XImage, matching what every conventional texture-authoring
     tool does by default."""
     nw, nh = max(1, w // 2), max(1, h // 2)
     out = bytearray(nw * nh * bpp)

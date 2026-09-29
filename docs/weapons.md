@@ -46,7 +46,7 @@ in load order get the free cells; a mod that doesn't fit is refused with the rea
 | `name` | A new resource name: `kWeapon` + a capital letter + 2-40 letters/digits (`^kWeapon[A-Z][A-Za-z0-9]{2,40}$`). Can't be a vanilla name, and can't start with `kWeaponCluster` or `kWeaponFactory`. Must be unique across every enabled mod. |
 | `base` | One of the whitelisted bases below. Anything else is refused at parse time with "not clonable in this version". |
 | `cell` | `29`, `39` or `40`. Optional — left out, the clone takes the first free cell in load order. Two mods asking for the same cell: the later one in load order is refused. |
-| `bank` | Optional: an `xomtool`-built `.xom` under `assets/data/` holding a container named `name`, of the base's class, instead of a plain copy of the base. **Not usable yet** — see "Meshes" below. |
+| `bank` | Optional: an `xomtool`-built `.xom` under `assets/data/` holding a container named `name`, of the base's class, taken instead of a plain copy of the base (`set` still applies on top). Build one with `xomtool bank` ([xomtool.md](xomtool.md)). A bank carries weapon properties only, not meshes — see "Meshes" below. |
 | `set` | Container field name → value, typed against the base's own schema (`xom_schema.inc`): a number for an `F32`/integer field, `true`/`false` for a `Bool` field, a string for a `String` field. An unknown field name or a value of the wrong type refuses the mod at parse time, naming the field. |
 | `panelIcon` | A path under `assets/`: a PNG, 64×64 (or a multiple, box-filtered down), RGBA. |
 | `hudIcon` | A file name under `assets/loose/`, a `.tga`, named `<your mod id>.*` (never a bare vanilla-looking name — see "Icons and loose files"). |
@@ -121,8 +121,8 @@ clone's `name`.
   already used in the match** — this is confirmed working (the sample points its shell at `Grenade.Payload`,
   scaled up with `Scale`). **A mod-supplied custom mesh doesn't work yet**: the engine's bank loader only
   accepts data banks, and a data bank has no mesh list, so an `xomtool`-built mesh bank can't be loaded this
-  way. The `bank` manifest field and `xomtool`'s mesh/glTF conversion still exist for when a loader is found;
-  until then, point mesh fields at vanilla resource names only.
+  way. `xomtool`'s mesh/glTF conversion still exists for when a loader is found; until then, point mesh
+  fields at vanilla resource names only. (The `bank` field itself works: it carries weapon properties.)
 - **`*Sfx` fields** (`LaunchSfx`, `DetonationSfx`, ...) can be reassigned to any existing FMOD event name your
   game already ships (`weapons/SheepBaa`, for example). **Whether this has an audible effect hasn't been
   confirmed** in this build — the sample sets `LaunchSfx` as a demonstration, but treat it as unverified until
@@ -162,7 +162,7 @@ This build is honest about a few gaps rather than silently doing less than it sa
   a projectile's position mid-flight, you don't have one yet.
 - **No `damage` event.** A clone's explosion damage happens *inside* the same engine call that posts the
   explosion, which is good for determinism but means it can't be cleanly separated as its own event yet.
-- **No custom mesh or bank.** See "Meshes and sounds" above — point mesh fields at vanilla resource names.
+- **No custom mesh.** See "Meshes and sounds" above — point mesh fields at vanilla resource names.
 - **Sound fields are unverified.** See "Meshes and sounds" above.
 - **Separate clone ammo and delay, and name-compare bases (Sheep, Homing Missile, ...) are not in this
   version.**

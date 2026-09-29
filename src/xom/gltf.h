@@ -1,7 +1,7 @@
 // melange::xom::gltf - a minimal glTF 2.0 reader/writer for static mesh geometry only
 // (positions/normals/UV0/indices and node transforms). No materials, images, skins or
 // animation: XShape.Shader material handling is mesh.h's --material-from, not glTF's own
-// material JSON (docs/m5-assets-research.md S2.3/S2.4). C++17, standard library only.
+// material JSON. C++17, standard library only.
 #pragma once
 
 #include <cstdint>

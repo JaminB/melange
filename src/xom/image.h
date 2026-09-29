@@ -1,5 +1,5 @@
-// melange::xom::image - XImage <-> raw pixel buffer, with the row flip settled by the M5
-// scaffold (bottom-up XImage rows, RGB channel order kept; see docs/m5-design.md S1.9#6).
+// melange::xom::image - XImage <-> raw pixel buffer, with the row flip
+// (XImage rows are bottom-up, RGB channel order kept).
 // No file I/O and no PNG codec here: src/xom stays platform-free (PNG is stb_image in
 // tools/xomtool). C++17, standard library only.
 #pragma once

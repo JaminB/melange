@@ -333,9 +333,9 @@ oversized Bazooka with a bigger blast and three extra explosions.
 
 The game's data files (weapon stats, meshes, textures, sound banks) are one container format, `.xom`. Sieve is
 Melange's toolchain for it: a portable C++/Python reader-writer library (already used by Melange itself for
-weapon field offsets and types) and, once Component D ships, a command-line tool (`xomtool`) for
-inspecting, converting and diffing `.xom` files and building weapon-clone banks. See
-[docs/xomtool.md](docs/xomtool.md) for what already works today and what's still planned.
+weapon field offsets and types) and a command-line tool, `xomtool` (built into `dist/tools/xomtool.exe`), for
+unpacking, packing, inspecting, diffing and converting `.xom` files (textures to and from PNG, static meshes to
+and from glTF) and building weapon-clone banks. See [docs/xomtool.md](docs/xomtool.md).
 
 ## Oasis (web app)
 
@@ -361,7 +361,7 @@ You need:
 
 ## Roadmap
 
-Shipped: the Mirage graphics layer (GL trace and frame capture, shader overrides and hot reload, a post-FX stack, and a world/HUD draw API), Lua mods and Thumper, Oasis, Wormsign, and M5's weapon clones and mod assets (`wum.sim.weapons`, [docs/weapons.md](docs/weapons.md)) with the Sieve toolchain's `.xom` library ([docs/xomtool.md](docs/xomtool.md); the `xomtool` command-line front-end is still coming). Coming next: a map editor.
+Shipped: the Mirage graphics layer (GL trace and frame capture, shader overrides and hot reload, a post-FX stack, and a world/HUD draw API), Lua mods and Thumper, Oasis, Wormsign, and M5's weapon clones and mod assets (`wum.sim.weapons`, [docs/weapons.md](docs/weapons.md)) with the Sieve toolchain, `xomtool` ([docs/xomtool.md](docs/xomtool.md)). Coming next: a map editor.
 
 ## License
 

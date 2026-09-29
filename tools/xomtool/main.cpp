@@ -617,7 +617,7 @@ int CmdBank(const Args& a) {
     out_.reserved24 = doc.reserved24;
     out_.guidRec = doc.guidRec;
     out_.schmRec = doc.schmRec;
-    // Keep every original TYPE entry, in place (bank_one.py's approach): the format doesn't mind
+    // Keep every original TYPE entry, in place: the format doesn't mind
     // an unused, zero-count entry, and a class version (e.g. an abstract ancestor's) can matter
     // for field gating even with no instances - dropping entries the bank does not need would
     // still be a valid file, but not a byte-identical one. Counts are recomputed below from the

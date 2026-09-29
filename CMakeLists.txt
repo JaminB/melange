@@ -256,7 +256,7 @@ target_compile_options(xomtool PRIVATE /W4 /utf-8 /permissive-)
 target_link_libraries(xomtool PRIVATE melange_xom)
 
 # Image/mesh/glTF/bank conversions without the game: round trips against real shipped files
-# and bank_one.py's fixture, run with --game pointing at an installed copy (skipped otherwise).
+# and a reference bank, run with --game pointing at an installed copy (skipped otherwise).
 add_executable(xom_convert_selftest tests/xom_convert_selftest.cpp)
 target_include_directories(xom_convert_selftest PRIVATE src/xom ${stb_SOURCE_DIR})
 target_compile_definitions(xom_convert_selftest PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX _CRT_SECURE_NO_WARNINGS)

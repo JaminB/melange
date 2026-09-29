@@ -76,10 +76,9 @@ xomtool convert weapon.png --into weapons.xom --as MyIcon.tga
 xomtool convert MyIcon.tga --from weapons.xom --out weapon.png [--mip 0]
 ```
 
-Texture layout (`docs/m5-assets-research.md` §1, validated against all 3110 shipped `XImage`s):
+Texture layout (validated against all 3110 shipped `XImage`s):
 Format 0 is RGB8, Format 1 is RGBA8, mip levels are back-to-back with no padding, and **rows are
-stored bottom-up** (settled at runtime by the M5 scaffold's panel-atlas check, `docs/m5-design.md`
-§1.9#6) while a PNG is top-down, so every conversion flips rows; channel order (RGB) is kept as-is
+stored bottom-up** (confirmed in game on the weapon panel atlas) while a PNG is top-down, so every conversion flips rows; channel order (RGB) is kept as-is
 either way. `--into` appends a new, fully independent `XImage` (mips regenerated with a 2×2 box
 filter unless `--mips=0`, in which case only the given level is stored - the lossless leg of the
 round trip: PNG → XImage → PNG at level 0 is exact). `--from`/`--out` finds an existing `XImage`
@@ -94,7 +93,7 @@ xomtool convert model.gltf --into weapons.xom --as MyMod.Payload \
 xomtool convert MyMod.Payload --from weapons.xom --out model.gltf
 ```
 
-Maps the object graph 1:1 onto glTF, per `docs/m5-assets-research.md` §2.1:
+Maps the object graph 1:1 onto glTF:
 
 ```
 XMeshDescriptor -> XGraphSet -> XInteriorNode -> XGroup -> XShape
@@ -115,7 +114,7 @@ XMeshDescriptor -> XGraphSet -> XInteriorNode -> XGroup -> XShape
   the well-defined case a template mesh's shader actually has, not a general material editor).
   Without `--material-from`, new shapes get no shader (`Shader` ref 0).
 - **Node transforms**: `--into` writes the node's matrix into a new `XTransform`'s `Matrix` field
-  exactly (this is what the engine renders from - see `docs/m5-design.md` gate §11.3/S1.9). Its
+  exactly (this is what the engine renders from). Its
   `Translate`/`Scale` fields are derived from that same matrix; `Rotate` is written as `(0,0,0)`
   rather than decomposed, since nothing here reads it back - if your own tooling depends on
   `Rotate`/`RotateOrder` being accurate for a mesh built by `xomtool`, decompose `Matrix` yourself.
@@ -125,14 +124,14 @@ XMeshDescriptor -> XGraphSet -> XInteriorNode -> XGroup -> XShape
   output file per mesh (as the examples above do) rather than injecting into an existing bundle
   with meshes of its own already - doing that safely needs re-indexing every `Ref` field in the
   file, which is future work, not this version's scope.
-- **Not loadable in game yet:** the M5 scaffold's C0 gate found that `LoadBank` only accepts an
+- **Not loadable in game yet:** `LoadBank` only accepts an
   `XDataBank` (a typed list of scalar/vector/container resources - it has no mesh list), so a mod
   cannot currently point a weapon at a bank-built mesh; `PayloadGraphicsResourceID` etc. may only
-  name a *vanilla* mesh already in the scene (`docs/m5-design.md` §11.3). This converter still
+  name a *vanilla* mesh already in the scene. This converter still
   ships so the format and the authoring pipeline are ready for whichever loader path lands next;
   round-trip correctness (`tests/xom_convert_selftest.cpp`, `parity_test.py`) does not depend on
   that loader existing.
-- Skinned meshes, animation and a Blender addon are not in this version (`docs/m5-design.md` §9.11).
+- Skinned meshes, animation and a Blender addon are not in this version.
 
 ### `bank`
 
@@ -144,7 +143,7 @@ xomtool bank --from Data/Tweak/WEAPTWK.XOM --object kWeaponBazooka --as kWeaponM
 Builds a minimal, one-entry `XDataBank` (`XContainerResourceDetails` + `XDataBank` +  a copy of
 the named container, with any `--set` overrides applied) from a container already present in
 `--from`, matching what `melange::weapons::registry`'s `bank` manifest field loads
-(`docs/m5-design.md` §2.4). `--set Field=value` writes a bool/int/float/string field by name
+(see [weapons.md](weapons.md)). `--set Field=value` writes a bool/int/float/string field by name
 (refused, exit 2, if the field does not exist or is a type `--set` cannot write, such as a `ref`
 or an array); the field's own type decides how `value` is parsed.
 

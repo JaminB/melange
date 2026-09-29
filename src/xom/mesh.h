@@ -1,5 +1,5 @@
 // melange::xom::mesh - static mesh object graphs <-> a small portable Mesh struct.
-// docs/m5-assets-research.md S2.1: XMeshDescriptor -> XGraphSet -> XInteriorNode -> XGroup ->
+// XMeshDescriptor -> XGraphSet -> XInteriorNode -> XGroup ->
 // XShape -> XIndexedTriangleSet{XCoord3fSet,XNormal3fSet,XTexCoord2fSet,XIndexSet}. One
 // primitive per XShape; u16 indices only. C++17, standard library only, no file I/O (glTF
 // text/binary framing is gltf.h; PNG is stb_image in tools/xomtool).

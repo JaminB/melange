@@ -1,6 +1,6 @@
-// xom_convert_selftest - offline checks for D (the Sieve xomtool CLI's library, src/xom):
+// xom_convert_selftest - offline checks for the Sieve xomtool library (src/xom):
 // image round trips, a mesh round trip on Factory.Proj.Bazookashell, and the bank builder
-// against bank_one.py's fixture. The game files it reads are read-only inputs, never written.
+// against a reference bank. The game files it reads are read-only inputs, never written.
 //
 // Usage: xom_convert_selftest --game <WormsXHD dir>
 // Without --game, the checks that need the game's files are skipped (reported, not a failure),
@@ -93,7 +93,7 @@ void ImageTests(const fs::path& game) {
     image::Pixels px2;
     Check(image::ExtractMip(copy, 0, px2, &err) && px2.data == px.data, "StoreFields/ExtractMip is byte-identical at level 0");
 
-    // Every mip level round-trips exactly too (the formula from docs/m5-assets-research.md S1.1).
+    // Every mip level round-trips exactly too.
     const Value* mipsF = icon->field("MipLevels");
     int mips = mipsF ? int(mipsF->asUInt()) : 1;
     bool allMips = true;

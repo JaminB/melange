@@ -9,8 +9,7 @@ namespace {
 
 int BppForFormat(uint32_t fmt) { return fmt == 1 ? 4 : 3; }
 
-// The layout formula validated exhaustively against every shipped XImage
-// (docs/m5-assets-research.md S1.1): levels are back-to-back, no padding.
+// The layout formula, validated against every shipped XImage: levels are back-to-back, no padding.
 void ComputeLayout(uint16_t width, uint16_t height, int bpp, int levels, std::vector<uint32_t>& strides,
                     std::vector<uint32_t>& offsets, uint32_t& total) {
     strides.assign(size_t(levels), 0);
