@@ -11,6 +11,8 @@
 #include "core/mem.h"
 #include "melange/jlog.h"
 #include "wormsign/contrib.h"
+#include "wormsign/detail.h"
+#include "wormsign/fpu.h"
 #include "wormsign/ring.h"
 
 namespace melange::wormsign {
@@ -125,6 +127,8 @@ void Begin() {
     if (g_open) return;
     const uint32_t serial = ++g_serial;
     g_ring.Reset();
+    contrib::ResetSession();
+    detail::Reset();
     g_tick = 0;
     g_ticks = 0;
     g_inputs = 0;
@@ -149,10 +153,13 @@ void End(const char* reason) {
 void EndTick(uint32_t bucket, const PoppedTask& popped) {
     const int64_t t0 = Qpc();
     TickHash h{};
-    ComputeEngine(bucket * kTickMs, &h, popped);
+    detail::DetailRec* rec = detail::Scratch();
+    ComputeEngine(bucket * kTickMs, &h, popped, rec);
     const int64_t t1 = Qpc();
     h.mods = contrib::HashTick(bucket);
     h.fpucw = Fpucw();
+    fpu::Tick(g_serial, bucket, h.fpucw);
+    detail::Commit(*rec);
     h.inputs = g_inputs;
     g_inputs = 0;
     g_ring.Put(h);

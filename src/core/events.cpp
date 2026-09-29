@@ -6,6 +6,7 @@
 #include <mutex>
 #include <vector>
 
+#include "core/dllcall.h"
 #include "core/log.h"
 #include "core/mem.h"
 
@@ -34,7 +35,9 @@ BOOL WINAPI HookSwapBuffers(HDC dc) {
     g_lastFrame.store(GetTickCount64(), std::memory_order_relaxed);
     Fire(Event::Frame);
     if (PresentHook hook = g_presentHook.load(std::memory_order_acquire)) hook(dc);
-    return g_origSwapBuffers(dc);
+    const BOOL r = g_origSwapBuffers(dc);
+    dllcall::Note("gdi32!SwapBuffers");
+    return r;
 }
 }  // namespace
 

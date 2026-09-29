@@ -10,9 +10,12 @@ struct PoppedTask {
     uint32_t time = 0;
     uintptr_t obj = 0;
 };
+namespace detail {
+struct DetailRec;
+}
 // Fills tick, engine, c[], rngLogic and rng2 of `out` for the tick ending at logic time `t`. Pure reads, fault
-// guarded, no allocation; main thread.
-void ComputeEngine(uint32_t t, TickHash* out, const PoppedTask& popped = {});
+// guarded, no allocation; main thread. `rec`, when given (cleared), also gets the bytes that were hashed.
+void ComputeEngine(uint32_t t, TickHash* out, const PoppedTask& popped = {}, detail::DetailRec* rec = nullptr);
 
 constexpr uint64_t kFnvBasis = 1469598103934665603ULL;
 inline uint64_t Fnv(const void* p, size_t n, uint64_t h = kFnvBasis) {

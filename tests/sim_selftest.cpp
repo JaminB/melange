@@ -21,7 +21,10 @@ extern "C" {
 #include "lua/engine50.h"
 #include "lua/sim/bridge_internal.h"
 #include "lua/sim/sim_core.h"
+#include "lua/sim/sim_hash.h"
 #include "melange/sim.h"
+#include "melange/wormsign.h"
+#include "wormsign/contrib.h"
 
 namespace l5 = melange::lua50;
 namespace core = melange::simcore;
@@ -593,6 +596,160 @@ void TestSample() {
     fake::L = nullptr;
 }
 
+// Mod hash contributors: the environment digest of every sim mod and wum.sim.hash.
+const char kHashMod[] = R"(
+counter = 0
+handler = function() end
+t = { a = 1, b = { c = "x", d = { e = true, f = { g = 1 } } } }
+wum.events.on("sim.test.bump", function(ev, n) counter = counter + n end)
+wum.events.on("sim.test.deep4", function() t.b.d.f.g = 2 end)
+wum.events.on("sim.test.deep3", function() t.b.d.e = false end)
+wum.events.on("sim.test.fn", function() handler = function() return 1 end end)
+wum.events.on("sim.test.store", function() wum.sim.storage.turn = (wum.sim.storage.turn or 0) + 1 end)
+wum.events.on("sim.test.hash", function(ev, v) wum.sim.hash(v, "s", true, nil) end)
+wum.events.on("sim.test.badhash", function() bad = pcall(wum.sim.hash, {}) end)
+wum.events.on("sim.test.zero", function() counter = 0 end)
+wum.events.on("sim.test.negzero", function() counter = 0 * -1 end)
+wum.events.on("sim.test.remove", function() counter = nil end)
+)";
+const char kOrder1[] = "x = 1 y = 'two' z = { p = 1, q = { 2, 3 } } w = true";
+const char kOrder2[] = "w = true z = {} z.q = { 2, 3 } z.p = 1 y = 'two' x = 1";
+const char kBig[] = R"(
+wum.events.on("sim.test.grow", function(ev, k)
+  local t = {} for i = 1, 20000 do t[i] = i end
+  _G["big" .. k] = t
+end)
+)";
+
+namespace ws = melange::wormsign;
+
+std::map<std::string, uint64_t> Comps(uint32_t tick) {
+    ws::contrib::Entry e[32];
+    const size_t n = ws::contrib::HashesAt(tick, e, 32);
+    std::map<std::string, uint64_t> m;
+    for (size_t i = 0; i < n; ++i) m[e[i].name] = e[i].hash;
+    return m;
+}
+
+std::vector<std::string> Changed(uint32_t a, uint32_t b) {
+    const auto ma = Comps(a), mb = Comps(b);
+    std::vector<std::string> v;
+    for (auto& [k, h] : mb)
+        if (!ma.count(k) || ma.at(k) != h) v.push_back(k);
+    return v;
+}
+
+std::string ChangeText(uint32_t tick) {
+    melange::simhash::EnvChange c[16];
+    const size_t n = melange::simhash::EnvChanges(tick, tick, c, 16);
+    std::string s;
+    for (size_t i = 0; i < n; ++i) s += melange::simhash::Format(c[i]) + "\n";
+    return s;
+}
+
+// Runs the scripted sequence and returns the mods hash of every tick.
+std::vector<uint64_t> RunHashMatch(melange::simhash::EnvMode mode, bool checks) {
+    melange::simhash::Install(mode);
+    fake::runState = 1;
+    fake::L = fake::NewMatchVM();
+    lua_State* S = fake::L;
+    core::SetSources({{"hashmod", "1.0.0", "@hashmod/sim.lua", kHashMod},
+                      {"order1", "1.0.0", "@order1/sim.lua", kOrder1},
+                      {"order2", "1.0.0", "@order2/sim.lua", kOrder2}});
+    core::ContextCreated(S);
+    Expect(core::Init({"GameLogic.Turn.Ended"}, true), "hash mods load");
+    std::vector<uint64_t> out;
+    uint32_t tick = 0;
+    auto step = [&](const char* ev, std::vector<float> args = {}) {
+        if (ev) melange::simbridge::Dispatch(ev, args);
+        out.push_back(ws::contrib::HashTick(++tick));
+        return tick;
+    };
+    const uint32_t t1 = step(nullptr);
+    const uint32_t t2 = step(nullptr);
+    const uint32_t tBump = step("sim.test.bump", {1});
+    const uint32_t tDeep4 = step("sim.test.deep4");
+    const uint32_t tDeep3 = step("sim.test.deep3");
+    const uint32_t tFn = step("sim.test.fn");
+    const uint32_t tStore = step("sim.test.store");
+    const uint32_t tHash = step("sim.test.hash", {5});
+    const uint32_t tAfter = step(nullptr);
+    const uint32_t tHash2 = step("sim.test.hash", {6});
+    const uint32_t tBad = step("sim.test.badhash");
+    const uint32_t tZero = step("sim.test.zero");
+    const uint32_t tNeg0 = step("sim.test.negzero");
+    const uint32_t tRemove = step("sim.test.remove");
+    if (checks) {
+        ws::contrib::Info info[16];
+        const size_t n = ws::contrib::List(info, 16);
+        std::string names;
+        for (size_t i = 0; i < n; ++i) names += std::string(info[i].name) + " ";
+        Expect(names == "mod.hashmod.env mod.hashmod.hash mod.order1.env mod.order1.hash mod.order2.env mod.order2.hash ",
+               "a contributor pair per sim mod, in name order: " + names);
+        Expect(out[t1 - 1] && out[t1 - 1] == out[t2 - 1], "no change: same mods hash");
+        Expect(Changed(t2, tBump) == std::vector<std::string>{"mod.hashmod.env"}, "a global change flags the env");
+        Expect(ChangeText(tBump).find("mod.hashmod.env global counter: 0 -> 1") != std::string::npos,
+               "the change names the key: " + ChangeText(tBump));
+        Expect(out[tDeep4 - 1] == out[tBump - 1], "below depth 3: not hashed");
+        Expect(Changed(tDeep4, tDeep3) == std::vector<std::string>{"mod.hashmod.env"}, "at depth 3: hashed");
+        Expect(ChangeText(tDeep3).find("global t: table -> table") != std::string::npos, "nested change named at the top key");
+        Expect(out[tFn - 1] == out[tDeep3 - 1], "functions are hashed by type only");
+        Expect(Changed(tFn, tStore) == std::vector<std::string>{"mod.hashmod.env"}, "wum.sim.storage is hashed");
+        Expect(ChangeText(tStore).find("storage.turn added: 1") != std::string::npos, "storage key named");
+        Expect(Changed(tStore, tHash) == std::vector<std::string>{"mod.hashmod.hash"}, "wum.sim.hash feeds its contributor");
+        Expect(Changed(tHash, tAfter) == std::vector<std::string>{"mod.hashmod.hash"} &&
+                   Comps(tAfter)["mod.hashmod.hash"] == Comps(t1)["mod.hashmod.hash"],
+               "wum.sim.hash counts for its tick only");
+        Expect(Comps(tHash2)["mod.hashmod.hash"] != Comps(tHash)["mod.hashmod.hash"], "the values matter");
+        Expect(Changed(tHash2, tBad) == std::vector<std::string>{"mod.hashmod.env", "mod.hashmod.hash"} ||
+                   Changed(tHash2, tBad) == std::vector<std::string>{"mod.hashmod.hash", "mod.hashmod.env"},
+               "a table argument raises (bad = false is a new global)");
+        melange::simbridge::PushModEnv("hashmod");
+        lua_pushstring(S, "bad");
+        lua_rawget(S, -2);
+        Expect(lua_isboolean(S, -1) && !lua_toboolean(S, -1), "wum.sim.hash({}) raised");
+        lua_settop(S, 0);
+        Expect(Changed(tZero, tNeg0) == std::vector<std::string>{"mod.hashmod.env"}, "-0 is hashed by its bits");
+        Expect(ChangeText(tRemove).find("global counter removed (was -0)") != std::string::npos, "removal named");
+        const auto c = Comps(t1);
+        Expect(c.at("mod.order1.env") == c.at("mod.order2.env"), "the digest does not depend on insertion order");
+        Expect(lua_gettop(S) == 0, "the digest leaves the stack as it was");
+        Expect(melange::simhash::GetCost().digests > 0, "digest cost measured");
+    }
+    core::ContextClosing(S);
+    lua_close(S);
+    fake::L = nullptr;
+    if (checks) Expect(ws::contrib::Count() == 0, "contributors removed at match end");
+    return out;
+}
+
+void TestModHash() {
+    const auto changed = RunHashMatch(melange::simhash::EnvMode::Changed, true);
+    const auto always = RunHashMatch(melange::simhash::EnvMode::Always, false);
+    Expect(changed == always, "digesting only after mod code ran gives the same hashes as every tick");
+
+    fake::runState = 1;
+    fake::L = fake::NewMatchVM();
+    core::SetSources({{"big", "1.0.0", "@big/sim.lua", kBig}});
+    core::ContextCreated(fake::L);
+    Expect(core::Init({"GameLogic.Turn.Ended"}, true), "big mod loads");
+    const uint64_t h0 = ws::contrib::HashTick(1);
+    melange::simbridge::Dispatch("sim.test.grow", {1});
+    const uint64_t h1 = ws::contrib::HashTick(2);
+    melange::simbridge::Dispatch("sim.test.grow", {2});
+    melange::simbridge::Dispatch("sim.test.grow", {3});
+    const uint64_t h2 = ws::contrib::HashTick(3);
+    melange::simbridge::Dispatch("sim.test.grow", {4});
+    const uint64_t h3 = ws::contrib::HashTick(4);
+    Expect(h0 != h1 && h1 != h2 && h2 == h3, "past the value cap the digest is a fixed marker");
+    Expect(Logged("hold over 50000 values"), "the cap is logged");
+    Expect(lua_gettop(fake::L) == 0, "stack clean after the cap");
+    core::ContextClosing(fake::L);
+    lua_close(fake::L);
+    fake::L = nullptr;
+    melange::simhash::Uninstall();
+}
+
 int main() {
     melange::log::SetTap(&Tap);
     {
@@ -631,6 +788,7 @@ int main() {
     fake::L = nullptr;
 
     TestSample();
+    TestModHash();
     printf("sim_selftest: %d passed, %d failed\n", g_pass, g_fail);
     return g_fail ? 1 : 0;
 }

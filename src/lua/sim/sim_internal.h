@@ -24,6 +24,10 @@ struct Mod {
     bool loaded = false;
     uint32_t rng = 0, faults = 0;
     int heapKB = 0;
+    uint64_t hashAcc = 0;            // wum.sim.hash values of the current tick (sim_hash.cpp)
+    uint32_t hashCalls = 0;
+    bool envDirty = true;            // mod code ran since the last environment digest
+    uint64_t envDigest = 0;
 };
 
 struct Callback {
@@ -119,6 +123,10 @@ struct SendArgs {
 };
 sim::SendResult DoSend(const SendArgs& a);
 const char* SendResultText(sim::SendResult r);
+
+// sim_hash.cpp
+int __cdecl LHash(l5::State* L);  // wum.sim.hash (upvalue 1 = mod)
+void NoteModRuns(int mod);        // mod code is about to run (-1: any mod's environment may change)
 
 // sim_rng.cpp
 uint32_t Fnv1a(const char* s);

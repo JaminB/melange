@@ -61,6 +61,7 @@ bool PushFrame(int mod, bool topLevel) {
         g_chainLeft = Chunks() * kMaxDepth;
     }
     if (g_chainLeft <= 0) return false;
+    NoteModRuns(mod);
     g_frames[g_depth++] = {mod, std::min(Chunks(), g_chainLeft), false, false, topLevel};
     ArmTop(L);
     return true;
