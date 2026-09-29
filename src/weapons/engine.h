@@ -31,6 +31,7 @@ constexpr uintptr_t kNames = 0x90c920, kPanel = 0x920e58, kSelWrite = 0x603cdb, 
 
 // Additive helpers.
 constexpr int kEnumCount = 0x45;
+constexpr uintptr_t kStartCheck = 0x70b3e1;   // host WaitingGameStart: players with a team vs players
 bool SitesOk();                               // every function and hook site above has its #1077 bytes
 bool SiteIntact(uintptr_t site);              // this hook site still has its #1077 bytes (false for unknown sites)
 std::string ReadCString(uintptr_t p, size_t max = 128);

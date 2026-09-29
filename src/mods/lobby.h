@@ -13,4 +13,5 @@ std::vector<uint64_t> Members();                      // every member other than
 std::string MemberData(uint64_t member, const char* key);
 void SetMyData(const char* key, const char* value);   // no-op outside a lobby
 std::string Name(uint64_t member);                    // persona name, or the id as text
+std::string Data(const char* key);                    // lobby-level data, "" outside a lobby
 }  // namespace melange::handshake::lobby
