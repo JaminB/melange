@@ -3,9 +3,11 @@ dist/*.asi
 dist/*.exe
 dist/*.pdb
 dist/*.dll
+dist/tools/
 /tools/*
 !/tools/xom/
 !/tools/wsr/
+!/tools/xomtool/
 testenv/
 *.dmp
 *.user

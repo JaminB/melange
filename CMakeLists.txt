@@ -247,6 +247,22 @@ target_compile_definitions(weapons_manifest_selftest PRIVATE WIN32_LEAN_AND_MEAN
 target_compile_options(weapons_manifest_selftest PRIVATE /W4 /utf-8 /permissive-)
 target_link_libraries(weapons_manifest_selftest PRIVATE melange_xom)
 
+# xomtool: the Sieve CLI (unpack/pack/inspect/diff/convert/bank/report). PNG I/O only here -
+# src/xom itself stays platform-free.
+add_executable(xomtool tools/xomtool/main.cpp)
+target_include_directories(xomtool PRIVATE src/xom ${stb_SOURCE_DIR})
+target_compile_definitions(xomtool PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX _CRT_SECURE_NO_WARNINGS)
+target_compile_options(xomtool PRIVATE /W4 /utf-8 /permissive-)
+target_link_libraries(xomtool PRIVATE melange_xom)
+
+# Image/mesh/glTF/bank conversions without the game: round trips against real shipped files
+# and bank_one.py's fixture, run with --game pointing at an installed copy (skipped otherwise).
+add_executable(xom_convert_selftest tests/xom_convert_selftest.cpp)
+target_include_directories(xom_convert_selftest PRIVATE src/xom ${stb_SOURCE_DIR})
+target_compile_definitions(xom_convert_selftest PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX _CRT_SECURE_NO_WARNINGS)
+target_compile_options(xom_convert_selftest PRIVATE /W4 /utf-8 /permissive-)
+target_link_libraries(xom_convert_selftest PRIVATE melange_xom)
+
 add_executable(lua54_selftest tests/lua54_selftest.cpp)
 target_compile_options(lua54_selftest PRIVATE /W4 /utf-8 /permissive- /EHsc)
 target_link_libraries(lua54_selftest PRIVATE lua54)
