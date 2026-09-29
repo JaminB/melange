@@ -27,8 +27,9 @@ void Rescan();
 void Configure(int keepMatches, uint32_t maxMB);
 
 // Copies `path` to `outPath` for sharing: SteamID-shaped numbers and IPv4 addresses in the file's JSON
-// (HEAD/SETP/NOTE) chunks are salted-hashed, and the current Windows user name is replaced with %USERNAME%,
-// exactly as tools/redact.h does for "Save logs as...". Binary chunks (INPT, RMTI, DISP, TICK, DETL, ENGV) carry
+// (HEAD/SETP/NOTE/DVRG/ENGV) chunks are salted-hashed, and the current Windows user name is replaced with %USERNAME%,
+// exactly as tools/redact.h does for "Save logs as...". Binary chunks (INPT, RMTI, DISP, TICK, DETL) carry
 // no identity data and pass through unchanged. The local, non-exported file on disk is never touched by this.
-bool ExportRedacted(const std::wstring& path, const std::wstring& outPath, std::string* error);
+bool ExportRedacted(const std::wstring& path, const std::wstring& outPath, std::string* error,
+                    const std::string& salt = "");
 }  // namespace melange::wormsign::library

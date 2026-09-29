@@ -5,11 +5,13 @@
 #include <windows.h>
 
 #include <atomic>
+#include <cstdio>
 #include <cstring>
 #include <ctime>
 #include <mutex>
 #include <vector>
 
+#include "core/config.h"
 #include "core/log.h"
 #include "melange/bus.h"
 #include "melange/gamestate.h"
@@ -20,6 +22,7 @@
 #include "wormsign/capture_internal.h"
 #include "wormsign/contrib.h"
 #include "wormsign/detail.h"
+#include "wormsign/enginecheck.h"
 #include "wormsign/format.h"
 #include "wormsign/fpu.h"
 #include "wormsign/library.h"
@@ -101,7 +104,7 @@ void WriteHead() {
         .Str("melange", MELANGE_VERSION)
         .Int("startUnix", static_cast<long long>(time(nullptr)))
         .Bool("online", online)
-        .Bool("localNet", false)  // set true by LocalNet's own hook when it wraps a match; not detected here
+        .Bool("localNet", melange::config::GetBool("LocalNet", "Enabled", false))
         .Str("contentHash", ContentHash16())
         .Int("tickMs", static_cast<long long>(kTickMs))
         .Bool("record", g_recordEnabled)
@@ -210,6 +213,11 @@ void EndRecording(const char* reason) {
     FlushRmti();
     FlushDisp();
     FlushDetl();
+    const auto engv = enginecheck::Records(g_serial);
+    if (!engv.empty()) {
+        const std::string j = enginecheck::Json(engv);
+        g_writer.Enqueue(wsr::kENGV, j.data(), j.size(), true);
+    }
     jsonmini::Obj note;
     note.Str("reason", reason)
         .Int("ticks", static_cast<long long>(g_ticksSeen))
@@ -266,6 +274,30 @@ void OnTickEndCb(const TickHash& h, void*) {
     if (g_dispBuf.size() >= kFlushBytes) FlushDisp();
 }
 
+void OnDivergenceCb(const Divergence& d, void*) {
+    if (!g_active || d.serial != g_serial) return;
+    char hex[17];
+    auto h = [&hex](uint64_t v) {
+        snprintf(hex, sizeof hex, "%016llx", static_cast<unsigned long long>(v));
+        return std::string(hex);
+    };
+    jsonmini::Obj o;
+    o.Str("source", d.source == Source::Replay ? "replay" : "peer")
+        .Int("serial", d.serial)
+        .Int("tick", d.tick)
+        .Str("oursEngine", h(d.oursEngine))
+        .Str("theirsEngine", h(d.theirsEngine))
+        .Str("oursMods", h(d.oursMods))
+        .Str("theirsMods", h(d.theirsMods))
+        .Int("compMask", d.compMask)
+        .Str("contrib", d.contrib)
+        .Str("peer", std::to_string(d.peer));
+    detail::DetailRec r;
+    if (detail::Get(d.tick, &r)) o.Raw("detailLocal", detail::ToJson(r));
+    const std::string json = o.End();
+    g_writer.Enqueue(wsr::kDVRG, json.data(), json.size(), true, d.tick, d.tick);
+}
+
 void OnSendCb(const capture::SendEvent& e, void*) {
     if (!g_active) return;
     rec::AppendInput(g_inptBuf, static_cast<uint8_t>(e.type), e.id, e.a, e.b, e.time, e.callT, e.caller, e.str);
@@ -303,6 +335,7 @@ bool Install() {
     melange::bus::SubscribeAll(melange::bus::Path::Post, &OnDispatch);
     melange::wormsign::OnSession(&OnSessionCb, nullptr);
     melange::wormsign::OnTickEnd(&OnTickEndCb, nullptr, 10);
+    melange::wormsign::OnDivergence(&OnDivergenceCb, nullptr);
     library::Rescan();
     return true;
 }

@@ -30,6 +30,7 @@
 #include "wormsign/bundle.h"
 #include "wormsign/enginecheck.h"
 #include "wormsign/exchange.h"
+#include "wormsign/library.h"
 
 namespace melange::wormsign::detector {
 namespace {
@@ -258,8 +259,11 @@ void WriteBundle(const BundleJob& job) {
             if (l.t >= last - 120) in->jlog += l.json + "\n";
         in->sysinfo = sysinfo::CollectJson();
         if (!wsr.empty()) {
-            std::string bytes;
-            if (ReadFileTail(wsr, kMaxRecordingBytes, &bytes)) in->recording.assign(bytes.begin(), bytes.end());
+            const std::wstring tmp = path + L".wsr.tmp";
+            std::string bytes, err;
+            if (library::ExportRedacted(wsr, tmp, &err, in->salt) && ReadFileTail(tmp, kMaxRecordingBytes, &bytes))
+                in->recording.assign(bytes.begin(), bytes.end());
+            DeleteFileW(tmp.c_str());
         }
         std::string zip;
         std::wstring result;
