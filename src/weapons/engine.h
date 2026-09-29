@@ -1,5 +1,6 @@
 #pragma once
 #include <cstdint>
+#include <initializer_list>
 #include <string>
 #include <vector>
 
@@ -35,6 +36,7 @@ constexpr int kEnumCount = 0x45;
 constexpr uintptr_t kStartCheck = 0x70b3e1;   // host WaitingGameStart: players with a team vs players
 bool SitesOk();                               // every function and hook site above has its #1077 bytes
 bool SiteIntact(uintptr_t site);              // this hook site still has its #1077 bytes (false for unknown sites)
+void AddHookSite(uintptr_t site, std::initializer_list<int> bytes);  // another component's hook site, checked the same way
 std::string ReadCString(uintptr_t p, size_t max = 128);
 std::string XStringValue(uintptr_t field);    // the text of an XString field, "" if unreadable
 std::string ClassName(uintptr_t cls);         // classInfo name ("" if unreadable)

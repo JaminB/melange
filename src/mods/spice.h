@@ -15,12 +15,15 @@ struct WeaponSet { std::string field; enum Kind { Number, Boolean, String } kind
                    bool boolean = false; std::string string; int line = 0; };
 struct Weapon { std::string name, base, bank, panelIcon, hudIcon, textName, textHelp; int cell = -1;
                 std::vector<WeaponSet> set; int line = 0; };
+// One entry of the "levels" array, checked for shape only; levels/manifest.cpp checks slugs, stems and limits.
+struct Level { std::string slug, title, type = "multi", source; bool chunk = false; int line = 0; };
 struct Manifest {
     std::string id, version, name, description, website, melangeRange; std::vector<std::string> authors;
     bool content = false, unsafe = false, defaultEnabled = true, implicit = false;
     std::string filesystem = "none", entryClient, entrySim, assetsRoot = "assets", shaders = "shaders", effects = "effects";
     std::vector<Dep> dependencies, optional, conflicts; std::vector<std::string> loadAfter, messages, hashInclude;
-    std::vector<Setting> settings; std::vector<Weapon> weapons; std::wstring dir;
+    std::vector<Setting> settings; std::vector<Weapon> weapons;
+    std::vector<Level> levels; std::wstring dir;
 };
 struct Error { std::string field; int line = 0, col = 0; std::string text; };
 bool Parse(const std::wstring& dir, Manifest* out, std::vector<Error>* errs);  // synthesises the implicit manifest
