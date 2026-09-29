@@ -7,11 +7,15 @@
 #include <intrin.h>
 #include <safetyhook.hpp>
 
+#include <algorithm>
 #include <atomic>
+#include <mutex>
+#include <vector>
 #include <cstring>
 
 #include "core/log.h"
 #include "core/mem.h"
+#include "melange/bus.h"
 #include "melange/wormsign.h"
 #include "wormsign/clock.h"
 #include "wormsign/inject.h"
@@ -26,7 +30,8 @@ constexpr uintptr_t kSend[6] = {0x542740, 0x5427f0, 0x5428b0, 0x542970, 0x542a30
 constexpr uintptr_t kIns[5] = {0x53e970, 0x53ea10, 0x53eae0, 0x53eb80, 0x53ec00};
 // NetStored*Array::Handle callers: an insert whose return address falls here delivered a remote record.
 constexpr uintptr_t kRemoteLo = 0x68a9f0, kRemoteHi = 0x68b200;
-// The local-only message-id exclusion list bsearch'd by 0x539c00 (HUD/menu/chat/camera names), 55 sorted u16 ids.
+// The local-only exclusion list behind 0x539c00: 55 pointers to message names (HUD/menu/chat/camera), resolved to
+// ids through the bus registry.
 constexpr uintptr_t kLocalOnlyTable = 0x91eef8;
 constexpr size_t kLocalOnlyCount = 55;
 
@@ -141,16 +146,28 @@ bool InjectSend(int type, uint16_t id, uint32_t a, uint32_t b, const char* str, 
 }
 
 bool LocalOnly(uint16_t id) {
-    uint16_t tbl[kLocalOnlyCount];
-    if (!mem::SafeRead(kLocalOnlyTable, tbl, sizeof tbl)) return false;
-    size_t lo = 0, hi = kLocalOnlyCount;
-    while (lo < hi) {
-        const size_t mid = (lo + hi) / 2;
-        if (tbl[mid] == id) return true;
-        if (tbl[mid] < id) lo = mid + 1;
-        else hi = mid;
+    static std::vector<uint16_t> ids;
+    static std::atomic<bool> ready{false};
+    static std::mutex mu;
+    if (!ready.load(std::memory_order_acquire)) {
+        std::lock_guard<std::mutex> lk(mu);
+        if (!ready) {
+            uint32_t names[kLocalOnlyCount];
+            if (!mem::SafeRead(kLocalOnlyTable, names, sizeof names)) return false;
+            std::vector<uint16_t> v;
+            for (uint32_t p : names) {
+                char s[64] = "";
+                if (!mem::SafeRead(p, s, sizeof s - 1)) continue;
+                const bus::MsgId m = bus::IdOf(s);
+                if (m != bus::kInvalidId) v.push_back(static_cast<uint16_t>(m));
+            }
+            if (v.empty()) return false;  // the bus registry is not ready yet
+            std::sort(v.begin(), v.end());
+            ids = std::move(v);
+            ready.store(true, std::memory_order_release);
+        }
     }
-    return false;
+    return std::binary_search(ids.begin(), ids.end(), id);
 }
 
 void SetSendSink(SendSink fn, void* user) {
