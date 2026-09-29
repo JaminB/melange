@@ -104,6 +104,31 @@
       "description": "Engine message names this mod registers (content mods only). Checked against the live vanilla registry at start-up, not against a fixed list here; a name that collides is skipped and logged."
     },
 
+    "weapons": {
+      "type": "array",
+      "maxItems": 3,
+      "description": "Weapon clones (content mods only). At most 3 across all enabled mods, in the free panel cells.",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["name", "base"],
+        "properties": {
+          "name": { "type": "string", "pattern": "^kWeapon[A-Z][A-Za-z0-9]{2,40}$", "description": "Resource name of the clone; not a vanilla name, not kWeaponCluster* or kWeaponFactory*." },
+          "base": { "type": "string", "enum": ["kWeaponBazooka", "kWeaponGrenade", "kWeaponHolyHandGrenade", "kWeaponBananaBomb", "kWeaponGasCanister"] },
+          "cell": { "type": "integer", "enum": [29, 39, 40], "description": "Panel cell; default: the first free cell." },
+          "bank": { "type": "string", "description": "A .xom bank under assets/data/ holding a container named `name`." },
+          "set": { "type": "object", "additionalProperties": { "type": ["number", "boolean", "string"] }, "description": "Container fields by schema name, with values of the field's type." },
+          "panelIcon": { "type": "string", "description": "A 64x64 RGBA PNG under assets/." },
+          "hudIcon": { "type": "string", "description": "A .tga in assets/loose/ named <id>.*" },
+          "text": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": { "name": { "type": "string", "maxLength": 48 }, "help": { "type": "string", "maxLength": 400 } }
+          }
+        }
+      }
+    },
+
     "settings": {
       "type": "array",
       "items": {

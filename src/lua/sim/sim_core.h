@@ -33,6 +33,7 @@ void NoteUpdateTime(double us);  // the whole hooked Update (engine + bridge), f
 bool Active();          // sim mods are loaded in this match
 bool NeedsTickHooks();  // HandleMessage/Update hooks are needed for this match
 bool HasTickHooks();    // C++ tick hooks exist
+bool HasBeforeLoad();   // OnBeforeModsLoad observers exist (the Init hook and the gate are needed without sim mods)
 lua50::State* MatchL();
 
 // wum.log output of sim mods (level: 0 debug, 1 info, 2 warn, 3 error).

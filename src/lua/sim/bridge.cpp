@@ -54,7 +54,7 @@ void Enable(SafetyHookInline& h, bool on, const char* what) {
 }
 
 void RefreshInitHook() {
-    if (g_installed) Enable(g_hInit, core::SourceCount() > 0 || core::HasTickHooks(), "Init");
+    if (g_installed) Enable(g_hInit, core::SourceCount() > 0 || core::HasTickHooks() || core::HasBeforeLoad(), "Init");
 }
 
 const std::vector<std::string>& Forwarded() {
@@ -76,7 +76,7 @@ int __fastcall HkInit(uintptr_t ss, void*, uintptr_t a1, uintptr_t a2, uintptr_t
     if (!Ours(ss)) return r;
     try {
         bool open = true;
-        if (core::SourceCount()) {
+        if (core::SourceCount() || core::HasBeforeLoad()) {
             if (g_gate) open = g_gate();
             // No Handshake to agree with peers on content: fail closed online, same as an unmatched hash would.
             else if (g_inLobby) open = false;

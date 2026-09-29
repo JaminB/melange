@@ -32,4 +32,11 @@ bool InTopLevelChunk();               // the running mod code is its entry.sim c
 std::vector<std::string> LoadedMods();                        // this match, load order
 bool PushModEnv(const char* id);                              // pushes that mod's environment on the match VM's stack
 std::vector<std::pair<std::string, uint16_t>> ModMessages();  // registered mod message names and ids, in order
+
+// Added for weapon clones (additive).
+using InitFn = void (*)(void* user);                    // at Init, after the gate allowed sim mods, before the first chunk
+int OnBeforeModsLoad(InitFn fn, void* user);            // clones are created here, so top-level chunks can set their fields
+void RemoveOnBeforeModsLoad(int handle);
+struct Arg { enum { Num, Str } kind; float num; const char* str; };
+void DispatchArgs(const char* event, const Arg* args, int n);   // Dispatch with string arguments
 }

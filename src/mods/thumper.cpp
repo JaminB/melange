@@ -31,6 +31,7 @@
 #include "melange/sim.h"
 #include "melange/testcmd.h"
 #include "mods/thumper_internal.h"
+#include "weapons/manifest.h"
 #include "version.h"
 
 namespace melange::thumper {
@@ -147,6 +148,41 @@ void MigrateDisabledMods() {
 // -------------------------------------------------------------------------------------------
 // Scan + parse + resolve, then merge into g_entries. Main thread only.
 // -------------------------------------------------------------------------------------------
+// Weapon clone declarations: checked per mod, then across mods in load order. A refused mod is Incompatible; the
+// accepted set is frozen at the first scan.
+void ApplyWeapons(std::vector<Entry>& entries) {
+    namespace wm = weapons::manifest;
+    std::vector<std::vector<wm::CloneDecl>> perMod;
+    std::vector<wm::Error> errs;
+    for (Entry& e : entries) {
+        if (!e.sessionActive || !e.contentRelevant || e.manifest.weapons.empty()) continue;
+        std::vector<wm::Error> own;
+        auto decls = wm::Parse(e.manifest, &own);
+        if (!own.empty()) {
+            errs.insert(errs.end(), own.begin(), own.end());
+            continue;
+        }
+        perMod.push_back(std::move(decls));
+    }
+    auto accepted = wm::Assign(perMod, &errs);
+    for (const wm::Error& er : errs) {
+        for (Entry& e : entries) {
+            if (e.manifest.id != er.mod) continue;
+            if (e.state != mods::State::Incompatible) e.reason.clear();
+            e.state = mods::State::Incompatible;
+            e.sessionActive = false;
+            e.reason += (e.reason.empty() ? "" : "; ") + er.text;
+        }
+        LOG_WARN("[thumper] %s: weapons refused: %s", er.mod.c_str(), er.text.c_str());
+    }
+    if (!wm::IsFrozen()) {
+        for (auto& d : accepted)
+            LOG_INFO("[thumper] clone k=%u %s (base %s, cell %d) from %s", d.k, d.name.c_str(), d.base.c_str(), d.cell,
+                     d.mod.c_str());
+        wm::Freeze(std::move(accepted));
+    }
+}
+
 void DoRescan() {
     std::vector<Candidate> candidates = ScanFolders();
     std::vector<spice::Manifest> manifests;
@@ -266,6 +302,8 @@ void DoRescan() {
         if (ap) return a.order < b.order;
         return a.manifest.id < b.manifest.id;
     });
+
+    ApplyWeapons(next);
 
     std::vector<std::string> simIds;
     for (const Entry& e : next)

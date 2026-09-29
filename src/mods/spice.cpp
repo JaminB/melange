@@ -317,6 +317,109 @@ bool ValidMessageName(const std::string& s) {
     return p == s.size() && segments >= 1 && segments <= 5;
 }
 
+bool ParseWeapons(const json::Value& a, Manifest* out, std::vector<Error>* errs) {
+    if (!a.IsArray()) {
+        AddError(errs, &a, "weapons", "weapons must be an array");
+        return false;
+    }
+    if (a.items.size() > 3) {
+        AddError(errs, &a, "weapons", "at most 3 weapons (the free panel cells)");
+        return false;
+    }
+    bool ok = true;
+    for (const json::Value& item : a.items) {
+        if (!item.IsObject()) {
+            AddError(errs, &item, "weapons", "each weapon must be an object");
+            ok = false;
+            continue;
+        }
+        Weapon w;
+        w.line = item.line;
+        bool good = true;
+        auto str = [&](const json::Value& m, const char* key, std::string* into, size_t max) {
+            if (!m.IsString() || m.string.empty() || m.string.size() > max) {
+                AddError(errs, &m, "weapons", std::string("weapons.") + key + " must be a string of 1-" + std::to_string(max) +
+                                                  " characters");
+                good = false;
+                return;
+            }
+            *into = m.string;
+        };
+        for (const auto& [key, m] : item.members) {
+            if (key == "name") {
+                str(m, "name", &w.name, 48);
+            } else if (key == "base") {
+                str(m, "base", &w.base, 48);
+            } else if (key == "bank") {
+                str(m, "bank", &w.bank, 200);
+            } else if (key == "panelIcon") {
+                str(m, "panelIcon", &w.panelIcon, 200);
+            } else if (key == "hudIcon") {
+                str(m, "hudIcon", &w.hudIcon, 120);
+            } else if (key == "cell") {
+                if (!m.IsInteger() || m.number < 0 || m.number > 41) {
+                    AddError(errs, &m, "weapons.cell", "weapons.cell must be 29, 39 or 40");
+                    good = false;
+                } else {
+                    w.cell = static_cast<int>(m.number);
+                }
+            } else if (key == "set") {
+                if (!m.IsObject() || m.members.size() > 64) {
+                    AddError(errs, &m, "weapons.set", "weapons.set must be an object of at most 64 fields");
+                    good = false;
+                    continue;
+                }
+                for (const auto& [fk, fv] : m.members) {
+                    WeaponSet s;
+                    s.field = fk;
+                    s.line = fv.line;
+                    if (fv.IsNumber()) {
+                        s.kind = WeaponSet::Number;
+                        s.number = fv.number;
+                    } else if (fv.IsBool()) {
+                        s.kind = WeaponSet::Boolean;
+                        s.boolean = fv.boolean;
+                    } else if (fv.IsString() && fv.string.size() <= 120) {
+                        s.kind = WeaponSet::String;
+                        s.string = fv.string;
+                    } else {
+                        AddError(errs, &fv, "weapons.set", "weapons.set." + fk + " must be a number, a boolean or a string");
+                        good = false;
+                        continue;
+                    }
+                    w.set.push_back(std::move(s));
+                }
+            } else if (key == "text") {
+                if (!m.IsObject()) {
+                    AddError(errs, &m, "weapons.text", "weapons.text must be an object");
+                    good = false;
+                    continue;
+                }
+                for (const auto& [tk, tv] : m.members) {
+                    if (tk == "name" && tv.IsString() && tv.string.size() <= 48) {
+                        w.textName = tv.string;
+                    } else if (tk == "help" && tv.IsString() && tv.string.size() <= 400) {
+                        w.textHelp = tv.string;
+                    } else {
+                        AddError(errs, &tv, "weapons.text", "weapons.text takes name (<= 48) and help (<= 400) strings");
+                        good = false;
+                    }
+                }
+            } else {
+                AddError(errs, &m, "weapons", "unknown weapons key '" + key + "'");
+                good = false;
+            }
+        }
+        if (w.name.empty() || w.base.empty()) {
+            AddError(errs, &item, "weapons", "each weapon needs a name and a base");
+            good = false;
+        }
+        if (good) out->weapons.push_back(std::move(w));
+        ok &= good;
+    }
+    return ok;
+}
+
 bool ParseManifestJson(const json::Value& v, const std::string& folderId, Manifest* out, std::vector<Error>* errs) {
     if (!v.IsObject()) {
         AddError(errs, &v, "", "spice.json must be a JSON object");
@@ -531,6 +634,13 @@ bool ParseManifestJson(const json::Value& v, const std::string& folderId, Manife
     if (!out->messages.empty() && !out->content) {
         AddError(errs, v.Get("messages"), "messages", "messages requires kind: \"content\"");
         ok = false;
+    }
+    if (const json::Value* w = v.Get("weapons")) {
+        if (!ParseWeapons(*w, out, errs)) ok = false;
+        if (!out->weapons.empty() && !out->content) {
+            AddError(errs, w, "weapons", "weapons requires kind: \"content\"");
+            ok = false;
+        }
     }
     if (const json::Value* settings = v.Get("settings")) {
         if (!settings->IsArray()) {

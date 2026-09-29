@@ -27,6 +27,12 @@ struct MatchObserver {
 };
 std::vector<MatchObserver> g_matchObservers;
 int g_nextObserver = 1;
+struct BeforeLoad {
+    int handle;
+    simbridge::InitFn fn;
+    void* user;
+};
+std::vector<BeforeLoad> g_beforeLoad;
 std::vector<std::pair<std::string, uint16_t>> g_modMessages;
 bool g_frozen = false;
 double g_usLast = 0, g_usBridge = 0;
@@ -61,16 +67,45 @@ int PushTick(l5::State* L, const void* ctx) {
     return 1;
 }
 
-struct DispatchArgs {
+struct DispatchFloats {
     const char* event;
     const std::vector<float>* args;
 };
 int PushDispatch(l5::State* L, const void* ctx) {
-    const auto& d = *static_cast<const DispatchArgs*>(ctx);
+    const auto& d = *static_cast<const DispatchFloats*>(ctx);
     l5::A().pushstring(L, d.event);
     const size_t n = std::min<size_t>(d.args->size(), 16);
     for (size_t i = 0; i < n; ++i) l5::A().pushnumber(L, (*d.args)[i]);
     return 1 + static_cast<int>(n);
+}
+
+struct DispatchArgList {
+    const char* event;
+    const simbridge::Arg* args;
+    int n;
+};
+int PushDispatchArgs(l5::State* L, const void* ctx) {
+    const auto& d = *static_cast<const DispatchArgList*>(ctx);
+    l5::A().pushstring(L, d.event);
+    const int n = std::min(d.n, 16);
+    for (int i = 0; i < n; ++i) {
+        if (d.args[i].kind == simbridge::Arg::Str)
+            l5::A().pushstring(L, d.args[i].str ? d.args[i].str : "");
+        else
+            l5::A().pushnumber(L, d.args[i].num);
+    }
+    return 1 + n;
+}
+
+void NotifyBeforeLoad() {
+    const auto obs = g_beforeLoad;
+    for (auto& o : obs) {
+        try {
+            o.fn(o.user);
+        } catch (...) {
+            LOG_ERROR("[sim] an OnBeforeModsLoad observer threw");
+        }
+    }
 }
 
 void NotifyMatch(bool begin) {
@@ -126,6 +161,7 @@ void SetLogSink(LogSink fn) { g_sink = fn; }
 void SetHooksChanged(void (*fn)()) { g_hooksChanged = fn; }
 bool Active() { return g.active; }
 bool HasTickHooks() { return !g_tickHooks.empty(); }
+bool HasBeforeLoad() { return !g_beforeLoad.empty(); }
 bool NeedsTickHooks() { return g.active || !g_tickHooks.empty(); }
 l5::State* MatchL() { return g.L; }
 
@@ -145,11 +181,13 @@ bool Init(const std::vector<std::string>& forwarded, bool gateOpen) {
         const uint16_t id = l5::Lookup(n.c_str());
         if (id != 0xffff) g.forwarded[id] = n;
     }
-    if (g_sources.empty()) return false;
+    if (g_sources.empty() && g_beforeLoad.empty()) return false;
     if (!gateOpen) {
         LOG_INFO("[sim] match %u: %zu sim mods suspended (gate closed)", g.serial, g_sources.size());
         return false;
     }
+    NotifyBeforeLoad();
+    if (g_sources.empty()) return false;
     const auto t0 = Clock::now();
     CaptureEngineRefs();
     g.baseHeapKB = l5::A().getgccount(g.L);
@@ -468,9 +506,28 @@ void RemoveOnMatch(int handle) {
     std::erase_if(g_matchObservers, [handle](const MatchObserver& o) { return o.handle == handle; });
 }
 
+int OnBeforeModsLoad(InitFn fn, void* user) {
+    if (!fn) return 0;
+    g_beforeLoad.push_back({g_nextObserver, fn, user});
+    if (g_hooksChanged) g_hooksChanged();
+    return g_nextObserver++;
+}
+
+void RemoveOnBeforeModsLoad(int handle) {
+    std::erase_if(g_beforeLoad, [handle](const BeforeLoad& o) { return o.handle == handle; });
+    if (g_hooksChanged) g_hooksChanged();
+}
+
+void DispatchArgs(const char* event, const Arg* args, int n) {
+    if (!g.active || !event || std::strncmp(event, "sim.", 4) != 0 || n < 0 || (n && !args)) return;
+    const DispatchArgList d{event, args, n};
+    DeliverEvent(event, &PushDispatchArgs, &d);
+    Compact();
+}
+
 void Dispatch(const char* event, const std::vector<float>& args) {
     if (!g.active || !event || std::strncmp(event, "sim.", 4) != 0) return;
-    const DispatchArgs d{event, &args};
+    const DispatchFloats d{event, &args};
     DeliverEvent(event, &PushDispatch, &d);
     Compact();
 }

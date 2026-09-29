@@ -10,12 +10,17 @@
 namespace melange::spice {
 struct Dep { std::string id, range; };
 struct Setting { std::string key, type, label, def; double min = 0, max = 0; std::vector<std::string> options; };
+// One entry of the "weapons" array, checked for shape only; weapons/manifest.cpp checks names, bases and field types.
+struct WeaponSet { std::string field; enum Kind { Number, Boolean, String } kind = Number; double number = 0;
+                   bool boolean = false; std::string string; int line = 0; };
+struct Weapon { std::string name, base, bank, panelIcon, hudIcon, textName, textHelp; int cell = -1;
+                std::vector<WeaponSet> set; int line = 0; };
 struct Manifest {
     std::string id, version, name, description, website, melangeRange; std::vector<std::string> authors;
     bool content = false, unsafe = false, defaultEnabled = true, implicit = false;
     std::string filesystem = "none", entryClient, entrySim, assetsRoot = "assets", shaders = "shaders", effects = "effects";
     std::vector<Dep> dependencies, optional, conflicts; std::vector<std::string> loadAfter, messages, hashInclude;
-    std::vector<Setting> settings; std::wstring dir;
+    std::vector<Setting> settings; std::vector<Weapon> weapons; std::wstring dir;
 };
 struct Error { std::string field; int line = 0, col = 0; std::string text; };
 bool Parse(const std::wstring& dir, Manifest* out, std::vector<Error>* errs);  // synthesises the implicit manifest

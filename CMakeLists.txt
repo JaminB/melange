@@ -149,7 +149,8 @@ target_include_directories(melange PRIVATE src src/sdk ${CMAKE_BINARY_DIR}/gener
 target_compile_definitions(melange PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX _CRT_SECURE_NO_WARNINGS)
 target_compile_options(melange PRIVATE /W4 /utf-8 /permissive- /Zi /wd4100)
 target_link_options(melange PRIVATE /DEBUG /OPT:REF /OPT:ICF /SAFESEH:NO)
-target_link_libraries(melange PRIVATE safetyhook::safetyhook dbghelp bcrypt ws2_32 shell32 imgui miniz lua54 oasis_core)
+target_link_libraries(melange PRIVATE safetyhook::safetyhook dbghelp bcrypt ws2_32 shell32 imgui miniz lua54 oasis_core
+    melange_xom)
 
 # Oasis core without the game: HTTP/WS corpus against a live server on 127.0.0.1, protocol and queue cases.
 add_executable(oasis_core_selftest tests/oasis_core_selftest.cpp src/oasis/auth.cpp src/oasis/webpanels.cpp
@@ -232,6 +233,19 @@ target_include_directories(handshake_selftest PRIVATE src src/sdk)
 target_compile_definitions(handshake_selftest PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX _CRT_SECURE_NO_WARNINGS)
 target_compile_options(handshake_selftest PRIVATE /W4 /utf-8 /permissive-)
 target_link_libraries(handshake_selftest PRIVATE bcrypt)
+
+# The spice.json "weapons" array without the game: shape, names, bases, cells, set types and the k order.
+add_executable(weapons_manifest_selftest
+    tests/weapons_manifest_selftest.cpp
+    src/weapons/manifest.cpp
+    src/weapons/schema.cpp
+    src/mods/spice.cpp
+    src/tools/json_read.cpp
+    src/core/log.cpp)
+target_include_directories(weapons_manifest_selftest PRIVATE src src/sdk)
+target_compile_definitions(weapons_manifest_selftest PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX _CRT_SECURE_NO_WARNINGS)
+target_compile_options(weapons_manifest_selftest PRIVATE /W4 /utf-8 /permissive-)
+target_link_libraries(weapons_manifest_selftest PRIVATE melange_xom)
 
 add_executable(lua54_selftest tests/lua54_selftest.cpp)
 target_compile_options(lua54_selftest PRIVATE /W4 /utf-8 /permissive- /EHsc)
