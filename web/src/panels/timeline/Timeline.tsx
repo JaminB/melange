@@ -4,7 +4,8 @@
 import { useEffect, useRef, useState } from "preact/hooks";
 import type { TickRecord, WsrFile } from "../../sdk/wsr";
 import {
-  COMPONENT_NAMES, EXPECTED_FPUCW, changedMask, clampView, fracToTick, panView, tickAtOrBefore, tickToFrac, zoomView,
+  COMPONENT_NAMES, EXPECTED_FPUCW, changedMask, clampView, fracToTick, panView, tickAtOrBefore, tickToFrac, turnStarts,
+  zoomView,
   type ViewRange,
 } from "./model";
 
@@ -37,6 +38,7 @@ export function Timeline({ file, name, onClose }: TimelineProps) {
   const total = file.tickRange ? file.tickRange.to + 1 : file.ticks.length;
   const [view, setView] = useState<ViewRange>(() => clampView({ from: 0, to: Math.max(0, total - 1) }, total, Math.min(50, Math.max(1, total))));
   const [selected, setSelected] = useState<number>();
+  const [turns] = useState(() => turnStarts(file.ticks));
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const boxRef = useRef<HTMLDivElement>(null);
   const dragRef = useRef<{ x: number; view: ViewRange } | null>(null);
@@ -114,6 +116,17 @@ export function Timeline({ file, name, onClose }: TimelineProps) {
     ctx.fillStyle = muted;
     ctx.font = "10px sans-serif";
     for (let r = 0; r < rows; r++) ctx.fillText(COMPONENT_NAMES[r], 4, HEADER_H + r * rowH + rowH / 2 + 3);
+
+    // turn starts: a tick mark across the ruler
+    ctx.strokeStyle = muted;
+    for (const t of turns) {
+      if (t < view.from || t > view.to) continue;
+      const x = Math.round(tickToFrac(t, view) * w) + 0.5;
+      ctx.beginPath();
+      ctx.moveTo(x, HEADER_H - 6);
+      ctx.lineTo(x, HEADER_H);
+      ctx.stroke();
+    }
 
     // divergence markers span the full height
     ctx.strokeStyle = bad;
@@ -193,6 +206,7 @@ export function Timeline({ file, name, onClose }: TimelineProps) {
           <button class="btn" onClick={onClose}>&larr; Replays</button>
           <strong class="mono small">{name}</strong>
           <span class="muted small">{file.complete ? "complete" : "incomplete"}{file.header.online ? " · online" : ""}</span>
+          <span class="muted small" data-turns={turns.length}>{turns.length} turns · {file.ticks.length} ticks</span>
         </div>
         <span class="muted small">scroll to zoom · drag to pan · click a tick to inspect it</span>
       </div>

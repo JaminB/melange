@@ -72,3 +72,10 @@ export const EXPECTED_FPUCW = 0x027f;
 export function fpuFaultTicks(ticks: readonly TickRecord[]): number[] {
   return ticks.filter((t) => t.fpucw !== EXPECTED_FPUCW).map((t) => t.tick);
 }
+
+// Ticks where the turn component (current team and active worm) changes: one per turn start.
+export function turnStarts(ticks: readonly TickRecord[]): number[] {
+  const out: number[] = [];
+  for (let i = 1; i < ticks.length; i++) if (ticks[i].c[1] !== ticks[i - 1].c[1]) out.push(ticks[i].tick);
+  return out;
+}

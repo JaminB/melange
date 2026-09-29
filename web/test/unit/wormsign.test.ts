@@ -3,7 +3,7 @@ import { test } from "node:test";
 import { deepDiff } from "../../src/panels/desync/model";
 import { entriesOf, formatBytes, formatDuration, sortNewestFirst, withEntry, type ReplayEntry } from "../../src/panels/replays/model";
 import {
-  changedMask, clampView, fpuFaultTicks, fracToTick, panView, tickAtOrBefore, tickToFrac, zoomView,
+  changedMask, clampView, fpuFaultTicks, fracToTick, panView, tickAtOrBefore, tickToFrac, turnStarts, zoomView,
 } from "../../src/panels/timeline/model";
 import type { TickRecord } from "../../src/sdk/wsr";
 
@@ -129,4 +129,10 @@ test("deepDiff handles missing keys on either side and top-level scalars", () =>
   assert.deepEqual(deepDiff({ a: 1 }, { a: 1, b: 2 }), [{ path: "b", before: undefined, after: 2 }]);
   assert.deepEqual(deepDiff(5, 6), [{ path: "(root)", before: 5, after: 6 }]);
   assert.deepEqual(deepDiff(5, 5), []);
+});
+
+test("turnStarts marks each tick where the turn component changes", () => {
+  const mk = (tick: number, turn: string): TickRecord =>
+    ({ tick, engine: "", mods: "", c: ["0", turn, "0", "0", "0", "0"], rngLogic: 0, rng2: 0, fpucw: 0x027f, inputs: 0 });
+  assert.deepEqual(turnStarts([mk(0, "a"), mk(1, "a"), mk(2, "b"), mk(3, "b"), mk(4, "c")]), [2, 4]);
 });
