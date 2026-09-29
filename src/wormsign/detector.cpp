@@ -229,7 +229,7 @@ void GameEnv::Bundle(const detect::Report& r) {
     SYSTEMTIME st;
     GetLocalTime(&st);
     job.path = job.dir + L"\\" + bundle::FileName(r.div.serial, r.div.tick, st.wYear, st.wMonth, st.wDay, st.wHour, st.wMinute,
-                                                  st.wSecond);
+                                                  st.wSecond, GetCurrentProcessId());
     WriteBundle(job);
     g_jobs.push_back(std::move(job));
 }

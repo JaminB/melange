@@ -151,9 +151,9 @@ bool BuildZip(const Inputs& in, std::string* zip, std::vector<std::string>* entr
     return ok;
 }
 
-std::wstring FileName(uint32_t serial, uint32_t tick, int y, int mo, int d, int h, int mi, int s) {
-    wchar_t b[96];
-    swprintf(b, 96, L"desync-%04d%02d%02d-%02d%02d%02d-m%u-t%u.zip", y, mo, d, h, mi, s, serial, tick);
+std::wstring FileName(uint32_t serial, uint32_t tick, int y, int mo, int d, int h, int mi, int s, uint32_t pid) {
+    wchar_t b[112];
+    swprintf(b, 112, L"desync-%04d%02d%02d-%02d%02d%02d-p%u-m%u-t%u.zip", y, mo, d, h, mi, s, pid, serial, tick);
     return b;
 }
 }  // namespace melange::wormsign::bundle

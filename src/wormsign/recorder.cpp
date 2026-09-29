@@ -56,8 +56,8 @@ std::wstring TimestampedName(uint32_t serial) {
     SYSTEMTIME st;
     GetLocalTime(&st);
     wchar_t buf[96];
-    swprintf_s(buf, L"wsr-%04d%02d%02d-%02d%02d%02d-m%u.wsr", st.wYear, st.wMonth, st.wDay, st.wHour, st.wMinute,
-               st.wSecond, serial);
+    swprintf_s(buf, L"wsr-%04d%02d%02d-%02d%02d%02d-p%lu-m%u.wsr", st.wYear, st.wMonth, st.wDay, st.wHour, st.wMinute,
+               st.wSecond, GetCurrentProcessId(), serial);
     return buf;
 }
 

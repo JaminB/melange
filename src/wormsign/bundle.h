@@ -39,6 +39,6 @@ std::string ReportJson(const Inputs& in);
 std::string DiffText(const Inputs& in);
 std::string Redact(const Inputs& in, std::string text);
 bool BuildZip(const Inputs& in, std::string* zip, std::vector<std::string>* entries = nullptr);
-// desync-<yyyymmdd-hhmmss>-m<serial>-t<tick>.zip
-std::wstring FileName(uint32_t serial, uint32_t tick, int y, int mo, int d, int h, int mi, int s);
+// desync-<yyyymmdd-hhmmss>-p<pid>-m<serial>-t<tick>.zip (the pid keeps two instances on one machine apart)
+std::wstring FileName(uint32_t serial, uint32_t tick, int y, int mo, int d, int h, int mi, int s, uint32_t pid);
 }  // namespace melange::wormsign::bundle

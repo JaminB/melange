@@ -62,7 +62,7 @@ The overlay panel *Wormsign/Peers* lists every lobby member: whether hashes are 
 
 ### The desync bundle
 
-`Documents\Melange\replays\desync-<date>-m<match>-t<tick>.zip` holds:
+`Documents\Melange\replays\desync-<date>-p<process>-m<match>-t<tick>.zip` holds:
 
 | File | Content |
 |---|---|

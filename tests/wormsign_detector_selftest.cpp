@@ -565,7 +565,7 @@ void Bundle() {
            "the log is redacted");
     Expect(ZipEntry(zip, "sysinfo.txt").find("DESKTOP-XYZ") == std::string::npos, "the computer name is replaced");
     Expect(ZipEntry(zip, "match.wsr") == "WSR1", "the recording is stored as is");
-    Expect(bundle::FileName(3, 5000, 2026, 9, 29, 14, 5, 7) == L"desync-20260929-140507-m3-t5000.zip", "bundle file name");
+    Expect(bundle::FileName(3, 5000, 2026, 9, 29, 14, 5, 7, 42) == L"desync-20260929-140507-p42-m3-t5000.zip", "bundle file name");
     bundle::Inputs none;
     none.div.tick = 1;
     Expect(bundle::BuildZip(none, &zip, nullptr) && ZipEntry(zip, "diff.txt").find("no field diff") != std::string::npos,
