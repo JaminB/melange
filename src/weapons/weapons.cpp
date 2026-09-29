@@ -15,6 +15,7 @@
 #include "melange/jlog.h"
 #include "melange/testcmd.h"
 #include "melange/weapons.h"
+#include "mods/thumper_internal.h"
 #include "weapons/behaviour.h"
 #include "weapons/contrib.h"
 #include "weapons/engine.h"
@@ -117,6 +118,17 @@ bool VerbField(std::string_view a, void*) {
     return c != 0;
 }
 
+// Every enabled content mod with an assets/loose/ folder gets a search path, once per launch. Panel icons and
+// banks are per-clone and per-match, so they stay with the registry (it asks ReservePanelIcon/LoadModBank).
+void AddModRoots() {
+    for (auto& e : melange::thumper::Snapshot()) {
+        if (!e.sessionActive || !e.contentRelevant) continue;
+        char err[256] = {};
+        if (!melange::assets::AddModRoot(e.manifest.id.c_str(), err, sizeof err) && *err)
+            LOG_WARN("[assets] %s: %s", e.manifest.id.c_str(), err);
+    }
+}
+
 bool VerbAssets(std::string_view, void*) {
     const auto s = melange::assets::GetStats();
     const auto u = melange::assets::upload::GetStats();
@@ -167,6 +179,7 @@ public:
     bool Install() override {
         g_assets = melange::assets::upload::Available() && eng::SitesOk();
         melange::testcmd::Register("assets.stats", &VerbAssets);
+        if (g_assets) AddModRoots();
         LOG_INFO("[assets] installed: %s", g_assets ? "ok" : "code bytes differ, inert");
         return true;
     }
