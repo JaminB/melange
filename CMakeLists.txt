@@ -262,6 +262,17 @@ target_compile_definitions(erg_scene_selftest PRIVATE WIN32_LEAN_AND_MEAN NOMINM
 target_compile_options(erg_scene_selftest PRIVATE /W4 /utf-8 /permissive-)
 target_link_libraries(erg_scene_selftest PRIVATE melange_xom)
 
+# Terrain sculpting without the game: voxel word rules, voxels ops applied and diffed over synthetic frames, the
+# editor's sculpt fixture under the server's rules, and the shadow-cache deletion.
+add_executable(erg_voxels_selftest
+    tests/erg_voxels_selftest.cpp
+    src/erg/voxels.cpp src/erg/scene.cpp src/erg/patch.cpp src/erg/names.cpp src/erg/jsonio.cpp)
+target_include_directories(erg_voxels_selftest PRIVATE src src/sdk)
+target_compile_definitions(erg_voxels_selftest PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX _CRT_SECURE_NO_WARNINGS
+    MELANGE_SOURCE_DIR="${CMAKE_SOURCE_DIR}")
+target_compile_options(erg_voxels_selftest PRIVATE /W4 /utf-8 /permissive-)
+target_link_libraries(erg_voxels_selftest PRIVATE melange_xom)
+
 # xomtool: the Sieve CLI (unpack/pack/inspect/diff/convert/bank/report). PNG I/O only here -
 # src/xom itself stays platform-free.
 add_executable(xomtool tools/xomtool/main.cpp)

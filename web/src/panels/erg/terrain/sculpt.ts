@@ -1,0 +1,134 @@
+// Sculpting against the editor's scene: strokes become one undoable command each (a drag merges its steps), touched
+// frames are remeshed, and a step that would push the patch past the server's limits is refused before it is applied.
+import { LIMITS, voxelRuns, type Command, type CommandStack, type Scene, type Vec3 } from "../../../sdk/erg";
+import { anchorAt, strokeChanges, worldBox, type Anchor, type Brush } from "./brush";
+import { pick, type Hit } from "./pick";
+import { gridFrames, overlaps, type Box, type GridFrame } from "./voxel";
+
+export interface TerrainHost {
+  scene: Scene;
+  voxels: Map<number, Uint32Array>;   // blob ref -> the edited words (the scene the view draws)
+  base: Map<number, Uint32Array>;     // blob ref -> the words as loaded (what toPatch diffs against)
+  stack: CommandStack;
+  remesh(frameIds: number[]): void;   // the mesher rebuilds these frames only
+}
+
+type Changes = Map<number, Map<number, [number, number]>>;
+
+/** One brush stroke over any number of frames. Steps of the same stroke merge into it. */
+export class SculptStroke implements Command {
+  constructor(readonly label: string, readonly stroke: number, private voxels: Map<number, Uint32Array>,
+    private changes: Changes, private notify: (refs: number[]) => void) {}
+  get size() { let n = 0; for (const c of this.changes.values()) n += c.size; return n; }
+  refs() { return [...this.changes.keys()]; }
+  do() { this.write(1); }
+  undo() { this.write(0); }
+  merge(next: Command): boolean {
+    if (!(next instanceof SculptStroke) || next.stroke !== this.stroke) return false;
+    for (const [ref, add] of next.changes) {
+      const mine = this.changes.get(ref) ?? new Map<number, [number, number]>();
+      for (const [i, [before, after]] of add) {
+        const had = mine.get(i);
+        if (!had) mine.set(i, [before, after]);
+        else if (had[0] === after) mine.delete(i);
+        else had[1] = after;
+      }
+      if (mine.size) this.changes.set(ref, mine);
+      else this.changes.delete(ref);
+    }
+    return true;
+  }
+  private write(which: 0 | 1) {
+    for (const [ref, c] of this.changes) {
+      const v = this.voxels.get(ref);
+      if (!v) throw new Error(`no voxel blob ${ref}`);
+      for (const [i, pair] of c) v[i] = pair[which];
+    }
+    this.notify(this.refs());
+  }
+}
+
+export interface StepResult { changed: number; frames: number[]; refused?: string; ms: number; }
+
+// JSON bytes of a run, "[start,count,value],"
+const runBytes = (r: [number, number, number]) => String(r[0]).length + String(r[1]).length + String(r[2]).length + 5;
+const PATCH_BUDGET = LIMITS.patchBytes - (512 << 10);   // headroom for the detail ops and the envelope
+
+const now = () => (typeof performance !== "undefined" ? performance.now() : Date.now());
+
+export class Sculptor {
+  private grids: GridFrame[] = [];
+  private frameOfRef = new Map<number, number>();
+  private patchCost = new Map<number, number>();   // ref -> JSON bytes of its runs
+  private stroke = 0;
+  private open = false;
+
+  constructor(private host: TerrainHost) { this.refresh(); }
+
+  /** Rebuilds the frame caches (after a load or a reload of the scene). */
+  refresh() {
+    this.grids = gridFrames(this.host.scene, this.host.voxels);
+    this.frameOfRef = new Map(this.grids.map((g) => [g.ref, g.frame.id]));
+    this.patchCost.clear();
+    for (const g of this.grids) this.patchCost.set(g.ref, this.cost(g.ref, this.host.voxels.get(g.ref)!));
+  }
+
+  get frames(): readonly GridFrame[] { return this.grids; }
+
+  pick(origin: Vec3, dir: Vec3): Hit | null { return pick(this.grids, this.host.voxels, origin, dir); }
+
+  anchor(hit: Hit, b: Brush): Anchor { return anchorAt(hit, b.mode); }
+
+  /** The brush outline (world box, .xan units) and the frames it reaches, for the cursor. */
+  preview(a: Anchor, b: Brush): { box: Box; frames: number[] } {
+    const box = worldBox(a, b);
+    return { box, frames: this.grids.filter((g) => overlaps(box, g.bounds)).map((g) => g.frame.id) };
+  }
+
+  /** Starts a stroke: the steps until end() are one undo step. */
+  begin() { this.stroke++; this.open = true; }
+  end() { this.open = false; }
+
+  /** Applies the brush once at the anchor; refused when a frame would pass 2000 runs or the patch 3.5 MB. */
+  step(a: Anchor, b: Brush): StepResult {
+    const t0 = now();
+    if (!this.open) this.begin();
+    const changes = strokeChanges(this.grids, this.host.voxels, a, b);
+    const frames = [...changes.keys()].map((r) => this.frameOfRef.get(r)!);
+    let changed = 0;
+    for (const c of changes.values()) changed += c.size;
+    if (!changed) return { changed: 0, frames: [], ms: now() - t0 };
+
+    let total = 0;
+    for (const v of this.patchCost.values()) total += v;
+    for (const [ref, c] of changes) {
+      const words = this.host.voxels.get(ref)!.slice();
+      for (const [i, [, after]] of c) words[i] = after;
+      const runs = voxelRuns(this.host.base.get(ref) ?? words, words);
+      if (runs.length > LIMITS.runsPerFrame)
+        return { changed: 0, frames: [], ms: now() - t0,
+          refused: `frame ${this.frameOfRef.get(ref)} would need ${runs.length} runs (the limit is ${LIMITS.runsPerFrame}): its edits are too scattered` };
+      total += runs.reduce((n, r) => n + runBytes(r), 0) - (this.patchCost.get(ref) ?? 0);
+    }
+    if (total > PATCH_BUDGET)
+      return { changed: 0, frames: [], ms: now() - t0, refused: "the terrain edits would make the patch larger than the server accepts" };
+
+    const cmd = new SculptStroke(`${b.mode[0].toUpperCase()}${b.mode.slice(1)} terrain`, this.stroke, this.host.voxels, changes,
+      (refs) => this.onWrite(refs));
+    this.host.stack.exec(cmd, true);
+    return { changed, frames, ms: now() - t0 };
+  }
+
+  /** The JSON cost of every frame's runs so far (bytes); the panel shows it against the limit. */
+  get patchBytes() { let n = 0; for (const v of this.patchCost.values()) n += v; return n; }
+
+  private onWrite(refs: number[]) {
+    for (const ref of refs) this.patchCost.set(ref, this.cost(ref, this.host.voxels.get(ref)!));
+    this.host.remesh(refs.map((r) => this.frameOfRef.get(r)!).filter((id) => id !== undefined));
+  }
+
+  private cost(ref: number, words: Uint32Array) {
+    const base = this.host.base.get(ref);
+    return base ? voxelRuns(base, words).reduce((n, r) => n + runBytes(r), 0) : 0;
+  }
+}
