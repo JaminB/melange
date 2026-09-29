@@ -54,6 +54,21 @@ const Site kSites[] = {
 
 bool Intact(const Site& s) { return game::IsKnownBuild() && mem::Expect(s.addr, s.bytes); }
 
+struct ExtraSite {
+    uintptr_t addr;
+    std::vector<int> bytes;
+};
+std::vector<ExtraSite> g_extraSites;
+
+bool Intact(const ExtraSite& s) {
+    if (!game::IsKnownBuild()) return false;
+    for (size_t i = 0; i < s.bytes.size(); ++i) {
+        uint8_t b = 0;
+        if (s.bytes[i] >= 0 && (!mem::SafeRead(s.addr + i, &b, 1) || b != s.bytes[i])) return false;
+    }
+    return true;
+}
+
 bool FnOk(uintptr_t addr) {
     for (auto& s : kSites)
         if (s.addr == addr) return Intact(s);
@@ -212,7 +227,17 @@ bool SitesOk() {
 bool SiteIntact(uintptr_t site) {
     for (auto& s : kSites)
         if (s.addr == site) return s.hook && Intact(s);
+    for (auto& s : g_extraSites)
+        if (s.addr == site) return Intact(s);
     return false;
+}
+
+void AddHookSite(uintptr_t site, std::initializer_list<int> bytes) {
+    for (auto& s : kSites)
+        if (s.addr == site) return;
+    for (auto& s : g_extraSites)
+        if (s.addr == site) return;
+    g_extraSites.push_back({site, std::vector<int>(bytes)});
 }
 
 uintptr_t Drm() { return FnOk(kRoot) ? RawDrm() : 0; }

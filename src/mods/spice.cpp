@@ -435,6 +435,56 @@ bool ParseWeapons(const json::Value& a, Manifest* out, std::vector<Error>* errs)
     return ok;
 }
 
+bool ParseLevels(const json::Value& a, Manifest* out, std::vector<Error>* errs) {
+    if (!a.IsArray()) {
+        AddError(errs, &a, "levels", "levels must be an array");
+        return false;
+    }
+    if (a.items.size() > 32) {
+        AddError(errs, &a, "levels", "at most 32 levels per mod");
+        return false;
+    }
+    bool ok = true;
+    for (const json::Value& item : a.items) {
+        if (!item.IsObject()) {
+            AddError(errs, &item, "levels", "each level must be an object");
+            ok = false;
+            continue;
+        }
+        Level l;
+        l.line = item.line;
+        bool good = true;
+        for (const auto& [key, m] : item.members) {
+            if (key == "slug" || key == "title" || key == "type" || key == "source") {
+                const size_t max = key == "source" ? 200 : key == "title" ? 40 : 24;
+                if (!m.IsString() || m.string.empty() || m.string.size() > max) {
+                    AddError(errs, &m, "levels", "levels." + key + " must be a string of 1-" + std::to_string(max) + " characters");
+                    good = false;
+                    continue;
+                }
+                (key == "slug" ? l.slug : key == "title" ? l.title : key == "type" ? l.type : l.source) = m.string;
+            } else if (key == "chunk") {
+                if (!m.IsBool()) {
+                    AddError(errs, &m, "levels.chunk", "levels.chunk must be a boolean");
+                    good = false;
+                } else {
+                    l.chunk = m.boolean;
+                }
+            } else {
+                AddError(errs, &m, "levels", "unknown levels key '" + key + "'");
+                good = false;
+            }
+        }
+        if (l.slug.empty() || l.title.empty()) {
+            AddError(errs, &item, "levels", "each level needs a slug and a title");
+            good = false;
+        }
+        if (good) out->levels.push_back(std::move(l));
+        ok &= good;
+    }
+    return ok;
+}
+
 bool ParseManifestJson(const json::Value& v, const std::string& folderId, Manifest* out, std::vector<Error>* errs) {
     if (!v.IsObject()) {
         AddError(errs, &v, "", "spice.json must be a JSON object");
@@ -659,6 +709,13 @@ bool ParseManifestJson(const json::Value& v, const std::string& folderId, Manife
         if (!ParseWeapons(*w, out, errs)) ok = false;
         if (!out->weapons.empty() && !out->content) {
             AddError(errs, w, "weapons", "weapons requires kind: \"content\"");
+            ok = false;
+        }
+    }
+    if (const json::Value* lv = v.Get("levels")) {
+        if (!ParseLevels(*lv, out, errs)) ok = false;
+        if (!out->levels.empty() && !out->content) {
+            AddError(errs, lv, "levels", "levels requires kind: \"content\"");
             ok = false;
         }
     }

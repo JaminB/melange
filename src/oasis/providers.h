@@ -10,5 +10,6 @@ void InstallLua(); void InstallMods(); void InstallIni();                       
 void InstallCapture();                                                                            // capture viewer
 void InstallWebPanels();                                                                          // web panels
 void InstallWormsign();                                                                           // replays and desync
+void InstallLevels(); void InstallErgAssets();                                                    // Erg level service, previews
 core::Auth* MakeAuth();                                                                           // launch token, Host, Origin
 }  // namespace melange::oasis::providers
