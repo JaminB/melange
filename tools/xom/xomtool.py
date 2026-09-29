@@ -134,8 +134,15 @@ def cmd_pack(a):
         else:
             with open(src, encoding='utf-8') as f:
                 doc = json.load(f)
-        save_doc(out, doc)
     except (xom.XomError, OSError, KeyError, ValueError) as e:
+        err(str(e))
+        return 2
+    try:
+        save_doc(out, doc)
+    except xom.XomError as e:
+        err(str(e))
+        return 3
+    except (OSError, KeyError, ValueError) as e:
         err(str(e))
         return 2
     print('wrote %s' % out)
