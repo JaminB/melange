@@ -18,7 +18,7 @@
 #include "wormsign/writer.h"
 
 namespace wsr = melange::wormsign::wsr;
-namespace rec = melange::wormsign::records;
+namespace rec = melange::wormsign::rec;
 namespace lib = melange::wormsign::library;
 
 namespace {
@@ -79,25 +79,22 @@ void TestRecordsRoundTrip() {
         {2, 9, 42, 43, 300, 260, 0x44444444, std::string(255, 'x')},  // max strLen
         {1, 0xffff, 7, 0, 400, 380, 0, ""},
     };
-    for (auto& w : want) rec::AppendInput(buf, w.type, w.id, w.a, w.b, w.time, w.callT, w.caller, w.str.c_str());
-    size_t i = 0;
-    const int64_t n = rec::ForEachInput(buf.data(), buf.size(), [&](uint8_t type, uint16_t id, uint32_t a, uint32_t b,
-                                                                      uint32_t time, uint32_t callT, uint32_t caller,
-                                                                      const char* str, uint8_t strLen) {
-        if (i >= want.size()) return;
-        auto& w = want[i];
-        Expect(type == w.type && id == w.id && a == w.a && b == w.b && time == w.time && callT == w.callT &&
-                   caller == w.caller && strLen == w.str.size() && std::string(str, strLen) == w.str,
+    for (auto& w : want) rec::AppendInput(buf, rec::Input{w.type, w.id, w.a, w.b, w.time, w.callT, w.caller, w.str});
+    std::vector<rec::Input> got;
+    Expect(rec::DecodeInputs(buf.data(), buf.size(), &got), "input records decode");
+    Expect(got.size() == want.size(), "input record count");
+    for (size_t i = 0; i < got.size() && i < want.size(); ++i) {
+        const auto& w = want[i];
+        const auto& g = got[i];
+        Expect(g.type == w.type && g.id == w.id && g.a == w.a && g.b == w.b && g.time == w.time && g.callT == w.callT &&
+                   g.caller == w.caller && g.str == w.str,
                "input record field match");
-        ++i;
-    });
-    Expect(n == static_cast<int64_t>(want.size()), "input record count");
-    Expect(i == want.size(), "input record callback count");
+    }
 
     // A truncated buffer must be reported as malformed, not silently short-counted.
     std::vector<uint8_t> bad(buf.begin(), buf.end() - 3);
-    Expect(rec::ForEachInput(bad.data(), bad.size(), [](uint8_t, uint16_t, uint32_t, uint32_t, uint32_t, uint32_t,
-                                                         uint32_t, const char*, uint8_t) {}) < 0,
+    std::vector<rec::Input> badOut;
+    Expect(!rec::DecodeInputs(bad.data(), bad.size(), &badOut),
            "truncated input buffer detected");
 
     std::vector<uint8_t> rbuf;
@@ -166,10 +163,17 @@ void MakeRecording(const std::wstring& path, long long fakeSteamId, bool flagged
     w.Chunk(wsr::kHEAD, headJson.data(), headJson.size(), true);
 
     std::vector<uint8_t> inpt;
-    rec::AppendInput(inpt, 1, 5, 0, 0, 100, 100, 0x1000, "");
+    rec::AppendInput(inpt, rec::Input{1, 5, 0, 0, 100, 100, 0x1000, ""});
     w.Chunk(wsr::kINPT, inpt.data(), inpt.size(), true);
 
-    std::vector<uint8_t> tick(rec::kTickBytes * 10, 0x7);
+    rec::TickChunk tc;
+    for (uint32_t t = 1; t <= 10; ++t) {
+        melange::wormsign::TickHash h{};
+        h.tick = t;
+        h.engine = 0x0707070707070707ull;
+        tc.Add(h);
+    }
+    const std::vector<uint8_t> tick = tc.Take();
     w.Chunk(wsr::kTICK, tick.data(), tick.size(), true, 1, 10);
 
     melange::jsonmini::Obj setp;
@@ -259,7 +263,7 @@ void TestLibraryRetentionAndExport(const std::wstring& baseDir) {
     });
     Expect(sawNote, "exported file still has a NOTE chunk");
     r.ForEach(wsr::kTICK, [&](const wsr::ChunkRef&, const std::vector<uint8_t>& p) {
-        tickUnchanged = p.size() == rec::kTickBytes * 10 && p[0] == 0x7;
+        tickUnchanged = p.size() == 4 + (1 + rec::kTickBytes) * 10 && p[0] == 1 && p[5] == 0x7;
     });
     Expect(tickUnchanged, "exported TICK payload is untouched (no identity data there to redact)");
 }

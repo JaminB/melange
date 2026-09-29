@@ -28,6 +28,7 @@
 #include "tools/sysinfo.h"
 #include "version.h"
 #include "wormsign/bundle.h"
+#include "wormsign/divergence.h"
 #include "wormsign/enginecheck.h"
 #include "wormsign/exchange.h"
 #include "wormsign/library.h"
@@ -40,16 +41,9 @@ constexpr uint64_t kLobbyPollMs = 1000, kToastMs = 8000;
 constexpr int kMaxPacketsPerFrame = 128;
 constexpr size_t kMaxRecordingBytes = 256u << 20;
 
-struct Observer {
-    int handle;
-    DivergenceFn fn;
-    void* user;
-};
-
 Options g_opt;
 bool g_installed = false;
-std::vector<Observer> g_obs;
-int g_nextObs = 1, g_tickHandle = 0, g_sessionHandle = 0, g_panel = 0;
+int g_tickHandle = 0, g_sessionHandle = 0, g_panel = 0;
 
 ContribNamesFn g_contribNames = nullptr;
 ContribHashesFn g_contribHashes = nullptr;
@@ -510,8 +504,7 @@ void Raise(const Divergence& d) {
     ev.Str("source", d.source == Source::Peer ? "peer" : "replay").UInt("tick", d.tick).UInt("serial", d.serial)
         .Raw("comps", ca.End()).Str("contrib", d.contrib).Str("peer", d.peer ? std::to_string(d.peer) : "");
     lua::PostEvent("wormsign.divergence", ev.End().c_str());
-    const std::vector<Observer> obs = g_obs;
-    for (const Observer& o : obs) o.fn(d, o.user);
+    divergence::Raise(d);
 }
 
 void SetContribSource(ContribNamesFn names, ContribHashesFn hashes) {
@@ -533,16 +526,3 @@ std::wstring ReplaysDir() {
     return (d.empty() ? game::DataDir() : d) + L"\\replays";
 }
 }  // namespace melange::wormsign::detector
-
-namespace melange::wormsign {
-int OnDivergence(DivergenceFn fn, void* user) {
-    if (!fn) return 0;
-    const int h = detector::g_nextObs++;
-    detector::g_obs.push_back({h, fn, user});
-    return h;
-}
-void RemoveOnDivergence(int handle) {
-    auto& v = detector::g_obs;
-    v.erase(std::remove_if(v.begin(), v.end(), [&](const detector::Observer& o) { return o.handle == handle; }), v.end());
-}
-}  // namespace melange::wormsign

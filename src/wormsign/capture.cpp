@@ -14,6 +14,7 @@
 #include "core/mem.h"
 #include "melange/wormsign.h"
 #include "wormsign/clock.h"
+#include "wormsign/inject.h"
 #include "wormsign/session.h"
 
 namespace melange::wormsign::capture {
@@ -111,19 +112,30 @@ bool Inline(SafetyHookInline& h, uintptr_t a, F fn, const char* what) {
 
 void SetGate(GateFn fn) { g_gate = fn; }
 
+// Through the hooked senders, so an injected input is gated, counted and recorded like a live one.
 bool InjectSend(int type, uint16_t id, uint32_t a, uint32_t b, const char* str, uint32_t time) {
+    using F2 = void(__cdecl*)(uint32_t, uint32_t);
+    using F3 = void(__cdecl*)(uint32_t, uint32_t, uint32_t);
+    using F4 = void(__cdecl*)(uint32_t, uint32_t, uint32_t, uint32_t);
     if (!g_installed || type < 0 || type > 5) return false;
-    if (type == 5) return false;  // the string sender needs an engine XString; that is C's job (inject.cpp)
+    if (type == 5) {
+        inject::EngineString s(str);
+        if (!s.Ok()) return false;
+        t_injecting = true;
+        using F5 = void(__cdecl*)(uint32_t, uintptr_t, uint32_t);
+        reinterpret_cast<F5>(kSend[5])(id, reinterpret_cast<uintptr_t>(s.Arg()), time);
+        t_injecting = false;
+        return true;
+    }
     t_injecting = true;
     switch (type) {
-        case 0: g_send[0].ccall<void>(id, time); break;
-        case 1: g_send[1].ccall<void>(id, a, time); break;
-        case 2: g_send[2].ccall<void>(id, a, b, time); break;
-        case 3: g_send[3].ccall<void>(id, a, time); break;
-        case 4: g_send[4].ccall<void>(id, a, b, time); break;
+        case 0: reinterpret_cast<F2>(kSend[0])(id, time); break;
+        case 1:
+        case 3: reinterpret_cast<F3>(kSend[type])(id, a, time); break;
+        case 2:
+        case 4: reinterpret_cast<F4>(kSend[type])(id, a, b, time); break;
         default: break;
     }
-    (void)str;
     t_injecting = false;
     return true;
 }

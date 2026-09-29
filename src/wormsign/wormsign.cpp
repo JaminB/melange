@@ -4,6 +4,7 @@
 //   wormsign.detail [tick]         the detail record of a tick (default: the last) and its diff against the tick before
 //   wormsign.fpu                   the FPU watch
 //   wormsign.peers                 the hash exchange with each lobby member
+//   wormsign.replay ...            the replay player (player.cpp)
 #include <lua.hpp>
 #include <windows.h>
 
@@ -25,6 +26,7 @@
 #include "wormsign/library.h"
 #include "wormsign/recorder.h"
 #include "wormsign/detector.h"
+#include "wormsign/player.h"
 #include "wormsign/session.h"
 
 namespace ws = melange::wormsign;
@@ -177,7 +179,7 @@ bool VerbFpu(std::string_view, void*) {
 class Wormsign final : public melange::Module {
   public:
     const char* Name() const override { return "Wormsign"; }
-    const char* Description() const override { return "tick clock and per-tick state hashes"; }
+    const char* Description() const override { return "tick clock, per-tick state hashes and match replays"; }
     bool RequiresKnownBuild() const override { return true; }
     int Order() const override { return 58; }
     bool Install() override {
@@ -215,9 +217,11 @@ class Wormsign final : public melange::Module {
         ws::detector::SetDetailSource(&DetailJson);
         ws::detector::SetRecordingSource(&ws::recorder::RecordingPath);
         ws::detector::Install(det);
+        ws::player::Install();
         return true;
     }
     void Uninstall() override {
+        ws::player::Uninstall();
         ws::detector::Uninstall();
         melange::simhash::Uninstall();
         ws::clock::Uninstall();

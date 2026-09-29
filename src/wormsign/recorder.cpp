@@ -28,12 +28,13 @@
 #include "wormsign/library.h"
 #include "wormsign/records.h"
 #include "wormsign/rngtap_internal.h"
+#include "wormsign/setup.h"
 #include "wormsign/writer.h"
 
 namespace melange::wormsign::recorder {
 namespace {
 namespace wsr = melange::wormsign::wsr;
-namespace rec = melange::wormsign::records;
+namespace rec = melange::wormsign::rec;
 
 constexpr size_t kTickChunkTicks = 500;
 constexpr size_t kFlushBytes = 64 * 1024;
@@ -47,8 +48,9 @@ uint64_t g_ticksSeen = 0, g_inputCount = 0, g_remoteCount = 0;
 bool g_preIncomplete = false;
 uint32_t g_recordingsWritten = 0;
 
-std::vector<uint8_t> g_inptBuf, g_rmtiBuf, g_dispBuf, g_tickBuf, g_detlBuf, g_detlPrev, g_detlCur;
-uint32_t g_tickChunkFrom = 0, g_tickChunkTo = 0, g_detlFrom = 0, g_detlTo = 0;
+std::vector<uint8_t> g_inptBuf, g_rmtiBuf, g_dispBuf, g_detlBuf, g_detlPrev, g_detlCur;
+rec::TickChunk g_ticks;
+uint32_t g_detlFrom = 0, g_detlTo = 0;
 
 std::wstring TimestampedName(uint32_t serial) {
     SYSTEMTIME st;
@@ -75,9 +77,10 @@ void FlushDisp() {
     g_dispBuf.clear();
 }
 void FlushTick() {
-    if (g_tickBuf.empty()) return;
-    g_writer.Enqueue(wsr::kTICK, g_tickBuf.data(), g_tickBuf.size(), true, g_tickChunkFrom, g_tickChunkTo);
-    g_tickBuf.clear();
+    if (g_ticks.Empty()) return;
+    const uint32_t from = g_ticks.FirstTick(), to = g_ticks.LastTick();
+    const std::vector<uint8_t> b = g_ticks.Take();
+    g_writer.Enqueue(wsr::kTICK, b.data(), b.size(), true, from, to);
 }
 void FlushDetl() {
     if (g_detlBuf.empty()) return;
@@ -125,52 +128,21 @@ void WriteHead() {
 void WriteSeedAndPreDraws() {
     std::vector<uint8_t> seedBuf;
     for (const auto& s : rngtap::TakeSessionSeeds())
-        rec::AppendSeed(seedBuf, static_cast<uint8_t>(s.kind), s.value, s.caller, s.t);
+        rec::AppendSeed(seedBuf, rec::Seed{static_cast<uint8_t>(s.kind), s.value, s.caller, s.t});
     g_writer.Enqueue(wsr::kSEED, seedBuf.data(), seedBuf.size(), true);
 
     bool overflow = false;
     std::vector<uint8_t> preBuf;
-    for (const auto& d : rngtap::PreMatchDraws(&overflow)) rec::AppendPreDraw(preBuf, static_cast<uint8_t>(d.rng), d.ret, 0, d.bits);
+    for (const auto& d : rngtap::PreMatchDraws(&overflow))
+        rec::AppendDraw(preBuf, rec::Draw{static_cast<uint8_t>(d.rng), d.ret, d.stateAfter, d.bits});
     g_writer.Enqueue(wsr::kPDRW, preBuf.data(), preBuf.size(), true);
     g_preIncomplete = overflow;
 }
 
-// Best-effort setup fingerprint via the same named-variable path Land.* already uses in the overlay. GM.SchemeData
-// and GM.GameInitData are read the same way if the engine's variable enumerator exposes them; when it does not,
-// those two fields are left empty. Verify against a real session's variable dump before relying on this for
-// anything but diagnostics -- the replay player is the actual consumer of this fingerprint.
 void WriteSetp() {
-    gamestate::Var v{};
-    jsonmini::Obj o;
-    auto field = [&](const char* name, const char* key) {
-        if (gamestate::Var1(name, &v)) o.Str(key, v.value);
-        else o.Str(key, "");
-    };
-    field("Land.File", "landFile");
-    field("Land.Theme", "landTheme");
-    field("LevelDetailsName", "levelDetailsName");
-    field("WXD.Level.Current", "levelCurrent");
-    field("GM.SchemeData", "schemeData");
-    field("GM.GameInitData", "gameInitData");
-
-    gamestate::Snapshot snap{};
-    jsonmini::Arr teams;
-    if (gamestate::Latest(&snap) || gamestate::Read(&snap)) {
-        for (uint8_t i = 0; i < snap.teamCount; ++i) {
-            const auto& t = snap.teams[i];
-            jsonmini::Obj to;
-            to.Str("name", t.name).Int("alliance", t.alliance).Bool("ai", t.ai);
-            teams.Raw(to.End());
-        }
-        int wormCounts[4] = {};
-        for (uint8_t i = 0; i < snap.wormCount; ++i)
-            if (snap.worms[i].team < 4) ++wormCounts[snap.worms[i].team];
-        jsonmini::Arr wc;
-        for (int i = 0; i < 4 && i < snap.teamCount; ++i) wc.Raw(std::to_string(wormCounts[i]));
-        o.Raw("wormCounts", wc.End());
-    }
-    o.Raw("teams", teams.End());
-    const std::string json = o.End();
+    setup::Data d;
+    if (!setup::Capture(&d)) LOG_WARN("[wormsign] recorder: the match setup could not be read");
+    const std::string json = setup::ToJson(d);
     g_writer.Enqueue(wsr::kSETP, json.data(), json.size(), true);
 }
 
@@ -195,10 +167,9 @@ void BeginRecording(uint32_t serial) {
         g_inptBuf.clear();
         g_rmtiBuf.clear();
         g_dispBuf.clear();
-        g_tickBuf.clear();
+        g_ticks.Take();
         g_detlBuf.clear();
         g_detlPrev.clear();
-        g_tickChunkFrom = g_tickChunkTo = 0;
     }
     WriteHead();
     WriteSeedAndPreDraws();
@@ -246,18 +217,7 @@ void OnTickEndCb(const TickHash& h, void*) {
     ++g_ticksSeen;
     if (h.tick == 1) WriteSetp();
 
-    if (g_tickBuf.empty()) g_tickChunkFrom = h.tick;
-    g_tickChunkTo = h.tick;
-    const size_t base = g_tickBuf.size();
-    g_tickBuf.resize(base + rec::kTickBytes);
-    uint8_t* p = g_tickBuf.data() + base;
-    memcpy(p, &h.engine, 8), p += 8;
-    memcpy(p, &h.mods, 8), p += 8;
-    memcpy(p, h.c, sizeof h.c), p += sizeof h.c;
-    memcpy(p, &h.rngLogic, 4), p += 4;
-    memcpy(p, &h.rng2, 4), p += 4;
-    memcpy(p, &h.fpucw, 2), p += 2;
-    memcpy(p, &h.inputs, 2);
+    g_ticks.Add(h);
 
     if (g_detailEnabled && detail::GetPacked(h.tick, &g_detlCur)) {
         if (g_detlBuf.empty()) g_detlFrom = h.tick;
@@ -268,7 +228,7 @@ void OnTickEndCb(const TickHash& h, void*) {
         if (g_detlTo - g_detlFrom + 1 >= kTickChunkTicks) FlushDetl();
     }
 
-    if (g_tickBuf.size() >= kTickChunkTicks * rec::kTickBytes) FlushTick();
+    if (g_ticks.Count() >= kTickChunkTicks) FlushTick();
     if (g_inptBuf.size() >= kFlushBytes) FlushInpt();
     if (g_rmtiBuf.size() >= kFlushBytes) FlushRmti();
     if (g_dispBuf.size() >= kFlushBytes) FlushDisp();
@@ -300,7 +260,8 @@ void OnDivergenceCb(const Divergence& d, void*) {
 
 void OnSendCb(const capture::SendEvent& e, void*) {
     if (!g_active) return;
-    rec::AppendInput(g_inptBuf, static_cast<uint8_t>(e.type), e.id, e.a, e.b, e.time, e.callT, e.caller, e.str);
+    rec::AppendInput(g_inptBuf, rec::Input{static_cast<uint8_t>(e.type), e.id, e.a, e.b, e.time, e.callT, e.caller,
+                                           e.str ? e.str : ""});
     ++g_inputCount;
 }
 void OnInsertCb(const capture::InsertEvent& e, void*) {

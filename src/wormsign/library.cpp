@@ -25,7 +25,7 @@
 
 namespace melange::wormsign::library {
 namespace wsr = melange::wormsign::wsr;
-namespace rec = melange::wormsign::records;
+namespace rec = melange::wormsign::rec;
 
 struct Entry {
     std::wstring path;
@@ -65,21 +65,26 @@ bool HasPinnedMarker(const std::wstring& wsrPath) {
 int64_t CountRecords(const wsr::Reader& r, uint32_t type, bool remote) {
     int64_t total = 0;
     bool bad = false;
+    std::vector<rec::Input> inputs;
     r.ForEach(type, [&](const wsr::ChunkRef&, const std::vector<uint8_t>& p) {
-        const int64_t n = remote ? rec::ForEachRemoteInput(p.data(), p.size(), [](uint32_t, uint16_t, uint32_t, uint32_t) {})
-                                  : rec::ForEachInput(p.data(), p.size(),
-                                                       [](uint8_t, uint16_t, uint32_t, uint32_t, uint32_t, uint32_t,
-                                                          uint32_t, const char*, uint8_t) {});
-        if (n < 0) bad = true;
-        else total += n;
+        if (remote) {
+            const int64_t n = rec::ForEachRemoteInput(p.data(), p.size(), [](uint32_t, uint16_t, uint32_t, uint32_t) {});
+            if (n < 0) bad = true;
+            else total += n;
+            return;
+        }
+        inputs.clear();
+        if (!rec::DecodeInputs(p.data(), p.size(), &inputs)) bad = true;
+        total += static_cast<int64_t>(inputs.size());
     });
     return bad ? -1 : total;
 }
 
 uint32_t CountTicks(const wsr::Reader& r) {
     uint32_t total = 0;
-    for (const auto& e : r.Index())
-        if (e.type == wsr::kTICK && e.tickTo >= e.tickFrom) total += e.tickTo - e.tickFrom + 1;
+    r.ForEach(wsr::kTICK, [&](const wsr::ChunkRef&, const std::vector<uint8_t>& p) {
+        rec::DecodeTicks(p.data(), p.size(), [&](const TickHash&) { ++total; });
+    });
     return total;
 }
 

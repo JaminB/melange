@@ -18,6 +18,7 @@ namespace melange::wormsign::rngtap {
 namespace {
 constexpr uintptr_t kSeedLogic = 0x68c053, kSeed2 = 0x68c0b9;
 constexpr uintptr_t kDrawU = 0x68c015, kDrawF = 0x68c024, kDraw2F = 0x68c07b, kDraw2U = 0x68c0aa;
+constexpr uintptr_t kRngStateLogic = 0x96d034, kRngState2 = 0x96d040;
 // 0x4eded0's two call sites: menu entry, then match start (both reseed with the same QPC-ms value).
 constexpr uintptr_t kMenuEntrySeed = 0x4ee250;
 constexpr size_t kPreDrawCap = 200000;
@@ -52,7 +53,8 @@ T DoDraw(int rng, uintptr_t ret, SafetyHookInline& h) {
     }
     if (!session::Open()) {
         std::lock_guard<std::mutex> lk(g_mu);
-        if (g_pre.size() < kPreDrawCap) g_pre.push_back(DrawEvent{rng, static_cast<uint32_t>(ret), bits});
+        const uint32_t state = *reinterpret_cast<volatile uint32_t*>(rng ? kRngState2 : kRngStateLogic);
+        if (g_pre.size() < kPreDrawCap) g_pre.push_back(DrawEvent{rng, static_cast<uint32_t>(ret), bits, state});
         else g_preOverflow = true;
     }
     return v;

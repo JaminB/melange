@@ -395,6 +395,7 @@ add_executable(wormsign_recorder_selftest
     src/wormsign/format.cpp
     src/wormsign/writer.cpp
     src/wormsign/library.cpp
+    src/wormsign/records.cpp
     src/tools/json_read.cpp
     src/tools/redact.cpp
     src/tools/hash.cpp
@@ -419,3 +420,18 @@ target_include_directories(wormsign_detector_selftest PRIVATE src src/sdk)
 target_compile_definitions(wormsign_detector_selftest PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX _CRT_SECURE_NO_WARNINGS)
 target_compile_options(wormsign_detector_selftest PRIVATE /W4 /utf-8 /permissive-)
 target_link_libraries(wormsign_detector_selftest PRIVATE miniz bcrypt)
+
+# The replay player without the game: record payloads, loading, arm checks, forcing, the input schedule, compare,
+# the virtual clock, the setup fingerprint and a record/replay round trip on a toy simulation.
+add_executable(wormsign_player_selftest
+    tests/wormsign_player_selftest.cpp
+    src/wormsign/format.cpp
+    src/wormsign/records.cpp
+    src/wormsign/recording.cpp
+    src/wormsign/replay_core.cpp
+    src/wormsign/setup.cpp
+    src/tools/json_read.cpp)
+target_include_directories(wormsign_player_selftest PRIVATE src src/sdk)
+target_compile_definitions(wormsign_player_selftest PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX _CRT_SECURE_NO_WARNINGS)
+target_compile_options(wormsign_player_selftest PRIVATE /W4 /utf-8 /permissive-)
+target_link_libraries(wormsign_player_selftest PRIVATE miniz)

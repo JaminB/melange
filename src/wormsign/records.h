@@ -1,53 +1,98 @@
 #pragma once
+#include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <string>
 #include <vector>
 
-// Binary layouts for the streamed .wsr chunk payloads (INPT/RMTI/DISP/SEED/PDRW/TICK). format.h only knows chunk
-// framing; the record shapes inside a chunk's payload are the recorder's own choice, kept here so the recorder
-// (writer side) and the library (reader side, for counts) agree on one definition.
-namespace melange::wormsign::records {
+#include "melange/wormsign.h"
 
-// INPT: {type u8, id u16, a u32, b u32, time u32, callT u32, caller u32, strLen u8, str[strLen]}
-inline void AppendInput(std::vector<uint8_t>& out, uint8_t type, uint16_t id, uint32_t a, uint32_t b, uint32_t time,
-                        uint32_t callT, uint32_t caller, const char* str) {
-    const uint8_t strLen = str ? static_cast<uint8_t>(strnlen(str, 255)) : 0;
-    const size_t base = out.size();
-    out.resize(base + 1 + 2 + 4 + 4 + 4 + 4 + 4 + 1 + strLen);
-    uint8_t* p = out.data() + base;
-    *p = type, p += 1;
-    memcpy(p, &id, 2), p += 2;
-    memcpy(p, &a, 4), p += 4;
-    memcpy(p, &b, 4), p += 4;
-    memcpy(p, &time, 4), p += 4;
-    memcpy(p, &callT, 4), p += 4;
-    memcpy(p, &caller, 4), p += 4;
-    *p = strLen, p += 1;
-    if (strLen) memcpy(p, str, strLen);
-}
-// fn(type, id, a, b, time, callT, caller, str, strLen). Returns the record count, or -1 if the buffer is malformed.
+// Payload layouts of the .wsr record chunks (little-endian, packed). The recorder appends, the player decodes.
+//   SEED  n x {u8 kind, u32 value, u32 caller, u32 t}                                           13 bytes each
+//   PDRW  n x {u8 rng, u32 ret, u32 stateAfter, u32 bits}                                        13 bytes each
+//   INPT  n x {u8 type, u16 id, u32 a, u32 b, u32 time, u32 callT, u32 caller, u8 strLen, strLen bytes}
+//         type: SendType (the sender's order); a, b: the int values or float bits; callT: logic time of the call
+//   RMTI  n x {u32 arrivedT, u16 id, u32 time, u32 a}; DISP  n x {u32 t, u16 id}
+//   TICK  u32 firstTick, then records: u8 0 + {u64 engine, u64 mods, u64 c[6], u32 rngLogic, u32 rng2, u16 fpucw,
+//         u16 inputs} (one tick, then the next tick number), or u8 1 + u32 n (TGAP: n ticks missing)
+// A decoder stops at the first record that does not fit and reports it.
+namespace melange::wormsign::rec {
+constexpr size_t kSeedBytes = 13, kDrawBytes = 13, kInputFixedBytes = 24, kTickBytes = 76;
+constexpr uint8_t kTickRec = 0, kTickGap = 1;
+enum SendType : uint8_t { kSendMsg, kSendInt, kSendInt2, kSendFloat, kSendFloat2, kSendString, kSendTypes };
+
+struct Seed {
+    uint8_t kind;           // 0 logic, 1 second
+    uint32_t value, caller, t;
+};
+struct Draw {
+    uint8_t rng;            // 0 logic, 1 second
+    uint32_t ret, stateAfter, bits;
+};
+struct Input {
+    uint8_t type;           // SendType
+    uint16_t id;
+    uint32_t a, b, time, callT, caller;
+    std::string str;        // kSendString only; at most 255 bytes
+};
+
+void AppendSeed(std::vector<uint8_t>& out, const Seed& s);
+void AppendDraw(std::vector<uint8_t>& out, const Draw& d);
+void AppendInput(std::vector<uint8_t>& out, const Input& i);
+
+// Builds one TICK payload from consecutive tick hashes; a jump in tick numbers is written as a gap.
+class TickChunk {
+  public:
+    void Add(const TickHash& h);
+    bool Empty() const { return bytes_.empty(); }
+    uint32_t Count() const { return count_; }
+    uint32_t FirstTick() const { return first_; }
+    uint32_t LastTick() const { return next_ ? next_ - 1 : 0; }
+    std::vector<uint8_t> Take();
+
+  private:
+    std::vector<uint8_t> bytes_;
+    uint32_t first_ = 0, next_ = 0, count_ = 0;
+};
+
+bool DecodeSeeds(const uint8_t* p, size_t n, std::vector<Seed>* out);
+bool DecodeDraws(const uint8_t* p, size_t n, std::vector<Draw>* out);
+bool DecodeInputs(const uint8_t* p, size_t n, std::vector<Input>* out);
+// Calls fn(const TickHash&) for each tick record, with tick numbers filled in.
 template <class Fn>
-int64_t ForEachInput(const uint8_t* data, size_t n, Fn&& fn) {
-    size_t i = 0;
-    int64_t count = 0;
-    while (i < n) {
-        if (i + 24 > n) return -1;
-        const uint8_t type = data[i];
-        uint16_t id;
-        uint32_t a, b, time, callT, caller;
-        memcpy(&id, data + i + 1, 2);
-        memcpy(&a, data + i + 3, 4);
-        memcpy(&b, data + i + 7, 4);
-        memcpy(&time, data + i + 11, 4);
-        memcpy(&callT, data + i + 15, 4);
-        memcpy(&caller, data + i + 19, 4);
-        const uint8_t strLen = data[i + 23];
-        if (i + 24 + strLen > n) return -1;
-        fn(type, id, a, b, time, callT, caller, reinterpret_cast<const char*>(data + i + 24), strLen);
-        i += 24 + strLen;
-        ++count;
+bool DecodeTicks(const uint8_t* p, size_t n, Fn&& fn);
+
+namespace detail {
+uint32_t Rd32(const uint8_t* p);
+uint64_t Rd64(const uint8_t* p);
+void ReadTick(const uint8_t* p, TickHash* h);
+}  // namespace detail
+
+template <class Fn>
+bool DecodeTicks(const uint8_t* p, size_t n, Fn&& fn) {
+    if (n < 4) return n == 0;
+    uint32_t tick = detail::Rd32(p);
+    size_t at = 4;
+    while (at < n) {
+        const uint8_t kind = p[at++];
+        if (kind == kTickRec) {
+            if (n - at < kTickBytes) return false;
+            TickHash h{};
+            detail::ReadTick(p + at, &h);
+            h.tick = tick++;
+            fn(static_cast<const TickHash&>(h));
+            at += kTickBytes;
+        } else if (kind == kTickGap) {
+            if (n - at < 4) return false;
+            const uint32_t skip = detail::Rd32(p + at);
+            if (skip > 0xffffffffu - tick) return false;
+            tick += skip;
+            at += 4;
+        } else {
+            return false;
+        }
     }
-    return count;
+    return true;
 }
 
 // RMTI: {arrivedT u32, id u16, time u32, a u32} -- fixed 14 bytes.
@@ -87,32 +132,4 @@ inline void AppendDispatch(std::vector<uint8_t>& out, uint32_t t, uint16_t id) {
     memcpy(out.data() + base + 4, &id, 2);
 }
 
-// SEED: {kind u8, value u32, caller u32, t u32} -- fixed 13 bytes.
-constexpr size_t kSeedBytes = 13;
-inline void AppendSeed(std::vector<uint8_t>& out, uint8_t kind, uint32_t value, uint32_t caller, uint32_t t) {
-    const size_t base = out.size();
-    out.resize(base + kSeedBytes);
-    uint8_t* p = out.data() + base;
-    *p = kind, p += 1;
-    memcpy(p, &value, 4), p += 4;
-    memcpy(p, &caller, 4), p += 4;
-    memcpy(p, &t, 4);
-}
-
-// PDRW: {rng u8, ret u32, stateAfter u32, bits u32} -- fixed 13 bytes.
-constexpr size_t kPreDrawBytes = 13;
-inline void AppendPreDraw(std::vector<uint8_t>& out, uint8_t rng, uint32_t ret, uint32_t stateAfter, uint32_t bits) {
-    const size_t base = out.size();
-    out.resize(base + kPreDrawBytes);
-    uint8_t* p = out.data() + base;
-    *p = rng, p += 1;
-    memcpy(p, &ret, 4), p += 4;
-    memcpy(p, &stateAfter, 4), p += 4;
-    memcpy(p, &bits, 4);
-}
-
-// TICK: a TickHash (melange/wormsign.h) without its leading `tick` field -- implicit and consecutive within the
-// chunk's [tickFrom, tickTo] index range. engine u64, mods u64, c[6] u64, rngLogic u32, rng2 u32, fpucw u16,
-// inputs u16 -- 8+8+48+4+4+2+2 = 76 bytes.
-constexpr size_t kTickBytes = 76;
-}  // namespace melange::wormsign::records
+}  // namespace melange::wormsign::rec

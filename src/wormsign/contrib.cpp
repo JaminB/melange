@@ -253,6 +253,23 @@ uint64_t ListHash() {
     return h;
 }
 
+std::string ReplayKey() {
+    std::vector<std::string> v;
+    bool optOut = false;
+    {
+        std::lock_guard lk(g_mu);
+        for (auto& c : g_list) {
+            if (c->dead) continue;
+            v.push_back(std::string(c->name) + "@" + std::to_string(c->opt.version));
+            optOut |= !c->opt.inReplayCompare;
+        }
+    }
+    std::sort(v.begin(), v.end());
+    std::string key;
+    for (const std::string& s : v) key += (key.empty() ? "" : ",") + s;
+    return optOut ? "!" + key : key;
+}
+
 std::string Describe(const Info& i) {
     char b[160];
     if (i.faulted)

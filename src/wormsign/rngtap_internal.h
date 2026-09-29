@@ -11,7 +11,7 @@ struct SeedEvent {
 };
 struct DrawEvent {
     int rng;  // 0 logic, 1 second
-    uint32_t ret, bits;
+    uint32_t ret, bits, stateAfter;
 };
 bool Install();
 bool Installed();
