@@ -155,6 +155,7 @@ class Oasis final : public Module {
         providers::InstallIni();
         providers::InstallCapture();
         providers::InstallWebPanels();
+        providers::InstallWormsign();
         panel::Install();  // A: overlay panel, hotkey/menu, AutoOpen, oasis_url.txt
 
         testcmd::Register("oasis.start", &VerbStart);

@@ -55,6 +55,7 @@ Every module has its own section in `Melange.ini`, and `Enabled=0` turns a modul
 | `LuaConsole` | on | Overlay Lua REPL (`Ctrl+Shift+F10`, *Lua/Console*) for the client VM and, in a match, the match VM (off online unless `MatchConsoleOnline=1`) |
 | `GameState` | on | Read-only game-state readers for Oasis and `wum.game.worms()` (worms, teams, match values, entities); build #1077 only |
 | `Oasis` | on | The local web app on 127.0.0.1 ([docs/oasis.md](docs/oasis.md)); nothing listens until you open it |
+| `Wormsign` | on | The match's tick clock and a per-tick state hash (`wum.wormsign.tick()`), the base for match replays and desync detection; build #1077 only |
 
 ## Logs and bug reports
 

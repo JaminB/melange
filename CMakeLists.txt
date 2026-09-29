@@ -362,3 +362,13 @@ target_compile_definitions(tweak_selftest PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX _
 target_compile_options(tweak_selftest PRIVATE /W4 /utf-8 /permissive- /Zi /wd4100)
 target_link_options(tweak_selftest PRIVATE /DEBUG /SAFESEH:NO)
 target_link_libraries(tweak_selftest PRIVATE safetyhook::safetyhook bcrypt psapi)
+
+# The .wsr recording container without the game: round trips, truncation, bad CRCs and a timed reader mutation run.
+add_executable(wormsign_format_selftest
+    tests/wormsign_format_selftest.cpp
+    src/wormsign/format.cpp
+    src/tools/json_read.cpp)
+target_include_directories(wormsign_format_selftest PRIVATE src src/sdk)
+target_compile_definitions(wormsign_format_selftest PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX _CRT_SECURE_NO_WARNINGS)
+target_compile_options(wormsign_format_selftest PRIVATE /W4 /utf-8 /permissive-)
+target_link_libraries(wormsign_format_selftest PRIVATE miniz)

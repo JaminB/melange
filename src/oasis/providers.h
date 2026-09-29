@@ -9,5 +9,6 @@ void InstallState(); void InstallEntities();                                    
 void InstallLua(); void InstallMods(); void InstallIni();                                         // panels' RPCs
 void InstallCapture();                                                                            // capture viewer
 void InstallWebPanels();                                                                          // web panels
+void InstallWormsign();                                                                           // replays and desync
 core::Auth* MakeAuth();                                                                           // launch token, Host, Origin
 }  // namespace melange::oasis::providers

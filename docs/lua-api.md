@@ -226,6 +226,16 @@ A panel page has no cookie and cannot reach `/ws` or `document` outside its own 
 and `OasisExt.subscribe(channel, filter, fn)` restricted to the mod's own `mod.<id>.*` names plus read-only `state`
 and `log`.
 
+## `wum.wormsign`
+
+The match's tick clock and state hash. A tick is one 20 ms step of the game's simulation (50 per second); its hash
+covers the logic RNG, the turn, the worms, the scheduled tasks, projectiles and teams, so two machines (or a match and
+its replay) that agree on a tick's hash agree on the game state at that tick.
+
+| Name | Description |
+|---|---|
+| `wum.wormsign.tick()` | `{tick, engine, mods}` for the last completed tick: `tick` is a number, `engine` and `mods` are 16-digit hex strings (`mods` is `"0000000000000000"` when no mod contributes). `nil` outside a match or before the first tick. |
+
 ## Extending the API from C++
 
 C++ modules can add namespaces with `melange::lua::AddLibrary("name", open)` (`melange/lua.h`). They appear as `wum.<name>` in
