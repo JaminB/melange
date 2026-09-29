@@ -1,5 +1,6 @@
 // Wormsign: the tick clock and the per-tick engine hash; recordings, replays and the desync detector build on it.
 //   wormsign.stats         session, tick and hash cost
+//   wormsign.replay ...    the replay player (player.cpp)
 #include <lua.hpp>
 
 #include <cstdio>
@@ -11,6 +12,7 @@
 #include "melange/testcmd.h"
 #include "melange/wormsign.h"
 #include "wormsign/clock.h"
+#include "wormsign/player.h"
 #include "wormsign/session.h"
 
 namespace ws = melange::wormsign;
@@ -57,7 +59,7 @@ bool VerbStats(std::string_view, void*) {
 class Wormsign final : public melange::Module {
   public:
     const char* Name() const override { return "Wormsign"; }
-    const char* Description() const override { return "tick clock and per-tick state hashes"; }
+    const char* Description() const override { return "tick clock, per-tick state hashes and match replays"; }
     bool RequiresKnownBuild() const override { return true; }
     int Order() const override { return 58; }
     bool Install() override {
@@ -72,10 +74,12 @@ class Wormsign final : public melange::Module {
         if (!ws::clock::Install()) return true;
         ws::session::SetEnabled(true);
         melange::lua::AddLibrary("wormsign", &OpenLib);
+        ws::player::Install();
         LOG_INFO("[wormsign] tick clock installed");
         return true;
     }
     void Uninstall() override {
+        ws::player::Uninstall();
         ws::clock::Uninstall();
         ws::session::SetEnabled(false);
     }

@@ -7,5 +7,6 @@ int AddContributor(const char*, ContribFn, void*, const ContribOptions&) { retur
 void RemoveContributor(int) {}
 namespace contrib {
 uint64_t HashTick(uint32_t) { return 0; }
+std::string ReplayKey() { return ""; }
 }
 }  // namespace melange::wormsign

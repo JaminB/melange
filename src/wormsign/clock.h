@@ -8,6 +8,11 @@ bool Install();                           // mid-hook 0x68d85c, inline TaskManag
 using PreTickFn = void (*)(uint32_t tick, uint32_t timeMs);
 void SetPreTick(PreTickFn fn);            // one owner: the player; null when idle
 uint32_t CurrentBucket();                 // the bucket being run (0 outside a session)
+// The scheduler's `now` (ms) as TaskManager::Update receives it, before it subtracts its time base. In a session the
+// filter's result is passed instead, which is how the replay player pauses, slows and speeds up the simulation.
+using NowFn = int (*)(int realNow);
+void SetNowFilter(NowFn fn);              // one owner: the player; null when idle
+int TimeBase();                           // the value TaskManager::Update subtracts from `now` (0 if unreadable)
 
 bool Installed();                         // Install() succeeded
 void Uninstall();

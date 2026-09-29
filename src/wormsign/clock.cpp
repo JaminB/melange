@@ -25,6 +25,7 @@ std::atomic<uint32_t> g_bucket{0};
 bool g_haveB = false;
 uint32_t g_curB = 0, g_lastT = 0;
 std::atomic<PreTickFn> g_preTick{nullptr};
+std::atomic<NowFn> g_nowFilter{nullptr};
 
 void OnPreTask(safetyhook::Context& c) {
     if (!session::Open()) return;
@@ -56,7 +57,14 @@ int __stdcall HkTmUpdate(uintptr_t tm, int* now) {
         session::End("match-end");
         g_bucket = 0;
     }
-    return g_hTm.stdcall<int>(tm, now);
+    const NowFn filter = g_nowFilter.load(std::memory_order_relaxed);
+    if (!filter || !now || !session::Open()) return g_hTm.stdcall<int>(tm, now);
+    const int real = *now;
+    int v = filter(real);
+    const int given = v;
+    const int r = g_hTm.stdcall<int>(tm, &v);
+    *now = real + (v - given);
+    return r;
 }
 
 bool Toggle(bool on) {
@@ -122,6 +130,14 @@ bool ProloguesOriginal() {
 }
 
 void SetPreTick(PreTickFn fn) { g_preTick = fn; }
+void SetNowFilter(NowFn fn) { g_nowFilter = fn; }
+
+int TimeBase() {
+    uintptr_t tm = 0, inner = 0;
+    int base = 0;
+    if (!mem::SafeRead(kTM, &tm, sizeof tm) || !tm || !mem::SafeRead(tm + 0x1c, &inner, sizeof inner) || !inner) return 0;
+    return mem::SafeRead(inner + 4, &base, sizeof base) ? base : 0;
+}
 uint32_t CurrentBucket() { return session::Open() ? g_bucket.load(std::memory_order_relaxed) : 0; }
 
 bool Paused() {
