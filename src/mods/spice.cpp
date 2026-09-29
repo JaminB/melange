@@ -53,6 +53,21 @@ bool ValidId(const std::string& s) {
     return true;
 }
 
+// A manifest's own id must already satisfy ValidId, but a folder with no manifest takes its folder name as
+// its id unchanged, which may hold a '.' (or other characters ValidId rejects). Oasis channel and method
+// names allow '.' in the part after "mod.<id>.", so a dotted id would make that prefix ambiguous: mod "foo"
+// registering "mod.foo.bar.x" would be indistinguishable from mod "foo.bar" registering "mod.foo.bar.x" for
+// itself, letting one mod's panel reach another's channels. Folding every character ValidId disallows to '-'
+// keeps ids collision-free without breaking existing folders (real Mods\ names are already alnum/-/_).
+std::string SanitizeId(std::string s) {
+    for (char& c : s)
+        if (!IsIdChar(static_cast<unsigned char>(c))) c = '-';
+    while (!s.empty() && (s.front() == '-' || s.front() == '_')) s.erase(s.begin());
+    while (!s.empty() && (s.back() == '-' || s.back() == '_')) s.pop_back();
+    if (s.size() > 64) s.resize(64);
+    return s.empty() ? "mod" : s;
+}
+
 // ---------------------------------------------------------------------------------------------
 // Semantic versions and the npm/Cargo-style comparator grammar (^, ~, >=, <=, >, <, =, space = AND).
 // ---------------------------------------------------------------------------------------------
@@ -595,7 +610,7 @@ bool Parse(const std::wstring& dir, Manifest* out, std::vector<Error>* errs) {
     if (!json::ParseFile(path, &v, &jerr)) {
         if (jerr.line == 0 && jerr.col == 0 && jerr.text == "cannot open the file") {
             // M1-era folder with no manifest: synthesise the implicit one so it keeps working unchanged.
-            out->id = folderId;
+            out->id = SanitizeId(folderId);
             out->version = "0.0.0";
             out->name = folderId;
             out->content = false;

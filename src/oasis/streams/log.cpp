@@ -46,11 +46,12 @@ void OnSub(ChannelId, int client, std::string_view filterJson, bool subscribed, 
         return;
     }
     streams::LogFilter f = streams::ParseLogFilter(filterJson);
-    std::lock_guard lk(g_mx);
+    // The ring copy and the backlog filter (up to the whole ring) run without g_mx held, so a subscribing
+    // client never makes PollFrame -- which needs the same lock every frame on the main thread -- wait for it.
     std::vector<jlog::Line> lines;
     jlog::Tail(0, lines, 1u << 20);
     const uint64_t head = lines.empty() ? 0 : lines.back().seq;
-    g_subs[client] = Sub{f, head};
+    { std::lock_guard lk(g_mx); g_subs[client] = Sub{f, head}; }
     std::vector<const jlog::Line*> matched;
     for (auto it = lines.rbegin(); it != lines.rend() && matched.size() < kBacklogMax; ++it)
         if (streams::MatchesLog(f, *it)) matched.push_back(&*it);

@@ -14,7 +14,7 @@
 // of its arguments, so tests/oasis_streams_selftest.cpp drives it directly. streams/*.cpp supply the live data.
 namespace melange::oasis::streams {
 
-// ---- log / net: filter {minLevel, cats, text} (docs/m3-design.md §3.5)
+// ---- log / net: filter {minLevel, cats, text}
 struct LogFilter {
     jlog::Level minLevel = jlog::Level::Trace;
     std::vector<std::string> cats;  // empty: every category

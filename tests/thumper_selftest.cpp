@@ -91,6 +91,16 @@ void TestParse() {
         Expect(ok && m.implicit && m.id == "m1-legacy" && m.version == "0.0.0" && !m.content, "parse: implicit manifest for an M1 folder");
     }
     {
+        // A folder name is never validated the way a manifest's own "id" is (ValidId rejects '.'). A dot in an
+        // implicit id would make "mod.<id>." ambiguous with another mod's own "mod.<id>." prefix over Oasis
+        // (web/src/shell/ext/host.tsx's extAllowed), so it must come out sanitized.
+        std::wstring dir = Fixture("foo.bar", "");
+        Manifest m;
+        std::vector<Error> errs;
+        bool ok = Parse(dir, &m, &errs);
+        Expect(ok && m.implicit && m.id == "foo-bar", "parse: a dot in an implicit id is sanitized (got '" + m.id + "')");
+    }
+    {
         const char* json = R"({
             "spiceVersion": 1, "id": "hello-spice", "version": "1.0.0", "name": "Hello Spice",
             "authors": ["a", "b"], "melange": {"range": ">=0.1.0 <1.0.0"}, "kind": "client-only",

@@ -1,4 +1,4 @@
-// Offline self-test for Component C's pure wire logic (src/oasis/streams/wire.cpp): filter parsing and
+// Offline self-test for the streams' pure wire logic (src/oasis/streams/wire.cpp): filter parsing and
 // matching for log/net and bus, bus name-pattern matching, and the JSON payloads shipped on each channel.
 // No game, no bus::, no Steam, no jlog writer: everything here is driven directly with synthetic values.
 #include <cstdio>

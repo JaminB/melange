@@ -27,7 +27,10 @@ namespace sp = stateparams;
 struct Sub { int client; uint32_t hz, kinds; uint64_t next; bool sentEmpty; };
 ChannelId g_state = 0, g_entities = 0;
 std::vector<Sub> g_stateSubs, g_entSubs;
-std::map<int, uint64_t> g_varsAt;
+// Global, not per client: a client id is only good for one connection, so keying this by c.client would let a
+// reconnect loop reset the limit and force a full DRM walk (the actual main-thread cost this guards) every
+// frame instead of at most once a second.
+uint64_t g_lastVarsAt = 0;
 std::vector<gs::Entity> g_ents(512);
 std::vector<gs::Var> g_vars(2048);
 
@@ -116,10 +119,8 @@ void StateVars(const Call& c, Result& r, void*) {
     std::string prefix;
     if (!sp::ParsePrefix(c.paramsJson, &prefix)) return Fail(r, -32602, "prefix must be a string of at most 63 characters");
     const uint64_t now = GetTickCount64();
-    if (g_varsAt.size() > 64) std::erase_if(g_varsAt, [&](const auto& kv) { return now - kv.second > 60000; });
-    auto& last = g_varsAt[c.client];
-    if (last && now - last < 1000) return Fail(r, -32002, "state.vars: at most one call per second");
-    last = now;
+    if (g_lastVarsAt && now - g_lastVarsAt < 1000) return Fail(r, -32002, "state.vars: at most one call per second");
+    g_lastVarsAt = now;
     const char* p = prefix.empty() ? nullptr : prefix.c_str();
     int n = gs::Vars(g_vars.data(), static_cast<int>(g_vars.size()), p);
     if (n > static_cast<int>(g_vars.size())) {

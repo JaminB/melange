@@ -718,8 +718,8 @@ void TestWebPanels() {
     std::string r = Get("/ext/f-selftest/index.html", ck);
     Expect(Status(r) == 200 && r.find("panel-ok") != std::string::npos, "panel file served", r.substr(0, 60));
     Expect(r.find("Content-Security-Policy: sandbox allow-scripts") != std::string::npos &&
-               r.find("default-src") == std::string::npos,
-           "panel response carries the sandbox CSP, not the default one");
+               r.find("connect-src 'none'") != std::string::npos && r.find("img-src 'self' blob: data:") == std::string::npos,
+           "panel response carries the sandbox CSP (with its own connect-src), not the default one");
     r = Get("/ext/f-selftest/", ck);
     Expect(Status(r) == 200 && r.find("panel-ok") != std::string::npos, "empty path serves the entry file");
     Expect(Status(Get("/ext/f-selftest/index.html")) == 200,

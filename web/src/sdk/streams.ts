@@ -1,5 +1,5 @@
-// Payload types and filter helpers for the streams channels (Component C): log, net, bus, bus.counts, lobby,
-// stats. Mirrors src/oasis/streams/wire.cpp so a panel's filter logic matches what the server actually does.
+// Payload types and filter helpers for the streams channels: log, net, bus, bus.counts, lobby, stats. Mirrors
+// src/oasis/streams/wire.cpp so a panel's filter logic matches what the server actually does.
 
 export interface LogEvent { seq: number; lvl: "trace" | "debug" | "info" | "warn" | "error" | "fatal"; cat: string; ts: number; j: unknown; }
 export interface LogFilter { minLevel?: LogEvent["lvl"]; cats?: string[]; text?: string; }

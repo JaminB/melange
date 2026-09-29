@@ -1,11 +1,12 @@
-// Full authentication (M3 design doc, section 3.2): launch token in the URL, exchanged for a per-port session
-// cookie; Host allowlist on every request; Origin on the upgrade; a visibility rate limit on repeated failures.
-// Replaces auth_min.cpp, S's placeholder version.
+// Full authentication: launch token in the URL, exchanged for a per-port session cookie; Host allowlist on
+// every request; Origin on the upgrade; a visibility rate limit on repeated failures. Replaces auth_min.cpp,
+// the scaffold's minimal placeholder version.
 #include "oasis/auth.h"
 
 #include <windows.h>
 #include <bcrypt.h>
 
+#include <atomic>
 #include <string>
 
 #include "core/log.h"
@@ -56,6 +57,16 @@ bool FailureLimiter::Note() {
     return over;
 }
 
+namespace {
+constexpr int kMaxConcurrentDelays = 2;
+std::atomic<int> g_delaying{0};
+}  // namespace
+
+void Delay() {
+    if (g_delaying.fetch_add(1, std::memory_order_acq_rel) < kMaxConcurrentDelays) Sleep(1000);
+    g_delaying.fetch_sub(1, std::memory_order_acq_rel);
+}
+
 }  // namespace melange::oasis::auth
 
 namespace melange::oasis::providers {
@@ -98,7 +109,7 @@ class AuthImpl final : public core::Auth {
             const std::string p = std::to_string(rq.port);
             ok = core::IEquals(origin, "http://127.0.0.1:" + p) || core::IEquals(origin, "http://localhost:" + p);
         }
-        if (!ok && limiter_.Note()) Sleep(1000);
+        if (!ok && limiter_.Note()) auth::Delay();
         return ok;
     }
 
@@ -114,7 +125,7 @@ class AuthImpl final : public core::Auth {
     }
     bool Deny(core::Response* out) {
         core::NoteAuthFailure();
-        if (limiter_.Note()) Sleep(1000);
+        if (limiter_.Note()) auth::Delay();
         out->status = 403;
         out->body = "Forbidden\n";
         out->close = true;

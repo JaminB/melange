@@ -1,6 +1,6 @@
 // Overlay panel "Oasis": status, the launch URL (hidden behind "Show"), Copy URL, Open in browser, a client
 // list with Kick, and stats. Hotkey + menu item "Oasis/Open". AutoOpen and oasis_url.txt (for test scripts)
-// live here too: S's Oasis module only reads their ini defaults, it does not act on them.
+// live here too: the Oasis module itself only reads their ini defaults, it does not act on them.
 #include "oasis/panel.h"
 
 #include <windows.h>

@@ -30,7 +30,7 @@ Oasis is Melange's local web app: a page in your browser that talks to the runni
 | **Events** | Pick bus messages by name or `Prefix.*` and watch them arrive with their decoded payloads. Nothing is streamed until you pick something. The Counts view shows every message's rate from `bus.counts`. |
 | **Console** | Lua, as the overlay console: the client environment, a mod's environment or the match. Enter runs, Shift+Enter adds a line, Tab completes, Up and Down recall your history (kept in the browser). Match code follows the console's rule: refused online unless `[LuaConsole] MatchConsoleOnline=1`. |
 | **Mods** | Enable and disable mods (content mods take effect after a restart), see load errors, and revoke Deep Desert. **Deep Desert is never granted from the browser**: a mod waiting for consent asks in the game's overlay. |
-| **Settings** | Every `Melange.ini` key a module declares, with its default and whether it applies live or after a restart, plus the file as raw text. Saving changes that one line in place and keeps every comment and other byte. `[Thumper] GrantSalt` is hidden and cannot be changed, and `[Thumper] AutoGrantDeepDesert` can only be set to `0`. |
+| **Settings** | Every `Melange.ini` key a module declares, with its default and whether it applies live or after a restart, plus the file as raw text. Saving changes that one line in place and keeps every comment and other byte. `[Thumper] GrantSalt` is hidden and cannot be changed, and `[Thumper] AutoGrantDeepDesert` can only be set to `0`. This hides the salt from the Settings page; it is not a defense against `RawInspect` (below), which can already read it as part of the process. |
 | **About** | Versions, the protocol, and the channels and methods the server offers. |
 
 Tabs can be opened side by side (the ⧉ button next to a tab, or the command palette, `Ctrl+K`). The layout and the
@@ -46,7 +46,7 @@ something is disabled, the console included.
 | `Port`, `PortRange` | `8765`, `10` | The first port to try and how many to try. |
 | `MaxClients` | `4` | Browser tabs (WebSocket clients) at once. |
 | `ReadOnly` | `0` | Refuse every call that changes something (ini, mods, captures). |
-| `RawInspect` | `1` | Allow the read-only memory view in the entity inspector. |
+| `RawInspect` | `1` | Allow the read-only memory view in the entity inspector. Anyone with the session cookie can read any address the process can, including Melange's own memory; set to `0` to turn it off. |
 | `WebRoot` | *(empty)* | Serve the web app from this folder instead of the copy built into `melange.asi` (development; relative to the game folder). |
 | `AutoOpen` | `0` | Also open a browser tab the moment the server starts (otherwise only the overlay button, hotkey and menu item open one). |
 | `Hotkey` | `Ctrl+Shift+O` | Opens Oasis (starts the server if needed and opens exactly one browser tab); also *Oasis/Open* in the overlay menu. |

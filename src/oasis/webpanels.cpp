@@ -37,7 +37,10 @@ bool ServeExt(const core::Request& rq, core::Response* out, void* user) {
     out->status = 200;
     out->contentType = core::MimeType(rel);
     out->cacheable = false;
-    out->headers.emplace_back("Content-Security-Policy", "sandbox allow-scripts");
+    // sandbox allow-scripts: no cookie, no same-origin fetch to /ws (§3.8). default-src/connect-src close a
+    // gap that sandbox alone leaves open: a panel could otherwise fetch() out to any origin, including the
+    // internet, and exfiltrate whatever it reads over the bridge (state, log, its own published data).
+    out->headers.emplace_back("Content-Security-Policy", "sandbox allow-scripts; default-src 'self'; connect-src 'none'");
     return true;
 }
 

@@ -1,5 +1,5 @@
 // A minimal ZIP reader for .mcap files: central-directory parsing plus DEFLATE via the platform's
-// DecompressionStream. No zip library (docs/capture-format.md, M3 §4 component E).
+// DecompressionStream. No zip library (docs/capture-format.md).
 const EOCD_SIGNATURE = 0x06054b50;
 const CENTRAL_SIGNATURE = 0x02014b50;
 const LOCAL_SIGNATURE = 0x04034b50;

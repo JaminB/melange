@@ -35,6 +35,7 @@ void PollFrame() {
 void InstallStats() {
     ChannelOptions opt;
     opt.overflow = Overflow::Coalesce;
+    opt.mainThreadSubscribe = true;  // OnSub reads g_last, which PollFrame writes on the main thread
     g_ch = AddChannel("stats", opt);
     if (!g_ch) return;
     OnSubscribe(g_ch, &OnSub, nullptr);

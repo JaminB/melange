@@ -1,4 +1,4 @@
-// Offline self-test for Component F's standalone-only file logic: no game, no server, no network.
+// Offline self-test for the standalone-only file logic: no game, no server, no network.
 //   ini_edit: reading and rewriting one key of Melange.ini without disturbing the rest of the file.
 //   mods_provider: mods.list / mods.setEnabled against real spice.json files and thumper-state.json.
 // Exit code 0 = all passed.

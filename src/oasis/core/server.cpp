@@ -7,6 +7,7 @@
 
 #include <atomic>
 #include <cstdio>
+#include <memory>
 #include <mutex>
 #include <shared_mutex>
 #include <vector>
@@ -20,7 +21,16 @@ extern "C" void mg_oasis_abort(struct mg_connection* conn);
 
 namespace melange::oasis::core {
 namespace {
-struct RouteEntry { int handle; std::string prefix; Route fn; void* user; };
+// Held by shared_ptr so a request already dispatched to a route can keep it (and the `user` it points to)
+// alive after RemoveRoute has taken it out of g_routes; `busy` lets RemoveRoute wait for that request to
+// finish before its caller frees `user` (RemovePanel deletes the Panel right after RemoveRoute returns).
+struct RouteEntry {
+    int handle;
+    std::string prefix;
+    Route fn;
+    void* user;
+    std::atomic<int> busy{0};
+};
 
 std::mutex g_startMx;  // Start/Stop
 mg_context* g_ctx = nullptr;
@@ -32,7 +42,7 @@ std::atomic<bool> g_running{false};
 std::mutex g_urlMx;
 std::string g_url;
 std::shared_mutex g_routesMx;
-std::vector<RouteEntry> g_routes;
+std::vector<std::shared_ptr<RouteEntry>> g_routes;
 int g_nextRoute = 1;
 
 struct WsConn {
@@ -180,15 +190,18 @@ int BeginRequest(mg_connection* conn) {
     if (rq.upgrade) return Plain(conn, rq, 400, true);
     if (rq.path == "/" || rq.path == "/index.html") return ServeStatic(conn, rq, "index.html");
     if (rq.path.starts_with("/app/")) return ServeStatic(conn, rq, rq.path.substr(1));
-    RouteEntry route{};
+    std::shared_ptr<RouteEntry> route;
     {
         std::shared_lock lk(g_routesMx);
         for (const auto& e : g_routes)
-            if (rq.path.starts_with(e.prefix) && e.prefix.size() > route.prefix.size()) route = e;
+            if (rq.path.starts_with(e->prefix) && (!route || e->prefix.size() > route->prefix.size())) route = e;
     }
-    if (route.fn) {
+    if (route) {
+        route->busy.fetch_add(1, std::memory_order_acq_rel);
         Response r;
-        if (route.fn(rq, &r, route.user)) return Reply(conn, rq, r);
+        const bool matched = route->fn(rq, &r, route->user);
+        route->busy.fetch_sub(1, std::memory_order_acq_rel);
+        if (matched) return Reply(conn, rq, r);
     }
     return Plain(conn, rq, 404);
 }
@@ -369,14 +382,30 @@ std::string LaunchUrl() {
 
 int AddRoute(const char* prefix, Route fn, void* user) {
     if (!prefix || !fn || prefix[0] != '/') return 0;
+    auto e = std::make_shared<RouteEntry>();
+    e->handle = g_nextRoute;
+    e->prefix = prefix;
+    e->fn = fn;
+    e->user = user;
     std::unique_lock lk(g_routesMx);
-    g_routes.push_back(RouteEntry{g_nextRoute, prefix, fn, user});
+    g_routes.push_back(e);
     return g_nextRoute++;
 }
 
 void RemoveRoute(int handle) {
-    std::unique_lock lk(g_routesMx);
-    std::erase_if(g_routes, [&](const RouteEntry& e) { return e.handle == handle; });
+    std::shared_ptr<RouteEntry> removed;
+    {
+        std::unique_lock lk(g_routesMx);
+        for (auto it = g_routes.begin(); it != g_routes.end(); ++it)
+            if ((*it)->handle == handle) {
+                removed = *it;
+                g_routes.erase(it);
+                break;
+            }
+    }
+    // A request already dispatched to this route copied the shared_ptr and released g_routesMx before calling
+    // fn(); wait for it so the caller can safely free `user` (e.g. RemovePanel deletes the Panel) right after.
+    while (removed && removed->busy.load(std::memory_order_acquire) > 0) Sleep(1);
 }
 
 void NoteAuthFailure() { router::CountAuthFailure(); }

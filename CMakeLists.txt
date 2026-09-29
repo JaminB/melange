@@ -183,7 +183,7 @@ target_compile_definitions(oasis_rpc_selftest PRIVATE WIN32_LEAN_AND_MEAN NOMINM
 target_compile_options(oasis_rpc_selftest PRIVATE /W4 /utf-8 /permissive-)
 target_link_libraries(oasis_rpc_selftest PRIVATE oasis_core)
 
-# oasis.exe: the standalone server (Component F). Embeds the same web bundle as melange.asi.
+# oasis.exe: the standalone server, running with the game closed. Embeds the same web bundle as melange.asi.
 add_executable(oasis_standalone
     src/oasis/standalone/main.cpp src/oasis/standalone/ini_edit.cpp src/oasis/standalone/mods_provider.cpp
     src/oasis/standalone/json_write.cpp src/oasis/standalone/game_lock.cpp
@@ -197,7 +197,7 @@ target_compile_options(oasis_standalone PRIVATE /W4 /utf-8 /permissive- /Zi)
 target_link_options(oasis_standalone PRIVATE /DEBUG)
 target_link_libraries(oasis_standalone PRIVATE oasis_core bcrypt shell32 ole32)
 
-# Offline self-test for F's standalone-only file logic (ini editing, mods.list/setEnabled): no game, no server.
+# Offline self-test for the standalone-only file logic (ini editing, mods.list/setEnabled): no game, no server.
 add_executable(oasis_standalone_selftest
     tests/oasis_standalone_selftest.cpp
     src/oasis/standalone/ini_edit.cpp src/oasis/standalone/mods_provider.cpp src/oasis/standalone/json_write.cpp
@@ -211,7 +211,7 @@ target_include_directories(json_read_selftest PRIVATE src)
 target_compile_definitions(json_read_selftest PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX _CRT_SECURE_NO_WARNINGS)
 target_compile_options(json_read_selftest PRIVATE /W4 /utf-8 /permissive-)
 
-# Component C's pure wire logic (filters, bus name patterns, channel payloads) -- no game, no bus::, no Steam.
+# The streams' pure wire logic (filters, bus name patterns, channel payloads) -- no game, no bus::, no Steam.
 add_executable(oasis_streams_selftest
     tests/oasis_streams_selftest.cpp
     src/oasis/streams/wire.cpp

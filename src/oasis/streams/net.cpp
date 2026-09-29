@@ -1,6 +1,6 @@
 // The `net` channel: jlog records of categories `net` (NetSession's own state-change records) and `handshake`,
-// filtered per client as `log` is. Same seq-polled design as log.cpp; kept as its own file and its own cursor
-// per the frozen file layout, since the two channels have independent subscribers and independent backpressure.
+// filtered per client as `log` is. Same seq-polled design as log.cpp, kept as its own file with its own cursor
+// since the two channels have independent subscribers and independent backpressure.
 #include <cstdint>
 #include <mutex>
 #include <unordered_map>
@@ -37,11 +37,12 @@ void OnSub(ChannelId, int client, std::string_view filterJson, bool subscribed, 
         return;
     }
     streams::LogFilter f = streams::ParseLogFilter(filterJson);
-    std::lock_guard lk(g_mx);
+    // As log.cpp: keep the ring copy and backlog filter off g_mx, so a subscribing client never makes
+    // PollFrame -- which needs the same lock every frame on the main thread -- wait for it.
     std::vector<jlog::Line> lines;
     jlog::Tail(0, lines, 1u << 20);
     const uint64_t head = lines.empty() ? 0 : lines.back().seq;
-    g_subs[client] = Sub{f, head};
+    { std::lock_guard lk(g_mx); g_subs[client] = Sub{f, head}; }
     std::vector<const jlog::Line*> matched;
     for (auto it = lines.rbegin(); it != lines.rend() && matched.size() < kBacklogMax; ++it)
         if (InScope(*it) && streams::MatchesLog(f, *it)) matched.push_back(&*it);

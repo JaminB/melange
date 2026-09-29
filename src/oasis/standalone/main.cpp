@@ -136,22 +136,30 @@ void LogSessions(const oa::Call&, oa::Result& r, void*) {
     r.json = sessions.End();
 }
 
-bool ServeUnderDir(const oc::Request& rq, oc::Response* out, const std::wstring& root, const std::string& prefix) {
-    if (rq.path.size() <= prefix.size()) return false;
-    const std::string rel = rq.path.substr(prefix.size());
-    if (!oc::SafePath(rel)) return false;
-    std::wstring w = Widen(rel);
-    for (auto& c : w)
-        if (c == L'/') c = L'\\';
-    const std::wstring full = root + L"\\" + w;
-    if (GetFileAttributesW(full.c_str()) == INVALID_FILE_ATTRIBUTES) return false;
+// /logs/<session>/<file>: as the in-game route, the session must be a real session folder under the
+// (ini-configurable) logs directory and the file a plain name directly inside it; no further '/' or '\', no
+// nested folders. A configurable Dir must not turn this into a browser for the rest of the disk.
+bool RouteLogs(const oc::Request& rq, oc::Response* out, void*) {
+    constexpr size_t kPrefixLen = 6;  // "/logs/"
+    if (rq.path.size() <= kPrefixLen) return false;
+    const std::string rel = rq.path.substr(kPrefixLen);
+    const size_t slash = rel.find('/');
+    if (slash == std::string::npos || slash == 0 || slash + 1 >= rel.size()) return false;
+    if (rel.find('/', slash + 1) != std::string::npos) return false;
+    const std::wstring session = Widen(rel.substr(0, slash)), file = Widen(rel.substr(slash + 1));
+    if (!LooksLikeSession(session)) return false;
+    if (file.find_first_of(L"/\\:") != std::wstring::npos || file == L"." || file == L"..") return false;
+    const std::wstring root = LogsDir();
+    const DWORD sessionAttr = GetFileAttributesW((root + L"\\" + session).c_str());
+    if (sessionAttr == INVALID_FILE_ATTRIBUTES || !(sessionAttr & FILE_ATTRIBUTE_DIRECTORY)) return false;
+    const std::wstring full = root + L"\\" + session + L"\\" + file;
+    const DWORD attr = GetFileAttributesW(full.c_str());
+    if (attr == INVALID_FILE_ATTRIBUTES || (attr & FILE_ATTRIBUTE_DIRECTORY)) return false;
     out->status = 200;
     out->contentType = oc::MimeType(rel);
     out->file = full;
     return true;
 }
-
-bool RouteLogs(const oc::Request& rq, oc::Response* out, void*) { return ServeUnderDir(rq, out, LogsDir(), "/logs/"); }
 
 // ---------------------------------------------------------------- capture.list, /captures/
 std::wstring CapturesDir() {
@@ -186,7 +194,21 @@ void CaptureList(const oa::Call&, oa::Result& r, void*) {
     r.json = arr.End();
 }
 
-bool RouteCaptures(const oc::Request& rq, oc::Response* out, void*) { return ServeUnderDir(rq, out, CapturesDir(), "/captures/"); }
+// /captures/<name>.mcap: flat, no subfolders, and the name must be one capture.list would report.
+bool RouteCaptures(const oc::Request& rq, oc::Response* out, void*) {
+    constexpr size_t kPrefixLen = 10;  // "/captures/"
+    if (rq.path.size() <= kPrefixLen) return false;
+    const std::string name = rq.path.substr(kPrefixLen);
+    if (name.find('/') != std::string::npos || name.size() < 6 || name.substr(name.size() - 5) != ".mcap") return false;
+    if (!oc::SafePath(name)) return false;
+    const std::wstring full = CapturesDir() + L"\\" + Widen(name);
+    const DWORD attr = GetFileAttributesW(full.c_str());
+    if (attr == INVALID_FILE_ATTRIBUTES || (attr & FILE_ATTRIBUTE_DIRECTORY)) return false;
+    out->status = 200;
+    out->contentType = oc::MimeType(name);
+    out->file = full;
+    return true;
+}
 
 // ---------------------------------------------------------------- mods.list, mods.setEnabled
 void ModsList(const oa::Call&, oa::Result& r, void*) { r.json = standalone::modsprov::ListJson(g_gameDir, MELANGE_VERSION); }
@@ -259,6 +281,13 @@ void IniSetMethod(const oa::Call& c, oa::Result& r, void*) {
         r.ok = false;
         r.code = -32602;
         r.message = "expected {section, key, value}";
+        return;
+    }
+    if (std::string why; !melange::oasis::ini::ValidName(section->string, &why) || !melange::oasis::ini::ValidName(key->string, &why) ||
+                          !melange::oasis::ini::ValidValue(value->string, &why)) {
+        r.ok = false;
+        r.code = -32602;
+        r.message = why;
         return;
     }
     if (std::string why; melange::oasis::ini::Protected(section->string, key->string, value->string, &why)) {
