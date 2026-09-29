@@ -32,6 +32,9 @@ std::mutex g_mu;
 std::vector<DrawEvent> g_pre;
 bool g_preOverflow = false;
 std::vector<SeedEvent> g_seeds;
+// Both the menu-entry and the match-start seed come from 0x4ee250: the draws and seeds kept for a match start at the
+// one before the last of them. [prev, last) is that window's first segment in g_pre / g_seeds.
+size_t g_drawPrev = 0, g_drawLast = 0, g_seedPrev = 0, g_seedLast = 0;
 
 template <class T>
 uint32_t ToBits(T v) {
@@ -66,12 +69,14 @@ uint32_t __cdecl HkDraw2U() { return DoDraw<uint32_t>(1, reinterpret_cast<uintpt
 
 void OnSeed(int kind, uint32_t& v, uintptr_t ret) {
     if (kind == 0 && ret == kMenuEntrySeed) {
-        // A fresh menu-entry window: the pre-match draw buffer and the seed log both restart here, so a recording
-        // only ever carries the seed calls and draws since the last menu entry.
         std::lock_guard<std::mutex> lk(g_mu);
-        g_pre.clear();
+        g_pre.erase(g_pre.begin(), g_pre.begin() + static_cast<std::ptrdiff_t>(g_drawPrev));
+        g_seeds.erase(g_seeds.begin(), g_seeds.begin() + static_cast<std::ptrdiff_t>(g_seedPrev));
+        g_drawPrev = g_drawLast - g_drawPrev;
+        g_seedPrev = g_seedLast - g_seedPrev;
+        g_drawLast = g_pre.size();
+        g_seedLast = g_seeds.size();
         g_preOverflow = false;
-        g_seeds.clear();
     }
     if (ForcedSeedFn fn = g_forcedSeed.load(std::memory_order_relaxed)) {
         uint32_t forced = v;
@@ -124,13 +129,17 @@ void SetForcedSeed(ForcedSeedFn fn) { g_forcedSeed = fn; }
 
 std::vector<SeedEvent> TakeSessionSeeds() {
     std::lock_guard<std::mutex> lk(g_mu);
-    std::vector<SeedEvent> out;
-    out.swap(g_seeds);
+    std::vector<SeedEvent> out(g_seeds.begin() + static_cast<std::ptrdiff_t>(g_seedPrev), g_seeds.end());
+    g_seeds.clear();
+    g_seedPrev = g_seedLast = 0;
     return out;
 }
 std::vector<DrawEvent> PreMatchDraws(bool* overflow) {
     std::lock_guard<std::mutex> lk(g_mu);
     if (overflow) *overflow = g_preOverflow;
-    return g_pre;
+    std::vector<DrawEvent> out(g_pre.begin() + static_cast<std::ptrdiff_t>(g_drawPrev), g_pre.end());
+    g_pre.clear();
+    g_drawPrev = g_drawLast = 0;
+    return out;
 }
 }  // namespace melange::wormsign::rngtap

@@ -15,9 +15,9 @@ struct DrawEvent {
 };
 bool Install();
 bool Installed();
-// Every seed call recorded since the session began (cleared at Begin()).
+// Session begin: the seed calls since the menu-entry seed (the one before the match-start seed), then cleared.
 std::vector<SeedEvent> TakeSessionSeeds();
-// Pre-match draws since the last logic-RNG seed (menu entry); cleared there. `overflow` is set once the
+// Session begin: the draws since the menu-entry seed, then cleared. `overflow` is set once the
 // 200000-entry cap was hit and later draws were dropped -- the recording is then marked pre-match incomplete.
 std::vector<DrawEvent> PreMatchDraws(bool* overflow);
 }  // namespace melange::wormsign::rngtap
