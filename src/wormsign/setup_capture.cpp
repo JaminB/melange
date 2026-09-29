@@ -97,7 +97,13 @@ bool Capture(Data* out) {
         memcpy(&name, scheme + 0x14, 4);
         CString(name, &out->schemeName);
         uint64_t h = HashFields(scheme, 0x14, 0x20, {}, kFnvBasis);
-        out->scheme = Fnv(scheme + 0x108, sizeof scheme - 0x108, h);
+        // 0x108 is the AssistedShotSettings reference (a heap pointer); the 26 integer settings follow it.
+        out->scheme = Fnv(scheme + 0x10c, sizeof scheme - 0x10c, h);
+        static const char kHex[] = "0123456789abcdef";
+        for (size_t i = 0x10c; i < sizeof scheme; ++i) {
+            out->schemeRaw.push_back(kHex[scheme[i] >> 4]);
+            out->schemeRaw.push_back(kHex[scheme[i] & 15]);
+        }
         out->haveScheme = true;
     }
 

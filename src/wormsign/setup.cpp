@@ -63,6 +63,7 @@ std::string ToJson(const Data& d) {
         .Str("lastScheme", d.lastScheme)
         .Str("schemeName", d.schemeName);
     if (d.haveScheme) o.Str("scheme", Hex(d.scheme));
+    if (!d.schemeRaw.empty()) o.Str("schemeRaw", d.schemeRaw);
     if (d.haveInit) o.Str("init", Hex(d.init));
     jsonmini::Arr teams;
     for (const Team& t : d.teams) teams.Raw(jsonmini::Obj().Str("name", t.name).UInt("worms", t.worms).End());
