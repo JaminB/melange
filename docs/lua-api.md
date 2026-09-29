@@ -236,6 +236,7 @@ its replay) that agree on a tick's hash agree on the game state at that tick.
 |---|---|
 | `wum.wormsign.tick()` | `{tick, engine, mods}` for the last completed tick: `tick` is a number, `engine` and `mods` are 16-digit hex strings (`mods` is `"0000000000000000"` when no mod contributes). `nil` outside a match or before the first tick. |
 | `wum.wormsign.library()` | An array of the recorded matches (newest first): `{path, bytes, ticks, land, online, complete, pinned, flagged}` per entry. Empty when `[Wormsign] Record=0` or nothing has been recorded yet. |
+| `wum.wormsign.onDivergence(fn)` | Calls `fn(payload, name)` when a tick's hash differs from another player's (or from a recording being replayed); returns a handle for `wum.events.off`. `payload` is `{source, tick, serial, comps, contrib, peer}`: `source` is `"peer"` or `"replay"`, `comps` an array of the engine parts that differ (`"time+rng"`, `"turn"`, `"worms"`, `"tasks"`, `"projectiles"`, `"teams"`), `contrib` the first differing mod contributor or `""`, `peer` the other player's SteamID as a string. The same payload is the client event `wormsign.divergence`. |
 
 `mods` covers every sim mod of the match. Sim scripts are not covered by this page, but two things feed `mods` from them:
 

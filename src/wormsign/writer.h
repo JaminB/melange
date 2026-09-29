@@ -19,6 +19,7 @@ class Writer {
     bool Enqueue(uint32_t type, const void* data, size_t n, bool deflate = true, uint32_t tickFrom = 0,
                  uint32_t tickTo = 0);
     void Flush();                 // blocks until the queue drains to disk
+    void RequestFlush();          // the same without waiting
     bool Close();                 // flush, write INDX + trailer, join the thread
     void Abandon();               // stop without INDX, as a crash would leave it (tests only)
     bool IsOpen() const;

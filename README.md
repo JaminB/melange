@@ -55,7 +55,7 @@ Every module has its own section in `Melange.ini`, and `Enabled=0` turns a modul
 | `LuaConsole` | on | Overlay Lua REPL (`Ctrl+Shift+F10`, *Lua/Console*) for the client VM and, in a match, the match VM (off online unless `MatchConsoleOnline=1`) |
 | `GameState` | on | Read-only game-state readers for Oasis and `wum.game.worms()` (worms, teams, match values, entities); build #1077 only |
 | `Oasis` | on | The local web app on 127.0.0.1 ([docs/oasis.md](docs/oasis.md)); nothing listens until you open it |
-| `Wormsign` | on | The match's tick clock and a per-tick state hash (`wum.wormsign.tick()`); records a rolling library of recent matches to `Documents\Melange\replays` (last 20 / 200 MB by default, `wum.wormsign.library()`), the base for match replays and desync detection; build #1077 only |
+| `Wormsign` | on | The match's tick clock and a per-tick state hash (`wum.wormsign.tick()`); records a rolling library of recent matches to `Documents\Melange\replays` (last 20 / 200 MB by default, `wum.wormsign.library()`), the base for match replays; online, it compares the hashes with other Melange players and reports the first tick where they disagree ([docs/wormsign.md](docs/wormsign.md)); build #1077 only |
 
 ## Logs and bug reports
 
@@ -64,8 +64,9 @@ Every module has its own section in `Melange.ini`, and `Enabled=0` turns a modul
 | `<game>\Melange\Melange.log` | Plain-text log of the current run (`Melange.prev.log` is the run before) |
 | `<game>\Melange\dumps\` | Crash and hang minidumps |
 | `Documents\Melange\logs\<session>\` | Structured session log (`events.jsonl`) |
+| `Documents\Melange\replays\desync-*.zip` | Desync bundles: what differed between two players, and at which tick |
 
-To report a bug, press `Ctrl+Shift+F11` in the game, or choose *File > Save logs as...* in the overlay, and attach the zip. In fullscreen, the zip goes to `Documents\Melange\exports` instead of opening a save dialog.
+To report a bug, press `Ctrl+Shift+F11` in the game, or choose *File > Save logs as...* in the overlay, and attach the zip (it includes the newest desync bundle). In fullscreen, the zip goes to `Documents\Melange\exports` instead of opening a save dialog.
 
 The zip includes a GPU compatibility report (`gpu/compat.txt`): graphics card, driver, OpenGL version and extensions, the Cg shader profiles your card supports, and which shaders and effects loaded or were skipped and why. The overlay panel *Mirage/GPU* shows the same report.
 
@@ -146,7 +147,7 @@ A content mod's `entry.sim` runs inside the match's own Lua VM, which is Lua 5.0
 | `wum.sim.weapon(name):get(field)`, `:set(field, v)` | Read and change a weapon's data for this match; `set` works only while the script's top-level chunk runs at match start |
 | `wum.sim.hash(v, ...)` | Adds numbers, strings, booleans or `nil` to this tick's state hash, for state the mod keeps in locals |
 
-Every call from the game into a sim script has an instruction budget (`[SimBridge] InstrPerCall`). A callback that fails or runs out of budget three times is switched off. `dist\Mods\sim-sampler` and `dist\Mods\bazooka-plus` are examples (shipped disabled).
+Every call from the game into a sim script has an instruction budget (`[SimBridge] InstrPerCall`). A callback that fails or runs out of budget three times is switched off. `dist\Mods\sim-sampler` and `dist\Mods\bazooka-plus` are examples (shipped disabled). `dist\Mods\desync-probe`, also disabled, shows how to test a mod's determinism with the desync detector ([docs/wormsign.md](docs/wormsign.md)).
 
 With Wormsign on, every sim mod's state is part of the per-tick hash, so a mod that computes differently on two machines is caught at the tick it happens, with the mod named. Wormsign hashes the mod's globals and `wum.sim.storage` (three tables deep, in any key order; functions and userdata count by type only), and whatever the mod passes to `wum.sim.hash` in that tick. Locals and upvalues are not visible to it: a mod that keeps its state there can pass it to `wum.sim.hash`.
 

@@ -91,6 +91,13 @@ void Writer::Flush() {
     impl_->cv.wait(lk, [&] { return !impl_->flushRequested; });
 }
 
+void Writer::RequestFlush() {
+    std::lock_guard<std::mutex> lk(impl_->mu);
+    if (!impl_->open) return;
+    impl_->flushRequested = true;
+    impl_->cv.notify_all();
+}
+
 bool Writer::Close() {
     {
         std::lock_guard<std::mutex> lk(impl_->mu);

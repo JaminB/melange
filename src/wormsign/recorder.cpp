@@ -310,6 +310,20 @@ bool Install() {
 void SetRecordEnabled(bool on) { g_recordEnabled = on; }
 void SetDetailEnabled(bool on) { g_detailEnabled = on; }
 
+bool RecordingPath(uint32_t serial, std::wstring* path) {
+    if (serial != g_serial || g_path.empty()) return false;
+    if (g_active) {
+        FlushTick();
+        FlushInpt();
+        FlushRmti();
+        FlushDisp();
+        FlushDetl();
+        g_writer.RequestFlush();
+    }
+    *path = g_path;
+    return true;
+}
+
 Stats GetStats() {
     return Stats{g_writer.QueuedChunks(), g_writer.DroppedChunks(), g_writer.BytesWritten(), g_recordingsWritten};
 }

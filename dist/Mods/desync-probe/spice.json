@@ -1,0 +1,12 @@
+{
+  "spiceVersion": 1,
+  "id": "desync-probe",
+  "version": "1.0.0",
+  "name": "Desync probe",
+  "authors": ["Melange"],
+  "description": "Sample content mod for testing determinism: on the local event sim.test.desync it changes its own state on one machine only, so Wormsign's desync detector reports the exact tick.",
+  "melange": { "range": ">=0.2.0" },
+  "kind": "content",
+  "defaultEnabled": false,
+  "entry": { "sim": "sim/main.lua" }
+}

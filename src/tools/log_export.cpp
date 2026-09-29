@@ -278,7 +278,8 @@ std::string BuildReadme(std::string_view melangeVersion) {
     s += "  logs/engine/*     the engine's own XOM/Net log files, if found\n";
     s += "  dumps/*.dmp       crash/hang minidumps, if any were found\n";
     s += "  config/*.ini      Melange.ini and any other .ini next to the game exe\n";
-    s += "  mods/*.json       installed Melange modules and detected .asi plugins\n\n";
+    s += "  mods/*.json       installed Melange modules and detected .asi plugins\n";
+    s += "  replays/*         the newest desync bundle and match recording, if any\n\n";
     s += "Privacy note - this zip can contain:\n";
     s += "  - your Windows user name in file paths (replaced with %USERNAME% by default)\n";
     s += "  - Steam ids, persona names and lobby ids (ids are replaced with a short hash unique to\n";
@@ -437,6 +438,18 @@ bool DoExport(const std::wstring& zipPath, const Options& opt, std::string* erro
         }
     } else {
         absent.push_back("dumps (IncludeDumps=0)");
+    }
+
+    // replays/: the newest desync bundle and the newest match recording.
+    {
+        const std::wstring docs = DocumentsDir();
+        size_t before = manifest.size();
+        if (!docs.empty())
+            for (const wchar_t* pattern : {L"desync-*.zip", L"*.wsr"})
+                for (const auto& f : NewestMatching(docs + L"\\Melange\\replays", pattern, 1))
+                    AddFileEntry(zip, manifest, "replays/" + Narrow(BaseNameW(f)), f, kCap, opt.redactUserPaths, userName,
+                                 salt);
+        if (manifest.size() == before) absent.push_back("replays (no desync bundle or recording found)");
     }
 
     // config/*.ini from the game folder and the ASI loader's plugins\ and scripts\ folders.

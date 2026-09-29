@@ -3,6 +3,7 @@
 //   wormsign.contrib               hash contributors, their state and the mod environment digest cost
 //   wormsign.detail [tick]         the detail record of a tick (default: the last) and its diff against the tick before
 //   wormsign.fpu                   the FPU watch
+//   wormsign.peers                 the hash exchange with each lobby member
 #include <lua.hpp>
 #include <windows.h>
 
@@ -23,9 +24,13 @@
 #include "wormsign/fpu.h"
 #include "wormsign/library.h"
 #include "wormsign/recorder.h"
+#include "wormsign/detector.h"
 #include "wormsign/session.h"
 
 namespace ws = melange::wormsign;
+namespace melange::sandbox {
+int WormsignOnDivergence(lua_State* L);
+}
 
 namespace {
 int LTick(lua_State* L) {
@@ -82,6 +87,8 @@ int OpenLib(lua_State* L) {
     lua_setfield(L, -2, "tick");
     lua_pushcfunction(L, &LLibrary);
     lua_setfield(L, -2, "library");
+    lua_pushcfunction(L, &melange::sandbox::WormsignOnDivergence);
+    lua_setfield(L, -2, "onDivergence");
     return 1;
 }
 
@@ -142,6 +149,26 @@ bool VerbDetail(std::string_view a, void*) {
     return true;
 }
 
+void ContribNames(std::vector<ws::wire::ContribName>* out) {
+    ws::contrib::Info list[128];
+    const size_t n = ws::contrib::List(list, 128);
+    for (size_t i = 0; i < n; ++i) out->push_back({list[i].name, list[i].version});
+}
+
+bool ContribHashes(uint32_t tick, std::vector<uint64_t>* out) {
+    ws::contrib::Entry e[128];
+    const size_t n = ws::contrib::HashesAt(tick, e, 128);
+    for (size_t i = 0; i < n; ++i) out->push_back(e[i].hash);
+    return n > 0;
+}
+
+bool DetailJson(uint32_t tick, std::string* json) {
+    ws::detail::DetailRec r;
+    if (!ws::detail::Get(tick, &r)) return false;
+    *json = ws::detail::ToJson(r);
+    return true;
+}
+
 bool VerbFpu(std::string_view, void*) {
     LOG_INFO("[wormsign] %s", ws::fpu::NoteJson().c_str());
     return true;
@@ -158,8 +185,13 @@ class Wormsign final : public melange::Module {
         const bool recordDetail = Bool("RecordDetail", true);
         const int keepMatches = Int("KeepMatches", 20);
         const int maxMB = Int("MaxMB", 200);
-        Bool("Exchange", true);
+        ws::detector::Options det;
+        det.exchange = Bool("Exchange", true);
         melange::config::EnsureKey(Name(), "OnDesync", "report");
+        const std::string onDesync = melange::config::GetString(Name(), "OnDesync", "report");
+        det.onDesync = onDesync == "bundle-only" ? ws::detector::OnDesync::BundleOnly : ws::detector::OnDesync::Report;
+        if (onDesync != "report" && onDesync != "bundle-only")
+            LOG_WARN("[wormsign] OnDesync=%s is not report or bundle-only; using report", onDesync.c_str());
         Bool("ReplayAnyContent", false);
         melange::config::EnsureKey(Name(), "EnvDigest", "changed");
         const auto mode = melange::simhash::ParseMode(melange::config::GetString(Name(), "EnvDigest", "changed").c_str());
@@ -179,9 +211,14 @@ class Wormsign final : public melange::Module {
             LOG_ERROR("[wormsign] recorder failed to install: matches will not be recorded this session");
         }
         LOG_INFO("[wormsign] tick clock installed (mod environment digest: %s)", melange::simhash::ModeName(mode));
+        ws::detector::SetContribSource(&ContribNames, &ContribHashes);
+        ws::detector::SetDetailSource(&DetailJson);
+        ws::detector::SetRecordingSource(&ws::recorder::RecordingPath);
+        ws::detector::Install(det);
         return true;
     }
     void Uninstall() override {
+        ws::detector::Uninstall();
         melange::simhash::Uninstall();
         ws::clock::Uninstall();
         ws::session::SetEnabled(false);
