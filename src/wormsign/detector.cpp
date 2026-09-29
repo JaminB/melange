@@ -488,7 +488,8 @@ void Raise(const Divergence& d) {
     std::string what = comps;
     if (d.contrib[0]) what += (what.empty() ? "mods: " : ", mods: ") + std::string(d.contrib);
     else if (what.empty()) what = d.oursMods != d.theirsMods ? "mods" : "engine";
-    LOG_WARN("[wormsign] DESYNC at tick %u (%s) with %s, match %u", d.tick, what.c_str(), who.c_str(), d.serial);
+    LOG_WARN("[wormsign] DESYNC at tick %u (%s) with %s, match %u; reported at our tick %u", d.tick, what.c_str(), who.c_str(),
+             d.serial, Tick());
     jlog::Rec("wormsign", jlog::Level::Warn, "divergence")
         .Str("source", d.source == Source::Peer ? "peer" : "replay").Uint("serial", d.serial).Uint("tick", d.tick)
         .Hex("oursEngine", d.oursEngine).Hex("theirsEngine", d.theirsEngine).Hex("oursMods", d.oursMods)

@@ -19,13 +19,14 @@
 #include "melange/lua.h"
 #include "melange/testcmd.h"
 #include "melange/wormsign.h"
+#include "tools/json_mini.h"
 #include "wormsign/clock.h"
 #include "wormsign/contrib.h"
 #include "wormsign/detail.h"
+#include "wormsign/detector.h"
 #include "wormsign/fpu.h"
 #include "wormsign/library.h"
 #include "wormsign/recorder.h"
-#include "wormsign/detector.h"
 #include "wormsign/player.h"
 #include "wormsign/session.h"
 
@@ -167,7 +168,26 @@ bool ContribHashes(uint32_t tick, std::vector<uint64_t>* out) {
 bool DetailJson(uint32_t tick, std::string* json) {
     ws::detail::DetailRec r;
     if (!ws::detail::Get(tick, &r)) return false;
-    *json = ws::detail::ToJson(r);
+    // The exchanged record leaves out the second RNG (never simulation state, it differs between machines) and adds
+    // the mod globals and storage keys that changed in this tick, so a mod desync names its key.
+    std::string j = ws::detail::ToJson(r);
+    if (const size_t p = j.find("\"rng2\":"); p != std::string::npos) {
+        const size_t e = j.find(',', p);
+        if (e != std::string::npos) j.erase(p, e - p + 1);
+    }
+    melange::simhash::EnvChange ch[16];
+    const size_t n = melange::simhash::EnvChanges(tick, tick, ch, 16);
+    if (n && !j.empty() && j.back() == '}') {
+        melange::jsonmini::Obj env;
+        for (size_t i = 0; i < n; ++i) {
+            const std::string t = melange::simhash::Format(ch[i]);
+            const size_t c = t.rfind(": ");
+            env.Str(t.substr(0, c), c == std::string::npos ? "" : t.substr(c + 2));
+        }
+        j.pop_back();
+        j += ",\"env\":" + env.End() + "}";
+    }
+    *json = std::move(j);
     return true;
 }
 
