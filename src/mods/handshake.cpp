@@ -22,6 +22,7 @@
 #include "lua/sim/bridge_internal.h"
 #include "melange/jlog.h"
 #include "mods/handshake_internal.h"
+#include "mods/lobby.h"
 #include "mods/thumper_internal.h"
 #include "net/steam.h"
 #include "tools/hash.h"
@@ -386,6 +387,35 @@ int Peers(Peer* out, int max) {
 bool SimAllowedThisMatch() { return handshake::g_simAllowedThisMatch.load(); }
 bool InLobby() { return handshake::g_lobby.load() != 0; }
 }  // namespace melange::mods
+
+namespace melange::handshake::lobby {
+uint64_t Current() { return g_lobby.load(); }
+uint64_t Me() { return MySteamId(); }
+uint64_t Owner() {
+    const SteamID l = g_lobby.load();
+    return l ? LobbyOwner(l) : 0;
+}
+std::vector<uint64_t> Members() {
+    std::vector<uint64_t> out;
+    const SteamID l = g_lobby.load();
+    if (!l) return out;
+    const SteamID me = MySteamId();
+    for (int i = 0, n = NumLobbyMembers(l); i < n; ++i)
+        if (SteamID m = LobbyMemberByIndex(l, i); m && m != me) out.push_back(m);
+    return out;
+}
+std::string MemberData(uint64_t member, const char* key) {
+    const SteamID l = g_lobby.load();
+    return l ? LobbyMemberData(l, member, key) : std::string();
+}
+void SetMyData(const char* key, const char* value) {
+    if (const SteamID l = g_lobby.load()) SetLobbyMemberDataRaw(l, key, value);
+}
+std::string Name(uint64_t member) {
+    const std::string n = FriendName(member);
+    return n.empty() ? std::to_string(member) : n;
+}
+}  // namespace melange::handshake::lobby
 
 namespace {
 class Handshake final : public melange::Module {

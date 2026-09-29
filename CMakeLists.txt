@@ -372,3 +372,18 @@ target_include_directories(wormsign_format_selftest PRIVATE src src/sdk)
 target_compile_definitions(wormsign_format_selftest PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX _CRT_SECURE_NO_WARNINGS)
 target_compile_options(wormsign_format_selftest PRIVATE /W4 /utf-8 /permissive-)
 target_link_libraries(wormsign_format_selftest PRIVATE miniz)
+
+# The desync detector without the game: the exchange packets, the two-peer protocol over a simulated link, the
+# field diff and the bundle, plus a timed mutation run on the packet decoder.
+add_executable(wormsign_detector_selftest
+    tests/wormsign_detector_selftest.cpp
+    src/wormsign/exchange_wire.cpp
+    src/wormsign/detector_core.cpp
+    src/wormsign/bundle.cpp
+    src/tools/json_read.cpp
+    src/tools/redact.cpp
+    src/tools/hash.cpp)
+target_include_directories(wormsign_detector_selftest PRIVATE src src/sdk)
+target_compile_definitions(wormsign_detector_selftest PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX _CRT_SECURE_NO_WARNINGS)
+target_compile_options(wormsign_detector_selftest PRIVATE /W4 /utf-8 /permissive-)
+target_link_libraries(wormsign_detector_selftest PRIVATE miniz bcrypt)

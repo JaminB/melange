@@ -593,6 +593,55 @@ void TestSample() {
     fake::L = nullptr;
 }
 
+std::string Global(const char* mod, const char* name) {
+    lua_State* S = fake::L;
+    if (!melange::simbridge::PushModEnv(mod)) return "<no env>";
+    lua_pushstring(S, name);
+    lua_gettable(S, -2);
+    std::string r = Scalar(S, -1);
+    lua_settop(S, 0);
+    return r;
+}
+
+// desync-probe runs clean until sim.test.desync, then changes a global (kind 0) or its random stream (kind 2).
+std::vector<std::string> RunProbe(int kind, int atTick) {
+    std::string code;
+    if (FILE* f = fopen(MELANGE_SOURCE_DIR "/dist/Mods/desync-probe/sim/main.lua", "rb")) {
+        char b[4096];
+        for (size_t n; (n = fread(b, 1, sizeof b, f)) > 0;) code.append(b, n);
+        fclose(f);
+    }
+    Expect(!code.empty(), "desync-probe source found");
+    fake::runState = 1;
+    fake::seed = 0x5eed;
+    fake::L = fake::NewMatchVM();
+    core::SetSources({{"desync-probe", "1.0.0", "@desync-probe/sim/main.lua", code}});
+    core::ContextCreated(fake::L);
+    Expect(core::Init({}, true), "desync-probe loads");
+    std::vector<std::string> states;
+    for (int i = 1; i <= 200; ++i) {
+        core::Update();
+        if (kind >= 0 && i == atTick) melange::simbridge::Dispatch("sim.test.desync", {static_cast<float>(kind)});
+        states.push_back(Global("desync-probe", "desyncs") + "/" + Global("desync-probe", "lastDraw"));
+    }
+    Expect(melange::sim::GetStats().faults == 0 && fake::runState == 1, "desync-probe: no faults");
+    core::ContextClosing(fake::L);
+    lua_close(fake::L);
+    fake::L = nullptr;
+    return states;
+}
+
+void TestDesyncProbe() {
+    const auto clean = RunProbe(-1, 0), clean2 = RunProbe(-1, 0);
+    Expect(clean == clean2 && clean.back() != "0/0", "desync-probe: deterministic without the event");
+    const auto env = RunProbe(0, 120), rng = RunProbe(2, 130);
+    Expect(std::equal(clean.begin(), clean.begin() + 119, env.begin()) && env[119] != clean[119] &&
+               env[119].rfind("1/", 0) == 0,
+           "desync-probe env: equal before the tick, the global changes at it");
+    Expect(std::equal(clean.begin(), clean.begin() + 129, rng.begin()) && rng[129] != clean[129] && rng[199] != clean[199],
+           "desync-probe rng: equal before the tick, the stream differs from it on");
+}
+
 int main() {
     melange::log::SetTap(&Tap);
     {
@@ -631,6 +680,7 @@ int main() {
     fake::L = nullptr;
 
     TestSample();
+    TestDesyncProbe();
     printf("sim_selftest: %d passed, %d failed\n", g_pass, g_fail);
     return g_fail ? 1 : 0;
 }
