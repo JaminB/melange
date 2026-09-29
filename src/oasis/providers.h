@@ -11,5 +11,6 @@ void InstallCapture();                                                          
 void InstallWebPanels();                                                                          // web panels
 void InstallWormsign();                                                                           // replays and desync
 void InstallLevels(); void InstallErgAssets();                                                    // Erg level service, previews
+void InstallErgChannel();                                                                         // Test state and level starts
 core::Auth* MakeAuth();                                                                           // launch token, Host, Origin
 }  // namespace melange::oasis::providers

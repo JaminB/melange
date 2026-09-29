@@ -262,6 +262,22 @@ target_compile_definitions(erg_scene_selftest PRIVATE WIN32_LEAN_AND_MEAN NOMINM
 target_compile_options(erg_scene_selftest PRIVATE /W4 /utf-8 /permissive-)
 target_link_libraries(erg_scene_selftest PRIVATE melange_xom)
 
+# Level registration without the game: level-root rules, pack checks, root order, the .csh guard, the online map gate,
+# the one-shot override and the "erg" channel payloads.
+add_executable(levels_selftest
+    tests/levels_selftest.cpp
+    src/levels/roots.cpp src/levels/csh.cpp src/levels/gate_policy.cpp src/levels/test_arm.cpp src/levels/manifest.cpp
+    src/erg/names.cpp src/erg/scene.cpp src/erg/patch.cpp src/erg/jsonio.cpp
+    src/assets/crcsafe_math.cpp
+    src/mods/spice.cpp
+    src/tools/hash.cpp
+    src/tools/json_read.cpp
+    src/core/log.cpp)
+target_include_directories(levels_selftest PRIVATE src src/sdk)
+target_compile_definitions(levels_selftest PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX _CRT_SECURE_NO_WARNINGS)
+target_compile_options(levels_selftest PRIVATE /W4 /utf-8 /permissive-)
+target_link_libraries(levels_selftest PRIVATE melange_xom bcrypt)
+
 # xomtool: the Sieve CLI (unpack/pack/inspect/diff/convert/bank/report). PNG I/O only here -
 # src/xom itself stays platform-free.
 add_executable(xomtool tools/xomtool/main.cpp)

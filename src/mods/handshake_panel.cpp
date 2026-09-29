@@ -5,6 +5,7 @@
 #include <cstdint>
 #include <string>
 
+#include "levels/gate.h"
 #include "melange/mods.h"
 #include "melange/overlay.h"
 #include "mods/handshake_internal.h"
@@ -77,6 +78,7 @@ void DrawPanel(void*) {
     } else if (!wv.why.empty()) {
         ImGui::TextColored(kAmber, "%s", wv.why.c_str());
     }
+    for (const auto& line : levels::gate::LobbyLines()) ImGui::TextColored(kAmber, "%s", line.c_str());
     ImGui::Text("Our content: %s", ours.vanilla ? "vanilla" : ours.hash);
     if (lobby::Current() && wpngate::LocalClones()) ImGui::Text("Our clone weapons: %s", WeaponsCell(lobby::Me()).c_str());
 

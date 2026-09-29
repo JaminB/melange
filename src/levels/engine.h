@@ -1,6 +1,7 @@
 #pragma once
 #include <cstdint>
 #include <string>
+#include <vector>
 
 // Engine glue for levels: SEH-guarded calls that refuse to run when the #1077 bytes of what they call differ, and
 // the level-name and picker hooks (through weapons::engine::Mid, so they are listed, gated and suppressible).
@@ -43,4 +44,18 @@ bool InstallPickerHook(KeepFn keep);
 void EnablePickerHook(bool on);
 bool PickerHookEnabled();
 KeepFn CurrentPickerKeep();
+
+// The random pools (Quick Game, network quick starts): MissionService's per-type level lists are built by one
+// ForEachResource callback. The mid-hook at kPoolEntry gets each candidate; `keep` returning false resumes at
+// kPoolSkip, the callback's own "not added" exit. `request` is the entry's Level_Type.
+constexpr uintptr_t kPoolEntry = 0x72faec, kPoolSkip = 0x72fce3, kMissionService = 0x97a998;
+bool InstallPoolHook(KeepFn keep);
+void EnablePoolHook(bool on);
+bool PoolHookEnabled();
+std::vector<std::string> PoolKeys();             // the type-0 list as it stands now
+
+// Posts WXMsg.SetDataResource <name> <value> (the frontend's own way to change a data resource, persisted in the
+// save). Main thread.
+constexpr uintptr_t kMsgFactory = 0x96d14c, kMsgAlloc = 0x691705, kTwoStringMsgInit = 0x69154e, kMsgPost = 0x6910e4;
+bool PostDataResource(const char* name, const char* value);
 }  // namespace melange::levels::engine

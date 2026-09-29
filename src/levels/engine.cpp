@@ -5,9 +5,11 @@
 #include <safetyhook.hpp>
 
 #include <cstring>
+#include <deque>
 #include <initializer_list>
 
 #include "assets/searchpath.h"
+#include "melange/bus.h"
 #include "core/game.h"
 #include "core/log.h"
 #include "core/mem.h"
@@ -32,6 +34,20 @@ const Site kFns[] = {
 };
 constexpr std::initializer_list<int> kLevelNameBytes = {0x68, 0x80, 0x8b, 0x8b, 0x00};
 constexpr std::initializer_list<int> kPickerKeepBytes = {0x8b, 0x43, 0x30, 0x8b, 0x74, 0x24, 0x48};
+constexpr std::initializer_list<int> kPoolEntryBytes = {0x8b, 0x46, 0x30, 0x83, 0xf8, 0x03};
+const Site kExtra[] = {
+    {kPoolSkip, {0x85, 0xdb, 0x74, 0x06, 0x8b, 0x03, 0x53}},
+    {kMsgAlloc, {0x55, 0x8b, 0xec, 0x83, 0xec, 0x10}},
+    {kTwoStringMsgInit, {0x55, 0x8b, 0xec, 0x51, 0x89, 0x4d, 0xfc}},
+    {kMsgPost, {0x55, 0x8b, 0xec, 0x51, 0x51, 0x83, 0x3d}},
+};
+
+bool ExtraOk(uintptr_t addr) {
+    if (!game::IsKnownBuild()) return false;
+    for (auto& s : kExtra)
+        if (s.addr == addr) return mem::Expect(s.addr, s.bytes);
+    return false;
+}
 
 bool FnOk(uintptr_t addr) {
     if (!game::IsKnownBuild()) return false;
@@ -127,11 +143,36 @@ void OnPickerKeep(safetyhook::Context& c) {
     if (!g_keep(key, request)) c.eip = kPickerReject;
 }
 
+KeepFn g_poolKeep = nullptr;
+SafetyHookMid g_poolHook;
+
+void OnPoolEntry(safetyhook::Context& c) {
+    if (!g_poolKeep) return;
+    const char* key = RawEntryName(c.ebx);
+    if (!key) return;
+    if (!g_poolKeep(key, Rd<uint32_t>(c.esi + 0x30))) c.eip = kPoolSkip;
+}
+
+bool RawPostTwoStrings(uint16_t id, const char* a, const char* b) {
+    __try {
+        const uintptr_t factory = *reinterpret_cast<uintptr_t*>(kMsgFactory);
+        if (!factory) return false;
+        const uintptr_t msg = reinterpret_cast<uintptr_t(__thiscall*)(uintptr_t, uint32_t)>(kMsgAlloc)(factory, 0x10);
+        if (!msg) return false;
+        reinterpret_cast<uintptr_t(__thiscall*)(uintptr_t, uint32_t, const char*, const char*)>(kTwoStringMsgInit)(msg, id, a, b);
+        reinterpret_cast<int(__cdecl*)(uintptr_t)>(kMsgPost)(msg);
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return false;
+    }
+    return true;
+}
+
 bool RegisterSites() {
     static bool done = false;
     if (!done) {
         weng::AddHookSite(kLevelName, kLevelNameBytes);
         weng::AddHookSite(kPickerKeep, kPickerKeepBytes);
+        weng::AddHookSite(kPoolEntry, kPoolEntryBytes);
         done = true;
     }
     return true;
@@ -261,4 +302,48 @@ void EnablePickerHook(bool on) {
 bool PickerHookEnabled() { return g_pickerHook && g_pickerHook.enabled(); }
 
 KeepFn CurrentPickerKeep() { return g_keep; }
+
+bool InstallPoolHook(KeepFn keep) {
+    RegisterSites();
+    g_poolKeep = keep;
+    if (!ExtraOk(kPoolSkip)) return false;
+    if (!weng::Mid(g_poolHook, kPoolEntry, &OnPoolEntry, "random pool")) return false;
+    weng::Enable(g_poolHook, true);
+    return true;
+}
+
+void EnablePoolHook(bool on) {
+    if (g_poolHook) weng::Enable(g_poolHook, on);
+}
+
+bool PoolHookEnabled() { return g_poolHook && g_poolHook.enabled(); }
+
+std::vector<std::string> PoolKeys() {
+    std::vector<std::string> out;
+    if (!game::IsKnownBuild()) return out;
+    const uintptr_t ms = Rd<uintptr_t>(kMissionService);
+    if (!ms) return out;
+    const uintptr_t b = Rd<uintptr_t>(ms + 0x2c), e = Rd<uintptr_t>(ms + 0x30);
+    if (!b || e < b || e - b > 4 * 1024) return out;
+    for (uintptr_t p = b; p < e; p += 4) {
+        std::string k = weng::ReadCString(Rd<uintptr_t>(p), 80);
+        if (!k.empty()) out.push_back(std::move(k));
+    }
+    return out;
+}
+
+bool PostDataResource(const char* name, const char* value) {
+    if (!name || !*name || !value) return false;
+    if (!ExtraOk(kMsgAlloc) || !ExtraOk(kTwoStringMsgInit) || !ExtraOk(kMsgPost)) return false;
+    const auto id = bus::IdOf("WXMsg.SetDataResource");
+    if (id == bus::kInvalidId) return false;
+    // The message keeps the pointers, not copies: the text lives for the rest of the process.
+    static std::deque<std::string> texts;
+    if (texts.size() > 64) return false;
+    texts.emplace_back(name);
+    const char* a = texts.back().c_str();
+    texts.emplace_back(value);
+    const char* b = texts.back().c_str();
+    return RawPostTwoStrings(id, a, b);
+}
 }  // namespace melange::levels::engine

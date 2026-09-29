@@ -2,6 +2,7 @@
 // the observers and the state verbs; registration lives in registry.
 #include <chrono>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <string>
 #include <vector>
@@ -71,9 +72,9 @@ bool VerbState(std::string_view, void*) {
     lv::Armed(armed, sizeof armed);
     float water = 0;
     const bool haveWater = lv::WaterLevel(&water);
-    LOG_INFO("[levels] state: enabled=%d hooks=%d levelHook=%d pickerHook=%d frontend=%d current='%s' armed='%s' "
+    LOG_INFO("[levels] state: enabled=%d hooks=%d levelHook=%d pickerHook=%d poolHook=%d frontend=%d current='%s' armed='%s' "
              "packs=%u levels=%u test=%u starts=%u held=%u cshDeleted=%u msRegister=%.3f water=%s%.2f online=%d",
-             g_enabled, g_hooks, eng::LevelHookEnabled(), eng::PickerHookEnabled(), eng::AtFrontend(),
+             g_enabled, g_hooks, eng::LevelHookEnabled(), eng::PickerHookEnabled(), eng::PoolHookEnabled(), eng::AtFrontend(),
              eng::CurrentLevelKey(), armed, st.packs, st.levels, st.testLevels, st.starts, st.heldStarts, st.cshDeleted,
              st.msRegister, haveWater ? "" : "-", water, g_cfg.online);
     melange::jlog::Rec("levels", melange::jlog::Level::Info, "state")
@@ -92,6 +93,14 @@ bool VerbList(std::string_view a, void*) {
     return true;
 }
 
+bool VerbSetWater(std::string_view a, void*) {
+    const std::string v(a);
+    char* end = nullptr;
+    const float f = std::strtof(v.c_str(), &end);
+    if (v.empty() || end == v.c_str()) return false;
+    return lv::SetWaterLevelOffline(f);
+}
+
 class Levels final : public melange::Module {
 public:
     const char* Name() const override { return "Levels"; }
@@ -108,6 +117,7 @@ public:
         g_cfg.devWater = Bool("DevWater", false);
         melange::testcmd::Register("levels.state", &VerbState);
         melange::testcmd::Register("levels.list", &VerbList);
+        melange::testcmd::Register("levels.setwater", &VerbSetWater);
         const bool sites = eng::SitesOk();
         g_enabled = sites;
         if (g_enabled) {
@@ -217,8 +227,10 @@ void InstallHooks() {
     g_hooks = true;
     const bool level = engine::InstallLevelHook(&Decide, nullptr);
     const bool picker = engine::InstallPickerHook(&registry::Keep);
-    LOG_INFO("[levels] hooks installed: level name %s, picker %s", level ? "ok" : "FAILED", picker ? "ok" : "FAILED");
-    jlog::Rec("levels", jlog::Level::Info, "hooks").Bool("level", level).Bool("picker", picker);
+    const bool pool = engine::InstallPoolHook(&registry::KeepInPool);
+    LOG_INFO("[levels] hooks installed: level name %s, picker %s, random pool %s", level ? "ok" : "FAILED",
+             picker ? "ok" : "FAILED", pool ? "ok" : "FAILED (RandomPool=0 cannot be honoured offline)");
+    jlog::Rec("levels", jlog::Level::Info, "hooks").Bool("level", level).Bool("picker", picker).Bool("pool", pool);
 }
 }  // namespace melange::levels::internal
 

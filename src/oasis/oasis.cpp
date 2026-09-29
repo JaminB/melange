@@ -155,6 +155,7 @@ class Oasis final : public Module {
         providers::InstallIni();
         providers::InstallLevels();
         providers::InstallErgAssets();
+        providers::InstallErgChannel();
         providers::InstallCapture();
         providers::InstallWebPanels();
         providers::InstallWormsign();
