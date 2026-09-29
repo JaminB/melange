@@ -6,7 +6,7 @@
 namespace melange::wormsign::recorder {
 bool Install();               // registers the session/tick-end observers; call once, after clock::Install()
 void SetRecordEnabled(bool on);   // [Wormsign] Record
-void SetDetailEnabled(bool on);   // [Wormsign] RecordDetail (no detail source until A lands; accepted, unused)
+void SetDetailEnabled(bool on);   // [Wormsign] RecordDetail: DETL chunks
 struct Stats {
     uint64_t chunksQueued, chunksDropped;
     uint64_t bytesWritten;

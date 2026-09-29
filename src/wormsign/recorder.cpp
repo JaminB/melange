@@ -18,7 +18,10 @@
 #include "tools/json_mini.h"
 #include "version.h"
 #include "wormsign/capture_internal.h"
+#include "wormsign/contrib.h"
+#include "wormsign/detail.h"
 #include "wormsign/format.h"
+#include "wormsign/fpu.h"
 #include "wormsign/library.h"
 #include "wormsign/records.h"
 #include "wormsign/rngtap_internal.h"
@@ -41,8 +44,8 @@ uint64_t g_ticksSeen = 0, g_inputCount = 0, g_remoteCount = 0;
 bool g_preIncomplete = false;
 uint32_t g_recordingsWritten = 0;
 
-std::vector<uint8_t> g_inptBuf, g_rmtiBuf, g_dispBuf, g_tickBuf;
-uint32_t g_tickChunkFrom = 0, g_tickChunkTo = 0;
+std::vector<uint8_t> g_inptBuf, g_rmtiBuf, g_dispBuf, g_tickBuf, g_detlBuf, g_detlPrev, g_detlCur;
+uint32_t g_tickChunkFrom = 0, g_tickChunkTo = 0, g_detlFrom = 0, g_detlTo = 0;
 
 std::wstring TimestampedName(uint32_t serial) {
     SYSTEMTIME st;
@@ -73,6 +76,12 @@ void FlushTick() {
     g_writer.Enqueue(wsr::kTICK, g_tickBuf.data(), g_tickBuf.size(), true, g_tickChunkFrom, g_tickChunkTo);
     g_tickBuf.clear();
 }
+void FlushDetl() {
+    if (g_detlBuf.empty()) return;
+    g_writer.Enqueue(wsr::kDETL, g_detlBuf.data(), g_detlBuf.size(), true, g_detlFrom, g_detlTo);
+    g_detlBuf.clear();
+    g_detlPrev.clear();
+}
 
 std::string ContentHash16() {
     const mods::ContentId c = mods::LocalContent();
@@ -97,6 +106,15 @@ void WriteHead() {
         .Int("tickMs", static_cast<long long>(kTickMs))
         .Bool("record", g_recordEnabled)
         .Bool("recordDetail", g_detailEnabled);
+    contrib::Info infos[128];
+    const size_t n = contrib::List(infos, 128);
+    jsonmini::Arr cs;
+    for (size_t i = 0; i < n; ++i) {
+        jsonmini::Obj c;
+        c.Str("name", infos[i].name).Int("version", infos[i].version).Bool("replay", infos[i].inReplayCompare);
+        cs.Raw(c.End());
+    }
+    o.Raw("contributors", cs.End());
     const std::string json = o.End();
     g_writer.Enqueue(wsr::kHEAD, json.data(), json.size(), true);
 }
@@ -175,6 +193,8 @@ void BeginRecording(uint32_t serial) {
         g_rmtiBuf.clear();
         g_dispBuf.clear();
         g_tickBuf.clear();
+        g_detlBuf.clear();
+        g_detlPrev.clear();
         g_tickChunkFrom = g_tickChunkTo = 0;
     }
     WriteHead();
@@ -189,12 +209,15 @@ void EndRecording(const char* reason) {
     FlushInpt();
     FlushRmti();
     FlushDisp();
+    FlushDetl();
     jsonmini::Obj note;
     note.Str("reason", reason)
         .Int("ticks", static_cast<long long>(g_ticksSeen))
         .Int("inputs", static_cast<long long>(g_inputCount))
         .Int("remoteInputs", static_cast<long long>(g_remoteCount))
-        .Bool("preMatchDrawsIncomplete", g_preIncomplete);
+        .Bool("preMatchDrawsIncomplete", g_preIncomplete)
+        .Raw("contrib", contrib::NoteJson())
+        .Raw("fpu", fpu::NoteJson());
     const std::string json = note.End();
     g_writer.Enqueue(wsr::kNOTE, json.data(), json.size(), true);
     const bool ok = g_writer.Close();
@@ -227,6 +250,15 @@ void OnTickEndCb(const TickHash& h, void*) {
     memcpy(p, &h.rng2, 4), p += 4;
     memcpy(p, &h.fpucw, 2), p += 2;
     memcpy(p, &h.inputs, 2);
+
+    if (g_detailEnabled && detail::GetPacked(h.tick, &g_detlCur)) {
+        if (g_detlBuf.empty()) g_detlFrom = h.tick;
+        g_detlTo = h.tick;
+        detail::EncodeDelta(g_detlPrev.empty() ? nullptr : g_detlPrev.data(), g_detlPrev.size(), g_detlCur.data(),
+                            g_detlCur.size(), &g_detlBuf);
+        g_detlPrev.swap(g_detlCur);
+        if (g_detlTo - g_detlFrom + 1 >= kTickChunkTicks) FlushDetl();
+    }
 
     if (g_tickBuf.size() >= kTickChunkTicks * rec::kTickBytes) FlushTick();
     if (g_inptBuf.size() >= kFlushBytes) FlushInpt();
