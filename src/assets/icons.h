@@ -25,5 +25,15 @@ bool WriteSubIcon(uint8_t* atlasRgb256, size_t atlasSize, int sub, const uint8_t
 bool Reserve(const std::string& modId, const std::wstring& assetsDir, const std::string& relPng, uint32_t* iconCode,
              std::string* err);
 
+// Decodes and caches the icon ahead of Reserve (start-up), so a match's clone creation does not decode PNGs.
+void Preload(const std::string& modId, const std::wstring& assetsDir, const std::string& relPng);
+
+// Patching follows the clones: on in a match where they are live, off otherwise (the reservations stay).
+void Activate(bool on);
+
 uint32_t Count();  // icons reserved this session
 }  // namespace melange::assets::icons
+
+namespace melange::assets {
+void PreloadPanelIcon(const char* modId, const char* relPng);
+}

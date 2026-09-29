@@ -1,8 +1,10 @@
 // Weapons and Assets: weapon clones from content mods and their mod assets. This file owns the modules, the ini
 // sections, the lifecycle wiring and the state verbs; the components live beside it.
+#include <chrono>
 #include <cstdio>
 #include <string>
 
+#include "assets/icons.h"
 #include "assets/searchpath.h"
 #include "assets/upload.h"
 #include "core/config.h"
@@ -186,6 +188,16 @@ public:
                 if (!g_rootsPending || !eng::AppReady()) return;
                 g_rootsPending = false;
                 AddModRoots();
+                const auto t0 = std::chrono::steady_clock::now();
+                size_t n = 0;
+                for (auto& d : wm::Frozen()) {
+                    if (d.panelIcon.empty()) continue;
+                    melange::assets::PreloadPanelIcon(d.mod.c_str(), d.panelIcon.c_str());
+                    ++n;
+                }
+                if (n)
+                    LOG_INFO("[assets] %zu panel icon(s) decoded in %.3f ms", n,
+                             std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count());
             });
         }
         LOG_INFO("[assets] installed: %s", g_assets ? "ok" : "code bytes differ, inert");

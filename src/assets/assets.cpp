@@ -56,6 +56,12 @@ int LoadModBank(const char* modId, const char* rel, char* err, size_t errLen) {
     return rc;
 }
 
+void PreloadPanelIcon(const char* modId, const char* relPng) {
+    thumper::Entry e;
+    if (!modId || !relPng || !*relPng || !FindMod(modId, &e, nullptr, 0)) return;
+    icons::Preload(modId, e.dir + L"\\" + game::Widen(e.manifest.assetsRoot), relPng);
+}
+
 bool ReservePanelIcon(const char* modId, const char* relPng, uint32_t* iconCode, char* err, size_t errLen) {
     if (iconCode) *iconCode = 0;
     if (!relPng || !*relPng) return Fail(err, errLen, "no icon path");

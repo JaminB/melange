@@ -41,6 +41,11 @@ struct Reservation {
     std::vector<uint8_t> rgba;  // kSize*kSize*4
 };
 std::vector<Reservation> g_reservations;
+struct Decoded {
+    std::string modId, relPng, err;
+    std::vector<uint8_t> rgba;
+};
+std::vector<Decoded> g_decoded;
 int g_patcherHandle = 0;
 bool g_warnedShape = false;
 
@@ -56,22 +61,9 @@ void OnUpload(const char*, uint16_t w, uint16_t h, uint32_t fmt, uint8_t* rgb, u
     }
     for (auto& r : g_reservations) WriteSubIcon(rgb, size, r.sub, r.rgba.data());
 }
-}  // namespace
-
-bool Reserve(const std::string& modId, const std::wstring& assetsDir, const std::string& relPng, uint32_t* iconCode,
-             std::string* err) {
-    if (iconCode) *iconCode = 0;
-    for (auto& r : g_reservations)
-        if (r.modId == modId && r.relPng == relPng) {
-            if (iconCode) *iconCode = 3u | static_cast<uint32_t>(r.sub << 8);
-            return true;
-        }
+bool Decode(const std::wstring& assetsDir, const std::string& relPng, std::vector<uint8_t>* rgba, std::string* err) {
     if (!SafeRel(relPng)) {
         if (err) *err = "panelIcon must be a relative path with no '..'";
-        return false;
-    }
-    if (static_cast<int>(g_reservations.size()) >= kSubCount) {
-        if (err) *err = "no free panel icon slot (at most 3 clones, 7 slots)";
         return false;
     }
     const std::wstring path = assetsDir + L"\\" + ToBackslash(game::Widen(relPng));
@@ -95,13 +87,59 @@ bool Reserve(const std::string& modId, const std::wstring& assetsDir, const std:
         if (err) *err = "could not decode the PNG";
         return false;
     }
+    rgba->resize(kSize * kSize * 4);
+    const bool ok = Downscale(px, w, h, rgba->data(), err);
+    stbi_image_free(px);
+    return ok;
+}
+
+const Decoded* Cached(const std::string& modId, const std::string& relPng) {
+    for (auto& d : g_decoded)
+        if (d.modId == modId && d.relPng == relPng) return &d;
+    return nullptr;
+}
+}  // namespace
+
+void Preload(const std::string& modId, const std::wstring& assetsDir, const std::string& relPng) {
+    if (Cached(modId, relPng)) return;
+    Decoded d{modId, relPng, {}, {}};
+    if (!Decode(assetsDir, relPng, &d.rgba, &d.err)) d.rgba.clear();
+    g_decoded.push_back(std::move(d));
+}
+
+void Activate(bool on) {
+    if (on && !g_patcherHandle && !g_reservations.empty())
+        g_patcherHandle = upload::AddPatcher("Weapon Panel Icons3", &OnUpload, nullptr);
+    else if (!on && g_patcherHandle) {
+        upload::RemovePatcher(g_patcherHandle);
+        g_patcherHandle = 0;
+    }
+}
+
+bool Reserve(const std::string& modId, const std::wstring& assetsDir, const std::string& relPng, uint32_t* iconCode,
+             std::string* err) {
+    if (iconCode) *iconCode = 0;
+    for (auto& r : g_reservations)
+        if (r.modId == modId && r.relPng == relPng) {
+            if (iconCode) *iconCode = 3u | static_cast<uint32_t>(r.sub << 8);
+            return true;
+        }
+    if (static_cast<int>(g_reservations.size()) >= kSubCount) {
+        if (err) *err = "no free panel icon slot (at most 3 clones, 7 slots)";
+        return false;
+    }
     Reservation r;
     r.modId = modId;
     r.relPng = relPng;
-    r.rgba.resize(kSize * kSize * 4);
-    const bool ok = Downscale(px, w, h, r.rgba.data(), err);
-    stbi_image_free(px);
-    if (!ok) return false;
+    if (const Decoded* d = Cached(modId, relPng)) {
+        if (d->rgba.empty()) {
+            if (err) *err = d->err;
+            return false;
+        }
+        r.rgba = d->rgba;
+    } else if (!Decode(assetsDir, relPng, &r.rgba, err)) {
+        return false;
+    }
     r.sub = kFirstSub + static_cast<int>(g_reservations.size());
     const int sub = r.sub;
     g_reservations.push_back(std::move(r));

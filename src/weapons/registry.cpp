@@ -5,6 +5,7 @@
 #include <chrono>
 #include <cstring>
 
+#include "assets/icons.h"
 #include "assets/searchpath.h"
 #include "core/log.h"
 #include "core/mem.h"
@@ -134,6 +135,7 @@ void OnInit() {
     std::string why;
     const bool live = g_core.Init(&why);
     const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+    assets::icons::Activate(live);
     if (live)
         LOG_INFO("[weapons] match %u: %d clone(s) live in %.3f ms", sim::MatchSerial(), g_core.Count(), ms);
     else
@@ -144,6 +146,7 @@ void OnInit() {
 
 void OnMatchEnd() {
     if (g_installed) g_core.MatchEnd();
+    assets::icons::Activate(false);
 }
 
 const CloneInfo* ByDesc(uintptr_t desc) { return g_core.ByDesc(desc); }
