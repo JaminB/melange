@@ -363,6 +363,21 @@ target_compile_definitions(sim_selftest PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX _CR
 target_compile_options(sim_selftest PRIVATE /W4 /utf-8 /permissive- /EHsc)
 target_link_libraries(sim_selftest PRIVATE lua50_ref bcrypt psapi shell32 ole32)
 
+# dist/Mods/mega-bazooka (component F): the spice.json weapons array parses, sim/main.lua compiles under the
+# real Lua 5.0 dialect, and the shipped icon/HUD art matches the manifest's own size and format rules.
+add_executable(mega_bazooka_selftest EXCLUDE_FROM_ALL
+    tests/mega_bazooka_selftest.cpp
+    src/weapons/manifest.cpp
+    src/weapons/schema.cpp
+    src/mods/spice.cpp
+    src/tools/json_read.cpp
+    src/core/log.cpp)
+target_include_directories(mega_bazooka_selftest PRIVATE src src/sdk ${stb_SOURCE_DIR})
+target_compile_definitions(mega_bazooka_selftest PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX _CRT_SECURE_NO_WARNINGS
+    MELANGE_SOURCE_DIR="${CMAKE_SOURCE_DIR}")
+target_compile_options(mega_bazooka_selftest PRIVATE /W4 /utf-8 /permissive- /EHsc)
+target_link_libraries(mega_bazooka_selftest PRIVATE melange_xom lua50_ref)
+
 # Offline self-tests (no game needed).
 add_executable(bus_selftest EXCLUDE_FROM_ALL
     tests/bus_selftest.cpp

@@ -40,7 +40,24 @@ after its folder — every M1-era `Mods\` folder keeps working unchanged.
 | `contentHash.include` | Glob list of files that feed the online content hash (default: `entry.sim`, `assets/**`, `*.spice.json`). Never computed for a client-only mod. |
 | `messages` | Up to 16 engine message names this content mod registers (pattern `Prefix.Sub[.Sub...]`, 1-5 dotted segments after the first capitalised word). Checked against the **live** vanilla message registry at start-up, not a fixed list in the schema — a name that collides with a vanilla one is skipped and logged, not a hard error for the rest of the mod. The engine has 73 free slots; Thumper caps registrations at `[Thumper] MaxModMessages` (48) across every mod combined. |
 | `settings` | `{key, type: bool\|int\|float\|string\|enum, default, min?, max?, options?, label}`. Drives `wum.config.get/set` and the per-mod widgets on the Mods page. |
+| `weapons` | Weapon clones, `kind: "content"` mods only — see below and [weapons.md](weapons.md). |
 | `defaultEnabled` | Honoured only the first time Thumper ever sees this mod id (default `true`). The shipped samples set it to `false`. |
+
+## `weapons`: weapon clones
+
+A `kind: "content"` mod can declare up to 3 weapon clones (schema: [spice-1.schema.json](spice-1.schema.json)),
+in the free panel cells 29, 39 and 40 — shared across every enabled mod, not per mod. This is checked in two
+passes, both at every Thumper rescan:
+
+1. **Shape**, right here in `spice.cpp`: at most 3 entries, each an object with a known set of keys
+   (`name`, `base`, `cell`, `bank`, `set`, `panelIcon`, `hudIcon`, `text`), `set` values that are a number, a
+   boolean or a string. A shape error refuses the whole mod, naming the bad key or value.
+2. **Names, bases, cells and field types**, in `weapons/manifest.cpp` — the base whitelist, the resource-name
+   pattern, cell conflicts between mods (later load order loses), and each `set` field checked against the
+   base's own container schema. A mod that fails here is `Incompatible` with the specific reason.
+
+The full field reference, the base whitelist, the Lua side (`wum.sim.weapons`) and what does and doesn't work
+yet are in [weapons.md](weapons.md); `dist\Mods\mega-bazooka` is a complete, working (disabled) example.
 
 ## Resolution
 
