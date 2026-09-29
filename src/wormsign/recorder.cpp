@@ -209,6 +209,8 @@ void BeginRecording(uint32_t serial) {
 
 void EndRecording(const char* reason) {
     if (!g_active.exchange(false)) return;
+    LARGE_INTEGER q0, qf;
+    QueryPerformanceCounter(&q0);
     FlushTick();
     FlushInpt();
     FlushRmti();
@@ -230,13 +232,17 @@ void EndRecording(const char* reason) {
         .Raw("fpu", fpu::NoteJson());
     const std::string json = note.End();
     g_w->Enqueue(wsr::kNOTE, json.data(), json.size(), true);
+    LARGE_INTEGER q1;
+    QueryPerformanceCounter(&q1);
+    QueryPerformanceFrequency(&qf);
+    const long long handoverUs = (q1.QuadPart - q0.QuadPart) * 1000000 / qf.QuadPart;
     // Closing deflates and writes what is still queued: off the main thread, with a fresh writer for the next match.
     std::thread([w = std::move(g_w), path = g_path, serial = g_serial, reason = std::string(reason),
-                 ticks = g_ticksSeen, inputs = g_inputCount]() mutable {
+                 ticks = g_ticksSeen, inputs = g_inputCount, handoverUs]() mutable {
         const bool ok = w->Close();
-        LOG_INFO("[wormsign] recorder: session %u closed (%s), %llu ticks, %llu inputs, %s", serial, reason.c_str(),
-                 static_cast<unsigned long long>(ticks), static_cast<unsigned long long>(inputs),
-                 ok ? "complete" : "FAILED to close");
+        LOG_INFO("[wormsign] recorder: session %u closed (%s), %llu ticks, %llu inputs, %s; main thread %lld us", serial,
+                 reason.c_str(), static_cast<unsigned long long>(ticks), static_cast<unsigned long long>(inputs),
+                 ok ? "complete" : "FAILED to close", handoverUs);
         library::OnRecordingClosed(path, ok);
     }).detach();
     g_w = std::make_unique<writer::Writer>();
