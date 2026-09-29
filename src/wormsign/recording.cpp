@@ -40,6 +40,16 @@ bool Recording::Tick(uint32_t tick, TickHash* out) const {
     return true;
 }
 
+bool Recording::ContribHashes(uint32_t tick, std::vector<uint64_t>* out) const {
+    out->assign(contribNames.size(), 0);
+    bool any = false;
+    for (const rec::ContribChange& c : contribChanges) {
+        if (c.tick > tick) break;
+        if (c.index < out->size()) (*out)[c.index] = c.hash, any = true;
+    }
+    return any;
+}
+
 uint32_t Recording::TickCount() const {
     uint32_t n = 0;
     for (uint8_t h : have) n += h;
@@ -70,6 +80,9 @@ bool LoadRecording(const wsr::Reader& r, Recording* out, std::string* err) {
     const json::Value* online = head.Get("online");
     out->online = online && online->IsBool() && online->boolean;
     out->contributors = KeyOf(head.Get("contributors"));
+    if (const json::Value* cl = head.Get("contributors"); cl && cl->IsArray())
+        for (const json::Value& e : cl->items)
+            out->contribNames.push_back(e.IsString() ? e.string.substr(0, e.string.find('@')) : Str(e, "name"));
     const json::Value* tickMs = head.Get("tickMs");
     if (tickMs && (!tickMs->IsNumber() || tickMs->number != kTickMs)) {
         *err = "the recording uses a different tick length";
@@ -89,6 +102,8 @@ bool LoadRecording(const wsr::Reader& r, Recording* out, std::string* err) {
             if (!rec::DecodeInputs(d, p.size(), &out->inputs)) bad = "INPT";
         } else if (c.type == wsr::kTICK) {
             if (!rec::DecodeTicks(d, p.size(), [&](const TickHash& h) { ticks.push_back(h); })) bad = "TICK";
+        } else if (c.type == wsr::kCTRB) {
+            if (!rec::DecodeContribChanges(d, p.size(), &out->contribChanges)) bad = "CTRB";
         } else if (c.type == wsr::kSETP) {
             out->setup.assign(p.begin(), p.end());
         }
@@ -128,7 +143,7 @@ std::string ArmRefusal(const Recording& rec, const ArmEnv& env) {
     if (env.inMatch) return "finish or quit the current match first";
     if (rec.online) return "online matches cannot be replayed yet";
     if (!rec.exeBuild.empty() && rec.exeBuild != env.exeBuild) return "recorded with game build " + rec.exeBuild;
-    if (rec.contentHash != env.contentHash && !env.anyContent) {
+    if (rec.contentHash.substr(0, 16) != env.contentHash.substr(0, 16) && !env.anyContent) {
         auto shortHash = [](const std::string& h) { return h.empty() ? std::string("vanilla") : h.substr(0, 16); };
         return "recorded with different mod content (" + shortHash(rec.contentHash) + ", here " +
                shortHash(env.contentHash) + "); [Wormsign] ReplayAnyContent=1 replays it anyway";

@@ -207,6 +207,22 @@ bool CheckSetup() {
     return true;
 }
 
+// The first contributor whose live hash differs from the recording's at `tick`.
+void NameContrib(uint32_t tick, Divergence* d) {
+    std::vector<uint64_t> recorded;
+    if (!g_rec->ContribHashes(tick, &recorded)) return;
+    static contrib::Entry live[128];
+    const size_t n = contrib::HashesAt(tick, live, 128);
+    for (size_t i = 0; i < n; ++i) {
+        const auto it = std::find(g_rec->contribNames.begin(), g_rec->contribNames.end(), live[i].name);
+        if (it == g_rec->contribNames.end() || !live[i].computed) continue;
+        if (recorded[static_cast<size_t>(it - g_rec->contribNames.begin())] != live[i].hash) {
+            snprintf(d->contrib, sizeof d->contrib, "%s", live[i].name);
+            return;
+        }
+    }
+}
+
 void TickEnd(const TickHash& h, void*) {
     Divergence raise{};
     bool doRaise = false;
@@ -234,6 +250,7 @@ void TickEnd(const TickHash& h, void*) {
             d.oursMods = h.mods;
             d.theirsMods = rec.mods;
             d.compMask = mask;
+            if (g_core.ComparesMods() && h.mods != rec.mods) NameContrib(h.tick, &d);
             g_div.recorded = rec;
             g_div.live = h;
             std::string comps;

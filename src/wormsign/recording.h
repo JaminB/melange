@@ -20,9 +20,13 @@ struct Recording {
     std::vector<TickHash> ticks;                              // index tick - firstTick
     std::vector<uint8_t> have;                                // per index: 0 for a gap
     std::string setup;                                        // SETP JSON, "" if none
+    std::vector<std::string> contribNames;                    // HEAD contributors, in name order
+    std::vector<rec::ContribChange> contribChanges;           // CTRB, in tick order
 
     bool Tick(uint32_t tick, TickHash* out) const;
     uint32_t TickCount() const;
+    // Per-contributor hashes at `tick` (contribNames order) from the CTRB changes; false when none were recorded.
+    bool ContribHashes(uint32_t tick, std::vector<uint64_t>* out) const;
 };
 
 // Decodes every chunk the player needs. False with *err for a file that cannot be replayed at all.

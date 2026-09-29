@@ -19,7 +19,7 @@ constexpr uint32_t Tag(const char (&s)[5]) {
 constexpr uint32_t kFormat = 1;
 constexpr uint32_t kHEAD = Tag("HEAD"), kSEED = Tag("SEED"), kPDRW = Tag("PDRW"), kSETP = Tag("SETP"), kINPT = Tag("INPT"),
                    kRMTI = Tag("RMTI"), kDISP = Tag("DISP"), kTICK = Tag("TICK"), kDETL = Tag("DETL"), kDVRG = Tag("DVRG"),
-                   kENGV = Tag("ENGV"), kNOTE = Tag("NOTE"), kINDX = Tag("INDX");
+                   kENGV = Tag("ENGV"), kNOTE = Tag("NOTE"), kINDX = Tag("INDX"), kCTRB = Tag("CTRB");
 constexpr uint32_t kFlagDeflate = 1;
 constexpr uint32_t kMaxChunkBytes = 64u << 20;
 constexpr size_t kMagicBytes = 4, kChunkHeaderBytes = 20, kIndexEntryBytes = 20, kTrailerBytes = 12;

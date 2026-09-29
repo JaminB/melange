@@ -124,4 +124,28 @@ bool DecodeInputs(const uint8_t* p, size_t n, std::vector<Input>* out) {
     }
     return true;
 }
+
+void AppendContribChanges(std::vector<uint8_t>& out, uint32_t tick,
+                          const std::vector<std::pair<uint8_t, uint64_t>>& changes) {
+    const size_t n = changes.size() < 255 ? changes.size() : 255;
+    Le32(out, tick);
+    out.push_back(static_cast<uint8_t>(n));
+    for (size_t i = 0; i < n; ++i) {
+        out.push_back(changes[i].first);
+        Le64(out, changes[i].second);
+    }
+}
+
+bool DecodeContribChanges(const uint8_t* p, size_t n, std::vector<ContribChange>* out) {
+    size_t at = 0;
+    while (at < n) {
+        if (n - at < 5) return false;
+        const uint32_t tick = Rd32(p + at);
+        const uint8_t count = p[at + 4];
+        at += 5;
+        if (n - at < count * 9u) return false;
+        for (uint8_t i = 0; i < count; ++i, at += 9) out->push_back(ContribChange{tick, p[at], detail::Rd64(p + at + 1)});
+    }
+    return true;
+}
 }  // namespace melange::wormsign::rec

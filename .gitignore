@@ -5,6 +5,7 @@ dist/*.pdb
 dist/*.dll
 /tools/*
 !/tools/xom/
+!/tools/wsr/
 testenv/
 *.dmp
 *.user

@@ -3,6 +3,7 @@
 #include <cstdint>
 #include <cstring>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "melange/wormsign.h"
@@ -13,6 +14,8 @@
 //   INPT  n x {u8 type, u16 id, u32 a, u32 b, u32 time, u32 callT, u32 caller, u8 strLen, strLen bytes}
 //         type: SendType (the sender's order); a, b: the int values or float bits; callT: logic time of the call
 //   RMTI  n x {u32 arrivedT, u16 id, u32 time, u32 a}; DISP  n x {u32 t, u16 id}
+//   CTRB  records {u32 tick, u8 n, n x {u8 index, u64 hash}}: the per-contributor hashes that changed at that tick,
+//         index = position in name order (HEAD contributors); a record with every index restates the whole list
 //   TICK  u32 firstTick, then records: u8 0 + {u64 engine, u64 mods, u64 c[6], u32 rngLogic, u32 rng2, u16 fpucw,
 //         u16 inputs} (one tick, then the next tick number), or u8 1 + u32 n (TGAP: n ticks missing)
 // A decoder stops at the first record that does not fit and reports it.
@@ -58,6 +61,14 @@ class TickChunk {
 bool DecodeSeeds(const uint8_t* p, size_t n, std::vector<Seed>* out);
 bool DecodeDraws(const uint8_t* p, size_t n, std::vector<Draw>* out);
 bool DecodeInputs(const uint8_t* p, size_t n, std::vector<Input>* out);
+struct ContribChange {
+    uint32_t tick;
+    uint8_t index;
+    uint64_t hash;
+};
+void AppendContribChanges(std::vector<uint8_t>& out, uint32_t tick,
+                          const std::vector<std::pair<uint8_t, uint64_t>>& changes);
+bool DecodeContribChanges(const uint8_t* p, size_t n, std::vector<ContribChange>* out);
 // Calls fn(const TickHash&) for each tick record, with tick numbers filled in.
 template <class Fn>
 bool DecodeTicks(const uint8_t* p, size_t n, Fn&& fn);
