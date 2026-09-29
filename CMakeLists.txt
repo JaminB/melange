@@ -247,6 +247,20 @@ target_compile_definitions(weapons_manifest_selftest PRIVATE WIN32_LEAN_AND_MEAN
 target_compile_options(weapons_manifest_selftest PRIVATE /W4 /utf-8 /permissive-)
 target_link_libraries(weapons_manifest_selftest PRIVATE melange_xom)
 
+# The clone registry against a fake engine: creation per match, cells, text, icons, the slot swap and the vid mapping.
+add_executable(weapons_registry_selftest
+    tests/weapons_registry_selftest.cpp
+    src/weapons/registry_core.cpp
+    src/weapons/manifest.cpp
+    src/weapons/schema.cpp
+    src/mods/spice.cpp
+    src/tools/json_read.cpp
+    src/core/log.cpp)
+target_include_directories(weapons_registry_selftest PRIVATE src src/sdk)
+target_compile_definitions(weapons_registry_selftest PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX _CRT_SECURE_NO_WARNINGS)
+target_compile_options(weapons_registry_selftest PRIVATE /W4 /utf-8 /permissive-)
+target_link_libraries(weapons_registry_selftest PRIVATE melange_xom)
+
 add_executable(lua54_selftest tests/lua54_selftest.cpp)
 target_compile_options(lua54_selftest PRIVATE /W4 /utf-8 /permissive- /EHsc)
 target_link_libraries(lua54_selftest PRIVATE lua54)

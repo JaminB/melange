@@ -14,8 +14,8 @@ namespace melange::weapons::engine {
 namespace {
 constexpr uintptr_t kRoot = 0x639b1d, kDrmIid = 0x888288, kLookup = 0x50b8b0, kDescLookup = 0x50b760;
 constexpr uintptr_t kXStrCtor = 0x638101, kXStrFree = 0x637db4, kXStrAssign = 0x638828, kApp = 0x96d1cc;
-constexpr uintptr_t kAddResource = 0x6a5a70, kLoadBank = 0x6a37a0;
-constexpr int kSlotAddResource = 9, kSlotLoadBank = 42;
+constexpr uintptr_t kAddResource = 0x6a5a70, kLoadBank = 0x6a37a0, kAddString = 0x6a5830, kTextGet = 0x50b820;
+constexpr int kSlotAddResource = 9, kSlotLoadBank = 42, kSlotAddString = 10;
 
 struct Site {
     uintptr_t addr;
@@ -31,6 +31,8 @@ const Site kSites[] = {
     {kXStrAssign, {0xe9, 0x82, 0xfe, 0xff, 0xff}, false},
     {kAddResource, {0x83, 0xec, 0x10, 0x53, 0x8b, 0x5c, 0x24, 0x1c}, false},
     {kLoadBank, {0x83, 0xec, 0x18, 0x53, 0x55, 0x56, 0x8b, 0x74, 0x24, 0x28}, false},
+    {kAddString, {0x55, 0x8b, 0x6c, 0x24, 0x0c, 0x8b, 0x45, 0x00}, false},
+    {kTextGet, {0x53, 0x56, 0x57, 0xe8, 0xf5, 0xe2, 0x12, 0x00}, false},
     {kSelWrite, {0x89, 0xa8, 0xf4, 0x00, 0x00, 0x00}, true},
     {kSelLog, {0x8b, 0x04, 0x85, 0x20, 0xc9, 0x90, 0x00}, true},
     {kInvGet, {0x83, 0xf8, 0x41, 0x0f, 0x87}, true},
@@ -99,6 +101,23 @@ int RawAdd(uintptr_t drm, uintptr_t fn, const char* name, uintptr_t obj, uint16_
 int RawLoadBank(uintptr_t drm, uintptr_t fn, const char* path, uint32_t section, uint32_t flags) {
     __try {
         return reinterpret_cast<int(__stdcall*)(uintptr_t, const char*, uint32_t, uint32_t)>(fn)(drm, path, section, flags);
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return -1;
+    }
+}
+
+int RawAddString(uintptr_t drm, uintptr_t fn, const char* name, const char* value, uint32_t section, uint32_t flags) {
+    __try {
+        return reinterpret_cast<int(__stdcall*)(uintptr_t, const char**, const char*, uint32_t, uint32_t)>(fn)(
+            drm, &name, value, section, flags);
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return -1;
+    }
+}
+
+int RawTextGet(const char* name, const char** out) {
+    __try {
+        return reinterpret_cast<int(__cdecl*)(const char**, const char**)>(kTextGet)(&name, out);
     } __except (EXCEPTION_EXECUTE_HANDLER) {
         return -1;
     }
@@ -226,6 +245,26 @@ int LoadBank(const char* gameRelPath, uint32_t section, uint32_t flags) {
 }
 
 uintptr_t ClassOf(uintptr_t container) { return container ? RawClassOf(container) : 0; }
+
+int AddString(const char* name, const char* value, uint32_t section, uint32_t flags) {
+    if (!name || !*name || !value || !FnOk(kAddString)) return -1;
+    const uintptr_t drm = Drm();
+    if (!drm) return -1;
+    const uintptr_t fn = Slot(drm, kSlotAddString);
+    if (fn != kAddString) {
+        LOG_ERROR("[weapons] AddString slot is %08x, expected %08x", static_cast<unsigned>(fn), static_cast<unsigned>(kAddString));
+        return -1;
+    }
+    return RawAddString(drm, fn, name, value, section, flags);
+}
+
+bool TextOf(const char* name, std::string* out) {
+    if (!name || !*name || !FnOk(kTextGet)) return false;
+    const char* v = nullptr;
+    if (RawTextGet(name, &v) < 0 || !v) return false;
+    if (out) *out = ReadCString(reinterpret_cast<uintptr_t>(v), 512);
+    return true;
+}
 
 XStr::XStr(const char* s) {
     if (FnOk(kXStrCtor)) RawCtor(&p, s);

@@ -37,6 +37,10 @@ std::string ReadCString(uintptr_t p, size_t max = 128);
 std::string XStringValue(uintptr_t field);    // the text of an XString field, "" if unreadable
 std::string ClassName(uintptr_t cls);         // classInfo name ("" if unreadable)
 uintptr_t ClassParent(uintptr_t cls);
+// String resources: DRM slot 10 adds one (flags bit 0 = overwrite); TextOf reads one through 0x50b820, which logs a
+// miss in the game's own log.
+int AddString(const char* name, const char* value, uint32_t section, uint32_t flags);
+bool TextOf(const char* name, std::string* out);
 
 // Hooks created through these start disabled, are refused unless SiteIntact(site), and are listed by Hooks().
 // Enable() records the wanted state; SuppressAll(true) forces every tracked hook off until SuppressAll(false).
