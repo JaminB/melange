@@ -44,7 +44,12 @@ void DispatchArgs(const char* event, const Arg* args, int n);   // Dispatch with
 struct LevelSim {
     std::string mod, slug, stem, key, chunkName;
     std::string text;
+    std::vector<std::pair<std::string, std::string>> knots;   // wum.level.knots: name, kind
 };
 void SetLevelSims(std::vector<LevelSim> sims);          // at launch from the frozen content set; Test adds one
 void SetTestLevelSim(const LevelSim& s);                // offline Test only; replaced per Test
+// The knots a generated chunk places (objects by kind, and WORM0-7 as "spawn" when it uses knot spawns).
+std::vector<std::pair<std::string, std::string>> LevelKnots(const std::string& stem, const std::string& chunkText);
+std::string LevelSimDigest();                           // sha256 of this match's level script text; "" for none
+void InstallLevelSims();                                // SimBridge install: level starts and turn starts
 }

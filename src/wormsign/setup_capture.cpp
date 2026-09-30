@@ -2,6 +2,7 @@
 #include <cstring>
 #include <initializer_list>
 
+#include "lua/sim/bridge_internal.h"
 #include "melange/gamestate.h"
 #include "tools/json_read.h"
 #include "wormsign/hash_engine.h"
@@ -90,6 +91,7 @@ bool Capture(Data* out) {
     out->timeOfDay = VarString("Databank.TimeOfDay");
     out->levelDetails = VarString("LevelDetailsName");
     out->lastScheme = VarString("FE.LastSchemeUserSelected");
+    out->levelSim = simbridge::LevelSimDigest();
 
     uint8_t scheme[0x174];
     if (const uintptr_t p = VarObject("GM.SchemeData"); p && gamestate::Peek(p, scheme, sizeof scheme)) {

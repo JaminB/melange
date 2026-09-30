@@ -7,13 +7,14 @@
 #include <string_view>
 #include <vector>
 
-// The Erg project store: <dir>\<id>\project.ergpatch.json (the patch), meta.json and .lock. Saves are atomic, and a
-// project a server has open is locked against every other server (the lock is an open handle, released on close or
-// when the process ends). Within one server, the lock is a set of per-connection leases: Lock/Unlock add or drop the
-// caller's lease, and the file closes only once the last one is gone. conn 0 is a caller with no connection of its
-// own (a direct Store user, or an internal build with nothing to release it later).
+// The Erg project store: <dir>\<id>\project.ergpatch.json (the patch), script.lua, meta.json and .lock. Saves are
+// atomic, and a project a server has open is locked against every other server (the lock is an open handle, released
+// on close or when the process ends). Within one server, the lock is a set of per-connection leases: Lock/Unlock add or
+// drop the caller's lease, and the file closes only once the last one is gone. conn 0 is a caller with no connection of
+// its own (a direct Store user, or an internal build with nothing to release it later).
 namespace melange::erg::project {
 constexpr const char* kPatchFile = "project.ergpatch.json";
+constexpr const char* kScriptFile = "script.lua";
 
 struct Meta { std::string title, created, lastExport, lastTest; };
 struct Info {
@@ -40,6 +41,9 @@ class Store {
     bool Create(const std::string& id, const std::string& patchJson, const Meta& meta, std::string* err);
     bool ReadPatch(const std::string& id, std::string* json, std::string* err) const;
     bool WritePatch(const std::string& id, const std::string& json, std::string* err);
+    // The level script, "" when the project has none; writing "" removes it.
+    bool ReadScript(const std::string& id, std::string* text, std::string* err) const;
+    bool WriteScript(const std::string& id, const std::string& text, std::string* err);
     bool ReadMeta(const std::string& id, Meta* out) const;
     bool WriteMeta(const std::string& id, const Meta& meta, std::string* err);
 

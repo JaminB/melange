@@ -19,6 +19,7 @@ import { Properties } from "./Properties";
 import { snapVec } from "../model/geometry";
 import { ExportDialog } from "../test/ExportDialog";
 import { TestPanel } from "../test/TestPanel";
+import { ScriptDoc, ScriptPanel } from "../script";
 import { Sculptor, TerrainTool, TerrainTools, fetchAtlas, hexColors, setAtlas } from "../terrain";
 import { assetUrl } from "../../../sdk/erg/assets";
 
@@ -62,7 +63,14 @@ export function Editor({ client, info, opened, onClose }: Props) {
   const [palette, setPalette] = useState<PaletteEntry[]>(BUILTIN);
   const [catalog, setCatalog] = useState<ObjectCatalog | undefined>();
   const [themes, setThemes] = useState<ThemeInfo>(() => themesOf(undefined));
-  const [tab, setTab] = useState<"props" | "level" | "checks" | "terrain" | "export">("props");
+  const [tab, setTab] = useState<"props" | "level" | "checks" | "terrain" | "script" | "export">("props");
+  const scriptDoc = useMemo(() => new ScriptDoc(opened.session), [opened]);
+  const hasScript = client.has("level.script.get") && client.has("level.script.put");
+  const [, bumpScript] = useState(0);
+  useEffect(() => {
+    let dirty = scriptDoc.dirty;
+    return scriptDoc.on(() => { if (scriptDoc.dirty !== dirty) { dirty = scriptDoc.dirty; bumpScript((n) => n + 1); } });
+  }, [scriptDoc]);
   const [sculptOn, setSculptOn] = useState(false);
   const [atlasColors, setAtlasColors] = useState<string[]>();
   const viewRef = useRef<Viewport>();
@@ -285,7 +293,7 @@ export function Editor({ client, info, opened, onClose }: Props) {
                   onClick={() => { if (sculptOn) setSculpt(false); setPlacing(placing?.id === p.id ? null : p); }} title={`Click the terrain to place: ${p.label} (Esc stops)`}>{p.label}</button>
         ))}
         <span class="erg-grow" />
-        {client.has("level.test") ? <TestPanel client={client} session={opened.session} projectTod={store.scene.databank.timeOfDay} beforeTest={() => (store.dirty ? save() : Promise.resolve(true))} /> : null}
+        {client.has("level.test") ? <TestPanel client={client} session={opened.session} projectTod={store.scene.databank.timeOfDay} beforeTest={async () => (!store.dirty || await save()) && (!scriptDoc.dirty || await scriptDoc.save())} /> : null}
         <button class="btn" onClick={onClose} data-action="close">Close</button>
       </div>
       {!conn.open ? <p class="erg-note warn" data-erg-offline>Not connected. Your changes and the undo history are kept; save once the connection is back.</p> : null}
@@ -309,6 +317,7 @@ export function Editor({ client, info, opened, onClose }: Props) {
               Checks{issues.length ? <span class={`erg-count${errors ? " bad" : ""}`}>{issues.length}</span> : null}
             </button>
             <button class={`erg-tab${tab === "terrain" ? " on" : ""}`} onClick={() => setTab("terrain")} data-tab="terrain">Terrain</button>
+            {hasScript ? <button class={`erg-tab${tab === "script" ? " on" : ""}`} onClick={() => setTab("script")} data-tab="script">Script{scriptDoc.dirty ? " •" : ""}</button> : null}
             <button class={`erg-tab${tab === "export" ? " on" : ""}`} onClick={() => setTab("export")} data-tab="export">Export</button>
           </div>
           <div class="erg-side-body">
@@ -316,6 +325,7 @@ export function Editor({ client, info, opened, onClose }: Props) {
                                            setObject={(knot, o) => store.exec(new SetObject(knot, o))} />
               : tab === "level" ? <LevelSettings store={store} themes={themes} />
               : tab === "terrain" ? <TerrainTools tool={terrainTool} palette={atlasColors} />
+              : tab === "script" && hasScript ? <ScriptPanel doc={scriptDoc} />
               : tab === "export" ? <ExportDialog client={client} project={info.id} defaultName={store.scene.title} />
               : <Checks issues={issues} onPick={(id) => { store.select([id]); view?.focus(); }} />}
           </div>

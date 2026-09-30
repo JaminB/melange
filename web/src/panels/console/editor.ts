@@ -17,7 +17,7 @@ export interface EditorHooks {
   complete: (prefix: string) => Promise<string[]>;
 }
 
-const style = HighlightStyle.define([
+export const luaHighlight = HighlightStyle.define([
   { tag: tags.keyword, color: "var(--hl-keyword)", fontWeight: "600" },
   { tag: [tags.string, tags.special(tags.string)], color: "var(--hl-string)" },
   { tag: [tags.number, tags.bool, tags.null, tags.atom], color: "var(--hl-number)" },
@@ -26,7 +26,7 @@ const style = HighlightStyle.define([
   { tag: tags.operator, color: "var(--hl-operator)" },
 ]);
 
-const theme = EditorView.theme({
+export const editorTheme = EditorView.theme({
   "&": { backgroundColor: "var(--surface)", color: "var(--text)", fontSize: "13px" },
   ".cm-content": { fontFamily: "var(--mono)", caretColor: "var(--text)", padding: "6px 0" },
   ".cm-scroller": { fontFamily: "var(--mono)", lineHeight: "1.5" },
@@ -93,12 +93,12 @@ export function createEditor(parent: HTMLElement, hooks: EditorHooks): EditorVie
         highlightSelectionMatches(),
         autocompletion({ override: [source], activateOnTyping: true, defaultKeymap: true }),
         StreamLanguage.define(lua),
-        syntaxHighlighting(style),
+        syntaxHighlighting(luaHighlight),
         placeholder("Lua. Enter runs, Shift+Enter adds a line, Tab completes, Up/Down recall history. =expr prints a value."),
         keymap.of([...closeBracketsKeymap, ...completionKeymap, ...searchKeymap, ...historyKeymap, ...defaultKeymap]),
         EditorView.lineWrapping,
         EditorView.contentAttributes.of({ "aria-label": "Lua code", "data-editor": "lua" }),
-        theme,
+        editorTheme,
       ],
     }),
   });

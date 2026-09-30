@@ -288,6 +288,7 @@ public:
         melange::events::Subscribe(melange::events::Event::LobbyLeave, [] { g_inLobby = false; });
         melange::testcmd::Register("sim.stats", &VerbStats);
         melange::testcmd::Register("sim.mods", &VerbMods);
+        melange::simbridge::InstallLevelSims();
         g_installed = true;
         if (!g_modIds.empty()) ApplyModList();
         RefreshInitHook();

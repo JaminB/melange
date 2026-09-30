@@ -1,6 +1,7 @@
 #pragma once
 #include <cstdint>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "lua/engine50.h"
@@ -18,7 +19,19 @@ struct Config {
 };
 void Configure(const Config& c);
 void SetSources(std::vector<ModSource> mods);  // load order; applied at the next Init
-size_t SourceCount();
+size_t SourceCount();                          // sim mods plus the level scripts of the level that loads next
+
+// Level scripts: loaded after the sim mods, only when the match's level is `key` (or its Survivor twin).
+struct LevelSource {
+    std::string key, stem, sha256;
+    std::vector<std::pair<std::string, std::string>> knots;  // knot name, kind
+    ModSource src;                                           // id "<modId>:<slug>"
+};
+void SetLevelSources(std::vector<LevelSource> sources);  // load order
+void SetLevel(const std::string& key);                   // the level being set up; "" for none
+std::string LevelDigest();                               // sha256 of this match's level scripts, comma-joined
+bool IsLevelMod(int mod);
+void TurnStarted();                                      // GameLogic.Turn.Started: sim.turnStarted at the next tick
 
 // Lifecycle, in engine order.
 void ContextCreated(lua50::State* L);

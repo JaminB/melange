@@ -25,7 +25,9 @@
 #include "erg/scene.h"
 #include "erg/service.h"
 #include "erg/xomutil.h"
+#include "levels/manifest.h"
 #include "mods/spice.h"
+#include "tools/hash.h"
 #include "xom/json.h"
 #include "xom/xom.h"
 
@@ -1039,6 +1041,11 @@ void TestService(const std::wstring& root) {
         S.s->ClientClosed(102);
         Expect(other.Lock("harbour2") == erg::project::LockResult::Ok, "lease: the last connection's disconnect frees it");
         other.Unlock("harbour2");
+        Expect(Call(S, "level.script.put", R"({"project":"harbour2","text":"-- lease\n"})", 103).ok, "lease: script.put leases for its connection");
+        Expect(other.Lock("harbour2") == erg::project::LockResult::Busy, "lease: busy while the script writer's connection holds it");
+        S.s->ClientClosed(103);
+        Expect(other.Lock("harbour2") == erg::project::LockResult::Ok, "lease: the script writer's disconnect frees it");
+        other.Unlock("harbour2");
     }
 
     r = Call(S, "level.themes", "{}");
@@ -1057,6 +1064,67 @@ void TestService(const std::wstring& root) {
         }
     Expect(r.ok && toolbox && drum && n == 11, "palette: knots, objects and the theme's scenery " + r.json.substr(0, 300));
     Expect(Call(S, "level.palette", R"({"theme":"MOON"})").code == erg::service::kBadParams, "palette: an unknown theme");
+
+    // level.script.get / level.script.put, and the script in both export forms.
+    {
+        const std::wstring scriptPath = root + L"\\projects\\harbour\\script.lua";
+        const std::string text = "wum.events.on(\"sim.turnStarted\", function() wum.log(wum.level.stem) end)\n";
+        r = Call(S, "level.script.get", R"({"project":"harbour"})");
+        Expect(r.ok && J(r.json).find("text")->str.empty(), "script.get: \"\" when there is none " + r.message);
+        r = Call(S, "level.script.put", R"({"project":"harbour","text":"wum.events.on(\"sim.turnStarted\", function() wum.log(wum.level.stem) end)\n"})");
+        Json put = J(r.json);
+        Expect(r.ok && put.find("saved")->boolean && put.find("problems")->arr.empty(), "script.put: saved " + r.message);
+        r = Call(S, "level.script.get", R"({"project":"harbour"})");
+        Expect(r.ok && J(r.json).find("text")->str == text, "script.get: reads it back");
+        erg::Patch onDisk;
+        std::string st;
+        Expect(erg::project::Store(root + L"\\projects").ReadPatch("harbour", &st, &err) && erg::ParsePatch(st, &onDisk, &err) &&
+                   onDisk.script.present && onDisk.script.sha256 == melange::hashutil::Sha256Hex(text.data(), text.size()),
+               "script.put: the patch declares the script " + err);
+        r = Call(S, "level.save", R"({"project":"harbour","patch":)" + erg::WritePatch(p) + "}");
+        Expect(r.ok && erg::project::Store(root + L"\\projects").ReadPatch("harbour", &st, &err) && erg::ParsePatch(st, &onDisk, &err) &&
+                   onDisk.script.present,
+               "save: the script declaration follows script.lua, not the saved patch " + r.message);
+
+        r = Call(S, "level.script.put", R"({"project":"harbour","text":"-- ok\nlocal x = 1\n\u001bLua\n"})");
+        put = J(r.json);
+        Expect(r.ok && !put.find("saved")->boolean && put.find("problems")->arr.size() == 1 &&
+                   put.find("problems")->arr[0].find("line")->numLiteral == "3" &&
+                   put.find("problems")->arr[0].find("message")->str.find("ESC") != std::string::npos,
+               "script.put: an ESC byte is a problem on its line " + r.json);
+        r = Call(S, "level.script.put", R"({"project":"harbour","text":"﻿x = 1"})");
+        put = J(r.json);
+        Expect(r.ok && !put.find("saved")->boolean && put.find("problems")->arr[0].find("line")->numLiteral == "1", "script.put: a BOM is refused " + r.json);
+        r = Call(S, "level.script.put", R"({"project":"harbour","text":")" + std::string(melange::levels::manifest::kMaxSimBytes + 1, 'x') + "\"}");
+        put = J(r.json);
+        Expect(r.ok && !put.find("saved")->boolean && put.find("problems")->arr[0].find("message")->str.find("256 KB") != std::string::npos,
+               "script.put: larger than 256 KB is refused");
+        r = Call(S, "level.script.get", R"({"project":"harbour"})");
+        Expect(r.ok && J(r.json).find("text")->str == text, "script.put: a refused text leaves the saved script alone");
+        Expect(Call(S, "level.script.put", R"({"project":"harbour"})").code == erg::service::kBadParams, "script.put: text is required");
+        Expect(Call(S, "level.script.put", R"({"project":"../x","text":""})").code == erg::service::kBadParams, "script.put: a bad id");
+        Expect(Call(S, "level.script.get", R"({"project":"nope"})").code == erg::service::kBadParams, "script.get: an unknown project");
+
+        for (const char* mode : {"install", "source"}) {
+            const std::string modId = std::string("script-") + mode;
+            const std::wstring dir = game + L"\\Mods\\" + erg::install::Widen(modId);
+            r = Call(S, "level.export", R"({"project":"harbour","modId":")" + modId + R"(","name":"x","version":"1.0.0","mode":")" + mode + "\"}");
+            std::vector<uint8_t> sim, spice;
+            Expect(r.ok && erg::install::ReadFile(dir + L"\\sim\\harbour.lua", 1u << 20, &sim, &err) &&
+                       std::string(sim.begin(), sim.end()) == text && r.json.find("sim/harbour.lua") != std::string::npos,
+                   std::string("export ") + mode + ": sim/<slug>.lua " + r.message);
+            Expect(erg::install::ReadFile(dir + L"\\spice.json", 1u << 20, &spice, &err) &&
+                       std::string(spice.begin(), spice.end()).find(R"("sim":"sim/harbour.lua")") != std::string::npos,
+                   std::string("export ") + mode + ": levels[].sim");
+        }
+        r = Call(S, "level.script.put", R"({"project":"harbour","text":""})");
+        Expect(r.ok && J(r.json).find("saved")->boolean && !erg::install::Exists(scriptPath), "script.put: \"\" removes the script");
+        r = Call(S, "level.export", R"({"project":"harbour","modId":"script-source","name":"x","version":"1.0.0","mode":"source"})");
+        Expect(r.ok && !erg::install::Exists(game + L"\\Mods\\script-source\\sim\\harbour.lua"), "export: a removed script is removed from the pack");
+        RemoveTree(game + L"\\Mods\\script-install");
+        RemoveTree(game + L"\\Mods\\script-source");
+        Expect(Call(S, "level.close", R"({"project":"harbour"})").ok, "close after the script cases");
+    }
 
     // level.build on a source pack in the temp install.
     const std::wstring mod = game + L"\\Mods\\my-maps";
@@ -1173,7 +1241,7 @@ void TestService(const std::wstring& root) {
     Expect(Call(S, "level.close", R"({"project":"harbour"})").ok, "close: read-only");
     S.oasisReadOnly = false;
     Expect(Call(S, "level.nope", "{}").code == -32601 && Call(S, "level.list", "[1]").code == erg::service::kBadParams, "unknown method, bad params");
-    Expect(erg::service::Methods().size() == 10 && erg::service::Mutating("level.save") && !erg::service::Mutating("level.load"), "methods");
+    Expect(erg::service::Methods().size() == 12 && erg::service::Mutating("level.save") && erg::service::Mutating("level.script.put") && !erg::service::Mutating("level.script.get") && !erg::service::Mutating("level.load"), "methods");
 }
 }  // namespace
 

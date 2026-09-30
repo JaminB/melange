@@ -28,6 +28,7 @@
 #include "levels/engine.h"
 #include "levels/gate.h"
 #include "levels/test.h"
+#include "lua/sim/bridge_internal.h"
 #include "melange/jlog.h"
 #include "mods/thumper_internal.h"
 #include "weapons/engine.h"
@@ -174,6 +175,37 @@ int LoadEntries(const std::string& bankName, std::vector<erg::bank::Entry> entri
     return n;
 }
 
+// A pack level's sim script, read once with the frozen content set.
+bool ReadLevelSim(const fs::path& modDir, const std::string& mod, const manifest::LevelDecl& d, const std::string& chunk,
+                  simbridge::LevelSim* out, std::string* err) {
+    std::error_code ec;
+    const fs::path p = modDir / game::Widen(d.sim);
+    const auto size = fs::file_size(p, ec);
+    std::string text;
+    if (!ec && size <= manifest::kMaxSimBytes) {
+        std::ifstream f(p, std::ios::binary);
+        text.resize(static_cast<size_t>(size));
+        if (!f || (size && !f.read(text.data(), static_cast<std::streamsize>(size)))) ec = std::make_error_code(std::errc::io_error);
+    }
+    if (ec) {
+        *err = d.sim + " could not be read";
+        return false;
+    }
+    std::string why;
+    if (size > manifest::kMaxSimBytes || !manifest::CheckSimText(text, &why)) {
+        *err = d.sim + ": " + (why.empty() ? "the level script is larger than 256 KB" : why);
+        return false;
+    }
+    out->mod = mod;
+    out->slug = d.slug;
+    out->stem = d.stem;
+    out->key = erg::names::Key(d.stem);
+    out->chunkName = "@" + mod + "/" + d.sim;
+    out->text = std::move(text);
+    out->knots = simbridge::LevelKnots(d.stem, chunk);
+    return true;
+}
+
 // The engine runs the cache root's copy of a pack chunk, written only from text the generator could have produced.
 bool AcceptChunk(const std::string& stem, const fs::path& root, std::string* text, std::string* err) {
     std::string got, why;
@@ -203,19 +235,26 @@ void SetChunk(const std::string& stem, const std::string& text) {
         if (stem == l.info.stem) l.chunkText = text;
 }
 
-// Serves the chunks, then writes and loads the pack's bank and titles. The number of levels registered, or -1.
-int LoadPack(const roots::PackVerdict& v, const fs::path& root, std::string* err) {
+// Serves the chunks, reads the level scripts into *sims (when given), then writes and loads the pack's bank and titles.
+// The number of levels registered, or -1.
+int LoadPack(const roots::PackVerdict& v, const fs::path& root, const fs::path& modDir, std::vector<simbridge::LevelSim>* sims,
+             std::string* err) {
     std::vector<erg::bank::Entry> entries;
     std::vector<std::string> titles;
     for (const auto& d : v.levels) {
+        std::string text;
         if (d.chunk) {
-            std::string text;
             if (!AcceptChunk(d.stem, root, &text, err)) return -1;
             if (!ServeChunk(d.stem, text)) {
                 *err = "cannot write Melange/cache/" + d.stem + ".lub";
                 return -1;
             }
             SetChunk(d.stem, text);
+        }
+        if (!d.sim.empty() && sims) {
+            simbridge::LevelSim s;
+            if (!ReadLevelSim(modDir, v.mod, d, text, &s, err)) return -1;
+            sims->push_back(std::move(s));
         }
         erg::bank::Entry en;
         en.key = erg::names::Key(d.stem);
@@ -290,6 +329,7 @@ void RegisterPacks() {
         }
     }
     const bool cacheRoot = EnsureCacheRoot();
+    std::vector<simbridge::LevelSim> sims;
 
     for (auto& p : packs) {
         if (!cacheRoot) {
@@ -301,16 +341,19 @@ void RegisterPacks() {
             continue;
         }
         std::string err;
-        const int n = LoadPack(p.v, GameDir() / game::Widen(p.rel), &err);
+        std::vector<simbridge::LevelSim> packSims;
+        const int n = LoadPack(p.v, GameDir() / game::Widen(p.rel), fs::path(p.e.dir), &packSims, &err);
         if (n < 0) {
             Refuse(p.v.mod, err);
         } else {
             ++g_packs;
             g_loaded.push_back(p.v.mod);
+            for (auto& s : packSims) sims.push_back(std::move(s));
             LOG_INFO("[levels] %s: %d level(s) registered from %s", p.v.mod.c_str(), n, p.rel.c_str());
             jlog::Rec("levels", jlog::Level::Info, "pack").Str("mod", p.v.mod).Uint("levels", static_cast<uint64_t>(n));
         }
     }
+    if (!sims.empty()) simbridge::SetLevelSims(std::move(sims));
     MarkRegistered();
     g_msRegister = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
     LOG_INFO("[levels] registration took %.2f ms", g_msRegister);
@@ -695,6 +738,11 @@ bool EnableLive(const std::string& mod, std::string* err) {
             *err = erg::names::Key(d.stem) + " already exists in the data store";
             return false;
         }
+    for (const auto& d : verdict.levels)
+        if (!d.sim.empty()) {
+            *err = mod + " has level scripts, which load only at launch; restart the game with it enabled";
+            return false;
+        }
     const fs::path root = fs::path(self->dir) / game::Widen(self->manifest.assetsRoot) / roots::kLevelDir;
     const std::string rel = roots::GameRelative(GameDir(), root);
     if (rel.empty()) {
@@ -711,7 +759,7 @@ bool EnableLive(const std::string& mod, std::string* err) {
         l.info.live = true;
         Declare(l);
     }
-    const int n = LoadPack(verdict, root, err);
+    const int n = LoadPack(verdict, root, fs::path(self->dir), nullptr, err);
     if (n < 0) {
         Forget(mod);
         ReloadAll();

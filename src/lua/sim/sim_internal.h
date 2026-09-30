@@ -28,6 +28,9 @@ struct Mod {
     uint32_t hashCalls = 0;
     bool envDirty = true;            // mod code ran since the last environment digest
     uint64_t envDigest = 0;
+    bool level = false;              // a level script (wum.level, "level." contributors)
+    std::string levelKey, stem, sha256;
+    std::vector<std::pair<std::string, std::string>> knots;
 };
 
 struct Callback {
@@ -66,6 +69,8 @@ struct Match {
     int baseHeapKB = 0;
     bool heapWarned = false;
     std::map<uint32_t, uint32_t> cppStreams;  // sim::Random stream key -> LCG state
+    bool turnPending = false;
+    uint32_t turns = 0;
 };
 extern Match g;
 extern Config g_cfg;
@@ -122,7 +127,11 @@ struct SendArgs {
     const char* s;
 };
 sim::SendResult DoSend(const SendArgs& a);
+const char* SetDataAt(l5::State* L, const char* name, int v);  // pre-checked SetData of stack slot v; nullptr or why
 const char* SendResultText(sim::SendResult r);
+
+// sim_level.cpp
+void PushLevel(int mod);  // pushes the level script's wum.level table
 
 // sim_weapons.cpp
 void PushWeapons(int mod);                 // pushes the mod's wum.sim.weapons table

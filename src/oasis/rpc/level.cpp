@@ -4,14 +4,19 @@
 
 #include <shlobj.h>
 
+#include <filesystem>
+#include <fstream>
 #include <memory>
 
 #include "assets/crcsafe.h"
 #include "core/config.h"
 #include "core/game.h"
 #include "core/log.h"
+#include "erg/names.h"
 #include "erg/service.h"
 #include "levels/gate.h"
+#include "levels/manifest.h"
+#include "lua/sim/bridge_internal.h"
 #include "mods/thumper_internal.h"
 #include "oasis/core/router.h"
 #include "oasis/providers.h"
@@ -43,6 +48,17 @@ std::vector<erg::install::Pack> EnabledPacks() {
         if (erg::install::PackFromManifest(e.manifest, e.dir, &p)) packs.push_back(std::move(p));
     }
     return erg::install::AssignPacks(std::move(packs));
+}
+
+// A file of at most the level script limit; false when it is missing, unreadable or larger.
+bool ReadSmall(const std::wstring& path, std::string* out) {
+    out->clear();
+    std::error_code ec;
+    const auto size = std::filesystem::file_size(path, ec);
+    if (ec || size > levels::manifest::kMaxSimBytes) return false;
+    std::ifstream f(std::filesystem::path(path), std::ios::binary);
+    out->resize(static_cast<size_t>(size));
+    return f && (!size || f.read(out->data(), static_cast<std::streamsize>(size)));
 }
 
 bool ModActive(const std::string& id) {
@@ -83,6 +99,22 @@ bool BuildTestLevel(const std::string& project, const std::string& tod, std::str
     }
     *stem = s->string;
     *title = t->string;
+    std::string text, chunk, why;
+    const bool haveScript = ReadSmall(ProjectsDir() + L"\\" + game::Widen(project) + L"\\script.lua", &text);
+    if (haveScript && !levels::manifest::CheckSimText(text, &why)) {
+        *err = "script.lua: " + why;
+        return false;
+    }
+    ReadSmall(game::GameDir() + L"\\Melange\\erg\\test\\" + game::Widen(*stem) + L".lub", &chunk);
+    simbridge::LevelSim sim;
+    sim.mod = "erg";
+    sim.slug = project;
+    sim.stem = *stem;
+    sim.key = erg::names::Key(*stem);
+    sim.chunkName = "@erg/" + project + "/script.lua";
+    sim.text = std::move(text);
+    sim.knots = simbridge::LevelKnots(*stem, chunk);
+    simbridge::SetTestLevelSim(sim);
     return true;
 }
 

@@ -967,6 +967,171 @@ void TestWeapons() {
     bh::SetExtraLimit(bh::kMaxExtraCap);
 }
 
+// Level scripts: loaded only on their level, sandboxed like sim mods, with wum.level and sim.turnStarted.
+const char kLevelA[] = R"(
+local n = 0
+for name, kind in pairs(wum.level.knots) do n = n + 1 end
+wum.sim.storage.knots = n .. ":" .. tostring(wum.level.knots.TRIG_0) .. ":" .. tostring(wum.level.knots.WORM3)
+wum.sim.storage.where = wum.level.key .. "|" .. wum.level.stem .. "|" .. wum.mod.id
+local ok, why = wum.level.trigger("TRIG_0", { index = 0, radius = 50, wormCollect = true })
+wum.sim.storage.trig = tostring(ok) .. ":" .. tostring(why)
+ok, why = wum.level.trigger("NOPE")
+wum.sim.storage.nope = tostring(ok) .. ":" .. tostring(why)
+ok, why = wum.level.crate("CRATE_1", { kind = "health", amount = 50 })
+wum.sim.storage.crate = tostring(ok) .. ":" .. tostring(why)
+wum.sim.storage.badopt = tostring(pcall(wum.level.trigger, "TRIG_0", { radius = 5000 }))
+wum.sim.storage.engine = tostring(SendMessage) .. ":" .. tostring(GetData) .. ":" .. tostring(entryGlobal)
+levelGlobal = 1
+wum.events.on("Trigger.Collected", function() wum.sim.setData("Water.Level", 30) end)
+wum.events.on("sim.turnStarted", function(ev, turn) wum.log.info("turn " .. turn .. " r=" .. wum.sim.random(1, 1000)) end)
+)";
+const char kLevelB[] = "wum.log.info('B loaded')";
+const char kEntry[] = "entryGlobal = 1 wum.sim.storage.level = tostring(wum.level) .. ':' .. tostring(levelGlobal)";
+const char kLoop[] = "while true do end";
+const char kPause[] = R"(
+local ok, why = wum.sim.send("GameLogic.PauseGame")
+wum.sim.storage.pause = tostring(ok) .. ":" .. tostring(why)
+wum.sim.storage.sm = tostring(SendMessage)
+)";
+
+core::LevelSource Level(const char* key, const char* id, const char* code) {
+    core::LevelSource s;
+    s.key = key;
+    s.stem = std::string(key).substr(6);
+    s.sha256 = std::string("sha-") + id;
+    s.knots = {{"TRIG_0", "trigger"}, {"CRATE_1", "crate"}, {"WORM3", "spawn"}};
+    s.src = {std::string("pack:") + id, "level", std::string("@pack/sim/") + id + ".lua", code};
+    return s;
+}
+
+struct LevelRun {
+    std::vector<std::string> loaded, modLog;
+    std::string digest;
+    bool active = false;
+};
+
+LevelRun RunLevel(const char* key, int ticks) {
+    g_modLog.clear();
+    fake::runState = 1;
+    fake::allowAll = false;
+    fake::sent.clear();
+    fake::halts.clear();
+    fake::data.clear();
+    for (const char* n : {"Trigger.Spawn", "Crate.Type", "Crate.Contents", "Crate.Spawn"}) fake::data[n] = {4, 0, ""};
+    for (const char* n : {"Trigger.Radius", "Crate.Scale", "Water.Level"}) fake::data[n] = {2, 0, ""};
+    for (const char* n : {"Trigger.Index", "Trigger.TeamCollect", "Trigger.TeamDestroy", "Trigger.HitPoints",
+                          "Trigger.WormCollect", "Crate.NumContents", "Crate.GroundSnap", "Crate.Parachute",
+                          "Crate.RandomSpawnPos", "Crate.Hitpoints"})
+        fake::data[n] = {0, 0, ""};
+    fake::L = fake::NewMatchVM();
+    const std::string before = GlobalsDigest();
+    core::SetLevel(key);
+    core::ContextCreated(fake::L);
+    LevelRun r;
+    r.active = core::Init({"GameLogic.Turn.Ended", "Trigger.Collected"}, true);
+    r.loaded = melange::simbridge::LoadedMods();
+    r.digest = core::LevelDigest();
+    if (!r.active) Expect(GlobalsDigest() == before && lua_gettop(fake::L) == 0, std::string(key) + ": VM untouched");
+    for (int i = 1; i <= ticks; ++i) {
+        core::Update();
+        if (i == 5 || i == 40) core::TurnStarted();
+        if (i == 20) fake::Deliver("Trigger.Collected");
+    }
+    r.modLog = g_modLog;
+    return r;
+}
+
+void CloseLevel() {
+    core::ContextClosing(fake::L);
+    lua_close(fake::L);
+    fake::L = nullptr;
+}
+
+void TestLevelSims() {
+    for (const char* n : {"GameLogic.ResetTriggerParams", "GameLogic.CreateTrigger", "GameLogic.ResetCrateParameters",
+                          "GameLogic.CreateCrate", "Trigger.Collected"})
+        fake::Reg(n);
+    melange::simhash::Install(melange::simhash::EnvMode::Changed);
+    core::SetSources({{"entry", "1.0.0", "@entry/sim.lua", kEntry}});
+    core::SetLevelSources({Level("Multi.lva", "lva", kLevelA), Level("Multi.lvb", "lvb", kLevelB),
+                           Level("Multi.lvc", "loop", kLoop), Level("Multi.lvc", "pause", kPause),
+                           Level("Multi.lvc", "syntax", "this is not lua ("), Level("Multi.lvc", "calm", "x = 1")});
+
+    core::SetLevel("Multi.lva");
+    Expect(core::SourceCount() == 2, "level A: one sim mod and one level script counted");
+    LevelRun a = RunLevel("Multi.lva", 60);
+    Expect(a.loaded == std::vector<std::string>({"entry", "pack:lva"}), "level A: entry.sim then its own script only");
+    Expect(a.digest == "sha-lva", "level A: the digest names its script: " + a.digest);
+    Expect(Storage("pack:lva", "where") == "Multi.lva|lva|pack:lva", "wum.level key and stem: " + Storage("pack:lva", "where"));
+    Expect(Storage("pack:lva", "knots") == "3:trigger:spawn", "wum.level.knots: " + Storage("pack:lva", "knots"));
+    Expect(Storage("pack:lva", "trig") == "true:nil" && fake::data["Trigger.Radius"].num == 50 &&
+               fake::data["Trigger.WormCollect"].num == 1 && fake::data["Trigger.Spawn"].str == "TRIG_0",
+           "wum.level.trigger sets the trigger fields: " + Storage("pack:lva", "trig"));
+    Expect(Storage("pack:lva", "nope") == "nil:unknown knot", "an unknown knot is refused: " + Storage("pack:lva", "nope"));
+    Expect(Storage("pack:lva", "crate") == "true:nil" && fake::data["Crate.Contents"].str == "health" &&
+               fake::data["Crate.NumContents"].num == 50, "wum.level.crate: health crate");
+    Expect(Storage("pack:lva", "badopt") == "false", "an option out of range raises");
+    Expect(std::count(fake::sent.begin(), fake::sent.end(), "GameLogic.CreateTrigger") == 1 &&
+               std::count(fake::sent.begin(), fake::sent.end(), "GameLogic.CreateCrate") == 1,
+           "one trigger and one crate created");
+    Expect(Storage("pack:lva", "engine") == "nil:nil:nil", "no engine globals and no sim mod globals in a level script");
+    Expect(Storage("entry", "level") == "nil:nil", "a sim mod has no wum.level and no level globals");
+    Expect(GlobalNil("levelGlobal") && GlobalNil("entryGlobal"), "level script globals stay in its environment");
+    Expect(fake::data["Water.Level"].num == 30, "Trigger.Collected handled: water raised to 30");
+    const auto turnAt = [&](const LevelRun& r, const std::string& prefix) {
+        return std::any_of(r.modLog.begin(), r.modLog.end(), [&](const std::string& s) { return s.rfind(prefix, 0) == 0; });
+    };
+    Expect(turnAt(a, "pack:lva|1|6|turn 1 r=") && turnAt(a, "pack:lva|1|41|turn 2 r="),
+           "sim.turnStarted at the tick after Turn.Started, numbered per match");
+    {
+        ws::contrib::Info info[16];
+        const size_t n = ws::contrib::List(info, 16);
+        std::string names;
+        for (size_t i = 0; i < n; ++i) names += std::string(info[i].name) + " ";
+        Expect(names.find("level.pack.lva.env") != std::string::npos && names.find("level.pack.lva.hash") != std::string::npos &&
+                   names.find("mod.entry.env") != std::string::npos,
+               "level contributors: " + names);
+    }
+    CloseLevel();
+    Expect(core::LevelDigest().empty(), "no digest after the match");
+
+    LevelRun a2 = RunLevel("Multi.lva", 60);
+    CloseLevel();
+    Expect(a.modLog == a2.modLog && !a.modLog.empty(), "level A twice: identical mod log (ticks and draws)");
+
+    LevelRun b = RunLevel("Multi.lvb", 5);
+    Expect(b.loaded == std::vector<std::string>({"entry", "pack:lvb"}), "level B: only its own script");
+    CloseLevel();
+
+    LevelRun twin = RunLevel("Multi.lva.S", 1);
+    Expect(twin.loaded == std::vector<std::string>({"entry", "pack:lva"}), "a Survivor twin runs its base level's script");
+    CloseLevel();
+
+    core::SetSources({});
+    core::SetLevel("Multi.DinerMight");
+    Expect(core::SourceCount() == 0, "a vanilla level counts no source");
+    LevelRun v = RunLevel("Multi.DinerMight", 50);
+    Expect(!v.active && v.loaded.empty() && v.digest.empty() && fake::sent.empty(), "a vanilla level loads no level script");
+    CloseLevel();
+
+    LevelRun c = RunLevel("Multi.lvc", 5);
+    Expect(c.active && c.loaded == std::vector<std::string>({"pack:pause", "pack:calm"}),
+           "the looping and broken scripts are not loaded, the others are");
+    const auto has = [&](const std::string& p) {
+        return std::any_of(c.modLog.begin(), c.modLog.end(), [&](const std::string& s) { return s.rfind(p, 0) == 0; });
+    };
+    Expect(has("pack:loop|3|0|level script failed:") && has("pack:syntax|3|0|level script failed:"),
+           "the failures are logged against the level script");
+    Expect(Storage("pack:pause", "pause") == "nil:denied" && Storage("pack:pause", "sm") == "nil",
+           "PauseGame denied and SendMessage nil: " + Storage("pack:pause", "pause"));
+    Expect(fake::runState == 1 && fake::halts.empty(), "the match continues");
+    CloseLevel();
+
+    core::SetLevelSources({});
+    core::SetLevel("");
+    melange::simhash::Uninstall();
+}
+
 int main() {
     melange::log::SetTap(&Tap);
     {
@@ -1008,6 +1173,7 @@ int main() {
     TestModHash();
     TestDesyncProbe();
     TestWeapons();
+    TestLevelSims();
     printf("sim_selftest: %d passed, %d failed\n", g_pass, g_fail);
     return g_fail ? 1 : 0;
 }

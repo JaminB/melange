@@ -436,7 +436,8 @@ target_compile_options(lua50_ref PRIVATE /W0 /FI${CMAKE_SOURCE_DIR}/tests/lua50_
 add_executable(sim_selftest EXCLUDE_FROM_ALL
     tests/sim_selftest.cpp
     src/lua/sim/sim_env.cpp src/lua/sim/sim_api.cpp src/lua/sim/sim_events.cpp src/lua/sim/sim_rng.cpp
-    src/lua/sim/sim_hash.cpp src/lua/sim/sim_weapons.cpp src/weapons/behaviour_core.cpp src/wormsign/contrib.cpp
+    src/lua/sim/sim_hash.cpp src/lua/sim/sim_weapons.cpp src/lua/sim/sim_level.cpp src/weapons/behaviour_core.cpp
+    src/wormsign/contrib.cpp
     src/core/jlog.cpp src/core/jlog_ring.cpp src/core/jlog_bus_filter.cpp
     src/core/events.cpp src/core/game.cpp src/core/mem.cpp src/core/log.cpp)
 target_include_directories(sim_selftest PRIVATE src src/sdk ${CMAKE_BINARY_DIR}/generated)

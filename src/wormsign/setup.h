@@ -15,6 +15,7 @@ struct Team {
 };
 struct Data {
     std::string level, landFile, landTheme, dataBank, timeOfDay, levelDetails, lastScheme, schemeName;
+    std::string levelSim;            // sha256 of the level script text the match loaded; "" for none
     uint64_t scheme = 0, init = 0;   // FNV of GM.SchemeData / GM.GameInitData (strings dereferenced, refs skipped)
     std::string schemeRaw;           // hex of the scheme's integer settings, for diagnosing a mismatch
     bool haveScheme = false, haveInit = false;
