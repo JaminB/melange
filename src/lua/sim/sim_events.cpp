@@ -191,7 +191,7 @@ std::string LevelDigest() {
 bool IsLevelMod(int mod) { return mod >= 0 && mod < static_cast<int>(g.mods.size()) && g.mods[mod].level; }
 
 void TurnStarted() {
-    if (g.active) g.turnPending = true;
+    if (g.L) g.turnPending = true;   // the first turn starts before Init loads the sims
 }
 void SetLogSink(LogSink fn) { g_sink = fn; }
 void SetHooksChanged(void (*fn)()) { g_hooksChanged = fn; }
