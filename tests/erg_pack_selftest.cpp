@@ -285,8 +285,16 @@ void TestSampleModParses() {
     Expect(erg::ParsePatch(patchText, &p, &perr), "the sample's patch parses: " + perr);
     Expect(p.spawns == erg::SpawnMode::Knots, "the sample uses knot spawns");
     Expect(p.water.has_value() && *p.water == 25.0, "the sample sets water to 25");
-    Expect(p.ops.size() == 8, "the sample moves exactly the 8 knots");
-    for (auto& op : p.ops) Expect(op.kind == erg::Op::Kind::Set && op.src >= 1, "every op is a plain 'set' on an existing detail");
+    size_t sets = 0, drums = 0, mines = 0, voxels = 0;
+    for (auto& op : p.ops) {
+        if (op.kind == erg::Op::Kind::Set && op.src >= 1) ++sets;
+        if (op.kind == erg::Op::Kind::Add && op.fields.name && *op.fields.name == "oildrum") ++drums;
+        if (op.kind == erg::Op::Kind::Add && op.fields.name && *op.fields.name == "mine") ++mines;
+        if (op.kind == erg::Op::Kind::Voxels) ++voxels;
+    }
+    Expect(sets == 8, "the sample moves the 8 knots");
+    Expect(drums == 3 && mines == 2, "the sample places 3 drums and 2 mines");
+    Expect(voxels > 0 && sets + drums + mines + voxels == p.ops.size(), "the sample carves a little terrain and does nothing else");
 }
 
 void TestPackNeverWritesCshEvenIfAskedTwice(const fs::path& base) {
