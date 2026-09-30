@@ -73,6 +73,11 @@ edits what the base map already has, and a brush reaches every piece of terrain 
 The *Surround* setting keeps the base map's far-off scenery ring (*copy*), removes it (*none*) or flattens it
 (*flat*).
 
+*Painted* lets you reshape it: the **Terrain** tab shows the surround as a 100×100 top-down grid, starting from the
+base map's heights. Drag on it with *Raise*, *Lower*, *Flatten* (shift-click a cell to pick its height) or *Smooth*.
+Heights run from 0 to 1 and are relative; test the map to see them in the game. A changed surround also rebuilds
+the level's shadow cache.
+
 ## Testing your map
 
 Press **Test** to play the map as it stands, without exporting or restarting anything:

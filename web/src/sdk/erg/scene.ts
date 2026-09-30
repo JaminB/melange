@@ -341,7 +341,7 @@ export function validateScene(s: unknown): Validation {
     if (!isObj(b) || !c.keys(b, ["ref", "kind", "frame", "bytes"], p)) return c.fail(p, "must be an object");
     if (v2 && b.kind === "hmp") {
       if (!isInt(b.ref, 0, 1 << 24) || b.frame !== 0 || b.bytes !== LIMITS.hmpBytes || (s.hmp as Obj | undefined)?.ref !== b.ref)
-        return c.fail(p, "the hmp blob must be the painted surround (frame 0, 50000 bytes, hmp.ref)");
+        return c.fail(p, "the hmp blob must be the surround (frame 0, 50000 bytes, hmp.ref)");
     } else if (!isInt(b.ref, 0, 1 << 24) || (b.kind !== "voxels" && b.kind !== "heightMap") || !isInt(b.frame, v2 ? -LIMITS.newFrames : 1, 1 << 24) ||
         b.frame === 0 || !isInt(b.bytes, 0, 4 * LIMITS.frameVoxels))
       return c.fail(p, "ref, kind (voxels or heightMap), frame and bytes are required");
@@ -393,7 +393,7 @@ export function validateScene(s: unknown): Validation {
   if (v2) {
     const hmp = s.hmp as Obj | undefined;
     if (hmp?.mode === "paint" && !blobs.some((b) => isObj(b) && b.kind === "hmp")) c.fail("hmp.ref", "hmp.mode paint needs the painted surround's blob");
-    if (hmp?.ref !== undefined && hmp.mode !== "paint") c.fail("hmp.ref", "needs hmp.mode paint");
+    if (hmp?.ref !== undefined && hmp.mode !== "paint" && hmp.mode !== "copy") c.fail("hmp.ref", "needs hmp.mode paint or copy");
   }
   for (const f of frameById.values()) {
     let cur: unknown = f.id;

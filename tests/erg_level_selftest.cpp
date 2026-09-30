@@ -15,6 +15,7 @@
 
 #include "erg/bank.h"
 #include "erg/build.h"
+#include "erg/hmp.h"
 #include "erg/install.h"
 #include "erg/jsonio.h"
 #include "erg/load.h"
@@ -22,6 +23,7 @@
 #include "erg/project.h"
 #include "erg/scene.h"
 #include "erg/service.h"
+#include "erg/voxels.h"
 #include "erg/xomutil.h"
 #include "mods/spice.h"
 #include "xom/json.h"
@@ -704,6 +706,69 @@ Json J(const std::string& text) {
     return v;
 }
 
+void TestSurround() {
+    namespace hmp = erg::hmp;
+    const erg::load::BaseFiles f = Base();
+    erg::load::Loaded L;
+    std::string err;
+    erg::load::LoadScene(f, &L, &err);
+
+    hmp::Surround s0;
+    Expect(hmp::Read(*f.hmp, &s0, &err) && hmp::Write(s0) == *f.hmp, "hmp: read and write round-trip");
+    Expect(!hmp::Read(std::vector<uint8_t>(49999), &s0, &err), "hmp: a short .hmp is refused");
+    hmp::Surround s1 = s0;
+    Expect(!hmp::ApplyRuns(s1, {{0, 2, 0.5}, {9999, 2, 0.5}}, {}, &err) && s1.heights == s0.heights, "hmp: a run past the cells changes nothing");
+    Expect(!hmp::ApplyRuns(s1, {{0, 1, 1.5}}, {}, &err) && !hmp::ApplyRuns(s1, {}, {{0, 1, 2.5}}, &err), "hmp: out-of-range values are refused");
+
+    erg::Patch p = EmptyPatch(L, "ergtest_synth");
+    p.hmp = erg::HmpMode::Paint;
+    erg::Op op;
+    op.kind = erg::Op::Kind::Hmp;
+    op.heights = {{0, 100, 1.0}, {50, 10, 0.25}};
+    op.blend = {{9990, 10, 200}};
+    p.ops.push_back(op);
+    erg::PatchRules rules;
+    rules.anyFrame = true;
+    erg::Scene s;
+    erg::build::VoxelEdits v;
+    Expect(!erg::build::Apply(L, p, rules, &s, &v, &err) && err.find("surround") != std::string::npos, "paint: refused while the rules say so");
+    rules.hmpPaint = true;
+    Expect(erg::build::Apply(L, p, rules, &s, &v, &err) && v.hmp && s.hmpRef >= 0 && erg::ValidateScene(s, &err), "paint: applied " + err);
+    hmp::Surround got;
+    Expect(v.hmp && hmp::Read(*v.hmp, &got, &err) && got.heights[0] == 1.0f && got.heights[55] == 0.25f && got.heights[60] == 1.0f &&
+               got.heights[100] == s0.heights[100] && got.blend[9995] == 200 && got.blend[0] == s0.blend[0],
+           "paint: runs over the base's surround, in order");
+    std::vector<erg::build::File> files;
+    Expect(erg::build::Build(L, s, v, {}, &files, &err) && FileBytes(files, "Maps/ergtest_synth.hmp") == *v.hmp, "paint: the painted .hmp is built " + err);
+    erg::build::VoxelEdits none;
+    Expect(!erg::build::Build(L, s, none, {}, &files, &err), "paint: a build without the painted surround is refused");
+
+    const erg::Patch d = erg::build::Diff(L.scene, s, v, &L.blobs, &*f.hmp);
+    erg::Scene s2;
+    erg::build::VoxelEdits v2;
+    Expect(!d.ops.empty() && d.ops.back().kind == erg::Op::Kind::Hmp && erg::build::Apply(L, d, rules, &s2, &v2, &err) && v2.hmp == v.hmp &&
+               erg::WriteScene(s2) == erg::WriteScene(s),
+           "paint: the diff re-applies to the same surround " + err);
+    const erg::Patch same = erg::build::Diff(L.scene, s, v, &L.blobs, &*v.hmp);
+    Expect(std::none_of(same.ops.begin(), same.ops.end(), [](const erg::Op& o) { return o.kind == erg::Op::Kind::Hmp; }),
+           "paint: an unchanged surround emits no hmp op");
+
+    erg::load::BaseFiles nf = f;
+    nf.hmp.reset();
+    erg::load::Loaded N;
+    erg::load::LoadScene(nf, &N, &err);
+    erg::Patch pn = EmptyPatch(N, "ergtest_synth");
+    pn.hmp = erg::HmpMode::Paint;
+    pn.ops.push_back(op);
+    Expect(erg::build::Apply(N, pn, rules, &s, &v, &err) && v.hmp && hmp::Read(*v.hmp, &got, &err) && got.heights[100] == 0.0f &&
+               got.heights[0] == 1.0f && got.blend[0] == 0,
+           "paint: without a base .hmp the runs go over zeros " + err);
+    erg::Patch pt = EmptyPatch(L, "ergtest_synth");
+    pt.ops.push_back(op);
+    pt.ops.back().kind = erg::Op::Kind::Hmp;
+    Expect(erg::voxels::TerrainChanged(pt), "paint: an hmp op is a terrain change (the shadows go)");
+}
+
 void TestService(const std::wstring& root) {
     const std::wstring game = root + L"\\game", data = game + L"\\Data";
     const erg::load::BaseFiles f = Base();
@@ -826,6 +891,34 @@ void TestService(const std::wstring& root) {
            "save: a malformed patch");
     Expect(Call(S, "level.save", R"({"project":"nope","patch":)" + erg::WritePatch(p) + "}").code == erg::service::kBadParams,
            "save: an unknown project");
+    {
+        auto sr = Call(S, "level.load", R"({"base":"Multi.Synth","surround":true})");
+        erg::Scene ss;
+        const bool parsed = sr.ok && erg::ParseScene(sr.json, &ss, &err);
+        Expect(parsed && ss.hmp == erg::HmpMode::Copy && ss.hmpRef >= 0 && sr.blobs.size() == 7 && sr.blobs.back().ref == ss.hmpRef &&
+                   std::vector<uint8_t>(sr.blobs.back().bytes.begin(), sr.blobs.back().bytes.end()) == *f.hmp,
+               "load base with surround: the base's .hmp as an hmp blob " + err + sr.message);
+        Expect(Call(S, "level.load", R"({"base":"Multi.Synth","surround":1})").code == erg::service::kBadParams, "load: surround is a boolean");
+        erg::Patch paint = q;
+        paint.hmp = erg::HmpMode::Paint;
+        erg::Op op;
+        op.kind = erg::Op::Kind::Hmp;
+        op.heights = {{0, 3, 0.5}};
+        paint.ops.push_back(op);
+        sr = Call(S, "level.save", R"({"project":"harbour","patch":)" + erg::WritePatch(paint) + "}");
+        Expect(sr.ok, "save: a painted surround " + sr.message);
+        sr = Call(S, "level.load", R"({"project":"harbour"})");
+        float h0 = 0, h3 = 0;
+        const bool back = sr.ok && erg::ParseScene(sr.json, &ss, &err) && ss.hmp == erg::HmpMode::Paint && !sr.blobs.empty() &&
+                          sr.blobs.back().ref == ss.hmpRef && sr.blobs.back().bytes.size() == erg::kHmpBytes;
+        if (back) {
+            std::memcpy(&h0, sr.blobs.back().bytes.data(), 4);
+            std::memcpy(&h3, sr.blobs.back().bytes.data() + 12, 4);
+        }
+        Expect(back && h0 == 0.5f && h3 == 0.03f, "load project: the painted surround's blob " + err + sr.message);
+        sr = Call(S, "level.save", R"({"project":"harbour","patch":)" + erg::WritePatch(q) + "}");
+        Expect(sr.ok, "save: back to the copied surround " + sr.message);
+    }
 
     {
         erg::project::Store other(root + L"\\projects");
@@ -981,6 +1074,7 @@ int main() {
     TestEditBuild();
     TestScale();
     TestVoxels();
+    TestSurround();
     TestNegative();
     TestBank();
     const std::wstring root = TempDir();

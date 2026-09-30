@@ -67,22 +67,37 @@ Result Guard(const fs::path& xan, const std::string& stem, const fs::path& sidec
         r.error = "cannot read " + xan.filename().string();
         return r;
     }
+    // The surround is terrain too: a .hmp beside the .xan joins the recorded hash and the age check.
+    std::string key = r.sha;
+    const fs::path hmp = xan.parent_path() / (stem + ".hmp");
+    std::error_code hec;
+    const bool hasHmp = fs::is_regular_file(hmp, hec);
+    if (hasHmp) {
+        const std::string h = hashutil::Sha256HexFile(hmp.wstring());
+        if (h.empty()) {
+            r.error = "cannot read " + hmp.filename().string();
+            return r;
+        }
+        key += " " + h;
+    }
     const fs::path side = sidecarDir / (stem + ".xan.sha");
-    r.changed = ReadSidecar(side) != r.sha;
+    r.changed = ReadSidecar(side) != key;
     if (r.changed) {
         r.deleted = Purge(stem, mapsDirs);
-        if (!WriteSidecar(side, r.sha)) {
+        if (!WriteSidecar(side, key)) {
             r.error = "cannot write " + side.filename().string();
             return r;
         }
     } else {
         std::error_code ec;
-        const auto xanTime = fs::last_write_time(xan, ec);
+        auto newest = fs::last_write_time(xan, ec);
+        std::error_code e3;
+        if (const auto ht = hasHmp ? fs::last_write_time(hmp, e3) : newest; !ec && !e3 && ht > newest) newest = ht;
         if (!ec)
             r.deleted = RemoveShadows(stem, mapsDirs, [&](const fs::path& p) {
                 std::error_code e2;
                 const auto t = fs::last_write_time(p, e2);
-                return !e2 && t < xanTime;
+                return !e2 && t < newest;
             });
     }
     r.ok = true;

@@ -30,7 +30,7 @@ constexpr size_t kMaxCached = 4;
 constexpr uint64_t kMaxCachedBytes = 160u << 20;   // estimated parsed size of the cached bases
 constexpr uint64_t kMaxBlobBytes = 16u << 20;
 constexpr int64_t kMaxRef = 1 << 24;
-const PatchRules kRules{voxels::kAccepted, true};   // adds may target any frame
+const PatchRules kRules{.voxels = voxels::kAccepted, .anyFrame = true, .hmpPaint = true};   // adds may target any frame
 
 Reply Err(int code, std::string msg) {
     Reply r;
@@ -487,6 +487,16 @@ struct Service::Impl {
             L = Load(base, source, &res, &r);
             if (!L) return r;
             scene = L->scene;
+            // {surround: true}: the base's .hmp as an hmp blob, the start the editor paints from.
+            const Json* sur = p.find("surround");
+            if (sur && sur->kind != Json::Kind::Bool) return Err(kBadParams, "surround must be a boolean");
+            if (sur && sur->boolean && L->hmp && scene.hmp == HmpMode::Copy) {
+                int64_t ref = 0;
+                for (const auto& b : scene.blobs) ref = std::max(ref, b.ref + 1);
+                scene.hmpRef = ref;
+                scene.blobs.push_back({ref, "hmp", 0, kHmpBytes});
+                voxels.hmp = *L->hmp;
+            }
         }
         uint64_t total = 0;
         int64_t maxRef = 0;
@@ -508,6 +518,7 @@ struct Service::Impl {
             if (f.voxels >= 0) f.voxels += shift;
             if (f.heightMap >= 0) f.heightMap += shift;
         }
+        if (scene.hmpRef >= 0) scene.hmpRef += shift;
         r.json = WriteScene(scene);
         for (size_t i = 0; i < scene.blobs.size(); ++i) {
             const auto& b = scene.blobs[i];
@@ -519,7 +530,10 @@ struct Service::Impl {
             meta.set("frame", Int(b.frame));
             out.meta = jsonio::Compact(meta);
             auto ed = b.kind == "voxels" ? voxels.find(b.frame) : voxels.end();
-            if (ed != voxels.end()) {
+            if (b.kind == "hmp") {
+                if (!voxels.hmp) return Err(kPolicy, "the surround's blob is missing");
+                out.bytes.assign(voxels.hmp->begin(), voxels.hmp->end());
+            } else if (ed != voxels.end()) {
                 out.bytes.resize(ed->second.size() * 4);
                 for (size_t k2 = 0; k2 < ed->second.size(); ++k2)
                     for (int k = 0; k < 4; ++k) out.bytes[k2 * 4 + k] = static_cast<char>(ed->second[k2] >> (8 * k));

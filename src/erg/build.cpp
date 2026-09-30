@@ -7,6 +7,7 @@
 #include <unordered_map>
 #include <unordered_set>
 
+#include "erg/hmp.h"
 #include "erg/luagen.h"
 #include "erg/voxels.h"
 #include "erg/xomutil.h"
@@ -238,6 +239,9 @@ bool Build(const load::Loaded& base, const Scene& edited, const VoxelEdits& voxe
         std::vector<uint8_t> h(load::kHmpBytes, 0);
         if (base.hmp) std::copy(base.hmp->begin() + load::kHmpSide * load::kHmpSide * 4, base.hmp->end(), h.begin() + load::kHmpSide * load::kHmpSide * 4);
         out->push_back({"Maps/" + edited.stem + ".hmp", std::move(h)});
+    } else if (edited.hmp == HmpMode::Paint) {
+        if (!voxels.hmp || voxels.hmp->size() != kHmpBytes) return Fail(err, "hmp.mode paint: no painted surround");
+        out->push_back({"Maps/" + edited.stem + ".hmp", *voxels.hmp});
     }
     if (opt.materialTxt) out->push_back({"Maps/" + edited.stem + ".txt", *opt.materialTxt});
     if (opt.chunk && luagen::Needed(edited)) {
@@ -279,12 +283,26 @@ bool Apply(const load::Loaded& base, const Patch& p, const PatchRules& rules, Sc
                                          "]: a voxel may only be carved, filled or painted (second material and blend stay)");
             }
     }
+    if (s.hmp == HmpMode::Paint) {
+        hmp::Surround sur;
+        std::string why;
+        if (base.hmp && !hmp::Read(*base.hmp, &sur, &why)) return Fail(err, "base " + why);
+        for (size_t i = 0; i < p.ops.size(); ++i)
+            if (p.ops[i].kind == Op::Kind::Hmp && !hmp::ApplyRuns(sur, p.ops[i].heights, p.ops[i].blend, &why))
+                return Fail(err, "ops[" + std::to_string(i) + "]." + why);
+        int64_t ref = 0;
+        for (const Blob& b : s.blobs) ref = std::max(ref, b.ref + 1);
+        s.hmpRef = ref;
+        s.blobs.push_back({ref, "hmp", 0, kHmpBytes});
+        edits.hmp = hmp::Write(sur);
+    }
     *scene = std::move(s);
     if (voxels) *voxels = std::move(edits);
     return true;
 }
 
-Patch Diff(const Scene& base, const Scene& edited, const VoxelEdits& voxels, const std::map<int64_t, std::vector<uint8_t>>* baseBlobs) {
+Patch Diff(const Scene& base, const Scene& edited, const VoxelEdits& voxels, const std::map<int64_t, std::vector<uint8_t>>* baseBlobs,
+           const std::vector<uint8_t>* baseHmp) {
     Patch p;
     p.stem = edited.stem;
     p.title = edited.title;
@@ -350,6 +368,14 @@ Patch Diff(const Scene& base, const Scene& edited, const VoxelEdits& voxels, con
             }
             if (!op.runs.empty()) p.ops.push_back(std::move(op));
         }
+    }
+    hmp::Surround painted, before;
+    if (edited.hmp == HmpMode::Paint && voxels.hmp && hmp::Read(*voxels.hmp, &painted, nullptr)) {
+        const bool hasBase = baseHmp && hmp::Read(*baseHmp, &before, nullptr);
+        Op op;
+        op.kind = Op::Kind::Hmp;
+        hmp::Runs(hasBase ? &before : nullptr, painted, &op.heights, &op.blend);
+        if (!op.heights.empty() || !op.blend.empty()) p.ops.push_back(std::move(op));
     }
     return p;
 }
