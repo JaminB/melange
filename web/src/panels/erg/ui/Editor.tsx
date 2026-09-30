@@ -266,7 +266,7 @@ export function Editor({ client, info, opened, onClose }: Props) {
         <button class="btn danger" onClick={del} disabled={!sel.length} data-action="delete" title="Delete (Del)">Delete</button>
         <span class="erg-sep" />
         <button class={`btn${sculptOn ? " on" : ""}`} onClick={() => setSculpt(!sculptOn)} data-action="sculpt"
-                title="Sculpt the terrain: drag to carve, fill or paint (Shift-drag or Alt-drag still orbits)">Sculpt</button>
+                title="Sculpt the terrain: drag to carve, fill or paint (Alt-drag still orbits)">Sculpt</button>
         <span class="erg-sep" />
         <span class="muted small">Place</span>
         {palette.map((p) => (

@@ -15,19 +15,23 @@ not in a lobby.
 
 A project is one map you're editing: a base level plus your changes, saved under
 `Documents\Melange\erg\projects\<id>\`. Opening the panel lists the game's own multiplayer maps and any project you
-already started; pick one to start a new project from it, or an existing project to keep going. Saves are automatic
-and atomic — closing the tab or losing the connection never corrupts a project, and only one server (the game or
-`oasis.exe`, not both) can have a given project open at a time.
+already started; pick one to start a new project from it, or an existing project to keep going. **Save** (Ctrl+S)
+writes the project atomically; until then your edits and the undo history live in the page, and unsaved edits come
+back as a draft if you reload it. Only one server (the game or `oasis.exe`, not both) can have a given project open at
+a time. Map packs that ship only their patches (see Export) are listed at the top with a **Build** button.
 
 ## The view and tools
 
-- **Camera:** orbit, pan and zoom with the mouse, as in the game's own editor tools you may already know.
+- **Camera:** orbit, pan and zoom with the mouse.
 - **Selecting and moving:** click a spawn, object or scenery piece to select it; drag its gizmo to move, rotate or
   scale it, with snapping (1, 0.5 or 0.1 map units, and 15° steps).
 - **Outliner and properties:** a tree of everything in the map on one side, and the selected thing's fields (name,
   position, rotation, scale) on the other.
 - **Units:** the editor works in world units, which are 20× the numbers stored in the level file. A worm 1 map unit
   from a wall in the file is 20 world units away on screen — the same units the game's own camera and physics use.
+- **Placing:** pick *Spawn knot*, *Oil drum* or *Mine* in the toolbar, then click the terrain. *Drop* (G) puts the
+  selection on the ground below it; *Duplicate* (Ctrl+D) copies spawns and objects (not scenery).
+- **Undo and redo:** Ctrl+Z and Ctrl+Shift+Z, up to 500 steps.
 - The 3D view is an approximation of the game's own geometry, close enough to place things accurately but not a
   pixel-identical render of the game.
 
@@ -47,8 +51,8 @@ that uses them. (Crates, telepads and mine factories aren't supported yet.)
 
 ## Water
 
-Set a water level or leave it at the map's own default. The number is in world units, with sea level at 0; a
-level Erg exported floods the whole map somewhere around 150.
+Set a water level or leave it at the map's own default. The number is in world units, with sea level at 0; on Diner
+Might, 150 floods nearly everything.
 
 ## Theme and time of day
 
@@ -59,9 +63,15 @@ game shows it.
 
 ## Terrain
 
-You can carve, fill and paint the existing terrain with a brush (box or sphere, in a range of sizes) and any of the
-current theme's materials. Erg doesn't add new terrain shapes or resize what's there — only edit what the base map
-already has.
+Press **Sculpt**, then drag over the terrain to carve, fill or paint with a box or sphere brush (the *Terrain* tab sets
+the mode, shape, size and material; `[` and `]` resize the brush, and Alt-drag still orbits). Fill with *Match
+column* takes the material of the terrain above. Erg doesn't add new terrain shapes or resize what's there — it only
+edits what the base map already has, and a brush reaches every piece of terrain it overlaps.
+
+## Surround
+
+The *Surround* setting keeps the base map's far-off scenery ring (*copy*), removes it (*none*) or flattens it
+(*flat*).
 
 ## Testing your map
 
