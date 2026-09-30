@@ -130,7 +130,7 @@ set_source_files_properties(${CMAKE_BINARY_DIR}/generated/oasis_web.rc PROPERTIE
 # Oasis, oasis.exe, xomtool and the self-tests.
 set(ERG_SERVICE_SOURCES
     src/erg/scene.cpp src/erg/patch.cpp src/erg/names.cpp src/erg/jsonio.cpp src/erg/xomutil.cpp src/erg/load.cpp
-    src/erg/build.cpp src/erg/bank.cpp src/erg/install.cpp src/erg/project.cpp src/erg/service.cpp src/erg/pack.cpp src/erg/luagen.cpp src/erg/voxels.cpp src/erg/objects.cpp
+    src/erg/build.cpp src/erg/bank.cpp src/erg/install.cpp src/erg/project.cpp src/erg/service.cpp src/erg/pack.cpp src/erg/luagen.cpp src/erg/voxels.cpp src/erg/objects.cpp src/erg/hmp.cpp
     src/erg/preview.cpp src/levels/manifest.cpp src/mods/spice.cpp src/tools/json_read.cpp src/tools/hash.cpp
     src/core/log.cpp)
 

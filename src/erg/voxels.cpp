@@ -161,7 +161,7 @@ bool DiffOps(const Scene& base, const FrameWords& before, const FrameWords& afte
 }
 
 bool TerrainChanged(const Patch& p) {
-    return std::any_of(p.ops.begin(), p.ops.end(), [](const Op& op) { return op.kind == Op::Kind::Voxels; });
+    return std::any_of(p.ops.begin(), p.ops.end(), [](const Op& op) { return op.kind == Op::Kind::Voxels || op.kind == Op::Kind::Hmp; });
 }
 
 std::vector<std::string> ShadowFiles(std::string_view stem) {

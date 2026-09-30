@@ -20,7 +20,7 @@ import { snapVec } from "../model/geometry";
 import { ExportDialog } from "../test/ExportDialog";
 import { TestPanel } from "../test/TestPanel";
 import { ScriptDoc, ScriptPanel } from "../script";
-import { Sculptor, TerrainTool, TerrainTools, fetchAtlas, hexColors, setAtlas } from "../terrain";
+import { Sculptor, SurroundTools, TerrainTool, TerrainTools, fetchAtlas, hexColors, setAtlas } from "../terrain";
 import { assetUrl } from "../../../sdk/erg/assets";
 
 export const SNAPS: (number | null)[] = [null, 1, 0.5, 0.1];
@@ -324,7 +324,7 @@ export function Editor({ client, info, opened, onClose }: Props) {
             {tab === "props" ? <Properties store={store} set={(id, f) => store.exec(new SetDetail(id, f))} catalog={catalog}
                                            setObject={(knot, o) => store.exec(new SetObject(knot, o))} />
               : tab === "level" ? <LevelSettings store={store} themes={themes} />
-              : tab === "terrain" ? <TerrainTools tool={terrainTool} palette={atlasColors} />
+              : tab === "terrain" ? <><TerrainTools tool={terrainTool} palette={atlasColors} /><SurroundTools store={store} /></>
               : tab === "script" && hasScript ? <ScriptPanel doc={scriptDoc} />
               : tab === "export" ? <ExportDialog client={client} project={info.id} defaultName={store.scene.title} />
               : <Checks issues={issues} onPick={(id) => { store.select([id]); view?.focus(); }} />}

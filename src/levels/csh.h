@@ -4,7 +4,7 @@
 #include <string>
 #include <vector>
 
-// The shadow-cache guard: a level's generated <stem><TOD>.csh files are deleted whenever its .xan changed. A sidecar
+// The shadow-cache guard: a level's generated <stem><TOD>.csh files are deleted whenever its terrain changed. A sidecar
 // <stem>.xan.sha (the .xan's sha256) records the .xan the current shadows belong to. File-system only, no game calls.
 namespace melange::levels::csh {
 struct Result {
@@ -15,7 +15,8 @@ struct Result {
     std::string error;
 };
 // xan: the level's .xan; sidecarDir: where <stem>.xan.sha lives; mapsDirs: every Maps folder a .csh can be in.
-// A .csh older than the .xan is deleted even when the sha is unchanged. Idempotent.
+// A <stem>.hmp beside the .xan counts as terrain: its sha joins the sidecar and its time the age check.
+// A .csh older than the .xan (or the .hmp) is deleted even when the sha is unchanged. Idempotent.
 Result Guard(const std::filesystem::path& xan, const std::string& stem, const std::filesystem::path& sidecarDir,
              const std::vector<std::filesystem::path>& mapsDirs);
 // Deletes every <stem><TOD>.csh in mapsDirs; returns the count.

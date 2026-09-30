@@ -93,9 +93,10 @@ export function LevelSettings({ store, themes }: Props) {
           <option value="copy">Copy the base's</option>
           <option value="flat">Flat</option>
           <option value="none">None</option>
+          <option value="paint">Painted (Terrain tab)</option>
         </select>
       </label>
-      <p class="hint">The surround grid in the view marks where the surround lies; its heights are not shown.</p>
+      <p class="hint">The grid in the view marks where the surround lies; paint its heights in the Terrain tab.</p>
     </div>
   );
 }

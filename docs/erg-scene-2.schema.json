@@ -171,7 +171,7 @@
           "ref": { "$ref": "#/$defs/ref" },
           "kind": {
             "enum": ["voxels", "heightMap", "hmp"],
-            "description": "hmp: the painted surround, 100x100 f32 heights 0..1 then 100x100 u8 blend (50000 bytes), frame 0."
+            "description": "hmp: the surround (hmp.ref), 100x100 f32 heights 0..1 then 100x100 u8 blend (50000 bytes), frame 0."
           },
           "frame": { "type": "integer", "minimum": -64, "maximum": 16777216 },
           "bytes": { "type": "integer", "minimum": 0, "maximum": 1048576 }
@@ -251,7 +251,7 @@
       "required": ["mode"],
       "properties": {
         "mode": { "enum": ["copy", "none", "flat", "paint"] },
-        "ref": { "$ref": "#/$defs/ref", "description": "paint: the blob of the painted surround." }
+        "ref": { "$ref": "#/$defs/ref", "description": "paint: the blob of the painted surround; copy: the base's surround, when level.load was asked for it." }
       }
     },
     "kind": {

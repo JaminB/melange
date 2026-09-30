@@ -631,14 +631,14 @@ bool ValidateScene(const Scene& s, std::string* err) {
         if (!blobs.emplace(b.ref, &b).second) return Fail(err, "blobs: duplicate ref " + std::to_string(b.ref));
         if (b.kind == "hmp") {
             if (b.frame != 0 || b.bytes != kHmpBytes || s.hmpRef != b.ref)
-                return Fail(err, "blobs: the hmp blob must be the painted surround (frame 0, 50000 bytes, hmp.ref)");
+                return Fail(err, "blobs: the hmp blob must be the surround (frame 0, 50000 bytes, hmp.ref)");
             continue;
         }
         if (b.kind != "voxels" && b.kind != "heightMap") return Fail(err, "blobs: kind must be voxels, heightMap or hmp");
         if (!frames.count(b.frame)) return Fail(err, "blobs: ref " + std::to_string(b.ref) + " names a missing frame");
     }
-    if (s.hmpRef >= 0 && (s.hmp != HmpMode::Paint || !blobs.count(s.hmpRef)))
-        return Fail(err, "hmp.ref: names the painted surround's blob and needs hmp.mode paint");
+    if (s.hmpRef >= 0 && ((s.hmp != HmpMode::Paint && s.hmp != HmpMode::Copy) || !blobs.count(s.hmpRef)))
+        return Fail(err, "hmp.ref: names the surround's blob and needs hmp.mode paint or copy");
     if (s.hmp == HmpMode::Paint && s.hmpRef < 0) return Fail(err, "hmp.ref: hmp.mode paint needs the painted surround's blob");
     size_t newFrames = 0;
     for (auto& f : s.frames) {
