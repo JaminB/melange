@@ -1090,9 +1090,10 @@ void TestService(const std::wstring& root) {
         const std::string chunk(lub.begin(), lub.end());
         Expect(chunk.find("ergCrate(\"CRATE_0\", \"weapon\", \"kWeaponBazooka\", 1, 25, 0)") != std::string::npos &&
                    chunk.find("lib_CreateTelepad(\"TP_1_0\", 1)") != std::string::npos &&
-                   chunk.find("MineFactoryOn ~= true then SendMessage(\"GameLogic.PlaceObjects\") end") != std::string::npos &&
+                   chunk.find("    scheme.MineFactoryOn = false\n") != std::string::npos &&
+                   chunk.find("    SendMessage(\"GameLogic.PlaceObjects\")\n") != std::string::npos &&
                    erg::luagen::IsGenerated("ergtest_harbour", chunk, &e2),
-               "objects: the chunk holds the crate, the pad and the guarded factory, and verifies " + e2);
+               "objects: the chunk holds the crate, the pad and the factory, and verifies " + e2);
         xom::Document xd;
         Expect(xom::parse(xan.data(), xan.size(), xd, &e2), "objects: the built .xan parses " + e2);
         int knots = 0, lifted = 0;

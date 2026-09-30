@@ -45,7 +45,7 @@ export function ObjectProps({ o, set, catalog }: { o: ObjectSpec; set(o: ObjectS
   if (o.type === "telepad")
     return <div class="erg-field" data-erg-object="telepad"><span class="erg-label">Telepad</span><span>group {o.group}: a worm on one pad of the group comes out of another</span></div>;
   if (o.type === "minefactory")
-    return <p class="hint" data-erg-object="minefactory">Mine factory. It is placed only when the game's scheme has no factory of its own, so a match never has two.</p>;
+    return <p class="hint" data-erg-object="minefactory">Mine factory. It replaces the scheme's own factory, so a match never has two.</p>;
   if (o.type === "trigger") {
     const t = o.trigger;
     const put = (f: Partial<typeof t>) => set({ ...o, trigger: { ...t, ...f } });
