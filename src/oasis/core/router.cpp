@@ -66,6 +66,11 @@ Config g_cfg;
 Host g_host;
 std::string g_build = "dev";
 
+struct ClosedCb { int handle; ClientClosedFn fn; void* user; };
+std::mutex g_closedMx;
+std::vector<ClosedCb> g_closed;
+int g_nextClosed = 1;
+
 std::mutex g_pumpMx;
 std::deque<PendingCall> g_calls;
 std::deque<SubEvent> g_subEvents;
@@ -554,6 +559,7 @@ void CloseAll(uint16_t code, const char* reason) {
 
 void Gone(int id) {
     std::vector<SubEvent> evs;
+    bool first = false;
     {
         std::unique_lock lk(g_reg);
         auto it = g_clients.find(id);
@@ -567,10 +573,18 @@ void Gone(int id) {
         }
         c.subs.clear();
         std::lock_guard ck(c.mx);
+        first = !c.gone;
         c.gone = true;
         SetEvent(c.wake);
     }
     Dispatch(evs);
+    if (!first) return;
+    std::vector<ClosedCb> cbs;
+    {
+        std::lock_guard lk(g_closedMx);
+        cbs = g_closed;
+    }
+    for (const auto& cb : cbs) cb.fn(static_cast<uint64_t>(id), cb.user);
 }
 
 void Release(int id) {
@@ -604,6 +618,18 @@ std::vector<int> ListClients() {
 }  // namespace core
 
 int Clients() { return core::router::OpenClients(); }
+
+int OnClientClosed(ClientClosedFn fn, void* user) {
+    if (!fn) return 0;
+    std::lock_guard lk(core::g_closedMx);
+    core::g_closed.push_back({core::g_nextClosed, fn, user});
+    return core::g_nextClosed++;
+}
+
+void RemoveOnClientClosed(int handle) {
+    std::lock_guard lk(core::g_closedMx);
+    std::erase_if(core::g_closed, [handle](const core::ClosedCb& c) { return c.handle == handle; });
+}
 
 ChannelId AddChannel(const char* name, const ChannelOptions& opt) {
     using namespace core;

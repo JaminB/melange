@@ -4,12 +4,16 @@
 
 #include <safetyhook.hpp>
 
+#include <atomic>
+#include <chrono>
 #include <cstring>
 #include <deque>
 #include <initializer_list>
+#include <mutex>
 
 #include "assets/searchpath.h"
 #include "melange/bus.h"
+#include "core/events.h"
 #include "core/game.h"
 #include "core/log.h"
 #include "core/mem.h"
@@ -40,6 +44,20 @@ const Site kExtra[] = {
     {kMsgAlloc, {0x55, 0x8b, 0xec, 0x83, 0xec, 0x10}},
     {kTwoStringMsgInit, {0x55, 0x8b, 0xec, 0x51, 0x89, 0x4d, 0xfc}},
     {kMsgPost, {0x55, 0x8b, 0xec, 0x51, 0x51, 0x83, 0x3d}},
+    {kSetString, {0x6a, 0xff, 0x68, 0x38, 0x93, 0x7c, 0x00, 0x64, 0xa1, 0x00, 0x00, 0x00, 0x00, 0x50, 0x64, 0x89, 0x25,
+                  0x00, 0x00, 0x00, 0x00, 0x51, 0x56, 0xc7}},
+    {kClearDataBank, {0xa1, 0xe0, 0x26, 0x96, 0x00, 0x85, 0xc0, 0x74, 0x05, 0x83, 0xc0, 0x14}},
+    {kPoolRebuild, {0x55, 0x8b, 0xec, 0x81, 0xec, 0x20, 0x01, 0x00, 0x00, 0x53, 0x56, 0x8b, 0xf1}},
+};
+
+// Where FlowControlService::Update reads the fields ReadFrontend reports: the global, the state switch, the idle
+// deadline against the clock with the attract-allowed bit, and the attract-running bit.
+const Site kFcs[] = {
+    {0x4f11ba, {0xa1, 0x98, 0xa2, 0x95, 0x00}},
+    {0x4f15b0, {0x8b, 0x86, 0x38, 0x01, 0x00, 0x00, 0x3b, 0x86, 0x3c, 0x01}},
+    {0x4f19a2, {0xf6, 0x86, 0x59, 0x01, 0x00, 0x00, 0x01, 0x0f, 0x84}},
+    {0x4f19af, {0xa1, 0x30, 0xd0, 0x96, 0x00, 0x8b, 0x40, 0x38, 0x3b, 0x86, 0x50, 0x01, 0x00, 0x00}},
+    {0x4f1a31, {0x80, 0x8e, 0x60, 0x01, 0x00, 0x00, 0x01}},
 };
 
 bool ExtraOk(uintptr_t addr) {
@@ -122,7 +140,16 @@ void* g_decideUser = nullptr;
 SafetyHookMid g_levelHook;
 char g_override[128] = {};
 
+using Clock = std::chrono::steady_clock;
+std::atomic<int64_t> g_loadingSinceMs{0};
+constexpr int64_t kLoadingMaxMs = 90000;
+
+int64_t NowMs() {
+    return std::chrono::duration_cast<std::chrono::milliseconds>(Clock::now().time_since_epoch()).count();
+}
+
 void OnLevelName(safetyhook::Context& c) {
+    g_loadingSinceMs = NowMs();
     if (!g_decide) return;
     const uintptr_t slot = c.esp + 0x20;
     const char* cur = reinterpret_cast<const char*>(Rd<uintptr_t>(slot));
@@ -167,6 +194,64 @@ bool RawPostTwoStrings(uint16_t id, const char* a, const char* b) {
         return false;
     }
     return true;
+}
+
+bool RawSetString(const char* name, const char* v) {
+    __try {
+        return reinterpret_cast<int(__cdecl*)(const char**, const char*)>(kSetString)(&name, v) >= 0;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return false;
+    }
+}
+
+bool RawClearDataBank(uint32_t section) {
+    __try {
+        reinterpret_cast<void(__cdecl*)(uint32_t)>(kClearDataBank)(section);
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return false;
+    }
+    return true;
+}
+
+bool RawRebuild(uintptr_t ms) {
+    __try {
+        reinterpret_cast<void(__thiscall*)(uintptr_t)>(kPoolRebuild)(ms);
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return false;
+    }
+    return true;
+}
+
+bool FcsOk() {
+    static const bool ok = [] {
+        if (!game::IsKnownBuild()) return false;
+        for (auto& s : kFcs)
+            if (!mem::Expect(s.addr, s.bytes)) return false;
+        return true;
+    }();
+    return ok;
+}
+
+struct StartObserver {
+    int handle;
+    StartGameFn fn;
+    void* user;
+};
+std::mutex g_startMx;
+std::vector<StartObserver> g_startObs;
+int g_startNext = 1;
+bus::SubId g_startSub = 0;
+
+void OnStartGameMsg(const bus::MessageView& m, void*) {
+    uintptr_t p = 0;
+    char text[64] = {};
+    if (m.Get(8, p) && p) mem::SafeRead(p, text, sizeof text - 1);
+    std::vector<StartObserver> obs;
+    {
+        std::lock_guard lk(g_startMx);
+        obs = g_startObs;
+    }
+    for (auto& o : obs) o.fn(text, o.user);
 }
 
 bool RegisterSites() {
@@ -273,6 +358,14 @@ bool InstallLevelHook(DecideFn decide, void* user) {
     g_decide = decide;
     g_decideUser = user;
     if (!weng::Mid(g_levelHook, kLevelName, &OnLevelName, "level name")) return false;
+    static bool tracked = false;
+    if (!tracked) {
+        tracked = true;
+        events::Subscribe(events::Event::Frame, [] {
+            const int64_t t = g_loadingSinceMs.load();
+            if (t && (sim::InMatch() || NowMs() - t > kLoadingMaxMs)) g_loadingSinceMs = 0;
+        });
+    }
     weng::Enable(g_levelHook, true);
     return true;
 }
@@ -320,12 +413,14 @@ void EnablePoolHook(bool on) {
 
 bool PoolHookEnabled() { return g_poolHook && g_poolHook.enabled(); }
 
-std::vector<std::string> PoolKeys() {
+std::vector<std::string> PoolKeys() { return PoolKeysAt(0x2c); }
+
+std::vector<std::string> PoolKeysAt(uint32_t offset) {
     std::vector<std::string> out;
-    if (!game::IsKnownBuild()) return out;
+    if (!game::IsKnownBuild() || offset > 0x200 || offset % 4) return out;
     const uintptr_t ms = Rd<uintptr_t>(kMissionService);
     if (!ms) return out;
-    const uintptr_t b = Rd<uintptr_t>(ms + 0x2c), e = Rd<uintptr_t>(ms + 0x30);
+    const uintptr_t b = Rd<uintptr_t>(ms + offset), e = Rd<uintptr_t>(ms + offset + 4);
     if (!b || e < b || e - b > 4 * 1024) return out;
     for (uintptr_t p = b; p < e; p += 4) {
         std::string k = weng::ReadCString(Rd<uintptr_t>(p), 80);
@@ -347,5 +442,64 @@ bool PostDataResource(const char* name, const char* value) {
     texts.emplace_back(value);
     const char* b = texts.back().c_str();
     return RawPostTwoStrings(id, a, b);
+}
+
+bool SetString(const char* name, const char* v) {
+    if (!name || !*name || !v || !ExtraOk(kSetString)) return false;
+    return RawSetString(name, v);
+}
+
+bool GetString(const char* name, std::string* out) {
+    if (!name || !*name) return false;
+    std::string v;
+    if (!weng::TextOf(name, &v)) return false;
+    if (out) *out = std::move(v);
+    return true;
+}
+
+bool ClearDataBank(uint32_t section) {
+    if (section != 12) {
+        LOG_WARN("[levels] ClearDataBank(%u) refused: only section 12 may be cleared", section);
+        return false;
+    }
+    if (!ExtraOk(kClearDataBank) || !AtFrontend()) return false;
+    return RawClearDataBank(section);
+}
+
+bool RebuildPools() {
+    if (!ExtraOk(kPoolRebuild) || !AtFrontend()) return false;
+    const uintptr_t ms = Rd<uintptr_t>(kMissionService);
+    return ms && RawRebuild(ms);
+}
+
+FrontendState ReadFrontend() {
+    FrontendState f{};
+    if (!FcsOk()) return f;
+    const uintptr_t fcs = Rd<uintptr_t>(kFrontendControl);
+    if (!fcs) return f;
+    uint8_t b159 = 0, b160 = 0;
+    if (!mem::SafeRead(fcs + 0x138, &f.state, 4) || !mem::SafeRead(fcs + 0x150, &f.idleDeadline, 4) ||
+        !mem::SafeRead(fcs + 0x159, &b159, 1) || !mem::SafeRead(fcs + 0x160, &b160, 1))
+        return FrontendState{};
+    f.attractAllowed = (b159 & 1) != 0;
+    f.attractRunning = (b160 & 1) != 0;
+    f.valid = true;
+    return f;
+}
+
+bool Loading() { return g_loadingSinceMs.load() != 0; }
+
+int OnStartGame(StartGameFn fn, void* user) {
+    if (!fn) return 0;
+    std::lock_guard lk(g_startMx);
+    if (!g_startSub) g_startSub = bus::SubscribeName("WXMsg.StartGame", bus::Path::Post, &OnStartGameMsg, nullptr);
+    if (!g_startSub) return 0;
+    g_startObs.push_back({g_startNext, fn, user});
+    return g_startNext++;
+}
+
+void RemoveOnStartGame(int handle) {
+    std::lock_guard lk(g_startMx);
+    std::erase_if(g_startObs, [handle](const StartObserver& o) { return o.handle == handle; });
 }
 }  // namespace melange::levels::engine

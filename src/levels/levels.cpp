@@ -161,6 +161,8 @@ bool ArmNextLevel(const char* key, int timeoutS) {
     return registry::Arm(key, timeoutS);
 }
 
+bool ArmNextLevel(const char* key, const ArmOptions& o) { return ArmNextLevel(key, o.timeoutS); }
+
 void Disarm() {
     if (g_enabled) registry::Disarm();
 }

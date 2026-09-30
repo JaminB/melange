@@ -1,5 +1,6 @@
-// Offline self-test for the Erg scene model (no game, no game files): stem rules, erg-scene/1 and erg-patch/1 round
-// trips and refusals over synthetic scenes, patch application, frame transforms and the spice.json "levels" array.
+// Offline self-test for the Erg scene model (no game, no game files): stem rules, erg-scene/1 and /2 and erg-patch/1 and
+// /2 round trips and refusals over synthetic scenes, patch application, frame transforms, the generated chunk's grammar
+// (every branch verifies, mutated chunks are refused) and the spice.json "levels" array.
 // The synthetic scenes are written to tests/fixtures/erg with --write and compared with the committed files otherwise.
 // Exit code 0 = all passed.
 #include <algorithm>
@@ -11,6 +12,7 @@
 #include <string>
 #include <vector>
 
+#include "erg/luagen.h"
 #include "erg/names.h"
 #include "erg/patch.h"
 #include "erg/scene.h"
@@ -19,6 +21,7 @@
 
 namespace erg = melange::erg;
 namespace names = melange::erg::names;
+namespace luagen = melange::erg::luagen;
 namespace lm = melange::levels::manifest;
 
 namespace {
@@ -182,7 +185,7 @@ void TestSceneRefusals(const erg::Scene& s) {
     std::string err;
     struct Case { std::string json, what; };
     const Case cases[] = {
-        {Mutate(good, "\"erg-scene/1\"", "\"erg-scene/2\""), "another format"},
+        {Mutate(good, "\"erg-scene/1\"", "\"erg-scene/3\""), "another format"},
         {Mutate(good, "\"stem\":", "\"extra\":1,\"stem\":"), "an unknown key"},
         {Mutate(good, "\"title\":\"Synthetic 12\"", "\"title\":\"" + std::string(41, 'x') + "\""), "a long title"},
         {Mutate(good, "\"worldPerXan\":20", "\"worldPerXan\":10"), "another unit"},
@@ -430,6 +433,367 @@ void TestManifest() {
     Expect(all.size() == 120 && refused.size() == 1 && refused[0].mod == "pack4", "more than 128 levels in all refuse the last mod");
 }
 
+// ---------------------------------------------------------------- erg-scene/2, erg-patch/2 and the v2 chunk
+const std::string kShaD(64, 'd');
+
+// The v1 synthetic level plus a "Scene" group frame, the only place new frames may go.
+erg::Scene BaseV2() {
+    erg::Scene s = Synthetic(12, 7);
+    erg::Frame scene;
+    scene.id = 1000;
+    scene.parent = s.frames[0].id;
+    scene.name = "Scene";
+    scene.size = {0, 0, 0};
+    s.frames.push_back(scene);
+    return s;
+}
+
+int64_t ObjectsFolder(const erg::Scene& s) { return s.details[8].frame; }
+
+erg::ObjectSpec Crate(const std::string& knot, erg::CrateKind kind, const std::string& contents, int n) {
+    erg::ObjectSpec o;
+    o.knot = knot;
+    o.type = erg::ObjectType::Crate;
+    o.crate.kind = kind;
+    if (kind == erg::CrateKind::Health) o.crate.amount = n;
+    else o.crate.contents = contents, o.crate.count = n;
+    return o;
+}
+
+erg::ObjectSpec Telepad(const std::string& knot, int group) {
+    erg::ObjectSpec o;
+    o.knot = knot;
+    o.type = erg::ObjectType::Telepad;
+    o.group = group;
+    return o;
+}
+
+erg::ObjectSpec Trigger(const std::string& knot, int index, double radius) {
+    erg::ObjectSpec o;
+    o.knot = knot;
+    o.type = erg::ObjectType::Trigger;
+    o.trigger.index = index;
+    o.trigger.radius = radius;
+    return o;
+}
+
+std::vector<erg::ObjectSpec> SampleObjects() {
+    return {Crate("CRATE_0", erg::CrateKind::Weapon, "kWeaponHolyHandGrenade", 1), Crate("CRATE_1", erg::CrateKind::Health, "", 50),
+            Crate("CRATE_2", erg::CrateKind::Utility, "kUtilityJetpack", 2), Telepad("TP_1_0", 1), Telepad("TP_1_1", 1),
+            Trigger("TRIG_0", 1, 60.0)};
+}
+
+erg::Patch SamplePatchV2(const erg::Scene& base) {
+    erg::Patch p = SamplePatch(base);
+    p.stem = "mymaps_objects";
+    p.objects = SampleObjects();
+    p.survivor = true;
+    p.script = {true, kShaD};
+    p.hmp = erg::HmpMode::Paint;
+    int k = 0;
+    for (auto& o : p.objects) {
+        erg::Op add;
+        add.kind = erg::Op::Kind::Add;
+        add.frame = ObjectsFolder(base);
+        add.fields.name = o.knot;
+        add.fields.resource = "Unit";
+        add.fields.pos = erg::Vec3{static_cast<double>(k++), 1, 2};
+        p.ops.push_back(add);
+    }
+    erg::Op frame;
+    frame.kind = erg::Op::Kind::AddFrame;
+    frame.newFrame = {-1, 1000, "ergframe_0", {4, 2, -3}, {6, 31, 6}};
+    p.ops.push_back(frame);
+    erg::Op vox;
+    vox.kind = erg::Op::Kind::Voxels;
+    vox.frame = -1;
+    vox.runs = {{0, 64, 3 | (5 << 2)}};
+    p.ops.push_back(vox);
+    erg::Op hmp;
+    hmp.kind = erg::Op::Kind::Hmp;
+    hmp.heights = {{0, 100, 1.0}, {9900, 100, 0.25}};
+    hmp.blend = {{0, 10000, 255}};
+    p.ops.push_back(hmp);
+    return p;
+}
+
+erg::PatchRules AllRules() {
+    erg::PatchRules r;
+    r.voxels = r.objects = r.survivor = r.script = r.newFrames = r.hmpPaint = r.blend = true;
+    return r;
+}
+
+// The scene the server would send for SamplePatchV2 applied to BaseV2 (with the blobs of the new frame and the .hmp).
+erg::Scene SceneV2() {
+    const erg::Scene base = BaseV2();
+    erg::Scene s = base;
+    std::string err;
+    erg::ApplyPatch(s, SamplePatchV2(base), AllRules(), &err);
+    int64_t ref = 0;
+    for (auto& b : s.blobs) ref = std::max(ref, b.ref + 1);
+    for (auto& f : s.frames)
+        if (f.isNew) {
+            f.voxels = ref;
+            s.blobs.push_back({ref++, "voxels", f.id, static_cast<uint64_t>(f.size[0]) * f.size[1] * f.size[2] * 4});
+        }
+    s.hmpRef = ref;
+    s.blobs.push_back({ref, "hmp", 0, erg::kHmpBytes});
+    return s;
+}
+
+void TestV2Model() {
+    std::string err;
+    // A v1 document reads as a scene without /2 features and is written back as the same /1 bytes.
+    const erg::Scene v1 = Synthetic(12, 7);
+    const std::string v1Text = erg::WriteScene(v1);
+    erg::Scene up;
+    Expect(erg::ParseScene(v1Text, &up, &err) && !up.UsesV2() && erg::WriteScene(up) == v1Text && v1Text.find("erg-scene/1") != std::string::npos,
+           "a v1 scene upgrades in memory and is written back byte for byte: " + err);
+    const std::string v1Patch = erg::WritePatch(SamplePatch(v1));
+    erg::Patch upP;
+    Expect(erg::ParsePatch(v1Patch, &upP, &err) && !upP.UsesV2() && erg::WritePatch(upP) == v1Patch,
+           "a v1 patch is written back byte for byte: " + err);
+
+    const erg::Scene s2 = SceneV2();
+    Expect(erg::ValidateScene(s2, &err), "the v2 scene validates: " + err);
+    const std::string text = erg::WriteScene(s2);
+    erg::Scene back;
+    Expect(text.find("\"format\":\"erg-scene/2\"") != std::string::npos && erg::ParseScene(text, &back, &err) &&
+               erg::WriteScene(back) == text,
+           "the v2 scene round-trips byte for byte: " + err);
+    Expect(back.objects.size() == 6 && back.survivor && back.script.present && back.hmp == erg::HmpMode::Paint &&
+               back.FindFrame(-1) && back.FindFrame(-1)->isNew,
+           "the v2 scene keeps objects, kind, script, the painted surround and the new frame");
+
+    const erg::Scene base = BaseV2();
+    const erg::Patch p2 = SamplePatchV2(base);
+    const std::string ptext = erg::WritePatch(p2);
+    erg::Patch pback;
+    Expect(ptext.find("\"format\":\"erg-patch/2\"") != std::string::npos && erg::ParsePatch(ptext, &pback, &err) &&
+               erg::WritePatch(pback) == ptext,
+           "the v2 patch round-trips byte for byte: " + err);
+    Expect(erg::ValidatePatch(pback, base, AllRules(), &err), "the v2 patch validates with every rule on: " + err);
+    const std::pair<void (*)(erg::PatchRules&), const char*> off[] = {
+        {[](erg::PatchRules& r) { r.objects = false; }, "objects"},
+        {[](erg::PatchRules& r) { r.survivor = false; }, "kind.survivor"},
+        {[](erg::PatchRules& r) { r.script = false; }, "script"},
+        {[](erg::PatchRules& r) { r.hmpPaint = false; }, "hmp"},
+        {[](erg::PatchRules& r) { r.newFrames = false; }, "new frames"},
+    };
+    for (auto& [fn, what] : off) {
+        erg::PatchRules r = AllRules();
+        fn(r);
+        Expect(!erg::ValidatePatch(pback, base, r, &err) && err.find(what) != std::string::npos,
+               std::string("a v2 feature is refused while its rule is off: ") + what + " (" + err + ")");
+    }
+    erg::Scene applied = base;
+    Expect(erg::ApplyPatch(applied, pback, AllRules(), &err) && applied.objects.size() == 6 && applied.FindFrame(-1) &&
+               applied.FindFrame(-1)->parent == 1000,
+           "the v2 patch applies: " + err);
+
+    struct Case { std::string json, what, needle; };
+    const Case sceneCases[] = {
+        {Mutate(v1Text, "\"blobs\":[", "\"objects\":[],\"blobs\":["), "a v1 scene with v2 keys", "unknown key"},
+        {Mutate(v1Text, "erg-scene/1", "erg-scene/3"), "a newer scene format", "newer"},
+        {Mutate(text, "\"knot\":\"CRATE_0\"", "\"knot\":\"CRATE_00\""), "a knot with a leading zero", "knot"},
+        {Mutate(text, "\"knot\":\"TP_1_0\"", "\"knot\":\"TP_2_0\""), "a telepad knot of another group", "knot"},
+        {Mutate(text, "\"kind\":\"weapon\"", "\"kind\":\"target\""), "a target crate", "kind"},
+        {Mutate(text, "\"amount\":50", "\"amount\":0"), "a health crate of 0", "amount"},
+        {Mutate(text, "\"count\":2", "\"count\":100"), "100 utilities in a crate", "count"},
+        {Mutate(text, "\"contents\":\"kWeaponHolyHandGrenade\"", "\"contents\":\"k\\\")os.exit()--\""), "contents with a quote", "contents"},
+        {Mutate(text, "\"radius\":60", "\"radius\":0.5"), "a trigger radius below 1", "radius"},
+        {Mutate(text, "\"name\":\"TRIG_0\"", "\"name\":\"telepad\""), "an added detail named telepad", "telepad"},
+        {Mutate(text, "\"name\":\"CRATE_1\"", "\"name\":\"CRATE_9\""), "a knot without its detail", "CRATE_1"},
+        {Mutate(text, "\"parent\":1000", "\"parent\":1"), "a new frame under the root", "Scene"},
+        {Mutate(text, "\"size\":[6,31,6]", "\"size\":[33,31,6]"), "a new frame of 33 voxels", "size"},
+    };
+    for (auto& c : sceneCases) {
+        erg::Scene out;
+        Expect(c.json != text && c.json != v1Text && !erg::ParseScene(c.json, &out, &err) && err.find(c.needle) != std::string::npos,
+               "scene refused: " + c.what + " (" + err + ")");
+    }
+    const Case patchCases[] = {
+        {Mutate(v1Patch, "\"ops\":[", "\"objects\":[],\"ops\":["), "a v1 patch with v2 keys", "unknown key"},
+        {Mutate(v1Patch, "erg-patch/1", "erg-patch/2x"), "a newer patch format", "newer"},
+        {Mutate(ptext, "\"mode\":\"paint\"", "\"mode\":\"copy\""), "hmp ops without paint", "paint"},
+        {Mutate(ptext, "{\"op\":\"voxels\",\"frame\":-1", "{\"op\":\"voxels\",\"frame\":-2"), "voxels on an unknown new frame", "ops["},
+        {Mutate(ptext, "\"tmp\":-1", "\"tmp\":-65"), "a tmp id past 64", "tmp"},
+        {Mutate(ptext, "\"blend\":[[0,10000,255]]", "\"blend\":[[0,10000,256]]"), "a blend value of 256", "blend"},
+        {Mutate(ptext, "[9900,100,0.25]", "[9900,101,0.25]"), "a run past the 10000 cells", "10000"},
+        {Mutate(ptext, "[9900,100,0.25]", "[9900,100,1.5]"), "a height above 1", "heights"},
+        {Mutate(ptext, "\"name\":\"ergframe_0\"", "\"name\":\"a b\""), "a frame name with a space", "name"},
+    };
+    for (auto& c : patchCases) {
+        erg::Patch out;
+        Expect(c.json != ptext && c.json != v1Patch && !erg::ParsePatch(c.json, &out, &err) && err.find(c.needle) != std::string::npos,
+               "patch refused: " + c.what + " (" + err + ")");
+    }
+
+    erg::Patch bad = pback;
+    for (auto& op : bad.ops)
+        if (op.kind == erg::Op::Kind::AddFrame) op.newFrame.parent = 2;
+    Expect(!erg::ValidatePatch(bad, base, AllRules(), &err) && err.find("ops[") != std::string::npos && err.find("Scene") != std::string::npos,
+           "a new frame outside the Scene frame names its op (" + err + ")");
+    bad = pback;
+    bad.objects.push_back(bad.objects[0]);
+    Expect(!erg::ValidatePatch(bad, base, AllRules(), &err) && err.find("another object") != std::string::npos, "two objects on one knot");
+    bad = pback;
+    bad.objects[0].knot = "WORM0";
+    Expect(!erg::ValidatePatch(bad, base, AllRules(), &err), "an object on a base detail's name is refused");
+    bad = pback;
+    bad.ops[0].fields.name = "telepad";
+    Expect(!erg::ValidatePatch(bad, base, AllRules(), &err) && err.find("telepad") != std::string::npos, "a set naming a detail telepad");
+    bad = pback;
+    bad.ops.erase(std::remove_if(bad.ops.begin(), bad.ops.end(),
+                                 [](const erg::Op& o) { return o.kind == erg::Op::Kind::Add && o.fields.name == std::string("TRIG_0"); }),
+                  bad.ops.end());
+    Expect(!erg::ValidatePatch(bad, base, AllRules(), &err) && err.find("TRIG_0") != std::string::npos, "deleting a knot's detail orphans its object");
+    erg::Scene many = s2;
+    many.objects.clear();
+    for (int i = 0; i < 257; ++i) many.objects.push_back(Crate("CRATE_" + std::to_string(i % 256), erg::CrateKind::Health, "", 1));
+    Expect(!erg::ValidateObjects(many, &err) && err.find("256") != std::string::npos, "257 objects are refused");
+}
+
+// ---------------------------------------------------------------- the v2 chunk grammar
+std::vector<luagen::ChunkSpec> ChunkBranches() {
+    std::vector<luagen::ChunkSpec> out;
+    for (int k = 0; k < 2; ++k)
+        for (int o = 0; o < 2; ++o)
+            for (int w = 0; w < 2; ++w) {
+                if (!k && !o && !w) continue;
+                luagen::ChunkSpec c;
+                c.knots = k != 0;
+                c.placeObjects = o != 0;
+                if (w) c.water = -12.5;
+                out.push_back(c);
+            }
+    const auto objs = SampleObjects();
+    for (auto& ob : objs) {
+        luagen::ChunkSpec c;
+        c.objects = {ob};
+        out.push_back(c);
+    }
+    luagen::ChunkSpec all;
+    all.knots = all.placeObjects = true;
+    all.water = 40;
+    all.objects = objs;
+    all.objects[1].crate.parachute = true;
+    all.objects[5].trigger.wormCollect = true;
+    all.objects[5].trigger.teamCollect = 2;
+    out.push_back(all);
+    luagen::ChunkSpec max;
+    for (int i = 0; i < 256; ++i) {
+        if (i % 3 == 0) max.objects.push_back(Crate("CRATE_" + std::to_string(i), erg::CrateKind::Weapon, "kWeaponBazooka", 1 + i % 99));
+        else if (i % 3 == 1) max.objects.push_back(Telepad("TP_" + std::to_string(1 + i % 8) + "_" + std::to_string(i), 1 + i % 8));
+        else max.objects.push_back(Trigger("TRIG_" + std::to_string(i), i, 1 + i));
+    }
+    out.push_back(max);
+    return out;
+}
+
+// Positions whose bytes are author values (numbers and crate contents): changing them gives another valid chunk.
+std::vector<bool> ValueBytes(const std::string& t) {
+    std::vector<bool> v(t.size(), false);
+    for (size_t i = 0; i < t.size(); ++i) {
+        const char c = t[i];
+        if ((c >= '0' && c <= '9') || c == '.' || c == '-') v[i] = true;
+    }
+    for (const char* key : {"\"kWeapon", "\"kUtility"}) {
+        size_t p = 0;
+        while ((p = t.find(key, p)) != std::string::npos) {
+            const size_t e = t.find('"', p + 1);
+            for (size_t i = p + 1; i < e; ++i) v[i] = true;
+            p = e;
+        }
+    }
+    return v;
+}
+
+void TestChunkGrammar() {
+    std::string why;
+    const std::string stem = "mymaps_objects";
+    int branch = 0;
+    for (const auto& c : ChunkBranches()) {
+        const std::string t = luagen::Text(stem, c);
+        luagen::ChunkSpec back;
+        Expect(!t.empty() && luagen::IsGenerated(stem, t, &why) && luagen::Parse(stem, t, &back) && luagen::Text(stem, back) == t,
+               "chunk branch " + std::to_string(branch) + " is generated and verifies: " + why);
+        ++branch;
+    }
+    for (int k = 0; k < 2; ++k)
+        for (int o = 0; o < 2; ++o)
+            for (int w = 0; w < 2; ++w) {
+                const std::string t = luagen::Text(stem, k != 0, o != 0, w ? std::optional<double>(25.0) : std::nullopt);
+                if (t.empty()) continue;
+                Expect(luagen::IsGenerated(stem, t, &why) && t.find("ergCrate") == std::string::npos, "the v1 chunks verify unchanged");
+            }
+    Expect(!luagen::IsGenerated("other_stem", luagen::Text(stem, ChunkBranches().back()), &why), "a chunk of another stem is refused");
+    luagen::ChunkSpec mf;
+    erg::ObjectSpec f;
+    f.knot = "minefactory";
+    f.type = erg::ObjectType::MineFactory;
+    mf.objects = {f};
+    Expect(luagen::Text(stem, mf).empty(), "no mine factory is generated in this version");
+
+    const std::string sample = luagen::Text(stem, ChunkBranches()[ChunkBranches().size() - 2]);
+    const std::vector<bool> values = ValueBytes(sample);
+    const char* inserts[] = {"\nos.exit()\n", "\nSendMessage(\"GameLogic.PauseGame\")\n", " ", "\t", "--", "\"", "\\", ")", "(",
+                             "\nend\n", ";", "x", "\x1b", "\n    lib_CreateTelepad(\"TP_1_0\", 1) os.exit()\n"};
+    Rng r{2024};
+    int refused = 0, tried = 0;
+    while (tried < 1000) {
+        std::string m = sample;
+        const size_t pos = r.Next() % m.size();
+        const int kind = r.Range(0, 2);
+        if (kind == 0) {
+            if (values[pos]) continue;
+            char c = static_cast<char>(r.Range(32, 126));
+            if (c == m[pos]) continue;
+            m[pos] = c;
+        } else if (kind == 1) {
+            if (values[pos]) continue;
+            m.erase(pos, 1);
+        } else {
+            m.insert(pos, inserts[r.Next() % (sizeof inserts / sizeof inserts[0])]);
+        }
+        ++tried;
+        if (!luagen::IsGenerated(stem, m, &why)) ++refused;
+        else printf("  accepted mutation at %zu: %.60s\n", pos, m.substr(pos > 20 ? pos - 20 : 0, 60).c_str());
+    }
+    Expect(refused == 1000, "1000 mutated chunks are refused (" + std::to_string(refused) + ")");
+}
+
+void TestManifestV2() {
+    using L = melange::spice::Level;
+    std::vector<lm::Error> errs;
+    L surv{"a", "A", "multi", "", false, 0};
+    surv.survivor = true;
+    Expect(lm::Parse(Mod("maps", {surv}), &errs).empty() == !lm::kSurvivorTwins, "survivor follows the build flag");
+    for (const char* t : {"challenge", "deathmatch", "fort", "story"}) {
+        errs.clear();
+        Expect(lm::Parse(Mod("maps", {L{"a", "A", t, "", false, 0}}), &errs).empty() && !errs.empty() &&
+                   errs[0].text.find("not supported in this version") != std::string::npos,
+               std::string("type ") + t + " is not supported in this version");
+    }
+    L sim{"harbour", "Harbour", "multi", "", true, 0};
+    sim.sim = "sim/harbour.lua";
+    errs.clear();
+    auto d = lm::Parse(Mod("maps", {sim}), &errs);
+    Expect(d.size() == 1 && d[0].sim == "sim/harbour.lua", "a level sim script path is accepted");
+    for (const char* bad : {"sim/../x.lua", "scripts/x.lua", "sim/x.txt", "/sim/x.lua", "sim\\x.lua", "sim/.lua", "sim/a b.lua"}) {
+        sim.sim = bad;
+        errs.clear();
+        Expect(lm::Parse(Mod("maps", {sim}), &errs).empty(), std::string("a bad sim path is refused: ") + bad);
+    }
+    std::string why;
+    Expect(lm::CheckSimText("wum.log('hi')\n-- \xc3\xa9\n", &why), "a UTF-8 script passes: " + why);
+    Expect(!lm::CheckSimText("\xef\xbb\xbfwum.log(1)", &why), "a BOM is refused");
+    Expect(!lm::CheckSimText("\x1bLua", &why), "bytecode is refused");
+    Expect(!lm::CheckSimText("x = '\xc3'", &why), "invalid UTF-8 is refused");
+    Expect(!lm::CheckSimText(std::string(lm::kMaxSimBytes + 1, 'a'), &why), "a script over 256 KB is refused");
+    Expect(lm::TwinKey("maps_a") == "Multi.maps_a.S" && lm::SurvivorScripts(d[0]).front() == "Survivor", "twin key and scripts");
+}
+
 void Fixtures(const std::string& dir, bool write) {
     const std::pair<const char*, erg::Scene> scenes[] = {{"synthetic-12.json", Synthetic(12, 7)},
                                                          {"synthetic-400.json", Synthetic(400, 11)}};
@@ -445,9 +809,16 @@ void Fixtures(const std::string& dir, bool write) {
         }
     }
     const erg::Scene s = Synthetic(12, 7);
-    const std::string patch = erg::WritePatch(SamplePatch(s)) + "\n";
-    if (write) std::ofstream(dir + "/synthetic-12.ergpatch.json", std::ios::binary) << patch;
-    else Expect(ReadFile(dir + "/synthetic-12.ergpatch.json") == patch, "fixture synthetic-12.ergpatch.json matches the generator");
+    const std::pair<const char*, std::string> docs[] = {
+        {"synthetic-12.ergpatch.json", erg::WritePatch(SamplePatch(s)) + "\n"},
+        {"synthetic-v2.json", erg::WriteScene(SceneV2()) + "\n"},
+        {"synthetic-v2-base.json", erg::WriteScene(BaseV2()) + "\n"},
+        {"synthetic-v2.ergpatch.json", erg::WritePatch(SamplePatchV2(BaseV2())) + "\n"},
+    };
+    for (auto& [file, text] : docs) {
+        if (write) std::ofstream(dir + "/" + file, std::ios::binary) << text;
+        else Expect(ReadFile(dir + "/" + file) == text, std::string("fixture ") + file + " matches the generator (run with --write)");
+    }
 }
 }  // namespace
 
@@ -463,6 +834,9 @@ int main(int argc, char** argv) {
     TestPatch(small);
     TestTransforms();
     TestManifest();
+    TestV2Model();
+    TestChunkGrammar();
+    TestManifestV2();
     Fixtures(std::string(MELANGE_SOURCE_DIR) + "/tests/fixtures/erg", write);
     printf("erg_scene_selftest: %d passed, %d failed\n", g_pass, g_fail);
     return g_fail ? 1 : 0;

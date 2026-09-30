@@ -28,7 +28,7 @@ test("the synthetic fixtures validate", () => {
 
 test("scene refusals", () => {
   const cases: [string, (s: Scene) => void][] = [
-    ["format", (s) => ((s as { format: string }).format = "erg-scene/2")],
+    ["format", (s) => ((s as { format: string }).format = "erg-scene/3")],
     ["unknown key", (s) => ((s as unknown as Record<string, unknown>).extra = 1)],
     ["long title", (s) => (s.title = "x".repeat(41))],
     ["blob size", (s) => (s.blobs[0].bytes += 4)],

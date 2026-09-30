@@ -1,7 +1,9 @@
-// toPatch: the edit between the loaded base and the edited scene, as an erg-patch/1 (details by src, voxels as runs).
-// applyPatch is its inverse on the model, as the server applies it.
+// toPatch: the edit between the loaded base and the edited scene, as an erg-patch (details by src, voxels and the painted
+// surround as runs, objects, new frames). It is /1 unless a /2 feature is used. applyPatch is its inverse on the model, as
+// the server applies it.
 import {
-  PATCH_FORMAT, deriveRole, type Databank, type Detail, type DetailFields, type Op, type Patch, type Scene, type Vec3, type VoxelRun,
+  PATCH_FORMAT, PATCH_FORMAT_2, deriveRole, patchUsesV2, type Databank, type Detail, type DetailFields, type HmpRun, type Op, type Patch,
+  type Scene, type Vec3, type VoxelRun,
 } from "./scene";
 
 const FIELD_KEYS = ["name", "resource", "pos", "rot", "scale", "voxelPos"] as const;
@@ -12,7 +14,24 @@ const copyVec = (v: Vec3): Vec3 => [v[0], v[1], v[2]];
 
 export interface VoxelData {
   base: Map<number, Uint32Array>;     // blob ref -> the base's voxels
-  edited: Map<number, Uint32Array>;   // blob ref -> the edited voxels
+  edited: Map<number, Uint32Array>;   // blob ref -> the edited voxels (new frames: their whole grid)
+}
+
+/** The surround as 100x100 heights (0..1) and blend values, row-major. */
+export interface Surround { heights: Float32Array; blend: Uint8Array; }
+export interface SurroundData { base: Surround | null; edited: Surround; }
+
+/** Runs of changed cells, [start, count, value], merging neighbours with the same new value. */
+export function cellRuns(before: ArrayLike<number> | null, after: ArrayLike<number>): HmpRun[] {
+  const runs: HmpRun[] = [];
+  for (let i = 0; i < after.length; i++) {
+    if (before && before[i] === after[i]) continue;
+    if (!before && after[i] === 0) continue;
+    const last = runs[runs.length - 1];
+    if (last && last[0] + last[1] === i && last[2] === after[i]) last[1]++;
+    else runs.push([i, 1, after[i]]);
+  }
+  return runs;
 }
 
 /** Runs of changed words, [start, count, value], merging neighbours with the same new value. */
@@ -28,7 +47,7 @@ export function voxelRuns(before: Uint32Array, after: Uint32Array): VoxelRun[] {
   return runs;
 }
 
-export function toPatch(base: Scene, edited: Scene, voxels?: VoxelData): Patch {
+export function toPatch(base: Scene, edited: Scene, voxels?: VoxelData, surround?: SurroundData): Patch {
   const patch: Patch = {
     format: PATCH_FORMAT,
     stem: edited.stem,
@@ -75,19 +94,43 @@ export function toPatch(base: Scene, edited: Scene, voxels?: VoxelData): Patch {
       if (runs.length) ops.push({ op: "voxels", frame: f.id, runs });
     }
   }
+  for (const f of edited.frames) {
+    if (!f.new || f.parent === null) continue;
+    ops.push({ op: "addFrame", tmp: f.id, parent: f.parent, name: f.name, pos: copyVec(f.pos), size: copyVec(f.size) });
+    const e = f.voxels !== null ? voxels?.edited.get(f.voxels) : undefined;
+    if (e) {
+      const runs = voxelRuns(new Uint32Array(e.length), e);
+      if (runs.length) ops.push({ op: "voxels", frame: f.id, runs });
+    }
+  }
+  if (edited.hmp.mode === "paint" && surround) {
+    const heights = cellRuns(surround.base?.heights ?? null, surround.edited.heights);
+    const blend = cellRuns(surround.base?.blend ?? null, surround.edited.blend);
+    if (heights.length || blend.length) ops.push({ op: "hmp", ...(heights.length ? { heights } : {}), ...(blend.length ? { blend } : {}) });
+  }
   patch.ops = ops;
+  if (edited.kind?.survivor) patch.kind = { survivor: true };
+  if (edited.objects?.length) patch.objects = structuredClone(edited.objects);
+  if (edited.script?.present) patch.script = { ...edited.script };
+  if (patchUsesV2(patch)) {
+    patch.format = PATCH_FORMAT_2;
+    patch.kind = patch.kind ?? { survivor: false };
+    patch.objects = patch.objects ?? [];
+    patch.script = patch.script ?? { present: false, sha256: null };
+  }
   return patch;
 }
 
 /** True when the patch changes nothing against its base scene. */
 export function isEmptyPatch(p: Patch, base: Scene): boolean {
   return p.ops.length === 0 && Object.keys(p.databank ?? {}).length === 0 && (p.water?.level ?? null) === base.water.level &&
+    !p.objects?.length && !p.kind?.survivor && !p.script?.present &&
     (p.spawns?.mode ?? "random") === base.spawns.mode && (p.hmp?.mode ?? "copy") === base.hmp.mode && p.title === base.title &&
     p.stem === base.stem;
 }
 
 /** Applies a patch to a copy of the scene (voxels ops change the given blobs in place). Throws on a bad reference. */
-export function applyPatch(scene: Scene, p: Patch, voxels?: Map<number, Uint32Array>): Scene {
+export function applyPatch(scene: Scene, p: Patch, voxels?: Map<number, Uint32Array>, surround?: Surround): Scene {
   const s: Scene = structuredClone(scene);
   s.stem = p.stem;
   s.title = p.title;
@@ -95,6 +138,11 @@ export function applyPatch(scene: Scene, p: Patch, voxels?: Map<number, Uint32Ar
   s.water = { level: p.water?.level ?? null };
   s.spawns = { mode: p.spawns?.mode ?? "random" };
   s.hmp = { mode: p.hmp?.mode ?? "copy" };
+  if (p.format === PATCH_FORMAT_2 || scene.format === "erg-scene/2") {
+    s.kind = { survivor: !!p.kind?.survivor };
+    s.objects = structuredClone(p.objects ?? []);
+    s.script = p.script ? { ...p.script } : { present: false, sha256: null };
+  }
   let nextId = s.details.reduce((m, d) => Math.max(m, d.id), 0) + 1;
   p.ops.forEach((op, i) => {
     switch (op.op) {
@@ -131,6 +179,18 @@ export function applyPatch(scene: Scene, p: Patch, voxels?: Map<number, Uint32Ar
           if (start + count > v.length) throw new Error(`ops[${i}]: a run is past the frame's voxels`);
           v.fill(value, start, start + count);
         }
+        break;
+      }
+      case "addFrame": {
+        if (!s.frames.some((f) => f.id === op.parent)) throw new Error(`ops[${i}].parent: ${op.parent} is not a frame`);
+        s.frames.push({ id: op.tmp, new: true, parent: op.parent, name: op.name, pos: copyVec(op.pos), rot: [0, 0, 0], scale: [1, 1, 1],
+          size: copyVec(op.size), voxels: null, heightMap: null, folder: false });
+        break;
+      }
+      case "hmp": {
+        if (!surround) break;
+        for (const [start, count, value] of op.heights ?? []) surround.heights.fill(value, start, start + count);
+        for (const [start, count, value] of op.blend ?? []) surround.blend.fill(value, start, start + count);
         break;
       }
     }

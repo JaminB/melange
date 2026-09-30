@@ -11,21 +11,21 @@
 #include "core/events.h"
 #include "core/game.h"
 #include "core/log.h"
-#include "melange/draw.h"
 #include "melange/jlog.h"
 #include "melange/mods.h"
 #include "melange/overlay.h"
-#include "melange/render.h"
 #include "melange/testcmd.h"
 #include "melange/weapons.h"
 #include "mods/handshake_internal.h"
 #include "mods/lobby.h"
+#include "mods/lobbybanner.h"
 #include "mods/starthold.h"
 #include "net/net.h"
 #include "weapons/engine.h"
 #include "weapons/manifest.h"
 
 namespace melange::handshake::wpngate {
+namespace lobbybanner = mods::lobbybanner;
 namespace {
 constexpr uint32_t kLeaveCode = 0x8021012D;  // Net.NotViable, the code the engine uses when the host is lost in the lobby
 constexpr int kEvalEvery = 15;
@@ -35,6 +35,7 @@ bool g_leaveButton = true;
 bool g_installed = false;
 
 int g_holdHandle = 0;
+int g_banner = 0;
 bool g_hookFailLogged = false;
 uint32_t g_loggedFrames = 0;
 uint64_t g_lastRefuseLog = 0;
@@ -177,40 +178,17 @@ void Tick() {
     }
 }
 
-float DrawLines(float x, float y, const std::string& text, draw::Rgba color) {
-    constexpr size_t kWidth = 110;
-    size_t i = 0;
-    while (i < text.size()) {
-        size_t n = std::min(kWidth, text.size() - i);
-        if (i + n < text.size()) {
-            const size_t sp = text.rfind(' ', i + n);
-            if (sp != std::string::npos && sp > i) n = sp - i;
-        }
-        draw::HudText(x, y, text.substr(i, n).c_str(), color, 15.f);
-        y += 18.f;
-        i += n;
-        while (i < text.size() && text[i] == ' ') ++i;
-    }
-    return y;
-}
-
-void DrawBanner(render::Stage, void*) {
+void UpdateBanner() {
+    constexpr uint32_t kAmber = 0xff30a0ffu;
+    if (!g_banner) return;
     const View& v = g_view;
-    if (!v.inLobby || !(v.hostHeld || v.joinerMismatch) || !InLobbyScreen()) return;
-    constexpr draw::Rgba kAmber = 0xff30a0ffu, kText = 0xffe0e0e0u;
-    const float x = 24.f;
-    float y = 20.f;
-    if (v.hostHeld) {
-        draw::HudText(x, y,
-                      v.refusing ? "Clone weapons: the match cannot start until every player has the same mods."
-                                 : "Clone weapons will be off this match: not every player has the same mods.",
-                      kAmber, 16.f);
-        y += 22.f;
-        for (const auto& m : v.members) y = DrawLines(x + 12.f, y, m, kText);
-    } else {
-        draw::HudText(x, y, "Clone weapons: your mods differ from the host's.", kAmber, 16.f);
-        DrawLines(x + 12.f, y + 22.f, v.why, kText);
-    }
+    if (!v.inLobby || !(v.hostHeld || v.joinerMismatch)) lobbybanner::Set(g_banner, kAmber, "", {});
+    else if (v.hostHeld)
+        lobbybanner::Set(g_banner, kAmber,
+                         v.refusing ? "Clone weapons: the match cannot start until every player has the same mods."
+                                    : "Clone weapons will be off this match: not every player has the same mods.",
+                         v.members);
+    else lobbybanner::Set(g_banner, kAmber, "Clone weapons: your mods differ from the host's.", {v.why});
 }
 
 int HookState() {
@@ -244,9 +222,12 @@ void Install(Policy policy, bool leaveButton) {
     g_installed = true;
     g_policy = policy;
     g_leaveButton = leaveButton;
-    events::Subscribe(events::Event::Frame, [] { Tick(); });
+    events::Subscribe(events::Event::Frame, [] {
+        Tick();
+        UpdateBanner();
+    });
     g_holdHandle = mods::starthold::Add("weapons", &HoldReason, nullptr);
-    draw::AddDrawCallback(render::Stage::Hud, &DrawBanner, nullptr);
+    g_banner = lobbybanner::Add("weapons", 10);
     testcmd::Register("handshake.wpn", &VerbState);
     testcmd::Register("handshake.leave", &VerbLeave);
     LOG_INFO("[handshake] weapon gate: %s, %d clone(s) declared", policy == Policy::Refuse ? "refuse" : "suspend",

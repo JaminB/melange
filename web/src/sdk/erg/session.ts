@@ -2,11 +2,17 @@
 import type { Client } from "../client";
 import { validatePatch, validateScene, type Patch, type Scene } from "./scene";
 
+export type TimeOfDay = "DAY" | "EVENING" | "NIGHT";
+export interface ScriptProblem { line: number; message: string; }
+
 export interface ErgSession {
   load(project: string): Promise<{ scene: Scene; blobs: Map<number, ArrayBuffer> }>;
   save(patch: Patch): Promise<{ saved: boolean; warnings: string[] }>;
-  test(): Promise<{ key: string; state: string }>;
+  test(opts?: { tod?: TimeOfDay }): Promise<{ key: string; state: string }>;
   onTest(fn: (s: { state: string; key: string; detail: string }) => void): () => void;
+  /** The project's level script (script.lua), "" when it has none. */
+  script(): Promise<string>;
+  saveScript(text: string): Promise<{ saved: boolean; problems: ScriptProblem[] }>;
 }
 
 export class ErgError extends Error {
@@ -51,9 +57,18 @@ export function createErgSession(client: Client, opts: SessionOptions = {}): Erg
       if (!v.ok) throw new ErgError("the patch is invalid", v.errors);
       return client.call<{ saved: boolean; warnings: string[] }>("level.save", { project, patch }, callTimeout);
     },
-    async test() {
+    async test(opts?: { tod?: TimeOfDay }) {
       if (!project) throw new ErgError("no project is open");
-      return client.call<{ key: string; state: string }>("level.test", { project }, callTimeout);
+      return client.call<{ key: string; state: string }>("level.test", opts?.tod ? { project, tod: opts.tod } : { project }, callTimeout);
+    },
+    async script() {
+      if (!project) throw new ErgError("no project is open");
+      const r = await client.call<{ text: string }>("level.script.get", { project }, callTimeout);
+      return typeof r?.text === "string" ? r.text : "";
+    },
+    async saveScript(text: string) {
+      if (!project) throw new ErgError("no project is open");
+      return client.call<{ saved: boolean; problems: ScriptProblem[] }>("level.script.put", { project, text }, callTimeout);
     },
     onTest(fn) {
       return client.subscribe<{ state?: string; key?: string; detail?: string }>("erg", undefined, (m) => {

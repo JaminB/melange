@@ -366,6 +366,7 @@ Level MakeLevel(const std::string& key, const std::string& stem, const std::stri
     l.info.source = src;
     l.info.levelType = 0;
     l.info.themeType = 5;
+    Copy(l.info.levelKind, sizeof l.info.levelKind, "multi");
     l.root = root;
     l.modVersion = version;
     l.chunk = chunk;
@@ -458,6 +459,7 @@ int List(LevelInfo* out, int max, bool includeVanilla) {
                 v.levelType = static_cast<uint8_t>(d.levelType);
                 v.themeType = static_cast<uint8_t>(d.themeType);
                 v.registered = true;
+                Copy(v.levelKind, sizeof v.levelKind, d.levelType == 3 ? "survivor" : "multi");
             }
             v.source = Source::Vanilla;
             all.push_back(v);

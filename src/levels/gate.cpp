@@ -9,10 +9,9 @@
 #include "core/log.h"
 #include "levels/engine.h"
 #include "levels/registry.h"
-#include "melange/draw.h"
 #include "melange/jlog.h"
-#include "melange/render.h"
 #include "mods/lobby.h"
+#include "mods/lobbybanner.h"
 #include "mods/starthold.h"
 #include "mods/thumper_internal.h"
 #include "net/net.h"
@@ -21,6 +20,7 @@ namespace melange::levels::gate {
 namespace {
 namespace eng = levels::engine;
 namespace lobby = handshake::lobby;
+namespace lobbybanner = mods::lobbybanner;
 
 constexpr int kEvalEvery = 15;
 
@@ -32,6 +32,7 @@ std::atomic<bool> g_inLobby{false};
 bool g_wasHeld = false;
 uint32_t g_held = 0;
 std::string g_published;
+int g_banner = 0;
 
 bool Waiting() { return game::IsKnownBuild() && wum::CurrentState() == wum::state::WaitingGameStart; }
 
@@ -110,17 +111,14 @@ bool HoldReason(std::string* why, void*) {
     return true;
 }
 
-void DrawBanner(render::Stage, void*) {
-    if (!g_inLobby.load() || !Waiting()) return;
-    constexpr draw::Rgba kAmber = 0xff30a0ffu, kText = 0xffe0e0e0u;
-    float y = 64.f;
-    if (g_v.hold) {
-        draw::HudText(24.f, y, "The match cannot start on this map:", kAmber, 16.f);
-        y += 22.f;
-        draw::HudText(36.f, y, g_v.why.c_str(), kText, 15.f);
-    } else if (!g_joiner.empty()) {
-        draw::HudText(24.f, y, g_joiner.front().c_str(), kAmber, 16.f);
-    }
+void UpdateBanner() {
+    constexpr uint32_t kAmber = 0xff30a0ffu;
+    if (!g_banner) return;
+    if (!g_inLobby.load()) lobbybanner::Set(g_banner, kAmber, "", {});
+    else if (g_v.hold) lobbybanner::Set(g_banner, kAmber, "The match cannot start on this map:", {g_v.why});
+    else if (!g_joiner.empty())
+        lobbybanner::Set(g_banner, kAmber, g_joiner.front(), std::vector<std::string>(g_joiner.begin() + 1, g_joiner.end()));
+    else lobbybanner::Set(g_banner, kAmber, "", {});
 }
 }  // namespace
 
@@ -129,10 +127,11 @@ void Install(bool online) {
     g_installed = true;
     g_online = online;
     mods::starthold::Add("levels", &HoldReason, nullptr);
-    draw::AddDrawCallback(render::Stage::Hud, &DrawBanner, nullptr);
+    g_banner = lobbybanner::Add("levels", 20);
 }
 
 void Tick() {
+    UpdateBanner();
     const uint64_t l = lobby::Current();
     g_inLobby = l != 0;
     if (!l) {

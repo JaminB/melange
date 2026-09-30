@@ -260,7 +260,7 @@ target_link_libraries(weapons_manifest_selftest PRIVATE melange_xom)
 # the spice.json "levels" array. --write regenerates tests/fixtures/erg.
 add_executable(erg_scene_selftest
     tests/erg_scene_selftest.cpp
-    src/erg/scene.cpp src/erg/patch.cpp src/erg/names.cpp src/erg/jsonio.cpp
+    src/erg/scene.cpp src/erg/patch.cpp src/erg/names.cpp src/erg/jsonio.cpp src/erg/luagen.cpp
     src/levels/manifest.cpp
     src/mods/spice.cpp
     src/tools/json_read.cpp

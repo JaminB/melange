@@ -16,7 +16,7 @@ struct WeaponSet { std::string field; enum Kind { Number, Boolean, String } kind
 struct Weapon { std::string name, base, bank, panelIcon, hudIcon, textName, textHelp; int cell = -1;
                 std::vector<WeaponSet> set; int line = 0; };
 // One entry of the "levels" array, checked for shape only; levels/manifest.cpp checks slugs, stems and limits.
-struct Level { std::string slug, title, type = "multi", source; bool chunk = false; int line = 0; };
+struct Level { std::string slug, title, type = "multi", source; bool chunk = false; int line = 0; std::string sim; bool survivor = false; };
 struct Manifest {
     std::string id, version, name, description, website, melangeRange; std::vector<std::string> authors;
     bool content = false, unsafe = false, defaultEnabled = true, implicit = false;

@@ -39,4 +39,12 @@ int OnBeforeModsLoad(InitFn fn, void* user);            // clones are created he
 void RemoveOnBeforeModsLoad(int handle);
 struct Arg { enum { Num, Str } kind; float num; const char* str; };
 void DispatchArgs(const char* event, const Arg* args, int n);   // Dispatch with string arguments
+
+// Level scripts (additive): a level's sandboxed sim script, run only when its level loads.
+struct LevelSim {
+    std::string mod, slug, stem, key, chunkName;
+    std::string text;
+};
+void SetLevelSims(std::vector<LevelSim> sims);          // at launch from the frozen content set; Test adds one
+void SetTestLevelSim(const LevelSim& s);                // offline Test only; replaced per Test
 }

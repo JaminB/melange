@@ -69,7 +69,247 @@ bool ParseDatabankField(const Json& o, const char* key, std::string* out, std::s
     if (!GetString(o, key, "databank", out, err, false)) return false;
     return true;
 }
+
+constexpr const char* kObjectTypes[] = {"crate", "telepad", "trigger", "minefactory"};
+constexpr const char* kCrateKinds[] = {"weapon", "health", "utility"};
+
+// "<prefix><n>" with n 0-255 written without leading zeros.
+bool IndexAfter(std::string_view s, std::string_view prefix) {
+    if (s.size() <= prefix.size() || s.size() > prefix.size() + 3 || s.compare(0, prefix.size(), prefix) != 0) return false;
+    const std::string_view d = s.substr(prefix.size());
+    if (d.size() > 1 && d[0] == '0') return false;
+    int v = 0;
+    for (char c : d) {
+        if (c < '0' || c > '9') return false;
+        v = v * 10 + (c - '0');
+    }
+    return v <= 255;
+}
+
+bool IntField(const Json& o, const char* key, const std::string& p, int64_t lo, int64_t hi, int* out, std::string* err,
+              bool required) {
+    if (!required && !o.find(key)) return true;
+    int64_t v = 0;
+    if (!GetInt(o, key, p, lo, hi, &v, err)) return false;
+    *out = static_cast<int>(v);
+    return true;
+}
 }  // namespace
+
+const char* ObjectTypeName(ObjectType t) { return kObjectTypes[static_cast<int>(t)]; }
+const char* CrateKindName(CrateKind k) { return kCrateKinds[static_cast<int>(k)]; }
+
+bool ParseObjectType(std::string_view s, ObjectType* out) {
+    for (int i = 0; i < 4; ++i)
+        if (s == kObjectTypes[i]) {
+            *out = static_cast<ObjectType>(i);
+            return true;
+        }
+    return false;
+}
+
+bool ParseCrateKind(std::string_view s, CrateKind* out) {
+    for (int i = 0; i < 3; ++i)
+        if (s == kCrateKinds[i]) {
+            *out = static_cast<CrateKind>(i);
+            return true;
+        }
+    return false;
+}
+
+bool ValidKnot(std::string_view knot, ObjectType type, int group) {
+    switch (type) {
+        case ObjectType::Crate: return IndexAfter(knot, "CRATE_");
+        case ObjectType::Trigger: return IndexAfter(knot, "TRIG_");
+        case ObjectType::MineFactory: return knot == "minefactory";
+        case ObjectType::Telepad:
+            if (group < 1 || group > static_cast<int>(kMaxTelepadGroups)) return false;
+            return IndexAfter(knot, "TP_" + std::to_string(group) + "_");
+    }
+    return false;
+}
+
+bool ValidContentsName(std::string_view s) {
+    if (s.empty() || s.size() > 63 || !std::isalpha(static_cast<unsigned char>(s[0]))) return false;
+    for (char c : s)
+        if (!std::isalnum(static_cast<unsigned char>(c)) && c != '_') return false;
+    return true;
+}
+
+bool ValidateObject(const ObjectSpec& o, const std::string& p, std::string* err) {
+    if (!ValidKnot(o.knot, o.type, o.group))
+        return Fail(err, p + ".knot: '" + o.knot + "' is not a " + ObjectTypeName(o.type) + " knot name");
+    switch (o.type) {
+        case ObjectType::Crate: {
+            const CrateSpec& c = o.crate;
+            if (c.kind == CrateKind::Health) {
+                if (c.amount < 1 || c.amount > 500) return Fail(err, p + ".crate.amount: must be 1-500");
+            } else {
+                if (!ValidContentsName(c.contents)) return Fail(err, p + ".crate.contents: must be a weapon or utility name");
+                if (c.count < 1 || c.count > 99) return Fail(err, p + ".crate.count: must be 1-99");
+            }
+            if (c.hitpoints < 1 || c.hitpoints > 1000) return Fail(err, p + ".crate.hitpoints: must be 1-1000");
+            break;
+        }
+        case ObjectType::Trigger: {
+            const TriggerSpec& t = o.trigger;
+            if (t.index < 0 || t.index > 255) return Fail(err, p + ".trigger.index: must be 0-255");
+            if (!std::isfinite(t.radius) || t.radius < 1 || t.radius > 1000) return Fail(err, p + ".trigger.radius: must be 1-1000");
+            if (t.teamCollect < 0 || t.teamCollect > 8 || t.teamDestroy < 0 || t.teamDestroy > 8)
+                return Fail(err, p + ".trigger: teams must be 0-8");
+            if (t.hitpoints < 0 || t.hitpoints > 1000) return Fail(err, p + ".trigger.hitpoints: must be 0-1000");
+            break;
+        }
+        case ObjectType::Telepad:
+        case ObjectType::MineFactory: break;
+    }
+    return true;
+}
+
+namespace jsonio {
+bool GetBool(const Json& o, const char* key, const std::string& path, bool* out, std::string* err, bool required) {
+    const Json* v = o.find(key);
+    if (!v) return !required || Fail(err, path + "." + key + ": is required");
+    if (v->kind != Json::Kind::Bool) return Fail(err, path + "." + key + ": must be a boolean");
+    *out = v->boolean;
+    return true;
+}
+
+bool ParseObjects(const Json* arr, std::vector<ObjectSpec>* out, std::string* err) {
+    if (!arr || arr->kind != Json::Kind::Array || arr->arr.size() > kMaxObjects)
+        return Fail(err, "objects: must be an array of at most 256 objects");
+    for (size_t i = 0; i < arr->arr.size(); ++i) {
+        const std::string p = "objects[" + std::to_string(i) + "]";
+        const Json& o = arr->arr[i];
+        if (!Obj(&o, p, err)) return false;
+        ObjectSpec ob;
+        std::string type;
+        if (!GetString(o, "type", p, &type, err) || !GetString(o, "knot", p, &ob.knot, err)) return false;
+        if (!ParseObjectType(type, &ob.type)) return Fail(err, p + ".type: must be crate, telepad, trigger or minefactory");
+        switch (ob.type) {
+            case ObjectType::Crate: {
+                if (!OnlyKeys(o, {"knot", "type", "crate"}, p, err)) return false;
+                const Json* c = o.find("crate");
+                const std::string cp = p + ".crate";
+                std::string kind;
+                if (!Obj(c, cp, err) || !GetString(*c, "kind", cp, &kind, err)) return false;
+                if (!ParseCrateKind(kind, &ob.crate.kind)) return Fail(err, cp + ".kind: must be weapon, health or utility");
+                if (ob.crate.kind == CrateKind::Health) {
+                    if (!OnlyKeys(*c, {"kind", "amount", "hitpoints", "parachute"}, cp, err) ||
+                        !IntField(*c, "amount", cp, 1, 500, &ob.crate.amount, err, true))
+                        return false;
+                } else {
+                    if (!OnlyKeys(*c, {"kind", "contents", "count", "hitpoints", "parachute"}, cp, err) ||
+                        !GetString(*c, "contents", cp, &ob.crate.contents, err) ||
+                        !IntField(*c, "count", cp, 1, 99, &ob.crate.count, err, false))
+                        return false;
+                }
+                if (!IntField(*c, "hitpoints", cp, 1, 1000, &ob.crate.hitpoints, err, false) ||
+                    !GetBool(*c, "parachute", cp, &ob.crate.parachute, err, false))
+                    return false;
+                break;
+            }
+            case ObjectType::Telepad:
+                if (!OnlyKeys(o, {"knot", "type", "group"}, p, err) ||
+                    !IntField(o, "group", p, 1, kMaxTelepadGroups, &ob.group, err, true))
+                    return false;
+                break;
+            case ObjectType::Trigger: {
+                if (!OnlyKeys(o, {"knot", "type", "trigger"}, p, err)) return false;
+                const Json* t = o.find("trigger");
+                const std::string tp = p + ".trigger";
+                if (!Obj(t, tp, err) ||
+                    !OnlyKeys(*t, {"index", "radius", "teamCollect", "teamDestroy", "hitpoints", "wormCollect"}, tp, err) ||
+                    !IntField(*t, "index", tp, 0, 255, &ob.trigger.index, err, true) ||
+                    !IntField(*t, "teamCollect", tp, 0, 8, &ob.trigger.teamCollect, err, false) ||
+                    !IntField(*t, "teamDestroy", tp, 0, 8, &ob.trigger.teamDestroy, err, false) ||
+                    !IntField(*t, "hitpoints", tp, 0, 1000, &ob.trigger.hitpoints, err, false) ||
+                    !GetBool(*t, "wormCollect", tp, &ob.trigger.wormCollect, err, false))
+                    return false;
+                if (const Json* r = t->find("radius"); r && !GetNumber(*r, tp + ".radius", 1, 1000, &ob.trigger.radius, err))
+                    return false;
+                break;
+            }
+            case ObjectType::MineFactory:
+                if (!OnlyKeys(o, {"knot", "type"}, p, err)) return false;
+                break;
+        }
+        if (!ValidateObject(ob, p, err)) return false;
+        out->push_back(std::move(ob));
+    }
+    return true;
+}
+
+Json ObjectsJson(const std::vector<ObjectSpec>& objects) {
+    Json arr = Json::Arr();
+    for (const auto& ob : objects) {
+        Json o = Json::Obj();
+        o.set("knot", Str(ob.knot));
+        o.set("type", Str(ObjectTypeName(ob.type)));
+        switch (ob.type) {
+            case ObjectType::Crate: {
+                Json c = Json::Obj();
+                c.set("kind", Str(CrateKindName(ob.crate.kind)));
+                if (ob.crate.kind == CrateKind::Health) {
+                    c.set("amount", Int(ob.crate.amount));
+                } else {
+                    c.set("contents", Str(ob.crate.contents));
+                    c.set("count", Int(ob.crate.count));
+                }
+                c.set("hitpoints", Int(ob.crate.hitpoints));
+                c.set("parachute", Json::Bool(ob.crate.parachute));
+                o.set("crate", std::move(c));
+                break;
+            }
+            case ObjectType::Telepad: o.set("group", Int(ob.group)); break;
+            case ObjectType::Trigger: {
+                Json t = Json::Obj();
+                t.set("index", Int(ob.trigger.index));
+                t.set("radius", Num(ob.trigger.radius));
+                t.set("teamCollect", Int(ob.trigger.teamCollect));
+                t.set("teamDestroy", Int(ob.trigger.teamDestroy));
+                t.set("hitpoints", Int(ob.trigger.hitpoints));
+                t.set("wormCollect", Json::Bool(ob.trigger.wormCollect));
+                o.set("trigger", std::move(t));
+                break;
+            }
+            case ObjectType::MineFactory: break;
+        }
+        arr.arr.push_back(std::move(o));
+    }
+    return arr;
+}
+
+bool ParseKind(const Json* o, bool* survivor, std::string* err) {
+    if (!Obj(o, "kind", err) || !OnlyKeys(*o, {"survivor"}, "kind", err)) return false;
+    return GetBool(*o, "survivor", "kind", survivor, err, false);
+}
+
+Json KindJson(bool survivor) {
+    Json o = Json::Obj();
+    o.set("survivor", Json::Bool(survivor));
+    return o;
+}
+
+bool ParseScript(const Json* o, ScriptMeta* out, std::string* err) {
+    if (!Obj(o, "script", err) || !OnlyKeys(*o, {"present", "sha256"}, "script", err) ||
+        !GetBool(*o, "present", "script", &out->present, err))
+        return false;
+    if (const Json* h = o->find("sha256"); h && h->kind != Json::Kind::Null) {
+        if (!GetString(*o, "sha256", "script", &out->sha256, err)) return false;
+        if (!IsHex64(out->sha256)) return Fail(err, "script.sha256: must be 64 lower-case hex digits");
+    }
+    if (out->present == out->sha256.empty()) return Fail(err, "script: sha256 is set exactly when present is true");
+    return true;
+}
+
+Json ScriptJson(const ScriptMeta& m) {
+    Json o = Json::Obj();
+    o.set("present", Json::Bool(m.present));
+    o.set("sha256", m.sha256.empty() ? Json::Null_() : Str(m.sha256));
+    return o;
+}
+}  // namespace jsonio
 
 const char* RoleName(Role r) { return kRoles[static_cast<int>(r)]; }
 
@@ -101,7 +341,9 @@ Role DeriveRole(std::string_view name, std::string_view resource) {
 }
 
 const char* SpawnModeName(SpawnMode m) { return m == SpawnMode::Knots ? "knots" : "random"; }
-const char* HmpModeName(HmpMode m) { return m == HmpMode::None ? "none" : m == HmpMode::Flat ? "flat" : "copy"; }
+const char* HmpModeName(HmpMode m) {
+    return m == HmpMode::None ? "none" : m == HmpMode::Flat ? "flat" : m == HmpMode::Paint ? "paint" : "copy";
+}
 
 bool ParseSpawnMode(std::string_view s, SpawnMode* out) {
     if (s == "random") *out = SpawnMode::Random;
@@ -114,6 +356,7 @@ bool ParseHmpMode(std::string_view s, HmpMode* out) {
     if (s == "copy") *out = HmpMode::Copy;
     else if (s == "none") *out = HmpMode::None;
     else if (s == "flat") *out = HmpMode::Flat;
+    else if (s == "paint") *out = HmpMode::Paint;
     else return false;
     return true;
 }
@@ -164,20 +407,45 @@ const Detail* Scene::FindDetailBySrc(int64_t src) const {
     return nullptr;
 }
 
+bool Scene::UsesV2() const {
+    if (survivor || !objects.empty() || script.present || hmp == HmpMode::Paint || hmpRef >= 0) return true;
+    for (auto& f : frames)
+        if (f.isNew) return true;
+    for (auto& b : blobs)
+        if (b.kind == "hmp") return true;
+    return false;
+}
+
+bool UnderSceneFrame(const Scene& s, int64_t frameId) {
+    int64_t cur = frameId;
+    for (size_t hops = 0; cur >= 0 && hops <= s.frames.size(); ++hops) {
+        const Frame* f = s.FindFrame(cur);
+        if (!f) return false;
+        if (f->name == "Scene") return true;
+        cur = f->parent;
+    }
+    return false;
+}
+
 bool ParseScene(std::string_view json, Scene* out, std::string* err) {
     if (json.size() > kMaxSceneBytes) return Fail(err, "the scene is larger than 16 MB");
     Json root;
     std::string perr;
     if (!xom::ParseJson(json, root, &perr)) return Fail(err, "not JSON: " + perr);
     if (!Obj(&root, "scene", err)) return false;
-    if (!OnlyKeys(root, {"format", "stem", "title", "base", "registry", "databank", "water", "spawns", "hmp", "units",
-                         "frames", "details", "blobs"},
-                  "scene", err))
-        return false;
     Scene s;
     std::string format;
     if (!GetString(root, "format", "scene", &format, err)) return false;
-    if (format != kSceneFormat) return Fail(err, "scene.format: must be \"erg-scene/1\"");
+    if (format != kSceneFormat && format != kSceneFormat2)
+        return Fail(err, "scene.format: must be \"erg-scene/1\" or \"erg-scene/2\" (a newer format needs a newer Melange)");
+    const bool v2 = format == kSceneFormat2;
+    if (v2 ? !OnlyKeys(root, {"format", "stem", "title", "base", "registry", "kind", "databank", "water", "spawns", "hmp",
+                              "units", "frames", "details", "blobs", "objects", "script"},
+                       "scene", err)
+           : !OnlyKeys(root, {"format", "stem", "title", "base", "registry", "databank", "water", "spawns", "hmp", "units",
+                              "frames", "details", "blobs"},
+                       "scene", err))
+        return false;
     if (!GetString(root, "stem", "scene", &s.stem, err) || !GetString(root, "title", "scene", &s.title, err)) return false;
     if (!Obj(root.find("base"), "base", err) || !ParseBase(*root.find("base"), &s.base, true, err)) return false;
 
@@ -226,8 +494,19 @@ bool ParseScene(std::string_view json, Scene* out, std::string* err) {
         return false;
     if (!ParseSpawnMode(mode, &s.spawns)) return Fail(err, "spawns.mode: must be \"random\" or \"knots\"");
     const Json* hmp = root.find("hmp");
-    if (!Obj(hmp, "hmp", err) || !OnlyKeys(*hmp, {"mode"}, "hmp", err) || !GetString(*hmp, "mode", "hmp", &mode, err)) return false;
-    if (!ParseHmpMode(mode, &s.hmp)) return Fail(err, "hmp.mode: must be \"copy\", \"none\" or \"flat\"");
+    if (!Obj(hmp, "hmp", err) || !(v2 ? OnlyKeys(*hmp, {"mode", "ref"}, "hmp", err) : OnlyKeys(*hmp, {"mode"}, "hmp", err)) ||
+        !GetString(*hmp, "mode", "hmp", &mode, err))
+        return false;
+    if (!ParseHmpMode(mode, &s.hmp) || (!v2 && s.hmp == HmpMode::Paint))
+        return Fail(err, v2 ? "hmp.mode: must be \"copy\", \"none\", \"flat\" or \"paint\""
+                            : "hmp.mode: must be \"copy\", \"none\" or \"flat\"");
+    if (const Json* r = hmp->find("ref"); r && r->kind != Json::Kind::Null && !GetInt(*hmp, "ref", "hmp", 0, 1 << 24, &s.hmpRef, err))
+        return false;
+    if (v2) {
+        if (const Json* k = root.find("kind"); k && !ParseKind(k, &s.survivor, err)) return false;
+        if (const Json* o = root.find("objects"); o && !ParseObjects(o, &s.objects, err)) return false;
+        if (const Json* sc = root.find("script"); sc && !ParseScript(sc, &s.script, err)) return false;
+    }
     const Json* units = root.find("units");
     if (!Obj(units, "units", err) || !OnlyKeys(*units, {"worldPerXan"}, "units", err) ||
         !GetInt(*units, "worldPerXan", "units", kWorldPerXan, kWorldPerXan, &n, err))
@@ -240,10 +519,14 @@ bool ParseScene(std::string_view json, Scene* out, std::string* err) {
         const std::string p = "frames[" + std::to_string(i) + "]";
         const Json& fo = frames->arr[i];
         if (!Obj(&fo, p, err) ||
-            !OnlyKeys(fo, {"id", "parent", "name", "pos", "rot", "scale", "size", "voxels", "heightMap", "folder"}, p, err))
+            !(v2 ? OnlyKeys(fo, {"id", "new", "parent", "name", "pos", "rot", "scale", "size", "voxels", "heightMap", "folder"}, p, err)
+                 : OnlyKeys(fo, {"id", "parent", "name", "pos", "rot", "scale", "size", "voxels", "heightMap", "folder"}, p, err)))
             return false;
         Frame f;
-        if (!GetInt(fo, "id", p, 1, 1 << 24, &f.id, err)) return false;
+        if (v2 && !GetBool(fo, "new", p, &f.isNew, err, false)) return false;
+        if (f.isNew ? !GetInt(fo, "id", p, -static_cast<int64_t>(kMaxNewFrames), -1, &f.id, err)
+                    : !GetInt(fo, "id", p, 1, 1 << 24, &f.id, err))
+            return false;
         const Json* par = fo.find("parent");
         if (par && par->kind != Json::Kind::Null && !GetInt(fo, "parent", p, 1, 1 << 24, &f.parent, err)) return false;
         if (!GetString(fo, "name", p, &f.name, err)) return false;
@@ -311,8 +594,10 @@ bool ParseScene(std::string_view json, Scene* out, std::string* err) {
         if (!Obj(&bo, p, err) || !OnlyKeys(bo, {"ref", "kind", "frame", "bytes"}, p, err)) return false;
         Blob b;
         int64_t bytes = 0;
-        if (!GetInt(bo, "ref", p, 0, 1 << 24, &b.ref, err) || !GetString(bo, "kind", p, &b.kind, err) ||
-            !GetInt(bo, "frame", p, 1, 1 << 24, &b.frame, err) || !GetInt(bo, "bytes", p, 0, 4 * int64_t(kMaxFrameVoxels), &bytes, err))
+        if (!GetInt(bo, "ref", p, 0, 1 << 24, &b.ref, err) || !GetString(bo, "kind", p, &b.kind, err)) return false;
+        const bool hmpBlob = v2 && b.kind == "hmp";
+        const int64_t lo = hmpBlob ? 0 : v2 ? -static_cast<int64_t>(kMaxNewFrames) : 1, hi = hmpBlob ? 0 : 1 << 24;
+        if (!GetInt(bo, "frame", p, lo, hi, &b.frame, err) || !GetInt(bo, "bytes", p, 0, 4 * int64_t(kMaxFrameVoxels), &bytes, err))
             return false;
         b.bytes = static_cast<uint64_t>(bytes);
         s.blobs.push_back(std::move(b));
@@ -336,8 +621,27 @@ bool ValidateScene(const Scene& s, std::string* err) {
     std::unordered_map<int64_t, const Blob*> blobs;
     for (auto& b : s.blobs) {
         if (!blobs.emplace(b.ref, &b).second) return Fail(err, "blobs: duplicate ref " + std::to_string(b.ref));
-        if (b.kind != "voxels" && b.kind != "heightMap") return Fail(err, "blobs: kind must be voxels or heightMap");
+        if (b.kind == "hmp") {
+            if (b.frame != 0 || b.bytes != kHmpBytes || s.hmpRef != b.ref)
+                return Fail(err, "blobs: the hmp blob must be the painted surround (frame 0, 50000 bytes, hmp.ref)");
+            continue;
+        }
+        if (b.kind != "voxels" && b.kind != "heightMap") return Fail(err, "blobs: kind must be voxels, heightMap or hmp");
         if (!frames.count(b.frame)) return Fail(err, "blobs: ref " + std::to_string(b.ref) + " names a missing frame");
+    }
+    if (s.hmpRef >= 0 && (s.hmp != HmpMode::Paint || !blobs.count(s.hmpRef)))
+        return Fail(err, "hmp.ref: names the painted surround's blob and needs hmp.mode paint");
+    if (s.hmp == HmpMode::Paint && s.hmpRef < 0) return Fail(err, "hmp.ref: hmp.mode paint needs the painted surround's blob");
+    size_t newFrames = 0;
+    for (auto& f : s.frames) {
+        if (!f.isNew) continue;
+        const std::string p = "frame " + std::to_string(f.id);
+        if (++newFrames > kMaxNewFrames) return Fail(err, "frames: at most 64 new frames");
+        if (f.id >= 0 || f.parent < 1) return Fail(err, p + ": a new frame has id -1..-64 and a frame of the base as parent");
+        if (f.rot != Vec3{0, 0, 0} || f.scale != Vec3{1, 1, 1} || f.folder || f.heightMap >= 0)
+            return Fail(err, p + ": a new frame has identity rotation and scale, no heightMap, and is not a folder");
+        for (int k = 0; k < 3; ++k)
+            if (f.size[k] < 1 || f.size[k] > static_cast<int>(kMaxNewFrameSide)) return Fail(err, p + ".size: each size must be 1..32");
     }
     int roots = 0;
     for (auto& f : s.frames) {
@@ -365,19 +669,50 @@ bool ValidateScene(const Scene& s, std::string* err) {
             cur = frames[cur]->parent;
         }
     }
+    for (auto& f : s.frames)
+        if (f.isNew && (!frames.count(f.parent) || frames[f.parent]->isNew || !UnderSceneFrame(s, f.parent)))
+            return Fail(err, "frame " + std::to_string(f.id) + ": a new frame's parent must be the Scene frame or under it");
     std::unordered_set<int64_t> ids, srcs;
     for (auto& d : s.details) {
         const std::string p = "detail " + std::to_string(d.id);
         if (!ids.insert(d.id).second) return Fail(err, "details: duplicate id " + std::to_string(d.id));
         if (d.src && !srcs.insert(*d.src).second) return Fail(err, p + ": duplicate src");
         if (!frames.count(d.frame)) return Fail(err, p + ": frame " + std::to_string(d.frame) + " is not in the scene");
+        if (!d.src && d.name == "telepad") return Fail(err, p + ": an added detail may not be named 'telepad' (place a telepad pair)");
     }
+    return ValidateObjects(s, err);
+}
+
+bool ValidateObjects(const Scene& s, std::string* err) {
+    if (s.objects.size() > kMaxObjects) return Fail(err, "objects: at most 256 objects");
+    std::unordered_map<std::string, int> added;
+    std::unordered_set<std::string> based;
+    for (auto& d : s.details) {
+        if (d.src) based.insert(d.name);
+        else ++added[d.name];
+    }
+    std::unordered_set<std::string> knots;
+    std::unordered_set<int> groups;
+    int factories = 0;
+    for (size_t i = 0; i < s.objects.size(); ++i) {
+        const ObjectSpec& o = s.objects[i];
+        const std::string p = "objects[" + std::to_string(i) + "]";
+        if (!ValidateObject(o, p, err)) return false;
+        if (!knots.insert(o.knot).second) return Fail(err, p + ".knot: '" + o.knot + "' is used by another object");
+        if (based.count(o.knot)) return Fail(err, p + ".knot: the base level already has a detail named '" + o.knot + "'");
+        auto it = added.find(o.knot);
+        if (it == added.end() || it->second != 1) return Fail(err, p + ".knot: needs exactly one added detail named '" + o.knot + "'");
+        if (o.type == ObjectType::Telepad) groups.insert(o.group);
+        if (o.type == ObjectType::MineFactory && ++factories > 1) return Fail(err, p + ": at most one mine factory");
+    }
+    if (groups.size() > kMaxTelepadGroups) return Fail(err, "objects: at most 8 telepad groups");
     return true;
 }
 
 std::string WriteScene(const Scene& s) {
+    const bool v2 = s.UsesV2();
     Json root = Json::Obj();
-    root.set("format", Str(kSceneFormat));
+    root.set("format", Str(v2 ? kSceneFormat2 : kSceneFormat));
     root.set("stem", Str(s.stem));
     root.set("title", Str(s.title));
     root.set("base", BaseJson(s.base, true));
@@ -389,6 +724,7 @@ std::string WriteScene(const Scene& s) {
     reg.set("scripts", std::move(scripts));
     reg.set("previewType", Int(s.registry.previewType));
     root.set("registry", std::move(reg));
+    if (v2) root.set("kind", KindJson(s.survivor));
     Json db = Json::Obj();
     db.set("theme", Str(s.databank.theme));
     db.set("timeOfDay", Str(s.databank.timeOfDay));
@@ -404,6 +740,7 @@ std::string WriteScene(const Scene& s) {
     root.set("spawns", std::move(sp));
     Json hmp = Json::Obj();
     hmp.set("mode", Str(HmpModeName(s.hmp)));
+    if (s.hmpRef >= 0) hmp.set("ref", Int(s.hmpRef));
     root.set("hmp", std::move(hmp));
     Json units = Json::Obj();
     units.set("worldPerXan", Int(s.worldPerXan));
@@ -412,6 +749,7 @@ std::string WriteScene(const Scene& s) {
     for (auto& f : s.frames) {
         Json o = Json::Obj();
         o.set("id", Int(f.id));
+        if (f.isNew) o.set("new", Json::Bool(true));
         o.set("parent", f.parent < 0 ? Json::Null_() : Int(f.parent));
         o.set("name", Str(f.name));
         o.set("pos", Vec(f.pos));
@@ -452,6 +790,10 @@ std::string WriteScene(const Scene& s) {
         blobs.arr.push_back(std::move(o));
     }
     root.set("blobs", std::move(blobs));
+    if (v2) {
+        root.set("objects", ObjectsJson(s.objects));
+        root.set("script", ScriptJson(s.script));
+    }
     return Compact(root);
 }
 

@@ -59,6 +59,12 @@ void RemoveMethod(int handle);                                                  
 int AddWebPanel(const char* id, const char* title, const wchar_t* dir, const char* entry = "index.html");  // any thread
 void RemoveWebPanel(int handle);
 
+// Called on the server thread when a client's connection has ended (connId = Call::client). Any thread; returns a
+// handle (0 = failure).
+using ClientClosedFn = void (*)(uint64_t connId, void* user);
+int OnClientClosed(ClientClosedFn fn, void* user);
+void RemoveOnClientClosed(int handle);
+
 struct Stats { uint32_t clients, channels, methods; uint64_t framesOut, bytesOut, bytesIn, dropped, authFailures, rpcCalls; };
 Stats GetStats();  // any thread
 }

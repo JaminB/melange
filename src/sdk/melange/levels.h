@@ -13,6 +13,8 @@ struct LevelInfo {
     char title[64];                              // the FETXT string
     Source source; uint8_t levelType, themeType;
     bool registered;                             // present in the data store now
+    bool live;                                   // enabled or disabled at the menu this session (offline only)
+    char levelKind[16];                          // "multi" | "survivor"
 };
 int List(LevelInfo* out, int max, bool includeVanilla = false);   // main thread; returns the total
 bool IsModLevel(const char* key);                // Pack or Test
@@ -23,6 +25,9 @@ bool RegisterTest(const char* stem, const char* title, char* err, size_t errLen)
 // One-shot override: the next offline SetUpLevelData loads `key` instead of the frontend's choice. Refused in a lobby
 // or network session; disarmed on a lobby join, after one use, or after timeoutS.
 bool ArmNextLevel(const char* key, int timeoutS = 120);
+enum class Tod : uint8_t { Default, Day, Evening, Night };      // Default = what the frontend chose (Quick Game: DAY)
+struct ArmOptions { int timeoutS = 120; Tod tod = Tod::Default; };
+bool ArmNextLevel(const char* key, const ArmOptions& o);
 void Disarm();
 bool Armed(char* key, size_t keyLen);
 enum class TestState : uint8_t { Idle, Registering, Registered, Armed, Starting, Playing, Ended, Failed };
@@ -38,9 +43,21 @@ void RemoveOnLevelStart(int handle);
 bool WaterLevel(float* out);                     // Water.Level in a match
 bool SetWaterLevelOffline(float v);              // dev only: offline match and [Levels] DevWater=1
 
-enum class Online : uint8_t { Allowed, NotAllMatch, TestLevel, NotInLobby };
+enum class Online : uint8_t { Allowed, NotAllMatch, TestLevel, NotInLobby, LivePack };
 Online OnlineStatus(const char* key);            // what the start hold would decide for this level now
 
-struct Stats { uint32_t packs, levels, testLevels, cshDeleted, starts, heldStarts; double msRegister; };
+struct Stats {
+    uint32_t packs, levels, testLevels, cshDeleted, starts, heldStarts; double msRegister;
+    uint32_t livePacks, livePackChanges, attractRefusals;
+};
 Stats GetStats();
+
+// Live packs, offline at the frontend only; main-thread work is queued. A live-changed pack is offline-only until
+// restart (Online::LivePack). Refused with a reason: in a lobby, not at the frontend, a Test pending, a pack with
+// `sim`/`entry.sim` (restart required), a prefix or key collision.
+bool EnablePackLive(const char* modId, char* err, size_t errLen);
+bool DisablePackLive(const char* modId, char* err, size_t errLen);
+using PacksChangedFn = void (*)(void* user);
+int OnPacksChanged(PacksChangedFn fn, void* user);
+void RemoveOnPacksChanged(int handle);
 }

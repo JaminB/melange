@@ -58,4 +58,20 @@ std::vector<std::string> PoolKeys();             // the type-0 list as it stands
 // save). Main thread.
 constexpr uintptr_t kMsgFactory = 0x96d14c, kMsgAlloc = 0x691705, kTwoStringMsgInit = 0x69154e, kMsgPost = 0x6910e4;
 bool PostDataResource(const char* name, const char* value);
+
+constexpr uintptr_t kSetString = 0x50bb80, kClearDataBank = 0x50cf00, kPoolRebuild = 0x72fcf4,
+    kFrontendControl = 0x95a298;
+bool SetString(const char* name, const char* v);        // cdecl(const char**, const char*); not persisted by itself
+bool GetString(const char* name, std::string* out);
+bool ClearDataBank(uint32_t section);                   // 12 only; refuses any other section
+bool RebuildPools();                                    // __thiscall on [kMissionService]; main thread, frontend only
+struct FrontendState { bool valid; uint32_t state; bool attractAllowed, attractRunning; uint32_t idleDeadline; };
+FrontendState ReadFrontend();                           // FCS fields, byte-checked
+bool Loading();                                         // between a SetUpLevelData and the match VM (or the frontend)
+using StartGameFn = void (*)(const char* text, void* user);   // WXMsg.StartGame observer (bus subscription)
+int OnStartGame(StartGameFn fn, void* user);
+void RemoveOnStartGame(int handle);
+
+// Type lists of MissionService by offset (+0x2c multi, +0xbc survivor, ...): the keys it holds now.
+std::vector<std::string> PoolKeysAt(uint32_t offset);
 }  // namespace melange::levels::engine

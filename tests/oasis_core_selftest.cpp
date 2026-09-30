@@ -289,6 +289,10 @@ void TestRouter() {
     oa::AddMethod("t.blobsmain", &Blobs, nullptr);
     oa::AddMethod("t.blobsrefused", &BlobsRefused, nullptr, oa::kRpcServerThread);
 
+    static std::vector<uint64_t> closed;
+    const int closedHandle = oa::OnClientClosed([](uint64_t conn, void*) { closed.push_back(conn); }, nullptr);
+    Expect(closedHandle != 0 && oa::OnClientClosed(nullptr, nullptr) == 0, "client-closed observer added");
+
     FakeClient a;
     a.id = oc::router::Open(a.ev);
     uint16_t code = 0;
@@ -296,7 +300,10 @@ void TestRouter() {
     a.Take(&code);
     Expect(code == oc::kCloseNoHello, "message before hello closes 4002");
     oc::router::Gone(a.id);
+    oc::router::Gone(a.id);
     oc::router::Release(a.id);
+    Expect(closed.size() == 1 && closed[0] == static_cast<uint64_t>(a.id), "client-closed observer called once with the id");
+    oa::RemoveOnClientClosed(closedHandle);
 
     FakeClient b;
     b.id = oc::router::Open(b.ev);

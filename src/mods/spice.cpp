@@ -455,20 +455,20 @@ bool ParseLevels(const json::Value& a, Manifest* out, std::vector<Error>* errs) 
         l.line = item.line;
         bool good = true;
         for (const auto& [key, m] : item.members) {
-            if (key == "slug" || key == "title" || key == "type" || key == "source") {
-                const size_t max = key == "source" ? 200 : key == "title" ? 40 : 24;
+            if (key == "slug" || key == "title" || key == "type" || key == "source" || key == "sim") {
+                const size_t max = key == "source" || key == "sim" ? 200 : key == "title" ? 40 : 24;
                 if (!m.IsString() || m.string.empty() || m.string.size() > max) {
                     AddError(errs, &m, "levels", "levels." + key + " must be a string of 1-" + std::to_string(max) + " characters");
                     good = false;
                     continue;
                 }
-                (key == "slug" ? l.slug : key == "title" ? l.title : key == "type" ? l.type : l.source) = m.string;
-            } else if (key == "chunk") {
+                (key == "slug" ? l.slug : key == "title" ? l.title : key == "type" ? l.type : key == "sim" ? l.sim : l.source) = m.string;
+            } else if (key == "chunk" || key == "survivor") {
                 if (!m.IsBool()) {
-                    AddError(errs, &m, "levels.chunk", "levels.chunk must be a boolean");
+                    AddError(errs, &m, key == "chunk" ? "levels.chunk" : "levels.survivor", "levels." + key + " must be a boolean");
                     good = false;
                 } else {
-                    l.chunk = m.boolean;
+                    (key == "chunk" ? l.chunk : l.survivor) = m.boolean;
                 }
             } else {
                 AddError(errs, &m, "levels", "unknown levels key '" + key + "'");
