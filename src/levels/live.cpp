@@ -75,7 +75,7 @@ bool Change(const std::string& mod, bool on, std::string* err) {
     if (why.empty() && !registry::PacksReady()) why = "the game is still starting; try again in a moment";
     thumper::Entry e;
     if (why.empty() && !thumper::FindEntry(mod, &e)) why = "no mod " + mod + " is installed";
-    if (why.empty() && on) why = live::PackRefusal(e.manifest);
+    if (why.empty()) why = live::PackRefusal(e.manifest);  // both ways: a running sim or override cannot be unloaded live
     if (why.empty() && !(on ? registry::EnableLive(mod, &why) : registry::DisableLive(mod, &why)) && why.empty())
         why = "the change failed; see Melange.log";
     if (!why.empty()) {
