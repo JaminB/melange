@@ -3,6 +3,8 @@
 param([string]$Game = "", [string]$XomTool = "")
 $ErrorActionPreference = "Stop"
 $root = $PSScriptRoot
+if (-not $Game) { $Game = Split-Path (Split-Path $root -Parent) -Parent }
+if (-not (Test-Path (Join-Path $Game "Data\Maps"))) { throw "$Game is not a game folder (no Data\Maps); pass -Game <game folder>" }
 if (-not $XomTool) {
     $cmd = Get-Command xomtool -ErrorAction SilentlyContinue
     if ($cmd) { $XomTool = $cmd.Source }

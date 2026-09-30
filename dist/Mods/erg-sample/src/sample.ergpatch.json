@@ -11,17 +11,25 @@
       "hmp": "13d4308a55def0d8c9b150f55b1d2da6c0b198f1d2decbc012775e62a6d7fec2"
     }
   },
-  "water": { "level": 25.0 },
-  "spawns": { "mode": "knots" },
-  "hmp": { "mode": "copy" },
+  "water": {"level": 25},
+  "spawns": {"mode": "knots"},
+  "hmp": {"mode": "copy"},
   "ops": [
-    { "op": "set", "src": 112, "pos": [3.62, 19.6, 7.4] },
-    { "op": "set", "src": 113, "pos": [-1.44, 18.68, -5.52] },
-    { "op": "set", "src": 114, "pos": [5.02, 20.1, -16.52] },
-    { "op": "set", "src": 115, "pos": [-14.128, 19.3, 6.83] },
-    { "op": "set", "src": 116, "pos": [-31.98, 28.82, 5.34] },
-    { "op": "set", "src": 117, "pos": [-27.8, 19.68, -12.62] },
-    { "op": "set", "src": 118, "pos": [-47.218, 22.24, 13.232] },
-    { "op": "set", "src": 119, "pos": [-43.56, 21.32, -10.2] }
+    {"op": "set", "src": 113, "pos": [-1.44, 12.68, -5.52]},
+    {"op": "set", "src": 114, "pos": [5.02, 14.100005, -16.52]},
+    {"op": "set", "src": 115, "pos": [-14.128, 13.3, 6.83]},
+    {"op": "set", "src": 116, "pos": [-31.98, 22.82, 5.34]},
+    {"op": "set", "src": 117, "pos": [-27.8, 13.68, -12.62]},
+    {"op": "set", "src": 118, "pos": [-47.2181, 16.24, 13.232]},
+    {"op": "set", "src": 119, "pos": [-43.56005, 15.32, -10.2]},
+    {"op": "set", "src": 120, "pos": [3.62, 13.6, 7.4]},
+    {"op": "add", "frame": 224, "detail": {"name": "oildrum", "resource": "OilDrum", "pos": [-18, 4, 7]}},
+    {"op": "add", "frame": 224, "detail": {"name": "oildrum", "resource": "OilDrum", "pos": [-48, 7, -14.5]}},
+    {"op": "add", "frame": 224, "detail": {"name": "oildrum", "resource": "OilDrum", "pos": [-28, 13.5, 5.5]}},
+    {"op": "add", "frame": 224, "detail": {"name": "mine", "resource": "Mine", "pos": [-47, 8, 9]}},
+    {"op": "add", "frame": 224, "detail": {"name": "mine", "resource": "Mine", "pos": [-17, 4, 4]}},
+    {"op": "voxels", "frame": 437, "runs": [[0, 1, 116]]},
+    {"op": "voxels", "frame": 436, "runs": [[0, 4, 132]]},
+    {"op": "voxels", "frame": 218, "runs": [[78, 1, 200], [88, 1, 64], [89, 1, 200], [98, 1, 200]]}
   ]
 }
