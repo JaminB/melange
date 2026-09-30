@@ -14,12 +14,13 @@
 namespace melange::erg::quickstart {
 namespace {
 constexpr uintptr_t kMsgFactory = 0x96d14c, kMsgAlloc = 0x691705, kStringMsgInit = 0x69151a, kPost = 0x6910e4;
+constexpr const char* kStartGame = "WXMsg.StartGame";
 constexpr const char* kQuickStart = "QuickStartHvC";
 
 bool BytesOk() {
     return game::IsKnownBuild() && mem::Expect(kMsgAlloc, {0x55, 0x8b, 0xec, 0x83, 0xec, 0x10}) &&
            mem::Expect(kStringMsgInit, {0x55, 0x8b, 0xec, 0x51, 0x89, 0x4d, 0xfc}) &&
-           mem::Expect(kPost, {0x55, 0x8b, 0xec, 0x51, 0x51, 0x83, 0x3d, 0x90, 0xd0, 0x96, 0x00, 0x00});
+           (bus::Installed() || mem::Expect(kPost, {0x55, 0x8b, 0xec, 0x51, 0x51, 0x83, 0x3d, 0x90, 0xd0, 0x96, 0x00, 0x00}));
 }
 
 // The text pointer is stored by the message, not copied, so it must outlive the post; static storage does.
@@ -44,7 +45,7 @@ bool Available() { return BytesOk() && bus::RegistryReady() && levels::engine::A
 
 bool PostQuickGame() {
     if (!Available()) return false;
-    const bus::MsgId id = bus::IdOf(kQuickStart);
+    const bus::MsgId id = bus::IdOf(kStartGame);
     if (id == bus::kInvalidId) return false;
     strncpy_s(g_text, kQuickStart, _TRUNCATE);
     return RawPost(id, g_text);

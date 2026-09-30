@@ -44,6 +44,8 @@ const Site kExtra[] = {
 
 bool ExtraOk(uintptr_t addr) {
     if (!game::IsKnownBuild()) return false;
+    // The bus module hooks Post after checking these same bytes; a post then goes through its hook.
+    if (addr == kMsgPost && bus::Installed()) return true;
     for (auto& s : kExtra)
         if (s.addr == addr) return mem::Expect(s.addr, s.bytes);
     return false;

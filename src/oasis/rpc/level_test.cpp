@@ -23,7 +23,7 @@ namespace melange::oasis::providers {
 namespace {
 using rpc::Fail;
 
-std::atomic<bool> g_atFrontend{false}, g_inLobby{false};
+std::atomic<bool> g_atFrontend{false}, g_inLobby{false}, g_quickOk{false};
 std::mutex g_mx;
 std::string g_startKey;
 ULONGLONG g_startBy = 0;
@@ -43,6 +43,7 @@ void OnFrame() {
     const bool front = levels::engine::AtFrontend();
     g_atFrontend = front;
     g_inLobby = handshake::lobby::Current() != 0;
+    g_quickOk = front && erg::quickstart::Available();
     std::string key;
     {
         std::lock_guard lk(g_mx);
@@ -57,7 +58,7 @@ void OnFrame() {
     }
     char armed[128] = {};
     if (!levels::Armed(armed, sizeof armed) || key != armed) return;
-    const bool ok = erg::quickstart::Available() && erg::quickstart::PostQuickGame();
+    const bool ok = erg::quickstart::PostQuickGame();
     LOG_INFO("[erg] test: %s registered; Quick Game %s", key.c_str(), ok ? "started" : "not available, press it to play");
 }
 
@@ -93,7 +94,7 @@ void Test(const Call& c, Result& r, void*) {
         Fail(r, rpc::kRefused, "could not arm the Test override");
         return;
     }
-    const bool quick = erg::quickstart::Available();
+    const bool quick = g_quickOk;
     if (quick) {
         std::lock_guard lk(g_mx);
         g_startKey = key;
