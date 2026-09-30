@@ -46,8 +46,8 @@ A map's spawn mode is either:
 
 ## Objects
 
-Erg can place two kinds of object on the ground: **mines** and **oil drums**. Both work in any match, on any map
-that uses them. (Crates, telepads and mine factories aren't supported yet.)
+Erg can place **mines** and **oil drums**, which work in any match on any map that uses them, and **crates**,
+**telepad pairs**, **triggers** and one **mine factory**, whose settings are on the Properties tab.
 
 ## Water
 
@@ -173,10 +173,10 @@ can't pick your map to begin with.
 - A map title is 1-40 plain-ASCII characters.
 - A patch (your saved edits) is capped at 20 000 operations and 4 MB — enough for any hand-made edit; if you hit
   this, split the changes into more than one exported map.
-- Not yet supported: crates and mine factories and telepads, per-team or story spawn points, survivor/story/challenge
+- Not yet supported: per-team or story spawn points, survivor/story/challenge
   map types, new terrain shapes (only carving, filling and painting the terrain the base map already has), editing
-  the map's generated chunk (Erg rewrites it every export; use a [level script](#level-scripts)), and enabling a freshly exported mod
-  without a restart.
+  the map's generated chunk (Erg rewrites it every export; use a [level script](#level-scripts)), and enabling a
+  freshly exported mod that has level scripts without a restart.
 - A replay recorded on a Test map only plays back correctly while your Test workspace still has the same files —
   moving on to a different edit, or exporting for real, can make an older Test recording unplayable.
 
