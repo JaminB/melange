@@ -127,7 +127,7 @@ foreach ($p in $pkgs) {
 # ---------------------------------------------------------------- licence notices
 function License-Text([string]$Dir) {
     $f = Get-ChildItem $Dir -File | Where-Object { $_.Name -match '^(LICEN[CS]E|COPYING|NOTICE)(\.(md|txt))?$' } | Sort-Object Name
-    ($f | ForEach-Object { (Get-Content $_.FullName -Raw).Trim() }) -join "`n`n"
+    ($f | ForEach-Object { (Get-Content $_.FullName -Raw -Encoding UTF8).Trim() }) -join "`n`n"
 }
 $ships = @($pkgs | Where-Object { -not $_.dev })
 $txt = New-Object Text.StringBuilder

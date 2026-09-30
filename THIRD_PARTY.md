@@ -632,7 +632,7 @@ THE SOFTWARE.
 ```text
 The MIT License
 
-Copyright Â© 2010-2026 three.js authors
+Copyright © 2010-2026 three.js authors
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal
