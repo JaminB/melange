@@ -41,11 +41,13 @@ bool RawPost(uint16_t id, const char* text) {
 }
 }  // namespace
 
-// A StartGame posted while the attract demo runs, or in a match, asserts in the frontend.
+// A StartGame posted while the attract demo runs, or in a match, asserts in the frontend. One posted in the frames
+// between a demo's end and the menu's return (FCS state still kInGame) is dropped.
 bool Available() {
+    constexpr uint32_t kInGame = 9;
     if (!BytesOk() || !bus::RegistryReady() || !levels::engine::AtFrontend() || levels::engine::Loading()) return false;
     const levels::engine::FrontendState fs = levels::engine::ReadFrontend();
-    return fs.valid && !fs.attractRunning;
+    return fs.valid && !fs.attractRunning && fs.state != kInGame;
 }
 
 bool PostQuickGame() {
