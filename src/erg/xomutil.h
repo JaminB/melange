@@ -2,6 +2,7 @@
 #include <cstdint>
 #include <string>
 #include <string_view>
+#include <vector>
 
 #include "erg/scene.h"
 #include "xom/xom.h"
@@ -17,6 +18,11 @@ bool EnsureType(xom::Document& doc, std::string_view cls, std::string_view befor
 bool InsertObject(xom::Document& doc, uint32_t at, xom::Object obj);
 // Removes object #at; references to it become 0 (null) and later ones move down by one.
 bool RemoveObject(xom::Document& doc, uint32_t at);
+// The same for many objects with one pass over the references: InsertObjects puts `objs` at #at.. in order;
+// RemoveObjects drops every object in `ats`, and RemovedMap(sorted ats, r) is where reference r lands (0 if removed).
+bool InsertObjects(xom::Document& doc, uint32_t at, std::vector<xom::Object> objs);
+bool RemoveObjects(xom::Document& doc, std::vector<uint32_t> ats);
+uint32_t RemovedMap(const std::vector<uint32_t>& sortedAts, uint32_t r);
 
 xom::Value RefValue(uint32_t ref);
 std::string Str(const xom::Object& o, std::string_view field);

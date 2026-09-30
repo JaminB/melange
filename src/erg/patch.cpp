@@ -4,6 +4,7 @@
 #include <cmath>
 #include <map>
 #include <unordered_map>
+#include <unordered_set>
 
 #include "erg/jsonio.h"
 #include "erg/names.h"
@@ -164,6 +165,7 @@ bool ParsePatch(std::string_view json, Patch* out, std::string* err) {
     if (!ops || ops->kind != Json::Kind::Array) return Fail(err, "ops: must be an array");
     if (ops->arr.size() > kMaxOps) return Fail(err, "ops: at most 20000 ops");
     std::map<int64_t, size_t> runsPerFrame;
+    uint64_t covered = 0;
     for (size_t i = 0; i < ops->arr.size(); ++i) {
         const std::string path = OpPath(i);
         const Json& o = ops->arr[i];
@@ -211,6 +213,8 @@ bool ParsePatch(std::string_view json, Patch* out, std::string* err) {
                     if (!ok || v[k] > 0xffffffffu) return Fail(err, rp + ": must hold three unsigned 32-bit integers");
                 }
                 if (v[1] == 0 || v[0] + v[1] > kMaxFrameVoxels) return Fail(err, rp + ": the run is empty or past 262144 voxels");
+                covered += v[1];
+                if (covered > kMaxRunVoxels) return Fail(err, rp + ": the runs of a patch cover more than " + std::to_string(kMaxRunVoxels) + " voxels");
                 if (!ValidRunValue(static_cast<uint32_t>(v[2])))
                     return Fail(err, rp + ": the value must keep bits 24-31 at 0 and the solid bits at 0 or 3");
                 op.runs.push_back({static_cast<uint32_t>(v[0]), static_cast<uint32_t>(v[1]), static_cast<uint32_t>(v[2])});
@@ -356,16 +360,21 @@ bool ApplyPatch(Scene& s, const Patch& p, const PatchRules& rules, std::string* 
     out.spawns = p.spawns;
     out.hmp = p.hmp;
     int64_t nextId = 1;
-    for (auto& d : out.details) nextId = std::max(nextId, d.id + 1);
+    std::unordered_map<int64_t, size_t> bySrc;
+    for (size_t i = 0; i < out.details.size(); ++i) {
+        nextId = std::max(nextId, out.details[i].id + 1);
+        if (out.details[i].src) bySrc[*out.details[i].src] = i;
+    }
+    std::unordered_set<int64_t> removed;
     for (size_t i = 0; i < p.ops.size(); ++i) {
         const Op& op = p.ops[i];
         switch (op.kind) {
             case Op::Kind::Set:
-                for (auto& d : out.details)
-                    if (d.src && *d.src == op.src) Assign(d, op.fields);
+                if (auto it = bySrc.find(op.src); it != bySrc.end() && !removed.count(op.src))
+                    Assign(out.details[it->second], op.fields);
                 break;
             case Op::Kind::Remove:
-                std::erase_if(out.details, [&](const Detail& d) { return d.src && *d.src == op.src; });
+                removed.insert(op.src);
                 break;
             case Op::Kind::Add: {
                 Detail d;
@@ -378,6 +387,7 @@ bool ApplyPatch(Scene& s, const Patch& p, const PatchRules& rules, std::string* 
             case Op::Kind::Voxels: break;
         }
     }
+    if (!removed.empty()) std::erase_if(out.details, [&](const Detail& d) { return d.src && removed.count(*d.src); });
     s = std::move(out);
     return true;
 }

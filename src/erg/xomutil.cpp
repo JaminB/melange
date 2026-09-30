@@ -107,6 +107,42 @@ bool InsertObject(xom::Document& doc, uint32_t at, xom::Object obj) {
     return true;
 }
 
+bool InsertObjects(xom::Document& doc, uint32_t at, std::vector<xom::Object> objs) {
+    if (at < 1 || at > doc.objects.size() + 1) return false;
+    const uint32_t n = static_cast<uint32_t>(objs.size());
+    if (!n) return true;
+    if (!Remap(doc, [at, n](uint32_t r) { return r >= at ? r + n : r; })) return false;
+    doc.objects.insert(doc.objects.begin() + (at - 1), std::make_move_iterator(objs.begin()), std::make_move_iterator(objs.end()));
+    return true;
+}
+
+bool RemoveObjects(xom::Document& doc, std::vector<uint32_t> ats) {
+    std::sort(ats.begin(), ats.end());
+    ats.erase(std::unique(ats.begin(), ats.end()), ats.end());
+    if (ats.empty()) return true;
+    if (ats.front() < 1 || ats.back() > doc.objects.size()) return false;
+    if (std::binary_search(ats.begin(), ats.end(), doc.root)) return false;
+    if (!Remap(doc, [&](uint32_t r) { return RemovedMap(ats, r); })) return false;
+    size_t out = 0;
+    for (size_t i = 0, k = 0; i < doc.objects.size(); ++i) {
+        if (k < ats.size() && ats[k] == i + 1) {
+            ++k;
+            continue;
+        }
+        if (out != i) doc.objects[out] = std::move(doc.objects[i]);
+        ++out;
+    }
+    doc.objects.resize(out);
+    return true;
+}
+
+uint32_t RemovedMap(const std::vector<uint32_t>& sortedAts, uint32_t r) {
+    if (!r) return 0;
+    const auto it = std::lower_bound(sortedAts.begin(), sortedAts.end(), r);
+    if (it != sortedAts.end() && *it == r) return 0;
+    return r - static_cast<uint32_t>(it - sortedAts.begin());
+}
+
 bool RemoveObject(xom::Document& doc, uint32_t at) {
     if (at < 1 || at > doc.objects.size() || at == doc.root) return false;
     if (!Remap(doc, [at](uint32_t r) { return r == at ? 0u : r > at ? r - 1 : r; })) return false;

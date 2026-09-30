@@ -2,7 +2,10 @@
 
 #include <algorithm>
 #include <cstring>
+#include <optional>
+#include <set>
 #include <unordered_map>
+#include <unordered_set>
 
 #include "erg/luagen.h"
 #include "erg/voxels.h"
@@ -75,25 +78,22 @@ bool BuildXan(const load::Loaded& base, const Scene& edited, const VoxelEdits& v
     const Scene& bs = base.scene;
     std::vector<uint32_t> cur(x.objects.size() + 1);
     for (uint32_t i = 0; i < cur.size(); ++i) cur[i] = i;
-    auto onInsert = [&](uint32_t at) {
-        for (auto& c : cur)
-            if (c >= at) ++c;
-    };
-    auto onRemove = [&](uint32_t at) {
-        for (auto& c : cur) c = c == at ? 0 : c > at ? c - 1 : c;
-    };
 
+    std::unordered_set<int64_t> baseSrcs;
+    for (const auto& b : bs.details) baseSrcs.insert(*b.src);
     std::unordered_map<int64_t, const Detail*> bySrc;
     for (const auto& d : edited.details)
         if (d.src) {
-            if (!bs.FindDetailBySrc(*d.src)) return Fail(err, "detail " + std::to_string(d.id) + ": src " + std::to_string(*d.src) + " is not in the base");
+            if (!baseSrcs.count(*d.src)) return Fail(err, "detail " + std::to_string(d.id) + ": src " + std::to_string(*d.src) + " is not in the base");
             bySrc[*d.src] = &d;
         }
-    std::vector<const Detail*> removed;
+    std::vector<uint32_t> gone;
+    std::set<int64_t> goneFrames;
     for (const auto& b : bs.details) {
         auto it = bySrc.find(*b.src);
         if (it == bySrc.end()) {
-            removed.push_back(&b);
+            gone.push_back(static_cast<uint32_t>(*b.src));
+            goneFrames.insert(b.frame);
             continue;
         }
         const Detail& e = *it->second;
@@ -109,39 +109,54 @@ bool BuildXan(const load::Loaded& base, const Scene& edited, const VoxelEdits& v
         if (!ok) return Fail(err, "detail " + std::to_string(e.id) + ": the base object has an unexpected shape");
     }
 
-    std::sort(removed.begin(), removed.end(), [](const Detail* a, const Detail* b) { return *a->src > *b->src; });
-    for (const Detail* d : removed) {
-        const uint32_t at = cur[static_cast<size_t>(*d->src)], fr = cur[static_cast<size_t>(d->frame)];
-        Value* list = x.objects[fr - 1].field("Details");
-        if (!list) return Fail(err, "frame " + std::to_string(d->frame) + " has no Details");
-        std::erase_if(list->items, [at](const Value& v) { return v.asRef() == at; });
-        if (!xomutil::RemoveObject(x, at)) return Fail(err, "could not remove detail " + std::to_string(*d->src));
-        onRemove(at);
+    if (!gone.empty()) {
+        std::sort(gone.begin(), gone.end());
+        for (int64_t fid : goneFrames) {
+            Value* list = x.objects[static_cast<size_t>(fid) - 1].field("Details");
+            if (!list) return Fail(err, "frame " + std::to_string(fid) + " has no Details");
+            std::erase_if(list->items, [&](const Value& v) { return std::binary_search(gone.begin(), gone.end(), v.asRef()); });
+        }
+        if (!xomutil::RemoveObjects(x, gone)) return Fail(err, "could not remove detail " + std::to_string(gone.front()));
+        for (auto& c : cur) c = xomutil::RemovedMap(gone, c);
     }
 
+    std::vector<xom::Object> fresh;
+    std::vector<int64_t> freshFrames;
+    std::optional<xom::Object> like;
     for (const auto& d : edited.details) {
         if (d.src) continue;
         if (!bs.FindFrame(d.frame)) return Fail(err, "detail " + std::to_string(d.id) + ": frame " + std::to_string(d.frame) + " is not in the base");
-        if (!xomutil::EnsureType(x, "DetailEntityStore", "LandFrameStore")) return Fail(err, "no DetailEntityStore type");
-        xom::Object obj;
-        if (const xom::Object* like = FirstOf(x, "DetailEntityStore")) {
-            obj = *like;
-        } else {
-            std::string e;
-            if (!xomutil::NewObject(x, "DetailEntityStore", &obj, &e)) return Fail(err, e);
-            if (Value* b = obj.field("Bounds")) b->setComponents({0, 0, 0, -1});
-            if (Value* m = obj.field("BoundMode")) m->setInt(1);
+        if (!like) {
+            if (!xomutil::EnsureType(x, "DetailEntityStore", "LandFrameStore")) return Fail(err, "no DetailEntityStore type");
+            if (const xom::Object* first = FirstOf(x, "DetailEntityStore")) {
+                like = *first;
+            } else {
+                xom::Object obj;
+                std::string e;
+                if (!xomutil::NewObject(x, "DetailEntityStore", &obj, &e)) return Fail(err, e);
+                if (Value* b = obj.field("Bounds")) b->setComponents({0, 0, 0, -1});
+                if (Value* m = obj.field("BoundMode")) m->setInt(1);
+                like = std::move(obj);
+            }
         }
+        xom::Object obj = *like;
         if (!xomutil::SetStr(obj, "Name", d.name) || !xomutil::SetStr(obj, "ResourceName", d.resource) ||
             !xomutil::SetVec(obj, "Position", d.pos) || !xomutil::SetVec(obj, "Orientation", d.rot) ||
             !xomutil::SetVec(obj, "Scale", d.scale) || !xomutil::SetVec(obj, "VoxelPos", d.voxelPos))
             return Fail(err, "a new detail could not be built");
-        const uint32_t at = InsertAt(x, "DetailEntityStore");
-        if (!xomutil::InsertObject(x, at, std::move(obj))) return Fail(err, "could not insert a detail");
-        onInsert(at);
-        Value* list = x.objects[cur[static_cast<size_t>(d.frame)] - 1].field("Details");
-        if (!list) return Fail(err, "frame " + std::to_string(d.frame) + " has no Details");
-        list->items.push_back(xomutil::RefValue(at));
+        fresh.push_back(std::move(obj));
+        freshFrames.push_back(d.frame);
+    }
+    if (!fresh.empty()) {
+        const uint32_t at = InsertAt(x, "DetailEntityStore"), n = static_cast<uint32_t>(fresh.size());
+        if (!xomutil::InsertObjects(x, at, std::move(fresh))) return Fail(err, "could not insert a detail");
+        for (auto& c : cur)
+            if (c >= at) c += n;
+        for (uint32_t k = 0; k < n; ++k) {
+            Value* list = x.objects[cur[static_cast<size_t>(freshFrames[k])] - 1].field("Details");
+            if (!list) return Fail(err, "frame " + std::to_string(freshFrames[k]) + " has no Details");
+            list->items.push_back(xomutil::RefValue(at + k));
+        }
     }
 
     for (const auto& [fid, words] : voxels) {

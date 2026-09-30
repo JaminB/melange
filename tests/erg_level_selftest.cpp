@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <array>
+#include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <cstring>
@@ -485,6 +486,55 @@ void TestEditBuild() {
     Expect(des == 11 && grouped, "edit: details stay grouped before frames");
 }
 
+void TestScale() {
+    const erg::load::BaseFiles f = Base();
+    erg::load::Loaded L;
+    std::string err;
+    erg::load::LoadScene(f, &L, &err);
+    erg::Patch p = EmptyPatch(L, "ergtest_synth");
+    for (int64_t src : {5, 10}) {
+        erg::Op rm;
+        rm.kind = erg::Op::Kind::Remove;
+        rm.src = src;
+        p.ops.push_back(rm);
+    }
+    for (size_t i = 0; p.ops.size() < erg::kMaxOps; ++i) {
+        erg::Op add;
+        add.kind = erg::Op::Kind::Add;
+        add.frame = 12;
+        add.fields.name = "mine";
+        add.fields.resource = "Landmine";
+        add.fields.pos = erg::Vec3{static_cast<double>(i % 100), 1, static_cast<double>(i / 100)};
+        p.ops.push_back(add);
+    }
+    const auto t0 = std::chrono::steady_clock::now();
+    erg::Scene s;
+    erg::build::VoxelEdits v;
+    std::vector<erg::build::File> files;
+    Expect(erg::build::Apply(L, p, {false, true}, &s, &v, &err) && erg::build::Build(L, s, v, {}, &files, &err),
+           "scale: 20000 ops apply and build " + err);
+    const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+    Expect(ms < 5000, "scale: 20000 ops take " + std::to_string(static_cast<int>(ms)) + " ms");
+    erg::load::BaseFiles out = f;
+    out.xan = FileBytes(files, "Maps/ergtest_synth.xan");
+    out.xom = FileBytes(files, "ergtest_synth.XOM");
+    erg::load::Loaded B;
+    Expect(erg::load::LoadScene(out, &B, &err) && B.scene.details.size() == 11 - 2 + erg::kMaxOps - 2,
+           "scale: the built level loads with every added detail " + err);
+
+    erg::Patch runs = EmptyPatch(L, "ergtest_synth");
+    for (int k = 0; k < 40; ++k) {
+        erg::Op op;
+        op.kind = erg::Op::Kind::Voxels;
+        op.frame = 1 + k;
+        op.runs.assign(1000, erg::VoxelRun{0, static_cast<uint32_t>(erg::kMaxFrameVoxels), 0});
+        runs.ops.push_back(op);
+    }
+    erg::Patch parsed;
+    Expect(!erg::ParsePatch(erg::WritePatch(runs), &parsed, &err) && err.find("cover more than") != std::string::npos,
+           "scale: overlapping runs past the covered-voxel limit are refused: " + err);
+}
+
 void TestVoxels() {
     const erg::load::BaseFiles f = Base();
     erg::load::Loaded L;
@@ -867,6 +917,7 @@ int main() {
     TestLoad();
     TestEmptyBuild();
     TestEditBuild();
+    TestScale();
     TestVoxels();
     TestNegative();
     TestBank();

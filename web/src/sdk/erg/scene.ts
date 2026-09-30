@@ -5,7 +5,7 @@
 export const SCENE_FORMAT = "erg-scene/1";
 export const PATCH_FORMAT = "erg-patch/1";
 export const WORLD_PER_XAN = 20;
-export const LIMITS = { frames: 4096, details: 65536, frameVoxels: 262144, ops: 20000, patchBytes: 4 << 20, runsPerFrame: 2000 };
+export const LIMITS = { frames: 4096, details: 65536, frameVoxels: 262144, ops: 20000, patchBytes: 4 << 20, runsPerFrame: 2000, runVoxels: 1 << 23 };
 
 export type Vec3 = [number, number, number];
 export type Role = "scenery" | "spawn" | "object" | "camera" | "light" | "emitter" | "sound" | "collision" | "marker" | "other";
@@ -267,6 +267,7 @@ export function validatePatch(p: unknown, sizeBytes?: number): Validation {
   if (!Array.isArray(p.ops)) return { ok: false, errors: [...c.errors, "ops: must be an array"] };
   if (p.ops.length > LIMITS.ops) c.fail("ops", "at most 20000 ops");
   const runsPerFrame = new Map<number, number>();
+  let covered = 0;
   p.ops.forEach((o, i) => {
     const path = `ops[${i}]`;
     if (!isObj(o)) return c.fail(path, "must be an object");
@@ -298,6 +299,8 @@ export function validatePatch(p: unknown, sizeBytes?: number): Validation {
           const rp = `${path}.runs[${j}]`;
           if (!Array.isArray(r) || r.length !== 3 || !r.every((v) => isInt(v, 0, 0xffffffff))) return c.fail(rp, "must be [start, count, value]");
           if (r[1] === 0 || r[0] + r[1] > LIMITS.frameVoxels) return c.fail(rp, "the run is empty or past 262144 voxels");
+          covered += r[1];
+          if (covered > LIMITS.runVoxels) return c.fail(rp, `the runs of a patch cover more than ${LIMITS.runVoxels} voxels`);
           if (!validRunValue(r[2])) c.fail(rp, "the value must keep bits 24-31 at 0 and the solid bits at 0 or 3");
         });
         break;

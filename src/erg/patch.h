@@ -12,6 +12,7 @@
 namespace melange::erg {
 constexpr std::string_view kPatchFormat = "erg-patch/1";
 constexpr size_t kMaxOps = 20000, kMaxPatchBytes = 4u << 20, kMaxRunsPerFrame = 2000;
+constexpr uint64_t kMaxRunVoxels = 1u << 23;   // voxels covered by all the runs of one patch
 
 struct DetailFields {
     std::optional<std::string> name, resource;
