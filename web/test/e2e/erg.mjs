@@ -1,122 +1,297 @@
-// The Erg level service over a live Oasis server (the game's or oasis.exe), in headless Edge.
-//   node web/test/e2e/erg.mjs <launch url> [--base <key>] [--dump <file.json>]
-// Opens the launch URL, then over the page's own authenticated origin: level.list, level.themes, level.palette,
-// level.load of one base with every blob arriving as a binary frame (ref, size and meta checked against the scene),
-// and the refusals of bad params. --dump writes the scene and each blob's sha256 so the game's and oasis.exe's answers
-// can be compared file to file.
-import { createHash } from "node:crypto";
-import { writeFileSync } from "node:fs";
+// Browser tests of the Erg editor in headless Edge (SwiftShader WebGL) against the mock server's synthetic level
+// service: lazy loading, the 400-frame load and frame rate, pick/move/rotate with undo and redo, placing knots and
+// objects with water and theme and a reload, drafts, and a dropped connection.
+//   node web/test/e2e/erg.mjs [<built web app folder>]
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import { chromium } from "playwright-core";
+import { startMock } from "./mock-server.mjs";
 
-const url = process.argv[2] || process.env.OASIS_URL;
-const arg = (name) => {
-  const i = process.argv.indexOf(name);
-  return i > 0 ? process.argv[i + 1] : undefined;
-};
-if (!url) {
-  console.error("usage: erg.mjs <launch url> [--base <key>] [--dump <file.json>]");
-  process.exit(2);
-}
-
+const root = process.argv.slice(2).find((a) => !a.startsWith("--")) ?? "web/dist";
 const results = [];
 const check = (name, ok, detail = "") => {
-  results.push({ name, ok: !!ok, detail });
+  results.push({ name, ok: !!ok });
   console.log(`${ok ? "ok  " : "FAIL"} ${name}${detail ? ` ${detail}` : ""}`);
 };
+let current;
+const attempt = async (name, fn) => {
+  try {
+    await fn();
+  } catch (e) {
+    check(name, false, String(e?.message ?? e).split("\n")[0]);
+    const shot = `web/test/out/fail-erg-${name.replace(/\W+/g, "_")}.png`;
+    await current?.screenshot({ path: shot }).then(() => console.log(`     screenshot: ${shot}`), () => {});
+  }
+};
 
-const browser = await chromium.launch({ channel: "msedge", headless: true });
-try {
-  const page = await browser.newPage();
-  await page.goto(url, { waitUntil: "load" });
-  const out = await page.evaluate(async (wantBase) => {
-    const ws = new WebSocket(`ws://${location.host}/ws`);
-    ws.binaryType = "arraybuffer";
-    const pending = new Map();
-    const bins = [];
-    let nextId = 1;
-    let welcome;
-    const opened = new Promise((resolve, reject) => {
-      ws.onerror = () => reject(new Error("socket error"));
-      ws.onmessage = (ev) => {
-        if (ev.data instanceof ArrayBuffer) {
-          bins.push(ev.data);
-          return;
+async function openPage(browser, mock, hash = "") {
+  const page = await browser.newPage({ viewport: { width: 1400, height: 860 } });
+  const errors = [];
+  const scripts = [];
+  page.on("pageerror", (e) => errors.push(e.message));
+  page.on("console", (m) => { if (m.type() === "error") errors.push(m.text()); });
+  page.on("request", (r) => { if (r.url().endsWith(".js")) scripts.push(r.url()); });
+  current = page;
+  await page.goto(mock.url, { waitUntil: "load" });
+  await page.waitForSelector(".badge-open", { timeout: 15000 });
+  if (hash) await page.evaluate((h) => { location.hash = h; }, hash);
+  return { page, errors, scripts };
+}
+
+// Runs fn(editor handles, arg) in the page (a DevTools evaluation, which the page's CSP does not cover).
+const erg = (page, fn, arg) =>
+  page.evaluate(`(${fn.toString()})(document.querySelector("[data-erg-editor]").__erg, ${JSON.stringify(arg ?? null)})`);
+
+async function openErg(page) {
+  await page.locator('nav [data-panel="erg"]').click();
+  await page.waitForSelector("[data-erg-home], [data-erg-editor]", { timeout: 10000 });
+}
+
+async function createProject(page, base, slug, title) {
+  await page.waitForSelector("[data-erg-new]", { timeout: 10000 });
+  await page.selectOption('[data-control="base"]', base);
+  await page.fill('[data-control="slug"]', slug);
+  await page.fill('[data-control="title"]', title);
+  const t0 = Date.now();
+  await page.locator('[data-action="create"]').click();
+  await page.waitForSelector("[data-erg-view][data-first-frame]", { timeout: 20000 });
+  return Date.now() - t0;
+}
+
+// The static imports of main.js, recursively: what every page load pays for.
+function initialJs(dist) {
+  const seen = new Set();
+  const walk = (rel) => {
+    if (seen.has(rel)) return;
+    seen.add(rel);
+    const text = readFileSync(join(dist, "app", rel), "utf8");
+    for (const m of text.matchAll(/(?:from|import)\s*"\.\/((?:chunks\/)?[^"]+\.js)"/g)) walk(m[1].startsWith("chunks/") || rel === "main.js" ? m[1] : `chunks/${m[1]}`);
+  };
+  walk("main.js");
+  let bytes = 0, three = false, ergCode = false;
+  for (const f of seen) {
+    const t = readFileSync(join(dist, "app", f), "utf8");
+    bytes += t.length;
+    three ||= t.includes("WebGLRenderer") || t.includes("WEBGL_");
+    ergCode ||= t.includes("erg-scene/1") || t.includes("erg-mesher");
+  }
+  return { files: [...seen], bytes, three, ergCode };
+}
+
+async function suite(browser) {
+  const mock = await startMock({ root });
+  let { page, errors, scripts } = await openPage(browser, mock);
+  try {
+    await attempt("lazy loading", async () => {
+      const init = initialJs(root);
+      check("initial JS has neither three.js nor the editor", !init.three && !init.ergCode, `${init.files.length} files, ${init.bytes} bytes`);
+      check("the initial page load fetched no editor chunk", !scripts.some((u) => /\/(Erg|viewport)-/.test(u)), scripts.map((u) => u.split("/").pop()).join(","));
+      await openErg(page);
+      check("opening Erg fetches the panel chunk", scripts.some((u) => /\/Erg-/.test(u)));
+      check("the project list shows before any 3D code loads", !scripts.some((u) => /\/viewport-/.test(u)));
+    });
+
+    await attempt("400-frame load", async () => {
+      const ms = await createProject(page, "Multi.Synthetic400", "big", "Big Synthetic");
+      const stats = await erg(page, (e) => e.view.stats());
+      check("400 frames: first frame drawn within 2 s of Create", ms <= 2000, `${ms} ms end to end, view ${stats.firstFrameMs?.toFixed(0)} ms, mesher ${stats.meshMs?.toFixed(0)} ms, worker=${stats.threaded}`);
+      check("400 frames: meshed off the main thread", stats.threaded === true);
+      check("400 frames: at most 400 draw calls", stats.drawCalls > 0 && stats.drawCalls <= 400, `${stats.drawCalls} calls, ${stats.triangles} triangles, ${stats.buckets} buckets`);
+      const fps = await erg(page, (e) => e.view.benchmark(3000));
+      check("400 frames: orbit at 30 fps or more in SwiftShader", fps >= 30, `${fps.toFixed(1)} fps`);
+      await page.screenshot({ path: "web/test/out/erg-400.png" });
+      await page.locator('[data-action="close"]').click();
+    });
+
+    await attempt("pick, move, rotate, undo, redo", async () => {
+      await createProject(page, "Multi.Synthetic12", "edit", "Edit Test");
+      const p0 = await erg(page, (e) => e.store.patchText());
+      const drum = await erg(page, (e) => {
+        const d = e.store.scene.details.find((x) => x.name === "oildrum");
+        e.store.select([]);
+        return d.id;
+      });
+      await erg(page, (e, id) => { e.store.select([id]); e.view.focus(); }, drum);
+      await page.waitForTimeout(150);
+      await erg(page, (e) => e.store.select([]));
+      const at = await erg(page, (e, id) => e.view.screenOf(id), drum);
+      const box = await page.locator("[data-erg-view] canvas").boundingBox();
+      await page.mouse.click(box.x + at[0], box.y + at[1]);
+      const sel = await erg(page, (e) => e.store.selection);
+      check("pick: clicking a marker selects it", sel.length === 1 && sel[0] === drum, JSON.stringify(sel));
+
+      const before = await erg(page, (e, id) => e.store.detail(id).pos, drum);
+      const c = await erg(page, (e, id) => e.view.screenOfWorld(e.store.frames.detailWorld(e.store.detail(id))), drum);
+      const depth0 = await erg(page, (e) => e.store.stack.depth);
+      await page.mouse.move(box.x + c[0], box.y + c[1]);
+      await page.mouse.down();
+      for (let i = 1; i <= 10; i++) await page.mouse.move(box.x + c[0] + i * 8, box.y + c[1] + i * 3);
+      await page.mouse.up();
+      const after = await erg(page, (e, id) => e.store.detail(id).pos, drum);
+      const depth1 = await erg(page, (e) => e.store.stack.depth);
+      check("move: dragging the gizmo moves the detail as one undo step", JSON.stringify(after) !== JSON.stringify(before) && depth1 === depth0 + 1,
+        `${JSON.stringify(before)} -> ${JSON.stringify(after)}, depth ${depth0} -> ${depth1}`);
+
+      await page.keyboard.press("e");
+      await page.waitForTimeout(100);
+      const c2 = await erg(page, (e, id) => e.view.screenOfWorld(e.store.frames.detailWorld(e.store.detail(id))), drum);
+      await page.mouse.move(box.x + c2[0] + 2, box.y + c2[1] + 2);
+      await page.mouse.down();
+      for (let i = 1; i <= 10; i++) await page.mouse.move(box.x + c2[0] + 2 + i * 6, box.y + c2[1] + 2 - i * 4);
+      await page.mouse.up();
+      let rot = await erg(page, (e, id) => e.store.detail(id).rot, drum);
+      if (rot.every((v) => v === 0)) {
+        // The trackball handle missed: rotate through the properties panel instead.
+        await page.locator('[data-tab="props"]').click();
+        await page.fill('[data-field="rot.1"]', "45");
+        await page.locator('[data-field="rot.1"]').press("Enter");
+        await page.locator('[data-field="rot.1"]').blur();
+        rot = await erg(page, (e, id) => e.store.detail(id).rot, drum);
+      }
+      check("rotate: the detail turns", rot.some((v) => v !== 0), JSON.stringify(rot));
+      await page.keyboard.press("w");
+      const p2 = await erg(page, (e) => e.store.patchText());
+      const depth2 = await erg(page, (e) => e.store.stack.depth);
+      await page.locator("[data-erg-view] canvas").focus();
+      for (let i = depth0; i < depth2; i++) await page.keyboard.press("Control+z");
+      const pu = await erg(page, (e) => e.store.patchText());
+      for (let i = depth0; i < depth2; i++) await page.keyboard.press("Control+Shift+z");
+      const pr = await erg(page, (e) => e.store.patchText());
+      check("undo returns the patch byte for byte", pu === p0);
+      check("redo returns the edited patch byte for byte", pr === p2 && p2 !== p0);
+      await page.locator('[data-action="close"]').click();
+    });
+
+    await attempt("knots, objects, water, theme, save, reload", async () => {
+      await createProject(page, "Multi.Synthetic12", "place", "Place Test");
+      const roles = await page.locator("[data-erg-outliner] [data-role]").evaluateAll((els) => els.map((b) => b.getAttribute("data-role")));
+      for (const r of roles) if (r !== "spawn") await page.locator(`[data-erg-outliner] [data-role="${r}"]`).click();
+      const items = page.locator("[data-erg-outliner] [data-detail]");
+      check("outliner: the role filter leaves the 8 knots", (await items.count()) === 8);
+      await items.first().click();
+      for (let i = 1; i < 8; i++) await items.nth(i).click({ modifiers: ["Control"] });
+      await page.locator('[data-action="delete"]').click();
+      check("delete removes the selected knots", (await erg(page, (e) => e.store.scene.details.filter((d) => /^WORM\d$/.test(d.name)).length)) === 0);
+      for (const r of roles) if (r !== "spawn") await page.locator(`[data-erg-outliner] [data-role="${r}"]`).click();
+
+      const spots = await erg(page, (e) => {
+        const out = [];
+        for (const f of e.store.scene.frames) {
+          if (f.voxels === null || !f.size[0]) continue;
+          const w = e.store.frames.worldOf(f.id);
+          const p = [f.size[0] / 2, f.size[1], f.size[2] / 2];
+          const q = [0, 1, 2].map((i) => w[i * 4] * p[0] + w[i * 4 + 1] * p[1] + w[i * 4 + 2] * p[2] + w[i * 4 + 3]);
+          out.push(q);
         }
-        const m = JSON.parse(ev.data);
-        if (m.t === "welcome") {
-          welcome = m;
-          resolve();
-        } else if (m.t === "bin") {
-          bins.push(m);
-        } else if ((m.t === "res" || m.t === "err") && pending.has(m.id)) {
-          pending.get(m.id)(m);
-          pending.delete(m.id);
-        }
+        return out;
+      });
+      await erg(page, (e) => { e.store.select([]); e.view.focus(); });
+      const box = await page.locator("[data-erg-view] canvas").boundingBox();
+      const clickAt = async (i) => {
+        const box = await page.locator("[data-erg-view] canvas").boundingBox();
+        const s = await erg(page, (e, p) => e.view.screenOfWorld(p), spots[i % spots.length]);
+        await page.mouse.click(box.x + Math.min(box.width - 5, Math.max(5, s[0])), box.y + Math.min(box.height - 5, Math.max(5, s[1])));
+        const msg = page.locator("[data-erg-message]");
+        if (await msg.count()) notes.push(`${i}: ${await msg.textContent()}`);
       };
-      ws.onopen = () => ws.send(JSON.stringify({ t: "hello", proto: 1, build: "dev", client: "erg-e2e" }));
-    });
-    await opened;
-    const call = (m, p) => new Promise((resolve) => {
-      const id = nextId++;
-      pending.set(id, resolve);
-      ws.send(JSON.stringify({ t: "call", id, m, p }));
-    });
-    const r = { methods: welcome.methods.filter((m) => m.startsWith("level.")), server: welcome.server };
-    r.list = await call("level.list", {});
-    r.themes = await call("level.themes", {});
-    const bases = r.list.r?.bases ?? [];
-    const base = wantBase ?? bases.find((b) => b.source === "game")?.key;
-    r.palette = await call("level.palette", { theme: bases.find((b) => b.key === base)?.theme || "BUILDING" });
-    r.bad = [await call("level.load", {}), await call("level.load", { base: "Multi.NoSuchLevel" }), await call("level.palette", { theme: "MOON" }),
-      await call("level.save", { project: "../x", patch: {} })];
-    const t0 = performance.now();
-    bins.length = 0;
-    r.load = await call("level.load", { base });
-    const blobs = r.load.r?.blobs ?? [];
-    const deadline = Date.now() + 30000;
-    while (bins.length < blobs.length * 2 && Date.now() < deadline) await new Promise((res) => setTimeout(res, 20));
-    r.loadMs = performance.now() - t0;
-    r.base = base;
-    r.bins = [];
-    for (let i = 0; i + 1 < bins.length; i += 2) {
-      const a = bins[i], frame = bins[i + 1];
-      const ref = frame instanceof ArrayBuffer && frame.byteLength >= 4 ? new DataView(frame).getUint32(0, true) : -1;
-      const body = frame instanceof ArrayBuffer ? Array.from(new Uint8Array(frame, 4)) : [];
-      r.bins.push({ announce: a, ref, bytes: body });
-    }
-    ws.close();
-    return r;
-  }, arg("--base"));
+      const notes = [];
+      await page.locator('[data-place="knot"]').click();
+      for (let i = 0; i < 8; i++) await clickAt(i);
+      await page.locator('[data-place="oildrum"]').click();
+      for (let i = 0; i < 3; i++) await clickAt(i + 8);
+      await page.locator('[data-place="mine"]').click();
+      for (let i = 0; i < 2; i++) await clickAt(i + 3);
+      await page.keyboard.press("Escape");
+      const counts = await erg(page, (e) => {
+        const d = e.store.scene.details.filter((x) => x.src === null);
+        return { knots: d.filter((x) => /^WORM[0-7]$/.test(x.name)).length, drums: d.filter((x) => x.name === "oildrum").length, mines: d.filter((x) => x.name === "mine").length };
+      });
+      check("placed 8 knots, 3 drums and 2 mines", counts.knots === 8 && counts.drums === 3 && counts.mines === 2, `${JSON.stringify(counts)} ${notes.join("; ")}`);
 
-  const levelMethods = ["level.list", "level.new", "level.load", "level.save", "level.export", "level.build", "level.themes", "level.palette", "level.close"];
-  check("the level methods are offered", levelMethods.every((m) => out.methods.includes(m)), `${out.server}: ${out.methods.join(",")}`);
-  const bases = out.list.r?.bases ?? [];
-  check("level.list names bases", out.list.t === "res" && bases.length > 0 && bases.every((b) => b.key && b.stem && b.title && b.source),
-    `${bases.length} bases, ${(out.list.r?.projects ?? []).length} projects`);
-  check("level.themes: eleven themes, three times of day", out.themes.r?.themes?.length === 11 && out.themes.r?.timesOfDay?.length === 3,
-    `${out.themes.r?.materialFiles?.length ?? 0} material files`);
-  const entries = out.palette.r?.entries ?? [];
-  check("level.palette: knots and objects", entries.filter((e) => e.role === "spawn").length === 8 && entries.some((e) => e.name === "oildrum"),
-    `${entries.length} entries`);
-  check("bad params are refused", out.bad.every((m) => m.t === "err") && out.bad[0].code === -32602 && out.bad[2].code === -32602,
-    out.bad.map((m) => m.code).join(","));
-  const scene = out.load.r;
-  check("level.load returns a scene", out.load.t === "res" && scene?.format === "erg-scene/1" && scene.base.key === out.base,
-    out.load.t === "res" ? `${out.base}: ${scene.frames.length} frames, ${scene.details.length} details` : JSON.stringify(out.load));
-  const blobs = scene?.blobs ?? [];
-  let same = out.bins.length === blobs.length;
-  for (let i = 0; same && i < blobs.length; i++) {
-    const b = out.bins[i];
-    same = b.announce.t === "bin" && b.announce.ref === blobs[i].ref && b.announce.ch === "erg" && b.announce.len === blobs[i].bytes &&
-      b.ref === blobs[i].ref && b.bytes.length === blobs[i].bytes && b.announce.meta?.kind === blobs[i].kind && b.announce.meta?.frame === blobs[i].frame;
+      await page.locator('[data-tab="level"]').click();
+      await page.locator('[data-field="water-set"]').check();
+      await page.fill('[data-field="water"]', "40");
+      await page.locator('[data-field="water"]').press("Enter");
+      await page.locator('[data-field="water"]').blur();
+      await page.selectOption('[data-field="theme"]', "CAMELOT");
+      await page.selectOption('[data-field="spawns"]', "knots");
+      const lvl = await erg(page, (e) => [e.store.scene.water.level, e.store.scene.databank.theme, e.store.scene.spawns.mode]);
+      check("water 40, theme CAMELOT, knot spawns", JSON.stringify(lvl) === JSON.stringify([40, "CAMELOT", "knots"]), JSON.stringify(lvl));
+      await page.locator('[data-tab="checks"]').click();
+      const checks = await page.locator("[data-erg-checks]").getAttribute("data-erg-checks");
+      check("checks list renders", checks !== null, `${checks} issues`);
+
+      const saves = mock.state.erg.saves;
+      await page.locator("[data-erg-view] canvas").focus();
+      await page.keyboard.press("Control+s");
+      await page.waitForSelector('[data-erg-save="ok"]', { timeout: 5000 });
+      check("Ctrl+S saves through level.save", mock.state.erg.saves === saves + 1);
+      const sceneBefore = await erg(page, (e) => JSON.stringify(e.store.scene));
+      const patchBefore = await erg(page, (e) => e.store.patchText());
+      await page.screenshot({ path: "web/test/out/erg-placed.png" });
+
+      await page.reload({ waitUntil: "load" });
+      await page.waitForSelector("[data-erg-view][data-first-frame]", { timeout: 20000 });
+      const sceneAfter = await erg(page, (e) => JSON.stringify(e.store.scene));
+      const patchAfter = await erg(page, (e) => e.store.patchText());
+      check("after a reload the project reopens with the identical scene", sceneAfter === sceneBefore);
+      check("after a reload the patch is identical and nothing is dirty", patchAfter === patchBefore &&
+        (await page.locator("[data-erg-editor]").getAttribute("data-dirty")) === "0");
+      check("no draft is offered after a save", (await page.locator("[data-erg-restored]").count()) === 0);
+    });
+
+    await attempt("drafts", async () => {
+      const id = await erg(page, (e) => e.store.scene.details[0].id);
+      await erg(page, (e, x) => e.store.select([x]), id);
+      await page.locator('[data-tab="props"]').click();
+      await page.fill('[data-field="pos.0"]', "123");
+      await page.locator('[data-field="pos.0"]').press("Enter");
+      await page.locator('[data-field="pos.0"]').blur();
+      await page.waitForTimeout(500);
+      await page.reload({ waitUntil: "load" });
+      await page.waitForSelector("[data-erg-restored]", { timeout: 20000 });
+      const pos = await erg(page, (e, x) => e.store.detail(x).pos[0], id);
+      check("an unsaved edit survives a reload as a draft", Math.abs(pos * 20 - 123) < 1e-6 &&
+        (await page.locator("[data-erg-editor]").getAttribute("data-dirty")) === "1", String(pos));
+      await page.locator('[data-action="discard-draft"]').click();
+      await page.waitForFunction(() => {
+        const e = document.querySelector("[data-erg-editor]")?.__erg;
+        return e && !e.store.dirty && e.view && document.querySelector("[data-erg-view]")?.dataset.firstFrame;
+      }, null, { timeout: 20000 });
+      check("discarding the draft returns to the saved project", (await page.locator("[data-erg-editor]").getAttribute("data-dirty")) === "0");
+    });
+
+    await attempt("dropped connection", async () => {
+      const id = await erg(page, (e) => e.store.scene.details[1].id);
+      await erg(page, (e, x) => e.store.select([x]), id);
+      await page.fill('[data-field="pos.2"]', "77");
+      await page.locator('[data-field="pos.2"]').press("Enter");
+      await page.locator('[data-field="pos.2"]').blur();
+      const depth = await erg(page, (e) => e.store.stack.depth);
+      mock.drop(2500);
+      await page.waitForSelector("[data-erg-offline]", { timeout: 3000 });
+      check("a dropped connection shows 'not connected'", /Not connected/.test(await page.locator("[data-erg-offline]").textContent()));
+      check("the undo stack is kept", (await erg(page, (e) => e.store.stack.depth)) === depth && depth > 0);
+      await page.locator('[data-action="save"]').click();
+      check("saving while offline is refused with a reason", /Not connected/.test(await page.locator("[data-erg-save]").textContent()));
+      await page.waitForSelector("[data-erg-offline]", { state: "detached", timeout: 15000 });
+      const saves = mock.state.erg.saves;
+      await page.locator('[data-action="save"]').click();
+      await page.waitForSelector('[data-erg-save="ok"]', { timeout: 5000 });
+      check("after reconnecting, save works", mock.state.erg.saves === saves + 1 && (await page.locator("[data-erg-editor]").getAttribute("data-dirty")) === "0");
+    });
+
+    const real = errors.filter((e) => !/WebSocket connection .* 503/.test(e));
+    check("no page errors", real.length === 0, real.slice(0, 5).join(" | "));
+  } finally {
+    await page.close();
+    await mock.close();
   }
-  check("one binary frame per blob, in order, after the result", same, `${out.bins.length}/${blobs.length} in ${out.loadMs.toFixed(0)} ms`);
-  const dump = arg("--dump");
-  if (dump && scene) {
-    const blobsSha = out.bins.map((b) => ({ ref: b.ref, sha256: createHash("sha256").update(Buffer.from(b.bytes)).digest("hex") }));
-    writeFileSync(dump, JSON.stringify({ server: out.server, list: out.list.r, scene, blobs: blobsSha }, null, 1));
-    check("dump written", true, dump);
-  }
+}
+
+const browser = await chromium.launch({ channel: "msedge", headless: true, args: ["--use-angle=swiftshader", "--enable-unsafe-swiftshader", "--ignore-gpu-blocklist"] });
+try {
+  await suite(browser);
 } finally {
   await browser.close();
 }

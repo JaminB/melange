@@ -5,6 +5,8 @@
 #   [-Erg]                                     ...and the Erg level service suite (level.*, binary blob frames)
 #   .\scripts\web\test.ps1 -Panels [-Quick]    ...then the panel suite in headless Edge against the mock server (no game):
 #                                              builds the app, drives every panel; -Quick skips the 30 s throughput run
+#   .\scripts\web\test.ps1 -Erg                ...then the Erg editor suite in headless Edge (SwiftShader) against the mock
+#                                              server's synthetic levels
 param([string]$Url = "", [switch]$Reconnect, [switch]$NoUnit, [switch]$Panels, [switch]$Quick, [switch]$Erg)
 $ErrorActionPreference = "Stop"
 $root = Split-Path (Split-Path $PSScriptRoot -Parent) -Parent
@@ -43,13 +45,18 @@ if ($Url) {
     $args_ = @((Join-Path $web "test\e2e\smoke.mjs"), $Url)
     if ($Reconnect) { $args_ += "--reconnect" }
     if (Invoke-Edge $args_) { $fail++ }
-    if ($Erg -and (Invoke-Edge @((Join-Path $web "test\e2e\erg.mjs"), $Url))) { $fail++ }
+    if ($Erg -and (Invoke-Edge @((Join-Path $web "test\e2e\erg-service.mjs"), $Url))) { $fail++ }
 }
 
-if ($Panels) {
+if ($Panels -or $Erg) {
     $dist = Join-Path $out "app-dist"
     & powershell -NoProfile -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot "build.ps1") -Out $dist -SkipTypeCheck
     if ($LASTEXITCODE) { throw "web build failed" }
+}
+if ($Erg) {
+    if (Invoke-Edge @((Join-Path $web "test\e2e\erg.mjs"), $dist)) { $fail++ }
+}
+if ($Panels) {
     $args_ = @((Join-Path $web "test\e2e\panels.mjs"), $dist)
     if ($Quick) { $args_ += "--quick" }
     if (Invoke-Edge $args_) { $fail++ }

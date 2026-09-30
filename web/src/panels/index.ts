@@ -3,6 +3,7 @@ import "./logs";
 import "./events";
 import "./console";
 import "./mods";
+import "./erg";
 import "./ini";
 import "./about";
 import "./entities";
