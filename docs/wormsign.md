@@ -9,6 +9,8 @@ random draws made in the menus before the match, every input with its time, the 
 of the match setup. A replay plays the match again with those inputs and compares each tick with the recording.
 
 1. Open the overlay panel *Wormsign/Replay* at the main menu and arm a recording.
+
+![The overlay's Wormsign/Replay panel: the recording library, with land and tick counts, and an Arm button per entry](images/wormsign/replay-panel.png)
 2. Start a **Quick Game from the main menu**. The replay needs the same route into the match as the recording: the
    match setup is rebuilt from the recorded menu draws, not written directly.
 3. At the first tick the setup (level, land, theme, scheme and teams) is checked against the recording. If it

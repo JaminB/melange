@@ -41,6 +41,12 @@ in load order get the free cells; a mod that doesn't fit is refused with the rea
 }]
 ```
 
+![The weapon panel with the Mega Bazooka selected, showing its clone info card](images/weapons/mega-bazooka-weapon-panel.png)
+
+![The Mega Bazooka's extra explosions triggering after impact](images/weapons/mega-bazooka-explosion.png)
+
+![A second extra explosion from the same shot, queued via wum.sim.weapons.explode](images/weapons/mega-bazooka-explosion-2.png)
+
 | Field | Rules |
 |---|---|
 | `name` | A new resource name: `kWeapon` + a capital letter + 2-40 letters/digits (`^kWeapon[A-Z][A-Za-z0-9]{2,40}$`). Can't be a vanilla name, and can't start with `kWeaponCluster` or `kWeaponFactory`. Must be unique across every enabled mod. |
