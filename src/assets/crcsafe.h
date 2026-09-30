@@ -19,4 +19,10 @@ bool Collides(const std::vector<Entry>& table, const std::string& fileName);
 // they can't verify.
 bool Available();
 const std::vector<Entry>& Entries();
+
+// The same table read from a WormsMayhem.exe image on disk (tools that run without the game), checked the same way.
+constexpr uint32_t kTableVa = 0x922508, kFirstCrc = 0xed888fb8;
+constexpr int kExpectedCount = 89;
+bool ParseImage(const std::vector<uint8_t>& image, std::vector<Entry>* out);
+bool ReadFromExe(const std::wstring& exePath, std::vector<Entry>* out);
 }  // namespace melange::assets::crcsafe

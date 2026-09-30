@@ -196,7 +196,7 @@ target_link_libraries(oasis_rpc_selftest PRIVATE oasis_core)
 add_executable(oasis_standalone
     src/oasis/standalone/main.cpp src/oasis/standalone/ini_edit.cpp src/oasis/standalone/mods_provider.cpp
     src/oasis/standalone/json_write.cpp src/oasis/standalone/game_lock.cpp src/oasis/standalone/wormsign_provider.cpp
-    src/oasis/standalone/level_provider.cpp src/oasis/rpc/erg_assets.cpp
+    src/oasis/standalone/level_provider.cpp src/oasis/rpc/erg_assets.cpp src/assets/crcsafe_math.cpp src/assets/crcsafe_file.cpp
     src/oasis/auth.cpp src/oasis/webpanels.cpp src/oasis/rpc/ini_edit.cpp ${ERG_SERVICE_SOURCES}
     src/wormsign/format.cpp src/wormsign/records.cpp
     ${CMAKE_BINARY_DIR}/generated/oasis_web.rc)
@@ -387,6 +387,7 @@ target_link_libraries(weapons_behaviour_selftest PRIVATE safetyhook::safetyhook 
 add_executable(assets_selftest
     tests/assets_selftest.cpp
     src/assets/crcsafe_math.cpp
+    src/assets/crcsafe_file.cpp
     src/assets/roots_math.cpp
     src/assets/banks.cpp
     src/assets/icons_math.cpp)

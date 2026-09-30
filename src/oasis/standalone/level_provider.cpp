@@ -4,8 +4,10 @@
 
 #include <shlobj.h>
 
+#include <cstdio>
 #include <memory>
 
+#include "assets/crcsafe.h"
 #include "erg/service.h"
 #include "melange/oasis.h"
 #include "oasis/core/router.h"
@@ -17,6 +19,7 @@ namespace {
 std::unique_ptr<erg::service::Service> g_service;
 std::wstring g_gameDir;
 std::string g_version;
+std::vector<assets::crcsafe::Entry> g_crc;
 
 std::wstring DefaultProjects(const std::wstring& gameDir) {
     PWSTR docs = nullptr;
@@ -54,6 +57,11 @@ void Install(const std::wstring& gameDir, const std::wstring& projectsDir, const
     env.packs = &EnabledPacks;
     env.modsReadOnly = [] { return GameRunning(g_gameDir); };
     env.modActive = [](const std::string&) { return false; };
+    if (!assets::crcsafe::ReadFromExe(gameDir + L"\\WormsMayhem.exe", &g_crc)) {
+        g_crc.clear();
+        fwprintf(stderr, L"oasis: the CRC table could not be read from WormsMayhem.exe; built names are not checked\n");
+    }
+    env.crcCollides = [](const std::string& name) { return assets::crcsafe::Collides(g_crc, name); };
     env.readOnly = [] { return core::router::ReadOnly(); };
     g_service = std::make_unique<erg::service::Service>(std::move(env));
     for (const auto& m : erg::service::Methods())

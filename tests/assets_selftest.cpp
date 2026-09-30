@@ -61,6 +61,49 @@ void TestCrcsafe() {
     Expect(crcsafe::Collides(table, "some/dir/WeapTwk.xom"), "crcsafe: compares the file name, not the full path");
 }
 
+std::vector<uint8_t> FakeImage(int entries, uint32_t firstCrc) {
+    constexpr uint32_t kBase = 0x400000, kSecRva = 0x522000, kRaw = 0x400, kStrRva = 0x523000;
+    std::vector<uint8_t> b(kRaw + 0x4000, 0);
+    auto put32 = [&](size_t off, uint32_t v) { std::memcpy(b.data() + off, &v, 4); };
+    auto put16 = [&](size_t off, uint16_t v) { std::memcpy(b.data() + off, &v, 2); };
+    put16(0, 0x5a4d);
+    put32(0x3c, 0x80);
+    put32(0x80, 0x4550);
+    put16(0x80 + 6, 1);
+    put16(0x80 + 20, 0xe0);
+    put16(0x80 + 24, 0x10b);
+    put32(0x80 + 24 + 28, kBase);
+    const size_t sec = 0x80 + 24 + 0xe0;
+    put32(sec + 8, 0x4000);
+    put32(sec + 12, kSecRva);
+    put32(sec + 16, 0x4000);
+    put32(sec + 20, kRaw);
+    size_t str = kRaw + (kStrRva - kSecRva);
+    for (int i = 0; i < entries; ++i) {
+        const std::string name = "Data/Tweak/file" + std::to_string(i) + ".xom";
+        const size_t at = kRaw + (crcsafe::kTableVa - kBase - kSecRva) + 8u * i;
+        put32(at, static_cast<uint32_t>(kBase + kSecRva + (str - kRaw)));
+        put32(at + 4, i ? 0x1000u + i : firstCrc);
+        std::memcpy(b.data() + str, name.c_str(), name.size() + 1);
+        str += name.size() + 1;
+    }
+    return b;
+}
+
+void TestCrcsafeImage() {
+    std::vector<crcsafe::Entry> t;
+    Expect(crcsafe::ParseImage(FakeImage(crcsafe::kExpectedCount, crcsafe::kFirstCrc), &t) &&
+               t.size() == static_cast<size_t>(crcsafe::kExpectedCount) && t[3].path == "Data/Tweak/file3.xom" &&
+               crcsafe::Collides(t, "FILE88.XOM"),
+           "crcsafe: the table reads from an exe image");
+    Expect(!crcsafe::ParseImage(FakeImage(crcsafe::kExpectedCount, 0x1234), &t) && t.empty(),
+           "crcsafe: an image whose first entry differs is refused");
+    Expect(!crcsafe::ParseImage(FakeImage(crcsafe::kExpectedCount - 1, crcsafe::kFirstCrc), &t),
+           "crcsafe: an image with another entry count is refused");
+    std::vector<uint8_t> junk(64, 0x5a);
+    Expect(!crcsafe::ParseImage(junk, &t), "crcsafe: a file that is not a PE image is refused");
+}
+
 // ---------------------------------------------------------------------------------------------
 // roots: the "<modId>.*" naming rule and the CRC-collision refusal.
 // ---------------------------------------------------------------------------------------------
@@ -329,6 +372,7 @@ int main() {
     g_root = dir;
 
     TestCrcsafe();
+    TestCrcsafeImage();
     TestRootsNaming();
     TestBanksCheckPath();
     TestBanksSizeCap();
