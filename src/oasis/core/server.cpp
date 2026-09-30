@@ -209,16 +209,20 @@ int BeginRequest(mg_connection* conn) {
 DWORD WINAPI Writer(void* p) {
     auto* w = static_cast<WsConn*>(p);
     std::vector<std::string> msgs;
+    std::vector<uint8_t> binary;
     std::string reason;
     for (;;) {
         msgs.clear();
+        binary.clear();
         uint32_t wait = UINT32_MAX;
         uint16_t code = 0;
-        if (!router::Take(w->id, GetTickCount(), &msgs, &wait, &code, &reason)) break;
+        if (!router::Take(w->id, GetTickCount(), &msgs, &wait, &code, &reason, &binary)) break;
         uint64_t bytes = 0;
         bool failed = false;
-        for (const auto& m : msgs) {
-            if (mg_websocket_write(w->conn, MG_WEBSOCKET_OPCODE_TEXT, m.data(), m.size()) <= 0) {
+        for (size_t i = 0; i < msgs.size(); ++i) {
+            const auto& m = msgs[i];
+            const int op = i < binary.size() && binary[i] ? MG_WEBSOCKET_OPCODE_BINARY : MG_WEBSOCKET_OPCODE_TEXT;
+            if (mg_websocket_write(w->conn, op, m.data(), m.size()) <= 0) {
                 failed = true;
                 break;
             }

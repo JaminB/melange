@@ -25,6 +25,7 @@
 #include "oasis/rpc/ini_edit.h"
 #include "oasis/standalone/game_lock.h"
 #include "oasis/standalone/ini_edit.h"
+#include "oasis/standalone/level_provider.h"
 #include "oasis/standalone/mods_provider.h"
 #include "oasis/standalone/wormsign_provider.h"
 #include "tools/json_mini.h"
@@ -412,6 +413,11 @@ int main(int argc, char** argv) {
     MustAddMethod("mods.setEnabled", &ModsSetEnabled, oa::kRpcServerThread | oa::kRpcMutating);
     MustAddMethod("ini.get", &IniGetMethod, oa::kRpcServerThread);
     MustAddMethod("ini.set", &IniSetMethod, oa::kRpcServerThread | oa::kRpcMutating);
+    if (IniGet("Erg", "Enabled", "1") != "0") {
+        std::wstring projects = Widen(IniGet("Erg", "ProjectsDir", ""));
+        if (!projects.empty() && !(projects.size() > 1 && projects[1] == L':')) projects = g_gameDir + L"\\" + projects;
+        standalone::levelprov::Install(g_gameDir, projects, MELANGE_VERSION);
+    }
 
     oc::Config cfg;
     if (!oc::Start(cfg, melange::oasis::providers::MakeAuth(), files.get())) {

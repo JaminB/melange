@@ -182,6 +182,16 @@ void TestOutbox() {
     o.Take(3010, &out);
     Expect(out.size() == 1 && out[0] == "{\"t\":\"res\"}", "control messages are never delayed");
     Expect(!o.PushControl(std::string(2000, 'x')), "control over the connection cap reports it");
+    {
+        oc::Outbox::Limits bl;
+        bl.binaryBytes = 100;
+        oc::Outbox b(bl);
+        std::vector<std::string> msgs;
+        std::vector<uint8_t> flags;
+        Expect(b.PushControl("{}") && b.PushBinary(std::string(60, 'b')) && !b.PushBinary(std::string(60, 'c')), "binary cap");
+        b.Take(0, &msgs, &flags);
+        Expect(msgs.size() == 2 && flags == std::vector<uint8_t>{0, 1} && b.PushBinary(std::string(60, 'd')), "binary frames drain and free the cap");
+    }
     o.Unsubscribe(3);
     Expect(!o.Subscribed(3) && o.Subscribed(1), "unsubscribe");
 }
@@ -197,6 +207,15 @@ struct FakeClient {
         std::string reason;
         oc::router::Take(id, now ? now : GetTickCount(), &out, &wait, &c, &reason);
         if (code) *code = c;
+        return out;
+    }
+    std::vector<std::string> TakeBin(std::vector<uint8_t>* binary) {
+        std::vector<std::string> out;
+        uint32_t wait = 0;
+        uint16_t c = 0;
+        std::string reason;
+        binary->clear();
+        oc::router::Take(id, GetTickCount(), &out, &wait, &c, &reason, binary);
         return out;
     }
 };
@@ -215,6 +234,17 @@ void Refuse(const oa::Call&, oa::Result& r, void*) {
     r.ok = false;
     r.code = -32000;
     r.message = "no";
+}
+void Blobs(const oa::Call&, oa::Result& r, void*) {
+    oc::QueueBinary(7, "erg", R"({"kind":"voxels"})", std::string("\x01\x02\x03", 3));
+    oc::QueueBinary(300, "erg", "", std::string());
+    r.json = "{\"blobs\":2}";
+}
+void BlobsRefused(const oa::Call&, oa::Result& r, void*) {
+    oc::QueueBinary(8, "erg", "{}", "x");
+    r.ok = false;
+    r.code = -32000;
+    r.message = "refused";
 }
 std::vector<std::string> g_subLog;
 void OnSub(oa::ChannelId, int client, std::string_view filter, bool on, void*) {
@@ -255,6 +285,9 @@ void TestRouter() {
     oa::AddMethod("t.throws", &Throws, nullptr, oa::kRpcServerThread);
     oa::AddMethod("t.refuse", &Refuse, nullptr, oa::kRpcServerThread);
     oa::AddMethod("t.write", &Echo, nullptr, oa::kRpcServerThread | oa::kRpcMutating);
+    oa::AddMethod("t.blobs", &Blobs, nullptr, oa::kRpcServerThread);
+    oa::AddMethod("t.blobsmain", &Blobs, nullptr);
+    oa::AddMethod("t.blobsrefused", &BlobsRefused, nullptr, oa::kRpcServerThread);
 
     FakeClient a;
     a.id = oc::router::Open(a.ev);
@@ -303,6 +336,22 @@ void TestRouter() {
     Expect(out.size() == 3 && out[0] == R"({"t":"res","id":10,"r":{"a":[1,2.5,"x\n",true,null]}})" &&
                out[1] == R"({"t":"err","id":11,"code":-32000,"msg":"no"})" && out[2].starts_with(R"({"t":"res","id":12,"r":{"frame":0,"ms":)"),
            "server-thread calls", out.empty() ? "" : out[0]);
+
+    std::vector<uint8_t> bin;
+    oc::QueueBinary(1, "erg", "{}", "outside a handler");
+    oc::router::Text(c.id, R"({"t":"call","id":13,"m":"t.blobs"})");
+    oc::router::Text(c.id, R"({"t":"call","id":14,"m":"t.blobsrefused"})");
+    out = c.TakeBin(&bin);
+    Expect(out.size() == 6 && bin == std::vector<uint8_t>{0, 0, 1, 0, 1, 0} && out[0] == R"({"t":"res","id":13,"r":{"blobs":2}})" &&
+               out[1] == R"({"t":"bin","ref":7,"ch":"erg","len":3,"meta":{"kind":"voxels"}})" &&
+               out[2] == std::string("\x07\0\0\0\x01\x02\x03", 7) && out[3] == R"({"t":"bin","ref":300,"ch":"erg","len":0,"meta":null})" &&
+               out[4] == std::string("\x2c\x01\0\0", 4) && out[5] == R"({"t":"err","id":14,"code":-32000,"msg":"refused"})",
+           "binary frames follow their result, in order; none after an error", out.empty() ? "" : out[0]);
+    oc::router::Text(c.id, R"({"t":"call","id":15,"m":"t.blobsmain"})");
+    oc::Pump();
+    out = c.TakeBin(&bin);
+    Expect(out.size() == 5 && bin == std::vector<uint8_t>{0, 0, 1, 0, 1} && out[0] == R"({"t":"res","id":15,"r":{"blobs":2}})",
+           "binary frames from a main-thread handler", out.empty() ? "" : out[0]);
 
     for (int i = 0; i < 4; ++i) oc::router::Text(c.id, R"({"t":"call","id":20,"m":"t.crash"})");
     oc::router::Text(c.id, R"({"t":"call","id":21,"m":"t.throws"})");
@@ -860,6 +909,7 @@ void MutationRun(int seconds) {
 }  // namespace
 
 int main(int argc, char** argv) {
+    setvbuf(stdout, nullptr, _IONBF, 0);
     int mutate = 0;
     for (int i = 1; i < argc; ++i)
         if (!strcmp(argv[i], "--mutate") && i + 1 < argc) mutate = atoi(argv[++i]);
