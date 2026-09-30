@@ -27,6 +27,7 @@
 #include "levels/engine.h"
 #include "levels/gate.h"
 #include "levels/test.h"
+#include "lua/sim/bridge_internal.h"
 #include "melange/jlog.h"
 #include "mods/thumper_internal.h"
 #include "weapons/engine.h"
@@ -169,6 +170,37 @@ int LoadEntries(const std::string& bankName, std::vector<erg::bank::Entry> entri
     return n;
 }
 
+// A pack level's sim script, read once with the frozen content set.
+bool ReadLevelSim(const fs::path& modDir, const std::string& mod, const manifest::LevelDecl& d, const std::string& chunk,
+                  simbridge::LevelSim* out, std::string* err) {
+    std::error_code ec;
+    const fs::path p = modDir / game::Widen(d.sim);
+    const auto size = fs::file_size(p, ec);
+    std::string text;
+    if (!ec && size <= manifest::kMaxSimBytes) {
+        std::ifstream f(p, std::ios::binary);
+        text.resize(static_cast<size_t>(size));
+        if (!f || (size && !f.read(text.data(), static_cast<std::streamsize>(size)))) ec = std::make_error_code(std::errc::io_error);
+    }
+    if (ec) {
+        *err = d.sim + " could not be read";
+        return false;
+    }
+    std::string why;
+    if (size > manifest::kMaxSimBytes || !manifest::CheckSimText(text, &why)) {
+        *err = d.sim + ": " + (why.empty() ? "the level script is larger than 256 KB" : why);
+        return false;
+    }
+    out->mod = mod;
+    out->slug = d.slug;
+    out->stem = d.stem;
+    out->key = erg::names::Key(d.stem);
+    out->chunkName = "@" + mod + "/" + d.sim;
+    out->text = std::move(text);
+    out->knots = simbridge::LevelKnots(d.stem, chunk);
+    return true;
+}
+
 // The engine runs the cache root's copy of a pack chunk, written only from text the generator could have produced.
 bool AcceptChunk(const std::string& stem, const fs::path& root, std::string* text, std::string* err) {
     std::string got, why;
@@ -255,6 +287,7 @@ void RegisterPacks() {
         }
     }
     const bool cacheRoot = EnsureCacheRoot();
+    std::vector<simbridge::LevelSim> sims;
 
     for (auto& p : packs) {
         if (!cacheRoot) {
@@ -268,16 +301,22 @@ void RegisterPacks() {
         const fs::path root = GameDir() / game::Widen(p.rel);
         std::vector<erg::bank::Entry> entries;
         std::vector<std::string> titles;
+        std::vector<simbridge::LevelSim> packSims;
         std::string err;
         for (const auto& d : p.v.levels) {
+            std::string text;
             if (d.chunk && err.empty()) {
-                std::string text;
                 if (!AcceptChunk(d.stem, root, &text, &err)) break;
                 if (!ServeChunk(d.stem, text)) {
                     err = "cannot write Melange/cache/" + d.stem + ".lub";
                     break;
                 }
                 SetChunk(d.stem, text);
+            }
+            if (!d.sim.empty()) {
+                simbridge::LevelSim s;
+                if (!ReadLevelSim(fs::path(p.e.dir), p.v.mod, d, text, &s, &err)) break;
+                packSims.push_back(std::move(s));
             }
             erg::bank::Entry en;
             en.key = erg::names::Key(d.stem);
@@ -298,10 +337,12 @@ void RegisterPacks() {
             Refuse(p.v.mod, std::to_string(entries.size() - static_cast<size_t>(n)) + " of its levels did not register");
         } else {
             ++g_packs;
+            for (auto& s : packSims) sims.push_back(std::move(s));
             LOG_INFO("[levels] %s: %d level(s) registered from %s", p.v.mod.c_str(), n, p.rel.c_str());
             jlog::Rec("levels", jlog::Level::Info, "pack").Str("mod", p.v.mod).Uint("levels", static_cast<uint64_t>(n));
         }
     }
+    if (!sims.empty()) simbridge::SetLevelSims(std::move(sims));
     MarkRegistered();
     g_msRegister = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
     LOG_INFO("[levels] registration took %.2f ms", g_msRegister);

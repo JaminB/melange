@@ -21,7 +21,7 @@ constexpr Field kFields[] = {
     {"level", "level"},         {"landFile", "land file"},     {"landTheme", "land theme"},
     {"dataBank", "data bank"},  {"timeOfDay", "time of day"},  {"levelDetails", "level details"},
     {"lastScheme", "scheme choice"}, {"schemeName", "scheme name"}, {"scheme", "scheme settings"},
-    {"init", "team setup"},
+    {"init", "team setup"}, {"levelSim", "level script"},
 };
 
 std::string Show(const json::Value* v) {
@@ -61,7 +61,8 @@ std::string ToJson(const Data& d) {
         .Str("timeOfDay", d.timeOfDay)
         .Str("levelDetails", d.levelDetails)
         .Str("lastScheme", d.lastScheme)
-        .Str("schemeName", d.schemeName);
+        .Str("schemeName", d.schemeName)
+        .Str("levelSim", d.levelSim);
     if (d.haveScheme) o.Str("scheme", Hex(d.scheme));
     if (!d.schemeRaw.empty()) o.Str("schemeRaw", d.schemeRaw);
     if (d.haveInit) o.Str("init", Hex(d.init));
@@ -92,7 +93,8 @@ bool Compare(std::string_view recorded, std::string_view live, std::string* why)
         if (!a) continue;
         const json::Value* b = l.Get(f.key);
         if (!Same(a, b)) {
-            *why = std::string(f.label) + ": recorded " + Show(a) + ", now " + Show(b);
+            if (std::string_view(f.key) == "levelSim") *why = "level script differs";
+            else *why = std::string(f.label) + ": recorded " + Show(a) + ", now " + Show(b);
             return false;
         }
     }

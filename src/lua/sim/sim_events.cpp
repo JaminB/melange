@@ -15,6 +15,8 @@ Config g_cfg;
 namespace {
 using Clock = std::chrono::steady_clock;
 std::vector<ModSource> g_sources;
+std::vector<LevelSource> g_levelSources;
+std::string g_levelKey;
 uint32_t g_serial = 0;
 LogSink g_sink = nullptr;
 void (*g_hooksChanged)() = nullptr;
@@ -60,6 +62,16 @@ void Compact() {
 int PushName(l5::State* L, const void* ctx) {
     l5::A().pushstring(L, static_cast<const char*>(ctx));
     return 1;
+}
+
+bool ForLevel(const LevelSource& s, const std::string& key) {
+    return !key.empty() && (key == s.key || key == s.key + ".S");
+}
+
+size_t LevelCount() {
+    size_t n = 0;
+    for (auto& s : g_levelSources) n += ForLevel(s, g_levelKey);
+    return n;
 }
 
 int PushTick(l5::State* L, const void* ctx) {
@@ -156,7 +168,31 @@ void SetSources(std::vector<ModSource> mods) {
     if (g_hooksChanged) g_hooksChanged();
 }
 
-size_t SourceCount() { return g_sources.size(); }
+size_t SourceCount() { return g_sources.size() + LevelCount(); }
+
+void SetLevelSources(std::vector<LevelSource> sources) {
+    g_levelSources = std::move(sources);
+    if (g_hooksChanged) g_hooksChanged();
+}
+
+void SetLevel(const std::string& key) {
+    if (key == g_levelKey) return;
+    g_levelKey = key;
+    if (g_hooksChanged) g_hooksChanged();
+}
+
+std::string LevelDigest() {
+    std::string s;
+    for (auto& m : g.mods)
+        if (m.level) s += (s.empty() ? "" : ",") + m.sha256;
+    return s;
+}
+
+bool IsLevelMod(int mod) { return mod >= 0 && mod < static_cast<int>(g.mods.size()) && g.mods[mod].level; }
+
+void TurnStarted() {
+    if (g.active) g.turnPending = true;
+}
 void SetLogSink(LogSink fn) { g_sink = fn; }
 void SetHooksChanged(void (*fn)()) { g_hooksChanged = fn; }
 bool Active() { return g.active; }
@@ -181,22 +217,37 @@ bool Init(const std::vector<std::string>& forwarded, bool gateOpen) {
         const uint16_t id = l5::Lookup(n.c_str());
         if (id != 0xffff) g.forwarded[id] = n;
     }
-    if (g_sources.empty() && g_beforeLoad.empty()) return false;
+    std::vector<const ModSource*> srcs;
+    for (auto& s : g_sources) srcs.push_back(&s);
+    std::vector<const LevelSource*> levels;
+    for (auto& s : g_levelSources)
+        if (ForLevel(s, g_levelKey)) levels.push_back(&s);
+    for (auto* s : levels) srcs.push_back(&s->src);
+    if (srcs.empty() && g_beforeLoad.empty()) return false;
     if (!gateOpen) {
-        LOG_INFO("[sim] match %u: %zu sim mods suspended (gate closed)", g.serial, g_sources.size());
+        LOG_INFO("[sim] match %u: %zu sim mods suspended (gate closed)", g.serial, srcs.size());
         return false;
     }
     NotifyBeforeLoad();
-    if (g_sources.empty()) return false;
+    if (srcs.empty()) return false;
     const auto t0 = Clock::now();
     CaptureEngineRefs();
     g.baseHeapKB = l5::A().getgccount(g.L);
-    for (auto& s : g_sources) {
+    for (size_t k = 0; k < srcs.size(); ++k) {
+        const ModSource& s = *srcs[k];
         Mod m;
         m.id = s.id;
         m.version = s.version;
         m.chunkName = s.chunkName;
         m.rng = g.seed ^ Fnv1a(s.id.c_str());
+        if (k >= g_sources.size()) {
+            const LevelSource& l = *levels[k - g_sources.size()];
+            m.level = true;
+            m.levelKey = l.key;
+            m.stem = l.stem;
+            m.sha256 = l.sha256;
+            m.knots = l.knots;
+        }
         g.mods.push_back(std::move(m));
     }
     for (int i = 0; i < static_cast<int>(g.mods.size()); ++i) {
@@ -205,14 +256,15 @@ bool Init(const std::vector<std::string>& forwarded, bool gateOpen) {
         std::string err;
         if (!BuildEnv(i)) {
             err = "cannot build the environment";
-        } else if (LoadChunk(i, g_sources[i].code, &err)) {
+        } else if (LoadChunk(i, srcs[i]->code, &err)) {
             m.loaded = true;
         }
         if (!m.loaded) {
             ++g.faults;
             ++m.faults;
-            LOG_ERROR("[sim] %s: entry.sim failed, the mod is not loaded: %s", m.id.c_str(), err.c_str());
-            ModLog(i, 3, ("entry.sim failed: " + err).c_str());
+            const char* what = m.level ? "level script" : "entry.sim";
+            LOG_ERROR("[sim] %s: %s failed, the mod is not loaded: %s", m.id.c_str(), what, err.c_str());
+            ModLog(i, 3, (std::string(what) + " failed: " + err).c_str());
             DropModCallbacks(i);
             DropRef(m.envRef);
         }
@@ -265,6 +317,12 @@ void Update() {
             }
         }
         DeliverEvent("tick", &PushTick, &tick);
+        if (g.turnPending) {
+            g.turnPending = false;
+            const std::vector<float> turn{static_cast<float>(++g.turns)};
+            const DispatchFloats d{"sim.turnStarted", &turn};
+            DeliverEvent(d.event, &PushDispatch, &d);
+        }
     }
     if (!g_tickHooks.empty()) {
         auto hooks = g_tickHooks;

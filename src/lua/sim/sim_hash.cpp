@@ -315,16 +315,18 @@ void HashContrib(wormsign::Hasher& h, uint32_t, void* user) {
     m.hashAcc = 0;
 }
 
-std::string ContribName(const std::string& id, const char* what) {
+// "mod.<id>.<what>"; a level script "<modId>:<slug>" is "level.<modId>.<slug>.<what>".
+std::string ContribName(const Mod& m, const char* what) {
+    const std::string prefix = m.level ? "level." : "mod.";
     std::string s;
-    for (char c : id) {
+    for (char c : m.id) {
         const bool ok = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '.' ||
                         c == '_' || c == '-';
-        s += ok ? c : '_';
+        s += ok ? c : m.level && c == ':' ? '.' : '_';
     }
-    const size_t room = 63 - 4 - strlen(what) - 1;
+    const size_t room = 63 - prefix.size() - strlen(what) - 1;
     if (s.size() > room) s.resize(room);
-    return "mod." + s + "." + what;
+    return prefix + s + "." + what;
 }
 
 // `unref`: the references belong to the live match VM (at its end); a VM that was never seen closing is gone.
@@ -375,9 +377,9 @@ void OnMatch(bool begin, void*) {
         st.g = std::make_unique<KeyMap>();
         st.s = std::make_unique<KeyMap>();
         if (g_mode != simhash::EnvMode::Off)
-            st.envHandle = wormsign::AddContributor(ContribName(m.id, "env").c_str(), &EnvContrib,
+            st.envHandle = wormsign::AddContributor(ContribName(m, "env").c_str(), &EnvContrib,
                                                     reinterpret_cast<void*>(static_cast<intptr_t>(i)));
-        st.hashHandle = wormsign::AddContributor(ContribName(m.id, "hash").c_str(), &HashContrib,
+        st.hashHandle = wormsign::AddContributor(ContribName(m, "hash").c_str(), &HashContrib,
                                                  reinterpret_cast<void*>(static_cast<intptr_t>(i)));
     }
     a.settop(L, top);

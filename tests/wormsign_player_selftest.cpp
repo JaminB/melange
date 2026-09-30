@@ -433,6 +433,14 @@ void Setup() {
            "newer fingerprint not compared");
     Expect(!setup::Compare("{", rec, &why), "unreadable recording");
     Expect(setup::Compare(R"({"landFile":"cropcircle-w3d.xan","extra":1})", rec, &why), "unknown recorded keys ignored");
+    e = d;
+    e.levelSim = "ab12";
+    const std::string withSim = setup::ToJson(e);
+    Expect(setup::Compare(withSim, withSim, &why), "same level script");
+    e.levelSim = "cd34";
+    Expect(!setup::Compare(withSim, setup::ToJson(e), &why) && why == "level script differs", "edited level script");
+    Expect(!setup::Compare(rec, withSim, &why) && why == "level script differs", "a level script the recording lacked");
+    Expect(setup::Compare(R"({"landFile":"cropcircle-w3d.xan"})", withSim, &why), "an older recording has no levelSim");
 }
 
 // ---------------------------------------------------------------- record, then replay, a toy simulation

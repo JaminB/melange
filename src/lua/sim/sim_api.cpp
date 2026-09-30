@@ -227,25 +227,7 @@ int __cdecl LGetData(l5::State* L) {
 int __cdecl LSetData(l5::State* L) {
     const auto& a = l5::A();
     if (!IsType(L, 1, l5::kTString) || a.gettop(L) < 2) return Fail(L, "wum.sim.setData: expected (data id, value)");
-    int type = 0;
-    if (const char* why = DataPrecheck(a.tostring(L, 1), &type)) return NilReason(L, why);
-    if (type == 4 ? !a.isstring(L, 2) : !a.isnumber(L, 2))
-        return NilReason(L, type == 4 ? "the value must be a string" : "the value must be a number");
-    if (!EnsureEngineRef(kSetData)) return NilReason(L, "SetData is unavailable");
-    const int top = a.gettop(L);
-    const int run0 = l5::RunState();
-    SuspendBudget();
-    a.rawgeti(L, l5::kRegistry, g.engineRef[kSetData]);
-    a.pushvalue(L, 1);
-    a.pushvalue(L, 2);
-    const int rc = a.pcall(L, 2, 0, 0);
-    ResumeBudget();
-    a.settop(L, top);
-    if (run0 == 1 && l5::RunState() == 2) {
-        LOG_ERROR("[sim] setData halted the level script despite the pre-check (left halted)");
-        return NilReason(L, "halted");
-    }
-    if (rc) return NilReason(L, "SetData failed");
+    if (const char* why = SetDataAt(L, a.tostring(L, 1), 2)) return NilReason(L, why);
     a.pushboolean(L, 1);
     return 1;
 }
@@ -295,6 +277,29 @@ int PushSend(l5::State* L, const void* ctx) {
     return 1;
 }
 }  // namespace
+
+const char* SetDataAt(l5::State* L, const char* name, int v) {
+    const auto& a = l5::A();
+    int type = 0;
+    if (const char* why = DataPrecheck(name, &type)) return why;
+    if (type == 4 ? !a.isstring(L, v) : !a.isnumber(L, v))
+        return type == 4 ? "the value must be a string" : "the value must be a number";
+    if (!EnsureEngineRef(kSetData)) return "SetData is unavailable";
+    const int top = a.gettop(L);
+    const int run0 = l5::RunState();
+    SuspendBudget();
+    a.rawgeti(L, l5::kRegistry, g.engineRef[kSetData]);
+    a.pushstring(L, name);
+    a.pushvalue(L, v);
+    const int rc = a.pcall(L, 2, 0, 0);
+    ResumeBudget();
+    a.settop(L, top);
+    if (run0 == 1 && l5::RunState() == 2) {
+        LOG_ERROR("[sim] setData halted the level script despite the pre-check (left halted)");
+        return "halted";
+    }
+    return rc ? "SetData failed" : nullptr;
+}
 
 void CaptureEngineRefs() {
     for (int i = 0; i < 6; ++i) EnsureEngineRef(i);
@@ -350,6 +355,11 @@ void PushWum(int mod) {
     a.rawset(L, sim);
     for (int i = 0; i < g_extraCount; ++i) SetFn(L, sim, g_extra[i].name, g_extra[i].fn, mod);
     a.rawset(L, wum);
+    if (m.level) {
+        a.pushstring(L, "level");
+        PushLevel(mod);
+        a.rawset(L, wum);
+    }
 }
 
 const char* SendResultText(sim::SendResult r) {
