@@ -18,6 +18,8 @@
 #include "erg/install.h"
 #include "erg/jsonio.h"
 #include "erg/load.h"
+#include "erg/luagen.h"
+#include "erg/objects.h"
 #include "erg/patch.h"
 #include "erg/project.h"
 #include "erg/scene.h"
@@ -208,6 +210,94 @@ std::vector<uint8_t> SyntheticScripts() {
     }
     d.root = n + 1;
     return Bytes(d);
+}
+
+// A weapon table: two crate-able names, a sub-munition without a display name and a non-weapon container.
+std::vector<uint8_t> SyntheticWeapons() {
+    xom::Document d;
+    for (const char* c : {"XContainer", "XResourceDetails", "XContainerResourceDetails", "XDataBank", "BaseWeaponContainer"}) AddType(d, c);
+    d.strings.push_back("");
+    const char* names[] = {"kWeaponBazooka", "kUtilityJetpack", "kWeaponClusterBomb", "kMineFactoryData"};
+    const char* shown[] = {"Text.kWeaponBazooka", "Text.kUtilityJetpack", "", "Text.kMineFactoryData"};
+    const uint32_t n = 4;
+    for (uint32_t i = 0; i < n; ++i) {
+        xom::Object r = New(d, "XContainerResourceDetails");
+        xu::SetStr(r, "Name", names[i]);
+        SetU(r, "Flags", 80);
+        r.field("Value")->bits = n + 2 + i;
+        d.objects.push_back(std::move(r));
+    }
+    xom::Object bank = New(d, "XDataBank");
+    Refs(bank, "ContainerResources", {1, 2, 3, 4});
+    d.objects.push_back(std::move(bank));
+    for (uint32_t i = 0; i < n; ++i) {
+        xom::Object w = New(d, "BaseWeaponContainer");
+        xu::SetStr(w, "DisplayName", shown[i]);
+        d.objects.push_back(std::move(w));
+    }
+    d.root = n + 1;
+    return Bytes(d);
+}
+
+void TestObjects() {
+    const std::vector<uint8_t> wb = SyntheticWeapons();
+    xom::Document wd;
+    std::string err;
+    Expect(xom::parse(wb.data(), wb.size(), wd, &err), "objects: the weapon table parses " + err);
+    erg::objects::Catalog cat;
+    Expect(erg::objects::CatalogFrom(wd, &cat) && cat.weapons == std::vector<std::string>{"kWeaponBazooka"} &&
+               cat.utilities == std::vector<std::string>{"kUtilityJetpack"},
+           "objects: the catalog holds the named weapons and utilities only");
+
+    erg::Scene s;
+    s.frames.push_back(erg::Frame{});
+    s.frames[0].id = 1;
+    auto knot = [&](const std::string& name, double y) {
+        erg::Detail d;
+        d.id = static_cast<int64_t>(s.details.size()) + 1;
+        d.frame = 1;
+        d.name = name;
+        d.resource = std::string(erg::kKnotResource);
+        d.pos = {0, y, 0};
+        s.details.push_back(d);
+    };
+    erg::ObjectSpec crate;
+    crate.knot = "CRATE_0";
+    crate.crate.contents = "kWeaponBazooka";
+    erg::ObjectSpec pad;
+    pad.type = erg::ObjectType::Telepad;
+    pad.knot = "TP_1_0";
+    pad.group = 1;
+    s.objects = {crate, pad};
+    knot("CRATE_0", 1);
+    knot("TP_1_0", 1);
+    std::vector<std::string> warns;
+    Expect(erg::objects::Validate(s, cat, &warns, &err) && warns.size() == 1 && warns[0].find("group 1") != std::string::npos,
+           "objects: a lone telepad warns");
+    s.water = 40;
+    warns.clear();
+    Expect(erg::objects::Validate(s, cat, &warns, &err) && warns.size() == 2 && warns[0].find("CRATE_0 is under the water") == 0,
+           "objects: a crate under the water warns");
+    s.water.reset();
+    s.objects[0].crate.contents = "kWeaponClusterBomb";
+    Expect(!erg::objects::Validate(s, cat, nullptr, &err) && err.find("objects[0].crate.contents") == 0, "objects: an unknown weapon is refused");
+    s.objects[0].crate.kind = erg::CrateKind::Utility;
+    s.objects[0].crate.contents = "kWeaponBazooka";
+    Expect(!erg::objects::Validate(s, cat, nullptr, &err), "objects: a weapon in a utility crate is refused");
+    s.objects[0].crate.contents = "kUtilityJetpack";
+    Expect(erg::objects::Validate(s, cat, nullptr, &err), "objects: a utility crate");
+
+    Expect(erg::objects::NextKnot(s, erg::ObjectType::Crate, 0) == "CRATE_1", "knots: the next crate");
+    Expect(erg::objects::NextKnot(s, erg::ObjectType::Telepad, 1) == "TP_1_1" &&
+               erg::objects::NextKnot(s, erg::ObjectType::Telepad, 2) == "TP_2_0" &&
+               erg::objects::NextKnot(s, erg::ObjectType::Telepad, 9).empty(),
+           "knots: telepads by group");
+    Expect(erg::objects::NextKnot(s, erg::ObjectType::Trigger, 0) == "TRIG_0", "knots: the first trigger");
+    Expect(erg::objects::NextKnot(s, erg::ObjectType::MineFactory, 0) == "minefactory", "knots: the factory");
+    knot("minefactory", 0);
+    Expect(erg::objects::NextKnot(s, erg::ObjectType::MineFactory, 0).empty(), "knots: one factory only");
+    for (int i = 0; i < 256; ++i) knot("TRIG_" + std::to_string(i), 0);
+    Expect(erg::objects::NextKnot(s, erg::ObjectType::Trigger, 0).empty(), "knots: none left after TRIG_255");
 }
 
 std::vector<uint8_t> SyntheticStrings() {
@@ -659,6 +749,17 @@ void RemoveTree(const std::wstring& dir) {
     RemoveDirectoryW(dir.c_str());
 }
 
+bool ReadAll(const std::wstring& path, std::vector<uint8_t>* out) {
+    FILE* f = _wfopen(path.c_str(), L"rb");
+    if (!f) return false;
+    out->clear();
+    uint8_t buf[65536];
+    size_t n;
+    while ((n = std::fread(buf, 1, sizeof buf, f)) > 0) out->insert(out->end(), buf, buf + n);
+    std::fclose(f);
+    return true;
+}
+
 void Put(const std::wstring& path, const std::vector<uint8_t>& b) {
     erg::install::MakeDirs(path.substr(0, path.find_last_of(L'\\')));
     std::string err;
@@ -708,6 +809,7 @@ void TestService(const std::wstring& root) {
     const std::wstring game = root + L"\\game", data = game + L"\\Data";
     const erg::load::BaseFiles f = Base();
     Put(data + L"\\Tweak\\SCRIPTS.XOM", SyntheticScripts());
+    Put(data + L"\\Tweak\\WEAPTWK.XOM", SyntheticWeapons());
     Put(data + L"\\Language\\PC\\EngFE.xom", SyntheticStrings());
     Put(data + L"\\Maps\\Multi_Synth.xan", f.xan);
     Put(data + L"\\Maps\\Multi_Synth.hmp", *f.hmp);
@@ -826,6 +928,69 @@ void TestService(const std::wstring& root) {
            "save: a malformed patch");
     Expect(Call(S, "level.save", R"({"project":"nope","patch":)" + erg::WritePatch(p) + "}").code == erg::service::kBadParams,
            "save: an unknown project");
+
+    {
+        r = Call(S, "level.objects", "{}");
+        Json ob = J(r.json);
+        Expect(r.ok && ob.find("weapons")->arr.size() == 1 && ob.find("weapons")->arr[0].str == "kWeaponBazooka" &&
+                   ob.find("utilities")->arr.size() == 1 && ob.find("crateKinds")->arr.size() == 3 && ob.find("error")->kind == Json::Kind::Null,
+               "objects: the install's catalog " + r.json.substr(0, 200));
+        erg::Patch o = p;
+        auto addKnot = [&](const char* name, erg::Vec3 pos) {
+            erg::Op a;
+            a.kind = erg::Op::Kind::Add;
+            a.frame = 12;
+            a.fields.name = name;
+            a.fields.resource = "Unit";
+            a.fields.pos = pos;
+            o.ops.push_back(a);
+        };
+        addKnot("CRATE_0", {1, 1, 1});
+        addKnot("TP_1_0", {2, 1, 1});
+        addKnot("minefactory", {3, 1, 1});
+        erg::ObjectSpec c, t, mf;
+        c.knot = "CRATE_0";
+        c.crate.contents = "kWeaponBazooka";
+        t.type = erg::ObjectType::Telepad;
+        t.knot = "TP_1_0";
+        t.group = 1;
+        mf.type = erg::ObjectType::MineFactory;
+        mf.knot = "minefactory";
+        o.objects = {c, t, mf};
+        r = Call(S, "level.save", R"({"project":"harbour","patch":)" + erg::WritePatch(o) + "}");
+        Json w = J(r.json);
+        Expect(r.ok && w.find("warnings")->arr.size() == 1 && w.find("warnings")->arr[0].str.find("telepad group 1") != std::string::npos,
+               "objects: saved as v2, a lone pad warns " + r.message + r.json.substr(0, 300));
+        const std::wstring test = root + L"\\testws";
+        erg::install::MakeDirs(test);
+        r = S.s->BuildTest("harbour", test);
+        std::vector<uint8_t> lub, xan;
+        std::string e2;
+        Expect(r.ok && ReadAll(test + L"\\ergtest_harbour.lub", &lub) && ReadAll(test + L"\\Maps\\ergtest_harbour.xan", &xan),
+               "objects: the test build writes a chunk " + r.message);
+        const std::string chunk(lub.begin(), lub.end());
+        Expect(chunk.find("ergCrate(\"CRATE_0\", \"weapon\", \"kWeaponBazooka\", 1, 25, 0)") != std::string::npos &&
+                   chunk.find("lib_CreateTelepad(\"TP_1_0\", 1)") != std::string::npos &&
+                   chunk.find("MineFactoryOn ~= true then SendMessage(\"GameLogic.PlaceObjects\") end") != std::string::npos &&
+                   erg::luagen::IsGenerated("ergtest_harbour", chunk, &e2),
+               "objects: the chunk holds the crate, the pad and the guarded factory, and verifies " + e2);
+        xom::Document xd;
+        Expect(xom::parse(xan.data(), xan.size(), xd, &e2), "objects: the built .xan parses " + e2);
+        int knots = 0;
+        for (const auto& obj : xd.objects) {
+            if (obj.type != "DetailEntityStore") continue;
+            const std::string n = xu::Str(obj, "Name");
+            Expect(n != "telepad", "objects: no detail named telepad");
+            if (n == "CRATE_0" || n == "TP_1_0" || n == "minefactory") knots += xu::Str(obj, "ResourceName") == erg::kKnotResource;
+        }
+        Expect(knots == 3, "objects: every knot is the non-visual marker");
+        o.objects[0].crate.contents = "kWeaponClusterBomb";
+        r = Call(S, "level.save", R"({"project":"harbour","patch":)" + erg::WritePatch(o) + "}");
+        Expect(r.ok && J(r.json).find("warnings")->arr.size() == 2, "objects: unknown contents save with a warning");
+        r = S.s->BuildTest("harbour", test);
+        Expect(!r.ok && r.message.find("not a weapon of this install") != std::string::npos, "objects: and the build refuses them " + r.message);
+        Expect(Call(S, "level.save", R"({"project":"harbour","patch":)" + erg::WritePatch(q) + "}").ok, "objects: back to the last save");
+    }
 
     {
         erg::project::Store other(root + L"\\projects");
@@ -971,7 +1136,7 @@ void TestService(const std::wstring& root) {
     Expect(Call(S, "level.close", R"({"project":"harbour"})").ok, "close: read-only");
     S.oasisReadOnly = false;
     Expect(Call(S, "level.nope", "{}").code == -32601 && Call(S, "level.list", "[1]").code == erg::service::kBadParams, "unknown method, bad params");
-    Expect(erg::service::Methods().size() == 9 && erg::service::Mutating("level.save") && !erg::service::Mutating("level.load"), "methods");
+    Expect(erg::service::Methods().size() == 10 && erg::service::Mutating("level.save") && !erg::service::Mutating("level.load"), "methods");
 }
 }  // namespace
 
@@ -983,6 +1148,7 @@ int main() {
     TestVoxels();
     TestNegative();
     TestBank();
+    TestObjects();
     const std::wstring root = TempDir();
     TestStore(root);
     TestService(root);

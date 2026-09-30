@@ -140,7 +140,10 @@ bool BuildXan(const load::Loaded& base, const Scene& edited, const VoxelEdits& v
             }
         }
         xom::Object obj = *like;
-        if (!xomutil::SetStr(obj, "Name", d.name) || !xomutil::SetStr(obj, "ResourceName", d.resource) ||
+        // An object's knot is only a position: it always gets the non-visual marker, whatever the scene says.
+        const bool knot = std::any_of(edited.objects.begin(), edited.objects.end(), [&](const ObjectSpec& o) { return o.knot == d.name; });
+        const std::string resource = knot ? std::string(kKnotResource) : d.resource;
+        if (!xomutil::SetStr(obj, "Name", d.name) || !xomutil::SetStr(obj, "ResourceName", resource) ||
             !xomutil::SetVec(obj, "Position", d.pos) || !xomutil::SetVec(obj, "Orientation", d.rot) ||
             !xomutil::SetVec(obj, "Scale", d.scale) || !xomutil::SetVec(obj, "VoxelPos", d.voxelPos))
             return Fail(err, "a new detail could not be built");
@@ -301,6 +304,7 @@ Patch Diff(const Scene& base, const Scene& edited, const VoxelEdits& voxels, con
     p.water = edited.water;
     p.spawns = edited.spawns;
     p.hmp = edited.hmp;
+    p.objects = edited.objects;
     for (const auto& b : base.details) {
         if (!b.src) continue;
         const Detail* e = edited.FindDetailBySrc(*b.src);

@@ -9,6 +9,10 @@ namespace {
 constexpr std::string_view kWater = "SetData(\"Water.Level\", ";
 constexpr std::string_view kKnotLine = "        worm.Spawn = \"WORM\" .. i\n";
 constexpr std::string_view kPlaceLine = "    SendMessage(\"GameLogic.PlaceObjects\")\n";
+// The scheme's own factory, when it has one, is the only one: a second trips the engine's one-factory assert.
+constexpr std::string_view kFactoryLine =
+    "    if QueryContainer(\"GM.SchemeData\").MineFactoryOn ~= true then SendMessage(\"GameLogic.PlaceObjects\") end\n";
+constexpr std::string_view kFactoryKnot = "minefactory";
 constexpr std::string_view kCrateCall = "    ergCrate(", kTelepadCall = "    lib_CreateTelepad(", kTriggerCall = "    ergTrigger(";
 
 constexpr std::string_view kCrateFn =
@@ -202,11 +206,14 @@ std::string Chunk(const Scene& s) {
 std::string Text(std::string_view stem, const ChunkSpec& c) {
     if (!c.knots && !c.placeObjects && c.objects.empty() && !c.water) return {};
     bool crates = false, triggers = false;
+    int factories = 0;
     for (auto& o : c.objects) {
-        if (o.type == ObjectType::MineFactory || !ValidateObject(o, "object", nullptr)) return {};
+        if (!ValidateObject(o, "object", nullptr)) return {};
         crates |= o.type == ObjectType::Crate;
         triggers |= o.type == ObjectType::Trigger;
+        factories += o.type == ObjectType::MineFactory;
     }
+    if (factories > 1) return {};
     std::string out = Header(stem);
     if (c.water) out += std::string(kWater) + Num(*c.water) + ")\n";
     if (c.knots || c.placeObjects || !c.objects.empty()) {
@@ -222,7 +229,8 @@ std::string Text(std::string_view stem, const ChunkSpec& c) {
             out += "        CloseContainer(lock)\n";
             out += "    end\n";
         }
-        if (c.placeObjects) out += kPlaceLine;
+        if (factories) out += kFactoryLine;
+        else if (c.placeObjects) out += kPlaceLine;
         for (auto& o : c.objects) out += ObjectLine(o);
         if (c.water) out += "    " + std::string(kWater) + Num(*c.water) + ")\n";
         out += "end\n";
@@ -247,6 +255,12 @@ bool Parse(std::string_view stem, std::string_view text, ChunkSpec* out) {
     c.water = WaterIn(text);
     c.knots = text.find(kKnotLine) != std::string_view::npos;
     c.placeObjects = text.find(kPlaceLine) != std::string_view::npos;
+    if (text.find(kFactoryLine) != std::string_view::npos) {
+        ObjectSpec f;
+        f.type = ObjectType::MineFactory;
+        f.knot = kFactoryKnot;
+        c.objects.push_back(std::move(f));
+    }
     size_t i = 0;
     while (i < text.size()) {
         size_t e = text.find('\n', i);

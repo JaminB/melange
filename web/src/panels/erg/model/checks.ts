@@ -19,11 +19,20 @@ export function checkScene(scene: Scene, frames: Frames, patchErrors: string[] =
   for (const [name, ids] of knots)
     if (ids.length > 1) out.push({ level: "warn", text: `${ids.length} details are named ${name}; the game uses one of them`, detail: ids[1] });
 
+  const objects = scene.objects ?? [];
+  const added = new Map(scene.details.filter((d) => d.src === null).map((d) => [d.name, d.id]));
+  const pads = new Map<number, string[]>();
+  for (const o of objects) if (o.type === "telepad") pads.set(o.group, [...(pads.get(o.group) ?? []), o.knot]);
+  for (const [g, knots] of pads)
+    if (knots.length === 1) out.push({ level: "warn", text: `Telepad group ${g} has one pad (${knots[0]}); it needs a partner`, detail: added.get(knots[0]) });
+  const crates = new Set(objects.filter((o) => o.type === "crate").map((o) => o.knot));
+
   const water = scene.water.level;
   const terrain = scene.frames.filter((f) => !f.folder && f.parent !== null && f.size[0] && f.size[2]);
   for (const d of scene.details) {
     const p = frames.detailWorld(d);
-    if (water !== null && PLACED_OBJECTS.includes(d.name) && p[1] * WORLD_PER_XAN < water)
+    const placed = PLACED_OBJECTS.includes(d.name) || (d.src === null && crates.has(d.name));
+    if (water !== null && placed && p[1] * WORLD_PER_XAN < water)
       out.push({ level: "warn", text: `${d.name} #${d.id} is under water (${(p[1] * WORLD_PER_XAN).toFixed(1)} < ${water})`, detail: d.id });
     if (terrain.length && !terrain.some((f) => overFrame(frames, f, p)))
       out.push({ level: "warn", text: `${d.name || d.resource} #${d.id} is outside every terrain frame`, detail: d.id });

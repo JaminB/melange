@@ -309,6 +309,7 @@ at all.
 | `level.test` | `{project}` → `{key, state}` | builds into the Test workspace, arms a one-shot override, starts Quick Game itself when the game supports it |
 | `level.themes` | `{}` → themes, times of day, material files | from the install's own `Data\Themes` |
 | `level.palette` | `{theme}` → placeable entries `{name, resource, role, preview}` | `preview` is an `/erg/assets/` key |
+| `level.objects` | `{}` → `{crateKinds, weapons, utilities, limits, error}` | crate contents from the install's `Data\Tweak\WEAPTWK.XOM`; `error` is null when it was read |
 | `level.close` | `{project}` → `{}` | frees the server's parsed copy of the base |
 
 The `erg` channel (Coalesce) carries `{state, key, detail}` from `level.test`'s progress (`idle`, `registering`,
