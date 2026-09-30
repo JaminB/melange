@@ -750,6 +750,16 @@ void TestService(const std::wstring& root) {
         blobsOk &= r.blobs[i].ref == scene.blobs[i].ref && r.blobs[i].bytes.size() == scene.blobs[i].bytes &&
                    J(r.blobs[i].meta).find("kind")->str == scene.blobs[i].kind;
     Expect(blobsOk, "load base: blob refs, sizes and meta");
+    {
+        const auto again = Call(S, "level.load", R"({"base":"Multi.Synth"})");
+        erg::Scene s2;
+        bool disjoint = again.ok && erg::ParseScene(again.json, &s2, &err) && again.blobs.size() == r.blobs.size();
+        for (const auto& a : again.blobs)
+            for (const auto& b : r.blobs) disjoint &= a.ref != b.ref;
+        for (size_t i = 0; disjoint && i < again.blobs.size(); ++i) disjoint &= again.blobs[i].bytes == r.blobs[i].bytes;
+        const erg::Frame* fr = s2.frames.empty() ? nullptr : &s2.frames.back();
+        Expect(disjoint && erg::ValidateScene(s2, &err) && fr, "load: a second load sends the same blobs under new refs " + err);
+    }
     Expect(!Call(S, "level.load", R"({"base":"Story.Synth"})").ok, "load: a story entry is not a base");
     Expect(Call(S, "level.load", R"({"base":"Multi.DinerMight"})").code == erg::service::kPolicy, "load: a base whose files are missing");
     Expect(Call(S, "level.load", R"({})").code == erg::service::kBadParams, "load: needs project or base");

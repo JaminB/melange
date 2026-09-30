@@ -29,6 +29,7 @@ using xom::Json;
 constexpr size_t kMaxCached = 4;
 constexpr uint64_t kMaxCachedBytes = 160u << 20;   // estimated parsed size of the cached bases
 constexpr uint64_t kMaxBlobBytes = 16u << 20;
+constexpr int64_t kMaxRef = 1 << 24;
 const PatchRules kRules{voxels::kAccepted, true};   // adds may target any frame
 
 Reply Err(int code, std::string msg) {
@@ -245,6 +246,7 @@ struct Service::Impl {
     std::map<std::string, std::string> strings, themeOfFile;
     std::vector<Cached> cache;
     uint64_t tick = 0;
+    int64_t refBase = 0;
     std::map<std::string, std::vector<PaletteEntry>> scenery;
 
     explicit Impl(Env e) : env(std::move(e)), store(env.projectsDir) {}
@@ -487,10 +489,28 @@ struct Service::Impl {
             scene = L->scene;
         }
         uint64_t total = 0;
-        for (const auto& b : scene.blobs) total += b.bytes;
-        if (total > kMaxBlobBytes) return Err(kPolicy, "the level's voxel data is larger than 16 MB");
-        r.json = WriteScene(scene);
+        int64_t maxRef = 0;
         for (const auto& b : scene.blobs) {
+            total += b.bytes;
+            maxRef = std::max(maxRef, b.ref);
+        }
+        if (total > kMaxBlobBytes) return Err(kPolicy, "the level's voxel data is larger than 16 MB");
+        // Refs run on across loads, so a frame left over from an earlier load never matches this one's refs.
+        if (refBase + maxRef >= kMaxRef) refBase = 0;
+        const int64_t shift = refBase;
+        refBase += maxRef;
+        std::vector<int64_t> original;
+        for (auto& b : scene.blobs) {
+            original.push_back(b.ref);
+            b.ref += shift;
+        }
+        for (auto& f : scene.frames) {
+            if (f.voxels >= 0) f.voxels += shift;
+            if (f.heightMap >= 0) f.heightMap += shift;
+        }
+        r.json = WriteScene(scene);
+        for (size_t i = 0; i < scene.blobs.size(); ++i) {
+            const auto& b = scene.blobs[i];
             Blob out;
             out.ref = static_cast<uint32_t>(b.ref);
             Json meta = Json::Obj();
@@ -501,10 +521,10 @@ struct Service::Impl {
             auto ed = b.kind == "voxels" ? voxels.find(b.frame) : voxels.end();
             if (ed != voxels.end()) {
                 out.bytes.resize(ed->second.size() * 4);
-                for (size_t i = 0; i < ed->second.size(); ++i)
-                    for (int k = 0; k < 4; ++k) out.bytes[i * 4 + k] = static_cast<char>(ed->second[i] >> (8 * k));
+                for (size_t k2 = 0; k2 < ed->second.size(); ++k2)
+                    for (int k = 0; k < 4; ++k) out.bytes[k2 * 4 + k] = static_cast<char>(ed->second[k2] >> (8 * k));
             } else {
-                const auto& src = L->blobs.at(b.ref);
+                const auto& src = L->blobs.at(original[i]);
                 out.bytes.assign(src.begin(), src.end());
             }
             r.blobs.push_back(std::move(out));
