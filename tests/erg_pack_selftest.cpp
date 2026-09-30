@@ -1,6 +1,7 @@
-// Offline self-test for E: the generated level chunk (luagen) and the pack writer (pack), over synthetic scenes and
+// Offline self-test of the generated level chunk (luagen) and the pack writer (pack), over synthetic scenes and
 // a scratch temp directory only -- no game, no game files. Exit code 0 = all passed.
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
@@ -237,6 +238,48 @@ void TestPackRefusesForeignFolder(const fs::path& base) {
     Expect(!err.empty(), "the refusal names a reason");
 }
 
+void TestPackStaleAndFolders(const fs::path& base) {
+    const fs::path dir = base / "stale" / "erg-pack-test";
+    std::string err;
+    std::vector<std::string> files;
+    auto first = BasicSpec("sample", false, true);
+    first.levelFiles.push_back({"assets/levels/Maps/erg_pack_test_sample.hmp", {'H'}});
+    first.levelFiles.push_back({"assets/levels/Maps/erg_pack_test_sample.txt", {'T'}});
+    Expect(erg::pack::WritePack(first, dir.wstring(), &files, &err), "an export with a .hmp and a chunk succeeds: " + err);
+    Expect(FileExists(dir / "assets" / "levels" / "Maps" / "erg_pack_test_sample.hmp"), "the .hmp is written");
+    Expect(erg::pack::WritePack(BasicSpec("sample", false, false), dir.wstring(), &files, &err), "a re-export succeeds: " + err);
+    Expect(!FileExists(dir / "assets" / "levels" / "Maps" / "erg_pack_test_sample.hmp") &&
+               !FileExists(dir / "assets" / "levels" / "Maps" / "erg_pack_test_sample.txt") &&
+               !FileExists(dir / "assets" / "levels" / "erg_pack_test_sample.lub"),
+           "a re-export without a .hmp, .txt or chunk removes the old ones");
+    Expect(ReadFile(dir / "spice.json").find("\"chunk\":false") != std::string::npos, "the re-export records chunk:false");
+
+    const fs::path legacy = base / "legacy";
+    fs::create_directories(legacy / "assets" / "Textures");
+    std::ofstream(legacy / "assets" / "Textures" / "x.tga", std::ios::binary) << "x";
+    Expect(!erg::pack::WritePack(BasicSpec("sample", false, false), legacy.wstring(), &files, &err) &&
+               !FileExists(legacy / "spice.json"),
+           "a folder with files but no spice.json is refused: " + err);
+    const fs::path empty = base / "empty";
+    fs::create_directories(empty);
+    Expect(erg::pack::WritePack(BasicSpec("sample", false, false), empty.wstring(), &files, &err), "an empty folder is used: " + err);
+
+    const fs::path linked = base / "linked", outside = base / "outside";
+    fs::create_directories(linked);
+    fs::create_directories(outside);
+    const std::wstring cmd = L"cmd /c mklink /J \"" + (linked / "assets").wstring() + L"\" \"" + outside.wstring() + L"\" >nul";
+    if (_wsystem(cmd.c_str()) == 0) {
+        std::ofstream(linked / "spice.json", std::ios::binary)
+            << "{\"spiceVersion\":1,\"id\":\"erg-pack-test\",\"version\":\"1.0.0\",\"name\":\"T\",\"kind\":\"content\"}";
+        Expect(!erg::pack::WritePack(BasicSpec("sample", false, false), linked.wstring(), &files, &err) &&
+                   fs::is_empty(outside),
+               "an export through a junction is refused and writes nothing outside: " + err);
+        fs::remove(linked / "assets");
+    } else {
+        Expect(false, "could not create a junction for the test");
+    }
+}
+
 void TestPackRefusesBadNames(const fs::path& base) {
     const fs::path dir = base / "badnames";
     std::string err;
@@ -323,6 +366,7 @@ int main() {
     TestPackMerge(base);
     TestPackRefusesForeignFolder(base);
     TestPackRefusesBadNames(base);
+    TestPackStaleAndFolders(base);
     TestPackNeverWritesCshEvenIfAskedTwice(base);
     fs::remove_all(base, ec);
     TestSampleModParses();

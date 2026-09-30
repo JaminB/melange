@@ -24,6 +24,8 @@ struct Env {
     std::function<bool()> modsReadOnly;                   // oasis.exe while the game runs: no writes under Mods
     std::function<bool(const std::string& modId)> modActive;   // enabled this launch (else a restart is needed)
     std::function<bool(const std::string& fileName)> crcCollides;   // a built file would shadow a CRC-listed one
+    std::function<bool(const std::string& modId)> inSession;   // an active pack while in a lobby: its files must not change
+    std::function<bool()> readOnly;                       // [Oasis] ReadOnly: level.load opens projects without a lock
 };
 
 struct Blob {

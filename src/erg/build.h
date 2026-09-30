@@ -27,6 +27,8 @@ struct Options {
 
 bool Build(const load::Loaded& base, const Scene& edited, const VoxelEdits& voxels, const Options& opt,
            std::vector<File>* out, std::string* err);
+// The optional outputs of `stem` (.hmp, .txt, .lub) that `files` does not hold: left over from an earlier build.
+std::vector<std::string> Stale(const std::string& stem, const std::vector<File>& files);
 
 // A patch applied to a loaded base: the scene and the voxel arrays its voxels ops produce.
 bool Apply(const load::Loaded& base, const Patch& p, const PatchRules& rules, Scene* scene, VoxelEdits* voxels,

@@ -1,5 +1,7 @@
 #include "erg/pack.h"
 
+#include <windows.h>
+
 #include <algorithm>
 #include <filesystem>
 #include <fstream>
@@ -17,10 +19,16 @@ bool Fail(std::string* err, std::string why) {
     return false;
 }
 
-// Files Erg itself ever writes for a level pack; anything else already in the target folder means some other mod
-// owns it (§7.2: a map pack ships nothing but these).
-bool TopLevelEntryIsOurs(const std::string& name) {
-    return name == "spice.json" || name == "build.ps1" || name == ".gitignore" || name == "assets" || name == "src";
+bool NoReparse(const fs::path& dir, const fs::path& rel) {
+    auto plain = [](const fs::path& p) {
+        const DWORD a = GetFileAttributesW(p.c_str());
+        return a == INVALID_FILE_ATTRIBUTES || !(a & FILE_ATTRIBUTE_REPARSE_POINT);
+    };
+    fs::path cur = dir;
+    if (!plain(cur)) return false;
+    for (const auto& part : rel)
+        if (!plain(cur /= part)) return false;
+    return true;
 }
 
 // A round-trip serializer for the generic json::Value DOM (json_read.h has no writer of its own): used only to
@@ -64,9 +72,10 @@ bool ReadExisting(const std::wstring& dir, const std::string& slug, Existing* ou
     std::error_code ec;
     if (!fs::exists(path, ec)) {
         if (fs::exists(dir, ec))
-            for (auto& e : fs::directory_iterator(dir, ec))
-                if (!TopLevelEntryIsOurs(e.path().filename().string()))
-                    return Fail(err, "this folder holds files Erg did not create ('" + e.path().filename().string() + "')");
+            for (auto& e : fs::directory_iterator(dir, ec)) {
+                (void)e;
+                return Fail(err, "this folder already holds files but no spice.json ('" + e.path().filename().string() + "')");
+            }
         return true;
     }
     json::Value v;
@@ -172,8 +181,18 @@ bool WritePack(const PackSpec& spec, const std::wstring& dir, std::vector<std::s
     }
 
     // Validate everything before writing anything, so a bad spec never leaves a half-written pack.
-    for (auto& [rel, label] : pending)
+    for (auto& [rel, label] : pending) {
         if (rel.empty()) return Fail(err, "empty path for '" + label + "'");
+        if (!NoReparse(dir, rel)) return Fail(err, "'" + label + "' would be written through a link or junction");
+    }
+    std::vector<fs::path> stale;
+    if (!spec.source)
+        for (const std::string rel : {"assets/levels/Maps/" + stem + ".hmp", "assets/levels/Maps/" + stem + ".txt", lubRel}) {
+            fs::path p;
+            if (std::none_of(spec.levelFiles.begin(), spec.levelFiles.end(), [&](const File& f) { return f.rel == rel; }) &&
+                SafeRel(rel, &p) && NoReparse(dir, p))
+                stale.push_back(fs::path(dir) / p);
+        }
 
     std::vector<std::string> written;
     for (auto& [rel, label] : pending) {
@@ -217,6 +236,10 @@ bool WritePack(const PackSpec& spec, const std::wstring& dir, std::vector<std::s
         }
         if (!WriteFile(full, bytes.data(), bytes.size(), err)) return false;
         written.push_back(label);
+    }
+    for (const auto& p : stale) {
+        std::error_code ec;
+        fs::remove(p, ec);
     }
     if (files) *files = written;
     return true;

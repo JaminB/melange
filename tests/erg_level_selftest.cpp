@@ -23,6 +23,7 @@
 #include "erg/scene.h"
 #include "erg/service.h"
 #include "erg/xomutil.h"
+#include "mods/spice.h"
 #include "xom/json.h"
 #include "xom/xom.h"
 
@@ -691,7 +692,7 @@ void TestStore(const std::wstring& root) {
 
 struct Svc {
     std::unique_ptr<erg::service::Service> s;
-    bool readOnly = false;
+    bool readOnly = false, inLobby = false, oasisReadOnly = false;
     std::vector<erg::install::Pack> packs;
 };
 
@@ -723,6 +724,8 @@ void TestService(const std::wstring& root) {
     env.modsReadOnly = [raw] { return raw->readOnly; };
     env.modActive = [](const std::string&) { return false; };
     env.crcCollides = [](const std::string& n) { return _stricmp(n.c_str(), "SCRIPTS.XOM") == 0; };
+    env.inSession = [raw](const std::string&) { return raw->inLobby; };
+    env.readOnly = [raw] { return raw->oasisReadOnly; };
     svc->s = std::make_unique<erg::service::Service>(env);
     Svc& S = *svc;
 
@@ -877,6 +880,49 @@ void TestService(const std::wstring& root) {
         r = Call(S, "level.build", R"({"modId":"my-maps"})");
         Expect(r.ok, "build: builds again once the junction is gone " + r.message);
     }
+    {
+        const std::wstring hmp = mod + L"\\assets\\levels\\Maps\\my_maps_harbour.hmp";
+        erg::Patch flat = pack;
+        flat.hmp = erg::HmpMode::None;
+        Put(mod + L"\\src\\harbour.ergpatch.json", erg::WritePatch(flat));
+        r = Call(S, "level.build", R"({"modId":"my-maps"})");
+        Expect(r.ok && !erg::install::Exists(hmp), "build: a .hmp left from an earlier build is removed " + r.message);
+        Put(mod + L"\\src\\harbour.ergpatch.json", erg::WritePatch(pack));
+        r = Call(S, "level.build", R"({"modId":"my-maps"})");
+        Expect(r.ok && erg::install::Exists(hmp), "build: the .hmp is back when the patch copies it " + r.message);
+        S.inLobby = true;
+        Expect(Call(S, "level.build", R"({"modId":"my-maps"})").code == erg::service::kReadOnly,
+               "build: refused for a loaded pack while in a lobby");
+        Expect(Call(S, "level.export", R"({"project":"harbour","modId":"my-maps","name":"x","version":"1.0.0","mode":"source"})").code ==
+                   erg::service::kReadOnly,
+               "export: refused for a loaded pack while in a lobby");
+        S.inLobby = false;
+    }
+    {
+        const std::wstring other = game + L"\\Mods\\data-maps";
+        Put(other + L"\\spice.json", std::string(R"({"spiceVersion":1,"id":"data-maps","version":"1.0.0","name":"Data maps","melange":{"range":">=0.1.0"},)"
+                                                 R"("kind":"content","assets":{"root":"data"},)"
+                                                 R"("levels":[{"slug":"harbour","title":"Harbour","source":"src/h.ergpatch.json"}]})"));
+        erg::Patch dp = pack;
+        dp.stem = "data_maps_harbour";
+        Put(other + L"\\src\\h.ergpatch.json", erg::WritePatch(dp));
+        r = Call(S, "level.build", R"({"modId":"data-maps"})");
+        Expect(r.ok && erg::install::Exists(other + L"\\data\\levels\\Maps\\data_maps_harbour.xan") &&
+                   !erg::install::Exists(other + L"\\assets\\levels\\Maps\\data_maps_harbour.xan") &&
+                   r.json.find("data/levels/Maps/data_maps_harbour.xan") != std::string::npos,
+               "build: a pack's assets.root is where its levels go " + r.message);
+        erg::install::Pack dpk;
+        melange::spice::Manifest m;
+        std::vector<melange::spice::Error> errs;
+        Expect(melange::spice::Parse(other, &m, &errs) && erg::install::PackFromManifest(m, other, &dpk) &&
+                   erg::install::LevelRoot(dpk) == other + L"\\data\\levels",
+               "install: the level root follows assets.root");
+        S.packs = {dpk};
+        r = Call(S, "level.list", "{}");
+        Expect(r.ok && r.json.find(R"("mod":"data-maps","built":true)") != std::string::npos, "list: a pack under assets.root reads as built " + r.json);
+        S.packs.clear();
+        RemoveTree(other);
+    }
     S.readOnly = true;
     Expect(Call(S, "level.build", R"({"modId":"my-maps"})").code == erg::service::kReadOnly, "build: -32003 while Mods is read-only");
     Expect(Call(S, "level.export", R"({"project":"harbour","modId":"my-maps","name":"x","version":"1.0.0","mode":"install"})").code ==
@@ -908,6 +954,12 @@ void TestService(const std::wstring& root) {
     Expect(Call(S, "level.export", R"({"project":"harbour","modId":"ergtest","name":"x","version":"1","mode":"source"})").code ==
                erg::service::kBadParams,
            "export: the reserved prefix");
+    Expect(Call(S, "level.close", R"({"project":"harbour"})").ok, "close before the read-only case");
+    S.oasisReadOnly = true;
+    r = Call(S, "level.load", R"({"project":"harbour"})");
+    Expect(r.ok && !erg::install::Exists(root + L"\\projects\\harbour\\.lock"), "load: a read-only server opens a project without a lock");
+    Expect(Call(S, "level.close", R"({"project":"harbour"})").ok, "close: read-only");
+    S.oasisReadOnly = false;
     Expect(Call(S, "level.nope", "{}").code == -32601 && Call(S, "level.list", "[1]").code == erg::service::kBadParams, "unknown method, bad params");
     Expect(erg::service::Methods().size() == 9 && erg::service::Mutating("level.save") && !erg::service::Mutating("level.load"), "methods");
 }

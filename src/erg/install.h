@@ -18,6 +18,7 @@ struct RegistryEntry {
 struct Pack {
     std::string modId;
     std::wstring dir;                                  // Mods\<id>
+    std::string assetsRoot = "assets";                 // the manifest's assets.root
     std::vector<levels::manifest::LevelDecl> levels;
 };
 
@@ -44,6 +45,7 @@ bool MaterialFileExists(const std::wstring& gameDir, const std::string& rel);
 // The levels of every mod folder under <game>\Mods whose spice.json declares some (no enabled-state check).
 std::vector<Pack> ScanPacks(const std::wstring& gameDir);
 bool PackFromManifest(const spice::Manifest& m, const std::wstring& dir, Pack* out);
+std::wstring LevelRoot(const Pack& p);                 // <dir>\<assets root>\levels
 // Enabled packs in load order, minus the mods the cross-mod limits refuse (a taken prefix, the 128-level cap).
 std::vector<Pack> AssignPacks(std::vector<Pack> inLoadOrder);
 }  // namespace melange::erg::install

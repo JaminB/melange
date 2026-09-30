@@ -11,6 +11,7 @@
 #include "core/game.h"
 #include "core/log.h"
 #include "erg/service.h"
+#include "levels/gate.h"
 #include "mods/thumper_internal.h"
 #include "oasis/core/router.h"
 #include "oasis/providers.h"
@@ -96,6 +97,8 @@ void InstallLevels() {
     env.modActive = &ModActive;
     if (assets::crcsafe::Available()) g_crc = assets::crcsafe::Entries();
     env.crcCollides = [](const std::string& name) { return assets::crcsafe::Collides(g_crc, name); };
+    env.inSession = [](const std::string& id) { return ModActive(id) && levels::gate::InLobby(); };
+    env.readOnly = [] { return core::router::ReadOnly(); };
     g_service = std::make_unique<erg::service::Service>(std::move(env));
     for (const auto& m : erg::service::Methods())
         AddMethod(m.c_str(), &Handle, nullptr, kRpcServerThread | (erg::service::Mutating(m) ? kRpcMutating : kRpcNone));

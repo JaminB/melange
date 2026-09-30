@@ -33,6 +33,7 @@ std::string Build();
 
 namespace router {
 void Configure(const Config& c);
+bool ReadOnly();   // [Oasis] ReadOnly as configured; any thread
 // Server side of one WebSocket connection. Open returns the client id; the client may already be marked for
 // closing (too many clients). `wake` is signalled whenever the client has something to send.
 int Open(void* wake);

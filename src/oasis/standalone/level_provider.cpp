@@ -54,6 +54,7 @@ void Install(const std::wstring& gameDir, const std::wstring& projectsDir, const
     env.packs = &EnabledPacks;
     env.modsReadOnly = [] { return GameRunning(g_gameDir); };
     env.modActive = [](const std::string&) { return false; };
+    env.readOnly = [] { return core::router::ReadOnly(); };
     g_service = std::make_unique<erg::service::Service>(std::move(env));
     for (const auto& m : erg::service::Methods())
         AddMethod(m.c_str(), &Handle, nullptr, kRpcServerThread | (erg::service::Mutating(m) ? kRpcMutating : kRpcNone));

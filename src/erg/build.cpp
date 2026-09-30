@@ -247,6 +247,13 @@ bool Build(const load::Loaded& base, const Scene& edited, const VoxelEdits& voxe
     return true;
 }
 
+std::vector<std::string> Stale(const std::string& stem, const std::vector<File>& files) {
+    std::vector<std::string> out;
+    for (const std::string rel : {"Maps/" + stem + ".hmp", "Maps/" + stem + ".txt", stem + ".lub"})
+        if (std::none_of(files.begin(), files.end(), [&](const File& f) { return f.rel == rel; })) out.push_back(rel);
+    return out;
+}
+
 bool Apply(const load::Loaded& base, const Patch& p, const PatchRules& rules, Scene* scene, VoxelEdits* voxels,
            std::string* err) {
     Scene s = base.scene;

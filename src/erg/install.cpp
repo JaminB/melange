@@ -214,8 +214,16 @@ bool PackFromManifest(const spice::Manifest& m, const std::wstring& dir, Pack* o
     if (decls.empty()) return false;
     out->modId = m.id;
     out->dir = dir;
+    out->assetsRoot = m.assetsRoot.empty() ? "assets" : m.assetsRoot;
     out->levels = std::move(decls);
     return true;
+}
+
+std::wstring LevelRoot(const Pack& p) {
+    std::wstring root = Widen(p.assetsRoot);
+    std::replace(root.begin(), root.end(), L'/', L'\\');
+    while (!root.empty() && root.back() == L'\\') root.pop_back();
+    return p.dir + L"\\" + root + L"\\levels";
 }
 
 std::vector<Pack> ScanPacks(const std::wstring& gameDir) {

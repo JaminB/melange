@@ -475,6 +475,11 @@ void Configure(const Config& c) {
     (void)ping;
 }
 
+bool ReadOnly() {
+    std::shared_lock lk(g_reg);
+    return g_cfg.readOnly;
+}
+
 int Open(void* wake) {
     std::unique_lock lk(g_reg);
     Outbox::Limits l;

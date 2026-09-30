@@ -3,12 +3,14 @@
 //   level build --patch <p.ergpatch.json> --game <game dir> --out <dir> [--stem <stem>]
 //   level diff <a.scene.json> <b.scene.json> [-o <patch.json>]
 #include <cstdio>
+#include <filesystem>
 #include <string>
 #include <vector>
 
 #include "erg/build.h"
 #include "erg/install.h"
 #include "erg/load.h"
+#include "erg/luagen.h"
 #include "erg/patch.h"
 #include "erg/scene.h"
 #include "erg/service.h"
@@ -150,6 +152,23 @@ int BuildCmd(const LevelArgs& a) {
             return 3;
         }
         std::printf("%s (%zu bytes)\n", f.rel.c_str(), f.bytes.size());
+    }
+    const std::string stem = a.get("stem").empty() ? p.stem : a.get("stem");
+    for (std::string rel : erg::build::Stale(stem, files)) {
+        const bool lub = rel == stem + ".lub";
+        for (auto& c : rel)
+            if (c == '/') c = '\\';
+        const std::wstring path = outDir + L"\\" + erg::install::Widen(rel);
+        if (!erg::install::Exists(path)) continue;
+        const std::string stub = erg::luagen::Stub(stem);
+        std::error_code ec;
+        const bool ok = lub ? erg::install::WriteAtomic(path, stub.data(), stub.size(), &err)
+                            : std::filesystem::remove(std::filesystem::path(path), ec);
+        if (!ok) {
+            std::fprintf(stderr, "xomtool level: cannot replace the stale %s\n", rel.c_str());
+            return 3;
+        }
+        std::printf("%s (%s)\n", rel.c_str(), lub ? "no chunk needed" : "removed");
     }
     return 0;
 }

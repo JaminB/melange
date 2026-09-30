@@ -27,6 +27,7 @@ using jsonio::Str;
 using xom::Json;
 
 constexpr size_t kMaxCached = 4;
+constexpr uint64_t kMaxCachedBytes = 160u << 20;   // estimated parsed size of the cached bases
 constexpr uint64_t kMaxBlobBytes = 16u << 20;
 const PatchRules kRules{voxels::kAccepted, true};   // adds may target any frame
 
@@ -95,11 +96,21 @@ std::wstring Slashes(std::string rel) {
 
 using Resolved = BaseSource;
 
+std::string InSession(const std::string& modId) {
+    return "'" + modId + "' is loaded in this game and you are in a lobby; leave the lobby to change its files";
+}
+
+void DeleteStale(const std::wstring& path) {
+    std::error_code ec;
+    std::filesystem::remove(std::filesystem::path(path), ec);
+}
+
 struct Cached {
     std::string key;
     Sha256Set sha;
     std::shared_ptr<const load::Loaded> loaded;
     uint64_t used = 0;
+    uint64_t bytes = 0;
 };
 
 struct PaletteEntry { std::string name, resource, role; };
@@ -169,7 +180,7 @@ bool ReadBase(const std::wstring& gameDir, const std::vector<install::RegistryEn
                 f.title = d.title;
                 f.registry = RegistryInfo{};
                 f.registry.scripts = levels::manifest::Scripts(d);
-                out->packRoot = p.dir + L"\\assets\\levels";
+                out->packRoot = install::LevelRoot(p);
                 const std::wstring stem = install::Widen(d.stem);
                 if (!install::ReadFile(out->packRoot + L"\\Maps\\" + stem + L".xan", load::kMaxXanBytes, &f.xan, &e) ||
                     !install::ReadFile(out->packRoot + L"\\" + stem + L".XOM", load::kMaxXomBytes, &f.xom, &e) ||
@@ -286,10 +297,22 @@ struct Service::Impl {
             *r = Err(kPolicy, "base '" + key + "': " + err);
             return nullptr;
         }
+        uint64_t blobBytes = 0;
+        for (const auto& [ref, b] : L->blobs) blobBytes += b.size();
+        if (blobBytes > kMaxBlobBytes) {
+            *r = Err(kPolicy, "base '" + key + "': the level's voxel data is larger than 16 MB");
+            return nullptr;
+        }
+        const uint64_t bytes = 2 * static_cast<uint64_t>(f.xan.size()) + f.xom.size() + blobBytes;
         std::erase_if(cache, [&](const Cached& c) { return c.key == key; });
-        if (cache.size() >= kMaxCached)
+        auto total = [&] {
+            uint64_t t = 0;
+            for (const auto& c : cache) t += c.bytes;
+            return t;
+        };
+        while (!cache.empty() && (cache.size() >= kMaxCached || total() + bytes > kMaxCachedBytes))
             cache.erase(std::min_element(cache.begin(), cache.end(), [](const Cached& a, const Cached& b) { return a.used < b.used; }));
-        cache.push_back({key, sha, L, ++tick});
+        cache.push_back({key, sha, L, ++tick, bytes});
         return L;
     }
 
@@ -308,8 +331,12 @@ struct Service::Impl {
 
     // A project's saved patch against its base: the loaded base, the parsed patch and the edited scene.
     bool OpenProject(const std::string& id, std::shared_ptr<const load::Loaded>* L, Patch* p, Scene* scene,
-                     build::VoxelEdits* voxels, Resolved* res, Reply* r) {
-        if (!LockProject(id, r)) return false;
+                     build::VoxelEdits* voxels, Resolved* res, Reply* r, bool lock = true) {
+        if (lock && !LockProject(id, r)) return false;
+        if (!lock && !project::ValidId(id)) {
+            *r = Err(kBadParams, "project must be [a-z0-9]{1,24}");
+            return false;
+        }
         std::string text, err;
         if (!store.ReadPatch(id, &text, &err)) {
             *r = Err(kPolicy, err);
@@ -392,7 +419,7 @@ struct Service::Impl {
         }
         for (const auto& p : Packs())
             for (const auto& d : p.levels) {
-                const std::wstring x = p.dir + L"\\assets\\levels\\" + install::Widen(d.stem) + L".XOM";
+                const std::wstring x = install::LevelRoot(p) + L"\\" + install::Widen(d.stem) + L".XOM";
                 Json o = Json::Obj();
                 o.set("key", Str(names::Key(d.stem)));
                 o.set("stem", Str(d.stem));
@@ -400,7 +427,7 @@ struct Service::Impl {
                 o.set("source", Str("pack"));
                 o.set("theme", Str(install::Exists(x) ? ThemeOf(x, "pack:" + d.stem) : ""));
                 o.set("mod", Str(p.modId));
-                o.set("built", Json::Bool(install::Exists(p.dir + L"\\assets\\levels\\Maps\\" + install::Widen(d.stem) + L".xan")));
+                o.set("built", Json::Bool(install::Exists(install::LevelRoot(p) + L"\\Maps\\" + install::Widen(d.stem) + L".xan")));
                 bases.arr.push_back(std::move(o));
             }
         Json projects = Json::Arr();
@@ -453,7 +480,7 @@ struct Service::Impl {
         Resolved res;
         if (!id.empty()) {
             Patch patch;
-            if (!OpenProject(id, &L, &patch, &scene, &voxels, &res, &r)) return r;
+            if (!OpenProject(id, &L, &patch, &scene, &voxels, &res, &r, !(env.readOnly && env.readOnly()))) return r;
         } else {
             L = Load(base, source, &res, &r);
             if (!L) return r;
@@ -628,6 +655,7 @@ struct Service::Impl {
         if (!PrintableAscii(name, 1, 64) || !PrintableAscii(version, 1, 32)) return Err(kBadParams, "name and version must be printable");
         if (mode == "install" && env.modsReadOnly && env.modsReadOnly())
             return Err(kReadOnly, "the game is running; Mods is read-only here (export as source, or use the in-game Oasis)");
+        if (env.inSession && env.inSession(modId)) return Err(kReadOnly, InSession(modId));
         std::shared_ptr<const load::Loaded> L;
         Patch patch;
         Scene scene;
@@ -675,6 +703,7 @@ struct Service::Impl {
         if (!GetStr(p, "modId", &modId, &r)) return r;
         if (!ValidModId(modId)) return Err(kBadParams, "modId: not a mod id");
         if (env.modsReadOnly && env.modsReadOnly()) return Err(kReadOnly, "the game is running; Mods is read-only here");
+        if (env.inSession && env.inSession(modId)) return Err(kReadOnly, InSession(modId));
         const std::wstring dir = env.gameDir + L"\\Mods\\" + install::Widen(modId);
         spice::Manifest m;
         std::vector<spice::Error> errs;
@@ -682,53 +711,72 @@ struct Service::Impl {
             return Err(kBadParams, "no mod '" + modId + "' with a valid spice.json" + (errs.empty() ? "" : ": " + errs.front().text));
         install::Pack pack;
         if (!install::PackFromManifest(m, dir, &pack)) return Err(kBadParams, "mod '" + modId + "' declares no valid levels");
-        const std::wstring root = dir + L"\\assets\\levels";
-        struct Planned { const levels::manifest::LevelDecl* decl; std::vector<build::File> files; };
-        std::vector<Planned> plan;
+        const std::wstring root = install::LevelRoot(pack);
+        // Every level is built once to check it, then built again and written one at a time, so only one level's
+        // files are held at once and nothing is written unless all of them build.
+        auto buildLevel = [&](const levels::manifest::LevelDecl& d, std::vector<build::File>* files, Reply* rr) {
+            std::vector<uint8_t> bytes;
+            std::string err;
+            if (!install::ReadFile(dir + L"\\" + Slashes(d.source), kMaxPatchBytes, &bytes, &err)) {
+                *rr = Err(kBadParams, d.slug + ": " + err);
+                return false;
+            }
+            Patch patch;
+            if (!ParsePatch(std::string_view(reinterpret_cast<const char*>(bytes.data()), bytes.size()), &patch, &err)) {
+                *rr = Err(kBadParams, d.slug + ": " + err);
+                return false;
+            }
+            if (patch.stem != d.stem) {
+                *rr = Err(kBadParams, d.slug + ": the patch's stem must be '" + d.stem + "'");
+                return false;
+            }
+            Resolved res;
+            auto L = Load(patch.base.key, patch.base.source, &res, rr);
+            if (!L) return false;
+            Scene scene;
+            build::VoxelEdits voxels;
+            if (!ApplyTo(*L, patch, &scene, &voxels, rr) || !BuildFiles(*L, res, scene, voxels, files, rr)) {
+                rr->message = d.slug + ": " + rr->message;
+                return false;
+            }
+            if (d.chunk && std::none_of(files->begin(), files->end(), [&](const build::File& f) { return f.rel == d.stem + ".lub"; })) {
+                const std::string stub = luagen::Stub(d.stem);
+                files->push_back({d.stem + ".lub", std::vector<uint8_t>(stub.begin(), stub.end())});
+            }
+            return true;
+        };
         Json skipped = Json::Arr();
         for (const auto& d : pack.levels) {
             if (d.source.empty()) {
                 skipped.arr.push_back(Str(d.slug));
                 continue;
             }
-            std::vector<uint8_t> bytes;
-            std::string err;
-            if (!install::ReadFile(dir + L"\\" + Slashes(d.source), kMaxPatchBytes, &bytes, &err)) return Err(kBadParams, d.slug + ": " + err);
-            Patch patch;
-            if (!ParsePatch(std::string_view(reinterpret_cast<const char*>(bytes.data()), bytes.size()), &patch, &err))
-                return Err(kBadParams, d.slug + ": " + err);
-            if (patch.stem != d.stem) return Err(kBadParams, d.slug + ": the patch's stem must be '" + d.stem + "'");
-            Resolved res;
-            auto L = Load(patch.base.key, patch.base.source, &res, &r);
-            if (!L) return r;
-            Scene scene;
-            build::VoxelEdits voxels;
-            if (!ApplyTo(*L, patch, &scene, &voxels, &r)) {
-                r.message = d.slug + ": " + r.message;
-                return r;
-            }
-            Planned pl{&d, {}};
-            if (!BuildFiles(*L, res, scene, voxels, &pl.files, &r)) {
-                r.message = d.slug + ": " + r.message;
-                return r;
-            }
-            plan.push_back(std::move(pl));
+            std::vector<build::File> files;
+            if (!buildLevel(d, &files, &r)) return r;
         }
         Json levels = Json::Arr();
-        for (auto& pl : plan) {
+        for (const auto& d : pack.levels) {
+            if (d.source.empty()) continue;
+            std::vector<build::File> built;
+            if (!buildLevel(d, &built, &r)) return r;
             Json files = Json::Arr();
-            for (const auto& f : pl.files) {
+            for (const auto& f : built) {
                 const std::wstring path = root + L"\\" + Slashes(f.rel);
                 std::string err;
                 const std::wstring folder = path.substr(0, path.find_last_of(L'\\'));
                 if (!install::Inside(path, root) || !install::NoReparse(dir, folder) || !install::MakeDirs(folder) ||
                     !install::WriteAtomic(path, f.bytes.data(), f.bytes.size(), &err))
-                    return Err(kPolicy, pl.decl->slug + ": " + (err.empty() ? "cannot write " + f.rel : err));
-                files.arr.push_back(Str("assets/levels/" + f.rel));
+                    return Err(kPolicy, d.slug + ": " + (err.empty() ? "cannot write " + f.rel : err));
+                files.arr.push_back(Str(pack.assetsRoot + "/levels/" + f.rel));
+            }
+            for (const auto& rel : build::Stale(d.stem, built)) {
+                const std::wstring path = root + L"\\" + Slashes(rel);
+                if (install::Inside(path, root) && install::NoReparse(dir, path.substr(0, path.find_last_of(L'\\'))))
+                    DeleteStale(path);
             }
             Json o = Json::Obj();
-            o.set("slug", Str(pl.decl->slug));
-            o.set("stem", Str(pl.decl->stem));
+            o.set("slug", Str(d.slug));
+            o.set("stem", Str(d.stem));
             o.set("files", std::move(files));
             levels.arr.push_back(std::move(o));
         }
@@ -761,13 +809,7 @@ Reply Service::BuildTest(const std::string& id, const std::wstring& root) {
         const std::string none = luagen::Stub(stem);
         files.push_back({stem + ".lub", std::vector<uint8_t>(none.begin(), none.end())});
     }
-    for (const char* rel : {"Maps/%s.hmp", "Maps/%s.txt"}) {
-        std::string name = rel;
-        name.replace(name.find("%s"), 2, stem);
-        if (std::any_of(files.begin(), files.end(), [&](const build::File& f) { return f.rel == name; })) continue;
-        std::error_code ec;
-        std::filesystem::remove(std::filesystem::path(root + L"\\" + Slashes(name)), ec);
-    }
+    for (const auto& rel : build::Stale(stem, files)) DeleteStale(root + L"\\" + Slashes(rel));
     Json list = Json::Arr();
     for (const auto& f : files) {
         const std::wstring path = root + L"\\" + Slashes(f.rel);
