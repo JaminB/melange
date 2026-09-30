@@ -1,7 +1,7 @@
 // One open project in the editor: the pinned base (for the patch), the working scene, voxels, the undo stack and the
 // selection. The working scene is edited only through commands.
 import {
-  CommandStack, MAX_UNDO, toPatch, validatePatch, type Command, type Frame, type Patch, type Scene,
+  CommandStack, MAX_UNDO, toPatch, validatePatch, validatePatchObjects, type Command, type Frame, type Patch, type Scene,
 } from "../../../sdk/erg";
 import { Frames, translationOnlyFrames } from "./geometry";
 
@@ -66,7 +66,8 @@ export class EditorStore {
   savedText() { return this.saved; }
   problems(): string[] {
     const p = this.patch();
-    return validatePatch(p, JSON.stringify(p).length).errors;
+    const shape = validatePatch(p, JSON.stringify(p).length).errors;
+    return shape.length || !p.objects?.length ? shape : validatePatchObjects(p, this.base).errors;
   }
 
   exec(cmd: Command, mergeable = false) {

@@ -680,6 +680,17 @@ std::vector<luagen::ChunkSpec> ChunkBranches() {
     all.objects[1].crate.parachute = true;
     all.objects[5].trigger.wormCollect = true;
     all.objects[5].trigger.teamCollect = 2;
+    erg::ObjectSpec factory;
+    factory.type = erg::ObjectType::MineFactory;
+    factory.knot = "minefactory";
+    luagen::ChunkSpec lone;
+    lone.objects = {factory};
+    out.push_back(lone);
+    luagen::ChunkSpec placed = lone;
+    placed.placeObjects = true;
+    placed.knots = true;
+    out.push_back(placed);
+    all.objects.insert(all.objects.begin() + 2, factory);
     out.push_back(all);
     luagen::ChunkSpec max;
     for (int i = 0; i < 256; ++i) {
@@ -733,7 +744,33 @@ void TestChunkGrammar() {
     f.knot = "minefactory";
     f.type = erg::ObjectType::MineFactory;
     mf.objects = {f};
-    Expect(luagen::Text(stem, mf).empty(), "no mine factory is generated in this version");
+    const std::string guarded = luagen::Text(stem, mf);
+    const std::string guard =
+        "    if QueryContainer(\"GM.SchemeData\").MineFactoryOn ~= true then SendMessage(\"GameLogic.PlaceObjects\") end\n";
+    Expect(guarded.find(guard) != std::string::npos && guarded.find("    SendMessage(\"GameLogic.PlaceObjects\")\n") == std::string::npos,
+           "the mine factory is placed by the scheme-guarded line only");
+    Expect(guarded.find("\"minefactory\"") == std::string::npos && guarded.find("telepad") == std::string::npos,
+           "the factory chunk names no knot");
+    mf.placeObjects = true;
+    Expect(luagen::Text(stem, mf) == guarded, "with mines or drums too, the guarded line is the only PlaceObjects");
+    mf.objects.push_back(f);
+    Expect(luagen::Text(stem, mf).empty(), "two mine factories are refused");
+    for (const char* k : {"CRATE_0", "TP_8_255", "TRIG_12", "minefactory"})
+        Expect(erg::DeriveRole(k, erg::kKnotResource) == erg::Role::Object, std::string("an object knot is an object: ") + k);
+    for (const char* k : {"WORM0", "TP_9_0", "CRATE_007", "TRIG_256", "MINEFACTORY_1"})
+        Expect(erg::DeriveRole(k, erg::kKnotResource) == erg::Role::Spawn, std::string("not an object knot: ") + k);
+    {
+        std::string once = guarded, twice = guarded;
+        twice.insert(twice.find(guard), guard);
+        Expect(!luagen::IsGenerated(stem, twice, &why), "a doubled factory line is refused");
+        once.replace(once.find("~= true"), 7, "== true");
+        Expect(!luagen::IsGenerated(stem, once, &why), "an inverted factory guard is refused");
+        once = guarded;
+        once.replace(once.find(guard), guard.size(), "    SendMessage(\"GameLogic.PlaceObjects\")\n");
+        Expect(luagen::IsGenerated(stem, once, &why), "the unguarded line is the mines-and-drums chunk");
+        luagen::ChunkSpec back;
+        Expect(luagen::Parse(stem, once, &back) && back.objects.empty() && back.placeObjects, "and parses without a factory");
+    }
 
     const std::string sample = luagen::Text(stem, ChunkBranches()[ChunkBranches().size() - 2]);
     const std::vector<bool> values = ValueBytes(sample);
@@ -754,6 +791,7 @@ void TestChunkGrammar() {
             if (values[pos]) continue;
             m.erase(pos, 1);
         } else {
+            if (values[pos] || (pos > 0 && values[pos - 1])) continue;   // text next to a value may extend it validly
             m.insert(pos, inserts[r.Next() % (sizeof inserts / sizeof inserts[0])]);
         }
         ++tried;

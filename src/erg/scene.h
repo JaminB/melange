@@ -104,6 +104,7 @@ bool ParseCrateKind(std::string_view s, CrateKind* out);   // weapon, health, ut
 // The knot rules: CRATE_<n>, TP_<g>_<n> (g 1-8, the telepad's group), TRIG_<n> (n 0-255, no leading zeros), and the
 // bare engine name minefactory. A detail named exactly "telepad" is never written.
 bool ValidKnot(std::string_view knot, ObjectType type, int group);
+bool IsObjectKnot(std::string_view name);             // CRATE_<n>, TP_<g>_<n>, TRIG_<n>, minefactory: an object
 bool ValidContentsName(std::string_view s);            // [A-Za-z][A-Za-z0-9_]{0,62}
 bool ValidateObject(const ObjectSpec& o, const std::string& path, std::string* err);   // shape and ranges
 

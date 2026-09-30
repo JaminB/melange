@@ -142,7 +142,13 @@ export function validKnot(knot: string, type: ObjectType, group = 0): boolean {
   return false;
 }
 
-export const validContentsName = (s: unknown): s is string => typeof s === "string" && /^[A-Za-z][A-Za-z0-9_]{0,62}$/.test(s);
+/** CRATE_<n>, TP_<g>_<n>, TRIG_<n> or minefactory: the knot of a level object. */
+export function isObjectKnot(name: string): boolean {
+  const g = /^TP_([1-8])_/.exec(name);
+  return name === "minefactory" || validKnot(name, "crate") || validKnot(name, "trigger") || (!!g && validKnot(name, "telepad", Number(g[1])));
+}
+
+export const validContentsName =(s: unknown): s is string => typeof s === "string" && /^[A-Za-z][A-Za-z0-9_]{0,62}$/.test(s);
 
 export function sceneUsesV2(s: Scene): boolean {
   return !!s.kind?.survivor || !!s.objects?.length || !!s.script?.present || s.hmp.mode === "paint" || s.hmp.ref !== undefined ||
@@ -171,6 +177,7 @@ export function validRunValue(v: number): boolean {
 /** Derived exactly as the server does (src/erg/scene.cpp DeriveRole). */
 export function deriveRole(name: string, resource: string): Role {
   const n = name.toUpperCase(), r = resource.toUpperCase();
+  if (isObjectKnot(name)) return "object";
   if (/^WORM\d/.test(n) || r === "CHEESYGRINWORM") return "spawn";
   if (["MINE", "OILDRUM", "MINEFACTORY", "TELEPAD"].includes(n) || r.includes("MINE") || r.includes("OILDRUM") ||
       r.includes("OIL DRUM") || r === "TELEPAD" || r.includes("CRATE") || r === "TARGET") return "object";

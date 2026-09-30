@@ -96,6 +96,11 @@ bool IntField(const Json& o, const char* key, const std::string& p, int64_t lo, 
 }
 }  // namespace
 
+bool IsObjectKnot(std::string_view n) {
+    if (n == "minefactory" || IndexAfter(n, "CRATE_") || IndexAfter(n, "TRIG_")) return true;
+    return n.size() > 5 && n[3] >= '1' && n[3] <= '8' && IndexAfter(n, std::string("TP_") + n[3] + "_");
+}
+
 const char* ObjectTypeName(ObjectType t) { return kObjectTypes[static_cast<int>(t)]; }
 const char* CrateKindName(CrateKind k) { return kCrateKinds[static_cast<int>(k)]; }
 
@@ -325,6 +330,7 @@ bool ParseRole(std::string_view s, Role* out) {
 // Name tokens and ResourceNames as the shipped levels use them; the case is folded (both spellings ship).
 Role DeriveRole(std::string_view name, std::string_view resource) {
     const std::string n = Upper(name), r = Upper(resource);
+    if (IsObjectKnot(name)) return Role::Object;
     if (n.size() >= 5 && n.compare(0, 4, "WORM") == 0 && std::isdigit(static_cast<unsigned char>(n[4]))) return Role::Spawn;
     if (r == "CHEESYGRINWORM") return Role::Spawn;
     if (n == "MINE" || n == "OILDRUM" || n == "MINEFACTORY" || n == "TELEPAD" || Contains(r, "MINE") || Contains(r, "OILDRUM") ||

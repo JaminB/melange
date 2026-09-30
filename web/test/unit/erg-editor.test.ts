@@ -2,8 +2,10 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import {
-  AddDetail, RemoveDetail, SetDetail, SetLevel, THEMES, applyPatch, frameWorld, isEmptyPatch, validatePatch, type Command, type Scene, type Vec3,
+  AddDetail, AddObjects, KNOT_RESOURCE, PATCH_FORMAT_2, RemoveDetail, SetDetail, SetLevel, SetObject, THEMES, applyPatch, deriveRole,
+  frameWorld, isEmptyPatch, validatePatch, validatePatchObjects, type Command, type Scene, type Vec3,
 } from "../../src/sdk/erg";
+import { catalogOf, objectOf } from "../../src/panels/erg/model/placing";
 import { checkScene } from "../../src/panels/erg/model/checks";
 import { clearDraft, readDraft, writeDraft } from "../../src/panels/erg/model/draft";
 import { Duplicate, Group, setMany } from "../../src/panels/erg/model/edits";
@@ -204,6 +206,74 @@ test("placing: knots, objects, target frames and refusals", () => {
   assert.equal(typeof scenery === "string", !SCENERY_COPIES);
 });
 
+test("objects: crates, a telepad pair, triggers and the mine factory place, edit, delete and undo", () => {
+  const store = newStore();
+  const entry = (id: string) => BUILTIN.find((e) => e.id === id)!;
+  const put = (id: string, at: Vec3) => {
+    const cmd = place(store.scene, store.frames, entry(id), at, null);
+    if (!(cmd instanceof AddObjects)) throw new Error(String(cmd));
+    store.exec(cmd);
+    return cmd;
+  };
+  const empty = JSON.stringify(store.patch());
+  put("crate", [1, 2, 3]);
+  put("crate", [2, 2, 3]);
+  const pads = put("telepads", [3, 2, 3]);
+  put("telepads", [4, 2, 3]);
+  put("trigger", [5, 2, 3]);
+  put("minefactory", [6, 2, 3]);
+  assert.ok(/already has a mine factory/.test(String(place(store.scene, store.frames, entry("minefactory"), [0, 0, 0], null))));
+  assert.deepEqual(store.scene.objects!.map((o) => o.knot), ["CRATE_0", "CRATE_1", "TP_1_0", "TP_1_1", "TP_2_0", "TP_2_1", "TRIG_0", "minefactory"]);
+  assert.equal(pads.ids.length, 2);
+  for (const o of store.scene.objects!) {
+    const d = store.scene.details.find((x) => x.name === o.knot)!;
+    assert.equal(d.resource, KNOT_RESOURCE, "every knot is the non-visual marker");
+    assert.equal(d.role, "object");
+    assert.equal(objectOf(store.scene, d), o);
+  }
+  assert.equal(deriveRole("CRATE_0", KNOT_RESOURCE), "object");
+  assert.equal(deriveRole("WORM0", KNOT_RESOURCE), "spawn");
+  assert.ok(!store.scene.details.some((d) => d.name === "telepad"));
+  store.exec(new SetObject("CRATE_1", { knot: "CRATE_1", type: "crate", crate: { kind: "weapon", contents: "kWeaponBazooka", count: 3, hitpoints: 25, parachute: true } }));
+
+  const p = store.patch();
+  assert.equal(p.format, PATCH_FORMAT_2);
+  assert.deepEqual(validatePatch(p).errors, []);
+  assert.deepEqual(validatePatchObjects(p, store.base).errors, []);
+  assert.deepEqual(store.problems(), []);
+  const replay = applyPatch(store.base, p);
+  assert.deepEqual(replay.objects, store.scene.objects);
+
+  const tp = store.scene.details.find((d) => d.name === "TP_2_1")!;
+  store.exec(new RemoveDetail(tp.id));
+  assert.ok(!store.scene.objects!.some((o) => o.knot === "TP_2_1"), "deleting a knot deletes its object");
+  const issues = checkScene(store.scene, store.frames, store.problems());
+  assert.ok(issues.some((i) => i.level === "warn" && /Telepad group 2 has one pad/.test(i.text) && i.detail !== undefined));
+  store.undo();
+  assert.ok(store.scene.objects!.some((o) => o.knot === "TP_2_1"));
+  assert.ok(!checkScene(store.scene, store.frames).some((i) => /one pad/.test(i.text)));
+
+  store.exec(new SetLevel({ water: 1000 }));
+  assert.ok(checkScene(store.scene, store.frames).some((i) => /^CRATE_0 #\d+ is under water/.test(i.text)));
+  store.undo();
+
+  const before = JSON.stringify(store.patch());
+  store.undo();
+  const back = store.scene.objects!.find((o) => o.knot === "CRATE_1")!;
+  assert.ok(back.type === "crate" && back.crate.kind === "health");
+  store.redo();
+  assert.equal(JSON.stringify(store.patch()), before, "undo and redo of an object edit are byte-identical");
+  while (store.undo());
+  assert.equal(JSON.stringify(store.patch()), empty, "undoing every placement gives the empty patch");
+  assert.ok(!store.scene.details.some((d) => /^(CRATE|TP|TRIG)_|^minefactory$/.test(d.name)));
+});
+
+test("objects: the install's catalog is read defensively", () => {
+  assert.deepEqual(catalogOf({ weapons: ["kWeaponBazooka", 3, "bad name"], utilities: ["kUtilityJetpack"], error: null }),
+    { weapons: ["kWeaponBazooka"], utilities: ["kUtilityJetpack"], error: undefined });
+  assert.deepEqual(catalogOf(null), { weapons: [], utilities: [], error: undefined });
+});
+
 test("palette: server entries merge over the built-ins; scenery waits for the in-game check", () => {
   const p = paletteFrom([
     { name: "oildrum", resource: "OilDrum", role: "object", preview: "abc" },
@@ -214,7 +284,9 @@ test("palette: server entries merge over the built-ins; scenery waits for the in
   assert.equal(p.find((e) => e.id === "oildrum")!.preview, "abc");
   assert.equal(p.some((e) => e.role === "scenery"), SCENERY_COPIES);
   assert.ok(p.some((e) => e.name === "Camera1"));
-  assert.deepEqual(paletteFrom(undefined).map((e) => e.id), ["knot", "oildrum", "mine"]);
+  assert.deepEqual(paletteFrom(undefined).map((e) => e.id), ["knot", "oildrum", "mine", "crate", "telepads", "trigger", "minefactory"]);
+  assert.equal(paletteFrom([{ name: "minefactory", resource: "MineFactory", role: "object", preview: "mf" }]).find((e) => e.id === "minefactory")!.preview,
+    undefined, "a server entry never takes over an object knot");
 });
 
 // ------------------------------------------------------------------ store, commands and patches

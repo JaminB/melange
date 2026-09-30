@@ -2,13 +2,13 @@
 import { useEffect, useMemo, useRef, useState } from "preact/hooks";
 import type { Client } from "../../../sdk/client";
 import { errorText, useConnection } from "../../../sdk/hooks";
-import { RemoveDetail, SetDetail, type Command, type CommandStack, type Detail } from "../../../sdk/erg";
+import { RemoveDetail, SetDetail, SetObject, type Command, type CommandStack, type Detail } from "../../../sdk/erg";
 import { checkScene } from "../model/checks";
 import { clearDraft, readDraft, writeDraft } from "../model/draft";
 import { Duplicate, Group, setMany } from "../model/edits";
 import { dropPoint } from "../model/ground";
 import { withPatch, type Opened } from "../model/loader";
-import { BUILTIN, canCopy, paletteFrom, type PaletteEntry } from "../model/placing";
+import { BUILTIN, canCopy, catalogOf, objectOf, paletteFrom, type ObjectCatalog, type PaletteEntry } from "../model/placing";
 import { EditorStore } from "../model/store";
 import type { Tool, Viewport } from "../view/viewport";
 import type { ProjectInfo } from "./Home";
@@ -60,6 +60,7 @@ export function Editor({ client, info, opened, onClose }: Props) {
   const [angle, setAngleState] = useState(true);
   const [placing, setPlacingState] = useState<PaletteEntry | null>(null);
   const [palette, setPalette] = useState<PaletteEntry[]>(BUILTIN);
+  const [catalog, setCatalog] = useState<ObjectCatalog | undefined>();
   const [themes, setThemes] = useState<ThemeInfo>(() => themesOf(undefined));
   const [tab, setTab] = useState<"props" | "level" | "checks" | "terrain" | "export">("props");
   const [sculptOn, setSculptOn] = useState(false);
@@ -143,6 +144,10 @@ export function Editor({ client, info, opened, onClose }: Props) {
     }, () => view?.setPreviews(scenePreviews));
   }, [conn.open, theme, view, scenePreviews]);
   useEffect(() => {
+    if (!conn.open || !client.has("level.objects")) return;
+    client.call<unknown>("level.objects").then((r) => setCatalog(catalogOf(r)), () => {});
+  }, [conn.open]);
+  useEffect(() => {
     if (!conn.open || !client.has("level.themes")) return;
     client.call<unknown>("level.themes").then((r) => setThemes(themesOf(r)), () => {});
   }, [conn.open]);
@@ -198,12 +203,12 @@ export function Editor({ client, info, opened, onClose }: Props) {
     store.select([]);
   };
   const duplicate = () => {
-    const src = sel.filter((d) => canCopy(d.role));
-    if (!src.length) return flash(sel.length ? "Scenery cannot be duplicated in this version" : "Select something to duplicate");
+    const src = sel.filter((d) => canCopy(d.role) && !objectOf(store.scene, d));
+    if (!src.length) return flash(sel.length ? "Scenery and level objects cannot be duplicated; place a new object instead" : "Select something to duplicate");
     const cmd = new Duplicate(src, [1, 0, 1]);
     store.exec(cmd);
     store.select(cmd.ids);
-    if (src.length < sel.length) flash("Scenery was left out: it cannot be duplicated in this version");
+    if (src.length < sel.length) flash("Scenery and level objects were left out: place new objects from the palette");
   };
   const drop = () => {
     const changes: [number, { pos: Detail["pos"] }][] = [];
@@ -307,7 +312,8 @@ export function Editor({ client, info, opened, onClose }: Props) {
             <button class={`erg-tab${tab === "export" ? " on" : ""}`} onClick={() => setTab("export")} data-tab="export">Export</button>
           </div>
           <div class="erg-side-body">
-            {tab === "props" ? <Properties store={store} set={(id, f) => store.exec(new SetDetail(id, f))} />
+            {tab === "props" ? <Properties store={store} set={(id, f) => store.exec(new SetDetail(id, f))} catalog={catalog}
+                                           setObject={(knot, o) => store.exec(new SetObject(knot, o))} />
               : tab === "level" ? <LevelSettings store={store} themes={themes} />
               : tab === "terrain" ? <TerrainTools tool={terrainTool} palette={atlasColors} />
               : tab === "export" ? <ExportDialog client={client} project={info.id} defaultName={store.scene.title} />

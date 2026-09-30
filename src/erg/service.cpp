@@ -11,6 +11,7 @@
 #include "erg/jsonio.h"
 #include "erg/load.h"
 #include "erg/names.h"
+#include "erg/objects.h"
 #include "erg/pack.h"
 #include "erg/patch.h"
 #include "erg/preview.h"
@@ -30,7 +31,7 @@ constexpr size_t kMaxCached = 4;
 constexpr uint64_t kMaxCachedBytes = 160u << 20;   // estimated parsed size of the cached bases
 constexpr uint64_t kMaxBlobBytes = 16u << 20;
 constexpr int64_t kMaxRef = 1 << 24;
-const PatchRules kRules{voxels::kAccepted, true};   // adds may target any frame
+const PatchRules kRules{voxels::kAccepted, true, true};   // adds may target any frame; level objects
 
 Reply Err(int code, std::string msg) {
     Reply r;
@@ -229,7 +230,7 @@ bool BuildPatch(const std::wstring& gameDir, const std::vector<install::Pack>& p
 
 const std::vector<std::string>& Methods() {
     static const std::vector<std::string> m = {"level.list",   "level.new",   "level.load",    "level.save",  "level.export",
-                                               "level.build",  "level.themes", "level.palette", "level.close"};
+                                               "level.build",  "level.themes", "level.palette", "level.close",  "level.objects"};
     return m;
 }
 
@@ -248,6 +249,9 @@ struct Service::Impl {
     uint64_t tick = 0;
     int64_t refBase = 0;
     std::map<std::string, std::vector<PaletteEntry>> scenery;
+    bool catalogRead = false;
+    objects::Catalog catalog;
+    std::string catalogErr;
 
     explicit Impl(Env e) : env(std::move(e)), store(env.projectsDir) {}
 
@@ -368,9 +372,28 @@ struct Service::Impl {
         return true;
     }
 
+    const objects::Catalog* Catalog() {
+        if (!catalogRead) {
+            catalogRead = true;
+            if (!objects::LoadCatalog(std::filesystem::path(env.gameDir), &catalog, &catalogErr)) catalog = {};
+        }
+        return catalogErr.empty() ? &catalog : nullptr;
+    }
+
+    // Crate contents the install does not know; checked only when its weapon table can be read.
+    bool CheckObjects(const Scene& scene, std::vector<std::string>* warnings, std::string* err) {
+        if (scene.objects.empty()) return true;
+        const objects::Catalog* c = Catalog();
+        return !c || objects::Validate(scene, *c, warnings, err);
+    }
+
     bool BuildFiles(const load::Loaded& L, const Resolved& res, const Scene& scene, const build::VoxelEdits& voxels,
-                    std::vector<build::File>* files, Reply* r) {
+                    std::vector<build::File>* files, Reply* r, bool checkObjects = true) {
         std::string err;
+        if (checkObjects && !CheckObjects(scene, nullptr, &err)) {
+            *r = Err(kBadParams, err);
+            return false;
+        }
         if (!build::Build(L, scene, voxels, Options(L, res, scene), files, &err)) {
             *r = Err(kBadParams, "build: " + err);
             return false;
@@ -562,7 +585,7 @@ struct Service::Impl {
         build::VoxelEdits voxels;
         if (!ApplyTo(*L, patch, &scene, &voxels, &r)) return r;
         std::vector<build::File> files;
-        if (!BuildFiles(*L, res, scene, voxels, &files, &r)) return r;
+        if (!BuildFiles(*L, res, scene, voxels, &files, &r, false)) return r;
         const std::string canon = WritePatch(patch);
         if (!store.WritePatch(id, canon, &err)) return Err(kPolicy, err);
         project::Meta meta;
@@ -578,6 +601,9 @@ struct Service::Impl {
                 if (std::none_of(scene.details.begin(), scene.details.end(), [&](const Detail& d) { return d.name == k; }))
                     warnings.arr.push_back(Str("spawns.mode is knots but there is no detail named " + k + "; export will refuse"));
             }
+        std::vector<std::string> notes;
+        if (!CheckObjects(scene, &notes, &err)) notes.push_back(err + "; export will refuse");
+        for (auto& n : notes) warnings.arr.push_back(Str(n));
         Json out = Json::Obj();
         out.set("saved", Json::Bool(true));
         out.set("warnings", std::move(warnings));
@@ -667,6 +693,26 @@ struct Service::Impl {
         out.set("entries", std::move(arr));
         const std::string atlas = preview::ThemeAtlasKey(theme);
         out.set("atlas", atlas.empty() ? Json::Null_() : Str(atlas));
+        return Ok(out);
+    }
+
+    Reply Objects() {
+        const objects::Catalog* c = Catalog();
+        Json kinds = Json::Arr(), weapons = Json::Arr(), utilities = Json::Arr();
+        for (auto k : {CrateKind::Weapon, CrateKind::Health, CrateKind::Utility}) kinds.arr.push_back(Str(CrateKindName(k)));
+        if (c) {
+            for (const auto& n : c->weapons) weapons.arr.push_back(Str(n));
+            for (const auto& n : c->utilities) utilities.arr.push_back(Str(n));
+        }
+        Json limits = Json::Obj();
+        limits.set("objects", Int(static_cast<int64_t>(kMaxObjects)));
+        limits.set("telepadGroups", Int(static_cast<int64_t>(kMaxTelepadGroups)));
+        Json out = Json::Obj();
+        out.set("crateKinds", std::move(kinds));
+        out.set("weapons", std::move(weapons));
+        out.set("utilities", std::move(utilities));
+        out.set("limits", std::move(limits));
+        out.set("error", c ? Json::Null_() : Str(catalogErr));
         return Ok(out);
     }
 
@@ -877,6 +923,7 @@ Reply Service::Call(std::string_view method, std::string_view paramsJson, uint64
     if (method == "level.palette") return impl_->Palette(p);
     if (method == "level.export") return impl_->Export(p);
     if (method == "level.build") return impl_->BuildMod(p);
+    if (method == "level.objects") return impl_->Objects();
     return Err(-32601, "unknown method");
 }
 

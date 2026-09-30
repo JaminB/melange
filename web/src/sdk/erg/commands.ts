@@ -1,5 +1,8 @@
 // Every edit is a Command (the three.js editor's pattern); the stack lives in the tab.
-import { deriveRole, type Databank, type Detail, type DetailFields, type HmpMode, type Scene, type SpawnMode, type Vec3 } from "./scene";
+import {
+  KNOT_RESOURCE, deriveRole, type Databank, type Detail, type DetailFields, type HmpMode, type ObjectSpec, type Scene, type SpawnMode,
+  type Vec3,
+} from "./scene";
 
 export interface Command { label: string; do(s: Scene): void; undo(s: Scene): void; merge?(next: Command): boolean; }
 
@@ -117,17 +120,70 @@ export class AddDetail implements Command {
   undo(s: Scene) { s.details = s.details.filter((d) => d.id !== this.id); }
 }
 
+/** Deletes a detail; an added knot takes its level object with it. */
 export class RemoveDetail implements Command {
   readonly label = "Delete detail";
-  private removed?: { d: Detail; at: number };
+  private removed?: { d: Detail; at: number; object?: { o: ObjectSpec; at: number } };
   constructor(readonly id: number) {}
   do(s: Scene) {
     const at = s.details.findIndex((d) => d.id === this.id);
     if (at < 0) throw new Error(`no detail ${this.id}`);
-    this.removed = { d: s.details[at], at };
+    const d = s.details[at];
+    this.removed = { d, at };
     s.details.splice(at, 1);
+    const oi = d.src === null && s.objects ? s.objects.findIndex((o) => o.knot === d.name) : -1;
+    if (oi >= 0) {
+      this.removed.object = { o: s.objects![oi], at: oi };
+      s.objects!.splice(oi, 1);
+    }
   }
-  undo(s: Scene) { if (this.removed) s.details.splice(this.removed.at, 0, this.removed.d); }
+  undo(s: Scene) {
+    if (!this.removed) return;
+    s.details.splice(this.removed.at, 0, this.removed.d);
+    if (this.removed.object) (s.objects ??= []).splice(this.removed.object.at, 0, this.removed.object.o);
+  }
+}
+
+/** Places level objects: a knot detail for each (the non-visual marker) and its entry, as one step. */
+export class AddObjects implements Command {
+  private adds: AddDetail[];
+  constructor(frame: number, private specs: ObjectSpec[], positions: Vec3[], readonly label = "Add object") {
+    this.adds = specs.map((o, i) => new AddDetail(frame, { name: o.knot, resource: KNOT_RESOURCE, pos: positions[i] }));
+  }
+  get detailId() { return this.adds[0].detailId; }
+  get ids() { return this.adds.map((a) => a.detailId); }
+  do(s: Scene) {
+    for (const a of this.adds) a.do(s);
+    (s.objects ??= []).push(...structuredClone(this.specs));
+  }
+  undo(s: Scene) {
+    const knots = new Set(this.specs.map((o) => o.knot));
+    s.objects = (s.objects ?? []).filter((o) => !knots.has(o.knot));
+    for (let i = this.adds.length - 1; i >= 0; i--) this.adds[i].undo(s);
+  }
+}
+
+/** Replaces a level object's settings (its knot and type stay); merges only when exec is asked to. */
+export class SetObject implements Command {
+  readonly label = "Change object";
+  private before?: ObjectSpec;
+  constructor(readonly knot: string, private after: ObjectSpec) {}
+  private at(s: Scene): number {
+    const i = (s.objects ?? []).findIndex((o) => o.knot === this.knot);
+    if (i < 0) throw new Error(`no object ${this.knot}`);
+    return i;
+  }
+  do(s: Scene) {
+    const i = this.at(s);
+    if (!this.before) this.before = structuredClone(s.objects![i]);
+    s.objects![i] = structuredClone(this.after);
+  }
+  undo(s: Scene) { if (this.before) s.objects![this.at(s)] = structuredClone(this.before); }
+  merge(next: Command): boolean {
+    if (!(next instanceof SetObject) || next.knot !== this.knot) return false;
+    this.after = next.after;
+    return true;
+  }
 }
 
 /** Level settings: water (world units, null = default), spawn and surround modes, databank keys, title. */
