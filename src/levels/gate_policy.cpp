@@ -22,6 +22,20 @@ bool KeepInPool(Source s, bool randomPool) {
     return s == Source::Pack && randomPool;
 }
 
+// The version of mod `id` in a member's "id@version,..." list, or "" when it has none.
+std::string VersionOf(const std::string& modsValue, const std::string& id) {
+    const std::string want = id + "@";
+    size_t start = 0;
+    while (start <= modsValue.size()) {
+        size_t end = modsValue.find(',', start);
+        if (end == std::string::npos) end = modsValue.size();
+        if (modsValue.compare(start, want.size(), want) == 0 && end > start + want.size())
+            return modsValue.substr(start + want.size(), end - start - want.size());
+        start = end + 1;
+    }
+    return "";
+}
+
 bool HasMod(const std::string& modsValue, const std::string& id, const std::string& version) {
     const std::string want = id + "@" + version;
     size_t start = 0;
@@ -72,8 +86,10 @@ Verdict Evaluate(const Input& in) {
         for (const auto& m : in.members) {
             if (m.status == mods::PeerStatus::Match) continue;
             const std::string who = m.name.empty() ? "a player" : m.name;
+            const std::string theirs = VersionOf(m.mods, in.mod);
             v.members.push_back(HasMod(m.mods, in.mod, in.modVersion) ? who + "'s mods differ from ours"
-                                                                       : who + " doesn't have " + in.mod);
+                                : !theirs.empty() ? who + " has " + in.mod + " " + theirs + ", not " + in.modVersion
+                                                  : who + " doesn't have " + in.mod);
         }
         if (v.members.empty()) return v;
         v.status = Online::NotAllMatch;

@@ -293,7 +293,7 @@ void TestGate() {
     v = gate::Evaluate(in);
     Expect(v.hold && v.members.size() == 5 && v.members[0] == "Otto doesn't have mymaps" &&
                v.members[1] == "Pia's mods differ from ours" && v.members[2] == "Ned doesn't have mymaps" &&
-               v.members[4] == "Vic doesn't have mymaps",
+               v.members[4] == "Vic has mymaps 0.9.0, not 1.0.0",
            "each offending member is named with its reason");
     in.owner = false;
     v = gate::Evaluate(in);
