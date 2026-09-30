@@ -22,6 +22,8 @@ export class ScriptDoc {
   text = "";
   saved = "";
   problems: ScriptProblem[] = [];
+  /** False after a save to a server that checks only bytes (oasis.exe without the game). */
+  syntaxChecked = true;
   loaded = false;
   busy = false;
   error: string | undefined;
@@ -74,6 +76,7 @@ export class ScriptDoc {
       const r = await this.session.saveScript(text);
       if (r.saved) this.saved = text;
       if (this.text === text) this.problems = r.problems ?? [];
+      this.syntaxChecked = r.syntaxChecked !== false;
       return r.saved;
     } catch (e) {
       this.error = e instanceof Error ? e.message : String(e);

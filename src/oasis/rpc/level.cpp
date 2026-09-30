@@ -16,6 +16,7 @@
 #include "erg/service.h"
 #include "levels/gate.h"
 #include "levels/manifest.h"
+#include "lua/engine50.h"
 #include "lua/sim/bridge_internal.h"
 #include "mods/thumper_internal.h"
 #include "oasis/core/router.h"
@@ -136,6 +137,10 @@ void InstallLevels() {
     env.crcCollides = [](const std::string& name) { return assets::crcsafe::Collides(g_crc, name); };
     env.inSession = [](const std::string& id) { return ModActive(id) && levels::gate::InLobby(); };
     env.readOnly = [] { return core::router::ReadOnly(); };
+    if (lua50::Check())
+        env.compile = [](const std::string& text, int* line, std::string* message) {
+            return lua50::Compile(text, line, message) != lua50::Compiled::SyntaxError;
+        };
     g_service = std::make_unique<erg::service::Service>(std::move(env));
     for (const auto& m : erg::service::Methods())
         AddMethod(m.c_str(), &Handle, nullptr, kRpcServerThread | (erg::service::Mutating(m) ? kRpcMutating : kRpcNone));

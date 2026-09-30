@@ -12,6 +12,7 @@
 #include "core/events.h"
 #include "game/state/gamestate_internal.h"
 #include "game/state/gamestate_json.h"
+#include "levels/engine.h"
 #include "melange/gamestate.h"
 #include "melange/oasis.h"
 #include "melange/sim.h"
@@ -55,6 +56,11 @@ int ReadEntities() {
     return (std::min)(n, static_cast<int>(g_ents.size()));
 }
 
+bool Attract() {
+    const levels::engine::FrontendState f = levels::engine::ReadFrontend();
+    return f.valid && f.attractRunning;
+}
+
 void OnSub(ChannelId ch, int client, std::string_view filter, bool on, void*) {
     auto& subs = ch == g_state ? g_stateSubs : g_entSubs;
     std::erase_if(subs, [&](const Sub& s) { return s.client == client; });
@@ -73,7 +79,7 @@ void PumpState(uint64_t now) {
         if (json.empty()) {
             gs::Snapshot snap{};
             if (!gs::Read(&snap)) snap = gs::Snapshot{};
-            json = gs::wire::SnapshotJson(snap, gs::Available());
+            json = gs::wire::SnapshotJson(snap, gs::Available(), Attract());
         }
         PublishTo(g_state, s.client, json);
     }
@@ -111,7 +117,7 @@ void StateGet(const Call&, Result& r, void*) {
     if (!NeedGame(r)) return;
     gs::Snapshot s{};
     if (!gs::Read(&s)) return Fail(r, -32001, "game state could not be read");
-    r.json = gs::wire::SnapshotJson(s, true);
+    r.json = gs::wire::SnapshotJson(s, true, Attract());
 }
 
 void StateVars(const Call& c, Result& r, void*) {

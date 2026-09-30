@@ -26,6 +26,9 @@ struct Env {
     std::function<bool(const std::string& fileName)> crcCollides;   // a built file would shadow a CRC-listed one
     std::function<bool(const std::string& modId)> inSession;   // an active pack while in a lobby: its files must not change
     std::function<bool()> readOnly;                       // [Oasis] ReadOnly: level.load opens projects without a lock
+    // Compiles a level script without running it: false with the parser's line and message. Unset in oasis.exe, where
+    // only the bytes are checked and the syntax waits for a Test in the game.
+    std::function<bool(const std::string& text, int* line, std::string* message)> compile;
 };
 
 struct Blob {

@@ -9,9 +9,13 @@ namespace {
 constexpr std::string_view kWater = "SetData(\"Water.Level\", ";
 constexpr std::string_view kKnotLine = "        worm.Spawn = \"WORM\" .. i\n";
 constexpr std::string_view kPlaceLine = "    SendMessage(\"GameLogic.PlaceObjects\")\n";
-// The scheme's own factory, when it has one, is the only one: a second trips the engine's one-factory assert.
-constexpr std::string_view kFactoryLine =
-    "    if QueryContainer(\"GM.SchemeData\").MineFactoryOn ~= true then SendMessage(\"GameLogic.PlaceObjects\") end\n";
+// The level's factory replaces the scheme's: stdvs reads MineFactoryOn after this setup to send CreateRandMineFactory,
+// and a second factory trips the engine's one-factory assert. GM.SchemeData is the match's copy of the scheme, which
+// vanilla level scripts edit the same way.
+constexpr std::string_view kFactoryLines =
+    "    local lock, scheme = EditContainer(\"GM.SchemeData\")\n"
+    "    scheme.MineFactoryOn = false\n"
+    "    CloseContainer(lock)\n";
 constexpr std::string_view kFactoryKnot = "minefactory";
 constexpr std::string_view kCrateCall = "    ergCrate(", kTelepadCall = "    lib_CreateTelepad(", kTriggerCall = "    ergTrigger(";
 
@@ -229,8 +233,8 @@ std::string Text(std::string_view stem, const ChunkSpec& c) {
             out += "        CloseContainer(lock)\n";
             out += "    end\n";
         }
-        if (factories) out += kFactoryLine;
-        else if (c.placeObjects) out += kPlaceLine;
+        if (factories) out += kFactoryLines;
+        if (factories || c.placeObjects) out += kPlaceLine;
         for (auto& o : c.objects) out += ObjectLine(o);
         if (c.water) out += "    " + std::string(kWater) + Num(*c.water) + ")\n";
         out += "end\n";
@@ -255,7 +259,7 @@ bool Parse(std::string_view stem, std::string_view text, ChunkSpec* out) {
     c.water = WaterIn(text);
     c.knots = text.find(kKnotLine) != std::string_view::npos;
     c.placeObjects = text.find(kPlaceLine) != std::string_view::npos;
-    if (text.find(kFactoryLine) != std::string_view::npos) {
+    if (text.find(kFactoryLines) != std::string_view::npos) {
         ObjectSpec f;
         f.type = ObjectType::MineFactory;
         f.knot = kFactoryKnot;

@@ -272,9 +272,10 @@ client asks for; nothing is ever written. The readers need build #1077 and `[Gam
 | `state` | a snapshot: `{available, frame, matchSerial, match, teams, worms}` | `hz` 1-10 (default 5) | Coalesce |
 | `entities` | `[{handle, object, vtable, kind, type, label, pos, vel}]`; `[]` outside a match | `hz` 1-5 (default 2), `kinds` | Coalesce |
 
-- `match`: `{inMatch, online, currentTeam, activeWorm, turnMs, turnMsLeft, roundMs, roundMsLeft, windSpeed,
+- `match`: `{inMatch, attract, online, currentTeam, activeWorm, turnMs, turnMsLeft, roundMs, roundMsLeft, windSpeed,
   windDir, waterLevel, turnsStarted, suddenDeath, theme}` (times in ms, `-1` for no team or worm, wind direction in
-  radians). `turnsStarted` and `suddenDeath` come from the engine's message counters for this match.
+  radians). `turnsStarted` and `suddenDeath` come from the engine's message counters for this match. `attract` is true
+  while the menu's attract demo runs, whose match also reports `inMatch`.
 - `teams[]`: `{slot, name, active, ai, local, colour, alliance, roundsWon, score}`.
 - `worms[]`: `{slot, team, posInTeam, name, active, alive, health, physicsState, weapon, pos, vel}`; positions are
   world units with +Y up, `weapon` is `-1` for none.
@@ -312,7 +313,7 @@ at all.
 | `level.objects` | `{}` → `{crateKinds, weapons, utilities, limits, error}` | crate contents from the install's `Data\Tweak\WEAPTWK.XOM`; `error` is null when it was read |
 | `level.close` | `{project}` → `{}` | frees the server's parsed copy of the base |
 | `level.script.get` | `{project}` → `{text}` | the project's `script.lua`, `""` when it has none |
-| `level.script.put` | `{project, text}` → `{saved, problems: [{line, message}]}` | a level script's rules (≤ 256 KB, UTF-8, no BOM or ESC); `""` removes it; not saved when there are problems |
+| `level.script.put` | `{project, text}` → `{saved, problems: [{line, message}], syntaxChecked}` | a level script's rules (≤ 256 KB, UTF-8, no BOM or ESC); `""` removes it; not saved when these fail. In the game the script is also compiled (not run) by the engine's Lua 5.0: a syntax error is saved and listed in `problems`. oasis.exe checks the bytes only (`syntaxChecked: false`); the syntax is checked when the level is tested in the game |
 
 The `erg` channel (Coalesce) carries `{state, key, detail}` from `level.test`'s progress (`idle`, `registering`,
 `registered`, `armed`, `starting`, `playing`, `ended`, `failed`) and, at the start of a match, `{level, water}`.

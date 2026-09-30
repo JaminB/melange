@@ -908,6 +908,14 @@ void TestService(const std::wstring& root) {
     env.crcCollides = [](const std::string& n) { return _stricmp(n.c_str(), "SCRIPTS.XOM") == 0; };
     env.inSession = [raw](const std::string&) { return raw->inLobby; };
     env.readOnly = [raw] { return raw->oasisReadOnly; };
+    // A stand-in for the engine's parser: "= =" is its one syntax error.
+    env.compile = [](const std::string& text, int* line, std::string* message) {
+        const size_t at = text.find("= =");
+        if (at == std::string::npos) return true;
+        *line = 1 + static_cast<int>(std::count(text.begin(), text.begin() + static_cast<ptrdiff_t>(at), '\n'));
+        *message = "unexpected symbol near `='";
+        return false;
+    };
     svc->s = std::make_unique<erg::service::Service>(env);
     Svc& S = *svc;
 
@@ -1090,19 +1098,24 @@ void TestService(const std::wstring& root) {
         const std::string chunk(lub.begin(), lub.end());
         Expect(chunk.find("ergCrate(\"CRATE_0\", \"weapon\", \"kWeaponBazooka\", 1, 25, 0)") != std::string::npos &&
                    chunk.find("lib_CreateTelepad(\"TP_1_0\", 1)") != std::string::npos &&
-                   chunk.find("MineFactoryOn ~= true then SendMessage(\"GameLogic.PlaceObjects\") end") != std::string::npos &&
+                   chunk.find("    scheme.MineFactoryOn = false\n") != std::string::npos &&
+                   chunk.find("    SendMessage(\"GameLogic.PlaceObjects\")\n") != std::string::npos &&
                    erg::luagen::IsGenerated("ergtest_harbour", chunk, &e2),
-               "objects: the chunk holds the crate, the pad and the guarded factory, and verifies " + e2);
+               "objects: the chunk holds the crate, the pad and the factory, and verifies " + e2);
         xom::Document xd;
         Expect(xom::parse(xan.data(), xan.size(), xd, &e2), "objects: the built .xan parses " + e2);
-        int knots = 0;
+        int knots = 0, lifted = 0;
         for (const auto& obj : xd.objects) {
             if (obj.type != "DetailEntityStore") continue;
             const std::string n = xu::Str(obj, "Name");
             Expect(n != "telepad", "objects: no detail named telepad");
             if (n == "CRATE_0" || n == "TP_1_0" || n == "minefactory") knots += xu::Str(obj, "ResourceName") == erg::kKnotResource;
+            erg::Vec3 at{};
+            if ((n == "CRATE_0" || n == "TP_1_0") && xu::GetVec(obj, "Position", &at))
+                lifted += at[1] == (n == "TP_1_0" ? 1 + erg::build::kTelepadLift : 1);
         }
         Expect(knots == 3, "objects: every knot is the non-visual marker");
+        Expect(lifted == 2, "objects: a telepad knot is written above its position, a crate knot at it");
         o.objects[0].crate.contents = "kWeaponClusterBomb";
         r = Call(S, "level.save", R"({"project":"harbour","patch":)" + erg::WritePatch(o) + "}");
         Expect(r.ok && J(r.json).find("warnings")->arr.size() == 2, "objects: unknown contents save with a warning");
@@ -1175,7 +1188,8 @@ void TestService(const std::wstring& root) {
         Expect(r.ok && J(r.json).find("text")->str.empty(), "script.get: \"\" when there is none " + r.message);
         r = Call(S, "level.script.put", R"({"project":"harbour","text":"wum.events.on(\"sim.turnStarted\", function() wum.log(wum.level.stem) end)\n"})");
         Json put = J(r.json);
-        Expect(r.ok && put.find("saved")->boolean && put.find("problems")->arr.empty(), "script.put: saved " + r.message);
+        Expect(r.ok && put.find("saved")->boolean && put.find("problems")->arr.empty() && put.find("syntaxChecked")->boolean,
+               "script.put: saved and compiled " + r.message);
         r = Call(S, "level.script.get", R"({"project":"harbour"})");
         Expect(r.ok && J(r.json).find("text")->str == text, "script.get: reads it back");
         erg::Patch onDisk;
@@ -1188,6 +1202,14 @@ void TestService(const std::wstring& root) {
                    onDisk.script.present,
                "save: the script declaration follows script.lua, not the saved patch " + r.message);
 
+        r = Call(S, "level.script.put", R"({"project":"harbour","text":"-- v2\nx = = 1\n"})");
+        put = J(r.json);
+        Expect(r.ok && put.find("saved")->boolean && put.find("problems")->arr.size() == 1 &&
+                   put.find("problems")->arr[0].find("line")->numLiteral == "2" &&
+                   put.find("problems")->arr[0].find("message")->str.find("near") != std::string::npos,
+               "script.put: a syntax error is saved and reported on its line " + r.json);
+        Expect(Call(S, "level.script.put", R"({"project":"harbour","text":"wum.events.on(\"sim.turnStarted\", function() wum.log(wum.level.stem) end)\n"})").ok,
+               "script.put: back to the good script");
         r = Call(S, "level.script.put", R"({"project":"harbour","text":"-- ok\nlocal x = 1\n\u001bLua\n"})");
         put = J(r.json);
         Expect(r.ok && !put.find("saved")->boolean && put.find("problems")->arr.size() == 1 &&

@@ -142,10 +142,15 @@ bool BuildXan(const load::Loaded& base, const Scene& edited, const VoxelEdits& v
         }
         xom::Object obj = *like;
         // An object's knot is only a position: it always gets the non-visual marker, whatever the scene says.
-        const bool knot = std::any_of(edited.objects.begin(), edited.objects.end(), [&](const ObjectSpec& o) { return o.knot == d.name; });
+        const auto spec = std::find_if(edited.objects.begin(), edited.objects.end(), [&](const ObjectSpec& o) { return o.knot == d.name; });
+        const bool knot = spec != edited.objects.end();
         const std::string resource = knot ? std::string(kKnotResource) : d.resource;
+        // The engine drops a telepad from its knot onto the ground below; one starting on or under the surface falls
+        // through the level.
+        Vec3 pos = d.pos;
+        if (knot && spec->type == ObjectType::Telepad) pos[1] += kTelepadLift;
         if (!xomutil::SetStr(obj, "Name", d.name) || !xomutil::SetStr(obj, "ResourceName", resource) ||
-            !xomutil::SetVec(obj, "Position", d.pos) || !xomutil::SetVec(obj, "Orientation", d.rot) ||
+            !xomutil::SetVec(obj, "Position", pos) || !xomutil::SetVec(obj, "Orientation", d.rot) ||
             !xomutil::SetVec(obj, "Scale", d.scale) || !xomutil::SetVec(obj, "VoxelPos", d.voxelPos))
             return Fail(err, "a new detail could not be built");
         fresh.push_back(std::move(obj));

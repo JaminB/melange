@@ -5,7 +5,7 @@ import type { ScriptProblem } from "../../src/sdk/erg/session";
 import { LEVEL_API, MAX_SCRIPT_BYTES, ScriptDoc, localProblems, type ScriptSession } from "../../src/panels/erg/script";
 import { problemDecorations } from "../../src/panels/erg/script/editor";
 
-function fakeSession(initial = "", reply?: (text: string) => { saved: boolean; problems: ScriptProblem[] }) {
+function fakeSession(initial = "", reply?: (text: string) => { saved: boolean; problems: ScriptProblem[]; syntaxChecked?: boolean }) {
   const puts: string[] = [];
   const s: ScriptSession = {
     script: async () => initial,
@@ -97,4 +97,20 @@ test("problems decorate their lines, clamped to the document", () => {
 test("the reference names wum.level and sim.turnStarted", () => {
   const names = LEVEL_API.map((e) => `${e.name} ${e.text}`).join("\n");
   for (const n of ["wum.level.stem", "wum.level.knots", "wum.level.trigger", "wum.level.crate", "sim.turnStarted"]) assert.ok(names.includes(n), n);
+});
+
+test("ScriptDoc keeps a saved script's syntax error and whether the syntax was checked", async () => {
+  const bad = { line: 1, message: "unexpected symbol near `='" };
+  const game = fakeSession("", () => ({ saved: true, problems: [bad], syntaxChecked: true }));
+  const doc = new ScriptDoc(game.s);
+  await doc.load();
+  doc.edit("x = = 1\n");
+  assert.equal(await doc.save(), true);
+  assert.deepEqual(doc.problems, [bad]);
+  assert.equal(doc.syntaxChecked, true);
+  const standalone = new ScriptDoc(fakeSession("", () => ({ saved: true, problems: [], syntaxChecked: false })).s);
+  await standalone.load();
+  standalone.edit("x = = 1\n");
+  assert.equal(await standalone.save(), true);
+  assert.equal(standalone.syntaxChecked, false);
 });

@@ -39,6 +39,9 @@ export function ScriptPanel({ doc, readOnly }: { doc: ScriptDoc; readOnly?: bool
           {doc.problems.map((p) => <li key={`${p.line}:${p.message}`} class="error">Line {p.line}: {p.message}</li>)}
         </ul>
       ) : null}
+      {!doc.syntaxChecked && !doc.dirty ? (
+        <p class="muted small pad" data-script-syntax>Syntax checked when tested in game.</p>
+      ) : null}
       <div class="erg-script-editor" ref={host} />
       <details class="erg-script-ref" data-script-ref>
         <summary>Level script reference</summary>

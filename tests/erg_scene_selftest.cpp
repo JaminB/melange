@@ -744,15 +744,18 @@ void TestChunkGrammar() {
     f.knot = "minefactory";
     f.type = erg::ObjectType::MineFactory;
     mf.objects = {f};
-    const std::string guarded = luagen::Text(stem, mf);
-    const std::string guard =
-        "    if QueryContainer(\"GM.SchemeData\").MineFactoryOn ~= true then SendMessage(\"GameLogic.PlaceObjects\") end\n";
-    Expect(guarded.find(guard) != std::string::npos && guarded.find("    SendMessage(\"GameLogic.PlaceObjects\")\n") == std::string::npos,
-           "the mine factory is placed by the scheme-guarded line only");
-    Expect(guarded.find("\"minefactory\"") == std::string::npos && guarded.find("telepad") == std::string::npos,
+    const std::string factory = luagen::Text(stem, mf);
+    const std::string edit =
+        "    local lock, scheme = EditContainer(\"GM.SchemeData\")\n"
+        "    scheme.MineFactoryOn = false\n"
+        "    CloseContainer(lock)\n";
+    const std::string place = "    SendMessage(\"GameLogic.PlaceObjects\")\n";
+    Expect(factory.find(edit + place) != std::string::npos && factory.find("~= true") == std::string::npos,
+           "a level factory turns the scheme's off, then places the level's objects");
+    Expect(factory.find("\"minefactory\"") == std::string::npos && factory.find("telepad") == std::string::npos,
            "the factory chunk names no knot");
     mf.placeObjects = true;
-    Expect(luagen::Text(stem, mf) == guarded, "with mines or drums too, the guarded line is the only PlaceObjects");
+    Expect(luagen::Text(stem, mf) == factory, "with mines or drums too, PlaceObjects is sent once");
     mf.objects.push_back(f);
     Expect(luagen::Text(stem, mf).empty(), "two mine factories are refused");
     for (const char* k : {"CRATE_0", "TP_8_255", "TRIG_12", "minefactory"})
@@ -760,16 +763,15 @@ void TestChunkGrammar() {
     for (const char* k : {"WORM0", "TP_9_0", "CRATE_007", "TRIG_256", "MINEFACTORY_1"})
         Expect(erg::DeriveRole(k, erg::kKnotResource) == erg::Role::Spawn, std::string("not an object knot: ") + k);
     {
-        std::string once = guarded, twice = guarded;
-        twice.insert(twice.find(guard), guard);
-        Expect(!luagen::IsGenerated(stem, twice, &why), "a doubled factory line is refused");
-        once.replace(once.find("~= true"), 7, "== true");
-        Expect(!luagen::IsGenerated(stem, once, &why), "an inverted factory guard is refused");
-        once = guarded;
-        once.replace(once.find(guard), guard.size(), "    SendMessage(\"GameLogic.PlaceObjects\")\n");
-        Expect(luagen::IsGenerated(stem, once, &why), "the unguarded line is the mines-and-drums chunk");
+        std::string twice = factory, flipped = factory, without = factory;
+        twice.insert(twice.find(place), place);
+        Expect(!luagen::IsGenerated(stem, twice, &why), "a doubled PlaceObjects line is refused");
+        flipped.replace(flipped.find("MineFactoryOn = false"), 21, "MineFactoryOn = true ");
+        Expect(!luagen::IsGenerated(stem, flipped, &why), "a changed scheme edit is refused");
+        without.erase(without.find(edit), edit.size());
+        Expect(luagen::IsGenerated(stem, without, &why), "without the scheme edit it is the mines-and-drums chunk");
         luagen::ChunkSpec back;
-        Expect(luagen::Parse(stem, once, &back) && back.objects.empty() && back.placeObjects, "and parses without a factory");
+        Expect(luagen::Parse(stem, without, &back) && back.objects.empty() && back.placeObjects, "and parses without a factory");
     }
 
     const std::string sample = luagen::Text(stem, ChunkBranches()[ChunkBranches().size() - 2]);

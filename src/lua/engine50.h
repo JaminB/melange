@@ -1,6 +1,8 @@
 #pragma once
 #include <cstddef>
 #include <cstdint>
+#include <string>
+#include <string_view>
 
 // The engine's Lua 5.0.1 (the match VM) and XScriptService, behind prologue checks. Build #1077 only.
 // lua_Number is float in this build. lua_error is a longjmp: never let it cross a C++ frame with live destructors.
@@ -63,6 +65,10 @@ uint32_t ContextSerial();            // +1 per match VM seen by Track()
 struct LibReg { const char* name; CFunction fn; };
 const LibReg* StringLib();           // len sub lower upper char rep byte format dump find gfind gsub
 const LibReg* TableLib();            // concat foreach foreachi getn setn sort insert remove
+
+// Compiles a level script with the engine's parser in a fresh state, without running it. Any thread.
+enum class Compiled { Ok, SyntaxError, Unavailable };
+Compiled Compile(std::string_view text, int* line, std::string* message);
 
 // Hook targets (installed by the sim bridge; Check() covers their prologues).
 constexpr uintptr_t kCreateContext = 0x6958d2, kInit = 0x6956b9, kLoadChunk = 0x697d04, kHandleMessage = 0x6953e9,
