@@ -115,15 +115,15 @@ void BuildImageBundle(const fs::path& bundlesDir) {
     Check(WriteAll(bundlesDir / "Bundl01.xom", bytes.data(), bytes.size()), "write Bundl01.xom");
 }
 
-// ThemeCamelot.txt: 3 six-line records - one resolves to Bundl01's "Swatch", one is NULL, one names a texture
+// ThemeCamelot.txt: 3 six-line records, the first line naming the surface texture - one resolves to Bundl01's "Swatch", one is NULL, one names a texture
 // that does not exist anywhere in the index.
 void WriteMaterialFile(const fs::path& path) {
     const char* text =
-        "C01\nC05\nC05\nC19\nFoo/Swatch\nC05\n"
+        "Swatch\nC05\nC05\nC19\nFoo/Grass\nC05\n"
         "\n"
-        "C02\nC06\nC06\nNULL\nNULL\nC05\n"
+        "NULL\nC06\nC06\nNULL\nNULL\nC05\n"
         "\n"
-        "C03\nC07\nC07\nC19\nBar/Missing1\nC07\n";
+        "Missing1\nC07\nC07\nC19\nBar/Rock\nC07\n";
     WriteAll(path, text, std::strlen(text));
 }
 
@@ -230,7 +230,7 @@ int main() {
         Check(materials && materials->arr.size() == 3, "the index lists all 3 fixture records");
         if (materials && materials->arr.size() == 3) {
             Check(materials->arr[0].find("resolved") && materials->arr[0].find("resolved")->boolean,
-                  "record 0 (Foo/Swatch) is marked resolved");
+                  "record 0 (Swatch) is marked resolved");
             Check(materials->arr[1].find("resolved") && !materials->arr[1].find("resolved")->boolean,
                   "record 1 (NULL) is marked unresolved");
             Check(materials->arr[2].find("resolved") && !materials->arr[2].find("resolved")->boolean,

@@ -191,6 +191,7 @@ bool EnsureIndexBuilt(Index& idx) {
                 const xom::Value* nm = o.field("Name");
                 if (nm && !nm->str.empty()) {
                     idx.imagesByLowerStem.emplace(Lower(StripExt(nm->str)), ImageLoc{rel, uint32_t(i + 1)});
+                    idx.imagesByLowerStem.emplace(Lower(StripExt(BaseName(nm->str))), ImageLoc{rel, uint32_t(i + 1)});
                     ++images;
                 }
             }
@@ -375,18 +376,18 @@ std::string ThemeFolder(const std::string& theme) {
 }
 
 struct MaterialRecord {
-    std::string textureRef;  // as the file names it, e.g. "BeigeRock/Grass01"; "" if the slot has none (NULL)
+    std::string textureRef;  // the record's first line: the surface texture id, e.g. "C01"; "" if none (NULL)
 };
 
-// The theme's <ThemeName>.txt: 6-line records separated by blank lines; line index 4 (5th line) names a texture
-// (or "NULL"). Capped at kAtlasMaxMaterials (the voxel material field is 6 bits).
+// The theme's <ThemeName>.txt: 6-line records separated by blank lines; the first line names the surface texture
+// (the ids Heightmap.BaseTexture uses, e.g. "C01"). Capped at kAtlasMaxMaterials (the voxel material field is 6 bits).
 bool ParseMaterialFile(const std::string& text, std::vector<MaterialRecord>* out) {
     std::vector<std::string> block;
     auto flush = [&] {
         if (!block.empty()) {
             MaterialRecord r;
-            if (block.size() > 4) {
-                const std::string tex = Trim(block[4]);
+            if (!block.empty()) {
+                const std::string tex = Trim(block[0]);
                 if (!tex.empty() && tex != "NULL") r.textureRef = tex;
             }
             out->push_back(std::move(r));
@@ -448,7 +449,8 @@ bool ConvertThemeAtlas(const std::string& theme, Index& idx, std::vector<uint8_t
         const std::string& ref = materials[i].textureRef;
         bool resolved = false;
         if (!ref.empty()) {
-            const auto it = idx.imagesByLowerStem.find(Lower(StripExt(BaseName(ref))));
+            auto it = idx.imagesByLowerStem.find(Lower(ThemeFolder(theme) + "\\" + StripExt(BaseName(ref))));
+            if (it == idx.imagesByLowerStem.end()) it = idx.imagesByLowerStem.find(Lower(StripExt(BaseName(ref))));
             if (it != idx.imagesByLowerStem.end()) {
                 const fs::path bundlePath = fs::path(GameDirNow()) / L"Data" / L"Bundles" / it->second.bundleFile;
                 std::vector<uint8_t> bytes;
@@ -564,7 +566,7 @@ bool Get(const std::string& key, const std::string& ext, Asset* out, std::string
     const std::string converter = isMesh ? "mesh" : "atlas";
     // The cache key covers the source bundle's own bytes, the resource, and this converter's version, so a
     // changed install or converter fix invalidates old entries automatically.
-    constexpr int kConverterVersion = 1;
+    constexpr int kConverterVersion = 3;
     std::string sourceTag;
     MeshLoc meshLoc;
     std::string themeName;
