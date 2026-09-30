@@ -163,8 +163,9 @@ struct Fake final : core::Engine {
     int AddText(const char* key, const char* value) override {
         ++textAdds;
         if (failTextAdd) return -1;
+        const int rc = texts.count(key) ? 1 : 0;  // the game returns non-zero when it overwrites a key
         texts[key] = value;
-        return 0;
+        return rc;
     }
     bool GetText(const char* key, std::string* out) override {
         auto it = texts.find(key);
@@ -304,6 +305,7 @@ void Basic() {
     // A match whose scene kept our container: overwrite from the base.
     r.MatchEnd();
     Expect(r.Init(&why) && e.adds == 3 && e.lastAddFlags == 1, "a leftover clone of ours is overwritten: " + why);
+    Expect(r.At(0)->text && r.TextName(0x100, 0, false) == P(c->namePtr), "the second Init keeps the clone's name");
     r.MatchEnd();
     // A missed match end: the next Init drops the old state first.
     e.NewScene();
@@ -468,6 +470,10 @@ void TextAndIcons() {
     r.MatchEnd();
     e.NewScene();
     Expect(r.Init(&why) && e.iconCalls == 1 && e.CellIcon(29) == 0x0c03, "icon reserved once per launch");
+    r.MatchEnd();
+    const int adds = e.textAdds;
+    Expect(r.Init(&why) && e.textAdds > adds && r.At(0)->text && r.At(0)->help && r.TextName(0x100, 0, false) == P(r.At(0)->namePtr),
+           "text already in the table from the last match still counts as the clone's own: " + why);
     r.MatchEnd();
 
     Fake f;

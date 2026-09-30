@@ -78,6 +78,7 @@ private:
     bool Create(Clone& c, std::string* why);
     bool ApplySet(Clone& c, std::string* why);
     void RegisterText(Clone& c);
+    bool PutText(const std::string& key, const std::string& value);
     uint32_t BaseIcon(int32_t base);
     void Swap(int k);
     void Unswap();

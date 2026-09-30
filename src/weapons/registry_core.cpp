@@ -153,11 +153,18 @@ bool Registry::Create(Clone& c, std::string* why) {
     return ApplySet(c, why);
 }
 
+// Overwriting a key left by an earlier match returns non-zero, so a failure is judged by reading the text back.
+bool Registry::PutText(const std::string& key, const std::string& value) {
+    if (e_.AddText(key.c_str(), value.c_str()) == 0) return true;
+    std::string got;
+    return e_.GetText(key.c_str(), &got) && got == value;
+}
+
 void Registry::RegisterText(Clone& c) {
     std::string name = c.decl.text.name;
     const std::string& help = c.decl.text.help;
     if (name.empty() && !e_.GetText(("Text." + c.decl.base).c_str(), &name)) name.clear();
-    c.text = !name.empty() && e_.AddText(c.textKey, name.c_str()) == 0;
+    c.text = !name.empty() && PutText(c.textKey, name);
     if (c.text) {
         bool own = false;
         for (auto& s : c.decl.set) own |= s.field == "DisplayName";
@@ -167,12 +174,12 @@ void Registry::RegisterText(Clone& c) {
     }
     c.help = false;
     if (!help.empty()) {
-        c.help = e_.AddText(("HelpText." + c.decl.name + "0").c_str(), help.c_str()) == 0;
+        c.help = PutText("HelpText." + c.decl.name + "0", help);
     } else {
         for (int i = 0; i < 4; ++i) {
             std::string line;
             if (!e_.GetText(("HelpText." + c.decl.base + std::to_string(i)).c_str(), &line)) break;
-            const bool ok = e_.AddText(("HelpText." + c.decl.name + std::to_string(i)).c_str(), line.c_str()) == 0;
+            const bool ok = PutText("HelpText." + c.decl.name + std::to_string(i), line);
             if (i == 0) c.help = ok;
             if (!ok) break;
         }
