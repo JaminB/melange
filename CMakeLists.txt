@@ -126,6 +126,14 @@ string(REPLACE "\\" "\\\\" OASIS_WEB_ZIP_RC "${OASIS_WEB_ZIP_NATIVE}")
 file(CONFIGURE OUTPUT ${CMAKE_BINARY_DIR}/generated/oasis_web.rc CONTENT "OASIS_WEB RCDATA \"${OASIS_WEB_ZIP_RC}\"\n")
 set_source_files_properties(${CMAKE_BINARY_DIR}/generated/oasis_web.rc PROPERTIES OBJECT_DEPENDS ${OASIS_WEB_ZIP})
 
+# The Erg level service (scene load/build over src/xom, the project store, the registry bank), shared by the plugin's
+# Oasis, oasis.exe, xomtool and the self-tests.
+set(ERG_SERVICE_SOURCES
+    src/erg/scene.cpp src/erg/patch.cpp src/erg/names.cpp src/erg/jsonio.cpp src/erg/xomutil.cpp src/erg/load.cpp
+    src/erg/build.cpp src/erg/bank.cpp src/erg/install.cpp src/erg/project.cpp src/erg/service.cpp src/erg/pack_stub.cpp
+    src/erg/preview_stub.cpp src/levels/manifest.cpp src/mods/spice.cpp src/tools/json_read.cpp src/tools/hash.cpp
+    src/core/log.cpp)
+
 # Every .cpp under src/ is compiled into the plugin.
 file(GLOB_RECURSE MELANGE_SOURCES CONFIGURE_DEPENDS src/*.cpp)
 list(FILTER MELANGE_SOURCES EXCLUDE REGEX "/src/xom/")
@@ -188,7 +196,8 @@ target_link_libraries(oasis_rpc_selftest PRIVATE oasis_core)
 add_executable(oasis_standalone
     src/oasis/standalone/main.cpp src/oasis/standalone/ini_edit.cpp src/oasis/standalone/mods_provider.cpp
     src/oasis/standalone/json_write.cpp src/oasis/standalone/game_lock.cpp src/oasis/standalone/wormsign_provider.cpp
-    src/oasis/auth.cpp src/oasis/webpanels.cpp src/oasis/rpc/ini_edit.cpp src/mods/spice.cpp src/tools/json_read.cpp src/core/log.cpp
+    src/oasis/standalone/level_provider.cpp
+    src/oasis/auth.cpp src/oasis/webpanels.cpp src/oasis/rpc/ini_edit.cpp ${ERG_SERVICE_SOURCES}
     src/wormsign/format.cpp src/wormsign/records.cpp
     ${CMAKE_BINARY_DIR}/generated/oasis_web.rc)
 add_dependencies(oasis_standalone oasis_web)
@@ -197,7 +206,7 @@ target_include_directories(oasis_standalone PRIVATE src src/sdk ${CMAKE_BINARY_D
 target_compile_definitions(oasis_standalone PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX _CRT_SECURE_NO_WARNINGS)
 target_compile_options(oasis_standalone PRIVATE /W4 /utf-8 /permissive- /Zi)
 target_link_options(oasis_standalone PRIVATE /DEBUG)
-target_link_libraries(oasis_standalone PRIVATE oasis_core bcrypt shell32 ole32)
+target_link_libraries(oasis_standalone PRIVATE oasis_core melange_xom bcrypt shell32 ole32)
 
 # Offline self-test for the standalone-only file logic (ini editing, mods.list/setEnabled, wormsign.library): no
 # game, no server.
@@ -264,11 +273,19 @@ target_link_libraries(erg_scene_selftest PRIVATE melange_xom)
 
 # xomtool: the Sieve CLI (unpack/pack/inspect/diff/convert/bank/report). PNG I/O only here -
 # src/xom itself stays platform-free.
-add_executable(xomtool tools/xomtool/main.cpp)
-target_include_directories(xomtool PRIVATE src/xom ${stb_SOURCE_DIR})
+add_executable(xomtool tools/xomtool/main.cpp tools/xomtool/level.cpp ${ERG_SERVICE_SOURCES})
+target_include_directories(xomtool PRIVATE src/xom src src/sdk ${stb_SOURCE_DIR})
 target_compile_definitions(xomtool PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX _CRT_SECURE_NO_WARNINGS)
 target_compile_options(xomtool PRIVATE /W4 /utf-8 /permissive-)
-target_link_libraries(xomtool PRIVATE melange_xom)
+target_link_libraries(xomtool PRIVATE melange_xom bcrypt)
+
+# The Erg level service without the game: synthetic .xan/.XOM documents through load, patch, build (renumbering,
+# byte-identical empty builds), the registry bank, the project store and every level.* method over a temp install.
+add_executable(erg_level_selftest tests/erg_level_selftest.cpp ${ERG_SERVICE_SOURCES})
+target_include_directories(erg_level_selftest PRIVATE src src/sdk)
+target_compile_definitions(erg_level_selftest PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX _CRT_SECURE_NO_WARNINGS)
+target_compile_options(erg_level_selftest PRIVATE /W4 /utf-8 /permissive-)
+target_link_libraries(erg_level_selftest PRIVATE melange_xom bcrypt)
 
 # Image/mesh/glTF/bank conversions without the game: round trips against real shipped files
 # and a reference bank, run with --game pointing at an installed copy (skipped otherwise).

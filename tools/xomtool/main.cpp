@@ -1,4 +1,4 @@
-// xomtool - the Sieve CLI: unpack/pack/inspect/diff/convert/bank/report on melange::xom.
+// xomtool - the Sieve CLI: unpack/pack/inspect/diff/convert/bank/report/level on melange::xom.
 // See docs/xomtool.md. Exit codes: 0 ok, 1 usage, 2 input error, 3 write refused.
 #include <algorithm>
 #include <cstdio>
@@ -22,6 +22,8 @@
 #include "mesh.h"
 
 using namespace melange::xom;
+
+int CmdLevel(int argc, char** argv);  // level.cpp
 
 namespace {
 
@@ -76,7 +78,8 @@ int Usage() {
         "                  [--material-from <Name>] [--material-file <file.xom>] [--texture <png>] [-o <out.xom>]\n"
         "  xomtool convert <Name> --from <file.xom> --out <mesh.gltf>\n"
         "  xomtool bank --from <src.xom> --object <BaseName> --as <NewName> [--set Field=value ...] --out <out.xom>\n"
-        "  xomtool report <in.xom> -o <out.md>\n");
+        "  xomtool report <in.xom> -o <out.md>\n"
+        "  xomtool level unpack|build|diff ...  (xomtool level for details)\n");
     return 1;
 }
 
@@ -703,6 +706,7 @@ int CmdReport(const Args& a) {
 int main(int argc, char** argv) {
     if (argc < 2) return Usage();
     std::string cmd = argv[1];
+    if (cmd == "level") return CmdLevel(argc, argv);
     Args a = ParseArgs(argc, argv, 2);
     if (cmd == "unpack") return CmdUnpack(a);
     if (cmd == "pack") return CmdPack(a);

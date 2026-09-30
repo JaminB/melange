@@ -2,6 +2,7 @@
 
 #include <windows.h>
 
+#include <algorithm>
 #include <cstdio>
 #include <map>
 #include <set>
@@ -126,6 +127,28 @@ std::string ListJson(const std::wstring& gameDir, const std::string& melangeVers
                     .End());
     }
     return arr.End();
+}
+
+std::vector<spice::Manifest> Enabled(const std::wstring& gameDir, const std::string& melangeVersion) {
+    json::Value state;
+    LoadState(gameDir, &state);
+    const auto enabledMap = EnabledMap(state);
+    const auto granted = DeepDesertGranted(state);
+    std::vector<spice::Manifest> manifests = ScanManifests(gameDir);
+    std::set<std::string> userEnabled;
+    for (const auto& m : manifests) {
+        const auto it = enabledMap.find(m.id);
+        if (it != enabledMap.end() ? it->second : m.defaultEnabled) userEnabled.insert(m.id);
+    }
+    auto resolved = spice::Resolve(manifests, userEnabled, melangeVersion, {});
+    std::sort(resolved.begin(), resolved.end(), [](const spice::Resolved& a, const spice::Resolved& b) { return a.order < b.order; });
+    std::vector<spice::Manifest> out;
+    for (const auto& r : resolved) {
+        if (r.state != mods::State::Enabled && !(r.state == mods::State::PendingConsent && granted.count(r.id))) continue;
+        for (auto& m : manifests)
+            if (m.id == r.id) out.push_back(m);
+    }
+    return out;
 }
 
 int SetEnabled(const std::wstring& gameDir, const std::string& id, bool on) {

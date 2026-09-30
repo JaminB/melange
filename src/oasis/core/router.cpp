@@ -4,6 +4,7 @@
 
 #include <atomic>
 #include <cmath>
+#include <cstring>
 #include <cstdio>
 #include <deque>
 #include <map>
@@ -50,6 +51,8 @@ struct Client {
 };
 
 struct PendingCall { int client; int64_t id; int method; std::string name, params; };
+struct PendingBin { std::string announce, frame; };
+thread_local std::vector<PendingBin>* t_bins = nullptr;
 struct SubEvent { ChannelId ch; int client; std::string filter; bool on; SubCb cb; bool main; };
 
 std::shared_mutex g_reg;  // everything below up to g_host
@@ -104,6 +107,19 @@ void Send(Client& c, std::string msg) {
         c.closeReason = "connection queue over the limit";
     }
     SetEvent(c.wake);
+}
+
+void SendBins(Client& c, std::vector<PendingBin>& bins) {
+    for (auto& b : bins) {
+        Send(c, std::move(b.announce));
+        std::lock_guard lk(c.mx);
+        if (c.gone) return;
+        if (!c.box.PushBinary(std::move(b.frame)) && !c.closeCode) {
+            c.closeCode = kCloseQueue;
+            c.closeReason = "binary queue over the limit";
+        }
+        SetEvent(c.wake);
+    }
 }
 
 void RequestClose(Client& c, uint16_t code, const char* reason) {
@@ -183,11 +199,16 @@ void SubCallSeh(SubscribeFn fn, ChannelId ch, int client, std::string_view* filt
     }
 }
 
-Result Run(const Method& m, int client, std::string_view params) {
+Result Run(const Method& m, int client, std::string_view params, std::vector<PendingBin>* bins) {
     Result r;
     const Call call{m.name, params, client};
+    bins->clear();
+    t_bins = bins;
     const unsigned long code = InvokeSeh(m.fn, &call, &r, m.user);
+    t_bins = nullptr;
+    if (!r.ok) bins->clear();
     if (!code) return r;
+    bins->clear();
     int faults = 0;
     {
         std::unique_lock lk(g_reg);
@@ -331,7 +352,11 @@ void OnCall(Client& c, const json::Value& v) {
     if ((m.flags & kRpcMutating) && readOnly) return Send(c, ErrMsg(id, true, kErrReadOnly, "Oasis is read-only ([Oasis] ReadOnly=1)"));
     if ((m.flags & kRpcGameOnly) && !game) return Send(c, ErrMsg(id, true, kErrNotInMatch, "the game is not running"));
     ++g_ct.rpcCalls;
-    if (m.flags & kRpcServerThread) return Send(c, ResultMsg(id, Run(m, c.id, params)));
+    if (m.flags & kRpcServerThread) {
+        std::vector<PendingBin> bins;
+        Send(c, ResultMsg(id, Run(m, c.id, params, &bins)));
+        return SendBins(c, bins);
+    }
     if (c.pending.load() >= kMaxQueuedCalls) return Send(c, ErrMsg(id, true, kErrBusy, "too many queued calls"));
     ++c.pending;
     std::lock_guard lk(g_pumpMx);
@@ -348,6 +373,22 @@ void SysPing(const Call&, Result& r, void*) {
     r.json = jsonmini::Obj().UInt("frame", frame).UInt("ms", GetTickCount64()).End();
 }
 }  // namespace
+
+void QueueBinary(uint32_t ref, std::string_view ch, std::string_view metaJson, std::string_view bytes) {
+    if (!t_bins) return;
+    PendingBin b;
+    b.announce = jsonmini::Obj()
+                     .Str("t", "bin")
+                     .UInt("ref", ref)
+                     .Str("ch", ch)
+                     .UInt("len", bytes.size())
+                     .Raw("meta", metaJson.empty() ? std::string_view("null") : metaJson)
+                     .End();
+    b.frame.resize(4 + bytes.size());
+    for (int k = 0; k < 4; ++k) b.frame[static_cast<size_t>(k)] = static_cast<char>(ref >> (8 * k));
+    if (!bytes.empty()) std::memcpy(b.frame.data() + 4, bytes.data(), bytes.size());
+    t_bins->push_back(std::move(b));
+}
 
 void SetHost(const Host& h) {
     std::unique_lock lk(g_reg);
@@ -391,6 +432,7 @@ void Pump() {
                 }
         }
         Result r;
+        std::vector<PendingBin> bins;
         if (!found) {
             r.ok = false;
             r.code = kErrMethod;
@@ -400,11 +442,12 @@ void Pump() {
             r.code = kErrFault;
             r.message = "method disabled after repeated faults";
         } else {
-            r = Run(m, pc.client, pc.params);
+            r = Run(m, pc.client, pc.params, &bins);
         }
         if (auto c = FindClient(pc.client)) {
             --c->pending;
             Send(*c, ResultMsg(pc.id, r));
+            SendBins(*c, bins);
         }
         QueryPerformanceCounter(&t);
         if (static_cast<double>(t.QuadPart - t0.QuadPart) * 1000.0 / static_cast<double>(f.QuadPart) >= kPumpBudgetMs) break;
@@ -479,12 +522,13 @@ void Text(int id, std::string_view msg) {
     Send(*c, ErrMsg(0, false, kErrEnvelope, "unknown message type"));
 }
 
-bool Take(int id, uint32_t now, std::vector<std::string>* out, uint32_t* wait, uint16_t* code, std::string* reason) {
+bool Take(int id, uint32_t now, std::vector<std::string>* out, uint32_t* wait, uint16_t* code, std::string* reason,
+          std::vector<uint8_t>* binary) {
     auto c = FindClient(id);
     if (!c) return false;
     std::lock_guard lk(c->mx);
     if (c->gone) return false;
-    *wait = c->box.Take(now, out);
+    *wait = c->box.Take(now, out, binary);
     *code = c->closeCode;
     if (c->closeCode) *reason = c->closeReason;
     return true;

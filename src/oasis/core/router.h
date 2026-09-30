@@ -25,6 +25,9 @@ struct Host {
     uint64_t (*frame)() = nullptr; // sys.ping's frame counter
 };
 void SetHost(const Host& h);
+// Inside an RPC handler: a binary frame to send right after the handler's result (announced by a `bin` message; the
+// frame starts with `ref`, u32 LE). Dropped when the handler fails. Any thread.
+void QueueBinary(uint32_t ref, std::string_view ch, std::string_view metaJson, std::string_view bytes);
 void SetBuild(std::string build);  // the web bundle's build id, sent in welcome
 std::string Build();
 
@@ -37,7 +40,7 @@ void Text(int id, std::string_view msg);
 // The writer's view: due messages, the wait until the next batch, and a close to perform (code 0 = none).
 // False once the client is gone.
 bool Take(int id, uint32_t nowMs, std::vector<std::string>* out, uint32_t* waitMs, uint16_t* closeCode,
-          std::string* closeReason);
+          std::string* closeReason, std::vector<uint8_t>* binary = nullptr);
 void Close(int id, uint16_t code, const char* reason);  // queue a close; any thread
 void Gone(int id);                                       // the connection ended; drops subscriptions
 void Release(int id);                                    // the writer has exited; frees the client

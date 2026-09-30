@@ -44,8 +44,15 @@ bool Outbox::Subscribed(ChannelId ch) const { return Find(ch) != nullptr; }
 
 bool Outbox::PushControl(std::string msg) {
     controlBytes_ += msg.size();
-    control_.push_back(std::move(msg));
+    control_.push_back(Msg{std::move(msg), false});
     return controlBytes_ <= lim_.connectionBytes;
+}
+
+bool Outbox::PushBinary(std::string frame) {
+    if (binaryBytes_ + frame.size() > lim_.binaryBytes) return false;
+    binaryBytes_ += frame.size();
+    control_.push_back(Msg{std::move(frame), true});
+    return true;
 }
 
 void Outbox::DropFront(Chan& c) {
@@ -76,10 +83,12 @@ bool Outbox::Publish(ChannelId ch, std::string_view json, uint64_t* dropped) {
     return true;
 }
 
-uint32_t Outbox::Take(uint32_t now, std::vector<std::string>* out) {
+uint32_t Outbox::Take(uint32_t now, std::vector<std::string>* out, std::vector<uint8_t>* binary) {
     while (!control_.empty()) {
-        controlBytes_ -= control_.front().size();
-        out->push_back(std::move(control_.front()));
+        Msg& m = control_.front();
+        (m.binary ? binaryBytes_ : controlBytes_) -= m.data.size();
+        if (binary) binary->push_back(m.binary ? 1 : 0);
+        out->push_back(std::move(m.data));
         control_.pop_front();
     }
     uint32_t wait = UINT32_MAX;
@@ -93,6 +102,7 @@ uint32_t Outbox::Take(uint32_t now, std::vector<std::string>* out) {
         c.lastFlush = now;
         c.flushedOnce = true;
         if (c.dropped) {
+            if (binary) binary->push_back(0);
             out->push_back(jsonmini::Obj().Str("t", "drop").Str("ch", c.name).UInt("n", c.dropped).Str("why", "queue").End());
             c.dropped = 0;
         }
@@ -112,6 +122,7 @@ uint32_t Outbox::Take(uint32_t now, std::vector<std::string>* out) {
             }
             m += '}';
             for (size_t i = 0; i < n; ++i) DropFront(c);
+            if (binary) binary->push_back(0);
             out->push_back(std::move(m));
         }
     }
