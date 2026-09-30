@@ -14,6 +14,7 @@
 #include "erg/scene.h"
 #include "levels/engine.h"
 #include "levels/registry.h"
+#include "lua/engine50.h"
 #include "melange/jlog.h"
 #include "melange/sim.h"
 #include "mods/lobby.h"
@@ -37,6 +38,7 @@ std::vector<Ev> g_events;
 Override g_ovr;
 char g_taken[128] = {};
 int g_startSub = 0;
+bool g_ctxSub = false;
 uint32_t g_attract = 0;
 bool g_todSet = false;
 std::string g_todOld;
@@ -90,6 +92,14 @@ void RestoreTod() {
     g_todSet = false;
     const bool ok = engine::SetString(kTodName, g_todOld.c_str());
     LOG_INFO("[levels] test: %s restored to '%s': %s", kTodName, g_todOld.c_str(), ok ? "ok" : "FAILED");
+}
+
+// The match VM is created after SetUpLevelData has read the time of day: the frontend's value can go back now, before
+// anything else reads it. OnFrame's restore stays as the fallback.
+void OnContext(bool created, lua50::State*, void*) {
+    if (!created) return;
+    std::lock_guard lk(g_mx);
+    RestoreTod();
 }
 }  // namespace
 
@@ -189,6 +199,10 @@ const char* Take(const char* frontendKey) {
 
 void OnFrame(bool atFrontend) {
     if (!g_startSub) g_startSub = engine::OnStartGame(&OnStartGame, nullptr);
+    if (!g_ctxSub) {
+        g_ctxSub = true;
+        if (lua50::Track()) lua50::OnContext(&OnContext, nullptr);
+    }
     if (handshake::lobby::Current() || NetSession()) Disarm("a network session started");
     {
         std::lock_guard lk(g_mx);
