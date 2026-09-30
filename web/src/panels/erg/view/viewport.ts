@@ -16,7 +16,7 @@ import { rayTerrain } from "../model/ground";
 import { place, type PaletteEntry } from "../model/placing";
 import { ROLE_STYLE, glyphOf } from "../model/roles";
 import type { EditorStore } from "../model/store";
-import type { MeshData } from "../terrain/mesher";
+import { MAX_LEVEL_QUADS, type MeshData } from "../terrain/mesher";
 import { skyColors, themePalette } from "../terrain/materials";
 import { MesherPool, buckets, meshInput, type Bucket } from "../terrain/pool";
 import type { TerrainTool } from "../terrain/tool";
@@ -183,9 +183,10 @@ export function createViewport(el: HTMLElement, store: EditorStore, events: View
     const want = frameIds ? new Set(frameIds) : null;
     const todo = bucketList.filter((b) => !want || b.frames.some((id) => want.has(id)));
     const palette = themePalette(s.databank.theme);
+    const share = Math.floor(MAX_LEVEL_QUADS / Math.max(1, bucketList.length));
     const tm = performance.now();
     const results = await Promise.all(todo.map((b) =>
-      pool.mesh(b.index, meshInput(s, b.frames, (f) => store.voxelsOf(f)), palette).then((m) => [b, m] as const)));
+      pool.mesh(b.index, meshInput(s, b.frames, (f) => store.voxelsOf(f)), palette, share).then((m) => [b, m] as const)));
     if (gen !== generation || disposed) return;
     if (!frameIds) {
       for (const m of bucketMesh.values()) { terrain.remove(m); m.geometry.dispose(); }
@@ -199,6 +200,7 @@ export function createViewport(el: HTMLElement, store: EditorStore, events: View
       bucketMesh.set(b.index, mesh);
       terrain.add(mesh);
     }
+    if (results.some(([, m]) => m.truncated)) console.warn("erg: the terrain has more faces than the viewer draws; some frames are left out");
     meshMs = performance.now() - tm;
     if (!frameIds) {
       sizeSurroundings();

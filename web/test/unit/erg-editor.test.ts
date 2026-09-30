@@ -70,6 +70,21 @@ test("mesher: face counts with greedy merging", () => {
   assert.equal(frameQuads([2, 2, 2], new Uint32Array(3)).length, 0, "a short array is ignored");
 });
 
+test("mesher: the quad budget bounds a checkerboard", () => {
+  const n = 16, cells: [number, number, number, number][] = [];
+  for (let x = 0; x < n; x++) for (let y = 0; y < n; y++) for (let z = 0; z < n; z++) if ((x + y + z) % 2 === 0) cells.push([x, y, z, 1]);
+  const v = vox([n, n, n], cells);
+  const all = frameQuads([n, n, n], v).length / 8;
+  assert.ok(all > 10000, `${all} quads`);
+  assert.equal(frameQuads([n, n, n], v, 100).length / 8, 100, "frameQuads stops at its budget");
+  const frame = { size: [n, n, n] as [number, number, number], world: [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0], voxels: v };
+  const pal = new Uint8Array(192);
+  const m = meshFrames([{ id: 1, ...frame }, { id: 2, ...frame }], pal, all + 10);
+  assert.ok(m.truncated && m.quads === all && m.positions.length === all * 12, "a frame past the budget is left out");
+  const whole = meshFrames([{ id: 1, ...frame }], pal, all);
+  assert.ok(!whole.truncated && whole.quads === all, "a frame that fits exactly is kept");
+});
+
 function checkWinding(m: ReturnType<typeof meshFrames>) {
   for (let q = 0; q < m.quads; q++) {
     const i = [m.index[q * 6], m.index[q * 6 + 1], m.index[q * 6 + 2]];

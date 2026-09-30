@@ -16,15 +16,28 @@ export interface MeshData {
   index: Uint32Array;         // 6 per quad
   quadFrame: Uint32Array;     // frame id of each quad (triangle t belongs to quad t >> 1)
   quads: number;
+  truncated: boolean;         // the quad budget ran out; later frames are left out
 }
+
+/** Quads a whole level may mesh into (about 130 bytes each once in GPU-ready buffers). */
+export const MAX_LEVEL_QUADS = 1 << 21;
 
 export const isSolid = (v: number) => (v & 3) === 3;
 export const materialOf = (v: number) => (v >>> 2) & 63;
 
-/** Quads of one frame in frame space: [axis, dir, plane, u0, v0, u1, v1, material] per quad. */
-export function frameQuads(size: readonly number[], voxels: Uint32Array): number[] {
+/** Quads of one frame in frame space: [axis, dir, plane, u0, v0, u1, v1, material] per quad; at most maxQuads. */
+export function frameQuads(size: readonly number[], voxels: Uint32Array, maxQuads = Infinity): Int16Array {
   const [X, Y, Z] = size;
-  const out: number[] = [];
+  let out = new Int16Array(0), used = 0;
+  const push = (...q: number[]) => {
+    if (used + 8 > out.length) {
+      const grown = new Int16Array(Math.max(64, out.length * 2));
+      grown.set(out);
+      out = grown;
+    }
+    out.set(q, used);
+    used += 8;
+  };
   if (!X || !Y || !Z || voxels.length < X * Y * Z) return out;
   const dims = [X, Y, Z];
   const at = (p: number[]) => voxels[(p[2] * X + p[0]) * Y + p[1]];
@@ -54,20 +67,25 @@ export function frameQuads(size: readonly number[], voxels: Uint32Array): number
           grow: for (; j + h < nv; h++)
             for (let k = 0; k < w; k++) if (mask[(j + h) * nu + i + k] !== m) break grow;
           for (let jj = 0; jj < h; jj++) mask.fill(0, (j + jj) * nu + i, (j + jj) * nu + i + w);
-          out.push(d, m > 0 ? 1 : -1, s, i, j, i + w, j + h, Math.abs(m) - 1);
+          if (used / 8 >= maxQuads) return out.subarray(0, used);
+          push(d, m > 0 ? 1 : -1, s, i, j, i + w, j + h, Math.abs(m) - 1);
           i += w;
         }
     }
   }
-  return out;
+  return out.subarray(0, used);
 }
 
-/** Meshes several frames into one buffer set. `palette` is 64 RGB triples. */
-export function meshFrames(frames: MeshFrame[], palette: Uint8Array): MeshData {
-  const all: { f: MeshFrame; q: number[] }[] = [];
-  let quads = 0;
+/** Meshes several frames into one buffer set, at most maxQuads quads. `palette` is 64 RGB triples. */
+export function meshFrames(frames: MeshFrame[], palette: Uint8Array, maxQuads = MAX_LEVEL_QUADS): MeshData {
+  const all: { f: MeshFrame; q: Int16Array }[] = [];
+  let quads = 0, truncated = false;
   for (const f of frames) {
-    const q = frameQuads(f.size, f.voxels);
+    const q = frameQuads(f.size, f.voxels, maxQuads - quads + 1);
+    if (quads + q.length / 8 > maxQuads) {
+      truncated = true;
+      break;
+    }
     quads += q.length / 8;
     all.push({ f, q });
   }
@@ -116,5 +134,9 @@ export function meshFrames(frames: MeshFrame[], palette: Uint8Array): MeshData {
       n++;
     }
   }
-  return { positions, normals, colors, index, quadFrame, quads };
+  return { positions, normals, colors, index, quadFrame, quads, truncated };
+}
+
+export function emptyMesh(): MeshData {
+  return meshFrames([], new Uint8Array(192));
 }
