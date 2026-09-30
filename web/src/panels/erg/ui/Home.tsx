@@ -44,6 +44,8 @@ export function Home({ client, busy, error, autoOpen, onOpen, onAutoDone }: Prop
   const [title, setTitle] = useState("");
   const [formError, setFormError] = useState<string>();
   const [creating, setCreating] = useState(false);
+  const [unbuilt, setUnbuilt] = useState<{ id: string; name: string }[]>([]);
+  const [buildNote, setBuildNote] = useState<string>();
 
   const load = () => {
     if (!conn.open) return;
@@ -58,6 +60,22 @@ export function Home({ client, busy, error, autoOpen, onOpen, onAutoDone }: Prop
         if (p) onOpen(p);
       }
     }, (e) => setListError(errorText(e)));
+    if (client.has("mods.list") && client.has("level.build"))
+      client.call<unknown>("mods.list").then((v) => {
+        const mods = Array.isArray(v) ? v : (v as { mods?: unknown })?.mods;
+        type Mod = { id?: unknown; name?: unknown; reason?: unknown };
+        setUnbuilt(((Array.isArray(mods) ? mods : []) as Mod[]).filter((m) => typeof m?.reason === "string" && m.reason.startsWith("not built"))
+          .map((m) => ({ id: String(m.id), name: String(m.name || m.id) })));
+      }, () => {});
+  };
+  const build = async (modId: string) => {
+    setBuildNote(`Building ${modId}…`);
+    try {
+      await client.call<unknown>("level.build", { modId }, 60000);
+      setBuildNote(`Built ${modId}. Restart the game to play its levels.`);
+    } catch (e) {
+      setBuildNote(`Could not build ${modId}: ${errorText(e)}`);
+    }
   };
   useEffect(load, [conn.open]);
 
@@ -105,6 +123,17 @@ export function Home({ client, busy, error, autoOpen, onOpen, onAutoDone }: Prop
               </tbody>
             </table>
           )}
+          {unbuilt.length ? (
+            <div data-erg-unbuilt>
+              <h2>Map packs to build</h2>
+              <p class="muted">These packs ship only their patches. Build them against your install to play them.</p>
+              {unbuilt.map((m) => (
+                <p key={m.id} class="row">{m.name} <code>{m.id}</code>
+                  <button class="btn" disabled={!conn.open} onClick={() => build(m.id)} data-build={m.id}>Build</button></p>
+              ))}
+              {buildNote ? <p class="hint" data-erg-build-note>{buildNote}</p> : null}
+            </div>
+          ) : null}
           <h2>New project</h2>
           <form class="erg-new" onSubmit={create} data-erg-new>
             <label>Base level
