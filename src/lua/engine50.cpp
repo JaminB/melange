@@ -3,6 +3,7 @@
 #include <windows.h>
 #include <safetyhook.hpp>
 
+#include <algorithm>
 #include <cstring>
 #include <iterator>
 #include <mutex>
@@ -194,6 +195,29 @@ uint32_t ElfSlot(const char* s, uint32_t cap) {
     }
     return h % cap;
 }
+
+constexpr uintptr_t kLuaOpen = 0x4217a0, kLuaClose = 0x421840;
+constexpr Prologue kCompilePrologues[] = {{kLuaOpen, "53566a5c33db5353e8"}, {kLuaClose, "558bec83e4f88b45088b4810"}};
+constexpr int kErrSyntax = 3;
+
+// A private state per call: nothing is shared with the match VM, and the allocator is the CRT's.
+int RawCompile(const char* text, size_t len, char* msg, size_t cap) {
+    __try {
+        State* L = At<State* (*)()>(kLuaOpen)();
+        if (!L) return -1;
+        const int rc = kApi.loadbuffer(L, text, len, "=script.lua");
+        if (rc) {
+            const char* m = kApi.tostring(L, -1);
+            size_t n = 0;
+            for (; m && m[n] && n + 1 < cap; ++n) msg[n] = m[n];
+            msg[n] = 0;
+        }
+        At<void (*)(State*)>(kLuaClose)(L);
+        return rc == 0 ? 0 : rc == kErrSyntax ? 1 : -1;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return -1;
+    }
+}
 }  // namespace
 
 const Api& A() { return kApi; }
@@ -350,4 +374,28 @@ uint32_t ContextSerial() {
 
 const LibReg* StringLib() { return Check() ? reinterpret_cast<const LibReg*>(kStringReg) : nullptr; }
 const LibReg* TableLib() { return Check() ? reinterpret_cast<const LibReg*>(kTableReg) : nullptr; }
+
+Compiled Compile(std::string_view text, int* line, std::string* message) {
+    static const bool ok = std::all_of(std::begin(kCompilePrologues), std::end(kCompilePrologues), Matches);
+    if (!Check() || !ok) return Compiled::Unavailable;
+    char msg[512] = "";
+    const int rc = RawCompile(text.data(), text.size(), msg, sizeof msg);
+    if (rc < 0) return Compiled::Unavailable;
+    if (rc == 0) return Compiled::Ok;
+    // "script.lua:<line>: <message>"
+    std::string_view m(msg);
+    *line = 1;
+    *message = msg;
+    if (m.starts_with("script.lua:")) {
+        m.remove_prefix(11);
+        int n = 0;
+        size_t i = 0;
+        for (; i < m.size() && m[i] >= '0' && m[i] <= '9' && n < 1000000; ++i) n = n * 10 + (m[i] - '0');
+        if (i && m.substr(i).starts_with(": ")) {
+            *line = n;
+            *message = std::string(m.substr(i + 2));
+        }
+    }
+    return Compiled::SyntaxError;
+}
 }  // namespace melange::lua50

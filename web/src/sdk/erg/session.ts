@@ -12,7 +12,8 @@ export interface ErgSession {
   onTest(fn: (s: { state: string; key: string; detail: string }) => void): () => void;
   /** The project's level script (script.lua), "" when it has none. */
   script(): Promise<string>;
-  saveScript(text: string): Promise<{ saved: boolean; problems: ScriptProblem[] }>;
+  /** syntaxChecked: false when the server cannot compile Lua (oasis.exe); the game checks it on Test. */
+  saveScript(text: string): Promise<{ saved: boolean; problems: ScriptProblem[]; syntaxChecked?: boolean }>;
 }
 
 export class ErgError extends Error {
@@ -68,7 +69,7 @@ export function createErgSession(client: Client, opts: SessionOptions = {}): Erg
     },
     async saveScript(text: string) {
       if (!project) throw new ErgError("no project is open");
-      return client.call<{ saved: boolean; problems: ScriptProblem[] }>("level.script.put", { project, text }, callTimeout);
+      return client.call<{ saved: boolean; problems: ScriptProblem[]; syntaxChecked?: boolean }>("level.script.put", { project, text }, callTimeout);
     },
     onTest(fn) {
       return client.subscribe<{ state?: string; key?: string; detail?: string }>("erg", undefined, (m) => {

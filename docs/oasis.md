@@ -312,7 +312,7 @@ at all.
 | `level.objects` | `{}` → `{crateKinds, weapons, utilities, limits, error}` | crate contents from the install's `Data\Tweak\WEAPTWK.XOM`; `error` is null when it was read |
 | `level.close` | `{project}` → `{}` | frees the server's parsed copy of the base |
 | `level.script.get` | `{project}` → `{text}` | the project's `script.lua`, `""` when it has none |
-| `level.script.put` | `{project, text}` → `{saved, problems: [{line, message}]}` | a level script's rules (≤ 256 KB, UTF-8, no BOM or ESC); `""` removes it; not saved when there are problems |
+| `level.script.put` | `{project, text}` → `{saved, problems: [{line, message}], syntaxChecked}` | a level script's rules (≤ 256 KB, UTF-8, no BOM or ESC); `""` removes it; not saved when these fail. In the game the script is also compiled (not run) by the engine's Lua 5.0: a syntax error is saved and listed in `problems`. oasis.exe checks the bytes only (`syntaxChecked: false`); the syntax is checked when the level is tested in the game |
 
 The `erg` channel (Coalesce) carries `{state, key, detail}` from `level.test`'s progress (`idle`, `registering`,
 `registered`, `armed`, `starting`, `playing`, `ended`, `failed`) and, at the start of a match, `{level, water}`.

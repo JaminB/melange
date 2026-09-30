@@ -908,6 +908,14 @@ void TestService(const std::wstring& root) {
     env.crcCollides = [](const std::string& n) { return _stricmp(n.c_str(), "SCRIPTS.XOM") == 0; };
     env.inSession = [raw](const std::string&) { return raw->inLobby; };
     env.readOnly = [raw] { return raw->oasisReadOnly; };
+    // A stand-in for the engine's parser: "= =" is its one syntax error.
+    env.compile = [](const std::string& text, int* line, std::string* message) {
+        const size_t at = text.find("= =");
+        if (at == std::string::npos) return true;
+        *line = 1 + static_cast<int>(std::count(text.begin(), text.begin() + static_cast<ptrdiff_t>(at), '\n'));
+        *message = "unexpected symbol near `='";
+        return false;
+    };
     svc->s = std::make_unique<erg::service::Service>(env);
     Svc& S = *svc;
 
@@ -1171,7 +1179,8 @@ void TestService(const std::wstring& root) {
         Expect(r.ok && J(r.json).find("text")->str.empty(), "script.get: \"\" when there is none " + r.message);
         r = Call(S, "level.script.put", R"({"project":"harbour","text":"wum.events.on(\"sim.turnStarted\", function() wum.log(wum.level.stem) end)\n"})");
         Json put = J(r.json);
-        Expect(r.ok && put.find("saved")->boolean && put.find("problems")->arr.empty(), "script.put: saved " + r.message);
+        Expect(r.ok && put.find("saved")->boolean && put.find("problems")->arr.empty() && put.find("syntaxChecked")->boolean,
+               "script.put: saved and compiled " + r.message);
         r = Call(S, "level.script.get", R"({"project":"harbour"})");
         Expect(r.ok && J(r.json).find("text")->str == text, "script.get: reads it back");
         erg::Patch onDisk;
@@ -1184,6 +1193,14 @@ void TestService(const std::wstring& root) {
                    onDisk.script.present,
                "save: the script declaration follows script.lua, not the saved patch " + r.message);
 
+        r = Call(S, "level.script.put", R"({"project":"harbour","text":"-- v2\nx = = 1\n"})");
+        put = J(r.json);
+        Expect(r.ok && put.find("saved")->boolean && put.find("problems")->arr.size() == 1 &&
+                   put.find("problems")->arr[0].find("line")->numLiteral == "2" &&
+                   put.find("problems")->arr[0].find("message")->str.find("near") != std::string::npos,
+               "script.put: a syntax error is saved and reported on its line " + r.json);
+        Expect(Call(S, "level.script.put", R"({"project":"harbour","text":"wum.events.on(\"sim.turnStarted\", function() wum.log(wum.level.stem) end)\n"})").ok,
+               "script.put: back to the good script");
         r = Call(S, "level.script.put", R"({"project":"harbour","text":"-- ok\nlocal x = 1\n\u001bLua\n"})");
         put = J(r.json);
         Expect(r.ok && !put.find("saved")->boolean && put.find("problems")->arr.size() == 1 &&

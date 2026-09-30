@@ -702,6 +702,16 @@ struct Service::Impl {
             out.set("problems", std::move(problems));
             return Ok(out);
         }
+        // A syntax error is reported but saved: it is work in progress, and a Test only logs the failed script.
+        int line = 0;
+        std::string message;
+        if (env.compile && !text.empty() && !env.compile(text, &line, &message)) {
+            Json e = Json::Obj();
+            e.set("line", Int(line));
+            e.set("message", Str(message));
+            problems.arr.push_back(std::move(e));
+        }
+        out.set("syntaxChecked", Json::Bool(static_cast<bool>(env.compile)));
         Patch patch;
         if (!store.ReadPatch(id, &patchText, &err) || !ParsePatch(patchText, &patch, &err))
             return Err(kPolicy, "project '" + id + "': " + err);
