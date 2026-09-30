@@ -143,8 +143,8 @@ export function Editor({ client, info, opened, onClose }: Props) {
 
   useEffect(() => {
     const root = rootEl.current as (HTMLDivElement & { __erg?: unknown }) | null;
-    if (root) root.__erg = { store, view };
-  }, [store, view]);
+    if (root) root.__erg = { store, view, terrain: terrainTool };
+  }, [store, view, terrainTool]);
 
   const flashTimer = useRef<ReturnType<typeof setTimeout>>();
   function flash(text: string) {
