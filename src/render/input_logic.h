@@ -216,6 +216,9 @@ public:
         releasePending_ = false;
     }
 
+    // A record injected after Process: the game sees it, so a capture must release it like any other key.
+    void NoteGame(uint8_t dik, bool down) { game_[dik] = down; }
+
     bool GameDown(uint8_t dik) const { return game_[dik]; }
     bool PhysDown(uint8_t dik) const { return phys_[dik]; }
     uint64_t Dropped() const { return dropped_; }

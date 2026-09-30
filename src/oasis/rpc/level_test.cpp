@@ -66,6 +66,7 @@ void OnFrame() {
             demoWon = attract;
             if (!demoWon) LOG_WARN("[erg] test: %s did not start in time; press Quick Game to play it", g_startKey.c_str());
             g_startKey.clear();
+            if (g_taps) render::CancelTap();
         } else if (attract) {
             if (now >= g_nextTap && g_taps < kMaxTaps) {
                 g_nextTap = now + kTapEveryMs;
@@ -75,6 +76,7 @@ void OnFrame() {
             }
             return;
         } else {
+            if (g_taps) render::CancelTap();  // the demo is over: a late tap would land on the menu
             if (!g_quickOk || !levels::engine::LevelDetails(g_startKey.c_str(), nullptr)) return;
             key.swap(g_startKey);
         }

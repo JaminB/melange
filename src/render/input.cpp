@@ -77,16 +77,32 @@ std::vector<int> g_fired;
 std::vector<uint8_t> g_released;
 
 // One synthetic key tap: a press record on one poll, the release on a later one, and the key held in the state
-// snapshot in between.
-std::mutex g_tapMx;
+// snapshot in between. A press not delivered within kTapStaleMs is dropped; a capture cancels the tap, and since the
+// filter records the press as seen by the game, the capture's synthetic release covers it.
+constexpr ULONGLONG kTapStaleMs = 250;
+std::mutex g_tapMx;  // after g_filterMx when both are held
 uint8_t g_tapDik = 0;
 int g_tapPhase = 0;   // 0 idle, 1 press due, 2 pressed, 3 release due
-ULONGLONG g_tapUntil = 0;
+ULONGLONG g_tapAsked = 0, g_tapUntil = 0;
 DWORD g_tapSeq = 0x40000000;
 
-void AppendTap(DIDEVICEOBJECTDATA* buf, DWORD* n, DWORD capacity) {
+void ExpireTap(ULONGLONG now) {  // g_tapMx held
+    if (g_tapPhase == 1 && now - g_tapAsked > kTapStaleMs) {
+        g_tapPhase = 0;
+        LOG_INFO("[overlay] synthetic %s tap dropped: not delivered within %u ms", melange::render::DikName(g_tapDik),
+                 static_cast<unsigned>(kTapStaleMs));
+    }
+    if (g_tapPhase == 2 && now >= g_tapUntil) g_tapPhase = 3;
+}
+
+// g_filterMx held.
+void AppendTap(DIDEVICEOBJECTDATA* buf, DWORD* n, DWORD capacity, bool capturing) {
     std::lock_guard lk(g_tapMx);
-    if (g_tapPhase == 2 && GetTickCount64() >= g_tapUntil) g_tapPhase = 3;
+    if (capturing) {
+        g_tapPhase = 0;
+        return;
+    }
+    ExpireTap(GetTickCount64());
     if ((g_tapPhase != 1 && g_tapPhase != 3) || *n >= capacity) return;
     DIDEVICEOBJECTDATA& d = buf[*n];
     d = {};
@@ -95,11 +111,13 @@ void AppendTap(DIDEVICEOBJECTDATA* buf, DWORD* n, DWORD capacity) {
     d.dwTimeStamp = GetTickCount();
     d.dwSequence = ++g_tapSeq;
     ++*n;
+    g_filter.NoteGame(g_tapDik, g_tapPhase == 1);
     g_tapPhase = g_tapPhase == 1 ? 2 : 0;
 }
 
 void HoldTap(uint8_t* state, DWORD cb) {
     std::lock_guard lk(g_tapMx);
+    ExpireTap(GetTickCount64());
     if ((g_tapPhase == 1 || g_tapPhase == 2) && g_tapDik < cb) state[g_tapDik] |= 0x80;
 }
 
@@ -146,8 +164,8 @@ HRESULT WINAPI HookGetDeviceData(void* self, DWORD cb, DIDEVICEOBJECTDATA* rgdod
         g_keysDropped += g_filter.Dropped() - droppedBefore;
         if (!g_fired.empty()) fired.swap(g_fired);
         if (!g_released.empty()) released.swap(g_released);
+        AppendTap(rgdod, inOut, capacity, capturing);
     }
-    if (!capturing) AppendTap(rgdod, inOut, capacity);
     if (!released.empty()) {
         g_synthetic += released.size();
         std::string names;
@@ -415,8 +433,15 @@ bool TapKey(uint8_t dik, int holdMs) {
     if (g_tapPhase != 0) return false;
     g_tapDik = dik;
     g_tapPhase = 1;
-    g_tapUntil = GetTickCount64() + static_cast<ULONGLONG>(holdMs < 0 ? 0 : holdMs);
+    g_tapAsked = GetTickCount64();
+    g_tapUntil = g_tapAsked + static_cast<ULONGLONG>(holdMs < 0 ? 0 : holdMs);
     return true;
+}
+
+void CancelTap() {
+    std::lock_guard lk(g_tapMx);
+    if (g_tapPhase == 1) g_tapPhase = 0;
+    else if (g_tapPhase == 2) g_tapPhase = 3;
 }
 
 InputStats GetInputStats() {
