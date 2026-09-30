@@ -17,6 +17,8 @@ import { LevelSettings, themesOf, type ThemeInfo } from "./LevelSettings";
 import { Outliner } from "./Outliner";
 import { Properties } from "./Properties";
 import { snapVec } from "../model/geometry";
+import { ExportDialog } from "../test/ExportDialog";
+import { TestPanel } from "../test/TestPanel";
 
 export const SNAPS: (number | null)[] = [null, 1, 0.5, 0.1];
 
@@ -57,7 +59,7 @@ export function Editor({ client, info, opened, onClose }: Props) {
   const [placing, setPlacingState] = useState<PaletteEntry | null>(null);
   const [palette, setPalette] = useState<PaletteEntry[]>(BUILTIN);
   const [themes, setThemes] = useState<ThemeInfo>(() => themesOf(undefined));
-  const [tab, setTab] = useState<"props" | "level" | "checks">("props");
+  const [tab, setTab] = useState<"props" | "level" | "checks" | "export">("props");
   const [message, setMessage] = useState<string>();
   const [saving, setSaving] = useState(false);
   const [saveNote, setSaveNote] = useState<{ ok: boolean; text: string }>();
@@ -131,9 +133,12 @@ export function Editor({ client, info, opened, onClose }: Props) {
     flashTimer.current = setTimeout(() => setMessage(undefined), 4000);
   }
 
-  const save = async () => {
-    if (saving) return;
-    if (!conn.open) return setSaveNote({ ok: false, text: "Not connected: the changes are kept here; save again when the connection is back." });
+  const save = async (): Promise<boolean> => {
+    if (saving) return false;
+    if (!conn.open) {
+      setSaveNote({ ok: false, text: "Not connected: the changes are kept here; save again when the connection is back." });
+      return false;
+    }
     const patch = store.patch();
     const text = JSON.stringify(patch);
     setSaving(true);
@@ -144,9 +149,11 @@ export function Editor({ client, info, opened, onClose }: Props) {
       clearDraft(info.id);
       setRestored(undefined);
       setSaveNote({ ok: true, text: r.warnings?.length ? `Saved with warnings: ${r.warnings.join("; ")}` : "Saved" });
+      return true;
     } catch (e) {
       const details = (e as { details?: string[] }).details;
       setSaveNote({ ok: false, text: `Not saved: ${errorText(e)}${details?.length ? ` (${details.slice(0, 3).join("; ")})` : ""}` });
+      return false;
     } finally {
       setSaving(false);
     }
@@ -215,7 +222,7 @@ export function Editor({ client, info, opened, onClose }: Props) {
     <div class="erg" ref={rootEl} data-erg-editor={info.id} data-dirty={dirty ? "1" : "0"} data-depth={store.stack.depth}>
       <div class="erg-bar">
         <strong class="erg-title" title={`${info.id} · base ${store.base.base.key}`}>{store.scene.title}</strong>
-        <button class={`btn${dirty ? " primary" : ""}`} onClick={save} disabled={saving} data-action="save" title="Save (Ctrl+S)">
+        <button class={`btn${dirty ? " primary" : ""}`} onClick={() => void save()} disabled={saving} data-action="save" title="Save (Ctrl+S)">
           {saving ? "Saving…" : dirty ? "Save" : "Saved"}
         </button>
         <span class="erg-sep" />
@@ -243,6 +250,7 @@ export function Editor({ client, info, opened, onClose }: Props) {
                   onClick={() => setPlacing(placing?.id === p.id ? null : p)} title={`Click the terrain to place: ${p.label} (Esc stops)`}>{p.label}</button>
         ))}
         <span class="erg-grow" />
+        {client.has("level.test") ? <TestPanel client={client} session={opened.session} beforeTest={() => (store.dirty ? save() : Promise.resolve(true))} /> : null}
         <button class="btn" onClick={onClose} data-action="close">Close</button>
       </div>
       {!conn.open ? <p class="erg-note warn" data-erg-offline>Not connected. Your changes and the undo history are kept; save once the connection is back.</p> : null}
@@ -265,10 +273,12 @@ export function Editor({ client, info, opened, onClose }: Props) {
             <button class={`erg-tab${tab === "checks" ? " on" : ""}`} onClick={() => setTab("checks")} data-tab="checks">
               Checks{issues.length ? <span class={`erg-count${errors ? " bad" : ""}`}>{issues.length}</span> : null}
             </button>
+            <button class={`erg-tab${tab === "export" ? " on" : ""}`} onClick={() => setTab("export")} data-tab="export">Export</button>
           </div>
           <div class="erg-side-body">
             {tab === "props" ? <Properties store={store} set={(id, f) => store.exec(new SetDetail(id, f))} />
               : tab === "level" ? <LevelSettings store={store} themes={themes} />
+              : tab === "export" ? <ExportDialog client={client} project={info.id} defaultName={store.scene.title} />
               : <Checks issues={issues} onPick={(id) => { store.select([id]); view?.focus(); }} />}
           </div>
         </aside>

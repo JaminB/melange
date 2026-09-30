@@ -19,7 +19,9 @@ function useGameState(client: Client): GameState {
   return { connected: conn.open, inMatch, inLobby };
 }
 
-export function TestPanel({ client, session }: { client: Client; session: ErgSession }) {
+export function TestPanel({ client, session, beforeTest }: {
+  client: Client; session: ErgSession; beforeTest?: () => Promise<boolean>;
+}) {
   const game = useGameState(client);
   const [status, setStatus] = useState<TestStatus>(IDLE_STATUS);
   const [error, setError] = useState<string>();
@@ -29,6 +31,7 @@ export function TestPanel({ client, session }: { client: Client; session: ErgSes
   const onClick = async () => {
     setError(undefined);
     try {
+      if (beforeTest && !(await beforeTest())) return;
       const r = await session.test();
       setStatus((s) => reduceTestEvent(s, { state: r.state, key: r.key, detail: "" }));
     } catch (e) {

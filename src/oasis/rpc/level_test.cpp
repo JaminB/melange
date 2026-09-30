@@ -1,8 +1,15 @@
-// level.test and the `erg` channel: building a project into the Test workspace, arming the one-shot override, and
-// (E0 GO) starting Quick Game itself. The workspace build and the project store are component A; until it merges,
-// this refuses with a clear reason, the same way S's stubs do for the other components' surfaces.
+// level.test: builds a project into the Test workspace (server thread), registers and arms it, then starts Quick Game
+// from the main thread once the level is registered at the frontend. Test states go out on B's `erg` channel.
+#include <windows.h>
+
+#include <atomic>
+#include <filesystem>
+#include <mutex>
 #include <string>
 
+#include "core/events.h"
+#include "core/game.h"
+#include "core/log.h"
 #include "erg/names.h"
 #include "erg/quickstart.h"
 #include "levels/engine.h"
@@ -16,37 +23,42 @@ namespace melange::oasis::providers {
 namespace {
 using rpc::Fail;
 
-ChannelId g_channel = 0;
+std::atomic<bool> g_atFrontend{false}, g_inLobby{false};
+std::mutex g_mx;
+std::string g_startKey;
+ULONGLONG g_startBy = 0;
 
-const char* StateName(levels::TestState s) {
-    switch (s) {
-        case levels::TestState::Idle: return "idle";
-        case levels::TestState::Registering: return "registering";
-        case levels::TestState::Registered: return "registered";
-        case levels::TestState::Armed: return "armed";
-        case levels::TestState::Starting: return "starting";
-        case levels::TestState::Playing: return "playing";
-        case levels::TestState::Ended: return "ended";
-        case levels::TestState::Failed: return "failed";
+void DeleteShadows(const std::string& stem) {
+    namespace fs = std::filesystem;
+    const fs::path game(game::GameDir());
+    for (const wchar_t* dir : {L"Melange\\erg\\test\\Maps", L"Melange\\cache\\Maps"})
+        for (const char* tod : {"DAY", "EVENING", "NIGHT"}) {
+            std::error_code ec;
+            if (fs::remove(game / dir / game::Widen(stem + tod + ".csh"), ec))
+                LOG_INFO("[erg] test: deleted %s%s.csh", stem.c_str(), tod);
+        }
+}
+
+void OnFrame() {
+    const bool front = levels::engine::AtFrontend();
+    g_atFrontend = front;
+    g_inLobby = handshake::lobby::Current() != 0;
+    std::string key;
+    {
+        std::lock_guard lk(g_mx);
+        if (g_startKey.empty()) return;
+        if (GetTickCount64() > g_startBy) {
+            LOG_WARN("[erg] test: %s was not registered in time; press Quick Game to play it", g_startKey.c_str());
+            g_startKey.clear();
+            return;
+        }
+        if (!front || !levels::engine::LevelDetails(g_startKey.c_str(), nullptr)) return;
+        key.swap(g_startKey);
     }
-    return "unknown";
-}
-
-void OnTestState(levels::TestState s, const char* key, const char* detail, void*) {
-    if (!HasSubscribers(g_channel)) return;
-    Publish(g_channel, jsonmini::Obj().Str("state", StateName(s)).Str("key", key ? key : "").Str("detail", detail ? detail : "").End());
-}
-
-bool InLobby() { return handshake::lobby::Current() != 0; }
-
-// Builds the project into <game>\Melange\erg\test\ergtest_<project>.* (§3.6) and deletes its stale .csh. This is
-// component A's project store and scene builder, not part of this version yet: there is nothing to read a patch
-// from, so nothing is written and nothing is registered. Replace this with A's Open + LoadScene/ApplyPatch + Build
-// once it merges; the stem below is already the frozen one and needs no change.
-bool BuildTestWorkspace(const std::string& project, std::string* title, std::string* err) {
-    (void)title;
-    *err = "the level service is not built into this version (project '" + project + "')";
-    return false;
+    char armed[128] = {};
+    if (!levels::Armed(armed, sizeof armed) || key != armed) return;
+    const bool ok = erg::quickstart::Available() && erg::quickstart::PostQuickGame();
+    LOG_INFO("[erg] test: %s registered; Quick Game %s", key.c_str(), ok ? "started" : "not available, press it to play");
 }
 
 void Test(const Call& c, Result& r, void*) {
@@ -57,21 +69,21 @@ void Test(const Call& c, Result& r, void*) {
         Fail(r, rpc::kBadParams, "project must match [a-z0-9]{1,24}");
         return;
     }
-    if (InLobby()) {
+    if (g_inLobby) {
         Fail(r, rpc::kRefused, "Test cannot start while you are in a lobby");
         return;
     }
-    if (!levels::engine::AtFrontend()) {
+    if (!g_atFrontend) {
         Fail(r, rpc::kNotInMatch, "the game must be at the frontend to test a level");
         return;
     }
-    const std::string stem = std::string(erg::names::kTestPrefix) + "_" + project;
-    const std::string key = erg::names::Key(stem);
-    std::string title, buildErr;
-    if (!BuildTestWorkspace(project, &title, &buildErr)) {
-        Fail(r, rpc::kRefused, buildErr);
+    std::string stem, title, err;
+    if (!BuildTestLevel(project, &stem, &title, &err)) {
+        Fail(r, rpc::kRefused, err);
         return;
     }
+    DeleteShadows(stem);
+    const std::string key = erg::names::Key(stem);
     char regErr[256] = {};
     if (!levels::RegisterTest(stem.c_str(), title.c_str(), regErr, sizeof regErr)) {
         Fail(r, rpc::kRefused, regErr);
@@ -81,16 +93,18 @@ void Test(const Call& c, Result& r, void*) {
         Fail(r, rpc::kRefused, "could not arm the Test override");
         return;
     }
-    const bool started = erg::quickstart::Available() && erg::quickstart::PostQuickGame();
-    r.json = jsonmini::Obj().Str("key", key).Str("state", started ? "starting" : "armed").End();
+    const bool quick = erg::quickstart::Available();
+    if (quick) {
+        std::lock_guard lk(g_mx);
+        g_startKey = key;
+        g_startBy = GetTickCount64() + 10000;
+    }
+    r.json = jsonmini::Obj().Str("key", key).Str("state", quick ? "starting" : "armed").End();
 }
 }  // namespace
 
 void InstallLevelTest() {
-    ChannelOptions o;
-    o.overflow = Overflow::Coalesce;
-    g_channel = AddChannel("erg", o);
-    levels::OnTestState(&OnTestState, nullptr);
-    AddMethod("level.test", &Test, nullptr, kRpcMutating | kRpcGameOnly);
+    events::Subscribe(events::Event::Frame, &OnFrame);
+    AddMethod("level.test", &Test, nullptr, kRpcServerThread | kRpcMutating | kRpcGameOnly);
 }
 }  // namespace melange::oasis::providers

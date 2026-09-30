@@ -14,6 +14,7 @@
 #include "mods/thumper_internal.h"
 #include "oasis/core/router.h"
 #include "oasis/providers.h"
+#include "tools/json_read.h"
 
 namespace melange::oasis::providers {
 namespace {
@@ -57,6 +58,28 @@ void Handle(const Call& c, Result& r, void*) {
     for (const auto& b : rep.blobs) core::QueueBinary(b.ref, "erg", b.meta, b.bytes);
 }
 }  // namespace
+
+bool BuildTestLevel(const std::string& project, std::string* stem, std::string* title, std::string* err) {
+    if (!g_service) {
+        *err = "the level service is off ([Erg] Enabled=0)";
+        return false;
+    }
+    erg::service::Reply rep = g_service->BuildTest(project, game::GameDir() + L"\\Melange\\erg\\test");
+    if (!rep.ok) {
+        *err = rep.message;
+        return false;
+    }
+    json::Value v;
+    json::Error perr;
+    const json::Value *s = nullptr, *t = nullptr;
+    if (!json::Parse(rep.json, &v, &perr) || !(s = v.Get("stem")) || !(t = v.Get("title")) || !s->IsString() || !t->IsString()) {
+        *err = "test build: bad reply";
+        return false;
+    }
+    *stem = s->string;
+    *title = t->string;
+    return true;
+}
 
 void InstallLevels() {
     config::EnsureKey("Erg", "Enabled", "1");

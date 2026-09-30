@@ -15,5 +15,6 @@ void InstallWormsign();                                                         
 void InstallLevels();                                                                              // Erg level service, previews
 void InstallErgAssetRoute(const std::wstring& gameDir, int cacheMB);                          // both servers
 void InstallErgChannel(); void InstallLevelTest();                                           // Test state, level starts, level.test
+bool BuildTestLevel(const std::string& project, std::string* stem, std::string* title, std::string* err);  // server thread
 core::Auth* MakeAuth();                                                                           // launch token, Host, Origin
 }  // namespace melange::oasis::providers
