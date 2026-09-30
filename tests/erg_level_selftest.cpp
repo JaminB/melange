@@ -789,8 +789,8 @@ void TestService(const std::wstring& root) {
     Expect(r.ok && erg::ParseScene(r.json, &scene, &err) && scene.stem == "ergtest_harbour" && scene.title == "Harbour Brawl",
            "load project: the scene " + r.message);
     {
-        const Json raw = J(r.json);
-        const Json* pv = raw.find("previews");
+        const Json loaded = J(r.json);
+        const Json* pv = loaded.find("previews");
         Expect(pv && pv->kind == Json::Kind::Object, "load: the reply carries a previews object " + r.json.substr(0, 200));
     }
 
