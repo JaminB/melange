@@ -80,12 +80,13 @@ void HandleClosed(uint64_t connId, void*) {
 }
 }  // namespace
 
-bool BuildTestLevel(const std::string& project, const std::string& tod, std::string* stem, std::string* title, std::string* err) {
+bool BuildTestLevel(const std::string& project, const std::string& tod, uint64_t conn, std::string* stem, std::string* title,
+                    std::string* err) {
     if (!g_service) {
         *err = "the level service is off ([Erg] Enabled=0)";
         return false;
     }
-    erg::service::Reply rep = g_service->BuildTest(project, game::GameDir() + L"\\Melange\\erg\\test", tod);
+    erg::service::Reply rep = g_service->BuildTest(project, game::GameDir() + L"\\Melange\\erg\\test", tod, conn);
     if (!rep.ok) {
         *err = rep.message;
         return false;

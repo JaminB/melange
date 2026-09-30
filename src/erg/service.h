@@ -72,7 +72,8 @@ class Service {
     void ClientClosed(uint64_t conn);
     // level.test's build: the project's level files as ergtest_<id> into `root` (the Test workspace), with an empty
     // chunk when none is needed; stale outputs of an earlier build are removed. Result: {stem, title, files}.
-    Reply BuildTest(const std::string& project, const std::wstring& root, const std::string& tod = "");
+    // The project is leased to `conn`, as level.load does, so level.close or the disconnect releases it.
+    Reply BuildTest(const std::string& project, const std::wstring& root, const std::string& tod = "", uint64_t conn = 0);
 
   private:
     struct Impl;

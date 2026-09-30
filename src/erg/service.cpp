@@ -818,7 +818,7 @@ struct Service::Impl {
         return Ok(out);
     }
 
-    Reply Export(const Json& p) {
+    Reply Export(const Json& p, uint64_t conn) {
         Reply r;
         std::string id, modId, name, version, mode;
         if (!GetStr(p, "project", &id, &r) || !GetStr(p, "modId", &modId, &r) || !GetStr(p, "name", &name, &r) ||
@@ -838,7 +838,7 @@ struct Service::Impl {
         Scene scene;
         build::VoxelEdits voxels;
         Resolved res;
-        if (!OpenProject(id, &L, &patch, &scene, &voxels, &res, &r)) return r;
+        if (!OpenProject(id, &L, &patch, &scene, &voxels, &res, &r, true, conn)) return r;
         std::string script;
         if (!ProjectScript(id, &script, &r)) return r;
         patch.script = MetaOf(script);
@@ -973,7 +973,7 @@ struct Service::Impl {
 Service::Service(Env env) : impl_(std::make_unique<Impl>(std::move(env))) {}
 Service::~Service() = default;
 
-Reply Service::BuildTest(const std::string& id, const std::wstring& root, const std::string& tod) {
+Reply Service::BuildTest(const std::string& id, const std::wstring& root, const std::string& tod, uint64_t conn) {
     if (!tod.empty() && !ValidTimeOfDay(tod)) return Err(kBadParams, "tod must be DAY, EVENING or NIGHT");
     std::lock_guard lk(impl_->mx);
     Reply r;
@@ -982,7 +982,7 @@ Reply Service::BuildTest(const std::string& id, const std::wstring& root, const 
     Scene scene;
     build::VoxelEdits voxels;
     Resolved res;
-    if (!impl_->OpenProject(id, &L, &patch, &scene, &voxels, &res, &r)) return r;
+    if (!impl_->OpenProject(id, &L, &patch, &scene, &voxels, &res, &r, true, conn)) return r;
     const std::string stem = std::string(names::kTestPrefix) + "_" + id;
     scene.stem = stem;
     if (!tod.empty()) scene.databank.timeOfDay = tod;
@@ -1027,7 +1027,7 @@ Reply Service::Call(std::string_view method, std::string_view paramsJson, uint64
     if (method == "level.close") return impl_->Close(p, conn);
     if (method == "level.themes") return impl_->Themes();
     if (method == "level.palette") return impl_->Palette(p);
-    if (method == "level.export") return impl_->Export(p);
+    if (method == "level.export") return impl_->Export(p, conn);
     if (method == "level.build") return impl_->BuildMod(p);
     if (method == "level.objects") return impl_->Objects();
     if (method == "level.script.get") return impl_->ScriptGet(p);

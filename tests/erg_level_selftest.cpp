@@ -1139,6 +1139,15 @@ void TestService(const std::wstring& root) {
         S.s->ClientClosed(103);
         Expect(other.Lock("harbour2") == erg::project::LockResult::Ok, "lease: the script writer's disconnect frees it");
         other.Unlock("harbour2");
+        Expect(Call(S, "level.load", R"({"project":"harbour2"})", 104).ok, "lease: connection 104 opens harbour2");
+        r = S.s->BuildTest("harbour2", root + L"\\testws", "", 104);
+        Expect(r.ok, "lease: connection 104 tests it " + r.message);
+        r = Call(S, "level.export", R"({"project":"harbour2","modId":"lease-export","name":"x","version":"1.0.0","mode":"source"})", 104);
+        Expect(r.ok, "lease: connection 104 exports it " + r.message);
+        Expect(Call(S, "level.close", R"({"project":"harbour2"})", 104).ok, "lease: connection 104 closes");
+        Expect(other.Lock("harbour2") == erg::project::LockResult::Ok, "lease: Test and Export leave no lock after the close");
+        other.Unlock("harbour2");
+        RemoveTree(game + L"\\Mods\\lease-export");
     }
 
     r = Call(S, "level.themes", "{}");

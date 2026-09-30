@@ -15,7 +15,7 @@ void InstallWormsign();                                                         
 void InstallLevels();                                                                              // Erg level service, previews
 void InstallErgAssetRoute(const std::wstring& gameDir, int cacheMB);                          // both servers
 void InstallErgChannel(); void InstallLevelTest();                                           // Test state, level starts, level.test
-bool BuildTestLevel(const std::string& project, const std::string& tod, std::string* stem, std::string* title,
-                    std::string* err);   // server thread; tod "" keeps the project's time of day
+bool BuildTestLevel(const std::string& project, const std::string& tod, uint64_t conn, std::string* stem, std::string* title,
+                    std::string* err);   // server thread; tod "" keeps the project's time of day; leased to conn
 core::Auth* MakeAuth();                                                                           // launch token, Host, Origin
 }  // namespace melange::oasis::providers

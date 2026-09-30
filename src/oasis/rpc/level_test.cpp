@@ -117,7 +117,7 @@ void Test(const Call& c, Result& r, void*) {
         return;
     }
     std::string stem, title, err;
-    if (!BuildTestLevel(project, todText, &stem, &title, &err)) {
+    if (!BuildTestLevel(project, todText, static_cast<uint64_t>(c.client), &stem, &title, &err)) {
         Fail(r, rpc::kRefused, err);
         return;
     }
