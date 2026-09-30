@@ -346,7 +346,7 @@ void OnStart(const LevelStart& s, void*) {
         if (!ServeChunk(stem, err.empty() ? text : l.chunkText))
             LOG_ERROR("[levels] %s: Melange/cache/%s.lub could not be written", stem.c_str(), stem.c_str());
     }
-    const auto r = csh::Guard(xan, stem, BankDir(), {l.root / L"Maps", CacheDir() / L"Maps"});
+    const auto r = csh::Guard(xan, stem, BankDir(), {l.root / L"Maps", CacheDir() / L"Maps", TestDir() / L"Maps"});
     g_cshDeleted += r.deleted;
     if (!r.ok) LOG_WARN("[levels] shadow guard for %s: %s", stem.c_str(), r.error.c_str());
     else if (r.changed || r.deleted)
