@@ -11,7 +11,7 @@ struct File {
     std::vector<uint8_t> bytes;
 };
 struct PackSpec {
-    std::string modId, name, version, slug;
+    std::string modId, name, version, slug, title;         // title: the level's (the mod name when empty)
     bool source = false;                                   // patch-only form (no assets/levels)
     std::vector<File> levelFiles;                          // built by the level service
     std::string patchJson;

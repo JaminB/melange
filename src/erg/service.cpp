@@ -643,6 +643,7 @@ struct Service::Impl {
         spec.name = name;
         spec.version = version;
         spec.slug = id;
+        spec.title = patch.title;
         spec.source = mode == "source";
         spec.patchJson = WritePatch(patch);
         if (!spec.source) {

@@ -137,7 +137,7 @@ bool WritePack(const PackSpec& spec, const std::wstring& dir, std::vector<std::s
     const bool chunk = std::any_of(spec.levelFiles.begin(), spec.levelFiles.end(),
                                     [&](const File& f) { return f.rel == lubRel; });
     jsonmini::Obj entry;
-    entry.Str("slug", spec.slug).Str("title", spec.name).Str("type", "multi").Bool("chunk", chunk);
+    entry.Str("slug", spec.slug).Str("title", spec.title.empty() ? spec.name : spec.title).Str("type", "multi").Bool("chunk", chunk);
     entry.Str("source", "src/" + spec.slug + ".ergpatch.json");
     jsonmini::Arr levels;
     levels.Raw(entry.End());
@@ -146,6 +146,7 @@ bool WritePack(const PackSpec& spec, const std::wstring& dir, std::vector<std::s
     jsonmini::Obj manifest;
     manifest.Int("spiceVersion", 1).Str("id", spec.modId).Str("version", spec.version);
     manifest.Str("name", existing.present && !existing.name.empty() ? existing.name : spec.name);
+    manifest.Raw("melange", R"({"range":">=0.2.0"})");
     manifest.Str("kind", "content").Bool("defaultEnabled", false);
     manifest.Raw("levels", levels.End());
     const std::string manifestJson = manifest.End();

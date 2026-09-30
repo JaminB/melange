@@ -165,7 +165,7 @@ erg::pack::PackSpec BasicSpec(std::string slug, bool source, bool withChunk) {
 }
 
 void TestPackInstall(const fs::path& base) {
-    const fs::path dir = base / "install";
+    const fs::path dir = base / "install" / "erg-pack-test";
     const auto spec = BasicSpec("sample", /*source=*/false, /*withChunk=*/true);
     std::vector<std::string> files;
     std::string err;
@@ -182,6 +182,10 @@ void TestPackInstall(const fs::path& base) {
     Expect(manifest.find("\"kind\":\"content\"") != std::string::npos, "spice.json is a content mod");
     Expect(manifest.find("\"chunk\":true") != std::string::npos, "spice.json records chunk:true when a .lub ships");
     Expect(manifest.find("\"slug\":\"sample\"") != std::string::npos, "spice.json names the slug");
+    melange::spice::Manifest m;
+    std::vector<melange::spice::Error> errs;
+    Expect(melange::spice::Parse(dir.wstring(), &m, &errs) && errs.empty(),
+           "the written spice.json passes the manifest parser" + (errs.empty() ? std::string() : ": " + errs.front().field + " " + errs.front().text));
 }
 
 void TestPackSource(const fs::path& base) {
