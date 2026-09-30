@@ -785,7 +785,7 @@ bool DisableLive(const std::string& mod, std::string* err) {
         return false;
     }
     std::erase(g_loaded, mod);
-    Forget(mod);
+    Forget(mod);  // the pack's search root stays until exit (no removal); with its bank gone, nothing names its files
     const bool ok = ReloadAll();
     {
         std::lock_guard lk(g_mx);
