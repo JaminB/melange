@@ -8,7 +8,7 @@ try {
     # Dot-sourced so the x86 developer environment stays set for the extra targets.
     . "$repo\build.ps1" -Config $Config
     $tests = @("bus_selftest", "jlog_selftest", "trace_selftest", "gldebug_selftest", "shaders_selftest", "postfx_selftest",
-        "draw_queue_selftest", "json_read_selftest", "lua54_selftest", "thumper_selftest", "sandbox_selftest", "sim_selftest", "console_selftest", "handshake_selftest", "tweak_selftest", "oasis_core_selftest", "oasis_auth_selftest", "oasis_streams_selftest", "gamestate_selftest", "oasis_rpc_selftest", "oasis_standalone_selftest", "wormsign_format_selftest", "wormsign_contrib_selftest", "wormsign_recorder_selftest", "wormsign_detector_selftest", "wormsign_player_selftest", "weapons_manifest_selftest", "xom_convert_selftest", "weapons_registry_selftest", "weapons_behaviour_selftest", "assets_selftest", "mega_bazooka_selftest", "erg_scene_selftest")
+        "draw_queue_selftest", "json_read_selftest", "lua54_selftest", "thumper_selftest", "sandbox_selftest", "sim_selftest", "console_selftest", "handshake_selftest", "tweak_selftest", "oasis_core_selftest", "oasis_auth_selftest", "oasis_streams_selftest", "gamestate_selftest", "oasis_rpc_selftest", "oasis_standalone_selftest", "wormsign_format_selftest", "wormsign_contrib_selftest", "wormsign_recorder_selftest", "wormsign_detector_selftest", "wormsign_player_selftest", "weapons_manifest_selftest", "xom_convert_selftest", "weapons_registry_selftest", "weapons_behaviour_selftest", "assets_selftest", "mega_bazooka_selftest", "erg_scene_selftest", "erg_preview_selftest")
     cmake --build --preset $Config --target $tests
     if ($LASTEXITCODE) { exit $LASTEXITCODE }
     foreach ($t in $tests) {

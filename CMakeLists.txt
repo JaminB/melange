@@ -262,6 +262,17 @@ target_compile_definitions(erg_scene_selftest PRIVATE WIN32_LEAN_AND_MEAN NOMINM
 target_compile_options(erg_scene_selftest PRIVATE /W4 /utf-8 /permissive-)
 target_link_libraries(erg_scene_selftest PRIVATE melange_xom)
 
+# D: asset previews (mesh -> glTF, texture/theme material -> PNG, the cache) against synthetic fixtures this test
+# builds itself - no game file is read. Stands in for config:: and jlog:: so it does not need the ini/logging
+# stack, each of which has its own selftest.
+add_executable(erg_preview_selftest
+    tests/erg_preview_selftest.cpp
+    src/erg/preview.cpp src/erg/scene.cpp src/erg/jsonio.cpp src/erg/names.cpp src/tools/hash.cpp)
+target_include_directories(erg_preview_selftest PRIVATE src src/sdk ${stb_SOURCE_DIR})
+target_compile_definitions(erg_preview_selftest PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX _CRT_SECURE_NO_WARNINGS)
+target_compile_options(erg_preview_selftest PRIVATE /W4 /utf-8 /permissive-)
+target_link_libraries(erg_preview_selftest PRIVATE melange_xom shell32 ole32 bcrypt)
+
 # xomtool: the Sieve CLI (unpack/pack/inspect/diff/convert/bank/report). PNG I/O only here -
 # src/xom itself stays platform-free.
 add_executable(xomtool tools/xomtool/main.cpp)
