@@ -41,6 +41,13 @@ void Rescan();
 
 // User actions (main thread). Both persist to thumper-state.json and re-resolve.
 bool SetEnabled(const std::string& id, bool on);
+
+// Map packs changed at the menu (levels/live.cpp). The candidates are installed mods with a levels array whose
+// launch state and preference may differ; SetLive records the session-only state (the content set stays the launch
+// one) and persists the preference like SetEnabled.
+std::vector<Entry> LiveCandidates();
+void SetLive(const std::string& id, bool on);
+bool LiveState(const std::string& id, bool* on);   // any thread
 bool SetDeepDesert(const std::string& id, bool granted);
 
 // A random value generated once per install and kept in Melange.ini, outside Mods\: mixed into GrantHash so a

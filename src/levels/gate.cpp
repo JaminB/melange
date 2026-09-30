@@ -39,7 +39,7 @@ bool Waiting() { return game::IsKnownBuild() && wum::CurrentState() == wum::stat
 std::string ModVersion(const std::string& mod, bool* active) {
     thumper::Entry e;
     const bool found = !mod.empty() && thumper::FindEntry(mod, &e);
-    if (active) *active = found && e.sessionActive;
+    if (active) *active = found && e.sessionActive && !registry::LiveChanged(mod, nullptr);
     return found ? e.manifest.version : "";
 }
 
@@ -59,6 +59,7 @@ Input Gather(bool owner) {
     LevelInfo info{};
     if (registry::Find(in.key.c_str(), &info)) {
         in.source = info.source;
+        in.live = info.live;
         in.title = info.title;
         in.mod = info.mod;
         in.modVersion = ModVersion(in.mod, nullptr);

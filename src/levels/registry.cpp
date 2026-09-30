@@ -9,6 +9,7 @@
 #include <cstdio>
 #include <cstring>
 #include <fstream>
+#include <map>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -69,6 +70,10 @@ bool g_scriptsTried = false;
 bool g_lastPlayedDone = false;
 uint64_t g_lastPlayedAt = 0;
 int g_lastPlayedTries = 0;
+
+std::vector<std::string> g_loaded;           // packs whose banks are in section 12 now, in load order
+std::map<std::string, bool> g_live;          // packs changed at the menu this session: on or off now
+uint32_t g_liveChanges = 0;
 
 void Copy(char* dst, size_t n, const std::string& s) { strncpy_s(dst, n, s.c_str(), _TRUNCATE); }
 
@@ -198,6 +203,36 @@ void SetChunk(const std::string& stem, const std::string& text) {
         if (stem == l.info.stem) l.chunkText = text;
 }
 
+// Serves the chunks, then writes and loads the pack's bank and titles. The number of levels registered, or -1.
+int LoadPack(const roots::PackVerdict& v, const fs::path& root, std::string* err) {
+    std::vector<erg::bank::Entry> entries;
+    std::vector<std::string> titles;
+    for (const auto& d : v.levels) {
+        if (d.chunk) {
+            std::string text;
+            if (!AcceptChunk(d.stem, root, &text, err)) return -1;
+            if (!ServeChunk(d.stem, text)) {
+                *err = "cannot write Melange/cache/" + d.stem + ".lub";
+                return -1;
+            }
+            SetChunk(d.stem, text);
+        }
+        erg::bank::Entry en;
+        en.key = erg::names::Key(d.stem);
+        en.stem = d.stem;
+        en.frontendName = "FETXT." + d.stem;
+        en.scripts = ScriptList(manifest::Scripts(d));
+        entries.push_back(en);
+        titles.push_back(d.title);
+    }
+    const int n = LoadEntries(erg::names::Prefix(v.mod) + "_REG", entries, titles, err);
+    if (n >= 0 && static_cast<size_t>(n) < entries.size()) {
+        *err = std::to_string(entries.size() - static_cast<size_t>(n)) + " of its levels did not register";
+        return -1;
+    }
+    return n;
+}
+
 // A pack that fails to register is refused like one that failed the launch checks, so it leaves the content hash.
 void Refuse(const std::string& mod, const std::string& why) {
     for (auto& v : g_verdicts)
@@ -265,39 +300,13 @@ void RegisterPacks() {
             Refuse(p.v.mod, "adding the level root " + p.rel + " failed");
             continue;
         }
-        const fs::path root = GameDir() / game::Widen(p.rel);
-        std::vector<erg::bank::Entry> entries;
-        std::vector<std::string> titles;
         std::string err;
-        for (const auto& d : p.v.levels) {
-            if (d.chunk && err.empty()) {
-                std::string text;
-                if (!AcceptChunk(d.stem, root, &text, &err)) break;
-                if (!ServeChunk(d.stem, text)) {
-                    err = "cannot write Melange/cache/" + d.stem + ".lub";
-                    break;
-                }
-                SetChunk(d.stem, text);
-            }
-            erg::bank::Entry en;
-            en.key = erg::names::Key(d.stem);
-            en.stem = d.stem;
-            en.frontendName = "FETXT." + d.stem;
-            en.scripts = ScriptList(manifest::Scripts(d));
-            entries.push_back(en);
-            titles.push_back(d.title);
-        }
-        if (!err.empty()) {
-            Refuse(p.v.mod, err);
-            continue;
-        }
-        const int n = LoadEntries(erg::names::Prefix(p.v.mod) + "_REG", entries, titles, &err);
+        const int n = LoadPack(p.v, GameDir() / game::Widen(p.rel), &err);
         if (n < 0) {
             Refuse(p.v.mod, err);
-        } else if (static_cast<size_t>(n) < entries.size()) {
-            Refuse(p.v.mod, std::to_string(entries.size() - static_cast<size_t>(n)) + " of its levels did not register");
         } else {
             ++g_packs;
+            g_loaded.push_back(p.v.mod);
             LOG_INFO("[levels] %s: %d level(s) registered from %s", p.v.mod.c_str(), n, p.rel.c_str());
             jlog::Rec("levels", jlog::Level::Info, "pack").Str("mod", p.v.mod).Uint("levels", static_cast<uint64_t>(n));
         }
@@ -498,6 +507,9 @@ Stats GetStats() {
     s.cshDeleted = g_cshDeleted;
     s.heldStarts = gate::HeldStarts();
     s.msRegister = g_msRegister;
+    for (const auto& [mod, on] : g_live) s.livePacks += on ? 1 : 0;
+    s.livePackChanges = g_liveChanges;
+    s.attractRefusals = test::AttractRefusals();
     return s;
 }
 
@@ -507,7 +519,7 @@ bool RegisterTest(const char* stem, const char* title, char* err, size_t errLen)
     return test::Register(stem, title, err, errLen);
 }
 
-bool Arm(const char* key, int timeoutS) { return test::Arm(key, timeoutS); }
+bool Arm(const char* key, const ArmOptions& o) { return test::Arm(key, o); }
 void Disarm() { test::Disarm("disarmed"); }
 bool Armed(char* key, size_t keyLen) { return test::Armed(key, keyLen); }
 const char* TakeOverride(const char* frontendKey) { return test::Take(frontendKey); }
@@ -515,7 +527,8 @@ const char* TakeOverride(const char* frontendKey) { return test::Take(frontendKe
 bool Keep(const char* key, uint32_t) {
     Source s;
     if (!Lookup(key, &s)) return true;
-    return gate::KeepInList(s, gate::InLobby(), g_cfg.online, gate::MembersMatch());
+    LevelInfo info{};
+    return gate::KeepInList(s, gate::InLobby(), g_cfg.online, gate::MembersMatch(), Find(key, &info) && info.live);
 }
 
 bool KeepInPool(const char* key, uint32_t) {
@@ -530,6 +543,8 @@ Online Status(const char* key) {
     const bool mod = Lookup(key, &s);
     if (!mod) return key && *key && !eng::LevelDetails(key, nullptr) ? Online::NotAllMatch : Online::Allowed;
     if (s == Source::Test) return Online::TestLevel;
+    LevelInfo info{};
+    if (Find(key, &info) && info.live) return Online::LivePack;
     return g_cfg.online && gate::MembersMatch() ? Online::Allowed : Online::NotAllMatch;
 }
 
@@ -587,6 +602,160 @@ bool RegisterTestLevel(const std::string& stem, const std::string& title, std::s
     l.info.registered = true;
     Declare(l);
     csh::Purge(stem, {root / L"Maps", CacheDir() / L"Maps"});
+    return true;
+}
+
+namespace {
+bool LoadBankFile(const std::string& bankName, const std::vector<std::pair<std::string, std::string>>& titles) {
+    const std::string rel = std::string(roots::kBankRel) + "/" + bankName + ".XOM";
+    const int rc = eng::LoadDataBank(rel.c_str(), 12);
+    if (rc != 0) {
+        LOG_ERROR("[levels] reloading %s failed (%d)", rel.c_str(), rc);
+        return false;
+    }
+    bool ok = true;
+    for (const auto& [stem, title] : titles) ok &= eng::AddString(("FETXT." + stem).c_str(), title.c_str(), 12);
+    return ok;
+}
+
+// Clears section 12 and loads back every pack in g_loaded and every Test bank, then rebuilds the random pools, all in
+// this frame: until the rebuild the pools still name the cleared keys.
+bool ReloadAll() {
+    std::map<std::string, std::vector<std::pair<std::string, std::string>>> byMod;
+    std::vector<std::pair<std::string, std::string>> tests;
+    {
+        std::lock_guard lk(g_mx);
+        for (const auto& l : g_levels) {
+            if (l.info.source == Source::Test) tests.emplace_back(l.info.stem, l.info.title);
+            else byMod[l.info.mod].emplace_back(l.info.stem, l.info.title);
+        }
+    }
+    if (!eng::ClearDataBank(12)) return false;
+    bool ok = true;
+    for (const auto& mod : g_loaded) ok &= LoadBankFile(erg::names::Prefix(mod) + "_REG", byMod[mod]);
+    for (uint32_t i = 1; i <= g_testBanks; ++i) ok &= LoadBankFile("ergtest_REG_" + std::to_string(i), {});
+    for (const auto& [stem, title] : tests) ok &= eng::AddString(("FETXT." + stem).c_str(), title.c_str(), 12);
+    ok &= eng::RebuildPools();
+    MarkRegistered();
+    return ok;
+}
+
+void Forget(const std::string& mod) {
+    std::lock_guard lk(g_mx);
+    for (const auto& l : g_levels)
+        if (mod == l.info.mod) g_sources.erase(l.info.key);
+    std::erase_if(g_levels, [&](const Level& l) { return mod == l.info.mod; });
+}
+
+void RecheckLastPlayed() {
+    g_lastPlayedDone = false;
+    g_lastPlayedAt = 0;
+    g_lastPlayedTries = 0;
+    CheckLastPlayed();
+}
+}  // namespace
+
+bool PacksReady() { return g_packsDone; }
+
+bool Loaded(const std::string& mod) { return std::find(g_loaded.begin(), g_loaded.end(), mod) != g_loaded.end(); }
+
+bool EnableLive(const std::string& mod, std::string* err) {
+    if (Loaded(mod)) {
+        *err = mod + " is already enabled";
+        return false;
+    }
+    const auto snap = thumper::Snapshot();
+    std::vector<roots::PackInput> in;
+    const thumper::Entry* self = nullptr;
+    for (const auto& e : snap) {
+        if (e.manifest.id == mod) self = &e;
+        if (e.manifest.id == mod || Loaded(e.manifest.id)) in.push_back({&e.manifest, e.dir});
+    }
+    if (!self) {
+        *err = "no mod " + mod + " is installed";
+        return false;
+    }
+    if (!assets::crcsafe::Available()) {
+        *err = "the name table could not be verified";
+        return false;
+    }
+    roots::PackVerdict verdict;
+    bool found = false;
+    for (const auto& v : roots::CheckPacks(in, assets::crcsafe::Entries(), true))
+        if (v.mod == mod) {
+            verdict = v;
+            found = true;
+        }
+    if (!found || !verdict.ok || verdict.levels.empty()) {
+        *err = found && !verdict.ok ? verdict.reason : mod + " has no levels to register";
+        return false;
+    }
+    for (const auto& d : verdict.levels)
+        if (KeyTaken(erg::names::Key(d.stem))) {
+            *err = erg::names::Key(d.stem) + " already exists in the data store";
+            return false;
+        }
+    const fs::path root = fs::path(self->dir) / game::Widen(self->manifest.assetsRoot) / roots::kLevelDir;
+    const std::string rel = roots::GameRelative(GameDir(), root);
+    if (rel.empty()) {
+        *err = "the level root must be a game-relative path without '.' in it";
+        return false;
+    }
+    internal::InstallHooks();
+    if (!EnsureCacheRoot() || !eng::AddRoot(rel.c_str())) {
+        *err = "adding the level root " + rel + " failed";
+        return false;
+    }
+    for (const auto& d : verdict.levels) {
+        Level l = MakeLevel(erg::names::Key(d.stem), d.stem, d.mod, d.title, Source::Pack, root, self->manifest.version, d.chunk);
+        l.info.live = true;
+        Declare(l);
+    }
+    const int n = LoadPack(verdict, root, err);
+    if (n < 0) {
+        Forget(mod);
+        ReloadAll();
+        return false;
+    }
+    g_loaded.push_back(mod);
+    const bool pools = eng::RebuildPools();
+    MarkRegistered();
+    {
+        std::lock_guard lk(g_mx);
+        g_live[mod] = true;
+        ++g_liveChanges;
+    }
+    LOG_INFO("[levels] %s: %d level(s) enabled at the menu from %s (offline only until restart); pools %s", mod.c_str(), n,
+             rel.c_str(), pools ? "rebuilt" : "NOT rebuilt");
+    jlog::Rec("levels", jlog::Level::Info, "pack_live").Str("mod", mod).Bool("on", true).Uint("levels", static_cast<uint64_t>(n));
+    return true;
+}
+
+bool DisableLive(const std::string& mod, std::string* err) {
+    if (!Loaded(mod)) {
+        *err = mod + " is not enabled";
+        return false;
+    }
+    std::erase(g_loaded, mod);
+    Forget(mod);
+    const bool ok = ReloadAll();
+    {
+        std::lock_guard lk(g_mx);
+        g_live[mod] = false;
+        ++g_liveChanges;
+    }
+    RecheckLastPlayed();
+    LOG_INFO("[levels] %s: disabled at the menu; section 12 reloaded %s", mod.c_str(), ok ? "ok" : "WITH ERRORS");
+    jlog::Rec("levels", ok ? jlog::Level::Info : jlog::Level::Error, "pack_live").Str("mod", mod).Bool("on", false).Bool("ok", ok);
+    if (!ok) *err = "the other packs could not all be reloaded; see Melange.log";
+    return ok;
+}
+
+bool LiveChanged(const std::string& mod, bool* on) {
+    std::lock_guard lk(g_mx);
+    auto it = g_live.find(mod);
+    if (it == g_live.end()) return false;
+    if (on) *on = it->second;
     return true;
 }
 }  // namespace melange::levels::registry

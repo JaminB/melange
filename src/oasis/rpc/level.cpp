@@ -60,12 +60,12 @@ void Handle(const Call& c, Result& r, void*) {
 }
 }  // namespace
 
-bool BuildTestLevel(const std::string& project, std::string* stem, std::string* title, std::string* err) {
+bool BuildTestLevel(const std::string& project, const std::string& tod, std::string* stem, std::string* title, std::string* err) {
     if (!g_service) {
         *err = "the level service is off ([Erg] Enabled=0)";
         return false;
     }
-    erg::service::Reply rep = g_service->BuildTest(project, game::GameDir() + L"\\Melange\\erg\\test");
+    erg::service::Reply rep = g_service->BuildTest(project, game::GameDir() + L"\\Melange\\erg\\test", tod);
     if (!rep.ok) {
         *err = rep.message;
         return false;

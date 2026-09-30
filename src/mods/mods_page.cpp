@@ -5,16 +5,32 @@
 
 #include <imgui.h>
 
+#include <map>
 #include <string>
 #include <vector>
 
 #include "lua/sandbox_internal.h"
+#include "melange/levels.h"
 #include "melange/overlay.h"
 #include "mods/thumper_internal.h"
 
 namespace melange::thumper {
 namespace {
 const char* KindLabel(const spice::Manifest& m) { return m.content ? "content" : "client-only"; }
+
+std::map<std::string, std::string> g_liveErr;
+
+// A map pack changes at once when it can (offline, at the menu); otherwise the change waits for a restart.
+void Toggle(const Entry& e, bool on) {
+    const std::string& id = e.manifest.id;
+    g_liveErr.erase(id);
+    if (e.manifest.content && !e.manifest.levels.empty() && levels::Enabled()) {
+        char err[256] = {};
+        if ((on ? levels::EnablePackLive : levels::DisablePackLive)(id.c_str(), err, sizeof err)) return;
+        g_liveErr[id] = err;
+    }
+    SetEnabled(id, on);
+}
 
 ImVec4 StateColor(mods::State s) {
     switch (s) {
@@ -80,7 +96,7 @@ void DrawModsPanel(void*) {
         // session state: for a content mod mid-session those can briefly disagree (state == RestartRequired).
         auto pref = Live().enabled.find(e.manifest.id);
         bool on = pref != Live().enabled.end() ? pref->second : e.state == mods::State::Enabled;
-        if (ImGui::Checkbox("##on", &on)) SetEnabled(e.manifest.id, on);
+        if (ImGui::Checkbox("##on", &on)) Toggle(e, on);
         ImGui::TableNextColumn();
         ImGui::TextUnformatted(e.manifest.name.empty() ? e.manifest.id.c_str() : e.manifest.name.c_str());
         if (e.manifest.implicit) {
@@ -88,9 +104,15 @@ void DrawModsPanel(void*) {
             ImGui::TextDisabled("(M1)");
         }
         ImGui::TableNextColumn();
-        ImGui::TextColored(StateColor(e.state), "%s", StateLabel(e.state));
+        bool liveOn = false;
+        if (LiveState(e.manifest.id, &liveOn) && liveOn == on)
+            ImGui::TextColored(ImVec4(0.55f, 0.8f, 1.f, 1.f), "%s", liveOn ? "enabled (live)" : "disabled (live)");
+        else
+            ImGui::TextColored(StateColor(e.state), "%s", StateLabel(e.state));
         ImGui::PushTextWrapPos(0.f);
         if (!e.reason.empty()) ImGui::TextDisabled("%s", e.reason.c_str());
+        if (auto le = g_liveErr.find(e.manifest.id); le != g_liveErr.end() && e.state == mods::State::RestartRequired)
+            ImGui::TextDisabled("not changed now: %s", le->second.c_str());
         sandbox::ModStatus st;
         if (sandbox::Status(e.manifest.id.c_str(), &st)) {
             if (!st.error.empty()) ImGui::TextColored(ImVec4(1.f, 0.4f, 0.4f, 1.f), "%s", st.error.c_str());

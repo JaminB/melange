@@ -14,6 +14,7 @@
 #include "erg/luagen.h"
 #include "levels/csh.h"
 #include "levels/gate.h"
+#include "levels/live.h"
 #include "levels/roots.h"
 #include "levels/test.h"
 #include "mods/spice.h"
@@ -26,7 +27,9 @@ namespace lt = melange::levels::test;
 using melange::levels::Online;
 using melange::levels::Source;
 using melange::levels::TestState;
+using melange::levels::Tod;
 using melange::mods::PeerStatus;
+namespace spice = melange::spice;
 
 namespace {
 int g_fail = 0, g_pass = 0;
@@ -408,6 +411,7 @@ void TestOverride() {
     Expect(!o.Arm("", 10, 0), "an empty key is refused");
     Expect(o.Arm("Multi.ergtest_p1", 120, 1000) && o.armed(), "armed");
     Expect(o.Update(false, 60000) == O::Event::None, "still armed before the timeout");
+    o.NoteStartGame("QuickStartHvC");
     Expect(o.Take("Multi.DinerMight", 61000, &ev) == "Multi.ergtest_p1" && ev == O::Event::Started, "the first set-up loads the override");
     Expect(!o.armed() && o.phase() == O::Phase::Starting, "used once: no longer armed");
     Expect(!o.Arm("Multi.other", 10, 61500), "re-arming while a Test start is under way is refused");
@@ -423,7 +427,9 @@ void TestOverride() {
     Expect(o.Update(false, 5001) == O::Event::Expired && !o.armed(), "the timeout disarms");
     Expect(o.Arm("Multi.ergtest_p1", 5, 0) && o.Take("x", 6000, &ev).empty() && ev == O::Event::Expired,
            "a late set-up after the timeout is not overridden");
-    Expect(o.Arm("Multi.ergtest_p1", 120, 0) && !o.Take("x", 1, &ev).empty(), "armed and started");
+    Expect(o.Arm("Multi.ergtest_p1", 120, 0), "armed again");
+    o.NoteStartGame("QuickStartHvC");
+    Expect(!o.Take("x", 1, &ev).empty(), "armed and started");
     Expect(o.Update(false, 1 + O::kStartWindowMs + 1) == O::Event::Abandoned && o.phase() == O::Phase::Idle,
            "a start that never reaches a match is abandoned");
     Expect(o.Arm("Multi.a", 120, 0), "armed");
@@ -431,6 +437,101 @@ void TestOverride() {
     Expect(!o.armed() && o.Take("x", 1, &ev).empty(), "Disarm");
     Expect(o.Arm("Multi.a", 999999, 0) && o.Update(false, static_cast<uint64_t>(O::kMaxTimeoutS) * 1000 + 1) == O::Event::Expired,
            "the timeout is capped");
+}
+
+void TestStartGate() {
+    using O = lt::Override;
+    O o;
+    O::Event ev;
+    Expect(o.Arm("Multi.ergtest_p1", 120, 0, Tod::Night) && o.tod() == Tod::Night, "armed with a time of day");
+    Expect(o.Take("Multi.DinerMight", 10, &ev).empty() && o.armed() && ev == O::Event::None,
+           "a set-up without a Quick Game start leaves the override armed and untouched");
+    o.NoteStartGame("NOW");
+    Expect(!o.startSeen(), "only a QuickStart* StartGame counts");
+    o.NoteStartGame("QuickStartHvC");
+    Expect(o.startSeen(), "a QuickStart* StartGame is noted");
+    Expect(o.Take("Multi.DinerMight", 20, &ev, {false, true}).empty() && o.armed(), "never while an earlier set-up loads");
+    Expect(o.Take("Multi.DinerMight", 30, &ev) == "Multi.ergtest_p1" && ev == O::Event::Started && o.tod() == Tod::Night,
+           "the first set-up after the start takes it");
+    o.Disarm();
+    Expect(o.tod() == Tod::Default && !o.startSeen(), "Disarm clears the time of day and the start");
+
+    Expect(o.Arm("Multi.ergtest_p1", 120, 0), "armed");
+    o.NoteStartGame("QuickStartHvC");
+    Expect(o.Take("Multi.MineAllMine", 10, &ev, {true, false}).empty() && ev == O::Event::AttractRefused && !o.armed() &&
+               o.phase() == O::Phase::Idle,
+           "an attract demo set-up disarms: the override never outlives a demo");
+    Expect(o.Take("Multi.DinerMight", 20, &ev).empty() && ev == O::Event::None, "and the next start is the frontend's");
+    Expect(o.Arm("Multi.ergtest_p1", 120, 0) && o.Take("Multi.MineAllMine", 10, &ev, {true, false}).empty() &&
+               ev == O::Event::AttractRefused,
+           "a demo refuses an override even before any StartGame");
+    o.NoteStartGame("QuickStartHvC");
+    Expect(!o.startSeen(), "a StartGame while nothing is armed is not remembered");
+    Expect(o.Arm("Multi.ergtest_p1", 120, 0), "armed");
+    o.NoteStartGame("QuickStartHvC");
+    Expect(!o.Take("Multi.DinerMight", 10, &ev).empty() && o.Take("Multi.DinerMight", 11, &ev, {true, true}) == "Multi.ergtest_p1",
+           "the second set-up of a taken start keeps its override");
+
+    Tod t = Tod::Day;
+    Expect(lt::ParseTod("", &t) && t == Tod::Default && lt::ParseTod("NIGHT", &t) && t == Tod::Night &&
+               lt::ParseTod("EVENING", &t) && t == Tod::Evening && !lt::ParseTod("night", &t) && !lt::ParseTod("DUSK", &t),
+           "time of day names");
+    Expect(std::string(lt::TodName(Tod::Day)) == "DAY" && std::string(lt::TodName(Tod::Default)).empty(), "TodName");
+}
+
+void TestLive() {
+    namespace lv = melange::levels::live;
+    lv::Session s;
+    Expect(lv::SessionRefusal(s).find("LivePacks=0") != std::string::npos, "LivePacks=0 refuses");
+    s.ini = s.enabled = s.atFrontend = true;
+    Expect(lv::SessionRefusal(s).empty(), "offline at the menu: allowed");
+    auto refused = [&](bool lv::Session::*f, const char* needle, const char* what) {
+        lv::Session t = s;
+        t.*f = !(t.*f);
+        Expect(lv::SessionRefusal(t).find(needle) != std::string::npos, what);
+    };
+    refused(&lv::Session::inLobby, "lobby", "a lobby refuses");
+    refused(&lv::Session::netSession, "network", "a network session refuses");
+    refused(&lv::Session::atFrontend, "main menu", "a match refuses");
+    refused(&lv::Session::attract, "loading", "the attract demo refuses");
+    refused(&lv::Session::loading, "loading", "a level set-up refuses");
+    refused(&lv::Session::testBusy, "Test", "a pending Test refuses");
+    refused(&lv::Session::enabled, "disabled", "a disabled module refuses");
+
+    spice::Manifest m;
+    m.content = true;
+    Expect(!lv::PackRefusal(m).empty(), "a mod without levels is not a live pack");
+    spice::Level l;
+    l.slug = "a";
+    m.levels.push_back(l);
+    Expect(lv::PackRefusal(m).empty(), "a pack of levels can change live");
+    auto restart = [&](void (*mutate)(spice::Manifest&), const char* what) {
+        spice::Manifest t = m;
+        mutate(t);
+        Expect(lv::PackRefusal(t).find("restart required") != std::string::npos, what);
+    };
+    restart([](spice::Manifest& t) { t.entrySim = "sim/main.lua"; }, "entry.sim: restart required");
+    restart([](spice::Manifest& t) { t.levels[0].sim = "sim/a.lua"; }, "a level sim: restart required");
+    restart([](spice::Manifest& t) { t.messages = {"m.x"}; }, "messages: restart required");
+    restart([](spice::Manifest& t) { t.weapons.resize(1); }, "weapons: restart required");
+    restart([](spice::Manifest& t) { t.entryClient = "client.lua"; }, "client code: restart required");
+    restart([](spice::Manifest& t) { t.filesystem = "overlay"; }, "file overrides: restart required");
+    Expect(lv::Badge(true) == "enabled for this session (offline only until restart)", "the Mods page badge");
+
+    gate::Input in;
+    in.inLobby = in.owner = true;
+    in.key = "Multi.mymaps_a";
+    in.source = Source::Pack;
+    in.title = "Harbour Brawl";
+    in.mod = "mymaps";
+    in.modVersion = "1.0.0";
+    in.live = true;
+    in.members = {Mem("Mia", PeerStatus::Match, "mymaps@1.0.0")};
+    const auto v = gate::Evaluate(in);
+    Expect(v.hold && v.status == Online::LivePack && v.why.find("offline only") != std::string::npos,
+           "a live-changed pack holds the start even when every member matches");
+    Expect(!gate::KeepInList(Source::Pack, true, true, true, true) && gate::KeepInList(Source::Pack, false, true, true, true),
+           "a live-changed pack is hidden in network lists and listed offline");
 }
 
 void TestWire() {
@@ -465,6 +566,8 @@ int main() {
     fs::remove_all(base, ec);
     TestGate();
     TestOverride();
+    TestStartGate();
+    TestLive();
     TestWire();
     printf("levels_selftest: %d passed, %d failed\n", g_pass, g_fail);
     return g_fail ? 1 : 0;

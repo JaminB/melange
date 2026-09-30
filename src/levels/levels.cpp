@@ -12,6 +12,7 @@
 #include "core/log.h"
 #include "core/module.h"
 #include "levels/engine.h"
+#include "levels/live.h"
 #include "levels/registry.h"
 #include "melange/jlog.h"
 #include "melange/levels.h"
@@ -73,10 +74,11 @@ bool VerbState(std::string_view, void*) {
     float water = 0;
     const bool haveWater = lv::WaterLevel(&water);
     LOG_INFO("[levels] state: enabled=%d hooks=%d levelHook=%d pickerHook=%d poolHook=%d frontend=%d current='%s' armed='%s' "
-             "packs=%u levels=%u test=%u starts=%u held=%u cshDeleted=%u msRegister=%.3f water=%s%.2f online=%d",
+             "packs=%u levels=%u test=%u starts=%u held=%u cshDeleted=%u msRegister=%.3f water=%s%.2f online=%d live=%u "
+             "liveChanges=%u attractRefusals=%u",
              g_enabled, g_hooks, eng::LevelHookEnabled(), eng::PickerHookEnabled(), eng::PoolHookEnabled(), eng::AtFrontend(),
              eng::CurrentLevelKey(), armed, st.packs, st.levels, st.testLevels, st.starts, st.heldStarts, st.cshDeleted,
-             st.msRegister, haveWater ? "" : "-", water, g_cfg.online);
+             st.msRegister, haveWater ? "" : "-", water, g_cfg.online, st.livePacks, st.livePackChanges, st.attractRefusals);
     melange::jlog::Rec("levels", melange::jlog::Level::Info, "state")
         .Bool("enabled", g_enabled).Bool("hooks", g_hooks).Uint("levels", st.levels).Uint("starts", st.starts);
     return true;
@@ -88,9 +90,23 @@ bool VerbList(std::string_view a, void*) {
     const int n = lv::List(v.data(), static_cast<int>(v.size()), all);
     LOG_INFO("[levels] list: %d level(s)%s", n, all ? " (with vanilla)" : "");
     for (int i = 0; i < n && i < static_cast<int>(v.size()); ++i)
-        LOG_INFO("[levels]   %s stem=%s mod=%s title='%s' source=%s type=%u theme=%u registered=%d", v[i].key, v[i].stem,
-                 v[i].mod, v[i].title, SourceName(v[i].source), v[i].levelType, v[i].themeType, v[i].registered);
+        LOG_INFO("[levels]   %s stem=%s mod=%s title='%s' source=%s type=%u theme=%u registered=%d live=%d", v[i].key,
+                 v[i].stem, v[i].mod, v[i].title, SourceName(v[i].source), v[i].levelType, v[i].themeType, v[i].registered,
+                 v[i].live);
     return true;
+}
+
+bool VerbLive(std::string_view a, void*) {
+    const std::string s(a);
+    const size_t sp = s.find(' ');
+    const std::string mod = s.substr(0, sp), arg = sp == std::string::npos ? "" : s.substr(sp + 1);
+    if (mod.empty() || (arg != "on" && arg != "off")) return false;
+    char err[256] = {};
+    const bool ok = arg == "on" ? lv::EnablePackLive(mod.c_str(), err, sizeof err) : lv::DisablePackLive(mod.c_str(), err, sizeof err);
+    const auto st = lv::GetStats();
+    LOG_INFO("[levels] live %s %s: %s%s%s (live packs %u, changes %u)", mod.c_str(), arg.c_str(), ok ? "ok" : "refused",
+             err[0] ? ": " : "", err, st.livePacks, st.livePackChanges);
+    return ok;
 }
 
 bool VerbSetWater(std::string_view a, void*) {
@@ -112,16 +128,20 @@ public:
         EnsureKey("Levels", "Online", "1");
         EnsureKey("Levels", "RandomPool", "0");
         EnsureKey("Levels", "DevWater", "0");
+        EnsureKey("Levels", "LivePacks", "1");
         g_cfg.online = Bool("Online", true);
         g_cfg.randomPool = Bool("RandomPool", false);
         g_cfg.devWater = Bool("DevWater", false);
+        g_cfg.livePacks = Bool("LivePacks", true);
         melange::testcmd::Register("levels.state", &VerbState);
         melange::testcmd::Register("levels.list", &VerbList);
         melange::testcmd::Register("levels.setwater", &VerbSetWater);
+        melange::testcmd::Register("levels.live", &VerbLive);
         const bool sites = eng::SitesOk();
         g_enabled = sites;
         if (g_enabled) {
             lv::registry::Install(g_cfg);
+            lv::live::Install();
             melange::events::Subscribe(melange::events::Event::Frame, [] {
                 lv::registry::OnFrame();
                 if (!g_hooks && lv::registry::HasModLevels()) lv::internal::InstallHooks();
@@ -156,12 +176,12 @@ bool RegisterTest(const char* stem, const char* title, char* err, size_t errLen)
     return registry::RegisterTest(stem, title, err, errLen);
 }
 
-bool ArmNextLevel(const char* key, int timeoutS) {
-    if (!g_enabled || !key || !*key || InLobby()) return false;
-    return registry::Arm(key, timeoutS);
-}
+bool ArmNextLevel(const char* key, int timeoutS) { return ArmNextLevel(key, ArmOptions{timeoutS, Tod::Default}); }
 
-bool ArmNextLevel(const char* key, const ArmOptions& o) { return ArmNextLevel(key, o.timeoutS); }
+bool ArmNextLevel(const char* key, const ArmOptions& o) {
+    if (!g_enabled || !key || !*key || InLobby()) return false;
+    return registry::Arm(key, o);
+}
 
 void Disarm() {
     if (g_enabled) registry::Disarm();

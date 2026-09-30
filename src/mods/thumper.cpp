@@ -10,6 +10,7 @@
 #include <algorithm>
 #include <atomic>
 #include <cctype>
+#include <map>
 #include <mutex>
 #include <random>
 #include <set>
@@ -30,6 +31,7 @@
 #include "melange/render.h"
 #include "melange/sim.h"
 #include "melange/testcmd.h"
+#include "levels/live.h"
 #include "levels/registry.h"
 #include "mods/thumper_internal.h"
 #include "weapons/manifest.h"
@@ -43,6 +45,8 @@ std::wstring g_modsDir;
 int g_maxModMessages = 48;
 bool g_autoGrantDeepDesert = false;
 bool g_sessionFrozen = false;
+std::mutex g_liveMx;
+std::map<std::string, bool> g_live;   // map packs changed at the menu this session
 std::atomic<bool> g_rescanRequested{false};
 
 struct ChangeSub {
@@ -291,6 +295,8 @@ void DoRescan() {
             e.state = r.state;
             e.reason = r.reason;
         }
+        bool liveOn = false;
+        if (LiveState(r.id, &liveOn) && liveOn == loadsNow) e.reason = levels::live::Badge(liveOn);
         if (e.deepDesertGranted && e.state == mods::State::PendingConsent) {
             e.state = mods::State::Enabled;
             e.reason.clear();
@@ -536,6 +542,29 @@ bool SetEnabled(const std::string& id, bool on) {
             sandbox::UnloadMod(id.c_str());
     }
     jlog::Rec("thumper", jlog::Level::Info, on ? "enable" : "disable").Str("id", id);
+    return true;
+}
+
+std::vector<Entry> LiveCandidates() {
+    std::vector<Entry> out;
+    for (auto& e : Snapshot())
+        if (e.manifest.content && !e.manifest.levels.empty() && e.order >= 0) out.push_back(std::move(e));
+    return out;
+}
+
+void SetLive(const std::string& id, bool on) {
+    {
+        std::lock_guard lk(g_liveMx);
+        g_live[id] = on;
+    }
+    SetEnabled(id, on);
+}
+
+bool LiveState(const std::string& id, bool* on) {
+    std::lock_guard lk(g_liveMx);
+    auto it = g_live.find(id);
+    if (it == g_live.end()) return false;
+    if (on) *on = it->second;
     return true;
 }
 

@@ -148,7 +148,10 @@ int64_t NowMs() {
     return std::chrono::duration_cast<std::chrono::milliseconds>(Clock::now().time_since_epoch()).count();
 }
 
+std::atomic<bool> g_loadingAtSetUp{false};
+
 void OnLevelName(safetyhook::Context& c) {
+    g_loadingAtSetUp = g_loadingSinceMs.load() != 0;
     g_loadingSinceMs = NowMs();
     if (!g_decide) return;
     const uintptr_t slot = c.esp + 0x20;
@@ -488,6 +491,8 @@ FrontendState ReadFrontend() {
 }
 
 bool Loading() { return g_loadingSinceMs.load() != 0; }
+
+bool LoadingAtSetUp() { return g_loadingAtSetUp.load(); }
 
 int OnStartGame(StartGameFn fn, void* user) {
     if (!fn) return 0;

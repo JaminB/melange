@@ -29,11 +29,17 @@ struct Ev {
     std::string key, detail;
 };
 
+constexpr const char* kTodName = "WXD.Level.TimeOfDay";
+
 std::mutex g_mx;
 std::vector<Req> g_queue;
 std::vector<Ev> g_events;
 Override g_ovr;
 char g_taken[128] = {};
+int g_startSub = 0;
+uint32_t g_attract = 0;
+bool g_todSet = false;
+std::string g_todOld;
 
 bool Fail(char* err, size_t n, const std::string& why) {
     if (err && n) snprintf(err, n, "%s", why.c_str());
@@ -62,6 +68,29 @@ void Flush() {
         internal::FireTestState(e.s, e.key.c_str(), e.detail.c_str());
     }
 }
+
+void OnStartGame(const char* text, void*) {
+    std::lock_guard lk(g_mx);
+    g_ovr.NoteStartGame(text ? text : "");
+}
+
+// The Test build's Databank.TimeOfDay decides while the frontend's value is empty; it is put back once the match runs.
+void ClearTod() {
+    std::string old;
+    if (!engine::GetString(kTodName, &old) || !engine::SetString(kTodName, "")) {
+        LOG_WARN("[levels] test: the time of day could not be cleared; the frontend's value loads");
+        return;
+    }
+    g_todSet = true;
+    g_todOld = old;
+}
+
+void RestoreTod() {
+    if (!g_todSet) return;
+    g_todSet = false;
+    const bool ok = engine::SetString(kTodName, g_todOld.c_str());
+    LOG_INFO("[levels] test: %s restored to '%s': %s", kTodName, g_todOld.c_str(), ok ? "ok" : "FAILED");
+}
 }  // namespace
 
 bool Register(const char* stem, const char* title, char* err, size_t errLen) {
@@ -83,14 +112,14 @@ bool Pending(const std::string& key) {
     return false;
 }
 
-bool Arm(const char* key, int timeoutS) {
+bool Arm(const char* key, const ArmOptions& o) {
     if (!key || !*key) return false;
     Source src = Source::Vanilla;
     const bool mod = registry::Lookup(key, &src);
     if (!mod && !Pending(key)) return false;
     if (NetSession() || handshake::lobby::Current()) return false;
     std::lock_guard lk(g_mx);
-    if (!g_ovr.Arm(key, timeoutS, GetTickCount64())) return false;
+    if (!g_ovr.Arm(key, o.timeoutS, GetTickCount64(), o.tod)) return false;
     Queue(TestState::Armed, key, "");
     return true;
 }
@@ -103,29 +132,63 @@ void Disarm(const char* why) {
     Queue(TestState::Idle, key, why ? why : "");
 }
 
+void Fail(const char* detail) {
+    std::lock_guard lk(g_mx);
+    if (!g_ovr.armed()) return;
+    const std::string key = g_ovr.key();
+    g_ovr.Disarm();
+    if (detail && std::string(detail) == kAttractRefused) ++g_attract;
+    Queue(TestState::Failed, key, detail ? detail : "");
+}
+
 bool Armed(char* key, size_t keyLen) {
     std::lock_guard lk(g_mx);
     if (key && keyLen) snprintf(key, keyLen, "%s", g_ovr.armed() ? g_ovr.key().c_str() : "");
     return g_ovr.armed();
 }
 
+bool Busy() {
+    std::lock_guard lk(g_mx);
+    return g_ovr.phase() != Override::Phase::Idle;
+}
+
+uint32_t AttractRefusals() {
+    std::lock_guard lk(g_mx);
+    return g_attract;
+}
+
 const char* Take(const char* frontendKey) {
+    const engine::FrontendState fs = engine::ReadFrontend();
+    Override::SetUp s;
+    s.attract = fs.valid && fs.attractRunning;
+    s.loading = engine::LoadingAtSetUp();
+    const bool online = handshake::lobby::Current() || NetSession();
     std::lock_guard lk(g_mx);
     Override::Event ev = Override::Event::None;
-    const std::string k = g_ovr.Take(frontendKey ? frontendKey : "", GetTickCount64(), &ev);
+    const std::string armedKey = g_ovr.key();
+    const Tod tod = g_ovr.tod();
+    const std::string k = g_ovr.Take(frontendKey ? frontendKey : "", GetTickCount64(), &ev, s);
     if (ev == Override::Event::Expired) Queue(TestState::Idle, "", "timed out");
+    if (ev == Override::Event::AttractRefused) {
+        ++g_attract;
+        Queue(TestState::Failed, armedKey, kAttractRefused);
+    }
     if (k.empty()) return nullptr;
     if (!engine::LevelDetails(k.c_str(), nullptr)) {
         g_ovr.Disarm();
         Queue(TestState::Failed, k, "the level is not registered; the frontend's choice loads");
         return nullptr;
     }
-    if (ev == Override::Event::Started) Queue(TestState::Starting, k, frontendKey ? frontendKey : "");
+    if (ev == Override::Event::Started) {
+        Queue(TestState::Starting, k, frontendKey ? frontendKey : "");
+        if (tod != Tod::Default && !online && !g_todSet) ClearTod();
+    }
     snprintf(g_taken, sizeof g_taken, "%s", k.c_str());
     return g_taken;
 }
 
 void OnFrame(bool atFrontend) {
+    if (!g_startSub) g_startSub = engine::OnStartGame(&OnStartGame, nullptr);
     if (handshake::lobby::Current() || NetSession()) Disarm("a network session started");
     {
         std::lock_guard lk(g_mx);
@@ -137,6 +200,7 @@ void OnFrame(bool atFrontend) {
             case Override::Event::Abandoned: Queue(TestState::Failed, key, "the match did not start"); break;
             default: break;
         }
+        if (g_todSet && g_ovr.phase() != Override::Phase::Starting) RestoreTod();
     }
     if (atFrontend) {
         std::vector<Req> todo;

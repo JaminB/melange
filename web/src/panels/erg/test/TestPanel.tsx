@@ -6,7 +6,8 @@ import type { Client } from "../../../sdk/client";
 import { errorText, useConnection } from "../../../sdk/hooks";
 import type { LobbyState } from "../../../sdk/streams";
 import {
-  IDLE_STATUS, reduceTestEvent, statusLine, testAvailability, type GameState, type TestStatus,
+  IDLE_STATUS, TEST_TODS, initialTod, reduceTestEvent, statusLine, testAvailability, type GameState, type TestStatus,
+  type TestTod,
 } from "./model";
 
 function useGameState(client: Client): GameState {
@@ -19,12 +20,14 @@ function useGameState(client: Client): GameState {
   return { connected: conn.open, inMatch, inLobby };
 }
 
-export function TestPanel({ client, session, beforeTest }: {
-  client: Client; session: ErgSession; beforeTest?: () => Promise<boolean>;
+export function TestPanel({ client, session, beforeTest, projectTod }: {
+  client: Client; session: ErgSession; beforeTest?: () => Promise<boolean>; projectTod?: string;
 }) {
   const game = useGameState(client);
   const [status, setStatus] = useState<TestStatus>(IDLE_STATUS);
   const [error, setError] = useState<string>();
+  const [tod, setTod] = useState<TestTod>(initialTod(projectTod));
+  useEffect(() => setTod(initialTod(projectTod)), [projectTod]);
   useEffect(() => session.onTest((ev) => setStatus((s) => reduceTestEvent(s, ev))), [session]);
 
   const avail = testAvailability(game);
@@ -32,7 +35,7 @@ export function TestPanel({ client, session, beforeTest }: {
     setError(undefined);
     try {
       if (beforeTest && !(await beforeTest())) return;
-      const r = await session.test();
+      const r = await session.test({ tod });
       setStatus((s) => reduceTestEvent(s, { state: r.state, key: r.key, detail: "" }));
     } catch (e) {
       setError(errorText(e));
@@ -44,6 +47,10 @@ export function TestPanel({ client, session, beforeTest }: {
       <button class="btn" data-action="test" disabled={!avail.ok || status.busy} title={avail.reason ?? ""} onClick={onClick}>
         Test
       </button>
+      <select data-test-tod value={tod} title="Time of day for this Test" disabled={status.busy}
+        onChange={(e) => setTod((e.currentTarget as HTMLSelectElement).value as TestTod)}>
+        {TEST_TODS.map((t) => <option key={t} value={t}>{t === initialTod(projectTod) ? `${t} (project)` : t}</option>)}
+      </select>
       {!avail.ok ? <span class="muted"> {avail.reason}</span> : null}
       {status.phase !== "idle" ? <span class="status-line" data-test-status>{statusLine(status)}</span> : null}
       {error ? <span class="error" data-test-error> {error}</span> : null}

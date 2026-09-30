@@ -20,6 +20,7 @@
 #include "core/mem.h"
 #include "render/input_logic.h"
 #include "render/internal.h"
+#include "render/keytap.h"
 #include "melange/overlay.h"
 
 extern IMGUI_IMPL_API LRESULT ImGui_ImplWin32_WndProcHandler(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam);
@@ -75,6 +76,33 @@ std::vector<HotkeyDef> g_defs;
 std::vector<int> g_fired;
 std::vector<uint8_t> g_released;
 
+// One synthetic key tap: a press record on one poll, the release on a later one, and the key held in the state
+// snapshot in between.
+std::mutex g_tapMx;
+uint8_t g_tapDik = 0;
+int g_tapPhase = 0;   // 0 idle, 1 press due, 2 pressed, 3 release due
+ULONGLONG g_tapUntil = 0;
+DWORD g_tapSeq = 0x40000000;
+
+void AppendTap(DIDEVICEOBJECTDATA* buf, DWORD* n, DWORD capacity) {
+    std::lock_guard lk(g_tapMx);
+    if (g_tapPhase == 2 && GetTickCount64() >= g_tapUntil) g_tapPhase = 3;
+    if ((g_tapPhase != 1 && g_tapPhase != 3) || *n >= capacity) return;
+    DIDEVICEOBJECTDATA& d = buf[*n];
+    d = {};
+    d.dwOfs = g_tapDik;
+    d.dwData = g_tapPhase == 1 ? 0x80 : 0;
+    d.dwTimeStamp = GetTickCount();
+    d.dwSequence = ++g_tapSeq;
+    ++*n;
+    g_tapPhase = g_tapPhase == 1 ? 2 : 0;
+}
+
+void HoldTap(uint8_t* state, DWORD cb) {
+    std::lock_guard lk(g_tapMx);
+    if ((g_tapPhase == 1 || g_tapPhase == 2) && g_tapDik < cb) state[g_tapDik] |= 0x80;
+}
+
 bool Lookup(void* self, DevVt* vt) {
     std::lock_guard lk(g_devMx);
     auto v = g_devVts.find(*static_cast<void***>(self));
@@ -119,6 +147,7 @@ HRESULT WINAPI HookGetDeviceData(void* self, DWORD cb, DIDEVICEOBJECTDATA* rgdod
         if (!g_fired.empty()) fired.swap(g_fired);
         if (!g_released.empty()) released.swap(g_released);
     }
+    if (!capturing) AppendTap(rgdod, inOut, capacity);
     if (!released.empty()) {
         g_synthetic += released.size();
         std::string names;
@@ -145,6 +174,7 @@ HRESULT WINAPI HookGetDeviceState(void* self, DWORD cb, void* data) {
     if (kb && SUCCEEDED(hr) && data) {
         std::lock_guard lk(g_filterMx);
         g_filter.FilterState(static_cast<uint8_t*>(data), cb, melange::overlay::Capturing());
+        if (!melange::overlay::Capturing()) HoldTap(static_cast<uint8_t*>(data), cb);
     }
     return hr;
 }
@@ -378,6 +408,16 @@ void SubclassGameWindow(HWND hwnd) {
 }
 
 void SetImGuiInputReady(bool ready) { g_imguiReady = ready; }
+
+bool TapKey(uint8_t dik, int holdMs) {
+    if (!g_diHooked || !dik) return false;
+    std::lock_guard lk(g_tapMx);
+    if (g_tapPhase != 0) return false;
+    g_tapDik = dik;
+    g_tapPhase = 1;
+    g_tapUntil = GetTickCount64() + static_cast<ULONGLONG>(holdMs < 0 ? 0 : holdMs);
+    return true;
+}
 
 InputStats GetInputStats() {
     InputStats s;

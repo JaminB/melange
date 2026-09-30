@@ -19,6 +19,7 @@ struct Input {
     std::string key;             // the lobby's level (WXD.Level.Current)
     bool known = true;           // a WXFE_LevelDetails of that name exists on this host
     Source source = Source::Vanilla;
+    bool live = false;           // the pack was enabled or disabled at the menu this session
     std::string title, mod, modVersion;
     std::vector<Member> members;  // everyone but us
 };
@@ -30,7 +31,7 @@ struct Verdict {
 };
 Verdict Evaluate(const Input& in);
 bool AllMatch(const std::vector<Member>& members);
-bool KeepInList(Source s, bool inLobby, bool online, bool allMatch);   // the landscape picker
+bool KeepInList(Source s, bool inLobby, bool online, bool allMatch, bool live = false);   // the landscape picker
 bool KeepInPool(Source s, bool randomPool);                            // Quick Game / lobby random pools
 bool HasMod(const std::string& modsValue, const std::string& id, const std::string& version);
 // The host's "mlg.lvl" member value naming the pack of the lobby's level ("" for a vanilla level), and its parse.

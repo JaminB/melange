@@ -812,7 +812,8 @@ struct Service::Impl {
 Service::Service(Env env) : impl_(std::make_unique<Impl>(std::move(env))) {}
 Service::~Service() = default;
 
-Reply Service::BuildTest(const std::string& id, const std::wstring& root) {
+Reply Service::BuildTest(const std::string& id, const std::wstring& root, const std::string& tod) {
+    if (!tod.empty() && !ValidTimeOfDay(tod)) return Err(kBadParams, "tod must be DAY, EVENING or NIGHT");
     std::lock_guard lk(impl_->mx);
     Reply r;
     std::shared_ptr<const load::Loaded> L;
@@ -823,6 +824,7 @@ Reply Service::BuildTest(const std::string& id, const std::wstring& root) {
     if (!impl_->OpenProject(id, &L, &patch, &scene, &voxels, &res, &r)) return r;
     const std::string stem = std::string(names::kTestPrefix) + "_" + id;
     scene.stem = stem;
+    if (!tod.empty()) scene.databank.timeOfDay = tod;
     std::vector<build::File> files;
     if (!impl_->BuildFiles(*L, res, scene, voxels, &files, &r)) return r;
     if (std::none_of(files.begin(), files.end(), [&](const build::File& f) { return f.rel == stem + ".lub"; })) {

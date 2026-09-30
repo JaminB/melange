@@ -274,7 +274,7 @@ export function Editor({ client, info, opened, onClose }: Props) {
                   onClick={() => { if (sculptOn) setSculpt(false); setPlacing(placing?.id === p.id ? null : p); }} title={`Click the terrain to place: ${p.label} (Esc stops)`}>{p.label}</button>
         ))}
         <span class="erg-grow" />
-        {client.has("level.test") ? <TestPanel client={client} session={opened.session} beforeTest={() => (store.dirty ? save() : Promise.resolve(true))} /> : null}
+        {client.has("level.test") ? <TestPanel client={client} session={opened.session} projectTod={store.scene.databank.timeOfDay} beforeTest={() => (store.dirty ? save() : Promise.resolve(true))} /> : null}
         <button class="btn" onClick={onClose} data-action="close">Close</button>
       </div>
       {!conn.open ? <p class="erg-note warn" data-erg-offline>Not connected. Your changes and the undo history are kept; save once the connection is back.</p> : null}
