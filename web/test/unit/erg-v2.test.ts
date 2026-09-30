@@ -25,6 +25,13 @@ test("the v2 fixtures written by the C++ model validate", () => {
   assert.equal(baseV2().format, "erg-scene/1");
 });
 
+test("a v2 load reply with objects and previews validates", () => {
+  const s = sceneV2();
+  s.previews = { CheesyGrinWorm: "detail/abc123.glb" };
+  assert.ok(s.objects?.length);
+  assert.ok(validateScene(s).ok, validateScene(s).errors.join("; "));
+});
+
 test("a v1 scene upgrades in memory and still saves as v1", () => {
   const s = upgrade(scene12());
   assert.equal(s.format, "erg-scene/2");

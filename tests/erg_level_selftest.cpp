@@ -979,6 +979,12 @@ void TestService(const std::wstring& root) {
         Json w = J(r.json);
         Expect(r.ok && w.find("warnings")->arr.size() == 1 && w.find("warnings")->arr[0].str.find("telepad group 1") != std::string::npos,
                "objects: saved as v2, a lone pad warns " + r.message + r.json.substr(0, 300));
+        r = Call(S, "level.load", R"({"project":"harbour"})");
+        const Json lj = r.ok ? J(r.json) : Json::Obj();
+        const Json* lp = lj.find("previews");
+        Expect(r.ok && erg::ParseScene(r.json, &scene, &err) && scene.objects.size() == 3 && ByName(scene, "TP_1_0") &&
+                   ByName(scene, "TP_1_0")->role == erg::Role::Object && lp && lp->kind == Json::Kind::Object,
+               "objects: the load reply keeps the objects, the knots and the previews " + err);
         const std::wstring test = root + L"\\testws";
         erg::install::MakeDirs(test);
         r = S.s->BuildTest("harbour", test);

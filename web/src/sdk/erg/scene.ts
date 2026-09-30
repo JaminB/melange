@@ -77,6 +77,9 @@ export interface Scene {
   kind?: { survivor: boolean };
   objects?: ObjectSpec[];
   script?: ScriptMeta;
+  /** level.load only: resource -> preview key (preview.h DetailKey), for every distinct detail resource in the
+   * scene, in any theme's bundle. Not part of the saved document. */
+  previews?: Record<string, string>;
 }
 
 export interface DetailFields { name?: string; resource?: string; pos?: Vec3; rot?: Vec3; scale?: Vec3; voxelPos?: Vec3; }
@@ -101,9 +104,6 @@ export interface Patch {
   kind?: { survivor: boolean };
   objects?: ObjectSpec[];
   script?: ScriptMeta;
-  /** level.load only: resource -> preview key (preview.h DetailKey), for every distinct detail resource in the
-   * scene, in any theme's bundle. Not part of the saved document. */
-  previews?: Record<string, string>;
 }
 
 export interface Validation { ok: boolean; errors: string[]; }
@@ -148,7 +148,7 @@ export function isObjectKnot(name: string): boolean {
   return name === "minefactory" || validKnot(name, "crate") || validKnot(name, "trigger") || (!!g && validKnot(name, "telepad", Number(g[1])));
 }
 
-export const validContentsName =(s: unknown): s is string => typeof s === "string" && /^[A-Za-z][A-Za-z0-9_]{0,62}$/.test(s);
+export const validContentsName = (s: unknown): s is string => typeof s === "string" && /^[A-Za-z][A-Za-z0-9_]{0,62}$/.test(s);
 
 export function sceneUsesV2(s: Scene): boolean {
   return !!s.kind?.survivor || !!s.objects?.length || !!s.script?.present || s.hmp.mode === "paint" || s.hmp.ref !== undefined ||
