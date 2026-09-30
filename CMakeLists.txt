@@ -130,7 +130,7 @@ set_source_files_properties(${CMAKE_BINARY_DIR}/generated/oasis_web.rc PROPERTIE
 # Oasis, oasis.exe, xomtool and the self-tests.
 set(ERG_SERVICE_SOURCES
     src/erg/scene.cpp src/erg/patch.cpp src/erg/names.cpp src/erg/jsonio.cpp src/erg/xomutil.cpp src/erg/load.cpp
-    src/erg/build.cpp src/erg/bank.cpp src/erg/install.cpp src/erg/project.cpp src/erg/service.cpp src/erg/pack.cpp
+    src/erg/build.cpp src/erg/bank.cpp src/erg/install.cpp src/erg/project.cpp src/erg/service.cpp src/erg/pack.cpp src/erg/voxels.cpp
     src/erg/preview.cpp src/levels/manifest.cpp src/mods/spice.cpp src/tools/json_read.cpp src/tools/hash.cpp
     src/core/log.cpp)
 
@@ -308,6 +308,16 @@ target_compile_definitions(erg_pack_selftest PRIVATE WIN32_LEAN_AND_MEAN NOMINMA
     MELANGE_SOURCE_DIR="${CMAKE_SOURCE_DIR}")
 target_compile_options(erg_pack_selftest PRIVATE /W4 /utf-8 /permissive-)
 target_link_libraries(erg_pack_selftest PRIVATE melange_xom)
+# Terrain sculpting without the game: voxel word rules, voxels ops applied and diffed over synthetic frames, the
+# editor's sculpt fixture under the server's rules, and the shadow-cache deletion.
+add_executable(erg_voxels_selftest
+    tests/erg_voxels_selftest.cpp
+    src/erg/voxels.cpp src/erg/scene.cpp src/erg/patch.cpp src/erg/names.cpp src/erg/jsonio.cpp)
+target_include_directories(erg_voxels_selftest PRIVATE src src/sdk)
+target_compile_definitions(erg_voxels_selftest PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX _CRT_SECURE_NO_WARNINGS
+    MELANGE_SOURCE_DIR="${CMAKE_SOURCE_DIR}")
+target_compile_options(erg_voxels_selftest PRIVATE /W4 /utf-8 /permissive-)
+target_link_libraries(erg_voxels_selftest PRIVATE melange_xom)
 
 # xomtool: the Sieve CLI (unpack/pack/inspect/diff/convert/bank/report). PNG I/O only here -
 # src/xom itself stays platform-free.
