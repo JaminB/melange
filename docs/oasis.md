@@ -173,6 +173,7 @@ headers or 16 KB of them with 431 or 413.
 | `GET /captures/<name>.mcap` * | cookie | a capture file, `Range` supported |
 | `GET /ext/<panel>/*` * | none (see below) | a module's or mod's web panel, sandboxed |
 | `GET /logs/<session>/<file>` * | cookie | past session logs |
+| `GET /erg/assets/<key>.glb\|.png` * | cookie | an Erg preview (a detail's mesh or a theme's material atlas); `key` only from `level.palette` or `level.load`, `ETag` = the cache key, `Cache-Control: private, max-age=86400` |
 | anything else | - | 404 |
 
 Routes marked * are added by the providers that serve them.
@@ -288,3 +289,27 @@ client asks for; nothing is ever written. The readers need build #1077 and `[Gam
 | `entity.inspect` | `{handle, len?}` or `{addr, len?}` → `{addr, len, vtable, type, kind?, handle?, fields, hex}` | `len` 1-4096 (default 256); `hex` has two characters per byte, `??` where memory is not readable; `{addr}` and `hex` need `[Oasis] RawInspect=1` (`-32000` / `null` otherwise) |
 
 The raw view reads committed, readable pages only (never a guard page) and copies under a fault guard.
+
+### Erg (the map editor)
+
+See [erg.md](erg.md) for the panel; this is the wire surface it and `xomtool level` use. `level.export`,
+`level.test` and `level.build` write into `Mods\` or the offline Test workspace and are refused (`-32003`) in
+`oasis.exe` while a real Melange instance is running, as `mods.setEnabled` is. `level.test` also needs the game
+running, at the frontend and outside a lobby (`-32001` / `-32000` otherwise), so it does not exist in `oasis.exe`
+at all.
+
+| Method | Params → result | Notes |
+|---|---|---|
+| `level.list` | `{}` → `{bases: [{key, stem, title, source, theme}], projects: [{id, title, stem, base, modified, built}]}` | every vanilla `Level_Type 0` map plus every enabled pack's, and your own projects |
+| `level.new` | `{base, slug, title}` → a project | an empty patch against `base` |
+| `level.load` | `{project}` or `{base}` → an `erg-scene/1` result, then one `bin` frame per blob | see `web/src/sdk/erg/scene.ts` for the shape |
+| `level.save` | `{project, patch}` → `{saved, warnings}` | validates the whole patch (`erg-patch/1`) against its pinned base |
+| `level.export` | `{project, modId, name, version, mode: "install"\|"source"}` → `{dir, files, restartRequired}` | see [erg.md](erg.md#export) |
+| `level.build` | `{modId}` → files written | rebuilds a Source-form pack's map files against this install (what its `build.ps1` also does) |
+| `level.test` | `{project}` → `{key, state}` | builds into the Test workspace, arms a one-shot override, starts Quick Game itself when the game supports it |
+| `level.themes` | `{}` → themes, times of day, material files | from the install's own `Data\Themes` |
+| `level.palette` | `{theme}` → placeable entries `{name, resource, role, preview}` | `preview` is an `/erg/assets/` key |
+| `level.close` | `{project}` → `{}` | frees the server's parsed copy of the base |
+
+The `erg` channel (Coalesce) carries `{state, key, detail}` from `level.test`'s progress (`idle`, `registering`,
+`registered`, `armed`, `starting`, `playing`, `ended`, `failed`) and, at the start of a match, `{level, water}`.

@@ -59,6 +59,26 @@ passes, both at every Thumper rescan:
 The full field reference, the base whitelist, the Lua side (`wum.sim.weapons`) and what does and doesn't work
 yet are in [weapons.md](weapons.md); `dist\Mods\mega-bazooka` is a complete, working (disabled) example.
 
+## `levels`: map packs
+
+A `kind: "content"` mod can ship maps built with [Erg](erg.md), up to 32 per mod and 128 across every enabled mod:
+
+```json
+"levels": [{ "slug": "harbour", "title": "Harbour Brawl", "type": "multi", "chunk": true, "source": "src/harbour.ergpatch.json" }]
+```
+
+| Field | Notes |
+|---|---|
+| `slug` | `[a-z0-9]{1,24}`, unique within the mod. The level's file stem is `<prefix>_<slug>`, where `<prefix>` is the mod id with `-` turned into `_`. |
+| `title` | Printable ASCII, 1-40 characters. What players see in the Prebuilt list. |
+| `type` | `multi` only — other map types aren't supported yet. |
+| `chunk` | `true` when the pack ships a generated script (`assets/levels/<stem>.lub`) for spawns, placed objects or a water level. |
+| `source` | Path to the patch the map was built from (Erg writes this). When the built files are missing, the mod is `Incompatible` with "not built: open Erg and press Build, or run build.ps1". |
+
+Two mods that resolve to the same prefix (their ids differ only by `-`/`_`) can't both ship maps; the later one in
+load order is `Incompatible`. A map's own files never touch anything under `Data\`, are never named the same as one
+of the game's own map files, and never include the shadow-cache files (`.csh`) the game itself generates.
+
 ## Resolution
 
 Thumper resolves the whole `Mods\` folder as one pass, deterministically:

@@ -130,7 +130,7 @@ set_source_files_properties(${CMAKE_BINARY_DIR}/generated/oasis_web.rc PROPERTIE
 # Oasis, oasis.exe, xomtool and the self-tests.
 set(ERG_SERVICE_SOURCES
     src/erg/scene.cpp src/erg/patch.cpp src/erg/names.cpp src/erg/jsonio.cpp src/erg/xomutil.cpp src/erg/load.cpp
-    src/erg/build.cpp src/erg/bank.cpp src/erg/install.cpp src/erg/project.cpp src/erg/service.cpp src/erg/pack_stub.cpp
+    src/erg/build.cpp src/erg/bank.cpp src/erg/install.cpp src/erg/project.cpp src/erg/service.cpp src/erg/pack.cpp
     src/erg/preview.cpp src/levels/manifest.cpp src/mods/spice.cpp src/tools/json_read.cpp src/tools/hash.cpp
     src/core/log.cpp)
 
@@ -296,6 +296,18 @@ target_include_directories(levels_selftest PRIVATE src src/sdk)
 target_compile_definitions(levels_selftest PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX _CRT_SECURE_NO_WARNINGS)
 target_compile_options(levels_selftest PRIVATE /W4 /utf-8 /permissive-)
 target_link_libraries(levels_selftest PRIVATE melange_xom bcrypt)
+# E: the generated level chunk (luagen) and the pack writer (pack) over synthetic scenes and a scratch temp dir;
+# also checks that dist\Mods\erg-sample (G) parses and applies as a real spice.json + erg-patch/1 would.
+add_executable(erg_pack_selftest
+    tests/erg_pack_selftest.cpp
+    src/erg/pack.cpp src/erg/names.cpp src/erg/scene.cpp src/erg/patch.cpp src/erg/jsonio.cpp
+    src/levels/manifest.cpp src/mods/spice.cpp
+    src/tools/json_read.cpp src/core/log.cpp)
+target_include_directories(erg_pack_selftest PRIVATE src src/sdk)
+target_compile_definitions(erg_pack_selftest PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX _CRT_SECURE_NO_WARNINGS
+    MELANGE_SOURCE_DIR="${CMAKE_SOURCE_DIR}")
+target_compile_options(erg_pack_selftest PRIVATE /W4 /utf-8 /permissive-)
+target_link_libraries(erg_pack_selftest PRIVATE melange_xom)
 
 # xomtool: the Sieve CLI (unpack/pack/inspect/diff/convert/bank/report). PNG I/O only here -
 # src/xom itself stays platform-free.
