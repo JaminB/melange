@@ -15,6 +15,7 @@
 #include "erg/patch.h"
 #include "erg/preview.h"
 #include "erg/project.h"
+#include "erg/voxels.h"
 #include "erg/xomutil.h"
 #include "mods/spice.h"
 #include "xom/json.h"
@@ -27,7 +28,7 @@ using xom::Json;
 
 constexpr size_t kMaxCached = 4;
 constexpr uint64_t kMaxBlobBytes = 16u << 20;
-const PatchRules kRules{false, true};   // voxels ops wait for terrain sculpting; adds may target any frame
+const PatchRules kRules{voxels::kAccepted, true};   // adds may target any frame
 
 Reply Err(int code, std::string msg) {
     Reply r;
@@ -608,6 +609,8 @@ struct Service::Impl {
         Json out = Json::Obj();
         out.set("theme", Str(theme));
         out.set("entries", std::move(arr));
+        const std::string atlas = preview::ThemeAtlasKey(theme);
+        out.set("atlas", atlas.empty() ? Json::Null_() : Str(atlas));
         return Ok(out);
     }
 

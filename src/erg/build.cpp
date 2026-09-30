@@ -5,6 +5,7 @@
 #include <unordered_map>
 
 #include "erg/pack.h"
+#include "erg/voxels.h"
 #include "erg/xomutil.h"
 
 namespace melange::erg::build {
@@ -246,6 +247,15 @@ bool Apply(const load::Loaded& base, const Patch& p, const PatchRules& rules, Sc
         if (fresh) it->second = FromBytes(blob->second);
         std::string why;
         if (!ApplyRuns(it->second, op.runs, &why)) return Fail(err, "ops[" + std::to_string(i) + "]." + why);
+        const auto* bw = reinterpret_cast<const uint8_t*>(blob->second.data());
+        for (size_t k = 0; k < op.runs.size(); ++k)
+            for (uint32_t j = 0; j < op.runs[k].count; ++j) {
+                const size_t at = (size_t(op.runs[k].start) + j) * 4;
+                const uint32_t was = uint32_t(bw[at]) | uint32_t(bw[at + 1]) << 8 | uint32_t(bw[at + 2]) << 16 | uint32_t(bw[at + 3]) << 24;
+                if (!voxels::ValidEdit(was, op.runs[k].value))
+                    return Fail(err, "ops[" + std::to_string(i) + "].runs[" + std::to_string(k) +
+                                         "]: a voxel may only be carved, filled or painted (second material and blend stay)");
+            }
     }
     *scene = std::move(s);
     if (voxels) *voxels = std::move(edits);

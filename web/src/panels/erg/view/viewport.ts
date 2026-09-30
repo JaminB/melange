@@ -19,6 +19,7 @@ import type { EditorStore } from "../model/store";
 import type { MeshData } from "../terrain/mesher";
 import { skyColors, themePalette } from "../terrain/materials";
 import { MesherPool, buckets, meshInput, type Bucket } from "../terrain/pool";
+import type { TerrainTool } from "../terrain/tool";
 
 export type Tool = "translate" | "rotate" | "scale";
 
@@ -37,6 +38,7 @@ export interface Viewport {
   setTool(t: Tool): void;
   setSnap(step: number | null, angle: boolean): void;
   setPlacing(e: PaletteEntry | null): void;
+  setSculpt(t: TerrainTool | null): void;
   setPreviews(byResource: Map<string, string>): void;
   setVisibleRoles(roles: Set<string>): void;
   focus(): void;
@@ -105,6 +107,8 @@ export function createViewport(el: HTMLElement, store: EditorStore, events: View
   let step: number | null = null;
   let angleSnap = false;
   let placing: PaletteEntry | null = null;
+  let sculpt: TerrainTool | null = null;
+  let sculpting = false;
   let visible: Set<string> | null = null;
   gizmo.setMode(tool);
   gizmo.setSpace("world");
@@ -459,25 +463,52 @@ export function createViewport(el: HTMLElement, store: EditorStore, events: View
     const r = canvas.getBoundingClientRect();
     return new Vector2(((x - r.left) / r.width) * 2 - 1, -((y - r.top) / r.height) * 2 + 1);
   };
+  function sculptRay(e: PointerEvent): [Vec3, Vec3] {
+    ray.setFromCamera(ndc(e.clientX, e.clientY), camera);
+    return [vec(ray.ray.origin), vec(ray.ray.direction)];
+  }
   function onDown(e: PointerEvent) {
     if (e.button !== 0) return;
+    if (sculpt && !e.shiftKey && !e.altKey) {
+      orbit.enabled = false;
+      sculpting = true;
+      canvas.setPointerCapture(e.pointerId);
+      const r = sculpt.down(...sculptRay(e));
+      if (r?.refused) events.onMessage(r.refused);
+      return;
+    }
     const box = e.shiftKey && !placing;
     orbit.enabled = !box;
     down = { x: e.clientX, y: e.clientY, box, button: e.button };
     if (box) canvas.setPointerCapture(e.pointerId);
   }
   function onMove(e: PointerEvent) {
+    if (sculpting && sculpt) {
+      const r = sculpt.drag(...sculptRay(e));
+      if (r?.refused) events.onMessage(r.refused);
+      return;
+    }
     if (!down?.box) return;
     const r = el.getBoundingClientRect();
     const x0 = Math.min(down.x, e.clientX) - r.left, y0 = Math.min(down.y, e.clientY) - r.top;
     Object.assign(band.style, { display: "block", left: `${x0}px`, top: `${y0}px`, width: `${Math.abs(e.clientX - down.x)}px`, height: `${Math.abs(e.clientY - down.y)}px` });
   }
   function endBand() {
+    if (sculpting) {
+      sculpting = false;
+      sculpt?.up();
+    }
     band.style.display = "none";
     orbit.enabled = true;
     down = undefined;
   }
   function onUp(e: PointerEvent) {
+    if (sculpting) {
+      sculpting = false;
+      orbit.enabled = true;
+      sculpt?.up();
+      return;
+    }
     const d = down;
     endBand();
     if (!d || d.button !== 0) return;
@@ -623,6 +654,12 @@ export function createViewport(el: HTMLElement, store: EditorStore, events: View
       placing = e;
       canvas.style.cursor = e ? "crosshair" : "";
       placeProxy();
+    },
+    setSculpt(t) {
+      if (sculpting) sculpt?.up();
+      sculpting = false;
+      sculpt = t;
+      canvas.style.cursor = t ? "cell" : placing ? "crosshair" : "";
     },
     setPreviews(byResource) {
       previews.clear();

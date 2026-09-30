@@ -2,7 +2,7 @@
 import { useEffect, useMemo, useRef, useState } from "preact/hooks";
 import type { Client } from "../../../sdk/client";
 import { errorText, useConnection } from "../../../sdk/hooks";
-import { RemoveDetail, SetDetail, type Detail } from "../../../sdk/erg";
+import { RemoveDetail, SetDetail, type Command, type CommandStack, type Detail } from "../../../sdk/erg";
 import { checkScene } from "../model/checks";
 import { clearDraft, readDraft, writeDraft } from "../model/draft";
 import { Duplicate, Group, setMany } from "../model/edits";
@@ -19,6 +19,8 @@ import { Properties } from "./Properties";
 import { snapVec } from "../model/geometry";
 import { ExportDialog } from "../test/ExportDialog";
 import { TestPanel } from "../test/TestPanel";
+import { Sculptor, TerrainTool, TerrainTools, fetchAtlas, hexColors, setAtlas } from "../terrain";
+import { assetUrl } from "../../../sdk/erg/assets";
 
 export const SNAPS: (number | null)[] = [null, 1, 0.5, 0.1];
 
@@ -59,7 +61,16 @@ export function Editor({ client, info, opened, onClose }: Props) {
   const [placing, setPlacingState] = useState<PaletteEntry | null>(null);
   const [palette, setPalette] = useState<PaletteEntry[]>(BUILTIN);
   const [themes, setThemes] = useState<ThemeInfo>(() => themesOf(undefined));
-  const [tab, setTab] = useState<"props" | "level" | "checks" | "export">("props");
+  const [tab, setTab] = useState<"props" | "level" | "checks" | "terrain" | "export">("props");
+  const [sculptOn, setSculptOn] = useState(false);
+  const [atlasColors, setAtlasColors] = useState<string[]>();
+  const viewRef = useRef<Viewport>();
+  viewRef.current = view;
+  const terrainTool = useMemo(() => new TerrainTool(new Sculptor({
+    scene: store.scene, voxels: store.voxels, base: store.baseVoxels,
+    stack: { exec: (c: Command, m?: boolean) => store.exec(c, m) } as unknown as CommandStack,
+    remesh: (ids) => { void viewRef.current?.remesh(ids); },
+  })), [store]);
   const [message, setMessage] = useState<string>();
   const [saving, setSaving] = useState(false);
   const [saveNote, setSaveNote] = useState<{ ok: boolean; text: string }>();
@@ -97,7 +108,8 @@ export function Editor({ client, info, opened, onClose }: Props) {
 
   // The view hears about tool changes at once (a click right after choosing must use the new tool), and again
   // whenever a new view starts.
-  useEffect(() => { view?.setTool(tool); view?.setSnap(snap, angle); view?.setPlacing(placing); }, [view]);
+  useEffect(() => { view?.setTool(tool); view?.setSnap(snap, angle); view?.setPlacing(placing); view?.setSculpt(sculptOn ? terrainTool : null); }, [view]);
+  const setSculpt = (on: boolean) => { setSculptOn(on); view?.setSculpt(on ? terrainTool : null); if (on) { setPlacing(null); setTab("terrain"); } };
   const setTool = (t: Tool) => { setToolState(t); view?.setTool(t); };
   const setSnap = (s: number | null) => { setSnapState(s); view?.setSnap(s, angle); };
   const setAngle = (a: boolean) => { setAngleState(a); view?.setSnap(snap, a); };
@@ -114,6 +126,14 @@ export function Editor({ client, info, opened, onClose }: Props) {
         for (const e of list as Record<string, unknown>[])
           if (typeof e?.resource === "string" && typeof e.preview === "string" && e.preview) byRes.set(e.resource, e.preview);
       view?.setPreviews(byRes);
+      const atlas = assetUrl(String((r as { atlas?: unknown })?.atlas ?? ""));
+      setAtlasColors(undefined);
+      if (atlas) fetchAtlas(atlas).then((rgb) => {
+        if (!rgb) return;
+        setAtlas(theme, rgb);
+        setAtlasColors(hexColors(rgb));
+        void view?.remesh();
+      }, () => {});
     }, () => {});
   }, [conn.open, theme, view]);
   useEffect(() => {
@@ -198,6 +218,7 @@ export function Editor({ client, info, opened, onClose }: Props) {
       const k = e.key.toLowerCase();
       if (ctrl && k === "s") { e.preventDefault(); void save(); return; }
       if (inField) return;
+      if (sculptOn && terrainTool.key(e)) { e.preventDefault(); return; }
       if (ctrl && k === "z" && !e.shiftKey) { e.preventDefault(); store.undo(); return; }
       if (ctrl && ((k === "z" && e.shiftKey) || k === "y")) { e.preventDefault(); store.redo(); return; }
       if (ctrl && k === "d") { e.preventDefault(); duplicate(); return; }
@@ -244,10 +265,13 @@ export function Editor({ client, info, opened, onClose }: Props) {
         <button class="btn" onClick={drop} disabled={!sel.length} data-action="drop" title="Drop to ground (G)">Drop</button>
         <button class="btn danger" onClick={del} disabled={!sel.length} data-action="delete" title="Delete (Del)">Delete</button>
         <span class="erg-sep" />
+        <button class={`btn${sculptOn ? " on" : ""}`} onClick={() => setSculpt(!sculptOn)} data-action="sculpt"
+                title="Sculpt the terrain: drag to carve, fill or paint (Shift-drag or Alt-drag still orbits)">Sculpt</button>
+        <span class="erg-sep" />
         <span class="muted small">Place</span>
         {palette.map((p) => (
           <button key={p.id} class={`btn${placing?.id === p.id ? " on" : ""}`} data-place={p.id}
-                  onClick={() => setPlacing(placing?.id === p.id ? null : p)} title={`Click the terrain to place: ${p.label} (Esc stops)`}>{p.label}</button>
+                  onClick={() => { if (sculptOn) setSculpt(false); setPlacing(placing?.id === p.id ? null : p); }} title={`Click the terrain to place: ${p.label} (Esc stops)`}>{p.label}</button>
         ))}
         <span class="erg-grow" />
         {client.has("level.test") ? <TestPanel client={client} session={opened.session} beforeTest={() => (store.dirty ? save() : Promise.resolve(true))} /> : null}
@@ -273,11 +297,13 @@ export function Editor({ client, info, opened, onClose }: Props) {
             <button class={`erg-tab${tab === "checks" ? " on" : ""}`} onClick={() => setTab("checks")} data-tab="checks">
               Checks{issues.length ? <span class={`erg-count${errors ? " bad" : ""}`}>{issues.length}</span> : null}
             </button>
+            <button class={`erg-tab${tab === "terrain" ? " on" : ""}`} onClick={() => setTab("terrain")} data-tab="terrain">Terrain</button>
             <button class={`erg-tab${tab === "export" ? " on" : ""}`} onClick={() => setTab("export")} data-tab="export">Export</button>
           </div>
           <div class="erg-side-body">
             {tab === "props" ? <Properties store={store} set={(id, f) => store.exec(new SetDetail(id, f))} />
               : tab === "level" ? <LevelSettings store={store} themes={themes} />
+              : tab === "terrain" ? <TerrainTools tool={terrainTool} palette={atlasColors} />
               : tab === "export" ? <ExportDialog client={client} project={info.id} defaultName={store.scene.title} />
               : <Checks issues={issues} onPick={(id) => { store.select([id]); view?.focus(); }} />}
           </div>
