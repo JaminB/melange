@@ -9,6 +9,7 @@
 #include <atomic>
 #include <chrono>
 #include <cstdio>
+#include <cstdlib>
 #include <cwctype>
 #include <memory>
 #include <string>
@@ -417,6 +418,7 @@ int main(int argc, char** argv) {
         std::wstring projects = Widen(IniGet("Erg", "ProjectsDir", ""));
         if (!projects.empty() && !(projects.size() > 1 && projects[1] == L':')) projects = g_gameDir + L"\\" + projects;
         standalone::levelprov::Install(g_gameDir, projects, MELANGE_VERSION);
+        melange::oasis::providers::InstallErgAssetRoute(g_gameDir, atoi(IniGet("Erg", "PreviewCacheMB", "512").c_str()));
     }
 
     oc::Config cfg;

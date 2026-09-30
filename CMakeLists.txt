@@ -131,7 +131,7 @@ set_source_files_properties(${CMAKE_BINARY_DIR}/generated/oasis_web.rc PROPERTIE
 set(ERG_SERVICE_SOURCES
     src/erg/scene.cpp src/erg/patch.cpp src/erg/names.cpp src/erg/jsonio.cpp src/erg/xomutil.cpp src/erg/load.cpp
     src/erg/build.cpp src/erg/bank.cpp src/erg/install.cpp src/erg/project.cpp src/erg/service.cpp src/erg/pack_stub.cpp
-    src/erg/preview_stub.cpp src/levels/manifest.cpp src/mods/spice.cpp src/tools/json_read.cpp src/tools/hash.cpp
+    src/erg/preview.cpp src/levels/manifest.cpp src/mods/spice.cpp src/tools/json_read.cpp src/tools/hash.cpp
     src/core/log.cpp)
 
 # Every .cpp under src/ is compiled into the plugin.
@@ -196,13 +196,13 @@ target_link_libraries(oasis_rpc_selftest PRIVATE oasis_core)
 add_executable(oasis_standalone
     src/oasis/standalone/main.cpp src/oasis/standalone/ini_edit.cpp src/oasis/standalone/mods_provider.cpp
     src/oasis/standalone/json_write.cpp src/oasis/standalone/game_lock.cpp src/oasis/standalone/wormsign_provider.cpp
-    src/oasis/standalone/level_provider.cpp
+    src/oasis/standalone/level_provider.cpp src/oasis/rpc/erg_assets.cpp
     src/oasis/auth.cpp src/oasis/webpanels.cpp src/oasis/rpc/ini_edit.cpp ${ERG_SERVICE_SOURCES}
     src/wormsign/format.cpp src/wormsign/records.cpp
     ${CMAKE_BINARY_DIR}/generated/oasis_web.rc)
 add_dependencies(oasis_standalone oasis_web)
 set_target_properties(oasis_standalone PROPERTIES OUTPUT_NAME "oasis")
-target_include_directories(oasis_standalone PRIVATE src src/sdk ${CMAKE_BINARY_DIR}/generated)
+target_include_directories(oasis_standalone PRIVATE src src/sdk ${CMAKE_BINARY_DIR}/generated ${stb_SOURCE_DIR})
 target_compile_definitions(oasis_standalone PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX _CRT_SECURE_NO_WARNINGS)
 target_compile_options(oasis_standalone PRIVATE /W4 /utf-8 /permissive- /Zi)
 target_link_options(oasis_standalone PRIVATE /DEBUG)
@@ -271,21 +271,32 @@ target_compile_definitions(erg_scene_selftest PRIVATE WIN32_LEAN_AND_MEAN NOMINM
 target_compile_options(erg_scene_selftest PRIVATE /W4 /utf-8 /permissive-)
 target_link_libraries(erg_scene_selftest PRIVATE melange_xom)
 
+# D: asset previews (mesh -> glTF, texture/theme material -> PNG, the cache) against synthetic fixtures this test
+# builds itself - no game file is read. Stands in for config:: and jlog:: so it does not need the ini/logging
+# stack, each of which has its own selftest.
+add_executable(erg_preview_selftest
+    tests/erg_preview_selftest.cpp
+    src/erg/preview.cpp src/erg/scene.cpp src/erg/jsonio.cpp src/erg/names.cpp src/tools/hash.cpp src/core/log.cpp)
+target_include_directories(erg_preview_selftest PRIVATE src src/sdk ${stb_SOURCE_DIR})
+target_compile_definitions(erg_preview_selftest PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX _CRT_SECURE_NO_WARNINGS)
+target_compile_options(erg_preview_selftest PRIVATE /W4 /utf-8 /permissive-)
+target_link_libraries(erg_preview_selftest PRIVATE melange_xom shell32 ole32 bcrypt)
+
 # xomtool: the Sieve CLI (unpack/pack/inspect/diff/convert/bank/report). PNG I/O only here -
 # src/xom itself stays platform-free.
 add_executable(xomtool tools/xomtool/main.cpp tools/xomtool/level.cpp ${ERG_SERVICE_SOURCES})
 target_include_directories(xomtool PRIVATE src/xom src src/sdk ${stb_SOURCE_DIR})
 target_compile_definitions(xomtool PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX _CRT_SECURE_NO_WARNINGS)
 target_compile_options(xomtool PRIVATE /W4 /utf-8 /permissive-)
-target_link_libraries(xomtool PRIVATE melange_xom bcrypt)
+target_link_libraries(xomtool PRIVATE melange_xom bcrypt shell32 ole32)
 
 # The Erg level service without the game: synthetic .xan/.XOM documents through load, patch, build (renumbering,
 # byte-identical empty builds), the registry bank, the project store and every level.* method over a temp install.
 add_executable(erg_level_selftest tests/erg_level_selftest.cpp ${ERG_SERVICE_SOURCES})
-target_include_directories(erg_level_selftest PRIVATE src src/sdk)
+target_include_directories(erg_level_selftest PRIVATE src src/sdk ${stb_SOURCE_DIR})
 target_compile_definitions(erg_level_selftest PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX _CRT_SECURE_NO_WARNINGS)
 target_compile_options(erg_level_selftest PRIVATE /W4 /utf-8 /permissive-)
-target_link_libraries(erg_level_selftest PRIVATE melange_xom bcrypt)
+target_link_libraries(erg_level_selftest PRIVATE melange_xom bcrypt shell32 ole32)
 
 # Image/mesh/glTF/bank conversions without the game: round trips against real shipped files
 # and a reference bank, run with --game pointing at an installed copy (skipped otherwise).

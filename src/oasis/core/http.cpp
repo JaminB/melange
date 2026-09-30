@@ -171,11 +171,15 @@ std::string Head(const Response& r, uint64_t length, bool keepAlive) {
     char line[96];
     snprintf(line, sizeof line, "HTTP/1.1 %d %s\r\n", r.status, StatusText(r.status));
     h += line;
-    bool ownCsp = false;
-    for (const auto& kv : r.headers) ownCsp |= IEquals(kv.first, "content-security-policy");
+    bool ownCsp = false, ownCacheControl = false;
+    for (const auto& kv : r.headers) {
+        ownCsp |= IEquals(kv.first, "content-security-policy");
+        ownCacheControl |= IEquals(kv.first, "cache-control");
+    }
     if (!ownCsp) h += kCsp;  // a route with its own CSP (sandboxed panels) replaces the default
     h += kOther;
-    h += r.cacheable ? "Cache-Control: no-cache\r\n" : "Cache-Control: no-store\r\n";
+    // a route with its own Cache-Control (e.g. D's /erg/assets/, cached previews) replaces the default too
+    if (!ownCacheControl) h += r.cacheable ? "Cache-Control: no-cache\r\n" : "Cache-Control: no-store\r\n";
     if (!r.contentType.empty() && r.status != 304) h += "Content-Type: " + r.contentType + "\r\n";
     for (const auto& [k, v] : r.headers) h += k + ": " + v + "\r\n";
     snprintf(line, sizeof line, "Content-Length: %llu\r\n", static_cast<unsigned long long>(length));

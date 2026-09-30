@@ -1,4 +1,6 @@
 #pragma once
+#include <string>
+
 #include "oasis/core/server.h"
 
 // The Oasis module calls one Install function per provider after the core is configured. Each owner replaces its
@@ -10,6 +12,7 @@ void InstallLua(); void InstallMods(); void InstallIni();                       
 void InstallCapture();                                                                            // capture viewer
 void InstallWebPanels();                                                                          // web panels
 void InstallWormsign();                                                                           // replays and desync
-void InstallLevels(); void InstallErgAssets();                                                    // Erg level service, previews
+void InstallLevels();                                                                              // Erg level service, previews
+void InstallErgAssetRoute(const std::wstring& gameDir, int cacheMB);                          // both servers
 core::Auth* MakeAuth();                                                                           // launch token, Host, Origin
 }  // namespace melange::oasis::providers
