@@ -1,4 +1,4 @@
-// D: asset previews. Detail meshes and theme materials are pure file conversions over src/xom (Data\Bundles,
+// Asset previews. Detail meshes and theme materials are pure file conversions over src/xom (Data\Bundles,
 // Data\Themes) with no game-memory access, cached on disk under Documents\Melange\erg\cache\<converter>\<key>.
 #include "erg/preview.h"
 

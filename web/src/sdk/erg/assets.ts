@@ -1,4 +1,4 @@
-// D: the GET /erg/assets/<key>.glb|.png route. Keys only ever come from a server result (level.palette's
+// The GET /erg/assets/<key>.glb|.png route. Keys only ever come from a server result (level.palette's
 // "preview" field, or a future level.load use); this module never invents one, it only shapes the URL and lets
 // the caller sanity-check a key before fetching it.
 const KEY_RE = /^(mesh|atlas)_[a-z0-9_.-]{1,96}$/;

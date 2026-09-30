@@ -1,5 +1,5 @@
 // level.test: builds a project into the Test workspace (server thread), registers and arms it, then starts Quick Game
-// from the main thread once the level is registered at the frontend. Test states go out on B's `erg` channel.
+// from the main thread once the level is registered at the frontend. Test states go out on the `erg` channel.
 #include <windows.h>
 
 #include <atomic>

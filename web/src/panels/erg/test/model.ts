@@ -1,6 +1,6 @@
-// Pure logic for the Test button and the Export dialog (§4.E). No DOM, no client: unit-tested directly. The button's
-// own reasons mirror §3.5/§4.E ("the Test button (disabled with a reason when the game isn't running, isn't at the
-// frontend, or is in a lobby)"); the server is authoritative and may still refuse for a reason this cannot see.
+// Pure logic for the Test button and the Export dialog. No DOM, no client: unit-tested directly. The button is
+// disabled with a reason when the game isn't running, isn't at the frontend, or is in a lobby; the server is
+// authoritative and may still refuse for a reason this cannot see.
 
 export interface GameState { connected: boolean; inMatch: boolean; inLobby: boolean; }
 

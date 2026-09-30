@@ -271,7 +271,7 @@ target_compile_definitions(erg_scene_selftest PRIVATE WIN32_LEAN_AND_MEAN NOMINM
 target_compile_options(erg_scene_selftest PRIVATE /W4 /utf-8 /permissive-)
 target_link_libraries(erg_scene_selftest PRIVATE melange_xom)
 
-# D: asset previews (mesh -> glTF, texture/theme material -> PNG, the cache) against synthetic fixtures this test
+# Asset previews (mesh -> glTF, texture/theme material -> PNG, the cache) against synthetic fixtures this test
 # builds itself - no game file is read. Stands in for config:: and jlog:: so it does not need the ini/logging
 # stack, each of which has its own selftest.
 add_executable(erg_preview_selftest
@@ -296,8 +296,8 @@ target_include_directories(levels_selftest PRIVATE src src/sdk)
 target_compile_definitions(levels_selftest PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX _CRT_SECURE_NO_WARNINGS)
 target_compile_options(levels_selftest PRIVATE /W4 /utf-8 /permissive-)
 target_link_libraries(levels_selftest PRIVATE melange_xom bcrypt)
-# E: the generated level chunk (luagen) and the pack writer (pack) over synthetic scenes and a scratch temp dir;
-# also checks that dist\Mods\erg-sample (G) parses and applies as a real spice.json + erg-patch/1 would.
+# The generated level chunk (luagen) and the pack writer (pack) over synthetic scenes and a scratch temp dir;
+# also checks that dist\Mods\erg-sample parses and applies as a real spice.json + erg-patch/1 would.
 add_executable(erg_pack_selftest
     tests/erg_pack_selftest.cpp
     src/erg/pack.cpp src/erg/luagen.cpp src/erg/names.cpp src/erg/scene.cpp src/erg/patch.cpp src/erg/jsonio.cpp

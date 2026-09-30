@@ -1,4 +1,4 @@
-// D: the /erg/assets/<key>.glb|.png route. Conversion itself lives in erg/preview.*; this file only wires the
+// The /erg/assets/<key>.glb|.png route. Conversion itself lives in erg/preview.*; this file only wires the
 // game's Data directory into it and serves the resulting bytes.
 #include "oasis/providers.h"
 

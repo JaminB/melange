@@ -1,5 +1,5 @@
-// The Test button and status line (§4.E). Mounted by the Erg editor (component C) once a project is open; this
-// file only needs a Client and an ErgSession, so it works against S's synthetic fixture server today.
+// The Test button and status line. Mounted by the Erg editor once a project is open; this file only needs a Client
+// and an ErgSession, so it also works against the synthetic fixture server.
 import { useEffect, useState } from "preact/hooks";
 import type { ErgSession } from "../../../sdk/erg/session";
 import type { Client } from "../../../sdk/client";

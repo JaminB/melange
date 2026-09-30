@@ -9,7 +9,7 @@
 #include "levels/engine.h"
 #include "melange/bus.h"
 
-// E0 (GO verdict): the Quick Game popup posts WXMsg.StartGame("QuickStartHvC") as a StringMessage. The message is
+// The Quick Game popup posts WXMsg.StartGame("QuickStartHvC") as a StringMessage. The message is
 // allocated by the frontend's message factory and posted on the same event bus melange/bus.h observes.
 namespace melange::erg::quickstart {
 namespace {

@@ -1,6 +1,5 @@
-// Export dialog (§4.E): mod id, name, version, mode, and the game-files notice (§3.1's install vs source). There is
-// no `level.export` wrapper on ErgSession (it is A's method, not part of the frozen §2.6 session), so this calls
-// the client directly, as the session's own `test()`/`save()` do internally.
+// Export dialog: mod id, name, version, mode, and the game-files notice (install vs source). ErgSession has no
+// `level.export` wrapper, so this calls the client directly, as the session's own `test()`/`save()` do internally.
 import { useState } from "preact/hooks";
 import type { Client } from "../../../sdk/client";
 import { errorText } from "../../../sdk/hooks";

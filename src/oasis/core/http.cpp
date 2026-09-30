@@ -178,7 +178,7 @@ std::string Head(const Response& r, uint64_t length, bool keepAlive) {
     }
     if (!ownCsp) h += kCsp;  // a route with its own CSP (sandboxed panels) replaces the default
     h += kOther;
-    // a route with its own Cache-Control (e.g. D's /erg/assets/, cached previews) replaces the default too
+    // a route with its own Cache-Control (e.g. the cached previews under /erg/assets/) replaces the default too
     if (!ownCacheControl) h += r.cacheable ? "Cache-Control: no-cache\r\n" : "Cache-Control: no-store\r\n";
     if (!r.contentType.empty() && r.status != 304) h += "Content-Type: " + r.contentType + "\r\n";
     for (const auto& [k, v] : r.headers) h += k + ": " + v + "\r\n";
