@@ -22,6 +22,8 @@ struct VoxelEdits : std::map<int64_t, std::vector<uint32_t>> {
     std::optional<std::vector<uint8_t>> hmp;
 };
 
+constexpr double kTelepadLift = 1.0;                  // .xan units a telepad knot is written above its scene position
+
 struct Options {
     // A per-map material file of a pack base, shipped as Maps/<stem>.txt (Databank.MaterialFile then points there).
     std::optional<std::vector<uint8_t>> materialTxt;

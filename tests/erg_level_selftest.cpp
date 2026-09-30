@@ -1095,14 +1095,18 @@ void TestService(const std::wstring& root) {
                "objects: the chunk holds the crate, the pad and the guarded factory, and verifies " + e2);
         xom::Document xd;
         Expect(xom::parse(xan.data(), xan.size(), xd, &e2), "objects: the built .xan parses " + e2);
-        int knots = 0;
+        int knots = 0, lifted = 0;
         for (const auto& obj : xd.objects) {
             if (obj.type != "DetailEntityStore") continue;
             const std::string n = xu::Str(obj, "Name");
             Expect(n != "telepad", "objects: no detail named telepad");
             if (n == "CRATE_0" || n == "TP_1_0" || n == "minefactory") knots += xu::Str(obj, "ResourceName") == erg::kKnotResource;
+            erg::Vec3 at{};
+            if ((n == "CRATE_0" || n == "TP_1_0") && xu::GetVec(obj, "Position", &at))
+                lifted += at[1] == (n == "TP_1_0" ? 1 + erg::build::kTelepadLift : 1);
         }
         Expect(knots == 3, "objects: every knot is the non-visual marker");
+        Expect(lifted == 2, "objects: a telepad knot is written above its position, a crate knot at it");
         o.objects[0].crate.contents = "kWeaponClusterBomb";
         r = Call(S, "level.save", R"({"project":"harbour","patch":)" + erg::WritePatch(o) + "}");
         Expect(r.ok && J(r.json).find("warnings")->arr.size() == 2, "objects: unknown contents save with a warning");
