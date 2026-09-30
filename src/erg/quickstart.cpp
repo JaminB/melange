@@ -41,7 +41,12 @@ bool RawPost(uint16_t id, const char* text) {
 }
 }  // namespace
 
-bool Available() { return BytesOk() && bus::RegistryReady() && levels::engine::AtFrontend(); }
+// A StartGame posted while the attract demo runs, or in a match, asserts in the frontend.
+bool Available() {
+    if (!BytesOk() || !bus::RegistryReady() || !levels::engine::AtFrontend() || levels::engine::Loading()) return false;
+    const levels::engine::FrontendState fs = levels::engine::ReadFrontend();
+    return fs.valid && !fs.attractRunning;
+}
 
 bool PostQuickGame() {
     if (!Available()) return false;

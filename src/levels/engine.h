@@ -68,6 +68,7 @@ bool RebuildPools();                                    // __thiscall on [kMissi
 struct FrontendState { bool valid; uint32_t state; bool attractAllowed, attractRunning; uint32_t idleDeadline; };
 FrontendState ReadFrontend();                           // FCS fields, byte-checked
 bool Loading();                                         // between a SetUpLevelData and the match VM (or the frontend)
+bool LoadingAtSetUp();                                  // in the level hook: an earlier set-up had not reached its match
 using StartGameFn = void (*)(const char* text, void* user);   // WXMsg.StartGame observer (bus subscription)
 int OnStartGame(StartGameFn fn, void* user);
 void RemoveOnStartGame(int handle);

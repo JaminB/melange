@@ -14,6 +14,7 @@ struct Config {
     bool online = true;        // [Levels] Online
     bool randomPool = false;   // [Levels] RandomPool
     bool devWater = false;     // [Levels] DevWater
+    bool livePacks = true;     // [Levels] LivePacks
 };
 void Install(const Config& cfg);             // once, after the site checks passed
 void OnFrame();                              // main thread, every frame (cheap when idle)
@@ -24,7 +25,7 @@ Stats GetStats();
 
 // Test levels and the one-shot override.
 bool RegisterTest(const char* stem, const char* title, char* err, size_t errLen);
-bool Arm(const char* key, int timeoutS);
+bool Arm(const char* key, const ArmOptions& o);
 void Disarm();
 bool Armed(char* key, size_t keyLen);
 const char* TakeOverride(const char* frontendKey);   // at level set-up: the armed key (and disarms), or nullptr
@@ -39,6 +40,14 @@ struct Refusal {
     std::string mod, reason;
 };
 std::vector<Refusal> CheckPacks(const std::vector<roots::PackInput>& inLoadOrder);
+
+// Live packs, main thread, after live::SessionRefusal passed. Enable runs the launch checks for the pack against the
+// loaded ones; disable clears section 12 and loads the rest back. Both rebuild the random pools in the same frame.
+bool PacksReady();
+bool Loaded(const std::string& mod);
+bool EnableLive(const std::string& mod, std::string* err);
+bool DisableLive(const std::string& mod, std::string* err);
+bool LiveChanged(const std::string& mod, bool* on);   // changed at the menu this session; `on` is its state now
 
 // Internal to the registration component.
 bool KeepInPool(const char* key, uint32_t levelType);   // random pool policy ([Levels] RandomPool)

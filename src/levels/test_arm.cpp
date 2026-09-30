@@ -4,7 +4,7 @@
 #include <cstdio>
 
 namespace melange::levels::test {
-bool Override::Arm(const std::string& key, int timeoutS, uint64_t nowMs) {
+bool Override::Arm(const std::string& key, int timeoutS, uint64_t nowMs, Tod tod) {
     if (key.empty() || phase_ == Phase::Starting || phase_ == Phase::Playing) return false;
     const int t = std::clamp(timeoutS, 1, kMaxTimeoutS);
     phase_ = Phase::Armed;
@@ -12,6 +12,8 @@ bool Override::Arm(const std::string& key, int timeoutS, uint64_t nowMs) {
     frontend_.clear();
     deadline_ = nowMs + static_cast<uint64_t>(t) * 1000;
     started_ = 0;
+    tod_ = tod;
+    startSeen_ = false;
     return true;
 }
 
@@ -19,9 +21,15 @@ void Override::Disarm() {
     phase_ = Phase::Idle;
     key_.clear();
     frontend_.clear();
+    tod_ = Tod::Default;
+    startSeen_ = false;
 }
 
-std::string Override::Take(const std::string& frontendKey, uint64_t nowMs, Event* ev) {
+void Override::NoteStartGame(const std::string& text) {
+    if (phase_ == Phase::Armed && text.rfind("QuickStart", 0) == 0) startSeen_ = true;
+}
+
+std::string Override::Take(const std::string& frontendKey, uint64_t nowMs, Event* ev, const SetUp& s) {
     if (ev) *ev = Event::None;
     switch (phase_) {
         case Phase::Armed:
@@ -30,6 +38,12 @@ std::string Override::Take(const std::string& frontendKey, uint64_t nowMs, Event
                 if (ev) *ev = Event::Expired;
                 return "";
             }
+            if (s.attract) {
+                Disarm();
+                if (ev) *ev = Event::AttractRefused;
+                return "";
+            }
+            if (!startSeen_ || s.loading) return "";
             phase_ = Phase::Starting;
             frontend_ = frontendKey;
             started_ = nowMs;
@@ -84,6 +98,24 @@ const char* StateName(TestState s) {
         case TestState::Failed: return "failed";
     }
     return "?";
+}
+
+const char* TodName(Tod t) {
+    switch (t) {
+        case Tod::Day: return "DAY";
+        case Tod::Evening: return "EVENING";
+        case Tod::Night: return "NIGHT";
+        default: return "";
+    }
+}
+
+bool ParseTod(const std::string& s, Tod* out) {
+    for (Tod t : {Tod::Default, Tod::Day, Tod::Evening, Tod::Night})
+        if (s == TodName(t)) {
+            if (out) *out = t;
+            return true;
+        }
+    return false;
 }
 
 const char* SourceName(Source s) {

@@ -13,6 +13,14 @@ export function testAvailability(s: GameState): Availability {
   return { ok: true };
 }
 
+// Test time of day: the project's own value unless the user picks another for this Test.
+export const TEST_TODS = ["DAY", "EVENING", "NIGHT"] as const;
+export type TestTod = (typeof TEST_TODS)[number];
+
+export function initialTod(projectTod: string | undefined): TestTod {
+  return (TEST_TODS as readonly string[]).includes(projectTod ?? "") ? (projectTod as TestTod) : "DAY";
+}
+
 // The state machine of melange::levels::TestState, mirrored for the status line. "starting"/"playing" are terminal
 // in the sense that the panel stops showing a spinner; "failed" surfaces `detail` as the error.
 export type TestPhase = "idle" | "registering" | "registered" | "armed" | "starting" | "playing" | "ended" | "failed";

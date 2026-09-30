@@ -285,7 +285,7 @@ target_link_libraries(erg_preview_selftest PRIVATE melange_xom shell32 ole32 bcr
 # the one-shot override and the "erg" channel payloads.
 add_executable(levels_selftest
     tests/levels_selftest.cpp
-    src/levels/roots.cpp src/levels/csh.cpp src/levels/gate_policy.cpp src/levels/test_arm.cpp src/levels/manifest.cpp
+    src/levels/roots.cpp src/levels/csh.cpp src/levels/gate_policy.cpp src/levels/live_policy.cpp src/levels/test_arm.cpp src/levels/manifest.cpp
     src/erg/names.cpp src/erg/scene.cpp src/erg/patch.cpp src/erg/jsonio.cpp src/erg/luagen.cpp
     src/assets/crcsafe_math.cpp
     src/mods/spice.cpp

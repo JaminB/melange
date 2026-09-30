@@ -1,4 +1,5 @@
 #include "levels/gate.h"
+#include "levels/live.h"
 
 namespace melange::levels::gate {
 namespace {
@@ -11,9 +12,9 @@ bool AllMatch(const std::vector<Member>& members) {
     return true;
 }
 
-bool KeepInList(Source s, bool inLobby, bool online, bool allMatch) {
+bool KeepInList(Source s, bool inLobby, bool online, bool allMatch, bool live) {
     if (s == Source::Vanilla || !inLobby) return true;
-    if (s == Source::Test) return false;
+    if (s == Source::Test || live) return false;
     return online && allMatch;
 }
 
@@ -79,6 +80,9 @@ Verdict Evaluate(const Input& in) {
     } else if (in.source == Source::Test) {
         v.status = Online::TestLevel;
         v.why = map + " is an Erg Test level, which never starts online";
+    } else if (in.live) {
+        v.status = Online::LivePack;
+        v.why = live::OnlineWhy(map);
     } else if (!in.online) {
         v.status = Online::NotAllMatch;
         v.why = map + " is a mod map, and mod maps are off online ([Levels] Online=0)";

@@ -72,7 +72,7 @@ class Service {
     void ClientClosed(uint64_t conn);
     // level.test's build: the project's level files as ergtest_<id> into `root` (the Test workspace), with an empty
     // chunk when none is needed; stale outputs of an earlier build are removed. Result: {stem, title, files}.
-    Reply BuildTest(const std::string& project, const std::wstring& root);
+    Reply BuildTest(const std::string& project, const std::wstring& root, const std::string& tod = "");
 
   private:
     struct Impl;

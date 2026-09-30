@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
-  IDLE_STATUS, prefixOf, reduceTestEvent, statusLine, testAvailability, validateExportForm, validModId, validSlug,
+  IDLE_STATUS, initialTod, prefixOf, reduceTestEvent, statusLine, testAvailability, validateExportForm, validModId, validSlug,
   validVersion,
 } from "../../src/panels/erg/test/model";
 
@@ -52,4 +52,18 @@ test("validateExportForm", () => {
   assert.deepEqual(validateExportForm({ modId: "my-maps", name: "Harbour Brawl", version: "1.0.0", mode: "source" }), []);
   const errs = validateExportForm({ modId: "", name: "", version: "x", mode: "install" });
   assert.equal(errs.length, 3);
+});
+
+test("initialTod follows the project and falls back to DAY", () => {
+  assert.equal(initialTod("NIGHT"), "NIGHT");
+  assert.equal(initialTod("EVENING"), "EVENING");
+  assert.equal(initialTod(""), "DAY");
+  assert.equal(initialTod(undefined), "DAY");
+  assert.equal(initialTod("night"), "DAY");
+});
+
+test("an attract refusal surfaces as a failed Test with its detail", () => {
+  const s = reduceTestEvent(IDLE_STATUS, { state: "failed", key: "Multi.ergtest_p1", detail: "the attract demo started first; press Test again" });
+  assert.equal(s.busy, false);
+  assert.equal(statusLine(s), "Test failed: the attract demo started first; press Test again");
 });
