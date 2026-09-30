@@ -38,6 +38,14 @@ Tabs can be opened side by side (the ⧉ button next to a tab, or the command pa
 colour theme (system, light or dark) are remembered by the browser. With `ReadOnly=1` every control that changes
 something is disabled, the console included.
 
+![The Logs panel showing a past session opened from the source menu, with one record expanded as a JSON tree](images/oasis/logs.png)
+
+![The Mods panel listing client and content mods, a pending Deep Desert consent, and a Revoke button on a mod that already has it granted](images/oasis/mods.png)
+
+![The Settings panel editing a declared Melange.ini key in place, with the grant salt masked](images/oasis/settings.png)
+
+![The capture viewer's Summary tab for an opened .mcap file: the captured frame, scene and GPU facts, and call/texture/program counts](images/oasis/capture.png)
+
 ### Settings (`[Oasis]` in `Melange.ini`)
 
 | Key | Default | Meaning |

@@ -28,6 +28,12 @@ compared.
 The `wormsign.replay` test command does the same from scripts: `arm <file>`, `disarm`, `pause`, `resume`,
 `speed <x>`, `runto <tick>`, `restart [tick]` and `status`.
 
+![The Oasis Replays panel's library: three recordings with their duration, size and land, one flagged desync and one incomplete](images/wormsign/library.png)
+
+![The replay timeline for one .wsr file: one row per engine component, a divergence marker, and the selected tick's hashes below](images/wormsign/timeline.png)
+
+![The divergence diff viewer opened on a desync bundle .zip: the report, the differing fields table, and diff.txt](images/wormsign/diff.png)
+
 | Setting (`[Wormsign]`) | Default | |
 |---|---|---|
 | `ReplayAnyContent` | 0 | 1 replays a recording made with different mod content |

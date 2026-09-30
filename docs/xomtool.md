@@ -69,6 +69,10 @@ $ xomtool diff WEAPTWK.XOM WEAPTWK_edited.XOM
 1 difference(s)
 ```
 
+![xomtool inspect listing WEAPTWK.XOM's TYPE table and then every field of one PayloadWeaponPropertiesContainer object](images/xomtool/inspect.png)
+
+![xomtool unpack, an edit, pack and diff: two fields changed on the Bazooka, printed one per line](images/xomtool/diff.png)
+
 ### `convert` (textures)
 
 ```
