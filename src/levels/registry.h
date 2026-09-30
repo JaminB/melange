@@ -2,7 +2,9 @@
 #include <cstddef>
 #include <cstdint>
 #include <string>
+#include <vector>
 
+#include "levels/roots.h"
 #include "melange/levels.h"
 
 // Level registration in the game (map packs, the Test workspace, the online map gate). The Levels module owns the
@@ -30,9 +32,22 @@ const char* TakeOverride(const char* frontendKey);   // at level set-up: the arm
 // The online map gate.
 bool Keep(const char* key, uint32_t request);        // picker policy
 Online Status(const char* key);
+
+// Map packs. Thumper's scan asks which mods' levels are refused; the first answer of a launch is frozen and every
+// later scan gets it again (the level set follows the per-launch content freeze).
+struct Refusal {
+    std::string mod, reason;
+};
+std::vector<Refusal> CheckPacks(const std::vector<roots::PackInput>& inLoadOrder);
+
+// Internal to the registration component.
+bool KeepInPool(const char* key, uint32_t levelType);   // random pool policy ([Levels] RandomPool)
+bool Lookup(const char* key, Source* source);            // a declared or registered mod level (any thread)
+bool RegisterTestLevel(const std::string& stem, const std::string& title, std::string* err);   // main thread
+const Config& Settings();
 }  // namespace melange::levels::registry
 
 namespace melange::levels::internal {
 void FireTestState(TestState s, const char* key, const char* detail);   // main thread
-void InstallHooks();                         // the level-name and picker hooks, once a mod level exists
+void InstallHooks();                         // the level-name, picker and random-pool hooks, once a mod level exists
 }  // namespace melange::levels::internal

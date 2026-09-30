@@ -30,6 +30,7 @@
 #include "melange/render.h"
 #include "melange/sim.h"
 #include "melange/testcmd.h"
+#include "levels/registry.h"
 #include "mods/thumper_internal.h"
 #include "weapons/manifest.h"
 #include "version.h"
@@ -183,6 +184,23 @@ void ApplyWeapons(std::vector<Entry>& entries) {
     }
 }
 
+// Map packs: the level roots and the levels arrays, checked once per launch (the registration component keeps the
+// first verdicts). A refused pack is Incompatible, so none of it is registered or hashed.
+void ApplyLevels(std::vector<Entry>& entries) {
+    std::vector<levels::roots::PackInput> in;
+    for (const Entry& e : entries)
+        if (e.sessionActive && e.contentRelevant && !e.manifest.levels.empty()) in.push_back({&e.manifest, e.dir});
+    for (const auto& r : levels::registry::CheckPacks(in)) {
+        for (Entry& e : entries) {
+            if (e.manifest.id != r.mod || !e.sessionActive) continue;
+            if (e.state != mods::State::Incompatible) e.reason.clear();
+            e.state = mods::State::Incompatible;
+            e.sessionActive = false;
+            e.reason += (e.reason.empty() ? "" : "; ") + r.reason;
+        }
+    }
+}
+
 void DoRescan() {
     std::vector<Candidate> candidates = ScanFolders();
     std::vector<spice::Manifest> manifests;
@@ -304,6 +322,7 @@ void DoRescan() {
     });
 
     ApplyWeapons(next);
+    ApplyLevels(next);
 
     std::vector<std::string> simIds;
     for (const Entry& e : next)
