@@ -1,12 +1,13 @@
 // A stand-in for the game's Oasis server, for browser tests without the game: serves a built web app and speaks
 // protocol v1 over a small RFC 6455 implementation. It fakes the log, bus, bus.counts and mods channels and the
-// lua.*, mods.*, ini.*, bus.names and log.sessions methods, with the same rules the real handlers apply.
+// lua.*, mods.*, ini.*, bus.names, log.sessions and level.* methods, with the same rules the real handlers apply.
 //   import { startMock } from "./mock-server.mjs"; const m = await startMock({ root: "web/dist" });
 //   node web/test/e2e/mock-server.mjs [--root web/dist] [--port 0] [--standalone] [--read-only] [--online]
 import { createHash, randomBytes } from "node:crypto";
 import { readFileSync, existsSync, statSync } from "node:fs";
 import { createServer } from "node:http";
 import { extname, join, normalize, resolve } from "node:path";
+import { AFTER, ergService } from "./erg-mock.mjs";
 
 const CSP = "default-src 'self'; connect-src 'self'; img-src 'self' blob: data:; style-src 'self' 'unsafe-inline'; frame-src 'self'; " +
   "frame-ancestors 'none'; base-uri 'none'; form-action 'none'";
@@ -125,9 +126,10 @@ export async function startMock(opts = {}) {
   const sessionText = Array.from({ length: 300 }, (_, i) =>
     JSON.stringify({ v: 1, seq: i + 1, t: i * 10, wall: `2026-09-27T10:00:${String(i % 60).padStart(2, "0")}.000-04:00`, lvl: LEVELS[2 + (i % 3)], cat: i % 2 ? "net" : "core", msg: `past record ${i + 1}` })).join("\n") + "\n";
 
-  const methods = state.server === "game"
+  const erg = ergService(state);
+  const methods = [...(state.server === "game"
     ? ["sys.ping", "lua.eval", "lua.complete", "mods.list", "mods.setEnabled", "mods.revokeDeepDesert", "ini.get", "ini.set", "bus.names", "log.sessions"]
-    : ["sys.ping", "mods.list", "ini.get", "ini.set", "log.sessions"];
+    : ["sys.ping", "mods.list", "ini.get", "ini.set", "log.sessions"]), ...erg.methods];
   const channels = state.server === "game" ? ["log", "bus", "bus.counts", "mods", "stats"] : ["log"];
 
   const logRecord = (lvl, cat, msg) => {
@@ -224,7 +226,8 @@ export async function startMock(opts = {}) {
       return { live, restart: !live, changed: true };
     },
   };
-  const mutating = new Set(["lua.eval", "mods.setEnabled", "mods.revokeDeepDesert", "ini.set"]);
+  Object.assign(handlers, erg.handlers);
+  const mutating = new Set(["lua.eval", "mods.setEnabled", "mods.revokeDeepDesert", "ini.set", ...erg.mutating]);
 
   function broadcast(ch, d) { for (const c of clients) if (c.subs.has(ch)) c.queue(ch, d); }
 
@@ -252,7 +255,12 @@ export async function startMock(opts = {}) {
       if (!methods.includes(m.m)) return fail(c, m.id, -32601, "unknown method");
       if (state.readOnly && mutating.has(m.m)) return fail(c, m.id, -32003, "Oasis is read-only ([Oasis] ReadOnly=1)");
       try {
-        return reply(c, m.id, handlers[m.m](m.p ?? {}));
+        const r = handlers[m.m](m.p ?? {});
+        if (r && r[AFTER]) {
+          reply(c, m.id, r.value);
+          return r[AFTER](c);
+        }
+        return reply(c, m.id, r);
       } catch (e) {
         return Array.isArray(e) ? fail(c, m.id, e[0], e[1]) : fail(c, m.id, -32004, String(e));
       }
@@ -280,6 +288,10 @@ export async function startMock(opts = {}) {
   });
 
   server.on("upgrade", (req, sock) => {
+    if (Date.now() < (state.holdUntil ?? 0)) {
+      sock.end("HTTP/1.1 503 Service Unavailable\r\n\r\n");
+      return;
+    }
     const origin = req.headers.origin;
     const host = req.headers.host;
     if (!(req.headers.cookie ?? "").includes(`oasis_s=${cookie}`) || origin !== `http://${host}`) {
@@ -297,6 +309,12 @@ export async function startMock(opts = {}) {
       if (!c.dead) sock.write(Buffer.concat([head, payload]));
     };
     c.send = (m) => frame(1, Buffer.from(JSON.stringify(m)));
+    c.sendBinary = (ref, data) => {
+      const head = Buffer.alloc(4);
+      head.writeUInt32LE(ref, 0);
+      c.send({ t: "bin", ref, ch: "erg", len: data.length, meta: null });
+      frame(2, Buffer.concat([head, data]));
+    };
     c.close = (code, reason) => {
       const b = Buffer.alloc(2 + Buffer.byteLength(reason)); b.writeUInt16BE(code, 0); b.write(reason, 2);
       frame(8, b);
@@ -387,6 +405,8 @@ export async function startMock(opts = {}) {
       broadcast("bus", { seq: state.busPosted, frame: 1000 + state.busPosted, name, cls: "Message", path: "GM.Logic", handle: "0x1", d });
     },
     kick: () => { for (const c of clients) c.close(4000, "kicked"); },
+    // Drops every client and refuses new connections for `ms`.
+    drop: (ms) => { state.holdUntil = Date.now() + ms; for (const c of clients) c.close(4000, "kicked"); },
     clients: () => clients.size,
     close: async () => {
       clearInterval(logTimer); clearInterval(busTimer); clearInterval(countTimer);

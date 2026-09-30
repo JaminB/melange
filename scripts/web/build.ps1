@@ -38,7 +38,7 @@ if (Test-Path $Out) { Remove-Item -Recurse -Force $Out }
 New-Item -ItemType Directory -Force (Join-Path $Out "app") | Out-Null
 Push-Location $web
 try {
-    & $esbuild "src/main.tsx" --bundle --splitting --format=esm --minify --target=chrome110,firefox115,safari16 `
+    & $esbuild "src/main.tsx" "erg-mesher=src/panels/erg/terrain/mesher.worker.ts" --bundle --splitting --format=esm --minify --target=chrome110,firefox115,safari16 `
         --jsx=automatic --jsx-import-source=preact --charset=utf8 --legal-comments=none `
         "--define:__OASIS_BUILD__=\`"$build\`"" --entry-names="[name]" --chunk-names="chunks/[name]-[hash]" `
         --outdir="$Out\app" --log-level=warning

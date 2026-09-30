@@ -31,6 +31,7 @@ Oasis is Melange's local web app: a page in your browser that talks to the runni
 | **Console** | Lua, as the overlay console: the client environment, a mod's environment or the match. Enter runs, Shift+Enter adds a line, Tab completes, Up and Down recall your history (kept in the browser). Match code follows the console's rule: refused online unless `[LuaConsole] MatchConsoleOnline=1`. |
 | **Mods** | Enable and disable mods (content mods take effect after a restart), see load errors, and revoke Deep Desert. **Deep Desert is never granted from the browser**: a mod waiting for consent asks in the game's overlay. |
 | **Settings** | Every `Melange.ini` key a module declares, with its default and whether it applies live or after a restart, plus the file as raw text. Saving changes that one line in place and keeps every comment and other byte. `[Thumper] GrantSalt` is hidden and cannot be changed, and `[Thumper] AutoGrantDeepDesert` can only be set to `0`. This hides the salt from the Settings page; it is not a defense against `RawInspect` (below), which can already read it as part of the process. |
+| **Erg** | The map editor: open a copy of a multiplayer level, move spawn knots and objects, place oil drums and mines, set water, theme and time of day, and save the project. Needs the level service; the 3D view (three.js) loads only when a project opens. |
 | **About** | Versions, the protocol, and the channels and methods the server offers. |
 
 Tabs can be opened side by side (the ⧉ button next to a tab, or the command palette, `Ctrl+K`). The layout and the
@@ -61,6 +62,7 @@ portable and needs no npm:
 .\build.ps1                 # type-checks, bundles and embeds the web app
 .\scripts\web\test.ps1      # unit tests; add -Url <launch url> for the browser tests against a running game
 .\scripts\web\test.ps1 -Panels   # plus every panel in headless Edge against a mock server (no game needed)
+.\scripts\web\test.ps1 -Erg      # plus the Erg map editor in headless Edge (WebGL by SwiftShader) on synthetic levels
 ```
 
 `web/test/e2e/mock-server.mjs` is a stand-in for the game's server that serves a built app and fakes the streams and
