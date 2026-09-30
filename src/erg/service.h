@@ -65,7 +65,11 @@ class Service {
     ~Service();
     Service(const Service&) = delete;
     Service& operator=(const Service&) = delete;
-    Reply Call(std::string_view method, std::string_view paramsJson);
+    // conn: the calling connection (Call::client in melange/oasis.h), so level.load's project lock is a lease this
+    // connection holds; 0 for a caller with no connection of its own.
+    Reply Call(std::string_view method, std::string_view paramsJson, uint64_t conn = 0);
+    // Releases every project lease `conn` holds; called when its connection has closed.
+    void ClientClosed(uint64_t conn);
     // level.test's build: the project's level files as ergtest_<id> into `root` (the Test workspace), with an empty
     // chunk when none is needed; stale outputs of an earlier build are removed. Result: {stem, title, files}.
     Reply BuildTest(const std::string& project, const std::wstring& root);

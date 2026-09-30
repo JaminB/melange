@@ -203,9 +203,22 @@ bool WritePack(const PackSpec& spec, const std::wstring& dir, std::vector<std::s
         } else if (label == "src/" + spec.slug + ".ergpatch.json") {
             bytes = spec.patchJson;
         } else if (label == "build.ps1") {
-            const std::string patchArg = "src\\" + spec.slug + ".ergpatch.json";
-            bytes = "# Regenerates assets\\levels from " + patchArg +
-                    " against this machine's own install.\n"
+            std::vector<std::string> sources = {"src/" + spec.slug + ".ergpatch.json"};
+            for (auto& lv : existing.levels) {
+                const json::Value* s = lv.Get("source");
+                if (s && s->IsString()) sources.push_back(s->string);
+            }
+            auto native = [](std::string s) {
+                std::replace(s.begin(), s.end(), '/', '\\');
+                return s;
+            };
+            std::string lines;
+            for (auto& src : sources)
+                lines += "& $XomTool level build --patch (Join-Path $root \"" + native(src) +
+                        "\") --game $Game --out (Join-Path $root \"assets\\levels\")\n"
+                        "if ($LASTEXITCODE) { throw \"xomtool level build failed for " + src + "\" }\n";
+            bytes = "# Regenerates assets\\levels from every level's patch (one xomtool line each) against this "
+                    "machine's own install.\n"
                     "# Usage: .\\build.ps1 [-Game <game folder>] [-XomTool <xomtool.exe>]\n"
                     "param([string]$Game = \"\", [string]$XomTool = \"\")\n"
                     "$ErrorActionPreference = \"Stop\"\n"
@@ -220,10 +233,7 @@ bool WritePack(const PackSpec& spec, const std::wstring& dir, std::vector<std::s
                     "if (-not $XomTool -or -not (Test-Path $XomTool)) {\n"
                     "    throw \"xomtool.exe not found; pass -XomTool <path>, or put it on PATH (it ships at "
                     "dist\\tools\\xomtool.exe in the melange repo)\"\n"
-                    "}\n"
-                    "& $XomTool level build --patch (Join-Path $root \"" + patchArg +
-                    "\") --game $Game --out (Join-Path $root \"assets\\levels\")\n"
-                    "if ($LASTEXITCODE) { throw \"xomtool level build failed\" }\n";
+                    "}\n" + lines;
         } else if (label == ".gitignore") {
             bytes = "assets/\n";
         } else {

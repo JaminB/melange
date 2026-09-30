@@ -101,6 +101,9 @@ export interface Patch {
   kind?: { survivor: boolean };
   objects?: ObjectSpec[];
   script?: ScriptMeta;
+  /** level.load only: resource -> preview key (preview.h DetailKey), for every distinct detail resource in the
+   * scene, in any theme's bundle. Not part of the saved document. */
+  previews?: Record<string, string>;
 }
 
 export interface Validation { ok: boolean; errors: string[]; }
@@ -285,6 +288,11 @@ function checkScript(c: Checker, v: unknown) {
   if (v.present !== (typeof v.sha256 === "string")) c.fail("script", "sha256 is set exactly when present is true");
 }
 
+function checkPreviews(c: Checker, v: unknown) {
+  if (!isObj(v)) return c.fail("previews", "must be an object");
+  for (const [k, val] of Object.entries(v)) if (typeof val !== "string") c.fail(`previews.${k}`, "must be a string");
+}
+
 function checkKind(c: Checker, v: unknown) {
   if (!isObj(v) || !c.keys(v, ["survivor"], "kind") || (v.survivor !== undefined && typeof v.survivor !== "boolean")) c.fail("kind", "survivor must be a boolean");
 }
@@ -309,8 +317,8 @@ export function validateScene(s: unknown): Validation {
   const c = new Checker();
   if (!isObj(s)) return { ok: false, errors: ["scene: must be an object"] };
   const v2 = s.format === SCENE_FORMAT_2;
-  c.keys(s, v2 ? ["format", "stem", "title", "base", "registry", "kind", "databank", "water", "spawns", "hmp", "units", "frames", "details", "blobs", "objects", "script"]
-    : ["format", "stem", "title", "base", "registry", "databank", "water", "spawns", "hmp", "units", "frames", "details", "blobs"], "scene");
+  c.keys(s, v2 ? ["format", "stem", "title", "base", "registry", "kind", "databank", "water", "spawns", "hmp", "units", "frames", "details", "blobs", "objects", "script", "previews"]
+    : ["format", "stem", "title", "base", "registry", "databank", "water", "spawns", "hmp", "units", "frames", "details", "blobs", "previews"], "scene");
   if (s.format !== SCENE_FORMAT && !v2) c.fail("scene.format", `must be "${SCENE_FORMAT}" or "${SCENE_FORMAT_2}" (a newer format needs a newer Melange)`);
   if (!printable(s.stem, 1, 48) || (s.stem as string).includes(".")) c.fail("scene.stem", "must be 1-48 printable characters without '.'");
   if (!printable(s.title, 1, 40)) c.fail("scene.title", "must be 1-40 printable ASCII characters");
@@ -323,6 +331,7 @@ export function validateScene(s: unknown): Validation {
   if (isObj(s.databank)) checkDatabank(c, s.databank, true);
   else c.fail("databank", "must be an object");
   checkWater(c, s.water);
+  if (s.previews !== undefined) checkPreviews(c, s.previews);
   checkMode(c, s.spawns, "spawns", ["random", "knots"]);
   checkMode(c, s.hmp, "hmp", v2 ? ["copy", "none", "flat", "paint"] : ["copy", "none", "flat"], v2 ? ["ref"] : []);
   if (v2) {

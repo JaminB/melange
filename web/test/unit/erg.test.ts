@@ -26,8 +26,18 @@ test("the synthetic fixtures validate", () => {
   assert.equal(scene400().frames.length, 403);
 });
 
+test("level.load's previews are optional and merge-friendly", () => {
+  const s = scene12() as Scene & { previews?: Record<string, string> };
+  s.previews = { CheesyGrinWorm: "detail/abc123.glb" };
+  const v = validateScene(s);
+  assert.ok(v.ok, v.errors.join("; "));
+  delete s.previews;
+  assert.ok(validateScene(s).ok);
+});
+
 test("scene refusals", () => {
   const cases: [string, (s: Scene) => void][] = [
+    ["previews value", (s) => ((s as unknown as { previews: unknown }).previews = { x: 5 })],
     ["format", (s) => ((s as { format: string }).format = "erg-scene/3")],
     ["unknown key", (s) => ((s as unknown as Record<string, unknown>).extra = 1)],
     ["long title", (s) => (s.title = "x".repeat(41))],

@@ -311,6 +311,21 @@ test("fill anchors in front of the hit face", () => {
   assert.deepEqual([...ch.get(grids[0].ref)!.entries()], [[index(grids[0].frame, 1, 2, 1), [0, filled(4)]]]);
 });
 
+test("fill and paint touch only the frame under the cursor; carve still reaches every frame it overlaps", () => {
+  const s = gridScene([4, 6, 4], 4, 4, [0, 0, 0], (_x, y) => (y < 3 ? 3 | (1 << 2) : 0));
+  const h = host(s, voxelsOf(s)), sc = new Sculptor(h), g = sc.frames[0];
+  assert.equal(sc.frames.length, 16);
+  const big = { shape: "box" as const, size: [16, 6, 16] as Vec3 };
+  const carveR = sc.step({ grid: g, center: [8, 3, 8] }, { ...big, mode: "carve", material: 0 });
+  assert.equal(carveR.frames.length, 16);
+  h.stack.undo();
+  const fillR = sc.step({ grid: g, center: [8, 3, 8] }, { ...big, mode: "fill", material: 5 });
+  assert.deepEqual(fillR.frames, [g.frame.id]);
+  h.stack.undo();
+  const paintR = sc.step({ grid: g, center: [8, 3, 8] }, { ...big, mode: "paint", material: 5 });
+  assert.deepEqual(paintR.frames, [g.frame.id]);
+});
+
 test("the palette takes the atlas colours it can read", () => {
   const p = paletteFrom(["#112233", "bad", 5]);
   assert.equal(p.length, 64);

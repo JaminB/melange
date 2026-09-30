@@ -137,9 +137,12 @@ bool Store::WriteMeta(const std::string& id, const Meta& m, std::string* err) {
     return install::WriteAtomic(Path(id, "meta.json"), text.data(), text.size(), err);
 }
 
-LockResult Store::Lock(const std::string& id) {
+LockResult Store::Lock(const std::string& id, uint64_t conn) {
     std::lock_guard lk(mx_);
-    if (locks_.count(id)) return LockResult::Ok;
+    if (locks_.count(id)) {
+        leases_[id].insert(conn);
+        return LockResult::Ok;
+    }
     if (!Exists(id)) return LockResult::Missing;
     HANDLE h = CreateFileW(Path(id, ".lock").c_str(), GENERIC_READ | GENERIC_WRITE, 0, nullptr, OPEN_ALWAYS,
                            FILE_ATTRIBUTE_HIDDEN | FILE_FLAG_DELETE_ON_CLOSE, nullptr);
@@ -149,15 +152,33 @@ LockResult Store::Lock(const std::string& id) {
     DWORD w = 0;
     WriteFile(h, pid, static_cast<DWORD>(n), &w, nullptr);
     locks_[id] = h;
+    leases_[id].insert(conn);
     return LockResult::Ok;
 }
 
-void Store::Unlock(const std::string& id) {
+void Store::UnlockLocked(const std::string& id, uint64_t conn) {
+    auto it = leases_.find(id);
+    if (it == leases_.end()) return;
+    it->second.erase(conn);
+    if (!it->second.empty()) return;
+    leases_.erase(it);
+    auto lit = locks_.find(id);
+    if (lit == locks_.end()) return;
+    CloseHandle(static_cast<HANDLE>(lit->second));
+    locks_.erase(lit);
+}
+
+void Store::Unlock(const std::string& id, uint64_t conn) {
     std::lock_guard lk(mx_);
-    auto it = locks_.find(id);
-    if (it == locks_.end()) return;
-    CloseHandle(static_cast<HANDLE>(it->second));
-    locks_.erase(it);
+    UnlockLocked(id, conn);
+}
+
+void Store::ReleaseConn(uint64_t conn) {
+    std::lock_guard lk(mx_);
+    std::vector<std::string> ids;
+    for (const auto& [id, conns] : leases_)
+        if (conns.count(conn)) ids.push_back(id);
+    for (const auto& id : ids) UnlockLocked(id, conn);
 }
 
 bool Store::Locked(const std::string& id) const {

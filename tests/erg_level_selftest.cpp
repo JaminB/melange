@@ -686,6 +686,19 @@ void TestStore(const std::wstring& root) {
     Expect(b.Lock("harbour") == erg::project::LockResult::Ok, "store: free after unlock");
     b.Unlock("harbour");
     Expect(!erg::install::Exists(root + L"\\projA\\harbour\\.lock"), "store: the lock file goes with the handle");
+
+    // Leases: two connections on the same store both hold the project; only the last Unlock (or ReleaseConn) frees it.
+    Expect(a.Lock("harbour", 1) == erg::project::LockResult::Ok, "lease: connection 1 opens the project");
+    Expect(a.Lock("harbour", 2) == erg::project::LockResult::Ok, "lease: connection 2 also leases it (idempotent open)");
+    Expect(b.Lock("harbour") == erg::project::LockResult::Busy, "lease: another server still sees it busy");
+    a.Unlock("harbour", 1);
+    Expect(b.Lock("harbour") == erg::project::LockResult::Busy, "lease: connection 2's lease keeps it locked");
+    a.ReleaseConn(2);
+    Expect(b.Lock("harbour") == erg::project::LockResult::Ok, "lease: releasing the last connection frees it");
+    b.Unlock("harbour");
+    Expect(a.Lock("harbour", 3) == erg::project::LockResult::Ok, "lease: reopen under a third connection");
+    a.ReleaseConn(3);
+    Expect(!erg::install::Exists(root + L"\\projA\\harbour\\.lock"), "lease: ReleaseConn closes the file when it was the last lease");
     Expect(a.List().size() == 1 && a.List()[0].title.empty(), "store: listed");
     Expect(!a.ReadPatch("..\\x", &text, &err) && !a.WritePatch("../x", "{}", &err), "store: ids never make paths");
 }
@@ -696,7 +709,7 @@ struct Svc {
     std::vector<erg::install::Pack> packs;
 };
 
-erg::service::Reply Call(Svc& svc, const char* m, const std::string& params) { return svc.s->Call(m, params); }
+erg::service::Reply Call(Svc& svc, const char* m, const std::string& params, uint64_t conn = 0) { return svc.s->Call(m, params, conn); }
 
 Json J(const std::string& text) {
     Json v;
@@ -775,6 +788,11 @@ void TestService(const std::wstring& root) {
     r = Call(S, "level.load", R"({"project":"harbour"})");
     Expect(r.ok && erg::ParseScene(r.json, &scene, &err) && scene.stem == "ergtest_harbour" && scene.title == "Harbour Brawl",
            "load project: the scene " + r.message);
+    {
+        const Json raw = J(r.json);
+        const Json* pv = raw.find("previews");
+        Expect(pv && pv->kind == Json::Kind::Object, "load: the reply carries a previews object " + r.json.substr(0, 200));
+    }
 
     const Json* patchJ = created.find("patch");
     std::string patchText = patchJ ? melange::erg::jsonio::Compact(*patchJ) : "";
@@ -837,6 +855,19 @@ void TestService(const std::wstring& root) {
     {
         erg::project::Store other(root + L"\\projects");
         Expect(other.Lock("harbour") == erg::project::LockResult::Ok, "close: the lock is released");
+    }
+    {
+        // Leases: level.load records the caller's connection; the project stays locked while either connection
+        // holds it, and a connection's close (ClientClosed) releases only its own lease.
+        Expect(Call(S, "level.load", R"({"project":"harbour2"})", 101).ok, "lease: connection 101 opens harbour2");
+        Expect(Call(S, "level.load", R"({"project":"harbour2"})", 102).ok, "lease: connection 102 also opens it");
+        erg::project::Store other(root + L"\\projects");
+        Expect(other.Lock("harbour2") == erg::project::LockResult::Busy, "lease: busy while either connection holds it");
+        Expect(Call(S, "level.close", R"({"project":"harbour2"})", 101).ok, "lease: connection 101 closes");
+        Expect(other.Lock("harbour2") == erg::project::LockResult::Busy, "lease: connection 102's lease still holds it");
+        S.s->ClientClosed(102);
+        Expect(other.Lock("harbour2") == erg::project::LockResult::Ok, "lease: the last connection's disconnect frees it");
+        other.Unlock("harbour2");
     }
 
     r = Call(S, "level.themes", "{}");

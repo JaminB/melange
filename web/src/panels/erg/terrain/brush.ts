@@ -1,6 +1,7 @@
-// Brushes: a box or an ellipsoid measured in the voxels of the frame under the cursor (the anchor), reaching into every
-// frame it overlaps. A voxel is inside when its centre is. Carve clears the solid bits and keeps the material; fill
-// writes the brush material with no second material or blend; paint changes a solid voxel's material only.
+// Brushes: a box or an ellipsoid measured in the voxels of the frame under the cursor (the anchor). A voxel is inside
+// when its centre is. Carve clears the solid bits and keeps the material, reaching into every frame it overlaps (holes
+// go through everything); fill and paint touch only the anchor frame. Fill writes the brush material with no second
+// material or blend; paint changes a solid voxel's material only.
 import { apply, multiply, type Vec3 } from "../../../sdk/erg";
 import type { Hit } from "./pick";
 import { carved, filled, index, isSolid, material, overlaps, painted, transformBox, type Box, type GridFrame } from "./voxel";
@@ -63,7 +64,8 @@ export function strokeChanges(grids: GridFrame[], voxels: Map<number, Uint32Arra
   const out = new Map<number, Map<number, [number, number]>>();
   const box = brushBox(a, b);
   const world = transformBox(a.grid.toWorld, box);
-  for (const g of grids) {
+  const targets = b.mode === "carve" ? grids : [a.grid];
+  for (const g of targets) {
     if (!overlaps(world, g.bounds)) continue;
     const words = voxels.get(g.ref);
     if (!words) continue;

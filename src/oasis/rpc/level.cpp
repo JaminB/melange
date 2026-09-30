@@ -51,12 +51,16 @@ bool ModActive(const std::string& id) {
 }
 
 void Handle(const Call& c, Result& r, void*) {
-    erg::service::Reply rep = g_service->Call(c.method, c.paramsJson);
+    erg::service::Reply rep = g_service->Call(c.method, c.paramsJson, static_cast<uint64_t>(c.client));
     r.ok = rep.ok;
     r.code = rep.code;
     r.message = std::move(rep.message);
     r.json = std::move(rep.json);
     for (const auto& b : rep.blobs) core::QueueBinary(b.ref, "erg", b.meta, b.bytes);
+}
+
+void HandleClosed(uint64_t connId, void*) {
+    if (g_service) g_service->ClientClosed(connId);
 }
 }  // namespace
 
@@ -102,6 +106,7 @@ void InstallLevels() {
     g_service = std::make_unique<erg::service::Service>(std::move(env));
     for (const auto& m : erg::service::Methods())
         AddMethod(m.c_str(), &Handle, nullptr, kRpcServerThread | (erg::service::Mutating(m) ? kRpcMutating : kRpcNone));
+    OnClientClosed(&HandleClosed, nullptr);
     LOG_INFO("[erg] level service: %zu methods, projects in %s", erg::service::Methods().size(), game::Narrow(ProjectsDir()).c_str());
 }
 }  // namespace melange::oasis::providers

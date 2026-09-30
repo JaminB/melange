@@ -439,11 +439,13 @@ bool ParseScene(std::string_view json, Scene* out, std::string* err) {
     if (format != kSceneFormat && format != kSceneFormat2)
         return Fail(err, "scene.format: must be \"erg-scene/1\" or \"erg-scene/2\" (a newer format needs a newer Melange)");
     const bool v2 = format == kSceneFormat2;
+    // "previews" (level.load only, resource -> preview key; not part of the saved document) rides along here and is
+    // ignored: the reply is the scene with one extra sibling key, not a scene field.
     if (v2 ? !OnlyKeys(root, {"format", "stem", "title", "base", "registry", "kind", "databank", "water", "spawns", "hmp",
-                              "units", "frames", "details", "blobs", "objects", "script"},
+                              "units", "frames", "details", "blobs", "objects", "script", "previews"},
                        "scene", err)
            : !OnlyKeys(root, {"format", "stem", "title", "base", "registry", "databank", "water", "spawns", "hmp", "units",
-                              "frames", "details", "blobs"},
+                              "frames", "details", "blobs", "previews"},
                        "scene", err))
         return false;
     if (!GetString(root, "stem", "scene", &s.stem, err) || !GetString(root, "title", "scene", &s.title, err)) return false;

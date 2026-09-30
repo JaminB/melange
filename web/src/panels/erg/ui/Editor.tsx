@@ -116,12 +116,18 @@ export function Editor({ client, info, opened, onClose }: Props) {
   const setPlacing = (p: PaletteEntry | null) => { setPlacingState(p); view?.setPlacing(p); };
 
   const theme = store.scene.databank.theme;
+  // Previews for every resource already in the loaded scene (any bundle, from level.load), merged with the current
+  // theme's palette previews below: a placed detail keeps its preview even when its resource is not in this theme.
+  const scenePreviews = useMemo(() => new Map(Object.entries(opened.current.scene.previews ?? {})), [opened]);
   useEffect(() => {
-    if (!conn.open || !client.has("level.palette")) return;
+    if (!conn.open || !client.has("level.palette")) {
+      view?.setPreviews(scenePreviews);
+      return;
+    }
     client.call<unknown>("level.palette", { theme }).then((r) => {
       const list = Array.isArray(r) ? r : (r as { entries?: unknown })?.entries;
       setPalette(paletteFrom(list));
-      const byRes = new Map<string, string>();
+      const byRes = new Map(scenePreviews);
       if (Array.isArray(list))
         for (const e of list as Record<string, unknown>[])
           if (typeof e?.resource === "string" && typeof e.preview === "string" && e.preview) byRes.set(e.resource, e.preview);
@@ -134,8 +140,8 @@ export function Editor({ client, info, opened, onClose }: Props) {
         setAtlasColors(hexColors(rgb));
         void view?.remesh();
       }, () => {});
-    }, () => {});
-  }, [conn.open, theme, view]);
+    }, () => view?.setPreviews(scenePreviews));
+  }, [conn.open, theme, view, scenePreviews]);
   useEffect(() => {
     if (!conn.open || !client.has("level.themes")) return;
     client.call<unknown>("level.themes").then((r) => setThemes(themesOf(r)), () => {});
