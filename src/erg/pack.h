@@ -2,6 +2,7 @@
 #include <string>
 #include <vector>
 
+#include "erg/luagen.h"
 #include "erg/scene.h"
 
 // Map pack export: the assets/levels layout of one level, the manifest entry and the patch. Never writes .csh.
@@ -19,9 +20,3 @@ struct PackSpec {
 };
 bool WritePack(const PackSpec& spec, const std::wstring& dir, std::vector<std::string>* files, std::string* err);
 }  // namespace melange::erg::pack
-
-// The generated level chunk (plain Lua 5.0 source).
-namespace melange::erg::luagen {
-bool Needed(const Scene& s);                               // knot spawns, placed objects or a water level
-std::string Chunk(const Scene& s);
-}  // namespace melange::erg::luagen

@@ -2,9 +2,11 @@
 
 #include <algorithm>
 #include <cctype>
+#include <fstream>
 #include <set>
 #include <system_error>
 
+#include "erg/luagen.h"
 #include "erg/names.h"
 
 namespace melange::levels::roots {
@@ -117,9 +119,32 @@ bool CheckBuilt(const std::vector<manifest::LevelDecl>& decls, const Listing& l,
     return true;
 }
 
+bool ReadChunk(const fs::path& file, std::string* out) {
+    std::ifstream f(file, std::ios::binary);
+    if (!f) return false;
+    out->assign(erg::luagen::kMaxChunkBytes + 1, '\0');
+    f.read(out->data(), static_cast<std::streamsize>(out->size()));
+    out->resize(static_cast<size_t>(f.gcount()));
+    return !f.bad();
+}
+
+bool CheckChunks(const std::vector<manifest::LevelDecl>& decls, const Listing& l, const fs::path& dir, const Reader& read,
+                 std::string* err) {
+    for (const auto& f : l.files) {
+        if (f.find('/') != std::string::npos || f.size() < 4 || !EqualsI(f.substr(f.size() - 4), ".lub")) continue;
+        std::string stem = f.substr(0, f.size() - 4);
+        for (const auto& d : decls)
+            if (EqualsI(d.stem, stem)) stem = d.stem;
+        std::string text, why;
+        if (!read(dir / f, &text)) return Fail(err, "levels/" + f + " could not be read");
+        if (!erg::luagen::IsGenerated(stem, text, &why)) return Fail(err, "levels/" + f + " " + why);
+    }
+    return true;
+}
+
 std::vector<PackVerdict> CheckPacks(const std::vector<PackInput>& inLoadOrder,
                                     const std::vector<assets::crcsafe::Entry>& crcTable, bool crcAvailable,
-                                    const Lister& list) {
+                                    const Lister& list, const Reader& read) {
     std::vector<PackVerdict> out;
     std::vector<std::vector<manifest::LevelDecl>> accepted;
     for (const PackInput& in : inLoadOrder) {
@@ -137,13 +162,15 @@ std::vector<PackVerdict> CheckPacks(const std::vector<PackInput>& inLoadOrder,
             v.ok = false;
             v.reason = "the CRC table could not be verified; map packs are refused";
         } else {
-            const Listing l = list(in.dir / fs::path(m.assetsRoot) / kLevelDir);
+            const fs::path dir = in.dir / fs::path(m.assetsRoot) / kLevelDir;
+            const Listing l = list(dir);
             const std::string prefix = erg::names::Prefix(m.id);
             std::string why;
             if (!l.exists) {
                 v.ok = false;
                 v.reason = std::string(manifest::kNotBuilt) + " (" + m.assetsRoot + "/levels is missing)";
-            } else if (!CheckLevelRoot(prefix, l, crcTable, &why) || !CheckBuilt(v.levels, l, &why)) {
+            } else if (!CheckLevelRoot(prefix, l, crcTable, &why) || !CheckBuilt(v.levels, l, &why) ||
+                       !CheckChunks(v.levels, l, dir, read, &why)) {
                 v.ok = false;
                 v.reason = why;
             }

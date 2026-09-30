@@ -130,7 +130,7 @@ set_source_files_properties(${CMAKE_BINARY_DIR}/generated/oasis_web.rc PROPERTIE
 # Oasis, oasis.exe, xomtool and the self-tests.
 set(ERG_SERVICE_SOURCES
     src/erg/scene.cpp src/erg/patch.cpp src/erg/names.cpp src/erg/jsonio.cpp src/erg/xomutil.cpp src/erg/load.cpp
-    src/erg/build.cpp src/erg/bank.cpp src/erg/install.cpp src/erg/project.cpp src/erg/service.cpp src/erg/pack.cpp src/erg/voxels.cpp
+    src/erg/build.cpp src/erg/bank.cpp src/erg/install.cpp src/erg/project.cpp src/erg/service.cpp src/erg/pack.cpp src/erg/luagen.cpp src/erg/voxels.cpp
     src/erg/preview.cpp src/levels/manifest.cpp src/mods/spice.cpp src/tools/json_read.cpp src/tools/hash.cpp
     src/core/log.cpp)
 
@@ -286,7 +286,7 @@ target_link_libraries(erg_preview_selftest PRIVATE melange_xom shell32 ole32 bcr
 add_executable(levels_selftest
     tests/levels_selftest.cpp
     src/levels/roots.cpp src/levels/csh.cpp src/levels/gate_policy.cpp src/levels/test_arm.cpp src/levels/manifest.cpp
-    src/erg/names.cpp src/erg/scene.cpp src/erg/patch.cpp src/erg/jsonio.cpp
+    src/erg/names.cpp src/erg/scene.cpp src/erg/patch.cpp src/erg/jsonio.cpp src/erg/luagen.cpp
     src/assets/crcsafe_math.cpp
     src/mods/spice.cpp
     src/tools/hash.cpp
@@ -300,7 +300,7 @@ target_link_libraries(levels_selftest PRIVATE melange_xom bcrypt)
 # also checks that dist\Mods\erg-sample (G) parses and applies as a real spice.json + erg-patch/1 would.
 add_executable(erg_pack_selftest
     tests/erg_pack_selftest.cpp
-    src/erg/pack.cpp src/erg/names.cpp src/erg/scene.cpp src/erg/patch.cpp src/erg/jsonio.cpp
+    src/erg/pack.cpp src/erg/luagen.cpp src/erg/names.cpp src/erg/scene.cpp src/erg/patch.cpp src/erg/jsonio.cpp
     src/levels/manifest.cpp src/mods/spice.cpp
     src/tools/json_read.cpp src/core/log.cpp)
 target_include_directories(erg_pack_selftest PRIVATE src src/sdk)

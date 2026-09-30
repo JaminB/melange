@@ -10,7 +10,7 @@
 #include "mods/spice.h"
 
 // A map pack's level root (assets/levels) and the engine search roots Melange adds for levels. The checks are pure
-// functions of a listing; ListLevelRoot is the only file-system call.
+// functions of a listing; ListLevelRoot and ReadChunk are the only file-system calls.
 namespace melange::levels::roots {
 constexpr const char* kLevelDir = "levels";                 // under the manifest's assets root
 constexpr const char* kCacheRel = "Melange/cache";         // generated .csh files, searched first
@@ -32,6 +32,13 @@ bool CheckLevelRoot(std::string_view prefix, const Listing& l, const std::vector
 // Every level's built files are present (manifest::RequiredFiles, case-insensitive).
 bool CheckBuilt(const std::vector<manifest::LevelDecl>& decls, const Listing& l, std::string* err);
 
+// Reads a chunk file (at most luagen::kMaxChunkBytes + 1 bytes); false when it cannot be read.
+using Reader = std::function<bool(const std::filesystem::path&, std::string*)>;
+bool ReadChunk(const std::filesystem::path& file, std::string* out);
+// Every top-level .lub under `dir` is the generator's chunk for its level.
+bool CheckChunks(const std::vector<manifest::LevelDecl>& decls, const Listing& l, const std::filesystem::path& dir,
+                 const Reader& read, std::string* err);
+
 // One content mod in load order, as Thumper resolved it.
 struct PackInput {
     const spice::Manifest* manifest = nullptr;
@@ -48,7 +55,7 @@ using Lister = std::function<Listing(const std::filesystem::path&)>;
 // crcAvailable false refuses every pack (the table could not be verified).
 std::vector<PackVerdict> CheckPacks(const std::vector<PackInput>& inLoadOrder,
                                     const std::vector<assets::crcsafe::Entry>& crcTable, bool crcAvailable,
-                                    const Lister& list = ListLevelRoot);
+                                    const Lister& list = ListLevelRoot, const Reader& read = ReadChunk);
 
 // The order in which the level roots are added: pack roots in load order, the Test workspace, then the cache root
 // (a root added later is searched first, so generated .csh files land in the cache).

@@ -21,6 +21,7 @@
 #include "core/game.h"
 #include "core/log.h"
 #include "erg/bank.h"
+#include "erg/luagen.h"
 #include "erg/names.h"
 #include "levels/csh.h"
 #include "levels/engine.h"
@@ -46,6 +47,7 @@ struct Level {
     fs::path root;             // the level root (assets/levels or the Test workspace)
     std::string modVersion;
     bool chunk = false;
+    std::string chunkText;     // the last accepted chunk, served from the cache root
 };
 
 std::mutex g_mx;                                        // g_levels, g_sources
@@ -167,6 +169,47 @@ int LoadEntries(const std::string& bankName, std::vector<erg::bank::Entry> entri
     return n;
 }
 
+// The engine runs the cache root's copy of a pack chunk, written only from text the generator could have produced.
+bool AcceptChunk(const std::string& stem, const fs::path& root, std::string* text, std::string* err) {
+    std::string got, why;
+    const std::string rel = stem + ".lub";
+    if (!roots::ReadChunk(root / game::Widen(rel), &got)) {
+        *err = "levels/" + rel + " could not be read";
+        return false;
+    }
+    if (!erg::luagen::IsGenerated(stem, got, &why)) {
+        *err = "levels/" + rel + " " + why;
+        return false;
+    }
+    *text = std::move(got);
+    return true;
+}
+
+bool ServeChunk(const std::string& stem, const std::string& text) {
+    const fs::path p = CacheDir() / game::Widen(stem + ".lub");
+    std::string have;
+    if (roots::ReadChunk(p, &have) && have == text) return true;
+    return WriteAtomic(p, std::vector<uint8_t>(text.begin(), text.end()));
+}
+
+void SetChunk(const std::string& stem, const std::string& text) {
+    std::lock_guard lk(g_mx);
+    for (auto& l : g_levels)
+        if (stem == l.info.stem) l.chunkText = text;
+}
+
+// A pack that fails to register is refused like one that failed the launch checks, so it leaves the content hash.
+void Refuse(const std::string& mod, const std::string& why) {
+    for (auto& v : g_verdicts)
+        if (v.mod == mod) {
+            v.ok = false;
+            v.reason = why;
+        }
+    LOG_ERROR("[levels] %s: %s; the pack is not loaded", mod.c_str(), why.c_str());
+    jlog::Rec("levels", jlog::Level::Error, "pack_failed").Str("mod", mod).Str("why", why);
+    thumper::Rescan();
+}
+
 void MarkRegistered() {
     std::lock_guard lk(g_mx);
     for (auto& l : g_levels) l.info.registered = eng::LevelDetails(l.info.key, nullptr);
@@ -194,9 +237,7 @@ void RegisterPacks() {
         const fs::path root = fs::path(p.e.dir) / game::Widen(p.e.manifest.assetsRoot) / roots::kLevelDir;
         p.rel = roots::GameRelative(GameDir(), root);
         if (p.rel.empty()) {
-            LOG_ERROR("[levels] %s: the level root must be a game-relative path without '.' in it; not registered",
-                      v.mod.c_str());
-            jlog::Rec("levels", jlog::Level::Error, "pack_refused").Str("mod", v.mod).Str("why", "root path");
+            Refuse(v.mod, "the level root must be a game-relative path without '.' in it");
             continue;
         }
         rels.push_back(p.rel);
@@ -204,17 +245,40 @@ void RegisterPacks() {
     }
     std::error_code ec;
     const bool testRoot = fs::is_directory(TestDir(), ec);
+    std::vector<std::string> failedRoots;
     for (const auto& r : roots::AddOrder(rels, testRoot, false)) {
         const bool added = eng::AddRoot(r.c_str());
         if (r == roots::kTestRel) g_testRoot = added;
-        if (!added) LOG_ERROR("[levels] adding the level root %s failed", r.c_str());
+        if (!added) {
+            LOG_ERROR("[levels] adding the level root %s failed", r.c_str());
+            failedRoots.push_back(r);
+        }
     }
-    if (!EnsureCacheRoot()) LOG_WARN("[levels] the cache root could not be added: .csh files stay in the packs' Maps");
+    const bool cacheRoot = EnsureCacheRoot();
 
     for (auto& p : packs) {
+        if (!cacheRoot) {
+            Refuse(p.v.mod, "the level cache root could not be added");
+            continue;
+        }
+        if (std::find(failedRoots.begin(), failedRoots.end(), p.rel) != failedRoots.end()) {
+            Refuse(p.v.mod, "adding the level root " + p.rel + " failed");
+            continue;
+        }
+        const fs::path root = GameDir() / game::Widen(p.rel);
         std::vector<erg::bank::Entry> entries;
         std::vector<std::string> titles;
+        std::string err;
         for (const auto& d : p.v.levels) {
+            if (d.chunk && err.empty()) {
+                std::string text;
+                if (!AcceptChunk(d.stem, root, &text, &err)) break;
+                if (!ServeChunk(d.stem, text)) {
+                    err = "cannot write Melange/cache/" + d.stem + ".lub";
+                    break;
+                }
+                SetChunk(d.stem, text);
+            }
             erg::bank::Entry en;
             en.key = erg::names::Key(d.stem);
             en.stem = d.stem;
@@ -223,15 +287,18 @@ void RegisterPacks() {
             entries.push_back(en);
             titles.push_back(d.title);
         }
-        std::string err;
+        if (!err.empty()) {
+            Refuse(p.v.mod, err);
+            continue;
+        }
         const int n = LoadEntries(erg::names::Prefix(p.v.mod) + "_REG", entries, titles, &err);
         if (n < 0) {
-            LOG_ERROR("[levels] %s: %s", p.v.mod.c_str(), err.c_str());
-            jlog::Rec("levels", jlog::Level::Error, "pack_failed").Str("mod", p.v.mod).Str("why", err);
+            Refuse(p.v.mod, err);
+        } else if (static_cast<size_t>(n) < entries.size()) {
+            Refuse(p.v.mod, std::to_string(entries.size() - static_cast<size_t>(n)) + " of its levels did not register");
         } else {
             ++g_packs;
-            LOG_INFO("[levels] %s: %d of %zu level(s) registered from %s", p.v.mod.c_str(), n, entries.size(),
-                     p.rel.c_str());
+            LOG_INFO("[levels] %s: %d level(s) registered from %s", p.v.mod.c_str(), n, p.rel.c_str());
             jlog::Rec("levels", jlog::Level::Info, "pack").Str("mod", p.v.mod).Uint("levels", static_cast<uint64_t>(n));
         }
     }
@@ -272,6 +339,13 @@ void OnStart(const LevelStart& s, void*) {
     }
     const std::string stem = l.info.stem;
     const fs::path xan = l.root / L"Maps" / game::Widen(stem + ".xan");
+    if (l.info.source == Source::Pack && l.chunk) {
+        std::string text, err;
+        if (AcceptChunk(stem, l.root, &text, &err)) SetChunk(stem, text);
+        else LOG_WARN("[levels] %s: %s; the last accepted chunk runs", stem.c_str(), err.c_str());
+        if (!ServeChunk(stem, err.empty() ? text : l.chunkText))
+            LOG_ERROR("[levels] %s: Melange/cache/%s.lub could not be written", stem.c_str(), stem.c_str());
+    }
     const auto r = csh::Guard(xan, stem, BankDir(), {l.root / L"Maps", CacheDir() / L"Maps"});
     g_cshDeleted += r.deleted;
     if (!r.ok) LOG_WARN("[levels] shadow guard for %s: %s", stem.c_str(), r.error.c_str());
@@ -469,7 +543,7 @@ bool RegisterTestLevel(const std::string& stem, const std::string& title, std::s
     const fs::path lub = root / game::Widen(stem + ".lub");
     if (!fs::is_regular_file(lub, ec)) {
         std::ofstream f(lub, std::ios::binary);
-        f << "-- generated by Erg for " << stem << "; no changes\n";
+        f << erg::luagen::Stub(stem);
     }
     LevelInfo existing{};
     if (Find(key.c_str(), &existing)) {

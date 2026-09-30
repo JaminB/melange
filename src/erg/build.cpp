@@ -4,7 +4,7 @@
 #include <cstring>
 #include <unordered_map>
 
-#include "erg/pack.h"
+#include "erg/luagen.h"
 #include "erg/voxels.h"
 #include "erg/xomutil.h"
 
