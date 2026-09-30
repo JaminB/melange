@@ -13,7 +13,8 @@ const char* TypeName(VarType t);
 constexpr uint32_t KindBit(EntityKind k) { return 1u << static_cast<uint32_t>(k); }
 constexpr uint32_t kAllKinds = 0x1f;
 
-std::string SnapshotJson(const Snapshot& s, bool available);
+// attract: the frontend's attract demo is running (its match reports inMatch like any other).
+std::string SnapshotJson(const Snapshot& s, bool available, bool attract = false);
 std::string EntityJson(const Entity& e);
 std::string EntitiesJson(const Entity* e, int n, uint32_t kinds = kAllKinds);
 std::string VarJson(const Var& v);

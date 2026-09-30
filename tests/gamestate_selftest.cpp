@@ -305,6 +305,10 @@ void TestSnapshot() {
     Expect(m && m->Get("suddenDeath") && m->Get("suddenDeath")->boolean && m->Get("activeWorm")->number == -1,
            "snapshot JSON match");
     Expect(v.Get("available") && v.Get("available")->boolean, "snapshot JSON available");
+    Expect(m && m->Get("attract") && !m->Get("attract")->boolean, "snapshot JSON attract defaults to false");
+    json::Value demo;
+    Expect(ValidJson(gs::wire::SnapshotJson(s, true, true), &demo) && demo.Get("match")->Get("attract")->boolean,
+           "snapshot JSON reports the attract demo");
     gs::Snapshot odd{};
     odd.match.windSpeed = std::numeric_limits<float>::infinity();
     Expect(gs::wire::SnapshotJson(odd, false).find("\"windSpeed\":null") != std::string::npos, "non-finite as null");

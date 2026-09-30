@@ -9,6 +9,8 @@ test("testAvailability", () => {
   assert.equal(testAvailability({ connected: false, inMatch: false, inLobby: false }).ok, false);
   assert.equal(testAvailability({ connected: true, inMatch: false, inLobby: true }).ok, false);
   assert.equal(testAvailability({ connected: true, inMatch: true, inLobby: false }).ok, false);
+  assert.equal(testAvailability({ connected: true, inMatch: true, inLobby: false, attract: true }).ok, true, "the attract demo is not a match");
+  assert.equal(testAvailability({ connected: true, inMatch: false, inLobby: false, attract: true }).ok, true);
   const ok = testAvailability({ connected: true, inMatch: false, inLobby: false });
   assert.equal(ok.ok, true);
   assert.equal(ok.reason, undefined);

@@ -1,15 +1,16 @@
 // Pure logic for the Test button and the Export dialog. No DOM, no client: unit-tested directly. The button is
 // disabled with a reason when the game isn't running, isn't at the frontend, or is in a lobby; the server is
-// authoritative and may still refuse for a reason this cannot see.
+// authoritative and may still refuse for a reason this cannot see. The attract demo's match counts as the frontend:
+// the server ends the demo and starts the Test.
 
-export interface GameState { connected: boolean; inMatch: boolean; inLobby: boolean; }
+export interface GameState { connected: boolean; inMatch: boolean; inLobby: boolean; attract?: boolean; }
 
 export interface Availability { ok: boolean; reason?: string; }
 
 export function testAvailability(s: GameState): Availability {
   if (!s.connected) return { ok: false, reason: "not connected to the game" };
   if (s.inLobby) return { ok: false, reason: "leave the lobby to test a level" };
-  if (s.inMatch) return { ok: false, reason: "finish or quit the current match first" };
+  if (s.inMatch && !s.attract) return { ok: false, reason: "finish or quit the current match first" };
   return { ok: true };
 }
 

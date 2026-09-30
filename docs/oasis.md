@@ -272,9 +272,10 @@ client asks for; nothing is ever written. The readers need build #1077 and `[Gam
 | `state` | a snapshot: `{available, frame, matchSerial, match, teams, worms}` | `hz` 1-10 (default 5) | Coalesce |
 | `entities` | `[{handle, object, vtable, kind, type, label, pos, vel}]`; `[]` outside a match | `hz` 1-5 (default 2), `kinds` | Coalesce |
 
-- `match`: `{inMatch, online, currentTeam, activeWorm, turnMs, turnMsLeft, roundMs, roundMsLeft, windSpeed,
+- `match`: `{inMatch, attract, online, currentTeam, activeWorm, turnMs, turnMsLeft, roundMs, roundMsLeft, windSpeed,
   windDir, waterLevel, turnsStarted, suddenDeath, theme}` (times in ms, `-1` for no team or worm, wind direction in
-  radians). `turnsStarted` and `suddenDeath` come from the engine's message counters for this match.
+  radians). `turnsStarted` and `suddenDeath` come from the engine's message counters for this match. `attract` is true
+  while the menu's attract demo runs, whose match also reports `inMatch`.
 - `teams[]`: `{slot, name, active, ai, local, colour, alliance, roundsWon, score}`.
 - `worms[]`: `{slot, team, posInTeam, name, active, alive, health, physicsState, weapon, pos, vel}`; positions are
   world units with +Y up, `weapon` is `-1` for none.

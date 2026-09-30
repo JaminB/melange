@@ -13,11 +13,14 @@ import {
 function useGameState(client: Client): GameState {
   const conn = useConnection(client);
   const [inMatch, setInMatch] = useState(false);
+  const [attract, setAttract] = useState(false);
   const [inLobby, setInLobby] = useState(false);
-  useEffect(() => client.subscribe<{ match?: { inMatch?: boolean } }>("state", undefined,
-    (m) => setInMatch(!!m?.match?.inMatch)), [client]);
+  useEffect(() => client.subscribe<{ match?: { inMatch?: boolean; attract?: boolean } }>("state", undefined, (m) => {
+    setInMatch(!!m?.match?.inMatch);
+    setAttract(!!m?.match?.attract);
+  }), [client]);
   useEffect(() => client.subscribe<LobbyState>("lobby", undefined, (m) => setInLobby(!!m?.inLobby)), [client]);
-  return { connected: conn.open, inMatch, inLobby };
+  return { connected: conn.open, inMatch, inLobby, attract };
 }
 
 export function TestPanel({ client, session, beforeTest, projectTod }: {

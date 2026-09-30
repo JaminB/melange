@@ -10,7 +10,7 @@ export interface Team {
   colour: number; alliance: number; roundsWon: number; score: number;
 }
 export interface Match {
-  inMatch: boolean; online: boolean; currentTeam: number; activeWorm: number;
+  inMatch: boolean; attract?: boolean; online: boolean; currentTeam: number; activeWorm: number;
   turnMs: number; turnMsLeft: number; roundMs: number; roundMsLeft: number;
   windSpeed: number | null; windDir: number | null; waterLevel: number | null;
   turnsStarted: number; suddenDeath: boolean; theme: string;
