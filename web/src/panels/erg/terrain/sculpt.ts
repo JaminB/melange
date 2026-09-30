@@ -79,10 +79,12 @@ export class Sculptor {
 
   anchor(hit: Hit, b: Brush): Anchor { return anchorAt(hit, b.mode); }
 
-  /** The brush outline (world box, .xan units) and the frames it reaches, for the cursor. */
+  /** The brush outline (world box, .xan units) and the frames it reaches, for the cursor: every overlapping frame for
+   * carve, the anchor frame alone for fill and paint. */
   preview(a: Anchor, b: Brush): { box: Box; frames: number[] } {
     const box = worldBox(a, b);
-    return { box, frames: this.grids.filter((g) => overlaps(box, g.bounds)).map((g) => g.frame.id) };
+    const targets = b.mode === "carve" ? this.grids : [a.grid];
+    return { box, frames: targets.filter((g) => overlaps(box, g.bounds)).map((g) => g.frame.id) };
   }
 
   /** Starts a stroke: the steps until end() are one undo step. */

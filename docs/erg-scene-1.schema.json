@@ -108,6 +108,11 @@
           "bytes": { "type": "integer", "minimum": 0, "maximum": 1048576 }
         }
       }
+    },
+    "previews": {
+      "type": "object",
+      "description": "level.load only, not part of the saved document: resource name -> preview asset key, for every distinct detail resource in the scene.",
+      "additionalProperties": { "type": "string" }
     }
   },
   "$defs": {

@@ -179,7 +179,12 @@
       }
     },
     "objects": { "$ref": "#/$defs/objects" },
-    "script": { "$ref": "#/$defs/script" }
+    "script": { "$ref": "#/$defs/script" },
+    "previews": {
+      "type": "object",
+      "description": "level.load only, not part of the saved document: resource name -> preview asset key, for every distinct detail resource in the scene.",
+      "additionalProperties": { "type": "string" }
+    }
   },
   "$defs": {
     "index": { "type": "integer", "minimum": 1, "maximum": 16777216 },

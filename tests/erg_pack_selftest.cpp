@@ -225,6 +225,23 @@ void TestPackMerge(const fs::path& base) {
            "both patches are on disk");
 }
 
+void TestPackSourceMultiLevel(const fs::path& base) {
+    const fs::path dir = base / "multi";
+    std::string err;
+    std::vector<std::string> files;
+    for (const char* slug : {"first", "second", "third"})
+        Expect(erg::pack::WritePack(BasicSpec(slug, /*source=*/true, /*withChunk=*/false), dir.wstring(), &files, &err),
+               std::string("multi-level: ") + slug + " exports: " + err);
+    const std::string script = ReadFile(dir / "build.ps1");
+    for (const char* slug : {"first", "second", "third"}) {
+        const std::string needle = std::string("--patch (Join-Path $root \"src\\") + slug + ".ergpatch.json\")";
+        Expect(script.find(needle) != std::string::npos, std::string("multi-level: build.ps1 builds ") + slug);
+    }
+    size_t n = 0;
+    for (size_t pos = script.find("--patch (Join-Path $root"); pos != std::string::npos; pos = script.find("--patch (Join-Path $root", pos + 1)) ++n;
+    Expect(n == 3, "multi-level: build.ps1 has one xomtool level build line per level (" + std::to_string(n) + ")");
+}
+
 void TestPackRefusesForeignFolder(const fs::path& base) {
     const fs::path dir = base / "foreign";
     fs::create_directories(dir);
@@ -363,6 +380,7 @@ int main() {
     fs::create_directories(base);
     TestPackInstall(base);
     TestPackSource(base);
+    TestPackSourceMultiLevel(base);
     TestPackMerge(base);
     TestPackRefusesForeignFolder(base);
     TestPackRefusesBadNames(base);

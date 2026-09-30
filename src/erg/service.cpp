@@ -318,12 +318,12 @@ struct Service::Impl {
         return L;
     }
 
-    bool LockProject(const std::string& id, Reply* r) {
+    bool LockProject(const std::string& id, uint64_t conn, Reply* r) {
         if (!project::ValidId(id)) {
             *r = Err(kBadParams, "project must be [a-z0-9]{1,24}");
             return false;
         }
-        switch (store.Lock(id)) {
+        switch (store.Lock(id, conn)) {
             case project::LockResult::Ok: return true;
             case project::LockResult::Busy: *r = Err(kBusy, "project '" + id + "' is open in another Oasis server"); return false;
             case project::LockResult::Missing: *r = Err(kBadParams, "no project '" + id + "'"); return false;
@@ -333,8 +333,8 @@ struct Service::Impl {
 
     // A project's saved patch against its base: the loaded base, the parsed patch and the edited scene.
     bool OpenProject(const std::string& id, std::shared_ptr<const load::Loaded>* L, Patch* p, Scene* scene,
-                     build::VoxelEdits* voxels, Resolved* res, Reply* r, bool lock = true) {
-        if (lock && !LockProject(id, r)) return false;
+                     build::VoxelEdits* voxels, Resolved* res, Reply* r, bool lock = true, uint64_t conn = 0) {
+        if (lock && !LockProject(id, conn, r)) return false;
         if (!lock && !project::ValidId(id)) {
             *r = Err(kBadParams, "project must be [a-z0-9]{1,24}");
             return false;
@@ -470,7 +470,7 @@ struct Service::Impl {
         return Ok(out);
     }
 
-    Reply LoadMethod(const Json& p) {
+    Reply LoadMethod(const Json& p, uint64_t conn) {
         Reply r;
         std::string id, base, source;
         if (!GetStr(p, "project", &id, &r, false) || !GetStr(p, "base", &base, &r, false) || !GetStr(p, "source", &source, &r, false))
@@ -482,7 +482,7 @@ struct Service::Impl {
         Resolved res;
         if (!id.empty()) {
             Patch patch;
-            if (!OpenProject(id, &L, &patch, &scene, &voxels, &res, &r, !(env.readOnly && env.readOnly()))) return r;
+            if (!OpenProject(id, &L, &patch, &scene, &voxels, &res, &r, !(env.readOnly && env.readOnly()), conn)) return r;
         } else {
             L = Load(base, source, &res, &r);
             if (!L) return r;
@@ -508,7 +508,16 @@ struct Service::Impl {
             if (f.voxels >= 0) f.voxels += shift;
             if (f.heightMap >= 0) f.heightMap += shift;
         }
-        r.json = WriteScene(scene);
+        std::set<std::string> resources;
+        for (const auto& d : scene.details) resources.insert(d.resource);
+        Json previews = Json::Obj();
+        for (const auto& resource : resources) {
+            const std::string key = preview::DetailKey(scene.databank.theme, resource);
+            if (!key.empty()) previews.set(resource, Str(key));
+        }
+        Json withPreviews = Parsed(WriteScene(scene));
+        withPreviews.set("previews", std::move(previews));
+        r.json = jsonio::Compact(withPreviews);
         for (size_t i = 0; i < scene.blobs.size(); ++i) {
             const auto& b = scene.blobs[i];
             Blob out;
@@ -532,13 +541,13 @@ struct Service::Impl {
         return r;
     }
 
-    Reply Save(const Json& p) {
+    Reply Save(const Json& p, uint64_t conn) {
         Reply r;
         std::string id;
         if (!GetStr(p, "project", &id, &r)) return r;
         const Json* pj = p.find("patch");
         if (!pj || pj->kind != Json::Kind::Object) return Err(kBadParams, "patch must be an erg-patch/1 object");
-        if (!LockProject(id, &r)) return r;
+        if (!LockProject(id, conn, &r)) return r;
         Patch patch, saved;
         std::string err, text;
         if (!ParsePatch(jsonio::Compact(*pj), &patch, &err)) return Err(kBadParams, err);
@@ -576,7 +585,7 @@ struct Service::Impl {
         return Ok(out);
     }
 
-    Reply Close(const Json& p) {
+    Reply Close(const Json& p, uint64_t conn) {
         Reply r;
         std::string id;
         if (!GetStr(p, "project", &id, &r)) return r;
@@ -585,7 +594,7 @@ struct Service::Impl {
         Patch patch;
         if (store.Locked(id) && store.ReadPatch(id, &text, nullptr) && ParsePatch(text, &patch, nullptr))
             std::erase_if(cache, [&](const Cached& c) { return c.key == patch.base.key; });
-        store.Unlock(id);
+        store.Unlock(id, conn);
         Json out = Json::Obj();
         out.set("closed", Json::Bool(true));
         return Ok(out);
@@ -851,7 +860,7 @@ Reply Service::BuildTest(const std::string& id, const std::wstring& root) {
     return Ok(out);
 }
 
-Reply Service::Call(std::string_view method, std::string_view paramsJson) {
+Reply Service::Call(std::string_view method, std::string_view paramsJson, uint64_t conn) {
     Json p;
     std::string perr;
     if (!xom::ParseJson(paramsJson.empty() ? std::string_view("{}") : paramsJson, p, &perr) || p.kind != Json::Kind::Object)
@@ -859,13 +868,18 @@ Reply Service::Call(std::string_view method, std::string_view paramsJson) {
     std::lock_guard lk(impl_->mx);
     if (method == "level.list") return impl_->List();
     if (method == "level.new") return impl_->New(p);
-    if (method == "level.load") return impl_->LoadMethod(p);
-    if (method == "level.save") return impl_->Save(p);
-    if (method == "level.close") return impl_->Close(p);
+    if (method == "level.load") return impl_->LoadMethod(p, conn);
+    if (method == "level.save") return impl_->Save(p, conn);
+    if (method == "level.close") return impl_->Close(p, conn);
     if (method == "level.themes") return impl_->Themes();
     if (method == "level.palette") return impl_->Palette(p);
     if (method == "level.export") return impl_->Export(p);
     if (method == "level.build") return impl_->BuildMod(p);
     return Err(-32601, "unknown method");
+}
+
+void Service::ClientClosed(uint64_t conn) {
+    std::lock_guard lk(impl_->mx);
+    impl_->store.ReleaseConn(conn);
 }
 }  // namespace melange::erg::service
