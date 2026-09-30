@@ -13,6 +13,7 @@ struct File {
 struct PackSpec {
     std::string modId, name, version, slug, title;         // title: the level's (the mod name when empty)
     bool source = false;                                   // patch-only form (no assets/levels)
+    bool chunk = false;                                    // source form: the built level will ship a chunk
     std::vector<File> levelFiles;                          // built by the level service
     std::string patchJson;
 };

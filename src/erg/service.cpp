@@ -645,6 +645,7 @@ struct Service::Impl {
         spec.slug = id;
         spec.title = patch.title;
         spec.source = mode == "source";
+        spec.chunk = luagen::Needed(scene);
         spec.patchJson = WritePatch(patch);
         if (!spec.source) {
             std::vector<build::File> files;

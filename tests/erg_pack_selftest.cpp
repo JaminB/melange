@@ -201,6 +201,12 @@ void TestPackSource(const fs::path& base) {
     Expect(!FileExists(dir / "assets"), "source ships no assets/levels");
     const std::string manifest = ReadFile(dir / "spice.json");
     Expect(manifest.find("\"chunk\":false") != std::string::npos, "source spice.json records chunk:false (no .lub given)");
+    auto withChunk = BasicSpec("sample", /*source=*/true, /*withChunk=*/false);
+    withChunk.chunk = true;
+    const fs::path dir2 = base / "source-chunk";
+    Expect(erg::pack::WritePack(withChunk, dir2.wstring(), &files, &err), "source export with a chunk succeeds: " + err);
+    Expect(ReadFile(dir2 / "spice.json").find("\"chunk\":true") != std::string::npos,
+           "source spice.json records chunk:true when the built level will have one");
 }
 
 void TestPackMerge(const fs::path& base) {

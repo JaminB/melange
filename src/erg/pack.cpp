@@ -134,7 +134,7 @@ bool WritePack(const PackSpec& spec, const std::wstring& dir, std::vector<std::s
 
     // The level's own manifest entry, plus every other level this mod already had.
     const std::string lubRel = "assets/levels/" + stem + ".lub";
-    const bool chunk = std::any_of(spec.levelFiles.begin(), spec.levelFiles.end(),
+    const bool chunk = spec.source ? spec.chunk : std::any_of(spec.levelFiles.begin(), spec.levelFiles.end(),
                                     [&](const File& f) { return f.rel == lubRel; });
     jsonmini::Obj entry;
     entry.Str("slug", spec.slug).Str("title", spec.title.empty() ? spec.name : spec.title).Str("type", "multi").Bool("chunk", chunk);
