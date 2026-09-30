@@ -17,7 +17,9 @@
 #include "erg/project.h"
 #include "erg/voxels.h"
 #include "erg/xomutil.h"
+#include "levels/manifest.h"
 #include "mods/spice.h"
+#include "tools/hash.h"
 #include "xom/json.h"
 
 namespace melange::erg::service {
@@ -30,7 +32,39 @@ constexpr size_t kMaxCached = 4;
 constexpr uint64_t kMaxCachedBytes = 160u << 20;   // estimated parsed size of the cached bases
 constexpr uint64_t kMaxBlobBytes = 16u << 20;
 constexpr int64_t kMaxRef = 1 << 24;
-const PatchRules kRules{voxels::kAccepted, true};   // adds may target any frame
+const PatchRules kRules{.voxels = voxels::kAccepted, .anyFrame = true, .script = true};
+
+// A level script's problems for the editor: the line of the first byte CheckSimText refuses (1 for the size limit).
+Json ScriptProblems(const std::string& text) {
+    Json out = Json::Arr();
+    std::string why;
+    if (levels::manifest::CheckSimText(text, &why)) return out;
+    int line = 1;
+    if (text.size() <= levels::manifest::kMaxSimBytes)
+        for (size_t start = 0, n = 1;; ++n) {
+            const size_t end = std::min(text.find('\n', start), text.size());
+            std::string w;
+            if (!levels::manifest::CheckSimText(std::string_view(text).substr(start, end - start), &w)) {
+                line = static_cast<int>(n);
+                why = std::move(w);
+                break;
+            }
+            if (end == text.size()) break;
+            start = end + 1;
+        }
+    Json p = Json::Obj();
+    p.set("line", Int(line));
+    p.set("message", Str(why));
+    out.arr.push_back(std::move(p));
+    return out;
+}
+
+ScriptMeta MetaOf(const std::string& script) {
+    ScriptMeta m;
+    m.present = !script.empty();
+    if (m.present) m.sha256 = hashutil::Sha256Hex(script.data(), script.size());
+    return m;
+}
 
 Reply Err(int code, std::string msg) {
     Reply r;
@@ -229,12 +263,14 @@ bool BuildPatch(const std::wstring& gameDir, const std::vector<install::Pack>& p
 
 const std::vector<std::string>& Methods() {
     static const std::vector<std::string> m = {"level.list",   "level.new",   "level.load",    "level.save",  "level.export",
-                                               "level.build",  "level.themes", "level.palette", "level.close"};
+                                               "level.build",  "level.themes", "level.palette", "level.close",
+                                               "level.script.get", "level.script.put"};
     return m;
 }
 
 bool Mutating(std::string_view method) {
-    return method == "level.new" || method == "level.save" || method == "level.export" || method == "level.build";
+    return method == "level.new" || method == "level.save" || method == "level.export" || method == "level.build" ||
+           method == "level.script.put";
 }
 
 struct Service::Impl {
@@ -546,6 +582,9 @@ struct Service::Impl {
         if (patch.stem != saved.stem) return Err(kBadParams, "patch.stem: must stay '" + saved.stem + "'");
         if (patch.base.key != saved.base.key || patch.base.source != saved.base.source)
             return Err(kBadParams, "base: the patch is for another level than the project");
+        std::string script;
+        if (!ProjectScript(id, &script, &r)) return r;
+        patch.script = MetaOf(script);   // script.lua is saved by level.script.put, never by the patch
         Resolved res;
         auto L = Load(patch.base.key, patch.base.source, &res, &r);
         if (!L) return r;
@@ -573,6 +612,55 @@ struct Service::Impl {
         out.set("saved", Json::Bool(true));
         out.set("warnings", std::move(warnings));
         out.set("modified", Str(InfoOf(id).modified));
+        return Ok(out);
+    }
+
+    // The project's script.lua, checked as a pack's level script is ("" when it has none).
+    bool ProjectScript(const std::string& id, std::string* text, Reply* r) {
+        std::string err;
+        if (!store.ReadScript(id, text, &err)) {
+            *r = Err(kPolicy, "project '" + id + "': script.lua: " + (err.empty() ? "cannot be read" : err));
+            return false;
+        }
+        if (!levels::manifest::CheckSimText(*text, &err)) {
+            *r = Err(kPolicy, "project '" + id + "': script.lua: " + err);
+            return false;
+        }
+        return true;
+    }
+
+    Reply ScriptGet(const Json& p) {
+        Reply r;
+        std::string id, text, err;
+        if (!GetStr(p, "project", &id, &r)) return r;
+        if (!project::ValidId(id)) return Err(kBadParams, "project must be [a-z0-9]{1,24}");
+        if (!store.Exists(id)) return Err(kBadParams, "no project '" + id + "'");
+        if (!store.ReadScript(id, &text, &err)) return Err(kPolicy, "script.lua: " + err);
+        Json out = Json::Obj();
+        out.set("text", Str(text));
+        return Ok(out);
+    }
+
+    Reply ScriptPut(const Json& p) {
+        Reply r;
+        std::string id, text, err, patchText;
+        if (!GetStr(p, "project", &id, &r) || !GetStr(p, "text", &text, &r)) return r;
+        if (!LockProject(id, &r)) return r;
+        Json out = Json::Obj();
+        Json problems = ScriptProblems(text);
+        if (!problems.arr.empty()) {
+            out.set("saved", Json::Bool(false));
+            out.set("problems", std::move(problems));
+            return Ok(out);
+        }
+        Patch patch;
+        if (!store.ReadPatch(id, &patchText, &err) || !ParsePatch(patchText, &patch, &err))
+            return Err(kPolicy, "project '" + id + "': " + err);
+        if (!store.WriteScript(id, text, &err)) return Err(kPolicy, err);
+        patch.script = MetaOf(text);
+        if (!store.WritePatch(id, WritePatch(patch), &err)) return Err(kPolicy, err);
+        out.set("saved", Json::Bool(true));
+        out.set("problems", std::move(problems));
         return Ok(out);
     }
 
@@ -682,6 +770,9 @@ struct Service::Impl {
         build::VoxelEdits voxels;
         Resolved res;
         if (!OpenProject(id, &L, &patch, &scene, &voxels, &res, &r)) return r;
+        std::string script;
+        if (!ProjectScript(id, &script, &r)) return r;
+        patch.script = MetaOf(script);
         const std::string stem = prefix + "_" + id;
         if (!names::ValidStem(stem, prefix, &why)) return Err(kBadParams, why);
         patch.stem = stem;
@@ -695,6 +786,7 @@ struct Service::Impl {
         spec.source = mode == "source";
         spec.chunk = luagen::Needed(scene);
         spec.patchJson = WritePatch(patch);
+        spec.script = std::move(script);
         if (!spec.source) {
             std::vector<build::File> files;
             if (!BuildFiles(*L, res, scene, voxels, &files, &r)) return r;
@@ -866,6 +958,8 @@ Reply Service::Call(std::string_view method, std::string_view paramsJson) {
     if (method == "level.palette") return impl_->Palette(p);
     if (method == "level.export") return impl_->Export(p);
     if (method == "level.build") return impl_->BuildMod(p);
+    if (method == "level.script.get") return impl_->ScriptGet(p);
+    if (method == "level.script.put") return impl_->ScriptPut(p);
     return Err(-32601, "unknown method");
 }
 }  // namespace melange::erg::service

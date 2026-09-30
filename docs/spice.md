@@ -74,6 +74,7 @@ A `kind: "content"` mod can ship maps built with [Erg](erg.md), up to 32 per mod
 | `type` | `multi` only — other map types aren't supported yet. |
 | `chunk` | `true` when the pack ships a generated script (`assets/levels/<stem>.lub`) for spawns, placed objects or a water level. |
 | `source` | Path to the patch the map was built from (Erg writes this). When the built files are missing, the mod is `Incompatible` with "not built: open Erg and press Build, or run build.ps1". |
+| `sim` | Optional `sim/<name>.lua`: the map's [level script](erg.md#level-scripts), run in the sim sandbox only on this map. At most 256 KB of UTF-8 without a byte order mark. |
 
 Two mods that resolve to the same prefix (their ids differ only by `-`/`_`) can't both ship maps; the later one in
 load order is `Incompatible`. A map's own files never touch anything under `Data\`, are never named the same as one

@@ -53,3 +53,15 @@
 .erg-new { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 12px; }
 .erg-new label { display: flex; flex-direction: column; gap: 3px; font-size: 12px; color: var(--muted); }
 .erg-new input, .erg-new select { font: inherit; font-size: 13px; padding: 4px 6px; border: 1px solid var(--border); border-radius: 5px; background: var(--bg); color: var(--text); }
+.erg-script { display: flex; flex-direction: column; gap: 8px; padding: 0 12px; min-height: 100%; }
+.erg-script-bar { display: flex; align-items: center; gap: 10px; }
+.erg-script-problems { margin: 0; padding: 0 0 0 16px; font-size: 12.5px; }
+.erg-script-editor { border: 1px solid var(--border); border-radius: 5px; min-height: 240px; overflow: hidden; }
+.erg-script-editor .cm-editor { height: 100%; min-height: 240px; }
+.erg-script-editor .cm-gutters { background: var(--surface-2); color: var(--muted); border-right: 1px solid var(--border); }
+.erg-script-bad { background: color-mix(in srgb, var(--bad) 14%, transparent); }
+.erg-script-problem { margin-left: 12px; color: var(--bad); font-family: var(--sans, inherit); font-size: 11.5px; font-style: italic; }
+.erg-script-ref summary { cursor: pointer; font-size: 12px; color: var(--muted); }
+.erg-script-ref dl { margin: 6px 0 0; font-size: 12px; }
+.erg-script-ref dt { margin-top: 6px; }
+.erg-script-ref dd { margin: 2px 0 0 10px; color: var(--muted); }

@@ -7,6 +7,7 @@
 #include <fstream>
 
 #include "erg/names.h"
+#include "levels/manifest.h"
 #include "tools/json_mini.h"
 #include "tools/json_read.h"
 
@@ -135,6 +136,7 @@ bool WritePack(const PackSpec& spec, const std::wstring& dir, std::vector<std::s
     if (!names::ValidSlug(spec.slug)) return Fail(err, "the slug '" + spec.slug + "' must match [a-z0-9]{1,24}");
     const std::string stem = prefix + "_" + spec.slug;
     if (!names::ValidStem(stem, prefix, &why)) return Fail(err, why);
+    if (!spec.script.empty() && !levels::manifest::CheckSimText(spec.script, &why)) return Fail(err, "script.lua: " + why);
 
     Existing existing;
     if (!ReadExisting(dir, spec.slug, &existing, err)) return false;
@@ -148,6 +150,8 @@ bool WritePack(const PackSpec& spec, const std::wstring& dir, std::vector<std::s
     jsonmini::Obj entry;
     entry.Str("slug", spec.slug).Str("title", spec.title.empty() ? spec.name : spec.title).Str("type", "multi").Bool("chunk", chunk);
     entry.Str("source", "src/" + spec.slug + ".ergpatch.json");
+    const std::string simRel = "sim/" + spec.slug + ".lua";
+    if (!spec.script.empty()) entry.Str("sim", simRel);
     jsonmini::Arr levels;
     levels.Raw(entry.End());
     for (auto& lv : existing.levels) levels.Raw(Serialize(lv));
@@ -174,6 +178,9 @@ bool WritePack(const PackSpec& spec, const std::wstring& dir, std::vector<std::s
     }
     const fs::path patchRel(L"src\\" + std::wstring(spec.slug.begin(), spec.slug.end()) + L".ergpatch.json");
     pending.emplace_back(patchRel, "src/" + spec.slug + ".ergpatch.json");
+    fs::path simPath;
+    if (!SafeRel(simRel, &simPath)) return Fail(err, "unsafe pack file path '" + simRel + "'");
+    if (!spec.script.empty()) pending.emplace_back(simPath, simRel);
 
     if (spec.source) {
         pending.emplace_back(fs::path(L"build.ps1"), "build.ps1");
@@ -193,6 +200,7 @@ bool WritePack(const PackSpec& spec, const std::wstring& dir, std::vector<std::s
                 SafeRel(rel, &p) && NoReparse(dir, p))
                 stale.push_back(fs::path(dir) / p);
         }
+    if (spec.script.empty() && NoReparse(dir, simPath)) stale.push_back(fs::path(dir) / simPath);
 
     std::vector<std::string> written;
     for (auto& [rel, label] : pending) {
@@ -226,6 +234,8 @@ bool WritePack(const PackSpec& spec, const std::wstring& dir, std::vector<std::s
                     "if ($LASTEXITCODE) { throw \"xomtool level build failed\" }\n";
         } else if (label == ".gitignore") {
             bytes = "assets/\n";
+        } else if (label == simRel) {
+            bytes = spec.script;
         } else {
             const auto it = std::find_if(spec.levelFiles.begin(), spec.levelFiles.end(),
                                           [&](const File& f) { return f.rel == label; });

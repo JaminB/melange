@@ -1,5 +1,6 @@
 // Offline self-test of the generated level chunk (luagen) and the pack writer (pack), over synthetic scenes and
 // a scratch temp directory only -- no game, no game files. Exit code 0 = all passed.
+#include <algorithm>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -295,6 +296,37 @@ void TestPackRefusesBadNames(const fs::path& base) {
 
 std::wstring Widen(const std::string& s) { return std::wstring(s.begin(), s.end()); }
 
+void TestPackScript(const fs::path& base) {
+    const std::string text = "wum.log('hello from ' .. wum.level.stem)\n";
+    for (bool source : {false, true}) {
+        const fs::path dir = base / (source ? "script-source" : "script-install") / "erg-pack-test";
+        auto spec = BasicSpec("sample", source, false);
+        spec.script = text;
+        std::vector<std::string> files;
+        std::string err;
+        Expect(erg::pack::WritePack(spec, dir.wstring(), &files, &err), "an export with a script succeeds: " + err);
+        Expect(ReadFile(dir / "sim" / "sample.lua") == text, "the script is copied to sim/<slug>.lua");
+        Expect(std::find(files.begin(), files.end(), "sim/sample.lua") != files.end(), "the written files list the script");
+        melange::spice::Manifest m;
+        std::vector<melange::spice::Error> errs;
+        std::vector<melange::levels::manifest::Error> lerrs;
+        const bool parsed = melange::spice::Parse(dir.wstring(), &m, &errs);
+        const auto decls = parsed ? melange::levels::manifest::Parse(m, &lerrs) : std::vector<melange::levels::manifest::LevelDecl>{};
+        Expect(decls.size() == 1 && decls[0].sim == "sim/sample.lua",
+               "spice.json declares levels[].sim" + (errs.empty() ? std::string() : ": " + errs.front().text) +
+                   (lerrs.empty() ? std::string() : ": " + lerrs.front().text));
+        Expect(erg::pack::WritePack(BasicSpec("sample", source, false), dir.wstring(), &files, &err) &&
+                   !FileExists(dir / "sim" / "sample.lua") && ReadFile(dir / "spice.json").find("\"sim\"") == std::string::npos,
+               "a re-export without a script removes it: " + err);
+    }
+    auto bad = BasicSpec("sample", true, false);
+    bad.script = std::string("\x1bLua", 4);
+    std::vector<std::string> files;
+    std::string err;
+    Expect(!erg::pack::WritePack(bad, (base / "script-bad").wstring(), &files, &err) && !FileExists(base / "script-bad" / "spice.json"),
+           "compiled Lua is refused before anything is written");
+}
+
 void TestSampleModParses() {
     const std::wstring dir = Widen(std::string(MELANGE_SOURCE_DIR) + "/dist/Mods/erg-sample");
     melange::spice::Manifest m;
@@ -368,6 +400,7 @@ int main() {
     TestPackRefusesBadNames(base);
     TestPackStaleAndFolders(base);
     TestPackNeverWritesCshEvenIfAskedTwice(base);
+    TestPackScript(base);
     fs::remove_all(base, ec);
     TestSampleModParses();
 

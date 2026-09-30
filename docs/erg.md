@@ -86,6 +86,52 @@ Press **Test** to play the map as it stands, without exporting or restarting any
 A Test map never appears to anyone else and never starts in an online match; it's for checking your own work before
 you export. Testing again after another edit simply overwrites the same private copy.
 
+## Level scripts
+
+The **Script** tab holds the map's own Lua, saved in the project as `script.lua`. It runs in the match's sandbox,
+the same one a content mod's `entry.sim` gets (see *Sim scripts* in [developer-guide.md](developer-guide.md#sim-scripts)),
+after every mod's sim script and only when this map is the one being played. **Save script** (Ctrl+S) checks the text
+first and marks the line of any problem; Test saves it and runs the saved text, so an edit followed by another Test
+needs no restart. Export ships it as `sim/<slug>.lua` and names it in the level's `levels[].sim` in `spice.json`.
+
+```lua
+wum.level.trigger("GOAL", { radius = 80 })
+wum.events.on("Trigger.Collected", function()
+  wum.sim.setData("Water.Level", 30)
+end)
+wum.events.on("sim.turnStarted", function(name, turn)
+  if math.mod(turn, 5) == 0 and wum.level.knots["CRATE1"] then
+    wum.level.crate("CRATE1", { kind = "health", amount = 50 })
+  end
+end)
+```
+
+| Name | Purpose |
+|---|---|
+| `wum.level.stem`, `wum.level.key` | This map's file stem and registry key (`Multi.<stem>`) |
+| `wum.level.knots` | Read-only table of the map's named knots, name → kind (no positions) |
+| `wum.level.trigger(knot [, opts])` | A trigger at a knot; `opts`: `index`, `radius`, `teamCollect`, `teamDestroy`, `hitpoints`, `wormCollect`. `true`, or `nil` and a reason |
+| `wum.level.crate(knot [, opts])` | A crate at a knot; `opts`: `kind` (`weapon`, `health`, `utility`), `contents`, `count`, `amount`, `hitpoints`, `parachute` |
+| `wum.events.on("sim.turnStarted", fn)` | `fn(name, turn)` at the first tick of each turn, on every machine at the same tick |
+
+Everything else (`wum.events`, `wum.sim.*`, `wum.log`) is the sim script API. In logs and in Wormsign the script is
+named `<mod id>:<slug>` (`erg:<project>` while testing).
+
+**Sandbox limits.** No engine globals (`SendMessage` and friends are `nil`), only the messages the sim allows
+(`GameLogic.PauseGame` and the like are refused), and an instruction budget per call (`[SimBridge] InstrPerCall`): a
+callback that errors or runs out of budget three times is switched off, and the match goes on. A script is at most
+256 KB of UTF-8 text with no byte order mark; compiled Lua is refused.
+
+**Determinism.** Every machine in a match runs the script and must reach the same result, so:
+
+- use `wum.sim.random` (`math.random` is the same stream), never the clock or anything local to one machine;
+- numbers are floats (exact integers only up to 2^24), and it's Lua 5.0: `table.getn(t)` not `#t`, `math.mod` not `%`;
+- a closure inside a loop sees the loop variable's last value, so copy it into a `local` first;
+- keep state in globals or `wum.sim.storage` (Wormsign hashes those) or pass it to `wum.sim.hash`.
+
+Online, everyone must have the same pack version, which covers the script's bytes, and a replay refuses to play if
+the level script has changed since it was recorded.
+
 ## Export
 
 Exporting turns a project into a mod under `Mods\`, in one of two forms:
@@ -123,8 +169,8 @@ can't pick your map to begin with.
 - A patch (your saved edits) is capped at 20 000 operations and 4 MB — enough for any hand-made edit; if you hit
   this, split the changes into more than one exported map.
 - Not yet supported: crates and mine factories and telepads, per-team or story spawn points, survivor/story/challenge
-  map types, new terrain shapes (only carving, filling and painting the terrain the base map already has), custom
-  Lua in a map's own script (Erg's generated script is overwritten every export), and enabling a freshly exported mod
+  map types, new terrain shapes (only carving, filling and painting the terrain the base map already has), editing
+  the map's generated chunk (Erg rewrites it every export; use a [level script](#level-scripts)), and enabling a freshly exported mod
   without a restart.
 - A replay recorded on a Test map only plays back correctly while your Test workspace still has the same files —
   moving on to a different edit, or exporting for real, can make an older Test recording unplayable.

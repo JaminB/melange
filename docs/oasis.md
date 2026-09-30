@@ -310,6 +310,8 @@ at all.
 | `level.themes` | `{}` → themes, times of day, material files | from the install's own `Data\Themes` |
 | `level.palette` | `{theme}` → placeable entries `{name, resource, role, preview}` | `preview` is an `/erg/assets/` key |
 | `level.close` | `{project}` → `{}` | frees the server's parsed copy of the base |
+| `level.script.get` | `{project}` → `{text}` | the project's `script.lua`, `""` when it has none |
+| `level.script.put` | `{project, text}` → `{saved, problems: [{line, message}]}` | a level script's rules (≤ 256 KB, UTF-8, no BOM or ESC); `""` removes it; not saved when there are problems |
 
 The `erg` channel (Coalesce) carries `{state, key, detail}` from `level.test`'s progress (`idle`, `registering`,
 `registered`, `armed`, `starting`, `playing`, `ended`, `failed`) and, at the start of a match, `{level, water}`.

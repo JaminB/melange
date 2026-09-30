@@ -8,6 +8,7 @@
 
 #include "erg/install.h"
 #include "erg/jsonio.h"
+#include "levels/manifest.h"
 #include "xom/json.h"
 
 namespace melange::erg::project {
@@ -111,6 +112,25 @@ bool Store::ReadPatch(const std::string& id, std::string* json, std::string* err
 bool Store::WritePatch(const std::string& id, const std::string& json, std::string* err) {
     if (!Exists(id)) return Fail(err, "no project '" + id + "'");
     return install::WriteAtomic(Path(id, kPatchFile), json.data(), json.size(), err);
+}
+
+bool Store::ReadScript(const std::string& id, std::string* text, std::string* err) const {
+    text->clear();
+    if (!ValidId(id)) return Fail(err, "a project id is [a-z0-9]{1,24}");
+    const std::wstring path = Path(id, kScriptFile);
+    if (!install::Exists(path)) return true;
+    std::vector<uint8_t> b;
+    if (!install::ReadFile(path, levels::manifest::kMaxSimBytes, &b, err)) return false;
+    text->assign(b.begin(), b.end());
+    return true;
+}
+
+bool Store::WriteScript(const std::string& id, const std::string& text, std::string* err) {
+    if (!Exists(id)) return Fail(err, "no project '" + id + "'");
+    const std::wstring path = Path(id, kScriptFile);
+    if (!text.empty()) return install::WriteAtomic(path, text.data(), text.size(), err);
+    if (!install::Exists(path) || DeleteFileW(path.c_str())) return true;
+    return Fail(err, "could not remove script.lua");
 }
 
 bool Store::ReadMeta(const std::string& id, Meta* out) const {
