@@ -1,6 +1,6 @@
 // A stand-in for the game's Oasis server, for browser tests without the game: serves a built web app and speaks
-// protocol v1 over a small RFC 6455 implementation. It fakes the log, bus, bus.counts and mods channels and the
-// lua.*, mods.*, ini.*, bus.names, log.sessions and level.* methods, with the same rules the real handlers apply.
+// protocol v1 over a small RFC 6455 implementation. It fakes the log, bus, bus.counts, mods and store channels and the
+// lua.*, mods.*, ini.*, bus.names, log.sessions, level.* and store.* methods, with the same rules the real handlers apply.
 //   import { startMock } from "./mock-server.mjs"; const m = await startMock({ root: "web/dist" });
 //   node web/test/e2e/mock-server.mjs [--root web/dist] [--port 0] [--standalone] [--read-only] [--online]
 import { createHash, randomBytes } from "node:crypto";
@@ -8,6 +8,7 @@ import { readFileSync, existsSync, statSync } from "node:fs";
 import { createServer } from "node:http";
 import { extname, join, normalize, resolve } from "node:path";
 import { AFTER, ergService } from "./erg-mock.mjs";
+import { storeService } from "./store-mock.mjs";
 
 const CSP = "default-src 'self'; connect-src 'self'; img-src 'self' blob: data:; style-src 'self' 'unsafe-inline'; frame-src 'self'; " +
   "frame-ancestors 'none'; base-uri 'none'; form-action 'none'";
@@ -130,10 +131,11 @@ export async function startMock(opts = {}) {
     JSON.stringify({ v: 1, seq: i + 1, t: i * 10, wall: `2026-09-27T10:00:${String(i % 60).padStart(2, "0")}.000-04:00`, lvl: LEVELS[2 + (i % 3)], cat: i % 2 ? "net" : "core", msg: `past record ${i + 1}` })).join("\n") + "\n";
 
   const erg = ergService(state);
+  const store = storeService(state, (ch, d) => broadcast(ch, d));
   const methods = [...(state.server === "game"
     ? ["sys.ping", "lua.eval", "lua.complete", "mods.list", "mods.setEnabled", "mods.revokeDeepDesert", "levels.live", "ini.get", "ini.set", "bus.names", "log.sessions"]
-    : ["sys.ping", "mods.list", "ini.get", "ini.set", "log.sessions"]), ...erg.methods];
-  const channels = state.server === "game" ? ["log", "bus", "bus.counts", "mods", "stats"] : ["log"];
+    : ["sys.ping", "mods.list", "ini.get", "ini.set", "log.sessions"]), ...erg.methods, ...(state.server === "game" ? store.methods : [])];
+  const channels = state.server === "game" ? ["log", "bus", "bus.counts", "mods", "stats", "store"] : ["log"];
 
   const logRecord = (lvl, cat, msg) => {
     state.seq++;
@@ -237,8 +239,8 @@ export async function startMock(opts = {}) {
       return { live, restart: !live, changed: true };
     },
   };
-  Object.assign(handlers, erg.handlers);
-  const mutating = new Set(["lua.eval", "mods.setEnabled", "levels.live", "mods.revokeDeepDesert", "ini.set", ...erg.mutating]);
+  Object.assign(handlers, erg.handlers, store.handlers);
+  const mutating = new Set(["lua.eval", "mods.setEnabled", "levels.live", "mods.revokeDeepDesert", "ini.set", ...erg.mutating, ...store.mutating]);
 
   function broadcast(ch, d) { for (const c of clients) if (c.subs.has(ch)) c.queue(ch, d); }
 
@@ -259,6 +261,7 @@ export async function startMock(opts = {}) {
       if (m.id !== undefined) reply(c, m.id, true);
       if (m.ch === "log") for (const r of backlog) c.queue("log", r);
       if (m.ch === "mods") c.queue("mods", modPublic());
+      if (m.ch === "store") c.queue("store", store.initial());
       return;
     }
     if (m.t === "call") {
@@ -295,6 +298,12 @@ export async function startMock(opts = {}) {
     if (url.pathname === `/logs/${session}/events.jsonl`) {
       res.writeHead(200, { ...headers, "Content-Type": TYPES[".jsonl"], "Cache-Control": "no-store" });
       return res.end(sessionText);
+    }
+    if (url.pathname.startsWith("/store/shots/") && state.server === "game") {
+      const img = store.route(url.pathname);
+      if (!img) { res.writeHead(404, headers); return res.end(); }
+      res.writeHead(200, { ...headers, "Content-Type": "image/png", "Cache-Control": "no-store" });
+      return res.end(img);
     }
     const rel = url.pathname === "/" ? "index.html" : decodeURIComponent(url.pathname.slice(1));
     const file = normalize(join(root, rel));
@@ -426,6 +435,7 @@ export async function startMock(opts = {}) {
     clients: () => clients.size,
     close: async () => {
       clearInterval(logTimer); clearInterval(busTimer); clearInterval(countTimer);
+      store.close();
       for (const c of clients) c.close(1001, "bye");
       await new Promise((r) => server.close(r));
       server.closeAllConnections?.();

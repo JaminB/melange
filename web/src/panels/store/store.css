@@ -1,0 +1,25 @@
+.store h1 { font-size: 18px; margin: 0 0 8px; }
+.store h2 { font-size: 16px; margin: 0 0 4px; }
+.store h3 { font-size: 13px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted); margin: 16px 0 6px; }
+.store .hint { margin: 4px 0; }
+.store-filters { border: 0; padding: 4px 0; flex-wrap: wrap; }
+.store-progress progress { width: 220px; }
+.store-body { display: grid; grid-template-columns: minmax(260px, 2fr) minmax(0, 3fr); gap: 16px; margin-top: 8px; align-items: start; }
+.store-list { list-style: none; margin: 0; padding: 0; border: 1px solid var(--border); border-radius: 6px; }
+.store-list li { padding: 8px 10px; border-bottom: 1px solid var(--border); cursor: pointer; }
+.store-list li:last-child { border-bottom: 0; }
+.store-list li:hover { background: var(--surface-2); }
+.store-list li.sel { background: var(--accent-soft); }
+.store-actions { display: inline-flex; gap: 6px; }
+.store-details { min-width: 0; }
+.store-desc { white-space: pre-wrap; overflow-wrap: anywhere; }
+.store-shots { display: grid; gap: 10px; }
+.store-shots figure { margin: 0; }
+.store-shots img { max-width: 100%; border-radius: 4px; border: 1px solid var(--border); display: block; }
+.store-versions { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; }
+.store-changelog { white-space: pre-wrap; overflow-wrap: anywhere; }
+.store-dialog-backdrop { position: fixed; inset: 0; background: rgb(0 0 0 / 0.45); display: grid; place-items: center; z-index: 50; }
+.store-dialog { background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 16px 20px; width: min(480px, 92vw); }
+.store-dialog p { margin: 6px 0; }
+.store-dialog .row { margin-top: 12px; }
+@media (max-width: 760px) { .store-body { grid-template-columns: 1fr; } }
