@@ -59,8 +59,8 @@ export function TerrainTools({ tool, palette, names }: { tool: TerrainTool; pale
         <div style={{ marginTop: "10px" }}>
           {second ? (
             <p class="warn small" data-second-note>Experimental: paints the level's second material over solid voxels, with
-              partial corners on the border. The corner order is not yet confirmed in game, and each corner also changes the
-              collision shape slightly. Test the level to check the result.</p>
+              partial corners on the border. Each corner also changes the collision shape slightly, so test the level to
+              check the result.</p>
           ) : null}
           <div class="row between">
             <span>{second && b.material === "none" ? "Removing the second material" : b.material === "column" ? "Material from the column"

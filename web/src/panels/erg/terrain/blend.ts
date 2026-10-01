@@ -4,9 +4,8 @@
 // collision: each set bit fills a corner of the frame's collision grid.
 import { maskOf, secondOf, withSecond } from "./voxel";
 
-/** The mask bit of each voxel corner, CORNER_BIT[cy][cz][cx] (c = 0 at the low side, 1 at the high side). Bits 0-3 are
- * the top face's corners and 4-7 the bottom's (M6.2 T2, run pF); the order within a face is not confirmed in game yet.
- * This table is the only place that order lives: flip it here if the in-game check disagrees. */
+/** The mask bit of each voxel corner, CORNER_BIT[cy][cz][cx] (c = 0 at the low side, 1 at the high side): bits 0-3 are
+ * the top face's corners and 4-7 the bottom's, in the order the engine decodes them (checked in game). */
 export const CORNER_BIT: readonly (readonly (readonly number[])[])[] = [
   [[7, 6], [5, 4]],   // bottom: (x0 z0) (x1 z0), (x0 z1) (x1 z1)
   [[3, 2], [1, 0]],   // top
