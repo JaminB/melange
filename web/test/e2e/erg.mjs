@@ -24,8 +24,8 @@ const attempt = async (name, fn) => {
   }
 };
 
-async function openPage(browser, mock, hash = "") {
-  const page = await browser.newPage({ viewport: { width: 1400, height: 860 } });
+async function openPage(browser, mock, hash = "", viewport = { width: 1400, height: 860 }) {
+  const page = await browser.newPage({ viewport });
   const errors = [];
   const scripts = [];
   page.on("pageerror", (e) => errors.push(e.message));
@@ -296,6 +296,31 @@ async function suite(browser) {
       await page.locator('[data-action="save"]').click();
       await page.waitForSelector('[data-erg-save="ok"]', { timeout: 5000 });
       check("after reconnecting, save works", mock.state.erg.saves === saves + 1 && (await page.locator("[data-erg-editor]").getAttribute("data-dirty")) === "0");
+    });
+
+    await attempt("side pane fits at 1280px", async () => {
+      const narrow = await openPage(browser, mock, "", { width: 1280, height: 860 });
+      try {
+        await openErg(narrow.page);
+        await createProject(narrow.page, "Multi.Synthetic12", "narrow", "Narrow Test");
+        for (const t of ["props", "level", "checks", "terrain", "script", "export"]) {
+          const loc = narrow.page.locator(`[data-tab="${t}"]`);
+          if (await loc.count()) await loc.click();
+        }
+        const overflow = await narrow.page.evaluate(() => {
+          const doc = document.documentElement;
+          const tabs = document.querySelector(".erg-tabs");
+          return {
+            page: doc.scrollWidth <= doc.clientWidth + 1,
+            tabs: !tabs || tabs.scrollWidth <= tabs.clientWidth + 1,
+          };
+        });
+        check("at 1280px the page has no horizontal overflow", overflow.page, JSON.stringify(overflow));
+        check("at 1280px the tab strip does not overflow its pane", overflow.tabs, JSON.stringify(overflow));
+      } finally {
+        await narrow.page.close();
+        current = page;
+      }
     });
 
     const real = errors.filter((e) => !/WebSocket connection .* 503/.test(e));

@@ -32,8 +32,8 @@
 .erg-item.sel { background: var(--accent-soft); }
 .erg-glyph { display: inline-grid; place-items: center; width: 16px; height: 16px; border-radius: 50%; color: #fff; font-size: 10px; font-weight: 700; flex: none; }
 .erg-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.erg-side { display: flex; flex-direction: column; min-height: 0; border-left: 1px solid var(--border); background: var(--surface); }
-.erg-tabs { display: flex; gap: 2px; padding: 6px 8px 0; border-bottom: 1px solid var(--border); }
+.erg-side { display: flex; flex-direction: column; min-width: 0; min-height: 0; border-left: 1px solid var(--border); background: var(--surface); }
+.erg-tabs { display: flex; flex-wrap: wrap; gap: 2px; padding: 6px 8px 0; border-bottom: 1px solid var(--border); }
 .erg-tab { background: none; border: 0; border-bottom: 2px solid transparent; padding: 5px 10px; cursor: pointer; color: var(--muted); }
 .erg-tab.on { color: var(--text); border-bottom-color: var(--accent); font-weight: 600; }
 .erg-count { margin-left: 6px; font-size: 11px; background: var(--surface-2); border-radius: 999px; padding: 0 6px; }
