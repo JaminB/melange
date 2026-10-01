@@ -377,8 +377,9 @@ std::string PoolFallback(uint32_t pool) {
     return {};
 }
 
-// The save keeps a last-played level per mode, and entering the mode makes it WXD.Level.Current: one that is not
-// registered this launch (a removed pack's level or Survivor copy) would crash that mode's lobby start on both peers.
+// The save keeps a last-played level per mode, and entering the mode makes it WXD.Level.Current: a Melange level that
+// is not registered this launch (a removed pack's level or Survivor copy) would crash that mode's lobby start on both
+// peers. Only Melange keys are reset: the save also holds story, challenge and DLC keys that are not WXFE_LevelDetails.
 void CheckLastPlayed() {
     if (g_lastPlayedDone) return;
     const uint64_t now = GetTickCount64();
@@ -401,7 +402,8 @@ void CheckLastPlayed() {
     for (const Mode& m : kModes) {
         const bool main = m.pool == 0x2c;
         if (!main && (!weng::TextOf(m.key, &last) || last.empty())) continue;
-        if (eng::LevelDetails(last.c_str(), nullptr)) continue;
+        if (eng::LevelDetails(last.c_str(), nullptr) || !(erg::names::ModKey(last) || Lookup(last.c_str(), nullptr)))
+            continue;
         const std::string to = main ? kFallbackLevel : PoolFallback(m.pool);
         const bool ok = !to.empty() && eng::PostDataResource(m.key, to.c_str()) &&
                         (!main || eng::PostDataResource("WXD.Level.PrettyName", kFallbackPretty));

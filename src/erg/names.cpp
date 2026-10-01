@@ -65,4 +65,13 @@ bool CollidesWithVanilla(std::string_view stem) {
 }
 
 std::string Key(std::string_view stem) { return "Multi." + std::string(stem); }
+
+bool ModKey(std::string_view key) {
+    constexpr std::string_view kMulti = "Multi.", kCopy = ".S";
+    if (key.substr(0, kMulti.size()) != kMulti) return false;
+    std::string_view stem = key.substr(kMulti.size());
+    if (stem.size() > kCopy.size() && stem.substr(stem.size() - kCopy.size()) == kCopy) stem.remove_suffix(kCopy.size());
+    const size_t us = stem.rfind('_');
+    return us != std::string_view::npos && us > 0 && ValidStem(stem, stem.substr(0, us), nullptr);
+}
 }  // namespace melange::erg::names

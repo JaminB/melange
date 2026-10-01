@@ -431,6 +431,17 @@ void TestSampleModParses() {
     Expect(voxels > 0 && sets + drums + mines + voxels == p.ops.size(), "the sample carves a little terrain and does nothing else");
 }
 
+void TestModKey() {
+    // Only these are reset when the save's last-played level is not registered; vanilla values must never match.
+    for (const char* v : {"AlexBond_FindFox", "AReStory.CarpetCapers", "Multi.DinerMight", "Multi.DinerMight.S",
+                          "Multi.multi_dinermight", "Multi.lp_multi_carpetcapers", "Multi.Erg_Sample_Sample", "Multi._x",
+                          "Multi.erg_", "Multi.ergsample", "Single.erg_sample_sample", "Multi.erg_sample_sample.S.S", ""})
+        Expect(!erg::names::ModKey(v), std::string("not a Melange key: ") + v);
+    for (const char* v : {"Multi.erg_sample_sample", "Multi.erg_sample_sample.S", "Multi.ergtest_abc123",
+                          "Multi.ergtest_abc123.S", "Multi.mirage_dunes"})
+        Expect(erg::names::ModKey(v), std::string("a Melange key: ") + v);
+}
+
 void TestPackNeverWritesCshEvenIfAskedTwice(const fs::path& base) {
     // Re-running an install export must not resurrect a .csh a previous (buggy) caller left behind.
     const fs::path dir = base / "csh";
@@ -463,6 +474,7 @@ int main() {
     TestPackScript(base);
     fs::remove_all(base, ec);
     TestSampleModParses();
+    TestModKey();
 
     printf("erg_pack_selftest: %d passed, %d failed\n", g_pass, g_fail);
     return g_fail ? 1 : 0;
