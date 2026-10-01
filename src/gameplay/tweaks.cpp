@@ -45,7 +45,6 @@ public:
     const char* Description() const override {
         return "engine frame interval in ms (16 = ~60 fps, 8 = ~120 fps); classic timing (timeBeginPeriod)";
     }
-    bool DefaultEnabled() const override { return false; }
     bool RequiresKnownBuild() const override { return true; }
     int Order() const override { return 101; }
 
@@ -56,7 +55,9 @@ public:
                                       [](void* self) { static_cast<FrameInterval*>(self)->ToggleClassicTiming(); },
                                       this);
 
+        // 16 is the engine's own value: leave the site untouched so SmoothSixty can still lift it.
         int ms = Int("IntervalMs", 16);
+        if (ms == 16) return true;
         if (ms < 1 || ms > 100) {
             LOG_WARN("FrameInterval: IntervalMs=%d out of range, not patched", ms);
             return true;
@@ -84,10 +85,8 @@ private:
     // never double up timeBeginPeriod/timeEndPeriod.
     void ApplyClassicTiming(bool on) {
         if (on == classicActive_) return;
-        if (on)
-            timeBeginPeriod(1);
-        else
-            timeEndPeriod(1);
+        MMRESULT r = on ? timeBeginPeriod(1) : timeEndPeriod(1);
+        LOG_INFO("FrameInterval: %s(1) -> %u", on ? "timeBeginPeriod" : "timeEndPeriod", r);
         classicActive_ = on;
     }
 
