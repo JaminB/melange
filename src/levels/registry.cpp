@@ -12,6 +12,7 @@
 #include <map>
 #include <memory>
 #include <mutex>
+#include <set>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -167,8 +168,9 @@ int LoadEntries(const std::string& bankName, std::vector<erg::bank::Entry> entri
         return -1;
     }
     int n = 0;
+    std::set<std::string> named;   // a Survivor copy shares its level's title
     for (size_t i = 0; i < fresh.size(); ++i) {
-        if (!eng::AddString(fresh[i].frontendName.c_str(), kept[i].c_str(), 12))
+        if (named.insert(fresh[i].frontendName).second && !eng::AddString(fresh[i].frontendName.c_str(), kept[i].c_str(), 12))
             LOG_WARN("[levels] the title of %s could not be added", fresh[i].key.c_str());
         n += eng::LevelDetails(fresh[i].key.c_str(), nullptr) ? 1 : 0;
     }
@@ -206,19 +208,19 @@ bool ReadLevelSim(const fs::path& modDir, const std::string& mod, const manifest
     return true;
 }
 
-// The engine runs the cache root's copy of a pack chunk, written only from text the generator could have produced.
+// The engine runs the cache root's copy of a pack chunk: the generator's current form of an accepted chunk.
 bool AcceptChunk(const std::string& stem, const fs::path& root, std::string* text, std::string* err) {
-    std::string got, why;
+    std::string got, why, run;
     const std::string rel = stem + ".lub";
     if (!roots::ReadChunk(root / game::Widen(rel), &got)) {
         *err = "levels/" + rel + " could not be read";
         return false;
     }
-    if (!erg::luagen::IsGenerated(stem, got, &why)) {
+    if (!erg::luagen::Upgrade(stem, got, &run, &why)) {
         *err = "levels/" + rel + " " + why;
         return false;
     }
-    *text = std::move(got);
+    *text = std::move(run);
     return true;
 }
 
@@ -263,6 +265,15 @@ int LoadPack(const roots::PackVerdict& v, const fs::path& root, const fs::path& 
         en.scripts = ScriptList(manifest::Scripts(d));
         entries.push_back(en);
         titles.push_back(d.title);
+        if (d.survivor) {
+            // No lock (a locked entry is left out of the picker) and the Prebuilt section, like the unlocked vanilla maps.
+            en.key = manifest::TwinKey(d.stem);
+            en.scripts = ScriptList(manifest::SurvivorScripts(d));
+            en.levelType = 3;
+            en.levelSection = 0;
+            entries.push_back(en);
+            titles.push_back(d.title);
+        }
     }
     const int n = LoadEntries(erg::names::Prefix(v.mod) + "_REG", entries, titles, err);
     if (n >= 0 && static_cast<size_t>(n) < entries.size()) {
@@ -359,7 +370,15 @@ void RegisterPacks() {
     LOG_INFO("[levels] registration took %.2f ms", g_msRegister);
 }
 
-// A last-played level that is not registered this launch would crash a lobby start on both peers.
+// The first vanilla level of one of MissionService's random pools (locked levels are not in them).
+std::string PoolFallback(uint32_t pool) {
+    for (const auto& k : eng::PoolKeysAt(pool))
+        if (!Lookup(k.c_str(), nullptr) && eng::LevelDetails(k.c_str(), nullptr)) return k;
+    return {};
+}
+
+// The save keeps a last-played level per mode, and entering the mode makes it WXD.Level.Current: one that is not
+// registered this launch (a removed pack's level or Survivor copy) would crash that mode's lobby start on both peers.
 void CheckLastPlayed() {
     if (g_lastPlayedDone) return;
     const uint64_t now = GetTickCount64();
@@ -372,12 +391,25 @@ void CheckLastPlayed() {
     std::string last;
     if (!weng::TextOf("WXD.Level.LastPlayed", &last) || last.empty()) return;
     g_lastPlayedDone = true;
-    if (eng::LevelDetails(last.c_str(), nullptr)) return;
-    const bool ok = eng::PostDataResource("WXD.Level.LastPlayed", kFallbackLevel) &&
-                    eng::PostDataResource("WXD.Level.PrettyName", kFallbackPretty);
-    LOG_WARN("[levels] the last-played level '%s' is not registered; reset to %s: %s", last.c_str(), kFallbackLevel,
-             ok ? "ok" : "FAILED");
-    jlog::Rec("levels", ok ? jlog::Level::Warn : jlog::Level::Error, "last_played_reset").Str("was", last).Bool("ok", ok);
+    struct Mode {
+        const char* key;
+        uint32_t pool;   // the mode's random pool in MissionService (Level_Type 0, 1, 2, 3, 11)
+    };
+    static constexpr Mode kModes[] = {{"WXD.Level.LastPlayed", 0x2c}, {"WXD.Level.LastPlayed.Dest", 0x8c},
+                                      {"WXD.Level.LastPlayed.Stat", 0xa4}, {"WXD.Level.LastPlayed.Surv", 0xbc},
+                                      {"WXD.Level.LastPlayed.Fort", 0xd4}};
+    for (const Mode& m : kModes) {
+        const bool main = m.pool == 0x2c;
+        if (!main && (!weng::TextOf(m.key, &last) || last.empty())) continue;
+        if (eng::LevelDetails(last.c_str(), nullptr)) continue;
+        const std::string to = main ? kFallbackLevel : PoolFallback(m.pool);
+        const bool ok = !to.empty() && eng::PostDataResource(m.key, to.c_str()) &&
+                        (!main || eng::PostDataResource("WXD.Level.PrettyName", kFallbackPretty));
+        LOG_WARN("[levels] %s '%s' is not registered; reset to %s: %s", m.key, last.c_str(), to.empty() ? "(none)" : to.c_str(),
+                 ok ? "ok" : "FAILED");
+        jlog::Rec("levels", ok ? jlog::Level::Warn : jlog::Level::Error, "last_played_reset")
+            .Str("key", m.key).Str("was", last).Str("to", to).Bool("ok", ok);
+    }
 }
 
 void OnStart(const LevelStart& s, void*) {
@@ -432,6 +464,26 @@ void Declare(const Level& l) {
     if (it == g_levels.end()) g_levels.push_back(l);
     else *it = l;
 }
+
+// A pack level and its Survivor copy, when it declares one.
+void DeclarePack(const manifest::LevelDecl& d, const fs::path& root, const std::string& version, bool live) {
+    Level l = MakeLevel(erg::names::Key(d.stem), d.stem, d.mod, d.title, Source::Pack, root, version, d.chunk);
+    l.info.live = live;
+    Declare(l);
+    if (!d.survivor) return;
+    Level t = MakeLevel(manifest::TwinKey(d.stem), d.stem, d.mod, d.title, Source::Pack, root, version,
+                        d.chunk && manifest::kSurvivorRunsChunk);
+    t.info.live = live;
+    t.info.levelType = 3;
+    Copy(t.info.levelKind, sizeof t.info.levelKind, "survivor");
+    Declare(t);
+}
+
+std::vector<std::string> PackKeys(const manifest::LevelDecl& d) {
+    std::vector<std::string> k = {erg::names::Key(d.stem)};
+    if (d.survivor) k.push_back(manifest::TwinKey(d.stem));
+    return k;
+}
 }  // namespace
 
 std::vector<Refusal> CheckPacks(const std::vector<roots::PackInput>& inLoadOrder) {
@@ -459,7 +511,7 @@ std::vector<Refusal> CheckPacks(const std::vector<roots::PackInput>& inLoadOrder
                     root = in.dir / game::Widen(in.manifest->assetsRoot) / roots::kLevelDir;
                 }
             for (const auto& d : v.levels)
-                Declare(MakeLevel(erg::names::Key(d.stem), d.stem, d.mod, d.title, Source::Pack, root, version, d.chunk));
+                DeclarePack(d, root, version, false);
         }
     }
     for (const auto& v : g_verdicts)
@@ -670,7 +722,7 @@ bool ReloadAll() {
         std::lock_guard lk(g_mx);
         for (const auto& l : g_levels) {
             if (l.info.source == Source::Test) tests.emplace_back(l.info.stem, l.info.title);
-            else byMod[l.info.mod].emplace_back(l.info.stem, l.info.title);
+            else if (l.info.levelType != 3) byMod[l.info.mod].emplace_back(l.info.stem, l.info.title);
         }
     }
     if (!eng::ClearDataBank(12)) return false;
@@ -734,10 +786,11 @@ bool EnableLive(const std::string& mod, std::string* err) {
         return false;
     }
     for (const auto& d : verdict.levels)
-        if (KeyTaken(erg::names::Key(d.stem))) {
-            *err = erg::names::Key(d.stem) + " already exists in the data store";
-            return false;
-        }
+        for (const auto& k : PackKeys(d))
+            if (KeyTaken(k)) {
+                *err = k + " already exists in the data store";
+                return false;
+            }
     for (const auto& d : verdict.levels)
         if (!d.sim.empty()) {
             *err = mod + " has level scripts, which load only at launch; restart the game with it enabled";
@@ -754,11 +807,7 @@ bool EnableLive(const std::string& mod, std::string* err) {
         *err = "adding the level root " + rel + " failed";
         return false;
     }
-    for (const auto& d : verdict.levels) {
-        Level l = MakeLevel(erg::names::Key(d.stem), d.stem, d.mod, d.title, Source::Pack, root, self->manifest.version, d.chunk);
-        l.info.live = true;
-        Declare(l);
-    }
+    for (const auto& d : verdict.levels) DeclarePack(d, root, self->manifest.version, true);
     const int n = LoadPack(verdict, root, fs::path(self->dir), nullptr, err);
     if (n < 0) {
         Forget(mod);

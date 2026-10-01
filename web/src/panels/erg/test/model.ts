@@ -53,7 +53,7 @@ export function statusLine(s: TestStatus): string {
 // ---- Export dialog ------------------------------------------------------------------------------------------
 
 export type ExportMode = "install" | "source";
-export interface ExportForm { modId: string; name: string; version: string; mode: ExportMode; }
+export interface ExportForm { modId: string; name: string; version: string; mode: ExportMode; survivor: boolean; }
 
 export function prefixOf(modId: string): string { return modId.replace(/-/g, "_"); }
 

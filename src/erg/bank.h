@@ -11,6 +11,7 @@ namespace melange::erg::bank {
 struct Entry {
     std::string key, stem, frontendName, scripts;   // scripts: "stdvs,wormpot[,<stem>]"
     int levelType = 0, themeType = 5;
+    int levelSection = -1;                          // the picker section; -1 keeps the template's
 };
 std::vector<uint8_t> RegistryBank(const xom::Document& scriptsXom, const std::vector<Entry>& entries, std::string* err);
 }  // namespace melange::erg::bank

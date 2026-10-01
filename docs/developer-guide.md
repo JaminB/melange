@@ -316,8 +316,15 @@ anything. The RPC surface (`level.*`, `levels.live`, the `erg` channel and the `
   [erg-patch-1](erg-patch-1.schema.json) and [erg-patch-2](erg-patch-2.schema.json). v2 adds level objects, a level
   script and a painted surround. A patch is written as v1 unless it uses one of them, so existing v1 projects and
   packs need no migration and stay readable. A build that knows only v1 refuses v2 by its `format`.
-- **Known limits:** no Survivor copies of a map, no new solid terrain pieces, no blend brushes, and the level script
-  syntax check runs in the game only. See [erg.md](erg.md#limits).
+- **Survivor copies:** a level with `"survivor": true` is also registered as `Multi.<stem>.S` (type 3, no lock,
+  `LevelSection 0`, theme 5, the level's own files and title, scripts `Survivor[,<stem>]`), a pack level for the
+  picker, the random pools, the online gate and level scripts alike. Its chunk runs under Survivor because the
+  generator wraps `lib_SetupMultiplayerWormsAndTeams` inside `Initialise` (Survivor's list has no `stdvs`, so the
+  loader refuses a library function redefined at load); a pack chunk in the pre-M6.2 form is still accepted and
+  served from the cache in the new form. At the main menu, every `WXD.Level.LastPlayed{,.Dest,.Stat,.Surv,.Fort}`
+  that names an unregistered level is reset to a vanilla one. See [erg.md](erg.md#survivor-copies).
+- **Known limits:** no new solid terrain pieces, no blend brushes, and the level script syntax check runs in the game
+  only. See [erg.md](erg.md#limits).
 
 ## SDK headers
 

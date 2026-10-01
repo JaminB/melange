@@ -1,5 +1,6 @@
-// Export dialog: mod id, name, version, mode, and the game-files notice (install vs source). ErgSession has no
-// `level.export` wrapper, so this calls the client directly, as the session's own `test()`/`save()` do internally.
+// Export dialog: mod id, name, version, mode, the Survivor copy and the game-files notice (install vs source).
+// ErgSession has no `level.export` wrapper, so this calls the client directly, as the session's own `test()`/`save()`
+// do internally.
 import { useState } from "preact/hooks";
 import type { Client } from "../../../sdk/client";
 import { errorText } from "../../../sdk/hooks";
@@ -10,7 +11,7 @@ export interface ExportResult { dir: string; files: string[]; restartRequired: b
 export function ExportDialog({ client, project, defaultName, onDone }: {
   client: Client; project: string; defaultName: string; onDone?: (r: ExportResult) => void;
 }) {
-  const [form, setForm] = useState<ExportForm>({ modId: "", name: defaultName, version: "1.0.0", mode: "source" });
+  const [form, setForm] = useState<ExportForm>({ modId: "", name: defaultName, version: "1.0.0", mode: "source", survivor: true });
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string>();
   const [result, setResult] = useState<ExportResult>();
@@ -24,7 +25,7 @@ export function ExportDialog({ client, project, defaultName, onDone }: {
     setError(undefined);
     try {
       const r = await client.call<ExportResult>("level.export",
-        { project, modId: form.modId, name: form.name, version: form.version, mode: form.mode });
+        { project, modId: form.modId, name: form.name, version: form.version, mode: form.mode, survivor: form.survivor });
       setResult(r);
       onDone?.(r);
     } catch (e) {
@@ -46,6 +47,10 @@ export function ExportDialog({ client, project, defaultName, onDone }: {
           </label>
         ))}
       </div>
+      <label title="Also list the level in Survivor's Prebuilt maps (Multi.<stem>.S)">
+        <input type="checkbox" data-export-survivor checked={form.survivor}
+          onChange={(e) => set("survivor", (e.target as HTMLInputElement).checked)} /> Survivor copy
+      </label>
       <p class="muted" data-export-notice>{EXPORT_NOTICE[form.mode]}</p>
       {errors.map((e) => <p class="error" key={e}>{e}</p>)}
       {error ? <p class="error" data-export-error>{error}</p> : null}

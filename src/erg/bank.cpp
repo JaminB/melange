@@ -93,6 +93,8 @@ std::vector<uint8_t> RegistryBank(const xom::Document& scripts, const std::vecto
             !xomutil::SetStr(l, "Frontend_Name", e.frontendName) || !xomutil::SetStr(l, "Lock", "") ||
             !SetInt(l, "Level_Type", e.levelType) || !SetInt(l, "Theme_Type", e.themeType))
             return fail("SCRIPTS.XOM: unexpected level entry shape");
+        if (e.levelSection >= 0 && !SetInt(l, "LevelSection", e.levelSection))
+            return fail("SCRIPTS.XOM: the level entry has no LevelSection");
         strings.insert({e.key, e.stem, e.scripts, e.frontendName});
         d.objects.push_back(std::move(l));
     }

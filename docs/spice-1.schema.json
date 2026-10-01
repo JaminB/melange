@@ -143,7 +143,7 @@
           "type": { "type": "string", "enum": ["multi"], "default": "multi", "description": "Multiplayer (Versus) levels only in this version." },
           "chunk": { "type": "boolean", "default": false, "description": "True when the pack ships assets/levels/<stem>.lub; the level's scripts become stdvs,wormpot,<stem>." },
           "source": { "type": "string", "description": "The erg-patch file the level was built from, relative to the mod folder." },
-          "survivor": { "type": "boolean", "default": false, "description": "Also list the level as a Survivor map (Multi.<stem>.S). Refused by builds that cannot keep the save free of mod levels." },
+          "survivor": { "type": "boolean", "default": false, "description": "Also list the level as a Survivor copy (Multi.<stem>.S: type 3, unlocked, in the Prebuilt section, running Survivor and the level's chunk)." },
           "sim": { "type": "string", "maxLength": 200, "pattern": "^sim/[!-~]+\\.lua$", "description": "The level's sandboxed script (sim/<name>.lua, at most 256 KB, UTF-8 without a BOM). It runs only on this level, as a sim mod does." }
         }
       }
