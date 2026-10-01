@@ -18,6 +18,7 @@ function Mods({ client }: { client: Client }) {
   const readOnly = !!conn.welcome?.limits?.readOnly;
   const canSet = conn.open && client.has("mods.setEnabled") && !readOnly;
   const canRevoke = conn.open && client.has("mods.revokeDeepDesert") && !readOnly;
+  const canLive = conn.open && client.has("levels.live") && !readOnly;
 
   const load = () => {
     if (!conn.open || !client.has("mods.list")) return;
@@ -29,10 +30,25 @@ function Mods({ client }: { client: Client }) {
     load();
   }, [conn.open]);
 
-  const act = async (m: ModInfo, method: string, params: object) => {
+  // As in the game's overlay: a map pack changes at once when it can (offline, at the menu), otherwise after a restart.
+  const live = async (m: ModInfo, on: boolean) => {
+    if (!canLive || m.kind !== "content") return false;
+    try {
+      const r = await client.call<{ ok?: boolean }>("levels.live", { modId: m.id, on });
+      if (r?.ok !== true) return false;
+    } catch {
+      return false;
+    }
+    const all = modsOf(await client.call<unknown>("mods.list"));
+    setList(all);
+    return true;
+  };
+
+  const act = async (m: ModInfo, method: string, params: object, liveOn?: boolean) => {
     setBusy(m.id);
     setRowError(({ [m.id]: _, ...rest }) => rest);
     try {
+      if (liveOn !== undefined && (await live(m, liveOn))) return;
       const r = modsOf([await client.call<unknown>(method, params)]);
       if (r[0]) setList((l) => withMod(l ?? [], r[0]));
     } catch (e) {
@@ -68,7 +84,10 @@ function Mods({ client }: { client: Client }) {
                   <td>
                     <input type="checkbox" checked={m.on} disabled={!canSet || busy === m.id} data-toggle={m.id}
                            aria-label={`${m.on ? "Disable" : "Enable"} ${m.name || m.id}`}
-                           onChange={(e) => act(m, "mods.setEnabled", { id: m.id, on: (e.currentTarget as HTMLInputElement).checked })} />
+                           onChange={(e) => {
+                             const on = (e.currentTarget as HTMLInputElement).checked;
+                             act(m, "mods.setEnabled", { id: m.id, on }, on);
+                           }} />
                   </td>
                   <td>
                     <div><strong>{m.name || m.id}</strong> <span class="muted small">{m.version}</span>{m.implicitManifest ? <span class="tag">no spice.json</span> : null}</div>

@@ -144,13 +144,21 @@ async function gamePanels(browser) {
     await attempt("mods", async () => {
       await tab(page, "mods").click();
       await page.waitForSelector("[data-mod]", { timeout: 5000 });
-      check("mods: list", (await page.locator("[data-mod]").count()) === 4);
+      check("mods: list", (await page.locator("[data-mod]").count()) === 5);
+      await page.locator('[data-toggle="dune-maps"]').click();
+      await page.waitForSelector('[data-mod="dune-maps"] [data-state="enabled"]', { timeout: 3000 });
+      check("mods: a map pack is enabled live, without setEnabled",
+        mock.state.mods.find((m) => m.id === "dune-maps").on === true && await page.locator("[data-restart]").count() === 0 &&
+        !mock.state.calls.some((c) => c.m === "mods.setEnabled" && c.p?.id === "dune-maps"));
       await page.locator('[data-toggle="hello-spice"]').click();
       await page.waitForSelector('[data-mod="hello-spice"] [data-state="disabled"]', { timeout: 3000 });
       check("mods: disable a client mod", mock.state.mods.find((m) => m.id === "hello-spice").on === false);
       await page.locator('[data-toggle="big-crates"]').click();
       await page.waitForSelector('[data-mod="big-crates"] [data-state="restart-required"]', { timeout: 3000 });
       check("mods: a content mod shows restart required", await page.locator("[data-restart]").count() === 1);
+      check("mods: a refused live change falls back to setEnabled",
+        mock.state.calls.some((c) => c.m === "levels.live" && c.p?.modId === "big-crates") &&
+        mock.state.calls.some((c) => c.m === "mods.setEnabled" && c.p?.id === "big-crates"));
       check("mods: granted Deep Desert shows Revoke", await page.locator('[data-revoke="memwatch"]').count() === 1);
       check("mods: an ungranted Deep Desert mod has no grant control", await page.locator('[data-mod="rawpeek"] button').count() === 0);
       await page.locator('[data-revoke="memwatch"]').click();

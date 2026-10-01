@@ -107,6 +107,9 @@ function initialMods() {
     { id: "rawpeek", name: "Raw Peek", version: "0.1.0", authors: "Tinkerer", dir: "Mods\\rawpeek", kind: "client",
       state: "pending-consent", reason: "asks for Deep Desert", on: true, restartRequired: false, implicitManifest: false, hasClient: true, hasSim: false,
       deepDesert: { declared: true, granted: false }, order: 3 },
+    { id: "dune-maps", name: "Dune Maps", version: "1.0.0", authors: "Mapper", dir: "Mods\\dune-maps", kind: "content",
+      state: "disabled", reason: "", on: false, restartRequired: false, implicitManifest: false, hasClient: false, hasSim: false,
+      deepDesert: { declared: false, granted: false }, order: 4 },
   ];
 }
 
@@ -128,7 +131,7 @@ export async function startMock(opts = {}) {
 
   const erg = ergService(state);
   const methods = [...(state.server === "game"
-    ? ["sys.ping", "lua.eval", "lua.complete", "mods.list", "mods.setEnabled", "mods.revokeDeepDesert", "ini.get", "ini.set", "bus.names", "log.sessions"]
+    ? ["sys.ping", "lua.eval", "lua.complete", "mods.list", "mods.setEnabled", "mods.revokeDeepDesert", "levels.live", "ini.get", "ini.set", "bus.names", "log.sessions"]
     : ["sys.ping", "mods.list", "ini.get", "ini.set", "log.sessions"]), ...erg.methods];
   const channels = state.server === "game" ? ["log", "bus", "bus.counts", "mods", "stats"] : ["log"];
 
@@ -191,6 +194,14 @@ export async function startMock(opts = {}) {
       setTimeout(() => broadcast("mods", modPublic()), 10);
       return JSON.parse(JSON.stringify(m));
     },
+    "levels.live": (p) => {
+      const m = state.mods.find((x) => x.id === p.modId);
+      if (!m) return { ok: false, reason: `no mod ${p.modId} is installed` };
+      if (m.id !== "dune-maps") return { ok: false, reason: "the pack has scripts or weapons, so it needs a restart" };
+      m.on = p.on; m.state = p.on ? "enabled" : "disabled"; m.reason = "";
+      setTimeout(() => broadcast("mods", modPublic()), 10);
+      return { ok: true, reason: "" };
+    },
     "mods.revokeDeepDesert": (p) => {
       const m = state.mods.find((x) => x.id === p.id);
       if (!m) throw [-32602, `no mod '${p.id}'`];
@@ -227,7 +238,7 @@ export async function startMock(opts = {}) {
     },
   };
   Object.assign(handlers, erg.handlers);
-  const mutating = new Set(["lua.eval", "mods.setEnabled", "mods.revokeDeepDesert", "ini.set", ...erg.mutating]);
+  const mutating = new Set(["lua.eval", "mods.setEnabled", "levels.live", "mods.revokeDeepDesert", "ini.set", ...erg.mutating]);
 
   function broadcast(ch, d) { for (const c of clients) if (c.subs.has(ch)) c.queue(ch, d); }
 
