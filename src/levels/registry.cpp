@@ -370,7 +370,15 @@ void RegisterPacks() {
     LOG_INFO("[levels] registration took %.2f ms", g_msRegister);
 }
 
-// A last-played level that is not registered this launch would crash a lobby start on both peers.
+// The first vanilla level of one of MissionService's random pools (locked levels are not in them).
+std::string PoolFallback(uint32_t pool) {
+    for (const auto& k : eng::PoolKeysAt(pool))
+        if (!Lookup(k.c_str(), nullptr) && eng::LevelDetails(k.c_str(), nullptr)) return k;
+    return {};
+}
+
+// The save keeps a last-played level per mode, and entering the mode makes it WXD.Level.Current: one that is not
+// registered this launch (a removed pack's level or Survivor copy) would crash that mode's lobby start on both peers.
 void CheckLastPlayed() {
     if (g_lastPlayedDone) return;
     const uint64_t now = GetTickCount64();
@@ -383,12 +391,25 @@ void CheckLastPlayed() {
     std::string last;
     if (!weng::TextOf("WXD.Level.LastPlayed", &last) || last.empty()) return;
     g_lastPlayedDone = true;
-    if (eng::LevelDetails(last.c_str(), nullptr)) return;
-    const bool ok = eng::PostDataResource("WXD.Level.LastPlayed", kFallbackLevel) &&
-                    eng::PostDataResource("WXD.Level.PrettyName", kFallbackPretty);
-    LOG_WARN("[levels] the last-played level '%s' is not registered; reset to %s: %s", last.c_str(), kFallbackLevel,
-             ok ? "ok" : "FAILED");
-    jlog::Rec("levels", ok ? jlog::Level::Warn : jlog::Level::Error, "last_played_reset").Str("was", last).Bool("ok", ok);
+    struct Mode {
+        const char* key;
+        uint32_t pool;   // the mode's random pool in MissionService (Level_Type 0, 1, 2, 3, 11)
+    };
+    static constexpr Mode kModes[] = {{"WXD.Level.LastPlayed", 0x2c}, {"WXD.Level.LastPlayed.Dest", 0x8c},
+                                      {"WXD.Level.LastPlayed.Stat", 0xa4}, {"WXD.Level.LastPlayed.Surv", 0xbc},
+                                      {"WXD.Level.LastPlayed.Fort", 0xd4}};
+    for (const Mode& m : kModes) {
+        const bool main = m.pool == 0x2c;
+        if (!main && (!weng::TextOf(m.key, &last) || last.empty())) continue;
+        if (eng::LevelDetails(last.c_str(), nullptr)) continue;
+        const std::string to = main ? kFallbackLevel : PoolFallback(m.pool);
+        const bool ok = !to.empty() && eng::PostDataResource(m.key, to.c_str()) &&
+                        (!main || eng::PostDataResource("WXD.Level.PrettyName", kFallbackPretty));
+        LOG_WARN("[levels] %s '%s' is not registered; reset to %s: %s", m.key, last.c_str(), to.empty() ? "(none)" : to.c_str(),
+                 ok ? "ok" : "FAILED");
+        jlog::Rec("levels", ok ? jlog::Level::Warn : jlog::Level::Error, "last_played_reset")
+            .Str("key", m.key).Str("was", last).Str("to", to).Bool("ok", ok);
+    }
 }
 
 void OnStart(const LevelStart& s, void*) {
