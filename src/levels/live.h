@@ -2,18 +2,14 @@
 #include <string>
 #include <vector>
 
+#include "levels/session.h"
 #include "mods/spice.h"
 
 // Map packs enabled or disabled at the menu, offline only. The policy is pure (live_policy.cpp); live.cpp runs it.
 namespace melange::levels::live {
-struct Session {
+struct Session : session::State {
     bool ini = false;          // [Levels] LivePacks
     bool enabled = false;      // the Levels module is active
-    bool inLobby = false, netSession = false;
-    bool atFrontend = false;
-    bool attract = false;      // the attract demo is running
-    bool loading = false;      // a level set-up has not reached its match
-    bool testBusy = false;     // a Test is armed, starting or playing
 };
 std::string SessionRefusal(const Session& s);   // "" when a live change may run now
 

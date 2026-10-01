@@ -31,4 +31,8 @@ struct Resolved { std::string id; mods::State state; std::string reason; int ord
 std::vector<Resolved> Resolve(const std::vector<Manifest>& all, const std::set<std::string>& userEnabled,
                               const std::string& melangeVersion, const std::vector<std::pair<std::string,std::string>>& pins);
 bool SemverSatisfies(const std::string& version, const std::string& range);
+bool ValidSemver(const std::string& v);
+bool ValidRange(const std::string& range);
+int SemverCompare(const std::string& a, const std::string& b);   // -1, 0, 1; both must be valid
+bool ValidModId(const std::string& id);
 }

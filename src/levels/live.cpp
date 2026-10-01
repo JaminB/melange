@@ -44,15 +44,9 @@ bool NetSession() {
 
 live::Session Now() {
     live::Session s;
+    static_cast<session::State&>(s) = session::Now();
     s.ini = registry::Settings().livePacks;
     s.enabled = Enabled();
-    s.inLobby = handshake::lobby::Current() != 0;
-    s.netSession = NetSession();
-    s.atFrontend = engine::AtFrontend();
-    const engine::FrontendState fs = engine::ReadFrontend();
-    s.attract = fs.valid && fs.attractRunning;
-    s.loading = engine::Loading();
-    s.testBusy = test::Busy();
     return s;
 }
 
@@ -117,7 +111,23 @@ bool Request(const char* modId, bool on, char* err, size_t errLen) {
 namespace live {
 void Install() { events::Subscribe(events::Event::Frame, &OnFrame); }
 }  // namespace live
+}  // namespace melange::levels
 
+namespace melange::session {
+State Now() {
+    State s;
+    s.inLobby = handshake::lobby::Current() != 0;
+    s.netSession = levels::NetSession();
+    s.atFrontend = levels::engine::AtFrontend();
+    const levels::engine::FrontendState fs = levels::engine::ReadFrontend();
+    s.attract = fs.valid && fs.attractRunning;
+    s.loading = levels::engine::Loading();
+    s.testBusy = levels::test::Busy();
+    return s;
+}
+}  // namespace melange::session
+
+namespace melange::levels {
 bool EnablePackLive(const char* modId, char* err, size_t errLen) { return Request(modId, true, err, errLen); }
 bool DisablePackLive(const char* modId, char* err, size_t errLen) { return Request(modId, false, err, errLen); }
 

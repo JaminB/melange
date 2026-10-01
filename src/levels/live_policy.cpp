@@ -1,14 +1,23 @@
 #include "levels/live.h"
 
+namespace melange::session {
+std::string ChangeRefusal(const State& s, For what) {
+    const bool packs = what == For::Packs;
+    if (s.inLobby || s.netSession)
+        return packs ? "packs cannot change in a lobby or a network game"
+                     : "plugins cannot change in a lobby or a network game: leave the lobby to install";
+    if (s.attract || s.loading) return "the game is loading a level; try again in a moment";
+    if (!s.atFrontend) return packs ? "packs can change only at the main menu" : "plugins can change only at the main menu";
+    if (s.testBusy) return "a Test is under way; try again when it ends";
+    return "";
+}
+}  // namespace melange::session
+
 namespace melange::levels::live {
 std::string SessionRefusal(const Session& s) {
     if (!s.ini) return "live pack changes are off ([Levels] LivePacks=0); restart the game";
     if (!s.enabled) return "[Levels] is disabled";
-    if (s.inLobby || s.netSession) return "packs cannot change in a lobby or a network game";
-    if (s.attract || s.loading) return "the game is loading a level; try again in a moment";
-    if (!s.atFrontend) return "packs can change only at the main menu";
-    if (s.testBusy) return "a Test is under way; try again when it ends";
-    return "";
+    return session::ChangeRefusal(s, session::For::Packs);
 }
 
 std::string PackRefusal(const spice::Manifest& m) {

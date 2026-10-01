@@ -89,4 +89,40 @@ std::string RandomSalt() {
     }
     return HexOf(buf, sizeof(buf));
 }
+
+Sha256::Sha256() {
+    BCRYPT_ALG_HANDLE alg{};
+    BCRYPT_HASH_HANDLE h{};
+    if (BCryptOpenAlgorithmProvider(&alg, BCRYPT_SHA256_ALGORITHM, nullptr, 0) != 0) return;
+    alg_ = alg;
+    if (BCryptCreateHash(alg, &h, nullptr, 0, nullptr, 0, 0) != 0) return;
+    h_ = h;
+    ok_ = true;
+}
+
+Sha256::~Sha256() {
+    if (h_) BCryptDestroyHash(static_cast<BCRYPT_HASH_HANDLE>(h_));
+    if (alg_) BCryptCloseAlgorithmProvider(static_cast<BCRYPT_ALG_HANDLE>(alg_), 0);
+}
+
+bool Sha256::Update(const void* data, size_t len) {
+    const auto* p = static_cast<const unsigned char*>(data);
+    while (ok_ && len) {
+        const ULONG n = static_cast<ULONG>(len > 0x40000000u ? 0x40000000u : len);
+        ok_ = BCryptHashData(static_cast<BCRYPT_HASH_HANDLE>(h_), const_cast<PUCHAR>(p), n, 0) == 0;
+        p += n;
+        len -= n;
+    }
+    return ok_;
+}
+
+std::string Sha256::FinishHex() {
+    unsigned char dig[32];
+    if (!ok_ || BCryptFinishHash(static_cast<BCRYPT_HASH_HANDLE>(h_), dig, 32, 0) != 0) {
+        ok_ = false;
+        return {};
+    }
+    ok_ = false;
+    return HexOf(dig, 32);
+}
 }  // namespace melange::hashutil
