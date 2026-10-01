@@ -1,5 +1,5 @@
 #pragma once
-// Pure state machine for one triple-buffered GL_TIME_ELAPSED query (render/mirage/gputimers.cpp drives it with real
+// Pure state machine for one triple-buffered GPU timer query (render/mirage/gputimers.cpp drives it with real
 // GL calls). No GL, no windows.h: offline self-tested in tests/trace_selftest.cpp.
 #include <cstdint>
 

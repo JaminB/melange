@@ -10,7 +10,9 @@
 
 namespace melange::mirage::gputimers {
 namespace {
-constexpr GLenum kTimeElapsed = 0x88BF, kQueryResult = 0x8866, kQueryResultAvailable = 0x8867;
+// Timestamp pairs rather than GL_TIME_ELAPSED: elapsed queries cannot nest, and the swap region spans every stage and
+// the post-FX effect timers.
+constexpr GLenum kTimestamp = 0x8E28, kQueryResult = 0x8866, kQueryResultAvailable = 0x8867;
 constexpr int kRegions = static_cast<int>(melange::gltrace::GpuRegion::Count);
 
 struct Procs {
@@ -18,8 +20,7 @@ struct Procs {
     bool ok = false;
     void(APIENTRY* GenQueries)(GLsizei, GLuint*) = nullptr;
     void(APIENTRY* DeleteQueries)(GLsizei, const GLuint*) = nullptr;
-    void(APIENTRY* BeginQuery)(GLenum, GLuint) = nullptr;
-    void(APIENTRY* EndQuery)(GLenum) = nullptr;
+    void(APIENTRY* QueryCounter)(GLuint, GLenum) = nullptr;
     void(APIENTRY* GetQueryObjectiv)(GLuint, GLenum, GLint*) = nullptr;
     void(APIENTRY* GetQueryObjectui64v)(GLuint, GLenum, unsigned long long*) = nullptr;
 };
@@ -40,7 +41,7 @@ const Procs& P() {
     p.ctx = ctx;
     if (ctx) {
         p.ok = Proc(p.GenQueries, "glGenQueries") && Proc(p.DeleteQueries, "glDeleteQueries") &&
-               Proc(p.BeginQuery, "glBeginQuery") && Proc(p.EndQuery, "glEndQuery") &&
+               Proc(p.QueryCounter, "glQueryCounter") &&
                Proc(p.GetQueryObjectiv, "glGetQueryObjectiv") && Proc(p.GetQueryObjectui64v, "glGetQueryObjectui64v");
     }
     g_p = p;
@@ -49,7 +50,7 @@ const Procs& P() {
 
 struct RegionState {
     logic::Region state;
-    GLuint queries[logic::kSlots] = {};
+    GLuint queries[logic::kSlots][2] = {};
     bool allocated = false;
 };
 RegionState g_regions[kRegions];
@@ -58,11 +59,12 @@ std::atomic<bool> g_enabled{true};
 void Poll(const Procs& p, RegionState& r) {
     if (!logic::ShouldPoll(r.state)) return;
     GLint avail = 0;
-    p.GetQueryObjectiv(r.queries[r.state.head], kQueryResultAvailable, &avail);
+    p.GetQueryObjectiv(r.queries[r.state.head][1], kQueryResultAvailable, &avail);
     if (!avail) return;
-    unsigned long long ns = 0;
-    p.GetQueryObjectui64v(r.queries[r.state.head], kQueryResult, &ns);
-    logic::Resolve(r.state, true, ns);
+    unsigned long long t0 = 0, t1 = 0;
+    p.GetQueryObjectui64v(r.queries[r.state.head][0], kQueryResult, &t0);
+    p.GetQueryObjectui64v(r.queries[r.state.head][1], kQueryResult, &t1);
+    logic::Resolve(r.state, true, t1 > t0 ? t1 - t0 : 0);
 }
 }  // namespace
 
@@ -85,11 +87,11 @@ void Begin(int region) {
     if (!p.ok) return;
     RegionState& r = g_regions[region];
     if (!r.allocated) {
-        p.GenQueries(logic::kSlots, r.queries);
+        p.GenQueries(logic::kSlots * 2, &r.queries[0][0]);
         r.allocated = true;
     }
     Poll(p, r);
-    p.BeginQuery(kTimeElapsed, r.queries[r.state.head]);
+    p.QueryCounter(r.queries[r.state.head][0], kTimestamp);
 }
 
 void End(int region) {
@@ -98,7 +100,7 @@ void End(int region) {
     if (!p.ok) return;
     RegionState& r = g_regions[region];
     if (!r.allocated) return;  // Begin() for this region never ran (no matching query is open)
-    p.EndQuery(kTimeElapsed);
+    p.QueryCounter(r.queries[r.state.head][1], kTimestamp);
     logic::Advance(r.state);
 }
 }  // namespace melange::mirage::gputimers

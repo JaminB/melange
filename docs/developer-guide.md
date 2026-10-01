@@ -97,8 +97,8 @@ Mods live in `<game>\Mods\<id>\`. When two mods provide the same file, the later
 
 ### GPU timers
 
-`[Mirage] GpuTimers=1` (the default) keeps a `GL_TIME_ELAPSED` query running for the swap-to-swap frame and for each
-stage in the table above (only stages with at least one registered callback are timed that frame). The *Mirage/GL*
+`[Mirage] GpuTimers=1` (the default) brackets the swap-to-swap frame and each stage in the table above with a pair of
+GPU timestamp queries (only stages with at least one registered callback are timed that frame). The *Mirage/GL*
 panel's *GPU timers* section lists them, and `melange::gltrace::GetGpuTime(GpuRegion)` (`melange/gltrace.h`) reads
 them from C++; the `gltrace.gpu` console verb logs all six at once. A region reads `n/a` until its first result has
 come back from the GPU (the queries are triple-buffered, so that's normally a couple of frames). This is separate
