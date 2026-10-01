@@ -1,6 +1,8 @@
 // Reference modules: WindowTag uses only the API (any build); FrameInterval patches fixed addresses.
 #include <windows.h>
 
+#include <timeapi.h>
+
 #include <cstdio>
 
 #include "core/config.h"
@@ -40,21 +42,60 @@ public:
 class FrameInterval final : public melange::Module {
 public:
     const char* Name() const override { return "FrameInterval"; }
-    const char* Description() const override { return "engine frame interval in ms (16 = ~60 fps, 8 = ~120 fps)"; }
+    const char* Description() const override {
+        return "engine frame interval in ms (16 = ~60 fps, 8 = ~120 fps); classic timing (timeBeginPeriod)";
+    }
     bool DefaultEnabled() const override { return false; }
     bool RequiresKnownBuild() const override { return true; }
     int Order() const override { return 101; }
 
     bool Install() override {
+        classicTiming_ = Bool("ClassicTiming", false);
+        if (classicTiming_) ApplyClassicTiming(true);
+        melange::overlay::AddMenuItem("Game/Classic timing (toggle)",
+                                      [](void* self) { static_cast<FrameInterval*>(self)->ToggleClassicTiming(); },
+                                      this);
+
         int ms = Int("IntervalMs", 16);
-        if (ms < 1 || ms > 100) return false;
+        if (ms < 1 || ms > 100) {
+            LOG_WARN("FrameInterval: IntervalMs=%d out of range, not patched", ms);
+            return true;
+        }
         // 004D919A: cmp eax, 10h / jnb ... / mov ecx, 10h (the same site WUMPatch patches)
         constexpr uintptr_t kCmp = 0x4D919B, kMov = 0x4D919F;
-        if (!melange::mem::Expect(kCmp, {0x10, 0x73}) || !melange::mem::Expect(kMov, {0x10, 0x00, 0x00, 0x00})) return false;
+        if (!melange::mem::Expect(kCmp, {0x10, 0x73}) || !melange::mem::Expect(kMov, {0x10, 0x00, 0x00, 0x00})) {
+            LOG_WARN("FrameInterval: limiter site does not match the expected bytes; not patched");
+            return true;
+        }
         melange::mem::Put<uint8_t>(kCmp, static_cast<uint8_t>(ms));
         melange::mem::Put<uint8_t>(kMov, static_cast<uint8_t>(ms));
         LOG_INFO("FrameInterval: set to %d ms", ms);
         return true;
+    }
+
+    void Uninstall() override { ApplyClassicTiming(false); }
+
+private:
+    bool classicTiming_ = false;
+    bool classicActive_ = false;
+
+    // Raises (or restores) the OS timer resolution to 1 ms, for steadier frame pacing on systems where the
+    // default ~15.6 ms resolution makes the game stutter. Calls are kept balanced so Toggle() and Uninstall()
+    // never double up timeBeginPeriod/timeEndPeriod.
+    void ApplyClassicTiming(bool on) {
+        if (on == classicActive_) return;
+        if (on)
+            timeBeginPeriod(1);
+        else
+            timeEndPeriod(1);
+        classicActive_ = on;
+    }
+
+    void ToggleClassicTiming() {
+        classicTiming_ = !classicTiming_;
+        ApplyClassicTiming(classicTiming_);
+        melange::config::SetString(Name(), "ClassicTiming", classicTiming_ ? "1" : "0");
+        LOG_INFO("FrameInterval: classic timing %s", classicTiming_ ? "on" : "off");
     }
 };
 

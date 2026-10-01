@@ -32,7 +32,7 @@ Every module has its own section in `Melange.ini`, and `Enabled=0` turns a modul
 | `SteamTrace` | on | Logs Steam lobby, P2P and callback activity |
 | `NetTrace` | on | Logs raw Winsock calls |
 | `WindowTag` | on | Shows the Melange version in the window title |
-| `FrameInterval` | off | Sets the engine frame interval (`IntervalMs=16` is about 60 fps) |
+| `FrameInterval` | off | Sets the engine frame interval (`IntervalMs=16` is about 60 fps); "Classic timing" (`ClassicTiming=0`) raises the OS timer resolution to 1 ms (`timeBeginPeriod`) for steadier pacing on systems that stutter at the default resolution. Toggle in the overlay menu *Game* |
 | `SmoothSixty` | on (`On=0`) | "Smooth 60": lifts the engine's frame limiter and uses vsync. Toggle in the overlay menu *Game* |
 | `Mirage` | on | Graphics layer core: renderer access, scene stages for mods, mod folders |
 | `MirageTrace` | on | OpenGL call statistics (`Mode=count`), frame capture (`CaptureHotkey`), texture dumper, GPU compatibility report |
