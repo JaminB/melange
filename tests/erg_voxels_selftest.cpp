@@ -120,6 +120,9 @@ void TestWords() {
         {v, 0x01000003u, false}, {0, 0, true},
     };
     for (auto& c : cases) Expect(vx::ValidEdit(c.base, c.now) == c.ok, "ValidEdit " + std::to_string(c.base) + " -> " + std::to_string(c.now));
+    Expect(vx::ValidEdit(3, 3u | 3u << 8 | 40u << 10 | 0x0fu << 16, true) && !vx::ValidEdit(3, 3u | 3u << 8, false) &&
+               !vx::ValidEdit(3, 0x01000003u, true),
+           "ValidEdit: second-material paint may set bits 8-23, never 24-31");
     std::vector<uint32_t> w = {0, 1, 0xffffffffu, 0x12345678u};
     std::vector<uint32_t> back;
     std::string err;

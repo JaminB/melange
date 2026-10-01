@@ -24,6 +24,8 @@ export const MAX_LEVEL_QUADS = 1 << 21;
 
 export const isSolid = (v: number) => (v & 3) === 3;
 export const materialOf = (v: number) => (v >>> 2) & 63;
+/** The material a voxel is drawn with: its second material where that covers it whole (flags set, mask 0xff). */
+export const shownOf = (v: number) => ((v & 0x300) && ((v >>> 16) & 0xff) === 0xff ? (v >>> 10) & 63 : materialOf(v));
 
 /** Quads of one frame in frame space: [axis, dir, plane, u0, v0, u1, v1, material] per quad; at most maxQuads. */
 export function frameQuads(size: readonly number[], voxels: Uint32Array, maxQuads = Infinity): Int16Array {
@@ -55,7 +57,7 @@ export function frameQuads(size: readonly number[], voxels: Uint32Array, maxQuad
           if (s > 0) { p[d] = s - 1; a = at(p); }
           if (s < dims[d]) { p[d] = s; b = at(p); }
           const sa = s > 0 && isSolid(a), sb = s < dims[d] && isSolid(b);
-          mask[j * nu + i] = sa && !sb ? materialOf(a) + 1 : !sa && sb ? -(materialOf(b) + 1) : 0;
+          mask[j * nu + i] = sa && !sb ? shownOf(a) + 1 : !sa && sb ? -(shownOf(b) + 1) : 0;
         }
       for (let j = 0; j < nv; j++)
         for (let i = 0; i < nu; ) {

@@ -20,8 +20,8 @@ export class TerrainTool {
   setBrush(b: Partial<Brush>) {
     const next = { ...this.brush, ...b };
     next.size = next.size.map((v) => Math.min(MAX_BRUSH, Math.max(1, Math.round(v)))) as Vec3;
-    if (next.material !== "column") next.material = Math.min(63, Math.max(0, Math.round(next.material)));
-    if (next.mode !== "fill" && next.material === "column") next.material = 0;
+    if (typeof next.material === "number") next.material = Math.min(63, Math.max(0, Math.round(next.material)));
+    if ((next.material === "column" && next.mode !== "fill") || (next.material === "none" && next.mode !== "second")) next.material = 0;
     this.brush = next;
     this.emit();
   }

@@ -9,6 +9,7 @@
 #include <cmath>
 #include <cstdio>
 #include <cstring>
+#include <filesystem>
 #include <memory>
 #include <string>
 #include <vector>
@@ -660,6 +661,35 @@ void TestVoxels() {
     erg::build::VoxelEdits bad = v;
     bad[13][1] = 0x01000003;
     Expect(!erg::build::Build(L, s, bad, {}, &files, &err), "voxels: a word with bits 24-31 set is refused");
+
+    // Second-material paint: flags 3, material 40, the full corner mask.
+    const uint32_t word = 3u | 9u << 2 | 3u << 8 | 40u << 10 | 0xffu << 16;
+    erg::Patch second = EmptyPatch(L, "ergtest_synth");
+    erg::Op sop;
+    sop.kind = erg::Op::Kind::Voxels;
+    sop.frame = 13;
+    sop.runs = {{1, 1, word}};
+    second.ops.push_back(sop);
+    erg::PatchRules rules;
+    rules.voxels = true;
+    Expect(!erg::build::Apply(L, second, rules, &s, &v, &err) && err.find("second material") != std::string::npos,
+           "second material: refused without the blend rule");
+    rules.blend = true;
+    Expect(erg::build::Apply(L, second, rules, &s, &v, &err) && v[13][1] == word && erg::build::Build(L, s, v, {}, &files, &err),
+           "second material: written and built under the blend rule " + err);
+    out.xan = FileBytes(files, "Maps/ergtest_synth.xan");
+    std::vector<uint32_t> back;
+    Expect(erg::load::LoadScene(out, &B, &err) && erg::voxels::Decode(B.blobs.at(B.scene.FindFrame(13)->voxels), &back, &err) &&
+               back.size() > 1 && back[1] == word,
+           "second material: the built level holds the word");
+
+    std::string txt = "B01\r\nB08\r\nB08\r\nB05\r\ngrass01\r\nB08\r\n\r\nB02\r\nB09\r\nB09\r\nNULL\r\nJCB \x96 Wheel\r\nB09\r\n\r\n";
+    Expect(erg::install::MaterialNames(std::vector<uint8_t>(txt.begin(), txt.end())) == std::vector<std::string>{"grass01", "JCB ? Wheel"},
+           "material names: the fifth line of each record, printable");
+    txt.clear();
+    for (int i = 0; i < 70; ++i) txt += "a\nb\nc\nNULL\nm" + std::to_string(i) + "\nf\n\n";
+    const auto names = erg::install::MaterialNames(std::vector<uint8_t>(txt.begin(), txt.end()));
+    Expect(names.size() == 64 && names[63] == "m63", "material names: at most 64");
 }
 
 // The synthetic base with its "tower" frame (#13) renamed Scene, so new frames may go under it.
@@ -1156,6 +1186,22 @@ void TestService(const std::wstring& root) {
     }
 
     {
+        Put(data + L"\\Maps\\mats.txt", std::string("B01\nB08\nB08\nNULL\nPlanks\nB08\n\nB02\nB09\nB09\nNULL\nGirder\nB09\n\n"));
+        r = Call(S, "level.materials", R"({"file":"Maps\\mats.txt"})");
+        const Json mats = r.ok ? J(r.json) : Json();
+        const Json* names = mats.find("names");
+        Expect(names && names->arr.size() == 2 && names->arr[0].str == "Planks" && names->arr[1].str == "Girder",
+               "materials: the record names of a level's material file " + r.message);
+        Expect(Call(S, "level.materials", R"({"file":"ThemeCamelot\\ThemeCamelot.txt"})").ok, "materials: a theme's file");
+        Expect(Call(S, "level.materials", R"({"file":"..\\..\\x.txt"})").code == erg::service::kBadParams &&
+                   Call(S, "level.materials", R"({"file":"Maps\\mats.xan"})").code == erg::service::kBadParams &&
+                   Call(S, "level.materials", R"({"file":"Maps\\none.txt"})").code == erg::service::kBadParams,
+               "materials: only material files inside the install");
+        std::error_code ec;
+        std::filesystem::remove(std::filesystem::path(data + L"\\Maps\\mats.txt"), ec);
+    }
+
+    {
         r = Call(S, "level.objects", "{}");
         Json ob = J(r.json);
         Expect(r.ok && ob.find("weapons")->arr.size() == 1 && ob.find("weapons")->arr[0].str == "kWeaponBazooka" &&
@@ -1470,7 +1516,7 @@ void TestService(const std::wstring& root) {
     Expect(Call(S, "level.close", R"({"project":"harbour"})").ok, "close: read-only");
     S.oasisReadOnly = false;
     Expect(Call(S, "level.nope", "{}").code == -32601 && Call(S, "level.list", "[1]").code == erg::service::kBadParams, "unknown method, bad params");
-    Expect(erg::service::Methods().size() == 12 && erg::service::Mutating("level.save") && erg::service::Mutating("level.script.put") && !erg::service::Mutating("level.script.get") && !erg::service::Mutating("level.load"), "methods");
+    Expect(erg::service::Methods().size() == 13 && erg::service::Mutating("level.save") && erg::service::Mutating("level.script.put") && !erg::service::Mutating("level.script.get") && !erg::service::Mutating("level.load"), "methods");
 }
 }  // namespace
 

@@ -41,6 +41,12 @@ std::map<std::string, std::string> ReadFrontendStrings(const std::wstring& gameD
 // Material files a databank may name: "Theme<X>\Theme<X>.txt" under Data\Themes and "Maps\<x>.txt" under Data\Maps.
 std::vector<std::string> MaterialFiles(const std::wstring& gameDir);
 bool MaterialFileExists(const std::wstring& gameDir, const std::string& rel);
+// Reads a material file a databank names, from Data or Data\Themes (at most 1 MB).
+bool ReadMaterialFile(const std::wstring& gameDir, const std::string& rel, std::vector<uint8_t>* out, std::string* err);
+// The record names of a material file: records of six lines (three textures, a blend texture or NULL, the name, a sixth
+// texture), each followed by a blank line in the game's files. At most 64, the voxel's material index range; names are
+// printable ASCII ('?' for anything else), at most 63 characters.
+std::vector<std::string> MaterialNames(const std::vector<uint8_t>& txt);
 
 // The levels of every mod folder under <game>\Mods whose spice.json declares some (no enabled-state check).
 std::vector<Pack> ScanPacks(const std::wstring& gameDir);

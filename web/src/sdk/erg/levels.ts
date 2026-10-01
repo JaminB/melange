@@ -12,6 +12,8 @@ export interface ProjectInfo { id: string; title: string; stem: string; base: st
 export interface LevelList { bases: BaseInfo[]; projects: ProjectInfo[]; }
 export interface Themes { themes: string[]; timesOfDay: string[]; materialFiles: string[]; }
 export interface PaletteEntry { name: string; resource: string; role: Role; preview: string | null; }
+/** The record names of a level's material file, material index order (at most 64). */
+export interface Materials { file: string; names: string[]; }
 export interface ExportResult { dir: string; files: string[]; restartRequired: boolean; }
 export interface BuildResult { modId: string; dir: string; levels: { slug: string; stem: string; files: string[] }[]; skipped: string[]; }
 export type ExportMode = "install" | "source";
@@ -22,6 +24,7 @@ export interface LevelService {
   loadBase(key: string, source?: "game" | "pack"): Promise<{ scene: Scene; blobs: Map<number, ArrayBuffer> }>;
   themes(): Promise<Themes>;
   palette(theme: string): Promise<PaletteEntry[]>;
+  materials(file: string, base?: string, source?: "game" | "pack"): Promise<Materials>;
   exportProject(project: string, modId: string, name: string, version: string, mode: ExportMode): Promise<ExportResult>;
   buildMod(modId: string): Promise<BuildResult>;
   close(project: string): Promise<void>;
@@ -63,6 +66,7 @@ export function createLevelService(client: Client, opts: LevelServiceOptions = {
     },
     themes: () => call<Themes>("level.themes", {}),
     palette: async (theme) => (await call<{ theme: string; entries: PaletteEntry[] }>("level.palette", { theme })).entries,
+    materials: (file, base, source) => call<Materials>("level.materials", base ? { file, base, source: source ?? "game" } : { file }),
     exportProject: (project, modId, name, version, mode) => call<ExportResult>("level.export", { project, modId, name, version, mode }, 120000),
     buildMod: (modId) => call<BuildResult>("level.build", { modId }, 120000),
     async close(project) {

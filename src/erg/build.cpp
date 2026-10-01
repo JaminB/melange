@@ -349,7 +349,7 @@ bool Apply(const load::Loaded& base, const Patch& p, const PatchRules& rules, Sc
                 const size_t at = (size_t(op.runs[k].start) + j) * 4;
                 const uint32_t was =
                     bw ? uint32_t(bw[at]) | uint32_t(bw[at + 1]) << 8 | uint32_t(bw[at + 2]) << 16 | uint32_t(bw[at + 3]) << 24 : 0;
-                if (!voxels::ValidEdit(was, op.runs[k].value))
+                if (!voxels::ValidEdit(was, op.runs[k].value, rules.blend))
                     return Fail(err, "ops[" + std::to_string(i) + "].runs[" + std::to_string(k) +
                                          "]: a voxel may only be carved, filled or painted (second material and blend stay)");
             }

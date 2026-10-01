@@ -97,7 +97,7 @@ export class Sculptor {
     if (!a.point || !this.host.freshRef) return { changed: 0, frames: [], ms: now() - t0, refused: "Blocks cannot be added here" };
     const centre = blockCentre(this.host.scene, a.point, b.size);
     if (!centre) return { changed: 0, frames: [], ms: now() - t0, refused: "This level has no Scene frame to add blocks under" };
-    const cmd = planBlock(this.host.scene, this.host.voxels, this.host.freshRef(), centre, b.size, b.material === "column" ? 0 : b.material);
+    const cmd = planBlock(this.host.scene, this.host.voxels, this.host.freshRef(), centre, b.size, typeof b.material === "number" ? b.material : 0);
     if (typeof cmd === "string") return { changed: 0, frames: [], ms: now() - t0, refused: cmd };
     this.host.stack.exec(cmd);
     this.refresh();
@@ -132,7 +132,7 @@ export class Sculptor {
     this.sync();
     const t0 = now();
     if (!this.open) this.begin();
-    const changes = strokeChanges(this.grids, this.host.voxels, a, b);
+    const changes = strokeChanges(this.grids, this.host.voxels, a, b, this.host.base);
     const frames = [...changes.keys()].map((r) => this.frameOfRef.get(r)!);
     let changed = 0;
     for (const c of changes.values()) changed += c.size;

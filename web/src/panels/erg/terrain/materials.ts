@@ -83,3 +83,9 @@ export function hexColors(rgb: Uint8Array): string[] {
   for (let i = 0; i < 64; i++) out.push(`#${[0, 1, 2].map((k) => rgb[i * 3 + k].toString(16).padStart(2, "0")).join("")}`);
   return out;
 }
+
+/** The record names from a level.materials reply (at most 64 strings), or undefined for anything else. */
+export function materialNames(reply: unknown): string[] | undefined {
+  const names = (reply as { names?: unknown } | null)?.names;
+  return Array.isArray(names) && names.every((n) => typeof n === "string") ? (names as string[]).slice(0, MATERIALS) : undefined;
+}

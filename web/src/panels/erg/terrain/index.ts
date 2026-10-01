@@ -7,5 +7,6 @@ export * from "./materials";
 export * from "./tool";
 export * from "./surround";
 export * from "./blocks";
+export * from "./blend";
 export { TerrainTools } from "./TerrainTools";
 export { SurroundTools } from "./SurroundTools";

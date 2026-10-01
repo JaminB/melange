@@ -34,7 +34,8 @@ constexpr uint64_t kMaxCachedBytes = 160u << 20;   // estimated parsed size of t
 constexpr uint64_t kMaxBlobBytes = 16u << 20;
 constexpr int64_t kMaxRef = 1 << 24;
 // Adds may target any frame.
-const PatchRules kRules{.voxels = voxels::kAccepted, .anyFrame = true, .objects = true, .script = true, .newFrames = true, .hmpPaint = true};
+const PatchRules kRules{.voxels = voxels::kAccepted, .anyFrame = true, .objects = true, .script = true, .newFrames = true, .hmpPaint = true,
+                        .blend = true};
 
 // A level script's problems for the editor: the line of the first byte CheckSimText refuses (1 for the size limit).
 Json ScriptProblems(const std::string& text) {
@@ -266,7 +267,7 @@ bool BuildPatch(const std::wstring& gameDir, const std::vector<install::Pack>& p
 const std::vector<std::string>& Methods() {
     static const std::vector<std::string> m = {"level.list",   "level.new",   "level.load",    "level.save",  "level.export",
                                                "level.build",  "level.themes", "level.palette", "level.close",  "level.objects",
-                                               "level.script.get", "level.script.put"};
+                                               "level.script.get", "level.script.put", "level.materials"};
     return m;
 }
 
@@ -809,6 +810,32 @@ struct Service::Impl {
         return Ok(out);
     }
 
+    // {file, base?, source?}: the record names of a level's material file, for second-material paint. A pack level's own
+    // Maps\<stem>.txt is read from the pack.
+    Reply Materials(const Json& p) {
+        Reply r;
+        std::string file, base, source, err;
+        if (!GetStr(p, "file", &file, &r) || !GetStr(p, "base", &base, &r, false) || !GetStr(p, "source", &source, &r, false)) return r;
+        const std::string lower = Lower(file);
+        if (!PrintableAscii(file, 1, 120) || lower.size() < 5 || lower.compare(lower.size() - 4, 4, ".txt") != 0)
+            return Err(kBadParams, "file must be a material file (.txt)");
+        std::vector<uint8_t> txt;
+        bool read = false;
+        if (source == "pack" && !base.empty()) {
+            Resolved res;
+            if (!Resolve(base, source, &res, &r)) return r;
+            if (!res.packRoot.empty() && lower.rfind("maps\\", 0) == 0 && install::ValidFileStem(file.substr(5, file.size() - 9)))
+                read = install::ReadFile(res.packRoot + L"\\" + Slashes(file), 1u << 20, &txt, nullptr);
+        }
+        if (!read && !install::ReadMaterialFile(env.gameDir, file, &txt, &err)) return Err(kBadParams, "material file '" + file + "': " + err);
+        Json names = Json::Arr();
+        for (const auto& n : install::MaterialNames(txt)) names.arr.push_back(Str(n));
+        Json out = Json::Obj();
+        out.set("file", Str(file));
+        out.set("names", std::move(names));
+        return Ok(out);
+    }
+
     Reply Objects() {
         const objects::Catalog* c = Catalog();
         Json kinds = Json::Arr(), weapons = Json::Arr(), utilities = Json::Arr();
@@ -1041,6 +1068,7 @@ Reply Service::Call(std::string_view method, std::string_view paramsJson, uint64
     if (method == "level.export") return impl_->Export(p, conn);
     if (method == "level.build") return impl_->BuildMod(p);
     if (method == "level.objects") return impl_->Objects();
+    if (method == "level.materials") return impl_->Materials(p);
     if (method == "level.script.get") return impl_->ScriptGet(p);
     if (method == "level.script.put") return impl_->ScriptPut(p, conn);
     return Err(-32601, "unknown method");

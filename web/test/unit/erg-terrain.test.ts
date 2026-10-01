@@ -1,11 +1,12 @@
 import assert from "node:assert/strict";
 import { readFileSync, writeFileSync } from "node:fs";
 import { test } from "node:test";
-import { CommandStack, apply, applyPatch, toPatch, validatePatch, type Frame, type Scene, type Vec3 } from "../../src/sdk/erg";
+import { CommandStack, apply, applyPatch, toPatch, validatePatch, validRunValue, type Frame, type Scene, type Vec3 } from "../../src/sdk/erg";
 import {
   RemeshQueue, Sculptor, TerrainTool, anchorAt, carved, filled, gridFrames, index, invert, isSolid, material, painted, paletteFrom,
-  pick, strokeChanges, validEdit, type Anchor, type Brush, type GridFrame, type TerrainHost,
+  pick, strokeChanges, validEdit, CORNER_BIT, maskOf, secondOf, withSecond, type Anchor, type Brush, type GridFrame, type TerrainHost,
 } from "../../src/panels/erg/terrain";
+import { shownOf } from "../../src/panels/erg/terrain/mesher";
 
 const fixtureUrl = (name: string) => new URL(`../../../tests/fixtures/erg/${name}`, import.meta.url);
 const scene12 = (): Scene => JSON.parse(readFileSync(fixtureUrl("synthetic-12.json"), "utf8"));
@@ -334,4 +335,46 @@ test("the palette takes the atlas colours it can read", () => {
   assert.equal(p.length, 64);
   assert.equal(p[0], "#112233");
   assert.ok(p[1].startsWith("hsl("));
+});
+
+test("second-material paint: flags 3, the material and mask 0xff inside; shared corners on the border; removal restores", () => {
+  const floor = 3 | (4 << 2), vanilla = (floor | (3 << 8) | (4 << 10)) >>> 0;   // flags 3, second = primary, as 0x7777 floors
+  const s = gridScene([6, 2, 6], 1, 1, [0, 0, 0], (x, y, z) => (y > 0 ? 0 : x === 5 && z === 5 ? vanilla : floor));
+  const h = host(s, voxelsOf(s)), sc = new Sculptor(h), g = sc.frames[0];
+  const w = () => h.voxels.get(g.ref)!;
+  const at = (x: number, y: number, z: number) => w()[index(g.frame, x, y, z)];
+  const brush: Brush = { mode: "second", shape: "box", size: [2, 1, 2], material: 40 };
+  const r = sc.step({ grid: g, center: [3, 0.5, 3] }, brush);
+  const bit = (cx: number, cy: number, cz: number) => 1 << CORNER_BIT[cy][cz][cx];
+  for (const [x, z] of [[2, 2], [3, 2], [2, 3], [3, 3]]) assert.equal(at(x, 0, z), withSecond(floor, 40, 0xff));
+  assert.equal(maskOf(at(1, 0, 2)), bit(1, 0, 0) | bit(1, 0, 1) | bit(1, 1, 0) | bit(1, 1, 1), "an edge neighbour gets the corners on the shared face");
+  assert.equal(maskOf(at(1, 0, 1)), bit(1, 0, 1) | bit(1, 1, 1), "a diagonal neighbour gets the shared vertex only");
+  assert.equal(maskOf(at(4, 0, 4)), bit(0, 0, 0) | bit(0, 1, 0));
+  assert.equal(secondOf(at(1, 0, 2)), 40);
+  assert.equal(at(0, 0, 0), floor, "voxels that touch nothing painted keep their word");
+  assert.equal(at(2, 1, 2), 0, "empty voxels stay empty");
+  assert.equal(r.changed, 4 + 12);
+  assert.ok([...h.voxels.get(g.ref)!].every(validRunValue));
+
+  sc.step({ grid: g, center: [5.5, 0.5, 5.5] }, { ...brush, size: [1, 1, 1] });
+  assert.equal(at(5, 0, 5), withSecond(vanilla, 40, 0xff), "a vanilla floor takes the new second material");
+  assert.equal(maskOf(at(4, 0, 4)), bit(0, 0, 0) | bit(0, 1, 0) | bit(1, 0, 1) | bit(1, 1, 1), "border corners add up");
+
+  sc.step({ grid: g, center: [5.5, 0.5, 5.5] }, { ...brush, size: [1, 1, 1], material: "none" });
+  assert.equal(at(5, 0, 5), vanilla, "removal restores the base's second material");
+  const p = toPatch(s, s, { base: h.base, edited: h.voxels });
+  assert.deepEqual(validatePatch(p).errors, []);
+  assert.ok(p.ops.some((o) => o.op === "voxels" && o.runs.some((run) => run[2] === withSecond(floor, 40, 0xff))));
+
+  const bits = CORNER_BIT.flat(2).sort((a, b) => a - b);
+  assert.deepEqual(bits, [0, 1, 2, 3, 4, 5, 6, 7], "each corner has its own bit");
+  assert.deepEqual([0, 1].flatMap((cz) => [0, 1].map((cx) => CORNER_BIT[1][cz][cx])).sort(), [0, 1, 2, 3], "the top corners are bits 0-3");
+  assert.equal(shownOf(withSecond(floor, 40, 0xff)), 40, "the view draws a fully covered voxel in its second material");
+  assert.equal(shownOf(withSecond(floor, 40, 0x0f)), 4);
+
+  const tool = new TerrainTool(sc);
+  tool.setBrush({ mode: "second", material: "none" });
+  assert.equal(tool.brush.material, "none");
+  tool.setBrush({ mode: "paint" });
+  assert.equal(tool.brush.material, 0, "only second-material paint removes");
 });

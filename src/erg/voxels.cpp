@@ -32,8 +32,9 @@ bool SafeRoot(const std::string& root) {
 }
 }  // namespace
 
-bool ValidEdit(uint32_t base, uint32_t now) {
+bool ValidEdit(uint32_t base, uint32_t now, bool secondPaint) {
     if (!ValidRunValue(now)) return false;
+    if (secondPaint) return true;
     const uint32_t kept = now & kKeptMask;
     return kept == 0 || kept == (base & kKeptMask);
 }

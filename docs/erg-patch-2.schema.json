@@ -102,7 +102,7 @@
             "type": "object",
             "additionalProperties": false,
             "required": ["op", "frame", "runs"],
-            "description": "Terrain: runs of voxel words over the frame's index order, at most 2000 per frame. Accepted only by servers with terrain sculpting. Every word written must be a carve, fill or paint of the base word: bits 8-23 (second material and blend) equal to the base word's or zero.",
+            "description": "Terrain: runs of voxel words over the frame's index order, at most 2000 per frame. Accepted only by servers with terrain sculpting. Every word written must be a carve, fill or paint of the base word: bits 8-23 (second-material flags, second material and corner mask) equal to the base word's or zero, unless the server has second-material paint (then bits 8-23 are free; bits 24-31 stay clear).",
             "properties": {
               "op": { "const": "voxels" },
               "frame": {

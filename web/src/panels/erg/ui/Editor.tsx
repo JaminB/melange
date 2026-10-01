@@ -20,7 +20,7 @@ import { snapVec } from "../model/geometry";
 import { ExportDialog } from "../test/ExportDialog";
 import { TestPanel } from "../test/TestPanel";
 import { ScriptDoc, ScriptPanel } from "../script";
-import { Sculptor, SurroundTools, TerrainTool, TerrainTools, fetchAtlas, hexColors, setAtlas } from "../terrain";
+import { Sculptor, SurroundTools, TerrainTool, TerrainTools, fetchAtlas, hexColors, materialNames, setAtlas } from "../terrain";
 import { assetUrl } from "../../../sdk/erg/assets";
 
 export const SNAPS: (number | null)[] = [null, 1, 0.5, 0.1];
@@ -73,6 +73,7 @@ export function Editor({ client, info, opened, onClose }: Props) {
   }, [scriptDoc]);
   const [sculptOn, setSculptOn] = useState(false);
   const [atlasColors, setAtlasColors] = useState<string[]>();
+  const [names, setNames] = useState<string[]>();
   const viewRef = useRef<Viewport>();
   viewRef.current = view;
   const terrainTool = useMemo(() => new TerrainTool(new Sculptor({
@@ -152,6 +153,13 @@ export function Editor({ client, info, opened, onClose }: Props) {
       }, () => {});
     }, () => view?.setPreviews(scenePreviews));
   }, [conn.open, theme, view, scenePreviews]);
+  const materialFile = store.scene.databank.materialFile;
+  useEffect(() => {
+    setNames(undefined);
+    if (!conn.open || !client.has("level.materials") || !materialFile) return;
+    const { key, source } = store.base.base;
+    client.call<unknown>("level.materials", { file: materialFile, base: key, source }).then((r) => setNames(materialNames(r)), () => {});
+  }, [conn.open, materialFile, store]);
   useEffect(() => {
     if (!conn.open || !client.has("level.objects")) return;
     client.call<unknown>("level.objects").then((r) => setCatalog(catalogOf(r)), () => {});
@@ -325,7 +333,7 @@ export function Editor({ client, info, opened, onClose }: Props) {
             {tab === "props" ? <Properties store={store} set={(id, f) => store.exec(new SetDetail(id, f))} catalog={catalog}
                                            setObject={(knot, o) => store.exec(new SetObject(knot, o))} />
               : tab === "level" ? <LevelSettings store={store} themes={themes} />
-              : tab === "terrain" ? <><TerrainTools tool={terrainTool} palette={atlasColors} /><SurroundTools store={store} /></>
+              : tab === "terrain" ? <><TerrainTools tool={terrainTool} palette={atlasColors} names={names} /><SurroundTools store={store} /></>
               : tab === "script" && hasScript ? <ScriptPanel doc={scriptDoc} />
               : tab === "export" ? <ExportDialog client={client} project={info.id} defaultName={store.scene.title} />
               : <Checks issues={issues} onPick={(id) => { store.select([id]); view?.focus(); }} />}
