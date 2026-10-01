@@ -8,13 +8,19 @@ struct ProgramInfo {
     bool failed;           // the engine gave up compiling it
     bool pendingReload;    // recompiles at its next bind
     bool overridden;       // source or include came from an override root or a built-in patch
-    bool glsl;             // a GLSL replacement is active for this program
+    bool glsl;             // a GLSL replacement is currently bound for this program (available and not disabled)
+    bool glslAvailable;    // a GLSL replacement file exists for this program, whether or not it's enabled right now
     const char* owner;     // "builtin", a mod id, or "" (vanilla)
     uint32_t binds;
 };
 // Strings stay valid until the next reload of that program.
 size_t ListPrograms(ProgramInfo* out, size_t max);
 const char* Profile(uint8_t stage);  // e.g. "arbvp1" / "arbfp1"
+
+// Runtime enable/disable of a program's GLSL replacement (L0): persisted to [MirageShaders] GlslDisabled, takes
+// effect at once (no restart). False if that (file, entry) has no GLSL replacement file at all.
+bool SetGlslEnabled(const char* file, const char* entry, bool on);
+bool GetGlslEnabled(const char* file, const char* entry);
 
 // Marks every program whose file or entry contains `match` (or that includes a file that matches) for a lazy
 // reload at its next bind. The new source is test-compiled first: on error the old program stays in use.

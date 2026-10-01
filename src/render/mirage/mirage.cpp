@@ -14,6 +14,7 @@
 #include "core/module.h"
 #include "render/mirage/compat.h"
 #include "render/mirage/engine.h"
+#include "render/mirage/gputimers.h"
 #include "render/mirage/hub.h"
 #include "render/mirage/modfs.h"
 #include "render/mirage/pe.h"
@@ -53,8 +54,12 @@ BOOL WINAPI TimedSwapBuffers(HDC dc) {
         g_lastEntry = entry;
         ++g_frames;
     }
+    // Swap-to-swap GPU time (L0): close the query opened right after the *previous* SwapBuffers returned (it
+    // brackets this frame's GL command stream), present, then open the next one before any new commands are issued.
+    melange::mirage::gputimers::End(0);
     BOOL r = g_swapBuffers(dc);
     QueryPerformanceCounter(&g_lastReturn);
+    melange::mirage::gputimers::Begin(0);
     return r;
 }
 
@@ -148,6 +153,7 @@ public:
         melange::mirage::modfs::Configure(dir, disabled);
         if (!stages::Configure(ids)) LOG_WARN("[mirage] StageIds='%s' ignored; using the built-in table", ids.c_str());
         stages::Enable();
+        melange::mirage::gputimers::SetEnabled(Bool("GpuTimers", true));
         // Independent of MirageTrace, so a Save-logs export still gets a real gpu/compat.* with it disabled.
         melange::mirage::compat::Install();
 

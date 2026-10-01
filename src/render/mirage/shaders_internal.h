@@ -28,7 +28,8 @@ std::string LastToast(uint64_t* tick);
 // shaders_glsl.cpp (per-program GLSL replacement, experimental)
 namespace glsl {
 bool Configure(bool enabled, bool profileExperiment);  // Install time
-bool Has(const std::string& file, const std::string& entry);
+bool HasFile(const std::string& file, const std::string& entry);  // a replacement file exists, regardless of the toggle
+bool Has(const std::string& file, const std::string& entry);      // HasFile() and not administratively disabled
 void OnCreate(CGprogram p, const std::string& file, const std::string& entry, int stage, const std::wstring& vanillaDir);
 void OnBind(CGprogram p);  // after the real cgGLBindProgram
 void OnFileChanged(const std::wstring& path);
@@ -36,6 +37,9 @@ bool Active(const std::string& file, const std::string& entry);
 std::string Owner(const std::string& file, const std::string& entry);
 uint32_t ActiveCount();
 bool Installed();
+// Runtime toggle (L0): persisted to [MirageShaders] GlslDisabled, takes effect immediately, no restart needed.
+bool IsEnabled(const std::string& file, const std::string& entry);
+bool SetEnabled(const std::string& file, const std::string& entry, bool on);  // false if no replacement file exists
 }  // namespace glsl
 
 // shaders_panel.cpp

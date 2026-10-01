@@ -692,7 +692,7 @@ size_t ListPrograms(ProgramInfo* out, size_t max) {
                 std::string file = src::BaseName(ms::SafeStr(c.path)), entry = ms::SafeStr(c.entry);
                 ProgramInfo& p = x.out[x.n];
                 p = {ms::Intern(file), ms::Intern(entry), static_cast<uint8_t>(c.type == 1), c.failed, c.reload, false,
-                     ms::glsl::Active(file, entry), "", c.binds};
+                     ms::glsl::Active(file, entry), ms::glsl::HasFile(file, entry), "", c.binds};
                 std::lock_guard lk(ms::g_mx);
                 auto it = ms::g_records.find(ms::Key(file, entry, c.type == 1 ? 1 : 0));
                 if (it != ms::g_records.end()) {
@@ -746,6 +746,12 @@ bool GetParam(const char* file, const char* entry, const char* param, float* v, 
     }
     return false;
 }
+
+bool SetGlslEnabled(const char* file, const char* entry, bool on) {
+    return file && entry && ms::glsl::SetEnabled(file, entry, on);
+}
+
+bool GetGlslEnabled(const char* file, const char* entry) { return !file || !entry || ms::glsl::IsEnabled(file, entry); }
 
 int AddOverrideRoot(const wchar_t* dir, const char* owner) {
     if (!dir || !*dir) return 0;

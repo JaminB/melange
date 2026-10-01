@@ -280,6 +280,27 @@ bool VerbStatus(std::string_view, void*) {
     return true;
 }
 
+bool VerbGpu(std::string_view, void*) {
+    static const char* kNames[] = {"swap", "World", "WorldLate", "PostWorld", "Hud", "Final"};
+    constexpr int kN = static_cast<int>(gltrace::GpuRegion::Count);
+    std::string line;
+    for (int i = 0; i < kN; ++i) {
+        gltrace::GpuTime t = gltrace::GetGpuTime(static_cast<gltrace::GpuRegion>(i));
+        char b[48];
+        if (t.valid) snprintf(b, sizeof b, "%s%s=%.3fms", i ? " " : "", kNames[i], t.ms);
+        else snprintf(b, sizeof b, "%s%s=n/a", i ? " " : "", kNames[i]);
+        line += b;
+    }
+    LOG_INFO("[mirage] gpu timers (supported=%d): %s", gltrace::GpuTimerSupported(), line.c_str());
+    jlog::Rec rec("mirage", jlog::Level::Info, "gltrace.gpu");
+    rec.Bool("supported", gltrace::GpuTimerSupported());
+    for (int i = 0; i < kN; ++i) {
+        gltrace::GpuTime t = gltrace::GetGpuTime(static_cast<gltrace::GpuRegion>(i));
+        if (t.valid) rec.Float(kNames[i], t.ms);
+    }
+    return true;
+}
+
 bool VerbReport(std::string_view, void*) {
     int n = hub::Count();
     int exeIat = 0, exeProc = 0, cgIat = 0, cgProc = 0;
@@ -387,6 +408,7 @@ public:
         testcmd::Register("gltrace.capture", &VerbCapture);
         testcmd::Register("gltrace.texdump", &VerbTexdump);
         testcmd::Register("gltrace.report", &VerbReport);
+        testcmd::Register("gltrace.gpu", &VerbGpu);
         testcmd::Register("gltrace.scene", &VerbScene);
         testcmd::Register("gltrace.status", &VerbStatus);
 

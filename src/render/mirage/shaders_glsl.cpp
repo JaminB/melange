@@ -12,10 +12,12 @@
 #include <unordered_map>
 #include <vector>
 
+#include "core/config.h"
 #include "core/log.h"
 #include "core/mem.h"
 #include "melange/jlog.h"
 #include "render/mirage/engine.h"
+#include "render/mirage/glsl_toggle_logic.h"
 #include "render/mirage/hub.h"
 #include "render/mirage/modfs.h"
 #include "render/mirage/shaders_internal.h"
@@ -66,6 +68,7 @@ struct File {
     std::string owner, name;
 };
 std::map<std::string, File> g_files;  // lower(file)|entry
+std::vector<logic::Pair> g_disabled;  // administratively disabled (file, entry) pairs, persisted
 bool g_installed = false;
 src::CGcontext g_ctx = nullptr;
 
@@ -513,6 +516,8 @@ bool Configure(bool enabled, bool profileExperiment) {
     if (!enabled) return false;
     ScanFiles();
     if (g_files.empty()) return false;
+    config::EnsureKey("MirageShaders", "GlslDisabled", "");
+    g_disabled = logic::Decode(config::GetString("MirageShaders", "GlslDisabled", ""));
     HMODULE cggl = GetModuleHandleW(L"cgGL.dll");
     g_cgGLGetProgramID = reinterpret_cast<decltype(g_cgGLGetProgramID)>(GetProcAddress(cggl, "cgGLGetProgramID"));
     g_cgGLGetTextureEnum = reinterpret_cast<decltype(g_cgGLGetTextureEnum)>(GetProcAddress(cggl, "cgGLGetTextureEnum"));
@@ -540,7 +545,30 @@ bool Configure(bool enabled, bool profileExperiment) {
 
 bool Installed() { return g_installed; }
 
-bool Has(const std::string& file, const std::string& entry) { return g_installed && g_files.count(Key(file, entry)) != 0; }
+bool HasFile(const std::string& file, const std::string& entry) { return g_installed && g_files.count(Key(file, entry)) != 0; }
+
+bool Has(const std::string& file, const std::string& entry) {
+    return HasFile(file, entry) && !logic::Contains(g_disabled, file, entry);
+}
+
+bool IsEnabled(const std::string& file, const std::string& entry) { return !logic::Contains(g_disabled, file, entry); }
+
+bool SetEnabled(const std::string& file, const std::string& entry, bool on) {
+    if (!HasFile(file, entry)) return false;
+    g_disabled = logic::SetEnabled(g_disabled, file, entry, on);
+    config::SetString("MirageShaders", "GlslDisabled", logic::Encode(g_disabled).c_str());
+    std::vector<src::CGprogram> affected;
+    for (auto& [p, prog] : g_progs)
+        if (src::IEquals(prog.file, file) && prog.entry == entry) {
+            prog.replaced = Has(prog.file, prog.entry);
+            prog.linkedOk = false;
+            affected.push_back(p);
+        }
+    for (src::CGprogram p : affected) Forget(p);
+    Update();
+    LOG_INFO("[shaders] GLSL replacement %s:%s %s", file.c_str(), entry.c_str(), on ? "enabled" : "disabled");
+    return true;
+}
 
 void OnCreate(src::CGprogram p, const std::string& file, const std::string& entry, int stage, const std::wstring& vdir) {
     if (!g_installed) return;

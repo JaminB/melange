@@ -24,6 +24,11 @@ struct Manifest {
     std::vector<Dep> dependencies, optional, conflicts; std::vector<std::string> loadAfter, messages, hashInclude;
     std::vector<Setting> settings; std::vector<Weapon> weapons;
     std::vector<Level> levels; std::wstring dir;
+    // Optional "graphics" block: a client-only mod's request for texture clarity (Mirage's MirageTextures
+    // component), applied unless the user overrides it in [MirageTextures]. Never affects the simulation.
+    bool graphicsPresent = false, graphicsTrilinear = false, graphicsLodBiasSet = false;
+    int graphicsAnisotropy = 0;
+    double graphicsLodBias = 0;
 };
 struct Error { std::string field; int line = 0, col = 0; std::string text; };
 bool Parse(const std::wstring& dir, Manifest* out, std::vector<Error>* errs);  // synthesises the implicit manifest

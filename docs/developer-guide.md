@@ -95,6 +95,16 @@ Mods live in `<game>\Mods\<id>\`. When two mods provide the same file, the later
 
 *Capture frame* (or `Ctrl+Shift+F9`) records one frame into `Documents\Melange\captures\*.mcap`: every call with decoded arguments, the GL state, the compiled shaders, the bound textures and the final image. The format is a plain zip, described in [capture-format.md](capture-format.md). *Dump next 50 textures* writes the next textures the game loads to `Documents\Melange\textures\` as PNG. Captures and dumps contain the game's textures, so they stay on your PC and are never part of a logs export.
 
+### GPU timers
+
+`[Mirage] GpuTimers=1` (the default) keeps a `GL_TIME_ELAPSED` query running for the swap-to-swap frame and for each
+stage in the table above (only stages with at least one registered callback are timed that frame). The *Mirage/GL*
+panel's *GPU timers* section lists them, and `melange::gltrace::GetGpuTime(GpuRegion)` (`melange/gltrace.h`) reads
+them from C++; the `gltrace.gpu` console verb logs all six at once. A region reads `n/a` until its first result has
+come back from the GPU (the queries are triple-buffered, so that's normally a couple of frames). This is separate
+from Post-FX's own per-effect timers (`melange::postfx::EffectInfo::gpuMs`, shown in *Mirage/Post-FX*): these time
+Mirage's own stage machinery and mod callbacks, not any one effect.
+
 ### Shader mods
 
 The game's shaders are the Cg files in `<game>\CG\`. A mod changes them from its `shaders\` folder, without shipping the game's files:
@@ -122,7 +132,32 @@ Saving a file reloads the shaders that use it while the game runs. The new sourc
 |---|---|
 | ![Jagged, unsmoothed edges with the game's own FXAA pass left broken](images/fxaa/fxaa-fix-off.png) | ![The same frame with FixFxaa=1: edges smoothed](images/fxaa/fxaa-fix-on.png) |
 
-`Mods\mirage-landscape\` is a sample: it adds tunables to the landscape lighting and softens the shadow edges. It is listed in `DisabledMods` by default; remove it from that list to try it. Experimental: a file `shaders\<File>.<Entry>.glsl` replaces one program with GLSL, keeping the Cg parameter names (`GlslReplace=1`, read at start). `Mods\mirage-landscape\extras\` has a GLSL version of the landscape pixel shader.
+`Mods\mirage-landscape\` is a sample: it adds tunables to the landscape lighting and softens the shadow edges. It is listed in `DisabledMods` by default; remove it from that list to try it. Experimental: a file `shaders\<File>.<Entry>.glsl` replaces one program with GLSL, keeping the Cg parameter names (`GlslReplace=1`, read at start). `Mods\mirage-landscape\extras\` has a GLSL version of the landscape pixel shader. Each GLSL replacement can be switched off at runtime, no restart needed: the *Mirage/Shaders* panel's *GLSL* column checkbox (shown whenever a replacement file exists for that program), or `melange::shaders::SetGlslEnabled(file, entry, on)`. The choice is persisted to `[MirageShaders] GlslDisabled`.
+
+### Texture clarity
+
+`MirageTextures` applies 16x anisotropic filtering, a trilinear minification filter and an optional negative LOD
+bias at the engine's own texture uploads. It changes nothing by default (vanilla filtering): a client-only mod asks
+for it through its `spice.json`'s `graphics` block,
+
+```json
+"graphics": { "anisotropy": 16, "trilinearFilter": true, "lodBias": -0.25 }
+```
+
+and `[MirageTextures]` in `Melange.ini` always has the final say over every enabled mod's request:
+
+```ini
+[MirageTextures]
+Anisotropy=auto   ; auto | an integer 0-16
+Trilinear=auto    ; auto | on | off
+LodBias=auto      ; auto | a number from -8 to 8
+```
+
+`auto` follows the strongest merged request among enabled mods (the highest anisotropy, trilinear if any mod wants
+it, the sharpest requested LOD bias), or vanilla if none ask for it. Enabling or disabling a requesting mod applies
+at once: every texture seen so far is swept back to the new effective settings. The `mirage.textures` console verb
+logs the effective settings, whether the upload hook is installed, and how many textures it has touched. The
+`sunstone` plugin ships this layer.
 
 ### Post-processing effects
 

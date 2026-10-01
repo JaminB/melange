@@ -18,6 +18,7 @@
 
 #include "miniz.h"
 #include "render/mirage/compat.h"
+#include "render/mirage/gputimers_logic.h"
 #include "render/mirage/trace_internal.h"
 
 namespace t = melange::mirage::trace;
@@ -477,9 +478,30 @@ void TestMcap() {
     mz_zip_reader_end(&z);
     std::cout << "trace_selftest: sample capture left at " << narrow << "\n";
 }
+// ---------------------------------------------------------------- gputimers_logic (L0 GPU timers)
+void TestGpuTimerLogic() {
+    using namespace melange::mirage::gputimers::logic;
+    Region r;
+    Check(!r.valid && r.lastMs == -1.0, "gputimers: a fresh region has no result yet");
+    Check(!ShouldPoll(r), "gputimers: slot 0 was never issued, so it is never polled before its first Begin");
+    Advance(r);  // frame 1: Begin/End issued into slot 0
+    Check(r.head == 1, "gputimers: Advance rotates to the next of 3 slots");
+    Check(ShouldPoll(r) == false, "gputimers: slot 1 (now current) was never issued either");
+    Resolve(r, false, 0);
+    Check(!r.valid, "gputimers: an unavailable poll leaves the region unresolved");
+    Advance(r);  // frame 2: slot 1
+    Advance(r);  // frame 3: slot 2
+    Check(r.head == 0, "gputimers: the ring wraps back to slot 0 after 3 slots");
+    Check(ShouldPoll(r), "gputimers: slot 0 is now due for a poll (it was issued back on frame 1)");
+    Resolve(r, true, 2'500'000);  // 2.5 ms in nanoseconds
+    Check(r.valid && r.lastMs == 2.5, "gputimers: a resolved poll converts ns to ms");
+    Resolve(r, false, 999);
+    Check(r.valid && r.lastMs == 2.5, "gputimers: a later unavailable poll keeps the last known value");
+}
 }  // namespace
 
 int main() {
+    TestGpuTimerLogic();
     TestTables();
     TestDecode();
     TestCallJson();

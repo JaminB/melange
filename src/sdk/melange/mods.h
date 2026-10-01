@@ -18,6 +18,11 @@ struct ModInfo {
 };
 int List(ModInfo* out, int max);          // every discovered mod, load order; returns the total
 bool Find(const char* id, ModInfo* out);
+// A mod's declared spice.json "graphics" block (texture clarity), read-only. False if the mod is unknown; `present`
+// is false if the mod has no "graphics" block. Honoured by Mirage's MirageTextures regardless of mod kind, but only
+// while the mod is State::Enabled.
+struct GraphicsRequest { bool present, trilinearFilter, lodBiasSet; int anisotropy; float lodBias; };
+bool GetGraphicsRequest(const char* id, GraphicsRequest* out);
 bool SetEnabled(const char* id, bool on); // persisted; client-only mods apply immediately
 bool SetDeepDesert(const char* id, bool granted);
 const wchar_t* ModsDir();

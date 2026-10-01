@@ -611,6 +611,15 @@ bool Find(const char* id, ModInfo* out) {
     return false;
 }
 
+bool GetGraphicsRequest(const char* id, GraphicsRequest* out) {
+    if (!id || !out) return false;
+    thumper::Entry e;
+    if (!thumper::FindEntry(id, &e)) return false;
+    *out = {e.manifest.graphicsPresent, e.manifest.graphicsTrilinear, e.manifest.graphicsLodBiasSet,
+            e.manifest.graphicsAnisotropy, static_cast<float>(e.manifest.graphicsLodBias)};
+    return true;
+}
+
 bool SetEnabled(const char* id, bool on) { return id && thumper::SetEnabled(id, on); }
 bool SetDeepDesert(const char* id, bool granted) { return id && thumper::SetDeepDesert(id, granted); }
 

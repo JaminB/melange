@@ -497,6 +497,10 @@ add_executable(gldebug_selftest EXCLUDE_FROM_ALL tests/gldebug_selftest.cpp)
 target_include_directories(gldebug_selftest PRIVATE src)
 target_compile_options(gldebug_selftest PRIVATE /W4 /utf-8 /permissive-)
 
+add_executable(textures_selftest tests/textures_selftest.cpp)
+target_include_directories(textures_selftest PRIVATE src)
+target_compile_options(textures_selftest PRIVATE /W4 /utf-8 /permissive-)
+
 add_executable(postfx_selftest EXCLUDE_FROM_ALL
     tests/postfx_selftest.cpp
     src/render/mirage/postfx_effect.cpp

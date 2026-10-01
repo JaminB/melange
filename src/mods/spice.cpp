@@ -681,6 +681,39 @@ bool ParseManifestJson(const json::Value& v, const std::string& folderId, Manife
             GetStr(*assets, "effects", &out->effects, "effects");
         }
     }
+    if (const json::Value* gfx = v.Get("graphics")) {
+        if (!gfx->IsObject()) {
+            AddError(errs, gfx, "graphics", "graphics must be an object");
+            ok = false;
+        } else {
+            out->graphicsPresent = true;
+            if (const json::Value* a = gfx->Get("anisotropy")) {
+                if (!a->IsInteger() || a->number < 0 || a->number > 16) {
+                    AddError(errs, a, "graphics.anisotropy", "graphics.anisotropy must be an integer 0-16");
+                    ok = false;
+                } else {
+                    out->graphicsAnisotropy = static_cast<int>(a->number);
+                }
+            }
+            if (const json::Value* t = gfx->Get("trilinearFilter")) {
+                if (!t->IsBool()) {
+                    AddError(errs, t, "graphics.trilinearFilter", "graphics.trilinearFilter must be a boolean");
+                    ok = false;
+                } else {
+                    out->graphicsTrilinear = t->boolean;
+                }
+            }
+            if (const json::Value* lb = gfx->Get("lodBias")) {
+                if (!lb->IsNumber() || lb->number < -8 || lb->number > 8) {
+                    AddError(errs, lb, "graphics.lodBias", "graphics.lodBias must be a number from -8 to 8");
+                    ok = false;
+                } else {
+                    out->graphicsLodBiasSet = true;
+                    out->graphicsLodBias = lb->number;
+                }
+            }
+        }
+    }
     if (const json::Value* ch = v.Get("contentHash")) {
         if (const json::Value* inc = ch->Get("include")) {
             if (!inc->IsArray()) {

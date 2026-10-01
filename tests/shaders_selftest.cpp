@@ -8,6 +8,7 @@
 #include <string>
 #include <vector>
 
+#include "render/mirage/glsl_toggle_logic.h"
 #include "render/mirage/shaders_source.h"
 
 using namespace melange::mirage::shadersrc;
@@ -221,9 +222,31 @@ void TestSamples() {
         Check(text.find(s.name) != std::string::npos && p.blocks[0].replace.find(s.name) != std::string::npos, "sample param declared by the patch");
 #endif
 }
+void TestGlslToggle() {
+    using namespace melange::mirage::shaders::glsl::logic;
+    Check(Decode("").empty(), "glsl toggle: an empty string decodes to no entries");
+    auto list = Decode("Landscape.cg:LandscapeFragmentMain,Water.cg:WaterFragmentMain");
+    Check(list.size() == 2 && list[0].first == "Landscape.cg" && list[0].second == "LandscapeFragmentMain",
+          "glsl toggle: decode splits on ':' and ','");
+    Check(Encode(list) == "Landscape.cg:LandscapeFragmentMain,Water.cg:WaterFragmentMain", "glsl toggle: encode round-trips decode");
+    Check(Contains(list, "landscape.cg", "LandscapeFragmentMain"), "glsl toggle: file matching is case-insensitive");
+    Check(!Contains(list, "Landscape.cg", "landscapefragmentmain"), "glsl toggle: entry matching is case-sensitive (Cg entry names are)");
+    Check(Decode("bad,noColon,:emptyfile,emptyentry:").empty(), "glsl toggle: malformed entries are skipped, not crashed on");
+
+    std::vector<Pair> disabled;
+    disabled = SetEnabled(disabled, "Landscape.cg", "LandscapeFragmentMain", false);
+    Check(Contains(disabled, "Landscape.cg", "LandscapeFragmentMain"), "glsl toggle: disabling adds the pair");
+    disabled = SetEnabled(disabled, "Landscape.cg", "LandscapeFragmentMain", false);
+    Check(disabled.size() == 1, "glsl toggle: disabling twice is idempotent");
+    disabled = SetEnabled(disabled, "Landscape.cg", "LandscapeFragmentMain", true);
+    Check(disabled.empty(), "glsl toggle: re-enabling removes the pair");
+    disabled = SetEnabled(disabled, "Landscape.cg", "LandscapeFragmentMain", true);
+    Check(disabled.empty(), "glsl toggle: re-enabling an already-enabled pair is a no-op");
+}
 }  // namespace
 
 int main() {
+    TestGlslToggle();
     TestText();
     TestPatch();
     TestBuiltin();

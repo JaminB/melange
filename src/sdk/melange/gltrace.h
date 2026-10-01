@@ -36,4 +36,11 @@ CaptureState CaptureStatus(std::wstring* path = nullptr, std::string* error = nu
 bool StartTextureDump(uint32_t maxCount, const char* nameFilter = nullptr);  // substring on the image name; any thread
 void StopTextureDump();
 uint32_t TexturesDumped();
+
+// GPU timer queries (L0): swap-to-swap and each Mirage stage (render::Stage World..Final, offset by one).
+// [Mirage] GpuTimers=1 (default) controls whether these run at all; off by itself costs nothing.
+enum class GpuRegion : uint8_t { Swap = 0, World, WorldLate, PostWorld, Hud, Final, Count };
+struct GpuTime { double ms; bool valid; };  // valid is false until the GPU has returned a first result for it
+bool GpuTimerSupported();                   // a GL context with GL_ARB_timer_query (or GL 3.3+) is current
+GpuTime GetGpuTime(GpuRegion r);
 }

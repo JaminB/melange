@@ -78,6 +78,28 @@ void Draw(void*) {
         ImGui::Text("%.2f", avg.busyMs);
         ImGui::EndTable();
     }
+    if (ImGui::CollapsingHeader("GPU timers", ImGuiTreeNodeFlags_DefaultOpen)) {
+        static const char* kNames[] = {"Swap-to-swap", "World", "WorldLate", "PostWorld", "Hud", "Final"};
+        constexpr int kN = static_cast<int>(gltrace::GpuRegion::Count);
+        if (!gltrace::GpuTimerSupported()) {
+            ImGui::TextDisabled("not supported by this context (needs GL_ARB_timer_query or GL 3.3+)");
+        } else if (ImGui::BeginTable("gputimers", 2, ImGuiTableFlags_SizingFixedFit)) {
+            ImGui::TableSetupColumn("region");
+            ImGui::TableSetupColumn("GPU ms");
+            ImGui::TableHeadersRow();
+            for (int i = 0; i < kN; ++i) {
+                gltrace::GpuTime t = gltrace::GetGpuTime(static_cast<gltrace::GpuRegion>(i));
+                ImGui::TableNextRow();
+                ImGui::TableNextColumn();
+                ImGui::TextUnformatted(kNames[i]);
+                ImGui::TableNextColumn();
+                if (t.valid) ImGui::Text("%.3f", t.ms);
+                else ImGui::TextDisabled("n/a");
+            }
+            ImGui::EndTable();
+        }
+        ImGui::TextDisabled("verb: gltrace.gpu   ini: [Mirage] GpuTimers=1");
+    }
     History h = GetHistory();
     float w = ImGui::GetContentRegionAvail().x;
     if (!h.calls.empty()) {

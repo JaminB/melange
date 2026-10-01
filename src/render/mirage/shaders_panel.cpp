@@ -76,7 +76,7 @@ void DrawPrograms() {
     }
     constexpr ImGuiTableFlags kFlags = ImGuiTableFlags_RowBg | ImGuiTableFlags_Borders | ImGuiTableFlags_ScrollY |
                                        ImGuiTableFlags_Resizable | ImGuiTableFlags_SizingStretchProp;
-    if (!ImGui::BeginTable("programs", 6, kFlags, ImVec2(0, 260))) return;
+    if (!ImGui::BeginTable("programs", 7, kFlags, ImVec2(0, 260))) return;
     ImGui::TableSetupScrollFreeze(0, 1);
     ImGui::TableSetupColumn("File");
     ImGui::TableSetupColumn("Entry");
@@ -84,6 +84,7 @@ void DrawPrograms() {
     ImGui::TableSetupColumn("Binds/s");
     ImGui::TableSetupColumn("Owner");
     ImGui::TableSetupColumn("State");
+    ImGui::TableSetupColumn("GLSL");
     ImGui::TableHeadersRow();
     for (const auto& p : list) {
         Rate& r = g_rates[std::string(p.file) + ":" + p.entry];
@@ -113,6 +114,15 @@ void DrawPrograms() {
         if (p.glsl) {
             ImGui::SameLine(0, 0);
             ImGui::TextColored(ImVec4(0.9f, 0.7f, 1.f, 1.f), "glsl");
+        }
+        ImGui::TableNextColumn();
+        if (p.glslAvailable) {
+            bool on = melange::shaders::GetGlslEnabled(p.file, p.entry);
+            std::string id = std::string("##glsl-") + p.file + ":" + p.entry;
+            if (ImGui::Checkbox(id.c_str(), &on)) melange::shaders::SetGlslEnabled(p.file, p.entry, on);
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip("enable/disable this program's GLSL replacement (takes effect at once)");
+        } else {
+            ImGui::TextDisabled("-");
         }
     }
     ImGui::EndTable();

@@ -16,6 +16,7 @@
 #include "core/mem.h"
 #include "render/gl_guard.h"
 #include "render/mirage/engine.h"
+#include "render/mirage/gputimers.h"
 
 namespace melange::mirage::stages {
 namespace {
@@ -154,10 +155,15 @@ void RunStage(Stage s) {
             if (c.stage == s && n < 64) local[n++] = c;
     }
     g_calls[static_cast<int>(s)].fetch_add(1, std::memory_order_relaxed);
+    if (n == 0) return;
+    // GpuRegion::Swap is 0, so World..Final (Stage 0..4) are regions 1..5.
+    int region = 1 + static_cast<int>(s);
+    gputimers::Begin(region);
     for (int i = 0; i < n; ++i) {
         unsigned long code = 0;
         if (!Invoke(local[i].fn, s, local[i].user, &code, local[i].handle)) Fault(local[i].handle, s, code);
     }
+    gputimers::End(region);
 }
 
 void __cdecl SlotFn(void* a1, void* a2) {

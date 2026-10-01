@@ -120,6 +120,49 @@ void TestParse() {
         Expect(ok && !m.defaultEnabled, "parse: defaultEnabled honoured");
     }
     {
+        const char* json = R"({
+            "spiceVersion": 1, "id": "gfx-mod", "version": "1.0.0", "name": "Gfx Mod",
+            "melange": {"range": ">=0.1.0"}, "kind": "client-only", "entry": {"client": "client/init.lua"},
+            "graphics": {"anisotropy": 16, "trilinearFilter": true, "lodBias": -0.5}
+        })";
+        std::wstring dir = Fixture("gfx-mod", json);
+        Manifest m;
+        std::vector<Error> errs;
+        bool ok = Parse(dir, &m, &errs);
+        Expect(ok, "parse: a valid graphics block");
+        Expect(ok && m.graphicsPresent && m.graphicsAnisotropy == 16 && m.graphicsTrilinear && m.graphicsLodBiasSet &&
+                   m.graphicsLodBias == -0.5,
+               "parse: graphics fields read through");
+    }
+    {
+        const char* json = R"({"spiceVersion": 1, "id": "no-gfx", "version": "1.0.0", "name": "X",
+            "melange": {"range": ">=0.1.0"}, "kind": "client-only", "entry": {}})";
+        std::wstring dir = Fixture("no-gfx", json);
+        Manifest m;
+        std::vector<Error> errs;
+        bool ok = Parse(dir, &m, &errs);
+        Expect(ok && !m.graphicsPresent && m.graphicsAnisotropy == 0 && !m.graphicsTrilinear,
+               "parse: no graphics block means no request (vanilla)");
+    }
+    {
+        const char* json = R"({"spiceVersion": 1, "id": "bad-gfx", "version": "1.0.0", "name": "X",
+            "melange": {"range": ">=0.1.0"}, "kind": "client-only", "entry": {}, "graphics": {"anisotropy": 17}})";
+        std::wstring dir = Fixture("bad-gfx", json);
+        Manifest m;
+        std::vector<Error> errs;
+        bool ok = Parse(dir, &m, &errs);
+        Expect(!ok && !errs.empty() && errs[0].field == "graphics.anisotropy", "parse: anisotropy above 16 is rejected");
+    }
+    {
+        const char* json = R"({"spiceVersion": 1, "id": "bad-gfx2", "version": "1.0.0", "name": "X",
+            "melange": {"range": ">=0.1.0"}, "kind": "client-only", "entry": {}, "graphics": {"lodBias": -9}})";
+        std::wstring dir = Fixture("bad-gfx2", json);
+        Manifest m;
+        std::vector<Error> errs;
+        bool ok = Parse(dir, &m, &errs);
+        Expect(!ok && !errs.empty() && errs[0].field == "graphics.lodBias", "parse: lodBias out of range is rejected");
+    }
+    {
         const char* json = R"({"spiceVersion": 1, "id": "wrong-id", "version": "1.0.0", "name": "X",
             "melange": {"range": ">=0.1.0"}, "kind": "client-only", "entry": {}})";
         std::wstring dir = Fixture("right-folder", json);
