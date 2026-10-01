@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import {
-  AddDetail, AddObjects, KNOT_RESOURCE, PATCH_FORMAT_2, RemoveDetail, SetDetail, SetLevel, SetObject, THEMES, applyPatch, deriveRole,
+  AddDetail, AddObjects, KNOT_RESOURCE, apply, type CommandStack, PATCH_FORMAT_2, RemoveDetail, SetDetail, SetLevel, SetObject, THEMES, applyPatch, deriveRole,
   frameWorld, isEmptyPatch, validatePatch, validatePatchObjects, type Command, type Scene, type Vec3,
 } from "../../src/sdk/erg";
 import { catalogOf, objectOf } from "../../src/panels/erg/model/placing";
@@ -14,6 +14,7 @@ import { dropPoint, rayVoxels } from "../../src/panels/erg/model/ground";
 import { withPatch } from "../../src/panels/erg/model/loader";
 import { BUILTIN, SCENERY_COPIES, nextKnot, paletteFrom, place, targetFrame } from "../../src/panels/erg/model/placing";
 import { EditorStore, type Loaded } from "../../src/panels/erg/model/store";
+import { Sculptor } from "../../src/panels/erg/terrain";
 import { frameQuads, meshFrames } from "../../src/panels/erg/terrain/mesher";
 import { themePalette } from "../../src/panels/erg/terrain/materials";
 import { buckets, meshInput } from "../../src/panels/erg/terrain/pool";
@@ -372,6 +373,41 @@ test("store: a saved patch applied to the base reopens as the same scene", () =>
   const s = applyPatch(scene12(), patch);
   assert.equal(s.water.level, 40);
   assert.equal(s.databank.theme, "CAMELOT");
+});
+
+// level.load numbers blob refs on from earlier loads, so the project's refs differ from the base's.
+function shiftRefs(s: Scene, by: number): Scene {
+  const o = structuredClone(s);
+  for (const b of o.blobs) b.ref += by;
+  for (const f of o.frames) {
+    if (f.voxels !== null) f.voxels += by;
+    if (f.heightMap !== null) f.heightMap += by;
+  }
+  if (o.hmp.ref !== undefined) o.hmp.ref += by;
+  return o;
+}
+
+test("store: sculpting works when the project's blob refs differ from the base's", () => {
+  const s = scene12();
+  const store = new EditorStore("p1", loaded(s), loaded(shiftRefs(s, 1000)));
+  const sc = new Sculptor({
+    scene: store.scene, voxels: store.voxels, base: store.baseVoxels, refOf: (id) => store.voxelRef(id),
+    stack: { exec: (c: Command, m?: boolean) => store.exec(c, m) } as unknown as CommandStack, remesh: () => {},
+  });
+  assert.equal(sc.frames.length, s.frames.filter((f) => f.voxels !== null).length);
+  const g = sc.frames.find((x) => x.frame.size[0] >= 6 && x.frame.size[2] >= 6)!;
+  const top = apply(g.toWorld, [2.5, g.frame.size[1] + 5, 2.5]), below = apply(g.toWorld, [2.5, 0, 2.5]);
+  const hit = sc.pick(top, [below[0] - top[0], below[1] - top[1], below[2] - top[2]])!;
+  assert.ok(hit, "pick meets the terrain");
+  const r = sc.step(sc.anchor(hit, { mode: "carve", shape: "box", size: [3, 3, 3], material: 0 }),
+    { mode: "carve", shape: "box", size: [3, 3, 3], material: 0 });
+  assert.ok(r.changed > 0 && r.frames.includes(g.frame.id));
+  const voxelOps = () => store.patch().ops.filter((o) => o.op === "voxels");
+  assert.deepEqual(voxelOps().map((o) => o.op === "voxels" && o.frame), [g.frame.id]);
+  store.undo();
+  assert.equal(voxelOps().length, 0);
+  store.redo();
+  assert.equal(voxelOps().length, 1);
 });
 
 test("store: selection follows deletes and undo", () => {

@@ -7,8 +7,9 @@ import { gridFrames, overlaps, type Box, type GridFrame } from "./voxel";
 
 export interface TerrainHost {
   scene: Scene;
-  voxels: Map<number, Uint32Array>;   // blob ref -> the edited words (the scene the view draws)
-  base: Map<number, Uint32Array>;     // blob ref -> the words as loaded (what toPatch diffs against)
+  voxels: Map<number, Uint32Array>;   // base blob ref -> the edited words (the scene the view draws)
+  base: Map<number, Uint32Array>;     // base blob ref -> the words as loaded (what toPatch diffs against)
+  refOf(id: number): number | null;   // a frame's key in voxels and base
   stack: CommandStack;
   remesh(frameIds: number[]): void;   // the mesher rebuilds these frames only
 }
@@ -67,7 +68,7 @@ export class Sculptor {
 
   /** Rebuilds the frame caches (after a load or a reload of the scene). */
   refresh() {
-    this.grids = gridFrames(this.host.scene, this.host.voxels);
+    this.grids = gridFrames(this.host.scene, this.host.voxels, (id) => this.host.refOf(id));
     this.frameOfRef = new Map(this.grids.map((g) => [g.ref, g.frame.id]));
     this.patchCost.clear();
     for (const g of this.grids) this.patchCost.set(g.ref, this.cost(g.ref, this.host.voxels.get(g.ref)!));

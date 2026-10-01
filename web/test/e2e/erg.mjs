@@ -159,6 +159,22 @@ async function suite(browser) {
       const pr = await erg(page, (e) => e.store.patchText());
       check("undo returns the patch byte for byte", pu === p0);
       check("redo returns the edited patch byte for byte", pr === p2 && p2 !== p0);
+      const sculpt = await erg(page, (e) => {
+        const sc = e.terrain.sculptor, g = sc.frames.find((x) => x.frame.size[0] >= 4 && x.frame.size[2] >= 4);
+        const differ = e.store.scene.frames.some((f) => f.voxels !== null && f.voxels !== e.store.voxelRef(f.id));
+        if (!g) return { frames: sc.frames.length, differ };
+        const w = (p) => [0, 1, 2].map((i) => g.toWorld[i * 4] * p[0] + g.toWorld[i * 4 + 1] * p[1] + g.toWorld[i * 4 + 2] * p[2] + g.toWorld[i * 4 + 3]);
+        const top = w([1.5, g.frame.size[1] + 5, 1.5]), low = w([1.5, 0, 1.5]);
+        const hit = sc.pick(top, [low[0] - top[0], low[1] - top[1], low[2] - top[2]]);
+        const brush = { mode: "carve", shape: "box", size: [3, 3, 3], material: 0 };
+        const r = hit ? sc.step(sc.anchor(hit, brush), brush) : null;
+        sc.end();
+        const ops = JSON.parse(e.store.patchText()).ops.filter((o) => o.op === "voxels").length;
+        if (r?.changed) e.store.undo();
+        return { frames: sc.frames.length, differ, hit: !!hit, changed: r?.changed ?? 0, ops };
+      });
+      check("sculpt: with the project's refs unlike the base's, a carve adds a voxels op", sculpt.differ && sculpt.hit && sculpt.changed > 0 && sculpt.ops === 1,
+        JSON.stringify(sculpt));
       await page.locator('[data-action="close"]').click();
     });
 
@@ -226,13 +242,14 @@ async function suite(browser) {
       await page.keyboard.press("Control+s");
       await page.waitForSelector('[data-erg-save="ok"]', { timeout: 5000 });
       check("Ctrl+S saves through level.save", mock.state.erg.saves === saves + 1);
-      const sceneBefore = await erg(page, (e) => JSON.stringify(e.store.scene));
+      // Blob refs run on across loads (as the service numbers them), so they are left out.
+      const sceneBefore = await erg(page, (e) => JSON.stringify(e.store.scene, (k, v) => (["ref", "voxels", "heightMap"].includes(k) && typeof v === "number" ? 0 : v)));
       const patchBefore = await erg(page, (e) => e.store.patchText());
       await page.screenshot({ path: "web/test/out/erg-placed.png" });
 
       await page.reload({ waitUntil: "load" });
       await page.waitForSelector("[data-erg-view][data-first-frame]", { timeout: 20000 });
-      const sceneAfter = await erg(page, (e) => JSON.stringify(e.store.scene));
+      const sceneAfter = await erg(page, (e) => JSON.stringify(e.store.scene, (k, v) => (["ref", "voxels", "heightMap"].includes(k) && typeof v === "number" ? 0 : v)));
       const patchAfter = await erg(page, (e) => e.store.patchText());
       check("after a reload the project reopens with the identical scene", sceneAfter === sceneBefore);
       check("after a reload the patch is identical and nothing is dirty", patchAfter === patchBefore &&

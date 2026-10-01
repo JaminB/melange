@@ -76,7 +76,7 @@ export function Editor({ client, info, opened, onClose }: Props) {
   const viewRef = useRef<Viewport>();
   viewRef.current = view;
   const terrainTool = useMemo(() => new TerrainTool(new Sculptor({
-    scene: store.scene, voxels: store.voxels, base: store.baseVoxels,
+    scene: store.scene, voxels: store.voxels, base: store.baseVoxels, refOf: (id) => store.voxelRef(id),
     stack: { exec: (c: Command, m?: boolean) => store.exec(c, m) } as unknown as CommandStack,
     remesh: (ids) => { void viewRef.current?.remesh(ids); },
   })), [store]);

@@ -32,11 +32,12 @@ function words(s: Scene): Map<number, Uint32Array> {
   return out;
 }
 
+const refs = (s: Scene) => (id: number) => s.frames.find((f) => f.id === id)?.voxels ?? null;
 const copy = (m: Map<number, Uint32Array>) => new Map([...m].map(([k, v]) => [k, v.slice()]));
 
 function host(s: Scene, voxels = words(s)): TerrainHost & { remeshed: number[][] } {
   const remeshed: number[][] = [];
-  return { scene: s, voxels, base: copy(voxels), stack: new CommandStack(s), remesh: (ids) => remeshed.push(ids), remeshed };
+  return { scene: s, voxels, base: copy(voxels), refOf: refs(s), stack: new CommandStack(s), remesh: (ids) => remeshed.push(ids), remeshed };
 }
 
 // A scene of terrain frames laid on a grid: size [X, Y, Z] each, `rows` x `cols`, with optional rotation.
@@ -84,7 +85,7 @@ test("voxel words follow the server's rules", () => {
 });
 
 test("invert undoes a frame's world matrix", () => {
-  const s = scene12(), grids = gridFrames(s, words(s));
+  const s = scene12(), grids = gridFrames(s, words(s), refs(s));
   assert.equal(grids.length, 12);
   for (const g of grids) {
     const p: Vec3 = [1.25, 2.5, -3], q = apply(g.toLocal, apply(g.toWorld, p));
@@ -97,7 +98,7 @@ test("pick finds the voxel under a ray, rotated frames included", () => {
   const solidBelow2 = (_x: number, y: number) => (y < 2 ? 3 | (4 << 2) : 0);
   const s = gridScene([4, 4, 4], 1, 1, [0, 0, 0], solidBelow2);
   s.frames[1].pos = [10, 0, 0];
-  const grids = gridFrames(s, voxelsOf(s));
+  const grids = gridFrames(s, voxelsOf(s), refs(s));
   const hit = pick(grids, voxelsOf(s), [11.5, 10, 1.5], [0, -1, 0])!;
   assert.deepEqual(hit.cell, [1, 1, 1]);
   assert.deepEqual(hit.normal, [0, 1, 0]);
@@ -108,7 +109,7 @@ test("pick finds the voxel under a ray, rotated frames included", () => {
   assert.deepEqual(side.normal, [-1, 0, 0]);
 
   const r = gridScene([4, 4, 4], 1, 1, [0.3, 1.1, -0.4], solidBelow2);
-  const rg = gridFrames(r, voxelsOf(r));
+  const rg = gridFrames(r, voxelsOf(r), refs(r));
   for (const cell of [[0, 1, 0], [3, 1, 2], [2, 1, 3]] as Vec3[]) {
     const target = apply(rg[0].toWorld, [cell[0] + 0.5, cell[1] + 0.99, cell[2] + 0.5]);
     const up = apply(rg[0].toWorld, [cell[0] + 0.5, 9, cell[2] + 0.5]);
@@ -303,7 +304,7 @@ test("the tool clamps the brush, resizes with [ and ], and steps only when the b
 
 test("fill anchors in front of the hit face", () => {
   const s = gridScene([4, 4, 4], 1, 1, [0, 0, 0], (_x, y) => (y < 2 ? 3 : 0));
-  const grids = gridFrames(s, voxelsOf(s));
+  const grids = gridFrames(s, voxelsOf(s), refs(s));
   const hit = pick(grids, voxelsOf(s), [1.5, 10, 1.5], [0, -1, 0])!;
   assert.deepEqual(anchorAt(hit, "fill").center, [1.5, 2.5, 1.5]);
   assert.deepEqual(anchorAt(hit, "carve").center, [1.5, 1.5, 1.5]);

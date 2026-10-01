@@ -72,18 +72,19 @@ export function transformBox(m: Mat3x4, b: Box): Box {
 export const overlaps = (a: Box, b: Box) =>
   a.min[0] <= b.max[0] && b.min[0] <= a.max[0] && a.min[1] <= b.max[1] && b.min[1] <= a.max[1] && a.min[2] <= b.max[2] && b.min[2] <= a.max[2];
 
-/** Every frame with a voxel blob of the right size, with invertible matrices. */
-export function gridFrames(scene: Scene, voxels: Map<number, Uint32Array>): GridFrame[] {
+/** Every frame with a voxel blob of the right size, with invertible matrices. `refOf` gives a frame's key in `voxels`. */
+export function gridFrames(scene: Scene, voxels: Map<number, Uint32Array>, refOf: (id: number) => number | null): GridFrame[] {
   const byId = new Map(scene.frames.map((f) => [f.id, f]));
   const out: GridFrame[] = [];
   for (const f of scene.frames) {
-    if (f.voxels === null || !cells(f)) continue;
-    const words = voxels.get(f.voxels);
+    const ref = refOf(f.id);
+    if (ref === null || !cells(f)) continue;
+    const words = voxels.get(ref);
     if (!words || words.length !== cells(f)) continue;
     const toWorld = frameWorld(byId, f.id);
     const toLocal = toWorld && invert(toWorld);
     if (!toWorld || !toLocal) continue;
-    out.push({ frame: f, ref: f.voxels, toWorld, toLocal, bounds: transformBox(toWorld, { min: [0, 0, 0], max: [f.size[0], f.size[1], f.size[2]] }) });
+    out.push({ frame: f, ref, toWorld, toLocal, bounds: transformBox(toWorld, { min: [0, 0, 0], max: [f.size[0], f.size[1], f.size[2]] }) });
   }
   return out;
 }

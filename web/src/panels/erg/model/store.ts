@@ -49,10 +49,15 @@ export class EditorStore {
   /** The surround can be painted: the base's .hmp arrived, or the base has none (painting starts from zeros). */
   get canPaintSurround() { return this.baseSurround !== null || this.base.base.sha256.hmp === null; }
 
-  /** Voxels of a frame by its id (the base's ref). */
+  /** The key of a frame's voxels in voxels and baseVoxels: the base's blob ref (the working scene's refs differ). */
+  voxelRef(id: number): number | null {
+    return this.base.frames.find((x) => x.id === id)?.voxels ?? null;
+  }
+
+  /** Voxels of a frame by its id. */
   voxelsOf(f: Pick<Frame, "id">): Uint32Array | undefined {
-    const bf = this.base.frames.find((x) => x.id === f.id);
-    return bf && bf.voxels !== null ? this.voxels.get(bf.voxels) : undefined;
+    const ref = this.voxelRef(f.id);
+    return ref !== null ? this.voxels.get(ref) : undefined;
   }
 
   patch(): Patch {
