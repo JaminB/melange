@@ -1,6 +1,6 @@
 // Runs the mesher in a Web Worker (the page's main thread stays free while a level loads), falling back to the main
 // thread when a worker cannot start. Frames are meshed in buckets so a later remesh touches one bucket only.
-import { frameWorld, type Frame, type Scene } from "../../../sdk/erg";
+import { voxelWorld, type Frame, type Scene } from "../../../sdk/erg";
 import { emptyMesh, meshFrames, MAX_LEVEL_QUADS, type MeshData, type MeshFrame } from "./mesher";
 
 export const BUCKET = 32;
@@ -22,7 +22,7 @@ export function meshInput(scene: Scene, frameIds: number[], voxelsOf: (f: Frame)
   for (const id of frameIds) {
     const f = byId.get(id);
     const v = f && voxelsOf(f);
-    const world = f && frameWorld(byId, id);
+    const world = f && voxelWorld(byId, id);
     if (!f || !v || !world) continue;
     out.push({ id, size: [f.size[0], f.size[1], f.size[2]], world, voxels: v });
   }

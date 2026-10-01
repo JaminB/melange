@@ -1,6 +1,6 @@
 // Greedy voxel mesher: the faces between solid and empty voxels of each frame, merged into rectangles per material and
-// direction, then moved into the level by the frame's world matrix. Self-contained so the Web Worker bundle stays small.
-// Voxel (x, y, z) is the unit cube [x, x+1] x [y, y+1] x [z, z+1] in frame space; word index (z*X + x)*Y + y.
+// direction, then moved into the level by voxelWorld. Self-contained so the Web Worker bundle stays small.
+// Voxel (x, y, z) is the unit cube [x, x+1] x [y, y+1] x [z, z+1] in grid space; word index (z*X + x)*Y + y.
 
 export interface MeshFrame {
   id: number;

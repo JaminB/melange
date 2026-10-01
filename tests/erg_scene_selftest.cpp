@@ -381,6 +381,36 @@ void TestTransforms() {
     Expect(std::fabs(px[0]) < 1e-9 && std::fabs(px[1]) < 1e-9 && std::fabs(px[2] - 1) < 1e-9, "Rz * Rx: X is applied first");
     d.frame = 42;
     Expect(!erg::DetailWorld(s, d, &w), "a missing frame has no world position");
+
+    // Diner Might's dance floor (frame 321, the M6.2 probe): voxels are centred on the frame's position.
+    erg::Frame floor;
+    floor.id = 321;
+    floor.parent = 1;
+    floor.pos = {-33.70, 3.45, -9.61};
+    floor.rot = {0, 1.49, 0};
+    floor.scale = {1.31, 0.64, 1.40};
+    floor.size = {11, 1, 11};
+    s.frames.push_back(floor);
+    erg::Mat3x4 g;
+    Expect(erg::VoxelWorld(s, 321, &g), "the dance floor has a voxel grid");
+    erg::Vec3 lo{1e9, 1e9, 1e9}, hi{-1e9, -1e9, -1e9};
+    for (int k = 0; k < 8; ++k) {
+        const erg::Vec3 c = erg::Apply(g, {k & 1 ? 11.0 : 0.0, k & 2 ? 1.0 : 0.0, k & 4 ? 11.0 : 0.0});
+        for (int ax = 0; ax < 3; ++ax) {
+            lo[ax] = std::min(lo[ax], c[ax]);
+            hi[ax] = std::max(hi[ax], c[ax]);
+        }
+    }
+    auto near = [](double a, double b) { return std::fabs(a - b) < 0.02; };
+    Expect(near(lo[0], -41.95) && near(hi[0], -25.45) && near(lo[2], -17.43) && near(hi[2], -1.79) && near(hi[1], 3.77),
+           "the dance floor's box is its position +- size/2, as the engine's BVH leaf");
+    const erg::Vec3 mid = erg::Apply(g, {5.5, 0.5, 5.5});
+    d.frame = 321;
+    d.pos = {0, 0, 0};
+    Expect(near(mid[0], -33.70) && near(mid[1], 3.45) && near(mid[2], -9.61) && erg::DetailWorld(s, d, &w) && near(w[0], mid[0]) &&
+               near(w[2], mid[2]),
+           "the grid's middle is the frame position, where a detail at 0 sits");
+    Expect(!erg::VoxelWorld(s, 42, &g), "a missing frame has no voxel grid");
 }
 
 melange::spice::Manifest Mod(const std::string& id, std::vector<melange::spice::Level> levels, bool content = true) {

@@ -1,6 +1,6 @@
 // Frame and detail geometry in .xan units: world positions, the inverse of a frame's matrix, snapping, and the frames
 // under which the editor only moves details (their runtime placement does not follow the file's transform).
-import { apply, frameLocal, frameWorld, multiply, type Detail, type Frame, type Mat3x4, type Scene, type Vec3 } from "../../../sdk/erg";
+import { apply, frameLocal, frameWorld, multiply, voxelWorld, type Detail, type Frame, type Mat3x4, type Scene, type Vec3 } from "../../../sdk/erg";
 
 export const IDENTITY: Mat3x4 = [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0];
 
@@ -34,23 +34,30 @@ export const snapVec = (v: Vec3, step: number | null): Vec3 => [snap(v[0], step)
 export type FrameIndex = Map<number, Frame>;
 export const frameIndex = (s: Scene): FrameIndex => new Map(s.frames.map((f) => [f.id, f]));
 
-/** Cached world matrices and inverses of a scene's frames (frames do not change in the editor). */
+/** Cached world matrices and inverses of a scene's frames. Base frames never move in the editor; added blocks (negative
+ * ids) come and go with undo, so theirs are computed each time. */
 export class Frames {
-  readonly byId: FrameIndex;
-  private world = new Map<number, Mat3x4 | null>();
-  private inv = new Map<number, Mat3x4 | null>();
-  constructor(scene: Scene) { this.byId = frameIndex(scene); }
-  worldOf(id: number): Mat3x4 | null {
-    if (!this.world.has(id)) this.world.set(id, frameWorld(this.byId, id));
-    return this.world.get(id)!;
+  private cache = new Map<string, Mat3x4 | null>();
+  private index?: FrameIndex;
+  constructor(private scene: Scene) {}
+  get byId(): FrameIndex {
+    const fs = this.scene.frames;
+    let ok = this.index?.size === fs.length;
+    for (let i = fs.length - 1; ok && i >= 0 && fs[i].new; i--) ok = this.index!.get(fs[i].id) === fs[i];
+    if (!ok) this.index = frameIndex(this.scene);
+    return this.index!;
   }
-  inverseOf(id: number): Mat3x4 | null {
-    if (!this.inv.has(id)) {
-      const w = this.worldOf(id);
-      this.inv.set(id, w ? invert(w) : null);
-    }
-    return this.inv.get(id)!;
+  private cached(kind: string, id: number, make: () => Mat3x4 | null): Mat3x4 | null {
+    if (id < 0) return make();
+    const k = `${kind}${id}`;
+    if (!this.cache.has(k)) this.cache.set(k, make());
+    return this.cache.get(k)!;
   }
+  worldOf(id: number): Mat3x4 | null { return this.cached("w", id, () => frameWorld(this.byId, id)); }
+  inverseOf(id: number): Mat3x4 | null { return this.cached("i", id, () => { const w = this.worldOf(id); return w && invert(w); }); }
+  /** The frame's voxel grid in the level: voxelWorld, centred on the frame's position. */
+  gridOf(id: number): Mat3x4 | null { return this.cached("g", id, () => voxelWorld(this.byId, id)); }
+  gridInverseOf(id: number): Mat3x4 | null { return this.cached("v", id, () => { const w = this.gridOf(id); return w && invert(w); }); }
   /** A detail's position in the level. */
   detailWorld(d: Pick<Detail, "frame" | "pos">): Vec3 {
     const w = this.worldOf(d.frame);
@@ -91,6 +98,8 @@ export function translationOnlyFrames(scene: Scene): Set<number> {
 /** True when a point lies over the frame's voxel box footprint and not below it (the air above counts). */
 export function overFrame(frames: Frames, f: Frame, p: Vec3, margin = 1): boolean {
   if (f.folder || !f.size[0] || !f.size[2] || f.parent === null) return false;
-  const q = frames.toLocal(f.id, p);
+  const inv = frames.gridInverseOf(f.id);
+  if (!inv) return false;
+  const q = apply(inv, p);
   return q[0] >= -margin && q[0] <= f.size[0] + margin && q[2] >= -margin && q[2] <= f.size[2] + margin && q[1] >= -margin;
 }

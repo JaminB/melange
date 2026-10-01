@@ -1,7 +1,7 @@
 // Voxel words and frame geometry for the terrain tools. The word rules are the server's (src/erg/voxels.h): bits 0-1
 // solid (3) or empty (0), 2-7 material, 8-15 second material, 16-23 blend, 24-31 clear; index (z*X + x)*Y + y.
-// Voxel (x, y, z) fills [x, x+1) x [y, y+1) x [z, z+1) of its frame's space (.xan units before the frame transform).
-import { frameWorld, validRunValue, type Frame, type Mat3x4, type Scene, type Vec3 } from "../../../sdk/erg";
+// Voxel (x, y, z) fills [x, x+1) x [y, y+1) x [z, z+1) of its grid space, which voxelWorld places in the level.
+import { validRunValue, voxelWorld, type Frame, type Mat3x4, type Scene, type Vec3 } from "../../../sdk/erg";
 
 export const SOLID = 3;
 export const MATERIALS = 64;
@@ -81,7 +81,7 @@ export function gridFrames(scene: Scene, voxels: Map<number, Uint32Array>, refOf
     if (ref === null || !cells(f)) continue;
     const words = voxels.get(ref);
     if (!words || words.length !== cells(f)) continue;
-    const toWorld = frameWorld(byId, f.id);
+    const toWorld = voxelWorld(byId, f.id);
     const toLocal = toWorld && invert(toWorld);
     if (!toWorld || !toLocal) continue;
     out.push({ frame: f, ref, toWorld, toLocal, bounds: transformBox(toWorld, { min: [0, 0, 0], max: [f.size[0], f.size[1], f.size[2]] }) });

@@ -636,3 +636,11 @@ export function frameWorld(frames: Map<number, Frame>, id: number): Mat3x4 | nul
   }
   return acc;
 }
+
+/** Where a frame's voxels sit: the engine centres the grid on the frame's position, so voxel (x, y, z) fills
+ * [x, x+1] x [y, y+1] x [z, z+1] under frameWorld * T(-size/2). Details use frameWorld alone. */
+export function voxelWorld(frames: Map<number, Frame>, id: number): Mat3x4 | null {
+  const w = frameWorld(frames, id), f = frames.get(id);
+  if (!w || !f) return null;
+  return multiply(w, [1, 0, 0, -f.size[0] / 2, 0, 1, 0, -f.size[1] / 2, 0, 0, 1, -f.size[2] / 2]);
+}

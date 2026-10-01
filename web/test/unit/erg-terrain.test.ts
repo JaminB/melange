@@ -49,7 +49,9 @@ function gridScene(size: Vec3, rows: number, cols: number, rot: Vec3 = [0, 0, 0]
   let id = 2, ref = 1;
   for (let r = 0; r < rows; r++)
     for (let c = 0; c < cols; c++) {
-      const f: Frame = { id: id++, parent: 1, name: `t${r}_${c}`, pos: [c * size[0], 0, r * size[2]], rot, scale: [1, 1, 1], size,
+      // The grid is centred on the frame's position, so each one starts at (c*X, 0, r*Z).
+      const pos: Vec3 = [(c + 0.5) * size[0], size[1] / 2, (r + 0.5) * size[2]];
+      const f: Frame = { id: id++, parent: 1, name: `t${r}_${c}`, pos, rot, scale: [1, 1, 1], size,
         voxels: ref, heightMap: null, folder: false };
       s.blobs.push({ ref: ref++, kind: "voxels", frame: f.id, bytes: size[0] * size[1] * size[2] * 4 });
       s.frames.push(f);
@@ -97,7 +99,7 @@ test("invert undoes a frame's world matrix", () => {
 test("pick finds the voxel under a ray, rotated frames included", () => {
   const solidBelow2 = (_x: number, y: number) => (y < 2 ? 3 | (4 << 2) : 0);
   const s = gridScene([4, 4, 4], 1, 1, [0, 0, 0], solidBelow2);
-  s.frames[1].pos = [10, 0, 0];
+  s.frames[1].pos = [12, 2, 2];
   const grids = gridFrames(s, voxelsOf(s), refs(s));
   const hit = pick(grids, voxelsOf(s), [11.5, 10, 1.5], [0, -1, 0])!;
   assert.deepEqual(hit.cell, [1, 1, 1]);

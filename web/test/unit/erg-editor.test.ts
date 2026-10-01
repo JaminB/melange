@@ -161,11 +161,33 @@ test("ground: voxel rays and drop to ground", () => {
   const s = scene12();
   const store = newStore(s);
   const f = s.frames.find((x) => x.name === "land1")!;
-  const w = store.frames.worldOf(f.id)!;
+  const w = store.frames.gridOf(f.id)!;
   const top: Vec3 = [w[0] * 0.5 + w[2] * 0.5 + w[3], 40, w[8] * 0.5 + w[10] * 0.5 + w[11]];
   const hit = dropPoint(store.scene, store.frames, (id) => store.voxelsOf({ id }), top);
   assert.ok(hit && hit[1] < 40 && hit[1] > w[7], `landed at ${hit}`);
   assert.equal(dropPoint(store.scene, store.frames, (id) => store.voxelsOf({ id }), [5000, 40, 5000]), null);
+});
+
+// The probe's dance floor in Diner Might (frame 321): the engine centres a frame's voxels on its position, and its
+// collision box is position +- size/2 in frame space. Knots use the frame matrix alone.
+test("voxel grids are centred on their frame; details are not", () => {
+  const s = scene12();
+  const root = s.frames.find((f) => f.parent === null)!;
+  const floor = { ...s.frames.find((f) => f.voxels !== null)!, id: 321, parent: root.id, name: "dancefloor", new: undefined,
+    pos: [-33.7, 3.45, -9.61] as Vec3, rot: [0, 1.49, 0] as Vec3, scale: [1.31, 0.64, 1.4] as Vec3, size: [11, 1, 11] as Vec3, voxels: null };
+  s.frames.push(floor);
+  const frames = new Frames(s);
+  const g = frames.gridOf(321)!;
+  const corners = [0, 1, 2, 3, 4, 5, 6, 7].map((k) => apply(g, [k & 1 ? 11 : 0, k & 2 ? 1 : 0, k & 4 ? 11 : 0]));
+  const lo = [0, 1, 2].map((a) => Math.min(...corners.map((c) => c[a]))), hi = [0, 1, 2].map((a) => Math.max(...corners.map((c) => c[a])));
+  const near = (a: number, b: number) => Math.abs(a - b) < 0.02;
+  assert.ok(near(lo[0], -41.95) && near(hi[0], -25.45), `x ${lo[0]}..${hi[0]}`);
+  assert.ok(near(lo[2], -17.43) && near(hi[2], -1.79), `z ${lo[2]}..${hi[2]}`);
+  assert.ok(near(hi[1], 3.77), `top ${hi[1]}`);
+  assert.deepEqual(apply(g, [5.5, 0.5, 5.5]).map((v) => Math.round(v * 1e6) / 1e6), [-33.7, 3.45, -9.61], "the grid's middle is the position");
+  assert.deepEqual(frames.detailWorld({ frame: 321, pos: [0, 0, 0] }).map((v) => Math.round(v * 1e6) / 1e6), [-33.7, 3.45, -9.61]);
+  const inv = frames.gridInverseOf(321)!;
+  assert.deepEqual(apply(inv, [-33.7, 3.77, -9.61]).map((v) => Math.round(v * 1e6) / 1e6), [5.5, 1, 5.5]);
 });
 
 test("translation-only frames: the recorded lamp bowls and anything under a HangingLamp", () => {
