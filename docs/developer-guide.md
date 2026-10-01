@@ -383,3 +383,17 @@ You need:
 ```
 
 `deploy.ps1` keeps an existing `dinput8.dll`. If there is none, it downloads the latest Ultimate ASI Loader, or uses the one you give with `-LoaderPath <dinput8.dll>`. `build.ps1 -PrivateDir <dir>` also compiles the modules in `<dir>\modules\*.cpp`.
+
+## Releasing
+
+```powershell
+.\scripts\release.ps1            # builds the public config and writes out\melange-<version>.zip
+```
+
+This builds with `build.ps1` and no `-PrivateDir`, so no out-of-tree modules are compiled in, then refuses to
+continue if `dist\melange.asi` contains a `LocalNet` or `Automation` marker (a sign a private build leaked in)
+or if any text file staged for the zip contains a local `C:\Users` path. The zip has `melange.asi`, the default
+`Melange.ini`, `dinput8.dll` (Ultimate ASI Loader) and its licence in `THIRD_PARTY.md`, `oasis.exe`,
+`tools\xomtool.exe`, the sample `Mods\`, `LICENSE`, `THIRD_PARTY.md` and an `INSTALL.txt` mirroring the README's
+install steps. The version comes from `project(Melange VERSION x.y.z)` in `CMakeLists.txt`. `out\` is not
+committed; the script prints the zip's SHA-256 so it can be posted alongside a GitHub release.
