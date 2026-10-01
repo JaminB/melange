@@ -183,8 +183,16 @@ export function applyPatch(scene: Scene, p: Patch, voxels?: Map<number, Uint32Ar
       }
       case "addFrame": {
         if (!s.frames.some((f) => f.id === op.parent)) throw new Error(`ops[${i}].parent: ${op.parent} is not a frame`);
+        // With a voxel map, the block's empty grid goes in under a fresh blob ref, as the server's apply does.
+        let ref: number | null = null;
+        if (voxels) {
+          ref = Math.max(0, ...voxels.keys(), ...s.blobs.map((b) => b.ref)) + 1;
+          const cells = op.size[0] * op.size[1] * op.size[2];
+          voxels.set(ref, new Uint32Array(cells));
+          s.blobs.push({ ref, kind: "voxels", frame: op.tmp, bytes: cells * 4 });
+        }
         s.frames.push({ id: op.tmp, new: true, parent: op.parent, name: op.name, pos: copyVec(op.pos), rot: [0, 0, 0], scale: [1, 1, 1],
-          size: copyVec(op.size), voxels: null, heightMap: null, folder: false });
+          size: copyVec(op.size), voxels: ref, heightMap: null, folder: false });
         break;
       }
       case "hmp": {

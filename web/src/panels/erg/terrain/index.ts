@@ -6,5 +6,6 @@ export * from "./remesh";
 export * from "./materials";
 export * from "./tool";
 export * from "./surround";
+export * from "./blocks";
 export { TerrainTools } from "./TerrainTools";
 export { SurroundTools } from "./SurroundTools";

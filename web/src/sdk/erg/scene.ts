@@ -538,6 +538,7 @@ export function validatePatch(p: unknown, sizeBytes?: number): Validation {
         else tmps.add(o.tmp as number);
         if (!isInt(o.parent, 1, 1 << 24)) c.fail(`${path}.parent`, "must be a frame of the base");
         if (typeof o.name !== "string" || !/^[A-Za-z0-9_]{1,31}$/.test(o.name)) c.fail(`${path}.name`, "must be 1-31 letters, digits or '_'");
+        else if (/SLIPPY|PERM|TEAMBASE/i.test(o.name)) c.fail(`${path}.name`, "may not hold SLIPPY, PERM or TEAMBASE (the engine reads them as tags)");
         if (!isVec(o.pos)) c.fail(`${path}.pos`, "must be 3 finite numbers");
         if (!Array.isArray(o.size) || o.size.length !== 3 || !o.size.every((v) => isInt(v, 1, LIMITS.newFrameSide))) c.fail(`${path}.size`, "each size must be 1..32");
         break;

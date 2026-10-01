@@ -33,7 +33,8 @@ constexpr size_t kMaxCached = 4;
 constexpr uint64_t kMaxCachedBytes = 160u << 20;   // estimated parsed size of the cached bases
 constexpr uint64_t kMaxBlobBytes = 16u << 20;
 constexpr int64_t kMaxRef = 1 << 24;
-const PatchRules kRules{.voxels = voxels::kAccepted, .anyFrame = true, .objects = true, .script = true, .hmpPaint = true};   // adds may target any frame; newFrames stays off
+// Adds may target any frame.
+const PatchRules kRules{.voxels = voxels::kAccepted, .anyFrame = true, .objects = true, .script = true, .newFrames = true, .hmpPaint = true};
 
 // A level script's problems for the editor: the line of the first byte CheckSimText refuses (1 for the size limit).
 Json ScriptProblems(const std::string& text) {

@@ -662,6 +662,91 @@ void TestVoxels() {
     Expect(!erg::build::Build(L, s, bad, {}, &files, &err), "voxels: a word with bits 24-31 set is refused");
 }
 
+// The synthetic base with its "tower" frame (#13) renamed Scene, so new frames may go under it.
+erg::load::BaseFiles SceneBase() {
+    erg::load::BaseFiles f = Base();
+    xom::Document d;
+    std::string err;
+    xom::parse(f.xan.data(), f.xan.size(), d, &err);
+    xu::SetStr(d.objects[12], "Name", "Scene");
+    f.xan = Bytes(d);
+    return f;
+}
+
+void TestNewFrames() {
+    const erg::load::BaseFiles f = SceneBase();
+    erg::load::Loaded L;
+    std::string err;
+    Expect(erg::load::LoadScene(f, &L, &err), "new frames: the base loads " + err);
+    erg::Patch p = EmptyPatch(L, "ergtest_synth");
+    erg::Op add;
+    add.kind = erg::Op::Kind::AddFrame;
+    add.newFrame = {-1, 13, "ergblock_0", {2, 1, 3.5}, {3, 2, 4}};
+    erg::Op fill;
+    fill.kind = erg::Op::Kind::Voxels;
+    fill.frame = -1;
+    fill.runs = {{0, 24, 3 | 5 << 2}, {1, 1, 0}};
+    p.ops = {add, fill};
+    erg::Patch back;
+    Expect(erg::ParsePatch(erg::WritePatch(p), &back, &err) && back.UsesV2(), "new frames: the patch round-trips as /2 " + err);
+    erg::Scene s;
+    erg::build::VoxelEdits v;
+    erg::PatchRules rules;
+    rules.voxels = true;
+    Expect(!erg::build::Apply(L, p, rules, &s, &v, &err) && err.find("new frames") != std::string::npos, "new frames: refused while the rules say so");
+    rules.newFrames = true;
+    Expect(erg::build::Apply(L, p, rules, &s, &v, &err), "new frames: applied " + err);
+    const erg::Frame* nf = s.FindFrame(-1);
+    Expect(nf && nf->isNew && nf->voxels >= 0 && v.count(-1) && v[-1].size() == 24 && v[-1][0] == (3 | 5 << 2) && v[-1][1] == 0 &&
+               erg::ValidateScene(s, &err),
+           "new frames: the frame has its own voxel blob, filled by the runs " + err);
+
+    std::vector<erg::build::File> files;
+    Expect(erg::build::Build(L, s, v, {}, &files, &err), "new frames: build " + err);
+    erg::load::BaseFiles out = f;
+    out.xan = FileBytes(files, "Maps/ergtest_synth.xan");
+    erg::load::Loaded B;
+    Expect(erg::load::LoadScene(out, &B, &err), "new frames: the built level loads " + err);
+    const erg::Frame* built = nullptr;
+    for (const auto& fr : B.scene.frames)
+        if (fr.name == "ergblock_0") built = &fr;
+    const erg::Frame* parent = built ? B.scene.FindFrame(built->parent) : nullptr;
+    Expect(built && parent && parent->name == "Scene" && built->size == std::array<int, 3>{3, 2, 4} && built->pos == erg::Vec3{2, 1, 3.5} &&
+               built->rot == erg::Vec3{0, 0, 0} && built->scale == erg::Vec3{1, 1, 1} && B.scene.frames.size() == L.scene.frames.size() + 1,
+           "new frames: the block is a child of Scene with its size and centre");
+    if (built) {
+        std::vector<uint32_t> words;
+        erg::voxels::Decode(B.blobs.at(built->voxels), &words, &err);
+        const std::vector<uint8_t>& hm = B.blobs.at(built->heightMap);
+        Expect(words == v[-1] && hm.size() == 4 * 5 * 4 && std::all_of(hm.begin(), hm.end(), [](uint8_t b) { return b == 0; }),
+               "new frames: its voxels are the runs' and its height map is (X+1)(Z+1) zeros");
+    }
+    Expect(B.scene.details.size() == L.scene.details.size() && ByName(B.scene, "Diner6") && ByName(B.scene, "WORM7"),
+           "new frames: every detail keeps its frame");
+
+    const erg::Patch d = erg::build::Diff(L.scene, s, v, &L.blobs);
+    erg::Scene s2;
+    erg::build::VoxelEdits v2;
+    Expect(d.ops.size() == 2 && d.ops[0].kind == erg::Op::Kind::AddFrame && erg::build::Apply(L, d, rules, &s2, &v2, &err) &&
+               erg::WriteScene(s2) == erg::WriteScene(s) && v2[-1] == v[-1],
+           "new frames: the diff re-applies to the same scene " + err);
+
+    auto refused = [&](const char* name, int64_t parentId, const char* why) {
+        erg::Patch q = p;
+        q.ops[0].newFrame.name = name;
+        q.ops[0].newFrame.parent = parentId;
+        erg::Patch parsed;
+        std::string e;
+        const bool ok = erg::ParsePatch(erg::WritePatch(q), &parsed, &e) && erg::build::Apply(L, parsed, rules, &s2, &v2, &e);
+        Expect(!ok && e.find(why) != std::string::npos, std::string("new frames: '") + name + "' is refused: " + e);
+    };
+    refused("SLIPPY_block", 13, "SLIPPY");
+    refused("myPermBlock", 13, "PERM");
+    refused("TeamBase1", 13, "TEAMBASE");
+    refused("LEDGE", 13, "fresh");
+    refused("ergblock_0", 12, "Scene frame");
+}
+
 void TestNegative() {
     const erg::load::BaseFiles f = Base();
     erg::load::Loaded L;
@@ -887,7 +972,7 @@ void TestSurround() {
 
 void TestService(const std::wstring& root) {
     const std::wstring game = root + L"\\game", data = game + L"\\Data";
-    const erg::load::BaseFiles f = Base();
+    const erg::load::BaseFiles f = SceneBase();   // "tower" is the Scene frame, so blocks can be added
     Put(data + L"\\Tweak\\SCRIPTS.XOM", SyntheticScripts());
     Put(data + L"\\Tweak\\WEAPTWK.XOM", SyntheticWeapons());
     Put(data + L"\\Language\\PC\\EngFE.xom", SyntheticStrings());
@@ -1048,6 +1133,26 @@ void TestService(const std::wstring& root) {
         Expect(back && h0 == 0.5f && h3 == 0.03f, "load project: the painted surround's blob " + err + sr.message);
         sr = Call(S, "level.save", R"({"project":"harbour","patch":)" + erg::WritePatch(q) + "}");
         Expect(sr.ok, "save: back to the copied surround " + sr.message);
+
+        erg::Patch block = q;
+        erg::Op add, fill;
+        add.kind = erg::Op::Kind::AddFrame;
+        add.newFrame = {-1, 13, "ergblock_0", {1, 2.5, 0}, {2, 1, 2}};
+        fill.kind = erg::Op::Kind::Voxels;
+        fill.frame = -1;
+        fill.runs = {{0, 4, 3 | 2 << 2}};
+        block.ops.push_back(add);
+        block.ops.push_back(fill);
+        sr = Call(S, "level.save", R"({"project":"harbour","patch":)" + erg::WritePatch(block) + "}");
+        Expect(sr.ok, "save: a new block " + sr.message);
+        sr = Call(S, "level.load", R"({"project":"harbour"})");
+        const erg::Frame* nf = sr.ok && erg::ParseScene(sr.json, &ss, &err) ? ss.FindFrame(-1) : nullptr;
+        const auto blob = nf ? std::find_if(sr.blobs.begin(), sr.blobs.end(), [&](const auto& b) { return b.ref == nf->voxels; })
+                             : sr.blobs.end();
+        Expect(nf && nf->isNew && blob != sr.blobs.end() && blob->bytes.size() == 16 && static_cast<uint8_t>(blob->bytes[0]) == (3 | 2 << 2),
+               "load project: the block and its voxels come back " + err + sr.message);
+        sr = Call(S, "level.save", R"({"project":"harbour","patch":)" + erg::WritePatch(q) + "}");
+        Expect(sr.ok, "save: without the block " + sr.message);
     }
 
     {
@@ -1375,6 +1480,7 @@ int main() {
     TestEditBuild();
     TestScale();
     TestVoxels();
+    TestNewFrames();
     TestSurround();
     TestNegative();
     TestBank();

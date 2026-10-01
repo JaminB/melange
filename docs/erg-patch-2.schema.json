@@ -138,7 +138,7 @@
             "type": "object",
             "additionalProperties": false,
             "required": ["op", "tmp", "parent", "name", "pos", "size"],
-            "description": "A new terrain block under the Scene frame (or a frame under it), identity rotation and scale, all voxels empty until voxels ops fill it. At most 64.",
+            "description": "A new terrain block under the Scene frame (or a frame under it), identity rotation and scale, all voxels empty until voxels ops fill it. pos is its centre in the parent's space: the engine centres a frame's voxels on its position. The name is unused by any frame and holds none of SLIPPY, PERM or TEAMBASE (any case). At most 64.",
             "properties": {
               "op": { "const": "addFrame" },
               "tmp": { "type": "integer", "minimum": -64, "maximum": -1 },

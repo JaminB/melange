@@ -6,7 +6,8 @@ import { apply, multiply, type Vec3 } from "../../../sdk/erg";
 import type { Hit } from "./pick";
 import { carved, filled, index, isSolid, material, overlaps, painted, transformBox, type Box, type GridFrame } from "./voxel";
 
-export type BrushMode = "carve" | "fill" | "paint";
+/** "block" adds a new terrain block of the brush size and material instead of editing voxels. */
+export type BrushMode = "carve" | "fill" | "paint" | "block";
 export type BrushShape = "box" | "sphere";
 /** "column": fill takes the material of the highest solid voxel in the same column of the frame (or the voxel's own). */
 export type BrushMaterial = number | "column";
@@ -15,12 +16,13 @@ export interface Brush { mode: BrushMode; shape: BrushShape; size: Vec3; materia
 
 export const MAX_BRUSH = 32;
 
-export interface Anchor { grid: GridFrame; center: Vec3; }
+/** The frame under the cursor and the brush centre in its voxels; point is where the ray met the terrain (level units). */
+export interface Anchor { grid: GridFrame; center: Vec3; point?: Vec3; }
 
 /** Carve and paint centre on the hit voxel; fill on the empty voxel in front of the hit face. */
 export function anchorAt(hit: Hit, mode: BrushMode): Anchor {
   const n = mode === "fill" ? hit.normal : [0, 0, 0];
-  return { grid: hit.grid, center: [0, 1, 2].map((a) => hit.cell[a] + n[a] + 0.5) as Vec3 };
+  return { grid: hit.grid, center: [0, 1, 2].map((a) => hit.cell[a] + n[a] + 0.5) as Vec3, point: hit.point };
 }
 
 export function brushBox(a: Anchor, b: Brush): Box {
@@ -56,6 +58,7 @@ function edit(b: Brush, g: GridFrame, words: Uint32Array, x: number, z: number, 
     case "carve": return isSolid(v) ? carved(v) : v;
     case "fill": return isSolid(v) ? v : filled(b.material === "column" ? columnMaterial(g, words, x, z, v) : b.material);
     case "paint": return isSolid(v) && b.material !== "column" ? painted(v, b.material) : v;
+    case "block": return v;
   }
 }
 

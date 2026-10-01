@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import {
-  AddDetail, AddObjects, KNOT_RESOURCE, apply, type CommandStack, PATCH_FORMAT_2, RemoveDetail, SetDetail, SetLevel, SetObject, THEMES, applyPatch, deriveRole,
+  AddDetail, AddObjects, KNOT_RESOURCE, LIMITS, apply, type CommandStack, PATCH_FORMAT_2, RemoveDetail, SetDetail, SetLevel, SetObject, THEMES, applyPatch, deriveRole,
   frameWorld, isEmptyPatch, validatePatch, validatePatchObjects, type Command, type Scene, type Vec3,
 } from "../../src/sdk/erg";
 import { catalogOf, objectOf } from "../../src/panels/erg/model/placing";
@@ -14,7 +14,7 @@ import { dropPoint, rayVoxels } from "../../src/panels/erg/model/ground";
 import { withPatch } from "../../src/panels/erg/model/loader";
 import { BUILTIN, SCENERY_COPIES, nextKnot, paletteFrom, place, targetFrame } from "../../src/panels/erg/model/placing";
 import { EditorStore, type Loaded } from "../../src/panels/erg/model/store";
-import { Sculptor } from "../../src/panels/erg/terrain";
+import { Sculptor, type Brush } from "../../src/panels/erg/terrain";
 import { frameQuads, meshFrames } from "../../src/panels/erg/terrain/mesher";
 import { themePalette } from "../../src/panels/erg/terrain/materials";
 import { buckets, meshInput } from "../../src/panels/erg/terrain/pool";
@@ -497,4 +497,70 @@ test("server shapes: level.list, level.new and level.themes are read defensively
   const t = themesOf({ themes: ["CAMELOT", { name: "WAR" }, "MOON"], timesOfDay: ["DAY"], materialFiles: ["a.txt"] });
   assert.deepEqual(t, { themes: ["CAMELOT", "WAR"], times: ["DAY"], materialFiles: ["a.txt"] });
   assert.equal(themesOf(undefined).themes.length, 11);
+});
+
+// ------------------------------------------------------------------ blocks
+test("blocks: placed on the grid, sculpted, undone, removed, and round-tripped through the patch", () => {
+  const s = scene12();
+  const root = s.frames.find((f) => f.parent === null)!;
+  const folder = { pos: [0, 0, 0] as Vec3, rot: [0, 0, 0] as Vec3, scale: [1, 1, 1] as Vec3, size: [1, 1, 1] as Vec3, voxels: null, heightMap: null, folder: true };
+  s.frames.push({ ...folder, id: 9000, parent: root.id, name: "Scene" }, { ...folder, id: 9001, parent: 9000, name: "ERGBLOCK_0" });
+  const base = loaded(s);
+  const store = new EditorStore("p1", base, loaded(structuredClone(s)));
+  const sc = new Sculptor({ scene: store.scene, voxels: store.voxels, base: store.baseVoxels, refOf: (id) => store.voxelRef(id),
+    stack: { exec: (c: Command, m?: boolean) => store.exec(c, m) } as unknown as CommandStack, remesh: () => {}, freshRef: () => store.freshRef() });
+  const grids = sc.frames.length;
+  const brush: Brush = { mode: "block", shape: "box", size: [3, 2, 4], material: 7 };
+  const r = sc.step({ grid: sc.frames[0], center: [0.5, 0.5, 0.5], point: [10.3, 4.6, -2.2] }, brush);
+  assert.equal(r.refused, undefined);
+  assert.deepEqual(r.frames, [-1]);
+  const f = store.scene.frames.find((x) => x.id === -1)!;
+  assert.equal(f.name, "ergblock_1", "a fresh name, whatever the case of the base's");
+  assert.equal(f.parent, 9000);
+  assert.deepEqual(f.pos, [10.5, 6, -2], "the centre, with the corner on whole units");
+  assert.deepEqual(apply(store.frames.gridOf(-1)!, [0, 0, 0]), [9, 5, -4], "the grid starts at the snapped corner");
+  assert.deepEqual([...store.voxelsOf({ id: -1 })!], new Array(24).fill(3 | (7 << 2)));
+  assert.equal(sc.frames.length, grids + 1, "the new block can be sculpted");
+
+  let p = store.patch();
+  assert.equal(p.format, PATCH_FORMAT_2);
+  assert.deepEqual(p.ops, [
+    { op: "addFrame", tmp: -1, parent: 9000, name: "ergblock_1", pos: [10.5, 6, -2], size: [3, 2, 4] },
+    { op: "voxels", frame: -1, runs: [[0, 24, 3 | (7 << 2)]] },
+  ]);
+  assert.deepEqual(validatePatch(p).errors, []);
+  const g = sc.frames.find((x) => x.frame.id === -1)!;
+  assert.equal(sc.step({ grid: g, center: [0.5, 1.5, 0.5] }, { mode: "carve", shape: "box", size: [1, 1, 1], material: 0 }).changed, 1);
+  p = store.patch();
+  const again = new EditorStore("p1", base, withPatch(base, p));
+  assert.equal(again.patchText(), JSON.stringify(p), "a draft with blocks reopens as the same patch");
+  assert.deepEqual([...again.voxelsOf({ id: -1 })!], [...store.voxelsOf({ id: -1 })!]);
+
+  store.undo();
+  store.undo();
+  assert.ok(!store.scene.frames.some((x) => x.new) && isEmptyPatch(store.patch(), store.base), "undo takes the block out");
+  assert.equal(sc.frames.length, grids);
+  store.redo();
+  assert.deepEqual(store.patch().ops[1], { op: "voxels", frame: -1, runs: [[0, 24, 3 | (7 << 2)]] }, "redo puts it back");
+  sc.removeBlock(-1);
+  assert.ok(isEmptyPatch(store.patch(), store.base));
+  store.undo();
+  assert.equal(store.scene.frames.filter((x) => x.new).length, 1);
+
+  assert.ok(/up to|1-32/.test(sc.step({ grid: sc.frames[0], center: [0.5, 0.5, 0.5], point: [0, 0, 0] }, { ...brush, size: [33, 1, 1] }).refused ?? ""));
+  for (let i = 1; i < LIMITS.newFrames; i++)
+    assert.equal(sc.step({ grid: sc.frames[0], center: [0.5, 0.5, 0.5], point: [i * 2, 0, 0] }, { ...brush, size: [1, 1, 1] }).refused, undefined);
+  assert.ok(/at most 64/.test(sc.step({ grid: sc.frames[0], center: [0.5, 0.5, 0.5], point: [0, 9, 0] }, brush).refused ?? ""));
+  const names = store.scene.frames.filter((x) => x.new).map((x) => x.name.toLowerCase());
+  assert.equal(new Set(names).size, LIMITS.newFrames);
+  assert.ok(!s.frames.some((x) => names.includes(x.name.toLowerCase())), "block names are fresh");
+  assert.deepEqual(validatePatch(store.patch()).errors, []);
+
+  const tagged = structuredClone(p);
+  (tagged.ops[0] as { name: string }).name = "SLIPPY_block";
+  assert.ok(/SLIPPY/.test(validatePatch(tagged).errors.join()));
+  const bare = newStore();
+  const bs = new Sculptor({ scene: bare.scene, voxels: bare.voxels, base: bare.baseVoxels, refOf: (id) => bare.voxelRef(id),
+    stack: bare.stack, remesh: () => {}, freshRef: () => bare.freshRef() });
+  assert.ok(/no Scene frame/.test(bs.step({ grid: bs.frames[0], center: [0.5, 0.5, 0.5], point: [0, 0, 0] }, brush).refused ?? ""));
 });

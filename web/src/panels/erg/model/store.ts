@@ -39,6 +39,12 @@ export class EditorStore {
       const cb = cf && cf.voxels !== null ? current.blobs.get(cf.voxels) : undefined;
       this.voxels.set(f.voxels, cb && cb.byteLength === b.byteLength ? new Uint32Array(cb.slice(0)) : bv.slice());
     }
+    // Added blocks keep the current scene's blob refs, which never meet the base's (the server numbers each load apart).
+    for (const f of current.scene.frames) {
+      const b = f.new && f.voxels !== null ? current.blobs.get(f.voxels) : undefined;
+      if (b && f.voxels !== null) this.voxels.set(f.voxels, new Uint32Array(b.slice(0)));
+    }
+    this.nextRef = Math.max(0, ...this.voxels.keys(), ...this.baseVoxels.keys(), ...this.scene.blobs.map((b) => b.ref)) + 1;
     this.baseSurround = surroundOf(base);
     const painted = current.scene.hmp.mode === "paint" ? surroundOf(current) : null;
     this.surround = copySurround(painted ?? this.baseSurround ?? emptySurround());
@@ -49,10 +55,16 @@ export class EditorStore {
   /** The surround can be painted: the base's .hmp arrived, or the base has none (painting starts from zeros). */
   get canPaintSurround() { return this.baseSurround !== null || this.base.base.sha256.hmp === null; }
 
-  /** The key of a frame's voxels in voxels and baseVoxels: the base's blob ref (the working scene's refs differ). */
+  /** The key of a frame's voxels in voxels and baseVoxels: the base's blob ref (the working scene's refs differ), or an
+   * added block's own ref. */
   voxelRef(id: number): number | null {
+    if (id < 0) return this.scene.frames.find((x) => x.id === id && x.new)?.voxels ?? null;
     return this.base.frames.find((x) => x.id === id)?.voxels ?? null;
   }
+
+  /** A blob ref no frame has used in this editor. */
+  freshRef(): number { return this.nextRef++; }
+  private nextRef: number;
 
   /** Voxels of a frame by its id. */
   voxelsOf(f: Pick<Frame, "id">): Uint32Array | undefined {

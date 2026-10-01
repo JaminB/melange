@@ -168,7 +168,58 @@ bool BuildXan(const load::Loaded& base, const Scene& edited, const VoxelEdits& v
         }
     }
 
+    // New frames copy the first solid frame of the base (edges, textures, shading), as M6.2's probe did, and go in
+    // just before the root.
+    std::vector<xom::Object> frames;
+    std::vector<int64_t> parents;
+    const xom::Object* solid = nullptr;
+    for (const auto& o : x.objects)
+        if (o.type == "LandFrameStore" && xomutil::Int(o, "XSize") * xomutil::Int(o, "ZSize") > 1 && o.field("Voxels") &&
+            o.field("Voxels")->size()) {
+            solid = &o;
+            break;
+        }
+    for (const auto& f : edited.frames) {
+        if (!f.isNew) continue;
+        if (!solid) return Fail(err, "frame " + std::to_string(f.id) + ": the base has no solid frame to copy");
+        xom::Object obj = *solid;
+        const size_t cells = voxels::Cells(f), corners = static_cast<size_t>(f.size[0] + 1) * (f.size[2] + 1);
+        auto words = voxels.find(f.id);
+        Value *xs = obj.field("XSize"), *ys = obj.field("YSize"), *zs = obj.field("ZSize"), *vox = obj.field("Voxels"),
+              *hm = obj.field("HeightMap"), *det = obj.field("Details"), *kids = obj.field("Children"), *vis = obj.field("Visible");
+        if (!xs || !ys || !zs || !vox || !hm || !det || !kids || !xomutil::SetStr(obj, "Name", f.name) ||
+            !xomutil::SetVec(obj, "Position", f.pos) || !xomutil::SetVec(obj, "Orientation", {0, 0, 0}) ||
+            !xomutil::SetVec(obj, "Scale", {1, 1, 1}) || !xomutil::SetVec(obj, "CentreOffset", {0, 0, 0}))
+            return Fail(err, "frame " + std::to_string(f.id) + ": the base's frames have an unexpected shape");
+        const std::vector<uint32_t> w = words != voxels.end() ? words->second : std::vector<uint32_t>(cells, 0);
+        if (w.size() != cells) return Fail(err, "voxels: frame " + std::to_string(f.id) + " has another size");
+        if (!std::all_of(w.begin(), w.end(), ValidRunValue))
+            return Fail(err, "voxels: frame " + std::to_string(f.id) + " holds an invalid voxel");
+        xs->setInt(f.size[0]);
+        ys->setInt(f.size[1]);
+        zs->setInt(f.size[2]);
+        vox->raw = Words(w);
+        hm->raw.assign(corners * 4, 0);
+        det->items.clear();
+        kids->items.clear();
+        if (vis) vis->setInt(1);
+        frames.push_back(std::move(obj));
+        parents.push_back(f.parent);
+    }
+    if (!frames.empty()) {
+        const uint32_t at = x.root, n = static_cast<uint32_t>(frames.size());
+        if (!xomutil::InsertObjects(x, at, std::move(frames))) return Fail(err, "could not insert a frame");
+        for (auto& c : cur)
+            if (c >= at) c += n;
+        for (uint32_t k = 0; k < n; ++k) {
+            Value* list = x.objects[cur[static_cast<size_t>(parents[k])] - 1].field("Children");
+            if (!list) return Fail(err, "frame " + std::to_string(parents[k]) + " has no Children");
+            list->items.push_back(xomutil::RefValue(at + k));
+        }
+    }
+
     for (const auto& [fid, words] : voxels) {
+        if (fid < 0) continue;
         const Frame* f = bs.FindFrame(fid);
         if (!f) return Fail(err, "voxels: frame " + std::to_string(fid) + " is not in the base");
         const size_t cells = static_cast<size_t>(f->size[0]) * f->size[1] * f->size[2];
@@ -271,21 +322,33 @@ bool Apply(const load::Loaded& base, const Patch& p, const PatchRules& rules, Sc
     Scene s = base.scene;
     if (!ApplyPatch(s, p, rules, err)) return false;
     VoxelEdits edits;
+    // A new frame starts empty, with its voxels as a blob of its own.
+    int64_t nextRef = 0;
+    for (const Blob& b : s.blobs) nextRef = std::max(nextRef, b.ref + 1);
+    for (Frame& f : s.frames) {
+        if (!f.isNew) continue;
+        const size_t cells = voxels::Cells(f);
+        f.voxels = nextRef++;
+        s.blobs.push_back({f.voxels, "voxels", f.id, cells * 4});
+        edits[f.id].assign(cells, 0);
+    }
     for (size_t i = 0; i < p.ops.size(); ++i) {
         const Op& op = p.ops[i];
         if (op.kind != Op::Kind::Voxels) continue;
-        const Frame* f = base.scene.FindFrame(op.frame);
+        const Frame* f = op.frame < 0 ? nullptr : base.scene.FindFrame(op.frame);
         auto blob = f ? base.blobs.find(f->voxels) : base.blobs.end();
-        if (blob == base.blobs.end()) return Fail(err, "ops[" + std::to_string(i) + "].frame: " + std::to_string(op.frame) + " has no voxels");
+        if (op.frame >= 0 && blob == base.blobs.end())
+            return Fail(err, "ops[" + std::to_string(i) + "].frame: " + std::to_string(op.frame) + " has no voxels");
         auto [it, fresh] = edits.try_emplace(op.frame);
         if (fresh) it->second = FromBytes(blob->second);
         std::string why;
         if (!ApplyRuns(it->second, op.runs, &why)) return Fail(err, "ops[" + std::to_string(i) + "]." + why);
-        const auto* bw = reinterpret_cast<const uint8_t*>(blob->second.data());
+        const auto* bw = op.frame < 0 ? nullptr : reinterpret_cast<const uint8_t*>(blob->second.data());
         for (size_t k = 0; k < op.runs.size(); ++k)
             for (uint32_t j = 0; j < op.runs[k].count; ++j) {
                 const size_t at = (size_t(op.runs[k].start) + j) * 4;
-                const uint32_t was = uint32_t(bw[at]) | uint32_t(bw[at + 1]) << 8 | uint32_t(bw[at + 2]) << 16 | uint32_t(bw[at + 3]) << 24;
+                const uint32_t was =
+                    bw ? uint32_t(bw[at]) | uint32_t(bw[at + 1]) << 8 | uint32_t(bw[at + 2]) << 16 | uint32_t(bw[at + 3]) << 24 : 0;
                 if (!voxels::ValidEdit(was, op.runs[k].value))
                     return Fail(err, "ops[" + std::to_string(i) + "].runs[" + std::to_string(k) +
                                          "]: a voxel may only be carved, filled or painted (second material and blend stay)");
@@ -377,6 +440,20 @@ Patch Diff(const Scene& base, const Scene& edited, const VoxelEdits& voxels, con
             }
             if (!op.runs.empty()) p.ops.push_back(std::move(op));
         }
+    }
+    for (const auto& f : edited.frames) {
+        if (!f.isNew) continue;
+        Op add;
+        add.kind = Op::Kind::AddFrame;
+        add.newFrame = {f.id, f.parent, f.name, f.pos, f.size};
+        p.ops.push_back(std::move(add));
+        auto ed = voxels.find(f.id);
+        if (ed == voxels.end()) continue;
+        Op op;
+        op.kind = Op::Kind::Voxels;
+        op.frame = f.id;
+        op.runs = voxels::Runs(std::vector<uint32_t>(ed->second.size(), 0), ed->second);
+        if (!op.runs.empty()) p.ops.push_back(std::move(op));
     }
     hmp::Surround painted, before;
     if (edited.hmp == HmpMode::Paint && voxels.hmp && hmp::Read(*voxels.hmp, &painted, nullptr)) {
