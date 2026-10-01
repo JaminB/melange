@@ -118,6 +118,36 @@ struct HotkeyDef {
     uint8_t mods;
 };
 
+// Window-message classification for the overlay's subclassed window procedure. Pure so it can be self-tested
+// without a real window, DirectInput device or ImGui backend.
+inline bool IsKeyMsg(UINT m) {
+    return m == WM_KEYDOWN || m == WM_KEYUP || m == WM_CHAR || m == WM_DEADCHAR || m == WM_SYSKEYDOWN ||
+           m == WM_SYSKEYUP || m == WM_SYSCHAR;
+}
+
+inline bool IsButtonMsg(UINT m) {
+    return (m >= WM_LBUTTONDOWN && m <= WM_MBUTTONDBLCLK) || (m >= WM_XBUTTONDOWN && m <= WM_XBUTTONDBLCLK);
+}
+
+// Messages ImGui's Win32 backend wants while the overlay is capturing.
+inline bool ForImGui(UINT m) {
+    return (m >= WM_MOUSEFIRST && m <= WM_MOUSELAST) || m == WM_MOUSELEAVE || m == WM_KEYDOWN || m == WM_KEYUP ||
+           m == WM_SYSKEYDOWN || m == WM_SYSKEYUP || m == WM_CHAR || m == WM_SETFOCUS || m == WM_KILLFOCUS ||
+           m == WM_INPUTLANGCHANGE;
+}
+
+inline bool SwallowForGame(UINT m) {
+    return (m >= WM_MOUSEFIRST && m <= WM_MOUSELAST) || m == WM_INPUT || m == WM_KEYDOWN || m == WM_KEYUP ||
+           m == WM_CHAR;
+}
+
+// Whether a message reaching the subclassed window procedure must be kept from the game. Depends only on
+// `capturing`, never on whether the ImGui backend happens to be ready for it: a message the overlay means to
+// capture is dropped, not let through to the game, if ImGui cannot take it right now. That keeps a real WM_CHAR
+// the only way text ever reaches an overlay box, and keeps a key the overlay is capturing (e.g. the one used to
+// leave the attract demo) from ever reaching the game while a box still holds it.
+inline bool CapturedFromGame(UINT m, bool capturing) { return capturing && SwallowForGame(m); }
+
 // Keyboard-buffer filter. Not thread-safe: the DirectInput poll runs on the game's main thread.
 class KeyFilter {
 public:

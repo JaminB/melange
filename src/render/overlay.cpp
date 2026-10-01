@@ -294,7 +294,14 @@ void ApplyInputMode() {
     else
         io.ConfigFlags |= passive;
     io.AddFocusEvent(false);  // drop buttons/keys held from before (a stale click must not fire)
-    if (cap) io.AddFocusEvent(true);
+    if (cap) {
+        io.AddFocusEvent(true);
+    } else if (!justShown) {
+        // Leaving capture (e.g. a hotkey, or the game taking a key back such as the one that ends the attract
+        // demo): drop whatever box was active so it stops consuming the real WM_CHAR the player now expects to
+        // reach the game, instead of silently keeping it focused.
+        ImGui::ClearActiveID();
+    }
 }
 
 void BuildFrame(void*) {

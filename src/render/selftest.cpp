@@ -141,6 +141,23 @@ void TestFilter(Ctx& c) {
     }
 }
 
+void TestWndProcGating(Ctx& c) {
+    c.Check(CapturedFromGame(WM_CHAR, true) && CapturedFromGame(WM_KEYDOWN, true) && CapturedFromGame(WM_KEYUP, true) &&
+                CapturedFromGame(WM_LBUTTONDOWN, true) && CapturedFromGame(WM_INPUT, true),
+            "capturing keeps char, key and mouse/raw-input messages from the game");
+    c.Check(!CapturedFromGame(WM_CHAR, false) && !CapturedFromGame(WM_KEYDOWN, false) && !CapturedFromGame(WM_INPUT, false),
+            "pass-through lets the same messages reach the game");
+    // The bug this guards: whether ImGui's backend happens to be ready must never factor into this decision, since
+    // CapturedFromGame takes no such flag -- a message the overlay is capturing is always kept from the game,
+    // never let through just because the backend cannot take it this instant.
+    c.Check(!CapturedFromGame(WM_MOUSEMOVE, false), "no stray capture when not capturing");
+    c.Check(ForImGui(WM_CHAR) && ForImGui(WM_KEYDOWN) && ForImGui(WM_SETFOCUS) && ForImGui(WM_LBUTTONDOWN),
+            "ImGui gets char, key, focus and mouse-button messages");
+    c.Check(!ForImGui(WM_INPUT), "raw input never reaches ImGui (no character path from it)");
+    c.Check(IsButtonMsg(WM_LBUTTONDOWN) && IsButtonMsg(WM_RBUTTONDBLCLK) && !IsButtonMsg(WM_MOUSEMOVE),
+            "button message classification");
+}
+
 void TestMenu(Ctx& c) {
     std::vector<std::string> s;
     c.Check(SplitMenuPath("File/Save logs as...", s) && s.size() == 2 && s[0] == "File" && s[1] == "Save logs as...",
@@ -156,6 +173,7 @@ int RunLogicSelfTests(std::string* report) {
     c.report = report;
     TestParse(c);
     TestFilter(c);
+    TestWndProcGating(c);
     TestMenu(c);
     if (report) {
         char b[96];

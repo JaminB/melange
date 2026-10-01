@@ -32,6 +32,10 @@ bool SehCall(void (*fn)(void*), void* arg, unsigned long* code);  // overlay.cpp
 namespace {
 using melange::render::HotkeyDef;
 using melange::render::KeyFilter;
+using melange::render::IsKeyMsg;
+using melange::render::IsButtonMsg;
+using melange::render::ForImGui;
+using melange::render::CapturedFromGame;
 
 struct Hotkey {
     int handle;
@@ -288,11 +292,6 @@ std::vector<Sub> g_subs;  // main thread only (subclassing and the window proced
 HWND g_subHwnd = nullptr;
 std::atomic<bool> g_imguiReady{false};
 
-bool IsKeyMsg(UINT m) {
-    return m == WM_KEYDOWN || m == WM_KEYUP || m == WM_CHAR || m == WM_DEADCHAR || m == WM_SYSKEYDOWN ||
-           m == WM_SYSKEYUP || m == WM_SYSCHAR;
-}
-
 // A key message whose scan code (+ modifiers) is a registered hotkey.
 bool IsHotkeyKeyMsg(LPARAM lp) {
     uint8_t scan = static_cast<uint8_t>((lp >> 16) & 0xFF);
@@ -306,21 +305,6 @@ bool IsHotkeyKeyMsg(LPARAM lp) {
     for (const Hotkey& h : g_hotkeys)
         if (h.dik == dik && h.mods == mods) return true;
     return false;
-}
-
-bool ForImGui(UINT m) {
-    return (m >= WM_MOUSEFIRST && m <= WM_MOUSELAST) || m == WM_MOUSELEAVE || m == WM_KEYDOWN || m == WM_KEYUP ||
-           m == WM_SYSKEYDOWN || m == WM_SYSKEYUP || m == WM_CHAR || m == WM_SETFOCUS || m == WM_KILLFOCUS ||
-           m == WM_INPUTLANGCHANGE;
-}
-
-bool IsButtonMsg(UINT m) {
-    return (m >= WM_LBUTTONDOWN && m <= WM_MBUTTONDBLCLK) || (m >= WM_XBUTTONDOWN && m <= WM_XBUTTONDBLCLK);
-}
-
-bool SwallowForGame(UINT m) {
-    return (m >= WM_MOUSEFIRST && m <= WM_MOUSELAST) || m == WM_INPUT || m == WM_KEYDOWN || m == WM_KEYUP ||
-           m == WM_CHAR;
 }
 
 LRESULT CALLBACK OverlayWndProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
@@ -338,20 +322,22 @@ LRESULT CALLBACK OverlayWndProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
         ++g_keyMsgsDropped;
         return 0;
     }
-    if (g_imguiReady.load(std::memory_order_relaxed) && melange::overlay::Capturing()) {
-        if (ForImGui(msg)) {
-            // Posted clicks may not match the real cursor position: take the position from the click itself.
-            if (IsButtonMsg(msg))
-                ImGui::GetIO().AddMousePosEvent(static_cast<float>(GET_X_LPARAM(lp)), static_cast<float>(GET_Y_LPARAM(lp)));
-            ImGui_ImplWin32_WndProcHandler(h, msg, wp, lp);
-        }
-        if (SwallowForGame(msg)) {
-            if (msg == WM_KEYDOWN || msg == WM_KEYUP || msg == WM_CHAR)
-                ++g_keyMsgsDropped;
-            else
-                ++g_mouseDropped;
-            return 0;
-        }
+    const bool capturing = melange::overlay::Capturing();
+    // ImGui readiness only gates whether the backend gets the message, never whether the game does: a message the
+    // overlay is capturing must never reach the game just because the backend is mid-reinit, or a box could lose a
+    // keystroke to the game instead of to ImGui (and the game would see input the overlay was meant to hide).
+    if (capturing && g_imguiReady.load(std::memory_order_relaxed) && ForImGui(msg)) {
+        // Posted clicks may not match the real cursor position: take the position from the click itself.
+        if (IsButtonMsg(msg))
+            ImGui::GetIO().AddMousePosEvent(static_cast<float>(GET_X_LPARAM(lp)), static_cast<float>(GET_Y_LPARAM(lp)));
+        ImGui_ImplWin32_WndProcHandler(h, msg, wp, lp);
+    }
+    if (CapturedFromGame(msg, capturing)) {
+        if (msg == WM_KEYDOWN || msg == WM_KEYUP || msg == WM_CHAR)
+            ++g_keyMsgsDropped;
+        else
+            ++g_mouseDropped;
+        return 0;
     }
     return unicode ? CallWindowProcW(orig, h, msg, wp, lp) : CallWindowProcA(orig, h, msg, wp, lp);
 }
