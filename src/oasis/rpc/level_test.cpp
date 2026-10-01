@@ -27,8 +27,8 @@ namespace {
 using rpc::Fail;
 
 constexpr uint8_t kDikSpace = 0x39;
+// Taps go on until the deadline: one asked while the demo is still loading is dropped unread.
 constexpr ULONGLONG kStartWaitMs = 15000, kTapEveryMs = 1500;
-constexpr int kMaxTaps = 3;
 
 std::atomic<bool> g_atFrontend{false}, g_inLobby{false}, g_quickOk{false}, g_attract{false}, g_loading{false};
 std::mutex g_mx;
@@ -68,11 +68,11 @@ void OnFrame() {
             g_startKey.clear();
             if (g_taps) render::CancelTap();
         } else if (attract) {
-            if (now >= g_nextTap && g_taps < kMaxTaps) {
+            if (now >= g_nextTap) {
                 g_nextTap = now + kTapEveryMs;
                 ++g_taps;
                 const bool tapped = render::TapKey(kDikSpace);
-                LOG_INFO("[erg] test: the attract demo is running; ending it with a key tap: %s", tapped ? "sent" : "keyboard not hooked");
+                LOG_INFO("[erg] test: the attract demo is running; ending it with a key tap: %s", tapped ? "sent" : "not sent (an earlier tap is pending, or the keyboard is not hooked)");
             }
             return;
         } else {
