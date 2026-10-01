@@ -13,7 +13,7 @@ after its folder — every M1-era `Mods\` folder keeps working unchanged.
   "id": "hello-spice",
   "version": "1.0.0",
   "name": "Hello Spice",
-  "melange": { "range": ">=0.2.0 <0.3.0" },
+  "melange": { "range": ">=0.3.0 <0.4.0" },
   "kind": "client-only",
   "entry": { "client": "client/init.lua" }
 }

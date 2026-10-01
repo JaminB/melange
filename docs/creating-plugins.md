@@ -15,7 +15,7 @@ Melange runs two kinds of plugins:
      "id": "my-mod",
      "version": "1.0.0",
      "name": "My Mod",
-     "melange": { "range": ">=0.2.0" },
+     "melange": { "range": ">=0.3.0" },
      "kind": "client-only",
      "entry": { "client": "client/init.lua" }
    }
