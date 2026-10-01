@@ -9,10 +9,10 @@
 // Pure functions.
 namespace melange::levels::manifest {
 constexpr size_t kMaxPerMod = 32, kMaxTotal = 128, kMaxSimBytes = 256 * 1024;
-// A level may also be registered as a Survivor map (Multi.<stem>.S) only once the save is known to stay untouched.
-constexpr bool kSurvivorTwins = false;
-// The Survivor script runs the level's own chunk when it is appended to the script list.
-constexpr bool kSurvivorRunsChunk = false;
+// A level may also be registered as a Survivor map (Multi.<stem>.S, the "Survivor copy").
+constexpr bool kSurvivorTwins = true;
+// The Survivor script runs the level's own chunk (the deferred form) when it is appended to the script list.
+constexpr bool kSurvivorRunsChunk = true;
 
 struct LevelDecl {
     std::string mod, slug, stem, title, type;

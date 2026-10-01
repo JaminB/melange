@@ -718,6 +718,19 @@ void TestBank() {
            "bank: entry fields");
     Expect(b.object(3)->field("ContainerResources")->items.size() == 2, "bank: resources listed");
     Expect(b.strings.front().empty() && std::is_sorted(b.strings.begin() + 1, b.strings.end()), "bank: strings sorted after ''");
+    {
+        auto twin = entries;
+        twin[1].key = "Multi.mymaps_b.S";
+        twin[1].scripts = "Survivor,mymaps_b";
+        twin[1].levelType = 3;
+        twin[1].levelSection = 0;
+        xom::Document t;
+        const std::vector<uint8_t> tb = erg::bank::RegistryBank(sd, twin, &err);
+        Expect(!tb.empty() && xom::parse(tb.data(), tb.size(), t, &err, strict) && xu::Int(t.objects[4], "Level_Type") == 3 &&
+                   xu::Int(t.objects[4], "LevelSection") == 0 && xu::Str(t.objects[4], "Lock").empty() &&
+                   xu::Str(t.objects[4], "Level_FileName") == "mymaps_b" && xu::Int(t.objects[4], "Theme_Type") == 5,
+               "bank: a Survivor copy is type 3, unlocked, theme 5, in section 0, on the level's own files " + err);
+    }
     entries[1].stem = "my.maps";
     Expect(erg::bank::RegistryBank(sd, entries, &err).empty(), "bank: a stem with a dot is refused");
     entries[1] = entries[0];
@@ -1245,6 +1258,14 @@ void TestService(const std::wstring& root) {
         Expect(r.ok && J(r.json).find("saved")->boolean && !erg::install::Exists(scriptPath), "script.put: \"\" removes the script");
         r = Call(S, "level.export", R"({"project":"harbour","modId":"script-source","name":"x","version":"1.0.0","mode":"source"})");
         Expect(r.ok && !erg::install::Exists(game + L"\\Mods\\script-source\\sim\\harbour.lua"), "export: a removed script is removed from the pack");
+        r = Call(S, "level.export", R"({"project":"harbour","modId":"script-source","name":"x","version":"1.0.0","mode":"source","survivor":true})");
+        std::vector<uint8_t> spice;
+        Expect(r.ok && erg::install::ReadFile(game + L"\\Mods\\script-source\\spice.json", 1u << 20, &spice, &err) &&
+                   std::string(spice.begin(), spice.end()).find(R"("survivor":true)") != std::string::npos,
+               "export: survivor:true lists a Survivor copy " + r.message);
+        Expect(Call(S, "level.export", R"({"project":"harbour","modId":"script-source","name":"x","version":"1.0.0","mode":"source","survivor":1})").code ==
+                   erg::service::kBadParams,
+               "export: survivor must be a boolean");
         RemoveTree(game + L"\\Mods\\script-install");
         RemoveTree(game + L"\\Mods\\script-source");
         Expect(Call(S, "level.close", R"({"project":"harbour"})").ok, "close after the script cases");

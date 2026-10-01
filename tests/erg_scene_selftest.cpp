@@ -842,6 +842,14 @@ void TestManifestV2() {
     L surv{"a", "A", "multi", "", false, 0};
     surv.survivor = true;
     Expect(lm::Parse(Mod("maps", {surv}), &errs).empty() == !lm::kSurvivorTwins, "survivor follows the build flag");
+    {
+        surv.chunk = true;
+        errs.clear();
+        const auto twins = lm::Parse(Mod("maps", {surv}), &errs);
+        Expect(twins.size() == 1 && twins[0].survivor && lm::SurvivorScripts(twins[0]) == std::vector<std::string>{"Survivor", "maps_a"},
+               "a Survivor copy with a chunk runs Survivor then the level's chunk");
+        surv.chunk = false;
+    }
     for (const char* t : {"challenge", "deathmatch", "fort", "story"}) {
         errs.clear();
         Expect(lm::Parse(Mod("maps", {L{"a", "A", t, "", false, 0}}), &errs).empty() && !errs.empty() &&

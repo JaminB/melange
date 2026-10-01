@@ -835,6 +835,8 @@ struct Service::Impl {
             !GetStr(p, "version", &version, &r) || !GetStr(p, "mode", &mode, &r))
             return r;
         if (mode != "install" && mode != "source") return Err(kBadParams, "mode must be \"install\" or \"source\"");
+        const Json* surv = p.find("survivor");
+        if (surv && surv->kind != Json::Kind::Bool) return Err(kBadParams, "survivor must be a boolean");
         std::string why;
         const std::string prefix = names::Prefix(modId);
         if (!ValidModId(modId) || !names::ValidPrefix(prefix, &why))
@@ -864,6 +866,7 @@ struct Service::Impl {
         spec.title = patch.title;
         spec.source = mode == "source";
         spec.chunk = luagen::Needed(scene);
+        spec.survivor = surv && surv->boolean;
         spec.patchJson = WritePatch(patch);
         spec.script = std::move(script);
         if (!spec.source) {

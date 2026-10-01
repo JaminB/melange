@@ -220,6 +220,16 @@ void TestPackInstall(const fs::path& base) {
     std::vector<melange::spice::Error> errs;
     Expect(melange::spice::Parse(dir.wstring(), &m, &errs) && errs.empty(),
            "the written spice.json passes the manifest parser" + (errs.empty() ? std::string() : ": " + errs.front().field + " " + errs.front().text));
+    Expect(manifest.find("\"survivor\"") == std::string::npos, "no Survivor copy unless asked");
+    auto twin = BasicSpec("sample", /*source=*/false, /*withChunk=*/true);
+    twin.survivor = true;
+    const fs::path dir3 = base / "install-survivor" / "erg-pack-test";
+    Expect(erg::pack::WritePack(twin, dir3.wstring(), &files, &err), "install export with a Survivor copy succeeds: " + err);
+    melange::spice::Manifest tm;
+    errs.clear();
+    Expect(melange::spice::Parse(dir3.wstring(), &tm, &errs) && errs.empty() && tm.levels.size() == 1 && tm.levels[0].survivor &&
+               tm.levels[0].chunk,
+           "spice.json records survivor:true for a Survivor copy");
 }
 
 void TestPackSource(const fs::path& base) {
