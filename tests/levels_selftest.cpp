@@ -540,7 +540,7 @@ void TestLive() {
     refused(&lv::Session::inLobby, "lobby", "a lobby refuses");
     refused(&lv::Session::netSession, "network", "a network session refuses");
     refused(&lv::Session::atFrontend, "main menu", "a match refuses");
-    refused(&lv::Session::attract, "loading", "the attract demo refuses");
+    refused(&lv::Session::attract, "attract demo", "the attract demo refuses");
     refused(&lv::Session::loading, "loading", "a level set-up refuses");
     refused(&lv::Session::testBusy, "Test", "a pending Test refuses");
     refused(&lv::Session::enabled, "disabled", "a disabled module refuses");

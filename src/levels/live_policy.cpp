@@ -6,7 +6,8 @@ std::string ChangeRefusal(const State& s, For what) {
     if (s.inLobby || s.netSession)
         return packs ? "packs cannot change in a lobby or a network game"
                      : "plugins cannot change in a lobby or a network game: leave the lobby to install";
-    if (s.attract || s.loading) return "the game is loading a level; try again in a moment";
+    if (s.attract) return "the attract demo is running; press a key to return to the menu";
+    if (s.loading) return "the game is loading a level; try again in a moment";
     if (!s.atFrontend) return packs ? "packs can change only at the main menu" : "plugins can change only at the main menu";
     if (s.testBusy) return "a Test is under way; try again when it ends";
     return "";

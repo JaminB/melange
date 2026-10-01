@@ -520,7 +520,7 @@ void TestGate() {
     refused(&se::State::inLobby, "leave the lobby to install", "plugins: a lobby refuses");
     refused(&se::State::netSession, "network", "plugins: a network session refuses");
     refused(&se::State::atFrontend, "main menu", "plugins: a match refuses");
-    refused(&se::State::attract, "loading", "plugins: the attract demo refuses");
+    refused(&se::State::attract, "attract demo", "plugins: the attract demo refuses");
     refused(&se::State::loading, "loading", "plugins: a level set-up refuses");
     refused(&se::State::testBusy, "Test", "plugins: an Erg Test refuses");
     se::State lobby = s;
