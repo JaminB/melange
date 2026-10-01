@@ -33,7 +33,7 @@ Every module has its own section in `Melange.ini`, and `Enabled=0` turns a modul
 | `SteamTrace` | on | Logs Steam lobby, P2P and callback activity |
 | `NetTrace` | on | Logs raw Winsock calls |
 | `WindowTag` | on | Shows the Melange version in the window title |
-| `FrameInterval` | off | Sets the engine frame interval (`IntervalMs=16` is about 60 fps) |
+| `FrameInterval` | off | Sets the engine frame interval (`IntervalMs=16` is about 60 fps); "Classic timing" (`ClassicTiming=0`) raises the OS timer resolution to 1 ms (`timeBeginPeriod`) for steadier pacing on systems that stutter at the default resolution. Toggle in the overlay menu *Game* |
 | `SmoothSixty` | on (`On=0`) | "Smooth 60": lifts the engine's frame limiter and uses vsync. Toggle in the overlay menu *Game* |
 | `Mirage` | on | Graphics layer core: renderer access, scene stages for mods, mod folders |
 | `MirageTrace` | on | OpenGL call statistics (`Mode=count`), frame capture (`CaptureHotkey`), texture dumper, GPU compatibility report |
@@ -384,3 +384,17 @@ You need:
 ```
 
 `deploy.ps1` keeps an existing `dinput8.dll`. If there is none, it downloads the latest Ultimate ASI Loader, or uses the one you give with `-LoaderPath <dinput8.dll>`. `build.ps1 -PrivateDir <dir>` also compiles the modules in `<dir>\modules\*.cpp`.
+
+## Releasing
+
+```powershell
+.\scripts\release.ps1            # builds the public config and writes out\melange-<version>.zip
+```
+
+This builds with `build.ps1` and no `-PrivateDir`, so no out-of-tree modules are compiled in, then refuses to
+continue if `dist\melange.asi` contains a `LocalNet` or `Automation` marker (a sign a private build leaked in)
+or if any text file staged for the zip contains a local `C:\Users` path. The zip has `melange.asi`, the default
+`Melange.ini`, `dinput8.dll` (Ultimate ASI Loader) and its licence in `THIRD_PARTY.md`, `oasis.exe`,
+`tools\xomtool.exe`, the sample `Mods\`, `LICENSE`, `THIRD_PARTY.md` and an `INSTALL.txt` mirroring the README's
+install steps. The version comes from `project(Melange VERSION x.y.z)` in `CMakeLists.txt`. `out\` is not
+committed; the script prints the zip's SHA-256 so it can be posted alongside a GitHub release.
