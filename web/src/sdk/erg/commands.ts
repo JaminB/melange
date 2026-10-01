@@ -1,7 +1,7 @@
 // Every edit is a Command (the three.js editor's pattern); the stack lives in the tab.
 import {
-  KNOT_RESOURCE, deriveRole, type Databank, type Detail, type DetailFields, type HmpMode, type ObjectSpec, type Scene, type SpawnMode,
-  type Vec3,
+  KNOT_RESOURCE, deriveRole, type Databank, type Detail, type DetailFields, type Frame, type HmpMode, type ObjectSpec, type Scene,
+  type SpawnMode, type Vec3,
 } from "./scene";
 
 export interface Command { label: string; do(s: Scene): void; undo(s: Scene): void; merge?(next: Command): boolean; }
@@ -238,4 +238,39 @@ export class SetVoxels implements Command {
     if (!v) throw new Error(`no voxel blob ${this.ref}`);
     for (const [i, pair] of this.changes) v[i] = pair[which];
   }
+}
+
+/** Adds a terrain block: a new frame with its voxels under the frame's blob ref. Undo takes both out again. */
+export class AddFrame implements Command {
+  readonly label = "Add block";
+  constructor(private voxels: Map<number, Uint32Array>, readonly frame: Frame, private words: Uint32Array) {}
+  do(s: Scene) { putFrame(s, this.voxels, this.frame, this.words, s.frames.length); }
+  undo(s: Scene) { this.words = takeFrame(s, this.voxels, this.frame.id).words; }
+}
+
+/** Removes an added block; undo puts it back where it was. */
+export class RemoveFrame implements Command {
+  readonly label = "Remove block";
+  private removed?: { frame: Frame; words: Uint32Array; at: number };
+  constructor(private voxels: Map<number, Uint32Array>, readonly id: number) {}
+  do(s: Scene) { this.removed = takeFrame(s, this.voxels, this.id); }
+  undo(s: Scene) { if (this.removed) putFrame(s, this.voxels, this.removed.frame, this.removed.words, this.removed.at); }
+}
+
+function putFrame(s: Scene, voxels: Map<number, Uint32Array>, f: Frame, words: Uint32Array, at: number) {
+  if (!f.new || f.voxels === null) throw new Error(`frame ${f.id} is not an added block`);
+  s.frames.splice(at, 0, structuredClone(f));
+  s.blobs.push({ ref: f.voxels, kind: "voxels", frame: f.id, bytes: words.length * 4 });
+  voxels.set(f.voxels, words);
+}
+
+function takeFrame(s: Scene, voxels: Map<number, Uint32Array>, id: number) {
+  const at = s.frames.findIndex((f) => f.id === id && f.new);
+  if (at < 0) throw new Error(`no added block ${id}`);
+  const [frame] = s.frames.splice(at, 1);
+  const words = voxels.get(frame.voxels!);
+  if (!words) throw new Error(`no voxels for block ${id}`);
+  voxels.delete(frame.voxels!);
+  s.blobs = s.blobs.filter((b) => b.ref !== frame.voxels);
+  return { frame, words, at };
 }

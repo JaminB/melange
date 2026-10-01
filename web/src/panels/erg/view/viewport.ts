@@ -19,6 +19,7 @@ import type { EditorStore } from "../model/store";
 import { MAX_LEVEL_QUADS, type MeshData } from "../terrain/mesher";
 import { skyColors, themePalette } from "../terrain/materials";
 import { MesherPool, buckets, meshInput, type Bucket } from "../terrain/pool";
+import { blockKey } from "../terrain/blocks";
 import type { TerrainTool } from "../terrain/tool";
 
 export type Tool = "translate" | "rotate" | "scale";
@@ -594,7 +595,7 @@ export function createViewport(el: HTMLElement, store: EditorStore, events: View
   }
   raf = requestAnimationFrame(loop);
 
-  let lastTheme = store.scene.databank.theme;
+  let lastTheme = store.scene.databank.theme, lastBlocks = blockKey(store.scene);
   const off = store.on((why) => {
     if (why === "saved") return;
     syncMarkers();
@@ -602,7 +603,8 @@ export function createViewport(el: HTMLElement, store: EditorStore, events: View
       syncLevel();
       if (!drag) placeProxy();
       const theme = store.scene.databank.theme;
-      if (theme !== lastTheme) {
+      if (theme !== lastTheme || blockKey(store.scene) !== lastBlocks) {
+        lastBlocks = blockKey(store.scene);
         lastTheme = theme;
         void remesh();
       }

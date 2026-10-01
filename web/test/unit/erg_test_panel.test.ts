@@ -51,8 +51,8 @@ test("prefixOf and slug/mod-id/version validation", () => {
 });
 
 test("validateExportForm", () => {
-  assert.deepEqual(validateExportForm({ modId: "my-maps", name: "Harbour Brawl", version: "1.0.0", mode: "source" }), []);
-  const errs = validateExportForm({ modId: "", name: "", version: "x", mode: "install" });
+  assert.deepEqual(validateExportForm({ modId: "my-maps", name: "Harbour Brawl", version: "1.0.0", mode: "source", survivor: true }), []);
+  const errs = validateExportForm({ modId: "", name: "", version: "x", mode: "install", survivor: false });
   assert.equal(errs.length, 3);
 });
 

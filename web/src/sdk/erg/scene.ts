@@ -538,6 +538,7 @@ export function validatePatch(p: unknown, sizeBytes?: number): Validation {
         else tmps.add(o.tmp as number);
         if (!isInt(o.parent, 1, 1 << 24)) c.fail(`${path}.parent`, "must be a frame of the base");
         if (typeof o.name !== "string" || !/^[A-Za-z0-9_]{1,31}$/.test(o.name)) c.fail(`${path}.name`, "must be 1-31 letters, digits or '_'");
+        else if (/SLIPPY|PERM|TEAMBASE/i.test(o.name)) c.fail(`${path}.name`, "may not hold SLIPPY, PERM or TEAMBASE (the engine reads them as tags)");
         if (!isVec(o.pos)) c.fail(`${path}.pos`, "must be 3 finite numbers");
         if (!Array.isArray(o.size) || o.size.length !== 3 || !o.size.every((v) => isInt(v, 1, LIMITS.newFrameSide))) c.fail(`${path}.size`, "each size must be 1..32");
         break;
@@ -635,4 +636,12 @@ export function frameWorld(frames: Map<number, Frame>, id: number): Mat3x4 | nul
     cur = f.parent;
   }
   return acc;
+}
+
+/** Where a frame's voxels sit: the engine centres the grid on the frame's position, so voxel (x, y, z) fills
+ * [x, x+1] x [y, y+1] x [z, z+1] under frameWorld * T(-size/2). Details use frameWorld alone. */
+export function voxelWorld(frames: Map<number, Frame>, id: number): Mat3x4 | null {
+  const w = frameWorld(frames, id), f = frames.get(id);
+  if (!w || !f) return null;
+  return multiply(w, [1, 0, 0, -f.size[0] / 2, 0, 1, 0, -f.size[1] / 2, 0, 0, 1, -f.size[2] / 2]);
 }

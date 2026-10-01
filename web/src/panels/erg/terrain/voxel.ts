@@ -1,7 +1,8 @@
 // Voxel words and frame geometry for the terrain tools. The word rules are the server's (src/erg/voxels.h): bits 0-1
-// solid (3) or empty (0), 2-7 material, 8-15 second material, 16-23 blend, 24-31 clear; index (z*X + x)*Y + y.
-// Voxel (x, y, z) fills [x, x+1) x [y, y+1) x [z, z+1) of its frame's space (.xan units before the frame transform).
-import { frameWorld, validRunValue, type Frame, type Mat3x4, type Scene, type Vec3 } from "../../../sdk/erg";
+// solid (3) or empty (0), 2-7 material, 8-9 second-material flags, 10-15 second material, 16-23 corner mask, 24-31 clear;
+// index (z*X + x)*Y + y.
+// Voxel (x, y, z) fills [x, x+1) x [y, y+1) x [z, z+1) of its grid space, which voxelWorld places in the level.
+import { validRunValue, voxelWorld, type Frame, type Mat3x4, type Scene, type Vec3 } from "../../../sdk/erg";
 
 export const SOLID = 3;
 export const MATERIALS = 64;
@@ -12,8 +13,14 @@ export const material = (v: number) => (v >>> 2) & 63;
 export const filled = (m: number) => (SOLID | ((m & 63) << 2)) >>> 0;
 export const carved = (v: number) => (v & ~3) >>> 0;
 export const painted = (v: number, m: number) => (isSolid(v) ? ((v & ~MATERIAL_MASK) | ((m & 63) << 2)) >>> 0 : v);
-
-/** A word the server accepts in place of `base`: bits 8-23 are the base's or zero (any mix of carve, fill, paint). */
+/** The second material and its corner mask (flags 3); the renderer reads them only when the flags are set. */
+export const withSecond = (v: number, m: number, mask: number) =>
+  ((v & ~KEPT_MASK) | (3 << 8) | ((m & 63) << 10) | ((mask & 0xff) << 16)) >>> 0;
+export const secondOf = (v: number) => ((v & 0x300) ? (v >>> 10) & 63 : -1);
+export const maskOf = (v: number) => (v >>> 16) & 0xff;
+/** `v` with bits 8-23 (flags, second material, mask) taken from `from`. */
+export const keptFrom = (v: number, from: number) => ((v & ~KEPT_MASK) | (from & KEPT_MASK)) >>> 0;
+/** A word the server accepts in place of `base` when second-material paint is off: bits 8-23 are the base's or zero. */
 export function validEdit(base: number, now: number): boolean {
   if (!validRunValue(now)) return false;
   const kept = now & KEPT_MASK;
@@ -81,7 +88,7 @@ export function gridFrames(scene: Scene, voxels: Map<number, Uint32Array>, refOf
     if (ref === null || !cells(f)) continue;
     const words = voxels.get(ref);
     if (!words || words.length !== cells(f)) continue;
-    const toWorld = frameWorld(byId, f.id);
+    const toWorld = voxelWorld(byId, f.id);
     const toLocal = toWorld && invert(toWorld);
     if (!toWorld || !toLocal) continue;
     out.push({ frame: f, ref, toWorld, toLocal, bounds: transformBox(toWorld, { min: [0, 0, 0], max: [f.size[0], f.size[1], f.size[2]] }) });

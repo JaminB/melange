@@ -313,13 +313,14 @@ at all.
 | `level.new` | `{base, slug, title}` → a project | an empty patch against `base` |
 | `level.load` | `{project}` or `{base, surround?}` → an `erg-scene/1` or `/2` result, then one `bin` frame per blob (`surround: true` adds the base's `.hmp` as an `hmp` blob) | see `web/src/sdk/erg/scene.ts` for the shape |
 | `level.save` | `{project, patch}` → `{saved, warnings}` | validates the whole patch (`erg-patch/1` or `/2`) against its pinned base |
-| `level.export` | `{project, modId, name, version, mode: "install"\|"source"}` → `{dir, files, restartRequired}` | see [erg.md](erg.md#export) |
+| `level.export` | `{project, modId, name, version, mode: "install"\|"source", survivor?: bool}` → `{dir, files, restartRequired}` | see [erg.md](erg.md#export); `survivor` (default false) adds a [Survivor copy](erg.md#survivor-copies) |
 | `level.build` | `{modId}` → files written | rebuilds a Source-form pack's map files against this install (what its `build.ps1` also does) |
 | `level.test` | `{project, tod?}` → `{key, state}` | builds into the Test workspace, arms a one-shot override, starts Quick Game itself when the game supports it; `tod` is `DAY`, `EVENING` or `NIGHT` for this Test only |
 | `levels.live` | `{modId, on}` → `{ok, reason}` | enables or disables a maps-only pack without a restart: game only, at the main menu, offline (see [erg.md](erg.md#live-packs)) |
 | `level.themes` | `{}` → themes, times of day, material files | from the install's own `Data\Themes` |
 | `level.palette` | `{theme}` → placeable entries `{name, resource, role, preview}` | `preview` is an `/erg/assets/` key |
 | `level.objects` | `{}` → `{crateKinds, weapons, utilities, limits, error}` | crate contents from the install's `Data\Tweak\WEAPTWK.XOM`; `error` is null when it was read |
+| `level.materials` | `{file, base?, source?}` → `{file, names}` | the record names of a level material file (`Databank.MaterialFile`), at most 64, for second-material paint; a pack base's own `Maps\<stem>.txt` is read from the pack |
 | `level.close` | `{project}` → `{}` | frees the server's parsed copy of the base |
 | `level.script.get` | `{project}` → `{text}` | the project's `script.lua`, `""` when it has none |
 | `level.script.put` | `{project, text}` → `{saved, problems: [{line, message}], syntaxChecked}` | a level script's rules (≤ 256 KB, UTF-8, no BOM or ESC); `""` removes it; not saved when these fail. In the game the script is also compiled (not run) by the engine's Lua 5.0: a syntax error is saved and listed in `problems`. oasis.exe checks the bytes only (`syntaxChecked: false`); the syntax is checked when the level is tested in the game |

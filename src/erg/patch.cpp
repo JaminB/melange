@@ -1,6 +1,7 @@
 #include "erg/patch.h"
 
 #include <algorithm>
+#include <cctype>
 #include <cmath>
 #include <map>
 #include <unordered_map>
@@ -80,6 +81,18 @@ bool ValidFrameName(std::string_view s) {
     return std::all_of(s.begin(), s.end(), [](char c) {
         return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_';
     });
+}
+
+std::string Upper(std::string_view s) {
+    std::string u(s);
+    for (char& c : u) c = static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
+    return u;
+}
+
+// The engine reads these in frame names at load: slippery, indestructible and team-base frames.
+bool TaggedFrameName(std::string_view s) {
+    const std::string u = Upper(s);
+    return u.find("SLIPPY") != std::string::npos || u.find("PERM") != std::string::npos || u.find("TEAMBASE") != std::string::npos;
 }
 
 bool ParseHmpRuns(const Json* runs, const std::string& p, bool blend, std::vector<HmpRun>* out, std::string* err) {
@@ -298,6 +311,8 @@ bool ParsePatch(std::string_view json, Patch* out, std::string* err) {
                 !GetVec(o, "pos", path, &f.pos, err, true))
                 return false;
             if (!ValidFrameName(f.name)) return Fail(err, path + ".name: must be 1-31 letters, digits or '_'");
+            if (TaggedFrameName(f.name))
+                return Fail(err, path + ".name: may not hold SLIPPY, PERM or TEAMBASE (the engine reads them as tags)");
             if (std::find(tmps.begin(), tmps.end(), f.tmp) != tmps.end()) return Fail(err, path + ".tmp: used by an earlier op");
             tmps.push_back(f.tmp);
             const Json* size = o.find("size");
@@ -422,6 +437,8 @@ bool ValidatePatch(const Patch& p, const Scene& base, const PatchRules& rules, s
     if (p.hmp == HmpMode::Paint && !rules.hmpPaint) return Fail(err, "hmp.mode: surround painting is not accepted by this version");
     std::unordered_map<int64_t, bool> live;           // src -> still present
     std::unordered_map<int64_t, uint64_t> newCells;   // tmp -> voxels
+    std::unordered_set<std::string> frameNames;       // upper case: a new frame's name is unused
+    for (auto& f : base.frames) frameNames.insert(Upper(f.name));
     for (auto& d : base.details)
         if (d.src) live[*d.src] = true;
     for (size_t i = 0; i < p.ops.size(); ++i) {
@@ -472,6 +489,8 @@ bool ValidatePatch(const Patch& p, const Scene& base, const PatchRules& rules, s
                 if (!UnderSceneFrame(base, nf.parent))
                     return Fail(err, path + ".parent: a new frame must be placed under the Scene frame");
                 if (newCells.size() >= kMaxNewFrames) return Fail(err, path + ": at most 64 new frames");
+                if (!frameNames.insert(Upper(nf.name)).second)
+                    return Fail(err, path + ".name: '" + nf.name + "' is already a frame's name (a new frame needs a fresh one)");
                 newCells[nf.tmp] = static_cast<uint64_t>(nf.size[0]) * nf.size[1] * nf.size[2];
                 break;
             }

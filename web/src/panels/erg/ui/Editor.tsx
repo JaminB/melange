@@ -20,7 +20,7 @@ import { snapVec } from "../model/geometry";
 import { ExportDialog } from "../test/ExportDialog";
 import { TestPanel } from "../test/TestPanel";
 import { ScriptDoc, ScriptPanel } from "../script";
-import { Sculptor, SurroundTools, TerrainTool, TerrainTools, fetchAtlas, hexColors, setAtlas } from "../terrain";
+import { Sculptor, SurroundTools, TerrainTool, TerrainTools, fetchAtlas, hexColors, materialNames, setAtlas } from "../terrain";
 import { assetUrl } from "../../../sdk/erg/assets";
 
 export const SNAPS: (number | null)[] = [null, 1, 0.5, 0.1];
@@ -73,12 +73,14 @@ export function Editor({ client, info, opened, onClose }: Props) {
   }, [scriptDoc]);
   const [sculptOn, setSculptOn] = useState(false);
   const [atlasColors, setAtlasColors] = useState<string[]>();
+  const [names, setNames] = useState<string[]>();
   const viewRef = useRef<Viewport>();
   viewRef.current = view;
   const terrainTool = useMemo(() => new TerrainTool(new Sculptor({
     scene: store.scene, voxels: store.voxels, base: store.baseVoxels, refOf: (id) => store.voxelRef(id),
     stack: { exec: (c: Command, m?: boolean) => store.exec(c, m) } as unknown as CommandStack,
     remesh: (ids) => { void viewRef.current?.remesh(ids); },
+    freshRef: () => store.freshRef(),
   })), [store]);
   const [message, setMessage] = useState<string>();
   const [saving, setSaving] = useState(false);
@@ -151,6 +153,13 @@ export function Editor({ client, info, opened, onClose }: Props) {
       }, () => {});
     }, () => view?.setPreviews(scenePreviews));
   }, [conn.open, theme, view, scenePreviews]);
+  const materialFile = store.scene.databank.materialFile;
+  useEffect(() => {
+    setNames(undefined);
+    if (!conn.open || !client.has("level.materials") || !materialFile) return;
+    const { key, source } = store.base.base;
+    client.call<unknown>("level.materials", { file: materialFile, base: key, source }).then((r) => setNames(materialNames(r)), () => {});
+  }, [conn.open, materialFile, store]);
   useEffect(() => {
     if (!conn.open || !client.has("level.objects")) return;
     client.call<unknown>("level.objects").then((r) => setCatalog(catalogOf(r)), () => {});
@@ -285,7 +294,7 @@ export function Editor({ client, info, opened, onClose }: Props) {
         <button class="btn danger" onClick={del} disabled={!sel.length} data-action="delete" title="Delete (Del)">Delete</button>
         <span class="erg-sep" />
         <button class={`btn${sculptOn ? " on" : ""}`} onClick={() => setSculpt(!sculptOn)} data-action="sculpt"
-                title="Sculpt the terrain: drag to carve, fill or paint (Alt-drag still orbits)">Sculpt</button>
+                title="Sculpt the terrain: drag to carve, fill or paint, or click to add a block (Alt-drag still orbits)">Sculpt</button>
         <span class="erg-sep" />
         <span class="muted small">Place</span>
         {palette.map((p) => (
@@ -324,7 +333,7 @@ export function Editor({ client, info, opened, onClose }: Props) {
             {tab === "props" ? <Properties store={store} set={(id, f) => store.exec(new SetDetail(id, f))} catalog={catalog}
                                            setObject={(knot, o) => store.exec(new SetObject(knot, o))} />
               : tab === "level" ? <LevelSettings store={store} themes={themes} />
-              : tab === "terrain" ? <><TerrainTools tool={terrainTool} palette={atlasColors} /><SurroundTools store={store} /></>
+              : tab === "terrain" ? <><TerrainTools tool={terrainTool} palette={atlasColors} names={names} /><SurroundTools store={store} /></>
               : tab === "script" && hasScript ? <ScriptPanel doc={scriptDoc} />
               : tab === "export" ? <ExportDialog client={client} project={info.id} defaultName={store.scene.title} />
               : <Checks issues={issues} onPick={(id) => { store.select([id]); view?.focus(); }} />}

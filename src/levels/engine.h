@@ -47,7 +47,9 @@ KeepFn CurrentPickerKeep();
 
 // The random pools (Quick Game, network quick starts): MissionService's per-type level lists are built by one
 // ForEachResource callback. The mid-hook at kPoolEntry gets each candidate; `keep` returning false resumes at
-// kPoolSkip, the callback's own "not added" exit. `request` is the entry's Level_Type.
+// kPoolSkip, the callback's own "not added" exit. `request` is the entry's Level_Type. The hook is ahead of the type
+// switch, so it covers every pool: RandSurvivorLevel (0x6277a0 posts it; the handler picks from the type-3 list
+// +0xbc and sends FE.SetLevel) only ever sees the Survivor copies this hook kept.
 constexpr uintptr_t kPoolEntry = 0x72faec, kPoolSkip = 0x72fce3, kMissionService = 0x97a998;
 bool InstallPoolHook(KeepFn keep);
 void EnablePoolHook(bool on);

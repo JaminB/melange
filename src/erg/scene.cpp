@@ -853,6 +853,19 @@ bool FrameWorld(const Scene& s, int64_t frameId, Mat3x4* out) {
     return true;
 }
 
+bool VoxelWorld(const Scene& s, int64_t frameId, Mat3x4* out) {
+    const Frame* f = s.FindFrame(frameId);
+    Mat3x4 w;
+    if (!f || !FrameWorld(s, frameId, &w)) return false;
+    Mat3x4 half{};
+    for (int i = 0; i < 3; ++i) {
+        half.m[i][i] = 1;
+        half.m[i][3] = -f->size[i] / 2.0;
+    }
+    *out = Multiply(w, half);
+    return true;
+}
+
 bool DetailWorld(const Scene& s, const Detail& d, Vec3* out) {
     Mat3x4 m;
     if (!FrameWorld(s, d.frame, &m)) return false;

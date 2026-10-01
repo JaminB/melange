@@ -12,6 +12,7 @@ export class TerrainTool {
   last?: StepResult;
   private dragging = false;
   private lastKey = "";
+  private placed = false;             // block mode: one block per press
   private listeners = new Set<() => void>();
 
   constructor(readonly sculptor: Sculptor) {}
@@ -19,8 +20,8 @@ export class TerrainTool {
   setBrush(b: Partial<Brush>) {
     const next = { ...this.brush, ...b };
     next.size = next.size.map((v) => Math.min(MAX_BRUSH, Math.max(1, Math.round(v)))) as Vec3;
-    if (next.material !== "column") next.material = Math.min(63, Math.max(0, Math.round(next.material)));
-    if (next.mode === "paint" && next.material === "column") next.material = 0;
+    if (typeof next.material === "number") next.material = Math.min(63, Math.max(0, Math.round(next.material)));
+    if ((next.material === "column" && next.mode !== "fill") || (next.material === "none" && next.mode !== "second")) next.material = 0;
     this.brush = next;
     this.emit();
   }
@@ -36,6 +37,7 @@ export class TerrainTool {
   down(origin: Vec3, dir: Vec3): StepResult | null {
     this.dragging = true;
     this.lastKey = "";
+    this.placed = false;
     this.sculptor.begin();
     return this.drag(origin, dir);
   }
@@ -45,7 +47,8 @@ export class TerrainTool {
     const a = this.anchorFor(origin, dir);
     if (!a) return null;
     const key = `${a.grid.ref}:${a.center.join()}`;
-    if (key === this.lastKey) return null;
+    if (key === this.lastKey || this.placed) return null;
+    this.placed = this.brush.mode === "block";
     this.lastKey = key;
     this.last = this.sculptor.step(a, this.brush);
     this.emit();

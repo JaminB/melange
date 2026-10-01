@@ -149,6 +149,7 @@ bool WritePack(const PackSpec& spec, const std::wstring& dir, std::vector<std::s
                                     [&](const File& f) { return f.rel == lubRel; });
     jsonmini::Obj entry;
     entry.Str("slug", spec.slug).Str("title", spec.title.empty() ? spec.name : spec.title).Str("type", "multi").Bool("chunk", chunk);
+    if (spec.survivor) entry.Bool("survivor", true);
     entry.Str("source", "src/" + spec.slug + ".ergpatch.json");
     const std::string simRel = "sim/" + spec.slug + ".lua";
     if (!spec.script.empty()) entry.Str("sim", simRel);

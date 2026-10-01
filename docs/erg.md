@@ -1,10 +1,10 @@
 # Erg: the map editor
 
 Erg is Oasis's level editor: it loads one of the game's own maps or a map you're already building, lets you move
-spawns, place objects, sculpt the terrain, paint the surround, add a level script, set water and theme, and export
-the result as a mod. It never touches your game
-files directly — everything happens through the local server (`melange.asi` with the game running, or `oasis.exe`
-with it closed), which is the only thing that reads `Data\` and writes `Mods\`.
+spawns, place objects, sculpt the terrain and add blocks, paint the surround, add a level script, set water and theme,
+and export the result as a mod. It never touches your game files directly — everything happens through the local
+server (`melange.asi` with the game running, or `oasis.exe` with it closed), which is the only thing that reads `Data\`
+and writes `Mods\`.
 
 ## Opening it
 
@@ -83,7 +83,15 @@ for **Test** (see [Testing your map](#testing-your-map)).
 Press **Sculpt**, then drag over the terrain to carve, fill or paint with a box or sphere brush (the *Terrain* tab sets
 the mode, shape, size and material; `[` and `]` resize the brush, and Alt-drag still orbits). Fill with *Match
 column* takes the material of the terrain above. Fill and paint stay inside the piece of terrain the stroke started
-on. Erg doesn't add new terrain shapes or resize what's there; it only edits what the base map already has.
+on.
+
+**Blocks.** *Add block* places a new solid block of the brush's size (1-32 voxels a side) and material: click the
+terrain and the block rests there, its corner snapped to whole map units. A block can be sculpted like any other
+terrain, and the *Terrain* tab lists the blocks with a *Remove* button. A map holds up to 64.
+
+**Second material (experimental).** *2nd material* paints one of the level's materials (named from its material file)
+over solid voxels; the voxels next to the brush take it on the corners they share, so it blends at the edge. *Remove*
+restores what the map had. The corner mask also shapes collision slightly, so test the map.
 
 ![The Terrain tab with Sculpt armed: carve, fill or paint, a sphere or box brush, and its size](images/erg/terrain.png)
 
@@ -189,6 +197,21 @@ on your machine.
 An exported map appears under *Prebuilt* in Versus, exactly like one of the game's own maps, once the mod that ships
 it is enabled.
 
+### Survivor copies
+
+The export dialog's *Survivor copy* box (on by default) also lists the map in Survivor: Local Game, Versus,
+Survivor, *Landscape*, then the *Prebuilt* section, under the same title. The copy uses the same files, spawns,
+objects, water and level script as the map itself, and runs the game's Survivor rules on top. It is always unlocked,
+whatever the base map's lock is in your save. In `spice.json` it is the level's `"survivor": true`.
+
+- Maps are registered at the main menu, before any Survivor screen is opened. A pack enabled or disabled at the menu
+  ([Live packs](#live-packs)) shows up or disappears in Survivor once you leave the screen and open it again.
+- Online, a Survivor copy follows its map's rules below: everyone needs the same version of the mod.
+- `[Levels] RandomPool=0` (the default) keeps both the map and its copy out of the game's random picks, Survivor's
+  included.
+- The game remembers the last Survivor map you picked. When that map's mod is no longer enabled, Melange puts a
+  vanilla Survivor map back in its place at the main menu, so a lobby never starts on a map that isn't there.
+
 ### Live packs
 
 A pack of maps can be enabled or disabled on the Mods page without a restart when:
@@ -207,23 +230,26 @@ can't pick your map to begin with.
 
 ## Formats
 
-A project or Source export is saved as `erg-patch/1` unless it uses level objects, a level script or a painted
-surround; then it is saved as `erg-patch/2` (and its scene as `erg-scene/2`). This Melange reads both: a v1 project
-opens and saves as before, and becomes v2 only once you use one of those features. There is nothing to migrate by
-hand. An older Melange that knows only v1 refuses a v2 project or pack by its format, so players need this version or
-later to build or play a v2 map. The schemas are [erg-patch-2.schema.json](erg-patch-2.schema.json) and
-[erg-scene-2.schema.json](erg-scene-2.schema.json).
+A project or Source export is saved as `erg-patch/1` unless it uses level objects, a level script, added blocks or a
+painted surround; then it is saved as `erg-patch/2` (and its scene as `erg-scene/2`). This Melange reads both: a v1
+project opens and saves as before, and becomes v2 only once you use one of those features. There is nothing to migrate
+by hand. An older Melange that knows only v1 refuses a v2 project or pack by its format, so players need this version
+or later to build or play a v2 map; a painted second material needs it too. The schemas are
+[erg-patch-2.schema.json](erg-patch-2.schema.json) and [erg-scene-2.schema.json](erg-scene-2.schema.json).
+
+A map with spawns, objects or water exported or built by this Melange needs this Melange or later: its generated chunk
+now does its set-up when the match starts (the form Survivor needs), and an earlier Melange refuses that chunk and a
+Survivor copy. Packs exported by an earlier Melange keep working unchanged.
 
 ## Limits
 
 - Up to 32 maps in one mod, 128 across every enabled mod at once.
 - A map title is 1-40 plain-ASCII characters.
+- Up to 64 added blocks per map, each side 1-32 voxels.
 - A patch (your saved edits) is capped at 20 000 operations and 4 MB — enough for any hand-made edit; if you hit
   this, split the changes into more than one exported map.
 - Not yet supported:
-  - Survivor copies of a map, per-team or story spawn points, and story or challenge map types;
-  - new solid terrain pieces: Erg only carves, fills and paints the terrain the base map already has;
-  - blend brushes that mix two materials;
+  - per-team or story spawn points, and story or challenge map types;
   - editing the map's generated chunk (Erg rewrites it every export; use a [level script](#level-scripts));
   - checking a level script's syntax outside the game: `oasis.exe` checks size and encoding only;
   - enabling a pack with level scripts without a restart (see [Live packs](#live-packs)).

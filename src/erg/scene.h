@@ -150,6 +150,9 @@ struct Mat3x4 { double m[3][4]; };
 Mat3x4 FrameLocal(const Frame& f);                    // T(pos) * R(rot) * S(scale)
 bool FrameWorld(const Scene& s, int64_t frameId, Mat3x4* out);
 bool DetailWorld(const Scene& s, const Detail& d, Vec3* out);
+// Where a frame's voxels sit: the engine centres the grid on the frame's position, so voxel (x, y, z) fills
+// [x, x+1] x [y, y+1] x [z, z+1] under FrameWorld * T(-size/2). Details use FrameWorld alone.
+bool VoxelWorld(const Scene& s, int64_t frameId, Mat3x4* out);
 Vec3 Apply(const Mat3x4& m, const Vec3& p);
 Mat3x4 Multiply(const Mat3x4& a, const Mat3x4& b);
 }  // namespace melange::erg

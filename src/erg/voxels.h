@@ -28,8 +28,9 @@ inline uint32_t Carved(uint32_t v) { return v & ~3u; }
 // Paint: a solid voxel's material; second material and blend stay.
 inline uint32_t Painted(uint32_t v, uint32_t material) { return Solid(v) ? (v & ~kMaterialMask) | ((material & 63u) << 2) : v; }
 
-// Every composition of carve, fill and paint over `base` gives a word whose bits 8-23 are the base's or zero.
-bool ValidEdit(uint32_t base, uint32_t now);
+// Every composition of carve, fill and paint over `base` gives a word whose bits 8-23 are the base's or zero. With
+// `secondPaint` (PatchRules::blend) bits 8-23 are the author's: the second material and its corner mask.
+bool ValidEdit(uint32_t base, uint32_t now, bool secondPaint = false);
 
 size_t Cells(const Frame& f);
 bool Decode(const std::vector<uint8_t>& le, std::vector<uint32_t>* out, std::string* err);   // u32 LE

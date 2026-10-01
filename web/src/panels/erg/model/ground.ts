@@ -1,4 +1,5 @@
-// Rays against the voxels themselves (no mesh needed): "drop to ground" and picking a place on the terrain.
+// Rays against the voxels themselves (no mesh needed): "drop to ground" and picking a place on the terrain. Grids are
+// centred on their frames (Frames.gridOf).
 import type { Scene, Vec3 } from "../../../sdk/erg";
 import { isSolid } from "../terrain/mesher";
 import type { Frames } from "./geometry";
@@ -42,7 +43,7 @@ export function rayTerrain(scene: Scene, frames: Frames, voxelsOf: (id: number) 
   let best: number | null = null;
   for (const f of scene.frames) {
     if (f.voxels === null || f.parent === null || !f.size[0] || !f.size[1] || !f.size[2]) continue;
-    const inv = frames.inverseOf(f.id);
+    const inv = frames.gridInverseOf(f.id);
     const v = voxelsOf(f.id);
     if (!inv || !v) continue;
     const o: Vec3 = [

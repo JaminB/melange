@@ -223,6 +223,23 @@ void TestChunks() {
         return true;
     });
     Expect(!strayV.front().ok, "a bytecode .lub of an undeclared level is refused too");
+    {
+        melange::erg::luagen::ChunkSpec spec;
+        spec.knots = true;
+        spec.water = 12.5;
+        const std::string legacy = luagen::LegacyText("chunky_a", spec);
+        Expect(legacy != luagen::Text("chunky_a", spec) && verdict(legacy).ok, "a legacy chunk of an earlier pack is accepted");
+        auto twin = M("chunky", {"a"});
+        twin.levels[0].chunk = true;
+        twin.levels[0].survivor = true;
+        const std::vector<roots::PackInput> tin = {{&twin, "Mods/chunky"}};
+        const auto tv = roots::CheckPacks(tin, kCrc, true, lister, [&](const fs::path&, std::string* out) {
+            *out = gen;
+            return true;
+        });
+        Expect(tv.front().ok && tv.front().levels.size() == 1 && tv.front().levels[0].survivor,
+               "a level with a Survivor copy needs no files of its own");
+    }
 }
 
 std::string Tmp() {
@@ -392,6 +409,21 @@ void TestGate() {
     in.title.clear();
     v = gate::Evaluate(in);
     Expect(v.hold && v.why.find("Multi.oldpack_a") != std::string::npos, "an unregistered lobby level holds (would crash both)");
+    {
+        // A Survivor copy is a pack level under its own key: the same hold, banner and live rules.
+        gate::Input twin = in;
+        twin.key = "Multi.mymaps_a.S";
+        twin.source = Source::Pack;
+        twin.title = "Harbour Brawl";
+        twin.known = true;
+        twin.members = {Mem("Mia", PeerStatus::Match, "mymaps@1.0.0"), Mem("Vera", PeerStatus::Vanilla)};
+        v = gate::Evaluate(twin);
+        Expect(v.hold && v.why == "Harbour Brawl is a mod map; Vera doesn't have mymaps", "a Survivor copy holds like its level: " + v.why);
+        twin.members.pop_back();
+        Expect(!gate::Evaluate(twin).hold, "a Survivor copy plays when every member matches");
+        twin.live = true;
+        Expect(gate::Evaluate(twin).hold && gate::Evaluate(twin).status == Online::LivePack, "a live pack's Survivor copy holds");
+    }
     in.key.clear();
     Expect(!gate::Evaluate(in).hold, "no level key: nothing to hold");
 
