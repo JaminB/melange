@@ -60,6 +60,23 @@ void TestNetServiceExit() {
     reinterpret_cast<void (*)()>(fn)();
     Check(live[0x75] == 2 && g_sink.bytes[0x75] == 0, "NetServiceExit: live service -> flag set as before");
 }
+
+// AISceneGraphService::Reset, 0x4B20A0: mov eax,[slot]; test byte [eax+9Ah],2; setnz al; movzx eax,al; ret
+void TestAiServiceExit() {
+    const uintptr_t fn = Emit({0xA1, 0, 0, 0, 0, 0xF6, 0x80, 0x9A, 0x00, 0x00, 0x00, 0x02, 0x0F, 0x95, 0xC0, 0x0F, 0xB6,
+                               0xC0, 0xC3});
+    auto hook = safetyhook::create_mid(fn + 5, &OnSite);
+    Check(static_cast<bool>(hook), "AiServiceExit: hook installs on the game's bytes");
+    if (!hook) return;
+    auto flag = reinterpret_cast<int (*)()>(fn);
+    std::memset(g_sink.bytes, 0, sizeof(g_sink.bytes));
+    g_slot = 0;
+    Check(flag() == 0, "AiServiceExit: destroyed config -> debug flag reads clear");
+    alignas(16) uint8_t live[0x100] = {};
+    live[0x9a] = 2;
+    g_slot = reinterpret_cast<uintptr_t>(live);
+    Check(flag() == 1, "AiServiceExit: live config -> debug flag read as before");
+}
 }  // namespace
 
 int main() {
@@ -67,6 +84,7 @@ int main() {
     if (!g_code) return 2;
     TestNullToSink();
     TestNetServiceExit();
+    TestAiServiceExit();
     std::printf("%s (%d failure(s))\n", g_failures ? "FAILED" : "all passed", g_failures);
     return g_failures ? 1 : 0;
 }

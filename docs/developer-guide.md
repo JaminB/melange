@@ -23,7 +23,7 @@ Every module has its own section in `Melange.ini`, and `Enabled=0` turns a modul
 |---|---|---|
 | `NetTransport` | on | Retransmits any lost packet, and re-acknowledges duplicates so a lost ACK can't stall the peer |
 | `NetSession` | on | Resets the match state the game leaves behind, and traces the match lifecycle |
-| `Fixes` | on | Fixes crashes in the game itself, one switch each: closing the game after an online or LAN session (`NetServiceExit`); build #1077 only |
+| `Fixes` | on | Fixes crashes in the game itself, one switch each: closing the game after an online or LAN session (`NetServiceExit`) or during or after a match (`AiServiceExit`); build #1077 only |
 | `Diagnostics` | on | Crash handler, hang watchdog and minidumps |
 | `Overlay` | on | The in-game overlay (`ToggleKey`, `PassthroughKey`) |
 | `EventBus` | on | The engine message bus for modules |

@@ -29,6 +29,17 @@ void OnNetServiceDtor(safetyhook::Context& c) {
         LOG_INFO("[fixes] NetServiceExit: input service already destroyed; skipped its flag");
 }
 
+// The same exit releases AIService after g_Config, and its scene-graph reset tests g_Config's net-debug flag:
+// mov eax,[g_Config]; test byte [eax+9Ah],2.
+constexpr uintptr_t kAiReset = 0x4B20A0, kAiResetTest = 0x4B20A5;
+Sink g_aiSink{};
+std::atomic<bool> g_aiLogged{false};
+
+void OnAiSceneReset(safetyhook::Context& c) {
+    if (NullToSink(c.eax, g_aiSink) && !g_aiLogged.exchange(true))
+        LOG_INFO("[fixes] AiServiceExit: config already destroyed; skipped the debug log");
+}
+
 bool Guard(const char* name, uintptr_t check, std::initializer_list<int> bytes, uintptr_t site,
            safetyhook::MidHookFn fn) {
     if (!melange::mem::Expect(check, bytes)) {
@@ -55,7 +66,10 @@ public:
     bool Install() override {
         if (Bool("NetServiceExit", true))
             Guard("NetServiceExit", kNetDtor, {0xA1, 0xA4, 0xB2, 0x95, 0x00, 0x80, 0x48, 0x75, 0x02, 0x8D, 0x45, 0xFC},
-                      kNetDtorOr, &OnNetServiceDtor);
+                  kNetDtorOr, &OnNetServiceDtor);
+        if (Bool("AiServiceExit", true))
+            Guard("AiServiceExit", kAiReset, {0xA1, 0x00, 0xA1, 0x95, 0x00, 0xF6, 0x80, 0x9A, 0x00, 0x00, 0x00, 0x02},
+                  kAiResetTest, &OnAiSceneReset);
         return true;
     }
 
