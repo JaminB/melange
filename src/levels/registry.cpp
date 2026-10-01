@@ -206,19 +206,19 @@ bool ReadLevelSim(const fs::path& modDir, const std::string& mod, const manifest
     return true;
 }
 
-// The engine runs the cache root's copy of a pack chunk, written only from text the generator could have produced.
+// The engine runs the cache root's copy of a pack chunk: the generator's current form of an accepted chunk.
 bool AcceptChunk(const std::string& stem, const fs::path& root, std::string* text, std::string* err) {
-    std::string got, why;
+    std::string got, why, run;
     const std::string rel = stem + ".lub";
     if (!roots::ReadChunk(root / game::Widen(rel), &got)) {
         *err = "levels/" + rel + " could not be read";
         return false;
     }
-    if (!erg::luagen::IsGenerated(stem, got, &why)) {
+    if (!erg::luagen::Upgrade(stem, got, &run, &why)) {
         *err = "levels/" + rel + " " + why;
         return false;
     }
-    *text = std::move(got);
+    *text = std::move(run);
     return true;
 }
 

@@ -135,9 +135,9 @@ bool CheckChunks(const std::vector<manifest::LevelDecl>& decls, const Listing& l
         std::string stem = f.substr(0, f.size() - 4);
         for (const auto& d : decls)
             if (EqualsI(d.stem, stem)) stem = d.stem;
-        std::string text, why;
+        std::string text, why, run;
         if (!read(dir / f, &text)) return Fail(err, "levels/" + f + " could not be read");
-        if (!erg::luagen::IsGenerated(stem, text, &why)) return Fail(err, "levels/" + f + " " + why);
+        if (!erg::luagen::Upgrade(stem, text, &run, &why)) return Fail(err, "levels/" + f + " " + why);
     }
     return true;
 }

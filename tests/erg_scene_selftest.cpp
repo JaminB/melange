@@ -736,8 +736,35 @@ void TestChunkGrammar() {
             for (int w = 0; w < 2; ++w) {
                 const std::string t = luagen::Text(stem, k != 0, o != 0, w ? std::optional<double>(25.0) : std::nullopt);
                 if (t.empty()) continue;
-                Expect(luagen::IsGenerated(stem, t, &why) && t.find("ergCrate") == std::string::npos, "the v1 chunks verify unchanged");
+                Expect(luagen::IsGenerated(stem, t, &why) && t.find("ergCrate") == std::string::npos, "the v1 settings verify");
             }
+    branch = 0;
+    for (const auto& c : ChunkBranches()) {
+        const std::string t = luagen::Text(stem, c), old = luagen::LegacyText(stem, c);
+        std::string run;
+        const bool needsWrap = c.knots || c.placeObjects || !c.objects.empty();
+        // Nothing at top level touches a library function: Survivor's strict check runs before Initialise.
+        const size_t init = t.find("function Initialise()\n");
+        const std::string top = t.substr(0, init);
+        Expect(!needsWrap || (init != std::string::npos && top.find("lib_") == std::string::npos &&
+                              t.ends_with("    ergInit()\n    lib_SetupMultiplayerWormsAndTeams = ergSetup\nend\n")),
+               "chunk branch " + std::to_string(branch) + " wraps the setup only inside Initialise");
+        Expect(needsWrap ? old != t : old == t, "chunk branch " + std::to_string(branch) + " differs from the legacy form only by the wrap");
+        Expect(luagen::Upgrade(stem, old, &run, &why) && run == t, "legacy chunk branch " + std::to_string(branch) + " is upgraded: " + why);
+        Expect(!needsWrap || !luagen::IsGenerated(stem, old, &why), "legacy chunk branch " + std::to_string(branch) + " is not the current form");
+        ++branch;
+    }
+    {
+        std::string run;
+        Expect(luagen::Upgrade(stem, luagen::Stub(stem), &run, &why) && run == luagen::Stub(stem), "the stub is run as is");
+        const std::string t = luagen::Text(stem, ChunkBranches().back());
+        std::string flat = t;
+        for (size_t p; (p = flat.find("\n        ")) != std::string::npos;) flat.replace(p, 9, "\n    ");
+        Expect(!luagen::Upgrade(stem, flat, &run, &why), "a deferred chunk with legacy indentation is refused");
+        std::string hybrid = luagen::LegacyText(stem, ChunkBranches().back());
+        hybrid += "local ergInit = Initialise\n";
+        Expect(!luagen::Upgrade(stem, hybrid, &run, &why), "a legacy chunk with extra lines is refused");
+    }
     Expect(!luagen::IsGenerated("other_stem", luagen::Text(stem, ChunkBranches().back()), &why), "a chunk of another stem is refused");
     luagen::ChunkSpec mf;
     erg::ObjectSpec f;
@@ -746,10 +773,10 @@ void TestChunkGrammar() {
     mf.objects = {f};
     const std::string factory = luagen::Text(stem, mf);
     const std::string edit =
-        "    local lock, scheme = EditContainer(\"GM.SchemeData\")\n"
-        "    scheme.MineFactoryOn = false\n"
-        "    CloseContainer(lock)\n";
-    const std::string place = "    SendMessage(\"GameLogic.PlaceObjects\")\n";
+        "        local lock, scheme = EditContainer(\"GM.SchemeData\")\n"
+        "        scheme.MineFactoryOn = false\n"
+        "        CloseContainer(lock)\n";
+    const std::string place = "        SendMessage(\"GameLogic.PlaceObjects\")\n";
     Expect(factory.find(edit + place) != std::string::npos && factory.find("~= true") == std::string::npos,
            "a level factory turns the scheme's off, then places the level's objects");
     Expect(factory.find("\"minefactory\"") == std::string::npos && factory.find("telepad") == std::string::npos,
@@ -774,33 +801,39 @@ void TestChunkGrammar() {
         Expect(luagen::Parse(stem, without, &back) && back.objects.empty() && back.placeObjects, "and parses without a factory");
     }
 
-    const std::string sample = luagen::Text(stem, ChunkBranches()[ChunkBranches().size() - 2]);
-    const std::vector<bool> values = ValueBytes(sample);
-    const char* inserts[] = {"\nos.exit()\n", "\nSendMessage(\"GameLogic.PauseGame\")\n", " ", "\t", "--", "\"", "\\", ")", "(",
-                             "\nend\n", ";", "x", "\x1b", "\n    lib_CreateTelepad(\"TP_1_0\", 1) os.exit()\n"};
-    Rng r{2024};
-    int refused = 0, tried = 0;
-    while (tried < 1000) {
-        std::string m = sample;
-        const size_t pos = r.Next() % m.size();
-        const int kind = r.Range(0, 2);
-        if (kind == 0) {
-            if (values[pos]) continue;
-            char c = static_cast<char>(r.Range(32, 126));
-            if (c == m[pos]) continue;
-            m[pos] = c;
-        } else if (kind == 1) {
-            if (values[pos]) continue;
-            m.erase(pos, 1);
-        } else {
-            if (values[pos] || (pos > 0 && values[pos - 1])) continue;   // text next to a value may extend it validly
-            m.insert(pos, inserts[r.Next() % (sizeof inserts / sizeof inserts[0])]);
+    for (const bool legacy : {false, true}) {
+        const luagen::ChunkSpec spec = ChunkBranches()[ChunkBranches().size() - 2];
+        const std::string sample = legacy ? luagen::LegacyText(stem, spec) : luagen::Text(stem, spec);
+        const std::vector<bool> values = ValueBytes(sample);
+        const char* inserts[] = {"\nos.exit()\n", "\nSendMessage(\"GameLogic.PauseGame\")\n", " ", "\t", "--", "\"", "\\", ")", "(",
+                                 "\nend\n", ";", "x", "\x1b", "\n    lib_CreateTelepad(\"TP_1_0\", 1) os.exit()\n",
+                                 "\nlib_SetupMultiplayerWormsAndTeams = ergSetup\n", "\n    ergInit()\n", "    "};
+        Rng r{legacy ? 2025u : 2024u};
+        int refused = 0, tried = 0;
+        while (tried < 1000) {
+            std::string m = sample;
+            const size_t pos = r.Next() % m.size();
+            const int kind = r.Range(0, 2);
+            if (kind == 0) {
+                if (values[pos]) continue;
+                char c = static_cast<char>(r.Range(32, 126));
+                if (c == m[pos]) continue;
+                m[pos] = c;
+            } else if (kind == 1) {
+                if (values[pos]) continue;
+                m.erase(pos, 1);
+            } else {
+                if (values[pos] || (pos > 0 && values[pos - 1])) continue;   // text next to a value may extend it validly
+                m.insert(pos, inserts[r.Next() % (sizeof inserts / sizeof inserts[0])]);
+            }
+            ++tried;
+            std::string run;
+            if (!luagen::Upgrade(stem, m, &run, &why)) ++refused;
+            else printf("  accepted mutation at %zu: %.60s\n", pos, m.substr(pos > 20 ? pos - 20 : 0, 60).c_str());
         }
-        ++tried;
-        if (!luagen::IsGenerated(stem, m, &why)) ++refused;
-        else printf("  accepted mutation at %zu: %.60s\n", pos, m.substr(pos > 20 ? pos - 20 : 0, 60).c_str());
+        Expect(refused == 1000, std::string("1000 mutated ") + (legacy ? "legacy" : "deferred") + " chunks are refused (" +
+                                    std::to_string(refused) + ")");
     }
-    Expect(refused == 1000, "1000 mutated chunks are refused (" + std::to_string(refused) + ")");
 }
 
 void TestManifestV2() {

@@ -35,7 +35,7 @@ bool CheckBuilt(const std::vector<manifest::LevelDecl>& decls, const Listing& l,
 // Reads a chunk file (at most luagen::kMaxChunkBytes + 1 bytes); false when it cannot be read.
 using Reader = std::function<bool(const std::filesystem::path&, std::string*)>;
 bool ReadChunk(const std::filesystem::path& file, std::string* out);
-// Every top-level .lub under `dir` is the generator's chunk for its level.
+// Every top-level .lub under `dir` is the generator's chunk for its level (the current form or a legacy one).
 bool CheckChunks(const std::vector<manifest::LevelDecl>& decls, const Listing& l, const std::filesystem::path& dir,
                  const Reader& read, std::string* err);
 

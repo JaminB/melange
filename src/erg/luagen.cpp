@@ -7,17 +7,30 @@
 namespace melange::erg::luagen {
 namespace {
 constexpr std::string_view kWater = "SetData(\"Water.Level\", ";
-constexpr std::string_view kKnotLine = "        worm.Spawn = \"WORM\" .. i\n";
-constexpr std::string_view kPlaceLine = "    SendMessage(\"GameLogic.PlaceObjects\")\n";
+constexpr std::string_view kKnotLine = "worm.Spawn = \"WORM\" .. i\n";
+constexpr std::string_view kPlaceLine = "SendMessage(\"GameLogic.PlaceObjects\")\n";
 // The level's factory replaces the scheme's: stdvs reads MineFactoryOn after this setup to send CreateRandMineFactory,
 // and a second factory trips the engine's one-factory assert. GM.SchemeData is the match's copy of the scheme, which
 // vanilla level scripts edit the same way.
-constexpr std::string_view kFactoryLines =
-    "    local lock, scheme = EditContainer(\"GM.SchemeData\")\n"
-    "    scheme.MineFactoryOn = false\n"
-    "    CloseContainer(lock)\n";
+constexpr std::string_view kFactoryLines[] = {"local lock, scheme = EditContainer(\"GM.SchemeData\")\n",
+                                              "scheme.MineFactoryOn = false\n", "CloseContainer(lock)\n"};
 constexpr std::string_view kFactoryKnot = "minefactory";
-constexpr std::string_view kCrateCall = "    ergCrate(", kTelepadCall = "    lib_CreateTelepad(", kTriggerCall = "    ergTrigger(";
+constexpr std::string_view kCrateCall = "ergCrate(", kTelepadCall = "lib_CreateTelepad(", kTriggerCall = "ergTrigger(";
+// Without "stdvs" in the script list (Survivor), the loader refuses a chunk that redefines a library function at load
+// (0x6998ba, checked once before Initialise). The deferred form installs its setup wrap inside Initialise instead.
+constexpr std::string_view kDeferredOpen =
+    "local ergInit = Initialise\n"
+    "function Initialise()\n"
+    "    local ergSetup = lib_SetupMultiplayerWormsAndTeams\n"
+    "    lib_SetupMultiplayerWormsAndTeams = function()\n";
+constexpr std::string_view kDeferredClose =
+    "    end\n"
+    "    ergInit()\n"
+    "    lib_SetupMultiplayerWormsAndTeams = ergSetup\n"
+    "end\n";
+constexpr std::string_view kLegacyOpen =
+    "local ergSetup = lib_SetupMultiplayerWormsAndTeams\n"
+    "function lib_SetupMultiplayerWormsAndTeams()\n";
 
 constexpr std::string_view kCrateFn =
     "local function ergCrate(knot, kind, contents, count, hitpoints, parachute)\n"
@@ -207,7 +220,9 @@ std::string Chunk(const Scene& s) {
     return Text(s.stem, SpecOf(s));
 }
 
-std::string Text(std::string_view stem, const ChunkSpec& c) {
+
+namespace {
+std::string Emit(std::string_view stem, const ChunkSpec& c, bool deferred) {
     if (!c.knots && !c.placeObjects && c.objects.empty() && !c.water) return {};
     bool crates = false, triggers = false;
     int factories = 0;
@@ -223,25 +238,37 @@ std::string Text(std::string_view stem, const ChunkSpec& c) {
     if (c.knots || c.placeObjects || !c.objects.empty()) {
         if (crates) out += kCrateFn;
         if (triggers) out += kTriggerFn;
-        out += "local ergSetup = lib_SetupMultiplayerWormsAndTeams\n";
-        out += "function lib_SetupMultiplayerWormsAndTeams()\n";
-        out += "    ergSetup()\n";
+        out += deferred ? kDeferredOpen : kLegacyOpen;
+        const std::string in(deferred ? 8 : 4, ' ');
+        out += in + "ergSetup()\n";
         if (c.knots) {
-            out += "    for i = 0, 7 do\n";
-            out += "        local lock, worm = EditContainer(lib_GetWormContainerName(i))\n";
-            out += kKnotLine;
-            out += "        CloseContainer(lock)\n";
-            out += "    end\n";
+            out += in + "for i = 0, 7 do\n";
+            out += in + "    local lock, worm = EditContainer(lib_GetWormContainerName(i))\n";
+            out += in + "    " + std::string(kKnotLine);
+            out += in + "    CloseContainer(lock)\n";
+            out += in + "end\n";
         }
-        if (factories) out += kFactoryLines;
-        if (factories || c.placeObjects) out += kPlaceLine;
-        for (auto& o : c.objects) out += ObjectLine(o);
-        if (c.water) out += "    " + std::string(kWater) + Num(*c.water) + ")\n";
-        out += "end\n";
+        if (factories)
+            for (auto l : kFactoryLines) out += in + std::string(l);
+        if (factories || c.placeObjects) out += in + std::string(kPlaceLine);
+        for (auto& o : c.objects)
+            if (o.type != ObjectType::MineFactory) out += in + ObjectLine(o);
+        if (c.water) out += in + std::string(kWater) + Num(*c.water) + ")\n";
+        out += deferred ? kDeferredClose : "end\n";
     }
     if (out.size() > kMaxChunkBytes) return {};
     return out;
 }
+
+std::string_view TrimIndent(std::string_view line) {
+    const size_t at = line.find_first_not_of(' ');
+    return at == std::string_view::npos ? std::string_view{} : line.substr(at);
+}
+}  // namespace
+
+std::string Text(std::string_view stem, const ChunkSpec& c) { return Emit(stem, c, true); }
+
+std::string LegacyText(std::string_view stem, const ChunkSpec& c) { return Emit(stem, c, false); }
 
 std::string Text(std::string_view stem, bool knots, bool objects, std::optional<double> water) {
     ChunkSpec c;
@@ -259,7 +286,7 @@ bool Parse(std::string_view stem, std::string_view text, ChunkSpec* out) {
     c.water = WaterIn(text);
     c.knots = text.find(kKnotLine) != std::string_view::npos;
     c.placeObjects = text.find(kPlaceLine) != std::string_view::npos;
-    if (text.find(kFactoryLines) != std::string_view::npos) {
+    if (text.find(kFactoryLines[1]) != std::string_view::npos) {
         ObjectSpec f;
         f.type = ObjectType::MineFactory;
         f.knot = kFactoryKnot;
@@ -269,7 +296,7 @@ bool Parse(std::string_view stem, std::string_view text, ChunkSpec* out) {
     while (i < text.size()) {
         size_t e = text.find('\n', i);
         if (e == std::string_view::npos) e = text.size();
-        const std::string_view line = text.substr(i, e - i);
+        const std::string_view line = TrimIndent(text.substr(i, e - i));
         if (line.starts_with(kCrateCall) || line.starts_with(kTelepadCall) || line.starts_with(kTriggerCall)) {
             if (c.objects.size() >= kMaxObjects) return false;
             ObjectSpec o;
@@ -283,13 +310,25 @@ bool Parse(std::string_view stem, std::string_view text, ChunkSpec* out) {
 }
 
 bool IsGenerated(std::string_view stem, std::string_view text, std::string* why) {
+    std::string up;
+    if (!Upgrade(stem, text, &up, why)) return false;
+    return up == text || Fail(why, "is a chunk from an older Erg (build the level again)");
+}
+
+bool Upgrade(std::string_view stem, std::string_view text, std::string* out, std::string* why) {
     if (!text.empty() && static_cast<unsigned char>(text.front()) == 0x1B) return Fail(why, "is compiled Lua, which is refused");
     if (text.empty() || text.size() > kMaxChunkBytes) return Fail(why, "is not a chunk generated by Erg");
-    if (text == Stub(stem)) return true;
+    if (text == Stub(stem)) {
+        *out = std::string(text);
+        return true;
+    }
     ChunkSpec c;
     if (Parse(stem, text, &c)) {
-        const std::string want = Text(stem, c);
-        if (!want.empty() && want == text) return true;
+        std::string want = Text(stem, c);
+        if (!want.empty() && (want == text || LegacyText(stem, c) == text)) {
+            *out = std::move(want);
+            return true;
+        }
     }
     return Fail(why, "is not a chunk generated by Erg (hand edits are not run)");
 }
