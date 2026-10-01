@@ -17,6 +17,8 @@ How Melange works for mod and module authors: settings, logs, the SDK, and each 
 
 Every module has its own section in `Melange.ini`, and `Enabled=0` turns a module off. Missing keys are added with their default values the first time the game runs.
 
+![The overlay's About/Stats panel, open over a match (the OpenGL vendor/renderer/driver rows are blanked)](images/overlay/main-overlay.png)
+
 | Module | Default | What it does |
 |---|---|---|
 | `NetTransport` | on | Retransmits any lost packet, and re-acknowledges duplicates so a lost ACK can't stall the peer |
@@ -44,6 +46,8 @@ Every module has its own section in `Melange.ini`, and `Enabled=0` turns a modul
 | `Oasis` | on | The local web app on 127.0.0.1 ([oasis.md](oasis.md)); nothing listens until you open it |
 | `Wormsign` | on | The match's tick clock and a per-tick state hash (`wum.wormsign.tick()`); records a rolling library of recent matches to `Documents\Melange\replays` (last 20 / 200 MB by default, `wum.wormsign.library()`), match replays checked tick by tick (*Wormsign/Replay*); online, it compares the hashes with other Melange players and reports the first tick where they disagree ([wormsign.md](wormsign.md)); build #1077 only |
 
+![The "Smooth 60" toggle in the overlay's Game menu](images/overlay/smooth60-menu-item.png)
+
 ## Logs and bug reports
 
 | Where | What |
@@ -56,6 +60,8 @@ Every module has its own section in `Melange.ini`, and `Enabled=0` turns a modul
 To report a bug, press `Ctrl+Shift+F11` in the game, or choose *File > Save logs as...* in the overlay, and attach the zip (it includes the newest desync bundle). In fullscreen, the zip goes to `Documents\Melange\exports` instead of opening a save dialog.
 
 The zip includes a GPU compatibility report (`gpu/compat.txt`): graphics card, driver, OpenGL version and extensions, the Cg shader profiles your card supports, and which shaders and effects loaded or were skipped and why. The overlay panel *Mirage/GPU* shows the same report.
+
+![The Mirage/GPU panel's compatibility report (the GPU/driver rows are blanked)](images/mirage/gpu-report.png)
 
 ## Graphics layer (Mirage)
 
@@ -71,11 +77,19 @@ Mirage lets modules and mods draw inside the game's own frame. `melange/render.h
 
 Callbacks run in the main render pass only, with the game's framebuffer bound. Wrap your GL work in `render::PushState()` / `PopState()`. With no stage callbacks or mods asking for one, the scene stages themselves patch nothing and the frame is pixel-identical to the game without Mirage. The GL trace hub is separate and installs its call-counting thunks whenever `[MirageTrace] Mode` is `count` (the default) or `log`; set it to `off` for a frame with no Mirage hooks at all.
 
+| `MirageDraw` demo off | `MirageDraw` demo on |
+|---|---|
+| ![A worm on a cliff top, no debug drawing](images/draw/draw-demo-off.png) | ![The same scene with a world-space box gizmo, an aim line and a HUD label drawn by the demo](images/draw/draw-demo-on.png) |
+
+![Close-up of the gizmo: the box outline, the axis line and a world-space text label drawn near the worm](images/draw/draw-demo-on-detail.png)
+
 Mods live in `<game>\Mods\<id>\`. When two mods provide the same file, the later folder name wins. `[Mirage] DisabledMods=a,b` switches mods off, and `ModsDir` moves the folder.
 
 ### GL trace and frame capture
 
 `MirageTrace` counts every OpenGL call the game and its Cg runtime make. The overlay panel *Mirage/GL* shows calls, draw calls, shader switches and frame time per frame, and the busiest functions. `[MirageTrace] Mode` is `count` (the default: one counter per call), `log` (records every call), or `off` (no hooks at all; switching back needs a restart).
+
+![The Mirage/GL panel: call and draw-call counts, a frame-time graph, and the busiest OpenGL functions](images/mirage/gl-stats.png)
 
 *Capture frame* (or `Ctrl+Shift+F9`) records one frame into `Documents\Melange\captures\*.mcap`: every call with decoded arguments, the GL state, the compiled shaders, the bound textures and the final image. The format is a plain zip, described in [capture-format.md](capture-format.md). *Dump next 50 textures* writes the next textures the game loads to `Documents\Melange\textures\` as PNG. Captures and dumps contain the game's textures, so they stay on your PC and are never part of a logs export.
 
@@ -96,9 +110,15 @@ The game's shaders are the Cg files in `<game>\CG\`. A mod changes them from its
   ```
 - `shaders\params.ini` turns uniforms into sliders in the overlay's *Mirage/Shaders* panel. A section names the file and the programs, `[Landscape.cg:*FragmentMain]`, and each line is `name=type,default,min,max,label` with the type `float`, `vec2`, `vec3`, `vec4` or `color`. Modules set the same values with `melange::shaders::SetParam`, and add folders of shader files with `AddOverrideRoot`.
 
+![The overlay's Mirage/Shaders panel: profiles, reload/error counts, and the loaded Cg programs per file](images/mirage/shaders-panel.png)
+
 Saving a file reloads the shaders that use it while the game runs. The new source is compiled first: if it has errors, the game keeps the running shader, and the errors go to the log and the panel.
 
 `[MirageShaders] FixFxaa=1` (the default) fixes the game's own FXAA pass (the `/FXAA` launch option), which does not compile on AMD and Intel GPUs. The panel also switches FXAA on and off while the game runs.
+
+| `FixFxaa` off | `FixFxaa` on |
+|---|---|
+| ![Jagged, unsmoothed edges with the game's own FXAA pass left broken](images/fxaa/fxaa-fix-off.png) | ![The same frame with FixFxaa=1: edges smoothed](images/fxaa/fxaa-fix-on.png) |
 
 `Mods\mirage-landscape\` is a sample: it adds tunables to the landscape lighting and softens the shadow edges. It is listed in `DisabledMods` by default; remove it from that list to try it. Experimental: a file `shaders\<File>.<Entry>.glsl` replaces one program with GLSL, keeping the Cg parameter names (`GlslReplace=1`, read at start). `Mods\mirage-landscape\extras\` has a GLSL version of the landscape pixel shader.
 
@@ -110,6 +130,8 @@ An effect is a folder `<game>\Mods\<id>\postfx\<effect>\` with an `effect.ini` a
 - `Final` changes the whole frame, just before the game copies it to the screen. The game's own FXAA and sepia still apply afterwards.
 
 Open the overlay's *Mirage/Post-FX* panel to switch effects on, change their order, drag their parameters and see what each one costs on the GPU. *Split compare* shows the left half of the screen without the effects. `Ctrl+Shift+F8` (`[MiragePostFX] ToggleKey`) bypasses the whole stack. Your choices are saved in `[MiragePostFX]` in `Melange.ini`. Editing an effect's files while the game runs reloads it. A shader that fails to compile is reported in the panel and the log, and the other effects keep running.
+
+![The overlay's Mirage/Post-FX panel: effects listed by stage, with GPU/CPU cost per effect](images/mirage/postfx-panel.png)
 
 ```ini
 [effect]
@@ -173,6 +195,22 @@ The `mirage-samples` mod in `dist\Mods\` has five example effects, all switched 
 | `bloom` | PostWorld | Glow around bright areas |
 | `tonemap` | PostWorld | A filmic curve plus exposure, contrast, saturation and a colour-grading LUT (`lut.png`) |
 
+| `ssao` off | `ssao` on |
+|---|---|
+| ![The scene with ambient occlusion off](images/postfx/ssao-off.png) | ![The same scene with SSAO darkening contact shadows](images/postfx/ssao-on.png) |
+
+| `bloom` off | `bloom` on |
+|---|---|
+| ![The scene with bloom off](images/postfx/bloom-off.png) | ![The same scene with bloom glow around bright areas](images/postfx/bloom-on.png) |
+
+| `tonemap` off | `tonemap` on |
+|---|---|
+| ![The scene with the filmic tonemap and grade off](images/postfx/tonemap-off.png) | ![The same scene with the tonemap and colour grade applied](images/postfx/tonemap-on.png) |
+
+| `smaa` off | `smaa` on |
+|---|---|
+| ![The scene with no anti-aliasing](images/postfx/smaa-off.png) | ![The same scene with SMAA anti-aliasing applied](images/postfx/smaa-on.png) |
+
 The SMAA and CAS folders carry their licence files.
 
 ## Mods (Thumper)
@@ -216,12 +254,18 @@ newly discovered mod without that flag starts enabled.
 
 A mod folder can carry a Lua 5.4 script for the client side, named by `entry.client` in its `spice.json`. Melange runs it in the Sandbox: each mod has its own globals, the standard library is limited (no files, no `load`, no `debug`), and a runaway script is stopped by an instruction and memory budget without stopping the game. Scripts reach the game through the `wum` table: engine and mod events, timers, settings, per-mod storage, overlay panels, world and HUD drawing, the camera, and post-FX parameters. When a script file changes, the mod reloads; if the new version fails, the old one keeps running. The full reference is [lua-api.md](lua-api.md).
 
+![The overlay's Lua/Console panel: running wum.game.* calls against the client VM](images/lua/console.png)
+
 Two sample mods in `dist\Mods\` ship switched off:
 
 | Mod | What it shows |
 |---|---|
 | `hello-spice` | Events, logging, a HUD widget, a world label, an overlay panel with a setting, timers, storage and hot reload |
 | `deep-desert-demo` | The Deep Desert permission: with the player's consent it reads the game's build stamp through `wum.unsafe` |
+
+| Before hello-spice loads | After hello-spice runs |
+|---|---|
+| ![The HUD and world label absent before hello-spice is enabled](images/hello-spice/hud-and-label-off.png) | ![hello-spice's HUD widget and world label shown above the worm](images/hello-spice/hud-and-label-on.png) |
 
 `wum.unsafe` (raw memory reads and writes, native calls) exists only for mods whose manifest asks for it, and raises an error until the player allows it.
 

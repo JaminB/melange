@@ -43,6 +43,10 @@ after its folder — every M1-era `Mods\` folder keeps working unchanged.
 | `weapons` | Weapon clones, `kind: "content"` mods only — see below and [weapons.md](weapons.md). |
 | `defaultEnabled` | Honoured only the first time Thumper ever sees this mod id (default `true`). The shipped samples set it to `false`. |
 
+| Before: `unsafe` mod switched on | After: the consent modal |
+|---|---|
+| ![The Thumper/Mods panel with an unsafe mod pending consent](images/thumper/mods-page.png) | ![The Deep Desert consent modal, offering Allow or Keep sandboxed](images/thumper/deep-desert-consent.png) |
+
 ## `weapons`: weapon clones
 
 A `kind: "content"` mod can declare up to 3 weapon clones (schema: [spice-1.schema.json](spice-1.schema.json)),

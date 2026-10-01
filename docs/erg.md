@@ -27,6 +27,9 @@ a time. Map packs that ship only their patches (see Export) are listed at the to
   scale it, with snapping (1, 0.5 or 0.1 map units, and 15° steps).
 - **Outliner and properties:** a tree of everything in the map on one side, and the selected thing's fields (name,
   position, rotation, scale) on the other.
+
+![The Properties tab for a selected oil drum: name, resource, role, position, rotation and scale](images/erg/properties.png)
+
 - **Units:** the editor works in world units, which are 20× the numbers stored in the level file. A worm 1 map unit
   from a wall in the file is 20 world units away on screen — the same units the game's own camera and physics use.
 - **Placing:** pick *Spawn knot*, *Oil drum* or *Mine* in the toolbar, then click the terrain. *Drop* (G) puts the
@@ -34,6 +37,8 @@ a time. Map packs that ship only their patches (see Export) are listed at the to
 - **Undo and redo:** Ctrl+Z and Ctrl+Shift+Z, up to 500 steps.
 - The 3D view is an approximation of the game's own geometry, close enough to place things accurately but not a
   pixel-identical render of the game.
+
+![The Erg editor open on a synthetic map: the terrain, the outliner grouped by frame, and the toolbar's tool and Place buttons](images/erg/terrain.png)
 
 ## Spawns
 
@@ -44,10 +49,14 @@ A map's spawn mode is either:
 - **Knots:** place up to 8 numbered markers (`WORM0`..`WORM7`); worm *i* always starts on marker *i*. Every match
   needs all 8, even in smaller games — the map simply won't use the markers past the worm count.
 
+![The outliner filtered to the "spawn" role, with one WORM knot selected and its move gizmo shown](images/erg/spawns.png)
+
 ## Objects
 
 Erg can place **mines** and **oil drums**, which work in any match on any map that uses them, and **crates**,
 **telepad pairs**, **triggers** and one **mine factory**, whose settings are on the Properties tab.
+
+![The toolbar's Place buttons with Oil drum armed, prompting a click on the terrain to place one](images/erg/objects.png)
 
 ## Water
 
