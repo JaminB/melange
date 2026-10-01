@@ -8,8 +8,8 @@ import { maskOf, secondOf, withSecond } from "./voxel";
  * the top face's corners and 4-7 the bottom's (M6.2 T2, run pF); the order within a face is not confirmed in game yet.
  * This table is the only place that order lives: flip it here if the in-game check disagrees. */
 export const CORNER_BIT: readonly (readonly (readonly number[])[])[] = [
-  [[4, 5], [6, 7]],   // bottom: (x0 z0) (x1 z0), (x0 z1) (x1 z1)
-  [[0, 1], [2, 3]],   // top
+  [[7, 6], [5, 4]],   // bottom: (x0 z0) (x1 z0), (x0 z1) (x1 z1)
+  [[3, 2], [1, 0]],   // top
 ];
 
 export const FULL_MASK = 0xff;
