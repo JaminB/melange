@@ -14,6 +14,7 @@
 #include "melange/overlay.h"
 #include "mods/spice.h"
 #include "mods/thumper_internal.h"
+#include "render/internal.h"
 #include "stb_image.h"
 #include "store/store.h"
 
@@ -47,7 +48,7 @@ std::string g_actionError;
 std::string Size(uint64_t n) {
     char buf[32];
     if (n >= (1u << 20)) snprintf(buf, sizeof buf, "%.1f MiB", n / 1048576.0);
-    else snprintf(buf, sizeof buf, "%.0f KiB", n / 1024.0 + 0.5);
+    else snprintf(buf, sizeof buf, "%.0f KiB", n < 1024 ? 1.0 : n / 1024.0);
     return buf;
 }
 
@@ -354,5 +355,8 @@ void DrawPanel(void*) {
 }
 }  // namespace
 
-void RegisterPage() { overlay::AddPanel("thumper.store", "Thumper/Store", &DrawPanel, nullptr); }
+void RegisterPage() {
+    const int h = overlay::AddPanel("thumper.store", "Thumper/Store", &DrawPanel, nullptr);
+    render::SetPanelDefaultRect(h, 80.f, 40.f, 900.f, 640.f);
+}
 }  // namespace melange::store
