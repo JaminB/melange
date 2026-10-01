@@ -308,6 +308,8 @@ void TestZipRules() {
 
     std::vector<zc::Entry> list = {{"hello/spice.json", 1, 1, 8, 0, 0x0314, 0}, {"hello/link", 1, 1, 0, 0, 0x0314, 0120777u << 16}};
     Expect(!zc::Check(list, "hello", 1 << 20, &why) && why.find("link") != std::string::npos, "symlink mode refused");
+    list[1] = {"hello/a.txt", 1, 1, 8, 0, 0x0314, 0644u << 16};
+    Expect(zc::Check(list, "hello", 1 << 20, &why), "unix permission bits without a file type accepted");
     list[1] = {"hello/a.txt", 1, 1, 0, 0, 0x0014, 0x400};
     Expect(!zc::Check(list, "hello", 1 << 20, &why), "reparse attribute refused");
     list[1] = {"hello/a.txt", 1, 1, 8, 1, 0x0014, 0};

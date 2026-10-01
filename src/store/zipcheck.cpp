@@ -97,8 +97,8 @@ bool Check(const std::vector<Entry>& entries, std::string_view id, uint64_t maxT
         const uint32_t mode = e.externalAttr >> 16;
         if ((e.madeBy >> 8) == 3 && mode) {
             const uint32_t type = mode & 0170000;
-            if (type != 0100000 && type != 0040000) return Fail(why, e.name, "symbolic link or special file");
-            if ((type == 0040000) != dir) return Fail(why, e.name, "file type does not match the name");
+            if (type != 0 && type != 0100000 && type != 0040000) return Fail(why, e.name, "symbolic link or special file");
+            if (type && (type == 0040000) != dir) return Fail(why, e.name, "file type does not match the name");
         }
         if (e.externalAttr & 0x400) return Fail(why, e.name, "reparse point");
         if (dir && e.size) return Fail(why, e.name, "folder entry with data");
