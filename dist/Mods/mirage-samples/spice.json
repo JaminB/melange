@@ -6,5 +6,6 @@
   "description": "Five sample post-processing effects (SMAA, CAS sharpen, SSAO, bloom, tonemap); all off by default in the Mirage/Post-FX panel.",
   "melange": { "range": ">=0.2.0 <0.3.0" },
   "kind": "client-only",
+  "defaultEnabled": false,
   "entry": {}
 }
