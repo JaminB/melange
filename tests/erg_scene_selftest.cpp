@@ -652,6 +652,11 @@ void TestV2Model() {
         {Mutate(ptext, "[9900,100,0.25]", "[9900,101,0.25]"), "a run past the 10000 cells", "10000"},
         {Mutate(ptext, "[9900,100,0.25]", "[9900,100,1.5]"), "a height above 1", "heights"},
         {Mutate(ptext, "\"name\":\"ergframe_0\"", "\"name\":\"a b\""), "a frame name with a space", "name"},
+        {Mutate(ptext, "\"name\":\"ergframe_0\"", "\"name\":\"rock_slippy\""), "a frame name with an engine tag", "SLIPPY"},
+        {Mutate(ptext, "\"size\":[6,31,6]", "\"size\":[6,0,6]"), "a new frame side of 0", "size"},
+        {Mutate(ptext, "\"size\":[6,31,6]", "\"size\":[6,31,33]"), "a new frame side of 33", "size"},
+        {Mutate(ptext, "\"size\":[6,31,6]", "\"size\":[6,31]"), "a new frame size of two sides", "size"},
+        {Mutate(ptext, "[0,64,23]", "[0,64,16777239]"), "a voxel value with bits 24-31 set", "bits 24-31"},
     };
     for (auto& c : patchCases) {
         erg::Patch out;
