@@ -189,6 +189,21 @@ on your machine.
 An exported map appears under *Prebuilt* in Versus, exactly like one of the game's own maps, once the mod that ships
 it is enabled.
 
+### Survivor copies
+
+The export dialog's *Survivor copy* box (on by default) also lists the map in Survivor: Local Game, Versus,
+Survivor, *Landscape*, then the *Prebuilt* section, under the same title. The copy uses the same files, spawns,
+objects, water and level script as the map itself, and runs the game's Survivor rules on top. It is always unlocked,
+whatever the base map's lock is in your save. In `spice.json` it is the level's `"survivor": true`.
+
+- Maps are registered at the main menu, before any Survivor screen is opened. A pack enabled or disabled at the menu
+  ([Live packs](#live-packs)) shows up or disappears in Survivor once you leave the screen and open it again.
+- Online, a Survivor copy follows its map's rules below: everyone needs the same version of the mod.
+- `[Levels] RandomPool=0` (the default) keeps both the map and its copy out of the game's random picks, Survivor's
+  included.
+- The game remembers the last Survivor map you picked. When that map's mod is no longer enabled, Melange puts a
+  vanilla Survivor map back in its place at the main menu, so a lobby never starts on a map that isn't there.
+
 ### Live packs
 
 A pack of maps can be enabled or disabled on the Mods page without a restart when:
@@ -214,6 +229,10 @@ hand. An older Melange that knows only v1 refuses a v2 project or pack by its fo
 later to build or play a v2 map. The schemas are [erg-patch-2.schema.json](erg-patch-2.schema.json) and
 [erg-scene-2.schema.json](erg-scene-2.schema.json).
 
+A map with spawns, objects or water exported or built by this Melange needs this Melange or later: its generated chunk
+now does its set-up when the match starts (the form Survivor needs), and an earlier Melange refuses that chunk and a
+Survivor copy. Packs exported by an earlier Melange keep working unchanged.
+
 ## Limits
 
 - Up to 32 maps in one mod, 128 across every enabled mod at once.
@@ -221,7 +240,7 @@ later to build or play a v2 map. The schemas are [erg-patch-2.schema.json](erg-p
 - A patch (your saved edits) is capped at 20 000 operations and 4 MB — enough for any hand-made edit; if you hit
   this, split the changes into more than one exported map.
 - Not yet supported:
-  - Survivor copies of a map, per-team or story spawn points, and story or challenge map types;
+  - per-team or story spawn points, and story or challenge map types;
   - new solid terrain pieces: Erg only carves, fills and paints the terrain the base map already has;
   - blend brushes that mix two materials;
   - editing the map's generated chunk (Erg rewrites it every export; use a [level script](#level-scripts));
