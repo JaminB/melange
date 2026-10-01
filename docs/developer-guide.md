@@ -242,7 +242,8 @@ a folder without one still loads, unchanged, as a client-only mod named after it
   on screen, even with the overlay hidden, while any granted unsafe mod is enabled.
 - **Client-only mods toggle live.** A content mod's message names are registered once per launch and
   never unregistered, so enabling or disabling one takes effect at the next launch (the Mods page shows
-  "restart required" until then).
+  "restart required" until then). The exception is a pack of maps only, which can change live at the main menu
+  (see [Map editor](#map-editor-erg)).
 - Choices are saved to `Mods\thumper-state.json` (falling back to `Documents\Melange` if the game folder
   is read-only). The overlay's *Thumper/Mods* panel lists every mod with its state and reason, and
   *Thumper/Deep Desert* lists every grant.
@@ -293,13 +294,29 @@ Oasis is a web page for the running game, served by `melange.asi` on `127.0.0.1`
 
 ## Map editor (Erg)
 
-Erg is an Oasis panel for building Versus maps from the game's own levels: move spawns, place mines and oil drums,
-set water and theme, sculpt terrain, and export the result as a mod (a shareable patch, or the full built files for
-your own machine). A *Test* button plays your changes in a private, offline-only copy before you export anything.
-The RPC surface (`level.*`, the `erg` channel and the `/erg/assets/` route) is in [oasis.md](oasis.md); the user
-guide, the `spice.json` `levels` array and the exported pack layout are in [erg.md](erg.md) and [spice.md](spice.md).
-The wire formats are [erg-scene-1.schema.json](erg-scene-1.schema.json) (the full editable scene, server/browser
-only) and [erg-patch-1.schema.json](erg-patch-1.schema.json) (a saved or exported edit against a pinned base).
+Erg is an Oasis panel for building Versus maps from the game's own levels: move spawns, place mines, oil drums,
+crates, telepad pairs, triggers and a mine factory, set water and theme, sculpt terrain, paint the surround, write a
+level script, and export the result as a mod (a shareable patch, or the full built files for your own machine). A
+*Test* button plays your changes, at the time of day you pick, in a private, offline-only copy before you export
+anything. The RPC surface (`level.*`, `levels.live`, the `erg` channel and the `/erg/assets/` route) is in
+[oasis.md](oasis.md); the user guide, the `spice.json` `levels` array and the exported pack layout are in
+[erg.md](erg.md) and [spice.md](spice.md).
+
+- **Level scripts** run in the sim sandbox after every mod's `entry.sim`, only on their own map, with `wum.level`
+  (the map's knots, and triggers and crates placed at them) and the `sim.turnStarted` event. The API and the
+  determinism rules are in [erg.md](erg.md#level-scripts). `oasis.exe` checks only a script's size and encoding;
+  its syntax is checked by the game's Lua 5.0 when the game is running.
+- **Live packs:** a mod whose only content is maps can be enabled or disabled at the main menu, offline, without a
+  restart (`levels::EnablePackLive`, `levels.live`, the overlay's Mods page). A pack with scripts, weapons, messages,
+  client code or file overrides needs a restart, and a live-changed pack plays offline only until the next restart.
+- **Formats:** the wire formats are `erg-scene` (the full editable scene, server/browser only) and `erg-patch` (a
+  saved or exported edit against a pinned base), each in two versions:
+  [erg-scene-1](erg-scene-1.schema.json), [erg-scene-2](erg-scene-2.schema.json),
+  [erg-patch-1](erg-patch-1.schema.json) and [erg-patch-2](erg-patch-2.schema.json). v2 adds level objects, a level
+  script and a painted surround. A patch is written as v1 unless it uses one of them, so existing v1 projects and
+  packs need no migration and stay readable. A build that knows only v1 refuses v2 by its `format`.
+- **Known limits:** no Survivor copies of a map, no new solid terrain pieces, no blend brushes, and the level script
+  syntax check runs in the game only. See [erg.md](erg.md#limits).
 
 ## SDK headers
 
@@ -323,6 +340,7 @@ The public SDK headers are in `src/sdk/melange/`:
 | `melange/lua.h` | Extend the Lua 5.4 client VM from C++: add `wum.*` namespaces, post events to mods, read Sandbox statistics |
 | `melange/sim.h` | The simulation side: match tick, C++ tick hooks, deterministic random numbers, pre-checked message sends, mod message names |
 | `melange/oasis.h` | Oasis: push data to the web app on channels, add RPC methods and web panels |
+| `melange/levels.h` | Map packs and Erg: the registered levels, Test arming and its time of day, the online map gate, and live pack changes |
 | `melange/gamestate.h` | Read-only game state: worms, teams, match values, entities, the game's data variables and a guarded raw memory view |
 
 ## Sim scripts

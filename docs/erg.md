@@ -1,7 +1,8 @@
 # Erg: the map editor
 
 Erg is Oasis's level editor: it loads one of the game's own maps or a map you're already building, lets you move
-spawns and a handful of objects, set water and theme, and export the result as a mod. It never touches your game
+spawns, place objects, sculpt the terrain, paint the surround, add a level script, set water and theme, and export
+the result as a mod. It never touches your game
 files directly — everything happens through the local server (`melange.asi` with the game running, or `oasis.exe`
 with it closed), which is the only thing that reads `Data\` and writes `Mods\`.
 
@@ -28,17 +29,14 @@ a time. Map packs that ship only their patches (see Export) are listed at the to
 - **Outliner and properties:** a tree of everything in the map on one side, and the selected thing's fields (name,
   position, rotation, scale) on the other.
 
-![The Properties tab for a selected oil drum: name, resource, role, position, rotation and scale](images/erg/properties.png)
-
 - **Units:** the editor works in world units, which are 20× the numbers stored in the level file. A worm 1 map unit
   from a wall in the file is 20 world units away on screen — the same units the game's own camera and physics use.
-- **Placing:** pick *Spawn knot*, *Oil drum* or *Mine* in the toolbar, then click the terrain. *Drop* (G) puts the
+- **Placing:** pick *Spawn knot*, *Oil drum*, *Mine*, *Crate*, *Telepad pair*, *Trigger* or *Mine factory* in the
+  toolbar, then click the terrain. *Drop* (G) puts the
   selection on the ground below it; *Duplicate* (Ctrl+D) copies spawns and objects (not scenery).
 - **Undo and redo:** Ctrl+Z and Ctrl+Shift+Z, up to 500 steps.
 - The 3D view is an approximation of the game's own geometry, close enough to place things accurately but not a
   pixel-identical render of the game.
-
-![The Erg editor open on a synthetic map: the terrain, the outliner grouped by frame, and the toolbar's tool and Place buttons](images/erg/terrain.png)
 
 ## Spawns
 
@@ -49,14 +47,24 @@ A map's spawn mode is either:
 - **Knots:** place up to 8 numbered markers (`WORM0`..`WORM7`); worm *i* always starts on marker *i*. Every match
   needs all 8, even in smaller games — the map simply won't use the markers past the worm count.
 
-![The outliner filtered to the "spawn" role, with one WORM knot selected and its move gizmo shown](images/erg/spawns.png)
+![Diner Might with knot spawns: the outliner filtered to the eight WORM knots, WORM2 selected](images/erg/spawns.png)
 
 ## Objects
 
-Erg can place **mines** and **oil drums**, which work in any match on any map that uses them, and **crates**,
-**telepad pairs**, **triggers** and one **mine factory**, whose settings are on the Properties tab.
+- **Oil drums** and **mines** are always placed, whatever the match's scheme.
+- **Crates** hold a weapon, health or a utility; the Properties tab sets the contents, count or amount, hit points
+  and parachute.
+- **Telepad pairs** place two pads in one group: a worm on one pad comes out of the other.
+- **Triggers** have an index, a radius and the teams that collect or destroy them; a
+  [level script](#level-scripts) reacts to them.
+- One **mine factory** per map. It replaces the scheme's own factory, so a match never has two.
 
-![The toolbar's Place buttons with Oil drum armed, prompting a click on the terrain to place one](images/erg/objects.png)
+Crates, telepads, triggers and the mine factory sit on knots the game reads when the match starts. Using any of them
+saves the project as format v2 (see [Formats](#formats)).
+
+![A crate, a telepad pair, a trigger and a mine factory placed on Diner Might, with the outliner showing only objects](images/erg/objects.png)
+
+![The Properties tab for a placed crate: its kind, health, hit points and parachute](images/erg/properties.png)
 
 ## Water
 
@@ -66,16 +74,18 @@ Might, 150 floods nearly everything.
 ## Theme and time of day
 
 Changing the theme swaps the terrain's material and texture set (for example, Camelot's stone-and-banner look) and
-loads that theme's own height-map textures; it doesn't rewrite the terrain itself. Quick Game always plays your map
-in daytime regardless of the time-of-day setting you pick — that only affects how the map looks in other places the
-game shows it.
+loads that theme's own height-map textures; it doesn't rewrite the terrain itself. Quick Game and network games load
+every map in daytime, whatever the project's time of day says. To see the map at evening or night, pick that time
+for **Test** (see [Testing your map](#testing-your-map)).
 
 ## Terrain
 
 Press **Sculpt**, then drag over the terrain to carve, fill or paint with a box or sphere brush (the *Terrain* tab sets
 the mode, shape, size and material; `[` and `]` resize the brush, and Alt-drag still orbits). Fill with *Match
-column* takes the material of the terrain above. Erg doesn't add new terrain shapes or resize what's there — it only
-edits what the base map already has, and a brush reaches every piece of terrain it overlaps.
+column* takes the material of the terrain above. Fill and paint stay inside the piece of terrain the stroke started
+on. Erg doesn't add new terrain shapes or resize what's there; it only edits what the base map already has.
+
+![The Terrain tab with Sculpt armed: carve, fill or paint, a sphere or box brush, and its size](images/erg/terrain.png)
 
 ## Surround
 
@@ -85,17 +95,23 @@ The *Surround* setting keeps the base map's far-off scenery ring (*copy*), remov
 *Painted* lets you reshape it: the **Terrain** tab shows the surround as a 100×100 top-down grid, starting from the
 base map's heights. Drag on it with *Raise*, *Lower*, *Flatten* (shift-click a cell to pick its height) or *Smooth*.
 Heights run from 0 to 1 and are relative; test the map to see them in the game. A changed surround also rebuilds
-the level's shadow cache.
+the level's shadow cache, and a painted one saves the project as format v2.
+
+![Painting the surround: the top-down height grid, the Raise brush, and its radius and strength](images/erg/surround.png)
 
 ## Testing your map
 
 Press **Test** to play the map as it stands, without exporting or restarting anything:
 
-1. Erg builds your changes into a private, offline-only copy of the map (never your `Mods` folder).
-2. It registers that copy for one session and arms a one-time override so the very next match loads it.
-3. If your game build supports starting a match from the editor directly, Test starts Quick Game itself. Otherwise
+1. Pick a time of day next to the Test button: *DAY*, *EVENING* or *NIGHT*. It starts at the project's own setting
+   and applies to this Test only.
+2. Erg builds your changes into a private, offline-only copy of the map (never your `Mods` folder).
+3. It registers that copy for one session and arms a one-time override so the very next match loads it.
+4. If your game build supports starting a match from the editor directly, Test starts Quick Game itself. Otherwise
    the status line asks you to press Quick Game yourself — the override is already armed, so that press loads your
    map.
+
+![The Test button and its time-of-day selector, starting at the project's NIGHT](images/erg/test.png)
 
 A Test map never appears to anyone else and never starts in an online match; it's for checking your own work before
 you export. Testing again after another edit simply overwrites the same private copy.
@@ -107,6 +123,9 @@ the same one a content mod's `entry.sim` gets (see *Sim scripts* in [developer-g
 after every mod's sim script and only when this map is the one being played. **Save script** (Ctrl+S) checks the text
 first and marks the line of any problem; Test saves it and runs the saved text, so an edit followed by another Test
 needs no restart. Export ships it as `sim/<slug>.lua` and names it in the level's `levels[].sim` in `spice.json`.
+`oasis.exe` checks only the script's size and encoding; the syntax is checked while the game is running.
+
+![The Script tab with a short level script that floods the map when the goal trigger is collected](images/erg/script.png)
 
 ```lua
 wum.level.trigger("GOAL", { radius = 80 })
@@ -158,9 +177,8 @@ Exporting turns a project into a mod under `Mods\`, in one of two forms:
   it.
 
 Either way you give the export a mod id, a display name and a version; exporting into a mod id you've already used
-adds the new map alongside any others already in it (or updates it, if you export the same map again). A newly
-exported mod needs a restart to take effect, the same as any other content mod — the dialog tells you when that's
-needed.
+adds the new map alongside any others already in it (or updates it, if you export the same map again). Whether it
+needs a restart is covered under [Live packs](#live-packs); the dialog tells you.
 
 If you choose Source, the recipient enables the mod and either presses *Build* in Erg or runs its `build.ps1`, which
 needs nothing but their own game install; either produces byte-identical files to what Install would have written
@@ -169,12 +187,32 @@ on your machine.
 ## Playing an exported map
 
 An exported map appears under *Prebuilt* in Versus, exactly like one of the game's own maps, once the mod that ships
-it is enabled and the game has restarted.
+it is enabled.
+
+### Live packs
+
+A pack of maps can be enabled or disabled on the Mods page without a restart when:
+
+- the game is at the main menu, offline, not in a lobby, and no Test is running;
+- the pack holds only maps. A pack with level scripts or `entry.sim`, weapons, messages, client code or file overrides
+  needs a restart.
+
+A map enabled this way plays offline only until the next restart; online, a start on it is held with a banner. Set
+`[Levels] LivePacks=0` to turn live packs off.
 
 **Online rules:** a map you made plays online only when everyone in the lobby has the exact same version of the mod
 that ships it — Melange checks this automatically. If anyone doesn't match, the host's selection of that map is held
 with a banner naming who's missing it, and maps you've only Tested never start online at all. A vanilla player simply
 can't pick your map to begin with.
+
+## Formats
+
+A project or Source export is saved as `erg-patch/1` unless it uses level objects, a level script or a painted
+surround; then it is saved as `erg-patch/2` (and its scene as `erg-scene/2`). This Melange reads both: a v1 project
+opens and saves as before, and becomes v2 only once you use one of those features. There is nothing to migrate by
+hand. An older Melange that knows only v1 refuses a v2 project or pack by its format, so players need this version or
+later to build or play a v2 map. The schemas are [erg-patch-2.schema.json](erg-patch-2.schema.json) and
+[erg-scene-2.schema.json](erg-scene-2.schema.json).
 
 ## Limits
 
@@ -182,10 +220,13 @@ can't pick your map to begin with.
 - A map title is 1-40 plain-ASCII characters.
 - A patch (your saved edits) is capped at 20 000 operations and 4 MB — enough for any hand-made edit; if you hit
   this, split the changes into more than one exported map.
-- Not yet supported: per-team or story spawn points, survivor/story/challenge
-  map types, new terrain shapes (only carving, filling and painting the terrain the base map already has), editing
-  the map's generated chunk (Erg rewrites it every export; use a [level script](#level-scripts)), and enabling a
-  freshly exported mod that has level scripts without a restart.
+- Not yet supported:
+  - Survivor copies of a map, per-team or story spawn points, and story or challenge map types;
+  - new solid terrain pieces: Erg only carves, fills and paints the terrain the base map already has;
+  - blend brushes that mix two materials;
+  - editing the map's generated chunk (Erg rewrites it every export; use a [level script](#level-scripts));
+  - checking a level script's syntax outside the game: `oasis.exe` checks size and encoding only;
+  - enabling a pack with level scripts without a restart (see [Live packs](#live-packs)).
 - A replay recorded on a Test map only plays back correctly while your Test workspace still has the same files —
   moving on to a different edit, or exporting for real, can make an older Test recording unplayable.
 
@@ -194,7 +235,8 @@ can't pick your map to begin with.
 - **A map you enabled doesn't show up:** it needs a restart after being enabled, like any content mod; check the
   Mods page for "restart required".
 - **"Not built"** on a Source-form mod: press *Build* in Erg, or run the mod's `build.ps1`, then restart.
-- **Test is greyed out:** the game needs to be running, sitting at the main menu, and not in a lobby.
+- **Test is greyed out or missing:** the game needs to be running, sitting at the main menu, and not in a lobby;
+  `oasis.exe` has no Test.
 - **A map is missing online, or a teammate's start is held:** everyone needs the exact same version of the mod; check
   who's missing it in the lobby panel.
 - **Something looks wrong in the 3D view but fine in-game (or the reverse):** the editor's view is an approximation;

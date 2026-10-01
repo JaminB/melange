@@ -36,7 +36,9 @@ Melange runs two kinds of plugins:
 `kind` decides how the mod behaves online:
 
 - `client-only` mods only change your own screen (UI, drawing, effects) and never affect other players.
-- `content` mods change the game itself, through a sim script (`entry.sim`) or weapon clones. Everyone in an online match needs the same content mods.
+- `content` mods change the game itself, through a sim script (`entry.sim`), weapon clones or maps. Everyone in an online match needs the same content mods.
+
+A content mod that ships only maps can be enabled at the main menu, offline, without a restart. One with scripts (including level scripts), weapons, messages or file overrides needs a restart.
 
 Next steps:
 
@@ -46,6 +48,7 @@ Next steps:
 | Run code inside the match simulation | [Sim scripts](developer-guide.md#sim-scripts) |
 | Change the game's shaders or add post-processing | [Graphics layer](developer-guide.md#graphics-layer-mirage) |
 | Add a weapon | [weapons.md](weapons.md) |
+| Make a map with objects, a level script (`wum.level`) or a painted surround | [erg.md](erg.md) |
 | Add a web panel to Oasis | [oasis.md](oasis.md) |
 | Declare dependencies, settings and permissions | [spice.md](spice.md) |
 | Check a content mod stays in sync online | [wormsign.md](wormsign.md) |

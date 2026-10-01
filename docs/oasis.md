@@ -312,10 +312,11 @@ at all.
 | `level.list` | `{}` → `{bases: [{key, stem, title, source, theme}], projects: [{id, title, stem, base, modified, built}]}` | every vanilla `Level_Type 0` map plus every enabled pack's, and your own projects |
 | `level.new` | `{base, slug, title}` → a project | an empty patch against `base` |
 | `level.load` | `{project}` or `{base, surround?}` → an `erg-scene/1` or `/2` result, then one `bin` frame per blob (`surround: true` adds the base's `.hmp` as an `hmp` blob) | see `web/src/sdk/erg/scene.ts` for the shape |
-| `level.save` | `{project, patch}` → `{saved, warnings}` | validates the whole patch (`erg-patch/1`) against its pinned base |
+| `level.save` | `{project, patch}` → `{saved, warnings}` | validates the whole patch (`erg-patch/1` or `/2`) against its pinned base |
 | `level.export` | `{project, modId, name, version, mode: "install"\|"source"}` → `{dir, files, restartRequired}` | see [erg.md](erg.md#export) |
 | `level.build` | `{modId}` → files written | rebuilds a Source-form pack's map files against this install (what its `build.ps1` also does) |
-| `level.test` | `{project}` → `{key, state}` | builds into the Test workspace, arms a one-shot override, starts Quick Game itself when the game supports it |
+| `level.test` | `{project, tod?}` → `{key, state}` | builds into the Test workspace, arms a one-shot override, starts Quick Game itself when the game supports it; `tod` is `DAY`, `EVENING` or `NIGHT` for this Test only |
+| `levels.live` | `{modId, on}` → `{ok, reason}` | enables or disables a maps-only pack without a restart: game only, at the main menu, offline (see [erg.md](erg.md#live-packs)) |
 | `level.themes` | `{}` → themes, times of day, material files | from the install's own `Data\Themes` |
 | `level.palette` | `{theme}` → placeable entries `{name, resource, role, preview}` | `preview` is an `/erg/assets/` key |
 | `level.objects` | `{}` → `{crateKinds, weapons, utilities, limits, error}` | crate contents from the install's `Data\Tweak\WEAPTWK.XOM`; `error` is null when it was read |
