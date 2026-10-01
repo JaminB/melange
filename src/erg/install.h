@@ -44,7 +44,7 @@ bool MaterialFileExists(const std::wstring& gameDir, const std::string& rel);
 // Reads a material file a databank names, from Data or Data\Themes (at most 1 MB).
 bool ReadMaterialFile(const std::wstring& gameDir, const std::string& rel, std::vector<uint8_t>* out, std::string* err);
 // The record names of a material file: records of six lines (three textures, a blend texture or NULL, the name, a sixth
-// texture), each followed by a blank line in the game's files. At most 64, the voxel's material index range; names are
+// texture), separated by blank lines in the game's files (sometimes more than one). At most 64, the voxel's material index range; names are
 // printable ASCII ('?' for anything else), at most 63 characters.
 std::vector<std::string> MaterialNames(const std::vector<uint8_t>& txt);
 

@@ -690,6 +690,9 @@ void TestVoxels() {
     for (int i = 0; i < 70; ++i) txt += "a\nb\nc\nNULL\nm" + std::to_string(i) + "\nf\n\n";
     const auto names = erg::install::MaterialNames(std::vector<uint8_t>(txt.begin(), txt.end()));
     Expect(names.size() == 64 && names[63] == "m63", "material names: at most 64");
+    txt = "a\nb\nc\nNULL\nPlanks\nf\n\n\na\nb\nc\nNULL\nroof\nf\n\na\nb\nc\nNULL\nSigns\nf\n";
+    Expect(erg::install::MaterialNames(std::vector<uint8_t>(txt.begin(), txt.end())) == std::vector<std::string>{"Planks", "roof", "Signs"},
+           "material names: an extra blank line between records keeps the count");
 }
 
 // The synthetic base with its "tower" frame (#13) renamed Scene, so new frames may go under it.

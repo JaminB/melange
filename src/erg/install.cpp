@@ -225,9 +225,15 @@ std::vector<std::string> MaterialNames(const std::vector<uint8_t>& txt) {
         if (c == '\n') lines.emplace_back();
         else if (c != '\r') lines.back() += c >= 0x20 && c < 0x7f ? static_cast<char>(c) : '?';
     }
-    const size_t stride = lines.size() > 6 && lines[6].empty() ? 7 : 6;
+    // Records start at the next non-blank line: Diner Might's file has a second blank line after record 29.
     std::vector<std::string> out;
-    for (size_t at = 4; at < lines.size() && out.size() < 64; at += stride) out.push_back(lines[at].substr(0, 63));
+    size_t at = 0;
+    while (out.size() < 64) {
+        while (at < lines.size() && lines[at].empty()) ++at;
+        if (at + 4 >= lines.size()) break;
+        out.push_back(lines[at + 4].substr(0, 63));
+        at += 6;
+    }
     return out;
 }
 
