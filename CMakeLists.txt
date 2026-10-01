@@ -549,6 +549,16 @@ target_compile_options(tweak_selftest PRIVATE /W4 /utf-8 /permissive- /Zi /wd410
 target_link_options(tweak_selftest PRIVATE /DEBUG /SAFESEH:NO)
 target_link_libraries(tweak_selftest PRIVATE safetyhook::safetyhook bcrypt psapi)
 
+# The Fixes module's crash guards without the game: each hook runs on a copy of the game's faulting code.
+add_executable(crashfix_selftest
+    tests/crashfix_selftest.cpp
+    src/gameplay/crashfix.cpp)
+target_include_directories(crashfix_selftest PRIVATE src)
+target_compile_definitions(crashfix_selftest PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX _CRT_SECURE_NO_WARNINGS)
+target_compile_options(crashfix_selftest PRIVATE /W4 /utf-8 /permissive-)
+target_link_options(crashfix_selftest PRIVATE /SAFESEH:NO)
+target_link_libraries(crashfix_selftest PRIVATE safetyhook::safetyhook)
+
 # The .wsr recording container without the game: round trips, truncation, bad CRCs and a timed reader mutation run.
 add_executable(wormsign_format_selftest
     tests/wormsign_format_selftest.cpp
