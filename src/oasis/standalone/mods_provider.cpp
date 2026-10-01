@@ -123,6 +123,7 @@ std::string ListJson(const std::wstring& gameDir, const std::string& melangeVers
                     .Str("kind", m.content ? "content" : "client-only")
                     .Str("state", StateName(st))
                     .Str("reason", r.reason)
+                    .Bool("on", userEnabled.count(m.id) > 0)
                     .Int("order", r.order)
                     .End());
     }

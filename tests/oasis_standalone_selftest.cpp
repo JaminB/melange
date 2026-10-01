@@ -111,6 +111,7 @@ void TestMods() {
     list = modsprov::ListJson(root, "1.0.0");
     const size_t betaPos = list.find("\"id\":\"beta\"");
     Expect(betaPos != std::string::npos && list.find("\"state\":\"enabled\"", betaPos) != std::string::npos, "beta is now enabled", list);
+    Expect(list.find("\"on\":true", betaPos) != std::string::npos, "beta reports on for the Mods checkbox", list);
 
     std::string stateText;
     FILE* f = _wfopen((root + L"\\Mods\\thumper-state.json").c_str(), L"rb");
