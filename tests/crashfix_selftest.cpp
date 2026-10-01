@@ -77,6 +77,60 @@ void TestAiServiceExit() {
     g_slot = reinterpret_cast<uintptr_t>(live);
     Check(flag() == 1, "AiServiceExit: live config -> debug flag read as before");
 }
+
+// A post-process double: slot 5 records `this` and the flag.
+struct FakePostProcess {
+    void** vtbl;
+    void* lastThis = nullptr;
+    int lastOn = -1;
+    int calls = 0;
+};
+
+void __fastcall FakeSetSepia(void* self, void*, int on) {
+    auto* pp = static_cast<FakePostProcess*>(self);
+    pp->lastThis = self;
+    pp->lastOn = on;
+    ++pp->calls;
+}
+
+void* g_fakeVtbl[8] = {nullptr, nullptr, nullptr, nullptr, nullptr, reinterpret_cast<void*>(&FakeSetSepia)};
+
+void OnSepiaSite(safetyhook::Context& c) { SepiaToStandIn(c.eax); }
+
+// /SEPIA switch, 0x4DAF9F: mov eax,[slot]; mov ecx,[eax+5Ch]; mov edx,[ecx]; mov eax,[edx+14h]; push 1; call eax; ret
+void TestSepiaSwitch() {
+    const uintptr_t fn = Emit({0xA1, 0, 0, 0, 0, 0x8B, 0x48, 0x5C, 0x8B, 0x11, 0x8B, 0x42, 0x14, 0x6A, 0x01, 0xFF, 0xD0,
+                               0xC3});
+    auto hook = safetyhook::create_mid(fn + 5, &OnSepiaSite);
+    Check(static_cast<bool>(hook), "SepiaSwitch: hook installs on the game's bytes");
+    if (!hook) return;
+    auto parse = reinterpret_cast<void (*)()>(fn);
+
+    ResetSepia();
+    g_slot = 0;
+    parse();
+    Check(SepiaRequested(), "SepiaSwitch: no AppDataService -> request recorded (and the stack balanced)");
+    FakePostProcess a{g_fakeVtbl}, b{g_fakeVtbl};
+    Check(!ApplySepia(0), "SepiaSwitch: nothing applied before the post-process exists");
+    Check(ApplySepia(reinterpret_cast<uintptr_t>(&a)) && a.calls == 1 && a.lastOn == 1 && a.lastThis == &a,
+          "SepiaSwitch: SetSepia(1) replayed on the post-process");
+    Check(!ApplySepia(reinterpret_cast<uintptr_t>(&a)) && a.calls == 1, "SepiaSwitch: replayed once per instance");
+    Check(ApplySepia(reinterpret_cast<uintptr_t>(&b)) && b.calls == 1, "SepiaSwitch: a new post-process gets it too");
+
+    alignas(16) uint8_t app[0x60] = {};
+    ResetSepia();
+    g_slot = reinterpret_cast<uintptr_t>(app);
+    parse();
+    Check(SepiaRequested(), "SepiaSwitch: AppDataService without a post-process -> request recorded");
+
+    FakePostProcess live{g_fakeVtbl};
+    const uint32_t livePtr = static_cast<uint32_t>(reinterpret_cast<uintptr_t>(&live));
+    std::memcpy(app + 0x5C, &livePtr, sizeof(livePtr));
+    ResetSepia();
+    parse();
+    Check(!SepiaRequested() && live.calls == 1 && live.lastOn == 1 && live.lastThis == &live,
+          "SepiaSwitch: live post-process -> the game's own call runs");
+}
 }  // namespace
 
 int main() {
@@ -85,6 +139,7 @@ int main() {
     TestNullToSink();
     TestNetServiceExit();
     TestAiServiceExit();
+    TestSepiaSwitch();
     std::printf("%s (%d failure(s))\n", g_failures ? "FAILED" : "all passed", g_failures);
     return g_failures ? 1 : 0;
 }

@@ -11,4 +11,13 @@ struct Sink {
 
 // Points a null `reg` at the sink. Returns true when it did.
 bool NullToSink(uintptr_t& reg, Sink& sink);
+
+// "/SEPIA" is parsed at startup, before AppDataService exists, and calls appData->postProcess->SetSepia(1)
+// (post-process at +0x5C, vtable slot 5, thiscall). When AppDataService or its post-process is missing,
+// SepiaToStandIn points `appData` at a stand-in whose post-process records the call. Returns true when it did.
+bool SepiaToStandIn(uintptr_t& appData);
+bool SepiaRequested();
+// Makes the recorded SetSepia(1) call on the post-process `pp`, once per instance. Returns true when it called.
+bool ApplySepia(uintptr_t pp);
+void ResetSepia();
 }  // namespace melange::crashfix
