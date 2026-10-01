@@ -84,10 +84,23 @@ export function ergService(state) {
   const projects = new Map();
   state.erg = { projects, saves: 0, loads: 0 };
   const info = (p) => ({ id: p.id, title: p.title, stem: p.stem, base: p.base, modified: p.modified, built: false });
+  // As the service's level.load: refs run on across loads, so a project's refs differ from its base's.
+  let refBase = 0;
   const load = (scene) => {
     state.erg.loads++;
     const blobs = syntheticBlobs(scene);
-    return { value: scene, [AFTER]: (c) => { for (const b of scene.blobs) c.sendBinary(b.ref, blobs.get(b.ref)); } };
+    const maxRef = Math.max(0, ...scene.blobs.map((b) => b.ref));
+    if (refBase + maxRef >= 1 << 24) refBase = 0;
+    const shift = refBase;
+    refBase += maxRef;
+    const sent = scene.blobs.map((b) => [b.ref + shift, blobs.get(b.ref)]);
+    for (const b of scene.blobs) b.ref += shift;
+    for (const f of scene.frames) {
+      if (f.voxels !== null) f.voxels += shift;
+      if (f.heightMap !== null) f.heightMap += shift;
+    }
+    if (scene.hmp?.ref !== undefined) scene.hmp.ref += shift;
+    return { value: scene, [AFTER]: (c) => { for (const [ref, data] of sent) c.sendBinary(ref, data); } };
   };
   return {
     methods: ["level.list", "level.new", "level.load", "level.save", "level.themes", "level.palette", "level.close"],
