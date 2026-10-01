@@ -298,6 +298,26 @@ async function suite(browser) {
       check("after reconnecting, save works", mock.state.erg.saves === saves + 1 && (await page.locator("[data-erg-editor]").getAttribute("data-dirty")) === "0");
     });
 
+    await attempt("overlapping opens", async () => {
+      // A reload reopens the last project; hold its load back and create another project meanwhile, then edit at once.
+      const last = await page.locator("[data-erg-editor]").getAttribute("data-erg-editor");
+      mock.state.delay = (m, p) => (m === "level.load" && p.project === last ? 1500 : 0);
+      await page.reload({ waitUntil: "load" });
+      await createProject(page, "Multi.Synthetic12", "race", "Race");
+      const id = await erg(page, (e) => e.store.scene.details[0].id);
+      await erg(page, (e, x) => e.store.select([x]), id);
+      await page.locator('[data-tab="props"]').click();
+      await page.fill('[data-field="pos.0"]', "55");
+      await page.locator('[data-field="pos.0"]').press("Enter");
+      await page.waitForTimeout(2500);
+      const now = await page.locator("[data-erg-editor]").getAttribute("data-erg-editor");
+      const pos = await erg(page, (e, x) => e.store.detail(x)?.pos[0], id);
+      check("a late open does not replace the project opened since", now === "race", `${now} (held back: ${last})`);
+      check("an edit made right after opening is kept", typeof pos === "number" && Math.abs(pos * 20 - 55) < 1e-6 &&
+        (await page.locator("[data-erg-editor]").getAttribute("data-dirty")) === "1", String(pos));
+      mock.state.delay = undefined;
+    });
+
     await attempt("side pane fits at 1280px", async () => {
       const narrow = await openPage(browser, mock, "", { width: 1280, height: 860 });
       try {

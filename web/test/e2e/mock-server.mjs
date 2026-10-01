@@ -265,16 +265,21 @@ export async function startMock(opts = {}) {
       state.calls.push({ m: m.m, p: m.p });
       if (!methods.includes(m.m)) return fail(c, m.id, -32601, "unknown method");
       if (state.readOnly && mutating.has(m.m)) return fail(c, m.id, -32003, "Oasis is read-only ([Oasis] ReadOnly=1)");
-      try {
-        const r = handlers[m.m](m.p ?? {});
-        if (r && r[AFTER]) {
-          reply(c, m.id, r.value);
-          return r[AFTER](c);
+      const run = () => {
+        try {
+          const r = handlers[m.m](m.p ?? {});
+          if (r && r[AFTER]) {
+            reply(c, m.id, r.value);
+            return r[AFTER](c);
+          }
+          return reply(c, m.id, r);
+        } catch (e) {
+          return Array.isArray(e) ? fail(c, m.id, e[0], e[1]) : fail(c, m.id, -32004, String(e));
         }
-        return reply(c, m.id, r);
-      } catch (e) {
-        return Array.isArray(e) ? fail(c, m.id, e[0], e[1]) : fail(c, m.id, -32004, String(e));
-      }
+      };
+      // A test can hold one call back (state.delay(method, params) -> ms) to make two requests overlap.
+      const wait = state.delay?.(m.m, m.p ?? {}) ?? 0;
+      return wait > 0 ? void setTimeout(run, wait) : run();
     }
     fail(c, null, -32600, "unknown message type");
   };

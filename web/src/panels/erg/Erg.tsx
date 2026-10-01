@@ -1,7 +1,7 @@
 // Erg, the map editor: the project list, then one open project (the 3D view, outliner, properties, level settings
 // and checks). Edits go through commands; Save sends the patch against the pinned base.
 import { render } from "preact";
-import { useState } from "preact/hooks";
+import { useRef, useState } from "preact/hooks";
 import type { Client } from "../../sdk/client";
 import { errorText, useConnection } from "../../sdk/hooks";
 import { Editor } from "./ui/Editor";
@@ -21,18 +21,30 @@ function Erg({ client }: { client: Client }) {
   const [error, setError] = useState<string>();
   const [auto, setAuto] = useState(() => lastProject());
 
+  // Opens can overlap (the last project reopening while another is created): only the newest applies, so a late
+  // result never replaces the editor opened since, with the edits made in it.
+  const latest = useRef({ n: 0, id: "" });
   const openIt = async (info: ProjectInfo) => {
+    const n = ++latest.current.n;
+    latest.current.id = info.id;
     setLoading(info.title || info.id);
     setError(undefined);
+    let data: Opened;
     try {
-      const data = await openProject(client, info.id, info.base);
-      setLastProject(info.id);
-      setOpen({ info, data });
+      data = await openProject(client, info.id, info.base);
     } catch (e) {
+      if (n !== latest.current.n) return;
       setError(`Could not open ${info.title || info.id}: ${errorText(e)}`);
-    } finally {
       setLoading(undefined);
+      return;
     }
+    if (n !== latest.current.n) {
+      if (latest.current.id !== info.id && client.has("level.close")) client.call("level.close", { project: info.id }).catch(() => {});
+      return;
+    }
+    setLastProject(info.id);
+    setOpen({ info, data });
+    setLoading(undefined);
   };
 
   if (conn.open && !client.has("level.list"))
