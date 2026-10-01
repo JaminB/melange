@@ -61,7 +61,7 @@ try {
 
     @"
 Installing Melange
-===================
+==================
 
 1. Copy dinput8.dll, melange.asi and Melange.ini into your game folder, next to WormsMayhem.exe
    (...\steamapps\common\WormsXHD). Copy oasis.exe there too if you want Oasis, Melange's browser tool,
@@ -69,7 +69,7 @@ Installing Melange
 2. Start the game. The window title shows [Melange $version].
 
 Installing a mod
------------------
+----------------
 
 1. Put the mod's folder in <game>\Mods\, so that you have <game>\Mods\<mod>\spice.json.
 2. Start the game and press the grave key (to the left of 1, above Tab) to open the overlay.
@@ -93,7 +93,7 @@ Delete melange.asi, Melange.ini and the Melange and Mods folders from the game f
 unless other .asi mods still need it.
 
 Reporting a bug
-----------------
+---------------
 
 Press Ctrl+Shift+F11 in the game (or File > Save logs as... in the overlay) and attach the zip it saves. User
 names are removed, and Steam IDs and IP addresses are hashed.
