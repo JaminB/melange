@@ -19,6 +19,8 @@ Melange fixes long-standing multiplayer bugs and lets you install mods: new weap
 2. Start the game and press `` ` `` to open the overlay.
 3. On the *Thumper/Mods* page, switch the mod on. Mods that change gameplay take effect the next time you start the game.
 
+Or install it from the Store: on the *Thumper/Mods* page press *Store* (or open the **Store** panel in Oasis), pick a plugin and press *Install*. The Store contacts GitHub only when you open it, and sends nothing about you or your game.
+
 Good to know:
 
 - **Online play:** everyone in a match needs the same gameplay mods. Mods that only change your screen, such as effects and UI, don't matter to other players.

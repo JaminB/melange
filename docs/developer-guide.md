@@ -44,6 +44,7 @@ Every module has its own section in `Melange.ini`, and `Enabled=0` turns a modul
 | `LuaConsole` | on | Overlay Lua REPL (`Ctrl+Shift+F10`, *Lua/Console*) for the client VM and, in a match, the match VM (off online unless `MatchConsoleOnline=1`) |
 | `GameState` | on | Read-only game-state readers for Oasis and `wum.game.worms()` (worms, teams, match values, entities); build #1077 only |
 | `Levels` | on | Map packs from content mods, Erg Test levels and the online map gate (`Online`, `RandomPool`, `DevWater`); installs nothing until a mod map or a Test level exists; build #1077 only |
+| `Store` | on | The plugin store (*Thumper/Store*, the Oasis Store panel): fetches the list only when you open it ([Plugin store](#plugin-store)) |
 | `Oasis` | on | The local web app on 127.0.0.1 ([oasis.md](oasis.md)); nothing listens until you open it |
 | `Wormsign` | on | The match's tick clock and a per-tick state hash (`wum.wormsign.tick()`); records a rolling library of recent matches to `Documents\Melange\replays` (last 20 / 200 MB by default, `wum.wormsign.library()`), match replays checked tick by tick (*Wormsign/Replay*); online, it compares the hashes with other Melange players and reports the first tick where they disagree ([wormsign.md](wormsign.md)); build #1077 only |
 
@@ -251,6 +252,51 @@ a folder without one still loads, unchanged, as a client-only mod named after it
 
 `dist\Mods\` includes `hello-spice` and `sim-sampler` as disabled samples (`defaultEnabled: false`); a
 newly discovered mod without that flag starts enabled.
+
+## Plugin store
+
+The Store installs mods from a curated list, the [melange-plugins](https://github.com/JaminB/melange-plugins)
+repository: every plugin there was reviewed in a pull request, its release zip was packed by that repository's own
+workflow, and the list pins each zip's SHA-256. Open *Thumper/Store* in the overlay (or the *Store* button on
+*Thumper/Mods*), or the **Store** panel in Oasis.
+
+- **Privacy.** The list is fetched from GitHub only when a Store page opens or you press *Refresh*; screenshots only
+  when you open a plugin's details; a zip only when you install it. Nothing runs at start-up or on a timer, and
+  nothing about you or your game is sent: the requests are plain HTTPS `GET`s with the user agent `Melange/<version>`
+  and no cookies, credentials or query strings. GitHub sees your IP address, as with any download.
+- **What an install does.** The zip is downloaded to `Mods\.store\dl\`, its length and SHA-256 must match the list,
+  every entry is checked before a byte is written (no absolute or `..` paths, links, device names, hidden files,
+  executables, or entries larger than they claim), and it is unpacked into `Mods\.store\stage\`. Its `spice.json`
+  must name the same id, version, kind and permissions as the listing (a zip cannot ask for more than its listing
+  showed). Only then is the folder moved into `Mods\<id>\` in one rename. Any failure leaves `Mods\` as it was.
+- **When changes apply.** Client-only plugins install, update and remove live. A content plugin that is active this
+  session is updated or removed at the next launch ("Applies at the next launch"); a new content plugin installs now
+  and shows *restart required*, as enabling one does. Installs, updates and removes are refused in a lobby, a network
+  game or a match, while a level loads and while an Erg Test runs; browsing and *Refresh* always work.
+- **Deep Desert.** A plugin that asks for it says so before anything is downloaded, runs sandboxed until you allow
+  it in the overlay's consent prompt, and asks again after every update. Oasis can never grant it.
+- **Your data.** Settings (`[Mod.<id>]` in `Melange.ini`), saved data and `Mods\<id>\user\` are kept across
+  updates. *Remove* keeps them unless you tick "Also delete its settings and saved data".
+- **Older versions and withdrawn ones.** An older version is never installed by itself: *Details > Versions* offers
+  *Install this version* with a confirm. A version the list marks as withdrawn is never offered. If a fetched list
+  is older than one seen before, updates and installs are disabled until a newer list arrives.
+- A mod you put in `Mods\` by hand shows as "Installed manually"; the Store replaces it only after a confirm, and
+  never removes it.
+
+`[Store]` in `Melange.ini`:
+
+| Key | Default | Meaning |
+|---|---|---|
+| `Enabled` | `1` | `0`: no Store pages, no methods, no network code. |
+| `IndexUrl` | the melange-plugins list on GitHub | For testing a list of your own: `https://` or `file:///C:/...` (then zips and screenshots may be `file:///` too). Anything else is refused and the default is used. A custom list shows a yellow "Custom index" line on both pages. |
+| `MaxDownloadMB` | `64` | The largest zip the Store downloads (1-256). |
+| `ShowIncompatible` | `0` | Also list plugins with no version for this Melange or game build, with the reason. |
+
+The Store keeps its files in `Mods\.store\` (Thumper ignores folders that start with a dot): `installed.json` (what
+it installed, by version and hash), the last fetched list for offline display, a screenshot cache, and
+`pending.json` for changes waiting for the next launch. Deleting the folder makes every plugin count as manually
+installed. To publish a plugin, see the melange-plugins repository's `CONTRIBUTING.md`; `tools/store.py pack` there
+builds the exact zip the Store will install, so you can drop it into `Mods\` and test it first.
 
 ## Lua scripting
 
