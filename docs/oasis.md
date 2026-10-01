@@ -30,6 +30,7 @@ Oasis is Melange's local web app: a page in your browser that talks to the runni
 | **Events** | Pick bus messages by name or `Prefix.*` and watch them arrive with their decoded payloads. Nothing is streamed until you pick something. The Counts view shows every message's rate from `bus.counts`. |
 | **Console** | Lua, as the overlay console: the client environment, a mod's environment or the match. Enter runs, Shift+Enter adds a line, Tab completes, Up and Down recall your history (kept in the browser). Match code follows the console's rule: refused online unless `[LuaConsole] MatchConsoleOnline=1`. |
 | **Mods** | Enable and disable mods (content mods take effect after a restart), see load errors, and revoke Deep Desert. **Deep Desert is never granted from the browser**: a mod waiting for consent asks in the game's overlay. |
+| **Store** | Browse the plugin store: search, categories, details with screenshots and changelogs, and install, update or remove with progress. The game does the downloading and checking; the page never contacts GitHub itself. Installs, updates and removes are refused in a lobby, a network game or a match. Needs the game. |
 | **Settings** | Every `Melange.ini` key a module declares, with its default and whether it applies live or after a restart, plus the file as raw text. Saving changes that one line in place and keeps every comment and other byte. `[Thumper] GrantSalt` is hidden and cannot be changed, and `[Thumper] AutoGrantDeepDesert` can only be set to `0`. This hides the salt from the Settings page; it is not a defense against `RawInspect` (below), which can already read it as part of the process. |
 | **Erg** | The map editor: open a copy of a multiplayer level, move spawn knots and objects, place oil drums and mines, set water, theme and time of day, and save the project. Needs the level service; the 3D view (three.js) loads only when a project opens. |
 | **About** | Versions, the protocol, and the channels and methods the server offers. |
@@ -248,6 +249,31 @@ Close codes: 4000 closed by the game (the page reconnects), 4001 protocol versio
 | `ini.set` | `{section, key, value}` → `{live, restart, changed}` | One line is changed in place (indentation, spacing, key spelling and an inline `; comment` kept) or added after the section's last key, and the file is replaced atomically in its own encoding. The key must be declared, present in the file, or in a `[Mod.<id>]` section. Values cannot contain line breaks or `;` or start or end with a space. `[Thumper] GrantSalt`, and `[Thumper] AutoGrantDeepDesert` other than `0`, are refused (`-32000`). |
 
 The `mods` channel sends the whole `mods.list` result to a new subscriber and again on every change (Coalesce).
+
+### Store
+
+The plugin store's methods are game-only. Each mutating method returns at once and the work runs on the Store's own
+thread, reporting on the `store` channel; the `mods` channel reports what changed in `Mods\` afterwards. Install,
+update and remove are refused (`-32000`, with the reason) in a lobby, a network game, a match, while a level loads or
+an Erg Test runs, and with `-32002` while another one is running. Mutating methods are refused with `-32003` under
+`ReadOnly=1`.
+
+| Method | Params → result | Notes |
+|---|---|---|
+| `store.status` | `{}` → `Status` | `Status`: `{enabled, indexUrl, customIndex, fetchedAt, offline, serial, plugins, job: {phase, id, version, bytes, total, message}, gate, fetching, haveIndex, rollback, busy, error, pending, notices}`. `gate` is `""` or why changes are refused right now. |
+| `store.refresh` | `{}` → `{started}` | Fetches the list (a no-op while a fetch runs). The panel calls it when it opens; nothing is fetched before that. |
+| `store.list` | `{query?, category?, filter?: "all"\|"installed"\|"updates", incompatible?}` → `[Item]` | `Item`: `{id, name, authors, description, categories, kind: "client-only"\|"content", unsafe, licence, latest, compatible, size, installed: {version, managed, state, enabled} \| null, action: "install"\|"update"\|"remove"\|"none", canRemove, state, reason, error}`. Updates first, then by name. |
+| `store.details` | `{id}` → `Item` + `{homepage, permissions: {unsafe, filesystem}, content, dependencies, conflicts, screenshots: [{n, caption, ready}], versions: [{version, released, melange, size, changelog, yanked, compatible}], dependants, conflictsEnabled, plan: [{id, version}], planError}` | Starts fetching the plugin's screenshots; each one arrives as a `store` event. |
+| `store.install` | `{id, version?, enable?: true, replaceManual?: false}` → `{started}` | Dependencies in `plan` are installed first. A copy of the mod put in `Mods\` by hand is replaced only with `replaceManual`. |
+| `store.update` | `{id}` → `{started}` | Store-installed plugins only. |
+| `store.remove` | `{id, deleteData?: false}` → `{started}` | `deleteData` also removes `[Mod.<id>]` from `Melange.ini` and the mod's saved data. |
+| `store.cancel` | `{}` → `{cancelled}` | Download phase only. |
+| `store.openHomepage` | `{id}` → `{}` | Opens the listing's `https://` homepage in the default browser on the game's PC. |
+
+The `store` channel (Coalesce) sends `{phase, id, version, bytes, total, message, pending, fetching, busy, gate, serial,
+shots, shot?}`; `phase` is `idle`, `fetching`, `downloading`, `verifying`, `installing`, `removing`, `done` or
+`error`. `GET /store/shots/<id>/<n>` serves a screenshot the game has already fetched and verified (404 before
+that), with the same cookie as the app.
 
 The streams (`log`, `bus`, `state`, ...) and the other methods are listed in `welcome` as their providers load.
 

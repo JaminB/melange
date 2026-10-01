@@ -266,6 +266,17 @@ bool SemverSatisfies(const std::string& version, const std::string& range) {
     return true;
 }
 
+bool ValidSemver(const std::string& v) { return ParseSemVer(v).ok; }
+
+int SemverCompare(const std::string& a, const std::string& b) { return Compare(ParseSemVer(a), ParseSemVer(b)); }
+
+bool ValidModId(const std::string& id) { return ValidId(id); }
+
+bool ValidRange(const std::string& range) {
+    std::vector<Comparator> cmps;
+    return ParseRange(Trim(range), &cmps);
+}
+
 namespace {
 bool ParseDepString(const std::string& raw, Dep* out) {
     std::string s = Trim(raw);

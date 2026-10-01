@@ -158,8 +158,8 @@ target_include_directories(melange PRIVATE src src/sdk ${CMAKE_BINARY_DIR}/gener
 target_compile_definitions(melange PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX _CRT_SECURE_NO_WARNINGS)
 target_compile_options(melange PRIVATE /W4 /utf-8 /permissive- /Zi /wd4100)
 target_link_options(melange PRIVATE /DEBUG /OPT:REF /OPT:ICF /SAFESEH:NO)
-target_link_libraries(melange PRIVATE safetyhook::safetyhook dbghelp bcrypt ws2_32 shell32 winmm imgui miniz lua54 oasis_core
-    melange_xom)
+target_link_libraries(melange PRIVATE safetyhook::safetyhook dbghelp bcrypt ws2_32 shell32 winmm winhttp imgui miniz lua54
+    oasis_core melange_xom)
 
 # Oasis core without the game: HTTP/WS corpus against a live server on 127.0.0.1, protocol and queue cases.
 add_executable(oasis_core_selftest tests/oasis_core_selftest.cpp src/oasis/auth.cpp src/oasis/webpanels.cpp
@@ -409,6 +409,15 @@ add_executable(thumper_selftest
 target_include_directories(thumper_selftest PRIVATE src src/sdk)
 target_compile_definitions(thumper_selftest PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX _CRT_SECURE_NO_WARNINGS)
 target_compile_options(thumper_selftest PRIVATE /W4 /utf-8 /permissive-)
+# The plugin store without the game or the network: index, zip rules, install engine, file:// fetches.
+add_executable(store_selftest
+    tests/store_selftest.cpp
+    src/store/index.cpp src/store/zipcheck.cpp src/store/install.cpp src/store/fetch.cpp
+    src/levels/live_policy.cpp src/mods/spice.cpp src/tools/json_read.cpp src/tools/hash.cpp src/core/log.cpp)
+target_include_directories(store_selftest PRIVATE src src/sdk)
+target_compile_definitions(store_selftest PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX _CRT_SECURE_NO_WARNINGS)
+target_compile_options(store_selftest PRIVATE /W4 /utf-8 /permissive-)
+target_link_libraries(store_selftest PRIVATE miniz bcrypt winhttp)
 # The Sandbox without the game: Thumper, the overlay, draw, config and jlog are faked in the test.
 add_executable(sandbox_selftest
     tests/sandbox_selftest.cpp

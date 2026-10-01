@@ -1,4 +1,4 @@
-// Browser tests of the shell and the logs, events, console, mods and settings panels in the installed Microsoft
+// Browser tests of the shell and the logs, events, console, mods, store and settings panels in the installed Microsoft
 // Edge (headless), against the mock server (no game needed).
 //   node web/test/e2e/panels.mjs [<built web app folder>] [--quick]
 // --quick skips the 30 s log-throughput run (2000 lines/s, 60 fps, heap under 200 MB).
@@ -169,6 +169,105 @@ async function gamePanels(browser) {
       check("mods: only list, setEnabled and revoke were called", [...methods].filter((m) => m.startsWith("mods.")).every((m) => ["mods.list", "mods.setEnabled", "mods.revokeDeepDesert"].includes(m)));
     });
 
+    await attempt("store", async () => {
+      const st = mock.state.store;
+      const plugins = () => page.locator("[data-plugin]").evaluateAll((els) => els.map((e) => e.getAttribute("data-plugin")));
+      const count = (n) => page.waitForFunction((k) => document.querySelectorAll("[data-plugin]").length === k, n, { timeout: 3000 });
+      const text = async (sel) => (await page.locator(sel).first().textContent()) ?? "";
+      const confirmReady = () => page.waitForSelector("[data-confirm] [data-confirm-ok]:not([disabled])", { timeout: 3000 });
+      await tab(page, "store").click();
+      await page.waitForSelector("[data-plugin]", { timeout: 5000 });
+      check("store: the list is fetched when the page opens", st.refreshes >= 1);
+      check("store: privacy note", /Nothing about you or your game is sent/.test(await text("[data-privacy]")));
+      check("store: custom index line", (await page.locator("[data-custom-index]").count()) === 1);
+      await count(4);
+      const ids = await plugins();
+      check("store: updates first, incompatible hidden", ids[0] === "hd-water" && !ids.includes("future-only"), ids.join(","));
+      check("store: Deep Desert badge", (await page.locator('[data-plugin="raw-tools"] [data-dd]').count()) === 1);
+      await page.locator("[data-store-search]").fill("memory");
+      await count(1);
+      check("store: search over descriptions", (await plugins())[0] === "raw-tools");
+      await page.locator("[data-store-search]").fill("");
+      await page.locator('[data-category="maps"]').click();
+      await count(1);
+      check("store: category filter", (await plugins())[0] === "dune-pack");
+      await page.locator('[data-category="maps"]').click();
+      await page.locator('[data-filter="updates"]').click();
+      await count(1);
+      check("store: updates filter", (await plugins())[0] === "hd-water");
+      await page.locator('[data-filter="all"]').click();
+      await count(4);
+
+      await page.locator('[data-plugin="hd-water"]').click();
+      await page.waitForSelector('[data-details="hd-water"]', { timeout: 3000 });
+      await page.waitForFunction(() => (document.querySelector('[data-shot="1"]')?.naturalWidth ?? 0) > 0, null, { timeout: 5000 });
+      check("store: screenshot served by the game", true);
+      check("store: versions with changelogs", (await page.locator("[data-version]").count()) === 2 &&
+        /Changes in 1.1.0/.test(await text('[data-version="1.1.0"]')));
+      await page.locator("[data-homepage]").click();
+      await page.waitForTimeout(150);
+      check("store: the homepage is opened by the game", st.opened[0] === "https://example.com/hd-water");
+
+      await page.locator('[data-store-action="raw-tools"]').click();
+      await confirmReady();
+      check("store: the confirm names Deep Desert before downloading", /raw access to the game's memory/.test(await text("[data-confirm]")));
+      await page.locator("[data-confirm-cancel]").click();
+      check("store: cancelling the confirm installs nothing", !mock.state.calls.some((c) => c.m === "store.install" && c.p?.id === "raw-tools"));
+
+      st.slow = true;
+      await page.locator('[data-store-action="dune-pack"]').click();
+      await confirmReady();
+      check("store: the confirm says content needs everyone on the same version", /online match needs the same version/.test(await text("[data-confirm]")));
+      await page.locator("[data-confirm-ok]").click();
+      await page.waitForSelector('[data-progress="downloading"]', { timeout: 3000 });
+      check("store: download progress", /downloading dune-pack/.test(await text("[data-progress]")));
+      st.slow = false;
+      await page.waitForSelector('[data-job="done"]', { timeout: 8000 });
+      await page.waitForSelector('[data-plugin="dune-pack"] [data-state="installed"]', { timeout: 3000 });
+      check("store: install finishes", st.plugins.find((x) => x.id === "dune-pack").installed?.version === "2.0.0");
+
+      await page.locator('[data-store-action="broken-zip"]').click();
+      await confirmReady();
+      await page.locator("[data-confirm-ok]").click();
+      await page.waitForSelector('[data-plugin="broken-zip"] [data-row-error]', { timeout: 5000 });
+      check("store: a hash mismatch stays on the row", /does not match the store's record/.test(await text('[data-plugin="broken-zip"] [data-row-error]')) &&
+        !st.plugins.find((x) => x.id === "broken-zip").installed);
+
+      st.slow = true;
+      await page.locator('[data-store-action="hd-water"]').click();
+      await confirmReady();
+      await page.locator("[data-confirm-ok]").click();
+      await page.waitForSelector('[data-progress="downloading"] [data-store-cancel]', { timeout: 3000 });
+      await page.locator("[data-store-cancel]").click();
+      await page.waitForSelector('[data-job="error"]', { timeout: 5000 });
+      st.slow = false;
+      check("store: cancel stops the download", st.plugins.find((x) => x.id === "hd-water").installed.version === "1.0.0" &&
+        /cancelled/.test(await text('[data-job="error"]')));
+
+      await page.locator('[data-store-action="hd-water"]').click();
+      await confirmReady();
+      await page.locator("[data-confirm-ok]").click();
+      await page.waitForSelector('[data-plugin="hd-water"] [data-state="installed"]', { timeout: 5000 });
+      check("store: update", st.plugins.find((x) => x.id === "hd-water").installed.version === "1.1.0" &&
+        mock.state.calls.some((c) => c.m === "store.update" && c.p?.id === "hd-water"));
+
+      await page.locator('[data-store-action="hd-water"]').click();
+      await page.waitForSelector('[data-confirm="remove"] [data-confirm-ok]:not([disabled])', { timeout: 3000 });
+      await page.locator("[data-delete-data]").check();
+      await page.locator("[data-confirm-ok]").click();
+      await page.waitForFunction(() => !document.querySelector('[data-plugin="hd-water"] [data-state="installed"]'), null, { timeout: 5000 });
+      check("store: remove with its data", st.lastRemove?.id === "hd-water" && st.lastRemove.deleteData === true &&
+        !st.plugins.find((x) => x.id === "hd-water").installed);
+
+      st.setGate("plugins cannot change in a lobby or a network game: leave the lobby to install");
+      await page.waitForSelector("[data-gate]", { timeout: 3000 });
+      check("store: in a lobby, actions are disabled with the reason", await page.locator('[data-store-action="raw-tools"]').isDisabled() &&
+        /leave the lobby/.test((await page.locator('[data-store-action="raw-tools"]').getAttribute("title")) ?? ""));
+      check("store: refresh still works in a lobby", !(await page.locator("[data-store-refresh]").isDisabled()));
+      st.setGate("");
+      await page.waitForFunction(() => !document.querySelector("[data-gate]"), null, { timeout: 3000 });
+    });
+
     await attempt("settings", async () => {
       await tab(page, "ini").click();
       await page.waitForSelector('[data-section="Oasis"]', { timeout: 5000 });
@@ -291,6 +390,10 @@ async function policyModes(browser) {
     await page.waitForSelector("[data-mod]", { timeout: 5000 });
     check("read-only: mod toggles disabled", await page.locator('[data-toggle="hello-spice"]').isDisabled());
     check("read-only: revoke disabled", await page.locator('[data-revoke="memwatch"]').isDisabled());
+    await tab(page, "store").click();
+    await page.waitForSelector('[data-store-action="hd-water"]', { timeout: 5000 });
+    check("read-only: store actions disabled", await page.locator('[data-store-action="hd-water"]').isDisabled() &&
+      (await page.locator("[data-readonly]").count()) === 1);
     await tab(page, "ini").click();
     await page.waitForSelector('[data-section="Oasis"]', { timeout: 5000 });
     check("read-only: settings not editable", await page.locator('[data-edit="Oasis.Port"]').isDisabled());
@@ -307,6 +410,7 @@ async function policyModes(browser) {
   ({ page, errors } = await openPage(browser, sa));
   try {
     check("standalone: events and console greyed out", await tab(page, "events").isDisabled() && await tab(page, "console").isDisabled());
+    check("standalone: the store needs the game", await tab(page, "store").isDisabled());
     await page.goto(sa.url.replace(/\/\?k=.*$/, "/#/console"), { waitUntil: "load" });
     await page.waitForSelector(".badge-open", { timeout: 10000 });
     await page.waitForSelector('[data-unavailable="console"]', { timeout: 5000 });

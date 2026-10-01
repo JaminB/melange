@@ -111,3 +111,7 @@ Choices persist in `Mods\thumper-state.json` (falling back to `Documents\Melange
 the game folder is read-only): which mods are enabled, load-order pins, and Deep Desert grants. It is
 written atomically and is safe to delete — Thumper rebuilds it (re-applying `defaultEnabled` for every
 mod as if freshly discovered).
+
+A mod that keeps files of its own inside its folder should keep them in `Mods\<id>\user\`: the Store carries that
+folder over when it updates the mod, and a plugin's release zip may not contain it. Folders starting with `.` are
+never mods (the Store keeps its own files in `Mods\.store\`).

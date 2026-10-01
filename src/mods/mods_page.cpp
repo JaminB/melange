@@ -13,6 +13,7 @@
 #include "melange/levels.h"
 #include "melange/overlay.h"
 #include "mods/thumper_internal.h"
+#include "store/store.h"
 
 namespace melange::thumper {
 namespace {
@@ -69,6 +70,10 @@ std::string Narrow(const wchar_t* w) {
 void DrawModsPanel(void*) {
     std::vector<Entry> entries = Snapshot();
     ImGui::TextDisabled("%zu mods discovered under %s", entries.size(), Narrow(mods::ModsDir()).c_str());
+    if (store::Active()) {
+        ImGui::SameLine();
+        if (ImGui::SmallButton("Store")) overlay::OpenPanel("thumper.store");
+    }
     bool anyRestart = false;
     for (const Entry& e : entries)
         if (e.state == mods::State::RestartRequired) anyRestart = true;
@@ -102,6 +107,10 @@ void DrawModsPanel(void*) {
         if (e.manifest.implicit) {
             ImGui::SameLine();
             ImGui::TextDisabled("(M1)");
+        }
+        if (store::UpdateAvailable(e.manifest.id)) {
+            ImGui::SameLine();
+            ImGui::TextColored(ImVec4(0.55f, 0.9f, 0.55f, 1.f), "Update available");
         }
         ImGui::TableNextColumn();
         bool liveOn = false;
