@@ -133,6 +133,7 @@ struct Cg {
     const char*(__cdecl* GetParameterName)(CGparameter);
     int(__cdecl* GetParameterVariability)(CGparameter);
     int(__cdecl* GetProgramProfile)(CGprogram);
+    int(__cdecl* IsParameterReferenced)(CGparameter);
     bool ok = false;
 
     bool Load(void* cgDll);  // HMODULE

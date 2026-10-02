@@ -191,6 +191,13 @@ replacement that declares `uniform mat4 view;` gets the vertex program's `view` 
 so `view[1].xyz` is the world's up axis in eye space). The `sunstone` plugin uses this for its soft shadows and
 lighting.
 
+A name that neither stage has is looked up in the game's other programs and fed from whichever of them the engine
+updated last: the water replacement declares `uniform vec3 globalLightDir;` to get the landscape's sun direction.
+A replacement may also read the scene as it was just before the program first draws into a colour target in the
+frame: `sampler2D mg_depth` (the depth buffer, in [0,1] as stored), `sampler2D mg_scene` (the colour) and
+`vec2 mg_nearFar`, with the main camera as `mat4 mg_view` and `mat4 mg_proj` (as in post-FX). The copies are taken
+once a frame, at that first draw, and use texture units 14 and 15.
+
 ### Post-processing effects
 
 An effect is a folder `<game>\Mods\<id>\postfx\<effect>\` with an `effect.ini` and GLSL fragment shaders. Its id is `<id>/<effect>`. Effects run at one of two stages:

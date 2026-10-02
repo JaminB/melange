@@ -13,10 +13,13 @@
 #include <vector>
 
 #include "core/config.h"
+#include "core/events.h"
 #include "core/log.h"
 #include "core/mem.h"
 #include "melange/jlog.h"
+#include "melange/render.h"
 #include "render/mirage/engine.h"
+#include "render/mirage/glsl_inputs_logic.h"
 #include "render/mirage/glsl_toggle_logic.h"
 #include "render/mirage/hub.h"
 #include "render/mirage/modfs.h"
@@ -54,6 +57,8 @@ struct Gl {
     void(WINAPI* Uniform3fv)(GLint, GLsizei, const GLfloat*);
     void(WINAPI* Uniform4fv)(GLint, GLsizei, const GLfloat*);
     void(WINAPI* UniformMatrix4fv)(GLint, GLsizei, GLboolean, const GLfloat*);
+    void(WINAPI* ActiveTexture)(GLenum);
+    void(WINAPI* BindFramebuffer)(GLenum, GLuint);
     bool tried = false, ok = false;
 } g_gl;
 
@@ -116,11 +121,23 @@ struct ParamBinding {
     GLenum type;
     std::string file, entry, name;
 };
+// A uniform named after a Cg parameter of programs outside the pair (e.g. the landscape's `globalLightDir`), fed
+// from whichever of them the engine updated last.
+struct ForeignBinding {
+    GLint loc;
+    GLenum type;
+    GLint count;
+    std::vector<std::pair<GLuint, unsigned>> from;  // ARB program, resource index
+    uint64_t seen = 0;
+};
 struct Linked {
     GLuint program = 0;
     bool failed = false;
     std::vector<Binding> bindings;
     std::vector<ParamBinding> params;
+    std::vector<ForeignBinding> foreign;
+    bool sceneDepth = false, sceneColor = false;
+    GLint nearFarLoc = -1, viewLoc = -1, projLoc = -1;
     uint32_t paramsSeen = ~0u;
     uint32_t seen[2] = {~0u, ~0u};
     GLuint arb[2] = {};
@@ -134,9 +151,24 @@ Linked* g_active = nullptr;
 struct Mirror {
     std::vector<float> v;  // 4 floats per program.local index
     uint32_t version = 0;
+    uint64_t stamp = 0;    // g_stamp at the last store
 };
 std::unordered_map<GLuint, Mirror> g_mirror;
 GLuint g_boundArb[2] = {};
+uint64_t g_stamp = 0;
+
+// Copies of the bound framebuffer's depth and colour, taken before the first draw in a frame of a replacement
+// that declares mg_depth or mg_scene, on texture units the engine leaves alone.
+constexpr GLenum kUnitDepth = 14, kUnitColor = 15;
+struct SceneCopy {
+    GLuint depth = 0, color = 0;
+    GLint w = 0, h = 0;
+    GLenum depthFormat = 0;
+    uint64_t frame = ~0ull;
+    bool depthBroken = false;
+    float nearFar[2] = {1.f, 1000.f};
+    float view[16] = {1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1}, proj[16] = {1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1};
+} g_copy;
 
 std::string Key(std::string_view file, std::string_view entry) { return src::Lower(file) + "|" + std::string(entry); }
 
@@ -148,6 +180,7 @@ void Store(GLuint prog, GLuint index, GLsizei count, const GLfloat* v) {
     if (m.v.size() < (index + count) * 4u) m.v.resize((index + count) * 4u);
     std::copy(v, v + count * 4, m.v.begin() + index * 4);
     ++m.version;
+    m.stamp = ++g_stamp;
 }
 
 int ArbSlot(GLenum target) { return target == kFragmentProgramArb ? 1 : target == kVertexProgramArb ? 0 : -1; }
@@ -242,6 +275,8 @@ bool LoadGl() {
     Proc(g_gl.Uniform3fv, "glUniform3fv");
     Proc(g_gl.Uniform4fv, "glUniform4fv");
     Proc(g_gl.UniformMatrix4fv, "glUniformMatrix4fv");
+    Proc(g_gl.ActiveTexture, "glActiveTexture");
+    Proc(g_gl.BindFramebuffer, "glBindFramebuffer");
     g_gl.ok = g_gl.CreateShader && g_gl.ShaderSource && g_gl.CompileShader && g_gl.GetShaderiv && g_gl.GetShaderInfoLog &&
               g_gl.DeleteShader && g_gl.CreateProgram && g_gl.AttachShader && g_gl.LinkProgram && g_gl.GetProgramiv &&
               g_gl.GetProgramInfoLog && g_gl.DeleteProgram && g_gl.UseProgram && g_gl.GetActiveUniform &&
@@ -378,6 +413,27 @@ Linked Link(src::CGprogram vp, src::CGprogram fp) {
         std::string glName = StripIndex(name);
         if (glName.rfind("gl_", 0) == 0) continue;
         GLint loc = g_gl.GetUniformLocation(prog, name);
+        switch (logic::ClassifySceneInput(glName)) {
+        case logic::SceneInput::Depth:
+            l.sceneDepth = true;
+            g_gl.Uniform1i(loc, kUnitDepth);
+            continue;
+        case logic::SceneInput::Color:
+            l.sceneColor = true;
+            g_gl.Uniform1i(loc, kUnitColor);
+            continue;
+        case logic::SceneInput::NearFar:
+            l.nearFarLoc = loc;
+            continue;
+        case logic::SceneInput::View:
+            l.viewLoc = loc;
+            continue;
+        case logic::SceneInput::Proj:
+            l.projLoc = loc;
+            continue;
+        default:
+            break;
+        }
         bool found = false;
         for (int s = 0; s < 2 && !found; ++s) {
             std::string cgName = glName;
@@ -412,6 +468,21 @@ Linked Link(src::CGprogram vp, src::CGprogram fp) {
             found = true;
             l.params.push_back({loc, type, p.file, p.entry, glName});
         }
+        if (!found && !(type >= kSampler1D && type <= kSampler2DRectShadow) && g_cgGLGetProgramID) {
+            ForeignBinding fb{loc, type, size, {}};
+            for (const auto& [other, op] : g_progs) {
+                if (other == vp || other == fp) continue;
+                src::CGparameter cp = cg.GetNamedParameter(other, glName.c_str());
+                if (!cp || !cg.IsParameterReferenced(cp)) continue;
+                if (GLuint arb = g_cgGLGetProgramID(other)) fb.from.push_back({arb, static_cast<unsigned>(cg.GetParameterResourceIndex(cp))});
+            }
+            cg.Drain();
+            if (!fb.from.empty()) {
+                found = true;
+                LOG_INFO("[shaders] GLSL %s: uniform '%s' fed from %zu other program(s)", label[mod[0] ? 0 : 1].c_str(), name, fb.from.size());
+                l.foreign.push_back(std::move(fb));
+            }
+        }
         if (!found) LOG_WARN("[shaders] GLSL %s: uniform '%s' has no Cg parameter; it stays 0", label[mod[0] ? 0 : 1].c_str(), name);
     }
     g_gl.UseProgram(g_used);
@@ -439,11 +510,136 @@ void UploadParams(Linked& l) {
     }
 }
 
+constexpr GLenum kActiveTextureBinding = 0x84E0, kReadFramebuffer = 0x8CA8, kReadFramebufferBinding = 0x8CAA,
+                 kDrawFramebufferBinding = 0x8CA6, kDepthComponent24 = 0x81A6, kDepth24Stencil8 = 0x88F0,
+                 kDepthStencil = 0x84F9, kUnsignedInt248 = 0x84FA, kTextureCompareMode = 0x884C, kClampToEdge = 0x812F;
+
+GLuint NewTarget(GLenum internal, GLenum format, GLenum type, GLint w, GLint h) {
+    GLuint t = 0;
+    glGenTextures(1, &t);
+    glBindTexture(GL_TEXTURE_2D, t);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, kClampToEdge);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, kClampToEdge);
+    if (format == kDepthStencil || format == GL_DEPTH_COMPONENT) glTexParameteri(GL_TEXTURE_2D, kTextureCompareMode, GL_NONE);
+    glTexImage2D(GL_TEXTURE_2D, 0, static_cast<GLint>(internal), w, h, 0, format, type, nullptr);
+    return t;
+}
+
+void CopyScene(const Linked& l) {
+    GLint vp[4] = {};
+    glGetIntegerv(GL_VIEWPORT, vp);
+    if (vp[2] <= 0 || vp[3] <= 0) return;
+    if (vp[2] != g_copy.w || vp[3] != g_copy.h) {
+        if (g_copy.depth) glDeleteTextures(1, &g_copy.depth);
+        if (g_copy.color) glDeleteTextures(1, &g_copy.color);
+        g_copy.depth = g_copy.color = 0;
+        g_copy.w = vp[2];
+        g_copy.h = vp[3];
+    }
+    GLint read = 0, draw = 0;
+    glGetIntegerv(kReadFramebufferBinding, &read);
+    glGetIntegerv(kDrawFramebufferBinding, &draw);
+    if (read != draw) g_gl.BindFramebuffer(kReadFramebuffer, static_cast<GLuint>(draw));
+    if (l.sceneDepth && !g_copy.depthBroken) {
+        g_gl.ActiveTexture(kTexture0 + kUnitDepth);
+        bool fresh = !g_copy.depth;
+        if (fresh) {
+            // The engine's depth buffer is D24S8; a plain 24-bit copy is tried first, then the matching format.
+            if (!g_copy.depthFormat) g_copy.depthFormat = kDepthComponent24;
+            g_copy.depth = g_copy.depthFormat == kDepthComponent24 ? NewTarget(kDepthComponent24, GL_DEPTH_COMPONENT, GL_UNSIGNED_INT, vp[2], vp[3])
+                                                                   : NewTarget(kDepth24Stencil8, kDepthStencil, kUnsignedInt248, vp[2], vp[3]);
+            while (glGetError() != GL_NO_ERROR) {}
+        } else {
+            glBindTexture(GL_TEXTURE_2D, g_copy.depth);
+        }
+        glCopyTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, vp[0], vp[1], vp[2], vp[3]);
+        if (fresh && glGetError() != GL_NO_ERROR) {
+            glDeleteTextures(1, &g_copy.depth);
+            g_copy.depth = 0;
+            if (g_copy.depthFormat == kDepthComponent24) {
+                g_copy.depthFormat = kDepth24Stencil8;
+                g_copy.frame = ~0ull;  // retry on the next draw
+            } else {
+                g_copy.depthBroken = true;
+                LOG_WARN("[shaders] the scene depth cannot be copied; mg_depth stays empty");
+            }
+        }
+    }
+    if (l.sceneColor) {
+        g_gl.ActiveTexture(kTexture0 + kUnitColor);
+        if (!g_copy.color) g_copy.color = NewTarget(GL_RGBA8, GL_RGBA, GL_UNSIGNED_BYTE, vp[2], vp[3]);
+        else glBindTexture(GL_TEXTURE_2D, g_copy.color);
+        glCopyTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, vp[0], vp[1], vp[2], vp[3]);
+    }
+    if (read != draw) g_gl.BindFramebuffer(kReadFramebuffer, static_cast<GLuint>(read));
+}
+
+void BindScene(Linked& l) {
+    if (!g_gl.ActiveTexture || !g_gl.BindFramebuffer) return;
+    GLint unit = kTexture0;
+    glGetIntegerv(kActiveTextureBinding, &unit);
+    // Depth-only targets (the shadow pass) are skipped: the copy waits for the first draw into a colour target.
+    if (uint64_t f = events::FrameCount(); f != g_copy.frame && melange::render::GetSceneTargets().colorTex) {
+        g_copy.frame = f;
+        melange::render::Camera cam;
+        if (melange::render::GetCamera(&cam) && cam.valid) {
+            g_copy.nearFar[0] = cam.nearZ;
+            g_copy.nearFar[1] = cam.farZ;
+            std::copy(cam.view, cam.view + 16, g_copy.view);
+            std::copy(cam.proj, cam.proj + 16, g_copy.proj);
+        }
+        CopyScene(l);
+    }
+    if (l.sceneDepth) {
+        g_gl.ActiveTexture(kTexture0 + kUnitDepth);
+        glBindTexture(GL_TEXTURE_2D, g_copy.depth);
+    }
+    if (l.sceneColor) {
+        g_gl.ActiveTexture(kTexture0 + kUnitColor);
+        glBindTexture(GL_TEXTURE_2D, g_copy.color);
+    }
+    g_gl.ActiveTexture(static_cast<GLenum>(unit));
+    if (l.nearFarLoc >= 0) g_gl.Uniform2fv(l.nearFarLoc, 1, g_copy.nearFar);
+    if (l.viewLoc >= 0) g_gl.UniformMatrix4fv(l.viewLoc, 1, 0, g_copy.view);
+    if (l.projLoc >= 0) g_gl.UniformMatrix4fv(l.projLoc, 1, 0, g_copy.proj);
+}
+
+void UploadForeign(Linked& l) {
+    for (ForeignBinding& b : l.foreign) {
+        uint64_t stamps[16] = {};
+        const Mirror* ms[16] = {};
+        int n = static_cast<int>(std::min<size_t>(b.from.size(), 16));
+        for (int i = 0; i < n; ++i) {
+            auto it = g_mirror.find(b.from[i].first);
+            int regs = b.type == kFloatMat4 ? 4 * b.count : b.count;
+            if (it == g_mirror.end() || it->second.v.size() < (b.from[i].second + regs) * 4u) continue;
+            ms[i] = &it->second;
+            stamps[i] = it->second.stamp;
+        }
+        int k = logic::Freshest(stamps, n);
+        if (k < 0 || stamps[k] == b.seen) continue;
+        b.seen = stamps[k];
+        const float* r = ms[k]->v.data() + b.from[k].second * 4;
+        switch (b.type) {
+        case kFloatMat4: g_gl.UniformMatrix4fv(b.loc, 1, 0, r); break;
+        case kFloatVec4: g_gl.Uniform4fv(b.loc, 1, r); break;
+        case kFloatVec3: g_gl.Uniform3fv(b.loc, 1, r); break;
+        case kFloatVec2: g_gl.Uniform2fv(b.loc, 1, r); break;
+        case GL_FLOAT: g_gl.Uniform1fv(b.loc, 1, r); break;
+        default: break;
+        }
+    }
+}
+
 void Upload() {
     ProfScope ps;
     if (g_prof.on) ++g_prof.uploads;
     Linked& l = *g_active;
     if (!l.params.empty()) UploadParams(l);
+    if (l.sceneDepth || l.sceneColor || l.nearFarLoc >= 0 || l.viewLoc >= 0 || l.projLoc >= 0) BindScene(l);
+    if (!l.foreign.empty()) UploadForeign(l);
     const Mirror* m[2] = {};
     for (int s = 0; s < 2; ++s) {
         auto it = g_mirror.find(l.arb[s]);

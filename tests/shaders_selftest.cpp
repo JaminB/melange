@@ -8,6 +8,7 @@
 #include <string>
 #include <vector>
 
+#include "render/mirage/glsl_inputs_logic.h"
 #include "render/mirage/glsl_toggle_logic.h"
 #include "render/mirage/shaders_source.h"
 
@@ -245,8 +246,21 @@ void TestGlslToggle() {
 }
 }  // namespace
 
+void TestGlslInputs() {
+    namespace gl = melange::mirage::shaders::glsl::logic;
+    Check(gl::ClassifySceneInput("mg_depth") == gl::SceneInput::Depth && gl::ClassifySceneInput("mg_scene") == gl::SceneInput::Color &&
+              gl::ClassifySceneInput("mg_nearFar") == gl::SceneInput::NearFar && gl::ClassifySceneInput("mg_view") == gl::SceneInput::View &&
+              gl::ClassifySceneInput("mg_proj") == gl::SceneInput::Proj && gl::ClassifySceneInput("mg_Depth") == gl::SceneInput::None &&
+              gl::ClassifySceneInput("texture0") == gl::SceneInput::None,
+          "scene input names");
+    uint64_t none[3] = {0, 0, 0}, some[3] = {5, 0, 9}, one[1] = {1};
+    Check(gl::Freshest(none, 3) == -1 && gl::Freshest(some, 3) == 2 && gl::Freshest(one, 1) == 0 && gl::Freshest(some, 0) == -1,
+          "freshest candidate");
+}
+
 int main() {
     TestGlslToggle();
+    TestGlslInputs();
     TestText();
     TestPatch();
     TestBuiltin();

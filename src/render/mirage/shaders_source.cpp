@@ -492,6 +492,7 @@ bool Cg::Load(void* dll) {
     get(GetParameterName, "cgGetParameterName");
     get(GetParameterVariability, "cgGetParameterVariability");
     get(GetProgramProfile, "cgGetProgramProfile");
+    get(IsParameterReferenced, "cgIsParameterReferenced");
     ok = missing == 0;
     return ok;
 }
