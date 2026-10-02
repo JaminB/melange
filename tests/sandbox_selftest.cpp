@@ -231,6 +231,14 @@ namespace shaders {
 bool SetOwnParam(const char* owner, const char*, const char*, const char* param, const float*, int) {
     return strcmp(owner, "esc") == 0 && strcmp(param, "softness") == 0;
 }
+std::string g_glslEntry;
+bool g_glslOn = true;
+bool SetOwnGlslEnabled(const char* owner, const char*, const char* entry, bool on) {
+    if (strcmp(owner, "esc") != 0) return false;
+    g_glslEntry = entry;
+    g_glslOn = on;
+    return true;
+}
 }  // namespace shaders
 namespace gamestate {
 Snapshot g_snapshot{};
@@ -852,6 +860,11 @@ void TestGraphics() {
              "a declared shader param is set");
     Expect(Eval("other", "wum.shaders.setParam('Landscape.cg', '*FragmentMain', 'softness', 1)").rfind("ERR:", 0) == 0,
            "another mod's shader param is refused");
+    ExpectEq(Eval("esc", "wum.shaders.enableGlsl('Landscape.cg', 'LandscapeFragmentMain', false) return 1"), "1",
+             "an own GLSL replacement is paused");
+    Expect(shaders::g_glslEntry == "LandscapeFragmentMain" && !shaders::g_glslOn, "pause carries the entry and state");
+    Expect(Eval("other", "wum.shaders.enableGlsl('Landscape.cg', 'LandscapeFragmentMain', true)").rfind("ERR:", 0) == 0,
+           "another mod's GLSL replacement is refused");
 }
 
 void TestDocs() {

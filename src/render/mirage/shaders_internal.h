@@ -44,6 +44,9 @@ bool Installed();
 // Runtime toggle (L0): persisted to [MirageShaders] GlslDisabled, takes effect immediately, no restart needed.
 bool IsEnabled(const std::string& file, const std::string& entry);
 bool SetEnabled(const std::string& file, const std::string& entry, bool on);  // false if no replacement file exists
+// Pause/resume by the mod that ships the file (not persisted); applied at the next program bind.
+bool SetModEnabled(const std::string& owner, const std::string& file, const std::string& entry, bool on);
+void Profile(bool on);  // on: reset and start counting; off: log the totals
 }  // namespace glsl
 
 // shaders_panel.cpp

@@ -21,6 +21,8 @@ const char* Profile(uint8_t stage);  // e.g. "arbvp1" / "arbfp1"
 // effect at once (no restart). False if that (file, entry) has no GLSL replacement file at all.
 bool SetGlslEnabled(const char* file, const char* entry, bool on);
 bool GetGlslEnabled(const char* file, const char* entry);
+// Pause or resume one of `owner`'s (a mod id) own GLSL replacements; not persisted, takes effect at the next bind.
+bool SetOwnGlslEnabled(const char* owner, const char* file, const char* entry, bool on);
 
 // Marks every program whose file or entry contains `match` (or that includes a file that matches) for a lazy
 // reload at its next bind. The new source is test-compiled first: on error the old program stays in use.

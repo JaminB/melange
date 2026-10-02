@@ -185,7 +185,11 @@ Filtering is up to the landscape shader. A GLSL replacement (`shaders\Landscape.
 `Landscape.HeightMapFragmentMain.glsl`) samples `shadowMap` as a `sampler2DShadow` (hardware depth compare with
 bilinear filtering) and gets the map size in `shadowSize`. Its own tunables are uniforms with no Cg parameter: declare
 them in the mod's `shaders\params.ini` and Melange feeds them the slider values (`float`, `vec2`, `vec3`, `vec4`).
-A script changes them with `wum.shaders.setParam`. The `sunstone` plugin uses this for its soft shadows.
+A script changes them with `wum.shaders.setParam`, and pauses or resumes its own replacements with
+`wum.shaders.enableGlsl`. A replacement can also read the other stage's Cg parameters by their Cg name: a fragment
+replacement that declares `uniform mat4 view;` gets the vertex program's `view` matrix (Cg rows become GLSL columns,
+so `view[1].xyz` is the world's up axis in eye space). The `sunstone` plugin uses this for its soft shadows and
+lighting.
 
 ### Post-processing effects
 

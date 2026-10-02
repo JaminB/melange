@@ -69,7 +69,29 @@ struct File {
 };
 std::map<std::string, File> g_files;  // lower(file)|entry
 std::vector<logic::Pair> g_disabled;  // administratively disabled (file, entry) pairs, persisted
+std::vector<logic::Pair> g_modOff;    // paused by the owning mod's script (presets), not persisted
+std::vector<logic::Pair> g_modApplied;
+bool g_modDirty = false;
 bool g_installed = false;
+
+// shaders.glslprof: CPU time spent mirroring uniforms (Store hooks) and uploading them before draws.
+struct Prof {
+    bool on = false;
+    LARGE_INTEGER start{};
+    uint64_t stores = 0, uploads = 0, uploadsChanged = 0, uniformCalls = 0, ticks = 0;
+} g_prof;
+struct ProfScope {
+    LARGE_INTEGER t0{};
+    ProfScope() {
+        if (g_prof.on) QueryPerformanceCounter(&t0);
+    }
+    ~ProfScope() {
+        if (!g_prof.on || !t0.QuadPart) return;
+        LARGE_INTEGER t1;
+        QueryPerformanceCounter(&t1);
+        g_prof.ticks += static_cast<uint64_t>(t1.QuadPart - t0.QuadPart);
+    }
+};
 src::CGcontext g_ctx = nullptr;
 
 struct Prog {
@@ -119,6 +141,8 @@ GLuint g_boundArb[2] = {};
 std::string Key(std::string_view file, std::string_view entry) { return src::Lower(file) + "|" + std::string(entry); }
 
 void Store(GLuint prog, GLuint index, GLsizei count, const GLfloat* v) {
+    ProfScope ps;
+    if (g_prof.on) ++g_prof.stores;
     if (!prog || !v || count <= 0 || index + count > 4096) return;
     Mirror& m = g_mirror[prog];
     if (m.v.size() < (index + count) * 4u) m.v.resize((index + count) * 4u);
@@ -372,6 +396,15 @@ Linked Link(src::CGprogram vp, src::CGprogram fp) {
                 l.bindings.push_back({loc, type, size, l.arb[s], static_cast<unsigned>(cg.GetParameterResourceIndex(cp))});
             }
         }
+        // A replacement may also read the partner stage's Cg parameters by their Cg name (e.g. the vertex program's
+        // `view`), whatever name Cg gave them in its generated GLSL.
+        for (int s = 0; s < 2 && !found; ++s) {
+            if (mod[s] || (type >= kSampler1D && type <= kSampler2DRectShadow)) continue;
+            src::CGparameter cp = cg.GetNamedParameter(progs[s], glName.c_str());
+            if (!cp) continue;
+            found = true;
+            l.bindings.push_back({loc, type, size, l.arb[s], static_cast<unsigned>(cg.GetParameterResourceIndex(cp))});
+        }
         cg.Drain();
         for (int s = 0; s < 2 && !found; ++s) {
             const Prog& p = g_progs[progs[s]];
@@ -407,6 +440,8 @@ void UploadParams(Linked& l) {
 }
 
 void Upload() {
+    ProfScope ps;
+    if (g_prof.on) ++g_prof.uploads;
     Linked& l = *g_active;
     if (!l.params.empty()) UploadParams(l);
     const Mirror* m[2] = {};
@@ -418,6 +453,10 @@ void Upload() {
     if (v0 == l.seen[0] && v1 == l.seen[1]) return;
     l.seen[0] = v0;
     l.seen[1] = v1;
+    if (g_prof.on) {
+        ++g_prof.uploadsChanged;
+        g_prof.uniformCalls += l.bindings.size();
+    }
     for (const Binding& b : l.bindings) {
         const Mirror* mm = b.arb == l.arb[0] ? m[0] : m[1];
         int regs = b.type == kFloatMat4 ? 4 * b.count : b.count;
@@ -451,7 +490,10 @@ void Upload() {
     }
 }
 
+void ApplyModToggles();
+
 void Update() {
+    if (g_modDirty) ApplyModToggles();
     src::CGprogram vp = g_cur[0], fp = g_cur[1];
     auto replaced = [](src::CGprogram p) {
         auto it = g_progs.find(p);
@@ -490,6 +532,29 @@ void Forget(src::CGprogram p) {
             ++it;
         }
     }
+}
+
+void Refresh(const std::string& file, const std::string& entry) {
+    std::vector<src::CGprogram> affected;
+    for (auto& [p, prog] : g_progs)
+        if (src::IEquals(prog.file, file) && prog.entry == entry) {
+            prog.replaced = Has(prog.file, prog.entry);
+            prog.linkedOk = false;
+            affected.push_back(p);
+        }
+    for (src::CGprogram p : affected) Forget(p);
+}
+
+// Script toggles take effect from the render path, where the GL context is current.
+void ApplyModToggles() {
+    g_modDirty = false;
+    std::vector<logic::Pair> changed;
+    for (const logic::Pair& p : g_modOff)
+        if (!logic::Contains(g_modApplied, p.first, p.second)) changed.push_back(p);
+    for (const logic::Pair& p : g_modApplied)
+        if (!logic::Contains(g_modOff, p.first, p.second)) changed.push_back(p);
+    g_modApplied = g_modOff;
+    for (const logic::Pair& p : changed) Refresh(p.first, p.second);
 }
 
 void ScanFiles() {
@@ -580,7 +645,36 @@ bool Installed() { return g_installed; }
 bool HasFile(const std::string& file, const std::string& entry) { return g_installed && g_files.count(Key(file, entry)) != 0; }
 
 bool Has(const std::string& file, const std::string& entry) {
-    return HasFile(file, entry) && !logic::Contains(g_disabled, file, entry);
+    return HasFile(file, entry) && !logic::Contains(g_disabled, file, entry) && !logic::Contains(g_modOff, file, entry);
+}
+
+bool SetModEnabled(const std::string& owner, const std::string& file, const std::string& entry, bool on) {
+    if (!HasFile(file, entry) || Owner(file, entry) != owner) return false;
+    if (logic::Contains(g_modOff, file, entry) == !on) return true;
+    g_modOff = logic::SetEnabled(g_modOff, file, entry, on);
+    g_modDirty = true;
+    LOG_INFO("[shaders] GLSL replacement %s:%s %s by %s", file.c_str(), entry.c_str(), on ? "resumed" : "paused", owner.c_str());
+    return true;
+}
+
+void Profile(bool on) {
+    if (on) {
+        g_prof = {};
+        g_prof.on = true;
+        QueryPerformanceCounter(&g_prof.start);
+        return;
+    }
+    if (!g_prof.on) return;
+    LARGE_INTEGER now, f;
+    QueryPerformanceCounter(&now);
+    QueryPerformanceFrequency(&f);
+    double sec = static_cast<double>(now.QuadPart - g_prof.start.QuadPart) / static_cast<double>(f.QuadPart);
+    double ms = static_cast<double>(g_prof.ticks) * 1000.0 / static_cast<double>(f.QuadPart);
+    LOG_INFO("[shaders] glslprof over %.2f s: stores=%llu uploads=%llu changed=%llu uniformCalls=%llu cpu=%.3f ms (%.4f ms/s)", sec,
+             static_cast<unsigned long long>(g_prof.stores), static_cast<unsigned long long>(g_prof.uploads),
+             static_cast<unsigned long long>(g_prof.uploadsChanged), static_cast<unsigned long long>(g_prof.uniformCalls), ms,
+             sec > 0 ? ms / sec : 0.0);
+    g_prof.on = false;
 }
 
 bool IsEnabled(const std::string& file, const std::string& entry) { return !logic::Contains(g_disabled, file, entry); }
@@ -589,14 +683,7 @@ bool SetEnabled(const std::string& file, const std::string& entry, bool on) {
     if (!HasFile(file, entry)) return false;
     g_disabled = logic::SetEnabled(g_disabled, file, entry, on);
     config::SetString("MirageShaders", "GlslDisabled", logic::Encode(g_disabled).c_str());
-    std::vector<src::CGprogram> affected;
-    for (auto& [p, prog] : g_progs)
-        if (src::IEquals(prog.file, file) && prog.entry == entry) {
-            prog.replaced = Has(prog.file, prog.entry);
-            prog.linkedOk = false;
-            affected.push_back(p);
-        }
-    for (src::CGprogram p : affected) Forget(p);
+    Refresh(file, entry);
     Update();
     LOG_INFO("[shaders] GLSL replacement %s:%s %s", file.c_str(), entry.c_str(), on ? "enabled" : "disabled");
     return true;

@@ -571,6 +571,10 @@ public:
         melange::testcmd::Register("shaders.param", &VerbParam);
         melange::testcmd::Register("shaders.errors", &VerbErrors);
         melange::testcmd::Register("shaders.fxaa", &VerbFxaa);
+        melange::testcmd::Register("shaders.glslprof", [](std::string_view a, void*) {
+            glsl::Profile(Words(a).empty() || atoi(Words(a)[0].c_str()) != 0);
+            return true;
+        });
         melange::overlay::AddMenuItem("Mirage/Shaders/Reload all", &MenuReloadAll, nullptr);
         melange::overlay::AddMenuItem("Mirage/Shaders/Toggle FXAA", &MenuToggleFxaa, nullptr);
         RegisterPanel();
@@ -788,6 +792,10 @@ bool SetGlslEnabled(const char* file, const char* entry, bool on) {
 }
 
 bool GetGlslEnabled(const char* file, const char* entry) { return !file || !entry || ms::glsl::IsEnabled(file, entry); }
+
+bool SetOwnGlslEnabled(const char* owner, const char* file, const char* entry, bool on) {
+    return owner && file && entry && ms::glsl::SetModEnabled(owner, file, entry, on);
+}
 
 int AddOverrideRoot(const wchar_t* dir, const char* owner) {
     if (!dir || !*dir) return 0;

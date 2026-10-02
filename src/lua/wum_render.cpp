@@ -402,6 +402,16 @@ int ShSetParam(lua_State* L) {
     return 0;
 }
 
+int ShEnableGlsl(lua_State* L) {
+    ModRec* m = Current();
+    const char* file = luaL_checkstring(L, 1);
+    const char* entry = luaL_checkstring(L, 2);
+    bool on = lua_toboolean(L, 3) != 0;
+    if (!m || !shaders::SetOwnGlslEnabled(m->id.c_str(), file, entry, on))
+        return luaL_error(L, "wum.shaders.enableGlsl: this mod ships no shaders\\%s.%s.glsl replacement", file, entry);
+    return 0;
+}
+
 void Shared(lua_State* L, int wum) {
     static const luaL_Reg kDraw[] = {{"line", Line},       {"box", Box},         {"sphere", Sphere},     {"axes", Axes},
                                      {"quad", Quad},       {"text", Text},       {"hudLine", HudLine},   {"hudRect", HudRect},
@@ -421,7 +431,7 @@ void Shared(lua_State* L, int wum) {
     RegisterFunctions(L, -1, kPostfx);
     lua_setfield(L, wum, "postfx");
     static const luaL_Reg kGraphics[] = {{"setShadowMapSize", GfxSetShadowMapSize}, {"shadowMap", GfxShadowMap}, {nullptr, nullptr}};
-    static const luaL_Reg kShaders[] = {{"setParam", ShSetParam}, {nullptr, nullptr}};
+    static const luaL_Reg kShaders[] = {{"setParam", ShSetParam}, {"enableGlsl", ShEnableGlsl}, {nullptr, nullptr}};
     lua_newtable(L);
     RegisterFunctions(L, -1, kGraphics);
     lua_setfield(L, wum, "graphics");
