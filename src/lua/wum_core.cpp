@@ -386,6 +386,13 @@ int GameActiveWorm(lua_State* L) {
     return 1;
 }
 
+int GameTheme(lua_State* L) {
+    gamestate::Snapshot s;
+    if (gamestate::Read(&s) && s.match.inMatch && s.match.theme[0]) lua_pushstring(L, s.match.theme);
+    else lua_pushnil(L);
+    return 1;
+}
+
 void Shared(lua_State* L, int wum) {
     static const luaL_Reg kLog[] = {{"debug", LogDebug}, {"info", LogInfo}, {"warn", LogWarn}, {"error", LogError}, {nullptr, nullptr}};
     static const luaL_Reg kEvents[] = {{"on", EventsOn}, {"off", EventsOff}, {"emit", EventsEmit}, {nullptr, nullptr}};
@@ -394,7 +401,7 @@ void Shared(lua_State* L, int wum) {
     static const luaL_Reg kStorage[] = {{"get", StorageGet}, {"set", StorageSet}, {"remove", StorageRemove}, {"keys", StorageKeys}, {nullptr, nullptr}};
     static const luaL_Reg kGame[] = {{"scene", GameScene}, {"inMatch", GameInMatch}, {"online", GameOnline},
                                      {"turn", GameTurn}, {"tick", GameTick}, {"worms", GameWorms}, {"teams", GameTeams},
-                                     {"activeWorm", GameActiveWorm}, {nullptr, nullptr}};
+                                     {"activeWorm", GameActiveWorm}, {"theme", GameTheme}, {nullptr, nullptr}};
     struct Ns {
         const char* name;
         const luaL_Reg* fns;

@@ -125,6 +125,7 @@ Read-only game state.
 | `wum.game.worms()` | The worms of the current match, an array of `{slot, team, name, health, alive, pos={x,y,z}, weapon}` (`weapon` is the weapon id, absent when none). Empty outside a match; `nil, "unavailable"` on an unrecognised game build or with `[GameState] Enabled=0`. |
 | `wum.game.teams()` | The teams of the current match, an array of `{slot, name, active, ai, local}`; empty outside a match, `nil, "unavailable"` as above. |
 | `wum.game.activeWorm()` | The slot of the worm whose turn it is, or `nil`. |
+| `wum.game.theme()` | The level theme of the current match as the game names it (for example `"SPACE"`), or `nil` outside a match. |
 
 ## `wum.ui`
 

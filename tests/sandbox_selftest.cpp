@@ -780,6 +780,7 @@ void TestGame() {
     ExpectEq(Eval(nullptr, "return select('#', wum.game.worms()), select(2, wum.game.worms())"), "2\tunavailable",
              "worms unavailable without the readers");
     ExpectEq(Eval(nullptr, "return wum.game.activeWorm()"), "nil", "no active worm without the readers");
+    ExpectEq(Eval(nullptr, "return wum.game.theme()"), "nil", "no theme without the readers");
     gamestate::Snapshot& s = gamestate::g_snapshot;
     s = {};
     s.match.inMatch = true;
@@ -811,6 +812,12 @@ void TestGame() {
     ExpectEq(Eval(nullptr, "local t = wum.game.teams() return #t, t[1].slot, t[1].name, t[1].active, t[1].ai, t[1][\"local\"]"),
              "1\t1\tSandworms\ttrue\ttrue\tfalse", "teams fields");
     ExpectEq(Eval(nullptr, "return wum.game.activeWorm()"), "5", "active worm slot");
+    ExpectEq(Eval(nullptr, "return wum.game.theme()"), "nil", "no theme before the level reports one");
+    strcpy(s.match.theme, "SPACE");
+    ExpectEq(Eval(nullptr, "return wum.game.theme()"), "SPACE", "level theme");
+    s.match.inMatch = false;
+    ExpectEq(Eval(nullptr, "return wum.game.theme()"), "nil", "no theme outside a match");
+    s.match.inMatch = true;
     s.match.activeWorm = -1;
     ExpectEq(Eval(nullptr, "return wum.game.activeWorm()"), "nil", "no active worm between turns");
     gamestate::g_readable = false;
