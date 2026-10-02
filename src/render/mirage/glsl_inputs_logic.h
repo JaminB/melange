@@ -3,6 +3,7 @@
 // draw in a frame, and uniforms fed from another program's Cg parameter. Offline self-tested in
 // tests/shaders_selftest.cpp.
 #include <cstdint>
+#include <cstring>
 #include <string_view>
 
 namespace melange::mirage::shaders::glsl::logic {
@@ -23,5 +24,12 @@ inline int Freshest(const uint64_t* stamps, int n) {
     for (int i = 0; i < n; ++i)
         if (stamps[i] && (best < 0 || stamps[i] > stamps[best])) best = i;
     return best;
+}
+
+// Copies n floats over the cache; false when they already match, so they need not be stored or sent again.
+inline bool Update(float* cache, const float* v, int n) {
+    if (std::memcmp(cache, v, n * sizeof(float)) == 0) return false;
+    std::memcpy(cache, v, n * sizeof(float));
+    return true;
 }
 }  // namespace melange::mirage::shaders::glsl::logic

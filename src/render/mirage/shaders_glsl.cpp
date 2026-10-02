@@ -7,6 +7,7 @@
 #include <GL/gl.h>
 
 #include <algorithm>
+#include <limits>
 #include <map>
 #include <string>
 #include <unordered_map>
@@ -114,6 +115,7 @@ struct Binding {
     GLint count;
     GLuint arb;
     unsigned index;
+    unsigned sent = 0;  // offset of its last-sent registers in Linked::sent
 };
 // A uniform with no Cg parameter, fed from a params.ini row (or SetParam) of the replaced program.
 struct ParamBinding {
@@ -129,6 +131,7 @@ struct ForeignBinding {
     GLint count;
     std::vector<std::pair<GLuint, unsigned>> from;  // ARB program, resource index
     uint64_t seen = 0;
+    float sent[16];
 };
 struct Linked {
     GLuint program = 0;
@@ -141,6 +144,8 @@ struct Linked {
     uint32_t paramsSeen = ~0u;
     uint32_t seen[2] = {~0u, ~0u};
     GLuint arb[2] = {};
+    uint64_t sceneFrame = ~0ull;
+    std::vector<float> sent;  // the registers each binding last sent, so unchanged uniforms are skipped
 };
 std::map<std::pair<src::CGprogram, src::CGprogram>, Linked> g_linked;
 src::CGprogram g_cur[2] = {};
@@ -172,14 +177,20 @@ struct SceneCopy {
 
 std::string Key(std::string_view file, std::string_view entry) { return src::Lower(file) + "|" + std::string(entry); }
 
+GLuint g_lastProg = 0;
+Mirror* g_lastMirror = nullptr;
+
+// The engine re-sends most parameters with every draw; only a real change bumps the version that triggers an upload.
 void Store(GLuint prog, GLuint index, GLsizei count, const GLfloat* v) {
     ProfScope ps;
     if (g_prof.on) ++g_prof.stores;
     if (!prog || !v || count <= 0 || index + count > 4096) return;
-    Mirror& m = g_mirror[prog];
-    if (m.v.size() < (index + count) * 4u) m.v.resize((index + count) * 4u);
-    std::copy(v, v + count * 4, m.v.begin() + index * 4);
-    ++m.version;
+    Mirror& m = prog == g_lastProg ? *g_lastMirror : g_mirror[prog];
+    g_lastProg = prog;
+    g_lastMirror = &m;
+    bool grown = m.v.size() < (index + count) * 4u;
+    if (grown) m.v.resize((index + count) * 4u);
+    if (logic::Update(m.v.data() + index * 4, v, count * 4) || grown) ++m.version;
     m.stamp = ++g_stamp;
 }
 
@@ -352,6 +363,8 @@ bool Generate(const Prog& p, std::string* text, std::vector<src::CgVar>* vars) {
     return !text->empty();
 }
 
+int SentRegs(const Binding& b) { return b.type == kFloatMat4 ? 4 * std::min(b.count, 16) : std::min(b.count, 64); }
+
 std::string StripIndex(std::string s) {
     if (size_t b = s.find('['); b != std::string::npos) s.resize(b);
     return s;
@@ -470,6 +483,7 @@ Linked Link(src::CGprogram vp, src::CGprogram fp) {
         }
         if (!found && !(type >= kSampler1D && type <= kSampler2DRectShadow) && g_cgGLGetProgramID) {
             ForeignBinding fb{loc, type, size, {}};
+            std::fill(std::begin(fb.sent), std::end(fb.sent), std::numeric_limits<float>::quiet_NaN());
             for (const auto& [other, op] : g_progs) {
                 if (other == vp || other == fp) continue;
                 src::CGparameter cp = cg.GetNamedParameter(other, glName.c_str());
@@ -486,6 +500,12 @@ Linked Link(src::CGprogram vp, src::CGprogram fp) {
         if (!found) LOG_WARN("[shaders] GLSL %s: uniform '%s' has no Cg parameter; it stays 0", label[mod[0] ? 0 : 1].c_str(), name);
     }
     g_gl.UseProgram(g_used);
+    size_t sent = 0;
+    for (Binding& b : l.bindings) {
+        b.sent = static_cast<unsigned>(sent);
+        sent += SentRegs(b) * 4u;
+    }
+    l.sent.assign(sent, std::numeric_limits<float>::quiet_NaN());
     l.program = prog;
     l.failed = false;
     LOG_INFO("[shaders] GLSL program %u linked: %s + %s, %zu mirrored uniforms", prog, label[0].c_str(), label[1].c_str(), l.bindings.size());
@@ -578,10 +598,13 @@ void CopyScene(const Linked& l) {
 
 void BindScene(Linked& l) {
     if (!g_gl.ActiveTexture || !g_gl.BindFramebuffer) return;
+    // The engine leaves the copy's units alone and uniforms stay with the program, so once per frame is enough.
+    uint64_t f = events::FrameCount();
+    if (l.sceneFrame == f) return;
     GLint unit = kTexture0;
     glGetIntegerv(kActiveTextureBinding, &unit);
     // Depth-only targets (the shadow pass) are skipped: the copy waits for the first draw into a colour target.
-    if (uint64_t f = events::FrameCount(); f != g_copy.frame && melange::render::GetSceneTargets().colorTex) {
+    if (f != g_copy.frame && melange::render::GetSceneTargets().colorTex) {
         g_copy.frame = f;
         melange::render::Camera cam;
         if (melange::render::GetCamera(&cam) && cam.valid) {
@@ -604,6 +627,7 @@ void BindScene(Linked& l) {
     if (l.nearFarLoc >= 0) g_gl.Uniform2fv(l.nearFarLoc, 1, g_copy.nearFar);
     if (l.viewLoc >= 0) g_gl.UniformMatrix4fv(l.viewLoc, 1, 0, g_copy.view);
     if (l.projLoc >= 0) g_gl.UniformMatrix4fv(l.projLoc, 1, 0, g_copy.proj);
+    l.sceneFrame = g_copy.frame == f ? f : ~0ull;
 }
 
 void UploadForeign(Linked& l) {
@@ -622,6 +646,7 @@ void UploadForeign(Linked& l) {
         if (k < 0 || stamps[k] == b.seen) continue;
         b.seen = stamps[k];
         const float* r = ms[k]->v.data() + b.from[k].second * 4;
+        if (!logic::Update(b.sent, r, b.type == kFloatMat4 ? 16 : 4)) continue;
         switch (b.type) {
         case kFloatMat4: g_gl.UniformMatrix4fv(b.loc, 1, 0, r); break;
         case kFloatVec4: g_gl.Uniform4fv(b.loc, 1, r); break;
@@ -649,15 +674,14 @@ void Upload() {
     if (v0 == l.seen[0] && v1 == l.seen[1]) return;
     l.seen[0] = v0;
     l.seen[1] = v1;
-    if (g_prof.on) {
-        ++g_prof.uploadsChanged;
-        g_prof.uniformCalls += l.bindings.size();
-    }
+    if (g_prof.on) ++g_prof.uploadsChanged;
     for (const Binding& b : l.bindings) {
         const Mirror* mm = b.arb == l.arb[0] ? m[0] : m[1];
         int regs = b.type == kFloatMat4 ? 4 * b.count : b.count;
         if (!mm || mm->v.size() < (b.index + regs) * 4u) continue;
         const float* r = mm->v.data() + b.index * 4;
+        if (!logic::Update(l.sent.data() + b.sent, r, SentRegs(b) * 4)) continue;
+        if (g_prof.on) ++g_prof.uniformCalls;
         float tmp[4 * 64];
         int n = std::min(b.count, 64);
         switch (b.type) {

@@ -256,6 +256,10 @@ void TestGlslInputs() {
     uint64_t none[3] = {0, 0, 0}, some[3] = {5, 0, 9}, one[1] = {1};
     Check(gl::Freshest(none, 3) == -1 && gl::Freshest(some, 3) == 2 && gl::Freshest(one, 1) == 0 && gl::Freshest(some, 0) == -1,
           "freshest candidate");
+    float cache[4] = {1, 2, 3, 4}, same[4] = {1, 2, 3, 4}, other[4] = {1, 2, 3, 5};
+    Check(!gl::Update(cache, same, 4), "unchanged values are not sent again");
+    Check(gl::Update(cache, other, 4) && cache[3] == 5 && !gl::Update(cache, other, 4), "changed values are copied once");
+    Check(!gl::Update(cache, same, 3), "only the first n values are compared");
 }
 
 int main() {
