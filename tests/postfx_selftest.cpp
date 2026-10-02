@@ -183,6 +183,10 @@ void TestPersist() {
           "Stack parsing", pfx::FormatStack(v));
     Check(pfx::FormatStack(v) == "a/b:7:0,c/d:-5:0,own:er/x:3:1", "Stack formatting");
     Check(pfx::ParseStack("").empty(), "empty Stack");
+    v = pfx::ParseStack("a/b::1,c/d:4:0,e/f:x:1");
+    Check(v.size() == 2 && !v[0].hasOrder && v[0].enabled && v[1].hasOrder && v[1].order == 4, "Stack without an order",
+          pfx::FormatStack(v));
+    Check(pfx::FormatStack(v) == "a/b::1,c/d:4:0", "Stack without an order round-trips", pfx::FormatStack(v));
     float f[4] = {};
     Check(pfx::ParseFloats("0.8, 1,-2.5", f, 4) == 3 && f[0] == 0.8f && f[2] == -2.5f, "ParseFloats");
     Check(pfx::FormatFloats(f, 3) == "0.8,1,-2.5", "FormatFloats round-trips", pfx::FormatFloats(f, 3));

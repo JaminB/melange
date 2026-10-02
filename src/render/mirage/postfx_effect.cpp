@@ -553,7 +553,9 @@ std::vector<StackEntry> ParseStack(std::string_view s) {
         if (a == std::string_view::npos || a == 0) continue;
         StackEntry e;
         std::string_view en = Trim(item.substr(b + 1));
-        if (!ToInt(item.substr(a + 1, b - a - 1), &e.order) || (en != "0" && en != "1")) continue;
+        std::string_view ord = Trim(item.substr(a + 1, b - a - 1));
+        e.hasOrder = !ord.empty();
+        if ((e.hasOrder && !ToInt(ord, &e.order)) || (en != "0" && en != "1")) continue;
         e.enabled = en == "1";
         e.id = UnescapeStackId(Trim(item.substr(0, a)));
         bool dup = false;
@@ -571,7 +573,7 @@ std::string FormatStack(const std::vector<StackEntry>& v) {
     std::string s;
     for (const StackEntry& e : v) {
         if (!s.empty()) s += ',';
-        s += EscapeStackId(e.id) + ":" + std::to_string(e.order) + ":" + (e.enabled ? "1" : "0");
+        s += EscapeStackId(e.id) + ":" + (e.hasOrder ? std::to_string(e.order) : std::string()) + ":" + (e.enabled ? "1" : "0");
     }
     return s;
 }

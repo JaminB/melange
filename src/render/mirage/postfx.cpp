@@ -71,12 +71,16 @@ pfx::StackEntry* Persisted(const std::string& id) {
     return nullptr;
 }
 
-void Persist(const pfx::Effect& e) {
-    if (pfx::StackEntry* s = Persisted(e.id)) {
+void Persist(const pfx::Effect& e, bool order) {
+    pfx::StackEntry* s = Persisted(e.id);
+    if (!s) {
+        g_persist.push_back({e.id, e.order, e.enabled, false});
+        s = &g_persist.back();
+    }
+    s->enabled = e.enabled;
+    if (order) {
         s->order = e.order;
-        s->enabled = e.enabled;
-    } else {
-        g_persist.push_back({e.id, e.order, e.enabled});
+        s->hasOrder = true;
     }
     g_stackDirty = true;
 }
@@ -111,11 +115,12 @@ void FlushPersist(bool force) {
 }
 
 void ApplyPersisted(pfx::Effect& e) {
-    if (const pfx::StackEntry* s = Persisted(e.id)) {
-        e.order = s->order;
+    const pfx::StackEntry* s = Persisted(e.id);
+    if (s && s->hasOrder) e.order = s->order;
+    else if (!e.code) e.order = e.desc.order;
+    if (s) {
         e.enabled = s->enabled;
     } else if (!e.code) {
-        e.order = e.desc.order;
         e.enabled = e.desc.enabled;
     }
 }
@@ -587,7 +592,7 @@ bool SetEnabled(const char* id, bool on) {
         e->reparse = true;
         g_rescan = true;
     }
-    Persist(*e);
+    Persist(*e, false);
     return true;
 }
 
@@ -597,7 +602,7 @@ bool SetOrder(const char* id, int order) {
     if (!e) return false;
     if (e->order != order) LOG_INFO("[postfx] %s order %d -> %d", e->id.c_str(), e->order, order);
     e->order = order;
-    Persist(*e);
+    Persist(*e, true);
     return true;
 }
 

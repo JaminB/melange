@@ -75,8 +75,9 @@ struct StackEntry {
     std::string id;
     int order = 0;
     bool enabled = false;
+    bool hasOrder = true;  // false: the order comes from effect.ini
 };
-std::vector<StackEntry> ParseStack(std::string_view s);  // "<id>:<order>:<0|1>,..."
+std::vector<StackEntry> ParseStack(std::string_view s);  // "<id>:<order>:<0|1>,..."; an empty order follows effect.ini
 std::string FormatStack(const std::vector<StackEntry>& v);
 int ParseFloats(std::string_view s, float* v, int max);  // "0.8, 1,2"; returns the count parsed
 std::string FormatFloats(const float* v, int n);
