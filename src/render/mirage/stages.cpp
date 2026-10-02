@@ -367,8 +367,6 @@ unsigned AttachedTexture(const FboProcs& p, GLenum attachment) {
     return static_cast<unsigned>(name);
 }
 
-SceneTargets g_targets{};
-uint64_t g_targetsFrame = ~0ull;
 }  // namespace
 
 Pass CurrentPass() { return g_enabled ? static_cast<Pass>(mirage::engine::Pass()) : Pass::None; }
@@ -465,8 +463,6 @@ SceneTargets GetSceneTargets() {
     if (!g_enabled || !p.ctx || !p.attachParam) return t;
     GLint fbo = 0;
     glGetIntegerv(kFRAMEBUFFER_BINDING, &fbo);
-    uint64_t frame = events::FrameCount();
-    if (frame == g_targetsFrame && g_targets.fbo == static_cast<unsigned>(fbo)) return g_targets;
     t.fbo = static_cast<unsigned>(fbo);
     if (fbo) {
         t.colorTex = AttachedTexture(p, kCOLOR_ATTACHMENT0);
@@ -484,8 +480,6 @@ SceneTargets GetSceneTargets() {
         }
         t.valid = t.colorTex != 0 && t.w > 0 && t.h > 0;
     }
-    g_targets = t;
-    g_targetsFrame = frame;
     return t;
 }
 }  // namespace melange::render
