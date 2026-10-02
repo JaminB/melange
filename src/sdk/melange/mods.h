@@ -23,6 +23,8 @@ bool Find(const char* id, ModInfo* out);
 // while the mod is State::Enabled.
 struct GraphicsRequest { bool present, trilinearFilter, lodBiasSet; int anisotropy; float lodBias; };
 bool GetGraphicsRequest(const char* id, GraphicsRequest* out);
+// The "graphics" block's shadowMapSize (512-4096), or 0 if the mod is unknown or asks for none.
+int ShadowMapRequest(const char* id);
 bool SetEnabled(const char* id, bool on); // persisted; client-only mods apply immediately
 bool SetDeepDesert(const char* id, bool granted);
 const wchar_t* ModsDir();

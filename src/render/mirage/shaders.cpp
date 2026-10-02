@@ -3,6 +3,7 @@
 #include <windows.h>
 
 #include <algorithm>
+#include <atomic>
 #include <cstdio>
 #include <deque>
 #include <functional>
@@ -89,6 +90,7 @@ struct Bound {
 };
 std::map<CGprogram, std::vector<Bound>> g_bindCache;
 volatile bool g_paramsLive = false;
+std::atomic<uint32_t> g_paramsVersion{0};
 
 std::string SafeStr(const char* p, size_t max = 260) {
     std::string s;
@@ -231,6 +233,7 @@ void EnsureParamHooks() {
 
 void ParamsChanged() {
     std::lock_guard lk(g_mx);
+    ++g_paramsVersion;
     g_bindCache.clear();
     if (!g_params.empty()) EnsureParamHooks();
     g_paramsLive = g_bindHooked && g_updateHooked && !g_params.empty();
@@ -633,6 +636,29 @@ std::vector<ParamRow> Params() {
     return out;
 }
 
+namespace {
+const Param* MatchParam(const std::string& file, const std::string& entry, const std::string& name) {
+    for (const Param& p : g_params)
+        if (p.name == name && src::IEquals(p.file, file) && src::Glob(p.entry, entry)) return &p;
+    return nullptr;
+}
+}  // namespace
+
+bool HasParam(const std::string& file, const std::string& entry, const std::string& name) {
+    std::lock_guard lk(g_mx);
+    return MatchParam(file, entry, name) != nullptr;
+}
+
+bool ParamValue(const std::string& file, const std::string& entry, const std::string& name, float* v, int n) {
+    std::lock_guard lk(g_mx);
+    const Param* p = MatchParam(file, entry, name);
+    if (!p) return false;
+    for (int i = 0; i < n; ++i) v[i] = i < p->n ? p->v[i] : 0.f;
+    return true;
+}
+
+uint32_t ParamsVersion() { return g_paramsVersion.load(); }
+
 bool FxaaToggle(bool on, std::string* why) {
     if (!engine::Check()) {
         *why = "engine checks failed";
@@ -723,6 +749,16 @@ int Reload(const char* match) {
 }
 
 bool SetParam(const char* file, const char* entry, const char* param, const float* v, int n) {
+    return ms::StoreParam(file, entry, param, v, n, true);
+}
+
+bool SetOwnParam(const char* owner, const char* file, const char* entry, const char* param, const float* v, int n) {
+    if (!owner || !file || !entry || !param) return false;
+    {
+        std::lock_guard lk(ms::g_mx);
+        ms::Param* p = ms::FindParam(file, entry, param);
+        if (!p || !p->spec || p->owner != owner) return false;
+    }
     return ms::StoreParam(file, entry, param, v, n, true);
 }
 

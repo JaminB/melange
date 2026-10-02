@@ -620,6 +620,11 @@ bool GetGraphicsRequest(const char* id, GraphicsRequest* out) {
     return true;
 }
 
+int ShadowMapRequest(const char* id) {
+    thumper::Entry e;
+    return id && thumper::FindEntry(id, &e) ? e.manifest.graphicsShadowMapSize : 0;
+}
+
 bool SetEnabled(const char* id, bool on) { return id && thumper::SetEnabled(id, on); }
 bool SetDeepDesert(const char* id, bool granted) { return id && thumper::SetDeepDesert(id, granted); }
 

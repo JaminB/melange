@@ -1382,7 +1382,7 @@ lua_State* ClientState() { return sandbox::L(); }
 
 bool AddLibrary(const char* name, OpenFn fn, uint32_t flags) {
     static const char* const kReserved[] = {"mod", "log", "events", "timers", "config", "storage", "game",
-                                            "ui", "draw", "render", "postfx", "unsafe", "sim"};
+                                            "ui", "draw", "render", "postfx", "graphics", "shaders", "unsafe", "sim"};
     if (!name || !fn || !IsIdent(name)) return false;
     for (const char* r : kReserved)
         if (strcmp(r, name) == 0) return false;

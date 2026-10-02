@@ -1,12 +1,14 @@
-// wum.draw, wum.render and wum.postfx.
+// wum.draw, wum.render, wum.postfx, wum.graphics and wum.shaders.
 #include <algorithm>
 #include <cstring>
 #include <memory>
 
 #include "lua/sandbox_core.h"
 #include "melange/draw.h"
+#include "melange/graphics.h"
 #include "melange/postfx.h"
 #include "melange/render.h"
+#include "melange/shaders.h"
 
 namespace melange::sandbox {
 namespace {
@@ -355,6 +357,51 @@ int PfxGetParam(lua_State* L) {
     return n;
 }
 
+// ---------------------------------------------------------------- wum.graphics / wum.shaders
+int GfxSetShadowMapSize(lua_State* L) {
+    ModRec* m = Current();
+    if (!m) return luaL_error(L, "wum.graphics.setShadowMapSize: no current mod");
+    int size = -1;
+    if (!lua_isnoneornil(L, 1)) {
+        lua_Integer v = luaL_checkinteger(L, 1);
+        if (v != 0 && v != 512 && v != 1024 && v != 2048 && v != 4096)
+            return luaL_error(L, "wum.graphics.setShadowMapSize: size must be 512, 1024, 2048, 4096, 0 or nil");
+        size = static_cast<int>(v);
+    }
+    lua_pushboolean(L, graphics::SetShadowMapRequest(m->id.c_str(), size));
+    return 1;
+}
+
+int GfxShadowMap(lua_State* L) {
+    const graphics::ShadowMapInfo i = graphics::GetShadowMapInfo();
+    lua_createtable(L, 0, 5);
+    lua_pushinteger(L, i.size);
+    lua_setfield(L, -2, "size");
+    lua_pushinteger(L, i.effective);
+    lua_setfield(L, -2, "effective");
+    lua_pushinteger(L, i.vanilla);
+    lua_setfield(L, -2, "vanilla");
+    lua_pushboolean(L, i.modRequest);
+    lua_setfield(L, -2, "modRequest");
+    lua_pushboolean(L, i.available);
+    lua_setfield(L, -2, "available");
+    return 1;
+}
+
+int ShSetParam(lua_State* L) {
+    ModRec* m = Current();
+    const char* file = luaL_checkstring(L, 1);
+    const char* entry = luaL_checkstring(L, 2);
+    const char* param = luaL_checkstring(L, 3);
+    float v[16];
+    int n = 0;
+    for (int i = 4; i <= lua_gettop(L) && n < 16; ++i) v[n++] = static_cast<float>(luaL_checknumber(L, i));
+    if (n == 0) return luaL_error(L, "wum.shaders.setParam: no values");
+    if (!m || !shaders::SetOwnParam(m->id.c_str(), file, entry, param, v, n))
+        return luaL_error(L, "wum.shaders.setParam: '%s' is not declared by this mod's shaders\\params.ini under [%s:%s]", param, file, entry);
+    return 0;
+}
+
 void Shared(lua_State* L, int wum) {
     static const luaL_Reg kDraw[] = {{"line", Line},       {"box", Box},         {"sphere", Sphere},     {"axes", Axes},
                                      {"quad", Quad},       {"text", Text},       {"hudLine", HudLine},   {"hudRect", HudRect},
@@ -373,6 +420,14 @@ void Shared(lua_State* L, int wum) {
     lua_newtable(L);
     RegisterFunctions(L, -1, kPostfx);
     lua_setfield(L, wum, "postfx");
+    static const luaL_Reg kGraphics[] = {{"setShadowMapSize", GfxSetShadowMapSize}, {"shadowMap", GfxShadowMap}, {nullptr, nullptr}};
+    static const luaL_Reg kShaders[] = {{"setParam", ShSetParam}, {nullptr, nullptr}};
+    lua_newtable(L);
+    RegisterFunctions(L, -1, kGraphics);
+    lua_setfield(L, wum, "graphics");
+    lua_newtable(L);
+    RegisterFunctions(L, -1, kShaders);
+    lua_setfield(L, wum, "shaders");
 }
 
 const LibRegistrar g_reg(&Shared, nullptr);

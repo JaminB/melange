@@ -123,7 +123,7 @@ void TestParse() {
         const char* json = R"({
             "spiceVersion": 1, "id": "gfx-mod", "version": "1.0.0", "name": "Gfx Mod",
             "melange": {"range": ">=0.1.0"}, "kind": "client-only", "entry": {"client": "client/init.lua"},
-            "graphics": {"anisotropy": 16, "trilinearFilter": true, "lodBias": -0.5}
+            "graphics": {"anisotropy": 16, "trilinearFilter": true, "lodBias": -0.5, "shadowMapSize": 2048}
         })";
         std::wstring dir = Fixture("gfx-mod", json);
         Manifest m;
@@ -131,7 +131,7 @@ void TestParse() {
         bool ok = Parse(dir, &m, &errs);
         Expect(ok, "parse: a valid graphics block");
         Expect(ok && m.graphicsPresent && m.graphicsAnisotropy == 16 && m.graphicsTrilinear && m.graphicsLodBiasSet &&
-                   m.graphicsLodBias == -0.5,
+                   m.graphicsLodBias == -0.5 && m.graphicsShadowMapSize == 2048,
                "parse: graphics fields read through");
     }
     {
@@ -161,6 +161,15 @@ void TestParse() {
         std::vector<Error> errs;
         bool ok = Parse(dir, &m, &errs);
         Expect(!ok && !errs.empty() && errs[0].field == "graphics.lodBias", "parse: lodBias out of range is rejected");
+    }
+    {
+        const char* json = R"({"spiceVersion": 1, "id": "bad-gfx3", "version": "1.0.0", "name": "X",
+            "melange": {"range": ">=0.1.0"}, "kind": "client-only", "entry": {}, "graphics": {"shadowMapSize": 3000}})";
+        std::wstring dir = Fixture("bad-gfx3", json);
+        Manifest m;
+        std::vector<Error> errs;
+        bool ok = Parse(dir, &m, &errs);
+        Expect(!ok && !errs.empty() && errs[0].field == "graphics.shadowMapSize", "parse: a shadowMapSize that isn't 512-4096 is rejected");
     }
     {
         const char* json = R"({"spiceVersion": 1, "id": "wrong-id", "version": "1.0.0", "name": "X",

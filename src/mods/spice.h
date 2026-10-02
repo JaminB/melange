@@ -25,9 +25,10 @@ struct Manifest {
     std::vector<Setting> settings; std::vector<Weapon> weapons;
     std::vector<Level> levels; std::wstring dir;
     // Optional "graphics" block: a client-only mod's request for texture clarity (Mirage's MirageTextures
-    // component), applied unless the user overrides it in [MirageTextures]. Never affects the simulation.
+    // component, and the shadow-map size for MirageShadows), applied unless the user overrides it in Melange.ini.
+    // Never affects the simulation.
     bool graphicsPresent = false, graphicsTrilinear = false, graphicsLodBiasSet = false;
-    int graphicsAnisotropy = 0;
+    int graphicsAnisotropy = 0, graphicsShadowMapSize = 0;  // shadowMapSize 0 = no request
     double graphicsLodBias = 0;
 };
 struct Error { std::string field; int line = 0, col = 0; std::string text; };

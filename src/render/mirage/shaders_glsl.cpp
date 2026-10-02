@@ -88,10 +88,18 @@ struct Binding {
     GLuint arb;
     unsigned index;
 };
+// A uniform with no Cg parameter, fed from a params.ini row (or SetParam) of the replaced program.
+struct ParamBinding {
+    GLint loc;
+    GLenum type;
+    std::string file, entry, name;
+};
 struct Linked {
     GLuint program = 0;
     bool failed = false;
     std::vector<Binding> bindings;
+    std::vector<ParamBinding> params;
+    uint32_t paramsSeen = ~0u;
     uint32_t seen[2] = {~0u, ~0u};
     GLuint arb[2] = {};
 };
@@ -365,6 +373,12 @@ Linked Link(src::CGprogram vp, src::CGprogram fp) {
             }
         }
         cg.Drain();
+        for (int s = 0; s < 2 && !found; ++s) {
+            const Prog& p = g_progs[progs[s]];
+            if (!mod[s] || !HasParam(p.file, p.entry, glName)) continue;
+            found = true;
+            l.params.push_back({loc, type, p.file, p.entry, glName});
+        }
         if (!found) LOG_WARN("[shaders] GLSL %s: uniform '%s' has no Cg parameter; it stays 0", label[mod[0] ? 0 : 1].c_str(), name);
     }
     g_gl.UseProgram(g_used);
@@ -375,8 +389,26 @@ Linked Link(src::CGprogram vp, src::CGprogram fp) {
     return l;
 }
 
+void UploadParams(Linked& l) {
+    uint32_t v = ParamsVersion();
+    if (v == l.paramsSeen) return;
+    l.paramsSeen = v;
+    for (const ParamBinding& b : l.params) {
+        float r[16] = {};
+        if (!ParamValue(b.file, b.entry, b.name, r, 16)) continue;
+        switch (b.type) {
+        case kFloatVec4: g_gl.Uniform4fv(b.loc, 1, r); break;
+        case kFloatVec3: g_gl.Uniform3fv(b.loc, 1, r); break;
+        case kFloatVec2: g_gl.Uniform2fv(b.loc, 1, r); break;
+        case GL_FLOAT: g_gl.Uniform1fv(b.loc, 1, r); break;
+        default: break;
+        }
+    }
+}
+
 void Upload() {
     Linked& l = *g_active;
+    if (!l.params.empty()) UploadParams(l);
     const Mirror* m[2] = {};
     for (int s = 0; s < 2; ++s) {
         auto it = g_mirror.find(l.arb[s]);

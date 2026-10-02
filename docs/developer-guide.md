@@ -159,6 +159,34 @@ at once: every texture seen so far is swept back to the new effective settings. 
 logs the effective settings, whether the upload hook is installed, and how many textures it has touched. The
 `sunstone` plugin ships this layer.
 
+### Shadows
+
+The game renders one shadow map for the whole level, 1024² by default (its own `/SHADOWMAP` cfg option). A
+client-only mod asks for a larger one in the same `graphics` block, and `MirageShadows` applies the largest request
+among enabled mods:
+
+```json
+"graphics": { "shadowMapSize": 2048 }
+```
+
+The size is 512, 1024, 2048 or 4096. Nothing changes unless a mod asks for it. `[MirageShadows]` in `Melange.ini`
+always has the final say:
+
+```ini
+[MirageShadows]
+ShadowMapSize=auto   ; auto | vanilla | 512 | 1024 | 2048 | 4096
+```
+
+A request known at start is applied before the game creates its shadow map. Enabling or disabling a mod, or a
+script's `wum.graphics.setShadowMapSize`, rebuilds the shadow map once on the next frame; going back to no request
+restores the game's own size. The `mirage.shadows` console verb logs the effective, vanilla and current sizes.
+
+Filtering is up to the landscape shader. A GLSL replacement (`shaders\Landscape.LandscapeFragmentMain.glsl` and
+`Landscape.HeightMapFragmentMain.glsl`) samples `shadowMap` as a `sampler2DShadow` (hardware depth compare with
+bilinear filtering) and gets the map size in `shadowSize`. Its own tunables are uniforms with no Cg parameter: declare
+them in the mod's `shaders\params.ini` and Melange feeds them the slider values (`float`, `vec2`, `vec3`, `vec4`).
+A script changes them with `wum.shaders.setParam`. The `sunstone` plugin uses this for its soft shadows.
+
 ### Post-processing effects
 
 An effect is a folder `<game>\Mods\<id>\postfx\<effect>\` with an `effect.ini` and GLSL fragment shaders. Its id is `<id>/<effect>`. Effects run at one of two stages:
@@ -423,6 +451,7 @@ The public SDK headers are in `src/sdk/melange/`:
 | `melange/compat.h` | Report what your module loaded or skipped on this GPU, for the compatibility report |
 | `melange/postfx.h` | List, enable, order and tune post-processing effects; add a full-screen pass from C++ |
 | `melange/shaders.h` | List the game's shader programs, reload them, set their parameters, add shader folders |
+| `melange/graphics.h` | Request a shadow-map size at runtime and read the current one |
 | `melange/draw.h` | Draw lines, boxes, spheres, meshes and text in the world, and shapes, text and images on the HUD |
 | `melange/gldebug.h` | Whether the debug context is on, its message counts, and debug groups and labels for your GL work |
 | `melange/mods.h` | The mod list, load order and enable state (Thumper), and the content identity and lobby handshake used online |

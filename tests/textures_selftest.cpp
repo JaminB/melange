@@ -1,6 +1,8 @@
-// Offline self-test of the MirageTextures (L1 "texture clarity") merge logic (render/mirage/textures_logic.h).
+// Offline self-test of the MirageTextures and MirageShadows merge logic (render/mirage/textures_logic.h,
+// render/mirage/shadows_logic.h).
 #include <cstdio>
 
+#include "render/mirage/shadows_logic.h"
 #include "render/mirage/textures_logic.h"
 
 namespace {
@@ -119,6 +121,25 @@ void TestParseLodBias(Ctx& c) {
     c.Check(ParseLodBias("-0.5", 8.f, &set, &v) && set && v == -0.5f, "lodBias: a number sets the override");
     c.Check(!ParseLodBias("9", 8.f, &set, &v), "lodBias: outside the limit is rejected");
 }
+void TestShadows(Ctx& c) {
+    namespace s = melange::mirage::shadows::logic;
+    c.Check(s::Merge(-1, {}).size == 0, "shadows: vanilla with no request and auto ini");
+    c.Check(s::Merge(-1, {0, 0}).size == 0, "shadows: mods without a request stay vanilla");
+    s::Effective e = s::Merge(-1, {2048, 1024});
+    c.Check(e.size == 2048 && e.anyModRequest, "shadows: the largest request wins");
+    c.Check(s::Merge(-1, {8192}).size == 4096, "shadows: capped at 4096");
+    c.Check(s::Merge(0, {4096}).size == 0, "shadows: ini vanilla beats a request");
+    c.Check(s::Merge(1024, {4096}).size == 1024, "shadows: an ini size beats a request");
+    c.Check(s::Merge(2048, {}).size == 2048, "shadows: an ini size works with no mod");
+    c.Check(s::ModRequest(2048, -1) == 2048 && s::ModRequest(2048, 4096) == 4096 && s::ModRequest(2048, 0) == 0,
+            "shadows: a runtime request replaces the manifest's");
+    c.Check(s::Target(s::Merge(-1, {}), 1024) == 1024 && s::Target(e, 1024) == 2048, "shadows: target falls back to the cfg value");
+    int v = 7;
+    c.Check(s::ParseIni("auto", &v) && v == -1, "shadows: ini auto");
+    c.Check(s::ParseIni("Vanilla", &v) && v == 0, "shadows: ini vanilla");
+    c.Check(s::ParseIni("4096", &v) && v == 4096, "shadows: ini size");
+    c.Check(!s::ParseIni("3000", &v) && !s::ParseIni("8192", &v) && !s::ParseIni("x", &v), "shadows: bad ini values rejected");
+}
 }  // namespace
 
 int main() {
@@ -134,6 +155,7 @@ int main() {
     TestParseAnisotropy(c);
     TestParseTriState(c);
     TestParseLodBias(c);
+    TestShadows(c);
     std::printf("textures: %d/%d checks passed\n", c.checks - c.failed, c.checks);
     return c.failed ? 1 : 0;
 }

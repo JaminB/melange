@@ -22,6 +22,10 @@ struct ParamRow {
     bool hasSpec;
 };
 std::vector<ParamRow> Params();
+// Parameter values for GLSL-only uniforms; `entry` is a concrete program entry matched against the rows' globs.
+bool HasParam(const std::string& file, const std::string& entry, const std::string& name);
+bool ParamValue(const std::string& file, const std::string& entry, const std::string& name, float* v, int n);
+uint32_t ParamsVersion();  // bumped on every parameter change
 bool FxaaToggle(bool on, std::string* why);
 std::string LastToast(uint64_t* tick);
 

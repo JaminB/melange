@@ -27,9 +27,12 @@ bool GetGlslEnabled(const char* file, const char* entry);
 int Reload(const char* match);  // returns the number of programs marked
 
 // A Cg parameter that Melange sets on every bind of (file, entry), before the engine's own values are flushed.
-// n = 1..16 floats. Used by mod shaders for tunables; shown as sliders in the Shaders panel.
+// n = 1..16 floats. Used by mod shaders for tunables; shown as sliders in the Shaders panel. A GLSL replacement's
+// uniform that has no Cg parameter of that name gets the value too (float, vec2, vec3 or vec4).
 bool SetParam(const char* file, const char* entry, const char* param, const float* v, int n);
 bool GetParam(const char* file, const char* entry, const char* param, float* v, int n);
+// SetParam limited to a row that `owner`'s (a mod id) shaders\params.ini declares; `entry` is that row's glob.
+bool SetOwnParam(const char* owner, const char* file, const char* entry, const char* param, const float* v, int n);
 
 // Override roots added from code (mods are added automatically). Later roots win over earlier ones.
 int AddOverrideRoot(const wchar_t* dir, const char* owner);  // any thread; applies at the next load/reload

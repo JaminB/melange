@@ -22,12 +22,14 @@
 #include "lua/sandbox_internal.h"
 #include "melange/draw.h"
 #include "melange/gamestate.h"
+#include "melange/graphics.h"
 #include "melange/jlog.h"
 #include "melange/lua.h"
 #include "melange/mods.h"
 #include "melange/overlay.h"
 #include "melange/postfx.h"
 #include "melange/render.h"
+#include "melange/shaders.h"
 
 namespace fake {
 struct Record {
@@ -215,6 +217,21 @@ bool GetParam(const char*, const char*, float* v, int n) {
     return true;
 }
 }  // namespace postfx
+namespace graphics {
+std::string g_lastMod;
+int g_lastSize = -2;
+bool SetShadowMapRequest(const char* mod, int size) {
+    g_lastMod = mod;
+    g_lastSize = size;
+    return true;
+}
+ShadowMapInfo GetShadowMapInfo() { return {2048, 2048, 1024, true, true}; }
+}  // namespace graphics
+namespace shaders {
+bool SetOwnParam(const char* owner, const char*, const char*, const char* param, const float*, int) {
+    return strcmp(owner, "esc") == 0 && strcmp(param, "softness") == 0;
+}
+}  // namespace shaders
 namespace gamestate {
 Snapshot g_snapshot{};
 bool g_readable = false;
@@ -823,6 +840,20 @@ void TestGame() {
     gamestate::g_readable = false;
 }
 
+void TestGraphics() {
+    ExpectEq(Eval("esc", "return wum.graphics.setShadowMapSize(4096)"), "true", "shadow-map request accepted");
+    Expect(graphics::g_lastMod == "esc" && graphics::g_lastSize == 4096, "request carries the calling mod");
+    Eval("esc", "wum.graphics.setShadowMapSize()");
+    Expect(graphics::g_lastSize == -1, "nil clears the runtime request");
+    Expect(Eval("esc", "return wum.graphics.setShadowMapSize(3000)").rfind("ERR:", 0) == 0, "an odd size is refused");
+    ExpectEq(Eval("esc", "local s = wum.graphics.shadowMap() return s.size, s.effective, s.vanilla, s.modRequest"),
+             "2048\t2048\t1024\ttrue", "shadowMap() fields");
+    ExpectEq(Eval("esc", "wum.shaders.setParam('Landscape.cg', '*FragmentMain', 'softness', 1.5) return 1"), "1",
+             "a declared shader param is set");
+    Expect(Eval("other", "wum.shaders.setParam('Landscape.cg', '*FragmentMain', 'softness', 1)").rfind("ERR:", 0) == 0,
+           "another mod's shader param is refused");
+}
+
 void TestDocs() {
     const std::string doc = ReadText(W(MELANGE_SOURCE_DIR) + L"\\docs\\lua-api.md");
     Expect(!doc.empty(), "docs/lua-api.md exists");
@@ -869,7 +900,7 @@ int main() {
         {"events", TestEvents},   {"timers", TestTimers},   {"reload", TestReload},
         {"config/storage", TestConfigStorage},              {"console", TestConsole},
         {"unsafe", TestUnsafe},   {"panels", TestPanels},   {"samples", TestSamples},
-        {"game", TestGame},       {"docs", TestDocs}};
+        {"game", TestGame},       {"graphics", TestGraphics}, {"docs", TestDocs}};
     for (const auto& [name, fn] : tests) {
         const int before = g_fail;
         fn();

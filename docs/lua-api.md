@@ -193,6 +193,19 @@ Every effect can be read; only the mod's own effects (`<mod id>/<effect>`) can b
 | `wum.postfx.setParam(id, param, v1[, v2...])` | Sets a uniform (up to 16 floats, or one table of them). |
 | `wum.postfx.getParam(id, param[, n])` | `n` floats (default 1). |
 
+## `wum.graphics`
+
+| Name | Description |
+|---|---|
+| `wum.graphics.setShadowMapSize(n)` | Replaces the mod's `graphics.shadowMapSize` request: 512, 1024, 2048 or 4096, 0 for none, `nil` to go back to the manifest's. The shadow map is rebuilt on the next frame. `[MirageShadows]` in `Melange.ini` still has the last word. |
+| `wum.graphics.shadowMap()` | `{size, effective, vanilla, modRequest, available}`: the engine's current size, the merged request (0 = vanilla), the size from the game's own cfg files. |
+
+## `wum.shaders`
+
+| Name | Description |
+|---|---|
+| `wum.shaders.setParam(file, entry, name, v1[, v2...])` | Sets a shader parameter the mod's own `shaders\params.ini` declares, e.g. `("Landscape.cg", "*FragmentMain", "softness", 1.5)`. `entry` is the section's glob. Errors on anything else. |
+
 ## `wum.unsafe` (Deep Desert)
 
 Only for mods whose `spice.json` has `permissions.unsafe: true`. Until the player allows it in the consent dialog, every function

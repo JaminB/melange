@@ -703,6 +703,15 @@ bool ParseManifestJson(const json::Value& v, const std::string& folderId, Manife
                     out->graphicsTrilinear = t->boolean;
                 }
             }
+            if (const json::Value* sm = gfx->Get("shadowMapSize")) {
+                const int s = sm->IsInteger() ? static_cast<int>(sm->number) : 0;
+                if (s != 512 && s != 1024 && s != 2048 && s != 4096) {
+                    AddError(errs, sm, "graphics.shadowMapSize", "graphics.shadowMapSize must be 512, 1024, 2048 or 4096");
+                    ok = false;
+                } else {
+                    out->graphicsShadowMapSize = s;
+                }
+            }
             if (const json::Value* lb = gfx->Get("lodBias")) {
                 if (!lb->IsNumber() || lb->number < -8 || lb->number > 8) {
                     AddError(errs, lb, "graphics.lodBias", "graphics.lodBias must be a number from -8 to 8");
