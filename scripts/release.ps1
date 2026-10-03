@@ -53,55 +53,13 @@ try {
 
     Copy-Item "$root\dist\melange.asi" $stage
     Copy-Item "$root\dist\Melange.ini" $stage
-    Copy-Item "$root\dist\oasis.exe" $stage
+    Copy-Item "$root\dist\Melange.exe" $stage
     Copy-Item "$root\dist\tools\xomtool.exe" (Join-Path $stage "tools")
     Copy-Item "$root\tools\ual\dinput8.dll" $stage
+    Copy-Item "$root\dist\INSTALL.txt" $stage
     Copy-Item "$root\LICENSE" $stage
     Copy-Item "$root\THIRD_PARTY.md" $stage
     Copy-Item "$root\dist\Mods" (Join-Path $stage "Mods") -Recurse
-
-    @"
-Installing Melange
-==================
-
-1. Copy dinput8.dll, melange.asi and Melange.ini into your game folder, next to WormsMayhem.exe
-   (...\steamapps\common\WormsXHD). Copy oasis.exe there too if you want Oasis, Melange's browser tool,
-   with the game closed.
-2. Start the game. The window title shows [Melange $version].
-
-Installing a mod
-----------------
-
-1. Put the mod's folder in <game>\Mods\, so that you have <game>\Mods\<mod>\spice.json.
-2. Start the game and press the grave key (to the left of 1, above Tab) to open the overlay.
-3. On the Thumper/Mods page, switch the mod on. Mods that change gameplay take effect the next time you start
-   the game.
-
-The Mods\ folder in this zip has example mods, all switched off. Copy one into <game>\Mods\ to try it.
-
-Good to know
-------------
-
-- Online play: everyone in a match needs the same gameplay mods. Mods that only change your screen, such as
-  effects and UI, don't matter to other players.
-- Permissions: a mod that asks for raw access to the game's memory ("Deep Desert") shows a consent dialog
-  first. Only allow mods you trust.
-
-Uninstalling
-------------
-
-Delete melange.asi, Melange.ini and the Melange and Mods folders from the game folder. Delete dinput8.dll too,
-unless other .asi mods still need it.
-
-Reporting a bug
----------------
-
-Press Ctrl+Shift+F11 in the game (or File > Save logs as... in the overlay) and attach the zip it saves. User
-names are removed, and Steam IDs and IP addresses are hashed.
-
-License: see LICENSE and THIRD_PARTY.md. Melange is an unofficial fan project, not affiliated with or endorsed
-by Team17. You need your own copy of Worms Ultimate Mayhem.
-"@ -replace "\r?\n", "`r`n" | Set-Content -Path (Join-Path $stage "INSTALL.txt") -Encoding ascii -NoNewline
 
     # No game assets (the only binaries are ours or UAL's, checked above and by hand), and no machine-specific
     # paths leaking into anything a user would read.

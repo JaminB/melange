@@ -26,7 +26,7 @@ function indexOfN(view: LogRow[], n: number): number {
   return -1;
 }
 
-function Logs({ client }: { client: Client }) {
+export function Logs({ client }: { client: Client }) {
   const conn = useConnection(client);
   const live = useMemo(() => new LogStore(DEFAULT_CAP), []);
   const [past, setPast] = useState<LogStore>();

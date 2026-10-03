@@ -8,6 +8,7 @@ export interface Welcome {
   build: string;
   server: "game" | "standalone";
   game?: { exeBuild: number; melange: string };
+  caps?: string[];
   channels: string[];
   methods: string[];
   panels: PanelInfo[];

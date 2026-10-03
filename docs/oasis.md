@@ -203,7 +203,7 @@ Every message is one JSON object with a `t` member:
 | `t` | Direction | Members |
 |---|---|---|
 | `hello` | client -> server | `proto` (1), `build` (the page's build id), `client` |
-| `welcome` | server -> client | `proto`, `build`, `server` (`game` or `standalone`), `game` (`exeBuild`, `melange`), `channels`, `methods`, `panels`, `limits` |
+| `welcome` | server -> client | `proto`, `build`, `server` (`game` or `standalone`), `caps` (feature set: `["launcher"]` in Melange.exe), `game` (`exeBuild`, `melange`), `channels`, `methods`, `panels`, `limits` |
 | `bye` | server -> client | `reason`, `want`: sent before a protocol refusal |
 | `sub` | client -> server | `ch`, `filter` (object, optional), `id` (optional; acknowledged by `res`) |
 | `unsub` | client -> server | `ch`, `id` (optional) |
@@ -235,6 +235,38 @@ Close codes: 4000 closed by the game (the page reconnects), 4001 protocol versio
 | `sys.ping` | `{frame, ms}`: the game's frame counter and the server's clock |
 | `bus.names` | `[{id, name, posts, deliveries}]`: every registered engine message name and its counts |
 | `log.sessions` | `[{id, files, bytes}]`: the 20 most recent log sessions, newest first, the current one included; their files are served at `/logs/<id>/<file>` |
+
+### Launcher (Melange.exe only)
+
+These methods are available only when Melange.exe is running (the welcome message includes `"caps": ["launcher"]`). The launcher runs on its own threads; methods are tagged with their thread: `M` = main (UI thread), `S` = server, `W` = setup worker (I/O and hashing). `!` = mutating (refused with `ReadOnly=1`). A new `setup` channel publishes status changes and progress during transactions.
+
+| Method | Params → result | Notes |
+|---|---|---|
+| `launcher.state` | `{}` → `LauncherState` | `LauncherState`: `{version, firstRun, gameDir \| null, theme: "system"\|"light"\|"dark", webview: bool, elevated: bool, protected: string[]}`; `protected` lists folders where writes are forbidden (test safety). |
+| `launcher.setTheme` ! | `{theme: "system"\|"light"\|"dark"}` → `{}` | Saves to `launcher.json` and updates the window caption's dark mode. |
+| `launcher.launch` | `{}` → `{how: "steam"\|"exe"}` | Starts the game via `steam://rungameid/70600` (Steam installs) or `WormsMayhem.exe` directly (GOG/other). |
+| `launcher.openPath` | `{what: "game"\|"logs"\|"backup", id?}` → `{}` | Opens a folder in Explorer: the game folder, the Melange logs folder, or a backup by id. |
+| `launcher.shortcuts` ! | `{startMenu: bool, desktop: bool}` → `{}` | Creates Start menu and/or desktop shortcuts to Melange.exe in the game folder. |
+| `setup.detect` | `{}` → `{candidates: Candidate[]}` | Locates game folders (Steam, GOG, saved, or manually browsed). Each `Candidate`: `{path, source: "saved"\|"self"\|"steam"\|"gog"\|"manual", library?, check: GameCheck}`. `GameCheck` includes the exe's size, SHA-256 hash (if readable), and verdict: `"ok"`, `"wrongBuild"`, `"noExe"`, `"notFound"` or `"unreadable"`. |
+| `setup.browse` | `{start?: string}` → `{path \| null, hint?: "child", child?: string}` | Shows a folder picker (Windows native dialog, UI thread). `hint: "child"` when the user picked a parent folder. |
+| `setup.validate` | `{path}` → `GameCheck` | Checks a game folder: exe presence, size, timestamp, SHA-256, and build verdict. |
+| `setup.select` ! | `{path, save: bool}` → `SetupStatus` | Selects a game folder for this run (and saves it if `save: true`). Refused unless verdict is `ok`. |
+| `setup.status` | `{}` → `SetupStatus` | Game folder state: loader identity and version, Melange state and last-load time, duplicates, legacy files, backups. `SetupStatus`: `{game: GameCheck \| null, running, melangeLoaded, loader: {state: "none"\|"ual"\|"other", dll?: DllInfo}, otherLoaders: DllInfo[], melange: {state, version?, path?, duplicates: string[], lastLoad?: {at, version}}, ini: {present, missingKeys}, legacy: string[], payload: {ok, version, missing: string[], fromGameFolder}, backups: [{id, created, action, files: [{path, op, description?}]}], install?: {...}}`. |
+| `setup.plan` | `{action: "install"\|"repair"\|"uninstall", replaceLoader?, allowDowngrade?, removeData?}` → `Plan` | Previews changes: the steps that would be taken, their reason, and any choice needed (e.g. which loader to replace). `Plan`: `{planId, steps: [{op, path, detail}], needsChoice?: "loader", refused?: string}`. |
+| `setup.apply` ! | `{action, ..., planId}` → `ApplyResult` | Executes the plan if unchanged. Reports progress on the `setup` channel. `ApplyResult`: `{ok: true, backupId?, status: SetupStatus}` on success, or an error code (`-32010` needs elevation, `-32012` rollback failure). |
+| `setup.restore` ! | `{backupId}` → `ApplyResult` | Restores a previous installation from a backup as a transaction. |
+| `setup.deleteBackup` ! | `{backupId}` → `{}` | Deletes a backup (no undo). |
+| `setup.setMelangeEnabled` ! | `{on: bool}` → `SetupStatus` | Disables Melange by renaming `melange.asi` ↔ `melange.asi.off` (the game runs vanilla). |
+| `setup.elevate` | `{resume: "install"\|"repair"\|"uninstall"\|"restore:<id>"}` → `{}` (then exits) | On Windows, elevates to administrator, re-runs the launcher with `--game <dir> --resume <action>`, and exits the current process. |
+| `plugins.settings` | `{id}` → `{decl: Setting[], values, defaults}` | Declaration and current values of a plugin's settings. `Setting`: `{key, type: "bool"\|"int"\|"float"\|"string"\|"enum", label, default, min?, max?, options?: string[], help?, optionLabels?: Record<string, {label, help?}>}`. |
+| `plugins.setSettings` ! | `{id, values: Record<string, value>}` → `{values}` | Writes settings to `Melange.ini [Mod.<id>]`, with validation. Errors: `-32602 {key, why}` for type/range/enum failures. |
+| `plugins.resetSettings` ! | `{id}` → `{values}` | Resets to the user's default or the declared default. |
+| `defaults.get` | `{}` → `Defaults` | The user's default set of plugins and their settings. `Defaults`: `{plugins: [{id, enabled, settings: Record<string, value>}], seeded: bool}`. |
+| `defaults.set` ! | `Defaults` → `Defaults` | Saves the user's defaults. |
+| `recommended.get` | `{}` → `{source: "index"\|"builtin", items: Recommended[]}` | The recommended plugins (from the store index, or a built-in fallback if offline). `Recommended`: `{id, name, description, why, settings, installed, compatible, reason?, decl?: Setting[]}`. |
+| `recommended.apply` ! | `{items: [{id, settings}], saveAsDefaults: bool}` → `{queued: string[]}` | Installs and enables the selected recommended plugins. Reports progress on the `store` channel. `queued` lists the plugin ids being downloaded. |
+
+Channel `setup`: `{status: SetupStatus}` on every change (folder selection, game start/stop, file changes), and `{progress: {action, step, of, label}}` during a transaction (each step's name, current step number, total steps).
 
 ### Console, mods and settings
 

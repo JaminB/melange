@@ -60,6 +60,42 @@ struct Details {
 };
 struct Outcome { int code = 0; std::string message; };   // 0 started, -32000 refused, -32002 busy, -32602 bad params
 
+// The Store engine runs in the game (game_host.cpp) and in Melange.exe; the host provides what differs.
+struct LocalMod {
+    std::string id, version, state;
+    bool enabled = false, sessionActive = false, contentRelevant = false;
+    std::vector<std::string> dependencies, conflicts;
+};
+class Host {
+  public:
+    virtual ~Host() = default;
+    virtual std::string MelangeVersion() = 0;
+    virtual std::string GameBuild() = 0;                 // "1077", "" when the exe is not recognised
+    virtual std::string Gate() = 0;                      // "" or why changes are refused now
+    virtual std::vector<LocalMod> InstalledMods() = 0;   // every mod in Mods\, Thumper's view
+    virtual void Placed(const std::string& id, bool enable) = 0;      // a new Mods\<id> is in place
+    virtual void Unload(const std::string& id) = 0;                   // before Mods\<id> is replaced or removed
+    virtual void Reload(const std::string& id, bool enable) = 0;      // after Mods\<id> was replaced
+    virtual void Forget(const std::string& id) = 0;                   // after Mods\<id> was removed
+    virtual void DeleteData(const std::string& id) = 0;               // its [Mod.<id>] settings and saved data
+};
+struct Config {
+    std::string indexUrl;
+    bool custom = false, showIncompatible = false;
+    uint64_t maxDownload = 64ull << 20;
+};
+extern const char* const kDefaultIndex;
+void SetHost(Host* h, const Config& c);
+// Point the engine at a Mods folder: load installed.json and pending.json. With `droppedIds` (the game, before
+// Thumper's first scan), deferred updates and removes run first and the removed ids are returned. False while a job
+// runs.
+bool Open(const std::wstring& modsDir, std::vector<std::string>* droppedIds = nullptr);
+void Close();                                  // no Mods folder (Melange.exe before a game is chosen)
+void Tick();                                   // the host's loop: gate changes, update markers
+void MarkDirty();                              // installed mods changed
+void Shutdown();
+std::string IndexText();                       // the last good index.json text ("" before one); any thread
+
 bool Active();                                 // any thread
 Status GetStatus();
 std::vector<Item> List(const ListQuery& q);
@@ -75,7 +111,7 @@ std::wstring ShotPath(const std::string& id, int n);   // any thread; "" until f
 bool UpdateAvailable(const std::string& id);           // the Mods page marker, once a list was fetched this session
 
 // store_rpc.cpp
-void InstallRpc();
+void InstallRpc(bool gameOnly = true);
 void PublishState();                                   // any thread
 std::string ChannelJson();                             // any thread
 // store_page.cpp
