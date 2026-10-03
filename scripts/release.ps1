@@ -115,7 +115,7 @@ by Team17. You need your own copy of Worms Ultimate Mayhem.
 
     $zipPath = Join-Path $outDir "melange-$version.zip"
     if (Test-Path $zipPath) { Remove-Item $zipPath -Force }
-    Compress-Archive -Path "$stage\*" -DestinationPath $zipPath
+    & "$PSScriptRoot\zip.ps1" -Source $stage -Destination $zipPath
     Remove-Item $stage -Recurse -Force
 
     $hash = (Get-FileHash $zipPath -Algorithm SHA256).Hash
