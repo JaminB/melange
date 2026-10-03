@@ -84,7 +84,7 @@ void Write(Result& r, const std::string& id, const plugins::Values& values) {
     // Shares setup's transaction lock: a plugin write must not race setup.apply/restore touching the same
     // Mods\ folder or Melange.ini.
     std::unique_lock lk(app::Tx(), std::try_to_lock);
-    if (!lk.owns_lock()) return Fail(r, -32002, "Melange is busy with another change. Try again in a moment.");
+    if (!lk.owns_lock()) return Fail(r, -32002, app::BusyMessage());
     std::vector<plugins::Setting> decl;
     std::string err;
     if (plugins::ModFolder(game, id).empty() || !plugins::LoadDecl(game, id, &decl, &err)) return Fail(r, -32602, "no such plugin");
@@ -196,7 +196,7 @@ void RecommendedGet(const Call&, Result& r, void*) {
 }
 
 struct ApplyItem {
-    std::string id;
+    std::string id, name;
     plugins::Values settings;
 };
 
@@ -243,6 +243,8 @@ void RecommendedApply(const Call& c, Result& r, void*) {
         ApplyItem a;
         a.id = it.IsObject() ? Str(it, "id") : "";
         if (!ValidId(a.id)) return Fail(r, -32602, "each item needs an id");
+        a.name = it.IsObject() ? Str(it, "name") : "";
+        if (a.name.empty()) a.name = a.id;
         if (const json::Value* s = it.Get("settings"); s && s->IsObject())
             for (const auto& [k, v] : s->members) {
                 plugins::Val x;
@@ -270,19 +272,26 @@ void RecommendedApply(const Call& c, Result& r, void*) {
         std::unique_lock<std::mutex> probe(app::Tx(), std::try_to_lock);
         if (!probe.owns_lock()) {
             g_applying = false;
-            return Fail(r, -32002, "Melange is busy with another change. Try again in a moment.");
+            return Fail(r, -32002, app::BusyMessage());
         }
     }
     jsonmini::Arr queued;
     for (const auto& a : list) queued.Str(a.id);
-    std::thread([list] {
+    const int total = static_cast<int>(list.size());
+    app::SetBatchBusy(true, "recommended", 0, total, "Installing plugins…");
+    std::thread([list, total] {
         // Held for the whole batch so setup.apply/restore can't run against the same Mods\ folder or
         // Melange.ini while plugins are being installed. A setup.* call that sneaks in between the probe
         // above and this lock just waits here rather than racing the writes below.
         std::lock_guard<std::mutex> lk(app::Tx());
-        for (const auto& a : list) ApplyOne(a);
+        int step = 0;
+        for (const auto& a : list) {
+            ++step;
+            app::SetBatchBusy(true, "recommended", step, total, "Installing " + a.name + "…");
+            ApplyOne(a);
+        }
         g_applying = false;
-        app::PublishStatus();
+        app::SetBatchBusy(false, "", 0, 0, "");
     }).detach();
     r.json = jsonmini::Obj().Raw("queued", queued.End()).End();
 }

@@ -4,8 +4,12 @@ export interface SettingControlProps {
   decl: Setting; value: Val; disabled?: boolean; onChange: (v: Val) => void;
 }
 
-function optionLabel(decl: Setting, opt: string): string {
-  return decl.optionLabels?.[opt]?.label ?? opt;
+export function optionLabel(decl: Setting, opt: string): string {
+  const label = decl.optionLabels?.[opt]?.label;
+  if (label) return label;
+  // No declared label for this option (an older plugin release, before it added optionLabels): capitalise the
+  // raw value instead of showing it lowercase, so "off"/"low"/"subtle"/"bold"/"ultra" read consistently.
+  return opt.length ? opt[0].toUpperCase() + opt.slice(1) : opt;
 }
 
 export function SettingControl({ decl, value, disabled, onChange }: SettingControlProps) {

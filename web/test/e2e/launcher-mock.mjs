@@ -53,6 +53,10 @@ function scenarioFixture(name) {
         },
         firstRun: false,
       };
+    case "plugins-busy": {
+      const r = scenarioFixture("restore");
+      return { ...r, status: { ...r.status, busy: { action: "recommended", step: 1, of: 2, label: "Installing Sunstone…" } } };
+    }
     case "fresh":
     default:
       return { candidates: base(), status: freshStatus() };
@@ -103,6 +107,9 @@ export function launcherService(state, broadcast, initialScenario) {
   const pushStatus = () => broadcast("setup", { status: publicStatus() });
 
   const findCandidate = (path) => l.candidates.find((c) => c.path === path);
+  // Mirrors the real server: setup.*/plugins.setSettings refuse with -32002 while a recommended-plugins batch
+  // holds the setup lock (l.status.busy), naming what is busy instead of a plain "try again".
+  const busyGuard = () => { if (l.status.busy) throw [-32002, `Installing plugins — this finishes in a moment. ${l.status.busy.label}`]; };
 
   const handlers = {
     "launcher.state": () => ({ version: l.version, firstRun: l.firstRun, gameDir: l.gameDir, theme: l.theme, webview: false, elevated: l.elevated, protected: [] }),
@@ -119,6 +126,7 @@ export function launcherService(state, broadcast, initialScenario) {
       return { path: p.path, verdict: "notFound", store: "unknown", running: false, writable: false };
     },
     "setup.select": (p) => {
+      busyGuard();
       const c = findCandidate(p.path);
       if (c) l.status.game = c.check;
       if (p.save) l.gameDir = p.path;
@@ -127,6 +135,7 @@ export function launcherService(state, broadcast, initialScenario) {
     "setup.status": () => publicStatus(),
     "setup.plan": (p) => planFor(l.status, p.action, p),
     "setup.apply": (p) => {
+      busyGuard();
       const plan = planFor(l.status, p.action, p);
       if (p.planId !== plan.planId) throw [-32013, "What will change has changed.", undefined];
       return new Promise((resolve) => {
@@ -163,6 +172,7 @@ export function launcherService(state, broadcast, initialScenario) {
       });
     },
     "setup.restore": (p) => {
+      busyGuard();
       const b = l.status.backups.find((x) => x.id === p.backupId);
       if (!b) throw [-32602, "unknown backup"];
       l.status.loader = { state: "other", dll: RESHADE_DLL };
@@ -170,15 +180,16 @@ export function launcherService(state, broadcast, initialScenario) {
       pushStatus();
       return { ok: true, status: publicStatus() };
     },
-    "setup.deleteBackup": (p) => { l.status.backups = l.status.backups.filter((b) => b.id !== p.backupId); pushStatus(); return {}; },
+    "setup.deleteBackup": (p) => { busyGuard(); l.status.backups = l.status.backups.filter((b) => b.id !== p.backupId); pushStatus(); return {}; },
     "setup.setMelangeEnabled": (p) => {
+      busyGuard();
       if (l.status.melange.state !== "missing") l.status.melange.state = p.on ? "installed" : "disabled";
       pushStatus();
       return publicStatus();
     },
     "setup.elevate": () => { l.elevated = true; return {}; },
     "plugins.settings": () => ({ decl: SUNSTONE_DECL, values: { quality: "bold" }, defaults: { quality: "bold" } }),
-    "plugins.setSettings": (p) => ({ values: p.values }),
+    "plugins.setSettings": (p) => { busyGuard(); return { values: p.values }; },
     "plugins.resetSettings": () => ({ values: { quality: "bold" } }),
     "defaults.get": () => l.defaults,
     "defaults.set": (p) => { l.defaults = { plugins: Array.isArray(p.plugins) ? p.plugins : [], seeded: true }; return l.defaults; },

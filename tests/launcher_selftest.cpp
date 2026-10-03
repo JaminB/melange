@@ -901,6 +901,31 @@ void TestSettings() {
     Put(dir + L"\\bad.json", "{not json");
     Expect(!L::LoadSettings(dir + L"\\bad.json", &t) && t.gameDir.empty() && t.theme == "system", "launcher.json: bad file -> defaults");
 }
+
+// A recommended-plugins batch (or anything else holding app::Tx() for longer than one RPC call) is set on
+// setup::Status by the app layer, after Inspect(); StatusJson() must round-trip it so setup.status can show it.
+void TestBusyStatusJson() {
+    S::Status s;
+    Expect(S::StatusJson(s).find("\"busy\"") == std::string::npos, "status: no busy field when nothing is running");
+
+    s.busyActive = true;
+    s.busyAction = "recommended";
+    s.busyStep = 1;
+    s.busyOf = 2;
+    s.busyLabel = "Installing Sunstone\xE2\x80\xA6";   // UTF-8 ellipsis, as the real label uses
+    const std::string json = S::StatusJson(s);
+    melange::json::Value v;
+    melange::json::Error e;
+    Expect(melange::json::Parse(json, &v, &e), "status: busy JSON parses", e.text);
+    const melange::json::Value* busy = v.Get("busy");
+    Expect(busy && busy->IsObject(), "status: busy is an object");
+    if (busy) {
+        Expect(busy->Get("action") && busy->Get("action")->string == "recommended", "status: busy.action");
+        Expect(busy->Get("step") && busy->Get("step")->IsNumber() && busy->Get("step")->number == 1, "status: busy.step");
+        Expect(busy->Get("of") && busy->Get("of")->number == 2, "status: busy.of");
+        Expect(busy->Get("label") && busy->Get("label")->string == s.busyLabel, "status: busy.label");
+    }
+}
 }  // namespace
 
 int main(int, char** argv) {
@@ -927,6 +952,7 @@ int main(int, char** argv) {
     TestPluginSettings();
     TestRecommended();
     TestSettings();
+    TestBusyStatusJson();
     TestStoreEngine();
     melange::store::Shutdown();
     Wipe(g_tmp);

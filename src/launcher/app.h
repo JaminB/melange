@@ -35,6 +35,14 @@ void PublishStatus();                              // push the status now (after
 void PublishProgress(const std::string& action, int step, int of, const std::string& label);
 std::string StatusJson();
 
+// A long batch outside the normal setup.apply/restore call (today: recommended.apply installing the first-run
+// plugin set) that holds Tx() for its whole run. Set true before the batch starts and false when it ends so
+// setup.status (and anyone polling it) can show it, and so a -32002 while it runs says what is busy instead of
+// a generic "try again". SetBatchBusy also publishes progress and status on the "setup" channel.
+void SetBatchBusy(bool active, const std::string& action, int step, int of, const std::string& label);
+bool BatchBusy(std::string* label = nullptr);
+std::string BusyMessage();   // -32002 text: specific while a batch is busy, generic otherwise
+
 // The UI thread (window mode): the window, the theme, and a queue for work posted from other threads.
 void SetWindow(HWND hwnd);
 HWND Window();

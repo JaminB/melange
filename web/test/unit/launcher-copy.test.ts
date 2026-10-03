@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { DllInfo, GameCheck, MelangeState, SetupStatus, Verdict } from "../../src/launcher/api";
 import { LauncherErrorCode } from "../../src/launcher/api";
-import { checkCopy, errorCopy, findCopy, loaderChecklistLine, loaderCopy, melangeCopy, planLine } from "../../src/launcher/copy";
+import { busyNotice, checkCopy, errorCopy, findCopy, loaderChecklistLine, loaderCopy, melangeCopy, planLine } from "../../src/launcher/copy";
 
 const VERDICTS: Verdict[] = ["ok", "wrongBuild", "noExe", "notFound", "unreadable"];
 const check = (verdict: Verdict, extra: Partial<GameCheck> = {}): GameCheck =>
@@ -20,6 +20,27 @@ test("checkCopy: wrongBuild names the build and shows the expected hash", () => 
   const c = checkCopy(check("wrongBuild", { exe: { size: 123, timestamp: 1, sha256: "abcdef0123456789" } }));
   assert.ok(/#1077/.test(c.body.join(" ")));
   assert.ok(/041c8c/.test(c.body.join(" ")));
+});
+
+test("checkCopy: wrongBuild shows the found file's size and hash next to the expected ones", () => {
+  const withHash = checkCopy(check("wrongBuild", { exe: { size: 5820224, timestamp: 1, sha256: "b".repeat(64) } }));
+  const detail = withHash.body[withHash.body.length - 1];
+  assert.ok(/Expected:.*size.*SHA-256/.test(detail), detail);
+  assert.ok(/Found:.*5,820,224 bytes, SHA-256/.test(detail), detail);
+});
+
+test("checkCopy: wrongBuild without a computed hash still shows the found size", () => {
+  // The engine skips hashing when the size alone already rules the build out (no profile matches).
+  const noHash = checkCopy(check("wrongBuild", { exe: { size: 9999, timestamp: 1 } }));
+  const detail = noHash.body[noHash.body.length - 1];
+  assert.ok(/Found: size 9,999 bytes$/m.test(detail), detail);
+  assert.ok(!/Found:.*SHA-256/.test(detail), detail);
+});
+
+test("busyNotice: names the label and shows progress when known", () => {
+  assert.equal(busyNotice({ action: "recommended", step: 1, of: 2, label: "Installing Sunstone…" }), "Installing Sunstone… (1 of 2)");
+  assert.equal(busyNotice({ action: "recommended", step: 0, of: 0, label: "Installing plugins…" }), "Installing plugins…");
+  assert.ok(busyNotice({ action: "recommended", step: 0, of: 0, label: "" }).length > 0, "falls back to non-empty copy");
 });
 
 test("findCopy: none, one and several candidates", () => {

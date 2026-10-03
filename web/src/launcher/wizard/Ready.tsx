@@ -32,9 +32,9 @@ export function Ready({ client, state, dispatch, onFinish }: WizardProps) {
         <p>Melange is installed in <span class="mono">{path}</span>.{line ? ` ${line}` : ""}</p>
         <div class="lw-ready-check">
           <label><input type="checkbox" checked={state.shortcuts.startMenu}
-                         onChange={(e) => dispatch({ type: "shortcut", which: "startMenu", value: (e.currentTarget as HTMLInputElement).checked })} /> Add Melange to the Start menu</label>
+                         onChange={(e) => dispatch({ type: "shortcut", which: "startMenu", value: (e.currentTarget as HTMLInputElement).checked })} /> Add a Start menu shortcut to Melange</label>
           <label><input type="checkbox" checked={state.shortcuts.desktop}
-                         onChange={(e) => dispatch({ type: "shortcut", which: "desktop", value: (e.currentTarget as HTMLInputElement).checked })} /> Add a desktop shortcut</label>
+                         onChange={(e) => dispatch({ type: "shortcut", which: "desktop", value: (e.currentTarget as HTMLInputElement).checked })} /> Add a desktop shortcut to Melange</label>
         </div>
         {error ? <p class="error" role="alert">{error}</p> : null}
       </div>

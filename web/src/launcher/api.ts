@@ -39,6 +39,10 @@ export interface SetupStatus {
   payload: { ok: boolean; version: string; missing: string[]; fromGameFolder: boolean };
   backups: { id: string; created: string; action: string; files: { path: string; op: string; description?: string }[] }[];
   install?: { melange: string; installedAt: string; loader: "added" | "reused" | "replaced" | "other-name" };
+  // A recommended-plugins batch (or other long transaction) holding the setup lock right now, if any: setup.select,
+  // setup.apply, setup.restore, setup.deleteBackup, setup.setMelangeEnabled and plugins.setSettings all return
+  // -32002 while this is set, so the UI should disable them and show `label` instead of letting the call fail.
+  busy?: SetupProgress;
 }
 
 export interface PlanRequest { action: PlanAction; replaceLoader?: boolean; allowDowngrade?: boolean; removeData?: boolean; }
@@ -155,6 +159,7 @@ export function setupStatusOf(v: unknown): SetupStatus {
     }),
     install: install ? { melange: str(install, "melange"), installedAt: str(install, "installedAt"),
       loader: (["added", "reused", "replaced", "other-name"].includes(install.loader as string) ? install.loader : "added") as "added" | "reused" | "replaced" | "other-name" } : undefined,
+    busy: o.busy && typeof o.busy === "object" ? (() => { const b = obj(o.busy); return { action: str(b, "action"), step: num(b, "step"), of: num(b, "of"), label: str(b, "label") }; })() : undefined,
   };
 }
 

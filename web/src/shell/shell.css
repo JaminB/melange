@@ -256,8 +256,10 @@ kbd { font-family: var(--mono); font-size: 11px; border: 1px solid var(--border)
 
 .ini-body { overflow: auto; min-height: 0; padding: 4px 12px 24px; }
 .ini-section h2 { font-family: var(--mono); font-size: 13px; color: var(--accent); margin: 16px 0 4px; }
-.ini-table td { padding: 4px 8px; }
+.ini-table { table-layout: fixed; }
+.ini-table td { padding: 4px 8px; overflow-wrap: anywhere; }
 .ini-key { width: 30%; white-space: nowrap; }
+.ini-value { width: auto; }
 .ini-def { width: 20%; }
 .ini-act { width: 4rem; text-align: right; }
 .ini-edit { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }

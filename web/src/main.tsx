@@ -28,6 +28,7 @@ function Root({ client }: { client: OasisClient }) {
     check();
     return client.onState(check);
   }, [client]);
+  useEffect(() => { if (launcher !== undefined) document.title = launcher ? "Melange" : "Oasis"; }, [launcher]);
   if (launcher === undefined) return <div class="boot-blank" />;
   return launcher ? <LauncherApp client={client} /> : <ShellApp client={client} />;
 }

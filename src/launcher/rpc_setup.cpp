@@ -112,7 +112,7 @@ void Select(const Call& c, Result& r, void*) {
         return Fail(r, -32000, why, jsonmini::Obj().Raw("check", setup::GameCheckJson(check)).End());
     }
     std::unique_lock lk(app::Tx(), std::try_to_lock);
-    if (!lk.owns_lock()) return Fail(r, -32002, "Melange is busy with another change. Try again in a moment.");
+    if (!lk.owns_lock()) return Fail(r, -32002, app::BusyMessage());
     app::SetGameDir(check.path, Bool(p, "save"));
     storehost::Sync();
     oasis::standalone::RegisterLevels(check.path);
@@ -127,7 +127,7 @@ void Apply(const Call& c, Result& r, void*) {
     if (planId.empty()) return Fail(r, -32602, "expected planId");
     if (app::GameDir().empty()) return Fail(r, -32000, "Choose your game folder first.");
     std::unique_lock lk(app::Tx(), std::try_to_lock);
-    if (!lk.owns_lock()) return Fail(r, -32002, "Melange is busy with another change. Try again in a moment.");
+    if (!lk.owns_lock()) return Fail(r, -32002, app::BusyMessage());
     setup::Context ctx = app::MakeContext();
     ctx.progress = [action = rq.action](int step, int of, const std::string& label) { app::PublishProgress(action, step, of, label); };
     const setup::Outcome o = setup::Apply(ctx, rq, planId);
@@ -148,7 +148,7 @@ void RestoreMethod(const Call& c, Result& r, void*) {
     const std::string id = Str(p, "backupId");
     if (id.empty()) return Fail(r, -32602, "expected {backupId}");
     std::unique_lock lk(app::Tx(), std::try_to_lock);
-    if (!lk.owns_lock()) return Fail(r, -32002, "Melange is busy with another change. Try again in a moment.");
+    if (!lk.owns_lock()) return Fail(r, -32002, app::BusyMessage());
     setup::Context ctx = app::MakeContext();
     ctx.progress = [](int step, int of, const std::string& label) { app::PublishProgress("restore", step, of, label); };
     const setup::Outcome o = setup::Restore(ctx, id);
@@ -164,7 +164,7 @@ void DeleteBackupMethod(const Call& c, Result& r, void*) {
     const std::string id = Str(p, "backupId");
     if (id.empty()) return Fail(r, -32602, "expected {backupId}");
     std::unique_lock lk(app::Tx(), std::try_to_lock);
-    if (!lk.owns_lock()) return Fail(r, -32002, "Melange is busy with another change. Try again in a moment.");
+    if (!lk.owns_lock()) return Fail(r, -32002, app::BusyMessage());
     const setup::Outcome o = setup::DeleteBackup(app::MakeContext(), id);
     lk.unlock();
     app::PublishStatus();
@@ -178,7 +178,7 @@ void SetEnabled(const Call& c, Result& r, void*) {
     const json::Value* on = p.Get("on");
     if (!on || !on->IsBool()) return Fail(r, -32602, "expected {on}");
     std::unique_lock lk(app::Tx(), std::try_to_lock);
-    if (!lk.owns_lock()) return Fail(r, -32002, "Melange is busy with another change. Try again in a moment.");
+    if (!lk.owns_lock()) return Fail(r, -32002, app::BusyMessage());
     const setup::Outcome o = setup::SetMelangeEnabled(app::MakeContext(), on->boolean);
     lk.unlock();
     app::PublishStatus();

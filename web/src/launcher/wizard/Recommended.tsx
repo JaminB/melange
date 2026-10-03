@@ -24,7 +24,7 @@ export function Recommended({ client, state, dispatch }: WizardProps) {
   const skip = () => dispatch({ type: "toReady" });
   const install = async () => {
     const items = (state.recommended?.items ?? []).filter((it) => state.choices[it.id]?.enabled)
-      .map((it) => ({ id: it.id, settings: state.choices[it.id]?.settings ?? it.settings }));
+      .map((it) => ({ id: it.id, name: it.name, settings: state.choices[it.id]?.settings ?? it.settings }));
     if (!items.length) { skip(); return; }
     setInstalling(true);
     setError(undefined);

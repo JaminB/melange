@@ -2,13 +2,16 @@ import { useEffect, useRef, useState } from "preact/hooks";
 import type { Client } from "../../sdk/client";
 import { errorText } from "../../sdk/hooks";
 import { modsOf, stateText, stateTone, type ModInfo } from "../../panels/mods/model";
-import type { Setting, Val } from "../api";
+import type { Setting, SetupStatus, Val } from "../api";
 import { settingOf, valuesOf } from "../api";
 import { Drawer } from "../components/Drawer";
 import { SettingControl } from "../components/SettingControl";
+import { busyNotice } from "../copy";
 import { StoreIcon } from "../icons";
 
-export function Plugins({ client, onOpenStore }: { client: Client; onOpenStore: () => void }) {
+export function Plugins({ client, status, onOpenStore }: { client: Client; status: SetupStatus | undefined; onOpenStore: () => void }) {
+  const batch = status?.busy;
+  const batchWhy = batch ? busyNotice(batch) : undefined;
   const [list, setList] = useState<ModInfo[]>();
   const [error, setError] = useState<string>();
   const [busy, setBusy] = useState<string>();
@@ -38,6 +41,7 @@ export function Plugins({ client, onOpenStore }: { client: Client; onOpenStore: 
         <button class="btn" onClick={onOpenStore}><StoreIcon size={16} /> Open Store</button>
       </div>
       {error ? <p class="error" role="alert">{error}</p> : null}
+      {batch ? <p class="hint" role="status" aria-live="polite" data-busy>{batchWhy}</p> : null}
       {!list ? (
         <div class="lw-skel"><div class="lw-skel-row" /><div class="lw-skel-row" /></div>
       ) : list.length === 0 ? (
@@ -57,12 +61,12 @@ export function Plugins({ client, onOpenStore }: { client: Client; onOpenStore: 
           ))}
         </ul>
       )}
-      {drawer ? <PluginSettings client={client} id={drawer} name={list?.find((x) => x.id === drawer)?.name ?? drawer} onClose={() => setDrawer(undefined)} /> : null}
+      {drawer ? <PluginSettings client={client} id={drawer} name={list?.find((x) => x.id === drawer)?.name ?? drawer} busyWhy={batchWhy} onClose={() => setDrawer(undefined)} /> : null}
     </div>
   );
 }
 
-function PluginSettings({ client, id, name, onClose }: { client: Client; id: string; name: string; onClose: () => void }) {
+function PluginSettings({ client, id, name, busyWhy, onClose }: { client: Client; id: string; name: string; busyWhy?: string; onClose: () => void }) {
   const [decl, setDecl] = useState<Setting[]>();
   const [values, setValues] = useState<Record<string, Val>>({});
   const [defaults, setDefaults] = useState<Record<string, Val>>({});
@@ -107,14 +111,15 @@ function PluginSettings({ client, id, name, onClose }: { client: Client; id: str
   return (
     <Drawer title={name} onClose={onClose} foot={<>
       {saved ? <span class="lx-saved" aria-live="polite">Saved</span> : <span />}
-      <button class="link" onClick={reset}>Reset to default</button>
+      <button class="link" disabled={!!busyWhy} title={busyWhy} onClick={reset}>Reset to default</button>
     </>}>
+      {busyWhy ? <p class="hint" role="status" aria-live="polite">{busyWhy}</p> : null}
       {!decl ? <div class="lw-skel"><div class="lw-skel-row" /></div>
         : decl.length === 0 ? <p class="muted">This plugin has no settings.</p>
         : decl.map((d) => (
           <div class="lx-field" key={d.key}>
             <span class="lx-label">{d.label}{values[d.key] !== defaults[d.key] ? <span class="tag">changed</span> : null}</span>
-            <SettingControl decl={d} value={values[d.key] ?? d.default} onChange={(v) => save({ ...values, [d.key]: v })} />
+            <SettingControl decl={d} value={values[d.key] ?? d.default} disabled={!!busyWhy} onChange={(v) => save({ ...values, [d.key]: v })} />
             {d.help ? <p class="lx-help">{d.help}</p> : null}
           </div>
         ))}

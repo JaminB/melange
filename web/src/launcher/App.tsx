@@ -137,7 +137,7 @@ export function LauncherApp({ client }: { client: Client }) {
           <div class="la-content-inner">
             {page === "home" ? <Home client={client} status={status} onFixGame={() => { dispatch({ type: "goto", step: "find" }); setInWizard(true); }}
                                       onOpenPlugins={() => setPage("plugins")} onOpenSettings={() => setPage("settings")} />
-              : page === "plugins" ? <Plugins client={client} onOpenStore={() => setPage("store")} />
+              : page === "plugins" ? <Plugins client={client} status={status} onOpenStore={() => setPage("store")} />
               : page === "store" ? <Store client={client} />
               : page === "settings" ? <Settings client={client} status={status} theme={launcher?.theme ?? "system"} onTheme={setTheme}
                                                  onChangeFolder={() => { dispatch({ type: "goto", step: "find" }); setInWizard(true); }} />

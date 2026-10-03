@@ -1,7 +1,7 @@
 // The wizard's words (spec §5.3) as pure data: one function per family of states, each returning {title, body}.
 // A unit test asserts every member of every union this file switches on produces non-empty title and body.
-import type { Candidate, DllInfo, GameCheck, Plan, SetupStatus, Verdict } from "./api";
-import { LauncherErrorCode, sizeText } from "./api";
+import type { Candidate, DllInfo, GameCheck, Plan, SetupProgress, SetupStatus, Verdict } from "./api";
+import { LauncherErrorCode, hashShort, sizeText } from "./api";
 
 export interface Copy { title: string; body: string[]; }
 
@@ -36,7 +36,11 @@ export function checkCopy(check: GameCheck): Copy {
   switch (check.verdict) {
     case "ok":
       return { title: "Your game is ready for Melange", body: [`Worms Ultimate Mayhem, ${check.exe?.build || "Steam/GOG build #1077"}.`] };
-    case "wrongBuild":
+    case "wrongBuild": {
+      const expected = `Expected: size ${BUILD_SIZE.toLocaleString()} bytes, SHA-256 ${hashShort(BUILD_HASH)}`;
+      // The found file's SHA-256 is only computed when its size and timestamp already matched a known build (no
+      // point hashing an obviously different file); when it wasn't, the size alone still tells the user something.
+      const found = check.exe ? `Found: size ${check.exe.size.toLocaleString()} bytes${check.exe.sha256 ? `, SHA-256 ${hashShort(check.exe.sha256)}` : ""}` : "";
       return {
         title: "This version of the game isn't supported",
         body: [
@@ -44,9 +48,10 @@ export function checkCopy(check: GameCheck): Copy {
           "Installing Melange on it could crash the game, so we won't.",
           "This usually happens when the game has been patched or modified, or when a beta branch is selected.",
           "On Steam: right-click the game › Properties › Installed Files › Verify integrity of game files, and make sure Betas is set to None. Then try again.",
-          `The Steam/GOG release is: size ${BUILD_SIZE.toLocaleString()} bytes, SHA-256 ${BUILD_HASH.slice(0, 6)}…`,
+          found ? `${expected}\n${found}` : expected,
         ],
       };
+    }
     case "noExe":
       return { title: "WormsMayhem.exe isn't in this folder", body: ["Choose the folder that contains it."] };
     case "notFound":
@@ -106,6 +111,13 @@ export function melangeCopy(status: SetupStatus, targetVersion: string): Copy {
   if (m.state === "damaged") return { title: `Melange ${targetVersion} needs repairing`, body: ["Some files are missing or do not match. We'll repair it."] };
   if (m.state === "disabled") return { title: `Melange ${m.version} is disabled`, body: ["We'll re-enable it."] };
   return { title: `Melange ${targetVersion} is already installed`, body: ["We'll repair it."] };
+}
+
+// The calm, non-error line shown (and used as a tooltip) while a batch such as the recommended-plugins install
+// holds the setup lock, in place of letting setup.*/plugins.setSettings fail with -32002.
+export function busyNotice(busy: SetupProgress): string {
+  const progress = busy.of > 0 ? ` (${busy.step} of ${busy.of})` : "";
+  return `${busy.label || "Installing plugins — this finishes in a moment."}${progress}`;
 }
 
 export function errorCopy(code: number, data?: unknown): Copy {

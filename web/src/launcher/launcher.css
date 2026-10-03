@@ -35,6 +35,10 @@
 .lw-card p { margin: 0 0 12px; line-height: 1.5; }
 .lw-card p:last-of-type { margin-bottom: 0; }
 .lw-body { flex: 1; }
+[data-step="welcome"] .lw-body { display: flex; flex-direction: column; }
+.lw-welcome-art { flex: 1; display: flex; align-items: flex-end; justify-content: center; min-height: 0; padding-top: 16px; }
+.lw-welcome-art svg { width: 100%; max-width: 300px; height: auto; }
+@media (max-height: 640px) { .lw-welcome-art { display: none; } }
 .lw-foot { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-top: 24px; padding-top: 16px; border-top: 1px solid var(--border); }
 .lw-foot-right { display: flex; gap: 8px; margin-left: auto; align-items: center; }
 .btn-lg { height: 36px; padding: 0 16px; border-radius: 6px; font-size: 14px; }
@@ -62,7 +66,7 @@
 @media (prefers-reduced-motion: reduce) { .lw-skel-row { animation: none; } }
 @keyframes lw-shimmer { 0% { background-position: 100% 0; } 100% { background-position: 0 0; } }
 
-.lw-mono-box { font-family: var(--mono); font-size: 12.5px; background: var(--surface-2); border-radius: 6px; padding: 8px 10px; overflow-wrap: anywhere; }
+.lw-mono-box { font-family: var(--mono); font-size: 12.5px; background: var(--surface-2); border-radius: 6px; padding: 8px 10px; overflow-wrap: anywhere; white-space: pre-line; }
 .lw-choice { display: flex; gap: 10px; align-items: flex-start; margin: 4px 0 16px; }
 .lw-warn-box { border: 1px solid var(--warn); background: color-mix(in srgb, var(--warn) 10%, transparent); border-radius: 8px; padding: 12px 14px; margin: 8px 0 16px; }
 .lw-warn-box h2 { font-size: 14px; margin: 0 0 6px; }
@@ -72,6 +76,7 @@
 .lw-check-row svg { flex-shrink: 0; margin-top: 1px; }
 .lw-check-row.done { color: var(--ok); }
 .lw-check-row.pending svg { color: var(--muted); }
+.lw-check-row.undecided svg { color: var(--warn); }
 
 .lw-progress { display: flex; flex-direction: column; gap: 8px; }
 .lw-progress-row { display: flex; align-items: center; gap: 10px; font-size: 13.5px; }
@@ -106,6 +111,9 @@
 .la-tab[aria-current="page"] { background: var(--accent-soft); font-weight: 600; }
 .la-content { min-width: 0; min-height: 0; overflow: auto; padding: 24px; }
 .la-content-inner { max-width: 960px; margin: 0 auto; }
+/* The Store panel brings its own .pad (it is also used standalone in the Oasis shell); strip it here so the Store
+   page sits at the same 24px as every other launcher page instead of 24px + .pad on top. */
+.la-content-inner > .pad { padding: 0; }
 @media (max-width: 720px) {
   .la-body { grid-template-columns: minmax(0, 1fr); grid-template-rows: auto 1fr; }
   .la-side { flex-direction: row; overflow-x: auto; border-right: 0; border-bottom: 1px solid var(--border); }

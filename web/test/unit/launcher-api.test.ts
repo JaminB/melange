@@ -42,6 +42,15 @@ test("setupStatusOf: round-trips a full status and defaults missing fields", () 
   const empty = setupStatusOf({});
   assert.equal(empty.game, null);
   assert.equal(empty.melange.state, "missing");
+  assert.equal(empty.busy, undefined, "no busy field when nothing is running");
+});
+
+test("setupStatusOf: parses a recommended-plugins batch's busy progress", () => {
+  const s = setupStatusOf({ busy: { action: "recommended", step: 1, of: 2, label: "Installing Sunstone…" } });
+  assert.equal(s.busy?.action, "recommended");
+  assert.equal(s.busy?.step, 1);
+  assert.equal(s.busy?.of, 2);
+  assert.equal(s.busy?.label, "Installing Sunstone…");
 });
 
 test("planOf: unknown op falls back to keep", () => {

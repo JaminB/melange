@@ -57,6 +57,7 @@ async function foundInstallRecommended(browser) {
   try {
     await attempt("welcome", async () => {
       check("welcome: shows the brand and the intro", /Welcome to Melange/.test(await h1Text(page)));
+      check("welcome: the page/window title says Melange, not Oasis", await page.title() === "Melange");
       await shot(page, "01-welcome");
       await page.locator('[data-action="get-started"]').click();
     });
@@ -158,7 +159,9 @@ async function wrongBuild(browser) {
       await page.locator('[data-action="continue"]').click();
       await page.waitForSelector('[data-step="check"][data-verdict="wrongBuild"]', { timeout: 10000 });
       check("check: names build #1077", /#1077/.test(await page.locator("main").textContent()));
-      check("check: shows the hash", /041c8c/.test(await page.locator("[data-details]").textContent()));
+      const details = await page.locator("[data-details]").textContent();
+      check("check: shows the expected hash", /041c8c/.test(details));
+      check("check: shows the found file's size and hash", /Found.*5,820,224 bytes.*SHA-256/s.test(details), details);
       await shot(page, "12-check-wrong-build");
       await page.locator('[data-action="primary"]').click();
       await page.waitForTimeout(400);
@@ -207,9 +210,11 @@ async function reshadeBackupAndRestore(browser) {
       await page.waitForSelector('[data-needs-choice="loader"]', { timeout: 10000 });
       check("install: names ReShade", /ReShade/.test(await page.locator('[data-needs-choice="loader"]').textContent()));
       check("install button disabled until a choice is made", await page.locator('[data-action="install"]').isDisabled());
+      check("install: the undecided loader item is not ticked", await page.locator('[data-item="loader"].undecided').count() === 1);
       await shot(page, "14-install-needs-choice");
       await page.locator('input[name="loader-choice"]').first().click();
       await page.waitForSelector('[data-action="install"]:not([disabled])', { timeout: 5000 });
+      check("install: choosing clears the undecided state", await page.locator('[data-item="loader"].undecided').count() === 0);
       await shot(page, "15-install-replace-chosen");
       await page.locator('[data-action="install"]').click();
       await page.waitForSelector('[data-step="recommended"]', { timeout: 10000 });
@@ -256,9 +261,50 @@ async function installedHome(browser) {
   }
 }
 
+async function pluginsBusy(browser) {
+  const mock = await startMock({ root, launcher: true });
+  const { page, errors } = await openPage(browser, mock, "plugins-busy");
+  try {
+    await attempt("home: a running recommended batch shows a calm notice and disables Restore", async () => {
+      await page.waitForSelector(".la", { timeout: 10000 });
+      await page.waitForSelector('[data-notice="busy"]', { timeout: 10000 });
+      const busyText = (await page.locator('[data-notice="busy"]').textContent()) ?? "";
+      check("home: busy notice names the plugin and progress", /Sunstone/.test(busyText) && /1 of 2/.test(busyText), busyText);
+      const restoreBtn = page.locator('[data-notice="restore"] button:has-text("Restore it")');
+      check("home: Restore it is disabled while busy", await restoreBtn.isDisabled());
+      check("home: Restore it explains why in a tooltip", !!(await restoreBtn.getAttribute("title")));
+      await shot(page, "19-home-plugins-busy");
+    });
+    await attempt("settings: setup actions are disabled with a tooltip while busy", async () => {
+      await page.locator('[data-page-tab="settings"]').click();
+      await page.waitForSelector('[data-section="melange"]', { timeout: 10000 });
+      await page.waitForSelector("[data-busy]", { timeout: 10000 });
+      const repair = page.locator('[data-section="melange"] button:has-text("Repair")');
+      check("settings: Repair is disabled while busy", await repair.isDisabled());
+      check("settings: Repair explains why in a tooltip", !!(await repair.getAttribute("title")));
+      const backupRestore = page.locator('[data-backup] button:has-text("Restore")');
+      check("settings: backup Restore is disabled while busy", await backupRestore.isDisabled());
+      await shot(page, "20-settings-busy");
+    });
+    await attempt("plugins: the settings drawer is read-only while busy", async () => {
+      await page.locator('[data-page-tab="plugins"]').click();
+      await page.waitForSelector("[data-busy]", { timeout: 10000 });
+      await page.locator("[data-settings]").first().click();
+      await page.waitForSelector('[role="dialog"]', { timeout: 5000 });
+      check("plugins: setting control is disabled while busy", await page.locator('[data-setting="quality"] [data-option="bold"]').isDisabled());
+      await shot(page, "21-plugins-busy");
+      await page.locator('.lx-drawer button:has-text("Close")').click();
+    });
+    check("plugins-busy scenario: no page errors", errors.length === 0, errors.join(" | "));
+  } finally {
+    await page.close();
+    await mock.close();
+  }
+}
+
 const browser = await chromium.launch({ channel: "msedge", headless: true });
 try {
-  for (const scenario of [foundInstallRecommended, notFound, wrongBuild, ualPresent, reshadeBackupAndRestore, installedHome]) {
+  for (const scenario of [foundInstallRecommended, notFound, wrongBuild, ualPresent, reshadeBackupAndRestore, installedHome, pluginsBusy]) {
     try {
       await scenario(browser);
     } catch (e) {

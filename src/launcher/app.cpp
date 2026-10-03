@@ -25,6 +25,10 @@ std::atomic<bool> g_webview{false};
 oasis::ChannelId g_channel = 0;
 std::mutex g_gateMx;
 std::string g_gate;
+std::mutex g_busyMx;
+bool g_busyActive = false;
+std::string g_busyAction, g_busyLabel;
+int g_busyStep = 0, g_busyOf = 0;
 
 std::string Fingerprint(const std::wstring& dir) {
     if (dir.empty()) return "none";
@@ -137,7 +141,18 @@ std::string CachedGate() {
 
 std::mutex& Tx() { return g_tx; }
 
-std::string StatusJson() { return setup::StatusJson(setup::Inspect(MakeContext())); }
+std::string StatusJson() {
+    setup::Status s = setup::Inspect(MakeContext());
+    {
+        std::lock_guard lk(g_busyMx);
+        s.busyActive = g_busyActive;
+        s.busyAction = g_busyAction;
+        s.busyStep = g_busyStep;
+        s.busyOf = g_busyOf;
+        s.busyLabel = g_busyLabel;
+    }
+    return setup::StatusJson(s);
+}
 
 void StartChannel() {
     g_channel = oasis::AddChannel("setup");
@@ -158,6 +173,31 @@ void PublishProgress(const std::string& action, int step, int of, const std::str
     oasis::Publish(g_channel, jsonmini::Obj()
                                   .Raw("progress", jsonmini::Obj().Str("action", action).Int("step", step).Int("of", of).Str("label", label).End())
                                   .End());
+}
+
+void SetBatchBusy(bool active, const std::string& action, int step, int of, const std::string& label) {
+    {
+        std::lock_guard lk(g_busyMx);
+        g_busyActive = active;
+        g_busyAction = active ? action : std::string();
+        g_busyStep = active ? step : 0;
+        g_busyOf = active ? of : 0;
+        g_busyLabel = active ? label : std::string();
+    }
+    if (active) PublishProgress(action, step, of, label);
+    PublishStatus();
+}
+
+bool BatchBusy(std::string* label) {
+    std::lock_guard lk(g_busyMx);
+    if (label) *label = g_busyLabel;
+    return g_busyActive;
+}
+
+std::string BusyMessage() {
+    std::string label;
+    if (BatchBusy(&label)) return "Installing plugins — this finishes in a moment." + (label.empty() ? std::string() : " " + label);
+    return "Melange is busy with another change. Try again in a moment.";
 }
 
 void SetWindow(HWND hwnd) { g_hwnd = hwnd; }

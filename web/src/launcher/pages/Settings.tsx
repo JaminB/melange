@@ -4,6 +4,7 @@ import { errorText } from "../../sdk/hooks";
 import { Ini } from "../../panels/ini";
 import type { Defaults, SetupStatus, Theme } from "../api";
 import { defaultsOf, whenText } from "../api";
+import { busyNotice } from "../copy";
 import { UndoIcon } from "../icons";
 
 export interface SettingsProps { client: Client; status: SetupStatus | undefined; theme: Theme; onTheme: (t: Theme) => void; onChangeFolder: () => void; }
@@ -56,10 +57,14 @@ export function Settings({ client, status, theme, onTheme, onChangeFolder }: Set
     try { await client.call("ini.set", { section: "Store", key: "IndexUrl", value: "" }); setIndexUrl((s) => (s ? { ...s, custom: false } : s)); } catch (e) { setError(errorText(e)); }
   };
 
+  const batch = status?.busy;
+  const batchWhy = batch ? busyNotice(batch) : undefined;
+
   return (
     <div data-page="settings">
       <h1 style="margin:0 0 16px;font-size:18px">Settings</h1>
       {error ? <p class="error" role="alert">{error}</p> : null}
+      {batch ? <p class="hint" role="status" aria-live="polite" data-busy>{batchWhy}</p> : null}
 
       <section class="ls-section" data-section="game-folder">
         <h2>Game folder</h2>
@@ -75,18 +80,18 @@ export function Settings({ client, status, theme, onTheme, onChangeFolder }: Set
         <h2>Melange</h2>
         <div class="ls-row">
           <span class="ls-row-label">{melangeText(status)} · Loader {loaderText(status)}</span>
-          <button class="btn" disabled={busy === "repair"} onClick={() => run("repair")}>{status?.melange.state === "missing" ? "Install" : "Repair"}</button>
+          <button class="btn" disabled={busy === "repair" || !!batch} title={batchWhy} onClick={() => run("repair")}>{status?.melange.state === "missing" ? "Install" : "Repair"}</button>
           {status?.melange.state === "missing" ? null : status?.melange.state === "disabled"
-            ? <button class="btn" disabled={busy === "enable"} onClick={() => run("enable")}>Enable</button>
-            : <button class="btn" disabled={busy === "disable"} onClick={() => run("disable")}>Disable</button>}
-          {status?.melange.state === "missing" ? null : <button class="btn danger" onClick={() => setConfirmUninstall(true)}>Uninstall…</button>}
+            ? <button class="btn" disabled={busy === "enable" || !!batch} title={batchWhy} onClick={() => run("enable")}>Enable</button>
+            : <button class="btn" disabled={busy === "disable" || !!batch} title={batchWhy} onClick={() => run("disable")}>Disable</button>}
+          {status?.melange.state === "missing" ? null : <button class="btn danger" disabled={!!batch} title={batchWhy} onClick={() => setConfirmUninstall(true)}>Uninstall…</button>}
         </div>
         {confirmUninstall ? (
           <div class="lw-warn-box" role="alertdialog" data-confirm="uninstall">
             <p>This removes Melange from the game folder.</p>
             <label class="small"><input type="checkbox" checked={removeData} onChange={(e) => setRemoveData((e.currentTarget as HTMLInputElement).checked)} /> Also remove settings, logs and Store plugins</label>
             <div class="row" style="margin-top:10px">
-              <button class="btn danger" disabled={busy === "uninstall"} onClick={() => run("uninstall")}>Uninstall</button>
+              <button class="btn danger" disabled={busy === "uninstall" || !!batch} title={batchWhy} onClick={() => run("uninstall")}>Uninstall</button>
               <button class="btn" onClick={() => setConfirmUninstall(false)}>Cancel</button>
             </div>
           </div>
@@ -95,8 +100,8 @@ export function Settings({ client, status, theme, onTheme, onChangeFolder }: Set
         {!status?.backups.length ? <p class="muted small">No backups yet.</p> : status.backups.map((b) => (
           <div class="ls-backup" key={b.id} data-backup={b.id}>
             <span class="mono">{whenText(b.created)}</span><span class="muted">{b.action}</span>
-            <button class="btn" disabled={busy === b.id} onClick={() => restore(b.id)}><UndoIcon size={14} /> Restore</button>
-            <button class="link" disabled={busy === b.id} onClick={() => deleteBackup(b.id)}>Delete</button>
+            <button class="btn" disabled={busy === b.id || !!batch} title={batchWhy} onClick={() => restore(b.id)}><UndoIcon size={14} /> Restore</button>
+            <button class="link" disabled={busy === b.id || !!batch} title={batchWhy} onClick={() => deleteBackup(b.id)}>Delete</button>
           </div>
         ))}
       </section>

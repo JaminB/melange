@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "preact/hooks";
 import { errorText } from "../../sdk/hooks";
 import { RpcError } from "../../sdk/client";
 import { applyResultOf, planOf, setupEventOf, setupStatusOf, type SetupProgress } from "../api";
-import { CheckCircleIcon } from "../icons";
+import { CheckCircleIcon, CircleDashedIcon } from "../icons";
 import { PlanList } from "../components/PlanList";
 import { StepHeading } from "../components/StepHeading";
 import { errorCopy, loaderChecklistLine, loaderCopy, melangeCopy } from "../copy";
@@ -99,7 +99,10 @@ export function Install({ client, state, dispatch }: WizardProps) {
         ) : (
           <>
             <ul class="lw-checklist" data-checklist>
-              <li class="lw-check-row pending" data-item="loader"><CheckCircleIcon size={16} /><span>{loaderChecklistLine(status.loader, status.otherLoaders, state.replaceLoader)}</span></li>
+              <li class={`lw-check-row ${needsChoice ? "undecided" : "pending"}`} data-item="loader">
+                {needsChoice ? <CircleDashedIcon size={16} /> : <CheckCircleIcon size={16} />}
+                <span>{loaderChecklistLine(status.loader, status.otherLoaders, state.replaceLoader)}</span>
+              </li>
               <li class="lw-check-row pending" data-item="melange"><CheckCircleIcon size={16} /><span>{melange.title}</span></li>
               <li class="lw-check-row pending" data-item="ini"><CheckCircleIcon size={16} /><span>{!status.ini.present ? "Create Melange.ini with the default settings" : status.ini.missingKeys ? `Keep your Melange.ini and add ${status.ini.missingKeys} new setting${status.ini.missingKeys === 1 ? "" : "s"}` : "Keep your Melange.ini"}</span></li>
               {status.legacy.length ? <li class="lw-check-row pending" data-item="legacy"><CheckCircleIcon size={16} /><span>Remove the old {status.legacy.join(", ")} (backed up)</span></li> : null}

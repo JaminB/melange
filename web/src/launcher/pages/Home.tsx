@@ -2,6 +2,7 @@ import { useEffect, useState } from "preact/hooks";
 import type { Client } from "../../sdk/client";
 import { errorText } from "../../sdk/hooks";
 import { loadedSinceInstall, whenText, type SetupStatus } from "../api";
+import { busyNotice } from "../copy";
 import { StatusCard, type Tone } from "../components/StatusCard";
 import { FolderIcon, PlugIcon, PuzzleIcon, SparkleIcon } from "../icons";
 
@@ -65,6 +66,7 @@ export function Home({ client, status, onFixGame, onOpenPlugins, onOpenSettings 
     : { tone: "ok", text: "…" };
 
   const canRestore = notice && status.install?.loader === "replaced" && status.backups.length > 0;
+  const busy = status.busy;
   const restore = async () => {
     const backup = status.backups[0];
     if (!backup) return;
@@ -74,9 +76,10 @@ export function Home({ client, status, onFixGame, onOpenPlugins, onOpenSettings 
 
   return (
     <div data-page="home">
+      {busy ? <div class="lc-notice" role="status" aria-live="polite" data-notice="busy">{busyNotice(busy)}</div> : null}
       {canRestore ? (
         <div class="lc-notice" role="status" data-notice="restore">
-          <span>You replaced the previous dinput8.dll. <button class="link" disabled={restoreBusy} onClick={restore}>Restore it</button></span>
+          <span>You replaced the previous dinput8.dll. <button class="link" disabled={restoreBusy || !!busy} title={busy ? busyNotice(busy) : undefined} onClick={restore}>Restore it</button></span>
           <button class="link" onClick={() => setNotice(false)} aria-label="Dismiss">Dismiss</button>
         </div>
       ) : null}

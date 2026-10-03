@@ -891,6 +891,8 @@ std::string StatusJson(const Status& s) {
     if (s.install.present)
         o.Raw("install", jsonmini::Obj().Str("melange", s.install.melange).Str("installedAt", s.install.installedAt)
                              .Str("loader", s.install.loader).End());
+    if (s.busyActive)
+        o.Raw("busy", jsonmini::Obj().Str("action", s.busyAction).Int("step", s.busyStep).Int("of", s.busyOf).Str("label", s.busyLabel).End());
     return o.End();
 }
 

@@ -57,6 +57,11 @@ struct Status {
     Payload payload;
     std::vector<Backup> backups;
     InstallRecord install;
+    // A long-running batch outside this call (today: the recommended-plugins install on first run) that holds
+    // the setup transaction lock. Set by the app layer after Inspect(), not by Inspect() itself.
+    bool busyActive = false;
+    std::string busyAction, busyLabel;
+    int busyStep = 0, busyOf = 0;
 };
 Status Inspect(const Context& ctx);
 std::string StatusJson(const Status& s);

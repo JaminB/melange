@@ -24,6 +24,8 @@ export const GearIcon = (p: IconProps) => <Svg {...p}><circle cx="12" cy="12" r=
 export const LifeBuoyIcon = (p: IconProps) => <Svg {...p}><circle cx="12" cy="12" r="9" /><circle cx="12" cy="12" r="3.5" /><path d="m7.5 7.5 2.3 2.3M16.5 7.5l-2.3 2.3M7.5 16.5l2.3-2.3M16.5 16.5l-2.3-2.3" /></Svg>;
 export const PlayIcon = (p: IconProps) => <Svg {...p}><path d="M7 4.5v15l13-7.5-13-7.5Z" /></Svg>;
 export const CheckCircleIcon = (p: IconProps) => <Svg {...p}><circle cx="12" cy="12" r="9" /><path d="m8.5 12.5 2.3 2.3 4.7-5" /></Svg>;
+// A plain, empty circle: not yet decided, as opposed to a (grey) checkmark for a step that will simply happen.
+export const CircleDashedIcon = (p: IconProps) => <Svg {...p}><circle cx="12" cy="12" r="9" stroke-dasharray="3.2 3.6" /></Svg>;
 export const AlertTriangleIcon = (p: IconProps) => <Svg {...p}><path d="M12 4 3 20h18L12 4Z" /><path d="M12 10.5v4" /><path d="M12 17.2h.01" /></Svg>;
 export const XCircleIcon = (p: IconProps) => <Svg {...p}><circle cx="12" cy="12" r="9" /><path d="m9 9 6 6M15 9l-6 6" /></Svg>;
 export const UndoIcon = (p: IconProps) => <Svg {...p}><path d="M7 7 3.5 10.5 7 14" /><path d="M3.5 10.5H14a6 6 0 1 1 0 12H9" /></Svg>;
