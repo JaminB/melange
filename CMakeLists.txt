@@ -139,6 +139,7 @@ set(ERG_SERVICE_SOURCES
 file(GLOB_RECURSE MELANGE_SOURCES CONFIGURE_DEPENDS src/*.cpp)
 list(FILTER MELANGE_SOURCES EXCLUDE REGEX "/src/xom/")
 list(FILTER MELANGE_SOURCES EXCLUDE REGEX "/src/oasis/(core|pack|standalone)/")
+list(FILTER MELANGE_SOURCES EXCLUDE REGEX "/src/launcher/")
 
 # Optional out-of-tree modules (<dir>/modules/*.cpp), e.g. build.ps1 -PrivateDir <dir>.
 set(MELANGE_PRIVATE_DIR "" CACHE PATH "Optional folder with extra modules (modules/*.cpp)")
@@ -220,6 +221,30 @@ target_include_directories(oasis_standalone_selftest PRIVATE src src/sdk)
 target_compile_definitions(oasis_standalone_selftest PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX _CRT_SECURE_NO_WARNINGS)
 target_compile_options(oasis_standalone_selftest PRIVATE /W4 /utf-8 /permissive-)
 target_link_libraries(oasis_standalone_selftest PRIVATE miniz)
+
+# Melange.exe's setup logic without a window: detection, validation, loader identity, the install engine, plugin
+# settings. Shared by the launcher and its self-test.
+set(LAUNCHER_CORE_SOURCES
+    src/launcher/util.cpp src/launcher/settings.cpp src/launcher/plugin_settings.cpp src/launcher/recommended.cpp
+    src/launcher/setup/vdf.cpp src/launcher/setup/detect.cpp src/launcher/setup/exe_check.cpp src/launcher/setup/dll_id.cpp
+    src/launcher/setup/running.cpp src/launcher/setup/ini_merge.cpp src/launcher/setup/engine.cpp
+    src/oasis/standalone/game_lock.cpp src/oasis/rpc/ini_edit.cpp)
+# Stand-ins for third-party DLLs and melange.asi builds: read from disk by the self-test, never loaded.
+foreach(fx reshade microsoft)
+    add_library(fake_dinput8_${fx} SHARED tests/fixtures/launcher/fake_dll.c tests/fixtures/launcher/fake_${fx}.rc)
+endforeach()
+add_library(fake_dinput8_other SHARED tests/fixtures/launcher/fake_dll.c)
+foreach(v 0_4_0 0_3_1 9_0_0)
+    add_library(fake_asi_${v} SHARED tests/fixtures/launcher/fake_dll.c tests/fixtures/launcher/fake_asi_${v}.rc)
+endforeach()
+add_executable(launcher_selftest tests/launcher_selftest.cpp ${LAUNCHER_CORE_SOURCES}
+    src/store/index.cpp src/mods/spice.cpp src/levels/live_policy.cpp src/tools/json_read.cpp src/tools/hash.cpp src/core/log.cpp)
+add_dependencies(launcher_selftest fake_dinput8_reshade fake_dinput8_microsoft fake_dinput8_other fake_asi_0_4_0 fake_asi_0_3_1 fake_asi_9_0_0)
+target_include_directories(launcher_selftest PRIVATE src src/sdk)
+target_compile_definitions(launcher_selftest PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX _CRT_SECURE_NO_WARNINGS
+    MELANGE_SOURCE_DIR="${CMAKE_SOURCE_DIR}")
+target_compile_options(launcher_selftest PRIVATE /W4 /utf-8 /permissive-)
+target_link_libraries(launcher_selftest PRIVATE bcrypt version shell32 ole32)
 
 add_executable(json_read_selftest tests/json_read_selftest.cpp src/tools/json_read.cpp)
 target_include_directories(json_read_selftest PRIVATE src)
