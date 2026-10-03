@@ -31,6 +31,7 @@ namespace {
 
 std::wstring GameDirFn() { return L::app::GameDir(); }
 std::string WriteGateFn() { return L::app::WriteGate(); }
+std::wstring DefaultsIniFn() { return L::ExeDir() + L"\\Melange.ini"; }
 
 void OpenLog() {
     const std::wstring dir = L::AppDataDir();
@@ -127,6 +128,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int) {
     sh.gameDir = &GameDirFn;
     sh.writeGate = &WriteGateFn;
     sh.version = MELANGE_VERSION;
+    sh.defaultsIni = &DefaultsIniFn;
     melange::oasis::standalone::RegisterStandalone(sh);
     if (const std::wstring game = L::app::GameDir(); !game.empty() && L::DirExists(game)) melange::oasis::standalone::RegisterLevels(game);
     L::rpc::InstallSetup();

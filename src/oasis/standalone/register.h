@@ -8,6 +8,7 @@ struct StandaloneHost {
     std::wstring (*gameDir)() = nullptr;      // "" until a folder is chosen
     std::string (*writeGate)() = nullptr;     // "" when writes to the folder are allowed now, else user copy
     const char* version = "";
+    std::wstring (*defaultsIni)() = nullptr;  // the shipped Melange.ini (keys and defaults for ini.get), "" if none
 };
 void RegisterStandalone(const StandaloneHost& host);
 // The Erg level service and asset route, bound to one game folder (installed once, when a folder is first known).

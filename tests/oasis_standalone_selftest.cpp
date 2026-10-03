@@ -83,6 +83,8 @@ std::wstring MakeModsFixture() {
     CreateDirectoryW((std::wstring(root) + L"\\Mods").c_str(), nullptr);
     CreateDirectoryW((std::wstring(root) + L"\\Mods\\alpha").c_str(), nullptr);
     CreateDirectoryW((std::wstring(root) + L"\\Mods\\beta").c_str(), nullptr);
+    CreateDirectoryW((std::wstring(root) + L"\\Mods\\.store").c_str(), nullptr);
+    WriteFile_(std::wstring(root) + L"\\Mods\\.store\\installed.json", "{}");
     auto manifest = [](const char* id, bool defaultEnabled) {
         return std::string("{\"spiceVersion\":1,\"id\":\"") + id +
                "\",\"version\":\"1.0.0\",\"name\":\"" + id + "\",\"authors\":[\"t\"],"
@@ -101,6 +103,7 @@ void TestMods() {
     std::string list = modsprov::ListJson(root, "1.0.0");
     Expect(list.find("\"id\":\"alpha\"") != std::string::npos && list.find("\"id\":\"beta\"") != std::string::npos,
            "ListJson finds both mods", list);
+    Expect(list.find("\".store\"") == std::string::npos, "ListJson skips the Store's .store folder", list);
     Expect(list.find("\"id\":\"alpha\",\"name\":\"alpha\",\"version\":\"1.0.0\",\"authors\":\"t\",\"kind\":\"client-only\","
                      "\"state\":\"enabled\"") != std::string::npos,
            "alpha defaults to enabled", list);

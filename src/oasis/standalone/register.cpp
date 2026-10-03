@@ -248,10 +248,31 @@ void IniGetMethod(const oa::Call&, oa::Result& r, void*) {
     const std::wstring path = game + L"\\Melange.ini";
     std::string text;
     ReadWhole(path, &text);
-    for (const auto& e : melange::oasis::ini::Parse(text))
-        if (_stricmp(e.section.c_str(), "Thumper") == 0 && _stricmp(e.key.c_str(), "GrantSalt") == 0)
-            text = melange::oasis::ini::Set(text, e.section, e.key, "********");
-    r.json = jsonmini::Obj().Str("path", Narrow(path)).Str("text", text).Raw("keys", "[]").End();
+    auto secret = [](const auto& e) { return _stricmp(e.section.c_str(), "Thumper") == 0 && _stricmp(e.key.c_str(), "GrantSalt") == 0; };
+    const auto entries = melange::oasis::ini::Parse(text);
+    for (const auto& e : entries)
+        if (secret(e)) text = melange::oasis::ini::Set(text, e.section, e.key, "********");
+    // The game isn't running, so there is no module schema: the shipped Melange.ini supplies the keys and defaults.
+    std::string defText;
+    const std::wstring defPath = g_host.defaultsIni ? g_host.defaultsIni() : std::wstring();
+    if (!defPath.empty() && _wcsicmp(defPath.c_str(), path.c_str()) != 0) ReadWhole(defPath, &defText);
+    const auto defs = melange::oasis::ini::Parse(defText.empty() ? text : defText);
+    jsonmini::Arr keys;
+    auto add = [&](const melange::oasis::ini::Entry* d, const melange::oasis::ini::Entry& k) {
+        const auto* e = melange::oasis::ini::Find(entries, k.section, k.key);
+        jsonmini::Obj o;
+        o.Str("section", k.section).Str("key", k.key);
+        if (d) o.Str("def", secret(*d) ? "" : d->value);
+        else o.Raw("def", "null");
+        o.Bool("live", false).Bool("declared", d != nullptr);
+        if (e) o.Str("current", secret(*e) ? "********" : e->value).Int("line", e->line);
+        else o.Raw("current", "null");
+        keys.Raw(o.End());
+    };
+    for (const auto& d : defs) add(&d, d);
+    for (const auto& e : entries)
+        if (!melange::oasis::ini::Find(defs, e.section, e.key)) add(nullptr, e);
+    r.json = jsonmini::Obj().Str("path", Narrow(path)).Str("text", text).Raw("keys", keys.End()).End();
 }
 
 void IniSetMethod(const oa::Call& c, oa::Result& r, void*) {

@@ -66,9 +66,8 @@ std::vector<spice::Manifest> ScanManifests(const std::wstring& gameDir) {
     HANDLE h = FindFirstFileW((modsDir + L"\\*").c_str(), &fd);
     if (h == INVALID_HANDLE_VALUE) return out;
     do {
-        if (!(fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)) continue;
+        if (!(fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) || fd.cFileName[0] == L'.') continue;
         const std::wstring name = fd.cFileName;
-        if (name == L"." || name == L"..") continue;
         spice::Manifest m;
         std::vector<spice::Error> errs;
         if (spice::Parse(modsDir + L"\\" + name, &m, &errs)) out.push_back(std::move(m));
