@@ -276,7 +276,7 @@ void DrawPanel(void*) {
     if (s.fetching) ImGui::TextUnformatted("Fetching the list...");
     else if (s.offline && s.haveIndex) ImGui::TextColored(kWarn, "Offline: showing the list from %s (%s)", s.fetchedAt.c_str(), s.error.c_str());
     else if (!s.error.empty()) ImGui::TextColored(kBad, "%s", s.error.c_str());
-    else if (s.haveIndex) ImGui::Text("Fetched %s, %zu plugins", s.fetchedAt.c_str(), s.plugins);
+    else if (s.haveIndex) ImGui::Text("Fetched %s, %zu plugin%s", s.fetchedAt.c_str(), s.plugins, s.plugins == 1 ? "" : "s");
     ImGui::PopTextWrapPos();
     ImGui::BeginDisabled(s.fetching);
     if (ImGui::Button("Refresh")) Refresh();
@@ -287,7 +287,10 @@ void DrawPanel(void*) {
     if (s.rollback) ImGui::TextColored(kBad, "%s", kRollbackText);
     if (!s.gate.empty()) ImGui::TextColored(kWarn, "Install, update and remove are paused: %s", s.gate.c_str());
     for (const std::string& n : s.notices) ImGui::TextColored(kInfo, "%s", n.c_str());
-    if (!g_actionError.empty()) ImGui::TextColored(kBad, "%s", g_actionError.c_str());
+    static std::string lastGate;
+    if (s.gate != lastGate && g_actionError == lastGate) g_actionError.clear();
+    lastGate = s.gate;
+    if (!g_actionError.empty() && g_actionError != s.gate) ImGui::TextColored(kBad, "%s", g_actionError.c_str());
     const Job& j = s.job;
     if (j.phase == "downloading" || j.phase == "verifying" || j.phase == "installing" || j.phase == "removing") {
         char overlay[96];

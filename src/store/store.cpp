@@ -194,17 +194,17 @@ void Record(const std::string& id, const Version& v) {
     install::SaveDb(g_paths, g_db);
 }
 
+std::string LastIndexUrl() {
+    FILE* f = _wfopen((g_paths.root + L"\\index.url").c_str(), L"rb");
+    if (!f) return {};
+    char buf[1024] = {};
+    const size_t n = fread(buf, 1, sizeof buf - 1, f);
+    fclose(f);
+    return std::string(buf, n);
+}
+
 bool LoadCachedIndex(Index* out, std::string* when) {
-    std::string url;
-    {
-        FILE* f = _wfopen((g_paths.root + L"\\index.url").c_str(), L"rb");
-        if (!f) return false;
-        char buf[1024] = {};
-        const size_t n = fread(buf, 1, sizeof buf - 1, f);
-        fclose(f);
-        url.assign(buf, n);
-    }
-    if (url != g_set.indexUrl) return false;
+    if (LastIndexUrl() != g_set.indexUrl) return false;
     const std::wstring path = g_paths.root + L"\\index.json";
     std::string text;
     FILE* f = _wfopen(path.c_str(), L"rb");
@@ -254,6 +254,7 @@ void DoFetch() {
         err = "the store list is invalid: " + err;
     }
     if (ok) {
+        const bool newList = LastIndexUrl() != g_set.indexUrl;
         install::EnsureDirs(g_paths);
         install::WriteFileAtomic(g_paths.root + L"\\index.json", sink.data);
         install::WriteFileAtomic(g_paths.root + L"\\index.url", g_set.indexUrl);
@@ -261,10 +262,15 @@ void DoFetch() {
                  idx.skipped.empty() ? "" : (", " + std::to_string(idx.skipped.size()) + " entr(ies) skipped").c_str());
         for (const std::string& s : idx.skipped) LOG_WARN("[store] skipped %s", s.c_str());
         std::lock_guard lk(g_mx);
-        g_rollback = SchemeOf(g_set.indexUrl) != Scheme::File && idx.serial < g_db.serialSeen;
+        const bool track = SchemeOf(g_set.indexUrl) != Scheme::File;
+        if (newList && g_db.serialSeen) {
+            g_db.serialSeen = 0;
+            install::SaveDb(g_paths, g_db);
+        }
+        g_rollback = track && idx.serial < g_db.serialSeen;
         if (g_rollback) {
             LOG_WARN("[store] the list's serial %lld is lower than %lld seen before: updates disabled", idx.serial, g_db.serialSeen);
-        } else if (idx.serial > g_db.serialSeen) {
+        } else if (track && idx.serial > g_db.serialSeen) {
             g_db.serialSeen = idx.serial;
             install::SaveDb(g_paths, g_db);
         }
@@ -663,6 +669,10 @@ void OnFrame() {
         {
             std::lock_guard lk(g_mx);
             changed = gate != g_gate;
+            if (changed && !g_gate.empty()) {
+                if (g_job.phase == "error" && g_job.message == g_gate) g_job = Job{};
+                std::erase_if(g_rowError, [&](const auto& e) { return e.second == g_gate; });
+            }
             g_gate = gate;
         }
         if (changed) PublishState();
