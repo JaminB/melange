@@ -9,6 +9,7 @@ import { createServer } from "node:http";
 import { extname, join, normalize, resolve } from "node:path";
 import { AFTER, ergService } from "./erg-mock.mjs";
 import { storeService } from "./store-mock.mjs";
+import { launcherService } from "./launcher-mock.mjs";
 
 const CSP = "default-src 'self'; connect-src 'self'; img-src 'self' blob: data:; style-src 'self' 'unsafe-inline'; frame-src 'self'; " +
   "frame-ancestors 'none'; base-uri 'none'; form-action 'none'";
@@ -120,8 +121,9 @@ export async function startMock(opts = {}) {
   const root = resolve(opts.root ?? "web/dist");
   const token = randomBytes(12).toString("base64url");
   const cookie = randomBytes(12).toString("hex");
+  const launcherMode = !!opts.launcher;
   const state = {
-    server: opts.standalone ? "standalone" : "game", readOnly: !!opts.readOnly, online: !!opts.online, inMatch: opts.inMatch ?? true,
+    server: launcherMode ? "standalone" : opts.standalone ? "standalone" : "game", readOnly: !!opts.readOnly, online: !!opts.online, inMatch: opts.inMatch ?? true,
     ini: INI, mods: initialMods(), calls: [], logRate: 0, seq: 0, busPosted: 0,
   };
   const build = existsSync(join(root, "build.txt")) ? readFileSync(join(root, "build.txt"), "utf8").trim() : "dev";
@@ -132,10 +134,12 @@ export async function startMock(opts = {}) {
 
   const erg = ergService(state);
   const store = storeService(state, (ch, d) => broadcast(ch, d));
+  const launcher = launcherMode ? launcherService(state, (ch, d) => broadcast(ch, d), opts.scenario) : undefined;
   const methods = [...(state.server === "game"
     ? ["sys.ping", "lua.eval", "lua.complete", "mods.list", "mods.setEnabled", "mods.revokeDeepDesert", "levels.live", "ini.get", "ini.set", "bus.names", "log.sessions"]
-    : ["sys.ping", "mods.list", "ini.get", "ini.set", "log.sessions"]), ...erg.methods, ...(state.server === "game" ? store.methods : [])];
-  const channels = state.server === "game" ? ["log", "bus", "bus.counts", "mods", "stats", "store"] : ["log"];
+    : ["sys.ping", "mods.list", "ini.get", "ini.set", "log.sessions"]),
+    ...erg.methods, ...(state.server === "game" ? store.methods : []), ...(launcher ? [...store.methods, ...launcher.methods] : [])];
+  const channels = state.server === "game" ? ["log", "bus", "bus.counts", "mods", "stats", "store"] : launcher ? ["log", "store", "setup"] : ["log"];
 
   const logRecord = (lvl, cat, msg) => {
     state.seq++;
@@ -153,7 +157,7 @@ export async function startMock(opts = {}) {
   for (let i = 0; i < 40; i++) pushLog(i % 5 === 0 ? 3 : 2, i % 3 ? "core" : "mods", `boot record ${i + 1}`);
 
   const reply = (c, id, r) => c.send({ t: "res", id, r });
-  const fail = (c, id, code, msg) => c.send({ t: "err", id, code, msg });
+  const fail = (c, id, code, msg, data) => c.send(data !== undefined ? { t: "err", id, code, msg, data } : { t: "err", id, code, msg });
   const modPublic = () => JSON.parse(JSON.stringify(state.mods));
 
   const handlers = {
@@ -239,8 +243,8 @@ export async function startMock(opts = {}) {
       return { live, restart: !live, changed: true };
     },
   };
-  Object.assign(handlers, erg.handlers, store.handlers);
-  const mutating = new Set(["lua.eval", "mods.setEnabled", "levels.live", "mods.revokeDeepDesert", "ini.set", ...erg.mutating, ...store.mutating]);
+  Object.assign(handlers, erg.handlers, store.handlers, launcher?.handlers);
+  const mutating = new Set(["lua.eval", "mods.setEnabled", "levels.live", "mods.revokeDeepDesert", "ini.set", ...erg.mutating, ...store.mutating, ...(launcher?.mutating ?? [])]);
 
   function broadcast(ch, d) { for (const c of clients) if (c.subs.has(ch)) c.queue(ch, d); }
 
@@ -252,7 +256,8 @@ export async function startMock(opts = {}) {
       if (m.proto !== 1) { c.send({ t: "bye", reason: "protocol", want: 1 }); return c.close(4001, "protocol"); }
       c.hello = true;
       return c.send({ t: "welcome", proto: 1, build, server: state.server, game: state.server === "game" ? { exeBuild: 1077, melange: "0.2.0-mock" } : undefined,
-        channels, methods, panels: [], limits: { maxClients: 4, maxMessageKB: 1024, maxQueueKB: 2048, maxQueuedCalls: 16, readOnly: state.readOnly } });
+        caps: launcher ? ["launcher"] : [], channels, methods, panels: [],
+        limits: { maxClients: 4, maxMessageKB: 1024, maxQueueKB: 2048, maxQueuedCalls: 16, readOnly: state.readOnly } });
     }
     if (m.t === "sub" || m.t === "unsub") {
       if (!channels.includes(m.ch)) { if (m.id !== undefined) fail(c, m.id, -32602, "unknown channel"); return; }
@@ -262,22 +267,25 @@ export async function startMock(opts = {}) {
       if (m.ch === "log") for (const r of backlog) c.queue("log", r);
       if (m.ch === "mods") c.queue("mods", modPublic());
       if (m.ch === "store") c.queue("store", store.initial());
+      if (m.ch === "setup" && launcher) c.queue("setup", { status: launcher.status() });
       return;
     }
     if (m.t === "call") {
       state.calls.push({ m: m.m, p: m.p });
       if (!methods.includes(m.m)) return fail(c, m.id, -32601, "unknown method");
       if (state.readOnly && mutating.has(m.m)) return fail(c, m.id, -32003, "Oasis is read-only ([Oasis] ReadOnly=1)");
+      const onErr = (e) => (Array.isArray(e) ? fail(c, m.id, e[0], e[1], e[2]) : fail(c, m.id, -32004, String(e)));
       const run = () => {
         try {
           const r = handlers[m.m](m.p ?? {});
+          if (r && typeof r.then === "function") return r.then((v) => reply(c, m.id, v), onErr);
           if (r && r[AFTER]) {
             reply(c, m.id, r.value);
             return r[AFTER](c);
           }
           return reply(c, m.id, r);
         } catch (e) {
-          return Array.isArray(e) ? fail(c, m.id, e[0], e[1]) : fail(c, m.id, -32004, String(e));
+          return onErr(e);
         }
       };
       // A test can hold one call back (state.delay(method, params) -> ms) to make two requests overlap.
@@ -291,6 +299,7 @@ export async function startMock(opts = {}) {
     const url = new URL(req.url, "http://x");
     const headers = { "Content-Security-Policy": CSP, "X-Content-Type-Options": "nosniff", "Referrer-Policy": "no-referrer" };
     if (url.searchParams.get("k") === token && url.pathname === "/") {
+      if (launcher && url.searchParams.get("scenario")) launcher.setScenario(url.searchParams.get("scenario"));
       res.writeHead(303, { ...headers, "Set-Cookie": `oasis_s=${cookie}; HttpOnly; SameSite=Strict; Path=/`, Location: "/", "Cache-Control": "no-store" });
       return res.end();
     }
@@ -436,6 +445,7 @@ export async function startMock(opts = {}) {
     close: async () => {
       clearInterval(logTimer); clearInterval(busTimer); clearInterval(countTimer);
       store.close();
+      launcher?.close();
       for (const c of clients) c.close(1001, "bye");
       await new Promise((r) => server.close(r));
       server.closeAllConnections?.();
@@ -446,7 +456,8 @@ export async function startMock(opts = {}) {
 if (process.argv[1] && import.meta.url.endsWith(process.argv[1].replace(/\\/g, "/").split("/").pop())) {
   const arg = (k, d) => { const i = process.argv.indexOf(k); return i > 0 ? process.argv[i + 1] : d; };
   const m = await startMock({ root: arg("--root", "web/dist"), port: Number(arg("--port", "0")), standalone: process.argv.includes("--standalone"),
-    readOnly: process.argv.includes("--read-only"), online: process.argv.includes("--online") });
+    readOnly: process.argv.includes("--read-only"), online: process.argv.includes("--online"), launcher: process.argv.includes("--launcher"),
+    scenario: arg("--scenario", undefined) });
   m.setLogRate(Number(arg("--log-rate", "5")));
   console.log(m.url);
 }

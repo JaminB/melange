@@ -7,7 +7,11 @@
 #                                              builds the app, drives every panel; -Quick skips the 30 s throughput run
 #   .\scripts\web\test.ps1 -Erg                ...then the Erg editor suite in headless Edge (SwiftShader) against the mock
 #                                              server's synthetic levels
-param([string]$Url = "", [switch]$Reconnect, [switch]$NoUnit, [switch]$Panels, [switch]$Quick, [switch]$Erg)
+#   .\scripts\web\test.ps1 -Launcher [-Shots <dir>]
+#                                              ...then the Melange.exe launcher wizard suite in headless Edge against the
+#                                              mock server's launcher scenarios; screenshots go to -Shots (default
+#                                              web\test\out\launcher-shots)
+param([string]$Url = "", [switch]$Reconnect, [switch]$NoUnit, [switch]$Panels, [switch]$Quick, [switch]$Erg, [switch]$Launcher, [string]$Shots = "")
 $ErrorActionPreference = "Stop"
 $root = Split-Path (Split-Path $PSScriptRoot -Parent) -Parent
 $web = Join-Path $root "web"
@@ -48,7 +52,7 @@ if ($Url) {
     if ($Erg -and (Invoke-Edge @((Join-Path $web "test\e2e\erg-service.mjs"), $Url))) { $fail++ }
 }
 
-if ($Panels -or $Erg) {
+if ($Panels -or $Erg -or $Launcher) {
     $dist = Join-Path $out "app-dist"
     & powershell -NoProfile -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot "build.ps1") -Out $dist -SkipTypeCheck
     if ($LASTEXITCODE) { throw "web build failed" }
@@ -59,6 +63,11 @@ if ($Erg) {
 if ($Panels) {
     $args_ = @((Join-Path $web "test\e2e\panels.mjs"), $dist)
     if ($Quick) { $args_ += "--quick" }
+    if (Invoke-Edge $args_) { $fail++ }
+}
+if ($Launcher) {
+    $args_ = @((Join-Path $web "test\e2e\launcher.mjs"), $dist)
+    if ($Shots) { $args_ += @("--shots", $Shots) }
     if (Invoke-Edge $args_) { $fail++ }
 }
 if ($fail) { Write-Host "web tests: FAILED"; exit 1 }
