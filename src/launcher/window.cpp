@@ -191,19 +191,21 @@ HRESULT OnController(HRESULT hr, ICoreWebView2Controller* controller) {
         }
     }
     EventRegistrationToken tok{};
-    g_webview->add_NavigationStarting(Callback<ICoreWebView2NavigationStartingEventHandler>(
-                                          [](ICoreWebView2*, ICoreWebView2NavigationStartingEventArgs* a) -> HRESULT {
-                                              LPWSTR uri = nullptr;
-                                              a->get_Uri(&uri);
-                                              const std::wstring u = uri ? uri : L"";
-                                              if (uri) CoTaskMemFree(uri);
-                                              if (!Allowed(u)) {
-                                                  a->put_Cancel(TRUE);
-                                                  OpenExternal(u);
-                                              }
-                                              return S_OK;
-                                          }).Get(),
-                                      &tok);
+    auto onNavigationStarting = [](ICoreWebView2*, ICoreWebView2NavigationStartingEventArgs* a) -> HRESULT {
+        LPWSTR uri = nullptr;
+        a->get_Uri(&uri);
+        const std::wstring u = uri ? uri : L"";
+        if (uri) CoTaskMemFree(uri);
+        if (!Allowed(u)) {
+            a->put_Cancel(TRUE);
+            OpenExternal(u);
+        }
+        return S_OK;
+    };
+    g_webview->add_NavigationStarting(Callback<ICoreWebView2NavigationStartingEventHandler>(onNavigationStarting).Get(), &tok);
+    // A sandboxed plugin panel iframe can still navigate itself (sandbox="allow-scripts" alone does not block
+    // same-frame navigation): without this, only the top-level handler above would ever see it.
+    g_webview->add_FrameNavigationStarting(Callback<ICoreWebView2NavigationStartingEventHandler>(onNavigationStarting).Get(), &tok);
     g_webview->add_NewWindowRequested(Callback<ICoreWebView2NewWindowRequestedEventHandler>(
                                           [](ICoreWebView2*, ICoreWebView2NewWindowRequestedEventArgs* a) -> HRESULT {
                                               LPWSTR uri = nullptr;

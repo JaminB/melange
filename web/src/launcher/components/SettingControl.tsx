@@ -31,7 +31,7 @@ export function SettingControl({ decl, value, disabled, onChange }: SettingContr
   }
   if (decl.type === "enum") {
     return (
-      <select id={id} value={String(value)} disabled={disabled} data-setting={decl.key}
+      <select id={id} value={String(value)} disabled={disabled} data-setting={decl.key} aria-label={decl.label}
               onChange={(e) => onChange((e.currentTarget as HTMLSelectElement).value)}>
         {(decl.options ?? []).map((o) => <option key={o} value={o}>{optionLabel(decl, o)}</option>)}
       </select>
@@ -52,7 +52,7 @@ export function SettingControl({ decl, value, disabled, onChange }: SettingContr
     );
   }
   return (
-    <input class="fb-text" id={id} type="text" value={String(value)} disabled={disabled} data-setting={decl.key}
+    <input class="fb-text" id={id} type="text" value={String(value)} disabled={disabled} data-setting={decl.key} aria-label={decl.label}
            onInput={(e) => onChange((e.currentTarget as HTMLInputElement).value)} />
   );
 }

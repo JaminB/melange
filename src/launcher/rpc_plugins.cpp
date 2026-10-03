@@ -81,6 +81,10 @@ void Write(Result& r, const std::string& id, const plugins::Values& values) {
     const std::wstring game = app::GameDir();
     if (game.empty()) return Fail(r, -32000, "Choose your game folder first.");
     if (const std::string gate = app::WriteGate(); !gate.empty()) return Fail(r, -32000, gate);
+    // Shares setup's transaction lock: a plugin write must not race setup.apply/restore touching the same
+    // Mods\ folder or Melange.ini.
+    std::unique_lock lk(app::Tx(), std::try_to_lock);
+    if (!lk.owns_lock()) return Fail(r, -32002, "Melange is busy with another change. Try again in a moment.");
     std::vector<plugins::Setting> decl;
     std::string err;
     if (plugins::ModFolder(game, id).empty() || !plugins::LoadDecl(game, id, &decl, &err)) return Fail(r, -32602, "no such plugin");
@@ -259,10 +263,18 @@ void RecommendedApply(const Call& c, Result& r, void*) {
     if (app::GameDir().empty()) return Fail(r, -32000, "Choose your game folder first.");
     if (const std::string gate = app::WriteGate(); !gate.empty()) return Fail(r, -32000, gate);
     if (g_applying.exchange(true)) return Fail(r, -32002, "Plugins are already being installed.");
+    // Held for the whole batch (moved into the worker thread) so setup.apply/restore can't run against the
+    // same Mods\ folder or Melange.ini while plugins are being installed.
+    std::unique_lock lk(app::Tx(), std::try_to_lock);
+    if (!lk.owns_lock()) {
+        g_applying = false;
+        return Fail(r, -32002, "Melange is busy with another change. Try again in a moment.");
+    }
     jsonmini::Arr queued;
     for (const auto& a : list) queued.Str(a.id);
-    std::thread([list] {
+    std::thread([list, lk = std::move(lk)]() mutable {
         for (const auto& a : list) ApplyOne(a);
+        lk.unlock();
         g_applying = false;
         app::PublishStatus();
     }).detach();

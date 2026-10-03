@@ -126,10 +126,15 @@ InstallRecord ReadInstallRecord(const std::wstring& game) {
 }
 
 bool SafeId(const std::string& id) {
-    if (id.empty() || id.size() > 80 || id == "." || id == "..") return false;
-    for (char ch : id)
+    if (id.empty() || id.size() > 80) return false;
+    bool allDots = true;
+    for (char ch : id) {
+        if (ch != '.') allDots = false;
         if (!(isalnum(static_cast<unsigned char>(ch)) || ch == '-' || ch == '_' || ch == '.')) return false;
-    return true;
+    }
+    // Not just "." or ".." (classic traversal) but any run of dots: Windows strips a trailing all-dot final
+    // path component, so "..." etc. would otherwise resolve to the parent (e.g. the whole backup\ folder).
+    return !allDots;
 }
 
 void LastLoad(const std::wstring& logs, std::string* at, std::string* version) {
@@ -397,6 +402,13 @@ Built BuildUninstall(const Context& c, const PlanRequest& req, const Status& st)
             b.ops.push_back(o);
             AddStep(b, "remove", L"Melange.exe", "this app's copy in the game folder");
         }
+    }
+    // Part of the same transaction as everything else here, so a crash mid-uninstall can't leave install.json
+    // behind claiming Melange is still installed once the files that back it are already gone.
+    if (FileExists(g + L"\\Melange\\install.json")) {
+        Op o{OpKind::Remove, L"Melange\\install.json"};
+        o.backup = false;
+        b.ops.push_back(o);
     }
     if (req.removeData) {
         if (st.iniPresent) {
@@ -916,9 +928,7 @@ Outcome Apply(const Context& c, const PlanRequest& req, const std::string& planI
     Outcome o = RunOps(c, req.action, b.ops, &backupId);
     if (!o.ok) return o;
     const std::wstring rec = c.gameDir + L"\\Melange\\install.json";
-    if (req.action == "uninstall") {
-        DeleteFileW(rec.c_str());
-    } else {
+    if (req.action != "uninstall") {
         std::string loaderMode = b.loaderMode, loaderSha = b.loaderSha;
         if (st.install.present && loaderMode == "reused" && (st.install.loader == "added" || st.install.loader == "replaced") &&
             st.install.loaderSha256 == st.loader.sha256)
