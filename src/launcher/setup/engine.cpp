@@ -361,7 +361,7 @@ Built BuildUninstall(const Context& c, const PlanRequest& req, const Status& st)
         for (const auto& bk : st.backups) {   // newest first
             if (from) break;
             for (const auto& f : bk.files)
-                if (IEquals(f.path, "dinput8.dll") && f.op == "replaced" && bk.action == "install") from = &bk;
+                if (IEquals(f.path, "dinput8.dll") && f.op == "replaced" && (bk.action == "install" || bk.action == "repair")) from = &bk;
         }
         if (r.loader == "replaced" && from && st.loader.sha256 == r.loaderSha256) {
             Op o{OpKind::Replace, L"dinput8.dll", g + L"\\Melange\\backup\\" + W(from->id) + L"\\dinput8.dll"};

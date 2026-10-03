@@ -103,6 +103,8 @@ void Sync() {
         g_openFor.clear();
         return;
     }
+    const store::Status st = store::GetStatus();
+    if (st.busy || st.fetching) return;   // the worker reads the settings; switch once it is idle
     store::SetHost(&g_host, ConfigFor(dir));
     if (store::Open(dir + L"\\Mods")) g_openFor = dir;
 }
