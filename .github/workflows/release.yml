@@ -81,7 +81,7 @@ jobs:
           certificate-profile-name: ${{ vars.SIGNING_PROFILE }}
           files: |
             ${{ github.workspace }}\out\stage\melange.asi
-            ${{ github.workspace }}\out\stage\oasis.exe
+            ${{ github.workspace }}\out\stage\Melange.exe
             ${{ github.workspace }}\out\stage\tools\xomtool.exe
           file-digest: SHA256
           timestamp-rfc3161: http://timestamp.acs.microsoft.com
@@ -92,7 +92,7 @@ jobs:
       - name: Verify signatures
         if: env.SIGN == 'true'
         run: |
-          foreach ($f in "out\stage\melange.asi", "out\stage\oasis.exe", "out\stage\tools\xomtool.exe") {
+          foreach ($f in "out\stage\melange.asi", "out\stage\Melange.exe", "out\stage\tools\xomtool.exe") {
             $sig = Get-AuthenticodeSignature $f
             Write-Host "$f $($sig.Status) $($sig.SignerCertificate.Subject)"
             if ($sig.Status -ne "Valid" -or -not $sig.TimeStamperCertificate) { throw "$f is not validly signed and timestamped" }

@@ -22,6 +22,7 @@ enum Close : uint16_t {
 struct Host {
     std::string server = "game";   // "game" | "standalone"
     std::string gameJson;          // welcome.game: a JSON object, or "" for none
+    std::vector<std::string> caps; // welcome.caps, e.g. "launcher"
     uint64_t (*frame)() = nullptr; // sys.ping's frame counter
 };
 void SetHost(const Host& h);

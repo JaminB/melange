@@ -188,12 +188,12 @@ void PublishState() {
     if (g_channel && oasis::HasSubscribers(g_channel)) oasis::Publish(g_channel, ChannelJson());
 }
 
-void InstallRpc() {
+void InstallRpc(bool gameOnly) {
     oasis::ChannelOptions o;
     o.overflow = oasis::Overflow::Coalesce;
     g_channel = oasis::AddChannel("store", o);
     oasis::OnSubscribe(g_channel, &OnSub, nullptr);
-    using oasis::kRpcGameOnly;
+    const uint32_t kRpcGameOnly = gameOnly ? oasis::kRpcGameOnly : 0u;
     using oasis::kRpcMutating;
     oasis::AddMethod("store.status", &RpcStatus, nullptr, kRpcGameOnly);
     oasis::AddMethod("store.refresh", &RpcRefresh, nullptr, kRpcGameOnly);

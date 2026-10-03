@@ -175,6 +175,9 @@ std::string ErrMsg(int64_t id, bool hasId, int code, std::string_view msg) {
 }
 
 std::string ResultMsg(int64_t id, const Result& r) {
+    if (!r.ok && !r.data.empty())
+        return jsonmini::Obj().Str("t", "err").Int("id", id).Int("code", r.code ? r.code : kErrRefused).Str("msg", r.message)
+            .Raw("data", r.data).End();
     if (!r.ok) return ErrMsg(id, true, r.code ? r.code : kErrRefused, r.message);
     return jsonmini::Obj().Str("t", "res").Int("id", id).Raw("r", r.json.empty() ? "null" : r.json).End();
 }
@@ -256,6 +259,11 @@ std::string Welcome() {
         pa.Raw(jsonmini::Obj().Str("id", p.id).Str("title", p.title).Str("url", "/ext/" + p.id + "/" + p.entry).End());
     jsonmini::Obj o;
     o.Str("t", "welcome").Int("proto", kProtocol).Str("build", g_build).Str("server", g_host.server);
+    if (!g_host.caps.empty()) {
+        jsonmini::Arr caps;
+        for (const auto& cap : g_host.caps) caps.Str(cap);
+        o.Raw("caps", caps.End());
+    }
     if (!g_host.gameJson.empty()) o.Raw("game", g_host.gameJson);
     o.Raw("channels", ch.End()).Raw("methods", me.End()).Raw("panels", pa.End());
     o.Raw("limits", jsonmini::Obj()

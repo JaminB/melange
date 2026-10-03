@@ -50,6 +50,7 @@ struct Result {
     std::string json = "null";           // ok: one JSON value
     int code = 0;                         // !ok: an error code (-32602 bad params, -32000 refused, -32001 not in a match, ...)
     std::string message;
+    std::string data;                     // !ok: optional JSON value, sent as the error's `data`
 };
 using RpcFn = void (*)(const Call& c, Result& r, void* user);  // must return within one frame's budget
 int AddMethod(const char* name, RpcFn fn, void* user, uint32_t flags = kRpcNone);  // any thread

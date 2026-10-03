@@ -1,30 +1,20 @@
-// oasis.exe: the same Oasis app and protocol, served with the game closed. Reads logs, captures and mods\ini
-// straight from disk; refuses to write mods\ini while a real Melange instance holds its game-folder mutex.
-#include <winsock2.h>
+#include "oasis/standalone/register.h"
+
 #include <windows.h>
 
-#include <shellapi.h>
 #include <shlobj.h>
 
-#include <atomic>
-#include <chrono>
 #include <cstdio>
 #include <cstdlib>
 #include <cwctype>
-#include <memory>
-#include <string>
-#include <vector>
-
-#include "version.h"
+#include <mutex>
 
 #include "melange/oasis.h"
-#include "oasis/core/files.h"
 #include "oasis/core/http.h"
 #include "oasis/core/router.h"
 #include "oasis/core/server.h"
 #include "oasis/providers.h"
 #include "oasis/rpc/ini_edit.h"
-#include "oasis/standalone/game_lock.h"
 #include "oasis/standalone/ini_edit.h"
 #include "oasis/standalone/level_provider.h"
 #include "oasis/standalone/mods_provider.h"
@@ -32,21 +22,16 @@
 #include "tools/json_mini.h"
 #include "tools/json_read.h"
 
+namespace melange::oasis::standalone {
 namespace oa = melange::oasis;
 namespace oc = melange::oasis::core;
-namespace standalone = melange::oasis::standalone;
-namespace jsonmini = melange::jsonmini;
 
 namespace {
-std::wstring g_gameDir;
+StandaloneHost g_host;
+constexpr char kNoGame[] = "Choose your game folder first.";
 
-std::wstring ExeDir() {
-    wchar_t buf[MAX_PATH];
-    const DWORD n = GetModuleFileNameW(nullptr, buf, MAX_PATH);
-    std::wstring s(buf, n);
-    const size_t slash = s.find_last_of(L"\\/");
-    return slash == std::wstring::npos ? s : s.substr(0, slash);
-}
+std::wstring GameDir() { return g_host.gameDir ? g_host.gameDir() : std::wstring(); }
+std::string WriteGate() { return g_host.writeGate ? g_host.writeGate() : std::string(); }
 
 std::string Narrow(const std::wstring& w) {
     if (w.empty()) return {};
@@ -76,16 +61,19 @@ bool ReadWhole(const std::wstring& path, std::string* out) {
     return ok;
 }
 
-std::wstring IniPath() { return g_gameDir + L"\\Melange.ini"; }
-
-std::string IniGet(const char* section, const char* key, const char* def) {
-    std::string text;
-    if (!ReadWhole(IniPath(), &text)) return def;
-    const std::string v = standalone::ini::Get(text, section, key);
-    return v.empty() ? def : v;
+std::wstring Documents(const wchar_t* sub) {
+    PWSTR docs = nullptr;
+    std::wstring out;
+    if (SUCCEEDED(SHGetKnownFolderPath(FOLDERID_Documents, 0, nullptr, &docs)) && docs) out = std::wstring(docs) + L"\\Melange\\" + sub;
+    if (docs) CoTaskMemFree(docs);
+    return out;
 }
 
-bool GameRunningNow() { return standalone::GameRunning(g_gameDir); }
+void Refuse(oa::Result& r, int code, const std::string& msg) {
+    r.ok = false;
+    r.code = code;
+    r.message = msg;
+}
 
 // ---------------------------------------------------------------- log.sessions, /logs/
 bool LooksLikeSession(const std::wstring& name) {
@@ -96,25 +84,11 @@ bool LooksLikeSession(const std::wstring& name) {
     return true;
 }
 
-std::wstring LogsDir() {
-    const std::string dir = IniGet("Logging", "Dir", "");
-    if (!dir.empty()) {
-        const std::wstring w = Widen(dir);
-        return w.size() > 1 && w[1] == L':' ? w : g_gameDir + L"\\" + w;
-    }
-    PWSTR docs = nullptr;
-    std::wstring out;
-    if (SUCCEEDED(SHGetKnownFolderPath(FOLDERID_Documents, 0, nullptr, &docs)) && docs) out = std::wstring(docs) + L"\\Melange\\logs";
-    if (docs) CoTaskMemFree(docs);
-    if (out.empty() || GetFileAttributesW(out.c_str()) == INVALID_FILE_ATTRIBUTES) out = g_gameDir + L"\\Melange\\logs";
-    return out;
-}
-
 void LogSessions(const oa::Call&, oa::Result& r, void*) {
-    const std::wstring root = LogsDir();
+    const std::wstring root = LogsDir(GameDir());
     jsonmini::Arr sessions;
     WIN32_FIND_DATAW fd{};
-    HANDLE h = FindFirstFileW((root + L"\\*").c_str(), &fd);
+    HANDLE h = root.empty() ? INVALID_HANDLE_VALUE : FindFirstFileW((root + L"\\*").c_str(), &fd);
     if (h != INVALID_HANDLE_VALUE) {
         do {
             if (!(fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)) continue;
@@ -139,9 +113,8 @@ void LogSessions(const oa::Call&, oa::Result& r, void*) {
     r.json = sessions.End();
 }
 
-// /logs/<session>/<file>: as the in-game route, the session must be a real session folder under the
-// (ini-configurable) logs directory and the file a plain name directly inside it; no further '/' or '\', no
-// nested folders. A configurable Dir must not turn this into a browser for the rest of the disk.
+// /logs/<session>/<file>: the session must be a real session folder under the (ini-configurable) logs directory and
+// the file a plain name directly inside it; a configurable Dir must not turn this into a browser for the disk.
 bool RouteLogs(const oc::Request& rq, oc::Response* out, void*) {
     constexpr size_t kPrefixLen = 6;  // "/logs/"
     if (rq.path.size() <= kPrefixLen) return false;
@@ -152,7 +125,8 @@ bool RouteLogs(const oc::Request& rq, oc::Response* out, void*) {
     const std::wstring session = Widen(rel.substr(0, slash)), file = Widen(rel.substr(slash + 1));
     if (!LooksLikeSession(session)) return false;
     if (file.find_first_of(L"/\\:") != std::wstring::npos || file == L"." || file == L"..") return false;
-    const std::wstring root = LogsDir();
+    const std::wstring root = LogsDir(GameDir());
+    if (root.empty()) return false;
     const DWORD sessionAttr = GetFileAttributesW((root + L"\\" + session).c_str());
     if (sessionAttr == INVALID_FILE_ATTRIBUTES || !(sessionAttr & FILE_ATTRIBUTE_DIRECTORY)) return false;
     const std::wstring full = root + L"\\" + session + L"\\" + file;
@@ -166,23 +140,22 @@ bool RouteLogs(const oc::Request& rq, oc::Response* out, void*) {
 
 // ---------------------------------------------------------------- capture.list, /captures/
 std::wstring CapturesDir() {
-    const std::string dir = IniGet("MirageTrace", "CaptureDir", "");
+    const std::wstring game = GameDir();
+    const std::string dir = IniGet(game, "MirageTrace", "CaptureDir", "");
     if (!dir.empty()) {
         const std::wstring w = Widen(dir);
-        return w.size() > 1 && w[1] == L':' ? w : g_gameDir + L"\\" + w;
+        if (w.size() > 1 && w[1] == L':') return w;
+        if (!game.empty()) return game + L"\\" + w;
     }
-    PWSTR docs = nullptr;
-    std::wstring out;
-    if (SUCCEEDED(SHGetKnownFolderPath(FOLDERID_Documents, 0, nullptr, &docs)) && docs) out = std::wstring(docs) + L"\\Melange\\captures";
-    if (docs) CoTaskMemFree(docs);
-    return out.empty() ? g_gameDir + L"\\Melange\\captures" : out;
+    const std::wstring docs = Documents(L"captures");
+    return !docs.empty() ? docs : game.empty() ? std::wstring() : game + L"\\Melange\\captures";
 }
 
 void CaptureList(const oa::Call&, oa::Result& r, void*) {
     const std::wstring root = CapturesDir();
     jsonmini::Arr arr;
     WIN32_FIND_DATAW fd{};
-    HANDLE h = FindFirstFileW((root + L"\\*.mcap").c_str(), &fd);
+    HANDLE h = root.empty() ? INVALID_HANDLE_VALUE : FindFirstFileW((root + L"\\*.mcap").c_str(), &fd);
     if (h != INVALID_HANDLE_VALUE) {
         do {
             if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) continue;
@@ -204,7 +177,9 @@ bool RouteCaptures(const oc::Request& rq, oc::Response* out, void*) {
     const std::string name = rq.path.substr(kPrefixLen);
     if (name.find('/') != std::string::npos || name.size() < 6 || name.substr(name.size() - 5) != ".mcap") return false;
     if (!oc::SafePath(name)) return false;
-    const std::wstring full = CapturesDir() + L"\\" + Widen(name);
+    const std::wstring root = CapturesDir();
+    if (root.empty()) return false;
+    const std::wstring full = root + L"\\" + Widen(name);
     const DWORD attr = GetFileAttributesW(full.c_str());
     if (attr == INVALID_FILE_ATTRIBUTES || (attr & FILE_ATTRIBUTE_DIRECTORY)) return false;
     out->status = 200;
@@ -215,17 +190,17 @@ bool RouteCaptures(const oc::Request& rq, oc::Response* out, void*) {
 
 // ---------------------------------------------------------------- wormsign.library, /replays/
 std::wstring ReplaysDir() {
-    PWSTR docs = nullptr;
-    std::wstring out;
-    if (SUCCEEDED(SHGetKnownFolderPath(FOLDERID_Documents, 0, nullptr, &docs)) && docs) out = std::wstring(docs) + L"\\Melange\\replays";
-    if (docs) CoTaskMemFree(docs);
-    return out.empty() ? g_gameDir + L"\\Melange\\replays" : out;
+    const std::wstring docs = Documents(L"replays");
+    const std::wstring game = GameDir();
+    return !docs.empty() ? docs : game.empty() ? std::wstring() : game + L"\\Melange\\replays";
 }
 
-void WormsignLibrary(const oa::Call&, oa::Result& r, void*) { r.json = standalone::wormsignprov::ListJson(ReplaysDir()); }
+void WormsignLibrary(const oa::Call&, oa::Result& r, void*) {
+    const std::wstring dir = ReplaysDir();
+    r.json = dir.empty() ? "[]" : wormsignprov::ListJson(dir);
+}
 
-// /replays/<name>.wsr|.zip: flat, no subfolders, as /captures/. arm/control/pin/detail are not offered here (no
-// live session to arm): the library and the timeline/diff viewers work from the file alone.
+// /replays/<name>.wsr|.zip: flat, no subfolders. arm/control/pin/detail are not offered here (no live session).
 bool RouteReplays(const oc::Request& rq, oc::Response* out, void*) {
     constexpr size_t kPrefixLen = 9;  // "/replays/"
     if (rq.path.size() <= kPrefixLen) return false;
@@ -233,7 +208,9 @@ bool RouteReplays(const oc::Request& rq, oc::Response* out, void*) {
     if (name.find('/') != std::string::npos || name.size() < 5) return false;
     const std::string ext = name.substr(name.size() - 4);
     if ((ext != ".wsr" && ext != ".zip") || !oc::SafePath(name)) return false;
-    const std::wstring full = ReplaysDir() + L"\\" + Widen(name);
+    const std::wstring root = ReplaysDir();
+    if (root.empty()) return false;
+    const std::wstring full = root + L"\\" + Widen(name);
     const DWORD attr = GetFileAttributesW(full.c_str());
     if (attr == INVALID_FILE_ATTRIBUTES || (attr & FILE_ATTRIBUTE_DIRECTORY)) return false;
     out->status = 200;
@@ -243,121 +220,71 @@ bool RouteReplays(const oc::Request& rq, oc::Response* out, void*) {
 }
 
 // ---------------------------------------------------------------- mods.list, mods.setEnabled
-void ModsList(const oa::Call&, oa::Result& r, void*) { r.json = standalone::modsprov::ListJson(g_gameDir, MELANGE_VERSION); }
+void ModsList(const oa::Call&, oa::Result& r, void*) {
+    const std::wstring game = GameDir();
+    if (game.empty()) return Refuse(r, -32000, kNoGame);
+    r.json = modsprov::ListJson(game, g_host.version);
+}
 
 void ModsSetEnabled(const oa::Call& c, oa::Result& r, void*) {
-    if (GameRunningNow()) {
-        r.ok = false;
-        r.code = -32003;
-        r.message = "the game is running; mods are read-only here";
-        return;
-    }
+    const std::wstring game = GameDir();
+    if (game.empty()) return Refuse(r, -32000, kNoGame);
+    if (const std::string gate = WriteGate(); !gate.empty()) return Refuse(r, -32000, gate);
     melange::json::Value p;
     melange::json::Error e;
-    if (!melange::json::Parse(c.paramsJson, &p, &e) || !p.IsObject()) {
-        r.ok = false;
-        r.code = -32602;
-        r.message = "bad params";
-        return;
-    }
+    if (!melange::json::Parse(c.paramsJson, &p, &e) || !p.IsObject()) return Refuse(r, -32602, "bad params");
     const melange::json::Value *id = p.Get("id"), *on = p.Get("on");
-    if (!id || !id->IsString() || !on || !on->IsBool()) {
-        r.ok = false;
-        r.code = -32602;
-        r.message = "expected {id, on}";
-        return;
-    }
-    const int rc = standalone::modsprov::SetEnabled(g_gameDir, id->string, on->boolean);
-    if (rc == 0) {
-        r.ok = false;
-        r.code = -32602;
-        r.message = "no such mod";
-        return;
-    }
-    if (rc < 0) {
-        r.ok = false;
-        r.code = -32000;
-        r.message = "could not write thumper-state.json";
-        return;
-    }
+    if (!id || !id->IsString() || !on || !on->IsBool()) return Refuse(r, -32602, "expected {id, on}");
+    const int rc = modsprov::SetEnabled(game, id->string, on->boolean);
+    if (rc == 0) return Refuse(r, -32602, "no such mod");
+    if (rc < 0) return Refuse(r, -32000, "could not write thumper-state.json");
     r.json = "true";
 }
 
 // ---------------------------------------------------------------- ini.get, ini.set
 void IniGetMethod(const oa::Call&, oa::Result& r, void*) {
+    const std::wstring game = GameDir();
+    if (game.empty()) return Refuse(r, -32000, kNoGame);
+    const std::wstring path = game + L"\\Melange.ini";
     std::string text;
-    ReadWhole(IniPath(), &text);
+    ReadWhole(path, &text);
     for (const auto& e : melange::oasis::ini::Parse(text))
         if (_stricmp(e.section.c_str(), "Thumper") == 0 && _stricmp(e.key.c_str(), "GrantSalt") == 0)
             text = melange::oasis::ini::Set(text, e.section, e.key, "********");
-    r.json = jsonmini::Obj().Str("path", Narrow(IniPath())).Str("text", text).Raw("keys", "[]").End();
+    r.json = jsonmini::Obj().Str("path", Narrow(path)).Str("text", text).Raw("keys", "[]").End();
 }
 
 void IniSetMethod(const oa::Call& c, oa::Result& r, void*) {
-    if (GameRunningNow()) {
-        r.ok = false;
-        r.code = -32003;
-        r.message = "the game is running; settings are read-only here";
-        return;
-    }
+    const std::wstring game = GameDir();
+    if (game.empty()) return Refuse(r, -32000, kNoGame);
+    if (const std::string gate = WriteGate(); !gate.empty()) return Refuse(r, -32000, gate);
     melange::json::Value p;
     melange::json::Error e;
-    if (!melange::json::Parse(c.paramsJson, &p, &e) || !p.IsObject()) {
-        r.ok = false;
-        r.code = -32602;
-        r.message = "bad params";
-        return;
-    }
+    if (!melange::json::Parse(c.paramsJson, &p, &e) || !p.IsObject()) return Refuse(r, -32602, "bad params");
     const melange::json::Value *section = p.Get("section"), *key = p.Get("key"), *value = p.Get("value");
-    if (!section || !section->IsString() || !key || !key->IsString() || !value || !value->IsString()) {
-        r.ok = false;
-        r.code = -32602;
-        r.message = "expected {section, key, value}";
-        return;
-    }
+    if (!section || !section->IsString() || !key || !key->IsString() || !value || !value->IsString())
+        return Refuse(r, -32602, "expected {section, key, value}");
     if (std::string why; !melange::oasis::ini::ValidName(section->string, &why) || !melange::oasis::ini::ValidName(key->string, &why) ||
-                          !melange::oasis::ini::ValidValue(value->string, &why)) {
-        r.ok = false;
-        r.code = -32602;
-        r.message = why;
-        return;
-    }
-    if (std::string why; melange::oasis::ini::Protected(section->string, key->string, value->string, &why)) {
-        r.ok = false;
-        r.code = -32000;
-        r.message = why;
-        return;
-    }
+                          !melange::oasis::ini::ValidValue(value->string, &why))
+        return Refuse(r, -32602, why);
+    if (std::string why; melange::oasis::ini::Protected(section->string, key->string, value->string, &why)) return Refuse(r, -32000, why);
+    const std::wstring path = game + L"\\Melange.ini";
     std::string text;
-    ReadWhole(IniPath(), &text);
+    ReadWhole(path, &text);
     std::string out;
-    if (!standalone::ini::Set(text, section->string, key->string, value->string, &out)) {
-        r.ok = false;
-        r.code = -32602;
-        r.message = "value cannot contain a line break or ';'";
-        return;
-    }
-    FILE* f = _wfopen((IniPath() + L".tmp").c_str(), L"wb");
+    if (!ini::Set(text, section->string, key->string, value->string, &out)) return Refuse(r, -32602, "value cannot contain a line break or ';'");
+    FILE* f = _wfopen((path + L".tmp").c_str(), L"wb");
     bool ok = f != nullptr;
     if (f) {
         ok = fwrite(out.data(), 1, out.size(), f) == out.size();
         fclose(f);
     }
-    if (ok) ok = MoveFileExW((IniPath() + L".tmp").c_str(), IniPath().c_str(), MOVEFILE_REPLACE_EXISTING) != 0;
+    if (ok) ok = MoveFileExW((path + L".tmp").c_str(), path.c_str(), MOVEFILE_REPLACE_EXISTING) != 0;
     if (!ok) {
-        DeleteFileW((IniPath() + L".tmp").c_str());
-        r.ok = false;
-        r.code = -32000;
-        r.message = "could not write Melange.ini";
-        return;
+        DeleteFileW((path + L".tmp").c_str());
+        return Refuse(r, -32000, "could not write Melange.ini");
     }
     r.json = jsonmini::Obj().Bool("live", false).Bool("restart", true).End();
-}
-
-std::atomic<bool> g_stop{false};
-BOOL WINAPI CtrlHandler(DWORD) {
-    g_stop = true;
-    return TRUE;
 }
 
 void MustAddMethod(const char* name, oa::RpcFn fn, uint32_t flags) {
@@ -365,44 +292,27 @@ void MustAddMethod(const char* name, oa::RpcFn fn, uint32_t flags) {
 }
 }  // namespace
 
-int main(int argc, char** argv) {
-    setvbuf(stdout, nullptr, _IONBF, 0);
-    g_gameDir = ExeDir();
-    std::wstring webRoot;
-    bool noOpen = false;
-    for (int i = 1; i < argc; ++i) {
-        if (std::string(argv[i]) == "--web-root" && i + 1 < argc) webRoot = Widen(argv[++i]);
-        else if (std::string(argv[i]) == "--no-open") noOpen = true;
+std::string IniGet(const std::wstring& gameDir, const char* section, const char* key, const char* def) {
+    std::string text;
+    if (gameDir.empty() || !ReadWhole(gameDir + L"\\Melange.ini", &text)) return def;
+    const std::string v = ini::Get(text, section, key);
+    return v.empty() ? def : v;
+}
+
+std::wstring LogsDir(const std::wstring& gameDir) {
+    const std::string dir = IniGet(gameDir, "Logging", "Dir", "");
+    if (!dir.empty()) {
+        const std::wstring w = Widen(dir);
+        if (w.size() > 1 && w[1] == L':') return w;
+        if (!gameDir.empty()) return gameDir + L"\\" + w;
     }
+    std::wstring out = Documents(L"logs");
+    if ((out.empty() || GetFileAttributesW(out.c_str()) == INVALID_FILE_ATTRIBUTES) && !gameDir.empty()) out = gameDir + L"\\Melange\\logs";
+    return out;
+}
 
-    WSADATA wd;
-    WSAStartup(MAKEWORD(2, 2), &wd);
-
-    std::unique_ptr<oc::Files> files;
-    std::string build = "standalone-dev";
-    if (!webRoot.empty()) {
-        files = oc::DirFiles(webRoot);
-        std::string b;
-        if (ReadWhole(webRoot + L"\\build.txt", &b)) {
-            while (!b.empty() && (b.back() == '\n' || b.back() == '\r')) b.pop_back();
-            build = b;
-        }
-    } else {
-        HMODULE self = GetModuleHandleW(nullptr);
-        HRSRC res = FindResourceW(self, L"OASIS_WEB", MAKEINTRESOURCEW(10));
-        HGLOBAL g = res ? LoadResource(self, res) : nullptr;
-        const void* data = g ? LockResource(g) : nullptr;
-        const size_t size = res ? SizeofResource(self, res) : 0;
-        files = oc::ZipFiles(data, size);
-        build = oc::ZipEntryText(data, size, "build.txt");
-        if (build.empty()) build = "standalone";
-    }
-
-    oc::Host host;
-    host.server = "standalone";
-    oc::SetHost(host);
-    oc::SetBuild(build);
-
+void RegisterStandalone(const StandaloneHost& host) {
+    g_host = host;
     melange::oasis::providers::InstallWebPanels();
     MustAddMethod("log.sessions", &LogSessions, oa::kRpcServerThread);
     oc::AddRoute("/logs/", &RouteLogs, nullptr);
@@ -414,30 +324,16 @@ int main(int argc, char** argv) {
     MustAddMethod("mods.setEnabled", &ModsSetEnabled, oa::kRpcServerThread | oa::kRpcMutating);
     MustAddMethod("ini.get", &IniGetMethod, oa::kRpcServerThread);
     MustAddMethod("ini.set", &IniSetMethod, oa::kRpcServerThread | oa::kRpcMutating);
-    if (IniGet("Erg", "Enabled", "1") != "0") {
-        std::wstring projects = Widen(IniGet("Erg", "ProjectsDir", ""));
-        if (!projects.empty() && !(projects.size() > 1 && projects[1] == L':')) projects = g_gameDir + L"\\" + projects;
-        standalone::levelprov::Install(g_gameDir, projects, MELANGE_VERSION);
-        melange::oasis::providers::InstallErgAssetRoute(g_gameDir, atoi(IniGet("Erg", "PreviewCacheMB", "512").c_str()));
-    }
-
-    oc::Config cfg;
-    if (!oc::Start(cfg, melange::oasis::providers::MakeAuth(), files.get())) {
-        fwprintf(stderr, L"oasis: could not start the server (every port %d..%d is taken?)\n", cfg.port, cfg.port + cfg.portRange - 1);
-        return 1;
-    }
-    const std::string url = oc::LaunchUrl();
-    printf("oasis: listening, %s\n", url.c_str());
-    if (!noOpen) ShellExecuteW(nullptr, L"open", Widen(url).c_str(), nullptr, nullptr, SW_SHOWNORMAL);
-
-    SetConsoleCtrlHandler(&CtrlHandler, TRUE);
-    auto lastActive = std::chrono::steady_clock::now();
-    while (!g_stop.load()) {
-        oc::Pump();
-        if (melange::oasis::Clients() > 0) lastActive = std::chrono::steady_clock::now();
-        else if (std::chrono::steady_clock::now() - lastActive > std::chrono::minutes(10)) break;
-        Sleep(200);
-    }
-    oc::Stop();
-    return 0;
 }
+
+void RegisterLevels(const std::wstring& gameDir) {
+    static std::once_flag once;
+    std::call_once(once, [&] {
+        if (IniGet(gameDir, "Erg", "Enabled", "1") == "0") return;
+        std::wstring projects = Widen(IniGet(gameDir, "Erg", "ProjectsDir", ""));
+        if (!projects.empty() && !(projects.size() > 1 && projects[1] == L':')) projects = gameDir + L"\\" + projects;
+        levelprov::Install(gameDir, projects, g_host.version);
+        melange::oasis::providers::InstallErgAssetRoute(gameDir, atoi(IniGet(gameDir, "Erg", "PreviewCacheMB", "512").c_str()));
+    });
+}
+}  // namespace melange::oasis::standalone

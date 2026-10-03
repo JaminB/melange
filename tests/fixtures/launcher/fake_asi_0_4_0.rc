@@ -1,0 +1,2 @@
+#define FAKE_VERSION "0.4.0"
+#include "fake_melange_asi.rch"

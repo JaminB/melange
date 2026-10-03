@@ -1,5 +1,5 @@
-// The Store module: [Store] settings, the index in memory, the worker thread that owns all network and disk work, and
-// the actions the overlay page and Oasis share. Thumper calls are made on the main thread.
+// The Store engine: the index in memory, the worker thread that owns all network and disk work, and the actions the
+// overlay page and Oasis share. Everything game- or launcher-specific goes through the Host.
 #include "store/store.h"
 
 #include <windows.h>
@@ -11,38 +11,23 @@
 #include <condition_variable>
 #include <deque>
 #include <functional>
-#include <future>
 #include <map>
 #include <memory>
 #include <mutex>
 #include <set>
 #include <thread>
 
-#include "core/config.h"
-#include "core/events.h"
-#include "core/game.h"
 #include "core/log.h"
-#include "core/module.h"
-#include "levels/live.h"
-#include "levels/session.h"
-#include "melange/levels.h"
-#include "melange/mods.h"
-#include "mods/thumper_internal.h"
 #include "store/fetch.h"
 #include "store/install.h"
 #include "tools/hash.h"
 #include "tools/json_mini.h"
-#include "version.h"
 
 namespace melange::store {
-namespace {
-constexpr const char* kDefaultIndex = "https://raw.githubusercontent.com/JaminB/melange-plugins/main/index.json";
+const char* const kDefaultIndex = "https://raw.githubusercontent.com/JaminB/melange-plugins/main/index.json";
 
-struct Settings {
-    std::string indexUrl = kDefaultIndex;
-    bool custom = false, showIncompatible = false;
-    uint64_t maxDownload = 64ull << 20;
-};
+namespace {
+using Settings = Config;
 
 struct StepData {
     Plugin plugin;   // without versions
@@ -77,7 +62,8 @@ int g_lastShotN = 0;
 std::string g_gate;
 std::set<std::string> g_updates;
 bool g_updatesDirty = true;
-std::vector<std::string> g_dropState;
+std::string g_indexText;
+Host* g_host = nullptr;
 
 std::deque<Task> g_tasks;
 std::condition_variable g_cv;
@@ -85,10 +71,13 @@ bool g_stop = false, g_workerStarted = false;
 std::atomic<bool> g_cancel{false};
 ULONGLONG g_lastProgress = 0;
 
-std::mutex g_mainMx;
-std::vector<std::function<void()>> g_mainQueue;
-
-std::wstring W(const std::string& s) { return game::Widen(s); }
+std::wstring W(const std::string& s) {
+    if (s.empty()) return {};
+    const int n = MultiByteToWideChar(CP_UTF8, 0, s.data(), static_cast<int>(s.size()), nullptr, 0);
+    std::wstring w(static_cast<size_t>(n), L'\0');
+    MultiByteToWideChar(CP_UTF8, 0, s.data(), static_cast<int>(s.size()), w.data(), n);
+    return w;
+}
 
 std::string LocalStamp(const SYSTEMTIME& t) {
     char buf[32];
@@ -102,58 +91,18 @@ std::string NowLocal() {
     return LocalStamp(t);
 }
 
-Env MakeEnv(bool rollback) { return Env{MELANGE_VERSION, game::IsKnownBuild() ? "1077" : "", rollback}; }
-
-const char* StateName(mods::State s) {
-    switch (s) {
-        case mods::State::Enabled: return "enabled";
-        case mods::State::Disabled: return "disabled";
-        case mods::State::Blocked: return "blocked";
-        case mods::State::PendingConsent: return "pending-consent";
-        case mods::State::Incompatible: return "incompatible";
-        case mods::State::RestartRequired: return "restart-required";
-    }
-    return "unknown";
-}
-
-std::wstring ModsDirFromIni() {
-    const std::string cfg = config::GetString("Thumper", "ModsDir", "Mods");
-    std::wstring dir(cfg.begin(), cfg.end());
-    if (dir.size() < 2 || (dir[1] != L':' && dir[0] != L'\\')) dir = game::GameDir() + L"\\" + dir;
-    return dir;
-}
-
-// ---- main-thread queue -------------------------------------------------------------------------------------
-bool RunOnMain(std::function<void()> fn) {
-    if (GetCurrentThreadId() == events::MainThreadId()) {
-        fn();
-        return true;
-    }
-    auto done = std::make_shared<std::promise<void>>();
-    std::future<void> f = done->get_future();
-    {
-        std::lock_guard lk(g_mainMx);
-        g_mainQueue.push_back([fn = std::move(fn), done] {
-            fn();
-            done->set_value();
-        });
-    }
-    return f.wait_for(std::chrono::seconds(20)) == std::future_status::ready;
-}
-
-void DropThumperState(const std::string& id) {
-    thumper::State& s = thumper::Live();
-    s.enabled.erase(id);
-    s.deepDesert.erase(id);
-    std::erase_if(s.pins, [&](const thumper::PinEntry& p) { return p.id == id || p.before == id || p.after == id; });
-    thumper::Save();
-    thumper::Rescan();
-}
+Env MakeEnv(bool rollback) { return Env{g_host->MelangeVersion(), g_host->GameBuild(), rollback}; }
 
 void DeleteData(const std::string& id) {
-    WritePrivateProfileStringW(W("Mod." + id).c_str(), nullptr, nullptr, config::Path().c_str());
-    install::DeleteTree(game::DataDir() + L"\\mods\\" + W(id));
+    g_host->DeleteData(id);
     LOG_INFO("[store] deleted the settings and saved data of %s", id.c_str());
+}
+
+std::map<std::string, LocalMod> LocalMods() {
+    std::map<std::string, LocalMod> out;
+    if (g_host)
+        for (LocalMod& m : g_host->InstalledMods()) out[m.id] = std::move(m);
+    return out;
 }
 
 // ---- state helpers ------------------------------------------------------------------------------------------
@@ -215,6 +164,10 @@ bool LoadCachedIndex(Index* out, std::string* when) {
     fclose(f);
     std::string err;
     if (!ParseIndex(text, out, &err)) return false;
+    {
+        std::lock_guard lk(g_mx);
+        g_indexText = text;
+    }
     WIN32_FILE_ATTRIBUTE_DATA fa{};
     if (GetFileAttributesExW(path.c_str(), GetFileExInfoStandard, &fa)) {
         FILETIME local;
@@ -229,7 +182,7 @@ bool LoadCachedIndex(Index* out, std::string* when) {
 // ---- worker -------------------------------------------------------------------------------------------------
 fetch::Options BaseOptions() {
     fetch::Options o;
-    o.userAgent = std::string("Melange/") + MELANGE_VERSION;
+    o.userAgent = "Melange/" + g_host->MelangeVersion();
     o.cancel = &g_cancel;
     return o;
 }
@@ -275,6 +228,7 @@ void DoFetch() {
             install::SaveDb(g_paths, g_db);
         }
         g_index = std::make_shared<const Index>(std::move(idx));
+        g_indexText = sink.data;
         g_fetchedAt = NowLocal();
         g_fetchError.clear();
         g_offline = false;
@@ -398,7 +352,7 @@ bool PlaceStep(const StepData& d, bool enable, std::string* message) {
     SetJob("verifying", id, v.version, "", v.size, v.size);
     SetJob("installing", id, v.version, "");
     install::Staged staged;
-    const bool staged_ok = install::Stage(g_paths, part, e, MELANGE_VERSION, &staged, &err, &g_cancel);
+    const bool staged_ok = install::Stage(g_paths, part, e, g_host->MelangeVersion(), &staged, &err, &g_cancel);
     DeleteFileW(part.c_str());
     if (!staged_ok) {
         FailJob(id, v.version, err);
@@ -416,8 +370,10 @@ bool PlaceStep(const StepData& d, bool enable, std::string* message) {
             return false;
         }
     }
-    thumper::Entry entry;
-    const bool known = thumper::FindEntry(id, &entry);
+    const auto local = LocalMods();
+    const auto me = local.find(id);
+    const bool known = me != local.end();
+    const LocalMod entry = known ? me->second : LocalMod{};
     const bool present = install::Exists(g_paths.mods + L"\\" + W(id));
     install::Pending op{"update", id, v.version, v.sha256, staged.rel, 0, false};
     {
@@ -430,23 +386,7 @@ bool PlaceStep(const StepData& d, bool enable, std::string* message) {
             return false;
         }
         Record(id, v);
-        const bool on = enable;
-        RunOnMain([id, on] {
-            thumper::Rescan();
-            if (!on) {
-                thumper::Live().enabled[id] = false;
-                thumper::Save();
-                thumper::Rescan();
-                return;
-            }
-            thumper::Entry e2;
-            if (levels::Enabled() && thumper::FindEntry(id, &e2) && e2.manifest.content && !e2.manifest.levels.empty() &&
-                levels::live::PackRefusal(e2.manifest).empty()) {
-                char why[256] = {};
-                if (levels::EnablePackLive(id.c_str(), why, sizeof why)) return;
-            }
-            thumper::SetEnabled(id, true);
-        });
+        g_host->Placed(id, enable);
         LOG_INFO("[store] installed %s %s", id.c_str(), v.version.c_str());
         *message = "Installed " + d.plugin.name + " " + v.version;
         return true;
@@ -459,16 +399,10 @@ bool PlaceStep(const StepData& d, bool enable, std::string* message) {
         return true;
     }
     const bool wasOn = known && !entry.contentRelevant && entry.sessionActive;
-    if (wasOn) {
-        RunOnMain([id] { thumper::SetEnabled(id, false); });
-        RunOnMain([] {});
-    }
+    if (wasOn) g_host->Unload(id);
     const install::Result r = install::Replace(g_paths, id, staged, &err);
     if (r == install::Result::Done) Record(id, v);
-    RunOnMain([id, wasOn] {
-        thumper::Rescan();
-        if (wasOn) thumper::SetEnabled(id, true);
-    });
+    g_host->Reload(id, wasOn);
     if (r == install::Result::Pending) {
         AddPending(op);
         LOG_INFO("[store] %s %s staged (%s): applies at the next launch", id.c_str(), v.version.c_str(), err.c_str());
@@ -500,8 +434,10 @@ void DoAdd(const Task& t) {
 void DoDrop(const Task& t) {
     const std::string& id = t.id;
     SetJob("removing", id, "", "");
-    thumper::Entry entry;
-    const bool known = thumper::FindEntry(id, &entry);
+    const auto local = LocalMods();
+    const auto me = local.find(id);
+    const bool known = me != local.end();
+    const LocalMod entry = known ? me->second : LocalMod{};
     std::string kind;
     {
         std::lock_guard lk(g_mx);
@@ -517,10 +453,7 @@ void DoDrop(const Task& t) {
         SetJob("done", id, "", "Removed at the next launch");
         return;
     }
-    if (known) {
-        RunOnMain([id] { thumper::SetEnabled(id, false); });
-        RunOnMain([] {});
-    }
+    if (known) g_host->Unload(id);
     std::string err;
     const install::Result r = install::Remove(g_paths, id, &err);
     if (r == install::Result::Failed) {
@@ -537,7 +470,7 @@ void DoDrop(const Task& t) {
         g_db.mods.erase(id);
         install::SaveDb(g_paths, g_db);
     }
-    RunOnMain([id] { DropThumperState(id); });
+    g_host->Forget(id);
     if (t.deleteData) DeleteData(id);
     LOG_INFO("[store] removed %s", id.c_str());
     SetJob("done", id, "", "Removed");
@@ -583,25 +516,7 @@ void EnqueueLocked(Task t) {
 }
 
 // ---- items --------------------------------------------------------------------------------------------------
-struct Local {
-    bool present = false, managed = false, enabled = false, sessionActive = false, contentRelevant = false;
-    std::string version, state;
-};
-
-std::map<std::string, Local> LocalMods() {
-    std::map<std::string, Local> out;
-    for (const thumper::Entry& e : thumper::Snapshot()) {
-        Local l;
-        l.present = true;
-        l.version = e.manifest.version;
-        l.state = StateName(e.state);
-        l.enabled = e.state == mods::State::Enabled;
-        l.sessionActive = e.sessionActive;
-        l.contentRelevant = e.contentRelevant;
-        out[e.manifest.id] = l;
-    }
-    return out;
-}
+using Local = LocalMod;
 
 // Caller holds g_mx.
 Item MakeItem(const Plugin& p, const std::map<std::string, Local>& local, const Env& env) {
@@ -661,101 +576,104 @@ void RecomputeUpdates() {
     }
 }
 
-void OnFrame() {
-    static unsigned frame = 0;
-    if (frame++ % 15 == 0) {
-        const std::string gate = session::ChangeRefusal(session::Now(), session::For::Plugins);
-        bool changed;
-        {
-            std::lock_guard lk(g_mx);
-            changed = gate != g_gate;
-            if (changed && !g_gate.empty()) {
-                if (g_job.phase == "error" && g_job.message == g_gate) g_job = Job{};
-                std::erase_if(g_rowError, [&](const auto& e) { return e.second == g_gate; });
-            }
-            g_gate = gate;
-        }
-        if (changed) PublishState();
-    }
-    std::vector<std::function<void()>> todo;
-    {
-        std::lock_guard lk(g_mainMx);
-        todo.swap(g_mainQueue);
-    }
-    for (auto& fn : todo) fn();
-    std::vector<std::string> drop;
-    bool dirty;
-    {
-        std::lock_guard lk(g_mx);
-        drop.swap(g_dropState);
-        dirty = g_updatesDirty;
-    }
-    for (const std::string& id : drop) DropThumperState(id);
-    if (dirty) RecomputeUpdates();
-}
-
 std::string CurrentGate() {
-    const std::string gate = session::ChangeRefusal(session::Now(), session::For::Plugins);
+    const std::string gate = g_host ? g_host->Gate() : std::string("the Store is not ready");
     std::lock_guard lk(g_mx);
     g_gate = gate;
     return gate;
 }
+}  // namespace
 
-class Store final : public Module {
-public:
-    const char* Name() const override { return "Store"; }
-    const char* Description() const override { return "plugin store: browse, install, update and remove mods from a curated list"; }
-    int Order() const override { return 35; }   // before Thumper, so deferred updates land before its first scan
+void SetHost(Host* h, const Config& c) {
+    std::lock_guard lk(g_mx);
+    g_host = h;
+    g_set = c;
+    if (g_set.indexUrl.empty()) g_set.indexUrl = kDefaultIndex;
+}
 
-    bool Install() override {
-        config::EnsureKey(Name(), "IndexUrl", kDefaultIndex);
-        std::string url = config::GetString(Name(), "IndexUrl", kDefaultIndex);
-        std::string why;
-        if (url.empty()) url = kDefaultIndex;
-        if (!CheckIndexUrl(url, &why)) {
-            LOG_WARN("[store] IndexUrl refused (%s); using the default list", why.c_str());
-            url = kDefaultIndex;
-        }
-        g_set.indexUrl = url;
-        g_set.custom = url != kDefaultIndex;
-        g_set.maxDownload = static_cast<uint64_t>(std::clamp(Int("MaxDownloadMB", 64), 1, 256)) << 20;
-        g_set.showIncompatible = Bool("ShowIncompatible", false);
-        g_paths = install::MakePaths(ModsDirFromIni());
-
-        if (install::Exists(g_paths.root)) {
-            install::LoadDb(g_paths, &g_db);
-            for (const install::Applied& a : install::ApplyPending(g_paths, &g_db)) {
+bool Open(const std::wstring& modsDir, std::vector<std::string>* droppedIds) {
+    {
+        std::lock_guard lk(g_mx);
+        if (g_busy) return false;
+        g_paths = install::MakePaths(modsDir);
+        g_db = install::Db{};
+        g_pending.clear();
+        g_rowError.clear();
+        g_updatesDirty = true;
+    }
+    if (install::Exists(g_paths.root)) {
+        install::Db db;
+        install::LoadDb(g_paths, &db);
+        if (droppedIds) {
+            for (const install::Applied& a : install::ApplyPending(g_paths, &db)) {
                 if (a.ok) LOG_INFO("[store] %s", a.message.c_str());
                 else LOG_WARN("[store] deferred %s of %s: %s", a.op.op.c_str(), a.op.id.c_str(), a.message.c_str());
-                g_notices.push_back(a.ok ? a.message : "Deferred " + a.op.op + " of " + a.op.id + " failed: " + a.message);
+                {
+                    std::lock_guard lk(g_mx);
+                    g_notices.push_back(a.ok ? a.message : "Deferred " + a.op.op + " of " + a.op.id + " failed: " + a.message);
+                }
                 if (a.ok && a.op.op == "remove") {
-                    g_dropState.push_back(a.op.id);
+                    droppedIds->push_back(a.op.id);
                     if (a.op.deleteData) DeleteData(a.op.id);
                 }
             }
-            install::CleanLeftovers(g_paths);
-            install::LoadPending(g_paths, &g_pending);
         }
-        g_active = true;
-        events::Subscribe(events::Event::Frame, &OnFrame);
-        events::Subscribe(events::Event::Shutdown, [] {
-            fetch::CancelActive();
-            g_cancel = true;
-            std::lock_guard lk(g_mx);
-            g_stop = true;
-            g_cv.notify_all();
-        });
-        mods::OnChange([](void*) {
-            std::lock_guard lk(g_mx);
-            g_updatesDirty = true;
-        }, nullptr);
-        RegisterPage();
-        InstallRpc();
-        LOG_INFO("[store] ready%s%s", g_set.custom ? ": custom index " : "", g_set.custom ? g_set.indexUrl.c_str() : "");
-        return true;
+        install::CleanLeftovers(g_paths);
+        std::vector<install::Pending> pending;
+        install::LoadPending(g_paths, &pending);
+        std::lock_guard lk(g_mx);
+        g_db = std::move(db);
+        g_pending = std::move(pending);
     }
-};
-}  // namespace
+    g_active = g_host != nullptr;
+    PublishState();
+    return true;
+}
+
+void Close() {
+    std::lock_guard lk(g_mx);
+    if (g_busy) return;
+    g_active = false;
+    g_paths = install::Paths{};
+    g_db = install::Db{};
+    g_pending.clear();
+}
+
+void Tick() {
+    if (!g_active.load()) return;
+    const std::string gate = g_host->Gate();
+    bool changed, dirty;
+    {
+        std::lock_guard lk(g_mx);
+        changed = gate != g_gate;
+        if (changed && !g_gate.empty()) {
+            if (g_job.phase == "error" && g_job.message == g_gate) g_job = Job{};
+            std::erase_if(g_rowError, [&](const auto& e) { return e.second == g_gate; });
+        }
+        g_gate = gate;
+        dirty = g_updatesDirty;
+    }
+    if (changed) PublishState();
+    if (dirty) RecomputeUpdates();
+}
+
+void MarkDirty() {
+    std::lock_guard lk(g_mx);
+    g_updatesDirty = true;
+}
+
+void Shutdown() {
+    fetch::CancelActive();
+    g_cancel = true;
+    std::lock_guard lk(g_mx);
+    g_stop = true;
+    g_cv.notify_all();
+}
+
+std::string IndexText() {
+    std::lock_guard lk(g_mx);
+    return g_indexText;
+}
 
 bool Active() { return g_active.load(); }
 
@@ -810,7 +728,6 @@ std::vector<Item> List(const ListQuery& q) {
 
 bool GetDetails(const std::string& id, Details* out, bool fetchShots) {
     std::map<std::string, Local> local = LocalMods();
-    std::vector<thumper::Entry> entries = thumper::Snapshot();
     std::lock_guard lk(g_mx);
     const Plugin* p = g_index ? FindPlugin(*g_index, id) : nullptr;
     if (!p) return false;
@@ -844,14 +761,14 @@ bool GetDetails(const std::string& id, Details* out, bool fetchShots) {
         r.compatible = !x.yanked && Compatible(x, *p, env, nullptr);
         out->versions.push_back(r);
     }
-    for (const thumper::Entry& e : entries) {
-        if (e.manifest.id == id || e.state != mods::State::Enabled) continue;
-        for (const spice::Dep& d : e.manifest.dependencies)
-            if (d.id == id) out->dependants.push_back(e.manifest.id);
+    for (const auto& [mid, e] : local) {
+        if (mid == id || !e.enabled) continue;
+        for (const std::string& d : e.dependencies)
+            if (d == id) out->dependants.push_back(mid);
         bool clash = false;
-        for (const spice::Dep& d : e.manifest.conflicts) clash |= d.id == id;
-        for (const Dep& d : v->conflicts) clash |= d.id == e.manifest.id;
-        if (clash) out->conflictsEnabled.push_back(e.manifest.id);
+        for (const std::string& d : e.conflicts) clash |= d == id;
+        for (const Dep& d : v->conflicts) clash |= d.id == mid;
+        if (clash) out->conflictsEnabled.push_back(mid);
     }
     if (!out->item.compatible.empty()) {
         std::map<std::string, std::string> installed;
@@ -1018,5 +935,4 @@ std::string ChannelJson() {
     return o.End();
 }
 
-MELANGE_MODULE(Store);
 }  // namespace melange::store
