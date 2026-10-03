@@ -3,7 +3,7 @@ import type { Client } from "../../sdk/client";
 import { errorText } from "../../sdk/hooks";
 import { Ini } from "../../panels/ini";
 import type { Defaults, SetupStatus, Theme } from "../api";
-import { defaultsOf } from "../api";
+import { defaultsOf, whenText } from "../api";
 import { UndoIcon } from "../icons";
 
 export interface SettingsProps { client: Client; status: SetupStatus | undefined; theme: Theme; onTheme: (t: Theme) => void; onChangeFolder: () => void; }
@@ -20,6 +20,8 @@ export function Settings({ client, status, theme, onTheme, onChangeFolder }: Set
     client.call<unknown>("defaults.get").then((r) => setDefaults(defaultsOf(r))).catch(() => {});
     client.call<{ indexUrl?: string; customIndex?: boolean }>("store.status").then((r) => setIndexUrl({ url: r.indexUrl ?? "", custom: !!r.customIndex })).catch(() => {});
   }, [client]);
+
+  useEffect(() => { if (!status?.running) setError(undefined); }, [status?.running]);
 
   const run = async (action: "repair" | "enable" | "disable" | "uninstall") => {
     setBusy(action);
@@ -72,12 +74,12 @@ export function Settings({ client, status, theme, onTheme, onChangeFolder }: Set
       <section class="ls-section" data-section="melange">
         <h2>Melange</h2>
         <div class="ls-row">
-          <span class="ls-row-label">Version {status?.melange.version ?? "—"} · Loader {status?.loader.state === "ual" ? "Ultimate ASI Loader" : status?.loader.state ?? "—"}</span>
-          <button class="btn" disabled={busy === "repair"} onClick={() => run("repair")}>Repair</button>
-          {status?.melange.state === "disabled"
+          <span class="ls-row-label">{melangeText(status)} · Loader {loaderText(status)}</span>
+          <button class="btn" disabled={busy === "repair"} onClick={() => run("repair")}>{status?.melange.state === "missing" ? "Install" : "Repair"}</button>
+          {status?.melange.state === "missing" ? null : status?.melange.state === "disabled"
             ? <button class="btn" disabled={busy === "enable"} onClick={() => run("enable")}>Enable</button>
             : <button class="btn" disabled={busy === "disable"} onClick={() => run("disable")}>Disable</button>}
-          <button class="btn danger" onClick={() => setConfirmUninstall(true)}>Uninstall…</button>
+          {status?.melange.state === "missing" ? null : <button class="btn danger" onClick={() => setConfirmUninstall(true)}>Uninstall…</button>}
         </div>
         {confirmUninstall ? (
           <div class="lw-warn-box" role="alertdialog" data-confirm="uninstall">
@@ -92,7 +94,7 @@ export function Settings({ client, status, theme, onTheme, onChangeFolder }: Set
         <h2 style="margin-top:16px">Backups</h2>
         {!status?.backups.length ? <p class="muted small">No backups yet.</p> : status.backups.map((b) => (
           <div class="ls-backup" key={b.id} data-backup={b.id}>
-            <span class="mono">{b.created}</span><span class="muted">{b.action}</span>
+            <span class="mono">{whenText(b.created)}</span><span class="muted">{b.action}</span>
             <button class="btn" disabled={busy === b.id} onClick={() => restore(b.id)}><UndoIcon size={14} /> Restore</button>
             <button class="link" disabled={busy === b.id} onClick={() => deleteBackup(b.id)}>Delete</button>
           </div>
@@ -131,4 +133,19 @@ export function Settings({ client, status, theme, onTheme, onChangeFolder }: Set
       </section>
     </div>
   );
+}
+
+function melangeText(s: SetupStatus | undefined): string {
+  const m = s?.melange;
+  if (!m) return "—";
+  if (m.state === "missing") return "Not installed";
+  return `Version ${m.version ?? "—"}${m.state === "disabled" ? " (disabled)" : m.state === "damaged" ? " (needs repair)" : ""}`;
+}
+
+function loaderText(s: SetupStatus | undefined): string {
+  const l = s?.loader;
+  if (!l) return "—";
+  if (l.state === "ual") return "Ultimate ASI Loader";
+  if (l.state === "none") return "not installed";
+  return l.dll?.description || l.dll?.product || "another program's dinput8.dll";
 }

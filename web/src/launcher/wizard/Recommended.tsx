@@ -30,7 +30,7 @@ export function Recommended({ client, state, dispatch }: WizardProps) {
     setError(undefined);
     try {
       await client.call("recommended.apply", { items, saveAsDefaults: true });
-      dispatch({ type: "toReady" });
+      dispatch({ type: "toReady", applied: true });
     } catch (e) {
       setError(errorText(e));
     } finally {

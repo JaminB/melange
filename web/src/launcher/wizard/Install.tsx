@@ -8,8 +8,6 @@ import { StepHeading } from "../components/StepHeading";
 import { errorCopy, loaderChecklistLine, loaderCopy, melangeCopy } from "../copy";
 import type { WizardProps } from "./types";
 
-const TARGET_VERSION = "0.4.0";
-
 export function Install({ client, state, dispatch }: WizardProps) {
   const [loading, setLoading] = useState(!state.status);
   const [progress, setProgress] = useState<SetupProgress[]>([]);
@@ -66,7 +64,7 @@ export function Install({ client, state, dispatch }: WizardProps) {
     return (
       <main class="lw-card" aria-label="Preparing to install" data-step="install" data-loading="true">
         <div class="lw-body">
-          <StepHeading>Install Melange {TARGET_VERSION}</StepHeading>
+          <StepHeading>Install Melange</StepHeading>
           <div class="lw-skel"><div class="lw-skel-row" /><div class="lw-skel-row" /><div class="lw-skel-row" /></div>
         </div>
         <div class="lw-foot"><span /></div>
@@ -75,15 +73,16 @@ export function Install({ client, state, dispatch }: WizardProps) {
   }
 
   const status = state.status, plan = state.plan;
+  const target = status.payload.version;
   const loader = loaderCopy(status.loader, status.otherLoaders);
-  const melange = melangeCopy(status, TARGET_VERSION);
+  const melange = melangeCopy(status, target);
   const needsChoice = plan.needsChoice === "loader" && !state.replaceLoader;
   const blockedByChoice = needsChoice;
 
   return (
-    <main class="lw-card" aria-label={`Install Melange ${TARGET_VERSION}`} data-step="install">
+    <main class="lw-card" aria-label={`Install Melange ${target}`} data-step="install">
       <div class="lw-body">
-        <StepHeading>Install Melange {TARGET_VERSION}</StepHeading>
+        <StepHeading>Install Melange {target}</StepHeading>
         {state.applying ? (
           <div class="lw-progress" aria-live="polite" data-installing="true">
             {done ? <p class="lw-check-row done"><CheckCircleIcon />Installed.</p> : (
@@ -102,7 +101,7 @@ export function Install({ client, state, dispatch }: WizardProps) {
             <ul class="lw-checklist" data-checklist>
               <li class="lw-check-row pending" data-item="loader"><CheckCircleIcon size={16} /><span>{loaderChecklistLine(status.loader, status.otherLoaders, state.replaceLoader)}</span></li>
               <li class="lw-check-row pending" data-item="melange"><CheckCircleIcon size={16} /><span>{melange.title}</span></li>
-              <li class="lw-check-row pending" data-item="ini"><CheckCircleIcon size={16} /><span>{status.ini.present ? `Keep your Melange.ini and add ${status.ini.missingKeys} new setting${status.ini.missingKeys === 1 ? "" : "s"}` : "Create Melange.ini with the default settings"}</span></li>
+              <li class="lw-check-row pending" data-item="ini"><CheckCircleIcon size={16} /><span>{!status.ini.present ? "Create Melange.ini with the default settings" : status.ini.missingKeys ? `Keep your Melange.ini and add ${status.ini.missingKeys} new setting${status.ini.missingKeys === 1 ? "" : "s"}` : "Keep your Melange.ini"}</span></li>
               {status.legacy.length ? <li class="lw-check-row pending" data-item="legacy"><CheckCircleIcon size={16} /><span>Remove the old {status.legacy.join(", ")} (backed up)</span></li> : null}
             </ul>
             {needsChoice ? (

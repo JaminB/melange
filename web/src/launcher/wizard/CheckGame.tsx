@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "preact/hooks";
 import { errorText } from "../../sdk/hooks";
-import { gameCheckOf, setupStatusOf } from "../api";
+import { BROWSE_TIMEOUT_MS, gameCheckOf, setupStatusOf } from "../api";
 import { StepHeading } from "../components/StepHeading";
 import { CHECK_ACTION, checkCopy } from "../copy";
 import type { WizardProps } from "./types";
@@ -36,7 +36,7 @@ export function CheckGame({ client, state, dispatch }: WizardProps) {
   const browseAgain = async () => {
     setBusy(true);
     try {
-      const r = await client.call<{ path: string | null }>("setup.browse", {});
+      const r = await client.call<{ path: string | null }>("setup.browse", {}, BROWSE_TIMEOUT_MS);
       if (r.path) { dispatch({ type: "select", path: r.path }); tick.current++; runCheck(r.path); } else setBusy(false);
     } catch (e) {
       setError(errorText(e));

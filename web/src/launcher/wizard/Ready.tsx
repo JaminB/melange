@@ -7,8 +7,9 @@ export function Ready({ client, state, dispatch, onFinish }: WizardProps) {
   const [busy, setBusy] = useState<"launch" | "open">();
   const [error, setError] = useState<string>();
   const path = state.status?.game?.path ?? state.selected ?? "";
-  const sunstone = state.recommended?.items.find((i) => i.id === "sunstone" && state.choices[i.id]?.enabled);
-  const line = sunstone ? `${sunstone.name} (${String(sunstone.settings.quality ?? state.choices[sunstone.id]?.settings.quality ?? "Bold")}) is on.` : "";
+  const sunstone = state.pluginsApplied ? state.recommended?.items.find((i) => i.id === "sunstone" && state.choices[i.id]?.enabled) : undefined;
+  const quality = sunstone ? String(state.choices[sunstone.id]?.settings.quality ?? sunstone.settings.quality ?? "bold") : "";
+  const line = sunstone ? `${sunstone.name} (${quality.charAt(0).toUpperCase()}${quality.slice(1)}) is on.` : "";
 
   const finish = async (how: "launch" | "open") => {
     setBusy(how);

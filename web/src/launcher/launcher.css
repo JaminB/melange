@@ -31,6 +31,7 @@
   padding: 32px; display: flex; flex-direction: column; min-height: 360px; flex: 1;
 }
 .lw-card h1 { font-size: 24px; font-weight: 600; line-height: 1.25; margin: 0 0 16px; }
+.lw-card h1[tabindex="-1"]:focus { outline: none; }
 .lw-card p { margin: 0 0 12px; line-height: 1.5; }
 .lw-card p:last-of-type { margin-bottom: 0; }
 .lw-body { flex: 1; }

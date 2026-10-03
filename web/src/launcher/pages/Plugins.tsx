@@ -22,8 +22,8 @@ export function Plugins({ client, onOpenStore }: { client: Client; onOpenStore: 
   const toggle = async (m: ModInfo) => {
     setBusy(m.id);
     try {
-      const r = modsOf([await client.call("mods.setEnabled", { id: m.id, on: !m.on })]);
-      if (r[0]) setList((l) => (l ?? []).map((x) => (x.id === r[0].id ? r[0] : x)));
+      await client.call("mods.setEnabled", { id: m.id, on: !m.on });
+      setList(modsOf(await client.call<unknown>("mods.list")));
     } catch (e) {
       setError(errorText(e));
     } finally {

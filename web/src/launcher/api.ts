@@ -59,6 +59,9 @@ export interface Recommended {
 export interface SetupProgress { action: string; step: number; of: number; label: string; }
 export interface SetupEvent { status?: SetupStatus; progress?: SetupProgress; }
 
+// The folder picker is modal and waits on the user, so the default RPC timeout would drop their choice.
+export const BROWSE_TIMEOUT_MS = 24 * 60 * 60 * 1000;
+
 // -- Error codes (spec §6.2) --------------------------------------------------------------------------------------
 export const LauncherErrorCode = {
   Refused: -32000,
@@ -228,4 +231,18 @@ export function sizeText(n: number): string {
 
 export function hashShort(sha256: string | undefined): string {
   return sha256 ? `${sha256.slice(0, 8)}…` : "";
+}
+
+export function whenText(at: string): string {
+  const t = Date.parse(at);
+  if (Number.isNaN(t)) return at;
+  return new Date(t).toLocaleString(undefined, { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" });
+}
+
+// Logs are shared by every copy of the game, so a session from before this install says nothing about it.
+export function loadedSinceInstall(status: SetupStatus): boolean {
+  const last = status.melange.lastLoad;
+  if (!last) return false;
+  const loaded = Date.parse(last.at), installed = status.install ? Date.parse(status.install.installedAt) : NaN;
+  return Number.isNaN(loaded) || Number.isNaN(installed) || loaded >= installed;
 }

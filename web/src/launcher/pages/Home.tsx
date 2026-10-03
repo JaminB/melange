@@ -1,7 +1,7 @@
 import { useEffect, useState } from "preact/hooks";
 import type { Client } from "../../sdk/client";
 import { errorText } from "../../sdk/hooks";
-import type { SetupStatus } from "../api";
+import { loadedSinceInstall, whenText, type SetupStatus } from "../api";
 import { StatusCard, type Tone } from "../components/StatusCard";
 import { FolderIcon, PlugIcon, PuzzleIcon, SparkleIcon } from "../icons";
 
@@ -56,7 +56,7 @@ export function Home({ client, status, onFixGame, onOpenPlugins, onOpenSettings 
     : m.state === "damaged" ? { tone: "bad", text: "Damaged", action: "Repair" }
     : m.state === "disabled" ? { tone: "warn", text: "Disabled", action: "Enable" }
     : m.state === "older" ? { tone: "warn", text: `${m.version} · update available`, action: "Update" }
-    : m.lastLoad ? { tone: "ok", text: `${m.version} · last loaded ${m.lastLoad.at}` }
+    : m.lastLoad && loadedSinceInstall(status) ? { tone: "ok", text: `${m.version} · last loaded ${whenText(m.lastLoad.at)}` }
     : { tone: "warn", text: `${m.version} · not loaded yet` };
 
   const pluginsCard: { tone: Tone; text: string; detail?: string } =

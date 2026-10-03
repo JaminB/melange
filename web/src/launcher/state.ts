@@ -26,13 +26,14 @@ export interface WizardState {
   recommended?: { source: "index" | "builtin"; items: Recommended[] };
   recommendedUnreachable: boolean;
   choices: Record<string, PluginChoice>;
+  pluginsApplied: boolean;
   shortcuts: { startMenu: boolean; desktop: boolean };
   error?: string;
 }
 
 export function initialWizard(): WizardState {
   return { step: "welcome", candidates: [], checking: false, replaceLoader: false, applying: false,
-    recommendedUnreachable: false, choices: {}, shortcuts: { startMenu: true, desktop: false } };
+    recommendedUnreachable: false, choices: {}, pluginsApplied: false, shortcuts: { startMenu: true, desktop: false } };
 }
 
 export type WizardAction =
@@ -57,7 +58,7 @@ export type WizardAction =
   | { type: "recommendedUnreachable" }
   | { type: "toggleChoice"; id: string; enabled: boolean }
   | { type: "setChoiceSetting"; id: string; key: string; value: Val }
-  | { type: "toReady" }
+  | { type: "toReady"; applied?: boolean }
   | { type: "shortcut"; which: "startMenu" | "desktop"; value: boolean }
   | { type: "error"; message?: string };
 
@@ -117,7 +118,7 @@ export function wizardReducer(s: WizardState, a: WizardAction): WizardState {
       return { ...s, choices: { ...s.choices, [a.id]: { ...cur, settings: { ...cur.settings, [a.key]: a.value } } } };
     }
     case "toReady":
-      return { ...s, step: "ready" };
+      return { ...s, step: "ready", pluginsApplied: !!a.applied };
     case "shortcut":
       return { ...s, shortcuts: { ...s.shortcuts, [a.which]: a.value } };
     case "error":

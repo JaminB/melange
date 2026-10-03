@@ -1,5 +1,5 @@
 import { useEffect, useState } from "preact/hooks";
-import { candidatesOf, gameCheckOf, type Candidate } from "../api";
+import { BROWSE_TIMEOUT_MS, candidatesOf, gameCheckOf, type Candidate } from "../api";
 import { errorText } from "../../sdk/hooks";
 import { StepHeading } from "../components/StepHeading";
 import { CHILD_HINT, findCopy } from "../copy";
@@ -32,7 +32,7 @@ export function FindGame({ client, state, dispatch }: WizardProps) {
     setBrowsing(true);
     setError(undefined);
     try {
-      const r = await client.call<{ path: string | null; hint?: "child"; child?: string }>("setup.browse", {});
+      const r = await client.call<{ path: string | null; hint?: "child"; child?: string }>("setup.browse", {}, BROWSE_TIMEOUT_MS);
       if (!r.path) return;
       if (r.hint === "child" && r.child) { dispatch({ type: "childHint", parent: r.path, child: r.child }); return; }
       const check = gameCheckOf(await client.call("setup.validate", { path: r.path }));
