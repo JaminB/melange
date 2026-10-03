@@ -11,6 +11,8 @@ Melange fixes long-standing multiplayer bugs and lets you install mods: new weap
 3. Copy `dinput8.dll`, `melange.asi` and `dist\Melange.ini` into the game folder, next to `WormsMayhem.exe` (`...\steamapps\common\WormsXHD`).
 4. Start the game. The window title shows `[Melange x.y.z]`.
 
+Releases from 0.3.1 on are code-signed; see [Code signing](CODE_SIGNING.md).
+
 ![The in-game overlay, opened with the grave key](docs/images/overlay/main-overlay.png)
 
 ## Install a mod
