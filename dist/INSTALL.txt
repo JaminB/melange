@@ -1,0 +1,83 @@
+Installing Melange
+==================
+
+Download and extraction
+-----------------------
+
+1. Download melange-*.zip from https://github.com/JaminB/melange/releases
+2. Extract it. You now have Melange.exe, melange.asi, dinput8.dll, Melange.ini and Mods\.
+
+Setup
+-----
+
+1. Run Melange.exe. It will:
+   - Locate your Worms Ultimate Mayhem folder (from Steam, GOG, or you pick it)
+   - Verify the build is #1077 (the only supported version)
+   - Show whether Ultimate ASI Loader (dinput8.dll) is present
+   - Install or update Melange and suggest some plugins
+
+2. Follow the setup wizard. It takes about a minute. Nothing changes until you confirm, and everything
+   can be undone from the Home page.
+
+3. Launch the game from Melange's Launch button, or start it as usual. The window title shows [Melange x.y.z].
+
+Managing Melange
+----------------
+
+After setup, Melange's window lets you:
+- Enable, disable or uninstall Melange (Settings › Melange)
+- Browse and install plugins from the Store
+- Configure installed plugins (Plugins page, Settings button per plugin)
+- Change your default set of plugins (Settings › Defaults)
+- Undo any change from a backup (Settings › Melange › Backups)
+
+Manual install (if Melange.exe doesn't work for you)
+------------------------------------------------------
+
+1. Copy dinput8.dll, melange.asi and Melange.ini into your game folder, next to WormsMayhem.exe
+   (...\steamapps\common\WormsXHD). Copy Melange.exe there too if you want it in the game folder.
+
+2. Start the game. The window title shows [Melange x.y.z].
+
+Installing a mod
+----------------
+
+Either:
+- Run Melange.exe › Plugins › Store, find a plugin and click Install
+- Or put the mod's folder in <game>\Mods\, so you have <game>\Mods\<mod>\spice.json
+
+Then start the game and press the grave key (to the left of 1, above Tab) to open the overlay.
+On the Thumper/Mods page, switch the mod on. Mods that change gameplay take effect the next
+time you start the game.
+
+The Mods\ folder in this zip has example mods, all switched off. Copy one into <game>\Mods\ to try it.
+
+Good to know
+------------
+
+- Online play: everyone in a match needs the same gameplay mods. Mods that only change your screen,
+  such as effects and UI, don't matter to other players.
+- Permissions: a mod that asks for raw access to the game's memory ("Deep Desert") shows a consent
+  dialog first. Only allow mods you trust.
+
+Uninstalling
+------------
+
+Use Melange's Home page: Settings › Melange › Uninstall. Choose whether to keep your plugins, mods
+and settings, or delete everything.
+
+Or do it manually: delete melange.asi, Melange.ini and the Melange and Mods folders from the game
+folder. Delete dinput8.dll too, unless other .asi mods still need it.
+
+Reporting a bug
+---------------
+
+In the game, press Ctrl+Shift+F11 (or File > Save logs as... in the overlay) and attach the zip it saves.
+Or run Melange.exe › Help › Save logs as zip when the game is closed.
+User names are removed, and Steam IDs and IP addresses are hashed.
+
+License
+-------
+
+MIT. See LICENSE and THIRD_PARTY.md. Melange is an unofficial fan project, not affiliated with or
+endorsed by Team17. You need your own copy of Worms Ultimate Mayhem.

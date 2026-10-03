@@ -545,6 +545,27 @@ You need:
 
 `deploy.ps1` keeps an existing `dinput8.dll`. If there is none, it downloads the latest Ultimate ASI Loader, or uses the one you give with `-LoaderPath <dinput8.dll>`. `build.ps1 -PrivateDir <dir>` also compiles the modules in `<dir>\modules\*.cpp`.
 
+## Melange.exe launcher
+
+`Melange.exe` is a small Windows app that manages your Melange installation. It locates your game, validates the build, installs or updates Melange and plugins, and lets you launch the game.
+
+- **First run:** guides you through setup (find game, verify build, install Melange and suggested plugins).
+- **Home:** shows status cards for your game, loader, Melange and plugins, with actions like Launch, Repair or Update.
+- **Plugins:** enable/disable installed plugins and configure their settings.
+- **Store:** browse and install plugins from the plugin store.
+- **Settings:** change your game folder, manage backups, edit plugin defaults, view logs.
+
+The launcher runs a local web server and embeds the same Oasis web app in Windows' Edge WebView2 component. It finds the game from Steam/GOG libraries or lets you browse, validates `WormsMayhem.exe` by SHA-256 against build #1077, and manages the ASI loader and plugin installation as atomic transactions with rollback on failure.
+
+All Melange files it manages (dinput8.dll, melange.asi, Melange.ini, backups) and app settings are stored in `%LOCALAPPDATA%\Melange\`. Game files are never modified unless you confirm the action, and every change is backed up so you can undo it one click away.
+
+Command line:
+
+- `Melange.exe` — run the window; first run if no game is saved.
+- `Melange.exe --game <dir>` — use this game folder (does not overwrite the saved one without your confirmation).
+- `Melange.exe --browser` — no WebView2 window, open the default browser instead (accessible only from `127.0.0.1`).
+- `Melange.exe --serve` — headless server for testing, prints the launch URL to stdout.
+
 ## Releasing
 
 Releases are built and signed by the `release` workflow (`.github/workflows/release.yml`) on a GitHub-hosted

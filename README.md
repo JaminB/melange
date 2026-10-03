@@ -6,12 +6,13 @@ Melange fixes long-standing multiplayer bugs and lets you install mods: new weap
 
 ## Install Melange
 
-1. Build `melange.asi` from source ([Building from source](docs/developer-guide.md#building-from-source)); prebuilt releases are coming.
-2. Get `dinput8.dll` from the x86 build of [Ultimate ASI Loader](https://github.com/ThirteenAG/Ultimate-ASI-Loader/releases/latest). If you already use WUMPatch, you already have it.
-3. Copy `dinput8.dll`, `melange.asi` and `dist\Melange.ini` into the game folder, next to `WormsMayhem.exe` (`...\steamapps\common\WormsXHD`).
-4. Start the game. The window title shows `[Melange x.y.z]`.
+1. Download the latest `melange-*.zip` from [Releases](https://github.com/JaminB/melange/releases) and extract it.
+2. Run `Melange.exe`. It will guide you to your game folder, check the build, and install or update Melange.
+3. Start the game. The window title shows `[Melange x.y.z]`.
 
-Releases from 0.3.1 on are code-signed; see [Code signing](CODE_SIGNING.md).
+**Undo:** Delete the `Melange.exe` copy in your game folder, `melange.asi`, `Melange.ini` and the `Melange` and `Mods` folders. Delete `dinput8.dll` too, unless other ASI mods still need it. Melange keeps a backup of anything it replaces on Home › Settings › Melange › Backups.
+
+Releases are code-signed; see [Code signing](CODE_SIGNING.md).
 
 ![The in-game overlay, opened with the grave key](docs/images/overlay/main-overlay.png)
 
