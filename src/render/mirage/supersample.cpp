@@ -28,7 +28,8 @@ namespace {
 namespace logic = melange::mirage::supersample::logic;
 // Build #1077: when pp+0x78 is set, BeginScene steps the /SSAA factors (options +0x6c/+0x70, FXAA flag +0x74) one
 // notch and rebuilds the scene targets (the engine's DEBUG.ChangeSSAA). The rebuild uses multisampled
-// renderbuffers while pp+0x79 is set, and targets the factors' multiple of the window otherwise.
+// renderbuffers while pp+0x79 is set (it then sets pp+0x7a), and targets the factors' multiple of the window while
+// pp+0x7a is clear.
 constexpr uintptr_t kBeginSceneDirty = 0x61f819, kCreateTargets = 0x61f190;
 constexpr int kMaxAttempts = 3;
 
@@ -76,6 +77,8 @@ void Queue(const logic::EngineAa& t) {
     *reinterpret_cast<volatile int*>(o + 0x70) = b.y;
     *reinterpret_cast<volatile uint8_t*>(o + 0x74) = b.fxaa ? 1 : 0;
     *reinterpret_cast<volatile uint8_t*>(pp + 0x79) = t.hardware ? 1 : 0;
+    // The rebuild sets pp+0x7a only while pp+0x79 is set, so a hardware-AA scene would stay multisampled.
+    if (!t.hardware) *reinterpret_cast<volatile uint8_t*>(pp + 0x7a) = 0;
     *reinterpret_cast<volatile uint8_t*>(pp + 0x78) = 1;
 }
 
