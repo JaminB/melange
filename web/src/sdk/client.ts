@@ -92,7 +92,7 @@ export function createClient(opts: ClientOptions = {}): OasisClient {
   const handle = (m: ServerMessage) => {
     switch (m.t) {
       case "welcome": {
-        const w: Welcome = { proto: m.proto, build: m.build, server: m.server, game: m.game, channels: m.channels ?? [],
+        const w: Welcome = { proto: m.proto, build: m.build, server: m.server, game: m.game, caps: m.caps ?? [], channels: m.channels ?? [],
           methods: m.methods ?? [], panels: m.panels ?? [], limits: m.limits };
         welcome = w;
         backoff = minBackoff;

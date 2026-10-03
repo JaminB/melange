@@ -9,7 +9,7 @@ export function mount(el: HTMLElement, c: Client): () => void {
   return () => render(null, el);
 }
 
-function Mods({ client }: { client: Client }) {
+export function Mods({ client }: { client: Client }) {
   const conn = useConnection(client);
   const [list, setList] = useState<ModInfo[]>();
   const [error, setError] = useState<string>();

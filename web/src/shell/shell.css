@@ -11,6 +11,9 @@
   --warn: #b7791f;
   --bad: #c2413a;
   --focus: #2b6cb0;
+  --accent-strong: #9a5a0f;
+  --on-accent: #ffffff;
+  --shadow: 0 1px 2px rgb(0 0 0 / .06), 0 4px 16px rgb(0 0 0 / .06);
   --mono: ui-monospace, "Cascadia Mono", Consolas, monospace;
   --sans: system-ui, "Segoe UI", sans-serif;
   color-scheme: light;
@@ -29,6 +32,9 @@
     --warn: #e0b04f;
     --bad: #ef6b63;
     --focus: #7fb0f0;
+    --accent-strong: #e7a54b;
+    --on-accent: #15171a;
+    --shadow: 0 1px 2px rgb(0 0 0 / .4);
     color-scheme: dark;
   }
 }
@@ -45,6 +51,9 @@
   --warn: #e0b04f;
   --bad: #ef6b63;
   --focus: #7fb0f0;
+  --accent-strong: #e7a54b;
+  --on-accent: #15171a;
+  --shadow: 0 1px 2px rgb(0 0 0 / .4);
   color-scheme: dark;
 }
 
@@ -60,6 +69,7 @@ button { font: inherit; color: inherit; }
 .small { font-size: 12px; }
 .error { color: var(--bad); }
 
+.boot-blank { height: 100%; background: var(--bg); }
 .shell { display: grid; grid-template-rows: auto auto 1fr; height: 100%; }
 .top { display: flex; align-items: center; gap: 16px; padding: 8px 16px; border-bottom: 1px solid var(--border); background: var(--surface); }
 .brand { display: flex; align-items: center; gap: 8px; font-weight: 600; letter-spacing: 0.02em; }

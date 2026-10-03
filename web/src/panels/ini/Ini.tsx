@@ -14,7 +14,7 @@ const id = (k: { section: string; key: string }) => `${k.section.toLowerCase()}\
 
 interface Edit { key: IniKey; value: string; error?: string; saving?: boolean; }
 
-function Ini({ client }: { client: Client }) {
+export function Ini({ client }: { client: Client }) {
   const conn = useConnection(client);
   const [doc, setDoc] = useState<IniDoc>();
   const [error, setError] = useState<string>();

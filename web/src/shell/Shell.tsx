@@ -60,7 +60,7 @@ function extTab(p: PanelInfo): Tab {
 const THEME_TEXT: Record<Theme, string> = { system: "Theme: system", light: "Theme: light", dark: "Theme: dark" };
 const NEXT_THEME: Record<Theme, Theme> = { system: "light", light: "dark", dark: "system" };
 
-function App({ client }: { client: OasisClient }) {
+export function App({ client }: { client: OasisClient }) {
   const [state, setState] = useState<ClientState>(client.state);
   const [welcome, setWelcome] = useState<Welcome | undefined>(client.welcome());
   const [list, setList] = useState<PanelDef[]>(panels());

@@ -14,7 +14,7 @@ export function mount(el: HTMLElement, c: Client): () => void {
 
 type Filter = "all" | "installed" | "updates";
 
-function Store({ client }: { client: Client }) {
+export function Store({ client }: { client: Client }) {
   const conn = useConnection(client);
   const [status, setStatus] = useState<Status>();
   const [items, setItems] = useState<Item[]>();
