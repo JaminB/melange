@@ -547,13 +547,33 @@ You need:
 
 ## Releasing
 
+Releases are built and signed by the `release` workflow (`.github/workflows/release.yml`) on a GitHub-hosted
+Windows runner. Bump `project(Melange VERSION x.y.z)` in `CMakeLists.txt`, then push the tag `vx.y.z` (the
+workflow refuses a tag that doesn't match). The workflow:
+
+1. fetches the toolchain: CMake, Ninja and the Ultimate ASI Loader `dinput8.dll` as pinned downloads checked by
+   SHA-256, and Node.js, esbuild and the web packages with `scripts\web\fetch.ps1`;
+2. runs `scripts\release.ps1 -StageOnly`, which builds the public config and stages the zip's files in
+   `out\stage`;
+3. signs `melange.asi`, `oasis.exe` and `tools\xomtool.exe` with Azure Artifact Signing (SHA-256, timestamped)
+   and checks the signatures. `dinput8.dll` is not signed;
+4. zips the stage and creates the GitHub release for the tag (or adds to it), with the zip's SHA-256 in the notes.
+
+Run it by hand from the Actions tab (`gh workflow run release.yml -f sign=false` for an unsigned dry run): the
+zip is then uploaded as a workflow artifact instead of a release. Signing uses the repository variables
+`AZURE_TENANT_ID`, `AZURE_CLIENT_ID`, `AZURE_SUBSCRIPTION_ID`, `SIGNING_ENDPOINT`, `SIGNING_ACCOUNT` and
+`SIGNING_PROFILE`, and logs in through OIDC from the `release` environment, so no secret is stored.
+[CODE_SIGNING.md](../CODE_SIGNING.md) is the public policy.
+
+To build a release offline, without signing:
+
 ```powershell
 .\scripts\release.ps1            # builds the public config and writes out\melange-<version>.zip
 ```
 
 This builds with `build.ps1` and no `-PrivateDir`, so no out-of-tree modules are compiled in, then refuses to
-continue if `dist\melange.asi` contains a `LocalNet` or `Automation` marker (a sign a private build leaked in)
-or if any text file staged for the zip contains a local `C:\Users` path. The zip has `melange.asi`, the default
+continue if the CMake cache has a private dir, if `dist\melange.asi` contains a private-module marker, or if any
+text file staged for the zip contains a local `C:\Users` path. The zip has `melange.asi`, the default
 `Melange.ini`, `dinput8.dll` (Ultimate ASI Loader) and its licence in `THIRD_PARTY.md`, `oasis.exe`,
 `tools\xomtool.exe`, the sample `Mods\`, `LICENSE`, `THIRD_PARTY.md` and an `INSTALL.txt` mirroring the README's
 install steps. The version comes from `project(Melange VERSION x.y.z)` in `CMakeLists.txt`. `out\` is not
