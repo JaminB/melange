@@ -93,12 +93,12 @@ Payload ReadPayload(const Context& c) {
         if (FileExists(asi)) {
             const std::string v = FileProductVersion(asi);
             if (v != c.version) p.missing.push_back("melange.asi (version " + (v.empty() ? std::string("unknown") : v) + ", expected " + c.version + ")");
-            else p.asiSha = hashutil::Sha256HexFile(asi);
+            else p.asiSha = Sha256Cached(asi);
         }
     }
     const std::wstring ual = c.payloadDir + L"\\dinput8.dll";
     if (!c.payloadDir.empty() && FileExists(ual)) {
-        p.ualSha = hashutil::Sha256HexFile(ual);
+        p.ualSha = Sha256Cached(ual);
         if (std::find(KnownUalHashes().begin(), KnownUalHashes().end(), p.ualSha) == KnownUalHashes().end()) {
             p.missing.push_back("dinput8.dll (not the Ultimate ASI Loader build Melange ships)");
             p.ualSha.clear();
@@ -239,7 +239,7 @@ Built BuildInstall(const Context& c, const PlanRequest& req, const Status& st) {
                          st.melangeState == "damaged";
     if (st.melangeState == "newer" && !req.allowDowngrade) {
         AddStep(b, "keep", asiRel, "Melange " + st.melangeVersion + " is newer than this release (" + c.version + "); kept");
-    } else if (st.melangeState == "installed" && (p.asiSha.empty() || p.fromGameFolder)) {
+    } else if (st.melangeState == "installed" && (!asiInPayload || p.fromGameFolder)) {
         AddStep(b, "keep", asiRel, "Melange " + st.melangeVersion);
     } else if (asiHere && !asiInPayload) {
         need("melange.asi");
@@ -251,9 +251,10 @@ Built BuildInstall(const Context& c, const PlanRequest& req, const Status& st) {
         } else {
             b.ops.push_back(Op{OpKind::Replace, asiRel, c.payloadDir + L"\\melange.asi"});
             AddStep(b, "replace", asiRel,
-                    st.melangeState == "older" ? "update Melange " + st.melangeVersion + " to " + c.version
+                    st.melangeState == "older"     ? "update Melange " + st.melangeVersion + " to " + c.version
                     : st.melangeState == "damaged" ? "repair Melange " + c.version
-                                                   : "Melange " + c.version + "; a backup is kept");
+                    : st.melangeState == "newer"   ? "go back to Melange " + c.version + "; a backup is kept"
+                                                   : "replace with this release's copy of Melange " + c.version + "; a backup is kept");
         }
     } else if (!asiInPayload) {
         need("melange.asi");
@@ -406,15 +407,13 @@ Built BuildUninstall(const Context& c, const PlanRequest& req, const Status& st)
         json::Value v;
         json::Error e;
         if (json::ParseFile(g + L"\\Mods\\.store\\installed.json", &v, &e) && v.IsObject())
-            if (const json::Value* mods = v.Get("mods"); mods && mods->IsObject())
-                for (const auto& [id, rec] : mods->members) {
-                    (void)rec;
-                    if (!SafeId(id) || !DirExists(g + L"\\Mods\\" + W(id))) continue;
-                    Op o{OpKind::RemoveDir, L"Mods\\" + W(id)};
-                    o.backup = false;
-                    b.ops.push_back(o);
-                    AddStep(b, "remove", o.rel, "a plugin installed from the Store");
-                }
+            for (const auto& [id, rec] : v.members) {
+                if (id.empty() || id[0] == '_' || !rec.IsObject() || !SafeId(id) || !DirExists(g + L"\\Mods\\" + W(id))) continue;
+                Op o{OpKind::RemoveDir, L"Mods\\" + W(id)};
+                o.backup = false;
+                b.ops.push_back(o);
+                AddStep(b, "remove", o.rel, "a plugin installed from the Store");
+            }
         if (DirExists(g + L"\\Mods\\.store")) {
             Op o{OpKind::RemoveDir, L"Mods\\.store"};
             o.backup = false;
@@ -532,7 +531,7 @@ Outcome RunOps(const Context& c, const std::string& action, std::vector<Op> ops,
     const std::wstring g = c.gameDir;
     const std::wstring dataDir = g + L"\\Melange";
     const std::wstring stageRoot = dataDir + L"\\.staging\\" + W(RandomHex(6));
-    const int of = static_cast<int>(ops.size()) + 1;
+    const int of = static_cast<int>(ops.size()) + 2;
     int step = 0;
     auto progress = [&](const std::string& label) {
         if (c.progress) c.progress(++step, of, label);
@@ -781,6 +780,7 @@ Status Inspect(const Context& c) {
     const std::wstring g = c.gameDir;
     s.haveGame = true;
     s.game = CheckExe(g, c.profiles ? *c.profiles : DefaultProfiles());
+    if (c.storeOf) s.game.store = c.storeOf(g);
     s.running = Running(c);
     s.game.running = s.running;
     s.game.writable = DirExists(g) && CanWrite(g);
@@ -810,8 +810,6 @@ Status Inspect(const Context& c) {
             const int cmp = CompareVersions(s.melangeVersion, c.version);
             if (cmp < 0) s.melangeState = "older";
             else if (cmp > 0) s.melangeState = "newer";
-            else if (!s.payload.asiSha.empty() && !s.payload.fromGameFolder && hashutil::Sha256HexFile(g + L"\\" + asi) != s.payload.asiSha)
-                s.melangeState = "damaged";
             else s.melangeState = "installed";
         }
     } else if (!offs.empty()) {
@@ -834,7 +832,7 @@ Status Inspect(const Context& c) {
     }
     s.backups = ListBackups(g);
     s.install = ReadInstallRecord(g);
-    LastLoad(c.logsDir, &s.lastLoadAt, &s.lastLoadVersion);
+    if (s.melangeState != "missing") LastLoad(c.logsDir, &s.lastLoadAt, &s.lastLoadVersion);
     return s;
 }
 
@@ -907,12 +905,12 @@ Outcome Apply(const Context& c, const PlanRequest& req, const std::string& planI
     if (req.action != "install" && req.action != "repair" && req.action != "uninstall") return Fail(-32602, "action must be install, repair or uninstall");
     Status st;
     Built b = Build(c, req, &st);
-    if (!planId.empty() && planId != b.plan.planId) return Fail(-32013, "The game folder changed since the plan was shown. Check the new plan and confirm again.");
     if (!b.plan.refused.empty()) {
         Outcome o = Fail(b.plan.code ? b.plan.code : -32000, b.plan.refused);
         o.missing = b.plan.missing;
         return o;
     }
+    if (!planId.empty() && planId != b.plan.planId) return Fail(-32013, "The game folder changed since the plan was shown. Check the new plan and confirm again.");
     if (!b.plan.needsChoice.empty()) return Fail(-32000, "Another program's dinput8.dll is in your game folder. Choose whether to replace it.");
     std::string backupId;
     Outcome o = RunOps(c, req.action, b.ops, &backupId);

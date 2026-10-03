@@ -146,7 +146,7 @@ bool IdentifyDll(const std::wstring& path, const std::string& oursSha256, DllInf
     out->file = Narrow(FileName(path));
     if (!FileExists(path)) return false;
     out->size = FileSize(path);
-    out->sha256 = hashutil::Sha256HexFile(path);
+    out->sha256 = Sha256Cached(path);
     Strings s;
     const bool hasVer = ReadVersionStrings(path, &s);
     out->product = s.product;

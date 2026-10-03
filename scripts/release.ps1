@@ -53,21 +53,25 @@ try {
 
     Copy-Item "$root\dist\melange.asi" $stage
     Copy-Item "$root\dist\Melange.ini" $stage
-    Copy-Item "$root\dist\oasis.exe" $stage
+    Copy-Item "$root\dist\Melange.exe" $stage
     Copy-Item "$root\dist\tools\xomtool.exe" (Join-Path $stage "tools")
     Copy-Item "$root\tools\ual\dinput8.dll" $stage
     Copy-Item "$root\LICENSE" $stage
     Copy-Item "$root\THIRD_PARTY.md" $stage
     Copy-Item "$root\dist\Mods" (Join-Path $stage "Mods") -Recurse
 
+    if (Test-Path "$root\dist\INSTALL.txt") {
+        (Get-Content "$root\dist\INSTALL.txt" -Raw).Replace('$version', $version) -replace "\r?\n", "`r`n" |
+            Set-Content -Path (Join-Path $stage "INSTALL.txt") -Encoding ascii -NoNewline
+    } else {
     @"
 Installing Melange
 ==================
 
-1. Copy dinput8.dll, melange.asi and Melange.ini into your game folder, next to WormsMayhem.exe
-   (...\steamapps\common\WormsXHD). Copy oasis.exe there too if you want Oasis, Melange's browser tool,
-   with the game closed.
-2. Start the game. The window title shows [Melange $version].
+1. Run Melange.exe from this folder. It finds your game, checks it's the supported version, installs Melange
+   and suggests a few plugins. Nothing changes until you confirm, and everything can be undone from it later.
+2. Or by hand: copy dinput8.dll, melange.asi and Melange.ini into your game folder, next to WormsMayhem.exe
+   (...\steamapps\common\WormsXHD), then start the game. The window title shows [Melange $version].
 
 Installing a mod
 ----------------
@@ -102,6 +106,7 @@ names are removed, and Steam IDs and IP addresses are hashed.
 License: see LICENSE and THIRD_PARTY.md. Melange is an unofficial fan project, not affiliated with or endorsed
 by Team17. You need your own copy of Worms Ultimate Mayhem.
 "@ -replace "\r?\n", "`r`n" | Set-Content -Path (Join-Path $stage "INSTALL.txt") -Encoding ascii -NoNewline
+    }
 
     # No game assets (the only binaries are ours or UAL's, checked above and by hand), and no machine-specific
     # paths leaking into anything a user would read.

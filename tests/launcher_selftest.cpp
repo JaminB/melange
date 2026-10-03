@@ -25,8 +25,11 @@
 #include "launcher/setup/vdf.h"
 #include "launcher/util.h"
 #include "store/index.h"
+#include "store/store.h"
 #include "tools/hash.h"
 #include "tools/json_read.h"
+
+#include <miniz.h>
 
 namespace L = melange::launcher;
 namespace S = melange::launcher::setup;
@@ -432,7 +435,7 @@ void TestEngineFresh() {
     // Uninstall, keeping data; then with data.
     Put(r.game + L"\\Mods\\mine\\spice.json", "{}");
     Put(r.game + L"\\Mods\\fromstore\\spice.json", "{}");
-    Put(r.game + L"\\Mods\\.store\\installed.json", "{\"mods\":{\"fromstore\":{\"version\":\"1.0.0\"}}}");
+    Put(r.game + L"\\Mods\\.store\\installed.json", "{\"_serialSeen\":3,\"fromstore\":{\"version\":\"1.0.0\",\"sha256\":\"00\",\"serial\":3}}");
     Put(r.game + L"\\Melange\\logs\\x.log", "log");
     p = S::MakePlan(r.ctx, {"uninstall"});
     Expect(!p.steps.empty() && L::IEquals(p.steps.front().path, "dinput8.dll") && p.steps.front().op == "remove", "engine: uninstall removes the loader first",
@@ -744,6 +747,137 @@ void TestRecommended() {
     Expect(builtin.size() == 1 && builtin[0].id == "sunstone" && builtin[0].settings.at("quality").str == "bold", "recommended: built-in Sunstone on Bold");
 }
 
+// ---------------------------------------------------------------- the Store engine on a non-game host
+class FakeStoreHost final : public melange::store::Host {
+  public:
+    std::wstring mods;
+    std::string gate;
+    std::vector<std::string> calls;
+    std::string MelangeVersion() override { return "0.4.0"; }
+    std::string GameBuild() override { return "1077"; }
+    std::string Gate() override { return gate; }
+    std::vector<melange::store::LocalMod> InstalledMods() override {
+        std::vector<melange::store::LocalMod> out;
+        WIN32_FIND_DATAW fd{};
+        HANDLE h = FindFirstFileW((mods + L"\\*").c_str(), &fd);
+        if (h == INVALID_HANDLE_VALUE) return out;
+        do {
+            if (!(fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) || fd.cFileName[0] == L'.') continue;
+            melange::json::Value v;
+            melange::json::Error e;
+            if (!melange::json::ParseFile(mods + L"\\" + fd.cFileName + L"\\spice.json", &v, &e)) continue;
+            melange::store::LocalMod m;
+            m.id = v.Get("id") ? v.Get("id")->string : "";
+            m.version = v.Get("version") ? v.Get("version")->string : "";
+            m.state = "enabled";
+            m.enabled = true;
+            out.push_back(m);
+        } while (FindNextFileW(h, &fd));
+        FindClose(h);
+        return out;
+    }
+    void Placed(const std::string& id, bool enable) override { calls.push_back("placed " + id + (enable ? " on" : " off")); }
+    void Unload(const std::string& id) override { calls.push_back("unload " + id); }
+    void Reload(const std::string& id, bool enable) override { calls.push_back("reload " + id + (enable ? " on" : " off")); }
+    void Forget(const std::string& id) override { calls.push_back("forget " + id); }
+    void DeleteData(const std::string& id) override { calls.push_back("delete " + id); }
+};
+
+std::string MakePluginZip(const std::string& version, uint64_t* unpacked) {
+    const std::string spice = "{\"spiceVersion\":1,\"id\":\"hello\",\"version\":\"" + version +
+                              "\",\"name\":\"Hello\",\"authors\":[\"me\"],\"melange\":{\"range\":\">=0.1.0\"},\"kind\":\"client-only\","
+                              "\"entry\":{\"client\":\"client/init.lua\"},\"settings\":[{\"key\":\"level\",\"type\":\"int\",\"default\":2,"
+                              "\"min\":1,\"max\":5,\"label\":\"Level\"}]}";
+    const std::pair<std::string, std::string> files[] = {
+        {"hello/spice.json", spice}, {"hello/LICENSE", "MIT"}, {"hello/client/init.lua", "wum.log.info('hello')"}};
+    mz_zip_archive z{};
+    mz_zip_writer_init_heap(&z, 0, 0);
+    *unpacked = 0;
+    for (const auto& [name, data] : files) {
+        mz_zip_writer_add_mem(&z, name.c_str(), data.data(), data.size(), MZ_BEST_COMPRESSION);
+        *unpacked += data.size();
+    }
+    void* buf = nullptr;
+    size_t n = 0;
+    mz_zip_writer_finalize_heap_archive(&z, &buf, &n);
+    std::string out(static_cast<const char*>(buf), n);
+    mz_zip_writer_end(&z);
+    return out;
+}
+
+template <class F>
+bool WaitFor(F done, int ms = 15000) {
+    for (int i = 0; i < ms / 50; ++i) {
+        if (done()) return true;
+        Sleep(50);
+    }
+    return done();
+}
+
+void TestStoreEngine() {
+    namespace st = melange::store;
+    const std::wstring root = Fresh(L"store");
+    const std::wstring game = root + L"\\game";
+    L::MakeDirs(game + L"\\Mods");
+    uint64_t unpacked = 0;
+    const std::string zip = MakePluginZip("1.0.0", &unpacked);
+    Put(root + L"\\index\\hello-1.0.0.zip", zip);
+    const std::string sha = melange::hashutil::Sha256Hex(zip.data(), zip.size());
+    Put(root + L"\\index\\index.json",
+        "{\"indexVersion\":1,\"serial\":1,\"recommended\":[{\"id\":\"hello\",\"settings\":{\"level\":4}}],\"plugins\":[{\"id\":\"hello\","
+        "\"name\":\"Hello\",\"authors\":[\"me\"],\"description\":\"A test plugin.\",\"licence\":\"MIT\",\"categories\":[\"misc\"],"
+        "\"gameBuilds\":[\"1077\"],\"versions\":[{\"version\":\"1.0.0\",\"released\":\"2026-10-03\",\"melange\":\">=0.1.0\","
+        "\"kind\":\"client-only\",\"permissions\":{\"unsafe\":false,\"filesystem\":\"none\"},\"url\":\"hello-1.0.0.zip\",\"sha256\":\"" +
+            sha + "\",\"size\":" + std::to_string(zip.size()) + ",\"unpackedSize\":" + std::to_string(unpacked) + ",\"files\":3}]}]}");
+    std::string url = "file:///" + L::Narrow(root + L"\\index\\index.json");
+    for (char& c : url)
+        if (c == '\\') c = '/';
+    FakeStoreHost host;
+    host.mods = game + L"\\Mods";
+    st::Config cfg;
+    cfg.indexUrl = url;
+    cfg.custom = true;
+    st::SetHost(&host, cfg);
+    Expect(st::Open(game + L"\\Mods"), "store: opened on a Mods folder");
+    Expect(st::Active(), "store: active with a host");
+    st::Refresh();
+    Expect(WaitFor([] { return st::GetStatus().haveIndex && !st::GetStatus().fetching; }), "store: file:// index fetched", st::GetStatus().error);
+    Expect(st::IndexText().find("\"recommended\"") != std::string::npos, "store: index text kept for the recommended list");
+    std::vector<L::Recommended> rec;
+    melange::store::Index idx;
+    std::string err;
+    Expect(st::ParseIndex(st::IndexText(), &idx, &err) &&
+               L::ParseRecommended(st::IndexText(), idx, &rec, [](const std::string&, std::vector<L::plugins::Setting>*) { return false; }) &&
+               rec.size() == 1 && rec[0].name == "Hello",
+           "store: recommended list from the fetched index");
+    host.gate = "Close Worms Ultimate Mayhem first.";
+    Expect(st::Install("hello", "", true, false).code == -32000, "store: the host's gate refuses installs");
+    host.gate.clear();
+    const st::Outcome o = st::Install("hello", "", true, false);
+    Expect(o.code == 0, "store: install started", o.message);
+    Expect(WaitFor([] { return !st::GetStatus().busy; }), "store: install finished");
+    Expect(L::FileExists(game + L"\\Mods\\hello\\spice.json") && L::FileExists(game + L"\\Mods\\.store\\installed.json"), "store: plugin placed and recorded",
+           st::GetStatus().job.message);
+    Expect(!host.calls.empty() && host.calls.back() == "placed hello on", "store: host told the plugin is in place",
+           host.calls.empty() ? "" : host.calls.back());
+    auto items = st::List(st::ListQuery{});
+    Expect(items.size() == 1 && items[0].installed && items[0].managed, "store: listed as installed from the Store");
+    std::vector<L::plugins::Setting> decl;
+    Expect(L::plugins::LoadDecl(game, "hello", &decl, &err) && decl.size() == 1 && decl[0].def.num == 2, "store: installed plugin's settings readable");
+    Expect(st::Remove("hello", true).code == 0, "store: remove started");
+    Expect(WaitFor([] { return !st::GetStatus().busy; }), "store: remove finished");
+    Expect(!L::DirExists(game + L"\\Mods\\hello"), "store: plugin removed");
+    bool forgot = false, deleted = false, unloaded = false;
+    for (const auto& c : host.calls) {
+        forgot |= c == "forget hello";
+        deleted |= c == "delete hello";
+        unloaded |= c == "unload hello";
+    }
+    Expect(unloaded && forgot && deleted, "store: host unloaded, forgot and deleted the plugin's data");
+    st::Close();
+    Expect(!st::Active(), "store: closed without a folder");
+}
+
 // ---------------------------------------------------------------- launcher.json
 void TestSettings() {
     const std::wstring dir = Fresh(L"settings");
@@ -793,6 +927,8 @@ int main(int, char** argv) {
     TestPluginSettings();
     TestRecommended();
     TestSettings();
+    TestStoreEngine();
+    melange::store::Shutdown();
     Wipe(g_tmp);
     printf("launcher_selftest: %d passed, %d failed\n", g_pass, g_fail);
     return g_fail ? 1 : 0;

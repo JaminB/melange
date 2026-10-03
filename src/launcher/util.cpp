@@ -5,6 +5,10 @@
 #include <shlobj.h>
 
 #include <cwctype>
+#include <map>
+#include <mutex>
+
+#include "tools/hash.h"
 
 namespace melange::launcher {
 std::string Narrow(std::wstring_view w) {
@@ -149,6 +153,13 @@ std::wstring ExeDir() { return Parent(ExePath()); }
 std::wstring AppDataDir() {
     PWSTR p = nullptr;
     std::wstring out;
+    wchar_t env[MAX_PATH];
+    const DWORD n = GetEnvironmentVariableW(L"MELANGE_DATA_DIR", env, MAX_PATH);   // tests: keep launcher.json elsewhere
+    if (n && n < MAX_PATH) {
+        out = FullPath(env);
+        MakeDirs(out);
+        return out;
+    }
     if (SUCCEEDED(SHGetKnownFolderPath(FOLDERID_LocalAppData, KF_FLAG_CREATE, nullptr, &p)) && p) out = std::wstring(p) + L"\\Melange";
     if (p) CoTaskMemFree(p);
     if (out.empty()) out = ExeDir() + L"\\Melange";
@@ -194,5 +205,30 @@ std::string RandomHex(int bytes) {
         s += h;
     }
     return s;
+}
+}  // namespace melange::launcher
+
+namespace melange::launcher {
+std::string Sha256Cached(const std::wstring& path) {
+    static std::mutex mx;
+    static std::map<std::wstring, std::pair<std::string, std::string>> cache;   // key -> (size.mtime, sha)
+    WIN32_FILE_ATTRIBUTE_DATA fa{};
+    if (!GetFileAttributesExW(path.c_str(), GetFileExInfoStandard, &fa)) return {};
+    char stamp[64];
+    snprintf(stamp, sizeof stamp, "%lx.%lx.%lx.%lx", fa.nFileSizeHigh, fa.nFileSizeLow, fa.ftLastWriteTime.dwHighDateTime,
+             fa.ftLastWriteTime.dwLowDateTime);
+    const std::wstring key = PathKey(path);
+    {
+        std::lock_guard lk(mx);
+        auto it = cache.find(key);
+        if (it != cache.end() && it->second.first == stamp) return it->second.second;
+    }
+    const std::string sha = hashutil::Sha256HexFile(path);
+    if (!sha.empty()) {
+        std::lock_guard lk(mx);
+        if (cache.size() > 256) cache.clear();
+        cache[key] = {stamp, sha};
+    }
+    return sha;
 }
 }  // namespace melange::launcher

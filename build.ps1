@@ -20,7 +20,8 @@ New-Item -ItemType Directory -Force "$root\dist" | Out-Null
 New-Item -ItemType Directory -Force "$root\dist\tools" | Out-Null
 Copy-Item "$root\build\$Config\melange.asi" "$root\dist\" -Force
 Copy-Item "$root\build\$Config\Melange.pdb" "$root\dist\" -Force -ErrorAction SilentlyContinue
-Copy-Item "$root\build\$Config\oasis.exe" "$root\dist\" -Force -ErrorAction SilentlyContinue
-Copy-Item "$root\build\$Config\oasis.pdb" "$root\dist\" -Force -ErrorAction SilentlyContinue
+Copy-Item "$root\build\$Config\Melange.exe" "$root\dist\" -Force
+Copy-Item "$root\build\$Config\Melange.exe.pdb" "$root\dist\" -Force -ErrorAction SilentlyContinue
+Remove-Item "$root\dist\oasis.exe", "$root\dist\oasis.pdb" -Force -ErrorAction SilentlyContinue
 Copy-Item "$root\build\$Config\xomtool.exe" "$root\dist\tools\" -Force -ErrorAction SilentlyContinue
-Write-Host "Built dist\melange.asi, dist\oasis.exe and dist\tools\xomtool.exe"
+Write-Host "Built dist\melange.asi, dist\Melange.exe and dist\tools\xomtool.exe"

@@ -22,6 +22,7 @@ struct Context {
     std::vector<std::wstring> protect;   // MELANGE_PROTECT
     std::function<bool(const std::wstring&)> running;   // default: GameRunning
     std::function<bool(const std::wstring&)> loaded;    // default: MelangeLoaded
+    std::function<std::string(const std::wstring&)> storeOf;   // steam | gog | unknown (default: unknown)
     MoveFn move;                      // default: DefaultMove
     std::function<void(int step, int of, const std::string& label)> progress;
 };

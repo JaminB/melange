@@ -128,7 +128,7 @@ file(CONFIGURE OUTPUT ${CMAKE_BINARY_DIR}/generated/oasis_web.rc CONTENT "OASIS_
 set_source_files_properties(${CMAKE_BINARY_DIR}/generated/oasis_web.rc PROPERTIES OBJECT_DEPENDS ${OASIS_WEB_ZIP})
 
 # The Erg level service (scene load/build over src/xom, the project store, the registry bank), shared by the plugin's
-# Oasis, oasis.exe, xomtool and the self-tests.
+# Oasis, Melange.exe, xomtool and the self-tests.
 set(ERG_SERVICE_SOURCES
     src/erg/scene.cpp src/erg/patch.cpp src/erg/names.cpp src/erg/jsonio.cpp src/erg/xomutil.cpp src/erg/load.cpp
     src/erg/build.cpp src/erg/bank.cpp src/erg/install.cpp src/erg/project.cpp src/erg/service.cpp src/erg/pack.cpp src/erg/luagen.cpp src/erg/voxels.cpp src/erg/objects.cpp src/erg/hmp.cpp
@@ -194,22 +194,6 @@ target_compile_definitions(oasis_rpc_selftest PRIVATE WIN32_LEAN_AND_MEAN NOMINM
 target_compile_options(oasis_rpc_selftest PRIVATE /W4 /utf-8 /permissive-)
 target_link_libraries(oasis_rpc_selftest PRIVATE oasis_core)
 
-# oasis.exe: the standalone server, running with the game closed. Embeds the same web bundle as melange.asi.
-add_executable(oasis_standalone
-    src/oasis/standalone/main.cpp src/oasis/standalone/ini_edit.cpp src/oasis/standalone/mods_provider.cpp
-    src/oasis/standalone/json_write.cpp src/oasis/standalone/game_lock.cpp src/oasis/standalone/wormsign_provider.cpp
-    src/oasis/standalone/level_provider.cpp src/oasis/rpc/erg_assets.cpp src/assets/crcsafe_math.cpp src/assets/crcsafe_file.cpp
-    src/oasis/auth.cpp src/oasis/webpanels.cpp src/oasis/rpc/ini_edit.cpp ${ERG_SERVICE_SOURCES}
-    src/wormsign/format.cpp src/wormsign/records.cpp
-    ${CMAKE_BINARY_DIR}/generated/oasis_web.rc)
-add_dependencies(oasis_standalone oasis_web)
-set_target_properties(oasis_standalone PROPERTIES OUTPUT_NAME "oasis")
-target_include_directories(oasis_standalone PRIVATE src src/sdk ${CMAKE_BINARY_DIR}/generated ${stb_SOURCE_DIR})
-target_compile_definitions(oasis_standalone PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX _CRT_SECURE_NO_WARNINGS)
-target_compile_options(oasis_standalone PRIVATE /W4 /utf-8 /permissive- /Zi)
-target_link_options(oasis_standalone PRIVATE /DEBUG)
-target_link_libraries(oasis_standalone PRIVATE oasis_core melange_xom bcrypt shell32 ole32)
-
 # Offline self-test for the standalone-only file logic (ini editing, mods.list/setEnabled, wormsign.library): no
 # game, no server.
 add_executable(oasis_standalone_selftest
@@ -238,13 +222,43 @@ foreach(v 0_4_0 0_3_1 9_0_0)
     add_library(fake_asi_${v} SHARED tests/fixtures/launcher/fake_dll.c tests/fixtures/launcher/fake_asi_${v}.rc)
 endforeach()
 add_executable(launcher_selftest tests/launcher_selftest.cpp ${LAUNCHER_CORE_SOURCES}
-    src/store/index.cpp src/mods/spice.cpp src/levels/live_policy.cpp src/tools/json_read.cpp src/tools/hash.cpp src/core/log.cpp)
+    src/mods/spice.cpp src/levels/live_policy.cpp src/tools/json_read.cpp src/tools/hash.cpp src/core/log.cpp)
 add_dependencies(launcher_selftest fake_dinput8_reshade fake_dinput8_microsoft fake_dinput8_other fake_asi_0_4_0 fake_asi_0_3_1 fake_asi_9_0_0)
 target_include_directories(launcher_selftest PRIVATE src src/sdk)
 target_compile_definitions(launcher_selftest PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX _CRT_SECURE_NO_WARNINGS
     MELANGE_SOURCE_DIR="${CMAKE_SOURCE_DIR}")
 target_compile_options(launcher_selftest PRIVATE /W4 /utf-8 /permissive-)
-target_link_libraries(launcher_selftest PRIVATE bcrypt version shell32 ole32)
+target_link_libraries(launcher_selftest PRIVATE melange_store bcrypt version shell32 ole32)
+
+# The Store engine without the game: index, downloads, installs, the store.* methods. The plugin compiles the same
+# sources through its glob, with store/game_host.cpp as the host; Melange.exe brings its own host.
+add_library(melange_store STATIC src/store/engine.cpp src/store/store_rpc.cpp src/store/index.cpp src/store/install.cpp
+    src/store/fetch.cpp src/store/zipcheck.cpp)
+target_include_directories(melange_store PUBLIC src src/sdk)
+target_compile_definitions(melange_store PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX _CRT_SECURE_NO_WARNINGS)
+target_compile_options(melange_store PRIVATE /W4 /utf-8 /permissive- /Zi)
+target_link_libraries(melange_store PUBLIC oasis_core miniz winhttp)
+
+# Melange.exe: the desktop app. The standalone Oasis server plus setup, plugins and the Store, shown in WebView2.
+include(cmake/webview2.cmake)
+add_executable(melange_launcher WIN32
+    src/launcher/main.cpp src/launcher/app.cpp src/launcher/window.cpp src/launcher/store_host.cpp
+    src/launcher/rpc_setup.cpp src/launcher/rpc_launcher.cpp src/launcher/rpc_plugins.cpp ${LAUNCHER_CORE_SOURCES}
+    src/oasis/standalone/register.cpp src/oasis/standalone/ini_edit.cpp src/oasis/standalone/mods_provider.cpp
+    src/oasis/standalone/json_write.cpp src/oasis/standalone/wormsign_provider.cpp src/oasis/standalone/level_provider.cpp
+    src/oasis/rpc/erg_assets.cpp src/assets/crcsafe_math.cpp src/assets/crcsafe_file.cpp src/oasis/auth.cpp src/oasis/webpanels.cpp
+    ${ERG_SERVICE_SOURCES} src/wormsign/format.cpp src/wormsign/records.cpp
+    res/launcher.rc ${CMAKE_BINARY_DIR}/generated/oasis_web.rc)
+add_dependencies(melange_launcher oasis_web)
+# PDB_NAME: melange.asi already writes Melange.pdb here (Windows paths ignore case).
+set_target_properties(melange_launcher PROPERTIES OUTPUT_NAME "Melange" PDB_NAME "Melange.exe")
+set_source_files_properties(res/launcher.rc PROPERTIES OBJECT_DEPENDS "${CMAKE_SOURCE_DIR}/res/melange.ico;${CMAKE_SOURCE_DIR}/res/Melange.manifest")
+target_include_directories(melange_launcher PRIVATE src src/sdk res ${CMAKE_BINARY_DIR}/generated ${stb_SOURCE_DIR})
+target_compile_definitions(melange_launcher PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX _CRT_SECURE_NO_WARNINGS UNICODE _UNICODE)
+target_compile_options(melange_launcher PRIVATE /W4 /utf-8 /permissive- /Zi)
+target_link_options(melange_launcher PRIVATE /DEBUG /MANIFEST:NO)
+target_link_libraries(melange_launcher PRIVATE oasis_core melange_store melange_xom webview2_loader bcrypt version shlwapi ole32 shell32
+    comctl32 dwmapi winhttp)
 
 add_executable(json_read_selftest tests/json_read_selftest.cpp src/tools/json_read.cpp)
 target_include_directories(json_read_selftest PRIVATE src)

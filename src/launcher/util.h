@@ -36,4 +36,6 @@ std::string Win32Message(unsigned long code);
 std::string NowIsoUtc();
 std::string StampLocal();    // YYYYMMDD-HHMMSS
 std::string RandomHex(int bytes);
+// SHA-256 of a file, cached per (path, size, write time).
+std::string Sha256Cached(const std::wstring& path);
 }  // namespace melange::launcher
