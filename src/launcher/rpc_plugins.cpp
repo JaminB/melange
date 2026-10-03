@@ -263,18 +263,24 @@ void RecommendedApply(const Call& c, Result& r, void*) {
     if (app::GameDir().empty()) return Fail(r, -32000, "Choose your game folder first.");
     if (const std::string gate = app::WriteGate(); !gate.empty()) return Fail(r, -32000, gate);
     if (g_applying.exchange(true)) return Fail(r, -32002, "Plugins are already being installed.");
-    // Held for the whole batch (moved into the worker thread) so setup.apply/restore can't run against the
-    // same Mods\ folder or Melange.ini while plugins are being installed.
-    std::unique_lock lk(app::Tx(), std::try_to_lock);
-    if (!lk.owns_lock()) {
-        g_applying = false;
-        return Fail(r, -32002, "Melange is busy with another change. Try again in a moment.");
+    // Report busy right away if a setup.* transaction already holds app::Tx(). The worker below takes its own
+    // lock for the actual duration instead of inheriting this one: a std::mutex must be unlocked by the same
+    // thread that locked it, so a lock can't cross the thread boundary into the detached worker.
+    {
+        std::unique_lock<std::mutex> probe(app::Tx(), std::try_to_lock);
+        if (!probe.owns_lock()) {
+            g_applying = false;
+            return Fail(r, -32002, "Melange is busy with another change. Try again in a moment.");
+        }
     }
     jsonmini::Arr queued;
     for (const auto& a : list) queued.Str(a.id);
-    std::thread([list, lk = std::move(lk)]() mutable {
+    std::thread([list] {
+        // Held for the whole batch so setup.apply/restore can't run against the same Mods\ folder or
+        // Melange.ini while plugins are being installed. A setup.* call that sneaks in between the probe
+        // above and this lock just waits here rather than racing the writes below.
+        std::lock_guard<std::mutex> lk(app::Tx());
         for (const auto& a : list) ApplyOne(a);
-        lk.unlock();
         g_applying = false;
         app::PublishStatus();
     }).detach();
