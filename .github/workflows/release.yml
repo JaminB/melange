@@ -3,6 +3,7 @@ name: release
 on:
   push:
     tags: ["v*"]
+    branches: [ci/signed-release]
   workflow_dispatch:
     inputs:
       sign:
@@ -20,7 +21,7 @@ jobs:
       id-token: write
       contents: write
     env:
-      SIGN: ${{ github.event_name == 'push' || inputs.sign }}
+      SIGN: ${{ github.ref_type == 'tag' || (github.event_name == 'workflow_dispatch' && inputs.sign) }}
     defaults:
       run:
         shell: powershell
@@ -106,7 +107,7 @@ jobs:
           "ZIP_SHA256=$hash" >> $env:GITHUB_ENV
 
       - name: Upload artifact
-        if: github.event_name == 'workflow_dispatch'
+        if: github.ref_type != 'tag'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           path: ${{ env.ZIP }}
