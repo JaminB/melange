@@ -1,6 +1,7 @@
 # Builds the public release zip: out\melange-<version>.zip, everything a user needs to install Melange.
-# Usage: .\scripts\release.ps1 [-Config x86-release]
-param([string]$Config = "x86-release")
+# Usage: .\scripts\release.ps1 [-Config x86-release] [-StageOnly]
+# -StageOnly stops after staging into out\stage, so CI can sign the binaries there before zipping.
+param([string]$Config = "x86-release", [switch]$StageOnly)
 $ErrorActionPreference = "Stop"
 $root = Split-Path $PSScriptRoot
 Push-Location $root
@@ -109,6 +110,8 @@ by Team17. You need your own copy of Worms Ultimate Mayhem.
         $content = Get-Content $f.FullName -Raw -ErrorAction SilentlyContinue
         if ($content -and $content -match [regex]::Escape("C:\Users")) { throw "a local user path leaked into $($f.FullName)" }
     }
+
+    if ($StageOnly) { Write-Host "Staged $stage"; return }
 
     $zipPath = Join-Path $outDir "melange-$version.zip"
     if (Test-Path $zipPath) { Remove-Item $zipPath -Force }

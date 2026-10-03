@@ -1,0 +1,133 @@
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      sign:
+        description: Sign the binaries with Azure Artifact Signing
+        type: boolean
+        default: true
+
+permissions: {}
+
+jobs:
+  release:
+    runs-on: windows-latest
+    environment: release
+    permissions:
+      id-token: write
+      contents: write
+    env:
+      SIGN: ${{ github.event_name == 'push' || inputs.sign }}
+    defaults:
+      run:
+        shell: powershell
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Fetch toolchain
+        run: |
+          $ErrorActionPreference = "Stop"
+          $cache = "$env:RUNNER_TEMP\dl"
+          New-Item -ItemType Directory -Force $cache | Out-Null
+          function Get-Pinned($Url, $Sha256) {
+            $file = Join-Path $cache ([IO.Path]::GetFileName($Url))
+            curl.exe -fsSL --retry 3 -o $file $Url
+            if ($LASTEXITCODE) { throw "download failed: $Url" }
+            $got = (Get-FileHash -Algorithm SHA256 $file).Hash
+            if ($got -ne $Sha256) { throw "SHA-256 mismatch for $Url (got $got)" }
+            $file
+          }
+          $cmake = Get-Pinned "https://github.com/Kitware/CMake/releases/download/v4.4.3/cmake-4.4.3-windows-x86_64.zip" "4D52EBAB7193A698651639ED80D8D04FD903358843572CF44C7FD234CB7C26AB"
+          Expand-Archive $cmake tools\cmake
+          $ninja = Get-Pinned "https://github.com/ninja-build/ninja/releases/download/v1.13.2/ninja-win.zip" "07FC8261B42B20E71D1720B39068C2E14FFCEE6396B76FB7A795FB460B78DC65"
+          Expand-Archive $ninja tools\ninja
+          $ual = Get-Pinned "https://github.com/ThirteenAG/Ultimate-ASI-Loader/releases/download/v9.7.4/Ultimate-ASI-Loader-NoPDB.zip" "14B3A1AD018899571AC9AA01482977F3C6D49E6CBA99F552D01C5ACACD1315E1"
+          Expand-Archive $ual "$cache\ual"
+          New-Item -ItemType Directory -Force tools\ual | Out-Null
+          Copy-Item "$cache\ual\dinput8.dll" tools\ual\
+          if ((Get-FileHash tools\ual\dinput8.dll).Hash -ne "EC2F4824ECA58DD40F425756A4A7CEC77B8E381F21D11D7C846EC4B339B617AB") { throw "dinput8.dll hash mismatch" }
+          .\scripts\web\fetch.ps1 -NoThirdParty
+          if ($LASTEXITCODE) { throw "web fetch failed" }
+
+      - name: Build and stage
+        run: |
+          .\scripts\release.ps1 -StageOnly
+          $v = (Select-String CMakeLists.txt -Pattern 'project\(Melange VERSION ([0-9.]+)').Matches[0].Groups[1].Value
+          if ($env:GITHUB_REF_TYPE -eq "tag" -and $env:GITHUB_REF_NAME -ne "v$v") { throw "tag $env:GITHUB_REF_NAME does not match version $v" }
+          "VERSION=$v" >> $env:GITHUB_ENV
+
+      - name: Azure login
+        if: env.SIGN == 'true'
+        uses: azure/login@a641126d1b8aa4d1fa005f4f92df94a3a4c4c906 # v3.1.0
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Sign
+        if: env.SIGN == 'true'
+        uses: azure/artifact-signing-action@c7ab2a863ab5f9a846ddb8265964877ef296ee82 # v2.0.0
+        with:
+          endpoint: ${{ vars.SIGNING_ENDPOINT }}
+          signing-account-name: ${{ vars.SIGNING_ACCOUNT }}
+          certificate-profile-name: ${{ vars.SIGNING_PROFILE }}
+          files: |
+            ${{ github.workspace }}\out\stage\melange.asi
+            ${{ github.workspace }}\out\stage\oasis.exe
+            ${{ github.workspace }}\out\stage\tools\xomtool.exe
+          file-digest: SHA256
+          timestamp-rfc3161: http://timestamp.acs.microsoft.com
+          timestamp-digest: SHA256
+          description: Melange
+          description-url: https://github.com/JaminB/melange
+
+      - name: Verify signatures
+        if: env.SIGN == 'true'
+        run: |
+          foreach ($f in "out\stage\melange.asi", "out\stage\oasis.exe", "out\stage\tools\xomtool.exe") {
+            $sig = Get-AuthenticodeSignature $f
+            Write-Host "$f $($sig.Status) $($sig.SignerCertificate.Subject)"
+            if ($sig.Status -ne "Valid" -or -not $sig.TimeStamperCertificate) { throw "$f is not validly signed and timestamped" }
+          }
+
+      - name: Zip
+        run: |
+          $ErrorActionPreference = "Stop"
+          $zip = "out\melange-$env:VERSION.zip"
+          Compress-Archive -Path out\stage\* -DestinationPath $zip
+          $hash = (Get-FileHash $zip -Algorithm SHA256).Hash.ToLowerInvariant()
+          Write-Host "SHA-256: $hash"
+          "ZIP=$zip" >> $env:GITHUB_ENV
+          "ZIP_SHA256=$hash" >> $env:GITHUB_ENV
+
+      - name: Upload artifact
+        if: github.event_name == 'workflow_dispatch'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          path: ${{ env.ZIP }}
+          archive: false
+          if-no-files-found: error
+
+      - name: Publish release
+        if: github.ref_type == 'tag'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          $ErrorActionPreference = "Continue"
+          $line = "SHA-256 of melange-$env:VERSION.zip: ``$env:ZIP_SHA256``"
+          $body = gh release view $env:TAG --json body -q .body 2> $null | Out-String
+          if ($LASTEXITCODE) {
+            gh release create $env:TAG $env:ZIP --verify-tag --title "Melange $env:VERSION" --notes $line
+          } else {
+            gh release upload $env:TAG $env:ZIP --clobber
+            if ($LASTEXITCODE) { exit 1 }
+            if (-not $body.Contains($line)) { gh release edit $env:TAG --notes ($body.TrimEnd() + "`n`n" + $line).Trim() }
+          }
+          if ($LASTEXITCODE) { exit 1 }
