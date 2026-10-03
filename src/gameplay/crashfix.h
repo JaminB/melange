@@ -20,4 +20,11 @@ bool SepiaRequested();
 // Makes the recorded SetSepia(1) call on the post-process `pp`, once per instance. Returns true when it called.
 bool ApplySepia(uintptr_t pp);
 void ResetSepia();
+
+// Composite tints with the "Sepia.Color" and "Sepia.LerpWeight" tweaks it looked up when the post-process was built
+// (pp+0x34, pp+0x38) and draws untinted while either is null. A null one is looked up again with the game's resolver
+// (cdecl, name by pointer, refcounted out slot), else filled with a holder of the shipped values.
+using ResolveTweak = int(__cdecl*)(const char* const* name, uint32_t* out);
+enum class Tint { Present, Resolved, Fallback };
+Tint EnsureSepiaTint(uintptr_t pp, ResolveTweak colour, ResolveTweak weight);
 }  // namespace melange::crashfix

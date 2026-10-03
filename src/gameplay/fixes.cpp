@@ -51,11 +51,26 @@ void OnSepiaSwitch(safetyhook::Context& c) {
     if (SepiaToStandIn(c.eax)) LOG_INFO("[fixes] SepiaSwitch: /SEPIA parsed before the renderer exists; deferred");
 }
 
+// Composite takes the sepia colour and weight from tweaks looked up when the post-process is built; while either is
+// missing it tints with weight 0. Resolvers for vector and float tweaks:
+constexpr uintptr_t kResolveVector = 0x47B4C0, kResolveFloat = 0x465290;
+bool g_resolvers = false;
+uint32_t g_tintLogged = 0;
+
 void ApplyPendingSepia() {
+    using melange::crashfix::ResolveTweak;
+    using melange::crashfix::Tint;
     if (!melange::crashfix::SepiaRequested()) return;
     uint32_t pp = 0;
-    if (!melange::mem::SafeRead(kPostProcess, &pp, sizeof(pp))) return;
+    if (!melange::mem::SafeRead(kPostProcess, &pp, sizeof(pp)) || !pp) return;
     if (melange::crashfix::ApplySepia(pp)) LOG_INFO("[fixes] SepiaSwitch: sepia on (post-process %08x)", pp);
+    const Tint t = melange::crashfix::EnsureSepiaTint(
+        pp, g_resolvers ? reinterpret_cast<ResolveTweak>(kResolveVector) : nullptr,
+        g_resolvers ? reinterpret_cast<ResolveTweak>(kResolveFloat) : nullptr);
+    if (t != Tint::Present && g_tintLogged != pp) {
+        g_tintLogged = pp;
+        LOG_INFO("[fixes] SepiaSwitch: tint %s", t == Tint::Resolved ? "tweaks resolved" : "tweaks missing; shipped values");
+    }
 }
 
 bool Guard(const char* name, uintptr_t check, std::initializer_list<int> bytes, uintptr_t site,
@@ -91,8 +106,11 @@ public:
         if (Bool("SepiaSwitch", true) &&
             Guard("SepiaSwitch", kSepia,
                   {0xA1, 0xE8, 0xA0, 0x95, 0x00, 0x8B, 0x48, 0x5C, 0x8B, 0x11, 0x8B, 0x42, 0x14, 0x6A, 0x01, 0xFF, 0xD0},
-                  kSepiaLoad, &OnSepiaSwitch))
+                  kSepiaLoad, &OnSepiaSwitch)) {
+            g_resolvers = melange::mem::Expect(kResolveVector, {0x6A, 0xFF, 0x68, 0x38, 0x93, 0x7C, 0x00}) &&
+                          melange::mem::Expect(kResolveFloat, {0x6A, 0xFF, 0x68, 0x38, 0x93, 0x7C, 0x00});
             melange::events::Subscribe(melange::events::Event::Frame, &ApplyPendingSepia);
+        }
         return true;
     }
 

@@ -131,6 +131,70 @@ void TestSepiaSwitch() {
     Check(!SepiaRequested() && live.calls == 1 && live.lastOn == 1 && live.lastThis == &live,
           "SepiaSwitch: live post-process -> the game's own call runs");
 }
+// A tweak resource double laid out like the game's: the value at details+0x1C.
+struct FakeTweak {
+    void** vtbl;
+    float* details;
+};
+float g_realDetails[10] = {0, 0, 0, 0, 0, 0, 0, 0.25f, 0.5f, 0.75f};
+FakeTweak g_realTweak{g_fakeVtbl, g_realDetails};
+int g_resolves = 0;
+
+int __cdecl ResolveFound(const char* const* name, uint32_t* out) {
+    ++g_resolves;
+    if (!name || !*name || std::strncmp(*name, "Sepia.", 6) != 0) return -1;
+    *out = static_cast<uint32_t>(reinterpret_cast<uintptr_t>(&g_realTweak));
+    return 0;
+}
+
+int __cdecl ResolveMissing(const char* const*, uint32_t*) {
+    ++g_resolves;
+    return -1;
+}
+
+uint32_t Slot(const uint8_t* pp, size_t off) {
+    uint32_t v = 0;
+    std::memcpy(&v, pp + off, sizeof(v));
+    return v;
+}
+
+// What Composite reads: (*(slot))->details + 0x1C.
+const float* TweakValue(uint32_t holder) {
+    const float* details = nullptr;
+    std::memcpy(&details, reinterpret_cast<const uint8_t*>(static_cast<uintptr_t>(holder)) + 4, sizeof(details));
+    return details + 7;
+}
+
+void TestSepiaTint() {
+    alignas(16) uint8_t pp[0x84] = {};
+    g_resolves = 0;
+    Check(EnsureSepiaTint(reinterpret_cast<uintptr_t>(pp), &ResolveFound, &ResolveFound) == Tint::Resolved &&
+              Slot(pp, 0x34) == reinterpret_cast<uintptr_t>(&g_realTweak) &&
+              Slot(pp, 0x38) == reinterpret_cast<uintptr_t>(&g_realTweak) && g_resolves == 2,
+          "SepiaTint: missing tweaks are looked up by name");
+    Check(EnsureSepiaTint(reinterpret_cast<uintptr_t>(pp), &ResolveFound, &ResolveFound) == Tint::Present &&
+              g_resolves == 2,
+          "SepiaTint: present tweaks are left alone (no lookup)");
+
+    std::memset(pp, 0, sizeof(pp));
+    Check(EnsureSepiaTint(reinterpret_cast<uintptr_t>(pp), &ResolveMissing, nullptr) == Tint::Fallback,
+          "SepiaTint: unresolvable tweaks get holders");
+    const float* c = TweakValue(Slot(pp, 0x34));
+    const float* w = TweakValue(Slot(pp, 0x38));
+    Check(c[0] == 1.0f && c[1] == 0.8f && c[2] == 0.6f && *w == 0.4f, "SepiaTint: holders carry the shipped tweak values");
+    using Release = uint32_t(__fastcall*)(void*, void*);
+    void* holder = reinterpret_cast<void*>(static_cast<uintptr_t>(Slot(pp, 0x34)));
+    reinterpret_cast<Release>((*static_cast<void***>(holder))[2])(holder, nullptr);
+    Check(TweakValue(Slot(pp, 0x34))[0] == 1.0f, "SepiaTint: releasing a holder is harmless");
+
+    alignas(16) uint8_t half[0x84] = {};
+    const uint32_t real = static_cast<uint32_t>(reinterpret_cast<uintptr_t>(&g_realTweak));
+    std::memcpy(half + 0x34, &real, sizeof(real));
+    Check(EnsureSepiaTint(reinterpret_cast<uintptr_t>(half), nullptr, nullptr) == Tint::Fallback &&
+              Slot(half, 0x34) == real && *TweakValue(Slot(half, 0x38)) == 0.4f,
+          "SepiaTint: only the missing tweak is filled");
+    Check(EnsureSepiaTint(0, &ResolveFound, &ResolveFound) == Tint::Present, "SepiaTint: no post-process, no-op");
+}
 }  // namespace
 
 int main() {
@@ -140,6 +204,7 @@ int main() {
     TestNetServiceExit();
     TestAiServiceExit();
     TestSepiaSwitch();
+    TestSepiaTint();
     std::printf("%s (%d failure(s))\n", g_failures ? "FAILED" : "all passed", g_failures);
     return g_failures ? 1 : 0;
 }

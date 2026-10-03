@@ -54,6 +54,39 @@ bool ApplySepia(uintptr_t pp) {
     return true;
 }
 
+namespace {
+// Laid out like the game's vector and float tweak resources: the value sits at details+0x1C. Release (slot 2) and the
+// other slots the game may call are no-ops on these static holders.
+struct TweakHolder {
+    void** vtbl;
+    const float* details;
+};
+
+uint32_t __fastcall HolderNoOp(void*, void*) { return 0; }
+
+void* g_holderVtbl[8] = {&HolderNoOp, &HolderNoOp, &HolderNoOp, &HolderNoOp,
+                         &HolderNoOp, &HolderNoOp, &HolderNoOp, &HolderNoOp};
+const float g_colourDetails[10] = {0, 0, 0, 0, 0, 0, 0, 1.0f, 0.8f, 0.6f};
+const float g_weightDetails[8] = {0, 0, 0, 0, 0, 0, 0, 0.4f};
+TweakHolder g_colourHolder{g_holderVtbl, g_colourDetails};
+TweakHolder g_weightHolder{g_holderVtbl, g_weightDetails};
+
+Tint Fill(uintptr_t slot, const char* name, ResolveTweak resolve, TweakHolder& holder) {
+    if (Read32(slot)) return Tint::Present;
+    auto* out = reinterpret_cast<uint32_t*>(slot);
+    if (resolve && resolve(&name, out) >= 0 && *out) return Tint::Resolved;
+    *out = static_cast<uint32_t>(reinterpret_cast<uintptr_t>(&holder));
+    return Tint::Fallback;
+}
+}  // namespace
+
+Tint EnsureSepiaTint(uintptr_t pp, ResolveTweak colour, ResolveTweak weight) {
+    if (!pp) return Tint::Present;
+    const Tint c = Fill(pp + 0x34, "Sepia.Color", colour, g_colourHolder);
+    const Tint w = Fill(pp + 0x38, "Sepia.LerpWeight", weight, g_weightHolder);
+    return c > w ? c : w;
+}
+
 void ResetSepia() {
     g_sepia = false;
     g_sepiaDone = 0;
