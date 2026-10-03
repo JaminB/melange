@@ -443,7 +443,7 @@ and from glTF) and building weapon-clone banks. See [xomtool.md](xomtool.md).
 
 ## Oasis (web app)
 
-Oasis is a web page for the running game, served by `melange.asi` on `127.0.0.1` only. Open it from the overlay or with `Ctrl+Shift+O`; the link carries a secret token that the page swaps for a session cookie, and nothing listens until then. Its panels show the live log and bus events, run Lua like the overlay console, enable and disable mods, and edit `Melange.ini`. The page can change what the overlay can, with one exception: it can revoke a mod's Deep Desert access but never grant it. Modules add channels, methods and panels through `melange/oasis.h`, and a client mod can do the same with `wum.web` (see [lua-api.md](lua-api.md)). `oasis.exe`, next to `melange.asi`, serves the same app with the game closed (past logs, captures, mods and settings). The user guide, the security model and the protocol are in [oasis.md](oasis.md).
+Oasis is a web page for the running game, served by `melange.asi` on `127.0.0.1` only. Open it from the overlay or with `Ctrl+Shift+O`; the link carries a secret token that the page swaps for a session cookie, and nothing listens until then. Its panels show the live log and bus events, run Lua like the overlay console, enable and disable mods, and edit `Melange.ini`. The page can change what the overlay can, with one exception: it can revoke a mod's Deep Desert access but never grant it. Modules add channels, methods and panels through `melange/oasis.h`, and a client mod can do the same with `wum.web` (see [lua-api.md](lua-api.md)). `Melange.exe`, next to `melange.asi`, serves the same app with the game closed (past logs, captures, mods and settings). The user guide, the security model and the protocol are in [oasis.md](oasis.md).
 
 ## Map editor (Erg)
 
@@ -457,7 +457,7 @@ anything. The RPC surface (`level.*`, `levels.live`, the `erg` channel and the `
 
 - **Level scripts** run in the sim sandbox after every mod's `entry.sim`, only on their own map, with `wum.level`
   (the map's knots, and triggers and crates placed at them) and the `sim.turnStarted` event. The API and the
-  determinism rules are in [erg.md](erg.md#level-scripts). `oasis.exe` checks only a script's size and encoding;
+  determinism rules are in [erg.md](erg.md#level-scripts). `Melange.exe` checks only a script's size and encoding;
   its syntax is checked by the game's Lua 5.0 when the game is running.
 - **Live packs:** a mod whose only content is maps can be enabled or disabled at the main menu, offline, without a
   restart (`levels::EnablePackLive`, `levels.live`, the overlay's Mods page). A pack with scripts, weapons, messages,
@@ -576,7 +576,7 @@ workflow refuses a tag that doesn't match). The workflow:
    SHA-256, and Node.js, esbuild and the web packages with `scripts\web\fetch.ps1`;
 2. runs `scripts\release.ps1 -StageOnly`, which builds the public config and stages the zip's files in
    `out\stage`;
-3. signs `melange.asi`, `oasis.exe` and `tools\xomtool.exe` with Azure Artifact Signing (SHA-256, timestamped)
+3. signs `melange.asi`, `Melange.exe` and `tools\xomtool.exe` with Azure Artifact Signing (SHA-256, timestamped)
    and checks the signatures. `dinput8.dll` is not signed;
 4. zips the stage and creates the GitHub release for the tag (or adds to it), with the zip's SHA-256 in the notes.
 
@@ -595,7 +595,7 @@ To build a release offline, without signing:
 This builds with `build.ps1` and no `-PrivateDir`, so no out-of-tree modules are compiled in, then refuses to
 continue if the CMake cache has a private dir, if `dist\melange.asi` contains a private-module marker, or if any
 text file staged for the zip contains a local `C:\Users` path. The zip has `melange.asi`, the default
-`Melange.ini`, `dinput8.dll` (Ultimate ASI Loader) and its licence in `THIRD_PARTY.md`, `oasis.exe`,
+`Melange.ini`, `dinput8.dll` (Ultimate ASI Loader) and its licence in `THIRD_PARTY.md`, `Melange.exe`,
 `tools\xomtool.exe`, the sample `Mods\`, `LICENSE`, `THIRD_PARTY.md` and an `INSTALL.txt` mirroring the README's
 install steps. The version comes from `project(Melange VERSION x.y.z)` in `CMakeLists.txt`. `out\` is not
 committed; the script prints the zip's SHA-256 so it can be posted alongside a GitHub release.

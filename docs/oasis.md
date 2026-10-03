@@ -88,22 +88,22 @@ methods; `node web/test/e2e/mock-server.mjs --root web/dist` prints a link you c
 - The build is deterministic: the same sources and lock give the same bundle, and the bundle's build id is a hash of
   its inputs.
 
-## Standalone: `oasis.exe`
+## Standalone: `Melange.exe`
 
-`oasis.exe` ships next to `melange.asi` and serves the same app and protocol with the game closed: past session
+`Melange.exe` ships next to `melange.asi` and serves the same app and protocol with the game closed: past session
 logs, captures, and the mods and settings of the game folder it sits in.
 
 ```
-oasis.exe [--web-root <dir>] [--no-open]
+Melange.exe [--game <dir>] [--browser] [--serve] [--web-root <dir>]
 ```
 
-- It finds the game folder from its own location, opens a browser itself (nothing else will), and exits once every
-  client has been gone for 10 minutes, or on Ctrl+C.
+- It opens its own window (WebView2) on the game folder it was installed into, or `--game`. `--browser` opens the
+  page in the default browser instead, and `--serve` runs the server without a window.
 - `welcome.server` is `"standalone"`; `state`, `entities` and the other game-only channels and methods are absent
   (a live panel that needs them shows "game not running").
 - **While a real Melange instance is running** (detected by the same `Local\Melange-<hash>` mutex the .asi holds),
   `mods.setEnabled` and `ini.set` are refused with `-32003`: the running game owns those files. With the game
-  closed, `oasis.exe` writes them itself (`Mods\thumper-state.json`, `Melange.ini`) the same way the overlay would.
+  closed, `Melange.exe` writes them itself (`Mods\thumper-state.json`, `Melange.ini`) the same way the overlay would.
 - `--web-root <dir>` serves a folder instead of the embedded bundle (development); `--no-open` skips the browser
   (scripted or headless use).
 - `mods.list` reads every `Mods\<id>\spice.json` and resolves them exactly as the game would (`spice::Resolve`); a
@@ -361,8 +361,8 @@ The raw view reads committed, readable pages only (never a guard page) and copie
 
 See [erg.md](erg.md) for the panel; this is the wire surface it and `xomtool level` use. `level.export`,
 `level.test` and `level.build` write into `Mods\` or the offline Test workspace and are refused (`-32003`) in
-`oasis.exe` while a real Melange instance is running, as `mods.setEnabled` is. `level.test` also needs the game
-running, at the frontend and outside a lobby (`-32001` / `-32000` otherwise), so it does not exist in `oasis.exe`
+`Melange.exe` while a real Melange instance is running, as `mods.setEnabled` is. `level.test` also needs the game
+running, at the frontend and outside a lobby (`-32001` / `-32000` otherwise), so it does not exist in `Melange.exe`
 at all.
 
 | Method | Params → result | Notes |
@@ -381,7 +381,7 @@ at all.
 | `level.materials` | `{file, base?, source?}` → `{file, names}` | the record names of a level material file (`Databank.MaterialFile`), at most 64, for second-material paint; a pack base's own `Maps\<stem>.txt` is read from the pack |
 | `level.close` | `{project}` → `{}` | frees the server's parsed copy of the base |
 | `level.script.get` | `{project}` → `{text}` | the project's `script.lua`, `""` when it has none |
-| `level.script.put` | `{project, text}` → `{saved, problems: [{line, message}], syntaxChecked}` | a level script's rules (≤ 256 KB, UTF-8, no BOM or ESC); `""` removes it; not saved when these fail. In the game the script is also compiled (not run) by the engine's Lua 5.0: a syntax error is saved and listed in `problems`. oasis.exe checks the bytes only (`syntaxChecked: false`); the syntax is checked when the level is tested in the game |
+| `level.script.put` | `{project, text}` → `{saved, problems: [{line, message}], syntaxChecked}` | a level script's rules (≤ 256 KB, UTF-8, no BOM or ESC); `""` removes it; not saved when these fail. In the game the script is also compiled (not run) by the engine's Lua 5.0: a syntax error is saved and listed in `problems`. Melange.exe checks the bytes only (`syntaxChecked: false`); the syntax is checked when the level is tested in the game |
 
 The `erg` channel (Coalesce) carries `{state, key, detail}` from `level.test`'s progress (`idle`, `registering`,
 `registered`, `armed`, `starting`, `playing`, `ended`, `failed`) and, at the start of a match, `{level, water}`.

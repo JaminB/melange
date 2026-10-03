@@ -165,7 +165,7 @@ with voxel and height-map blobs as separate files next to it; `build` applies an
 base and writes the map files a pack needs under `--out` (this is exactly what an exported Source-form pack's
 `build.ps1` runs); `diff` prints the field-by-field differences between two scene JSON files. There is no Python
 build of `level` — `src/erg` (not `tools/xom`) is the reference implementation, since it also has to run inside
-the game and `oasis.exe`.
+the game and `Melange.exe`.
 
 ### `report`
 

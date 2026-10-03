@@ -3,12 +3,12 @@
 Erg is Oasis's level editor: it loads one of the game's own maps or a map you're already building, lets you move
 spawns, place objects, sculpt the terrain and add blocks, paint the surround, add a level script, set water and theme,
 and export the result as a mod. It never touches your game files directly — everything happens through the local
-server (`melange.asi` with the game running, or `oasis.exe` with it closed), which is the only thing that reads `Data\`
+server (`melange.asi` with the game running, or `Melange.exe` with it closed), which is the only thing that reads `Data\`
 and writes `Mods\`.
 
 ## Opening it
 
-Open Oasis (see [oasis.md](oasis.md)) and pick the *Erg* panel, either with the game running or from `oasis.exe`
+Open Oasis (see [oasis.md](oasis.md)) and pick the *Erg* panel, either with the game running or from `Melange.exe`
 with it closed. Editing and building a pack work either way; **Test** needs the game running, at the main menu, and
 not in a lobby.
 
@@ -18,7 +18,7 @@ A project is one map you're editing: a base level plus your changes, saved under
 `Documents\Melange\erg\projects\<id>\`. Opening the panel lists the game's own multiplayer maps and any project you
 already started; pick one to start a new project from it, or an existing project to keep going. **Save** (Ctrl+S)
 writes the project atomically; until then your edits and the undo history live in the page, and unsaved edits come
-back as a draft if you reload it. Only one server (the game or `oasis.exe`, not both) can have a given project open at
+back as a draft if you reload it. Only one server (the game or `Melange.exe`, not both) can have a given project open at
 a time. Map packs that ship only their patches (see Export) are listed at the top with a **Build** button.
 
 ## The view and tools
@@ -131,7 +131,7 @@ the same one a content mod's `entry.sim` gets (see *Sim scripts* in [developer-g
 after every mod's sim script and only when this map is the one being played. **Save script** (Ctrl+S) checks the text
 first and marks the line of any problem; Test saves it and runs the saved text, so an edit followed by another Test
 needs no restart. Export ships it as `sim/<slug>.lua` and names it in the level's `levels[].sim` in `spice.json`.
-`oasis.exe` checks only the script's size and encoding; the syntax is checked while the game is running.
+`Melange.exe` checks only the script's size and encoding; the syntax is checked while the game is running.
 
 ![The Script tab with a short level script that floods the map when the goal trigger is collected](images/erg/script.png)
 
@@ -251,7 +251,7 @@ Survivor copy. Packs exported by an earlier Melange keep working unchanged.
 - Not yet supported:
   - per-team or story spawn points, and story or challenge map types;
   - editing the map's generated chunk (Erg rewrites it every export; use a [level script](#level-scripts));
-  - checking a level script's syntax outside the game: `oasis.exe` checks size and encoding only;
+  - checking a level script's syntax outside the game: `Melange.exe` checks size and encoding only;
   - enabling a pack with level scripts without a restart (see [Live packs](#live-packs)).
 - A replay recorded on a Test map only plays back correctly while your Test workspace still has the same files —
   moving on to a different edit, or exporting for real, can make an older Test recording unplayable.
@@ -262,7 +262,7 @@ Survivor copy. Packs exported by an earlier Melange keep working unchanged.
   Mods page for "restart required".
 - **"Not built"** on a Source-form mod: press *Build* in Erg, or run the mod's `build.ps1`, then restart.
 - **Test is greyed out or missing:** the game needs to be running, sitting at the main menu, and not in a lobby;
-  `oasis.exe` has no Test.
+  `Melange.exe` has no Test.
 - **A map is missing online, or a teammate's start is held:** everyone needs the exact same version of the mod; check
   who's missing it in the lobby panel.
 - **Something looks wrong in the 3D view but fine in-game (or the reverse):** the editor's view is an approximation;
