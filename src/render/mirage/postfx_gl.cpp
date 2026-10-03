@@ -69,6 +69,7 @@ struct Procs {
     void(APIENTRY* BindFramebuffer)(GLenum, GLuint);
     void(APIENTRY* FramebufferTexture2D)(GLenum, GLenum, GLenum, GLuint, GLint);
     GLenum(APIENTRY* CheckFramebufferStatus)(GLenum);
+    void(APIENTRY* BlitFramebuffer)(GLint, GLint, GLint, GLint, GLint, GLint, GLint, GLint, GLbitfield, GLenum);
     void(APIENTRY* ActiveTexture)(GLenum);
     void(APIENTRY* GenQueries)(GLsizei, GLuint*);
     void(APIENTRY* DeleteQueries)(GLsizei, const GLuint*);
@@ -136,6 +137,7 @@ const Procs& P() {
                Proc(p.BindFramebuffer, "glBindFramebuffer", "glBindFramebufferEXT") &&
                Proc(p.FramebufferTexture2D, "glFramebufferTexture2D", "glFramebufferTexture2DEXT") &&
                Proc(p.CheckFramebufferStatus, "glCheckFramebufferStatus", "glCheckFramebufferStatusEXT");
+    Proc(p.BlitFramebuffer, "glBlitFramebuffer", "glBlitFramebufferEXT");
     p.float16 = gl3 || HasExt(ext, "GL_ARB_texture_float");
     p.rg = gl3 || HasExt(ext, "GL_ARB_texture_rg");
     p.timer = (major > 3 || (major == 3 && minor >= 3) || HasExt(ext, "GL_ARB_timer_query")) &&
@@ -160,6 +162,8 @@ struct Shared {
     Target ping, pong;
     unsigned outFbo = 0, outTex = 0;
     int outW = 0, outH = 0;  // a resize may recreate the engine texture under the same name
+    unsigned resolveFbo = 0, resolveColor = 0, resolveDepth = 0;
+    int resolveW = 0, resolveH = 0;
     unsigned copyProg = 0;
     std::string copyError;
 };
@@ -549,6 +553,7 @@ bool Compile(Effect& e) {
             }
             if (n == "mg_resolution") pg.resolution = un;
             else if (n == "mg_sceneResolution") pg.sceneResolution = un;
+            else if (n == "mg_renderScale") pg.renderScale = un;
             else if (n == "mg_time") pg.time = un;
             else if (n == "mg_frame") pg.frame = un;
             else if (n == "mg_proj") pg.proj = un;
@@ -704,6 +709,7 @@ RunResult Run(const std::vector<Effect*>& chain, const FrameInput& in) {
                 const float res[4] = {static_cast<float>(t->w), static_cast<float>(t->h), 1.f / t->w, 1.f / t->h};
                 Set(pg.resolution, res, 4);
                 Set(pg.sceneResolution, sceneRes, 4);
+                Set(pg.renderScale, in.renderScale, 2);
                 Set(pg.time, &in.timeSec, 1);
                 Set(pg.frame, &frameF, 1);
                 Set(pg.proj, in.proj, 16);
@@ -753,6 +759,76 @@ RunResult Run(const std::vector<Effect*>& chain, const FrameInput& in) {
     return r;
 }
 
+namespace {
+constexpr GLenum kREAD_FRAMEBUFFER = 0x8CA8, kDRAW_FRAMEBUFFER = 0x8CA9, kDEPTH_STENCIL_ATTACHMENT = 0x821A,
+                 kDEPTH24_STENCIL8 = 0x88F0, kDEPTH_STENCIL = 0x84F9, kUNSIGNED_INT_24_8 = 0x84FA;
+
+void DeleteResolve() {
+    const Procs& p = P();
+    if (g_s.resolveFbo && p.DeleteFramebuffers) p.DeleteFramebuffers(1, &g_s.resolveFbo);
+    unsigned tex[2] = {g_s.resolveColor, g_s.resolveDepth};
+    if (tex[0] || tex[1]) glDeleteTextures(2, tex);
+    g_s.resolveFbo = g_s.resolveColor = g_s.resolveDepth = 0;
+    g_s.resolveW = g_s.resolveH = 0;
+}
+
+unsigned NewTexture(GLint internal, GLenum fmt, GLenum type, int w, int h) {
+    unsigned t = 0;
+    glGenTextures(1, &t);
+    glBindTexture(GL_TEXTURE_2D, t);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, kCLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, kCLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, kTEXTURE_MAX_LEVEL, 0);
+    glTexImage2D(GL_TEXTURE_2D, 0, internal, w, h, 0, fmt, type, nullptr);
+    return t;
+}
+
+bool EnsureResolve(int w, int h) {
+    if (g_s.gen != g_gen) g_s = Shared{g_gen};
+    if (g_s.resolveFbo && g_s.resolveW == w && g_s.resolveH == h) return true;
+    DeleteResolve();
+    const Procs& p = P();
+    g_s.resolveColor = NewTexture(GL_RGBA8, GL_RGBA, GL_UNSIGNED_BYTE, w, h);
+    g_s.resolveDepth = NewTexture(kDEPTH24_STENCIL8, kDEPTH_STENCIL, kUNSIGNED_INT_24_8, w, h);
+    p.GenFramebuffers(1, &g_s.resolveFbo);
+    p.BindFramebuffer(kFRAMEBUFFER, g_s.resolveFbo);
+    p.FramebufferTexture2D(kFRAMEBUFFER, kCOLOR_ATTACHMENT0, GL_TEXTURE_2D, g_s.resolveColor, 0);
+    p.FramebufferTexture2D(kFRAMEBUFFER, kDEPTH_STENCIL_ATTACHMENT, GL_TEXTURE_2D, g_s.resolveDepth, 0);
+    g_s.resolveW = w;
+    g_s.resolveH = h;
+    if (p.CheckFramebufferStatus(kFRAMEBUFFER) == kFRAMEBUFFER_COMPLETE) return true;
+    DeleteResolve();
+    return false;
+}
+}  // namespace
+
+bool ResolveMultisample(unsigned fbo, int w, int h, FrameInput* in) {
+    const Procs& p = P();
+    if (!p.ok || !p.BlitFramebuffer || !fbo || w <= 0 || h <= 0 || !EnsureResolve(w, h)) return false;
+    while (glGetError() != GL_NO_ERROR) {}
+    p.BindFramebuffer(kREAD_FRAMEBUFFER, fbo);
+    p.BindFramebuffer(kDRAW_FRAMEBUFFER, g_s.resolveFbo);
+    p.BlitFramebuffer(0, 0, w, h, 0, 0, w, h, GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT, GL_NEAREST);
+    p.BindFramebuffer(kFRAMEBUFFER, fbo);
+    in->sceneColor = g_s.resolveColor;
+    in->sceneDepth = g_s.resolveDepth;
+    in->w = w;
+    in->h = h;
+    return glGetError() == GL_NO_ERROR;
+}
+
+bool WriteBackMultisample(unsigned fbo, const FrameInput& in) {
+    const Procs& p = P();
+    if (!p.BlitFramebuffer || !g_s.resolveFbo || in.sceneColor != g_s.resolveColor) return false;
+    p.BindFramebuffer(kREAD_FRAMEBUFFER, g_s.resolveFbo);
+    p.BindFramebuffer(kDRAW_FRAMEBUFFER, fbo);
+    p.BlitFramebuffer(0, 0, in.w, in.h, 0, 0, in.w, in.h, GL_COLOR_BUFFER_BIT, GL_NEAREST);
+    p.BindFramebuffer(kFRAMEBUFFER, fbo);
+    return glGetError() == GL_NO_ERROR;
+}
+
 void ReleaseShared() {
     if (g_s.gen != g_gen) {
         g_s = Shared{};
@@ -761,6 +837,7 @@ void ReleaseShared() {
     const Procs& p = P();
     DeleteTarget(g_s.ping);
     DeleteTarget(g_s.pong);
+    DeleteResolve();
     if (g_s.outFbo && p.DeleteFramebuffers) p.DeleteFramebuffers(1, &g_s.outFbo);
     if (g_s.copyProg && p.DeleteProgram) p.DeleteProgram(g_s.copyProg);
     g_s = Shared{};

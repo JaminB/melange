@@ -401,6 +401,101 @@ void RedPass(const melange::postfx::PassContext& c, void* user) {
 
 void CrashPass(const melange::postfx::PassContext&, void*) { *static_cast<volatile int*>(nullptr) = 1; }
 
+template <class T>
+T GlProc(const char* name) {
+    PROC p = wglGetProcAddress(name);
+    auto v = reinterpret_cast<intptr_t>(p);
+    return (p && v != 1 && v != 2 && v != 3 && v != -1) ? reinterpret_cast<T>(p) : nullptr;
+}
+
+// The engine's hardware-AA scene: multisampled colour and depth renderbuffers. The stack resolves it, runs, and
+// writes the result into every sample.
+void TestMultisample(const Frame& f, pfx::Effect& inv) {
+    auto genFb = GlProc<void(APIENTRY*)(GLsizei, GLuint*)>("glGenFramebuffers");
+    auto delFb = GlProc<void(APIENTRY*)(GLsizei, const GLuint*)>("glDeleteFramebuffers");
+    auto bindFb = GlProc<void(APIENTRY*)(GLenum, GLuint)>("glBindFramebuffer");
+    auto fbTex = GlProc<void(APIENTRY*)(GLenum, GLenum, GLenum, GLuint, GLint)>("glFramebufferTexture2D");
+    auto fbRb = GlProc<void(APIENTRY*)(GLenum, GLenum, GLenum, GLuint)>("glFramebufferRenderbuffer");
+    auto genRb = GlProc<void(APIENTRY*)(GLsizei, GLuint*)>("glGenRenderbuffers");
+    auto delRb = GlProc<void(APIENTRY*)(GLsizei, const GLuint*)>("glDeleteRenderbuffers");
+    auto bindRb = GlProc<void(APIENTRY*)(GLenum, GLuint)>("glBindRenderbuffer");
+    auto storage = GlProc<void(APIENTRY*)(GLenum, GLsizei, GLenum, GLsizei, GLsizei)>("glRenderbufferStorageMultisample");
+    auto blit = GlProc<void(APIENTRY*)(GLint, GLint, GLint, GLint, GLint, GLint, GLint, GLint, GLbitfield, GLenum)>("glBlitFramebuffer");
+    auto status = GlProc<GLenum(APIENTRY*)(GLenum)>("glCheckFramebufferStatus");
+    if (!genFb || !delFb || !bindFb || !fbTex || !fbRb || !genRb || !delRb || !bindRb || !storage || !blit || !status) {
+        printf("multisample tests skipped: no multisampled framebuffers\n");
+        return;
+    }
+    constexpr GLenum kFB = 0x8D40, kREAD = 0x8CA8, kDRAW = 0x8CA9, kRB = 0x8D41, kCOLOR0 = 0x8CE0, kDS = 0x821A;
+    GLuint ms = 0, src = 0, dst = 0, rb[2] = {}, out = 0;
+    genRb(2, rb);
+    bindRb(kRB, rb[0]);
+    storage(kRB, 4, GL_RGBA8, kW, kH);
+    bindRb(kRB, rb[1]);
+    storage(kRB, 4, kDEPTH24_STENCIL8, kW, kH);
+    genFb(1, &ms);
+    bindFb(kFB, ms);
+    fbRb(kFB, kCOLOR0, kRB, rb[0]);
+    fbRb(kFB, kDS, kRB, rb[1]);
+    Check(status(kFB) == 0x8CD5, "multisampled scene framebuffer is complete");
+    genFb(1, &src);
+    bindFb(kFB, src);
+    fbTex(kFB, kCOLOR0, GL_TEXTURE_2D, f.color, 0);
+    fbTex(kFB, kDS, GL_TEXTURE_2D, f.depth, 0);
+    ResetColor(f);
+    bindFb(kREAD, src);
+    bindFb(kDRAW, ms);
+    blit(0, 0, kW, kH, 0, 0, kW, kH, GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT, GL_NEAREST);
+
+    pfx::FrameInput in;
+    bool ok = pfx::ResolveMultisample(ms, kW, kH, &in);
+    Check(ok && in.sceneColor && in.sceneDepth && in.w == kW && in.h == kH, "multisampled scene resolves");
+    std::vector<uint8_t> px(kW * kH * 4);
+    glBindTexture(GL_TEXTURE_2D, in.sceneColor);
+    glGetTexImage(GL_TEXTURE_2D, 0, GL_RGBA, GL_UNSIGNED_BYTE, px.data());
+    Check(px == f.original, "resolved colour matches the scene");
+    std::vector<uint32_t> want(kW * kH), got(kW * kH);
+    glBindTexture(GL_TEXTURE_2D, f.depth);
+    glGetTexImage(GL_TEXTURE_2D, 0, kDEPTH_STENCIL, kUNSIGNED_INT_24_8, want.data());
+    glBindTexture(GL_TEXTURE_2D, in.sceneDepth);
+    glGetTexImage(GL_TEXTURE_2D, 0, kDEPTH_STENCIL, kUNSIGNED_INT_24_8, got.data());
+    bool depthSame = true;
+    for (size_t i = 0; i < want.size(); ++i) depthSame &= (want[i] >> 8) == (got[i] >> 8);
+    Check(depthSame, "resolved depth matches the scene");
+
+    std::copy(f.proj, f.proj + 16, in.proj);
+    std::copy(f.invProj, f.invProj + 16, in.invProj);
+    pfx::RunResult r = pfx::Run({&inv}, in);
+    Check(r.effects == 1 && r.glErrors == 0, "the stack runs on the resolved scene");
+    Check(pfx::WriteBackMultisample(ms, in), "the result is written back into the samples");
+    GLint bound = 0;
+    glGetIntegerv(0x8CA6, &bound);
+    Check(bound == static_cast<GLint>(ms), "the scene framebuffer is bound again after the write-back");
+
+    glGenTextures(1, &out);
+    glBindTexture(GL_TEXTURE_2D, out);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, kW, kH, 0, GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
+    genFb(1, &dst);
+    bindFb(kFB, dst);
+    fbTex(kFB, kCOLOR0, GL_TEXTURE_2D, out, 0);
+    bindFb(kREAD, ms);
+    bindFb(kDRAW, dst);
+    blit(0, 0, kW, kH, 0, 0, kW, kH, GL_COLOR_BUFFER_BIT, GL_NEAREST);
+    bindFb(kFB, 0);
+    glBindTexture(GL_TEXTURE_2D, out);
+    glGetTexImage(GL_TEXTURE_2D, 0, GL_RGBA, GL_UNSIGNED_BYTE, px.data());
+    bool inverted = true;
+    for (size_t i = 0; i < px.size(); i += 4) inverted &= px[i] == 255 - f.original[i] && px[i + 1] == 255 - f.original[i + 1];
+    Check(inverted, "every sample carries the post-FX result");
+
+    delFb(1, &ms);
+    delFb(1, &src);
+    delFb(1, &dst);
+    delRb(2, rb);
+    glDeleteTextures(1, &out);
+    Check(glGetError() == GL_NO_ERROR, "no GL error in the multisample path");
+}
+
 void TestGl() {
     HGLRC rc = MakeContext();
     if (!rc) {
@@ -454,6 +549,26 @@ void TestGl() {
             else rightInv &= px[i] == 255 - f.original[i];
         }
     Check(leftSame && rightInv, "split compare keeps the left half");
+    TestMultisample(f, inv);
+    {
+        pfx::Effect scale;
+        LoadEffect(scale, TempEffect("scale", "[effect]\n[pass.a]\nshader=s.frag\n",
+                                     {{"s.frag", "uniform vec2 mg_renderScale;\n"
+                                                 "void main() { gl_FragColor = vec4(mg_renderScale * 0.25, 0.0, 1.0); }\n"}}),
+                   "test/scale");
+        ResetColor(f);
+        pfx::FrameInput in;
+        in.sceneColor = f.color;
+        in.w = kW;
+        in.h = kH;
+        in.renderScale[0] = 2.f;
+        in.renderScale[1] = 1.f;
+        pfx::Run({&scale}, in);
+        px = ReadColor(f);
+        Check(std::abs(px[0] - 128) <= 1 && std::abs(px[1] - 64) <= 1, "mg_renderScale reaches the shader",
+              std::to_string(px[0]) + "," + std::to_string(px[1]));
+        pfx::Release(scale);
+    }
 
     int seen = 0;
     pfx::Effect red;

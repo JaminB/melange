@@ -102,7 +102,7 @@ struct PassGl {
     };
     std::vector<Sampler> samplers;
     std::vector<Uniform> params;  // parallel to EffectDesc::params
-    Uniform resolution, sceneResolution, time, frame, proj, invProj, view, nearFar;
+    Uniform resolution, sceneResolution, renderScale, time, frame, proj, invProj, view, nearFar;
 };
 struct Effect {
     std::string id, owner, folder;
@@ -140,6 +140,7 @@ struct FrameInput {
     int w = 0, h = 0;
     float proj[16] = {}, invProj[16] = {}, view[16] = {};
     float nearFar[2] = {};
+    float renderScale[2] = {1, 1};  // the scene's size over the window's: 2 per axis at 2x2 supersampling
     float timeSec = 0;
     uint64_t frame = 0;
     bool splitCompare = false;
@@ -169,6 +170,11 @@ void Release(Effect& e);
 // own framebuffer. Changes the bound framebuffer, viewport, program, texture bindings, blend, depth and scissor
 // state: callers wrap it in render::PushState/PopState (which does not reset the program if it was 0).
 RunResult Run(const std::vector<Effect*>& chain, const FrameInput& in);
+// The engine's hardware-AA scene (/SSAA without /DISABLEHARDWAREAA) is a framebuffer of multisampled renderbuffers,
+// which Run cannot read. ResolveMultisample copies its colour and depth into own textures and points `in` at them;
+// WriteBackMultisample copies the result into every sample of `fbo`. Both change the framebuffer bindings.
+bool ResolveMultisample(unsigned fbo, int w, int h, FrameInput* in);
+bool WriteBackMultisample(unsigned fbo, const FrameInput& in);
 void ReleaseShared();
 
 // ---------------------------------------------------------------- module state for the panel (main thread)

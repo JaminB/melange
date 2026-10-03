@@ -12,4 +12,18 @@ struct ShadowMapInfo {
     bool available;  // the engine's shadow-map code was recognised
 };
 ShadowMapInfo GetShadowMapInfo();
+
+// Supersampling (MirageSupersample): the scene renders at a multiple of the window size and Composite scales it
+// down. A mod's runtime request: 2 (1x2) or 4 (2x2) samples per pixel, 0 = no request. Changes rebuild the scene
+// targets on the next frame. False for another count or while the feature is unavailable.
+bool SetSupersampleRequest(const char* mod, int samples);
+struct SupersampleInfo {
+    int x, y;          // the engine's current factors
+    int effective;     // merged request after the ini override, in samples; 0 = vanilla
+    int sceneW, sceneH;
+    bool multisampled; // /SSAA is using multisampled renderbuffers (hardware AA) rather than larger targets
+    bool modRequest;   // an enabled mod asks for supersampling
+    bool available;    // the engine's /SSAA switch was recognised
+};
+SupersampleInfo GetSupersampleInfo();
 }

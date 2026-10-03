@@ -200,6 +200,8 @@ Every effect can be read; only the mod's own effects (`<mod id>/<effect>`) can b
 |---|---|
 | `wum.graphics.setShadowMapSize(n)` | Replaces the mod's `graphics.shadowMapSize` request: 512, 1024, 2048 or 4096, 0 for none, `nil` to go back to the manifest's. The shadow map is rebuilt on the next frame. `[MirageShadows]` in `Melange.ini` still has the last word. |
 | `wum.graphics.shadowMap()` | `{size, effective, vanilla, modRequest, available}`: the engine's current size, the merged request (0 = vanilla), the size from the game's own cfg files. |
+| `wum.graphics.setSupersample(n)` | Asks for supersampling: 2 (1x2) or 4 (2x2) samples per pixel, 0 or `nil` for none. The scene targets are rebuilt on the next frame; with no request left, the game's own `/SSAA` setting comes back. `[MirageSupersample]` in `Melange.ini` still has the last word. |
+| `wum.graphics.supersample()` | `{x, y, effective, sceneWidth, sceneHeight, multisampled, modRequest, available}`: the engine's current factors, the merged request in samples (0 = vanilla), the scene's size, and whether `/SSAA` is running as multisampling instead. |
 
 ## `wum.shaders`
 

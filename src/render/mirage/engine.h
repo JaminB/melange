@@ -21,5 +21,8 @@ uintptr_t CgContext();               // *(mgr+0x14)
 int CgProfile(int type);             // mgr+0x18 / +0x1c
 bool FxaaOn();                       // *(0x95a100)+0x74
 bool SetFxaa(bool on);               // writes it; refused unless SSAA is 1x1 (+0x6c/+0x70)
-bool MsaaOn();                       // pp+0x7a
+bool MsaaOn();                       // pp+0x7a: the scene renders into multisampled renderbuffers (/SSAA's hardware AA)
+uintptr_t AppOptions();              // *0x95a100
+bool Supersample(int* x, int* y);    // the /SSAA factors (+0x6c wide, +0x70 high)
+bool SceneSize(int* w, int* h);      // pp+0x7c/+0x80: the scene targets' size
 }

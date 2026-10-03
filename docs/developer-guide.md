@@ -196,7 +196,37 @@ updated last: the water replacement declares `uniform vec3 globalLightDir;` to g
 A replacement may also read the scene as it was just before the program first draws into a colour target in the
 frame: `sampler2D mg_depth` (the depth buffer, in [0,1] as stored), `sampler2D mg_scene` (the colour) and
 `vec2 mg_nearFar`, with the main camera as `mat4 mg_view` and `mat4 mg_proj` (as in post-FX). The copies are taken
-once a frame, at that first draw, and use texture units 14 and 15.
+once a frame, at that first draw, and use texture units 14 and 15. `vec2 mg_renderScale` is the scene's size over the
+window's (see Supersampling below), for fades that count texels per pixel.
+
+### Supersampling
+
+The game's `/SSAA:<n>` cfg option (2, 4, 8 or 16 samples: 1x2, 2x2, 2x4 or 4x4) has two modes. By default it
+renders into multisampled framebuffers at window size, which is multisampling rather than supersampling. With
+`/DISABLEHARDWAREAA` it renders the scene at that multiple of the window size and scales it down when it copies the
+frame to the screen. Post-FX and the `mg_scene`/`mg_depth` copies work in both modes.
+
+A client-only mod asks for true supersampling from its script, and `MirageSupersample` applies the largest request
+among enabled mods:
+
+```lua
+wum.graphics.setSupersample(4)   -- 2x2; 2 for 1x2; 0 or nil to drop the request
+```
+
+Mods can ask for 2 or 4 samples. The scene targets are rebuilt on the next frame (the game's own switch, the one its
+`DEBUG.ChangeSSAA` command uses), FXAA is switched off while it is on, and dropping the request brings back the
+game's own `/SSAA` and FXAA settings. Nothing changes unless a mod asks. `[MirageSupersample]` in `Melange.ini` has
+the final say:
+
+```ini
+[MirageSupersample]
+Samples=auto   ; auto | vanilla | off | 2 | 4 | 8 | 16
+```
+
+At 2x2 everything in the scene, Mirage's post-FX included, shades four times as many pixels, and every scene-sized
+target takes four times the memory: at 1920x1080 the game's own targets grow by about 150 MB, about 350 MB in all
+with a full post-FX stack. The `mirage.supersample` console verb logs
+the effective request, the engine's factors and the scene size.
 
 ### Post-processing effects
 
@@ -253,6 +283,8 @@ Shader rules:
 - Parameters are `uniform <type> p_<name>`. Optional built-in uniforms:
   - `vec4 mg_resolution`: width, height, 1/width and 1/height of this pass's target;
   - `vec4 mg_sceneResolution`: the same for the scene;
+  - `vec2 mg_renderScale`: the scene's size over the window's, 2.0 per axis at 2x2 supersampling. Multiply
+    pixel-sized radii by it so that an effect looks the same on screen at any supersampling;
   - `float mg_time`, `float mg_frame`;
   - `mat4 mg_proj`, `mat4 mg_invProj`, `mat4 mg_view`: the main camera;
   - `vec2 mg_nearFar`: the near and far clip distances.

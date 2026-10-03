@@ -226,6 +226,13 @@ bool SetShadowMapRequest(const char* mod, int size) {
     return true;
 }
 ShadowMapInfo GetShadowMapInfo() { return {2048, 2048, 1024, true, true}; }
+int g_lastSamples = -2;
+bool SetSupersampleRequest(const char* mod, int samples) {
+    g_lastMod = mod;
+    g_lastSamples = samples;
+    return true;
+}
+SupersampleInfo GetSupersampleInfo() { return {2, 2, 4, 3840, 2160, false, true, true}; }
 }  // namespace graphics
 namespace shaders {
 bool SetOwnParam(const char* owner, const char*, const char*, const char* param, const float*, int) {
@@ -856,6 +863,13 @@ void TestGraphics() {
     Expect(Eval("esc", "return wum.graphics.setShadowMapSize(3000)").rfind("ERR:", 0) == 0, "an odd size is refused");
     ExpectEq(Eval("esc", "local s = wum.graphics.shadowMap() return s.size, s.effective, s.vanilla, s.modRequest"),
              "2048\t2048\t1024\ttrue", "shadowMap() fields");
+    ExpectEq(Eval("esc", "return wum.graphics.setSupersample(4)"), "true", "supersample request accepted");
+    Expect(graphics::g_lastMod == "esc" && graphics::g_lastSamples == 4, "supersample request carries the calling mod");
+    Eval("esc", "wum.graphics.setSupersample()");
+    Expect(graphics::g_lastSamples == 0, "nil clears the supersample request");
+    Expect(Eval("esc", "return wum.graphics.setSupersample(16)").rfind("ERR:", 0) == 0, "16 samples is refused to a mod");
+    ExpectEq(Eval("esc", "local s = wum.graphics.supersample() return s.x, s.y, s.effective, s.sceneWidth, s.multisampled"),
+             "2\t2\t4\t3840\tfalse", "supersample() fields");
     ExpectEq(Eval("esc", "wum.shaders.setParam('Landscape.cg', '*FragmentMain', 'softness', 1.5) return 1"), "1",
              "a declared shader param is set");
     Expect(Eval("other", "wum.shaders.setParam('Landscape.cg', '*FragmentMain', 'softness', 1)").rfind("ERR:", 0) == 0,

@@ -338,14 +338,17 @@ void OnStage(Stage s, void*) {
     std::sort(chain.begin(), chain.end(), [](const auto& a, const auto& b) {
         return a->order != b->order ? a->order < b->order : a->id < b->id;
     });
-    if (melange::mirage::engine::MsaaOn()) return SetReason("the scene target is multisampled");
     melange::render::SceneTargets t = melange::render::GetSceneTargets();
-    if (!t.valid) return SetReason("no scene framebuffer at this stage");
+    int msW = 0, msH = 0;
+    const bool msaa = melange::mirage::engine::MsaaOn() && t.fbo && !t.colorTex &&
+                      melange::mirage::engine::SceneSize(&msW, &msH);
+    if (!t.valid && !msaa) return SetReason("no scene framebuffer at this stage");
     if (!pfx::OwnContext()) return;
     uint32_t token = melange::render::PushState();
     if (!token) return SetReason("GL state could not be saved");
     melange::gldebug::PushGroup("Mirage post-FX");
     std::string why;
+    pfx::FrameInput resolved;
     if (!pfx::GlReady(&why)) {
         g_unsupported = true;
         SetReason(why.c_str());
@@ -355,8 +358,10 @@ void OnStage(Stage s, void*) {
             e->dirty = false;
             e->error = why;
         }
-    } else if (!SceneIsRgba8(t)) {
+    } else if (!msaa && !SceneIsRgba8(t)) {
         SetReason("the scene colour target is not RGBA8");
+    } else if (msaa && !pfx::ResolveMultisample(t.fbo, msW, msH, &resolved)) {
+        SetReason("the multisampled scene could not be resolved");
     } else {
         std::vector<pfx::Effect*> raw;
         std::vector<bool> failedBefore;
@@ -365,11 +370,19 @@ void OnStage(Stage s, void*) {
             raw.push_back(e.get());
             failedBefore.push_back(e->failed);
         }
-        pfx::FrameInput in;
-        in.sceneColor = t.colorTex;
-        in.sceneDepth = t.depthTex;
-        in.w = t.w;
-        in.h = t.h;
+        pfx::FrameInput in = resolved;
+        if (!msaa) {
+            in.sceneColor = t.colorTex;
+            in.sceneDepth = t.depthTex;
+            in.w = t.w;
+            in.h = t.h;
+        }
+        int winW = 0, winH = 0;
+        melange::render::WindowSize(&winW, &winH);
+        if (winW > 0 && winH > 0) {
+            in.renderScale[0] = static_cast<float>(in.w) / static_cast<float>(winW);
+            in.renderScale[1] = static_cast<float>(in.h) / static_cast<float>(winH);
+        }
         melange::render::Camera cam;
         if (melange::render::GetCamera(&cam)) {
             std::copy(cam.proj, cam.proj + 16, in.proj);
@@ -389,6 +402,7 @@ void OnStage(Stage s, void*) {
         pfx::RunResult r = pfx::Run(raw, in);
         g_passes[si] = r.passes;
         if (r.effects) g_reason.clear();
+        if (msaa && r.effects && !pfx::WriteBackMultisample(t.fbo, in)) SetReason("the multisampled scene could not be written back");
         if (r.glErrors && g_errorLogs < 20) {
             ++g_errorLogs;
             LOG_WARN("[postfx] %s stack raised %d GL error(s)", pfx::StageName(s), r.glErrors);

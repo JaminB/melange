@@ -7,7 +7,7 @@
 #include <string_view>
 
 namespace melange::mirage::shaders::glsl::logic {
-enum class SceneInput { None, Depth, Color, NearFar, View, Proj };
+enum class SceneInput { None, Depth, Color, NearFar, View, Proj, RenderScale };
 
 inline SceneInput ClassifySceneInput(std::string_view name) {
     if (name == "mg_depth") return SceneInput::Depth;
@@ -15,6 +15,7 @@ inline SceneInput ClassifySceneInput(std::string_view name) {
     if (name == "mg_nearFar") return SceneInput::NearFar;
     if (name == "mg_view") return SceneInput::View;
     if (name == "mg_proj") return SceneInput::Proj;
+    if (name == "mg_renderScale") return SceneInput::RenderScale;
     return SceneInput::None;
 }
 

@@ -3,6 +3,7 @@
 #include <cstdio>
 
 #include "render/mirage/shadows_logic.h"
+#include "render/mirage/supersample_logic.h"
 #include "render/mirage/textures_logic.h"
 
 namespace {
@@ -140,6 +141,36 @@ void TestShadows(Ctx& c) {
     c.Check(s::ParseIni("4096", &v) && v == 4096, "shadows: ini size");
     c.Check(!s::ParseIni("3000", &v) && !s::ParseIni("8192", &v) && !s::ParseIni("x", &v), "shadows: bad ini values rejected");
 }
+void TestSupersample(Ctx& c) {
+    namespace s = melange::mirage::supersample::logic;
+    c.Check(s::Merge(-1, {}).samples == 0 && !s::Merge(-1, {}).anyModRequest, "supersample: vanilla with no request");
+    s::Effective e = s::Merge(-1, {2, 4});
+    c.Check(e.samples == 4 && e.anyModRequest, "supersample: the largest request wins");
+    c.Check(s::Merge(-1, {16, 8, 3}).samples == 0, "supersample: mods cannot ask for more than 4 samples");
+    c.Check(s::Merge(0, {4}).samples == 0, "supersample: ini vanilla beats a request");
+    c.Check(s::Merge(1, {4}).samples == 1 && s::Merge(16, {}).samples == 16, "supersample: an ini count beats a request");
+    int v = 7;
+    c.Check(s::ParseIni("auto", &v) && v == -1 && s::ParseIni("Vanilla", &v) && v == 0 && s::ParseIni("off", &v) && v == 1,
+            "supersample: ini words");
+    c.Check(s::ParseIni("4", &v) && v == 4 && !s::ParseIni("3", &v) && !s::ParseIni("2x2", &v), "supersample: ini counts");
+    const s::EngineAa vanilla{1, 1, true, true};
+    c.Check(s::Same(s::Target(s::Merge(-1, {}), vanilla), vanilla), "supersample: no request keeps the engine's state");
+    s::EngineAa t = s::Target(e, vanilla);
+    c.Check(t.x == 2 && t.y == 2 && !t.fxaa && !t.hardware, "supersample: 4 samples is true 2x2 with FXAA off");
+    t = s::Target(s::Merge(-1, {2}), vanilla);
+    c.Check(t.x == 1 && t.y == 2, "supersample: 2 samples is 1x2 like /SSAA:2");
+    c.Check(s::Same({2, 2, false, true}, {2, 2, false, true}) && !s::Same({2, 2, false, true}, {2, 2, false, false}) &&
+                s::Same({1, 1, false, true}, {1, 1, false, false}),
+            "supersample: hardware AA only matters above 1x1");
+    bool landed = true;
+    for (s::EngineAa want : {s::EngineAa{1, 1, false, true}, s::EngineAa{1, 1, true, true}, s::EngineAa{1, 2, false, false},
+                             s::EngineAa{2, 2, false, false}, s::EngineAa{2, 4, false, true}, s::EngineAa{4, 4, false, false}})
+        landed &= s::Same(s::Step(s::Before(want)), want);
+    c.Check(landed, "supersample: one engine step from Before() lands on every target");
+    s::EngineAa cyc{1, 1, false, true};
+    for (int i = 0; i < 6; ++i) cyc = s::Step(cyc);
+    c.Check(cyc.x == 1 && cyc.y == 1 && !cyc.fxaa, "supersample: the engine cycle has six states");
+}
 }  // namespace
 
 int main() {
@@ -156,6 +187,7 @@ int main() {
     TestParseTriState(c);
     TestParseLodBias(c);
     TestShadows(c);
+    TestSupersample(c);
     std::printf("textures: %d/%d checks passed\n", c.checks - c.failed, c.checks);
     return c.failed ? 1 : 0;
 }

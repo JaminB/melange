@@ -388,6 +388,42 @@ int GfxShadowMap(lua_State* L) {
     return 1;
 }
 
+int GfxSetSupersample(lua_State* L) {
+    ModRec* m = Current();
+    if (!m) return luaL_error(L, "wum.graphics.setSupersample: no current mod");
+    int samples = 0;
+    if (!lua_isnoneornil(L, 1)) {
+        lua_Integer v = luaL_checkinteger(L, 1);
+        if (v != 0 && v != 1 && v != 2 && v != 4)
+            return luaL_error(L, "wum.graphics.setSupersample: samples must be 2, 4, 0 or nil");
+        samples = v <= 1 ? 0 : static_cast<int>(v);
+    }
+    lua_pushboolean(L, graphics::SetSupersampleRequest(m->id.c_str(), samples));
+    return 1;
+}
+
+int GfxSupersample(lua_State* L) {
+    const graphics::SupersampleInfo i = graphics::GetSupersampleInfo();
+    lua_createtable(L, 0, 8);
+    auto num = [&](const char* k, int v) {
+        lua_pushinteger(L, v);
+        lua_setfield(L, -2, k);
+    };
+    auto flag = [&](const char* k, bool v) {
+        lua_pushboolean(L, v);
+        lua_setfield(L, -2, k);
+    };
+    num("x", i.x);
+    num("y", i.y);
+    num("effective", i.effective);
+    num("sceneWidth", i.sceneW);
+    num("sceneHeight", i.sceneH);
+    flag("multisampled", i.multisampled);
+    flag("modRequest", i.modRequest);
+    flag("available", i.available);
+    return 1;
+}
+
 int ShSetParam(lua_State* L) {
     ModRec* m = Current();
     const char* file = luaL_checkstring(L, 1);
@@ -430,7 +466,9 @@ void Shared(lua_State* L, int wum) {
     lua_newtable(L);
     RegisterFunctions(L, -1, kPostfx);
     lua_setfield(L, wum, "postfx");
-    static const luaL_Reg kGraphics[] = {{"setShadowMapSize", GfxSetShadowMapSize}, {"shadowMap", GfxShadowMap}, {nullptr, nullptr}};
+    static const luaL_Reg kGraphics[] = {{"setShadowMapSize", GfxSetShadowMapSize}, {"shadowMap", GfxShadowMap},
+                                         {"setSupersample", GfxSetSupersample},   {"supersample", GfxSupersample},
+                                         {nullptr, nullptr}};
     static const luaL_Reg kShaders[] = {{"setParam", ShSetParam}, {"enableGlsl", ShEnableGlsl}, {nullptr, nullptr}};
     lua_newtable(L);
     RegisterFunctions(L, -1, kGraphics);

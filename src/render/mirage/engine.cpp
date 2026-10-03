@@ -157,4 +157,22 @@ bool MsaaOn() {
     uintptr_t pp = PostProcess();
     return pp && Rd8(pp + 0x7a) != 0;
 }
+
+uintptr_t AppOptions() { return Check() ? Rd(kAppOptionsPtr) : 0; }
+
+bool Supersample(int* x, int* y) {
+    uintptr_t o = AppOptions();
+    if (!o) return false;
+    *x = static_cast<int>(Rd(o + 0x6c));
+    *y = static_cast<int>(Rd(o + 0x70));
+    return true;
+}
+
+bool SceneSize(int* w, int* h) {
+    uintptr_t pp = PostProcess();
+    if (!pp) return false;
+    *w = static_cast<int>(Rd(pp + 0x7c));
+    *h = static_cast<int>(Rd(pp + 0x80));
+    return *w > 0 && *h > 0;
+}
 }  // namespace melange::mirage::engine

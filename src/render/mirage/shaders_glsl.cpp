@@ -60,6 +60,9 @@ struct Gl {
     void(WINAPI* UniformMatrix4fv)(GLint, GLsizei, GLboolean, const GLfloat*);
     void(WINAPI* ActiveTexture)(GLenum);
     void(WINAPI* BindFramebuffer)(GLenum, GLuint);
+    void(WINAPI* GenFramebuffers)(GLsizei, GLuint*);
+    void(WINAPI* FramebufferTexture2D)(GLenum, GLenum, GLenum, GLuint, GLint);
+    void(WINAPI* BlitFramebuffer)(GLint, GLint, GLint, GLint, GLint, GLint, GLint, GLint, GLbitfield, GLenum);
     bool tried = false, ok = false;
 } g_gl;
 
@@ -140,7 +143,7 @@ struct Linked {
     std::vector<ParamBinding> params;
     std::vector<ForeignBinding> foreign;
     bool sceneDepth = false, sceneColor = false;
-    GLint nearFarLoc = -1, viewLoc = -1, projLoc = -1;
+    GLint nearFarLoc = -1, viewLoc = -1, projLoc = -1, renderScaleLoc = -1;
     uint32_t paramsSeen = ~0u;
     uint32_t seen[2] = {~0u, ~0u};
     GLuint arb[2] = {};
@@ -166,11 +169,13 @@ uint64_t g_stamp = 0;
 // that declares mg_depth or mg_scene, on texture units the engine leaves alone.
 constexpr GLenum kUnitDepth = 14, kUnitColor = 15;
 struct SceneCopy {
-    GLuint depth = 0, color = 0;
+    GLuint depth = 0, color = 0, fbo = 0;
     GLint w = 0, h = 0;
     GLenum depthFormat = 0;
     uint64_t frame = ~0ull;
     bool depthBroken = false;
+    bool multisampled = false;
+    float renderScale[2] = {1.f, 1.f};
     float nearFar[2] = {1.f, 1000.f};
     float view[16] = {1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1}, proj[16] = {1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1};
 } g_copy;
@@ -288,6 +293,9 @@ bool LoadGl() {
     Proc(g_gl.UniformMatrix4fv, "glUniformMatrix4fv");
     Proc(g_gl.ActiveTexture, "glActiveTexture");
     Proc(g_gl.BindFramebuffer, "glBindFramebuffer");
+    Proc(g_gl.GenFramebuffers, "glGenFramebuffers");
+    Proc(g_gl.FramebufferTexture2D, "glFramebufferTexture2D");
+    Proc(g_gl.BlitFramebuffer, "glBlitFramebuffer");
     g_gl.ok = g_gl.CreateShader && g_gl.ShaderSource && g_gl.CompileShader && g_gl.GetShaderiv && g_gl.GetShaderInfoLog &&
               g_gl.DeleteShader && g_gl.CreateProgram && g_gl.AttachShader && g_gl.LinkProgram && g_gl.GetProgramiv &&
               g_gl.GetProgramInfoLog && g_gl.DeleteProgram && g_gl.UseProgram && g_gl.GetActiveUniform &&
@@ -444,6 +452,9 @@ Linked Link(src::CGprogram vp, src::CGprogram fp) {
         case logic::SceneInput::Proj:
             l.projLoc = loc;
             continue;
+        case logic::SceneInput::RenderScale:
+            l.renderScaleLoc = loc;
+            continue;
         default:
             break;
         }
@@ -530,7 +541,8 @@ void UploadParams(Linked& l) {
     }
 }
 
-constexpr GLenum kActiveTextureBinding = 0x84E0, kReadFramebuffer = 0x8CA8, kReadFramebufferBinding = 0x8CAA,
+constexpr GLenum kActiveTextureBinding = 0x84E0, kReadFramebuffer = 0x8CA8, kDrawFramebuffer = 0x8CA9, kSampleBuffers = 0x80A8,
+                 kColorAttachment0 = 0x8CE0, kDepthStencilAttachment = 0x821A, kReadFramebufferBinding = 0x8CAA,
                  kDrawFramebufferBinding = 0x8CA6, kDepthComponent24 = 0x81A6, kDepth24Stencil8 = 0x88F0,
                  kDepthStencil = 0x84F9, kUnsignedInt248 = 0x84FA, kTextureCompareMode = 0x884C, kClampToEdge = 0x812F;
 
@@ -547,20 +559,46 @@ GLuint NewTarget(GLenum internal, GLenum format, GLenum type, GLint w, GLint h) 
     return t;
 }
 
+// The engine's hardware-AA scene is multisampled renderbuffers, which glCopyTexSubImage2D cannot read: resolve it.
+void ResolveScene(const GLint* vp, GLint read, GLint draw) {
+    if (!g_gl.BlitFramebuffer || !g_gl.GenFramebuffers || !g_gl.FramebufferTexture2D) return;
+    if (!g_copy.color) {
+        g_gl.ActiveTexture(kTexture0 + kUnitColor);
+        g_copy.color = NewTarget(GL_RGBA8, GL_RGBA, GL_UNSIGNED_BYTE, vp[2], vp[3]);
+    }
+    if (!g_copy.depth) {
+        g_gl.ActiveTexture(kTexture0 + kUnitDepth);
+        g_copy.depth = NewTarget(kDepth24Stencil8, kDepthStencil, kUnsignedInt248, vp[2], vp[3]);
+    }
+    if (!g_copy.fbo) g_gl.GenFramebuffers(1, &g_copy.fbo);
+    g_gl.BindFramebuffer(kDrawFramebuffer, g_copy.fbo);
+    g_gl.FramebufferTexture2D(kDrawFramebuffer, kColorAttachment0, GL_TEXTURE_2D, g_copy.color, 0);
+    g_gl.FramebufferTexture2D(kDrawFramebuffer, kDepthStencilAttachment, GL_TEXTURE_2D, g_copy.depth, 0);
+    g_gl.BindFramebuffer(kReadFramebuffer, static_cast<GLuint>(draw));
+    g_gl.BlitFramebuffer(vp[0], vp[1], vp[0] + vp[2], vp[1] + vp[3], 0, 0, vp[2], vp[3],
+                         GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT, GL_NEAREST);
+    g_gl.BindFramebuffer(kDrawFramebuffer, static_cast<GLuint>(draw));
+    g_gl.BindFramebuffer(kReadFramebuffer, static_cast<GLuint>(read));
+}
+
 void CopyScene(const Linked& l) {
     GLint vp[4] = {};
     glGetIntegerv(GL_VIEWPORT, vp);
     if (vp[2] <= 0 || vp[3] <= 0) return;
-    if (vp[2] != g_copy.w || vp[3] != g_copy.h) {
+    GLint samples = 0;
+    glGetIntegerv(kSampleBuffers, &samples);
+    if (vp[2] != g_copy.w || vp[3] != g_copy.h || (samples > 0) != g_copy.multisampled) {
         if (g_copy.depth) glDeleteTextures(1, &g_copy.depth);
         if (g_copy.color) glDeleteTextures(1, &g_copy.color);
         g_copy.depth = g_copy.color = 0;
         g_copy.w = vp[2];
         g_copy.h = vp[3];
+        g_copy.multisampled = samples > 0;
     }
     GLint read = 0, draw = 0;
     glGetIntegerv(kReadFramebufferBinding, &read);
     glGetIntegerv(kDrawFramebufferBinding, &draw);
+    if (g_copy.multisampled) return ResolveScene(vp, read, draw);
     if (read != draw) g_gl.BindFramebuffer(kReadFramebuffer, static_cast<GLuint>(draw));
     if (l.sceneDepth && !g_copy.depthBroken) {
         g_gl.ActiveTexture(kTexture0 + kUnitDepth);
@@ -596,6 +634,14 @@ void CopyScene(const Linked& l) {
     if (read != draw) g_gl.BindFramebuffer(kReadFramebuffer, static_cast<GLuint>(read));
 }
 
+bool HasSceneColour() {
+    melange::render::SceneTargets t = melange::render::GetSceneTargets();
+    if (t.colorTex) return true;
+    GLint samples = 0;
+    if (t.fbo) glGetIntegerv(kSampleBuffers, &samples);
+    return samples > 0;
+}
+
 void BindScene(Linked& l) {
     if (!g_gl.ActiveTexture || !g_gl.BindFramebuffer) return;
     // The engine leaves the copy's units alone and uniforms stay with the program, so once per frame is enough.
@@ -604,7 +650,7 @@ void BindScene(Linked& l) {
     GLint unit = kTexture0;
     glGetIntegerv(kActiveTextureBinding, &unit);
     // Depth-only targets (the shadow pass) are skipped: the copy waits for the first draw into a colour target.
-    if (f != g_copy.frame && melange::render::GetSceneTargets().colorTex) {
+    if (f != g_copy.frame && HasSceneColour()) {
         g_copy.frame = f;
         melange::render::Camera cam;
         if (melange::render::GetCamera(&cam) && cam.valid) {
@@ -612,6 +658,14 @@ void BindScene(Linked& l) {
             g_copy.nearFar[1] = cam.farZ;
             std::copy(cam.view, cam.view + 16, g_copy.view);
             std::copy(cam.proj, cam.proj + 16, g_copy.proj);
+        }
+        int sw = 0, sh = 0, ww = 0, wh = 0;
+        melange::render::WindowSize(&ww, &wh);
+        if (engine::SceneSize(&sw, &sh) && ww > 0 && wh > 0 && !engine::MsaaOn()) {
+            g_copy.renderScale[0] = static_cast<float>(sw) / static_cast<float>(ww);
+            g_copy.renderScale[1] = static_cast<float>(sh) / static_cast<float>(wh);
+        } else {
+            g_copy.renderScale[0] = g_copy.renderScale[1] = 1.f;
         }
         CopyScene(l);
     }
@@ -627,6 +681,7 @@ void BindScene(Linked& l) {
     if (l.nearFarLoc >= 0) g_gl.Uniform2fv(l.nearFarLoc, 1, g_copy.nearFar);
     if (l.viewLoc >= 0) g_gl.UniformMatrix4fv(l.viewLoc, 1, 0, g_copy.view);
     if (l.projLoc >= 0) g_gl.UniformMatrix4fv(l.projLoc, 1, 0, g_copy.proj);
+    if (l.renderScaleLoc >= 0) g_gl.Uniform2fv(l.renderScaleLoc, 1, g_copy.renderScale);
     l.sceneFrame = g_copy.frame == f ? f : ~0ull;
 }
 
@@ -663,7 +718,7 @@ void Upload() {
     if (g_prof.on) ++g_prof.uploads;
     Linked& l = *g_active;
     if (!l.params.empty()) UploadParams(l);
-    if (l.sceneDepth || l.sceneColor || l.nearFarLoc >= 0 || l.viewLoc >= 0 || l.projLoc >= 0) BindScene(l);
+    if (l.sceneDepth || l.sceneColor || l.nearFarLoc >= 0 || l.viewLoc >= 0 || l.projLoc >= 0 || l.renderScaleLoc >= 0) BindScene(l);
     if (!l.foreign.empty()) UploadForeign(l);
     const Mirror* m[2] = {};
     for (int s = 0; s < 2; ++s) {
