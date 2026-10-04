@@ -299,10 +299,17 @@ function ResultView({ result, content, onBrowse, onDone }: { result: NonNullable
 }
 
 function Dialog({ title, onClose, children }: { title: string; onClose: () => void; children: ComponentChildren }) {
+  const h2 = useRef<HTMLHeadingElement>(null);
+  useEffect(() => { h2.current?.focus(); }, []);
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") onClose(); };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [onClose]);
   return (
     <div class="li-dialog-backdrop" onClick={onClose}>
-      <div class="li-dialog" role="dialog" aria-modal="true" onClick={(e) => e.stopPropagation()}>
-        <h2>{title}</h2>
+      <div class="li-dialog" role="dialog" aria-modal="true" aria-labelledby="li-dialog-title" onClick={(e) => e.stopPropagation()}>
+        <h2 id="li-dialog-title" tabIndex={-1} ref={h2}>{title}</h2>
         {children}
       </div>
     </div>
