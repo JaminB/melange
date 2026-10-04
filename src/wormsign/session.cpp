@@ -21,6 +21,7 @@ constexpr uintptr_t kTM = 0x96d030;
 
 std::atomic<bool> g_enabled{false}, g_open{false};
 std::atomic<uint32_t> g_serial{0}, g_tick{0};
+const char* g_endReason = "match-end";
 uint32_t g_ticks = 0;
 uint16_t g_inputs = 0;
 TickRing g_ring;
@@ -137,6 +138,7 @@ void SetEnabled(bool on) {
 }
 
 bool Open() { return g_open.load(std::memory_order_acquire); }
+const char* EndReason() { return g_endReason; }
 
 void Begin() {
     if (g_open) return;
@@ -157,6 +159,7 @@ void Begin() {
 void End(const char* reason) {
     if (!g_open) return;
     const uint32_t serial = g_serial;
+    g_endReason = reason;
     g_open = false;
     Unpublish();
     g_sessObs.Call(false, serial);

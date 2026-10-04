@@ -10,6 +10,7 @@
 #include "core/log.h"
 #include "core/mem.h"
 #include "lua/engine50.h"
+#include "net/net.h"
 #include "wormsign/hash_engine.h"
 #include "wormsign/session.h"
 
@@ -26,6 +27,10 @@ std::atomic<bool> g_installed{false}, g_on{false};
 std::atomic<uint32_t> g_bucket{0};
 bool g_haveB = false;
 uint32_t g_curB = 0, g_lastT = 0;
+// Online matches: once the net session has been InGame, its leaving InGame (AbortGame, the last peer gone) ends the
+// match for us, although the game keeps the match (and its sim) running behind the dialog until it is dismissed.
+// g_netEnded keeps the session from beginning again until that match is gone.
+bool g_netSeen = false, g_netEnded = false;
 std::atomic<PreTickFn> g_preTick{nullptr};
 std::atomic<NowFn> g_nowFilter{nullptr};
 
@@ -65,14 +70,21 @@ void OnPreTask(safetyhook::Context& c) {
 
 int __stdcall HkTmUpdate(uintptr_t tm, int* now) {
     const bool in = lua50::MatchState() != nullptr;
-    if (in && !session::Open()) {
+    const bool netIn = wum::CurrentState() == wum::state::InGame;
+    if (!in) g_netSeen = g_netEnded = false;
+    if (in && !session::Open() && !g_netEnded) {
         g_haveB = false;
         g_bucket = 0;
         session::Begin();
     } else if (!in && session::Open()) {
         session::End("match-end");
         g_bucket = 0;
+    } else if (session::Open() && g_netSeen && !netIn) {
+        session::End("net session ended");
+        g_netEnded = true;
+        g_bucket = 0;
     }
+    if (session::Open() && netIn) g_netSeen = true;
     const NowFn filter = g_nowFilter.load(std::memory_order_relaxed);
     if (!filter || !now || !session::Open()) return g_hTm.stdcall<int>(tm, now);
     const int real = *now;
