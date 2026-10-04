@@ -140,7 +140,7 @@ export function LauncherApp({ client }: { client: Client }) {
       <div class="la-body">
         <nav class="la-side" aria-label="Sections">
           {PAGES.map((p) => (
-            <button key={p.id} class="la-tab" aria-current={page === p.id ? "page" : undefined} data-page-tab={p.id} onClick={() => setPage(p.id)}>
+            <button key={p.id} class="la-tab" aria-current={page === p.id ? "page" : undefined} data-page-tab={p.id} onClick={() => { setImportPlugin(undefined); setPage(p.id); }}>
               {p.icon(16)}<span class="la-tab-label">{p.label}</span>
             </button>
           ))}

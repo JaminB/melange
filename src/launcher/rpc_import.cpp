@@ -367,6 +367,7 @@ void Start(const Call& c, Result& r, void*) {
         }
         if (spec.file.empty() || browsed.empty() || PathKey(spec.file) != PathKey(browsed) || !FileExists(browsed))
             return RefuseReason(r, -32000, "Choose the zip with the Choose file button.", "badPath");
+        if (spec.plugin.recipe.sources.empty()) return RefuseReason(r, -32000, "The recipe has no source.", "badPath");
         spec.file = browsed;
         spec.sourceId = spec.plugin.recipe.sources.front().id;
     } else {
@@ -500,7 +501,8 @@ void DeleteZip(const Call& c, Result& r, void*) {
     std::string id;
     if (!PluginParam(c, r, &p, &id)) return;
     const std::wstring game = app::GameDir();
-    if (game.empty()) return RefuseReason(r, -32000, "Choose your game folder first.", "noGame");
+    if (const std::string g = Gate(game); !g.empty())
+        return RefuseReason(r, -32000, g == "noGame" ? "Choose your game folder first." : "Close Worms Ultimate Mayhem first.", g);
     if (Busy()) return Fail(r, -32002, "An import is running.");
     const imp::Paths paths = imp::MakePaths(game, id);
     uint64_t freed = 0;
@@ -546,6 +548,8 @@ bool RoutePreview(const oc::Request& rq, oc::Response* out, void*) {
     return true;
 }
 }  // namespace
+
+bool ImportRunning() { return Busy(); }
 
 void InstallImport() {
     using oasis::kRpcMutating;

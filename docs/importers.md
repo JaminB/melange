@@ -28,13 +28,13 @@ A recipe is a JSON file with these top-level fields:
 | `name` | string | User-facing name of what is being imported. |
 | `content` | object | `{title, publisher, termsUrl, credit}`. Metadata shown to the user. |
 | `sources` | array | 1 to 4 download sources. Each: `{id, name, urls: [https://...], fileName, size (bytes), sha256 (lowercase hex)}`. |
-| `reader` | object | How to find content in the archive: `{type: "w4-registry", root, registry, titles?, descriptors?, maps?, previews?}`. Paths are relative, `/`-separated, with `*` globs only (no `..`). |
-| `select` | object | Filtering rules: `{levelType?, skipKeySuffix?, require?, exclude?, vanilla?, expect}`. |
+| `reader` | object | How to find content in the archive: `{type: "w4-registry", root, registry, titles?, descriptors, maps, previews?}`. Paths are relative, `/`-separated, with `*` globs only (no `..`). |
+| `select` | object | Filtering rules: `{levelType, skipKeySuffix?, require?, exclude?, vanilla?, expect}`. `require` is empty or both `"descriptor"` and `"xan"`. |
 | `categories` | array | 1 to 8 user-visible categories. Each: `{id, label, scriptsEqual?, scriptsWithin?, default?, hidden?}`. One must have `default: true`. |
-| `groups` | array | (optional) Groups for filtering. Each: `{id, label, match: [patterns], vanilla?, default?}`. |
+| `groups` | array | 1 to 8 groups for filtering. Each: `{id, label}` plus exactly one of `match: [patterns]`, `vanilla: true` or `default: true`. Exactly one must be the default. |
 | `modes` | object | (optional) Map mode tokens to user labels: `{"ModeToken": "Label"}`. |
 | `transform` | object | How to transform content: `{stem, descriptor, timeOfDay?, title?, author?, textures, scripts, survivor?, previews?}`. |
-| `output` | object | Output packs: `{packPrefix (must equal plugin id), version (semver), perPack (1-32 levels), order, newPackBefore?, packName, packDescription}`. |
+| `output` | object | Output packs: `{packPrefix (must equal plugin id), version (semver), perPack (1-32 levels), order?, newPackBefore?, packName (holds {n}), packDescription}`. |
 
 ## Safety rules (enforced by Melange)
 
@@ -146,4 +146,4 @@ Players see:
 - Per-map show/hide (filtering locally only)
 - An import fingerprint for online matching
 
-Removing Caravan uninstalls all imported packs and deletes the cached zip.
+Removing Caravan uninstalls all imported packs. The cached zip is deleted only when "Also delete its settings and saved data" is ticked.

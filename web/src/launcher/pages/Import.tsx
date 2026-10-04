@@ -140,8 +140,10 @@ export function Import({ client, plugin, onBack }: { client: Client; plugin: str
   // this reuses it when present and otherwise re-downloads, without asking the disclosure question again.
   const doReimport = () => {
     setShowReimport(false);
-    setDismissed(false);
-    if (source0) runAction(() => client.call("import.start", { plugin, source: { kind: "download", id: source0.id }, keepZip: true, accepted: true }));
+    if (source0) runAction(async () => {
+      await client.call("import.start", { plugin, source: { kind: "download", id: source0.id }, keepZip: true, accepted: true });
+      setDismissed(false);
+    });
   };
   const doRemove = () => { setShowRemove(false); runAction(() => client.call("import.uninstall", { plugin, deleteZip: deleteZipOnRemove })); };
   const doDeleteZip = () => runAction(() => client.call("import.deleteZip", { plugin }));

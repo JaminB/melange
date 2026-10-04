@@ -94,10 +94,12 @@ bool Place(const Paths& p, const std::string& plugin, const std::wstring& stageR
         return false;
     }
     std::vector<std::string> movedOld, placed;
+    // A failed move back keeps the journal, so Recover finishes the rollback instead of deleting the old packs.
     auto rollback = [&] {
-        for (auto it = placed.rbegin(); it != placed.rend(); ++it) mv(p.mods + L"\\" + W(*it), stageRoot + L"\\" + W(*it));
-        for (auto it = movedOld.rbegin(); it != movedOld.rend(); ++it) mv(p.Old() + L"\\" + W(*it), p.mods + L"\\" + W(*it));
-        DeleteFileW(p.Journal().c_str());
+        bool clean = true;
+        for (auto it = placed.rbegin(); it != placed.rend(); ++it) clean &= !mv(p.mods + L"\\" + W(*it), stageRoot + L"\\" + W(*it));
+        for (auto it = movedOld.rbegin(); it != movedOld.rend(); ++it) clean &= !mv(p.Old() + L"\\" + W(*it), p.mods + L"\\" + W(*it));
+        if (clean) DeleteFileW(p.Journal().c_str());
     };
     for (const auto& id : existing) {
         if (const unsigned long e = mv(p.mods + L"\\" + W(id), p.Old() + L"\\" + W(id))) {
@@ -125,14 +127,15 @@ void Finish(const Paths& p) {
     DeleteFileW(p.Journal().c_str());
 }
 
-void Recover(const Paths& p, const std::string& plugin, const MoveFn& mv) {
+bool Recover(const Paths& p, const std::string& plugin, const MoveFn& mv) {
     Journal j;
     if (!LoadJournal(p, plugin, &j)) {
         DeleteFileW(p.Journal().c_str());
         inst::DeleteTree(p.Old());
-        return;
+        return true;
     }
     if (!j.committed) {
+        bool restored = true;
         for (const auto& id : j.old) {
             const std::wstring back = p.Old() + L"\\" + W(id), target = p.mods + L"\\" + W(id);
             if (!IsDir(back)) continue;
@@ -140,8 +143,9 @@ void Recover(const Paths& p, const std::string& plugin, const MoveFn& mv) {
                 if (!IsGeneratedBy(target, plugin)) continue;
                 inst::DeleteTree(target);
             }
-            mv(back, target);
+            restored &= !mv(back, target);
         }
+        if (!restored) return false;   // keep the journal and the old packs for the next try
         for (const auto& id : j.fresh) {
             const std::wstring target = p.mods + L"\\" + W(id);
             if (!Has(j.old, id) && IsGeneratedBy(target, plugin)) inst::DeleteTree(target);
@@ -149,6 +153,7 @@ void Recover(const Paths& p, const std::string& plugin, const MoveFn& mv) {
     }
     Finish(p);
     inst::DeleteTree(p.Stage());
+    return true;
 }
 
 bool RemovePacks(const Paths& p, const std::string& plugin, std::vector<std::string>* removed, std::string* err, const MoveFn& mv) {

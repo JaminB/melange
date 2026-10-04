@@ -153,7 +153,7 @@ class Runner {
                 break;
             }
         if (!src_) return Fail("internal", "no source '" + s_.sourceId + "' in the recipe");
-        Recover(paths_, s_.plugin.id, s_.move);
+        if (!Recover(paths_, s_.plugin.id, s_.move)) return Fail("write", "cannot restore the previous packs from Mods\\.import");
         std::vector<std::string> foreign;
         ExistingPacks(paths_, s_.plugin.id, &foreign);
         if (!foreign.empty()) return Fail("occupied", foreign.front());
@@ -379,7 +379,9 @@ class Runner {
                 if (!GameFile(*pin, ".hmp", KindCap(Kind::Hmp), &hmp, &hasHmp)) return false;
                 if (!ReadDescriptor(descBytes, r_.transform.author, &d, &err)) return Fail("vanilla", e.fileName + ": " + err);
             } else {
-                if (!ReadMember(*desc_.at(key), &descBytes) || !ReadMember(*xan_.at(key), &xan)) return false;
+                const auto di = desc_.find(key), xi = xan_.find(key);
+                if (di == desc_.end() || xi == xan_.end()) return Fail("recipe", e.fileName + ": no descriptor or .xan in the zip");
+                if (!ReadMember(*di->second, &descBytes) || !ReadMember(*xi->second, &xan)) return false;
                 if (auto it = hmp_.find(key); it != hmp_.end()) {
                     if (!ReadMember(*it->second, &hmp)) return false;
                     hasHmp = true;
@@ -492,7 +494,7 @@ class Runner {
         }
         inst::DeleteTree(paths_.Previews());
         if (inst::Exists(stageRoot_ + L"\\.previews")) MoveFileExW((stageRoot_ + L"\\.previews").c_str(), paths_.Previews().c_str(), 0);
-        inst::WriteFileAtomic(paths_.Catalogue(), CatalogueJson(maps_));
+        bool saved = inst::WriteFileAtomic(paths_.Catalogue(), CatalogueJson(maps_));
 
         std::vector<std::string> hiddenFiles;
         if (hadState_) {
@@ -505,7 +507,7 @@ class Runner {
         std::set<std::string> stems;
         for (const MapInfo& m : maps_)
             if (std::find(hiddenFiles.begin(), hiddenFiles.end(), m.file) != hiddenFiles.end()) stems.insert(m.stem);
-        WriteHidden(paths_, s_.plugin.id, stems);
+        saved &= WriteHidden(paths_, s_.plugin.id, stems);
 
         res_.fingerprint = Fingerprint(hashes_);
         res_.maps = static_cast<int>(maps_.size());
@@ -522,10 +524,10 @@ class Runner {
         state_.bytes = written_;
         state_.zipKept = s_.keepZip;
         state_.hiddenByFile = hiddenFiles;
-        SaveState(paths_, state_);
+        saved &= SaveState(paths_, state_);
         Finish(paths_);
         if (!s_.keepZip) DeleteFileW(zip_.c_str());
-        return true;
+        return saved || Fail("write", "the packs are in place but the import record could not be saved");
     }
 
     const RunSpec& s_;
@@ -618,7 +620,10 @@ std::string Status(const Paths& p, const Plugin& pl, const State* st, std::strin
 
 bool Uninstall(const Paths& p, const std::string& plugin, bool deleteZip, std::vector<std::string>* removed, std::string* err,
                const MoveFn& mv) {
-    Recover(p, plugin, mv);
+    if (!Recover(p, plugin, mv)) {
+        *err = "cannot restore the previous packs from Mods\\.import";
+        return false;
+    }
     if (!RemovePacks(p, plugin, removed, err, mv)) return false;
     WriteHidden(p, plugin, {});
     DeleteFileW(p.Catalogue().c_str());
