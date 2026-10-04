@@ -12,13 +12,15 @@ bool AllMatch(const std::vector<Member>& members) {
     return true;
 }
 
-bool KeepInList(Source s, bool inLobby, bool online, bool allMatch, bool live) {
+bool KeepInList(Source s, bool inLobby, bool online, bool allMatch, bool live, bool hidden) {
+    if (s == Source::Pack && hidden) return false;
     if (s == Source::Vanilla || !inLobby) return true;
     if (s == Source::Test || live) return false;
     return online && allMatch;
 }
 
-bool KeepInPool(Source s, bool randomPool) {
+bool KeepInPool(Source s, bool randomPool, bool hidden) {
+    if (s == Source::Pack && hidden) return false;
     if (s == Source::Vanilla) return true;
     return s == Source::Pack && randomPool;
 }

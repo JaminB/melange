@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.25)
-project(Melange VERSION 0.3.2 LANGUAGES C CXX)
+project(Melange VERSION 0.3.3 LANGUAGES C CXX)
 
 if(NOT CMAKE_SIZEOF_VOID_P EQUAL 4)
     message(FATAL_ERROR "Melange must be built for 32-bit x86 (WormsMayhem.exe is a 32-bit process). Use build.ps1.")
@@ -140,6 +140,7 @@ file(GLOB_RECURSE MELANGE_SOURCES CONFIGURE_DEPENDS src/*.cpp)
 list(FILTER MELANGE_SOURCES EXCLUDE REGEX "/src/xom/")
 list(FILTER MELANGE_SOURCES EXCLUDE REGEX "/src/oasis/(core|pack|standalone)/")
 list(FILTER MELANGE_SOURCES EXCLUDE REGEX "/src/launcher/")
+list(FILTER MELANGE_SOURCES EXCLUDE REGEX "/src/import/")
 
 # Optional out-of-tree modules (<dir>/modules/*.cpp), e.g. build.ps1 -PrivateDir <dir>.
 set(MELANGE_PRIVATE_DIR "" CACHE PATH "Optional folder with extra modules (modules/*.cpp)")
@@ -233,17 +234,27 @@ target_link_libraries(launcher_selftest PRIVATE melange_store bcrypt version she
 # The Store engine without the game: index, downloads, installs, the store.* methods. The plugin compiles the same
 # sources through its glob, with store/game_host.cpp as the host; Melange.exe brings its own host.
 add_library(melange_store STATIC src/store/engine.cpp src/store/store_rpc.cpp src/store/index.cpp src/store/install.cpp
-    src/store/fetch.cpp src/store/zipcheck.cpp)
+    src/store/fetch.cpp src/store/zipcheck.cpp src/levels/hidden.cpp)
 target_include_directories(melange_store PUBLIC src src/sdk)
 target_compile_definitions(melange_store PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX _CRT_SECURE_NO_WARNINGS)
 target_compile_options(melange_store PRIVATE /W4 /utf-8 /permissive- /Zi)
 target_link_libraries(melange_store PUBLIC oasis_core miniz winhttp)
 
+# The local content importer (Melange.exe only): recipes, the verified zip, generated map packs. Its users also link
+# the Erg service sources it needs (names, luagen, xomutil, manifest).
+add_library(melange_import STATIC src/import/recipe.cpp src/import/archive.cpp src/import/w4reader.cpp src/import/plan.cpp
+    src/import/generate.cpp src/import/preview.cpp src/import/state.cpp src/import/place.cpp src/import/importer.cpp
+    src/levels/roots.cpp)
+target_include_directories(melange_import PUBLIC src src/sdk PRIVATE ${stb_SOURCE_DIR})
+target_compile_definitions(melange_import PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX _CRT_SECURE_NO_WARNINGS)
+target_compile_options(melange_import PRIVATE /W4 /utf-8 /permissive- /Zi)
+target_link_libraries(melange_import PUBLIC melange_store melange_xom)
+
 # Melange.exe: the desktop app. The standalone Oasis server plus setup, plugins and the Store, shown in WebView2.
 include(cmake/webview2.cmake)
 add_executable(melange_launcher WIN32
     src/launcher/main.cpp src/launcher/app.cpp src/launcher/window.cpp src/launcher/store_host.cpp
-    src/launcher/rpc_setup.cpp src/launcher/rpc_launcher.cpp src/launcher/rpc_plugins.cpp ${LAUNCHER_CORE_SOURCES}
+    src/launcher/rpc_setup.cpp src/launcher/rpc_launcher.cpp src/launcher/rpc_plugins.cpp src/launcher/rpc_import.cpp ${LAUNCHER_CORE_SOURCES}
     src/oasis/standalone/register.cpp src/oasis/standalone/ini_edit.cpp src/oasis/standalone/mods_provider.cpp
     src/oasis/standalone/json_write.cpp src/oasis/standalone/wormsign_provider.cpp src/oasis/standalone/level_provider.cpp
     src/oasis/rpc/erg_assets.cpp src/assets/crcsafe_math.cpp src/assets/crcsafe_file.cpp src/oasis/auth.cpp src/oasis/webpanels.cpp
@@ -257,7 +268,7 @@ target_include_directories(melange_launcher PRIVATE src src/sdk res ${CMAKE_BINA
 target_compile_definitions(melange_launcher PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX _CRT_SECURE_NO_WARNINGS UNICODE _UNICODE)
 target_compile_options(melange_launcher PRIVATE /W4 /utf-8 /permissive- /Zi)
 target_link_options(melange_launcher PRIVATE /DEBUG /MANIFEST:NO)
-target_link_libraries(melange_launcher PRIVATE oasis_core melange_store melange_xom webview2_loader bcrypt version shlwapi ole32 shell32
+target_link_libraries(melange_launcher PRIVATE oasis_core melange_store melange_import melange_xom webview2_loader bcrypt version shlwapi ole32 shell32
     comctl32 dwmapi winhttp)
 
 add_executable(json_read_selftest tests/json_read_selftest.cpp src/tools/json_read.cpp)
@@ -325,7 +336,7 @@ target_link_libraries(erg_preview_selftest PRIVATE melange_xom shell32 ole32 bcr
 # the one-shot override and the "erg" channel payloads.
 add_executable(levels_selftest
     tests/levels_selftest.cpp
-    src/levels/roots.cpp src/levels/csh.cpp src/levels/gate_policy.cpp src/levels/live_policy.cpp src/levels/test_arm.cpp src/levels/manifest.cpp
+    src/levels/roots.cpp src/levels/csh.cpp src/levels/gate_policy.cpp src/levels/hidden.cpp src/levels/live_policy.cpp src/levels/test_arm.cpp src/levels/manifest.cpp
     src/erg/names.cpp src/erg/scene.cpp src/erg/patch.cpp src/erg/jsonio.cpp src/erg/luagen.cpp
     src/assets/crcsafe_math.cpp
     src/mods/spice.cpp
@@ -452,7 +463,7 @@ target_compile_options(thumper_selftest PRIVATE /W4 /utf-8 /permissive-)
 add_executable(store_selftest
     tests/store_selftest.cpp
     src/store/index.cpp src/store/zipcheck.cpp src/store/install.cpp src/store/fetch.cpp
-    src/levels/live_policy.cpp src/mods/spice.cpp src/tools/json_read.cpp src/tools/hash.cpp src/core/log.cpp)
+    src/levels/live_policy.cpp src/levels/hidden.cpp src/mods/spice.cpp src/tools/json_read.cpp src/tools/hash.cpp src/core/log.cpp)
 target_include_directories(store_selftest PRIVATE src src/sdk)
 target_compile_definitions(store_selftest PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX _CRT_SECURE_NO_WARNINGS)
 target_compile_options(store_selftest PRIVATE /W4 /utf-8 /permissive-)
@@ -681,3 +692,14 @@ target_include_directories(wormsign_player_selftest PRIVATE src src/sdk)
 target_compile_definitions(wormsign_player_selftest PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX _CRT_SECURE_NO_WARNINGS)
 target_compile_options(wormsign_player_selftest PRIVATE /W4 /utf-8 /permissive-)
 target_link_libraries(wormsign_player_selftest PRIVATE miniz)
+
+# The local content importer without the game or the network: a synthetic zip built by the test (fixed timestamps),
+# recipe rules, member checks, the hash refusal, deterministic packs, placement rollback, hiding and uninstall.
+add_executable(import_selftest tests/import_selftest.cpp
+    src/erg/names.cpp src/erg/luagen.cpp src/erg/scene.cpp src/erg/xomutil.cpp src/erg/jsonio.cpp src/erg/patch.cpp
+    src/levels/manifest.cpp src/assets/crcsafe_math.cpp src/assets/crcsafe_file.cpp
+    src/mods/spice.cpp src/tools/json_read.cpp src/tools/hash.cpp src/core/log.cpp)
+target_include_directories(import_selftest PRIVATE src src/sdk)
+target_compile_definitions(import_selftest PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX _CRT_SECURE_NO_WARNINGS)
+target_compile_options(import_selftest PRIVATE /W4 /utf-8 /permissive-)
+target_link_libraries(import_selftest PRIVATE melange_import bcrypt winhttp)

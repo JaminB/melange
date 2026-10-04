@@ -31,8 +31,8 @@ struct Verdict {
 };
 Verdict Evaluate(const Input& in);
 bool AllMatch(const std::vector<Member>& members);
-bool KeepInList(Source s, bool inLobby, bool online, bool allMatch, bool live = false);   // the landscape picker
-bool KeepInPool(Source s, bool randomPool);                            // Quick Game / lobby random pools
+bool KeepInList(Source s, bool inLobby, bool online, bool allMatch, bool live = false, bool hidden = false);   // the picker
+bool KeepInPool(Source s, bool randomPool, bool hidden = false);       // Quick Game / lobby random pools
 bool HasMod(const std::string& modsValue, const std::string& id, const std::string& version);
 // The host's "mlg.lvl" member value naming the pack of the lobby's level ("" for a vanilla level), and its parse.
 std::string LevelValue(const std::string& mod, const std::string& version, const std::string& title);

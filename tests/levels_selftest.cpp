@@ -165,10 +165,10 @@ void TestPacks() {
 
     std::vector<melange::spice::Manifest> many;
     std::vector<roots::PackInput> big;
-    many.reserve(5);
-    for (int i = 0; i < 5; ++i) {
+    many.reserve(9);
+    for (int i = 0; i < 9; ++i) {
         std::vector<std::string> slugs;
-        for (int k = 0; k < 30; ++k) slugs.push_back("s" + std::to_string(k));
+        for (int k = 0; k < (i == 8 ? 1 : 32); ++k) slugs.push_back("s" + std::to_string(k));
         many.push_back(M("big" + std::to_string(i), slugs));
         roots::Listing l = L({});
         for (auto& s : slugs) {
@@ -181,8 +181,8 @@ void TestPacks() {
     const auto vbig = roots::CheckPacks(big, kCrc, true, lister);
     int accepted = 0;
     for (auto& x : vbig) accepted += x.ok;
-    Expect(accepted == 4 && !vbig[4].ok && vbig[4].reason.find("128") != std::string::npos,
-           "the fifth 30-level pack passes the 128-level limit and is refused");
+    Expect(accepted == 8 && !vbig[8].ok && vbig[8].reason.find("256") != std::string::npos,
+           "eight 32-level packs fill the 256-level limit; a ninth pack is refused");
 }
 
 void TestChunks() {
@@ -436,6 +436,9 @@ void TestGate() {
     Expect(gate::KeepInPool(Source::Vanilla, false) && !gate::KeepInPool(Source::Pack, false) &&
                gate::KeepInPool(Source::Pack, true) && !gate::KeepInPool(Source::Test, true),
            "random pools: RandomPool decides for packs, Test levels never");
+    Expect(!gate::KeepInList(Source::Pack, false, true, true, false, true) && !gate::KeepInPool(Source::Pack, true, true) &&
+               gate::KeepInList(Source::Vanilla, false, true, true, false, true) && gate::KeepInPool(Source::Vanilla, true, true),
+           "a hidden pack level leaves the list and the pools; vanilla levels are never hidden");
     Expect(gate::AllMatch({}) && !gate::AllMatch({Mem("a", PeerStatus::Unknown)}), "AllMatch");
     Expect(gate::HasMod("a@1,mymaps@1.0.0", "mymaps", "1.0.0") && !gate::HasMod("a@1,mymaps@1.0.0", "mymaps", "1.0") &&
                !gate::HasMod("", "mymaps", "1.0.0") && !gate::HasMod("xmymaps@1.0.0", "mymaps", "1.0.0"),

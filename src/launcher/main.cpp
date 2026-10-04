@@ -134,6 +134,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int) {
     L::rpc::InstallSetup();
     L::rpc::InstallLauncher();
     L::rpc::InstallPlugins();
+    L::rpc::InstallImport();
     L::storehost::Install();
     L::app::StartChannel();
 

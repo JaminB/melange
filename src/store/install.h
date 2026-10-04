@@ -61,6 +61,14 @@ Result Remove(const Paths& p, const std::string& id, std::string* err, const Mov
 bool DeleteTree(const std::wstring& dir);
 bool Exists(const std::wstring& path);
 
+// Packs an importer plugin made on this PC: Mods\<by>-<1..9> whose spice.json says generated.by == by.
+std::vector<std::string> GeneratedBy(const Paths& p, const std::string& by);
+// Removes them with their hidden-level stems and Mods\.import\<by> (its dl\ only with deleteData). Returns the ids
+// removed.
+std::vector<std::string> RemoveGenerated(const Paths& p, const std::string& by, bool deleteData, const MoveFn& mv = DefaultMove);
+// Why a Store install of `id` is refused because the id belongs to an importer's generated packs, "" otherwise.
+std::string ReservedGeneratedId(const Paths& p, const std::string& id);
+
 struct Record { std::string version, sha256, installedAt; long long serial = 0; };
 struct Db {
     std::map<std::string, Record> mods;

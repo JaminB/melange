@@ -678,7 +678,8 @@ bool parse(const uint8_t* d, size_t n, Document& doc, std::string* error, const 
         }
         doc.types.push_back(std::move(t));
     }
-    for (int k = 0; k < 2; ++k, o += 16) {
+    if (doc.version[3] == 1 && o + 16 <= n && std::memcmp(d + o, "SCHM", 4) == 0) doc.guidRecord = false;
+    for (int k = doc.guidRecord ? 0 : 1; k < 2; ++k, o += 16) {
         if (o + 16 > n || std::memcmp(d + o, k ? "SCHM" : "GUID", 4) != 0) return bad("expected GUID/SCHM");
         auto& rec = k ? doc.schmRec : doc.guidRec;
         for (int j = 0; j < 3; ++j) rec[j] = rd32(d + o + 4 + 4 * j);
@@ -817,8 +818,10 @@ bool serialize(const Document& doc, std::vector<uint8_t>& out, std::string* erro
         out.insert(out.end(), t.guid.begin(), t.guid.end());
         out.insert(out.end(), t.rawName.begin(), t.rawName.end());
     }
-    out.insert(out.end(), {'G', 'U', 'I', 'D'});
-    for (auto v : doc.guidRec) put(v);
+    if (doc.guidRecord) {
+        out.insert(out.end(), {'G', 'U', 'I', 'D'});
+        for (auto v : doc.guidRec) put(v);
+    }
     out.insert(out.end(), {'S', 'C', 'H', 'M'});
     for (auto v : doc.schmRec) put(v);
     if (!doc.strsRaw.empty() && strings.size() == doc.strings.size()) {

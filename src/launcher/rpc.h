@@ -4,11 +4,12 @@
 #include "melange/oasis.h"
 #include "tools/json_read.h"
 
-// Melange.exe's own Oasis methods: setup.*, launcher.*, plugins.*, defaults.*, recommended.*.
+// Melange.exe's own Oasis methods: setup.*, launcher.*, plugins.*, defaults.*, recommended.*, import.*.
 namespace melange::launcher::rpc {
 void InstallSetup();
 void InstallLauncher();
 void InstallPlugins();
+void InstallImport();
 
 inline void Fail(oasis::Result& r, int code, const std::string& msg, const std::string& data = {}) {
     r.ok = false;

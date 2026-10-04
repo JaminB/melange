@@ -8,7 +8,7 @@
 // The spice.json "levels" array: slugs, stems, titles and limits, and the per-launch set across mods (load order).
 // Pure functions.
 namespace melange::levels::manifest {
-constexpr size_t kMaxPerMod = 32, kMaxTotal = 128, kMaxSimBytes = 256 * 1024;
+constexpr size_t kMaxPerMod = 32, kMaxTotal = 256, kMaxSimBytes = 256 * 1024;
 // A level may also be registered as a Survivor map (Multi.<stem>.S, the "Survivor copy").
 constexpr bool kSurvivorTwins = true;
 // The Survivor script runs the level's own chunk (the deferred form) when it is appended to the script list.

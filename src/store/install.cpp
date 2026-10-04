@@ -8,6 +8,7 @@
 #include <cstdio>
 #include <set>
 
+#include "levels/hidden.h"
 #include "store/index.h"
 #include "tools/hash.h"
 #include "tools/json_mini.h"
@@ -450,6 +451,74 @@ bool DeleteTree(const std::wstring& dir) {
     return RemoveDirectoryW(dir.c_str()) != 0;
 }
 
+std::vector<std::string> GeneratedBy(const Paths& p, const std::string& by) {
+    std::vector<std::string> out;
+    if (!spice::ValidModId(by)) return out;
+    for (char n = '1'; n <= '9'; ++n) {
+        const std::string id = by + "-" + n;
+        const std::wstring dir = p.mods + L"\\" + W(id);
+        if (!IsDir(dir)) continue;
+        spice::Manifest m;
+        std::vector<spice::Error> errs;
+        if (spice::Parse(dir, &m, &errs) && !m.implicit && m.generatedBy == by) out.push_back(id);
+    }
+    return out;
+}
+
+std::vector<std::string> RemoveGenerated(const Paths& p, const std::string& by, bool deleteData, const MoveFn& mv) {
+    std::vector<std::string> removed;
+    const std::vector<std::string> gens = GeneratedBy(p, by);
+    if (!gens.empty()) EnsureDirs(p);
+    for (const std::string& id : gens) {
+        std::string err;
+        if (Remove(p, id, &err, mv) == Result::Done) removed.push_back(id);
+    }
+    const size_t cut = p.mods.find_last_of(L'\\');
+    if (cut != std::wstring::npos) {
+        const std::wstring game = p.mods.substr(0, cut);
+        std::set<std::string> h = levels::hidden::Load(game);
+        std::string prefix = by + "_";
+        std::replace(prefix.begin(), prefix.end(), '-', '_');
+        const size_t before = h.size();
+        for (auto it = h.begin(); it != h.end();) {
+            const std::string& s = *it;
+            const bool mine = s.size() > prefix.size() + 2 && s.compare(0, prefix.size(), prefix) == 0 && s[prefix.size()] >= '1' &&
+                              s[prefix.size()] <= '9' && s[prefix.size() + 1] == '_';
+            it = mine ? h.erase(it) : std::next(it);
+        }
+        if (h.size() != before) levels::hidden::Save(game, h);
+    }
+    const std::wstring work = p.mods + L"\\.import\\" + W(by);
+    if (IsDir(work)) {
+        WIN32_FIND_DATAW fd;
+        HANDLE h = FindFirstFileW((work + L"\\*").c_str(), &fd);
+        if (h != INVALID_HANDLE_VALUE) {
+            do {
+                if (!wcscmp(fd.cFileName, L".") || !wcscmp(fd.cFileName, L"..")) continue;
+                if (!deleteData && !_wcsicmp(fd.cFileName, L"dl")) continue;
+                DeleteTree(work + L"\\" + fd.cFileName);
+            } while (FindNextFileW(h, &fd));
+            FindClose(h);
+        }
+        if (deleteData) RemoveDirectoryW(work.c_str());
+    }
+    return removed;
+}
+
+std::string ReservedGeneratedId(const Paths& p, const std::string& id) {
+    const std::wstring dir = p.mods + L"\\" + W(id);
+    spice::Manifest m;
+    std::vector<spice::Error> errs;
+    if (IsDir(dir) && spice::Parse(dir, &m, &errs) && !m.generatedBy.empty())
+        return "Mods\\" + id + " holds maps imported by " + m.generatedBy;
+    if (id.size() < 3 || id[id.size() - 2] != '-' || id.back() < '1' || id.back() > '9') return "";
+    const std::string base = id.substr(0, id.size() - 2);
+    spice::Manifest b;
+    if (IsDir(p.mods + L"\\" + W(base)) && spice::Parse(p.mods + L"\\" + W(base), &b, &errs) && !b.implicit && !b.importerRecipe.empty())
+        return id + " is reserved for maps imported by " + base;
+    return "";
+}
+
 std::string NowIso() {
     SYSTEMTIME t;
     GetSystemTime(&t);
@@ -550,7 +619,10 @@ std::vector<Applied> ApplyPending(const Paths& p, Db* db, const MoveFn& mv) {
         Result r = Result::Failed;
         if (op.op == "remove") {
             r = Remove(p, op.id, &err, mv);
-            if (r == Result::Done) db->mods.erase(op.id);
+            if (r == Result::Done) {
+                db->mods.erase(op.id);
+                RemoveGenerated(p, op.id, op.deleteData, mv);
+            }
         } else {
             Staged s;
             s.rel = op.stage;

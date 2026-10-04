@@ -28,6 +28,7 @@
 #include "levels/csh.h"
 #include "levels/engine.h"
 #include "levels/gate.h"
+#include "levels/hidden.h"
 #include "levels/test.h"
 #include "lua/sim/bridge_internal.h"
 #include "melange/jlog.h"
@@ -75,6 +76,20 @@ int g_lastPlayedTries = 0;
 
 std::vector<std::string> g_loaded;           // packs whose banks are in section 12 now, in load order
 std::map<std::string, bool> g_live;          // packs changed at the menu this session: on or off now
+std::mutex g_hiddenMx;
+std::set<std::string> g_hidden;              // hidden-levels.txt, read at registration and live changes
+
+void LoadHidden() {
+    auto h = hidden::Load(game::GameDir());
+    std::lock_guard lk(g_hiddenMx);
+    g_hidden = std::move(h);
+}
+
+bool Hidden(const char* key) {
+    const std::string stem = hidden::StemOfKey(key);
+    std::lock_guard lk(g_hiddenMx);
+    return !stem.empty() && g_hidden.count(stem);
+}
 uint32_t g_liveChanges = 0;
 
 void Copy(char* dst, size_t n, const std::string& s) { strncpy_s(dst, n, s.c_str(), _TRUNCATE); }
@@ -302,6 +317,7 @@ void MarkRegistered() {
 
 void RegisterPacks() {
     g_packsDone = true;
+    LoadHidden();
     std::vector<roots::PackVerdict> ok;
     for (const auto& v : g_verdicts)
         if (v.ok && !v.levels.empty()) ok.push_back(v);
@@ -625,13 +641,13 @@ bool Keep(const char* key, uint32_t) {
     Source s;
     if (!Lookup(key, &s)) return true;
     LevelInfo info{};
-    return gate::KeepInList(s, gate::InLobby(), g_cfg.online, gate::MembersMatch(), Find(key, &info) && info.live);
+    return gate::KeepInList(s, gate::InLobby(), g_cfg.online, gate::MembersMatch(), Find(key, &info) && info.live, Hidden(key));
 }
 
 bool KeepInPool(const char* key, uint32_t) {
     Source s;
     if (!Lookup(key, &s)) return true;
-    return gate::KeepInPool(s, g_cfg.randomPool);
+    return gate::KeepInPool(s, g_cfg.randomPool, Hidden(key));
 }
 
 Online Status(const char* key) {
@@ -757,6 +773,7 @@ bool PacksReady() { return g_packsDone; }
 bool Loaded(const std::string& mod) { return std::find(g_loaded.begin(), g_loaded.end(), mod) != g_loaded.end(); }
 
 bool EnableLive(const std::string& mod, std::string* err) {
+    LoadHidden();
     if (Loaded(mod)) {
         *err = mod + " is already enabled";
         return false;
