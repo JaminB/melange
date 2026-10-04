@@ -486,7 +486,12 @@ void UninstallM(const Call& c, Result& r, void*) {
     std::vector<std::string> removed;
     std::string err;
     if (!imp::Uninstall(imp::MakePaths(game, id), id, Bool(p, "deleteZip"), &removed, &err)) return Fail(r, -32000, err);
+    {
+        std::lock_guard lk(g_mx);
+        if (g_job.plugin == id && !g_running) g_job = Job{};
+    }
     r.json = jsonmini::Obj().Raw("removed", Arr(removed)).End();
+    PublishJob();
     PublishImporters();
 }
 
