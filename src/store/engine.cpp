@@ -745,6 +745,12 @@ bool GetDetails(const std::string& id, Details* out, bool fetchShots) {
     out->content = v->kind == "content";
     out->dependencies = v->dependencies;
     out->conflicts = v->conflicts;
+    out->imports = p->imports;
+    for (const std::string& g : install::GeneratedBy(g_paths, id)) {
+        spice::Manifest m;
+        std::vector<spice::Error> errs;
+        if (spice::Parse(g_paths.mods + L"\\" + W(g), &m, &errs)) out->importedMaps += static_cast<int>(m.levels.size());
+    }
     bool missing = false;
     for (size_t i = 0; i < p->screenshots.size(); ++i) {
         ShotRow r;

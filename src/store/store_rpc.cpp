@@ -69,6 +69,10 @@ std::string DetailsJson(const Details& d) {
     for (const ShotRow& r : d.screenshots)
         shots.Raw(jsonmini::Obj().Int("n", r.n).Str("caption", r.caption).Bool("ready", r.ready).End());
     o.Raw("screenshots", shots.End());
+    jsonmini::Arr imports;
+    for (const ImportLine& im : d.imports)
+        imports.Raw(jsonmini::Obj().Str("title", im.title).Str("publisher", im.publisher).Str("host", im.host).UInt("size", im.size).End());
+    o.Raw("imports", imports.End()).Int("importedMaps", d.importedMaps);
     jsonmini::Arr versions;
     for (const VersionRow& v : d.versions)
         versions.Raw(jsonmini::Obj().Str("version", v.version).Str("released", v.released).Str("melange", v.melange)

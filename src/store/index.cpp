@@ -171,6 +171,23 @@ bool ReadPlugin(const Value& o, Plugin* p, std::string* why) {
             }
         }
     }
+    if (ok) {
+        if (const Value* s = o.Get("imports"); s && !s->IsNull()) {
+            if (!s->IsArray() || s->items.empty() || s->items.size() > 4) {
+                ok = r.Fail("imports must be a list of 1-4");
+            } else {
+                for (const Value& e : s->items) {
+                    ImportLine im;
+                    if (!e.IsObject() || !r.Text(e, "title", &im.title, 80, true) || !r.Text(e, "publisher", &im.publisher, 80, false) ||
+                        !r.Text(e, "host", &im.host, 253, true) || !r.Size(e, "size", &im.size, 4ull << 30)) {
+                        ok = r.Fail("an imports entry is invalid");
+                        break;
+                    }
+                    p->imports.push_back(std::move(im));
+                }
+            }
+        }
+    }
     if (!ok) {
         *why = r.why;
         return false;
