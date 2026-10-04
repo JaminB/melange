@@ -22,7 +22,7 @@ Releases are code-signed; see [Code signing](CODE_SIGNING.md).
 2. Start the game and press `` ` `` to open the overlay.
 3. On the *Thumper/Mods* page, switch the mod on. Mods that change gameplay take effect the next time you start the game.
 
-Or install it from the Store: on the *Thumper/Mods* page press *Store* (or open the **Store** panel in Oasis), pick a plugin and press *Install*. The Store contacts GitHub only when you open it, and sends nothing about you or your game.
+Or install it from the Store: on the *Thumper/Mods* page press *Store* (or open the **Store** panel in Oasis), pick a plugin and press *Install*. The Store contacts GitHub only when you open it, and sends nothing about you or your game. Some plugins, like Caravan, import maps from a download onto your PC.
 
 Good to know:
 
