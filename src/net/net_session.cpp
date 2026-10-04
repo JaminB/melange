@@ -228,6 +228,11 @@ constexpr StoreList kStoreLists[] = {
 constexpr uint32_t kFullTurnDelta = 0x90;
 constexpr uint32_t kVecProxy = 0x0, kVecFirst = 0xc, kVecLast = 0x10;
 constexpr uintptr_t kResendAll = 0x5408a0;
+// Lobby-entered handler (FUN_006269f0) copies the host's landscape_code into WXD.Level.Current via
+// SetString(key, FUN_006266f0(table, code)). The lookup returns NULL for a code missing from this game's level list
+// and SetString then strcmp()s it (crash c0000005 at 0x638a6c). Hook the PUSH EAX after the lookup call.
+constexpr uintptr_t kLobbyLevelPush = 0x626c24;
+constexpr uintptr_t kLobbyLevelDone = 0x626c32;  // past the SetString call and its ADD ESP,0x10
 SafetyHookInline g_resendHook;
 
 // Entry layout: +0 vtable, +4 u16 id (+6 is uninitialised padding), +8 time, +0xc payload (the string type keeps an
@@ -343,6 +348,15 @@ const char* AbortCode(uint32_t hr) {
     }
 }
 
+// eax = looked-up level (NULL = unknown). [esp] = &table, [esp+4] = code: the lookup's two cdecl args, still pushed.
+void OnLobbyLevel(safetyhook::Context& c) {
+    if (c.eax) return;
+    LOG_WARN("[fix] lobby level code %u not in this game's level list; keeping current level",
+            Read<uint32_t>(c.esp + 4));
+    c.esp += 8;  // the skipped ADD ESP,0x10 would have popped these plus SetString's two args
+    c.eip = kLobbyLevelDone;
+}
+
 void OnAbortGame(safetyhook::Context& c) {
     uint32_t hr = Arg(c, 0), ret = RetAddr(c);
     LOG_ERROR("[net] ===== AbortGame(%08x %s) from %s  [site %s] match %d", hr, AbortCode(hr),
@@ -442,6 +456,12 @@ public:
                 if (!g_resendHook) LOG_ERROR("[net] failed to hook migration resend at %08x", static_cast<unsigned>(kResendAll));
                 ok &= static_cast<bool>(g_resendHook);
             }
+        }
+
+        if (Bool("FixLobbyLevelNull", true)) {
+            // push eax / lea edx,[esp+0x2c] / push edx / call SetString
+            if (melange::mem::Expect(kLobbyLevelPush, {0x50, 0x8d, 0x54, 0x24, 0x2c, 0x52, 0xe8}))
+                ok &= Mid(kLobbyLevelPush, &OnLobbyLevel, "lobby level lookup");
         }
 
         melange::events::Subscribe(melange::events::Event::Frame, [] {
