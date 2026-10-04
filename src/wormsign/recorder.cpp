@@ -31,6 +31,7 @@
 #include "wormsign/library.h"
 #include "wormsign/records.h"
 #include "wormsign/rngtap_internal.h"
+#include "wormsign/session.h"
 #include "wormsign/setup.h"
 #include "wormsign/writer.h"
 
@@ -251,7 +252,7 @@ void EndRecording(const char* reason) {
 
 void OnSessionCb(bool begin, uint32_t serial, void*) {
     if (begin) BeginRecording(serial);
-    else EndRecording("match-end");
+    else EndRecording(session::EndReason());
 }
 
 void OnTickEndCb(const TickHash& h, void*) {

@@ -48,11 +48,16 @@ uint64_t PeerOf(uintptr_t conn) {
     return static_cast<uint64_t>(Read<uint32_t>(addr + 0x18)) << 32 | Read<uint32_t>(addr + 0x14);
 }
 
+// Universe 1 (public), account type 1 (individual): the only kind of SteamID a game peer has.
+bool IsIndividualSteamId(uint64_t id) { return (id >> 56) == 1 && ((id >> 52) & 0xf) == 1 && (id & 0xffffffffu); }
+
 void __fastcall OnConnectFail(uintptr_t conn, void* /*edx*/, const void* fail) {
     uint64_t failed = 0;
     melange::mem::SafeRead(reinterpret_cast<uintptr_t>(fail), &failed, sizeof failed);
     const uint64_t peer = PeerOf(conn);
-    if (peer && failed && failed != peer) {
+    // Only filter when we know this connection's peer: a connection being set up or torn down may not hold one yet
+    // (seen live: 0x100000000), and then the fail may well be its own, so the game's handler decides.
+    if (IsIndividualSteamId(peer) && IsIndividualSteamId(failed) && failed != peer) {
         if (g_foreignFails++ < 50)
             LOG_INFO("[transport] P2P connect fail for %llu ignored on the connection to %llu",
                      static_cast<unsigned long long>(failed), static_cast<unsigned long long>(peer));
