@@ -8,6 +8,7 @@
 namespace melange::wormsign::session {
 void Begin();
 void End(const char* reason);
+const char* EndReason();                        // why the last session ended (a string literal); main thread
 bool Open();                                   // any thread
 void EndTick(uint32_t bucket, const PoppedTask& popped);
 void CountInput();                             // one sender call in the current tick (the recorder's capture)
