@@ -353,8 +353,11 @@ void OnLobbyLevel(safetyhook::Context& c) {
     if (c.eax) return;
     LOG_WARN("[fix] lobby level code %u not in this game's level list; keeping current level",
             Read<uint32_t>(c.esp + 4));
-    c.esp += 8;  // the skipped ADD ESP,0x10 would have popped these plus SetString's two args
-    c.eip = kLobbyLevelDone;
+    // Resume at kLobbyLevelDone with both args popped (the skipped ADD ESP,0x10 popped these plus SetString's two).
+    // safetyhook's x86 stub ignores ctx.esp on restore: it does `pop esp` (trampoline_esp) then `ret`. So park the
+    // resume address in the code slot being discarded and return through it, leaving esp = original esp + 8.
+    *reinterpret_cast<uintptr_t*>(c.esp + 4) = kLobbyLevelDone;
+    c.trampoline_esp = c.esp + 4;
 }
 
 void OnAbortGame(safetyhook::Context& c) {
