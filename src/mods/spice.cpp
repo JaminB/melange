@@ -1085,6 +1085,11 @@ std::vector<Resolved> Resolve(const std::vector<Manifest>& all, const std::set<s
             n.state = mods::State::Disabled;
             continue;
         }
+        if (!n.m->generatedBy.empty() && !userEnabled.count(n.m->generatedBy)) {
+            n.state = mods::State::Disabled;
+            n.reason = n.m->generatedBy + " is turned off";
+            continue;
+        }
         if (n.m->unsafe) {
             n.state = mods::State::PendingConsent;  // the caller flips this to Enabled once granted
             continue;

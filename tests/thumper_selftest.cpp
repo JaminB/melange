@@ -268,6 +268,15 @@ void TestResolveBasics() {
         Expect(ra && ra->state == State::Blocked && ra->reason.find("have 1.4.0") != std::string::npos,
                "resolve: version mismatch names what's installed");
     }
+    {  // a generated pack follows its importer plugin
+        Manifest imp = M("imp"), pack = M("imp-1");
+        pack.generatedBy = "imp";
+        auto on = Resolve({imp, pack}, All({"imp", "imp-1"}), "1.0.0", {});
+        auto off = Resolve({imp, pack}, All({"imp-1"}), "1.0.0", {});
+        const Resolved *a = Find(on, "imp-1"), *b = Find(off, "imp-1");
+        Expect(a && a->state == State::Enabled && b && b->state == State::Disabled && b->reason.find("imp") != std::string::npos,
+               "resolve: a generated pack is off while its importer plugin is off");
+    }
     {  // optional absent: no error, no edge requirement
         Manifest a = M("a");
         a.optional.push_back({"nope", ""});
