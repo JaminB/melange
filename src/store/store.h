@@ -52,6 +52,8 @@ struct Details {
     bool content = false;
     std::vector<Dep> dependencies, conflicts;
     std::vector<ShotRow> screenshots;
+    std::vector<ImportLine> imports;
+    int importedMaps = 0;                        // levels in the packs its importer made on this PC
     std::vector<VersionRow> versions;
     std::vector<std::string> dependants;         // installed, enabled mods that need this one
     std::vector<std::string> conflictsEnabled;   // installed, enabled mods it conflicts with

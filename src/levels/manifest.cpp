@@ -85,7 +85,7 @@ std::vector<LevelDecl> Assign(const std::vector<std::vector<LevelDecl>>& perModI
             continue;
         }
         if (out.size() + mod.size() > kMaxTotal) {
-            Add(refused, id, "more than 128 levels across all enabled mods");
+            Add(refused, id, "more than 256 levels across all enabled mods");
             continue;
         }
         bool clash = false;

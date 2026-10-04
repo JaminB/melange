@@ -307,6 +307,25 @@ shots, shot?}`; `phase` is `idle`, `fetching`, `downloading`, `verifying`, `inst
 `error`. `GET /store/shots/<id>/<n>` serves a screenshot the game has already fetched and verified (404 before
 that), with the same cookie as the app.
 
+### Local content importers
+
+Plugins can declare a recipe to import content (such as maps) from a download or local file on the player's machine. Every importer is driven through these RPC methods. See [importers.md](../docs/importers.md) for the recipe schema and safety model.
+
+| Method | Params → result | Notes |
+|---|---|---|
+| `import.list` | `{}` → `{importers: Importer[]}` | Every installed plugin with a valid recipe |
+| `import.status` | `{plugin}` → `Importer` | Status of one importer |
+| `import.browse` | `{plugin}` → `{path, name, size}` or `{cancelled: true}` | Native file picker for `.zip` files |
+| `import.start` | `{plugin, source: {kind: "download", id} \| {kind: "file", path}, keepZip: bool, accepted: true}` → `{started: true}` | Start an import; progress on the `import` channel. `accepted: true` confirms the disclosure. File paths come only from `import.browse`. |
+| `import.cancel` | `{plugin}` → `{cancelling: bool}` | Stop the current job |
+| `import.maps` | `{plugin}` → `{maps: Map[], packs: Pack[]}` | Maps and packs from the current import, filtered and categorized per the recipe |
+| `import.setHidden` | `{plugin, files: string[], hidden: bool}` → `{hidden: number}` | Show or hide maps by file name |
+| `import.setPacks` | `{plugin, packs: [{id, enabled}]}` → `{packs: Pack[]}` | Enable or disable packs (changes online matching) |
+| `import.uninstall` | `{plugin, deleteZip?: bool}` → `{removed: string[]}` | Remove all imported packs |
+| `import.deleteZip` | `{plugin}` → `{freed: bytes}` | Delete the cached download |
+
+The `import` channel (Coalesce) publishes `{importers: [Importer]}` on subscribe and `{job: Job}` on every phase change and at most every 200 ms during transfer/building; see [importers.md](../docs/importers.md) for the `Job` shape.
+
 The streams (`log`, `bus`, `state`, ...) and the other methods are listed in `welcome` as their providers load.
 
 ### Streams (`log`, `bus`, `net`, `lobby`, `stats`)

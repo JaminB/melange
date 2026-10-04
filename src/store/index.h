@@ -14,6 +14,7 @@ constexpr int kMaxFiles = 2000;
 
 struct Dep { std::string id, range; };
 struct Shot { std::string path, sha256, caption; uint64_t size = 0; };
+struct ImportLine { std::string title, publisher, host; uint64_t size = 0; };
 struct Version {
     std::string version, released, melange, kind, filesystem = "none", url, sha256, changelog;
     bool unsafe = false, yanked = false;
@@ -25,6 +26,7 @@ struct Plugin {
     std::string id, name, description, homepage, licence;
     std::vector<std::string> authors, categories, gameBuilds;
     std::vector<Shot> screenshots;
+    std::vector<ImportLine> imports;   // what its importer can download when asked
     std::vector<Version> versions;   // newest first
 };
 struct Index {

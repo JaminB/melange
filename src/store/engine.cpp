@@ -447,7 +447,10 @@ void DoDrop(const Task& t) {
         if (v) kind = v->kind;
     }
     const install::Pending op{"remove", id, "", "", "", 0, t.deleteData};
-    if (known && entry.sessionActive && (entry.contentRelevant || kind == "content")) {
+    bool genActive = false;
+    for (const std::string& g : install::GeneratedBy(g_paths, id))
+        if (auto it = local.find(g); it != local.end() && it->second.sessionActive) genActive = true;
+    if ((known && entry.sessionActive && (entry.contentRelevant || kind == "content")) || genActive) {
         AddPending(op);
         LOG_INFO("[store] removing %s at the next launch", id.c_str());
         SetJob("done", id, "", "Removed at the next launch");
@@ -472,6 +475,8 @@ void DoDrop(const Task& t) {
     }
     g_host->Forget(id);
     if (t.deleteData) DeleteData(id);
+    for (const std::string& g : install::GeneratedBy(g_paths, id)) g_host->Unload(g);
+    for (const std::string& g : install::RemoveGenerated(g_paths, id, t.deleteData)) LOG_INFO("[store] removed %s with %s", g.c_str(), id.c_str());
     LOG_INFO("[store] removed %s", id.c_str());
     SetJob("done", id, "", "Removed");
 }
@@ -740,6 +745,12 @@ bool GetDetails(const std::string& id, Details* out, bool fetchShots) {
     out->content = v->kind == "content";
     out->dependencies = v->dependencies;
     out->conflicts = v->conflicts;
+    out->imports = p->imports;
+    for (const std::string& g : install::GeneratedBy(g_paths, id)) {
+        spice::Manifest m;
+        std::vector<spice::Error> errs;
+        if (spice::Parse(g_paths.mods + L"\\" + W(g), &m, &errs)) out->importedMaps += static_cast<int>(m.levels.size());
+    }
     bool missing = false;
     for (size_t i = 0; i < p->screenshots.size(); ++i) {
         ShotRow r;
@@ -812,6 +823,7 @@ Outcome Install(const std::string& id, const std::string& version, bool enable, 
     const Plugin* p = FindPlugin(*g_index, id);
     if (!p) return {-32602, "no plugin '" + id + "' in the list"};
     if (PendingFor(id)) return {-32000, "a change to " + id + " is waiting for the next launch"};
+    if (const std::string r = install::ReservedGeneratedId(g_paths, id); !r.empty()) return {-32000, r};
     const Env env = MakeEnv(false);
     const Item it = MakeItem(*p, local, env);
     const std::string target = version.empty() ? it.compatible : version;

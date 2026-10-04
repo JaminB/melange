@@ -300,6 +300,35 @@ void AddError(std::vector<Error>* errs, const json::Value* v, const char* field,
     errs->push_back(std::move(e));
 }
 
+bool ValidRecipePath(const std::string& p) {
+    if (p.size() < 6 || p.size() > 64 || !p.ends_with(".json")) return false;
+    size_t i = 0;
+    while (i <= p.size()) {
+        size_t j = p.find('/', i);
+        if (j == std::string::npos) j = p.size();
+        const std::string seg = p.substr(i, j - i);
+        if (seg.empty() || seg.front() == '.') return false;
+        for (char c : seg)
+            if (!(std::isalnum(static_cast<unsigned char>(c)) || c == '.' || c == '_' || c == '-')) return false;
+        i = j + 1;
+    }
+    return true;
+}
+
+bool ValidRecipeId(const std::string& s) {
+    if (s.empty() || s.size() > 48) return false;
+    for (size_t i = 0; i < s.size(); ++i) {
+        const char c = s[i];
+        if (!((c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || (i && (c == '.' || c == '-')))) return false;
+    }
+    return true;
+}
+
+bool GeneratedId(const std::string& id, const std::string& by) {
+    return id.size() == by.size() + 2 && id.compare(0, by.size(), by) == 0 && id[by.size()] == '-' &&
+           id.back() >= '1' && id.back() <= '9';
+}
+
 bool GetStr(const json::Value& obj, const char* key, std::string* out, const char* def = nullptr) {
     const json::Value* v = obj.Get(key);
     if (!v) {
@@ -772,6 +801,33 @@ bool ParseManifestJson(const json::Value& v, const std::string& folderId, Manife
             ok = false;
         }
     }
+    if (const json::Value* imp = v.Get("importer")) {
+        const json::Value* r = imp->IsObject() ? imp->Get("recipe") : nullptr;
+        if (!r || imp->members.size() != 1 || !r->IsString() || !ValidRecipePath(r->string)) {
+            AddError(errs, imp, "importer", "importer must be {\"recipe\": \"<file>.json\"}, a relative path of at most 64 characters");
+            ok = false;
+        } else {
+            out->importerRecipe = r->string;
+        }
+    }
+    if (const json::Value* gen = v.Get("generated")) {
+        const json::Value* by = gen->IsObject() ? gen->Get("by") : nullptr;
+        const json::Value* rec = gen->IsObject() ? gen->Get("recipe") : nullptr;
+        const json::Value* fmt = gen->IsObject() ? gen->Get("format") : nullptr;
+        const bool shape = by && rec && fmt && gen->members.size() == 3 && by->IsString() && ValidId(by->string) &&
+                           rec->IsString() && ValidRecipeId(rec->string) && fmt->IsInteger() && fmt->number >= 1 && fmt->number <= 999;
+        if (!shape) {
+            AddError(errs, gen, "generated", "generated must be {\"by\", \"recipe\", \"format\"}");
+            ok = false;
+        } else if (!GeneratedId(out->id, by->string)) {
+            AddError(errs, gen, "generated", "a generated pack's id must be <by>-<1..9>");
+            ok = false;
+        } else {
+            out->generatedBy = by->string;
+            out->generatedRecipe = rec->string;
+            out->generatedFormat = static_cast<int>(fmt->number);
+        }
+    }
     if (const json::Value* settings = v.Get("settings")) {
         if (!settings->IsArray()) {
             AddError(errs, settings, "settings", "settings must be an array");
@@ -1027,6 +1083,11 @@ std::vector<Resolved> Resolve(const std::vector<Manifest>& all, const std::set<s
         bool wantsOn = userEnabled.count(id) != 0;
         if (!wantsOn) {
             n.state = mods::State::Disabled;
+            continue;
+        }
+        if (!n.m->generatedBy.empty() && !userEnabled.count(n.m->generatedBy)) {
+            n.state = mods::State::Disabled;
+            n.reason = n.m->generatedBy + " is turned off";
             continue;
         }
         if (n.m->unsafe) {

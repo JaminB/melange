@@ -117,6 +117,7 @@ struct Document {
     std::array<uint8_t, 28> reserved24{};
     std::vector<TypeEntry> types;
     std::array<uint32_t, 3> guidRec{}, schmRec{};
+    bool guidRecord = true;            // false: a v1 file, SCHM follows the TYPE table directly
     std::vector<std::string> strings;  // STRS table; index = string id
     std::vector<uint8_t> strsRaw;      // original STRS bytes if not canonical (never seen)
     uint32_t root = 0;                 // 1-based object index

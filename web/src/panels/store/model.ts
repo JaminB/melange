@@ -10,10 +10,14 @@ export interface Item {
 export interface Dep { id: string; range: string; }
 export interface Shot { n: number; caption: string; ready: boolean; }
 export interface VersionRow { version: string; released: string; melange: string; size: number; changelog: string; yanked: boolean; compatible: boolean; }
+export interface ImportsLine { title: string; publisher: string; host: string; size: number; }
 export interface Details extends Item {
   homepage: string; permissions: { unsafe: boolean; filesystem: string }; content: boolean;
   dependencies: Dep[]; conflicts: Dep[]; screenshots: Shot[]; versions: VersionRow[];
   dependants: string[]; conflictsEnabled: string[]; plan: { id: string; version: string }[]; planError: string;
+  // A plugin with a recipe (spec §11.1 `imports` index field): what it can download, shown before install, and
+  // (§12.2 "Store remove confirm") how many maps it imported, shown before remove.
+  imports: ImportsLine[]; importedMaps: number;
 }
 export interface Job { phase: string; id: string; version: string; bytes: number; total: number; message: string; }
 export interface Status {
@@ -75,6 +79,9 @@ export function detailsOf(v: unknown): Details | undefined {
     })),
     dependants: strs(o, "dependants"), conflictsEnabled: strs(o, "conflictsEnabled"),
     plan: plan.map((p) => ({ id: str(p, "id"), version: str(p, "version") })), planError: str(o, "planError"),
+    imports: (Array.isArray(o.imports) ? o.imports : []).map(obj).filter((x) => typeof x.title === "string")
+      .map((x) => ({ title: str(x, "title"), publisher: str(x, "publisher"), host: str(x, "host"), size: num(x, "size") })),
+    importedMaps: num(o, "importedMaps"),
   };
 }
 
@@ -146,9 +153,12 @@ export function confirmLines(d: Details, ask: Ask): string[] {
   const out: string[] = [];
   if (ask.kind === "remove") {
     if (d.dependants.length) out.push(`${d.dependants.join(", ")} need${d.dependants.length === 1 ? "s" : ""} this; they will be blocked.`);
+    if (d.importedMaps > 0) out.push(`This also removes the ${d.importedMaps} map${d.importedMaps === 1 ? "" : "s"} it imported.`);
     return out;
   }
   out.push(`${sizeText(d.size)}, ${d.kind}`);
+  for (const im of d.imports)
+    out.push(`${d.name} can download ${im.title} (${sizeText(im.size)}) from ${im.host} when you ask it to. The maps are imported on your PC; the plugin contains none of them.`);
   if (d.installed && !d.installed.managed) out.push(`Replace the copy in Mods\\${d.id} (version ${d.installed.version})?`);
   if (ask.older) out.push("This is older than what you have.");
   if (d.unsafe) {

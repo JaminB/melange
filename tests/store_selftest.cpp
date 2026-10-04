@@ -69,6 +69,14 @@ void TestIndex() {
     Expect(idx.serial == 3 && idx.plugins.size() == 2 && idx.plugins[0].id == "alpha", "plugins sorted by id");
     Expect(idx.plugins[1].versions.size() == 2 && idx.plugins[1].versions[0].version == "1.1.0", "versions newest first");
     Expect(idx.plugins[1].screenshots.size() == 1 && idx.plugins[1].versions[0].size == 100, "fields read");
+    {
+        const std::string im = ",\"imports\":[{\"title\":\"Maps 1\",\"publisher\":\"p\",\"host\":\"example.com\",\"size\":1000}]";
+        Expect(st::ParseIndex(IndexOf({Plugin("imp", Ver("1.0.0"), im)}), &idx, &err) && idx.plugins.size() == 1 &&
+                   idx.plugins[0].imports.size() == 1 && idx.plugins[0].imports[0].host == "example.com" && idx.plugins[0].imports[0].size == 1000,
+               "imports read");
+        Expect(st::ParseIndex(IndexOf({Plugin("imp", Ver("1.0.0"), ",\"imports\":[{\"title\":\"x\"}]")}), &idx, &err) && idx.plugins.empty(),
+               "an imports entry without host and size drops the plugin");
+    }
 
     Expect(!st::ParseIndex(std::string(st::kMaxIndexBytes + 1, ' '), &idx, &err), "over 1 MiB refused");
     Expect(!st::ParseIndex("{\"indexVersion\":2,\"serial\":1,\"plugins\":[]}", &idx, &err) && err.find("indexVersion") != std::string::npos,

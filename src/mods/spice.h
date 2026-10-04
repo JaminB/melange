@@ -24,6 +24,9 @@ struct Manifest {
     std::vector<Dep> dependencies, optional, conflicts; std::vector<std::string> loadAfter, messages, hashInclude;
     std::vector<Setting> settings; std::vector<Weapon> weapons;
     std::vector<Level> levels; std::wstring dir;
+    std::string importerRecipe;                       // "importer": {"recipe"}: a local content importer's recipe file
+    std::string generatedBy, generatedRecipe;         // "generated": a pack an importer made on this PC
+    int generatedFormat = 0;
     // Optional "graphics" block: a client-only mod's request for texture clarity (Mirage's MirageTextures
     // component, and the shadow-map size for MirageShadows), applied unless the user overrides it in Melange.ini.
     // Never affects the simulation.

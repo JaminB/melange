@@ -38,13 +38,14 @@ async function shot(page, name) {
   await page.evaluate(() => { delete document.documentElement.dataset.theme; });
 }
 
-async function openPage(browser, mock, scenario) {
+async function openPage(browser, mock, scenario, importScenario) {
   const page = await browser.newPage({ viewport: { width: 1120, height: 740 } });
   const errors = [];
   page.on("pageerror", (e) => errors.push(e.message));
   page.on("console", (m) => { if (m.type() === "error") errors.push(m.text()); });
   current = page;
-  await page.goto(`${mock.url}&scenario=${scenario}`, { waitUntil: "load" });
+  const importQs = importScenario ? `&import=${importScenario}` : "";
+  await page.goto(`${mock.url}&scenario=${scenario}${importQs}`, { waitUntil: "load" });
   await page.waitForSelector("[data-step], .la", { timeout: 15000 });
   return { page, errors };
 }
@@ -302,9 +303,205 @@ async function pluginsBusy(browser) {
   }
 }
 
+// -- Local content importer (spec §12): the Import page, against web/test/e2e/import-mock.mjs's "caravan" fixture --
+
+async function openImportPage(browser, importScenario) {
+  const mock = await startMock({ root, launcher: true, import: importScenario });
+  const { page, errors } = await openPage(browser, mock, "restore", importScenario);
+  await page.waitForSelector(".la", { timeout: 10000 });
+  await page.locator('[data-page-tab="plugins"]').click();
+  await page.waitForSelector('[data-plugin="caravan"]', { timeout: 10000 });
+  return { mock, page, errors };
+}
+
+async function importDownloadFlow(browser) {
+  const { mock, page, errors } = await openImportPage(browser, "fresh");
+  try {
+    await attempt("plugins: caravan offers Import maps", async () => {
+      check("plugins: button label", (await page.locator('[data-import-open="caravan"]').textContent())?.trim() === "Import maps");
+      await shot(page, "22-plugins-caravan");
+      await page.locator('[data-import-open="caravan"]').click();
+      await page.waitForSelector('[data-import-step="form"]', { timeout: 10000 });
+    });
+    await attempt("import: disclosure names the content and gates the button", async () => {
+      check("import: heading names the fixture content", /Fixture Mod/.test(await page.locator(".li-card h2").textContent()));
+      check("import: Import is disabled before accepting", await page.locator("[data-import]").isDisabled());
+      await shot(page, "23-import-disclosure");
+      await page.locator("[data-accept]").check();
+      check("import: still disabled with no ready source until one is picked (download is default)", !(await page.locator("[data-import]").isDisabled()));
+      await page.locator("[data-import]").click();
+      await page.waitForSelector('[data-import-step="progress"]', { timeout: 5000 });
+    });
+    await attempt("import: progress shows phases and a bar", async () => {
+      await shot(page, "24-import-progress");
+      await page.waitForSelector('[data-import-step="result"]', { timeout: 10000 });
+    });
+    await attempt("import: result names the counts and a fingerprint", async () => {
+      check("import: heading", /12 maps imported/.test(await page.locator("[data-result] h2").textContent()));
+      check("import: fingerprint shown", /Fingerprint/.test(await page.locator("[data-result]").textContent()));
+      await shot(page, "25-import-result");
+      await page.locator("[data-result] button:has-text(\"Browse maps\")").click();
+      await page.waitForSelector('[data-import-step="imported"]', { timeout: 5000 });
+    });
+    await attempt("import: imported page lists packs and all 12 maps", async () => {
+      check("import: two packs", (await page.locator("[data-pack]").count()) === 2);
+      check("import: twelve maps", (await page.locator("[data-maps] [data-map]").count()) === 12);
+      await shot(page, "26-import-imported");
+    });
+    await attempt("import: map browser search, group/shown filters and hide/show", async () => {
+      await page.locator('[data-import-maps] input[type="search"]').fill("harbour");
+      check("maps: search narrows to one", (await page.locator("[data-maps] [data-map]").count()) === 1);
+      await page.locator('[data-import-maps] input[type="search"]').fill("");
+      await page.locator('[aria-label="Shown"]').selectOption("hidden");
+      check("maps: two maps hidden by default (the mode maps)", (await page.locator("[data-maps] [data-map]").count()) === 2);
+      await page.locator("[data-show-all]").click();
+      await page.waitForFunction(() => document.querySelectorAll("[data-maps] [data-map]").length === 0);
+      check("maps: Show all clears the hidden filter's results", true);
+      await page.locator('[aria-label="Shown"]').selectOption("all");
+      // A plain click, not .uncheck(): the box is controlled by the server round trip, so it holds its pre-click
+      // state until `import.setHidden` + the refetch land, which Playwright's own checked-state assertion does not expect.
+      await page.locator('input[data-show="Alpine"]').click();
+      await page.waitForSelector('[data-map="Alpine"][data-hidden="true"]', { timeout: 5000 });
+      check("maps: unchecking Show hides that one map", true);
+      await shot(page, "27-import-maps-filtered");
+    });
+    await attempt("import: a pack can be turned off", async () => {
+      await page.locator('[data-toggle="caravan-2"]').click();
+      await page.waitForSelector('[data-toggle="caravan-2"][aria-checked="false"]', { timeout: 5000 });
+      check("packs: toggled off", true);
+    });
+    await attempt("import: re-import asks first, then rebuilds the packs", async () => {
+      await page.locator('button:has-text("Re-import")').first().click();
+      await page.waitForSelector(".li-dialog", { timeout: 5000 });
+      check("import: re-import confirm names the content", /Fixture Mod/.test(await page.locator(".li-dialog").textContent()));
+      await page.locator(".li-dialog button:has-text(\"Re-import\")").click();
+      await page.waitForSelector('[data-import-step="progress"]', { timeout: 5000 });
+      await page.waitForSelector('[data-import-step="result"]', { timeout: 10000 });
+      await page.locator("[data-result] button:has-text(\"Done\")").click();
+      await page.waitForSelector('[data-import-step="imported"]', { timeout: 5000 });
+      check("import: back to the imported view after re-import", true);
+    });
+    await attempt("import: remove deletes the packs and offers to delete the zip", async () => {
+      await page.locator('button:has-text("Remove imported maps")').click();
+      await page.waitForSelector(".li-dialog", { timeout: 5000 });
+      check("import: remove confirm names the pack count", /2 map packs/.test(await page.locator(".li-dialog").textContent()));
+      await page.locator(".li-dialog input[type=\"checkbox\"]").check();
+      await page.locator(".li-dialog button:has-text(\"Remove\")").click();
+      await page.waitForSelector('[data-import-step="form"]', { timeout: 5000 });
+      check("import: back to the not-imported form", true);
+      await shot(page, "28-import-removed");
+    });
+    check("import download-flow scenario: no page errors", errors.length === 0, errors.join(" | "));
+  } finally {
+    await page.close();
+    await mock.close();
+  }
+}
+
+async function importLocalFileFlow(browser) {
+  const { mock, page, errors } = await openImportPage(browser, "fresh");
+  try {
+    await attempt("import: a local zip can be chosen instead of downloading", async () => {
+      await page.locator('[data-import-open="caravan"]').click();
+      await page.waitForSelector('[data-import-step="form"]', { timeout: 10000 });
+      await page.locator("[data-accept]").check();
+      await page.locator('[data-source="file"]').check();
+      check("import: Import disabled until a file is chosen", await page.locator("[data-import]").isDisabled());
+      await page.locator("[data-browse]").click();
+      await page.waitForFunction(() => /MyFixtureCopy\.zip/.test(document.querySelector('[data-source="file"]')?.closest("label")?.textContent ?? ""));
+      check("import: Import enabled once a file is chosen", !(await page.locator("[data-import]").isDisabled()));
+      await page.locator("[data-import]").click();
+      await page.waitForSelector('[data-import-step="result"]', { timeout: 10000 });
+      check("import: local-file import finishes", /12 maps imported/.test(await page.locator("[data-result] h2").textContent()));
+    });
+    check("import local-file scenario: no page errors", errors.length === 0, errors.join(" | "));
+  } finally {
+    await page.close();
+    await mock.close();
+  }
+}
+
+async function importHashErrorFlow(browser) {
+  const { mock, page, errors } = await openImportPage(browser, "hash-error");
+  try {
+    await attempt("import: a bad checksum is refused with an explanation", async () => {
+      await page.locator('[data-import-open="caravan"]').click();
+      await page.waitForSelector('[data-import-step="form"]', { timeout: 10000 });
+      await page.locator("[data-accept]").check();
+      await page.locator("[data-import]").click();
+      await page.waitForSelector('[data-import-step="error"]', { timeout: 10000 });
+      const text = await page.locator('[data-error]').textContent();
+      check("import: names the content and says nothing was read", /Fixture Mod/.test(text) && /Nothing was read/.test(text), text);
+      await shot(page, "29-import-hash-error");
+      await page.locator('button:has-text("Try again")').click();
+      await page.waitForSelector('[data-import-step="form"]', { timeout: 5000 });
+      check("import: Try again returns to the form", true);
+    });
+    check("import hash-error scenario: no page errors", errors.length === 0, errors.join(" | "));
+  } finally {
+    await page.close();
+    await mock.close();
+  }
+}
+
+async function importCancelFlow(browser) {
+  const { mock, page, errors } = await openImportPage(browser, "fresh");
+  try {
+    await attempt("import: cancel stops the job and changes nothing", async () => {
+      await page.locator('[data-import-open="caravan"]').click();
+      await page.waitForSelector('[data-import-step="form"]', { timeout: 10000 });
+      await page.locator("[data-accept]").check();
+      await page.locator("[data-import]").click();
+      await page.waitForSelector('[data-cancel]', { timeout: 5000 });
+      await page.locator("[data-cancel]").click();
+      await page.waitForSelector('[data-import-step="cancelled"]', { timeout: 5000 });
+      check("import: cancelled copy", /Import cancelled/.test(await page.locator("[data-cancelled]").textContent()));
+      await page.locator('[data-cancelled] button:has-text("Continue")').click();
+      await page.waitForSelector('[data-import-step="form"]', { timeout: 5000 });
+      check("import: back to the form after cancel", true);
+    });
+    check("import cancel scenario: no page errors", errors.length === 0, errors.join(" | "));
+  } finally {
+    await page.close();
+    await mock.close();
+  }
+}
+
+async function importStaleAndDamaged(browser) {
+  const { mock, page, errors } = await openImportPage(browser, "stale");
+  try {
+    await attempt("import: a stale import offers to re-import", async () => {
+      await page.locator('[data-import-open="caravan"]').click();
+      await page.waitForSelector('[data-import-step="imported"][data-status="stale"]', { timeout: 10000 });
+      check("import: stale banner", /was updated/.test(await page.locator('[data-notice="stale"]').textContent()));
+      await shot(page, "30-import-stale");
+    });
+    check("import stale scenario: no page errors", errors.length === 0, errors.join(" | "));
+  } finally {
+    await page.close();
+    await mock.close();
+  }
+  const d = await openImportPage(browser, "damaged");
+  try {
+    await attempt("import: a damaged import offers to repair", async () => {
+      await d.page.locator('[data-import-open="caravan"]').click();
+      await d.page.waitForSelector('[data-import-step="imported"][data-status="damaged"]', { timeout: 10000 });
+      check("import: damaged banner", /missing or changed/.test(await d.page.locator('[data-notice="damaged"]').textContent()));
+      await shot(d.page, "31-import-damaged");
+    });
+    check("import damaged scenario: no page errors", d.errors.length === 0, d.errors.join(" | "));
+  } finally {
+    await d.page.close();
+    await d.mock.close();
+  }
+}
+
 const browser = await chromium.launch({ channel: "msedge", headless: true });
 try {
-  for (const scenario of [foundInstallRecommended, notFound, wrongBuild, ualPresent, reshadeBackupAndRestore, installedHome, pluginsBusy]) {
+  for (const scenario of [
+    foundInstallRecommended, notFound, wrongBuild, ualPresent, reshadeBackupAndRestore, installedHome, pluginsBusy,
+    importDownloadFlow, importLocalFileFlow, importHashErrorFlow, importCancelFlow, importStaleAndDamaged,
+  ]) {
     try {
       await scenario(browser);
     } catch (e) {

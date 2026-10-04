@@ -453,14 +453,14 @@ void TestManifest() {
     auto all = lm::Assign({a, b, c}, &refused);
     Expect(all.size() == 2 && refused.size() == 1 && refused[0].mod == "my_maps", "the later mod with the same prefix is refused");
     std::vector<std::vector<lm::LevelDecl>> five;
-    for (int m = 0; m < 5; ++m) {
+    for (int m = 0; m < 9; ++m) {
         std::vector<L> ls;
-        for (int i = 0; i < 30; ++i) ls.push_back(L{"l" + std::to_string(i), "L", "multi", "", false, 0});
+        for (int i = 0; i < (m == 8 ? 1 : 32); ++i) ls.push_back(L{"l" + std::to_string(i), "L", "multi", "", false, 0});
         five.push_back(lm::Parse(Mod("pack" + std::to_string(m), ls), nullptr));
     }
     refused.clear();
     all = lm::Assign(five, &refused);
-    Expect(all.size() == 120 && refused.size() == 1 && refused[0].mod == "pack4", "more than 128 levels in all refuse the last mod");
+    Expect(all.size() == 256 && refused.size() == 1 && refused[0].mod == "pack8", "256 levels are accepted, the 257th refuses the last mod");
 }
 
 // ---------------------------------------------------------------- erg-scene/2, erg-patch/2 and the v2 chunk
