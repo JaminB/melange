@@ -2,17 +2,20 @@ import { useEffect, useRef, useState } from "preact/hooks";
 import type { Client } from "../../sdk/client";
 import { errorText } from "../../sdk/hooks";
 import { modsOf, stateText, stateTone, type ModInfo } from "../../panels/mods/model";
-import type { Setting, SetupStatus, Val } from "../api";
-import { settingOf, valuesOf } from "../api";
+import type { Importer, Setting, SetupStatus, Val } from "../api";
+import { importEventOf, importersOf, settingOf, valuesOf } from "../api";
 import { Drawer } from "../components/Drawer";
 import { SettingControl } from "../components/SettingControl";
-import { busyNotice } from "../copy";
+import { busyNotice, importButtonLabel } from "../copy";
 import { StoreIcon } from "../icons";
 
-export function Plugins({ client, status, onOpenStore }: { client: Client; status: SetupStatus | undefined; onOpenStore: () => void }) {
+export function Plugins({ client, status, onOpenStore, onOpenImport }: {
+  client: Client; status: SetupStatus | undefined; onOpenStore: () => void; onOpenImport: (plugin: string) => void;
+}) {
   const batch = status?.busy;
   const batchWhy = batch ? busyNotice(batch) : undefined;
   const [list, setList] = useState<ModInfo[]>();
+  const [importers, setImporters] = useState<Map<string, Importer>>(new Map());
   const [error, setError] = useState<string>();
   const [busy, setBusy] = useState<string>();
   const [drawer, setDrawer] = useState<string>();
@@ -21,6 +24,17 @@ export function Plugins({ client, status, onOpenStore }: { client: Client; statu
     client.call<unknown>("mods.list").then((v) => { setList(modsOf(v)); setError(undefined); }, (e) => setError(errorText(e)));
   };
   useEffect(load, [client]);
+
+  useEffect(() => {
+    if (!client.has("import.list")) return;
+    client.call<unknown>("import.list").then((v) => setImporters(new Map(importersOf(v).map((i) => [i.plugin, i]))), () => {});
+    if (!client.has("import")) return;
+    return client.subscribe<unknown>("import", undefined, (m) => {
+      const ev = importEventOf(m);
+      if (ev.importers) setImporters(new Map(ev.importers.map((i) => [i.plugin, i])));
+      if (ev.job) setImporters((prev) => { const i = prev.get(ev.job!.plugin); if (!i) return prev; const next = new Map(prev); next.set(i.plugin, { ...i, job: ev.job }); return next; });
+    });
+  }, [client]);
 
   const toggle = async (m: ModInfo) => {
     setBusy(m.id);
@@ -48,17 +62,32 @@ export function Plugins({ client, status, onOpenStore }: { client: Client; statu
         <p class="muted">No plugins yet. Browse the Store to add some. <button class="link" onClick={onOpenStore}>Open Store</button></p>
       ) : (
         <ul class="lp-list" data-plugins>
-          {list.map((m) => (
-            <li key={m.id} class="lp-row" data-plugin={m.id}>
-              <button class="lp-switch" role="switch" aria-checked={m.on} disabled={busy === m.id} aria-label={`${m.on ? "Disable" : "Enable"} ${m.name}`}
-                      data-toggle={m.id} onClick={() => toggle(m)} />
-              <div class="lp-row-main">
-                <div class="lp-row-name">{m.name || m.id} <span class="muted small">{m.version}</span></div>
-                <div class="lp-row-desc">{m.authors} · <span class={`tone-${stateTone(m.state)}`}>{stateText(m.state)}</span></div>
-              </div>
-              <button class="btn" data-settings={m.id} onClick={() => setDrawer(m.id)}>Settings</button>
-            </li>
-          ))}
+          {list.map((m) => {
+            const importer = importers.get(m.id);
+            const job = importer?.job;
+            const pct = job && job.total > 0 ? Math.round((job.bytes / job.total) * 100) : undefined;
+            const importing = job && !["idle", "done", "error", "cancelled"].includes(job.phase);
+            return (
+              <li key={m.id} class="lp-row" data-plugin={m.id}>
+                <button class="lp-switch" role="switch" aria-checked={m.on} disabled={busy === m.id} aria-label={`${m.on ? "Disable" : "Enable"} ${m.name}`}
+                        data-toggle={m.id} onClick={() => toggle(m)} />
+                <div class="lp-row-main">
+                  <div class="lp-row-name">{m.name || m.id} <span class="muted small">{m.version}</span></div>
+                  <div class="lp-row-desc">
+                    {m.authors} · <span class={`tone-${stateTone(m.state)}`}>{stateText(m.state)}</span>
+                    {importing ? <span class="muted"> · Importing…{pct !== undefined ? ` ${pct}%` : ""}</span> : null}
+                  </div>
+                </div>
+                {importer ? (
+                  <button class="btn" data-import-open={m.id} disabled={importer.status === "unsupported"}
+                          title={importer.status === "unsupported" ? importer.statusReason : undefined} onClick={() => onOpenImport(m.id)}>
+                    {importButtonLabel(importer.status)}
+                  </button>
+                ) : null}
+                <button class="btn" data-settings={m.id} onClick={() => setDrawer(m.id)}>Settings</button>
+              </li>
+            );
+          })}
         </ul>
       )}
       {drawer ? <PluginSettings client={client} id={drawer} name={list?.find((x) => x.id === drawer)?.name ?? drawer} busyWhy={batchWhy} onClose={() => setDrawer(undefined)} /> : null}

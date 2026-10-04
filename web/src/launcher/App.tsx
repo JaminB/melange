@@ -7,6 +7,7 @@ import { launcherStateOf, setupEventOf, setupStatusOf, type LauncherState, type 
 import { ExternalLinkIcon, GearIcon, LifeBuoyIcon, PlayIcon, PuzzleIcon, SparkleIcon, StoreIcon } from "./icons";
 import { Help } from "./pages/Help";
 import { Home } from "./pages/Home";
+import { Import } from "./pages/Import";
 import { Plugins } from "./pages/Plugins";
 import { Settings } from "./pages/Settings";
 import { initialWizard, wizardReducer } from "./state";
@@ -50,6 +51,7 @@ export function LauncherApp({ client }: { client: Client }) {
   const [status, setStatus] = useState<SetupStatus>();
   const [inWizard, setInWizard] = useState<boolean>();
   const [page, setPage] = useState<Page>("home");
+  const [importPlugin, setImportPlugin] = useState<string>();
   const [wizard, dispatch] = useReducer(wizardReducer, undefined, initialWizard);
   const [launchError, setLaunchError] = useState<string>();
   const [launching, setLaunching] = useState(false);
@@ -80,6 +82,17 @@ export function LauncherApp({ client }: { client: Client }) {
     client.call("launcher.setTheme", { theme: t }).catch(() => {});
   };
   useEffect(() => { if (launcher) applyTheme(launcher.theme); }, [launcher?.theme]);
+
+  // The Import page's own place (spec §12.1 `#/plugins/<id>/import`): read once on load, written back so the URL
+  // reflects it, but otherwise a plain piece of state like every other page here (no router).
+  useEffect(() => {
+    const m = /^#\/plugins\/([^/]+)\/import$/.exec(location.hash);
+    if (m) { setPage("plugins"); setImportPlugin(decodeURIComponent(m[1])); }
+  }, []);
+  useEffect(() => {
+    if (importPlugin) history.replaceState(null, "", `#/plugins/${encodeURIComponent(importPlugin)}/import`);
+    else if (location.hash.startsWith("#/plugins/")) history.replaceState(null, "", "#/plugins");
+  }, [importPlugin]);
 
   const launch = async () => {
     setLaunching(true);
@@ -135,9 +148,10 @@ export function LauncherApp({ client }: { client: Client }) {
         </nav>
         <main class="la-content" aria-label={PAGES.find((p) => p.id === page)?.label}>
           <div class="la-content-inner">
-            {page === "home" ? <Home client={client} status={status} onFixGame={() => { dispatch({ type: "goto", step: "find" }); setInWizard(true); }}
+            {importPlugin ? <Import client={client} plugin={importPlugin} onBack={() => setImportPlugin(undefined)} />
+              : page === "home" ? <Home client={client} status={status} onFixGame={() => { dispatch({ type: "goto", step: "find" }); setInWizard(true); }}
                                       onOpenPlugins={() => setPage("plugins")} onOpenSettings={() => setPage("settings")} />
-              : page === "plugins" ? <Plugins client={client} status={status} onOpenStore={() => setPage("store")} />
+              : page === "plugins" ? <Plugins client={client} status={status} onOpenStore={() => setPage("store")} onOpenImport={setImportPlugin} />
               : page === "store" ? <Store client={client} />
               : page === "settings" ? <Settings client={client} status={status} theme={launcher?.theme ?? "system"} onTheme={setTheme}
                                                  onChangeFolder={() => { dispatch({ type: "goto", step: "find" }); setInWizard(true); }} />

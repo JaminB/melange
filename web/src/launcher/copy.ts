@@ -1,7 +1,7 @@
 // The wizard's words (spec §5.3) as pure data: one function per family of states, each returning {title, body}.
 // A unit test asserts every member of every union this file switches on produces non-empty title and body.
-import type { Candidate, DllInfo, GameCheck, Plan, SetupProgress, SetupStatus, Verdict } from "./api";
-import { LauncherErrorCode, hashShort, sizeText } from "./api";
+import type { Candidate, DllInfo, GameCheck, ImportContent, ImportJob, ImportSource, Importer, Plan, SetupProgress, SetupStatus, Verdict } from "./api";
+import { LauncherErrorCode, fingerprintShort, hashShort, sizeText, whenText } from "./api";
 
 export interface Copy { title: string; body: string[]; }
 
@@ -162,3 +162,134 @@ export const OFFLINE_STORE: Copy = {
   title: "We can't reach the plugin store right now",
   body: ["You can install plugins later from the Store page."],
 };
+
+// -- Local content importer (spec §12.2); `{}` values come from the recipe, via `Importer`, so this page serves any
+// importer, not just Caravan -----------------------------------------------------------------------------------
+export function importButtonLabel(status: Importer["status"]): string {
+  switch (status) {
+    case "none": return "Import maps";
+    case "stale": return "Re-import";
+    case "damaged": return "Repair";
+    case "unsupported": return "Needs a newer Melange";
+    default: return "Maps";
+  }
+}
+
+export const importInstalledToast = (pluginName: string): string => `${pluginName} installed. Open it on the Plugins page to import the maps.`;
+
+export interface DisclosureCopy { heading: string; intro: string; bullets: string[]; }
+export function disclosureCopy(imp: Importer, source: ImportSource | undefined): DisclosureCopy {
+  const c = imp.content;
+  const size = source ? sizeText(source.size) : "";
+  const host = source?.host || c.publisher;
+  const fileName = source?.fileName ?? "";
+  return {
+    heading: `Bring the ${c.title} maps to Melange`,
+    intro: `${imp.name} imports the maps from ${c.title}, a fan mod published on ${c.publisher}, into Melange on this PC. ${imp.name} itself contains no maps.`,
+    bullets: [
+      `Downloaded only when you ask. Melange fetches ${fileName} (${size}) from ${host}, under that site's terms. You can also use a copy you already have.`,
+      "Checked before use. The file must match a known checksum before anything is read from it.",
+      "Stays on your PC. Imported maps are saved in your game's Mods folder. Melange never uploads or shares them.",
+      `Maps only. ${c.title}'s textures, scripts and game changes are not used. Maps use the game's standard textures, and maps made for special modes play as plain deathmatch.`,
+      `Not affiliated. Melange and ${imp.name} are not made by or affiliated with ${c.publisher} or Team17. ${c.credit}`,
+    ],
+  };
+}
+export const disclosureCheckboxLabel = (publisher: string): string => `I understand these maps come from ${publisher} under its terms.`;
+export const termsLinkLabel = (publisher: string): string => `Read ${publisher}'s terms`;
+
+export const sourceDownloadLabel = (source: ImportSource): string => `Download from ${source.name} (${sizeText(source.size)})`;
+export const SOURCE_LOCAL_LABEL = "Use a zip I already have";
+export const CHOOSE_FILE_LABEL = "Choose file…";
+export const localFileChosenLine = (name: string, size: number): string => `${name}, ${sizeText(size)}`;
+export const localFileHint = (source: ImportSource): string => `It must be ${source.fileName}, ${source.size.toLocaleString()} bytes.`;
+export const keepZipLabel = (size: number): string => `Keep the zip so I can re-import later without downloading (${sizeText(size)})`;
+
+export const IMPORT_BUTTON_LABEL = "Import maps";
+// `gate` is one of the `import.*` refusal reasons (RPC §10.3); anything else is shown as given so a future reason
+// still says something rather than nothing.
+export function importGateText(gate: string): string {
+  if (gate === "gameRunning") return "Close Worms Ultimate Mayhem to import maps.";
+  if (gate === "noGame") return "Choose your game folder on the Home page first.";
+  return gate;
+}
+
+export function importProgressLine(job: ImportJob): string {
+  switch (job.phase) {
+    case "downloading": return `Downloading… ${sizeText(job.bytes)} of ${sizeText(job.total)}`;
+    case "copying": return "Copying your zip…";
+    case "verifying": return "Checking the file…";
+    case "reading": return "Reading the maps…";
+    case "building": return `Building map packs… ${job.step} of ${job.of}`;
+    case "placing": return "Installing the packs…";
+    case "cancelled": return "Import cancelled. Nothing was changed.";
+    default: return "";
+  }
+}
+
+export function importErrorText(job: ImportJob, imp: Importer): string {
+  const message = job.message || "";
+  switch (job.reason) {
+    case "hash":
+      return `This isn't the expected ${imp.content.title} zip: its size or checksum doesn't match. Nothing was read ` +
+        `from it. If you downloaded it yourself, get it again from ${imp.content.publisher}.`;
+    case "network":
+      return `The download failed: ${message}. Check your connection and try again, or use a zip you already have.`;
+    case "space":
+      return `There isn't enough free space on the drive with your game.${message ? ` The import needs about ${message}.` : ""}`;
+    case "zip":
+      return `The zip is damaged or contains something unexpected${message ? ` (${message})` : ""}. Nothing was installed.`;
+    case "recipe":
+      return `The zip didn't contain what ${imp.name} expected${message ? ` (${message})` : ""}. Nothing was installed.`;
+    case "vanilla":
+      return "Some of your game's own map files differ from the expected version, so the maps based on them can't be " +
+        "imported the same way as for other players. Verify the game files in Steam, then try again.";
+    case "occupied":
+      return `A folder named ${message || "it"} is already in Mods and wasn't made by ${imp.name}. Move or remove it, then try again.`;
+    default:
+      return `The import failed${message ? `: ${message}` : ""}. Your existing maps were left as they were.`;
+  }
+}
+
+export function resultCopy(result: NonNullable<ImportJob["result"]>, content: ImportContent): { heading: string; lines: string[] } {
+  const lines = [
+    `${result.counts.play} play as designed · ${result.counts.dm} play as deathmatch · ${result.counts.mode} made for ` +
+    "special modes play as deathmatch and are hidden until you show them",
+    `${result.packs.length} map pack${result.packs.length === 1 ? "" : "s"}, ${sizeText(result.bytes)}, in your game's Mods folder.`,
+  ];
+  if (result.skipped > 0) lines.push(`${result.skipped} entries in ${content.title} weren't imported: their files are missing or they replace standard maps.`);
+  lines.push(`Fingerprint ${fingerprintShort(result.fingerprint)}. Players with the same fingerprint can play these maps together online.`);
+  return { heading: `${result.maps} maps imported`, lines };
+}
+
+export function importedHeaderLine(imp: Importer): string {
+  const im = imp.imported;
+  if (!im) return "";
+  return `${im.maps} maps · imported ${whenText(im.importedAt)} · fingerprint ${fingerprintShort(im.fingerprint)}`;
+}
+export const staleBanner = (name: string): string =>
+  `${name} was updated. Re-import to get the changes. Players need the same version to play these maps together online.`;
+export const DAMAGED_BANNER = "Some imported packs are missing or changed. Re-import to repair them.";
+
+export const PACKS_NOTE = "To play online, everyone needs the same packs turned on. Hiding a map below only takes it " +
+  "out of your own map list and random picks; it still loads if a host picks it.";
+
+export const MAP_SEARCH_PLACEHOLDER = "Search maps";
+export const MAP_SHOWN_OPTIONS: { value: "all" | "shown" | "hidden"; label: string }[] = [
+  { value: "all", label: "All" }, { value: "shown", label: "Shown" }, { value: "hidden", label: "Hidden" },
+];
+export const MAP_BROWSER_EMPTY = "No maps match these filters.";
+export const showAllLabel = (n: number): string => `Show all ${n}`;
+export const hideAllLabel = (n: number): string => `Hide all ${n}`;
+
+export const reimportConfirmLine = (content: ImportContent): string =>
+  `Re-import ${content.title}? The packs are rebuilt from the zip. Your shown and hidden maps and pack choices are kept.`;
+export const removeConfirmLine = (pluginName: string, packs: number): string =>
+  `Remove all ${pluginName} maps? This deletes ${packs} map pack${packs === 1 ? "" : "s"} from your Mods folder.`;
+export const deleteZipCheckboxLabel = (size: number): string => `Also delete the downloaded zip (${sizeText(size)})`;
+export const deleteZipActionLabel = (size: number): string => `Delete downloaded zip (${sizeText(size)})`;
+export const REMOVED_TOAST = "Imported maps removed.";
+
+export const storeImportsLine = (pluginName: string, title: string, size: number, host: string): string =>
+  `${pluginName} can download ${title} (${sizeText(size)}) from ${host} when you ask it to. The maps are imported on your PC; the plugin contains none of them.`;
+export const storeRemoveCascadeLine = (n: number): string => `This also removes the ${n} map${n === 1 ? "" : "s"} it imported.`;
