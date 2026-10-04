@@ -34,10 +34,10 @@ test("importersOf: reads the {importers} shape and drops malformed entries", () 
   assert.deepEqual(importersOf(null), []);
 });
 
-test("importMapOf: unknown group/category/timeOfDay fall back, file is required", () => {
+test("importMapOf: a recipe's own group id passes through, unknown category/timeOfDay fall back, file is required", () => {
   assert.equal(importMapOf({}), undefined);
   const m = importMapOf({ file: "re_x", group: "nope", category: "nope", timeOfDay: "nope" });
-  assert.equal(m?.group, "renewation");
+  assert.equal(m?.group, "nope");
   assert.equal(m?.category, "play");
   assert.equal(m?.timeOfDay, "DAY");
   assert.equal(m?.title, "re_x", "title falls back to the file name");

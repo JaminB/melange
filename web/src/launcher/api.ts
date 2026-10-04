@@ -248,7 +248,7 @@ export function whenText(at: string): string {
 export type ImportPhase = "idle" | "downloading" | "copying" | "verifying" | "reading" | "building" | "placing" | "done" | "error" | "cancelled";
 export type ImportStatusKind = "none" | "imported" | "stale" | "damaged" | "unsupported" | "busy";
 export type ImportCategory = "play" | "dm" | "mode";
-export type ImportGroup = "mmp" | "w3d" | "renewation" | "vanilla";
+export type ImportGroup = string;
 export type ImportTimeOfDay = "DAY" | "EVENING" | "NIGHT";
 
 export interface ImportContent { title: string; publisher: string; termsUrl: string; credit: string; }
@@ -281,7 +281,6 @@ export interface Importer {
 
 const IMPORT_PHASES: ImportPhase[] = ["idle", "downloading", "copying", "verifying", "reading", "building", "placing", "done", "error", "cancelled"];
 const IMPORT_STATUSES: ImportStatusKind[] = ["none", "imported", "stale", "damaged", "unsupported", "busy"];
-const IMPORT_GROUPS: ImportGroup[] = ["mmp", "w3d", "renewation", "vanilla"];
 const IMPORT_CATEGORIES: ImportCategory[] = ["play", "dm", "mode"];
 const IMPORT_TODS: ImportTimeOfDay[] = ["DAY", "EVENING", "NIGHT"];
 
@@ -304,7 +303,7 @@ export function importMapOf(v: unknown): ImportMap | undefined {
   if (typeof o.file !== "string") return undefined;
   return {
     file: o.file, stem: str(o, "stem"), pack: str(o, "pack"), title: str(o, "title") || o.file, author: strOpt(o, "author"),
-    group: IMPORT_GROUPS.includes(o.group as ImportGroup) ? (o.group as ImportGroup) : "renewation",
+    group: str(o, "group"),
     groupLabel: str(o, "groupLabel"),
     category: IMPORT_CATEGORIES.includes(o.category as ImportCategory) ? (o.category as ImportCategory) : "play",
     categoryLabel: str(o, "categoryLabel"), mode: strOpt(o, "mode"), theme: str(o, "theme"),
