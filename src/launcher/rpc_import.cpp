@@ -12,6 +12,8 @@
 #include <set>
 #include <thread>
 
+#include "core/log.h"
+
 #include "import/importer.h"
 #include "launcher/app.h"
 #include "launcher/rpc.h"
@@ -303,7 +305,11 @@ void Worker(imp::RunSpec spec) {
             PublishJob();
         }
     };
+    LOG_INFO("[import] %s: importing from %s", spec.plugin.id.c_str(),
+             spec.kind == imp::RunSpec::Kind::File ? "a local zip" : ("source '" + spec.sourceId + "'").c_str());
     imp::RunResult res = imp::Run(spec);
+    if (res.ok) LOG_INFO("[import] %s: %d maps in %zu packs, fingerprint %s", spec.plugin.id.c_str(), res.maps, res.packs.size(), res.fingerprint.c_str());
+    else LOG_WARN("[import] %s: %s (%s)", spec.plugin.id.c_str(), res.reason.c_str(), res.message.c_str());
     {
         std::lock_guard lk(g_mx);
         g_job.hasResult = true;

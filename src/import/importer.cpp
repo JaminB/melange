@@ -263,6 +263,7 @@ class Runner {
     }
 
     bool Read() {
+        t0_ = std::chrono::steady_clock::now();   // the watchdog covers generation, not a slow download
         Report("reading");
         std::string e;
         if (!archive_.Open(zip_, r_.reader, &e)) return Fail("zip", e);
