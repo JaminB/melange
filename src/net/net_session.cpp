@@ -5,6 +5,7 @@
 #include <safetyhook.hpp>
 
 #include <cstdio>
+#include <cstring>
 #include <string>
 #include <vector>
 
@@ -206,6 +207,123 @@ void PollState() {
 
 std::vector<SafetyHookMid> g_hooks;
 
+// Host migration: the turn owner's NetService::Update resends the whole turn (ReplayMessageStoreService 0x5408a0,
+// "Resending all input messages from current turn") after the other machines discarded theirs, but leaves the same
+// messages in the pending lists, and the next per-tick flush (0x5403a0) sends them again. The receiver's only dedupe
+// is a strict `time < latest` per type (NetStored*Array::Handle, 0x68abfe and siblings), so inputs sent while the
+// clock was frozen arrive twice with equal times and are applied twice: a desync. The resend sends the full-turn
+// lists and then empties them, so check before it runs which pending lists are exactly the tail of their full-turn
+// list, and after it drop those pending entries (if unchanged) through the game's own vector::erase.
+struct StoreList {
+    uint32_t pending;  // vector in the service; the full-turn list is at pending + kFullTurnDelta
+    uintptr_t erase;   // __thiscall vector::erase(ret*, first, last), iterators {proxy, ptr}, ret 0x14
+    uint32_t elem;
+    uint32_t cmpEnd;   // SameEntry compares bytes [8, cmpEnd): elem, or 12 where +0xc is a per-list owned pointer
+    const char* name;
+};
+constexpr StoreList kStoreLists[] = {
+    {0x1e8, 0x53bda0, 12, 12, "msg"},     {0x200, 0x53be30, 16, 16, "int"},   {0x218, 0x53df00, 16, 12, "string"},
+    {0x230, 0x53bec0, 20, 20, "two-int"}, {0x248, 0x53bf40, 16, 16, "float"}, {0x260, 0x53bfd0, 20, 20, "two-float"},
+};
+constexpr uint32_t kFullTurnDelta = 0x90;
+constexpr uint32_t kVecProxy = 0x0, kVecFirst = 0xc, kVecLast = 0x10;
+constexpr uintptr_t kResendAll = 0x5408a0;
+// Lobby-entered handler (FUN_006269f0) copies the host's landscape_code into WXD.Level.Current via
+// SetString(key, FUN_006266f0(table, code)). The lookup returns NULL for a code missing from this game's level list
+// and SetString then strcmp()s it (crash c0000005 at 0x638a6c). Hook the PUSH EAX after the lookup call.
+constexpr uintptr_t kLobbyLevelPush = 0x626c24;
+constexpr uintptr_t kLobbyLevelDone = 0x626c32;  // past the SetString call and its ADD ESP,0x10
+SafetyHookInline g_resendHook;
+
+// Entry layout: +0 vtable, +4 u16 id (+6 is uninitialised padding), +8 time, +0xc payload (the string type keeps an
+// XString* there, which each list may own separately). Compare everything except the padding and that pointer.
+bool SameEntry(uintptr_t a, uintptr_t b, const StoreList& l) {
+    uint8_t x[32], y[32];
+    const uint32_t n = l.elem;
+    if (n > sizeof x || !melange::mem::SafeRead(a, x, n) || !melange::mem::SafeRead(b, y, n)) return false;
+    return !memcmp(x, y, 6) && !memcmp(x + 8, y + 8, l.cmpEnd - 8);
+}
+
+std::string Hex(uintptr_t a, uint32_t n) {
+    uint8_t b[32] = {};
+    melange::mem::SafeRead(a, b, n < sizeof b ? n : sizeof b);
+    std::string s;
+    char h[4];
+    for (uint32_t i = 0; i < n && i < sizeof b; ++i) snprintf(h, sizeof h, "%02x", b[i]), s += h;
+    return s;
+}
+
+struct Range {
+    uint32_t first = 0, last = 0;
+};
+Range Vec(uintptr_t v) { return {Read<uint32_t>(v + kVecFirst), Read<uint32_t>(v + kVecLast)}; }
+
+// Before the resend: the pending entries that the resend is about to carry, i.e. a pending list that is exactly the
+// tail of its full-turn list, entry for entry (SameEntry). Their bytes go to `snap`; returns how many, or -1 (logged).
+int ResentPending(uintptr_t svc, const StoreList& l, std::vector<uint8_t>* snap) {
+    const uintptr_t pend = svc + l.pending;
+    const Range p = Vec(pend), f = Vec(pend + kFullTurnDelta);
+    if (p.last < p.first || f.last < f.first || (p.last - p.first) % l.elem || (f.last - f.first) % l.elem) {
+        LOG_WARN("[fix] migration resend: %s lists malformed (pending %08x..%08x, full turn %08x..%08x)", l.name,
+                 p.first, p.last, f.first, f.last);
+        return -1;
+    }
+    const uint32_t np = (p.last - p.first) / l.elem, nf = (f.last - f.first) / l.elem;
+    if (!np) return 0;
+    if (np > nf) {
+        LOG_WARN("[fix] migration resend: %s has %u pending but only %u in the full turn", l.name, np, nf);
+        return -1;
+    }
+    for (uint32_t i = 0; i < np; ++i) {
+        const uintptr_t a = p.first + i * l.elem, b = f.first + (nf - np + i) * l.elem;
+        if (!SameEntry(a, b, l)) {
+            LOG_WARN("[fix] migration resend: %s pending[%u] %s != full turn[%u] %s (%u pending, %u full)", l.name, i,
+                     Hex(a, l.elem).c_str(), nf - np + i, Hex(b, l.elem).c_str(), np, nf);
+            return -1;
+        }
+    }
+    snap->resize(np * l.elem);
+    if (!melange::mem::SafeRead(p.first, snap->data(), snap->size())) return -1;
+    return static_cast<int>(np);
+}
+
+// After the resend: drop the pending entries it carried, if the list still holds exactly those. Returns how many, or -1.
+int DropPending(uintptr_t svc, const StoreList& l, const std::vector<uint8_t>& snap) {
+    const uintptr_t pend = svc + l.pending;
+    const Range p = Vec(pend);
+    std::vector<uint8_t> now(snap.size());
+    if (p.last - p.first != snap.size() || !melange::mem::SafeRead(p.first, now.data(), now.size()) || now != snap) {
+        LOG_WARN("[fix] migration resend: %s pending list changed during the resend; left alone", l.name);
+        return -1;
+    }
+    const uint32_t proxy = Read<uint32_t>(pend + kVecProxy);
+    if (!proxy) return -1;  // the checked iterators would trap
+    uint32_t ret[2] = {};
+    reinterpret_cast<void*(__thiscall*)(uintptr_t, uint32_t*, uint32_t, uint32_t, uint32_t, uint32_t)>(l.erase)(
+        pend, ret, proxy, p.first, proxy, p.last);
+    return static_cast<int>(snap.size() / l.elem);
+}
+
+void __fastcall OnResendAll(uintptr_t svc, void* /*edx*/) {
+    constexpr size_t kLists = sizeof kStoreLists / sizeof kStoreLists[0];
+    std::vector<uint8_t> snap[kLists];
+    int plan[kLists];
+    for (size_t i = 0; i < kLists; ++i) plan[i] = ResentPending(svc, kStoreLists[i], &snap[i]);
+    g_resendHook.thiscall<void>(svc);
+    std::string done;
+    for (size_t i = 0; i < kLists; ++i) {
+        const int n = plan[i] > 0 ? DropPending(svc, kStoreLists[i], snap[i]) : plan[i];
+        if (n == 0) continue;
+        char b[48];
+        snprintf(b, sizeof b, " %s=%d", kStoreLists[i].name, n);
+        done += b;
+    }
+    if (done.empty())
+        LOG_INFO("[fix] migration resend: no pending inputs to drop");
+    else
+        LOG_WARN("[fix] migration resend: dropped pending inputs already resent (-1 = left alone):%s", done.c_str());
+}
+
 uint32_t Arg(const safetyhook::Context& c, int i) { return Read<uint32_t>(c.esp + 4 + 4 * i); }
 uint32_t RetAddr(const safetyhook::Context& c) { return Read<uint32_t>(c.esp); }
 
@@ -228,6 +346,18 @@ const char* AbortCode(uint32_t hr) {
         case 0x802100C9: return "Net.Connect";
         default: return "?";
     }
+}
+
+// eax = looked-up level (NULL = unknown). [esp] = &table, [esp+4] = code: the lookup's two cdecl args, still pushed.
+void OnLobbyLevel(safetyhook::Context& c) {
+    if (c.eax) return;
+    LOG_WARN("[fix] lobby level code %u not in this game's level list; keeping current level",
+            Read<uint32_t>(c.esp + 4));
+    // Resume at kLobbyLevelDone with both args popped (the skipped ADD ESP,0x10 popped these plus SetString's two).
+    // safetyhook's x86 stub ignores ctx.esp on restore: it does `pop esp` (trampoline_esp) then `ret`. So park the
+    // resume address in the code slot being discarded and return through it, leaving esp = original esp + 8.
+    *reinterpret_cast<uintptr_t*>(c.esp + 4) = kLobbyLevelDone;
+    c.trampoline_esp = c.esp + 4;
 }
 
 void OnAbortGame(safetyhook::Context& c) {
@@ -322,6 +452,21 @@ public:
             }
         }
 
+        if (Bool("FixResendDuplicates", true)) {
+            // push -1 / mov eax,fs:[0] / push 0x7d2af0
+            if (melange::mem::Expect(kResendAll, {0x6a, 0xff, 0x64, 0xa1, 0x00, 0x00, 0x00, 0x00, 0x68, 0xf0, 0x2a, 0x7d, 0x00})) {
+                g_resendHook = safetyhook::create_inline(kResendAll, &OnResendAll);
+                if (!g_resendHook) LOG_ERROR("[net] failed to hook migration resend at %08x", static_cast<unsigned>(kResendAll));
+                ok &= static_cast<bool>(g_resendHook);
+            }
+        }
+
+        if (Bool("FixLobbyLevelNull", true)) {
+            // push eax / lea edx,[esp+0x2c] / push edx / call SetString
+            if (melange::mem::Expect(kLobbyLevelPush, {0x50, 0x8d, 0x54, 0x24, 0x2c, 0x52, 0xe8}))
+                ok &= Mid(kLobbyLevelPush, &OnLobbyLevel, "lobby level lookup");
+        }
+
         melange::events::Subscribe(melange::events::Event::Frame, [] {
             PollState();
             if (watch && g_lastState) WatchProgressState();
@@ -336,7 +481,10 @@ public:
         return ok;
     }
 
-    void Uninstall() override { g_hooks.clear(); }
+    void Uninstall() override {
+        g_hooks.clear();
+        g_resendHook = {};
+    }
 };
 }  // namespace
 
