@@ -79,6 +79,21 @@ test("store: confirms say what will happen before anything is downloaded", () =>
   assert.deepEqual(confirmLines(d, { kind: "remove" }), ["b, c need this; they will be blocked."]);
 });
 
+test("store: a plugin with an importer shows what it downloads before install, and the cascade count before remove", () => {
+  const d = detailsOf({
+    ...raw, installed: null, imports: [{ title: "Fixture Mod", publisher: "fixture.example", host: "fixture.example", size: 15000000 }],
+  })!;
+  assert.equal(d.imports.length, 1);
+  const lines = confirmLines(d, { kind: "install", version: "1.1.0", older: false });
+  assert.ok(lines.some((l) => l === "HD Water can download Fixture Mod (14.3 MiB) from fixture.example when you ask it to. " +
+    "The maps are imported on your PC; the plugin contains none of them."), lines.join("\n"));
+  assert.deepEqual(confirmLines({ ...d, imports: [] }, { kind: "install", version: "1.1.0", older: false }).some((l) => /can download/.test(l)), false);
+
+  const withImports = detailsOf({ ...raw, installed: { version: "1.0.0", managed: true, state: "enabled", enabled: true }, dependants: [], importedMaps: 12 })!;
+  assert.deepEqual(confirmLines(withImports, { kind: "remove" }), ["This also removes the 12 maps it imported."]);
+  assert.equal(detailsOf({ ...raw, importedMaps: 0 })!.importedMaps, 0);
+});
+
 test("store: version order", () => {
   assert.equal(compareVersions("1.2.0", "1.10.0"), -1);
   assert.equal(compareVersions("1.0.0", "1.0.0-rc.1"), 1);

@@ -10,6 +10,7 @@ import { extname, join, normalize, resolve } from "node:path";
 import { AFTER, ergService } from "./erg-mock.mjs";
 import { storeService } from "./store-mock.mjs";
 import { launcherService } from "./launcher-mock.mjs";
+import { importService } from "./import-mock.mjs";
 
 const CSP = "default-src 'self'; connect-src 'self'; img-src 'self' blob: data:; style-src 'self' 'unsafe-inline'; frame-src 'self'; " +
   "frame-ancestors 'none'; base-uri 'none'; form-action 'none'";
@@ -135,11 +136,19 @@ export async function startMock(opts = {}) {
   const erg = ergService(state);
   const store = storeService(state, (ch, d) => broadcast(ch, d));
   const launcher = launcherMode ? launcherService(state, (ch, d) => broadcast(ch, d), opts.scenario) : undefined;
+  const imports = launcherMode ? importService(state, (ch, d) => broadcast(ch, d)) : undefined;
+  if (imports && opts.import) imports.setScenario(opts.import);
+  // The Plugins page's importer button (spec §12.1) sits on an already-installed plugin's own row, so the launcher
+  // fixture needs a "caravan" mod next to the main mock's unrelated ones.
+  if (imports) state.mods = [...state.mods, { id: "caravan", name: "Caravan", version: "1.0.0", authors: "Melange", dir: "Mods\\caravan",
+    kind: "client", state: "enabled", reason: "", on: true, restartRequired: false, implicitManifest: false, hasClient: false, hasSim: false,
+    deepDesert: { declared: false, granted: false }, order: 5 }];
   const methods = [...(state.server === "game"
     ? ["sys.ping", "lua.eval", "lua.complete", "mods.list", "mods.setEnabled", "mods.revokeDeepDesert", "levels.live", "ini.get", "ini.set", "bus.names", "log.sessions"]
     : ["sys.ping", "mods.list", "ini.get", "ini.set", "log.sessions"]),
-    ...erg.methods, ...(state.server === "game" ? store.methods : []), ...(launcher ? [...store.methods, ...launcher.methods] : [])];
-  const channels = state.server === "game" ? ["log", "bus", "bus.counts", "mods", "stats", "store"] : launcher ? ["log", "store", "setup"] : ["log"];
+    ...erg.methods, ...(state.server === "game" ? store.methods : []),
+    ...(launcher ? [...store.methods, ...launcher.methods, ...(imports?.methods ?? [])] : [])];
+  const channels = state.server === "game" ? ["log", "bus", "bus.counts", "mods", "stats", "store"] : launcher ? ["log", "store", "setup", "import"] : ["log"];
 
   const logRecord = (lvl, cat, msg) => {
     state.seq++;
@@ -243,8 +252,8 @@ export async function startMock(opts = {}) {
       return { live, restart: !live, changed: true };
     },
   };
-  Object.assign(handlers, erg.handlers, store.handlers, launcher?.handlers);
-  const mutating = new Set(["lua.eval", "mods.setEnabled", "levels.live", "mods.revokeDeepDesert", "ini.set", ...erg.mutating, ...store.mutating, ...(launcher?.mutating ?? [])]);
+  Object.assign(handlers, erg.handlers, store.handlers, launcher?.handlers, imports?.handlers);
+  const mutating = new Set(["lua.eval", "mods.setEnabled", "levels.live", "mods.revokeDeepDesert", "ini.set", ...erg.mutating, ...store.mutating, ...(launcher?.mutating ?? []), ...(imports?.mutating ?? [])]);
 
   function broadcast(ch, d) { for (const c of clients) if (c.subs.has(ch)) c.queue(ch, d); }
 
@@ -268,6 +277,7 @@ export async function startMock(opts = {}) {
       if (m.ch === "mods") c.queue("mods", modPublic());
       if (m.ch === "store") c.queue("store", store.initial());
       if (m.ch === "setup" && launcher) c.queue("setup", { status: launcher.status() });
+      if (m.ch === "import" && imports) c.queue("import", imports.initial());
       return;
     }
     if (m.t === "call") {
@@ -300,6 +310,7 @@ export async function startMock(opts = {}) {
     const headers = { "Content-Security-Policy": CSP, "X-Content-Type-Options": "nosniff", "Referrer-Policy": "no-referrer" };
     if (url.searchParams.get("k") === token && url.pathname === "/") {
       if (launcher && url.searchParams.get("scenario")) launcher.setScenario(url.searchParams.get("scenario"));
+      if (imports && url.searchParams.get("import")) imports.setScenario(url.searchParams.get("import"));
       res.writeHead(303, { ...headers, "Set-Cookie": `oasis_s=${cookie}; HttpOnly; SameSite=Strict; Path=/`, Location: "/", "Cache-Control": "no-store" });
       return res.end();
     }
@@ -310,6 +321,12 @@ export async function startMock(opts = {}) {
     }
     if (url.pathname.startsWith("/store/shots/") && state.server === "game") {
       const img = store.route(url.pathname);
+      if (!img) { res.writeHead(404, headers); return res.end(); }
+      res.writeHead(200, { ...headers, "Content-Type": "image/png", "Cache-Control": "no-store" });
+      return res.end(img);
+    }
+    if (url.pathname.startsWith("/import/previews/") && imports) {
+      const img = imports.route(url.pathname);
       if (!img) { res.writeHead(404, headers); return res.end(); }
       res.writeHead(200, { ...headers, "Content-Type": "image/png", "Cache-Control": "no-store" });
       return res.end(img);
@@ -446,6 +463,7 @@ export async function startMock(opts = {}) {
       clearInterval(logTimer); clearInterval(busTimer); clearInterval(countTimer);
       store.close();
       launcher?.close();
+      imports?.close();
       for (const c of clients) c.close(1001, "bye");
       await new Promise((r) => server.close(r));
       server.closeAllConnections?.();
@@ -457,7 +475,7 @@ if (process.argv[1] && import.meta.url.endsWith(process.argv[1].replace(/\\/g, "
   const arg = (k, d) => { const i = process.argv.indexOf(k); return i > 0 ? process.argv[i + 1] : d; };
   const m = await startMock({ root: arg("--root", "web/dist"), port: Number(arg("--port", "0")), standalone: process.argv.includes("--standalone"),
     readOnly: process.argv.includes("--read-only"), online: process.argv.includes("--online"), launcher: process.argv.includes("--launcher"),
-    scenario: arg("--scenario", undefined) });
+    scenario: arg("--scenario", undefined), import: arg("--import", undefined) });
   m.setLogRate(Number(arg("--log-rate", "5")));
   console.log(m.url);
 }

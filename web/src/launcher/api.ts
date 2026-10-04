@@ -244,6 +244,140 @@ export function whenText(at: string): string {
   return new Date(t).toLocaleString(undefined, { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" });
 }
 
+// -- Local content importer (spec §10.2, `import.*`) --------------------------------------------------------------
+export type ImportPhase = "idle" | "downloading" | "copying" | "verifying" | "reading" | "building" | "placing" | "done" | "error" | "cancelled";
+export type ImportStatusKind = "none" | "imported" | "stale" | "damaged" | "unsupported" | "busy";
+export type ImportCategory = "play" | "dm" | "mode";
+export type ImportGroup = "mmp" | "w3d" | "renewation" | "vanilla";
+export type ImportTimeOfDay = "DAY" | "EVENING" | "NIGHT";
+
+export interface ImportContent { title: string; publisher: string; termsUrl: string; credit: string; }
+export interface ImportSource { id: string; name: string; host: string; fileName: string; size: number; sha256: string; }
+export interface ImportCounts { play: number; dm: number; mode: number; skipped: number; }
+export interface ImportPack { id: string; name: string; enabled: boolean; levels: number; category: string[]; }
+export interface ImportMap {
+  file: string; stem: string; pack: string; title: string; author?: string;
+  group: ImportGroup; groupLabel: string; category: ImportCategory; categoryLabel: string; mode?: string;
+  theme: string; timeOfDay: ImportTimeOfDay; survivor: boolean; hidden: boolean; preview: boolean;
+}
+export interface ImportJobResult { maps: number; counts: ImportCounts; packs: string[]; bytes: number; fingerprint: string; skipped: number; }
+export interface ImportJob {
+  plugin: string; phase: ImportPhase; bytes: number; total: number; step: number; of: number;
+  reason?: string; message?: string; result?: ImportJobResult;
+}
+export interface Importer {
+  plugin: string; name: string;
+  recipe: string; recipeVersion: string; format: number; supported: boolean;
+  content: ImportContent;
+  sources: ImportSource[];
+  expect: { maps: number };
+  status: ImportStatusKind;
+  statusReason?: string;
+  imported?: { recipeVersion: string; fingerprint: string; importedAt: string; maps: number; counts: ImportCounts; packs: ImportPack[]; bytes: number };
+  zip?: { bytes: number; verified: boolean };
+  gate: string;
+  job?: ImportJob;
+}
+
+const IMPORT_PHASES: ImportPhase[] = ["idle", "downloading", "copying", "verifying", "reading", "building", "placing", "done", "error", "cancelled"];
+const IMPORT_STATUSES: ImportStatusKind[] = ["none", "imported", "stale", "damaged", "unsupported", "busy"];
+const IMPORT_GROUPS: ImportGroup[] = ["mmp", "w3d", "renewation", "vanilla"];
+const IMPORT_CATEGORIES: ImportCategory[] = ["play", "dm", "mode"];
+const IMPORT_TODS: ImportTimeOfDay[] = ["DAY", "EVENING", "NIGHT"];
+
+function importCountsOf(v: unknown): ImportCounts {
+  const o = obj(v);
+  return { play: num(o, "play"), dm: num(o, "dm"), mode: num(o, "mode"), skipped: num(o, "skipped") };
+}
+
+export function importPackOf(v: unknown): ImportPack | undefined {
+  const o = obj(v);
+  if (typeof o.id !== "string") return undefined;
+  return { id: o.id, name: str(o, "name") || o.id, enabled: bool(o, "enabled"), levels: num(o, "levels"), category: strs(o, "category") };
+}
+export function importPacksOf(v: unknown): ImportPack[] {
+  return (Array.isArray(v) ? v : []).map(importPackOf).filter((x): x is ImportPack => !!x);
+}
+
+export function importMapOf(v: unknown): ImportMap | undefined {
+  const o = obj(v);
+  if (typeof o.file !== "string") return undefined;
+  return {
+    file: o.file, stem: str(o, "stem"), pack: str(o, "pack"), title: str(o, "title") || o.file, author: strOpt(o, "author"),
+    group: IMPORT_GROUPS.includes(o.group as ImportGroup) ? (o.group as ImportGroup) : "renewation",
+    groupLabel: str(o, "groupLabel"),
+    category: IMPORT_CATEGORIES.includes(o.category as ImportCategory) ? (o.category as ImportCategory) : "play",
+    categoryLabel: str(o, "categoryLabel"), mode: strOpt(o, "mode"), theme: str(o, "theme"),
+    timeOfDay: IMPORT_TODS.includes(o.timeOfDay as ImportTimeOfDay) ? (o.timeOfDay as ImportTimeOfDay) : "DAY",
+    survivor: bool(o, "survivor"), hidden: bool(o, "hidden"), preview: bool(o, "preview"),
+  };
+}
+export function importMapsOf(v: unknown): ImportMap[] {
+  return (Array.isArray(v) ? v : []).map(importMapOf).filter((x): x is ImportMap => !!x);
+}
+
+export function importJobOf(v: unknown): ImportJob | undefined {
+  const o = obj(v);
+  if (typeof o.plugin !== "string") return undefined;
+  const result = o.result && typeof o.result === "object" ? obj(o.result) : undefined;
+  return {
+    plugin: o.plugin, phase: IMPORT_PHASES.includes(o.phase as ImportPhase) ? (o.phase as ImportPhase) : "idle",
+    bytes: num(o, "bytes"), total: num(o, "total"), step: num(o, "step"), of: num(o, "of"),
+    reason: strOpt(o, "reason"), message: strOpt(o, "message"),
+    result: result ? { maps: num(result, "maps"), counts: importCountsOf(result.counts), packs: strs(result, "packs"),
+      bytes: num(result, "bytes"), fingerprint: str(result, "fingerprint"), skipped: num(result, "skipped") } : undefined,
+  };
+}
+
+export function importerOf(v: unknown): Importer | undefined {
+  const o = obj(v);
+  if (typeof o.plugin !== "string") return undefined;
+  const content = obj(o.content);
+  const imported = o.imported && typeof o.imported === "object" ? obj(o.imported) : undefined;
+  const zip = o.zip && typeof o.zip === "object" ? obj(o.zip) : undefined;
+  return {
+    plugin: o.plugin, name: str(o, "name") || o.plugin, recipe: str(o, "recipe"), recipeVersion: str(o, "recipeVersion"),
+    format: num(o, "format"), supported: o.supported !== false,
+    content: { title: str(content, "title"), publisher: str(content, "publisher"), termsUrl: str(content, "termsUrl"), credit: str(content, "credit") },
+    sources: arr(o, "sources").map((s) => {
+      const so = obj(s);
+      return { id: str(so, "id"), name: str(so, "name") || str(so, "id"), host: str(so, "host"), fileName: str(so, "fileName"), size: num(so, "size"), sha256: str(so, "sha256") };
+    }),
+    expect: { maps: num(obj(o.expect), "maps") },
+    status: IMPORT_STATUSES.includes(o.status as ImportStatusKind) ? (o.status as ImportStatusKind) : "none",
+    statusReason: strOpt(o, "statusReason"),
+    imported: imported ? { recipeVersion: str(imported, "recipeVersion"), fingerprint: str(imported, "fingerprint"), importedAt: str(imported, "importedAt"),
+      maps: num(imported, "maps"), counts: importCountsOf(imported.counts), packs: importPacksOf(imported.packs), bytes: num(imported, "bytes") } : undefined,
+    zip: zip ? { bytes: num(zip, "bytes"), verified: bool(zip, "verified") } : undefined,
+    gate: str(o, "gate"),
+    job: o.job && typeof o.job === "object" ? importJobOf(o.job) : undefined,
+  };
+}
+export function importersOf(v: unknown): Importer[] {
+  const o = obj(v);
+  return arr(o, "importers").map(importerOf).filter((x): x is Importer => !!x);
+}
+
+export function importMapsResultOf(v: unknown): { maps: ImportMap[]; packs: ImportPack[] } {
+  const o = obj(v);
+  return { maps: importMapsOf(o.maps), packs: importPacksOf(o.packs) };
+}
+
+export function importEventOf(v: unknown): { importers?: Importer[]; job?: ImportJob } {
+  const o = obj(v);
+  const out: { importers?: Importer[]; job?: ImportJob } = {};
+  if (Array.isArray(o.importers)) out.importers = importersOf(o);
+  if (o.job && typeof o.job === "object") out.job = importJobOf(o.job);
+  return out;
+}
+
+export function fingerprintShort(fp: string): string {
+  return fp.slice(0, 12);
+}
+export function importPreviewUrl(plugin: string, stem: string): string {
+  return `/import/previews/${encodeURIComponent(plugin)}/${encodeURIComponent(stem)}.png`;
+}
+
 // Logs are shared by every copy of the game, so a session from before this install says nothing about it.
 export function loadedSinceInstall(status: SetupStatus): boolean {
   const last = status.melange.lastLoad;
