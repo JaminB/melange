@@ -8,6 +8,7 @@ How Melange works for mod and module authors: settings, logs, the SDK, and each 
 | Lua API (`wum.*`) | [lua-api.md](lua-api.md) |
 | Weapon clones | [weapons.md](weapons.md) |
 | Oasis web app | [oasis.md](oasis.md) |
+| Local content importers | [importers.md](importers.md) |
 | Replays and desync detection | [wormsign.md](wormsign.md) |
 | Map editor (Erg) | [erg.md](erg.md) |
 | `xomtool` | [xomtool.md](xomtool.md) |
