@@ -136,10 +136,13 @@ public:
         }
         if (Bool("IgnoreOtherPeerFails", true)) {
             // mov eax,[esp+4] / movzx eax,byte [eax+8] / dec eax / push esi / mov esi,ecx
-            if (!melange::mem::Expect(kOnConnectFail, {0x8b, 0x44, 0x24, 0x04, 0x0f, 0xb6, 0x40, 0x08, 0x48, 0x56, 0x8b, 0xf1}))
-                return false;
-            g_connectFail = safetyhook::create_inline(kOnConnectFail, &OnConnectFail);
-            ok &= static_cast<bool>(g_connectFail);
+            // On a byte mismatch skip only this fix: the retransmit hooks above are already live.
+            if (melange::mem::Expect(kOnConnectFail, {0x8b, 0x44, 0x24, 0x04, 0x0f, 0xb6, 0x40, 0x08, 0x48, 0x56, 0x8b, 0xf1})) {
+                g_connectFail = safetyhook::create_inline(kOnConnectFail, &OnConnectFail);
+                if (!g_connectFail)
+                    LOG_ERROR("[transport] failed to hook P2P connect fail at %08x", static_cast<unsigned>(kOnConnectFail));
+                ok &= static_cast<bool>(g_connectFail);
+            }
         }
         return ok;
     }

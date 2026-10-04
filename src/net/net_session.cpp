@@ -218,11 +218,12 @@ struct StoreList {
     uint32_t pending;  // vector in the service; the full-turn list is at pending + kFullTurnDelta
     uintptr_t erase;   // __thiscall vector::erase(ret*, first, last), iterators {proxy, ptr}, ret 0x14
     uint32_t elem;
+    uint32_t cmpEnd;   // SameEntry compares bytes [8, cmpEnd): elem, or 12 where +0xc is a per-list owned pointer
     const char* name;
 };
 constexpr StoreList kStoreLists[] = {
-    {0x1e8, 0x53bda0, 12, "msg"},     {0x200, 0x53be30, 16, "int"},   {0x218, 0x53df00, 16, "string"},
-    {0x230, 0x53bec0, 20, "two-int"}, {0x248, 0x53bf40, 16, "float"}, {0x260, 0x53bfd0, 20, "two-float"},
+    {0x1e8, 0x53bda0, 12, 12, "msg"},     {0x200, 0x53be30, 16, 16, "int"},   {0x218, 0x53df00, 16, 12, "string"},
+    {0x230, 0x53bec0, 20, 20, "two-int"}, {0x248, 0x53bf40, 16, 16, "float"}, {0x260, 0x53bfd0, 20, 20, "two-float"},
 };
 constexpr uint32_t kFullTurnDelta = 0x90;
 constexpr uint32_t kVecProxy = 0x0, kVecFirst = 0xc, kVecLast = 0x10;
@@ -235,8 +236,7 @@ bool SameEntry(uintptr_t a, uintptr_t b, const StoreList& l) {
     uint8_t x[32], y[32];
     const uint32_t n = l.elem;
     if (n > sizeof x || !melange::mem::SafeRead(a, x, n) || !melange::mem::SafeRead(b, y, n)) return false;
-    const uint32_t end = l.pending == 0x218 ? 12 : n;
-    return !memcmp(x, y, 6) && !memcmp(x + 8, y + 8, end - 8);
+    return !memcmp(x, y, 6) && !memcmp(x + 8, y + 8, l.cmpEnd - 8);
 }
 
 std::string Hex(uintptr_t a, uint32_t n) {
