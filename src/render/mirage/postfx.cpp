@@ -620,7 +620,7 @@ bool SetOrder(const char* id, int order) {
     return true;
 }
 
-bool SetParam(const char* id, const char* param, const float* v, int n) {
+static bool SetParamImpl(const char* id, const char* param, const float* v, int n, bool persist) {
     if (!param || !v || n < 1) return false;
     std::lock_guard lk(g_mx);
     pfx::Effect* e = Find(id);
@@ -629,10 +629,16 @@ bool SetParam(const char* id, const char* param, const float* v, int n) {
         const pfx::ParamDesc& p = e->desc.params[k];
         if (p.name != param) continue;
         for (int i = 0; i < n && i < p.n; ++i) e->values[k][i] = v[i];
-        g_pendingParams[e->id + "." + p.name] = pfx::FormatFloats(e->values[k].data(), p.n);
+        if (persist) g_pendingParams[e->id + "." + p.name] = pfx::FormatFloats(e->values[k].data(), p.n);
         return true;
     }
     return false;
+}
+
+bool SetParam(const char* id, const char* param, const float* v, int n) { return SetParamImpl(id, param, v, n, true); }
+
+bool SetParamTransient(const char* id, const char* param, const float* v, int n) {
+    return SetParamImpl(id, param, v, n, false);
 }
 
 bool GetParam(const char* id, const char* param, float* v, int n) {

@@ -217,6 +217,10 @@ struct Parser {
                 (k == "min" ? p.min : p.max) = f;
                 p.hasRange = true;
             } else if (k == "label") p.label = v;
+            else if (k == "hidden") {
+                if (v != "0" && v != "1") return Fail("hidden must be 0 or 1");
+                p.hidden = v == "1";
+            }
             else return unknown();
             return true;
         }

@@ -24,6 +24,7 @@ struct ParamDesc {
     float def[4] = {};
     float min = 0, max = 1;
     bool hasRange = false;
+    bool hidden = false;  // not listed for editing; a mod drives it from Lua
 };
 struct TextureDesc {
     std::string name, file;

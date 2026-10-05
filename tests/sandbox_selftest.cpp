@@ -212,6 +212,7 @@ size_t ListEffects(EffectInfo* out, size_t max) {
 }
 bool SetEnabled(const char*, bool) { return true; }
 bool SetParam(const char*, const char*, const float*, int) { return true; }
+bool SetParamTransient(const char*, const char*, const float*, int) { return true; }
 bool GetParam(const char*, const char*, float* v, int n) {
     for (int i = 0; i < n; ++i) v[i] = 0.5f;
     return true;
@@ -872,6 +873,8 @@ void TestGraphics() {
              "2\t2\t4\t3840\tfalse", "supersample() fields");
     ExpectEq(Eval("esc", "wum.shaders.setParam('Landscape.cg', '*FragmentMain', 'softness', 1.5) return 1"), "1",
              "a declared shader param is set");
+    ExpectEq(Eval("esc", "return wum.postfx.setTransient('esc/glow', 'amount', 1, 2)"), "true", "setTransient on the mod's own effect");
+    Expect(Eval("other", "wum.postfx.setTransient('esc/glow', 'amount', 1)").rfind("ERR:", 0) == 0, "setTransient refuses another mod's effect");
     Expect(Eval("other", "wum.shaders.setParam('Landscape.cg', '*FragmentMain', 'softness', 1)").rfind("ERR:", 0) == 0,
            "another mod's shader param is refused");
     ExpectEq(Eval("esc", "wum.shaders.enableGlsl('Landscape.cg', 'LandscapeFragmentMain', false) return 1"), "1",

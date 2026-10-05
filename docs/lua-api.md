@@ -192,6 +192,7 @@ Every effect can be read; only the mod's own effects (`<mod id>/<effect>`) can b
 | `wum.postfx.list()` | Array of `{id, title, stage, order, enabled, failed, own}`. |
 | `wum.postfx.enable(id, on)` | Turns one of the mod's effects on or off. |
 | `wum.postfx.setParam(id, param, v1[, v2...])` | Sets a uniform (up to 16 floats, or one table of them). |
+| `wum.postfx.setTransient(id, param, v1[, v2...])` | Like `setParam`, but the value is not saved to `Melange.ini` and not logged. For values a mod sets every frame. An effect reload keeps it, unless the edit removes the param or changes its size: then it returns to its saved value. |
 | `wum.postfx.getParam(id, param[, n])` | `n` floats (default 1). |
 
 ## `wum.graphics`

@@ -23,6 +23,7 @@ void Move(const std::vector<Effect*>& list, size_t i, int dir) {
 void Params(Effect& e) {
     for (size_t k = 0; k < e.desc.params.size() && k < e.values.size(); ++k) {
         const ParamDesc& p = e.desc.params[k];
+        if (p.hidden) continue;
         float v[4];
         std::copy(e.values[k].begin(), e.values[k].end(), v);
         bool changed = false;
@@ -88,7 +89,8 @@ void Row(const std::vector<Effect*>& list, size_t i) {
     } else if (!e.skipReason.empty()) {
         ImGui::TextDisabled("skipped: %s", e.skipReason.c_str());
     }
-    if (!e.desc.params.empty() && !e.missing && ImGui::TreeNode("Parameters")) {
+    const bool anyShown = std::any_of(e.desc.params.begin(), e.desc.params.end(), [](const ParamDesc& p) { return !p.hidden; });
+    if (anyShown && !e.missing && ImGui::TreeNode("Parameters")) {
         Params(e);
         ImGui::TreePop();
     }
