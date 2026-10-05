@@ -636,6 +636,18 @@ void TestGl() {
     px = ReadColor(f);
     Check(r.effects == 1 && px[0] == 255 - f.original[0], "and it stays skipped");
     Check(copy.drawChecked && inv.drawChecked && !inv.failed, "a working effect passes the check");
+    {
+        // A shader whose whole output is the marker colour is still a shader that draws.
+        pfx::Effect green;
+        LoadEffect(green, TempEffect("green", kInvIni, {{"inv.frag", "void main() { gl_FragColor = vec4(0.0, 1.0, 0.0, 0.0); }\n"}}),
+                   "test/green");
+        RunChain(f, {&green}, false, 2);
+        r = RunChain(f, {&green}, false, 2);
+        px = ReadColor(f);
+        Check(!green.failed && green.drawChecked && r.effects == 1 && px[0] == 0 && px[1] == 255 && px[3] == 0,
+              "an effect that draws the marker colour is not failed", green.error);
+        pfx::Release(green);
+    }
     pfx::Release(nothing);
 
     // the sample effects
