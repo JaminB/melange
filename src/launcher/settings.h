@@ -23,6 +23,7 @@ struct Settings {
     std::vector<DefaultPlugin> defaults;
     bool defaultsSeeded = false;
     std::string lastUpdateCheck;    // ISO time of the last look at GitHub for a newer Melange
+    bool autoUpdate = true;         // Settings › Updates: Melange.exe looks at start, the game once a day (CheckInGame)
 };
 std::wstring SettingsPath();
 bool LoadSettings(const std::wstring& path, Settings* out);   // false (and defaults) when missing or unreadable

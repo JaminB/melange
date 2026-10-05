@@ -108,7 +108,8 @@ export function launcherService(state, broadcast, initialScenario) {
     l.status = JSON.parse(JSON.stringify(f.status));
     l.gameDir = f.firstRun === false ? GAME_PATH : null;
     l.firstRun = f.firstRun !== false;
-    l.update = { current: l.version, phase: "current", latest: l.version, ...(f.update ?? {}) };
+    l.update = { current: l.version, phase: "current", latest: l.version, auto: true, ...(f.update ?? {}) };
+    l.checkInGame = true;   // what update.setAuto writes to Melange.ini's [Update] CheckInGame
     l.updateApplied = false;
   };
   apply(l.scenario);
@@ -215,6 +216,13 @@ export function launcherService(state, broadcast, initialScenario) {
     "defaults.set": (p) => { l.defaults = { plugins: Array.isArray(p.plugins) ? p.plugins : [], seeded: true }; return l.defaults; },
     "update.status": () => updateStatus(),
     "update.check": () => updateStatus(),
+    "update.setAuto": (p) => {
+      if (typeof p?.on !== "boolean") throw [-32602, "expected {on}"];
+      busyGuard();
+      l.update.auto = l.checkInGame = p.on;
+      broadcast("update", { status: updateStatus() });
+      return updateStatus();
+    },
     "update.apply": () => {
       if (l.update.phase !== "ready") throw [-32000, "No update is ready yet."];
       if (l.status.running) throw [-32000, "Close the game to update."];
@@ -231,7 +239,7 @@ export function launcherService(state, broadcast, initialScenario) {
   return {
     methods: Object.keys(handlers),
     mutating: ["launcher.setTheme", "launcher.shortcuts", "setup.select", "setup.apply", "setup.restore", "setup.deleteBackup",
-      "setup.setMelangeEnabled", "plugins.setSettings", "plugins.resetSettings", "defaults.set", "recommended.apply", "update.apply"],
+      "setup.setMelangeEnabled", "plugins.setSettings", "plugins.resetSettings", "defaults.set", "recommended.apply", "update.apply", "update.setAuto"],
     handlers,
     status: publicStatus,
     updateStatus,

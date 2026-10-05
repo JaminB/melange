@@ -48,7 +48,7 @@ Every module has its own section in `Melange.ini`, and `Enabled=0` turns a modul
 | `Store` | on | The plugin store (*Thumper/Store*, the Oasis Store panel): fetches the list only when you open it ([Plugin store](#plugin-store)) |
 | `Oasis` | on | The local web app on 127.0.0.1 ([oasis.md](oasis.md)); nothing listens until you open it |
 | `Wormsign` | on | The match's tick clock and a per-tick state hash (`wum.wormsign.tick()`); records a rolling library of recent matches to `Documents\Melange\replays` (last 20 / 200 MB by default, `wum.wormsign.library()`), match replays checked tick by tick (*Wormsign/Replay*); online, it compares the hashes with other Melange players and reports the first tick where they disagree ([wormsign.md](wormsign.md)); build #1077 only |
-| `Update` | on (`CheckInGame=1`) | At most once a day, about 10 s after the game starts and off the main thread, asks GitHub for the latest Melange release and shows a toast when it is newer ("it installs the next time you open Melange.exe"). Downloads nothing; the time of the last check is in `Documents\Melange\update-check.json` ([Updates](#updates)) |
+| `Update` | on (`CheckInGame=1`) | At most once a day, about 10 s after the game starts and off the main thread, asks GitHub for the latest Melange release and shows a toast when it is newer ("it installs the next time you open Melange.exe"). Downloads nothing; the time of the last check is in `Documents\Melange\update-check.json`. `Melange.exe`'s *Settings › Updates › Check for updates automatically* writes `CheckInGame` ([Updates](#updates)) |
 
 ![The "Smooth 60" toggle in the overlay's Game menu](images/overlay/smooth60-menu-item.png)
 
@@ -608,7 +608,8 @@ Command line:
 
 Melange keeps itself up to date (`src/launcher/updater.*`, `src/launcher/update_host.cpp`, `src/update/`):
 
-1. **Check.** Each time `Melange.exe` starts, and from *Settings › Updates › Check for updates*, a background thread
+1. **Check.** Each time `Melange.exe` starts (unless *Check for updates automatically* is off), and from
+   *Settings › Updates › Check for updates*, a background thread
    sends `GET https://api.github.com/repos/JaminB/melange/releases/latest` (user agent `Melange/<version>`, no
    cookies or credentials). GitHub's `/latest` never returns drafts or prereleases. The tag must be `v<version>`;
    if that version is newer than the running one, the release must also carry `melange-<version>.json`. A release
@@ -635,6 +636,12 @@ Melange keeps itself up to date (`src/launcher/updater.*`, `src/launcher/update_
 
 The game looks too (`[Update] CheckInGame=1`, the `Update` module): at most once a day, the same `GET`, compared
 by version only, with a toast if a newer Melange exists. It downloads nothing.
+
+One switch, *Settings › Updates › Check for updates automatically* (`autoUpdate` in `launcher.json`, default on,
+`update.setAuto`), covers both: off, `Melange.exe` doesn't look at start and writes `CheckInGame=0` into the game
+folder's `Melange.ini` (a running game picks it up at its next start). The launcher keeps the ini in step at start,
+after an install, repair or restore, and when a game folder is chosen, so a fresh `Melange.ini` (the template says
+`CheckInGame=1`) doesn't turn the game's check back on. *Check for updates* still works with it off.
 
 ## Releasing
 

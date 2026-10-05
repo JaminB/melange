@@ -14,6 +14,7 @@
 #include "launcher/setup/engine.h"
 #include "launcher/setup/running.h"
 #include "launcher/store_host.h"
+#include "launcher/update_host.h"
 #include "launcher/util.h"
 #include "launcher/window.h"
 #include "oasis/standalone/register.h"
@@ -115,6 +116,7 @@ void Select(const Call& c, Result& r, void*) {
     if (!lk.owns_lock()) return Fail(r, -32002, app::BusyMessage());
     app::SetGameDir(check.path, Bool(p, "save"));
     storehost::Sync();
+    updatehost::SyncInGameCheck();
     oasis::standalone::RegisterLevels(check.path);
     r.json = app::StatusJson();
 }
@@ -131,6 +133,7 @@ void Apply(const Call& c, Result& r, void*) {
     setup::Context ctx = app::MakeContext();
     ctx.progress = [action = rq.action](int step, int of, const std::string& label) { app::PublishProgress(action, step, of, label); };
     const setup::Outcome o = setup::Apply(ctx, rq, planId);
+    if (o.ok && rq.action != "uninstall") updatehost::SyncInGameCheck();   // a new Melange.ini has the template's CheckInGame=1
     lk.unlock();
     if (!o.ok) {
         app::PublishStatus();
@@ -152,6 +155,7 @@ void RestoreMethod(const Call& c, Result& r, void*) {
     setup::Context ctx = app::MakeContext();
     ctx.progress = [](int step, int of, const std::string& label) { app::PublishProgress("restore", step, of, label); };
     const setup::Outcome o = setup::Restore(ctx, id);
+    if (o.ok) updatehost::SyncInGameCheck();
     lk.unlock();
     app::PublishStatus();
     if (!o.ok) return SetError(r, o);

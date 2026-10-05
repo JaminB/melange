@@ -1,4 +1,5 @@
-// update.*: Melange.exe updating itself. One check at start (and on request from Settings), a background download
+// update.*: Melange.exe updating itself. One check at start (unless turned off in Settings, which also turns off the
+// game's daily check) and on request from Settings, a background download
 // into %LOCALAPPDATA%\Melange\updates\<version>\, and "Restart to update", which hands over to the new Melange.exe.
 #include "launcher/update_host.h"
 
@@ -41,6 +42,7 @@ struct State {
     std::string phase = "idle";
     std::string latest, htmlUrl, error, lastCheck;
     uint64_t got = 0, total = 0;
+    bool autoCheck = true;   // Settings › Updates › Check for updates automatically
     bool haveReady = false;
     updater::Staged ready;
     updater::Result applied;
@@ -64,7 +66,7 @@ const updater::Signer& Self() {
 std::string StatusJsonLocked() {
     const State& s = g_state;
     jsonmini::Obj o;
-    o.Str("current", MELANGE_VERSION).Str("phase", s.phase);
+    o.Str("current", MELANGE_VERSION).Str("phase", s.phase).Bool("auto", s.autoCheck);
     if (!s.latest.empty()) o.Str("latest", s.latest);
     if (!s.htmlUrl.empty()) o.Str("htmlUrl", s.htmlUrl);
     if (s.phase == "downloading") o.Raw("progress", jsonmini::Obj().UInt("got", s.got).UInt("total", s.total).End());
@@ -195,6 +197,25 @@ void CheckMethod(const Call&, Result& r, void*) {
     r.json = StatusJson();
 }
 
+// {on}: the launcher's check at start and the game's daily one ([Update] CheckInGame) together. A running game
+// picks the ini change up at its next start.
+void SetAutoMethod(const Call& c, Result& r, void*) {
+    json::Value p;
+    if (!rpc::Params(c, r, &p)) return;
+    const json::Value* on = p.Get("on");
+    if (!on || !on->IsBool()) return rpc::Fail(r, -32602, "expected {on}");
+    std::unique_lock lk(app::Tx(), std::try_to_lock);
+    if (!lk.owns_lock()) return rpc::Fail(r, -32002, app::BusyMessage());
+    const bool v = on->boolean;
+    LOG_INFO("[update] automatic checks %s", v ? "on" : "off");
+    app::UpdateSettings([&](Settings& s) { s.autoUpdate = v; });
+    Set([&](State& s) { s.autoCheck = v; });
+    SyncInGameCheck();
+    lk.unlock();
+    if (v) StartWork(false);
+    r.json = StatusJson();
+}
+
 void ApplyMethod(const Call&, Result& r, void*) {
     updater::Staged ready;
     {
@@ -291,10 +312,12 @@ void Start(bool autoCheck) {
     updater::Staged ready;
     const bool haveReady = updater::FindReady(updater::Root(), MELANGE_VERSION, &ready);
     updater::Clean(updater::Root(), haveReady ? ready.version : "", ExePath());
+    const Settings settings = app::GetSettings();
     {
         std::lock_guard lk(g_mx);
         g_state.applied = applied;
-        g_state.lastCheck = app::GetSettings().lastUpdateCheck;
+        g_state.lastCheck = settings.lastUpdateCheck;
+        g_state.autoCheck = settings.autoUpdate;
         if (haveReady) {
             g_state.haveReady = true;
             g_state.ready = ready;
@@ -303,7 +326,17 @@ void Start(bool autoCheck) {
             g_state.htmlUrl = ready.htmlUrl;
         }
     }
-    if (autoCheck) StartWork(false);
+    // An install or update since the last start may have brought the template's CheckInGame=1 back.
+    SyncInGameCheck();
+    if (autoCheck && settings.autoUpdate) StartWork(false);
+    else if (autoCheck) LOG_INFO("[update] automatic checks are off (Settings › Updates)");
+}
+
+void SyncInGameCheck() {
+    bool changed = false;
+    std::string err;
+    if (!updater::SyncInGameCheck(app::GameDir(), app::GetSettings().autoUpdate, &changed, &err))
+        LOG_WARN("[update] the in-game check setting was not written: %s", err.c_str());
 }
 
 void Install() {
@@ -314,6 +347,7 @@ void Install() {
     oasis::AddMethod("update.status", &StatusMethod, nullptr, kRpcServerThread);
     oasis::AddMethod("update.check", &CheckMethod, nullptr, kRpcServerThread);
     oasis::AddMethod("update.apply", &ApplyMethod, nullptr, kRpcServerThread | kRpcMutating);
+    oasis::AddMethod("update.setAuto", &SetAutoMethod, nullptr, kRpcServerThread | kRpcMutating);
 }
 
 int RunApply(const updater::ApplyArgs& args) {

@@ -94,4 +94,10 @@ bool WriteResult(const std::wstring& path, const Result& r);
 // Reads and deletes it: the next launcher start shows it once.
 bool TakeResult(const std::wstring& path, Result* out);
 std::string ResultJson(const Result& r);
+
+// ---------------------------------------------------------------- the in-game check
+// Makes gameDir\Melange.ini's [Update] CheckInGame agree with Settings › Updates (1/0), the way melange.asi reads it
+// (missing or empty is on). Rewrites the file only when it disagrees, keeping its encoding and every other byte.
+// No Melange.ini (no game folder, or Melange not installed): nothing to do. False and *err when it can't be written.
+bool SyncInGameCheck(const std::wstring& gameDir, bool on, bool* changed, std::string* err);
 }  // namespace melange::launcher::updater

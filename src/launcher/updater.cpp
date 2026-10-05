@@ -8,10 +8,12 @@
 #include <miniz.h>
 
 #include <cstdio>
+#include <cstdlib>
 
 #include "core/log.h"
 #include "launcher/setup/dll_id.h"
 #include "launcher/util.h"
+#include "oasis/rpc/ini_edit.h"
 #include "store/fetch.h"
 #include "store/install.h"
 #include "tools/hash.h"
@@ -538,6 +540,30 @@ bool TakeResult(const std::wstring& path, Result* out) {
     if (const json::Value* w = v.Get("warnings"); w && w->IsArray())
         for (const auto& x : w->items)
             if (x.IsString()) out->warnings.push_back(x.string);
+    return true;
+}
+
+// ---------------------------------------------------------------- the in-game check
+bool SyncInGameCheck(const std::wstring& gameDir, bool on, bool* changed, std::string* err) {
+    *changed = false;
+    const std::wstring path = gameDir.empty() ? std::wstring() : gameDir + L"\\Melange.ini";
+    std::string bytes;
+    if (path.empty() || !FileExists(path) || !ReadAll(path, &bytes, 4u << 20)) {
+        LOG_INFO("[update] no Melange.ini%s%ls: the in-game check setting is not written", path.empty() ? "" : " in ", gameDir.c_str());
+        return true;
+    }
+    oasis::ini::Encoding enc{};
+    const std::string text = oasis::ini::Decode(bytes, &enc);
+    const auto entries = oasis::ini::Parse(text);
+    const oasis::ini::Entry* e = oasis::ini::Find(entries, "Update", "CheckInGame");
+    const bool now = !e || e->value.empty() || strtol(e->value.c_str(), nullptr, 0) != 0;   // config::GetBool's reading
+    if (now == on) return true;
+    std::string out;
+    if (!oasis::ini::Encode(oasis::ini::Set(text, "Update", "CheckInGame", on ? "1" : "0"), enc, &out))
+        return Fail(err, "Melange.ini could not be written in its encoding");
+    if (const unsigned long w = WriteAtomic(path, out)) return Fail(err, "could not write Melange.ini: " + Win32Message(w));
+    LOG_INFO("[update] Melange.ini: [Update] CheckInGame=%d", on ? 1 : 0);
+    *changed = true;
     return true;
 }
 }  // namespace melange::launcher::updater

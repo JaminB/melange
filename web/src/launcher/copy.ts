@@ -326,6 +326,7 @@ export function updateCheckLine(u: UpdateStatus): string {
     case "ready": return `Melange ${u.latest ?? ""} is ready. Restart to update.`;
     case "current": return `You're up to date (Melange ${u.current}).`;
     case "error": return `Couldn't check for updates. ${u.error ?? ""}`.trim();
-    default: return u.lastCheck ? `Last checked ${whenText(u.lastCheck)}.` : "Melange checks for updates each time it starts.";
+    default: return u.lastCheck ? `Last checked ${whenText(u.lastCheck)}.`
+      : u.auto === false ? "Automatic checks are off." : "Melange checks for updates each time it starts.";
   }
 }

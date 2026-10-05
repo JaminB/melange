@@ -57,6 +57,7 @@ bool LoadSettings(const std::wstring& path, Settings* out) {
         if (const json::Value* m = w->Get("maximized"); m && m->IsBool()) out->window.maximized = m->boolean;
     }
     if (const json::Value* u = v.Get("lastUpdateCheck"); u && u->IsString()) out->lastUpdateCheck = u->string;
+    if (const json::Value* a = v.Get("autoUpdate"); a && a->IsBool()) out->autoUpdate = a->boolean;
     if (const json::Value* d = v.Get("defaults")) {
         std::string err;
         if (!DefaultsFromJson(*d, &out->defaults, &out->defaultsSeeded, &err)) out->defaults.clear();
@@ -74,6 +75,7 @@ bool SaveSettings(const std::wstring& path, const Settings& s) {
                             .Int("bottom", s.window.bottom).Bool("maximized", s.window.maximized).End());
     o.Raw("defaults", DefaultsJson(s.defaults, s.defaultsSeeded));
     if (!s.lastUpdateCheck.empty()) o.Str("lastUpdateCheck", s.lastUpdateCheck);
+    o.Bool("autoUpdate", s.autoUpdate);
     MakeDirs(Parent(path));
     return WriteAtomic(path, o.End()) == 0;
 }

@@ -3,7 +3,7 @@ import type { Client } from "../../sdk/client";
 import { errorText } from "../../sdk/hooks";
 import { Ini } from "../../panels/ini";
 import type { Defaults, SetupStatus, Theme, UpdateStatus } from "../api";
-import { defaultsOf, whenText } from "../api";
+import { defaultsOf, updateStatusOf, whenText } from "../api";
 import { busyNotice, updateCheckLine } from "../copy";
 import { UndoIcon } from "../icons";
 
@@ -57,6 +57,16 @@ export function Settings({ client, status, update, theme, onTheme, onChangeFolde
     try { await client.call("ini.set", { section: "Store", key: "IndexUrl", value: "" }); setIndexUrl((s) => (s ? { ...s, custom: false } : s)); } catch (e) { setError(errorText(e)); }
   };
 
+  // The switch follows the server's answer at once; the "update" channel brings the same value to the rest of the app.
+  const [autoSet, setAutoSet] = useState<boolean>();
+  useEffect(() => setAutoSet(undefined), [update?.auto]);
+  const autoOn = autoSet ?? update?.auto ?? true;
+  const setAuto = async (on: boolean) => {
+    setBusy("auto");
+    setError(undefined);
+    try { setAutoSet(updateStatusOf(await client.call<unknown>("update.setAuto", { on })).auto ?? on); } catch (e) { setError(errorText(e)); } finally { setBusy(undefined); }
+  };
+
   const batch = status?.busy;
   const batchWhy = batch ? busyNotice(batch) : undefined;
 
@@ -83,9 +93,15 @@ export function Settings({ client, status, update, theme, onTheme, onChangeFolde
           <button class="btn" data-update-check disabled={!update || update.phase === "checking" || update.phase === "downloading"}
                   onClick={() => client.call("update.check").catch((e) => setError(errorText(e)))}>Check for updates</button>
         </div>
-        <p class="muted small">Melange looks for a newer release on GitHub each time it starts: a plain HTTPS request that sends
-          nothing about you or your game. A newer one is downloaded and checked in the background, and installed when you
-          choose Restart to update.</p>
+        <div class="row" style="margin-top:8px;gap:8px;align-items:center">
+          <button class="lp-switch" role="switch" aria-checked={autoOn} aria-labelledby="ls-auto-update" data-update-auto
+                  disabled={!update || busy === "auto"} onClick={() => setAuto(!autoOn)} />
+          <span id="ls-auto-update">Check for updates automatically</span>
+        </div>
+        <p class="muted small">When this is on, Melange looks for a newer release on GitHub each time it starts, and the game
+          looks at most once a day and shows a notice when one is out. Each look is a plain HTTPS request that sends nothing about you or
+          your game. A newer release is downloaded and checked in the background, and installed when you choose Restart to
+          update. Turn it off and Melange only looks when you choose Check for updates.</p>
       </section>
 
       <section class="ls-section" data-section="melange">

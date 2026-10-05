@@ -26,6 +26,7 @@
 #include "launcher/setup/vdf.h"
 #include "launcher/updater.h"
 #include "launcher/util.h"
+#include "oasis/rpc/ini_edit.h"
 #include "store/index.h"
 #include "store/store.h"
 #include "tools/hash.h"
@@ -987,6 +988,50 @@ void TestSettings() {
            "launcher.json: round trip");
     Put(dir + L"\\bad.json", "{not json");
     Expect(!L::LoadSettings(dir + L"\\bad.json", &t) && t.gameDir.empty() && t.theme == "system", "launcher.json: bad file -> defaults");
+    Expect(t.autoUpdate, "launcher.json: automatic update checks default on");
+    Put(dir + L"\\old.json", "{\"version\":1,\"theme\":\"dark\"}");
+    Expect(L::LoadSettings(dir + L"\\old.json", &t) && t.autoUpdate, "launcher.json: autoUpdate missing -> on");
+    s.autoUpdate = false;
+    Expect(L::SaveSettings(dir + L"\\launcher.json", s) && L::LoadSettings(dir + L"\\launcher.json", &t) && !t.autoUpdate,
+           "launcher.json: autoUpdate off round trip");
+}
+
+// Settings › Updates writes the game's [Update] CheckInGame: only when it disagrees, keeping every other byte and
+// the file's encoding.
+void TestInGameCheckSync() {
+    namespace U = L::updater;
+    const std::wstring game = Fresh(L"ingame-check");
+    bool changed = true;
+    std::string err, bytes;
+    Expect(U::SyncInGameCheck(game, false, &changed, &err) && !changed && !L::FileExists(game + L"\\Melange.ini"),
+           "CheckInGame: no Melange.ini -> nothing written", err);
+    Expect(U::SyncInGameCheck(L"", false, &changed, &err) && !changed, "CheckInGame: no game folder -> nothing", err);
+    const std::string ini = "; Melange\r\n[Update]\r\nEnabled=1\r\nCheckInGame=1            ; once a day\r\n\r\n[Other]\r\nX=2\r\n";
+    Put(game + L"\\Melange.ini", ini);
+    Expect(U::SyncInGameCheck(game, true, &changed, &err) && !changed, "CheckInGame: already on -> untouched", err);
+    Expect(U::SyncInGameCheck(game, false, &changed, &err) && changed, "CheckInGame: turned off", err);
+    L::ReadAll(game + L"\\Melange.ini", &bytes);
+    Expect(bytes == "; Melange\r\n[Update]\r\nEnabled=1\r\nCheckInGame=0            ; once a day\r\n\r\n[Other]\r\nX=2\r\n",
+           "CheckInGame: only the value changed", bytes);
+    Expect(U::SyncInGameCheck(game, false, &changed, &err) && !changed, "CheckInGame: already off -> untouched", err);
+    Expect(U::SyncInGameCheck(game, true, &changed, &err) && changed, "CheckInGame: turned back on", err);
+    L::ReadAll(game + L"\\Melange.ini", &bytes);
+    Expect(bytes == ini, "CheckInGame: back to the original bytes", bytes);
+    // Missing key reads as on (melange.asi's default): off adds it, on leaves the file alone.
+    Put(game + L"\\Melange.ini", "[Update]\r\nEnabled=1\r\n");
+    Expect(U::SyncInGameCheck(game, true, &changed, &err) && !changed, "CheckInGame: missing key is on", err);
+    Expect(U::SyncInGameCheck(game, false, &changed, &err) && changed, "CheckInGame: missing key -> written", err);
+    L::ReadAll(game + L"\\Melange.ini", &bytes);
+    Expect(bytes == "[Update]\r\nEnabled=1\r\nCheckInGame=0\r\n", "CheckInGame: added after the section's last key", bytes);
+    // A UTF-16 file stays UTF-16.
+    std::string wide;
+    melange::oasis::ini::Encode("[Update]\r\nCheckInGame=1\r\n", melange::oasis::ini::Encoding::Utf16Le, &wide);
+    Put(game + L"\\Melange.ini", wide);
+    Expect(U::SyncInGameCheck(game, false, &changed, &err) && changed, "CheckInGame: UTF-16 turned off", err);
+    L::ReadAll(game + L"\\Melange.ini", &bytes);
+    melange::oasis::ini::Encoding enc{};
+    const std::string text = melange::oasis::ini::Decode(bytes, &enc);
+    Expect(enc == melange::oasis::ini::Encoding::Utf16Le && text == "[Update]\r\nCheckInGame=0\r\n", "CheckInGame: UTF-16 kept", text);
 }
 
 // A recommended-plugins batch (or anything else holding app::Tx() for longer than one RPC call) is set on
@@ -1376,6 +1421,7 @@ int main(int, char** argv) {
     TestPluginSettings();
     TestRecommended();
     TestSettings();
+    TestInGameCheckSync();
     TestBusyStatusJson();
     TestStoreEngine();
     TestUpdateRelease();

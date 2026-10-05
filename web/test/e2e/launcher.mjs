@@ -555,6 +555,18 @@ async function updateReady(browser) {
       await page.locator("[data-update-check]").click();
       await shot(page, "33-settings-updates");
     });
+    await attempt("settings: Check for updates automatically", async () => {
+      const sw = page.getByRole("switch", { name: "Check for updates automatically" });
+      check("settings: automatic checks start on", (await sw.getAttribute("aria-checked")) === "true");
+      await sw.click();
+      await page.waitForSelector('[data-update-auto][aria-checked="false"]', { timeout: 5000 });
+      check("settings: turning it off reaches the launcher and the game's CheckInGame",
+        mock.state.launcher.update.auto === false && mock.state.launcher.checkInGame === false);
+      check("settings: Check for updates still works when off", !(await page.locator("[data-update-check]").isDisabled()));
+      await sw.click();
+      await page.waitForSelector('[data-update-auto][aria-checked="true"]', { timeout: 5000 });
+      check("settings: and back on", mock.state.launcher.update.auto === true && mock.state.launcher.checkInGame === true);
+    });
     check("update-ready scenario: no page errors", errors.length === 0, errors.join(" | "));
   } finally {
     await page.close();

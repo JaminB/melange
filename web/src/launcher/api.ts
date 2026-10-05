@@ -413,6 +413,7 @@ export interface UpdateApplied { ok: boolean; version: string; message: string; 
 export interface UpdateStatus {
   current: string; phase: UpdatePhase; latest?: string; htmlUrl?: string;
   progress?: { got: number; total: number }; error?: string; lastCheck?: string; applied?: UpdateApplied;
+  auto?: boolean;   // Settings › Updates › Check for updates automatically (the launcher at start and the game daily)
 }
 
 const UPDATE_PHASES: UpdatePhase[] = ["idle", "checking", "downloading", "ready", "current", "error"];
@@ -431,6 +432,7 @@ export function updateStatusOf(v: unknown): UpdateStatus {
     progress: progress ? { got: num(progress, "got"), total: num(progress, "total") } : undefined,
     error: strOpt(o, "error"), lastCheck: strOpt(o, "lastCheck"),
     applied: applied ? { ok: bool(applied, "ok"), version: str(applied, "version"), message: str(applied, "message"), warnings: strs(applied, "warnings") } : undefined,
+    auto: typeof o.auto === "boolean" ? o.auto : undefined,
   };
 }
 

@@ -9,7 +9,7 @@ const status = (phase: UpdatePhase, extra: Partial<UpdateStatus> = {}): UpdateSt
 
 test("updateStatusOf: garbage never throws and falls back to idle", () => {
   assert.deepEqual(updateStatusOf(null), {
-    current: "", phase: "idle", latest: undefined, htmlUrl: undefined, progress: undefined, error: undefined, lastCheck: undefined, applied: undefined,
+    current: "", phase: "idle", latest: undefined, htmlUrl: undefined, progress: undefined, error: undefined, lastCheck: undefined, applied: undefined, auto: undefined,
   });
   assert.equal(updateStatusOf({ phase: "exploded" }).phase, "idle");
 });
@@ -55,6 +55,15 @@ test("updateCheckLine: every phase says something", () => {
   for (const p of PHASES) assert.ok(updateCheckLine(status(p, { error: "offline" })).length > 0, p);
   assert.ok(/up to date/.test(updateCheckLine(status("current"))));
   assert.ok(/could not reach GitHub/.test(updateCheckLine(status("error", { error: "could not reach GitHub" }))));
+  assert.ok(/each time it starts/.test(updateCheckLine(status("idle"))));
+  assert.equal(updateCheckLine(status("idle", { auto: false })), "Automatic checks are off.");
+});
+
+test("updateStatusOf: auto is the Settings switch, absent when the launcher doesn't say", () => {
+  assert.equal(updateStatusOf({ phase: "idle", auto: false }).auto, false);
+  assert.equal(updateStatusOf({ phase: "idle", auto: true }).auto, true);
+  assert.equal(updateStatusOf({ phase: "idle", auto: "no" }).auto, undefined);
+  assert.equal(updateStatusOf({ phase: "idle" }).auto, undefined);
 });
 
 test("updateAppliedLine: success, warnings and failure", () => {
