@@ -542,6 +542,12 @@ bool Load(const char* id, bool reload) {
         SysLog(2, "unknown mod", id);
         return false;
     }
+    // Thumper decided it cannot run (Melange version, schema, a missing dependency, a conflict): no Reload or
+    // switch-on loads it anyway.
+    if (info.state == mods::State::Incompatible || info.state == mods::State::Blocked) {
+        SysLog(2, reload ? "reload refused" : "load refused", id, info.reason ? info.reason : "");
+        return false;
+    }
     ModRec* m = Ensure(id);
     m->name = info.name ? info.name : id;
     m->version = info.version ? info.version : "";

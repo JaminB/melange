@@ -54,6 +54,7 @@ void Pump() {
     oasis::core::Pump();
     if (++g_ticks % 16 == 0) {
         storehost::Sync();
+        storehost::Tick();
         store::Tick();
     }
     if (g_idleExit) {
@@ -521,6 +522,7 @@ int RunHeadless() {
         oasis::core::Pump();
         if (++g_ticks % 16 == 0) {
             storehost::Sync();
+            storehost::Tick();
             store::Tick();
         }
         Sleep(15);

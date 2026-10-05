@@ -14,6 +14,7 @@
 #include "melange/overlay.h"
 #include "mods/thumper_internal.h"
 #include "store/store.h"
+#include "version.h"
 
 namespace melange::thumper {
 namespace {
@@ -67,18 +68,65 @@ std::string Narrow(const wchar_t* w) {
     return s;
 }
 
+// The checkbox reflects the user's persisted preference, not the (possibly frozen-until-restart) session state: for
+// a content mod mid-session those can briefly disagree (state == RestartRequired).
+bool PrefOn(const Entry& e) {
+    auto pref = Live().enabled.find(e.manifest.id);
+    return pref != Live().enabled.end() ? pref->second : e.state == mods::State::Enabled;
+}
+
+// What the compatibility sweep did (store/compat.h), newest first, until dismissed.
+void DrawNotices(const View& v) {
+    if (v.notices.empty()) return;
+    ImGui::TextColored(ImVec4(1.f, 0.75f, 0.3f, 1.f), "Plugins that cannot load on Melange %s were set aside:", MELANGE_VERSION);
+    for (auto it = v.notices.rbegin(); it != v.notices.rend(); ++it) {
+        const compat::Notice& n = *it;
+        ImGui::PushID(n.key.c_str());
+        ImGui::Bullet();
+        ImGui::PushTextWrapPos(ImGui::GetContentRegionAvail().x - 170.f);
+        ImGui::TextUnformatted(compat::Text(n).c_str());
+        ImGui::PopTextWrapPos();
+        if (!n.folder.empty()) {
+            ImGui::SameLine();
+            if (ImGui::SmallButton("Open folder")) OpenFolder(std::wstring(mods::ModsDir()) + L"\\" + std::wstring(n.folder.begin(), n.folder.end()));
+        }
+        ImGui::SameLine();
+        if (ImGui::SmallButton("Dismiss")) DismissNotice(n.key);
+        ImGui::PopID();
+    }
+    if (v.notices.size() > 1 && ImGui::SmallButton("Dismiss all")) DismissNotice("");
+    ImGui::Separator();
+}
+
 void DrawModsPanel(void*) {
     std::vector<Entry> entries = Snapshot();
+    const View view = CurrentView();
     ImGui::TextDisabled("%zu mods discovered under %s", entries.size(), Narrow(mods::ModsDir()).c_str());
     if (store::Active()) {
         ImGui::SameLine();
         if (ImGui::SmallButton("Store")) overlay::OpenPanel("thumper.store");
     }
+    DrawNotices(view);
     bool anyRestart = false;
     for (const Entry& e : entries)
         if (e.state == mods::State::RestartRequired) anyRestart = true;
     if (anyRestart)
         ImGui::TextColored(ImVec4(1.f, 0.75f, 0.3f, 1.f), "Restart required for at least one content mod to take effect.");
+
+    // Plugins not installed from the Store are hidden unless asked for: display only, they keep loading.
+    bool showLocal = Live().showLocal;
+    if (ImGui::Checkbox("Show local plugins", &showLocal)) SetShowLocal(showLocal);
+    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Plugins you put in the Mods folder yourself. Hidden ones still load when on.");
+    int hidden = 0, hiddenOn = 0;
+    for (const Entry& e : entries)
+        if (!IsStore(e, view)) {
+            ++hidden;
+            hiddenOn += PrefOn(e) ? 1 : 0;
+        }
+    if (!showLocal && hidden) {
+        ImGui::SameLine();
+        ImGui::TextDisabled("%d local plugin%s hidden (%d on)", hidden, hidden == 1 ? "" : "s", hiddenOn);
+    }
 
     constexpr ImGuiTableFlags kFlags =
         ImGuiTableFlags_RowBg | ImGuiTableFlags_Borders | ImGuiTableFlags_Resizable | ImGuiTableFlags_ScrollY | ImGuiTableFlags_ScrollX;
@@ -94,16 +142,19 @@ void DrawModsPanel(void*) {
     ImGui::TableHeadersRow();
 
     for (const Entry& e : entries) {
+        const bool fromStore = IsStore(e, view);
+        if (!showLocal && !fromStore) continue;
         ImGui::PushID(e.manifest.id.c_str());
         ImGui::TableNextRow();
         ImGui::TableNextColumn();
-        // The checkbox reflects the user's persisted preference, not the (possibly frozen-until-restart)
-        // session state: for a content mod mid-session those can briefly disagree (state == RestartRequired).
-        auto pref = Live().enabled.find(e.manifest.id);
-        bool on = pref != Live().enabled.end() ? pref->second : e.state == mods::State::Enabled;
+        bool on = PrefOn(e);
         if (ImGui::Checkbox("##on", &on)) Toggle(e, on);
         ImGui::TableNextColumn();
         ImGui::TextUnformatted(e.manifest.name.empty() ? e.manifest.id.c_str() : e.manifest.name.c_str());
+        if (showLocal) {
+            ImGui::SameLine();
+            ImGui::TextDisabled("%s", fromStore ? "[Store]" : "[Local]");
+        }
         if (e.manifest.implicit) {
             ImGui::SameLine();
             ImGui::TextDisabled("(M1)");
@@ -145,7 +196,7 @@ void DrawModsPanel(void*) {
         }
         ImGui::TableNextColumn();
         if (ImGui::SmallButton("Open folder")) OpenFolder(e.dir);
-        if (!e.manifest.content) {
+        if (!e.manifest.content && e.sessionActive) {   // never for a mod Thumper will not load (incompatible, blocked, off)
             ImGui::SameLine();
             if (ImGui::SmallButton("Reload")) sandbox::ReloadMod(e.manifest.id.c_str());
         }

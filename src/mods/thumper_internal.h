@@ -4,10 +4,12 @@
 // Thumper-internal: not a public contract.
 #include <cstdint>
 #include <map>
+#include <set>
 #include <string>
 #include <vector>
 
 #include "mods/spice.h"
+#include "store/compat.h"
 
 namespace melange::thumper {
 
@@ -65,6 +67,18 @@ void DrawDeepDesertMarker();                        // the persistent HUD corner
 // The overlay panels (mods_page.cpp).
 void RegisterPanels();
 
+// What the Mods pages show beside the list (store/compat.h): which plugins came from the Store, and the compatibility
+// sweep's notices. Read from Mods\.store\installed.json and Mods\.incompatible\notices.json, cached for 2 s
+// (`refresh` re-reads now). Any thread.
+struct View {
+    std::set<std::string> storeIds;
+    std::vector<compat::Notice> notices;
+};
+View CurrentView(bool refresh = false);
+bool IsStore(const Entry& e, const View& v);
+void SetShowLocal(bool on);                       // main thread; persists to thumper-state.json
+bool DismissNotice(const std::string& key);       // "" dismisses every notice
+
 // thumper_state.cpp
 struct PinEntry { std::string id, before, after; };  // exactly one of before/after is non-empty
 struct DeepDesertRecord { bool granted = false; std::string grantHash, author, at; };
@@ -74,6 +88,7 @@ struct State {
     std::vector<PinEntry> pins;
     std::map<std::string, DeepDesertRecord> deepDesert;
     bool migratedDisabledMods = false;
+    bool showLocal = false;   // the Mods pages also list plugins not installed from the Store (display only)
 };
 State& Live();               // the in-memory state, mutated in place; call Save() after changing it
 bool Load();                  // reads Mods\thumper-state.json (or the Documents fallback); missing = defaults

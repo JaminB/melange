@@ -18,6 +18,7 @@
 #include <thread>
 
 #include "core/log.h"
+#include "store/compat.h"
 #include "store/fetch.h"
 #include "store/install.h"
 #include "tools/hash.h"
@@ -35,10 +36,14 @@ struct StepData {
     std::string url;
 };
 struct Task {
-    enum Kind { Fetch, Shots, Add, Drop } kind = Fetch;
+    enum Kind { Fetch, Shots, Add, Drop, Reconcile } kind = Fetch;
     std::string id;
     std::vector<StepData> steps;
     bool enable = true, deleteData = false;
+    // Reconcile (the compatibility sweep's Store half); keepGenerated also applies to the Drops it makes.
+    std::vector<compat::Finding> found;
+    bool fetch = false, keepGenerated = false;
+    std::string melange;   // "" = the host's version
 };
 
 Settings g_set;
@@ -307,7 +312,7 @@ void DoShots(const std::string& id) {
     }
 }
 
-bool PlaceStep(const StepData& d, bool enable, std::string* message) {
+bool PlaceStep(const StepData& d, bool enable, const std::string& melange, std::string* message) {
     const std::string& id = d.plugin.id;
     const Version& v = d.version;
     if (v.size > g_set.maxDownload) {
@@ -352,7 +357,7 @@ bool PlaceStep(const StepData& d, bool enable, std::string* message) {
     SetJob("verifying", id, v.version, "", v.size, v.size);
     SetJob("installing", id, v.version, "");
     install::Staged staged;
-    const bool staged_ok = install::Stage(g_paths, part, e, g_host->MelangeVersion(), &staged, &err, &g_cancel);
+    const bool staged_ok = install::Stage(g_paths, part, e, melange.empty() ? g_host->MelangeVersion() : melange, &staged, &err, &g_cancel);
     DeleteFileW(part.c_str());
     if (!staged_ok) {
         FailJob(id, v.version, err);
@@ -418,20 +423,23 @@ bool PlaceStep(const StepData& d, bool enable, std::string* message) {
     return true;
 }
 
-void DoAdd(const Task& t) {
+bool DoAdd(const Task& t) {
     std::string message;
     for (size_t i = 0; i < t.steps.size(); ++i) {
         if (g_cancel.load()) {
             FailJob(t.id, "", "cancelled");
-            return;
+            return false;
         }
         const bool last = i + 1 == t.steps.size();
-        if (!PlaceStep(t.steps[i], last ? t.enable : true, &message)) return;
+        if (!PlaceStep(t.steps[i], last ? t.enable : true, t.melange, &message)) return false;
     }
     SetJob("done", t.id, t.steps.empty() ? "" : t.steps.back().version.version, message);
+    return true;
 }
 
-void DoDrop(const Task& t) {
+enum class Dropped { Now, NextLaunch, Failed };
+
+Dropped DoDrop(const Task& t) {
     const std::string& id = t.id;
     SetJob("removing", id, "", "");
     const auto local = LocalMods();
@@ -448,25 +456,26 @@ void DoDrop(const Task& t) {
     }
     const install::Pending op{"remove", id, "", "", "", 0, t.deleteData};
     bool genActive = false;
-    for (const std::string& g : install::GeneratedBy(g_paths, id))
-        if (auto it = local.find(g); it != local.end() && it->second.sessionActive) genActive = true;
+    if (!t.keepGenerated)
+        for (const std::string& g : install::GeneratedBy(g_paths, id))
+            if (auto it = local.find(g); it != local.end() && it->second.sessionActive) genActive = true;
     if ((known && entry.sessionActive && (entry.contentRelevant || kind == "content")) || genActive) {
         AddPending(op);
         LOG_INFO("[store] removing %s at the next launch", id.c_str());
         SetJob("done", id, "", "Removed at the next launch");
-        return;
+        return Dropped::NextLaunch;
     }
     if (known) g_host->Unload(id);
     std::string err;
     const install::Result r = install::Remove(g_paths, id, &err);
     if (r == install::Result::Failed) {
         FailJob(id, "", err);
-        return;
+        return Dropped::Failed;
     }
     if (r == install::Result::Pending) {
         AddPending(op);
         SetJob("done", id, "", "Removed at the next launch");
-        return;
+        return Dropped::NextLaunch;
     }
     {
         std::lock_guard lk(g_mx);
@@ -475,10 +484,158 @@ void DoDrop(const Task& t) {
     }
     g_host->Forget(id);
     if (t.deleteData) DeleteData(id);
-    for (const std::string& g : install::GeneratedBy(g_paths, id)) g_host->Unload(g);
-    for (const std::string& g : install::RemoveGenerated(g_paths, id, t.deleteData)) LOG_INFO("[store] removed %s with %s", g.c_str(), id.c_str());
+    if (!t.keepGenerated) {
+        for (const std::string& g : install::GeneratedBy(g_paths, id)) g_host->Unload(g);
+        for (const std::string& g : install::RemoveGenerated(g_paths, id, t.deleteData))
+            LOG_INFO("[store] removed %s with %s", g.c_str(), id.c_str());
+    }
     LOG_INFO("[store] removed %s", id.c_str());
     SetJob("done", id, "", "Removed");
+    return Dropped::Now;
+}
+
+// Caller holds g_mx. The download steps for `id` at `target`, dependencies first; Install's checks.
+std::string BuildStepsLocked(const Index& idx, const std::string& id, const std::string& target,
+                             const std::map<std::string, LocalMod>& local, const Env& env, Task* t) {
+    std::map<std::string, std::string> installed;
+    for (const auto& [mid, l] : local) installed[mid] = l.version;
+    installed.erase(id);
+    std::vector<Step> plan;
+    std::string why;
+    if (!PlanInstall(idx, id, target, installed, env, &plan, &why)) return why;
+    for (const Step& s : plan) {
+        const Plugin* sp = FindPlugin(idx, s.id);
+        const Version* sv = sp ? FindVersion(*sp, s.version) : nullptr;
+        if (!sv) return s.id + " " + s.version + " is not in the list";
+        if (s.id != id && local.count(s.id) && !g_db.mods.count(s.id)) return s.id + " was installed by hand; update it yourself first";
+        StepData d;
+        d.plugin = *sp;
+        d.plugin.versions.clear();
+        d.plugin.screenshots.clear();
+        d.version = *sv;
+        if (!ResolveUrl(g_set.indexUrl, sv->url, &d.url, &why)) return s.id + ": " + why;
+        t->steps.push_back(std::move(d));
+    }
+    return {};
+}
+
+// The compatibility sweep's Store half: every finding, plus a Store plugin the list does not build for this game.
+void DoReconcile(const Task& t) {
+    if (t.fetch) DoFetch();   // falls back to the cached list when offline
+    std::shared_ptr<const Index> idx;
+    bool rollback, offline;
+    {
+        std::lock_guard lk(g_mx);
+        idx = g_index;
+        rollback = g_rollback;
+        offline = g_offline;
+    }
+    if (!idx) {
+        Index cached;
+        std::string when;
+        if (LoadCachedIndex(&cached, &when)) {
+            idx = std::make_shared<const Index>(std::move(cached));
+            std::lock_guard lk(g_mx);
+            rollback = SchemeOf(g_set.indexUrl) != Scheme::File && idx->serial < g_db.serialSeen;
+        }
+    }
+    const std::map<std::string, LocalMod> local = LocalMods();
+    Env env = MakeEnv(rollback);
+    if (!t.melange.empty()) env.melange = t.melange;
+    const std::wstring modsDir = g_paths.mods;
+
+    std::vector<compat::Finding> todo = t.found;
+    if (idx && !env.gameBuild.empty()) {
+        std::lock_guard lk(g_mx);
+        for (const auto& [id, rec] : g_db.mods) {
+            const Plugin* p = FindPlugin(*idx, id);
+            const auto l = local.find(id);
+            if (!p || l == local.end() || std::find(p->gameBuilds.begin(), p->gameBuilds.end(), env.gameBuild) != p->gameBuilds.end())
+                continue;
+            if (std::any_of(todo.begin(), todo.end(), [&](const compat::Finding& f) { return f.id == id; })) continue;
+            todo.push_back({id, p->name, l->second.version, "not made for game build " + env.gameBuild});
+        }
+    }
+    if (todo.empty()) return;
+    std::string gate;
+    {
+        std::lock_guard lk(g_mx);
+        gate = g_gate;   // the host's gate as Tick last saw it (the host is not asked off its own thread)
+    }
+    const std::string why = !gate.empty()             ? gate
+                            : !idx                     ? std::string("no store list yet")
+                            : env.gameBuild.empty()    ? std::string("the game build is not recognised")
+                            : rollback                 ? std::string(kRollbackText)
+                                                       : std::string();
+    if (!why.empty()) {
+        for (const compat::Finding& f : todo)
+            LOG_WARN("[store] %s cannot load (%s); left in place: %s", f.id.c_str(), f.reason.c_str(), why.c_str());
+        return;
+    }
+
+    for (const compat::Finding& f : todo) {
+        {
+            std::lock_guard lk(g_mx);
+            if (!g_db.mods.count(f.id) || PendingFor(f.id)) continue;
+        }
+        compat::Notice n;
+        n.id = f.id;
+        n.name = f.name.empty() ? f.id : f.name;
+        n.version = f.version;
+        n.reason = f.reason;
+        n.melange = env.melange;
+        const Plugin* p = FindPlugin(*idx, f.id);
+        if (p && !p->name.empty()) n.name = p->name;
+        const Version* offer = nullptr;
+        if (p)
+            for (const Version& v : p->versions)
+                if (!v.yanked && Compatible(v, *p, env, nullptr)) {
+                    offer = &v;
+                    break;
+                }
+        if (offer && offer->version == f.version) offer = nullptr;   // the same version cannot load either
+        if (offer) {
+            if (!t.fetch || offline) {
+                LOG_INFO("[store] %s cannot load (%s); version %s can: update it from the Store", f.id.c_str(), f.reason.c_str(),
+                         offer->version.c_str());
+                continue;
+            }
+            Task add{Task::Add, f.id, {}, true, false};
+            add.melange = t.melange;
+            std::string err;
+            {
+                std::lock_guard lk(g_mx);
+                err = BuildStepsLocked(*idx, f.id, offer->version, local, env, &add);
+            }
+            LOG_INFO("[store] %s cannot load (%s): updating it to %s", f.id.c_str(), f.reason.c_str(), offer->version.c_str());
+            if (err.empty() && DoAdd(add)) {
+                n.action = "updated";
+                n.detail = offer->version;
+            } else {
+                if (err.empty()) {
+                    std::lock_guard lk(g_mx);
+                    err = g_job.message;
+                }
+                LOG_WARN("[store] %s: the update to %s failed: %s", f.id.c_str(), offer->version.c_str(), err.c_str());
+                n.action = "failed";
+                n.detail = "updating it to " + offer->version + " failed: " + err;
+            }
+        } else {
+            LOG_INFO("[store] %s cannot load (%s) and the list has no version that can: removing it", f.id.c_str(), f.reason.c_str());
+            Task drop{Task::Drop, f.id, {}, true, false};
+            drop.keepGenerated = true;
+            const Dropped d = DoDrop(drop);
+            if (d == Dropped::Failed) {
+                std::lock_guard lk(g_mx);
+                n.action = "failed";
+                n.detail = "removing it failed: " + g_job.message;
+            } else {
+                n.action = "removed";
+                if (d == Dropped::NextLaunch) n.detail = "at the next launch";
+            }
+        }
+        compat::AddNotice(modsDir, n);
+    }
 }
 
 void Worker() {
@@ -496,12 +653,15 @@ void Worker() {
             case Task::Shots: DoShots(t.id); break;
             case Task::Add:
             case Task::Drop:
+            case Task::Reconcile:
                 g_cancel = false;
                 if (t.kind == Task::Add) DoAdd(t);
-                else DoDrop(t);
+                else if (t.kind == Task::Drop) DoDrop(t);
+                else DoReconcile(t);
                 {
                     std::lock_guard lk(g_mx);
-                    g_busy = false;
+                    // A Reconcile can be queued behind a running job: stay busy until the last change ran.
+                    g_busy = std::any_of(g_tasks.begin(), g_tasks.end(), [](const Task& q) { return q.kind >= Task::Add; });
                     g_updatesDirty = true;
                 }
                 PublishState();
@@ -591,9 +751,20 @@ std::string CurrentGate() {
 
 void SetHost(Host* h, const Config& c) {
     std::lock_guard lk(g_mx);
+    const std::string before = g_set.indexUrl;
     g_host = h;
     g_set = c;
     if (g_set.indexUrl.empty()) g_set.indexUrl = kDefaultIndex;
+    if (g_set.indexUrl != before) {
+        // Another list (Melange.exe switched to a game folder with its own [Store] IndexUrl): the old one says nothing
+        // about this one's plugins.
+        g_index.reset();
+        g_indexText.clear();
+        g_fetchedAt.clear();
+        g_fetchError.clear();
+        g_offline = g_rollback = g_fetchedThisSession = g_fetchRequested = false;
+        g_updatesDirty = true;
+    }
 }
 
 bool Open(const std::wstring& modsDir, std::vector<std::string>* droppedIds) {
@@ -835,27 +1006,9 @@ Outcome Install(const std::string& id, const std::string& version, bool enable, 
     if (it.installed && !it.managed && !replaceManual)
         return {-32000, "Mods\\" + id + " was installed by hand; confirm to replace it"};
     if (it.installed && it.managed && it.installedVersion == target) return {-32000, id + " " + target + " is already installed"};
-    std::map<std::string, std::string> installed;
-    for (const auto& [mid, l] : local) installed[mid] = l.version;
-    installed.erase(id);
-    std::vector<Step> plan;
-    if (!PlanInstall(*g_index, id, target, installed, env, &plan, &why)) return {-32000, why};
     Task t{Task::Add, id, {}, enable, false};
-    for (const Step& s : plan) {
-        const Plugin* sp = FindPlugin(*g_index, s.id);
-        const Version* sv = sp ? FindVersion(*sp, s.version) : nullptr;
-        if (!sv) return {-32000, s.id + " " + s.version + " is not in the list"};
-        if (s.id != id && local.count(s.id) && !g_db.mods.count(s.id))
-            return {-32000, s.id + " was installed by hand; update it yourself first"};
-        StepData d;
-        d.plugin = *sp;
-        d.plugin.versions.clear();
-        d.plugin.screenshots.clear();
-        d.version = *sv;
-        if (!ResolveUrl(g_set.indexUrl, sv->url, &d.url, &why)) return {-32000, s.id + ": " + why};
-        t.steps.push_back(std::move(d));
-    }
-    for (const Step& s : plan) g_rowError.erase(s.id);
+    if (why = BuildStepsLocked(*g_index, id, target, local, env, &t); !why.empty()) return {-32000, why};
+    for (const StepData& s : t.steps) g_rowError.erase(s.plugin.id);
     g_busy = true;
     g_job = Job{"downloading", id, target, "", 0, v->size};
     EnqueueLocked(std::move(t));
@@ -886,6 +1039,19 @@ Outcome Remove(const std::string& id, bool deleteData) {
     g_job = Job{"removing", id, "", "", 0, 0};
     EnqueueLocked(Task{Task::Drop, id, {}, true, deleteData});
     return {};
+}
+
+bool Reconcile(const std::vector<compat::Finding>& found, bool fetch, const std::string& melange) {
+    std::lock_guard lk(g_mx);
+    if (!g_active || !g_host) return false;
+    Task t{Task::Reconcile, "", {}, true, false};
+    t.found = found;
+    t.fetch = fetch && !found.empty();
+    if (t.fetch) g_fetchRequested = true;
+    t.melange = melange;
+    g_busy = true;
+    EnqueueLocked(std::move(t));
+    return true;
 }
 
 bool Cancel() {

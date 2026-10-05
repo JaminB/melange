@@ -374,6 +374,21 @@ a folder without one still loads, unchanged, as a client-only mod named after it
 - Choices are saved to `Mods\thumper-state.json` (falling back to `Documents\Melange` if the game folder
   is read-only). The overlay's *Thumper/Mods* panel lists every mod with its state and reason, and
   *Thumper/Deep Desert* lists every grant.
+- **Store and local plugins.** A plugin with a record in `Mods\.store\installed.json` (whatever version), or a map
+  pack an installed Store importer generated, is a Store plugin; any other is local. The *Thumper/Mods* panel, the
+  Oasis Mods panel and Melange.exe's Plugins page list only Store plugins until *Show local plugins* is ticked
+  (`showLocal` in `thumper-state.json`, shared by all three), with a hint such as "3 local plugins hidden (1 on)".
+  This is display only: a hidden plugin keeps its switch and still loads.
+- **Compatibility sweep.** A plugin this Melange can never load (broken `spice.json`, unknown `spiceVersion`,
+  malformed or unmet `melange.range`) is moved out of `Mods\` before Thumper's first scan, and by Melange.exe when
+  it opens a game folder the game is not running from: a local one to `Mods\.incompatible\<folder>\`, a Store one is
+  updated or removed through the Store engine (`store::Reconcile`). Every action is logged (`[compat]`, `[store]`,
+  jlog `thumper.quarantine`) and leaves a notice the three pages show until dismissed. Details:
+  [spice.md](spice.md#compatibility-sweep). The shared code is `src/store/compat.cpp`; in Melange.exe,
+  `launcher::storehost::RequestSweep(version)` (any thread) or `SweepNow(version)` runs it against another version,
+  e.g. one an update just installed.
+
+`[Thumper]` keys beyond the ones above: `SweepIncompatible` (`1`; `0` leaves incompatible plugins in place, unloaded).
 
 `dist\Mods\` includes `hello-spice` and `sim-sampler` as disabled samples (`defaultEnabled: false`); a
 newly discovered mod without that flag starts enabled.
@@ -386,9 +401,11 @@ workflow, and the list pins each zip's SHA-256. Open *Thumper/Store* in the over
 *Thumper/Mods*), or the **Store** panel in Oasis.
 
 - **Privacy.** The list is fetched from GitHub only when a Store page opens or you press *Refresh*; screenshots only
-  when you open a plugin's details; a zip only when you install it. Nothing runs at start-up or on a timer, and
-  nothing about you or your game is sent: the requests are plain HTTPS `GET`s with the user agent `Melange/<version>`
-  and no cookies, credentials or query strings. GitHub sees your IP address, as with any download.
+  when you open a plugin's details; a zip only when you install it. Nothing runs on a timer, and at start-up only one
+  thing does: when Melange.exe finds a Store plugin that this Melange cannot load, it fetches the list and the
+  version that can (the compatibility sweep, see [Mods (Thumper)](#mods-thumper)). The game never does. Nothing about you or
+  your game is sent: the requests are plain HTTPS `GET`s with the user agent `Melange/<version>` and no cookies,
+  credentials or query strings. GitHub sees your IP address, as with any download.
 - **What an install does.** The zip is downloaded to `Mods\.store\dl\`, its length and SHA-256 must match the list,
   every entry is checked before a byte is written (no absolute or `..` paths, links, device names, hidden files,
   executables, or entries larger than they claim), and it is unpacked into `Mods\.store\stage\`. Its `spice.json`
@@ -407,6 +424,8 @@ workflow, and the list pins each zip's SHA-256. Open *Thumper/Store* in the over
   is older than one seen before, updates and installs are disabled until a newer list arrives.
 - A mod you put in `Mods\` by hand shows as "Installed manually"; the Store replaces it only after a confirm, and
   never removes it.
+- **Plugins that stop loading.** A Store plugin this Melange cannot load is updated to a version that can, or
+  removed when the list has none, by the compatibility sweep (see [Mods (Thumper)](#mods-thumper)).
 
 `[Store]` in `Melange.ini`:
 
@@ -420,7 +439,7 @@ workflow, and the list pins each zip's SHA-256. Open *Thumper/Store* in the over
 The Store keeps its files in `Mods\.store\` (Thumper ignores folders that start with a dot): `installed.json` (what
 it installed, by version and hash), the last fetched list for offline display, a screenshot cache, and
 `pending.json` for changes waiting for the next launch. Deleting the folder makes every plugin count as manually
-installed. To publish a plugin, see the melange-plugins repository's `CONTRIBUTING.md`; `tools/store.py pack` there
+installed (and so local, hidden on the Mods pages until *Show local plugins*). To publish a plugin, see the melange-plugins repository's `CONTRIBUTING.md`; `tools/store.py pack` there
 builds the exact zip the Store will install, so you can drop it into `Mods\` and test it first.
 
 ## Lua scripting

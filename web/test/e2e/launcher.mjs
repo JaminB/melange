@@ -109,7 +109,14 @@ async function foundInstallRecommended(browser) {
     await attempt("plugins and settings drawer", async () => {
       await page.locator('[data-page-tab="plugins"]').click();
       await page.waitForSelector("[data-plugin]", { timeout: 10000 });
+      await page.waitForSelector("[data-notices]", { timeout: 5000 });
+      check("plugins: a local plugin is hidden, with a hint", (await page.locator('[data-plugin="hello-spice"]').count()) === 0 &&
+        /1 local plugin hidden \(1 on\)/.test((await page.locator("[data-hidden-hint]").textContent()) ?? ""));
+      check("plugins: the sweep notice offers its folder", (await page.locator("[data-notices] [data-open-folder]").count()) === 1);
       await shot(page, "08-plugins");
+      await page.locator("[data-show-local]").click();
+      await page.waitForSelector('[data-plugin="hello-spice"] [data-source="local"]', { timeout: 5000 });
+      check("plugins: Show local plugins lists it with a Local badge", true);
       await page.locator("[data-settings]").first().click();
       await page.waitForSelector('[role="dialog"]', { timeout: 5000 });
       await shot(page, "09-plugin-settings");

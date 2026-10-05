@@ -31,7 +31,9 @@ Melange runs two kinds of plugins:
    end)
    ```
 
-3. Start the game and enable the mod on the overlay's *Thumper/Mods* page (press `` ` ``). Saving the script reloads it while the game runs.
+3. Start the game and enable the mod on the overlay's *Thumper/Mods* page (press `` ` ``). A mod you made is a local plugin: tick *Show local plugins* to see it. Saving the script reloads it while the game runs.
+
+A mod whose `spice.json` does not parse, or whose `melange.range` the running Melange does not satisfy, is moved to `Mods\.incompatible\` when the game or Melange.exe starts (see [Compatibility sweep](spice.md#compatibility-sweep)). While you work on one, set `[Thumper] SweepIncompatible=0` in `Melange.ini`: it then only shows as incompatible.
 
 `kind` decides how the mod behaves online:
 

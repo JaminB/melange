@@ -4,7 +4,7 @@ import { History, completionWord, parseTarget, targetParams, targetValue } from 
 import { Counts, EventStore, covered, namesOf, prefixes, toggle, validPattern } from "../../src/panels/events/model";
 import { docOf, effective, isDefault, protectedReason, sections, valueProblem } from "../../src/panels/ini/model";
 import { LogStore, fromEvent, fromLine, levelOf, message, parseJsonl, sessionUrl, sessionsOf, shortTime } from "../../src/panels/logs/model";
-import { deepDesertAction, modsOf, stateText, withMod } from "../../src/panels/mods/model";
+import { deepDesertAction, hiddenText, modsOf, sourceText, stateText, viewOf, visibleMods, withMod } from "../../src/panels/mods/model";
 import { filterCommands } from "../../src/shell/Palette";
 import { closeSecondary, loadLayout, matchScore, openPanel, resolve, sanitize, saveLayout } from "../../src/shell/layout";
 
@@ -149,6 +149,41 @@ test("mods: info, states and Deep Desert actions", () => {
   const next = withMod(list, { ...list[0], on: false, state: "disabled" });
   assert.equal(next[0].state, "disabled");
   assert.equal(list[0].state, "enabled");
+});
+
+test("mods: Store and local plugins, the show-local filter and sweep notices", () => {
+  const list = modsOf([
+    { id: "s", state: "enabled", on: true, source: "store" },
+    { id: "l1", state: "enabled", on: true, source: "local" },
+    { id: "l2", state: "disabled", on: false, source: "local" },
+    { id: "old", state: "enabled", on: true },
+    { id: "odd", state: "enabled", on: true, source: "elsewhere" },
+  ]);
+  assert.equal(list[0].source, "store");
+  assert.equal(list[3].source, undefined, "an older server says nothing");
+  assert.equal(list[4].source, undefined);
+  const hiddenView = visibleMods(list, false);
+  assert.deepEqual(hiddenView.shown.map((m) => m.id), ["s", "old", "odd"], "only plugins known to be local are hidden");
+  assert.equal(hiddenView.hidden, 2);
+  assert.equal(hiddenView.hiddenOn, 1);
+  assert.equal(hiddenText(2, 1), "2 local plugins hidden (1 on)");
+  assert.equal(hiddenText(1, 0), "1 local plugin hidden (0 on)");
+  assert.equal(visibleMods(list, true).shown.length, 5);
+  assert.equal(sourceText(list[0]), "Store");
+  assert.equal(sourceText(list[1]), "Local");
+  assert.equal(sourceText(list[3]), undefined);
+
+  const view = viewOf({ showLocal: true, notices: [
+    { key: "k1", id: "a", name: "A", action: "quarantined", reason: "needs Melange >=0.4.0, you have 0.3.6", folder: ".incompatible\\a", text: "Moved A" },
+    { key: "k2", id: "b", action: "removed", reason: "r" },
+    { key: "", id: "c" },
+    "junk",
+  ] });
+  assert.equal(view.showLocal, true);
+  assert.deepEqual(view.notices.map((n) => n.key), ["k2", "k1"], "newest first; a notice without a key is dropped");
+  assert.equal(view.notices[1].folder, ".incompatible\\a");
+  assert.equal(view.notices[0].text, "b: r", "a missing text is made from the id and reason");
+  assert.deepEqual(viewOf(undefined), { showLocal: false, notices: [] });
 });
 
 test("ini: keys by section, values and protected keys", () => {

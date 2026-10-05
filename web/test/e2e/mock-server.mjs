@@ -113,7 +113,14 @@ function initialMods() {
     { id: "dune-maps", name: "Dune Maps", version: "1.0.0", authors: "Mapper", dir: "Mods\\dune-maps", kind: "content",
       state: "disabled", reason: "", on: false, restartRequired: false, implicitManifest: false, hasClient: false, hasSim: false,
       deepDesert: { declared: false, granted: false }, order: 4 },
-  ];
+  ].map((m) => ({ ...m, source: m.id === "hello-spice" ? "local" : "store" }));   // hello-spice was put in Mods\ by hand
+}
+
+// mods.view: the "Show local plugins" choice and one compatibility-sweep notice.
+function initialModsView() {
+  return { showLocal: false, notices: [{ key: "2026-10-01T10:00:00Z-old-hud", id: "old-hud", name: "Old HUD", version: "0.1.0",
+    action: "quarantined", reason: "needs Melange >=9.0.0, you have 0.3.6", melange: "0.3.6", at: "2026-10-01T10:00:00Z",
+    folder: ".incompatible\\old-hud", detail: "", text: "Moved Old HUD to Mods\\.incompatible\\old-hud: needs Melange >=9.0.0, you have 0.3.6" }] };
 }
 
 const BUS = ["Camera.HasUpdated", "GameLogic.Turn.Started", "GameLogic.Turn.Ended", "GameLogic.Weapon.Fired", "Explosion.Created", "Worm.Damaged"];
@@ -125,7 +132,7 @@ export async function startMock(opts = {}) {
   const launcherMode = !!opts.launcher;
   const state = {
     server: launcherMode ? "standalone" : opts.standalone ? "standalone" : "game", readOnly: !!opts.readOnly, online: !!opts.online, inMatch: opts.inMatch ?? true,
-    ini: INI, mods: initialMods(), calls: [], logRate: 0, seq: 0, busPosted: 0,
+    ini: INI, mods: initialMods(), modsView: initialModsView(), calls: [], logRate: 0, seq: 0, busPosted: 0,
   };
   const build = existsSync(join(root, "build.txt")) ? readFileSync(join(root, "build.txt"), "utf8").trim() : "dev";
   const clients = new Set();
@@ -142,10 +149,11 @@ export async function startMock(opts = {}) {
   // fixture needs a "caravan" mod next to the main mock's unrelated ones.
   if (imports) state.mods = [...state.mods, { id: "caravan", name: "Caravan", version: "1.0.0", authors: "Melange", dir: "Mods\\caravan",
     kind: "client", state: "enabled", reason: "", on: true, restartRequired: false, implicitManifest: false, hasClient: false, hasSim: false,
-    deepDesert: { declared: false, granted: false }, order: 5 }];
+    deepDesert: { declared: false, granted: false }, order: 5, source: "store" }];
   const methods = [...(state.server === "game"
-    ? ["sys.ping", "lua.eval", "lua.complete", "mods.list", "mods.setEnabled", "mods.revokeDeepDesert", "levels.live", "ini.get", "ini.set", "bus.names", "log.sessions"]
-    : ["sys.ping", "mods.list", "ini.get", "ini.set", "log.sessions"]),
+    ? ["sys.ping", "lua.eval", "lua.complete", "mods.list", "mods.setEnabled", "mods.revokeDeepDesert", "mods.view", "mods.setShowLocal",
+       "mods.dismissNotice", "levels.live", "ini.get", "ini.set", "bus.names", "log.sessions"]
+    : ["sys.ping", "mods.list", "mods.view", "mods.setShowLocal", "mods.dismissNotice", "ini.get", "ini.set", "log.sessions"]),
     ...erg.methods, ...(state.server === "game" ? store.methods : []),
     ...(launcher ? [...store.methods, ...launcher.methods, ...(imports?.methods ?? [])] : [])];
   const channels = state.server === "game" ? ["log", "bus", "bus.counts", "mods", "stats", "store"] : launcher ? ["log", "store", "setup", "import", "update"] : ["log"];
@@ -209,6 +217,17 @@ export async function startMock(opts = {}) {
       setTimeout(() => broadcast("mods", modPublic()), 10);
       return JSON.parse(JSON.stringify(m));
     },
+    "mods.view": () => JSON.parse(JSON.stringify(state.modsView)),
+    "mods.setShowLocal": (p) => {
+      if (typeof p.on !== "boolean") throw [-32602, "on must be true or false"];
+      state.modsView.showLocal = p.on;
+      return JSON.parse(JSON.stringify(state.modsView));
+    },
+    "mods.dismissNotice": (p) => {
+      if (p.key !== undefined && typeof p.key !== "string") throw [-32602, "key must be a string"];
+      state.modsView.notices = state.modsView.notices.filter((n) => p.key !== undefined && n.key !== p.key);
+      return JSON.parse(JSON.stringify(state.modsView));
+    },
     "levels.live": (p) => {
       const m = state.mods.find((x) => x.id === p.modId);
       if (!m) return { ok: false, reason: `no mod ${p.modId} is installed` };
@@ -253,7 +272,7 @@ export async function startMock(opts = {}) {
     },
   };
   Object.assign(handlers, erg.handlers, store.handlers, launcher?.handlers, imports?.handlers);
-  const mutating = new Set(["lua.eval", "mods.setEnabled", "levels.live", "mods.revokeDeepDesert", "ini.set", ...erg.mutating, ...store.mutating, ...(launcher?.mutating ?? []), ...(imports?.mutating ?? [])]);
+  const mutating = new Set(["lua.eval", "mods.setEnabled", "levels.live", "mods.revokeDeepDesert", "mods.setShowLocal", "mods.dismissNotice", "ini.set", ...erg.mutating, ...store.mutating, ...(launcher?.mutating ?? []), ...(imports?.mutating ?? [])]);
 
   function broadcast(ch, d) { for (const c of clients) if (c.subs.has(ch)) c.queue(ch, d); }
 

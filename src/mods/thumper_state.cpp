@@ -1,4 +1,5 @@
-// Mods\thumper-state.json: enable/disable choices, load-order pins and Deep Desert grants. Written
+// Mods\thumper-state.json: enable/disable choices, load-order pins, Deep Desert grants and whether the Mods pages
+// list local plugins (Melange.exe reads and writes the same keys, oasis/standalone/mods_provider.cpp). Written
 // atomically (temp file + rename) so a crash mid-save never corrupts it. Falls back to
 // Documents\Melange when the game folder is read-only (Program Files).
 #include <windows.h>
@@ -119,6 +120,7 @@ bool Load() {
             g_state.deepDesert[id] = std::move(r);
         }
     if (const json::Value* m = v.Get("migratedDisabledMods"); m && m->IsBool()) g_state.migratedDisabledMods = m->boolean;
+    if (const json::Value* s = v.Get("showLocal"); s && s->IsBool()) g_state.showLocal = s->boolean;
     return true;
 }
 
@@ -146,6 +148,7 @@ bool Save() {
     }
     root.Raw("deepDesert", dd.End());
     root.Bool("migratedDisabledMods", g_state.migratedDisabledMods);
+    root.Bool("showLocal", g_state.showLocal);
     std::string text = root.End();
 
     size_t slash = path.find_last_of(L"\\/");

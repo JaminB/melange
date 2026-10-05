@@ -786,13 +786,16 @@ class FakeStoreHost final : public melange::store::Host {
     void DeleteData(const std::string& id) override { calls.push_back("delete " + id); }
 };
 
-std::string MakePluginZip(const std::string& version, uint64_t* unpacked) {
-    const std::string spice = "{\"spiceVersion\":1,\"id\":\"hello\",\"version\":\"" + version +
-                              "\",\"name\":\"Hello\",\"authors\":[\"me\"],\"melange\":{\"range\":\">=0.1.0\"},\"kind\":\"client-only\","
-                              "\"entry\":{\"client\":\"client/init.lua\"},\"settings\":[{\"key\":\"level\",\"type\":\"int\",\"default\":2,"
-                              "\"min\":1,\"max\":5,\"label\":\"Level\"}]}";
+std::string PluginSpice(const std::string& id, const std::string& version, const std::string& range) {
+    return "{\"spiceVersion\":1,\"id\":\"" + id + "\",\"version\":\"" + version + "\",\"name\":\"Hello\",\"authors\":[\"me\"],\"melange\":{\"range\":\"" +
+           range + "\"},\"kind\":\"client-only\",\"entry\":{\"client\":\"client/init.lua\"},\"settings\":[{\"key\":\"level\",\"type\":\"int\","
+           "\"default\":2,\"min\":1,\"max\":5,\"label\":\"Level\"}]}";
+}
+
+std::string MakePluginZip(const std::string& version, uint64_t* unpacked, const std::string& id = "hello") {
+    const std::string spice = PluginSpice(id, version, ">=0.1.0");
     const std::pair<std::string, std::string> files[] = {
-        {"hello/spice.json", spice}, {"hello/LICENSE", "MIT"}, {"hello/client/init.lua", "wum.log.info('hello')"}};
+        {id + "/spice.json", spice}, {id + "/LICENSE", "MIT"}, {id + "/client/init.lua", "wum.log.info('hello')"}};
     mz_zip_archive z{};
     mz_zip_writer_init_heap(&z, 0, 0);
     *unpacked = 0;
@@ -879,6 +882,86 @@ void TestStoreEngine() {
     Expect(unloaded && forgot && deleted, "store: host unloaded, forgot and deleted the plugin's data");
     st::Close();
     Expect(!st::Active(), "store: closed without a folder");
+}
+
+// The compatibility sweep against a Mods folder: a local plugin moves to Mods\.incompatible, a Store one with a
+// compatible newer version is updated to it, a Store one with none is removed; nothing changes without a list.
+void TestStoreReconcile() {
+    namespace st = melange::store;
+    namespace cp = melange::compat;
+    const std::wstring root = Fresh(L"reconcile");
+    const std::wstring mods = root + L"\\game\\Mods";
+    uint64_t unpacked = 0;
+    const std::string zip = MakePluginZip("1.1.0", &unpacked);
+    Put(root + L"\\index\\hello-1.1.0.zip", zip);
+    const std::string sha = melange::hashutil::Sha256Hex(zip.data(), zip.size());
+    auto ver = [&](const std::string& v, const std::string& range, const std::string& url, const std::string& hash, uint64_t size) {
+        return "{\"version\":\"" + v + "\",\"released\":\"2026-10-03\",\"melange\":\"" + range + "\",\"kind\":\"client-only\","
+               "\"permissions\":{\"unsafe\":false,\"filesystem\":\"none\"},\"url\":\"" + url + "\",\"sha256\":\"" + hash +
+               "\",\"size\":" + std::to_string(size) + ",\"unpackedSize\":" + std::to_string(unpacked) + ",\"files\":3}";
+    };
+    auto plugin = [](const std::string& id, const std::string& versions) {
+        return "{\"id\":\"" + id + "\",\"name\":\"" + id + " plugin\",\"authors\":[\"me\"],\"description\":\"d\",\"licence\":\"MIT\","
+               "\"categories\":[\"misc\"],\"gameBuilds\":[\"1077\"],\"versions\":[" + versions + "]}";
+    };
+    Put(root + L"\\index\\index.json",
+        "{\"indexVersion\":1,\"serial\":1,\"plugins\":[" +
+            plugin("hello", ver("1.1.0", ">=0.1.0", "hello-1.1.0.zip", sha, zip.size()) + "," +
+                                ver("1.0.0", ">=9.0.0", "hello-1.0.0.zip", std::string(64, 'a'), 100)) + "," +
+            plugin("gone", ver("1.0.0", ">=9.0.0", "gone-1.0.0.zip", std::string(64, 'a'), 100)) + "]}");
+    // Installed from the Store (installed.json), but asking for a Melange this is not.
+    Put(mods + L"\\hello\\spice.json", PluginSpice("hello", "1.0.0", ">=9.0.0"));
+    Put(mods + L"\\hello\\user\\keep.txt", "mine");
+    Put(mods + L"\\gone\\spice.json", PluginSpice("gone", "1.0.0", ">=9.0.0"));
+    Put(mods + L"\\mine\\spice.json", PluginSpice("mine", "1.0.0", ">=9.0.0"));
+    Put(mods + L"\\fine\\spice.json", PluginSpice("fine", "1.0.0", ">=0.1.0"));
+    Put(mods + L"\\.store\\installed.json",
+        "{\"_serialSeen\":0,\"hello\":{\"version\":\"1.0.0\",\"sha256\":\"\",\"installedAt\":\"\",\"serial\":1},"
+        "\"gone\":{\"version\":\"1.0.0\",\"sha256\":\"\",\"installedAt\":\"\",\"serial\":1}}");
+    std::string url = "file:///" + L::Narrow(root + L"\\index\\index.json");
+    for (char& c : url)
+        if (c == '\\') c = '/';
+    FakeStoreHost host;
+    host.mods = mods;
+    st::Config cfg;
+    cfg.indexUrl = url;
+    cfg.custom = true;
+    st::SetHost(&host, cfg);
+    Expect(st::Open(mods), "reconcile: store opened");
+
+    cp::SweepContext c;
+    c.modsDir = mods;
+    c.melangeVersion = "0.4.0";
+    std::vector<std::string> forgot;
+    c.forget = [&](const std::string& id) { forgot.push_back(id); };
+    const cp::Report r = cp::Sweep(c);
+    Expect(r.quarantined.size() == 1 && r.quarantined[0].id == "mine" && L::DirExists(mods + L"\\.incompatible\\mine") &&
+               !L::DirExists(mods + L"\\mine") && forgot == std::vector<std::string>{"mine"},
+           "reconcile: the local plugin was quarantined");
+    Expect(r.store.size() == 2 && L::DirExists(mods + L"\\hello") && L::DirExists(mods + L"\\gone"), "reconcile: Store plugins are left to the Store");
+
+    // No list in memory and none cached: nothing changes (the game without a fetch).
+    Expect(st::Reconcile(r.store, false), "reconcile: queued without a fetch");
+    Expect(WaitFor([] { return !st::GetStatus().busy; }), "reconcile: finished without a fetch");
+    Expect(Get(mods + L"\\hello\\spice.json").find("\"1.0.0\"") != std::string::npos && L::DirExists(mods + L"\\gone"),
+           "reconcile: without a list nothing is updated or removed");
+
+    Expect(st::Reconcile(r.store, true), "reconcile: queued with a fetch");
+    Expect(WaitFor([] { return !st::GetStatus().busy; }), "reconcile: finished with a fetch");
+    Expect(Get(mods + L"\\hello\\spice.json").find("\"1.1.0\"") != std::string::npos, "reconcile: hello updated to the version that loads",
+           st::GetStatus().job.message);
+    Expect(Get(mods + L"\\hello\\user\\keep.txt") == "mine", "reconcile: the update kept hello's user folder");
+    Expect(!L::DirExists(mods + L"\\gone"), "reconcile: gone (no version loads) was removed");
+    Expect(L::DirExists(mods + L"\\fine"), "reconcile: a plugin that loads is untouched");
+    const std::string db = Get(mods + L"\\.store\\installed.json");
+    Expect(db.find("\"gone\"") == std::string::npos && db.find("\"1.1.0\"") != std::string::npos, "reconcile: installed.json follows", db);
+    bool forgotGone = false;
+    for (const auto& call : host.calls) forgotGone |= call == "forget gone";
+    Expect(forgotGone, "reconcile: the host forgot the removed plugin");
+    std::string actions;
+    for (const cp::Notice& n : cp::LoadNotices(mods)) actions += n.id + ":" + n.action + (n.detail.empty() ? "" : "=" + n.detail) + " ";
+    Expect(actions == "mine:quarantined gone:removed hello:updated=1.1.0 ", "reconcile: one notice per action", actions);
+    st::Close();
 }
 
 // ---------------------------------------------------------------- launcher.json
@@ -1300,6 +1383,7 @@ int main(int, char** argv) {
     TestUpdateDownload();
     TestUpdateClean();
     TestUpdateArgs();
+    TestStoreReconcile();
     melange::store::Shutdown();
     Wipe(g_tmp);
     printf("launcher_selftest: %d passed, %d failed\n", g_pass, g_fail);

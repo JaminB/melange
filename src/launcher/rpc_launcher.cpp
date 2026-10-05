@@ -6,6 +6,7 @@
 #include <shlobj.h>
 #include <shobjidl.h>
 
+#include <algorithm>
 #include <atomic>
 #include <mutex>
 
@@ -17,6 +18,7 @@
 #include "launcher/util.h"
 #include "launcher/window.h"
 #include "oasis/standalone/register.h"
+#include "store/store.h"
 #include "tools/json_mini.h"
 #include "tools/log_export_core.h"
 
@@ -59,6 +61,8 @@ void Launch(const Call&, Result& r, void*) {
     if (game.empty()) return Fail(r, -32000, "Choose your game folder first.");
     if (!FileExists(game + L"\\WormsMayhem.exe")) return Fail(r, -32000, "WormsMayhem.exe isn't in this folder.");
     if (setup::GameRunning(game)) return Fail(r, -32000, "The game is already running.");
+    // A Store job (an install, or the compatibility sweep updating a plugin) is changing Mods\ right now.
+    if (store::GetStatus().busy) return Fail(r, -32002, "Melange is updating your plugins. Try again in a moment.");
     if (setup::StoreOf(game, setup::SystemRegistry()) == "steam") {
         const auto h = reinterpret_cast<INT_PTR>(ShellExecuteW(app::Window(), L"open", L"steam://rungameid/70600", nullptr, nullptr, SW_SHOWNORMAL));
         if (h <= 32) return Fail(r, -32000, "Steam didn't start the game. Is Steam installed?");
@@ -102,8 +106,17 @@ void OpenPath(const Call& c, Result& r, void*) {
         if (!ex::RevealInExplorer(zip)) return Fail(r, -32000, "Explorer didn't open.");
         r.json = "{}";
         return;
+    } else if (what == "incompatible") {
+        // Mods\.incompatible, or one plugin the compatibility sweep moved there (a notice's folder, ".incompatible\<name>").
+        std::string folder = Str(p, "folder");
+        if (folder.empty()) folder = ".incompatible";
+        const std::string rest = folder.substr(std::min<size_t>(folder.size(), 13));
+        if (folder.rfind(".incompatible", 0) != 0 || (!rest.empty() && rest[0] != '\\') || rest.find_first_of("/:") != std::string::npos ||
+            rest.find("..") != std::string::npos || rest.find('\\', 1) != std::string::npos)
+            return Fail(r, -32602, "bad folder");
+        path = game.empty() ? std::wstring() : game + L"\\Mods\\" + Widen(folder);
     } else {
-        return Fail(r, -32602, "what must be game, logs, backup or export");
+        return Fail(r, -32602, "what must be game, logs, backup, export or incompatible");
     }
     if (path.empty() || !DirExists(path)) return Fail(r, -32000, "That folder doesn't exist yet.");
     ShellExecuteW(app::Window(), L"open", path.c_str(), nullptr, nullptr, SW_SHOWNORMAL);

@@ -200,7 +200,7 @@ target_link_libraries(oasis_rpc_selftest PRIVATE oasis_core)
 add_executable(oasis_standalone_selftest
     tests/oasis_standalone_selftest.cpp
     src/oasis/standalone/ini_edit.cpp src/oasis/standalone/mods_provider.cpp src/oasis/standalone/json_write.cpp
-    src/oasis/standalone/wormsign_provider.cpp src/wormsign/format.cpp src/wormsign/records.cpp
+    src/oasis/standalone/wormsign_provider.cpp src/wormsign/format.cpp src/wormsign/records.cpp src/store/compat.cpp
     src/mods/spice.cpp src/tools/json_read.cpp src/core/log.cpp)
 target_include_directories(oasis_standalone_selftest PRIVATE src src/sdk)
 target_compile_definitions(oasis_standalone_selftest PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX _CRT_SECURE_NO_WARNINGS)
@@ -234,7 +234,7 @@ target_link_libraries(launcher_selftest PRIVATE melange_store bcrypt version she
 
 # The Store engine without the game: index, downloads, installs, the store.* methods. The plugin compiles the same
 # sources through its glob, with store/game_host.cpp as the host; Melange.exe brings its own host.
-add_library(melange_store STATIC src/store/engine.cpp src/store/store_rpc.cpp src/store/index.cpp src/store/install.cpp
+add_library(melange_store STATIC src/store/engine.cpp src/store/store_rpc.cpp src/store/index.cpp src/store/install.cpp src/store/compat.cpp
     src/store/fetch.cpp src/store/zipcheck.cpp src/levels/hidden.cpp)
 target_include_directories(melange_store PUBLIC src src/sdk)
 target_compile_definitions(melange_store PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX _CRT_SECURE_NO_WARNINGS)
@@ -470,7 +470,7 @@ target_compile_options(thumper_selftest PRIVATE /W4 /utf-8 /permissive-)
 # The plugin store without the game or the network: index, zip rules, install engine, file:// fetches.
 add_executable(store_selftest
     tests/store_selftest.cpp
-    src/store/index.cpp src/store/zipcheck.cpp src/store/install.cpp src/store/fetch.cpp
+    src/store/index.cpp src/store/zipcheck.cpp src/store/install.cpp src/store/fetch.cpp src/store/compat.cpp
     src/levels/live_policy.cpp src/levels/hidden.cpp src/mods/spice.cpp src/tools/json_read.cpp src/tools/hash.cpp src/core/log.cpp)
 target_include_directories(store_selftest PRIVATE src src/sdk)
 target_compile_definitions(store_selftest PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX _CRT_SECURE_NO_WARNINGS)

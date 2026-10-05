@@ -260,7 +260,7 @@ std::vector<Pack> ScanPacks(const std::wstring& gameDir) {
     std::vector<Pack> out;
     const std::wstring mods = gameDir + L"\\Mods";
     ForEach(mods + L"\\*", [&](const std::wstring& name, bool isDir) {
-        if (!isDir) return;
+        if (!isDir || name[0] == L'.') return;   // .store, .incompatible, .import: never mods
         spice::Manifest m;
         std::vector<spice::Error> errs;
         Pack p;

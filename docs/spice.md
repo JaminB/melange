@@ -27,7 +27,7 @@ after its folder — every M1-era `Mods\` folder keeps working unchanged.
 | `id` | Lowercase, `[a-z0-9_-]`, 1-64 characters. **Must equal the folder name** — one id, one folder. Used as the dependency-graph key and the `wum.storage`/`wum.config` namespace. |
 | `version` | Semver `MAJOR.MINOR.PATCH[-prerelease][+build]`. |
 | `name`, `authors`, `description`, `website` | Display only. |
-| `melange.range` | An npm/Cargo-style semver range (`^1.2.0`, `>=0.5.0 <0.7.0`, space = AND) the running Melange version must satisfy, or the mod is `incompatible`. |
+| `melange.range` | An npm/Cargo-style semver range (`^1.2.0`, `>=0.5.0 <0.7.0`, space = AND) the running Melange version must satisfy, or the mod is `incompatible` (and the [compatibility sweep](#compatibility-sweep) moves it out of `Mods\`). |
 | `kind` | `client-only` (never touches the simulation, the wire, or `Data/Tweak/*`; no online handshake) or `content` (does at least one of those). `entry.sim`, `messages`, or `permissions.unsafe: true` all imply the mod counts as content for the online handshake even if `kind` says otherwise. |
 | `dependencies`, `optional`, `conflicts` | Arrays of `"<id>"` or `"<id> <comparator><version>"` (e.g. `"weapon-toolkit >= 2.0.0 <3.0.0"`). `dependencies` are required and order the graph; `optional` orders the graph only when the id is present and version-compatible; `conflicts` blocks both mods, whichever side declares it. |
 | `loadAfter` | Plain mod ids: an ordering-only edge with no existence requirement — nothing breaks if the named mod isn't installed. |
@@ -91,7 +91,7 @@ Thumper resolves the whole `Mods\` folder as one pass, deterministically:
 
 1. **Parse and validate** every folder. A manifest that fails the schema, has an unknown `spiceVersion`,
    or whose `melange.range` excludes the running build is `incompatible` and excluded from the graph
-   entirely.
+   entirely. Normally such a mod has already left `Mods\` (see [Compatibility sweep](#compatibility-sweep)).
 2. **Build edges** from `dependencies` (required), `optional` (soft, only when present and compatible)
    and `loadAfter` (ordering only).
 3. **Topologically sort**, ties broken **by id, ascending** — the same mod set always resolves to the
@@ -108,10 +108,35 @@ unregistered, so enabling or disabling a `content`-relevant mod takes effect at 
 ## State
 
 Choices persist in `Mods\thumper-state.json` (falling back to `Documents\Melange\thumper-state.json` if
-the game folder is read-only): which mods are enabled, load-order pins, and Deep Desert grants. It is
+the game folder is read-only): which mods are enabled, load-order pins, Deep Desert grants, and whether the
+Mods pages show local plugins (`showLocal`, shared by the game and Melange.exe). It is
 written atomically and is safe to delete — Thumper rebuilds it (re-applying `defaultEnabled` for every
 mod as if freshly discovered).
 
 A mod that keeps files of its own inside its folder should keep them in `Mods\<id>\user\`: the Store carries that
 folder over when it updates the mod, and a plugin's release zip may not contain it. Folders starting with `.` are
-never mods (the Store keeps its own files in `Mods\.store\`).
+never mods (the Store keeps its own files in `Mods\.store\`, the compatibility sweep in `Mods\.incompatible\`).
+
+## Compatibility sweep
+
+A mod this Melange can never load doesn't stay in `Mods\`. When the game starts (before Thumper's first scan, so no
+file in a mod folder is open yet) and when Melange.exe opens a game folder that the game isn't running from, every
+folder is checked: a `spice.json` that does not parse (including an unknown `spiceVersion`), a malformed
+`melange.range`, or one the running version does not satisfy. A missing dependency, a conflict or a pending consent
+are not reasons: the user can fix those. A folder without `spice.json` is never touched.
+
+- **Store plugins** (a record in `Mods\.store\installed.json`) are updated to the newest version the Store's list
+  has for this Melange and game build, or removed when it has none (keeping the map packs an importer made, and
+  `[Mod.<id>]` settings and saved data). Melange.exe fetches the list for this, and only when such a plugin
+  exists; the game uses the list it cached and never downloads, so there a plugin with an update waiting stays
+  (unloaded) until Melange.exe or the Store page updates it. A Store plugin the list says is not built for this
+  game build counts too.
+- **Local plugins** move to `Mods\.incompatible\<folder>\` (`<folder>-2`, `-3`, ... when that exists; nothing is
+  overwritten), with a `.melange-quarantine.json` beside its files saying why, against which version and when.
+  Their `thumper-state.json` entries go. Move the folder back to try it again (it is moved out again while it still
+  cannot load).
+
+Each action is logged and leaves a notice in `Mods\.incompatible\notices.json` (the newest 50) that the Plugins page,
+the *Thumper/Mods* page and the Oasis Mods panel show until it is dismissed. `[Thumper] SweepIncompatible=0` turns
+the sweep off (in the game and in Melange.exe): such mods then just show as `incompatible` and never load. While you
+work on a mod of your own, a typo in its `spice.json` moves it too: set the key to `0` for that.

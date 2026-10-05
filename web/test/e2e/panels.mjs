@@ -144,7 +144,20 @@ async function gamePanels(browser) {
     await attempt("mods", async () => {
       await tab(page, "mods").click();
       await page.waitForSelector("[data-mod]", { timeout: 5000 });
+      await page.waitForSelector("[data-notices]", { timeout: 3000 });
+      check("mods: a local plugin is hidden by default", (await page.locator("[data-mod]").count()) === 4 &&
+        (await page.locator('[data-mod="hello-spice"]').count()) === 0);
+      check("mods: the hint counts it", /1 local plugin hidden \(1 on\)/.test((await page.locator("[data-hidden-hint]").textContent()) ?? ""));
+      check("mods: the sweep notice is shown", /Old HUD/.test((await page.locator("[data-notices]").textContent()) ?? ""));
+      await page.locator("[data-dismiss]").first().click();
+      await page.waitForFunction(() => !document.querySelector("[data-notices]"), null, { timeout: 3000 });
+      check("mods: dismiss removes the notice", mock.state.modsView.notices.length === 0);
+      await page.locator("[data-show-local]").click();
+      await page.waitForSelector('[data-mod="hello-spice"]', { timeout: 3000 });
       check("mods: list", (await page.locator("[data-mod]").count()) === 5);
+      check("mods: show local is stored and badges appear", mock.state.modsView.showLocal === true &&
+        (await page.locator('[data-mod="hello-spice"] [data-source="local"]').count()) === 1 &&
+        (await page.locator('[data-mod="big-crates"] [data-source="store"]').count()) === 1);
       await page.locator('[data-toggle="dune-maps"]').click();
       await page.waitForSelector('[data-mod="dune-maps"] [data-state="enabled"]', { timeout: 3000 });
       check("mods: a map pack is enabled live, without setEnabled",
@@ -166,7 +179,8 @@ async function gamePanels(browser) {
       check("mods: revoke Deep Desert", mock.state.mods.find((m) => m.id === "memwatch").deepDesert.granted === false);
       check("mods: no Grant button anywhere", (await page.locator("button", { hasText: /grant/i }).count()) === 0);
       const methods = new Set(mock.state.calls.map((c) => c.m));
-      check("mods: only list, setEnabled and revoke were called", [...methods].filter((m) => m.startsWith("mods.")).every((m) => ["mods.list", "mods.setEnabled", "mods.revokeDeepDesert"].includes(m)));
+      check("mods: only the mods.* methods the page offers were called", [...methods].filter((m) => m.startsWith("mods.")).every((m) =>
+        ["mods.list", "mods.setEnabled", "mods.revokeDeepDesert", "mods.view", "mods.setShowLocal", "mods.dismissNotice"].includes(m)));
     });
 
     await attempt("store", async () => {
@@ -388,7 +402,11 @@ async function policyModes(browser) {
   try {
     await tab(page, "mods").click();
     await page.waitForSelector("[data-mod]", { timeout: 5000 });
-    check("read-only: mod toggles disabled", await page.locator('[data-toggle="hello-spice"]').isDisabled());
+    check("read-only: mod toggles disabled", await page.locator('[data-toggle="big-crates"]').isDisabled());
+    await page.locator("[data-show-local]").click();
+    await page.waitForSelector('[data-mod="hello-spice"]', { timeout: 3000 });
+    check("read-only: show local still works, for this page only", ro.state.modsView.showLocal === false &&
+      await page.locator('[data-toggle="hello-spice"]').isDisabled() && (await page.locator("[data-dismiss]").count()) === 0);
     check("read-only: revoke disabled", await page.locator('[data-revoke="memwatch"]').isDisabled());
     await tab(page, "store").click();
     await page.waitForSelector('[data-store-action="hd-water"]', { timeout: 5000 });
