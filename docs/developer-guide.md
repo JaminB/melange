@@ -253,6 +253,7 @@ default=0.8
 min=0
 max=2
 label=Threshold
+hidden=0                 ; 1 keeps it out of the overlay panel (for values a script sets)
 
 [texture.lut]            ; uniform sampler2D t_lut, a PNG from the effect folder
 file=lut.png
@@ -281,7 +282,7 @@ Shader rules:
 - Fragment shaders only. The file's own `#version` is used, or `#version 120` if there is none. Mirage supplies a full-screen vertex shader that writes `vec2 mg_uv` (0..1, origin bottom-left). Declare it as `varying vec2 mg_uv;` in GLSL 1.20, or `in vec2 mg_uv;` in 1.30 and later.
 - Samplers are named after the inputs: `mg_scene`, `mg_depth`, `mg_prev` (the previous pass, or the scene for the first pass), `mg_pass_<name>` and `t_<name>`. Every sampler a shader uses must be listed in that pass's `inputs=`.
 - `mg_depth` is the game's depth buffer, in [0,1] as stored.
-- Parameters are `uniform <type> p_<name>`. Optional built-in uniforms:
+- Parameters are `uniform <type> p_<name>`. A script sets them with `wum.postfx.setParam`, which is saved to `Melange.ini`, or with `wum.postfx.setTransient`, which is not. Set `hidden=1` on a parameter that only a script drives, so the overlay does not list it. Optional built-in uniforms:
   - `vec4 mg_resolution`: width, height, 1/width and 1/height of this pass's target;
   - `vec4 mg_sceneResolution`: the same for the scene;
   - `vec2 mg_renderScale`: the scene's size over the window's, 2.0 per axis at 2x2 supersampling. Multiply

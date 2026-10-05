@@ -326,10 +326,10 @@ int PfxEnable(lua_State* L) {
     return 1;
 }
 
-int PfxSetParam(lua_State* L) {
+int PfxSetParamImpl(lua_State* L, const char* fn, bool persist) {
     const char* id = luaL_checkstring(L, 1);
     const char* param = luaL_checkstring(L, 2);
-    CheckOwn(L, id, "setParam");
+    CheckOwn(L, id, fn);
     float v[16];
     int n = 0;
     if (lua_istable(L, 3)) {
@@ -342,10 +342,14 @@ int PfxSetParam(lua_State* L) {
     } else {
         for (int i = 3; i <= lua_gettop(L) && n < 16; ++i) v[n++] = static_cast<float>(luaL_checknumber(L, i));
     }
-    if (n == 0) return luaL_error(L, "wum.postfx.setParam: no values");
-    lua_pushboolean(L, postfx::SetParam(id, param, v, n));
+    if (n == 0) return luaL_error(L, "wum.postfx.%s: no values", fn);
+    lua_pushboolean(L, persist ? postfx::SetParam(id, param, v, n) : postfx::SetParamTransient(id, param, v, n));
     return 1;
 }
+
+int PfxSetParam(lua_State* L) { return PfxSetParamImpl(L, "setParam", true); }
+
+int PfxSetTransient(lua_State* L) { return PfxSetParamImpl(L, "setTransient", false); }
 
 int PfxGetParam(lua_State* L) {
     const char* id = luaL_checkstring(L, 1);
@@ -456,7 +460,7 @@ void Shared(lua_State* L, int wum) {
     static const luaL_Reg kRender[] = {{"camera", Camera}, {"worldToScreen", WorldToScreen}, {"windowSize", WindowSize},
                                        {"timing", Timing}, {nullptr, nullptr}};
     static const luaL_Reg kPostfx[] = {{"list", PfxList}, {"enable", PfxEnable}, {"setParam", PfxSetParam},
-                                       {"getParam", PfxGetParam}, {nullptr, nullptr}};
+                                       {"setTransient", PfxSetTransient}, {"getParam", PfxGetParam}, {nullptr, nullptr}};
     lua_newtable(L);
     RegisterFunctions(L, -1, kDraw);
     lua_setfield(L, wum, "draw");

@@ -41,6 +41,7 @@ default=0.8
 min=0
 max=2
 label=Threshold
+hidden=1                 ; not listed in the overlay panel
 
 [texture.lut]            ; uniform sampler2D t_lut, loaded from the effect folder (PNG via stb_image)
 file=lut.png
@@ -78,7 +79,8 @@ void TestParse() {
     if (!ok) return;
     Check(d.title == "Bloom" && d.stage == Stage::PostWorld && d.order == 300 && !d.enabled, "[effect] fields");
     Check(d.params.size() == 1 && d.params[0].name == "threshold" && d.params[0].n == 1 && d.params[0].def[0] == 0.8f &&
-              d.params[0].hasRange && d.params[0].min == 0.f && d.params[0].max == 2.f && d.params[0].label == "Threshold",
+              d.params[0].hasRange && d.params[0].min == 0.f && d.params[0].max == 2.f && d.params[0].label == "Threshold" &&
+              d.params[0].hidden,
           "[param.threshold]");
     Check(d.textures.size() == 1 && d.textures[0].file == "lut.png" && d.textures[0].linear && !d.textures[0].repeat,
           "[texture.lut]");
@@ -118,6 +120,12 @@ void TestParse() {
     Check(Has(ParseError("[effect]\n[pass.a]\nshader=a\n[pass.A]\nshader=b\n"), "duplicate [pass.A]"), "duplicate pass");
     Check(Has(ParseError("[effect]\n[pass.a]\nshader=a\ninputs=texture.x\n"), "names no [texture.*]"), "unknown texture input");
     Check(Has(ParseError("[effect]\n[pass.a]\nshader=a\nscale=0\n"), "scale must be"), "scale range");
+    Check(Has(ParseError("[effect]\n[param.p]\nhidden=yes\n[pass.a]\nshader=a\n"), "hidden must be 0 or 1"), "bad hidden");
+    {
+        pfx::EffectDesc m;
+        pfx::ParseEffect("[effect]\n[param.p]\n[param.q]\nhidden=0\n[pass.a]\nshader=a\n", &m, &err);
+        Check(m.params.size() == 2 && !m.params[0].hidden && !m.params[1].hidden, "params are listed unless hidden=1");
+    }
     Check(Has(ParseError("[effect]\n[pass.my-pass]\nshader=a\n"), "bad section"), "pass names are identifiers");
     Check(Has(ParseError("[effect]\n[pass.a]\n"), "has no shader="), "pass without shader");
 }

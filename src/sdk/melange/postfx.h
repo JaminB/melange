@@ -14,6 +14,9 @@ size_t ListEffects(EffectInfo* out, size_t max);
 bool SetEnabled(const char* id, bool on);     // persisted to Melange.ini [MiragePostFX]
 bool SetOrder(const char* id, int order);     // persisted
 bool SetParam(const char* id, const char* param, const float* v, int n);  // persisted
+// Same, but not persisted and not logged: for values a mod drives every frame. An effect reload keeps it unless the
+// edit drops the param or changes its size.
+bool SetParamTransient(const char* id, const char* param, const float* v, int n);
 bool GetParam(const char* id, const char* param, float* v, int n);
 int Reload(const char* id = nullptr);         // recompile from disk; nullptr = all
 
