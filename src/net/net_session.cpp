@@ -15,6 +15,7 @@
 #include "core/mem.h"
 #include "core/module.h"
 #include "net/net.h"
+#include "melange/bus.h"
 #include "melange/jlog.h"
 
 namespace {
@@ -233,6 +234,21 @@ constexpr uintptr_t kResendAll = 0x5408a0;
 // and SetString then strcmp()s it (crash c0000005 at 0x638a6c). Hook the PUSH EAX after the lookup call.
 constexpr uintptr_t kLobbyLevelPush = 0x626c24;
 constexpr uintptr_t kLobbyLevelDone = 0x626c32;  // past the SetString call and its ADD ESP,0x10
+// Girder desync. Closing the weapon panel posts Input.ClosePanelPressed, a local message (the input translation
+// service posts it; it is never a sim input). GirderKitLogicEntity::HandleMessage 0x55bac0 answers it with
+// SetOverride(0,"UtilityGirder") and CameraManagerService::SetCamera("GirderCam") 0x51e4e0, on the closing machine
+// only. SetCamera deactivates and re-activates the camera even when it is already current; OccludingCam::Activate
+// 0x52da00 then re-derives the orbit yaw from the previous look vector (asin) and re-runs the occlusion search
+// 0x530c00 over its 45-degree candidates, which can land on another pose once the girder has moved. The other
+// machine keeps the old pose, so the logical cameras differ and the next turn-end validation fails (reasons 7,8;
+// with a placed girder also 9,11,13). When GirderCam is already the current logical camera the call is skipped:
+// the camera keeps the pose both machines agree on, which is also what a peer that did not close the panel has.
+// The sim-driven activation (GirderKitLogicEntity 0x55ada0, run on every machine) is untouched.
+constexpr uintptr_t kGirderCloseCase = 0x55bdd6;      // push 0x95d94c (the message id) ... call SetCamera
+constexpr uintptr_t kGirderSetCamera = 0x55be02;      // call 0x51e4e0; ecx = CameraManagerService, [esp] = "GirderCam"
+constexpr uintptr_t kGirderSetCameraDone = 0x55be07;  // push ebp; push esi; call the base HandleMessage
+constexpr uintptr_t kGirderCamVtable = 0x855324;
+constexpr uint32_t kCamIndexNone = 0xff, kCamMaxCount = 64;
 SafetyHookInline g_resendHook;
 
 // Entry layout: +0 vtable, +4 u16 id (+6 is uninitialised padding), +8 time, +0xc payload (the string type keeps an
@@ -360,6 +376,30 @@ void OnLobbyLevel(safetyhook::Context& c) {
     c.trampoline_esp = c.esp + 4;
 }
 
+// At the CALL SetCamera("GirderCam") of the panel-close case: ecx = CameraManagerService (just loaded from
+// 0x95c370), [esp] = the pushed name (the thiscall's one stack arg, popped by its RET 4), edi = the message id.
+void OnGirderPanelClose(safetyhook::Context& c) {
+    const uintptr_t mgr = c.ecx;
+    const uint32_t index = Read<uint32_t>(mgr + 0x28c);  // m_uLogicalCamera
+    const uint32_t first = Read<uint32_t>(mgr + 0x2a0), last = Read<uint32_t>(mgr + 0x2a4);  // Camera* vector
+    const uint32_t count = last >= first ? (last - first) / 4 : 0;
+    const uintptr_t cam = index < count && count <= kCamMaxCount ? Read<uint32_t>(first + index * 4) : 0;
+    const bool girderCam = cam && Read<uint32_t>(cam) == kGirderCamVtable;
+    static int logged = 0;
+    if (logged < 4) {
+        ++logged;
+        const char* msg = melange::bus::NameOf(static_cast<melange::bus::MsgId>(c.edi));
+        LOG_INFO("[fix] girder panel close (%s): logical camera %u/%u is %s -> %s", msg ? msg : "?", index, count,
+                 girderCam ? "GirderCam" : "another camera",
+                 girderCam ? "skipping its re-activation" : "letting the game switch");
+    }
+    if (!girderCam || index == kCamIndexNone) return;
+    // Skip the call: resume right after it with the argument popped, as the callee's RET 4 would have left it
+    // (same trick as OnLobbyLevel: the stub restores esp from trampoline_esp and returns through that slot).
+    *reinterpret_cast<uintptr_t*>(c.esp) = kGirderSetCameraDone;
+    c.trampoline_esp = c.esp;
+}
+
 void OnAbortGame(safetyhook::Context& c) {
     uint32_t hr = Arg(c, 0), ret = RetAddr(c);
     LOG_ERROR("[net] ===== AbortGame(%08x %s) from %s  [site %s] match %d", hr, AbortCode(hr),
@@ -465,6 +505,21 @@ public:
             // push eax / lea edx,[esp+0x2c] / push edx / call SetString
             if (melange::mem::Expect(kLobbyLevelPush, {0x50, 0x8d, 0x54, 0x24, 0x2c, 0x52, 0xe8}))
                 ok &= Mid(kLobbyLevelPush, &OnLobbyLevel, "lobby level lookup");
+        }
+
+        if (Bool("FixGirderPanelCamera", true)) {
+            // push 0x95d94c / push edi / call IsMessage / add esp,8 / test eax,eax / jz +0x3a / push "UtilityGirder" /
+            // push 0 / call SetOverride / mov ecx,[CameraManagerService] / add esp,8 / push "GirderCam" /
+            // call SetCamera / push ebp / push esi
+            if (melange::mem::Expect(kGirderCloseCase, {0x68, 0x4c, 0xd9, 0x95, 0x00, 0x57, 0xe8, 0xed, 0xfe, 0x12, 0x00,
+                                                        0x83, 0xc4, 0x08, 0x85, 0xc0, 0x74, 0x3a, 0x68, 0x38, 0x7e, 0x83,
+                                                        0x00, 0x6a, 0x00, 0xe8, 0x4c, 0xc1, 0xfa, 0xff, 0x8b, 0x0d, 0x70,
+                                                        0xc3, 0x95, 0x00, 0x83, 0xc4, 0x08, 0x68, 0x80, 0x48, 0x85, 0x00,
+                                                        0xe8, 0xd9, 0x26, 0xfc, 0xff, 0x55, 0x56}))
+                ok &= Mid(kGirderSetCamera, &OnGirderPanelClose, "girder panel-close SetCamera");
+            else
+                LOG_WARN("[fix] FixGirderPanelCamera: unexpected code at %08x; not installed",
+                         static_cast<unsigned>(kGirderCloseCase));
         }
 
         melange::events::Subscribe(melange::events::Event::Frame, [] {
