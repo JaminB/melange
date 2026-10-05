@@ -1,5 +1,5 @@
-// setup.*: find and check the game, plan and apply install/repair/uninstall, backups. The "W" methods run on the
-// calling server thread; mutations hold the setup transaction lock (another one running is -32002).
+// setup.*: find and check the game, plan and apply install/repair/uninstall, backups, restore vanilla. The "W"
+// methods run on the calling server thread; mutations hold the setup transaction lock (another one running is -32002).
 #include <windows.h>
 #include <objbase.h>
 
@@ -8,16 +8,20 @@
 
 #include <thread>
 
+#include "core/log.h"
 #include "launcher/app.h"
 #include "launcher/rpc.h"
 #include "launcher/setup/detect.h"
 #include "launcher/setup/engine.h"
 #include "launcher/setup/running.h"
+#include "launcher/setup/vanilla.h"
 #include "launcher/store_host.h"
 #include "launcher/update_host.h"
+#include "launcher/updater.h"
 #include "launcher/util.h"
 #include "launcher/window.h"
 #include "oasis/standalone/register.h"
+#include "store/store.h"
 #include "tools/json_mini.h"
 
 namespace melange::launcher::rpc {
@@ -190,6 +194,49 @@ void SetEnabled(const Call& c, Result& r, void*) {
     r.json = app::StatusJson();
 }
 
+// ---------------------------------------------------------------- restore vanilla
+void VanillaPlanMethod(const Call&, Result& r, void*) {
+    if (app::GameDir().empty()) return Fail(r, -32000, "Choose your game folder first.");
+    setup::VanillaContext ctx;
+    ctx.base = app::MakeContext();
+    r.json = setup::VanillaPlanJson(setup::MakeVanillaPlan(ctx));
+}
+
+// Deletes everything that isn't the stock game (no backup), then forgets the game so the next start is a first run.
+// Overwritten stock files are put back by Steam's verify, started here; other stores get copy in the result.
+void VanillaApplyMethod(const Call& c, Result& r, void*) {
+    json::Value p;
+    if (!Params(c, r, &p)) return;
+    const std::string planId = Str(p, "planId");
+    if (planId.empty()) return Fail(r, -32602, "expected planId");
+    if (app::GameDir().empty()) return Fail(r, -32000, "Choose your game folder first.");
+    if (store::GetStatus().busy || ImportRunning()) return Fail(r, -32002, "Melange is busy with your plugins. Try again in a moment.");
+    std::unique_lock lk(app::Tx(), std::try_to_lock);
+    if (!lk.owns_lock()) return Fail(r, -32002, app::BusyMessage());
+    setup::VanillaContext ctx;
+    ctx.base = app::MakeContext();
+    ctx.base.progress = [](int step, int of, const std::string& label) { app::PublishProgress("vanilla", step, of, label); };
+    setup::VanillaOutcome o = setup::ApplyVanilla(ctx, planId);
+    lk.unlock();
+    if (!o.outcome.ok) {
+        app::PublishStatus();
+        return SetError(r, o.outcome);
+    }
+    app::DeleteOnExit(o.pending);
+    app::ForgetGame();
+    updater::Clean(updater::Root(), "", ExePath());
+    DeleteFileW(updater::ResultPath().c_str());
+    if (o.plan.verify && o.plan.store == "steam") {
+        const HRESULT init = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE);
+        o.verifyStarted = reinterpret_cast<INT_PTR>(ShellExecuteW(nullptr, L"open", L"steam://validate/70600", nullptr, nullptr, SW_SHOWNORMAL)) > 32;
+        if (SUCCEEDED(init)) CoUninitialize();
+        LOG_INFO("[vanilla] Steam verify of the game files %s", o.verifyStarted ? "started" : "could not be started");
+    } else if (o.plan.verify) {
+        LOG_INFO("[vanilla] stock files need restoring; not a Steam install (%s), the user is asked to verify or reinstall", o.plan.store.c_str());
+    }
+    r.json = setup::VanillaOutcomeJson(o);
+}
+
 // ---------------------------------------------------------------- main thread
 void Browse(const Call& c, Result& r, void*) {
     json::Value p;
@@ -284,6 +331,8 @@ void InstallSetup() {
     oasis::AddMethod("setup.restore", &RestoreMethod, nullptr, kRpcServerThread | kRpcMutating);
     oasis::AddMethod("setup.deleteBackup", &DeleteBackupMethod, nullptr, kRpcServerThread | kRpcMutating);
     oasis::AddMethod("setup.setMelangeEnabled", &SetEnabled, nullptr, kRpcServerThread | kRpcMutating);
+    oasis::AddMethod("setup.vanillaPlan", &VanillaPlanMethod, nullptr, kRpcServerThread);
+    oasis::AddMethod("setup.vanillaApply", &VanillaApplyMethod, nullptr, kRpcServerThread | kRpcMutating);
     oasis::AddMethod("setup.browse", &Browse, nullptr, oasis::kRpcNone);
     oasis::AddMethod("setup.elevate", &Elevate, nullptr, oasis::kRpcNone);
 }

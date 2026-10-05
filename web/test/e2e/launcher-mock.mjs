@@ -1,8 +1,20 @@
 // The launcher's setup.*, plugins.*, defaults.*, recommended.*, update.* and launcher.* methods and the `setup` and
 // `update` channels, for the mock server (--launcher). Scenario fixtures (picked by ?scenario=, see startMock): fresh,
-// not-found, wrong-build, ual-present, reshade, restore, update-ready, update-running. No real file or registry access:
-// everything lives in `state.launcher`.
+// not-found, wrong-build, ual-present, reshade, restore, update-ready, update-running, vanilla-denied (Restore vanilla
+// needs administrator). No real file or registry access: everything lives in `state.launcher`.
 const GAME_PATH = "C:\\Games\\WormsMayhem";
+// setup.vanillaPlan for an installed Melange next to Renewation HD, WUMPatch, ReShade and loose plugins.
+const VANILLA_PLAN = {
+  planId: "vanilla-1",
+  groups: [{ id: "melange", label: "Melange", files: 41 }, { id: "renewation", label: "Renewation HD 0.2A2", files: 212 },
+    { id: "wumpatch", label: "WUMPatch", files: 6 }, { id: "loader", label: "Ultimate ASI Loader 9.7.4 (dinput8.dll)", files: 1 },
+    { id: "reshade", label: "ReShade 6.3.0", files: 24 }, { id: "asi", label: "ASI plugins", files: 3 }, { id: "other", label: "Other files", files: 12 }],
+  files: 299, bytes: 734003200, sample: ["melange.asi", "Version.txt", "plugins\\patch.asi"],
+  replays: ["Melange\\replays\\2026-10-03_14-02-11.wsr", "Melange\\replays\\2026-10-04_20-15-40.wsr"],
+  replaysDir: "C:\\Users\\Player\\Documents\\Melange\\replays",
+  modified: ["CG\\FixedFunction.cg", "Data\\Frontend\\Frontend.xom"], modifiedCount: 2, missing: [], missingCount: 0,
+  overwrites: true, verify: true, store: "steam", selfInGame: true,
+};
 const OK_EXE = { size: 5713408, timestamp: 1367508505, sha256: "041c8c6eb3b9f4fbaf367748f713ccb8f7bef68d13e825472c88c1ecf711ab7d", build: "Steam/GOG #1077" };
 const BAD_EXE = { size: 5820224, timestamp: 1420000000, sha256: "b".repeat(64) };
 const UAL_DLL = { file: "dinput8.dll", sha256: "ec2f4824eca58dd40f425756a4a7cec77b8e381f21d11d7c846ec4b339b617ab", size: 139264,
@@ -54,6 +66,8 @@ function scenarioFixture(name) {
         },
         firstRun: false,
       };
+    case "vanilla-denied":
+      return scenarioFixture("restore");
     case "plugins-busy": {
       const r = scenarioFixture("restore");
       return { ...r, status: { ...r.status, busy: { action: "recommended", step: 1, of: 2, label: "Installing Sunstone…" } } };
@@ -125,7 +139,9 @@ export function launcherService(state, broadcast, initialScenario) {
   const busyGuard = () => { if (l.status.busy) throw [-32002, `Installing plugins — this finishes in a moment. ${l.status.busy.label}`]; };
 
   const handlers = {
-    "launcher.state": () => ({ version: l.version, firstRun: l.firstRun, gameDir: l.gameDir, theme: l.theme, webview: false, elevated: l.elevated, protected: [] }),
+    "launcher.state": () => ({ version: l.version, firstRun: l.firstRun, gameDir: l.gameDir, theme: l.theme, webview: false, elevated: l.elevated, protected: [],
+      ...(l.resume ? { resume: l.resume } : {}) }),
+    "launcher.quit": () => { l.quit = true; return {}; },
     "launcher.setTheme": (p) => { l.theme = p.theme === "light" || p.theme === "dark" ? p.theme : "system"; return {}; },
     "launcher.launch": () => ({ how: l.status.game?.store === "steam" ? "steam" : "exe" }),
     "launcher.openPath": (p) => {
@@ -208,7 +224,27 @@ export function launcherService(state, broadcast, initialScenario) {
       pushStatus();
       return publicStatus();
     },
-    "setup.elevate": () => { l.elevated = true; return {}; },
+    "setup.elevate": (p) => { l.elevated = true; l.resume = p.resume || undefined; return {}; },
+    // Restore vanilla: the fixture plan; apply forgets the game (the next launcher.state is a first run).
+    "setup.vanillaPlan": () => {
+      if (!l.gameDir) throw [-32000, "Choose your game folder first."];
+      return l.status.running ? { ...VANILLA_PLAN, refused: "Close Worms Ultimate Mayhem first." } : VANILLA_PLAN;
+    },
+    "setup.vanillaApply": (p) => {
+      busyGuard();
+      if (l.status.running) throw [-32000, "Close Worms Ultimate Mayhem first."];
+      if (p.planId !== VANILLA_PLAN.planId) throw [-32013, "The game folder changed since the plan was shown. Check the new plan and confirm again."];
+      if (l.scenario === "vanilla-denied" && !l.elevated) {
+        throw [-32010, "Windows didn't let us change the game folder.", { path: `${GAME_PATH}\\melange.asi`, win32: 5, message: "Access is denied." }];
+      }
+      l.firstRun = true;
+      l.gameDir = null;
+      l.resume = undefined;
+      return { ok: true, deleted: VANILLA_PLAN.files - 1, dirsRemoved: 14,
+        moved: VANILLA_PLAN.replays.map((r) => ({ from: r, to: `${VANILLA_PLAN.replaysDir}\\${r.split("\\").pop()}` })),
+        replaysDir: VANILLA_PLAN.replaysDir, failed: [], modified: VANILLA_PLAN.modified, missing: [], verify: true, verifyStarted: true,
+        store: "steam", selfPending: true };
+    },
     "plugins.settings": () => ({ decl: SUNSTONE_DECL, values: { quality: "bold" }, defaults: { quality: "bold" } }),
     "plugins.setSettings": (p) => { busyGuard(); return { values: p.values }; },
     "plugins.resetSettings": () => ({ values: { quality: "bold" } }),
@@ -238,7 +274,7 @@ export function launcherService(state, broadcast, initialScenario) {
 
   return {
     methods: Object.keys(handlers),
-    mutating: ["launcher.setTheme", "launcher.shortcuts", "setup.select", "setup.apply", "setup.restore", "setup.deleteBackup",
+    mutating: ["launcher.setTheme", "launcher.shortcuts", "launcher.quit", "setup.vanillaApply", "setup.select", "setup.apply", "setup.restore", "setup.deleteBackup",
       "setup.setMelangeEnabled", "plugins.setSettings", "plugins.resetSettings", "defaults.set", "recommended.apply", "update.apply", "update.setAuto"],
     handlers,
     status: publicStatus,

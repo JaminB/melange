@@ -212,7 +212,8 @@ target_link_libraries(oasis_standalone_selftest PRIVATE miniz)
 set(LAUNCHER_CORE_SOURCES
     src/launcher/util.cpp src/launcher/settings.cpp src/launcher/plugin_settings.cpp src/launcher/recommended.cpp
     src/launcher/setup/vdf.cpp src/launcher/setup/detect.cpp src/launcher/setup/exe_check.cpp src/launcher/setup/dll_id.cpp
-    src/launcher/setup/running.cpp src/launcher/setup/ini_merge.cpp src/launcher/setup/engine.cpp src/launcher/updater.cpp
+    src/launcher/setup/running.cpp src/launcher/setup/ini_merge.cpp src/launcher/setup/engine.cpp src/launcher/setup/vanilla.cpp
+    src/launcher/updater.cpp
     src/update/release.cpp
     src/oasis/standalone/game_lock.cpp src/oasis/rpc/ini_edit.cpp)
 # Stand-ins for third-party DLLs and melange.asi builds: read from disk by the self-test, never loaded.
@@ -224,7 +225,7 @@ foreach(v 0_4_0 0_3_1 9_0_0)
     add_library(fake_asi_${v} SHARED tests/fixtures/launcher/fake_dll.c tests/fixtures/launcher/fake_asi_${v}.rc)
 endforeach()
 add_executable(launcher_selftest tests/launcher_selftest.cpp ${LAUNCHER_CORE_SOURCES}
-    src/mods/spice.cpp src/levels/live_policy.cpp src/tools/json_read.cpp src/tools/hash.cpp src/core/log.cpp)
+    src/mods/spice.cpp src/levels/live_policy.cpp src/tools/json_read.cpp src/tools/hash.cpp src/core/log.cpp res/stock.rc)
 add_dependencies(launcher_selftest fake_dinput8_reshade fake_dinput8_microsoft fake_dinput8_other fake_asi_0_4_0 fake_asi_0_3_1 fake_asi_9_0_0)
 target_include_directories(launcher_selftest PRIVATE src src/sdk)
 target_compile_definitions(launcher_selftest PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX _CRT_SECURE_NO_WARNINGS
@@ -267,11 +268,12 @@ add_executable(melange_launcher WIN32
     src/oasis/standalone/json_write.cpp src/oasis/standalone/wormsign_provider.cpp src/oasis/standalone/level_provider.cpp
     src/oasis/rpc/erg_assets.cpp src/assets/crcsafe_math.cpp src/assets/crcsafe_file.cpp src/oasis/auth.cpp src/oasis/webpanels.cpp
     ${ERG_SERVICE_SOURCES} src/wormsign/format.cpp src/wormsign/records.cpp ${LOG_EXPORT_CORE_SOURCES}
-    res/launcher.rc ${CMAKE_BINARY_DIR}/generated/oasis_web.rc)
+    res/launcher.rc res/stock.rc ${CMAKE_BINARY_DIR}/generated/oasis_web.rc)
 add_dependencies(melange_launcher oasis_web)
 # PDB_NAME: melange.asi already writes Melange.pdb here (Windows paths ignore case).
 set_target_properties(melange_launcher PROPERTIES OUTPUT_NAME "Melange" PDB_NAME "Melange.exe")
 set_source_files_properties(res/launcher.rc PROPERTIES OBJECT_DEPENDS "${CMAKE_SOURCE_DIR}/res/melange.ico;${CMAKE_SOURCE_DIR}/res/Melange.manifest")
+set_source_files_properties(res/stock.rc PROPERTIES OBJECT_DEPENDS ${CMAKE_SOURCE_DIR}/res/wum-1077-stock.tsv)
 target_include_directories(melange_launcher PRIVATE src src/sdk res ${CMAKE_BINARY_DIR}/generated ${stb_SOURCE_DIR})
 target_compile_definitions(melange_launcher PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX _CRT_SECURE_NO_WARNINGS UNICODE _UNICODE)
 target_compile_options(melange_launcher PRIVATE /W4 /utf-8 /permissive- /Zi)

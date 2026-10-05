@@ -604,6 +604,34 @@ Command line:
 - `Melange.exe --browser` — no WebView2 window, open the default browser instead (accessible only from `127.0.0.1`).
 - `Melange.exe --serve` — headless server for testing, prints the launch URL to stdout. It does not look for updates by itself.
 
+### Restore vanilla
+
+*Settings › Restore vanilla* makes the game folder stock Worms Ultimate Mayhem again (`src/launcher/setup/vanilla.*`,
+`setup.vanillaPlan` / `setup.vanillaApply`). It is not an uninstall: it removes every mod framework, not just
+Melange, and keeps no backup.
+
+- **Stock list.** `res/wum-1077-stock.tsv` (`relative\path<TAB>size`, 2130 files) is embedded in Melange.exe as the
+  `WUM_STOCK` resource (`res/stock.rc`). It was taken from a clean Steam install of build #1077, freshly verified,
+  with the `*.csh` shader caches left out. `scripts/gen-stock-manifest.ps1 -GameDir <clean install>` regenerates it.
+- **Plan.** Same gates as an install: the configured folder must hold the #1077 `WormsMayhem.exe`, the game must be
+  closed, and the folder must not be protected. Every file not in the list is deleted, except files the game
+  writes: `local.cfg`, `Default.cfg`, `steam_appid.txt`, `user.cfg`, `*.csh`, `XOM*-*.log`, `Net_*.log`, `Redist\`.
+  Saves live in Steam's `userdata`, outside the folder. The plan names what it found so the dialog can warn about
+  it: Melange, the loader DLLs (`dinput8`, `dsound`, `winmm`, `version`, `d3d9`, `xinput1_3`, `winhttp`, `wininet`,
+  `opengl32`, identified by `dll_id`), ReShade, Special K, dgVoodoo, Renewation HD (by `Version.txt`, with every
+  extra file under `Data\`), WUMPatch, Worms4UHD MouseFix and loose ASI plugins. Stock files whose size differs, or
+  that are missing, are listed.
+- **Apply.** Replays (`*.wsr`, `desync-*.zip`) move to `Documents\Melange\replays` first, never overwriting
+  (`name (2).wsr`). If one can't be moved, nothing is deleted. Then the files are deleted and the non-stock folders
+  left empty are removed. A running `Melange.exe` in the game folder is deleted by a hidden `cmd` once the
+  process has exited (after *Close Melange*). Access denied on the first file is `-32010`. The page offers
+  *Restart as administrator* (`setup.elevate {resume: "vanilla"}`), and the elevated run reopens the dialog.
+- **Afterwards.** `launcher.json` forgets the game folder, first run, default plugins and the last update check
+  (`ResetForVanilla`; theme, window and any other preference stay), and `updates\` is emptied. If stock files were
+  changed or missing, or Renewation HD or WUMPatch was found (they overwrite stock files), Steam installs get
+  `steam://validate/70600`. Others are told to verify in GOG Galaxy or reinstall. Everything is logged to
+  `launcher.log` (`[vanilla]`).
+
 ### Updates
 
 Melange keeps itself up to date (`src/launcher/updater.*`, `src/launcher/update_host.cpp`, `src/update/`):

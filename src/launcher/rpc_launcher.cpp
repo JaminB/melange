@@ -1,4 +1,4 @@
-// launcher.*: the app's own state, theme, Launch game, folders and shortcuts.
+// launcher.*: the app's own state, theme, Launch game, folders, shortcuts and Quit.
 #include <windows.h>
 #include <objbase.h>
 
@@ -224,6 +224,12 @@ void Shortcuts(const Call& c, Result& r, void*) {
     if (!ok) return Fail(r, -32000, err);
     r.json = "{}";
 }
+
+// After Restore vanilla, the page's "Close Melange". Main thread; the window closes shortly after replying.
+void Quit(const Call&, Result& r, void*) {
+    window::QuitSoon();
+    r.json = "{}";
+}
 }  // namespace
 
 void InstallLauncher() {
@@ -235,5 +241,6 @@ void InstallLauncher() {
     oasis::AddMethod("launcher.openPath", &OpenPath, nullptr, oasis::kRpcNone);
     oasis::AddMethod("launcher.exportLogs", &ExportLogs, nullptr, kRpcServerThread);
     oasis::AddMethod("launcher.shortcuts", &Shortcuts, nullptr, kRpcServerThread | kRpcMutating);
+    oasis::AddMethod("launcher.quit", &Quit, nullptr, kRpcMutating);
 }
 }  // namespace melange::launcher::rpc

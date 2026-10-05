@@ -1,7 +1,7 @@
 // Offline self-test for Melange.exe's setup logic: VDF parsing, game detection, exe validation, loader identity,
-// the install/repair/uninstall/restore engine, Melange.ini merging, plugin settings, the recommended set and the updater
-// (release parsing, file:/// downloads, staging, --apply-update). Works on fake game folders under %TEMP%; never touches
-// a real game folder or the network.
+// the install/repair/uninstall/restore engine, Restore vanilla, Melange.ini merging, plugin settings, the recommended
+// set and the updater (release parsing, file:/// downloads, staging, --apply-update). Works on fake game folders under
+// %TEMP%; never touches a real game folder or the network.
 // Exit code 0 = all passed.
 #include <windows.h>
 
@@ -23,6 +23,7 @@
 #include "launcher/setup/exe_check.h"
 #include "launcher/setup/ini_merge.h"
 #include "launcher/setup/running.h"
+#include "launcher/setup/vanilla.h"
 #include "launcher/setup/vdf.h"
 #include "launcher/updater.h"
 #include "launcher/util.h"
@@ -645,6 +646,189 @@ void TestEngineRollback() {
         Expect(Snap(r.game, L"Melange") == before, what, "folder changed");
         Expect(S::ListBackups(r.game).empty(), what, "a backup was left behind");
     }
+}
+
+// ---------------------------------------------------------------- restore vanilla
+bool HasPath(const std::vector<std::string>& v, const char* path) {
+    for (const auto& x : v)
+        if (L::IEquals(x, path)) return true;
+    return false;
+}
+const S::VanillaGroup* Group(const S::VanillaPlan& p, const char* id) {
+    for (const auto& g : p.groups)
+        if (g.id == id) return &g;
+    return nullptr;
+}
+std::string GroupsText(const S::VanillaPlan& p) {
+    std::string t;
+    for (const auto& g : p.groups) t += g.id + "=" + g.label + " x" + std::to_string(g.files) + "; ";
+    return t + (p.refused.empty() ? "" : " refused: " + p.refused);
+}
+
+void TestStockList() {
+    S::StockList l;
+    std::string err;
+    const std::string tsv = Get(g_src + L"\\res\\wum-1077-stock.tsv");
+    Expect(S::ParseStockList(tsv, &l, &err), "stock: the shipped list parses", err);
+    Expect(l.files.size() == 2130, "stock: 2130 files", std::to_string(l.files.size()));
+    const auto exe = l.files.find(L"wormsmayhem.exe");
+    Expect(exe != l.files.end() && exe->second == 5713408, "stock: WormsMayhem.exe #1077 size");
+    Expect(l.dirs.count(L"data") && l.dirs.count(L"cg") && !l.dirs.count(L"redist"), "stock: folders");
+    Expect(S::EmbeddedStockList().files.size() == 2130, "stock: embedded as WUM_STOCK", std::to_string(S::EmbeddedStockList().files.size()));
+    Expect(!S::ParseStockList("..\\x.dll\t1\r\n", &l, &err), "stock: traversal refused");
+    Expect(!S::ParseStockList("a.dll\tx\r\n", &l, &err), "stock: bad size refused");
+    Expect(!S::ParseStockList("# only a comment\n", &l, &err), "stock: empty refused");
+}
+
+void TestVanilla() {
+    Rig r = MakeRig(L"vanilla");
+    const std::wstring g = r.game, docs = L::Parent(g) + L"\\Documents\\Melange\\replays";
+    // The stock game: what the injected list names.
+    Put(g + L"\\CG\\FixedFunction.cg", "stock cg");
+    Put(g + L"\\Data\\Frontend\\menu.xom", "modified by a mod");   // stock size 5: overwritten
+    Put(g + L"\\Data\\Maps\\Stock.xom", "map");
+    Put(g + L"\\Default.cfg", "defaults");
+    const std::string tsv = "WormsMayhem.exe\t" + std::to_string(L::FileSize(g + L"\\WormsMayhem.exe")) +
+                            "\r\nCG\\FixedFunction.cg\t8\r\nData\\level.xom\t9\r\nData\\Frontend\\menu.xom\t5\r\nData\\Maps\\Stock.xom\t0\r\n"
+                            "Data\\gone.xom\t3\r\nDefault.cfg\t8\r\n";
+    S::StockList stock;
+    std::string err;
+    Expect(S::ParseStockList(tsv, &stock, &err), "vanilla: test list parses", err);
+    // Files the game writes: kept.
+    Put(g + L"\\local.cfg", "mine");
+    Put(g + L"\\steam_appid.txt", "70600");
+    Put(g + L"\\Data\\Shaders\\water.csh", "cache");
+    Put(g + L"\\XOM2-1.log", "engine");
+    Put(g + L"\\Net_1.log", "net");
+    Put(g + L"\\Redist\\vcredist_x86.exe", "redist");
+    // Melange (7 files, the replays aside; an engine log copied into its folder goes too).
+    Copy(g_bin + L"\\fake_asi_0_4_0.dll", g + L"\\melange.asi");
+    Put(g + L"\\Melange.ini", kTemplate);
+    Copy(g_bin + L"\\fake_dinput8_other.dll", g + L"\\Melange.exe");
+    Put(g + L"\\Melange\\install.json", "{}");
+    Put(g + L"\\Melange\\backup\\x\\manifest.json", "{}");
+    Put(g + L"\\Mods\\hello\\spice.json", "{}");
+    Put(g + L"\\Melange\\replays\\match.wsr", "replay 1");
+    Put(g + L"\\Melange\\logs\\desync-1.zip", "bundle");
+    Put(g + L"\\Melange\\logs\\XOM1-2.log", "copy");
+    Copy(Ual(), g + L"\\dinput8.dll");
+    // ReShade as opengl32.dll.
+    Copy(g_bin + L"\\fake_dinput8_reshade.dll", g + L"\\opengl32.dll");
+    Put(g + L"\\ReShade.ini", "[GENERAL]");
+    Put(g + L"\\reshade-shaders\\Shaders\\x.fx", "fx");
+    // Renewation HD.
+    Put(g + L"\\Version.txt", "Renewation HD 0.2A2\r\nby the team\r\n");
+    Put(g + L"\\plugins\\patch.asi", "patch");
+    Put(g + L"\\plugins\\patch.ini", "[Patch]");
+    Put(g + L"\\Credits.txt", "credits");
+    Put(g + L"\\Data\\AlexBond_x.XOM", "map");
+    // WUMPatch.
+    Put(g + L"\\plugins\\WUM.Patch.asi", "patch");
+    Put(g + L"\\Data2\\x.xom", "x");
+    Put(g + L"\\Data\\Language\\PC\\Chinese.xom", "zh");
+    // Loose plugins and leftovers.
+    Put(g + L"\\scripts\\foo.asi", "asi");
+    Put(g + L"\\bar.asi", "asi");
+    Put(g + L"\\notes.txt", "notes");
+    // A replay already in Documents with the same name: never overwritten.
+    Put(docs + L"\\match.wsr", "older replay");
+
+    S::VanillaContext v;
+    v.base = r.ctx;
+    v.base.selfExe = r.payload + L"\\Melange.exe";
+    v.stock = &stock;
+    v.replaysDir = docs;
+    v.base.storeOf = [](const std::wstring&) { return std::string("steam"); };
+
+    // Refused while the game runs; nothing changes.
+    const auto before = Snap(g);
+    S::VanillaContext running = v;
+    running.base.running = [](const std::wstring&) { return true; };
+    S::VanillaPlan p = S::MakeVanillaPlan(running);
+    Expect(p.refused == "Close Worms Ultimate Mayhem first.", "vanilla: refused while the game runs", p.refused);
+    Expect(!S::ApplyVanilla(running, "").outcome.ok && Snap(g) == before, "vanilla: apply refused while running, nothing changed");
+    // Refused on another build.
+    auto bad = *r.profiles;
+    bad[0].sha256 = std::string(64, 'f');
+    S::ClearExeCache();
+    S::VanillaContext wrong = v;
+    wrong.base.profiles = &bad;
+    Expect(S::MakeVanillaPlan(wrong).refused.find("build #1077") != std::string::npos, "vanilla: refused on another build");
+    S::ClearExeCache();
+
+    p = S::MakeVanillaPlan(v);
+    Expect(p.refused.empty(), "vanilla: plan runs", p.refused);
+    Expect(Group(p, "melange") && Group(p, "melange")->files == 7, "vanilla: Melange found", GroupsText(p));
+    Expect(Group(p, "renewation") && Group(p, "renewation")->label == "Renewation HD 0.2A2" && Group(p, "renewation")->files == 5,
+           "vanilla: Renewation named with its version", GroupsText(p));
+    Expect(Group(p, "wumpatch") && Group(p, "wumpatch")->files == 3, "vanilla: WUMPatch found", GroupsText(p));
+    Expect(Group(p, "loader") && Group(p, "loader")->label == "Ultimate ASI Loader 9.7.4 (dinput8.dll)", "vanilla: UAL named", GroupsText(p));
+    Expect(Group(p, "reshade") && Group(p, "reshade")->label == "ReShade 6.3.0.0" && Group(p, "reshade")->files == 3,
+           "vanilla: ReShade as opengl32.dll, with its files", GroupsText(p));
+    Expect(Group(p, "asi") && Group(p, "asi")->files == 2, "vanilla: two loose ASI plugins", GroupsText(p));
+    Expect(Group(p, "other") && Group(p, "other")->files == 1 && p.groups.back().id == "other", "vanilla: one other file, listed last", GroupsText(p));
+    Expect(p.remove.size() == 22, "vanilla: 22 files to delete", std::to_string(p.remove.size()));
+    for (const char* kept : {"local.cfg", "steam_appid.txt", "Data\\Shaders\\water.csh", "XOM2-1.log", "Net_1.log", "Redist\\vcredist_x86.exe",
+                             "Default.cfg", "WormsMayhem.exe", "Data\\Frontend\\menu.xom"})
+        Expect(!HasPath(p.remove, kept), "vanilla: not deleted", kept);
+    Expect(p.replays.size() == 2 && HasPath(p.replays, "Melange\\replays\\match.wsr") && HasPath(p.replays, "Melange\\logs\\desync-1.zip"),
+           "vanilla: replays and desync bundles are moved");
+    Expect(p.modified.size() == 1 && L::IEquals(p.modified[0], "Data\\Frontend\\menu.xom"), "vanilla: the overwritten stock file");
+    Expect(p.missing.size() == 1 && L::IEquals(p.missing[0], "data\\gone.xom"), "vanilla: the missing stock file");
+    Expect(p.verify && p.overwrites && p.store == "steam" && !p.selfInGame, "vanilla: verify needed");
+
+    Expect(S::ApplyVanilla(v, "stale").outcome.code == -32013, "vanilla: plan id mismatch");
+    // Access denied on the first delete: nothing deleted.
+    S::VanillaContext denied = v;
+    denied.remove = [](const std::wstring&) -> unsigned long { return ERROR_ACCESS_DENIED; };
+    S::VanillaOutcome o = S::ApplyVanilla(denied, p.planId);
+    Expect(!o.outcome.ok && o.outcome.code == -32010 && o.deleted == 0, "vanilla: access denied is -32010", o.outcome.message);
+    Expect(L::FileExists(g + L"\\melange.asi") && L::FileExists(g + L"\\notes.txt"), "vanilla: access denied deleted nothing");
+    Expect(Get(docs + L"\\match.wsr") == "older replay", "vanilla: an existing replay is never overwritten");
+    // The replays went out first and stay safe; put them back so the real run sees the same plan.
+    for (const auto& [from, to] : o.moved) MoveFileW(L::Widen(to).c_str(), (g + L"\\" + L::Widen(from)).c_str());
+
+    // Melange.exe run from the game folder is left for after exit.
+    v.base.selfExe = g + L"\\Melange.exe";
+    p = S::MakeVanillaPlan(v);
+    Expect(p.selfInGame, "vanilla: the running exe is in the game folder");
+    o = S::ApplyVanilla(v, p.planId);
+    Expect(o.outcome.ok, "vanilla: applied", o.outcome.message);
+    Expect(o.deleted == 21 && o.pending.size() == 1 && L::FileExists(g + L"\\Melange.exe"), "vanilla: 21 deleted, Melange.exe pending",
+           std::to_string(o.deleted));
+    DeleteFileW((g + L"\\Melange.exe").c_str());
+    const auto after = Snap(g);
+    std::string left;
+    for (const auto& [k, sha] : after) left += L::Narrow(k) + " ";
+    Expect(after.size() == 12, "vanilla: only stock and kept files remain", left);
+    for (const wchar_t* gone : {L"Melange", L"Mods", L"Data2", L"plugins", L"scripts", L"reshade-shaders"})
+        Expect(!L::DirExists(g + L"\\" + gone), "vanilla: folder removed", L::Narrow(gone));
+    Expect(L::DirExists(g + L"\\Data\\Shaders") && L::DirExists(g + L"\\Redist") && L::DirExists(g + L"\\Data\\Maps"), "vanilla: game folders kept");
+    Expect(Get(g + L"\\Data\\Frontend\\menu.xom") == "modified by a mod" && Get(g + L"\\local.cfg") == "mine", "vanilla: stock and user files untouched");
+    Expect(Get(docs + L"\\match.wsr") == "older replay" && Get(docs + L"\\match (2).wsr") == "replay 1" && Get(docs + L"\\desync-1.zip") == "bundle",
+           "vanilla: replays moved to Documents, suffixed instead of overwritten");
+    Expect(o.moved.size() == 2, "vanilla: two replays moved");
+    // Again: nothing left but the verify.
+    p = S::MakeVanillaPlan(v);
+    Expect(p.remove.empty() && p.replays.empty() && p.groups.empty() && !p.overwrites && p.verify, "vanilla: second plan is empty", GroupsText(p));
+
+    // launcher.json: forget the game, keep the theme and window.
+    const std::wstring dir = Fresh(L"vanilla-settings");
+    L::Settings s;
+    s.gameDir = g;
+    s.firstRunDone = true;
+    s.theme = "dark";
+    s.window.saved = true;
+    s.window.right = 900;
+    s.defaults.push_back(L::DefaultPlugin{"sunstone", true, {}});
+    s.defaultsSeeded = true;
+    s.lastUpdateCheck = "2026-10-05T10:00:00Z";
+    L::ResetForVanilla(&s);
+    Expect(L::SaveSettings(dir + L"\\launcher.json", s), "vanilla: launcher.json saved");
+    L::Settings t;
+    Expect(L::LoadSettings(dir + L"\\launcher.json", &t) && t.gameDir.empty() && !t.firstRunDone && t.defaults.empty() && !t.defaultsSeeded &&
+               t.lastUpdateCheck.empty() && t.theme == "dark" && t.window.saved && t.window.right == 900,
+           "vanilla: launcher reset to first run, theme and window kept");
 }
 
 // ---------------------------------------------------------------- ini merge
@@ -1429,8 +1613,10 @@ int main(int, char** argv) {
         TestEngineCleanup();
         TestEngineGuards();
         TestEngineRollback();
+        TestVanilla();
         TestUpdateApply();
     }
+    TestStockList();
     TestIniMerge();
     TestPluginSettings();
     TestRecommended();

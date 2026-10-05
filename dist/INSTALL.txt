@@ -30,6 +30,7 @@ After setup, Melange's window lets you:
 - Configure installed plugins (Plugins page, Settings button per plugin)
 - Change your default set of plugins (Settings › Defaults)
 - Undo any change from a backup (Settings › Melange › Backups)
+- Put the game back to stock, removing Melange and every other mod (Settings › Restore vanilla)
 
 Updates
 -------
@@ -82,6 +83,13 @@ and settings, or delete everything.
 
 Or do it manually: delete melange.asi, Melange.ini and the Melange and Mods folders from the game
 folder. Delete dinput8.dll too, unless other .asi mods still need it.
+
+To get the plain game back: Settings › Restore vanilla. This permanently deletes every file in the
+game folder that isn't part of the game: Melange and other mods too (Renewation HD, WUMPatch, ReShade,
+ASI loaders and plugins). The dialog names what it found before you confirm. Your saves (kept by
+Steam), local.cfg and the game's own caches and logs stay; replays move to Documents\Melange\replays.
+If a mod had overwritten game files, Steam verifies the game afterwards (on GOG, verify in GOG Galaxy
+or reinstall). Melange then closes, and the next time you open it, setup starts from the beginning.
 
 Reporting a bug
 ---------------

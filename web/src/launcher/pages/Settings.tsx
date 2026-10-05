@@ -2,14 +2,18 @@ import { useEffect, useState } from "preact/hooks";
 import type { Client } from "../../sdk/client";
 import { errorText } from "../../sdk/hooks";
 import { Ini } from "../../panels/ini";
-import type { Defaults, SetupStatus, Theme, UpdateStatus } from "../api";
+import type { Defaults, SetupStatus, Theme, UpdateStatus, VanillaResult } from "../api";
 import { defaultsOf, updateStatusOf, whenText } from "../api";
+import { RestoreVanilla } from "../components/RestoreVanilla";
 import { busyNotice, updateCheckLine } from "../copy";
 import { UndoIcon } from "../icons";
 
 export interface SettingsProps { client: Client; status: SetupStatus | undefined; update?: UpdateStatus; theme: Theme; onTheme: (t: Theme) => void; onChangeFolder: () => void; }
+// Restore vanilla: open its dialog straight away (after an elevated restart), and what to do once it has run.
+export interface VanillaProps { resumeVanilla?: boolean; onVanillaDone: (r: VanillaResult) => void; }
 
-export function Settings({ client, status, update, theme, onTheme, onChangeFolder }: SettingsProps) {
+export function Settings({ client, status, update, theme, onTheme, onChangeFolder, resumeVanilla, onVanillaDone }: SettingsProps & VanillaProps) {
+  const [vanillaOpen, setVanillaOpen] = useState(!!resumeVanilla);
   const [busy, setBusy] = useState<string>();
   const [error, setError] = useState<string>();
   const [confirmUninstall, setConfirmUninstall] = useState(false);
@@ -132,6 +136,18 @@ export function Settings({ client, status, update, theme, onTheme, onChangeFolde
             <button class="link" disabled={busy === b.id || !!batch} title={batchWhy} onClick={() => deleteBackup(b.id)}>Delete</button>
           </div>
         ))}
+      </section>
+
+      <section class="ls-section" data-section="vanilla">
+        <h2>Restore vanilla</h2>
+        <div class="ls-row">
+          <span class="ls-row-label">Make the game folder stock Worms Ultimate Mayhem again: removes Melange and every other mod, for good.</span>
+          <button class="btn danger" data-vanilla-open disabled={!status?.game || vanillaOpen || !!batch} title={batchWhy} onClick={() => setVanillaOpen(true)}>Restore vanilla…</button>
+        </div>
+        {vanillaOpen && status?.game ? (
+          <RestoreVanilla client={client} gamePath={status.game.path} running={!!status.running} blocked={batchWhy}
+                          onCancel={() => setVanillaOpen(false)} onDone={onVanillaDone} />
+        ) : null}
       </section>
 
       <section class="ls-section" data-section="defaults">

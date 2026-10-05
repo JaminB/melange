@@ -3,7 +3,8 @@ import { useEffect, useReducer, useState } from "preact/hooks";
 import type { Client, ClientState } from "../sdk/client";
 import { errorText, useConnection } from "../sdk/hooks";
 import { Store } from "../panels/store";
-import { launcherStateOf, setupEventOf, setupStatusOf, updateEventOf, updateStatusOf, type LauncherState, type SetupStatus, type Theme, type UpdateStatus } from "./api";
+import { launcherStateOf, setupEventOf, setupStatusOf, updateEventOf, updateStatusOf, type LauncherState, type SetupStatus, type Theme, type UpdateStatus, type VanillaResult } from "./api";
+import { VanillaDone } from "./components/VanillaDone";
 import { ExternalLinkIcon, GearIcon, LifeBuoyIcon, PlayIcon, PuzzleIcon, SparkleIcon, StoreIcon } from "./icons";
 import { Help } from "./pages/Help";
 import { Home } from "./pages/Home";
@@ -56,6 +57,7 @@ export function LauncherApp({ client }: { client: Client }) {
   const [wizard, dispatch] = useReducer(wizardReducer, undefined, initialWizard);
   const [launchError, setLaunchError] = useState<string>();
   const [launching, setLaunching] = useState(false);
+  const [vanilla, setVanilla] = useState<VanillaResult>();
 
   useEffect(() => {
     if (!conn.open) return;
@@ -63,6 +65,8 @@ export function LauncherApp({ client }: { client: Client }) {
       const s = launcherStateOf(r);
       setLauncher(s);
       setInWizard((prev) => prev ?? s.firstRun);
+      // Restarted as administrator to finish Restore vanilla: straight back to its dialog.
+      if (s.resume === "vanilla" && !s.firstRun) setPage("settings");
     }).catch(() => {});
   }, [conn.open, client]);
 
@@ -117,6 +121,9 @@ export function LauncherApp({ client }: { client: Client }) {
     return <div class="lw" aria-label="Starting Melange"><div class="lw-col"><div class="lw-skel" style="margin-top:80px"><div class="lw-skel-row" /></div></div></div>;
   }
 
+  // Restore vanilla ran: the game folder is stock and Melange has forgotten it. Nothing else to do here but close.
+  if (vanilla) return <VanillaDone client={client} result={vanilla} />;
+
   if (inWizard) {
     return (
       <div class="lw">
@@ -168,7 +175,8 @@ export function LauncherApp({ client }: { client: Client }) {
               : page === "plugins" ? <Plugins client={client} status={status} onOpenStore={() => setPage("store")} onOpenImport={setImportPlugin} />
               : page === "store" ? <Store client={client} />
               : page === "settings" ? <Settings client={client} status={status} update={update} theme={launcher?.theme ?? "system"} onTheme={setTheme}
-                                                 onChangeFolder={() => { dispatch({ type: "goto", step: "find" }); setInWizard(true); }} />
+                                                 onChangeFolder={() => { dispatch({ type: "goto", step: "find" }); setInWizard(true); }}
+                                                 resumeVanilla={launcher?.resume === "vanilla"} onVanillaDone={setVanilla} />
               : <Help client={client} version={launcher?.version ?? ""} />}
           </div>
         </main>

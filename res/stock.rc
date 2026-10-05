@@ -1,0 +1,4 @@
+// Every file of a clean Steam install of Worms Ultimate Mayhem build #1077, "relative\path<TAB>size" (size 0 = not
+// checked), read by Restore vanilla (src/launcher/setup/vanilla.h). Taken from a freshly Steam-verified install with
+// the *.csh shader caches the game writes left out; regenerate it with scripts/gen-stock-manifest.ps1.
+WUM_STOCK RCDATA "wum-1077-stock.tsv"

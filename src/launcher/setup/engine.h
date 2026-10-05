@@ -8,6 +8,7 @@
 
 // Install, repair, uninstall and restore Melange in a game folder: every change is planned first, staged, backed
 // up and committed by rename, and rolled back on failure. UI-free; the self-test drives it on a fake folder.
+// Restore vanilla (back to the stock game, no backup) is its own engine: vanilla.h.
 namespace melange::launcher::setup {
 using MoveFn = std::function<unsigned long(const std::wstring& from, const std::wstring& to)>;
 unsigned long DefaultMove(const std::wstring& from, const std::wstring& to);
@@ -102,4 +103,6 @@ Outcome SetMelangeEnabled(const Context& ctx, bool on);
 std::vector<Backup> ListBackups(const std::wstring& gameDir);
 // Refusal copy shared with other writers (plugins, store, ini): "" when writes to the folder are allowed now.
 std::string WriteGate(const Context& ctx);
+// WriteGate, and the folder must hold the supported WormsMayhem.exe (install, repair, restore vanilla).
+std::string GameGate(const Context& ctx);
 }  // namespace melange::launcher::setup

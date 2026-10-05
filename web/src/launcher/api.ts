@@ -14,6 +14,7 @@ export type Val = boolean | number | string;
 export interface LauncherState {
   version: string; firstRun: boolean; gameDir: string | null; theme: Theme;
   webview: boolean; elevated: boolean; protected: string[];
+  resume?: string;   // after an elevated restart (setup.elevate {resume}): what to pick up again, e.g. "vanilla"
 }
 
 export interface GameCheck {
@@ -106,7 +107,8 @@ export function launcherStateOf(v: unknown): LauncherState {
   const o = obj(v);
   const theme = o.theme === "light" || o.theme === "dark" ? o.theme : "system";
   return { version: str(o, "version"), firstRun: bool(o, "firstRun"), gameDir: strOpt(o, "gameDir") ?? null, theme,
-    webview: bool(o, "webview"), elevated: bool(o, "elevated"), protected: strs(o, "protected") };
+    webview: bool(o, "webview"), elevated: bool(o, "elevated"), protected: strs(o, "protected"),
+    ...(typeof o.resume === "string" && o.resume ? { resume: o.resume } : {}) };
 }
 
 export function gameCheckOf(v: unknown): GameCheck {
@@ -439,4 +441,42 @@ export function updateStatusOf(v: unknown): UpdateStatus {
 export function updateEventOf(v: unknown): UpdateStatus | undefined {
   const o = obj(v);
   return o.status && typeof o.status === "object" ? updateStatusOf(o.status) : undefined;
+}
+
+// -- Restore vanilla (`setup.vanillaPlan` / `setup.vanillaApply`) ---------------------------------------------------
+// Everything in the game folder that isn't the stock game goes, for good; replays move to Documents\Melange\replays.
+export interface VanillaGroup { id: string; label: string; files: number; }
+export interface VanillaPlan {
+  planId: string; refused?: string; groups: VanillaGroup[]; files: number; bytes: number; sample: string[];
+  replays: string[]; replaysDir: string; modified: string[]; modifiedCount: number; missing: string[]; missingCount: number;
+  overwrites: boolean; verify: boolean; store: Store; selfInGame: boolean;
+}
+export interface VanillaResult {
+  ok: boolean; deleted: number; dirsRemoved: number; moved: { from: string; to: string }[]; replaysDir: string;
+  failed: string[]; modified: string[]; missing: string[]; verify: boolean; verifyStarted: boolean; store: Store; selfPending: boolean;
+}
+
+const storeOf = (o: Rec): Store => (STORES.includes(o.store as Store) ? (o.store as Store) : "unknown");
+
+export function vanillaPlanOf(v: unknown): VanillaPlan {
+  const o = obj(v);
+  return {
+    planId: str(o, "planId"), refused: strOpt(o, "refused"),
+    groups: arr(o, "groups").map((g) => { const go = obj(g); return { id: str(go, "id"), label: str(go, "label") || str(go, "id"), files: num(go, "files") }; })
+      .filter((g) => g.files > 0),
+    files: num(o, "files"), bytes: num(o, "bytes"), sample: strs(o, "sample"), replays: strs(o, "replays"), replaysDir: str(o, "replaysDir"),
+    modified: strs(o, "modified"), modifiedCount: numOpt(o, "modifiedCount") ?? strs(o, "modified").length,
+    missing: strs(o, "missing"), missingCount: numOpt(o, "missingCount") ?? strs(o, "missing").length,
+    overwrites: bool(o, "overwrites"), verify: bool(o, "verify"), store: storeOf(o), selfInGame: bool(o, "selfInGame"),
+  };
+}
+
+export function vanillaResultOf(v: unknown): VanillaResult {
+  const o = obj(v);
+  return {
+    ok: bool(o, "ok"), deleted: num(o, "deleted"), dirsRemoved: num(o, "dirsRemoved"),
+    moved: arr(o, "moved").map((m) => { const mo = obj(m); return { from: str(mo, "from"), to: str(mo, "to") }; }),
+    replaysDir: str(o, "replaysDir"), failed: strs(o, "failed"), modified: strs(o, "modified"), missing: strs(o, "missing"),
+    verify: bool(o, "verify"), verifyStarted: bool(o, "verifyStarted"), store: storeOf(o), selfPending: bool(o, "selfPending"),
+  };
 }

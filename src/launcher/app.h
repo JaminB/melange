@@ -25,6 +25,13 @@ void SetGameDir(const std::wstring& dir, bool save);
 Settings GetSettings();
 void UpdateSettings(const std::function<void(Settings&)>& fn);   // applies and saves launcher.json
 
+// Restore vanilla finished: launcher.json forgets the game (ResetForVanilla) and so does this run, so the next start
+// shows the install wizard.
+void ForgetGame();
+// Files to delete once this process has exited: its own Melange.exe in a folder Restore vanilla emptied.
+void DeleteOnExit(const std::vector<std::wstring>& paths);
+std::vector<std::wstring> PendingDeletes();
+
 setup::Context MakeContext();                      // for the current folder
 std::string WriteGate();                           // "" when writes to the current folder are allowed now
 std::string CachedGate();                          // the last poll's WriteGate (cheap)

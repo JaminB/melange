@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
   candidatesOf, defaultsOf, exportPlaceText, exportResultOf, gameCheckOf, launcherStateOf, planOf, recommendedOf, setupStatusOf,
-  settingOf, sizeText, valuesOf,
+  settingOf, sizeText, valuesOf, vanillaPlanOf, vanillaResultOf,
 } from "../../src/launcher/api";
 
 test("launcherStateOf: garbage input never throws and falls back sanely", () => {
@@ -94,4 +94,32 @@ test("exportResultOf: needs a path, defaults the rest; exportPlaceText names the
   assert.equal(fallback?.pid, 0);
   assert.equal(fallback?.onDesktop, false);
   assert.equal(fallback && exportPlaceText(fallback), "C:\\Users\\P\\Documents\\Melange\\exports");
+});
+
+test("launcherStateOf: resume only when the server sends it", () => {
+  assert.equal(launcherStateOf({ resume: "vanilla" }).resume, "vanilla");
+  assert.equal("resume" in launcherStateOf({}), false);
+});
+
+test("vanillaPlanOf: garbage never throws; groups without files dropped; counts fall back to the lists", () => {
+  const empty = vanillaPlanOf(null);
+  assert.equal(empty.files, 0);
+  assert.deepEqual(empty.groups, []);
+  assert.equal(empty.store, "unknown");
+  const p = vanillaPlanOf({ planId: "x", files: 3, store: "steam", verify: true, modified: ["CG\a.cg"], missing: ["b"],
+    groups: [{ id: "renewation", label: "Renewation HD 0.2A2", files: 2 }, { id: "asi", files: 0 }, "junk"] });
+  assert.deepEqual(p.groups, [{ id: "renewation", label: "Renewation HD 0.2A2", files: 2 }]);
+  assert.equal(p.modifiedCount, 1);
+  assert.equal(p.missingCount, 1);
+  assert.equal(p.store, "steam");
+  assert.equal(p.refused, undefined);
+});
+
+test("vanillaResultOf: moved replays and the verify flags", () => {
+  const r = vanillaResultOf({ ok: true, deleted: 5, moved: [{ from: "Melange\replays\a.wsr", to: "D:\Docs\a.wsr" }, null], verify: true, verifyStarted: true, store: "gog" });
+  assert.equal(r.deleted, 5);
+  assert.equal(r.moved.length, 2);
+  assert.equal(r.moved[0].to, "D:\Docs\a.wsr");
+  assert.equal(r.store, "gog");
+  assert.equal(r.selfPending, false);
 });

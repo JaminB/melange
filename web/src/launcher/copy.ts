@@ -1,6 +1,6 @@
 // The wizard's words (spec §5.3) as pure data: one function per family of states, each returning {title, body}.
 // A unit test asserts every member of every union this file switches on produces non-empty title and body.
-import type { Candidate, DllInfo, GameCheck, ImportContent, ImportJob, ImportSource, Importer, Plan, SetupProgress, SetupStatus, UpdateApplied, UpdateStatus, Verdict } from "./api";
+import type { Candidate, DllInfo, GameCheck, ImportContent, ImportJob, ImportSource, Importer, Plan, SetupProgress, SetupStatus, Store, UpdateApplied, UpdateStatus, VanillaGroup, Verdict } from "./api";
 import { LauncherErrorCode, fingerprintShort, hashShort, sizeText, whenText } from "./api";
 
 export interface Copy { title: string; body: string[]; }
@@ -330,3 +330,29 @@ export function updateCheckLine(u: UpdateStatus): string {
       : u.auto === false ? "Automatic checks are off." : "Melange checks for updates each time it starts.";
   }
 }
+
+// -- Restore vanilla ------------------------------------------------------------------------------------------------
+const plural = (n: number, one: string, many = `${one}s`) => `${n} ${n === 1 ? one : many}`;
+
+// What the warning names: "Melange, Renewation HD 0.2A2, WUMPatch, 3 ASI plugins and 12 other files not part of
+// the game". Groups come in the server's display order, "other" last.
+export function vanillaFoundText(groups: VanillaGroup[]): string {
+  const parts = groups.map((g) => g.id === "asi" ? plural(g.files, "ASI plugin")
+    : g.id === "other" ? `${plural(g.files, "other file")} not part of the game` : g.label);
+  if (parts.length <= 1) return parts[0] ?? "";
+  return `${parts.slice(0, -1).join(", ")} and ${parts[parts.length - 1]}`;
+}
+
+// Mod frameworks other than Melange: the dialog says plainly that they go too.
+export function vanillaOthers(groups: VanillaGroup[]): VanillaGroup[] {
+  return groups.filter((g) => g.id !== "melange" && g.id !== "other");
+}
+
+// How the stock files a mod overwrote come back. `started`: Steam was asked to verify (after apply only).
+export function vanillaVerifyText(store: Store, started?: boolean): string {
+  if (store !== "steam") return "Verify the game files in GOG Galaxy or reinstall the game to get the original files back.";
+  if (started === false) return "Steam didn't open. In Steam, right-click Worms Ultimate Mayhem › Properties › Installed Files › Verify integrity of game files.";
+  return started ? "Steam is verifying the game files and will download the originals." : "Afterwards, Steam verifies the game files and downloads the originals.";
+}
+
+export const VANILLA_DONE = "Worms is back to stock. Melange will close.";

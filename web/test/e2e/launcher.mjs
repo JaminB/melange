@@ -1,6 +1,7 @@
 // Headless Edge e2e for the Melange.exe launcher's web UI, against the mock server (--launcher) and its scenario
 // fixtures (web/test/e2e/launcher-mock.mjs): fresh (found/install/recommended), not-found, wrong-build, ual-present,
-// reshade (other dinput8 + backup + restore), update-ready and update-running (Restart to update). Screenshots of every
+// reshade (other dinput8 + backup + restore), update-ready and update-running (Restart to update), Restore vanilla
+// (restore, update-running, vanilla-denied). Screenshots of every
 // wizard step and main-app section, light and dark, go into --shots (default web/test/out/launcher-shots).
 //   node web/test/e2e/launcher.mjs [<built web app folder>] [--shots <dir>]
 import { mkdirSync } from "node:fs";
@@ -589,11 +590,97 @@ async function updateReady(browser) {
   }
 }
 
+// Settings › Restore vanilla: the warning names every framework found, the confirm stays off until "I understand",
+// then the closing screen; a reload is a first run. Also: refused while the game runs, and the administrator restart.
+async function restoreVanilla(browser) {
+  const openDialog = async (page) => {
+    await page.waitForSelector(".la", { timeout: 10000 });
+    await page.locator('[data-page-tab="settings"]').click();
+    await page.locator("[data-vanilla-open]").click();
+    await page.waitForSelector('[data-confirm="vanilla"] [data-vanilla-plan], [data-confirm="vanilla"] [data-vanilla-refused]', { timeout: 10000 });
+  };
+  const mock = await startMock({ root, launcher: true });
+  const { page, errors } = await openPage(browser, mock, "restore");
+  try {
+    await attempt("vanilla: the warning names what it removes", async () => {
+      await openDialog(page);
+      const found = (await page.locator("[data-vanilla-found]").textContent()) ?? "";
+      check("vanilla: names Renewation with its version, WUMPatch, ReShade and counts the rest",
+        /Renewation HD 0\.2A2/.test(found) && /WUMPatch/.test(found) && /ReShade 6\.3\.0/.test(found) && /3 ASI plugins/.test(found) &&
+        /12 other files not part of the game/.test(found), found);
+      check("vanilla: says other mods go too", /not just Melange/.test((await page.locator("[data-vanilla-others]").textContent()) ?? ""));
+      check("vanilla: counts the files and says there's no backup",
+        /299 files/.test((await page.locator("[data-vanilla-plan]").textContent()) ?? "") && /No backup/.test((await page.locator("[data-vanilla-plan]").textContent()) ?? ""));
+      check("vanilla: replays are moved first", /2 replays are moved to/.test((await page.locator("[data-vanilla-replays]").textContent()) ?? ""));
+      check("vanilla: Steam verify announced", /Steam verifies/.test((await page.locator("[data-vanilla-verify]").textContent()) ?? ""));
+      check("vanilla: the confirm is off until I understand is ticked", await page.locator("[data-vanilla-apply]").isDisabled());
+      await page.locator('[data-confirm="vanilla"]').scrollIntoViewIfNeeded();
+      await shot(page, "35-settings-restore-vanilla");
+      await page.locator("[data-vanilla-ack]").check();
+      check("vanilla: ticking enables the confirm", !(await page.locator("[data-vanilla-apply]").isDisabled()));
+    });
+    await attempt("vanilla: done screen, then a first run", async () => {
+      await page.locator("[data-vanilla-apply]").click();
+      await page.waitForSelector("[data-vanilla-done]", { timeout: 10000 });
+      const text = (await page.locator("[data-vanilla-done]").textContent()) ?? "";
+      check("vanilla: back to stock, Melange will close", /Worms is back to stock\. Melange will close\./.test(text), text);
+      check("vanilla: says where the replays went and that Steam is verifying", /2 replays are in/.test(text) && /Steam is verifying/.test(text), text);
+      await shot(page, "36-vanilla-done");
+      await page.locator('[data-action="close-melange"]').click();
+      await page.waitForSelector('[data-action="close-melange"]:has-text("Closing")', { timeout: 5000 });
+      await page.reload({ waitUntil: "load" });
+      await page.waitForSelector('[data-step="welcome"]', { timeout: 10000 });
+      check("vanilla: the next start is the install wizard", true);
+    });
+    check("vanilla scenario: no page errors", errors.length === 0, errors.join(" | "));
+  } finally {
+    await page.close();
+    await mock.close();
+  }
+  const mock2 = await startMock({ root, launcher: true });
+  const r = await openPage(browser, mock2, "update-running");
+  try {
+    await attempt("vanilla: refused while the game runs", async () => {
+      await openDialog(r.page);
+      check("vanilla: says to close the game", /Close Worms Ultimate Mayhem first/.test((await r.page.locator('[data-confirm="vanilla"]').textContent()) ?? ""));
+      check("vanilla: the confirm is off", await r.page.locator("[data-vanilla-apply]").isDisabled());
+    });
+    check("vanilla running scenario: no page errors", r.errors.length === 0, r.errors.join(" | "));
+  } finally {
+    await r.page.close();
+    await mock2.close();
+  }
+  const mock3 = await startMock({ root, launcher: true });
+  const d = await openPage(browser, mock3, "vanilla-denied");
+  try {
+    await attempt("vanilla: access denied offers a restart as administrator", async () => {
+      await openDialog(d.page);
+      await d.page.locator("[data-vanilla-ack]").check();
+      await d.page.locator("[data-vanilla-apply]").click();
+      await d.page.waitForSelector("[data-vanilla-elevate]", { timeout: 10000 });
+      check("vanilla: says Windows refused", /Windows didn't let us/.test((await d.page.locator("[data-vanilla-error]").textContent()) ?? ""));
+      await shot(d.page, "37-vanilla-needs-admin");
+      await d.page.locator("[data-vanilla-elevate]").click();
+      // The elevated instance opens on the same dialog (launcher.state {resume: "vanilla"}).
+      await d.page.reload({ waitUntil: "load" });
+      await d.page.waitForSelector('[data-confirm="vanilla"] [data-vanilla-plan]', { timeout: 10000 });
+      check("vanilla: resumed after the restart", true);
+      await d.page.locator("[data-vanilla-ack]").check();
+      await d.page.locator("[data-vanilla-apply]").click();
+      await d.page.waitForSelector("[data-vanilla-done]", { timeout: 10000 });
+    });
+    check("vanilla-denied scenario: no page errors", d.errors.length === 0, d.errors.join(" | "));
+  } finally {
+    await d.page.close();
+    await mock3.close();
+  }
+}
+
 const browser = await chromium.launch({ channel: "msedge", headless: true });
 try {
   for (const scenario of [
     foundInstallRecommended, notFound, wrongBuild, ualPresent, reshadeBackupAndRestore, installedHome, helpExportLogs, pluginsBusy,
-    importDownloadFlow, importLocalFileFlow, importHashErrorFlow, importCancelFlow, importStaleAndDamaged, updateReady,
+    importDownloadFlow, importLocalFileFlow, importHashErrorFlow, importCancelFlow, importStaleAndDamaged, updateReady, restoreVanilla,
   ]) {
     try {
       await scenario(browser);

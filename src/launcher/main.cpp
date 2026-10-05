@@ -75,6 +75,26 @@ bool SecondInstance(HANDLE* mutex, bool resume) {
     }
     return true;
 }
+
+// Restore vanilla emptied the game folder but this Melange.exe ran from it: a running exe can't delete itself, so a
+// hidden cmd waits for this process to be gone, then deletes the files.
+void DeleteAfterExit(const std::vector<std::wstring>& paths) {
+    if (paths.empty()) return;
+    wchar_t sys[MAX_PATH];
+    if (!GetSystemDirectoryW(sys, MAX_PATH)) return;
+    std::wstring cmd = std::wstring(L"\"") + sys + L"\\cmd.exe\" /d /c ping -n 3 127.0.0.1 >nul";
+    for (const auto& p : paths) cmd += L" & del /f /q \"" + p + L"\"";
+    STARTUPINFOW si{};
+    si.cb = sizeof si;
+    PROCESS_INFORMATION pi{};
+    if (!CreateProcessW(nullptr, cmd.data(), nullptr, nullptr, FALSE, CREATE_NO_WINDOW, nullptr, sys, &si, &pi)) {
+        LOG_WARN("[vanilla] could not schedule deleting %zu file(s) after exit (%lu)", paths.size(), GetLastError());
+        return;
+    }
+    LOG_INFO("[vanilla] %zu file(s) of this app are deleted after it exits", paths.size());
+    CloseHandle(pi.hThread);
+    CloseHandle(pi.hProcess);
+}
 }  // namespace
 
 int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int) {
@@ -185,6 +205,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int) {
         ReleaseMutex(mutex);
         CloseHandle(mutex);
     }
+    DeleteAfterExit(L::app::PendingDeletes());
     CoUninitialize();
     return rc;
 }

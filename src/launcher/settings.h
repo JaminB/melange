@@ -28,6 +28,9 @@ struct Settings {
 std::wstring SettingsPath();
 bool LoadSettings(const std::wstring& path, Settings* out);   // false (and defaults) when missing or unreadable
 bool SaveSettings(const std::wstring& path, const Settings& s);
+// After Restore vanilla: forget the game folder, first run, default plugins and the last update check, so the next
+// start shows the install wizard. Everything else (theme, window, preferences added later) is kept.
+void ResetForVanilla(Settings* s);
 std::string DefaultsJson(const std::vector<DefaultPlugin>& d, bool seeded);
 bool DefaultsFromJson(const json::Value& v, std::vector<DefaultPlugin>* out, bool* seeded, std::string* err);
 }  // namespace melange::launcher

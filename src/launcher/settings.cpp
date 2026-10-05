@@ -65,6 +65,15 @@ bool LoadSettings(const std::wstring& path, Settings* out) {
     return true;
 }
 
+// Field by field on purpose: a preference added to Settings later (e.g. autoUpdate) survives without a change here.
+void ResetForVanilla(Settings* s) {
+    s->gameDir.clear();
+    s->firstRunDone = false;
+    s->defaults.clear();
+    s->defaultsSeeded = false;
+    s->lastUpdateCheck.clear();
+}
+
 bool SaveSettings(const std::wstring& path, const Settings& s) {
     jsonmini::Obj o;
     o.Int("version", 1);

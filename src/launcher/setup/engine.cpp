@@ -17,7 +17,7 @@
 namespace melange::launcher::setup {
 namespace {
 const wchar_t* const kAltLoaders[] = {L"dsound.dll", L"winmm.dll", L"version.dll", L"d3d9.dll", L"xinput1_3.dll", L"winhttp.dll",
-                                      L"wininet.dll"};
+                                      L"wininet.dll", L"opengl32.dll"};
 const wchar_t* const kAsiDirs[] = {L"", L"scripts\\", L"plugins\\"};
 constexpr char kProtectedCopy[] = "This folder is protected (MELANGE_PROTECT).";
 constexpr char kRunningCopy[] = "Close Worms Ultimate Mayhem first.";
@@ -871,6 +871,7 @@ std::string StatusJson(const Status& s) {
 }
 
 std::string WriteGate(const Context& c) { return Gate(c, false, nullptr); }
+std::string GameGate(const Context& c) { return Gate(c, true, nullptr); }
 
 Plan MakePlan(const Context& c, const PlanRequest& req) { return Build(c, req, nullptr).plan; }
 
