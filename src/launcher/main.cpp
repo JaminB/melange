@@ -9,11 +9,14 @@
 #include <cstdio>
 #include <memory>
 #include <string>
+#include <vector>
 
 #include "core/log.h"
 #include "launcher/app.h"
 #include "launcher/rpc.h"
 #include "launcher/store_host.h"
+#include "launcher/update_host.h"
+#include "launcher/updater.h"
 #include "launcher/util.h"
 #include "launcher/window.h"
 #include "oasis/core/files.h"
@@ -33,9 +36,9 @@ std::wstring GameDirFn() { return L::app::GameDir(); }
 std::string WriteGateFn() { return L::app::WriteGate(); }
 std::wstring DefaultsIniFn() { return L::ExeDir() + L"\\Melange.ini"; }
 
-void OpenLog() {
+void OpenLog(const wchar_t* name = L"launcher") {
     const std::wstring dir = L::AppDataDir();
-    const std::wstring log = dir + L"\\launcher.log", old = dir + L"\\launcher.1.log";
+    const std::wstring log = dir + L"\\" + name + L".log", old = dir + L"\\" + name + L".1.log";
     if (L::FileSize(log) > 0) MoveFileExW(log.c_str(), old.c_str(), MOVEFILE_REPLACE_EXISTING);
     melange::log::Init(log);
 }
@@ -72,12 +75,49 @@ bool SecondInstance(HANDLE* mutex, bool resume) {
     }
     return true;
 }
+
+// Restore vanilla emptied the game folder but this Melange.exe ran from it: a running exe can't delete itself, so a
+// hidden cmd waits for this process to be gone, then deletes the files.
+void DeleteAfterExit(const std::vector<std::wstring>& paths) {
+    if (paths.empty()) return;
+    wchar_t sys[MAX_PATH];
+    if (!GetSystemDirectoryW(sys, MAX_PATH)) return;
+    std::wstring cmd = std::wstring(L"\"") + sys + L"\\cmd.exe\" /d /c ping -n 3 127.0.0.1 >nul";
+    for (const auto& p : paths) cmd += L" & del /f /q \"" + p + L"\"";
+    STARTUPINFOW si{};
+    si.cb = sizeof si;
+    PROCESS_INFORMATION pi{};
+    if (!CreateProcessW(nullptr, cmd.data(), nullptr, nullptr, FALSE, CREATE_NO_WINDOW, nullptr, sys, &si, &pi)) {
+        LOG_WARN("[vanilla] could not schedule deleting %zu file(s) after exit (%lu)", paths.size(), GetLastError());
+        return;
+    }
+    LOG_INFO("[vanilla] %zu file(s) of this app are deleted after it exits", paths.size());
+    CloseHandle(pi.hThread);
+    CloseHandle(pi.hProcess);
+}
 }  // namespace
 
 int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int) {
     L::app::Options opts;
     int argc = 0;
     LPWSTR* argv = CommandLineToArgvW(GetCommandLineW(), &argc);
+    std::vector<std::wstring> args;
+    for (int i = 1; argv && i < argc; ++i) args.push_back(argv[i]);
+    // A downloaded Melange.exe started by the old one to install itself: no window, no server.
+    if (L::updater::IsApplyCommand(args)) {
+        if (argv) LocalFree(argv);
+        L::updater::ApplyArgs aa;
+        std::string why;
+        OpenLog(L"update");
+        if (!L::updater::ParseApplyArgs(args, &aa, &why)) {
+            LOG_WARN("[update] bad --apply-update command line: %s", why.c_str());
+            return 2;
+        }
+        CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
+        const int rc = L::updatehost::RunApply(aa);
+        CoUninitialize();
+        return rc;
+    }
     for (int i = 1; argv && i < argc; ++i) {
         const std::wstring a = argv[i];
         if (a == L"--game" && i + 1 < argc) opts.game = argv[++i];
@@ -136,6 +176,8 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int) {
     L::rpc::InstallPlugins();
     L::rpc::InstallImport();
     L::storehost::Install();
+    L::updatehost::Install();
+    L::updatehost::Start(!opts.serve);   // --serve is for tests: no automatic look at GitHub
     L::app::StartChannel();
 
     oc::Config cfg;
@@ -163,6 +205,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int) {
         ReleaseMutex(mutex);
         CloseHandle(mutex);
     }
+    DeleteAfterExit(L::app::PendingDeletes());
     CoUninitialize();
     return rc;
 }

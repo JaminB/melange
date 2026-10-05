@@ -19,6 +19,7 @@ std::mutex g_mx;
 Settings g_settings;
 std::wstring g_gameDir;
 std::vector<std::wstring> g_protect;
+std::vector<std::wstring> g_deleteOnExit;
 std::mutex g_tx;
 std::atomic<HWND> g_hwnd{nullptr};
 std::atomic<bool> g_webview{false};
@@ -38,7 +39,7 @@ std::string Fingerprint(const std::wstring& dir) {
         L"WormsMayhem.exe", L"dinput8.dll", L"melange.asi", L"melange.asi.off", L"scripts\\melange.asi", L"plugins\\melange.asi",
         L"scripts\\melange.asi.off", L"plugins\\melange.asi.off", L"WUMFix.asi", L"oasis.exe", L"Melange.ini", L"Melange.exe",
         L"Melange\\install.json", L"Melange\\backup", L"dsound.dll", L"winmm.dll", L"version.dll", L"d3d9.dll", L"xinput1_3.dll",
-        L"winhttp.dll", L"wininet.dll"};
+        L"winhttp.dll", L"wininet.dll", L"opengl32.dll"};
     for (const wchar_t* f : kFiles) {
         WIN32_FILE_ATTRIBUTE_DATA fa{};
         if (!GetFileAttributesExW((dir + L"\\" + f).c_str(), GetFileExInfoStandard, &fa)) {
@@ -114,6 +115,26 @@ void UpdateSettings(const std::function<void(Settings&)>& fn) {
     std::lock_guard lk(g_mx);
     fn(g_settings);
     SaveSettings(SettingsPath(), g_settings);
+}
+
+void ForgetGame() {
+    {
+        std::lock_guard lk(g_mx);
+        g_gameDir.clear();
+        ResetForVanilla(&g_settings);
+        SaveSettings(SettingsPath(), g_settings);
+    }
+    PublishStatus();
+}
+
+void DeleteOnExit(const std::vector<std::wstring>& paths) {
+    std::lock_guard lk(g_mx);
+    g_deleteOnExit.insert(g_deleteOnExit.end(), paths.begin(), paths.end());
+}
+
+std::vector<std::wstring> PendingDeletes() {
+    std::lock_guard lk(g_mx);
+    return g_deleteOnExit;
 }
 
 setup::Context MakeContext() {

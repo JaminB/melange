@@ -34,6 +34,8 @@
 #include "levels/live.h"
 #include "levels/registry.h"
 #include "mods/thumper_internal.h"
+#include "store/compat.h"
+#include "store/store.h"
 #include "weapons/manifest.h"
 #include "version.h"
 
@@ -61,6 +63,10 @@ bool g_messagesAttempted = false;
 uint32_t g_lastRegistryCapacity = 0;
 int g_stableFrames = 0;
 std::string g_grantSalt;
+
+std::mutex g_viewMx;
+View g_view;                 // guarded by g_viewMx
+ULONGLONG g_viewAt = 0;      // GetTickCount64 of the last read, 0 = never
 
 std::string Narrow(const std::wstring& w) {
     std::string s;
@@ -148,6 +154,30 @@ void MigrateDisabledMods() {
         config::SetString("Mirage", "DisabledMods", "");
         LOG_INFO("[thumper] migrated %d id(s) from [Mirage] DisabledMods into thumper-state.json", migrated);
     }
+}
+
+// -------------------------------------------------------------------------------------------
+// The compatibility sweep (store/compat.h), once per launch before the first scan: nothing has a file in a mod folder
+// open yet, so any plugin, content or not, can still move. Local plugins that cannot load go to Mods\.incompatible;
+// the Store ones are returned for store::Reconcile.
+// -------------------------------------------------------------------------------------------
+std::vector<compat::Finding> SweepIncompatible() {
+    compat::SweepContext c;
+    c.modsDir = g_modsDir;
+    c.melangeVersion = MELANGE_VERSION;
+    bool forgot = false;
+    c.forget = [&](const std::string& id) {
+        Live().enabled.erase(id);
+        Live().deepDesert.erase(id);
+        std::erase_if(Live().pins, [&](const PinEntry& p) { return p.id == id || p.before == id || p.after == id; });
+        forgot = true;
+    };
+    const compat::Report r = compat::Sweep(c);
+    if (forgot) Save();
+    for (const compat::Notice& n : r.quarantined)
+        jlog::Rec("thumper", jlog::Level::Warn, "quarantine").Str("id", n.id).Str("reason", n.reason).Str("folder", n.folder);
+    for (const std::string& e : r.errors) LOG_WARN("[thumper] incompatible plugin left in place: %s", e.c_str());
+    return r.store;
 }
 
 // -------------------------------------------------------------------------------------------
@@ -536,13 +566,45 @@ bool SetEnabled(const std::string& id, bool on) {
     Rescan();
     Entry e;
     if (FindEntry(id, &e) && !e.contentRelevant) {
-        if (on)
+        // Only what resolved to loading: an incompatible or blocked mod stays unloaded even when switched on.
+        if (on && e.sessionActive)
             sandbox::LoadMod(id.c_str());
         else
             sandbox::UnloadMod(id.c_str());
     }
     jlog::Rec("thumper", jlog::Level::Info, on ? "enable" : "disable").Str("id", id);
     return true;
+}
+
+View CurrentView(bool refresh) {
+    std::wstring dir;
+    {
+        std::lock_guard lk(g_mx);
+        dir = g_modsDir;
+    }
+    std::lock_guard lk(g_viewMx);
+    const ULONGLONG now = GetTickCount64();
+    if (refresh || !g_viewAt || now - g_viewAt > 2000) {
+        g_view.storeIds = compat::StoreIds(dir);
+        g_view.notices = compat::LoadNotices(dir);
+        g_viewAt = now;
+    }
+    return g_view;
+}
+
+bool IsStore(const Entry& e, const View& v) { return compat::IsStore(v.storeIds, e.manifest.id, e.manifest.generatedBy); }
+
+void SetShowLocal(bool on) {
+    if (Live().showLocal == on) return;
+    Live().showLocal = on;
+    Save();
+    jlog::Rec("thumper", jlog::Level::Info, "show_local").Bool("on", on);
+}
+
+bool DismissNotice(const std::string& key) {
+    const bool ok = compat::DismissNotice(std::wstring(mods::ModsDir()), key);
+    CurrentView(true);
+    return ok;
 }
 
 std::vector<Entry> LiveCandidates() {
@@ -678,7 +740,13 @@ public:
         CreateDirectoryW(dir.c_str(), nullptr);
         Load();
         MigrateDisabledMods();
+        const bool sweep = Bool("SweepIncompatible", true);
+        std::vector<compat::Finding> storeFindings;
+        if (sweep) storeFindings = SweepIncompatible();
         Rescan();
+        // No network here, so nothing is updated or removed: a Store plugin that cannot load stays (and does not load)
+        // until Melange.exe's sweep, with a freshly fetched list, updates or removes it, or the Store page updates it.
+        if (sweep && store::Active()) store::Reconcile(storeFindings, false);
         RegisterPanels();
         melange::events::Subscribe(melange::events::Event::Frame, [] { OnFrame(); });
         melange::draw::AddDrawCallback(melange::render::Stage::Hud, &DrawMarkerCallback, nullptr);

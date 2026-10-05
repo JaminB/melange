@@ -107,12 +107,23 @@ jobs:
           Write-Host "SHA-256: $hash"
           "ZIP=$zip" >> $env:GITHUB_ENV
           "ZIP_SHA256=$hash" >> $env:GITHUB_ENV
+          # The update manifest Melange.exe looks for on the release (melange-<version>.json beside the zip).
+          & scripts\release-manifest.ps1 -Zip $zip -Version $env:VERSION
+          "MANIFEST=out\melange-$env:VERSION.json" >> $env:GITHUB_ENV
 
       - name: Upload artifact
         if: github.ref_type != 'tag'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           path: ${{ env.ZIP }}
+          archive: false
+          if-no-files-found: error
+
+      - name: Upload update manifest
+        if: github.ref_type != 'tag'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          path: ${{ env.MANIFEST }}
           archive: false
           if-no-files-found: error
 
@@ -127,9 +138,9 @@ jobs:
           $line = "SHA-256 of melange-$env:VERSION.zip: ``$env:ZIP_SHA256``"
           $body = gh release view $env:TAG --json body -q .body 2> $null | Out-String
           if ($LASTEXITCODE) {
-            gh release create $env:TAG $env:ZIP --verify-tag --title "Melange $env:VERSION" --notes $line
+            gh release create $env:TAG $env:ZIP $env:MANIFEST --verify-tag --title "Melange $env:VERSION" --notes $line
           } else {
-            gh release upload $env:TAG $env:ZIP --clobber
+            gh release upload $env:TAG $env:ZIP $env:MANIFEST --clobber
             if ($LASTEXITCODE) { exit 1 }
             if (-not $body.Contains($line)) { gh release edit $env:TAG --notes ($body.TrimEnd() + "`n`n" + $line).Trim() }
           }

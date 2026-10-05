@@ -19,6 +19,7 @@
 #include "oasis/standalone/level_provider.h"
 #include "oasis/standalone/mods_provider.h"
 #include "oasis/standalone/wormsign_provider.h"
+#include "store/compat.h"
 #include "tools/json_mini.h"
 #include "tools/json_read.h"
 
@@ -241,6 +242,41 @@ void ModsSetEnabled(const oa::Call& c, oa::Result& r, void*) {
     r.json = "true";
 }
 
+// ---------------------------------------------------------------- mods.view, mods.setShowLocal, mods.dismissNotice
+void ModsView(const oa::Call&, oa::Result& r, void*) {
+    const std::wstring game = GameDir();
+    if (game.empty()) return Refuse(r, -32000, kNoGame);
+    r.json = modsprov::ViewJson(game);
+}
+
+void ModsSetShowLocal(const oa::Call& c, oa::Result& r, void*) {
+    const std::wstring game = GameDir();
+    if (game.empty()) return Refuse(r, -32000, kNoGame);
+    if (const std::string gate = WriteGate(); !gate.empty()) return Refuse(r, -32000, gate);
+    melange::json::Value p;
+    melange::json::Error e;
+    if (!melange::json::Parse(c.paramsJson, &p, &e) || !p.IsObject()) return Refuse(r, -32602, "bad params");
+    const melange::json::Value* on = p.Get("on");
+    if (!on || !on->IsBool()) return Refuse(r, -32602, "expected {on}");
+    if (!modsprov::SetShowLocal(game, on->boolean)) return Refuse(r, -32000, "could not write thumper-state.json");
+    r.json = modsprov::ViewJson(game);
+}
+
+void ModsDismissNotice(const oa::Call& c, oa::Result& r, void*) {
+    const std::wstring game = GameDir();
+    if (game.empty()) return Refuse(r, -32000, kNoGame);
+    // The running game writes notices.json too (its own sweep, its Mods page): no read-modify-write beside it.
+    if (const std::string gate = WriteGate(); !gate.empty()) return Refuse(r, -32000, gate);
+    melange::json::Value p;
+    melange::json::Error e;
+    if (!melange::json::Parse(c.paramsJson.empty() ? std::string("{}") : c.paramsJson, &p, &e) || !p.IsObject())
+        return Refuse(r, -32602, "bad params");
+    const melange::json::Value* key = p.Get("key");
+    if (key && !key->IsString()) return Refuse(r, -32602, "key must be a string");
+    melange::compat::DismissNotice(game + L"\\Mods", key ? key->string : std::string());
+    r.json = modsprov::ViewJson(game);
+}
+
 // ---------------------------------------------------------------- ini.get, ini.set
 void IniGetMethod(const oa::Call&, oa::Result& r, void*) {
     const std::wstring game = GameDir();
@@ -343,6 +379,9 @@ void RegisterStandalone(const StandaloneHost& host) {
     oc::AddRoute("/replays/", &RouteReplays, nullptr);
     MustAddMethod("mods.list", &ModsList, oa::kRpcServerThread);
     MustAddMethod("mods.setEnabled", &ModsSetEnabled, oa::kRpcServerThread | oa::kRpcMutating);
+    MustAddMethod("mods.view", &ModsView, oa::kRpcServerThread);
+    MustAddMethod("mods.setShowLocal", &ModsSetShowLocal, oa::kRpcServerThread | oa::kRpcMutating);
+    MustAddMethod("mods.dismissNotice", &ModsDismissNotice, oa::kRpcServerThread | oa::kRpcMutating);
     MustAddMethod("ini.get", &IniGetMethod, oa::kRpcServerThread);
     MustAddMethod("ini.set", &IniSetMethod, oa::kRpcServerThread | oa::kRpcMutating);
 }

@@ -1,10 +1,14 @@
-// launcher.*: the app's own state, theme, Launch game, folders and shortcuts.
+// launcher.*: the app's own state, theme, Launch game, folders, shortcuts and Quit.
 #include <windows.h>
 #include <objbase.h>
 
 #include <shellapi.h>
 #include <shlobj.h>
 #include <shobjidl.h>
+
+#include <algorithm>
+#include <atomic>
+#include <mutex>
 
 #include "launcher/app.h"
 #include "launcher/rpc.h"
@@ -14,12 +18,19 @@
 #include "launcher/util.h"
 #include "launcher/window.h"
 #include "oasis/standalone/register.h"
+#include "store/store.h"
 #include "tools/json_mini.h"
+#include "tools/log_export_core.h"
 
 namespace melange::launcher::rpc {
 namespace {
 using oasis::Call;
 using oasis::Result;
+namespace ex = exporter::core;
+
+std::atomic<bool> g_exporting{false};
+std::mutex g_exportMx;
+std::wstring g_lastExport;  // for launcher.openPath {what: "export"}
 
 void State(const Call&, Result& r, void*) {
     const Settings s = app::GetSettings();
@@ -50,6 +61,8 @@ void Launch(const Call&, Result& r, void*) {
     if (game.empty()) return Fail(r, -32000, "Choose your game folder first.");
     if (!FileExists(game + L"\\WormsMayhem.exe")) return Fail(r, -32000, "WormsMayhem.exe isn't in this folder.");
     if (setup::GameRunning(game)) return Fail(r, -32000, "The game is already running.");
+    // A Store job (an install, or the compatibility sweep updating a plugin) is changing Mods\ right now.
+    if (store::GetStatus().busy) return Fail(r, -32002, "Melange is updating your plugins. Try again in a moment.");
     if (setup::StoreOf(game, setup::SystemRegistry()) == "steam") {
         const auto h = reinterpret_cast<INT_PTR>(ShellExecuteW(app::Window(), L"open", L"steam://rungameid/70600", nullptr, nullptr, SW_SHOWNORMAL));
         if (h <= 32) return Fail(r, -32000, "Steam didn't start the game. Is Steam installed?");
@@ -81,12 +94,85 @@ void OpenPath(const Call& c, Result& r, void*) {
         const std::string id = Str(p, "id");
         if (id.empty() || id.find_first_of("\\/:") != std::string::npos || id.find("..") != std::string::npos) return Fail(r, -32602, "bad backup id");
         path = game.empty() ? std::wstring() : game + L"\\Melange\\backup\\" + Widen(id);
+    } else if (what == "export") {
+        // The zip launcher.exportLogs wrote last, selected in Explorer. Only that path: this never reveals an
+        // arbitrary file the page names.
+        std::wstring zip;
+        {
+            std::lock_guard lk(g_exportMx);
+            zip = g_lastExport;
+        }
+        if (zip.empty() || !FileExists(zip)) return Fail(r, -32000, "That export isn't there any more.");
+        if (!ex::RevealInExplorer(zip)) return Fail(r, -32000, "Explorer didn't open.");
+        r.json = "{}";
+        return;
+    } else if (what == "incompatible") {
+        // Mods\.incompatible, or one plugin the compatibility sweep moved there (a notice's folder, ".incompatible\<name>").
+        std::string folder = Str(p, "folder");
+        if (folder.empty()) folder = ".incompatible";
+        const std::string rest = folder.substr(std::min<size_t>(folder.size(), 13));
+        if (folder.rfind(".incompatible", 0) != 0 || (!rest.empty() && rest[0] != '\\') || rest.find_first_of("/:") != std::string::npos ||
+            rest.find("..") != std::string::npos || rest.find('\\', 1) != std::string::npos)
+            return Fail(r, -32602, "bad folder");
+        path = game.empty() ? std::wstring() : game + L"\\Mods\\" + Widen(folder);
     } else {
-        return Fail(r, -32602, "what must be game, logs or backup");
+        return Fail(r, -32602, "what must be game, logs, backup, export or incompatible");
     }
     if (path.empty() || !DirExists(path)) return Fail(r, -32000, "That folder doesn't exist yet.");
     ShellExecuteW(app::Window(), L"open", path.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
     r.json = "{}";
+}
+
+// One click: the last game's logs (the newest session folder, the replays and desync bundles its pid wrote, dumps
+// and engine logs from its time window, launcher.log) zipped to the Desktop by the same core and redaction as the
+// in-game export, then shown selected in Explorer unless {reveal: false}. Runs on the server thread: an export
+// takes a second or two, and the page shows a spinner meanwhile.
+void ExportLogs(const Call& c, Result& r, void*) {
+    json::Value p;
+    if (!Params(c, r, &p)) return;
+    const bool reveal = Bool(p, "reveal", true);
+    bool expected = false;
+    if (!g_exporting.compare_exchange_strong(expected, true)) return Fail(r, -32002, "An export is already running.");
+
+    namespace sa = oasis::standalone;
+    const std::wstring game = app::GameDir();
+    ex::Request rq;
+    rq.scope = ex::Scope::LastGame;
+    rq.producer = "launcher";
+    rq.opt.includeDumps = sa::IniGet(game, "LogExport", "IncludeDumps", "1") != "0";
+    rq.opt.includeFullDumps = sa::IniGet(game, "LogExport", "IncludeFullDumps", "0") == "1";
+    rq.opt.redactUserPaths = sa::IniGet(game, "LogExport", "RedactUserPaths", "1") != "0";
+    rq.opt.sessions = 1;
+    const std::wstring docs = ex::KnownFolder(ex::Folder::Documents);
+    rq.src.sessionRoots.push_back(sa::LogsDir(game));
+    if (!docs.empty()) rq.src.sessionRoots.push_back(docs + L"\\Melange\\logs");
+    if (!game.empty()) {
+        rq.src.sessionRoots.push_back(game + L"\\Melange\\logs");
+        // melange.asi can sit next to the exe or in the loader's scripts\ or plugins\ folder; its data folder is
+        // beside it.
+        for (const wchar_t* sub : {L"", L"\\scripts", L"\\plugins"}) rq.src.dataDirs.push_back(game + sub + L"\\Melange");
+    }
+    rq.src.gameDir = game;
+    rq.src.replaysDir = docs.empty() ? std::wstring() : docs + L"\\Melange\\replays";
+    rq.src.launcherLogDir = AppDataDir();
+
+    bool onDesktop = false;
+    const std::wstring path = ex::OneClickPath(&onDesktop);
+    ex::Result res;
+    const bool ok = ex::Export(path, rq, &res);
+    g_exporting = false;
+    if (!ok) return Fail(r, -32000, "Could not export the logs: " + res.error);
+    {
+        std::lock_guard lk(g_exportMx);
+        g_lastExport = path;
+    }
+    if (reveal) ex::RevealInExplorer(path);
+    jsonmini::Obj o;
+    o.Str("path", Narrow(path)).UInt("bytes", res.bytes).UInt("entries", res.entries).Bool("onDesktop", onDesktop);
+    if (res.sessionId.empty()) o.Raw("sessionId", "null");
+    else o.Str("sessionId", res.sessionId);
+    o.UInt("pid", res.pid);
+    r.json = o.End();
 }
 
 bool MakeShortcut(const std::wstring& lnk, const std::wstring& target, std::string* err) {
@@ -138,6 +224,12 @@ void Shortcuts(const Call& c, Result& r, void*) {
     if (!ok) return Fail(r, -32000, err);
     r.json = "{}";
 }
+
+// After Restore vanilla, the page's "Close Melange". Main thread; the window closes shortly after replying.
+void Quit(const Call&, Result& r, void*) {
+    window::QuitSoon();
+    r.json = "{}";
+}
 }  // namespace
 
 void InstallLauncher() {
@@ -147,6 +239,8 @@ void InstallLauncher() {
     oasis::AddMethod("launcher.setTheme", &SetTheme, nullptr, kRpcMutating);
     oasis::AddMethod("launcher.launch", &Launch, nullptr, oasis::kRpcNone);
     oasis::AddMethod("launcher.openPath", &OpenPath, nullptr, oasis::kRpcNone);
+    oasis::AddMethod("launcher.exportLogs", &ExportLogs, nullptr, kRpcServerThread);
     oasis::AddMethod("launcher.shortcuts", &Shortcuts, nullptr, kRpcServerThread | kRpcMutating);
+    oasis::AddMethod("launcher.quit", &Quit, nullptr, kRpcMutating);
 }
 }  // namespace melange::launcher::rpc

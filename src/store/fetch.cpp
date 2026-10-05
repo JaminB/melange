@@ -90,8 +90,9 @@ bool ReadFileUrl(const std::string& url, Sink& sink, const Options& o, std::stri
 }
 
 struct Handles {
-    HINTERNET session = nullptr, connect = nullptr, request = nullptr;
+    HINTERNET session = nullptr, connect = nullptr, request = nullptr, own = nullptr;
     ~Handles() {
+        if (own) WinHttpCloseHandle(own);
         {
             std::lock_guard lk(g_mx);
             if (request && g_active == request) {
@@ -159,10 +160,12 @@ bool GetHttps(const std::string& url, Sink& sink, const Options& o, std::string*
         *err = WinErr("request", GetLastError());
         return false;
     }
-    {
+    if (o.registerActive) {
         std::lock_guard lk(g_mx);
         g_active = req;
         h.request = req;
+    } else {
+        h.own = req;
     }
     DWORD features = WINHTTP_DISABLE_COOKIES | WINHTTP_DISABLE_AUTHENTICATION;
     WinHttpSetOption(req, WINHTTP_OPTION_DISABLE_FEATURE, &features, sizeof(features));

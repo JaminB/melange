@@ -1,4 +1,5 @@
-# Builds the public release zip: out\melange-<version>.zip, everything a user needs to install Melange.
+# Builds the public release zip: out\melange-<version>.zip, everything a user needs to install Melange, and its update
+# manifest out\melange-<version>.json (scripts\release-manifest.ps1). Both go on the GitHub release.
 # Usage: .\scripts\release.ps1 [-Config x86-release] [-StageOnly]
 # -StageOnly stops after staging into out\stage, so CI can sign the binaries there before zipping.
 param([string]$Config = "x86-release", [switch]$StageOnly)
@@ -80,6 +81,7 @@ try {
     $size = (Get-Item $zipPath).Length
     Write-Host "Built $zipPath ($size bytes)"
     Write-Host "SHA-256: $hash"
+    & "$PSScriptRoot\release-manifest.ps1" -Zip $zipPath -Version $version
 } finally {
     Pop-Location
 }

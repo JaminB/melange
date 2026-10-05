@@ -1,12 +1,14 @@
 // Offline self-test for Melange.exe's setup logic: VDF parsing, game detection, exe validation, loader identity,
-// the install/repair/uninstall/restore engine, Melange.ini merging, plugin settings and the recommended set. Works
-// on fake game folders under %TEMP%; never touches a real game folder.
+// the install/repair/uninstall/restore engine, Restore vanilla, Melange.ini merging, plugin settings, the recommended
+// set and the updater (release parsing, file:/// downloads, staging, --apply-update). Works on fake game folders under
+// %TEMP%; never touches a real game folder or the network.
 // Exit code 0 = all passed.
 #include <windows.h>
 
 #include <shellapi.h>
 
 #include <cstdio>
+#include <cstdlib>
 #include <functional>
 #include <map>
 #include <memory>
@@ -22,12 +24,16 @@
 #include "launcher/setup/exe_check.h"
 #include "launcher/setup/ini_merge.h"
 #include "launcher/setup/running.h"
+#include "launcher/setup/vanilla.h"
 #include "launcher/setup/vdf.h"
+#include "launcher/updater.h"
 #include "launcher/util.h"
+#include "oasis/rpc/ini_edit.h"
 #include "store/index.h"
 #include "store/store.h"
 #include "tools/hash.h"
 #include "tools/json_read.h"
+#include "update/release.h"
 
 #include <miniz.h>
 
@@ -643,6 +649,219 @@ void TestEngineRollback() {
     }
 }
 
+// ---------------------------------------------------------------- restore vanilla
+bool HasPath(const std::vector<std::string>& v, const char* path) {
+    for (const auto& x : v)
+        if (L::IEquals(x, path)) return true;
+    return false;
+}
+const S::VanillaGroup* Group(const S::VanillaPlan& p, const char* id) {
+    for (const auto& g : p.groups)
+        if (g.id == id) return &g;
+    return nullptr;
+}
+std::string GroupsText(const S::VanillaPlan& p) {
+    std::string t;
+    for (const auto& g : p.groups) t += g.id + "=" + g.label + " x" + std::to_string(g.files) + "; ";
+    return t + (p.refused.empty() ? "" : " refused: " + p.refused);
+}
+
+void TestStockList() {
+    S::StockList l;
+    std::string err;
+    const std::string tsv = Get(g_src + L"\\res\\wum-1077-stock.tsv");
+    Expect(S::ParseStockList(tsv, &l, &err), "stock: the shipped list parses", err);
+    Expect(l.files.size() == 2130, "stock: 2130 files", std::to_string(l.files.size()));
+    const auto exe = l.files.find(L"wormsmayhem.exe");
+    Expect(exe != l.files.end() && exe->second == 5713408, "stock: WormsMayhem.exe #1077 size");
+    Expect(l.dirs.count(L"data") && l.dirs.count(L"cg") && !l.dirs.count(L"redist"), "stock: folders");
+    Expect(S::EmbeddedStockList().files.size() == 2130, "stock: embedded as WUM_STOCK", std::to_string(S::EmbeddedStockList().files.size()));
+    Expect(!S::ParseStockList("..\\x.dll\t1\r\n", &l, &err), "stock: traversal refused");
+    Expect(!S::ParseStockList("a.dll\tx\r\n", &l, &err), "stock: bad size refused");
+    Expect(!S::ParseStockList("# only a comment\n", &l, &err), "stock: empty refused");
+}
+
+// A folder linked into the game folder (a mod author's junctioned Mods\) goes as a link: what it points at stays.
+void TestVanillaLink() {
+    Rig r = MakeRig(L"vanilla-link");
+    const std::wstring g = r.game, outside = L::Parent(g) + L"\\elsewhere";
+    Put(outside + L"\\precious\\work.lua", "keep me");
+    Put(outside + L"\\top.txt", "keep me too");
+    const std::wstring cmd = L"cmd /c mklink /J \"" + g + L"\\Mods\" \"" + outside + L"\" >nul";
+    const bool linked = _wsystem(cmd.c_str()) == 0 && L::FileExists(g + L"\\Mods\\top.txt");
+    Expect(linked, "vanilla link: junction made");
+    if (!linked) return;
+    S::StockList stock;
+    std::string err;
+    Expect(S::ParseStockList("WormsMayhem.exe\t" + std::to_string(L::FileSize(g + L"\\WormsMayhem.exe")) + "\r\n", &stock, &err),
+           "vanilla link: list parses", err);
+    S::VanillaContext v;
+    v.base = r.ctx;
+    v.base.selfExe = r.payload + L"\\Melange.exe";
+    v.stock = &stock;
+    v.replaysDir = L::Parent(g) + L"\\Documents\\Melange\\replays";
+    v.base.storeOf = [](const std::wstring&) { return std::string("steam"); };
+    const S::VanillaPlan p = S::MakeVanillaPlan(v);
+    Expect(p.refused.empty(), "vanilla link: plan runs", p.refused);
+    Expect(!HasPath(p.remove, "Mods\\top.txt") && !HasPath(p.remove, "Mods\\precious\\work.lua"), "vanilla link: never planned through the link");
+    const S::VanillaOutcome o = S::ApplyVanilla(v, p.planId);
+    Expect(o.outcome.ok, "vanilla link: applied", o.outcome.message);
+    Expect(!L::DirExists(g + L"\\Mods"), "vanilla link: the link itself is gone");
+    Expect(Get(outside + L"\\top.txt") == "keep me too" && Get(outside + L"\\precious\\work.lua") == "keep me",
+           "vanilla link: everything it pointed at is untouched");
+}
+
+void TestVanilla() {
+    Rig r = MakeRig(L"vanilla");
+    const std::wstring g = r.game, docs = L::Parent(g) + L"\\Documents\\Melange\\replays";
+    // The stock game: what the injected list names.
+    Put(g + L"\\CG\\FixedFunction.cg", "stock cg");
+    Put(g + L"\\Data\\Frontend\\menu.xom", "modified by a mod");   // stock size 5: overwritten
+    Put(g + L"\\Data\\Maps\\Stock.xom", "map");
+    Put(g + L"\\Default.cfg", "defaults");
+    const std::string tsv = "WormsMayhem.exe\t" + std::to_string(L::FileSize(g + L"\\WormsMayhem.exe")) +
+                            "\r\nCG\\FixedFunction.cg\t8\r\nData\\level.xom\t9\r\nData\\Frontend\\menu.xom\t5\r\nData\\Maps\\Stock.xom\t0\r\n"
+                            "Data\\gone.xom\t3\r\nDefault.cfg\t8\r\n";
+    S::StockList stock;
+    std::string err;
+    Expect(S::ParseStockList(tsv, &stock, &err), "vanilla: test list parses", err);
+    // Files the game writes: kept.
+    Put(g + L"\\local.cfg", "mine");
+    Put(g + L"\\steam_appid.txt", "70600");
+    Put(g + L"\\Data\\Shaders\\water.csh", "cache");
+    Put(g + L"\\XOM2-1.log", "engine");
+    Put(g + L"\\Net_1.log", "net");
+    Put(g + L"\\Redist\\vcredist_x86.exe", "redist");
+    // Melange (7 files, the replays aside; an engine log copied into its folder goes too).
+    Copy(g_bin + L"\\fake_asi_0_4_0.dll", g + L"\\melange.asi");
+    Put(g + L"\\Melange.ini", kTemplate);
+    Copy(g_bin + L"\\fake_dinput8_other.dll", g + L"\\Melange.exe");
+    Put(g + L"\\Melange\\install.json", "{}");
+    Put(g + L"\\Melange\\backup\\x\\manifest.json", "{}");
+    Put(g + L"\\Mods\\hello\\spice.json", "{}");
+    Put(g + L"\\Melange\\replays\\match.wsr", "replay 1");
+    Put(g + L"\\Melange\\logs\\desync-1.zip", "bundle");
+    Put(g + L"\\Melange\\logs\\XOM1-2.log", "copy");
+    Copy(Ual(), g + L"\\dinput8.dll");
+    // ReShade as opengl32.dll.
+    Copy(g_bin + L"\\fake_dinput8_reshade.dll", g + L"\\opengl32.dll");
+    Put(g + L"\\ReShade.ini", "[GENERAL]");
+    Put(g + L"\\reshade-shaders\\Shaders\\x.fx", "fx");
+    // Renewation HD.
+    Put(g + L"\\Version.txt", "Renewation HD 0.2A2\r\nby the team\r\n");
+    Put(g + L"\\plugins\\patch.asi", "patch");
+    Put(g + L"\\plugins\\patch.ini", "[Patch]");
+    Put(g + L"\\Credits.txt", "credits");
+    Put(g + L"\\Data\\AlexBond_x.XOM", "map");
+    // WUMPatch.
+    Put(g + L"\\plugins\\WUM.Patch.asi", "patch");
+    Put(g + L"\\Data2\\x.xom", "x");
+    Put(g + L"\\Data\\Language\\PC\\Chinese.xom", "zh");
+    // Loose plugins and leftovers.
+    Put(g + L"\\scripts\\foo.asi", "asi");
+    Put(g + L"\\bar.asi", "asi");
+    Put(g + L"\\notes.txt", "notes");
+    // A replay already in Documents with the same name: never overwritten.
+    Put(docs + L"\\match.wsr", "older replay");
+
+    S::VanillaContext v;
+    v.base = r.ctx;
+    v.base.selfExe = r.payload + L"\\Melange.exe";
+    v.stock = &stock;
+    v.replaysDir = docs;
+    v.base.storeOf = [](const std::wstring&) { return std::string("steam"); };
+
+    // Refused while the game runs; nothing changes.
+    const auto before = Snap(g);
+    S::VanillaContext running = v;
+    running.base.running = [](const std::wstring&) { return true; };
+    S::VanillaPlan p = S::MakeVanillaPlan(running);
+    Expect(p.refused == "Close Worms Ultimate Mayhem first.", "vanilla: refused while the game runs", p.refused);
+    Expect(!S::ApplyVanilla(running, "").outcome.ok && Snap(g) == before, "vanilla: apply refused while running, nothing changed");
+    // Refused on another build.
+    auto bad = *r.profiles;
+    bad[0].sha256 = std::string(64, 'f');
+    S::ClearExeCache();
+    S::VanillaContext wrong = v;
+    wrong.base.profiles = &bad;
+    Expect(S::MakeVanillaPlan(wrong).refused.find("build #1077") != std::string::npos, "vanilla: refused on another build");
+    S::ClearExeCache();
+
+    p = S::MakeVanillaPlan(v);
+    Expect(p.refused.empty(), "vanilla: plan runs", p.refused);
+    Expect(Group(p, "melange") && Group(p, "melange")->files == 7, "vanilla: Melange found", GroupsText(p));
+    Expect(Group(p, "renewation") && Group(p, "renewation")->label == "Renewation HD 0.2A2" && Group(p, "renewation")->files == 5,
+           "vanilla: Renewation named with its version", GroupsText(p));
+    Expect(Group(p, "wumpatch") && Group(p, "wumpatch")->files == 3, "vanilla: WUMPatch found", GroupsText(p));
+    Expect(Group(p, "loader") && Group(p, "loader")->label == "Ultimate ASI Loader 9.7.4 (dinput8.dll)", "vanilla: UAL named", GroupsText(p));
+    Expect(Group(p, "reshade") && Group(p, "reshade")->label == "ReShade 6.3.0.0" && Group(p, "reshade")->files == 3,
+           "vanilla: ReShade as opengl32.dll, with its files", GroupsText(p));
+    Expect(Group(p, "asi") && Group(p, "asi")->files == 2, "vanilla: two loose ASI plugins", GroupsText(p));
+    Expect(Group(p, "other") && Group(p, "other")->files == 1 && p.groups.back().id == "other", "vanilla: one other file, listed last", GroupsText(p));
+    Expect(p.remove.size() == 22, "vanilla: 22 files to delete", std::to_string(p.remove.size()));
+    for (const char* kept : {"local.cfg", "steam_appid.txt", "Data\\Shaders\\water.csh", "XOM2-1.log", "Net_1.log", "Redist\\vcredist_x86.exe",
+                             "Default.cfg", "WormsMayhem.exe", "Data\\Frontend\\menu.xom"})
+        Expect(!HasPath(p.remove, kept), "vanilla: not deleted", kept);
+    Expect(p.replays.size() == 2 && HasPath(p.replays, "Melange\\replays\\match.wsr") && HasPath(p.replays, "Melange\\logs\\desync-1.zip"),
+           "vanilla: replays and desync bundles are moved");
+    Expect(p.modified.size() == 1 && L::IEquals(p.modified[0], "Data\\Frontend\\menu.xom"), "vanilla: the overwritten stock file");
+    Expect(p.missing.size() == 1 && L::IEquals(p.missing[0], "data\\gone.xom"), "vanilla: the missing stock file");
+    Expect(p.verify && p.overwrites && p.store == "steam" && !p.selfInGame, "vanilla: verify needed");
+
+    Expect(S::ApplyVanilla(v, "stale").outcome.code == -32013, "vanilla: plan id mismatch");
+    // Access denied on the first delete: nothing deleted.
+    S::VanillaContext denied = v;
+    denied.remove = [](const std::wstring&) -> unsigned long { return ERROR_ACCESS_DENIED; };
+    S::VanillaOutcome o = S::ApplyVanilla(denied, p.planId);
+    Expect(!o.outcome.ok && o.outcome.code == -32010 && o.deleted == 0, "vanilla: access denied is -32010", o.outcome.message);
+    Expect(L::FileExists(g + L"\\melange.asi") && L::FileExists(g + L"\\notes.txt"), "vanilla: access denied deleted nothing");
+    Expect(Get(docs + L"\\match.wsr") == "older replay", "vanilla: an existing replay is never overwritten");
+    // The replays went out first and stay safe; put them back so the real run sees the same plan.
+    for (const auto& [from, to] : o.moved) MoveFileW(L::Widen(to).c_str(), (g + L"\\" + L::Widen(from)).c_str());
+
+    // Melange.exe run from the game folder is left for after exit.
+    v.base.selfExe = g + L"\\Melange.exe";
+    p = S::MakeVanillaPlan(v);
+    Expect(p.selfInGame, "vanilla: the running exe is in the game folder");
+    o = S::ApplyVanilla(v, p.planId);
+    Expect(o.outcome.ok, "vanilla: applied", o.outcome.message);
+    Expect(o.deleted == 21 && o.pending.size() == 1 && L::FileExists(g + L"\\Melange.exe"), "vanilla: 21 deleted, Melange.exe pending",
+           std::to_string(o.deleted));
+    DeleteFileW((g + L"\\Melange.exe").c_str());
+    const auto after = Snap(g);
+    std::string left;
+    for (const auto& [k, sha] : after) left += L::Narrow(k) + " ";
+    Expect(after.size() == 12, "vanilla: only stock and kept files remain", left);
+    for (const wchar_t* gone : {L"Melange", L"Mods", L"Data2", L"plugins", L"scripts", L"reshade-shaders"})
+        Expect(!L::DirExists(g + L"\\" + gone), "vanilla: folder removed", L::Narrow(gone));
+    Expect(L::DirExists(g + L"\\Data\\Shaders") && L::DirExists(g + L"\\Redist") && L::DirExists(g + L"\\Data\\Maps"), "vanilla: game folders kept");
+    Expect(Get(g + L"\\Data\\Frontend\\menu.xom") == "modified by a mod" && Get(g + L"\\local.cfg") == "mine", "vanilla: stock and user files untouched");
+    Expect(Get(docs + L"\\match.wsr") == "older replay" && Get(docs + L"\\match (2).wsr") == "replay 1" && Get(docs + L"\\desync-1.zip") == "bundle",
+           "vanilla: replays moved to Documents, suffixed instead of overwritten");
+    Expect(o.moved.size() == 2, "vanilla: two replays moved");
+    // Again: nothing left but the verify.
+    p = S::MakeVanillaPlan(v);
+    Expect(p.remove.empty() && p.replays.empty() && p.groups.empty() && !p.overwrites && p.verify, "vanilla: second plan is empty", GroupsText(p));
+
+    // launcher.json: forget the game, keep the theme and window.
+    const std::wstring dir = Fresh(L"vanilla-settings");
+    L::Settings s;
+    s.gameDir = g;
+    s.firstRunDone = true;
+    s.theme = "dark";
+    s.window.saved = true;
+    s.window.right = 900;
+    s.defaults.push_back(L::DefaultPlugin{"sunstone", true, {}});
+    s.defaultsSeeded = true;
+    s.lastUpdateCheck = "2026-10-05T10:00:00Z";
+    L::ResetForVanilla(&s);
+    Expect(L::SaveSettings(dir + L"\\launcher.json", s), "vanilla: launcher.json saved");
+    L::Settings t;
+    Expect(L::LoadSettings(dir + L"\\launcher.json", &t) && t.gameDir.empty() && !t.firstRunDone && t.defaults.empty() && !t.defaultsSeeded &&
+               t.lastUpdateCheck.empty() && t.theme == "dark" && t.window.saved && t.window.right == 900,
+           "vanilla: launcher reset to first run, theme and window kept");
+}
+
 // ---------------------------------------------------------------- ini merge
 void TestIniMerge() {
     const std::string user =
@@ -783,13 +1002,16 @@ class FakeStoreHost final : public melange::store::Host {
     void DeleteData(const std::string& id) override { calls.push_back("delete " + id); }
 };
 
-std::string MakePluginZip(const std::string& version, uint64_t* unpacked) {
-    const std::string spice = "{\"spiceVersion\":1,\"id\":\"hello\",\"version\":\"" + version +
-                              "\",\"name\":\"Hello\",\"authors\":[\"me\"],\"melange\":{\"range\":\">=0.1.0\"},\"kind\":\"client-only\","
-                              "\"entry\":{\"client\":\"client/init.lua\"},\"settings\":[{\"key\":\"level\",\"type\":\"int\",\"default\":2,"
-                              "\"min\":1,\"max\":5,\"label\":\"Level\"}]}";
+std::string PluginSpice(const std::string& id, const std::string& version, const std::string& range) {
+    return "{\"spiceVersion\":1,\"id\":\"" + id + "\",\"version\":\"" + version + "\",\"name\":\"Hello\",\"authors\":[\"me\"],\"melange\":{\"range\":\"" +
+           range + "\"},\"kind\":\"client-only\",\"entry\":{\"client\":\"client/init.lua\"},\"settings\":[{\"key\":\"level\",\"type\":\"int\","
+           "\"default\":2,\"min\":1,\"max\":5,\"label\":\"Level\"}]}";
+}
+
+std::string MakePluginZip(const std::string& version, uint64_t* unpacked, const std::string& id = "hello") {
+    const std::string spice = PluginSpice(id, version, ">=0.1.0");
     const std::pair<std::string, std::string> files[] = {
-        {"hello/spice.json", spice}, {"hello/LICENSE", "MIT"}, {"hello/client/init.lua", "wum.log.info('hello')"}};
+        {id + "/spice.json", spice}, {id + "/LICENSE", "MIT"}, {id + "/client/init.lua", "wum.log.info('hello')"}};
     mz_zip_archive z{};
     mz_zip_writer_init_heap(&z, 0, 0);
     *unpacked = 0;
@@ -878,6 +1100,100 @@ void TestStoreEngine() {
     Expect(!st::Active(), "store: closed without a folder");
 }
 
+// The compatibility sweep against a Mods folder: a local plugin moves to Mods\.incompatible, a Store one with a
+// compatible newer version is updated to it, a Store one with none is removed; nothing changes without a list.
+void TestStoreReconcile() {
+    namespace st = melange::store;
+    namespace cp = melange::compat;
+    const std::wstring root = Fresh(L"reconcile");
+    const std::wstring mods = root + L"\\game\\Mods";
+    uint64_t unpacked = 0;
+    const std::string zip = MakePluginZip("1.1.0", &unpacked);
+    Put(root + L"\\index\\hello-1.1.0.zip", zip);
+    const std::string sha = melange::hashutil::Sha256Hex(zip.data(), zip.size());
+    auto ver = [&](const std::string& v, const std::string& range, const std::string& url, const std::string& hash, uint64_t size) {
+        return "{\"version\":\"" + v + "\",\"released\":\"2026-10-03\",\"melange\":\"" + range + "\",\"kind\":\"client-only\","
+               "\"permissions\":{\"unsafe\":false,\"filesystem\":\"none\"},\"url\":\"" + url + "\",\"sha256\":\"" + hash +
+               "\",\"size\":" + std::to_string(size) + ",\"unpackedSize\":" + std::to_string(unpacked) + ",\"files\":3}";
+    };
+    auto plugin = [](const std::string& id, const std::string& versions) {
+        return "{\"id\":\"" + id + "\",\"name\":\"" + id + " plugin\",\"authors\":[\"me\"],\"description\":\"d\",\"licence\":\"MIT\","
+               "\"categories\":[\"misc\"],\"gameBuilds\":[\"1077\"],\"versions\":[" + versions + "]}";
+    };
+    Put(root + L"\\index\\index.json",
+        "{\"indexVersion\":1,\"serial\":1,\"plugins\":[" +
+            plugin("hello", ver("1.1.0", ">=0.1.0", "hello-1.1.0.zip", sha, zip.size()) + "," +
+                                ver("1.0.0", ">=9.0.0", "hello-1.0.0.zip", std::string(64, 'a'), 100)) + "," +
+            plugin("gone", ver("1.0.0", ">=9.0.0", "gone-1.0.0.zip", std::string(64, 'a'), 100)) + "]}");
+    // Installed from the Store (installed.json), but asking for a Melange this is not.
+    Put(mods + L"\\hello\\spice.json", PluginSpice("hello", "1.0.0", ">=9.0.0"));
+    Put(mods + L"\\hello\\user\\keep.txt", "mine");
+    Put(mods + L"\\gone\\spice.json", PluginSpice("gone", "1.0.0", ">=9.0.0"));
+    Put(mods + L"\\mine\\spice.json", PluginSpice("mine", "1.0.0", ">=9.0.0"));
+    Put(mods + L"\\fine\\spice.json", PluginSpice("fine", "1.0.0", ">=0.1.0"));
+    Put(mods + L"\\.store\\installed.json",
+        "{\"_serialSeen\":0,\"hello\":{\"version\":\"1.0.0\",\"sha256\":\"\",\"installedAt\":\"\",\"serial\":1},"
+        "\"gone\":{\"version\":\"1.0.0\",\"sha256\":\"\",\"installedAt\":\"\",\"serial\":1}}");
+    std::string url = "file:///" + L::Narrow(root + L"\\index\\index.json");
+    for (char& c : url)
+        if (c == '\\') c = '/';
+    FakeStoreHost host;
+    host.mods = mods;
+    st::Config cfg;
+    cfg.indexUrl = url;
+    cfg.custom = true;
+    st::SetHost(&host, cfg);
+    Expect(st::Open(mods), "reconcile: store opened");
+
+    cp::SweepContext c;
+    c.modsDir = mods;
+    c.melangeVersion = "0.4.0";
+    std::vector<std::string> forgot;
+    c.forget = [&](const std::string& id) { forgot.push_back(id); };
+    const cp::Report r = cp::Sweep(c);
+    Expect(r.quarantined.size() == 1 && r.quarantined[0].id == "mine" && L::DirExists(mods + L"\\.incompatible\\mine") &&
+               !L::DirExists(mods + L"\\mine") && forgot == std::vector<std::string>{"mine"},
+           "reconcile: the local plugin was quarantined");
+    Expect(r.store.size() == 2 && L::DirExists(mods + L"\\hello") && L::DirExists(mods + L"\\gone"), "reconcile: Store plugins are left to the Store");
+
+    // No list in memory and none cached: nothing changes (the game without a fetch).
+    Expect(st::Reconcile(r.store, false), "reconcile: queued without a fetch");
+    Expect(WaitFor([] { return !st::GetStatus().busy; }), "reconcile: finished without a fetch");
+    Expect(Get(mods + L"\\hello\\spice.json").find("\"1.0.0\"") != std::string::npos && L::DirExists(mods + L"\\gone"),
+           "reconcile: without a list nothing is updated or removed");
+
+    Expect(st::Reconcile(r.store, true), "reconcile: queued with a fetch");
+    Expect(WaitFor([] { return !st::GetStatus().busy; }), "reconcile: finished with a fetch");
+    Expect(Get(mods + L"\\hello\\spice.json").find("\"1.1.0\"") != std::string::npos, "reconcile: hello updated to the version that loads",
+           st::GetStatus().job.message);
+    Expect(Get(mods + L"\\hello\\user\\keep.txt") == "mine", "reconcile: the update kept hello's user folder");
+    Expect(!L::DirExists(mods + L"\\gone"), "reconcile: gone (no version loads) was removed");
+    Expect(L::DirExists(mods + L"\\fine"), "reconcile: a plugin that loads is untouched");
+
+    // With the list known but not fetched just now (the game, or offline), a plugin no version of which loads stays:
+    // the release that fixes it may be newer than that list.
+    Put(mods + L"\\later\\spice.json", PluginSpice("later", "1.0.0", ">=9.0.0"));
+    {
+        std::string dbText = Get(mods + L"\\.store\\installed.json");
+        dbText.insert(dbText.rfind('}'), ",\"later\":{\"version\":\"1.0.0\",\"sha256\":\"\",\"installedAt\":\"\",\"serial\":1}");
+        Put(mods + L"\\.store\\installed.json", dbText);
+    }
+    st::Close();
+    Expect(st::Open(mods), "reconcile: store reopened");
+    Expect(st::Reconcile({{"later", "later", "1.0.0", "needs Melange >=9.0.0, you have 0.4.0"}}, false), "reconcile: queued from the cached list");
+    Expect(WaitFor([] { return !st::GetStatus().busy; }), "reconcile: finished from the cached list");
+    Expect(L::DirExists(mods + L"\\later"), "reconcile: without a fresh list a plugin is not removed");
+    const std::string db = Get(mods + L"\\.store\\installed.json");
+    Expect(db.find("\"gone\"") == std::string::npos && db.find("\"1.1.0\"") != std::string::npos, "reconcile: installed.json follows", db);
+    bool forgotGone = false;
+    for (const auto& call : host.calls) forgotGone |= call == "forget gone";
+    Expect(forgotGone, "reconcile: the host forgot the removed plugin");
+    std::string actions;
+    for (const cp::Notice& n : cp::LoadNotices(mods)) actions += n.id + ":" + n.action + (n.detail.empty() ? "" : "=" + n.detail) + " ";
+    Expect(actions == "mine:quarantined gone:removed hello:updated=1.1.0 ", "reconcile: one notice per action", actions);
+    st::Close();
+}
+
 // ---------------------------------------------------------------- launcher.json
 void TestSettings() {
     const std::wstring dir = Fresh(L"settings");
@@ -892,14 +1208,59 @@ void TestSettings() {
     d.settings["water"] = L::plugins::Val::B(true);
     s.defaults.push_back(d);
     s.defaultsSeeded = true;
+    s.lastUpdateCheck = "2026-10-05T10:00:00Z";
     Expect(L::SaveSettings(dir + L"\\launcher.json", s), "launcher.json: saved");
     L::Settings t;
     Expect(L::LoadSettings(dir + L"\\launcher.json", &t), "launcher.json: loaded");
     Expect(t.gameDir == s.gameDir && t.firstRunDone && t.theme == "dark" && t.defaultsSeeded && t.defaults.size() == 1 &&
-               t.defaults[0].settings["quality"].str == "bold" && t.defaults[0].settings["water"].b,
+               t.defaults[0].settings["quality"].str == "bold" && t.defaults[0].settings["water"].b && t.lastUpdateCheck == s.lastUpdateCheck,
            "launcher.json: round trip");
     Put(dir + L"\\bad.json", "{not json");
     Expect(!L::LoadSettings(dir + L"\\bad.json", &t) && t.gameDir.empty() && t.theme == "system", "launcher.json: bad file -> defaults");
+    Expect(t.autoUpdate, "launcher.json: automatic update checks default on");
+    Put(dir + L"\\old.json", "{\"version\":1,\"theme\":\"dark\"}");
+    Expect(L::LoadSettings(dir + L"\\old.json", &t) && t.autoUpdate, "launcher.json: autoUpdate missing -> on");
+    s.autoUpdate = false;
+    Expect(L::SaveSettings(dir + L"\\launcher.json", s) && L::LoadSettings(dir + L"\\launcher.json", &t) && !t.autoUpdate,
+           "launcher.json: autoUpdate off round trip");
+}
+
+// Settings › Updates writes the game's [Update] CheckInGame: only when it disagrees, keeping every other byte and
+// the file's encoding.
+void TestInGameCheckSync() {
+    namespace U = L::updater;
+    const std::wstring game = Fresh(L"ingame-check");
+    bool changed = true;
+    std::string err, bytes;
+    Expect(U::SyncInGameCheck(game, false, &changed, &err) && !changed && !L::FileExists(game + L"\\Melange.ini"),
+           "CheckInGame: no Melange.ini -> nothing written", err);
+    Expect(U::SyncInGameCheck(L"", false, &changed, &err) && !changed, "CheckInGame: no game folder -> nothing", err);
+    const std::string ini = "; Melange\r\n[Update]\r\nEnabled=1\r\nCheckInGame=1            ; once a day\r\n\r\n[Other]\r\nX=2\r\n";
+    Put(game + L"\\Melange.ini", ini);
+    Expect(U::SyncInGameCheck(game, true, &changed, &err) && !changed, "CheckInGame: already on -> untouched", err);
+    Expect(U::SyncInGameCheck(game, false, &changed, &err) && changed, "CheckInGame: turned off", err);
+    L::ReadAll(game + L"\\Melange.ini", &bytes);
+    Expect(bytes == "; Melange\r\n[Update]\r\nEnabled=1\r\nCheckInGame=0            ; once a day\r\n\r\n[Other]\r\nX=2\r\n",
+           "CheckInGame: only the value changed", bytes);
+    Expect(U::SyncInGameCheck(game, false, &changed, &err) && !changed, "CheckInGame: already off -> untouched", err);
+    Expect(U::SyncInGameCheck(game, true, &changed, &err) && changed, "CheckInGame: turned back on", err);
+    L::ReadAll(game + L"\\Melange.ini", &bytes);
+    Expect(bytes == ini, "CheckInGame: back to the original bytes", bytes);
+    // Missing key reads as on (melange.asi's default): off adds it, on leaves the file alone.
+    Put(game + L"\\Melange.ini", "[Update]\r\nEnabled=1\r\n");
+    Expect(U::SyncInGameCheck(game, true, &changed, &err) && !changed, "CheckInGame: missing key is on", err);
+    Expect(U::SyncInGameCheck(game, false, &changed, &err) && changed, "CheckInGame: missing key -> written", err);
+    L::ReadAll(game + L"\\Melange.ini", &bytes);
+    Expect(bytes == "[Update]\r\nEnabled=1\r\nCheckInGame=0\r\n", "CheckInGame: added after the section's last key", bytes);
+    // A UTF-16 file stays UTF-16.
+    std::string wide;
+    melange::oasis::ini::Encode("[Update]\r\nCheckInGame=1\r\n", melange::oasis::ini::Encoding::Utf16Le, &wide);
+    Put(game + L"\\Melange.ini", wide);
+    Expect(U::SyncInGameCheck(game, false, &changed, &err) && changed, "CheckInGame: UTF-16 turned off", err);
+    L::ReadAll(game + L"\\Melange.ini", &bytes);
+    melange::oasis::ini::Encoding enc{};
+    const std::string text = melange::oasis::ini::Decode(bytes, &enc);
+    Expect(enc == melange::oasis::ini::Encoding::Utf16Le && text == "[Update]\r\nCheckInGame=0\r\n", "CheckInGame: UTF-16 kept", text);
 }
 
 // A recommended-plugins batch (or anything else holding app::Tx() for longer than one RPC call) is set on
@@ -926,6 +1287,342 @@ void TestBusyStatusJson() {
         Expect(busy->Get("label") && busy->Get("label")->string == s.busyLabel, "status: busy.label");
     }
 }
+
+// ---------------------------------------------------------------- Melange updating itself
+namespace U = melange::launcher::updater;
+namespace R = melange::update;
+
+std::string FileUrl(const std::wstring& path) {
+    std::string s = "file:///" + L::Narrow(path);
+    for (char& c : s)
+        if (c == '\\') c = '/';
+    return s;
+}
+
+std::string Zip(const std::vector<std::pair<std::string, std::string>>& files) {
+    mz_zip_archive z{};
+    mz_zip_writer_init_heap(&z, 0, 0);
+    for (const auto& [name, data] : files) mz_zip_writer_add_mem(&z, name.c_str(), data.data(), data.size(), MZ_BEST_COMPRESSION);
+    void* buf = nullptr;
+    size_t n = 0;
+    mz_zip_writer_finalize_heap_archive(&z, &buf, &n);
+    std::string out(static_cast<const char*>(buf), n);
+    mz_zip_writer_end(&z);
+    return out;
+}
+
+void TestUpdateRelease() {
+    Expect(R::CompareVersions("0.3.7", "0.3.6") > 0 && R::CompareVersions("0.3.6", "0.3.6.0") == 0 && R::CompareVersions("0.10.0", "0.9.9") > 0 &&
+               R::CompareVersions("1.0.0-beta", "1.0.0") == 0,
+           "update: version compare");
+    Expect(R::PlainVersion("0.3.7") && R::PlainVersion("1") && !R::PlainVersion("") && !R::PlainVersion("1..2") && !R::PlainVersion("1.2.") &&
+               !R::PlainVersion("v1.2") && !R::PlainVersion("1.2.3-rc1") && !R::PlainVersion("1.2.3.4.5") && !R::PlainVersion("..\\x"),
+           "update: plain versions only");
+
+    std::string text = Get(g_src + L"\\tests\\fixtures\\launcher\\update\\github-latest.json");
+    R::Release rel;
+    std::string err;
+    Expect(R::ParseRelease(text, &rel, &err), "update: GitHub's release object parses", err);
+    Expect(rel.version == "0.3.7" && rel.tag == "v0.3.7" && rel.htmlUrl == "https://github.com/JaminB/melange/releases/tag/v0.3.7",
+           "update: version and page from the release", rel.version);
+    const R::Asset* m = rel.Find(rel.ManifestName());
+    const R::Asset* z = rel.Find(rel.ZipName());
+    Expect(m && z && z->size == 4718592 && m->url == "https://github.com/JaminB/melange/releases/download/v0.3.7/melange-0.3.7.json",
+           "update: the manifest and zip assets");
+    Expect(z && R::AllowedUrl(z->url, R::kDownloadPrefix), "update: release downloads are allowed");
+    Expect(!R::AllowedUrl("https://github.com/JaminB/melange-fork/releases/download/v1/x.zip", R::kDownloadPrefix) &&
+               !R::AllowedUrl("https://github.com/JaminB/melange/releases/download/../../evil/x.zip", R::kDownloadPrefix) &&
+               !R::AllowedUrl("https://github.com/JaminB/melange/releases/download/v1/x.zip?redirect=evil", R::kDownloadPrefix) &&
+               !R::AllowedUrl("http://github.com/JaminB/melange/releases/download/v1/x.zip", R::kDownloadPrefix) &&
+               !R::AllowedUrl(R::kDownloadPrefix, R::kDownloadPrefix),
+           "update: anything else is refused");
+    for (const char* bad : {R"({"tag_name":"v1.0.0","draft":true})", R"({"tag_name":"v1.0.0","prerelease":true})", R"({"tag_name":"1.0.0"})",
+                            R"({"tag_name":"v1.0.0-rc1"})", R"({"tag_name":"v../x"})", R"([])", "not json"})
+        Expect(!R::ParseRelease(bad, &rel, &err), "update: refused release", bad);
+    Expect(R::ParseRelease(R"({"tag_name":"v2.0.0","html_url":"javascript:x","assets":[{"name":"a"},5,{"name":"b","browser_download_url":"u","size":-1}]})",
+                           &rel, &err) &&
+               rel.htmlUrl.empty() && rel.assets.size() == 1 && rel.assets[0].size == 0,
+           "update: odd assets and a non-https page are dropped");
+
+    R::Manifest mf;
+    text = Get(g_src + L"\\tests\\fixtures\\launcher\\update\\melange-0.3.7.json");
+    Expect(R::ParseManifest(text, "0.3.7", &mf, &err) && mf.size == 4718592 && mf.zip == "melange-0.3.7.zip" &&
+               mf.sha256 == "5d41402abc4b2a76b9719d911017c592ae2d4a7f3c6e1f0b8a9c7d6e5f4a3b2c",
+           "update: manifest parses (sha256 lower-cased)", err);
+    Expect(!R::ParseManifest(text, "0.3.8", &mf, &err) && err.find("expected 0.3.8") != std::string::npos, "update: manifest for another version", err);
+    const std::string sha(64, 'a');
+    const std::string head = "{\"version\":\"0.3.7\",\"zip\":\"melange-0.3.7.zip\",\"sha256\":\"";
+    for (const std::string& bad : {"{\"version\":\"0.3.7\",\"zip\":\"other.zip\",\"sha256\":\"" + sha + "\",\"size\":1}",
+                                   head + "abc\",\"size\":1}", head + sha + "\",\"size\":0}", head + sha + "\",\"size\":1.5}",
+                                   head + sha + "\",\"size\":999999999999}", head + sha + "\"}", std::string("[1]")})
+        Expect(!R::ParseManifest(bad, "0.3.7", &mf, &err), "update: refused manifest", bad);
+}
+
+void TestUpdateSigner() {
+    U::Signer unsignedRun, a, b, bad;
+    a.present = a.valid = true;
+    a.subject = "CN=Jamin Becker, O=Jamin Becker, C=US";
+    a.issuerOrg = "Microsoft Corporation";
+    b = a;
+    b.thumbprint = "renewed";
+    bad.present = true;
+    bad.error = "the file was changed after signing";
+    U::Signer other = a;
+    other.subject = "CN=Someone Else";
+    U::Signer otherCa = a;
+    otherCa.issuerOrg = "Another CA";
+    Expect(U::SignerRefusal(unsignedRun, bad, "x").empty() && U::SignerRefusal(unsignedRun, U::Signer{}, "x").empty(),
+           "signer: a developer build accepts anything");
+    Expect(U::SignerRefusal(a, b, "x").empty(), "signer: same publisher across a certificate renewal");
+    Expect(!U::SignerRefusal(a, U::Signer{}, "x").empty() && !U::SignerRefusal(a, bad, "x").empty(), "signer: unsigned or broken is refused");
+    Expect(U::SignerRefusal(a, other, "Melange.exe").find("Someone Else") != std::string::npos, "signer: another publisher is refused");
+    Expect(!U::SignerRefusal(a, otherCa, "x").empty(), "signer: another CA is refused");
+    const U::Signer fake = U::ReadSigner(g_bin + L"\\fake_asi_9_0_0.dll");
+    Expect(!fake.present && !fake.valid && fake.subject.empty(), "signer: an unsigned file reads as unsigned", fake.error);
+    // Any Authenticode-signed binary on this PC, when there is one (Edge's is embedded-signed, not by catalog).
+    wchar_t pf[MAX_PATH];
+    for (const wchar_t* var : {L"ProgramFiles(x86)", L"ProgramFiles"}) {
+        const DWORD n = GetEnvironmentVariableW(var, pf, MAX_PATH);
+        const std::wstring edge = std::wstring(pf, n && n < MAX_PATH ? n : 0) + L"\\Microsoft\\Edge\\Application\\msedge.exe";
+        if (!n || !L::FileExists(edge)) continue;
+        const U::Signer s = U::ReadSigner(edge);
+        Expect(s.present && s.valid && s.subject.find("Microsoft") != std::string::npos && !s.issuerOrg.empty() && s.thumbprint.size() == 40,
+               "signer: a signed file reads its publisher", s.subject + " / " + s.issuerOrg + " / " + s.error);
+        Expect(U::SignerRefusal(s, s, "x").empty() && !U::SignerRefusal(s, fake, "x").empty(), "signer: a signed launcher refuses an unsigned update");
+        break;
+    }
+}
+
+// A release served from file:/// fixtures: the latest answer, its manifest and the zip.
+struct FakeRelease {
+    std::wstring dir;
+    std::string zip, latestUrl, prefix;
+};
+FakeRelease MakeRelease(const std::wstring& root, const std::string& version, const std::string& zipBytes, const std::string& manifestSha = "",
+                        long long manifestSize = -1, long long assetSize = -1) {
+    FakeRelease f;
+    f.dir = root + L"\\server";
+    f.zip = zipBytes;
+    f.prefix = FileUrl(f.dir) + "/";
+    const std::string zipName = "melange-" + version + ".zip", jsonName = "melange-" + version + ".json";
+    Put(f.dir + L"\\" + L::Widen(zipName), zipBytes);
+    const std::string sha = manifestSha.empty() ? melange::hashutil::Sha256Hex(zipBytes.data(), zipBytes.size()) : manifestSha;
+    const long long size = manifestSize >= 0 ? manifestSize : static_cast<long long>(zipBytes.size());
+    const long long as = assetSize >= 0 ? assetSize : static_cast<long long>(zipBytes.size());
+    Put(f.dir + L"\\" + L::Widen(jsonName),
+        "{\"version\":\"" + version + "\",\"zip\":\"" + zipName + "\",\"sha256\":\"" + sha + "\",\"size\":" + std::to_string(size) + "}");
+    Put(f.dir + L"\\latest.json",
+        "{\"tag_name\":\"v" + version + "\",\"html_url\":\"https://github.com/JaminB/melange/releases/tag/v" + version + "\",\"assets\":[" +
+            "{\"name\":\"" + zipName + "\",\"size\":" + std::to_string(as) + ",\"browser_download_url\":\"" + f.prefix + zipName + "\"}," +
+            "{\"name\":\"" + jsonName + "\",\"size\":100,\"browser_download_url\":\"" + f.prefix + jsonName + "\"}]}");
+    f.latestUrl = f.prefix + "latest.json";
+    return f;
+}
+
+std::string ReleaseZip(const wchar_t* binary = L"fake_asi_9_0_0.dll") {
+    const std::string bin = Get(g_bin + L"\\" + binary);
+    return Zip({{"Melange.exe", bin}, {"melange.asi", bin}, {"Melange.ini", kTemplate}, {"dinput8.dll", "loader"},
+                {"tools/xomtool.exe", "xom"}, {"INSTALL.txt", "install"}, {"Mods/sample/spice.json", "{}"}});
+}
+
+void TestUpdateDownload() {
+    const std::wstring root = Fresh(L"update-dl");
+    const std::wstring updates = root + L"\\updates";
+    const U::Signer dev;   // an unsigned launcher: signatures are not compared
+    FakeRelease f = MakeRelease(root, "9.0.0", ReleaseZip());
+    U::Source src;
+    src.latestUrl = f.latestUrl;
+    src.downloadPrefix = f.prefix;
+    R::Release rel;
+    std::string err;
+    Expect(U::FetchLatest(src, &rel, &err) && rel.version == "9.0.0", "update: latest from a file:/// fixture", err);
+    uint64_t lastGot = 0, lastTotal = 0;
+    U::Staged st;
+    const bool ok = U::Download(src, rel, updates, dev, [&](uint64_t got, uint64_t total) {
+        lastGot = got;
+        lastTotal = total;
+    }, &st, &err);
+    Expect(ok, "update: download, verify and extract", err);
+    Expect(st.version == "9.0.0" && L::FileExists(st.payload + L"\\Melange.exe") && L::FileExists(st.payload + L"\\tools\\xomtool.exe") &&
+               L::FileExists(st.payload + L"\\Mods\\sample\\spice.json") && L::FileExists(st.dir + L"\\ready.json") &&
+               L::FileExists(st.dir + L"\\melange-9.0.0.zip") && !L::FileExists(st.dir + L"\\melange-9.0.0.zip.part"),
+           "update: staged payload and ready.json");
+    Expect(lastTotal == f.zip.size() && lastGot == lastTotal, "update: progress reaches the zip's size");
+    U::Staged found;
+    Expect(U::FindReady(updates, "0.3.6", &found) && found.version == "9.0.0" && found.htmlUrl == "https://github.com/JaminB/melange/releases/tag/v9.0.0",
+           "update: FindReady finds it");
+    Expect(!U::FindReady(updates, "9.0.0", &found) && !U::FindReady(updates, "10.0", &found), "update: nothing newer than the running version");
+    // A second Download of the same version reuses the staged copy.
+    DeleteFileW((f.dir + L"\\melange-9.0.0.zip").c_str());
+    Expect(U::Download(src, rel, updates, dev, nullptr, &st, &err) && st.version == "9.0.0", "update: a staged release is reused", err);
+
+    // Tampering: wrong hash, wrong size, the asset size disagreeing, binaries of another version, unsafe zips.
+    struct Case {
+        const char* what;
+        FakeRelease f;
+        const char* needle;
+    };
+    const std::wstring r2 = Fresh(L"update-bad");
+    std::vector<Case> cases;
+    cases.push_back({"update: sha256 mismatch", MakeRelease(r2 + L"\\a", "9.0.0", ReleaseZip(), std::string(64, 'b')), "SHA-256"});
+    cases.push_back({"update: size mismatch", MakeRelease(r2 + L"\\b", "9.0.0", Zip({{"Melange.exe", "x"}}), "", 12345, 12345), "bytes"});
+    cases.push_back({"update: asset size disagrees", MakeRelease(r2 + L"\\c", "9.0.0", ReleaseZip(), "", -1, 7), "manifest at"});
+    cases.push_back({"update: binaries of another version", MakeRelease(r2 + L"\\d", "9.0.0", ReleaseZip(L"fake_asi_0_4_0.dll")), "not 9.0.0"});
+    cases.push_back({"update: zip escapes its folder", MakeRelease(r2 + L"\\e", "9.0.0", Zip({{"../evil.txt", "x"}, {"Melange.exe", "x"}})), "plain relative"});
+    cases.push_back({"update: zip with a dot segment", MakeRelease(r2 + L"\\f", "9.0.0", Zip({{"a/./evil.txt", "x"}})), "plain relative"});
+    cases.push_back({"update: not a zip", MakeRelease(r2 + L"\\g", "9.0.0", "PK but not really"), "not a valid zip"});
+    cases.push_back({"update: payload incomplete", MakeRelease(r2 + L"\\h", "9.0.0", Zip({{"Melange.exe", "x"}})), "has no"});
+    for (auto& c : cases) {
+        U::Source s2;
+        s2.latestUrl = c.f.latestUrl;
+        s2.downloadPrefix = c.f.prefix;
+        R::Release r;
+        U::Staged out;
+        const std::wstring up = L::Parent(c.f.dir) + L"\\updates";
+        const bool got = U::FetchLatest(s2, &r, &err) && U::Download(s2, r, up, dev, nullptr, &out, &err);
+        Expect(!got && err.find(c.needle) != std::string::npos, c.what, err);
+        Expect(!L::DirExists(up + L"\\9.0.0"), "update: a failed download leaves nothing staged", c.what);
+        Expect(!L::FileExists(up + L"\\evil.txt") && !L::FileExists(up + L"\\9.0.0\\evil.txt"), "update: nothing written outside the payload", c.what);
+    }
+    // Asset URLs outside the allowed prefix are never fetched.
+    U::Source wrong = src;
+    wrong.downloadPrefix = "https://github.com/JaminB/melange/releases/download/";
+    Expect(!U::Download(wrong, rel, root + L"\\updates-wrong", dev, nullptr, &st, &err) && err.find("not a Melange release download") != std::string::npos,
+           "update: assets from elsewhere are refused", err);
+    // A release without the manifest (published before the updater existed) is not offered.
+    R::Release noManifest = rel;
+    std::erase_if(noManifest.assets, [](const R::Asset& a) { return a.name.ends_with(".json"); });
+    Expect(!U::Download(src, noManifest, root + L"\\updates-nm", dev, nullptr, &st, &err) && err.find("has no melange-9.0.0.json") != std::string::npos,
+           "update: a release without its manifest is skipped", err);
+    // Offline.
+    U::Source offline;
+    offline.latestUrl = FileUrl(root + L"\\nowhere\\latest.json");
+    Expect(!U::FetchLatest(offline, &rel, &err) && err.find("could not reach GitHub") != std::string::npos, "update: offline is an error, not a crash", err);
+}
+
+void TestUpdateClean() {
+    const std::wstring root = Fresh(L"update-clean");
+    for (const wchar_t* v : {L"1.0.0", L"2.0.0", L"3.0.0", L"junk"}) Put(root + L"\\" + v + L"\\payload\\Melange.exe", "x");
+    for (const wchar_t* v : {L"1.0.0", L"2.0.0"}) Put(root + L"\\" + v + L"\\ready.json", "{\"release\":\"" + L::Narrow(v) + "\"}");
+    Put(root + L"\\3.0.0\\ready.json", "{\"release\":\"2.0.0\"}");   // names another version: not ready
+    Put(root + L"\\result.json", "{}");
+    U::Staged s;
+    Expect(U::FindReady(root, "0.3.6", &s) && s.version == "2.0.0", "update: the newest ready version wins", s.version);
+    Expect(U::FindReady(root, "1.5", &s) && s.version == "2.0.0" && !U::FindReady(root, "2.0.0", &s), "update: only newer than running");
+    U::Clean(root, "2.0.0", root + L"\\1.0.0\\payload\\Melange.exe");
+    Expect(L::DirExists(root + L"\\2.0.0") && L::DirExists(root + L"\\1.0.0") && !L::DirExists(root + L"\\3.0.0") && !L::DirExists(root + L"\\junk") &&
+               L::FileExists(root + L"\\result.json"),
+           "update: Clean keeps the latest, the one in use, and plain files");
+    U::Clean(root, "", L"");
+    Expect(!L::DirExists(root + L"\\2.0.0") && !L::DirExists(root + L"\\1.0.0"), "update: Clean with nothing to keep");
+}
+
+std::vector<std::wstring> Argv(const std::wstring& line) {
+    int argc = 0;
+    LPWSTR* argv = CommandLineToArgvW(line.c_str(), &argc);
+    std::vector<std::wstring> args;
+    for (int i = 1; argv && i < argc; ++i) args.push_back(argv[i]);
+    if (argv) LocalFree(argv);
+    return args;
+}
+
+void TestUpdateArgs() {
+    U::ApplyArgs a;
+    a.from = L"C:\\Users\\me\\Downloads\\melange 0.3.6";
+    a.game = L"D:\\Steam\\steamapps\\common\\WormsXHD";
+    a.pid = 4242;
+    std::vector<std::wstring> args = Argv(U::ApplyCommandLine(L"C:\\Users\\me\\AppData\\Local\\Melange\\updates\\0.3.7\\payload\\Melange.exe", a));
+    U::ApplyArgs b;
+    std::string err;
+    Expect(U::IsApplyCommand(args) && U::ParseApplyArgs(args, &b, &err), "apply args: round trip parses", err);
+    Expect(b.from == a.from && b.game == a.game && b.pid == 4242 && !b.elevated && b.result.empty(), "apply args: round trip values");
+    // A drive root keeps its trailing backslash without eating the closing quote; elevated + result.
+    a.from = L"E:\\";
+    a.elevated = true;
+    a.result = L"C:\\Temp\\r.json";
+    args = Argv(L"x.exe " + U::ApplyCommandLine(L"", a));
+    Expect(U::ParseApplyArgs(args, &b, &err) && b.from == L"E:\\" && b.elevated && b.result == L"C:\\Temp\\r.json", "apply args: drive root and flags",
+           err + " " + L::Narrow(b.from));
+    const std::vector<std::vector<std::wstring>> bad = {
+        {L"--apply-update", L"--pid", L"1"},                                     // no --from
+        {L"--apply-update", L"--from", L"C:\\x"},                               // no --pid
+        {L"--apply-update", L"--from", L"relative\\dir", L"--pid", L"1"},       // relative
+        {L"--apply-update", L"--from", L"C:\\x", L"--pid", L"12ab"},            // bad pid
+        {L"--apply-update", L"--from", L"C:\\x", L"--pid", L"1", L"--bogus"},   // unknown
+        {L"--from", L"C:\\x", L"--pid", L"1"},                                  // not the command
+    };
+    for (const auto& v : bad) Expect(!U::ParseApplyArgs(v, &b, &err), "apply args: refused", L::Narrow(v.back()));
+    Expect(!U::IsApplyCommand({L"--game", L"C:\\x"}), "apply args: a normal start is not an apply");
+}
+
+void TestUpdateApply() {
+    // The game has Melange 0.3.1 installed; the staged release is 0.4.0; the old Melange.exe ran from a third folder.
+    Rig r = MakeRig(L"update-apply");
+    const std::wstring origin = L::Parent(r.game) + L"\\origin";
+    Copy(g_bin + L"\\fake_asi_0_3_1.dll", r.game + L"\\melange.asi");
+    Copy(Ual(), r.game + L"\\dinput8.dll");
+    Put(r.game + L"\\Melange.ini", "[Logging]\r\nEnabled=0\r\n");
+    Put(r.game + L"\\Melange.exe", "old exe in game");
+    Put(origin + L"\\Melange.exe", "old exe");
+    Put(origin + L"\\melange.asi", "old asi");
+    Put(origin + L"\\notes.txt", "mine");
+    Expect(S::Inspect(r.ctx).melangeState == "older", "apply: the game has an older Melange");
+
+    // The game running: refused, nothing changed anywhere.
+    S::Context running = r.ctx;
+    running.running = [](const std::wstring&) { return true; };
+    const auto before = Snap(r.game), beforeOrigin = Snap(origin);
+    U::ApplyOutcome o = U::ApplyStaged(running, origin);
+    Expect(!o.ok && !o.needElevation && o.message.find("Close Worms") != std::string::npos, "apply: refused while the game runs", o.message);
+    Expect(Snap(r.game) == before && Snap(origin) == beforeOrigin, "apply: a refusal changes nothing");
+
+    o = U::ApplyStaged(r.ctx, origin);
+    Expect(o.ok && o.gameUpdated && !o.backupId.empty(), "apply: applied", o.message);
+    Expect(S::Inspect(r.ctx).melangeState == "installed" && Get(r.game + L"\\melange.asi") == Get(r.payload + L"\\melange.asi") &&
+               Get(r.game + L"\\Melange.exe") == Get(r.payload + L"\\Melange.exe"),
+           "apply: the game folder has the new Melange and Melange.exe");
+    Expect(Get(r.game + L"\\Melange.ini").find("Enabled=0") != std::string::npos && Get(r.game + L"\\Melange.ini").find("Verbose=0") != std::string::npos,
+           "apply: the user's settings kept, new keys merged");
+    Expect(L::FileExists(r.game + L"\\Melange\\backup\\" + L::Widen(o.backupId) + L"\\melange.asi"), "apply: the old melange.asi is backed up");
+    Expect(Get(origin + L"\\Melange.exe") == Get(r.payload + L"\\Melange.exe") && Get(origin + L"\\Melange.exe.old") == "old exe" &&
+               Get(origin + L"\\melange.asi") == Get(r.payload + L"\\melange.asi") && Get(origin + L"\\notes.txt") == "mine" &&
+               !L::FileExists(origin + L"\\Melange.ini"),
+           "apply: the old exe's folder is refreshed, Melange.exe.old kept, other files left alone");
+    U::DeleteOldExe(origin);
+    Expect(!L::FileExists(origin + L"\\Melange.exe.old"), "apply: Melange.exe.old is deleted on the next start");
+
+    // Applying again (the elevated retry runs the whole thing a second time) is harmless.
+    o = U::ApplyStaged(r.ctx, origin);
+    Expect(o.ok && o.backupId.empty(), "apply: a second apply changes nothing", o.message);
+
+    // Melange uninstalled from the game folder: only the exe's folder is updated, with a warning.
+    Rig m = MakeRig(L"update-apply-missing");
+    const std::wstring origin2 = L::Parent(m.game) + L"\\origin";
+    Put(origin2 + L"\\Melange.exe", "old exe");
+    o = U::ApplyStaged(m.ctx, origin2);
+    Expect(o.ok && !o.gameUpdated && o.warnings.size() == 1 && !L::FileExists(m.game + L"\\melange.asi") &&
+               Get(origin2 + L"\\Melange.exe") == Get(m.payload + L"\\Melange.exe"),
+           "apply: no install in the game folder -> only Melange.exe", o.message);
+    // No game folder at all.
+    S::Context none = m.ctx;
+    none.gameDir.clear();
+    Put(origin2 + L"\\Melange.exe", "old again");
+    Expect(U::ApplyStaged(none, origin2).ok && Get(origin2 + L"\\Melange.exe") == Get(m.payload + L"\\Melange.exe"), "apply: no game folder chosen");
+
+    // The result handed to the next start, once.
+    const std::wstring res = Fresh(L"update-result") + L"\\result.json";
+    U::Result w;
+    w.present = w.ok = w.gameUpdated = true;
+    w.version = "0.4.0";
+    w.at = "2026-10-05T10:00:00Z";
+    w.warnings = {"a \"quoted\" warning"};
+    Expect(U::WriteResult(res, w), "result: written");
+    U::Result t;
+    Expect(U::TakeResult(res, &t) && t.present && t.ok && t.gameUpdated && t.version == "0.4.0" && t.warnings.size() == 1 &&
+               t.warnings[0] == "a \"quoted\" warning",
+           "result: read back");
+    Expect(!L::FileExists(res) && !U::TakeResult(res, &t) && !t.present, "result: shown once");
+}
 }  // namespace
 
 int main(int, char** argv) {
@@ -947,13 +1644,24 @@ int main(int, char** argv) {
         TestEngineCleanup();
         TestEngineGuards();
         TestEngineRollback();
+        TestVanilla();
+        TestVanillaLink();
+        TestUpdateApply();
     }
+    TestStockList();
     TestIniMerge();
     TestPluginSettings();
     TestRecommended();
     TestSettings();
+    TestInGameCheckSync();
     TestBusyStatusJson();
     TestStoreEngine();
+    TestUpdateRelease();
+    TestUpdateSigner();
+    TestUpdateDownload();
+    TestUpdateClean();
+    TestUpdateArgs();
+    TestStoreReconcile();
     melange::store::Shutdown();
     Wipe(g_tmp);
     printf("launcher_selftest: %d passed, %d failed\n", g_pass, g_fail);

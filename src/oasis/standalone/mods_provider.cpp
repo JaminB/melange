@@ -3,6 +3,7 @@
 #include <windows.h>
 
 #include <algorithm>
+#include <cctype>
 #include <cstdio>
 #include <map>
 #include <set>
@@ -10,11 +11,13 @@
 
 #include "mods/spice.h"
 #include "oasis/standalone/json_write.h"
+#include "store/compat.h"
 #include "tools/json_mini.h"
 #include "tools/json_read.h"
 
 namespace melange::oasis::standalone::modsprov {
 namespace {
+std::wstring ModsDir(const std::wstring& gameDir) { return gameDir + L"\\Mods"; }
 std::wstring StatePath(const std::wstring& gameDir) { return gameDir + L"\\Mods\\thumper-state.json"; }
 
 // True whether or not a file existed: an empty object is a fine starting point for a fresh install.
@@ -41,6 +44,16 @@ bool SaveState(const std::wstring& gameDir, const json::Value& root) {
     return true;
 }
 
+// The object member `key` of `obj`, created as `type` when missing.
+json::Value* Member(json::Value& obj, const char* key, json::Type type) {
+    for (auto& [k, v] : obj.members)
+        if (k == key) return &v;
+    obj.members.emplace_back(key, json::Value{});
+    json::Value* v = &obj.members.back().second;
+    v->type = type;
+    return v;
+}
+
 std::map<std::string, bool> EnabledMap(const json::Value& root) {
     std::map<std::string, bool> out;
     if (const json::Value* en = root.Get("enabled"); en && en->IsObject())
@@ -59,9 +72,14 @@ std::set<std::string> DeepDesertGranted(const json::Value& root) {
     return out;
 }
 
-std::vector<spice::Manifest> ScanManifests(const std::wstring& gameDir) {
+// A folder whose spice.json failed to parse: listed (incompatible, never enabled), as Thumper does.
+struct Broken {
+    std::string id, reason;
+};
+
+std::vector<spice::Manifest> ScanManifests(const std::wstring& gameDir, std::vector<Broken>* broken = nullptr) {
     std::vector<spice::Manifest> out;
-    const std::wstring modsDir = gameDir + L"\\Mods";
+    const std::wstring modsDir = ModsDir(gameDir);
     WIN32_FIND_DATAW fd{};
     HANDLE h = FindFirstFileW((modsDir + L"\\*").c_str(), &fd);
     if (h == INVALID_HANDLE_VALUE) return out;
@@ -70,20 +88,33 @@ std::vector<spice::Manifest> ScanManifests(const std::wstring& gameDir) {
         const std::wstring name = fd.cFileName;
         spice::Manifest m;
         std::vector<spice::Error> errs;
-        if (spice::Parse(modsDir + L"\\" + name, &m, &errs)) out.push_back(std::move(m));
+        if (spice::Parse(modsDir + L"\\" + name, &m, &errs)) {
+            out.push_back(std::move(m));
+        } else if (broken) {
+            Broken b;
+            for (wchar_t c : name) b.id.push_back(static_cast<char>(c < 128 ? std::tolower(static_cast<int>(c)) : '?'));
+            for (const spice::Error& er : errs) {
+                if (!b.reason.empty()) b.reason += "; ";
+                if (er.line) b.reason += std::to_string(er.line) + ":" + std::to_string(er.col) + " ";
+                b.reason += er.text;
+            }
+            if (b.reason.empty()) b.reason = "invalid spice.json";
+            broken->push_back(std::move(b));
+        }
     } while (FindNextFileW(h, &fd));
     FindClose(h);
     return out;
 }
 
+// The same names as the game's mods.list (oasis/rpc/mods.cpp), so one web page reads both.
 const char* StateName(mods::State s) {
     switch (s) {
         case mods::State::Enabled: return "enabled";
         case mods::State::Disabled: return "disabled";
         case mods::State::Blocked: return "blocked";
-        case mods::State::PendingConsent: return "pendingConsent";
+        case mods::State::PendingConsent: return "pending-consent";
         case mods::State::Incompatible: return "incompatible";
-        case mods::State::RestartRequired: return "restartRequired";
+        case mods::State::RestartRequired: return "restart-required";
     }
     return "disabled";
 }
@@ -94,7 +125,9 @@ std::string ListJson(const std::wstring& gameDir, const std::string& melangeVers
     LoadState(gameDir, &state);
     const auto enabledMap = EnabledMap(state);
     const auto granted = DeepDesertGranted(state);
-    const std::vector<spice::Manifest> manifests = ScanManifests(gameDir);
+    std::vector<Broken> broken;
+    const std::vector<spice::Manifest> manifests = ScanManifests(gameDir, &broken);
+    const std::set<std::string> storeIds = compat::StoreIds(ModsDir(gameDir));
 
     std::set<std::string> userEnabled;
     for (const auto& m : manifests) {
@@ -125,6 +158,23 @@ std::string ListJson(const std::wstring& gameDir, const std::string& melangeVers
                     .Bool("on", userEnabled.count(m.id) > 0)
                     .Int("order", r.order)
                     .Str("generatedBy", m.generatedBy)
+                    .Str("source", compat::IsStore(storeIds, m.id, m.generatedBy) ? "store" : "local")
+                    .End());
+    }
+    for (const Broken& b : broken) {
+        const auto it = enabledMap.find(b.id);
+        arr.Raw(jsonmini::Obj()
+                    .Str("id", b.id)
+                    .Str("name", b.id)
+                    .Str("version", "")
+                    .Str("authors", "")
+                    .Str("kind", "client-only")
+                    .Str("state", "incompatible")
+                    .Str("reason", b.reason)
+                    .Bool("on", it != enabledMap.end() && it->second)
+                    .Int("order", -1)
+                    .Str("generatedBy", "")
+                    .Str("source", storeIds.count(b.id) ? "store" : "local")
                     .End());
     }
     return arr.End();
@@ -159,27 +209,54 @@ int SetEnabled(const std::wstring& gameDir, const std::string& id, bool on) {
 
     json::Value state;
     LoadState(gameDir, &state);
-    json::Value* en = nullptr;
-    for (auto& [k, v] : state.members)
-        if (k == "enabled") en = &v;
-    if (!en) {
-        state.members.emplace_back("enabled", json::Value{});
-        en = &state.members.back().second;
+    json::Value* en = Member(state, "enabled", json::Type::Object);
+    if (!en->IsObject()) {
+        *en = json::Value{};
         en->type = json::Type::Object;
     }
-    bool set = false;
-    for (auto& [k, v] : en->members)
-        if (k == id) {
-            v.type = json::Type::Bool;
-            v.boolean = on;
-            set = true;
-        }
-    if (!set) {
-        json::Value b;
-        b.type = json::Type::Bool;
-        b.boolean = on;
-        en->members.emplace_back(id, b);
-    }
+    json::Value* v = Member(*en, id.c_str(), json::Type::Bool);
+    v->type = json::Type::Bool;
+    v->boolean = on;
     return SaveState(gameDir, state) ? 1 : -1;
+}
+
+bool Forget(const std::wstring& gameDir, const std::string& id) {
+    json::Value state;
+    LoadState(gameDir, &state);
+    bool changed = false;
+    for (auto& [k, v] : state.members) {
+        if ((k == "enabled" || k == "deepDesert") && v.IsObject())
+            changed |= std::erase_if(v.members, [&](const auto& m) { return m.first == id; }) > 0;
+        if (k == "pins" && v.IsArray())
+            changed |= std::erase_if(v.items, [&](const json::Value& p) {
+                for (const char* f : {"id", "before", "after"})
+                    if (const json::Value* x = p.Get(f); x && x->IsString() && x->string == id) return true;
+                return false;
+            }) > 0;
+    }
+    return !changed || SaveState(gameDir, state);
+}
+
+bool ShowLocal(const std::wstring& gameDir) {
+    json::Value state;
+    LoadState(gameDir, &state);
+    const json::Value* v = state.Get("showLocal");
+    return v && v->IsBool() && v->boolean;
+}
+
+bool SetShowLocal(const std::wstring& gameDir, bool on) {
+    json::Value state;
+    LoadState(gameDir, &state);
+    json::Value* v = Member(state, "showLocal", json::Type::Bool);
+    v->type = json::Type::Bool;
+    v->boolean = on;
+    return SaveState(gameDir, state);
+}
+
+std::string ViewJson(const std::wstring& gameDir) {
+    return jsonmini::Obj()
+        .Bool("showLocal", ShowLocal(gameDir))
+        .Raw("notices", compat::NoticesJson(compat::LoadNotices(ModsDir(gameDir))))
+        .End();
 }
 }  // namespace melange::oasis::standalone::modsprov

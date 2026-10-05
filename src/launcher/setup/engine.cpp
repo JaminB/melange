@@ -12,11 +12,12 @@
 #include "tools/hash.h"
 #include "tools/json_mini.h"
 #include "tools/json_read.h"
+#include "update/release.h"
 
 namespace melange::launcher::setup {
 namespace {
 const wchar_t* const kAltLoaders[] = {L"dsound.dll", L"winmm.dll", L"version.dll", L"d3d9.dll", L"xinput1_3.dll", L"winhttp.dll",
-                                      L"wininet.dll"};
+                                      L"wininet.dll", L"opengl32.dll"};
 const wchar_t* const kAsiDirs[] = {L"", L"scripts\\", L"plugins\\"};
 constexpr char kProtectedCopy[] = "This folder is protected (MELANGE_PROTECT).";
 constexpr char kRunningCopy[] = "Close Worms Ultimate Mayhem first.";
@@ -28,35 +29,8 @@ bool Running(const Context& c) { return c.running ? c.running(c.gameDir) : GameR
 bool Loaded(const Context& c) { return c.loaded ? c.loaded(c.gameDir) : MelangeLoaded(c.gameDir); }
 unsigned long Move(const Context& c, const std::wstring& a, const std::wstring& b) { return c.move ? c.move(a, b) : DefaultMove(a, b); }
 
-// Dotted numeric compare: -1, 0, 1. Pre-release and build suffixes are ignored.
-int CompareVersions(const std::string& a, const std::string& b) {
-    auto parts = [](const std::string& v) {
-        std::vector<long> out;
-        long cur = 0;
-        bool any = false;
-        for (char ch : v) {
-            if (ch >= '0' && ch <= '9') {
-                cur = cur * 10 + (ch - '0');
-                any = true;
-            } else if (ch == '.') {
-                out.push_back(cur);
-                cur = 0;
-                any = false;
-            } else {
-                break;
-            }
-        }
-        if (any || !out.empty()) out.push_back(cur);
-        while (out.size() > 1 && out.back() == 0) out.pop_back();
-        return out;
-    };
-    const auto x = parts(a), y = parts(b);
-    for (size_t i = 0; i < std::max(x.size(), y.size()); ++i) {
-        const long p = i < x.size() ? x[i] : 0, q = i < y.size() ? y[i] : 0;
-        if (p != q) return p < q ? -1 : 1;
-    }
-    return 0;
-}
+// Dotted numeric compare, shared with the updater (update/release.h).
+using update::CompareVersions;
 
 bool IsProtected(const Context& c) {
     for (const auto& p : c.protect)
@@ -897,6 +871,7 @@ std::string StatusJson(const Status& s) {
 }
 
 std::string WriteGate(const Context& c) { return Gate(c, false, nullptr); }
+std::string GameGate(const Context& c) { return Gate(c, true, nullptr); }
 
 Plan MakePlan(const Context& c, const PlanRequest& req) { return Build(c, req, nullptr).plan; }
 

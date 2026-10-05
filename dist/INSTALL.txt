@@ -30,6 +30,21 @@ After setup, Melange's window lets you:
 - Configure installed plugins (Plugins page, Settings button per plugin)
 - Change your default set of plugins (Settings › Defaults)
 - Undo any change from a backup (Settings › Melange › Backups)
+- Put the game back to stock, removing Melange and every other mod (Settings › Restore vanilla)
+
+Updates
+-------
+
+Melange keeps itself up to date. Each time you open Melange.exe, it asks GitHub for the latest release.
+A newer one is downloaded in the background and checked (its SHA-256, and that it is signed by the same
+publisher). Then Melange shows "Melange x.y.z is ready — Restart to update". One click closes Melange,
+installs the update into your game folder (with a backup, like any install) and opens the new version.
+Close the game first. Settings › Updates › Check for updates looks again on demand.
+
+The game also looks at most once a day and only tells you when a newer version is out. To turn both
+off, switch off Settings › Updates › Check for updates automatically (it also sets CheckInGame=0 under
+[Update] in Melange.ini); Check for updates still works. Each check is a plain HTTPS request to GitHub
+that sends nothing about you or your game.
 
 Manual install (if Melange.exe doesn't work for you)
 ------------------------------------------------------
@@ -68,6 +83,13 @@ and settings, or delete everything.
 
 Or do it manually: delete melange.asi, Melange.ini and the Melange and Mods folders from the game
 folder. Delete dinput8.dll too, unless other .asi mods still need it.
+
+To get the plain game back: Settings › Restore vanilla. This permanently deletes every file in the
+game folder that isn't part of the game: Melange and other mods too (Renewation HD, WUMPatch, ReShade,
+ASI loaders and plugins). The dialog names what it found before you confirm. Your saves (kept by
+Steam), local.cfg and the game's own caches and logs stay; replays move to Documents\Melange\replays.
+If a mod had overwritten game files, Steam verifies the game afterwards (on GOG, verify in GOG Galaxy
+or reinstall). Melange then closes, and the next time you open it, setup starts from the beginning.
 
 Reporting a bug
 ---------------

@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.25)
-project(Melange VERSION 0.3.6 LANGUAGES C CXX)
+project(Melange VERSION 0.4.0 LANGUAGES C CXX)
 
 if(NOT CMAKE_SIZEOF_VOID_P EQUAL 4)
     message(FATAL_ERROR "Melange must be built for 32-bit x86 (WormsMayhem.exe is a 32-bit process). Use build.ps1.")
@@ -200,7 +200,7 @@ target_link_libraries(oasis_rpc_selftest PRIVATE oasis_core)
 add_executable(oasis_standalone_selftest
     tests/oasis_standalone_selftest.cpp
     src/oasis/standalone/ini_edit.cpp src/oasis/standalone/mods_provider.cpp src/oasis/standalone/json_write.cpp
-    src/oasis/standalone/wormsign_provider.cpp src/wormsign/format.cpp src/wormsign/records.cpp
+    src/oasis/standalone/wormsign_provider.cpp src/wormsign/format.cpp src/wormsign/records.cpp src/store/compat.cpp
     src/mods/spice.cpp src/tools/json_read.cpp src/core/log.cpp)
 target_include_directories(oasis_standalone_selftest PRIVATE src src/sdk)
 target_compile_definitions(oasis_standalone_selftest PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX _CRT_SECURE_NO_WARNINGS)
@@ -212,7 +212,9 @@ target_link_libraries(oasis_standalone_selftest PRIVATE miniz)
 set(LAUNCHER_CORE_SOURCES
     src/launcher/util.cpp src/launcher/settings.cpp src/launcher/plugin_settings.cpp src/launcher/recommended.cpp
     src/launcher/setup/vdf.cpp src/launcher/setup/detect.cpp src/launcher/setup/exe_check.cpp src/launcher/setup/dll_id.cpp
-    src/launcher/setup/running.cpp src/launcher/setup/ini_merge.cpp src/launcher/setup/engine.cpp
+    src/launcher/setup/running.cpp src/launcher/setup/ini_merge.cpp src/launcher/setup/engine.cpp src/launcher/setup/vanilla.cpp
+    src/launcher/updater.cpp
+    src/update/release.cpp
     src/oasis/standalone/game_lock.cpp src/oasis/rpc/ini_edit.cpp)
 # Stand-ins for third-party DLLs and melange.asi builds: read from disk by the self-test, never loaded.
 foreach(fx reshade microsoft)
@@ -223,17 +225,17 @@ foreach(v 0_4_0 0_3_1 9_0_0)
     add_library(fake_asi_${v} SHARED tests/fixtures/launcher/fake_dll.c tests/fixtures/launcher/fake_asi_${v}.rc)
 endforeach()
 add_executable(launcher_selftest tests/launcher_selftest.cpp ${LAUNCHER_CORE_SOURCES}
-    src/mods/spice.cpp src/levels/live_policy.cpp src/tools/json_read.cpp src/tools/hash.cpp src/core/log.cpp)
+    src/mods/spice.cpp src/levels/live_policy.cpp src/tools/json_read.cpp src/tools/hash.cpp src/core/log.cpp res/stock.rc)
 add_dependencies(launcher_selftest fake_dinput8_reshade fake_dinput8_microsoft fake_dinput8_other fake_asi_0_4_0 fake_asi_0_3_1 fake_asi_9_0_0)
 target_include_directories(launcher_selftest PRIVATE src src/sdk)
 target_compile_definitions(launcher_selftest PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX _CRT_SECURE_NO_WARNINGS
     MELANGE_SOURCE_DIR="${CMAKE_SOURCE_DIR}")
 target_compile_options(launcher_selftest PRIVATE /W4 /utf-8 /permissive-)
-target_link_libraries(launcher_selftest PRIVATE melange_store bcrypt version shell32 ole32)
+target_link_libraries(launcher_selftest PRIVATE melange_store bcrypt version shell32 ole32 wintrust crypt32)
 
 # The Store engine without the game: index, downloads, installs, the store.* methods. The plugin compiles the same
 # sources through its glob, with store/game_host.cpp as the host; Melange.exe brings its own host.
-add_library(melange_store STATIC src/store/engine.cpp src/store/store_rpc.cpp src/store/index.cpp src/store/install.cpp
+add_library(melange_store STATIC src/store/engine.cpp src/store/store_rpc.cpp src/store/index.cpp src/store/install.cpp src/store/compat.cpp
     src/store/fetch.cpp src/store/zipcheck.cpp src/levels/hidden.cpp)
 target_include_directories(melange_store PUBLIC src src/sdk)
 target_compile_definitions(melange_store PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX _CRT_SECURE_NO_WARNINGS)
@@ -250,26 +252,34 @@ target_compile_definitions(melange_import PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX _
 target_compile_options(melange_import PRIVATE /W4 /utf-8 /permissive- /Zi)
 target_link_libraries(melange_import PUBLIC melange_store melange_xom)
 
+# The log export without the game (selection, redaction, the zip, system.json from disk): Melange.exe's
+# launcher.exportLogs and its self-test. The plugin compiles the same sources through its glob. Its users also link
+# json_read, hash, log, wormsign/format and miniz.
+set(LOG_EXPORT_CORE_SOURCES
+    src/tools/log_export_core.cpp src/tools/sysinfo_core.cpp src/tools/redact.cpp src/wormsign/export_redacted.cpp)
+
 # Melange.exe: the desktop app. The standalone Oasis server plus setup, plugins and the Store, shown in WebView2.
 include(cmake/webview2.cmake)
 add_executable(melange_launcher WIN32
     src/launcher/main.cpp src/launcher/app.cpp src/launcher/window.cpp src/launcher/store_host.cpp
-    src/launcher/rpc_setup.cpp src/launcher/rpc_launcher.cpp src/launcher/rpc_plugins.cpp src/launcher/rpc_import.cpp ${LAUNCHER_CORE_SOURCES}
+    src/launcher/rpc_setup.cpp src/launcher/rpc_launcher.cpp src/launcher/rpc_plugins.cpp src/launcher/rpc_import.cpp src/launcher/update_host.cpp
+    ${LAUNCHER_CORE_SOURCES}
     src/oasis/standalone/register.cpp src/oasis/standalone/ini_edit.cpp src/oasis/standalone/mods_provider.cpp
     src/oasis/standalone/json_write.cpp src/oasis/standalone/wormsign_provider.cpp src/oasis/standalone/level_provider.cpp
     src/oasis/rpc/erg_assets.cpp src/assets/crcsafe_math.cpp src/assets/crcsafe_file.cpp src/oasis/auth.cpp src/oasis/webpanels.cpp
-    ${ERG_SERVICE_SOURCES} src/wormsign/format.cpp src/wormsign/records.cpp
-    res/launcher.rc ${CMAKE_BINARY_DIR}/generated/oasis_web.rc)
+    ${ERG_SERVICE_SOURCES} src/wormsign/format.cpp src/wormsign/records.cpp ${LOG_EXPORT_CORE_SOURCES}
+    res/launcher.rc res/stock.rc ${CMAKE_BINARY_DIR}/generated/oasis_web.rc)
 add_dependencies(melange_launcher oasis_web)
 # PDB_NAME: melange.asi already writes Melange.pdb here (Windows paths ignore case).
 set_target_properties(melange_launcher PROPERTIES OUTPUT_NAME "Melange" PDB_NAME "Melange.exe")
 set_source_files_properties(res/launcher.rc PROPERTIES OBJECT_DEPENDS "${CMAKE_SOURCE_DIR}/res/melange.ico;${CMAKE_SOURCE_DIR}/res/Melange.manifest")
+set_source_files_properties(res/stock.rc PROPERTIES OBJECT_DEPENDS ${CMAKE_SOURCE_DIR}/res/wum-1077-stock.tsv)
 target_include_directories(melange_launcher PRIVATE src src/sdk res ${CMAKE_BINARY_DIR}/generated ${stb_SOURCE_DIR})
 target_compile_definitions(melange_launcher PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX _CRT_SECURE_NO_WARNINGS UNICODE _UNICODE)
 target_compile_options(melange_launcher PRIVATE /W4 /utf-8 /permissive- /Zi)
 target_link_options(melange_launcher PRIVATE /DEBUG /MANIFEST:NO)
 target_link_libraries(melange_launcher PRIVATE oasis_core melange_store melange_import melange_xom webview2_loader bcrypt version shlwapi ole32 shell32
-    comctl32 dwmapi winhttp)
+    comctl32 dwmapi winhttp wintrust crypt32)
 
 add_executable(json_read_selftest tests/json_read_selftest.cpp src/tools/json_read.cpp)
 target_include_directories(json_read_selftest PRIVATE src)
@@ -462,7 +472,7 @@ target_compile_options(thumper_selftest PRIVATE /W4 /utf-8 /permissive-)
 # The plugin store without the game or the network: index, zip rules, install engine, file:// fetches.
 add_executable(store_selftest
     tests/store_selftest.cpp
-    src/store/index.cpp src/store/zipcheck.cpp src/store/install.cpp src/store/fetch.cpp
+    src/store/index.cpp src/store/zipcheck.cpp src/store/install.cpp src/store/fetch.cpp src/store/compat.cpp
     src/levels/live_policy.cpp src/levels/hidden.cpp src/mods/spice.cpp src/tools/json_read.cpp src/tools/hash.cpp src/core/log.cpp)
 target_include_directories(store_selftest PRIVATE src src/sdk)
 target_compile_definitions(store_selftest PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX _CRT_SECURE_NO_WARNINGS)
@@ -652,6 +662,7 @@ add_executable(wormsign_recorder_selftest
     src/wormsign/format.cpp
     src/wormsign/writer.cpp
     src/wormsign/library.cpp
+    src/wormsign/export_redacted.cpp
     src/wormsign/records.cpp
     src/tools/json_read.cpp
     src/tools/redact.cpp
@@ -662,6 +673,20 @@ target_include_directories(wormsign_recorder_selftest PRIVATE src src/sdk)
 target_compile_definitions(wormsign_recorder_selftest PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX _CRT_SECURE_NO_WARNINGS)
 target_compile_options(wormsign_recorder_selftest PRIVATE /W4 /utf-8 /permissive- /wd4100)
 target_link_libraries(wormsign_recorder_selftest PRIVATE miniz bcrypt psapi shell32 ole32)
+
+# The log export's core without the game: which session, replays, dumps and engine logs one game's export picks
+# from a fixture tree of several sessions and pids, the redaction (logs and recordings alike) and manifest.json.
+add_executable(log_export_selftest
+    tests/log_export_selftest.cpp
+    ${LOG_EXPORT_CORE_SOURCES}
+    src/wormsign/format.cpp
+    src/tools/json_read.cpp
+    src/tools/hash.cpp
+    src/core/log.cpp)
+target_include_directories(log_export_selftest PRIVATE src src/sdk ${CMAKE_BINARY_DIR}/generated)
+target_compile_definitions(log_export_selftest PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX _CRT_SECURE_NO_WARNINGS)
+target_compile_options(log_export_selftest PRIVATE /W4 /utf-8 /permissive-)
+target_link_libraries(log_export_selftest PRIVATE miniz bcrypt version shell32 ole32)
 
 # The desync detector without the game: the exchange packets, the two-peer protocol over a simulated link, the
 # field diff and the bundle, plus a timed mutation run on the packet decoder.

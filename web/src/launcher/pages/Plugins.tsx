@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "preact/hooks";
 import type { Client } from "../../sdk/client";
 import { errorText } from "../../sdk/hooks";
-import { modsOf, stateText, stateTone, type ModInfo } from "../../panels/mods/model";
+import { hiddenText, modsOf, sourceText, stateText, stateTone, viewOf, visibleMods, type ModInfo, type ModsView, type Notice } from "../../panels/mods/model";
 import type { Importer, Setting, SetupStatus, Val } from "../api";
 import { importEventOf, importersOf, settingOf, valuesOf } from "../api";
 import { Drawer } from "../components/Drawer";
@@ -19,11 +19,52 @@ export function Plugins({ client, status, onOpenStore, onOpenImport }: {
   const [error, setError] = useState<string>();
   const [busy, setBusy] = useState<string>();
   const [drawer, setDrawer] = useState<string>();
+  const [view, setView] = useState<ModsView>({ showLocal: false, notices: [] });
 
   const load = () => {
     client.call<unknown>("mods.list").then((v) => { setList(modsOf(v)); setError(undefined); }, (e) => setError(errorText(e)));
+    if (client.has("mods.view")) client.call<unknown>("mods.view").then((v) => setView(viewOf(v)), () => {});
   };
   useEffect(load, [client]);
+
+  // The compatibility sweep's Store half (an update or a removal) runs as a Store job: reload when one ends.
+  useEffect(() => {
+    if (!client.has("store")) return;
+    let wasBusy = false;
+    return client.subscribe<{ busy?: boolean }>("store", undefined, (m) => {
+      const nowBusy = m?.busy === true;
+      if (wasBusy && !nowBusy) load();
+      wasBusy = nowBusy;
+    });
+  }, [client]);
+
+  // Display only: a hidden local plugin keeps its switch and still loads. Kept for this page alone if Melange.exe
+  // cannot store the choice (the game is running).
+  const setShowLocal = async (on: boolean) => {
+    setView((v) => ({ ...v, showLocal: on }));
+    if (!client.has("mods.setShowLocal")) return;
+    try {
+      setView(viewOf(await client.call<unknown>("mods.setShowLocal", { on })));
+    } catch {
+      // the page keeps the choice for itself
+    }
+  };
+
+  const dismiss = async (key?: string) => {
+    try {
+      setView(viewOf(await client.call<unknown>("mods.dismissNotice", key ? { key } : {})));
+    } catch (e) {
+      setError(errorText(e));
+    }
+  };
+
+  const openFolder = async (n: Notice) => {
+    try {
+      await client.call("launcher.openPath", { what: "incompatible", folder: n.folder });
+    } catch (e) {
+      setError(errorText(e));
+    }
+  };
 
   useEffect(() => {
     if (!client.has("import.list")) return;
@@ -48,6 +89,8 @@ export function Plugins({ client, status, onOpenStore, onOpenImport }: {
     }
   };
 
+  const { shown, hidden, hiddenOn } = visibleMods(list ?? [], view.showLocal);
+
   return (
     <div data-page="plugins">
       <div class="row between" style="margin-bottom:16px">
@@ -56,13 +99,43 @@ export function Plugins({ client, status, onOpenStore, onOpenImport }: {
       </div>
       {error ? <p class="error" role="alert">{error}</p> : null}
       {batch ? <p class="hint" role="status" aria-live="polite" data-busy>{batchWhy}</p> : null}
+      {view.notices.length ? (
+        <div class="hint warn" data-notices role="status" style="margin-bottom:12px">
+          <div>Plugins that can't load on this version of Melange were set aside:</div>
+          <ul>
+            {view.notices.map((n) => (
+              <li key={n.key} data-notice={n.id}>
+                {n.text}{" "}
+                {n.folder ? <button class="link" data-open-folder={n.key} onClick={() => openFolder(n)}>Open folder</button> : null}
+                <button class="link" data-dismiss={n.key} onClick={() => dismiss(n.key)}>Dismiss</button>
+              </li>
+            ))}
+          </ul>
+          {view.notices.length > 1 ? <button class="link" data-dismiss-all onClick={() => dismiss()}>Dismiss all</button> : null}
+        </div>
+      ) : null}
+      {list && (list.some((m) => m.source === "local") || view.showLocal) ? (
+        <div class="row" style="margin-bottom:12px;gap:8px;align-items:center">
+          <button class="lp-switch" role="switch" aria-checked={view.showLocal} aria-label="Show local plugins" data-show-local
+                  onClick={() => setShowLocal(!view.showLocal)} />
+          <span>Show local plugins</span>
+          {!view.showLocal && hidden ? (
+            <span class="muted small" data-hidden-hint>
+              {hiddenText(hidden, hiddenOn)} · <button class="link" onClick={() => setShowLocal(true)}>Show</button>
+            </span>
+          ) : null}
+        </div>
+      ) : null}
       {!list ? (
         <div class="lw-skel"><div class="lw-skel-row" /><div class="lw-skel-row" /></div>
-      ) : list.length === 0 ? (
-        <p class="muted">No plugins yet. Browse the Store to add some. <button class="link" onClick={onOpenStore}>Open Store</button></p>
+      ) : shown.length === 0 ? (
+        <p class="muted">
+          {list.length ? "No plugins from the Store yet. " : "No plugins yet. "}Browse the Store to add some.{" "}
+          <button class="link" onClick={onOpenStore}>Open Store</button>
+        </p>
       ) : (
         <ul class="lp-list" data-plugins>
-          {list.map((m) => {
+          {shown.map((m) => {
             const importer = importers.get(m.id);
             const job = importer?.job;
             const pct = job && job.total > 0 ? Math.round((job.bytes / job.total) * 100) : undefined;
@@ -72,9 +145,13 @@ export function Plugins({ client, status, onOpenStore, onOpenImport }: {
                 <button class="lp-switch" role="switch" aria-checked={m.on} disabled={busy === m.id} aria-label={`${m.on ? "Disable" : "Enable"} ${m.name}`}
                         data-toggle={m.id} onClick={() => toggle(m)} />
                 <div class="lp-row-main">
-                  <div class="lp-row-name">{m.name || m.id} <span class="muted small">{m.version}</span></div>
+                  <div class="lp-row-name">
+                    {m.name || m.id} <span class="muted small">{m.version}</span>
+                    {view.showLocal && sourceText(m) ? <span class="tag" data-source={m.source}>{sourceText(m)}</span> : null}
+                  </div>
                   <div class="lp-row-desc">
-                    {m.authors} · <span class={`tone-${stateTone(m.state)}`}>{stateText(m.state)}</span>
+                    {m.authors ? `${m.authors} · ` : ""}<span class={`tone-${stateTone(m.state)}`}>{stateText(m.state)}</span>
+                    {(m.state === "incompatible" || m.state === "blocked") && m.reason ? <span class="muted"> · {m.reason}</span> : null}
                     {importing ? <span class="muted"> · Importing…{pct !== undefined ? ` ${pct}%` : ""}</span> : null}
                   </div>
                 </div>

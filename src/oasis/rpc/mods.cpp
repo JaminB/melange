@@ -1,5 +1,5 @@
-// mods.list, mods.setEnabled, mods.revokeDeepDesert and the `mods` channel. The page has the overlay's Mods page
-// powers except one: Deep Desert can be revoked here but granted only in the game.
+// mods.list, mods.setEnabled, mods.revokeDeepDesert, mods.view/setShowLocal/dismissNotice and the `mods` channel. The
+// page has the overlay's Mods page powers except one: Deep Desert can be revoked here but granted only in the game.
 #include <string>
 #include <vector>
 
@@ -29,7 +29,7 @@ const char* StateName(mods::State s) {
     return "unknown";
 }
 
-std::string Info(const mods::ModInfo& m) {
+std::string Info(const mods::ModInfo& m, const thumper::View& view) {
     const auto& pref = thumper::Live().enabled;
     const auto it = pref.find(m.id ? m.id : "");
     const bool on = it != pref.end() ? it->second : m.state == mods::State::Enabled;
@@ -41,6 +41,8 @@ std::string Info(const mods::ModInfo& m) {
     o.Bool("implicitManifest", m.implicitManifest).Bool("hasClient", m.hasClient).Bool("hasSim", m.hasSim);
     o.Raw("deepDesert", jsonmini::Obj().Bool("declared", m.unsafe).Bool("granted", m.unsafe && m.unsafeGranted).End());
     o.Int("order", m.order);
+    thumper::Entry e;
+    o.Str("source", m.id && thumper::FindEntry(m.id, &e) && thumper::IsStore(e, view) ? "store" : "local");
     sandbox::ModStatus st;
     if (m.id && sandbox::Status(m.id, &st)) {
         o.Raw("sandbox", jsonmini::Obj()
@@ -58,9 +60,16 @@ std::string Info(const mods::ModInfo& m) {
 std::string ListJson() {
     std::vector<mods::ModInfo> all(static_cast<size_t>(mods::List(nullptr, 0)));
     const int n = all.empty() ? 0 : mods::List(all.data(), static_cast<int>(all.size()));
+    const thumper::View view = thumper::CurrentView();
     jsonmini::Arr a;
-    for (int i = 0; i < n; ++i) a.Raw(Info(all[static_cast<size_t>(i)]));
+    for (int i = 0; i < n; ++i) a.Raw(Info(all[static_cast<size_t>(i)], view));
     return a.End();
+}
+
+// What the page shows beside the list: the "Show local plugins" choice and the compatibility sweep's notices.
+std::string ViewJson() {
+    const thumper::View view = thumper::CurrentView(true);
+    return jsonmini::Obj().Bool("showLocal", thumper::Live().showLocal).Raw("notices", compat::NoticesJson(view.notices)).End();
 }
 
 bool FindMod(const json::Value& p, std::string* id, mods::ModInfo* m, Result& r) {
@@ -72,7 +81,7 @@ bool FindMod(const json::Value& p, std::string* id, mods::ModInfo* m, Result& r)
 bool Reply(const std::string& id, Result& r) {
     mods::ModInfo m{};
     if (!mods::Find(id.c_str(), &m)) return Fail(r, rpc::kRefused, "mod '" + id + "' disappeared");
-    r.json = Info(m);
+    r.json = Info(m, thumper::CurrentView());
     return true;
 }
 
@@ -98,6 +107,24 @@ void RevokeDeepDesert(const Call& c, Result& r, void*) {
     Reply(id, r);
 }
 
+void GetView(const Call&, Result& r, void*) { r.json = ViewJson(); }
+
+void SetShowLocal(const Call& c, Result& r, void*) {
+    json::Value p;
+    bool on = false;
+    if (!rpc::ParseParams(c, &p, r) || !rpc::Flag(p, "on", &on, r)) return;
+    thumper::SetShowLocal(on);
+    r.json = ViewJson();
+}
+
+void DismissNotice(const Call& c, Result& r, void*) {
+    json::Value p;
+    std::string key;
+    if (!rpc::ParseParams(c, &p, r) || !rpc::Str(p, "key", &key, r, false)) return;
+    thumper::DismissNotice(key);
+    r.json = ViewJson();
+}
+
 void OnChanged(void*) {
     if (HasSubscribers(g_channel)) Publish(g_channel, ListJson());
 }
@@ -117,5 +144,8 @@ void InstallMods() {
     AddMethod("mods.list", &List, nullptr);
     AddMethod("mods.setEnabled", &SetEnabled, nullptr, kRpcMutating | kRpcGameOnly);
     AddMethod("mods.revokeDeepDesert", &RevokeDeepDesert, nullptr, kRpcMutating | kRpcGameOnly);
+    AddMethod("mods.view", &GetView, nullptr);
+    AddMethod("mods.setShowLocal", &SetShowLocal, nullptr, kRpcMutating);
+    AddMethod("mods.dismissNotice", &DismissNotice, nullptr, kRpcMutating);
 }
 }  // namespace melange::oasis::providers

@@ -14,6 +14,7 @@ export type Val = boolean | number | string;
 export interface LauncherState {
   version: string; firstRun: boolean; gameDir: string | null; theme: Theme;
   webview: boolean; elevated: boolean; protected: string[];
+  resume?: string;   // after an elevated restart (setup.elevate {resume}): what to pick up again, e.g. "vanilla"
 }
 
 export interface GameCheck {
@@ -66,6 +67,12 @@ export interface SetupEvent { status?: SetupStatus; progress?: SetupProgress; }
 // The folder picker is modal and waits on the user, so the default RPC timeout would drop their choice.
 export const BROWSE_TIMEOUT_MS = 24 * 60 * 60 * 1000;
 
+// launcher.exportLogs: the last game's logs zipped to the Desktop (else Documents\Melange\exports). sessionId is
+// null when no session folder was found (the zip still holds Melange.log, launcher.log and the rest).
+export interface ExportResult { path: string; bytes: number; entries: number; onDesktop: boolean; sessionId: string | null; pid: number; }
+// Reading and deflating a long session's logs and recordings can take longer than an ordinary call.
+export const EXPORT_TIMEOUT_MS = 5 * 60 * 1000;
+
 // -- Error codes (spec §6.2) --------------------------------------------------------------------------------------
 export const LauncherErrorCode = {
   Refused: -32000,
@@ -100,7 +107,8 @@ export function launcherStateOf(v: unknown): LauncherState {
   const o = obj(v);
   const theme = o.theme === "light" || o.theme === "dark" ? o.theme : "system";
   return { version: str(o, "version"), firstRun: bool(o, "firstRun"), gameDir: strOpt(o, "gameDir") ?? null, theme,
-    webview: bool(o, "webview"), elevated: bool(o, "elevated"), protected: strs(o, "protected") };
+    webview: bool(o, "webview"), elevated: bool(o, "elevated"), protected: strs(o, "protected"),
+    ...(typeof o.resume === "string" && o.resume ? { resume: o.resume } : {}) };
 }
 
 export function gameCheckOf(v: unknown): GameCheck {
@@ -226,6 +234,20 @@ export function setupEventOf(v: unknown): SetupEvent {
     out.progress = { action: str(p, "action"), step: num(p, "step"), of: num(p, "of"), label: str(p, "label") };
   }
   return out;
+}
+
+export function exportResultOf(v: unknown): ExportResult | undefined {
+  const o = obj(v);
+  if (typeof o.path !== "string" || !o.path) return undefined;
+  return { path: o.path, bytes: num(o, "bytes"), entries: num(o, "entries"), onDesktop: bool(o, "onDesktop"),
+    sessionId: strOpt(o, "sessionId") ?? null, pid: num(o, "pid") };
+}
+
+// "Desktop" or the folder, for "Saved to …".
+export function exportPlaceText(r: ExportResult): string {
+  if (r.onDesktop) return "Desktop";
+  const i = Math.max(r.path.lastIndexOf("\\"), r.path.lastIndexOf("/"));
+  return i > 0 ? r.path.slice(0, i) : r.path;
 }
 
 export function sizeText(n: number): string {
@@ -383,4 +405,80 @@ export function loadedSinceInstall(status: SetupStatus): boolean {
   if (!last) return false;
   const loaded = Date.parse(last.at), installed = status.install ? Date.parse(status.install.installedAt) : NaN;
   return Number.isNaN(loaded) || Number.isNaN(installed) || loaded >= installed;
+}
+
+// -- Melange updating itself (`update.*`, the "update" channel) ---------------------------------------------------
+// idle: nothing known yet · checking · downloading · ready: downloaded and verified, "Restart to update" · current:
+// this is the latest · error: a check the user asked for failed (an automatic one fails silently)
+export type UpdatePhase = "idle" | "checking" | "downloading" | "ready" | "current" | "error";
+export interface UpdateApplied { ok: boolean; version: string; message: string; warnings: string[]; }
+export interface UpdateStatus {
+  current: string; phase: UpdatePhase; latest?: string; htmlUrl?: string;
+  progress?: { got: number; total: number }; error?: string; lastCheck?: string; applied?: UpdateApplied;
+  auto?: boolean;   // Settings › Updates › Check for updates automatically (the launcher at start and the game daily)
+}
+
+const UPDATE_PHASES: UpdatePhase[] = ["idle", "checking", "downloading", "ready", "current", "error"];
+
+export function updateStatusOf(v: unknown): UpdateStatus {
+  const o = obj(v);
+  const progress = o.progress && typeof o.progress === "object" ? obj(o.progress) : undefined;
+  const applied = o.applied && typeof o.applied === "object" ? obj(o.applied) : undefined;
+  const htmlUrl = strOpt(o, "htmlUrl");
+  return {
+    current: str(o, "current"),
+    phase: UPDATE_PHASES.includes(o.phase as UpdatePhase) ? (o.phase as UpdatePhase) : "idle",
+    latest: strOpt(o, "latest"),
+    // Only a GitHub page is ever linked: the value comes from the network, through the launcher.
+    htmlUrl: htmlUrl && /^https:\/\/github\.com\//.test(htmlUrl) ? htmlUrl : undefined,
+    progress: progress ? { got: num(progress, "got"), total: num(progress, "total") } : undefined,
+    error: strOpt(o, "error"), lastCheck: strOpt(o, "lastCheck"),
+    applied: applied ? { ok: bool(applied, "ok"), version: str(applied, "version"), message: str(applied, "message"), warnings: strs(applied, "warnings") } : undefined,
+    auto: typeof o.auto === "boolean" ? o.auto : undefined,
+  };
+}
+
+export function updateEventOf(v: unknown): UpdateStatus | undefined {
+  const o = obj(v);
+  return o.status && typeof o.status === "object" ? updateStatusOf(o.status) : undefined;
+}
+
+// -- Restore vanilla (`setup.vanillaPlan` / `setup.vanillaApply`) ---------------------------------------------------
+// Everything in the game folder that isn't the stock game goes, for good; replays move to Documents\Melange\replays.
+export interface VanillaGroup { id: string; label: string; files: number; }
+export interface VanillaPlan {
+  planId: string; refused?: string; groups: VanillaGroup[]; files: number; bytes: number; sample: string[];
+  replays: string[]; replaysDir: string; modified: string[]; modifiedCount: number; missing: string[]; missingCount: number;
+  overwrites: boolean; verify: boolean; store: Store; selfInGame: boolean;
+}
+export interface VanillaResult {
+  ok: boolean; deleted: number; dirsRemoved: number; moved: { from: string; to: string }[]; replaysDir: string;
+  failed: string[]; modified: string[]; missing: string[]; modifiedCount: number; missingCount: number;
+  verify: boolean; verifyStarted: boolean; store: Store; selfPending: boolean;
+}
+
+const storeOf = (o: Rec): Store => (STORES.includes(o.store as Store) ? (o.store as Store) : "unknown");
+
+export function vanillaPlanOf(v: unknown): VanillaPlan {
+  const o = obj(v);
+  return {
+    planId: str(o, "planId"), refused: strOpt(o, "refused"),
+    groups: arr(o, "groups").map((g) => { const go = obj(g); return { id: str(go, "id"), label: str(go, "label") || str(go, "id"), files: num(go, "files") }; })
+      .filter((g) => g.files > 0),
+    files: num(o, "files"), bytes: num(o, "bytes"), sample: strs(o, "sample"), replays: strs(o, "replays"), replaysDir: str(o, "replaysDir"),
+    modified: strs(o, "modified"), modifiedCount: numOpt(o, "modifiedCount") ?? strs(o, "modified").length,
+    missing: strs(o, "missing"), missingCount: numOpt(o, "missingCount") ?? strs(o, "missing").length,
+    overwrites: bool(o, "overwrites"), verify: bool(o, "verify"), store: storeOf(o), selfInGame: bool(o, "selfInGame"),
+  };
+}
+
+export function vanillaResultOf(v: unknown): VanillaResult {
+  const o = obj(v);
+  return {
+    ok: bool(o, "ok"), deleted: num(o, "deleted"), dirsRemoved: num(o, "dirsRemoved"),
+    moved: arr(o, "moved").map((m) => { const mo = obj(m); return { from: str(mo, "from"), to: str(mo, "to") }; }),
+    replaysDir: str(o, "replaysDir"), failed: strs(o, "failed"), modified: strs(o, "modified"), missing: strs(o, "missing"),
+    modifiedCount: numOpt(o, "modifiedCount") ?? strs(o, "modified").length, missingCount: numOpt(o, "missingCount") ?? strs(o, "missing").length,
+    verify: bool(o, "verify"), verifyStarted: bool(o, "verifyStarted"), store: storeOf(o), selfPending: bool(o, "selfPending"),
+  };
 }

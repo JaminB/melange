@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { DllInfo, GameCheck, MelangeState, SetupStatus, Verdict } from "../../src/launcher/api";
 import { LauncherErrorCode } from "../../src/launcher/api";
-import { busyNotice, checkCopy, errorCopy, findCopy, loaderChecklistLine, loaderCopy, melangeCopy, planLine } from "../../src/launcher/copy";
+import { busyNotice, checkCopy, errorCopy, findCopy, loaderChecklistLine, loaderCopy, melangeCopy, planLine, vanillaFoundText, vanillaOthers, vanillaVerifyText } from "../../src/launcher/copy";
 
 const VERDICTS: Verdict[] = ["ok", "wrongBuild", "noExe", "notFound", "unreadable"];
 const check = (verdict: Verdict, extra: Partial<GameCheck> = {}): GameCheck =>
@@ -122,4 +122,21 @@ test("planLine: every op renders a readable verb", () => {
     assert.ok(/melange\.asi/.test(line));
     assert.ok(line.length > "melange.asi".length);
   }
+});
+
+test("vanillaFoundText: names frameworks, counts plugins and the rest", () => {
+  const groups = [{ id: "melange", label: "Melange", files: 9 }, { id: "renewation", label: "Renewation HD 0.2A2", files: 200 },
+    { id: "wumpatch", label: "WUMPatch", files: 3 }, { id: "asi", label: "ASI plugins", files: 3 }, { id: "other", label: "Other files", files: 12 }];
+  assert.equal(vanillaFoundText(groups), "Melange, Renewation HD 0.2A2, WUMPatch, 3 ASI plugins and 12 other files not part of the game");
+  assert.equal(vanillaFoundText([{ id: "asi", label: "ASI plugins", files: 1 }]), "1 ASI plugin");
+  assert.equal(vanillaFoundText([]), "");
+  assert.deepEqual(vanillaOthers(groups).map((g) => g.id), ["renewation", "wumpatch", "asi"]);
+});
+
+test("vanillaVerifyText: Steam verifies, other stores are told to verify or reinstall", () => {
+  assert.ok(/Steam verifies/.test(vanillaVerifyText("steam")));
+  assert.ok(/Steam is verifying/.test(vanillaVerifyText("steam", true)));
+  assert.ok(/Verify integrity of game files/.test(vanillaVerifyText("steam", false)));
+  assert.ok(/GOG Galaxy or reinstall/.test(vanillaVerifyText("gog")));
+  assert.ok(/GOG Galaxy or reinstall/.test(vanillaVerifyText("unknown", true)));
 });

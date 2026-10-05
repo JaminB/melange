@@ -1,16 +1,20 @@
 // Offline self-test for the plugin store: index parsing and caps, URL rules, version selection, dependency plans,
-// the zip rules, the install engine against a temp Mods\ folder, file:// fetches and the shared change gate.
+// the zip rules, the install engine against a temp Mods\ folder, file:// fetches, the shared change gate and the
+// compatibility sweep (store/compat.h).
 // Exit code 0 = all passed.
 #include <windows.h>
 
 #include <miniz.h>
 
+#include <algorithm>
 #include <cstdio>
 #include <cstring>
+#include <set>
 #include <string>
 #include <vector>
 
 #include "levels/session.h"
+#include "store/compat.h"
 #include "store/fetch.h"
 #include "store/index.h"
 #include "store/install.h"
@@ -535,6 +539,101 @@ void TestGate() {
     lobby.inLobby = true;
     Expect(se::ChangeRefusal(lobby, se::For::Packs) == "packs cannot change in a lobby or a network game", "packs keep their message");
 }
+
+// --- the compatibility sweep (store/compat.h) ----------------------------------------------------------------
+std::string RangedSpice(const std::string& id, const std::string& range, const std::string& extra = "") {
+    return "{\"spiceVersion\":1,\"id\":\"" + id + "\",\"version\":\"1.0.0\",\"name\":\"" + id + " name\",\"melange\":{\"range\":\"" + range +
+           "\"},\"kind\":\"client-only\"" + extra + "}";
+}
+
+void PutMod(const std::wstring& mods, const std::wstring& folder, const std::string& spice) {
+    CreateDirectoryW((mods + L"\\" + folder).c_str(), nullptr);
+    if (!spice.empty()) WriteFile(mods + L"\\" + folder + L"\\spice.json", spice);
+}
+
+bool IsDir(const std::wstring& p) {
+    const DWORD a = GetFileAttributesW(p.c_str());
+    return a != INVALID_FILE_ATTRIBUTES && (a & FILE_ATTRIBUTE_DIRECTORY);
+}
+
+void TestCompat() {
+    namespace cp = melange::compat;
+    const std::wstring mods = Tmp(L"CompatMods");
+    CreateDirectoryW(mods.c_str(), nullptr);
+    CreateDirectoryW((mods + L"\\.store").c_str(), nullptr);
+    WriteFile(mods + L"\\.store\\installed.json", "{\"_serialSeen\":3,\"storeold\":{\"version\":\"1.0.0\"},\"maps\":{\"version\":\"2.0.0\"}}");
+
+    // Check: what counts as "can never load here".
+    PutMod(mods, L"fine", RangedSpice("fine", ">=0.3.0 <0.4.0"));
+    PutMod(mods, L"m1", "");   // an M1-era folder without spice.json: the implicit manifest is always compatible
+    PutMod(mods, L"future", RangedSpice("future", ">=0.4.0"));
+    PutMod(mods, L"garbled", RangedSpice("garbled", ">=0.3.0 lol"));
+    PutMod(mods, L"broken", "{\"spiceVersion\":1,");
+    PutMod(mods, L"newschema", Sub(RangedSpice("newschema", ">=0.1.0"), "\"spiceVersion\":1", "\"spiceVersion\":2"));
+    PutMod(mods, L"storeold", RangedSpice("storeold", ">=9.0.0"));
+    PutMod(mods, L"maps-1", RangedSpice("maps-1", ">=0.1.0", ",\"generated\":{\"by\":\"maps\",\"recipe\":\"r\",\"format\":1}"));
+    PutMod(mods, L".hidden", RangedSpice("hidden", ">=9.0.0"));
+    Expect(cp::Check(mods + L"\\fine", "0.3.6").empty(), "compat: a satisfied range loads");
+    Expect(cp::Check(mods + L"\\m1", "0.3.6").empty(), "compat: no spice.json is compatible");
+    Expect(cp::Check(mods + L"\\future", "0.3.6") == "needs Melange >=0.4.0, you have 0.3.6", "compat: an unmet range: " +
+           cp::Check(mods + L"\\future", "0.3.6"));
+    Expect(cp::Check(mods + L"\\future", "0.4.0").empty(), "compat: the same plugin loads on the version it asks for");
+    Expect(cp::Check(mods + L"\\garbled", "0.3.6").find("malformed") != std::string::npos, "compat: a malformed range");
+    Expect(cp::Check(mods + L"\\broken", "0.3.6").find("spice.json is invalid") != std::string::npos, "compat: unparsable spice.json");
+    Expect(cp::Check(mods + L"\\newschema", "0.3.6").find("spiceVersion") != std::string::npos, "compat: an unknown spiceVersion");
+
+    const std::set<std::string> ids = cp::StoreIds(mods);
+    Expect(ids.size() == 2 && ids.count("storeold") && ids.count("maps") && !ids.count("_serialSeen"), "compat: Store ids from installed.json");
+    Expect(cp::IsStore(ids, "maps-1", "maps") && !cp::IsStore(ids, "fine", "") && !cp::IsStore(ids, "x", "fine"),
+           "compat: a pack a Store importer made counts as Store");
+
+    // A quarantined folder of the same name is never overwritten: the next one is <folder>-2.
+    CreateDirectoryW((mods + L"\\.incompatible").c_str(), nullptr);
+    CreateDirectoryW((mods + L"\\.incompatible\\future").c_str(), nullptr);
+    std::vector<std::string> forgot;
+    cp::SweepContext c;
+    c.modsDir = mods;
+    c.melangeVersion = "0.3.6";
+    c.forget = [&](const std::string& id) { forgot.push_back(id); };
+    const cp::Report r = cp::Sweep(c);
+    Expect(r.quarantined.size() == 4, "compat: four local plugins quarantined, got " + std::to_string(r.quarantined.size()));
+    Expect(r.store.size() == 1 && r.store[0].id == "storeold" && r.store[0].reason == "needs Melange >=9.0.0, you have 0.3.6",
+           "compat: the Store plugin is handed back, not moved");
+    Expect(IsDir(mods + L"\\storeold") && IsDir(mods + L"\\fine") && IsDir(mods + L"\\m1") && IsDir(mods + L"\\maps-1") &&
+               IsDir(mods + L"\\.hidden"),
+           "compat: compatible, Store and dot folders stay");
+    Expect(!IsDir(mods + L"\\future") && IsDir(mods + L"\\.incompatible\\future-2") && IsDir(mods + L"\\.incompatible\\future"),
+           "compat: moved to future-2 beside the earlier one");
+    Expect(IsDir(mods + L"\\.incompatible\\garbled") && IsDir(mods + L"\\.incompatible\\broken") && IsDir(mods + L"\\.incompatible\\newschema"),
+           "compat: malformed range, broken and unknown-schema plugins moved");
+    Expect(ReadFile(mods + L"\\.incompatible\\future-2\\.melange-quarantine.json").find("\"from\":\"Mods\\\\future\"") != std::string::npos,
+           "compat: the quarantine record says where it came from");
+    Expect(forgot.size() == 4 && std::find(forgot.begin(), forgot.end(), "broken") != forgot.end(), "compat: thumper-state entries dropped");
+
+    std::vector<cp::Notice> notes = cp::LoadNotices(mods);
+    Expect(notes.size() == 4, "compat: one notice per move");
+    bool sawFuture = false;
+    for (const cp::Notice& n : notes)
+        if (n.id == "future") {
+            sawFuture = n.action == "quarantined" && n.folder == ".incompatible\\future-2" && n.melange == "0.3.6" && !n.key.empty() &&
+                        cp::Text(n) == "Moved future name to Mods\\.incompatible\\future-2: needs Melange >=0.4.0, you have 0.3.6";
+        }
+    Expect(sawFuture, "compat: the notice names the folder, the reason and the version");
+    Expect(cp::NoticesJson(notes).find("\"text\":\"Moved ") != std::string::npos, "compat: notices JSON carries the line to show");
+    Expect(cp::Sweep(c).quarantined.empty(), "compat: a second sweep has nothing left to move");
+
+    Expect(cp::DismissNotice(mods, notes[0].key) && cp::LoadNotices(mods).size() == 3, "compat: dismiss one notice");
+    Expect(!cp::DismissNotice(mods, "nope"), "compat: an unknown key changes nothing");
+    cp::Notice extra;
+    extra.id = "x";
+    extra.action = "removed";
+    for (int i = 0; i < 60; ++i) cp::AddNotice(mods, extra);
+    notes = cp::LoadNotices(mods);
+    std::set<std::string> keys;
+    for (const cp::Notice& n : notes) keys.insert(n.key);
+    Expect(notes.size() == cp::kMaxNotices && keys.size() == notes.size(), "compat: notices are capped and keys stay unique");
+    Expect(cp::DismissNotice(mods, "") && cp::LoadNotices(mods).empty(), "compat: dismiss all");
+}
 }  // namespace
 
 int main() {
@@ -550,6 +649,7 @@ int main() {
     TestEngine();
     TestFetch();
     TestGate();
+    TestCompat();
     in::DeleteTree(g_tmp);
     printf("store_selftest: %d passed, %d failed\n", g_pass, g_fail);
     return g_fail ? 1 : 0;

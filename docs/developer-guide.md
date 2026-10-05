@@ -29,13 +29,13 @@ Every module has its own section in `Melange.ini`, and `Enabled=0` turns a modul
 | `Overlay` | on | The in-game overlay (`ToggleKey`, `PassthroughKey`) |
 | `EventBus` | on | The engine message bus for modules |
 | `Logging` | on | Structured JSONL session logs |
-| `LogExport` | on | "Save logs" zip export (`Hotkey`) |
+| `LogExport` | on | Log zips: one-click "Export last game's logs" (`Hotkey`) and "Save logs as..." |
 | `EngineLog` | on | Copies the engine's own log into `Melange.log` |
 | `SteamTrace` | on | Logs Steam lobby, P2P and callback activity |
 | `NetTrace` | on | Logs raw Winsock calls |
 | `WindowTag` | on | Shows the Melange version in the window title |
-| `FrameInterval` | on | Sets the engine frame interval (`IntervalMs=16` is about 60 fps); "Classic timing" (`ClassicTiming=0`) raises the OS timer resolution to 1 ms (`timeBeginPeriod`) for steadier pacing on systems that stutter at the default resolution. Toggle in the overlay menu *Game* |
-| `SmoothSixty` | on (`On=0`) | "Smooth 60": lifts the engine's frame limiter and uses vsync. Toggle in the overlay menu *Game* |
+| `FrameInterval` | on | Sets the engine frame interval (`IntervalMs=16` is about 60 fps); "Classic timing" (`ClassicTiming=0`) raises the OS timer resolution to 1 ms (`timeBeginPeriod`) for steadier pacing on systems that stutter at the default resolution. Switch it with *Game > Classic timing* in the overlay (checked while on) |
+| `SmoothSixty` | on (`On=0`) | "Smooth 60": lifts the engine's frame limiter and uses vsync. Switch it with *Game > Smooth 60* in the overlay (checked while on) |
 | `Mirage` | on | Graphics layer core: renderer access, scene stages for mods, mod folders |
 | `MirageTrace` | on | OpenGL call statistics (`Mode=count`), frame capture (`CaptureHotkey`), texture dumper, GPU compatibility report |
 | `MirageShaders` | on | Shader mods: replacements, patches, live reload, sliders; fixes the game's FXAA on AMD and Intel (`FixFxaa`) |
@@ -48,6 +48,7 @@ Every module has its own section in `Melange.ini`, and `Enabled=0` turns a modul
 | `Store` | on | The plugin store (*Thumper/Store*, the Oasis Store panel): fetches the list only when you open it ([Plugin store](#plugin-store)) |
 | `Oasis` | on | The local web app on 127.0.0.1 ([oasis.md](oasis.md)); nothing listens until you open it |
 | `Wormsign` | on | The match's tick clock and a per-tick state hash (`wum.wormsign.tick()`); records a rolling library of recent matches to `Documents\Melange\replays` (last 20 / 200 MB by default, `wum.wormsign.library()`), match replays checked tick by tick (*Wormsign/Replay*); online, it compares the hashes with other Melange players and reports the first tick where they disagree ([wormsign.md](wormsign.md)); build #1077 only |
+| `Update` | on (`CheckInGame=1`) | At most once a day, about 10 s after the game starts and off the main thread, asks GitHub for the latest Melange release and shows a toast when it is newer ("it installs the next time you open Melange.exe"). Downloads nothing; the time of the last check is in `Documents\Melange\update-check.json`. `Melange.exe`'s *Settings › Updates › Check for updates automatically* writes `CheckInGame` ([Updates](#updates)) |
 
 ![The "Smooth 60" toggle in the overlay's Game menu](images/overlay/smooth60-menu-item.png)
 
@@ -60,7 +61,21 @@ Every module has its own section in `Melange.ini`, and `Enabled=0` turns a modul
 | `Documents\Melange\logs\<session>\` | Structured session log (`events.jsonl`) |
 | `Documents\Melange\replays\desync-*.zip` | Desync bundles: what differed between two players, and at which tick |
 
-To report a bug, press `Ctrl+Shift+F11` in the game, or choose *File > Save logs as...* in the overlay, and attach the zip (it includes the newest desync bundle). In fullscreen, the zip goes to `Documents\Melange\exports` instead of opening a save dialog.
+To report a bug, export the last game's logs and attach the zip. It takes one click, with no dialog:
+
+- in the game: `Ctrl+Shift+F11` (`[LogExport] Hotkey`), or *File > Export last game's logs* in the overlay;
+- with the game closed: *Export last game's logs* on Melange.exe's *Help* page (or under the status cards on *Home*).
+
+The zip goes to the Desktop as `Melange-logs-<YYYYMMDD-HHMMSS>.zip` (`Documents\Melange\exports` when the Desktop is not writable). Windowed, Explorer opens with the zip selected; in fullscreen the game only shows a toast with the path, so it does not lose focus. Melange.exe shows "Saved to Desktop · Show in folder".
+
+"Last game" is one game process: the newest session folder (in the game, the running one), and with it
+
+- every match recording (`wsr-*-p<pid>-*.wsr`) and desync bundle (`desync-*-p<pid>-*.zip`) whose name carries that session's pid, not just the newest;
+- the minidumps and the engine's XOM/Net logs written during that session (its folder name to its last write, plus 15 minutes);
+- `Melange.log` and `Melange.prev.log`, Melange.exe's `launcher.log` and `launcher.1.log` (from `%LOCALAPPDATA%\Melange`);
+- the `.ini` files, the mods (`mods/spice.json`: each mod's id, name and version; `thumper-state.json`; the Store's `installed.json`; the `.asi` plugins) and `system.json`. From inside the game it also has the GPU report and the installed modules.
+
+`manifest.json` records which game it is (`game.sessionId`, `game.pid`, its time window) next to the size and SHA-256 of every file. *File > Save logs as...* is still there: a save dialog and the newest `Sessions` (default 3) session folders with the newest bundle and recording, whichever game they came from; in fullscreen it writes to `Documents\Melange\exports`. Both exports, in the game and in Melange.exe, go through the same code (`src/tools/log_export_core.cpp`) and the same redaction: the Windows user and computer names are replaced, and SteamIDs and IP addresses are replaced with a hash that is different in every zip (recordings included). For scripted tests, the automation verbs `savelogs <path.zip>` (Save logs as) and `savelogs-last [<path.zip>]` (the one-click contents; without a path, to the Desktop, without Explorer or a toast) write the zip in the background.
 
 The zip includes a GPU compatibility report (`gpu/compat.txt`): graphics card, driver, OpenGL version and extensions, the Cg shader profiles your card supports, and which shaders and effects loaded or were skipped and why. The overlay panel *Mirage/GPU* shows the same report.
 
@@ -127,7 +142,7 @@ The game's shaders are the Cg files in `<game>\CG\`. A mod changes them from its
 
 Saving a file reloads the shaders that use it while the game runs. The new source is compiled first: if it has errors, the game keeps the running shader, and the errors go to the log and the panel.
 
-`[MirageShaders] FixFxaa=1` (the default) fixes the game's own FXAA pass (the `/FXAA` launch option), which does not compile on AMD and Intel GPUs. The panel also switches FXAA on and off while the game runs.
+`[MirageShaders] FixFxaa=1` (the default) fixes the game's own FXAA pass (the `/FXAA` launch option), which does not compile on AMD and Intel GPUs. The panel, and *Mirage > Shaders > FXAA* in the overlay menu (checked while on), also switch FXAA on and off while the game runs.
 
 | `FixFxaa` off | `FixFxaa` on |
 |---|---|
@@ -236,7 +251,7 @@ An effect is a folder `<game>\Mods\<id>\postfx\<effect>\` with an `effect.ini` a
 - `PostWorld` changes the world only: worm labels and the HUD are drawn on top afterwards.
 - `Final` changes the whole frame, just before the game copies it to the screen. The game's own FXAA and sepia still apply afterwards.
 
-Open the overlay's *Mirage/Post-FX* panel to switch effects on, change their order, drag their parameters and see what each one costs on the GPU. *Split compare* shows the left half of the screen without the effects. `Ctrl+Shift+F8` (`[MiragePostFX] ToggleKey`) bypasses the whole stack. Your choices are saved in `[MiragePostFX]` in `Melange.ini`. Editing an effect's files while the game runs reloads it. A shader that fails to compile is reported in the panel and the log, and the other effects keep running. So is one that compiles and then draws nothing: a graphics driver can accept a large shader without an error and produce a program that does not draw, so after each compile Melange checks the output of an effect's runs until its last pass has written pixels, and fails the effect if it has written none for three seconds. A warning the driver gives for a shader that compiled is logged too.
+Open the overlay's *Mirage/Post-FX* panel to switch effects on, change their order, drag their parameters and see what each one costs on the GPU. *Split compare* shows the left half of the screen without the effects. `Ctrl+Shift+F8` (`[MiragePostFX] ToggleKey`) or *Mirage > Post-FX > Enabled* in the overlay menu (checked while the effects run) bypasses the whole stack. Your choices are saved in `[MiragePostFX]` in `Melange.ini`. Editing an effect's files while the game runs reloads it. A shader that fails to compile is reported in the panel and the log, and the other effects keep running. So is one that compiles and then draws nothing: a graphics driver can accept a large shader without an error and produce a program that does not draw, so after each compile Melange checks the output of an effect's runs until its last pass has written pixels, and fails the effect if it has written none for three seconds. A warning the driver gives for a shader that compiled is logged too.
 
 ![The overlay's Mirage/Post-FX panel: effects listed by stage, with GPU/CPU cost per effect](images/mirage/postfx-panel.png)
 
@@ -359,6 +374,21 @@ a folder without one still loads, unchanged, as a client-only mod named after it
 - Choices are saved to `Mods\thumper-state.json` (falling back to `Documents\Melange` if the game folder
   is read-only). The overlay's *Thumper/Mods* panel lists every mod with its state and reason, and
   *Thumper/Deep Desert* lists every grant.
+- **Store and local plugins.** A plugin with a record in `Mods\.store\installed.json` (whatever version), or a map
+  pack an installed Store importer generated, is a Store plugin; any other is local. The *Thumper/Mods* panel, the
+  Oasis Mods panel and Melange.exe's Plugins page list only Store plugins until *Show local plugins* is ticked
+  (`showLocal` in `thumper-state.json`, shared by all three), with a hint such as "3 local plugins hidden (1 on)".
+  This is display only: a hidden plugin keeps its switch and still loads.
+- **Compatibility sweep.** A plugin this Melange can never load (broken `spice.json`, unknown `spiceVersion`,
+  malformed or unmet `melange.range`) is moved out of `Mods\` before Thumper's first scan, and by Melange.exe when
+  it opens a game folder the game is not running from: a local one to `Mods\.incompatible\<folder>\`, a Store one is
+  updated or removed through the Store engine (`store::Reconcile`). Every action is logged (`[compat]`, `[store]`,
+  jlog `thumper.quarantine`) and leaves a notice the three pages show until dismissed. Details:
+  [spice.md](spice.md#compatibility-sweep). The shared code is `src/store/compat.cpp`; in Melange.exe,
+  `launcher::storehost::RequestSweep(version)` (any thread) or `SweepNow(version)` runs it against another version,
+  e.g. one an update just installed.
+
+`[Thumper]` keys beyond the ones above: `SweepIncompatible` (`1`; `0` leaves incompatible plugins in place, unloaded).
 
 `dist\Mods\` includes `hello-spice` and `sim-sampler` as disabled samples (`defaultEnabled: false`); a
 newly discovered mod without that flag starts enabled.
@@ -371,9 +401,11 @@ workflow, and the list pins each zip's SHA-256. Open *Thumper/Store* in the over
 *Thumper/Mods*), or the **Store** panel in Oasis.
 
 - **Privacy.** The list is fetched from GitHub only when a Store page opens or you press *Refresh*; screenshots only
-  when you open a plugin's details; a zip only when you install it. Nothing runs at start-up or on a timer, and
-  nothing about you or your game is sent: the requests are plain HTTPS `GET`s with the user agent `Melange/<version>`
-  and no cookies, credentials or query strings. GitHub sees your IP address, as with any download.
+  when you open a plugin's details; a zip only when you install it. Nothing runs on a timer, and at start-up only one
+  thing does: when Melange.exe finds a Store plugin that this Melange cannot load, it fetches the list and the
+  version that can (the compatibility sweep, see [Mods (Thumper)](#mods-thumper)). The game never does. Nothing about you or
+  your game is sent: the requests are plain HTTPS `GET`s with the user agent `Melange/<version>` and no cookies,
+  credentials or query strings. GitHub sees your IP address, as with any download.
 - **What an install does.** The zip is downloaded to `Mods\.store\dl\`, its length and SHA-256 must match the list,
   every entry is checked before a byte is written (no absolute or `..` paths, links, device names, hidden files,
   executables, or entries larger than they claim), and it is unpacked into `Mods\.store\stage\`. Its `spice.json`
@@ -392,6 +424,8 @@ workflow, and the list pins each zip's SHA-256. Open *Thumper/Store* in the over
   is older than one seen before, updates and installs are disabled until a newer list arrives.
 - A mod you put in `Mods\` by hand shows as "Installed manually"; the Store replaces it only after a confirm, and
   never removes it.
+- **Plugins that stop loading.** A Store plugin this Melange cannot load is updated to a version that can, or
+  removed when the list has none, by the compatibility sweep (see [Mods (Thumper)](#mods-thumper)).
 
 `[Store]` in `Melange.ini`:
 
@@ -405,7 +439,7 @@ workflow, and the list pins each zip's SHA-256. Open *Thumper/Store* in the over
 The Store keeps its files in `Mods\.store\` (Thumper ignores folders that start with a dot): `installed.json` (what
 it installed, by version and hash), the last fetched list for offline display, a screenshot cache, and
 `pending.json` for changes waiting for the next launch. Deleting the folder makes every plugin count as manually
-installed. To publish a plugin, see the melange-plugins repository's `CONTRIBUTING.md`; `tools/store.py pack` there
+installed (and so local, hidden on the Mods pages until *Show local plugins*). To publish a plugin, see the melange-plugins repository's `CONTRIBUTING.md`; `tools/store.py pack` there
 builds the exact zip the Store will install, so you can drop it into `Mods\` and test it first.
 
 ## Lua scripting
@@ -489,7 +523,7 @@ The public SDK headers are in `src/sdk/melange/`:
 | Header | Purpose |
 |---|---|
 | `melange/bus.h` | Subscribe to engine messages by name or id, read their payloads, and register payload decoders |
-| `melange/overlay.h` | Add overlay panels, menu items and hotkeys |
+| `melange/overlay.h` | Add overlay panels, menu items and hotkeys. The *View* menu lists every panel, with a `/` in its title (`"Tools/Grid"`, no blanks around it) making a submenu; `AddToggleMenuItem` adds an item that shows a check mark while its getter returns true |
 | `melange/jlog.h` | Write structured records to the session log, and read the in-memory tail |
 | `melange/export.h` | Start a "Save logs" export, or write one to a given path |
 | `melange/testcmd.h` | Register named text commands for scripted testing |
@@ -557,7 +591,7 @@ You need:
 - **Home:** shows status cards for your game, loader, Melange and plugins, with actions like Launch, Repair or Update.
 - **Plugins:** enable/disable installed plugins and configure their settings.
 - **Store:** browse and install plugins from the plugin store.
-- **Settings:** change your game folder, manage backups, edit plugin defaults, view logs.
+- **Settings:** change your game folder, check for updates, manage backups, edit plugin defaults, view logs.
 
 The launcher runs a local web server and embeds the same Oasis web app in Windows' Edge WebView2 component. It finds the game from Steam/GOG libraries or lets you browse, validates `WormsMayhem.exe` by SHA-256 against build #1077, and manages the ASI loader and plugin installation as atomic transactions with rollback on failure.
 
@@ -568,7 +602,74 @@ Command line:
 - `Melange.exe` — run the window; first run if no game is saved.
 - `Melange.exe --game <dir>` — use this game folder (does not overwrite the saved one without your confirmation).
 - `Melange.exe --browser` — no WebView2 window, open the default browser instead (accessible only from `127.0.0.1`).
-- `Melange.exe --serve` — headless server for testing, prints the launch URL to stdout.
+- `Melange.exe --serve` — headless server for testing, prints the launch URL to stdout. It does not look for updates by itself.
+
+### Restore vanilla
+
+*Settings › Restore vanilla* makes the game folder stock Worms Ultimate Mayhem again (`src/launcher/setup/vanilla.*`,
+`setup.vanillaPlan` / `setup.vanillaApply`). It is not an uninstall: it removes every mod framework, not just
+Melange, and keeps no backup.
+
+- **Stock list.** `res/wum-1077-stock.tsv` (`relative\path<TAB>size`, 2130 files) is embedded in Melange.exe as the
+  `WUM_STOCK` resource (`res/stock.rc`). It was taken from a clean Steam install of build #1077, freshly verified,
+  with the `*.csh` shader caches left out. `scripts/gen-stock-manifest.ps1 -GameDir <clean install>` regenerates it.
+- **Plan.** Same gates as an install: the configured folder must hold the #1077 `WormsMayhem.exe`, the game must be
+  closed, and the folder must not be protected. Every file not in the list is deleted, except files the game
+  writes: `local.cfg`, `Default.cfg`, `steam_appid.txt`, `user.cfg`, `*.csh`, `XOM*-*.log`, `Net_*.log`, `Redist\`.
+  Saves live in Steam's `userdata`, outside the folder. The plan names what it found so the dialog can warn about
+  it: Melange, the loader DLLs (`dinput8`, `dsound`, `winmm`, `version`, `d3d9`, `xinput1_3`, `winhttp`, `wininet`,
+  `opengl32`, identified by `dll_id`), ReShade, Special K, dgVoodoo, Renewation HD (by `Version.txt`, with every
+  extra file under `Data\`), WUMPatch, Worms4UHD MouseFix and loose ASI plugins. Stock files whose size differs, or
+  that are missing, are listed.
+- **Apply.** Replays (`*.wsr`, `desync-*.zip`) move to `Documents\Melange\replays` first, never overwriting
+  (`name (2).wsr`). If one can't be moved, nothing is deleted. Then the files are deleted and the non-stock folders
+  left empty are removed. A running `Melange.exe` in the game folder is deleted by a hidden `cmd` once the
+  process has exited (after *Close Melange*). Access denied on the first file is `-32010`. The page offers
+  *Restart as administrator* (`setup.elevate {resume: "vanilla"}`), and the elevated run reopens the dialog.
+- **Afterwards.** `launcher.json` forgets the game folder, first run, default plugins and the last update check
+  (`ResetForVanilla`; theme, window and any other preference stay), and `updates\` is emptied. If stock files were
+  changed or missing, or Renewation HD or WUMPatch was found (they overwrite stock files), Steam installs get
+  `steam://validate/70600`. Others are told to verify in GOG Galaxy or reinstall. Everything is logged to
+  `launcher.log` (`[vanilla]`).
+
+### Updates
+
+Melange keeps itself up to date (`src/launcher/updater.*`, `src/launcher/update_host.cpp`, `src/update/`):
+
+1. **Check.** Each time `Melange.exe` starts (unless *Check for updates automatically* is off), and from
+   *Settings › Updates › Check for updates*, a background thread
+   sends `GET https://api.github.com/repos/JaminB/melange/releases/latest` (user agent `Melange/<version>`, no
+   cookies or credentials). GitHub's `/latest` never returns drafts or prereleases. The tag must be `v<version>`;
+   if that version is newer than the running one, the release must also carry `melange-<version>.json`. A release
+   without it is never offered. Offline or rate-limited is not an error: the automatic check just logs it. The time
+   of the last check is `lastUpdateCheck` in `launcher.json`.
+2. **Download.** The manifest and the zip it names are downloaded into
+   `%LOCALAPPDATA%\Melange\updates\<version>\` (only `https://github.com/JaminB/melange/releases/download/` URLs).
+   The zip's length and SHA-256 must match the manifest (and the release's asset size). It is unpacked into
+   `payload\` (plain relative names only), where `Melange.exe` and `melange.asi` must carry this version. If the
+   running `Melange.exe` is signed, both must also pass `WinVerifyTrust` with a leaf certificate of the same subject
+   and issuing organisation. `ready.json` is written last. Only the newest staged update is kept; older ones, and
+   ones no newer than the running version, are deleted at start.
+3. **Restart to update.** The banner's button (disabled while the game runs) starts
+   `payload\Melange.exe --apply-update --from <old exe folder> --pid <old pid> --game <dir>`, and the old launcher
+   exits. The new one waits for it, then runs the setup engine's install over the game folder: staged, backed up
+   to `Melange\backup\`, committed by rename, rolled back on failure. It merges new `Melange.ini` keys and copies
+   itself in as the game folder's `Melange.exe`. If Melange isn't installed in that folder, the folder is left
+   alone. If the old `Melange.exe` ran from somewhere else, that copy is replaced as well: the old file is renamed
+   to `Melange.exe.old` (deleted at the next start), along with the other release files already there. When
+   Windows refuses a write, the same apply runs again as administrator (`--elevated`, one UAC prompt). Then it
+   starts the installed `Melange.exe` normally. That start shows "Updated to x.y.z", or the error if nothing could
+   be changed, from `updates\result.json`, and calls `OnMelangeUpdated(gameDir)` once after a successful update.
+   The apply logs to `%LOCALAPPDATA%\Melange\update.log`.
+
+The game looks too (`[Update] CheckInGame=1`, the `Update` module): at most once a day, the same `GET`, compared
+by version only, with a toast if a newer Melange exists. It downloads nothing.
+
+One switch, *Settings › Updates › Check for updates automatically* (`autoUpdate` in `launcher.json`, default on,
+`update.setAuto`), covers both: off, `Melange.exe` doesn't look at start and writes `CheckInGame=0` into the game
+folder's `Melange.ini` (a running game picks it up at its next start). The launcher keeps the ini in step at start,
+after an install, repair or restore, and when a game folder is chosen, so a fresh `Melange.ini` (the template says
+`CheckInGame=1`) doesn't turn the game's check back on. *Check for updates* still works with it off.
 
 ## Releasing
 
@@ -582,7 +683,14 @@ workflow refuses a tag that doesn't match). The workflow:
    `out\stage`;
 3. signs `melange.asi`, `Melange.exe` and `tools\xomtool.exe` with Azure Artifact Signing (SHA-256, timestamped)
    and checks the signatures. `dinput8.dll` is not signed;
-4. zips the stage and creates the GitHub release for the tag (or adds to it), with the zip's SHA-256 in the notes.
+4. zips the stage, writes its update manifest `out\melange-<version>.json` with
+   `scripts\release-manifest.ps1` (`{"version", "zip", "sha256", "size"}`), and creates the GitHub release for the
+   tag (or adds to it) with **both** files attached and the zip's SHA-256 in the notes.
+
+`Melange.exe` updates itself from the latest release (see [Updates](#updates)), and only when that release has
+`melange-<version>.json` beside `melange-<version>.zip`. If you ever publish a release by hand, attach both files,
+on a tag named `v<version>` that is not a draft or prerelease. The new `Melange.exe` and `melange.asi` must be signed
+with the same publisher certificate subject as the release before it, or signed installs will refuse the update.
 
 Run it by hand from the Actions tab (`gh workflow run release.yml -f sign=false` for an unsigned dry run): the
 zip is then uploaded as a workflow artifact instead of a release. Signing uses the repository variables
@@ -593,7 +701,7 @@ zip is then uploaded as a workflow artifact instead of a release. Signing uses t
 To build a release offline, without signing:
 
 ```powershell
-.\scripts\release.ps1            # builds the public config and writes out\melange-<version>.zip
+.\scripts\release.ps1            # builds the public config and writes out\melange-<version>.zip and .json
 ```
 
 This builds with `build.ps1` and no `-PrivateDir`, so no out-of-tree modules are compiled in, then refuses to
@@ -602,4 +710,5 @@ text file staged for the zip contains a local `C:\Users` path. The zip has `mela
 `Melange.ini`, `dinput8.dll` (Ultimate ASI Loader) and its licence in `THIRD_PARTY.md`, `Melange.exe`,
 `tools\xomtool.exe`, the sample `Mods\`, `LICENSE`, `THIRD_PARTY.md` and an `INSTALL.txt` mirroring the README's
 install steps. The version comes from `project(Melange VERSION x.y.z)` in `CMakeLists.txt`. `out\` is not
-committed; the script prints the zip's SHA-256 so it can be posted alongside a GitHub release.
+committed; the script prints the zip's SHA-256 so it can be posted alongside a GitHub release, and writes the
+update manifest `out\melange-<version>.json` that must be attached to the release with the zip.

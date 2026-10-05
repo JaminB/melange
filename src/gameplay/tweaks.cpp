@@ -51,9 +51,9 @@ public:
     bool Install() override {
         classicTiming_ = Bool("ClassicTiming", false);
         if (classicTiming_) ApplyClassicTiming(true);
-        melange::overlay::AddMenuItem("Game/Classic timing (toggle)",
-                                      [](void* self) { static_cast<FrameInterval*>(self)->ToggleClassicTiming(); },
-                                      this);
+        melange::overlay::AddToggleMenuItem(
+            "Game/Classic timing", [](void* self) { static_cast<FrameInterval*>(self)->ToggleClassicTiming(); }, this,
+            [](void* self) { return static_cast<FrameInterval*>(self)->classicTiming_; });
 
         // 16 is the engine's own value: leave the site untouched so SmoothSixty can still lift it.
         int ms = Int("IntervalMs", 16);
@@ -113,8 +113,9 @@ public:
         on_ = Bool("On", false);
         if (on_ && !Apply(true)) on_ = false;
         melange::events::Subscribe(melange::events::Event::Frame, [this] { EnsureVsync(); });
-        melange::overlay::AddMenuItem("Game/Smooth 60 (toggle)",
-                                      [](void* self) { static_cast<SmoothSixty*>(self)->Toggle(); }, this);
+        melange::overlay::AddToggleMenuItem(
+            "Game/Smooth 60", [](void* self) { static_cast<SmoothSixty*>(self)->Toggle(); }, this,
+            [](void* self) { return static_cast<SmoothSixty*>(self)->on_; });
         LOG_INFO("SmoothSixty: ready (on=%d)", on_);
         return true;
     }

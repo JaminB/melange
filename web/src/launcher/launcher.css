@@ -121,6 +121,8 @@
 }
 
 .lc-notice { padding: 10px 14px; border-radius: 8px; background: var(--accent-soft); font-size: 13px; margin-bottom: 16px; display: flex; align-items: center; gap: 10px; justify-content: space-between; flex-wrap: wrap; }
+.lc-update-progress { display: flex; align-items: center; gap: 10px; margin: -4px 0 12px; }
+.lc-update-progress progress { width: 120px; height: 4px; accent-color: var(--accent-strong); }
 .lc-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; align-items: stretch; }
 @media (max-width: 879px) { .lc-grid { grid-template-columns: 1fr; } }
 .lc-card { background: var(--surface); border: 1px solid var(--border); border-radius: 10px; box-shadow: var(--shadow); padding: 16px; display: flex; flex-direction: column; gap: 6px; }
@@ -131,6 +133,10 @@
 .lc-card-detail { color: var(--muted); font-size: 12.5px; }
 .lc-card-action { margin-top: auto; align-self: flex-start; }
 .la-launch { display: flex; align-items: center; gap: 6px; }
+.lx-export { display: inline-flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.lx-export .link .btn-min { min-width: 0; }
+.lx-export .link .spin { width: 10px; height: 10px; }
+.lc-foot { margin-top: 16px; display: flex; align-items: center; gap: 6px; flex-wrap: wrap; font-size: 12px; }
 
 .lp-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 10px; }
 .lp-row { background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 12px 14px; display: flex; align-items: center; gap: 12px; }

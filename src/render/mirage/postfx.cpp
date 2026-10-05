@@ -546,7 +546,8 @@ public:
         melange::testcmd::Register("postfx.bypass", &VerbBypass);
         melange::testcmd::Register("postfx.compare", &VerbCompare);
         melange::overlay::AddPanel("mirage.postfx", "Mirage/Post-FX", &pfx::DrawPanel, nullptr);
-        melange::overlay::AddMenuItem("Mirage/Post-FX/Toggle stack", &ToggleStack, nullptr, toggle.c_str());
+        melange::overlay::AddToggleMenuItem("Mirage/Post-FX/Enabled", &ToggleStack, nullptr,
+                                            [](void*) { return !pfx::Bypassed(); }, toggle.c_str());
         uint8_t dik = 0, mods = 0;
         if (!toggle.empty() && melange::overlay::ParseHotkey(toggle.c_str(), &dik, &mods))
             melange::overlay::AddHotkey(dik, mods, &ToggleStack, nullptr);

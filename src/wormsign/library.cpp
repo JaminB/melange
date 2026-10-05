@@ -7,16 +7,13 @@
 
 #include <algorithm>
 #include <cstring>
-#include <map>
 #include <mutex>
 #include <string>
 #include <vector>
 
 #include "core/game.h"
 #include "core/log.h"
-#include "tools/hash.h"
 #include "tools/json_read.h"
-#include "tools/redact.h"
 #include "wormsign/format.h"
 #include "wormsign/records.h"
 
@@ -353,54 +350,6 @@ void OnBundleWritten(const std::wstring& path) {
         g_bundles.insert(g_bundles.begin(), std::move(b));
     }
     EnforceBundleRetentionLocked();
-}
-
-bool ExportRedacted(const std::wstring& path, const std::wstring& outPath, std::string* error, const std::string& saltIn) {
-    wsr::Reader r;
-    std::string err;
-    if (!r.OpenFile(path, &err)) {
-        if (error) *error = "could not open source: " + err;
-        return false;
-    }
-    wchar_t userBuf[256];
-    DWORD userLen = 256;
-    const std::string userName = GetUserNameW(userBuf, &userLen) ? melange::game::Narrow(userBuf) : std::string();
-    const std::string salt = saltIn.empty() ? melange::hashutil::RandomSalt() : saltIn;
-
-    wsr::Writer w;
-    if (!w.Open(outPath)) {
-        if (error) *error = "could not create " + melange::game::Narrow(outPath);
-        return false;
-    }
-    bool ok = true;
-    std::map<uint64_t, std::pair<uint32_t, uint32_t>> ticks;
-    for (const auto& e : r.Index()) ticks[e.offset] = {e.tickFrom, e.tickTo};
-    for (const auto& c : r.Chunks()) {
-        if (c.type == wsr::kINDX) continue;
-        std::vector<uint8_t> payload;
-        if (!r.Payload(c, &payload)) {
-            ok = false;
-            continue;
-        }
-        // Only the JSON chunks can carry a SteamID, IP or a path with the Windows user name in it; every other
-        // chunk type is a fixed binary record shape with no identity fields.
-        if (c.type == wsr::kHEAD || c.type == wsr::kSETP || c.type == wsr::kNOTE || c.type == wsr::kDVRG ||
-            c.type == wsr::kENGV) {
-            std::string text(payload.begin(), payload.end());
-            text = melange::redact::HashIdsAndIps(text, salt);
-            if (!userName.empty()) text = melange::redact::RedactUserName(text, userName);
-            payload.assign(text.begin(), text.end());
-        }
-        const auto t = ticks.find(c.offset);
-        const uint32_t from = t == ticks.end() ? 0 : t->second.first, to = t == ticks.end() ? 0 : t->second.second;
-        if (!w.Chunk(c.type, payload.data(), payload.size(), true, from, to)) ok = false;
-    }
-    const bool closed = w.Close();
-    if (!closed || !ok) {
-        if (error) *error = "failed while rewriting chunks";
-        return false;
-    }
-    return true;
 }
 }  // namespace melange::wormsign::library
 

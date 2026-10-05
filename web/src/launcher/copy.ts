@@ -1,6 +1,6 @@
 // The wizard's words (spec §5.3) as pure data: one function per family of states, each returning {title, body}.
 // A unit test asserts every member of every union this file switches on produces non-empty title and body.
-import type { Candidate, DllInfo, GameCheck, ImportContent, ImportJob, ImportSource, Importer, Plan, SetupProgress, SetupStatus, Verdict } from "./api";
+import type { Candidate, DllInfo, GameCheck, ImportContent, ImportJob, ImportSource, Importer, Plan, SetupProgress, SetupStatus, Store, UpdateApplied, UpdateStatus, VanillaGroup, Verdict } from "./api";
 import { LauncherErrorCode, fingerprintShort, hashShort, sizeText, whenText } from "./api";
 
 export interface Copy { title: string; body: string[]; }
@@ -293,3 +293,66 @@ export const REMOVED_TOAST = "Imported maps removed.";
 export const storeImportsLine = (pluginName: string, title: string, size: number, host: string): string =>
   `${pluginName} can download ${title} (${sizeText(size)}) from ${host} when you ask it to. The maps are imported on your PC; the plugin contains none of them.`;
 export const storeRemoveCascadeLine = (n: number): string => `This also removes the ${n} map${n === 1 ? "" : "s"} it imported.`;
+
+// -- Melange updating itself (the global banner, Home and Settings) -----------------------------------------------
+export const UPDATE_GAME_RUNNING = "Close the game to update";
+export const UPDATE_ACTION = "Restart to update";
+export const WHATS_NEW = "What's new";
+
+// The banner over every page: a quiet progress line while a download runs, the one-click restart once it is ready,
+// nothing otherwise. `blocked` says why the button is disabled (the game is running).
+export function updateBanner(u: UpdateStatus, gameRunning: boolean): { text: string; action?: string; blocked?: string } | undefined {
+  const v = u.latest ?? "";
+  if (u.phase === "downloading") {
+    const p = u.progress;
+    const pct = p && p.total > 0 ? ` ${Math.min(100, Math.floor((p.got / p.total) * 100))}%` : "";
+    return { text: `Downloading Melange ${v}…${pct}` };
+  }
+  if (u.phase === "ready") return { text: `Melange ${v} is ready`, action: UPDATE_ACTION, blocked: gameRunning ? UPDATE_GAME_RUNNING : undefined };
+  return undefined;
+}
+
+// What the last start's update did, shown once by the launcher that started after it.
+export function updateAppliedLine(a: UpdateApplied): string {
+  if (a.ok) return `Updated to Melange ${a.version}.${a.warnings.length ? ` ${a.warnings.join(" ")}` : ""}`;
+  return `Melange wasn't updated to ${a.version || "the new version"}. ${a.message || "Something went wrong; the logs on the Help page say more."}`;
+}
+
+// Settings › Updates, beside "Check for updates".
+export function updateCheckLine(u: UpdateStatus): string {
+  switch (u.phase) {
+    case "checking": return "Checking for updates…";
+    case "downloading": return `Downloading Melange ${u.latest ?? ""}…`;
+    case "ready": return `Melange ${u.latest ?? ""} is ready. Restart to update.`;
+    case "current": return `You're up to date (Melange ${u.current}).`;
+    case "error": return `Couldn't check for updates. ${u.error ?? ""}`.trim();
+    default: return u.lastCheck ? `Last checked ${whenText(u.lastCheck)}.`
+      : u.auto === false ? "Automatic checks are off." : "Melange checks for updates each time it starts.";
+  }
+}
+
+// -- Restore vanilla ------------------------------------------------------------------------------------------------
+const plural = (n: number, one: string, many = `${one}s`) => `${n} ${n === 1 ? one : many}`;
+
+// What the warning names: "Melange, Renewation HD 0.2A2, WUMPatch, 3 ASI plugins and 12 other files not part of
+// the game". Groups come in the server's display order, "other" last.
+export function vanillaFoundText(groups: VanillaGroup[]): string {
+  const parts = groups.map((g) => g.id === "asi" ? plural(g.files, "ASI plugin")
+    : g.id === "other" ? `${plural(g.files, "other file")} not part of the game` : g.label);
+  if (parts.length <= 1) return parts[0] ?? "";
+  return `${parts.slice(0, -1).join(", ")} and ${parts[parts.length - 1]}`;
+}
+
+// Mod frameworks other than Melange: the dialog says plainly that they go too.
+export function vanillaOthers(groups: VanillaGroup[]): VanillaGroup[] {
+  return groups.filter((g) => g.id !== "melange" && g.id !== "other");
+}
+
+// How the stock files a mod overwrote come back. `started`: Steam was asked to verify (after apply only).
+export function vanillaVerifyText(store: Store, started?: boolean): string {
+  if (store !== "steam") return "Verify the game files in GOG Galaxy or reinstall the game to get the original files back.";
+  if (started === false) return "Steam didn't open. In Steam, right-click Worms Ultimate Mayhem › Properties › Installed Files › Verify integrity of game files.";
+  return started ? "Steam is verifying the game files and will download the originals." : "Afterwards, Steam verifies the game files and downloads the originals.";
+}
+
+export const VANILLA_DONE = "Worms is back to stock. Melange will close.";

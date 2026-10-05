@@ -131,6 +131,43 @@ void TestMods() {
     const json::Value* en = v.Get("enabled");
     const json::Value* betaVal = en ? en->Get("beta") : nullptr;
     Expect(betaVal && betaVal->IsBool() && betaVal->boolean, "the persisted state has enabled.beta = true");
+
+    // Store or local (Mods\.store\installed.json), the game's state names, and a broken spice.json listed, not dropped.
+    WriteFile_(root + L"\\Mods\\.store\\installed.json", "{\"alpha\":{\"version\":\"1.0.0\"}}");
+    CreateDirectoryW((root + L"\\Mods\\gamma").c_str(), nullptr);
+    WriteFile_(root + L"\\Mods\\gamma\\spice.json", "{\"spiceVersion\":1,");
+    list = modsprov::ListJson(root, "1.0.0");
+    auto sourceOf = [&](const char* id) {
+        const size_t at = list.find(std::string("\"id\":\"") + id + "\"");
+        const size_t s = at == std::string::npos ? at : list.find("\"source\":\"", at);
+        return s == std::string::npos ? std::string() : list.substr(s + 10, 5);
+    };
+    Expect(sourceOf("alpha") == "store" && sourceOf("beta") == "local", "alpha is from the Store, beta is local", list);
+    const size_t gammaPos = list.find("\"id\":\"gamma\"");
+    Expect(gammaPos != std::string::npos && list.find("\"state\":\"incompatible\"", gammaPos) != std::string::npos,
+           "a broken spice.json is listed as incompatible", list);
+    CreateDirectoryW((root + L"\\Mods\\delta").c_str(), nullptr);
+    WriteFile_(root + L"\\Mods\\delta\\spice.json",
+               "{\"spiceVersion\":1,\"id\":\"delta\",\"version\":\"1.0.0\",\"name\":\"delta\",\"melange\":{\"range\":\">=0.0.0\"},"
+               "\"kind\":\"client-only\",\"permissions\":{\"unsafe\":true}}");
+    list = modsprov::ListJson(root, "1.0.0");
+    Expect(list.find("\"state\":\"pending-consent\"") != std::string::npos && list.find("pendingConsent") == std::string::npos,
+           "states use the game's names (pending-consent)", list);
+
+    // Forget drops the entry a removed plugin left behind (SetEnabled would refuse: the folder is gone).
+    Expect(modsprov::Forget(root, "beta"), "Forget succeeds");
+    melange::json::Value after;
+    Expect(json::ParseFile(root + L"\\Mods\\thumper-state.json", &after, &e) && after.Get("enabled") && !after.Get("enabled")->Get("beta"),
+           "Forget dropped enabled.beta");
+    Expect(modsprov::Forget(root, "never-there"), "Forget of an unknown id is fine");
+
+    Expect(!modsprov::ShowLocal(root), "show local is off by default");
+    Expect(modsprov::SetShowLocal(root, true) && modsprov::ShowLocal(root), "show local persists");
+    const std::string view = modsprov::ViewJson(root);
+    Expect(view.find("\"showLocal\":true") != std::string::npos && view.find("\"notices\":[]") != std::string::npos, "mods.view", view);
+    Expect(json::ParseFile(root + L"\\Mods\\thumper-state.json", &after, &e) && after.Get("enabled") && after.Get("enabled")->IsObject() &&
+               after.Get("showLocal") && after.Get("showLocal")->boolean,
+           "SetShowLocal keeps the other keys");
 }
 // ---------------------------------------------------------------- wormsign_provider
 std::wstring MakeReplaysFixture() {

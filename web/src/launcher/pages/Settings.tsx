@@ -2,14 +2,18 @@ import { useEffect, useState } from "preact/hooks";
 import type { Client } from "../../sdk/client";
 import { errorText } from "../../sdk/hooks";
 import { Ini } from "../../panels/ini";
-import type { Defaults, SetupStatus, Theme } from "../api";
-import { defaultsOf, whenText } from "../api";
-import { busyNotice } from "../copy";
+import type { Defaults, SetupStatus, Theme, UpdateStatus, VanillaResult } from "../api";
+import { defaultsOf, updateStatusOf, whenText } from "../api";
+import { RestoreVanilla } from "../components/RestoreVanilla";
+import { busyNotice, updateCheckLine } from "../copy";
 import { UndoIcon } from "../icons";
 
-export interface SettingsProps { client: Client; status: SetupStatus | undefined; theme: Theme; onTheme: (t: Theme) => void; onChangeFolder: () => void; }
+export interface SettingsProps { client: Client; status: SetupStatus | undefined; update?: UpdateStatus; theme: Theme; onTheme: (t: Theme) => void; onChangeFolder: () => void; }
+// Restore vanilla: open its dialog straight away (after an elevated restart), and what to do once it has run.
+export interface VanillaProps { resumeVanilla?: boolean; onVanillaDone: (r: VanillaResult) => void; }
 
-export function Settings({ client, status, theme, onTheme, onChangeFolder }: SettingsProps) {
+export function Settings({ client, status, update, theme, onTheme, onChangeFolder, resumeVanilla, onVanillaDone }: SettingsProps & VanillaProps) {
+  const [vanillaOpen, setVanillaOpen] = useState(!!resumeVanilla);
   const [busy, setBusy] = useState<string>();
   const [error, setError] = useState<string>();
   const [confirmUninstall, setConfirmUninstall] = useState(false);
@@ -57,6 +61,16 @@ export function Settings({ client, status, theme, onTheme, onChangeFolder }: Set
     try { await client.call("ini.set", { section: "Store", key: "IndexUrl", value: "" }); setIndexUrl((s) => (s ? { ...s, custom: false } : s)); } catch (e) { setError(errorText(e)); }
   };
 
+  // The switch follows the server's answer at once; the "update" channel brings the same value to the rest of the app.
+  const [autoSet, setAutoSet] = useState<boolean>();
+  useEffect(() => setAutoSet(undefined), [update?.auto]);
+  const autoOn = autoSet ?? update?.auto ?? true;
+  const setAuto = async (on: boolean) => {
+    setBusy("auto");
+    setError(undefined);
+    try { setAutoSet(updateStatusOf(await client.call<unknown>("update.setAuto", { on })).auto ?? on); } catch (e) { setError(errorText(e)); } finally { setBusy(undefined); }
+  };
+
   const batch = status?.busy;
   const batchWhy = batch ? busyNotice(batch) : undefined;
 
@@ -74,6 +88,24 @@ export function Settings({ client, status, theme, onTheme, onChangeFolder }: Set
           <button class="btn" onClick={onChangeFolder}>Change…</button>
           <button class="btn" disabled={!status?.game} onClick={() => client.call("launcher.openPath", { what: "game" }).catch((e) => setError(errorText(e)))}>Open folder</button>
         </div>
+      </section>
+
+      <section class="ls-section" data-section="updates">
+        <h2>Updates</h2>
+        <div class="ls-row">
+          <span class="ls-row-label" role="status" aria-live="polite" data-update-line>{update ? updateCheckLine(update) : "—"}</span>
+          <button class="btn" data-update-check disabled={!update || update.phase === "checking" || update.phase === "downloading"}
+                  onClick={() => client.call("update.check").catch((e) => setError(errorText(e)))}>Check for updates</button>
+        </div>
+        <div class="row" style="margin-top:8px;gap:8px;align-items:center">
+          <button class="lp-switch" role="switch" aria-checked={autoOn} aria-labelledby="ls-auto-update" data-update-auto
+                  disabled={!update || busy === "auto"} onClick={() => setAuto(!autoOn)} />
+          <span id="ls-auto-update">Check for updates automatically</span>
+        </div>
+        <p class="muted small">When this is on, Melange looks for a newer release on GitHub each time it starts, and the game
+          looks at most once a day and shows a notice when one is out. Each look is a plain HTTPS request that sends nothing about you or
+          your game. A newer release is downloaded and checked in the background, and installed when you choose Restart to
+          update. Turn it off and Melange only looks when you choose Check for updates.</p>
       </section>
 
       <section class="ls-section" data-section="melange">
@@ -104,6 +136,18 @@ export function Settings({ client, status, theme, onTheme, onChangeFolder }: Set
             <button class="link" disabled={busy === b.id || !!batch} title={batchWhy} onClick={() => deleteBackup(b.id)}>Delete</button>
           </div>
         ))}
+      </section>
+
+      <section class="ls-section" data-section="vanilla">
+        <h2>Restore vanilla</h2>
+        <div class="ls-row">
+          <span class="ls-row-label">Make the game folder stock Worms Ultimate Mayhem again: removes Melange and every other mod, for good.</span>
+          <button class="btn danger" data-vanilla-open disabled={!status?.game || vanillaOpen || !!batch} title={batchWhy} onClick={() => setVanillaOpen(true)}>Restore vanilla…</button>
+        </div>
+        {vanillaOpen && status?.game ? (
+          <RestoreVanilla client={client} gamePath={status.game.path} running={!!status.running} blocked={batchWhy}
+                          onCancel={() => setVanillaOpen(false)} onDone={onVanillaDone} />
+        ) : null}
       </section>
 
       <section class="ls-section" data-section="defaults">
