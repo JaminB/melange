@@ -8,6 +8,7 @@
 #include <shellapi.h>
 
 #include <cstdio>
+#include <cstdlib>
 #include <functional>
 #include <map>
 #include <memory>
@@ -678,6 +679,36 @@ void TestStockList() {
     Expect(!S::ParseStockList("..\\x.dll\t1\r\n", &l, &err), "stock: traversal refused");
     Expect(!S::ParseStockList("a.dll\tx\r\n", &l, &err), "stock: bad size refused");
     Expect(!S::ParseStockList("# only a comment\n", &l, &err), "stock: empty refused");
+}
+
+// A folder linked into the game folder (a mod author's junctioned Mods\) goes as a link: what it points at stays.
+void TestVanillaLink() {
+    Rig r = MakeRig(L"vanilla-link");
+    const std::wstring g = r.game, outside = L::Parent(g) + L"\\elsewhere";
+    Put(outside + L"\\precious\\work.lua", "keep me");
+    Put(outside + L"\\top.txt", "keep me too");
+    const std::wstring cmd = L"cmd /c mklink /J \"" + g + L"\\Mods\" \"" + outside + L"\" >nul";
+    const bool linked = _wsystem(cmd.c_str()) == 0 && L::FileExists(g + L"\\Mods\\top.txt");
+    Expect(linked, "vanilla link: junction made");
+    if (!linked) return;
+    S::StockList stock;
+    std::string err;
+    Expect(S::ParseStockList("WormsMayhem.exe\t" + std::to_string(L::FileSize(g + L"\\WormsMayhem.exe")) + "\r\n", &stock, &err),
+           "vanilla link: list parses", err);
+    S::VanillaContext v;
+    v.base = r.ctx;
+    v.base.selfExe = r.payload + L"\\Melange.exe";
+    v.stock = &stock;
+    v.replaysDir = L::Parent(g) + L"\\Documents\\Melange\\replays";
+    v.base.storeOf = [](const std::wstring&) { return std::string("steam"); };
+    const S::VanillaPlan p = S::MakeVanillaPlan(v);
+    Expect(p.refused.empty(), "vanilla link: plan runs", p.refused);
+    Expect(!HasPath(p.remove, "Mods\\top.txt") && !HasPath(p.remove, "Mods\\precious\\work.lua"), "vanilla link: never planned through the link");
+    const S::VanillaOutcome o = S::ApplyVanilla(v, p.planId);
+    Expect(o.outcome.ok, "vanilla link: applied", o.outcome.message);
+    Expect(!L::DirExists(g + L"\\Mods"), "vanilla link: the link itself is gone");
+    Expect(Get(outside + L"\\top.txt") == "keep me too" && Get(outside + L"\\precious\\work.lua") == "keep me",
+           "vanilla link: everything it pointed at is untouched");
 }
 
 void TestVanilla() {
@@ -1614,6 +1645,7 @@ int main(int, char** argv) {
         TestEngineGuards();
         TestEngineRollback();
         TestVanilla();
+        TestVanillaLink();
         TestUpdateApply();
     }
     TestStockList();
