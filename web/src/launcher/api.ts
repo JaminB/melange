@@ -66,6 +66,12 @@ export interface SetupEvent { status?: SetupStatus; progress?: SetupProgress; }
 // The folder picker is modal and waits on the user, so the default RPC timeout would drop their choice.
 export const BROWSE_TIMEOUT_MS = 24 * 60 * 60 * 1000;
 
+// launcher.exportLogs: the last game's logs zipped to the Desktop (else Documents\Melange\exports). sessionId is
+// null when no session folder was found (the zip still holds Melange.log, launcher.log and the rest).
+export interface ExportResult { path: string; bytes: number; entries: number; onDesktop: boolean; sessionId: string | null; pid: number; }
+// Reading and deflating a long session's logs and recordings can take longer than an ordinary call.
+export const EXPORT_TIMEOUT_MS = 5 * 60 * 1000;
+
 // -- Error codes (spec §6.2) --------------------------------------------------------------------------------------
 export const LauncherErrorCode = {
   Refused: -32000,
@@ -226,6 +232,20 @@ export function setupEventOf(v: unknown): SetupEvent {
     out.progress = { action: str(p, "action"), step: num(p, "step"), of: num(p, "of"), label: str(p, "label") };
   }
   return out;
+}
+
+export function exportResultOf(v: unknown): ExportResult | undefined {
+  const o = obj(v);
+  if (typeof o.path !== "string" || !o.path) return undefined;
+  return { path: o.path, bytes: num(o, "bytes"), entries: num(o, "entries"), onDesktop: bool(o, "onDesktop"),
+    sessionId: strOpt(o, "sessionId") ?? null, pid: num(o, "pid") };
+}
+
+// "Desktop" or the folder, for "Saved to …".
+export function exportPlaceText(r: ExportResult): string {
+  if (r.onDesktop) return "Desktop";
+  const i = Math.max(r.path.lastIndexOf("\\"), r.path.lastIndexOf("/"));
+  return i > 0 ? r.path.slice(0, i) : r.path;
 }
 
 export function sizeText(n: number): string {

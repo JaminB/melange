@@ -36,7 +36,7 @@ Delete `melange.asi`, `Melange.ini` and the `Melange` and `Mods` folders from th
 
 ## Reporting a bug
 
-Press `Ctrl+Shift+F11` in the game (or *File > Save logs as...* in the overlay) and attach the zip it saves. User names are removed, and Steam IDs and IP addresses are hashed.
+Press `Ctrl+Shift+F11` in the game (or *File > Export last game's logs* in the overlay), or click *Export last game's logs* on Melange.exe's *Help* page after the game has closed. It saves `Melange-logs-<date>-<time>.zip` to your Desktop in one click: that game's logs, match recordings and desync bundles. Attach the zip to your report. User names are removed, and Steam IDs and IP addresses are hashed.
 
 ## For developers
 

@@ -29,7 +29,7 @@ Every module has its own section in `Melange.ini`, and `Enabled=0` turns a modul
 | `Overlay` | on | The in-game overlay (`ToggleKey`, `PassthroughKey`) |
 | `EventBus` | on | The engine message bus for modules |
 | `Logging` | on | Structured JSONL session logs |
-| `LogExport` | on | "Save logs" zip export (`Hotkey`) |
+| `LogExport` | on | Log zips: one-click "Export last game's logs" (`Hotkey`) and "Save logs as..." |
 | `EngineLog` | on | Copies the engine's own log into `Melange.log` |
 | `SteamTrace` | on | Logs Steam lobby, P2P and callback activity |
 | `NetTrace` | on | Logs raw Winsock calls |
@@ -60,7 +60,21 @@ Every module has its own section in `Melange.ini`, and `Enabled=0` turns a modul
 | `Documents\Melange\logs\<session>\` | Structured session log (`events.jsonl`) |
 | `Documents\Melange\replays\desync-*.zip` | Desync bundles: what differed between two players, and at which tick |
 
-To report a bug, press `Ctrl+Shift+F11` in the game, or choose *File > Save logs as...* in the overlay, and attach the zip (it includes the newest desync bundle). In fullscreen, the zip goes to `Documents\Melange\exports` instead of opening a save dialog.
+To report a bug, export the last game's logs and attach the zip. It takes one click, with no dialog:
+
+- in the game: `Ctrl+Shift+F11` (`[LogExport] Hotkey`), or *File > Export last game's logs* in the overlay;
+- with the game closed: *Export last game's logs* on Melange.exe's *Help* page (or under the status cards on *Home*).
+
+The zip goes to the Desktop as `Melange-logs-<YYYYMMDD-HHMMSS>.zip` (`Documents\Melange\exports` when the Desktop is not writable). Windowed, Explorer opens with the zip selected; in fullscreen the game only shows a toast with the path, so it does not lose focus. Melange.exe shows "Saved to Desktop · Show in folder".
+
+"Last game" is one game process: the newest session folder (in the game, the running one), and with it
+
+- every match recording (`wsr-*-p<pid>-*.wsr`) and desync bundle (`desync-*-p<pid>-*.zip`) whose name carries that session's pid, not just the newest;
+- the minidumps and the engine's XOM/Net logs written during that session (its folder name to its last write, plus 15 minutes);
+- `Melange.log` and `Melange.prev.log`, Melange.exe's `launcher.log` and `launcher.1.log` (from `%LOCALAPPDATA%\Melange`);
+- the `.ini` files, the mods (`mods/spice.json`: each mod's id, name and version; `thumper-state.json`; the Store's `installed.json`; the `.asi` plugins) and `system.json`. From inside the game it also has the GPU report and the installed modules.
+
+`manifest.json` records which game it is (`game.sessionId`, `game.pid`, its time window) next to the size and SHA-256 of every file. *File > Save logs as...* is still there: a save dialog and the newest `Sessions` (default 3) session folders with the newest bundle and recording, whichever game they came from; in fullscreen it writes to `Documents\Melange\exports`. Both exports, in the game and in Melange.exe, go through the same code (`src/tools/log_export_core.cpp`) and the same redaction: the Windows user and computer names are replaced, and SteamIDs and IP addresses are replaced with a hash that is different in every zip (recordings included). For scripted tests, the automation verbs `savelogs <path.zip>` (Save logs as) and `savelogs-last [<path.zip>]` (the one-click contents; without a path, to the Desktop, without Explorer or a toast) write the zip in the background.
 
 The zip includes a GPU compatibility report (`gpu/compat.txt`): graphics card, driver, OpenGL version and extensions, the Cg shader profiles your card supports, and which shaders and effects loaded or were skipped and why. The overlay panel *Mirage/GPU* shows the same report.
 

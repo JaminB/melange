@@ -3,6 +3,7 @@ import type { Client } from "../../sdk/client";
 import { errorText } from "../../sdk/hooks";
 import { loadedSinceInstall, whenText, type SetupStatus } from "../api";
 import { busyNotice } from "../copy";
+import { ExportLogs } from "../components/ExportLogs";
 import { StatusCard, type Tone } from "../components/StatusCard";
 import { FolderIcon, PlugIcon, PuzzleIcon, SparkleIcon } from "../icons";
 
@@ -94,6 +95,13 @@ export function Home({ client, status, onFixGame, onOpenPlugins, onOpenSettings 
         <StatusCard id="plugins" icon={<PuzzleIcon />} label="Plugins" tone={pluginsCard.tone} status={pluginsCard.text} detail={pluginsCard.detail}
                     actionLabel={!storeDown ? "Manage" : undefined} onAction={onOpenPlugins} />
       </div>
+      {/* Only once Melange has run in the game: before that there is no game to export. */}
+      {m.lastLoad ? (
+        <div class="lc-foot" data-foot="export">
+          <span class="muted">Something went wrong in your last game?</span>
+          <ExportLogs client={client} compact />
+        </div>
+      ) : null}
     </div>
   );
 }

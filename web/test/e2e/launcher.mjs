@@ -262,6 +262,33 @@ async function installedHome(browser) {
   }
 }
 
+// One click from Help: spinner, then "Saved to Desktop · Show in folder"; Home offers the same once Melange has run.
+async function helpExportLogs(browser) {
+  const mock = await startMock({ root, launcher: true });
+  const { page, errors } = await openPage(browser, mock, "restore");
+  try {
+    await attempt("help-export: one click exports the last game's logs", async () => {
+      await page.waitForSelector(".la", { timeout: 10000 });
+      check("home: offers the export once Melange has loaded", (await page.locator('[data-foot="export"] button').count()) === 1);
+      await page.locator('[data-page-tab="help"]').click();
+      await page.waitForSelector('[data-page="help"]', { timeout: 10000 });
+      await page.locator('[data-page="help"] button:has-text("Export last game\'s logs")').click();
+      await page.waitForSelector('[data-page="help"] [data-export="done"]', { timeout: 10000 });
+      const status = await page.locator('[data-page="help"] [data-export="done"] [role="status"]').textContent();
+      check("help: says where the zip went", /Saved to Desktop/.test(status ?? ""), status ?? "");
+      await shot(page, "19-help-exported");
+      await page.locator('[data-page="help"] button:has-text("Show in folder")').click();
+      await page.locator('[data-action="open-logs"]').click();
+      await page.waitForTimeout(200);
+      check("help: show in folder and open logs ran without an error", (await page.locator(".error").count()) === 0);
+    });
+    check("help-export scenario: no page errors", errors.length === 0, errors.join(" | "));
+  } finally {
+    await page.close();
+    await mock.close();
+  }
+}
+
 async function pluginsBusy(browser) {
   const mock = await startMock({ root, launcher: true });
   const { page, errors } = await openPage(browser, mock, "plugins-busy");
@@ -499,7 +526,7 @@ async function importStaleAndDamaged(browser) {
 const browser = await chromium.launch({ channel: "msedge", headless: true });
 try {
   for (const scenario of [
-    foundInstallRecommended, notFound, wrongBuild, ualPresent, reshadeBackupAndRestore, installedHome, pluginsBusy,
+    foundInstallRecommended, notFound, wrongBuild, ualPresent, reshadeBackupAndRestore, installedHome, helpExportLogs, pluginsBusy,
     importDownloadFlow, importLocalFileFlow, importHashErrorFlow, importCancelFlow, importStaleAndDamaged,
   ]) {
     try {

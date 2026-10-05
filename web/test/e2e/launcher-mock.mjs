@@ -115,7 +115,15 @@ export function launcherService(state, broadcast, initialScenario) {
     "launcher.state": () => ({ version: l.version, firstRun: l.firstRun, gameDir: l.gameDir, theme: l.theme, webview: false, elevated: l.elevated, protected: [] }),
     "launcher.setTheme": (p) => { l.theme = p.theme === "light" || p.theme === "dark" ? p.theme : "system"; return {}; },
     "launcher.launch": () => ({ how: l.status.game?.store === "steam" ? "steam" : "exe" }),
-    "launcher.openPath": () => ({}),
+    "launcher.openPath": (p) => {
+      if (p.what === "export" && !l.exported) throw [-32000, "That export isn't there any more."];
+      return {};
+    },
+    "launcher.exportLogs": () => {
+      l.exported = true;
+      return { path: "C:\\Users\\Player\\Desktop\\Melange-logs-20261005-121500.zip", bytes: 482133, entries: 23,
+        onDesktop: true, sessionId: "2026-10-05_11-40-02_pid4242", pid: 4242 };
+    },
     "launcher.shortcuts": (p) => { l.shortcuts = { startMenu: !!p.startMenu, desktop: !!p.desktop }; return {}; },
     "setup.detect": () => ({ candidates: l.candidates }),
     "setup.browse": () => ({ path: l.candidates[0]?.path ?? GAME_PATH }),

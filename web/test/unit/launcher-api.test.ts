@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
-  candidatesOf, defaultsOf, gameCheckOf, launcherStateOf, planOf, recommendedOf, setupStatusOf, settingOf, sizeText, valuesOf,
+  candidatesOf, defaultsOf, exportPlaceText, exportResultOf, gameCheckOf, launcherStateOf, planOf, recommendedOf, setupStatusOf,
+  settingOf, sizeText, valuesOf,
 } from "../../src/launcher/api";
 
 test("launcherStateOf: garbage input never throws and falls back sanely", () => {
@@ -79,4 +80,18 @@ test("sizeText", () => {
   assert.equal(sizeText(500), "500 B");
   assert.equal(sizeText(2048), "2 KiB");
   assert.equal(sizeText(5 * 1048576), "5.0 MiB");
+});
+
+test("exportResultOf: needs a path, defaults the rest; exportPlaceText names the Desktop or the folder", () => {
+  assert.equal(exportResultOf(null), undefined);
+  assert.equal(exportResultOf({ bytes: 5 }), undefined, "no path, no result");
+  const r = exportResultOf({ path: "C:\\Users\\P\\Desktop\\Melange-logs-20261005-121500.zip", bytes: 10, entries: 3, onDesktop: true,
+    sessionId: "2026-10-05_11-40-02_pid4242", pid: 4242 });
+  assert.equal(r?.sessionId, "2026-10-05_11-40-02_pid4242");
+  assert.equal(r && exportPlaceText(r), "Desktop");
+  const fallback = exportResultOf({ path: "C:\\Users\\P\\Documents\\Melange\\exports\\x.zip", sessionId: null, pid: "nope" });
+  assert.equal(fallback?.sessionId, null);
+  assert.equal(fallback?.pid, 0);
+  assert.equal(fallback?.onDesktop, false);
+  assert.equal(fallback && exportPlaceText(fallback), "C:\\Users\\P\\Documents\\Melange\\exports");
 });

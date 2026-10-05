@@ -250,6 +250,12 @@ target_compile_definitions(melange_import PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX _
 target_compile_options(melange_import PRIVATE /W4 /utf-8 /permissive- /Zi)
 target_link_libraries(melange_import PUBLIC melange_store melange_xom)
 
+# The log export without the game (selection, redaction, the zip, system.json from disk): Melange.exe's
+# launcher.exportLogs and its self-test. The plugin compiles the same sources through its glob. Its users also link
+# json_read, hash, log, wormsign/format and miniz.
+set(LOG_EXPORT_CORE_SOURCES
+    src/tools/log_export_core.cpp src/tools/sysinfo_core.cpp src/tools/redact.cpp src/wormsign/export_redacted.cpp)
+
 # Melange.exe: the desktop app. The standalone Oasis server plus setup, plugins and the Store, shown in WebView2.
 include(cmake/webview2.cmake)
 add_executable(melange_launcher WIN32
@@ -258,7 +264,7 @@ add_executable(melange_launcher WIN32
     src/oasis/standalone/register.cpp src/oasis/standalone/ini_edit.cpp src/oasis/standalone/mods_provider.cpp
     src/oasis/standalone/json_write.cpp src/oasis/standalone/wormsign_provider.cpp src/oasis/standalone/level_provider.cpp
     src/oasis/rpc/erg_assets.cpp src/assets/crcsafe_math.cpp src/assets/crcsafe_file.cpp src/oasis/auth.cpp src/oasis/webpanels.cpp
-    ${ERG_SERVICE_SOURCES} src/wormsign/format.cpp src/wormsign/records.cpp
+    ${ERG_SERVICE_SOURCES} src/wormsign/format.cpp src/wormsign/records.cpp ${LOG_EXPORT_CORE_SOURCES}
     res/launcher.rc ${CMAKE_BINARY_DIR}/generated/oasis_web.rc)
 add_dependencies(melange_launcher oasis_web)
 # PDB_NAME: melange.asi already writes Melange.pdb here (Windows paths ignore case).
@@ -652,6 +658,7 @@ add_executable(wormsign_recorder_selftest
     src/wormsign/format.cpp
     src/wormsign/writer.cpp
     src/wormsign/library.cpp
+    src/wormsign/export_redacted.cpp
     src/wormsign/records.cpp
     src/tools/json_read.cpp
     src/tools/redact.cpp
@@ -662,6 +669,20 @@ target_include_directories(wormsign_recorder_selftest PRIVATE src src/sdk)
 target_compile_definitions(wormsign_recorder_selftest PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX _CRT_SECURE_NO_WARNINGS)
 target_compile_options(wormsign_recorder_selftest PRIVATE /W4 /utf-8 /permissive- /wd4100)
 target_link_libraries(wormsign_recorder_selftest PRIVATE miniz bcrypt psapi shell32 ole32)
+
+# The log export's core without the game: which session, replays, dumps and engine logs one game's export picks
+# from a fixture tree of several sessions and pids, the redaction (logs and recordings alike) and manifest.json.
+add_executable(log_export_selftest
+    tests/log_export_selftest.cpp
+    ${LOG_EXPORT_CORE_SOURCES}
+    src/wormsign/format.cpp
+    src/tools/json_read.cpp
+    src/tools/hash.cpp
+    src/core/log.cpp)
+target_include_directories(log_export_selftest PRIVATE src src/sdk ${CMAKE_BINARY_DIR}/generated)
+target_compile_definitions(log_export_selftest PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX _CRT_SECURE_NO_WARNINGS)
+target_compile_options(log_export_selftest PRIVATE /W4 /utf-8 /permissive-)
+target_link_libraries(log_export_selftest PRIVATE miniz bcrypt version shell32 ole32)
 
 # The desync detector without the game: the exchange packets, the two-peer protocol over a simulated link, the
 # field diff and the bundle, plus a timed mutation run on the packet decoder.
