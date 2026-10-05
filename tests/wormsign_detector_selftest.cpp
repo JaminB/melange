@@ -291,6 +291,7 @@ struct Scenario {
     std::string bAdvert = "1";
     uint32_t bEngineHash = kEngineHashVersion;
     std::vector<wire::ContribName> contribs = {{"mod.desync-probe.env", 1}, {"mod.sim-sampler.env", 1}};
+    std::vector<wire::ContribName> bContribs;   // B's list when it differs from A's (an older Melange)
 };
 
 struct Result {
@@ -316,7 +317,8 @@ std::unique_ptr<Result> Run(const Scenario& s) {
     db.SetPeers({{A.id, "A", "1"}});
     const uint64_t key = wire::MatchKey(A.id, 99);
     da.Begin(1, key, s.contribs);
-    if (!s.bBegin) db.Begin(1, key, s.contribs);
+    const auto& bList = s.bContribs.empty() ? s.contribs : s.bContribs;
+    if (!s.bBegin) db.Begin(1, key, bList);
     uint64_t desyncWallA = 0, desyncWallB = 0;
     const uint32_t frames = s.ticks + s.bLag + 400;
     for (uint32_t f = 1; f <= frames; ++f) {
@@ -340,7 +342,7 @@ std::unique_ptr<Result> Run(const Scenario& s) {
             if (isB && s.desyncAt && t == s.desyncAt) desyncWallB = now;
             if (!isB && s.desyncAt && t == s.desyncAt) desyncWallA = now;
         };
-        if (s.bBegin && f == s.bBegin) db.Begin(1, key, s.contribs);
+        if (s.bBegin && f == s.bBegin) db.Begin(1, key, bList);
         tick(A, da, f, false);
         tick(B, db, f > s.bLag ? f - s.bLag : 0, true);
         while (!link.q.empty() && link.q.front().due <= now) {
@@ -432,6 +434,41 @@ void Pair() {
         auto r = Run(s);
         Expect(r->a.diverged.size() == 1 && r->a.diverged[0].tick == 900 && r->a.diverged[0].contrib[0] == 0,
                "mods hash without named contributors: flagged, no name");
+    }
+    // The melange.camera contributor against a peer without it (an older Melange or HashCamera=0): its mods hash
+    // differs on every tick, yet only the engine hash is compared, so there is no false desync and a real one is
+    // still found.
+    {
+        Scenario s;
+        s.contribs = {{"melange.camera", 1}, {"mod.desync-probe.env", 1}};
+        s.bContribs = {{"mod.desync-probe.env", 1}};
+        s.desyncAt = 1;
+        s.viaMods = true;
+        auto r = Run(s);
+        Expect(r->a.diverged.empty() && r->b.diverged.empty(), "camera vs older peer: no false desync");
+        Expect(r->aPeers.size() == 1 && r->aPeers[0].state == detect::PeerState::Exchanging &&
+                   !r->aPeers[0].modsCompared && r->bPeers.size() == 1 && !r->bPeers[0].modsCompared &&
+                   r->aPeers[0].compared > 2900,
+               "camera vs older peer: engine hashes still exchanged, mods not compared");
+    }
+    {
+        Scenario s;
+        s.contribs = {{"melange.camera", 1}, {"mod.desync-probe.env", 1}};
+        s.bContribs = {{"mod.desync-probe.env", 1}};
+        s.desyncAt = 1200;
+        auto r = Run(s);
+        Expect(r->a.diverged.size() == 1 && r->a.diverged[0].tick == 1200 && r->a.diverged[0].compMask == (1u << kWorms),
+               "camera vs older peer: an engine desync is still found");
+    }
+    {
+        Scenario s;
+        s.contribs = {{"melange.camera", 1}, {"mod.desync-probe.env", 1}};
+        s.desyncAt = 800;
+        s.viaMods = true;
+        auto r = Run(s);
+        Expect(r->a.diverged.size() == 1 && r->a.diverged[0].tick == 800 &&
+                   !strcmp(r->a.diverged[0].contrib, "melange.camera") && r->a.diverged[0].compMask == 0,
+               "camera on both sides: a camera desync names melange.camera");
     }
     {
         Scenario s;

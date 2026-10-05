@@ -10,6 +10,7 @@
 
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <string>
 
 #include "core/config.h"
@@ -25,6 +26,7 @@
 #include "wormsign/detail.h"
 #include "wormsign/detector.h"
 #include "wormsign/fpu.h"
+#include "wormsign/hash_engine.h"
 #include "wormsign/library.h"
 #include "wormsign/recorder.h"
 #include "wormsign/player.h"
@@ -140,6 +142,12 @@ bool VerbDetail(std::string_view a, void*) {
             if ((mask >> i & 1) && c[i] != th.c[i]) bad += " c" + std::to_string(i);
         LOG_INFO("[wormsign] detail %u against its tick hash: %s", tick, bad.empty() ? "c0 c1 c2 c4 c5 match" : bad.c_str());
     }
+    ws::contrib::Entry ce[128];
+    const size_t ne = ws::contrib::HashesAt(tick, ce, 128);
+    for (size_t i = 0; i < ne; ++i)
+        if (strcmp(ce[i].name, ws::kCameraContrib) == 0 && ce[i].computed)
+            LOG_INFO("[wormsign] detail %u camera against the %s hash: %s", tick, ws::kCameraContrib,
+                     ce[i].hash == ws::detail::CameraHash(cur.cam) ? "match" : "differs");
     if (tick && ws::detail::Get(tick - 1, &prev)) {
         const std::string d = ws::detail::Diff(prev, cur);
         melange::log::WriteRaw(("[wormsign] diff " + std::to_string(tick - 1) + " -> " + std::to_string(tick) +
@@ -221,8 +229,13 @@ class Wormsign final : public melange::Module {
         melange::testcmd::Register("wormsign.contrib", &VerbContrib);
         melange::testcmd::Register("wormsign.detail", &VerbDetail);
         melange::testcmd::Register("wormsign.fpu", &VerbFpu);
+        // Opt-in until two peers are seen to agree on it through whole matches: the engine checks the logical camera
+        // only at turn ends and time syncs, so whether it also agrees between those is not yet verified live.
+        const bool hashCamera = Bool("HashCamera", false);
         if (!ws::clock::Install()) return true;
         ws::session::SetEnabled(true);
+        if (hashCamera && !ws::AddCameraContributor())
+            LOG_ERROR("[wormsign] the %s contributor could not be added", ws::kCameraContrib);
         melange::simhash::Install(mode);
         melange::lua::AddLibrary("wormsign", &OpenLib);
         ws::library::Configure(keepMatches, static_cast<uint32_t>(maxMB > 0 ? maxMB : 200));
@@ -244,6 +257,7 @@ class Wormsign final : public melange::Module {
         ws::player::Uninstall();
         ws::detector::Uninstall();
         melange::simhash::Uninstall();
+        ws::RemoveCameraContributor();
         ws::clock::Uninstall();
         ws::session::SetEnabled(false);
     }

@@ -15,12 +15,59 @@ constexpr uintptr_t kRngLogicAddr = 0x96d034, kRng2Addr = 0x96d040;
 constexpr uintptr_t kGetInt = 0x50b790;  // cdecl(const char** name, int* out)
 constexpr uintptr_t kWormHandles = 0x95b4a8, kWormVt = 0x8747d4, kTeamHandles = 0x95b528, kTeamVt = 0x874e40;
 constexpr uintptr_t kQueueBytesMax = 8 * 4096;
+// CameraManagerService* (null outside a match); +0x28c m_uLogicalCamera, +0x2a0/+0x2a4 the Camera* vector's
+// begin/end, as GetLogicalViewMatrix 0x562730 and the pos/target/up getters 0x547600/0x547640/0x547680 read them.
+constexpr uintptr_t kCamMgr = 0x95c370;
+constexpr uint32_t kMaxCameras = 64;
 
 template <class T>
 T Rd(uintptr_t a) {
     T v{};
     mem::SafeRead(a, &v, sizeof(T));
     return v;
+}
+
+// Pure, fault-guarded reads; flags stay 0 unless the manager, the index and every camera field could be read.
+void ReadCamera(detail::CameraDetail* c) {
+    *c = detail::CameraDetail{};
+    uintptr_t mgr = 0;
+    if (!mem::SafeRead(kCamMgr, &mgr, sizeof mgr) || !mgr) return;
+    uint32_t index = 0;
+    uintptr_t vec[2] = {};
+    if (!mem::SafeRead(mgr + 0x28c, &index, sizeof index) || !mem::SafeRead(mgr + 0x2a0, vec, sizeof vec)) return;
+    if (vec[1] < vec[0] || (vec[1] - vec[0]) % 4) return;
+    const uint32_t count = static_cast<uint32_t>((vec[1] - vec[0]) / 4);
+    c->index = index;
+    c->count = count;
+    if (count > kMaxCameras || index >= count) return;
+    uintptr_t cam = 0;
+    if (!mem::SafeRead(vec[0] + index * 4, &cam, sizeof cam) || !cam) return;
+    uint32_t f[11];  // +0x04 pos, +0x10 target, +0x1c up, +0x28 (unknown, not kept), +0x2c m_eView
+    if (!mem::SafeRead(cam + 4, f, sizeof f)) return;
+    memcpy(c->pos, f, 12);
+    memcpy(c->target, f + 3, 12);
+    memcpy(c->up, f + 6, 12);
+    c->view = f[10];
+    c->flags = detail::kCamPresent;
+}
+
+// The camera of the tick being hashed, read once by ComputeEngine and fed to the contributor right after it.
+// Consumed once: tick numbers restart every session, so any later HashTick for the same tick number (another
+// session, or a caller other than session::EndTick) reads the camera again instead of reusing a stale one.
+detail::CameraDetail g_cam{};
+uint32_t g_camTick = 0;
+bool g_camValid = false;
+int g_camHandle = 0;
+
+void CameraContrib(Hasher& h, uint32_t tick, void*) {
+    detail::CameraDetail c;
+    if (g_camValid && g_camTick == tick)
+        c = g_cam;
+    else
+        ReadCamera(&c);
+    g_camValid = false;
+    uint8_t b[detail::kCameraHashBytes];
+    h.Bytes(b, detail::CameraHashBytes(c, b));
 }
 
 int GetInt(const char* name) {
@@ -163,5 +210,26 @@ void ComputeEngine(uint32_t t, TickHash* out, const PoppedTask& popped, detail::
     uint64_t all = kFnvBasis;
     for (int i = 0; i < kEngineComps; ++i) all = FnvV(out->c[i], all);
     out->engine = all;
+
+    // Not part of the engine hash (that would change kEngineHashVersion and end the exchange with older Melange):
+    // the camera goes to the detail record and to the melange.camera contributor.
+    ReadCamera(&g_cam);
+    g_camTick = out->tick;
+    g_camValid = true;
+    if (rec) rec->cam = g_cam;
+}
+
+bool AddCameraContributor() {
+    if (g_camHandle) return true;
+    ContribOptions opt;
+    opt.version = kCameraContribVersion;
+    g_camHandle = AddContributor(kCameraContrib, &CameraContrib, nullptr, opt);
+    return g_camHandle > 0;
+}
+
+void RemoveCameraContributor() {
+    if (g_camHandle > 0) RemoveContributor(g_camHandle);
+    g_camHandle = 0;
+    g_camValid = false;
 }
 }  // namespace melange::wormsign
