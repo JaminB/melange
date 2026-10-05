@@ -265,6 +265,7 @@ void FillSnapshot(const Layout& l, const Engine& e, const MatchInfo& m, Snapshot
         w.weapon = static_cast<int16_t>(wi >= 1 && wi <= 65 ? wi : -1);
         w.pos = ReadVec(c + 0x38);
         w.vel = ReadVec(c + 0x50);
+        w.yaw = Finite(Rd<float>(c + 0x90));
         out->worms[out->wormCount++] = w;
     }
 }

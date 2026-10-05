@@ -213,6 +213,7 @@ World MakeWorld() {
         const float pos[3] = {10.f * slot, 20.f, -5.f}, vel[3] = {1.f, 0.f, 0.5f};
         memcpy(&c.bytes[0x38], pos, 12);
         memcpy(&c.bytes[0x50], vel, 12);
+        c.Put<float>(0x90, slot == 0 ? 6.25f : slot == 1 ? std::numeric_limits<float>::quiet_NaN() : 0.f);
         w.worms[slot] = &c;
     };
     worm(0, "Paul", true, 0, 100, 6, 1);
@@ -277,9 +278,11 @@ void TestSnapshot() {
     const gs::Worm& a = s.worms[0];
     Expect(a.slot == 0 && a.alive && a.health == 100 && a.physicsState == 6 && a.weapon == 1, "worm 0 fields");
     Expect(a.pos.x == 0.f && a.pos.y == 0.f && a.pos.z == -5.f && a.vel.z == 0.5f, "non-finite coordinate reads as 0");
+    Expect(a.yaw == 6.25f, "yaw read from +0x90, unwrapped");
     const gs::Worm& b = s.worms[1];
     Expect(b.slot == 1 && b.active && !b.alive && b.physicsState == 8 && b.weapon == -1 && b.health == 54,
            "drowning worm is not alive; weapon 67 is none");
+    Expect(b.yaw == 0.f, "non-finite yaw reads as 0");
     Expect(s.worms[2].slot == 3 && !s.worms[2].active && !s.worms[2].alive, "dead named worm kept");
 
     g_ints["CurrentTeamIndex"] = 9;

@@ -831,6 +831,7 @@ void TestGame() {
     s.worms[0].alive = s.worms[0].active = true;
     s.worms[0].weapon = 1;
     s.worms[0].pos = {1.5f, -2.f, 300.f};
+    s.worms[0].yaw = 4.25f;
     strcpy(s.worms[0].name, "Paul");
     s.worms[1] = {};
     s.worms[1].slot = 6;
@@ -840,6 +841,7 @@ void TestGame() {
     ExpectEq(Eval(nullptr, "local w = wum.game.worms() return #w, w[1].slot, w[1].team, w[1].name, w[1].health, "
                            "w[1].alive, w[1].weapon, w[1].pos.x, w[1].pos.y, w[1].pos.z"),
              "2\t5\t1\tPaul\t87\ttrue\t1\t1.5\t-2\t300", "worms fields");
+    ExpectEq(Eval(nullptr, "return wum.game.worms()[1].yaw"), "4.25", "worm yaw");
     ExpectEq(Eval(nullptr, "local w = wum.game.worms()[2] return w.name, w.alive, w.weapon"), "Leto\tfalse\tnil",
              "a dead worm without a weapon");
     ExpectEq(Eval(nullptr, "local t = wum.game.teams() return #t, t[1].slot, t[1].name, t[1].active, t[1].ai, t[1][\"local\"]"),
