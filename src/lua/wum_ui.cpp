@@ -14,6 +14,7 @@ namespace {
 // The overlay cannot remove menu items or hotkeys: one slot per path/key lives for the process and is rebound.
 struct MenuSlot {
     uint32_t cb = 0;
+    uint32_t checked = 0;  // opts.checked: asked each frame the menu is open; 0 = never checked
 };
 struct HotkeySlot {
     std::vector<uint32_t> cbs;
@@ -43,6 +44,15 @@ void PanelTramp(void* user) {
 void MenuTramp(void* user) {
     auto* slot = static_cast<MenuSlot*>(user);
     if (Callback* cb = FindCallback(slot->cb)) Invoke(cb, {});
+}
+
+// An error counts as a fault like any callback's (logged, disabled after 3) and reads unchecked.
+bool MenuCheckedTramp(void* user) {
+    auto* slot = static_cast<MenuSlot*>(user);
+    Callback* cb = slot->checked ? FindCallback(slot->checked) : nullptr;
+    bool on = false;
+    if (cb) Invoke(cb, {}, 1, [&](lua_State* L) { on = lua_toboolean(L, -1) != 0; });
+    return on;
 }
 
 void HotkeyTramp(void* user) {
@@ -85,16 +95,27 @@ int Panel(lua_State* L) {
 int Menu(lua_State* L) {
     const std::string path = luaL_checkstring(L, 1);
     luaL_checktype(L, 2, LUA_TFUNCTION);
+    int checkedIdx = 0;  // opts.checked, pushed on the stack
+    if (!lua_isnoneornil(L, 3)) {
+        luaL_checktype(L, 3, LUA_TTABLE);
+        if (lua_getfield(L, 3, "checked") == LUA_TFUNCTION)
+            checkedIdx = lua_gettop(L);
+        else if (!lua_isnil(L, -1))
+            return luaL_argerror(L, 3, "checked must be a function");
+    }
     ModRec* m = Current();
     if (!m) return luaL_error(L, "wum.ui.menu needs a mod context");
     const std::string full = "Mods/" + m->name + "/" + path;
     Callback* cb = NewCallback(L, 2, CbKind::Menu, path);
     const uint32_t cid = cb->id;
-    cb->attach = [full, cid] {
+    // The check-mark getter is its own callback so its faults never disable the action; it lives and dies with it.
+    const uint32_t checkedId = checkedIdx ? NewCallback(L, checkedIdx, CbKind::Menu, path + " (checked)")->id : 0;
+    cb->attach = [full, cid, checkedId] {
         MenuSlot*& slot = g_menus[full];
         if (!slot) {
+            // Always a toggle item: the slot outlives this callback, and a later reload may add `checked`.
             slot = new MenuSlot;
-            if (!overlay::AddMenuItem(full.c_str(), &MenuTramp, slot)) {
+            if (!overlay::AddToggleMenuItem(full.c_str(), &MenuTramp, slot, &MenuCheckedTramp)) {
                 delete slot;
                 slot = nullptr;
                 g_menus.erase(full);
@@ -102,13 +123,18 @@ int Menu(lua_State* L) {
             }
         }
         slot->cb = cid;
+        slot->checked = checkedId;
         return true;
     };
-    cb->revoke = [full, cid] {
+    cb->revoke = [full, cid, checkedId] {
         auto it = g_menus.find(full);
-        if (it != g_menus.end() && it->second->cb == cid) it->second->cb = 0;
+        if (it != g_menus.end() && it->second->cb == cid) it->second->cb = it->second->checked = 0;
+        if (checkedId) KillCallback(checkedId);
     };
-    if (!Activate(cb)) return luaL_error(L, "wum.ui.menu: bad path '%s'", path.c_str());
+    if (!Activate(cb)) {
+        if (checkedId) KillCallback(checkedId);
+        return luaL_error(L, "wum.ui.menu: bad path '%s'", path.c_str());
+    }
     lua_pushinteger(L, cid);
     return 1;
 }

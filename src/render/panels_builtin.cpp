@@ -65,7 +65,8 @@ void RegisterBuiltinPanels(bool demo) {
     g_demoOpen = demo;
     int about = melange::overlay::AddPanel("melange.about", "About / Stats", &DrawAbout, nullptr, melange::overlay::kPanelOpenByDefault);
     SetPanelDefaultRect(about, 24.f, 40.f, 460.f, 360.f);
-    if (demo) melange::overlay::AddMenuItem("View/Dear ImGui demo", &ToggleDemo, nullptr);
+    if (demo)
+        melange::overlay::AddToggleMenuItem("View/Dear ImGui demo", &ToggleDemo, nullptr, [](void*) { return g_demoOpen; });
 }
 
 void DrawBuiltinExtras() {

@@ -12,6 +12,12 @@ bool OpenPanel(const char* id, bool open = true);  // any thread; force a panel 
 // Main-menu-bar item, e.g. "File/Save logs as...". `shortcut` is display text only.
 using ActionFn = void (*)(void* user);
 int AddMenuItem(const char* path, ActionFn fn, void* user, const char* shortcut = nullptr);  // any thread
+// The same for an item that switches something on or off: `checked` is asked (main thread) every frame the menu
+// is open and the item shows a check mark while it returns true, so the label names the setting ("Smooth 60"),
+// not the action ("Toggle ...").
+using CheckedFn = bool (*)(void* user);
+int AddToggleMenuItem(const char* path, ActionFn fn, void* user, CheckedFn checked,
+                      const char* shortcut = nullptr);  // any thread
 
 // Hotkeys: matched on DirectInput key-down events (DIK codes, src/core/keys.h names) and swallowed so the game
 // never sees them. Fire on the main thread whether or not the overlay is visible.

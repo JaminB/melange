@@ -165,6 +165,31 @@ void TestMenu(Ctx& c) {
     c.Check(SplitMenuPath(" a // b /", s) && s.size() == 2 && s[0] == "a" && s[1] == "b", "split trims and drops empties");
     c.Check(SplitMenuPath("Solo", s) && s.size() == 1, "split single");
     c.Check(!SplitMenuPath("", s) && !SplitMenuPath(" / ", s) && !SplitMenuPath(nullptr, s), "split rejects empty");
+
+    s = SplitPanelTitle("Thumper/Deep Desert");
+    c.Check(s.size() == 2 && s[0] == "Thumper" && s[1] == "Deep Desert", "panel title Thumper/Deep Desert nests");
+    s = SplitPanelTitle("About / Stats");
+    c.Check(s.size() == 1 && s[0] == "About / Stats", "panel title with a spaced slash stays whole");
+    s = SplitPanelTitle("My Mod/Tools/Grid");
+    c.Check(s.size() == 3 && s[0] == "My Mod" && s[2] == "Grid", "panel title nests more than one level");
+    s = SplitPanelTitle("/x/");
+    c.Check(s.size() == 1 && s[0] == "/x/", "edge slashes are not separators");
+    s = SplitPanelTitle("Log");
+    c.Check(s.size() == 1 && s[0] == "Log", "plain panel title");
+
+    std::vector<MenuNode> tree;
+    AddMenuNode(tree, {"Mirage", "GL"}, 0);
+    AddMenuNode(tree, {"Log"}, 1);
+    AddMenuNode(tree, {"Mirage", "Post-FX"}, 2);
+    AddMenuNode(tree, {"Mirage"}, 3);
+    AddMenuNode(tree, {"Mirage", "GL"}, 4);
+    c.Check(tree.size() == 2 && tree[0].name == "Mirage" && tree[1].name == "Log" && tree[1].items == std::vector<int>{1},
+            "tree keeps first-registration order at the top");
+    c.Check(tree[0].children.size() == 2 && tree[0].children[0].name == "GL" && tree[0].children[1].name == "Post-FX",
+            "tree groups a submenu's items");
+    c.Check(tree[0].items == std::vector<int>{3}, "an item named like a submenu goes inside it");
+    c.Check(tree[0].children[0].items == (std::vector<int>{0, 4}) && tree[0].children[0].children.empty(),
+            "duplicate paths stay separate items");
 }
 }  // namespace
 

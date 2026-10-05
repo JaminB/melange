@@ -65,6 +65,7 @@ struct MenuEntry {
     std::string shortcut;
     melange::overlay::ActionFn fn;
     void* user;
+    melange::overlay::CheckedFn checked = nullptr;  // AddToggleMenuItem; cleared if it ever faults
 };
 std::mutex g_regMx;
 std::vector<Panel> g_panels;
@@ -134,54 +135,100 @@ struct Clicked {
     std::string what;
 };
 
-void DrawMenuLevel(const std::vector<const MenuEntry*>& items, size_t depth, Clicked& clicked) {
-    std::vector<std::string> seen;
-    for (const MenuEntry* e : items) {
-        const std::string& name = e->segs[depth];
-        if (e->segs.size() == depth + 1) {
-            if (ImGui::MenuItem(name.c_str(), e->shortcut.empty() ? nullptr : e->shortcut.c_str())) {
-                clicked.fn = e->fn;
-                clicked.user = e->user;
-                clicked.what = name;
-            }
-            continue;
-        }
-        if (std::find(seen.begin(), seen.end(), name) != seen.end()) continue;
-        seen.push_back(name);
-        std::vector<const MenuEntry*> sub;
-        for (const MenuEntry* f : items)
-            if (f->segs.size() > depth + 1 && f->segs[depth] == name) sub.push_back(f);
-        if (ImGui::BeginMenu(name.c_str())) {
-            DrawMenuLevel(sub, depth + 1, clicked);
-            ImGui::EndMenu();
-        }
+struct CheckedCall {
+    melange::overlay::CheckedFn fn;
+    void* user;
+    bool result;
+};
+void RunChecked(void* p) {
+    auto* c = static_cast<CheckedCall*>(p);
+    c->result = c->fn(c->user);
+}
+
+// A toggle item's state. A getter that faults is dropped (logged once): the item reads unchecked from then on.
+bool ItemChecked(const MenuEntry& e, const std::string& what) {
+    if (!e.checked) return false;
+    CheckedCall cc{e.checked, e.user, false};
+    unsigned long code = 0;
+    if (SehCall(&RunChecked, &cc, &code)) return cc.result;
+    LOG_ERROR("[overlay] menu item '%s' state raised exception 0x%08lx; shown unchecked from now on", what.c_str(), code);
+    std::lock_guard lk(g_regMx);
+    for (MenuEntry& m : g_menu)
+        if (m.handle == e.handle) m.checked = nullptr;
+    return false;
+}
+
+// A node's own items first, then its submenus; a node without children is just its items at this level.
+template <class Leaf>
+void DrawMenuNode(const melange::render::MenuNode& n, const Leaf& leaf) {
+    if (n.children.empty()) {
+        for (int i : n.items) leaf(n.name, i);
+        return;
     }
+    if (!ImGui::BeginMenu(n.name.c_str())) return;
+    for (int i : n.items) leaf(n.name, i);
+    for (const melange::render::MenuNode& c : n.children) DrawMenuNode(c, leaf);
+    ImGui::EndMenu();
+}
+
+std::string JoinPath(const std::vector<std::string>& segs) {
+    std::string s;
+    for (const std::string& t : segs) s += (s.empty() ? "" : "/") + t;
+    return s;
 }
 
 void DrawMenuBar() {
     if (!ImGui::BeginMainMenuBar()) return;
     Clicked clicked;
+    std::vector<MenuEntry> entries;
     {
-        std::vector<MenuEntry> copy;
-        {
-            std::lock_guard lk(g_regMx);
-            copy = g_menu;
-        }
-        std::vector<const MenuEntry*> items;
-        for (const MenuEntry& e : copy) items.push_back(&e);
-        DrawMenuLevel(items, 0, clicked);
+        std::lock_guard lk(g_regMx);
+        entries = g_menu;
     }
-    // "View" (merges with user items under View/...): panel toggles and overlay mode
+    std::vector<melange::render::MenuNode> tree;
+    for (size_t i = 0; i < entries.size(); ++i) melange::render::AddMenuNode(tree, entries[i].segs, static_cast<int>(i));
+    auto item = [&](const std::string& name, int i) {
+        const MenuEntry& e = entries[static_cast<size_t>(i)];
+        const std::string what = JoinPath(e.segs);
+        ImGui::PushID(i);
+        if (ImGui::MenuItem(name.c_str(), e.shortcut.empty() ? nullptr : e.shortcut.c_str(), ItemChecked(e, what))) {
+            clicked.fn = e.fn;
+            clicked.user = e.user;
+            clicked.what = what;
+        }
+        ImGui::PopID();
+    };
+    const melange::render::MenuNode* view = nullptr;  // items registered under View/... join the built-in View menu
+    for (const melange::render::MenuNode& n : tree) {
+        if (n.name == "View")
+            view = &n;
+        else
+            DrawMenuNode(n, item);
+    }
+    // "View": panel toggles (a title's '/' levels become submenus), registered View/... items, overlay mode
     if (ImGui::BeginMenu("View")) {
         {
             std::lock_guard lk(g_regMx);
-            for (Panel& p : g_panels) {
-                if (ImGui::MenuItem(p.title.c_str(), nullptr, &p.open)) ImGui::MarkIniSettingsDirty();
-            }
+            std::vector<melange::render::MenuNode> panels;
+            for (size_t i = 0; i < g_panels.size(); ++i)
+                melange::render::AddMenuNode(panels, melange::render::SplitPanelTitle(g_panels[i].title), static_cast<int>(i));
+            auto panelItem = [&](const std::string& name, int i) {
+                Panel& p = g_panels[static_cast<size_t>(i)];
+                ImGui::PushID(p.id.c_str());
+                if (ImGui::MenuItem(name.c_str(), nullptr, &p.open)) ImGui::MarkIniSettingsDirty();
+                ImGui::PopID();
+            };
+            for (const melange::render::MenuNode& n : panels) DrawMenuNode(n, panelItem);
+        }
+        if (view) {
+            ImGui::Separator();
+            for (int i : view->items) item(view->name, i);
+            for (const melange::render::MenuNode& c : view->children) DrawMenuNode(c, item);
         }
         ImGui::Separator();
         std::string pass = melange::render::HotkeyText(1), toggle = melange::render::HotkeyText(0);
-        if (ImGui::MenuItem("Pass-through (game keeps input)", pass.c_str())) melange::overlay::SetCapture(false);
+        // An action, not a setting: the overlay stays drawn and the game gets the input, so no check mark.
+        if (ImGui::MenuItem("Pass-through (give the game input)", pass.c_str())) melange::overlay::SetCapture(false);
         if (ImGui::MenuItem("Hide overlay", toggle.c_str())) melange::overlay::SetVisible(false);
         ImGui::EndMenu();
     }
@@ -721,11 +768,16 @@ void RemovePanel(int handle) {
 }
 
 int AddMenuItem(const char* path, ActionFn fn, void* user, const char* shortcut) {
+    return AddToggleMenuItem(path, fn, user, nullptr, shortcut);
+}
+
+int AddToggleMenuItem(const char* path, ActionFn fn, void* user, CheckedFn checked, const char* shortcut) {
     if (!fn) return 0;
     MenuEntry e;
     if (!melange::render::SplitMenuPath(path, e.segs)) return 0;
     e.fn = fn;
     e.user = user;
+    e.checked = checked;
     e.shortcut = shortcut ? shortcut : "";
     std::lock_guard lk(g_regMx);
     e.handle = g_nextHandle++;

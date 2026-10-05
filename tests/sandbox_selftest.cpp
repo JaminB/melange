@@ -54,7 +54,14 @@ struct PanelReg {
     void* user;
 };
 std::vector<PanelReg> g_panels;
-int g_nextHandle = 1, g_textures = 0, g_drawCbs = 0, g_menuItems = 0, g_hotkeys = 0;
+struct MenuReg {
+    std::string path;
+    melange::overlay::ActionFn fn;
+    void* user;
+    melange::overlay::CheckedFn checked;
+};
+std::vector<MenuReg> g_menus;
+int g_nextHandle = 1, g_textures = 0, g_drawCbs = 0, g_hotkeys = 0;
 }  // namespace fake
 
 // ---------------------------------------------------------------- link-time fakes
@@ -166,7 +173,13 @@ void RemovePanel(int handle) {
             return;
         }
 }
-int AddMenuItem(const char*, ActionFn, void*, const char*) { return ++fake::g_menuItems; }
+int AddToggleMenuItem(const char* path, ActionFn fn, void* user, CheckedFn checked, const char*) {
+    fake::g_menus.push_back({path, fn, user, checked});
+    return fake::g_nextHandle++;
+}
+int AddMenuItem(const char* path, ActionFn fn, void* user, const char* shortcut) {
+    return AddToggleMenuItem(path, fn, user, nullptr, shortcut);
+}
 int AddHotkey(uint8_t, uint8_t, ActionFn, void*) { return ++fake::g_hotkeys; }
 bool ParseHotkey(const char* text, uint8_t* dik, uint8_t* mods) {
     *dik = 0x23;
@@ -765,6 +778,40 @@ wum.draw.hudText(1, 2, "x", "#ff000080")
     Expect(fake::g_panels.empty(), "panel removed on unload");
 }
 
+void TestMenus() {
+    SetMod("menu", R"lua(
+on = false
+wum.ui.menu("Grid", function() on = not on end, { checked = function() return on end })
+wum.ui.menu("Plain", function() end)
+wum.ui.menu("Broken", function() end, { checked = function() error("state bug") end })
+ok = pcall(wum.ui.menu, "Bad", function() end, { checked = true })
+)lua");
+    Expect(sandbox::LoadMod("menu"), "menu loads: " + StatusOf("menu").error);
+    auto find = [](const char* path) -> const fake::MenuReg* {
+        for (const fake::MenuReg& r : fake::g_menus)
+            if (r.path == path) return &r;
+        return nullptr;
+    };
+    const fake::MenuReg* grid = find("Mods/menu/Grid");
+    const fake::MenuReg* plain = find("Mods/menu/Plain");
+    const fake::MenuReg* broken = find("Mods/menu/Broken");
+    Expect(grid && plain && broken && grid->checked && plain->checked, "menu items registered with a state getter");
+    if (!grid || !plain || !broken || !grid->checked) return;
+    Expect(!grid->checked(grid->user), "unchecked until the mod says so");
+    grid->fn(grid->user);
+    Expect(grid->checked(grid->user), "checked after the item flips the mod's state");
+    Expect(!plain->checked(plain->user), "an item without opts.checked never shows a check mark");
+    bool any = false;
+    for (int i = 0; i < 5; ++i) any = broken->checked(broken->user) || any;
+    Expect(!any, "a failing getter reads unchecked");
+    Expect(StatusOf("menu").disabledCallbacks == 1, "a failing getter is disabled after 3 faults");
+    ExpectEq(Eval("menu", "return ok"), "false", "opts.checked must be a function");
+    grid->fn(grid->user);
+    ExpectEq(Eval("menu", "return on"), "false", "the action still runs");
+    sandbox::UnloadMod("menu");
+    Expect(!grid->checked(grid->user), "unchecked once the mod is unloaded");
+}
+
 void CopySample(const std::string& id, bool unsafe, bool granted) {
     const std::wstring src = W(MELANGE_SOURCE_DIR) + L"\\dist\\Mods\\" + W(id);
     SetMod(id, ReadText(src + L"\\client\\init.lua"), "", unsafe, granted);
@@ -931,7 +978,8 @@ int main() {
         {"escapes", TestEscapes}, {"budget", TestBudget},   {"memory", TestMemory},
         {"events", TestEvents},   {"timers", TestTimers},   {"reload", TestReload},
         {"config/storage", TestConfigStorage},              {"console", TestConsole},
-        {"unsafe", TestUnsafe},   {"panels", TestPanels},   {"samples", TestSamples},
+        {"unsafe", TestUnsafe},   {"panels", TestPanels},   {"menus", TestMenus},
+        {"samples", TestSamples},
         {"game", TestGame},       {"graphics", TestGraphics}, {"docs", TestDocs}};
     for (const auto& [name, fn] : tests) {
         const int before = g_fail;

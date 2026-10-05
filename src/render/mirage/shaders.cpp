@@ -576,7 +576,8 @@ public:
             return true;
         });
         melange::overlay::AddMenuItem("Mirage/Shaders/Reload all", &MenuReloadAll, nullptr);
-        melange::overlay::AddMenuItem("Mirage/Shaders/Toggle FXAA", &MenuToggleFxaa, nullptr);
+        melange::overlay::AddToggleMenuItem("Mirage/Shaders/FXAA", &MenuToggleFxaa, nullptr,
+                                            [](void*) { return engine::FxaaOn(); });
         RegisterPanel();
 
         int roots = static_cast<int>(MakeSources(L"CG").roots.size());

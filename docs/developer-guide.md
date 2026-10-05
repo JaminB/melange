@@ -34,8 +34,8 @@ Every module has its own section in `Melange.ini`, and `Enabled=0` turns a modul
 | `SteamTrace` | on | Logs Steam lobby, P2P and callback activity |
 | `NetTrace` | on | Logs raw Winsock calls |
 | `WindowTag` | on | Shows the Melange version in the window title |
-| `FrameInterval` | on | Sets the engine frame interval (`IntervalMs=16` is about 60 fps); "Classic timing" (`ClassicTiming=0`) raises the OS timer resolution to 1 ms (`timeBeginPeriod`) for steadier pacing on systems that stutter at the default resolution. Toggle in the overlay menu *Game* |
-| `SmoothSixty` | on (`On=0`) | "Smooth 60": lifts the engine's frame limiter and uses vsync. Toggle in the overlay menu *Game* |
+| `FrameInterval` | on | Sets the engine frame interval (`IntervalMs=16` is about 60 fps); "Classic timing" (`ClassicTiming=0`) raises the OS timer resolution to 1 ms (`timeBeginPeriod`) for steadier pacing on systems that stutter at the default resolution. Switch it with *Game > Classic timing* in the overlay (checked while on) |
+| `SmoothSixty` | on (`On=0`) | "Smooth 60": lifts the engine's frame limiter and uses vsync. Switch it with *Game > Smooth 60* in the overlay (checked while on) |
 | `Mirage` | on | Graphics layer core: renderer access, scene stages for mods, mod folders |
 | `MirageTrace` | on | OpenGL call statistics (`Mode=count`), frame capture (`CaptureHotkey`), texture dumper, GPU compatibility report |
 | `MirageShaders` | on | Shader mods: replacements, patches, live reload, sliders; fixes the game's FXAA on AMD and Intel (`FixFxaa`) |
@@ -127,7 +127,7 @@ The game's shaders are the Cg files in `<game>\CG\`. A mod changes them from its
 
 Saving a file reloads the shaders that use it while the game runs. The new source is compiled first: if it has errors, the game keeps the running shader, and the errors go to the log and the panel.
 
-`[MirageShaders] FixFxaa=1` (the default) fixes the game's own FXAA pass (the `/FXAA` launch option), which does not compile on AMD and Intel GPUs. The panel also switches FXAA on and off while the game runs.
+`[MirageShaders] FixFxaa=1` (the default) fixes the game's own FXAA pass (the `/FXAA` launch option), which does not compile on AMD and Intel GPUs. The panel, and *Mirage > Shaders > FXAA* in the overlay menu (checked while on), also switch FXAA on and off while the game runs.
 
 | `FixFxaa` off | `FixFxaa` on |
 |---|---|
@@ -236,7 +236,7 @@ An effect is a folder `<game>\Mods\<id>\postfx\<effect>\` with an `effect.ini` a
 - `PostWorld` changes the world only: worm labels and the HUD are drawn on top afterwards.
 - `Final` changes the whole frame, just before the game copies it to the screen. The game's own FXAA and sepia still apply afterwards.
 
-Open the overlay's *Mirage/Post-FX* panel to switch effects on, change their order, drag their parameters and see what each one costs on the GPU. *Split compare* shows the left half of the screen without the effects. `Ctrl+Shift+F8` (`[MiragePostFX] ToggleKey`) bypasses the whole stack. Your choices are saved in `[MiragePostFX]` in `Melange.ini`. Editing an effect's files while the game runs reloads it. A shader that fails to compile is reported in the panel and the log, and the other effects keep running. So is one that compiles and then draws nothing: a graphics driver can accept a large shader without an error and produce a program that does not draw, so after each compile Melange checks the output of an effect's runs until its last pass has written pixels, and fails the effect if it has written none for three seconds. A warning the driver gives for a shader that compiled is logged too.
+Open the overlay's *Mirage/Post-FX* panel to switch effects on, change their order, drag their parameters and see what each one costs on the GPU. *Split compare* shows the left half of the screen without the effects. `Ctrl+Shift+F8` (`[MiragePostFX] ToggleKey`) or *Mirage > Post-FX > Enabled* in the overlay menu (checked while the effects run) bypasses the whole stack. Your choices are saved in `[MiragePostFX]` in `Melange.ini`. Editing an effect's files while the game runs reloads it. A shader that fails to compile is reported in the panel and the log, and the other effects keep running. So is one that compiles and then draws nothing: a graphics driver can accept a large shader without an error and produce a program that does not draw, so after each compile Melange checks the output of an effect's runs until its last pass has written pixels, and fails the effect if it has written none for three seconds. A warning the driver gives for a shader that compiled is logged too.
 
 ![The overlay's Mirage/Post-FX panel: effects listed by stage, with GPU/CPU cost per effect](images/mirage/postfx-panel.png)
 
@@ -489,7 +489,7 @@ The public SDK headers are in `src/sdk/melange/`:
 | Header | Purpose |
 |---|---|
 | `melange/bus.h` | Subscribe to engine messages by name or id, read their payloads, and register payload decoders |
-| `melange/overlay.h` | Add overlay panels, menu items and hotkeys |
+| `melange/overlay.h` | Add overlay panels, menu items and hotkeys. The *View* menu lists every panel, with a `/` in its title (`"Tools/Grid"`, no blanks around it) making a submenu; `AddToggleMenuItem` adds an item that shows a check mark while its getter returns true |
 | `melange/jlog.h` | Write structured records to the session log, and read the in-memory tail |
 | `melange/export.h` | Start a "Save logs" export, or write one to a given path |
 | `melange/testcmd.h` | Register named text commands for scripted testing |

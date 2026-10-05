@@ -132,8 +132,8 @@ Read-only game state.
 
 | Name | Description |
 |---|---|
-| `wum.ui.panel(id, title, fn[, open])` | Adds an overlay panel. `fn()` draws its contents every frame while it is open. Returns a handle. |
-| `wum.ui.menu(path, fn)` | Adds a menu item `Mods/<mod name>/<path>` (for example `"Reset"`). |
+| `wum.ui.panel(id, title, fn[, open])` | Adds an overlay panel. `fn()` draws its contents every frame while it is open. Returns a handle. The overlay's *View* menu lists it as *<mod name> > <title>*; a `/` in `title` (`"Tools/Grid"`) adds a submenu level. |
+| `wum.ui.menu(path, fn[, opts])` | Adds a menu item `Mods/<mod name>/<path>` (for example `"Reset"`). `opts.checked` is an optional function asked every frame the menu is open: the item shows a check mark while it returns true, for an item that switches something on and off (`wum.ui.menu("Grid", toggleGrid, {checked = function() return gridOn end})`). An error in it counts as a fault (the getter is disabled after 3, the item still works) and reads as unchecked. Returns a handle. |
 | `wum.ui.hotkey(keys, fn)` | Calls `fn()` on a hotkey such as `"Ctrl+Shift+H"`, whether or not the overlay is shown. The key is kept from the game. |
 | `wum.ui.remove(handle)` | Removes a panel, menu item or hotkey handle. |
 

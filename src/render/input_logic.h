@@ -112,6 +112,51 @@ inline bool SplitMenuPath(const char* path, std::vector<std::string>& out) {
     return !out.empty();
 }
 
+// Splits a panel title into View-menu levels: "Thumper/Mods" -> {"Thumper", "Mods"}. Only a '/' with no blank on
+// either side separates, so a title like "About / Stats" stays one item. Segments are trimmed and empty ones
+// dropped; a title that leaves nothing stays whole.
+inline std::vector<std::string> SplitPanelTitle(const std::string& title) {
+    auto blank = [](char c) { return c == ' ' || c == '\t'; };
+    std::vector<std::string> out;
+    size_t start = 0;
+    for (size_t i = 0; i <= title.size(); ++i) {
+        const bool cut = i == title.size() ||
+                         (title[i] == '/' && i > 0 && i + 1 < title.size() && !blank(title[i - 1]) && !blank(title[i + 1]));
+        if (!cut) continue;
+        std::string t = TrimCopy(title.substr(start, i - start));
+        if (!t.empty()) out.push_back(std::move(t));
+        start = i + 1;
+    }
+    if (out.empty()) out.push_back(title);
+    return out;
+}
+
+// One level of an overlay menu, built from item paths in registration order. `items` are the caller's indices of
+// the items whose path ends at this node. A name that is both an item and a submenu ("A" and "A/B") becomes one
+// submenu with the item first in it, so the two never share an ImGui id at one level.
+struct MenuNode {
+    std::string name;
+    std::vector<int> items;
+    std::vector<MenuNode> children;
+};
+
+inline void AddMenuNode(std::vector<MenuNode>& level, const std::vector<std::string>& segs, int item) {
+    std::vector<MenuNode>* cur = &level;
+    for (size_t i = 0; i < segs.size(); ++i) {
+        MenuNode* node = nullptr;
+        for (MenuNode& n : *cur)
+            if (n.name == segs[i]) node = &n;
+        if (!node) {
+            cur->push_back(MenuNode{segs[i], {}, {}});
+            node = &cur->back();
+        }
+        if (i + 1 == segs.size())
+            node->items.push_back(item);
+        else
+            cur = &node->children;
+    }
+}
+
 struct HotkeyDef {
     int handle;
     uint8_t dik;
