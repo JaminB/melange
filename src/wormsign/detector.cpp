@@ -307,16 +307,16 @@ void Correlate() {
     enginecheck::Record r{};
     if (!enginecheck::FirstFailure(g_serial, &r)) return;
     g_correlated = true;
-    const int reason = enginecheck::FirstReason(r.reasons);
-    char b[256];
-    if (reason)
-        snprintf(b, sizeof b, "Wormsign flagged tick %u; the engine's turn-end check failed at tick %u (reason %d, %s)",
-                 flagged, r.tick, reason, enginecheck::ReasonText(reason));
+    // Every failed reason, not only the first: a camera failure (7..10) can come with worm ones (11, 13).
+    const std::string reasons = enginecheck::DescribeReasons(r.reasons);
+    char b[160];
+    if (!reasons.empty())
+        snprintf(b, sizeof b, "Wormsign flagged tick %u; the engine's turn-end check failed at tick %u (", flagged, r.tick);
     else
         snprintf(b, sizeof b, "Wormsign flagged tick %u; the engine aborted the match at tick %u (%s)", flagged, r.tick,
                  r.error);
-    g_correlation = b;
-    LOG_WARN("[wormsign] %s", b);
+    g_correlation = reasons.empty() ? std::string(b) : std::string(b) + reasons + ")";
+    LOG_WARN("[wormsign] %s", g_correlation.c_str());
     for (BundleJob& job : g_jobs) {
         if (job.serial != g_serial) continue;
         auto in = std::make_shared<bundle::Inputs>(*job.base);
@@ -327,8 +327,10 @@ void Correlate() {
     }
     jlog::Rec("wormsign", jlog::Level::Warn, "engine correlation")
         .Uint("flaggedTick", flagged).Uint("engineTick", r.tick)
-        .Int("lagTicks", static_cast<int64_t>(r.tick) - static_cast<int64_t>(flagged)).Uint("reason", reason)
-        .Str("error", r.error);
+        .Int("lagTicks", static_cast<int64_t>(r.tick) - static_cast<int64_t>(flagged))
+        .Uint("reason", enginecheck::FirstReason(r.reasons))  // the first, for readers of the single code
+        .Uint("reasons", r.reasons).Str("reasonList", enginecheck::ReasonNumbers(r.reasons))
+        .Str("reasonText", enginecheck::ReasonTexts(r.reasons)).Str("error", r.error);
 }
 
 void PollLobby() {

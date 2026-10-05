@@ -46,15 +46,18 @@ void Add(Kind kind, uint8_t sov, bool result, uint16_t reasons, const char* erro
         if (g_recs.size() >= kMaxRecords) g_recs.erase(g_recs.begin());
         g_recs.push_back(r);
     }
-    const int reason = FirstReason(reasons);
+    // "reasons" stays the bitmask; "reason" names every failed check (one text when one failed, as before) and
+    // "reasonList" their numbers, so a camera + worm failure is not reported as the camera alone.
     jlog::Rec("wormsign", result ? jlog::Level::Info : jlog::Level::Warn,
               kind == Kind::Build ? "engine validation sent" : kind == Kind::Check ? "engine validation" : "engine abort")
         .Uint("serial", r.serial).Uint("tick", r.tick).Uint("t", r.timeMs).Uint("sov", sov).Bool("ok", result)
-        .Uint("reasons", reasons).Str("reason", reason ? ReasonText(reason) : "").Str("error", r.error);
-    if (!result)
-        LOG_WARN("[wormsign] engine %s failed at tick %u (t=%u)%s%s%s%s", kind == Kind::Abort ? "match check" : "validation",
-                 r.tick, r.timeMs, reason ? ", reason " : "", reason ? std::to_string(reason).c_str() : "",
-                 reason ? ": " : "", reason ? ReasonText(reason) : r.error);
+        .Uint("reasons", reasons).Str("reasonList", ReasonNumbers(reasons)).Str("reason", ReasonTexts(reasons))
+        .Str("error", r.error);
+    if (!result) {
+        const std::string why = reasons ? DescribeReasons(reasons) : std::string(r.error);
+        LOG_WARN("[wormsign] engine %s failed at tick %u (t=%u)%s%s", kind == Kind::Abort ? "match check" : "validation",
+                 r.tick, r.timeMs, why.empty() ? "" : ", ", why.c_str());
+    }
 }
 
 uint32_t __fastcall HkInitialise(void* self, void*, int sov) {
@@ -196,6 +199,26 @@ int FirstReason(uint16_t reasons) {
     return 0;
 }
 
+std::string ReasonNumbers(uint16_t reasons) {
+    std::string s;
+    for (int i = 0; i < 13; ++i)
+        if (reasons & (1u << i)) s += (s.empty() ? "" : ",") + std::to_string(i + 1);
+    return s;
+}
+
+std::string ReasonTexts(uint16_t reasons) {
+    std::string s;
+    for (int i = 0; i < 13; ++i)
+        if (reasons & (1u << i)) s += (s.empty() ? "" : "; ") + std::string(ReasonText(i + 1));
+    return s;
+}
+
+std::string DescribeReasons(uint16_t reasons) {
+    const std::string n = ReasonNumbers(reasons);
+    if (n.empty()) return {};
+    return (n.find(',') == std::string::npos ? "reason " : "reasons ") + n + ": " + ReasonTexts(reasons);
+}
+
 std::string Json(const std::vector<Record>& v) {
     jsonmini::Arr a;
     for (const Record& r : v) {
@@ -205,7 +228,7 @@ std::string Json(const std::vector<Record>& v) {
         jsonmini::Obj o;
         o.Str("kind", r.kind == Kind::Build ? "build" : r.kind == Kind::Check ? "check" : "abort")
             .UInt("tick", r.tick).UInt("t", r.timeMs).UInt("sov", r.sov).Bool("ok", r.result)
-            .Raw("reasons", reasons.End()).Str("reason", ReasonText(FirstReason(r.reasons))).Str("error", r.error);
+            .Raw("reasons", reasons.End()).Str("reason", ReasonTexts(r.reasons)).Str("error", r.error);
         a.Raw(o.End());
     }
     return a.End();

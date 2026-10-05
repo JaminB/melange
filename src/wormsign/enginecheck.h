@@ -22,6 +22,12 @@ void Uninstall();
 std::vector<Record> Records(uint32_t serial);  // this match's records, oldest first; main thread
 bool FirstFailure(uint32_t serial, Record* out);
 const char* ReasonText(int reason);            // 1..13
-int FirstReason(uint16_t reasons);             // 0 when none
+int FirstReason(uint16_t reasons);             // 0 when none; only where one code is needed
+std::string ReasonNumbers(uint16_t reasons);   // every failed reason: "7,8,9,11,13"; "" when none
+std::string ReasonTexts(uint16_t reasons);     // their texts in order, joined by "; "
+// "reason 5: Random's dont match", "reasons 7,8: camera's active view matrix differs; camera's logical position
+// differs"; "" when none.
+std::string DescribeReasons(uint16_t reasons);
+// "reasons" is the array of every failed reason number, "reason" their texts joined by "; ".
 std::string Json(const std::vector<Record>& v);
 }  // namespace melange::wormsign::enginecheck

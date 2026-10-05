@@ -130,6 +130,20 @@ void Clear(DetailRec* r) {
     for (auto& t : r->teams) t = {kNoTeam, 0, 0};
     r->rng = r->rng2 = 0;
     r->curTeam = r->activeWorm = 0;
+    r->cam = CameraDetail{};
+}
+
+size_t CameraHashBytes(const CameraDetail& c, uint8_t out[kCameraHashBytes]) {
+    out[0] = c.flags;
+    memcpy(out + 1, c.pos, 12);
+    memcpy(out + 13, c.target, 12);
+    memcpy(out + 25, c.up, 12);
+    return kCameraHashBytes;
+}
+
+uint64_t CameraHash(const CameraDetail& c) {
+    uint8_t b[kCameraHashBytes];
+    return Fnv(b, CameraHashBytes(c, b));
 }
 
 DetailRec* Scratch() {
@@ -197,6 +211,9 @@ size_t Pack(const DetailRec& r, uint8_t* out, size_t cap) {
         const ProjDetail& p = r.proj[i];
         o.V(p.vt), o.V(p.time), o.V(p.cat), o.Put(p.pv, sizeof p.pv);
     }
+    const CameraDetail& c = r.cam;
+    o.V(c.flags), o.V(c.index), o.V(c.count), o.V(c.view);
+    o.Put(c.pos, sizeof c.pos), o.Put(c.target, sizeof c.target), o.Put(c.up, sizeof c.up);
     return o.ok ? o.n : 0;
 }
 
@@ -234,6 +251,15 @@ bool Unpack(const uint8_t* p, size_t n, DetailRec* r) {
         d.cat = in.V<uint8_t>();
         in.Get(d.pv, sizeof d.pv);
     }
+    CameraDetail& c = r->cam;
+    c.flags = in.V<uint8_t>();
+    c.index = in.V<uint32_t>();
+    c.count = in.V<uint32_t>();
+    c.view = in.V<uint32_t>();
+    in.Get(c.pos, sizeof c.pos);
+    in.Get(c.target, sizeof c.target);
+    in.Get(c.up, sizeof c.up);
+    if (c.flags & ~kCamPresent) return false;
     return in.ok && in.i == n;
 }
 
@@ -360,7 +386,18 @@ std::string ToJson(const DetailRec& r) {
         s += "{\"vt\":" + Hex(p.vt) + ",\"time\":" + std::to_string(p.time) + ",\"cat\":" + std::to_string(p.cat) +
              ",\"pos\":" + Vec(p.pv) + ",\"vel\":" + Vec(p.pv + 3) + "}";
     }
-    s += "]}";
+    const CameraDetail& c = r.cam;
+    s += "],\"camera\":{\"present\":";
+    if (c.flags & kCamPresent) {
+        char h[24];
+        snprintf(h, sizeof h, "\"%016llx\"", static_cast<unsigned long long>(CameraHash(c)));
+        s += "true,\"index\":" + std::to_string(c.index) + ",\"count\":" + std::to_string(c.count) +
+             ",\"view\":" + std::to_string(c.view) + ",\"pos\":" + Vec(c.pos) + ",\"target\":" + Vec(c.target) +
+             ",\"up\":" + Vec(c.up) + ",\"hash\":" + h;
+    } else {
+        s += "false";
+    }
+    s += "}}";
     return s;
 }
 
@@ -422,6 +459,21 @@ std::string Diff(const DetailRec& a, const DetailRec& b) {
         for (int k = 0; k < 6; ++k)
             if (pa.pv[k] != pb.pv[k])
                 line(p + (k < 3 ? ".pos" : ".vel") + kAxis[k % 3], Num(Fb(pa.pv[k])), Num(Fb(pb.pv[k])));
+    }
+    const CameraDetail &ca = a.cam, &cb = b.cam;
+    const bool ina = ca.flags & kCamPresent, inb = cb.flags & kCamPresent;
+    line("camera", ina ? "present" : "absent", inb ? "present" : "absent");
+    if (ina && inb) {
+        line("camera.index", std::to_string(ca.index), std::to_string(cb.index));
+        line("camera.count", std::to_string(ca.count), std::to_string(cb.count));
+        line("camera.view", std::to_string(ca.view), std::to_string(cb.view));
+        const struct {
+            const char* name;
+            const uint32_t *va, *vb;
+        } vecs[] = {{".pos", ca.pos, cb.pos}, {".target", ca.target, cb.target}, {".up", ca.up, cb.up}};
+        for (const auto& v : vecs)
+            for (int k = 0; k < 3; ++k)
+                if (v.va[k] != v.vb[k]) line(std::string("camera") + v.name + kAxis[k], Num(Fb(v.va[k])), Num(Fb(v.vb[k])));
     }
     return s;
 }

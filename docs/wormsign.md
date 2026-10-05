@@ -40,6 +40,7 @@ The `wormsign.replay` test command does the same from scripts: `arm <file>`, `di
 |---|---|---|
 | `ReplayAnyContent` | 0 | 1 replays a recording made with different mod content |
 | `ReplayPassLocal` | 0 | 1 lets local-only inputs (the camera) through while a replay plays; by default every live input is ignored |
+| `HashCamera` | 0 | 1 adds the `melange.camera` contributor: the active logical camera in the mods hash of every tick (see [The logical camera](#the-logical-camera-melangecamera)) |
 
 ## Record layouts in a `.wsr` file
 
@@ -63,7 +64,7 @@ In an online match every player runs the same simulation from the same inputs. W
 
 - **Who it talks to.** Each Melange player with `[Wormsign] Exchange=1` writes the lobby member key `mlg.ws=1`. Hashes go only to members whose `mlg.ws` is the same version. A player without Melange, or with Wormsign off, gets nothing: Melange never sends them a packet, and a match against them is byte-for-byte the same on the wire as without Melange.
 - **How.** Steam P2P channel 5, which the game neither uses nor reads. A batch of tick hashes goes out every half second, about 1.2 KB/s per player.
-- **What it compares.** The engine hash, always. The mods hash, when both players have the same mod contributors; otherwise the *Wormsign/Peers* panel says "mod contributors differ".
+- **What it compares.** The engine hash, always. The mods hash, when both players have the same mod contributors; otherwise the *Wormsign/Peers* panel says "mod contributors differ". With `HashCamera=1` the mods hash includes the logical camera (`melange.camera`), so it is compared only with players that have it on too.
 - **What a desync does.** Nothing to the match: Wormsign never pauses or ends it, and the game's own turn-end check keeps working as before. Wormsign shows a message ("Desync at tick 5000 (worms) with *player*, bundle saved"), writes the log, and saves a desync bundle. `[Wormsign] OnDesync=bundle-only` keeps the message off the screen.
 
 The overlay panel *Wormsign/Peers* lists every lobby member: whether hashes are exchanged ("no exchange" for a player without it, "version mismatch" for another protocol), the last tick both sides compared, how many ticks the other player is behind, and, after a desync, how long the two have stayed apart.
@@ -83,7 +84,25 @@ The overlay panel *Wormsign/Peers* lists every lobby member: whether hashes are 
 
 Bundles follow the redaction of *Save logs as...*: SteamIDs and IP addresses are replaced with a hash that is different in every bundle, and the Windows user and computer names are replaced. *Save logs as...* also includes the newest bundle.
 
-When the game's own turn-end check later fails, the log and the panel say how far behind it was: "Wormsign flagged tick 5000; the engine's turn-end check failed at tick 7488 (reason 5, Random's dont match)".
+When the game's own turn-end check later fails, the log and the panel say how far behind it was and name every check that failed, not only the first: "Wormsign flagged tick 5000; the engine's turn-end check failed at tick 7488 (reasons 7,8,9,11,13: camera's active view matrix differs; camera's logical position differs; camera's logical target position differs; worm data mismatch; local and remote worm data differ)", or "(reason 5: Random's dont match)" for one. In `session.jsonl` the `engine validation` and `engine correlation` records keep `reasons` as the bitmask (bit n-1 for reason n) and add `reasonList` ("7,8,9,11,13"); `engine validation`'s `reason` and `engine correlation`'s `reasonText` hold every failed check's text joined by "; ", and `engine correlation`'s numeric `reason` stays the first one. In `report.json` and the `ENGV` chunk each check's `reasons` lists every number and `reason` every text.
+
+The game's reasons are: 1 source of validation differs, 2 no active worm, 3 worm indexes differ, 4 task list, 5 random numbers, 6 active camera name, 7 the active logical camera's view matrix, 8 its position, 9 its target, 10 its up vector, 11 worm data, 12 weapon inventory, 13 local and remote worm data. Reasons 7-10 hash the active *logical* camera (`GameStateValidationMsg` 0x68a027/0x68a335 through `CameraManagerService::GetLogicalViewMatrix` 0x562730), the camera the simulation steps every tick, not the one on the screen.
+
+### The logical camera (`melange.camera`)
+
+The engine hash does not include the camera. With `[Wormsign] HashCamera=1`, Wormsign adds the contributor `melange.camera` (version 1), which feeds the mods hash of every tick with the active logical camera's raw position, target and up vector (camera +0x04, +0x10, +0x1c; the camera is `*(0x95c370)`'s camera vector at +0x2a0 indexed by `m_uLogicalCamera` at +0x28c) and a flag for whether it could be read. Those are the values reasons 7-10 compare, as stored bits rather than the engine's sums of them, so a camera that drifts mid-turn is reported at its first differing tick. The camera index, the number of cameras and the view mode (+0x2c) are only in the detail record: the engine compares the camera by name (reason 6), and they need not be the same on every machine. The reads are fault guarded and only read memory.
+
+Every detail record has the camera (`camera` in `wormsign.detail`, `detail-local.json` and `detail-peer.json`: `present`, `index`, `count`, `view`, `pos`, `target`, `up` and the contributor `hash`), with or without `HashCamera`; `wormsign.detail` also says whether the record's camera matches the tick's `melange.camera` hash.
+
+Compatibility with players who do not have it (an older Melange, or `HashCamera=0`):
+
+- It is a contributor, not an engine component. An engine component would change the engine hash version, and a peer with another version gets no exchange at all ("version mismatch").
+- The mods hash is compared only between players whose contributor lists match (`contributorListHash` in `HELLO`). A player without `melange.camera` has another list, so with them only the engine hash is compared: no false desync, and a real engine desync is still found. The *Wormsign/Peers* panel says "mod contributors differ" for them. That also means the other mod contributors are not compared with that player.
+- Recordings list their contributors, so a replay compares the mods hash only when the recording has the same set (a recording made without `melange.camera` plays with the engine hash only).
+- An older Melange's detail record has no `camera`, so a bundle from a desync with it lists `camera.*` as "(none)" on its side in `diff.txt`.
+- It is off by default until two players have run whole matches with it and agreed: the game checks the logical camera only at turn ends and time syncs, so that it also agrees between those checks is not yet verified. Turn it on on every machine of a test match. A camera desync names `melange.camera` as the differing contributor, and `diff.txt` names the fields (`camera.target.x 512.25 -> 512.5`).
+
+The girder kit's aim (`GirderKitLogicEntity` 0x55a680, its +0xdc..+0xf0 vectors) is computed from the same camera's target minus position, so it is covered through the camera; the girder kit entity itself is not hashed.
 
 ### Testing a mod's determinism
 

@@ -259,6 +259,17 @@ dt::DetailRec Random(std::mt19937& r, uint32_t tick, int worms, int proj) {
         d.proj[i] = {0x870000u + (r() & 0xfff), r(), static_cast<uint8_t>(1 + (r() & 1)), {}};
         for (auto& p : d.proj[i].pv) p = r();
     }
+    // The camera from the tick, not from r(), so the other fields keep their sequences.
+    d.cam.flags = dt::kCamPresent;
+    d.cam.index = tick % 3;
+    d.cam.count = 3;
+    d.cam.view = 7;
+    for (int k = 0; k < 3; ++k) {
+        const float p = static_cast<float>(tick) + static_cast<float>(k), t = p * 0.5f, u = k == 1 ? 1.f : 0.f;
+        memcpy(&d.cam.pos[k], &p, 4);
+        memcpy(&d.cam.target[k], &t, 4);
+        memcpy(&d.cam.up[k], &u, 4);
+    }
     return d;
 }
 
@@ -275,9 +286,37 @@ void TestDetail(int fuzzSeconds) {
     std::mt19937 r(1234);
     const dt::DetailRec a = Random(r, 77, 8, 3);
     const auto pa = Packed(a);
-    dt::DetailRec b;
+    dt::DetailRec b{};
     Expect(!pa.empty() && dt::Unpack(pa.data(), pa.size(), &b) && Packed(b) == pa, "pack round trip");
-    Expect(pa.size() == 20 + 1 + 8 * 94 + 1 + 2 * 6 + 2 + 3 * 33, "packed size");
+    Expect(pa.size() == 20 + 1 + 8 * 94 + 1 + 2 * 6 + 2 + 3 * 33 + 49, "packed size");
+    Expect(b.cam.flags == dt::kCamPresent && b.cam.index == a.cam.index && b.cam.count == 3 && b.cam.view == 7 &&
+               !memcmp(b.cam.pos, a.cam.pos, sizeof b.cam.pos) && !memcmp(b.cam.up, a.cam.up, sizeof b.cam.up),
+           "camera round trip");
+    {
+        auto badCam = pa;
+        badCam[pa.size() - 49] = 2;
+        Expect(!dt::Unpack(badCam.data(), badCam.size(), &b), "unknown camera flags refused");
+        // The contributor's bytes: flags, pos, target, up; index, count and view are detail only.
+        dt::DetailRec c1 = a, c2 = a;
+        c2.cam.index = a.cam.index + 1, c2.cam.count = 9, c2.cam.view = 1;
+        Expect(dt::CameraHash(c1.cam) == dt::CameraHash(c2.cam), "camera hash ignores index, count and view");
+        const float x = 1234.5f;
+        memcpy(&c2.cam.target[0], &x, 4);
+        Expect(dt::CameraHash(c1.cam) != dt::CameraHash(c2.cam), "camera hash covers the target");
+        uint8_t hb[dt::kCameraHashBytes];
+        Expect(dt::CameraHashBytes(c1.cam, hb) == 37 && hb[0] == dt::kCamPresent && !memcmp(hb + 1, c1.cam.pos, 12) &&
+                   !memcmp(hb + 13, c1.cam.target, 12) && !memcmp(hb + 25, c1.cam.up, 12),
+               "camera hash bytes layout");
+        dt::DetailRec none = a;
+        none.cam = dt::CameraDetail{};
+        Expect(dt::CameraHash(none.cam) != dt::CameraHash(a.cam), "an unread camera hashes differently");
+        const std::string cd = dt::Diff(c1, c2);
+        Expect(cd.find("camera.target.x ") != std::string::npos && cd.find("camera.count 3 -> 9\n") != std::string::npos &&
+                   cd.find("camera.pos") == std::string::npos,
+               "diff names the camera fields: " + cd);
+        Expect(dt::Diff(c1, none).find("camera present -> absent\n") != std::string::npos, "diff: camera lost");
+        Expect(dt::ToJson(none).find("\"camera\":{\"present\":false}") != std::string::npos, "JSON: absent camera");
+    }
     dt::DetailRec big = Random(r, 1, 16, 64);
     big.teams[2] = {2, 1, 5};
     big.teams[3] = {3, 0, 6};
