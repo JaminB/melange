@@ -4,6 +4,8 @@
 
 Melange fixes long-standing multiplayer bugs and lets you install mods: new weapons, graphics effects, shaders, scripts and tools. It works with the Steam version of the game (build #1077) and switches itself off on any other build.
 
+![Melange.exe's Home page: the game folder, the loader, the installed Melange and the plugins that are on, with Launch game at the top](docs/images/launcher/home.png)
+
 ## Install Melange
 
 1. Download the latest `melange-*.zip` from [Releases](https://github.com/JaminB/melange/releases) and extract it.
@@ -12,9 +14,11 @@ Melange fixes long-standing multiplayer bugs and lets you install mods: new weap
 
 **Melange keeps itself up to date.** Each time you open `Melange.exe`, it asks GitHub for the latest release. When there is a newer one, it downloads it in the background, checks its SHA-256 and that it is signed by the same publisher, and shows *Melange x.y.z is ready — Restart to update*. One click closes Melange, installs the update into your game folder (with a backup, like any install), and opens the new version. Close the game first. *Settings › Updates › Check for updates* looks again on demand. The game itself looks at most once a day and only says when a newer version is out. *Settings › Updates › Check for updates automatically* turns off both the check at start and the game's (it writes `CheckInGame=0` under `[Update]` in `Melange.ini`); *Check for updates* still works. Each check is a plain HTTPS `GET` to GitHub that sends nothing about you or your game.
 
-**Undo:** Delete the `Melange.exe` copy in your game folder, `melange.asi`, `Melange.ini` and the `Melange` and `Mods` folders. Delete `dinput8.dll` too, unless other ASI mods still need it. Melange keeps a backup of anything it replaces on Home › Settings › Melange › Backups.
+**Undo:** see [Uninstall](#uninstall). Melange keeps a backup of anything it replaces on *Settings › Melange › Backups*.
 
 Releases are code-signed; see [Code signing](CODE_SIGNING.md).
+
+In the game, press `` ` `` for Melange's overlay: mod pages, logs, graphics tools and the Store.
 
 ![The in-game overlay, opened with the grave key](docs/images/overlay/main-overlay.png)
 
@@ -27,6 +31,8 @@ To install a mod by hand (a "local" plugin):
 1. Put the mod's folder in `<game>\Mods\`, so that you have `<game>\Mods\<mod>\spice.json`.
 2. Start the game and press `` ` `` to open the overlay.
 3. On the *Thumper/Mods* page, tick *Show local plugins* and switch the mod on. Mods that change gameplay take effect the next time you start the game.
+
+![Melange.exe's Plugins page: a notice that a plugin which can't load was set aside, the Show local plugins switch, and the installed plugins with their switches](docs/images/launcher/plugins.png)
 
 Good to know:
 
@@ -41,6 +47,8 @@ Good to know:
 Melange.exe's *Settings › Melange › Uninstall* removes Melange and keeps a backup. Or delete `melange.asi`, `Melange.ini` and the `Melange` and `Mods` folders from the game folder yourself. Delete `dinput8.dll` too, unless other `.asi` mods still need it.
 
 To get the plain game back, *Settings › Restore vanilla* makes the game folder stock Worms Ultimate Mayhem again. It deletes, for good, every file that isn't part of the game: Melange, and also other mods such as Renewation HD, WUMPatch, ReShade, ASI loaders and plugins. The dialog names everything it found before you confirm. Your saves (kept by Steam, outside the game folder), `local.cfg` and the game's own caches and logs stay. Replays move to `Documents\Melange\replays`. If a mod had overwritten game files, Steam verifies the game afterwards (on GOG, verify in GOG Galaxy or reinstall). Melange then closes. The next time you open it, setup starts from the beginning.
+
+![The Restore vanilla dialog: it names Melange, Renewation HD, WUMPatch, the ASI loader, ReShade and other files it will delete, says replays are moved and saves are kept, and waits for "I understand" before deleting](docs/images/launcher/restore-vanilla.png)
 
 ## Reporting a bug
 
