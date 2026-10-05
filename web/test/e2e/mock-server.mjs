@@ -119,8 +119,8 @@ function initialMods() {
 // mods.view: the "Show local plugins" choice and one compatibility-sweep notice.
 function initialModsView() {
   return { showLocal: false, notices: [{ key: "2026-10-01T10:00:00Z-old-hud", id: "old-hud", name: "Old HUD", version: "0.1.0",
-    action: "quarantined", reason: "needs Melange >=9.0.0, you have 0.3.6", melange: "0.3.6", at: "2026-10-01T10:00:00Z",
-    folder: ".incompatible\\old-hud", detail: "", text: "Moved Old HUD to Mods\\.incompatible\\old-hud: needs Melange >=9.0.0, you have 0.3.6" }] };
+    action: "quarantined", reason: "needs Melange >=9.0.0, you have 0.4.0", melange: "0.4.0", at: "2026-10-01T10:00:00Z",
+    folder: ".incompatible\\old-hud", detail: "", text: "Moved Old HUD to Mods\\.incompatible\\old-hud: needs Melange >=9.0.0, you have 0.4.0" }] };
 }
 
 const BUS = ["Camera.HasUpdated", "GameLogic.Turn.Started", "GameLogic.Turn.Ended", "GameLogic.Weapon.Fired", "Explosion.Created", "Worm.Damaged"];

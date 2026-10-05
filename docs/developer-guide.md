@@ -50,7 +50,7 @@ Every module has its own section in `Melange.ini`, and `Enabled=0` turns a modul
 | `Wormsign` | on | The match's tick clock and a per-tick state hash (`wum.wormsign.tick()`); records a rolling library of recent matches to `Documents\Melange\replays` (last 20 / 200 MB by default, `wum.wormsign.library()`), match replays checked tick by tick (*Wormsign/Replay*); online, it compares the hashes with other Melange players and reports the first tick where they disagree ([wormsign.md](wormsign.md)); build #1077 only |
 | `Update` | on (`CheckInGame=1`) | At most once a day, about 10 s after the game starts and off the main thread, asks GitHub for the latest Melange release and shows a toast when it is newer ("it installs the next time you open Melange.exe"). Downloads nothing; the time of the last check is in `Documents\Melange\update-check.json`. `Melange.exe`'s *Settings › Updates › Check for updates automatically* writes `CheckInGame` ([Updates](#updates)) |
 
-![The "Smooth 60" toggle in the overlay's Game menu](images/overlay/smooth60-menu-item.png)
+![The "Smooth 60" item in the overlay's Game menu (captured before 0.4, when it read "Smooth 60 (toggle)"; it now has a check mark while on)](images/overlay/smooth60-menu-item.png)
 
 ## Logs and bug reports
 
@@ -588,14 +588,17 @@ You need:
 `Melange.exe` is a small Windows app that manages your Melange installation. It locates your game, validates the build, installs or updates Melange and plugins, and lets you launch the game.
 
 - **First run:** guides you through setup (find game, verify build, install Melange and suggested plugins).
-- **Home:** shows status cards for your game, loader, Melange and plugins, with actions like Launch, Repair or Update.
-- **Plugins:** enable/disable installed plugins and configure their settings.
+- **Home:** shows status cards for your game, loader, Melange and plugins, with actions like Launch, Repair or Update. A downloaded update shows *Restart to update* here (and on every page).
+- **Plugins:** enable/disable installed plugins and configure their settings. Local plugins are hidden until *Show local plugins* is on; notices say which plugins the [compatibility sweep](spice.md#compatibility-sweep) set aside, updated or removed.
 - **Store:** browse and install plugins from the plugin store.
-- **Settings:** change your game folder, check for updates, manage backups, edit plugin defaults, view logs.
+- **Settings:** change your game folder, check for updates (and switch automatic checks off), manage backups, edit plugin defaults, uninstall, or *Restore vanilla*.
+- **Help:** *Export last game's logs* zips the last game's logs to the Desktop in one click.
+
+![Melange.exe's Home page](images/launcher/home.png)
 
 The launcher runs a local web server and embeds the same Oasis web app in Windows' Edge WebView2 component. It finds the game from Steam/GOG libraries or lets you browse, validates `WormsMayhem.exe` by SHA-256 against build #1077, and manages the ASI loader and plugin installation as atomic transactions with rollback on failure.
 
-All Melange files it manages (dinput8.dll, melange.asi, Melange.ini, backups) and app settings are stored in `%LOCALAPPDATA%\Melange\`. Game files are never modified unless you confirm the action, and every change is backed up so you can undo it one click away.
+The launcher's own settings (`launcher.json`), logs and downloaded updates are in `%LOCALAPPDATA%\Melange\`; the files it installs (dinput8.dll, melange.asi, Melange.ini) are in the game folder, with backups in `<game>\Melange\backup\`. Game files are never modified unless you confirm the action, and every install, repair, update and uninstall is backed up so you can undo it in one click. The one exception is *Restore vanilla*, which deletes for good, and says so before you confirm.
 
 Command line:
 
