@@ -15,6 +15,7 @@
 #include "launcher/rpc.h"
 #include "launcher/setup/detect.h"
 #include "launcher/setup/running.h"
+#include "launcher/store_host.h"
 #include "launcher/util.h"
 #include "launcher/window.h"
 #include "oasis/standalone/register.h"
@@ -23,8 +24,10 @@
 
 namespace melange::launcher {
 void OnMelangeUpdated(const std::wstring& gameDir) {
-    // The plugin compatibility sweep is wired in here.
+    // Plugins that needed the old version, or can't load under this one, are set aside or updated now rather than
+    // failing in the next game.
     LOG_INFO("[update] now Melange %s; game folder %ls", MELANGE_VERSION, gameDir.empty() ? L"(none)" : gameDir.c_str());
+    storehost::RequestSweep(MELANGE_VERSION);
 }
 
 namespace updatehost {

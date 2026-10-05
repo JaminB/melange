@@ -295,9 +295,9 @@ void DrawPanel(void*) {
     ImGui::SameLine();
     if (ImGui::Button("Copy report")) ImGui::SetClipboardText(BuildText(s, reps).c_str());
     ImGui::SameLine();
-    if (ImGui::Button("Save logs...")) exporter::RequestSaveAs();
+    if (ImGui::Button("Export last game's logs")) exporter::RequestExportLastGame();
     ImGui::SameLine();
-    ImGui::TextDisabled("the report is part of every Save-logs zip");
+    ImGui::TextDisabled("the report is part of every logs zip");
 
     if (ImGui::CollapsingHeader("GPU and driver", ImGuiTreeNodeFlags_DefaultOpen)) {
         if (!s.gpu.valid) ImGui::TextColored(kGrey, "No GL context seen yet.");

@@ -638,6 +638,8 @@ bool DoExport(const std::wstring& zipPath, const Request& rq, Result* res) {
             c.absent.push_back("mods/thumper-state.json (not found)");
         if (!c.AddFile("mods/store-installed.json", src.gameDir + L"\\Mods\\.store\\installed.json"))
             c.absent.push_back("mods/store-installed.json (no Store installs)");
+        if (!c.AddFile("mods/incompatible-notices.json", src.gameDir + L"\\Mods\\.incompatible\\notices.json"))
+            c.absent.push_back("mods/incompatible-notices.json (nothing set aside)");
     }
 
     c.AddGenerated("system.json",
