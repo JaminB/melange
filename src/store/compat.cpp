@@ -223,7 +223,8 @@ Report Sweep(const SweepContext& c) {
         const std::string why = Check(dir, c.melangeVersion, &m);
         if (why.empty()) continue;
         const std::string id = m.id.empty() ? Lower(Narrow(folder)) : m.id;
-        if (store.count(id)) {
+        // A map pack a Store importer generated counts as the Store's too (as on the Mods pages): its importer owns it.
+        if (IsStore(store, id, m.generatedBy)) {
             LOG_INFO("[compat] %s (Store) cannot load: %s", id.c_str(), why.c_str());
             r.store.push_back({id, m.name, m.version, why});
             continue;

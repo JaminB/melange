@@ -111,8 +111,8 @@ Outcome Remove(const std::string& id, bool deleteData);
 // The compatibility sweep's Store half (store/compat.h), on the worker: `found` are Store plugins that cannot load.
 // With `fetch` (Melange.exe at start-up; only when `found` is not empty) the list is fetched first; otherwise the
 // list in memory or the cached Mods\.store\index.json is used and nothing is downloaded. A plugin the list has a
-// compatible newer version of is updated to it (only after a fetch that reached the Store); one it has none for is
-// removed, keeping the map packs its importer made. A Store plugin the list does not build for this game build counts
+// compatible newer version of is updated to it, one it has none for is removed (keeping the map packs its importer
+// made) -- both only after a fetch that reached the Store; without one they stay, not loading. A Store plugin the list does not build for this game build counts
 // as a finding too. Nothing changes without a list, with an unrecognised game build or a rolled-back list, or while
 // the gate refuses changes. Each update or removal leaves a compat notice. `melange` overrides the version checked
 // against ("" = the host's). False when the Store is not open.

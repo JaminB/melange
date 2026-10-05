@@ -10,6 +10,7 @@
 #include "core/log.h"
 #include "launcher/app.h"
 #include "launcher/rpc.h"
+#include "launcher/setup/engine.h"
 #include "launcher/setup/exe_check.h"
 #include "launcher/util.h"
 #include "oasis/rpc/ini_edit.h"
@@ -18,6 +19,7 @@
 #include "store/install.h"
 #include "store/store.h"
 #include "tools/json_read.h"
+#include "update/release.h"
 #include "version.h"
 
 namespace melange::launcher::storehost {
@@ -154,6 +156,13 @@ bool SweepNow(const std::string& melangeVersion, compat::Report* report) {
     if (!tx.owns_lock()) return false;
     if (const std::string gate = app::WriteGate(); !gate.empty()) return false;   // the game runs from it, or similar
     const std::string version = melangeVersion.empty() ? std::string(MELANGE_VERSION) : melangeVersion;
+    // An older Melange.exe (a stale copy run again) must not judge plugins made for the newer melange.asi the game
+    // actually loads: they would be set aside, removed or downgraded.
+    if (const setup::Status st = setup::Inspect(app::MakeContext());
+        !st.melangeVersion.empty() && update::CompareVersions(st.melangeVersion, version) > 0) {
+        LOG_INFO("[launcher] compatibility sweep skipped: the game has Melange %s, newer than %s", st.melangeVersion.c_str(), version.c_str());
+        return true;
+    }
     if (oasis::standalone::IniGet(dir, "Thumper", "SweepIncompatible", "1") == "0") {
         LOG_INFO("[launcher] compatibility sweep skipped: [Thumper] SweepIncompatible=0");
         return true;

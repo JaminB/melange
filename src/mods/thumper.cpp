@@ -744,8 +744,8 @@ public:
         std::vector<compat::Finding> storeFindings;
         if (sweep) storeFindings = SweepIncompatible();
         Rescan();
-        // No network here: a Store plugin with a compatible update stays (and does not load) until Melange.exe or
-        // the Store page updates it; one the cached list has no version for is removed.
+        // No network here, so nothing is updated or removed: a Store plugin that cannot load stays (and does not load)
+        // until Melange.exe's sweep, with a freshly fetched list, updates or removes it, or the Store page updates it.
         if (sweep && store::Active()) store::Reconcile(storeFindings, false);
         RegisterPanels();
         melange::events::Subscribe(melange::events::Event::Frame, [] { OnFrame(); });

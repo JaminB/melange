@@ -81,9 +81,14 @@ bool Keep(const std::wstring& k) {
         if (StartsWith(name, L"xom") && name.find(L'-') != std::wstring::npos && EndsWith(name, L".log")) return true;   // XOM*-*.log
         if (StartsWith(name, L"net_") && EndsWith(name, L".log")) return true;                                        // Net_*.log
         if (EndsWith(name, L".sav")) return true;
+        // A GOG install's own files (the stock list is Steam's): Galaxy's metadata and runtime, the uninstaller.
+        if (StartsWith(name, L"goggame-") || StartsWith(name, L"unins0") || (StartsWith(name, L"galaxy") && EndsWith(name, L".dll")) ||
+            name == L"gog.ico" || name == L"support.ico" || name == L"webcache.zip")
+            return true;
     }
     if ((dir.empty() || top == L"data") && EndsWith(name, L".csh")) return true;   // the engine's shadow caches
     if (top == L"redist") return true;                                             // Steam redistributables
+    if (top == L"__redist" || top == L"__support") return true;                    // GOG's redistributables and support files
     // Saves live in Steam\userdata\<id>\70600\remote, outside the folder; this is a safety net for anything else.
     return top == L"save" || top == L"saves" || top == L"savedata" || top == L"savegames";
 }
@@ -451,6 +456,8 @@ std::string VanillaOutcomeJson(const VanillaOutcome& o) {
     Arr(j, "failed", o.failed);
     Arr(j, "modified", o.plan.modified);
     Arr(j, "missing", o.plan.missing);
+    // The lists stop at 500 entries: the counts are the real ones.
+    j.Int("modifiedCount", static_cast<long long>(o.plan.modified.size())).Int("missingCount", static_cast<long long>(o.plan.missing.size()));
     j.Bool("verify", o.plan.verify).Bool("verifyStarted", o.verifyStarted).Str("store", o.plan.store).Bool("selfPending", !o.pending.empty());
     return j.End();
 }

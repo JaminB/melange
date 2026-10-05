@@ -477,10 +477,17 @@ ApplyOutcome ApplyStaged(const setup::Context& ctx, const std::wstring& originDi
             }
             r.gameUpdated = true;
             r.backupId = o.backupId;
+            // An install switches a switched-off Melange back on: keep the user's choice.
+            if (st.melangeState == "disabled") {
+                const setup::Outcome off = setup::SetMelangeEnabled(ctx, false);
+                if (!off.ok) r.warnings.push_back("Melange was updated but could not be switched off again: " + off.message);
+            }
         }
     }
-    // 2. The folder the old Melange.exe ran from, when that is somewhere else.
-    if (!originDir.empty() && FileExists(originDir + L"\\Melange.exe") && PathKey(originDir) != PathKey(ctx.gameDir) &&
+    // 2. The folder the old Melange.exe ran from, when that is somewhere else -- or the game folder itself when the
+    // setup engine left it alone (Melange isn't installed there, but this Melange.exe is): then Melange.exe only.
+    const bool originIsGame = PathKey(originDir) == PathKey(ctx.gameDir);
+    if (!originDir.empty() && FileExists(originDir + L"\\Melange.exe") && (!originIsGame || !r.gameUpdated) &&
         PathKey(originDir) != PathKey(ctx.payloadDir)) {
         const std::wstring exe = originDir + L"\\Melange.exe", old = exe + L".old";
         if (hashutil::Sha256HexFile(exe) != hashutil::Sha256HexFile(ctx.payloadDir + L"\\Melange.exe")) {
@@ -496,6 +503,7 @@ ApplyOutcome ApplyStaged(const setup::Context& ctx, const std::wstring& originDi
             }
         }
         for (const wchar_t* f : kOriginFiles) {
+            if (originIsGame) break;   // the game folder's other files belong to the setup engine (Melange.ini is the user's)
             const std::wstring to = originDir + L"\\" + f, from = ctx.payloadDir + L"\\" + f;
             if (!FileExists(to) || !FileExists(from) || hashutil::Sha256HexFile(to) == hashutil::Sha256HexFile(from)) continue;
             if (const unsigned long e = ReplaceFile(from, to)) r.warnings.push_back("Could not update " + Narrow(to) + ": " + Win32Message(e));

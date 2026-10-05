@@ -453,7 +453,8 @@ export interface VanillaPlan {
 }
 export interface VanillaResult {
   ok: boolean; deleted: number; dirsRemoved: number; moved: { from: string; to: string }[]; replaysDir: string;
-  failed: string[]; modified: string[]; missing: string[]; verify: boolean; verifyStarted: boolean; store: Store; selfPending: boolean;
+  failed: string[]; modified: string[]; missing: string[]; modifiedCount: number; missingCount: number;
+  verify: boolean; verifyStarted: boolean; store: Store; selfPending: boolean;
 }
 
 const storeOf = (o: Rec): Store => (STORES.includes(o.store as Store) ? (o.store as Store) : "unknown");
@@ -477,6 +478,7 @@ export function vanillaResultOf(v: unknown): VanillaResult {
     ok: bool(o, "ok"), deleted: num(o, "deleted"), dirsRemoved: num(o, "dirsRemoved"),
     moved: arr(o, "moved").map((m) => { const mo = obj(m); return { from: str(mo, "from"), to: str(mo, "to") }; }),
     replaysDir: str(o, "replaysDir"), failed: strs(o, "failed"), modified: strs(o, "modified"), missing: strs(o, "missing"),
+    modifiedCount: numOpt(o, "modifiedCount") ?? strs(o, "modified").length, missingCount: numOpt(o, "missingCount") ?? strs(o, "missing").length,
     verify: bool(o, "verify"), verifyStarted: bool(o, "verifyStarted"), store: storeOf(o), selfPending: bool(o, "selfPending"),
   };
 }

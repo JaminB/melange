@@ -14,7 +14,7 @@ export function VanillaDone({ client, result }: { client: Client; result: Vanill
     setClosing(true);
     try { await client.call("launcher.quit"); } catch (e) { setError(errorText(e)); setClosing(false); }
   };
-  const changed = result.modified.length + result.missing.length;
+  const changed = result.modifiedCount + result.missingCount;   // the lists themselves stop at 500
   return (
     <div class="lw">
       <div class="lw-col">

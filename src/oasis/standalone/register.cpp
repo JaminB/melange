@@ -265,6 +265,8 @@ void ModsSetShowLocal(const oa::Call& c, oa::Result& r, void*) {
 void ModsDismissNotice(const oa::Call& c, oa::Result& r, void*) {
     const std::wstring game = GameDir();
     if (game.empty()) return Refuse(r, -32000, kNoGame);
+    // The running game writes notices.json too (its own sweep, its Mods page): no read-modify-write beside it.
+    if (const std::string gate = WriteGate(); !gate.empty()) return Refuse(r, -32000, gate);
     melange::json::Value p;
     melange::json::Error e;
     if (!melange::json::Parse(c.paramsJson.empty() ? std::string("{}") : c.paramsJson, &p, &e) || !p.IsObject())
