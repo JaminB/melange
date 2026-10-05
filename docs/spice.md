@@ -126,10 +126,11 @@ folder is checked: a `spice.json` that does not parse (including an unknown `spi
 are not reasons: the user can fix those. A folder without `spice.json` is never touched.
 
 - **Store plugins** (a record in `Mods\.store\installed.json`) are updated to the newest version the Store's list
-  has for this Melange and game build, or removed when it has none (keeping the map packs an importer made, and
-  `[Mod.<id>]` settings and saved data). Melange.exe fetches the list for this, and only when such a plugin
-  exists; the game uses the list it cached and never downloads, so there a plugin with an update waiting stays
-  (unloaded) until Melange.exe or the Store page updates it. A Store plugin the list says is not built for this
+  has for this Melange and game build, or removed when a list fetched just now has none (keeping the map packs an
+  importer made, and `[Mod.<id>]` settings and saved data). Melange.exe fetches the list for this, and only when
+  such a plugin exists; the game uses the list it cached and never downloads, so there such a plugin only stays
+  unloaded until Melange.exe updates or removes it. Offline, Melange.exe does the same: a cached list may predate
+  the plugin release that supports a new Melange, so it is never reason enough to remove one. A Store plugin the list says is not built for this
   game build counts too.
 - **Local plugins** move to `Mods\.incompatible\<folder>\` (`<folder>-2`, `-3`, ... when that exists; nothing is
   overwritten), with a `.melange-quarantine.json` beside its files saying why, against which version and when.

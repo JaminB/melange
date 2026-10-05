@@ -954,6 +954,20 @@ void TestStoreReconcile() {
     Expect(Get(mods + L"\\hello\\user\\keep.txt") == "mine", "reconcile: the update kept hello's user folder");
     Expect(!L::DirExists(mods + L"\\gone"), "reconcile: gone (no version loads) was removed");
     Expect(L::DirExists(mods + L"\\fine"), "reconcile: a plugin that loads is untouched");
+
+    // With the list known but not fetched just now (the game, or offline), a plugin no version of which loads stays:
+    // the release that fixes it may be newer than that list.
+    Put(mods + L"\\later\\spice.json", PluginSpice("later", "1.0.0", ">=9.0.0"));
+    {
+        std::string dbText = Get(mods + L"\\.store\\installed.json");
+        dbText.insert(dbText.rfind('}'), ",\"later\":{\"version\":\"1.0.0\",\"sha256\":\"\",\"installedAt\":\"\",\"serial\":1}");
+        Put(mods + L"\\.store\\installed.json", dbText);
+    }
+    st::Close();
+    Expect(st::Open(mods), "reconcile: store reopened");
+    Expect(st::Reconcile({{"later", "later", "1.0.0", "needs Melange >=9.0.0, you have 0.4.0"}}, false), "reconcile: queued from the cached list");
+    Expect(WaitFor([] { return !st::GetStatus().busy; }), "reconcile: finished from the cached list");
+    Expect(L::DirExists(mods + L"\\later"), "reconcile: without a fresh list a plugin is not removed");
     const std::string db = Get(mods + L"\\.store\\installed.json");
     Expect(db.find("\"gone\"") == std::string::npos && db.find("\"1.1.0\"") != std::string::npos, "reconcile: installed.json follows", db);
     bool forgotGone = false;

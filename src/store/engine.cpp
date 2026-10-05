@@ -621,6 +621,13 @@ void DoReconcile(const Task& t) {
                 n.detail = "updating it to " + offer->version + " failed: " + err;
             }
         } else {
+            // A cached list can predate the release that fixes this plugin (a Melange update usually lands first),
+            // so removal waits for a list fetched just now; until then the plugin is only not loaded.
+            if (!t.fetch || offline) {
+                LOG_INFO("[store] %s cannot load (%s); left in place until a fresh Store list says no version can", f.id.c_str(),
+                         f.reason.c_str());
+                continue;
+            }
             LOG_INFO("[store] %s cannot load (%s) and the list has no version that can: removing it", f.id.c_str(), f.reason.c_str());
             Task drop{Task::Drop, f.id, {}, true, false};
             drop.keepGenerated = true;

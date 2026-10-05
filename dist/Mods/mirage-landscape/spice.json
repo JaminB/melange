@@ -4,7 +4,7 @@
   "version": "1.0.0",
   "name": "Mirage Landscape",
   "description": "Tunables for the landscape lighting and softened shadow edges; an experimental GLSL replacement in extras\\.",
-  "melange": { "range": ">=0.2.0 <0.4.0" },
+  "melange": { "range": ">=0.2.0 <0.5.0" },
   "kind": "client-only",
   "entry": {},
   "defaultEnabled": false
