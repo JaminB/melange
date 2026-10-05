@@ -315,6 +315,13 @@ void SetReason(const char* why) {
 void CompileLogged(pfx::Effect& e) {
     if (pfx::Compile(e)) {
         if (!e.code) LOG_INFO("[postfx] %s compiled (%zu passes)", e.id.c_str(), e.passes.size());
+        if (!e.notes.empty()) {
+            LOG_WARN("[postfx] %s: the driver reported on a shader that compiled: %s", e.id.c_str(), e.notes.c_str());
+            melange::jlog::Rec("shader", melange::jlog::Level::Warn, "postfx compile notes")
+                .Str("id", e.id)
+                .Str("owner", e.owner)
+                .Str("notes", e.notes);
+        }
         return;
     }
     LOG_ERROR("[postfx] %s failed: %s", e.id.c_str(), e.error.c_str());
@@ -408,8 +415,13 @@ void OnStage(Stage s, void*) {
             LOG_WARN("[postfx] %s stack raised %d GL error(s)", pfx::StageName(s), r.glErrors);
         }
         for (size_t i = 0; i < raw.size(); ++i)
-            if (raw[i]->failed && !failedBefore[i])
+            if (raw[i]->failed && !failedBefore[i]) {
                 LOG_ERROR("[postfx] %s %s; skipped until reloaded", raw[i]->id.c_str(), raw[i]->error.c_str());
+                melange::jlog::Rec("shader", melange::jlog::Level::Error, "postfx effect failed")
+                    .Str("id", raw[i]->id)
+                    .Str("owner", raw[i]->owner)
+                    .Str("error", raw[i]->error);
+            }
     }
     melange::gldebug::PopGroup();
     melange::render::PopState(token);

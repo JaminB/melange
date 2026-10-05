@@ -258,6 +258,21 @@ std::string InfoLog(GLuint obj, bool program) {
     return s;
 }
 
+// Drivers answer a successful compile or link with anything from nothing to a fixed "linked" line. Only a message that
+// says more than that is worth keeping: a warning is the one hint a driver gives before a program misbehaves.
+bool WorthKeeping(std::string s) {
+    for (char& c : s) c = static_cast<char>(tolower(static_cast<unsigned char>(c)));
+    if (s.empty() || s == "no errors." || s == "no errors") return false;
+    if (s.find("warning") != std::string::npos || s.find("error") != std::string::npos) return true;
+    return s.find("linked") == std::string::npos && s.find("successfully compiled") == std::string::npos;
+}
+
+void Note(std::string* notes, const std::string& what, const std::string& log) {
+    if (!notes || !WorthKeeping(log)) return;
+    if (!notes->empty()) *notes += "\n";
+    *notes += what + ": " + log;
+}
+
 GLuint CompileStage(GLenum type, const std::string& text, std::string* log) {
     const Procs& p = P();
     GLuint sh = p.CreateShader(type);
@@ -266,15 +281,15 @@ GLuint CompileStage(GLenum type, const std::string& text, std::string* log) {
     p.CompileShader(sh);
     GLint ok = 0;
     p.GetShaderiv(sh, kCOMPILE_STATUS, &ok);
+    *log = InfoLog(sh, false);
     if (!ok) {
-        *log = InfoLog(sh, false);
         p.DeleteShader(sh);
         return 0;
     }
     return sh;
 }
 
-GLuint Link(const std::string& vsText, const Source& fs, std::string* error) {
+GLuint Link(const std::string& vsText, const Source& fs, std::string* error, std::string* notes = nullptr) {
     const Procs& p = P();
     std::string log;
     GLuint vs = CompileStage(kVERTEX_SHADER, vsText, &log);
@@ -293,6 +308,7 @@ GLuint Link(const std::string& vsText, const Source& fs, std::string* error) {
         }
         return 0;
     }
+    Note(notes, fs.files[0] + " compile", log);
     GLuint prog = p.CreateProgram();
     p.AttachShader(prog, vs);
     p.AttachShader(prog, f);
@@ -307,6 +323,7 @@ GLuint Link(const std::string& vsText, const Source& fs, std::string* error) {
         p.DeleteProgram(prog);
         return 0;
     }
+    Note(notes, fs.files[0] + " link", InfoLog(prog, true));
     return prog;
 }
 
@@ -504,7 +521,10 @@ bool Compile(Effect& e) {
     e.glGen = g_gen;
     e.dirty = false;
     e.failed = false;
+    e.drawChecked = false;
+    e.emptyRuns = 0;
     e.error.clear();
+    e.notes.clear();
     e.gpuMs = -1;
     if (e.code) return true;
     std::string why;
@@ -522,7 +542,7 @@ bool Compile(Effect& e) {
             return Fail(e, pd.shader + b);
         }
         PassGl pass;
-        pass.program = Link(BuildVertex(src.version, src.profile), src, &err);
+        pass.program = Link(BuildVertex(src.version, src.profile), src, &err, &e.notes);
         if (!pass.program) return Fail(e, err);
         e.passes.push_back(pass);
         PassGl& pg = e.passes.back();
@@ -574,6 +594,25 @@ bool Compile(Effect& e) {
     }
     while (glGetError() != GL_NO_ERROR) {}
     return true;
+}
+
+// A target is cleared to this before an effect's first run after a compile. No pass blends, so a working last pass
+// writes every pixel and none of it survives; pure green with no alpha at every sample point means nothing was drawn.
+const float kMarker[4] = {0.f, 1.f, 0.f, 0.f};
+
+bool DrewNothing(const Target& t) {
+    P().BindFramebuffer(kFRAMEBUFFER, t.fbo);
+    GLint pack = 4;
+    glGetIntegerv(GL_PACK_ALIGNMENT, &pack);
+    glPixelStorei(GL_PACK_ALIGNMENT, 1);
+    bool nothing = true;
+    for (int i = 0; i < 9 && nothing; ++i) {
+        unsigned char px[4] = {255, 0, 255, 255};
+        glReadPixels(t.w * (2 * (i % 3) + 1) / 6, t.h * (2 * (i / 3) + 1) / 6, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, px);
+        nothing = px[0] == 0 && px[1] == 255 && px[2] == 0 && px[3] == 0;
+    }
+    glPixelStorei(GL_PACK_ALIGNMENT, pack);
+    return nothing;
 }
 
 RunResult Run(const std::vector<Effect*>& chain, const FrameInput& in) {
@@ -643,7 +682,11 @@ RunResult Run(const std::vector<Effect*>& chain, const FrameInput& in) {
     for (size_t i = 0; i < run.size(); ++i) {
         Effect& e = *run[i];
         const bool lastEffect = i + 1 == run.size();
-        const Target* dst = lastEffect ? &out : (cur == &g_s.ping ? &g_s.pong : &g_s.ping);
+        // An effect's first run after a compile goes to a spare target cleared to the marker colour, even when it is
+        // the last one, so that a program which linked and then draws nothing is caught instead of silently dropping
+        // the image (see DrewNothing). The split comparison scissors the scene, so the check waits for it to end.
+        const bool check = !e.code && !e.drawChecked && !in.splitCompare;
+        const Target* dst = lastEffect && !check ? &out : (cur == &g_s.ping ? &g_s.pong : &g_s.ping);
         double t0 = Now();
         BeginTimer(e, in.gpuTimers);
         if (e.code) {
@@ -700,8 +743,11 @@ RunResult Run(const std::vector<Effect*>& chain, const FrameInput& in) {
                 }
                 p.BindFramebuffer(kFRAMEBUFFER, t->fbo);
                 glViewport(0, 0, t->w, t->h);
-                if (t != &out) glClear(GL_COLOR_BUFFER_BIT);
-                else if (in.splitCompare) {
+                if (t != &out) {
+                    if (check && lastPass) glClearColor(kMarker[0], kMarker[1], kMarker[2], kMarker[3]);
+                    glClear(GL_COLOR_BUFFER_BIT);
+                    if (check && lastPass) glClearColor(0.f, 0.f, 0.f, 0.f);
+                } else if (in.splitCompare) {
                     glEnable(GL_SCISSOR_TEST);
                     glScissor(in.w / 2, 0, in.w - in.w / 2, in.h);
                 }
@@ -744,9 +790,41 @@ RunResult Run(const std::vector<Effect*>& chain, const FrameInput& in) {
         }
         EndTimer(e, in.gpuTimers);
         e.cpuMs = Now() - t0;
+        if (check && !e.failed) {
+            if (DrewNothing(*dst)) {
+                if (e.emptyRuns++ == 0) e.emptySinceMs = Now();
+                if (e.emptyRuns >= in.checkRuns && Now() - e.emptySinceMs >= in.checkMs) {
+                    char b[224];
+                    snprintf(b, sizeof b,
+                             "compiled and linked, but its last pass drew nothing in %d runs (the graphics driver may have "
+                             "rejected the shader without reporting an error; a smaller shader may work)",
+                             e.emptyRuns);
+                    e.failed = true;
+                    e.error = b;
+                }
+                // cur stays where it was: the next effect, or the copy below, carries on from the image before this one.
+                continue;
+            }
+            e.drawChecked = true;
+        }
         ++e.runs;
         ++r.effects;
         cur = dst;
+    }
+    // The last effect did not write to the scene itself: it was being checked, it failed the check, or it was a code
+    // pass removed mid-chain. The image so far is in a spare target and is copied over.
+    if (cur != &out && r.effects) {
+        p.BindFramebuffer(kFRAMEBUFFER, out.fbo);
+        glViewport(0, 0, in.w, in.h);
+        if (in.splitCompare) {
+            glEnable(GL_SCISSOR_TEST);
+            glScissor(in.w / 2, 0, in.w - in.w / 2, in.h);
+        }
+        p.UseProgram(g_s.copyProg);
+        p.ActiveTexture(kTEXTURE0);
+        glBindTexture(GL_TEXTURE_2D, cur->tex);
+        DrawTriangle();
+        glDisable(GL_SCISSOR_TEST);
     }
     p.UseProgram(0);
     if (in.sceneDepth) {

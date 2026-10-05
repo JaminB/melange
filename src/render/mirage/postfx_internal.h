@@ -120,10 +120,17 @@ struct Effect {
 
     bool enabled = false, missing = false, failed = false;
     bool dirty = true;     // (re)compile before the next run
+    // The last pass has been seen to write pixels since the last compile. Until then a run goes to a spare target
+    // first, because a driver can link a program without an error and then draw nothing with it. emptyRuns counts the
+    // runs that wrote nothing so far and emptySinceMs is when the first of them was.
+    bool drawChecked = false;
+    int emptyRuns = 0;
+    double emptySinceMs = 0;
     bool reparse = false;  // re-read effect.ini at the next scan
     int order = 0;
     Stage stage = Stage::PostWorld;
     std::string error, skipReason;
+    std::string notes;  // what the driver said about a compile and link that succeeded, when it said anything of note
     std::vector<std::array<float, 4>> values;  // parallel to desc.params
 
     int glGen = 0;  // ContextGeneration() the GL names below belong to
@@ -146,6 +153,11 @@ struct FrameInput {
     uint64_t frame = 0;
     bool splitCompare = false;
     bool gpuTimers = true;
+    // An effect fails the draw check once its last pass has written nothing for this many runs and this long. A
+    // driver may build a program in the background and draw nothing with it until it is ready, so one empty frame
+    // proves nothing.
+    int checkRuns = 30;
+    double checkMs = 3000;
 };
 struct RunResult {
     uint32_t passes = 0, effects = 0;
