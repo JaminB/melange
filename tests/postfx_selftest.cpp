@@ -359,7 +359,8 @@ void SetValue(pfx::Effect& e, const char* name, float v) {
         if (e.desc.params[i].name == name) e.values[i][0] = v;
 }
 
-pfx::RunResult RunChain(const Frame& f, std::vector<pfx::Effect*> chain, bool split = false) {
+// checkRuns is how many empty runs fail an effect's draw check; the tests do not wait out the time limit.
+pfx::RunResult RunChain(const Frame& f, std::vector<pfx::Effect*> chain, bool split = false, int checkRuns = 1) {
     ResetColor(f);
     pfx::FrameInput in;
     in.sceneColor = f.color;
@@ -373,6 +374,8 @@ pfx::RunResult RunChain(const Frame& f, std::vector<pfx::Effect*> chain, bool sp
     in.nearFar[1] = 100.f;
     in.frame = 7;
     in.splitCompare = split;
+    in.checkRuns = checkRuns;
+    in.checkMs = 0;
     return pfx::Run(chain, in);
 }
 
@@ -613,6 +616,39 @@ void TestGl() {
           unlisted.error);
     r = RunChain(f, {&bad, &copy});
     Check(r.effects == 1 && ReadColor(f) == f.original, "a failed effect is skipped and the rest runs");
+
+    // A program that links and then draws nothing (a driver can do that to a large shader without an error) is failed
+    // once it has stayed empty for the given number of runs, and all along the image from the effects before it still
+    // reaches the scene.
+    pfx::Effect nothing;
+    LoadEffect(nothing, TempEffect("nothing", kInvIni, {{"inv.frag", "void main() { discard; }\n"}}), "test/nothing");
+    r = RunChain(f, {&inv, &nothing}, false, 3);
+    px = ReadColor(f);
+    Check(!nothing.failed && r.effects == 1 && px[0] == 255 - f.original[0], "one empty run does not fail an effect");
+    RunChain(f, {&inv, &nothing}, false, 3);
+    Check(!nothing.failed, "nor do two when three are asked for");
+    r = RunChain(f, {&inv, &nothing}, false, 3);
+    px = ReadColor(f);
+    Check(nothing.failed && Has(nothing.error, "drew nothing in 3 runs") && r.effects == 1,
+          "an effect that keeps drawing nothing is failed", nothing.error);
+    Check(px[0] == 255 - f.original[0] && px[4 * (kW * 100 + 80)] == 0, "the effects before it still reach the scene");
+    r = RunChain(f, {&nothing, &inv});
+    px = ReadColor(f);
+    Check(r.effects == 1 && px[0] == 255 - f.original[0], "and it stays skipped");
+    Check(copy.drawChecked && inv.drawChecked && !inv.failed, "a working effect passes the check");
+    {
+        // A shader whose whole output is the marker colour is still a shader that draws.
+        pfx::Effect green;
+        LoadEffect(green, TempEffect("green", kInvIni, {{"inv.frag", "void main() { gl_FragColor = vec4(0.0, 1.0, 0.0, 0.0); }\n"}}),
+                   "test/green");
+        RunChain(f, {&green}, false, 2);
+        r = RunChain(f, {&green}, false, 2);
+        px = ReadColor(f);
+        Check(!green.failed && green.drawChecked && r.effects == 1 && px[0] == 0 && px[1] == 255 && px[3] == 0,
+              "an effect that draws the marker colour is not failed", green.error);
+        pfx::Release(green);
+    }
+    pfx::Release(nothing);
 
     // the sample effects
     pfx::Effect smaa, tonemap, bloom, ssao, sharpen;

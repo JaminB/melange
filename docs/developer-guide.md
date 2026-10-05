@@ -236,7 +236,7 @@ An effect is a folder `<game>\Mods\<id>\postfx\<effect>\` with an `effect.ini` a
 - `PostWorld` changes the world only: worm labels and the HUD are drawn on top afterwards.
 - `Final` changes the whole frame, just before the game copies it to the screen. The game's own FXAA and sepia still apply afterwards.
 
-Open the overlay's *Mirage/Post-FX* panel to switch effects on, change their order, drag their parameters and see what each one costs on the GPU. *Split compare* shows the left half of the screen without the effects. `Ctrl+Shift+F8` (`[MiragePostFX] ToggleKey`) bypasses the whole stack. Your choices are saved in `[MiragePostFX]` in `Melange.ini`. Editing an effect's files while the game runs reloads it. A shader that fails to compile is reported in the panel and the log, and the other effects keep running.
+Open the overlay's *Mirage/Post-FX* panel to switch effects on, change their order, drag their parameters and see what each one costs on the GPU. *Split compare* shows the left half of the screen without the effects. `Ctrl+Shift+F8` (`[MiragePostFX] ToggleKey`) bypasses the whole stack. Your choices are saved in `[MiragePostFX]` in `Melange.ini`. Editing an effect's files while the game runs reloads it. A shader that fails to compile is reported in the panel and the log, and the other effects keep running. So is one that compiles and then draws nothing: a graphics driver can accept a large shader without an error and produce a program that does not draw, so after each compile Melange checks the output of an effect's runs until its last pass has written pixels, and fails the effect if it has written none for three seconds. A warning the driver gives for a shader that compiled is logged too.
 
 ![The overlay's Mirage/Post-FX panel: effects listed by stage, with GPU/CPU cost per effect](images/mirage/postfx-panel.png)
 
@@ -291,6 +291,8 @@ Shader rules:
   - `mat4 mg_proj`, `mat4 mg_invProj`, `mat4 mg_view`: the main camera;
   - `vec2 mg_nearFar`: the near and far clip distances.
 - `#include "file"` pastes a file from the effect folder.
+- An effect's last pass must write every pixel. Passes do not blend onto their target, so a pixel that is left out (with `discard`, for example) does not keep the scene, and an effect whose last pass writes nothing is failed by the check described above.
+- Keep shaders small. GLSL has no real function calls, so a long function used once per slot of a list is expanded that many times, and a program that large can link and then draw nothing on some drivers. Pick the one candidate with a short test per slot and run the long code once.
 - Textures are uploaded top row first, so `v = 0` is the top row of the PNG.
 
 C++ modules can add a pass of their own with `postfx::AddCodePass`. It draws a full-screen pass that reads `ctx.srcColor` (and `ctx.srcDepth`) into the framebuffer already bound.

@@ -258,6 +258,40 @@ std::string InfoLog(GLuint obj, bool program) {
     return s;
 }
 
+// Drivers answer a successful compile or link with anything from nothing to a fixed line. A message is worth keeping
+// when any line of it is not one of those fixed lines: a warning is the one hint a driver gives before a program
+// misbehaves.
+bool WorthKeeping(const std::string& log) {
+    static const char* const kRoutine[] = {
+        "no errors",
+        "fragment shader(s) linked, vertex shader(s) linked",
+        "vertex shader(s) linked, fragment shader(s) linked",
+        "fragment shader was successfully compiled to run on hardware",
+        "vertex shader was successfully compiled to run on hardware",
+    };
+    size_t pos = 0;
+    while (pos < log.size()) {
+        size_t nl = log.find('\n', pos);
+        std::string line = log.substr(pos, nl == std::string::npos ? std::string::npos : nl - pos);
+        pos = nl == std::string::npos ? log.size() : nl + 1;
+        for (char& c : line) c = static_cast<char>(tolower(static_cast<unsigned char>(c)));
+        while (!line.empty() && strchr(" \t\r.", line.back())) line.pop_back();
+        size_t first = line.find_first_not_of(" \t");
+        line = first == std::string::npos ? std::string() : line.substr(first);
+        if (line.empty()) continue;
+        bool routine = false;
+        for (const char* r : kRoutine) routine |= line == r;
+        if (!routine) return true;
+    }
+    return false;
+}
+
+void Note(std::string* notes, const std::string& what, const std::string& log) {
+    if (!notes || !WorthKeeping(log)) return;
+    if (!notes->empty()) *notes += "\n";
+    *notes += what + ": " + log;
+}
+
 GLuint CompileStage(GLenum type, const std::string& text, std::string* log) {
     const Procs& p = P();
     GLuint sh = p.CreateShader(type);
@@ -266,15 +300,15 @@ GLuint CompileStage(GLenum type, const std::string& text, std::string* log) {
     p.CompileShader(sh);
     GLint ok = 0;
     p.GetShaderiv(sh, kCOMPILE_STATUS, &ok);
+    *log = InfoLog(sh, false);
     if (!ok) {
-        *log = InfoLog(sh, false);
         p.DeleteShader(sh);
         return 0;
     }
     return sh;
 }
 
-GLuint Link(const std::string& vsText, const Source& fs, std::string* error) {
+GLuint Link(const std::string& vsText, const Source& fs, std::string* error, std::string* notes = nullptr) {
     const Procs& p = P();
     std::string log;
     GLuint vs = CompileStage(kVERTEX_SHADER, vsText, &log);
@@ -293,6 +327,7 @@ GLuint Link(const std::string& vsText, const Source& fs, std::string* error) {
         }
         return 0;
     }
+    Note(notes, fs.files[0] + " compile", log);
     GLuint prog = p.CreateProgram();
     p.AttachShader(prog, vs);
     p.AttachShader(prog, f);
@@ -307,6 +342,7 @@ GLuint Link(const std::string& vsText, const Source& fs, std::string* error) {
         p.DeleteProgram(prog);
         return 0;
     }
+    Note(notes, fs.files[0] + " link", InfoLog(prog, true));
     return prog;
 }
 
@@ -504,7 +540,10 @@ bool Compile(Effect& e) {
     e.glGen = g_gen;
     e.dirty = false;
     e.failed = false;
+    e.drawChecked = false;
+    e.emptyRuns = 0;
     e.error.clear();
+    e.notes.clear();
     e.gpuMs = -1;
     if (e.code) return true;
     std::string why;
@@ -522,7 +561,7 @@ bool Compile(Effect& e) {
             return Fail(e, pd.shader + b);
         }
         PassGl pass;
-        pass.program = Link(BuildVertex(src.version, src.profile), src, &err);
+        pass.program = Link(BuildVertex(src.version, src.profile), src, &err, &e.notes);
         if (!pass.program) return Fail(e, err);
         e.passes.push_back(pass);
         PassGl& pg = e.passes.back();
@@ -574,6 +613,45 @@ bool Compile(Effect& e) {
     }
     while (glGetError() != GL_NO_ERROR) {}
     return true;
+}
+
+// A target is cleared to one of these before a run of an effect whose last pass has not yet been seen to write. No
+// pass blends, so a working last pass writes every pixel and none of the marker survives; the marker at every sample
+// point means nothing was drawn. The two alternate from one empty run to the next, so a shader whose whole output
+// happens to be one of them is told apart on the following run.
+const unsigned char kMarker[2][4] = {{0, 255, 0, 0}, {255, 0, 255, 0}};
+
+bool DrewNothing(const Target& t, const unsigned char* marker) {
+    constexpr GLenum kPIXEL_PACK_BUFFER = 0x88EB, kPIXEL_PACK_BUFFER_BINDING = 0x88ED;
+    P().BindFramebuffer(kFRAMEBUFFER, t.fbo);
+    // The read must land in px: the game's pack state is not part of what the stage saves, and with a pack buffer
+    // bound the pointer would be taken as an offset into it.
+    GLint align = 4, rowLength = 0, skipRows = 0, skipPixels = 0, packBuffer = 0;
+    glGetIntegerv(GL_PACK_ALIGNMENT, &align);
+    glGetIntegerv(GL_PACK_ROW_LENGTH, &rowLength);
+    glGetIntegerv(GL_PACK_SKIP_ROWS, &skipRows);
+    glGetIntegerv(GL_PACK_SKIP_PIXELS, &skipPixels);
+    auto bindBuffer = reinterpret_cast<void(APIENTRY*)(GLenum, GLuint)>(wglGetProcAddress("glBindBuffer"));
+    if (bindBuffer) {
+        glGetIntegerv(kPIXEL_PACK_BUFFER_BINDING, &packBuffer);
+        if (packBuffer) bindBuffer(kPIXEL_PACK_BUFFER, 0);
+    }
+    glPixelStorei(GL_PACK_ALIGNMENT, 1);
+    glPixelStorei(GL_PACK_ROW_LENGTH, 0);
+    glPixelStorei(GL_PACK_SKIP_ROWS, 0);
+    glPixelStorei(GL_PACK_SKIP_PIXELS, 0);
+    bool nothing = true;
+    for (int i = 0; i < 9 && nothing; ++i) {
+        unsigned char px[4] = {1, 2, 3, 4};  // neither marker, so a read that fails counts as drawn
+        glReadPixels(t.w * (2 * (i % 3) + 1) / 6, t.h * (2 * (i / 3) + 1) / 6, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, px);
+        nothing = memcmp(px, marker, 4) == 0;
+    }
+    glPixelStorei(GL_PACK_ALIGNMENT, align);
+    glPixelStorei(GL_PACK_ROW_LENGTH, rowLength);
+    glPixelStorei(GL_PACK_SKIP_ROWS, skipRows);
+    glPixelStorei(GL_PACK_SKIP_PIXELS, skipPixels);
+    if (packBuffer) bindBuffer(kPIXEL_PACK_BUFFER, static_cast<GLuint>(packBuffer));
+    return nothing;
 }
 
 RunResult Run(const std::vector<Effect*>& chain, const FrameInput& in) {
@@ -643,7 +721,13 @@ RunResult Run(const std::vector<Effect*>& chain, const FrameInput& in) {
     for (size_t i = 0; i < run.size(); ++i) {
         Effect& e = *run[i];
         const bool lastEffect = i + 1 == run.size();
-        const Target* dst = lastEffect ? &out : (cur == &g_s.ping ? &g_s.pong : &g_s.ping);
+        // An effect's first run after a compile goes to a spare target cleared to the marker colour, even when it is
+        // the last one, so that a program which linked and then draws nothing is caught instead of silently dropping
+        // the image (see DrewNothing). The split comparison scissors the scene, so the check waits for it to end.
+        const bool check = !e.code && !e.drawChecked && !in.splitCompare;
+        const unsigned char* marker = kMarker[e.emptyRuns & 1];
+        bool broke = false;  // a pass could not get its target, so dst does not hold this effect's image
+        const Target* dst = lastEffect && !check ? &out : (cur == &g_s.ping ? &g_s.pong : &g_s.ping);
         double t0 = Now();
         BeginTimer(e, in.gpuTimers);
         if (e.code) {
@@ -694,14 +778,18 @@ RunResult Run(const std::vector<Effect*>& chain, const FrameInput& in) {
                     if (!EnsureTarget(pg.target, w, h, pd.format)) {
                         e.failed = true;
                         e.error = "cannot create the " + std::string(FormatName(pd.format)) + " target of [pass." + pd.name + "]";
+                        broke = true;
                         break;
                     }
                     t = &pg.target;
                 }
                 p.BindFramebuffer(kFRAMEBUFFER, t->fbo);
                 glViewport(0, 0, t->w, t->h);
-                if (t != &out) glClear(GL_COLOR_BUFFER_BIT);
-                else if (in.splitCompare) {
+                if (t != &out) {
+                    if (check && lastPass) glClearColor(marker[0] / 255.f, marker[1] / 255.f, marker[2] / 255.f, marker[3] / 255.f);
+                    glClear(GL_COLOR_BUFFER_BIT);
+                    if (check && lastPass) glClearColor(0.f, 0.f, 0.f, 0.f);
+                } else if (in.splitCompare) {
                     glEnable(GL_SCISSOR_TEST);
                     glScissor(in.w / 2, 0, in.w - in.w / 2, in.h);
                 }
@@ -744,9 +832,42 @@ RunResult Run(const std::vector<Effect*>& chain, const FrameInput& in) {
         }
         EndTimer(e, in.gpuTimers);
         e.cpuMs = Now() - t0;
+        if (broke) continue;  // cur stays on the image before this effect
+        if (check && !e.failed) {
+            if (DrewNothing(*dst, marker)) {
+                if (e.emptyRuns++ == 0) e.emptySinceMs = Now();
+                if (e.emptyRuns >= in.checkRuns && Now() - e.emptySinceMs >= in.checkMs) {
+                    char b[224];
+                    snprintf(b, sizeof b,
+                             "compiled and linked, but its last pass drew nothing in %d runs (the graphics driver may have "
+                             "rejected the shader without reporting an error; a smaller shader may work)",
+                             e.emptyRuns);
+                    e.failed = true;
+                    e.error = b;
+                }
+                // cur stays where it was: the next effect, or the copy below, carries on from the image before this one.
+                continue;
+            }
+            e.drawChecked = true;
+        }
         ++e.runs;
         ++r.effects;
         cur = dst;
+    }
+    // The last effect did not write to the scene itself: it was being checked, it failed the check, or it was a code
+    // pass removed mid-chain. The image so far is in a spare target and is copied over.
+    if (cur != &out && r.effects) {
+        p.BindFramebuffer(kFRAMEBUFFER, out.fbo);
+        glViewport(0, 0, in.w, in.h);
+        if (in.splitCompare) {
+            glEnable(GL_SCISSOR_TEST);
+            glScissor(in.w / 2, 0, in.w - in.w / 2, in.h);
+        }
+        p.UseProgram(g_s.copyProg);
+        p.ActiveTexture(kTEXTURE0);
+        glBindTexture(GL_TEXTURE_2D, cur->tex);
+        DrawTriangle();
+        glDisable(GL_SCISSOR_TEST);
     }
     p.UseProgram(0);
     if (in.sceneDepth) {
