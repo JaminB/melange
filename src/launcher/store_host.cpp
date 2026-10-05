@@ -8,6 +8,7 @@
 #include <mutex>
 
 #include "launcher/app.h"
+#include "launcher/rpc.h"
 #include "launcher/setup/exe_check.h"
 #include "launcher/util.h"
 #include "oasis/rpc/ini_edit.h"
@@ -31,7 +32,7 @@ class LauncherHost final : public store::Host {
         const std::wstring dir = app::GameDir();
         return !dir.empty() && setup::CheckExe(dir).verdict == setup::Verdict::Ok ? "1077" : "";
     }
-    std::string Gate() override { return app::CachedGate(); }
+    std::string Gate() override { return rpc::ImportRunning() ? "an import is running" : app::CachedGate(); }
     std::vector<store::LocalMod> InstalledMods() override {
         std::vector<store::LocalMod> out;
         const std::wstring dir = app::GameDir();

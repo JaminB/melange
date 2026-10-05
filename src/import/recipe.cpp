@@ -212,6 +212,8 @@ bool ParseSelect(Ctx& c, const json::Value& v, Recipe* r) {
         return false;
     for (const auto& q : s.require)
         if (q != "descriptor" && q != "xan") return c.Fail("select.require", "only 'descriptor' and 'xan'");
+    if (s.require.size() == 1 || (s.require.size() == 2 && s.require[0] == s.require[1]))
+        return c.Fail("select.require", "format 1 needs both 'descriptor' and 'xan'");
     if (const json::Value* van = v.Get("vanilla")) {
         if (!van->IsArray() || van->items.size() > 32) return c.Fail("select.vanilla", "must be an array of at most 32 entries");
         std::set<std::string> files;

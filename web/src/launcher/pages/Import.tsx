@@ -140,8 +140,10 @@ export function Import({ client, plugin, onBack }: { client: Client; plugin: str
   // this reuses it when present and otherwise re-downloads, without asking the disclosure question again.
   const doReimport = () => {
     setShowReimport(false);
-    setDismissed(false);
-    if (source0) runAction(() => client.call("import.start", { plugin, source: { kind: "download", id: source0.id }, keepZip: true, accepted: true }));
+    if (source0) runAction(async () => {
+      await client.call("import.start", { plugin, source: { kind: "download", id: source0.id }, keepZip: true, accepted: true });
+      setDismissed(false);
+    });
   };
   const doRemove = () => { setShowRemove(false); runAction(() => client.call("import.uninstall", { plugin, deleteZip: deleteZipOnRemove })); };
   const doDeleteZip = () => runAction(() => client.call("import.deleteZip", { plugin }));
@@ -299,10 +301,17 @@ function ResultView({ result, content, onBrowse, onDone }: { result: NonNullable
 }
 
 function Dialog({ title, onClose, children }: { title: string; onClose: () => void; children: ComponentChildren }) {
+  const h2 = useRef<HTMLHeadingElement>(null);
+  useEffect(() => { h2.current?.focus(); }, []);
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") onClose(); };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [onClose]);
   return (
     <div class="li-dialog-backdrop" onClick={onClose}>
-      <div class="li-dialog" role="dialog" aria-modal="true" onClick={(e) => e.stopPropagation()}>
-        <h2>{title}</h2>
+      <div class="li-dialog" role="dialog" aria-modal="true" aria-labelledby="li-dialog-title" onClick={(e) => e.stopPropagation()}>
+        <h2 id="li-dialog-title" tabIndex={-1} ref={h2}>{title}</h2>
         {children}
       </div>
     </div>

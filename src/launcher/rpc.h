@@ -10,6 +10,7 @@ void InstallSetup();
 void InstallLauncher();
 void InstallPlugins();
 void InstallImport();
+bool ImportRunning();
 
 inline void Fail(oasis::Result& r, int code, const std::string& msg, const std::string& data = {}) {
     r.ok = false;

@@ -382,6 +382,7 @@ void TestRecipe(const Fixture& f) {
     bad("\"perPack\": 4", "\"perPack\": 33", "perPack above 32");
     bad("\"fromGame\": 1}", "\"fromGame\": 2}", "expect counts that do not add up");
     bad("\"Maps/vanmap.xan\"", "\"../vanmap.xan\"", "a vanilla hash outside Data");
+    bad("\"require\": [\"descriptor\", \"xan\"]", "\"require\": [\"xan\"]", "a partial require list");
     bool unsupported = false;
     std::string t = RecipeJson(f);
     t.replace(t.find("\"format\": 1"), 11, "\"format\": 2");

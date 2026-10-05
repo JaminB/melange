@@ -21,8 +21,8 @@ std::vector<std::string> ExistingPacks(const Paths& p, const std::string& plugin
 bool Place(const Paths& p, const std::string& plugin, const std::wstring& stageRoot, const std::vector<std::string>& staged,
            std::string* err, const MoveFn& mv = store::install::DefaultMove);
 void Finish(const Paths& p);
-// At start: undo an uncommitted placement, clean a committed one.
-void Recover(const Paths& p, const std::string& plugin, const MoveFn& mv = store::install::DefaultMove);
+// At start: undo an uncommitted placement, clean a committed one. False when an old pack could not be moved back.
+bool Recover(const Paths& p, const std::string& plugin, const MoveFn& mv = store::install::DefaultMove);
 // Removes every generated pack of the plugin; returns their ids, or false with *err when one could not be moved.
 bool RemovePacks(const Paths& p, const std::string& plugin, std::vector<std::string>* removed, std::string* err,
                  const MoveFn& mv = store::install::DefaultMove);

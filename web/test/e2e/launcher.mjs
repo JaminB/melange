@@ -328,7 +328,7 @@ async function importDownloadFlow(browser) {
       check("import: Import is disabled before accepting", await page.locator("[data-import]").isDisabled());
       await shot(page, "23-import-disclosure");
       await page.locator("[data-accept]").check();
-      check("import: still disabled with no ready source until one is picked (download is default)", !(await page.locator("[data-import]").isDisabled()));
+      check("import: enabled after accepting (download is the default source)", !(await page.locator("[data-import]").isDisabled()));
       await page.locator("[data-import]").click();
       await page.waitForSelector('[data-import-step="progress"]', { timeout: 5000 });
     });
