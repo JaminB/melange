@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.25)
-project(Melange VERSION 0.3.4 LANGUAGES C CXX)
+project(Melange VERSION 0.3.5 LANGUAGES C CXX)
 
 if(NOT CMAKE_SIZEOF_VOID_P EQUAL 4)
     message(FATAL_ERROR "Melange must be built for 32-bit x86 (WormsMayhem.exe is a 32-bit process). Use build.ps1.")

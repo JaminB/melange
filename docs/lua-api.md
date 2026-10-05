@@ -123,7 +123,7 @@ Read-only game state.
 | `wum.game.online()` | The current match is an online match. |
 | `wum.game.turn()` | `{index}`: turns started in this match (`team` is not available yet). |
 | `wum.game.tick()` | Simulation ticks (50 per second) since the match started, when the sim bridge is running; otherwise 0. |
-| `wum.game.worms()` | The worms of the current match, an array of `{slot, team, name, health, alive, pos={x,y,z}, weapon}` (`weapon` is the weapon id, absent when none). Empty outside a match; `nil, "unavailable"` on an unrecognised game build or with `[GameState] Enabled=0`. |
+| `wum.game.worms()` | The worms of the current match, an array of `{slot, team, name, health, alive, pos={x,y,z}, yaw, weapon}` (`weapon` is the weapon id, absent when none; `yaw` is the facing angle in radians about +Y, the facing direction is `(sin yaw, 0, cos yaw)`, it is not wrapped to a range and it spins while a worm is thrown). Empty outside a match; `nil, "unavailable"` on an unrecognised game build or with `[GameState] Enabled=0`. |
 | `wum.game.teams()` | The teams of the current match, an array of `{slot, name, active, ai, local}`; empty outside a match, `nil, "unavailable"` as above. |
 | `wum.game.activeWorm()` | The slot of the worm whose turn it is, or `nil`. |
 | `wum.game.theme()` | The level theme of the current match as the game names it (for example `"SPACE"`), or `nil` outside a match. |

@@ -13,6 +13,7 @@ struct Worm {
     uint8_t physicsState;
     int16_t weapon;                   // -1 if none
     Vec3 pos, vel;
+    float yaw;                        // facing angle, radians about +Y, unwrapped; facing = (sin, 0, cos)
     char name[32];
 };
 struct Team {

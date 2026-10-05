@@ -341,7 +341,7 @@ int GameWorms(lua_State* L) {
     lua_createtable(L, s.wormCount, 0);
     for (int i = 0; i < s.wormCount; ++i) {
         const gamestate::Worm& w = s.worms[i];
-        lua_createtable(L, 0, 7);
+        lua_createtable(L, 0, 8);
         SetInt(L, "slot", w.slot);
         SetInt(L, "team", w.team);
         lua_pushstring(L, w.name);
@@ -355,6 +355,8 @@ int GameWorms(lua_State* L) {
             lua_setfield(L, -2, k == 0 ? "x" : k == 1 ? "y" : "z");
         }
         lua_setfield(L, -2, "pos");
+        lua_pushnumber(L, w.yaw);
+        lua_setfield(L, -2, "yaw");
         if (w.weapon >= 0) SetInt(L, "weapon", w.weapon);
         lua_rawseti(L, -2, i + 1);
     }
