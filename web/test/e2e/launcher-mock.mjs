@@ -1,6 +1,7 @@
-// The launcher's setup.*, plugins.*, defaults.*, recommended.* and launcher.* methods and the `setup` channel, for
-// the mock server (--launcher). Scenario fixtures (picked by ?scenario=, see startMock): fresh, not-found,
-// wrong-build, ual-present, reshade, restore. No real file or registry access: everything lives in `state.launcher`.
+// The launcher's setup.*, plugins.*, defaults.*, recommended.*, update.* and launcher.* methods and the `setup` and
+// `update` channels, for the mock server (--launcher). Scenario fixtures (picked by ?scenario=, see startMock): fresh,
+// not-found, wrong-build, ual-present, reshade, restore, update-ready, update-running. No real file or registry access:
+// everything lives in `state.launcher`.
 const GAME_PATH = "C:\\Games\\WormsMayhem";
 const OK_EXE = { size: 5713408, timestamp: 1367508505, sha256: "041c8c6eb3b9f4fbaf367748f713ccb8f7bef68d13e825472c88c1ecf711ab7d", build: "Steam/GOG #1077" };
 const BAD_EXE = { size: 5820224, timestamp: 1420000000, sha256: "b".repeat(64) };
@@ -57,6 +58,14 @@ function scenarioFixture(name) {
       const r = scenarioFixture("restore");
       return { ...r, status: { ...r.status, busy: { action: "recommended", step: 1, of: 2, label: "Installing Sunstone…" } } };
     }
+    case "update-ready": {
+      const r = scenarioFixture("restore");
+      return { ...r, update: { current: "0.4.0", phase: "ready", latest: "0.4.1", htmlUrl: "https://github.com/JaminB/melange/releases/tag/v0.4.1" } };
+    }
+    case "update-running": {
+      const r = scenarioFixture("update-ready");
+      return { ...r, status: { ...r.status, running: true, game: { ...r.status.game, running: true } } };
+    }
     case "fresh":
     default:
       return { candidates: base(), status: freshStatus() };
@@ -99,12 +108,15 @@ export function launcherService(state, broadcast, initialScenario) {
     l.status = JSON.parse(JSON.stringify(f.status));
     l.gameDir = f.firstRun === false ? GAME_PATH : null;
     l.firstRun = f.firstRun !== false;
+    l.update = { current: l.version, phase: "current", latest: l.version, ...(f.update ?? {}) };
+    l.updateApplied = false;
   };
   apply(l.scenario);
 
   const later = (ms, fn) => { const t = setTimeout(() => { l.timers.delete(t); fn(); }, ms); l.timers.add(t); };
   const publicStatus = () => JSON.parse(JSON.stringify(l.status));
   const pushStatus = () => broadcast("setup", { status: publicStatus() });
+  const updateStatus = () => JSON.parse(JSON.stringify(l.update));
 
   const findCandidate = (path) => l.candidates.find((c) => c.path === path);
   // Mirrors the real server: setup.*/plugins.setSettings refuse with -32002 while a recommended-plugins batch
@@ -201,6 +213,14 @@ export function launcherService(state, broadcast, initialScenario) {
     "plugins.resetSettings": () => ({ values: { quality: "bold" } }),
     "defaults.get": () => l.defaults,
     "defaults.set": (p) => { l.defaults = { plugins: Array.isArray(p.plugins) ? p.plugins : [], seeded: true }; return l.defaults; },
+    "update.status": () => updateStatus(),
+    "update.check": () => updateStatus(),
+    "update.apply": () => {
+      if (l.update.phase !== "ready") throw [-32000, "No update is ready yet."];
+      if (l.status.running) throw [-32000, "Close the game to update."];
+      l.updateApplied = true;
+      return {};
+    },
     "recommended.get": () => (l.scenario === "offline-store" ? { source: "builtin", items: [] } : { source: "index", items: [SUNSTONE] }),
     "recommended.apply": (p) => {
       l.defaults = { plugins: (p.items ?? []).map((it) => ({ id: it.id, enabled: true, settings: it.settings ?? {} })), seeded: true };
@@ -211,9 +231,10 @@ export function launcherService(state, broadcast, initialScenario) {
   return {
     methods: Object.keys(handlers),
     mutating: ["launcher.setTheme", "launcher.shortcuts", "setup.select", "setup.apply", "setup.restore", "setup.deleteBackup",
-      "setup.setMelangeEnabled", "plugins.setSettings", "plugins.resetSettings", "defaults.set", "recommended.apply"],
+      "setup.setMelangeEnabled", "plugins.setSettings", "plugins.resetSettings", "defaults.set", "recommended.apply", "update.apply"],
     handlers,
     status: publicStatus,
+    updateStatus,
     setScenario: apply,
     close: () => { for (const t of l.timers) clearTimeout(t); l.timers.clear(); },
   };

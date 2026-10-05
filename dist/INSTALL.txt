@@ -31,6 +31,19 @@ After setup, Melange's window lets you:
 - Change your default set of plugins (Settings › Defaults)
 - Undo any change from a backup (Settings › Melange › Backups)
 
+Updates
+-------
+
+Melange keeps itself up to date. Each time you open Melange.exe, it asks GitHub for the latest release.
+A newer one is downloaded in the background and checked (its SHA-256, and that it is signed by the same
+publisher). Then Melange shows "Melange x.y.z is ready — Restart to update". One click closes Melange,
+installs the update into your game folder (with a backup, like any install) and opens the new version.
+Close the game first. Settings › Updates › Check for updates looks again on demand.
+
+The game also looks at most once a day and only tells you when a newer version is out. To turn that off,
+set CheckInGame=0 under [Update] in Melange.ini. Each check is a plain HTTPS request to GitHub that sends
+nothing about you or your game.
+
 Manual install (if Melange.exe doesn't work for you)
 ------------------------------------------------------
 

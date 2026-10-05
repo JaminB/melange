@@ -212,7 +212,8 @@ target_link_libraries(oasis_standalone_selftest PRIVATE miniz)
 set(LAUNCHER_CORE_SOURCES
     src/launcher/util.cpp src/launcher/settings.cpp src/launcher/plugin_settings.cpp src/launcher/recommended.cpp
     src/launcher/setup/vdf.cpp src/launcher/setup/detect.cpp src/launcher/setup/exe_check.cpp src/launcher/setup/dll_id.cpp
-    src/launcher/setup/running.cpp src/launcher/setup/ini_merge.cpp src/launcher/setup/engine.cpp
+    src/launcher/setup/running.cpp src/launcher/setup/ini_merge.cpp src/launcher/setup/engine.cpp src/launcher/updater.cpp
+    src/update/release.cpp
     src/oasis/standalone/game_lock.cpp src/oasis/rpc/ini_edit.cpp)
 # Stand-ins for third-party DLLs and melange.asi builds: read from disk by the self-test, never loaded.
 foreach(fx reshade microsoft)
@@ -229,7 +230,7 @@ target_include_directories(launcher_selftest PRIVATE src src/sdk)
 target_compile_definitions(launcher_selftest PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX _CRT_SECURE_NO_WARNINGS
     MELANGE_SOURCE_DIR="${CMAKE_SOURCE_DIR}")
 target_compile_options(launcher_selftest PRIVATE /W4 /utf-8 /permissive-)
-target_link_libraries(launcher_selftest PRIVATE melange_store bcrypt version shell32 ole32)
+target_link_libraries(launcher_selftest PRIVATE melange_store bcrypt version shell32 ole32 wintrust crypt32)
 
 # The Store engine without the game: index, downloads, installs, the store.* methods. The plugin compiles the same
 # sources through its glob, with store/game_host.cpp as the host; Melange.exe brings its own host.
@@ -260,7 +261,8 @@ set(LOG_EXPORT_CORE_SOURCES
 include(cmake/webview2.cmake)
 add_executable(melange_launcher WIN32
     src/launcher/main.cpp src/launcher/app.cpp src/launcher/window.cpp src/launcher/store_host.cpp
-    src/launcher/rpc_setup.cpp src/launcher/rpc_launcher.cpp src/launcher/rpc_plugins.cpp src/launcher/rpc_import.cpp ${LAUNCHER_CORE_SOURCES}
+    src/launcher/rpc_setup.cpp src/launcher/rpc_launcher.cpp src/launcher/rpc_plugins.cpp src/launcher/rpc_import.cpp src/launcher/update_host.cpp
+    ${LAUNCHER_CORE_SOURCES}
     src/oasis/standalone/register.cpp src/oasis/standalone/ini_edit.cpp src/oasis/standalone/mods_provider.cpp
     src/oasis/standalone/json_write.cpp src/oasis/standalone/wormsign_provider.cpp src/oasis/standalone/level_provider.cpp
     src/oasis/rpc/erg_assets.cpp src/assets/crcsafe_math.cpp src/assets/crcsafe_file.cpp src/oasis/auth.cpp src/oasis/webpanels.cpp
@@ -275,7 +277,7 @@ target_compile_definitions(melange_launcher PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX
 target_compile_options(melange_launcher PRIVATE /W4 /utf-8 /permissive- /Zi)
 target_link_options(melange_launcher PRIVATE /DEBUG /MANIFEST:NO)
 target_link_libraries(melange_launcher PRIVATE oasis_core melange_store melange_import melange_xom webview2_loader bcrypt version shlwapi ole32 shell32
-    comctl32 dwmapi winhttp)
+    comctl32 dwmapi winhttp wintrust crypt32)
 
 add_executable(json_read_selftest tests/json_read_selftest.cpp src/tools/json_read.cpp)
 target_include_directories(json_read_selftest PRIVATE src)

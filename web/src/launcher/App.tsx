@@ -3,7 +3,7 @@ import { useEffect, useReducer, useState } from "preact/hooks";
 import type { Client, ClientState } from "../sdk/client";
 import { errorText, useConnection } from "../sdk/hooks";
 import { Store } from "../panels/store";
-import { launcherStateOf, setupEventOf, setupStatusOf, type LauncherState, type SetupStatus, type Theme } from "./api";
+import { launcherStateOf, setupEventOf, setupStatusOf, updateEventOf, updateStatusOf, type LauncherState, type SetupStatus, type Theme, type UpdateStatus } from "./api";
 import { ExternalLinkIcon, GearIcon, LifeBuoyIcon, PlayIcon, PuzzleIcon, SparkleIcon, StoreIcon } from "./icons";
 import { Help } from "./pages/Help";
 import { Home } from "./pages/Home";
@@ -18,6 +18,7 @@ import { Ready } from "./wizard/Ready";
 import { Recommended } from "./wizard/Recommended";
 import { Welcome } from "./wizard/Welcome";
 import { StepRail } from "./components/StepRail";
+import { UpdateBanner } from "./components/UpdateBanner";
 
 type Page = "home" | "plugins" | "store" | "settings" | "help";
 const PAGES: { id: Page; label: string; icon: (s: number) => JSX.Element }[] = [
@@ -63,6 +64,18 @@ export function LauncherApp({ client }: { client: Client }) {
       setLauncher(s);
       setInWizard((prev) => prev ?? s.firstRun);
     }).catch(() => {});
+  }, [conn.open, client]);
+
+  // Melange updating itself: the banner over every page, Home's Melange card and Settings › Updates.
+  const [update, setUpdate] = useState<UpdateStatus>();
+  useEffect(() => {
+    if (!conn.open || !client.has("update.status")) return;
+    client.call<unknown>("update.status").then((r) => setUpdate(updateStatusOf(r))).catch(() => {});
+    if (!client.has("update")) return;
+    return client.subscribe<unknown>("update", undefined, (m) => {
+      const u = updateEventOf(m);
+      if (u) setUpdate(u);
+    });
   }, [conn.open, client]);
 
   const loadStatus = () => client.call<unknown>("setup.status").then((r) => setStatus(setupStatusOf(r))).catch(() => {});
@@ -148,12 +161,13 @@ export function LauncherApp({ client }: { client: Client }) {
         </nav>
         <main class="la-content" aria-label={PAGES.find((p) => p.id === page)?.label}>
           <div class="la-content-inner">
+            <UpdateBanner client={client} update={update} gameRunning={!!status?.running} />
             {importPlugin ? <Import client={client} plugin={importPlugin} onBack={() => setImportPlugin(undefined)} />
-              : page === "home" ? <Home client={client} status={status} onFixGame={() => { dispatch({ type: "goto", step: "find" }); setInWizard(true); }}
+              : page === "home" ? <Home client={client} status={status} update={update} onFixGame={() => { dispatch({ type: "goto", step: "find" }); setInWizard(true); }}
                                       onOpenPlugins={() => setPage("plugins")} onOpenSettings={() => setPage("settings")} />
               : page === "plugins" ? <Plugins client={client} status={status} onOpenStore={() => setPage("store")} onOpenImport={setImportPlugin} />
               : page === "store" ? <Store client={client} />
-              : page === "settings" ? <Settings client={client} status={status} theme={launcher?.theme ?? "system"} onTheme={setTheme}
+              : page === "settings" ? <Settings client={client} status={status} update={update} theme={launcher?.theme ?? "system"} onTheme={setTheme}
                                                  onChangeFolder={() => { dispatch({ type: "goto", step: "find" }); setInWizard(true); }} />
               : <Help client={client} version={launcher?.version ?? ""} />}
           </div>

@@ -1,6 +1,6 @@
 // The wizard's words (spec §5.3) as pure data: one function per family of states, each returning {title, body}.
 // A unit test asserts every member of every union this file switches on produces non-empty title and body.
-import type { Candidate, DllInfo, GameCheck, ImportContent, ImportJob, ImportSource, Importer, Plan, SetupProgress, SetupStatus, Verdict } from "./api";
+import type { Candidate, DllInfo, GameCheck, ImportContent, ImportJob, ImportSource, Importer, Plan, SetupProgress, SetupStatus, UpdateApplied, UpdateStatus, Verdict } from "./api";
 import { LauncherErrorCode, fingerprintShort, hashShort, sizeText, whenText } from "./api";
 
 export interface Copy { title: string; body: string[]; }
@@ -293,3 +293,39 @@ export const REMOVED_TOAST = "Imported maps removed.";
 export const storeImportsLine = (pluginName: string, title: string, size: number, host: string): string =>
   `${pluginName} can download ${title} (${sizeText(size)}) from ${host} when you ask it to. The maps are imported on your PC; the plugin contains none of them.`;
 export const storeRemoveCascadeLine = (n: number): string => `This also removes the ${n} map${n === 1 ? "" : "s"} it imported.`;
+
+// -- Melange updating itself (the global banner, Home and Settings) -----------------------------------------------
+export const UPDATE_GAME_RUNNING = "Close the game to update";
+export const UPDATE_ACTION = "Restart to update";
+export const WHATS_NEW = "What's new";
+
+// The banner over every page: a quiet progress line while a download runs, the one-click restart once it is ready,
+// nothing otherwise. `blocked` says why the button is disabled (the game is running).
+export function updateBanner(u: UpdateStatus, gameRunning: boolean): { text: string; action?: string; blocked?: string } | undefined {
+  const v = u.latest ?? "";
+  if (u.phase === "downloading") {
+    const p = u.progress;
+    const pct = p && p.total > 0 ? ` ${Math.min(100, Math.floor((p.got / p.total) * 100))}%` : "";
+    return { text: `Downloading Melange ${v}…${pct}` };
+  }
+  if (u.phase === "ready") return { text: `Melange ${v} is ready`, action: UPDATE_ACTION, blocked: gameRunning ? UPDATE_GAME_RUNNING : undefined };
+  return undefined;
+}
+
+// What the last start's update did, shown once by the launcher that started after it.
+export function updateAppliedLine(a: UpdateApplied): string {
+  if (a.ok) return `Updated to Melange ${a.version}.${a.warnings.length ? ` ${a.warnings.join(" ")}` : ""}`;
+  return `Melange wasn't updated to ${a.version || "the new version"}. ${a.message || "Something went wrong; the logs on the Help page say more."}`;
+}
+
+// Settings › Updates, beside "Check for updates".
+export function updateCheckLine(u: UpdateStatus): string {
+  switch (u.phase) {
+    case "checking": return "Checking for updates…";
+    case "downloading": return `Downloading Melange ${u.latest ?? ""}…`;
+    case "ready": return `Melange ${u.latest ?? ""} is ready. Restart to update.`;
+    case "current": return `You're up to date (Melange ${u.current}).`;
+    case "error": return `Couldn't check for updates. ${u.error ?? ""}`.trim();
+    default: return u.lastCheck ? `Last checked ${whenText(u.lastCheck)}.` : "Melange checks for updates each time it starts.";
+  }
+}

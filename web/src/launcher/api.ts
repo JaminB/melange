@@ -404,3 +404,37 @@ export function loadedSinceInstall(status: SetupStatus): boolean {
   const loaded = Date.parse(last.at), installed = status.install ? Date.parse(status.install.installedAt) : NaN;
   return Number.isNaN(loaded) || Number.isNaN(installed) || loaded >= installed;
 }
+
+// -- Melange updating itself (`update.*`, the "update" channel) ---------------------------------------------------
+// idle: nothing known yet · checking · downloading · ready: downloaded and verified, "Restart to update" · current:
+// this is the latest · error: a check the user asked for failed (an automatic one fails silently)
+export type UpdatePhase = "idle" | "checking" | "downloading" | "ready" | "current" | "error";
+export interface UpdateApplied { ok: boolean; version: string; message: string; warnings: string[]; }
+export interface UpdateStatus {
+  current: string; phase: UpdatePhase; latest?: string; htmlUrl?: string;
+  progress?: { got: number; total: number }; error?: string; lastCheck?: string; applied?: UpdateApplied;
+}
+
+const UPDATE_PHASES: UpdatePhase[] = ["idle", "checking", "downloading", "ready", "current", "error"];
+
+export function updateStatusOf(v: unknown): UpdateStatus {
+  const o = obj(v);
+  const progress = o.progress && typeof o.progress === "object" ? obj(o.progress) : undefined;
+  const applied = o.applied && typeof o.applied === "object" ? obj(o.applied) : undefined;
+  const htmlUrl = strOpt(o, "htmlUrl");
+  return {
+    current: str(o, "current"),
+    phase: UPDATE_PHASES.includes(o.phase as UpdatePhase) ? (o.phase as UpdatePhase) : "idle",
+    latest: strOpt(o, "latest"),
+    // Only a GitHub page is ever linked: the value comes from the network, through the launcher.
+    htmlUrl: htmlUrl && /^https:\/\/github\.com\//.test(htmlUrl) ? htmlUrl : undefined,
+    progress: progress ? { got: num(progress, "got"), total: num(progress, "total") } : undefined,
+    error: strOpt(o, "error"), lastCheck: strOpt(o, "lastCheck"),
+    applied: applied ? { ok: bool(applied, "ok"), version: str(applied, "version"), message: str(applied, "message"), warnings: strs(applied, "warnings") } : undefined,
+  };
+}
+
+export function updateEventOf(v: unknown): UpdateStatus | undefined {
+  const o = obj(v);
+  return o.status && typeof o.status === "object" ? updateStatusOf(o.status) : undefined;
+}

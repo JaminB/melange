@@ -22,6 +22,7 @@ struct Settings {
     WindowState window;
     std::vector<DefaultPlugin> defaults;
     bool defaultsSeeded = false;
+    std::string lastUpdateCheck;    // ISO time of the last look at GitHub for a newer Melange
 };
 std::wstring SettingsPath();
 bool LoadSettings(const std::wstring& path, Settings* out);   // false (and defaults) when missing or unreadable

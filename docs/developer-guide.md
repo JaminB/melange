@@ -48,6 +48,7 @@ Every module has its own section in `Melange.ini`, and `Enabled=0` turns a modul
 | `Store` | on | The plugin store (*Thumper/Store*, the Oasis Store panel): fetches the list only when you open it ([Plugin store](#plugin-store)) |
 | `Oasis` | on | The local web app on 127.0.0.1 ([oasis.md](oasis.md)); nothing listens until you open it |
 | `Wormsign` | on | The match's tick clock and a per-tick state hash (`wum.wormsign.tick()`); records a rolling library of recent matches to `Documents\Melange\replays` (last 20 / 200 MB by default, `wum.wormsign.library()`), match replays checked tick by tick (*Wormsign/Replay*); online, it compares the hashes with other Melange players and reports the first tick where they disagree ([wormsign.md](wormsign.md)); build #1077 only |
+| `Update` | on (`CheckInGame=1`) | At most once a day, about 10 s after the game starts and off the main thread, asks GitHub for the latest Melange release and shows a toast when it is newer ("it installs the next time you open Melange.exe"). Downloads nothing; the time of the last check is in `Documents\Melange\update-check.json` ([Updates](#updates)) |
 
 ![The "Smooth 60" toggle in the overlay's Game menu](images/overlay/smooth60-menu-item.png)
 
@@ -571,7 +572,7 @@ You need:
 - **Home:** shows status cards for your game, loader, Melange and plugins, with actions like Launch, Repair or Update.
 - **Plugins:** enable/disable installed plugins and configure their settings.
 - **Store:** browse and install plugins from the plugin store.
-- **Settings:** change your game folder, manage backups, edit plugin defaults, view logs.
+- **Settings:** change your game folder, check for updates, manage backups, edit plugin defaults, view logs.
 
 The launcher runs a local web server and embeds the same Oasis web app in Windows' Edge WebView2 component. It finds the game from Steam/GOG libraries or lets you browse, validates `WormsMayhem.exe` by SHA-256 against build #1077, and manages the ASI loader and plugin installation as atomic transactions with rollback on failure.
 
@@ -582,7 +583,39 @@ Command line:
 - `Melange.exe` — run the window; first run if no game is saved.
 - `Melange.exe --game <dir>` — use this game folder (does not overwrite the saved one without your confirmation).
 - `Melange.exe --browser` — no WebView2 window, open the default browser instead (accessible only from `127.0.0.1`).
-- `Melange.exe --serve` — headless server for testing, prints the launch URL to stdout.
+- `Melange.exe --serve` — headless server for testing, prints the launch URL to stdout. It does not look for updates by itself.
+
+### Updates
+
+Melange keeps itself up to date (`src/launcher/updater.*`, `src/launcher/update_host.cpp`, `src/update/`):
+
+1. **Check.** Each time `Melange.exe` starts, and from *Settings › Updates › Check for updates*, a background thread
+   sends `GET https://api.github.com/repos/JaminB/melange/releases/latest` (user agent `Melange/<version>`, no
+   cookies or credentials). GitHub's `/latest` never returns drafts or prereleases. The tag must be `v<version>`;
+   if that version is newer than the running one, the release must also carry `melange-<version>.json`. A release
+   without it is never offered. Offline or rate-limited is not an error: the automatic check just logs it. The time
+   of the last check is `lastUpdateCheck` in `launcher.json`.
+2. **Download.** The manifest and the zip it names are downloaded into
+   `%LOCALAPPDATA%\Melange\updates\<version>\` (only `https://github.com/JaminB/melange/releases/download/` URLs).
+   The zip's length and SHA-256 must match the manifest (and the release's asset size). It is unpacked into
+   `payload\` (plain relative names only), where `Melange.exe` and `melange.asi` must carry this version. If the
+   running `Melange.exe` is signed, both must also pass `WinVerifyTrust` with a leaf certificate of the same subject
+   and issuing organisation. `ready.json` is written last. Only the newest staged update is kept; older ones, and
+   ones no newer than the running version, are deleted at start.
+3. **Restart to update.** The banner's button (disabled while the game runs) starts
+   `payload\Melange.exe --apply-update --from <old exe folder> --pid <old pid> --game <dir>`, and the old launcher
+   exits. The new one waits for it, then runs the setup engine's install over the game folder: staged, backed up
+   to `Melange\backup\`, committed by rename, rolled back on failure. It merges new `Melange.ini` keys and copies
+   itself in as the game folder's `Melange.exe`. If Melange isn't installed in that folder, the folder is left
+   alone. If the old `Melange.exe` ran from somewhere else, that copy is replaced as well: the old file is renamed
+   to `Melange.exe.old` (deleted at the next start), along with the other release files already there. When
+   Windows refuses a write, the same apply runs again as administrator (`--elevated`, one UAC prompt). Then it
+   starts the installed `Melange.exe` normally. That start shows "Updated to x.y.z", or the error if nothing could
+   be changed, from `updates\result.json`, and calls `OnMelangeUpdated(gameDir)` once after a successful update.
+   The apply logs to `%LOCALAPPDATA%\Melange\update.log`.
+
+The game looks too (`[Update] CheckInGame=1`, the `Update` module): at most once a day, the same `GET`, compared
+by version only, with a toast if a newer Melange exists. It downloads nothing.
 
 ## Releasing
 
@@ -596,7 +629,14 @@ workflow refuses a tag that doesn't match). The workflow:
    `out\stage`;
 3. signs `melange.asi`, `Melange.exe` and `tools\xomtool.exe` with Azure Artifact Signing (SHA-256, timestamped)
    and checks the signatures. `dinput8.dll` is not signed;
-4. zips the stage and creates the GitHub release for the tag (or adds to it), with the zip's SHA-256 in the notes.
+4. zips the stage, writes its update manifest `out\melange-<version>.json` with
+   `scripts\release-manifest.ps1` (`{"version", "zip", "sha256", "size"}`), and creates the GitHub release for the
+   tag (or adds to it) with **both** files attached and the zip's SHA-256 in the notes.
+
+`Melange.exe` updates itself from the latest release (see [Updates](#updates)), and only when that release has
+`melange-<version>.json` beside `melange-<version>.zip`. If you ever publish a release by hand, attach both files,
+on a tag named `v<version>` that is not a draft or prerelease. The new `Melange.exe` and `melange.asi` must be signed
+with the same publisher certificate subject as the release before it, or signed installs will refuse the update.
 
 Run it by hand from the Actions tab (`gh workflow run release.yml -f sign=false` for an unsigned dry run): the
 zip is then uploaded as a workflow artifact instead of a release. Signing uses the repository variables
@@ -607,7 +647,7 @@ zip is then uploaded as a workflow artifact instead of a release. Signing uses t
 To build a release offline, without signing:
 
 ```powershell
-.\scripts\release.ps1            # builds the public config and writes out\melange-<version>.zip
+.\scripts\release.ps1            # builds the public config and writes out\melange-<version>.zip and .json
 ```
 
 This builds with `build.ps1` and no `-PrivateDir`, so no out-of-tree modules are compiled in, then refuses to
@@ -616,4 +656,5 @@ text file staged for the zip contains a local `C:\Users` path. The zip has `mela
 `Melange.ini`, `dinput8.dll` (Ultimate ASI Loader) and its licence in `THIRD_PARTY.md`, `Melange.exe`,
 `tools\xomtool.exe`, the sample `Mods\`, `LICENSE`, `THIRD_PARTY.md` and an `INSTALL.txt` mirroring the README's
 install steps. The version comes from `project(Melange VERSION x.y.z)` in `CMakeLists.txt`. `out\` is not
-committed; the script prints the zip's SHA-256 so it can be posted alongside a GitHub release.
+committed; the script prints the zip's SHA-256 so it can be posted alongside a GitHub release, and writes the
+update manifest `out\melange-<version>.json` that must be attached to the release with the zip.

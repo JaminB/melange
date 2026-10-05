@@ -25,6 +25,7 @@ struct Options {
     const std::atomic<bool>* cancel = nullptr;
     std::function<void(uint64_t got, uint64_t total)> progress;   // total 0 when unknown
     std::string userAgent = "Melange";
+    bool registerActive = true;     // false: CancelActive leaves this request alone (a background check beside the Store)
 };
 bool Get(const std::string& url, Sink& sink, const Options& o, std::string* err);
 void CancelActive();   // any thread: closes the request in flight so a blocked read returns at once

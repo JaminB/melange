@@ -1,19 +1,19 @@
 import { useEffect, useState } from "preact/hooks";
 import type { Client } from "../../sdk/client";
 import { errorText } from "../../sdk/hooks";
-import { loadedSinceInstall, whenText, type SetupStatus } from "../api";
+import { loadedSinceInstall, whenText, type SetupStatus, type UpdateStatus } from "../api";
 import { busyNotice } from "../copy";
 import { ExportLogs } from "../components/ExportLogs";
 import { StatusCard, type Tone } from "../components/StatusCard";
 import { FolderIcon, PlugIcon, PuzzleIcon, SparkleIcon } from "../icons";
 
 export interface HomeProps {
-  client: Client; status: SetupStatus | undefined; onFixGame: () => void; onOpenPlugins: () => void; onOpenSettings: () => void;
+  client: Client; status: SetupStatus | undefined; update?: UpdateStatus; onFixGame: () => void; onOpenPlugins: () => void; onOpenSettings: () => void;
 }
 
 const STORE_LABEL: Record<string, string> = { steam: "Steam", gog: "GOG", unknown: "" };
 
-export function Home({ client, status, onFixGame, onOpenPlugins, onOpenSettings }: HomeProps) {
+export function Home({ client, status, update, onFixGame, onOpenPlugins, onOpenSettings }: HomeProps) {
   const [counts, setCounts] = useState<{ on: number; updates: number } | undefined>();
   const [storeDown, setStoreDown] = useState(false);
   const [restoreBusy, setRestoreBusy] = useState(false);
@@ -61,7 +61,11 @@ export function Home({ client, status, onFixGame, onOpenPlugins, onOpenSettings 
     : m.lastLoad && loadedSinceInstall(status) ? { tone: "ok", text: `${m.version} · last loaded ${whenText(m.lastLoad.at)}` }
     : { tone: "warn", text: `${m.version} · not loaded yet` };
 
-  const pluginsCard: { tone: Tone; text: string; detail?: string } =
+  // A newer Melange than this app, from Melange.exe's own update check (the banner above has the button).
+  const newer = update?.phase === "ready" ? `Melange ${update.latest} is ready to install`
+    : update?.phase === "downloading" ? `Downloading Melange ${update.latest}…` : undefined;
+
+  const pluginsCard:{ tone: Tone; text: string; detail?: string } =
     storeDown ? { tone: "warn", text: "Store unreachable" }
     : counts ? { tone: counts.updates ? "warn" : "ok", text: `${counts.on} on${counts.updates ? ` · ${counts.updates} update${counts.updates === 1 ? "" : "s"}` : ""}` }
     : { tone: "ok", text: "…" };
@@ -90,7 +94,7 @@ export function Home({ client, status, onFixGame, onOpenPlugins, onOpenSettings 
                     actionLabel={gameCard.action} onAction={gameCard.onAction} />
         <StatusCard id="loader" icon={<PlugIcon />} label="Loader" tone={loaderCard.tone} status={loaderCard.text} detail={loaderCard.detail}
                     actionLabel={loaderCard.action} onAction={onOpenSettings} />
-        <StatusCard id="melange" icon={<SparkleIcon />} label="Melange" tone={melangeCard.tone} status={melangeCard.text} detail={melangeCard.detail}
+        <StatusCard id="melange" icon={<SparkleIcon />} label="Melange" tone={melangeCard.tone} status={melangeCard.text} detail={melangeCard.detail ?? newer}
                     actionLabel={melangeCard.action} onAction={onOpenSettings} />
         <StatusCard id="plugins" icon={<PuzzleIcon />} label="Plugins" tone={pluginsCard.tone} status={pluginsCard.text} detail={pluginsCard.detail}
                     actionLabel={!storeDown ? "Manage" : undefined} onAction={onOpenPlugins} />

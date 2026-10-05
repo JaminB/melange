@@ -2,14 +2,14 @@ import { useEffect, useState } from "preact/hooks";
 import type { Client } from "../../sdk/client";
 import { errorText } from "../../sdk/hooks";
 import { Ini } from "../../panels/ini";
-import type { Defaults, SetupStatus, Theme } from "../api";
+import type { Defaults, SetupStatus, Theme, UpdateStatus } from "../api";
 import { defaultsOf, whenText } from "../api";
-import { busyNotice } from "../copy";
+import { busyNotice, updateCheckLine } from "../copy";
 import { UndoIcon } from "../icons";
 
-export interface SettingsProps { client: Client; status: SetupStatus | undefined; theme: Theme; onTheme: (t: Theme) => void; onChangeFolder: () => void; }
+export interface SettingsProps { client: Client; status: SetupStatus | undefined; update?: UpdateStatus; theme: Theme; onTheme: (t: Theme) => void; onChangeFolder: () => void; }
 
-export function Settings({ client, status, theme, onTheme, onChangeFolder }: SettingsProps) {
+export function Settings({ client, status, update, theme, onTheme, onChangeFolder }: SettingsProps) {
   const [busy, setBusy] = useState<string>();
   const [error, setError] = useState<string>();
   const [confirmUninstall, setConfirmUninstall] = useState(false);
@@ -74,6 +74,18 @@ export function Settings({ client, status, theme, onTheme, onChangeFolder }: Set
           <button class="btn" onClick={onChangeFolder}>Change…</button>
           <button class="btn" disabled={!status?.game} onClick={() => client.call("launcher.openPath", { what: "game" }).catch((e) => setError(errorText(e)))}>Open folder</button>
         </div>
+      </section>
+
+      <section class="ls-section" data-section="updates">
+        <h2>Updates</h2>
+        <div class="ls-row">
+          <span class="ls-row-label" role="status" aria-live="polite" data-update-line>{update ? updateCheckLine(update) : "—"}</span>
+          <button class="btn" data-update-check disabled={!update || update.phase === "checking" || update.phase === "downloading"}
+                  onClick={() => client.call("update.check").catch((e) => setError(errorText(e)))}>Check for updates</button>
+        </div>
+        <p class="muted small">Melange looks for a newer release on GitHub each time it starts: a plain HTTPS request that sends
+          nothing about you or your game. A newer one is downloaded and checked in the background, and installed when you
+          choose Restart to update.</p>
       </section>
 
       <section class="ls-section" data-section="melange">

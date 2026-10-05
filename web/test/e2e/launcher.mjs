@@ -1,7 +1,7 @@
 // Headless Edge e2e for the Melange.exe launcher's web UI, against the mock server (--launcher) and its scenario
 // fixtures (web/test/e2e/launcher-mock.mjs): fresh (found/install/recommended), not-found, wrong-build, ual-present,
-// reshade (other dinput8 + backup + restore). Screenshots of every wizard step and main-app section, light and dark,
-// go into --shots (default web/test/out/launcher-shots).
+// reshade (other dinput8 + backup + restore), update-ready and update-running (Restart to update). Screenshots of every
+// wizard step and main-app section, light and dark, go into --shots (default web/test/out/launcher-shots).
 //   node web/test/e2e/launcher.mjs [<built web app folder>] [--shots <dir>]
 import { mkdirSync } from "node:fs";
 import { chromium } from "playwright-core";
@@ -523,11 +523,58 @@ async function importStaleAndDamaged(browser) {
   }
 }
 
+async function updateReady(browser) {
+  const mock = await startMock({ root, launcher: true });
+  const { page, errors } = await openPage(browser, mock, "update-ready");
+  try {
+    await attempt("update: a downloaded release offers one-click Restart to update", async () => {
+      await page.waitForSelector('[data-notice="update"]', { timeout: 10000 });
+      const text = (await page.locator('[data-notice="update"]').textContent()) ?? "";
+      check("update: banner names the version", /Melange 0\.4\.1 is ready/.test(text), text);
+      check("update: What's new links the release page",
+        (await page.locator('[data-notice="update"] a').getAttribute("href")) === "https://github.com/JaminB/melange/releases/tag/v0.4.1");
+      check("home: the Melange card mentions it", /0\.4\.1 is ready to install/.test((await page.locator('[data-card="melange"]').textContent()) ?? ""));
+      await shot(page, "32-home-update-ready");
+      const btn = page.locator("[data-update-apply]");
+      check("update: the button is enabled", !(await btn.isDisabled()));
+      await btn.click();
+      await page.waitForSelector('[data-update-apply]:has-text("Restarting")', { timeout: 5000 });
+      check("update: apply ran without an error", (await page.locator('[data-notice="update"] .error').count()) === 0);
+    });
+    await attempt("settings: Check for updates", async () => {
+      await page.locator('[data-page-tab="settings"]').click();
+      await page.waitForSelector('[data-section="updates"]', { timeout: 10000 });
+      check("settings: the update line says it is ready", /0\.4\.1 is ready/.test((await page.locator("[data-update-line]").textContent()) ?? ""));
+      await page.locator("[data-update-check]").click();
+      await shot(page, "33-settings-updates");
+    });
+    check("update-ready scenario: no page errors", errors.length === 0, errors.join(" | "));
+  } finally {
+    await page.close();
+    await mock.close();
+  }
+  const mock2 = await startMock({ root, launcher: true });
+  const r = await openPage(browser, mock2, "update-running");
+  try {
+    await attempt("update: disabled while the game runs", async () => {
+      await r.page.waitForSelector('[data-notice="update"]', { timeout: 10000 });
+      await r.page.waitForSelector('[data-notice="running"]', { timeout: 10000 });
+      check("update: the button is disabled", await r.page.locator("[data-update-apply]").isDisabled());
+      check("update: says to close the game", /Close the game to update/.test((await r.page.locator('[data-notice="update"]').textContent()) ?? ""));
+      await shot(r.page, "34-home-update-game-running");
+    });
+    check("update-running scenario: no page errors", r.errors.length === 0, r.errors.join(" | "));
+  } finally {
+    await r.page.close();
+    await mock2.close();
+  }
+}
+
 const browser = await chromium.launch({ channel: "msedge", headless: true });
 try {
   for (const scenario of [
     foundInstallRecommended, notFound, wrongBuild, ualPresent, reshadeBackupAndRestore, installedHome, helpExportLogs, pluginsBusy,
-    importDownloadFlow, importLocalFileFlow, importHashErrorFlow, importCancelFlow, importStaleAndDamaged,
+    importDownloadFlow, importLocalFileFlow, importHashErrorFlow, importCancelFlow, importStaleAndDamaged, updateReady,
   ]) {
     try {
       await scenario(browser);

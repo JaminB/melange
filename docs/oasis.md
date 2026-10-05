@@ -269,6 +269,16 @@ These methods are available only when Melange.exe is running (the welcome messag
 
 Channel `setup`: `{status: SetupStatus}` on every change (folder selection, game start/stop, file changes), and `{progress: {action, step, of, label}}` during a transaction (each step's name, current step number, total steps).
 
+Melange updating itself ([developer guide](developer-guide.md#updates)):
+
+| Method | Params → result | Notes |
+|---|---|---|
+| `update.status` | `{}` → `UpdateStatus` | `UpdateStatus`: `{current, phase: "idle"\|"checking"\|"downloading"\|"ready"\|"current"\|"error", latest?, htmlUrl?, progress?: {got, total}, error?, lastCheck?, applied?: {ok, gameUpdated, version, message, at, warnings}}`. `ready`: a newer release is downloaded and verified. `error` only follows a check you asked for; the automatic one at start fails silently. `applied` is what the last *Restart to update* did, reported once by the launcher that started after it. |
+| `update.check` | `{}` → `UpdateStatus` | Looks at GitHub's latest release now, and downloads it in the background if it is newer (a no-op while a check runs). |
+| `update.apply` ! | `{}` → `{}` (then exits) | Starts the downloaded `Melange.exe` with `--apply-update` and closes this one. Refused (`-32000`) with nothing ready or while the game runs ("Close the game to update."), `-32002` while another setup change or an import runs. |
+
+Channel `update`: `{status: UpdateStatus}` on every change, including download progress (at most 4 a second).
+
 ### Console, mods and settings
 
 | Method | Params → result | Notes |

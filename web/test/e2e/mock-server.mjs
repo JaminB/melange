@@ -148,7 +148,7 @@ export async function startMock(opts = {}) {
     : ["sys.ping", "mods.list", "ini.get", "ini.set", "log.sessions"]),
     ...erg.methods, ...(state.server === "game" ? store.methods : []),
     ...(launcher ? [...store.methods, ...launcher.methods, ...(imports?.methods ?? [])] : [])];
-  const channels = state.server === "game" ? ["log", "bus", "bus.counts", "mods", "stats", "store"] : launcher ? ["log", "store", "setup", "import"] : ["log"];
+  const channels = state.server === "game" ? ["log", "bus", "bus.counts", "mods", "stats", "store"] : launcher ? ["log", "store", "setup", "import", "update"] : ["log"];
 
   const logRecord = (lvl, cat, msg) => {
     state.seq++;
@@ -277,6 +277,7 @@ export async function startMock(opts = {}) {
       if (m.ch === "mods") c.queue("mods", modPublic());
       if (m.ch === "store") c.queue("store", store.initial());
       if (m.ch === "setup" && launcher) c.queue("setup", { status: launcher.status() });
+      if (m.ch === "update" && launcher) c.queue("update", { status: launcher.updateStatus() });
       if (m.ch === "import" && imports) c.queue("import", imports.initial());
       return;
     }
