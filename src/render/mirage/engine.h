@@ -25,4 +25,5 @@ bool MsaaOn();                       // pp+0x7a: the scene renders into multisam
 uintptr_t AppOptions();              // *0x95a100
 bool Supersample(int* x, int* y);    // the /SSAA factors (+0x6c wide, +0x70 high)
 bool SceneSize(int* w, int* h);      // pp+0x7c/+0x80: the scene targets' size
+bool WindowViewport(int v[4]);       // pp+0x68..+0x74: GL_VIEWPORT as the last target rebuild read it (Composite restores it)
 }

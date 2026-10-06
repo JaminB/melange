@@ -482,3 +482,61 @@ export function vanillaResultOf(v: unknown): VanillaResult {
     verify: bool(o, "verify"), verifyStarted: bool(o, "verifyStarted"), store: storeOf(o), selfPending: bool(o, "selfPending"),
   };
 }
+
+// -- Settings › Display (`display.get` / `display.set`) -------------------------------------------------------------
+// The window size the game opens at (local.cfg /W /H) and Melange's borderless fullscreen ([Display] Fullscreen in
+// Melange.ini). Both are read when the game starts, so the server refuses to write them while it runs (`refused`).
+export interface DisplaySize { w: number; h: number; }
+export interface DisplayState {
+  monitor: DisplaySize;                  // the primary monitor, in pixels
+  modes: DisplaySize[];                  // window sizes to offer, largest first
+  windowed: DisplaySize | null;          // the size the game opens at, null when no cfg file names one
+  source: "local" | "default" | "none";  // which file that size came from
+  localCfg: boolean; exclusive: boolean; // exclusive: the stock launcher's fullscreen (/FS) is on in local.cfg
+  fullscreen: boolean; enabled: boolean; hotkey: string; melangeIni: boolean;
+  running: boolean; refused?: string;
+  removedFs?: boolean;                   // display.set just took /FS out of local.cfg
+}
+
+const sizeOf = (v: unknown): DisplaySize | undefined => {
+  const o = obj(v);
+  const w = num(o, "w"), h = num(o, "h");
+  return w > 0 && h > 0 && Number.isInteger(w) && Number.isInteger(h) ? { w, h } : undefined;
+};
+
+export function displayOf(v: unknown): DisplayState {
+  const o = obj(v);
+  const source = o.source === "local" || o.source === "default" ? o.source : "none";
+  return {
+    monitor: sizeOf(o.monitor) ?? { w: 0, h: 0 },
+    modes: arr(o, "modes").map(sizeOf).filter((s): s is DisplaySize => !!s),
+    windowed: sizeOf(o.windowed) ?? null, source,
+    localCfg: bool(o, "localCfg"), exclusive: bool(o, "exclusive"), fullscreen: bool(o, "fullscreen"),
+    enabled: o.enabled !== false, hotkey: str(o, "hotkey") || "Alt+RETURN", melangeIni: bool(o, "melangeIni"),
+    running: bool(o, "running"), refused: strOpt(o, "refused") || undefined,
+    ...(o.removedFs === true ? { removedFs: true } : {}),
+  };
+}
+
+export const sizeKey = (s: DisplaySize): string => `${s.w}x${s.h}`;
+export function sizeFromKey(k: string): DisplaySize | undefined {
+  const m = /^(\d{3,5})x(\d{3,5})$/.exec(k);
+  return m ? { w: Number(m[1]), h: Number(m[2]) } : undefined;
+}
+
+// The window-size picker: the offered sizes plus the current one when it isn't among them, largest first. `native`
+// marks the monitor's own size.
+export function displaySizeOptions(d: DisplayState): { key: string; size: DisplaySize; native: boolean }[] {
+  const all = [...d.modes];
+  if (d.windowed && !all.some((s) => s.w === d.windowed!.w && s.h === d.windowed!.h)) all.push(d.windowed);
+  all.sort((a, b) => (a.w !== b.w ? b.w - a.w : b.h - a.h));
+  return all.map((s) => ({ key: sizeKey(s), size: s, native: s.w === d.monitor.w && s.h === d.monitor.h }));
+}
+
+// What the picker shows when nothing is set yet: the largest offered 16:9 size below the monitor's (a window the size
+// of the whole monitor would not fit with its border), else the largest offered.
+export function defaultWindowed(d: DisplayState): DisplaySize | undefined {
+  if (d.windowed) return d.windowed;
+  const below = d.modes.filter((s) => s.w < d.monitor.w && s.h < d.monitor.h);
+  return below.find((s) => s.w * 9 === s.h * 16) ?? below[0] ?? d.modes[0];
+}

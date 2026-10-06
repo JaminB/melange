@@ -141,6 +141,37 @@ void TestWriterCloseAndAbandon(const std::wstring& dir) {
     Expect(r2.Header() == R"({"format":1})", "abandoned file kept its HEAD chunk");
 }
 
+// A crash leaves the file as the writer last flushed it: the HEAD must be on disk without any Flush or Close (a
+// 0-byte .wsr was what a crash 17 s into a match left in 0.4.0), and the crash path's TryEnqueue + FlushWithin put
+// the rest there without INDX.
+void TestWriterCrashSafety(const std::wstring& dir) {
+    const std::wstring path = dir + L"\\writer_crash.wsr";
+    melange::wormsign::writer::Writer w;
+    Expect(w.Open(path), "writer open (crash case)");
+    const std::string head = R"({"format":1,"crash":"test"})";
+    w.Enqueue(wsr::kHEAD, head.data(), head.size(), true);
+    wsr::Reader r;
+    std::string err;
+    bool onDisk = false;
+    for (int i = 0; i < 200 && !onDisk; ++i) {  // up to 2 s; the writer thread wakes on the enqueue
+        onDisk = r.OpenFile(path, &err) && r.Header() == head;
+        if (!onDisk) Sleep(10);
+    }
+    Expect(onDisk, "the HEAD reaches the disk while the writer is still open, with no Flush or Close");
+    Expect(onDisk && !r.Complete(), "an open recording reads as incomplete");
+
+    std::vector<uint8_t> tick(rec::kTickBytes * 2, 0x24);
+    Expect(w.TryEnqueue(wsr::kTICK, tick.data(), tick.size(), 1, 2), "TryEnqueue on the crash path");
+    const char* note = "{\"reason\":\"crash\"}";
+    Expect(w.TryEnqueue(wsr::kNOTE, note, strlen(note)), "TryEnqueue the crash NOTE");
+    Expect(w.FlushWithin(2000), "FlushWithin confirms the queue is on disk");
+    wsr::Reader r2;
+    Expect(r2.OpenFile(path, &err) && !r2.Complete() && r2.Chunks().size() == 3,
+           "after the crash flush: HEAD, TICK and NOTE on disk, still without INDX");
+    w.Abandon();
+    Expect(!w.TryEnqueue(wsr::kNOTE, note, strlen(note)) && !w.FlushWithin(10), "a closed writer refuses both");
+}
+
 std::string CurrentUserNameUtf8() {
     wchar_t buf[256];
     DWORD n = 256;
@@ -194,6 +225,52 @@ void MakeRecording(const std::wstring& path, long long fakeSteamId, bool flagged
         w.Chunk(wsr::kDVRG, dvrg, strlen(dvrg), false);
     }
     w.Close();
+}
+
+// The redacted copy of a recording a crash cut off: as far as it reads, redacted, still incomplete; an empty file or
+// one cut inside its HEAD is refused with a reason, never copied raw.
+void TestExportCrashCut(const std::wstring& baseDir) {
+    const std::wstring full = baseDir + L"\\cut_full.wsr", cut = baseDir + L"\\cut.wsr", out = baseDir + L"\\cut_out.wsr";
+    MakeRecording(full, 76561198000000077LL, false);
+    std::vector<uint8_t> bytes;
+    {
+        FILE* f = _wfopen(full.c_str(), L"rb");
+        uint8_t buf[4096];
+        size_t n;
+        while (f && (n = fread(buf, 1, sizeof buf, f)) > 0) bytes.insert(bytes.end(), buf, buf + n);
+        if (f) fclose(f);
+    }
+    wsr::Reader src;
+    std::string err;
+    Expect(src.OpenMemory(bytes, &err) && src.Chunks().size() == 6, "the source recording reads (5 chunks and INDX)");
+    // Cut inside the last chunk before INDX (the NOTE with the SteamID): HEAD, INPT, TICK and SETP survive.
+    const auto& chunks = src.Chunks();
+    const size_t cutAt = chunks.size() >= 2 ? static_cast<size_t>(chunks[chunks.size() - 2].offset) + 10 : 0;
+    {
+        FILE* f = _wfopen(cut.c_str(), L"wb");
+        if (f) fwrite(bytes.data(), 1, cutAt, f), fclose(f);
+    }
+    bool incomplete = false;
+    Expect(lib::ExportRedacted(cut, out, &err, "salt", &incomplete), ("export a cut recording: " + err).c_str());
+    Expect(incomplete, "the export says the recording was incomplete");
+    wsr::Reader r;
+    Expect(r.OpenFile(out, &err) && !r.Complete() && r.Chunks().size() == 4,
+           "the copy holds the four whole chunks and stays incomplete");
+    Expect(r.Header().find("1077") != std::string::npos, "the copy's HEAD is the recording's");
+
+    const std::wstring empty = baseDir + L"\\empty.wsr";
+    if (FILE* f = _wfopen(empty.c_str(), L"wb")) fclose(f);
+    err.clear();
+    Expect(!lib::ExportRedacted(empty, out, &err) && err.rfind("empty: the game crashed", 0) == 0,
+           "an empty recording is refused as empty");
+    const std::wstring magic = baseDir + L"\\magic.wsr";
+    if (FILE* f = _wfopen(magic.c_str(), L"wb")) {
+        fwrite(bytes.data(), 1, 12, f);
+        fclose(f);
+    }
+    err.clear();
+    Expect(!lib::ExportRedacted(magic, out, &err) && err.rfind("no complete header", 0) == 0,
+           "a recording cut inside its HEAD is refused as headerless");
 }
 
 void TestLibraryRetentionAndExport(const std::wstring& baseDir) {
@@ -275,6 +352,8 @@ int main() {
     const std::wstring tmp = TempDir();
     TestRecordsRoundTrip();
     TestWriterCloseAndAbandon(tmp);
+    TestWriterCrashSafety(tmp);
+    TestExportCrashCut(tmp);
     TestLibraryRetentionAndExport(tmp);
     RemoveDirRecursive(tmp);
     printf("%d passed, %d failed\n", g_pass, g_fail);

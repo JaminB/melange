@@ -22,6 +22,10 @@ In the game, press `` ` `` for Melange's overlay: mod pages, logs, graphics tool
 
 ![The in-game overlay, opened with the grave key](docs/images/overlay/main-overlay.png)
 
+## Fullscreen
+
+Press `Alt+Enter` in the game (or *View › Fullscreen* in the overlay) for borderless fullscreen: the game's window fills its monitor without a border and renders at the monitor's resolution, and `Alt+Tab` works as with any window. Press it again to go back to the window. The game remembers your choice for the next start. Melange.exe's *Settings › Display* has the same switch and the window size the game opens at (written to the game's `local.cfg` as `/W` and `/H`); close the game before changing them there. If the stock launcher's exclusive fullscreen (`/FS` in `local.cfg`) is on, turning on Melange's fullscreen removes it. The hotkey is `Hotkey=` under `[Display]` in `Melange.ini`.
+
 ## Install a mod
 
 The easy way is the Store: on Melange.exe's **Plugins** page press *Open Store* (in the game: *Store* on the *Thumper/Mods* page, or the **Store** panel in Oasis), pick a plugin and press *Install*. The Store contacts GitHub only when you open it, and sends nothing about you or your game. Some plugins, like Caravan, import maps from a download onto your PC.

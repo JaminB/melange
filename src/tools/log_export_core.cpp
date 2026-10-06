@@ -227,6 +227,7 @@ struct ManifestEntry {
     std::string sha256;   // of those bytes
     std::string source;   // original path, redacted
     bool truncated = false;
+    bool incomplete = false;  // a recording cut off by a crash (no INDX): it is in as far as it reads
 };
 
 class ZipBuilder {
@@ -294,6 +295,10 @@ public:
         if (!profile.empty()) out = melange::redact::RedactUserName(out, profile);
         return out;
     }
+    // Text that can hold a local path (a manifest note): the passes a source path gets.
+    std::string RedactPath(const std::string& text) const {
+        return ExcludeComputerName(redactUserPaths_ ? RedactUserNames(text) : text);
+    }
 
     void Add(const std::string& archivePathIn, std::string data, const std::wstring& sourcePath, bool truncated,
              bool isText) {
@@ -339,21 +344,37 @@ public:
     // A .wsr recording can carry a peer's raw SteamID (its DVRG chunk) and the case is exactly the one this export
     // exists for, so it gets the same redaction as everything else here rather than going in verbatim: rewritten
     // through the library's redactor (SteamID-shaped numbers and IPs salted-hashed, the Windows user name replaced)
-    // into a temp file, then capped from its start so the HEAD chunk a reader needs survives the cap.
-    bool AddRedactedWsr(const std::string& archivePath, const std::wstring& sourcePath) {
+    // into a temp file, then capped from its start so the HEAD chunk a reader needs survives the cap. A recording cut
+    // off by a crash goes in as far as it reads, marked "incomplete"; one with nothing redactable in it (empty, or
+    // cut off inside its HEAD) stays out, and *why says so for the manifest's "absent" list. Never the raw file.
+    bool AddRedactedWsr(const std::string& archivePath, const std::wstring& sourcePath, std::string* why) {
         wchar_t tmpDir[MAX_PATH], tmpPath[MAX_PATH];
-        if (!GetTempPathW(MAX_PATH, tmpDir) || !GetTempFileNameW(tmpDir, L"wsx", 0, tmpPath)) return false;
+        if (!GetTempPathW(MAX_PATH, tmpDir) || !GetTempFileNameW(tmpDir, L"wsx", 0, tmpPath)) {
+            *why = "no temporary file for the redacted copy";
+            return false;
+        }
         std::string err;
-        if (!melange::wormsign::library::ExportRedacted(sourcePath, tmpPath, &err, salt_)) {
+        bool incomplete = false;
+        if (!melange::wormsign::library::ExportRedacted(sourcePath, tmpPath, &err, salt_, &incomplete)) {
             DeleteFileW(tmpPath);
+            *why = err.empty() ? "could not be redacted" : err;
             return false;
         }
         std::string data;
         bool truncated = false;
         const bool ok = ReadCapped(tmpPath, kCap, true, data, &truncated);
         DeleteFileW(tmpPath);
-        if (!ok) return false;
+        if (!ok) {
+            *why = "could not read the redacted copy back";
+            return false;
+        }
+        const size_t before = manifest.size();
         Add(archivePath, std::move(data), sourcePath, truncated, /*isText=*/false);
+        if (manifest.size() == before) {
+            *why = "could not be added to the zip";
+            return false;
+        }
+        manifest.back().incomplete = incomplete;
         return true;
     }
 
@@ -381,7 +402,8 @@ std::string BuildReadme(Scope scope) {
     s += "  dumps/*.dmp       crash/hang minidumps, if any were found\n";
     s += "  config/*.ini      Melange.ini and any other .ini next to the game exe\n";
     s += "  mods/*.json       installed mods (spice.json ids and versions, enabled state), modules and .asi plugins\n";
-    s += "  replays/*         desync bundles and match recordings, if any\n\n";
+    s += "  replays/*         desync bundles and match recordings, if any (a recording cut off by a crash is\n";
+    s += "                    marked \"incomplete\" in manifest.json; an empty one is listed under \"absent\")\n\n";
     s += "Privacy note - this zip can contain:\n";
     s += "  - your Windows user name in file paths (replaced with %USERNAME% by default)\n";
     s += "  - Steam ids, persona names and lobby ids (ids are replaced with a short hash unique to\n";
@@ -556,11 +578,24 @@ bool DoExport(const std::wstring& zipPath, const Request& rq, Result* res) {
         if (!any) c.absent.push_back("logs/launcher (no launcher.log found)");
     }
 
-    // dumps/*.dmp, newest 3 (for one game: from its window). Full-memory dumps ("-full.dmp") can hold private
-    // data, so they are opt-in.
+    // dumps/*.dmp, newest 3 (for one game: from its window), from <data dir>\dumps and Sources::dumpDirs (the
+    // Documents\Melange\dumps fallback). Full-memory dumps ("-full.dmp") can hold private data, so they are opt-in.
     if (opt.includeDumps) {
+        std::vector<std::wstring> dumpDirs;
+        if (!dataDir.empty()) dumpDirs.push_back(dataDir + L"\\dumps");
+        for (const auto& d : src.dumpDirs) {
+            bool seen = d.empty();
+            for (const auto& o : dumpDirs) seen = seen || _wcsicmp(o.c_str(), d.c_str()) == 0;
+            if (!seen) dumpDirs.push_back(d);
+        }
+        std::vector<FileInfo> found;
+        for (const auto& d : dumpDirs) {
+            const auto more = ListFiles(d, L"*.dmp");
+            found.insert(found.end(), more.begin(), more.end());
+        }
+        std::stable_sort(found.begin(), found.end(), [](const FileInfo& a, const FileInfo& b) { return a.mtime > b.mtime; });
         std::vector<std::wstring> dumps;
-        for (const auto& f : ListFiles(dataDir.empty() ? std::wstring() : dataDir + L"\\dumps", L"*.dmp")) {
+        for (const auto& f : found) {
             if (HasSuffixCI(f.path, L"-full.dmp") && !opt.includeFullDumps) continue;
             if (rq.scope == Scope::LastGame && !win.Contains(f.mtime, kMinute, 15 * kMinute)) continue;
             dumps.push_back(f.path);
@@ -578,9 +613,15 @@ bool DoExport(const std::wstring& zipPath, const Request& rq, Result* res) {
     // carries its pid, newest first within a size budget; otherwise the newest of each.
     {
         const size_t before = c.manifest.size();
+        size_t leftOut = 0;
         auto addWsr = [&](const std::wstring& f) {
-            if (!c.AddRedactedWsr("replays/" + Narrow(BaseNameW(f)), f))
-                LOG_WARN("[LogExport] could not redact %ls for the export; omitted", f.c_str());
+            const std::string name = "replays/" + Narrow(BaseNameW(f));
+            std::string why;
+            if (c.AddRedactedWsr(name, f, &why)) return;
+            ++leftOut;
+            LOG_WARN("[LogExport] %s left out of the export: %s", name.c_str(), why.c_str());
+            // The reason can hold a temp path, so it gets the same user-name pass as everything else.
+            c.absent.push_back(c.RedactPath(name + " (" + why + ")"));
         };
         if (rq.scope == Scope::LastGame) {
             uint64_t budget = kReplayBudget;
@@ -607,12 +648,13 @@ bool DoExport(const std::wstring& zipPath, const Request& rq, Result* res) {
                 }
             }
             if (skipped) c.absent.push_back("replays (" + std::to_string(skipped) + " older file(s) over the size budget)");
-            if (c.manifest.size() == before) c.absent.push_back("replays (no desync bundle or recording from this game)");
+            if (c.manifest.size() == before && !leftOut)
+                c.absent.push_back("replays (no desync bundle or recording from this game)");
         } else {
             for (const auto& f : Newest(src.replaysDir, L"desync-*.zip", 1))
                 c.AddFile("replays/" + Narrow(BaseNameW(f)), f);
             for (const auto& f : Newest(src.replaysDir, L"*.wsr", 1)) addWsr(f);
-            if (c.manifest.size() == before) c.absent.push_back("replays (no desync bundle or recording found)");
+            if (c.manifest.size() == before && !leftOut) c.absent.push_back("replays (no desync bundle or recording found)");
         }
     }
 
@@ -660,6 +702,7 @@ bool DoExport(const std::wstring& zipPath, const Request& rq, Result* res) {
             jsonmini::Obj o;
             o.Str("path", e.archivePath).UInt("size", e.size).Str("sha256", e.sha256).Str("source", e.source)
                 .Bool("truncated", e.truncated);
+            if (e.incomplete) o.Bool("incomplete", true);
             entriesJson.Raw(o.End());
         }
         jsonmini::Arr sessionsJson;

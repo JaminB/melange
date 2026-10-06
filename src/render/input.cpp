@@ -291,6 +291,7 @@ struct Sub {
 std::vector<Sub> g_subs;  // main thread only (subclassing and the window procedure both run there)
 HWND g_subHwnd = nullptr;
 std::atomic<bool> g_imguiReady{false};
+melange::render::AltReleaseGuard g_altGuard;  // main thread only, like the window procedure
 
 // A key message whose scan code (+ modifiers) is a registered hotkey.
 bool IsHotkeyKeyMsg(LPARAM lp) {
@@ -318,7 +319,8 @@ LRESULT CALLBACK OverlayWndProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
         }
     if (!orig) return unicode ? DefWindowProcW(h, msg, wp, lp) : DefWindowProcA(h, msg, wp, lp);
 
-    if (IsKeyMsg(msg) && IsHotkeyKeyMsg(lp)) {
+    const bool hotkeyMsg = IsKeyMsg(msg) && IsHotkeyKeyMsg(lp);
+    if (g_altGuard.Drop(msg, wp, lp, hotkeyMsg) || hotkeyMsg) {
         ++g_keyMsgsDropped;
         return 0;
     }

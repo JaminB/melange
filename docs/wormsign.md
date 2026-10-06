@@ -58,6 +58,23 @@ These are the payloads of the record chunks, little-endian and packed:
 The `HEAD` chunk's `contributors` (an array of `{name, version}`) decides whether a replay also compares the `mods`
 hash: only when the recording and the running game have the same set.
 
+### Crashes and incomplete recordings
+
+A recording is written while the match runs. `HEAD`, `SEED` and `PDRW` reach the disk when the match starts, `SETP`
+at its first tick, and the ticks, inputs and details every 500 ticks (10 s); the writer thread flushes every batch it
+writes. If the game crashes, the crash handler gives the writer what is still buffered and a `NOTE` with
+`"reason":"crash"`, and waits up to 3 s for it to reach the disk (`recording: ... on disk` in `Melange.log`). Without
+that, a crash loses at most the last 10 s.
+
+A file without `INDX` and the trailer is *incomplete*: the reader keeps every whole chunk up to the first damaged or
+missing one. The library, the replay panels and `tools/wsr/wsr.py info` show it as incomplete. *Export last game's
+logs* includes it, redacted like any recording and marked `"incomplete": true` in `manifest.json`. A file too short to
+hold its `HEAD` chunk (an empty one, for example) has nothing that can be redacted, so the export lists it under
+`absent` with the reason ("empty: the game crashed before the recording was written").
+
+If reading another module's state at the match start faults (the game state, the mod content id, the contributors,
+the RNG logs), the recording continues without that one value and the log names the read and the exception.
+
 ## Desync detection
 
 In an online match every player runs the same simulation from the same inputs. When one machine's state drifts, the game notices only at the end of a turn, and then ends the match with "This session is no longer available". Wormsign compares the hashes of every tick with the other Melange players in the lobby, so a desync is reported at the tick where it happened, usually within a second.
@@ -114,6 +131,11 @@ A sim mod must do the same thing on every machine. A mod that reads something on
 
 - `OnDivergence(fn, user)`: called on the main thread with a `Divergence` for every desync with another player (`Source::Peer`) or a replay (`Source::Replay`): the tick, both hashes, the engine parts that differ (`compMask`), the first differing contributor and the other player's SteamID. `bundle` is empty then; the bundle is written a few seconds later.
 - `AddContributor(name, fn, user)` feeds a module's own state into the mods hash.
+- `OnSession(fn, user)` and `OnTickEnd(fn, user, order)` run fault-guarded: an observer that faults is skipped for that
+  call, and the first fault is logged with the list, the handle, the observer's name (Melange's own observers have
+  one; another module's is named by the module its function is in) and the exception:
+  `[wormsign] session observer 1 (wormsign recorder, 70a1c2d0 melange.asi+0x1c2d0) faulted and was skipped: c0000005 at ..., read of address 00000000`.
+  After that it is logged at 10, 100, 1000 ... faults.
 
 Client Lua has `wum.wormsign.onDivergence(fn)` and the event `wormsign.divergence` ([lua-api.md](lua-api.md)).
 

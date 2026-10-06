@@ -4,6 +4,7 @@ import { errorText } from "../../sdk/hooks";
 import { Ini } from "../../panels/ini";
 import type { Defaults, SetupStatus, Theme, UpdateStatus, VanillaResult } from "../api";
 import { defaultsOf, updateStatusOf, whenText } from "../api";
+import { DisplaySettings } from "../components/DisplaySettings";
 import { RestoreVanilla } from "../components/RestoreVanilla";
 import { busyNotice, updateCheckLine } from "../copy";
 import { UndoIcon } from "../icons";
@@ -89,6 +90,13 @@ export function Settings({ client, status, update, theme, onTheme, onChangeFolde
           <button class="btn" disabled={!status?.game} onClick={() => client.call("launcher.openPath", { what: "game" }).catch((e) => setError(errorText(e)))}>Open folder</button>
         </div>
       </section>
+
+      {status?.game ? (
+        <section class="ls-section" data-section="display">
+          <h2>Display</h2>
+          <DisplaySettings client={client} running={!!status.running} />
+        </section>
+      ) : null}
 
       <section class="ls-section" data-section="updates">
         <h2>Updates</h2>

@@ -10,6 +10,7 @@
 #include <atomic>
 #include <mutex>
 
+#include "core/dump_paths.h"
 #include "launcher/app.h"
 #include "launcher/rpc.h"
 #include "launcher/setup/detect.h"
@@ -154,6 +155,7 @@ void ExportLogs(const Call& c, Result& r, void*) {
     }
     rq.src.gameDir = game;
     rq.src.replaysDir = docs.empty() ? std::wstring() : docs + L"\\Melange\\replays";
+    rq.src.dumpDirs = melange::debug::DumpDirs(L"", docs);  // where the game writes a dump its own folder refused
     rq.src.launcherLogDir = AppDataDir();
 
     bool onDesktop = false;

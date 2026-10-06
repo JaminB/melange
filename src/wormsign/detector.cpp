@@ -32,6 +32,7 @@
 #include "wormsign/enginecheck.h"
 #include "wormsign/exchange.h"
 #include "wormsign/library.h"
+#include "wormsign/session.h"
 
 namespace melange::wormsign::detector {
 namespace {
@@ -459,8 +460,8 @@ bool Install(const Options& opt) {
     g_opt = opt;
     g_det = std::make_unique<detect::Detector>(g_env);
     enginecheck::Install();
-    g_tickHandle = OnTickEnd(&OnTick, nullptr, 100);
-    g_sessionHandle = OnSession(&OnSessionFn, nullptr);
+    g_tickHandle = session::OnTickEndNamed(&OnTick, nullptr, 100, "wormsign desync detector");
+    g_sessionHandle = session::OnSessionNamed(&OnSessionFn, nullptr, "wormsign desync detector");
     static bool subscribed = false;
     if (!subscribed) {
         subscribed = true;

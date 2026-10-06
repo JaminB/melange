@@ -21,6 +21,7 @@
 #include "melange/testcmd.h"
 #include "render/mirage/engine.h"
 #include "render/mirage/stages.h"
+#include "render/mirage/supersample.h"
 #include "render/mirage/supersample_logic.h"
 
 namespace melange::mirage::supersample {
@@ -208,6 +209,35 @@ public:
 }  // namespace
 
 MELANGE_MODULE(MirageSupersample);
+
+bool RebuildTargets(int w, int h) {
+    std::lock_guard lk(g_mx);
+    if (w <= 0 || h <= 0 || !wglGetCurrentContext() || !Check() || !engine::Rm()) return false;
+    uintptr_t pp = engine::PostProcess();
+    logic::EngineAa cur;
+    if (!pp || !ReadAa(&cur)) return false;
+    if (Rd8(pp + 0x78)) return true;  // already queued: that rebuild reads the same viewport
+    if (!g_haveVanilla) {
+        g_vanilla = cur;
+        g_haveVanilla = true;
+    }
+    const logic::EngineAa want = g_eff.samples != 0 || g_touched ? logic::Target(g_eff, g_vanilla) : cur;
+    GLint max = 0;
+    glGetIntegerv(GL_MAX_TEXTURE_SIZE, &max);
+    const logic::EngineAa t = logic::ForSize(want, cur, w, h, max);
+    if (!logic::Same(t, want))
+        LOG_WARN("[mirage] supersampling %dx%d does not fit a %dx%d window (largest texture %d): scene targets rebuilt at %dx%d",
+                 want.x, want.y, w, h, max, t.x, t.y);
+    Queue(t);
+    if (!logic::Same(t, cur)) g_touched = true;
+    // The once-a-second check looks again after the rebuild, and tries the mods' request anew at the new size.
+    g_dirty = true;
+    g_attempts = 0;
+    g_gaveUp = false;
+    g_nextCheck = events::FrameCount() + 60;
+    LOG_INFO("[mirage] scene targets queued for a rebuild at %dx%d (supersampling %dx%d%s)", w, h, t.x, t.y, t.fxaa ? ", fxaa" : "");
+    return true;
+}
 }  // namespace melange::mirage::supersample
 
 namespace melange::graphics {

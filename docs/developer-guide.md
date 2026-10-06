@@ -34,6 +34,7 @@ Every module has its own section in `Melange.ini`, and `Enabled=0` turns a modul
 | `SteamTrace` | on | Logs Steam lobby, P2P and callback activity |
 | `NetTrace` | on | Logs raw Winsock calls |
 | `WindowTag` | on | Shows the Melange version in the window title |
+| `Display` | on (`Fullscreen=0`) | Borderless fullscreen at the monitor's resolution, switched live with *View > Fullscreen* or `Hotkey` (`Alt+RETURN`), remembered in `Fullscreen` and applied as soon as the game's window is up ([Fullscreen](#fullscreen)); `Melange.exe`'s *Settings › Display* writes it too. Build #1077 only |
 | `FrameInterval` | on | Sets the engine frame interval (`IntervalMs=16` is about 60 fps); "Classic timing" (`ClassicTiming=0`) raises the OS timer resolution to 1 ms (`timeBeginPeriod`) for steadier pacing on systems that stutter at the default resolution. Switch it with *Game > Classic timing* in the overlay (checked while on) |
 | `SmoothSixty` | on (`On=0`) | "Smooth 60": lifts the engine's frame limiter and uses vsync. Switch it with *Game > Smooth 60* in the overlay (checked while on) |
 | `Mirage` | on | Graphics layer core: renderer access, scene stages for mods, mod folders |
@@ -57,7 +58,7 @@ Every module has its own section in `Melange.ini`, and `Enabled=0` turns a modul
 | Where | What |
 |---|---|
 | `<game>\Melange\Melange.log` | Plain-text log of the current run (`Melange.prev.log` is the run before) |
-| `<game>\Melange\dumps\` | Crash and hang minidumps |
+| `<game>\Melange\dumps\` | Crash and hang minidumps (`Documents\Melange\dumps\` when the game folder is not writable) |
 | `Documents\Melange\logs\<session>\` | Structured session log (`events.jsonl`) |
 | `Documents\Melange\replays\desync-*.zip` | Desync bundles: what differed between two players, and at which tick |
 
@@ -70,8 +71,8 @@ The zip goes to the Desktop as `Melange-logs-<YYYYMMDD-HHMMSS>.zip` (`Documents\
 
 "Last game" is one game process: the newest session folder (in the game, the running one), and with it
 
-- every match recording (`wsr-*-p<pid>-*.wsr`) and desync bundle (`desync-*-p<pid>-*.zip`) whose name carries that session's pid, not just the newest;
-- the minidumps and the engine's XOM/Net logs written during that session (its folder name to its last write, plus 15 minutes);
+- every match recording (`wsr-*-p<pid>-*.wsr`) and desync bundle (`desync-*-p<pid>-*.zip`) whose name carries that session's pid, not just the newest. A recording cut off by a crash goes in as far as it reads (redacted like the rest) and is marked `"incomplete": true` in `manifest.json`; one with nothing in it is listed under `absent` with the reason (`empty: the game crashed before the recording was written`);
+- the minidumps (from both dump folders) and the engine's XOM/Net logs written during that session (its folder name to its last write, plus 15 minutes);
 - `Melange.log` and `Melange.prev.log`, Melange.exe's `launcher.log` and `launcher.1.log` (from `%LOCALAPPDATA%\Melange`);
 - the `.ini` files, the mods (`mods/spice.json`: each mod's id, name and version; `thumper-state.json`; the Store's `installed.json`; the `.asi` plugins) and `system.json`. From inside the game it also has the GPU report and the installed modules.
 
@@ -80,6 +81,18 @@ The zip goes to the Desktop as `Melange-logs-<YYYYMMDD-HHMMSS>.zip` (`Documents\
 The zip includes a GPU compatibility report (`gpu/compat.txt`): graphics card, driver, OpenGL version and extensions, the Cg shader profiles your card supports, and which shaders and effects loaded or were skipped and why. The overlay panel *Mirage/GPU* shows the same report.
 
 ![The Mirage/GPU panel's compatibility report (the GPU/driver rows are blanked)](images/mirage/gpu-report.png)
+
+### Reading a crash in Melange.log
+
+A crash is logged as `==== CRASH: exception <code> at <address>`, the registers and a heuristic call stack (return addresses found on the stack, so a few lines can be stale), then `minidump: <path>`, or `minidump: (failed)` with each folder tried and its Win32 error or `MiniDumpWriteDump` HRESULT. The dump is written by a thread the Diagnostics module starts with the game, not by the crashing thread, and carries a comment stream with the same summary. `[Diagnostics] FullMemoryDumps=1` makes full-memory dumps.
+
+The header says which kind of crash it is:
+
+- `[first fault]`: the exception itself was not handled.
+- `[handler fault: raised while an earlier exception was being handled]`: an exception handler crashed, often the game's own while it handled another fault. The fault it was handling follows as `FIRST FAULT ...`, with its own registers and stack; that one is usually the real bug. Melange finds it on the stack (the outer exception's dispatch frame) or in the last few exceptions each thread raised, which a vectored handler keeps (code, address and registers only; it never handles anything).
+- `an earlier exception on this thread, N ms before (it was handled; may be unrelated)`: the last exception before the crash, for context.
+
+With a match in progress, the crash also hands the recording's buffered ticks and inputs to its writer and logs `recording: ... on disk: <path>`, so the `.wsr` keeps the match up to the crash (it reads as incomplete). To try the crash path on purpose, set `[Diagnostics] SelfTestCrashAtFrame=<n>`: an access violation at that frame (`SelfTestCrashKind=1`: one inside an exception filter that is handling another, a handler fault).
 
 ## Graphics layer (Mirage)
 
@@ -243,6 +256,40 @@ At 2x2 everything in the scene, Mirage's post-FX included, shades four times as 
 target takes four times the memory: at 1920x1080 the game's own targets grow by about 150 MB, about 350 MB in all
 with a full post-FX stack. The `mirage.supersample` console verb logs
 the effective request, the engine's factors and the scene size.
+
+### Fullscreen
+
+The `Display` module (`src/render/display.cpp`, pure logic in `src/render/display_logic.h`) gives the game a
+borderless fullscreen: *View > Fullscreen* in the overlay (checked while on), `Hotkey` (`Alt+RETURN` by default; `none`
+turns it off; it runs from the overlay's hotkey path, so it needs `[Overlay] Enabled=1`), and `Fullscreen=1` under
+`[Display]` to start that way. Switching in game writes `Fullscreen`, so the choice holds at the next start.
+
+- **The window.** Melange restyles the game's own window as a popup without a frame (`WS_POPUP`, caption, border and
+  system menu off) and sizes it to cover its monitor (`MonitorFromWindow` and `rcMonitor`); leaving restores the saved
+  style and rect, or centres it on the monitor's work area when the saved rect is no longer on any monitor. There is
+  no display-mode change (`ChangeDisplaySettings`), and the window and GL context stay the same ones: the engine's own
+  `XOpenGLRenderManager::ChangeDisplay` (`0x6f6003`) re-creates both, so Melange never calls it. The window is not
+  topmost, so `Alt+Tab` works as with any window. The game is DPI-unaware: on a scaled display it sees, and covers, the
+  monitor's logical size, and Windows scales the picture up.
+- **Native resolution, live.** The engine sets its window viewport once, when it opens the display, and
+  `PCPostProcess` caches it (`pp+0x68`) when it builds its scene targets (`CreateTargets` `0x61f190` reads
+  `GL_VIEWPORT`, then sizes the scene from it); `Composite` restores that viewport every frame. On the frames after a
+  switch, `Display` sets the GL viewport to the new client area and queues the engine's own target rebuild, the switch
+  `MirageSupersample` uses (`supersample::RebuildTargets`, `pp+0x78`). 3D, HUD and menus then draw at the new size.
+  It checks that the cached viewport took the new size (3 tries), and every 2 s that the borderless window still
+  covers its monitor and the viewport still matches.
+- **Supersampling.** The rebuild lands on the supersampling Melange wants (a mod's request or `[MirageSupersample]`)
+  when the scene, at the new size times its factors, fits the GPU's largest texture; otherwise on the engine's current
+  factors, otherwise 1x1, and the log says so. Going back to the window tries the request again.
+- **Exclusive fullscreen.** A game started with the stock launcher's `/FS` (in `local.cfg`) changed the display mode
+  itself; `Display` sees a captionless window that already covers the monitor and stays off for that session.
+  *Settings › Display* in `Melange.exe` removes `/FS` when you turn Melange's fullscreen on.
+- **Alt+Enter.** The game has no Alt+Enter of its own (`XomWndProc` leaves `WM_SYSKEYDOWN` to `DefWindowProc`). As a
+  hotkey, the key never reaches the game's DirectInput or its window procedure, and the overlay also drops the Alt
+  release that follows, so a window with a system menu doesn't go into menu mode.
+
+The `display.fullscreen 0|1|toggle` and `display.info` test verbs switch it and log the window, monitor, viewport and
+scene size.
 
 ### Post-processing effects
 
@@ -591,7 +638,7 @@ You need:
 - **Home:** shows status cards for your game, loader, Melange and plugins, with actions like Launch, Repair or Update. A downloaded update shows *Restart to update* here (and on every page).
 - **Plugins:** enable/disable installed plugins and configure their settings. Local plugins are hidden until *Show local plugins* is on; notices say which plugins the [compatibility sweep](spice.md#compatibility-sweep) set aside, updated or removed.
 - **Store:** browse and install plugins from the plugin store.
-- **Settings:** change your game folder, check for updates (and switch automatic checks off), manage backups, edit plugin defaults, uninstall, or *Restore vanilla*.
+- **Settings:** change your game folder, switch fullscreen and pick the window size ([Display](#display)), check for updates (and switch automatic checks off), manage backups, edit plugin defaults, uninstall, or *Restore vanilla*.
 - **Help:** *Export last game's logs* zips the last game's logs to the Desktop in one click.
 
 ![Melange.exe's Home page](images/launcher/home.png)
@@ -606,6 +653,24 @@ Command line:
 - `Melange.exe --game <dir>` — use this game folder (does not overwrite the saved one without your confirmation).
 - `Melange.exe --browser` — no WebView2 window, open the default browser instead (accessible only from `127.0.0.1`).
 - `Melange.exe --serve` — headless server for testing, prints the launch URL to stdout. It does not look for updates by itself.
+
+### Display
+
+*Settings › Display* (`src/launcher/rpc_display.cpp`, `display.get` / `display.set`, pure logic in
+`src/launcher/local_cfg.h`) holds the two things the game reads when it starts:
+
+- **Fullscreen** writes `Fullscreen` under `[Display]` in `Melange.ini` (and `Enabled=1` there if the module was
+  off); `melange.asi` applies it as soon as the game's window is up ([Fullscreen](#fullscreen)). It needs Melange
+  installed.
+- **Window size** writes `/W` and `/H` in the game folder's `local.cfg`, which the engine reads after `Default.cfg`
+  (command-line sizes are overridden by both). The rest of the file is kept as it was: unknown switches, their order,
+  `/W:1280` or `/W 1280` style, line endings; a missing `/W` or `/H` is added. The list offers the primary monitor's
+  display modes (`EnumDisplaySettings`) and the common 16:9 sizes, none larger than the monitor.
+- **`/FS`**, the stock launcher's exclusive fullscreen, conflicts with Melange's borderless one: turning Fullscreen on
+  removes it from `local.cfg`, and the page says so.
+
+Both are refused while the game runs (the usual write gate). `display.get` reports what is set (`local.cfg` over
+`Default.cfg`), the monitor and the gate's reason, so the page can disable the controls.
 
 ### Restore vanilla
 

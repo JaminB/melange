@@ -1,6 +1,6 @@
 // The wizard's words (spec §5.3) as pure data: one function per family of states, each returning {title, body}.
 // A unit test asserts every member of every union this file switches on produces non-empty title and body.
-import type { Candidate, DllInfo, GameCheck, ImportContent, ImportJob, ImportSource, Importer, Plan, SetupProgress, SetupStatus, Store, UpdateApplied, UpdateStatus, VanillaGroup, Verdict } from "./api";
+import type { Candidate, DisplaySize, DisplayState, DllInfo, GameCheck, ImportContent, ImportJob, ImportSource, Importer, Plan, SetupProgress, SetupStatus, Store, UpdateApplied, UpdateStatus, VanillaGroup, Verdict } from "./api";
 import { LauncherErrorCode, fingerprintShort, hashShort, sizeText, whenText } from "./api";
 
 export interface Copy { title: string; body: string[]; }
@@ -356,3 +356,35 @@ export function vanillaVerifyText(store: Store, started?: boolean): string {
 }
 
 export const VANILLA_DONE = "Worms is back to stock. Melange will close.";
+
+// -- Settings › Display -----------------------------------------------------------------------------------------------
+// "Alt+RETURN" (Melange.ini's key names) as people say it.
+export const hotkeyText = (k: string): string =>
+  k.split("+").map((p) => p.trim()).map((p) => (/^(return|enter)$/i.test(p) ? "Enter" : /^grave$/i.test(p) ? "`" : p)).join("+");
+export const displaySizeText = (s: DisplaySize): string => `${s.w} × ${s.h}`;
+export const DISPLAY_RUNNING = "Close the game to change these: it reads them when it starts.";
+export const DISPLAY_NO_MELANGE = "Install Melange to use fullscreen.";
+export const DISPLAY_FS_REMOVED = "Removed the stock launcher's exclusive fullscreen (/FS) from local.cfg: Melange's borderless fullscreen replaces it.";
+
+export function displayFullscreenHelp(d: DisplayState): string {
+  const at = d.monitor.w > 0 ? ` (${displaySizeText(d.monitor)})` : "";
+  const keys = /^(none|off)?$/i.test(d.hotkey.trim()) ? "View › Fullscreen" : `${hotkeyText(d.hotkey)} or View › Fullscreen in the overlay`;
+  return `Fills the screen without a border, at your monitor's resolution${at}. Alt+Tab works as with any window. ` +
+    `Switch in game with ${keys}; the game remembers your choice.`;
+}
+
+// A note under the switch, or undefined.
+export function displayNote(d: DisplayState): string | undefined {
+  if (d.removedFs) return DISPLAY_FS_REMOVED;
+  if (!d.melangeIni) return DISPLAY_NO_MELANGE;
+  if (d.exclusive && !d.fullscreen)
+    return "The stock launcher's exclusive fullscreen is on (/FS in local.cfg). Turning on fullscreen here replaces it with Melange's borderless one: the two can't both be on.";
+  if (d.fullscreen && !d.enabled) return "Melange's Display module is off in Melange.ini; turning fullscreen on again switches it back on.";
+  return undefined;
+}
+
+export function windowSizeHelp(d: DisplayState): string {
+  return d.fullscreen
+    ? "The window's size when you leave fullscreen. Saved as /W and /H in the game's local.cfg."
+    : "The size the game's window opens at. Saved as /W and /H in the game's local.cfg.";
+}

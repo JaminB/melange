@@ -31,6 +31,8 @@ After setup, Melange's window lets you:
 - Change your default set of plugins (Settings › Defaults)
 - Undo any change from a backup (Settings › Melange › Backups)
 - Put the game back to stock, removing Melange and every other mod (Settings › Restore vanilla)
+- Play fullscreen and pick the window size (Settings › Display). In the game, Alt+Enter switches
+  borderless fullscreen on and off; the game remembers your choice.
 
 Updates
 -------

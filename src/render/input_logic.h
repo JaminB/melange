@@ -193,6 +193,34 @@ inline bool SwallowForGame(UINT m) {
 // leave the attract demo) from ever reaching the game while a box still holds it.
 inline bool CapturedFromGame(UINT m, bool capturing) { return capturing && SwallowForGame(m); }
 
+// An Alt+key hotkey (Display's Alt+Enter) reaches the window as WM_SYSKEYDOWN and is dropped, so DefWindowProc never
+// sees a key pressed with Alt and would take the Alt release for a lone Alt tap: the system-menu mode (SC_KEYMENU)
+// of a window that has a system menu. Dropping that one Alt release keeps it out; a fresh Alt press forgets it.
+class AltReleaseGuard {
+public:
+    // `droppedHotkey`: the window procedure is dropping this message as a hotkey's. True: drop this message too.
+    bool Drop(UINT msg, WPARAM wp, LPARAM lp, bool droppedHotkey) {
+        if (droppedHotkey) {
+            if (msg == WM_SYSKEYDOWN) pending_ = true;
+            return false;
+        }
+        if (wp != VK_MENU) return false;
+        if ((msg == WM_SYSKEYDOWN || msg == WM_KEYDOWN) && !(lp & (1 << 30))) {
+            pending_ = false;
+            return false;
+        }
+        if ((msg == WM_SYSKEYUP || msg == WM_KEYUP) && pending_) {
+            pending_ = false;
+            return true;
+        }
+        return false;
+    }
+    bool Pending() const { return pending_; }
+
+private:
+    bool pending_ = false;
+};
+
 // Keyboard-buffer filter. Not thread-safe: the DirectInput poll runs on the game's main thread.
 class KeyFilter {
 public:

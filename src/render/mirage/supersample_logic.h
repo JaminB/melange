@@ -104,4 +104,19 @@ inline EngineAa Before(const EngineAa& t) {
     else b = {2, 4, false, t.hardware};
     return b;
 }
+
+// Whether scene targets for a w x h window at `t`'s factors stay within the GPU's largest texture `max` (0 = not
+// known: assumed to fit). Counted as true supersampling even when hardware AA might keep them at window size.
+inline bool FitsSize(const EngineAa& t, int w, int h, int max) {
+    if (t.x * t.y <= 1 || max <= 0) return true;
+    return static_cast<long long>(w) * t.x <= max && static_cast<long long>(h) * t.y <= max;
+}
+
+// What a scene-target rebuild for a new window size lands on (Display's borderless fullscreen): `want` when it
+// fits, else the engine's current state, else plain 1x1 (FXAA kept only if it was on at 1x1).
+inline EngineAa ForSize(const EngineAa& want, const EngineAa& cur, int w, int h, int max) {
+    if (FitsSize(want, w, h, max)) return want;
+    if (FitsSize(cur, w, h, max)) return cur;
+    return {1, 1, cur.x * cur.y == 1 && cur.fxaa, cur.hardware};
+}
 }  // namespace melange::mirage::supersample::logic

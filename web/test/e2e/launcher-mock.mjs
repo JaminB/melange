@@ -1,7 +1,7 @@
-// The launcher's setup.*, plugins.*, defaults.*, recommended.*, update.* and launcher.* methods and the `setup` and
+// The launcher's setup.*, plugins.*, defaults.*, recommended.*, update.*, display.* and launcher.* methods and the `setup` and
 // `update` channels, for the mock server (--launcher). Scenario fixtures (picked by ?scenario=, see startMock): fresh,
 // not-found, wrong-build, ual-present, reshade, restore, update-ready, update-running, vanilla-denied (Restore vanilla
-// needs administrator). No real file or registry access: everything lives in `state.launcher`.
+// needs administrator), display-fs (/FS in local.cfg). No real file or registry access: everything lives in `state.launcher`.
 const GAME_PATH = "C:\\Games\\WormsMayhem";
 // setup.vanillaPlan for an installed Melange next to Renewation HD, WUMPatch, ReShade and loose plugins.
 const VANILLA_PLAN = {
@@ -80,6 +80,11 @@ function scenarioFixture(name) {
       const r = scenarioFixture("update-ready");
       return { ...r, status: { ...r.status, running: true, game: { ...r.status.game, running: true } } };
     }
+    // Settings › Display with the stock launcher's exclusive fullscreen (/FS) in local.cfg.
+    case "display-fs": {
+      const r = scenarioFixture("restore");
+      return { ...r, localCfg: "/FS /W:1920 /H:1080 /REFRESH:60 /SSAA:1 /SHADOWMAP:1024 /CONFIG:user.cfg\r\n" };
+    }
     case "fresh":
     default:
       return { candidates: base(), status: freshStatus() };
@@ -125,6 +130,9 @@ export function launcherService(state, broadcast, initialScenario) {
     l.update = { current: l.version, phase: "current", latest: l.version, auto: true, ...(f.update ?? {}) };
     l.checkInGame = true;   // what update.setAuto writes to Melange.ini's [Update] CheckInGame
     l.updateApplied = false;
+    // Settings › Display: the game folder's local.cfg text and Melange.ini's [Display] keys, on a 1920x1080 monitor.
+    l.display = { localCfg: f.localCfg ?? "/W:1280 /H:720 /REFRESH:59 /SSAA:1 /SHADOWMAP:1024 /CONFIG:user.cfg\r\n",
+      fullscreen: false, enabled: true, hotkey: "Alt+RETURN", writes: 0 };
   };
   apply(l.scenario);
 
@@ -137,6 +145,19 @@ export function launcherService(state, broadcast, initialScenario) {
   // Mirrors the real server: setup.*/plugins.setSettings refuse with -32002 while a recommended-plugins batch
   // holds the setup lock (l.status.busy), naming what is busy instead of a plain "try again".
   const busyGuard = () => { if (l.status.busy) throw [-32002, `Installing plugins — this finishes in a moment. ${l.status.busy.label}`]; };
+  const displayState = (removedFs) => {
+    const d = l.display;
+    const w = Number(/\/W:(\d+)/i.exec(d.localCfg)?.[1] ?? 0), h = Number(/\/H:(\d+)/i.exec(d.localCfg)?.[1] ?? 0);
+    return {
+      monitor: { w: 1920, h: 1080 },
+      modes: [{ w: 1920, h: 1080 }, { w: 1680, h: 1050 }, { w: 1600, h: 900 }, { w: 1366, h: 768 }, { w: 1280, h: 720 }, { w: 1024, h: 768 }, { w: 800, h: 600 }],
+      windowed: w && h ? { w, h } : null, source: w && h ? "local" : "none", localCfg: true,
+      exclusive: /(^|\s)\/FS(?=\s|$)/i.test(d.localCfg), fullscreen: d.fullscreen, enabled: d.enabled, hotkey: d.hotkey,
+      melangeIni: l.status.melange.state !== "missing", running: !!l.status.running,
+      ...(l.status.running ? { refused: "Close Worms Ultimate Mayhem first." } : {}),
+      ...(removedFs ? { removedFs: true } : {}),
+    };
+  };
 
   const handlers = {
     "launcher.state": () => ({ version: l.version, firstRun: l.firstRun, gameDir: l.gameDir, theme: l.theme, webview: false, elevated: l.elevated, protected: [],
@@ -265,6 +286,24 @@ export function launcherService(state, broadcast, initialScenario) {
       l.updateApplied = true;
       return {};
     },
+    "display.get": () => displayState(false),
+    // Mirrors src/launcher/rpc_display.cpp: refused while the game runs; /W /H rewritten in place; /FS removed when
+    // fullscreen goes on; [Display] Fullscreen (and Enabled=1 with it) into Melange.ini.
+    "display.set": (p) => {
+      if (typeof p?.fullscreen !== "boolean" || !Number.isInteger(p?.width) || !Number.isInteger(p?.height)) throw [-32602, "expected {fullscreen, width, height}"];
+      if (p.width < 640 || p.height < 480) throw [-32602, "the window size must be whole pixels, at least 640x480"];
+      if (l.status.running) throw [-32000, "Close Worms Ultimate Mayhem first."];
+      busyGuard();
+      const d = l.display;
+      let text = d.localCfg.replace(/\/W:\d*/i, `/W:${p.width}`).replace(/\/H:\d*/i, `/H:${p.height}`);
+      const hadFs = /(^|\s)\/FS(?=\s|$)/i.test(text);
+      if (p.fullscreen) text = text.replace(/^\/FS[ \t]+/i, "").replace(/[ \t]+\/FS(?=\s|$)/gi, "");
+      d.localCfg = text;
+      if (p.fullscreen && !d.enabled) d.enabled = true;
+      d.fullscreen = p.fullscreen;
+      d.writes++;
+      return displayState(p.fullscreen && hadFs);
+    },
     "recommended.get": () => (l.scenario === "offline-store" ? { source: "builtin", items: [] } : { source: "index", items: [SUNSTONE] }),
     "recommended.apply": (p) => {
       l.defaults = { plugins: (p.items ?? []).map((it) => ({ id: it.id, enabled: true, settings: it.settings ?? {} })), seeded: true };
@@ -275,7 +314,7 @@ export function launcherService(state, broadcast, initialScenario) {
   return {
     methods: Object.keys(handlers),
     mutating: ["launcher.setTheme", "launcher.shortcuts", "launcher.quit", "setup.vanillaApply", "setup.select", "setup.apply", "setup.restore", "setup.deleteBackup",
-      "setup.setMelangeEnabled", "plugins.setSettings", "plugins.resetSettings", "defaults.set", "recommended.apply", "update.apply", "update.setAuto"],
+      "setup.setMelangeEnabled", "plugins.setSettings", "plugins.resetSettings", "defaults.set", "recommended.apply", "update.apply", "update.setAuto", "display.set"],
     handlers,
     status: publicStatus,
     updateStatus,

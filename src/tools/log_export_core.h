@@ -23,7 +23,10 @@ struct Sources {
     std::vector<std::wstring> sessionRoots;
     // <folder of melange.asi>\Melange candidates (Melange.log, dumps\). The one with the newest Melange.log is used.
     std::vector<std::wstring> dataDirs;
-    std::wstring gameDir;          // engine XOM/Net logs, *.ini, Mods\ (spice.json, thumper-state.json, .store)
+    // More dumps folders besides the chosen data dir's dumps\: Documents\Melange\dumps, where the game writes a dump
+    // when its own folder is not writable (core/dump_paths.h). Duplicates and missing folders are fine.
+    std::vector<std::wstring> dumpDirs;
+    std::wstring gameDir;         // engine XOM/Net logs, *.ini, Mods\ (spice.json, thumper-state.json, .store)
     std::wstring replaysDir;       // Documents\Melange\replays
     std::wstring launcherLogDir;   // %LOCALAPPDATA%\Melange (launcher.log, launcher.1.log)
     // In-game: this process's session folder and pid, so LastGame means "this game" and the session is still
