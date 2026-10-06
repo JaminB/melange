@@ -548,6 +548,74 @@ bool ParseDataFiles(const json::Value& a, const char* key, size_t max, std::vect
     return ok;
 }
 
+// "music": [{"slot": "suddenDeath", "file": "<path>.mp3", "title": "...", "credit": "..."}].
+bool ParseMusic(const json::Value& a, std::vector<Music>* out, std::vector<Error>* errs) {
+    if (!a.IsArray()) {
+        AddError(errs, &a, "music", "music must be an array");
+        return false;
+    }
+    if (a.items.size() > 16) {
+        AddError(errs, &a, "music", "at most 16 music entries per mod");
+        return false;
+    }
+    auto printable = [](const std::string& s) {
+        return std::all_of(s.begin(), s.end(), [](unsigned char c) { return c >= 0x20 && c < 0x7f; });
+    };
+    bool ok = true;
+    for (const json::Value& item : a.items) {
+        if (!item.IsObject()) {
+            AddError(errs, &item, "music", "each music entry must be an object");
+            ok = false;
+            continue;
+        }
+        Music m;
+        m.line = item.line;
+        bool good = true;
+        for (const auto& [key, v] : item.members) {
+            if (key == "slot") {
+                if (!v.IsString() || v.string != "suddenDeath") {
+                    AddError(errs, &v, "music.slot", "music.slot must be \"suddenDeath\"");
+                    good = false;
+                } else {
+                    m.slot = v.string;
+                }
+            } else if (key == "file") {
+                if (!v.IsString() || !ToLower(v.string).ends_with(".mp3") || !SafeRelRoot(v.string)) {
+                    AddError(errs, &v, "music.file", "music.file must be a relative .mp3 path inside the mod folder");
+                    good = false;
+                } else {
+                    m.file = v.string;
+                }
+            } else if (key == "title") {
+                if (!v.IsString() || v.string.empty() || v.string.size() > 48 || !printable(v.string)) {
+                    AddError(errs, &v, "music.title", "music.title must be 1-48 printable ASCII characters");
+                    good = false;
+                } else {
+                    m.title = v.string;
+                }
+            } else if (key == "credit") {
+                if (!v.IsString() || v.string.size() > 96 ||
+                    std::any_of(v.string.begin(), v.string.end(), [](unsigned char c) { return c < 0x20 || c == 0x7f; })) {
+                    AddError(errs, &v, "music.credit", "music.credit must be a string of at most 96 characters, no control characters");
+                    good = false;
+                } else {
+                    m.credit = v.string;
+                }
+            } else {
+                AddError(errs, &v, "music", "unknown music key '" + key + "'");
+                good = false;
+            }
+        }
+        if (good && (m.slot.empty() || m.file.empty() || m.title.empty())) {
+            AddError(errs, &item, "music", "each music entry needs a slot, a file and a title");
+            good = false;
+        }
+        if (good) out->push_back(std::move(m));
+        ok &= good;
+    }
+    return ok;
+}
+
 bool ParseManifestJson(const json::Value& v, const std::string& folderId, Manifest* out, std::vector<Error>* errs) {
     if (!v.IsObject()) {
         AddError(errs, &v, "", "spice.json must be a JSON object");
@@ -830,6 +898,9 @@ bool ParseManifestJson(const json::Value& v, const std::string& folderId, Manife
         if (!ParseDataFiles(*sc, "schemes", 8, &out->schemes, errs)) ok = false;
     if (const json::Value* fw = v.Get("factoryWeapons"))
         if (!ParseDataFiles(*fw, "factoryWeapons", 16, &out->factoryWeapons, errs)) ok = false;
+    // The music is local (each player hears their own), so any kind may carry it.
+    if (const json::Value* mu = v.Get("music"))
+        if (!ParseMusic(*mu, &out->music, errs)) ok = false;
     if (const json::Value* imp = v.Get("importer")) {
         const json::Value* r = imp->IsObject() ? imp->Get("recipe") : nullptr;
         if (!r || imp->members.size() != 1 || !r->IsString() || !ValidRecipePath(r->string)) {

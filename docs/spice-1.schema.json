@@ -177,6 +177,23 @@
       }
     },
 
+    "music": {
+      "type": "array",
+      "maxItems": 16,
+      "description": "MP3 tracks for a music slot, allowed for client-only mods (the music is local). Only the suddenDeath slot exists. MPEG-1/2 Layer II or III; all tracks of a slot need the same sample rate and channel count. At most 64 across all enabled mods. The plugin author must hold the rights to the audio.",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["slot", "file", "title"],
+        "properties": {
+          "slot": { "enum": ["suddenDeath"], "description": "The music slot to play the track in." },
+          "file": { "type": "string", "maxLength": 200, "pattern": "^[^/\\\\:][^:]*\\.[mM][pP]3$", "description": "An .mp3 path relative to the mod folder, inside it (no '..'), at most 24 MiB." },
+          "title": { "type": "string", "minLength": 1, "maxLength": 48, "pattern": "^[ -~]+$", "description": "Printable ASCII, shown in the log." },
+          "credit": { "type": "string", "maxLength": 96, "description": "The original title or author, shown in the log only." }
+        }
+      }
+    },
+
     "settings": {
       "type": "array",
       "items": {

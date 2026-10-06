@@ -74,8 +74,12 @@ bool WriteAtomic(const fs::path& p, const std::vector<uint8_t>& bytes) {
         if (!f) return false;
     }
     fs::rename(tmp, p, ec);
-    if (ec) fs::remove(tmp, ec);
-    return !ec;
+    if (ec) {
+        std::error_code cleanup;
+        fs::remove(tmp, cleanup);
+        return false;
+    }
+    return true;
 }
 
 void LogErrors(const sc::Built& b) {

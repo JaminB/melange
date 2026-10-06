@@ -42,6 +42,7 @@ after its folder — every M1-era `Mods\` folder keeps working unchanged.
 | `settings` | `{key, type: bool\|int\|float\|string\|enum, default, min?, max?, options?, label}`. Drives `wum.config.get/set` and the per-mod widgets on the Mods page. |
 | `weapons` | Weapon clones, `kind: "content"` mods only — see below and [weapons.md](weapons.md). |
 | `schemes`, `factoryWeapons` | Game styles and custom-weapon presets from data files, allowed for client-only mods; see [`schemes` and `factoryWeapons`](#schemes-and-factoryweapons-game-styles-and-weapon-presets). |
+| `music` | MP3 tracks for the sudden-death music, allowed for client-only mods; see [`music`](#music-sudden-death-music). |
 | `defaultEnabled` | Honoured only the first time Thumper ever sees this mod id (default `true`). The shipped samples set it to `false`. |
 
 | Before: `unsafe` mod switched on | After: the consent modal |
@@ -111,7 +112,7 @@ display text. The scheme is a copy of a built-in one with your changes.
   "title": "Kanly",
   "base": "FE.Scheme.Standard",
   "lock": "Lock.Scheme.Standard",
-  "fields": { "RoundTime": 300000, "SuddenDeath": 2, "WaterSpeed": 3 },
+  "fields": { "RoundTime": 300000, "SuddenDeath": 1, "WaterSpeed": 3 },
   "weapons": {
     "*": { "Ammo": 10, "Delay": 0 },
     "ConcreteDonkey": { "Ammo": 1 },
@@ -126,7 +127,7 @@ display text. The scheme is a copy of a built-in one with your changes.
 | `title` | The text shown in the list, 1-24 printable ASCII characters. |
 | `base` | The `Name` key of a built-in scheme to copy (default `FE.Scheme.Standard`; others include `FE.Scheme.Pro`, `FE.Scheme.Beginner`, `FETXT.Scheme.Darksider`). |
 | `lock` | Optional lock key (default: the base's, `Lock.Scheme.Standard` for Standard, which is unlocked from the start). `Lock.AllwaysLocked` hides the scheme. |
-| `fields` | Any integer or boolean field of the game's `SchemeData` by name, e.g. `Wins`, `WormHealth`, `RoundTime` and `TurnTime` (milliseconds), `SuddenDeath` (2 is MultiDestruction), `WaterSpeed` (3 is Pro), `WindMaxStrength`, `MineFactoryOn`. Integers must fit in int32. `Permanent` is always `true`. |
+| `fields` | Any integer or boolean field of the game's `SchemeData` by name, e.g. `Wins`, `WormHealth`, `RoundTime` and `TurnTime` (milliseconds), `SuddenDeath` (0 is 1 Health, 1 is Raise Water, 2 is Draw Round), `WaterSpeed` (1 Slow, 2 Medium, 3 Fast), `WindMaxStrength`, `MineFactoryOn`. Integers must fit in int32. `Permanent` is always `true`. |
 | `weapons` | Per-weapon `Ammo`, `Crate` and `Delay`, keyed by the `SchemeData` field name of the weapon (`Bazooka`, `ConcreteDonkey`, ..., and the 15 `...Mystery` entries). `"*"` applies to all 58 entries first, then each named entry on top. |
 
 An unknown field or weapon name, a value that is not an integer or is outside int32, or an unknown key is an error
@@ -164,6 +165,36 @@ Both lists are client-side. A host's scheme and a team's preset key travel to pe
 need nothing installed; a peer without the mod may see the raw `FETXT.Scheme.<Name>` key as the style's name in the
 lobby (unverified). That a preset is listed in the team editor is expected to work like the scheme list but has not
 been verified in game.
+
+## `music`: sudden-death music
+
+Replaces the music that plays when sudden death starts with MP3s from the mod. Allowed for a `kind: "client-only"`
+mod (a content mod may use it too): the music is local, and every player hears their own.
+
+```json
+"music": [
+  { "slot": "suddenDeath", "file": "music/ash-ridge.mp3", "title": "Ash Ridge", "credit": "Slaughter at Ash Ridge" }
+]
+```
+
+| Key | Meaning |
+|---|---|
+| `slot` | Required. Only `"suddenDeath"` for now; another value refuses the mod. |
+| `file` | Required. A `.mp3` path relative to the mod folder, inside it, at most 24 MiB. |
+| `title` | Required. 1-48 printable ASCII characters, shown in the log. |
+| `credit` | Optional, at most 96 characters: the original title or author, shown in the log only. |
+
+At most 16 entries per mod and 64 tracks per slot across every enabled mod. The audio must be MPEG-1 or MPEG-2 Layer II
+or III (a normal MP3; ID3 tags are skipped), with at least 50 frames, and one sample rate and channel count throughout
+the file. All tracks of a slot must share one sample rate and channel count (Melange does not resample): the first
+track in load order sets them and a track that differs is skipped with an error in the log (`[music] <mod>/<file>: ...`).
+A shape error in the manifest itself refuses the whole mod. Only add music you hold the rights to; Melange does not
+check, and the plugin author is responsible for what a plugin ships.
+
+Every enabled mod's tracks for the slot are played back to back in a random order, with hard cuts. The order is new for
+every match, and the track that led last time does not lead again when there are two or more tracks. With no enabled
+mod declaring music the game's own music plays. The game's own `muSuddenDeath.fsb` is never modified, and the
+sudden-death sting and commentary are untouched. `[Music] Enabled=0` in `Melange.ini` turns it off.
 
 ## Resolution
 

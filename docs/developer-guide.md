@@ -47,6 +47,7 @@ Every module has its own section in `Melange.ini`, and `Enabled=0` turns a modul
 | `GameState` | on | Read-only game-state readers for Oasis and `wum.game.worms()` (worms, teams, match values, entities); build #1077 only |
 | `Levels` | on | Map packs from content mods, Erg Test levels and the online map gate (`Online`, `RandomPool`, `DevWater`); installs nothing until a mod map or a Test level exists; build #1077 only |
 | `Schemes` | on | Game styles and team-editor weapon presets from mods' `schemes` and `factoryWeapons` files, written to `Melange\cache\schemes\` and loaded over `DATA.LockedSchemes` and `DATA.LockedWeapons` at the frontend; installs nothing until an enabled mod declares one; build #1077 only |
+| `Music` | on | Sudden-death music from mods' `music` MP3s: a bank built under `Melange\cache\music\` and handed to the game by a `CreateFileA` hook; installs the hook at start-up and does nothing until an enabled mod declares music; build #1077 only |
 | `Store` | on | The plugin store (*Thumper/Store*, the Oasis Store panel): fetches the list only when you open it ([Plugin store](#plugin-store)) |
 | `Oasis` | on | The local web app on 127.0.0.1 ([oasis.md](oasis.md)); nothing listens until you open it |
 | `Wormsign` | on | The match's tick clock and a per-tick state hash (`wum.wormsign.tick()`); records a rolling library of recent matches to `Documents\Melange\replays` (last 20 / 200 MB by default, `wum.wormsign.library()`), match replays checked tick by tick (*Wormsign/Replay*); online, it compares the hashes with other Melange players and reports the first tick where they disagree ([wormsign.md](wormsign.md)); build #1077 only |
@@ -531,6 +532,21 @@ original (`LoadBank`, section 0, overwrite) once the frontend has settled, addin
 resource. It runs again when the set of enabled mods changes, always from LOCAL, so it is idempotent. Both lists are
 client-side: the host's scheme and a team's preset key travel by the vanilla protocol, so peers need nothing. The
 builder (`schemes/builder.cpp`) is pure and has an offline test, `schemes_selftest`.
+
+## Sudden-death music
+
+A mod's `music` entries ([spice.md](spice.md#music-sudden-death-music)) replace the sudden-death music. The sound
+is `Data\Audio\PC\muSuddenDeath.fsb`, an FSB4 bank with one MPEG sample, which FMOD opens itself with `CreateFileA`
+(relative path `data\audio\PC\muSuddenDeath.fsb`) once per match at match load, not at start-up and not when sudden
+death starts. The `Music` module (`src/music`) scans each MP3 for its MPEG frames (`music/bank.cpp`), writes one bank
+with a single `SuddenDeath` sample made of the tracks' frames in a random order, copying the version, mode, bank ID
+and hash bytes from the game's own file, to `Melange\cache\music\suddenDeath.fsb`, and hooks kernel32's `CreateFileA`
+(safetyhook inline): a read-only open of a name ending in `\audio\pc\musuddendeath.fsb` is answered with the cache
+bank, anything else passes through. The vanilla file is never modified, and with no tracks the cache bank is deleted
+so the game gets its own. A match plays the bank as it is when the game opens it, so the bank is rebuilt (new order,
+and the last first track is not repeated) at start-up, whenever the enabled mods change, and on the first frontend
+settle after every match: one order per match, the next one prepared while the player is in the menus. The scanner,
+bank writer, shuffle and path matcher are pure and have an offline test, `music_selftest`.
 
 ## Sieve (`xomtool`)
 

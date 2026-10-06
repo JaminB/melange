@@ -587,6 +587,14 @@ target_compile_definitions(schemes_selftest PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX
 target_compile_options(schemes_selftest PRIVATE /W4 /utf-8 /permissive-)
 target_link_libraries(schemes_selftest PRIVATE melange_xom)
 
+# The music module's data side without the game: spice.json "music" parsing, the MP3 frame scanner, the FSB4 bank
+# writer, the shuffle rule and the CreateFileA path matcher.
+add_executable(music_selftest EXCLUDE_FROM_ALL
+    tests/music_selftest.cpp src/music/bank.cpp src/mods/spice.cpp src/tools/json_read.cpp src/core/log.cpp)
+target_include_directories(music_selftest PRIVATE src src/sdk)
+target_compile_definitions(music_selftest PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX _CRT_SECURE_NO_WARNINGS)
+target_compile_options(music_selftest PRIVATE /W4 /utf-8 /permissive-)
+
 add_executable(draw_queue_selftest EXCLUDE_FROM_ALL tests/draw_queue_selftest.cpp)
 target_include_directories(draw_queue_selftest PRIVATE src src/sdk)
 target_compile_options(draw_queue_selftest PRIVATE /W4 /utf-8 /permissive-)

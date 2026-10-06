@@ -19,13 +19,15 @@ struct Weapon { std::string name, base, bank, panelIcon, hudIcon, textName, text
 struct Level { std::string slug, title, type = "multi", source; bool chunk = false; int line = 0; std::string sim; bool survivor = false; };
 // One entry of "schemes" / "factoryWeapons": a data file in the mod folder, checked for shape only; schemes/builder.cpp reads it.
 struct DataFile { std::string file; int line = 0; };
+// One entry of "music": an MP3 for a music slot, checked for shape only; music/bank.cpp reads the file.
+struct Music { std::string slot, file, title, credit; int line = 0; };
 struct Manifest {
     std::string id, version, name, description, website, melangeRange; std::vector<std::string> authors;
     bool content = false, unsafe = false, defaultEnabled = true, implicit = false;
     std::string filesystem = "none", entryClient, entrySim, assetsRoot = "assets", shaders = "shaders", effects = "effects";
     std::vector<Dep> dependencies, optional, conflicts; std::vector<std::string> loadAfter, messages, hashInclude;
     std::vector<Setting> settings; std::vector<Weapon> weapons;
-    std::vector<Level> levels; std::vector<DataFile> schemes, factoryWeapons; std::wstring dir;
+    std::vector<Level> levels; std::vector<DataFile> schemes, factoryWeapons; std::vector<Music> music; std::wstring dir;
     std::string importerRecipe;                       // "importer": {"recipe"}: a local content importer's recipe file
     std::string generatedBy, generatedRecipe;         // "generated": a pack an importer made on this PC
     int generatedFormat = 0;

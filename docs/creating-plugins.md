@@ -69,12 +69,27 @@ the team editor, with no code. List the files in `spice.json`:
 and describe the scheme in `schemes/kanly.json`:
 
 ```json
-{ "key": "FETXT.Scheme.Kanly", "title": "Kanly", "fields": { "RoundTime": 300000, "SuddenDeath": 2 },
+{ "key": "FETXT.Scheme.Kanly", "title": "Kanly", "fields": { "RoundTime": 300000, "SuddenDeath": 1 },
   "weapons": { "*": { "Ammo": 10 }, "ConcreteDonkey": { "Ammo": 1 } } }
 ```
 
 The scheme copies `FE.Scheme.Standard`, applies the changes and appears as a built-in style. Presets work the same
 way with `factoryWeapons`. The fields, limits and the caveats for online play are in [spice.md](spice.md#schemes-and-factoryweapons-game-styles-and-weapon-presets).
+
+## Sudden-death music
+
+A client-only mod can replace the sudden-death music with MP3s, again with no code. Put the files in the mod folder and
+list them in `spice.json`:
+
+```json
+"music": [
+  { "slot": "suddenDeath", "file": "music/ash-ridge.mp3", "title": "Ash Ridge", "credit": "Slaughter at Ash Ridge" }
+]
+```
+
+The audio must be MPEG-1 or MPEG-2 Layer II or III (an ordinary MP3), and all tracks of the slot, across every enabled
+mod, need the same sample rate and channel count. The tracks play in a random order that changes every match. Only ship
+music you hold the rights to. Details are in [spice.md](spice.md#music-sudden-death-music).
 
 ## A C++ module
 
