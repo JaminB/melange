@@ -188,6 +188,7 @@ input[type="checkbox"], input[type="radio"] { accent-color: var(--accent-strong)
 .li-map-filters { border: 0; padding: 8px 0; }
 .li-map-filter { display: flex; align-items: center; gap: 4px; color: var(--muted); }
 .li-map-filter select { background: var(--surface); color: var(--text); border: 1px solid var(--border); border-radius: 6px; padding: 3px 6px; font: inherit; }
+.ls-display select { background: var(--surface); color: var(--text); border: 1px solid var(--border); border-radius: 6px; padding: 3px 6px; font: inherit; }
 .li-map-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
 .li-map-row { display: flex; align-items: center; gap: 12px; background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 8px 12px; }
 .li-map-row[data-hidden="true"] { opacity: .6; }

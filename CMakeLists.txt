@@ -262,7 +262,7 @@ set(LOG_EXPORT_CORE_SOURCES
 include(cmake/webview2.cmake)
 add_executable(melange_launcher WIN32
     src/launcher/main.cpp src/launcher/app.cpp src/launcher/window.cpp src/launcher/store_host.cpp
-    src/launcher/rpc_setup.cpp src/launcher/rpc_launcher.cpp src/launcher/rpc_plugins.cpp src/launcher/rpc_import.cpp src/launcher/update_host.cpp
+    src/launcher/rpc_setup.cpp src/launcher/rpc_launcher.cpp src/launcher/rpc_plugins.cpp src/launcher/rpc_import.cpp src/launcher/rpc_display.cpp src/launcher/update_host.cpp
     ${LAUNCHER_CORE_SOURCES}
     src/oasis/standalone/register.cpp src/oasis/standalone/ini_edit.cpp src/oasis/standalone/mods_provider.cpp
     src/oasis/standalone/json_write.cpp src/oasis/standalone/wormsign_provider.cpp src/oasis/standalone/level_provider.cpp
@@ -560,6 +560,12 @@ target_compile_options(gldebug_selftest PRIVATE /W4 /utf-8 /permissive-)
 add_executable(textures_selftest tests/textures_selftest.cpp)
 target_include_directories(textures_selftest PRIVATE src)
 target_compile_options(textures_selftest PRIVATE /W4 /utf-8 /permissive-)
+
+# Borderless fullscreen's pure logic: local.cfg, window rects, the hotkey, the scene-target size fallback.
+add_executable(display_selftest EXCLUDE_FROM_ALL tests/display_selftest.cpp)
+target_include_directories(display_selftest PRIVATE src)
+target_compile_definitions(display_selftest PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX)
+target_compile_options(display_selftest PRIVATE /W4 /utf-8 /permissive-)
 
 add_executable(postfx_selftest EXCLUDE_FROM_ALL
     tests/postfx_selftest.cpp

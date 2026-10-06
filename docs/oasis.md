@@ -283,6 +283,13 @@ Melange updating itself ([developer guide](developer-guide.md#updates)):
 
 Channel `update`: `{status: UpdateStatus}` on every change, including download progress (at most 4 a second).
 
+Settings › Display ([developer guide](developer-guide.md#display)):
+
+| Method | Params → result | Notes |
+|---|---|---|
+| `display.get` | `{}` → `DisplayState` | `DisplayState`: `{monitor: {w, h}, modes: [{w, h}], windowed: {w, h} \| null, source: "local"\|"default"\|"none", localCfg, exclusive, fullscreen, enabled, hotkey, melangeIni, running, refused?}`. `monitor`: the primary monitor in pixels; `modes`: its display modes and the common 16:9 sizes no larger than it, largest first; `windowed`: the `/W` `/H` the game opens at (`local.cfg` over `Default.cfg`, `source` says which); `exclusive`: `/FS` is in `local.cfg`; `fullscreen`, `enabled`, `hotkey`: `[Display]` in `Melange.ini`; `refused`: why `display.set` would be refused now (the game runs, no folder). |
+| `display.set` ! | `{fullscreen: bool, width, height}` → `DisplayState` (+ `removedFs: true`) | Writes `/W` `/H` into `local.cfg` (everything else in it kept; created when missing) and `[Display] Fullscreen` into `Melange.ini` (and `Enabled=1` when turning it on). Turning fullscreen on removes `/FS` from `local.cfg`, and the result says so with `removedFs`. Refused (`-32000`) while the game runs, and for fullscreen without a `Melange.ini`; `-32602` for a size under 640x480 or not whole pixels; `-32002` while another setup change runs. |
+
 ### Console, mods and settings
 
 | Method | Params → result | Notes |

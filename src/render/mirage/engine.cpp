@@ -175,4 +175,12 @@ bool SceneSize(int* w, int* h) {
     *h = static_cast<int>(Rd(pp + 0x80));
     return *w > 0 && *h > 0;
 }
+
+// CreateTargets (0x61f190) reads glGetIntegerv(GL_VIEWPORT) into pp+0x68 and sizes the scene from its w/h.
+bool WindowViewport(int v[4]) {
+    uintptr_t pp = PostProcess();
+    if (!pp) return false;
+    for (uintptr_t i = 0; i < 4; ++i) v[i] = static_cast<int>(Rd(pp + 0x68 + 4 * i));
+    return v[2] > 0 && v[3] > 0;
+}
 }  // namespace melange::mirage::engine

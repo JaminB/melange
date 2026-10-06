@@ -1,7 +1,7 @@
 // Headless Edge e2e for the Melange.exe launcher's web UI, against the mock server (--launcher) and its scenario
 // fixtures (web/test/e2e/launcher-mock.mjs): fresh (found/install/recommended), not-found, wrong-build, ual-present,
 // reshade (other dinput8 + backup + restore), update-ready and update-running (Restart to update), Restore vanilla
-// (restore, update-running, vanilla-denied). Screenshots of every
+// (restore, update-running, vanilla-denied), Settings › Display (restore, display-fs, update-running). Screenshots of every
 // wizard step and main-app section, light and dark, go into --shots (default web/test/out/launcher-shots).
 //   node web/test/e2e/launcher.mjs [<built web app folder>] [--shots <dir>]
 import { mkdirSync } from "node:fs";
@@ -676,11 +676,92 @@ async function restoreVanilla(browser) {
   }
 }
 
+// Settings › Display: the window size goes into local.cfg (other switches kept), the fullscreen switch into
+// Melange.ini; with the stock launcher's /FS in local.cfg, turning fullscreen on removes it and says so; both are
+// refused while the game runs.
+async function displaySettings(browser) {
+  const openDisplay = async (page) => {
+    await page.waitForSelector(".la", { timeout: 10000 });
+    await page.locator('[data-page-tab="settings"]').click();
+    await page.waitForSelector('[data-section="display"] [data-display-fullscreen]', { timeout: 10000 });
+  };
+  const mock = await startMock({ root, launcher: true });
+  const { page, errors } = await openPage(browser, mock, "restore");
+  try {
+    await attempt("display: the window size and fullscreen", async () => {
+      await openDisplay(page);
+      const sw = page.getByRole("switch", { name: "Fullscreen" });
+      check("display: fullscreen starts off", (await sw.getAttribute("aria-checked")) === "false");
+      check("display: the picker shows local.cfg's size", (await page.locator("[data-display-size]").inputValue()) === "1280x720");
+      check("display: the monitor's own size is marked",
+        /1920 × 1080 \(your monitor\)/.test((await page.locator('[data-display-size] option[value="1920x1080"]').textContent()) ?? ""));
+      const text = (await page.locator('[data-section="display"]').textContent()) ?? "";
+      check("display: the help names the monitor and Alt+Enter", /1920 × 1080/.test(text) && /Alt\+Enter/.test(text), text);
+      await page.locator('[data-section="display"]').scrollIntoViewIfNeeded();
+      await shot(page, "38-settings-display");
+      await page.locator("[data-display-size]").selectOption("1600x900");
+      await page.waitForFunction(() => document.querySelector("[data-display-size]")?.value === "1600x900", null, { timeout: 5000 });
+      await page.waitForFunction(() => !document.querySelector("[data-display-size]")?.disabled, null, { timeout: 5000 });
+      const cfg = mock.state.launcher.display.localCfg;
+      check("display: the size reaches local.cfg, the other switches stay",
+        cfg === "/W:1600 /H:900 /REFRESH:59 /SSAA:1 /SHADOWMAP:1024 /CONFIG:user.cfg\r\n", JSON.stringify(cfg));
+      await sw.click();
+      await page.waitForSelector('[data-display-fullscreen][aria-checked="true"]', { timeout: 5000 });
+      check("display: fullscreen reaches Melange.ini", mock.state.launcher.display.fullscreen === true);
+      check("display: no /FS note without /FS", (await page.locator("[data-display-note]").count()) === 0);
+      check("display: the size is kept", (await page.locator("[data-display-size]").inputValue()) === "1600x900");
+      await sw.click();
+      await page.waitForSelector('[data-display-fullscreen][aria-checked="false"]', { timeout: 5000 });
+      check("display: and off again", mock.state.launcher.display.fullscreen === false);
+    });
+    check("display scenario: no page errors", errors.length === 0, errors.join(" | "));
+  } finally {
+    await page.close();
+    await mock.close();
+  }
+  const mock2 = await startMock({ root, launcher: true });
+  const f = await openPage(browser, mock2, "display-fs");
+  try {
+    await attempt("display: the stock launcher's /FS gives way to borderless", async () => {
+      await openDisplay(f.page);
+      check("display: says /FS is on and will be replaced", /\/FS in local\.cfg/.test((await f.page.locator("[data-display-note]").textContent()) ?? ""));
+      await f.page.getByRole("switch", { name: "Fullscreen" }).click();
+      await f.page.waitForSelector('[data-display-fullscreen][aria-checked="true"]', { timeout: 5000 });
+      const cfg = mock2.state.launcher.display.localCfg;
+      check("display: /FS removed from local.cfg, the rest kept",
+        cfg === "/W:1920 /H:1080 /REFRESH:60 /SSAA:1 /SHADOWMAP:1024 /CONFIG:user.cfg\r\n", JSON.stringify(cfg));
+      check("display: says it removed /FS",
+        /Removed the stock launcher's exclusive fullscreen/.test((await f.page.locator("[data-display-note]").textContent()) ?? ""));
+      await f.page.locator('[data-section="display"]').scrollIntoViewIfNeeded();
+      await shot(f.page, "39-settings-display-fs-removed");
+    });
+    check("display-fs scenario: no page errors", f.errors.length === 0, f.errors.join(" | "));
+  } finally {
+    await f.page.close();
+    await mock2.close();
+  }
+  const mock3 = await startMock({ root, launcher: true });
+  const r = await openPage(browser, mock3, "update-running");
+  try {
+    await attempt("display: refused while the game runs", async () => {
+      await openDisplay(r.page);
+      check("display: says to close the game", /Close Worms Ultimate Mayhem first/.test((await r.page.locator("[data-display-refused]").textContent()) ?? ""));
+      check("display: the switch is disabled", await r.page.locator("[data-display-fullscreen]").isDisabled());
+      check("display: the picker is disabled", await r.page.locator("[data-display-size]").isDisabled());
+      check("display: nothing was written", mock3.state.launcher.display.writes === 0);
+    });
+    check("display running scenario: no page errors", r.errors.length === 0, r.errors.join(" | "));
+  } finally {
+    await r.page.close();
+    await mock3.close();
+  }
+}
+
 const browser = await chromium.launch({ channel: "msedge", headless: true });
 try {
   for (const scenario of [
     foundInstallRecommended, notFound, wrongBuild, ualPresent, reshadeBackupAndRestore, installedHome, helpExportLogs, pluginsBusy,
-    importDownloadFlow, importLocalFileFlow, importHashErrorFlow, importCancelFlow, importStaleAndDamaged, updateReady, restoreVanilla,
+    importDownloadFlow, importLocalFileFlow, importHashErrorFlow, importCancelFlow, importStaleAndDamaged, updateReady, restoreVanilla, displaySettings,
   ]) {
     try {
       await scenario(browser);
