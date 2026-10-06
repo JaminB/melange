@@ -46,6 +46,7 @@ Every module has its own section in `Melange.ini`, and `Enabled=0` turns a modul
 | `LuaConsole` | on | Overlay Lua REPL (`Ctrl+Shift+F10`, *Lua/Console*) for the client VM and, in a match, the match VM (off online unless `MatchConsoleOnline=1`) |
 | `GameState` | on | Read-only game-state readers for Oasis and `wum.game.worms()` (worms, teams, match values, entities); build #1077 only |
 | `Levels` | on | Map packs from content mods, Erg Test levels and the online map gate (`Online`, `RandomPool`, `DevWater`); installs nothing until a mod map or a Test level exists; build #1077 only |
+| `Schemes` | on | Game styles and team-editor weapon presets from mods' `schemes` and `factoryWeapons` files, written to `Melange\cache\schemes\` and loaded over `DATA.LockedSchemes` and `DATA.LockedWeapons` at the frontend; installs nothing until an enabled mod declares one; build #1077 only |
 | `Store` | on | The plugin store (*Thumper/Store*, the Oasis Store panel): fetches the list only when you open it ([Plugin store](#plugin-store)) |
 | `Oasis` | on | The local web app on 127.0.0.1 ([oasis.md](oasis.md)); nothing listens until you open it |
 | `Wormsign` | on | The match's tick clock and a per-tick state hash (`wum.wormsign.tick()`); records a rolling library of recent matches to `Documents\Melange\replays` (last 20 / 200 MB by default, `wum.wormsign.library()`), match replays checked tick by tick (*Wormsign/Replay*); online, it compares the hashes with other Melange players and reports the first tick where they disagree ([wormsign.md](wormsign.md)); build #1077 only |
@@ -517,6 +518,19 @@ a handful of vanilla weapons' own code and stats, with its own icon and Lua beha
 reference, the base whitelist, the Lua events and what does and doesn't work yet are in
 [weapons.md](weapons.md); `dist\Mods\mega-bazooka` (shipped disabled) is a complete example: an
 oversized Bazooka with a bigger blast and three extra explosions.
+
+## Schemes and weapon presets
+
+A client-only mod can add game styles and team-editor weapon presets as data: `schemes` and `factoryWeapons` in
+`spice.json` list JSON files (formats in [spice.md](spice.md#schemes-and-factoryweapons-game-styles-and-weapon-presets)).
+The `Schemes` module (`src/schemes`) rebuilds the game's `DATA.LockedSchemes` and `DATA.LockedWeapons` resources from
+`Data\Tweak\LOCAL.XOM`: it copies the object graph reachable from each collective into a bank shaped like the level
+registry's (wrapper #1, `XDataBank` #2, then the objects grouped in TYPE-table order), appends a deep copy of the base
+scheme or preset per entry with the file's changes, writes it under `Melange\cache\schemes\` and loads it over the
+original (`LoadBank`, section 0, overwrite) once the frontend has settled, adding each entry's text as a string
+resource. It runs again when the set of enabled mods changes, always from LOCAL, so it is idempotent. Both lists are
+client-side: the host's scheme and a team's preset key travel by the vanilla protocol, so peers need nothing. The
+builder (`schemes/builder.cpp`) is pure and has an offline test, `schemes_selftest`.
 
 ## Sieve (`xomtool`)
 

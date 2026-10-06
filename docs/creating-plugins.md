@@ -57,6 +57,25 @@ Next steps:
 
 The samples in `dist\Mods\` (all shipped disabled) are complete examples: `hello-spice` (client Lua), `sim-sampler` (sim script), `mega-bazooka` (weapon clone), `mirage-samples` (post-FX) and `mirage-landscape` (shaders).
 
+## A scheme or weapon preset
+
+A client-only mod can add a game style (a scheme) to the local modes' *Game Style* list, or a custom-weapon preset to
+the team editor, with no code. List the files in `spice.json`:
+
+```json
+"schemes": [{ "file": "schemes/kanly.json" }]
+```
+
+and describe the scheme in `schemes/kanly.json`:
+
+```json
+{ "key": "FETXT.Scheme.Kanly", "title": "Kanly", "fields": { "RoundTime": 300000, "SuddenDeath": 2 },
+  "weapons": { "*": { "Ammo": 10 }, "ConcreteDonkey": { "Ammo": 1 } } }
+```
+
+The scheme copies `FE.Scheme.Standard`, applies the changes and appears as a built-in style. Presets work the same
+way with `factoryWeapons`. The fields, limits and the caveats for online play are in [spice.md](spice.md#schemes-and-factoryweapons-game-styles-and-weapon-presets).
+
 ## A C++ module
 
 Modules need a source build (see [Building from source](developer-guide.md#building-from-source)). A module is one `.cpp` file anywhere under `src/`; the build picks it up automatically.

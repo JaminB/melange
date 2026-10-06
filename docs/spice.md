@@ -41,6 +41,7 @@ after its folder — every M1-era `Mods\` folder keeps working unchanged.
 | `messages` | Up to 16 engine message names this content mod registers (pattern `Prefix.Sub[.Sub...]`, 1-5 dotted segments after the first capitalised word). Checked against the **live** vanilla message registry at start-up, not a fixed list in the schema — a name that collides with a vanilla one is skipped and logged, not a hard error for the rest of the mod. The engine has 73 free slots; Thumper caps registrations at `[Thumper] MaxModMessages` (48) across every mod combined. |
 | `settings` | `{key, type: bool\|int\|float\|string\|enum, default, min?, max?, options?, label}`. Drives `wum.config.get/set` and the per-mod widgets on the Mods page. |
 | `weapons` | Weapon clones, `kind: "content"` mods only — see below and [weapons.md](weapons.md). |
+| `schemes`, `factoryWeapons` | Game styles and custom-weapon presets from data files, allowed for client-only mods; see [`schemes` and `factoryWeapons`](#schemes-and-factoryweapons-game-styles-and-weapon-presets). |
 | `defaultEnabled` | Honoured only the first time Thumper ever sees this mod id (default `true`). The shipped samples set it to `false`. |
 
 | Before: `unsafe` mod switched on | After: the consent modal |
@@ -84,6 +85,85 @@ A `kind: "content"` mod can ship maps built with [Erg](erg.md), up to 32 per mod
 Two mods that resolve to the same prefix (their ids differ only by `-`/`_`) can't both ship maps; the later one in
 load order is `Incompatible`. A map's own files never touch anything under `Data\`, are never named the same as one
 of the game's own map files, and never include the shadow-cache files (`.csh`) the game itself generates.
+
+## `schemes` and `factoryWeapons`: game styles and weapon presets
+
+Data only, so both are allowed for a `kind: "client-only"` mod (a content mod may use them too). Each is an array of
+`{ "file": "<path>.json" }`; the path is relative to the mod folder, must stay inside it and end in `.json`.
+
+```json
+"schemes": [{ "file": "schemes/kanly.json" }],
+"factoryWeapons": [{ "file": "weapons/red.json" }]
+```
+
+At most 8 schemes and 16 factory weapons per mod, and 32 and 64 across every enabled mod. A key used twice (by any
+mod, or by one of the game's own entries) is refused with an error in the log (`[schemes] <mod>/<file>: ...`) and that
+entry is skipped; the rest of the mod still loads. A shape error in the manifest itself refuses the whole mod, as
+for `levels`.
+
+**Scheme file**: one game style, listed in *Versus > Deathmatch > Game Style* (and the same list in the other local
+modes) as a permanent built-in style: the game neither edits nor deletes it, and the list is sorted alphabetically by
+display text. The scheme is a copy of a built-in one with your changes.
+
+```json
+{
+  "key": "FETXT.Scheme.Kanly",
+  "title": "Kanly",
+  "base": "FE.Scheme.Standard",
+  "lock": "Lock.Scheme.Standard",
+  "fields": { "RoundTime": 300000, "SuddenDeath": 2, "WaterSpeed": 3 },
+  "weapons": {
+    "*": { "Ammo": 10, "Delay": 0 },
+    "ConcreteDonkey": { "Ammo": 1 },
+    "HealthMystery": { "Crate": 50 }
+  }
+}
+```
+
+| Field | Notes |
+|---|---|
+| `key` | `FETXT.Scheme.<Name>`, the name being 2-32 letters or digits starting with a letter. It is the scheme's `Name` and the name of its display string. |
+| `title` | The text shown in the list, 1-24 printable ASCII characters. |
+| `base` | The `Name` key of a built-in scheme to copy (default `FE.Scheme.Standard`; others include `FE.Scheme.Pro`, `FE.Scheme.Beginner`, `FETXT.Scheme.Darksider`). |
+| `lock` | Optional lock key (default: the base's, `Lock.Scheme.Standard` for Standard, which is unlocked from the start). `Lock.AllwaysLocked` hides the scheme. |
+| `fields` | Any integer or boolean field of the game's `SchemeData` by name, e.g. `Wins`, `WormHealth`, `RoundTime` and `TurnTime` (milliseconds), `SuddenDeath` (2 is MultiDestruction), `WaterSpeed` (3 is Pro), `WindMaxStrength`, `MineFactoryOn`. Integers must fit in int32. `Permanent` is always `true`. |
+| `weapons` | Per-weapon `Ammo`, `Crate` and `Delay`, keyed by the `SchemeData` field name of the weapon (`Bazooka`, `ConcreteDonkey`, ..., and the 15 `...Mystery` entries). `"*"` applies to all 58 entries first, then each named entry on top. |
+
+An unknown field or weapon name, a value that is not an integer or is outside int32, or an unknown key is an error
+and the scheme is skipped.
+
+**Factory weapon file**: one custom-weapon preset, listed in the team editor's weapon list. A team stores only the
+preset's key.
+
+```json
+{
+  "key": "FETXT.Kanly.Red",
+  "title": "Red Kanly",
+  "base": "FETXT.WipeOut",
+  "stock": true,
+  "weapon": { "WormDamageMagnitude": 1.2, "FuseTime": 1500, "DetonationFX": "WXP_ExplosionX_Med" },
+  "cluster": { "WormDamageMagnitude": 0.6 }
+}
+```
+
+| Field | Notes |
+|---|---|
+| `key` | `FETXT.<Name>[.<Name>...]`, 6-40 characters, each part letters and digits starting with a letter; not a built-in key. The preset's `Weapon` container's `Name` is set to it, and it is the display string's name. |
+| `title` | The text shown, 1-24 printable ASCII characters. |
+| `base` | Required: the key of a built-in preset to copy (weapon and cluster): `FETXT.AFewProblems`, `FETXT.ChatterBomb`, `FETXT.KneeTrembler`, `FETXT.ThePeaceBreaker`, `FETXT.TheBrownSofa`, `FETXT.Factory.Blaster` or `FETXT.WipeOut`. |
+| `stock` | `StockWeapon`, default `true`. |
+| `weapon`, `cluster` | Overrides on the two `WeaponFactoryContainer`s by field name: booleans, integers (int32; `U32` fields 0 to 4294967295), enums as integers (0-255), floats, strings (printable ASCII) and the string arrays `GraphicalResourceID` and `GraphicalLocatorID`. `Name` cannot be overridden. |
+
+Melange rebuilds the game's `DATA.LockedSchemes` and `DATA.LockedWeapons` resources from its own `Data\Tweak\LOCAL.XOM`
+with the entries of every enabled mod appended, writes them to `Melange\cache\schemes\`, and loads them over the
+originals at the frontend (again whenever the set of enabled mods changes while you are at the menus; a disabled
+mod's entries leave the lists without a restart, expected but not yet verified in game). With no enabled mod declaring either key, nothing is touched.
+`[Schemes] Enabled=0` in `Melange.ini` turns it off.
+
+Both lists are client-side. A host's scheme and a team's preset key travel to peers by the vanilla protocol, so peers
+need nothing installed; a peer without the mod may see the raw `FETXT.Scheme.<Name>` key as the style's name in the
+lobby (unverified). That a preset is listed in the team editor is expected to work like the scheme list but has not
+been verified in game.
 
 ## Resolution
 

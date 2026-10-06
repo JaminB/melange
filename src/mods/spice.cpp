@@ -525,6 +525,29 @@ bool ParseLevels(const json::Value& a, Manifest* out, std::vector<Error>* errs) 
     return ok;
 }
 
+// "schemes" / "factoryWeapons": [{"file": "<path>.json"}], each file relative to the mod folder.
+bool ParseDataFiles(const json::Value& a, const char* key, size_t max, std::vector<DataFile>* out, std::vector<Error>* errs) {
+    if (!a.IsArray()) {
+        AddError(errs, &a, key, std::string(key) + " must be an array");
+        return false;
+    }
+    if (a.items.size() > max) {
+        AddError(errs, &a, key, "at most " + std::to_string(max) + " " + key + " per mod");
+        return false;
+    }
+    bool ok = true;
+    for (const json::Value& item : a.items) {
+        const json::Value* f = item.IsObject() ? item.Get("file") : nullptr;
+        if (!f || item.members.size() != 1 || !f->IsString() || !f->string.ends_with(".json") || !SafeRelRoot(f->string)) {
+            AddError(errs, &item, key, std::string("each ") + key + " entry must be {\"file\": \"<path>.json\"}, a relative path inside the mod folder");
+            ok = false;
+            continue;
+        }
+        out->push_back({f->string, item.line});
+    }
+    return ok;
+}
+
 bool ParseManifestJson(const json::Value& v, const std::string& folderId, Manifest* out, std::vector<Error>* errs) {
     if (!v.IsObject()) {
         AddError(errs, &v, "", "spice.json must be a JSON object");
@@ -801,6 +824,12 @@ bool ParseManifestJson(const json::Value& v, const std::string& folderId, Manife
             ok = false;
         }
     }
+    // Data only, so allowed for client-only mods (no kind restriction): the host's scheme and a team's preset key travel
+    // to peers by the vanilla protocol.
+    if (const json::Value* sc = v.Get("schemes"))
+        if (!ParseDataFiles(*sc, "schemes", 8, &out->schemes, errs)) ok = false;
+    if (const json::Value* fw = v.Get("factoryWeapons"))
+        if (!ParseDataFiles(*fw, "factoryWeapons", 16, &out->factoryWeapons, errs)) ok = false;
     if (const json::Value* imp = v.Get("importer")) {
         const json::Value* r = imp->IsObject() ? imp->Get("recipe") : nullptr;
         if (!r || imp->members.size() != 1 || !r->IsString() || !ValidRecipePath(r->string)) {

@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.25)
-project(Melange VERSION 0.4.1 LANGUAGES C CXX)
+project(Melange VERSION 0.5.0 LANGUAGES C CXX)
 
 if(NOT CMAKE_SIZEOF_VOID_P EQUAL 4)
     message(FATAL_ERROR "Melange must be built for 32-bit x86 (WormsMayhem.exe is a 32-bit process). Use build.ps1.")
@@ -576,6 +576,16 @@ target_compile_definitions(postfx_selftest PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX 
     MELANGE_SOURCE_DIR="${CMAKE_SOURCE_DIR}")
 target_compile_options(postfx_selftest PRIVATE /W4 /utf-8 /permissive- /wd4100)
 target_link_libraries(postfx_selftest PRIVATE opengl32 gdi32 user32)
+
+# The schemes and factoryWeapons banks without the game: spice.json parsing, DATA.LockedSchemes / DATA.LockedWeapons built
+# from a synthetic LOCAL.XOM plus scheme and preset files, and every error case.
+add_executable(schemes_selftest EXCLUDE_FROM_ALL
+    tests/schemes_selftest.cpp
+    src/schemes/builder.cpp src/erg/xomutil.cpp src/erg/scene.cpp src/erg/jsonio.cpp src/mods/spice.cpp src/tools/json_read.cpp src/core/log.cpp)
+target_include_directories(schemes_selftest PRIVATE src src/sdk)
+target_compile_definitions(schemes_selftest PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX _CRT_SECURE_NO_WARNINGS)
+target_compile_options(schemes_selftest PRIVATE /W4 /utf-8 /permissive-)
+target_link_libraries(schemes_selftest PRIVATE melange_xom)
 
 add_executable(draw_queue_selftest EXCLUDE_FROM_ALL tests/draw_queue_selftest.cpp)
 target_include_directories(draw_queue_selftest PRIVATE src src/sdk)
