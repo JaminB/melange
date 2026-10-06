@@ -146,6 +146,10 @@ void Set(const Call& c, Result& r, void*) {
     const bool iniPresent = FileExists(game + L"\\Melange.ini");
     if (fs->boolean && !iniPresent) return Fail(r, -32000, "Install Melange first: fullscreen is one of its features.");
 
+    // Melange.ini first: if local.cfg then fails, an /FS still in it only keeps the module off (it detects the
+    // exclusive mode). The other order could take /FS out and leave the game with no fullscreen at all.
+    std::string err;
+    if (iniPresent && !WriteIni(game, fs->boolean, &err)) return Fail(r, -32000, err);
     const std::wstring cfg = game + L"\\local.cfg";
     const std::string before = ReadText(cfg);
     bool removedFs = false;
@@ -154,8 +158,6 @@ void Set(const Call& c, Result& r, void*) {
         if (const unsigned long e = WriteAtomic(cfg, after)) return Fail(r, -32000, "Could not write local.cfg: " + Win32Message(e));
         LOG_INFO("[display] local.cfg: %s", after.c_str());
     }
-    std::string err;
-    if (iniPresent && !WriteIni(game, fs->boolean, &err)) return Fail(r, -32000, err);
     lk.unlock();
     r.json = StateJson(game, removedFs);
 }

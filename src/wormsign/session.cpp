@@ -42,11 +42,6 @@ struct Obs {
     uint32_t faults;
 };
 
-int CopyRecord(EXCEPTION_POINTERS* ep, EXCEPTION_RECORD* out) {
-    *out = *ep->ExceptionRecord;
-    return EXCEPTION_EXECUTE_HANDLER;
-}
-
 // Third-party modules subscribe here too (OnTickEnd is public SDK), so one observer's fault or bad_alloc must not
 // take the whole tick-end call chain (and the game) down with it. A plain function, not a member or lambda, so
 // the __try lives in a scope with no C++ objects needing unwinding.
@@ -55,7 +50,7 @@ bool CallGuarded(EXCEPTION_RECORD* rec, Fn fn, A... a) {
     __try {
         fn(a...);
         return true;
-    } __except (CopyRecord(GetExceptionInformation(), rec)) {
+    } __except (debug::CopyExceptionRecord(GetExceptionInformation(), rec)) {
         return false;
     }
 }
@@ -64,12 +59,14 @@ bool CallGuarded(EXCEPTION_RECORD* rec, Fn fn, A... a) {
 template <class Fn>
 void LogFault(const char* list, Obs<Fn>& e, const EXCEPTION_RECORD& rec) {
     ++e.faults;
-    const std::string owner = game::DescribeAddress(reinterpret_cast<uintptr_t>(e.fn));
+    // Only when a line is written: an observer that faults every tick must not cost a module lookup each time.
+    auto owner = [&e] { return game::DescribeAddress(reinterpret_cast<uintptr_t>(e.fn)); };
     if (e.faults == 1) {
+        const std::string fn = owner();
         LOG_ERROR("[wormsign] %s observer %d (%s, %s) faulted and was skipped: %s", list, e.handle,
-                  e.name ? e.name : "a module's observer", owner.c_str(), debug::DescribeException(rec).c_str());
+                  e.name ? e.name : "a module's observer", fn.c_str(), debug::DescribeException(rec).c_str());
         jlog::Rec("wormsign", jlog::Level::Error, "observer fault")
-            .Str("list", list).Int("handle", e.handle).Str("name", e.name ? e.name : "").Str("fn", owner)
+            .Str("list", list).Int("handle", e.handle).Str("name", e.name ? e.name : "").Str("fn", fn)
             .Str("exception", debug::DescribeException(rec));
         return;
     }
@@ -77,7 +74,7 @@ void LogFault(const char* list, Obs<Fn>& e, const EXCEPTION_RECORD& rec) {
     while (p < e.faults && p < 1000000000u) p *= 10;
     if (p == e.faults)
         LOG_ERROR("[wormsign] %s observer %d (%s) has faulted %u times; the last: %s", list, e.handle,
-                  e.name ? e.name : owner.c_str(), e.faults, debug::DescribeException(rec).c_str());
+                  e.name ? e.name : owner().c_str(), e.faults, debug::DescribeException(rec).c_str());
 }
 
 template <class Fn>

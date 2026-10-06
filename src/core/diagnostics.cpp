@@ -120,7 +120,11 @@ public:
         // loader lock could not start a new thread.
         s_dumpGo = CreateEventW(nullptr, FALSE, FALSE, nullptr);
         s_dumpDone = CreateEventW(nullptr, FALSE, FALSE, nullptr);
-        if (!s_dumpGo || !s_dumpDone || !CreateThread(nullptr, 256 * 1024, &DumpThread, nullptr, 0, nullptr)) {
+        HANDLE dumpThread = s_dumpGo && s_dumpDone ? CreateThread(nullptr, 256 * 1024, &DumpThread, nullptr, 0, nullptr)
+                                                   : nullptr;
+        if (dumpThread) {
+            CloseHandle(dumpThread);
+        } else {
             s_dumpThread = false;
             LOG_WARN("crash dump thread unavailable: a crash dump will be written by the faulting thread");
         }
@@ -222,9 +226,12 @@ private:
     // KiUserExceptionDispatcher calls RtlDispatchException(record, context), so while an exception is being
     // dispatched its stack holds [return into KiUserExceptionDispatcher][EXCEPTION_RECORD*][CONTEXT*]. Above the
     // crash's own stack pointer (its own dispatch is below it) such a frame is an outer exception whose handler is
-    // still running: the crash is a fault inside that handler. The frame must describe a fault further up the stack,
-    // at its own EIP (an access violation) or the one the vectored handler recorded (a RaiseException).
-    static bool FindOuterFault(uintptr_t crashEsp, const FirstChance* earlier, OuterFault* out) {
+    // still running: the crash is a fault inside that handler. The frame must match, by code, address and stack
+    // pointer, an exception the vectored handler recorded on this thread in the last 30 s: a dispatch frame left over
+    // from an exception that has finished can sit in a later function's uninitialised locals and would otherwise read
+    // as a live one.
+    static bool FindOuterFault(uintptr_t crashEsp, const FirstChanceRing& ring, const EXCEPTION_RECORD* crash,
+                               OuterFault* out) {
         const uintptr_t ki = s_kiUserExceptionDispatcher;
         if (!ki) return false;
         for (uintptr_t a = crashEsp; a < crashEsp + 0x10000; a += 4) {
@@ -235,10 +242,15 @@ private:
                 !melange::mem::SafeRead(w[2], &out->ctx, sizeof out->ctx))
                 continue;
             const uintptr_t at = reinterpret_cast<uintptr_t>(out->rec.ExceptionAddress);
-            const bool recorded = earlier && earlier->code == out->rec.ExceptionCode && earlier->address == at;
-            if (out->ctx.Esp > a && out->rec.NumberParameters <= EXCEPTION_MAXIMUM_PARAMETERS &&
-                (out->ctx.Eip == at || recorded))
-                return true;
+            if (out->ctx.Esp <= a || out->rec.NumberParameters > EXCEPTION_MAXIMUM_PARAMETERS) continue;
+            if (out->rec.ExceptionCode == crash->ExceptionCode && at == reinterpret_cast<uintptr_t>(crash->ExceptionAddress))
+                continue;   // the crash's own dispatch
+            const DWORD now = GetTickCount();
+            for (uint32_t k = 0; k < 4 && k < ring.n; ++k) {
+                const FirstChance& f = ring.e[(ring.n - 1 - k) % 4];
+                if (f.code == out->rec.ExceptionCode && f.address == at && f.esp == out->ctx.Esp && now - f.tick < 30000)
+                    return true;
+            }
         }
         return false;
     }
@@ -261,7 +273,7 @@ private:
             }
         }
         OuterFault outer{};
-        const bool haveOuter = FindOuterFault(ctx.Esp, earlier, &outer);
+        const bool haveOuter = FindOuterFault(ctx.Esp, ring, rec, &outer);
         const bool nestedFlag = (rec->ExceptionFlags & EXCEPTION_NESTED_CALL) != 0;
         const bool nested = haveOuter || nestedFlag;
         const DWORD ago = earlier ? GetTickCount() - earlier->tick : 0;
@@ -326,7 +338,14 @@ private:
                 path = s_jobPath;
                 error = s_jobError;
             } else {
+                // The dump thread may be stuck on a lock this thread holds (a crash inside the heap or the loader:
+                // this thread can re-enter those, another cannot), so write the dump here instead. Hooks stay with
+                // the dump thread: they must not run twice if it does finish.
                 error = "the dump thread did not finish within " + std::to_string(waitMs / 1000) + " s";
+                std::string retryError;
+                path = melange::debug::WriteMiniDump("crash-retry", ep, GetCurrentThreadId(),
+                                                     s_self && s_self->fullDumps_, &retryError, s_jobComment);
+                if (path.empty()) error += "; on the faulting thread: " + retryError;
             }
         } else {
             path = melange::debug::WriteMiniDump("crash", ep, GetCurrentThreadId(), s_self && s_self->fullDumps_, &error,

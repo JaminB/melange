@@ -27,6 +27,11 @@ void SetDocumentsDir(const std::wstring& dir);
 // "C++ exception std::length_error (\"vector too long\") thrown at 70a01234 melange.asi+0x1234". Reads the
 // exception object with SafeRead only, so it can run in an exception filter.
 std::string DescribeException(const EXCEPTION_RECORD& rec);
+// An __except filter that keeps the exception's record for DescribeException and handles it.
+inline int CopyExceptionRecord(EXCEPTION_POINTERS* ep, EXCEPTION_RECORD* out) {
+    *out = *ep->ExceptionRecord;
+    return EXCEPTION_EXECUTE_HANDLER;
+}
 
 // Work for the crash path besides the dump, e.g. pushing a recording's buffered bytes to disk. Each hook runs on the
 // Diagnostics dump thread (not the faulting one) after the minidump is written, fault-guarded; it must not wait on a

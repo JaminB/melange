@@ -123,6 +123,22 @@ bool CallHookGuarded(CrashHook fn, DWORD crashingThread) {
     }
 }
 
+// A NUL-terminated string of at most cap-1 chars, read a page at a time with SafeRead: a short string that ends near
+// the end of its committed memory must not fail because a fixed-size read would cross into the next page.
+bool SafeReadString(uintptr_t at, char* out, size_t cap) {
+    size_t got = 0;
+    while (got + 1 < cap) {
+        size_t n = 0x1000 - ((at + got) & 0xFFF);
+        if (n > cap - 1 - got) n = cap - 1 - got;
+        if (!mem::SafeRead(at + got, out + got, n)) break;
+        const bool ended = memchr(out + got, 0, n) != nullptr;
+        got += n;
+        if (ended) break;
+    }
+    out[got] = 0;
+    return got > 0;
+}
+
 // The C++ type thrown by an MSVC throw (0xE06D7363), from its ThrowInfo: the first catchable type is the thrown class.
 // *isStdException: std::exception is among its catchable types, so what() is the second word of the object.
 std::string ThrownTypeName(const EXCEPTION_RECORD& rec, bool* isStdException) {
@@ -134,9 +150,8 @@ std::string ThrownTypeName(const EXCEPTION_RECORD& rec, bool* isStdException) {
     for (uintptr_t i = 0; i < n && i < 16; ++i) {
         uintptr_t ct = 0, td = 0;
         char raw[128];
-        if (!mem::SafeRead(cta + 4 + 4 * i, &ct, 4) || !mem::SafeRead(ct + 4, &td, 4) || !mem::SafeRead(td + 8, raw, sizeof raw))
+        if (!mem::SafeRead(cta + 4 + 4 * i, &ct, 4) || !mem::SafeRead(ct + 4, &td, 4) || !SafeReadString(td + 8, raw, sizeof raw))
             break;
-        raw[sizeof raw - 1] = 0;
         if (strcmp(raw, ".?AVexception@std@@") == 0) *isStdException = true;
         if (i) continue;
         char out[256];
@@ -160,10 +175,8 @@ std::string DescribeException(const EXCEPTION_RECORD& rec) {
         uintptr_t whatPtr = 0;
         char text[128];
         if (isStd && rec.NumberParameters >= 2 && mem::SafeRead(rec.ExceptionInformation[1] + 4, &whatPtr, 4) && whatPtr &&
-            mem::SafeRead(whatPtr, text, sizeof text)) {
-            text[sizeof text - 1] = 0;
+            SafeReadString(whatPtr, text, sizeof text))
             what = text;
-        }
         snprintf(buf, sizeof buf, "C++ exception %s%s%s%s thrown at %s", type.empty() ? "(unknown type)" : type.c_str(),
                  what.empty() ? "" : " (\"", what.c_str(), what.empty() ? "" : "\")", where.c_str());
         return buf;

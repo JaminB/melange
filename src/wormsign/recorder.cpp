@@ -125,11 +125,6 @@ std::string ContentHash16() {
     return std::string(c.hash, c.hash + (std::strlen(c.hash) < 16 ? std::strlen(c.hash) : 16));
 }
 
-int CopyRecord(EXCEPTION_POINTERS* ep, EXCEPTION_RECORD* out) {
-    *out = *ep->ExceptionRecord;
-    return EXCEPTION_EXECUTE_HANDLER;
-}
-
 // One read of another module's state at a recording's start, fault-guarded on its own: a fault there costs the
 // recording that one field, not the whole recording (and is logged with what faulted where).
 template <class F>
@@ -137,7 +132,7 @@ bool GuardedStep(F& step, EXCEPTION_RECORD* rec) {
     __try {
         step();
         return true;
-    } __except (CopyRecord(GetExceptionInformation(), rec)) {
+    } __except (melange::debug::CopyExceptionRecord(GetExceptionInformation(), rec)) {
         return false;
     }
 }
