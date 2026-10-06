@@ -154,6 +154,7 @@ void ExportLogs(const Call& c, Result& r, void*) {
     }
     rq.src.gameDir = game;
     rq.src.replaysDir = docs.empty() ? std::wstring() : docs + L"\\Melange\\replays";
+    if (!docs.empty()) rq.src.dumpDirs.push_back(docs + L"\\Melange\\dumps");
     rq.src.launcherLogDir = AppDataDir();
 
     bool onDesktop = false;

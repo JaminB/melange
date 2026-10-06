@@ -34,6 +34,9 @@ void Configure(int keepMatches, uint32_t maxMB);
 // (HEAD/SETP/NOTE/DVRG/ENGV) chunks are salted-hashed, and the current Windows user name is replaced with %USERNAME%,
 // exactly as tools/redact.h does for "Save logs as...". Binary chunks (INPT, RMTI, DISP, TICK, DETL) carry
 // no identity data and pass through unchanged. The local, non-exported file on disk is never touched by this.
+// A recording cut off by a crash is copied as far as it reads and stays incomplete (no INDX); `*incomplete` says so.
+// An empty file, or one cut off inside its HEAD chunk, fails with `*error` saying that ("empty: the game crashed
+// before the recording was written"), so a caller can list it instead of shipping it.
 bool ExportRedacted(const std::wstring& path, const std::wstring& outPath, std::string* error,
-                    const std::string& salt = "");
+                    const std::string& salt = "", bool* incomplete = nullptr);
 }  // namespace melange::wormsign::library

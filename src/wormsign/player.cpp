@@ -317,7 +317,7 @@ void OnSessionFn(bool begin, uint32_t serial, void*) {
             g_gate = true;
             capture::SetGate(&GateHook);
             clock::SetPreTick(&PreTick);
-            g_tickObs = OnTickEnd(&TickEnd, nullptr, -100);
+            g_tickObs = session::OnTickEndNamed(&TickEnd, nullptr, -100, "wormsign replay player");
             LOG_INFO("[wormsign] replay: session %u starts, %zu inputs to inject, ticks %u..%u", serial,
                      g_rec->inputs.size(), g_rec->firstTick, g_rec->lastTick);
             return;
@@ -597,7 +597,7 @@ void Install() {
     if (g_installed) return;
     g_installed = true;
     config::EnsureKey("Wormsign", "ReplayPassLocal", "0");
-    g_sessObs = OnSession(&OnSessionFn, nullptr);
+    g_sessObs = session::OnSessionNamed(&OnSessionFn, nullptr, "wormsign replay player");
     events::Subscribe(events::Event::MatchStart, [] { g_onlineMatch = true; });
     events::Subscribe(events::Event::MatchEnd, [] { g_onlineMatch = false; });
     events::Subscribe(events::Event::LobbyEnter, [] {

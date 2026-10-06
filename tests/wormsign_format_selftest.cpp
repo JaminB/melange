@@ -132,6 +132,26 @@ void Truncated(std::mt19937& rng) {
     Expect(r.OpenMemory(open, nullptr) && !r.Complete() && SameChunks(r, src, src.size()), "abandoned file reads fully, incomplete");
 }
 
+// What a crash leaves, by how far the recording got: nothing, the magic, a HEAD cut short, a HEAD and a cut chunk.
+void CrashCut(std::mt19937& rng) {
+    const auto src = Sample(rng, 2);
+    const auto full = Write(src, false);
+    std::string err;
+    Reader r;
+    Expect(!r.OpenMemory({}, &err) && err == "not a .wsr file", "a 0-byte file is not a .wsr file");
+    Expect(!r.OpenMemory(std::vector<uint8_t>(full.begin(), full.begin() + 4), &err) && err == "no HEAD chunk",
+           "the magic alone: no HEAD chunk");
+    Expect(!r.OpenMemory(std::vector<uint8_t>(full.begin(), full.begin() + 4 + kChunkHeaderBytes + 1), &err) &&
+               err == "no HEAD chunk",
+           "a HEAD chunk cut short: no HEAD chunk");
+    Reader first;
+    first.OpenMemory(full, nullptr);
+    const size_t secondEnd = static_cast<size_t>(first.Chunks()[1].offset) + kChunkHeaderBytes + 1;
+    Expect(r.OpenMemory(std::vector<uint8_t>(full.begin(), full.begin() + static_cast<std::ptrdiff_t>(secondEnd)), &err) &&
+               !r.Complete() && r.Chunks().size() == 1 && r.Index().empty() && SameChunks(r, src, 1),
+           "a HEAD and a cut chunk: opens with the HEAD, incomplete, no index");
+}
+
 void BadCrc(std::mt19937& rng) {
     const auto src = Sample(rng, 5);
     const auto full = Write(src, true);
@@ -245,6 +265,7 @@ int main(int argc, char** argv) {
     RoundTrip(rng);
     Deflates();
     Truncated(rng);
+    CrashCut(rng);
     BadCrc(rng);
     Versions();
     FileIo();

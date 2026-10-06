@@ -79,6 +79,7 @@ core::Request GameRequest(core::Scope scope, const Options& opt) {
     rq.src.currentSessionDir = session.dir;
     rq.src.currentPid = GetCurrentProcessId();
     rq.src.dataDirs = {melange::game::DataDir()};
+    if (!docs.empty()) rq.src.dumpDirs.push_back(docs + L"\\Melange\\dumps");
     rq.src.gameDir = game;
     rq.src.replaysDir = docs.empty() ? std::wstring() : docs + L"\\Melange\\replays";
     const std::wstring local = core::KnownFolder(core::Folder::LocalAppData);

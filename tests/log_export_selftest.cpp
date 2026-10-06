@@ -12,6 +12,7 @@
 #include <string>
 #include <vector>
 
+#include "core/dump_paths.h"
 #include "miniz.h"
 #include "tools/json_read.h"
 #include "tools/log_export_core.h"
@@ -176,6 +177,26 @@ std::string FirstHash(const std::string& text) {
     return p == std::string::npos || p + 13 > text.size() ? std::string() : text.substr(p, 13);
 }
 
+// Where the game writes a minidump (core/dump_paths.h), the same list the export reads dumps from.
+void TestDumpDirs() {
+    namespace dbg = melange::debug;
+    auto dirs = dbg::DumpDirs(L"C:\\Games\\WUM\\Melange", L"C:\\Users\\me\\Documents");
+    Expect(dirs.size() == 2 && dirs[0] == L"C:\\Games\\WUM\\Melange\\dumps" &&
+               dirs[1] == L"C:\\Users\\me\\Documents\\Melange\\dumps",
+           "dumps go next to melange.asi first, then to Documents\\Melange\\dumps");
+    dirs = dbg::DumpDirs(L"", L"C:\\Users\\me\\Documents\\");
+    Expect(dirs.size() == 1 && dirs[0] == L"C:\\Users\\me\\Documents\\Melange\\dumps",
+           "no data dir: Documents only, without a doubled separator");
+    dirs = dbg::DumpDirs(L"C:\\Users\\me\\documents\\melange", L"C:\\Users\\me\\Documents");
+    Expect(dirs.size() == 1, "a data dir that already is Documents\\Melange is listed once");
+    Expect(dbg::DumpDirs(L"", L"").empty(), "nothing known: no folder to try");
+    SYSTEMTIME st{};
+    st.wYear = 2026, st.wMonth = 10, st.wDay = 5, st.wHour = 19, st.wMinute = 58, st.wSecond = 4;
+    Expect(dbg::DumpFileName(st, "crash", false) == L"20261005_195804_crash.dmp" &&
+               dbg::DumpFileName(st, "hang", true) == L"20261005_195804_hang-full.dmp",
+           "dump file names, with the -full suffix the export filters on");
+}
+
 void TestParsers() {
     uint32_t pid = 0;
     uint64_t t = 0;
@@ -258,6 +279,29 @@ Fixture Build(const std::wstring& tmp) {
               Replay(L"desync-20260102-121000-p200-m1-t500.zip"));
     // The newest bundle by mtime belongs to pid 100: "Save logs as..." takes it, the last-game export must not.
     WriteText(fx.replays + L"\\desync-20260101-100600-p100-m1-t10.zip", "PK-bundle-100", fx.s200 + 3 * kHour);
+
+    // What a crash leaves of pid 200's later matches: an empty file (0.4.0 left one 17 s into a match), one cut inside
+    // its HEAD, and one cut mid-match (HEAD and INPT whole, no INDX, half a chunk header). Older by mtime than m2,
+    // so "Save logs as..." still takes m2 as the newest recording.
+    WriteText(fx.replays + L"\\wsr-20260102-140000-p200-m3.wsr", "", fx.s200 + 10 * kMinute);
+    WriteText(fx.replays + L"\\wsr-20260102-143000-p200-m4.wsr", std::string("WSR1HEAD\x01\0\0\0", 12), fx.s200 + 10 * kMinute);
+    {
+        const std::wstring cut = fx.replays + L"\\wsr-20260102-150000-p200-m5.wsr";
+        const std::string head = "{\"format\":1,\"peer\":\"76561198000000001\",\"dir\":\"C:\\\\Users\\\\" + fx.user + "\"}";
+        wsr::Writer w;
+        w.Open(cut);
+        w.Chunk(wsr::kHEAD, head.data(), head.size());
+        const uint8_t inpt[8] = {1, 2, 3, 4, 5, 6, 7, 8};
+        w.Chunk(wsr::kINPT, inpt, sizeof inpt, true, 1, 2);
+        w.Abandon();
+        if (FILE* f = _wfopen(cut.c_str(), L"ab")) {
+            fwrite("TICK\0\0\0", 1, 7, f);
+            fclose(f);
+        }
+        SetMTime(cut, fx.s200 + 10 * kMinute);
+    }
+    // A dump the game wrote to Documents\Melange\dumps because its own folder was not writable.
+    WriteText(fx.root + L"\\docs\\Melange\\dumps\\fallback.dmp", "MDMP", fx.s200 + kHour);
     return fx;
 }
 
@@ -267,6 +311,7 @@ ex::Request LauncherRequest(const Fixture& fx) {
     rq.producer = "launcher";
     rq.src.sessionRoots = {fx.logs, fx.fallback, fx.logs + L"\\"};  // the same root twice: listed once
     rq.src.dataDirs = {fx.game + L"\\scripts\\Melange", fx.data};
+    rq.src.dumpDirs = {fx.root + L"\\docs\\Melange\\dumps", fx.data + L"\\dumps"};  // the data dir's again: listed once
     rq.src.gameDir = fx.game;
     rq.src.replaysDir = fx.replays;
     rq.src.launcherLogDir = fx.applocal;
@@ -301,9 +346,23 @@ void TestLastGameFromLauncher(const Fixture& fx) {
     Expect(z.Has("replays/wsr-20260102-120500-p200-m1.wsr") && z.Has("replays/wsr-20260102-130000-p200-m2.wsr") &&
                z.Has("replays/desync-20260102-121000-p200-m1-t500.zip"),
            "every recording and bundle of pid 200 is in");
-    Expect(z.Count("replays/") == 3, "no other pid's replays, and not the reused pid from a year before");
-    Expect(z.Has("dumps/in-window.dmp") && z.Count("dumps/") == 1,
-           "only the dump from the game's window (the full dump stays out by default)");
+    Expect(z.Has("replays/wsr-20260102-150000-p200-m5.wsr"), "a recording a crash cut off is in");
+    Expect(!z.Has("replays/wsr-20260102-140000-p200-m3.wsr") && !z.Has("replays/wsr-20260102-143000-p200-m4.wsr"),
+           "an empty recording and one cut inside its HEAD are not");
+    Expect(z.Count("replays/") == 4, "no other pid's replays, and not the reused pid from a year before");
+    Expect(z.Has("dumps/in-window.dmp") && z.Has("dumps/fallback.dmp") && z.Count("dumps/") == 2,
+           "the dumps from the game's window, the Documents fallback's too (the full dump stays out by default)");
+    {
+        const std::string cutBytes = z.Read("replays/wsr-20260102-150000-p200-m5.wsr");
+        wsr::Reader cr;
+        std::string cerr;
+        const bool copened = cr.OpenMemory(std::vector<uint8_t>(cutBytes.begin(), cutBytes.end()), &cerr);
+        Expect(copened && !cr.Complete() && cr.Chunks().size() == 2,
+               "the cut recording is in as far as it reads, and still reads as incomplete");
+        Expect(copened && !Contains(cr.Header(), "76561198000000001") &&
+                   (fx.user.size() < 3 || !ContainsCI(cr.Header(), fx.user)),
+               "the cut recording is redacted like a complete one");
+    }
     Expect(z.Has("logs/engine/XOM0-%COMPUTERNAME%.log"), "the engine log nearest the game, computer name redacted");
     Expect(!z.Has("logs/engine/XOM1-OLD.log"), "an engine log from another day stays out when one is in the window");
     Expect(z.Has("logs/Melange.log") && z.Has("logs/Melange.prev.log"), "Melange.log and .prev from the data dir");
@@ -368,6 +427,29 @@ void TestLastGameFromLauncher(const Fixture& fx) {
         }
     Expect(allIn, "every manifest entry is in the zip, with a redacted source path");
     Expect(z.names.size() == res.entries + 2, "nothing in the zip is missing from the manifest");
+    size_t incompleteEntries = 0;
+    bool cutMarked = false;
+    if (entries)
+        for (const auto& e : entries->items) {
+            const json::Value* inc = e.Get("incomplete");
+            const json::Value* p = e.Get("path");
+            if (!inc) continue;
+            ++incompleteEntries;
+            cutMarked = inc->boolean && p && p->string == "replays/wsr-20260102-150000-p200-m5.wsr";
+        }
+    Expect(cutMarked && incompleteEntries == 1, "manifest marks the cut recording, and only it, \"incomplete\"");
+    const json::Value* absent = m.Get("absent");
+    bool emptyListed = false, headlessListed = false, noReplays = false;
+    if (absent)
+        for (const auto& a : absent->items) {
+            emptyListed = emptyListed || a.string == "replays/wsr-20260102-140000-p200-m3.wsr (empty: the game crashed "
+                                                     "before the recording was written)";
+            headlessListed = headlessListed || (a.string.rfind("replays/wsr-20260102-143000-p200-m4.wsr (no complete header", 0) == 0);
+            noReplays = noReplays || a.string.rfind("replays (no desync", 0) == 0;
+        }
+    Expect(emptyListed, "the empty recording is listed under absent, with the reason");
+    Expect(headlessListed, "the recording cut inside its HEAD is listed under absent, with the reason");
+    Expect(!noReplays, "absent does not claim there were no replays");
     const json::Value* ids = m.Get("sessionIds");
     Expect(ids && ids->items.size() == 1 && ids->items[0].string == "2026-01-02_12-00-00_pid200", "sessionIds is the one game");
 }
@@ -417,7 +499,8 @@ void TestRecentSessions(const Fixture& fx) {
            "the newest two sessions");
     Expect(z.Has("replays/desync-20260101-100600-p100-m1-t10.zip") && z.Count("replays/") == 2,
            "the newest bundle by time and the newest recording");
-    Expect(z.Count("dumps/") == 2, "the newest dumps, full dumps still excluded");
+    Expect(z.Count("dumps/") == 3 && z.Has("dumps/fallback.dmp"),
+           "the newest dumps from both dump folders, full dumps still excluded");
     json::Value m;
     json::Error je;
     json::Parse(z.Read("manifest.json"), &m, &je);
@@ -451,6 +534,7 @@ void TestEmpty(const Fixture& fx) {
 int main() {
     const std::wstring tmp = TempDir();
     TestParsers();
+    TestDumpDirs();
     const Fixture fx = Build(tmp);
     TestSessions(fx);
     TestLastGameFromLauncher(fx);

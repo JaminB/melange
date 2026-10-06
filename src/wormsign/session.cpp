@@ -5,8 +5,11 @@
 #include <algorithm>
 #include <atomic>
 #include <cstring>
+#include <string>
 #include <vector>
 
+#include "core/debug.h"
+#include "core/game.h"
 #include "core/log.h"
 #include "core/mem.h"
 #include "melange/jlog.h"
@@ -35,31 +38,60 @@ struct Obs {
     int handle, order;
     Fn fn;
     void* user;
+    const char* name;  // nullptr: named after the module fn lives in
+    uint32_t faults;
 };
+
+int CopyRecord(EXCEPTION_POINTERS* ep, EXCEPTION_RECORD* out) {
+    *out = *ep->ExceptionRecord;
+    return EXCEPTION_EXECUTE_HANDLER;
+}
 
 // Third-party modules subscribe here too (OnTickEnd is public SDK), so one observer's fault or bad_alloc must not
 // take the whole tick-end call chain (and the game) down with it. A plain function, not a member or lambda, so
 // the __try lives in a scope with no C++ objects needing unwinding.
 template <class Fn, class... A>
-bool CallGuarded(Fn fn, A... a) {
+bool CallGuarded(EXCEPTION_RECORD* rec, Fn fn, A... a) {
     __try {
         fn(a...);
         return true;
-    } __except (EXCEPTION_EXECUTE_HANDLER) {
+    } __except (CopyRecord(GetExceptionInformation(), rec)) {
         return false;
     }
 }
 
+// Which observer, whose, and what it hit: the first fault in full, then a count at 10, 100, 1000 ... faults.
+template <class Fn>
+void LogFault(const char* list, Obs<Fn>& e, const EXCEPTION_RECORD& rec) {
+    ++e.faults;
+    const std::string owner = game::DescribeAddress(reinterpret_cast<uintptr_t>(e.fn));
+    if (e.faults == 1) {
+        LOG_ERROR("[wormsign] %s observer %d (%s, %s) faulted and was skipped: %s", list, e.handle,
+                  e.name ? e.name : "a module's observer", owner.c_str(), debug::DescribeException(rec).c_str());
+        jlog::Rec("wormsign", jlog::Level::Error, "observer fault")
+            .Str("list", list).Int("handle", e.handle).Str("name", e.name ? e.name : "").Str("fn", owner)
+            .Str("exception", debug::DescribeException(rec));
+        return;
+    }
+    uint32_t p = 10;
+    while (p < e.faults && p < 1000000000u) p *= 10;
+    if (p == e.faults)
+        LOG_ERROR("[wormsign] %s observer %d (%s) has faulted %u times; the last: %s", list, e.handle,
+                  e.name ? e.name : owner.c_str(), e.faults, debug::DescribeException(rec).c_str());
+}
+
 template <class Fn>
 struct ObsList {
+    const char* what;
     std::vector<Obs<Fn>> v;
     int next = 1, depth = 0;
     bool dirty = false;
-    int Add(Fn fn, void* user, int order) {
+    explicit ObsList(const char* w) : what(w) {}
+    int Add(Fn fn, void* user, int order, const char* name = nullptr) {
         if (!fn) return 0;
         const int h = next++;
         auto it = std::upper_bound(v.begin(), v.end(), order, [](int o, const Obs<Fn>& e) { return o < e.order; });
-        v.insert(it, Obs<Fn>{h, order, fn, user});
+        v.insert(it, Obs<Fn>{h, order, fn, user, name, 0});
         return h;
     }
     void Remove(int h) {
@@ -77,14 +109,18 @@ struct ObsList {
         ++depth;
         for (size_t i = 0; i < v.size(); ++i) {
             const Obs<Fn> e = v[i];
-            if (e.fn && !CallGuarded(e.fn, a..., e.user))
-                LOG_ERROR("[wormsign] an observer (handle %d) faulted and was skipped this tick", e.handle);
+            EXCEPTION_RECORD rec{};
+            if (e.fn && !CallGuarded(&rec, e.fn, a..., e.user)) {
+                // By handle: an observer may have added or removed others (v may have moved).
+                for (auto& o : v)
+                    if (o.handle == e.handle) LogFault(what, o, rec);
+            }
         }
         if (!--depth) Compact();
     }
 };
-ObsList<TickEndFn> g_tickObs;
-ObsList<SessionFn> g_sessObs;
+ObsList<TickEndFn> g_tickObs{"tick-end"};
+ObsList<SessionFn> g_sessObs{"session"};
 
 // Cost in integer QPC units; converted only when read.
 constexpr uint32_t kBins = 4000;  // 0.1 us bins up to 400 us
@@ -260,4 +296,11 @@ int OnTickEnd(TickEndFn fn, void* user, int order) { return g_tickObs.Add(fn, us
 void RemoveOnTickEnd(int handle) { g_tickObs.Remove(handle); }
 int OnSession(SessionFn fn, void* user) { return g_sessObs.Add(fn, user, 0); }
 void RemoveOnSession(int handle) { g_sessObs.Remove(handle); }
+
+namespace session {
+int OnSessionNamed(SessionFn fn, void* user, const char* name) { return g_sessObs.Add(fn, user, 0, name); }
+int OnTickEndNamed(TickEndFn fn, void* user, int order, const char* name) {
+    return g_tickObs.Add(fn, user, order, name);
+}
+}  // namespace session
 }  // namespace melange::wormsign

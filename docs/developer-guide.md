@@ -58,7 +58,7 @@ Every module has its own section in `Melange.ini`, and `Enabled=0` turns a modul
 | Where | What |
 |---|---|
 | `<game>\Melange\Melange.log` | Plain-text log of the current run (`Melange.prev.log` is the run before) |
-| `<game>\Melange\dumps\` | Crash and hang minidumps |
+| `<game>\Melange\dumps\` | Crash and hang minidumps (`Documents\Melange\dumps\` when the game folder is not writable) |
 | `Documents\Melange\logs\<session>\` | Structured session log (`events.jsonl`) |
 | `Documents\Melange\replays\desync-*.zip` | Desync bundles: what differed between two players, and at which tick |
 
@@ -71,8 +71,8 @@ The zip goes to the Desktop as `Melange-logs-<YYYYMMDD-HHMMSS>.zip` (`Documents\
 
 "Last game" is one game process: the newest session folder (in the game, the running one), and with it
 
-- every match recording (`wsr-*-p<pid>-*.wsr`) and desync bundle (`desync-*-p<pid>-*.zip`) whose name carries that session's pid, not just the newest;
-- the minidumps and the engine's XOM/Net logs written during that session (its folder name to its last write, plus 15 minutes);
+- every match recording (`wsr-*-p<pid>-*.wsr`) and desync bundle (`desync-*-p<pid>-*.zip`) whose name carries that session's pid, not just the newest. A recording cut off by a crash goes in as far as it reads (redacted like the rest) and is marked `"incomplete": true` in `manifest.json`; one with nothing in it is listed under `absent` with the reason (`empty: the game crashed before the recording was written`);
+- the minidumps (from both dump folders) and the engine's XOM/Net logs written during that session (its folder name to its last write, plus 15 minutes);
 - `Melange.log` and `Melange.prev.log`, Melange.exe's `launcher.log` and `launcher.1.log` (from `%LOCALAPPDATA%\Melange`);
 - the `.ini` files, the mods (`mods/spice.json`: each mod's id, name and version; `thumper-state.json`; the Store's `installed.json`; the `.asi` plugins) and `system.json`. From inside the game it also has the GPU report and the installed modules.
 
@@ -81,6 +81,18 @@ The zip goes to the Desktop as `Melange-logs-<YYYYMMDD-HHMMSS>.zip` (`Documents\
 The zip includes a GPU compatibility report (`gpu/compat.txt`): graphics card, driver, OpenGL version and extensions, the Cg shader profiles your card supports, and which shaders and effects loaded or were skipped and why. The overlay panel *Mirage/GPU* shows the same report.
 
 ![The Mirage/GPU panel's compatibility report (the GPU/driver rows are blanked)](images/mirage/gpu-report.png)
+
+### Reading a crash in Melange.log
+
+A crash is logged as `==== CRASH: exception <code> at <address>`, the registers and a heuristic call stack (return addresses found on the stack, so a few lines can be stale), then `minidump: <path>`, or `minidump: (failed)` with each folder tried and its Win32 error or `MiniDumpWriteDump` HRESULT. The dump is written by a thread the Diagnostics module starts with the game, not by the crashing thread, and carries a comment stream with the same summary. `[Diagnostics] FullMemoryDumps=1` makes full-memory dumps.
+
+The header says which kind of crash it is:
+
+- `[first fault]`: the exception itself was not handled.
+- `[handler fault: raised while an earlier exception was being handled]`: an exception handler crashed, often the game's own while it handled another fault. The fault it was handling follows as `FIRST FAULT ...`, with its own registers and stack; that one is usually the real bug. Melange finds it on the stack (the outer exception's dispatch frame) or in the last few exceptions each thread raised, which a vectored handler keeps (code, address and registers only; it never handles anything).
+- `an earlier exception on this thread, N ms before (it was handled; may be unrelated)`: the last exception before the crash, for context.
+
+With a match in progress, the crash also hands the recording's buffered ticks and inputs to its writer and logs `recording: ... on disk: <path>`, so the `.wsr` keeps the match up to the crash (it reads as incomplete). To try the crash path on purpose, set `[Diagnostics] SelfTestCrashAtFrame=<n>`: an access violation at that frame (`SelfTestCrashKind=1`: one inside an exception filter that is handling another, a handler fault).
 
 ## Graphics layer (Mirage)
 
