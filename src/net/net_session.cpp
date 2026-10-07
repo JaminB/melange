@@ -62,7 +62,10 @@ struct Fixes {
     bool resetThrottleMask = true;
     bool resetViabilityOffset = true;
     bool releaseStuckPause = true;
+    bool skipCameraHold = true;
 } g_fix;
+bool g_cameraHoldPatched = false;
+void SetCameraHoldPatch(bool on);
 
 int g_matchNumber = 0;
 
@@ -157,6 +160,7 @@ void OnStateChange(uintptr_t from, uintptr_t to) {
         ResetStaleMatchState("match-start", false);
     } else if (to == S::InGame) {
         LOG_INFO("[net] ===== match %d in progress =====", g_matchNumber);
+        SetCameraHoldPatch(true);
         melange::events::Fire(Event::MatchStart);
     } else if (to == S::ProcessWinOrDraw || (to == S::WaitingUnload && from != S::ProcessWinOrDraw)) {
         // ProcessWinOrDraw usually runs within one frame, so the poll often sees InGame -> WaitingUnload.
@@ -166,6 +170,7 @@ void OnStateChange(uintptr_t from, uintptr_t to) {
         DumpState("net session closed");
         melange::events::Fire(Event::LobbyLeave);
     }
+    if (to != S::InGame) SetCameraHoldPatch(false);
 }
 
 // One log line per change of the values that gate match progress, so a freeze shows which one got stuck.
@@ -249,6 +254,27 @@ constexpr uintptr_t kGirderSetCamera = 0x55be02;      // call 0x51e4e0; ecx = Ca
 constexpr uintptr_t kGirderSetCameraDone = 0x55be07;  // push ebp; push esi; call the base HandleMessage
 constexpr uintptr_t kGirderCamVtable = 0x855324;
 constexpr uint32_t kCamIndexNone = 0xff, kCamMaxCount = 64;
+// Turn-end clock desync. The turn ends on every machine from its own Lua: Timer.PostActivityTimedOut posts
+// Net.DisableAllInput, whose handler (0x50e500) calls NetService::ProcessDisableNetInputMessage 0x709a3e. The active
+// player builds and sends a GameStateValidationMsg stamped with its sim clock; a spectator pops the one it queued at
+// receipt (ScheduleValidation 0x708fec) and requires the stamp to equal its own clock, and the per-frame time-sync
+// check 0x709134 aborts (site D) as soon as the local clock passes a queued stamp. So every machine must reach its
+// post-activity timeout at the same sim time. That timer waits for the ActiveObject registry, and FlyCam::Update
+// 0x528240 registers "Hold the FlyCamera for a moment after the explosion" (about 1 s) when its tracked projectile is
+// gone: a per-machine camera event (the engine tags the function "Danger of non-determinism"). Seen 2026-10-06 on
+// the one spectator that switched to the blimp view (E, SpectateCam.BlimpViewPressed) 0.7 s after a Super Sheep
+// explosion, and reproduced on LocalNet the same way: the hold delays NoActivity by its length, the machine ends its
+// turn later than the others, and a spectator then overshoots the host's stamp by one tick (site D, Net.OutOfSynch)
+// while an active player would stamp later than the spectators' own turn end (Net.Error.MissingTurnEndVal on every
+// spectator). The fix skips the registration during an online match: the camera still pauses, only the turn no
+// longer waits for it (verified: the same key press then ends the turn at the host's stamp).
+constexpr uintptr_t kFlyCamHoldLea = 0x528444;      // lea eax,[esi+0x90]; esi = FlyCam (+0x8c hold ms)
+constexpr uintptr_t kFlyCamHoldCall = 0x528457;     // call 0x4d3af0 (cdecl, its 4 args popped by the add esp,0x10 after)
+constexpr uintptr_t kFlyCamHoldRelease = 0x5282a4;  // test eax,eax; eax = the hold's handle (NULL once released)
+constexpr uintptr_t kScheduleValidation = 0x708fec; // __thiscall NetService::ScheduleValidation(msg)
+constexpr uintptr_t kDisableNetInput = 0x709a3e;    // __thiscall NetService::ProcessDisableNetInputMessage()
+constexpr uintptr_t kTimeSyncOvershoot = 0x709208;  // in 0x709134, "NETWORK TIMES NOT IN SYNC": eax = our clock, esi = msg, edi = NetService
+constexpr uintptr_t kCameraManagerPtr = 0x95c370;
 SafetyHookInline g_resendHook;
 
 // Entry layout: +0 vtable, +4 u16 id (+6 is uninitialised padding), +8 time, +0xc payload (the string type keeps an
@@ -400,6 +426,96 @@ void OnGirderPanelClose(safetyhook::Context& c) {
     c.trampoline_esp = c.esp;
 }
 
+uint32_t SimClock() { return Read<uint32_t>(Read<uint32_t>(A::TaskManagerPtr) + 0x38); }
+bool InNetMatch() { return g_lastState == S::InGame; }
+
+// The queued validation messages: how many and the head's stamp.
+std::string ValidationFifo(uintptr_t ns, uint32_t* headT) {
+    const uint32_t n = Read<uint32_t>(ns + O::ValidationFifoCount);
+    *headT = 0;
+    if (!n) return "queue empty";
+    const uintptr_t head = Read<uint32_t>(Read<uint32_t>(ns + O::ValidationFifo));
+    *headT = Read<uint32_t>(head + O::ValidationTime);
+    char b[64];
+    snprintf(b, sizeof b, "queued %u, head t=%u sov %u", n, *headT, Read<uint8_t>(head + O::ValidationSov));
+    return b;
+}
+
+// ecx = NetService, [esp+4] = the received GameStateValidationMsg (before the duplicate check and the push).
+void OnScheduleValidation(safetyhook::Context& c) {
+    const uintptr_t msg = Arg(c, 0);
+    const uint32_t t = SimClock(), mt = Read<uint32_t>(msg + O::ValidationTime), sov = Read<uint8_t>(msg + O::ValidationSov);
+    uint32_t headT;
+    const std::string q = ValidationFifo(c.ecx, &headT);
+    LOG_INFO("[net] validation received for t=%u (sov %u) at our t=%u%s (%s)", mt, sov, t, t > mt ? " LATE" : "", q.c_str());
+    melange::jlog::Rec("net", t > mt ? melange::jlog::Level::Warn : melange::jlog::Level::Info, "validation received")
+        .Uint("t", t).Uint("msgT", mt).Uint("sov", sov).Uint("queued", Read<uint32_t>(c.ecx + O::ValidationFifoCount)).Emit();
+}
+
+// ecx = NetService: this machine's own turn end (its Lua posted Net.DisableAllInput).
+void OnDisableNetInput(safetyhook::Context& c) {
+    const uint32_t t = SimClock();
+    uint32_t headT;
+    const std::string q = ValidationFifo(c.ecx, &headT);
+    // The active player builds and sends the validation here; everyone else pops the one it received.
+    const uintptr_t cur = melange::wum::CurrentPlayer(c.ecx);
+    const bool active = cur && Read<uint8_t>(cur + O::PlayerIsLocal);
+    const bool bad = !active && (headT ? headT != t : !Read<uint8_t>(c.ecx + O::CurrentSurrendered));
+    LOG_INFO("[net] turn end at t=%u (%s; %s)%s", t, active ? "active player" : "spectator", q.c_str(),
+             !bad ? "" : headT ? " MISMATCH" : " NO VALIDATION YET");
+    melange::jlog::Rec("net", bad ? melange::jlog::Level::Warn : melange::jlog::Level::Info, "turn end")
+        .Uint("t", t).Bool("active", active).Uint("headT", headT).Uint("queued", Read<uint32_t>(c.ecx + O::ValidationFifoCount)).Emit();
+}
+
+// The time-sync check found our clock past the queued stamp: the engine logs it to a null stream and aborts.
+void OnTimeSyncOvershoot(safetyhook::Context& c) {
+    const uint32_t mt = Read<uint32_t>(c.esi + O::ValidationTime), sov = Read<uint8_t>(c.esi + O::ValidationSov);
+    LOG_ERROR("[net] time-sync check: our t=%u is past the queued validation for t=%u (sov %u, queued %u) -> abort",
+              c.eax, mt, sov, Read<uint32_t>(c.edi + O::ValidationFifoCount));
+    melange::jlog::Rec("net", melange::jlog::Level::Error, "time sync overshoot")
+        .Uint("t", c.eax).Uint("msgT", mt).Uint("sov", sov).Uint("queued", Read<uint32_t>(c.edi + O::ValidationFifoCount)).Emit();
+}
+
+// esi = the FlyCam about to register its post-explosion hold. Says whether it is even the manager's logical camera.
+void OnFlyCamHold(safetyhook::Context& c) {
+    const uintptr_t mgr = Read<uint32_t>(kCameraManagerPtr);
+    const uint32_t index = mgr ? Read<uint32_t>(mgr + 0x28c) : kCamIndexNone;
+    const uint32_t first = mgr ? Read<uint32_t>(mgr + 0x2a0) : 0, last = mgr ? Read<uint32_t>(mgr + 0x2a4) : 0;
+    const uint32_t count = last >= first ? (last - first) / 4 : 0;
+    const uintptr_t logical = index < count && count <= kCamMaxCount ? Read<uint32_t>(first + index * 4) : 0;
+    const bool skipped = g_cameraHoldPatched;
+    LOG_INFO("[net] FlyCam post-explosion hold at t=%u for %u ms (%s logical camera)%s", SimClock(),
+             Read<uint32_t>(c.esi + 0x8c), logical == c.esi ? "the" : "not the",
+             skipped ? "; not registered as activity (FixCameraHold)" : "");
+    melange::jlog::Rec("net", melange::jlog::Level::Info, "camera hold").Uint("t", SimClock())
+        .Uint("ms", Read<uint32_t>(c.esi + 0x8c)).Bool("logical", logical == c.esi).Bool("net", InNetMatch())
+        .Bool("skipped", skipped).Emit();
+}
+
+// Runs every frame once the hold time is up; the handle is non-NULL only on the frame that releases it.
+void OnFlyCamHoldRelease(safetyhook::Context& c) {
+    if (c.eax) LOG_INFO("[net] FlyCam hold released at t=%u", SimClock());
+}
+
+// FixCameraHold: while an online match runs, the register call is five NOPs (its pushes are still popped by the
+// add esp,0x10 after it, and the release path only checks the handle at +0x90 for NULL). Restored outside matches so
+// local games keep the engine's camera pause as activity.
+void SetCameraHoldPatch(bool on) {
+    static const uint8_t call[5] = {0xe8, 0x94, 0xb6, 0xfa, 0xff};  // call 0x4d3af0
+    static const uint8_t nops[5] = {0x90, 0x90, 0x90, 0x90, 0x90};
+    if (!g_fix.skipCameraHold || on == g_cameraHoldPatched) return;
+    const bool asExpected = on ? melange::mem::Expect(kFlyCamHoldCall, {0xe8, 0x94, 0xb6, 0xfa, 0xff})
+                               : melange::mem::Expect(kFlyCamHoldCall, {0x90, 0x90, 0x90, 0x90, 0x90});
+    if (!asExpected) {
+        LOG_WARN("[fix] FixCameraHold: unexpected code at %08x; not %s", static_cast<unsigned>(kFlyCamHoldCall),
+                 on ? "installed" : "restored");
+        return;
+    }
+    melange::mem::Write(kFlyCamHoldCall, on ? nops : call, 5);
+    g_cameraHoldPatched = on;
+    LOG_INFO("[fix] FixCameraHold: FlyCam hold %s", on ? "no longer registers as activity (online match)" : "restored");
+}
+
 void OnAbortGame(safetyhook::Context& c) {
     uint32_t hr = Arg(c, 0), ret = RetAddr(c);
     LOG_ERROR("[net] ===== AbortGame(%08x %s) from %s  [site %s] match %d", hr, AbortCode(hr),
@@ -476,6 +592,30 @@ public:
             ok &= Mid(A::SurrenderPlayer, &OnSurrender, "SurrenderPlayer");
             ok &= Mid(A::TurnStarted, &OnTurnStarted, "TurnStarted");
             ok &= Mid(A::CheckViability, &OnCheckViability, "CheckViability");
+            // The turn-end validation protocol and the camera hold that can shift a machine's turn end (see
+            // kFlyCamHoldLea): push ebx/esi/edi/push "ScheduleValidation" | push ebp/mov ebp,esp/sub esp,0xc/push
+            // ebx/esi | call 0x70ce5e | lea eax,[esi+0x90] | test eax,eax/jz +8/mov edx,[eax]/push eax
+            if (melange::mem::Expect(kScheduleValidation, {0x53, 0x56, 0x57, 0x68, 0x94, 0xc1, 0x89, 0x00}) &&
+                melange::mem::Expect(kDisableNetInput, {0x55, 0x8b, 0xec, 0x83, 0xec, 0x0c, 0x53, 0x56}) &&
+                melange::mem::Expect(kTimeSyncOvershoot, {0xe8, 0x51, 0x3c, 0x00, 0x00}) &&
+                melange::mem::Expect(kFlyCamHoldLea, {0x8d, 0x86, 0x90, 0x00, 0x00, 0x00, 0x50, 0x6a, 0x61}) &&
+                melange::mem::Expect(kFlyCamHoldRelease, {0x85, 0xc0, 0x74, 0x08, 0x8b, 0x10, 0x50})) {
+                ok &= Mid(kScheduleValidation, &OnScheduleValidation, "ScheduleValidation");
+                ok &= Mid(kDisableNetInput, &OnDisableNetInput, "ProcessDisableNetInputMessage");
+                ok &= Mid(kTimeSyncOvershoot, &OnTimeSyncOvershoot, "time-sync overshoot");
+                ok &= Mid(kFlyCamHoldLea, &OnFlyCamHold, "FlyCam hold");
+                ok &= Mid(kFlyCamHoldRelease, &OnFlyCamHoldRelease, "FlyCam hold release");
+            } else {
+                LOG_WARN("[net] turn-end trace: unexpected code at one of %08x %08x %08x %08x %08x; not installed",
+                         static_cast<unsigned>(kScheduleValidation), static_cast<unsigned>(kDisableNetInput),
+                         static_cast<unsigned>(kTimeSyncOvershoot), static_cast<unsigned>(kFlyCamHoldLea),
+                         static_cast<unsigned>(kFlyCamHoldRelease));
+            }
+        }
+        g_fix.skipCameraHold = Bool("FixCameraHold", true);
+        if (g_fix.skipCameraHold && !melange::mem::Expect(kFlyCamHoldCall, {0xe8, 0x94, 0xb6, 0xfa, 0xff, 0x8b, 0x0d, 0x30, 0xd0, 0x96, 0x00})) {
+            LOG_WARN("[fix] FixCameraHold: unexpected code at %08x; not installed", static_cast<unsigned>(kFlyCamHoldCall));
+            g_fix.skipCameraHold = false;
         }
         if (traceTransport) {
             ok &= Mid(A::SteamConnCtor, &OnConnCtor, "XSteamConnection ctor");
@@ -537,6 +677,7 @@ public:
     }
 
     void Uninstall() override {
+        SetCameraHoldPatch(false);
         g_hooks.clear();
         g_resendHook = {};
     }
