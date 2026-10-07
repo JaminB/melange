@@ -47,7 +47,11 @@ constexpr uintptr_t InGameFlag = 0x4bd;
 constexpr uintptr_t GameEnded = 0x4be;
 constexpr uintptr_t CurrentSurrendered = 0x4c0;
 constexpr uintptr_t ValidationFifoCount = 0x4dc;
+constexpr uintptr_t ValidationFifo = 0x4e4;  // GameStateValidationMsg* vector begin (count above), head first
 constexpr uintptr_t Throttle = 0x4d8;  // NetThrottle*
+// GameStateValidationMsg
+constexpr uintptr_t ValidationTime = 0x18;  // sender's sim clock when it was built
+constexpr uintptr_t ValidationSov = 0x89;   // 1 = time sync, 2 = turn end
 // NetThrottle
 constexpr uintptr_t ThrottlePaused = 0x20;
 constexpr uintptr_t ThrottleAuto = 0x21;
