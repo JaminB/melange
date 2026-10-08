@@ -269,6 +269,17 @@ bool Read(Snapshot* s) {
     *s = g_snapshot;
     return true;
 }
+LandRayResult g_rayResult = LandRayResult::Unavailable;
+LandHit g_rayHit{};
+Vec3 g_rayA{}, g_rayB{};
+int g_rayCalls = 0;
+LandRayResult LandRay(const Vec3& a, const Vec3& b, LandHit* out) {
+    ++g_rayCalls;
+    g_rayA = a;
+    g_rayB = b;
+    if (g_rayResult == LandRayResult::Hit) *out = g_rayHit;
+    return g_rayResult;
+}
 }  // namespace gamestate
 namespace sandbox {
 double NowSeconds() { return fake::g_clock; }
@@ -878,6 +889,7 @@ void TestGame() {
     s.worms[0].alive = s.worms[0].active = true;
     s.worms[0].weapon = 1;
     s.worms[0].pos = {1.5f, -2.f, 300.f};
+    s.worms[0].vel = {0.25f, -0.5f, 0.f};
     s.worms[0].yaw = 4.25f;
     strcpy(s.worms[0].name, "Paul");
     s.worms[1] = {};
@@ -889,6 +901,8 @@ void TestGame() {
                            "w[1].alive, w[1].weapon, w[1].pos.x, w[1].pos.y, w[1].pos.z"),
              "2\t5\t1\tPaul\t87\ttrue\t1\t1.5\t-2\t300", "worms fields");
     ExpectEq(Eval(nullptr, "return wum.game.worms()[1].yaw"), "4.25", "worm yaw");
+    ExpectEq(Eval(nullptr, "local v = wum.game.worms()[1].vel return v.x, v.y, v.z"), "250\t-500\t0",
+             "worm velocity in units per second (the engine's per-millisecond value x1000)");
     ExpectEq(Eval(nullptr, "local w = wum.game.worms()[2] return w.name, w.alive, w.weapon"), "Leto\tfalse\tnil",
              "a dead worm without a weapon");
     ExpectEq(Eval(nullptr, "local t = wum.game.teams() return #t, t[1].slot, t[1].name, t[1].active, t[1].ai, t[1][\"local\"]"),
@@ -903,6 +917,29 @@ void TestGame() {
     s.match.activeWorm = -1;
     ExpectEq(Eval(nullptr, "return wum.game.activeWorm()"), "nil", "no active worm between turns");
     gamestate::g_readable = false;
+
+    // wum.game.landRay: arguments are checked before the engine is asked; each result maps to its Lua form.
+    gamestate::g_rayCalls = 0;
+    Expect(Eval(nullptr, "return wum.game.landRay(1, 2, 3, 4, 5)").rfind("ERR:", 0) == 0, "landRay needs six numbers");
+    Expect(Eval(nullptr, "return wum.game.landRay(1, 2, 3, 4, 5, 'x')").rfind("ERR:", 0) == 0,
+           "landRay refuses a non-number");
+    Expect(gamestate::g_rayCalls == 0, "bad arguments never reach the engine");
+    gamestate::g_rayResult = gamestate::LandRayResult::Unavailable;
+    ExpectEq(Eval(nullptr, "local r = table.pack(wum.game.landRay(0, 0, 0, 1, 1, 1)) return r.n, r[1], r[2]"),
+             "2\tnil\tunavailable", "landRay unavailable");
+    gamestate::g_rayResult = gamestate::LandRayResult::Budget;
+    ExpectEq(Eval(nullptr, "return wum.game.landRay(0, 0, 0, 1, 1, 1)"), "nil\tbudget", "landRay over budget");
+    gamestate::g_rayResult = gamestate::LandRayResult::Invalid;
+    ExpectEq(Eval(nullptr, "return wum.game.landRay(0/0, 0, 0, 1, 1, 1)"), "nil\tinvalid", "landRay invalid point");
+    gamestate::g_rayResult = gamestate::LandRayResult::Miss;
+    ExpectEq(Eval(nullptr, "return select('#', wum.game.landRay(1.5, 2, 3, 4, 5, 6.25))"), "1", "a miss is one nil");
+    Expect(gamestate::g_rayA.x == 1.5f && gamestate::g_rayA.z == 3.f && gamestate::g_rayB.y == 5.f &&
+               gamestate::g_rayB.z == 6.25f,
+           "landRay passes the segment through");
+    gamestate::g_rayResult = gamestate::LandRayResult::Hit;
+    gamestate::g_rayHit = {0.5f, {0.f, 1.f, 0.f}};
+    ExpectEq(Eval(nullptr, "return wum.game.landRay(0, 10, 0, 0, -10, 0)"), "0.5\t0\t1\t0", "landRay hit: t and normal");
+    gamestate::g_rayResult = gamestate::LandRayResult::Unavailable;
 }
 
 void TestGraphics() {

@@ -335,26 +335,34 @@ bool ReadSnapshot(lua_State* L, gamestate::Snapshot* s) {
     return false;
 }
 
+void SetVec(lua_State* L, const char* k, const gamestate::Vec3& v, float scale) {
+    lua_createtable(L, 0, 3);
+    const float p[3] = {v.x, v.y, v.z};
+    for (int i = 0; i < 3; ++i) {
+        lua_pushnumber(L, p[i] * scale);
+        lua_setfield(L, -2, i == 0 ? "x" : i == 1 ? "y" : "z");
+    }
+    lua_setfield(L, -2, k);
+}
+
+// The engine keeps velocities in world units per millisecond of game time; Lua gets units per second.
+constexpr float kVelPerSecond = 1000.f;
+
 int GameWorms(lua_State* L) {
     gamestate::Snapshot s;
     if (!ReadSnapshot(L, &s)) return 2;
     lua_createtable(L, s.wormCount, 0);
     for (int i = 0; i < s.wormCount; ++i) {
         const gamestate::Worm& w = s.worms[i];
-        lua_createtable(L, 0, 8);
+        lua_createtable(L, 0, 9);
         SetInt(L, "slot", w.slot);
         SetInt(L, "team", w.team);
         lua_pushstring(L, w.name);
         lua_setfield(L, -2, "name");
         SetInt(L, "health", w.health);
         SetBool(L, "alive", w.alive);
-        lua_createtable(L, 0, 3);
-        const float p[3] = {w.pos.x, w.pos.y, w.pos.z};
-        for (int k = 0; k < 3; ++k) {
-            lua_pushnumber(L, p[k]);
-            lua_setfield(L, -2, k == 0 ? "x" : k == 1 ? "y" : "z");
-        }
-        lua_setfield(L, -2, "pos");
+        SetVec(L, "pos", w.pos, 1.f);
+        SetVec(L, "vel", w.vel, kVelPerSecond);
         lua_pushnumber(L, w.yaw);
         lua_setfield(L, -2, "yaw");
         if (w.weapon >= 0) SetInt(L, "weapon", w.weapon);
@@ -395,6 +403,29 @@ int GameTheme(lua_State* L) {
     return 1;
 }
 
+// wum.game.landRay(x0, y0, z0, x1, y1, z1) -> t, nx, ny, nz | nil [, "unavailable" | "budget" | "invalid"]
+int GameLandRay(lua_State* L) {
+    float v[6];
+    for (int i = 0; i < 6; ++i) v[i] = static_cast<float>(luaL_checknumber(L, i + 1));
+    gamestate::LandHit h{};
+    const char* why = nullptr;
+    switch (gamestate::LandRay({v[0], v[1], v[2]}, {v[3], v[4], v[5]}, &h)) {
+        case gamestate::LandRayResult::Hit:
+            lua_pushnumber(L, h.t);
+            lua_pushnumber(L, h.normal.x);
+            lua_pushnumber(L, h.normal.y);
+            lua_pushnumber(L, h.normal.z);
+            return 4;
+        case gamestate::LandRayResult::Miss: lua_pushnil(L); return 1;
+        case gamestate::LandRayResult::Budget: why = "budget"; break;
+        case gamestate::LandRayResult::Invalid: why = "invalid"; break;
+        default: why = "unavailable"; break;
+    }
+    lua_pushnil(L);
+    lua_pushstring(L, why);
+    return 2;
+}
+
 void Shared(lua_State* L, int wum) {
     static const luaL_Reg kLog[] = {{"debug", LogDebug}, {"info", LogInfo}, {"warn", LogWarn}, {"error", LogError}, {nullptr, nullptr}};
     static const luaL_Reg kEvents[] = {{"on", EventsOn}, {"off", EventsOff}, {"emit", EventsEmit}, {nullptr, nullptr}};
@@ -403,7 +434,8 @@ void Shared(lua_State* L, int wum) {
     static const luaL_Reg kStorage[] = {{"get", StorageGet}, {"set", StorageSet}, {"remove", StorageRemove}, {"keys", StorageKeys}, {nullptr, nullptr}};
     static const luaL_Reg kGame[] = {{"scene", GameScene}, {"inMatch", GameInMatch}, {"online", GameOnline},
                                      {"turn", GameTurn}, {"tick", GameTick}, {"worms", GameWorms}, {"teams", GameTeams},
-                                     {"activeWorm", GameActiveWorm}, {"theme", GameTheme}, {nullptr, nullptr}};
+                                     {"activeWorm", GameActiveWorm}, {"theme", GameTheme}, {"landRay", GameLandRay},
+                                     {nullptr, nullptr}};
     struct Ns {
         const char* name;
         const luaL_Reg* fns;

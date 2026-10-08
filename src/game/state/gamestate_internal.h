@@ -55,4 +55,17 @@ bool Rtti(uintptr_t vtable, char* name, size_t cap, bool* payload);  // MSVC RTT
 ClassInfo Classify(uintptr_t vtable);                   // cached per vtable
 std::string Demangle(std::string_view raw);             // ".?AVFoo@@" -> "Foo", ".?AVA@B@@" -> "B::A"
 int WalkEntities(const Layout& l, Entity* out, int max);
+
+// LandRay without the game. One engine sweep runs origin + step * k for k in [0, ticks]; `time` is the hit's k (the
+// engine's float hit time) and `normal` the raw normal it computed. False: the sweep could not run (fault, bad pointers).
+struct RawLandHit { bool hit; float time; Vec3 normal; };
+using LandSweep = bool (*)(const Vec3& origin, const Vec3& step, int ticks, RawLandHit* out);
+constexpr int kLandRayTicks = 1000;                     // the engine's own ray cast steps a segment in 1000
+bool InWorld(const Vec3& v);                            // finite and within +-1e6 on every axis
+LandRayResult SegmentLandRay(LandSweep sweep, const Vec3& a, const Vec3& b, LandHit* out);
+struct FrameBudget {                                    // `cap` takes per frame
+    uint64_t frame = 0;
+    int used = 0;
+    bool Take(uint64_t now, int cap);
+};
 }  // namespace melange::gamestate::detail

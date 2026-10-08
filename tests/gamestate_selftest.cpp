@@ -529,13 +529,86 @@ void TestParams() {
     Expect(gs::wire::KindFromName("Barrel", &k) && k == gs::EntityKind::Barrel && !gs::wire::KindFromName("barrel", &k), "kind names");
     ExpectEq(gs::wire::TypeName(gs::VarType::StringTable), "StringTable", "type names");
 }
+
+// A fake engine sweep: land fills y <= 0 and reports a raw normal of (0, 3, 0), like the engine's unnormalised one.
+gs::Vec3 g_sweepStep{};
+int g_sweepTicks = 0, g_sweeps = 0;
+gs::Vec3 g_sweepNormal{0.f, 3.f, 0.f};
+float g_sweepTimeBias = 0.f;
+bool FloorSweep(const gs::Vec3& o, const gs::Vec3& step, int ticks, d::RawLandHit* out) {
+    ++g_sweeps;
+    g_sweepStep = step;
+    g_sweepTicks = ticks;
+    *out = d::RawLandHit{};
+    float k;
+    if (o.y <= 0.f) k = 0.f;
+    else if (step.y < 0.f) k = -o.y / step.y;
+    else return true;
+    k += g_sweepTimeBias;
+    if (k > static_cast<float>(ticks) + 1.f) return true;  // the engine gives up one step past the end
+    *out = d::RawLandHit{true, k, g_sweepNormal};
+    return true;
+}
+bool FailedSweep(const gs::Vec3&, const gs::Vec3&, int, d::RawLandHit*) { return false; }
+
+bool Near(float a, float b, float eps = 1e-4f) { return std::fabs(a - b) <= eps; }
+
+void TestLandRay() {
+    gs::LandHit h{};
+    using R = gs::LandRayResult;
+    const float inf = std::numeric_limits<float>::infinity(), nan = std::numeric_limits<float>::quiet_NaN();
+    g_sweeps = 0;
+    Expect(d::SegmentLandRay(&FloorSweep, {0, nan, 0}, {0, -1, 0}, &h) == R::Invalid, "NaN start is invalid");
+    Expect(d::SegmentLandRay(&FloorSweep, {0, 1, 0}, {inf, -1, 0}, &h) == R::Invalid, "infinite end is invalid");
+    Expect(d::SegmentLandRay(&FloorSweep, {2e6f, 1, 0}, {0, -1, 0}, &h) == R::Invalid, "a point beyond 1e6 is invalid");
+    Expect(d::SegmentLandRay(&FloorSweep, {0, 1, 0}, {0, -1, 0}, nullptr) == R::Invalid, "no output is invalid");
+    Expect(d::SegmentLandRay(&FloorSweep, {5, -3, 5}, {5, -3, 5}, &h) == R::Miss, "a zero-length segment never hits");
+    Expect(g_sweeps == 0, "rejected segments never reach the engine");
+
+    Expect(d::SegmentLandRay(&FloorSweep, {0, 10, 0}, {0, -30, 0}, &h) == R::Hit, "a ray into the floor hits");
+    Expect(g_sweepTicks == d::kLandRayTicks && Near(g_sweepStep.y, -0.04f, 1e-6f), "the engine's 1000 steps");
+    Expect(Near(h.t, 0.25f), "t along the segment");
+    Expect(h.normal.x == 0.f && Near(h.normal.y, 1.f) && h.normal.z == 0.f, "the normal is normalised");
+    Expect(d::SegmentLandRay(&FloorSweep, {0, -5, 0}, {0, -6, 0}, &h) == R::Hit && h.t == 0.f, "a start inside land hits at 0");
+    Expect(d::SegmentLandRay(&FloorSweep, {0, 10, 0}, {0, 20, 0}, &h) == R::Miss, "a ray away from the floor misses");
+    Expect(d::SegmentLandRay(&FloorSweep, {0, 10, 0}, {0, 0.5f, 0}, &h) == R::Miss, "a ray that stops short misses");
+    g_sweepTimeBias = 0.5f;
+    Expect(d::SegmentLandRay(&FloorSweep, {0, 10, 0}, {0, 0.f, 0}, &h) == R::Miss,
+           "a hit the engine reports past the end of the segment is a miss");
+    g_sweepTimeBias = 0.f;
+
+    // Long segments: only the first 4096 units are swept; t stays relative to the whole segment.
+    Expect(d::SegmentLandRay(&FloorSweep, {0, 1000, 0}, {0, -9000, 0}, &h) == R::Hit, "a long ray hits");
+    Expect(Near(g_sweepStep.y, -gs::kLandRayMaxLength / d::kLandRayTicks, 1e-4f), "a long ray is swept over 4096 units");
+    Expect(Near(h.t, 0.1f), "t of a long ray is relative to the whole segment");
+    Expect(d::SegmentLandRay(&FloorSweep, {0, 5000, 0}, {0, -5000, 0}, &h) == R::Miss, "land beyond 4096 units is not seen");
+
+    g_sweepNormal = {0.f, 0.f, 0.f};
+    const float len = std::sqrt(425.f);  // the segment below is (3, -20, 4)
+    Expect(d::SegmentLandRay(&FloorSweep, {0, 10, 0}, {3, -10, 4}, &h) == R::Hit && Near(h.normal.x, -3.f / len) &&
+               Near(h.normal.y, 20.f / len) && Near(h.normal.z, -4.f / len),
+           "no usable normal: it faces the ray");
+    g_sweepNormal = {nan, 1.f, 0.f};
+    Expect(d::SegmentLandRay(&FloorSweep, {0, 10, 0}, {0, -10, 0}, &h) == R::Hit && Near(h.normal.y, 1.f),
+           "a NaN normal also faces the ray");
+    g_sweepNormal = {0.f, 3.f, 0.f};
+    Expect(d::SegmentLandRay(&FailedSweep, {0, 10, 0}, {0, -10, 0}, &h) == R::Unavailable, "a failed sweep is unavailable");
+    Expect(d::SegmentLandRay(nullptr, {0, 10, 0}, {0, -10, 0}, &h) == R::Unavailable, "no sweep is unavailable");
+
+    d::FrameBudget b;
+    int taken = 0;
+    for (int i = 0; i < 300; ++i) taken += b.Take(7, gs::kLandRaysPerFrame);
+    Expect(taken == gs::kLandRaysPerFrame, "the per-frame budget caps the calls");
+    Expect(b.Take(8, gs::kLandRaysPerFrame), "the budget refills on the next frame");
+}
 }  // namespace
 
 int main() {
     setvbuf(stdout, nullptr, _IONBF, 0);
     const std::pair<const char*, void (*)()> tests[] = {{"text", TestText},         {"snapshot", TestSnapshot},
                                                          {"vars", TestVars},         {"rtti", TestRtti},
-                                                         {"entities", TestEntities}, {"params", TestParams}};
+                                                         {"entities", TestEntities}, {"params", TestParams},
+                                                         {"landray", TestLandRay}};
     for (const auto& [name, fn] : tests) {
         const int before = g_fail;
         fn();

@@ -123,10 +123,30 @@ Read-only game state.
 | `wum.game.online()` | The current match is an online match. |
 | `wum.game.turn()` | `{index}`: turns started in this match (`team` is not available yet). |
 | `wum.game.tick()` | Simulation ticks (50 per second) since the match started, when the sim bridge is running; otherwise 0. |
-| `wum.game.worms()` | The worms of the current match, an array of `{slot, team, name, health, alive, pos={x,y,z}, yaw, weapon}` (`weapon` is the weapon id, absent when none; `yaw` is the facing angle in radians about +Y, the facing direction is `(sin yaw, 0, cos yaw)`, it is not wrapped to a range and it spins while a worm is thrown). Empty outside a match; `nil, "unavailable"` on an unrecognised game build or with `[GameState] Enabled=0`. |
+| `wum.game.worms()` | The worms of the current match, an array of `{slot, team, name, health, alive, pos={x,y,z}, vel={x,y,z}, yaw, weapon}` (`vel` is the engine's own velocity in world units per second: the game keeps it per millisecond of game time and Melange multiplies by 1000; it is the worm's physics velocity, so it is about zero while the worm stands or walks and large while it flies, falls or is knocked back; `weapon` is the weapon id, absent when none; `yaw` is the facing angle in radians about +Y, the facing direction is `(sin yaw, 0, cos yaw)`, it is not wrapped to a range and it spins while a worm is thrown). Empty outside a match; `nil, "unavailable"` on an unrecognised game build or with `[GameState] Enabled=0`. |
 | `wum.game.teams()` | The teams of the current match, an array of `{slot, name, active, ai, local}`; empty outside a match, `nil, "unavailable"` as above. |
 | `wum.game.activeWorm()` | The slot of the worm whose turn it is, or `nil`. |
 | `wum.game.theme()` | The level theme of the current match as the game names it (for example `"SPACE"`), or `nil` outside a match. |
+| `wum.game.landRay(x0, y0, z0, x1, y1, z1)` | Casts the segment from `(x0, y0, z0)` to `(x1, y1, z1)` against the land with the game's own collision code. On a hit it returns `t, nx, ny, nz`: `t` from 0 to 1 along the segment (the point is `p0 + t * (p1 - p0)`) and the unit outward surface normal there. A miss returns `nil`. See below for the details and the other results. |
+
+**`wum.game.landRay` in detail.** It runs the straight sweep the game's camera uses for its own ray casts, against the
+landscape (including terrain that weapons have changed) and the heightmap around it; it does not see water, worms, crates,
+barrels or other objects. The hit is the last point outside the land the sweep found, refined by bisection, so it sits on
+or just in front of the surface; a segment that starts inside land hits at `t = 0`. The game's collision state is saved
+and restored around the call, so a ray never changes the match, online or offline.
+
+- `nil` alone: no land along the segment, the segment has zero length, or no match is running.
+- `nil, "budget"`: more than 256 rays this frame (all mods together); try again next frame.
+- `nil, "invalid"`: a coordinate is not finite or is beyond ±1e6.
+- `nil, "unavailable"`: the game build is not #1077, `[GameState] Enabled=0`, the call is not on the main thread, the
+  loaded landscape is not one the sweep can take (more than 1024 land frames, or its objects do not look right), or a
+  sweep faulted earlier this session (logged; the function then stays off until the game restarts).
+- Segments longer than 4096 units are searched over their first 4096 units only; `t` is still measured along the whole
+  segment.
+- Arguments that are not numbers raise an error.
+
+Check for the function before using it, since older Melange versions do not have it: `if wum.game.landRay then ... end`.
+Melange logs the number of rays and their average and longest time at the end of each match.
 
 ## `wum.ui`
 

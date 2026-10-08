@@ -1,5 +1,6 @@
 #include <windows.h>
 
+#include <algorithm>
 #include <cmath>
 #include <cstdio>
 #include <cstring>
@@ -491,5 +492,35 @@ int WalkEntities(const Layout& l, Entity* out, int max) {
         if (x.hasPos && !Plausible(x.pos)) x.hasPos = false;
     }
     return total;
+}
+
+bool InWorld(const Vec3& v) { return Plausible(v); }
+
+bool FrameBudget::Take(uint64_t now, int cap) {
+    if (now != frame) frame = now, used = 0;
+    if (used >= cap) return false;
+    ++used;
+    return true;
+}
+
+// The segment is swept over its first kLandRayMaxLength units in the engine's 1000 steps, and the hit time is mapped
+// back onto a->b. The engine accepts a hit up to one step past the end of its sweep: anything beyond the segment misses.
+LandRayResult SegmentLandRay(LandSweep sweep, const Vec3& a, const Vec3& b, LandHit* out) {
+    if (!out || !InWorld(a) || !InWorld(b)) return LandRayResult::Invalid;
+    const Vec3 d{b.x - a.x, b.y - a.y, b.z - a.z};
+    const float len = std::sqrt(d.x * d.x + d.y * d.y + d.z * d.z);
+    if (!(len >= 1e-3f)) return LandRayResult::Miss;
+    const float frac = len > kLandRayMaxLength ? kLandRayMaxLength / len : 1.f;
+    const float k = frac / static_cast<float>(kLandRayTicks);
+    RawLandHit r{};
+    if (!sweep || !sweep(a, Vec3{d.x * k, d.y * k, d.z * k}, kLandRayTicks, &r)) return LandRayResult::Unavailable;
+    if (!r.hit || !std::isfinite(r.time) || r.time > static_cast<float>(kLandRayTicks)) return LandRayResult::Miss;
+    const float s = r.time > 0.f ? r.time / static_cast<float>(kLandRayTicks) : 0.f;
+    out->t = (std::min)(s * frac, 1.f);
+    const Vec3& n = r.normal;
+    const float nl = std::sqrt(n.x * n.x + n.y * n.y + n.z * n.z);  // NaN or inf for a bad normal
+    if (std::isfinite(nl) && nl > 1e-6f) out->normal = Vec3{n.x / nl, n.y / nl, n.z / nl};
+    else out->normal = Vec3{-d.x / len, -d.y / len, -d.z / len};  // no usable normal: face the ray
+    return LandRayResult::Hit;
 }
 }  // namespace melange::gamestate::detail
