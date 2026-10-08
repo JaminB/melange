@@ -199,9 +199,22 @@ void HudRect(float, float, float, float, Rgba, bool, float, int) {}
 Rgba g_lastHudColor = 0;
 void HudText(float, float, const char*, Rgba c, float, int) { g_lastHudColor = c; }
 void HudImage(float, float, float, float, unsigned, Rgba, int) {}
+render::Stage g_stage = render::Stage::Count;
+uint64_t g_frame = 1;
+std::vector<Sprite> g_sprites;
+size_t g_spriteCap = kMaxSpritesPerStage;
+bool DrawSprite(const Sprite& s) {
+    if (g_stage != render::Stage::World && g_stage != render::Stage::WorldLate) return false;
+    if (g_sprites.size() >= g_spriteCap) return false;
+    g_sprites.push_back(s);
+    return true;
+}
+render::Stage CurrentStage() { return g_stage; }
+uint64_t FrameSerial() { return g_frame; }
+unsigned g_nextTexture = 100;
 unsigned LoadTexture(const wchar_t*) {
     ++fake::g_textures;
-    return 77;
+    return g_nextTexture++;
 }
 void FreeTexture(unsigned) { --fake::g_textures; }
 int AddDrawCallback(render::Stage, DrawFn, void*, int) {
@@ -268,6 +281,17 @@ bool Read(Snapshot* s) {
     if (!g_readable) return false;
     *s = g_snapshot;
     return true;
+}
+LandRayResult g_rayResult = LandRayResult::Unavailable;
+LandHit g_rayHit{};
+Vec3 g_rayA{}, g_rayB{};
+int g_rayCalls = 0;
+LandRayResult LandRay(const Vec3& a, const Vec3& b, LandHit* out) {
+    ++g_rayCalls;
+    g_rayA = a;
+    g_rayB = b;
+    if (g_rayResult == LandRayResult::Hit) *out = g_rayHit;
+    return g_rayResult;
 }
 }  // namespace gamestate
 namespace sandbox {
@@ -878,6 +902,7 @@ void TestGame() {
     s.worms[0].alive = s.worms[0].active = true;
     s.worms[0].weapon = 1;
     s.worms[0].pos = {1.5f, -2.f, 300.f};
+    s.worms[0].vel = {0.25f, -0.5f, 0.f};
     s.worms[0].yaw = 4.25f;
     strcpy(s.worms[0].name, "Paul");
     s.worms[1] = {};
@@ -889,6 +914,8 @@ void TestGame() {
                            "w[1].alive, w[1].weapon, w[1].pos.x, w[1].pos.y, w[1].pos.z"),
              "2\t5\t1\tPaul\t87\ttrue\t1\t1.5\t-2\t300", "worms fields");
     ExpectEq(Eval(nullptr, "return wum.game.worms()[1].yaw"), "4.25", "worm yaw");
+    ExpectEq(Eval(nullptr, "local v = wum.game.worms()[1].vel return v.x, v.y, v.z"), "250\t-500\t0",
+             "worm velocity in units per second (the engine's per-millisecond value x1000)");
     ExpectEq(Eval(nullptr, "local w = wum.game.worms()[2] return w.name, w.alive, w.weapon"), "Leto\tfalse\tnil",
              "a dead worm without a weapon");
     ExpectEq(Eval(nullptr, "local t = wum.game.teams() return #t, t[1].slot, t[1].name, t[1].active, t[1].ai, t[1][\"local\"]"),
@@ -903,6 +930,29 @@ void TestGame() {
     s.match.activeWorm = -1;
     ExpectEq(Eval(nullptr, "return wum.game.activeWorm()"), "nil", "no active worm between turns");
     gamestate::g_readable = false;
+
+    // wum.game.landRay: arguments are checked before the engine is asked; each result maps to its Lua form.
+    gamestate::g_rayCalls = 0;
+    Expect(Eval(nullptr, "return wum.game.landRay(1, 2, 3, 4, 5)").rfind("ERR:", 0) == 0, "landRay needs six numbers");
+    Expect(Eval(nullptr, "return wum.game.landRay(1, 2, 3, 4, 5, 'x')").rfind("ERR:", 0) == 0,
+           "landRay refuses a non-number");
+    Expect(gamestate::g_rayCalls == 0, "bad arguments never reach the engine");
+    gamestate::g_rayResult = gamestate::LandRayResult::Unavailable;
+    ExpectEq(Eval(nullptr, "local r = table.pack(wum.game.landRay(0, 0, 0, 1, 1, 1)) return r.n, r[1], r[2]"),
+             "2\tnil\tunavailable", "landRay unavailable");
+    gamestate::g_rayResult = gamestate::LandRayResult::Budget;
+    ExpectEq(Eval(nullptr, "return wum.game.landRay(0, 0, 0, 1, 1, 1)"), "nil\tbudget", "landRay over budget");
+    gamestate::g_rayResult = gamestate::LandRayResult::Invalid;
+    ExpectEq(Eval(nullptr, "return wum.game.landRay(0/0, 0, 0, 1, 1, 1)"), "nil\tinvalid", "landRay invalid point");
+    gamestate::g_rayResult = gamestate::LandRayResult::Miss;
+    ExpectEq(Eval(nullptr, "return select('#', wum.game.landRay(1.5, 2, 3, 4, 5, 6.25))"), "1", "a miss is one nil");
+    Expect(gamestate::g_rayA.x == 1.5f && gamestate::g_rayA.z == 3.f && gamestate::g_rayB.y == 5.f &&
+               gamestate::g_rayB.z == 6.25f,
+           "landRay passes the segment through");
+    gamestate::g_rayResult = gamestate::LandRayResult::Hit;
+    gamestate::g_rayHit = {0.5f, {0.f, 1.f, 0.f}};
+    ExpectEq(Eval(nullptr, "return wum.game.landRay(0, 10, 0, 0, -10, 0)"), "0.5\t0\t1\t0", "landRay hit: t and normal");
+    gamestate::g_rayResult = gamestate::LandRayResult::Unavailable;
 }
 
 void TestGraphics() {
@@ -931,6 +981,104 @@ void TestGraphics() {
     Expect(shaders::g_glslEntry == "LandscapeFragmentMain" && !shaders::g_glslOn, "pause carries the entry and state");
     Expect(Eval("other", "wum.shaders.enableGlsl('Landscape.cg', 'LandscapeFragmentMain', true)").rfind("ERR:", 0) == 0,
            "another mod's GLSL replacement is refused");
+}
+
+void TestSprites() {
+    SetMod("spr", "tex = wum.draw.texture('spark.png') tex2 = wum.draw.texture('smoke.png')\n");
+    SetMod("spr2", "tex = wum.draw.texture('other.png')\n");
+    Expect(sandbox::LoadMod("spr") && sandbox::LoadMod("spr2"), "sprite mods load");
+    ExpectEq(Eval("spr", "return type(wum.draw.sprite)"), "function", "wum.draw.sprite exists");
+
+    draw::g_stage = render::Stage::Count;
+    const std::string outside = Eval("spr", "return wum.draw.sprite(tex, 0, 0, 0, 1)");
+    Expect(outside.find("only inside a wum.draw.on") != std::string::npos, "outside a draw callback raises: " + outside);
+    draw::g_stage = render::Stage::Hud;
+    Expect(Eval("spr", "return wum.draw.sprite(tex, 0, 0, 0, 1)").rfind("ERR:", 0) == 0, "a hud callback raises");
+
+    draw::g_stage = render::Stage::World;
+    draw::g_sprites.clear();
+    ++draw::g_frame;
+    ExpectEq(Eval("spr", "return wum.draw.sprite(tex, 1, 2, 3, 4, 5, 0, 0, 2, 0xff000080, 'additive')"), "true", "full call");
+    Expect(draw::g_sprites.size() == 1, "one sprite submitted");
+    if (!draw::g_sprites.empty()) {
+        const draw::Sprite& s = draw::g_sprites[0];
+        Expect(s.pos[0] == 1 && s.pos[1] == 2 && s.pos[2] == 3 && s.halfW == 4 && s.halfL == 5 && s.axis[0] == 0 &&
+                   s.axis[1] == 0 && s.axis[2] == 2,
+               "position, sizes and axis passed through");
+        Expect(s.color == 0x800000ffu && s.blend == draw::SpriteBlend::Additive, "colour 0xRRGGBBAA -> 0xAABBGGRR, additive");
+        ExpectEq(Eval("spr", "return tex"), std::to_string(s.texture), "texture id passed through");
+    }
+    ExpectEq(Eval("spr", "return wum.draw.sprite(tex2, 0, 0, 0, 1)"), "true", "only tex, position and halfW are required");
+    Expect(draw::g_sprites.back().color == 0xffffffffu && draw::g_sprites.back().blend == draw::SpriteBlend::Alpha &&
+               draw::g_sprites.back().halfL == 0 && draw::g_sprites.back().axis[2] == 0,
+           "defaults: white, alpha, billboard");
+    Eval("spr", "wum.draw.sprite(tex, 0, 0, 0, 1, 1, 1, 0, 0, '#11223344', 'premul')");
+    Expect(draw::g_sprites.back().color == 0x44332211u && draw::g_sprites.back().blend == draw::SpriteBlend::Premultiplied,
+           "\"#RRGGBBAA\" colour, premul mode");
+    Eval("spr", "wum.draw.sprite(tex, 0, 0, 0, 1, 1, 1, 0, 0, {1, 0, 0, 0.5}, 'alpha')");
+    Expect(draw::g_sprites.back().color == 0x800000ffu && draw::g_sprites.back().blend == draw::SpriteBlend::Alpha,
+           "{r, g, b, a} colour, alpha mode");
+    draw::g_stage = render::Stage::WorldLate;
+    ExpectEq(Eval("spr", "return wum.draw.sprite(tex, 0, 0, 0, 1)"), "true", "worldLate callbacks may draw sprites");
+    ExpectEq(Eval("spr", "return wum.draw.sprite(tex, 0/0, 1/0, 0, 1, 0/0, 0, 0, 0)"), "true",
+             "non-finite values are not an error (the draw layer skips them)");
+
+    const size_t before = draw::g_sprites.size();
+    const char* bad[] = {
+        "wum.draw.sprite('x', 0, 0, 0, 1)",                  // texture not a number
+        "wum.draw.sprite(1.5, 0, 0, 0, 1)",                  // texture not an integer
+        "wum.draw.sprite(9999, 0, 0, 0, 1)",                 // never loaded
+        "wum.draw.sprite(0, 0, 0, 0, 1)",                    // zero
+        "wum.draw.sprite(tex, 'a', 0, 0, 1)",                // position
+        "wum.draw.sprite(tex, 0, 0, nil, 1)",                // missing z
+        "wum.draw.sprite(tex, 0, 0, 0)",                     // missing halfW
+        "wum.draw.sprite(tex, 0, 0, 0, 1, 'long')",          // halfL
+        "wum.draw.sprite(tex, 0, 0, 0, 1, 1, {}, 0, 0)",     // axis component
+        "wum.draw.sprite(tex, 0, 0, 0, 1, 1, 0, 0, 0, true)",  // colour
+        "wum.draw.sprite(tex, 0, 0, 0, 1, 1, 0, 0, 0, '#12')",  // colour string
+        "wum.draw.sprite(tex, 0, 0, 0, 1, 1, 0, 0, 0, nil, 'add')",  // mode
+        "wum.draw.sprite(tex, 0, 0, 0, 1, 1, 0, 0, 0, nil, {})",     // mode type
+    };
+    for (const char* code : bad) Expect(Eval("spr", code).rfind("ERR:", 0) == 0, std::string("raises: ") + code);
+    const std::string foreign = Eval("spr2", "return wum.draw.sprite(" + Eval("spr", "return tex") + ", 0, 0, 0, 1)");
+    Expect(foreign.find("texture id from this mod's wum.draw.texture expected") != std::string::npos,
+           "another mod's texture is refused: " + foreign);
+    Expect(draw::g_sprites.size() == before, "nothing submitted by a failed call");
+
+    // Per-mod, per-frame cap (4096), counted across callbacks and reset by the next frame.
+    ++draw::g_frame;
+    const std::string loop = "local n = 0 for i = 1, 2100 do if wum.draw.sprite(tex, i, 0, 0, 1) then n = n + 1 end end return n";
+    ExpectEq(Eval("spr", loop), "2100", "under the cap");
+    ExpectEq(Eval("spr", loop), "1996", "the cap stops the 4097th sprite of the frame");
+    ExpectEq(Eval("spr", "return wum.draw.sprite(tex, 0, 0, 0, 1)"), "false", "past the cap returns false");
+    ExpectEq(Eval("spr2", "return wum.draw.sprite(tex, 0, 0, 0, 1)"), "true", "the cap is per mod");
+    ++draw::g_frame;
+    ExpectEq(Eval("spr", "return wum.draw.sprite(tex, 0, 0, 0, 1)"), "true", "the next frame has a fresh budget");
+    draw::g_spriteCap = draw::g_sprites.size();
+    ExpectEq(Eval("spr2", "return wum.draw.sprite(tex, 0, 0, 0, 1)"), "false", "the draw layer's stage cap returns false");
+    draw::g_spriteCap = draw::kMaxSpritesPerStage;
+
+    // Lua-side cost: 2000 calls per Eval (the selftest's 100k instruction budget), timed over several frames.
+    LARGE_INTEGER f, t0, t1;
+    QueryPerformanceFrequency(&f);
+    const std::string bench =
+        "local s, sp, t = wum.draw.sprite, 0, tex for i = 1, 2000 do s(t, i, 2, 3, 4, 8, 0.5, 0.25, 1, 0xffcc88ff, 'additive') end";
+    double best = 1e9;
+    for (int rep = 0; rep < 8; ++rep) {
+        ++draw::g_frame;
+        draw::g_sprites.clear();
+        QueryPerformanceCounter(&t0);
+        const std::string r = Eval("spr", bench);
+        QueryPerformanceCounter(&t1);
+        Expect(r.rfind("ERR:", 0) != 0 && draw::g_sprites.size() == 2000, "bench loop ran: " + r);
+        best = std::min(best, static_cast<double>(t1.QuadPart - t0.QuadPart) * 1000.0 / static_cast<double>(f.QuadPart));
+    }
+    printf("  sprite: Lua wum.draw.sprite %.3f ms per 1000 calls (best of 8, incl. Eval overhead)\n", best / 2.0);
+
+    draw::g_stage = render::Stage::Count;
+    draw::g_sprites.clear();
+    sandbox::UnloadMod("spr");
+    sandbox::UnloadMod("spr2");
 }
 
 void TestDocs() {
@@ -980,7 +1128,8 @@ int main() {
         {"config/storage", TestConfigStorage},              {"console", TestConsole},
         {"unsafe", TestUnsafe},   {"panels", TestPanels},   {"menus", TestMenus},
         {"samples", TestSamples},
-        {"game", TestGame},       {"graphics", TestGraphics}, {"docs", TestDocs}};
+        {"game", TestGame},       {"graphics", TestGraphics}, {"sprites", TestSprites},
+        {"docs", TestDocs}};
     for (const auto& [name, fn] : tests) {
         const int before = g_fail;
         fn();

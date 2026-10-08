@@ -12,7 +12,8 @@ struct Worm {
     uint16_t health;
     uint8_t physicsState;
     int16_t weapon;                   // -1 if none
-    Vec3 pos, vel;
+    Vec3 pos;
+    Vec3 vel;                         // the engine's value: world units per millisecond of game time (x1000 = per s)
     float yaw;                        // facing angle, radians about +Y, unwrapped; facing = (sin, 0, cos)
     char name[32];
 };
@@ -60,4 +61,16 @@ bool Var1(const char* name, Var* out);                        // one named value
 
 // Read-only raw view for the inspector: fault-guarded copy of up to 4096 bytes. False on fault.
 bool Peek(uintptr_t addr, void* out, uint32_t n);
+
+// The game's own land collision along the segment a->b: the straight sweep its camera ray cast uses, over the landscape's
+// voxel frames and the heightmap surround (not water, worms or objects). Main thread. The engine's query globals are
+// saved and restored around the call, so the simulation never sees it. Miss outside a match.
+enum class LandRayResult : uint8_t { Hit, Miss, Unavailable, Budget, Invalid };
+struct LandHit {
+    float t;                          // 0..1 along a->b
+    Vec3 normal;                      // unit; the land's outward surface normal at the hit
+};
+constexpr int kLandRaysPerFrame = 256;       // all callers together; more in one frame: Budget
+constexpr float kLandRayMaxLength = 4096.f;  // a longer segment is searched over its first 4096 units only
+LandRayResult LandRay(const Vec3& a, const Vec3& b, LandHit* out);  // Invalid: a non-finite coordinate
 }

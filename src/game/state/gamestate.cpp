@@ -1,10 +1,13 @@
 // GameState: read-only worms, teams, match values, entities and data variables of build #1077 (melange/gamestate.h).
 // Nothing here calls a setter or caches a container pointer; the only engine calls are the data store's getters
-// (GetResource, Enumerate) and the Rm.cpp GetInt wrapper inside a match, each behind a fault guard.
+// (GetResource, Enumerate), the Rm.cpp GetInt wrapper inside a match and LandRay's land sweep (whose globals are put
+// back afterwards), each behind a fault guard.
 #include <windows.h>
 
 #include <algorithm>
 #include <atomic>
+#include <cstring>
+#include <float.h>
 #include <mutex>
 
 #include "core/events.h"
@@ -136,6 +139,8 @@ constexpr detail::Engine kEngine{&GetInt, &GetResource, &Release, &Enumerate};
 
 bool MainThread() { return events::FrameCount() > 0 && GetCurrentThreadId() == events::MainThreadId(); }
 
+void LogRayStats();  // LandRay, below
+
 uint32_t Count(bus::MsgId id) {
     return id == bus::kInvalidId ? 0 : bus::CountOf(id, bus::Path::Post) + bus::CountOf(id, bus::Path::Deliver);
 }
@@ -154,6 +159,8 @@ void TrackMatch() {
         if (vm) {
             g_turnBase = g_prevTurns;
             g_sdBase = g_prevSd;
+        } else {
+            LogRayStats();
         }
     }
     g_prevTurns = turns;
@@ -276,6 +283,166 @@ bool Var1(const char* name, Var* out) {
 }
 
 bool Peek(uintptr_t addr, void* out, uint32_t n) { return detail::PeekGuarded(addr, out, n); }
+
+// ---------------------------------------------------------------- LandRay
+// The engine's straight sweep, as its camera ray cast 0x51b150 runs it: 0x466ae0(origin, step, accel 0, 1000 ticks,
+// 1, colliders 0, 0), then the hit's normal from the LandCollisionMessage getter 0x482010. The query lives in globals
+// that the simulation can still read after the call (payload code dispatches a message between its sweep and reading
+// the normal), and the broadphase leaves a frame bitmask in the landscape: all of it is saved and put back, so a mod's
+// ray never changes what the sim sees. The sweep's call tree (0x473190, 0x462010, 0x46a070 and helpers) writes only
+// those globals and that bitmask, and its only indirect calls are the assert logger's (checked in Ghidra). Engine
+// asserts are compiled in and reachable from it (0x467400, 0x468490, 0x46a070, 0x462010): 0x638889 sets the
+// re-entrancy flag 0x962698, writes the game's log through virtual stream calls, then clears the flag. A fault in
+// there would skip the clear and turn the next assert anywhere into an int3, so the flag is saved and put back too.
+// A firing assert's log line is the one side effect a ray can leave.
+// The broadphase ends with an unconditional store of the partial mask word at index frames / 32; with 1024 frames
+// that is land+0x148 (m_vRayCache[0]), past the mask, so the sweep takes at most 1023.
+namespace {
+constexpr uintptr_t kSweep = 0x466ae0, kLandNormal = 0x482010, kLandscape = 0x955638, kHeightmap = 0x952ad4,
+                    kFrames = 0x955740, kLandVt = 0x81c810, kHeightmapVt = 0x81babc, kFilter = 0x952d00,
+                    kHitTick = 0x952cfc, kHitTime = 0x952cf8;
+constexpr struct { uintptr_t at; uint32_t n; } kScratch[] = {
+    {0x94ef8c, 0x4}, {0x952ab0, 0x78}, {0x952c28, 0x148}, {0x952f50, 0x16c}, {0x962698, 0x1}};
+constexpr uint32_t kScratchBytes = 0x4 + 0x78 + 0x148 + 0x16c + 0x1;
+constexpr uint32_t kMaskAt = 0xc8, kMaskBytes = 0x80, kMaxFrames = kMaskBytes * 8;  // frames must stay below this
+
+bool g_landFaulted = false;  // main thread only, like everything below
+detail::FrameBudget g_landBudget;
+uint32_t g_rayCalls = 0;
+uint64_t g_rayTicks = 0, g_rayMaxTicks = 0;
+
+bool LandCheck() {
+    static std::once_flag once;
+    static bool ok = false;
+    std::call_once(once, [] {
+        if (!Check()) return;
+        ok = mem::Expect(0x466ae0, {0x83, 0xec, 0x30, 0x8b, 0x44, 0x24, 0x48, 0x8b, 0x4c, 0x24, 0x4c, 0x55}) &&
+             // hit tick = ticks + 1 (no hit), hit time = that as a float
+             mem::Expect(0x466f97, {0x8d, 0x4d, 0x01, 0x89, 0x0d, 0xfc, 0x2c, 0x95, 0x00, 0xdb, 0x05, 0xfc, 0x2c, 0x95, 0x00}) &&
+             mem::Expect(0x466fb3, {0xd9, 0x1d, 0xf8, 0x2c, 0x95, 0x00}) &&
+             // the landscape, then the heightmap, swept
+             mem::Expect(0x466fed, {0x8b, 0x0d, 0x38, 0x56, 0x95, 0x00}) &&
+             mem::Expect(0x46701d, {0xe8, 0x6e, 0xc1, 0x00, 0x00, 0x8b, 0x0d, 0xd4, 0x2a, 0x95, 0x00, 0x85, 0xc9, 0x74,
+                                    0x05, 0xe8, 0xdf, 0xaf, 0xff, 0xff}) &&
+             // the broadphase bitmask at landscape+0xc8, one bit per land frame
+             mem::Expect(0x4731a1, {0xe8, 0xba, 0xf7, 0xff, 0xff, 0x8b, 0x35, 0x40, 0x57, 0x95, 0x00}) &&
+             mem::Expect(0x472c39, {0x89, 0xb4, 0xba, 0xc8, 0x00, 0x00, 0x00}) &&
+             // the normal getter returns &normal (0x952d64)
+             mem::Expect(0x482010, {0x80, 0x3d, 0x4a, 0x2c, 0x95, 0x00, 0x00, 0x75, 0x24, 0xb8, 0xff, 0xff, 0x00, 0x00,
+                                    0x66, 0x39, 0x05, 0xe8, 0x2c, 0x95, 0x00}) &&
+             mem::Expect(0x48203d, {0xb8, 0x64, 0x2d, 0x95, 0x00, 0xc3}) &&
+             mem::Expect(0x47330b, {0x8b, 0x15, 0x44, 0x57, 0x95, 0x00, 0x2b, 0x15, 0x40, 0x57, 0x95, 0x00});
+        char name[64];
+        bool payload = false;
+        ok = ok && detail::Rtti(kLandVt, name, sizeof name, &payload) && strcmp(name, "LandscapeLogicEntity") == 0 &&
+             detail::Rtti(kHeightmapVt, name, sizeof name, &payload) && strcmp(name, "HeightmapLogicEntity") == 0;
+        if (!ok) LOG_WARN("[gamestate] land sweep differs from build #1077: wum.game.landRay is off");
+    });
+    return ok;
+}
+
+bool Poke(uintptr_t addr, const void* in, size_t n) {
+    __try {
+        memcpy(reinterpret_cast<void*>(addr), in, n);
+        return true;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return false;
+    }
+}
+
+using SweepFn = void(__cdecl*)(const float* origin, const float* step, const float* accel, int ticks, int flag,
+                               int colliders, int arg);
+using NormalFn = const float*(__cdecl*)();
+
+// The raw engine calls; no C++ objects with destructors here (SEH).
+bool CallSweep(const float* origin, const float* step, int ticks, int* hitTick, float* hitTime, float* normal) {
+    static const float kZero[3] = {0.f, 0.f, 0.f};
+    __try {
+        *reinterpret_cast<volatile uint8_t*>(kFilter) = 0;  // no frame filter (some sim callers set it around a sweep)
+        reinterpret_cast<SweepFn>(kSweep)(origin, step, kZero, ticks, 1, 0, 0);
+        *hitTick = *reinterpret_cast<const volatile int32_t*>(kHitTick);
+        *hitTime = *reinterpret_cast<const volatile float*>(kHitTime);
+        if (*hitTick != ticks + 1) {
+            const float* n = reinterpret_cast<NormalFn>(kLandNormal)();
+            normal[0] = n[0], normal[1] = n[1], normal[2] = n[2];
+        }
+        return true;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return false;
+    }
+}
+
+bool EngineSweep(const Vec3& origin, const Vec3& step, int ticks, detail::RawLandHit* out) {
+    const uintptr_t land = Rd<uintptr_t>(kLandscape), hm = Rd<uintptr_t>(kHeightmap);
+    if (land) {
+        const uintptr_t b = Rd<uintptr_t>(kFrames), e = Rd<uintptr_t>(kFrames + 4);
+        if (Rd<uintptr_t>(land) != kLandVt || e < b || (e - b) % 4 || (e - b) / 4 >= kMaxFrames || (e != b && !b))
+            return false;
+    }
+    if (hm && Rd<uintptr_t>(hm) != kHeightmapVt) return false;
+    static uint8_t saved[kScratchBytes], mask[kMaskBytes];
+    uint32_t off = 0;
+    for (const auto& s : kScratch) {
+        if (!detail::Copy(s.at, saved + off, s.n)) return false;
+        off += s.n;
+    }
+    if (land && !detail::Copy(land + kMaskAt, mask, kMaskBytes)) return false;
+    const float o[3] = {origin.x, origin.y, origin.z}, st[3] = {step.x, step.y, step.z};
+    int32_t tick = ticks + 1;
+    float time = 0.f, n[3] = {0.f, 0.f, 0.f};
+    unsigned int x87 = 0, sse = 0, unused = 0;
+    __control87_2(0, 0, &x87, &sse);
+    const bool ran = CallSweep(o, st, ticks, &tick, &time, n);
+    if (!ran) {  // a fault mid-sweep can leave values on the x87 stack: empty it, keep the game's control words
+        constexpr unsigned int kAll = _MCW_DN | _MCW_EM | _MCW_IC | _MCW_RC | _MCW_PC;
+        _fpreset();
+        __control87_2(x87, kAll, &unused, nullptr);
+        __control87_2(sse, kAll, nullptr, &unused);
+    }
+    off = 0;
+    bool restored = true;
+    for (const auto& s : kScratch) {
+        restored &= Poke(s.at, saved + off, s.n);
+        off += s.n;
+    }
+    if (land) restored &= Poke(land + kMaskAt, mask, kMaskBytes);
+    if (!ran || !restored) {
+        g_landFaulted = true;
+        LOG_WARN("[gamestate] the land sweep faulted (%s): wum.game.landRay is off for this session",
+                 ran ? "restoring its globals" : "in the engine");
+        return false;
+    }
+    *out = detail::RawLandHit{tick != ticks + 1, time, Vec3{n[0], n[1], n[2]}};
+    return true;
+}
+
+void LogRayStats() {
+    if (!g_rayCalls) return;
+    LARGE_INTEGER f;
+    QueryPerformanceFrequency(&f);
+    const double us = 1e6 / static_cast<double>(f.QuadPart);
+    LOG_INFO("[gamestate] landRay: %u calls this match, %.1f us average, %.1f us max", g_rayCalls,
+             static_cast<double>(g_rayTicks) * us / g_rayCalls, static_cast<double>(g_rayMaxTicks) * us);
+    g_rayCalls = 0;
+    g_rayTicks = g_rayMaxTicks = 0;
+}
+}  // namespace
+
+LandRayResult LandRay(const Vec3& a, const Vec3& b, LandHit* out) {
+    if (!out || !detail::InWorld(a) || !detail::InWorld(b)) return LandRayResult::Invalid;
+    if (!Available() || !MainThread() || !LandCheck() || g_landFaulted) return LandRayResult::Unavailable;
+    if (!sim::InMatch()) return LandRayResult::Miss;
+    if (!g_landBudget.Take(events::FrameCount(), kLandRaysPerFrame)) return LandRayResult::Budget;
+    LARGE_INTEGER t0, t1;
+    QueryPerformanceCounter(&t0);
+    const LandRayResult r = detail::SegmentLandRay(&EngineSweep, a, b, out);
+    QueryPerformanceCounter(&t1);
+    const uint64_t dt = static_cast<uint64_t>(t1.QuadPart - t0.QuadPart);
+    ++g_rayCalls;
+    g_rayTicks += dt;
+    g_rayMaxTicks = (std::max)(g_rayMaxTicks, dt);
+    return r;
+}
 
 MELANGE_MODULE(GameState);
 }  // namespace melange::gamestate

@@ -388,7 +388,8 @@ client asks for; nothing is ever written. The readers need build #1077 and `[Gam
   while the menu's attract demo runs, whose match also reports `inMatch`.
 - `teams[]`: `{slot, name, active, ai, local, colour, alliance, roundsWon, score}`.
 - `worms[]`: `{slot, team, posInTeam, name, active, alive, health, physicsState, weapon, pos, vel}`; positions are
-  world units with +Y up, `weapon` is `-1` for none.
+  world units with +Y up, `vel` is the engine's raw value in world units per millisecond of game time (Lua's
+  `wum.game.worms()` gives it per second), `weapon` is `-1` for none.
 - Outside a match `teams` and `worms` are empty. `kind` is one of `Worm`, `Projectile`, `Crate`, `Barrel`, `Other`;
   `pos` and `vel` are `{x, y, z}` or `null` when the class's position is not known.
 
