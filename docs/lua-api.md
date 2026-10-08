@@ -139,7 +139,7 @@ and restored around the call, so a ray never changes the match, online or offlin
 - `nil, "budget"`: more than 256 rays this frame (all mods together); try again next frame.
 - `nil, "invalid"`: a coordinate is not finite or is beyond ±1e6.
 - `nil, "unavailable"`: the game build is not #1077, `[GameState] Enabled=0`, the call is not on the main thread, the
-  loaded landscape is not one the sweep can take (more than 1024 land frames, or its objects do not look right), or a
+  loaded landscape is not one the sweep can take (1024 or more land frames, or its objects do not look right), or a
   sweep faulted earlier this session (logged; the function then stays off until the game restarts).
 - Segments longer than 4096 units are searched over their first 4096 units only; `t` is still measured along the whole
   segment.

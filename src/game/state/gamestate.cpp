@@ -289,16 +289,22 @@ bool Peek(uintptr_t addr, void* out, uint32_t n) { return detail::PeekGuarded(ad
 // 1, colliders 0, 0), then the hit's normal from the LandCollisionMessage getter 0x482010. The query lives in globals
 // that the simulation can still read after the call (payload code dispatches a message between its sweep and reading
 // the normal), and the broadphase leaves a frame bitmask in the landscape: all of it is saved and put back, so a mod's
-// ray never changes what the sim sees. The sweep's call tree (0x473190, 0x462010, 0x46a070 and helpers) has no
-// indirect calls and writes only those globals and that bitmask (checked in Ghidra).
+// ray never changes what the sim sees. The sweep's call tree (0x473190, 0x462010, 0x46a070 and helpers) writes only
+// those globals and that bitmask, and its only indirect calls are the assert logger's (checked in Ghidra). Engine
+// asserts are compiled in and reachable from it (0x467400, 0x468490, 0x46a070, 0x462010): 0x638889 sets the
+// re-entrancy flag 0x962698, writes the game's log through virtual stream calls, then clears the flag. A fault in
+// there would skip the clear and turn the next assert anywhere into an int3, so the flag is saved and put back too.
+// A firing assert's log line is the one side effect a ray can leave.
+// The broadphase ends with an unconditional store of the partial mask word at index frames / 32; with 1024 frames
+// that is land+0x148 (m_vRayCache[0]), past the mask, so the sweep takes at most 1023.
 namespace {
 constexpr uintptr_t kSweep = 0x466ae0, kLandNormal = 0x482010, kLandscape = 0x955638, kHeightmap = 0x952ad4,
                     kFrames = 0x955740, kLandVt = 0x81c810, kHeightmapVt = 0x81babc, kFilter = 0x952d00,
                     kHitTick = 0x952cfc, kHitTime = 0x952cf8;
 constexpr struct { uintptr_t at; uint32_t n; } kScratch[] = {
-    {0x94ef8c, 0x4}, {0x952ab0, 0x78}, {0x952c28, 0x148}, {0x952f50, 0x16c}};
-constexpr uint32_t kScratchBytes = 0x4 + 0x78 + 0x148 + 0x16c;
-constexpr uint32_t kMaskAt = 0xc8, kMaskBytes = 0x80, kMaxFrames = kMaskBytes * 8;
+    {0x94ef8c, 0x4}, {0x952ab0, 0x78}, {0x952c28, 0x148}, {0x952f50, 0x16c}, {0x962698, 0x1}};
+constexpr uint32_t kScratchBytes = 0x4 + 0x78 + 0x148 + 0x16c + 0x1;
+constexpr uint32_t kMaskAt = 0xc8, kMaskBytes = 0x80, kMaxFrames = kMaskBytes * 8;  // frames must stay below this
 
 bool g_landFaulted = false;  // main thread only, like everything below
 detail::FrameBudget g_landBudget;
@@ -370,7 +376,7 @@ bool EngineSweep(const Vec3& origin, const Vec3& step, int ticks, detail::RawLan
     const uintptr_t land = Rd<uintptr_t>(kLandscape), hm = Rd<uintptr_t>(kHeightmap);
     if (land) {
         const uintptr_t b = Rd<uintptr_t>(kFrames), e = Rd<uintptr_t>(kFrames + 4);
-        if (Rd<uintptr_t>(land) != kLandVt || e < b || (e - b) % 4 || (e - b) / 4 > kMaxFrames || (e != b && !b))
+        if (Rd<uintptr_t>(land) != kLandVt || e < b || (e - b) % 4 || (e - b) / 4 >= kMaxFrames || (e != b && !b))
             return false;
     }
     if (hm && Rd<uintptr_t>(hm) != kHeightmapVt) return false;
