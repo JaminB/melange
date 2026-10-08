@@ -132,9 +132,17 @@ Mods live in `<game>\Mods\<id>\`. When two mods provide the same file, the later
 GPU timestamp queries (only stages with at least one registered callback are timed that frame). The *Mirage/GL*
 panel's *GPU timers* section lists them, and `melange::gltrace::GetGpuTime(GpuRegion)` (`melange/gltrace.h`) reads
 them from C++; the `gltrace.gpu` console verb logs all six at once. A region reads `n/a` until its first result has
-come back from the GPU (the queries are triple-buffered, so that's normally a couple of frames). This is separate
+come back from the GPU (the queries are triple-buffered, so that's normally a couple of frames), and again once its
+stage has not been timed for 8 frames (no callbacks, so its last value is not shown forever). This is separate
 from Post-FX's own per-effect timers (`melange::postfx::EffectInfo::gpuMs`, shown in *Mirage/Post-FX*): these time
 Mirage's own stage machinery and mod callbacks, not any one effect.
+
+A timestamp is taken when the GPU reaches it, so a region is GPU wall time: it includes any time the GPU sat idle
+waiting for that region's commands. Mirage flushes right after each stage's end timestamp, so a stage is not charged
+for whatever the CPU does after it (Frame-event work, log writes, a Lua call, a turn change) while the driver holds the
+rest of the frame back; without that, a 0.6 ms PostWorld read 5-10 ms on an idle-ish AMD GPU. The swap region spans
+the whole frame and still counts the gaps between the driver's submissions, so on a GPU that is mostly waiting for
+the game it shows when the frame finished on the GPU more than how busy the GPU was.
 
 ### Shader mods
 

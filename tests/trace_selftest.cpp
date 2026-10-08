@@ -484,19 +484,25 @@ void TestGpuTimerLogic() {
     Region r;
     Check(!r.valid && r.lastMs == -1.0, "gputimers: a fresh region has no result yet");
     Check(!ShouldPoll(r), "gputimers: slot 0 was never issued, so it is never polled before its first Begin");
-    Advance(r);  // frame 1: Begin/End issued into slot 0
+    Check(!Current(r, 0), "gputimers: a fresh region is not current");
+    Advance(r, 1);  // frame 1: Begin/End issued into slot 0
     Check(r.head == 1, "gputimers: Advance rotates to the next of 3 slots");
     Check(ShouldPoll(r) == false, "gputimers: slot 1 (now current) was never issued either");
     Resolve(r, false, 0);
     Check(!r.valid, "gputimers: an unavailable poll leaves the region unresolved");
-    Advance(r);  // frame 2: slot 1
-    Advance(r);  // frame 3: slot 2
+    Advance(r, 2);  // frame 2: slot 1
+    Advance(r, 3);  // frame 3: slot 2
     Check(r.head == 0, "gputimers: the ring wraps back to slot 0 after 3 slots");
     Check(ShouldPoll(r), "gputimers: slot 0 is now due for a poll (it was issued back on frame 1)");
     Resolve(r, true, 2'500'000);  // 2.5 ms in nanoseconds
     Check(r.valid && r.lastMs == 2.5, "gputimers: a resolved poll converts ns to ms");
     Resolve(r, false, 999);
     Check(r.valid && r.lastMs == 2.5, "gputimers: a later unavailable poll keeps the last known value");
+    Check(Current(r, 3) && Current(r, 3 + kStaleFrames), "gputimers: a result stays current while the region is timed");
+    Check(!Current(r, 4 + kStaleFrames), "gputimers: a region not timed for kStaleFrames frames has no current value");
+    Advance(r, 50);
+    Check(Current(r, 51) && r.lastMs == 2.5, "gputimers: timing the region again makes its last result current again");
+    Check(!Current(r, 49), "gputimers: a frame counter behind the last Advance is not trusted");
 }
 }  // namespace
 

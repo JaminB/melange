@@ -5,6 +5,7 @@
 
 #include <atomic>
 
+#include "core/events.h"
 #include "melange/gltrace.h"
 #include "render/mirage/gputimers_logic.h"
 
@@ -73,8 +74,10 @@ void Poll(const Procs& p, RegionState& r) {
 double LastMs(int region, bool* valid) {
     if (valid) *valid = false;
     if (region < 0 || region >= kRegions) return -1.0;
-    *valid = g_regions[region].state.valid;
-    return g_regions[region].state.lastMs;
+    const logic::Region& r = g_regions[region].state;
+    const bool current = logic::Current(r, melange::events::FrameCount());
+    if (valid) *valid = current;
+    return current ? r.lastMs : -1.0;
 }
 
 bool Supported() { return P().ok; }
@@ -101,7 +104,14 @@ void End(int region) {
     RegionState& r = g_regions[region];
     if (!r.allocated) return;  // Begin() for this region never ran (no matching query is open)
     p.QueryCounter(r.queries[r.state.head][1], kTimestamp);
-    logic::Advance(r.state);
+    logic::Advance(r.state, melange::events::FrameCount());
+    // A timestamp records when the GPU reaches it, so a region also counts any time the GPU spends waiting for its
+    // commands. Drivers hold recorded commands back and submit them in chunks (AMD's at a chunk boundary that can fall
+    // anywhere in the frame), so without this the end of a stage could wait in the driver for everything the CPU does
+    // until the next submission: Frame-event work, log writes, a Lua call, SwapBuffers. Measured on an RX 7800 XT, that
+    // turned a 0.6 ms PostWorld into 5-10 ms readings (and 2263 ms across a turn change). Flushing right after the end
+    // timestamp submits the stage's commands with it. The swap region needs none: SwapBuffers follows at once.
+    if (region != 0) glFlush();
 }
 }  // namespace melange::mirage::gputimers
 
