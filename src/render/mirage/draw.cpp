@@ -18,6 +18,7 @@
 #include "melange/testcmd.h"
 #include "render/mirage/draw_gl.h"
 #include "render/mirage/draw_queue.h"
+#include "render/mirage/draw_sprites.h"
 #include "render/mirage/stages.h"
 
 namespace {
@@ -61,6 +62,7 @@ struct StageState {
     int enterHandle = 0, exitHandle = 0;
     std::vector<Primitive>* activePass = nullptr;
     std::vector<DrawCb> callbacks;
+    std::vector<Sprite> sprites;  // this pass only (DrawSprite is immediate-only), drawn after the primitives
 };
 StageState g_stage[kNumStages];
 
@@ -68,6 +70,10 @@ StageState g_stage[kNumStages];
 bool g_insideStage = false;
 render::Stage g_currentStage = render::Stage::Count;
 int g_nextHandle = 1;
+// FrameSerial(): stages run World, WorldLate, Hud within a main pass, so entering one at or before the last entered
+// index starts a new pass.
+uint64_t g_frameSerial = 0;
+int g_lastEnterIdx = kNumStages;
 
 uint64_t g_statsFrame = 0;
 Stats g_stats{};
@@ -99,8 +105,12 @@ void FaultDrawCb(StageState* s, int handle, render::Stage stage, unsigned long c
 
 void EnterCb(render::Stage stage, void* user) {
     StageState* s = static_cast<StageState*>(user);
+    const int idx = IndexOf(stage);
+    if (idx <= g_lastEnterIdx) ++g_frameSerial;
+    g_lastEnterIdx = idx;
     g_insideStage = true;
     g_currentStage = stage;
+    s->sprites.clear();
     s->activePass = &s->queue.BeginPass();
     std::vector<DrawCb> sorted = s->callbacks;
     std::stable_sort(sorted.begin(), sorted.end(), [](const DrawCb& a, const DrawCb& b) { return a.order < b.order; });
@@ -118,7 +128,8 @@ void ExitCb(render::Stage stage, void* user) {
     // faulting); draw whatever was queued for immediate drawing and otherwise treat the pass as empty.
     static std::vector<Primitive> kEmptyPass;
     std::vector<Primitive>& pass = s->activePass ? *s->activePass : kEmptyPass;
-    mirage::drawgl::FrameStats fs = mirage::drawgl::DrawStage(stage, pass, s->queue.Immediate());
+    mirage::drawgl::FrameStats fs = mirage::drawgl::DrawStage(stage, pass, s->queue.Immediate(), s->sprites);
+    s->sprites.clear();
 
     uint64_t frame = render::GetTiming().frames;
     if (frame != g_statsFrame) {
@@ -167,6 +178,20 @@ void Submit(Kind kind, uint32_t flags, Primitive p) {
 
 int ClampFrames(int frames) { return frames < 1 ? 1 : frames; }
 }  // namespace
+
+bool DrawSprite(const Sprite& s) {
+    if (!g_insideStage || (g_currentStage != render::Stage::World && g_currentStage != render::Stage::WorldLate)) return false;
+    const int idx = IndexOf(g_currentStage);
+    if (idx < 0) return false;
+    std::vector<Sprite>& v = g_stage[idx].sprites;
+    if (v.size() >= kMaxSpritesPerStage) return false;
+    if (mirage::drawsprites::Drawable(s)) v.push_back(s);
+    return true;
+}
+
+render::Stage CurrentStage() { return g_insideStage ? g_currentStage : render::Stage::Count; }
+
+uint64_t FrameSerial() { return g_frameSerial; }
 
 void Line(const float a[3], const float b[3], Rgba c, float widthPx, uint32_t flags, int frames) {
     Primitive p;
@@ -324,11 +349,26 @@ unsigned LoadTexture(const wchar_t* pngPath) {
     unsigned texture = 0;
     glGenTextures(1, &texture);
     glBindTexture(GL_TEXTURE_2D, texture);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP);
+    GLint prevAlign = 4;
+    glGetIntegerv(GL_UNPACK_ALIGNMENT, &prevAlign);
+    glPixelStorei(GL_UNPACK_ALIGNMENT, 4);  // RGBA8 rows are always 4-byte aligned; only guards a stray setting
     glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, w, h, 0, GL_RGBA, GL_UNSIGNED_BYTE, pixels);
+    // Full chain down to 1x1 on the CPU (no GL 3 / FBO extension needed), so sprites minify without shimmering.
+    const bool premul = mirage::drawsprites::LooksPremultiplied(pixels, static_cast<size_t>(w) * h);
+    std::vector<uint8_t> a(pixels, pixels + static_cast<size_t>(w) * h * 4), b;
+    for (int level = 1; w > 1 || h > 1; ++level) {
+        b.resize(static_cast<size_t>(mirage::drawsprites::MipSize(w)) * mirage::drawsprites::MipSize(h) * 4);
+        mirage::drawsprites::Downsample(a.data(), w, h, b.data(), premul);
+        w = mirage::drawsprites::MipSize(w);
+        h = mirage::drawsprites::MipSize(h);
+        glTexImage2D(GL_TEXTURE_2D, level, GL_RGBA, w, h, 0, GL_RGBA, GL_UNSIGNED_BYTE, b.data());
+        a.swap(b);
+    }
+    glPixelStorei(GL_UNPACK_ALIGNMENT, prevAlign);
     glBindTexture(GL_TEXTURE_2D, static_cast<GLuint>(prev));
     stbi_image_free(pixels);
     return texture;

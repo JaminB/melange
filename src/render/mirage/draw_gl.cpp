@@ -7,6 +7,7 @@
 
 #include "melange/draw.h"
 #include "render/mirage/draw_font.h"
+#include "render/mirage/draw_sprites.h"
 
 namespace melange::mirage::drawgl {
 namespace {
@@ -79,12 +80,16 @@ void SetSpace(Space s) {
     else glLoadIdentity();
 }
 
-void SetBlend(bool additive) {
-    if (g_c.additive == static_cast<int>(additive)) return;
+// g_c.additive: 0 alpha, 1 additive, 2 premultiplied (sprites only).
+void SetBlendMode(int mode) {
+    if (g_c.additive == mode) return;
     EndQuads();
-    g_c.additive = additive;
-    glBlendFunc(GL_SRC_ALPHA, additive ? GL_ONE : GL_ONE_MINUS_SRC_ALPHA);
+    g_c.additive = mode;
+    if (mode == 2) glBlendFunc(GL_ONE, GL_ONE_MINUS_SRC_ALPHA);
+    else glBlendFunc(GL_SRC_ALPHA, mode == 1 ? GL_ONE : GL_ONE_MINUS_SRC_ALPHA);
 }
+
+void SetBlend(bool additive) { SetBlendMode(additive ? 1 : 0); }
 
 void SetDepth(bool test, bool write) {
     if (g_c.depthTest != static_cast<int>(test)) {
@@ -301,6 +306,36 @@ void DrawWorldOne(const Primitive& p, uint32_t& prims, uint32_t& verts) {
     }
 }
 
+drawsprites::Batch g_sprites;
+
+// All of a stage's sprites from one client-side vertex array, one glDrawArrays per texture + blend run.
+void DrawSprites(const std::vector<draw::Sprite>& sprites, uint32_t& prims, uint32_t& verts) {
+    g_sprites.Build(sprites, g_cam.view);
+    if (g_sprites.runs.empty()) return;
+    EndQuads();
+    SetSpace(Space::ViewSpace);
+    SetDepth(true, false);
+    SetCull(false);
+    glTexEnvi(GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_MODULATE);  // restored by PopState (GL_TEXTURE_BIT)
+    glEnableClientState(GL_VERTEX_ARRAY);
+    glEnableClientState(GL_COLOR_ARRAY);
+    glEnableClientState(GL_TEXTURE_COORD_ARRAY);
+    const draw::Vertex* v = g_sprites.verts.data();
+    glVertexPointer(3, GL_FLOAT, sizeof(draw::Vertex), &v->pos);
+    glColorPointer(4, GL_UNSIGNED_BYTE, sizeof(draw::Vertex), &v->color);
+    glTexCoordPointer(2, GL_FLOAT, sizeof(draw::Vertex), &v->uv);
+    for (const drawsprites::Run& r : g_sprites.runs) {
+        SetTexture(r.texture);
+        SetBlendMode(r.blend == draw::SpriteBlend::Additive ? 1 : r.blend == draw::SpriteBlend::Premultiplied ? 2 : 0);
+        glDrawArrays(GL_QUADS, static_cast<GLint>(r.first), static_cast<GLsizei>(r.count));
+    }
+    glDisableClientState(GL_VERTEX_ARRAY);
+    glDisableClientState(GL_COLOR_ARRAY);
+    glDisableClientState(GL_TEXTURE_COORD_ARRAY);
+    prims += static_cast<uint32_t>(g_sprites.verts.size() / 4);
+    verts += static_cast<uint32_t>(g_sprites.verts.size());
+}
+
 void DrawHudOne(const Primitive& p, uint32_t& prims, uint32_t& verts) {
     float rgba[4];
     UnpackColor(p.color, rgba);
@@ -375,9 +410,11 @@ void DrawHudOne(const Primitive& p, uint32_t& prims, uint32_t& verts) {
 }
 }  // namespace
 
-FrameStats DrawStage(render::Stage stage, std::vector<Primitive>& a, std::vector<Primitive>& b) {
+FrameStats DrawStage(render::Stage stage, std::vector<Primitive>& a, std::vector<Primitive>& b,
+                     const std::vector<draw::Sprite>& sprites) {
     FrameStats stats;
-    if (a.empty() && b.empty()) return stats;
+    const bool haveSprites = !sprites.empty() && stage != render::Stage::Hud;
+    if (a.empty() && b.empty() && !haveSprites) return stats;
 
     render::WindowSize(&g_windowW, &g_windowH);
     bool haveCam = render::GetCamera(&g_cam);
@@ -404,6 +441,7 @@ FrameStats DrawStage(render::Stage stage, std::vector<Primitive>& a, std::vector
     } else {
         for (auto& p : a) DrawWorldOne(p, stats.primitives, stats.vertices);
         for (auto& p : b) DrawWorldOne(p, stats.primitives, stats.vertices);
+        if (haveSprites) DrawSprites(sprites, stats.primitives, stats.vertices);
     }
     EndQuads();
     render::PopState(token);

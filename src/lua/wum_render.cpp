@@ -153,7 +153,7 @@ int Texture(lua_State* L) {
     ModRec* m = Current();
     Gen* g = CurrentGen();
     if (!m || !g) return luaL_error(L, "wum.draw.texture needs a mod context");
-    if (g->textureCount >= kMaxTexturesPerGen) {
+    if (g->textures.size() >= kMaxTexturesPerGen) {
         lua_pushnil(L);
         lua_pushliteral(L, "too many textures loaded");
         return 2;
@@ -168,9 +168,58 @@ int Texture(lua_State* L) {
         lua_pushfstring(L, "cannot load %s", rel.c_str());
         return 2;
     }
-    ++g->textureCount;
+    g->textures.push_back(tex);
     g->cleanups.push_back([tex] { draw::FreeTexture(tex); });
     lua_pushinteger(L, tex);
+    return 1;
+}
+
+constexpr uint32_t kMaxSpritesPerMod = 4096;  // per frame, across all of the mod's draw callbacks
+
+draw::SpriteBlend CheckSpriteMode(lua_State* L, int idx) {
+    if (lua_isnoneornil(L, idx)) return draw::SpriteBlend::Alpha;
+    size_t n = 0;
+    const char* s = luaL_checklstring(L, idx, &n);
+    if (n == 5 && memcmp(s, "alpha", 5) == 0) return draw::SpriteBlend::Alpha;
+    if (n == 6 && memcmp(s, "premul", 6) == 0) return draw::SpriteBlend::Premultiplied;
+    if (n == 8 && memcmp(s, "additive", 8) == 0) return draw::SpriteBlend::Additive;
+    luaL_argerror(L, idx, "mode must be \"alpha\", \"premul\" or \"additive\"");
+    return draw::SpriteBlend::Alpha;
+}
+
+// wum.draw.sprite(tex, x, y, z, halfW, halfL, ax, ay, az[, color[, mode]]) -> true, or false when dropped.
+int Sprite(lua_State* L) {
+    ModRec* m = Current();
+    Gen* g = CurrentGen();
+    if (!m || !g) return luaL_error(L, "wum.draw.sprite needs a mod context");
+    draw::Sprite s{};
+    const lua_Integer tex = luaL_checkinteger(L, 1);
+    // Any id this generation loaded; the last one accepted is checked first (usually all a frame uses).
+    if (tex <= 0 || static_cast<lua_Integer>(g->spriteTexHit) != tex) {
+        if (tex <= 0 || std::find(g->textures.begin(), g->textures.end(), static_cast<unsigned>(tex)) == g->textures.end())
+            return luaL_argerror(L, 1, "texture id from this mod's wum.draw.texture expected");
+        g->spriteTexHit = static_cast<unsigned>(tex);
+    }
+    s.texture = static_cast<unsigned>(tex);
+    s.pos[0] = Num(L, 2);
+    s.pos[1] = Num(L, 3);
+    s.pos[2] = Num(L, 4);
+    s.halfW = Num(L, 5);
+    s.halfL = static_cast<float>(luaL_optnumber(L, 6, 0));
+    for (int i = 0; i < 3; ++i) s.axis[i] = static_cast<float>(luaL_optnumber(L, 7 + i, 0));
+    s.color = CheckColor(L, 10, 0xffffffff);
+    s.blend = CheckSpriteMode(L, 11);
+    const render::Stage stage = draw::CurrentStage();
+    if (stage != render::Stage::World && stage != render::Stage::WorldLate)
+        return luaL_error(L, "wum.draw.sprite: only inside a wum.draw.on(\"world\" or \"worldLate\") callback");
+    const uint64_t frame = draw::FrameSerial();
+    if (m->spriteFrame != frame) {
+        m->spriteFrame = frame;
+        m->spriteCount = 0;
+    }
+    bool ok = m->spriteCount < kMaxSpritesPerMod && draw::DrawSprite(s);
+    if (ok) ++m->spriteCount;
+    lua_pushboolean(L, ok);
     return 1;
 }
 
@@ -455,8 +504,8 @@ int ShEnableGlsl(lua_State* L) {
 void Shared(lua_State* L, int wum) {
     static const luaL_Reg kDraw[] = {{"line", Line},       {"box", Box},         {"sphere", Sphere},     {"axes", Axes},
                                      {"quad", Quad},       {"text", Text},       {"hudLine", HudLine},   {"hudRect", HudRect},
-                                     {"hudText", HudText}, {"hudImage", HudImage}, {"texture", Texture}, {"on", On},
-                                     {"off", Off},         {nullptr, nullptr}};
+                                     {"hudText", HudText}, {"hudImage", HudImage}, {"texture", Texture}, {"sprite", Sprite},
+                                     {"on", On},           {"off", Off},         {nullptr, nullptr}};
     static const luaL_Reg kRender[] = {{"camera", Camera}, {"worldToScreen", WorldToScreen}, {"windowSize", WindowSize},
                                        {"timing", Timing}, {nullptr, nullptr}};
     static const luaL_Reg kPostfx[] = {{"list", PfxList}, {"enable", PfxEnable}, {"setParam", PfxSetParam},

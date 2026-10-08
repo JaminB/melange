@@ -610,7 +610,7 @@ The public SDK headers are in `src/sdk/melange/`:
 | `melange/postfx.h` | List, enable, order and tune post-processing effects; add a full-screen pass from C++ |
 | `melange/shaders.h` | List the game's shader programs, reload them, set their parameters, add shader folders |
 | `melange/graphics.h` | Request a shadow-map size at runtime and read the current one |
-| `melange/draw.h` | Draw lines, boxes, spheres, meshes and text in the world, and shapes, text and images on the HUD |
+| `melange/draw.h` | Draw lines, boxes, spheres, meshes, text and batched textured sprites (billboards and velocity-stretched) in the world, and shapes, text and images on the HUD |
 | `melange/gldebug.h` | Whether the debug context is on, its message counts, and debug groups and labels for your GL work |
 | `melange/mods.h` | The mod list, load order and enable state (Thumper), and the content identity and lobby handshake used online |
 | `melange/lua.h` | Extend the Lua 5.4 client VM from C++: add `wum.*` namespaces, post events to mods, read Sandbox statistics |

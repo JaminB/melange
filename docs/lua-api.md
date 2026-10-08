@@ -192,9 +192,67 @@ queued for the next frame; inside `wum.draw.on`, they are drawn at that stage.
 | `wum.draw.hudRect(x0, y0, x1, y1, color[, filled[, width[, frames]]])` | HUD rectangle. |
 | `wum.draw.hudText(x, y, text, color[, size[, frames]])` | HUD text. |
 | `wum.draw.hudImage(x0, y0, x1, y1, texture[, tint[, frames]])` | HUD image from `wum.draw.texture`. |
-| `wum.draw.texture(rel)` | Loads a PNG from the mod folder; returns a texture id, or `nil, err`. Freed when the mod unloads or reloads. |
+| `wum.draw.texture(rel)` | Loads a PNG from the mod folder; returns a texture id, or `nil, err`. Freed when the mod unloads or reloads. A mod can hold 256 at a time. Textures get a full mip chain and trilinear filtering. |
+| `wum.draw.sprite(tex, x, y, z, halfW, halfL, ax, ay, az[, color[, mode]])` | Textured world sprite; only inside a `"world"` or `"worldLate"` callback. Returns `true`, or `false` when dropped by the per-frame cap. See [Sprites](#sprites). |
 | `wum.draw.on(stage, fn)` | Calls `fn(stage)` every frame at `"world"`, `"worldLate"` or `"hud"`; returns a handle. |
 | `wum.draw.off(handle)` | Removes a draw callback. |
+
+### Sprites
+
+`wum.draw.sprite(tex, x, y, z, halfW, halfL, ax, ay, az[, color[, mode]])` draws a textured quad for particles, sparks,
+smoke and similar effects. Detect it with `if wum.draw.sprite then ... end` (Melange 0.6 and later).
+
+- `tex`: a texture id from this mod's `wum.draw.texture`. Any other number raises an error. The PNG can use straight or
+  premultiplied alpha (pick the matching `mode`). It is sampled with bilinear filtering and mipmaps. Mips are averaged
+  weighted by alpha, unless every pixel has r, g and b no greater than its alpha (a premultiplied image), in which case
+  they are averaged as stored.
+- `x, y, z`: the world centre. `halfW`: half the width, in world units. `halfL`: half the length along the axis.
+- `ax, ay, az`: the world-space stretch axis (any length; it is normalised).
+  - Zero axis: a round billboard that faces the camera. It is `2*halfW` square, `halfL` is ignored, and the image is
+    upright (texture top at the top of the screen).
+  - Otherwise: a view-facing quad `2*halfW` wide whose long side follows the screen projection of the axis, as for a
+    velocity-stretched particle. Texture `v` runs from the tail (`v = 0`, the PNG's top row) at `centre - axis*halfL` to
+    the head (`v = 1`, the bottom row) at `centre + axis*halfL`, so draw streak textures with the head at the bottom.
+    `u` runs 0..1 across the width. The tail and head keep their real depths, so the streak is in perspective.
+  - When the axis points nearly at the camera, the sprite is not allowed to look shorter than `min(halfW, halfL)`. It
+    shows as that much quad in the axis's screen direction (screen up if it has none), so a particle flying straight
+    at the camera does not vanish.
+- `color`: a tint multiplied with the texture, in any colour form above. The default is opaque white.
+- `mode`: `"alpha"` (default, straight alpha blending), `"premul"` (premultiplied: `ONE, ONE_MINUS_SRC_ALPHA`; the
+  tint is premultiplied by its own alpha, so its alpha still fades the sprite) or `"additive"` (`SRC_ALPHA, ONE`).
+
+Sprites are drawn at the callback's stage after that stage's other primitives. They are depth-tested against the
+scene, with no depth writes and no face culling. All sprites of a stage, from every mod, are sorted back to front by
+view depth, and sprites at equal depth keep their call order. Additive sprites blend the same in any order, so each
+unbroken stretch of additive sprites in that order is regrouped by texture.
+
+Sprites are batched into one vertex array per stage, with one draw call per run of consecutive sprites (in that order)
+that share a texture and mode. One texture costs one draw call however many sprites use it. Alpha-blended textures
+interleaved in depth cost a draw call for every switch.
+
+A mod can draw 4096 sprites per frame across all its callbacks. Past that, calls do nothing and return `false`. They
+also return `false` if the stage already holds 65536 sprites from all mods.
+
+The arguments are checked. A non-number position or size, a bad colour or mode, or calling outside a world callback
+raises an error. `halfL` and the axis may be `nil` (0). Non-finite values (NaN, infinity) are ignored: nothing is
+drawn and the call returns `true`. The same happens for `halfW <= 0`, and for a non-zero axis with `halfL == 0`.
+
+```lua
+local spark = wum.draw.texture("fx/spark.png")
+wum.draw.on("worldLate", function()
+  for _, p in ipairs(particles) do
+    local v = p.vel
+    wum.draw.sprite(spark, p.x, p.y, p.z, 0.4, 0.4 + p.speed * 0.05, v.x, v.y, v.z, 0xffd080ff, "additive")
+  end
+end)
+```
+
+Measured cost, x86 release build on a Ryzen 7 7800X3D with a Radeon RX 7800 XT:
+
+- Lua: about 0.18 ms per 1000 `wum.draw.sprite` calls.
+- Melange's side (expand, sort, runs, GL submission), sharing one texture: about 0.04 to 0.06 ms per 1000.
+- Worst case: 4096 sprites with three textures shuffled at random in depth make about 3100 draw calls. That costs
+  about 0.28 ms of CPU per 1000 sprites, plus a few milliseconds of GPU time per frame. Prefer few textures.
 
 ## `wum.render`
 
