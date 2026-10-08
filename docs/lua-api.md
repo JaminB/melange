@@ -140,10 +140,12 @@ and restored around the call, so a ray never changes the match, online or offlin
 - `nil, "invalid"`: a coordinate is not finite or is beyond ±1e6.
 - `nil, "unavailable"`: the game build is not #1077, `[GameState] Enabled=0`, the call is not on the main thread, the
   loaded landscape is not one the sweep can take (1024 or more land frames, or its objects do not look right), or a
-  sweep faulted earlier this session (logged; the function then stays off until the game restarts).
+  sweep faulted earlier this session (logged; the function then stays off until the game restarts). Only the build,
+  setting and fault causes are permanent: the thread and landscape causes can clear on a later call or the next match,
+  so a mod should try again later rather than give up for the session.
 - Segments longer than 4096 units are searched over their first 4096 units only; `t` is still measured along the whole
   segment.
-- Arguments that are not numbers raise an error.
+- Arguments that are not numbers (or strings that convert to numbers) raise an error.
 
 Check for the function before using it, since older Melange versions do not have it: `if wum.game.landRay then ... end`.
 Melange logs the number of rays and their average and longest time at the end of each match.
