@@ -319,11 +319,70 @@ void VanillaTests() {
            "vanilla: no clone or message keys");
 }
 
+void GidTests() {
+    const std::string exe = "0123456789abcdef", data = "fedcba9876543210";
+    {
+        Expect(GidHashesPath("Data/Tweak/SCRIPTS.XOM") && GidHashesPath("Data/scripts/stdvs.lub"),
+               "gid: tweak and script files are hashed");
+        Expect(!GidHashesPath("Data/Language/PC/English.xom") && !GidHashesPath("data\\language\\pc\\Czech.xom"),
+               "gid: language files are not");
+        const std::string t = GidDataText({{"Data/Tweak/WEAPTWK.XOM", "bb"}, {"Data/scripts/stdvs.lub", "aa"},
+                                           {"Data/Language/PC/English.xom", "cc"}, {"Data/Tweak/SCRIPTS.XOM", ""}});
+        Expect(t == "melange-gid/1\nfile=data/scripts/stdvs.lub aa\nfile=data/tweak/scripts.xom -\n"
+                    "file=data/tweak/weaptwk.xom bb\n",
+               "gid: data text sorted, lower case, language skipped, a missing file is -");
+        Expect(GidDataText({{"Data/Tweak/A.XOM", "1"}, {"Data/Tweak/B.XOM", "2"}}) ==
+                   GidDataText({{"data\\tweak\\b.xom", "2"}, {"Data/Tweak/A.XOM", "1"}}),
+               "gid: data text ignores table order, case and slashes");
+        Expect(GidDataText({{"Data/Tweak/SCRIPTS.XOM", "aa"}}) != GidDataText({{"Data/Tweak/SCRIPTS.XOM", "ab"}}),
+               "gid: a changed file changes the data text");
+    }
+    {
+        const std::string v = BuildGidValue({exe, data, kGidData2 | kGidCrcOff});
+        Expect(v == "1;0123456789abcdef;fedcba9876543210;3", "gid value");
+        GameId g;
+        Expect(ParseGidValue(v, &g) && g.exe16 == exe && g.data16 == data && g.flags == 3, "gid value round-trips");
+        Expect(BuildGidValue({"", data, 0}).empty() && BuildGidValue({exe, "short", 0}).empty(),
+               "gid value: nothing to publish without both hashes");
+        Expect(!ParseGidValue("", nullptr) && !ParseGidValue("2;" + exe + ";" + data + ";0", nullptr) &&
+                   !ParseGidValue("1;" + exe + ";" + data, nullptr) && !ParseGidValue("1;" + exe + ";" + data + ";x", nullptr) &&
+                   !ParseGidValue("1;" + exe + ";NOTHEX0123456789;0", nullptr),
+               "gid value: empty, another version, missing or bad fields rejected");
+    }
+    {
+        const GameId ours{exe, data, 0};
+        Expect(GidFlagsText(0).empty() && GidFlagsText(3) == "Data2 overlay, CRC check off", "gid flags text");
+        Expect(DiffGid(ours, ours).empty(), "gid diff: same files");
+        Expect(DiffGid(ours, {"1111111111111111", data, 0}) == "different game build", "gid diff: another exe");
+        Expect(DiffGid(ours, {exe, "2222222222222222", 0}) == "different game data files", "gid diff: other data");
+        Expect(DiffGid(ours, {exe, data, kGidData2}) == "different game data files (theirs: Data2 overlay)",
+               "gid diff: same hashes, but they have a Data2 overlay");
+        Expect(DiffGid({exe, data, kGidCrcOff}, {"1111111111111111", "2222222222222222", kGidData2}) ==
+                   "different game build; different game data files (theirs: Data2 overlay; yours: CRC check off)",
+               "gid diff: both, with the flags on each side");
+    }
+    {
+        const std::string ours = BuildGidValue({exe, data, 0});
+        const std::vector<GidMember> members = {{"Ann", ours},
+                                                {"Bob", BuildGidValue({"1111111111111111", data, 0})},
+                                                {"Cid", ""},
+                                                {"Dee", "garbage"},
+                                                {"", BuildGidValue({exe, "2222222222222222", 0})}};
+        const std::vector<std::string> w = GidWarnings(ours, members);
+        Expect(w.size() == 2, "gid warnings: one line per differing Melange peer, unknown peers skipped");
+        Expect(w.size() == 2 && w[0] == "Bob: different game build" && w[1] == "?: different game data files",
+               "gid warnings: named, in member order");
+        Expect(GidWarnings("", members).empty(), "gid warnings: nothing while our own value is not ready");
+        Expect(GidWarnings(ours, {{"Ann", ours}, {"Cid", ""}}).empty(), "gid warnings: everyone known matches");
+    }
+}
+
 void WeaponTests(const std::vector<ContentMod>& a) {
     ContentTextTests(a);
     CloneTests(a);
     PolicyTests();
     VanillaTests();
+    GidTests();
 }
 }  // namespace
 

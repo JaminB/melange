@@ -123,4 +123,33 @@ struct CloneVerdict {
 };
 CloneVerdict EvaluateCloneLobby(const CloneLobbyInput& in);
 
+// Game-file integrity ("mlg.gid", member): which exe and which retail data files this peer runs, so the lobby can
+// warn when two Melange peers would desync over a third-party mod (MMP, Renewation, a Data2 overlay). Warning
+// only: never part of the content hash, never gates anything.
+constexpr uint32_t kGidData2 = 1, kGidCrcOff = 2;   // a Data2 folder exists; the exe's CRC check is bypassed
+struct GameId {
+    std::string exe16, data16;   // first 16 hex of the exe file's sha256, and of GidDataText's sha256
+    uint32_t flags = 0;
+};
+// The retail CRC table paths that go into data16: everything but Data/Language/ (text only, never sim).
+bool GidHashesPath(const std::string& path);
+// "melange-gid/1\n" then "file=<path lower case, forward slashes> <sha256 or ->\n" sorted by path; files is
+// (path, sha256) with "" for a missing file. Paths GidHashesPath refuses are skipped.
+std::string GidDataText(const std::vector<std::pair<std::string, std::string>>& files);
+// "1;<exe16>;<data16>;<flags>", "" when either hash is not 16 hex chars (a hashing failure: publish nothing).
+std::string BuildGidValue(const GameId& g);
+bool ParseGidValue(const std::string& value, GameId* out);
+// "Data2 overlay, CRC check off", "" for no flags.
+std::string GidFlagsText(uint32_t flags);
+// What differs between our fingerprint and a peer's, "" when nothing does: "different game build", "different
+// game data files", or both joined by "; ", the data difference followed by the flags of whoever has any, as
+// "(theirs: ...; yours: ...)".
+std::string DiffGid(const GameId& ours, const GameId& theirs);
+// One "<name>: <DiffGid>" line per member whose "mlg.gid" parses and differs from ours. Members without the key
+// (vanilla or an older Melange) are unknown and skipped; so is everyone when our own value does not parse.
+struct GidMember {
+    std::string name, gid;
+};
+std::vector<std::string> GidWarnings(const std::string& ourGid, const std::vector<GidMember>& members);
+
 }  // namespace melange::handshake

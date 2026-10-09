@@ -1,6 +1,7 @@
 #include "mods/handshake_internal.h"
 
 #include <algorithm>
+#include <cctype>
 #include <cstdio>
 #include <cstdlib>
 #include <utility>
@@ -318,6 +319,73 @@ CloneVerdict EvaluateCloneLobby(const CloneLobbyInput& in) {
         v.why = "The host has no clone weapons, so yours stay off this match.";
     }
     return v;
+}
+
+namespace {
+std::string LowerPath(std::string s) {
+    for (char& c : s) c = c == '\\' ? '/' : static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+    return s;
+}
+}  // namespace
+
+bool GidHashesPath(const std::string& path) { return LowerPath(path).rfind("data/language/", 0) != 0; }
+
+std::string GidDataText(const std::vector<std::pair<std::string, std::string>>& files) {
+    std::vector<std::pair<std::string, std::string>> sorted;
+    for (const auto& [path, sha] : files)
+        if (GidHashesPath(path)) sorted.emplace_back(LowerPath(path), sha.empty() ? "-" : sha);
+    std::sort(sorted.begin(), sorted.end());
+    std::string t = "melange-gid/1\n";
+    for (const auto& [path, sha] : sorted) t += "file=" + path + " " + sha + "\n";
+    return t;
+}
+
+std::string BuildGidValue(const GameId& g) {
+    if (!IsHex16(g.exe16) || !IsHex16(g.data16)) return "";
+    return "1;" + g.exe16 + ";" + g.data16 + ";" + std::to_string(g.flags);
+}
+
+bool ParseGidValue(const std::string& value, GameId* out) {
+    const std::vector<std::string> parts = Split(value, ';');
+    if (parts.size() != 4 || parts[0] != "1" || !IsHex16(parts[1]) || !IsHex16(parts[2])) return false;
+    char* end = nullptr;
+    const unsigned long flags = strtoul(parts[3].c_str(), &end, 10);
+    if (parts[3].empty() || !end || *end != '\0') return false;
+    if (out) *out = GameId{parts[1], parts[2], static_cast<uint32_t>(flags)};
+    return true;
+}
+
+std::string GidFlagsText(uint32_t flags) {
+    std::string s;
+    if (flags & kGidData2) Add(s, "Data2 overlay");
+    if (flags & kGidCrcOff) Add(s, "CRC check off");
+    return s;
+}
+
+std::string DiffGid(const GameId& ours, const GameId& theirs) {
+    std::string out;
+    if (ours.exe16 != theirs.exe16) out = "different game build";
+    if (ours.data16 != theirs.data16 || ours.flags != theirs.flags) {
+        std::string data = "different game data files", who;
+        if (theirs.flags) who = "theirs: " + GidFlagsText(theirs.flags);
+        if (ours.flags) who += (who.empty() ? "" : "; ") + std::string("yours: ") + GidFlagsText(ours.flags);
+        if (!who.empty()) data += " (" + who + ")";
+        out += (out.empty() ? "" : "; ") + data;
+    }
+    return out;
+}
+
+std::vector<std::string> GidWarnings(const std::string& ourGid, const std::vector<GidMember>& members) {
+    std::vector<std::string> out;
+    GameId ours;
+    if (!ParseGidValue(ourGid, &ours)) return out;
+    for (const auto& m : members) {
+        GameId theirs;
+        if (!ParseGidValue(m.gid, &theirs)) continue;
+        const std::string diff = DiffGid(ours, theirs);
+        if (!diff.empty()) out.push_back((m.name.empty() ? std::string("?") : m.name) + ": " + diff);
+    }
+    return out;
 }
 
 }  // namespace melange::handshake

@@ -16,8 +16,10 @@
 #include <string>
 #include <vector>
 
+#include "core/events.h"
 #include "core/log.h"
 #include "core/mem.h"
+#include "core/module.h"
 #include "render/input_logic.h"
 #include "render/internal.h"
 #include "render/keytap.h"
@@ -469,3 +471,143 @@ int AddHotkey(uint8_t dik, uint8_t mods, ActionFn fn, void* user) {
 
 bool ParseHotkey(const char* text, uint8_t* dik, uint8_t* mods) { return melange::render::ParseHotkeyText(text, dik, mods); }
 }  // namespace melange::overlay
+
+// ---------------------------------------------------------------- MouseFix
+// Every frame the engine warps the (hidden) OS cursor to the window centre through slot 18 of the
+// XomInputDeviceManagerDx vtable (0x701d92, called only from 0x510f10), also in the menus where the frontend cursor is
+// drawn from WM_MOUSEMOVE deltas: the warp races those deltas and the menu cursor stutters. This module skips the warp
+// while a frontend MouseEntity is alive (the menu cursor is shown); aiming in a match, where no MouseEntity exists, keeps
+// the warp, so it stays unbounded. Local input only: nothing here touches the simulation.
+namespace {
+constexpr uintptr_t kMouseSlot = 0x89ae5c;      // vtable 0x89ae14 + 0x48, holds 0x701d92
+constexpr uintptr_t kMouseWarp = 0x701d92;      // stdcall (mgr, x, y), ret 0xc, returns 0
+constexpr uintptr_t kMouseEntityList = 0x97ac94;  // MouseEntity XomClass (0x97ac60) + 0x34: instance-list head, 0 = none alive
+constexpr uintptr_t kMouseDevice = 0x701348;    // cdecl (xomObject) -> mouse device or null
+
+using MouseWarp_t = int(__stdcall*)(void*, int, int);
+using MouseDevice_t = void*(__cdecl*)(void*);
+MouseWarp_t g_mouseOrig = nullptr;
+bool g_mouseClip = true, g_mouseProbe = false;
+bool g_mouseWasCapturing = false, g_mouseClipped = false;  // main thread only, like the slot call
+uint64_t g_mouseSlotTick = 0;                               // GetTickCount64() of the last slot call
+
+bool FeMouseAlive() { return *reinterpret_cast<volatile uint32_t*>(kMouseEntityList) != 0; }
+
+void ReleaseMouseClip() {
+    if (!g_mouseClipped) return;
+    ClipCursor(nullptr);
+    g_mouseClipped = false;
+}
+
+// Windows drops the clip on activation changes, so it is applied again on every call.
+void ApplyMouseClip() {
+    HWND hwnd = static_cast<HWND>(melange::events::GameWindow());
+    RECT r;
+    POINT tl{0, 0};
+    if (!hwnd || GetForegroundWindow() != hwnd || !GetClientRect(hwnd, &r) || !ClientToScreen(hwnd, &tl)) return;
+    OffsetRect(&r, tl.x, tl.y);
+    if (ClipCursor(&r)) g_mouseClipped = true;
+}
+
+// The tail of what the game does on focus gain: the device's last mouse position (+0xb0/+0xb4, client pixels) becomes the
+// real cursor position, so the first WM_MOUSEMOVE after the overlay released the mouse has no delta.
+void RebaseMouse(void* mgr) {
+    HWND hwnd = static_cast<HWND>(melange::events::GameWindow());
+    POINT p;
+    if (!hwnd || !GetCursorPos(&p) || !ScreenToClient(hwnd, &p)) return;
+    __try {
+        void** vt = *static_cast<void***>(mgr);
+        auto getDevice = reinterpret_cast<void*(__stdcall*)(void*, int)>(vt[0x3c / 4]);
+        auto asMouse = reinterpret_cast<MouseDevice_t>(kMouseDevice);
+        if (uint8_t* dev = static_cast<uint8_t*>(asMouse(getDevice(mgr, 1)))) {
+            *reinterpret_cast<int*>(dev + 0xb0) = p.x;
+            *reinterpret_cast<int*>(dev + 0xb4) = p.y;
+        }
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+    }
+}
+
+void ProbeMouse(bool capturing, bool alive) {
+    static int last = -1;
+    int state = (capturing ? 1 : 0) | (alive ? 2 : 0) | (g_mouseClipped ? 4 : 0);
+    if (state == last) return;
+    last = state;
+    LOG_INFO("[mousefix] capturing=%d feMouseAlive=%d clipped=%d list=%08x count=%u", capturing, alive, g_mouseClipped,
+            *reinterpret_cast<volatile uint32_t*>(kMouseEntityList),
+            (*reinterpret_cast<volatile uint32_t*>(0x97ac88) >> 4) & 0xffff);
+}
+
+int __stdcall MouseSlot(void* self, int x, int y) {
+    const bool capturing = melange::overlay::Capturing();
+    const bool alive = FeMouseAlive();
+    g_mouseSlotTick = GetTickCount64();
+    if (g_mouseProbe) ProbeMouse(capturing, alive);
+    if (capturing) {  // the overlay owns the mouse: no shift, no warp, no clip
+        g_mouseWasCapturing = true;
+        ReleaseMouseClip();
+        return 0;
+    }
+    if (g_mouseWasCapturing) {
+        g_mouseWasCapturing = false;
+        RebaseMouse(self);
+    }
+    if (alive) {
+        if (g_mouseClip) ApplyMouseClip();
+        return 0;
+    }
+    ReleaseMouseClip();
+    return g_mouseOrig(self, x, y);
+}
+
+class MouseFix final : public melange::Module {
+public:
+    const char* Name() const override { return "MouseFix"; }
+    const char* Description() const override { return "menu cursor stutter: no per-frame cursor warp while the frontend cursor is shown"; }
+    bool DefaultEnabled() const override { return false; }
+    bool RequiresKnownBuild() const override { return true; }
+    int Order() const override { return 40; }
+
+    bool Install() override {
+        g_mouseClip = Bool("Clip", true);
+        g_mouseProbe = Bool("Probe", false);
+        // 0x701d92: push ebp; mov ebp,esp; sub esp,0x10; push ebx; lea eax,[ebp-8]; push eax; call [GetCursorPos]
+        if (!melange::mem::Expect(kMouseWarp, {0x55, 0x8b, 0xec, 0x83, 0xec, 0x10, 0x53, 0x8d, 0x45, 0xf8, 0x50, 0xff, 0x15, 0xa4, 0x55, 0x81, 0x00}) ||
+            // ... xor eax,eax; pop ebx; leave; ret 0xc
+            !melange::mem::Expect(0x701e18, {0x33, 0xc0, 0x5b, 0xc9, 0xc2, 0x0c, 0x00}) ||
+            // 0x89ae5c: vtable slot 18 of XomInputDeviceManagerDx -> 0x701d92
+            !melange::mem::Expect(kMouseSlot, {0x92, 0x1d, 0x70, 0x00}) ||
+            // 0x510f10: the per-frame caller; 0x510f6e: its only `mov ecx,[esi+0x48]; call ecx`
+            !melange::mem::Expect(0x510f10, {0x83, 0xec, 0x10, 0x80, 0x3d, 0x40, 0x56, 0x95, 0x00, 0x00}) ||
+            !melange::mem::Expect(0x510f6e, {0x8b, 0x4e, 0x48, 0xff, 0xd1}) ||
+            // 0x744be4: the MouseEntity factory links the new entity into class 0x97ac60 (list head at +0x34)
+            !melange::mem::Expect(0x744be4, {0xb9, 0x60, 0xac, 0x97, 0x00, 0xe8, 0x97, 0x3d, 0xef, 0xff, 0xa1, 0x88, 0xac, 0x97, 0x00}) ||
+            !melange::mem::Expect(0x638985, {0x8b, 0x51, 0x34, 0x8b, 0x44, 0x24, 0x04, 0x83, 0x60, 0x0c, 0x00, 0x89, 0x50, 0x08, 0x8b, 0x51, 0x34})) {
+            LOG_ERROR("[mousefix] unexpected code at the cursor warp, its caller or the MouseEntity list, not installed");
+            return false;
+        }
+        g_mouseOrig = reinterpret_cast<MouseWarp_t>(kMouseWarp);
+        if (!melange::mem::Put<uint32_t>(kMouseSlot, static_cast<uint32_t>(reinterpret_cast<uintptr_t>(&MouseSlot)))) {
+            LOG_ERROR("[mousefix] vtable slot 0x89ae5c not writable, not installed");
+            return false;
+        }
+        melange::events::Subscribe(melange::events::Event::Frame, [] {
+            // The slot is not called while the game is unfocused (nor while 0x955640 is set or the manager at 0x96d188
+            // is gone), so let go of the clip here once it has stopped being re-applied.
+            if (g_mouseClipped && (GetForegroundWindow() != static_cast<HWND>(melange::events::GameWindow()) ||
+                                   GetTickCount64() - g_mouseSlotTick > 500))
+                ReleaseMouseClip();
+        });
+        melange::events::Subscribe(melange::events::Event::Shutdown, [] { ReleaseMouseClip(); });
+        LOG_INFO("[mousefix] installed: vtable slot 0x89ae5c -> %p (Clip=%d Probe=%d)", reinterpret_cast<void*>(&MouseSlot),
+                g_mouseClip, g_mouseProbe);
+        return true;
+    }
+
+    void Uninstall() override {
+        ReleaseMouseClip();
+        // g_mouseOrig stays set: a slot call already in flight on the main thread still forwards to the original.
+        if (g_mouseOrig) melange::mem::Put<uint32_t>(kMouseSlot, static_cast<uint32_t>(kMouseWarp));
+    }
+};
+}  // namespace
+MELANGE_MODULE(MouseFix);

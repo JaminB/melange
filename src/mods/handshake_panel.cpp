@@ -4,10 +4,12 @@
 
 #include <cstdint>
 #include <string>
+#include <vector>
 
 #include "levels/gate.h"
 #include "melange/mods.h"
 #include "melange/overlay.h"
+#include "mods/handshake_gid.h"
 #include "mods/handshake_internal.h"
 #include "mods/lobby.h"
 #include "mods/weapon_gate.h"
@@ -79,8 +81,21 @@ void DrawPanel(void*) {
         ImGui::TextColored(kAmber, "%s", wv.why.c_str());
     }
     for (const auto& line : levels::gate::LobbyLines()) ImGui::TextColored(kAmber, "%s", line.c_str());
+    const std::vector<std::string> gidWarnings = gid::Warnings();
+    if (!gidWarnings.empty()) {
+        ImGui::TextColored(kAmber, "Game files differ: this match may desync (mods like MMP or Renewation?)");
+        for (const auto& w : gidWarnings) ImGui::BulletText("%s", w.c_str());
+    }
     ImGui::Text("Our content: %s", ours.vanilla ? "vanilla" : ours.hash);
     if (lobby::Current() && wpngate::LocalClones()) ImGui::Text("Our clone weapons: %s", WeaponsCell(lobby::Me()).c_str());
+    if (gid::Enabled()) {
+        GameId g;
+        if (ParseGidValue(gid::OurValue(), &g))
+            ImGui::Text("Our game files: exe %s, data %s%s%s", g.exe16.c_str(), g.data16.c_str(), g.flags ? ", " : "",
+                        GidFlagsText(g.flags).c_str());
+        else
+            ImGui::TextDisabled("Our game files: not hashed yet");
+    }
 
     mods::Peer peers[64];
     int n = mods::Peers(peers, 64);
