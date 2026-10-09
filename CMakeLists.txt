@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.25)
-project(Melange VERSION 0.7.0 LANGUAGES C CXX)
+project(Melange VERSION 0.8.0 LANGUAGES C CXX)
 
 if(NOT CMAKE_SIZEOF_VOID_P EQUAL 4)
     message(FATAL_ERROR "Melange must be built for 32-bit x86 (WormsMayhem.exe is a 32-bit process). Use build.ps1.")
@@ -482,7 +482,7 @@ target_link_libraries(store_selftest PRIVATE miniz bcrypt winhttp)
 add_executable(sandbox_selftest
     tests/sandbox_selftest.cpp
     src/lua/sandbox.cpp src/lua/sandbox_limits.cpp
-    src/lua/wum_core.cpp src/lua/wum_ui.cpp src/lua/wum_render.cpp src/lua/wum_unsafe.cpp
+    src/lua/wum_core.cpp src/lua/wum_ui.cpp src/lua/wum_render.cpp src/lua/wum_unsafe.cpp src/lua/wum_input.cpp
     src/tools/json_read.cpp)
 target_include_directories(sandbox_selftest PRIVATE src src/sdk)
 target_compile_definitions(sandbox_selftest PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX _CRT_SECURE_NO_WARNINGS
@@ -566,6 +566,12 @@ add_executable(display_selftest EXCLUDE_FROM_ALL tests/display_selftest.cpp)
 target_include_directories(display_selftest PRIVATE src)
 target_compile_definitions(display_selftest PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX)
 target_compile_options(display_selftest PRIVATE /W4 /utf-8 /permissive-)
+
+# The Controls module's pure logic: invert-mode table, sensitivity carry, key labels, bare function-key hotkeys.
+add_executable(controls_selftest EXCLUDE_FROM_ALL tests/controls_selftest.cpp)
+target_include_directories(controls_selftest PRIVATE src)
+target_compile_definitions(controls_selftest PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX)
+target_compile_options(controls_selftest PRIVATE /W4 /utf-8 /permissive-)
 
 add_executable(postfx_selftest EXCLUDE_FROM_ALL
     tests/postfx_selftest.cpp

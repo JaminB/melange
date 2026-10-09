@@ -4,6 +4,9 @@
 #include <cstring>
 
 namespace melange::automation {
+// F1..F12 (DirectInput scan codes): the only keys wum.ui.hotkey accepts without a modifier.
+inline constexpr bool IsFunctionKeyDik(uint8_t dik) { return (dik >= 0x3B && dik <= 0x44) || dik == 0x57 || dik == 0x58; }
+
 struct KeyDef {
     const char* name;
     uint8_t dik;

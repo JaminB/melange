@@ -28,6 +28,7 @@ Every module has its own section in `Melange.ini`, and `Enabled=0` turns a modul
 | `Diagnostics` | on | Crash handler, hang watchdog and minidumps |
 | `Overlay` | on | The in-game overlay (`ToggleKey`, `PassthroughKey`) |
 | `MouseFix` | off | Menu cursor stutter fix: skips the engine's per-frame cursor re-centre while the frontend cursor is shown (aiming in a match is unchanged), keeps the cursor inside the window (`Clip=1`), and re-syncs the mouse after the overlay releases it. Local input only, nothing to agree with other players; build #1077 only (`Probe=1` logs the gate) |
+| `Controls` | on | Mouse look and aim options for mods (`wum.input`) and mouse smoothing ([Controls](#controls)); build #1077 only |
 | `EventBus` | on | The engine message bus for modules |
 | `Logging` | on | Structured JSONL session logs |
 | `LogExport` | on | Log zips: one-click "Export last game's logs" (`Hotkey`) and "Save logs as..." |
@@ -55,6 +56,14 @@ Every module has its own section in `Melange.ini`, and `Enabled=0` turns a modul
 | `Update` | on (`CheckInGame=1`) | At most once a day, about 10 s after the game starts and off the main thread, asks GitHub for the latest Melange release and shows a toast when it is newer ("it installs the next time you open Melange.exe"). Downloads nothing; the time of the last check is in `Documents\Melange\update-check.json`. `Melange.exe`'s *Settings › Updates › Check for updates automatically* writes `CheckInGame` ([Updates](#updates)) |
 
 ![The "Smooth 60" item in the overlay's Game menu (captured before 0.4, when it read "Smooth 60 (toggle)"; it now has a check mark while on)](images/overlay/smooth60-menu-item.png)
+
+### Controls
+
+`[Controls]` has `Enabled` (default 1) and `SmoothMouse` (default 1); `Probe=1` logs the invert flags it finds and the raw mouse totals whenever they change.
+
+`SmoothMouse` removes the mouse jitter the game has while aiming and looking. The game re-centres the cursor every frame, and that races with the window's mouse-move messages, so the deltas it computes wobble. With the setting on, Melange reads the mouse with Raw Input instead (relative counts, only while the game window is in front and the overlay is not using the mouse) and hands those counts to the game's own mouse code, scaled by the menu's Sensitivity and with the fraction that rounding would drop carried over to the next event. If Raw Input cannot be registered, or no raw event ever arrives, the game's normal input is used. It does not change the menu cursor. The Lua options of `wum.input` (invert, sensitivity, Blimp view) are not part of this setting: [lua-api.md](lua-api.md#wuminput).
+
+Lockstep safety: the module only changes local input on the sending side, before the game builds a mouse message, by editing the invert flag of the game's own control mappings and the two numbers passed to the function that posts the message. Other players and Wormsign recordings receive the final values like any other input, and nothing is touched that the match simulation, the camera data (`TWEAK`), the save file or the receiving side reads, so no setting here can desynchronise a game.
 
 ## Logs and bug reports
 

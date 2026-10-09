@@ -6,6 +6,7 @@
 #include <cstring>
 #include <map>
 
+#include "core/keys.h"
 #include "lua/sandbox_core.h"
 #include "melange/overlay.h"
 
@@ -144,9 +145,10 @@ int Hotkey(lua_State* L) {
     luaL_checktype(L, 2, LUA_TFUNCTION);
     uint8_t dik = 0, mods = 0;
     if (!overlay::ParseHotkey(text.c_str(), &dik, &mods)) return luaL_argerror(L, 1, "not a hotkey (e.g. \"Ctrl+Shift+H\")");
-    // A bare key (no modifier) would swallow an ordinary gameplay key for the rest of the session, even once the
-    // mod that bound it is disabled (the overlay never releases a hotkey slot, only rebinds it).
-    if (mods == overlay::kNone) return luaL_argerror(L, 1, "a hotkey needs at least one of Ctrl, Shift or Alt");
+    // A bare ordinary key would swallow a gameplay key for the rest of the session, even once the mod that bound it
+    // is disabled (the overlay never releases a hotkey slot, only rebinds it). The function keys are not gameplay keys.
+    if (mods == overlay::kNone && !melange::automation::IsFunctionKeyDik(dik))
+        return luaL_argerror(L, 1, "a hotkey needs at least one of Ctrl, Shift or Alt (only F1..F12 may stand alone)");
     const uint16_t key = static_cast<uint16_t>(dik | (mods << 8));
     Callback* cb = NewCallback(L, 2, CbKind::Hotkey, text);
     const uint32_t cid = cb->id;

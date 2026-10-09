@@ -293,6 +293,7 @@ struct Sub {
 std::vector<Sub> g_subs;  // main thread only (subclassing and the window procedure both run there)
 HWND g_subHwnd = nullptr;
 std::atomic<bool> g_imguiReady{false};
+std::atomic<melange::render::RawInputSink> g_rawSink{nullptr};
 melange::render::AltReleaseGuard g_altGuard;  // main thread only, like the window procedure
 
 // A key message whose scan code (+ modifiers) is a registered hotkey.
@@ -321,6 +322,9 @@ LRESULT CALLBACK OverlayWndProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
         }
     if (!orig) return unicode ? DefWindowProcW(h, msg, wp, lp) : DefWindowProcA(h, msg, wp, lp);
 
+    if (msg == WM_INPUT) {
+        if (melange::render::RawInputSink sink = g_rawSink.load(std::memory_order_relaxed)) sink(h, wp, lp);
+    }
     const bool hotkeyMsg = IsKeyMsg(msg) && IsHotkeyKeyMsg(lp);
     if (g_altGuard.Drop(msg, wp, lp, hotkeyMsg) || hotkeyMsg) {
         ++g_keyMsgsDropped;
@@ -337,6 +341,11 @@ LRESULT CALLBACK OverlayWndProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
         ImGui_ImplWin32_WndProcHandler(h, msg, wp, lp);
     }
     if (CapturedFromGame(msg, capturing)) {
+        // A foreground WM_INPUT must still reach DefWindowProc, which frees the raw input data; the game never sees it.
+        if (msg == WM_INPUT) {
+            ++g_mouseDropped;
+            return unicode ? DefWindowProcW(h, msg, wp, lp) : DefWindowProcA(h, msg, wp, lp);
+        }
         if (msg == WM_KEYDOWN || msg == WM_KEYUP || msg == WM_CHAR)
             ++g_keyMsgsDropped;
         else
@@ -416,6 +425,8 @@ void SubclassGameWindow(HWND hwnd) {
 }
 
 void SetImGuiInputReady(bool ready) { g_imguiReady = ready; }
+void SetRawInputSink(RawInputSink fn) { g_rawSink.store(fn, std::memory_order_relaxed); }
+HWND SubclassedWindow() { return g_subHwnd; }
 
 bool TapKey(uint8_t dik, int holdMs) {
     if (!g_diHooked || !dik) return false;
