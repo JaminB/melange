@@ -15,6 +15,7 @@
 
 namespace {
 using melange::crashfix::NullToSink;
+using melange::crashfix::SchemeToStandIn;
 using melange::crashfix::SepiaToStandIn;
 using melange::crashfix::Sink;
 
@@ -73,6 +74,20 @@ void ApplyPendingSepia() {
     }
 }
 
+// A joining peer names the host's game style from the lobby's "scheme_code", an index into its own scheme list:
+// call GetSchemes (count to [esp+8]); cmp edi,[esp+8]; jle; <assert>; mov eax,[esi+edi*4-4]; mov esi,[eax+14h].
+// A host with mod styles the peer lacks sends an index past the end, and the assert only logs.
+constexpr uintptr_t kSchemeCheck = 0x62680D, kSchemeLoad = 0x626829;
+std::atomic<uint32_t> g_schemeLogged{0};
+
+void OnSchemeName(safetyhook::Context& c) {
+    const uint32_t count = *reinterpret_cast<const uint32_t*>(c.esp + 8);
+    const uint32_t code = static_cast<uint32_t>(c.edi);
+    if (SchemeToStandIn(c.esi, c.edi, count) && g_schemeLogged.exchange(code) != code)
+        LOG_WARN("[fixes] SchemeCode: the host's game style #%d is not among this game's %u (a mod's?); shown as \"%s\"",
+                 static_cast<int>(code), count, melange::crashfix::kUnknownScheme);
+}
+
 bool Guard(const char* name, uintptr_t check, std::initializer_list<int> bytes, uintptr_t site,
            safetyhook::MidHookFn fn) {
     if (!melange::mem::Expect(check, bytes)) {
@@ -111,6 +126,12 @@ public:
                           melange::mem::Expect(kResolveFloat, {0x6A, 0xFF, 0x68, 0x38, 0x93, 0x7C, 0x00});
             melange::events::Subscribe(melange::events::Event::Frame, &ApplyPendingSepia);
         }
+        if (Bool("SchemeCode", true))
+            Guard("SchemeCode", kSchemeCheck,
+                  {0x3B, 0x7C, 0x24, 0x08, 0x8B, 0xF0, 0x7E, 0x14, 0x68, 0x10, 0xE0, 0x86, 0x00, 0x68, 0xE8, 0x01, 0x00,
+                   0x00, 0x68, 0x5C, 0xDD, 0x86, 0x00, 0xE8, 0x60, 0x20, 0x01, 0x00, 0x8B, 0x44, 0xBE, 0xFC, 0x8B, 0x70,
+                   0x14},
+                  kSchemeLoad, &OnSchemeName);
         return true;
     }
 

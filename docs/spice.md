@@ -161,9 +161,10 @@ originals at the frontend (again whenever the set of enabled mods changes while 
 mod's entries leave the lists without a restart, expected but not yet verified in game). With no enabled mod declaring either key, nothing is touched.
 `[Schemes] Enabled=0` in `Melange.ini` turns it off.
 
-Both lists are client-side. A host's scheme and a team's preset key travel to peers by the vanilla protocol, so peers
-need nothing installed; a peer without the mod may see the raw `FETXT.Scheme.<Name>` key as the style's name in the
-lobby (unverified). That a preset is listed in the team editor is expected to work like the scheme list but has not
+Both lists are client-side. The lobby names the host's game style by its position in the host's list
+(`scheme_code`), not by key, so a peer without the mod has no entry for it: the unmodified game reads past the end of
+its own list and crashes on joining. With `[Fixes] SchemeCode=1` (the default) such a peer sees the style as
+"Unknown game style" instead. Whether the match itself then plays with the host's settings is not verified. That a preset is listed in the team editor is expected to work like the scheme list but has not
 been verified in game.
 
 ## `music`: sudden-death music

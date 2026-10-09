@@ -91,4 +91,25 @@ void ResetSepia() {
     g_sepia = false;
     g_sepiaDone = 0;
 }
+
+const char kUnknownScheme[] = "Unknown game style";
+
+namespace {
+// Laid out like a SchemeData entry as far as the name read goes: the name at +0x14.
+struct SchemeStandIn {
+    uint8_t head[0x14];
+    uint32_t name;
+};
+SchemeStandIn g_schemeStandIn{};
+uint32_t g_schemeTable[1] = {};
+}  // namespace
+
+bool SchemeToStandIn(uintptr_t& table, uintptr_t& code, uint32_t count) {
+    if (code >= 1 && code <= count) return false;
+    g_schemeStandIn.name = static_cast<uint32_t>(reinterpret_cast<uintptr_t>(kUnknownScheme));
+    g_schemeTable[0] = static_cast<uint32_t>(reinterpret_cast<uintptr_t>(&g_schemeStandIn));
+    table = reinterpret_cast<uintptr_t>(g_schemeTable);
+    code = 1;
+    return true;
+}
 }  // namespace melange::crashfix
