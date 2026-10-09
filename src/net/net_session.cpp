@@ -63,9 +63,13 @@ struct Fixes {
     bool resetViabilityOffset = true;
     bool releaseStuckPause = true;
     bool skipCameraHold = true;
+    bool panelSelectUnderMenu = false;
 } g_fix;
 bool g_cameraHoldPatched = false;
 void SetCameraHoldPatch(bool on);
+bool g_panelSelectPatched = false;
+void SetPanelSelectPatch(bool on);
+void ResetMatchTrace();
 
 int g_matchNumber = 0;
 
@@ -143,6 +147,16 @@ void ResetStaleMatchState(const char* when, bool inLobby) {
 
 uintptr_t g_lastState = 0;
 
+uint32_t SimClock() { return Read<uint32_t>(Read<uint32_t>(A::TaskManagerPtr) + 0x38); }
+bool InNetMatch() { return g_lastState == S::InGame; }
+
+// The current player is this machine's: the test behind the engine's own replication gate (0x708fdc, used by
+// 0x539c00), false between turns.
+bool ActivePlayerHere() {
+    const uintptr_t cur = melange::wum::CurrentPlayer(melange::wum::NetService());
+    return cur && Read<uint8_t>(cur + O::PlayerIsLocal);
+}
+
 void OnStateChange(uintptr_t from, uintptr_t to) {
     LOG_INFO("[net] state %s -> %s", melange::wum::StateName(from), melange::wum::StateName(to));
     melange::jlog::Rec("net", melange::jlog::Level::Info, "state").Int("from", static_cast<int64_t>(from)).Int("to", static_cast<int64_t>(to)).Emit();
@@ -161,6 +175,8 @@ void OnStateChange(uintptr_t from, uintptr_t to) {
     } else if (to == S::InGame) {
         LOG_INFO("[net] ===== match %d in progress =====", g_matchNumber);
         SetCameraHoldPatch(true);
+        SetPanelSelectPatch(true);
+        ResetMatchTrace();
         melange::events::Fire(Event::MatchStart);
     } else if (to == S::ProcessWinOrDraw || (to == S::WaitingUnload && from != S::ProcessWinOrDraw)) {
         // ProcessWinOrDraw usually runs within one frame, so the poll often sees InGame -> WaitingUnload.
@@ -170,7 +186,10 @@ void OnStateChange(uintptr_t from, uintptr_t to) {
         DumpState("net session closed");
         melange::events::Fire(Event::LobbyLeave);
     }
-    if (to != S::InGame) SetCameraHoldPatch(false);
+    if (to != S::InGame) {
+        SetCameraHoldPatch(false);
+        SetPanelSelectPatch(false);
+    }
 }
 
 // One log line per change of the values that gate match progress, so a freeze shows which one got stuck.
@@ -246,8 +265,13 @@ constexpr uintptr_t kLobbyLevelDone = 0x626c32;  // past the SetString call and 
 // 0x52da00 then re-derives the orbit yaw from the previous look vector (asin) and re-runs the occlusion search
 // 0x530c00 over its 45-degree candidates, which can land on another pose once the girder has moved. The other
 // machine keeps the old pose, so the logical cameras differ and the next turn-end validation fails (reasons 7,8;
-// with a placed girder also 9,11,13). When GirderCam is already the current logical camera the call is skipped:
-// the camera keeps the pose both machines agree on, which is also what a peer that did not close the panel has.
+// with a placed girder also 9,11,13). When the logical camera is another one (the kit outlives GameLogic.EndTurn's
+// switch to Default, or a Path/Fall camera runs during its life), the switch itself diverges (reason 6). And the
+// local-only message also reaches this handler on a spectator that right-clicks while the girder is selected. So
+// during an online match the call is always skipped: before the close the logical cameras agree on every machine
+// (otherwise validation has already failed), and not switching keeps this one identical to the peers that never saw
+// the message. Offline the game re-aims as before. SetOverride(0,"UtilityGirder") still runs (it restores the girder
+// control group; the key releases it forces go out as replicated sends, which the D1 trace below watches).
 // The sim-driven activation (GirderKitLogicEntity 0x55ada0, run on every machine) is untouched.
 constexpr uintptr_t kGirderCloseCase = 0x55bdd6;      // push 0x95d94c (the message id) ... call SetCamera
 constexpr uintptr_t kGirderSetCamera = 0x55be02;      // call 0x51e4e0; ecx = CameraManagerService, [esp] = "GirderCam"
@@ -275,6 +299,44 @@ constexpr uintptr_t kScheduleValidation = 0x708fec; // __thiscall NetService::Sc
 constexpr uintptr_t kDisableNetInput = 0x709a3e;    // __thiscall NetService::ProcessDisableNetInputMessage()
 constexpr uintptr_t kTimeSyncOvershoot = 0x709208;  // in 0x709134, "NETWORK TIMES NOT IN SYNC": eax = our clock, esi = msg, edi = NetService
 constexpr uintptr_t kCameraManagerPtr = 0x95c370;
+// Weapon selected under a frontend layer. Picking a weapon in the panel sends a replicated Weapon.DelayedPanelChanged
+// (0x5427f0 at 0x600d0c, stamped ahead), and every machine's WXWeaponPanelLogicEntity::HandleMessage 0x603b70 then
+// sets the worm's weapon. But when the frontend layer counter is non-zero (a popup or the pause menu is open), the
+// handler only applies it when Game.Scope is 0, a NetService exists and the current player is remote; otherwise it
+// skips it (0x603c40: cmp [0x97a614],ebx / jz 0x603c71 / cmp al,bl / jnz 0x603da9 / NetService / jz 0x603da9 /
+// CurrentPlayerLocal / jnz 0x603da9). A machine with no layer open always applies it, so an active player who
+// presses Esc between the pick and its stamped tick keeps the old weapon while the others switch (worm/weapon
+// validation reasons). FixPanelSelectUnderMenu turns the jz into a jmp while an online match
+// runs: 0x603c71 is IsMessage(edi, Weapon.DelayedPanelChanged), and every other id still goes on to 0x603da9, the
+// skip's own target. Off by default until the desync is reproduced online.
+constexpr uintptr_t kPanelSelectGate = 0x603c40;  // cmp [0x97a614],ebx; edi = message id (movzx), ebx = 0
+constexpr uintptr_t kPanelSelectJz = 0x603c46;    // jz 0x603c71 (74 29); eb 29 while patched
+constexpr uintptr_t kFrontendLayers = 0x97a614;   // frontend layer counter (DAT_0097a614)
+// Trace: a replicated send made on a machine that is not the current player's. Every ReplayMessageStore sender
+// inserts into this machine's dispatch list first and only then hands the record to its network queue (0x5416e0 and
+// siblings), which drops it unless 0x539c00 passes, online meaning the current player is local. So a send from a
+// spectator is applied on that spectator only, unless every machine makes the same send (the sim-driven ones do, and
+// the receivers dedupe them by time), which is why this only logs. Hooked at the `mov ecx,[0x95cc20]` before each
+// queue call, past the sender prologues that Wormsign's capture hooks and checks: esp = the MessageInfo just built
+// (+4 id, +8 stamp), and the sender's own return address is at retOff.
+struct SendSite {
+    uintptr_t at;
+    uint32_t retOff;
+    const char* type;
+};
+constexpr SendSite kSendSites[] = {
+    {0x5427dc, 0x0c, "msg"},   {0x542894, 0x10, "int"},       {0x54295c, 0x14, "two-int"},
+    {0x542a17, 0x10, "float"}, {0x542adf, 0x14, "two-float"}, {0x5431d9, 0x1c, "string"},
+};
+// Trace: CameraManagerService::SetCamera 0x51e4e0 checks DeterminismChecker at entry (asserts when checking is on and
+// the deterministic-phase flag 0x922ab4 is 0, then sets it). The flag is no filter: SetCamera and most camera code
+// leave it at 1, so a local-only call usually finds it set too. Each distinct caller is logged once per match with the
+// flag and whose turn it is; a caller that shows up on one machine's log and not the other's is a local-only switch.
+constexpr uintptr_t kSetCamera = 0x51e4e0;
+constexpr uintptr_t kDeterministicPhase = 0x922ab4;
+// Per-match caps on the diagnostics above, so a chatty site cannot flood the log.
+constexpr size_t kTraceKeysPerMatch = 32;
+constexpr int kTraceLinesPerMatch = 16;
 SafetyHookInline g_resendHook;
 
 // Entry layout: +0 vtable, +4 u16 id (+6 is uninitialised padding), +8 time, +0xc payload (the string type keeps an
@@ -402,32 +464,161 @@ void OnLobbyLevel(safetyhook::Context& c) {
     c.trampoline_esp = c.esp + 4;
 }
 
+std::string CStr(uintptr_t p, size_t max = 64) {
+    std::string s;
+    char ch = 0;
+    for (size_t i = 0; p && i < max && melange::mem::SafeRead(p + i, &ch, 1) && ch; ++i) s += ch;
+    return s;
+}
+
+// The manager's logical camera (m_uLogicalCamera +0x28c into the Camera* vector +0x2a0..+0x2a4), or 0.
+uintptr_t LogicalCamera(uintptr_t mgr, uint32_t* index, uint32_t* count) {
+    *index = mgr ? Read<uint32_t>(mgr + 0x28c) : kCamIndexNone;
+    const uint32_t first = mgr ? Read<uint32_t>(mgr + 0x2a0) : 0, last = mgr ? Read<uint32_t>(mgr + 0x2a4) : 0;
+    *count = last >= first ? (last - first) / 4 : 0;
+    return *index < *count && *count <= kCamMaxCount ? Read<uint32_t>(first + *index * 4) : 0;
+}
+// A camera's name: +0x40 holds the XString's char* (what 0x4b58f0 hands to the "Path" compare).
+std::string CameraName(uintptr_t cam) { return cam ? CStr(Read<uint32_t>(cam + 0x40)) : "none"; }
+
+// Per-match trace budgets, reset when a match enters InGame (ResetMatchTrace).
+struct MatchTrace {
+    int girderClose = 0;
+    int panelSelect = 0;
+    int layerChanges = 0;
+    std::vector<uint64_t> sends, setCameras;  // keys already logged
+    bool sendsCapped = false, setCamerasCapped = false;
+    uint32_t lastLayers = 0;
+} g_matchTrace;
+bool g_traceLayers = false;
+
+void ResetMatchTrace() { g_matchTrace = MatchTrace{}; }
+
+// True the first time `key` is seen this match, until `seen` holds kTraceKeysPerMatch keys (then says so once).
+bool FirstSeen(std::vector<uint64_t>& seen, bool& capped, uint64_t key, const char* what) {
+    for (uint64_t k : seen)
+        if (k == key) return false;
+    if (seen.size() >= kTraceKeysPerMatch) {
+        if (!capped) LOG_INFO("[net] %s: %u distinct sites logged this match; not logging more", what,
+                              static_cast<unsigned>(kTraceKeysPerMatch));
+        capped = true;
+        return false;
+    }
+    seen.push_back(key);
+    return true;
+}
+
 // At the CALL SetCamera("GirderCam") of the panel-close case: ecx = CameraManagerService (just loaded from
 // 0x95c370), [esp] = the pushed name (the thiscall's one stack arg, popped by its RET 4), edi = the message id.
 void OnGirderPanelClose(safetyhook::Context& c) {
-    const uintptr_t mgr = c.ecx;
-    const uint32_t index = Read<uint32_t>(mgr + 0x28c);  // m_uLogicalCamera
-    const uint32_t first = Read<uint32_t>(mgr + 0x2a0), last = Read<uint32_t>(mgr + 0x2a4);  // Camera* vector
-    const uint32_t count = last >= first ? (last - first) / 4 : 0;
-    const uintptr_t cam = index < count && count <= kCamMaxCount ? Read<uint32_t>(first + index * 4) : 0;
+    if (!InNetMatch()) return;  // offline the game re-aims as it always did
+    uint32_t index, count;
+    const uintptr_t cam = LogicalCamera(c.ecx, &index, &count);
     const bool girderCam = cam && Read<uint32_t>(cam) == kGirderCamVtable;
-    static int logged = 0;
-    if (logged < 4) {
-        ++logged;
+    if (g_matchTrace.girderClose < 4) {
+        ++g_matchTrace.girderClose;
         const char* msg = melange::bus::NameOf(static_cast<melange::bus::MsgId>(c.edi));
-        LOG_INFO("[fix] girder panel close (%s): logical camera %u/%u is %s -> %s", msg ? msg : "?", index, count,
-                 girderCam ? "GirderCam" : "another camera",
-                 girderCam ? "skipping its re-activation" : "letting the game switch");
+        const bool active = ActivePlayerHere();
+        const std::string name = CameraName(cam);
+        LOG_INFO("[fix] girder panel close (%s) on the %s at t=%u: logical camera %u/%u is %s (%s) -> skipping the "
+                 "switch to GirderCam", msg ? msg : "?", active ? "active player" : "spectator", SimClock(), index,
+                 count, girderCam ? "GirderCam" : "another camera", name.c_str());
+        melange::jlog::Rec("net", melange::jlog::Level::Info, "girder panel close").Uint("t", SimClock())
+            .Bool("active", active).Bool("girderCam", girderCam).Str("camera", name).Emit();
     }
-    if (!girderCam || index == kCamIndexNone) return;
     // Skip the call: resume right after it with the argument popped, as the callee's RET 4 would have left it
     // (same trick as OnLobbyLevel: the stub restores esp from trampoline_esp and returns through that slot).
     *reinterpret_cast<uintptr_t*>(c.esp) = kGirderSetCameraDone;
     c.trampoline_esp = c.esp;
 }
 
-uint32_t SimClock() { return Read<uint32_t>(Read<uint32_t>(A::TaskManagerPtr) + 0x38); }
-bool InNetMatch() { return g_lastState == S::InGame; }
+// At 0x603c40, before the frontend-layer test: edi = the message id, al = Game.Scope (0x4d3ed0, just called).
+// Reports the case the patch exists for (the active player handling Weapon.DelayedPanelChanged under a frontend
+// layer), patched or not.
+void OnPanelSelectGate(safetyhook::Context& c) {
+    static melange::bus::MsgId id = melange::bus::kInvalidId;
+    if (!InNetMatch()) return;
+    if (id == melange::bus::kInvalidId) id = melange::bus::IdOf("Weapon.DelayedPanelChanged");
+    if (id == melange::bus::kInvalidId || static_cast<uint16_t>(c.edi) != id) return;
+    const uint32_t layers = Read<uint32_t>(kFrontendLayers);
+    if (!layers || !ActivePlayerHere() || g_matchTrace.panelSelect >= kTraceLinesPerMatch) return;
+    ++g_matchTrace.panelSelect;
+    const bool patched = g_panelSelectPatched;
+    if (patched)
+        LOG_INFO("[fix] Weapon.DelayedPanelChanged at t=%u with %u frontend layer(s) open on the active player: "
+                 "applied (FixPanelSelectUnderMenu)", SimClock(), layers);
+    else
+        LOG_WARN("[net] Weapon.DelayedPanelChanged at t=%u with %u frontend layer(s) open on the active player: "
+                 "skipped by the game, so this machine keeps its old weapon while the others switch "
+                 "(FixPanelSelectUnderMenu=0)", SimClock(), layers);
+    melange::jlog::Rec("net", patched ? melange::jlog::Level::Info : melange::jlog::Level::Warn, "panel select under menu")
+        .Uint("t", SimClock()).Uint("layers", layers).Uint("scope", c.eax & 0xff).Bool("patched", patched).Emit();
+}
+
+// D1 at one of kSendSites: esp = the MessageInfo about to be queued for the network.
+void SpectatorSend(const SendSite& s, const safetyhook::Context& c) {
+    if (!InNetMatch() || ActivePlayerHere()) return;
+    const uint16_t id = static_cast<uint16_t>(Read<uint32_t>(c.esp + 4));  // +6 is padding
+    const uint32_t stamp = Read<uint32_t>(c.esp + 8), ret = Read<uint32_t>(c.esp + s.retOff);
+    if (!FirstSeen(g_matchTrace.sends, g_matchTrace.sendsCapped, (static_cast<uint64_t>(id) << 32) | ret,
+                   "replicated sends off-turn"))
+        return;
+    const char* msg = melange::bus::NameOf(static_cast<melange::bus::MsgId>(id));
+    LOG_INFO("[net] replicated %s send of %s (stamp %u, our t=%u) from %s while the current player is not local: "
+             "applied here only unless every machine sends it", s.type, msg ? msg : "?", stamp, SimClock(),
+             melange::game::DescribeAddress(ret).c_str());
+    melange::jlog::Rec("net", melange::jlog::Level::Info, "off-turn send").Str("type", s.type).Str("msg", msg ? msg : "?")
+        .Uint("stamp", stamp).Uint("t", SimClock()).Hex("caller", ret).Emit();
+}
+template <int N>
+void OnSpectatorSend(safetyhook::Context& c) {
+    SpectatorSend(kSendSites[N], c);
+}
+
+// mov ecx,[0x95cc20] / lea r,[esp] / push r / call the network queue (0x5416e0, 0x541850, 0x541980, 0x541b20,
+// 0x541c50, 0x543000).
+bool SendSitesOriginal() {
+    namespace M = melange::mem;
+    return M::Expect(kSendSites[0].at, {0x8b, 0x0d, 0x20, 0xcc, 0x95, 0x00, 0x8d, 0x14, 0x24, 0x52, 0xe8, 0xf5, 0xee, 0xff, 0xff}) &&
+           M::Expect(kSendSites[1].at, {0x8b, 0x0d, 0x20, 0xcc, 0x95, 0x00, 0x8d, 0x04, 0x24, 0x50, 0xe8, 0xad, 0xef, 0xff, 0xff}) &&
+           M::Expect(kSendSites[2].at, {0x8b, 0x0d, 0x20, 0xcc, 0x95, 0x00, 0x8d, 0x04, 0x24, 0x50, 0xe8, 0x15, 0xf0, 0xff, 0xff}) &&
+           M::Expect(kSendSites[3].at, {0x8b, 0x0d, 0x20, 0xcc, 0x95, 0x00, 0x8d, 0x14, 0x24, 0x52, 0xe8, 0xfa, 0xf0, 0xff, 0xff}) &&
+           M::Expect(kSendSites[4].at, {0x8b, 0x0d, 0x20, 0xcc, 0x95, 0x00, 0x8d, 0x14, 0x24, 0x52, 0xe8, 0x62, 0xf1, 0xff, 0xff}) &&
+           M::Expect(kSendSites[5].at, {0x8b, 0x0d, 0x20, 0xcc, 0x95, 0x00, 0x8d, 0x14, 0x24, 0x52, 0xe8, 0x18, 0xfe, 0xff, 0xff});
+}
+
+// D2 at SetCamera entry: ecx = CameraManagerService, [esp+4] = the requested camera name.
+void OnSetCamera(safetyhook::Context& c) {
+    if (!InNetMatch()) return;
+    const uint32_t ret = RetAddr(c);
+    if (!FirstSeen(g_matchTrace.setCameras, g_matchTrace.setCamerasCapped, ret, "SetCamera callers")) return;
+    const bool deterministic = Read<uint8_t>(kDeterministicPhase, 1) != 0;
+    const bool active = ActivePlayerHere();
+    uint32_t index, count;
+    const std::string want = CStr(Arg(c, 0)), cur = CameraName(LogicalCamera(c.ecx, &index, &count));
+    LOG_INFO("[net] SetCamera(\"%s\") at t=%u (logical camera %s, deterministic phase %u, %s) from %s", want.c_str(),
+             SimClock(), cur.c_str(), deterministic ? 1u : 0u, active ? "active player" : "spectator",
+             melange::game::DescribeAddress(ret).c_str());
+    melange::jlog::Rec("net", deterministic ? melange::jlog::Level::Info : melange::jlog::Level::Warn, "SetCamera caller")
+        .Str("name", want).Str("current", cur).Uint("t", SimClock()).Hex("caller", ret).Bool("deterministic", deterministic)
+        .Bool("active", active).Emit();
+}
+
+// Under Trace: each change of the frontend layer counter during a match (does the pause menu or the chat console
+// raise it online at all? FixPanelSelectUnderMenu only matters if it does).
+void WatchFrontendLayers() {
+    if (!g_traceLayers || !InNetMatch()) return;
+    const uint32_t v = Read<uint32_t>(kFrontendLayers);
+    if (v == g_matchTrace.lastLayers) return;
+    const uint32_t was = g_matchTrace.lastLayers;
+    g_matchTrace.lastLayers = v;
+    if (g_matchTrace.layerChanges >= kTraceLinesPerMatch) return;
+    ++g_matchTrace.layerChanges;
+    const bool active = ActivePlayerHere();
+    LOG_INFO("[net] frontend layers %u -> %u at t=%u (%s)", was, v, SimClock(), active ? "active player" : "spectator");
+    melange::jlog::Rec("net", melange::jlog::Level::Info, "frontend layers").Uint("from", was).Uint("to", v)
+        .Uint("t", SimClock()).Bool("active", active).Emit();
+}
 
 // The queued validation messages: how many and the head's stamp.
 std::string ValidationFifo(uintptr_t ns, uint32_t* headT) {
@@ -478,11 +669,8 @@ void OnTimeSyncOvershoot(safetyhook::Context& c) {
 
 // esi = the FlyCam about to register its post-explosion hold. Says whether it is even the manager's logical camera.
 void OnFlyCamHold(safetyhook::Context& c) {
-    const uintptr_t mgr = Read<uint32_t>(kCameraManagerPtr);
-    const uint32_t index = mgr ? Read<uint32_t>(mgr + 0x28c) : kCamIndexNone;
-    const uint32_t first = mgr ? Read<uint32_t>(mgr + 0x2a0) : 0, last = mgr ? Read<uint32_t>(mgr + 0x2a4) : 0;
-    const uint32_t count = last >= first ? (last - first) / 4 : 0;
-    const uintptr_t logical = index < count && count <= kCamMaxCount ? Read<uint32_t>(first + index * 4) : 0;
+    uint32_t index, count;
+    const uintptr_t logical = LogicalCamera(Read<uint32_t>(kCameraManagerPtr), &index, &count);
     const bool skipped = g_cameraHoldPatched;
     LOG_INFO("[net] FlyCam post-explosion hold at t=%u for %u ms (%s logical camera)%s", SimClock(),
              Read<uint32_t>(c.esi + 0x8c), logical == c.esi ? "the" : "not the",
@@ -514,6 +702,24 @@ void SetCameraHoldPatch(bool on) {
     melange::mem::Write(kFlyCamHoldCall, on ? nops : call, 5);
     g_cameraHoldPatched = on;
     LOG_INFO("[fix] FixCameraHold: FlyCam hold %s", on ? "no longer registers as activity (online match)" : "restored");
+}
+
+// FixPanelSelectUnderMenu: while an online match runs, the frontend-layer jz at 0x603c46 is a jmp (see
+// kPanelSelectGate). Only the jz is checked here: the trace hook may own the instruction before it.
+void SetPanelSelectPatch(bool on) {
+    static const uint8_t jz = 0x74, jmp = 0xeb;
+    if (!g_fix.panelSelectUnderMenu || on == g_panelSelectPatched) return;
+    const bool asExpected = on ? melange::mem::Expect(kPanelSelectJz, {0x74, 0x29, 0x3a, 0xc3})
+                               : melange::mem::Expect(kPanelSelectJz, {0xeb, 0x29, 0x3a, 0xc3});
+    if (!asExpected) {
+        LOG_WARN("[fix] FixPanelSelectUnderMenu: unexpected code at %08x; not %s", static_cast<unsigned>(kPanelSelectJz),
+                 on ? "installed" : "restored");
+        return;
+    }
+    melange::mem::Write(kPanelSelectJz, on ? &jmp : &jz, 1);
+    g_panelSelectPatched = on;
+    LOG_INFO("[fix] FixPanelSelectUnderMenu: %s",
+             on ? "a weapon picked under a frontend layer is applied (online match)" : "restored");
 }
 
 void OnAbortGame(safetyhook::Context& c) {
@@ -662,9 +868,43 @@ public:
                          static_cast<unsigned>(kGirderCloseCase));
         }
 
+        // cmp [0x97a614],ebx / jz 0x603c71 / cmp al,bl / jnz 0x603da9. Checked whole before the trace hook takes the
+        // cmp; the patch itself only touches the jz.
+        g_fix.panelSelectUnderMenu = Bool("FixPanelSelectUnderMenu", false);
+        const bool panelGate = melange::mem::Expect(kPanelSelectGate, {0x39, 0x1d, 0x14, 0xa6, 0x97, 0x00, 0x74, 0x29, 0x3a,
+                                                                       0xc3, 0x0f, 0x85, 0x59, 0x01, 0x00, 0x00});
+        if (g_fix.panelSelectUnderMenu && !panelGate) {
+            LOG_WARN("[fix] FixPanelSelectUnderMenu: unexpected code at %08x; not installed",
+                     static_cast<unsigned>(kPanelSelectGate));
+            g_fix.panelSelectUnderMenu = false;
+        }
+        if (panelGate && (trace || g_fix.panelSelectUnderMenu))
+            ok &= Mid(kPanelSelectGate, &OnPanelSelectGate, "weapon-panel select gate");
+
+        g_traceLayers = trace;
+        if (trace) {
+            // Off-turn replicated sends and local-only camera switches (see kSendSites, kSetCamera).
+            if (SendSitesOriginal()) {
+                ok &= Mid(kSendSites[0].at, &OnSpectatorSend<0>, "msg send queue");
+                ok &= Mid(kSendSites[1].at, &OnSpectatorSend<1>, "int send queue");
+                ok &= Mid(kSendSites[2].at, &OnSpectatorSend<2>, "two-int send queue");
+                ok &= Mid(kSendSites[3].at, &OnSpectatorSend<3>, "float send queue");
+                ok &= Mid(kSendSites[4].at, &OnSpectatorSend<4>, "two-float send queue");
+                ok &= Mid(kSendSites[5].at, &OnSpectatorSend<5>, "string send queue");
+            } else {
+                LOG_WARN("[net] off-turn send trace: unexpected code at a ReplayMessageStore sender; not installed");
+            }
+            // SEH prologue: mov eax,fs:[0] / push -1 / push 0x7d0960
+            if (melange::mem::Expect(kSetCamera, {0x64, 0xa1, 0x00, 0x00, 0x00, 0x00, 0x6a, 0xff, 0x68, 0x60, 0x09, 0x7d, 0x00}))
+                ok &= Mid(kSetCamera, &OnSetCamera, "SetCamera");
+            else
+                LOG_WARN("[net] SetCamera trace: unexpected code at %08x; not installed", static_cast<unsigned>(kSetCamera));
+        }
+
         melange::events::Subscribe(melange::events::Event::Frame, [] {
             PollState();
             if (watch && g_lastState) WatchProgressState();
+            WatchFrontendLayers();
             if (forceNetLog) {  // same as launching with /LOG ALL: the engine's own NetThrottle/NetService logging
                 uintptr_t cfg = Read<uint32_t>(A::ConfigPtr);
                 if (cfg && !(Read<uint8_t>(cfg + 0x9a) & 2)) melange::wum::WriteByte(cfg + 0x9a, Read<uint8_t>(cfg + 0x9a) | 2);
@@ -678,6 +918,8 @@ public:
 
     void Uninstall() override {
         SetCameraHoldPatch(false);
+        SetPanelSelectPatch(false);
+        g_traceLayers = false;
         g_hooks.clear();
         g_resendHook = {};
     }

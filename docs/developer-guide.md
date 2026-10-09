@@ -27,6 +27,7 @@ Every module has its own section in `Melange.ini`, and `Enabled=0` turns a modul
 | `Fixes` | on | Fixes crashes in the game itself, one switch each: closing the game after an online or LAN session (`NetServiceExit`) or during or after a match (`AiServiceExit`), and the `/SEPIA` launch option crashing at startup and not tinting the screen (`SepiaSwitch`), and joining a host whose game style is one this game lacks (`SchemeCode`); build #1077 only |
 | `Diagnostics` | on | Crash handler, hang watchdog and minidumps |
 | `Overlay` | on | The in-game overlay (`ToggleKey`, `PassthroughKey`) |
+| `MouseFix` | off | Menu cursor stutter fix: skips the engine's per-frame cursor re-centre while the frontend cursor is shown (aiming in a match is unchanged), keeps the cursor inside the window (`Clip=1`), and re-syncs the mouse after the overlay releases it. Local input only, nothing to agree with other players; build #1077 only (`Probe=1` logs the gate) |
 | `EventBus` | on | The engine message bus for modules |
 | `Logging` | on | Structured JSONL session logs |
 | `LogExport` | on | Log zips: one-click "Export last game's logs" (`Hotkey`) and "Save logs as..." |

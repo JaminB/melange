@@ -22,6 +22,7 @@
 #include "lua/sim/bridge_internal.h"
 #include "melange/jlog.h"
 #include "melange/weapons.h"
+#include "mods/handshake_gid.h"
 #include "mods/handshake_internal.h"
 #include "mods/lobby.h"
 #include "mods/thumper_internal.h"
@@ -240,11 +241,6 @@ std::string SetValueText(const weapons::manifest::SetValue& v) {
         case FieldType::String: return SetString(v.string);
         default: return SetNumber(v.number);
     }
-}
-
-std::string LowerSlashes(std::string s) {
-    for (char& c : s) c = c == '\\' ? '/' : static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
-    return s;
 }
 
 std::vector<CloneSpec> CloneSpecs(const std::vector<weapons::manifest::CloneDecl>& decls,
@@ -565,6 +561,8 @@ public:
         const std::string policy = melange::config::GetString("Handshake", "WeaponGate", "refuse");
         wpngate::Install(policy == "suspend" ? wpngate::Policy::Suspend : wpngate::Policy::Refuse,
                          Bool("LeaveButton", true));
+        // Game-file integrity: its own member key, never part of the content hash (it only warns).
+        gid::Install(Bool("PeerIntegrity", true), g_publish);
         new Listener(melange::steam::kLobbyEnter, 24);
         new Listener(melange::steam::kLobbyDataUpdate, 24);
         new Listener(melange::steam::kLobbyChatUpdate, 32);
