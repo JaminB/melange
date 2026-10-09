@@ -55,7 +55,7 @@ bool GetMode(lua_State* L, int t, const char* key, ctl::InvertMode* out) {
 void GetSens(lua_State* L, int t, const char* key, float* out) {
     lua_getfield(L, t, key);
     if (!lua_isnil(L, -1)) {
-        if (!lua_isnumber(L, -1)) luaL_error(L, "wum.input.setOptions: %s must be a number", key);
+        if (lua_type(L, -1) != LUA_TNUMBER) luaL_error(L, "wum.input.setOptions: %s must be a number", key);
         *out = ctl::ClampSensitivity(lua_tonumber(L, -1));
     }
     lua_pop(L, 1);

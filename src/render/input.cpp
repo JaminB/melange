@@ -341,6 +341,11 @@ LRESULT CALLBACK OverlayWndProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
         ImGui_ImplWin32_WndProcHandler(h, msg, wp, lp);
     }
     if (CapturedFromGame(msg, capturing)) {
+        // A foreground WM_INPUT must still reach DefWindowProc, which frees the raw input data; the game never sees it.
+        if (msg == WM_INPUT) {
+            ++g_mouseDropped;
+            return unicode ? DefWindowProcW(h, msg, wp, lp) : DefWindowProcA(h, msg, wp, lp);
+        }
         if (msg == WM_KEYDOWN || msg == WM_KEYUP || msg == WM_CHAR)
             ++g_keyMsgsDropped;
         else

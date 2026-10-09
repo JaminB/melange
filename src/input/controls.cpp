@@ -199,7 +199,8 @@ void ApplyInvert() {
         const int want = k == kCamera ? camWant : aimWant;
         const uint8_t now = want >= 0 ? static_cast<uint8_t>(want) : orig;
         if (now != cur) melange::mem::Put<uint8_t>(m.addr + 0xd, now);
-        next[m.addr] = {orig, now};
+        // Only overridden mappings are tracked: once every mode is back to "game" the table empties and the scan stops.
+        if (want >= 0) next[m.addr] = {orig, now};
         if (k == kCamera) {
             if (camAny < 0) camAny = now;
             if (camActive < 0 && GroupActive(l, gi)) camActive = now;
@@ -226,6 +227,15 @@ void RestoreInvert() {
 std::atomic<int> g_idCamera{-1}, g_idSpectate{-1}, g_idAim{-1};
 uint64_t g_idTry = 0;
 Carry g_carryX[4], g_carryY[4];
+// The flush posts a message once per active group that maps it, all with the same motion. Every copy within one flush
+// gets the same scaled result, so the carry advances once per flush and not once per mapping.
+struct PostMemo {
+    uint32_t flush = 0;
+    int inX = 0, inY = 0, outX = 0, outY = 0;
+    bool valid = false;
+};
+uint32_t g_flushSeq = 0;  // main thread, like the flush
+PostMemo g_memo[4];
 
 void ResolveIds() {
     if (g_idCamera >= 0 && g_idSpectate >= 0 && g_idAim >= 0) return;
@@ -265,7 +275,14 @@ void OnPost(SafetyHookContext& ctx) {
     uint32_t* a = reinterpret_cast<uint32_t*>(ctx.esp);
     const Kind k = KindOfId(static_cast<uint16_t>(a[1]));
     if (k == kNone) return;
-    int x = static_cast<int>(a[2]), y = static_cast<int>(a[3]);
+    const int inX = static_cast<int>(a[2]), inY = static_cast<int>(a[3]);
+    PostMemo& memo = g_memo[k];
+    if (memo.valid && memo.flush == g_flushSeq && memo.inX == inX && memo.inY == inY) {
+        a[2] = static_cast<uint32_t>(memo.outX);
+        a[3] = static_cast<uint32_t>(memo.outY);
+        return;
+    }
+    int x = inX, y = inY;
     if (k == kCamera && g_opt.blimpInvert && g_camFlag.load(std::memory_order_relaxed) == 1 && InBlimpView())
         y = -y;  // the flush skips the invert flags in this view; do what it does everywhere else
     const float s = k == kAim ? g_opt.aimSensitivity : g_opt.cameraSensitivity;
@@ -273,6 +290,7 @@ void OnPost(SafetyHookContext& ctx) {
         x = g_carryX[k].Apply(x, s);
         y = g_carryY[k].Apply(y, s);
     }
+    memo = {g_flushSeq, inX, inY, x, y, true};
     a[2] = static_cast<uint32_t>(x);
     a[3] = static_cast<uint32_t>(y);
 }
@@ -288,6 +306,13 @@ bool SmoothActive() {
     return g_smoothCfg && g_rawRegistered.load(std::memory_order_relaxed) && g_rawSeen.load(std::memory_order_relaxed);
 }
 
+void AddRaw(LONG dx, LONG dy) {
+    g_rawX.fetch_add(dx, std::memory_order_relaxed);
+    g_rawY.fetch_add(dy, std::memory_order_relaxed);
+    g_rawTotX.fetch_add(dx, std::memory_order_relaxed);
+    g_rawTotY.fetch_add(dy, std::memory_order_relaxed);
+}
+
 void RawSink(HWND h, WPARAM wp, LPARAM lp) {
     RAWINPUT ri;
     UINT size = sizeof ri;
@@ -299,10 +324,7 @@ void RawSink(HWND h, WPARAM wp, LPARAM lp) {
     g_rawSeen.store(true, std::memory_order_relaxed);
     // Background input is ignored, and so is anything the overlay owns (the game gets no mouse then either).
     if (GET_RAWINPUT_CODE_WPARAM(wp) != RIM_INPUT || GetForegroundWindow() != h || melange::overlay::Capturing()) return;
-    g_rawX.fetch_add(dx, std::memory_order_relaxed);
-    g_rawY.fetch_add(dy, std::memory_order_relaxed);
-    g_rawTotX.fetch_add(dx, std::memory_order_relaxed);
-    g_rawTotY.fetch_add(dy, std::memory_order_relaxed);
+    AddRaw(dx, dy);
 }
 
 // Test verb controls.raw <dx> <dy>: adds relative counts exactly as RawSink does for a WM_INPUT event, without the
@@ -312,10 +334,7 @@ bool VerbRaw(std::string_view args, void*) {
     int dx = 0, dy = 0;
     if (sscanf_s(std::string(args).c_str(), "%d %d", &dx, &dy) != 2 || !g_rawRegistered) return false;
     g_rawSeen.store(true, std::memory_order_relaxed);
-    g_rawX.fetch_add(dx, std::memory_order_relaxed);
-    g_rawY.fetch_add(dy, std::memory_order_relaxed);
-    g_rawTotX.fetch_add(dx, std::memory_order_relaxed);
-    g_rawTotY.fetch_add(dy, std::memory_order_relaxed);
+    AddRaw(dx, dy);
     return true;
 }
 
@@ -332,6 +351,7 @@ void OnTick(SafetyHookContext& ctx) {
 void OnFlush(SafetyHookContext& ctx) {
     uint8_t* svc = reinterpret_cast<uint8_t*>(ctx.ecx);
     if (!(svc[0x75] & 1)) return;  // the flush returns at once
+    ++g_flushSeq;
     ApplyInvert();
     if (!SmoothActive()) return;
     const float sens = *reinterpret_cast<float*>(svc + 0xa4);
@@ -398,8 +418,11 @@ void OnFrame() {
     if (!g_installed) return;
     HWND hwnd = static_cast<HWND>(melange::events::GameWindow());
     if (g_smoothCfg && hwnd && hwnd != g_rawHwnd && melange::render::SubclassedWindow() == hwnd) RegisterRaw(hwnd);
-    ApplyInvert();
-    if (g_probe) ProbeLog();
+    // The flush re-applies the flags right before it reads them; the per-frame scan is only for the probe log.
+    if (g_probe) {
+        ApplyInvert();
+        ProbeLog();
+    }
 }
 
 bool Hook(uintptr_t at, safetyhook::MidHookFn fn, const char* what) {
@@ -485,6 +508,7 @@ void SetOptions(const Options& o, const void* owner) {
     g_owner = owner;
     for (Carry& c : g_carryX) c.Reset();
     for (Carry& c : g_carryY) c.Reset();
+    for (PostMemo& m : g_memo) m.valid = false;
     if (g_installed) ApplyInvert();
 }
 

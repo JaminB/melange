@@ -331,7 +331,7 @@ Mouse look and aim options, and what the game's controls are bound to. Everythin
 puts into its own mouse messages on this machine, before they are sent, so other players and Wormsign recordings
 receive the same final values as for any other input: no option can desynchronise a match. The namespace needs build
 #1077 and `[Controls] Enabled=1` (the default); otherwise `groups()` returns `nil, "unavailable"` and the other
-functions do nothing useful (`binding()` returns `nil`, `setOptions` is accepted and has no effect).
+functions do nothing useful (`binding()` returns `nil`, `setOptions` is accepted and has no effect, though `options()` reports what it set).
 
 | Name | Description |
 |---|---|
