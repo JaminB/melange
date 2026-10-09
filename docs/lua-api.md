@@ -156,7 +156,7 @@ Melange logs the number of rays and their average and longest time at the end of
 |---|---|
 | `wum.ui.panel(id, title, fn[, open])` | Adds an overlay panel. `fn()` draws its contents every frame while it is open. Returns a handle. The overlay's *View* menu lists it as *<mod name> > <title>*; a `/` in `title` (`"Tools/Grid"`) adds a submenu level. |
 | `wum.ui.menu(path, fn[, opts])` | Adds a menu item `Mods/<mod name>/<path>` (for example `"Reset"`). `opts.checked` is an optional function asked every frame the menu is open: the item shows a check mark while it returns true, for an item that switches something on and off (`wum.ui.menu("Grid", toggleGrid, {checked = function() return gridOn end})`). An error in it counts as a fault (the getter is disabled after 3, the item still works) and reads as unchecked. Returns a handle. |
-| `wum.ui.hotkey(keys, fn)` | Calls `fn()` on a hotkey such as `"Ctrl+Shift+H"`, whether or not the overlay is shown. The key is kept from the game. |
+| `wum.ui.hotkey(keys, fn)` | Calls `fn()` on a hotkey such as `"Ctrl+Shift+H"`, whether or not the overlay is shown. The key is kept from the game. A hotkey needs at least one of Ctrl, Shift or Alt, except that a bare function key (`"F1"` to `"F12"`) is accepted; any other key without a modifier raises an error, because it would take an ordinary gameplay key away from the game. |
 | `wum.ui.remove(handle)` | Removes a panel, menu item or hotkey handle. |
 
 Widgets, only inside a panel function:
@@ -324,6 +324,24 @@ A panel page has no cookie and cannot reach `/ws` or `document` outside its own 
 `allow-same-origin`); it talks to the shell only through `/app/ext.js`, which exposes `OasisExt.call(method, params)`
 and `OasisExt.subscribe(channel, filter, fn)` restricted to the mod's own `mod.<id>.*` names plus read-only `state`
 and `log`.
+
+## `wum.input`
+
+Mouse look and aim options, and what the game's controls are bound to. Everything here changes the numbers the game
+puts into its own mouse messages on this machine, before they are sent, so other players and Wormsign recordings
+receive the same final values as for any other input: no option can desynchronise a match. The namespace needs build
+#1077 and `[Controls] Enabled=1` (the default); otherwise `groups()` returns `nil, "unavailable"` and the other
+functions do nothing useful (`binding()` returns `nil`, `setOptions` is accepted and has no effect).
+
+| Name | Description |
+|---|---|
+| `wum.input.groups()` | An array of the active control-group names in index order, for example `{"InGame", "WormFirstPersonAiming"}`. The names are `Menu`, `InGame`, `WormAiming`, `WormFirstPersonAiming`, `WormMoving`, `WormRoping`, `UtilityGirder`, `Flying`, `CameraSelect`, `Fire`, `UtilityFire`, `CrateChuteRelease`, `Spectator`, `NetworkSpectator`, `AttractMode`, `ControllerRemoved`, `ManualCam`, `EFMVMovie` and `XboxSignIn`. An empty table when the game has no input service yet; `nil, "unavailable"` on an unknown build or with `[Controls] Enabled=0`. |
+| `wum.input.binding(messageName)` | A short label of the key mapped to an engine message (`"Space"`, `"Q"`), or of the mouse button (`"LMB"`, `"MMB"`, `"RMB"`) when no key is, or `nil` when neither is (joypad bindings are not reported). Names are the game's message names, for example `"Input.JumpPressed"` or `"Input.FirePressed"`. |
+| `wum.input.setOptions(t)` | Sets the options in `t` and returns `true`. `t` fields are all optional, and a missing one means the game's own behaviour: `cameraInvertY` = `"game"`, `"standard"` (mouse up looks up) or `"inverted"`; `aimInvertY` = the same for aiming; `blimpInvert` = a boolean, applies the camera invert in the Blimp view too, which the game skips; `cameraSensitivity` = a number from 0.25 to 3.0 (a number outside the range is clamped), scales camera and spectator-camera motion; `aimSensitivity` = the same for aiming. A wrong type or an unknown string raises an error. `setOptions(nil)` clears everything. The last caller wins, and a mod's options are cleared when that mod unloads or is disabled. |
+| `wum.input.options()` | A table of the effective values: the five fields above (`"game"`, `false` and `1.0` when unset) and `smoothMouse`, a boolean owned by Melange's `[Controls] SmoothMouse` setting that Lua cannot change. |
+
+Scaled motion keeps its fractional part from one mouse event to the next, so a low sensitivity does not drop slow
+movements.
 
 ## `wum.wormsign`
 

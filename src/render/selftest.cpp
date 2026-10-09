@@ -54,6 +54,7 @@ void TestParse(Ctx& c) {
             "reject bad hex");
     c.Check(HotkeyLabel(kF11, kModCtrl | kModShift) == "Ctrl+Shift+F11", "label Ctrl+Shift+F11");
     c.Check(HotkeyLabel(kGrave, 0) == "GRAVE", "label GRAVE");
+    c.Check(ParseHotkeyText("F1", &d, &m) && d == 0x3B && m == 0 && ParseHotkeyText("f12", &d, &m) && d == 0x58 && m == 0, "parse bare F1 and F12");
 }
 
 void TestFilter(Ctx& c) {

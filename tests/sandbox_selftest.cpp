@@ -18,6 +18,7 @@
 #include "core/config.h"
 #include "core/game.h"
 #include "core/log.h"
+#include "input/controls.h"
 #include "lua/sandbox_core.h"
 #include "lua/sandbox_internal.h"
 #include "melange/draw.h"
@@ -62,6 +63,9 @@ struct MenuReg {
 };
 std::vector<MenuReg> g_menus;
 int g_nextHandle = 1, g_textures = 0, g_drawCbs = 0, g_hotkeys = 0;
+bool g_ctlAvail = true;
+melange::controls::Options g_ctlOpts;
+const void* g_ctlOwner = nullptr;
 }  // namespace fake
 
 // ---------------------------------------------------------------- link-time fakes
@@ -184,9 +188,34 @@ int AddHotkey(uint8_t, uint8_t, ActionFn, void*) { return ++fake::g_hotkeys; }
 bool ParseHotkey(const char* text, uint8_t* dik, uint8_t* mods) {
     *dik = 0x23;
     *mods = kCtrl;
+    if (text && !strcmp(text, "F5")) { *dik = 0x3F; *mods = 0; }  // a bare function key
+    if (text && !strcmp(text, "Q")) { *dik = 0x10; *mods = 0; }   // a bare ordinary key
     return text && *text;
 }
 }  // namespace overlay
+namespace controls {  // the Controls module is replaced by a fake that remembers what wum.input set
+bool Available() { return fake::g_ctlAvail; }
+void SetOptions(const Options& o, const void* owner) {
+    fake::g_ctlOpts = o;
+    fake::g_ctlOwner = owner;
+}
+void ClearAllOptions() { SetOptions(Options{}, nullptr); }
+void ClearOptions(const void* owner) {
+    if (owner && fake::g_ctlOwner == owner) ClearAllOptions();
+}
+Options Effective() { return fake::g_ctlOpts; }
+bool SmoothMouse() { return true; }
+bool ActiveGroups(std::vector<std::string>* out) {
+    if (!fake::g_ctlAvail) return false;
+    *out = {"InGame", "WormFirstPersonAiming"};
+    return true;
+}
+bool Binding(const char* name, std::string* label) {
+    if (strcmp(name, "Worm.Jump") != 0) return false;
+    *label = "Space";
+    return true;
+}
+}  // namespace controls
 namespace draw {
 void Line(const float*, const float*, Rgba, float, uint32_t, int) {}
 void Box(const float*, const float*, Rgba, float, uint32_t, int) {}
@@ -1081,6 +1110,55 @@ void TestSprites() {
     sandbox::UnloadMod("spr2");
 }
 
+void TestInput() {
+    fake::g_ctlAvail = true;
+    fake::g_ctlOpts = controls::Options{};
+    fake::g_ctlOwner = nullptr;
+    SetMod("inp", R"lua(
+groups = wum.input.groups()
+bind = wum.input.binding("Worm.Jump")
+nobind = wum.input.binding("Nope")
+r1 = wum.input.setOptions({ cameraInvertY = "standard", aimInvertY = "inverted", blimpInvert = true,
+                            cameraSensitivity = 9, aimSensitivity = 0.5 })
+o = wum.input.options()
+badMode = pcall(wum.input.setOptions, { cameraInvertY = "sideways" })
+badSens = pcall(wum.input.setOptions, { aimSensitivity = "fast" })
+badBlimp = pcall(wum.input.setOptions, { blimpInvert = 1 })
+ok1, e1 = pcall(wum.ui.hotkey, "F5", function() end)
+ok2, e2 = pcall(wum.ui.hotkey, "Q", function() end)
+)lua");
+    Expect(sandbox::LoadMod("inp"), "inp loads: " + StatusOf("inp").error);
+    ExpectEq(Eval("inp", "return #groups .. groups[1] .. groups[2]"), "2InGameWormFirstPersonAiming", "groups() lists active groups in order");
+    ExpectEq(Eval("inp", "return bind"), "Space", "binding() returns a label");
+    ExpectEq(Eval("inp", "return tostring(nobind)"), "nil", "binding() of an unknown message is nil");
+    ExpectEq(Eval("inp", "return r1"), "true", "setOptions returns true");
+    ExpectEq(Eval("inp", "return o.cameraInvertY .. o.aimInvertY .. tostring(o.blimpInvert)"), "standardinvertedtrue", "options() reflects setOptions");
+    ExpectEq(Eval("inp", "return o.cameraSensitivity"), "3", "cameraSensitivity is clamped to 3.0");
+    ExpectEq(Eval("inp", "return o.aimSensitivity"), "0.5", "aimSensitivity 0.5");
+    ExpectEq(Eval("inp", "return tostring(o.smoothMouse)"), "true", "options() reports smoothMouse");
+    ExpectEq(Eval("inp", "return badMode or badSens or badBlimp"), "false", "bad option values raise");
+    ExpectEq(Eval("inp", "return ok1"), "true", "wum.ui.hotkey accepts a bare F5");
+    ExpectEq(Eval("inp", "return ok2"), "false", "wum.ui.hotkey still wants a modifier for Q");
+    Expect(fake::g_ctlOpts.cameraInvertY == controls::InvertMode::Standard && fake::g_ctlOpts.blimpInvert, "options reached the module");
+    sandbox::UnloadMod("inp");
+    Expect(fake::g_ctlOpts.cameraInvertY == controls::InvertMode::Game && !fake::g_ctlOpts.blimpInvert && fake::g_ctlOpts.aimSensitivity == 1.0f,
+           "options are cleared when the owning mod unloads");
+
+    // Last caller wins: a second mod takes over; the first one unloading then leaves the second's options alone.
+    SetMod("inpA", "wum.input.setOptions({ aimSensitivity = 2 })");
+    SetMod("inpB", "wum.input.setOptions({ cameraSensitivity = 1.5 })");
+    Expect(sandbox::LoadMod("inpA") && sandbox::LoadMod("inpB"), "two input mods load");
+    Expect(fake::g_ctlOpts.cameraSensitivity == 1.5f && fake::g_ctlOpts.aimSensitivity == 1.0f, "last caller wins");
+    sandbox::UnloadMod("inpA");
+    Expect(fake::g_ctlOpts.cameraSensitivity == 1.5f, "an earlier caller unloading does not clear a later caller's options");
+    ExpectEq(Eval(nullptr, "wum.input.setOptions(nil) return wum.input.options().cameraSensitivity"), "1", "setOptions(nil) clears");
+    sandbox::UnloadMod("inpB");
+
+    fake::g_ctlAvail = false;
+    ExpectEq(Eval(nullptr, "local a, b = wum.input.groups() return tostring(a) .. ':' .. tostring(b)"), "nil:unavailable", "groups() is unavailable without the module");
+    fake::g_ctlAvail = true;
+}
+
 void TestDocs() {
     const std::string doc = ReadText(W(MELANGE_SOURCE_DIR) + L"\\docs\\lua-api.md");
     Expect(!doc.empty(), "docs/lua-api.md exists");
@@ -1129,7 +1207,7 @@ int main() {
         {"unsafe", TestUnsafe},   {"panels", TestPanels},   {"menus", TestMenus},
         {"samples", TestSamples},
         {"game", TestGame},       {"graphics", TestGraphics}, {"sprites", TestSprites},
-        {"docs", TestDocs}};
+        {"input", TestInput}, {"docs", TestDocs}};
     for (const auto& [name, fn] : tests) {
         const int before = g_fail;
         fn();

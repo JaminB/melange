@@ -17,6 +17,11 @@ void RunPendingHotkeys();
 // (Re)subclasses the game window; a no-op when `hwnd` is already subclassed.
 void SubclassGameWindow(HWND hwnd);
 void SetImGuiInputReady(bool ready);
+// WM_INPUT hook point: `fn(hwnd, wParam, lParam)` runs on the main thread from the subclassed window procedure for
+// every WM_INPUT, before the message is forwarded to the game (which always still gets it). nullptr removes it.
+using RawInputSink = void (*)(HWND, WPARAM, LPARAM);
+void SetRawInputSink(RawInputSink fn);
+HWND SubclassedWindow();  // the game window once subclassed, else null
 
 struct InputStats {
     uint64_t keysDropped = 0, syntheticReleases = 0, mouseMsgsDropped = 0, keyMsgsDropped = 0, cursorPosBlocked = 0,
