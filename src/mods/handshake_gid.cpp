@@ -43,6 +43,7 @@ std::mutex g_mx;
 std::string g_exe16, g_data16;          // guarded by g_mx, "" until the background hash finishes
 uint32_t g_diskFlags = 0;               // guarded by g_mx: kGidData2
 std::vector<std::string> g_warnings;    // guarded by g_mx
+std::atomic<bool> g_hashFailed{false};  // the background hash gave up: OurValue stays ""
 uint64_t g_publishedLobby = 0;          // main thread
 std::string g_publishedValue;           // main thread
 int g_banner = 0;
@@ -65,6 +66,7 @@ void Compute(std::vector<std::string> paths) {
     const std::string exeSha = game::Exe().sha256;
     if (exeSha.size() < 16) {
         LOG_WARN("[handshake] game files: the exe could not be hashed, so mlg.gid is not published");
+        g_hashFailed = true;
         return;
     }
     // Still publish: an unrecognised exe is what peers most need to see. Its data hash then covers no files, so
@@ -81,9 +83,28 @@ void Compute(std::vector<std::string> paths) {
         if (sha.empty()) ++missing;
         files.emplace_back(p, std::move(sha));
     }
-    const std::string data = HashOfCanonicalText(GidDataText(files));
+    // A Data2 overlay (WUM.Loader, Renewation) shadows Data\ file by file: hash every file in it, so two peers with
+    // different overlays differ in data16, not only in the presence flag.
     std::error_code ec;
-    const bool data2 = fs::is_directory(fs::path(dir) / L"Data2", ec);
+    const fs::path data2Dir = fs::path(dir) / L"Data2";
+    const bool data2 = fs::is_directory(data2Dir, ec);
+    size_t overlay = 0;
+    if (data2) {
+        try {  // a name the narrow conversion cannot take throws, and this thread must not
+            for (fs::recursive_directory_iterator it(data2Dir, fs::directory_options::skip_permission_denied, ec), end;
+                 !ec && it != end; it.increment(ec)) {
+                if (!it->is_regular_file(ec)) continue;
+                const std::string rel = "Data2/" + it->path().lexically_relative(data2Dir).generic_string();
+                if (!GidHashesPath(rel)) continue;
+                files.emplace_back(rel, hashutil::Sha256HexFile(it->path().wstring()));
+                ++overlay;
+            }
+            if (ec) LOG_WARN("[handshake] game files: could not list all of Data2 (%s)", ec.message().c_str());
+        } catch (const std::exception& e) {
+            LOG_WARN("[handshake] game files: could not list all of Data2 (%s)", e.what());
+        }
+    }
+    const std::string data = HashOfCanonicalText(GidDataText(files));
     {
         std::lock_guard lk(g_mx);
         g_exe16 = exeSha.substr(0, 16);
@@ -91,9 +112,11 @@ void Compute(std::vector<std::string> paths) {
         g_diskFlags = data2 ? kGidData2 : 0;
     }
     LOG_INFO("[handshake] game files: exe %s, data %s (%zu files, %d missing%s)", exeSha.substr(0, 16).c_str(),
-             data.substr(0, 16).c_str(), files.size(), missing, data2 ? ", Data2 overlay present" : "");
+             data.substr(0, 16).c_str(), files.size(), missing,
+             data2 ? (", " + std::to_string(overlay) + " of them in the Data2 overlay").c_str() : "");
     jlog::Rec("handshake", jlog::Level::Info, "game_files").Str("exe16", exeSha.substr(0, 16))
-        .Str("data16", data.substr(0, 16)).Uint("files", files.size()).Int("missing", missing).Bool("data2", data2).Emit();
+        .Str("data16", data.substr(0, 16)).Uint("files", files.size()).Int("missing", missing).Bool("data2", data2)
+        .Uint("overlayFiles", overlay).Emit();
 }
 
 void UpdateBanner(const std::vector<std::string>& warnings) {
@@ -134,8 +157,8 @@ void Tick() {
         if (!warnings.empty()) LOG_WARN("[handshake] game files differ: %s", all.c_str());
         jlog::Rec("handshake", warnings.empty() ? jlog::Level::Info : jlog::Level::Warn, "game_files_lobby")
             .Uint("mismatched", warnings.size()).Str("why", all).Emit();
+        UpdateBanner(warnings);  // the slot starts hidden, so only a change needs to reach it
     }
-    UpdateBanner(warnings);
 }
 
 bool VerbState(std::string_view, void*) {
@@ -164,6 +187,7 @@ void Install(bool enabled, bool publish) {
 }
 
 bool Enabled() { return g_enabled; }
+bool HashFailed() { return g_hashFailed.load(); }
 
 std::string OurValue() {
     GameId g;

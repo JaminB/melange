@@ -302,10 +302,11 @@ constexpr uintptr_t kCameraManagerPtr = 0x95c370;
 // Weapon selected under a frontend layer. Picking a weapon in the panel sends a replicated Weapon.DelayedPanelChanged
 // (0x5427f0 at 0x600d0c, stamped ahead), and every machine's WXWeaponPanelLogicEntity::HandleMessage 0x603b70 then
 // sets the worm's weapon. But when the frontend layer counter is non-zero (a popup or the pause menu is open), the
-// handler skips the message if Game.Scope is 0 and the current player is local (0x603c40: cmp [0x97a614],ebx / jz
-// 0x603c71 / cmp al,bl / jnz 0x603da9 / NetService / CurrentPlayerLocal / jnz 0x603da9). Spectators always apply it,
-// so an active player who presses Esc between the pick and its stamped tick keeps the old weapon while the others
-// switch (worm/weapon validation reasons). FixPanelSelectUnderMenu turns the jz into a jmp while an online match
+// handler only applies it when Game.Scope is 0, a NetService exists and the current player is remote; otherwise it
+// skips it (0x603c40: cmp [0x97a614],ebx / jz 0x603c71 / cmp al,bl / jnz 0x603da9 / NetService / jz 0x603da9 /
+// CurrentPlayerLocal / jnz 0x603da9). A machine with no layer open always applies it, so an active player who
+// presses Esc between the pick and its stamped tick keeps the old weapon while the others switch (worm/weapon
+// validation reasons). FixPanelSelectUnderMenu turns the jz into a jmp while an online match
 // runs: 0x603c71 is IsMessage(edi, Weapon.DelayedPanelChanged), and every other id still goes on to 0x603da9, the
 // skip's own target. Off by default until the desync is reproduced online.
 constexpr uintptr_t kPanelSelectGate = 0x603c40;  // cmp [0x97a614],ebx; edi = message id (movzx), ebx = 0
@@ -668,11 +669,8 @@ void OnTimeSyncOvershoot(safetyhook::Context& c) {
 
 // esi = the FlyCam about to register its post-explosion hold. Says whether it is even the manager's logical camera.
 void OnFlyCamHold(safetyhook::Context& c) {
-    const uintptr_t mgr = Read<uint32_t>(kCameraManagerPtr);
-    const uint32_t index = mgr ? Read<uint32_t>(mgr + 0x28c) : kCamIndexNone;
-    const uint32_t first = mgr ? Read<uint32_t>(mgr + 0x2a0) : 0, last = mgr ? Read<uint32_t>(mgr + 0x2a4) : 0;
-    const uint32_t count = last >= first ? (last - first) / 4 : 0;
-    const uintptr_t logical = index < count && count <= kCamMaxCount ? Read<uint32_t>(first + index * 4) : 0;
+    uint32_t index, count;
+    const uintptr_t logical = LogicalCamera(Read<uint32_t>(kCameraManagerPtr), &index, &count);
     const bool skipped = g_cameraHoldPatched;
     LOG_INFO("[net] FlyCam post-explosion hold at t=%u for %u ms (%s logical camera)%s", SimClock(),
              Read<uint32_t>(c.esi + 0x8c), logical == c.esi ? "the" : "not the",

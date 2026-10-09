@@ -243,11 +243,6 @@ std::string SetValueText(const weapons::manifest::SetValue& v) {
     }
 }
 
-std::string LowerSlashes(std::string s) {
-    for (char& c : s) c = c == '\\' ? '/' : static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
-    return s;
-}
-
 std::vector<CloneSpec> CloneSpecs(const std::vector<weapons::manifest::CloneDecl>& decls,
                                   const std::vector<ContentMod>& mods,
                                   const std::vector<thumper::Entry>& enabled) {

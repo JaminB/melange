@@ -94,7 +94,7 @@ void DrawPanel(void*) {
             ImGui::Text("Our game files: exe %s, data %s%s%s", g.exe16.c_str(), g.data16.c_str(), g.flags ? ", " : "",
                         GidFlagsText(g.flags).c_str());
         else
-            ImGui::TextDisabled("Our game files: not hashed yet");
+            ImGui::TextDisabled("Our game files: %s", gid::HashFailed() ? "could not be hashed" : "not hashed yet");
     }
 
     mods::Peer peers[64];

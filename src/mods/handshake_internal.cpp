@@ -321,19 +321,20 @@ CloneVerdict EvaluateCloneLobby(const CloneLobbyInput& in) {
     return v;
 }
 
-namespace {
-std::string LowerPath(std::string s) {
+std::string LowerSlashes(std::string s) {
     for (char& c : s) c = c == '\\' ? '/' : static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
     return s;
 }
-}  // namespace
 
-bool GidHashesPath(const std::string& path) { return LowerPath(path).rfind("data/language/", 0) != 0; }
+bool GidHashesPath(const std::string& path) {
+    const std::string p = LowerSlashes(path);
+    return p.rfind("data/language/", 0) != 0 && p.rfind("data2/language/", 0) != 0;
+}
 
 std::string GidDataText(const std::vector<std::pair<std::string, std::string>>& files) {
     std::vector<std::pair<std::string, std::string>> sorted;
     for (const auto& [path, sha] : files)
-        if (GidHashesPath(path)) sorted.emplace_back(LowerPath(path), sha.empty() ? "-" : sha);
+        if (GidHashesPath(path)) sorted.emplace_back(LowerSlashes(path), sha.empty() ? "-" : sha);
     std::sort(sorted.begin(), sorted.end());
     std::string t = "melange-gid/1\n";
     for (const auto& [path, sha] : sorted) t += "file=" + path + " " + sha + "\n";
@@ -348,9 +349,11 @@ std::string BuildGidValue(const GameId& g) {
 bool ParseGidValue(const std::string& value, GameId* out) {
     const std::vector<std::string> parts = Split(value, ';');
     if (parts.size() != 4 || parts[0] != "1" || !IsHex16(parts[1]) || !IsHex16(parts[2])) return false;
-    char* end = nullptr;
-    const unsigned long flags = strtoul(parts[3].c_str(), &end, 10);
-    if (parts[3].empty() || !end || *end != '\0') return false;
+    // Digits only: strtoul alone would also take a sign or leading spaces ("-1" -> every flag set).
+    if (parts[3].empty() || parts[3].size() > 9 ||
+        !std::all_of(parts[3].begin(), parts[3].end(), [](char c) { return c >= '0' && c <= '9'; }))
+        return false;
+    const unsigned long flags = strtoul(parts[3].c_str(), nullptr, 10);
     if (out) *out = GameId{parts[1], parts[2], static_cast<uint32_t>(flags)};
     return true;
 }
@@ -365,13 +368,17 @@ std::string GidFlagsText(uint32_t flags) {
 std::string DiffGid(const GameId& ours, const GameId& theirs) {
     std::string out;
     if (ours.exe16 != theirs.exe16) out = "different game build";
-    if (ours.data16 != theirs.data16 || ours.flags != theirs.flags) {
+    const uint32_t differ = ours.flags ^ theirs.flags;
+    if (ours.data16 != theirs.data16 || (differ & kGidData2)) {
         std::string data = "different game data files", who;
-        if (theirs.flags) who = "theirs: " + GidFlagsText(theirs.flags);
-        if (ours.flags) who += (who.empty() ? "" : "; ") + std::string("yours: ") + GidFlagsText(ours.flags);
+        if (theirs.flags & kGidData2) who = "theirs: Data2 overlay";
+        if (ours.flags & kGidData2) who += (who.empty() ? "" : "; ") + std::string("yours: Data2 overlay");
         if (!who.empty()) data += " (" + who + ")";
         out += (out.empty() ? "" : "; ") + data;
     }
+    if (differ & kGidCrcOff)
+        out += (out.empty() ? "" : "; ") +
+               std::string(theirs.flags & kGidCrcOff ? "their game's CRC check is off" : "your game's CRC check is off");
     return out;
 }
 

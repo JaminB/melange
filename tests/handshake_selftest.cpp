@@ -348,6 +348,10 @@ void GidTests() {
                    !ParseGidValue("1;" + exe + ";" + data, nullptr) && !ParseGidValue("1;" + exe + ";" + data + ";x", nullptr) &&
                    !ParseGidValue("1;" + exe + ";NOTHEX0123456789;0", nullptr),
                "gid value: empty, another version, missing or bad fields rejected");
+        Expect(!ParseGidValue("1;" + exe + ";" + data + ";-1", nullptr) &&
+                   !ParseGidValue("1;" + exe + ";" + data + "; 3", nullptr) &&
+                   !ParseGidValue("1;" + exe + ";" + data + ";+3", nullptr),
+               "gid value: flags are plain digits (no sign, no spaces)");
     }
     {
         const GameId ours{exe, data, 0};
@@ -358,8 +362,18 @@ void GidTests() {
         Expect(DiffGid(ours, {exe, data, kGidData2}) == "different game data files (theirs: Data2 overlay)",
                "gid diff: same hashes, but they have a Data2 overlay");
         Expect(DiffGid({exe, data, kGidCrcOff}, {"1111111111111111", "2222222222222222", kGidData2}) ==
-                   "different game build; different game data files (theirs: Data2 overlay; yours: CRC check off)",
-               "gid diff: both, with the flags on each side");
+                   "different game build; different game data files (theirs: Data2 overlay); your game's CRC check is off",
+               "gid diff: build, data and the CRC bypass reported separately");
+        Expect(DiffGid(ours, {exe, data, kGidCrcOff}) == "their game's CRC check is off",
+               "gid diff: a CRC bypass alone is not a data difference");
+        Expect(DiffGid({exe, data, kGidData2 | kGidCrcOff}, {exe, data, kGidData2 | kGidCrcOff}).empty(),
+               "gid diff: same overlay and same bypass on both sides");
+        Expect(DiffGid({exe, data, kGidData2}, {exe, "2222222222222222", kGidData2}) ==
+                   "different game data files (theirs: Data2 overlay; yours: Data2 overlay)",
+               "gid diff: both have an overlay, with different contents");
+        Expect(GidHashesPath("Data/Tweak/LOCAL.XOM") && GidHashesPath("Data2/Tweak/SCRIPTS.XOM") &&
+                   !GidHashesPath("Data/Language/PC/English.xom") && !GidHashesPath("Data2\\Language\\x.xom"),
+               "gid paths: overlay files hashed, language files skipped in both roots");
     }
     {
         const std::string ours = BuildGidValue({exe, data, 0});

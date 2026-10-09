@@ -8,6 +8,7 @@
 namespace melange::handshake::gid {
 void Install(bool enabled, bool publish);
 bool Enabled();
+bool HashFailed();                       // the background hash gave up, so OurValue stays ""
 std::string OurValue();                  // "" until the background hash finishes (or when it failed)
 std::vector<std::string> Warnings();     // "<name>: <what differs>" per mismatched Melange peer, main thread
 }  // namespace melange::handshake::gid
