@@ -195,6 +195,38 @@ void TestSepiaTint() {
           "SepiaTint: only the missing tweak is filled");
     Check(EnsureSepiaTint(0, &ResolveFound, &ResolveFound) == Tint::Present, "SepiaTint: no post-process, no-op");
 }
+
+void OnSchemeSite(safetyhook::Context& c) {
+    SchemeToStandIn(c.esi, c.edi, *reinterpret_cast<const uint32_t*>(c.esp + 8));
+}
+
+// A scheme list entry: the name at +0x14.
+struct FakeScheme {
+    uint8_t head[0x14];
+    const char* name;
+};
+
+// Scheme name, 0x626829, wrapped as cdecl name(table, code, count) with the count at [esp+8] as in the game:
+// push esi; push edi; mov esi,[esp+0Ch]; mov edi,[esp+10h]; push [esp+14h]; push 0; push 0;
+// mov eax,[esi+edi*4-4]; mov esi,[eax+14h]; mov eax,esi; add esp,0Ch; pop edi; pop esi; ret
+void TestSchemeCode() {
+    const uintptr_t fn = Emit({0x56, 0x57, 0x8B, 0x74, 0x24, 0x0C, 0x8B, 0x7C, 0x24, 0x10, 0xFF, 0x74, 0x24, 0x14, 0x6A,
+                               0x00, 0x6A, 0x00, 0x8B, 0x44, 0xBE, 0xFC, 0x8B, 0x70, 0x14, 0x8B, 0xC6, 0x83, 0xC4, 0x0C,
+                               0x5F, 0x5E, 0xC3});
+    auto hook = safetyhook::create_mid(fn + 18, &OnSchemeSite);
+    Check(static_cast<bool>(hook), "SchemeCode: hook installs on the game's bytes");
+    if (!hook) return;
+    auto name = reinterpret_cast<const char*(__cdecl*)(const FakeScheme* const*, int, uint32_t)>(fn);
+
+    FakeScheme a{{}, "FE.Scheme.Standard"}, b{{}, "FE.Scheme.Pro"};
+    // One slot past the list holds a pointer to nowhere, as the heap did in the crash.
+    const FakeScheme* table[3] = {&a, &b, reinterpret_cast<const FakeScheme*>(uintptr_t{0x51C7E2DA})};
+    Check(std::strcmp(name(table, 1, 2), "FE.Scheme.Standard") == 0 && std::strcmp(name(table, 2, 2), "FE.Scheme.Pro") == 0,
+          "SchemeCode: a code in the list -> its own name");
+    Check(name(table, 3, 2) == kUnknownScheme, "SchemeCode: a code past the list -> stand-in name, no read past it");
+    Check(name(table, 0, 2) == kUnknownScheme && name(table, -1, 2) == kUnknownScheme,
+          "SchemeCode: a code below 1 -> stand-in name");
+}
 }  // namespace
 
 int main() {
@@ -205,6 +237,7 @@ int main() {
     TestAiServiceExit();
     TestSepiaSwitch();
     TestSepiaTint();
+    TestSchemeCode();
     std::printf("%s (%d failure(s))\n", g_failures ? "FAILED" : "all passed", g_failures);
     return g_failures ? 1 : 0;
 }

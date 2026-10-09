@@ -27,4 +27,11 @@ void ResetSepia();
 using ResolveTweak = int(__cdecl*)(const char* const* name, uint32_t* out);
 enum class Tint { Present, Resolved, Fallback };
 Tint EnsureSepiaTint(uintptr_t pp, ResolveTweak colour, ResolveTweak weight);
+
+// A lobby's "scheme_code" is a 1-based index into the local DATA.LockedSchemes list, and the game reads the entry's
+// name (entry+0x14) checked only by an assert that release builds log and step over. A host with game styles a peer
+// lacks (from mods) sends a code past the end of the peer's list. When `code` is outside 1..count, SchemeToStandIn
+// points `table` and `code` at a one-entry stand-in named kUnknownScheme. Returns true when it did.
+extern const char kUnknownScheme[];
+bool SchemeToStandIn(uintptr_t& table, uintptr_t& code, uint32_t count);
 }  // namespace melange::crashfix
