@@ -114,7 +114,7 @@ void LogRefusals() {
     const uint64_t now = GetTickCount64();
     if (now - g_lastRefuseLog < 2000) return;
     g_lastRefuseLog = now;
-    LOG_INFO("[handshake] match start held for clone weapons (%u frames so far): %s", n, g_view.why.c_str());
+    LOG_INFO("[handshake] match start held for weapon content (%u frames so far): %s", n, g_view.why.c_str());
     g_loggedFrames = n;
 }
 
@@ -141,7 +141,7 @@ void Tick() {
         const uintptr_t ns = game::IsKnownBuild() ? wum::NetService() : 0;
         const bool joiner = lobby::Current() && lobby::Owner() != lobby::Me();
         if (ns && joiner && InLobbyScreen()) {
-            LOG_INFO("[handshake] leaving the lobby at the player's request (clone weapons differ)");
+            LOG_INFO("[handshake] leaving the lobby at the player's request (weapon content differs)");
             jlog::Rec("handshake", jlog::Level::Info, "leave_lobby").Str("why", g_view.why).Emit();
             if (!CallAbort(ns)) LOG_ERROR("[handshake] leaving the lobby failed");
         }
@@ -157,7 +157,7 @@ void Tick() {
     if (g_view.hostHeld != g_wasHeld) {
         g_wasHeld = g_view.hostHeld;
         if (g_view.hostHeld)
-            LOG_WARN("[handshake] clone weapons: %s %s", g_view.refusing ? "the match start is refused:" : "clones will be off:",
+            LOG_WARN("[handshake] weapon content: %s %s", g_view.refusing ? "the match start is refused:" : "clones will be off:",
                      g_view.why.c_str());
         jlog::Rec("handshake", g_view.hostHeld ? jlog::Level::Warn : jlog::Level::Info, "clone_lobby")
             .Bool("held", g_view.hostHeld).Bool("refusing", g_view.refusing).Str("why", g_view.why).Emit();
@@ -171,7 +171,7 @@ void Tick() {
         const std::string key = std::to_string(lobby::Current()) + "|" + lobby::Data("mlg.req");
         if (key != g_modalKey) {
             g_modalKey = key;
-            LOG_WARN("[handshake] clone weapons: %s", g_view.why.c_str());
+            LOG_WARN("[handshake] weapon content: %s", g_view.why.c_str());
             jlog::Rec("handshake", jlog::Level::Warn, "clone_lobby_joined").Str("why", g_view.why).Emit();
             OpenModal();
         }
@@ -230,14 +230,17 @@ void Install(Policy policy, bool leaveButton) {
     g_banner = lobbybanner::Add("weapons", 10);
     testcmd::Register("handshake.wpn", &VerbState);
     testcmd::Register("handshake.leave", &VerbLeave);
-    LOG_INFO("[handshake] weapon gate: %s, %d clone(s) declared", policy == Policy::Refuse ? "refuse" : "suspend",
-             LocalClones() ? static_cast<int>(weapons::manifest::Frozen().size()) : 0);
+    LOG_INFO("[handshake] weapon gate: %s, %d clone(s) and %d rename(s) declared", policy == Policy::Refuse ? "refuse" : "suspend",
+             LocalClones() ? static_cast<int>(weapons::manifest::Frozen().size()) : 0,
+             LocalClones() ? static_cast<int>(weapons::manifest::FrozenText().size()) : 0);
 }
 
 Policy CurrentPolicy() { return g_policy; }
 
 bool LocalClones() {
-    return weapons::Enabled() && weapons::manifest::IsFrozen() && !weapons::manifest::Frozen().empty();
+    // Vanilla renames count as weapon content: peers must show the same names, so they get the same gate as clones.
+    return weapons::Enabled() && ((weapons::manifest::IsFrozen() && !weapons::manifest::Frozen().empty()) ||
+                                  (weapons::manifest::IsTextFrozen() && !weapons::manifest::FrozenText().empty()));
 }
 
 View Current() { return g_view; }

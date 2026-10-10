@@ -24,6 +24,10 @@ namespace {
 // when a target file does not already define them.
 constexpr const char* kGraphSetGuid = "0b3dbf644139bb40b1798f882d14449b";
 constexpr const char* kMeshDescGuid = "dbb2e8a8c30af04ba47696f47cf924d2";
+// The engine finds a descriptor's geometry graph by the first GUID (IID at 0x98c100); a bundle root's entries carry
+// the second (resource descriptor, 0x98c310). Both as stored in vanilla Bundl*.xom (docs/meshes.md).
+constexpr const char* kWorldGraphGuid = "6ae6dbe4fa866b45a73ff9130e12dfeb";
+constexpr const char* kRootEntryGuid = "99cc436e6fbef54b85d2bfcdf9ae4283";
 // Versions seen in the same file, used only as the default for a brand new TYPE entry; a class
 // the target document already defines keeps its own version untouched.
 uint32_t DefaultVersionFor(const std::string& cls) {
@@ -594,7 +598,7 @@ uint32_t WriteMesh(Document& doc, const Mesh& mesh, uint32_t materialFromShaderR
     Object gs; gs.type = "XGraphSet"; gs.container = false;
     Value graphs; graphs.type = Type::Struct; graphs.array = true; graphs.items.resize(1);
     graphs.items[0].type = Type::Struct;
-    graphs.items[0].members.emplace_back("Guid", Value{});
+    { Value g; g.type = Type::Guid; g.guid = GuidFromHex(kWorldGraphGuid); graphs.items[0].members.emplace_back("Guid", g); }
     graphs.items[0].members.emplace_back("Graph", RefVal(rootRef));
     graphs.items[0].members.emplace_back("Name", StrVal("world"));
     gs.fields.emplace_back("Graphs", graphs);
@@ -609,6 +613,28 @@ uint32_t WriteMesh(Document& doc, const Mesh& mesh, uint32_t materialFromShaderR
     uint32_t descRef = uint32_t(doc.objects.size()) + 1;
     doc.objects.push_back(std::move(desc));
     return descRef;
+}
+
+uint32_t WriteBundle(Document& doc, const Mesh& mesh, uint32_t materialFromShaderRef, std::string* error) {
+    uint32_t descRef = WriteMesh(doc, mesh, materialFromShaderRef, error);
+    if (!descRef) return 0;
+    // WriteMesh's last two objects are the mesh's XGraphSet and the XMeshDescriptor (nothing refers to the
+    // descriptor), so a root XGraphSet slotted between them keeps the objects grouped by TYPE-table order and
+    // moves only the descriptor, one place later.
+    if (descRef != doc.objects.size() || descRef < 2 || doc.objects[descRef - 2].type != "XGraphSet") {
+        if (error) *error = "internal: unexpected object layout after WriteMesh";
+        return 0;
+    }
+    Object root; root.type = "XGraphSet"; root.container = false;
+    Value graphs; graphs.type = Type::Struct; graphs.array = true; graphs.items.resize(1);
+    graphs.items[0].type = Type::Struct;
+    { Value g; g.type = Type::Guid; g.guid = GuidFromHex(kRootEntryGuid); graphs.items[0].members.emplace_back("Guid", g); }
+    graphs.items[0].members.emplace_back("Graph", RefVal(descRef + 1));
+    graphs.items[0].members.emplace_back("Name", StrVal(mesh.resourceId));
+    root.fields.emplace_back("Graphs", graphs);
+    doc.objects.insert(doc.objects.begin() + long(descRef - 1), std::move(root));
+    doc.root = descRef;  // the new root's own 1-based index
+    return descRef + 1;
 }
 
 }  // namespace melange::xom::mesh

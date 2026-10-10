@@ -27,7 +27,9 @@ xomtool convert <texture.png> --into <file.xom> --as <Name> [--section N] [--mip
 xomtool convert <Name> --from <file.xom> --out <texture.png> [--mip N]
 xomtool convert <mesh.gltf|.glb> --into <file.xom> --as <Name> [--section N]
                 [--material-from <Name>] [--material-file <file.xom>] [--texture <png>] [-o <out.xom>]
-xomtool convert <Name> --from <file.xom> --out <mesh.gltf>
+xomtool convert <mesh.gltf|.glb> --bundle <out.xom> --as <modId.Name> --section <476..519>
+                [--material-from <Name> --material-file <Bundl09.xom>] [--texture <png>] [--scene-bin N]
+xomtool convert <Name|#N> --from <file.xom> --out <mesh.gltf>
 xomtool bank --from <src.xom> --object <BaseName> --as <NewName> [--set Field=value ...] --out <out.xom>
 xomtool report <in.xom> -o <out.md>
 ```
@@ -128,14 +130,41 @@ XMeshDescriptor -> XGraphSet -> XInteriorNode -> XGroup -> XShape
   output file per mesh (as the examples above do) rather than injecting into an existing bundle
   with meshes of its own already - doing that safely needs re-indexing every `Ref` field in the
   file, which is future work, not this version's scope.
-- **Not loadable in game yet:** `LoadBank` only accepts an
-  `XDataBank` (a typed list of scalar/vector/container resources - it has no mesh list), so a mod
-  cannot currently point a weapon at a bank-built mesh; `PayloadGraphicsResourceID` etc. may only
-  name a *vanilla* mesh already in the scene. This converter still
-  ships so the format and the authoring pipeline are ready for whichever loader path lands next;
-  round-trip correctness (`tests/xom_convert_selftest.cpp`, `parity_test.py`) does not depend on
-  that loader existing.
+- **Loading in game:** `LoadBank` only accepts an `XDataBank`, so a `--into` file is not loadable by
+  itself. A mod's mesh is loaded by Melange's mesh loader (the manifest's `meshes` field, see
+  `docs/spice.md` and `docs/meshes.md`) from a bundle-shaped bank: see `--bundle` below.
 - Skinned meshes, animation and a Blender addon are not in this version.
+
+
+#### `convert ... --bundle` (a loadable mesh bank)
+
+```
+xomtool convert model.gltf --bundle kindjal.NailBat.xom --as kindjal.NailBat --section 476 \
+    --material-from BaseballBat --material-file Data/Bundles/Bundl09.xom --texture nailbat.png [--scene-bin 8]
+```
+
+Writes a complete mesh bank from nothing (no seed file): the shape `Meshes.LoadModBank` / the engine's section
+loader read (see `docs/meshes.md`). The root object is an `XGraphSet` whose single entry is
+`{Guid 99cc436e6fbef54b85d2bfcdf9ae4283, Graph -> XMeshDescriptor, Name = <modId>.<Name>}`; the descriptor
+carries `ResourceId`, `SectionId` (`--section`, 476..519 only) and `Flags 8`, and its own `XGraphSet` has a
+`"world"` entry with the geometry-graph GUID `6ae6dbe4fa866b45a73ff9130e12dfeb` pointing at
+`XInteriorNode -> XGroup -> XShape ...`. The file header comes from `--material-file`, and the TYPE table
+lists only the classes the bank uses (counts are computed). The output matches, object for object, the
+hand-built `kindjal.NailBat.xom` that loaded in game (`xomtool diff` reports 0 differences).
+
+- `--as` must be `<modId>.<Name>`; `--material-from` needs `--material-file`; `--texture` needs `--material-from`.
+- **One mesh per bank.** There is no `--bundle-append`: use one file and one `--section` per mesh.
+- `--scene-bin N` (0..87) is only validated. The scene bin is not stored in the file; it is the loader's argument
+  (`mesh.load <bank> <modId> <sceneBin>`, default 8).
+- Without `--material-from` the shapes have no shader (the mesh will not render in game).
+- `--texture` needs a shader with exactly one texture; a vanilla shader with several (e.g. `GasCanister`) is
+  refused, pick another mesh's material (e.g. `Grenade.Payload`).
+
+The `--into` form now also writes the `"world"` entry with the same geometry GUID instead of a zero GUID.
+
+`convert <Name> --from <file.xom> --out <texture.png|mesh.gltf>` also accepts `#N`, the 1-based object index
+shown by `inspect`/`unpack` (texture form: an `XImage`), for the case where several images share a name -
+Bundl09 has ten called `maya:file11/-1`: `xomtool convert "#6819" --from Bundl09.xom --out bat.png`.
 
 ### `bank`
 

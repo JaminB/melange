@@ -22,7 +22,21 @@ uint32_t Registry::U32(uintptr_t a) {
 
 bool Registry::PutU32(uintptr_t a, uint32_t v) { return e_.Write(a, &v, sizeof v); }
 
-void Registry::Configure(const std::vector<manifest::CloneDecl>& decls) {
+void Registry::Configure(const std::vector<manifest::CloneDecl>& decls, const std::vector<manifest::TextDecl>& texts) {
+    rules_.clear();
+    rules_.reserve(texts.size());  // the hook hands out token.c_str(): the rules must not move after this
+    for (const auto& t : texts) {
+        TextRule r;
+        r.decl = t;
+        // Short and fixed-width on purpose: the game formats the token into "HelpText.%s%d" in a buffer of unknown size
+        // (a clone name is capped at 48 for the same reason), so nothing from the mod id or the weapon goes into it.
+        // The width keeps "HelpText.<token>0" from reading as another token's key.
+        char tok[16];
+        snprintf(tok, sizeof tok, "wt%03zu", rules_.size());
+        r.token = tok;
+        rules_.push_back(std::move(r));
+    }
+    ResetText();
     n_ = static_cast<int>(std::min<size_t>(decls.size(), kMaxClones));
     for (int k = 0; k < n_; ++k) {
         Clone& c = clones_[k];
@@ -189,6 +203,113 @@ void Registry::RegisterText(Clone& c) {
                  c.help ? "" : "help", c.decl.base.c_str());
 }
 
+// The std::string tokens keep their addresses while rules_ is not resized, which only Configure does.
+void Registry::ResetText() {
+    textLive_ = false;
+    std::fill(std::begin(ruleOf_), std::end(ruleOf_), int16_t{-1});
+    for (auto& r : rules_) {
+        RestoreTag(r);
+        r.id = -1;
+        r.slot = 0;
+        r.text = r.help = false;
+    }
+}
+
+// The in-world weapon-name tag resolves the container's DisplayName through the string table, so a renamed weapon's
+// DisplayName is pointed at the same "Text.<token>" key the panel path registered. Determinism: every peer makes this
+// write at the same moment (match creation, behind the same gate as clones) with a cosmetic string key that no
+// simulation number reads, and contrib.cpp hashes only clone containers' fields, so the vanilla container is not in the
+// Wormsign contribution. A failure costs only the tag; the panel rename stands.
+bool Registry::SetTag(TextRule& r, uintptr_t container) {
+    uint32_t off = 0;
+    if (e_.Field(container, "DisplayName", &off) != FieldType::String) {
+        LOG_WARN("[weapons] weaponText %s (%s): no DisplayName string field, the HUD tag keeps its text", r.decl.weapon.c_str(),
+                 r.decl.mod.c_str());
+        return false;
+    }
+    const uintptr_t at = container + off;
+    std::string orig;
+    if (!e_.ReadXString(at, &orig)) {
+        LOG_WARN("[weapons] weaponText %s (%s): DisplayName is unreadable, the HUD tag keeps its text", r.decl.weapon.c_str(),
+                 r.decl.mod.c_str());
+        return false;
+    }
+    if (!e_.AssignString(at, ("Text." + r.token).c_str())) {
+        LOG_WARN("[weapons] weaponText %s (%s): writing DisplayName failed, the HUD tag keeps its text", r.decl.weapon.c_str(),
+                 r.decl.mod.c_str());
+        return false;
+    }
+    r.tagContainer = container;
+    r.tagField = at;
+    r.tagOrig = std::move(orig);
+    return true;
+}
+
+// Only into the container that was written: a scene change that freed or rebuilt it leaves nothing to restore into.
+void Registry::RestoreTag(TextRule& r) {
+    if (!r.tagField) return;
+    if (e_.Lookup(r.decl.weapon.c_str()) == r.tagContainer) {
+        if (!e_.AssignString(r.tagField, r.tagOrig.c_str()))
+            LOG_WARN("[weapons] weaponText %s: restoring DisplayName failed", r.decl.weapon.c_str());
+    } else {
+        LOG_WARN("[weapons] weaponText %s: container changed or gone, DisplayName not restored", r.decl.weapon.c_str());
+    }
+    r.tagContainer = r.tagField = 0;
+    r.tagOrig.clear();
+}
+
+int Registry::TagCount() const {
+    int n = 0;
+    for (const auto& r : rules_) n += r.tagField != 0;
+    return n;
+}
+
+// Per match, once: find each renamed weapon's slot in the name table (by the name string it holds, which is what the
+// panel hook sees), register the strings under the rule's own key, and remember the slot's pointer so the hook is
+// one array lookup and one compare.
+void Registry::ResolveText() {
+    ResetText();
+    for (size_t i = 0; i < rules_.size(); ++i) {
+        TextRule& r = rules_[i];
+        const std::string& w = r.decl.weapon;
+        if (!e_.Lookup(w.c_str())) {
+            LOG_WARN("[weapons] weaponText %s (%s): no such container in this game, skipped", w.c_str(), r.decl.mod.c_str());
+            continue;
+        }
+        int id = -1;
+        uintptr_t slot = 0;
+        for (int k = 1; k < kEnumCount && id < 0; ++k) {
+            const uintptr_t p = U32(SlotAddr(k));
+            std::string have;
+            if (p && e_.ReadString(p, &have, 64) && have == w) id = k, slot = p;
+        }
+        if (id < 0) {
+            LOG_WARN("[weapons] weaponText %s (%s): not in the name table, so no panel to rename; skipped", w.c_str(),
+                     r.decl.mod.c_str());
+            continue;
+        }
+        if (ruleOf_[id] >= 0) continue;  // the manifest layer refuses two mods renaming one weapon; this is only a guard
+        r.text = !r.decl.name.empty() && PutText("Text." + r.token, r.decl.name);
+        r.help = !r.decl.help.empty() && PutText("HelpText." + r.token + "0", r.decl.help);
+        if (!r.text && !r.help) {
+            LOG_WARN("[weapons] weaponText %s (%s): the strings were not registered; the panel keeps its text", w.c_str(),
+                     r.decl.mod.c_str());
+            continue;
+        }
+        r.id = id;
+        r.slot = slot;
+        ruleOf_[id] = static_cast<int16_t>(i);
+        textLive_ = true;
+        const bool tag = r.text && SetTag(r, e_.Lookup(w.c_str()));  // help-only entries leave DisplayName alone
+        LOG_INFO("[weapons] weaponText %s id %d by %s: key %s name=%d help=%d tag=%d", w.c_str(), id, r.decl.mod.c_str(),
+                 r.token.c_str(), r.text, r.help, tag);
+    }
+    if (!textLive_) return;
+    int named = 0;
+    for (const auto& r : rules_) named += r.text;
+    LOG_INFO("[weapons] weaponText: DisplayName set for %d of %d name rename(s)", TagCount(), named);
+}
+
 bool Registry::Init(std::string* why) {
     std::string local;
     if (!why) why = &local;
@@ -197,7 +318,8 @@ bool Registry::Init(std::string* why) {
         LOG_WARN("[weapons] the previous match was not closed: its clone state is dropped");
         Reset();
     }
-    if (n_ == 0) {
+    ResetText();
+    if (n_ == 0 && rules_.empty()) {
         *why = "no clones declared";
         return false;
     }
@@ -206,6 +328,14 @@ bool Registry::Init(std::string* why) {
     // clones fail to go live below: a peer whose clones did go live can still select one and send its vid across.
     if (!e_.EnableHooks(true)) {
         *why = "the selection hooks could not be enabled";
+        return false;
+    }
+    // Renames are display only and independent of the clones: they go live even when a clone then fails to.
+    ResolveText();
+    if (n_ == 0) {
+        if (textLive_) return true;
+        e_.EnableHooks(false);
+        *why = "no weaponText entry could be applied";
         return false;
     }
     for (int k = 0; k < n_; ++k) {
@@ -306,10 +436,12 @@ void Registry::Reset() {
 }
 
 void Registry::MatchEnd() {
-    const bool was = live_;
+    const bool was = live_, text = textLive_;
     Reset();
+    ResetText();
     e_.EnableHooks(false);
     if (was) LOG_INFO("[weapons] match end: panel cells and name slots restored");
+    else if (text) LOG_INFO("[weapons] match end: weaponText off");
 }
 
 void Registry::TurnEnded() {
@@ -353,16 +485,29 @@ int32_t Registry::BaseOf(int32_t v) const {
 
 int32_t Registry::GuardId(int32_t id) const { return IsVidValue(id) ? BaseOf(id) : id; }
 
+// A vanilla weapon with a live rename: the key is handed over only while the name the game read is still the slot's
+// original pointer, so a name some other code swapped in is left alone.
+uintptr_t Registry::Renamed(int32_t id, uintptr_t current, bool help) const {
+    if (!textLive_ || id < 0 || id >= kEnumCount) return current;
+    const int r = ruleOf_[id];
+    if (r < 0) return current;
+    const TextRule& t = rules_[static_cast<size_t>(r)];
+    if (current != t.slot || !(help ? t.help : t.text)) return current;
+    return reinterpret_cast<uintptr_t>(t.token.c_str());
+}
+
 uintptr_t Registry::TextName(int32_t id, uintptr_t current, bool help) const {
     if (IsVidValue(id)) {
         const uint32_t k = static_cast<uint32_t>(id) - static_cast<uint32_t>(kVidBase);
         if (live_ && k < static_cast<uint32_t>(n_) && (help ? clones_[k].help : clones_[k].text))
             return reinterpret_cast<uintptr_t>(clones_[k].namePtr);
+        // The vanilla pointer, like RegisterText's copy of the vanilla text: a clone with no text of its own shows its
+        // base's original name even when the base is renamed (the rename belongs to the base's own cell).
         return orig_[BaseOf(id)];
     }
     if (swapped_ >= 0 && id == clones_[swapped_].info.base && current == reinterpret_cast<uintptr_t>(clones_[swapped_].namePtr))
-        return orig_[id];
-    return current;
+        return Renamed(id, orig_[id], help);
+    return Renamed(id, current, help);
 }
 
 uintptr_t Registry::CanUseSlot(int32_t id, uintptr_t current) const {

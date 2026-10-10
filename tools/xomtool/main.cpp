@@ -73,10 +73,12 @@ int Usage() {
         "  xomtool inspect <in.xom> [--object <NAME|#N>] [--type <TypeName>]\n"
         "  xomtool diff <a.xom> <b.xom>\n"
         "  xomtool convert <texture.png> --into <file.xom> --as <Name> [--section N] [--mips=0|1] [-o <out.xom>]\n"
-        "  xomtool convert <Name> --from <file.xom> --out <texture.png> [--mip N]\n"
+        "  xomtool convert <Name|#N> --from <file.xom> --out <texture.png> [--mip N]\n"
         "  xomtool convert <mesh.gltf|.glb> --into <file.xom> --as <Name> [--section N]\n"
         "                  [--material-from <Name>] [--material-file <file.xom>] [--texture <png>] [-o <out.xom>]\n"
-        "  xomtool convert <Name> --from <file.xom> --out <mesh.gltf>\n"
+        "  xomtool convert <mesh.gltf|.glb> --bundle <out.xom> --as <modId.Name> --section <476..519>\n"
+        "                  [--material-from <Name> --material-file <Bundl09.xom>] [--texture <png>] [--scene-bin N]\n"
+        "  xomtool convert <Name|#N> --from <file.xom> --out <mesh.gltf>\n"
         "  xomtool bank --from <src.xom> --object <BaseName> --as <NewName> [--set Field=value ...] --out <out.xom>\n"
         "  xomtool report <in.xom> -o <out.md>\n"
         "  xomtool level unpack|build|diff ...  (xomtool level for details)\n");
@@ -396,7 +398,16 @@ bool SavePng(const std::string& path, const image::Pixels& px, std::string* erro
     return ok != 0;
 }
 
+// `name` is an XImage Name (the first match), or "#N": the 1-based object index shown by `inspect`/`unpack`,
+// which must be an XImage (several share a name, e.g. ten "maya:file11/-1" in Bundl09).
 const Object* FindImageByName(const Document& doc, const std::string& name) {
+    if (name.size() > 1 && name[0] == '#') {
+        char* end = nullptr;
+        unsigned long n = std::strtoul(name.c_str() + 1, &end, 10);
+        if (*end != '\0' || n == 0 || n > doc.objects.size()) return nullptr;
+        const Object& o = doc.objects[n - 1];
+        return (o.type == "XImage" && !o.opaque && !o.inTail) ? &o : nullptr;
+    }
     for (auto& o : doc.objects)
         if (o.type == "XImage" && !o.opaque && !o.inTail) {
             const Value* n = o.field("Name");
@@ -473,15 +484,11 @@ bool ReadGltfFile(const std::string& path, std::vector<mesh::Primitive>& prims, 
     return gltf::ReadGltf(bytes, isGlb, DirOf(path), prims, error);
 }
 
-int CmdConvertMeshIn(const Args& a, const std::string& gltfPath) {
-    std::string into = a.get("into"), as = a.get("as");
-    if (into.empty() || as.empty()) { std::fprintf(stderr, "xomtool: convert <mesh> needs --into and --as\n"); return 1; }
+// Copies --material-from's shader subgraph (from --material-file, or `doc` itself) into `doc` and applies
+// --texture. `shaderRef` stays 0 without --material-from. Returns the process exit code (0 = ok).
+int ApplyMaterial(const Args& a, Document& doc, uint32_t& shaderRef, bool takeHeader = false) {
     std::string err;
-    std::vector<mesh::Primitive> prims;
-    if (!ReadGltfFile(gltfPath, prims, &err)) { std::fprintf(stderr, "xomtool: %s\n", err.c_str()); return 2; }
-    Document doc;
-    if (!LoadDoc(into, doc, &err)) { std::fprintf(stderr, "xomtool: %s\n", err.c_str()); return 2; }
-    uint32_t shaderRef = 0;
+    shaderRef = 0;
     if (a.has("material-from")) {
         // The template mesh usually lives in a different file (a vanilla bundle) than the one
         // being written into; --material-file names it, defaulting to --into for the case where
@@ -491,6 +498,10 @@ int CmdConvertMeshIn(const Args& a, const std::string& gltfPath) {
         if (a.has("material-file")) {
             if (!LoadDoc(a.get("material-file"), matDoc, &err)) { std::fprintf(stderr, "xomtool: %s\n", err.c_str()); return 2; }
             matSrc = &matDoc;
+            if (takeHeader) {  // a fresh bank adopts the vanilla file header (version, reserved bytes, GUID/SCHM records)
+                doc.version = matDoc.version; doc.reserved08 = matDoc.reserved08; doc.reserved24 = matDoc.reserved24;
+                doc.guidRec = matDoc.guidRec; doc.schmRec = matDoc.schmRec; doc.guidRecord = matDoc.guidRecord;
+            }
         }
         uint32_t srcShaderRef = mesh::FindMeshShader(*matSrc, a.get("material-from"), &err);
         if (!srcShaderRef) { std::fprintf(stderr, "xomtool: %s\n", err.c_str()); return 2; }
@@ -506,7 +517,23 @@ int CmdConvertMeshIn(const Args& a, const std::string& gltfPath) {
                 return 2;
             }
         }
+    } else if (a.has("texture")) {
+        std::fprintf(stderr, "xomtool: --texture needs --material-from (the texture replaces the copied shader's image)\n");
+        return 1;
     }
+    return 0;
+}
+
+int CmdConvertMeshIn(const Args& a, const std::string& gltfPath) {
+    std::string into = a.get("into"), as = a.get("as");
+    if (into.empty() || as.empty()) { std::fprintf(stderr, "xomtool: convert <mesh> needs --into and --as\n"); return 1; }
+    std::string err;
+    std::vector<mesh::Primitive> prims;
+    if (!ReadGltfFile(gltfPath, prims, &err)) { std::fprintf(stderr, "xomtool: %s\n", err.c_str()); return 2; }
+    Document doc;
+    if (!LoadDoc(into, doc, &err)) { std::fprintf(stderr, "xomtool: %s\n", err.c_str()); return 2; }
+    uint32_t shaderRef = 0;
+    if (int rc = ApplyMaterial(a, doc, shaderRef)) return rc;
     mesh::Mesh m;
     m.resourceId = as;
     m.sectionId = a.has("section") ? uint16_t(std::atoi(a.get("section").c_str())) : 0;
@@ -516,6 +543,50 @@ int CmdConvertMeshIn(const Args& a, const std::string& gltfPath) {
     std::string out = a.has("o") ? a.get("o") : into;
     if (!SaveDoc(out, doc, &err)) { std::fprintf(stderr, "xomtool: %s\n", err.c_str()); return 3; }
     std::printf("wrote %s (added XMeshDescriptor \"%s\", %zu primitive(s))\n", out.c_str(), as.c_str(), m.primitives.size());
+    return 0;
+}
+
+// convert <mesh> --bundle <out.xom> --as <modId.Name> --section N: a complete, loadable one-mesh bank.
+int CmdConvertMeshBundle(const Args& a, const std::string& gltfPath) {
+    std::string out = a.get("bundle"), as = a.get("as");
+    if (as.empty() || !a.has("section")) {
+        std::fprintf(stderr, "xomtool: convert <mesh> --bundle needs --as <modId.Name> and --section <476..519>\n");
+        return 1;
+    }
+    char* end = nullptr;
+    long section = std::strtol(a.get("section").c_str(), &end, 10);
+    if (*end != '\0' || section < 476 || section > 519) {
+        std::fprintf(stderr, "xomtool: --section must be a mod section, 476..519 (got \"%s\")\n", a.get("section").c_str());
+        return 1;
+    }
+    if (as.find('.') == std::string::npos || as[0] == '.' || as.back() == '.') {
+        std::fprintf(stderr, "xomtool: --as must be <modId>.<Name> (the engine's mod-bank naming rule)\n");
+        return 1;
+    }
+    if (a.has("scene-bin")) {
+        // The scene bin lives in the game's startup record, not in the bank (docs/meshes.md); it is the
+        // loader's argument (`mesh.load <bank> <modId> <sceneBin>`). Validated here so a typo fails early.
+        long bin = std::strtol(a.get("scene-bin").c_str(), &end, 10);
+        if (*end != '\0' || bin < 0 || bin > 87) { std::fprintf(stderr, "xomtool: --scene-bin must be 0..87\n"); return 1; }
+    }
+    if (a.has("material-from") && !a.has("material-file")) {
+        std::fprintf(stderr, "xomtool: --material-from needs --material-file (the vanilla bundle holding that mesh)\n");
+        return 1;
+    }
+    std::string err;
+    std::vector<mesh::Primitive> prims;
+    if (!ReadGltfFile(gltfPath, prims, &err)) { std::fprintf(stderr, "xomtool: %s\n", err.c_str()); return 2; }
+    Document doc;
+    uint32_t shaderRef = 0;
+    if (int rc = ApplyMaterial(a, doc, shaderRef, /*takeHeader=*/true)) return rc;
+    mesh::Mesh m;
+    m.resourceId = as;
+    m.sectionId = uint16_t(section);
+    m.primitives = prims;
+    if (!mesh::WriteBundle(doc, m, shaderRef, &err)) { std::fprintf(stderr, "xomtool: %s\n", err.c_str()); return 3; }
+    if (!SaveDoc(out, doc, &err)) { std::fprintf(stderr, "xomtool: %s\n", err.c_str()); return 3; }
+    std::printf("wrote %s (mesh bank \"%s\", section %ld, %zu primitive(s), %zu objects)\n", out.c_str(), as.c_str(),
+                section, m.primitives.size(), doc.objects.size());
     return 0;
 }
 
@@ -547,8 +618,9 @@ int CmdConvert(const Args& a) {
         return CmdConvertTextureOut(a, first);
     }
     if (ext == "gltf" || ext == "glb") {
+        if (a.has("bundle")) return CmdConvertMeshBundle(a, first);
         if (a.has("into")) return CmdConvertMeshIn(a, first);
-        std::fprintf(stderr, "xomtool: convert <mesh> --into is the only mesh-import form\n");
+        std::fprintf(stderr, "xomtool: convert <mesh> needs --into <file.xom> or --bundle <out.xom>\n");
         return 1;
     }
     if (a.has("out")) {

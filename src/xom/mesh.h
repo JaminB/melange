@@ -48,6 +48,12 @@ bool ReadMesh(const Document& doc, const std::string& resourceId, Mesh& out, std
 // primitive with more than 65535 vertices (u16 indices only).
 uint32_t WriteMesh(Document& doc, const Mesh& mesh, uint32_t materialFromShaderRef, std::string* error = nullptr);
 
+// WriteMesh into a document that holds nothing else (plus the shader subgraph, if any), made a loadable
+// mesh bank, the shape of Data/Bundles/BundlNN.xom: the document root is a new XGraphSet whose one entry is
+// {resource-descriptor GUID, Graph -> the XMeshDescriptor, Name = resourceId}. One mesh per bank. Returns the
+// descriptor's new 1-based index, or 0 with *error set.
+uint32_t WriteBundle(Document& doc, const Mesh& mesh, uint32_t materialFromShaderRef, std::string* error = nullptr);
+
 // Deep-copies the object subgraph reachable from `srcRef` in `src` (following every Ref field
 // transitively) into `dst`, appending the copies grouped by TYPE-table order and adding TYPE
 // entries as needed (`src` and `dst` may be the same document). Returns the new ref to the

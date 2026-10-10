@@ -45,6 +45,7 @@ const FieldDef kFields[] = {
     {"LandDamageRadius", 0x168, FieldType::F32},    {"ImpulseRadius", 0x16c, FieldType::F32},
     {"PayloadGraphicsResourceID", 0xd4, FieldType::String}, {"LaunchSfx", 0x1a0, FieldType::String},
     {"IsHoming", 0x1b0, FieldType::Bool},            {"NumBomblets", 0x1b4, FieldType::U8},
+    {"DisplayName", 0x2c, FieldType::String},
     {"Fuse", 0x1b8, FieldType::I32},               {"DetonatesOnLandImpact", 0x1bc, FieldType::Bool},
 };
 
@@ -57,7 +58,7 @@ struct Fake final : core::Engine {
     std::map<std::string, std::string> banks;  // "mod/rel" -> container name it holds
     uintptr_t next = 0x20000000;
     int adds = 0, lastAddFlags = -1, bankLoads = 0, iconCalls = 0, textAdds = 0;
-    bool failAdd = false, hooksOk = true, hooksOn = false, hud = true, failTextAdd = false;
+    bool failTagWrite = false, failAdd = false, hooksOk = true, hooksOn = false, hud = true, failTextAdd = false;
     uint32_t icon = 0, tick = 100;
     uintptr_t cloneClassOverride = 0;
 
@@ -157,7 +158,14 @@ struct Fake final : core::Engine {
         return true;
     }
     bool AssignString(uintptr_t field, const char* s) override {
+        if (failTagWrite && std::string(s).rfind("Text.wt", 0) == 0) return false;
         strs[field] = s;
+        return true;
+    }
+    bool ReadXString(uintptr_t field, std::string* out) override {
+        auto it = strs.find(field);
+        if (it == strs.end()) return false;
+        *out = it->second;
         return true;
     }
     int AddText(const char* key, const char* value) override {
@@ -185,6 +193,12 @@ struct Fake final : core::Engine {
         return true;
     }
     uint32_t Tick() override { return tick; }
+    // The name table holds host pointers here, so a string is read straight from the host.
+    bool ReadString(uintptr_t a, std::string* out, size_t) override {
+        if (!a) return false;
+        *out = reinterpret_cast<const char*>(a);
+        return true;
+    }
 
     Fake() {
         for (int i = 0; i < 5; ++i) {
@@ -193,6 +207,7 @@ struct Fake final : core::Engine {
             float dmg = 50.f + i;
             Write(o + 0x15c, &dmg, 4);
             strs[o + 0xd4] = std::string(kBaseNames[i] + 7) + ".Payload";
+            strs[o + 0x2c] = std::string("Text.") + kBaseNames[i];
         }
         for (int c = 0; c < core::kPanelCells; ++c) {
             uint32_t id = 5, code = 0x0501;
@@ -314,6 +329,208 @@ void Basic() {
     e.NewScene();
     Expect(r.Init(&why) && r.Active() == -1 && e.Slot(1) == "kWeaponBazooka" && e.CellId(29) == 0x100, "unclosed match recovered");
     r.MatchEnd();
+}
+
+wm::TextDecl Rename(const char* weapon, const char* name, const char* help, const char* mod = "textmod") {
+    return {mod, weapon, name, help};
+}
+
+std::string Str(uintptr_t p) { return p ? reinterpret_cast<const char*>(p) : ""; }
+
+void VanillaRenames() {
+    Fake e;
+    core::Registry r(e);
+    r.Configure({}, {Rename("kWeaponBazooka", "Nail Bat", "Swing it."), Rename("kWeaponGrenade", "Pineapple", ""),
+                     Rename("kWeaponNoSuch", "Ghost", "Boo"), Rename("kUtilityJetPack", "Rocket Pack", "")});
+    e.NewObj("kUtilityJetPack", kPayloadClass);  // a container that exists but has no slot in the name table
+    Expect(r.TextCount() == 4 && !r.TextLive() && !r.Live() && r.Count() == 0, "configured, not live");
+
+    // Outside a live match the game's own names come back, whatever the rules say.
+    Expect(r.TextName(1, P(kBaseNames[0]), false) == P(kBaseNames[0]) && r.TextName(1, P(kBaseNames[0]), true) == P(kBaseNames[0]),
+           "not live: vanilla name and help");
+    Expect(e.adds == 0 && e.textAdds == 0 && !e.hooksOn, "not live: nothing registered, hooks off");
+
+    std::string why;
+    Expect(r.Init(&why), "rename-only match goes live: " + why);
+    Expect(r.TextLive() && !r.Live() && r.Count() == 0, "text live, no clone registry live");
+    Expect(e.hooksOn && e.adds == 0, "panel hooks on, no resources created");
+    Expect(e.texts["Text.wt000"] == "Nail Bat" && e.texts["HelpText.wt0000"] == "Swing it.",
+           "name and help registered under the rule's short key");
+    Expect(e.texts["Text.wt001"] == "Pineapple" && !e.texts.count("HelpText.wt0010"),
+           "a name-only rename registers no help");
+    Expect(!e.texts.count("Text.wt002") && !e.texts.count("Text.wt003"),
+           "a missing container and a weapon with no name slot are skipped");
+    Expect(e.texts["Text.kWeaponBazooka"] == "Bazooka" && e.texts["HelpText.kWeaponGrenade0"] == "Throw it.",
+           "the vanilla strings are left alone");
+    Expect(r.TextAt(0)->id == 1 && r.TextAt(1)->id == 2 && r.TextAt(2)->id == -1 && r.TextAt(3)->id == -1,
+           "rules resolved to their name-table ids");
+
+    // The hook: the renamed id hands over the key, only for the strings that were renamed.
+    Expect(Str(r.TextName(1, P(kBaseNames[0]), false)) == "wt000", "Bazooka name -> mod key");
+    Expect(Str(r.TextName(1, P(kBaseNames[0]), true)) == "wt000", "Bazooka help -> mod key");
+    Expect(Str(r.TextName(2, P(kBaseNames[1]), false)) == "wt001", "Grenade name -> mod key");
+    Expect(r.TextName(2, P(kBaseNames[1]), true) == P(kBaseNames[1]), "Grenade help, not renamed, stays vanilla");
+    for (int i = 0; i < r.TextCount(); ++i)
+        Expect(std::string("HelpText.").append(r.TextAt(i)->token).size() + 1 <= 48, "the key stays within the clone-name length limit");
+    Expect(r.TextName(6, P(kBaseNames[2]), false) == P(kBaseNames[2]) && r.TextName(7, P(kBaseNames[3]), true) == P(kBaseNames[3]),
+           "weapons without a rename are untouched");
+    Expect(r.TextName(1, P("kWeaponSomethingElse"), false) == P("kWeaponSomethingElse"),
+           "a name that is not the slot's own is left alone");
+    Expect(r.TextName(0, 0, false) == 0 && r.TextName(core::kEnumCount, 5, true) == 5 && r.TextName(0x44, 5, false) == 5,
+           "ids outside the name table are passed through");
+    Expect(r.GuardId(1) == 1 && r.CanUseSlot(1, 0x5555) == 0x5555 && r.HudName() == nullptr,
+           "no other hook is affected by a rename");
+
+    r.MatchEnd();
+    Expect(!r.TextLive() && !e.hooksOn, "match end: text off, hooks off");
+    Expect(r.TextName(1, P(kBaseNames[0]), false) == P(kBaseNames[0]), "after the match: vanilla again");
+
+    // The next match registers again over the keys left behind (AddText reports an overwrite as non-zero).
+    e.NewScene();
+    e.NewObj("kUtilityJetPack", kPayloadClass);
+    e.texts["Text.wt000"] = "stale";
+    Expect(r.Init(&why) && Str(r.TextName(1, P(kBaseNames[0]), false)) == "wt000" &&
+               e.texts["Text.wt000"] == "Nail Bat",
+           "second match: overwritten and live");
+    r.MatchEnd();
+
+    // Registration that fails leaves the panel alone and the match without a registry.
+    {
+        Fake f;
+        core::Registry q(f);
+        q.Configure({}, {Rename("kWeaponBazooka", "Nail Bat", "")});
+        f.failTextAdd = true;
+        Expect(!q.Init(&why) && !q.TextLive() && !f.hooksOn && why.find("weaponText") != std::string::npos,
+               "all registrations failed: not live, hooks off (" + why + ")");
+        Expect(q.TextName(1, P(kBaseNames[0]), false) == P(kBaseNames[0]), "failed registration: vanilla name");
+    }
+    // Nothing declared at all.
+    {
+        Fake f;
+        core::Registry q(f);
+        q.Configure({}, {});
+        Expect(!q.Init(&why) && why == "no clones declared" && !f.hooksOn, "no clones and no renames: nothing to do");
+    }
+    // The hooks refused: no renames either.
+    {
+        Fake f;
+        core::Registry q(f);
+        f.hooksOk = false;
+        q.Configure({}, {Rename("kWeaponBazooka", "Nail Bat", "")});
+        Expect(!q.Init(&why) && !q.TextLive() && f.textAdds == 0, "suppressed hooks: no strings registered");
+    }
+}
+
+// Renames next to clones: the clone's own name and help win on its cell, and the base's cell keeps the rename while
+// the clone has the name slot swapped.
+void RenamesWithClones() {
+    Fake e;
+    core::Registry r(e);
+    auto d = Decl("kWeaponMegaBazooka", "kWeaponBazooka", 1, 29, 0);
+    d.text = {"Mega Bazooka", "More so."};
+    r.Configure({d}, {Rename("kWeaponBazooka", "Nail Bat", "Swing it."), Rename("kWeaponGrenade", "Pineapple", "Pull the pin.")});
+    std::string why;
+    Expect(r.Init(&why) && r.Live() && r.TextLive(), "clone and renames live together: " + why);
+    const auto* c = r.At(0);
+    Expect(r.TextName(0x100, 0x1234, false) == P(c->namePtr), "the clone's cell shows the clone's name");
+    Expect(Str(r.TextName(1, P(kBaseNames[0]), false)) == "wt000", "the base's cell shows the rename");
+    r.Select(0x100);
+    Expect(e.Slot(1) == "kWeaponMegaBazooka", "slot swapped while the clone is selected");
+    Expect(Str(r.TextName(1, P(c->namePtr), false)) == "wt000" &&
+               Str(r.TextName(1, P(c->namePtr), true)) == "wt000",
+           "the base's cell shows the rename, not the clone name, while swapped");
+    Expect(Str(r.TextName(2, P(kBaseNames[1]), true)) == "wt001", "another rename unaffected by the swap");
+    r.MatchEnd();
+    Expect(e.Slot(1) == "kWeaponBazooka" && !r.TextLive() && r.TextName(1, P(kBaseNames[0]), false) == P(kBaseNames[0]),
+           "match end restores everything");
+}
+
+// A clone that failed to go live does not take the renames with it.
+void RenamesSurviveCloneFailure() {
+    Fake e;
+    core::Registry r(e);
+    auto d = Decl("kWeaponGrenade2", "kWeaponGrenade", 2, 29, 0);
+    e.NewObj("kWeaponGrenade2", kPayloadClass);
+    r.Configure({d}, {Rename("kWeaponBazooka", "Nail Bat", "")});
+    std::string why;
+    Expect(!r.Init(&why) && !r.Live() && r.TextLive(), "clone refused, renames still live: " + why);
+    Expect(Str(r.TextName(1, P(kBaseNames[0]), false)) == "wt000", "the rename answers");
+    r.MatchEnd();
+}
+
+
+// A clone with no text of its own copies its base's vanilla text, and that holds when the base is renamed: the rename
+// belongs to the base's cell, not to its clones.
+void CloneWithoutTextOverRenamedBase() {
+    Fake e;
+    core::Registry r(e);
+    auto d = Decl("kWeaponMegaBazooka", "kWeaponBazooka", 1, 29, 0);
+    r.Configure({d}, {Rename("kWeaponBazooka", "Nail Bat", "Swing it.")});
+    std::string why;
+    Expect(r.Init(&why) && r.Live() && r.TextLive(), "clone and rename live: " + why);
+    Expect(e.texts["Text.kWeaponMegaBazooka"] == "Bazooka" && e.texts["HelpText.kWeaponMegaBazooka0"] == "Fire it.",
+           "the clone copied the vanilla text, not the rename");
+    Expect(Str(r.TextName(0x100, 0, false)) == "kWeaponMegaBazooka", "the clone's cell shows its own copy");
+    Expect(Str(r.TextName(1, P(kBaseNames[0]), false)) == "wt000", "the base's cell shows the rename");
+    r.MatchEnd();
+}
+
+// The in-world weapon-name tag reads the container's DisplayName: a renamed weapon's points at the rename's key while
+// live and goes back at match end; a help-only rename leaves it alone; a failed write costs only the tag.
+void RenameTag() {
+    Fake e;
+    core::Registry r(e);
+    r.Configure({}, {Rename("kWeaponBazooka", "Nail Bat", "Swing it."), Rename("kWeaponGrenade", "", "Throw hard."),
+                     Rename("kWeaponHolyHandGrenade", "Holy Cow", "")});
+    const uintptr_t baz = e.Lookup("kWeaponBazooka"), gren = e.Lookup("kWeaponGrenade"),
+                    holy = e.Lookup("kWeaponHolyHandGrenade");
+    std::string why;
+    Expect(r.Init(&why) && r.TextLive(), "tag: renames live: " + why);
+    Expect(e.strs[baz + 0x2c] == "Text.wt000" && e.strs[holy + 0x2c] == "Text.wt002",
+           "tag: named renames point DisplayName at their key");
+    Expect(e.strs[gren + 0x2c] == "Text.kWeaponGrenade" && r.TagCount() == 2, "tag: a help-only rename leaves DisplayName alone");
+    r.MatchEnd();
+    Expect(e.strs[baz + 0x2c] == "Text.kWeaponBazooka" && e.strs[holy + 0x2c] == "Text.kWeaponHolyHandGrenade" &&
+               r.TagCount() == 0,
+           "tag: restored at match end");
+
+    // An unclosed match is restored by the next Init before it writes again.
+    Expect(r.Init(&why) && e.strs[baz + 0x2c] == "Text.wt000", "tag: second match writes again");
+    Expect(r.Init(&why) && e.strs[baz + 0x2c] == "Text.wt000", "tag: an unclosed match is restored and rewritten");
+    r.MatchEnd();
+    Expect(e.strs[baz + 0x2c] == "Text.kWeaponBazooka", "tag: original after the unclosed round trip");
+
+    // A write that fails: the panel rename stands, nothing is half-written.
+    Fake f;
+    core::Registry q(f);
+    q.Configure({}, {Rename("kWeaponBazooka", "Nail Bat", "")});
+    f.failTagWrite = true;
+    Expect(q.Init(&why) && q.TextLive() && f.texts["Text.wt000"] == "Nail Bat" && q.TagCount() == 0,
+           "tag: a failed write is tolerated, the panel rename stays");
+    Expect(f.strs[f.Lookup("kWeaponBazooka") + 0x2c] == "Text.kWeaponBazooka", "tag: failed write left the original");
+    q.MatchEnd();
+
+    // A container rebuilt between the write and the end is not written into.
+    Fake g;
+    core::Registry t(g);
+    t.Configure({}, {Rename("kWeaponBazooka", "Nail Bat", "")});
+    Expect(t.Init(&why), "tag: live before the scene change");
+    const uintptr_t old = g.Lookup("kWeaponBazooka");
+    g.res["kWeaponBazooka"] = old + 0x100000;
+    t.MatchEnd();
+    Expect(g.strs[old + 0x2c] == "Text.wt000", "tag: a replaced container is not restored into");
+}
+
+void DefaultReadString() {
+    Fake e;
+    core::Registry r(e);
+    const char s[] = "kWeaponBazooka";
+    const uintptr_t at = 0x30000000 - 3;
+    e.Write(at, s, sizeof s);
+    std::string out;
+    Expect(e.Engine::ReadString(at, &out, 64) && out == "kWeaponBazooka", "default ReadString reads a string");
+    Expect(e.Engine::ReadString(at, &out, 4) && out == "kWea", "default ReadString stops at max");
+    Expect(!e.Engine::ReadString(0, &out, 64), "default ReadString refuses null");
 }
 
 void Refusals() {
@@ -568,6 +785,12 @@ int wmain(int argc, wchar_t** argv) {
     g_root = std::wstring(tmp) + L"melange_registry_selftest_" + std::to_wstring(GetCurrentProcessId());
     CreateDirectoryW(g_root.c_str(), nullptr);
     Basic();
+    VanillaRenames();
+    RenamesWithClones();
+    RenamesSurviveCloneFailure();
+    CloneWithoutTextOverRenamedBase();
+    RenameTag();
+    DefaultReadString();
     Refusals();
     Banks();
     ThreeClones();

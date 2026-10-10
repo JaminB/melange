@@ -41,8 +41,10 @@ after its folder — every M1-era `Mods\` folder keeps working unchanged.
 | `messages` | Up to 16 engine message names this content mod registers (pattern `Prefix.Sub[.Sub...]`, 1-5 dotted segments after the first capitalised word). Checked against the **live** vanilla message registry at start-up, not a fixed list in the schema — a name that collides with a vanilla one is skipped and logged, not a hard error for the rest of the mod. The engine has 73 free slots; Thumper caps registrations at `[Thumper] MaxModMessages` (48) across every mod combined. |
 | `settings` | `{key, type: bool\|int\|float\|string\|enum, default, min?, max?, options?, label}`. Drives `wum.config.get/set` and the per-mod widgets on the Mods page. |
 | `weapons` | Weapon clones, `kind: "content"` mods only — see below and [weapons.md](weapons.md). |
+| `weaponText` | New panel names and help text for vanilla weapons, `kind: "content"` mods only — see [`weaponText`](#weapontext-renaming-vanilla-weapons). |
 | `schemes`, `factoryWeapons` | Game styles and custom-weapon presets from data files, allowed for client-only mods; see [`schemes` and `factoryWeapons`](#schemes-and-factoryweapons-game-styles-and-weapon-presets). |
 | `music` | MP3 tracks for the sudden-death music, allowed for client-only mods; see [`music`](#music-sudden-death-music). |
+| `meshes` | Mesh banks (`.xom`) under the assets root that give a weapon clone or a `wum.sim.weapon():set` its own 3D model, `kind: "content"` mods only — see [`meshes`](#meshes-custom-3d-models). |
 | `defaultEnabled` | Honoured only the first time Thumper ever sees this mod id (default `true`). The shipped samples set it to `false`. |
 
 | Before: `unsafe` mod switched on | After: the consent modal |
@@ -64,6 +66,30 @@ passes, both at every Thumper rescan:
 
 The full field reference, the base whitelist, the Lua side (`wum.sim.weapons`) and what does and doesn't work
 yet are in [weapons.md](weapons.md); `dist\Mods\mega-bazooka` is a complete, working (disabled) example.
+
+## `weaponText`: renaming vanilla weapons
+
+A `kind: "content"` mod can give vanilla weapons new panel names and help text without changing how they behave:
+
+```json
+"weaponText": {
+  "kWeaponBazooka": { "name": "Nail Bat", "help": "Swing it at the nearest worm." },
+  "kUtilityJetPack": { "name": "Rocket Pack" }
+}
+```
+
+The key is the weapon's container name, `^k(Weapon|Utility)[A-Z][A-Za-z0-9]{2,40}$`. `name` is 1-24 and `help` 0-160
+printable ASCII characters (no control characters); at least one of the two is needed, and an unknown field inside an entry
+refuses the mod. At most 64 entries per mod. Checked in two passes, like `weapons`:
+
+1. **Shape**, in `spice.cpp`: the kind, the count, the key pattern, the text limits, and that the key is not a clone
+   declared in the same mod's `weapons` (a clone has its own `text`).
+2. **Across mods**, in `weapons/manifest.cpp`: a key may not be a clone name declared by any mod, and a weapon renamed by
+   an earlier mod in load order refuses the later mod as a whole (the reason names the weapon and the earlier mod).
+
+Whether each container exists is checked when a match starts; an entry for a weapon the game doesn't have is skipped with
+a warning. How it works, what it needs online and what is unverified in game are in
+[weapons.md](weapons.md#renaming-vanilla-weapons).
 
 ## `levels`: map packs
 
@@ -196,6 +222,43 @@ Every enabled mod's tracks for the slot are played back to back in a random orde
 every match, and the track that led last time does not lead again when there are two or more tracks. With no enabled
 mod declaring music the game's own music plays. The game's own `muSuddenDeath.fsb` is never modified, and the
 sudden-death sting and commentary are untouched. `[Music] Enabled=0` in `Melange.ini` turns it off.
+
+## `meshes`: custom 3D models
+
+Loads mesh banks so a weapon can use a model of the mod's own. `kind: "content"` mods only.
+
+```json
+"meshes": [
+  { "file": "assets/meshes/kindjal.NailBat.xom" }
+]
+```
+
+| Key | Meaning |
+|---|---|
+| `file` | Required, the only key. A `.xom` path relative to the mod folder, inside it, **under the mod's assets root** (`assets/` unless `assets.root` renames it). At most 16 entries per mod, none twice. |
+
+A bank is an `xomtool convert <mesh.gltf> --bundle <out.xom> --as <modId>.<Name>` file (see [xomtool.md](xomtool.md)).
+Every resource name in a bank must start with `<modId>.` (the mod's own id and a dot), so two mods cannot collide and a
+mod cannot replace a vanilla mesh. Once the bank is loaded, name the mesh from a clone's `set` or an `entry.sim`:
+
+```lua
+wum.sim.weapon("kWeaponBaseballBat"):set("WeaponGraphicsResourceID", "kindjal.NailBat")
+```
+
+Because the files sit under the assets root they are already part of the content hash: peers must have the same banks,
+like any other file under `assets/**`. The mod does not need to re-hash anything by hand.
+
+When the banks load: once per launch, on the main thread, after the game has been at the main menu for about half a
+second (the same settle the `schemes` and `music` features wait for), for every content mod that is active this session,
+in load order. A bank that cannot be loaded (unreadable, not a mesh bank, a name outside `<modId>.`, a name the game
+already has, ...) is logged as `[meshes] <mod>/<file>: <reason>` and skipped; the mod stays enabled and its other banks
+still load. One summary line per launch reports the banks, meshes and sections used. Content-mod changes need a restart
+anyway, so a mod disabled later keeps its banks for the rest of the session.
+
+Each bank takes one of the engine's free section numbers (476 to 519). A bank keeps the section it was built with
+(`--section`) when that section is in range and still free; otherwise Melange rewrites the section in a copy under
+`Melange\cache\meshes\` and loads that, taking the first free section from 476 up, in load order. At most 44 banks fit
+in one session across all mods. The engine and the mechanics are in [meshes.md](meshes.md).
 
 ## Resolution
 

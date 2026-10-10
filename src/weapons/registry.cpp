@@ -38,6 +38,12 @@ public:
     bool Read(uintptr_t a, void* out, size_t n) override { return mem::SafeRead(a, out, n); }
     bool Write(uintptr_t a, const void* data, size_t n) override { return mem::Write(a, data, n); }
     bool AssignString(uintptr_t field, const char* s) override { return engine::AssignXString(field, s); }
+    bool ReadXString(uintptr_t field, std::string* out) override {
+        uintptr_t p = 0;
+        if (!mem::SafeRead(field, &p, sizeof p) || !p) return false;
+        *out = engine::XStringValue(field);
+        return true;
+    }
     int AddText(const char* key, const char* value) override { return engine::AddString(key, value, 0, 1); }
     bool GetText(const char* key, std::string* out) override { return engine::TextOf(key, out); }
     uint32_t ReserveIcon(const char* mod, const char* rel, std::string* err) override {
@@ -63,7 +69,8 @@ public:
             LOG_ERROR("[weapons] the weapon hooks are suppressed: no clones in this match");
             return false;
         }
-        const bool a = vid::Enable(on), b = panel::Enable(on), c = hud::Enable(on);
+        // The selection hooks are for clones; a rename-only match needs just the panel text hooks.
+        const bool a = registry::Core().Count() == 0 || vid::Enable(on), b = panel::Enable(on), c = hud::Enable(on);
         return a && b && c;
     }
     uint32_t Tick() override { return sim::Tick(); }
@@ -116,11 +123,11 @@ core::Registry& Core() { return g_core; }
 
 bool Install() {
     if (g_installed) return true;
-    g_core.Configure(manifest::Frozen());
+    g_core.Configure(manifest::Frozen(), manifest::FrozenText());
     g_configured = true;
-    const bool v = vid::Create(), p = panel::Create(), h = hud::Create();
+    const bool v = g_core.Count() == 0 || vid::Create(), p = panel::Create(), h = hud::Create();
     if (!(v && p && h)) {
-        LOG_ERROR("[weapons] creating the clone hooks failed (selection %d, panel %d, HUD %d): no clones this launch", v, p, h);
+        LOG_ERROR("[weapons] creating the weapon hooks failed (selection %d, panel %d, HUD %d): no clones or renames this launch", v, p, h);
         return false;
     }
     if (!bus::SubscribeName("GameLogic.Turn.Ended", bus::Path::Post, &OnTurnEnded))
@@ -135,13 +142,23 @@ void OnInit() {
     std::string why;
     const bool live = g_core.Init(&why);
     const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
-    assets::icons::Activate(live);
-    if (live)
-        LOG_INFO("[weapons] match %u: %d clone(s) live in %.3f ms", sim::MatchSerial(), g_core.Count(), ms);
-    else
-        LOG_ERROR("[weapons] match %u: no clones in this match: %s", sim::MatchSerial(), why.c_str());
-    jlog::Rec("weapons", live ? jlog::Level::Info : jlog::Level::Error, "clones")
-        .Bool("live", live).Int("count", g_core.Count()).Float("ms", ms).Str("why", why);
+    const bool clones = g_core.Count() > 0;
+    assets::icons::Activate(live && clones);
+    if (clones) {
+        if (live)
+            LOG_INFO("[weapons] match %u: %d clone(s) live in %.3f ms", sim::MatchSerial(), g_core.Count(), ms);
+        else
+            LOG_ERROR("[weapons] match %u: no clones in this match: %s", sim::MatchSerial(), why.c_str());
+        jlog::Rec("weapons", live ? jlog::Level::Info : jlog::Level::Error, "clones")
+            .Bool("live", live).Int("count", g_core.Count()).Float("ms", ms).Str("why", why);
+    }
+    if (g_core.TextCount()) {
+        int applied = 0;
+        for (int i = 0; i < g_core.TextCount(); ++i) applied += g_core.TextAt(i)->id >= 0;
+        LOG_INFO("[weapons] match %u: %d of %d weaponText rename(s) live", sim::MatchSerial(), applied, g_core.TextCount());
+        jlog::Rec("weapons", jlog::Level::Info, "weapon_text")
+            .Bool("live", g_core.TextLive()).Int("declared", g_core.TextCount()).Int("applied", applied);
+    }
 }
 
 void OnMatchEnd() {

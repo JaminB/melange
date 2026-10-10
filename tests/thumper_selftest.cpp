@@ -82,6 +82,58 @@ void TestSemver() {
 // ---------------------------------------------------------------------------------------------
 // Parse()
 // ---------------------------------------------------------------------------------------------
+// "meshes": shape, kind, the 16 limit, and that every bank lies under the mod's assets root (so it is content-hashed).
+void TestMeshes() {
+    int n = 0;
+    auto parse = [&](const std::string& kind, const std::string& assets, const std::string& meshes, Manifest* m, std::vector<Error>* errs) {
+        const std::string folder = "mesh-mod" + std::to_string(++n);  // the id must equal the folder name
+        const std::string json = std::string(R"({"spiceVersion": 1, "id": ")") + folder + R"(", "version": "1.0.0", "name": "M",
+            "melange": {"range": ">=0.1.0"}, "kind": ")" + kind + R"(", "entry": {})" + assets + R"(, "meshes": )" + meshes + "}";
+        return Parse(Fixture(folder.c_str(), json), m, errs);
+    };
+    auto fails = [&](const std::string& kind, const std::string& assets, const std::string& meshes, const char* field) {
+        Manifest m;
+        std::vector<Error> errs;
+        const bool ok = parse(kind, assets, meshes, &m, &errs);
+        return !ok && !errs.empty() && errs[0].field == field;
+    };
+    {
+        Manifest m;
+        std::vector<Error> errs;
+        const bool ok = parse("content", "",
+                              R"([{"file": "assets/meshes/mesh-mod.A.xom"}, {"file": "Assets\\Meshes\\mesh-mod.B.XOM"}])", &m, &errs);
+        Expect(ok && m.meshes.size() == 2 && m.meshes[0].file == "assets/meshes/mesh-mod.A.xom" && m.meshes[1].line > 0,
+               "meshes: two entries under assets/ parse in order");
+    }
+    {
+        Manifest m;
+        std::vector<Error> errs;
+        const bool ok = parse("content", R"(, "assets": {"root": "res"})", R"([{"file": "res/m/a.xom"}])", &m, &errs);
+        Expect(ok && m.meshes.size() == 1, "meshes: a renamed assets root is the base");
+    }
+    Expect(fails("content", R"(, "assets": {"root": "res"})", R"([{"file": "assets/a.xom"}])", "meshes.file"),
+           "meshes: outside the renamed assets root is refused");
+    Expect(fails("content", "", R"([{"file": "other/a.xom"}])", "meshes.file"), "meshes: outside assets/ is refused");
+    Expect(fails("content", "", R"([{"file": "assets.xom"}])", "meshes.file"), "meshes: 'assets.xom' is not under assets/");
+    Expect(fails("content", "", R"([{"file": "assets/a.bin"}])", "meshes"), "meshes: not .xom is refused");
+    Expect(fails("content", "", R"([{"file": "assets/../a.xom"}])", "meshes"), "meshes: '..' is refused");
+    Expect(fails("content", "", R"([{"file": "/assets/a.xom"}])", "meshes"), "meshes: absolute is refused");
+    Expect(fails("content", "", R"([{"file": "assets/a.xom", "x": 1}])", "meshes"), "meshes: unknown key is refused");
+    Expect(fails("content", "", R"([{"path": "assets/a.xom"}])", "meshes"), "meshes: entry without file is refused");
+    Expect(fails("content", "", R"({"file": "assets/a.xom"})", "meshes"), "meshes: not an array is refused");
+    Expect(fails("content", "", R"([{"file": "assets/a.xom"}, {"file": "ASSETS/A.xom"}])", "meshes.file"), "meshes: duplicate is refused");
+    Expect(fails("client-only", "", R"([{"file": "assets/a.xom"}])", "meshes"), "meshes: requires kind content");
+    {
+        std::string many = "[";
+        for (int i = 0; i < 16; ++i) many += std::string(i ? "," : "") + R"({"file": "assets/m)" + std::to_string(i) + R"(.xom"})";
+        Manifest m;
+        std::vector<Error> errs;
+        Expect(parse("content", "", many + "]", &m, &errs) && m.meshes.size() == 16, "meshes: 16 entries are accepted");
+        many += R"(,{"file": "assets/m16.xom"}])";
+        Expect(fails("content", "", many, "meshes"), "meshes: 17 entries are refused");
+    }
+}
+
 void TestParse() {
     {
         std::wstring dir = Fixture("m1-legacy", "");
@@ -401,6 +453,7 @@ int main() {
 
     TestSemver();
     TestParse();
+    TestMeshes();
     TestResolveBasics();
     TestResolveStableOrder();
 

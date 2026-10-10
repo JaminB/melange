@@ -129,6 +129,22 @@
       }
     },
 
+    "weaponText": {
+      "type": "object",
+      "maxProperties": 64,
+      "propertyNames": { "pattern": "^k(Weapon|Utility)[A-Z][A-Za-z0-9]{2,40}$" },
+      "description": "New panel name and help text for vanilla weapons (content mods only). Display only: the simulation is untouched. A key may not be a clone name declared by any mod, and a weapon renamed by an earlier mod refuses the later mod. Applies only in a live content match that every peer has with the same text.",
+      "additionalProperties": {
+        "type": "object",
+        "additionalProperties": false,
+        "minProperties": 1,
+        "properties": {
+          "name": { "type": "string", "minLength": 1, "maxLength": 24, "pattern": "^[ -~]+$", "description": "The panel name (printable ASCII)." },
+          "help": { "type": "string", "maxLength": 160, "pattern": "^[ -~]*$", "description": "The panel help text (printable ASCII); one line." }
+        }
+      }
+    },
+
     "levels": {
       "type": "array",
       "maxItems": 32,
@@ -190,6 +206,20 @@
           "file": { "type": "string", "maxLength": 200, "pattern": "^[^/\\\\:][^:]*\\.[mM][pP]3$", "description": "An .mp3 path relative to the mod folder, inside it (no '..'), at most 24 MiB." },
           "title": { "type": "string", "minLength": 1, "maxLength": 48, "pattern": "^[ -~]+$", "description": "Printable ASCII, shown in the log." },
           "credit": { "type": "string", "maxLength": 96, "description": "The original title or author, shown in the log only." }
+        }
+      }
+    },
+
+    "meshes": {
+      "type": "array",
+      "maxItems": 16,
+      "description": "Mesh banks (.xom, built with xomtool convert --bundle) loaded into the game's graphical resource manager at the main menu, so a weapon clone's set or wum.sim.weapon():set can name a mesh as \"<modId>.<Name>\". kind: content only. Every resource name in a bank must start with \"<modId>.\". Each file must be under the mod's assets root, so it is part of the content hash. See docs/meshes.md.",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["file"],
+        "properties": {
+          "file": { "type": "string", "maxLength": 200, "pattern": "^[^/\\\\:][^:]*\\.[xX][oO][mM]$", "description": "A .xom path relative to the mod folder, under the assets root (default \"assets/\"; no '..')." }
         }
       }
     },

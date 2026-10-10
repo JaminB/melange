@@ -1,7 +1,9 @@
 #pragma once
+#include <algorithm>
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <iterator>
 #include <string>
 #include <vector>
 
@@ -35,6 +37,40 @@ public:
     virtual bool HudUsable(const char* mod) = 0;  // the mod's loose-file root is an engine search path
     virtual bool EnableHooks(bool on) = 0;
     virtual uint32_t Tick() = 0;
+    // The NUL-terminated string at addr, cut at max bytes; false if its first byte cannot be read. Byte by byte, so a
+    // string that ends just before an unmapped page still comes back, and it runs once per weapon per match.
+    virtual bool ReadString(uintptr_t addr, std::string* out, size_t max = 64) {
+        out->clear();
+        if (!addr) return false;
+        while (out->size() < max) {
+            char c = 0;
+            if (!Read(addr + out->size(), &c, 1)) return !out->empty();
+            if (!c) break;
+            out->push_back(c);
+        }
+        return true;
+    }
+    // The text of an XString field (as AssignString writes it); false if unreadable. The default reads a plain
+    // pointer-to-chars, which is only right for a fake; the game engine overrides it.
+    virtual bool ReadXString(uintptr_t field, std::string* out) {
+        uint32_t p = 0;
+        return Read(field, &p, sizeof p) && p && ReadString(p, out, 256);
+    }
+};
+
+// A vanilla weapon's renamed panel text. The game formats "Text.%s" / "HelpText.%s%d" with the name it reads from its
+// name table, so a rename is a pair of string-table entries under a short key of our own ("wt" + the rule index) plus a hook
+// that hands the game that key in place of the weapon's name.
+struct TextRule {
+    manifest::TextDecl decl;
+    std::string token;           // the "name" the game formats into the keys; c_str() is stable after Configure
+    int id = -1;                 // the weapon's slot in the name table, -1 until resolved for a match
+    uintptr_t slot = 0;          // what that slot held when resolved: the hook compares against it
+    bool text = false, help = false;  // registered for this match
+    // The in-world weapon-name tag reads the container's DisplayName, not the panel keys: while the rename is live that
+    // field holds "Text.<token>", and tagOrig is what to put back. tagContainer/tagField are 0 when nothing was written.
+    uintptr_t tagContainer = 0, tagField = 0;
+    std::string tagOrig;
 };
 
 struct Clone {
@@ -49,12 +85,13 @@ struct Clone {
 
 class Registry {
 public:
-    explicit Registry(Engine& e) : e_(e) {}
+    explicit Registry(Engine& e) : e_(e) { std::fill(std::begin(ruleOf_), std::end(ruleOf_), int16_t{-1}); }
     Registry(const Registry&) = delete;
     Registry& operator=(const Registry&) = delete;
 
-    void Configure(const std::vector<manifest::CloneDecl>& decls);  // the frozen table; reads the original name slots
-    bool Init(std::string* why);                                    // match Init: every clone, or none
+    // The frozen tables; reads the original name slots. texts = the vanilla renames (see TextRule), none by default.
+    void Configure(const std::vector<manifest::CloneDecl>& decls, const std::vector<manifest::TextDecl>& texts = {});
+    bool Init(std::string* why);                                    // match Init: every clone, or none; then the renames
     void MatchEnd();
     void TurnEnded();
     int32_t Select(int32_t value);  // selection handler: the id to store in the worm's selected weapon
@@ -67,6 +104,11 @@ public:
 
     int Count() const { return n_; }
     bool Live() const { return live_; }
+    // Vanilla renames. TextLive: at least one rule is registered for this match, so TextName may answer for vanilla ids.
+    bool TextLive() const { return textLive_; }
+    int TextCount() const { return static_cast<int>(rules_.size()); }
+    int TagCount() const;  // renames whose container DisplayName is currently pointed at the rename
+    const TextRule* TextAt(int i) const { return i >= 0 && i < TextCount() ? &rules_[i] : nullptr; }
     int Active() const { return active_; }
     int SwappedBase() const { return swapped_ < 0 ? -1 : clones_[swapped_].info.base; }
     const Clone* At(int k) const { return k >= 0 && k < n_ ? &clones_[k] : nullptr; }
@@ -78,6 +120,11 @@ private:
     bool Create(Clone& c, std::string* why);
     bool ApplySet(Clone& c, std::string* why);
     void RegisterText(Clone& c);
+    void ResolveText();
+    void ResetText();
+    bool SetTag(TextRule& r, uintptr_t container);
+    void RestoreTag(TextRule& r);
+    uintptr_t Renamed(int32_t id, uintptr_t current, bool help) const;
     bool PutText(const std::string& key, const std::string& value);
     uint32_t BaseIcon(int32_t base);
     void Swap(int k);
@@ -94,5 +141,8 @@ private:
     bool live_ = false;
     int active_ = -1, swapped_ = -1;
     bool cellWritten_[kMaxClones] = {};
+    std::vector<TextRule> rules_;
+    int16_t ruleOf_[kEnumCount];  // name-table id -> index into rules_, -1 for none
+    bool textLive_ = false;
 };
 }  // namespace melange::weapons::core

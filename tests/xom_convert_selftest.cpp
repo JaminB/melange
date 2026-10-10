@@ -5,6 +5,7 @@
 // Usage: xom_convert_selftest --game <WormsXHD dir>
 // Without --game, the checks that need the game's files are skipped (reported, not a failure),
 // so this still builds and runs offline; D acceptance runs it with --game set.
+#include <array>
 #include <cstdio>
 #include <cstring>
 #include <filesystem>
@@ -201,6 +202,87 @@ void MeshTests(const fs::path& game, const fs::path& outDir) {
           "ReadMesh recovers the same number of primitives after a full XOM round trip");
 }
 
+// ---------------------------------------------------------------- mesh bundle (no game needed)
+
+std::string GuidHex(const std::array<uint8_t, 16>& g) {
+    static const char* d = "0123456789abcdef";
+    std::string s;
+    for (uint8_t b : g) { s += d[b >> 4]; s += d[b & 15]; }
+    return s;
+}
+
+// A tiny glTF -> WriteBundle -> serialize -> parse round trip: the bank must have the shape the engine's section
+// loader reads (docs/meshes.md): root XGraphSet -> descriptor -> world graph set (geometry GUID).
+void BundleTests(const fs::path& outDir) {
+    fs::create_directories(outDir);
+    mesh::Primitive p;
+    p.name = "tri";
+    p.positions = {{0, 0, 0}, {1, 0, 0}, {0, 1, 0}};
+    p.normals = {{0, 0, 1}, {0, 0, 1}, {0, 0, 1}};
+    p.uvs = {{0, 0}, {1, 0}, {0, 1}};
+    p.indices = {0, 1, 2};
+    auto g = gltf::WriteGltf({p}, "tri.bin");
+    Check(WriteAll(outDir / "tri.gltf", g.json.data(), g.json.size()) && WriteAll(outDir / "tri.bin", g.bin.data(), g.bin.size()),
+          "write tri.gltf/.bin");
+    auto gltfBytes = ReadAll(outDir / "tri.gltf");
+    std::string err;
+    std::vector<mesh::Primitive> prims;
+    Check(gltf::ReadGltf(gltfBytes, false, outDir.string(), prims, &err) && prims.size() == 1, "ReadGltf tri.gltf: " + err);
+    if (prims.size() != 1) return;
+
+    mesh::Mesh m;
+    m.resourceId = "kindjal.Tri";
+    m.sectionId = 478;
+    m.primitives = prims;
+    Document doc;
+    const uint32_t descRef = mesh::WriteBundle(doc, m, 0, &err);
+    Check(descRef != 0, "WriteBundle: " + err);
+    std::vector<uint8_t> bytes;
+    Check(descRef != 0 && serialize(doc, bytes, &err), "serialize the bundle: " + err);
+    Check(WriteAll(outDir / "kindjal.Tri.xom", bytes.data(), bytes.size()), "write kindjal.Tri.xom");
+    Document d;
+    ParseOptions strict{true};
+    Check(!bytes.empty() && parse(bytes.data(), bytes.size(), d, &err, strict), "re-parse the bundle (strict): " + err);
+    if (d.objects.empty()) return;
+
+    const Object* root = d.object(d.root);
+    Check(root && root->type == "XGraphSet", "the document root is an XGraphSet");
+    const Value* graphs = root ? root->field("Graphs") : nullptr;
+    Check(graphs && graphs->size() == 1, "the root lists exactly one entry");
+    if (!graphs || graphs->size() != 1) return;
+    Value entry = graphs->at(0);
+    const Value *eg = entry.member("Guid"), *er = entry.member("Graph"), *en = entry.member("Name");
+    Check(eg && GuidHex(eg->guid) == "99cc436e6fbef54b85d2bfcdf9ae4283", "root entry GUID is the resource-descriptor GUID");
+    Check(en && en->str == "kindjal.Tri", "root entry Name is the resource id");
+    const Object* desc = er ? d.object(er->asRef()) : nullptr;
+    Check(desc && desc->type == "XMeshDescriptor", "root entry points at an XMeshDescriptor");
+    if (!desc) return;
+    const Value *rid = desc->field("ResourceId"), *sec = desc->field("SectionId"), *fl = desc->field("Flags"),
+                *gs = desc->field("GraphSet");
+    Check(rid && rid->str == "kindjal.Tri", "descriptor ResourceId");
+    Check(sec && sec->asUInt() == 478, "descriptor SectionId is 478");
+    Check(fl && fl->asUInt() == 8, "descriptor Flags is 8");
+    const Object* world = gs ? d.object(gs->asRef()) : nullptr;
+    Check(world && world->type == "XGraphSet" && world != root, "descriptor GraphSet is a second XGraphSet");
+    const Value* wg = world ? world->field("Graphs") : nullptr;
+    Check(wg && wg->size() == 1, "the world graph set has one entry");
+    if (wg && wg->size() == 1) {
+        Value we = wg->at(0);
+        const Value *wguid = we.member("Guid"), *wname = we.member("Name"), *wgraph = we.member("Graph");
+        Check(wguid && GuidHex(wguid->guid) == "6ae6dbe4fa866b45a73ff9130e12dfeb", "world entry carries the geometry-graph GUID");
+        Check(wname && wname->str == "world", "world entry is named \"world\"");
+        const Object* node = wgraph ? d.object(wgraph->asRef()) : nullptr;
+        Check(node && node->type == "XInteriorNode", "world graph is an XInteriorNode");
+    }
+    size_t graphSets = 0;
+    for (auto& t : d.types) if (t.className() == "XGraphSet") graphSets = t.count;
+    Check(graphSets == 2, "TYPE table counts two XGraphSets");
+    mesh::Mesh back;
+    Check(mesh::ReadMesh(d, "kindjal.Tri", back, &err) && back.primitives.size() == 1 &&
+              back.primitives[0].positions.size() == 3 && back.primitives[0].indices.size() == 3,
+          "ReadMesh recovers the triangle from the bundle: " + err);
+}
+
 // ---------------------------------------------------------------- bank builder
 
 void BankTests(const fs::path& game, const fs::path& outDir) {
@@ -288,6 +370,7 @@ int main(int argc, char** argv) {
     ImageTests(game);
     ImageSafetyTests();
     MeshSafetyTests();
+    BundleTests(outDir);
     MeshTests(game, outDir);
     BankTests(game, outDir);
 
