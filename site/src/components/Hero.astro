@@ -1,0 +1,11 @@
+---
+// Hero override. The landing page (src/pages/index.astro) sets `hero` only to get Starlight's splash layout
+// without a page-title panel, and draws its own download-first hero (.mel-hero) in its body, so on the landing
+// page this renders nothing. Any other page with a `hero` gets Starlight's default.
+import Default from '@astrojs/starlight/components/Hero.astro';
+
+const BASE = import.meta.env.BASE_URL.replace(/\/+$/, '');
+const onLanding = Astro.url.pathname.replace(/\/+$/, '') === BASE;
+---
+
+{!onLanding && <Default />}

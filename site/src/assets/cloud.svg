@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 120 64" width="120" height="64" aria-hidden="true">
+  <!-- Puffy cloud. Body = -mel-cloud (white by day, storm blue by night), outline = currentColor. -->
+  <g stroke="currentColor" stroke-width="4" stroke-linejoin="round" stroke-linecap="round">
+    <path fill="var(--mel-cloud, #FFFFFF)" d="M22 58a14 14 0 0 1-2-27.8A20 20 0 0 1 56 18a22 22 0 0 1 38 10 15 15 0 0 1 4 30z"/>
+    <path fill="none" stroke="var(--mel-cloud-shade, #CFE3F0)" stroke-width="3" d="M28 47c7 3 15 3 21 0M70 49c5 2 12 2 17-1"/>
+  </g>
+</svg>

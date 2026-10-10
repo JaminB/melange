@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 80" width="200" height="80" aria-hidden="true">
+  <!-- The "sign" ripple: concentric broken rings in the sand, rising from a buried point. Rings only, never a creature.
+       Static version of the CTA pulse; also usable as a loading mark. Stroke = -mel-ochre. -->
+  <g fill="none" stroke="var(--mel-ochre, #B8661A)" stroke-linecap="round" stroke-width="3">
+    <ellipse cx="100" cy="56" rx="14" ry="5"/>
+    <path d="M70 58a30 11 0 0 1 60 0M134 62a30 11 0 0 1-21 7" opacity=".8"/>
+    <path d="M48 60a52 18 0 0 1 104 0M150 66a52 18 0 0 1-30 11" opacity=".6"/>
+    <path d="M24 62a76 26 0 0 1 152 0" stroke-dasharray="18 10" opacity=".4"/>
+  </g>
+  <circle cx="100" cy="56" r="3.5" fill="var(--mel-ochre, #B8661A)"/>
+</svg>

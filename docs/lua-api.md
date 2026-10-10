@@ -1,5 +1,4 @@
 # Lua API for client mods (`wum.*`)
-| `wum.shaders.enableGlsl(file, entry, on)` | Pauses (`false`) or resumes one of the mod's own `shaders<File>.<Entry>.glsl` replacements, e.g. `("Landscape.cg", "LandscapeFragmentMain", false)`, so the game's own program draws again. Takes effect on the next frame, is not saved, and needs `[MirageShaders] GlslReplace=1`. Errors if the mod ships no such file. |
 
 A mod's `entry.client` script (from its `spice.json`) runs in Melange's Lua 5.4 VM, the Sandbox. This page lists everything a
 client script can use. The offline self-test (`sandbox_selftest`) fails if a `wum.*` function is missing from this page.

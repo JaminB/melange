@@ -145,3 +145,13 @@ jobs:
             if (-not $body.Contains($line)) { gh release edit $env:TAG --notes ($body.TrimEnd() + "`n`n" + $line).Trim() }
           }
           if ($LASTEXITCODE) { exit 1 }
+
+  # Last step of a release: rebuild the site so its download button, changelog and version switcher show the new release.
+  pages:
+    needs: release
+    if: github.ref_type == 'tag'
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
+    uses: ./.github/workflows/pages.yml

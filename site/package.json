@@ -1,0 +1,26 @@
+{
+  "name": "melange-site",
+  "type": "module",
+  "version": "0.0.1",
+  "scripts": {
+    "generate": "node scripts/prebuild.mjs",
+    "dev": "node scripts/prebuild.mjs && astro dev",
+    "build": "node scripts/prebuild.mjs && astro build",
+    "check": "node scripts/wum-coverage.mjs",
+    "check:links": "node scripts/check-links.mjs",
+    "preview": "astro preview",
+    "astro": "astro"
+  },
+  "dependencies": {
+    "@astrojs/starlight": "^0.42.6",
+    "@fontsource-variable/inter": "^5.3.0",
+    "@fontsource-variable/jetbrains-mono": "^5.3.0",
+    "@fontsource/fredoka": "^5.3.0",
+    "astro": "^7.2.10",
+    "sharp": "^0.35.3"
+  },
+  "overrides": {
+    "postcss-selector-parser": "^7.1.6"
+  },
+  "private": true
+}

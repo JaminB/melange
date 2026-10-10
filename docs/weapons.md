@@ -76,8 +76,8 @@ utility items), and cell takeover beyond 29/39/40, are not in this version.
 
 ## Lua: `wum.sim.weapons`
 
-This is a sim-script API (`entry.sim`, Lua 5.0 with float numbers — see the README's
-["Sim scripts"](../README.md#sim-scripts) section for the base rules). It isn't part of
+This is a sim-script API (`entry.sim`, Lua 5.0 with float numbers — see the developer guide's
+["Sim scripts"](developer-guide.md#sim-scripts) section for the base rules). It isn't part of
 [lua-api.md](lua-api.md), which covers only the always-on client Sandbox; the sim match VM's weapon surface is
 documented here instead.
 

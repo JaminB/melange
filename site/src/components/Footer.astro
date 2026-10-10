@@ -1,0 +1,23 @@
+---
+// Footer override: Starlight's footer (edit link, last updated, prev/next) followed by the site footer
+// (.mel-footer): licence, links, and the non-affiliation notice that every page of both sites carries.
+import Default from '@astrojs/starlight/components/Footer.astro';
+
+const BASE = import.meta.env.BASE_URL.replace(/\/+$/, '');
+---
+
+<Default />
+<footer class="mel-footer not-content">
+	<div class="mel-wrap">
+		<p class="mel-footer__links">
+			<span>Melange is open source (<a href="https://github.com/JaminB/melange/blob/main/LICENSE">MIT</a>).</span>
+			<a href="https://github.com/JaminB/melange">GitHub</a>
+			<a href="https://jaminb.github.io/melange-plugins/">Plugins store</a>
+			<a href={`${BASE}/reporting-a-bug/`}>Report a bug</a>
+		</p>
+		<p class="mel-footer__tm">
+			Worms and Worms Ultimate Mayhem are trademarks of Team17 Digital Limited. Melange is an independent fan
+			project and is not affiliated with, sponsored by, or endorsed by Team17.
+		</p>
+	</div>
+</footer>

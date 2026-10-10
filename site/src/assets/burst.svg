@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64" aria-hidden="true">
+  <!-- Cartoon burst with flying terrain chunks. Outer = -mel-burst-outer, inner = -mel-burst-inner (amber,
+       never the CTA yellow), core = -mel-burst-core. Outline = currentColor. -->
+  <g stroke="currentColor" stroke-width="3.5" stroke-linejoin="round" stroke-linecap="round">
+    <path fill="var(--mel-burst-outer, #FF7A3D)" d="M32 3l6 13 12-8-2 14 14 2-10 10 10 10-14 2 2 14-12-8-6 13-6-13-12 8 2-14-14-2 10-10L2 24l14-2-2-14 12 8z"/>
+    <path fill="var(--mel-burst-inner, #FFA94D)" d="M32 17l4 8 8-3-3 8 8 2-7 5 4 7-8-1-1 8-5-6-5 6-1-8-8 1 4-7-7-5 8-2-3-8 8 3z"/>
+    <circle cx="32" cy="34" r="4" fill="var(--mel-burst-core, #FFF1DE)" stroke-width="2.5"/>
+    <g stroke-width="2">
+      <path fill="var(--mel-ground, #8A5A33)" d="M55 4l5 1-1 5-5-1z"/>
+      <path fill="var(--mel-grass, #5CB338)" d="M4 52l5-1 1 5-5 1z"/>
+    </g>
+  </g>
+</svg>

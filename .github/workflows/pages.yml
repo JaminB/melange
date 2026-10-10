@@ -1,0 +1,84 @@
+name: pages
+
+# Builds the documentation site in site/ and publishes it to GitHub Pages (https://jaminb.github.io/melange/).
+# Runs on every push to main, at the end of a release (release.yml calls it), by hand, and as a build-only check on
+# pull requests that touch the docs, the Lua API sources or the site itself.
+#
+# The site is the one place in this repository where npm runs. It is built only here, from site/package-lock.json,
+# and nothing it installs is ever shipped in a release.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    paths:
+      - "docs/**"
+      - "README.md"
+      - "CODE_SIGNING.md"
+      - "src/lua/**"
+      - "site/**"
+      - ".github/workflows/pages.yml"
+  workflow_dispatch:
+  workflow_call:
+
+permissions: {}
+
+concurrency:
+  group: pages-${{ github.event_name == 'pull_request' && github.ref || 'deploy' }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    defaults:
+      run:
+        working-directory: site
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0 # the site renders the docs of every release tag from v0.8.0 on
+          persist-credentials: false
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: site/package-lock.json
+
+      - name: Install
+        run: npm ci
+
+      - name: Check the Lua API docs cover every wum.* function
+        run: npm run check
+
+      - name: Build
+        env:
+          GITHUB_TOKEN: ${{ github.token }} # only for the Releases API (download link, version, changelog)
+        run: npm run build
+
+      - name: Check links
+        run: npm run check:links
+
+      - uses: actions/configure-pages@45bfe0192ca1faeb007ade9deae92b16b8254a0d # v6.0.0
+        if: github.event_name != 'pull_request'
+
+      - uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5.0.0
+        if: github.event_name != 'pull_request'
+        with:
+          path: site/dist
+
+  deploy:
+    if: github.event_name != 'pull_request'
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@368f82528645a54fb793d4d04e342629a3f51346 # v5.0.1
