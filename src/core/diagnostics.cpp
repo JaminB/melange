@@ -529,7 +529,7 @@ private:
             DWORD tid = melange::events::MainThreadId();
             if (!tid) continue;
 
-            // Every ~5 s: the game is a 2 GB process, and when the largest free block gets small, allocations fail.
+            // Every ~5 s: the game is a 2 GB process (4 GB large-address-aware); when the largest free block gets small, allocations fail.
             if (GetTickCount64() >= nextSpaceCheck) {
                 nextSpaceCheck = GetTickCount64() + 5000;
                 const melange::mem::AddressSpace sp = melange::mem::QueryAddressSpace();
@@ -541,9 +541,9 @@ private:
                 }
                 if (!spaceLow && sp.largestFreeMB < 128) {
                     spaceLow = true;
-                    LOG_WARN("address space low: %u MB free, largest block %u MB (WormsMayhem.exe is a 2 GB process%s); "
+                    LOG_WARN("address space low: %u MB free, largest block %u MB (WormsMayhem.exe is %s); "
                              "allocations may fail and end the game",
-                             sp.freeMB, sp.largestFreeMB, sp.largeAddressAware ? "" : ", not large-address-aware");
+                             sp.freeMB, sp.largestFreeMB, sp.largeAddressAware ? "a 4 GB large-address-aware process" : "a 2 GB process, not large-address-aware");
                 } else if (spaceLow && sp.largestFreeMB > 192) {
                     spaceLow = false;
                 }

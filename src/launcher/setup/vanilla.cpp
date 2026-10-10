@@ -7,6 +7,7 @@
 #include <algorithm>
 
 #include "core/log.h"
+#include "launcher/setup/laa.h"
 #include "launcher/util.h"
 #include "tools/hash.h"
 #include "tools/json_mini.h"
@@ -391,6 +392,12 @@ VanillaOutcome ApplyVanilla(const VanillaContext& ctx, const std::string& planId
         o.moved.emplace_back(r, N(to));
         LOG_INFO("[vanilla] moved %s -> %ls", r.c_str(), to.c_str());
         progress("Moved " + r);
+    }
+
+    // 1b. The 4 GB bit goes back to stock while the marker (deleted below with the rest of Melange) still says it was ours.
+    if (LaaMarkerPresent(g)) {
+        const LaaResult l = EnsureLaa(c, false);
+        if (!l.ok) LOG_WARN("[vanilla] could not clear the 4 GB bit: %s", l.message.c_str());
     }
 
     // 2. Delete. This process's own files (Melange.exe run from the game folder) go once it has closed.

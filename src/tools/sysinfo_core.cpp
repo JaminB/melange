@@ -11,6 +11,7 @@
 #include <cctype>
 #include <cstdio>
 
+#include "core/pe_laa.h"
 #include "tools/hash.h"
 #include "tools/json_mini.h"
 
@@ -199,7 +200,9 @@ std::string OfflineJson(const std::wstring& gameDir) {
     jsonmini::Obj exe;
     exe.Str("path", NarrowLocal(exePath))
         .UInt("size", FileSizeOf(exePath))
-        .Str("sha256", exePath.empty() ? std::string() : hashutil::Sha256HexFile(exePath))
+        .Str("sha256", exePath.empty() ? std::string() : pe::CanonicalSha256(exePath))   // large-address-aware bit cleared
+        .Str("rawSha256", exePath.empty() ? std::string() : hashutil::Sha256HexFile(exePath))
+        .Bool("largeAddressAware", pe::IsLaaFile(exePath))
         .Str("source", "disk");  // read by Melange.exe, not identified by the running game
     return CollectJsonWith(gameDir, gl.End(), exe.End());
 }

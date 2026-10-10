@@ -176,6 +176,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int) {
     L::rpc::InstallPlugins();
     L::rpc::InstallImport();
     L::rpc::InstallDisplay();
+    L::rpc::InstallLaa();
     L::storehost::Install();
     L::updatehost::Install();
     L::updatehost::Start(!opts.serve);   // --serve is for tests: no automatic look at GitHub

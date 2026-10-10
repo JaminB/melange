@@ -1,6 +1,6 @@
 // The wizard's words (spec §5.3) as pure data: one function per family of states, each returning {title, body}.
 // A unit test asserts every member of every union this file switches on produces non-empty title and body.
-import type { Candidate, DisplaySize, DisplayState, DllInfo, GameCheck, ImportContent, ImportJob, ImportSource, Importer, Plan, SetupProgress, SetupStatus, Store, UpdateApplied, UpdateStatus, VanillaGroup, Verdict } from "./api";
+import type { Candidate, DisplaySize, DisplayState, DllInfo, GameCheck, LaaState, ImportContent, ImportJob, ImportSource, Importer, Plan, SetupProgress, SetupStatus, Store, UpdateApplied, UpdateStatus, VanillaGroup, Verdict } from "./api";
 import { LauncherErrorCode, fingerprintShort, hashShort, sizeText, whenText } from "./api";
 
 export interface Copy { title: string; body: string[]; }
@@ -388,3 +388,12 @@ export function windowSizeHelp(d: DisplayState): string {
     ? "The window's size when you leave fullscreen. Saved as /W and /H in the game's local.cfg."
     : "The size the game's window opens at. Saved as /W and /H in the game's local.cfg.";
 }
+
+// -- Settings › Memory -----------------------------------------------------------------------------------------------
+export const LAA_NOTE = "Only changes this PC. Network games and other players are not affected.";
+export const LAA_RUNNING = "Close the game to change this: it reads it when it starts.";
+export const laaStatus = (s: LaaState): string =>
+  s.enabled && s.active ? "On: the game can use up to 4 GB."
+  : s.enabled ? "On. It takes effect the next time you start the game from Melange."
+  : s.active ? "Off. The game file still has it from something other than Melange."
+  : "Off: the game uses up to 2 GB.";

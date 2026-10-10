@@ -5,6 +5,7 @@ import { Ini } from "../../panels/ini";
 import type { Defaults, SetupStatus, Theme, UpdateStatus, VanillaResult } from "../api";
 import { defaultsOf, updateStatusOf, whenText } from "../api";
 import { DisplaySettings } from "../components/DisplaySettings";
+import { LaaSettings } from "../components/LaaSettings";
 import { RestoreVanilla } from "../components/RestoreVanilla";
 import { busyNotice, updateCheckLine } from "../copy";
 import { UndoIcon } from "../icons";
@@ -95,6 +96,13 @@ export function Settings({ client, status, update, theme, onTheme, onChangeFolde
         <section class="ls-section" data-section="display">
           <h2>Display</h2>
           <DisplaySettings client={client} running={!!status.running} />
+        </section>
+      ) : null}
+
+      {status?.game ? (
+        <section class="ls-section" data-section="memory">
+          <h2>Memory</h2>
+          <LaaSettings client={client} running={!!status.running} />
         </section>
       ) : null}
 

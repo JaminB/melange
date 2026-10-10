@@ -19,6 +19,17 @@
 - The background worker threads (recording close and library indexing, mod handshake hashing, the Store, the update
   check, the trace panel, the detector's bundle export and the launcher's workers) now catch and log an error instead of
   ending the game.
+- New opt-in 4 GB mode (large-address-aware) for `WormsMayhem.exe`, the way out of the address-space limit described
+  above. Turn it on in `Melange.exe` under *Settings › Memory* ("Use up to 4 GB of memory"), or set `[Game]
+  LargeAddressAware=1` in `Melange.ini`: `Melange.exe` then sets one bit in the game's PE header (on a checked copy that
+  is swapped in, only for the supported build #1077, and not while the game runs) at every launch, and clears it again
+  when the setting is turned off or on Restore vanilla. It is off by default and only changes this PC. It does not
+  affect multiplayer: the game-files hash that Melange shows other players ignores that bit, so patched and unpatched
+  players publish the same hash (a peer on an older Melange may show the amber "Game files differ" lobby banner, and
+  nothing else happens). Steam's "Verify files" restores the stock exe; the next launch from `Melange.exe` applies it
+  again, and a game started straight from Steam keeps whatever state the file was left in (the log warns when
+  `Melange.ini` asks for it and the exe does not have it). `Melange.log` and the system report now show whether the exe
+  is large-address-aware, and the "address space low" warning says 2 GB or 4 GB accordingly.
 
 ## 0.9.0
 

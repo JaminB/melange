@@ -15,6 +15,7 @@
 #include <string>
 #include <vector>
 
+#include "core/pe_laa.h"
 #include "launcher/plugin_settings.h"
 #include "launcher/recommended.h"
 #include "launcher/settings.h"
@@ -23,6 +24,7 @@
 #include "launcher/setup/engine.h"
 #include "launcher/setup/exe_check.h"
 #include "launcher/setup/ini_merge.h"
+#include "launcher/setup/laa.h"
 #include "launcher/setup/running.h"
 #include "launcher/setup/vanilla.h"
 #include "launcher/setup/vdf.h"
@@ -187,7 +189,7 @@ std::vector<S::Profile> FakeProfiles(const std::wstring& exe) {
         S::Profile none{0, 0, "", ""};
         return S::CheckExe(L::Parent(exe), {none});
     }();
-    return {S::Profile{probe.exe.size, probe.exe.timestamp, melange::hashutil::Sha256HexFile(exe), "Test #1"}};
+    return {S::Profile{probe.exe.size, probe.exe.timestamp, melange::pe::CanonicalSha256(exe), "Test #1"}};
 }
 
 void TestDetect() {
@@ -296,6 +298,117 @@ void TestExe() {
     CloseHandle(lock);
     Expect(S::DefaultProfiles().size() == 1 && S::DefaultProfiles()[0].sha256 == "041c8c6eb3b9f4fbaf367748f713ccb8f7bef68d13e825472c88c1ecf711ab7d",
            "exe: the shared #1077 profile");
+}
+
+// ---------------------------------------------------------------- large-address-aware (4 GB) mode
+void TestLaa() {
+    const std::wstring dir = Fresh(L"laa");
+    const std::wstring exe = dir + L"\\WormsMayhem.exe", tmp = exe + L".melange-tmp", marker = dir + L"\\Melange\\laa.json";
+    Copy(L::ExePath(), exe);
+    melange::pe::SetLaaInFile(exe, false);   // the build's stock state, whatever the linker did to this test exe
+    const std::string raw0 = melange::hashutil::Sha256HexFile(exe), canon0 = melange::pe::CanonicalSha256(exe);
+    uint16_t chars0 = 0, chars1 = 0;
+    uint32_t ts0 = 0, ts1 = 0, sum0 = 0, sum1 = 0;
+    Expect(melange::pe::ReadPeFlags(exe, &chars0, &ts0, &sum0) && (chars0 & 0x20) == 0, "laa: stock copy has the bit clear");
+    Expect(canon0 == raw0, "laa: canonical hash of a stock exe is its raw hash");
+
+    // The hash ignores the bit and nothing else.
+    Expect(melange::pe::SetLaaInFile(exe, true) == 0 && melange::pe::IsLaaFile(exe), "laa: SetLaaInFile sets the bit");
+    Expect(melange::pe::ReadPeFlags(exe, &chars1, &ts1, &sum1) && chars1 == (chars0 | 0x20), "laa: only the 0x0020 bit changed", std::to_string(chars1));
+    Expect(ts1 == ts0 && sum1 == sum0, "laa: timestamp and CheckSum untouched");
+    Expect(melange::pe::CanonicalSha256(exe) == canon0, "laa: patched and unpatched give the same canonical hash");
+    Expect(melange::hashutil::Sha256HexFile(exe) != raw0, "laa: the raw hash does differ");
+    Expect(melange::pe::SetLaaInFile(exe, true) == 0 && melange::pe::SetLaaInFile(exe, false) == 0 && melange::hashutil::Sha256HexFile(exe) == raw0,
+           "laa: clearing gives the original bytes back");
+    const std::wstring junk = dir + L"\\junk.bin";
+    Put(junk, "MZ this is not a portable executable");
+    Expect(!melange::pe::ReadPeFlags(junk, &chars1) && melange::pe::CanonicalSha256(junk) == melange::hashutil::Sha256HexFile(junk) &&
+               melange::pe::SetLaaInFile(junk, true) != 0,
+           "laa: a file without a PE header is hashed raw and not patched");
+
+    // The launcher sees a patched copy as the same build.
+    auto profiles = FakeProfiles(exe);
+    Expect(profiles[0].sha256 == canon0, "laa: the profile hash is the canonical one");
+    melange::pe::SetLaaInFile(exe, true);
+    S::ClearExeCache();
+    S::GameCheck c = S::CheckExe(dir, profiles);
+    Expect(c.verdict == S::Verdict::Ok && c.exe.laa && c.exe.sha256 == canon0, "laa: a patched exe is still verdict ok, laa reported");
+    Expect(S::GameCheckJson(c).find("\"laa\":true") != std::string::npos, "laa: GameCheckJson carries laa", S::GameCheckJson(c));
+    melange::pe::SetLaaInFile(exe, false);
+
+    S::Context ctx;
+    ctx.gameDir = dir;
+    ctx.profiles = &profiles;
+    ctx.version = "9.9.9";
+    ctx.running = [](const std::wstring&) { return false; };
+
+    // Apply: marker, checked swap, no temp file; again is a no-op; revert is byte for byte.
+    S::LaaResult r = S::EnsureLaa(ctx, true);
+    Expect(r.ok && r.changed && r.state == "applied" && melange::pe::IsLaaFile(exe), "laa: EnsureLaa(true) patches", r.message);
+    Expect(L::FileExists(marker) && Get(marker).find("\"appliedBy\":\"melange\"") != std::string::npos && S::LaaMarkerPresent(dir),
+           "laa: the marker records that Melange set it", Get(marker));
+    Expect(!L::FileExists(tmp), "laa: no temp file left after applying");
+    Expect(melange::pe::CanonicalSha256(exe) == canon0 && S::CheckExe(dir, profiles).verdict == S::Verdict::Ok, "laa: still the known build afterwards");
+    const std::string patched = melange::hashutil::Sha256HexFile(exe);
+    r = S::EnsureLaa(ctx, true);
+    Expect(r.ok && !r.changed && r.state == "unchanged" && melange::hashutil::Sha256HexFile(exe) == patched && !L::FileExists(tmp),
+           "laa: applying twice changes nothing");
+    r = S::EnsureLaa(ctx, false);
+    Expect(r.ok && r.changed && r.state == "reverted" && melange::hashutil::Sha256HexFile(exe) == raw0, "laa: revert restores the original bytes", r.message);
+    Expect(!L::FileExists(marker) && !L::FileExists(tmp), "laa: revert removes the marker and leaves no temp file");
+    r = S::EnsureLaa(ctx, false);
+    Expect(r.ok && !r.changed && r.state == "unchanged", "laa: reverting a stock exe is a no-op");
+
+    // An exe patched by something else is not Melange's to undo, unless asked outright.
+    melange::pe::SetLaaInFile(exe, true);
+    r = S::EnsureLaa(ctx, false);
+    Expect(r.ok && !r.changed && r.state == "external" && melange::pe::IsLaaFile(exe), "laa: an external patch without the marker is not reverted");
+    r = S::EnsureLaa(ctx, false, true);
+    Expect(r.ok && r.changed && !melange::pe::IsLaaFile(exe) && melange::hashutil::Sha256HexFile(exe) == raw0, "laa: an explicit revert clears it", r.message);
+
+    // Refusals leave the exe as it was.
+    auto other = profiles;
+    other[0].sha256 = std::string(64, '0');
+    S::Context unknown = ctx;
+    unknown.profiles = &other;
+    S::ClearExeCache();
+    r = S::EnsureLaa(unknown, true);
+    Expect(!r.ok && r.state == "refused" && !melange::pe::IsLaaFile(exe) && !L::FileExists(marker), "laa: an unknown exe is never patched");
+    S::Context busy = ctx;
+    busy.running = [](const std::wstring&) { return true; };
+    r = S::EnsureLaa(busy, true);
+    Expect(!r.ok && r.state == "refused" && r.message == "Close Worms Ultimate Mayhem first." && !melange::pe::IsLaaFile(exe),
+           "laa: refused while the game runs", r.message);
+    S::ClearExeCache();
+    HANDLE lock = CreateFileW(exe.c_str(), GENERIC_READ, 0, nullptr, OPEN_EXISTING, 0, nullptr);
+    r = S::EnsureLaa(ctx, true);
+    CloseHandle(lock);
+    Expect(!r.ok && !r.changed && !L::FileExists(tmp) && !L::FileExists(marker) && melange::hashutil::Sha256HexFile(exe) == raw0,
+           "laa: an exclusively locked exe is left alone", r.message);
+    // Held open for reading without delete sharing, as a mapped image is: the copy works, the swap does not.
+    S::ClearExeCache();
+    lock = CreateFileW(exe.c_str(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, OPEN_EXISTING, 0, nullptr);
+    r = S::EnsureLaa(ctx, true);
+    CloseHandle(lock);
+    Expect(!r.ok && !r.changed && r.state == "failed" && !L::FileExists(tmp) && !L::FileExists(marker) && melange::hashutil::Sha256HexFile(exe) == raw0,
+           "laa: a failed swap removes the temp file and the marker and leaves the exe", r.message);
+    r = S::EnsureLaa(ctx, true);
+    Expect(r.ok && r.changed, "laa: and works once the lock is gone", r.message);
+    Put(tmp, "stale");
+    r = S::EnsureLaa(ctx, false);
+    Expect(r.ok && !L::FileExists(tmp), "laa: a stale temp file is swept");
+
+    // The setting: one key in Melange.ini, every other line kept.
+    const std::string ini = "; mine\r\n[Display]\r\nFullscreen=1 ; yes\r\n\r\n[Game]\r\nOther=5\r\n";
+    Put(dir + L"\\Melange.ini", ini);
+    Expect(!S::IniWantsLaa(dir), "laa: ini default is off");
+    Expect(S::SetIniLaa(dir, true).empty() && S::IniWantsLaa(dir), "laa: SetIniLaa(true)");
+    std::string now = Get(dir + L"\\Melange.ini");
+    Expect(now == "; mine\r\n[Display]\r\nFullscreen=1 ; yes\r\n\r\n[Game]\r\nOther=5\r\nLargeAddressAware=1\r\n", "laa: only the new key was added", now);
+    Expect(S::SetIniLaa(dir, false).empty() && !S::IniWantsLaa(dir) && Get(dir + L"\\Melange.ini").find("LargeAddressAware=0") != std::string::npos &&
+               Get(dir + L"\\Melange.ini").find("Fullscreen=1 ; yes") != std::string::npos,
+           "laa: SetIniLaa(false) keeps the other keys");
+    Expect(!S::SetIniLaa(dir + L"\\nope", true).empty(), "laa: no ini, no write");
 }
 
 // ---------------------------------------------------------------- loader identity
@@ -1637,6 +1750,7 @@ int main(int, char** argv) {
     TestVdf();
     TestDetect();
     TestExe();
+    TestLaa();
     TestDll();
     if (L::FileExists(Ual())) {
         TestEngineFresh();

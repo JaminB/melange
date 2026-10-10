@@ -1,13 +1,13 @@
 #include "core/game.h"
 
 #include <windows.h>
-#include <bcrypt.h>
 #include <psapi.h>
 
 #include <cstdio>
 #include <vector>
 
 #include "core/exe_profiles.h"
+#include "core/pe_laa.h"
 
 namespace melange::game {
 namespace {
@@ -15,31 +15,6 @@ ExeInfo g_exe;
 std::wstring g_gameDir, g_pluginDir, g_dataDir;
 
 std::wstring DirOf(const std::wstring& p) { return p.substr(0, p.find_last_of(L"\\/")); }
-
-std::string Sha256File(const std::wstring& path) {
-    HANDLE f = CreateFileW(path.c_str(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr,
-                           OPEN_EXISTING, 0, nullptr);
-    if (f == INVALID_HANDLE_VALUE) return {};
-    BCRYPT_ALG_HANDLE alg{};
-    BCRYPT_HASH_HANDLE h{};
-    std::string hex;
-    if (BCryptOpenAlgorithmProvider(&alg, BCRYPT_SHA256_ALGORITHM, nullptr, 0) == 0 &&
-        BCryptCreateHash(alg, &h, nullptr, 0, nullptr, 0, 0) == 0) {
-        std::vector<unsigned char> buf(1 << 20);
-        DWORD rd = 0;
-        while (ReadFile(f, buf.data(), static_cast<DWORD>(buf.size()), &rd, nullptr) && rd) BCryptHashData(h, buf.data(), rd, 0);
-        unsigned char dig[32];
-        if (BCryptFinishHash(h, dig, 32, 0) == 0) {
-            char s[65];
-            for (int i = 0; i < 32; ++i) snprintf(s + i * 2, 3, "%02x", dig[i]);
-            hex = s;
-        }
-    }
-    if (h) BCryptDestroyHash(h);
-    if (alg) BCryptCloseAlgorithmProvider(alg, 0);
-    CloseHandle(f);
-    return hex;
-}
 }  // namespace
 
 void Init(void* pluginModule) {
@@ -57,7 +32,9 @@ void Init(void* pluginModule) {
     g_exe.timestamp = nt->FileHeader.TimeDateStamp;
     WIN32_FILE_ATTRIBUTE_DATA fa{};
     if (GetFileAttributesExW(exePath.c_str(), GetFileExInfoStandard, &fa)) g_exe.fileSize = fa.nFileSizeLow;
-    g_exe.sha256 = Sha256File(exePath);
+    // The hash ignores the large-address-aware bit, so a patched exe is still the known build.
+    g_exe.sha256 = pe::CanonicalSha256(exePath);
+    g_exe.laa = (nt->FileHeader.Characteristics & IMAGE_FILE_LARGE_ADDRESS_AWARE) != 0;
     for (const auto& p : kProfiles) {
         if (p.size == g_exe.fileSize && p.timestamp == g_exe.timestamp && g_exe.sha256 == p.sha256) {
             g_exe.known = true;

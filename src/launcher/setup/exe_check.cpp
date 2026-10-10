@@ -7,6 +7,7 @@
 #include <tuple>
 
 #include "core/exe_profiles.h"
+#include "core/pe_laa.h"
 #include "launcher/util.h"
 #include "tools/hash.h"
 #include "tools/json_mini.h"
@@ -27,16 +28,10 @@ std::map<CacheKey, GameCheck> g_cache;
 
 std::string HashHandle(HANDLE f) {
     ++g_hashCount;
-    LARGE_INTEGER zero{};
-    SetFilePointerEx(f, zero, nullptr, FILE_BEGIN);
-    hashutil::Sha256 h;
-    std::vector<char> buf(1 << 20);
-    DWORD rd = 0;
-    while (ReadFile(f, buf.data(), static_cast<DWORD>(buf.size()), &rd, nullptr) && rd) h.Update(buf.data(), rd);
-    return h.FinishHex();
+    return pe::CanonicalSha256(f);   // the large-address-aware bit does not change which build this is
 }
 
-bool PeTimestamp(HANDLE f, uint32_t* ts) {
+bool PeTimestamp(HANDLE f, uint32_t* ts, bool* laa) {
     IMAGE_DOS_HEADER dos{};
     DWORD rd = 0;
     if (!ReadFile(f, &dos, sizeof dos, &rd, nullptr) || rd != sizeof dos || dos.e_magic != IMAGE_DOS_SIGNATURE) return false;
@@ -48,6 +43,7 @@ bool PeTimestamp(HANDLE f, uint32_t* ts) {
     if (!ReadFile(f, &sig, sizeof sig, &rd, nullptr) || rd != sizeof sig || sig != IMAGE_NT_SIGNATURE) return false;
     if (!ReadFile(f, &fh, sizeof fh, &rd, nullptr) || rd != sizeof fh) return false;
     *ts = fh.TimeDateStamp;
+    *laa = (fh.Characteristics & IMAGE_FILE_LARGE_ADDRESS_AWARE) != 0;
     return true;
 }
 }  // namespace
@@ -108,10 +104,10 @@ GameCheck CheckExe(const std::wstring& dirIn, const std::vector<Profile>& profil
         return c;
     }
     uint32_t ts = 0;
-    const bool pe = PeTimestamp(f, &ts);
+    const bool isPe = PeTimestamp(f, &ts, &c.exe.laa);
     c.exe.timestamp = ts;
     const Profile* match = nullptr;
-    if (pe)
+    if (isPe)
         for (const auto& p : profiles)
             if (p.size == size && p.timestamp == ts) match = &p;
     c.verdict = Verdict::WrongBuild;
@@ -150,7 +146,7 @@ std::string GameCheckJson(const GameCheck& c) {
         .Bool("writable", c.writable);
     if (c.exe.present) {
         jsonmini::Obj e;
-        e.UInt("size", c.exe.size).UInt("timestamp", c.exe.timestamp);
+        e.UInt("size", c.exe.size).UInt("timestamp", c.exe.timestamp).Bool("laa", c.exe.laa);
         if (!c.exe.sha256.empty()) e.Str("sha256", c.exe.sha256);
         if (!c.exe.build.empty()) e.Str("build", c.exe.build);
         o.Raw("exe", e.End());

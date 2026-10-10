@@ -37,6 +37,7 @@ Every module has its own section in `Melange.ini`, and `Enabled=0` turns a modul
 | `NetTrace` | on | Logs raw Winsock calls |
 | `WindowTag` | on | Shows the Melange version in the window title |
 | `Display` | on (`Fullscreen=0`) | Borderless fullscreen at the monitor's resolution, switched live with *View > Fullscreen* or `Hotkey` (`Alt+RETURN`), remembered in `Fullscreen` and applied as soon as the game's window is up ([Fullscreen](#fullscreen)); `Melange.exe`'s *Settings › Display* writes it too. Build #1077 only |
+| `Game` | off (`LargeAddressAware=0`) | Opt-in 4 GB mode: `Melange.exe` sets the large-address-aware bit of `WormsMayhem.exe` at launch ([Memory (4 GB)](#memory-4-gb)); *Settings › Memory* writes it. Does not affect multiplayer |
 | `FrameInterval` | on | Sets the engine frame interval (`IntervalMs=16` is about 60 fps); "Classic timing" (`ClassicTiming=0`) raises the OS timer resolution to 1 ms (`timeBeginPeriod`) for steadier pacing on systems that stutter at the default resolution. Switch it with *Game > Classic timing* in the overlay (checked while on) |
 | `SmoothSixty` | on (`On=0`) | "Smooth 60": lifts the engine's frame limiter and uses vsync. Switch it with *Game > Smooth 60* in the overlay (checked while on) |
 | `Mirage` | on | Graphics layer core: renderer access, scene stages for mods, mod folders |
@@ -720,6 +721,31 @@ Command line:
 
 Both are refused while the game runs (the usual write gate). `display.get` reports what is set (`local.cfg` over
 `Default.cfg`), the monitor and the gate's reason, so the page can disable the controls.
+
+### Memory (4 GB)
+
+*Settings › Memory* (`src/launcher/rpc_laa.cpp`, `launcher.laa.get` / `launcher.laa.set`, logic in
+`src/launcher/setup/laa.*` and `src/core/pe_laa.*`) is the opt-in large-address-aware mode: `WormsMayhem.exe` is a
+32-bit process with 2 GB of address space, and the flag in its PE header (`IMAGE_FILE_LARGE_ADDRESS_AWARE`, the
+`0x0020` bit of the 16-bit `Characteristics` word at `e_lfanew+22`) lets it use up to 4 GB on 64-bit Windows.
+
+- **The setting** is `LargeAddressAware=0|1` under `[Game]` in `Melange.ini` (default `0`). It needs Melange installed.
+- **Applying** happens when the toggle changes and again in `launcher.launch`, just before the game starts (so Steam's
+  "Verify files", which restores the stock exe, is undone). Only the supported build (`CheckExe` is `Ok`) is touched,
+  and never while the game runs. The exe is copied to `WormsMayhem.exe.melange-tmp`, the copy is patched and flushed,
+  and its canonical hash, size and bit are checked before `MoveFileExW` swaps it in; the temp file is removed on any
+  failure. A failure is logged (`[laa]`) and never stops the launch (`launcher.launch` answers `laa: "failed:<why>"`).
+- **Reverting** (the toggle off, and Restore vanilla) clears the bit only when `Melange\laa.json` exists, the marker
+  Melange writes when it sets the bit. An exe patched by something else is left alone.
+- **Identity.** The exe hash that names the build (`game::Exe().sha256`, `CheckExe`, the `mlg.gid` handshake value, crash
+  reports, the system report) is the *canonical* SHA-256: the file with that one bit cleared. A patched and a stock exe
+  give the same string, so every module stays on, the launcher still sees the supported build, and other players see no
+  difference. `CheckSum` is not touched (the exe is not signed and Windows does not check it for a user-mode exe). The
+  system report also has `rawSha256` and `largeAddressAware`.
+- **In game** `Melange.log` prints `large-address-aware=0|1` on the `exe` line and warns when `Melange.ini` asks for
+  the mode and the exe does not have it (the game was started without `Melange.exe`).
+- If Windows refuses the write (a game folder only an administrator can change), the page says so; run `Melange.exe` as
+  administrator once.
 
 ### Restore vanilla
 
