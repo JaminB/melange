@@ -193,10 +193,11 @@ Limits and rules:
 The `weapons.state` test verb lists the declared renames, the name-table id each resolved to and whether its name and
 help were registered. The `weapons` jlog category records a `weapon_text` entry per match (declared and applied counts).
 
-Not verified in a running game (built and tested offline against a fake engine only):
+Verified in a running game, on one machine: the panel rename and the HUD tag. Everything else here was built and tested
+offline against a fake engine only. Not verified:
 
 - That the HUD tag follows the rename **on a peer other than the one tested**, and in the other places the container's
-  `DisplayName` is read (if any): the tag was verified on one machine only.
+  `DisplayName` is read (if any).
 - That the **help text key format** (`HelpText.<name>0`, one line) matches for every weapon. It is the format a clone's
   own help already uses, but a weapon whose vanilla help has several lines uses `HelpText.<name>0` to `3`, and whether
   the game stops at the first missing index is not confirmed.

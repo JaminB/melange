@@ -377,9 +377,11 @@ Resolved Resolve(const std::vector<std::vector<CloneDecl>>& clones, const std::v
         return !ids[i].empty() && std::any_of(list.begin(), list.end(), [&](const Error& er) { return er.mod == ids[i]; });
     };
     // Clone cells first, then renames, icons and vehicle meshes against the clones that survived. A rename, icon or vehicle refusal removes
-    // that mod's clones, which can free a cell or a name, so the clone pass runs again. Clone refusals are recomputed
-    // every round (a mod refused only because of a mod that is gone is let back in); rename and icon refusals are
-    // kept, so the set of removed mods only grows and the loop ends.
+    // that mod's clones, which can free a cell or a name, so the clone pass runs again. Every refusal is recomputed
+    // each round, and only the earliest refused mod in load order is removed per round: a later mod that was refused
+    // for a clash with that one (a rename it had already taken) is let back in on the next round. A mod only ever
+    // clashes with an earlier one, so the earliest refused mod's reason stays true once the rest settles. The set of
+    // removed mods only grows, so the loop ends.
     std::vector<bool> textOut(n, false);
     std::vector<Error> textRefusals;
     for (;;) {
@@ -407,9 +409,12 @@ Resolved Resolve(const std::vector<std::vector<CloneDecl>>& clones, const std::v
         r.vehicles = AssignVehicles(vh, &iconErrs);
         textErrs.insert(textErrs.end(), iconErrs.begin(), iconErrs.end());
         bool again = false;
-        for (size_t i = 0; i < n; ++i)
-            if (!textOut[i] && named(textErrs, i)) textOut[i] = again = true;
-        textRefusals.insert(textRefusals.end(), textErrs.begin(), textErrs.end());
+        for (size_t i = 0; i < n && !again; ++i) {
+            if (textOut[i] || !named(textErrs, i)) continue;
+            textOut[i] = again = true;
+            for (const auto& er : textErrs)
+                if (er.mod == ids[i]) textRefusals.push_back(er);
+        }
         if (!again) {
             r.refused = cloneErrs;
             break;

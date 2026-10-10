@@ -162,8 +162,8 @@ uint32_t Play(const void* owner, uint32_t clipId, const PlayOpts& opts, std::str
         if (why) *why = "unknown sound";
         return 0;
     }
-    // A voice that was stopped but is not yet released by the mixer still holds an XAudio2 voice and its clip, so the
-    // mixer's count bounds the real voices, not just the book's.
+    // The book only knows ids; the mixer's count is the one that also covers a voice it failed to start earlier. Stopped
+    // voices awaiting release are not in it (the mixer bounds those on its own), so stop() then play() always has room.
     if (g_book.Full() || g_mixer->Active() >= g_book.Max()) {
         if (why) *why = "too many voices";
         return 0;
@@ -177,6 +177,8 @@ uint32_t Play(const void* owner, uint32_t clipId, const PlayOpts& opts, std::str
     if (opts.positional) {
         render::Camera cam;
         if (render::GetCamera(&cam) && cam.valid) level = PositionalVolume(opts.volume, Distance(cam.pos, vi.pos), g_near, g_far);
+        // A NaN position is silent whether or not a camera exists to measure the distance from (the docs promise it).
+        if (std::isnan(vi.pos[0]) || std::isnan(vi.pos[1]) || std::isnan(vi.pos[2])) level = 0.0f;
     }
     vi.applied = level;
     vi.startFrame = events::FrameCount();

@@ -69,6 +69,7 @@ bool Registry::PutU32(uintptr_t a, uint32_t v) { return e_.Write(a, &v, sizeof v
 void Registry::Configure(const std::vector<manifest::CloneDecl>& decls, const std::vector<manifest::TextDecl>& texts,
                          const std::vector<manifest::IconDecl>& icons, const std::vector<manifest::VehicleDecl>& vehicles) {
     ResetVehicles();
+    ResetText();  // before rules_ is cleared: it is the rules that hold the tags to put back
     vehicleRules_.clear();
     for (const auto& v : vehicles) {
         VehicleRule r;

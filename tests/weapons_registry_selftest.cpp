@@ -541,6 +541,13 @@ void RenameTag() {
     r.MatchEnd();
     Expect(e.strs[baz + 0x2c] == "Text.kWeaponBazooka", "tag: original after the unclosed round trip");
 
+    // Reconfiguring while tags are live puts the old ones back before the rules that hold them are dropped.
+    Expect(r.Init(&why) && e.strs[baz + 0x2c] == "Text.wt000", "tag: live before the reconfigure");
+    r.Configure({}, {});
+    Expect(e.strs[baz + 0x2c] == "Text.kWeaponBazooka" && e.strs[holy + 0x2c] == "Text.kWeaponHolyHandGrenade" &&
+               r.TagCount() == 0 && !r.TextLive(),
+           "tag: Configure restores the previous configuration's tags");
+
     // A write that fails: the panel rename stands, nothing is half-written.
     Fake f;
     core::Registry q(f);

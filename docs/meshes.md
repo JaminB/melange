@@ -149,7 +149,7 @@ mod and is spent in load order:
 | Sections the engine can address for mods | 476..519 = **44**. The per-section arrays have 520 entries (`0x96ef58`, `0x96f160`, `0x96f368`), 475 is the engine's "no section" sentinel, 0..474 are vanilla. |
 | `meshes` entries one mod may declare | **64** (a parse limit, `spice::kMaxMeshes`). More than 44 is allowed on purpose: a mod that lists spare banks still parses, and the budget is spent only by banks that actually load. |
 | Banks that load across all mods | at most 44, first come in load order (mod order, then array order). A bank that fails before the engine call (unreadable, a name outside `<modId>.`) burns nothing; one that reaches `LoadSection` burns its section even if the engine then refuses it. |
-| Many meshes in one bank | A bank may hold any number of `XMeshDescriptor`s as long as they share one `SectionId`, so a mod that needs more than its share of 44 puts several meshes in a bank (`xomtool convert ... --bundle` writes one mesh per file today; merging banks is a separate change). |
+| Many meshes in one bank | A bank may hold up to **256** `XMeshDescriptor`s (`meshes::kMaxEntriesPerBank`) as long as they share one `SectionId`, and all banks together may register at most **1024** mesh stubs (`kMaxStubsTotal`): the GRM's 7500-slot name table (above) already holds about 1100 meshes plus bitmaps, sprites and fonts, and its insert has no way out of a full table, so a bank over either limit is refused before anything is registered. So a mod that needs more than its share of 44 puts several meshes in a bank (`xomtool convert ... --bundle` writes one mesh per file today; merging banks is a separate change). |
 
 When the budget runs short the load says so before it starts and again per bank, instead of 20 identical failures:
 
@@ -284,42 +284,31 @@ path in a real match; behaviour when the mesh is missing a required node (the as
 
 ## Building a bank with xomtool
 
-`xomtool convert <mesh> --into` writes the mesh and its `XMeshDescriptor` but (a) needs an existing file to write
-into, (b) leaves the file's root where it was and (c) writes the `"world"` graph entry with a zero GUID, while the
-engine finds the geometry graph by GUID `6ae6dbe4fa866b45a73ff9130e12dfeb`. Until `xomtool` grows a
-`--bundle`/`-o new.xom` form that does this itself, a loadable bank is the `convert` output plus one JSON edit.
-This is exactly how the test asset was made (paths relative to a scratch folder; the game copy is
-`C:\Users\Jamin\Desktop\WUMFix\testenv\A\Data`):
+`xomtool convert <mesh> --into` writes the mesh and its `XMeshDescriptor` into an existing file but leaves that file's
+root where it was, so it is not a loadable bank by itself. The bank shape the engine reads (a root `XGraphSet` listing
+the descriptor by name, with the geometry GUID `6ae6dbe4fa866b45a73ff9130e12dfeb` on the `"world"` entry) is written
+directly by `convert ... --bundle` and by `clone` (see [xomtool.md](xomtool.md)):
 
 ```
-# 1. the vanilla mesh as glTF (BaseballBat.gltf + BaseballBat.bin)
+# 1. the vanilla mesh as glTF (BaseballBat.gltf + BaseballBat.bin), edit it in any 3D tool
 xomtool convert BaseballBat --from Data/Bundles/Bundl09.xom --out BaseballBat.gltf
 
 # 2. its texture. NOTE: ten XImages in Bundl09 are named "maya:file11/-1" and `convert <Name> --from` takes the
 #    first, which is not the bat's. Walk the graph instead: descriptor #102 -> XGraphSet #646 -> ... -> XShape ->
-#    XSimpleShader #6263 "baseballbat_shader" -> XOglTextureMap #6964 -> XImage #6819 (64x64 RGB8, rows bottom-up).
-xomtool unpack Data/Bundles/Bundl09.xom -o bundl09.json
-python extract_tex.py 6819            # writes bat_orig.png (level 0) and nailbat_rust.png (darker, rust-red tint
-                                      # keeping the grain: R = lum*150+25, G = lum*55+8, B = lum*35+6)
+#    XSimpleShader #6263 "baseballbat_shader" -> XOglTextureMap #6964 -> XImage #6819 (64x64 RGB8, rows bottom-up),
+#    and extract it by its object index (or list a mesh's images with `xomtool clone BaseballBat --list-images`).
+xomtool convert "#6819" --from Data/Bundles/Bundl09.xom --out bat_orig.png
+# ... recolour it in any image editor and save it as nailbat_rust.png
 
-# 3. a seed file to write into (any small XOM; a one-entry data bank is handy), then the mesh with the bat's own
-#    shader/material copied over and the texture swapped, as section 480
-xomtool bank --from Data/Tweak/WEAPTWK.XOM --object kWeaponBaseballBat --as kindjal.NailBatSeed --out seed.xom
-xomtool convert BaseballBat.gltf --into seed.xom --as kindjal.NailBat --section 480 \
-    --material-from BaseballBat --material-file Data/Bundles/Bundl09.xom --texture nailbat_rust.png -o stage1.xom
-
-# 4. bundle shape: drop the 3 seed objects, set the "world" entry GUID, add a root XGraphSet listing the
-#    descriptor by name (entry GUID 99cc436e6fbef54b85d2bfcdf9ae4283 as in vanilla roots), fix TYPE counts
-xomtool unpack stage1.xom -o stage1.json
-python bundleize.py stage1.json stage2.json 3
-xomtool pack stage2.json kindjal.NailBat.xom
+# 3. the bank: the edited mesh with the bat's own shader/material copied over and the texture swapped, as section 480
+xomtool convert BaseballBat.gltf --bundle kindjal.NailBat.xom --as kindjal.NailBat --section 480 \
+    --material-from BaseballBat --material-file Data/Bundles/Bundl09.xom --texture nailbat_rust.png
 ```
 
-The helper scripts (`extract_tex.py`, `bundleize.py`) are in the session scratch folder next to the result:
-`C:\Users\Jamin\AppData\Local\Temp\claude\C--Users-Jamin-Desktop-melange-plugins\2e56fa3c-e59c-4870-9357-c436ad2eadcc\scratchpad\meshes\kindjal.NailBat.xom`
-(44 798 bytes, 16 objects: root `#15 XGraphSet` -> `#16 XMeshDescriptor kindjal.NailBat` SectionId 480 Flags 8 ->
-`#14 XGraphSet` "world" -> `XInteriorNode` -> `XGroup` -> `XShape` with the copied `baseballbat_shader` and the
-recoloured `XImage`). `meshbank_selftest` accepts it (`InspectBank` + `CheckEntries("kindjal")`).
+The proven test asset (16 objects: root `XGraphSet` -> `XMeshDescriptor kindjal.NailBat` SectionId 480 Flags 8 ->
+`XGraphSet` "world" -> `XInteriorNode` -> `XGroup` -> `XShape` with the copied `baseballbat_shader` and the recoloured
+`XImage`) was first made by hand from the `--into` output plus a JSON edit that moved the root; `convert --bundle` and
+`clone` replace that. `meshbank_selftest` accepts the shape (`InspectBank` + `CheckEntries("kindjal")`).
 
 ## Trying it in the game
 
@@ -371,7 +360,7 @@ assets root, the 64 limit, kind) is tested in `tests/thumper_selftest.cpp` (`Tes
   slots 7-11) are out of scope; the same stub-then-bundle protocol should apply to bitmaps (slot 11 records are
   20 bytes with a type bit at `+0x10`), not checked.
 - `xomtool convert ... --bundle out.xom` writes the bundle shape directly (see [xomtool.md](xomtool.md)); the
-  hand-made pipeline above (`--into`, `bundleize.py`) is how the proven test asset was built.
+  hand-made pipeline (`--into` plus a JSON edit of the root) is how the proven test asset was first built.
 - A mod mesh as a projectile (`PayloadGraphicsResourceID`) or an `AttachedMesh`, and on a weapon clone, is untried.
 - `vehicleMeshes` (the Airstrike and Super Airstrike helicopters) is implemented from the decompile and the `.data` bytes
   and unit-tested, not run in the game; see [the section above](#engine-picked-meshes-the-airstrike-and-super-airstrike-helicopters).

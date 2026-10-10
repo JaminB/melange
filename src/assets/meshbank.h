@@ -16,6 +16,9 @@
 namespace melange::assets::meshes {
 constexpr uint16_t kSectionMin = 476, kSectionMax = 519;
 constexpr uint8_t kSceneBinWeapons = 8;  // the bin every vanilla weapon mesh stub uses (Bazooka.Weapon, BaseballBat, ...)
+// The GRM's name table has 7500 slots for meshes, bitmaps, sprites and fonts together (about 1100 meshes at start-up) and
+// its insert probes linearly with no way out of a full table, so mods may add few: per bank, and over every bank loaded.
+constexpr size_t kMaxEntriesPerBank = 256, kMaxStubsTotal = 1024;
 
 struct BankEntry {
     std::string name;  // XMeshDescriptor.ResourceId

@@ -207,6 +207,15 @@ void SyntheticTests() {
     std::vector<meshes::BankEntry> bare = {{"kindjal.", 8}};
     Expect(!meshes::CheckEntries("kindjal", bare, 480, &err), "empty name after the prefix refused");
     {
+        // The GRM's hash table has 7500 slots for everything: a bank may not fill it. The cap is on descriptors per bank.
+        std::vector<meshes::BankEntry> many;
+        for (size_t i = 0; i < meshes::kMaxEntriesPerBank; ++i) many.push_back({"kindjal.M" + std::to_string(i), 8});
+        Expect(meshes::CheckEntries("kindjal", many, 480, &err), "a bank at the per-bank cap is accepted: " + err);
+        many.push_back({"kindjal.Over", 8});
+        Expect(!meshes::CheckEntries("kindjal", many, 480, &err) && err.find("at most") != std::string::npos,
+               "one descriptor over the per-bank cap is refused: " + err);
+    }
+    {
         // RelocateBank: the section is rewritten, nothing else is (names, order, flags), and the result is a valid bank.
         std::vector<uint8_t> moved;
         const auto src = Bundle({{"kindjal.NailBat", uint16_t(9)}, {"kindjal.Shell", uint16_t(9)}});

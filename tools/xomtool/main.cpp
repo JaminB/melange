@@ -631,12 +631,23 @@ int CmdConvertMeshBundle(const Args& a, const std::string& gltfPath) {
     return 0;
 }
 
-int CmdConvertMeshOut(const Args& a, const std::string& name) {
+int CmdConvertMeshOut(const Args& a, const std::string& nameArg) {
     std::string from = a.get("from"), out = a.get("out");
     if (from.empty() || out.empty()) { std::fprintf(stderr, "xomtool: convert <Name> --from needs --out\n"); return 1; }
     Document doc;
     std::string err;
     if (!LoadDoc(from, doc, &err)) { std::fprintf(stderr, "xomtool: %s\n", err.c_str()); return 2; }
+    // "#N" is the 1-based object index `inspect`/`unpack` print, as for the texture form; here it must be an
+    // XMeshDescriptor, and the mesh readers below look it up by its ResourceId.
+    std::string name = nameArg;
+    if (nameArg.size() > 1 && nameArg[0] == '#') {
+        char* end = nullptr;
+        const unsigned long n = std::strtoul(nameArg.c_str() + 1, &end, 10);
+        const Object* o = (*end == '\0' && n >= 1 && n <= doc.objects.size()) ? &doc.objects[n - 1] : nullptr;
+        const Value* rid = o && o->type == "XMeshDescriptor" && !o->opaque && !o->inTail ? o->field("ResourceId") : nullptr;
+        if (!rid || rid->str.empty()) { std::fprintf(stderr, "xomtool: %s is not an XMeshDescriptor\n", nameArg.c_str()); return 2; }
+        name = rid->str;
+    }
     mesh::Mesh m;
     // --nodes: the XGroup tree with its names and local transforms (what `convert --bundle` keeps), rather than the flat
     // list of shapes with composed matrices.

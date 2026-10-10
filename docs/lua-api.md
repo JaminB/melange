@@ -367,7 +367,7 @@ units by default), falling linearly to silence at `[Audio] Far` (1500), recalcul
 and a long or looping sound follow each other. There is no panning. If the camera is not available the sound plays at
 its own volume. The `Volume` setting (0 to 1) scales everything the mod plays, and at most `[Audio] MaxVoices` (default
 32, up to 64) voices play at once across all mods; a new `play` over that returns `nil, "too many voices"` and does not
-cut off a playing one.
+cut off a playing one. A voice stopped with `stop` or `stopAll` frees its slot at once, so a `play` right after it has room.
 
 Voices end by themselves when the sound finishes. Every voice that started before the match ended is also stopped when
 it does, and a mod's voices when that mod unloads, reloads or is disabled. A sound started from a `melange.match.end`

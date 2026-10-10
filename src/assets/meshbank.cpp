@@ -219,7 +219,6 @@ bool LoadModBank(const std::wstring& absPath, const std::string& modId, std::str
                  bool relocate) {
     const uintptr_t grm = Grm();
     if (!grm) return Fail(err, "the graphical resource manager's code is not build #1077's (or the game is not up): refused");
-    if (absPath.find(L'%') != std::wstring::npos) return Fail(err, "the bank path may not contain '%' (it becomes a format string)");
 
     std::vector<uint8_t> bytes;
     std::vector<BankEntry> entries;
@@ -256,6 +255,14 @@ bool LoadModBank(const std::wstring& absPath, const std::string& modId, std::str
     for (auto& en : entries)
         if (RawFind(grm, en.name.c_str()))
             return Fail(err, modId + ": \"" + en.name + "\" already exists in the graphical resource manager");
+    // The engine's insert has no way out of a full name table (see kMaxStubsTotal), so refuse before registering anything.
+    if (g_stubs + entries.size() > kMaxStubsTotal)
+        return Fail(err, modId + ": " + std::to_string(entries.size()) + " more mesh stubs would pass the limit of " + std::to_string(kMaxStubsTotal) +
+                             " for all mods (" + std::to_string(g_stubs) + " registered)");
+    // The string the engine's sprintf sees is this one (game-relative when the file is under the game folder), not the
+    // absolute path: a '%' in it becomes a format directive. A game folder with a '%' in its name is fine.
+    const std::string path = EnginePath(loadPath);
+    if (path.find('%') != std::string::npos) return Fail(err, modId + ": the bank path '" + path + "' may not contain '%' (it becomes a format string)");
 
     // Step 1: stubs. Strings must outlive this call (see g_strings).
     std::vector<Record> recs;
@@ -279,7 +286,6 @@ bool LoadModBank(const std::wstring& absPath, const std::string& modId, std::str
     const uintptr_t fmtField = grm + kFormatString;
     const std::string oldFmt = weapons::engine::XStringValue(fmtField);
     if (oldFmt.empty()) return Fail(err, "the bundle format string could not be read; refused");
-    const std::string path = EnginePath(loadPath);
     if (!weapons::engine::AssignXString(fmtField, path.c_str())) return Fail(err, "could not set the bundle path");
     const int rc = RawLoadSection(grm, section);
     const bool restored = weapons::engine::AssignXString(fmtField, oldFmt.c_str());

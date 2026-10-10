@@ -3,6 +3,7 @@
 #include "assets/meshbank.h"
 
 #include <algorithm>
+#include <unordered_set>
 
 #include "xom/xom.h"
 
@@ -159,17 +160,21 @@ bool CheckEntries(const std::string& modId, const std::vector<BankEntry>& entrie
         if (err) *err = "the bank declares no mesh";
         return false;
     }
+    if (entries.size() > kMaxEntriesPerBank) {
+        if (err) *err = "the bank declares " + std::to_string(entries.size()) + " meshes; at most " + std::to_string(kMaxEntriesPerBank) + " per bank";
+        return false;
+    }
     const std::string prefix = modId + ".";
+    std::unordered_set<std::string> seen;
     for (auto& e : entries) {
         if (e.name.size() <= prefix.size() || e.name.compare(0, prefix.size(), prefix) != 0) {
             if (err) *err = "\"" + e.name + "\" is not named \"" + prefix + "<something>\"";
             return false;
         }
-        for (auto& o : entries)
-            if (&o != &e && o.name == e.name) {
-                if (err) *err = "\"" + e.name + "\" is declared twice";
-                return false;
-            }
+        if (!seen.insert(e.name).second) {
+            if (err) *err = "\"" + e.name + "\" is declared twice";
+            return false;
+        }
     }
     return true;
 }

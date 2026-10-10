@@ -4,8 +4,9 @@
 // of a static, a rigid-hierarchy and a skinned vanilla mesh. The game files it reads are read-only inputs, never written.
 //
 // Usage: xom_convert_selftest --game <WormsXHD dir>
-// Without --game, the checks that need the game's files are skipped (reported, not a failure),
-// so this still builds and runs offline; D acceptance runs it with --game set.
+// Without --game, the checks that need the game's files are skipped (reported, not a failure), so this still builds and runs
+// offline; the clone, image and UV-layout code is covered offline by a synthetic textured bank. With --game, a missing file
+// is a failure. D acceptance runs it with --game set.
 #include <algorithm>
 #include <array>
 #include <cmath>
@@ -15,6 +16,7 @@
 #include <fstream>
 #include <iterator>
 #include <map>
+#include <set>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -44,11 +46,18 @@ inline bool operator==(const Vec3& a, const Vec3& b) { return a.x == b.x && a.y 
 namespace {
 
 int g_pass = 0, g_fail = 0, g_skip = 0;
+bool g_gameRequested = false;  // --game was given: a check that cannot run for want of the game's files is then a failure
 void Check(bool ok, const std::string& name) {
     if (ok) { ++g_pass; std::printf("ok   - %s\n", name.c_str()); }
     else { ++g_fail; std::printf("FAIL - %s\n", name.c_str()); }
 }
 void Skip(const std::string& name, const std::string& why) {
+    if (g_gameRequested) {
+        // A wrong --game path must not read as a green run.
+        ++g_fail;
+        std::printf("FAIL - %s (%s, but --game was given)\n", name.c_str(), why.c_str());
+        return;
+    }
     ++g_skip;
     std::printf("skip - %s (%s)\n", name.c_str(), why.c_str());
 }
@@ -213,6 +222,64 @@ void MeshTests(const fs::path& game, const fs::path& outDir) {
     mesh::Mesh m2;
     Check(mesh::ReadMesh(reparsed, m.resourceId, m2, &err) && m2.primitives.size() == m.primitives.size(),
           "ReadMesh recovers the same number of primitives after a full XOM round trip");
+}
+
+// ---------------------------------------------------------------- malformed glTF (no game needed)
+
+void GltfRefusalTests(const fs::path& outDir) {
+    fs::create_directories(outDir);
+    // The buffer is read before any node is walked, so the file has to exist; its content does not matter.
+    const unsigned char zero[16] = {};
+    Check(WriteAll(outDir / "empty.bin", zero, sizeof zero), "write empty.bin");
+    // The flat and the tree reader both walk the nodes: both errors are returned.
+    auto read = [&](const std::string& nodes) {
+        const std::string j = R"({"asset":{"version":"2.0"},"buffers":[{"uri":"empty.bin","byteLength":16}],"bufferViews":[],"accessors":[],"meshes":[],"nodes":)" +
+                              nodes + "}";
+        std::vector<uint8_t> bytes(j.begin(), j.end());
+        std::vector<mesh::Primitive> out;
+        std::string err;
+        gltf::ReadGltf(bytes, false, outDir.string(), out, &err);
+        mesh::Mesh tree;
+        std::string err2;
+        gltf::ReadGltfScene(bytes, false, outDir.string(), tree, &err2);
+        return std::make_pair(err, err2);
+    };
+    struct Bad { const char* nodes; const char* what; };
+    const Bad bads[] = {
+        {R"([{"matrix":[1,2,3]}])", "a matrix of 3 numbers"},
+        {R"([{"matrix":"x"}])", "a matrix that is not an array"},
+        {R"([{"matrix":[1,0,0,0,0,1,0,0,0,0,1,0,0,0,"a",1]}])", "a non-number in a matrix"},
+        {R"([{"matrix":[1,0,0,0,0,1,0,0,0,0,1,0,0,0,1e999,1]}])", "an infinite matrix entry"},
+        {R"([{"translation":[1,2]}])", "a translation of 2 numbers"},
+        {R"([{"rotation":[0,0,0]}])", "a rotation of 3 numbers"},
+        {R"([{"scale":[1,1,1e999]}])", "an infinite scale"},
+    };
+    for (auto& b : bads) {
+        const auto [e1, e2] = read(b.nodes);
+        Check(e1.find("node 0") != std::string::npos && e2.find("node 0") != std::string::npos,
+              std::string("a node with ") + b.what + " is refused naming the node: " + e1);
+    }
+    // Well-formed transforms get past the node walk (the file then fails later: it has no mesh).
+    {
+        const auto [e1, e2] = read(R"([{"matrix":[1,0,0,0,0,1,0,0,0,0,1,0,0,0,0,1]},{"translation":[1,2,3],"rotation":[0,0,0,1],"scale":[1,1,1]}])");
+        Check(e1.find("no triangle mesh") != std::string::npos, "well-formed node transforms are accepted: " + e1);
+    }
+    // A chain of nodes, each the only child of the last: refused past the depth limit instead of overflowing the stack.
+    for (int depth : {300, 5000}) {
+        std::string nodes = "[";
+        for (int i = 0; i < depth; ++i) nodes += (i ? "," : "") + std::string("{\"children\":[") + std::to_string(i + 1) + "]}";
+        nodes += ",{}]";
+        const auto [e1, e2] = read(nodes);
+        Check(e1.find("deeper than") != std::string::npos && e2.find("deeper than") != std::string::npos,
+              "a node chain " + std::to_string(depth) + " deep is refused: " + e1);
+    }
+    {
+        std::string nodes = "[";
+        for (int i = 0; i < 100; ++i) nodes += (i ? "," : "") + std::string("{\"children\":[") + std::to_string(i + 1) + "]}";
+        nodes += ",{}]";
+        const auto [e1, e2] = read(nodes);
+        Check(e1.find("deeper than") == std::string::npos, "a node chain 100 deep is not refused for its depth: " + e1);
+    }
 }
 
 // ---------------------------------------------------------------- mesh bundle (no game needed)
@@ -802,11 +869,123 @@ void DeformTests() {
                   DocumentToJson(d) == before,
               "shapes sharing coordinates but not index/normal sets are refused, document untouched: " + e);
     }
+
+    // A node's bounding sphere is in its parent's space: under a scale-3 node the vertices' move counts three times as far.
+    {
+        mesh::Mesh m;
+        m.resourceId = "kindjal.Scaled";
+        m.sectionId = 476;
+        mesh::Mat4 s3 = mesh::Identity();
+        s3[0] = s3[5] = s3[10] = 3.0f;
+        m.nodes = {{"outer", s3, -1}};
+        auto a = MakeSphere("ball", 12, 8, true);
+        a.node = 0;
+        m.primitives = {a};
+        Document d;
+        Check(mesh::WriteBundle(d, m, 0, &err) != 0, "WriteBundle a sphere under a scale-3 node: " + err);
+        const uint32_t desc = mesh::FindDescriptor(d, "kindjal.Scaled");
+        auto radius = [&](const char* type, const char* name) {
+            for (auto& o : d.objects) {
+                if (o.type != type) continue;
+                const Value* n = o.field("Name");
+                if (name && (!n || n->str != name)) continue;
+                const Value* b = o.field("Bounds");
+                if (b && b->components().size() == 4) return b->components()[3];
+            }
+            return -1.0;
+        };
+        for (auto& o : d.objects)
+            if (Value* b = o.field("Bounds")) if (b->type == Type::Math && b->components().size() == 4) b->setComponents({0, 0, 0, 10});
+        mesh::DeformReport rep;
+        Check(desc && mesh::ApplyDeform(d, desc, R"([{"op":"push","dist":0.1}])", &rep, &err) && rep.maxDisplacement > 0.09f, "push the scaled sphere: " + err);
+        const double shape = radius("XShape", "ball"), outer = radius("XGroup", "outer");
+        Check(shape >= 10.09 && shape < 10.2, "the shape's sphere grows by its own move: " + std::to_string(shape));
+        Check(outer >= 10.0 + 3.0 * double(rep.maxDisplacement) - 1e-4, "a scale-3 node's sphere grows by three times the move: " + std::to_string(outer));
+    }
 }
 
 // ---------------------------------------------------------------- clone (needs the game's Bundl09.xom)
 
 std::string GuidHexOf(const Value* v) { return v ? GuidHex(v->guid) : std::string(); }
+
+// A TYPE entry for `cls` and each ancestor the document lacks (version 0, count 0: serialize and parse recount).
+void AddClassTypes(Document& doc, const char* cls) {
+    auto add = [&](const std::string& name, const char* guidHex) {
+        for (auto& t : doc.types) if (t.className() == name) return;
+        TypeEntry t;
+        t.name = name;
+        std::string padded = name;
+        padded.resize(32, '\0');
+        std::memcpy(t.rawName.data(), padded.data(), 32);
+        for (int i = 0; guidHex && i < 16; ++i) {
+            auto hv = [](char c) { return c <= '9' ? c - '0' : (c | 32) - 'a' + 10; };
+            t.guid[size_t(i)] = uint8_t((hv(guidHex[2 * i]) << 4) | hv(guidHex[2 * i + 1]));
+        }
+        doc.types.push_back(t);
+    };
+    const ClassDef* c = findClass(cls);
+    if (!c) { add(cls, nullptr); return; }   // a hand-written class (XAnimClipLibrary) is not in the schema
+    for (; c; c = classParent(*c)) add(c->name, c->guid);
+}
+
+// An object of schema class `cls` at TYPE version 0 with every field zero: what a serializer needs to see for the class.
+Object DefaultObject(const char* cls) {
+    Object o;
+    o.type = cls;
+    o.container = true;
+    std::set<std::string> seen;
+    for (const ClassDef* c = findClass(cls); c; c = classParent(*c)) {
+        const FieldDef* f = classFields(*c);
+        for (unsigned i = 0; i < c->fieldCount; ++i) {
+            const bool present = (f[i].flags & 0x04) ? false
+                                 : (f[i].flags & 0x20) ? (f[i].obsoleteFrom >= 0 && 0 < f[i].obsoleteFrom)
+                                 : f[i].schemaFrom >= 0 ? 0 >= f[i].schemaFrom : true;
+            if (!present) continue;
+            std::string key = f[i].name;
+            if (seen.count(key)) key = std::string(c->name) + "." + key;
+            seen.insert(key);
+            Value v;
+            v.type = f[i].type;
+            v.math = f[i].math;
+            v.array = f[i].isArray();
+            if (v.type == Type::Math && !v.array) {
+                const MathDef& m = mathDef(f[i].math);
+                v.raw.assign(size_t(m.count) * (m.elem == 'f' ? 4 : (m.elem == 'h' || m.elem == 'H') ? 2 : 1), 0);
+            }
+            o.fields.emplace_back(key, v);
+        }
+    }
+    return o;
+}
+
+// MakeTwoSphereBundle with one 8x8 texture on a shader both shapes use (XSimpleShader -> XOglTextureMap -> XImage), so the
+// clone, image and UV-layout code has a bank to work on without the game's files. Well-formed: it serializes and re-parses.
+Document MakeTexturedBundle() {
+    Document doc = MakeTwoSphereBundle(true);
+    image::Pixels px;
+    px.width = 8; px.height = 8; px.channels = 3;
+    for (int i = 0; i < 64; ++i) { px.data.push_back(uint8_t(i * 4)); px.data.push_back(uint8_t(255 - i * 4)); px.data.push_back(uint8_t(i)); }
+    AddClassTypes(doc, "XImage");
+    AddClassTypes(doc, "XOglTextureMap");
+    AddClassTypes(doc, "XSimpleShader");
+    Object img = DefaultObject("XImage");
+    const Object made = image::MakeXImage("kindjal.tex", px, true);
+    for (auto& [k, v] : made.fields) if (Value* slot = img.field(k)) *slot = v;
+    const uint32_t imgRef = uint32_t(doc.objects.size()) + 1;
+    doc.objects.push_back(std::move(img));
+    Object tm = DefaultObject("XOglTextureMap");
+    tm.field("Texture")->bits = imgRef;
+    const uint32_t tmRef = imgRef + 1;
+    doc.objects.push_back(std::move(tm));
+    Object sh = DefaultObject("XSimpleShader");
+    Value stage; stage.type = Type::Ref; stage.bits = tmRef;
+    sh.field("TextureStages")->items.push_back(stage);
+    sh.field("Name")->str = "kindjal.shader";
+    const uint32_t shRef = tmRef + 1;
+    doc.objects.push_back(std::move(sh));
+    for (auto& o : doc.objects) if (o.type == "XShape") o.field("Shader")->bits = shRef;
+    return doc;
+}
 
 struct CloneCase {
     const char* vanilla;
@@ -819,7 +998,7 @@ void CloneOne(const Document& src, const CloneCase& cc, const fs::path& outDir) 
     const std::string newName = std::string("kindjal.Proto") + cc.vanilla;
     std::string err;
     const uint32_t srcDesc = mesh::FindDescriptor(src, cc.vanilla);
-    Check(srcDesc != 0, "the vanilla descriptor is in Bundl09.xom" + tag);
+    Check(srcDesc != 0, "the source descriptor is in the bank" + tag);
     if (!srcDesc) return;
     mesh::Closure sc;
     Check(mesh::CollectClosure(src, srcDesc, sc, &err), "the source closure is collectable: " + err + tag);
@@ -962,6 +1141,148 @@ void CloneOne(const Document& src, const CloneCase& cc, const fs::path& outDir) 
     Check(tris >= shapeTris, "the layouts account for every triangle of the shapes (" + std::to_string(tris) + " drawn, " + std::to_string(shapeTris) + " in the mesh)" + tag);
 }
 
+// The refusals CloneMesh makes, on `src` (by value: the cases edit it). `other` names a second mesh in the same document, or
+// is empty to copy `mesh` under another name. `addLib` gives `mesh` an XAnimClipLibrary in its graph set (a vanilla animated
+// mesh already has one). None of this needs the game: the synthetic bank is enough.
+void RefusalTests(Document src, const std::string& mesh, std::string other, bool addLib) {
+    std::string err;
+    Document d;
+    Check(mesh::CloneMesh(d, src, mesh, "kindjal.X", 475, {}, nullptr, &err) == 0 && err.find("476..519") != std::string::npos, "a section below 476 is refused: " + err);
+    Document d1;
+    Check(mesh::CloneMesh(d1, src, mesh, "kindjal.X", 520, {}, nullptr, &err) == 0 && err.find("476..519") != std::string::npos, "a section above 519 is refused: " + err);
+    Document d2;
+    Check(mesh::CloneMesh(d2, src, "NoSuchMesh", "kindjal.X", 480, {}, nullptr, &err) == 0 && err.find("NoSuchMesh") != std::string::npos, "an unknown mesh is refused: " + err);
+
+    if (addLib) {
+        AddClassTypes(src, "XAnimClipLibrary");
+        Object lib;
+        lib.type = "XAnimClipLibrary";
+        lib.container = false;
+        const uint32_t libRef = uint32_t(src.objects.size()) + 1;
+        src.objects.push_back(lib);
+        const uint32_t own = mesh::FindDescriptor(src, mesh);
+        Object* gset = src.object(src.object(own)->field("GraphSet")->asRef());
+        Value entry;
+        entry.type = Type::Struct;
+        { Value g; g.type = Type::Guid; entry.members.emplace_back("Guid", g); }
+        { Value r; r.type = Type::Ref; r.bits = libRef; entry.members.emplace_back("Graph", r); }
+        { Value n; n.type = Type::String; n.str = "clips"; entry.members.emplace_back("Name", n); }
+        gset->field("Graphs")->items.push_back(entry);
+    }
+
+    // An XAnimClipLibrary that something outside the closure also reads is shared: refused unless --allow-shared.
+    {
+        Document shared = src;
+        const uint32_t own = mesh::FindDescriptor(shared, mesh);
+        mesh::Closure c;
+        mesh::CollectClosure(shared, own, c);
+        uint32_t lib = 0;
+        for (auto r : c.order) if (shared.objects[r - 1].type == "XAnimClipLibrary") lib = r;
+        Check(lib != 0, mesh + " owns an XAnimClipLibrary");
+        Object gs;
+        gs.type = "XGraphSet";
+        gs.container = false;
+        Value graphs; graphs.type = Type::Struct; graphs.array = true; graphs.items.resize(1);
+        graphs.items[0].type = Type::Struct;
+        { Value g; g.type = Type::Guid; graphs.items[0].members.emplace_back("Guid", g); }
+        { Value r; r.type = Type::Ref; r.bits = lib; graphs.items[0].members.emplace_back("Graph", r); }
+        { Value n; n.type = Type::String; n.str = "other"; graphs.items[0].members.emplace_back("Name", n); }
+        gs.fields.emplace_back("Graphs", graphs);
+        shared.objects.push_back(gs);   // (not serialized: CloneMesh only reads references)
+        Document out;
+        Check(mesh::CloneMesh(out, shared, mesh, "kindjal.Shared", 480, {}, nullptr, &err) == 0 && err.find("--allow-shared") != std::string::npos &&
+                  err.find("XAnimClipLibrary") != std::string::npos,
+              "a clip library shared with another resource is refused, naming it and the flag: " + err);
+        Document out2;
+        mesh::CloneOptions allow;
+        allow.allowShared = true;
+        mesh::CloneReport rep;
+        Check(mesh::CloneMesh(out2, shared, mesh, "kindjal.Shared", 480, allow, &rep, &err) != 0, "--allow-shared lets it through: " + err);
+        bool dup = false;
+        for (auto& n : rep.notes) if (n.find("duplicated shared") != std::string::npos) dup = true;
+        Check(dup, "and the report says the library was duplicated");
+    }
+    // A second descriptor in the closure is refused too.
+    {
+        Document two = src;
+        if (other.empty()) {
+            const uint32_t copy = mesh::CopySubgraph(two, two, mesh::FindDescriptor(two, mesh), &err);
+            Check(copy != 0, "copy a second descriptor into the bank: " + err);
+            if (!copy) return;
+            two.objects[copy - 1].field("ResourceId")->str = other = "kindjal.Other";
+        }
+        const uint32_t own = mesh::FindDescriptor(two, mesh), dyn = mesh::FindDescriptor(two, other);
+        Object* sd = two.object(own);
+        Object* gset = two.object(sd->field("GraphSet")->asRef());
+        Value entry;
+        entry.type = Type::Struct;
+        { Value g; g.type = Type::Guid; entry.members.emplace_back("Guid", g); }
+        { Value r; r.type = Type::Ref; r.bits = dyn; entry.members.emplace_back("Graph", r); }
+        { Value n; n.type = Type::String; n.str = "pulls in the other mesh"; entry.members.emplace_back("Name", n); }
+        gset->field("Graphs")->items.push_back(entry);
+        Document out;
+        Check(mesh::CloneMesh(out, two, mesh, "kindjal.Two", 480, {}, nullptr, &err) == 0 && err.find("XMeshDescriptor") != std::string::npos &&
+                  err.find(other) != std::string::npos,
+              "a closure that reaches another XMeshDescriptor is refused, naming it: " + err);
+    }
+    // An object in the undelimited tail (or an opaque one) cannot be copied; the message says so and what reached it.
+    {
+        Document tail = src;
+        const uint32_t own = mesh::FindDescriptor(tail, mesh);
+        mesh::Closure c;
+        mesh::CollectClosure(tail, own, c);
+        uint32_t img = 0;
+        for (auto r : c.order) if (tail.objects[r - 1].type == "XImage") img = r;
+        Check(img != 0, mesh + " has an XImage to mark");
+        if (!img) return;
+        tail.objects[img - 1].inTail = true;
+        Document out;
+        Check(mesh::CloneMesh(out, tail, mesh, "kindjal.Tail", 480, {}, nullptr, &err) == 0 && err.find("undelimited tail") != std::string::npos &&
+                  err.find("XImage") != std::string::npos && err.find("reached via") != std::string::npos,
+              "an object in the undelimited tail is refused with its name and the chain that reaches it: " + err);
+        tail.objects[img - 1].inTail = false;
+        tail.objects[img - 1].opaque = true;
+        Document out2;
+        Check(mesh::CloneMesh(out2, tail, mesh, "kindjal.Tail", 480, {}, nullptr, &err) == 0 && err.find("opaque") != std::string::npos, "an opaque object is refused: " + err);
+    }
+}
+
+// CloneMesh, ListImages, EnumerateShapes, BuildUvLayouts and InsertObject on a synthetic bank (the game's files are not needed).
+void SyntheticCloneTests(const fs::path& outDir) {
+    fs::create_directories(outDir);
+    const Document src = MakeTexturedBundle();
+    CloneOne(src, {"kindjal.Two", 491, 0, 0, 0, 0, 0, 1}, outDir);
+    RefusalTests(src, "kindjal.Two", "", true);
+
+    // Both shapes are found, with the shader's image used by both of them.
+    const uint32_t desc = mesh::FindDescriptor(src, "kindjal.Two");
+    std::vector<mesh::ShapeRef> shapes;
+    std::string err;
+    Check(desc != 0 && mesh::EnumerateShapes(src, desc, shapes, &err) && shapes.size() == 2 && shapes[0].geometry && shapes[1].geometry,
+          "EnumerateShapes finds both spheres: " + err);
+    auto images = mesh::ListImages(src, desc);
+    Check(images.size() == 1 && images[0].name == "kindjal.tex" && images[0].width == 8 && images[0].usedBy.size() == 2,
+          "ListImages: one 8x8 image used by both shapes");
+
+    // InsertObject moves everything after the insertion point and every reference to it, and the document root.
+    {
+        Document d = src;
+        const uint32_t before = d.root;
+        const uint32_t imgRef = images.empty() ? 0 : images[0].ref;
+        Object spare;
+        spare.type = "XGraphSet";
+        spare.container = false;
+        mesh::InsertObject(d, imgRef, spare);
+        mesh::Closure sc, dc;
+        const uint32_t d2 = mesh::FindDescriptor(d, "kindjal.Two");
+        Check(imgRef && d.objects.size() == src.objects.size() + 1 && d.objects[imgRef - 1].type == "XGraphSet" && d.objects[imgRef].type == "XImage",
+              "InsertObject puts the object at the position and shifts the rest");
+        Check(d.root == (before >= imgRef ? before + 1 : before) && mesh::CollectClosure(src, desc, sc) && mesh::CollectClosure(d, d2, dc) &&
+                  sc.order.size() == dc.order.size() && mesh::ListImages(d, d2).size() == 1 && mesh::ListImages(d, d2)[0].ref == imgRef + 1,
+              "InsertObject rewrites the references (closure and image still resolve) and the root");
+    }
+}
+
 void CloneTests(const fs::path& game, const fs::path& outDir) {
     auto bundlePath = game / "Data" / "Bundles" / "Bundl09.xom";
     if (!fs::exists(bundlePath)) { Skip("mesh clone", "no game files"); return; }
@@ -976,80 +1297,7 @@ void CloneTests(const fs::path& game, const fs::path& outDir) {
     CloneOne(src, {"ClusterBomb", 492, 0, 0, 0, 0, 0, 2}, outDir);
     CloneOne(src, {"Sheep", 490, 14, 14, 1, 1, 1, 1}, outDir);
 
-    // Refusals. A section outside 476..519, an unknown name, a descriptor reached through a second graph set.
-    {
-        Document d;
-        Check(mesh::CloneMesh(d, src, "Sheep", "kindjal.X", 475, {}, nullptr, &err) == 0 && err.find("476..519") != std::string::npos, "a section below 476 is refused: " + err);
-        Document d2;
-        Check(mesh::CloneMesh(d2, src, "NoSuchMesh", "kindjal.X", 480, {}, nullptr, &err) == 0 && err.find("NoSuchMesh") != std::string::npos, "an unknown mesh is refused: " + err);
-    }
-    // An XAnimClipLibrary that something outside the closure also reads is shared: refused unless --allow-shared.
-    {
-        Document shared = src;
-        const uint32_t sheep = mesh::FindDescriptor(shared, "Sheep");
-        mesh::Closure c;
-        mesh::CollectClosure(shared, sheep, c);
-        uint32_t lib = 0;
-        for (auto r : c.order) if (shared.objects[r - 1].type == "XAnimClipLibrary") lib = r;
-        Check(lib != 0, "Sheep owns an XAnimClipLibrary");
-        Object gs;
-        gs.type = "XGraphSet";
-        gs.container = false;
-        Value graphs; graphs.type = Type::Struct; graphs.array = true; graphs.items.resize(1);
-        graphs.items[0].type = Type::Struct;
-        { Value g; g.type = Type::Guid; graphs.items[0].members.emplace_back("Guid", g); }
-        { Value r; r.type = Type::Ref; r.bits = lib; graphs.items[0].members.emplace_back("Graph", r); }
-        { Value n; n.type = Type::String; n.str = "other"; graphs.items[0].members.emplace_back("Name", n); }
-        gs.fields.emplace_back("Graphs", graphs);
-        shared.objects.push_back(gs);   // (not serialized: CloneMesh only reads references)
-        Document out;
-        Check(mesh::CloneMesh(out, shared, "Sheep", "kindjal.Shared", 480, {}, nullptr, &err) == 0 && err.find("--allow-shared") != std::string::npos &&
-                  err.find("XAnimClipLibrary") != std::string::npos,
-              "a clip library shared with another resource is refused, naming it and the flag: " + err);
-        Document out2;
-        mesh::CloneOptions allow;
-        allow.allowShared = true;
-        mesh::CloneReport rep;
-        Check(mesh::CloneMesh(out2, shared, "Sheep", "kindjal.Shared", 480, allow, &rep, &err) != 0, "--allow-shared lets it through: " + err);
-        bool dup = false;
-        for (auto& n : rep.notes) if (n.find("duplicated shared") != std::string::npos) dup = true;
-        Check(dup, "and the report says the library was duplicated");
-    }
-    // A second descriptor in the closure is refused too.
-    {
-        Document two = src;
-        const uint32_t sheep = mesh::FindDescriptor(two, "Sheep"), dyn = mesh::FindDescriptor(two, "Dynamite");
-        Object* sd = two.object(sheep);
-        Object* gset = two.object(sd->field("GraphSet")->asRef());
-        Value entry;
-        entry.type = Type::Struct;
-        { Value g; g.type = Type::Guid; entry.members.emplace_back("Guid", g); }
-        { Value r; r.type = Type::Ref; r.bits = dyn; entry.members.emplace_back("Graph", r); }
-        { Value n; n.type = Type::String; n.str = "pulls in Dynamite"; entry.members.emplace_back("Name", n); }
-        gset->field("Graphs")->items.push_back(entry);
-        Document out;
-        Check(mesh::CloneMesh(out, two, "Sheep", "kindjal.Two", 480, {}, nullptr, &err) == 0 && err.find("XMeshDescriptor") != std::string::npos &&
-                  err.find("Dynamite") != std::string::npos,
-              "a closure that reaches another XMeshDescriptor is refused, naming it: " + err);
-    }
-    // An object in the undelimited tail (or an opaque one) cannot be copied; the message says so and what reached it.
-    {
-        Document tail = src;
-        const uint32_t dyn = mesh::FindDescriptor(tail, "Dynamite");
-        mesh::Closure c;
-        mesh::CollectClosure(tail, dyn, c);
-        uint32_t img = 0;
-        for (auto r : c.order) if (tail.objects[r - 1].type == "XImage") img = r;
-        tail.objects[img - 1].inTail = true;
-        Document out;
-        Check(mesh::CloneMesh(out, tail, "Dynamite", "kindjal.Tail", 480, {}, nullptr, &err) == 0 && err.find("undelimited tail") != std::string::npos &&
-                  err.find("XImage") != std::string::npos && err.find("reached via") != std::string::npos,
-              "an object in the undelimited tail is refused with its name and the chain that reaches it: " + err);
-        tail.objects[img - 1].inTail = false;
-        tail.objects[img - 1].opaque = true;
-        Document out2;
-        Check(mesh::CloneMesh(out2, tail, "Dynamite", "kindjal.Tail", 480, {}, nullptr, &err) == 0 && err.find("opaque") != std::string::npos, "an opaque object is refused: " + err);
-    }
+    RefusalTests(src, "Sheep", "Dynamite", false);
 
     // Deform a skinned clone: counts, UVs, indices, skin weights and bones stay byte-identical; positions and normals change.
     {
@@ -1154,18 +1402,20 @@ void CloneTests(const fs::path& game, const fs::path& outDir) {
 int main(int argc, char** argv) {
     fs::path game;
     for (int i = 1; i < argc; ++i)
-        if (std::strcmp(argv[i], "--game") == 0 && i + 1 < argc) game = argv[++i];
+        if (std::strcmp(argv[i], "--game") == 0 && i + 1 < argc) { game = argv[++i]; g_gameRequested = true; }
     fs::path outDir = fs::temp_directory_path() / "xom_convert_selftest";
 
     ImageTests(game);
     ImageSafetyTests();
     MeshSafetyTests();
+    GltfRefusalTests(outDir);
     BundleTests(outDir);
     MeshTests(game, outDir);
     BankTests(game, outDir);
     NodeTests(outDir);
     ImageReplaceTests();
     DeformTests();
+    SyntheticCloneTests(outDir);
     CloneTests(game, outDir);
 
     std::printf("\n%d passed, %d failed, %d skipped\n", g_pass, g_fail, g_skip);

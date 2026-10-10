@@ -26,13 +26,14 @@ public:
     // Starts the clip as voice `id`. The mixer keeps a reference to the clip until the engine has let go of the buffer.
     bool Start(uint32_t id, std::shared_ptr<const Clip> clip, float volume, float pitch, bool loop, std::string* why);
     void SetVolume(uint32_t id, float volume);
-    void Stop(uint32_t id);  // stops and flushes; the voice is recycled by a later Poll once the buffer is released
+    // Stops and flushes. The voice is recycled at once when nothing is left queued on it, else by a later Poll.
+    void Stop(uint32_t id);
 
     // Recycles voices whose buffers have played out or been flushed. Ids that ended on their own (not through Stop) are
     // appended to *ended. If the output device was lost the engine is shut down and every voice counts as ended; Ready()
     // is then false until Init succeeds again.
     void Poll(std::vector<uint32_t>* ended);
-    size_t Active() const;
+    size_t Active() const;  // voices playing; stopped ones that are not yet released are not counted
 
 private:
     struct Impl;

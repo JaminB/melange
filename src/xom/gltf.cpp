@@ -50,21 +50,32 @@ Mat4 TranslateMatrix(float x, float y, float z) {
     return m;
 }
 
+// `key` as exactly n finite numbers. Absent is fine (out untouched, true); present but anything else is not.
+bool NodeFloats(const Json& node, const char* key, size_t n, float* out) {
+    const Json* v = node.find(key);
+    if (!v) return true;
+    if (v->kind != Json::Kind::Array || v->arr.size() != n) return false;
+    for (size_t i = 0; i < n; ++i) {
+        bool ok = false;
+        const double d = v->arr[i].kind == Json::Kind::Number ? v->arr[i].asDouble(&ok) : 0.0;
+        // Out of float range counts as non-finite: it would turn into infinity below.
+        if (!ok || !std::isfinite(float(d))) return false;
+        out[i] = float(d);
+    }
+    return true;
+}
+
+// False when "matrix", "translation", "rotation" or "scale" is malformed or not finite; `out` is then not meaningful.
 bool NodeMatrix(const Json& node, Mat4& out) {
-    if (const Json* m = node.find("matrix")) {
-        if (m->kind != Json::Kind::Array || m->arr.size() != 16) return false;
-        for (int i = 0; i < 16; ++i) out[size_t(i)] = float(m->arr[size_t(i)].asDouble());
+    if (node.find("matrix")) {
+        float f[16];
+        if (!NodeFloats(node, "matrix", 16, f)) return false;
+        for (size_t i = 0; i < 16; ++i) out[i] = f[i];
         return true;
     }
-    Mat4 t = mesh::Identity(), r = mesh::Identity(), s = mesh::Identity();
-    if (const Json* v = node.find("translation"))
-        if (v->arr.size() == 3) t = TranslateMatrix(float(v->arr[0].asDouble()), float(v->arr[1].asDouble()), float(v->arr[2].asDouble()));
-    if (const Json* v = node.find("rotation"))
-        if (v->arr.size() == 4)
-            r = QuatToMatrix(float(v->arr[0].asDouble()), float(v->arr[1].asDouble()), float(v->arr[2].asDouble()),
-                              float(v->arr[3].asDouble()));
-    if (const Json* v = node.find("scale"))
-        if (v->arr.size() == 3) s = ScaleMatrix(float(v->arr[0].asDouble()), float(v->arr[1].asDouble()), float(v->arr[2].asDouble()));
+    float tr[3] = {0, 0, 0}, q[4] = {0, 0, 0, 1}, sc[3] = {1, 1, 1};
+    if (!NodeFloats(node, "translation", 3, tr) || !NodeFloats(node, "rotation", 4, q) || !NodeFloats(node, "scale", 3, sc)) return false;
+    const Mat4 t = TranslateMatrix(tr[0], tr[1], tr[2]), r = QuatToMatrix(q[0], q[1], q[2], q[3]), s = ScaleMatrix(sc[0], sc[1], sc[2]);
     out = mesh::Multiply(mesh::Multiply(t, r), s);
     return true;
 }
@@ -164,17 +175,30 @@ bool ReadAccessorIndices(const Accessor& a, const Json& bufferViews, const std::
     return true;
 }
 
+constexpr int kMaxNodeDepth = 256;
+
 void WalkNode(const Json& root, const Json& nodes, const Json& meshes, const Json& accessors, const Json& bufferViews,
               const std::vector<uint8_t>& bin, int64_t nodeIdx, const Mat4& parent, std::vector<mesh::Primitive>& out,
-              bool& failed, std::string* error, std::vector<bool>& visited, mesh::Mesh* tree = nullptr, int parentNode = -1) {
+              bool& failed, std::string* error, std::vector<bool>& visited, mesh::Mesh* tree = nullptr, int parentNode = -1, int depth = 0) {
     if (failed || nodeIdx < 0 || nodeIdx >= int64_t(nodes.arr.size())) return;
+    // A chain of thousands of nodes (each the only child of the last) passes the visited check but would overflow the
+    // stack of a 1 MiB thread; real models are a few levels deep.
+    if (depth > kMaxNodeDepth) {
+        failed = true;
+        if (error) *error = "node tree deeper than " + std::to_string(kMaxNodeDepth) + " levels";
+        return;
+    }
     // glTF's node graph is a tree: a node reached a second time, whether through a cycle or a shared child, would
     // otherwise recurse without end or blow up the primitive count. Refuse instead of walking it again.
     if (visited[size_t(nodeIdx)]) { failed = true; if (error) *error = "node graph is not a tree (a node repeats)"; return; }
     visited[size_t(nodeIdx)] = true;
     const Json& node = nodes.arr[size_t(nodeIdx)];
-    Mat4 local;
-    NodeMatrix(node, local);
+    Mat4 local = mesh::Identity();
+    if (!NodeMatrix(node, local)) {
+        failed = true;
+        if (error) *error = "node " + std::to_string(nodeIdx) + ": matrix, translation, rotation and scale must be finite numbers (16, 3, 4 and 3 of them)";
+        return;
+    }
     Mat4 world = mesh::Multiply(parent, local);
     // Tree mode (ReadGltfScene) keeps each node as a mesh::Node with its own local matrix and leaves the geometry in node
     // space; a node marked extras.xomShape is one more shape of its parent node (what WriteGltfScene emits for the 2nd, 3rd,
@@ -268,7 +292,7 @@ void WalkNode(const Json& root, const Json& nodes, const Json& meshes, const Jso
     }
     if (const Json* children = node.find("children"))
         for (auto& c : children->arr)
-            WalkNode(root, nodes, meshes, accessors, bufferViews, bin, c.asInt64(), tree ? mesh::Identity() : world, out, failed, error, visited, tree, myNode);
+            WalkNode(root, nodes, meshes, accessors, bufferViews, bin, c.asInt64(), tree ? mesh::Identity() : world, out, failed, error, visited, tree, myNode, depth + 1);
 }
 
 }  // namespace

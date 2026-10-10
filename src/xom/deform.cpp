@@ -182,6 +182,20 @@ float ValueNoise(V3 p, uint32_t seed) {
 
 // ---------------------------------------------------------------- shapes under edit
 
+// The largest scale the node's own transform applies: the longest column of its Core XTransform's Matrix (12 floats, the
+// columns of a 3x4), 1 for a node without one.
+float CoreScale(const Document& doc, const Object& o) {
+    const Value* core = o.field("Core");
+    const Object* xf = core ? doc.object(core->asRef()) : nullptr;
+    const Value* m = xf && xf->type == "XTransform" ? xf->field("Matrix") : nullptr;
+    if (!m || m->type != Type::Math) return 1.0f;
+    const auto c = m->components();
+    if (c.size() != 12) return 1.0f;
+    float s = 0;
+    for (size_t col = 0; col < 3; ++col) s = std::max(s, float(std::sqrt(c[col * 3] * c[col * 3] + c[col * 3 + 1] * c[col * 3 + 1] + c[col * 3 + 2] * c[col * 3 + 2])));
+    return std::isfinite(s) ? s : 1.0f;
+}
+
 struct Target {
     ShapeRef ref;
     uint32_t coordRef = 0, normalRef = 0, geometryRef = 0;
@@ -478,6 +492,7 @@ bool ApplyDeform(Document& doc, uint32_t descRef, const std::string& scriptJson,
 
     // Everything computed; from here on only writes. Coordinates, then the normals of the vertices the edit reached.
     float maxDisp = 0;
+    std::unordered_map<uint32_t, float> moveOf;  // shape -> the farthest one of its vertices moved
     DeformReport rep;
     for (auto& tg : targets) {
         if (!tg.selectedByAny) continue;
@@ -492,6 +507,7 @@ bool ApplyDeform(Document& doc, uint32_t descRef, const std::string& scriptJson,
             if (m > 0) { movedV[i] = 1; ++sr.moved; sr.maxMove = std::max(sr.maxMove, m); }
         }
         maxDisp = std::max(maxDisp, sr.maxMove);
+        if (sr.maxMove > 0) moveOf[tg.ref.shape] = sr.maxMove;
         if (sr.moved) {
             std::vector<float> flat;
             flat.reserve(tg.pos.size() * 3);
@@ -541,25 +557,46 @@ bool ApplyDeform(Document& doc, uint32_t descRef, const std::string& scriptJson,
     }
     rep.maxDisplacement = maxDisp;
 
-    // Bound spheres only ever need to grow: every vertex stayed within maxDisp of where it was, so adding that to the
-    // radius of each non-empty sphere above the shapes keeps the old guarantee (sphere (x,y,z,r) with r > 0). Only the
-    // scene graph (Children chain from the world root) is touched, not a skin's skeleton.
+    // Bound spheres only ever need to grow. A shape's sphere is in the shape's own coordinates, so it grows by how far
+    // that shape's vertices moved. A group's, interior node's or skin's sphere is in its parent's space: whatever moved
+    // below it is scaled by the transforms between, so each of those grows by the largest move beneath it times the
+    // largest scale its own transform applies (never less than 1: whether the node's sphere is taken before or after
+    // its own transform is not known, and growing too much only costs a little culling). Only the scene graph (Children
+    // chain from the world root) is touched, not a skin's skeleton. A scene graph is a tree; a node shared by two
+    // parents is counted when the first reaches it.
     if (maxDisp > 0) {
-        std::vector<uint32_t> stack{WorldRoot(doc, descRef)};
+        std::vector<uint32_t> order, stack{WorldRoot(doc, descRef)};
         std::unordered_set<uint32_t> seen;
         while (!stack.empty()) {
             const uint32_t r = stack.back();
             stack.pop_back();
             if (!r || !doc.object(r) || !seen.insert(r).second) continue;
-            Object& o = doc.objects[r - 1];
-            if (const Value* ch = o.field("Children"))
+            order.push_back(r);
+            if (const Value* ch = doc.objects[r - 1].field("Children"))
                 for (size_t i = 0; i < ch->size(); ++i) stack.push_back(ch->at(i).asRef());
+        }
+        std::unordered_map<uint32_t, float> reach;  // node -> the farthest anything under it moved, in its parent's space
+        for (auto it = order.rbegin(); it != order.rend(); ++it) {   // children before parents
+            Object& o = doc.objects[*it - 1];
+            float d = 0;
+            if (o.type == "XShape" || o.type == "XSkinShape") {
+                auto m = moveOf.find(*it);
+                if (m != moveOf.end()) d = m->second;
+            } else if (const Value* ch = o.field("Children")) {
+                for (size_t i = 0; i < ch->size(); ++i) {
+                    auto m = reach.find(ch->at(i).asRef());
+                    if (m != reach.end()) d = std::max(d, m->second);
+                }
+                d *= std::max(1.0f, CoreScale(doc, o));
+            }
+            reach[*it] = d;
+            if (!(d > 0)) continue;
             if (o.type != "XShape" && o.type != "XSkinShape" && o.type != "XGroup" && o.type != "XInteriorNode" && o.type != "XSkin") continue;
             Value* b = o.field("Bounds");
             if (!b || b->type != Type::Math) continue;
             auto cmp = b->components();
             if (cmp.size() != 4 || !(cmp[3] > 0)) continue;
-            cmp[3] += double(maxDisp);
+            cmp[3] += double(d);
             b->setComponents(cmp);
         }
     }

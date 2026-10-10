@@ -12,6 +12,7 @@ namespace melange::audio {
 namespace {
 constexpr size_t kMaxPooledPerFormat = 8;  // idle source voices kept for reuse, per (channels, rate)
 constexpr float kMaxPitch = 2.0f;          // the frequency ratio ceiling every source voice is created with
+constexpr size_t kMaxVoicesTotal = 128;    // playing plus stopped-but-unreleased voices: twice the largest MaxVoices
 constexpr unsigned kIdleTrimPolls = 1800;  // polls with nothing playing (about 30 s of frames) before idle voices are destroyed
 
 // Only sets a flag: it runs on XAudio2's engine thread.
@@ -135,6 +136,11 @@ bool Mixer::Start(uint32_t id, std::shared_ptr<const Clip> clip, float volume, f
         if (why) *why = "audio unavailable";
         return false;
     }
+    // Stopped voices do not count towards Active(), so a mod that stops and replays every frame is bounded here.
+    if (d.playing.size() >= kMaxVoicesTotal) {
+        if (why) *why = "too many voices";
+        return false;
+    }
     const uint64_t key = FormatKey(clip->channels, clip->rate);
     IXAudio2SourceVoice* v = nullptr;
     auto& pool = d.idle[key];
@@ -186,6 +192,14 @@ void Mixer::Stop(uint32_t id) {
     // Stop first so the buffer being played is flushed too; Poll recycles the voice once nothing is queued on it.
     it->second.voice->Stop();
     it->second.voice->FlushSourceBuffers();
+    // A stopped voice usually has nothing queued after the flush: release it now, so that stop() then play() in the same
+    // frame finds the slot free. If the engine thread still holds the buffer, Poll releases it later.
+    XAUDIO2_VOICE_STATE st = {};
+    it->second.voice->GetState(&st, XAUDIO2_VOICE_NOSAMPLESPLAYED);
+    if (st.BuffersQueued == 0) {
+        d_->Recycle(it->second);
+        d_->playing.erase(it);
+    }
 }
 
 // Polled from the Frame event instead of using IXAudio2VoiceCallback::OnStreamEnd: that callback runs on XAudio2's
@@ -224,5 +238,11 @@ void Mixer::Poll(std::vector<uint32_t>* ended) {
     }
 }
 
-size_t Mixer::Active() const { return d_->playing.size(); }
+// Stopped voices that are not released yet do not count: they are no longer the mod's, and kMaxVoicesTotal bounds them.
+size_t Mixer::Active() const {
+    size_t n = 0;
+    for (const auto& [id, p] : d_->playing)
+        if (!p.stopping) ++n;
+    return n;
+}
 }  // namespace melange::audio

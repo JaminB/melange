@@ -401,6 +401,12 @@ void WeaponIconTests() {
         r = wm::Resolve({{clone("wa", "kWeaponWaOne")}, {}}, {{}, {}}, {{}, {icon("wb", "kWeaponWaOne")}});
         Expect(r.refused.size() == 1 && r.refused[0].mod == "wb" && r.clones.size() == 1 && r.icons.empty(),
                "icons for another mod's clone name refuse the icon mod");
+        // Load order z, a, b: z and a clash on icons, a and b clash on a rename. Refusing a frees the rename, so b stays.
+        r = wm::Resolve({{}, {}, {}}, {{}, {rename("a", "kWeaponBazooka")}, {rename("b", "kWeaponBazooka")}},
+                        {{icon("z", "kWeaponGrenade")}, {icon("a", "kWeaponGrenade")}, {}});
+        Expect(r.refused.size() == 1 && r.refused[0].mod == "a" && r.texts.size() == 1 && r.texts[0].mod == "b" &&
+                   r.icons.size() == 1 && r.icons[0].mod == "z",
+               "a mod refused only for a clash with a refused mod is let back in");
     }
     wm::FreezeIcons({});
     Expect(wm::IsIconsFrozen() && wm::FrozenIcons().empty(), "icons freeze");
