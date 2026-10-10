@@ -2,6 +2,7 @@
 
 #include <windows.h>
 
+#include <atomic>
 #include <chrono>
 #include <condition_variable>
 #include <deque>
@@ -31,6 +32,7 @@ struct Writer::Impl {
     uint64_t qBytes = 0, dropped = 0, queuedTotal = 0;
     uint64_t taken = 0, flushed = 0;  // batches taken off the queue, and the last one of them on disk
     bool open = false, stop = false, flushRequested = false;
+    std::atomic<bool> failed{false};  // the writer thread hit an exception; nothing more is written
     std::thread th;
 
     void Run() {
@@ -45,10 +47,25 @@ struct Writer::Impl {
             flushRequested = false;
             const bool doStop = stop;
             lk.unlock();
-            for (auto& it : batch) w.Chunk(it.type, it.bytes.data(), it.bytes.size(), it.deflate, it.tickFrom, it.tickTo);
-            // Every batch goes to the disk, not just into the CRT's buffer: the recorder hands chunks over at most a
-            // few times every 10 s, and a crash must not take a recording's start with it (a 0-byte .wsr).
-            if (!batch.empty() || doFlush || doStop) w.Flush();
+            // An exception here (deflate or the file buffer out of memory) must not leave the thread: std::thread
+            // would end the game through terminate. The recording is marked failed, later batches are dropped, and
+            // the waiters below are still woken.
+            if (!failed) {
+                try {
+                    for (auto& it : batch)
+                        w.Chunk(it.type, it.bytes.data(), it.bytes.size(), it.deflate, it.tickFrom, it.tickTo);
+                    // Every batch goes to the disk, not just into the CRT's buffer: the recorder hands chunks over at
+                    // most a few times every 10 s, and a crash must not take a recording's start with it (a 0-byte .wsr).
+                    if (!batch.empty() || doFlush || doStop) w.Flush();
+                } catch (const std::exception& e) {
+                    failed = true;
+                    LOG_ERROR("[wormsign] writer failed (%s): the rest of this recording is dropped", e.what());
+                } catch (...) {
+                    failed = true;
+                    LOG_ERROR("[wormsign] writer failed: the rest of this recording is dropped");
+                }
+            }
+            batch.clear();
             lk.lock();
             flushed = seq;
             cv.notify_all();
@@ -72,6 +89,7 @@ bool Writer::Open(const std::wstring& path) {
     if (!impl_->w.Open(path)) return false;
     impl_->open = true;
     impl_->stop = false;
+    impl_->failed = false;
     impl_->th = std::thread([this] { impl_->Run(); });
     return true;
 }
@@ -84,9 +102,14 @@ bool Writer::Enqueue(uint32_t type, const void* data, size_t n, bool deflate, ui
         ++impl_->dropped;
         return false;
     }
+    try {
+        impl_->q.push_back(impl_->Make(type, data, n, deflate, tickFrom, tickTo));
+    } catch (const std::bad_alloc&) {  // the caller is a game hook: a dropped chunk, never an exception
+        ++impl_->dropped;
+        return false;
+    }
     impl_->qBytes += n;
     ++impl_->queuedTotal;
-    impl_->q.push_back(impl_->Make(type, data, n, deflate, tickFrom, tickTo));
     impl_->cv.notify_all();
     return true;
 }
@@ -94,9 +117,14 @@ bool Writer::Enqueue(uint32_t type, const void* data, size_t n, bool deflate, ui
 bool Writer::TryEnqueue(uint32_t type, const void* data, size_t n, uint32_t tickFrom, uint32_t tickTo) {
     std::unique_lock<std::mutex> lk(impl_->mu, std::try_to_lock);
     if (!lk.owns_lock() || !impl_->open || impl_->qBytes + n > kQueueCapBytes) return false;
+    try {
+        impl_->q.push_back(impl_->Make(type, data, n, true, tickFrom, tickTo));
+    } catch (const std::bad_alloc&) {
+        ++impl_->dropped;
+        return false;
+    }
     impl_->qBytes += n;
     ++impl_->queuedTotal;
-    impl_->q.push_back(impl_->Make(type, data, n, true, tickFrom, tickTo));
     impl_->cv.notify_all();
     return true;
 }
@@ -141,7 +169,8 @@ bool Writer::Close() {
         impl_->cv.notify_all();
     }
     if (impl_->th.joinable()) impl_->th.join();
-    return impl_->w.Close();
+    const bool closed = impl_->w.Close();
+    return closed && !impl_->failed;
 }
 
 void Writer::Abandon() {

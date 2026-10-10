@@ -508,7 +508,18 @@ private:
             LOG_WARN("     minidump: %s", melange::game::Narrow(path).c_str());
     }
 
+    // A raw thread: an exception out of the loop (its log lines allocate, and it runs when memory is low) would end
+    // the game through terminate, so the loop is restarted instead.
     static DWORD WINAPI WatchdogThread(LPVOID param) {
+        for (;;) {
+            try {
+                return WatchdogLoop(param);
+            } catch (...) {
+                Sleep(1000);
+            }
+        }
+    }
+    static DWORD WatchdogLoop(LPVOID param) {
         auto* self = static_cast<Diagnostics*>(param);
         bool hung = false;
         ULONGLONG hangStart = 0, lastReport = 0, nextSpaceCheck = 0;
