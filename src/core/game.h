@@ -7,8 +7,9 @@ namespace melange::game {
 struct ExeInfo {
     uint32_t fileSize = 0;
     uint32_t timestamp = 0;  // PE TimeDateStamp
-    std::string sha256;
+    std::string sha256;             // canonical: the large-address-aware bit cleared (core/pe_laa.h)
     const char* build = "unknown";  // human-readable build name if recognised
+    bool laa = false;               // the running image is large-address-aware
     bool known = false;             // true when it matches a profile we have verified addresses for
 };
 

@@ -4,6 +4,7 @@
 #include <cstdio>
 #include <cstring>
 
+#include "core/mem.h"
 #include "lua/sim/sim_internal.h"
 
 namespace melange::simcore {
@@ -79,8 +80,9 @@ struct Field {
     float num;
 };
 
-// Resets, sets the fields in order and creates, as the generated chunk does. nullptr or the reason.
-const char* Spawn(l5::State* L, const char* reset, const Field* f, int n, const char* create) noexcept {
+// Resets, sets the fields in order and creates, as the generated chunk does. nullptr or the reason. The sends can
+// allocate (DeliverEvent), so an allocation failure is caught by Spawn below.
+const char* SpawnUnguarded(l5::State* L, const char* reset, const Field* f, int n, const char* create) {
     const auto& a = l5::A();
     sim::SendResult r = DoSend(SendArgs{SendKind::Plain, reset, 0, 0, nullptr});
     if (r != sim::SendResult::Ok) return SendResultText(r);
@@ -96,6 +98,16 @@ const char* Spawn(l5::State* L, const char* reset, const Field* f, int n, const 
     }
     r = DoSend(SendArgs{SendKind::Plain, create, 0, 0, nullptr});
     return r == sim::SendResult::Ok ? nullptr : SendResultText(r);
+}
+
+const char* Spawn(l5::State* L, const char* reset, const Field* f, int n, const char* create) noexcept {
+    try {
+        return SpawnUnguarded(L, reset, f, n, create);
+    } catch (...) {
+        mem::ReportOutOfMemory("sim: level spawn");
+        snprintf(g_err, sizeof g_err, "out of memory");
+        return g_err;
+    }
 }
 
 // wum.level.trigger(knot [, {index, radius, teamCollect, teamDestroy, hitpoints, wormCollect}])

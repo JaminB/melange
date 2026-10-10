@@ -2,6 +2,8 @@
 
 #include <windows.h>
 
+#include <atomic>
+#include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <vector>
@@ -123,6 +125,57 @@ bool SafeRead(uintptr_t addr, void* out, size_t n) {
         return true;
     } __except (EXCEPTION_EXECUTE_HANDLER) {
         return false;
+    }
+}
+
+bool IsLargeAddressAware(const void* base) {
+    const auto* dos = static_cast<const IMAGE_DOS_HEADER*>(base);
+    if (!base || dos->e_magic != IMAGE_DOS_SIGNATURE) return false;
+    const auto* nt = reinterpret_cast<const IMAGE_NT_HEADERS*>(static_cast<const char*>(base) + dos->e_lfanew);
+    return nt->Signature == IMAGE_NT_SIGNATURE && (nt->FileHeader.Characteristics & IMAGE_FILE_LARGE_ADDRESS_AWARE) != 0;
+}
+
+AddressSpace QueryAddressSpace() {
+    SYSTEM_INFO si;
+    GetSystemInfo(&si);
+    const uint64_t top = reinterpret_cast<uintptr_t>(si.lpMaximumApplicationAddress);
+    uint64_t freeB = 0, largest = 0, used = 0;
+    for (uint64_t a = 0x10000; a < top;) {
+        MEMORY_BASIC_INFORMATION mbi;
+        if (!VirtualQuery(reinterpret_cast<void*>(static_cast<uintptr_t>(a)), &mbi, sizeof mbi)) break;
+        const uint64_t n = mbi.RegionSize;
+        if (mbi.State == MEM_FREE) {
+            freeB += n;
+            if (n > largest) largest = n;
+        } else {
+            used += n;
+        }
+        a += n ? n : 0x1000;
+    }
+    AddressSpace s;
+    s.freeMB = static_cast<uint32_t>(freeB >> 20);
+    s.largestFreeMB = static_cast<uint32_t>(largest >> 20);
+    s.usedMB = static_cast<uint32_t>(used >> 20);
+    s.largeAddressAware = IsLargeAddressAware(GetModuleHandleW(nullptr));
+    return s;
+}
+
+void FormatAddressSpace(const AddressSpace& s, char* buf, size_t len) {
+    snprintf(buf, len, "address space: free %u MB, largest block %u MB, used %u MB, %s", s.freeMB, s.largestFreeMB,
+             s.usedMB, s.largeAddressAware ? "large-address-aware" : "not large-address-aware (2 GB)");
+}
+
+bool ShouldReportOom(uint32_t count) { return count <= 3 || count % 1000 == 0; }
+
+void ReportOutOfMemory(const char* where) noexcept {
+    static std::atomic<uint32_t> s_count{0};
+    const uint32_t n = ++s_count;
+    if (!ShouldReportOom(n)) return;
+    try {
+        char sum[160];
+        FormatAddressSpace(QueryAddressSpace(), sum, sizeof sum);
+        LOG_ERROR("out of memory (std::bad_alloc) in %s [occurrence %u]; %s", where, n, sum);
+    } catch (...) {
     }
 }
 }  // namespace melange::mem

@@ -133,6 +133,7 @@ export function launcherService(state, broadcast, initialScenario) {
     // Settings › Display: the game folder's local.cfg text and Melange.ini's [Display] keys, on a 1920x1080 monitor.
     l.display = { localCfg: f.localCfg ?? "/W:1280 /H:720 /REFRESH:59 /SSAA:1 /SHADOWMAP:1024 /CONFIG:user.cfg\r\n",
       fullscreen: false, enabled: true, hotkey: "Alt+RETURN", writes: 0 };
+    l.laa = { enabled: false, active: false };   // Melange.ini [Game] LargeAddressAware and the exe bit
   };
   apply(l.scenario);
 
@@ -145,6 +146,7 @@ export function launcherService(state, broadcast, initialScenario) {
   // Mirrors the real server: setup.*/plugins.setSettings refuse with -32002 while a recommended-plugins batch
   // holds the setup lock (l.status.busy), naming what is busy instead of a plain "try again".
   const busyGuard = () => { if (l.status.busy) throw [-32002, `Installing plugins — this finishes in a moment. ${l.status.busy.label}`]; };
+  const laaState = () => ({ ...l.laa, byMelange: l.laa.active, melangeIni: true, running: !!l.status.running });
   const displayState = (removedFs) => {
     const d = l.display;
     const w = Number(/\/W:(\d+)/i.exec(d.localCfg)?.[1] ?? 0), h = Number(/\/H:(\d+)/i.exec(d.localCfg)?.[1] ?? 0);
@@ -304,6 +306,16 @@ export function launcherService(state, broadcast, initialScenario) {
       d.writes++;
       return displayState(p.fullscreen && hadFs);
     },
+    // Mirrors src/launcher/rpc_laa.cpp: the ini key and the exe bit follow the toggle; refused while the game runs.
+    "launcher.laa.get": () => laaState(),
+    "launcher.laa.set": (p) => {
+      if (typeof p?.enabled !== "boolean") throw [-32602, "expected {enabled}"];
+      if (l.status.running) throw [-32000, "Close Worms Ultimate Mayhem first."];
+      busyGuard();
+      l.laa.enabled = p.enabled;
+      l.laa.active = p.enabled;
+      return laaState();
+    },
     "recommended.get": () => (l.scenario === "offline-store" ? { source: "builtin", items: [] } : { source: "index", items: [SUNSTONE] }),
     "recommended.apply": (p) => {
       l.defaults = { plugins: (p.items ?? []).map((it) => ({ id: it.id, enabled: true, settings: it.settings ?? {} })), seeded: true };
@@ -314,7 +326,7 @@ export function launcherService(state, broadcast, initialScenario) {
   return {
     methods: Object.keys(handlers),
     mutating: ["launcher.setTheme", "launcher.shortcuts", "launcher.quit", "setup.vanillaApply", "setup.select", "setup.apply", "setup.restore", "setup.deleteBackup",
-      "setup.setMelangeEnabled", "plugins.setSettings", "plugins.resetSettings", "defaults.set", "recommended.apply", "update.apply", "update.setAuto", "display.set"],
+      "setup.setMelangeEnabled", "plugins.setSettings", "plugins.resetSettings", "defaults.set", "recommended.apply", "update.apply", "update.setAuto", "display.set", "launcher.laa.set"],
     handlers,
     status: publicStatus,
     updateStatus,

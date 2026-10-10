@@ -18,7 +18,13 @@ void Init(HMODULE self) {
     LOG_INFO("Melange " MELANGE_VERSION " starting (pid %lu)", GetCurrentProcessId());
     LOG_INFO("game dir : %s", melange::game::Narrow(melange::game::GameDir()).c_str());
     LOG_INFO("ini      : %s", melange::game::Narrow(melange::config::Path()).c_str());
-    LOG_INFO("exe      : size=%u timestamp=%08x sha256=%s", exe.fileSize, exe.timestamp, exe.sha256.c_str());
+    LOG_INFO("exe      : size=%u timestamp=%08x sha256=%s large-address-aware=%d", exe.fileSize, exe.timestamp, exe.sha256.c_str(), exe.laa ? 1 : 0);
+    melange::config::EnsureKey("Game", "LargeAddressAware", "0");
+    const bool wantLaa = melange::config::GetBool("Game", "LargeAddressAware", false);
+    if (wantLaa && !exe.laa)
+        LOG_WARN("[laa] Melange.ini asks for LargeAddressAware=1 but the exe is not large-address-aware; start the game from Melange.exe to apply it");
+    else if (!wantLaa && exe.laa)
+        LOG_INFO("[laa] the exe is large-address-aware (LargeAddressAware=0 in Melange.ini; Melange.exe clears it at the next launch if it set it)");
     if (exe.known)
         LOG_INFO("exe guard: recognised build %s - all modules available", exe.build);
     else

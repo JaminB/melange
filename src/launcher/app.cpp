@@ -4,6 +4,7 @@
 #include <chrono>
 #include <thread>
 
+#include "core/thread_guard.h"
 #include "launcher/setup/detect.h"
 #include "launcher/setup/running.h"
 #include "launcher/util.h"
@@ -182,7 +183,7 @@ void StartChannel() {
         std::lock_guard lk(g_gateMx);
         g_gate = WriteGate();
     }
-    std::thread(&Poll).detach();
+    std::thread([] { GuardedThreadBody("launcher-poll", &Poll); }).detach();
 }
 
 void PublishStatus() {

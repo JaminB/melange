@@ -4,6 +4,7 @@
 #include <windows.h>
 
 #include "core/game.h"
+#include "tools/hash.h"
 #include "tools/json_mini.h"
 #include "melange/overlay.h"
 
@@ -31,7 +32,9 @@ std::string CollectJson() {
     exej.Str("path", melange::game::Narrow(exePath))
         .UInt("size", exe.fileSize)
         .UInt("timestampUtc", exe.timestamp)
-        .Str("sha256", exe.sha256)
+        .Str("sha256", exe.sha256)   // canonical: the large-address-aware bit cleared
+        .Str("rawSha256", exePath.empty() ? std::string() : melange::hashutil::Sha256HexFile(exePath))
+        .Bool("largeAddressAware", exe.laa)
         .Str("build", exe.build)
         .Bool("known", exe.known);
 

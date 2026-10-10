@@ -11,6 +11,7 @@ void InstallLauncher();
 void InstallPlugins();
 void InstallImport();
 void InstallDisplay();
+void InstallLaa();
 bool ImportRunning();
 
 inline void Fail(oasis::Result& r, int code, const std::string& msg, const std::string& data = {}) {

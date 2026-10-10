@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.25)
-project(Melange VERSION 0.9.0 LANGUAGES C CXX)
+project(Melange VERSION 0.9.1 LANGUAGES C CXX)
 
 if(NOT CMAKE_SIZEOF_VOID_P EQUAL 4)
     message(FATAL_ERROR "Melange must be built for 32-bit x86 (WormsMayhem.exe is a 32-bit process). Use build.ps1.")
@@ -213,7 +213,7 @@ set(LAUNCHER_CORE_SOURCES
     src/launcher/util.cpp src/launcher/settings.cpp src/launcher/plugin_settings.cpp src/launcher/recommended.cpp
     src/launcher/setup/vdf.cpp src/launcher/setup/detect.cpp src/launcher/setup/exe_check.cpp src/launcher/setup/dll_id.cpp
     src/launcher/setup/running.cpp src/launcher/setup/ini_merge.cpp src/launcher/setup/engine.cpp src/launcher/setup/vanilla.cpp
-    src/launcher/updater.cpp
+    src/launcher/updater.cpp src/launcher/setup/laa.cpp src/core/pe_laa.cpp
     src/update/release.cpp
     src/oasis/standalone/game_lock.cpp src/oasis/rpc/ini_edit.cpp)
 # Stand-ins for third-party DLLs and melange.asi builds: read from disk by the self-test, never loaded.
@@ -256,13 +256,13 @@ target_link_libraries(melange_import PUBLIC melange_store melange_xom)
 # launcher.exportLogs and its self-test. The plugin compiles the same sources through its glob. Its users also link
 # json_read, hash, log, wormsign/format and miniz.
 set(LOG_EXPORT_CORE_SOURCES
-    src/tools/log_export_core.cpp src/tools/sysinfo_core.cpp src/tools/redact.cpp src/wormsign/export_redacted.cpp)
+    src/tools/log_export_core.cpp src/tools/sysinfo_core.cpp src/core/pe_laa.cpp src/tools/redact.cpp src/wormsign/export_redacted.cpp)
 
 # Melange.exe: the desktop app. The standalone Oasis server plus setup, plugins and the Store, shown in WebView2.
 include(cmake/webview2.cmake)
 add_executable(melange_launcher WIN32
     src/launcher/main.cpp src/launcher/app.cpp src/launcher/window.cpp src/launcher/store_host.cpp
-    src/launcher/rpc_setup.cpp src/launcher/rpc_launcher.cpp src/launcher/rpc_plugins.cpp src/launcher/rpc_import.cpp src/launcher/rpc_display.cpp src/launcher/update_host.cpp
+    src/launcher/rpc_setup.cpp src/launcher/rpc_launcher.cpp src/launcher/rpc_plugins.cpp src/launcher/rpc_import.cpp src/launcher/rpc_display.cpp src/launcher/rpc_laa.cpp src/launcher/update_host.cpp
     ${LAUNCHER_CORE_SOURCES}
     src/oasis/standalone/register.cpp src/oasis/standalone/ini_edit.cpp src/oasis/standalone/mods_provider.cpp
     src/oasis/standalone/json_write.cpp src/oasis/standalone/wormsign_provider.cpp src/oasis/standalone/level_provider.cpp
@@ -431,7 +431,7 @@ add_executable(weapons_behaviour_selftest
     src/mods/spice.cpp
     src/tools/json_read.cpp
     src/core/mem.cpp
-    src/core/game.cpp
+    src/core/game.cpp src/core/pe_laa.cpp src/tools/hash.cpp
     src/core/log.cpp
     src/core/config.cpp
     src/core/config_schema.cpp
@@ -510,7 +510,7 @@ add_executable(sim_selftest EXCLUDE_FROM_ALL
     src/lua/sim/sim_hash.cpp src/lua/sim/sim_weapons.cpp src/lua/sim/sim_level.cpp src/weapons/behaviour_core.cpp
     src/wormsign/contrib.cpp
     src/core/jlog.cpp src/core/jlog_ring.cpp src/core/jlog_bus_filter.cpp
-    src/core/events.cpp src/core/game.cpp src/core/mem.cpp src/core/log.cpp)
+    src/core/events.cpp src/core/game.cpp src/core/pe_laa.cpp src/tools/hash.cpp src/core/mem.cpp src/core/log.cpp)
 target_include_directories(sim_selftest PRIVATE src src/sdk ${CMAKE_BINARY_DIR}/generated)
 target_compile_definitions(sim_selftest PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX _CRT_SECURE_NO_WARNINGS
     MELANGE_SOURCE_DIR="${CMAKE_SOURCE_DIR}")
@@ -536,7 +536,7 @@ target_link_libraries(mega_bazooka_selftest PRIVATE melange_xom lua50_ref)
 add_executable(bus_selftest EXCLUDE_FROM_ALL
     tests/bus_selftest.cpp
     src/core/bus.cpp src/core/bus_registry.cpp src/core/bus_decoders.cpp
-    src/core/events.cpp src/core/game.cpp src/core/mem.cpp src/core/log.cpp src/core/config.cpp src/core/config_schema.cpp
+    src/core/events.cpp src/core/game.cpp src/core/pe_laa.cpp src/tools/hash.cpp src/core/mem.cpp src/core/log.cpp src/core/config.cpp src/core/config_schema.cpp
     src/core/testcmd.cpp src/core/module.cpp)
 target_include_directories(bus_selftest PRIVATE src src/sdk ${CMAKE_BINARY_DIR}/generated)
 target_compile_definitions(bus_selftest PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX _CRT_SECURE_NO_WARNINGS)
@@ -547,7 +547,7 @@ target_link_libraries(bus_selftest PRIVATE safetyhook::safetyhook bcrypt)
 add_executable(trace_selftest EXCLUDE_FROM_ALL
     tests/trace_selftest.cpp
     src/render/mirage/trace_decode.cpp src/render/mirage/trace_mcap.cpp src/render/mirage/compat_report.cpp
-    src/core/events.cpp src/core/game.cpp src/core/mem.cpp src/core/log.cpp)
+    src/core/events.cpp src/core/game.cpp src/core/pe_laa.cpp src/tools/hash.cpp src/core/mem.cpp src/core/log.cpp)
 target_include_directories(trace_selftest PRIVATE src src/sdk ${CMAKE_BINARY_DIR}/generated ${stb_SOURCE_DIR})
 target_compile_definitions(trace_selftest PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX _CRT_SECURE_NO_WARNINGS)
 target_compile_options(trace_selftest PRIVATE /W4 /utf-8 /permissive- /Zi /wd4100)
@@ -619,7 +619,7 @@ add_executable(jlog_selftest
     src/core/jlog_ring.cpp
     src/core/jlog_bus_filter.cpp
     src/core/events.cpp
-    src/core/game.cpp
+    src/core/game.cpp src/core/pe_laa.cpp src/tools/hash.cpp
     src/core/mem.cpp
     src/core/log.cpp)
 target_include_directories(jlog_selftest PRIVATE src src/sdk ${CMAKE_BINARY_DIR}/generated)
@@ -642,7 +642,7 @@ add_executable(tweak_selftest
     src/lua/sim/tweak.cpp
     src/lua/engine50.cpp
     src/core/mem.cpp
-    src/core/game.cpp
+    src/core/game.cpp src/core/pe_laa.cpp src/tools/hash.cpp
     src/core/log.cpp
     src/core/config.cpp
     src/core/config_schema.cpp
@@ -697,7 +697,7 @@ add_executable(wormsign_contrib_selftest
     src/wormsign/contrib.cpp src/wormsign/detail.cpp src/wormsign/fpu.cpp
     src/tools/json_read.cpp
     src/core/jlog.cpp src/core/jlog_ring.cpp src/core/jlog_bus_filter.cpp
-    src/core/events.cpp src/core/game.cpp src/core/mem.cpp src/core/log.cpp)
+    src/core/events.cpp src/core/game.cpp src/core/pe_laa.cpp src/tools/hash.cpp src/core/mem.cpp src/core/log.cpp)
 target_include_directories(wormsign_contrib_selftest PRIVATE src src/sdk ${CMAKE_BINARY_DIR}/generated)
 target_compile_definitions(wormsign_contrib_selftest PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX _CRT_SECURE_NO_WARNINGS)
 target_compile_options(wormsign_contrib_selftest PRIVATE /W4 /utf-8 /permissive- /wd4100)
@@ -715,7 +715,7 @@ add_executable(wormsign_recorder_selftest
     src/tools/json_read.cpp
     src/tools/redact.cpp
     src/tools/hash.cpp
-    src/core/game.cpp
+    src/core/game.cpp src/core/pe_laa.cpp
     src/core/log.cpp)
 target_include_directories(wormsign_recorder_selftest PRIVATE src src/sdk)
 target_compile_definitions(wormsign_recorder_selftest PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX _CRT_SECURE_NO_WARNINGS)

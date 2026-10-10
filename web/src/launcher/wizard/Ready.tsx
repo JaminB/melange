@@ -16,8 +16,8 @@ export function Ready({ client, state, dispatch, onFinish }: WizardProps) {
     setError(undefined);
     try {
       await client.call("launcher.shortcuts", { startMenu: state.shortcuts.startMenu, desktop: state.shortcuts.desktop });
-      if (how === "launch") await client.call("launcher.launch");
-      onFinish?.();
+      const launched = how === "launch" ? await client.call<unknown>("launcher.launch") : undefined;
+      onFinish?.(launched);
     } catch (e) {
       setError(errorText(e));
     } finally {

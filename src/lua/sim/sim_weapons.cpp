@@ -5,6 +5,7 @@
 #include <cstdio>
 #include <cstring>
 
+#include "core/mem.h"
 #include "lua/sim/bridge_internal.h"
 #include "lua/sim/sim_internal.h"
 
@@ -211,6 +212,7 @@ bool WeaponsAllowed(int mod) noexcept {
     try {
         return simweapons::g_api->allowed(id);
     } catch (...) {
+        mem::ReportOutOfMemory("sim: weapons allowed");
         return false;
     }
 }

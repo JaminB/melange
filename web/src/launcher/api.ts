@@ -540,3 +540,23 @@ export function defaultWindowed(d: DisplayState): DisplaySize | undefined {
   const below = d.modes.filter((s) => s.w < d.monitor.w && s.h < d.monitor.h);
   return below.find((s) => s.w * 9 === s.h * 16) ?? below[0] ?? d.modes[0];
 }
+
+// -- Settings › Memory (`launcher.laa.get` / `launcher.laa.set`) ---------------------------------------------------
+// The opt-in 4 GB mode. `enabled` is [Game] LargeAddressAware in Melange.ini; `active` is the bit in WormsMayhem.exe
+// (Steam's "Verify files" clears it until the next launch from Melange.exe); `byMelange` is the marker that lets
+// Melange undo its own change. The server refuses to write while the game runs (`refused`).
+export interface LaaState { enabled: boolean; active: boolean; byMelange: boolean; melangeIni: boolean; running: boolean; refused?: string; }
+
+export function laaOf(v: unknown): LaaState {
+  const o = obj(v);
+  return {
+    enabled: bool(o, "enabled"), active: bool(o, "active"), byMelange: bool(o, "byMelange"), melangeIni: bool(o, "melangeIni"),
+    running: bool(o, "running"), refused: strOpt(o, "refused") || undefined,
+  };
+}
+
+// launcher.launch reports a failed 4 GB switch as `laa: "failed:<reason>"`; the game started anyway. Returns the reason.
+export function launchLaaFailure(v: unknown): string | undefined {
+  const l = strOpt(obj(v), "laa");
+  return l !== undefined && l.startsWith("failed:") ? l.slice(7).trim() || "unknown reason" : undefined;
+}

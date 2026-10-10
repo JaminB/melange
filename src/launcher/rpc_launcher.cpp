@@ -11,10 +11,12 @@
 #include <mutex>
 
 #include "core/dump_paths.h"
+#include "core/log.h"
 #include "launcher/app.h"
 #include "launcher/rpc.h"
 #include "launcher/setup/detect.h"
 #include "launcher/setup/engine.h"
+#include "launcher/setup/laa.h"
 #include "launcher/setup/running.h"
 #include "launcher/util.h"
 #include "launcher/window.h"
@@ -64,10 +66,34 @@ void Launch(const Call&, Result& r, void*) {
     if (setup::GameRunning(game)) return Fail(r, -32000, "The game is already running.");
     // A Store job (an install, or the compatibility sweep updating a plugin) is changing Mods\ right now.
     if (store::GetStatus().busy) return Fail(r, -32002, "Melange is updating your plugins. Try again in a moment.");
+    // The 4 GB mode follows Melange.ini just before the game starts, so Steam's "Verify files" (which restores the
+    // stock exe) is undone here. A failure is reported, never a reason not to launch.
+    std::string laa;
+    {
+        const bool want = setup::IniWantsLaa(game);
+        std::unique_lock lk(app::Tx(), std::try_to_lock);   // not while an install or a repair is writing the folder
+        if (!lk.owns_lock()) {
+            laa = "failed:" + app::BusyMessage();
+        } else if (want || setup::LaaMarkerPresent(game)) {
+            const setup::LaaResult res = setup::EnsureLaa(app::MakeContext(), want);
+            if (!res.ok) {
+                LOG_WARN("[laa] not applied at launch: %s", res.message.c_str());
+                laa = "failed:" + res.message;
+            } else if (res.changed) {
+                laa = res.state;
+            }
+        }
+    }
+    auto done = [&](const char* how) {
+        jsonmini::Obj o;
+        o.Str("how", how);
+        if (!laa.empty()) o.Str("laa", laa);
+        r.json = o.End();
+    };
     if (setup::StoreOf(game, setup::SystemRegistry()) == "steam") {
         const auto h = reinterpret_cast<INT_PTR>(ShellExecuteW(app::Window(), L"open", L"steam://rungameid/70600", nullptr, nullptr, SW_SHOWNORMAL));
         if (h <= 32) return Fail(r, -32000, "Steam didn't start the game. Is Steam installed?");
-        r.json = "{\"how\":\"steam\"}";
+        done("steam");
         return;
     }
     std::wstring cmd = L"\"" + game + L"\\WormsMayhem.exe\"";
@@ -78,7 +104,7 @@ void Launch(const Call&, Result& r, void*) {
         return Fail(r, -32000, "Could not start the game: " + Win32Message(GetLastError()));
     CloseHandle(pi.hThread);
     CloseHandle(pi.hProcess);
-    r.json = "{\"how\":\"exe\"}";
+    done("exe");
 }
 
 void OpenPath(const Call& c, Result& r, void*) {

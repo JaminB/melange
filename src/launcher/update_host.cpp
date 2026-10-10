@@ -12,6 +12,7 @@
 #include <thread>
 
 #include "core/log.h"
+#include "core/thread_guard.h"
 #include "launcher/app.h"
 #include "launcher/rpc.h"
 #include "launcher/setup/detect.h"
@@ -183,7 +184,7 @@ bool StartWork(bool manual) {
     bool expected = false;
     if (!g_working.compare_exchange_strong(expected, true)) return false;
     std::thread([manual] {
-        Work(manual);
+        GuardedThreadBody("update", [&] { Work(manual); });
         g_working = false;
     }).detach();
     return true;

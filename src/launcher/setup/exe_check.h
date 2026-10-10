@@ -5,6 +5,7 @@
 #include <vector>
 
 // Is this folder a supported Worms Ultimate Mayhem? Size and PE timestamp first, SHA-256 only when they match.
+// The SHA-256 is canonical (pe::CanonicalSha256): the same for a build with and without the 4 GB bit.
 namespace melange::launcher::setup {
 struct Profile {
     uint64_t size;
@@ -20,6 +21,7 @@ struct ExeFacts {
     bool present = false;
     uint64_t size = 0;
     uint32_t timestamp = 0;
+    bool laa = false;              // the large-address-aware bit is set (the hash ignores it)
     std::string sha256, build;
 };
 struct GameCheck {

@@ -13,6 +13,7 @@
 #include <thread>
 
 #include "core/log.h"
+#include "core/thread_guard.h"
 
 #include "import/importer.h"
 #include "launcher/app.h"
@@ -383,7 +384,25 @@ void Start(const Call& c, Result& r, void*) {
         g_job.plugin = id;
         g_job.phase = spec.kind == imp::RunSpec::Kind::File ? "copying" : "downloading";
     }
-    std::thread(&Worker, std::move(spec)).detach();
+    std::thread([spec = std::move(spec)]() mutable {
+        bool finished = false;
+        GuardedThreadBody("import", [&] {
+            Worker(std::move(spec));
+            finished = true;
+        });
+        if (finished) return;
+        {
+            // Worker clears g_running itself; a failure before that must not leave the import stuck as running.
+            std::lock_guard lk(g_mx);
+            if (g_running) {
+                g_running = false;
+                g_job.phase = "error";
+                g_job.reason = "internal";
+                g_job.message = "The import stopped unexpectedly.";
+            }
+        }
+        PublishJob();
+    }).detach();
     PublishJob();
     r.json = "{\"started\":true}";
 }

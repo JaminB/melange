@@ -18,6 +18,7 @@
 #include "core/events.h"
 #include "core/game.h"
 #include "core/log.h"
+#include "core/thread_guard.h"
 #include "lua/engine50.h"
 #include "lua/sim/bridge_internal.h"
 #include "melange/jlog.h"
@@ -378,7 +379,7 @@ void Recompute(uint32_t gen, const ComputeInputs& in) {
 }
 void RecomputeAsync() {
     const uint32_t gen = ++g_computeGen;
-    std::thread([gen, in = TakeInputs()] { Recompute(gen, in); }).detach();
+    std::thread([gen, in = TakeInputs()] { GuardedThreadBody("handshake", [&] { Recompute(gen, in); }); }).detach();
 }
 
 // At Init: every hashed mod message must still have the id the content text names.

@@ -39,7 +39,14 @@ void Write(const char* level, const char* fmt, ...) {
     vsnprintf(msg, sizeof(msg), fmt, ap);
     va_end(ap);
 
-    if (Tap tap = g_tap.load(std::memory_order_acquire)) tap(level, msg);
+    // The tap (the JSONL log) allocates; out of memory it must not stop the line reaching the file, nor throw out
+    // of the crash and out-of-memory reports that log through here.
+    if (Tap tap = g_tap.load(std::memory_order_acquire)) {
+        try {
+            tap(level, msg);
+        } catch (...) {
+        }
+    }
 
     SYSTEMTIME st;
     GetLocalTime(&st);

@@ -18,6 +18,7 @@
 #include "core/debug.h"
 #include "core/events.h"
 #include "core/log.h"
+#include "core/thread_guard.h"
 #include "melange/bus.h"
 #include "melange/gamestate.h"
 #include "melange/mods.h"
@@ -213,8 +214,10 @@ void CloseStaleWriter(const char* when) {
     if (g_active || !g_w->IsOpen()) return;
     LOG_WARN("[wormsign] recorder: a recording was left open without a session (%s); closing %ls", when, g_path.c_str());
     std::thread([w = std::move(g_w), path = g_path]() mutable {
-        const bool ok = w->Close();
-        library::OnRecordingClosed(path, ok);
+        GuardedThreadBody("wormsign-recorder", [&] {
+            const bool ok = w->Close();
+            library::OnRecordingClosed(path, ok);
+        });
     }).detach();
     g_w = std::make_unique<writer::Writer>();
 }
@@ -290,11 +293,13 @@ void EndRecording(const char* reason) {
     // Closing deflates and writes what is still queued: off the main thread, with a fresh writer for the next match.
     std::thread([w = std::move(g_w), path = g_path, serial = g_serial, reason = std::string(reason),
                  ticks = g_ticksSeen, inputs = g_inputCount, handoverUs]() mutable {
-        const bool ok = w->Close();
-        LOG_INFO("[wormsign] recorder: session %u closed (%s), %llu ticks, %llu inputs, %s; main thread %lld us", serial,
-                 reason.c_str(), static_cast<unsigned long long>(ticks), static_cast<unsigned long long>(inputs),
-                 ok ? "complete" : "FAILED to close", handoverUs);
-        library::OnRecordingClosed(path, ok);
+        GuardedThreadBody("wormsign-recorder", [&] {
+            const bool ok = w->Close();
+            LOG_INFO("[wormsign] recorder: session %u closed (%s), %llu ticks, %llu inputs, %s; main thread %lld us",
+                     serial, reason.c_str(), static_cast<unsigned long long>(ticks),
+                     static_cast<unsigned long long>(inputs), ok ? "complete" : "FAILED to close", handoverUs);
+            library::OnRecordingClosed(path, ok);
+        });
     }).detach();
     g_w = std::make_unique<writer::Writer>();
     ++g_recordingsWritten;
@@ -437,7 +442,7 @@ bool Install() {
     // Off the main thread: a large or crafted replays folder can mean gigabytes of inflate work (up to 64 MB per
     // chunk, every chunk of every file), and the main thread never waits on disk (the same rule the writer and
     // detector follow). Library() simply returns nothing for this session's matches until the scan finishes.
-    std::thread(&library::Rescan).detach();
+    std::thread([] { GuardedThreadBody("wormsign-library", &library::Rescan); }).detach();
     return true;
 }
 

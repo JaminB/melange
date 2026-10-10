@@ -6,6 +6,7 @@
 #include <chrono>
 #include <thread>
 
+#include "core/thread_guard.h"
 #include "launcher/app.h"
 #include "launcher/plugin_settings.h"
 #include "launcher/recommended.h"
@@ -284,12 +285,14 @@ void RecommendedApply(const Call& c, Result& r, void*) {
         // Melange.ini while plugins are being installed. A setup.* call that sneaks in between the probe
         // above and this lock just waits here rather than racing the writes below.
         std::lock_guard<std::mutex> lk(app::Tx());
-        int step = 0;
-        for (const auto& a : list) {
-            ++step;
-            app::SetBatchBusy(true, "recommended", step, total, "Installing " + a.name + "…");
-            ApplyOne(a);
-        }
+        GuardedThreadBody("plugins-apply", [&] {
+            int step = 0;
+            for (const auto& a : list) {
+                ++step;
+                app::SetBatchBusy(true, "recommended", step, total, "Installing " + a.name + "…");
+                ApplyOne(a);
+            }
+        });
         g_applying = false;
         app::SetBatchBusy(false, "", 0, 0, "");
     }).detach();

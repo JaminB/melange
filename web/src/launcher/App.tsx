@@ -3,7 +3,8 @@ import { useEffect, useReducer, useState } from "preact/hooks";
 import type { Client, ClientState } from "../sdk/client";
 import { errorText, useConnection } from "../sdk/hooks";
 import { Store } from "../panels/store";
-import { launcherStateOf, setupEventOf, setupStatusOf, updateEventOf, updateStatusOf, type LauncherState, type SetupStatus, type Theme, type UpdateStatus, type VanillaResult } from "./api";
+import { launchLaaFailure, launcherStateOf, setupEventOf, setupStatusOf, updateEventOf, updateStatusOf, type LauncherState, type SetupStatus, type Theme, type UpdateStatus, type VanillaResult } from "./api";
+import { laaLaunchFailed } from "./copy";
 import { VanillaDone } from "./components/VanillaDone";
 import { ExternalLinkIcon, GearIcon, LifeBuoyIcon, PlayIcon, PuzzleIcon, SparkleIcon, StoreIcon } from "./icons";
 import { Help } from "./pages/Help";
@@ -57,6 +58,7 @@ export function LauncherApp({ client }: { client: Client }) {
   const [wizard, dispatch] = useReducer(wizardReducer, undefined, initialWizard);
   const [launchError, setLaunchError] = useState<string>();
   const [launching, setLaunching] = useState(false);
+  const [laaNotice, setLaaNotice] = useState<string>();
   const [vanilla, setVanilla] = useState<VanillaResult>();
 
   useEffect(() => {
@@ -111,10 +113,17 @@ export function LauncherApp({ client }: { client: Client }) {
     else if (location.hash.startsWith("#/plugins/")) history.replaceState(null, "", "#/plugins");
   }, [importPlugin]);
 
+  // The game starts even when the 4 GB switch fails; say so without blocking anything.
+  const noteLaa = (result: unknown) => {
+    const why = launchLaaFailure(result);
+    setLaaNotice(why ? laaLaunchFailed(why) : undefined);
+  };
+
   const launch = async () => {
     setLaunching(true);
     setLaunchError(undefined);
-    try { await client.call("launcher.launch"); } catch (e) { setLaunchError(errorText(e)); } finally { setLaunching(false); }
+    setLaaNotice(undefined);
+    try { noteLaa(await client.call<unknown>("launcher.launch")); } catch (e) { setLaunchError(errorText(e)); } finally { setLaunching(false); }
   };
 
   if (inWizard === undefined || !conn.open) {
@@ -139,7 +148,7 @@ export function LauncherApp({ client }: { client: Client }) {
             : wizard.step === "check" ? <CheckGame client={client} state={wizard} dispatch={dispatch} />
             : wizard.step === "install" ? <Install client={client} state={wizard} dispatch={dispatch} />
             : wizard.step === "recommended" ? <Recommended client={client} state={wizard} dispatch={dispatch} />
-            : <Ready client={client} state={wizard} dispatch={dispatch} onFinish={() => { setInWizard(false); setLauncher((l) => (l ? { ...l, firstRun: false } : l)); }} />}
+            : <Ready client={client} state={wizard} dispatch={dispatch} onFinish={(result) => { noteLaa(result); setInWizard(false); setLauncher((l) => (l ? { ...l, firstRun: false } : l)); }} />}
         </div>
       </div>
     );
@@ -168,6 +177,7 @@ export function LauncherApp({ client }: { client: Client }) {
         </nav>
         <main class="la-content" aria-label={PAGES.find((p) => p.id === page)?.label}>
           <div class="la-content-inner">
+            {laaNotice ? <p class="hint" role="status" data-laa-launch-failed>{laaNotice}</p> : null}
             <UpdateBanner client={client} update={update} gameRunning={!!status?.running} />
             {importPlugin ? <Import client={client} plugin={importPlugin} onBack={() => setImportPlugin(undefined)} />
               : page === "home" ? <Home client={client} status={status} update={update} onFixGame={() => { dispatch({ type: "goto", step: "find" }); setInWizard(true); }}

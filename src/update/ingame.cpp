@@ -13,6 +13,7 @@
 #include "core/events.h"
 #include "core/log.h"
 #include "core/module.h"
+#include "core/thread_guard.h"
 #include "melange/draw.h"
 #include "melange/overlay.h"
 #include "store/fetch.h"
@@ -113,7 +114,7 @@ void DrawToast() {
 }
 
 void OnFrame() {
-    if (!g_started.load() && events::FrameCount() >= kStartFrame && !g_started.exchange(true)) std::thread(&Check).detach();
+    if (!g_started.load() && events::FrameCount() >= kStartFrame && !g_started.exchange(true)) std::thread([] { GuardedThreadBody("update", &Check); }).detach();
     DrawToast();
 }
 

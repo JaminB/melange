@@ -8,6 +8,7 @@
 #include <thread>
 
 #include "core/game.h"
+#include "core/thread_guard.h"
 #include "melange/gltrace.h"
 #include "melange/overlay.h"
 #include "render/mirage/hub.h"
@@ -17,8 +18,10 @@ namespace melange::mirage::trace {
 namespace {
 void OpenFolder(std::wstring path, bool select) {
     std::thread([path = std::move(path), select] {
-        std::wstring args = select ? L"/select,\"" + path + L"\"" : L"\"" + path + L"\"";
-        ShellExecuteW(nullptr, L"open", L"explorer.exe", args.c_str(), nullptr, SW_SHOWNORMAL);
+        GuardedThreadBody("mirage-trace", [&] {
+            std::wstring args = select ? L"/select,\"" + path + L"\"" : L"\"" + path + L"\"";
+            ShellExecuteW(nullptr, L"open", L"explorer.exe", args.c_str(), nullptr, SW_SHOWNORMAL);
+        });
     }).detach();
 }
 
