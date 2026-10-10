@@ -1,0 +1,84 @@
+/* Melange site: Starlight wiring for this site's component overrides.
+   theme.css (shared with the plugins site, copied verbatim) holds the palette and the .mel-* components;
+   this file only places them inside Starlight's layout. Loaded after theme.css. */
+
+/* ---- Header ------------------------------------------------------------- */
+.header .mel-nav a[aria-current='true'] { color: var(--sl-color-white); }
+.mel-version select { font-size: var(--sl-text-sm); }
+.mel-version { align-items: center; }
+
+/* Landing page on phones (no menu there): a compact nav in the bar; the CTA is right below, so no Download link */
+.mel-nav--bar { gap: 0; margin-inline-start: auto; }
+.mel-nav--bar a { padding: 8px 6px; font-size: .9rem; }
+.mel-nav--bar a[href$='#download'] { display: none; }
+/* theme.css sets .mel-nav { display: flex } outside any layer, which beats Starlight's layered md:sl-hidden */
+@media (min-width: 50rem) { .mel-nav--bar { display: none; } }
+@media (max-width: 22rem) { .header .site-title span { display: none; } }
+
+/* Between 50rem and 72rem the header gets tight: drop the GitHub icon (it is in the footer too) */
+@media (min-width: 50rem) and (max-width: 71.98rem) {
+  .header .right-group .social-icons { display: none; }
+}
+
+/* ---- Landing page: full-bleed sections inside Starlight's splash layout ----- */
+main:has(.mel-landing) { padding-bottom: 0; }
+.content-panel:has(.mel-landing) { padding: 0; }
+.content-panel:has(.mel-landing) > .sl-container { max-width: none; margin-inline: 0; }
+.sl-container:has(> .sl-markdown-content > .mel-landing) > * + * { margin-top: 0; }
+.mel-landing { overflow-x: clip; }
+.mel-sprite { position: absolute; width: 0; height: 0; overflow: hidden; }
+.mel-sprite svg { width: 0; height: 0; }
+
+.mel-hero .mel-dl a:not(.mel-cta) { color: var(--sl-color-text-accent); }
+.mel-dl__req a { text-underline-offset: .18em; }
+
+/* Codename tiles that are links: the name is the link, stretched over the tile */
+.mel-tile--link { position: relative; transition: transform .14s var(--mel-bounce), box-shadow .14s var(--mel-bounce); }
+.mel-tile--link a.mel-tile__name { text-decoration: none; }
+.mel-tile--link a.mel-tile__name::after { content: ''; position: absolute; inset: 0; border-radius: inherit; }
+.mel-tile--link:hover { transform: translate(-1px, -1px); box-shadow: 4px 4px 0 var(--mel-hard-shadow); }
+.mel-tile--link:hover a.mel-tile__name { text-decoration: underline; text-underline-offset: .18em; }
+.mel-tile--link:focus-within { outline: 3px solid var(--sl-color-text-accent); outline-offset: 2px; }
+.mel-tile--link a.mel-tile__name:focus-visible { outline: none; }
+
+.mel-section { padding: 40px 0 8px; }
+.mel-section:last-child { padding-bottom: 48px; }
+.mel-section__title { margin: 0 0 6px; font-size: var(--sl-text-h2); line-height: 1.2; color: var(--sl-color-white); }
+.mel-section__lede { margin: 0 0 18px; color: var(--sl-color-gray-3); max-width: 60ch; }
+.mel-section__title + .mel-cards { margin-top: 18px; }
+.mel-cards--3 { grid-template-columns: repeat(auto-fill, minmax(min(100%, 18rem), 1fr)); }
+.mel-card__glyph { width: 46px; height: 46px; bottom: 14px; color: var(--mel-icon-ink); }
+.mel-card__foot .mel-btn { font-size: .9rem; }
+
+.mel-section--modders .mel-tile { background: var(--mel-card); }
+.mel-section--modders .mel-tile .mel-glyph { color: var(--sl-color-text-accent); }
+.mel-section--modders .mel-tile__name { color: var(--sl-color-white); }
+.mel-section--modders .mel-tile__what { color: var(--sl-color-gray-3); }
+.mel-tiles--wide { grid-template-columns: repeat(auto-fill, minmax(min(100%, 14rem), 1fr)); }
+
+.mel-shot { margin: 0; }
+.mel-shot img {
+  display: block;
+  width: 100%;
+  height: auto;
+  border: var(--mel-outline-w) solid var(--mel-outline);
+  border-radius: var(--mel-radius);
+  box-shadow: 4px 4px 0 var(--mel-hard-shadow);
+}
+
+/* ---- Footer ------------------------------------------------------------- */
+/* Docs pages: the site footer sits in the content column as a rounded panel under Starlight's footer */
+.sl-container > .mel-footer,
+footer + .mel-footer {
+  margin-top: 2.5rem;
+  border: var(--mel-outline-w) solid var(--mel-icon-ink);
+  border-radius: var(--mel-radius);
+}
+.mel-footer .mel-wrap { max-width: none; }
+/* Landing page: full width, flush with the bottom */
+.content-panel:has(.mel-landing) .mel-footer { margin-top: 0; border-width: var(--mel-outline-w) 0 0; border-radius: 0; }
+.content-panel:has(.mel-landing) .mel-footer .mel-wrap { max-width: var(--mel-page-max); }
+.content-panel:has(.mel-landing) footer.sl-flex:not(.mel-footer) { display: none; }
+
+/* Versioned docs: the banner link reads as a link on the accent background */
+.sl-banner a { text-decoration: underline; text-underline-offset: .18em; font-weight: 600; }

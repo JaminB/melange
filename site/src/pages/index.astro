@@ -1,0 +1,310 @@
+---
+// The landing page: download first. Data from the prebuild (scripts/releases.mjs, scripts/versions.mjs):
+// src/data/releases.json `latest` is the newest non-draft, non-prerelease GitHub release, or null when the
+// Releases API was unreachable at build time (then the card links to the Releases page instead).
+// `hero` is set only for Starlight's splash layout without a title panel; components/Hero.astro renders nothing
+// here and the hero below (.mel-hero, markup from the theme's mockup) is the page's h1.
+import StarlightPage from '@astrojs/starlight/components/StarlightPage.astro';
+import glyphSprite from '../assets/glyphs.svg?raw';
+import releases from '../data/releases.json';
+
+type Latest = { version: string; tag: string; url: string; size: number; sha256: string | null; publishedAt: string; htmlUrl?: string } | null;
+const latest = (releases as { latest: Latest }).latest;
+
+const BASE = import.meta.env.BASE_URL.replace(/\/+$/, '');
+const doc = (slug: string) => `${BASE}/${slug}/`;
+const RELEASES_URL = 'https://github.com/JaminB/melange/releases';
+const GAME_BUILD = '1077';
+
+const fileName = latest ? latest.url.split('/').pop() : null;
+const sizeMb = latest ? `${(latest.size / (1024 * 1024)).toFixed(1)} MB` : null;
+const released = latest
+	? new Intl.DateTimeFormat('en-GB', { day: 'numeric', month: 'short', year: 'numeric', timeZone: 'UTC' }).format(new Date(latest.publishedAt))
+	: null;
+
+const tiles = [
+	{ id: 'thumper', name: 'Thumper', what: 'mod loader', href: doc('developer-guide') + '#mods-thumper' },
+	{ id: 'spice', name: 'Spice', what: 'plugin manifest', href: doc('spice') },
+	{ id: 'erg', name: 'Erg', what: 'map editor', href: doc('erg') },
+	{ id: 'wormsign', name: 'Wormsign', what: 'replays', href: doc('wormsign') },
+	{ id: 'oasis', name: 'Oasis', what: 'web panel', href: doc('oasis') },
+	{ id: 'mirage', name: 'Mirage', what: 'graphics', href: doc('developer-guide') + '#graphics-layer-mirage' },
+	{ id: 'sieve', name: 'Sieve', what: 'asset extractor', href: doc('xomtool') },
+	{ id: 'caravan', name: 'Caravan', what: 'map importer', href: doc('importers') + '#example-caravan' },
+];
+
+const modders = [
+	{ id: 'thumper', name: 'Creating a plugin', what: 'Lua mods, presets, C++ modules', href: doc('creating-plugins') },
+	{ id: 'oasis', name: 'Lua API', what: 'every wum.* function', href: doc('lua-api') },
+	{ id: 'spice', name: 'Spice manifest', what: 'spice.json, field by field', href: doc('spice') },
+	{ id: 'erg', name: 'Erg', what: 'build and patch maps', href: doc('erg') },
+];
+
+const crate = `<g fill="none" stroke="currentColor" stroke-width="4" stroke-linejoin="round" stroke-linecap="round"><rect x="7" y="10" width="50" height="46" rx="6" fill="var(--mel-crate, #E9A23B)"/><path d="M9 47h46v3a5 5 0 0 1-5 5H14a5 5 0 0 1-5-5z" fill="var(--mel-crate-shade, #C27A1E)" stroke="none"/><path d="M7 22h50M7 44h50"/><path d="M13 24l38 18" stroke="var(--mel-crate-shade, #C27A1E)" stroke-width="5"/><circle cx="32" cy="33" r="7.5" fill="var(--mel-crate-shade, #C27A1E)" stroke-width="3"/><path d="M32 28.5c2.6 3 3.5 4.5 3.5 5.8a3.5 3.5 0 0 1-7 0c0-1.3.9-2.8 3.5-5.8z" fill="currentColor" stroke="none"/><rect x="7" y="10" width="50" height="46" rx="6"/><g fill="currentColor" stroke="none"><circle cx="13" cy="16" r="1.7"/><circle cx="51" cy="16" r="1.7"/><circle cx="13" cy="50" r="1.7"/><circle cx="51" cy="50" r="1.7"/></g><path d="M13 14h12" stroke="#FFFFFF" stroke-width="2.5" opacity=".55"/></g>`;
+const burst = `<g stroke="currentColor" stroke-width="3.5" stroke-linejoin="round" stroke-linecap="round"><path fill="var(--mel-burst-outer, #FF7A3D)" d="M32 3l6 13 12-8-2 14 14 2-10 10 10 10-14 2 2 14-12-8-6 13-6-13-12 8 2-14-14-2 10-10L2 24l14-2-2-14 12 8z"/><path fill="var(--mel-burst-inner, #FFA94D)" d="M32 17l4 8 8-3-3 8 8 2-7 5 4 7-8-1-1 8-5-6-5 6-1-8-8 1 4-7-7-5 8-2-3-8 8 3z"/><circle cx="32" cy="34" r="4" fill="var(--mel-burst-core, #FFF1DE)" stroke-width="2.5"/><g stroke-width="2"><path fill="var(--mel-ground, #8A5A33)" d="M55 4l5 1-1 5-5-1z"/><path fill="var(--mel-grass, #5CB338)" d="M4 52l5-1 1 5-5 1z"/></g></g>`;
+const cloud = `<g stroke="currentColor" stroke-width="4" stroke-linejoin="round" stroke-linecap="round"><path fill="var(--mel-cloud, #FFFFFF)" d="M22 58a14 14 0 0 1-2-27.8A20 20 0 0 1 56 18a22 22 0 0 1 38 10 15 15 0 0 1 4 30z"/><path fill="none" stroke="var(--mel-cloud-shade, #CFE3F0)" stroke-width="3" d="M28 47c7 3 15 3 21 0M70 49c5 2 12 2 17-1"/></g>`;
+
+const features = [
+	{
+		title: 'Multiplayer fixes',
+		href: doc('multiplayer-fixes'),
+		art: 'burst',
+		tag: 'Online play',
+		desc: 'Fixes for freezes, desyncs, "This session is no longer available" and crashes in online play. Each fix runs on your own machine and needs nothing from the other players.',
+		cta: 'What gets fixed',
+	},
+	{
+		title: 'Mods and the Store',
+		href: doc('install-a-mod'),
+		art: 'crate',
+		tag: 'Thumper',
+		desc: 'Weapons, effects, shaders, scripts and tools. Open the Store from Melange.exe or the game, pick a plugin, press Install, and switch it off again any time.',
+		cta: 'Install a mod',
+	},
+	{
+		title: 'Graphics tools',
+		href: doc('developer-guide') + '#graphics-layer-mirage',
+		art: 'mirage',
+		tag: 'Mirage',
+		desc: 'Borderless fullscreen, supersampling, sharper textures, shadows, post-processing effects and shader mods, with a GL capture for debugging.',
+		cta: 'Graphics layer',
+	},
+];
+---
+
+<StarlightPage
+	frontmatter={{
+		title: 'Download Melange',
+		description:
+			'Download Melange, the open-source modding framework for Worms Ultimate Mayhem: multiplayer fixes, a plugin store, graphics tools and a Lua API.',
+		template: 'splash',
+		hero: { title: 'Melange' },
+		tableOfContents: false,
+		editUrl: false,
+		lastUpdated: false,
+	}}
+>
+	<div class="mel-landing not-content">
+		<div class="mel-sprite" aria-hidden="true" set:html={glyphSprite} />
+
+		<section class="mel-hero" aria-labelledby="_top">
+			<div class="mel-deco mel-celestial"></div>
+			<svg class="mel-deco mel-cloud mel-cloud--a" aria-hidden="true" focusable="false" viewBox="0 0 120 64" set:html={cloud} />
+			<svg class="mel-deco mel-cloud mel-cloud--b" aria-hidden="true" focusable="false" viewBox="0 0 120 64" set:html={cloud} />
+			<svg class="mel-deco mel-hero__crate" aria-hidden="true" focusable="false" viewBox="0 0 64 64" set:html={crate} />
+
+			<div class="mel-wrap mel-hero__grid">
+				<div class="mel-hero__copy">
+					<h1 class="mel-hero__title mel-outlined" id="_top">Mod it. Map it. Play it.</h1>
+					<p class="mel-hero__lede">Melange is an open-source modding framework for Worms Ultimate Mayhem.</p>
+					<p class="mel-hero__sub mel-hide-sm">
+						Multiplayer fixes, a plugin store, a map editor, replays and a web panel, all loaded by one drop-in ASI.
+					</p>
+				</div>
+
+				<section class="mel-dl" id="download" aria-labelledby="dl-heading">
+					<h2 class="sr-only" id="dl-heading">Download Melange</h2>
+					<div class="mel-cta-wrap">
+						<span class="mel-ripple" aria-hidden="true"><i></i><i></i><i></i></span>
+						<a class="mel-cta" href={latest ? latest.url : RELEASES_URL} download={latest ? '' : undefined}>
+							<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3v12M6.5 10l5.5 5.5 5.5-5.5M4 20h16"></path></svg>
+							<span>
+								{
+									latest ? (
+										<>
+											<span class="mel-cta__label">Download Melange {latest.version}</span>
+											<span class="mel-cta__file">{fileName} · Windows</span>
+										</>
+									) : (
+										<>
+											<span class="mel-cta__label">Download from GitHub Releases</span>
+											<span class="mel-cta__file">github.com/JaminB/melange/releases</span>
+										</>
+									)
+								}
+							</span>
+						</a>
+					</div>
+
+					<div class="mel-dl__head">
+						<span class="mel-dl__icon" aria-hidden="true">
+							<svg class="mel-burst" aria-hidden="true" focusable="false" viewBox="0 0 64 64" set:html={burst} />
+							<svg class="mel-crate" aria-hidden="true" focusable="false" viewBox="0 0 64 64" set:html={crate} />
+						</span>
+						<div class="mel-dl__meta">
+							{
+								latest ? (
+									<>
+										<span class="mel-pill">Latest</span>
+										<span><b>{sizeMb}</b></span>
+										<span>
+											Released <time datetime={latest.publishedAt}>{released}</time>
+										</span>
+										<span>Steam build #{GAME_BUILD}</span>
+									</>
+								) : (
+									<span>Steam build #{GAME_BUILD}</span>
+								)
+							}
+						</div>
+					</div>
+
+					{
+						latest?.sha256 && (
+							<dl class="mel-sha">
+								<dt class="mel-sha__label">SHA-256</dt>
+								<dd class="mel-sha__row">
+									<code class="mel-sha__value" id="mel-sha">{latest.sha256}</code>
+									<button class="mel-copy" type="button" id="mel-copy-sha" aria-label="Copy SHA-256" hidden>
+										Copy
+									</button>
+									<span class="sr-only" role="status" id="mel-copy-status"></span>
+								</dd>
+							</dl>
+						)
+					}
+
+					<p class="mel-dl__req">
+						Needs the Steam release of the game, build #{GAME_BUILD}. Signed; see <a href={doc('code-signing')}>Code signing</a>.
+					</p>
+					<ul class="mel-dl__links">
+						<li><a href={doc('install')}>Install guide</a></li>
+						<li><a href={doc('changelog')}>Release notes</a></li>
+						<li><a href={RELEASES_URL}>All releases</a></li>
+						<li><a href={doc('code-signing')}>Verify the hash</a></li>
+					</ul>
+				</section>
+			</div>
+
+			<div class="mel-divider mel-divider--sand" aria-hidden="true"></div>
+		</section>
+
+		<section class="mel-band" aria-labelledby="inside-title">
+			<div class="mel-wrap">
+				<h2 class="mel-band__title" id="inside-title">What's inside</h2>
+				<ul class="mel-tiles">
+					{
+						tiles.map((t) => (
+							<li class="mel-tile mel-tile--link">
+								<svg class="mel-glyph" aria-hidden="true">
+									<use href={`#${t.id}`} />
+								</svg>
+								<span>
+									<a class="mel-tile__name" href={t.href}>
+										{t.name}
+									</a>
+									<span class="mel-tile__what">{t.what}</span>
+								</span>
+							</li>
+						))
+					}
+				</ul>
+			</div>
+		</section>
+
+		<section class="mel-section" aria-labelledby="features-title">
+			<div class="mel-wrap">
+				<h2 class="mel-section__title mel-display" id="features-title">What it does</h2>
+				<div class="mel-cards mel-cards--3">
+					{
+						features.map((f) => (
+							<article class="mel-card">
+								<div class="mel-card__sky">
+									<span class="mel-card__ridge" aria-hidden="true" />
+									{f.art === 'mirage' ? (
+										<svg class="mel-card__crate mel-card__glyph" aria-hidden="true" focusable="false">
+											<use href="#mirage" />
+										</svg>
+									) : (
+										<svg class="mel-card__crate" aria-hidden="true" focusable="false" viewBox="0 0 64 64" set:html={f.art === 'burst' ? burst : crate} />
+									)}
+									<span class="mel-card__version">{f.tag}</span>
+								</div>
+								<div class="mel-card__body">
+									<h3 class="mel-card__title">
+										<a href={f.href}>{f.title}</a>
+									</h3>
+									<p class="mel-card__desc">{f.desc}</p>
+									<div class="mel-card__foot">
+										<span>Docs</span>
+										<span class="mel-btn" aria-hidden="true">
+											{f.cta}
+										</span>
+									</div>
+								</div>
+							</article>
+						))
+					}
+				</div>
+			</div>
+		</section>
+
+		<section class="mel-section mel-section--modders" aria-labelledby="modders-title">
+			<div class="mel-wrap">
+				<h2 class="mel-section__title mel-display" id="modders-title">For modders</h2>
+				<p class="mel-section__lede">Write a plugin in Lua or C++, describe it in a manifest, and publish it to the Store.</p>
+				<ul class="mel-tiles mel-tiles--wide">
+					{
+						modders.map((t) => (
+							<li class="mel-tile mel-tile--link">
+								<svg class="mel-glyph" aria-hidden="true">
+									<use href={`#${t.id}`} />
+								</svg>
+								<span>
+									<a class="mel-tile__name" href={t.href}>
+										{t.name}
+									</a>
+									<span class="mel-tile__what">{t.what}</span>
+								</span>
+							</li>
+						))
+					}
+				</ul>
+			</div>
+		</section>
+
+		<section class="mel-section" aria-labelledby="launcher-title">
+			<div class="mel-wrap">
+				<h2 class="mel-section__title mel-display" id="launcher-title">The launcher</h2>
+				<p class="mel-section__lede">
+					<code>Melange.exe</code> installs and updates Melange, turns plugins on and off, and starts the game.
+				</p>
+				<figure class="mel-shot">
+					<img
+						src={`${BASE}/images/launcher/home.png`}
+						width="2240"
+						height="664"
+						loading="lazy"
+						decoding="async"
+						alt="Melange.exe's Home page: the game folder, the loader, the installed Melange and the plugins that are on, with Launch game at the top"
+					/>
+				</figure>
+			</div>
+		</section>
+	</div>
+</StarlightPage>
+
+<script>
+	// Copy the SHA-256 (the button stays hidden without JavaScript or the Clipboard API).
+	const btn = document.getElementById('mel-copy-sha');
+	const value = document.getElementById('mel-sha');
+	const status = document.getElementById('mel-copy-status');
+	if (btn && value && status && navigator.clipboard) {
+		btn.hidden = false;
+		btn.addEventListener('click', () => {
+			navigator.clipboard.writeText(value.textContent?.trim() ?? '').then(
+				() => {
+					btn.textContent = 'Copied';
+					status.textContent = 'SHA-256 copied';
+					setTimeout(() => {
+						btn.textContent = 'Copy';
+						status.textContent = '';
+					}, 1600);
+				},
+				() => {
+					btn.textContent = 'Select it';
+				},
+			);
+		});
+	}
+</script>

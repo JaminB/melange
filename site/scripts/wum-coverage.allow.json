@@ -1,0 +1,17 @@
+{
+  "undocumented": [],
+  "unregistered": [
+    {
+      "name": "wum.mod.onReload",
+      "reason": "Set by the mod itself (a hook Melange calls after hot reload), so no C++ code registers it."
+    },
+    {
+      "name": "wum.sim.hash",
+      "reason": "Sim VM (Lua 5.0) API mentioned in the wum.wormsign section; the client sandbox scan does not cover src/lua/sim."
+    },
+    {
+      "name": "wum.sim.storage",
+      "reason": "Sim VM (Lua 5.0) API mentioned in the wum.wormsign section; the client sandbox scan does not cover src/lua/sim."
+    }
+  ]
+}

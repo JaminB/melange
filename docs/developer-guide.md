@@ -828,3 +828,15 @@ text file staged for the zip contains a local `C:\Users` path. The zip has `mela
 install steps. The version comes from `project(Melange VERSION x.y.z)` in `CMakeLists.txt`. `out\` is not
 committed; the script prints the zip's SHA-256 so it can be posted alongside a GitHub release, and writes the
 update manifest `out\melange-<version>.json` that must be attached to the release with the zip.
+
+### Documentation site
+
+`site\` is an Astro Starlight site, published to <https://jaminb.github.io/melange/> by
+`.github/workflows/pages.yml` on every push to `main` and as the last job of `release.yml`. `docs\*.md`, `README.md`
+and `CODE_SIGNING.md` stay the source of truth: the site's prebuild syncs them (and renders the docs of every tag from
+`v0.8.0` on, the `*.schema.json` references and the changelog from GitHub Releases) into gitignored folders, so edit
+the docs here, never under `site\`. The site is the one place npm runs, only in that workflow, and nothing it
+installs ships in a release. To preview it locally: `cd site; npm ci; npm run dev`. `npm run check` (also run on pull
+requests that touch `docs\`, `src\lua\` or `site\`) fails when a function registered under `wum.*` in
+`src\lua\` isn't documented in `docs\lua-api.md`; intentional internals go in `site\scripts\wum-coverage.allow.json`
+with a reason.

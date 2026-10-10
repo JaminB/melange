@@ -1,0 +1,17 @@
+---
+// The site's main nav (.mel-nav): Download first (the landing page's download card), the docs, the other site.
+interface Props {
+	class?: string;
+}
+
+const BASE = import.meta.env.BASE_URL.replace(/\/+$/, ''); // "/melange"
+const path = Astro.url.pathname.replace(/\/+$/, '');
+const onLanding = path === BASE || path === '';
+const inDocs = !onLanding;
+---
+
+<nav class:list={['mel-nav', Astro.props.class]} aria-label="Main">
+	<a href={`${BASE}/#download`} aria-current={onLanding ? 'page' : undefined}>Download</a>
+	<a href={`${BASE}/install/`} aria-current={inDocs ? 'true' : undefined} data-mel-docs>Docs</a>
+	<a href="https://jaminb.github.io/melange-plugins/">Plugins</a>
+</nav>

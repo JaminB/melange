@@ -1,0 +1,931 @@
+/* ==========================================================================
+   MELANGE FIELD MANUAL — shared Starlight theme
+   Used by jaminb.github.io/melange and jaminb.github.io/melange-plugins.
+
+   Copy to:   site/src/styles/theme.css   (this file)
+              site/src/assets/*.svg       (icons, glyphs, mark)
+   astro.config.mjs → starlight({ customCss: [
+     '@fontsource/fredoka/600.css',
+     '@fontsource/fredoka/700.css',
+     '@fontsource-variable/inter',
+     '@fontsource-variable/jetbrains-mono',
+     './src/styles/theme.css',
+   ] })
+
+   Rule of the house: the cartoon lives in the CHROME (header, hero, download
+   card, dividers, catalogue cards, footer). Docs pages read like a calm
+   field manual: Inter body, flat 1px code frames, zebra tables. The only
+   cartoon tell inside a docs page is the short grass bar under each h2.
+
+   Starlight convention: bare :root holds DARK values and
+   [data-theme='light'] overrides them. Dark is also stated explicitly on
+   :root[data-theme='dark'] so the toggle always wins.
+
+   --------------------------------------------------------------------------
+   CONTRAST (WCAG 2.x relative luminance, computed, not eyeballed)
+   LIGHT                                              ratio
+     body   #1C2530 on page #FBFCF7                  15.01
+     strong #0B1118 on page                          18.39
+     muted  #45505C on page                           7.97
+     link   #2E6B12 on page                           6.31
+     link   #2E6B12 on sidebar #F5F7F1                6.03
+     body   #1C2530 on code/inline #EEF2EA           13.65
+     body   #1C2530 on zebra/sidebar #F5F7F1         14.34
+     white  #FFFFFF on accent #2E6B12 (invert)        6.51
+     strong #0B1118 on accent-low #D9F0CB            15.60
+     hero   #1C2530 on sky #8FD3F7 / #BFE6FA     9.46 / 11.73
+     CTA    #0F1A07 on #FFD34D                       12.53
+     DeepD  #6B3D00 on #FFF1D6                        8.20
+     ochre  #8A4B00 on page                           6.60
+     tile   #1C2530 on #FFF8EA / muted #5A4A33   14.64 / 8.07
+     footer #FFF6E6 on #6E4526 / link #FFE08A     7.70 / 6.40
+     asides X-high on X-low: blue 9.50, green 8.47, orange 8.20,
+            red 8.80, purple 9.24; body #0B1118 on any X-low ≥ 15.4
+     hero title: solid ink fill #1C2530 on sky 9.46:1 or better
+            (large text); the 2px offset shadow is decoration only.
+   DARK
+     body   #DCE4EA on page #11181F                  13.91
+     strong #FFFFFF on page                          17.88
+     muted  #9FB0BE on page                           8.03
+     link   #8BD66A on page / sidebar #141C24    10.15 / 9.76
+     body   #DCE4EA on code #18222C                  12.52
+     invert #0E1A08 on accent #8BD66A                10.19
+     strong #FFFFFF on accent-low #1D3A12            12.60
+     hero   #F4F7F9 on night sky #0E1730 / #1F3A5C  16.49 / 10.74
+     CTA    #0F1A07 on #FFD34D                       12.53
+     DeepD  #FFD99A on #3A2A0E                       10.31
+     ochre  #F0C27F on page                          10.84
+     tile   #F3EAD8 on #2C2418 / muted #C9B898   12.80 / 7.86
+     footer #F4EBDD on #2A1D12 / link #FFD99A    13.85 / 12.19
+     asides X-high on X-low: blue 10.60, green 10.59, orange 10.31,
+            red 9.91, purple 10.63
+   Non-text: ochre ripple #B8661A on white 4.24 / #E0A458 on #18222C 7.38.
+   Dark card outline #3A4A58 is decorative (the card surface #18222C is
+   already distinct); it is lightened from near-black so the cartoon edge
+   still reads at night.
+   ========================================================================== */
+
+
+/* --------------------------------------------------------------------------
+   1. Mode-independent tokens
+   -------------------------------------------------------------------------- */
+:root {
+  /* Type (all OFL) */
+  --sl-font: 'Inter Variable', 'Inter', system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+  --sl-font-mono: 'JetBrains Mono Variable', 'JetBrains Mono', ui-monospace, 'Cascadia Code', Consolas, monospace;
+  --sl-font-system-mono: ui-monospace, 'Cascadia Code', 'SF Mono', Consolas, 'Liberation Mono', monospace;
+  --mel-font-display: 'Fredoka', 'Nunito', ui-rounded, 'Trebuchet MS', system-ui, sans-serif;
+
+  --sl-text-body: 1.0625rem;          /* 17px for long reads */
+  --sl-line-height: 1.7;
+  --sl-line-height-headings: 1.2;
+  --sl-content-width: 46rem;          /* ~72ch measure */
+  --sl-text-h1: 2.25rem;
+  --sl-text-h2: 1.625rem;
+  --sl-text-h3: 1.25rem;
+  --sl-text-h4: 1.0625rem;
+  --sl-text-h5: 1rem;
+
+  /* Shape */
+  --mel-outline-w: 3px;               /* the thick cartoon outline (chrome only) */
+  --mel-radius-sm: 8px;
+  --mel-radius: 12px;
+  --mel-radius-lg: 18px;
+  --mel-radius-xl: 22px;
+  --mel-gutter: 16px;
+  --mel-page-max: 72rem;
+
+  /* Motion */
+  --mel-bounce: cubic-bezier(.34, 1.56, .64, 1);
+  --mel-press: 3px;                   /* how far a button sinks when pressed */
+
+  /* Fixed brand hues (same in both modes) */
+  --mel-cta: #FFD34D;                 /* RESERVED: the download CTA is the only yellow thing */
+  --mel-cta-hover: #FFDD70;
+  --mel-cta-ink: #0F1A07;             /* 12.53:1 on --mel-cta */
+  --mel-burst-outer: #FF7A3D;
+  --mel-burst-inner: #FFA94D;         /* amber, deliberately not CTA yellow */
+  --mel-burst-core: #FFF1DE;
+  --mel-spice: #E08A2E;               /* crystal in the mark */
+  --mel-spice-hi: #F7C987;
+
+  /* Terrain shapes, used as masks (1200x64 tile, repeats seamlessly) */
+  --mel-terrain-ground: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 1200 64'%3E%3Cpath d='M0 26C40 23 110 16 168 22C180 24 186 28 192 34C206 50 246 52 262 36C270 28 282 22 300 21C380 18 460 10 560 16S700 28 750 24C760 23 768 26 774 32C790 48 830 48 846 34C854 26 866 21 890 20C980 18 1080 30 1140 27C1160 26.5 1180 27.5 1200 26V64H0Z'/%3E%3Cpath d='M214 12l7-4 5 5-4 6-7-1zM238 3l6 1v6l-6 1-3-4zM796 9l6-3 4 5-5 5-6-2zM826 15l5-2 3 4-4 3z'/%3E%3C/svg%3E");
+  --mel-terrain-grass: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 1200 64'%3E%3Cpath d='M-6 26.5C40 23 110 16 168 22Q178 24 184 27M270 28Q282 22 300 21C380 18 460 10 560 16S700 28 750 24Q760 23 765 25M854 26Q866 21 890 20C980 18 1080 30 1140 27C1160 26.5 1180 27.5 1206 26' fill='none' stroke='black' stroke-width='7' stroke-linecap='round'/%3E%3C/svg%3E");
+  --mel-terrain-ridge: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 360 32'%3E%3Cpath d='M0 16C30 10 60 6 100 11S170 22 210 17 290 6 330 11C342 12.5 352 15 360 16V32H0Z'/%3E%3C/svg%3E");
+}
+
+
+/* --------------------------------------------------------------------------
+   2. DARK — "night battle" (Starlight default)
+   -------------------------------------------------------------------------- */
+:root,
+:root[data-theme='dark'] {
+  /* Starlight accent ramp: grass at night */
+  --sl-color-accent-low:  #1D3A12;
+  --sl-color-accent:      #8BD66A;
+  --sl-color-accent-high: #D4F5C2;
+
+  /* Starlight gray ramp (white = strongest ink, black = page) */
+  --sl-color-white:  #FFFFFF;
+  --sl-color-gray-1: #EEF2F5;
+  --sl-color-gray-2: #DCE4EA;   /* body text */
+  --sl-color-gray-3: #9FB0BE;   /* muted */
+  --sl-color-gray-4: #5E6E7C;
+  --sl-color-gray-5: #2A3743;   /* hairlines */
+  --sl-color-gray-6: #18222C;   /* code / surfaces */
+  --sl-color-gray-7: #141C24;
+  --sl-color-black:  #11181F;   /* page */
+
+  /* Starlight semantic tokens */
+  --sl-color-text: var(--sl-color-gray-2);
+  --sl-color-text-accent: var(--sl-color-accent);   /* links: 10.15:1 */
+  --sl-color-text-invert: #0E1A08;                  /* on accent: 10.19:1 */
+  --sl-color-bg: var(--sl-color-black);
+  --sl-color-bg-nav: #141C24;
+  --sl-color-bg-sidebar: #141C24;
+  --sl-color-bg-inline-code: #1E2A36;
+  --sl-color-bg-accent: var(--sl-color-accent);
+  --sl-color-hairline-light: #2A3743;
+  --sl-color-hairline: #22303B;
+  --sl-color-hairline-shade: #0B1118;
+  --sl-color-backdrop-overlay: rgb(5 8 15 / .66);
+
+  /* Aside / badge ramps (Starlight: note=blue, tip=purple, caution=orange, danger=red) */
+  --sl-color-orange-low: #3A2A0E; --sl-color-orange: #E0A458; --sl-color-orange-high: #FFD99A;
+  --sl-color-green-low:  #1D3A12; --sl-color-green:  #8BD66A; --sl-color-green-high:  #D4F5C2;
+  --sl-color-blue-low:   #142A4D; --sl-color-blue:   #6FB4FF; --sl-color-blue-high:   #C4E1FF;
+  --sl-color-purple-low: #2E2050; --sl-color-purple: #B79BFF; --sl-color-purple-high: #E2D6FF;
+  --sl-color-red-low:    #4A1414; --sl-color-red:    #FF6B5E; --sl-color-red-high:    #FFC4BD;
+
+  /* Chrome tokens */
+  --mel-outline: #3A4A58;        /* card + button outlines, lightened so they read at night */
+  --mel-icon-ink: #0B1118;       /* strokes inside illustrations (they carry their own fills) */
+  --mel-hard-shadow: #05080F;    /* offset shadows: darker than the page */
+  --mel-card: #18222C;
+  --mel-sky-top: #0E1730;
+  --mel-sky-bottom: #1F3A5C;
+  --mel-hero-ink: #F4F7F9;
+  --mel-title-fill: #F4F7F9;
+  --mel-stars: #E6ECF7;
+  --mel-celestial: #F2EBD3;      /* moon */
+  --mel-celestial-spot: #D6CBA8; /* moon craters */
+  --mel-cloud: #2E4566;          /* storm-blue */
+  --mel-cloud-shade: #22364F;
+  --mel-ground: #4A3020;
+  --mel-grass: #4E9A2E;
+  --mel-crate: #D99234;
+  --mel-crate-shade: #A86A1B;
+  --mel-sand: #221B12;           /* band background */
+  --mel-sand-tile: #2C2418;
+  --mel-sand-ink: #F3EAD8;
+  --mel-sand-muted: #C9B898;
+  --mel-ochre: #E0A458;          /* rings, chip edges (non-text) */
+  --mel-ochre-text: #F0C27F;
+  --mel-warn-bg: #3A2A0E;
+  --mel-warn-ink: #FFD99A;
+  --mel-warn-edge: #E0A458;
+  --mel-footer-bg: #2A1D12;
+  --mel-footer-ink: #F4EBDD;
+  --mel-footer-link: #FFD99A;
+}
+
+
+/* --------------------------------------------------------------------------
+   3. LIGHT — "day skirmish"
+   -------------------------------------------------------------------------- */
+:root[data-theme='light'],
+[data-theme='light'] ::backdrop {
+  --sl-color-accent-low:  #D9F0CB;
+  --sl-color-accent:      #2E6B12;
+  --sl-color-accent-high: #1E4A0B;
+
+  --sl-color-white:  #0B1118;
+  --sl-color-gray-1: #141B24;
+  --sl-color-gray-2: #1C2530;   /* body text */
+  --sl-color-gray-3: #45505C;   /* muted */
+  --sl-color-gray-4: #8C97A1;
+  --sl-color-gray-5: #D3DACE;   /* hairlines */
+  --sl-color-gray-6: #EEF2EA;   /* code / surfaces */
+  --sl-color-gray-7: #F5F7F1;
+  --sl-color-black:  #FBFCF7;   /* page: warm paper, not pure white */
+
+  --sl-color-text: var(--sl-color-gray-2);
+  --sl-color-text-accent: var(--sl-color-accent);   /* links: 6.31:1 */
+  --sl-color-text-invert: #FFFFFF;                  /* on accent: 6.51:1 */
+  --sl-color-bg: var(--sl-color-black);
+  --sl-color-bg-nav: #FBFCF7;
+  --sl-color-bg-sidebar: #F5F7F1;
+  --sl-color-bg-inline-code: #EEF2EA;
+  --sl-color-bg-accent: var(--sl-color-accent);
+  --sl-color-hairline-light: #E3E8DD;
+  --sl-color-hairline: #D3DACE;
+  --sl-color-hairline-shade: #D3DACE;
+  --sl-color-backdrop-overlay: rgb(28 37 48 / .4);
+
+  --sl-color-orange-low: #FFF1D6; --sl-color-orange: #B8661A; --sl-color-orange-high: #6B3D00;
+  --sl-color-green-low:  #D9F0CB; --sl-color-green:  #2E6B12; --sl-color-green-high:  #1E4A0B;
+  --sl-color-blue-low:   #DCEEFB; --sl-color-blue:   #1E6FD0; --sl-color-blue-high:   #0F3A70;
+  --sl-color-purple-low: #EDE4FB; --sl-color-purple: #6D46B8; --sl-color-purple-high: #432684;
+  --sl-color-red-low:    #FFE1DC; --sl-color-red:    #C42B1C; --sl-color-red-high:    #7A1509;
+
+  --mel-outline: #1C2530;
+  --mel-icon-ink: #1C2530;
+  --mel-hard-shadow: #1C2530;
+  --mel-card: #FFFFFF;
+  --mel-sky-top: #8FD3F7;
+  --mel-sky-bottom: #BFE6FA;
+  --mel-hero-ink: #1C2530;
+  --mel-title-fill: #1C2530;     /* hero h1: solid ink, never white-with-outline */
+  --mel-stars: transparent;
+  --mel-celestial: #FFA94D;      /* sun: amber, never CTA yellow */
+  --mel-celestial-spot: transparent;
+  --mel-cloud: #FFFFFF;
+  --mel-cloud-shade: #CFE3F0;
+  --mel-ground: #8A5A33;
+  --mel-grass: #5CB338;
+  --mel-crate: #E9A23B;
+  --mel-crate-shade: #C27A1E;
+  --mel-sand: #F6E3BC;
+  --mel-sand-tile: #FFF8EA;
+  --mel-sand-ink: #1C2530;
+  --mel-sand-muted: #5A4A33;
+  --mel-ochre: #B8661A;
+  --mel-ochre-text: #8A4B00;
+  --mel-warn-bg: #FFF1D6;
+  --mel-warn-ink: #6B3D00;
+  --mel-warn-edge: #B8661A;
+  --mel-footer-bg: #6E4526;
+  --mel-footer-ink: #FFF6E6;
+  --mel-footer-link: #FFE08A;
+}
+
+
+/* --------------------------------------------------------------------------
+   4. Starlight chrome (header, sidebar) — light touch
+   -------------------------------------------------------------------------- */
+::selection { background: var(--sl-color-accent-low); color: var(--sl-color-white); }
+
+/* The thick ink rule under the header is chrome; docs content never gets one */
+header.header { border-bottom: var(--mel-outline-w) solid var(--mel-outline); }
+
+.site-title {
+  font-family: var(--mel-font-display);
+  font-weight: 700;
+  letter-spacing: .005em;
+  color: var(--sl-color-white);
+}
+.site-title img { height: 2.25rem; width: auto; }
+
+/* Sidebar: group headers are small caps in Inter, optionally led by a codename glyph */
+.sidebar-content .group-label,
+.sidebar-content summary .large {
+  display: inline-flex;
+  align-items: center;
+  gap: .45em;
+}
+.sidebar-content summary .large {
+  font: 650 .78rem/1.2 var(--sl-font);
+  letter-spacing: .08em;
+  text-transform: uppercase;
+  color: var(--sl-color-gray-3);
+}
+.sidebar-content summary .mel-glyph { color: var(--sl-color-text-accent); }
+.sidebar-content a[aria-current='page'],
+.sidebar-content a[aria-current='page']:hover,
+.sidebar-content a[aria-current='page']:focus {
+  background: var(--sl-color-accent-low);
+  color: var(--sl-color-white);
+  font-weight: 600;
+  box-shadow: inset 3px 0 0 var(--sl-color-accent);
+}
+
+
+/* --------------------------------------------------------------------------
+   5. Docs content — calm zone
+   -------------------------------------------------------------------------- */
+/* Fredoka on h1/h2 ONLY. Never outlined in docs. */
+h1#_top,
+.sl-markdown-content :is(h1, h2) {
+  font-family: var(--mel-font-display);
+  font-weight: 700;
+  letter-spacing: .005em;
+  color: var(--sl-color-white);
+}
+h1#_top { line-height: 1.15; }
+
+/* The single cartoon tell inside docs: a short grass bar under h2 */
+.sl-markdown-content h2::after {
+  content: '';
+  display: block;
+  width: 72px;
+  height: 8px;
+  margin-top: .4rem;
+  border-radius: 4px;
+  background: var(--mel-grass);
+  border: 2px solid var(--mel-outline);
+  box-sizing: border-box;
+}
+
+/* h3 and deeper drop back to Inter so long reference pages scan quietly */
+.sl-markdown-content :is(h3, h4, h5, h6) {
+  font-family: var(--sl-font);
+  font-weight: 650;
+  letter-spacing: -.005em;
+  color: var(--sl-color-white);
+}
+
+/* Links: accent, comfortable underline, no fat borders */
+.sl-markdown-content a:not(:where(.not-content *, .sl-link-button, .mel-btn, .mel-cta)) {
+  color: var(--sl-color-text-accent);
+  text-decoration-thickness: 1px;
+  text-underline-offset: .18em;
+}
+.sl-markdown-content a:not(:where(.not-content *)):hover { text-decoration-thickness: 2px; }
+
+/* Inline code */
+.sl-markdown-content :not(pre) > code {
+  font-size: .9em;
+  background: var(--sl-color-bg-inline-code);
+  border: 1px solid var(--sl-color-hairline);
+  border-radius: 5px;
+  padding: .1em .35em;
+}
+
+/* Code blocks: flat 1px frames (also set expressiveCode.styleOverrides, see STYLE.md) */
+.expressive-code .frame { box-shadow: none !important; }
+.expressive-code .frame pre,
+.sl-markdown-content pre:not(.expressive-code pre) {
+  border: 1px solid var(--sl-color-hairline) !important;
+  border-radius: var(--mel-radius-sm);
+}
+
+/* Tables: zebra, tabular figures, hairlines only */
+.sl-markdown-content table {
+  font-variant-numeric: tabular-nums;
+  border-collapse: collapse;
+}
+.sl-markdown-content :is(th, td) { border-bottom: 1px solid var(--sl-color-hairline); }
+.sl-markdown-content th { background: var(--sl-color-gray-6); font-weight: 650; color: var(--sl-color-white); }
+.sl-markdown-content tbody tr:nth-child(even) td { background: var(--sl-color-gray-7); }
+
+/* Asides: Starlight already draws a 4px start border from our ramps; just round the far corners */
+.starlight-aside { border-radius: 0 var(--mel-radius-sm) var(--mel-radius-sm) 0; }
+.starlight-aside__title { font-weight: 650; }
+
+/* Breadcrumbs (custom component). Links are accent-coloured and underlined;
+   the current page is a plain muted span, so the two never look alike. */
+.mel-crumbs {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: .35em;
+  margin: 0 0 .4rem;
+  font-size: .85rem;
+  color: var(--sl-color-gray-3);
+}
+.mel-crumbs a { color: var(--sl-color-text-accent); text-decoration: underline; text-decoration-thickness: 1px; text-underline-offset: .18em; }
+.mel-crumbs a:hover { text-decoration-thickness: 2px; }
+.mel-crumbs [aria-current] { color: var(--sl-color-gray-3); text-decoration: none; }
+.mel-crumbs .mel-glyph { color: var(--sl-color-text-accent); }
+
+
+/* --------------------------------------------------------------------------
+   6. Utilities
+   -------------------------------------------------------------------------- */
+.mel-display { font-family: var(--mel-font-display); font-weight: 700; letter-spacing: .005em; }
+
+/* Hero display type. HERO h1 ONLY — never docs headings.
+   Solid ink fill (light) / light fill (dark), Fredoka 700, and at most a
+   subtle 2px offset shadow in the outline colour. No text stroke and no
+   white fill with a dark outline: bubbly outlined lettering next to the
+   game's name would imitate its wordmark. (Class name kept for compatibility.) */
+.mel-outlined {
+  font-family: var(--mel-font-display);
+  font-weight: 700;
+  color: var(--mel-title-fill);
+  text-shadow: 2px 2px 0 var(--mel-outline);
+  letter-spacing: .01em;
+}
+@media (prefers-contrast: more) {
+  .mel-outlined { color: var(--mel-hero-ink); text-shadow: none; }
+}
+
+/* Codename glyphs. Two ways to use them:
+   1) inline sprite:  <svg class="mel-glyph"><use href="/glyphs.svg#erg"/></svg>
+   2) CSS mask:       <span class="mel-glyph" data-glyph="erg"></span>
+   Use in sidebar group headers, breadcrumbs, catalogue chips and the tile band.
+   Never inside running prose. */
+.mel-glyph {
+  display: inline-block;
+  flex: none;
+  width: 1.15em;
+  height: 1.15em;
+  vertical-align: -.2em;
+  color: currentColor;
+  fill: none;
+  stroke: currentColor;
+}
+span.mel-glyph[data-glyph] {
+  background: currentColor;
+  -webkit-mask: center / contain no-repeat;
+          mask: center / contain no-repeat;
+}
+/* URLs are written per rule (not via a custom property) so Vite rewrites and
+   fingerprints them, and they resolve relative to src/styles/. */
+span.mel-glyph[data-glyph='spice']       { -webkit-mask-image: url('../assets/glyph-spice.svg');       mask-image: url('../assets/glyph-spice.svg'); }
+span.mel-glyph[data-glyph='erg']         { -webkit-mask-image: url('../assets/glyph-erg.svg');         mask-image: url('../assets/glyph-erg.svg'); }
+span.mel-glyph[data-glyph='thumper']     { -webkit-mask-image: url('../assets/glyph-thumper.svg');     mask-image: url('../assets/glyph-thumper.svg'); }
+span.mel-glyph[data-glyph='oasis']       { -webkit-mask-image: url('../assets/glyph-oasis.svg');       mask-image: url('../assets/glyph-oasis.svg'); }
+span.mel-glyph[data-glyph='wormsign']    { -webkit-mask-image: url('../assets/glyph-wormsign.svg');    mask-image: url('../assets/glyph-wormsign.svg'); }
+span.mel-glyph[data-glyph='sieve']       { -webkit-mask-image: url('../assets/glyph-sieve.svg');       mask-image: url('../assets/glyph-sieve.svg'); }
+span.mel-glyph[data-glyph='mirage']      { -webkit-mask-image: url('../assets/glyph-mirage.svg');      mask-image: url('../assets/glyph-mirage.svg'); }
+span.mel-glyph[data-glyph='caravan']     { -webkit-mask-image: url('../assets/glyph-caravan.svg');     mask-image: url('../assets/glyph-caravan.svg'); }
+span.mel-glyph[data-glyph='deep-desert'] { -webkit-mask-image: url('../assets/glyph-deep-desert.svg'); mask-image: url('../assets/glyph-deep-desert.svg'); }
+
+.mel-wrap {
+  width: 100%;
+  max-width: var(--mel-page-max);
+  margin-inline: auto;
+  padding-inline: var(--mel-gutter);
+  box-sizing: border-box;
+}
+
+/* Chunky secondary button (green, outlined). The yellow CTA is separate. */
+.mel-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: .5em;
+  font: 700 1rem/1 var(--mel-font-display);
+  color: var(--sl-color-text-invert);
+  background: var(--sl-color-accent);
+  border: 2px solid var(--mel-outline);
+  border-radius: var(--mel-radius-sm);
+  box-shadow: 3px 3px 0 var(--mel-hard-shadow);
+  padding: .6em 1em;
+  text-decoration: none;
+  cursor: pointer;
+  transition: transform .14s var(--mel-bounce), box-shadow .14s var(--mel-bounce);
+}
+.mel-btn:hover { transform: translate(-1px, -1px); box-shadow: 4px 4px 0 var(--mel-hard-shadow); }
+.mel-btn:active { transform: translate(2px, 2px); box-shadow: 1px 1px 0 var(--mel-hard-shadow); }
+.mel-btn:focus-visible { outline: 3px solid var(--sl-color-text-accent); outline-offset: 3px; }
+
+/* Starlight's own primary link button picks up the same treatment */
+.sl-link-button.primary {
+  font-family: var(--mel-font-display);
+  font-weight: 700;
+  border: 2px solid var(--mel-outline);
+  box-shadow: 3px 3px 0 var(--mel-hard-shadow);
+}
+
+/* Hide on small phones (used for the hero sub line) */
+@media (max-width: 699.98px) { .mel-hide-sm { display: none !important; } }
+
+
+/* --------------------------------------------------------------------------
+   7. Landing hero — download first
+   -------------------------------------------------------------------------- */
+.mel-hero {
+  position: relative;
+  overflow: hidden;
+  isolation: isolate;
+  color: var(--mel-hero-ink);
+  background:
+    radial-gradient(1.5px 1.5px at 9% 14%,  var(--mel-stars) 99%, transparent),
+    radial-gradient(1.5px 1.5px at 31% 7%,  var(--mel-stars) 99%, transparent),
+    radial-gradient(2px 2px     at 52% 19%, var(--mel-stars) 99%, transparent),
+    radial-gradient(1.5px 1.5px at 74% 9%,  var(--mel-stars) 99%, transparent),
+    radial-gradient(2px 2px     at 93% 28%, var(--mel-stars) 99%, transparent),
+    linear-gradient(180deg, var(--mel-sky-top), var(--mel-sky-bottom));
+}
+.mel-hero__grid {
+  position: relative;
+  z-index: 2;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);     /* no implicit auto track → no 360px overflow */
+  gap: 16px;
+  padding-top: 20px;
+  padding-bottom: 22px;      /* keeps the card's shadow clear of the divider's debris */
+}
+@media (min-width: 880px) {
+  .mel-hero__grid {
+    grid-template-columns: minmax(0, 1.05fr) minmax(0, 1fr);
+    align-items: center;
+    gap: 40px;
+    padding-top: 88px;
+    padding-bottom: 24px;
+  }
+}
+.mel-hero__title {
+  margin: 0;
+  font-size: clamp(2.1rem, 1.2rem + 4vw, 3.6rem);
+  line-height: 1.05;
+  max-width: 14ch;
+}
+.mel-hero__lede {
+  margin: 8px 0 0;
+  font-size: clamp(1.02rem, .95rem + .4vw, 1.2rem);
+  line-height: 1.5;
+  font-weight: 500;
+  max-width: 36ch;
+}
+.mel-hero__sub { margin: 10px 0 0; font-size: .98rem; line-height: 1.55; opacity: .88; max-width: 40ch; }
+
+/* Decorations: chrome only, hidden below 700px so nothing competes with the CTA */
+.mel-deco { position: absolute; z-index: 1; pointer-events: none; color: var(--mel-icon-ink); }
+.mel-celestial {
+  top: 26px; right: 5%;
+  width: 64px; height: 64px;
+  border-radius: 50%;
+  border: 3px solid var(--mel-icon-ink);
+  box-shadow: 4px 4px 0 var(--mel-hard-shadow);
+  background:
+    radial-gradient(circle at 34% 38%, var(--mel-celestial-spot) 0 6px, transparent 7px),
+    radial-gradient(circle at 64% 66%, var(--mel-celestial-spot) 0 4px, transparent 5px),
+    radial-gradient(circle at 66% 30%, var(--mel-celestial-spot) 0 3px, transparent 4px),
+    var(--mel-celestial);
+}
+.mel-cloud { width: 120px; height: auto; animation: mel-drift 38s ease-in-out 3 alternate; }  /* three legs, then rests */
+.mel-cloud--a { top: 18px; left: 3%; }
+.mel-cloud--b { top: 44px; left: 40%; width: 92px; opacity: .9; animation-duration: 52s; animation-direction: alternate-reverse; }
+.mel-hero__crate { bottom: 30px; left: 5%; width: 56px; height: 56px; transform: rotate(-7deg); }
+@keyframes mel-drift { from { transform: translateX(0); } to { transform: translateX(36px); } }
+@media (max-width: 699.98px) { .mel-deco { display: none; } }
+
+
+/* --------------------------------------------------------------------------
+   8. Download card — the most important object on the site
+   -------------------------------------------------------------------------- */
+.mel-dl {
+  position: relative;
+  min-width: 0;
+  background: var(--mel-card);
+  color: var(--sl-color-text);
+  border: var(--mel-outline-w) solid var(--mel-outline);
+  border-radius: var(--mel-radius-xl);
+  box-shadow: 6px 6px 0 var(--mel-hard-shadow);
+  padding: 18px;
+}
+@media (min-width: 480px) { .mel-dl { padding: 22px; } }
+
+/* 1. The CTA comes first */
+.mel-cta-wrap { position: relative; isolation: isolate; }
+.mel-ripple { position: absolute; inset: 0; z-index: -1; pointer-events: none; }
+.mel-ripple i {
+  position: absolute;
+  inset: 0;
+  border: 3px solid var(--mel-ochre);
+  border-radius: calc(var(--mel-radius-lg) + 2px);
+  opacity: 0;
+  animation: mel-ripple 2.7s cubic-bezier(.2, .6, .35, 1) 2;  /* two pulses on load, then still */
+}
+.mel-ripple i:nth-child(2) { animation-delay: .9s; }
+.mel-ripple i:nth-child(3) { animation-delay: 1.8s; border-style: dashed; }
+@keyframes mel-ripple {
+  0%   { inset: 0;     opacity: .9; }
+  100% { inset: -14px; opacity: 0; border-radius: calc(var(--mel-radius-lg) + 14px); }
+}
+
+.mel-cta {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  width: 100%;
+  min-height: 64px;
+  box-sizing: border-box;
+  padding: 12px 18px;
+  background: var(--mel-cta);
+  color: var(--mel-cta-ink);
+  border: var(--mel-outline-w) solid var(--mel-icon-ink);
+  border-radius: var(--mel-radius-lg);
+  box-shadow: 4px 4px 0 var(--mel-hard-shadow);
+  text-decoration: none;
+  text-align: left;
+  transition: transform .14s var(--mel-bounce), box-shadow .14s var(--mel-bounce), background-color .15s;
+}
+.mel-cta:hover { background: var(--mel-cta-hover); transform: translate(-1px, -1px); box-shadow: 5px 5px 0 var(--mel-hard-shadow); }
+.mel-cta:active { transform: translate(var(--mel-press), var(--mel-press)); box-shadow: 1px 1px 0 var(--mel-hard-shadow); }
+.mel-cta:focus-visible { outline: 3px solid var(--sl-color-text-accent); outline-offset: 4px; }
+.mel-cta svg { flex: none; width: 28px; height: 28px; }
+.mel-cta__label { display: block; font: 700 clamp(1.08rem, .75rem + 1.6vw, 1.4rem)/1.1 var(--mel-font-display); }
+@media (max-width: 479.98px) {
+  .mel-dl { padding: 14px; }
+  .mel-cta { gap: 10px; padding: 10px 14px; }
+  .mel-cta svg { width: 24px; height: 24px; }
+}
+.mel-cta__file {
+  display: block;
+  margin-top: 3px;
+  font: 500 .78rem/1.3 var(--sl-font-mono);
+  opacity: .82;
+  overflow-wrap: anywhere;
+}
+
+/* 2. Version head + meta row (beside the exploding crate) */
+.mel-dl__head { display: flex; align-items: center; gap: 22px; margin-top: 20px; padding-left: 8px; min-width: 0; }
+.mel-dl__icon { position: relative; flex: none; width: 44px; height: 44px; color: var(--mel-icon-ink); }
+.mel-dl__icon .mel-burst { position: absolute; inset: -11px; width: 66px; height: 66px; }
+.mel-dl__icon .mel-crate { position: relative; width: 44px; height: 44px; }
+.mel-dl__meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 12px;
+  min-width: 0;
+  font-size: .9rem;
+  color: var(--sl-color-gray-3);
+}
+.mel-dl__meta b { color: var(--sl-color-white); font-weight: 650; }
+.mel-pill {
+  display: inline-block;
+  font: 700 .75rem/1 var(--mel-font-display);
+  letter-spacing: .02em;
+  padding: 5px 9px;
+  border-radius: 999px;
+  border: 2px solid var(--mel-outline);
+  background: var(--sl-color-accent-low);
+  color: var(--sl-color-white);
+}
+
+/* 3. SHA-256: wraps so it can be compared character by character */
+/* <dl class="mel-sha"><dt class="mel-sha__label">SHA-256</dt>
+     <dd class="mel-sha__row"><code class="mel-sha__value">…</code><button class="mel-copy" aria-label="Copy SHA-256">Copy</button></dd></dl> */
+.mel-sha {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 6px;
+  margin: 14px 0 0;
+  padding: 10px 10px 10px 12px;
+  background: var(--sl-color-gray-6);
+  border: 1px solid var(--sl-color-hairline);
+  border-radius: var(--mel-radius-sm);
+}
+.mel-sha__row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: start;
+  gap: 10px;
+  margin: 0;
+}
+.mel-sha__label {
+  margin: 0;
+  font: 650 .7rem/1 var(--sl-font);
+  letter-spacing: .08em;
+  text-transform: uppercase;
+  color: var(--sl-color-gray-3);
+}
+.mel-sha__value {
+  min-width: 0;
+  font: 400 .8rem/1.5 var(--sl-font-mono);
+  color: var(--sl-color-text);
+  overflow-wrap: anywhere;
+  word-break: break-all;
+  background: none;
+  border: 0;
+  padding: 0;
+}
+.mel-copy {
+  align-self: start;
+  font: 700 .82rem/1 var(--mel-font-display);
+  color: var(--sl-color-white);
+  background: var(--mel-card);
+  border: 2px solid var(--mel-outline);
+  border-radius: var(--mel-radius-sm);
+  box-shadow: 2px 2px 0 var(--mel-hard-shadow);
+  padding: 8px 12px;
+  cursor: pointer;
+  transition: transform .14s var(--mel-bounce), box-shadow .14s var(--mel-bounce);
+}
+.mel-copy:active { transform: translate(2px, 2px); box-shadow: 0 0 0 var(--mel-hard-shadow); }
+.mel-copy:focus-visible { outline: 3px solid var(--sl-color-text-accent); outline-offset: 2px; }
+
+/* 4. Requirement + four links */
+.mel-dl__req { margin: 12px 0 0; font-size: .88rem; color: var(--sl-color-gray-3); }
+.mel-dl__links {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 16px;
+  margin: 10px 0 0;
+  padding: 0;
+  list-style: none;
+  font-size: .92rem;
+  font-weight: 550;
+}
+.mel-dl__links a { color: var(--sl-color-text-accent); text-underline-offset: .18em; }
+
+
+/* --------------------------------------------------------------------------
+   9. Terrain divider — destructible ground with blast craters and debris.
+   <div class="mel-divider" aria-hidden="true"></div>
+   The wrapper paints the ink outline (drop-shadow follows the mask shape);
+   ::before is the ground, ::after is the grass lip that skips the craters.
+   -------------------------------------------------------------------------- */
+.mel-divider {
+  --mel-divider-h: 48px;
+  position: relative;
+  height: var(--mel-divider-h);
+  margin-top: -2px;
+  pointer-events: none;
+  filter:
+    drop-shadow(0 -3px 0 var(--mel-icon-ink))
+    drop-shadow(2px 0 0 var(--mel-icon-ink))
+    drop-shadow(-2px 0 0 var(--mel-icon-ink));
+}
+@media (min-width: 880px) { .mel-divider { --mel-divider-h: 64px; } }
+.mel-divider::before,
+.mel-divider::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  -webkit-mask-repeat: repeat-x;     mask-repeat: repeat-x;
+  -webkit-mask-size: auto 100%;      mask-size: auto 100%;
+  -webkit-mask-position: left bottom; mask-position: left bottom;
+}
+.mel-divider::before { background: var(--mel-divider-fill, var(--mel-ground)); -webkit-mask-image: var(--mel-terrain-ground); mask-image: var(--mel-terrain-ground); }
+.mel-divider::after  { background: var(--mel-grass); -webkit-mask-image: var(--mel-terrain-grass); mask-image: var(--mel-terrain-grass); }
+.mel-divider--sand { --mel-divider-fill: var(--mel-sand); }   /* flows into .mel-band */
+
+
+/* --------------------------------------------------------------------------
+   10. Codename tile band — the first section after the download
+   -------------------------------------------------------------------------- */
+.mel-band { background: var(--mel-sand); color: var(--mel-sand-ink); padding: 12px 0 40px; }
+.mel-band__title { margin: 0 0 12px; font: 700 1.35rem/1.2 var(--mel-font-display); color: var(--mel-sand-ink); }
+.mel-tiles {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, 9.5rem), 1fr));
+  gap: 10px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.mel-tile {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+  padding: 10px 12px;
+  background: var(--mel-sand-tile);
+  border: 2px solid var(--mel-outline);
+  border-radius: var(--mel-radius);
+  box-shadow: 3px 3px 0 var(--mel-hard-shadow);
+}
+.mel-tile .mel-glyph { width: 24px; height: 24px; color: var(--mel-ochre-text); }
+.mel-tile__name { display: block; font: 700 1rem/1.15 var(--mel-font-display); color: var(--mel-sand-ink); }
+.mel-tile__what { display: block; font-size: .8rem; line-height: 1.3; color: var(--mel-sand-muted); }
+
+
+/* --------------------------------------------------------------------------
+   11. Catalogue plugin cards (plugins site only — never in docs)
+   -------------------------------------------------------------------------- */
+.mel-cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, 20rem), 1fr));
+  gap: 22px;
+}
+.mel-card {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  overflow: hidden;
+  background: var(--mel-card);
+  color: var(--sl-color-text);
+  border: var(--mel-outline-w) solid var(--mel-outline);
+  border-radius: var(--mel-radius-lg);
+  box-shadow: 4px 4px 0 var(--mel-hard-shadow);
+  transition: transform .18s var(--mel-bounce), box-shadow .18s var(--mel-bounce);
+}
+.mel-card:hover,
+.mel-card:focus-within { transform: translate(-2px, -2px) rotate(-.4deg); box-shadow: 6px 6px 0 var(--mel-hard-shadow); }
+
+/* Sky strip header with a mini terrain ridge, crate on the grass, version pill in the corner */
+.mel-card__sky {
+  position: relative;
+  height: 84px;
+  background:
+    radial-gradient(1.5px 1.5px at 22% 22%, var(--mel-stars) 99%, transparent),
+    radial-gradient(1.5px 1.5px at 58% 14%, var(--mel-stars) 99%, transparent),
+    radial-gradient(1.5px 1.5px at 80% 40%, var(--mel-stars) 99%, transparent),
+    linear-gradient(180deg, var(--mel-sky-top), var(--mel-sky-bottom));
+  border-bottom: var(--mel-outline-w) solid var(--mel-outline);
+}
+.mel-card__ridge {
+  position: absolute;
+  inset: auto 0 0 0;
+  height: 30px;
+  filter: drop-shadow(0 -2.5px 0 var(--mel-icon-ink));
+}
+.mel-card__ridge::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: var(--mel-grass);
+  -webkit-mask: var(--mel-terrain-ridge) left bottom / auto 100% repeat-x;
+          mask: var(--mel-terrain-ridge) left bottom / auto 100% repeat-x;
+}
+.mel-card__crate { position: absolute; left: 14px; bottom: 10px; width: 54px; height: 54px; color: var(--mel-icon-ink); }
+.mel-card__version {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  font: 600 .78rem/1 var(--sl-font-mono);
+  color: var(--sl-color-white);
+  background: var(--mel-card);
+  border: 2px solid var(--mel-outline);
+  border-radius: 999px;
+  padding: 5px 9px;
+}
+.mel-card__body { display: flex; flex-direction: column; gap: 10px; flex: 1; padding: 14px 16px 16px; }
+.mel-card__title { margin: 0; font: 700 1.3rem/1.15 var(--mel-font-display); color: var(--sl-color-white); }
+.mel-card__title a { color: inherit; text-decoration: none; }
+.mel-card__title a::after { content: ''; position: absolute; inset: 0; }  /* whole card clickable */
+.mel-card__by { margin: -6px 0 0; font-size: .85rem; color: var(--sl-color-gray-3); }
+.mel-card__desc { margin: 0; font-size: .97rem; line-height: 1.55; }
+.mel-chips { display: flex; flex-wrap: wrap; gap: 6px; margin: 0; padding: 0; list-style: none; }
+.mel-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font: 600 .75rem/1 var(--sl-font);
+  padding: 5px 9px;
+  border-radius: 999px;
+  background: var(--sl-color-gray-6);
+  border: 1px solid var(--sl-color-hairline-light);
+  color: var(--sl-color-text);
+}
+.mel-chip .mel-glyph { width: 14px; height: 14px; color: var(--sl-color-gray-3); }
+/* Deep Desert (raw memory) is ALWAYS highlighted in ochre */
+.mel-chip--deep {
+  background: var(--mel-warn-bg);
+  color: var(--mel-warn-ink);
+  border: 2px solid var(--mel-warn-edge);
+  font-weight: 700;
+}
+.mel-chip--deep .mel-glyph { color: var(--mel-warn-ink); }
+/* Explanation: <abbr title="…">Deep Desert</abbr> plus an .sr-only span with
+   the same words, so it never relies on title alone. */
+.mel-chip abbr[title] { text-decoration: underline dotted; text-underline-offset: .2em; cursor: help; }
+.mel-card__foot {
+  position: relative;
+  z-index: 1;               /* above the stretched title link */
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-top: auto;
+  padding-top: 12px;
+  border-top: 1px dashed var(--sl-color-hairline-light);
+  font-size: .85rem;
+  color: var(--sl-color-gray-3);
+}
+
+
+/* --------------------------------------------------------------------------
+   12. Header nav (custom Header override) and footer
+   -------------------------------------------------------------------------- */
+.mel-nav { display: flex; align-items: center; gap: 2px; }
+.mel-nav a {
+  font: 600 .95rem/1 var(--mel-font-display);
+  color: var(--sl-color-text);
+  text-decoration: none;
+  padding: 8px 10px;
+  border-radius: var(--mel-radius-sm);
+}
+.mel-nav a:hover { background: var(--sl-color-gray-6); color: var(--sl-color-white); }
+.mel-nav a[aria-current='page'] { background: var(--sl-color-accent-low); color: var(--sl-color-white); }
+
+.mel-footer {
+  background: var(--mel-footer-bg);
+  color: var(--mel-footer-ink);
+  border-top: var(--mel-outline-w) solid var(--mel-icon-ink);
+  padding: 20px 0 28px;
+  font-size: .9rem;
+  line-height: 1.6;
+}
+.mel-footer a { color: var(--mel-footer-link); text-underline-offset: .18em; }
+.mel-footer p { margin: 0 0 6px; }
+.mel-footer__links { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 16px; }
+.mel-footer__tm { font-size: .8rem; opacity: .9; max-width: 60ch; }
+
+
+/* --------------------------------------------------------------------------
+   13. Motion and accessibility guards
+   -------------------------------------------------------------------------- */
+@media (prefers-reduced-motion: reduce) {
+  .mel-cloud,
+  .mel-ripple i { animation: none; }
+  .mel-ripple { display: none; }
+  .mel-cta, .mel-btn, .mel-copy, .mel-card { transition: none; }
+  .mel-cta:hover, .mel-btn:hover { transform: none; }
+  .mel-card:hover, .mel-card:focus-within { transform: none; }
+}
+@media (forced-colors: active) {
+  .mel-cta, .mel-btn, .mel-copy, .mel-dl, .mel-card, .mel-tile { border-color: CanvasText; box-shadow: none; }
+  .mel-divider, .mel-card__ridge { filter: none; }
+  .mel-outlined { text-shadow: none; }
+  span.mel-glyph[data-glyph] { forced-color-adjust: none; background: CanvasText; }
+}

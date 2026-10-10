@@ -145,3 +145,7 @@ jobs:
             if (-not $body.Contains($line)) { gh release edit $env:TAG --notes ($body.TrimEnd() + "`n`n" + $line).Trim() }
           }
           if ($LASTEXITCODE) { exit 1 }
+
+  # When this run succeeds for a tag, pages.yml (on: workflow_run) rebuilds the site so its download button, changelog
+  # and version switcher show the new release. It is not called from here: a job of this run would carry the tag ref,
+  # which the github-pages environment's branch policy (main only) rejects.

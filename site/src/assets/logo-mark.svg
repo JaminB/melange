@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64" role="img" aria-label="Melange">
+  <!-- Melange mark: a faceted spice crystal cradled in an "M" plinth.
+       No creature, no face, no lettering style borrowed from anyone.
+       Outline = currentColor (set color: var(-mel-icon-ink)). Fills read theme vars with light fallbacks. -->
+  <g stroke="currentColor" stroke-width="3" stroke-linejoin="round" stroke-linecap="round">
+    <!-- M plinth -->
+    <path fill="var(--mel-grass, #5CB338)" d="M6 59V42h14l12 9 12-9h14v17H47v-7l-15 7-15-7v7z"/>
+    <!-- crystal: table top, girdle, pavilion point resting in the M notch -->
+    <path fill="var(--mel-spice, #E08A2E)" d="M23 5h18l9 11-18 33L14 16z"/>
+    <path fill="var(--mel-spice-hi, #F7C987)" stroke="none" d="M23 5l-9 11h13z"/>
+    <path fill="none" stroke-width="2.5" d="M14 16h36M23 5l4 11 5 33 5-33 4-11"/>
+  </g>
+</svg>

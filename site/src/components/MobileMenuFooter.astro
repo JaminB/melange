@@ -1,0 +1,28 @@
+---
+// The phone menu's footer: the site nav and the docs version picker (the header hides both below 50rem),
+// then Starlight's own social icons and theme picker.
+import Default from '@astrojs/starlight/components/MobileMenuFooter.astro';
+import NavLinks from './NavLinks.astro';
+import VersionSelect from './VersionSelect.astro';
+---
+
+<div class="mel-mobile-menu">
+	<NavLinks />
+	<VersionSelect />
+</div>
+<Default />
+
+<style>
+	.mel-mobile-menu {
+		display: flex;
+		flex-wrap: wrap;
+		align-items: center;
+		justify-content: space-between;
+		gap: 0.5rem 1rem;
+		padding: 0.75rem 0;
+		border-top: 1px solid var(--sl-color-gray-6);
+	}
+	.mel-mobile-menu :global(.mel-nav) {
+		margin-inline-start: -10px;
+	}
+</style>

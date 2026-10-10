@@ -1,0 +1,60 @@
+---
+// Docs version picker: "Latest (main)", then every released version that has docs (src/data/versions.json,
+// written by scripts/versions.mjs). Each option's value is the URL to go to, worked out at build time:
+// the same page in that version when it exists there, else that version's first page (its index; for the
+// latest docs, the install page). Rendered in the Header override (desktop) and MobileMenuFooter (phones).
+import { getCollection } from 'astro:content';
+import Select from '@astrojs/starlight/components/Select.astro';
+import versionsData from '../data/versions.json';
+
+interface Props {
+	class?: string;
+}
+
+const BASE = import.meta.env.BASE_URL.replace(/\/+$/, ''); // "/melange"
+const VERSION_RE = /^v(\d+\.\d+\.\d+)(?:\/|$)/;
+const LATEST_FIRST = 'install';
+
+// Page ids are the URL paths without the base: "lua-api", "v0.8.0/lua-api", "v0.8.0" (a version index).
+const ids = new Set((await getCollection('docs')).map((e) => e.id.replace(/\/index$/, '')));
+
+let path = decodeURI(Astro.url.pathname);
+if (path.startsWith(BASE)) path = path.slice(BASE.length);
+path = path.replace(/^\/+|\/+$/g, '');
+const m = VERSION_RE.exec(path);
+const current = m ? m[1] : 'main';
+const slug = m ? path.slice(m[0].length).replace(/^\/+/, '') : path;
+
+const href = (id: string) => `${BASE}/${id ? id + '/' : ''}`;
+const latestHref = slug === '' ? href('') : ids.has(slug) ? href(slug) : href(LATEST_FIRST);
+const versionHref = (v: string) => {
+	const id = slug ? `v${v}/${slug}` : `v${v}`;
+	return ids.has(id) ? href(id) : href(`v${v}`);
+};
+
+const versions: string[] = (versionsData as { versions?: string[] }).versions ?? [];
+const options = [
+	{ label: 'Latest (main)', value: latestHref, selected: current === 'main' },
+	...versions.map((v) => ({ label: `v${v}`, value: versionHref(v), selected: current === v })),
+];
+---
+
+{
+	versions.length > 0 && (
+		<mel-version-select class:list={['mel-version', Astro.props.class]}>
+			<Select icon="open-book" label="Documentation version" options={options} width="9.5em" />
+		</mel-version-select>
+	)
+}
+
+<script>
+	class MelVersionSelect extends HTMLElement {
+		connectedCallback() {
+			const select = this.querySelector('select');
+			select?.addEventListener('change', () => {
+				if (select.value) window.location.href = select.value;
+			});
+		}
+	}
+	if (!customElements.get('mel-version-select')) customElements.define('mel-version-select', MelVersionSelect);
+</script>

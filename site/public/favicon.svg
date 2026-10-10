@@ -1,0 +1,15 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64">
+  <!-- Melange favicon: the crystal-on-M mark on a sky tile. Colours are fixed (favicons cannot read page vars);
+       the embedded media query swaps to the night palette for dark browser chrome. -->
+  <style>
+    .tile{fill:#BFE6FA}.ink{stroke:#1C2530}.gem{fill:#E08A2E}.hi{fill:#F7C987}.m{fill:#5CB338}
+    @media (prefers-color-scheme: dark){.tile{fill:#1F3A5C}.ink{stroke:#0B1118}.m{fill:#4E9A2E}}
+  </style>
+  <rect class="tile ink" x="2" y="2" width="60" height="60" rx="14" stroke-width="3"/>
+  <g class="ink" stroke-width="3" stroke-linejoin="round" stroke-linecap="round">
+    <path class="m" d="M9 55V41h12l11 8 11-8h12v14h-9v-6l-14 6-14-6v6z"/>
+    <path class="gem" d="M24 7h16l8 10-16 30-16-30z"/>
+    <path class="hi" stroke="none" d="M24 7l-8 10h12z"/>
+    <path fill="none" stroke-width="2.5" d="M16 17h32M24 7l4 10 4 30 4-30 4-10"/>
+  </g>
+</svg>
