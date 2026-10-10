@@ -321,20 +321,62 @@ std::vector<IconDecl> AssignIcons(const std::vector<std::vector<IconDecl>>& perM
     return acc;
 }
 
+std::vector<VehicleDecl> ParseVehicles(const spice::Manifest& m, std::vector<Error>* errs) {
+    std::vector<VehicleDecl> out;
+    bool ok = true;
+    auto fail = [&](const std::string& what, const std::string& text) {
+        if (errs) errs->push_back({m.id, what + ": " + text});
+        ok = false;
+    };
+    if (m.vehicleMeshes.empty()) return out;
+    if (!m.content) fail("vehicleMeshes", "requires kind: \"content\"");
+    if (m.meshes.empty()) fail("vehicleMeshes", "the mod lists no meshes bank");
+    for (const auto& v : m.vehicleMeshes) {
+        const std::string tag = v.vehicle.empty() ? "vehicleMeshes" : v.vehicle;
+        if (std::find(std::begin(spice::kVehicleKeys), std::end(spice::kVehicleKeys), v.vehicle) == std::end(spice::kVehicleKeys))
+            fail(tag, "not a vehicle this build draws (BomberHelicopter, SuperAirstrike)");
+        for (const auto& o : out)
+            if (o.vehicle == v.vehicle) fail(tag, "listed twice");
+        if (!spice::ValidVehicleMeshName(m.id, v.mesh))
+            fail(tag, "the mesh must be named '" + m.id + ".<Name>' (letters, digits, '.', '_', '-'; at most 96 characters)");
+        out.push_back({m.id, v.vehicle, v.mesh});
+    }
+    if (!ok) out.clear();
+    return out;
+}
+
+std::vector<VehicleDecl> AssignVehicles(const std::vector<std::vector<VehicleDecl>>& perMod, std::vector<Error>* refused) {
+    std::vector<VehicleDecl> acc;
+    for (const auto& mod : perMod) {
+        if (mod.empty()) continue;
+        std::string why;
+        for (const auto& d : mod)
+            for (const auto& a : acc)
+                if (why.empty() && a.vehicle == d.vehicle) why = "vehicleMeshes." + d.vehicle + " is already set by " + a.mod;
+        if (!why.empty()) {
+            if (refused) refused->push_back({mod.front().mod, why});
+            continue;
+        }
+        for (const auto& d : mod) acc.push_back(d);
+    }
+    return acc;
+}
+
 Resolved Resolve(const std::vector<std::vector<CloneDecl>>& clones, const std::vector<std::vector<TextDecl>>& texts,
-                 const std::vector<std::vector<IconDecl>>& icons) {
+                 const std::vector<std::vector<IconDecl>>& icons, const std::vector<std::vector<VehicleDecl>>& vehicles) {
     Resolved r;
-    const size_t n = std::max({clones.size(), texts.size(), icons.size()});
+    const size_t n = std::max({clones.size(), texts.size(), icons.size(), vehicles.size()});
     std::vector<std::string> ids(n);
     for (size_t i = 0; i < n; ++i) {
         if (i < clones.size() && !clones[i].empty()) ids[i] = clones[i].front().mod;
         else if (i < texts.size() && !texts[i].empty()) ids[i] = texts[i].front().mod;
         else if (i < icons.size() && !icons[i].empty()) ids[i] = icons[i].front().mod;
+        else if (i < vehicles.size() && !vehicles[i].empty()) ids[i] = vehicles[i].front().mod;
     }
     auto named = [&](const std::vector<Error>& list, size_t i) {
         return !ids[i].empty() && std::any_of(list.begin(), list.end(), [&](const Error& er) { return er.mod == ids[i]; });
     };
-    // Clone cells first, then renames and icons against the clones that survived. A rename or icon refusal removes
+    // Clone cells first, then renames, icons and vehicle meshes against the clones that survived. A rename, icon or vehicle refusal removes
     // that mod's clones, which can free a cell or a name, so the clone pass runs again. Clone refusals are recomputed
     // every round (a mod refused only because of a mod that is gone is let back in); rename and icon refusals are
     // kept, so the set of removed mods only grows and the loop ends.
@@ -349,6 +391,7 @@ Resolved Resolve(const std::vector<std::vector<CloneDecl>>& clones, const std::v
         // Only clones that will exist block a rename or an icon rule: those of a mod refused for any reason do not count.
         std::vector<std::vector<TextDecl>> tx(n);
         std::vector<std::vector<IconDecl>> ic(n);
+        std::vector<std::vector<VehicleDecl>> vh(n);
         std::vector<std::string> cloneNames;
         for (size_t i = 0; i < n; ++i) {
             if (textOut[i] || named(cloneErrs, i)) continue;
@@ -356,10 +399,12 @@ Resolved Resolve(const std::vector<std::vector<CloneDecl>>& clones, const std::v
                 for (const auto& d : clones[i]) cloneNames.push_back(d.name);
             if (i < texts.size()) tx[i] = texts[i];
             if (i < icons.size()) ic[i] = icons[i];
+            if (i < vehicles.size()) vh[i] = vehicles[i];
         }
         std::vector<Error> textErrs, iconErrs;
         r.texts = AssignText(tx, cloneNames, &textErrs);
         r.icons = AssignIcons(ic, cloneNames, &iconErrs);
+        r.vehicles = AssignVehicles(vh, &iconErrs);
         textErrs.insert(textErrs.end(), iconErrs.begin(), iconErrs.end());
         bool again = false;
         for (size_t i = 0; i < n; ++i)
@@ -386,6 +431,19 @@ void FreezeIcons(std::vector<IconDecl> decls) {
 bool IsIconsFrozen() { return g_iconsFrozen; }
 
 const std::vector<IconDecl>& FrozenIcons() { return g_frozenIcons; }
+
+std::vector<VehicleDecl> g_frozenVehicles;
+bool g_vehiclesFrozen = false;
+
+void FreezeVehicles(std::vector<VehicleDecl> decls) {
+    if (g_vehiclesFrozen) return;
+    g_frozenVehicles = std::move(decls);
+    g_vehiclesFrozen = true;
+}
+
+bool IsVehiclesFrozen() { return g_vehiclesFrozen; }
+
+const std::vector<VehicleDecl>& FrozenVehicles() { return g_frozenVehicles; }
 
 void FreezeText(std::vector<TextDecl> decls) {
     if (g_textFrozen) return;

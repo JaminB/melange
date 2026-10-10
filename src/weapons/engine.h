@@ -26,6 +26,12 @@ bool AssignXString(uintptr_t field, const char* s);
 const char* EnumName(int id);
 bool AddSearchPath(const char* gameRelDir);
 bool AppReady();                                        // [0x96d1cc] is set
+// Vehicle meshes (vehicleMeshes): point the static mesh name of the Airstrike helicopter ("BomberHelicopter") or the Super
+// Airstrike's ("SuperAirstrike") at a mesh the GRM already holds, until ClearVehicleMeshes() puts the vanilla names back.
+// Refuses (false, *err) for an unknown vehicle, other code bytes than #1077's at the creating site, or a name variable that
+// is not the vanilla one. The mesh is not looked up here: the caller checks it is loaded (assets::meshes::Describe).
+bool SetVehicleMesh(const char* vehicle, const char* name, std::string* err);
+void ClearVehicleMeshes();
 constexpr uintptr_t kNames = 0x90c920, kPanel = 0x920e58, kSelWrite = 0x603cdb, kSelLog = 0x603cfc,
     kInvGet = 0x67cc33, kAllowed = 0x50c804, kDelay = 0x65a28c, kCanUse = 0x600bd4, kText = 0x600e21, kHelp = 0x5fee4d,
     kHudIcon = 0x5d7f8b, kLaunch = 0x583160, kUpdBase = 0x57fae0, kUpdPara = 0x576fc0, kMsgBase = 0x582860,

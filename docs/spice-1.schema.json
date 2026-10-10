@@ -161,6 +161,16 @@
       }
     },
 
+    "vehicleMeshes": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "The mesh the Airstrike helicopter and the Super Airstrike's are drawn with (content mods only; the mod must also list the bank in \"meshes\"). The value is a \"<modId>.<Name>\" mesh from one of the mod's banks. Presentation only: the simulation is untouched. A vehicle an earlier mod already sets refuses the later mod. Applies only in a live content match that every peer has with the same rules. The mesh must keep the vanilla mesh's node names (rear_rotor, top_rotor, trail1, trail2) and animation channels. See docs/meshes.md.",
+      "properties": {
+        "BomberHelicopter": { "type": "string", "minLength": 3, "maxLength": 96, "pattern": "^[A-Za-z0-9._-]+\\.[A-Za-z0-9._-]+$", "description": "The mesh the Airstrike's helicopter is drawn with." },
+        "SuperAirstrike": { "type": "string", "minLength": 3, "maxLength": 96, "pattern": "^[A-Za-z0-9._-]+\\.[A-Za-z0-9._-]+$", "description": "The mesh the Super Airstrike's helicopter is drawn with." }
+      }
+    },
+
     "levels": {
       "type": "array",
       "maxItems": 32,
@@ -228,7 +238,7 @@
 
     "meshes": {
       "type": "array",
-      "maxItems": 16,
+      "maxItems": 64,
       "description": "Mesh banks (.xom, built with xomtool convert --bundle) loaded into the game's graphical resource manager at the main menu, so a weapon clone's set or wum.sim.weapon():set can name a mesh as \"<modId>.<Name>\". kind: content only. Every resource name in a bank must start with \"<modId>.\". Each file must be under the mod's assets root, so it is part of the content hash. See docs/meshes.md.",
       "items": {
         "type": "object",

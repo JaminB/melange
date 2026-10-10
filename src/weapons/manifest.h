@@ -76,19 +76,37 @@ std::vector<IconDecl> ParseIcons(const spice::Manifest& m, std::vector<Error>* e
 std::vector<IconDecl> AssignIcons(const std::vector<std::vector<IconDecl>>& perModInLoadOrder,
                                   const std::vector<std::string>& cloneNames, std::vector<Error>* refused);
 
+// The spice.json "vehicleMeshes" object: the mesh the Airstrike helicopter (BomberHelicopter) and the Super Airstrike's
+// (SuperAirstrike) are drawn with, a "<modId>.<Name>" mesh from one of the mod's banks. The graphic entities read their mesh
+// name from a static string, so the registry swaps that string for a match (registry_core.cpp). Presentation only.
+struct VehicleDecl {
+    std::string mod, vehicle, mesh;
+};
+
+// Empty when refused (the reasons in *errs). Rechecks what spice.cpp checked: a known vehicle (spice::kVehicleKeys), a
+// "<modId>." mesh name, a kind: content mod that lists a meshes bank.
+std::vector<VehicleDecl> ParseVehicles(const spice::Manifest& m, std::vector<Error>* errs);
+// Like AssignIcons: a vehicle claimed by an earlier mod refuses the later mod as a whole.
+std::vector<VehicleDecl> AssignVehicles(const std::vector<std::vector<VehicleDecl>>& perModInLoadOrder, std::vector<Error>* refused);
+
 // All passes together, for the mods in load order (index i of each list is the same mod; a mod with nothing to
-// declare in one kind has an empty entry there). A mod refused by any pass loses its clones, renames and icons,
+// declare in one kind has an empty entry there). A mod refused by any pass loses its clones, renames, icons and vehicle meshes,
 // and the clone names that block a rename or an icon are only those of mods still accepted. All reasons are in
-// `refused`. iconsPerMod may be left out (no icon rules).
+// `refused`. iconsPerMod and vehiclesPerMod may be left out (no such rules).
 struct Resolved {
     std::vector<CloneDecl> clones;
     std::vector<TextDecl> texts;
     std::vector<IconDecl> icons;
+    std::vector<VehicleDecl> vehicles;
     std::vector<Error> refused;
 };
 Resolved Resolve(const std::vector<std::vector<CloneDecl>>& clonesPerMod, const std::vector<std::vector<TextDecl>>& textsPerMod,
-                 const std::vector<std::vector<IconDecl>>& iconsPerMod = {});
+                 const std::vector<std::vector<IconDecl>>& iconsPerMod = {},
+                 const std::vector<std::vector<VehicleDecl>>& vehiclesPerMod = {});
 void FreezeIcons(std::vector<IconDecl> decls);   // once per launch, like Freeze
+void FreezeVehicles(std::vector<VehicleDecl> decls);   // once per launch, like Freeze
+bool IsVehiclesFrozen();
+const std::vector<VehicleDecl>& FrozenVehicles();
 bool IsIconsFrozen();
 const std::vector<IconDecl>& FrozenIcons();
 void FreezeText(std::vector<TextDecl> decls);    // once per launch, like Freeze

@@ -2,6 +2,8 @@
 // library), kept apart from meshbank.cpp so an offline self-test can link this file and src/xom alone.
 #include "assets/meshbank.h"
 
+#include <algorithm>
+
 #include "xom/xom.h"
 
 namespace melange::assets::meshes {
@@ -65,6 +67,81 @@ bool RelocateBank(const std::vector<uint8_t>& bytes, uint16_t newSection, std::v
         desc->field("SectionId")->setInt(newSection);
     }
     return xom::serialize(doc, *out, err);
+}
+
+namespace {
+void CollectRefsOf(const xom::Value& v, std::vector<uint32_t>& out) {
+    if (v.type == xom::Type::Ref) {
+        if (v.array) {
+            for (auto& it : v.items)
+                if (it.bits) out.push_back(static_cast<uint32_t>(it.bits));
+        } else if (v.bits) {
+            out.push_back(static_cast<uint32_t>(v.bits));
+        }
+        return;
+    }
+    if (v.array) {
+        if (v.type == xom::Type::Struct && !v.packed())
+            for (auto& it : v.items) CollectRefsOf(it, out);
+        return;
+    }
+    if (v.type == xom::Type::Struct)
+        for (auto& m : v.members) CollectRefsOf(m.second, out);
+}
+}  // namespace
+
+const std::vector<std::string>& VehicleNodes() {
+    // BomberGraphicEntity::Setup looks up rear_rotor and top_rotor on the mesh instance (an HRESULT assert if one is
+    // missing) and the trail locators; BomberLogicEntity finds the camera as perspShape. See docs/meshes.md.
+    static const std::vector<std::string> nodes = {"rear_rotor", "top_rotor", "trail1", "trail2", "perspShape"};
+    return nodes;
+}
+
+bool MissingNodes(const std::vector<uint8_t>& bytes, const std::string& resourceName, const std::vector<std::string>& required,
+                  std::vector<std::string>* missing, std::string* err) {
+    xom::Document doc;
+    if (!xom::parse(bytes.data(), bytes.size(), doc, err)) return false;
+    const xom::Object* desc = nullptr;
+    for (auto& o : doc.objects)
+        if (o.type == "XMeshDescriptor" && !o.opaque && !o.inTail) {
+            const xom::Value* rid = o.field("ResourceId");
+            if (rid && rid->str == resourceName) {
+                desc = &o;
+                break;
+            }
+        }
+    const xom::Value* gs = desc ? desc->field("GraphSet") : nullptr;
+    if (!gs || !gs->asRef()) {
+        if (err) *err = "no XMeshDescriptor named " + resourceName + " with a GraphSet";
+        return false;
+    }
+    // Every Name string in the closure of the mesh's graph set: groups, shapes and the graph entries all carry one, and
+    // the engine's node lookup matches on it. (Which class holds a given name does not matter here.)
+    std::vector<std::string> names;
+    std::vector<uint32_t> todo = {gs->asRef()};
+    std::vector<bool> seen(doc.objects.size() + 1, false);
+    while (!todo.empty()) {
+        const uint32_t r = todo.back();
+        todo.pop_back();
+        const xom::Object* o = doc.object(r);
+        if (!o || seen[r]) continue;
+        seen[r] = true;
+        for (auto& f : o->fields) {
+            if (f.first == "Name" && f.second.type == xom::Type::String && !f.second.array) names.push_back(f.second.str);
+            CollectRefsOf(f.second, todo);
+            if (f.second.type == xom::Type::Struct && f.second.array && !f.second.packed())
+                for (auto& item : f.second.items) {  // not at(): it returns a copy, and member() points into its argument
+                    const xom::Value* n = item.member("Name");
+                    if (n && n->type == xom::Type::String) names.push_back(n->str);
+                }
+        }
+    }
+    if (missing) {
+        missing->clear();
+        for (auto& r : required)
+            if (std::find(names.begin(), names.end(), r) == names.end()) missing->push_back(r);
+    }
+    return true;
 }
 
 bool CheckEntries(const std::string& modId, const std::vector<BankEntry>& entries, uint16_t section, std::string* err) {

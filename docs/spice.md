@@ -46,6 +46,7 @@ after its folder — every M1-era `Mods\` folder keeps working unchanged.
 | `schemes`, `factoryWeapons` | Game styles and custom-weapon presets from data files, allowed for client-only mods; see [`schemes` and `factoryWeapons`](#schemes-and-factoryweapons-game-styles-and-weapon-presets). |
 | `music` | MP3 tracks for the sudden-death music, allowed for client-only mods; see [`music`](#music-sudden-death-music). |
 | `meshes` | Mesh banks (`.xom`) under the assets root that give a weapon clone or a `wum.sim.weapon():set` its own 3D model, `kind: "content"` mods only — see [`meshes`](#meshes-custom-3d-models). |
+| `vehicleMeshes` | The mesh the Airstrike and Super Airstrike helicopters are drawn with, `kind: "content"` mods with a `meshes` bank only — see [`vehicleMeshes`](#vehiclemeshes-the-airstrike-helicopters). |
 | `defaultEnabled` | Honoured only the first time Thumper ever sees this mod id (default `true`). The shipped samples set it to `false`. |
 
 | Before: `unsafe` mod switched on | After: the consent modal |
@@ -264,7 +265,7 @@ Loads mesh banks so a weapon can use a model of the mod's own. `kind: "content"`
 
 | Key | Meaning |
 |---|---|
-| `file` | Required, the only key. A `.xom` path relative to the mod folder, inside it, **under the mod's assets root** (`assets/` unless `assets.root` renames it). At most 16 entries per mod, none twice. |
+| `file` | Required, the only key. A `.xom` path relative to the mod folder, inside it, **under the mod's assets root** (`assets/` unless `assets.root` renames it). At most 64 entries per mod, none twice. |
 
 A bank is an `xomtool convert <mesh.gltf> --bundle <out.xom> --as <modId>.<Name>` file (see [xomtool.md](xomtool.md)).
 Every resource name in a bank must start with `<modId>.` (the mod's own id and a dot), so two mods cannot collide and a
@@ -286,8 +287,46 @@ anyway, so a mod disabled later keeps its banks for the rest of the session.
 
 Each bank takes one of the engine's free section numbers (476 to 519). A bank keeps the section it was built with
 (`--section`) when that section is in range and still free; otherwise Melange rewrites the section in a copy under
-`Melange\cache\meshes\` and loads that, taking the first free section from 476 up, in load order. At most 44 banks fit
-in one session across all mods. The engine and the mechanics are in [meshes.md](meshes.md).
+`Melange\cache\meshes\` and loads that, taking the first free section from 476 up, in load order. **At most 44 banks load
+in one session across all mods**, however many each mod declares (up to 64): the banks past the budget in load order are
+skipped, and the log says so before the first load (`only 44 of the 44 mod sections are free: the last N in load order will
+not load`) and for each skipped bank. Put several variants of a model in one bank rather than one bank each if a pack needs
+many meshes. The engine, the section table and the mechanics are in [meshes.md](meshes.md#the-section-budget).
+
+## `vehicleMeshes`: the Airstrike helicopters
+
+Replaces the model of the aircraft the Airstrike and Super Airstrike send over. The aircraft is not a weapon field, so
+`set` cannot reach it: the engine's two graphic entities each have a built-in mesh name, and this swaps that name for a
+match. `kind: "content"` mods only, and the mod must list at least one [`meshes`](#meshes-custom-3d-models) bank.
+
+```json
+"meshes": [{ "file": "assets/meshes/kindjal.Chopper.xom" }],
+"vehicleMeshes": {
+  "BomberHelicopter": "kindjal.Chopper",
+  "SuperAirstrike": "kindjal.Chopper"
+}
+```
+
+| Key | The aircraft |
+|---|---|
+| `BomberHelicopter` | The Airstrike's helicopter (the game's `BomberGraphicEntity`). |
+| `SuperAirstrike` | The Super Airstrike's helicopter (`SuperBomberGraphicEntity`). |
+
+The key is one of these two, case-sensitive. (`Bomber`, the third aircraft mesh in the game's files, is never drawn by this
+build and is refused with that explanation.) The value is a mesh name `<modId>.<Name>` (letters, digits, `.`, `_`, `-`, at
+most 96 characters) that one of the mod's banks defines. Whether a loaded bank has that mesh is checked when the match
+starts, not when the manifest is read: if it did not load, that vehicle keeps the vanilla model for the match and the log has a
+`[weapons] vehicleMeshes ...` line saying why. Two mods that set the same vehicle: the later one in load order is refused as a
+whole. The mesh must keep the vanilla helicopter's node names and animation channels (`rear_rotor`, `top_rotor`, `trail1`,
+`trail2`, the `perspShape` camera and the rest; start from `xomtool convert BomberHelicopter --from Bundl09.xom --out ...`).
+A mesh that lacks any of the five names `rear_rotor`, `top_rotor`, `trail1`, `trail2`, `perspShape` is not used: the vanilla
+vehicle is drawn and the log names the missing nodes.
+
+Like `weaponIcons` it is presentation only, applied only inside a live content match (the same gate as clones, so every
+peer runs the same rules), undone at the match end, and part of the content identity, so peers with a different vehicle mesh
+do not play together. How the name is found and swapped, and what is unverified in the game, is in
+[meshes.md](meshes.md#engine-picked-meshes-the-airstrike-and-super-airstrike-helicopters). Melange versions before 0.9.0
+do not know the field.
 
 ## Resolution
 

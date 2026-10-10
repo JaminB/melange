@@ -37,6 +37,19 @@ bool CheckEntries(const std::string& modId, const std::vector<BankEntry>& entrie
 // coordinate section numbers across mods.
 bool RelocateBank(const std::vector<uint8_t>& bytes, uint16_t newSection, std::vector<uint8_t>* out, std::string* err);
 
+// The node names the Airstrike / Super Airstrike graphic entities look up on their mesh (see docs/meshes.md): a mesh
+// named by "vehicleMeshes" must carry all of them, or Setup's node lookup asserts mid-match.
+const std::vector<std::string>& VehicleNodes();
+
+// Pure: which of `required` no object in the closure of the bank's mesh `resourceName` (its XMeshDescriptor's GraphSet)
+// carries as a Name. False (with *err) if the bytes don't parse or the bank has no such mesh.
+bool MissingNodes(const std::vector<uint8_t>& bytes, const std::string& resourceName, const std::vector<std::string>& required,
+                  std::vector<std::string>* missing, std::string* err);
+
+// Engine side: the VehicleNodes() a loaded mod mesh lacks, comma separated ("" = none missing, or not a mesh this module
+// loaded). Computed from the bank's bytes when LoadModBank loads it.
+std::string VehicleNodesMissing(const char* resourceName);
+
 // True when the engine sites this module calls were verified (known build, bytes intact, vtable slots as expected).
 bool Available();
 
@@ -67,5 +80,6 @@ struct Info {
 bool Describe(const char* resourceName, Info* out);  // false if it does not resolve
 
 uint32_t Count();      // banks loaded this session
+uint32_t FreeSections();  // sections in kSectionMin..kSectionMax the engine has not loaded (or tried to): the budget left, 44 at launch
 uint32_t Registered();  // stubs registered this session
 }  // namespace melange::assets::meshes

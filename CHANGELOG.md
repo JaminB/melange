@@ -22,7 +22,14 @@
   `[Meshes] Enabled`) so `wum.sim.weapon(name):set("WeaponGraphicsResourceID", "<modId>.<Name>")` or a clone's `set`
   can use a mod's own 3D model. Every resource name in a bank must start with `<modId>.`; a bank that fails to load
   is logged and skipped. Loading a bank and holding its mesh was tried in the game by the author; the automatic load
-  and projectile meshes were not.
+  and projectile meshes were not. A mod may list up to 64 banks, but the engine has only 44 free mesh sections for all
+  mods together: banks past that in load order are skipped, and the log says how many before loading starts.
+- New `vehicleMeshes` manifest field for content mods with a `meshes` bank: the mesh the Airstrike (`BomberHelicopter`)
+  and Super Airstrike (`SuperAirstrike`) helicopters are drawn with, `"<modId>.<Name>"`. The game's two bomber graphic
+  entities read their mesh name from a built-in string, which is swapped for the match and put back at its end; nothing
+  in the game's code is patched. Only inside a match that allows sim mods, part of the content identity, and a vehicle
+  set by two mods refuses the later one in load order. The "Bomber" plane mesh in the game's files is never drawn
+  and is refused. Found in the game's code and unit-tested; not yet tried in the game by the author.
 
 ## 0.8.0
 

@@ -191,13 +191,17 @@ void ApplyWeapons(std::vector<Entry>& entries) {
     std::vector<std::vector<wm::CloneDecl>> perMod;
     std::vector<std::vector<wm::TextDecl>> perModText;
     std::vector<std::vector<wm::IconDecl>> perModIcons;
+    std::vector<std::vector<wm::VehicleDecl>> perModVehicles;
     std::vector<wm::Error> errs;
     for (Entry& e : entries) {
-        if (!e.sessionActive || !e.contentRelevant || (e.manifest.weapons.empty() && e.manifest.weaponText.empty() && e.manifest.weaponIcons.empty())) continue;
+        if (!e.sessionActive || !e.contentRelevant ||
+            (e.manifest.weapons.empty() && e.manifest.weaponText.empty() && e.manifest.weaponIcons.empty() && e.manifest.vehicleMeshes.empty()))
+            continue;
         std::vector<wm::Error> own;
         auto decls = wm::Parse(e.manifest, &own);
         auto texts = wm::ParseText(e.manifest, &own);
         auto iconRules = wm::ParseIcons(e.manifest, &own);
+        auto vehicleRules = wm::ParseVehicles(e.manifest, &own);
         if (!own.empty()) {
             errs.insert(errs.end(), own.begin(), own.end());
             continue;
@@ -205,12 +209,14 @@ void ApplyWeapons(std::vector<Entry>& entries) {
         perMod.push_back(std::move(decls));
         perModText.push_back(std::move(texts));
         perModIcons.push_back(std::move(iconRules));
+        perModVehicles.push_back(std::move(vehicleRules));
     }
-    wm::Resolved res = wm::Resolve(perMod, perModText, perModIcons);
+    wm::Resolved res = wm::Resolve(perMod, perModText, perModIcons, perModVehicles);
     errs.insert(errs.end(), res.refused.begin(), res.refused.end());
     auto accepted = std::move(res.clones);
     auto acceptedText = std::move(res.texts);
     auto acceptedIcons = std::move(res.icons);
+    auto acceptedVehicles = std::move(res.vehicles);
     for (const wm::Error& er : errs) {
         for (Entry& e : entries) {
             if (e.manifest.id != er.mod) continue;
@@ -237,6 +243,11 @@ void ApplyWeapons(std::vector<Entry>& entries) {
             LOG_INFO("[thumper] weaponIcons %s (panel '%s', hud '%s') by %s", t.weapon.c_str(), t.panelIcon.c_str(),
                      t.hudIcon.c_str(), t.mod.c_str());
         wm::FreezeIcons(std::move(acceptedIcons));
+    }
+    if (!wm::IsVehiclesFrozen()) {
+        for (auto& t : acceptedVehicles)
+            LOG_INFO("[thumper] vehicleMeshes %s -> %s by %s", t.vehicle.c_str(), t.mesh.c_str(), t.mod.c_str());
+        wm::FreezeVehicles(std::move(acceptedVehicles));
     }
 }
 

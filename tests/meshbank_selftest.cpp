@@ -116,6 +116,71 @@ std::vector<uint8_t> Bundle(const std::vector<std::pair<std::string, uint16_t>>&
     return bytes;
 }
 
+// A bank with one mesh, kindjal.Chopper, whose graph set holds one named entry per node (the walk reads every Name in the
+// mesh's graph-set closure, whichever class holds it).
+std::vector<uint8_t> NodeBundle(const std::vector<std::string>& nodes) {
+    xom::Document doc;
+    AddType(doc, "XGraphSet", "0b3dbf644139bb40b1798f882d14449b");
+    AddType(doc, "XMeshDescriptor", "dbb2e8a8c30af04ba47696f47cf924d2");
+    xom::Object gs;  // #1: the mesh's graph set
+    gs.type = "XGraphSet";
+    gs.container = false;
+    xom::Value graphs;
+    graphs.type = xom::Type::Struct;
+    graphs.array = true;
+    graphs.items.resize(nodes.size());
+    for (size_t i = 0; i < nodes.size(); ++i) {
+        graphs.items[i].type = xom::Type::Struct;
+        graphs.items[i].members.emplace_back("Guid", xom::Value{});
+        graphs.items[i].members.emplace_back("Graph", Ref(0));
+        graphs.items[i].members.emplace_back("Name", Str(nodes[i]));
+    }
+    gs.fields.emplace_back("Graphs", graphs);
+    doc.objects.push_back(gs);
+    xom::Object root;  // #2: the bank's root
+    root.type = "XGraphSet";
+    root.container = false;
+    xom::Value rg;
+    rg.type = xom::Type::Struct;
+    rg.array = true;
+    rg.items.resize(1);
+    rg.items[0].type = xom::Type::Struct;
+    rg.items[0].members.emplace_back("Guid", xom::Value{});
+    rg.items[0].members.emplace_back("Graph", Ref(3));
+    rg.items[0].members.emplace_back("Name", Str("kindjal.Chopper"));
+    root.fields.emplace_back("Graphs", rg);
+    doc.objects.push_back(root);
+    xom::Object d;  // #3: the descriptor
+    d.type = "XMeshDescriptor";
+    d.container = false;
+    d.fields.emplace_back("ResourceId", Str("kindjal.Chopper"));
+    d.fields.emplace_back("SectionId", U16(480));
+    d.fields.emplace_back("GraphSet", Ref(1));
+    d.fields.emplace_back("Flags", U16(8));
+    doc.objects.push_back(d);
+    doc.root = 2;
+    std::vector<uint8_t> bytes;
+    std::string err;
+    if (!xom::serialize(doc, bytes, &err)) printf("serialize failed: %s\n", err.c_str());
+    return bytes;
+}
+
+void NodeTests() {
+    std::string err;
+    std::vector<std::string> missing;
+    const auto& need = meshes::VehicleNodes();
+    Expect(need.size() == 5, "the vehicle needs rear_rotor, top_rotor, trail1, trail2 and perspShape");
+    std::vector<std::string> all = need;
+    all.push_back("helicopter");
+    Expect(meshes::MissingNodes(NodeBundle(all), "kindjal.Chopper", need, &missing, &err) && missing.empty(), "every node present: " + err);
+    const std::vector<std::string> some = {"helicopter", "rear_rotor", "trail1", "trail2"};
+    Expect(meshes::MissingNodes(NodeBundle(some), "kindjal.Chopper", need, &missing, &err), "partial bank reads: " + err);
+    Expect(missing.size() == 2 && missing[0] == "top_rotor" && missing[1] == "perspShape", "top_rotor and perspShape reported missing");
+    Expect(meshes::MissingNodes(NodeBundle({}), "kindjal.Chopper", need, &missing, &err) && missing.size() == need.size(), "a bare mesh lacks them all");
+    Expect(!meshes::MissingNodes(NodeBundle(all), "kindjal.Other", need, &missing, &err) && !err.empty(), "an absent mesh name is an error");
+    Expect(!meshes::MissingNodes(std::vector<uint8_t>{1, 2, 3}, "kindjal.Chopper", need, &missing, &err), "junk bytes are an error");
+}
+
 void SyntheticTests() {
     std::vector<meshes::BankEntry> e;
     uint16_t sec = 0;
@@ -129,6 +194,8 @@ void SyntheticTests() {
     Expect(!meshes::CheckEntries("kindjal", e, 475, &err), "section 475 (kSectionCount sentinel) refused");
     Expect(meshes::CheckEntries("kindjal", e, 476, &err) && meshes::CheckEntries("kindjal", e, 519, &err), "476 and 519 accepted");
     Expect(!meshes::CheckEntries("kindjal", e, 520, &err), "520 (past the engine's 520-entry section arrays) refused");
+    // The budget the docs and the load log state: 44 sections for all mods together (and a mod may declare 64 banks).
+    Expect(meshes::kSectionMax - meshes::kSectionMin + 1 == 44, "the mod section range holds 44 sections");
 
     e.clear();
     Expect(!meshes::InspectBank(Bundle({{"kindjal.A", uint16_t(480)}, {"kindjal.B", uint16_t(481)}}), &e, &sec, &err) && err.find("SectionId") != std::string::npos,
@@ -167,10 +234,33 @@ void RealBank(const char* path, const char* mod) {
     Expect(!bytes.empty(), std::string("read ") + path);
     const bool ok = meshes::InspectBank(bytes, &e, &sec, &err);
     Expect(ok, std::string("InspectBank(") + path + "): " + err);
+    if (!ok) {
+        // A vanilla bundle (Bundl09.xom) lists more than meshes, so it is not a mod bank; its helicopters still answer.
+        for (const char* v : {"BomberHelicopter", "SuperAirstrike", "Bomber"}) {
+            std::vector<std::string> missing;
+            std::string e2;
+            if (!meshes::MissingNodes(bytes, v, meshes::VehicleNodes(), &missing, &e2)) continue;
+            std::string list;
+            for (auto& m : missing) list += " " + m;
+            printf("  %s lacks:%s\n", v, list.empty() ? " nothing" : list.c_str());
+            Expect(missing.empty(), std::string(v) + " (vanilla) has every vehicle node:" + list);
+        }
+    }
     if (ok) {
         printf("%s: section %u, %zu mesh(es)\n", path, sec, e.size());
         for (auto& x : e) printf("  %s (Flags %u)\n", x.name.c_str(), x.flags);
         Expect(meshes::CheckEntries(mod, e, sec, &err), std::string("CheckEntries(") + mod + "): " + err);
+        // The vanilla helicopter meshes carry every node the Airstrike entities look up.
+        for (auto& x : e) {
+            std::vector<std::string> missing;
+            const bool read = meshes::MissingNodes(bytes, x.name, meshes::VehicleNodes(), &missing, &err);
+            Expect(read, "MissingNodes(" + x.name + "): " + err);
+            std::string list;
+            for (auto& m : missing) list += " " + m;
+            if (read) printf("  %s lacks:%s\n", x.name.c_str(), list.empty() ? " nothing" : list.c_str());
+            if (read && (x.name == "BomberHelicopter" || x.name == "SuperAirstrike"))
+                Expect(missing.empty(), x.name + " (vanilla) has every vehicle node:" + list);
+        }
     }
 }
 }  // namespace
@@ -183,6 +273,7 @@ int main(int argc, char** argv) {
         else if (!strcmp(argv[i], "--mod")) mod = argv[++i];
     }
     SyntheticTests();
+    NodeTests();
     if (bank) RealBank(bank, mod);
     printf("%d passed, %d failed\n", g_pass, g_fail);
     return g_fail ? 1 : 0;

@@ -29,12 +29,25 @@ struct Primitive {
     std::vector<Vec2> uvs;
     std::vector<uint32_t> indices;  // triangle list, length a multiple of 3
     Mat4 matrix = Identity();       // this primitive's own node transform (already composed)
+    int node = -1;                  // Mesh::nodes index of the node that owns it (hierarchical meshes only; matrix is then identity)
+};
+
+// One XGroup of a hierarchical mesh. Vanilla meshes keep an animated node per XGroup ("shotgun_pump", "cluster|flap1"):
+// the clips that move a mesh address these groups by name, and an empty group is a locator ("eject", "Payload_Spawn").
+struct Node {
+    std::string name;
+    Mat4 local = Identity();  // relative to the parent node
+    int parent = -1;          // index into Mesh::nodes (always lower than this node's own), -1 = under the root
 };
 
 struct Mesh {
     std::string resourceId;
     uint16_t sectionId = 0;
     std::vector<Primitive> primitives;
+    // Empty: the flat shape (one group per primitive, named <resourceId>_group_<i>, matrix composed into it). Non-empty:
+    // WriteMesh writes one XGroup + XTransform per node, with its shapes in a "<name>Shape" group under it, as the
+    // vanilla bundles do; every primitive then names its node and carries an identity matrix.
+    std::vector<Node> nodes;
 };
 
 // Reads every XShape reachable from `resourceId`'s "world" graph entry (or its first entry, if
@@ -53,6 +66,10 @@ uint32_t WriteMesh(Document& doc, const Mesh& mesh, uint32_t materialFromShaderR
 // {resource-descriptor GUID, Graph -> the XMeshDescriptor, Name = resourceId}. One mesh per bank. Returns the
 // descriptor's new 1-based index, or 0 with *error set.
 uint32_t WriteBundle(Document& doc, const Mesh& mesh, uint32_t materialFromShaderRef, std::string* error = nullptr);
+
+// Appends every non-null object reference held by `v` (a Ref, a Ref array, or one nested in Struct members) to `out`,
+// in stream order. The reference-following half of CopySubgraph, shared with clone.h's closure walk.
+void CollectRefs(const Value& v, std::vector<uint32_t>& out);
 
 // Deep-copies the object subgraph reachable from `srcRef` in `src` (following every Ref field
 // transitively) into `dst`, appending the copies grouped by TYPE-table order and adding TYPE

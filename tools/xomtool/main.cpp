@@ -16,10 +16,13 @@
 #define STB_IMAGE_WRITE_IMPLEMENTATION
 #include "stb_image_write.h"
 
+#include "clone.h"
+#include "deform.h"
 #include "gltf.h"
 #include "image.h"
 #include "json.h"
 #include "mesh.h"
+#include "uvlayout.h"
 
 using namespace melange::xom;
 
@@ -78,7 +81,11 @@ int Usage() {
         "                  [--material-from <Name>] [--material-file <file.xom>] [--texture <png>] [-o <out.xom>]\n"
         "  xomtool convert <mesh.gltf|.glb> --bundle <out.xom> --as <modId.Name> --section <476..519>\n"
         "                  [--material-from <Name> --material-file <Bundl09.xom>] [--texture <png>] [--scene-bin N]\n"
-        "  xomtool convert <Name|#N> --from <file.xom> --out <mesh.gltf>\n"
+        "                  [--nodes keep|flat|auto]\n"
+        "  xomtool convert <Name|#N> --from <file.xom> --out <mesh.gltf> [--nodes]\n"
+        "  xomtool clone <VanillaName> --from <Bundl09.xom> --bundle <out.xom> --as <modId.Name> --section <476..519>\n"
+        "                [--texture k=<png> ...] [--deform <script.json>] [--uv-layout <dir>] [--out-gltf <file>] [--allow-shared]\n"
+        "  xomtool clone <VanillaName> --from <Bundl09.xom> --list-images | --tree\n"
         "  xomtool bank --from <src.xom> --object <BaseName> --as <NewName> [--set Field=value ...] --out <out.xom>\n"
         "  xomtool report <in.xom> -o <out.md>\n"
         "  xomtool level unpack|build|diff ...  (xomtool level for details)\n");
@@ -126,6 +133,8 @@ Args ParseArgs(int argc, char** argv, int start) {
                 continue;
             }
             if (name == "set" && i + 1 < argc) { a.setPairs.push_back(argv[++i]); continue; }
+            // Switches never take a value, so a positional after one is not swallowed.
+            if (name == "list-images" || name == "tree" || name == "allow-shared") { a.flags.emplace_back(name, "1"); continue; }
             if (i + 1 < argc && argv[i + 1][0] != '-') { a.flags.emplace_back(name, argv[++i]); continue; }
             a.flags.emplace_back(name, "1");
         } else if (s == "-o" && i + 1 < argc) {
@@ -554,9 +563,11 @@ int CmdConvertMeshBundle(const Args& a, const std::string& gltfPath) {
         return 1;
     }
     char* end = nullptr;
-    long section = std::strtol(a.get("section").c_str(), &end, 10);
-    if (*end != '\0' || section < 476 || section > 519) {
-        std::fprintf(stderr, "xomtool: --section must be a mod section, 476..519 (got \"%s\")\n", a.get("section").c_str());
+    // strtol's end pointer points into the string it parsed, so that string must outlive the check (get() returns by value).
+    const std::string sectionText = a.get("section");
+    long section = std::strtol(sectionText.c_str(), &end, 10);
+    if (sectionText.empty() || *end != '\0' || section < 476 || section > 519) {
+        std::fprintf(stderr, "xomtool: --section must be a mod section, 476..519 (got \"%s\")\n", sectionText.c_str());
         return 1;
     }
     if (as.find('.') == std::string::npos || as[0] == '.' || as.back() == '.') {
@@ -566,27 +577,57 @@ int CmdConvertMeshBundle(const Args& a, const std::string& gltfPath) {
     if (a.has("scene-bin")) {
         // The scene bin lives in the game's startup record, not in the bank (docs/meshes.md); it is the
         // loader's argument (`mesh.load <bank> <modId> <sceneBin>`). Validated here so a typo fails early.
-        long bin = std::strtol(a.get("scene-bin").c_str(), &end, 10);
-        if (*end != '\0' || bin < 0 || bin > 87) { std::fprintf(stderr, "xomtool: --scene-bin must be 0..87\n"); return 1; }
+        const std::string binText = a.get("scene-bin");
+        long bin = std::strtol(binText.c_str(), &end, 10);
+        if (binText.empty() || *end != '\0' || bin < 0 || bin > 87) { std::fprintf(stderr, "xomtool: --scene-bin must be 0..87\n"); return 1; }
     }
     if (a.has("material-from") && !a.has("material-file")) {
         std::fprintf(stderr, "xomtool: --material-from needs --material-file (the vanilla bundle holding that mesh)\n");
         return 1;
     }
     std::string err;
-    std::vector<mesh::Primitive> prims;
-    if (!ReadGltfFile(gltfPath, prims, &err)) { std::fprintf(stderr, "xomtool: %s\n", err.c_str()); return 2; }
+    // --nodes keep|flat|auto (default auto): keep the glTF node tree as XGroup/XTransform names, as the vanilla bundles lay
+    // them out, when the file has more than one node; a lone node stays the flat shape of the proven single-mesh bank.
+    std::string nodesMode = a.has("nodes") ? a.get("nodes") : "auto";
+    if (nodesMode == "1") nodesMode = "keep";
+    if (nodesMode != "keep" && nodesMode != "flat" && nodesMode != "auto") {
+        std::fprintf(stderr, "xomtool: --nodes must be keep, flat or auto\n");
+        return 1;
+    }
+    mesh::Mesh m;
+    {
+        std::vector<uint8_t> bytes;
+        if (!ReadFile(gltfPath, bytes)) { std::fprintf(stderr, "xomtool: cannot read %s\n", gltfPath.c_str()); return 2; }
+        if (!gltf::ReadGltfScene(bytes, Ext(gltfPath) == "glb", DirOf(gltfPath), m, &err)) {
+            std::fprintf(stderr, "xomtool: %s\n", err.c_str());
+            return 2;
+        }
+        if (nodesMode == "flat" || (nodesMode == "auto" && m.nodes.size() <= 1)) {
+            m.nodes.clear();
+            m.primitives.clear();
+            if (!ReadGltfFile(gltfPath, m.primitives, &err)) { std::fprintf(stderr, "xomtool: %s\n", err.c_str()); return 2; }
+        } else if (nodesMode == "auto") {
+            // The node-tree layout is built from the vanilla trees but has not been loaded in game; say so when it is picked
+            // for the user, so a file that used to come out flat is not changed silently.
+            std::fprintf(stderr, "xomtool: note: %zu glTF nodes, so the node tree is kept (--nodes auto); pass --nodes flat for the "
+                                 "single-group layout of the proven one-mesh bank\n", m.nodes.size());
+        }
+    }
+    for (size_t i = 0; i < m.nodes.size(); ++i)
+        for (size_t j = i + 1; j < m.nodes.size(); ++j)
+            if (m.nodes[i].name == m.nodes[j].name)
+                std::fprintf(stderr, "xomtool: warning: node name \"%s\" is used twice; animation clips address nodes by name\n",
+                             m.nodes[i].name.c_str());
     Document doc;
     uint32_t shaderRef = 0;
     if (int rc = ApplyMaterial(a, doc, shaderRef, /*takeHeader=*/true)) return rc;
-    mesh::Mesh m;
     m.resourceId = as;
     m.sectionId = uint16_t(section);
-    m.primitives = prims;
     if (!mesh::WriteBundle(doc, m, shaderRef, &err)) { std::fprintf(stderr, "xomtool: %s\n", err.c_str()); return 3; }
     if (!SaveDoc(out, doc, &err)) { std::fprintf(stderr, "xomtool: %s\n", err.c_str()); return 3; }
-    std::printf("wrote %s (mesh bank \"%s\", section %ld, %zu primitive(s), %zu objects)\n", out.c_str(), as.c_str(),
-                section, m.primitives.size(), doc.objects.size());
+    std::printf("wrote %s (mesh bank \"%s\", section %ld, %zu primitive(s)", out.c_str(), as.c_str(), section, m.primitives.size());
+    if (!m.nodes.empty()) std::printf(", %zu node(s) kept by name", m.nodes.size());
+    std::printf(", %zu objects)\n", doc.objects.size());
     return 0;
 }
 
@@ -597,15 +638,27 @@ int CmdConvertMeshOut(const Args& a, const std::string& name) {
     std::string err;
     if (!LoadDoc(from, doc, &err)) { std::fprintf(stderr, "xomtool: %s\n", err.c_str()); return 2; }
     mesh::Mesh m;
-    if (!mesh::ReadMesh(doc, name, m, &err)) { std::fprintf(stderr, "xomtool: %s\n", err.c_str()); return 2; }
-    auto res = gltf::WriteGltf(m.primitives, BaseNoExt(out) + ".bin");
+    // --nodes: the XGroup tree with its names and local transforms (what `convert --bundle` keeps), rather than the flat
+    // list of shapes with composed matrices.
+    const bool tree = a.has("nodes");
+    if (tree) {
+        const uint32_t desc = mesh::FindDescriptor(doc, name);
+        if (!desc) { std::fprintf(stderr, "xomtool: no XMeshDescriptor named %s\n", name.c_str()); return 2; }
+        if (!mesh::ReadMeshTree(doc, desc, m, &err)) { std::fprintf(stderr, "xomtool: %s\n", err.c_str()); return 2; }
+    } else if (!mesh::ReadMesh(doc, name, m, &err)) {
+        std::fprintf(stderr, "xomtool: %s\n", err.c_str());
+        return 2;
+    }
+    auto res = tree ? gltf::WriteGltfScene(m, BaseNoExt(out) + ".bin") : gltf::WriteGltf(m.primitives, BaseNoExt(out) + ".bin");
     if (!WriteTextFile(out, res.json)) { std::fprintf(stderr, "xomtool: cannot write %s\n", out.c_str()); return 3; }
     std::string binPath = DirOf(out) + "/" + BaseNoExt(out) + ".bin";
     if (!WriteFile(binPath, res.bin.data(), res.bin.size())) {
         std::fprintf(stderr, "xomtool: cannot write %s\n", binPath.c_str());
         return 3;
     }
-    std::printf("wrote %s and %s (%zu primitive(s))\n", out.c_str(), binPath.c_str(), m.primitives.size());
+    std::printf("wrote %s and %s (%zu primitive(s)", out.c_str(), binPath.c_str(), m.primitives.size());
+    if (tree) std::printf(", %zu node(s)", m.nodes.size());
+    std::printf(")\n");
     return 0;
 }
 
@@ -630,6 +683,191 @@ int CmdConvert(const Args& a) {
     }
     std::fprintf(stderr, "xomtool: convert: cannot tell texture from mesh here; name a .png/.gltf/.glb file\n");
     return 1;
+}
+
+// ---------------------------------------------------------------- clone
+
+std::vector<std::string> GetAll(const Args& a, const std::string& name) {
+    std::vector<std::string> v;
+    for (auto& [k, val] : a.flags) if (k == name) v.push_back(val);
+    return v;
+}
+
+const char* FormatName(uint32_t f) { return f == 1 ? "RGBA8" : "RGB8"; }
+
+void PrintImages(const std::string& mesh, const std::vector<mesh::ImageInfo>& images) {
+    std::printf("%s: %zu image(s), in graph order (the k of --texture k=<png>)\n", mesh.c_str(), images.size());
+    for (auto& ii : images) {
+        std::string users;
+        for (auto& u : ii.usedBy) users += (users.empty() ? "" : ", ") + u;
+        std::printf("  [%d] #%u \"%s\"  %ux%u %s  mips=%u  used by: %s\n", ii.index, ii.ref, ii.name.c_str(), ii.width, ii.height,
+                    FormatName(ii.format), ii.mips, users.empty() ? "(no shape)" : users.c_str());
+    }
+}
+
+// clone <VanillaName> --from <Bundl09.xom> --bundle <out.xom> --as <modId.Name> --section <476..519>
+//       [--texture k=png ...] [--deform script.json] [--uv-layout dir] [--out-gltf file] [--allow-shared]
+// clone <VanillaName> --from <Bundl09.xom> (--list-images | --tree)
+int CmdClone(const Args& a) {
+    if (a.positional.empty() || !a.has("from")) {
+        std::fprintf(stderr, "xomtool: clone <VanillaName> --from <Bundl09.xom> --bundle <out.xom> --as <modId.Name> --section <476..519>\n"
+                             "                [--texture k=<png> ...] [--deform <script.json>] [--uv-layout <dir>] [--out-gltf <file>] [--allow-shared]\n"
+                             "        clone <VanillaName> --from <Bundl09.xom> --list-images | --tree\n");
+        return 1;
+    }
+    const std::string vanilla = a.positional[0];
+    std::string err;
+    Document src;
+    if (!LoadDoc(a.get("from"), src, &err)) { std::fprintf(stderr, "xomtool: %s\n", err.c_str()); return 2; }
+    const uint32_t srcDesc = mesh::FindDescriptor(src, vanilla);
+    if (!srcDesc) { std::fprintf(stderr, "xomtool: no XMeshDescriptor named %s in %s\n", vanilla.c_str(), a.get("from").c_str()); return 2; }
+    if (a.has("tree") || a.has("list-images")) {
+        if (a.has("tree")) std::fputs(mesh::TreeText(src, srcDesc).c_str(), stdout);
+        if (a.has("list-images")) PrintImages(vanilla, mesh::ListImages(src, srcDesc));
+        return 0;
+    }
+
+    const std::string out = a.get("bundle"), as = a.get("as");
+    if (out.empty() || as.empty() || !a.has("section")) {
+        std::fprintf(stderr, "xomtool: clone needs --bundle <out.xom>, --as <modId.Name> and --section <476..519> (or --list-images / --tree)\n");
+        return 1;
+    }
+    char* end = nullptr;
+    const std::string sectionText = a.get("section");
+    const long section = std::strtol(sectionText.c_str(), &end, 10);
+    if (sectionText.empty() || *end != '\0' || section < mesh::kFirstModSection || section > mesh::kLastModSection) {
+        std::fprintf(stderr, "xomtool: --section must be a mod section, 476..519 (got \"%s\")\n", sectionText.c_str());
+        return 1;
+    }
+    if (as.find('.') == std::string::npos || as[0] == '.' || as.back() == '.') {
+        std::fprintf(stderr, "xomtool: --as must be <modId>.<Name> (the engine's mod-bank naming rule)\n");
+        return 1;
+    }
+    // Parse every texture argument before doing any work, so a typo fails fast.
+    std::vector<std::pair<int, std::string>> textures;
+    for (auto& t : GetAll(a, "texture")) {
+        auto eq = t.find('=');
+        char* e2 = nullptr;
+        const std::string kText = eq == std::string::npos ? std::string() : t.substr(0, eq);  // must outlive the *e2 check
+        long k = eq == std::string::npos ? -1 : std::strtol(kText.c_str(), &e2, 10);
+        if (eq == std::string::npos || eq == 0 || *e2 != '\0' || k < 0 || eq + 1 >= t.size()) {
+            std::fprintf(stderr, "xomtool: --texture needs <k>=<png> (k from --list-images), got \"%s\"\n", t.c_str());
+            return 1;
+        }
+        for (auto& tk : textures)
+            if (tk.first == k) { std::fprintf(stderr, "xomtool: --texture %ld given twice\n", k); return 1; }
+        textures.emplace_back(int(k), t.substr(eq + 1));
+    }
+    std::string deformJson;
+    if (a.has("deform") && !ReadTextFile(a.get("deform"), deformJson)) {
+        std::fprintf(stderr, "xomtool: cannot read %s\n", a.get("deform").c_str());
+        return 2;
+    }
+
+    Document doc;
+    mesh::CloneOptions opt;
+    opt.allowShared = a.has("allow-shared");
+    mesh::CloneReport rep;
+    const uint32_t desc = mesh::CloneMesh(doc, src, vanilla, as, uint16_t(section), opt, &rep, &err);
+    if (!desc) { std::fprintf(stderr, "xomtool: clone: %s\n", err.c_str()); return 2; }
+    std::printf("cloned %s (#%u in %s) as \"%s\", section %ld: %zu objects\n", vanilla.c_str(), rep.srcDescriptor,
+                a.get("from").c_str(), as.c_str(), section, rep.objects);
+    {
+        std::string line = "  closure by class:";
+        for (auto& c : rep.classes) {
+            std::string item = " " + c.cls + " " + std::to_string(c.count) + ",";
+            if (line.size() + item.size() > 118) { std::printf("%s\n", line.c_str()); line = "   "; }
+            line += item;
+        }
+        line.pop_back();
+        std::printf("%s\n", line.c_str());
+    }
+    for (auto& n : rep.notes) std::printf("  note: %s\n", n.c_str());
+
+    // The UV layout is drawn from the pristine clone, before any texture swap, so it shows the texture a painter starts from.
+    if (a.has("uv-layout")) {
+        const std::string dir = a.get("uv-layout");
+        std::error_code ec;
+        std::filesystem::create_directories(dir, ec);
+        std::vector<mesh::UvLayout> layouts;
+        if (!mesh::BuildUvLayouts(doc, desc, "image", layouts, &err)) { std::fprintf(stderr, "xomtool: uv-layout: %s\n", err.c_str()); return 2; }
+        for (auto& l : layouts) {
+            if (!SavePng(dir + "/" + l.originalFile, l.original, &err) || !SavePng(dir + "/" + l.overlayFile, l.overlay, &err) ||
+                !WriteTextFile(dir + "/image" + std::to_string(l.imageIndex) + ".json", l.json)) {
+                std::fprintf(stderr, "xomtool: uv-layout: cannot write into %s\n", dir.c_str());
+                return 3;
+            }
+            std::printf("  uv-layout: image %d \"%s\": %zu island(s), %zu triangle(s) -> %s/%s\n", l.imageIndex, l.imageName.c_str(),
+                        l.islands, l.triangles, dir.c_str(), l.overlayFile.c_str());
+        }
+        if (layouts.empty()) std::printf("  uv-layout: no shape samples an image, nothing written\n");
+    }
+
+    if (!textures.empty()) {
+        const auto images = mesh::ListImages(doc, desc);
+        for (auto& tk : textures) {
+            const int k = tk.first;
+            if (k >= int(images.size())) {
+                std::fprintf(stderr, "xomtool: --texture %d: %s has %zu image(s) (0..%zu); see --list-images\n", k, vanilla.c_str(),
+                             images.size(), images.empty() ? size_t(0) : images.size() - 1);
+                return 2;
+            }
+            image::Pixels px;
+            if (!LoadPng(tk.second, px, &err)) { std::fprintf(stderr, "xomtool: --texture %d: %s\n", k, err.c_str()); return 2; }
+            bool resampled = false;
+            if (!image::ReplacePixels(doc.objects[images[size_t(k)].ref - 1], px, &resampled, &err)) {
+                std::fprintf(stderr, "xomtool: --texture %d: %s\n", k, err.c_str());
+                return 2;
+            }
+            std::printf("  texture [%d] \"%s\" %ux%u <- %s (%ux%u%s)\n", k, images[size_t(k)].name.c_str(), images[size_t(k)].width,
+                        images[size_t(k)].height, tk.second.c_str(), px.width, px.height, resampled ? ", resampled to the original size" : "");
+        }
+    }
+
+    if (!deformJson.empty()) {
+        mesh::DeformReport dr;
+        if (!mesh::ApplyDeform(doc, desc, deformJson, &dr, &err)) { std::fprintf(stderr, "xomtool: %s\n", err.c_str()); return 2; }
+        for (auto& s : dr.shapes)
+            std::printf("  deform: %s%s: %zu/%zu vertices moved (max %.4g), %zu normal(s) recomputed\n", s.name.c_str(),
+                        s.skinned ? " [skinned, bind pose]" : "", s.moved, s.vertices, double(s.maxMove), s.renormalised);
+        for (auto& n : dr.notes) std::printf("  note: %s\n", n.c_str());
+    }
+
+    if (a.has("out-gltf")) {
+        // The node tree (names, local transforms, locators) with static parts as they are and skinned parts in bind pose
+        // without their skin: a preview, and the starting point of a `convert --bundle` round trip.
+        const std::string gp = a.get("out-gltf");
+        mesh::Mesh tree;
+        if (!mesh::ReadMeshTree(doc, desc, tree, &err)) { std::fprintf(stderr, "xomtool: out-gltf: %s\n", err.c_str()); return 2; }
+        std::vector<mesh::ShapeRef> shapes;
+        size_t skinned = 0;
+        if (mesh::EnumerateShapes(doc, desc, shapes)) for (auto& s : shapes) skinned += s.skinned ? 1 : 0;
+        auto res = gltf::WriteGltfScene(tree, BaseNoExt(gp) + ".bin");
+        const std::string binPath = DirOf(gp) + "/" + BaseNoExt(gp) + ".bin";
+        if (!WriteTextFile(gp, res.json) || !WriteFile(binPath, res.bin.data(), res.bin.size())) {
+            std::fprintf(stderr, "xomtool: out-gltf: cannot write %s\n", gp.c_str());
+            return 3;
+        }
+        std::printf("  wrote %s and %s (%zu primitive(s), %zu node(s)%s)\n", gp.c_str(), binPath.c_str(), tree.primitives.size(),
+                    tree.nodes.size(), skinned ? "; skinned parts in bind pose without skin" : "");
+    }
+
+    if (!SaveDoc(out, doc, &err)) { std::fprintf(stderr, "xomtool: %s\n", err.c_str()); return 3; }
+    // Read it back strictly: a bank the loader cannot parse is worse than no bank.
+    {
+        std::vector<uint8_t> bytes;
+        Document check;
+        ParseOptions strict;
+        strict.strict = true;
+        mesh::Closure c;
+        if (!ReadFile(out, bytes) || !parse(bytes.data(), bytes.size(), check, &err, strict) ||
+            !mesh::CollectClosure(check, mesh::FindDescriptor(check, as), c, &err)) {
+            std::fprintf(stderr, "xomtool: wrote an unreadable bank: %s\n", err.c_str());
+            return 3;
+        }
+        std::printf("wrote %s (%zu bytes, %zu objects, re-read strictly)\n", out.c_str(), bytes.size(), check.objects.size());
+    }
+    return 0;
 }
 
 // ---------------------------------------------------------------- bank
@@ -785,6 +1023,7 @@ int main(int argc, char** argv) {
     if (cmd == "inspect") return CmdInspect(a);
     if (cmd == "diff") return CmdDiff(a);
     if (cmd == "convert") return CmdConvert(a);
+    if (cmd == "clone") return CmdClone(a);
     if (cmd == "bank") return CmdBank(a);
     if (cmd == "report") return CmdReport(a);
     return Usage();

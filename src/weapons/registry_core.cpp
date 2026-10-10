@@ -67,7 +67,14 @@ uint32_t Registry::U32(uintptr_t a) {
 bool Registry::PutU32(uintptr_t a, uint32_t v) { return e_.Write(a, &v, sizeof v); }
 
 void Registry::Configure(const std::vector<manifest::CloneDecl>& decls, const std::vector<manifest::TextDecl>& texts,
-                         const std::vector<manifest::IconDecl>& icons) {
+                         const std::vector<manifest::IconDecl>& icons, const std::vector<manifest::VehicleDecl>& vehicles) {
+    ResetVehicles();
+    vehicleRules_.clear();
+    for (const auto& v : vehicles) {
+        VehicleRule r;
+        r.decl = v;
+        vehicleRules_.push_back(std::move(r));
+    }
     ResetIcons();
     iconRules_.clear();
     for (const auto& i : icons) {
@@ -448,6 +455,38 @@ void Registry::ResolveIcons() {
         LOG_INFO("[weapons] weaponIcons: %d panel icon(s) and %d HUD icon(s) armed from %d rule(s)", panels, huds, IconCount());
 }
 
+void Registry::ResetVehicles() {
+    if (vehiclesLive_) e_.ClearVehicleMeshes();  // every vanilla mesh name goes back, whichever rules armed
+    vehiclesLive_ = false;
+    for (auto& r : vehicleRules_) r.armed = false;
+}
+
+// Per match, once: for each rule whose mesh is in the engine's table with its graph (the mod's bank loaded at the main
+// menu), have the engine's graphic entity draw it. Every failure costs only that rule: the vanilla vehicle is drawn.
+void Registry::ResolveVehicles() {
+    ResetVehicles();
+    for (auto& r : vehicleRules_) {
+        const char* v = r.decl.vehicle.c_str();
+        const char* mod = r.decl.mod.c_str();
+        std::string err;
+        if (!e_.MeshLoaded(r.decl.mesh.c_str())) {
+            LOG_WARN("[weapons] vehicleMeshes %s (%s): mesh %s is not loaded (is its bank in the mod's meshes and did it load? see the [meshes] lines); the vanilla vehicle is drawn",
+                     v, mod, r.decl.mesh.c_str());
+        } else if (const std::string lacks = e_.MeshNodesMissing(r.decl.mesh.c_str()); !lacks.empty()) {
+            // Setup looks these nodes up by name and asserts when one is absent: keep the vanilla vehicle rather than risk the match.
+            LOG_WARN("[weapons] vehicleMeshes %s (%s): mesh %s lacks the node(s) %s that the vehicle needs (re-export the vanilla mesh and keep its node names); the vanilla vehicle is drawn",
+                     v, mod, r.decl.mesh.c_str(), lacks.c_str());
+        } else if (!e_.SetVehicleMesh(v, r.decl.mesh.c_str(), &err)) {
+            LOG_WARN("[weapons] vehicleMeshes %s (%s): %s not used (%s); the vanilla vehicle is drawn", v, mod, r.decl.mesh.c_str(),
+                     err.empty() ? "refused" : err.c_str());
+        } else {
+            r.armed = true;
+            vehiclesLive_ = true;  // set at once: a later rule's failure must still clear this one at match end
+            LOG_INFO("[weapons] vehicleMeshes %s by %s: drawn as %s", v, mod, r.decl.mesh.c_str());
+        }
+    }
+}
+
 bool Registry::Init(std::string* why) {
     std::string local;
     if (!why) why = &local;
@@ -458,7 +497,8 @@ bool Registry::Init(std::string* why) {
     }
     ResetText();
     ResetIcons();
-    if (n_ == 0 && rules_.empty() && iconRules_.empty()) {
+    ResetVehicles();
+    if (n_ == 0 && rules_.empty() && iconRules_.empty() && vehicleRules_.empty()) {
         *why = "no clones declared";
         return false;
     }
@@ -472,10 +512,11 @@ bool Registry::Init(std::string* why) {
     // Renames are display only and independent of the clones: they go live even when a clone then fails to.
     ResolveText();
     ResolveIcons();
+    ResolveVehicles();
     if (n_ == 0) {
-        if (textLive_ || iconsLive_) return true;
+        if (textLive_ || iconsLive_ || vehiclesLive_) return true;
         e_.EnableHooks(false);
-        *why = "no weaponText or weaponIcons entry could be applied";
+        *why = "no weaponText, weaponIcons or vehicleMeshes entry could be applied";
         return false;
     }
     for (int k = 0; k < n_; ++k) {
@@ -576,14 +617,16 @@ void Registry::Reset() {
 }
 
 void Registry::MatchEnd() {
-    const bool was = live_, text = textLive_, icons = iconsLive_;
+    const bool was = live_, text = textLive_, icons = iconsLive_, vehicles = vehiclesLive_;
     Reset();
     ResetText();
     ResetIcons();
+    ResetVehicles();
     e_.EnableHooks(false);
     if (was) LOG_INFO("[weapons] match end: panel cells and name slots restored");
     else if (text) LOG_INFO("[weapons] match end: weaponText off");
     if (icons) LOG_INFO("[weapons] match end: weaponIcons off (panel patches dropped; vanilla icons return at the next atlas upload)");
+    if (vehicles) LOG_INFO("[weapons] match end: vehicleMeshes off (vanilla vehicle mesh names restored)");
 }
 
 void Registry::TurnEnded() {

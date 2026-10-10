@@ -221,6 +221,7 @@ struct ComputeInputs {
     std::vector<weapons::manifest::CloneDecl> clones;
     std::vector<weapons::manifest::TextDecl> texts;
     std::vector<weapons::manifest::IconDecl> icons;
+    std::vector<weapons::manifest::VehicleDecl> vehicles;
     int extraPerExplosion = 8;
 };
 
@@ -231,6 +232,7 @@ ComputeInputs TakeInputs() {
         in.clones = weapons::manifest::Frozen();
         in.texts = weapons::manifest::FrozenText();
         in.icons = weapons::manifest::FrozenIcons();
+        in.vehicles = weapons::manifest::FrozenVehicles();
         // A per-machine [Weapons] setting, but one that changes clone sim behaviour (how many extra explosions a
         // clone's Lua handler may queue), so it goes into the content text alongside the clones themselves.
         in.extraPerExplosion = weapons::behaviour::ExtraLimit();
@@ -277,10 +279,12 @@ std::vector<CloneSpec> CloneSpecs(const std::vector<weapons::manifest::CloneDecl
 }
 
 std::vector<TextSpec> TextSpecs(const std::vector<weapons::manifest::TextDecl>& decls,
-                                const std::vector<weapons::manifest::IconDecl>& icons) {
+                                const std::vector<weapons::manifest::IconDecl>& icons,
+                                const std::vector<weapons::manifest::VehicleDecl>& vehicles) {
     std::vector<TextSpec> out;
     for (const auto& d : decls) out.push_back({d.weapon, d.name, d.help});
     for (const auto& d : icons) out.push_back({d.weapon, "", "", true, d.panelIcon, d.hudIcon});
+    for (const auto& d : vehicles) out.push_back({d.vehicle, "", "", false, "", "", true, d.mesh});
     return out;
 }
 
@@ -299,7 +303,7 @@ Computed ComputeContent(const ComputeInputs& in) {
             {m.manifest.id, m.manifest.version, FilesForMod(m.manifest.id, m.dir, m.manifest.entrySim, m.manifest.assetsRoot)});
     const std::vector<CloneSpec> clones = CloneSpecs(in.clones, contentMods, enabled);
     Computed out;
-    const std::vector<TextSpec> texts = TextSpecs(in.texts, in.icons);
+    const std::vector<TextSpec> texts = TextSpecs(in.texts, in.icons, in.vehicles);
     out.id = BuildContentId(std::move(contentMods), in.messages, clones, in.extraPerExplosion, texts);
     out.messages = in.messages;
     out.wpn = BuildWpnValue(clones, in.extraPerExplosion, texts);

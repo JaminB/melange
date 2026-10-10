@@ -37,10 +37,24 @@ void LoadModBanks() {
         if (e.sessionActive && e.manifest.content && !e.manifest.meshes.empty()) mods.push_back(std::move(e));
     if (mods.empty()) return;
     std::stable_sort(mods.begin(), mods.end(), [](const auto& a, const auto& b) { return a.order < b.order; });
-    unsigned banks = 0, meshes = 0, failed = 0;
+    unsigned banks = 0, meshes = 0, failed = 0, skipped = 0, declared = 0;
     std::string used;
+    for (const auto& e : mods) declared += static_cast<unsigned>(e.manifest.meshes.size());
+    // 44 sections (476..519) hold every mod's banks together, one per bank, in load order; say so before the first
+    // bank, not as a string of identical per-bank failures after it.
+    if (declared > mb::FreeSections())
+        LOG_WARN("[meshes] %u bank(s) declared by %zu mod(s), but only %u of the %u mod sections are free: the last %u in load order will not load",
+                 declared, mods.size(), mb::FreeSections(), mb::kSectionMax - mb::kSectionMin + 1u, declared - mb::FreeSections());
     for (const auto& e : mods) {
         for (const auto& f : e.manifest.meshes) {
+            if (mb::FreeSections() == 0) {
+                LOG_ERROR("[meshes] %s/%s: not loaded, all %u mod sections (%u..%u) are in use", e.manifest.id.c_str(), f.file.c_str(),
+                          mb::kSectionMax - mb::kSectionMin + 1u, static_cast<unsigned>(mb::kSectionMin), static_cast<unsigned>(mb::kSectionMax));
+                melange::jlog::Rec("meshes", melange::jlog::Level::Error, "mod_bank")
+                    .Str("mod", e.manifest.id).Str("file", f.file).Bool("ok", false).Uint("section", 0).Str("error", "section budget exhausted");
+                ++skipped;
+                continue;
+            }
             const std::wstring abs = (std::filesystem::path(e.dir) / melange::game::Widen(f.file)).wstring();
             std::string err;
             uint16_t section = 0;
@@ -58,7 +72,8 @@ void LoadModBanks() {
             used += (used.empty() ? "" : ", ") + std::to_string(section);
         }
     }
-    const std::string tail = failed ? ", " + std::to_string(failed) + " failed" : "";
+    std::string tail = failed ? ", " + std::to_string(failed) + " failed" : "";
+    if (skipped) tail += ", " + std::to_string(skipped) + " not loaded (section budget exhausted)";
     LOG_INFO("[meshes] %u bank(s) loaded from %zu mod(s), %u mesh(es), sections %s%s", banks, mods.size(), meshes,
              used.empty() ? "none" : used.c_str(), tail.c_str());
 }
@@ -141,8 +156,8 @@ bool VerbResolve(std::string_view a, void*) {
 }
 
 bool VerbState(std::string_view, void*) {
-    LOG_INFO("[meshes] state: enabled=%d available=%d banks=%u stubs=%u sections=%u..%u", g_enabled, mb::Available(), mb::Count(),
-             mb::Registered(), mb::kSectionMin, mb::kSectionMax);
+    LOG_INFO("[meshes] state: enabled=%d available=%d banks=%u stubs=%u sections=%u..%u free=%u", g_enabled, mb::Available(), mb::Count(),
+             mb::Registered(), mb::kSectionMin, mb::kSectionMax, mb::FreeSections());
     return true;
 }
 

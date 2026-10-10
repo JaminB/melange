@@ -272,6 +272,13 @@ int SemverCompare(const std::string& a, const std::string& b) { return Compare(P
 
 bool ValidModId(const std::string& id) { return ValidId(id); }
 
+bool ValidVehicleMeshName(const std::string& modId, const std::string& name) {
+    if (name.size() <= modId.size() + 1 || name.size() > 96 || name.compare(0, modId.size() + 1, modId + ".") != 0) return false;
+    return std::all_of(name.begin(), name.end(), [](unsigned char c) {
+        return (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '.' || c == '_' || c == '-';
+    });
+}
+
 bool ValidRange(const std::string& range) {
     std::vector<Comparator> cmps;
     return ParseRange(Trim(range), &cmps);
@@ -555,8 +562,8 @@ bool ParseMeshes(const json::Value& a, Manifest* out, std::vector<Error>* errs) 
         AddError(errs, &a, "meshes", "meshes must be an array");
         return false;
     }
-    if (a.items.size() > 16) {
-        AddError(errs, &a, "meshes", "at most 16 meshes entries per mod");
+    if (a.items.size() > kMaxMeshes) {
+        AddError(errs, &a, "meshes", "at most " + std::to_string(kMaxMeshes) + " meshes entries per mod");
         return false;
     }
     auto norm = [](std::string s) {
@@ -795,6 +802,42 @@ bool ParseWeaponIcons(const json::Value& o, Manifest* out, std::vector<Error>* e
         }
         if (good) out->weaponIcons.push_back(std::move(w));
         ok &= good;
+    }
+    return ok;
+}
+
+// "vehicleMeshes": {"BomberHelicopter": "<modId>.Chopper", "SuperAirstrike": "<modId>.Chopper2"}. The mesh the Airstrike
+// helicopter and the Super Airstrike's are drawn with. The names live in the banks, which a pure parse cannot open, so the
+// manifest-level rules are: a known vehicle, a "<modId>." name, and a mod that lists at least one mesh bank; whether a
+// loaded bank has that mesh is checked when the match starts (weapons/registry_core.cpp).
+bool ParseVehicleMeshes(const json::Value& o, Manifest* out, std::vector<Error>* errs) {
+    if (!o.IsObject()) {
+        AddError(errs, &o, "vehicleMeshes", "vehicleMeshes must be an object of vehicle name -> mesh name");
+        return false;
+    }
+    bool ok = true;
+    for (const auto& [key, item] : o.members) {
+        std::string known;
+        for (const char* k : kVehicleKeys) known += (known.empty() ? "" : ", ") + std::string(k);
+        if (std::find(std::begin(kVehicleKeys), std::end(kVehicleKeys), key) == std::end(kVehicleKeys)) {
+            AddError(errs, &item, "vehicleMeshes",
+                     key == "Bomber"
+                         ? "vehicleMeshes.Bomber: this game build never draws the \"Bomber\" mesh (the Airstrike is the BomberHelicopter mesh); use one of: " + known
+                         : "unknown vehicleMeshes key '" + key + "'; use one of: " + known);
+            ok = false;
+        } else if (std::any_of(out->vehicleMeshes.begin(), out->vehicleMeshes.end(), [&](const VehicleMesh& v) { return v.vehicle == key; })) {
+            AddError(errs, &item, "vehicleMeshes", "vehicleMeshes." + key + " is listed twice");
+            ok = false;
+        } else if (!item.IsString() || !ValidVehicleMeshName(out->id, item.string)) {
+            AddError(errs, &item, "vehicleMeshes",
+                     "vehicleMeshes." + key + " must be a mesh name \"" + out->id + ".<Name>\" (letters, digits, '.', '_', '-'; at most 96 characters)");
+            ok = false;
+        } else if (out->meshes.empty()) {
+            AddError(errs, &item, "vehicleMeshes", "vehicleMeshes." + key + " names \"" + item.string + "\" but this mod lists no meshes bank");
+            ok = false;
+        } else {
+            out->vehicleMeshes.push_back({key, item.string, item.line});
+        }
     }
     return ok;
 }
@@ -1108,6 +1151,15 @@ bool ParseManifestJson(const json::Value& v, const std::string& folderId, Manife
             AddError(errs, me, "meshes", "meshes requires kind: \"content\"");
             ok = false;
         } else if (!ParseMeshes(*me, out, errs)) {
+            ok = false;
+        }
+    }
+    // After "meshes": it needs to know the mod lists a bank. Presentation only, but the names are the mod's own resources.
+    if (const json::Value* vm = v.Get("vehicleMeshes")) {
+        if (!out->content) {
+            AddError(errs, vm, "vehicleMeshes", "vehicleMeshes requires kind: \"content\"");
+            ok = false;
+        } else if (!ParseVehicleMeshes(*vm, out, errs)) {
             ok = false;
         }
     }

@@ -120,7 +120,7 @@ Sections **476..519** are therefore addressable, never named, never loaded by th
 
 ### Loading from the manifest
 
-A content mod lists banks in `spice.json` (`"meshes": [{ "file": "assets/meshes/kindjal.NailBat.xom" }]`, at most 16,
+A content mod lists banks in `spice.json` (`"meshes": [{ "file": "assets/meshes/kindjal.NailBat.xom" }]`, at most 64,
 under the assets root, see [spice.md](spice.md#meshes-custom-3d-models)). The files are under `assets/**`, which
 `WalkModFileList` in `src/mods/handshake.cpp` hashes into the mod's content hash, so peers must hold identical banks.
 
@@ -139,7 +139,30 @@ engine has not loaded it. Otherwise (outside the range, or taken by an earlier b
 rewrites that one field in a copy at `Melange\cache\meshes\<modId>.<section>.xom` and the copy is loaded as the first
 free section from 476 up. Two mods that both built their bank as section 480 therefore both load.
 
-`src/assets/meshbank.{h,cpp}` (engine side), `src/assets/meshbank_inspect.cpp` (pure parsing, offline-testable),
+### The section budget
+
+One bank takes one section for the whole session, and a section is never given back, so the budget is shared by every
+mod and is spent in load order:
+
+| | |
+|---|---|
+| Sections the engine can address for mods | 476..519 = **44**. The per-section arrays have 520 entries (`0x96ef58`, `0x96f160`, `0x96f368`), 475 is the engine's "no section" sentinel, 0..474 are vanilla. |
+| `meshes` entries one mod may declare | **64** (a parse limit, `spice::kMaxMeshes`). More than 44 is allowed on purpose: a mod that lists spare banks still parses, and the budget is spent only by banks that actually load. |
+| Banks that load across all mods | at most 44, first come in load order (mod order, then array order). A bank that fails before the engine call (unreadable, a name outside `<modId>.`) burns nothing; one that reaches `LoadSection` burns its section even if the engine then refuses it. |
+| Many meshes in one bank | A bank may hold any number of `XMeshDescriptor`s as long as they share one `SectionId`, so a mod that needs more than its share of 44 puts several meshes in a bank (`xomtool convert ... --bundle` writes one mesh per file today; merging banks is a separate change). |
+
+When the budget runs short the load says so before it starts and again per bank, instead of 20 identical failures:
+
+```
+[meshes] 52 bank(s) declared by 3 mod(s), but only 44 of the 44 mod sections are free: the last 8 in load order will not load
+[meshes] bigmod/assets/meshes/m45.xom: not loaded, all 44 mod sections (476..519) are in use
+[meshes] 44 bank(s) loaded from 3 mod(s), 44 mesh(es), sections 480, 476, ..., 8 not loaded (section budget exhausted)
+```
+
+(`mesh.state` shows the sections left.) A mod whose bank did not load keeps working: its `set` and `vehicleMeshes` entries
+that name a missing mesh are skipped for that match with a `[weapons] ... not loaded` line and the vanilla mesh is drawn.
+
+`src/assets/meshbank.{h,cpp}` (engine side; `FreeSections()` counts what is left of the 44), `src/assets/meshbank_inspect.cpp` (pure parsing, offline-testable),
 `src/assets/meshes_module.cpp` (the module and test verbs). `[Meshes] Enabled=1`, `RequiresKnownBuild` true.
 
 ```cpp
@@ -181,6 +204,83 @@ Test verbs (`melange/testcmd.h`, run through the automation driver or the Lua co
 | `mesh.state` | enabled / sites verified / banks and stubs this session / the mod section range |
 | `mesh.resolve <name>` | `Describe`: descriptor address, section, scene bin, loaded bit, graph set, source file |
 | `mesh.load <bank.xom> [modId] [sceneBin]` | `LoadModBank`; a path with spaces is quoted; `modId` defaults to the file name's first dot-part |
+
+## Engine-picked meshes: the Airstrike and Super Airstrike helicopters
+
+The Airstrike (`kWeaponAirstrike`, `IsBomberWeapon`) and Super Airstrike (`kWeaponSuperAirstrike`, `IsControlledBomber`)
+containers name only the radio (`Radio`) and the bomb (`Airstrike.Payload`, `Cow.Payload`); the aircraft that flies over is
+not a container field. This section records where the engine picks its mesh and the hook built on it. Everything here is
+**[V]** (read from the decompile and the `.data` bytes of `WormsMayhem.exe` #1077) unless marked otherwise.
+
+### What the engine does
+
+- **`Bomber.Mesh` in WEAPTWK is not a mesh index.** `BomberLogicEntity::Initialize` (`0x54d720`) writes the data resource
+  `Bomber.Mesh` as a literal `0`, builds its `BomberGraphicEntity`, and then reads `Bomber.Mesh` back and calls it as an
+  object (`GetNode(…, "perspShape")` on it); the last thing `BomberGraphicEntity::Setup` (`0x54cab0`) does is store the mesh
+  instance it created under that name. So it is a pointer channel from the graphic entity to the logic entity that happens to
+  have a tweak slot, not a selector. Nothing reads the WEAPTWK value as a choice.
+- **The mesh name is a static `const char*` in `.data`, and `Bomber` is not used.** Each graphic entity's `Setup` creates its
+  mesh with `push <&name>; call 0x6f3d95` (the wrapper that calls GRM `CreateResource`, slot 35 `0x6aeac0`, whose second
+  argument is a pointer to a `char*`: the first thing it does is `FindResourceIndex(*param_2)`):
+
+  | Vehicle (manifest key) | Entity, `Setup` | `push` of the variable | Variable (`.data`) | Vanilla value | Stub record |
+  |---|---|---|---|---|---|
+  | `BomberHelicopter` | `BomberGraphicEntity`, `0x54cab0` | `0x54cb40`: `68 88 f3 91 00 e8 4b 72 1a 00` | `0x91f388` | `0x850938` "BomberHelicopter" | `0x9113d8`: section 9, bin 8, flags 8, `AirStrike.xom` |
+  | `SuperAirstrike` | `SuperBomberGraphicEntity`, `0x5897e0` | `0x589870`: `68 28 fc 91 00 e8 1b a5 16 00` | `0x91fc28` | `0x850cf0` "SuperAirstrike" | `0x91116c`: section 9, bin 8, flags 8, `SuperAirstrike.xom` |
+
+  Each variable has exactly one code reference (a scan of the whole image for the 4-byte address finds the `push` and
+  nothing else), and each sits in a run of sibling variables (`bombrun_start`, `trail1`, `trail2`, `rear_rotor`, `top_rotor`,
+  `Chopper`) that the same `Setup` and the logic entity read for node and animation names.
+- **The `Bomber` mesh (2731 triangles, 512x512 texture, `Airstrike.xom`) is never created.** Its string at `0x850984` is
+  referenced only by its own stub record (`0x9113b0`); no code loads it. In the bundle it is the same helicopter as
+  `BomberHelicopter` (same node tree and the same `CULLEDAirstrike` clip library). The plane the task brief called "Bomber" is
+  therefore a helicopter, and the Airstrike's aircraft is the `BomberHelicopter` mesh. Three more references to the
+  `SuperAirstrike` string (`0x92f7f0`, `0x92ffd0`, `0x933cc8`) are `{name, id, vtable}` class-registration records, not mesh
+  lookups.
+- **What a replacement mesh must keep.** The hierarchy of all three vanilla meshes is
+  `helicopter` > `Chopper` > { `ChopperShape`, `rear_rotor`, `Bombbaydoor_left`, `bombbaydoor_right`, `locator1` > `top_rotor`,
+  `trail1`, `trail2` }, plus a `persp` camera group beside `Chopper`. `Setup` looks up `rear_rotor` and `top_rotor` (the mesh
+  instance's node lookup, an `HRESULT` assert on failure) and `trail1` / `trail2` (the smoke-trail locators); the logic entity
+  finds the camera as `perspShape`;
+  the `bombrun_start*` / `bombrun_end*` clips of `CULLEDAirstrike` animate nodes by name. A mod mesh should therefore be the
+  vanilla mesh with edited geometry and textures, node names and transforms untouched
+  (`xomtool convert BomberHelicopter --from Bundl09.xom --out chopper.gltf`, edit, `convert ... --bundle`).
+  Both stub records say scene bin 8, the loader's default, so no bin override is needed.
+  The loader checks this offline: when it loads a bank it records, per mesh, which of `rear_rotor`, `top_rotor`, `trail1`,
+  `trail2` and `perspShape` no object in the mesh's graph-set closure carries as a `Name` (`meshes::MissingNodes`), and a
+  `vehicleMeshes` rule whose mesh lacks any is not armed (the vanilla vehicle is drawn, with a log line naming the nodes).
+  That checks names only, not that the animation clips still bind to them, which is still unverified in a match.
+
+### The hook: `vehicleMeshes`
+
+```json
+"meshes": [{ "file": "assets/meshes/kindjal.Chopper.xom" }],
+"vehicleMeshes": { "BomberHelicopter": "kindjal.Chopper", "SuperAirstrike": "kindjal.Chopper" }
+```
+
+Keys are exactly the two vehicles above (`Bomber` is refused with the reason; anything else is an unknown key). Values must
+be `<modId>.<Name>` (letters, digits, `.`, `_`, `-`, at most 96 characters), and the mod must list at least one `meshes`
+bank: a pure manifest parse cannot open the banks, so "the bank really holds that mesh and it loaded" is checked when the
+match starts (the mesh must resolve in the GRM with its graph loaded; otherwise that vehicle stays vanilla and the log says
+so). Two mods setting the same vehicle: the later one in load order is refused as a whole, like `weaponIcons`.
+
+How it is applied (`weapons::engine::SetVehicleMesh`, called by the clone registry; **no code is patched and no hook is
+created**): when the registry goes live for a match (the same gate as clones, `weaponText` and `weaponIcons`, so every peer
+has the same rules), for each rule whose mesh is loaded it checks the build, that the `push` site still has the bytes in the
+table above, and that the variable still holds the vanilla pointer to the vanilla name, then writes the address of the mod's
+mesh name (a string kept alive for the process) into the variable. `Setup` then asks the GRM for the mod's mesh instead.
+At the match end (and when a new match starts over an unclosed one) the vanilla pointer is written back. Any mismatch, or an
+unknown build, leaves the vanilla vehicle and logs `[weapons] vehicleMeshes <vehicle> (<mod>): ... not used (...)`.
+
+The rules travel in the content identity as `vehicle <key> mesh="<name>"` lines beside the `text` and `icon` lines (the
+banks themselves are already hashed as files under `assets/**`), and count as weapon content for the lobby gate: a peer
+with a different vehicle mesh is held, exactly as for a different icon.
+
+Verified offline: the manifest rules, the cross-mod assignment, the registry lifecycle against a fake engine, the identity
+lines. **Not run in the game (unverified):** that `CreateResource` accepts a mod-section mesh at the helicopter's scene bin
+and that nothing else caches the vanilla mesh; that the helicopter's animations and rotor nodes bind on a re-exported mesh;
+that a `.data` write to the two variables is not reverted by another writer (the scan found none); the Super Airstrike
+path in a real match; behaviour when the mesh is missing a required node (the assert path was not exercised).
 
 ## Building a bank with xomtool
 
@@ -247,7 +347,8 @@ recoloured `XImage`). `meshbank_selftest` accepts it (`InspectBank` + `CheckEntr
 mixed sections, bad root, duplicates, `RelocateBank`; plus `--bank <file> --mod <id>` for a real bank) is the
 `meshbank_selftest` target in `CMakeLists.txt` and in `scripts/selftest.ps1`; it links
 `src/assets/meshbank_inspect.cpp` and `melange_xom` only. The manifest field's parsing (shape, `.xom`, under the
-assets root, the 16 limit, kind) is tested in `tests/thumper_selftest.cpp` (`TestMeshes`).
+assets root, the 64 limit, kind) is tested in `tests/thumper_selftest.cpp` (`TestMeshes`, and `TestVehicleMeshes` for
+`vehicleMeshes`).
 
 ## Unverified and open
 
@@ -272,4 +373,6 @@ assets root, the 16 limit, kind) is tested in `tests/thumper_selftest.cpp` (`Tes
 - `xomtool convert ... --bundle out.xom` writes the bundle shape directly (see [xomtool.md](xomtool.md)); the
   hand-made pipeline above (`--into`, `bundleize.py`) is how the proven test asset was built.
 - A mod mesh as a projectile (`PayloadGraphicsResourceID`) or an `AttachedMesh`, and on a weapon clone, is untried.
+- `vehicleMeshes` (the Airstrike and Super Airstrike helicopters) is implemented from the decompile and the `.data` bytes
+  and unit-tested, not run in the game; see [the section above](#engine-picked-meshes-the-airstrike-and-super-airstrike-helicopters).
 - Only content mods load banks, once per launch; there is no live reload and no unload.

@@ -8,6 +8,7 @@
 #include <cstring>
 
 #include "assets/icons.h"
+#include "assets/meshbank.h"
 #include "assets/searchpath.h"
 #include "core/game.h"
 #include "core/log.h"
@@ -82,6 +83,15 @@ public:
         return ok;
     }
     void ClearPanelIcons() override { assets::ClearVanillaPanelIcons(); }
+    bool MeshLoaded(const char* name) override {
+        assets::meshes::Info i;
+        return assets::meshes::Describe(name, &i) && i.loaded && i.graphSet;
+    }
+    std::string MeshNodesMissing(const char* name) override { return assets::meshes::VehicleNodesMissing(name); }
+    bool SetVehicleMesh(const char* vehicle, const char* name, std::string* err) override {
+        return engine::SetVehicleMesh(vehicle, name, err);
+    }
+    void ClearVehicleMeshes() override { engine::ClearVehicleMeshes(); }
     bool EnableHooks(bool on) override {
         if (on && engine::Suppressed()) {
             LOG_ERROR("[weapons] the weapon hooks are suppressed: no clones in this match");
@@ -141,7 +151,7 @@ core::Registry& Core() { return g_core; }
 
 bool Install() {
     if (g_installed) return true;
-    g_core.Configure(manifest::Frozen(), manifest::FrozenText(), manifest::FrozenIcons());
+    g_core.Configure(manifest::Frozen(), manifest::FrozenText(), manifest::FrozenIcons(), manifest::FrozenVehicles());
     g_configured = true;
     const bool v = g_core.Count() == 0 || vid::Create(), p = panel::Create(), h = hud::Create();
     if (!(v && p && h)) {
@@ -187,6 +197,13 @@ void OnInit() {
                  g_core.IconCount());
         jlog::Rec("weapons", jlog::Level::Info, "weapon_icons")
             .Bool("live", g_core.IconsLive()).Int("declared", g_core.IconCount()).Int("panel", panels).Int("hud", huds);
+    }
+    if (g_core.VehicleCount()) {
+        int armed = 0;
+        for (int i = 0; i < g_core.VehicleCount(); ++i) armed += g_core.VehicleAt(i)->armed;
+        LOG_INFO("[weapons] match %u: vehicleMeshes %d of %d rule(s) armed", sim::MatchSerial(), armed, g_core.VehicleCount());
+        jlog::Rec("weapons", jlog::Level::Info, "vehicle_meshes")
+            .Bool("live", g_core.VehiclesLive()).Int("declared", g_core.VehicleCount()).Int("armed", armed);
     }
 }
 

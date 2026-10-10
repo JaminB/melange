@@ -67,6 +67,11 @@ struct Fake final : core::Engine {
     std::set<std::string> missingHud;
     bool failPatch = false;
     int clears = 0;
+    std::set<std::string> loadedMeshes;             // the meshes the "GRM" has with a graph
+    std::map<std::string, std::string> meshLacks;   // loaded mesh -> the vehicle nodes it lacks
+    std::map<std::string, std::string> vehicleMesh;  // vehicle -> the mesh its entity draws now (absent = vanilla)
+    bool failVehicle = false;
+    int vehicleClears = 0;
 
     uintptr_t NewObj(const std::string& name, uintptr_t c) {
         const uintptr_t o = next;
@@ -205,6 +210,23 @@ struct Fake final : core::Engine {
     void ClearPanelIcons() override {
         ++clears;
         patches.clear();
+    }
+    bool MeshLoaded(const char* name) override { return loadedMeshes.count(name) != 0; }
+    std::string MeshNodesMissing(const char* name) override {
+        const auto it = meshLacks.find(name);
+        return it == meshLacks.end() ? std::string() : it->second;
+    }
+    bool SetVehicleMesh(const char* vehicle, const char* name, std::string* err) override {
+        if (failVehicle) {
+            if (err) *err = "stub refused";
+            return false;
+        }
+        vehicleMesh[vehicle] = name;
+        return true;
+    }
+    void ClearVehicleMeshes() override {
+        ++vehicleClears;
+        vehicleMesh.clear();
     }
     bool EnableHooks(bool on) override {
         if (on && !hooksOk) return false;
@@ -899,6 +921,103 @@ void WeaponIcons() {
     }
 }
 
+wm::VehicleDecl Vehicle(const char* vehicle, const char* mesh, const char* mod = "vehmod") { return {mod, vehicle, mesh}; }
+
+void VehicleMeshes() {
+    Fake e;
+    e.loadedMeshes = {"vehmod.Chopper", "vehmod.Super"};
+    core::Registry r(e);
+    r.Configure({}, {}, {}, {Vehicle("BomberHelicopter", "vehmod.Chopper"), Vehicle("SuperAirstrike", "vehmod.Super")});
+    Expect(r.VehicleCount() == 2 && !r.VehiclesLive() && !r.Live() && r.Count() == 0, "configured, not live");
+    Expect(e.vehicleMesh.empty() && !e.hooksOn, "not live: the vanilla vehicles");
+
+    std::string why;
+    Expect(r.Init(&why), "a vehicle-only match goes live: " + why);
+    Expect(r.VehiclesLive() && !r.Live() && e.hooksOn && r.VehicleAt(0)->armed && r.VehicleAt(1)->armed,
+           "both rules armed, no clone registry");
+    Expect(e.vehicleMesh.size() == 2 && e.vehicleMesh["BomberHelicopter"] == "vehmod.Chopper" &&
+               e.vehicleMesh["SuperAirstrike"] == "vehmod.Super",
+           "the engine was told each vehicle's mesh");
+    r.MatchEnd();
+    Expect(!r.VehiclesLive() && e.vehicleMesh.empty() && e.vehicleClears == 1 && !e.hooksOn && !r.VehicleAt(0)->armed,
+           "match end: every vanilla vehicle back, hooks off");
+    // The next match arms again; an unclosed match is cleared first.
+    Expect(r.Init(&why) && e.vehicleMesh.size() == 2 && r.Init(&why) && e.vehicleMesh.size() == 2 && e.vehicleClears == 2,
+           "second match arms again; an unclosed one is cleared first");
+    r.MatchEnd();
+
+    // A mesh that never loaded (its bank failed, or the budget ran out) costs only that rule.
+    {
+        Fake f;
+        f.loadedMeshes = {"vehmod.Super"};
+        core::Registry q(f);
+        q.Configure({}, {}, {}, {Vehicle("BomberHelicopter", "vehmod.Chopper"), Vehicle("SuperAirstrike", "vehmod.Super")});
+        Expect(q.Init(&why) && q.VehiclesLive() && !q.VehicleAt(0)->armed && q.VehicleAt(1)->armed &&
+                   f.vehicleMesh.size() == 1 && f.vehicleMesh.count("SuperAirstrike") == 1,
+               "an unloaded mesh: that vehicle stays vanilla, the other is drawn");
+        q.MatchEnd();
+        Expect(f.vehicleMesh.empty() && f.vehicleClears == 1, "...and the match end clears it");
+    }
+    // A mesh that loaded but lacks a node Setup looks up would assert mid-match: that vehicle stays vanilla.
+    {
+        Fake f;
+        f.loadedMeshes = {"vehmod.Chopper", "vehmod.Super"};
+        f.meshLacks["vehmod.Chopper"] = "top_rotor, perspShape";
+        core::Registry q(f);
+        q.Configure({}, {}, {}, {Vehicle("BomberHelicopter", "vehmod.Chopper"), Vehicle("SuperAirstrike", "vehmod.Super")});
+        Expect(q.Init(&why) && q.VehiclesLive() && !q.VehicleAt(0)->armed && q.VehicleAt(1)->armed && f.vehicleMesh.size() == 1 &&
+                   f.vehicleMesh.count("BomberHelicopter") == 0,
+               "a mesh lacking required nodes is not armed, the other vehicle is");
+        q.MatchEnd();
+    }
+    // Nothing loads, or the engine refuses (other build bytes, a changed name variable): not live, and the caller is told.
+    {
+        Fake f;
+        core::Registry q(f);
+        q.Configure({}, {}, {}, {Vehicle("BomberHelicopter", "vehmod.Chopper")});
+        Expect(!q.Init(&why) && !q.VehiclesLive() && !f.hooksOn && f.vehicleMesh.empty() && why.find("vehicleMeshes") != std::string::npos,
+               "no mesh loaded: not live (" + why + ")");
+        f.loadedMeshes = {"vehmod.Chopper"};
+        f.failVehicle = true;
+        Expect(!q.Init(&why) && !q.VehiclesLive() && f.vehicleMesh.empty() && f.vehicleClears == 0,
+               "the engine refuses: not live, nothing to clear");
+    }
+    // Beside renames, icons and clones: all of them live in one match, each torn down by the match end.
+    {
+        Fake f;
+        f.loadedMeshes = {"vehmod.Chopper"};
+        core::Registry q(f);
+        auto d = Decl("kWeaponMegaBazooka", "kWeaponBazooka", 1, 29, 0);
+        q.Configure({d}, {wm::TextDecl{"vehmod", "kWeaponGrenade", "Nade", ""}}, {Icon("kWeaponBazooka", "", "iconmod.baz.tga")},
+                    {Vehicle("BomberHelicopter", "vehmod.Chopper")});
+        Expect(q.Init(&why) && q.Live() && q.TextLive() && q.IconsLive() && q.VehiclesLive() && f.vehicleMesh.size() == 1,
+               "clone, rename, icons and vehicle live together: " + why);
+        q.MatchEnd();
+        Expect(!q.Live() && !q.TextLive() && !q.IconsLive() && !q.VehiclesLive() && f.vehicleMesh.empty(), "all off at the match end");
+    }
+    // A clone that fails to go live leaves the vehicle rules armed (like renames and icons), and the match end clears them.
+    {
+        Fake f;
+        f.loadedMeshes = {"vehmod.Chopper"};
+        f.failAdd = true;
+        core::Registry q(f);
+        q.Configure({Decl("kWeaponMegaBazooka", "kWeaponBazooka", 1, 29, 0)}, {}, {}, {Vehicle("BomberHelicopter", "vehmod.Chopper")});
+        Expect(!q.Init(&why) && q.VehiclesLive() && f.vehicleMesh.size() == 1, "a failed clone leaves the vehicle mesh armed");
+        q.MatchEnd();
+        Expect(f.vehicleMesh.empty(), "...until the match end");
+    }
+    // Reconfiguring drops what a previous configuration armed.
+    {
+        Fake f;
+        f.loadedMeshes = {"vehmod.Chopper"};
+        core::Registry q(f);
+        q.Configure({}, {}, {}, {Vehicle("BomberHelicopter", "vehmod.Chopper")});
+        Expect(q.Init(&why) && f.vehicleMesh.size() == 1, "armed");
+        q.Configure({}, {}, {}, {});
+        Expect(f.vehicleMesh.empty() && q.VehicleCount() == 0 && !q.VehiclesLive(), "Configure clears the armed vehicles");
+    }
+}
+
 int wmain(int argc, wchar_t** argv) {
     if (argc > 1) return CheckMods(argc, argv);
     wchar_t tmp[MAX_PATH];
@@ -908,6 +1027,7 @@ int wmain(int argc, wchar_t** argv) {
     Basic();
     VanillaRenames();
     WeaponIcons();
+    VehicleMeshes();
     RenamesWithClones();
     RenamesSurviveCloneFailure();
     CloneWithoutTextOverRenamedBase();

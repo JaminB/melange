@@ -327,6 +327,63 @@ void IconRuleTests(const std::vector<ContentMod>& a) {
     Expect(h.size() == 16 && BuildWpnValue({}, 8, {rip}) == "1;" + h + ";0", "mlg.wpn for an icon-only peer: zero clones");
 }
 
+// Vehicle meshes (spice.json "vehicleMeshes") travel as "vehicle" lines in the same list: a mesh is cosmetic, but same
+// content must be the same hash, and the banks themselves are already hashed as files under assets/.
+void VehicleRuleTests(const std::vector<ContentMod>& a) {
+    const std::vector<ModMessage> none;
+    const TextSpec nail{"kWeaponBazooka", "Nail Bat", "Swing it."};
+    auto vehicle = [](const char* key, const char* mesh) {
+        TextSpec s;
+        s.weapon = key;
+        s.vehicle = true;
+        s.mesh = mesh;
+        return s;
+    };
+    const TextSpec heli = vehicle("BomberHelicopter", "kindjal.Chopper"), super = vehicle("SuperAirstrike", "kindjal.Super");
+
+    Expect(TextLine(heli) == "vehicle BomberHelicopter mesh=\"kindjal.Chopper\"", "vehicle line: the key and the encoded mesh name");
+    Expect(TextLine(vehicle("SuperAirstrike", "a b")) == "vehicle SuperAirstrike mesh=\"a%20b\"", "vehicle line: the mesh name is percent-encoded");
+    Expect(Contains(CanonicalText(a, none, {}, 8, {heli}), "\n" + TextLine(heli) + "\n"), "the vehicle line is in the canonical text");
+
+    const ContentId base = BuildContentId(a, none, {}, 8, {heli});
+    Expect(std::string(base.hash) != std::string(BuildContentId(a, none, {}).hash), "a vehicle rule changes the content hash");
+    auto differs = [&](std::vector<TextSpec> t, const char* what) {
+        Expect(std::string(BuildContentId(a, none, {}, 8, t).hash) != base.hash, what);
+        Expect(CloneHash16({}, 8, t) != CloneHash16({}, 8, {heli}), what);
+    };
+    differs({vehicle("BomberHelicopter", "kindjal.Other")}, "another mesh changes the hashes");
+    differs({vehicle("SuperAirstrike", "kindjal.Chopper")}, "another vehicle changes the hashes");
+    differs({heli, super}, "an extra vehicle changes the hashes");
+    differs({}, "no vehicle rules hash differently from one");
+    differs({heli, nail}, "a rename beside the vehicle changes the hashes");
+    Expect(std::string(BuildContentId(a, none, {}, 8, {heli, super}).hash) == BuildContentId(a, none, {}, 8, {super, heli}).hash &&
+               CloneHash16({}, 8, {heli, super}) == CloneHash16({}, 8, {super, heli}),
+           "the order the vehicle rules arrive in does not matter");
+    Expect(std::string(BuildContentId(a, none, {}, 2, {heli}).hash) == base.hash, "without clones ExtraPerExplosion does not matter");
+    // Vehicle-only content is weapon content: the gate applies, and it is never vanilla.
+    Expect(!BuildContentId({}, none, {}, 8, {heli}).vanilla, "a vehicle rule alone is never vanilla content");
+    const std::string h = CloneHash16({}, 8, {heli});
+    Expect(h.size() == 16 && BuildWpnValue({}, 8, {heli}) == "1;" + h + ";0", "mlg.wpn for a vehicle-only peer: zero clones");
+
+    CloneLobbyInput in;
+    in.inLobby = true;
+    in.weAreOwner = true;
+    in.haveClones = true;  // wpngate::LocalClones() is true for a vehicle-only peer
+    in.ourHash16 = Hash16(base);
+    auto peer = [](const char* name, const std::string& hash) {
+        LobbyMember m;
+        m.name = name;
+        m.hasMlg = true;
+        m.hash16 = hash;
+        return m;
+    };
+    in.members = {peer("Same", Hash16(base)), peer("Other", Hash16(BuildContentId(a, none, {}, 8, {vehicle("BomberHelicopter", "kindjal.Other")})))};
+    const CloneVerdict v = EvaluateCloneLobby(in);
+    Expect(!v.ok && v.hostHeld && v.members.size() == 1 && v.members[0].find("Other") == 0, "a peer with another vehicle mesh is held");
+    in.members = {peer("Same", Hash16(base))};
+    Expect(EvaluateCloneLobby(in).ok, "a peer with the same vehicle mesh is fine");
+}
+
 LobbyMember Member(std::string name, bool hasMlg, std::string hash, std::string diff = "") {
     LobbyMember m;
     m.name = std::move(name);
@@ -516,6 +573,7 @@ void WeaponTests(const std::vector<ContentMod>& a) {
     CloneTests(a);
     TextTests(a);
     IconRuleTests(a);
+    VehicleRuleTests(a);
     PolicyTests();
     VanillaTests();
     GidTests();

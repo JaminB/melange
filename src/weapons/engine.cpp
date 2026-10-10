@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <cstring>
+#include <deque>
 #include <initializer_list>
 
 #include "core/game.h"
@@ -393,6 +394,63 @@ void SuppressAll(bool suppress) {
 }
 
 bool Suppressed() { return g_suppressed; }
+
+// Vehicle meshes. BomberGraphicEntity::Setup (0x54cab0) and SuperBomberGraphicEntity::Setup (0x5897e0) each create their
+// mesh with `push <&name>; call 0x6f3d95` (the GRM CreateResource wrapper: the name is passed as a pointer to a char*), where
+// <&name> is a static `const char*` in .data that starts out pointing at "BomberHelicopter" / "SuperAirstrike" and that
+// nothing else writes or reads. Pointing that variable at a mod mesh's name is therefore the whole hook: no code is patched.
+namespace {
+struct Vehicle {
+    const char* key;          // the vehicleMeshes key, which is also the vanilla mesh name
+    uintptr_t var;            // the static char*
+    uint32_t vanilla;         // what the variable holds in #1077
+    uintptr_t push;           // the `push imm32` that passes &var ...
+    std::initializer_list<int> bytes;  // ... and the CreateResource wrapper it calls (a call to 0x6f3d95)
+};
+const Vehicle kVehicles[] = {
+    {"BomberHelicopter", 0x91f388, 0x850938, 0x54cb40, {0x68, 0x88, 0xf3, 0x91, 0x00, 0xe8, 0x4b, 0x72, 0x1a, 0x00}},
+    {"SuperAirstrike", 0x91fc28, 0x850cf0, 0x589870, {0x68, 0x28, 0xfc, 0x91, 0x00, 0xe8, 0x1b, 0xa5, 0x16, 0x00}},
+};
+constexpr size_t kVehicleCount = sizeof kVehicles / sizeof kVehicles[0];
+std::deque<std::string> g_vehicleNames;  // what patched variables point at: elements never move or die, so a pointer into one stays valid
+uint32_t g_vehicleOrig[kVehicleCount] = {};  // the vanilla pointer while patched, else 0
+}  // namespace
+
+bool SetVehicleMesh(const char* vehicle, const char* name, std::string* err) {
+    auto fail = [&](const std::string& why) {
+        if (err) *err = why;
+        return false;
+    };
+    size_t i = 0;
+    while (i < kVehicleCount && (!vehicle || strcmp(kVehicles[i].key, vehicle) != 0)) ++i;
+    if (i == kVehicleCount) return fail("not a known vehicle");
+    if (!name || !*name || strlen(name) > 96) return fail("bad mesh name");
+    const Vehicle& v = kVehicles[i];
+    if (!game::IsKnownBuild() || !mem::Expect(v.push, v.bytes))
+        return fail("the code that creates this vehicle's mesh is not build #1077's");
+    const uint32_t cur = Rd<uint32_t>(v.var);
+    if (!g_vehicleOrig[i] && (cur != v.vanilla || ReadCString(cur, 32) != v.key))
+        return fail("the vehicle's mesh name is not the vanilla one");
+    // A name the variable may still point at is never overwritten (a failed Put below would leave it dangling): each
+    // distinct name gets its own stable string, reused when set again.
+    auto at = std::find(g_vehicleNames.begin(), g_vehicleNames.end(), name);
+    if (at == g_vehicleNames.end()) {
+        g_vehicleNames.emplace_back(name);
+        at = g_vehicleNames.end() - 1;
+    }
+    const uint32_t p = static_cast<uint32_t>(reinterpret_cast<uintptr_t>(at->c_str()));
+    if (!mem::Put<uint32_t>(v.var, p)) return fail("writing the mesh name failed");
+    if (!g_vehicleOrig[i]) g_vehicleOrig[i] = v.vanilla;
+    return true;
+}
+
+void ClearVehicleMeshes() {
+    for (size_t i = 0; i < kVehicleCount; ++i) {
+        if (!g_vehicleOrig[i]) continue;
+        mem::Put<uint32_t>(kVehicles[i].var, g_vehicleOrig[i]);
+        g_vehicleOrig[i] = 0;
+    }
+}
 
 std::vector<HookState> Hooks() {
     std::vector<HookState> v;

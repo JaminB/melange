@@ -408,6 +408,114 @@ void WeaponIconTests() {
     Expect(wm::FrozenIcons().empty(), "icons freeze once per launch");
 }
 
+// The manifest with a mesh bank and a "vehicleMeshes" object appended.
+std::vector<wm::VehicleDecl> Vehicles(const char* id, const std::string& vehicles, std::string* why = nullptr,
+                                      const char* kind = "content", const char* meshes = R"([{"file":"assets/b.xom"}])") {
+    std::string j = Manifest(id, "[]", kind);
+    j.pop_back();
+    melange::spice::Manifest m;
+    std::string perr;
+    if (!Load(id, j + ",\"meshes\":" + meshes + ",\"vehicleMeshes\":" + vehicles + "}", &m, &perr)) {
+        if (why) *why = "spice: " + perr;
+        return {};
+    }
+    std::vector<wm::Error> errs;
+    auto d = wm::ParseVehicles(m, &errs);
+    if (why)
+        for (auto& e : errs) *why += e.text + "; ";
+    return d;
+}
+
+void VehicleMeshTests() {
+    {
+        std::string why;
+        auto v = Vehicles("vh1", R"({"BomberHelicopter":"vh1.Chopper","SuperAirstrike":"vh1.Super"})", &why);
+        Expect(v.size() == 2 && why.empty(), "vehicleMeshes parses: " + why);
+        if (v.size() == 2) {
+            Expect(v[0].mod == "vh1" && v[0].vehicle == "BomberHelicopter" && v[0].mesh == "vh1.Chopper", "first vehicle rule");
+            Expect(v[1].vehicle == "SuperAirstrike" && v[1].mesh == "vh1.Super", "second vehicle rule");
+        }
+    }
+    // The spice layer already refuses these; a Manifest can come from anywhere, so the manifest layer checks again.
+    {
+        melange::spice::Manifest m;
+        m.id = "vh2";
+        m.content = true;
+        m.meshes.push_back({"assets/b.xom", 1});
+        std::vector<wm::Error> errs;
+        auto bad = [&](const char* vehicle, const char* mesh, const char* expect) {
+            errs.clear();
+            m.vehicleMeshes.assign(1, {vehicle, mesh, 1});
+            const bool ok = wm::ParseVehicles(m, &errs).empty() && !errs.empty() && errs[0].mod == "vh2" &&
+                            errs[0].text.find(expect) != std::string::npos;
+            if (!ok && !errs.empty()) printf("  (%s: got '%s')\n", vehicle, errs[0].text.c_str());
+            return ok;
+        };
+        Expect(bad("Bomber", "vh2.X", "not a vehicle"), "the unused Bomber mesh is refused (rechecked)");
+        Expect(bad("Plane", "vh2.X", "not a vehicle"), "an unknown vehicle is refused (rechecked)");
+        Expect(bad("BomberHelicopter", "other.X", "vh2.<Name>"), "another mod's prefix is refused (rechecked)");
+        Expect(bad("BomberHelicopter", "vh2.", "vh2.<Name>"), "an empty name after the prefix is refused (rechecked)");
+        Expect(bad("BomberHelicopter", "vh2.a b", "vh2.<Name>"), "a space is refused (rechecked)");
+        errs.clear();
+        m.vehicleMeshes.assign(2, {"BomberHelicopter", "vh2.X", 1});
+        Expect(wm::ParseVehicles(m, &errs).empty() && !errs.empty() && errs[0].text.find("listed twice") != std::string::npos,
+               "a vehicle listed twice (rechecked)");
+        errs.clear();
+        m.vehicleMeshes.assign(1, {"BomberHelicopter", "vh2.X", 1});
+        m.meshes.clear();
+        Expect(wm::ParseVehicles(m, &errs).empty() && !errs.empty() && errs[0].text.find("no meshes bank") != std::string::npos,
+               "a mod without a meshes bank (rechecked)");
+        errs.clear();
+        m.meshes.push_back({"assets/b.xom", 1});
+        m.content = false;
+        Expect(wm::ParseVehicles(m, &errs).empty() && !errs.empty() && errs[0].text.find("requires kind") != std::string::npos,
+               "not content (rechecked)");
+        errs.clear();
+        m.vehicleMeshes.clear();
+        Expect(wm::ParseVehicles(m, &errs).empty() && errs.empty(), "no vehicleMeshes, no errors");
+    }
+    // Across mods: the later mod loses a vehicle the earlier one has set.
+    {
+        auto a = Vehicles("va", R"({"BomberHelicopter":"va.Chopper"})");
+        auto b = Vehicles("vb", R"({"BomberHelicopter":"vb.Chopper","SuperAirstrike":"vb.Super"})");
+        auto c = Vehicles("vc", R"({"SuperAirstrike":"vc.Super"})");
+        std::vector<wm::Error> ref;
+        auto all = wm::AssignVehicles({a, c}, &ref);
+        Expect(ref.empty() && all.size() == 2, "different vehicles from two mods");
+        all = wm::AssignVehicles({a, b, c}, &ref);
+        Expect(all.size() == 2 && all[1].mod == "vc" && ref.size() == 1 && ref[0].mod == "vb" &&
+                   ref[0].text.find("BomberHelicopter") != std::string::npos && ref[0].text.find("va") != std::string::npos,
+               "the later mod is refused as a whole, naming the vehicle and the earlier mod");
+        ref.clear();
+        all = wm::AssignVehicles({b, a}, &ref);
+        Expect(all.size() == 2 && all[0].mod == "vb" && ref.size() == 1 && ref[0].mod == "va", "load order decides");
+    }
+    // All passes together: a vehicle conflict drops that mod's clones, renames and icons too; a vehicle claim does not
+    // block a clone or a rename of anything.
+    {
+        wm::CloneDecl cl;
+        cl.mod = "vb";
+        cl.name = "kWeaponVbOne";
+        cl.base = "kWeaponBazooka";
+        cl.baseId = 1;
+        const wm::VehicleDecl ha{"va", "BomberHelicopter", "va.A"}, hb{"vb", "BomberHelicopter", "vb.B"};
+        auto r = wm::Resolve({{}, {cl}}, {{}, {wm::TextDecl{"vb", "kWeaponGrenade", "N", ""}}}, {{}, {}}, {{ha}, {hb}});
+        Expect(r.refused.size() == 1 && r.refused[0].mod == "vb" && r.clones.empty() && r.texts.empty() && r.vehicles.size() == 1 &&
+                   r.vehicles[0].mod == "va",
+               "a vehicle conflict refuses the later mod as a whole");
+        r = wm::Resolve({{cl}}, {{}}, {{}}, {{hb}});
+        Expect(r.refused.empty() && r.clones.size() == 1 && r.vehicles.size() == 1, "a vehicle rule beside a clone of the same mod");
+        r = wm::Resolve({}, {}, {}, {{ha}});
+        Expect(r.refused.empty() && r.vehicles.size() == 1, "a vehicle rule alone");
+        r = wm::Resolve({{cl}}, {{}});
+        Expect(r.vehicles.empty(), "no vehicle lists, no vehicle rules");
+    }
+    wm::FreezeVehicles({});
+    Expect(wm::IsVehiclesFrozen() && wm::FrozenVehicles().empty(), "vehicles freeze");
+    wm::FreezeVehicles({wm::VehicleDecl{"m", "BomberHelicopter", "m.X"}});
+    Expect(wm::FrozenVehicles().empty(), "vehicles freeze once per launch");
+}
+
 }  // namespace
 
 int main() {
@@ -533,6 +641,7 @@ int main() {
 
     WeaponTextTests();
     WeaponIconTests();
+    VehicleMeshTests();
 
     wm::Freeze({});
     Expect(wm::IsFrozen() && wm::Frozen().empty(), "freeze");

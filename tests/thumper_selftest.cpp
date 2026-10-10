@@ -82,7 +82,7 @@ void TestSemver() {
 // ---------------------------------------------------------------------------------------------
 // Parse()
 // ---------------------------------------------------------------------------------------------
-// "meshes": shape, kind, the 16 limit, and that every bank lies under the mod's assets root (so it is content-hashed).
+// "meshes": shape, kind, the 64 limit, and that every bank lies under the mod's assets root (so it is content-hashed).
 void TestMeshes() {
     int n = 0;
     auto parse = [&](const std::string& kind, const std::string& assets, const std::string& meshes, Manifest* m, std::vector<Error>* errs) {
@@ -125,13 +125,87 @@ void TestMeshes() {
     Expect(fails("client-only", "", R"([{"file": "assets/a.xom"}])", "meshes"), "meshes: requires kind content");
     {
         std::string many = "[";
-        for (int i = 0; i < 16; ++i) many += std::string(i ? "," : "") + R"({"file": "assets/m)" + std::to_string(i) + R"(.xom"})";
+        for (int i = 0; i < 64; ++i) many += std::string(i ? "," : "") + R"({"file": "assets/m)" + std::to_string(i) + R"(.xom"})";
         Manifest m;
         std::vector<Error> errs;
-        Expect(parse("content", "", many + "]", &m, &errs) && m.meshes.size() == 16, "meshes: 16 entries are accepted");
-        many += R"(,{"file": "assets/m16.xom"}])";
-        Expect(fails("content", "", many, "meshes"), "meshes: 17 entries are refused");
+        Expect(parse("content", "", many + "]", &m, &errs) && m.meshes.size() == 64 && melange::spice::kMaxMeshes == 64,
+               "meshes: 64 entries are accepted");
+        many += R"(,{"file": "assets/m64.xom"}])";
+        Expect(fails("content", "", many, "meshes"), "meshes: 65 entries are refused");
+        errs.clear();
+        Manifest m2;
+        parse("content", "", many, &m2, &errs);
+        Expect(!errs.empty() && errs[0].text.find("at most 64") != std::string::npos, "meshes: the limit is named in the error");
     }
+}
+
+// "vehicleMeshes": the engine-picked Airstrike helicopter and Super Airstrike mesh names. A pure parse cannot open the
+// banks, so the rules are the known keys, the "<modId>." prefix, a mod that lists a bank and kind: content.
+void TestVehicleMeshes() {
+    int n = 0;
+    auto parse = [&](const std::string& kind, const std::string& meshes, const std::string& vehicles, Manifest* m,
+                     std::vector<Error>* errs) {
+        const std::string folder = "veh-mod" + std::to_string(++n);  // the id must equal the folder name
+        const std::string json = std::string(R"({"spiceVersion": 1, "id": ")") + folder + R"(", "version": "1.0.0", "name": "M",
+            "melange": {"range": ">=0.1.0"}, "kind": ")" + kind + R"(", "entry": {})" +
+            (meshes.empty() ? "" : R"(, "meshes": )" + meshes) + R"(, "vehicleMeshes": )" + vehicles + "}";
+        return Parse(Fixture(folder.c_str(), json), m, errs);
+    };
+    const std::string bank = R"([{"file": "assets/meshes/b.xom"}])";
+    // The error text names the problem: look for a fragment of it.
+    auto fails = [&](const std::string& kind, const std::string& meshes, const std::string& vehicles, const char* text) {
+        Manifest m;
+        std::vector<Error> errs;
+        const bool ok = parse(kind, meshes, vehicles, &m, &errs);
+        // Any error: a client-only mod is refused for its meshes bank first, and vehicleMeshes then adds its own.
+        const bool good = !ok && std::any_of(errs.begin(), errs.end(), [&](const Error& e) {
+            return e.field == "vehicleMeshes" && e.text.find(text) != std::string::npos;
+        });
+        if (!good && !errs.empty()) printf("  (vehicleMeshes: got '%s' / '%s')\n", errs[0].field.c_str(), errs[0].text.c_str());
+        return good;
+    };
+    {
+        Manifest m;
+        std::vector<Error> errs;
+        // The mesh names carry this fixture's mod id, veh-mod1.
+        const bool ok = parse("content", bank, R"({"BomberHelicopter": "veh-mod1.Chopper", "SuperAirstrike": "veh-mod1.Super_2"})", &m, &errs);
+        Expect(ok && m.vehicleMeshes.size() == 2 && m.vehicleMeshes[0].vehicle == "BomberHelicopter" &&
+                   m.vehicleMeshes[0].mesh == "veh-mod1.Chopper" && m.vehicleMeshes[1].vehicle == "SuperAirstrike" &&
+                   m.vehicleMeshes[1].mesh == "veh-mod1.Super_2" && m.vehicleMeshes[0].line > 0,
+               "vehicleMeshes: both vehicles parse in order");
+    }
+    {
+        Manifest m;
+        std::vector<Error> errs;
+        Expect(parse("content", bank, R"({"SuperAirstrike": "veh-mod2.A.B-c"})", &m, &errs) && m.vehicleMeshes.size() == 1,
+               "vehicleMeshes: one vehicle, dots, dashes and underscores in the name");
+        Manifest e;
+        Expect(parse("content", bank, "{}", &e, &errs) && e.vehicleMeshes.empty(), "vehicleMeshes: an empty object is accepted");
+    }
+    // Keys: only the vehicles the build draws. "Bomber" gets its own explanation.
+    Expect(fails("content", bank, R"({"Plane": "veh-mod4.X"})", "unknown vehicleMeshes key 'Plane'"), "vehicleMeshes: unknown key");
+    Expect(fails("content", bank, R"({"bomberhelicopter": "veh-mod5.X"})", "unknown vehicleMeshes key"), "vehicleMeshes: keys are case-sensitive");
+    Expect(fails("content", bank, R"({"Bomber": "veh-mod6.X"})", "never draws"), "vehicleMeshes: Bomber is refused with the reason");
+    // Names: the "<modId>." prefix, a non-empty rest, the character set, a string.
+    Expect(fails("content", bank, R"({"BomberHelicopter": "other.Chopper"})", "veh-mod7.<Name>"), "vehicleMeshes: another mod's prefix is refused");
+    {
+        Manifest m;
+        std::vector<Error> errs;
+        Expect(parse("content", bank, R"({"BomberHelicopter": "veh-mod8.X"})", &m, &errs), "vehicleMeshes: ...but the own prefix is fine");
+    }
+    Expect(fails("content", bank, R"({"BomberHelicopter": "veh-mod9"})", "veh-mod9.<Name>"), "vehicleMeshes: no prefix at all");
+    Expect(fails("content", bank, R"({"BomberHelicopter": "veh-mod10."})", "veh-mod10.<Name>"), "vehicleMeshes: nothing after the prefix");
+    Expect(fails("content", bank, R"({"BomberHelicopter": "Chopper"})", "veh-mod11.<Name>"), "vehicleMeshes: a vanilla-looking name");
+    Expect(fails("content", bank, R"({"BomberHelicopter": "veh-mod12.a b"})", "veh-mod12.<Name>"), "vehicleMeshes: a space in the name");
+    Expect(fails("content", bank, R"({"BomberHelicopter": "veh-mod13.a%s"})", "veh-mod13.<Name>"), "vehicleMeshes: a '%' in the name");
+    Expect(fails("content", bank, R"({"BomberHelicopter": 3})", "veh-mod14.<Name>"), "vehicleMeshes: a name that is not a string");
+    Expect(fails("content", bank, R"({"BomberHelicopter": "veh-mod15.)" + std::string(90, 'x') + R"("})", "veh-mod15.<Name>"),
+           "vehicleMeshes: a name over 96 characters");
+    // A mesh the mod does not declare: it needs a meshes bank (the banks' names are checked when they load).
+    Expect(fails("content", "", R"({"BomberHelicopter": "veh-mod16.Chopper"})", "lists no meshes bank"), "vehicleMeshes: no meshes array");
+    Expect(fails("content", "[]", R"({"BomberHelicopter": "veh-mod17.Chopper"})", "lists no meshes bank"), "vehicleMeshes: an empty meshes array");
+    Expect(fails("client-only", bank, R"({"BomberHelicopter": "veh-mod18.Chopper"})", "requires kind"), "vehicleMeshes: requires kind content");
+    Expect(fails("content", bank, R"(["veh-mod19.Chopper"])", "must be an object"), "vehicleMeshes: not an object");
 }
 
 void TestParse() {
@@ -454,6 +528,7 @@ int main() {
     TestSemver();
     TestParse();
     TestMeshes();
+    TestVehicleMeshes();
     TestResolveBasics();
     TestResolveStableOrder();
 

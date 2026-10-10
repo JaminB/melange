@@ -25,6 +25,7 @@
 #include <filesystem>
 #include <fstream>
 #include <iterator>
+#include <map>
 
 #include "core/game.h"
 #include "core/log.h"
@@ -78,6 +79,7 @@ const Site kSites[] = {
 // sourceFile pointer raw (desc+0x20) and the loaded descriptor copies it over.
 std::deque<std::string> g_strings;
 uint32_t g_banks = 0, g_stubs = 0;
+std::map<std::string, std::string> g_nodesMissing;  // loaded mesh -> VehicleNodes() it lacks, "" if none
 
 template <class T>
 T Rd(uintptr_t a) {
@@ -230,7 +232,7 @@ bool LoadModBank(const std::wstring& absPath, const std::string& modId, std::str
         const uint16_t free = FirstFreeSection();
         std::vector<uint8_t> moved;
         if (!free)
-            return Fail(err, modId + ": no free mod section left (" + std::to_string(kSectionMin) + ".." + std::to_string(kSectionMax) + ")");
+            return Fail(err, modId + ": no free mod section left, all " + std::to_string(kSectionMax - kSectionMin + 1) + " (" + std::to_string(kSectionMin) + ".." + std::to_string(kSectionMax) + ") are in use");
         if (!RelocateBank(bytes, free, &moved, &e)) return Fail(err, modId + ": " + game::Narrow(absPath) + ": " + e);
         const std::filesystem::path dir = std::filesystem::path(game::GameDir()) / L"Melange" / L"cache" / L"meshes";
         std::error_code ec;
@@ -292,12 +294,34 @@ bool LoadModBank(const std::wstring& absPath, const std::string& modId, std::str
         LOG_INFO("[meshes] %s: \"%s\" ready: section %u bin %u graphSet %08x", modId.c_str(), en.name.c_str(), i.section, i.sceneBin,
                  static_cast<unsigned>(i.graphSet));
     }
+    // Which of the Airstrike helicopter's nodes each mesh lacks, for the "vehicleMeshes" gate (the nodes are the same after
+    // a relocation, so the bytes loaded are the ones inspected). A failed read records nothing: such a mesh is not blocked.
+    for (auto& en : entries) {
+        std::vector<std::string> missing;
+        std::string ne;
+        if (!MissingNodes(bytes, en.name, VehicleNodes(), &missing, &ne)) continue;
+        std::string list;
+        for (auto& m : missing) list += (list.empty() ? "" : ", ") + m;
+        g_nodesMissing[en.name] = list;
+    }
     ++g_banks;
     LOG_INFO("[meshes] %s: loaded %zu mesh(es) from %s as section %u (instances now %d)", modId.c_str(), entries.size(), path.c_str(),
              section, Rd<int>(kSectionInstances + section * 4));
     return true;
 }
 
+std::string VehicleNodesMissing(const char* resourceName) {
+    if (!resourceName) return "";
+    const auto it = g_nodesMissing.find(resourceName);
+    return it == g_nodesMissing.end() ? std::string() : it->second;
+}
+
+uint32_t FreeSections() {
+    if (!Grm()) return 0;
+    uint32_t n = 0;
+    for (uint16_t s = kSectionMin; s <= kSectionMax; ++s) n += Rd<uint8_t>(kSectionLoaded + s) == 0;
+    return n;
+}
 uint32_t Count() { return g_banks; }
 uint32_t Registered() { return g_stubs; }
 }  // namespace melange::assets::meshes

@@ -105,6 +105,11 @@ bool VerbState(std::string_view, void*) {
                  t->panel, static_cast<unsigned>(t->iconCode), t->decl.panelIcon.c_str(), t->hud, t->hudFile ? t->hudFile : "-",
                  t->decl.hudIcon.c_str());
     }
+    LOG_INFO("[weapons]   vehicleMeshes: declared=%zu live=%d", wm::FrozenVehicles().size(), text.VehiclesLive());
+    for (int i = 0; i < text.VehicleCount(); ++i) {
+        const melange::weapons::core::VehicleRule* t = text.VehicleAt(i);
+        LOG_INFO("[weapons]   vehicle %s by %s: %s armed=%d", t->decl.vehicle.c_str(), t->decl.mod.c_str(), t->decl.mesh.c_str(), t->armed);
+    }
     CloneInfo info[kMaxClones] = {};
     const int n = Declared(info, kMaxClones);
     for (int k = 0; k < n && k < kMaxClones; ++k)
@@ -180,9 +185,9 @@ public:
         melange::testcmd::Register("weapons.field", &VerbField);
         const size_t n = wm::Frozen().size();
         if (g_weapons) melange::weapons::behaviour::InstallLua();
-        const size_t nt = wm::FrozenText().size(), ni = wm::FrozenIcons().size();
-        // Renames and icon replacements alone need the registry and the match lifecycle but none of the clone behaviour.
-        if (g_weapons && (n || nt || ni) && melange::weapons::registry::Install()) {
+        const size_t nt = wm::FrozenText().size(), ni = wm::FrozenIcons().size(), nv = wm::FrozenVehicles().size();
+        // Renames, icon replacements and vehicle meshes alone need the registry and the match lifecycle but none of the clone behaviour.
+        if (g_weapons && (n || nt || ni || nv) && melange::weapons::registry::Install()) {
             if (n) {
                 melange::weapons::behaviour::Install(Int("ExtraPerExplosion", 8), Bool("LogEvents", false));
                 melange::weapons::contrib::Register();
@@ -191,9 +196,9 @@ public:
             melange::lua50::OnContext(&OnContext, nullptr);
         }
         melange::jlog::Rec("weapons", melange::jlog::Level::Info, "installed")
-            .Bool("sites", sites).Bool("bases", bases).Uint("declared", n).Uint("renames", nt).Uint("iconRules", ni);
-        LOG_INFO("[weapons] installed: sites %s, bases %s, %zu clone(s) declared, %zu weaponText rename(s), %zu weaponIcons rule(s)",
-                 sites ? "ok" : "CHANGED", bases ? "ok" : "CHANGED", n, nt, ni);
+            .Bool("sites", sites).Bool("bases", bases).Uint("declared", n).Uint("renames", nt).Uint("iconRules", ni).Uint("vehicleRules", nv);
+        LOG_INFO("[weapons] installed: sites %s, bases %s, %zu clone(s) declared, %zu weaponText rename(s), %zu weaponIcons rule(s), %zu vehicleMeshes rule(s)",
+                 sites ? "ok" : "CHANGED", bases ? "ok" : "CHANGED", n, nt, ni, nv);
         return true;
     }
 };

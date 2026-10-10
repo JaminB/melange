@@ -41,6 +41,19 @@ public:
     // drop all such patches again (the vanilla pixels return when the atlas is next uploaded).
     virtual bool PatchPanelIcon(const char* mod, const char* relPng, uint32_t iconCode, std::string* err) = 0;
     virtual void ClearPanelIcons() = 0;
+    // Vehicle meshes (vehicleMeshes): the mesh `name` is in the engine's mesh table with its graph loaded (its bank went
+    // in), make `vehicle`'s graphic entity draw it from now until ClearVehicleMeshes(), which puts every vanilla name
+    // back. False (with *err) when the build's bytes differ or the entity's name is not the vanilla one.
+    virtual bool MeshLoaded(const char* name) { (void)name; return false; }
+    // The nodes the entity's Setup looks up that the loaded mesh `name` lacks, comma separated; "" = none (or unknown).
+    // A missing one makes Setup's lookup assert, so such a mesh is never armed.
+    virtual std::string MeshNodesMissing(const char* name) { (void)name; return ""; }
+    virtual bool SetVehicleMesh(const char* vehicle, const char* name, std::string* err) {
+        (void)vehicle; (void)name;
+        if (err) *err = "not supported";
+        return false;
+    }
+    virtual void ClearVehicleMeshes() {}
     virtual bool EnableHooks(bool on) = 0;
     virtual uint32_t Tick() = 0;
     // The NUL-terminated string at addr, cut at max bytes; false if its first byte cannot be read. Byte by byte, so a
@@ -93,6 +106,12 @@ struct IconRule {
 // in the table. The name is the container name minus kWeapon/kUtility, lower-cased, through a few aliases.
 const char* VanillaHudFile(const std::string& weapon);
 
+// A vehicle's replacement mesh (vehicleMeshes). Armed per match when the mod's mesh is loaded and the engine accepted the swap.
+struct VehicleRule {
+    manifest::VehicleDecl decl;
+    bool armed = false;
+};
+
 struct Clone {
     CloneInfo info{};
     manifest::CloneDecl decl;
@@ -111,7 +130,7 @@ public:
 
     // The frozen tables; reads the original name slots. texts = the vanilla renames (see TextRule), none by default.
     void Configure(const std::vector<manifest::CloneDecl>& decls, const std::vector<manifest::TextDecl>& texts = {},
-                   const std::vector<manifest::IconDecl>& icons = {});
+                   const std::vector<manifest::IconDecl>& icons = {}, const std::vector<manifest::VehicleDecl>& vehicles = {});
     bool Init(std::string* why);                                    // match Init: every clone, or none; then the renames
     void MatchEnd();
     void TurnEnded();
@@ -139,6 +158,10 @@ public:
     bool IconsLive() const { return iconsLive_; }
     int IconCount() const { return static_cast<int>(iconRules_.size()); }
     const IconRule* IconAt(int i) const { return i >= 0 && i < IconCount() ? &iconRules_[i] : nullptr; }
+    // Vehicle meshes. VehiclesLive: at least one rule is armed for this match.
+    bool VehiclesLive() const { return vehiclesLive_; }
+    int VehicleCount() const { return static_cast<int>(vehicleRules_.size()); }
+    const VehicleRule* VehicleAt(int i) const { return i >= 0 && i < VehicleCount() ? &vehicleRules_[i] : nullptr; }
     int Active() const { return active_; }
     int SwappedBase() const { return swapped_ < 0 ? -1 : clones_[swapped_].info.base; }
     const Clone* At(int k) const { return k >= 0 && k < n_ ? &clones_[k] : nullptr; }
@@ -154,6 +177,8 @@ private:
     void ResetText();
     void ResolveIcons();
     void ResetIcons();
+    void ResolveVehicles();
+    void ResetVehicles();
     int NameSlot(const std::string& weapon, uintptr_t* slot);  // the weapon's name-table id, -1 if absent
     bool SetTag(TextRule& r, uintptr_t container);
     void RestoreTag(TextRule& r);
@@ -179,5 +204,7 @@ private:
     bool textLive_ = false;
     std::vector<IconRule> iconRules_;
     bool iconsLive_ = false, hudIconsLive_ = false;
+    std::vector<VehicleRule> vehicleRules_;
+    bool vehiclesLive_ = false;
 };
 }  // namespace melange::weapons::core
