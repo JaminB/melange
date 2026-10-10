@@ -44,6 +44,7 @@ export default defineConfig({
 			sidebar,
 			routeMiddleware: './src/route-data.ts',
 			components: {
+				ThemeProvider: './src/components/ThemeProvider.astro',
 				Header: './src/components/Header.astro',
 				Footer: './src/components/Footer.astro',
 				Hero: './src/components/Hero.astro',

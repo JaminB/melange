@@ -1,0 +1,13 @@
+---
+// Dark is the default. Starlight follows the system scheme until a visitor picks a theme; this seeds that choice
+// with "dark" on their first visit, so the picker shows Dark and still lets them choose Light or Auto (which is
+// then stored as usual). It must run before Starlight's own inline provider script, which reads the stored value.
+import Default from '@astrojs/starlight/components/ThemeProvider.astro';
+---
+
+<script is:inline>
+	try {
+		if (!localStorage.getItem('starlight-theme')) localStorage.setItem('starlight-theme', 'dark');
+	} catch {}
+</script>
+<Default {...Astro.props}><slot /></Default>
