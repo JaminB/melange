@@ -50,21 +50,32 @@ Mat4 TranslateMatrix(float x, float y, float z) {
     return m;
 }
 
+// `key` as exactly n finite numbers. Absent is fine (out untouched, true); present but anything else is not.
+bool NodeFloats(const Json& node, const char* key, size_t n, float* out) {
+    const Json* v = node.find(key);
+    if (!v) return true;
+    if (v->kind != Json::Kind::Array || v->arr.size() != n) return false;
+    for (size_t i = 0; i < n; ++i) {
+        bool ok = false;
+        const double d = v->arr[i].kind == Json::Kind::Number ? v->arr[i].asDouble(&ok) : 0.0;
+        // Out of float range counts as non-finite: it would turn into infinity below.
+        if (!ok || !std::isfinite(float(d))) return false;
+        out[i] = float(d);
+    }
+    return true;
+}
+
+// False when "matrix", "translation", "rotation" or "scale" is malformed or not finite; `out` is then not meaningful.
 bool NodeMatrix(const Json& node, Mat4& out) {
-    if (const Json* m = node.find("matrix")) {
-        if (m->kind != Json::Kind::Array || m->arr.size() != 16) return false;
-        for (int i = 0; i < 16; ++i) out[size_t(i)] = float(m->arr[size_t(i)].asDouble());
+    if (node.find("matrix")) {
+        float f[16];
+        if (!NodeFloats(node, "matrix", 16, f)) return false;
+        for (size_t i = 0; i < 16; ++i) out[i] = f[i];
         return true;
     }
-    Mat4 t = mesh::Identity(), r = mesh::Identity(), s = mesh::Identity();
-    if (const Json* v = node.find("translation"))
-        if (v->arr.size() == 3) t = TranslateMatrix(float(v->arr[0].asDouble()), float(v->arr[1].asDouble()), float(v->arr[2].asDouble()));
-    if (const Json* v = node.find("rotation"))
-        if (v->arr.size() == 4)
-            r = QuatToMatrix(float(v->arr[0].asDouble()), float(v->arr[1].asDouble()), float(v->arr[2].asDouble()),
-                              float(v->arr[3].asDouble()));
-    if (const Json* v = node.find("scale"))
-        if (v->arr.size() == 3) s = ScaleMatrix(float(v->arr[0].asDouble()), float(v->arr[1].asDouble()), float(v->arr[2].asDouble()));
+    float tr[3] = {0, 0, 0}, q[4] = {0, 0, 0, 1}, sc[3] = {1, 1, 1};
+    if (!NodeFloats(node, "translation", 3, tr) || !NodeFloats(node, "rotation", 4, q) || !NodeFloats(node, "scale", 3, sc)) return false;
+    const Mat4 t = TranslateMatrix(tr[0], tr[1], tr[2]), r = QuatToMatrix(q[0], q[1], q[2], q[3]), s = ScaleMatrix(sc[0], sc[1], sc[2]);
     out = mesh::Multiply(mesh::Multiply(t, r), s);
     return true;
 }
@@ -164,18 +175,60 @@ bool ReadAccessorIndices(const Accessor& a, const Json& bufferViews, const std::
     return true;
 }
 
+constexpr int kMaxNodeDepth = 256;
+
 void WalkNode(const Json& root, const Json& nodes, const Json& meshes, const Json& accessors, const Json& bufferViews,
               const std::vector<uint8_t>& bin, int64_t nodeIdx, const Mat4& parent, std::vector<mesh::Primitive>& out,
-              bool& failed, std::string* error, std::vector<bool>& visited) {
+              bool& failed, std::string* error, std::vector<bool>& visited, mesh::Mesh* tree = nullptr, int parentNode = -1, int depth = 0) {
     if (failed || nodeIdx < 0 || nodeIdx >= int64_t(nodes.arr.size())) return;
+    // A chain of thousands of nodes (each the only child of the last) passes the visited check but would overflow the
+    // stack of a 1 MiB thread; real models are a few levels deep.
+    if (depth > kMaxNodeDepth) {
+        failed = true;
+        if (error) *error = "node tree deeper than " + std::to_string(kMaxNodeDepth) + " levels";
+        return;
+    }
     // glTF's node graph is a tree: a node reached a second time, whether through a cycle or a shared child, would
     // otherwise recurse without end or blow up the primitive count. Refuse instead of walking it again.
     if (visited[size_t(nodeIdx)]) { failed = true; if (error) *error = "node graph is not a tree (a node repeats)"; return; }
     visited[size_t(nodeIdx)] = true;
     const Json& node = nodes.arr[size_t(nodeIdx)];
-    Mat4 local;
-    NodeMatrix(node, local);
+    Mat4 local = mesh::Identity();
+    if (!NodeMatrix(node, local)) {
+        failed = true;
+        if (error) *error = "node " + std::to_string(nodeIdx) + ": matrix, translation, rotation and scale must be finite numbers (16, 3, 4 and 3 of them)";
+        return;
+    }
     Mat4 world = mesh::Multiply(parent, local);
+    // Tree mode (ReadGltfScene) keeps each node as a mesh::Node with its own local matrix and leaves the geometry in node
+    // space; a node marked extras.xomShape is one more shape of its parent node (what WriteGltfScene emits for the 2nd, 3rd,
+    // ... shape of a node, since a glTF node carries one mesh).
+    int myNode = -1;
+    if (tree) {
+        const Json* ex = node.find("extras");
+        // Folding drops the node's own matrix, so a hand-edited xomShape node that carries a transform stays a node of its
+        // own (its geometry keeps the transform) instead of silently loading untransformed.
+        bool identityLocal = true;
+        const Mat4 id = mesh::Identity();
+        for (size_t i = 0; i < 16; ++i) if (std::fabs(local[i] - id[i]) > 1e-6f) identityLocal = false;
+        const bool shapeOnly = ex && ex->find("xomShape") && parentNode >= 0 && identityLocal;
+        // A camera or light with nothing under it is scene furniture from the exporting tool, not part of the model;
+        // writing it as a locator would only add a node the clips never address.
+        if (!node.find("mesh") && !node.find("children") &&
+            (node.find("camera") || (node.find("extensions") && node.find("extensions")->find("KHR_lights_punctual"))))
+            return;
+        if (shapeOnly) {
+            myNode = parentNode;
+        } else {
+            mesh::Node nd;
+            const Json* nm = node.find("name");
+            nd.name = nm && !nm->str.empty() ? nm->str : "node" + std::to_string(nodeIdx);
+            nd.local = local;
+            nd.parent = parentNode;
+            myNode = int(tree->nodes.size());
+            tree->nodes.push_back(std::move(nd));
+        }
+    }
     if (const Json* meshIdx = node.find("mesh")) {
         int64_t mi = meshIdx->asInt64();
         if (mi >= 0 && mi < int64_t(meshes.arr.size())) {
@@ -202,7 +255,8 @@ void WalkNode(const Json& root, const Json& nodes, const Json& meshes, const Jso
                     };
                     auto badAccessor = [&] { failed = true; if (error) *error = "primitive references an out-of-range accessor"; };
                     mesh::Primitive prim;
-                    prim.matrix = world;
+                    prim.matrix = tree ? mesh::Identity() : world;
+                    prim.node = myNode;
                     if (const Json* n = m.find("name")) prim.name = n->str;
                     Accessor posA;
                     if (!getAccessor(posIdx->asInt64(), posA)) { badAccessor(); return; }
@@ -238,13 +292,14 @@ void WalkNode(const Json& root, const Json& nodes, const Json& meshes, const Jso
     }
     if (const Json* children = node.find("children"))
         for (auto& c : children->arr)
-            WalkNode(root, nodes, meshes, accessors, bufferViews, bin, c.asInt64(), world, out, failed, error, visited);
+            WalkNode(root, nodes, meshes, accessors, bufferViews, bin, c.asInt64(), tree ? mesh::Identity() : world, out, failed, error, visited, tree, myNode, depth + 1);
 }
 
 }  // namespace
 
-bool ReadGltf(const std::vector<uint8_t>& fileBytes, bool isGlb, const std::string& binDir,
-              std::vector<mesh::Primitive>& out, std::string* error) {
+namespace {
+bool ReadGltfImpl(const std::vector<uint8_t>& fileBytes, bool isGlb, const std::string& binDir,
+                  std::vector<mesh::Primitive>& out, mesh::Mesh* tree, std::string* error) {
     auto fail = [&](const std::string& e) { if (error) *error = e; return false; };
     std::string jsonText;
     std::vector<uint8_t> bin;
@@ -300,13 +355,29 @@ bool ReadGltf(const std::vector<uint8_t>& fileBytes, bool isGlb, const std::stri
     }
     bool failed = false;
     std::vector<bool> visited(nodes->arr.size(), false);
-    for (auto r : roots) WalkNode(root, *nodes, *meshes, *accessors, *bufferViews, bin, r, mesh::Identity(), out, failed, error, visited);
+    for (auto r : roots) WalkNode(root, *nodes, *meshes, *accessors, *bufferViews, bin, r, mesh::Identity(), out, failed, error, visited, tree, -1);
     if (failed) return false;
     if (out.empty()) return fail("no triangle mesh primitives found");
     return true;
 }
+}  // namespace
 
-Output WriteGltf(const std::vector<mesh::Primitive>& primitives, const std::string& binFileName) {
+bool ReadGltf(const std::vector<uint8_t>& fileBytes, bool isGlb, const std::string& binDir,
+              std::vector<mesh::Primitive>& out, std::string* error) {
+    return ReadGltfImpl(fileBytes, isGlb, binDir, out, nullptr, error);
+}
+
+bool ReadGltfScene(const std::vector<uint8_t>& fileBytes, bool isGlb, const std::string& binDir, mesh::Mesh& out,
+                   std::string* error) {
+    out.primitives.clear();
+    out.nodes.clear();
+    return ReadGltfImpl(fileBytes, isGlb, binDir, out.primitives, &out, error);
+}
+
+
+namespace {
+// WriteGltf (flat) and WriteGltfScene (tree) share every accessor and buffer byte; only the node list differs.
+Output WriteImpl(const std::vector<mesh::Primitive>& primitives, const mesh::Mesh* tree, const std::string& binFileName) {
     Output res;
     std::vector<uint8_t>& bin = res.bin;
     auto align4 = [&]() { while (bin.size() % 4) bin.push_back(0); };
@@ -339,6 +410,7 @@ Output WriteGltf(const std::vector<mesh::Primitive>& primitives, const std::stri
         }
     };
 
+    std::vector<int64_t> primMesh;  // tree mode: glTF mesh index of each primitive
     for (size_t pi = 0; pi < primitives.size(); ++pi) {
         const mesh::Primitive& prim = primitives[pi];
         std::vector<float> posFlat;
@@ -416,6 +488,11 @@ Output WriteGltf(const std::vector<mesh::Primitive>& primitives, const std::stri
         int64_t meshIdx = int64_t(meshes.arr.size());
         meshes.arr.push_back(std::move(meshJ));
 
+        if (tree) {
+            primMesh.push_back(meshIdx);  // nodes are built from the tree below
+            (void)pi;
+            continue;
+        }
         Json nodeJ = Json::Obj();
         if (!prim.name.empty()) nodeJ.set("name", Json::Str(prim.name));
         nodeJ.set("mesh", Json::Int(meshIdx));
@@ -428,6 +505,51 @@ Output WriteGltf(const std::vector<mesh::Primitive>& primitives, const std::stri
         nodes.arr.push_back(std::move(nodeJ));
         sceneNodes.arr.push_back(Json::Int(nodeIdx));
         (void)pi;
+    }
+
+    if (tree) {
+        // glTF node i = mesh::Node i (name, local matrix, children); a node carries one mesh, so a node's 2nd, 3rd, ...
+        // shape becomes an extra child marked extras.xomShape that ReadGltfScene folds back into the node.
+        const size_t n = tree->nodes.size();
+        std::vector<std::vector<size_t>> prims(n);
+        for (size_t i = 0; i < primitives.size(); ++i)
+            if (primitives[i].node >= 0 && size_t(primitives[i].node) < n) prims[size_t(primitives[i].node)].push_back(i);
+        std::vector<Json> nodeJ(n);
+        std::vector<std::vector<int64_t>> kids(n);
+        for (size_t i = 0; i < n; ++i) {
+            Json j = Json::Obj();
+            j.set("name", Json::Str(tree->nodes[i].name));
+            if (tree->nodes[i].local != mesh::Identity()) {
+                Json m = Json::Arr();
+                for (float f : tree->nodes[i].local) m.arr.push_back(Json::Num(double(f)));
+                j.set("matrix", std::move(m));
+            }
+            if (!prims[i].empty()) j.set("mesh", Json::Int(primMesh[prims[i][0]]));
+            nodeJ[i] = std::move(j);
+            if (tree->nodes[i].parent >= 0) kids[size_t(tree->nodes[i].parent)].push_back(int64_t(i));
+            else sceneNodes.arr.push_back(Json::Int(int64_t(i)));
+        }
+        std::vector<Json> extra;
+        for (size_t i = 0; i < n; ++i)
+            for (size_t k = 1; k < prims[i].size(); ++k) {
+                Json j = Json::Obj();
+                j.set("name", Json::Str(primitives[prims[i][k]].name));
+                j.set("mesh", Json::Int(primMesh[prims[i][k]]));
+                Json ex = Json::Obj();
+                ex.set("xomShape", Json::Bool(true));
+                j.set("extras", std::move(ex));
+                kids[i].push_back(int64_t(n + extra.size()));
+                extra.push_back(std::move(j));
+            }
+        for (size_t i = 0; i < n; ++i) {
+            if (!kids[i].empty()) {
+                Json c = Json::Arr();
+                for (auto k : kids[i]) c.arr.push_back(Json::Int(k));
+                nodeJ[i].set("children", std::move(c));
+            }
+            nodes.arr.push_back(std::move(nodeJ[i]));
+        }
+        for (auto& e : extra) nodes.arr.push_back(std::move(e));
     }
 
     Json root = Json::Obj();
@@ -453,6 +575,16 @@ Output WriteGltf(const std::vector<mesh::Primitive>& primitives, const std::stri
     root.set("scene", Json::Int(0));
     res.json = WriteJson(root);
     return res;
+}
+
+}  // namespace
+
+Output WriteGltf(const std::vector<mesh::Primitive>& primitives, const std::string& binFileName) {
+    return WriteImpl(primitives, nullptr, binFileName);
+}
+
+Output WriteGltfScene(const mesh::Mesh& scene, const std::string& binFileName) {
+    return WriteImpl(scene.primitives, &scene, binFileName);
 }
 
 }  // namespace melange::xom::gltf

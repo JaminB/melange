@@ -24,6 +24,10 @@ namespace {
 // when a target file does not already define them.
 constexpr const char* kGraphSetGuid = "0b3dbf644139bb40b1798f882d14449b";
 constexpr const char* kMeshDescGuid = "dbb2e8a8c30af04ba47696f47cf924d2";
+// The engine finds a descriptor's geometry graph by the first GUID (IID at 0x98c100); a bundle root's entries carry
+// the second (resource descriptor, 0x98c310). Both as stored in vanilla Bundl*.xom (docs/meshes.md).
+constexpr const char* kWorldGraphGuid = "6ae6dbe4fa866b45a73ff9130e12dfeb";
+constexpr const char* kRootEntryGuid = "99cc436e6fbef54b85d2bfcdf9ae4283";
 // Versions seen in the same file, used only as the default for a brand new TYPE entry; a class
 // the target document already defines keeps its own version untouched.
 uint32_t DefaultVersionFor(const std::string& cls) {
@@ -286,7 +290,6 @@ bool ReadMesh(const Document& doc, const std::string& resourceId, Mesh& out, std
 
 // ---------------------------------------------------------------- ref closure (copy)
 
-namespace {
 void CollectRefs(const Value& v, std::vector<uint32_t>& out) {
     if (v.type == Type::Ref) {
         if (!v.array) { if (v.bits) out.push_back(uint32_t(v.bits)); return; }
@@ -298,6 +301,8 @@ void CollectRefs(const Value& v, std::vector<uint32_t>& out) {
     }
     if (v.type == Type::Struct) { for (auto& [k, m] : v.members) { (void)k; CollectRefs(m, out); } return; }
 }
+
+namespace {
 void RemapRefs(Value& v, const std::unordered_map<uint32_t, uint32_t>& m) {
     if (v.type == Type::Ref && !v.array) { if (v.bits) v.bits = m.count(uint32_t(v.bits)) ? m.at(uint32_t(v.bits)) : 0; return; }
     if (v.array) {
@@ -468,34 +473,68 @@ uint32_t WriteMesh(Document& doc, const Mesh& mesh, uint32_t materialFromShaderR
     }
 
     uint16_t vec3 = Vector3fMathIndex();
-    std::vector<uint32_t> groupRefs;
-    for (auto& p : mesh.primitives) {
-        uint32_t transformRef = 0;
-        if (p.matrix != Identity()) {
-            Object xf;
-            xf.type = "XTransform";
-            xf.container = true;
-            Vec3 col0{p.matrix[0], p.matrix[1], p.matrix[2]}, col1{p.matrix[4], p.matrix[5], p.matrix[6]},
-                col2{p.matrix[8], p.matrix[9], p.matrix[10]}, col3{p.matrix[12], p.matrix[13], p.matrix[14]};
-            float sx = std::sqrt(col0.x * col0.x + col0.y * col0.y + col0.z * col0.z);
-            float sy = std::sqrt(col1.x * col1.x + col1.y * col1.y + col1.z * col1.z);
-            float sz = std::sqrt(col2.x * col2.x + col2.y * col2.y + col2.z * col2.z);
-            xf.fields.emplace_back("Translate", Vec3Val(vec3, col3.x, col3.y, col3.z));
-            xf.fields.emplace_back("Rotate", Vec3Val(vec3, 0, 0, 0));  // not decomposed; Matrix (below) is exact
-            xf.fields.emplace_back("Scale", Vec3Val(vec3, sx, sy, sz));
-            { Value v; v.type = Type::Enum; v.bits = 0; xf.fields.emplace_back("RotateOrder", v); }
-            { Value v; v.type = Type::Math; v.math = 0; v.raw.resize(48);
-              float m12[12] = {col0.x, col0.y, col0.z, col1.x, col1.y, col1.z,
-                                col2.x, col2.y, col2.z, col3.x, col3.y, col3.z};
-              // Matrix's math index is looked up by name below (Matrix43f: 12 floats).
-              v.math = MathIndex("Matrix43f");
-              v.raw.assign(reinterpret_cast<uint8_t*>(m12), reinterpret_cast<uint8_t*>(m12) + 48);
-              xf.fields.emplace_back("Matrix", v); }
-            { Value v; v.type = Type::U32; v.bits = 0; xf.fields.emplace_back("Flags", v); }
-            transformRef = uint32_t(doc.objects.size()) + 1;
-            doc.objects.push_back(std::move(xf));
+    const bool hier = !mesh.nodes.empty();
+    if (hier) {
+        for (size_t i = 0; i < mesh.nodes.size(); ++i)
+            if (mesh.nodes[i].parent < -1 || mesh.nodes[i].parent >= int(i))
+                return fail("node " + std::to_string(i) + " (" + mesh.nodes[i].name + "): its parent must be an earlier node");
+        for (auto& p : mesh.primitives)
+            if (p.node < 0 || p.node >= int(mesh.nodes.size())) return fail(p.name + ": the primitive names no node of the mesh");
+    }
+    // One XTransform for `m`. Flat meshes keep Rotate at zero (Matrix, which the engine renders from, is exact). A node
+    // that an animation clip drives is written with its Euler angles too: a clip sets Translate/Rotate/Scale channels, and
+    // a channel it does not set keeps the stored value, so a rest rotation must be in Rotate, not only in Matrix. The
+    // engine's Euler convention is R = Rz * Ry * Rx (radians, RotateOrder 0): all 56 multi-axis
+    // transforms of Bundl09 match it within 3e-3.
+    auto addTransform = [&](const Mat4& m, bool decompose) -> uint32_t {
+        Object xf;
+        xf.type = "XTransform";
+        xf.container = true;
+        Vec3 col0{m[0], m[1], m[2]}, col1{m[4], m[5], m[6]}, col2{m[8], m[9], m[10]}, col3{m[12], m[13], m[14]};
+        float sx = std::sqrt(col0.x * col0.x + col0.y * col0.y + col0.z * col0.z);
+        float sy = std::sqrt(col1.x * col1.x + col1.y * col1.y + col1.z * col1.z);
+        float sz = std::sqrt(col2.x * col2.x + col2.y * col2.y + col2.z * col2.z);
+        float rx = 0, ry = 0, rz = 0;
+        if (decompose) {
+            const float det = col0.x * (col1.y * col2.z - col1.z * col2.y) - col0.y * (col1.x * col2.z - col1.z * col2.x) +
+                              col0.z * (col1.x * col2.y - col1.y * col2.x);
+            if (det < 0) sx = -sx;  // a mirror lives in one scale axis
+            auto r = [&](int row, int col) {
+                const float s = col == 0 ? sx : col == 1 ? sy : sz;
+                return s != 0 ? m[size_t(col) * 4 + size_t(row)] / s : 0.0f;
+            };
+            const float r20 = std::max(-1.0f, std::min(1.0f, r(2, 0)));
+            ry = -std::asin(r20);
+            if (std::fabs(r20) < 0.999999f) {
+                rx = std::atan2(r(2, 1), r(2, 2));
+                rz = std::atan2(r(1, 0), r(0, 0));
+            } else {  // gimbal lock: fold the whole rotation about the shared axis into X
+                rx = std::atan2(-r(1, 2), r(1, 1));
+                rz = 0;
+            }
         }
-        groupRefs.push_back(transformRef);  // placeholder; replaced by the real group ref below
+        xf.fields.emplace_back("Translate", Vec3Val(vec3, col3.x, col3.y, col3.z));
+        xf.fields.emplace_back("Rotate", Vec3Val(vec3, rx, ry, rz));
+        xf.fields.emplace_back("Scale", Vec3Val(vec3, sx, sy, sz));
+        { Value v; v.type = Type::Enum; v.bits = 0; xf.fields.emplace_back("RotateOrder", v); }
+        { Value v; v.type = Type::Math; v.math = 0; v.raw.resize(48);
+          float m12[12] = {col0.x, col0.y, col0.z, col1.x, col1.y, col1.z,
+                            col2.x, col2.y, col2.z, col3.x, col3.y, col3.z};
+          // Matrix's math index is looked up by name below (Matrix43f: 12 floats).
+          v.math = MathIndex("Matrix43f");
+          v.raw.assign(reinterpret_cast<uint8_t*>(m12), reinterpret_cast<uint8_t*>(m12) + 48);
+          xf.fields.emplace_back("Matrix", v); }
+        { Value v; v.type = Type::U32; v.bits = 0; xf.fields.emplace_back("Flags", v); }
+        const uint32_t ref = uint32_t(doc.objects.size()) + 1;
+        doc.objects.push_back(std::move(xf));
+        return ref;
+    };
+    std::vector<uint32_t> groupRefs, nodeXf;
+    if (hier) {
+        for (auto& n : mesh.nodes) nodeXf.push_back(addTransform(n.local, true));
+    } else {
+        for (auto& p : mesh.primitives)
+            groupRefs.push_back(p.matrix != Identity() ? addTransform(p.matrix, false) : 0);  // replaced by the group ref below
     }
 
     std::vector<uint32_t> coordRefs, normalRefs, uvRefs, indexRefs, triRefs, shapeRefs;
@@ -567,23 +606,53 @@ uint32_t WriteMesh(Document& doc, const Mesh& mesh, uint32_t materialFromShaderR
         { Value v; v.type = Type::Math; v.math = MathIndex("BoundSphere"); v.raw.assign(16, 0);
           sh.fields.emplace_back("Bounds", v); }
         { Value v; v.type = Type::Enum; v.bits = 0; sh.fields.emplace_back("BoundMode", v); }
-        sh.fields.emplace_back("Name", StrVal(p.name.empty() ? (mesh.resourceId + "_" + std::to_string(i)) : p.name));
+        sh.fields.emplace_back("Name", StrVal(p.name.empty() ? (hier ? mesh.nodes[size_t(p.node)].name + "Shape_" + std::to_string(i) : mesh.resourceId + "_" + std::to_string(i)) : p.name));
         shapeRefs.push_back(uint32_t(doc.objects.size()) + 1);
         doc.objects.push_back(std::move(sh));
     }
-    for (size_t i = 0; i < mesh.primitives.size(); ++i) {
+    auto bounds0 = [&]() { Value v; v.type = Type::Math; v.math = MathIndex("BoundSphere"); v.raw.assign(16, 0); return v; };
+    auto addGroup = [&](uint32_t core, const std::vector<uint32_t>& children, const std::string& name) {
         Object gr; gr.type = "XGroup"; gr.container = true;
-        gr.fields.emplace_back("Core", RefVal(groupRefs[i]));
-        gr.fields.emplace_back("Children", RefArrVal({shapeRefs[i]}));
-        { Value v; v.type = Type::Math; v.math = MathIndex("BoundSphere"); v.raw.assign(16, 0);
-          gr.fields.emplace_back("Bounds", v); }
+        gr.fields.emplace_back("Core", RefVal(core));
+        gr.fields.emplace_back("Children", RefArrVal(children));
+        gr.fields.emplace_back("Bounds", bounds0());
         { Value v; v.type = Type::Enum; v.bits = 0; gr.fields.emplace_back("BoundMode", v); }
-        gr.fields.emplace_back("Name", StrVal(mesh.resourceId + "_group_" + std::to_string(i)));
-        groupRefs[i] = uint32_t(doc.objects.size()) + 1;  // overwrite the transform-ref placeholder
+        gr.fields.emplace_back("Name", StrVal(name));
         doc.objects.push_back(std::move(gr));
+    };
+    std::vector<uint32_t> topRefs;
+    if (!hier) {
+        for (size_t i = 0; i < mesh.primitives.size(); ++i) {
+            const uint32_t ref = uint32_t(doc.objects.size()) + 1;
+            addGroup(groupRefs[i], {shapeRefs[i]}, mesh.resourceId + "_group_" + std::to_string(i));
+            groupRefs[i] = ref;  // overwrite the transform-ref placeholder
+        }
+        topRefs = groupRefs;
+    } else {
+        // The vanilla layout (Shotgun, ClusterBomb, SentryGun): an XGroup per node carrying the XTransform a clip drives,
+        // whose first child is a Core-less "<name>Shape" group holding the node's shapes, then the child nodes. A node
+        // with no shapes is a locator and is just the transform. Refs are assigned up front so a parent can list
+        // children that are written after it.
+        const size_t n = mesh.nodes.size();
+        std::vector<std::vector<uint32_t>> nodeShapes(n);
+        for (size_t i = 0; i < mesh.primitives.size(); ++i) nodeShapes[size_t(mesh.primitives[i].node)].push_back(shapeRefs[i]);
+        std::vector<uint32_t> groupOf(n), holderOf(n, 0);
+        uint32_t next = uint32_t(doc.objects.size()) + 1;
+        for (size_t i = 0; i < n; ++i) {
+            groupOf[i] = next++;
+            if (!nodeShapes[i].empty()) holderOf[i] = next++;
+        }
+        for (size_t i = 0; i < n; ++i) {
+            std::vector<uint32_t> kids;
+            if (holderOf[i]) kids.push_back(holderOf[i]);
+            for (size_t j = i + 1; j < n; ++j) if (mesh.nodes[j].parent == int(i)) kids.push_back(groupOf[j]);
+            addGroup(nodeXf[i], kids, mesh.nodes[i].name);
+            if (holderOf[i]) addGroup(0, nodeShapes[i], mesh.nodes[i].name + "Shape");
+            if (mesh.nodes[i].parent < 0) topRefs.push_back(groupOf[i]);
+        }
     }
     Object root; root.type = "XInteriorNode"; root.container = true;
-    root.fields.emplace_back("Children", RefArrVal(groupRefs));
+    root.fields.emplace_back("Children", RefArrVal(topRefs));
     { Value v; v.type = Type::Math; v.math = MathIndex("BoundSphere"); v.raw.assign(16, 0);
       root.fields.emplace_back("Bounds", v); }
     { Value v; v.type = Type::Enum; v.bits = 0; root.fields.emplace_back("BoundMode", v); }
@@ -594,7 +663,7 @@ uint32_t WriteMesh(Document& doc, const Mesh& mesh, uint32_t materialFromShaderR
     Object gs; gs.type = "XGraphSet"; gs.container = false;
     Value graphs; graphs.type = Type::Struct; graphs.array = true; graphs.items.resize(1);
     graphs.items[0].type = Type::Struct;
-    graphs.items[0].members.emplace_back("Guid", Value{});
+    { Value g; g.type = Type::Guid; g.guid = GuidFromHex(kWorldGraphGuid); graphs.items[0].members.emplace_back("Guid", g); }
     graphs.items[0].members.emplace_back("Graph", RefVal(rootRef));
     graphs.items[0].members.emplace_back("Name", StrVal("world"));
     gs.fields.emplace_back("Graphs", graphs);
@@ -609,6 +678,28 @@ uint32_t WriteMesh(Document& doc, const Mesh& mesh, uint32_t materialFromShaderR
     uint32_t descRef = uint32_t(doc.objects.size()) + 1;
     doc.objects.push_back(std::move(desc));
     return descRef;
+}
+
+uint32_t WriteBundle(Document& doc, const Mesh& mesh, uint32_t materialFromShaderRef, std::string* error) {
+    uint32_t descRef = WriteMesh(doc, mesh, materialFromShaderRef, error);
+    if (!descRef) return 0;
+    // WriteMesh's last two objects are the mesh's XGraphSet and the XMeshDescriptor (nothing refers to the
+    // descriptor), so a root XGraphSet slotted between them keeps the objects grouped by TYPE-table order and
+    // moves only the descriptor, one place later.
+    if (descRef != doc.objects.size() || descRef < 2 || doc.objects[descRef - 2].type != "XGraphSet") {
+        if (error) *error = "internal: unexpected object layout after WriteMesh";
+        return 0;
+    }
+    Object root; root.type = "XGraphSet"; root.container = false;
+    Value graphs; graphs.type = Type::Struct; graphs.array = true; graphs.items.resize(1);
+    graphs.items[0].type = Type::Struct;
+    { Value g; g.type = Type::Guid; g.guid = GuidFromHex(kRootEntryGuid); graphs.items[0].members.emplace_back("Guid", g); }
+    graphs.items[0].members.emplace_back("Graph", RefVal(descRef + 1));
+    graphs.items[0].members.emplace_back("Name", StrVal(mesh.resourceId));
+    root.fields.emplace_back("Graphs", graphs);
+    doc.objects.insert(doc.objects.begin() + long(descRef - 1), std::move(root));
+    doc.root = descRef;  // the new root's own 1-based index
+    return descRef + 1;
 }
 
 }  // namespace melange::xom::mesh

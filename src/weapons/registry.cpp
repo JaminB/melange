@@ -1,18 +1,23 @@
 #include "weapons/registry.h"
 
+#include <windows.h>
+
 #include <algorithm>
 #include <cctype>
 #include <chrono>
 #include <cstring>
 
 #include "assets/icons.h"
+#include "assets/meshbank.h"
 #include "assets/searchpath.h"
+#include "core/game.h"
 #include "core/log.h"
 #include "core/mem.h"
 #include "melange/assets.h"
 #include "melange/bus.h"
 #include "melange/jlog.h"
 #include "melange/sim.h"
+#include "mods/thumper_internal.h"
 #include "weapons/engine.h"
 #include "weapons/hud.h"
 #include "weapons/manifest.h"
@@ -38,6 +43,12 @@ public:
     bool Read(uintptr_t a, void* out, size_t n) override { return mem::SafeRead(a, out, n); }
     bool Write(uintptr_t a, const void* data, size_t n) override { return mem::Write(a, data, n); }
     bool AssignString(uintptr_t field, const char* s) override { return engine::AssignXString(field, s); }
+    bool ReadXString(uintptr_t field, std::string* out) override {
+        uintptr_t p = 0;
+        if (!mem::SafeRead(field, &p, sizeof p) || !p) return false;
+        *out = engine::XStringValue(field);
+        return true;
+    }
     int AddText(const char* key, const char* value) override { return engine::AddString(key, value, 0, 1); }
     bool GetText(const char* key, std::string* out) override { return engine::TextOf(key, out); }
     uint32_t ReserveIcon(const char* mod, const char* rel, std::string* err) override {
@@ -58,12 +69,36 @@ public:
         LOG_WARN("[weapons] %s: its assets/loose folder is not a search path, so the HUD keeps the base's icon", mod);
         return false;
     }
+    bool HudFileExists(const char* mod, const char* file) override {
+        thumper::Entry e;
+        if (!thumper::FindEntry(mod, &e)) return false;
+        const std::wstring path = e.dir + L"\\" + game::Widen(e.manifest.assetsRoot) + L"\\loose\\" + game::Widen(file);
+        const DWORD a = GetFileAttributesW(path.c_str());
+        return a != INVALID_FILE_ATTRIBUTES && !(a & FILE_ATTRIBUTE_DIRECTORY);
+    }
+    bool PatchPanelIcon(const char* mod, const char* rel, uint32_t iconCode, std::string* err) override {
+        char b[256] = {};
+        const bool ok = assets::PatchVanillaPanelIcon(mod, rel, iconCode, b, sizeof b);
+        if (err) *err = b;
+        return ok;
+    }
+    void ClearPanelIcons() override { assets::ClearVanillaPanelIcons(); }
+    bool MeshLoaded(const char* name) override {
+        assets::meshes::Info i;
+        return assets::meshes::Describe(name, &i) && i.loaded && i.graphSet;
+    }
+    std::string MeshNodesMissing(const char* name) override { return assets::meshes::VehicleNodesMissing(name); }
+    bool SetVehicleMesh(const char* vehicle, const char* name, std::string* err) override {
+        return engine::SetVehicleMesh(vehicle, name, err);
+    }
+    void ClearVehicleMeshes() override { engine::ClearVehicleMeshes(); }
     bool EnableHooks(bool on) override {
         if (on && engine::Suppressed()) {
             LOG_ERROR("[weapons] the weapon hooks are suppressed: no clones in this match");
             return false;
         }
-        const bool a = vid::Enable(on), b = panel::Enable(on), c = hud::Enable(on);
+        // The selection hooks are for clones; a rename-only match needs just the panel text hooks.
+        const bool a = registry::Core().Count() == 0 || vid::Enable(on), b = panel::Enable(on), c = hud::Enable(on);
         return a && b && c;
     }
     uint32_t Tick() override { return sim::Tick(); }
@@ -116,11 +151,11 @@ core::Registry& Core() { return g_core; }
 
 bool Install() {
     if (g_installed) return true;
-    g_core.Configure(manifest::Frozen());
+    g_core.Configure(manifest::Frozen(), manifest::FrozenText(), manifest::FrozenIcons(), manifest::FrozenVehicles());
     g_configured = true;
-    const bool v = vid::Create(), p = panel::Create(), h = hud::Create();
+    const bool v = g_core.Count() == 0 || vid::Create(), p = panel::Create(), h = hud::Create();
     if (!(v && p && h)) {
-        LOG_ERROR("[weapons] creating the clone hooks failed (selection %d, panel %d, HUD %d): no clones this launch", v, p, h);
+        LOG_ERROR("[weapons] creating the weapon hooks failed (selection %d, panel %d, HUD %d): no clones or renames this launch", v, p, h);
         return false;
     }
     if (!bus::SubscribeName("GameLogic.Turn.Ended", bus::Path::Post, &OnTurnEnded))
@@ -135,13 +170,41 @@ void OnInit() {
     std::string why;
     const bool live = g_core.Init(&why);
     const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
-    assets::icons::Activate(live);
-    if (live)
-        LOG_INFO("[weapons] match %u: %d clone(s) live in %.3f ms", sim::MatchSerial(), g_core.Count(), ms);
-    else
-        LOG_ERROR("[weapons] match %u: no clones in this match: %s", sim::MatchSerial(), why.c_str());
-    jlog::Rec("weapons", live ? jlog::Level::Info : jlog::Level::Error, "clones")
-        .Bool("live", live).Int("count", g_core.Count()).Float("ms", ms).Str("why", why);
+    const bool clones = g_core.Count() > 0;
+    assets::icons::Activate(live && clones);
+    if (clones) {
+        if (live)
+            LOG_INFO("[weapons] match %u: %d clone(s) live in %.3f ms", sim::MatchSerial(), g_core.Count(), ms);
+        else
+            LOG_ERROR("[weapons] match %u: no clones in this match: %s", sim::MatchSerial(), why.c_str());
+        jlog::Rec("weapons", live ? jlog::Level::Info : jlog::Level::Error, "clones")
+            .Bool("live", live).Int("count", g_core.Count()).Float("ms", ms).Str("why", why);
+    }
+    if (g_core.TextCount()) {
+        int applied = 0;
+        for (int i = 0; i < g_core.TextCount(); ++i) applied += g_core.TextAt(i)->id >= 0;
+        LOG_INFO("[weapons] match %u: %d of %d weaponText rename(s) live", sim::MatchSerial(), applied, g_core.TextCount());
+        jlog::Rec("weapons", jlog::Level::Info, "weapon_text")
+            .Bool("live", g_core.TextLive()).Int("declared", g_core.TextCount()).Int("applied", applied);
+    }
+    if (g_core.IconCount()) {
+        int panels = 0, huds = 0;
+        for (int i = 0; i < g_core.IconCount(); ++i) {
+            panels += g_core.IconAt(i)->panel;
+            huds += g_core.IconAt(i)->hud;
+        }
+        LOG_INFO("[weapons] match %u: weaponIcons %d panel and %d HUD icon(s) armed of %d rule(s)", sim::MatchSerial(), panels, huds,
+                 g_core.IconCount());
+        jlog::Rec("weapons", jlog::Level::Info, "weapon_icons")
+            .Bool("live", g_core.IconsLive()).Int("declared", g_core.IconCount()).Int("panel", panels).Int("hud", huds);
+    }
+    if (g_core.VehicleCount()) {
+        int armed = 0;
+        for (int i = 0; i < g_core.VehicleCount(); ++i) armed += g_core.VehicleAt(i)->armed;
+        LOG_INFO("[weapons] match %u: vehicleMeshes %d of %d rule(s) armed", sim::MatchSerial(), armed, g_core.VehicleCount());
+        jlog::Rec("weapons", jlog::Level::Info, "vehicle_meshes")
+            .Bool("live", g_core.VehiclesLive()).Int("declared", g_core.VehicleCount()).Int("armed", armed);
+    }
 }
 
 void OnMatchEnd() {

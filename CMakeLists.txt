@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.25)
-project(Melange VERSION 0.8.0 LANGUAGES C CXX)
+project(Melange VERSION 0.9.0 LANGUAGES C CXX)
 
 if(NOT CMAKE_SIZEOF_VOID_P EQUAL 4)
     message(FATAL_ERROR "Melange must be built for 32-bit x86 (WormsMayhem.exe is a 32-bit process). Use build.ps1.")
@@ -482,7 +482,8 @@ target_link_libraries(store_selftest PRIVATE miniz bcrypt winhttp)
 add_executable(sandbox_selftest
     tests/sandbox_selftest.cpp
     src/lua/sandbox.cpp src/lua/sandbox_limits.cpp
-    src/lua/wum_core.cpp src/lua/wum_ui.cpp src/lua/wum_render.cpp src/lua/wum_unsafe.cpp src/lua/wum_input.cpp
+    src/lua/wum_core.cpp src/lua/wum_ui.cpp src/lua/wum_render.cpp src/lua/wum_unsafe.cpp src/lua/wum_input.cpp src/lua/wum_audio.cpp
+    src/audio/wav.cpp src/audio/clips.cpp
     src/tools/json_read.cpp)
 target_include_directories(sandbox_selftest PRIVATE src src/sdk)
 target_compile_definitions(sandbox_selftest PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX _CRT_SECURE_NO_WARNINGS
@@ -651,6 +652,23 @@ target_compile_definitions(tweak_selftest PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX _
 target_compile_options(tweak_selftest PRIVATE /W4 /utf-8 /permissive- /Zi /wd4100)
 target_link_options(tweak_selftest PRIVATE /DEBUG /SAFESEH:NO)
 target_link_libraries(tweak_selftest PRIVATE safetyhook::safetyhook bcrypt psapi)
+
+# Mod sound playback without the game or XAudio2: the WAV reader, the clip cache, distance falloff and voice bookkeeping.
+add_executable(audio_selftest
+    tests/audio_selftest.cpp
+    src/audio/wav.cpp
+    src/audio/clips.cpp)
+target_include_directories(audio_selftest PRIVATE src)
+target_compile_definitions(audio_selftest PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX _CRT_SECURE_NO_WARNINGS)
+target_compile_options(audio_selftest PRIVATE /W4 /utf-8 /permissive-)
+target_link_options(audio_selftest PRIVATE /SAFESEH:NO)
+
+# Mod mesh banks without the game: the bundle-shape check, the "<modId>." naming rule and the section relocation.
+add_executable(meshbank_selftest tests/meshbank_selftest.cpp src/assets/meshbank_inspect.cpp)
+target_include_directories(meshbank_selftest PRIVATE src src/sdk)
+target_compile_definitions(meshbank_selftest PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX _CRT_SECURE_NO_WARNINGS)
+target_compile_options(meshbank_selftest PRIVATE /W4 /utf-8 /permissive-)
+target_link_libraries(meshbank_selftest PRIVATE melange_xom)
 
 # The Fixes module's crash guards without the game: each hook runs on a copy of the game's faulting code.
 add_executable(crashfix_selftest

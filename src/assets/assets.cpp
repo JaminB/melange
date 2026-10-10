@@ -62,6 +62,19 @@ void PreloadPanelIcon(const char* modId, const char* relPng) {
     icons::Preload(modId, e.dir + L"\\" + game::Widen(e.manifest.assetsRoot), relPng);
 }
 
+bool PatchVanillaPanelIcon(const char* modId, const char* relPng, uint32_t iconCode, char* err, size_t errLen) {
+    if (!Enabled()) return Fail(err, errLen, "[Assets] is disabled");
+    if (!relPng || !*relPng) return Fail(err, errLen, "no icon path");
+    thumper::Entry e;
+    if (!FindMod(modId, &e, err, errLen)) return false;
+    const std::wstring assetsDir = e.dir + L"\\" + game::Widen(e.manifest.assetsRoot);
+    std::string werr;
+    if (!icons::PatchVanilla(modId, assetsDir, relPng, iconCode, &werr)) return Fail(err, errLen, werr);
+    return true;
+}
+
+void ClearVanillaPanelIcons() { icons::ClearVanilla(); }
+
 bool ReservePanelIcon(const char* modId, const char* relPng, uint32_t* iconCode, char* err, size_t errLen) {
     if (iconCode) *iconCode = 0;
     // Reserving one installs the upload hook (icons::Reserve), which must never happen with assets off: a hook is

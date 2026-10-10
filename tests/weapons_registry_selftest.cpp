@@ -6,7 +6,9 @@
 #include <cstdio>
 #include <cstring>
 #include <map>
+#include <set>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "mods/spice.h"
@@ -45,6 +47,7 @@ const FieldDef kFields[] = {
     {"LandDamageRadius", 0x168, FieldType::F32},    {"ImpulseRadius", 0x16c, FieldType::F32},
     {"PayloadGraphicsResourceID", 0xd4, FieldType::String}, {"LaunchSfx", 0x1a0, FieldType::String},
     {"IsHoming", 0x1b0, FieldType::Bool},            {"NumBomblets", 0x1b4, FieldType::U8},
+    {"DisplayName", 0x2c, FieldType::String},
     {"Fuse", 0x1b8, FieldType::I32},               {"DetonatesOnLandImpact", 0x1bc, FieldType::Bool},
 };
 
@@ -57,9 +60,18 @@ struct Fake final : core::Engine {
     std::map<std::string, std::string> banks;  // "mod/rel" -> container name it holds
     uintptr_t next = 0x20000000;
     int adds = 0, lastAddFlags = -1, bankLoads = 0, iconCalls = 0, textAdds = 0;
-    bool failAdd = false, hooksOk = true, hooksOn = false, hud = true, failTextAdd = false;
+    bool failTagWrite = false, failAdd = false, hooksOk = true, hooksOn = false, hud = true, failTextAdd = false;
     uint32_t icon = 0, tick = 100;
     uintptr_t cloneClassOverride = 0;
+    std::vector<std::pair<std::string, uint32_t>> patches;  // PatchPanelIcon: "mod/rel", icon code
+    std::set<std::string> missingHud;
+    bool failPatch = false;
+    int clears = 0;
+    std::set<std::string> loadedMeshes;             // the meshes the "GRM" has with a graph
+    std::map<std::string, std::string> meshLacks;   // loaded mesh -> the vehicle nodes it lacks
+    std::map<std::string, std::string> vehicleMesh;  // vehicle -> the mesh its entity draws now (absent = vanilla)
+    bool failVehicle = false;
+    int vehicleClears = 0;
 
     uintptr_t NewObj(const std::string& name, uintptr_t c) {
         const uintptr_t o = next;
@@ -157,7 +169,14 @@ struct Fake final : core::Engine {
         return true;
     }
     bool AssignString(uintptr_t field, const char* s) override {
+        if (failTagWrite && std::string(s).rfind("Text.wt", 0) == 0) return false;
         strs[field] = s;
+        return true;
+    }
+    bool ReadXString(uintptr_t field, std::string* out) override {
+        auto it = strs.find(field);
+        if (it == strs.end()) return false;
+        *out = it->second;
         return true;
     }
     int AddText(const char* key, const char* value) override {
@@ -179,12 +198,48 @@ struct Fake final : core::Engine {
         return icon;
     }
     bool HudUsable(const char*) override { return hud; }
+    bool HudFileExists(const char*, const char* file) override { return !missingHud.count(file); }
+    bool PatchPanelIcon(const char* mod, const char* rel, uint32_t code, std::string* err) override {
+        if (failPatch) {
+            if (err) *err = "stub refused";
+            return false;
+        }
+        patches.push_back({std::string(mod) + "/" + rel, code});
+        return true;
+    }
+    void ClearPanelIcons() override {
+        ++clears;
+        patches.clear();
+    }
+    bool MeshLoaded(const char* name) override { return loadedMeshes.count(name) != 0; }
+    std::string MeshNodesMissing(const char* name) override {
+        const auto it = meshLacks.find(name);
+        return it == meshLacks.end() ? std::string() : it->second;
+    }
+    bool SetVehicleMesh(const char* vehicle, const char* name, std::string* err) override {
+        if (failVehicle) {
+            if (err) *err = "stub refused";
+            return false;
+        }
+        vehicleMesh[vehicle] = name;
+        return true;
+    }
+    void ClearVehicleMeshes() override {
+        ++vehicleClears;
+        vehicleMesh.clear();
+    }
     bool EnableHooks(bool on) override {
         if (on && !hooksOk) return false;
         hooksOn = on;
         return true;
     }
     uint32_t Tick() override { return tick; }
+    // The name table holds host pointers here, so a string is read straight from the host.
+    bool ReadString(uintptr_t a, std::string* out, size_t) override {
+        if (!a) return false;
+        *out = reinterpret_cast<const char*>(a);
+        return true;
+    }
 
     Fake() {
         for (int i = 0; i < 5; ++i) {
@@ -193,6 +248,7 @@ struct Fake final : core::Engine {
             float dmg = 50.f + i;
             Write(o + 0x15c, &dmg, 4);
             strs[o + 0xd4] = std::string(kBaseNames[i] + 7) + ".Payload";
+            strs[o + 0x2c] = std::string("Text.") + kBaseNames[i];
         }
         for (int c = 0; c < core::kPanelCells; ++c) {
             uint32_t id = 5, code = 0x0501;
@@ -314,6 +370,215 @@ void Basic() {
     e.NewScene();
     Expect(r.Init(&why) && r.Active() == -1 && e.Slot(1) == "kWeaponBazooka" && e.CellId(29) == 0x100, "unclosed match recovered");
     r.MatchEnd();
+}
+
+wm::TextDecl Rename(const char* weapon, const char* name, const char* help, const char* mod = "textmod") {
+    return {mod, weapon, name, help};
+}
+
+std::string Str(uintptr_t p) { return p ? reinterpret_cast<const char*>(p) : ""; }
+
+void VanillaRenames() {
+    Fake e;
+    core::Registry r(e);
+    r.Configure({}, {Rename("kWeaponBazooka", "Nail Bat", "Swing it."), Rename("kWeaponGrenade", "Pineapple", ""),
+                     Rename("kWeaponNoSuch", "Ghost", "Boo"), Rename("kUtilityJetPack", "Rocket Pack", "")});
+    e.NewObj("kUtilityJetPack", kPayloadClass);  // a container that exists but has no slot in the name table
+    Expect(r.TextCount() == 4 && !r.TextLive() && !r.Live() && r.Count() == 0, "configured, not live");
+
+    // Outside a live match the game's own names come back, whatever the rules say.
+    Expect(r.TextName(1, P(kBaseNames[0]), false) == P(kBaseNames[0]) && r.TextName(1, P(kBaseNames[0]), true) == P(kBaseNames[0]),
+           "not live: vanilla name and help");
+    Expect(e.adds == 0 && e.textAdds == 0 && !e.hooksOn, "not live: nothing registered, hooks off");
+
+    std::string why;
+    Expect(r.Init(&why), "rename-only match goes live: " + why);
+    Expect(r.TextLive() && !r.Live() && r.Count() == 0, "text live, no clone registry live");
+    Expect(e.hooksOn && e.adds == 0, "panel hooks on, no resources created");
+    Expect(e.texts["Text.wt000"] == "Nail Bat" && e.texts["HelpText.wt0000"] == "Swing it.",
+           "name and help registered under the rule's short key");
+    Expect(e.texts["Text.wt001"] == "Pineapple" && !e.texts.count("HelpText.wt0010"),
+           "a name-only rename registers no help");
+    Expect(!e.texts.count("Text.wt002") && !e.texts.count("Text.wt003"),
+           "a missing container and a weapon with no name slot are skipped");
+    Expect(e.texts["Text.kWeaponBazooka"] == "Bazooka" && e.texts["HelpText.kWeaponGrenade0"] == "Throw it.",
+           "the vanilla strings are left alone");
+    Expect(r.TextAt(0)->id == 1 && r.TextAt(1)->id == 2 && r.TextAt(2)->id == -1 && r.TextAt(3)->id == -1,
+           "rules resolved to their name-table ids");
+
+    // The hook: the renamed id hands over the key, only for the strings that were renamed.
+    Expect(Str(r.TextName(1, P(kBaseNames[0]), false)) == "wt000", "Bazooka name -> mod key");
+    Expect(Str(r.TextName(1, P(kBaseNames[0]), true)) == "wt000", "Bazooka help -> mod key");
+    Expect(Str(r.TextName(2, P(kBaseNames[1]), false)) == "wt001", "Grenade name -> mod key");
+    Expect(r.TextName(2, P(kBaseNames[1]), true) == P(kBaseNames[1]), "Grenade help, not renamed, stays vanilla");
+    for (int i = 0; i < r.TextCount(); ++i)
+        Expect(std::string("HelpText.").append(r.TextAt(i)->token).size() + 1 <= 48, "the key stays within the clone-name length limit");
+    Expect(r.TextName(6, P(kBaseNames[2]), false) == P(kBaseNames[2]) && r.TextName(7, P(kBaseNames[3]), true) == P(kBaseNames[3]),
+           "weapons without a rename are untouched");
+    Expect(r.TextName(1, P("kWeaponSomethingElse"), false) == P("kWeaponSomethingElse"),
+           "a name that is not the slot's own is left alone");
+    Expect(r.TextName(0, 0, false) == 0 && r.TextName(core::kEnumCount, 5, true) == 5 && r.TextName(0x44, 5, false) == 5,
+           "ids outside the name table are passed through");
+    Expect(r.GuardId(1) == 1 && r.CanUseSlot(1, 0x5555) == 0x5555 && r.HudName() == nullptr,
+           "no other hook is affected by a rename");
+
+    r.MatchEnd();
+    Expect(!r.TextLive() && !e.hooksOn, "match end: text off, hooks off");
+    Expect(r.TextName(1, P(kBaseNames[0]), false) == P(kBaseNames[0]), "after the match: vanilla again");
+
+    // The next match registers again over the keys left behind (AddText reports an overwrite as non-zero).
+    e.NewScene();
+    e.NewObj("kUtilityJetPack", kPayloadClass);
+    e.texts["Text.wt000"] = "stale";
+    Expect(r.Init(&why) && Str(r.TextName(1, P(kBaseNames[0]), false)) == "wt000" &&
+               e.texts["Text.wt000"] == "Nail Bat",
+           "second match: overwritten and live");
+    r.MatchEnd();
+
+    // Registration that fails leaves the panel alone and the match without a registry.
+    {
+        Fake f;
+        core::Registry q(f);
+        q.Configure({}, {Rename("kWeaponBazooka", "Nail Bat", "")});
+        f.failTextAdd = true;
+        Expect(!q.Init(&why) && !q.TextLive() && !f.hooksOn && why.find("weaponText") != std::string::npos,
+               "all registrations failed: not live, hooks off (" + why + ")");
+        Expect(q.TextName(1, P(kBaseNames[0]), false) == P(kBaseNames[0]), "failed registration: vanilla name");
+    }
+    // Nothing declared at all.
+    {
+        Fake f;
+        core::Registry q(f);
+        q.Configure({}, {});
+        Expect(!q.Init(&why) && why == "no clones declared" && !f.hooksOn, "no clones and no renames: nothing to do");
+    }
+    // The hooks refused: no renames either.
+    {
+        Fake f;
+        core::Registry q(f);
+        f.hooksOk = false;
+        q.Configure({}, {Rename("kWeaponBazooka", "Nail Bat", "")});
+        Expect(!q.Init(&why) && !q.TextLive() && f.textAdds == 0, "suppressed hooks: no strings registered");
+    }
+}
+
+// Renames next to clones: the clone's own name and help win on its cell, and the base's cell keeps the rename while
+// the clone has the name slot swapped.
+void RenamesWithClones() {
+    Fake e;
+    core::Registry r(e);
+    auto d = Decl("kWeaponMegaBazooka", "kWeaponBazooka", 1, 29, 0);
+    d.text = {"Mega Bazooka", "More so."};
+    r.Configure({d}, {Rename("kWeaponBazooka", "Nail Bat", "Swing it."), Rename("kWeaponGrenade", "Pineapple", "Pull the pin.")});
+    std::string why;
+    Expect(r.Init(&why) && r.Live() && r.TextLive(), "clone and renames live together: " + why);
+    const auto* c = r.At(0);
+    Expect(r.TextName(0x100, 0x1234, false) == P(c->namePtr), "the clone's cell shows the clone's name");
+    Expect(Str(r.TextName(1, P(kBaseNames[0]), false)) == "wt000", "the base's cell shows the rename");
+    r.Select(0x100);
+    Expect(e.Slot(1) == "kWeaponMegaBazooka", "slot swapped while the clone is selected");
+    Expect(Str(r.TextName(1, P(c->namePtr), false)) == "wt000" &&
+               Str(r.TextName(1, P(c->namePtr), true)) == "wt000",
+           "the base's cell shows the rename, not the clone name, while swapped");
+    Expect(Str(r.TextName(2, P(kBaseNames[1]), true)) == "wt001", "another rename unaffected by the swap");
+    r.MatchEnd();
+    Expect(e.Slot(1) == "kWeaponBazooka" && !r.TextLive() && r.TextName(1, P(kBaseNames[0]), false) == P(kBaseNames[0]),
+           "match end restores everything");
+}
+
+// A clone that failed to go live does not take the renames with it.
+void RenamesSurviveCloneFailure() {
+    Fake e;
+    core::Registry r(e);
+    auto d = Decl("kWeaponGrenade2", "kWeaponGrenade", 2, 29, 0);
+    e.NewObj("kWeaponGrenade2", kPayloadClass);
+    r.Configure({d}, {Rename("kWeaponBazooka", "Nail Bat", "")});
+    std::string why;
+    Expect(!r.Init(&why) && !r.Live() && r.TextLive(), "clone refused, renames still live: " + why);
+    Expect(Str(r.TextName(1, P(kBaseNames[0]), false)) == "wt000", "the rename answers");
+    r.MatchEnd();
+}
+
+
+// A clone with no text of its own copies its base's vanilla text, and that holds when the base is renamed: the rename
+// belongs to the base's cell, not to its clones.
+void CloneWithoutTextOverRenamedBase() {
+    Fake e;
+    core::Registry r(e);
+    auto d = Decl("kWeaponMegaBazooka", "kWeaponBazooka", 1, 29, 0);
+    r.Configure({d}, {Rename("kWeaponBazooka", "Nail Bat", "Swing it.")});
+    std::string why;
+    Expect(r.Init(&why) && r.Live() && r.TextLive(), "clone and rename live: " + why);
+    Expect(e.texts["Text.kWeaponMegaBazooka"] == "Bazooka" && e.texts["HelpText.kWeaponMegaBazooka0"] == "Fire it.",
+           "the clone copied the vanilla text, not the rename");
+    Expect(Str(r.TextName(0x100, 0, false)) == "kWeaponMegaBazooka", "the clone's cell shows its own copy");
+    Expect(Str(r.TextName(1, P(kBaseNames[0]), false)) == "wt000", "the base's cell shows the rename");
+    r.MatchEnd();
+}
+
+// The in-world weapon-name tag reads the container's DisplayName: a renamed weapon's points at the rename's key while
+// live and goes back at match end; a help-only rename leaves it alone; a failed write costs only the tag.
+void RenameTag() {
+    Fake e;
+    core::Registry r(e);
+    r.Configure({}, {Rename("kWeaponBazooka", "Nail Bat", "Swing it."), Rename("kWeaponGrenade", "", "Throw hard."),
+                     Rename("kWeaponHolyHandGrenade", "Holy Cow", "")});
+    const uintptr_t baz = e.Lookup("kWeaponBazooka"), gren = e.Lookup("kWeaponGrenade"),
+                    holy = e.Lookup("kWeaponHolyHandGrenade");
+    std::string why;
+    Expect(r.Init(&why) && r.TextLive(), "tag: renames live: " + why);
+    Expect(e.strs[baz + 0x2c] == "Text.wt000" && e.strs[holy + 0x2c] == "Text.wt002",
+           "tag: named renames point DisplayName at their key");
+    Expect(e.strs[gren + 0x2c] == "Text.kWeaponGrenade" && r.TagCount() == 2, "tag: a help-only rename leaves DisplayName alone");
+    r.MatchEnd();
+    Expect(e.strs[baz + 0x2c] == "Text.kWeaponBazooka" && e.strs[holy + 0x2c] == "Text.kWeaponHolyHandGrenade" &&
+               r.TagCount() == 0,
+           "tag: restored at match end");
+
+    // An unclosed match is restored by the next Init before it writes again.
+    Expect(r.Init(&why) && e.strs[baz + 0x2c] == "Text.wt000", "tag: second match writes again");
+    Expect(r.Init(&why) && e.strs[baz + 0x2c] == "Text.wt000", "tag: an unclosed match is restored and rewritten");
+    r.MatchEnd();
+    Expect(e.strs[baz + 0x2c] == "Text.kWeaponBazooka", "tag: original after the unclosed round trip");
+
+    // Reconfiguring while tags are live puts the old ones back before the rules that hold them are dropped.
+    Expect(r.Init(&why) && e.strs[baz + 0x2c] == "Text.wt000", "tag: live before the reconfigure");
+    r.Configure({}, {});
+    Expect(e.strs[baz + 0x2c] == "Text.kWeaponBazooka" && e.strs[holy + 0x2c] == "Text.kWeaponHolyHandGrenade" &&
+               r.TagCount() == 0 && !r.TextLive(),
+           "tag: Configure restores the previous configuration's tags");
+
+    // A write that fails: the panel rename stands, nothing is half-written.
+    Fake f;
+    core::Registry q(f);
+    q.Configure({}, {Rename("kWeaponBazooka", "Nail Bat", "")});
+    f.failTagWrite = true;
+    Expect(q.Init(&why) && q.TextLive() && f.texts["Text.wt000"] == "Nail Bat" && q.TagCount() == 0,
+           "tag: a failed write is tolerated, the panel rename stays");
+    Expect(f.strs[f.Lookup("kWeaponBazooka") + 0x2c] == "Text.kWeaponBazooka", "tag: failed write left the original");
+    q.MatchEnd();
+
+    // A container rebuilt between the write and the end is not written into.
+    Fake g;
+    core::Registry t(g);
+    t.Configure({}, {Rename("kWeaponBazooka", "Nail Bat", "")});
+    Expect(t.Init(&why), "tag: live before the scene change");
+    const uintptr_t old = g.Lookup("kWeaponBazooka");
+    g.res["kWeaponBazooka"] = old + 0x100000;
+    t.MatchEnd();
+    Expect(g.strs[old + 0x2c] == "Text.wt000", "tag: a replaced container is not restored into");
+}
+
+void DefaultReadString() {
+    Fake e;
+    core::Registry r(e);
+    const char s[] = "kWeaponBazooka";
+    const uintptr_t at = 0x30000000 - 3;
+    e.Write(at, s, sizeof s);
+    std::string out;
+    Expect(e.Engine::ReadString(at, &out, 64) && out == "kWeaponBazooka", "default ReadString reads a string");
+    Expect(e.Engine::ReadString(at, &out, 4) && out == "kWea", "default ReadString stops at max");
+    Expect(!e.Engine::ReadString(0, &out, 64), "default ReadString refuses null");
 }
 
 void Refusals() {
@@ -561,6 +826,205 @@ int CheckMods(int argc, wchar_t** argv) {
     return errs.empty() && live ? 0 : 1;
 }
 
+wm::IconDecl Icon(const char* weapon, const char* panel, const char* hud, const char* mod = "iconmod") {
+    return {mod, weapon, panel, hud};
+}
+
+void WeaponIcons() {
+    Expect(std::string(core::VanillaHudFile("kWeaponBazooka")) == "bazooka.tga" &&
+               std::string(core::VanillaHudFile("kWeaponHolyHandGrenade")) == "hollyhandgrenade.tga" &&
+               std::string(core::VanillaHudFile("kWeaponHomingMissile")) == "HomingMissile.tga" &&
+               std::string(core::VanillaHudFile("kUtilityJetPack")) == "jetpack.tga" &&
+               std::string(core::VanillaHudFile("kWeaponFatkins")) == "fatkinstrike.tga" &&
+               std::string(core::VanillaHudFile("kWeaponNoMoreNails")) == "tailnail.tga",
+           "VanillaHudFile: names, aliases and case");
+    Expect(core::VanillaHudFile("kWeaponNoSuchThing") == nullptr && core::VanillaHudFile("Bazooka") == nullptr &&
+               core::VanillaHudFile("kWeapon") == nullptr,
+           "VanillaHudFile: unknown names have no file");
+
+    Fake e;
+    core::Registry r(e);
+    r.Configure({}, {},
+                {Icon("kWeaponBazooka", "icons/a.png", "iconmod.baz.tga"), Icon("kWeaponGrenade", "icons/g.png", ""),
+                 Icon("kWeaponHolyHandGrenade", "", "iconmod.holy.tga"), Icon("kWeaponBananaBomb", "icons/b.png", ""),
+                 Icon("kWeaponNoSuch", "icons/x.png", ""), Icon("kWeaponGasCanister", "", "iconmod.gas.tga")});
+    Expect(r.IconCount() == 6 && !r.IconsLive() && !r.HudIconsLive() && !r.Live() && r.Count() == 0, "configured, not live");
+    Expect(r.HudNameFor("bazooka.tga") == nullptr && e.patches.empty() && !e.hooksOn, "not live: no HUD answer, nothing patched");
+
+    std::string why;
+    Expect(r.Init(&why), "icon-only match goes live: " + why);
+    Expect(r.IconsLive() && r.HudIconsLive() && !r.Live() && e.hooksOn, "icons live, no clone registry, hooks on");
+    // The icon code comes from the weapon's own panel cell in the game: Bazooka 0x0001 (atlas 1 sub 0), Grenade 0x0002.
+    Expect(e.patches.size() == 2 && e.patches[0] == std::make_pair(std::string("iconmod/icons/a.png"), 0x0001u) &&
+               e.patches[1] == std::make_pair(std::string("iconmod/icons/g.png"), 0x0002u),
+           "panel icons written over the weapons' own sub-icons");
+    Expect(r.IconAt(0)->id == 1 && r.IconAt(0)->panel && r.IconAt(0)->hud && r.IconAt(0)->iconCode == 0x0001, "rule 0 resolved");
+    Expect(r.IconAt(1)->id == 2 && r.IconAt(1)->panel && !r.IconAt(1)->hud, "panel-only rule");
+    Expect(r.IconAt(2)->id == 6 && !r.IconAt(2)->panel && r.IconAt(2)->hud, "HUD-only rule (no panel field)");
+    Expect(r.IconAt(3)->id == -1 && !r.IconAt(3)->panel, "a weapon without a panel cell gets no panel icon and no rule");
+    Expect(r.IconAt(4)->id == -1, "a container that does not exist is skipped");
+    Expect(r.IconAt(5)->id == 16 && r.IconAt(5)->hud, "gas canister HUD rule armed");
+
+    Expect(Str(reinterpret_cast<uintptr_t>(r.HudNameFor("bazooka.tga"))) == "iconmod.baz.tga", "HUD: bazooka.tga -> the mod's file");
+    Expect(Str(reinterpret_cast<uintptr_t>(r.HudNameFor(R"(Data\HUD\Weapons\Bazooka.TGA)"))) == "iconmod.baz.tga",
+           "HUD: path and case do not matter");
+    Expect(Str(reinterpret_cast<uintptr_t>(r.HudNameFor("data/hud/weapons/hollyhandgrenade.tga"))) == "iconmod.holy.tga",
+           "HUD: forward slashes, another weapon");
+    Expect(Str(reinterpret_cast<uintptr_t>(r.HudNameFor("gascanister.tga"))) == "iconmod.gas.tga", "HUD: gas canister");
+    Expect(r.HudNameFor("grenade.tga") == nullptr, "HUD: a weapon with no hudIcon is left alone");
+    Expect(r.HudNameFor("sheep.tga") == nullptr && r.HudNameFor("iconmod.baz.tga") == nullptr && r.HudNameFor("") == nullptr &&
+               r.HudNameFor(nullptr) == nullptr,
+           "HUD: other files, the mod's own file, empty and null are left alone");
+
+    r.MatchEnd();
+    Expect(!r.IconsLive() && !r.HudIconsLive() && e.patches.empty() && e.clears == 1 && !e.hooksOn,
+           "match end: panel patches dropped, HUD off, hooks off");
+    Expect(r.HudNameFor("bazooka.tga") == nullptr && r.IconAt(0)->id == -1, "after the match: vanilla HUD again");
+
+    // The next match arms again; an unclosed match is cleared first, so the patches are never doubled.
+    Expect(r.Init(&why) && e.patches.size() == 2 && r.Init(&why) && e.patches.size() == 2 && e.clears == 2,
+           "second match arms again; an unclosed one is cleared first");
+    r.MatchEnd();
+
+    // Failures cost only the piece that failed.
+    {
+        Fake f;
+        core::Registry q(f);
+        q.Configure({}, {}, {Icon("kWeaponBazooka", "icons/a.png", "iconmod.baz.tga")});
+        f.failPatch = true;
+        f.missingHud.insert("iconmod.baz.tga");
+        Expect(!q.Init(&why) && !q.IconsLive() && !f.hooksOn && why.find("weaponIcons") != std::string::npos,
+               "panel refused and HUD file missing: nothing live (" + why + ")");
+        Expect(q.HudNameFor("bazooka.tga") == nullptr, "a missing HUD file falls back to vanilla");
+        f.missingHud.clear();
+        Expect(q.Init(&why) && q.IconsLive() && q.HudIconsLive() && !q.IconAt(0)->panel && q.IconAt(0)->hud,
+               "panel refused, HUD file present: the HUD half still works");
+        q.MatchEnd();
+        f.failPatch = false;
+        f.hud = false;
+        Expect(q.Init(&why) && q.IconsLive() && !q.HudIconsLive() && q.IconAt(0)->panel,
+               "loose root not a search path: the panel half still works");
+        q.MatchEnd();
+    }
+    // A panel icon on a weapon with no cell, and a rule that names a weapon with no HUD file in the table.
+    {
+        Fake f;
+        core::Registry q(f);
+        q.Configure({}, {}, {Icon("kWeaponBananaBomb", "icons/b.png", "")});
+        Expect(!q.Init(&why) && !q.IconsLive() && f.patches.empty(), "no panel cell: nothing to patch, not live");
+    }
+    // Rules beside clones: the clone's own hudIcon wins while it is selected; icons survive a clone that fails.
+    {
+        Fake f;
+        core::Registry q(f);
+        auto d = Decl("kWeaponMegaBazooka", "kWeaponBazooka", 1, 29, 0);
+        d.hudIcon = "iconmod.mega.tga";
+        q.Configure({d}, {}, {Icon("kWeaponBazooka", "", "iconmod.baz.tga")});
+        Expect(q.Init(&why) && q.Live() && q.HudIconsLive(), "clone and icon rule live together: " + why);
+        Expect(Str(reinterpret_cast<uintptr_t>(q.HudNameFor("bazooka.tga"))) == "iconmod.baz.tga", "no clone selected: the vanilla rule answers");
+        q.Select(0x100);
+        Expect(Str(reinterpret_cast<uintptr_t>(q.HudNameFor("bazooka.tga"))) == "iconmod.mega.tga", "clone selected: its own hudIcon wins");
+        q.MatchEnd();
+    }
+}
+
+wm::VehicleDecl Vehicle(const char* vehicle, const char* mesh, const char* mod = "vehmod") { return {mod, vehicle, mesh}; }
+
+void VehicleMeshes() {
+    Fake e;
+    e.loadedMeshes = {"vehmod.Chopper", "vehmod.Super"};
+    core::Registry r(e);
+    r.Configure({}, {}, {}, {Vehicle("BomberHelicopter", "vehmod.Chopper"), Vehicle("SuperAirstrike", "vehmod.Super")});
+    Expect(r.VehicleCount() == 2 && !r.VehiclesLive() && !r.Live() && r.Count() == 0, "configured, not live");
+    Expect(e.vehicleMesh.empty() && !e.hooksOn, "not live: the vanilla vehicles");
+
+    std::string why;
+    Expect(r.Init(&why), "a vehicle-only match goes live: " + why);
+    Expect(r.VehiclesLive() && !r.Live() && e.hooksOn && r.VehicleAt(0)->armed && r.VehicleAt(1)->armed,
+           "both rules armed, no clone registry");
+    Expect(e.vehicleMesh.size() == 2 && e.vehicleMesh["BomberHelicopter"] == "vehmod.Chopper" &&
+               e.vehicleMesh["SuperAirstrike"] == "vehmod.Super",
+           "the engine was told each vehicle's mesh");
+    r.MatchEnd();
+    Expect(!r.VehiclesLive() && e.vehicleMesh.empty() && e.vehicleClears == 1 && !e.hooksOn && !r.VehicleAt(0)->armed,
+           "match end: every vanilla vehicle back, hooks off");
+    // The next match arms again; an unclosed match is cleared first.
+    Expect(r.Init(&why) && e.vehicleMesh.size() == 2 && r.Init(&why) && e.vehicleMesh.size() == 2 && e.vehicleClears == 2,
+           "second match arms again; an unclosed one is cleared first");
+    r.MatchEnd();
+
+    // A mesh that never loaded (its bank failed, or the budget ran out) costs only that rule.
+    {
+        Fake f;
+        f.loadedMeshes = {"vehmod.Super"};
+        core::Registry q(f);
+        q.Configure({}, {}, {}, {Vehicle("BomberHelicopter", "vehmod.Chopper"), Vehicle("SuperAirstrike", "vehmod.Super")});
+        Expect(q.Init(&why) && q.VehiclesLive() && !q.VehicleAt(0)->armed && q.VehicleAt(1)->armed &&
+                   f.vehicleMesh.size() == 1 && f.vehicleMesh.count("SuperAirstrike") == 1,
+               "an unloaded mesh: that vehicle stays vanilla, the other is drawn");
+        q.MatchEnd();
+        Expect(f.vehicleMesh.empty() && f.vehicleClears == 1, "...and the match end clears it");
+    }
+    // A mesh that loaded but lacks a node Setup looks up would assert mid-match: that vehicle stays vanilla.
+    {
+        Fake f;
+        f.loadedMeshes = {"vehmod.Chopper", "vehmod.Super"};
+        f.meshLacks["vehmod.Chopper"] = "top_rotor, perspShape";
+        core::Registry q(f);
+        q.Configure({}, {}, {}, {Vehicle("BomberHelicopter", "vehmod.Chopper"), Vehicle("SuperAirstrike", "vehmod.Super")});
+        Expect(q.Init(&why) && q.VehiclesLive() && !q.VehicleAt(0)->armed && q.VehicleAt(1)->armed && f.vehicleMesh.size() == 1 &&
+                   f.vehicleMesh.count("BomberHelicopter") == 0,
+               "a mesh lacking required nodes is not armed, the other vehicle is");
+        q.MatchEnd();
+    }
+    // Nothing loads, or the engine refuses (other build bytes, a changed name variable): not live, and the caller is told.
+    {
+        Fake f;
+        core::Registry q(f);
+        q.Configure({}, {}, {}, {Vehicle("BomberHelicopter", "vehmod.Chopper")});
+        Expect(!q.Init(&why) && !q.VehiclesLive() && !f.hooksOn && f.vehicleMesh.empty() && why.find("vehicleMeshes") != std::string::npos,
+               "no mesh loaded: not live (" + why + ")");
+        f.loadedMeshes = {"vehmod.Chopper"};
+        f.failVehicle = true;
+        Expect(!q.Init(&why) && !q.VehiclesLive() && f.vehicleMesh.empty() && f.vehicleClears == 0,
+               "the engine refuses: not live, nothing to clear");
+    }
+    // Beside renames, icons and clones: all of them live in one match, each torn down by the match end.
+    {
+        Fake f;
+        f.loadedMeshes = {"vehmod.Chopper"};
+        core::Registry q(f);
+        auto d = Decl("kWeaponMegaBazooka", "kWeaponBazooka", 1, 29, 0);
+        q.Configure({d}, {wm::TextDecl{"vehmod", "kWeaponGrenade", "Nade", ""}}, {Icon("kWeaponBazooka", "", "iconmod.baz.tga")},
+                    {Vehicle("BomberHelicopter", "vehmod.Chopper")});
+        Expect(q.Init(&why) && q.Live() && q.TextLive() && q.IconsLive() && q.VehiclesLive() && f.vehicleMesh.size() == 1,
+               "clone, rename, icons and vehicle live together: " + why);
+        q.MatchEnd();
+        Expect(!q.Live() && !q.TextLive() && !q.IconsLive() && !q.VehiclesLive() && f.vehicleMesh.empty(), "all off at the match end");
+    }
+    // A clone that fails to go live leaves the vehicle rules armed (like renames and icons), and the match end clears them.
+    {
+        Fake f;
+        f.loadedMeshes = {"vehmod.Chopper"};
+        f.failAdd = true;
+        core::Registry q(f);
+        q.Configure({Decl("kWeaponMegaBazooka", "kWeaponBazooka", 1, 29, 0)}, {}, {}, {Vehicle("BomberHelicopter", "vehmod.Chopper")});
+        Expect(!q.Init(&why) && q.VehiclesLive() && f.vehicleMesh.size() == 1, "a failed clone leaves the vehicle mesh armed");
+        q.MatchEnd();
+        Expect(f.vehicleMesh.empty(), "...until the match end");
+    }
+    // Reconfiguring drops what a previous configuration armed.
+    {
+        Fake f;
+        f.loadedMeshes = {"vehmod.Chopper"};
+        core::Registry q(f);
+        q.Configure({}, {}, {}, {Vehicle("BomberHelicopter", "vehmod.Chopper")});
+        Expect(q.Init(&why) && f.vehicleMesh.size() == 1, "armed");
+        q.Configure({}, {}, {}, {});
+        Expect(f.vehicleMesh.empty() && q.VehicleCount() == 0 && !q.VehiclesLive(), "Configure clears the armed vehicles");
+    }
+}
+
 int wmain(int argc, wchar_t** argv) {
     if (argc > 1) return CheckMods(argc, argv);
     wchar_t tmp[MAX_PATH];
@@ -568,6 +1032,14 @@ int wmain(int argc, wchar_t** argv) {
     g_root = std::wstring(tmp) + L"melange_registry_selftest_" + std::to_wstring(GetCurrentProcessId());
     CreateDirectoryW(g_root.c_str(), nullptr);
     Basic();
+    VanillaRenames();
+    WeaponIcons();
+    VehicleMeshes();
+    RenamesWithClones();
+    RenamesSurviveCloneFailure();
+    CloneWithoutTextOverRenamedBase();
+    RenameTag();
+    DefaultReadString();
     Refusals();
     Banks();
     ThreeClones();

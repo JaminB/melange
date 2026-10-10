@@ -41,6 +41,7 @@ export const GROUPS = [
 			{ slug: 'spice', label: 'Spice manifest' },
 			{ slug: 'lua-api', label: 'Lua API (wum.*)' },
 			{ slug: 'weapons', label: 'Weapon mods' },
+			{ slug: 'meshes', label: 'Mesh banks' },
 			{ slug: 'importers', label: 'Content importers' },
 		],
 	},

@@ -173,4 +173,89 @@ Object MakeXImage(const std::string& name, const Pixels& px, bool generateMips) 
     return o;
 }
 
+
+Pixels Resize(const Pixels& px, uint16_t width, uint16_t height) {
+    Pixels out;
+    out.width = width;
+    out.height = height;
+    out.channels = px.channels;
+    const int ch = px.channels;
+    out.data.assign(size_t(width) * height * size_t(ch), 0);
+    if (px.width == 0 || px.height == 0 || width == 0 || height == 0 || ch <= 0) return out;
+    const double sx = double(px.width) / width, sy = double(px.height) / height;
+    const bool enlarge = width >= px.width && height >= px.height;
+    for (uint32_t y = 0; y < height; ++y)
+        for (uint32_t x = 0; x < width; ++x)
+            for (int c = 0; c < ch; ++c) {
+                double v = 0;
+                if (enlarge) {
+                    // Bilinear at the pixel centre.
+                    const double fx = std::min(std::max((x + 0.5) * sx - 0.5, 0.0), double(px.width - 1));
+                    const double fy = std::min(std::max((y + 0.5) * sy - 0.5, 0.0), double(px.height - 1));
+                    const uint32_t x0 = uint32_t(fx), y0 = uint32_t(fy);
+                    const uint32_t x1 = std::min<uint32_t>(x0 + 1, px.width - 1), y1 = std::min<uint32_t>(y0 + 1, px.height - 1);
+                    const double tx = fx - x0, ty = fy - y0;
+                    auto at = [&](uint32_t xx, uint32_t yy) { return double(px.data[(size_t(yy) * px.width + xx) * size_t(ch) + size_t(c)]); };
+                    v = (at(x0, y0) * (1 - tx) + at(x1, y0) * tx) * (1 - ty) + (at(x0, y1) * (1 - tx) + at(x1, y1) * tx) * ty;
+                } else {
+                    // Area average over the source rectangle this pixel covers, edges weighted by coverage.
+                    const double x0 = x * sx, x1 = (x + 1) * sx, y0 = y * sy, y1 = (y + 1) * sy;
+                    double sum = 0, wsum = 0;
+                    for (uint32_t yy = uint32_t(y0); yy < px.height && yy < y1; ++yy) {
+                        const double wy = std::min<double>(yy + 1, y1) - std::max<double>(yy, y0);
+                        for (uint32_t xx = uint32_t(x0); xx < px.width && xx < x1; ++xx) {
+                            const double w = (std::min<double>(xx + 1, x1) - std::max<double>(xx, x0)) * wy;
+                            if (w <= 0) continue;
+                            sum += w * px.data[(size_t(yy) * px.width + xx) * size_t(ch) + size_t(c)];
+                            wsum += w;
+                        }
+                    }
+                    v = wsum > 0 ? sum / wsum : 0;
+                }
+                out.data[(size_t(y) * width + x) * size_t(ch) + size_t(c)] = uint8_t(std::min(255.0, std::max(0.0, v + 0.5)));
+            }
+    return out;
+}
+
+Pixels WithChannels(const Pixels& px, int channels) {
+    if (px.channels == channels || (channels != 3 && channels != 4) || (px.channels != 3 && px.channels != 4)) return px;
+    Pixels out;
+    out.width = px.width;
+    out.height = px.height;
+    out.channels = channels;
+    const size_t n = size_t(px.width) * px.height;
+    out.data.resize(n * size_t(channels));
+    for (size_t i = 0; i < n; ++i) {
+        for (int c = 0; c < 3; ++c) out.data[i * size_t(channels) + size_t(c)] = px.data[i * size_t(px.channels) + size_t(c)];
+        if (channels == 4) out.data[i * 4 + 3] = 255;
+    }
+    return out;
+}
+
+bool ReplacePixels(Object& ximage, const Pixels& px, bool* resampled, std::string* error) {
+    auto fail = [&](const std::string& e) { if (error) *error = e; return false; };
+    if (resampled) *resampled = false;
+    if (ximage.type != "XImage") return fail("not an XImage");
+    const Value *wf = ximage.field("Width"), *hf = ximage.field("Height"), *ff = ximage.field("Format"), *mf = ximage.field("MipLevels");
+    if (!wf || !hf || !ff || !mf) return fail("XImage is missing a field");
+    const uint16_t width = uint16_t(wf->asUInt()), height = uint16_t(hf->asUInt());
+    if (px.channels != 3 && px.channels != 4) return fail("pixels must be RGB (3) or RGBA (4)");
+    Pixels use = WithChannels(px, BppForFormat(uint32_t(ff->asUInt())));
+    if (use.width != width || use.height != height) {
+        use = Resize(use, width, height);
+        if (resampled) *resampled = true;
+    }
+    // StoreFields rewrites every field a fresh image has, including Flags (0) and Palette (none). A vanilla image's Flags
+    // is often 2 or 4 (168 and 17 of Bundl09's 338), which the engine may read, so a pixel swap keeps both as they were.
+    const Value* oldFlags = ximage.field("Flags");
+    const Value* oldPalette = ximage.field("Palette");
+    const Value savedFlags = oldFlags ? *oldFlags : Value();
+    const Value savedPalette = oldPalette ? *oldPalette : Value();
+    const bool hadFlags = oldFlags != nullptr, hadPalette = oldPalette != nullptr;
+    if (!StoreFields(ximage, use, mf->asUInt() > 1, error)) return false;
+    if (hadFlags) *ximage.field("Flags") = savedFlags;
+    if (hadPalette) *ximage.field("Palette") = savedPalette;
+    return true;
+}
+
 }  // namespace melange::xom::image

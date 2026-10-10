@@ -1,5 +1,6 @@
 #include "weapons/manifest.h"
 
+#include <algorithm>
 #include <cctype>
 #include <cmath>
 #include <cstring>
@@ -19,6 +20,8 @@ constexpr Base kBases[] = {
 
 std::vector<CloneDecl> g_frozen;
 bool g_isFrozen = false;
+std::vector<TextDecl> g_frozenText;
+bool g_textFrozen = false;
 
 bool SafeRel(const std::string& p) {
     if (p.empty() || p.size() > 200 || p[0] == '/' || p[0] == '\\' || p.find(':') != std::string::npos) return false;
@@ -203,6 +206,259 @@ std::vector<CloneDecl> Assign(const std::vector<std::vector<CloneDecl>>& perMod,
     }
     return acc;
 }
+
+bool ValidTextKey(const std::string& k) {
+    size_t p = 0;
+    if (k.compare(0, 7, "kWeapon") == 0) p = 7;
+    else if (k.compare(0, 8, "kUtility") == 0) p = 8;
+    else return false;
+    if (p >= k.size() || !(k[p] >= 'A' && k[p] <= 'Z')) return false;
+    const size_t tail = k.size() - p - 1;
+    if (tail < 2 || tail > 40) return false;
+    for (size_t i = p + 1; i < k.size(); ++i)
+        if (!std::isalnum(static_cast<unsigned char>(k[i]))) return false;
+    return true;
+}
+
+std::vector<TextDecl> ParseText(const spice::Manifest& m, std::vector<Error>* errs) {
+    std::vector<TextDecl> out;
+    bool ok = true;
+    auto fail = [&](const std::string& what, const std::string& text) {
+        if (errs) errs->push_back({m.id, what + ": " + text});
+        ok = false;
+    };
+    auto printable = [](const std::string& s) {
+        return std::all_of(s.begin(), s.end(), [](unsigned char c) { return c >= 0x20 && c < 0x7f; });
+    };
+    if (m.weaponText.empty()) return out;
+    if (!m.content) fail("weaponText", "requires kind: \"content\"");
+    if (m.weaponText.size() > kMaxTextPerMod) fail("weaponText", "at most 64 entries");
+    for (const auto& w : m.weaponText) {
+        const std::string tag = w.weapon.empty() ? "weaponText" : w.weapon;
+        if (!ValidTextKey(w.weapon)) fail(tag, "key must match ^k(Weapon|Utility)[A-Z][A-Za-z0-9]{2,40}$");
+        for (const auto& o : out)
+            if (o.weapon == w.weapon) fail(tag, "listed twice");
+        for (const auto& c : m.weapons)
+            if (c.name == w.weapon) fail(tag, "is a clone of this mod; clones have their own \"text\"");
+        if (w.name.empty() && w.help.empty()) fail(tag, "needs a name or a help");
+        if (w.name.size() > kMaxTextName || !printable(w.name)) fail(tag, "name must be 1-24 printable ASCII characters");
+        if (w.help.size() > kMaxTextHelp || !printable(w.help)) fail(tag, "help must be at most 160 printable ASCII characters");
+        out.push_back({m.id, w.weapon, w.name, w.help});
+    }
+    if (!ok) out.clear();
+    return out;
+}
+
+std::vector<TextDecl> AssignText(const std::vector<std::vector<TextDecl>>& perMod, const std::vector<std::string>& cloneNames,
+                                 std::vector<Error>* refused) {
+    std::vector<TextDecl> acc;
+    for (const auto& mod : perMod) {
+        if (mod.empty()) continue;
+        std::string why;
+        for (const auto& d : mod) {
+            if (why.empty() && std::find(cloneNames.begin(), cloneNames.end(), d.weapon) != cloneNames.end())
+                why = "weaponText." + d.weapon + " is a clone name; clones have their own \"text\"";
+            for (const auto& a : acc)
+                if (why.empty() && a.weapon == d.weapon) why = d.weapon + " is already renamed by " + a.mod;
+        }
+        if (!why.empty()) {
+            if (refused) refused->push_back({mod.front().mod, why});
+            continue;
+        }
+        for (const auto& d : mod) acc.push_back(d);
+    }
+    return acc;
+}
+
+std::vector<IconDecl> ParseIcons(const spice::Manifest& m, std::vector<Error>* errs) {
+    std::vector<IconDecl> out;
+    bool ok = true;
+    auto fail = [&](const std::string& what, const std::string& text) {
+        if (errs) errs->push_back({m.id, what + ": " + text});
+        ok = false;
+    };
+    if (m.weaponIcons.empty()) return out;
+    if (!m.content) fail("weaponIcons", "requires kind: \"content\"");
+    if (m.weaponIcons.size() > kMaxIconsPerMod) fail("weaponIcons", "at most 64 entries");
+    for (const auto& w : m.weaponIcons) {
+        const std::string tag = w.weapon.empty() ? "weaponIcons" : w.weapon;
+        if (!ValidTextKey(w.weapon)) fail(tag, "key must match ^k(Weapon|Utility)[A-Z][A-Za-z0-9]{2,40}$");
+        for (const auto& o : out)
+            if (o.weapon == w.weapon) fail(tag, "listed twice");
+        for (const auto& c : m.weapons)
+            if (c.name == w.weapon) fail(tag, "is a clone of this mod; clones have their own panelIcon and hudIcon");
+        if (w.panelIcon.empty() && w.hudIcon.empty()) fail(tag, "needs a panelIcon or a hudIcon");
+        if (!w.panelIcon.empty() && (!SafeRel(w.panelIcon) || !EndsWithI(w.panelIcon, ".png")))
+            fail(tag, "panelIcon must be a relative .png path under assets/");
+        if (!w.hudIcon.empty() &&
+            (w.hudIcon.find_first_of("/\\:") != std::string::npos || w.hudIcon.compare(0, m.id.size() + 1, m.id + ".") != 0 ||
+             !EndsWithI(w.hudIcon, ".tga")))
+            fail(tag, "hudIcon must be a .tga file name in assets/loose/ named '" + m.id + ".*'");
+        out.push_back({m.id, w.weapon, w.panelIcon, w.hudIcon});
+    }
+    if (!ok) out.clear();
+    return out;
+}
+
+std::vector<IconDecl> AssignIcons(const std::vector<std::vector<IconDecl>>& perMod, const std::vector<std::string>& cloneNames,
+                                  std::vector<Error>* refused) {
+    std::vector<IconDecl> acc;
+    for (const auto& mod : perMod) {
+        if (mod.empty()) continue;
+        std::string why;
+        for (const auto& d : mod) {
+            if (why.empty() && std::find(cloneNames.begin(), cloneNames.end(), d.weapon) != cloneNames.end())
+                why = "weaponIcons." + d.weapon + " is a clone name; clones have their own panelIcon and hudIcon";
+            for (const auto& a : acc)
+                if (why.empty() && a.weapon == d.weapon) why = d.weapon + " already has icons from " + a.mod;
+        }
+        if (!why.empty()) {
+            if (refused) refused->push_back({mod.front().mod, why});
+            continue;
+        }
+        for (const auto& d : mod) acc.push_back(d);
+    }
+    return acc;
+}
+
+std::vector<VehicleDecl> ParseVehicles(const spice::Manifest& m, std::vector<Error>* errs) {
+    std::vector<VehicleDecl> out;
+    bool ok = true;
+    auto fail = [&](const std::string& what, const std::string& text) {
+        if (errs) errs->push_back({m.id, what + ": " + text});
+        ok = false;
+    };
+    if (m.vehicleMeshes.empty()) return out;
+    if (!m.content) fail("vehicleMeshes", "requires kind: \"content\"");
+    if (m.meshes.empty()) fail("vehicleMeshes", "the mod lists no meshes bank");
+    for (const auto& v : m.vehicleMeshes) {
+        const std::string tag = v.vehicle.empty() ? "vehicleMeshes" : v.vehicle;
+        if (std::find(std::begin(spice::kVehicleKeys), std::end(spice::kVehicleKeys), v.vehicle) == std::end(spice::kVehicleKeys))
+            fail(tag, "not a vehicle this build draws (BomberHelicopter, SuperAirstrike)");
+        for (const auto& o : out)
+            if (o.vehicle == v.vehicle) fail(tag, "listed twice");
+        if (!spice::ValidVehicleMeshName(m.id, v.mesh))
+            fail(tag, "the mesh must be named '" + m.id + ".<Name>' (letters, digits, '.', '_', '-'; at most 96 characters)");
+        out.push_back({m.id, v.vehicle, v.mesh});
+    }
+    if (!ok) out.clear();
+    return out;
+}
+
+std::vector<VehicleDecl> AssignVehicles(const std::vector<std::vector<VehicleDecl>>& perMod, std::vector<Error>* refused) {
+    std::vector<VehicleDecl> acc;
+    for (const auto& mod : perMod) {
+        if (mod.empty()) continue;
+        std::string why;
+        for (const auto& d : mod)
+            for (const auto& a : acc)
+                if (why.empty() && a.vehicle == d.vehicle) why = "vehicleMeshes." + d.vehicle + " is already set by " + a.mod;
+        if (!why.empty()) {
+            if (refused) refused->push_back({mod.front().mod, why});
+            continue;
+        }
+        for (const auto& d : mod) acc.push_back(d);
+    }
+    return acc;
+}
+
+Resolved Resolve(const std::vector<std::vector<CloneDecl>>& clones, const std::vector<std::vector<TextDecl>>& texts,
+                 const std::vector<std::vector<IconDecl>>& icons, const std::vector<std::vector<VehicleDecl>>& vehicles) {
+    Resolved r;
+    const size_t n = std::max({clones.size(), texts.size(), icons.size(), vehicles.size()});
+    std::vector<std::string> ids(n);
+    for (size_t i = 0; i < n; ++i) {
+        if (i < clones.size() && !clones[i].empty()) ids[i] = clones[i].front().mod;
+        else if (i < texts.size() && !texts[i].empty()) ids[i] = texts[i].front().mod;
+        else if (i < icons.size() && !icons[i].empty()) ids[i] = icons[i].front().mod;
+        else if (i < vehicles.size() && !vehicles[i].empty()) ids[i] = vehicles[i].front().mod;
+    }
+    auto named = [&](const std::vector<Error>& list, size_t i) {
+        return !ids[i].empty() && std::any_of(list.begin(), list.end(), [&](const Error& er) { return er.mod == ids[i]; });
+    };
+    // Clone cells first, then renames, icons and vehicle meshes against the clones that survived. A rename, icon or vehicle refusal removes
+    // that mod's clones, which can free a cell or a name, so the clone pass runs again. Every refusal is recomputed
+    // each round, and only the earliest refused mod in load order is removed per round: a later mod that was refused
+    // for a clash with that one (a rename it had already taken) is let back in on the next round. A mod only ever
+    // clashes with an earlier one, so the earliest refused mod's reason stays true once the rest settles. The set of
+    // removed mods only grows, so the loop ends.
+    std::vector<bool> textOut(n, false);
+    std::vector<Error> textRefusals;
+    for (;;) {
+        std::vector<std::vector<CloneDecl>> cl(n);
+        for (size_t i = 0; i < n && i < clones.size(); ++i)
+            if (!textOut[i]) cl[i] = clones[i];
+        std::vector<Error> cloneErrs;
+        r.clones = Assign(cl, &cloneErrs);
+        // Only clones that will exist block a rename or an icon rule: those of a mod refused for any reason do not count.
+        std::vector<std::vector<TextDecl>> tx(n);
+        std::vector<std::vector<IconDecl>> ic(n);
+        std::vector<std::vector<VehicleDecl>> vh(n);
+        std::vector<std::string> cloneNames;
+        for (size_t i = 0; i < n; ++i) {
+            if (textOut[i] || named(cloneErrs, i)) continue;
+            if (i < clones.size())
+                for (const auto& d : clones[i]) cloneNames.push_back(d.name);
+            if (i < texts.size()) tx[i] = texts[i];
+            if (i < icons.size()) ic[i] = icons[i];
+            if (i < vehicles.size()) vh[i] = vehicles[i];
+        }
+        std::vector<Error> textErrs, iconErrs;
+        r.texts = AssignText(tx, cloneNames, &textErrs);
+        r.icons = AssignIcons(ic, cloneNames, &iconErrs);
+        r.vehicles = AssignVehicles(vh, &iconErrs);
+        textErrs.insert(textErrs.end(), iconErrs.begin(), iconErrs.end());
+        bool again = false;
+        for (size_t i = 0; i < n && !again; ++i) {
+            if (textOut[i] || !named(textErrs, i)) continue;
+            textOut[i] = again = true;
+            for (const auto& er : textErrs)
+                if (er.mod == ids[i]) textRefusals.push_back(er);
+        }
+        if (!again) {
+            r.refused = cloneErrs;
+            break;
+        }
+    }
+    r.refused.insert(r.refused.end(), textRefusals.begin(), textRefusals.end());
+    return r;
+}
+
+std::vector<IconDecl> g_frozenIcons;
+bool g_iconsFrozen = false;
+
+void FreezeIcons(std::vector<IconDecl> decls) {
+    if (g_iconsFrozen) return;
+    g_frozenIcons = std::move(decls);
+    g_iconsFrozen = true;
+}
+
+bool IsIconsFrozen() { return g_iconsFrozen; }
+
+const std::vector<IconDecl>& FrozenIcons() { return g_frozenIcons; }
+
+std::vector<VehicleDecl> g_frozenVehicles;
+bool g_vehiclesFrozen = false;
+
+void FreezeVehicles(std::vector<VehicleDecl> decls) {
+    if (g_vehiclesFrozen) return;
+    g_frozenVehicles = std::move(decls);
+    g_vehiclesFrozen = true;
+}
+
+bool IsVehiclesFrozen() { return g_vehiclesFrozen; }
+
+const std::vector<VehicleDecl>& FrozenVehicles() { return g_frozenVehicles; }
+
+void FreezeText(std::vector<TextDecl> decls) {
+    if (g_textFrozen) return;
+    g_frozenText = std::move(decls);
+    g_textFrozen = true;
+}
+
+bool IsTextFrozen() { return g_textFrozen; }
+
+const std::vector<TextDecl>& FrozenText() { return g_frozenText; }
 
 void Freeze(std::vector<CloneDecl> decls) {
     if (g_isFrozen) return;

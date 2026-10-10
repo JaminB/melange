@@ -25,6 +25,7 @@
 #include "weapons/fields.h"
 #include "weapons/manifest.h"
 #include "weapons/registry.h"
+#include "weapons/registry_core.h"
 
 namespace {
 namespace eng = melange::weapons::engine;
@@ -87,6 +88,27 @@ bool VerbState(std::string_view, void*) {
         LOG_INFO("[weapons]   k=%u vid=%x %s base %s(%d) cell %d mod %s bank '%s' icon '%s' hud '%s' set:%s", d.k,
                  kVidBase + d.k, d.name.c_str(), d.base.c_str(), d.baseId, d.cell, d.mod.c_str(), d.bank.c_str(),
                  d.panelIcon.c_str(), d.hudIcon.c_str(), set.empty() ? " -" : set.c_str());
+    }
+    const auto& text = registry::Core();
+    LOG_INFO("[weapons]   weaponText: declared=%zu live=%d", wm::FrozenText().size(), text.TextLive());
+    for (auto& t : wm::FrozenText()) LOG_INFO("[weapons]   text %s by %s name='%s' help='%s'", t.weapon.c_str(), t.mod.c_str(),
+                                              t.name.c_str(), t.help.c_str());
+    for (int i = 0; i < text.TextCount(); ++i) {
+        const melange::weapons::core::TextRule* t = text.TextAt(i);
+        LOG_INFO("[weapons]   text %s: id %d slot %08x key %s name=%d help=%d", t->decl.weapon.c_str(), t->id,
+                 static_cast<unsigned>(t->slot), t->token.c_str(), t->text, t->help);
+    }
+    LOG_INFO("[weapons]   weaponIcons: declared=%zu live=%d hudLive=%d", wm::FrozenIcons().size(), text.IconsLive(), text.HudIconsLive());
+    for (int i = 0; i < text.IconCount(); ++i) {
+        const melange::weapons::core::IconRule* t = text.IconAt(i);
+        LOG_INFO("[weapons]   icons %s by %s: id %d panel=%d (code %x) %s hud=%d %s -> %s", t->decl.weapon.c_str(), t->decl.mod.c_str(), t->id,
+                 t->panel, static_cast<unsigned>(t->iconCode), t->decl.panelIcon.c_str(), t->hud, t->hudFile ? t->hudFile : "-",
+                 t->decl.hudIcon.c_str());
+    }
+    LOG_INFO("[weapons]   vehicleMeshes: declared=%zu live=%d", wm::FrozenVehicles().size(), text.VehiclesLive());
+    for (int i = 0; i < text.VehicleCount(); ++i) {
+        const melange::weapons::core::VehicleRule* t = text.VehicleAt(i);
+        LOG_INFO("[weapons]   vehicle %s by %s: %s armed=%d", t->decl.vehicle.c_str(), t->decl.mod.c_str(), t->decl.mesh.c_str(), t->armed);
     }
     CloneInfo info[kMaxClones] = {};
     const int n = Declared(info, kMaxClones);
@@ -163,16 +185,20 @@ public:
         melange::testcmd::Register("weapons.field", &VerbField);
         const size_t n = wm::Frozen().size();
         if (g_weapons) melange::weapons::behaviour::InstallLua();
-        if (g_weapons && n && melange::weapons::registry::Install()) {
-            melange::weapons::behaviour::Install(Int("ExtraPerExplosion", 8), Bool("LogEvents", false));
-            melange::weapons::contrib::Register();
+        const size_t nt = wm::FrozenText().size(), ni = wm::FrozenIcons().size(), nv = wm::FrozenVehicles().size();
+        // Renames, icon replacements and vehicle meshes alone need the registry and the match lifecycle but none of the clone behaviour.
+        if (g_weapons && (n || nt || ni || nv) && melange::weapons::registry::Install()) {
+            if (n) {
+                melange::weapons::behaviour::Install(Int("ExtraPerExplosion", 8), Bool("LogEvents", false));
+                melange::weapons::contrib::Register();
+            }
             melange::simbridge::OnBeforeModsLoad(&BeforeMods, nullptr);
             melange::lua50::OnContext(&OnContext, nullptr);
         }
         melange::jlog::Rec("weapons", melange::jlog::Level::Info, "installed")
-            .Bool("sites", sites).Bool("bases", bases).Uint("declared", n);
-        LOG_INFO("[weapons] installed: sites %s, bases %s, %zu clone(s) declared", sites ? "ok" : "CHANGED",
-                 bases ? "ok" : "CHANGED", n);
+            .Bool("sites", sites).Bool("bases", bases).Uint("declared", n).Uint("renames", nt).Uint("iconRules", ni).Uint("vehicleRules", nv);
+        LOG_INFO("[weapons] installed: sites %s, bases %s, %zu clone(s) declared, %zu weaponText rename(s), %zu weaponIcons rule(s), %zu vehicleMeshes rule(s)",
+                 sites ? "ok" : "CHANGED", bases ? "ok" : "CHANGED", n, nt, ni, nv);
         return true;
     }
 };
@@ -195,6 +221,11 @@ public:
                 const auto t0 = std::chrono::steady_clock::now();
                 size_t n = 0;
                 for (auto& d : wm::Frozen()) {
+                    if (d.panelIcon.empty()) continue;
+                    melange::assets::PreloadPanelIcon(d.mod.c_str(), d.panelIcon.c_str());
+                    ++n;
+                }
+                for (auto& d : wm::FrozenIcons()) {
                     if (d.panelIcon.empty()) continue;
                     melange::assets::PreloadPanelIcon(d.mod.c_str(), d.panelIcon.c_str());
                     ++n;

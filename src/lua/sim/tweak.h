@@ -13,11 +13,13 @@
 namespace melange::tweak {
 using weapons::FieldType;
 
-enum class TweakError { Ok, UnknownWeapon, UnknownField, Unsupported, TypeMismatch, OutOfRange, WriteFailed };
+enum class TweakError { Ok, UnknownWeapon, UnknownField, Unsupported, TypeMismatch, OutOfRange, WriteFailed, Inexact };
 const char* ToString(TweakError e);
 
-// A value of one of the supported field types (F32, I32, U8, Bool, String). `str` is borrowed: for Get it points into
-// a buffer that stays valid until the next Get.
+// A value of one of the supported field types (F32, I32, U32, U16, U8, Bool, String). `str` is borrowed: for Get it
+// points into a buffer that stays valid until the next Get. The Lua value is a float32, so a U32 above 2^24 (16777216)
+// is refused with TweakError::Inexact: the float cannot name every integer there. A script's 16777217 is already
+// rounded to 16777216 before Set sees it and is accepted as that. Get of a U32 above 2^24 returns the nearest float32.
 struct Value {
     FieldType type = FieldType::None;
     float num = 0;
@@ -67,7 +69,8 @@ Engine& Instance();
 // wum.sim.weapon(name).get(field) / .set(field, value).
 TweakError Get(const char* weapon, const char* field, Value* out);
 TweakError Set(const char* weapon, const char* field, const Value& v);
-// Numeric shorthands for f32, i32 and u8 fields (bool reads as 0/1), and the container lookup (weapons::Container).
+// Numeric shorthands for f32, i32, u32, u16 and u8 fields (bool reads as 0/1), and the container lookup
+// (weapons::Container).
 TweakError Get(const char* weapon, const char* field, float* value);
 TweakError Set(const char* weapon, const char* field, float value);
 uintptr_t FindContainer(const char* weaponName);

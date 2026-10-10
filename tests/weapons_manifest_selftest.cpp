@@ -73,6 +73,455 @@ const char* kMega = R"([{"name":"kWeaponMegaBazooka","base":"kWeaponBazooka","ce
          "PayloadGraphicsResourceID":"mega-bazooka.Payload","LaunchSfx":"weapons/SheepBaa"},
   "panelIcon":"icons/megabazooka.png","hudIcon":"mega-bazooka.hud.tga",
   "text":{"name":"Mega Bazooka","help":"Like a bazooka, only more so."}}])";
+
+// The manifest with a "weaponText" object appended; weapons defaults to no clones.
+std::string WithText(const char* id, const std::string& text, const std::string& weapons = "[]", const char* kind = "content") {
+    std::string j = Manifest(id, weapons, kind);
+    j.pop_back();
+    return j + ",\"weaponText\":" + text + "}";
+}
+
+// Spice shape, then the manifest layer; why collects both.
+std::vector<wm::TextDecl> Texts(const char* id, const std::string& text, std::string* why = nullptr,
+                                const std::string& weapons = "[]") {
+    melange::spice::Manifest m;
+    std::string perr;
+    if (!Load(id, WithText(id, text, weapons), &m, &perr)) {
+        if (why) *why = "spice: " + perr;
+        return {};
+    }
+    std::vector<wm::Error> errs;
+    auto d = wm::ParseText(m, &errs);
+    if (why)
+        for (auto& e : errs) *why += e.text + "; ";
+    return d;
+}
+
+bool TextRefused(const char* id, const std::string& text, const char* expect, const std::string& weapons = "[]") {
+    std::string why;
+    const bool ok = Texts(id, text, &why, weapons).empty() && why.find(expect) != std::string::npos;
+    if (!ok) printf("  (%s: got '%s')\n", id, why.c_str());
+    return ok;
+}
+
+void WeaponTextTests() {
+    // A good object: two entries, one with only a name.
+    {
+        std::string why;
+        auto t = Texts("wt1", R"({"kWeaponBazooka":{"name":"Nail Bat","help":"Swing it."},"kUtilityJetPack":{"name":"Jet Pack"}})", &why);
+        Expect(t.size() == 2, "weaponText parses: " + why);
+        if (t.size() == 2) {
+            Expect(t[0].mod == "wt1" && t[0].weapon == "kWeaponBazooka" && t[0].name == "Nail Bat" && t[0].help == "Swing it.",
+                   "weaponText entry fields");
+            Expect(t[1].weapon == "kUtilityJetPack" && t[1].help.empty(), "a name without help leaves the help alone");
+        }
+        Expect(Texts("wt2", R"({"kWeaponGrenade":{"help":"Just the help."}})").size() == 1, "help without a name is allowed");
+    }
+    // Limits of the text.
+    Expect(Texts("wt3", std::string(R"({"kWeaponBazooka":{"name":")") + std::string(24, 'n') + "\"}}").size() == 1, "name of 24");
+    Expect(TextRefused("wt4", std::string(R"({"kWeaponBazooka":{"name":")") + std::string(25, 'n') + "\"}}", "name must be 1-24"),
+           "name of 25");
+    Expect(TextRefused("wt5", R"({"kWeaponBazooka":{"name":""}})", "name must be 1-24"), "empty name");
+    Expect(Texts("wt6", std::string(R"({"kWeaponBazooka":{"help":")") + std::string(160, 'h') + "\"}}").size() == 1, "help of 160");
+    Expect(TextRefused("wt7", std::string(R"({"kWeaponBazooka":{"help":")") + std::string(161, 'h') + "\"}}", "help must be at most 160"),
+           "help of 161");
+    Expect(TextRefused("wt8", R"({"kWeaponBazooka":{"name":"Tab\there"}})", "printable"), "control character in the name");
+    Expect(TextRefused("wt9", R"({"kWeaponBazooka":{"help":"line\nbreak"}})", "printable"), "newline in the help");
+    Expect(TextRefused("wt10", "{\"kWeaponBazooka\":{\"name\":\"Caf\xC3\xA9\"}}", "printable"), "non-ASCII name");
+    Expect(TextRefused("wt11", R"({"kWeaponBazooka":{}})", "needs a name or a help"), "an entry with neither");
+    Expect(TextRefused("wt12", R"({"kWeaponBazooka":{"name":"A","colour":1}})", "unknown weaponText"), "unknown key in an entry");
+    Expect(TextRefused("wt13", R"({"kWeaponBazooka":"Nail Bat"})", "must be an object"), "entry not an object");
+    Expect(TextRefused("wt14", R"([{"name":"x"}])", "must be an object"), "weaponText not an object");
+    Expect(TextRefused("wt15", R"({"kWeaponBazooka":{"name":3}})", "name must be 1-24"), "name not a string");
+
+    // Keys.
+    Expect(TextRefused("wk1", R"({"kweaponBazooka":{"name":"A"}})", "must match"), "lowercase prefix");
+    Expect(TextRefused("wk2", R"({"kWeaponBa":{"name":"A"}})", "must match"), "too short");
+    Expect(TextRefused("wk3", R"({"kGirderBazooka":{"name":"A"}})", "must match"), "wrong family");
+    Expect(TextRefused("wk4", R"({"kWeaponbazooka":{"name":"A"}})", "must match"), "lowercase after the family");
+    Expect(TextRefused("wk5", R"({"kWeaponBaz-ooka":{"name":"A"}})", "must match"), "bad character");
+    Expect(Texts("wk6", std::string(R"({"kWeaponA)") + std::string(40, 'b') + R"(":{"name":"A"}})").size() == 1, "longest key");
+    Expect(TextRefused("wk7", std::string(R"({"kWeaponA)") + std::string(41, 'b') + R"(":{"name":"A"}})", "must match"), "key too long");
+    Expect(wm::ValidTextKey("kWeaponBazooka") && wm::ValidTextKey("kUtilityJetPack") && !wm::ValidTextKey("kWeapon") &&
+               !wm::ValidTextKey("kUtilityab") && !wm::ValidTextKey("Weapon"),
+           "ValidTextKey");
+
+    // Count.
+    {
+        std::string many = "{";
+        for (int i = 0; i < 64; ++i) many += std::string(i ? "," : "") + "\"kWeaponMany" + std::to_string(100 + i) + "\":{\"name\":\"N\"}";
+        std::string tooMany = many + ",\"kWeaponMany999\":{\"name\":\"N\"}}";
+        many += "}";
+        Expect(Texts("wc1", many).size() == 64, "64 entries are fine");
+        Expect(TextRefused("wc2", tooMany, "at most 64"), "65 entries");
+    }
+
+    // Kind, and the mod's own clones.
+    {
+        melange::spice::Manifest m;
+        std::string e;
+        Load("wk8", WithText("wk8", R"({"kWeaponBazooka":{"name":"A"}})", "[]", "client-only"), &m, &e);
+        Expect(e.find("weaponText requires kind") != std::string::npos, "client-only mod refused");
+    }
+    Expect(TextRefused("wo1", R"({"kWeaponMegaBazooka":{"name":"A"}})", "clone of this mod",
+                       R"([{"name":"kWeaponMegaBazooka","base":"kWeaponBazooka"}])"),
+           "renaming its own clone");
+    {
+        // The manifest layer rechecks a Manifest that did not come through spice.cpp.
+        melange::spice::Manifest m;
+        m.id = "hand";
+        m.content = true;
+        m.weaponText.push_back({"kWeaponBazooka", "OK", "", 1});
+        m.weaponText.push_back({"kWeaponBazooka", "Twice", "", 2});
+        std::vector<wm::Error> errs;
+        Expect(wm::ParseText(m, &errs).empty() && !errs.empty() && errs[0].text.find("listed twice") != std::string::npos,
+               "a duplicate key is refused");
+        m.weaponText.assign(1, {"kWeaponBazooka", "Bad\x01", "", 1});
+        errs.clear();
+        Expect(wm::ParseText(m, &errs).empty() && !errs.empty(), "a control character is refused");
+        m.weaponText.assign(1, {"kWeaponBazooka", "Fine", "", 1});
+        m.content = false;
+        errs.clear();
+        Expect(wm::ParseText(m, &errs).empty() && !errs.empty() && errs[0].text.find("kind") != std::string::npos,
+               "a non-content mod is refused");
+        m.weaponText.clear();
+        errs.clear();
+        Expect(wm::ParseText(m, &errs).empty() && errs.empty(), "no weaponText, no errors");
+    }
+
+    // Across mods: the later mod loses a weapon the earlier one renamed; clone names are off limits.
+    {
+        auto a = Texts("wa", R"({"kWeaponBazooka":{"name":"Nail Bat"},"kWeaponGrenade":{"name":"Pineapple"}})");
+        auto b = Texts("wb", R"({"kWeaponBazooka":{"name":"Rocket"}})");
+        auto c = Texts("wc", R"({"kWeaponSheep":{"name":"Baa"}})");
+        std::vector<wm::Error> ref;
+        auto all = wm::AssignText({a, c}, {}, &ref);
+        Expect(ref.empty() && all.size() == 3, "renames of different weapons from two mods");
+        ref.clear();
+        all = wm::AssignText({a, b, c}, {}, &ref);
+        Expect(all.size() == 3 && ref.size() == 1 && ref[0].mod == "wb" && ref[0].text.find("kWeaponBazooka") != std::string::npos &&
+                   ref[0].text.find("wa") != std::string::npos,
+               "the later mod is refused, naming the weapon and the earlier mod");
+        ref.clear();
+        all = wm::AssignText({b, a, c}, {}, &ref);
+        Expect(all.size() == 2 && all[0].mod == "wb" && ref.size() == 1 && ref[0].mod == "wa", "load order decides");
+        ref.clear();
+        all = wm::AssignText({a, c}, {"kWeaponSheep"}, &ref);
+        Expect(all.size() == 2 && ref.size() == 1 && ref[0].mod == "wc" && ref[0].text.find("clone") != std::string::npos,
+               "a clone name declared by any mod is refused");
+        // The whole mod goes, not just the clashing entry, like a cell conflict.
+        ref.clear();
+        auto both = Texts("wd", R"({"kWeaponBazooka":{"name":"Rocket"},"kWeaponBananaBomb":{"name":"Fruit"}})");
+        all = wm::AssignText({a, both}, {}, &ref);
+        Expect(all.size() == 2 && ref.size() == 1 && ref[0].mod == "wd", "a conflict refuses the later mod as a whole");
+    }
+
+    // Both passes together: a mod refused by either one loses its clones and its renames.
+    {
+        auto clone = [](const char* mod, const char* name, int cell = -1) {
+            wm::CloneDecl d;
+            d.mod = mod;
+            d.name = name;
+            d.base = "kWeaponBazooka";
+            d.baseId = 1;
+            d.cell = cell;
+            return d;
+        };
+        auto rename = [](const char* mod, const char* weapon) { return wm::TextDecl{mod, weapon, "N", ""}; };
+        // A renames Bazooka. B, later, renames Bazooka too and declares valid clones: B is refused for the rename, and
+        // its clones must not survive in the frozen set.
+        auto r = wm::Resolve({{}, {clone("wb", "kWeaponWbOne"), clone("wb", "kWeaponWbTwo")}},
+                             {{rename("wa", "kWeaponBazooka")}, {rename("wb", "kWeaponBazooka")}});
+        Expect(r.refused.size() == 1 && r.refused[0].mod == "wb" && r.refused[0].text.find("wa") != std::string::npos,
+               "a rename conflict is reported once, naming the earlier mod");
+        Expect(r.clones.empty(), "the clones of a mod refused for a rename are dropped");
+        Expect(r.texts.size() == 1 && r.texts[0].mod == "wa", "the earlier mod's rename stays");
+
+        // The same when the refusal is a rename of another mod's clone name.
+        r = wm::Resolve({{clone("wa", "kWeaponWaOne")}, {clone("wb", "kWeaponWbOne")}},
+                        {{}, {rename("wb", "kWeaponWaOne")}});
+        Expect(r.refused.size() == 1 && r.refused[0].mod == "wb" && r.clones.size() == 1 && r.clones[0].mod == "wa" &&
+                   r.texts.empty(),
+               "a rename of a clone name refuses the renaming mod and keeps its own clones out");
+
+        // A mod refused for its clones loses its renames, and its clone names no longer block anyone.
+        r = wm::Resolve({{clone("wa", "kWeaponWaOne", 29)}, {clone("wb", "kWeaponWbOne", 29), clone("wb", "kWeaponWbTwo")}, {}},
+                        {{}, {rename("wb", "kWeaponGrenade")}, {rename("wc", "kWeaponWbOne")}});
+        Expect(r.refused.size() == 1 && r.refused[0].mod == "wb" && r.refused[0].text.find("cell") != std::string::npos,
+               "a cell conflict refuses the later mod");
+        Expect(r.clones.size() == 1 && r.clones[0].mod == "wa", "only the accepted mod's clones");
+        Expect(r.texts.size() == 1 && r.texts[0].mod == "wc", "its rename is gone and a rename of its clone name is fine");
+
+        // A text refusal frees the clone cell it was holding: the later mod's clone is let back in, not refused for a
+        // mod that no longer exists.
+        r = wm::Resolve({{clone("wa", "kWeaponWaOne", 29)}, {clone("wb", "kWeaponWbOne", 29)}},
+                        {{rename("wa", "kWeaponWaOne")}, {}});
+        Expect(r.refused.size() == 1 && r.refused[0].mod == "wa" && r.clones.size() == 1 && r.clones[0].mod == "wb" &&
+                   r.clones[0].cell == 29 && r.texts.empty(),
+               "a text refusal frees the clone cell for a later mod");
+    }
+}
+// The manifest with a "weaponIcons" object appended; weapons defaults to no clones.
+std::string WithIcons(const char* id, const std::string& icons, const std::string& weapons = "[]", const char* kind = "content") {
+    std::string j = Manifest(id, weapons, kind);
+    j.pop_back();
+    return j + ",\"weaponIcons\":" + icons + "}";
+}
+
+std::vector<wm::IconDecl> Icons(const char* id, const std::string& icons, std::string* why = nullptr,
+                                const std::string& weapons = "[]", const char* kind = "content") {
+    melange::spice::Manifest m;
+    std::string perr;
+    if (!Load(id, WithIcons(id, icons, weapons, kind), &m, &perr)) {
+        if (why) *why = "spice: " + perr;
+        return {};
+    }
+    std::vector<wm::Error> errs;
+    auto d = wm::ParseIcons(m, &errs);
+    if (why)
+        for (auto& e : errs) *why += e.text + "; ";
+    return d;
+}
+
+bool IconsRefused(const char* id, const std::string& icons, const char* expect, const std::string& weapons = "[]",
+                  const char* kind = "content") {
+    std::string why;
+    const bool ok = Icons(id, icons, &why, weapons, kind).empty() && why.find(expect) != std::string::npos;
+    if (!ok) printf("  (%s: got '%s')\n", id, why.c_str());
+    return ok;
+}
+
+void WeaponIconTests() {
+    {
+        std::string why;
+        auto t = Icons("wi1",
+                       R"({"kWeaponBazooka":{"panelIcon":"icons/ripper.png","hudIcon":"wi1.ripper.hud.tga"},"kWeaponGrenade":{"panelIcon":"g.png"},"kUtilityJetPack":{"hudIcon":"wi1.jet.tga"}})",
+                       &why);
+        Expect(t.size() == 3, "weaponIcons parses: " + why);
+        if (t.size() == 3) {
+            Expect(t[0].mod == "wi1" && t[0].weapon == "kWeaponBazooka" && t[0].panelIcon == "icons/ripper.png" &&
+                       t[0].hudIcon == "wi1.ripper.hud.tga",
+                   "weaponIcons entry fields");
+            Expect(t[1].hudIcon.empty() && t[2].panelIcon.empty(), "one of the two fields is enough");
+        }
+    }
+    Expect(IconsRefused("wi2", R"({"kWeaponBazooka":{}})", "needs a panelIcon or a hudIcon"), "an entry with neither field");
+    Expect(IconsRefused("wi3", R"({"kWeaponBazooka":{"panelIcon":"a.png","colour":1}})", "unknown weaponIcons"), "unknown key");
+    Expect(IconsRefused("wi4", R"({"kWeaponBazooka":"a.png"})", "must be an object"), "entry not an object");
+    Expect(IconsRefused("wi5", R"([{"panelIcon":"a.png"}])", "must be an object"), "weaponIcons not an object");
+    Expect(IconsRefused("wi6", R"({"kWeaponBazooka":{"panelIcon":3}})", "panelIcon must be a file name"), "panelIcon not a string");
+    Expect(IconsRefused("wi7", R"({"kWeaponBazooka":{"panelIcon":""}})", "panelIcon must be a file name"), "empty panelIcon");
+    Expect(IconsRefused("wi8", R"({"bazooka":{"panelIcon":"a.png"}})", "key 'bazooka' must match"), "key shape");
+    Expect(IconsRefused("wi9", R"({"kWeaponBazooka":{"panelIcon":"../a.png"}})", "panelIcon must be a relative .png"),
+           "panelIcon with ..");
+    Expect(IconsRefused("wi10", R"({"kWeaponBazooka":{"panelIcon":"C:/a.png"}})", "panelIcon must be a relative .png"),
+           "panelIcon absolute");
+    Expect(IconsRefused("wi11", R"({"kWeaponBazooka":{"panelIcon":"a.jpg"}})", "panelIcon must be a relative .png"),
+           "panelIcon not a PNG");
+    Expect(IconsRefused("wi12", R"({"kWeaponBazooka":{"hudIcon":"bazooka.tga"}})", "hudIcon must be a .tga file name"),
+           "a bare vanilla-looking hudIcon");
+    Expect(IconsRefused("wi13", R"({"kWeaponBazooka":{"hudIcon":"wi13.a.png"}})", "hudIcon must be a .tga file name"),
+           "hudIcon not a .tga");
+    Expect(IconsRefused("wi14", R"({"kWeaponBazooka":{"hudIcon":"sub/wi14.a.tga"}})", "hudIcon must be a .tga file name"),
+           "hudIcon with a path");
+    Expect(IconsRefused("wi15", R"({"kWeaponBazooka":{"hudIcon":"other.a.tga"}})", "named 'wi15.*'"),
+           "hudIcon of another mod's name");
+    Expect(IconsRefused("wi16", R"({"kWeaponBazooka":{"panelIcon":"a.png"}})", "requires kind", "[]", "client-only"),
+           "client-only mod refused");
+    {
+        std::string many = "{";
+        for (int i = 0; i < 65; ++i)
+            many += std::string(i ? "," : "") + "\"kWeaponBaz" + std::to_string(100 + i) + "\":{\"panelIcon\":\"a.png\"}";
+        Expect(IconsRefused("wi17", many + "}", "at most 64"), "65 entries");
+    }
+    // Clone-name collision: with this mod's own clone (spice layer), with any mod's clone (assign layer).
+    Expect(IconsRefused("wi18", R"({"kWeaponMegaBazooka":{"panelIcon":"a.png"}})", "is a clone of this mod", kMega),
+           "an entry naming this mod's own clone");
+    {
+        melange::spice::Manifest m;
+        m.id = "wi19";
+        m.content = true;
+        m.weaponIcons.push_back({"kWeaponBazooka", "a.png", "", 1});
+        m.weaponIcons.push_back({"kWeaponBazooka", "b.png", "", 2});
+        std::vector<wm::Error> errs;
+        Expect(wm::ParseIcons(m, &errs).empty() && !errs.empty() && errs[0].text.find("listed twice") != std::string::npos,
+               "a weapon listed twice (rechecked at the manifest layer)");
+        errs.clear();
+        m.weaponIcons.assign(1, {"kWeaponBazooka", "", "", 1});
+        Expect(wm::ParseIcons(m, &errs).empty() && !errs.empty(), "no field at all (rechecked)");
+        errs.clear();
+        m.weaponIcons.assign(1, {"kWeaponBazooka", "a.png", "", 1});
+        m.content = false;
+        Expect(wm::ParseIcons(m, &errs).empty() && !errs.empty(), "not content (rechecked)");
+        errs.clear();
+        m.weaponIcons.clear();
+        Expect(wm::ParseIcons(m, &errs).empty() && errs.empty(), "no weaponIcons, no errors");
+    }
+    // Across mods: the later mod loses a weapon the earlier one has icons for; clone names are off limits.
+    {
+        auto a = Icons("ia", R"({"kWeaponBazooka":{"panelIcon":"a.png"},"kWeaponGrenade":{"hudIcon":"ia.g.tga"}})");
+        auto b = Icons("ib", R"({"kWeaponBazooka":{"hudIcon":"ib.b.tga"}})");
+        auto c = Icons("ic", R"({"kWeaponSheep":{"panelIcon":"c.png"}})");
+        std::vector<wm::Error> ref;
+        auto all = wm::AssignIcons({a, c}, {}, &ref);
+        Expect(ref.empty() && all.size() == 3, "icons for different weapons from two mods");
+        ref.clear();
+        all = wm::AssignIcons({a, b, c}, {}, &ref);
+        Expect(all.size() == 3 && ref.size() == 1 && ref[0].mod == "ib" && ref[0].text.find("kWeaponBazooka") != std::string::npos &&
+                   ref[0].text.find("ia") != std::string::npos,
+               "the later mod is refused, naming the weapon and the earlier mod");
+        ref.clear();
+        all = wm::AssignIcons({b, a, c}, {}, &ref);
+        Expect(all.size() == 2 && all[0].mod == "ib" && ref.size() == 1 && ref[0].mod == "ia", "load order decides");
+        ref.clear();
+        all = wm::AssignIcons({a, c}, {"kWeaponSheep"}, &ref);
+        Expect(all.size() == 2 && ref.size() == 1 && ref[0].mod == "ic" && ref[0].text.find("clone") != std::string::npos,
+               "a clone name declared by any mod is refused");
+    }
+    // All passes together: an icon refusal drops that mod's clones and renames; a rename may share a weapon with icons.
+    {
+        auto clone = [](const char* mod, const char* name) {
+            wm::CloneDecl d;
+            d.mod = mod;
+            d.name = name;
+            d.base = "kWeaponBazooka";
+            d.baseId = 1;
+            return d;
+        };
+        auto icon = [](const char* mod, const char* weapon) { return wm::IconDecl{mod, weapon, "a.png", ""}; };
+        auto rename = [](const char* mod, const char* weapon) { return wm::TextDecl{mod, weapon, "N", ""}; };
+        auto r = wm::Resolve({{}, {clone("wb", "kWeaponWbOne")}}, {{}, {rename("wb", "kWeaponGrenade")}},
+                             {{icon("wa", "kWeaponBazooka")}, {icon("wb", "kWeaponBazooka")}});
+        Expect(r.refused.size() == 1 && r.refused[0].mod == "wb" && r.clones.empty() && r.texts.empty() && r.icons.size() == 1 &&
+                   r.icons[0].mod == "wa",
+               "an icon conflict refuses the later mod as a whole: its clones and renames go too");
+        r = wm::Resolve({{}, {}}, {{rename("wa", "kWeaponBazooka")}, {}}, {{}, {icon("wb", "kWeaponBazooka")}});
+        Expect(r.refused.empty() && r.texts.size() == 1 && r.icons.size() == 1,
+               "renaming a weapon and giving it icons are separate claims");
+        r = wm::Resolve({{clone("wa", "kWeaponWaOne")}, {}}, {{}, {}}, {{}, {icon("wb", "kWeaponWaOne")}});
+        Expect(r.refused.size() == 1 && r.refused[0].mod == "wb" && r.clones.size() == 1 && r.icons.empty(),
+               "icons for another mod's clone name refuse the icon mod");
+        // Load order z, a, b: z and a clash on icons, a and b clash on a rename. Refusing a frees the rename, so b stays.
+        r = wm::Resolve({{}, {}, {}}, {{}, {rename("a", "kWeaponBazooka")}, {rename("b", "kWeaponBazooka")}},
+                        {{icon("z", "kWeaponGrenade")}, {icon("a", "kWeaponGrenade")}, {}});
+        Expect(r.refused.size() == 1 && r.refused[0].mod == "a" && r.texts.size() == 1 && r.texts[0].mod == "b" &&
+                   r.icons.size() == 1 && r.icons[0].mod == "z",
+               "a mod refused only for a clash with a refused mod is let back in");
+    }
+    wm::FreezeIcons({});
+    Expect(wm::IsIconsFrozen() && wm::FrozenIcons().empty(), "icons freeze");
+    wm::FreezeIcons({wm::IconDecl{"m", "kWeaponLate", "a.png", ""}});
+    Expect(wm::FrozenIcons().empty(), "icons freeze once per launch");
+}
+
+// The manifest with a mesh bank and a "vehicleMeshes" object appended.
+std::vector<wm::VehicleDecl> Vehicles(const char* id, const std::string& vehicles, std::string* why = nullptr,
+                                      const char* kind = "content", const char* meshes = R"([{"file":"assets/b.xom"}])") {
+    std::string j = Manifest(id, "[]", kind);
+    j.pop_back();
+    melange::spice::Manifest m;
+    std::string perr;
+    if (!Load(id, j + ",\"meshes\":" + meshes + ",\"vehicleMeshes\":" + vehicles + "}", &m, &perr)) {
+        if (why) *why = "spice: " + perr;
+        return {};
+    }
+    std::vector<wm::Error> errs;
+    auto d = wm::ParseVehicles(m, &errs);
+    if (why)
+        for (auto& e : errs) *why += e.text + "; ";
+    return d;
+}
+
+void VehicleMeshTests() {
+    {
+        std::string why;
+        auto v = Vehicles("vh1", R"({"BomberHelicopter":"vh1.Chopper","SuperAirstrike":"vh1.Super"})", &why);
+        Expect(v.size() == 2 && why.empty(), "vehicleMeshes parses: " + why);
+        if (v.size() == 2) {
+            Expect(v[0].mod == "vh1" && v[0].vehicle == "BomberHelicopter" && v[0].mesh == "vh1.Chopper", "first vehicle rule");
+            Expect(v[1].vehicle == "SuperAirstrike" && v[1].mesh == "vh1.Super", "second vehicle rule");
+        }
+    }
+    // The spice layer already refuses these; a Manifest can come from anywhere, so the manifest layer checks again.
+    {
+        melange::spice::Manifest m;
+        m.id = "vh2";
+        m.content = true;
+        m.meshes.push_back({"assets/b.xom", 1});
+        std::vector<wm::Error> errs;
+        auto bad = [&](const char* vehicle, const char* mesh, const char* expect) {
+            errs.clear();
+            m.vehicleMeshes.assign(1, {vehicle, mesh, 1});
+            const bool ok = wm::ParseVehicles(m, &errs).empty() && !errs.empty() && errs[0].mod == "vh2" &&
+                            errs[0].text.find(expect) != std::string::npos;
+            if (!ok && !errs.empty()) printf("  (%s: got '%s')\n", vehicle, errs[0].text.c_str());
+            return ok;
+        };
+        Expect(bad("Bomber", "vh2.X", "not a vehicle"), "the unused Bomber mesh is refused (rechecked)");
+        Expect(bad("Plane", "vh2.X", "not a vehicle"), "an unknown vehicle is refused (rechecked)");
+        Expect(bad("BomberHelicopter", "other.X", "vh2.<Name>"), "another mod's prefix is refused (rechecked)");
+        Expect(bad("BomberHelicopter", "vh2.", "vh2.<Name>"), "an empty name after the prefix is refused (rechecked)");
+        Expect(bad("BomberHelicopter", "vh2.a b", "vh2.<Name>"), "a space is refused (rechecked)");
+        errs.clear();
+        m.vehicleMeshes.assign(2, {"BomberHelicopter", "vh2.X", 1});
+        Expect(wm::ParseVehicles(m, &errs).empty() && !errs.empty() && errs[0].text.find("listed twice") != std::string::npos,
+               "a vehicle listed twice (rechecked)");
+        errs.clear();
+        m.vehicleMeshes.assign(1, {"BomberHelicopter", "vh2.X", 1});
+        m.meshes.clear();
+        Expect(wm::ParseVehicles(m, &errs).empty() && !errs.empty() && errs[0].text.find("no meshes bank") != std::string::npos,
+               "a mod without a meshes bank (rechecked)");
+        errs.clear();
+        m.meshes.push_back({"assets/b.xom", 1});
+        m.content = false;
+        Expect(wm::ParseVehicles(m, &errs).empty() && !errs.empty() && errs[0].text.find("requires kind") != std::string::npos,
+               "not content (rechecked)");
+        errs.clear();
+        m.vehicleMeshes.clear();
+        Expect(wm::ParseVehicles(m, &errs).empty() && errs.empty(), "no vehicleMeshes, no errors");
+    }
+    // Across mods: the later mod loses a vehicle the earlier one has set.
+    {
+        auto a = Vehicles("va", R"({"BomberHelicopter":"va.Chopper"})");
+        auto b = Vehicles("vb", R"({"BomberHelicopter":"vb.Chopper","SuperAirstrike":"vb.Super"})");
+        auto c = Vehicles("vc", R"({"SuperAirstrike":"vc.Super"})");
+        std::vector<wm::Error> ref;
+        auto all = wm::AssignVehicles({a, c}, &ref);
+        Expect(ref.empty() && all.size() == 2, "different vehicles from two mods");
+        all = wm::AssignVehicles({a, b, c}, &ref);
+        Expect(all.size() == 2 && all[1].mod == "vc" && ref.size() == 1 && ref[0].mod == "vb" &&
+                   ref[0].text.find("BomberHelicopter") != std::string::npos && ref[0].text.find("va") != std::string::npos,
+               "the later mod is refused as a whole, naming the vehicle and the earlier mod");
+        ref.clear();
+        all = wm::AssignVehicles({b, a}, &ref);
+        Expect(all.size() == 2 && all[0].mod == "vb" && ref.size() == 1 && ref[0].mod == "va", "load order decides");
+    }
+    // All passes together: a vehicle conflict drops that mod's clones, renames and icons too; a vehicle claim does not
+    // block a clone or a rename of anything.
+    {
+        wm::CloneDecl cl;
+        cl.mod = "vb";
+        cl.name = "kWeaponVbOne";
+        cl.base = "kWeaponBazooka";
+        cl.baseId = 1;
+        const wm::VehicleDecl ha{"va", "BomberHelicopter", "va.A"}, hb{"vb", "BomberHelicopter", "vb.B"};
+        auto r = wm::Resolve({{}, {cl}}, {{}, {wm::TextDecl{"vb", "kWeaponGrenade", "N", ""}}}, {{}, {}}, {{ha}, {hb}});
+        Expect(r.refused.size() == 1 && r.refused[0].mod == "vb" && r.clones.empty() && r.texts.empty() && r.vehicles.size() == 1 &&
+                   r.vehicles[0].mod == "va",
+               "a vehicle conflict refuses the later mod as a whole");
+        r = wm::Resolve({{cl}}, {{}}, {{}}, {{hb}});
+        Expect(r.refused.empty() && r.clones.size() == 1 && r.vehicles.size() == 1, "a vehicle rule beside a clone of the same mod");
+        r = wm::Resolve({}, {}, {}, {{ha}});
+        Expect(r.refused.empty() && r.vehicles.size() == 1, "a vehicle rule alone");
+        r = wm::Resolve({{cl}}, {{}});
+        Expect(r.vehicles.empty(), "no vehicle lists, no vehicle rules");
+    }
+    wm::FreezeVehicles({});
+    Expect(wm::IsVehiclesFrozen() && wm::FrozenVehicles().empty(), "vehicles freeze");
+    wm::FreezeVehicles({wm::VehicleDecl{"m", "BomberHelicopter", "m.X"}});
+    Expect(wm::FrozenVehicles().empty(), "vehicles freeze once per launch");
+}
+
 }  // namespace
 
 int main() {
@@ -195,6 +644,10 @@ int main() {
         all = wm::Assign({e, a}, &ref);
         Expect(all.size() == 1 && all[0].mod == "ke" && ref.size() == 1 && ref[0].mod == "ka", "load order decides");
     }
+
+    WeaponTextTests();
+    WeaponIconTests();
+    VehicleMeshTests();
 
     wm::Freeze({});
     Expect(wm::IsFrozen() && wm::Frozen().empty(), "freeze");

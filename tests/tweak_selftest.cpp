@@ -1,6 +1,6 @@
 // Offline self-test for src/lua/sim/tweak.*: field lookup by schema name through weapons::Container/Field, typed
-// get/set (f32, i32, u8, bool, string), value checks, and snapshot/restore. The weapons layer and the XString helpers
-// are replaced below by fakes over in-process "containers".
+// get/set (f32, i32, u32, u16, u8, bool, string), value checks, and snapshot/restore. The weapons layer and the
+// XString helpers are replaced below by fakes over in-process "containers".
 #include "lua/sim/tweak.h"
 
 #include <cmath>
@@ -48,6 +48,10 @@ void Fill(FakeContainer& c, float dmg, const char* mesh) {
     std::memcpy(c.bytes + 4, &life, 4);
     c.bytes[8] = 1;
     c.bytes[9] = 3;
+    const uint16_t flags = 0x1234;
+    std::memcpy(c.bytes + 0x0a, &flags, 2);
+    const uint32_t power = 0xA0B0C0D0u;
+    std::memcpy(c.bytes + 0x0c, &power, 4);
     SetText(Addr(c) + 0x10, mesh);
 }
 
@@ -140,14 +144,15 @@ int main() {
     Instance().Reset();
 
     Check(Supported(FieldType::F32) && Supported(FieldType::I32) && Supported(FieldType::U8) &&
-              Supported(FieldType::Bool) && Supported(FieldType::String),
-          "the five v1 types are supported");
-    Check(!Supported(FieldType::U16) && !Supported(FieldType::U32) && !Supported(FieldType::None),
-          "u16, u32 and none are not");
+              Supported(FieldType::Bool) && Supported(FieldType::String) && Supported(FieldType::U16) &&
+              Supported(FieldType::U32),
+          "f32, i32, u8, bool, string, u16 and u32 are supported");
+    Check(!Supported(FieldType::None), "none is not");
     Check(RawSize(FieldType::F32) == 4 && RawSize(FieldType::I32) == 4 && RawSize(FieldType::U8) == 1 &&
-              RawSize(FieldType::Bool) == 1 && RawSize(FieldType::String) == 0,
+              RawSize(FieldType::U16) == 2 && RawSize(FieldType::U32) == 4 && RawSize(FieldType::Bool) == 1 &&
+              RawSize(FieldType::String) == 0,
           "raw sizes");
-    for (int e = 0; e <= static_cast<int>(TweakError::WriteFailed); ++e) {
+    for (int e = 0; e <= static_cast<int>(TweakError::Inexact); ++e) {
         const char* s = ToString(static_cast<TweakError>(e));
         Check(s && *s, "ToString covers every TweakError");
     }
@@ -158,14 +163,17 @@ int main() {
     CheckError(Get(nullptr, "WormDamageMagnitude", &v), TweakError::UnknownWeapon, "null weapon");
     CheckError(Get("kWeaponBazooka", "NoSuchField", &v), TweakError::UnknownField, "unknown field");
     CheckError(Get("kWeaponBazooka", "", &v), TweakError::UnknownField, "empty field");
-    CheckError(Get("kWeaponBazooka", "ColliderFlags", &v), TweakError::Unsupported, "u16 field not supported");
-    CheckError(Set("kWeaponBazooka", "MaxPowerUp", Num(1)), TweakError::Unsupported, "u32 field not supported");
     CheckError(Set("kWeaponNoSuch", "WormDamageMagnitude", Num(1)), TweakError::UnknownWeapon, "set: unknown weapon");
 
     // --- typed reads ---
     Check(GetF("kWeaponBazooka", "WormDamageMagnitude") == 50.0f, "f32 read");
     Check(GetF("kWeaponBazooka", "LifeTime") == 5000.0f, "i32 read");
     Check(GetF("kWeaponBazooka", "NumBomblets") == 3.0f, "u8 read");
+    Check(Get("kWeaponBazooka", "ColliderFlags", &v) == TweakError::Ok && v.type == FieldType::U16 && v.num == 4660.0f,
+          "u16 read ignores the u32 next to it");
+    Check(Get("kWeaponBazooka", "MaxPowerUp", &v) == TweakError::Ok && v.type == FieldType::U32 &&
+              v.num == static_cast<float>(0xA0B0C0D0u),
+          "u32 read");
     Check(Get("kWeaponBazooka", "IsHoming", &v) == TweakError::Ok && v.type == FieldType::Bool && v.b, "bool read");
     Check(GetS("kWeaponBazooka", "PayloadGraphicsResourceID") == "Bazooka.Payload", "string read");
     Check(GetF("kWeaponMegaBazooka", "WormDamageMagnitude") == 120.0f, "a clone name resolves");
@@ -228,13 +236,69 @@ int main() {
     Check(GetF("kWeaponBazooka", "WormDamageMagnitude") == 75.0f, "no restore when the container is gone");
     Check(Instance().PendingCount() == 0, "the snapshot is dropped anyway");
 
+    // --- u16 and u32 ---
+    {
+        Instance().Reset();
+        const unsigned char before[8] = {g_bazooka.bytes[0x08], g_bazooka.bytes[0x09], g_bazooka.bytes[0x0a],
+                                         g_bazooka.bytes[0x0b], g_bazooka.bytes[0x0c], g_bazooka.bytes[0x0d],
+                                         g_bazooka.bytes[0x0e], g_bazooka.bytes[0x0f]};
+        CheckError(Set("kWeaponBazooka", "ColliderFlags", Num(65535)), TweakError::Ok, "u16 upper bound");
+        Check(GetF("kWeaponBazooka", "ColliderFlags") == 65535.0f, "u16 reads back");
+        Check(g_bazooka.bytes[0x0a] == 0xff && g_bazooka.bytes[0x0b] == 0xff && g_bazooka.bytes[0x0c] == before[4] &&
+                  g_bazooka.bytes[0x09] == before[1],
+              "a u16 write touches two bytes only");
+        CheckError(Set("kWeaponBazooka", "ColliderFlags", Num(300)), TweakError::Ok, "u16 write");
+        Check(GetF("kWeaponBazooka", "ColliderFlags") == 300.0f, "u16 round trip");
+        CheckError(Set("kWeaponBazooka", "ColliderFlags", Num(65536)), TweakError::OutOfRange, "u16 overflow");
+        CheckError(Set("kWeaponBazooka", "ColliderFlags", Num(-1)), TweakError::OutOfRange, "negative u16");
+        CheckError(Set("kWeaponBazooka", "ColliderFlags", Num(1.5f)), TweakError::OutOfRange, "fraction into u16");
+        CheckError(Set("kWeaponBazooka", "ColliderFlags", Bool(true)), TweakError::TypeMismatch, "bool into u16");
+        Check(GetF("kWeaponBazooka", "ColliderFlags") == 300.0f, "refused u16 writes leave the value");
+
+        CheckError(Set("kWeaponBazooka", "MaxPowerUp", Num(0)), TweakError::Ok, "u32 zero");
+        CheckError(Set("kWeaponBazooka", "MaxPowerUp", Num(16777216.0f)), TweakError::Ok, "u32 upper bound (2^24)");
+        Check(GetF("kWeaponBazooka", "MaxPowerUp") == 16777216.0f, "u32 upper bound reads back");
+        Check(g_bazooka.bytes[0x0c] == 0 && g_bazooka.bytes[0x0d] == 0 && g_bazooka.bytes[0x0e] == 0 &&
+                  g_bazooka.bytes[0x0f] == 1,
+              "a u32 write fills four bytes");
+        // 16777217 is not a float32: a script's literal rounds to even, 16777216, and is accepted as that.
+        CheckError(Set("kWeaponBazooka", "MaxPowerUp", Num(static_cast<float>(16777217.0))), TweakError::Ok,
+                   "a script's 16777217 arrives as 2^24 and is accepted");
+        Check(GetF("kWeaponBazooka", "MaxPowerUp") == 16777216.0f, "the rounded 16777217 reads back as 2^24");
+        CheckError(Set("kWeaponBazooka", "MaxPowerUp", Num(1234567)), TweakError::Ok, "u32 write");
+        Check(GetF("kWeaponBazooka", "MaxPowerUp") == 1234567.0f, "u32 round trip");
+        // The next float above 2^24 is 16777218, the smallest value that can reach the Inexact branch.
+        CheckError(Set("kWeaponBazooka", "MaxPowerUp", Num(16777218.0f)), TweakError::Inexact, "u32 above 2^24");
+        CheckError(Set("kWeaponBazooka", "MaxPowerUp", Num(3e9f)), TweakError::Inexact, "u32 far above 2^24");
+        CheckError(Set("kWeaponBazooka", "MaxPowerUp", Num(INFINITY)), TweakError::Inexact, "infinity into u32");
+        CheckError(Set("kWeaponBazooka", "ColliderFlags", Num(INFINITY)), TweakError::OutOfRange, "infinity into u16");
+        CheckError(Set("kWeaponBazooka", "ColliderFlags", Num(NAN)), TweakError::OutOfRange, "nan into u16");
+        CheckError(Set("kWeaponBazooka", "MaxPowerUp", Num(-1)), TweakError::OutOfRange, "negative u32");
+        CheckError(Set("kWeaponBazooka", "MaxPowerUp", Num(0.5f)), TweakError::OutOfRange, "fraction into u32");
+        CheckError(Set("kWeaponBazooka", "MaxPowerUp", Num(NAN)), TweakError::OutOfRange, "nan into u32");
+        CheckError(Set("kWeaponBazooka", "MaxPowerUp", Str("1")), TweakError::TypeMismatch, "string into u32");
+        Check(GetF("kWeaponBazooka", "MaxPowerUp") == 1234567.0f, "refused u32 writes leave the value");
+        Check(std::strlen(ToString(TweakError::Inexact)) > 0 && std::strstr(ToString(TweakError::Inexact), "16777216"),
+              "the Inexact text names the limit");
+        Check(Instance().PendingCount() == 2, "one snapshot per u16/u32 field");
+
+        Instance().RestoreAll(&ResolveSame, nullptr);
+        Check(g_bazooka.bytes[0x08] == before[0] && g_bazooka.bytes[0x09] == before[1] &&
+                  g_bazooka.bytes[0x0a] == before[2] && g_bazooka.bytes[0x0b] == before[3] &&
+                  g_bazooka.bytes[0x0c] == before[4] && g_bazooka.bytes[0x0d] == before[5] &&
+                  g_bazooka.bytes[0x0e] == before[6] && g_bazooka.bytes[0x0f] == before[7],
+              "restore puts the original u16 and u32 bytes back");
+        Check(GetF("kWeaponBazooka", "ColliderFlags") == 4660.0f, "u16 restored");
+        Check(GetF("kWeaponBazooka", "MaxPowerUp") == static_cast<float>(0xA0B0C0D0u), "u32 restored");
+    }
+
     // --- the Engine on its own ---
     {
         Fill(g_other, 10.0f, "X");
         Engine eng;
         const uintptr_t c = Addr(g_other);
         Check(!eng.Write(c, "W", 0, FieldType::F32, Str("x")), "Engine refuses a mismatched value");
-        Check(!eng.Write(c, "W", 0, FieldType::U16, Num(1)), "Engine refuses an unsupported type");
+        Check(!eng.Write(c, "W", 0, FieldType::None, Num(1)), "Engine refuses an unsupported type");
         Check(!eng.Write(0, "W", 0, FieldType::F32, Num(1)), "Engine refuses a null container");
         Check(eng.PendingCount() == 0, "nothing recorded for refused writes");
         Check(eng.Write(c, "W", 0, FieldType::F32, Num(11)), "Engine write");

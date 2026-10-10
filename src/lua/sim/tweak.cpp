@@ -28,7 +28,14 @@ void OnMatchEvent(bool created, lua50::State*, void*) {
     LOG_INFO("[tweak] match VM closed: restored up to %zu field(s)", pending);
 }
 
-bool IsNumber(FieldType t) { return t == FieldType::F32 || t == FieldType::I32 || t == FieldType::U8; }
+bool IsNumber(FieldType t) {
+    return t == FieldType::F32 || t == FieldType::I32 || t == FieldType::U8 || t == FieldType::U16 ||
+           t == FieldType::U32;
+}
+
+// The sim's Lua numbers are float32: every integer up to 2^24 is exact, above that neighbours are skipped, so a U32
+// above it would be written as a different number than the script asked for.
+constexpr float kMaxExactU32 = 16777216.0f;
 
 TweakError Locate(const char* weapon, const char* field, uintptr_t* c, uint32_t* off, FieldType* t) {
     if (!weapon || !*weapon) return TweakError::UnknownWeapon;
@@ -52,6 +59,13 @@ TweakError Check(FieldType t, const Value& v) {
         case FieldType::U8:
             if (!IsNumber(v.type)) return TweakError::TypeMismatch;
             return std::floor(v.num) == v.num && v.num >= 0 && v.num <= 255 ? TweakError::Ok : TweakError::OutOfRange;
+        case FieldType::U16:
+            if (!IsNumber(v.type)) return TweakError::TypeMismatch;
+            return std::floor(v.num) == v.num && v.num >= 0 && v.num <= 65535 ? TweakError::Ok : TweakError::OutOfRange;
+        case FieldType::U32:
+            if (!IsNumber(v.type)) return TweakError::TypeMismatch;
+            if (!(std::floor(v.num) == v.num && v.num >= 0)) return TweakError::OutOfRange;
+            return v.num <= kMaxExactU32 ? TweakError::Ok : TweakError::Inexact;
         case FieldType::Bool: return v.type == FieldType::Bool ? TweakError::Ok : TweakError::TypeMismatch;
         case FieldType::String:
             if (v.type != FieldType::String || !v.str) return TweakError::TypeMismatch;
@@ -66,6 +80,8 @@ uint32_t Encode(FieldType t, const Value& v) {
         case FieldType::F32: std::memcpy(&bits, &v.num, 4); break;
         case FieldType::I32: bits = static_cast<uint32_t>(static_cast<int32_t>(v.num)); break;
         case FieldType::U8: bits = static_cast<uint8_t>(v.num); break;
+        case FieldType::U16: bits = static_cast<uint16_t>(v.num); break;
+        case FieldType::U32: bits = static_cast<uint32_t>(v.num); break;
         case FieldType::Bool: bits = v.b ? 1u : 0u; break;
         default: break;
     }
@@ -159,17 +175,20 @@ const char* ToString(TweakError e) {
         case TweakError::Ok: return "ok";
         case TweakError::UnknownWeapon: return "no weapon container by that name in this match";
         case TweakError::UnknownField: return "unknown field";
-        case TweakError::Unsupported: return "field type not supported (f32, i32, u8, bool and string fields only)";
+        case TweakError::Unsupported:
+            return "field type not supported (f32, i32, u32, u16, u8, bool and string fields only)";
         case TweakError::TypeMismatch: return "value does not match the field's type";
         case TweakError::OutOfRange: return "value out of range for the field";
         case TweakError::WriteFailed: return "the field could not be written";
+        case TweakError::Inexact:
+            return "value above 16777216 is refused: the sim's float numbers cannot name every integer above it";
     }
     return "unknown error";
 }
 
 bool Supported(FieldType t) {
-    return t == FieldType::F32 || t == FieldType::I32 || t == FieldType::U8 || t == FieldType::Bool ||
-           t == FieldType::String;
+    return t == FieldType::F32 || t == FieldType::I32 || t == FieldType::U32 || t == FieldType::U16 ||
+           t == FieldType::U8 || t == FieldType::Bool || t == FieldType::String;
 }
 
 size_t RawSize(FieldType t) {
@@ -202,6 +221,8 @@ bool Engine::Read(uintptr_t container, uint32_t offset, FieldType t, Value* out)
     switch (t) {
         case FieldType::F32: std::memcpy(&out->num, &bits, 4); break;
         case FieldType::I32: out->num = static_cast<float>(static_cast<int32_t>(bits)); break;
+        case FieldType::U32: out->num = static_cast<float>(bits); break;
+        case FieldType::U16: out->num = static_cast<float>(bits & 0xffff); break;
         case FieldType::U8: out->num = static_cast<float>(bits & 0xff); break;
         case FieldType::Bool: out->b = (bits & 0xff) != 0; break;
         default: break;

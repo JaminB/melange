@@ -35,24 +35,41 @@ struct CloneSpec {
     std::vector<std::pair<std::string, std::string>> set;    // field, canonical value (SetNumber/SetBool/SetString)
 };
 
+// One vanilla-weapon rename (spice.json "weaponText"); an empty name or help means that text is not renamed.
+// A weaponIcons rule travels in the same list with icon = true: weapon, then panelIcon and hudIcon (file names).
+// A vehicleMeshes rule travels there too with vehicle = true: the vehicle key in `weapon` and the mesh name in `mesh`.
+struct TextSpec {
+    std::string weapon, name, help;
+    bool icon = false;
+    std::string panelIcon, hudIcon;
+    bool vehicle = false;
+    std::string mesh;
+};
+
 std::string SetNumber(double v);
 std::string SetBool(bool v);
 std::string SetString(const std::string& v);   // percent-encodes anything outside [A-Za-z0-9._/-]
 
 // "clone <k> <vid> <name> <base> <cell> <bank sha256 or -> <set as sorted key=value, space separated, or ->".
 std::string CloneLine(const CloneSpec& c);
+// "text <weapon> name=<encoded name or -> help=<encoded help or ->", the strings percent-encoded like set values.
+std::string TextLine(const TextSpec& t);
 
 // Deterministic text, version 2: the mod set (in load order) with its file hashes, the mod messages as name=id in
 // registration order, one line per declared clone in k order, and (only with clones) the local [Weapons]
 // ExtraPerExplosion: a per-machine setting, but one that changes how many extra explosions a clone can queue, so
 // peers whose clones went live must agree on it too. Defaults to 8, the ini default, for callers that don't care.
+// The weapon renames follow the clone lines, one "text" line each, sorted by weapon: a peer showing different
+// names must hash differently, so the existing weapon gate refuses the mix like it does for clones.
 std::string CanonicalText(const std::vector<ContentMod>& modsInLoadOrder, const std::vector<ModMessage>& messages,
-                          const std::vector<CloneSpec>& clones, int extraPerExplosion = 8);
+                          const std::vector<CloneSpec>& clones, int extraPerExplosion = 8,
+                          const std::vector<TextSpec>& texts = {});
 std::string HashOfCanonicalText(const std::string& canonical);  // sha256 hex, "" only on a hashing failure
 
 // Sorts each mod's files by relPath, then builds the ContentId this peer would publish for this content.
 mods::ContentId BuildContentId(std::vector<ContentMod> modsInLoadOrder, const std::vector<ModMessage>& messages,
-                               const std::vector<CloneSpec>& clones, int extraPerExplosion = 8);
+                               const std::vector<CloneSpec>& clones, int extraPerExplosion = 8,
+                               const std::vector<TextSpec>& texts = {});
 
 // First 16 hex chars of ContentId.hash, or "v" for the vanilla (empty-hash) case.
 std::string Hash16(const mods::ContentId& c);
@@ -81,12 +98,13 @@ std::string BuildMlgSim(const std::string& ourHash16, bool weAreVanilla, const s
 // May a sim mod run this match? Offline/local: always. Online: only if the lobby's "mlg.sim" is our hash16.
 bool GateAllowsSim(bool online, const std::string& ourHash16, const std::string& lobbySim);
 
-// Clone keys. "mlg.wpn" (member) = "1;<hash16 of the clone lines and ExtraPerExplosion>;<count>", "" when there are
-// no clones. extraPerExplosion defaults to 8, the ini default, for callers that don't care.
-std::string CloneHash16(const std::vector<CloneSpec>& clones, int extraPerExplosion = 8);
-std::string BuildWpnValue(const std::vector<CloneSpec>& clones, int extraPerExplosion = 8);
+// Clone keys. "mlg.wpn" (member) = "1;<hash16 of the clone lines, text lines and ExtraPerExplosion>;<clone count>", ""
+// when there are neither clones nor renames (a rename-only peer still has weapon content to agree on).
+// extraPerExplosion defaults to 8, the ini default, for callers that don't care.
+std::string CloneHash16(const std::vector<CloneSpec>& clones, int extraPerExplosion = 8, const std::vector<TextSpec>& texts = {});
+std::string BuildWpnValue(const std::vector<CloneSpec>& clones, int extraPerExplosion = 8, const std::vector<TextSpec>& texts = {});
 bool ParseWpnValue(const std::string& value, std::string* hash16, uint32_t* clones);
-// "mlg.req" (lobby, owner only) = "wpn1;<hash16 of the owner's content>", "" (removed) without clones.
+// "mlg.req" (lobby, owner only) = "wpn1;<hash16 of the owner's content>", "" (removed) without weapon content.
 std::string BuildReqValue(const std::string& ourHash16, bool haveClones);
 bool ParseReqValue(const std::string& value, std::string* hash16);
 

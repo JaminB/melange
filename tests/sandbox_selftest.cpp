@@ -15,6 +15,8 @@
 #include <string>
 #include <vector>
 
+#include "audio/audio.h"
+#include "audio/clips.h"
 #include "core/config.h"
 #include "core/game.h"
 #include "core/log.h"
@@ -66,6 +68,16 @@ int g_nextHandle = 1, g_textures = 0, g_drawCbs = 0, g_hotkeys = 0;
 bool g_ctlAvail = true;
 melange::controls::Options g_ctlOpts;
 const void* g_ctlOwner = nullptr;
+struct AudioVoice {
+    const void* owner;
+    uint32_t clip;
+    melange::audio::PlayOpts opts;
+};
+bool g_audioAvail = true;
+int g_audioReleases = 0;
+uint32_t g_audioNext = 0;
+std::map<const void*, melange::audio::ClipCache> g_audioClips;  // the real cache; only the XAudio2 side is faked
+std::map<uint32_t, AudioVoice> g_audioVoices;
 }  // namespace fake
 
 // ---------------------------------------------------------------- link-time fakes
@@ -330,6 +342,52 @@ void EngineSubscribe(const std::string& name, bool on) {
     else fake::g_engineSubs.erase(name);
 }
 }  // namespace sandbox
+namespace audio {  // the Audio module is replaced by a fake that records plays; clips go through the real cache
+bool Available() { return fake::g_audioAvail; }
+uint32_t FindClip(const void* owner, const std::string& key) {
+    auto it = fake::g_audioClips.find(owner);
+    return it == fake::g_audioClips.end() ? 0 : it->second.Find(key);
+}
+uint32_t LoadClip(const void* owner, const std::string& key, const uint8_t* bytes, size_t n, std::string* why) {
+    return fake::g_audioClips[owner].Add(key, bytes, n, why);
+}
+uint32_t Play(const void* owner, uint32_t clip, const PlayOpts& opts, std::string* why) {
+    if (!fake::g_audioAvail) {
+        *why = "audio unavailable";
+        return 0;
+    }
+    auto it = fake::g_audioClips.find(owner);
+    if (it == fake::g_audioClips.end() || !it->second.Get(clip)) {
+        *why = "unknown sound";
+        return 0;
+    }
+    fake::g_audioVoices[++fake::g_audioNext] = {owner, clip, opts};
+    return fake::g_audioNext;
+}
+bool Stop(const void* owner, uint32_t voice) {
+    auto it = fake::g_audioVoices.find(voice);
+    if (it == fake::g_audioVoices.end() || it->second.owner != owner) return false;
+    fake::g_audioVoices.erase(it);
+    return true;
+}
+size_t StopAll(const void* owner) {
+    size_t n = 0;
+    for (auto it = fake::g_audioVoices.begin(); it != fake::g_audioVoices.end();) {
+        if (it->second.owner == owner) {
+            it = fake::g_audioVoices.erase(it);
+            ++n;
+        } else {
+            ++it;
+        }
+    }
+    return n;
+}
+void Release(const void* owner) {
+    ++fake::g_audioReleases;
+    StopAll(owner);
+    fake::g_audioClips.erase(owner);
+}
+}  // namespace audio
 }  // namespace melange
 
 // ---------------------------------------------------------------- helpers
@@ -1159,6 +1217,111 @@ ok2, e2 = pcall(wum.ui.hotkey, "Q", function() end)
     fake::g_ctlAvail = true;
 }
 
+std::string TestWavBytes(uint32_t rate, uint32_t frames) {
+    auto u32 = [](uint32_t v) { return std::string(reinterpret_cast<const char*>(&v), 4); };
+    auto u16 = [](uint16_t v) { return std::string(reinterpret_cast<const char*>(&v), 2); };
+    const uint32_t bytes = frames * 2;
+    return "RIFF" + u32(36 + bytes) + "WAVEfmt " + u32(16) + u16(1) + u16(1) + u32(rate) + u32(rate * 2) + u16(2) + u16(16) + "data" +
+           u32(bytes) + std::string(bytes, '\x10');
+}
+
+void TestAudio() {
+    fake::g_audioAvail = true;
+    fake::g_audioVoices.clear();
+    fake::g_audioClips.clear();
+    fake::g_audioReleases = 0;
+    SetMod("aud", R"lua(
+h = wum.audio.load("sfx/boom.wav")
+h2 = wum.audio.load("SFX\\Boom.wav")
+h3 = wum.audio.load("sfx/./boom.wav")
+nofile, nofileWhy = wum.audio.load("sfx/missing.wav")
+badpath, badpathWhy = wum.audio.load("../x.wav")
+abspath, abspathWhy = wum.audio.load("C:\\Windows\\x.wav")
+junk, junkWhy = wum.audio.load("sfx/junk.wav")
+big, bigWhy = wum.audio.load("sfx/big.wav")
+v1 = wum.audio.play(h)
+v2 = wum.audio.play(h, { volume = math.huge, pitch = -math.huge, loop = true, pos = { 1, 2, 3 } })
+v3 = wum.audio.play(h, { volume = 0.25, pos = { x = 4, y = 5, z = 6 } })
+v4 = wum.audio.play(h, { pos = { 1e300, 1 / 0, -1 / 0 } })
+nov, novWhy = wum.audio.play(9999)
+okOpts, errOpts = pcall(wum.audio.play, h, 5)
+okVol = pcall(wum.audio.play, h, { volume = "loud" })
+okLoop = pcall(wum.audio.play, h, { loop = 1 })
+okPos = pcall(wum.audio.play, h, { pos = 3 })
+okPosC, errPosC = pcall(wum.audio.play, h, { pos = { 1, "up", 3 } })
+okHandle = pcall(wum.audio.play, "boom")
+okLoad = pcall(wum.audio.load, {})
+)lua");
+    const std::wstring dir = fake::g_modsDir + L"\\aud";
+    WriteText(dir + L"\\sfx\\boom.wav", TestWavBytes(22050, 100));
+    WriteText(dir + L"\\sfx\\junk.wav", "this is not a wav file at all");
+    WriteText(dir + L"\\sfx\\big.wav", std::string((2u << 20) + 2, '\0'));
+    Expect(sandbox::LoadMod("aud"), "aud loads: " + StatusOf("aud").error);
+
+    ExpectEq(Eval("aud", "return math.type(h)"), "integer", "load returns an integer handle");
+    ExpectEq(Eval("aud", "return tostring(h == h2 and h == h3)"), "true", "equivalent spellings of one path share a handle");
+    size_t clips = 0;
+    for (const auto& [owner, cache] : fake::g_audioClips) clips += cache.Count();
+    Expect(clips == 1, "three spellings cost one clip");
+    ExpectEq(Eval("aud", "return tostring(nofile) .. ':' .. nofileWhy"), "nil:cannot open file", "a missing file is nil plus a reason");
+    ExpectEq(Eval("aud", "return tostring(badpath) .. ':' .. badpathWhy"), "nil:path must be relative and inside the mod folder", "'..' is refused");
+    ExpectEq(Eval("aud", "return tostring(abspath)"), "nil", "an absolute path is refused");
+    Expect(Eval("aud", "return tostring(junk) .. ':' .. junkWhy").rfind("nil:", 0) == 0, "a file that is not a WAV is nil plus the parser's reason");
+    ExpectEq(Eval("aud", "return tostring(big) .. ':' .. bigWhy"), "nil:too large", "an oversized file is 'too large'");
+
+    ExpectEq(Eval("aud", "return math.type(v1)"), "integer", "play returns an integer voice id");
+    ExpectEq(Eval("aud", "return tostring(nov) .. ':' .. novWhy"), "nil:unknown sound", "an unknown handle is nil plus a reason");
+    uint32_t id1 = 0, id2 = 0, id3 = 0, id4 = 0;
+    for (const auto& [id, v] : fake::g_audioVoices) {
+        if (!v.opts.positional) id1 = id;
+        else if (v.opts.loop) id2 = id;
+        else if (v.opts.volume == 0.25f) id3 = id;
+        else id4 = id;
+    }
+    Expect(id1 && id2 && id3 && id4 && fake::g_audioVoices.size() == 4, "four voices started");
+    const melange::audio::PlayOpts& o1 = fake::g_audioVoices[id1].opts;
+    Expect(o1.volume == 1.0f && o1.pitch == 1.0f && !o1.loop, "defaults: volume 1, pitch 1, no loop");
+    const melange::audio::PlayOpts& o2 = fake::g_audioVoices[id2].opts;
+    Expect(o2.volume == 2.0f && o2.pitch == 0.5f, "infinite volume and pitch clamp to the range ends");
+    Expect(o2.pos[0] == 1.0f && o2.pos[1] == 2.0f && o2.pos[2] == 3.0f, "pos as an array");
+    const melange::audio::PlayOpts& o3 = fake::g_audioVoices[id3].opts;
+    Expect(o3.pos[0] == 4.0f && o3.pos[1] == 5.0f && o3.pos[2] == 6.0f, "pos as x, y, z fields");
+    const melange::audio::PlayOpts& o4 = fake::g_audioVoices[id4].opts;
+    Expect(o4.pos[0] == FLT_MAX && o4.pos[1] == FLT_MAX && o4.pos[2] == -FLT_MAX, "out-of-range pos components clamp to the float range");
+
+    ExpectEq(Eval("aud", "return tostring(okOpts or okVol or okLoop or okPos or okPosC or okHandle or okLoad)"), "false", "wrong argument types raise");
+    Expect(Eval("aud", "return errOpts").find("table") != std::string::npos, "the opts error names the problem");
+    Expect(Eval("aud", "return errPosC").find("pos.y") != std::string::npos, "the pos error names the component");
+    ExpectEq(Eval("aud", "return tostring(wum.audio.ready())"), "true", "ready() reports the backend");
+
+    // Voices are scoped to the mod that started them.
+    SetMod("aud2", "other = wum.audio.load('x.wav')");
+    Expect(sandbox::LoadMod("aud2"), "second audio mod loads");
+    ExpectEq(Eval("aud2", "return tostring(wum.audio.stop(" + std::to_string(id1) + "))"), "false", "another mod's voice cannot be stopped");
+    ExpectEq(Eval("aud2", "return wum.audio.stopAll()"), "0", "stopAll counts only this mod's voices");
+    Expect(fake::g_audioVoices.size() == 4, "the other mod's voices are untouched");
+    ExpectEq(Eval("aud", "return tostring(wum.audio.stop(" + std::to_string(id1) + "))"), "true", "a mod stops its own voice");
+    ExpectEq(Eval("aud", "return tostring(wum.audio.stop(" + std::to_string(id1) + "))"), "false", "a stopped voice is gone");
+    ExpectEq(Eval("aud", "return tostring(wum.audio.stop(99999))"), "false", "an unknown voice is false");
+    ExpectEq(Eval("aud", "return wum.audio.stopAll()"), "3", "stopAll returns how many it stopped");
+
+    // No output device: loading still works, playing says why.
+    fake::g_audioAvail = false;
+    ExpectEq(Eval("aud", "return tostring(wum.audio.ready())"), "false", "ready() is false without a device");
+    ExpectEq(Eval("aud", "local a = wum.audio.load('sfx/boom.wav') return math.type(a)"), "integer", "load needs no device");
+    ExpectEq(Eval("aud", "local a, b = wum.audio.play(h) return tostring(a) .. ':' .. b"), "nil:audio unavailable", "play without a device is nil plus a reason");
+    fake::g_audioAvail = true;
+
+    // Unload releases the mod's voices and clips.
+    ExpectEq(Eval("aud", "return tostring(wum.audio.play(h) ~= nil)"), "true", "a voice to be released");
+    const int releases = fake::g_audioReleases;
+    sandbox::UnloadMod("aud");
+    Expect(fake::g_audioReleases > releases, "unload releases the mod's audio");
+    Expect(fake::g_audioVoices.empty(), "unload stops the mod's voices");
+    sandbox::UnloadMod("aud2");
+    fake::g_audioClips.clear();
+}
+
 void TestDocs() {
     const std::string doc = ReadText(W(MELANGE_SOURCE_DIR) + L"\\docs\\lua-api.md");
     Expect(!doc.empty(), "docs/lua-api.md exists");
@@ -1207,7 +1370,7 @@ int main() {
         {"unsafe", TestUnsafe},   {"panels", TestPanels},   {"menus", TestMenus},
         {"samples", TestSamples},
         {"game", TestGame},       {"graphics", TestGraphics}, {"sprites", TestSprites},
-        {"input", TestInput}, {"docs", TestDocs}};
+        {"input", TestInput}, {"audio", TestAudio}, {"docs", TestDocs}};
     for (const auto& [name, fn] : tests) {
         const int before = g_fail;
         fn();

@@ -129,6 +129,48 @@
       }
     },
 
+    "weaponText": {
+      "type": "object",
+      "maxProperties": 64,
+      "propertyNames": { "pattern": "^k(Weapon|Utility)[A-Z][A-Za-z0-9]{2,40}$" },
+      "description": "New panel name and help text for vanilla weapons (content mods only). Display only: the simulation is untouched. A key may not be a clone name declared by any mod, and a weapon renamed by an earlier mod refuses the later mod. Applies only in a live content match that every peer has with the same text.",
+      "additionalProperties": {
+        "type": "object",
+        "additionalProperties": false,
+        "minProperties": 1,
+        "properties": {
+          "name": { "type": "string", "minLength": 1, "maxLength": 24, "pattern": "^[ -~]+$", "description": "The panel name (printable ASCII)." },
+          "help": { "type": "string", "maxLength": 160, "pattern": "^[ -~]*$", "description": "The panel help text (printable ASCII); one line." }
+        }
+      }
+    },
+
+    "weaponIcons": {
+      "type": "object",
+      "maxProperties": 64,
+      "propertyNames": { "pattern": "^k(Weapon|Utility)[A-Z][A-Za-z0-9]{2,40}$" },
+      "description": "New panel and/or HUD icon for vanilla weapons (content mods only). Presentation only: the simulation is untouched. A key may not be a clone name declared by any mod, and a weapon an earlier mod already has icons for refuses the later mod. Applies only in a live content match that every peer has with the same rules.",
+      "additionalProperties": {
+        "type": "object",
+        "additionalProperties": false,
+        "minProperties": 1,
+        "properties": {
+          "panelIcon": { "type": "string", "minLength": 1, "maxLength": 120, "pattern": "\\.[pP][nN][gG]$", "description": "A square PNG (side a multiple of 64, up to 4096) under the assets root, relative with no '..'. Written over the weapon's own panel sub-icon." },
+          "hudIcon": { "type": "string", "minLength": 1, "maxLength": 120, "pattern": "^[^/\\\\:]+\\.[tT][gG][aA]$", "description": "A .tga file name in assets/loose/ named <id>.*; loaded in place of the weapon's vanilla HUD icon." }
+        }
+      }
+    },
+
+    "vehicleMeshes": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "The mesh the Airstrike helicopter and the Super Airstrike's are drawn with (content mods only; the mod must also list the bank in \"meshes\"). The value is a \"<modId>.<Name>\" mesh from one of the mod's banks. Presentation only: the simulation is untouched. A vehicle an earlier mod already sets refuses the later mod. Applies only in a live content match that every peer has with the same rules. The mesh must keep the vanilla mesh's node names (rear_rotor, top_rotor, trail1, trail2) and animation channels. See docs/meshes.md.",
+      "properties": {
+        "BomberHelicopter": { "type": "string", "minLength": 3, "maxLength": 96, "pattern": "^[A-Za-z0-9._-]+\\.[A-Za-z0-9._-]+$", "description": "The mesh the Airstrike's helicopter is drawn with." },
+        "SuperAirstrike": { "type": "string", "minLength": 3, "maxLength": 96, "pattern": "^[A-Za-z0-9._-]+\\.[A-Za-z0-9._-]+$", "description": "The mesh the Super Airstrike's helicopter is drawn with." }
+      }
+    },
+
     "levels": {
       "type": "array",
       "maxItems": 32,
@@ -190,6 +232,20 @@
           "file": { "type": "string", "maxLength": 200, "pattern": "^[^/\\\\:][^:]*\\.[mM][pP]3$", "description": "An .mp3 path relative to the mod folder, inside it (no '..'), at most 24 MiB." },
           "title": { "type": "string", "minLength": 1, "maxLength": 48, "pattern": "^[ -~]+$", "description": "Printable ASCII, shown in the log." },
           "credit": { "type": "string", "maxLength": 96, "description": "The original title or author, shown in the log only." }
+        }
+      }
+    },
+
+    "meshes": {
+      "type": "array",
+      "maxItems": 64,
+      "description": "Mesh banks (.xom, built with xomtool convert --bundle) loaded into the game's graphical resource manager at the main menu, so a weapon clone's set or wum.sim.weapon():set can name a mesh as \"<modId>.<Name>\". kind: content only. Every resource name in a bank must start with \"<modId>.\". Each file must be under the mod's assets root, so it is part of the content hash. See docs/meshes.md.",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["file"],
+        "properties": {
+          "file": { "type": "string", "maxLength": 200, "pattern": "^[^/\\\\:][^:]*\\.[xX][oO][mM]$", "description": "A .xom path relative to the mod folder, under the assets root (default \"assets/\"; no '..')." }
         }
       }
     },

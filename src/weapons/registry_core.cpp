@@ -1,6 +1,7 @@
 #include "weapons/registry_core.h"
 
 #include <algorithm>
+#include <cctype>
 #include <cmath>
 #include <cstdio>
 #include <cstring>
@@ -12,7 +13,50 @@ namespace {
 uint32_t Ptr32(const void* p) { return static_cast<uint32_t>(reinterpret_cast<uintptr_t>(p)); }
 uintptr_t CellAddr(int cell) { return kPanel + 8 * static_cast<uintptr_t>(cell); }
 uintptr_t SlotAddr(int id) { return kNames + 4 * static_cast<uintptr_t>(id); }
+
+// Data\HUD\Weapons in the game's files (res/wum-1077-stock.tsv): the weapon icons the HUD loads by file name.
+constexpr const char* kHudFiles[] = {
+    "airstrike.tga", "alienabduction.tga", "bananabomb.tga", "baseballbat.tga", "bazooka.tga", "Binoculars.tga",
+    "bubbletrubble.tga", "clustergrenade.tga", "concretedonkey.tga", "dynamite.tga", "fatkinstrike.tga", "firepunch.tga",
+    "gascanister.tga", "girder.tga", "grenade.tga", "hollyhandgrenade.tga", "HomingMissile.tga", "icaruspotion.tga",
+    "inflatablescouser.tga", "jetpack.tga", "landmine.tga", "madcowstrike.tga", "ninjarope.tga", "oldwoman.tga",
+    "parachute.tga", "pipegun.tga", "poisonarrow.tga", "prod.tga", "raindance.tga", "secretweapon.tga", "sentrygun.tga",
+    "sheep.tga", "shotgun.tga", "skipgo.tga", "sniperrifle.tga", "starburst.tga", "superairstrike.tga", "supersheep.tga",
+    "surrender.tga", "tailnail.tga",
+};
+// Container names whose lower-cased remainder is not the file stem.
+struct HudAlias {
+    const char* name;
+    const char* stem;
+};
+constexpr HudAlias kHudAliases[] = {
+    {"holyhandgrenade", "hollyhandgrenade"}, {"clusterbomb", "clustergrenade"}, {"mine", "landmine"},
+    {"donkey", "concretedonkey"},          {"bubbletrouble", "bubbletrubble"},   {"scouser", "inflatablescouser"},
+    {"fatkin", "fatkinstrike"},            {"fatkins", "fatkinstrike"},          {"nomorenails", "tailnail"},
+    {"bat", "baseballbat"},                {"homing", "homingmissile"},
+};
+
+bool EqualsI(const char* a, const char* b) { return _stricmp(a, b) == 0; }
 }  // namespace
+
+const char* VanillaHudFile(const std::string& weapon) {
+    size_t p = 0;
+    if (weapon.compare(0, 7, "kWeapon") == 0) p = 7;
+    else if (weapon.compare(0, 8, "kUtility") == 0) p = 8;
+    else return nullptr;
+    std::string stem = weapon.substr(p);
+    for (char& c : stem) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+    for (const auto& a : kHudAliases)
+        if (stem == a.name) {
+            stem = a.stem;
+            break;
+        }
+    for (const char* f : kHudFiles) {
+        const size_t n = strlen(f) - 4;  // minus ".tga"
+        if (n == stem.size() && _strnicmp(f, stem.c_str(), n) == 0) return f;
+    }
+    return nullptr;
+}
 
 uint32_t Registry::U32(uintptr_t a) {
     uint32_t v = 0;
@@ -22,7 +66,37 @@ uint32_t Registry::U32(uintptr_t a) {
 
 bool Registry::PutU32(uintptr_t a, uint32_t v) { return e_.Write(a, &v, sizeof v); }
 
-void Registry::Configure(const std::vector<manifest::CloneDecl>& decls) {
+void Registry::Configure(const std::vector<manifest::CloneDecl>& decls, const std::vector<manifest::TextDecl>& texts,
+                         const std::vector<manifest::IconDecl>& icons, const std::vector<manifest::VehicleDecl>& vehicles) {
+    ResetVehicles();
+    ResetText();  // before rules_ is cleared: it is the rules that hold the tags to put back
+    vehicleRules_.clear();
+    for (const auto& v : vehicles) {
+        VehicleRule r;
+        r.decl = v;
+        vehicleRules_.push_back(std::move(r));
+    }
+    ResetIcons();
+    iconRules_.clear();
+    for (const auto& i : icons) {
+        IconRule r;
+        r.decl = i;
+        iconRules_.push_back(std::move(r));
+    }
+    rules_.clear();
+    rules_.reserve(texts.size());  // the hook hands out token.c_str(): the rules must not move after this
+    for (const auto& t : texts) {
+        TextRule r;
+        r.decl = t;
+        // Short and fixed-width on purpose: the game formats the token into "HelpText.%s%d" in a buffer of unknown size
+        // (a clone name is capped at 48 for the same reason), so nothing from the mod id or the weapon goes into it.
+        // The width keeps "HelpText.<token>0" from reading as another token's key.
+        char tok[16];
+        snprintf(tok, sizeof tok, "wt%03zu", rules_.size());
+        r.token = tok;
+        rules_.push_back(std::move(r));
+    }
+    ResetText();
     n_ = static_cast<int>(std::min<size_t>(decls.size(), kMaxClones));
     for (int k = 0; k < n_; ++k) {
         Clone& c = clones_[k];
@@ -189,6 +263,231 @@ void Registry::RegisterText(Clone& c) {
                  c.help ? "" : "help", c.decl.base.c_str());
 }
 
+// The std::string tokens keep their addresses while rules_ is not resized, which only Configure does.
+void Registry::ResetText() {
+    textLive_ = false;
+    std::fill(std::begin(ruleOf_), std::end(ruleOf_), int16_t{-1});
+    for (auto& r : rules_) {
+        RestoreTag(r);
+        r.id = -1;
+        r.slot = 0;
+        r.text = r.help = false;
+    }
+}
+
+// The in-world weapon-name tag resolves the container's DisplayName through the string table, so a renamed weapon's
+// DisplayName is pointed at the same "Text.<token>" key the panel path registered. Determinism: every peer makes this
+// write at the same moment (match creation, behind the same gate as clones) with a cosmetic string key that no
+// simulation number reads, and contrib.cpp hashes only clone containers' fields, so the vanilla container is not in the
+// Wormsign contribution. A failure costs only the tag; the panel rename stands.
+bool Registry::SetTag(TextRule& r, uintptr_t container) {
+    uint32_t off = 0;
+    if (e_.Field(container, "DisplayName", &off) != FieldType::String) {
+        LOG_WARN("[weapons] weaponText %s (%s): no DisplayName string field, the HUD tag keeps its text", r.decl.weapon.c_str(),
+                 r.decl.mod.c_str());
+        return false;
+    }
+    const uintptr_t at = container + off;
+    std::string orig;
+    if (!e_.ReadXString(at, &orig)) {
+        LOG_WARN("[weapons] weaponText %s (%s): DisplayName is unreadable, the HUD tag keeps its text", r.decl.weapon.c_str(),
+                 r.decl.mod.c_str());
+        return false;
+    }
+    if (!e_.AssignString(at, ("Text." + r.token).c_str())) {
+        LOG_WARN("[weapons] weaponText %s (%s): writing DisplayName failed, the HUD tag keeps its text", r.decl.weapon.c_str(),
+                 r.decl.mod.c_str());
+        return false;
+    }
+    r.tagContainer = container;
+    r.tagField = at;
+    r.tagOrig = std::move(orig);
+    return true;
+}
+
+// Only into the container that was written: a scene change that freed or rebuilt it leaves nothing to restore into.
+void Registry::RestoreTag(TextRule& r) {
+    if (!r.tagField) return;
+    if (e_.Lookup(r.decl.weapon.c_str()) == r.tagContainer) {
+        if (!e_.AssignString(r.tagField, r.tagOrig.c_str()))
+            LOG_WARN("[weapons] weaponText %s: restoring DisplayName failed", r.decl.weapon.c_str());
+    } else {
+        LOG_WARN("[weapons] weaponText %s: container changed or gone, DisplayName not restored", r.decl.weapon.c_str());
+    }
+    r.tagContainer = r.tagField = 0;
+    r.tagOrig.clear();
+}
+
+int Registry::TagCount() const {
+    int n = 0;
+    for (const auto& r : rules_) n += r.tagField != 0;
+    return n;
+}
+
+// Per match, once: find each renamed weapon's slot in the name table (by the name string it holds, which is what the
+// panel hook sees), register the strings under the rule's own key, and remember the slot's pointer so the hook is
+// one array lookup and one compare.
+void Registry::ResolveText() {
+    ResetText();
+    for (size_t i = 0; i < rules_.size(); ++i) {
+        TextRule& r = rules_[i];
+        const std::string& w = r.decl.weapon;
+        if (!e_.Lookup(w.c_str())) {
+            LOG_WARN("[weapons] weaponText %s (%s): no such container in this game, skipped", w.c_str(), r.decl.mod.c_str());
+            continue;
+        }
+        int id = -1;
+        uintptr_t slot = 0;
+        for (int k = 1; k < kEnumCount && id < 0; ++k) {
+            const uintptr_t p = U32(SlotAddr(k));
+            std::string have;
+            if (p && e_.ReadString(p, &have, 64) && have == w) id = k, slot = p;
+        }
+        if (id < 0) {
+            LOG_WARN("[weapons] weaponText %s (%s): not in the name table, so no panel to rename; skipped", w.c_str(),
+                     r.decl.mod.c_str());
+            continue;
+        }
+        if (ruleOf_[id] >= 0) continue;  // the manifest layer refuses two mods renaming one weapon; this is only a guard
+        r.text = !r.decl.name.empty() && PutText("Text." + r.token, r.decl.name);
+        r.help = !r.decl.help.empty() && PutText("HelpText." + r.token + "0", r.decl.help);
+        if (!r.text && !r.help) {
+            LOG_WARN("[weapons] weaponText %s (%s): the strings were not registered; the panel keeps its text", w.c_str(),
+                     r.decl.mod.c_str());
+            continue;
+        }
+        r.id = id;
+        r.slot = slot;
+        ruleOf_[id] = static_cast<int16_t>(i);
+        textLive_ = true;
+        const bool tag = r.text && SetTag(r, e_.Lookup(w.c_str()));  // help-only entries leave DisplayName alone
+        LOG_INFO("[weapons] weaponText %s id %d by %s: key %s name=%d help=%d tag=%d", w.c_str(), id, r.decl.mod.c_str(),
+                 r.token.c_str(), r.text, r.help, tag);
+    }
+    if (!textLive_) return;
+    int named = 0;
+    for (const auto& r : rules_) named += r.text;
+    LOG_INFO("[weapons] weaponText: DisplayName set for %d of %d name rename(s)", TagCount(), named);
+}
+
+int Registry::NameSlot(const std::string& weapon, uintptr_t* slot) {
+    for (int k = 1; k < kEnumCount; ++k) {
+        const uintptr_t p = U32(SlotAddr(k));
+        std::string have;
+        if (p && e_.ReadString(p, &have, 64) && have == weapon) {
+            if (slot) *slot = p;
+            return k;
+        }
+    }
+    return -1;
+}
+
+void Registry::ResetIcons() {
+    if (iconsLive_) e_.ClearPanelIcons();  // the panel patches; the vanilla pixels return at the atlas's next upload
+    iconsLive_ = hudIconsLive_ = false;
+    for (auto& r : iconRules_) {
+        r.id = -1;
+        r.iconCode = 0;
+        r.panel = r.hud = false;
+        r.hudFile = nullptr;
+    }
+}
+
+// Per match, once: find each weapon's name-table id (the same id its panel cell carries), read its panel cell's icon
+// code from the game, hand the PNG to the engine to write over that sub-icon, and arm the HUD substitution for the
+// weapon's vanilla HUD file. Every failure costs only that rule's piece; nothing here can refuse the match.
+void Registry::ResolveIcons() {
+    ResetIcons();
+    int panels = 0, huds = 0;
+    for (auto& r : iconRules_) {
+        const std::string& w = r.decl.weapon;
+        const char* mod = r.decl.mod.c_str();
+        if (!e_.Lookup(w.c_str())) {
+            LOG_WARN("[weapons] weaponIcons %s (%s): no such container in this game, skipped", w.c_str(), mod);
+            continue;
+        }
+        const int id = NameSlot(w, nullptr);
+        if (id < 0) {
+            LOG_WARN("[weapons] weaponIcons %s (%s): not in the name table, so no panel cell or HUD file known; skipped", w.c_str(), mod);
+            continue;
+        }
+        bool dup = false;
+        for (const auto& o : iconRules_) dup |= &o != &r && o.id == id;
+        if (dup) continue;  // the manifest layer refuses two mods claiming one weapon; this is only a guard
+        if (!r.decl.panelIcon.empty()) {
+            const uint32_t code = BaseIcon(id);
+            std::string err;
+            if (!code) {
+                LOG_WARN("[weapons] weaponIcons %s (%s): the weapon has no panel cell, panel icon skipped", w.c_str(), mod);
+            } else if (!e_.PatchPanelIcon(mod, r.decl.panelIcon.c_str(), code, &err)) {
+                LOG_WARN("[weapons] weaponIcons %s (%s): panel icon %s not used (%s); the vanilla icon is shown", w.c_str(), mod,
+                         r.decl.panelIcon.c_str(), err.empty() ? "refused" : err.c_str());
+            } else {
+                r.panel = true;
+                r.iconCode = code;
+            }
+        }
+        if (!r.decl.hudIcon.empty()) {
+            const char* file = VanillaHudFile(w);
+            if (!file) {
+                LOG_WARN("[weapons] weaponIcons %s (%s): no known HUD icon file for this weapon, hudIcon skipped", w.c_str(), mod);
+            } else if (!e_.HudUsable(mod)) {
+                // HudUsable has logged why
+            } else if (!e_.HudFileExists(mod, r.decl.hudIcon.c_str())) {
+                LOG_WARN("[weapons] weaponIcons %s (%s): %s is not in the mod's assets/loose; the vanilla HUD icon is shown", w.c_str(),
+                         mod, r.decl.hudIcon.c_str());
+            } else {
+                r.hud = true;
+                r.hudFile = file;
+            }
+        }
+        if (!r.panel && !r.hud) continue;
+        r.id = id;
+        panels += r.panel;
+        huds += r.hud;
+        LOG_INFO("[weapons] weaponIcons %s id %d by %s: panel=%d (icon code %x, atlas %u sub %u) hud=%d (%s -> %s)", w.c_str(), id,
+                 mod, r.panel, static_cast<unsigned>(r.iconCode), static_cast<unsigned>(r.iconCode & 0xff),
+                 static_cast<unsigned>((r.iconCode >> 8) & 0xff), r.hud, r.hudFile ? r.hudFile : "-",
+                 r.hud ? r.decl.hudIcon.c_str() : "-");
+    }
+    iconsLive_ = panels || huds;
+    hudIconsLive_ = huds > 0;
+    if (iconsLive_)
+        LOG_INFO("[weapons] weaponIcons: %d panel icon(s) and %d HUD icon(s) armed from %d rule(s)", panels, huds, IconCount());
+}
+
+void Registry::ResetVehicles() {
+    if (vehiclesLive_) e_.ClearVehicleMeshes();  // every vanilla mesh name goes back, whichever rules armed
+    vehiclesLive_ = false;
+    for (auto& r : vehicleRules_) r.armed = false;
+}
+
+// Per match, once: for each rule whose mesh is in the engine's table with its graph (the mod's bank loaded at the main
+// menu), have the engine's graphic entity draw it. Every failure costs only that rule: the vanilla vehicle is drawn.
+void Registry::ResolveVehicles() {
+    ResetVehicles();
+    for (auto& r : vehicleRules_) {
+        const char* v = r.decl.vehicle.c_str();
+        const char* mod = r.decl.mod.c_str();
+        std::string err;
+        if (!e_.MeshLoaded(r.decl.mesh.c_str())) {
+            LOG_WARN("[weapons] vehicleMeshes %s (%s): mesh %s is not loaded (is its bank in the mod's meshes and did it load? see the [meshes] lines); the vanilla vehicle is drawn",
+                     v, mod, r.decl.mesh.c_str());
+        } else if (const std::string lacks = e_.MeshNodesMissing(r.decl.mesh.c_str()); !lacks.empty()) {
+            // Setup looks these nodes up by name and asserts when one is absent: keep the vanilla vehicle rather than risk the match.
+            LOG_WARN("[weapons] vehicleMeshes %s (%s): mesh %s lacks the node(s) %s that the vehicle needs (re-export the vanilla mesh and keep its node names); the vanilla vehicle is drawn",
+                     v, mod, r.decl.mesh.c_str(), lacks.c_str());
+        } else if (!e_.SetVehicleMesh(v, r.decl.mesh.c_str(), &err)) {
+            LOG_WARN("[weapons] vehicleMeshes %s (%s): %s not used (%s); the vanilla vehicle is drawn", v, mod, r.decl.mesh.c_str(),
+                     err.empty() ? "refused" : err.c_str());
+        } else {
+            r.armed = true;
+            vehiclesLive_ = true;  // set at once: a later rule's failure must still clear this one at match end
+            LOG_INFO("[weapons] vehicleMeshes %s by %s: drawn as %s", v, mod, r.decl.mesh.c_str());
+        }
+    }
+}
+
 bool Registry::Init(std::string* why) {
     std::string local;
     if (!why) why = &local;
@@ -197,7 +496,10 @@ bool Registry::Init(std::string* why) {
         LOG_WARN("[weapons] the previous match was not closed: its clone state is dropped");
         Reset();
     }
-    if (n_ == 0) {
+    ResetText();
+    ResetIcons();
+    ResetVehicles();
+    if (n_ == 0 && rules_.empty() && iconRules_.empty() && vehicleRules_.empty()) {
         *why = "no clones declared";
         return false;
     }
@@ -206,6 +508,16 @@ bool Registry::Init(std::string* why) {
     // clones fail to go live below: a peer whose clones did go live can still select one and send its vid across.
     if (!e_.EnableHooks(true)) {
         *why = "the selection hooks could not be enabled";
+        return false;
+    }
+    // Renames are display only and independent of the clones: they go live even when a clone then fails to.
+    ResolveText();
+    ResolveIcons();
+    ResolveVehicles();
+    if (n_ == 0) {
+        if (textLive_ || iconsLive_ || vehiclesLive_) return true;
+        e_.EnableHooks(false);
+        *why = "no weaponText, weaponIcons or vehicleMeshes entry could be applied";
         return false;
     }
     for (int k = 0; k < n_; ++k) {
@@ -306,10 +618,16 @@ void Registry::Reset() {
 }
 
 void Registry::MatchEnd() {
-    const bool was = live_;
+    const bool was = live_, text = textLive_, icons = iconsLive_, vehicles = vehiclesLive_;
     Reset();
+    ResetText();
+    ResetIcons();
+    ResetVehicles();
     e_.EnableHooks(false);
     if (was) LOG_INFO("[weapons] match end: panel cells and name slots restored");
+    else if (text) LOG_INFO("[weapons] match end: weaponText off");
+    if (icons) LOG_INFO("[weapons] match end: weaponIcons off (panel patches dropped; vanilla icons return at the next atlas upload)");
+    if (vehicles) LOG_INFO("[weapons] match end: vehicleMeshes off (vanilla vehicle mesh names restored)");
 }
 
 void Registry::TurnEnded() {
@@ -353,16 +671,29 @@ int32_t Registry::BaseOf(int32_t v) const {
 
 int32_t Registry::GuardId(int32_t id) const { return IsVidValue(id) ? BaseOf(id) : id; }
 
+// A vanilla weapon with a live rename: the key is handed over only while the name the game read is still the slot's
+// original pointer, so a name some other code swapped in is left alone.
+uintptr_t Registry::Renamed(int32_t id, uintptr_t current, bool help) const {
+    if (!textLive_ || id < 0 || id >= kEnumCount) return current;
+    const int r = ruleOf_[id];
+    if (r < 0) return current;
+    const TextRule& t = rules_[static_cast<size_t>(r)];
+    if (current != t.slot || !(help ? t.help : t.text)) return current;
+    return reinterpret_cast<uintptr_t>(t.token.c_str());
+}
+
 uintptr_t Registry::TextName(int32_t id, uintptr_t current, bool help) const {
     if (IsVidValue(id)) {
         const uint32_t k = static_cast<uint32_t>(id) - static_cast<uint32_t>(kVidBase);
         if (live_ && k < static_cast<uint32_t>(n_) && (help ? clones_[k].help : clones_[k].text))
             return reinterpret_cast<uintptr_t>(clones_[k].namePtr);
+        // The vanilla pointer, like RegisterText's copy of the vanilla text: a clone with no text of its own shows its
+        // base's original name even when the base is renamed (the rename belongs to the base's own cell).
         return orig_[BaseOf(id)];
     }
     if (swapped_ >= 0 && id == clones_[swapped_].info.base && current == reinterpret_cast<uintptr_t>(clones_[swapped_].namePtr))
-        return orig_[id];
-    return current;
+        return Renamed(id, orig_[id], help);
+    return Renamed(id, current, help);
 }
 
 uintptr_t Registry::CanUseSlot(int32_t id, uintptr_t current) const {
@@ -378,6 +709,17 @@ uintptr_t Registry::CanUseSlot(int32_t id, uintptr_t current) const {
 const char* Registry::HudName() const {
     if (!live_ || active_ < 0 || !clones_[active_].hud) return nullptr;
     return clones_[active_].decl.hudIcon.c_str();
+}
+
+const char* Registry::HudNameFor(const char* incoming) const {
+    if (const char* c = HudName()) return c;
+    if (!hudIconsLive_ || !incoming) return nullptr;
+    const char* base = incoming;  // the file name after the last path separator
+    for (const char* p = incoming; *p; ++p)
+        if (*p == '\\' || *p == '/') base = p + 1;
+    for (const auto& r : iconRules_)
+        if (r.hud && r.hudFile && EqualsI(base, r.hudFile)) return r.decl.hudIcon.c_str();
+    return nullptr;
 }
 
 const CloneInfo* Registry::ByDesc(uintptr_t desc) const {

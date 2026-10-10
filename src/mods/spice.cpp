@@ -272,6 +272,13 @@ int SemverCompare(const std::string& a, const std::string& b) { return Compare(P
 
 bool ValidModId(const std::string& id) { return ValidId(id); }
 
+bool ValidVehicleMeshName(const std::string& modId, const std::string& name) {
+    if (name.size() <= modId.size() + 1 || name.size() > 96 || name.compare(0, modId.size() + 1, modId + ".") != 0) return false;
+    return std::all_of(name.begin(), name.end(), [](unsigned char c) {
+        return (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '.' || c == '_' || c == '-';
+    });
+}
+
 bool ValidRange(const std::string& range) {
     std::vector<Comparator> cmps;
     return ParseRange(Trim(range), &cmps);
@@ -548,6 +555,49 @@ bool ParseDataFiles(const json::Value& a, const char* key, size_t max, std::vect
     return ok;
 }
 
+// "meshes": [{"file": "<assetsRoot>/<path>.xom"}], relative to the mod folder and under the mod's assets root (so the
+// bank is part of the content hash). assets/meshbank.cpp loads the banks and checks what is inside them.
+bool ParseMeshes(const json::Value& a, Manifest* out, std::vector<Error>* errs) {
+    if (!a.IsArray()) {
+        AddError(errs, &a, "meshes", "meshes must be an array");
+        return false;
+    }
+    if (a.items.size() > kMaxMeshes) {
+        AddError(errs, &a, "meshes", "at most " + std::to_string(kMaxMeshes) + " meshes entries per mod");
+        return false;
+    }
+    auto norm = [](std::string s) {
+        s = ToLower(std::move(s));
+        std::replace(s.begin(), s.end(), '\\', '/');
+        while (!s.empty() && s.back() == '/') s.pop_back();
+        return s;
+    };
+    const std::string root = norm(out->assetsRoot);
+    bool ok = true;
+    for (const json::Value& item : a.items) {
+        const json::Value* f = item.IsObject() ? item.Get("file") : nullptr;
+        if (!f || item.members.size() != 1 || !f->IsString() || !ToLower(f->string).ends_with(".xom") || !SafeRelRoot(f->string)) {
+            AddError(errs, &item, "meshes", "each meshes entry must be {\"file\": \"<path>.xom\"}, a relative path inside the mod folder");
+            ok = false;
+            continue;
+        }
+        const std::string low = norm(f->string);
+        if (low.compare(0, root.size() + 1, root + "/") != 0) {
+            AddError(errs, f, "meshes.file",
+                     "meshes.file must be under the assets root (\"" + out->assetsRoot + "/\"), which is part of the content hash");
+            ok = false;
+            continue;
+        }
+        if (std::any_of(out->meshes.begin(), out->meshes.end(), [&](const MeshFile& m) { return norm(m.file) == low; })) {
+            AddError(errs, f, "meshes.file", "meshes.file \"" + f->string + "\" is listed twice");
+            ok = false;
+            continue;
+        }
+        out->meshes.push_back({f->string, item.line});
+    }
+    return ok;
+}
+
 // "music": [{"slot": "suddenDeath", "file": "<path>.mp3", "title": "...", "credit": "..."}].
 bool ParseMusic(const json::Value& a, std::vector<Music>* out, std::vector<Error>* errs) {
     if (!a.IsArray()) {
@@ -612,6 +662,182 @@ bool ParseMusic(const json::Value& a, std::vector<Music>* out, std::vector<Error
         }
         if (good) out->push_back(std::move(m));
         ok &= good;
+    }
+    return ok;
+}
+
+// "weaponText": {"kWeaponBazooka": {"name": "...", "help": "..."}}. Renames vanilla weapons for display only. Mirrors
+// the key and text rules of weapons/manifest.cpp (this file links without it); the clone-name check here covers the
+// mod's own "weapons", the other mods' are checked where the load order is known.
+bool ValidWeaponTextKey(const std::string& k) {
+    // ^k(Weapon|Utility)[A-Z][A-Za-z0-9]{2,40}$
+    size_t p = 0;
+    if (k.compare(0, 7, "kWeapon") == 0) p = 7;
+    else if (k.compare(0, 8, "kUtility") == 0) p = 8;
+    else return false;
+    if (p >= k.size() || !(k[p] >= 'A' && k[p] <= 'Z')) return false;
+    const size_t tail = k.size() - p - 1;
+    if (tail < 2 || tail > 40) return false;
+    for (size_t i = p + 1; i < k.size(); ++i)
+        if (!std::isalnum(static_cast<unsigned char>(k[i]))) return false;
+    return true;
+}
+
+bool ParseWeaponText(const json::Value& o, Manifest* out, std::vector<Error>* errs) {
+    if (!o.IsObject()) {
+        AddError(errs, &o, "weaponText", "weaponText must be an object of weapon name -> {name, help}");
+        return false;
+    }
+    if (o.members.size() > 64) {
+        AddError(errs, &o, "weaponText", "at most 64 weaponText entries per mod");
+        return false;
+    }
+    auto printable = [](const std::string& s) {
+        return std::all_of(s.begin(), s.end(), [](unsigned char c) { return c >= 0x20 && c < 0x7f; });
+    };
+    bool ok = true;
+    std::vector<std::string> seen;
+    for (const auto& [key, item] : o.members) {
+        bool good = true;
+        if (!ValidWeaponTextKey(key)) {
+            AddError(errs, &item, "weaponText", "weaponText key '" + key + "' must match ^k(Weapon|Utility)[A-Z][A-Za-z0-9]{2,40}$");
+            good = false;
+        } else if (std::find(seen.begin(), seen.end(), key) != seen.end()) {
+            AddError(errs, &item, "weaponText", "weaponText." + key + " is listed twice");
+            good = false;
+        } else if (std::any_of(out->weapons.begin(), out->weapons.end(), [&](const Weapon& w) { return w.name == key; })) {
+            AddError(errs, &item, "weaponText", "weaponText." + key + " is a clone of this mod; give the clone its own \"text\"");
+            good = false;
+        }
+        seen.push_back(key);
+        if (!item.IsObject()) {
+            AddError(errs, &item, "weaponText", "weaponText." + key + " must be an object with name and/or help");
+            ok = false;
+            continue;
+        }
+        WeaponText w;
+        w.weapon = key;
+        w.line = item.line;
+        for (const auto& [fk, fv] : item.members) {
+            if (fk == "name") {
+                if (!fv.IsString() || fv.string.empty() || fv.string.size() > 24 || !printable(fv.string)) {
+                    AddError(errs, &fv, "weaponText", "weaponText." + key + ".name must be 1-24 printable ASCII characters");
+                    good = false;
+                } else {
+                    w.name = fv.string;
+                }
+            } else if (fk == "help") {
+                if (!fv.IsString() || fv.string.size() > 160 || !printable(fv.string)) {
+                    AddError(errs, &fv, "weaponText", "weaponText." + key + ".help must be at most 160 printable ASCII characters");
+                    good = false;
+                } else {
+                    w.help = fv.string;
+                }
+            } else {
+                AddError(errs, &fv, "weaponText", "unknown weaponText." + key + " key '" + fk + "'");
+                good = false;
+            }
+        }
+        if (good && w.name.empty() && w.help.empty()) {
+            AddError(errs, &item, "weaponText", "weaponText." + key + " needs a name or a help");
+            good = false;
+        }
+        if (good) out->weaponText.push_back(std::move(w));
+        ok &= good;
+    }
+    return ok;
+}
+
+// "weaponIcons": {"kWeaponBazooka": {"panelIcon": "icons/x.png", "hudIcon": "<modId>.x.tga"}}. Replaces the panel and HUD
+// icons of vanilla weapons. Shape only here (string fields, key rules like weaponText's); the file-name rules are
+// checked in weapons/manifest.cpp, which also knows every mod's clone names.
+bool ParseWeaponIcons(const json::Value& o, Manifest* out, std::vector<Error>* errs) {
+    if (!o.IsObject()) {
+        AddError(errs, &o, "weaponIcons", "weaponIcons must be an object of weapon name -> {panelIcon, hudIcon}");
+        return false;
+    }
+    if (o.members.size() > 64) {
+        AddError(errs, &o, "weaponIcons", "at most 64 weaponIcons entries per mod");
+        return false;
+    }
+    bool ok = true;
+    std::vector<std::string> seen;
+    for (const auto& [key, item] : o.members) {
+        bool good = true;
+        if (!ValidWeaponTextKey(key)) {
+            AddError(errs, &item, "weaponIcons", "weaponIcons key '" + key + "' must match ^k(Weapon|Utility)[A-Z][A-Za-z0-9]{2,40}$");
+            good = false;
+        } else if (std::find(seen.begin(), seen.end(), key) != seen.end()) {
+            AddError(errs, &item, "weaponIcons", "weaponIcons." + key + " is listed twice");
+            good = false;
+        } else if (std::any_of(out->weapons.begin(), out->weapons.end(), [&](const Weapon& w) { return w.name == key; })) {
+            AddError(errs, &item, "weaponIcons", "weaponIcons." + key + " is a clone of this mod; give the clone its own panelIcon/hudIcon");
+            good = false;
+        }
+        seen.push_back(key);
+        if (!item.IsObject()) {
+            AddError(errs, &item, "weaponIcons", "weaponIcons." + key + " must be an object with panelIcon and/or hudIcon");
+            ok = false;
+            continue;
+        }
+        WeaponIcon w;
+        w.weapon = key;
+        w.line = item.line;
+        for (const auto& [fk, fv] : item.members) {
+            if (fk == "panelIcon" || fk == "hudIcon") {
+                if (!fv.IsString() || fv.string.empty() || fv.string.size() > 120) {
+                    AddError(errs, &fv, "weaponIcons", "weaponIcons." + key + "." + fk + " must be a file name of 1-120 characters");
+                    good = false;
+                } else {
+                    (fk == "panelIcon" ? w.panelIcon : w.hudIcon) = fv.string;
+                }
+            } else {
+                AddError(errs, &fv, "weaponIcons", "unknown weaponIcons." + key + " key '" + fk + "'");
+                good = false;
+            }
+        }
+        if (good && w.panelIcon.empty() && w.hudIcon.empty()) {
+            AddError(errs, &item, "weaponIcons", "weaponIcons." + key + " needs a panelIcon or a hudIcon");
+            good = false;
+        }
+        if (good) out->weaponIcons.push_back(std::move(w));
+        ok &= good;
+    }
+    return ok;
+}
+
+// "vehicleMeshes": {"BomberHelicopter": "<modId>.Chopper", "SuperAirstrike": "<modId>.Chopper2"}. The mesh the Airstrike
+// helicopter and the Super Airstrike's are drawn with. The names live in the banks, which a pure parse cannot open, so the
+// manifest-level rules are: a known vehicle, a "<modId>." name, and a mod that lists at least one mesh bank; whether a
+// loaded bank has that mesh is checked when the match starts (weapons/registry_core.cpp).
+bool ParseVehicleMeshes(const json::Value& o, Manifest* out, std::vector<Error>* errs) {
+    if (!o.IsObject()) {
+        AddError(errs, &o, "vehicleMeshes", "vehicleMeshes must be an object of vehicle name -> mesh name");
+        return false;
+    }
+    bool ok = true;
+    for (const auto& [key, item] : o.members) {
+        std::string known;
+        for (const char* k : kVehicleKeys) known += (known.empty() ? "" : ", ") + std::string(k);
+        if (std::find(std::begin(kVehicleKeys), std::end(kVehicleKeys), key) == std::end(kVehicleKeys)) {
+            AddError(errs, &item, "vehicleMeshes",
+                     key == "Bomber"
+                         ? "vehicleMeshes.Bomber: this game build never draws the \"Bomber\" mesh (the Airstrike is the BomberHelicopter mesh); use one of: " + known
+                         : "unknown vehicleMeshes key '" + key + "'; use one of: " + known);
+            ok = false;
+        } else if (std::any_of(out->vehicleMeshes.begin(), out->vehicleMeshes.end(), [&](const VehicleMesh& v) { return v.vehicle == key; })) {
+            AddError(errs, &item, "vehicleMeshes", "vehicleMeshes." + key + " is listed twice");
+            ok = false;
+        } else if (!item.IsString() || !ValidVehicleMeshName(out->id, item.string)) {
+            AddError(errs, &item, "vehicleMeshes",
+                     "vehicleMeshes." + key + " must be a mesh name \"" + out->id + ".<Name>\" (letters, digits, '.', '_', '-'; at most 96 characters)");
+            ok = false;
+        } else if (out->meshes.empty()) {
+            AddError(errs, &item, "vehicleMeshes", "vehicleMeshes." + key + " names \"" + item.string + "\" but this mod lists no meshes bank");
+            ok = false;
+        } else {
+            out->vehicleMeshes.push_back({key, item.string, item.line});
+        }
     }
     return ok;
 }
@@ -885,6 +1111,23 @@ bool ParseManifestJson(const json::Value& v, const std::string& folderId, Manife
             ok = false;
         }
     }
+    if (const json::Value* wt = v.Get("weaponText")) {
+        // Parsed after "weapons" so this mod's own clone names are known.
+        if (!out->content) {
+            AddError(errs, wt, "weaponText", "weaponText requires kind: \"content\"");
+            ok = false;
+        } else if (!ParseWeaponText(*wt, out, errs)) {
+            ok = false;
+        }
+    }
+    if (const json::Value* wi = v.Get("weaponIcons")) {
+        if (!out->content) {
+            AddError(errs, wi, "weaponIcons", "weaponIcons requires kind: \"content\"");
+            ok = false;
+        } else if (!ParseWeaponIcons(*wi, out, errs)) {
+            ok = false;
+        }
+    }
     if (const json::Value* lv = v.Get("levels")) {
         if (!ParseLevels(*lv, out, errs)) ok = false;
         if (!out->levels.empty() && !out->content) {
@@ -901,6 +1144,25 @@ bool ParseManifestJson(const json::Value& v, const std::string& folderId, Manife
     // The music is local (each player hears their own), so any kind may carry it.
     if (const json::Value* mu = v.Get("music"))
         if (!ParseMusic(*mu, &out->music, errs)) ok = false;
+    // Loaded on this PC only (it changes what the game draws, not the simulation), but the names are "<modId>."
+    // resources a clone or an entry.sim points at, so it is a content mod's field. Parsed after "assets" (the root).
+    if (const json::Value* me = v.Get("meshes")) {
+        if (!out->content) {
+            AddError(errs, me, "meshes", "meshes requires kind: \"content\"");
+            ok = false;
+        } else if (!ParseMeshes(*me, out, errs)) {
+            ok = false;
+        }
+    }
+    // After "meshes": it needs to know the mod lists a bank. Presentation only, but the names are the mod's own resources.
+    if (const json::Value* vm = v.Get("vehicleMeshes")) {
+        if (!out->content) {
+            AddError(errs, vm, "vehicleMeshes", "vehicleMeshes requires kind: \"content\"");
+            ok = false;
+        } else if (!ParseVehicleMeshes(*vm, out, errs)) {
+            ok = false;
+        }
+    }
     if (const json::Value* imp = v.Get("importer")) {
         const json::Value* r = imp->IsObject() ? imp->Get("recipe") : nullptr;
         if (!r || imp->members.size() != 1 || !r->IsString() || !ValidRecipePath(r->string)) {

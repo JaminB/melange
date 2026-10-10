@@ -342,6 +342,49 @@ functions do nothing useful (`binding()` returns `nil`, `setOptions` is accepted
 Scaled motion keeps its fractional part from one mouse event to the next, so a low sensitivity does not drop slow
 movements.
 
+## `wum.audio`
+
+Plays sounds from the mod folder on this machine. It is client-only: the library exists in the client VM and not in the
+match VM, the sound is mixed and played locally, and nothing about it reaches the simulation, the wire, the content
+handshake or other players. Each player hears only what their own copy of the mod plays. The backend is XAudio2 2.9
+(`xaudio2_9.dll`, part of Windows 10 and later); where it or an output device is missing, `ready()` is `false` and
+`play` returns `nil, "audio unavailable"` (`load` still works, since it only reads the file). It is also unavailable with `[Audio] Enabled=0`.
+
+Files must be WAV: PCM (format 1, or `WAVE_FORMAT_EXTENSIBLE` with a PCM subformat), 16-bit, 1 or 2 channels, 8000 to
+48000 Hz, at most 2 MiB. Other RIFF chunks are skipped. Anything else (24-bit, float, ADPCM, a truncated file) returns
+`nil` and a short reason such as `"not 16-bit"` or `"too large"`. Convert other formats first.
+
+| Name | Description |
+|---|---|
+| `wum.audio.ready()` | `true` when sound can play. The first call starts the audio backend, so a mod can check once at start-up. |
+| `wum.audio.load(rel)` | Reads and decodes a WAV from the mod folder (`rel` is relative to it, with no `..`, drive or leading slash) and returns a handle, an integer, or `nil, reason`. Loading the same path again returns the same handle without reading the file; paths that differ only in case, in `/` against `\`, or by a `.` segment count as the same path. `load` does not need the audio backend, so a `load` at the top of the mod works even if the output device comes up later. A mod holds up to 64 sounds and 16 MiB of decoded audio at a time; past that `load` returns `nil, "too many sounds loaded"` or `nil, "sound memory limit reached"`. Handles are valid only in the mod that loaded them and are freed when the mod unloads, reloads or is disabled. |
+| `wum.audio.play(handle[, opts])` | Starts the sound and returns a voice id, an integer, or `nil, reason` (`"audio unavailable"`, `"unknown sound"`, `"too many voices"`). `opts` is a table, all fields optional: `volume` = 0 to 2, default 1; `pitch` = a frequency ratio from 0.5 to 2.0, default 1 (2.0 is an octave up and half as long); `loop` = a boolean, default `false`, a looping voice plays until `stop` or `stopAll`; `pos` = `{x=, y=, z=}` (or `{x, y, z}`) in world units, which makes the sound positional. Numbers outside a range, infinities included, are clamped; a `NaN` volume or pitch is replaced by the default, and a `NaN` `pos` component makes the sound silent. Without `pos` the sound is plain 2D. |
+| `wum.audio.stop(voice)` | Stops a voice and returns `true`, or `false` if it is unknown, has already ended, or belongs to another mod. |
+| `wum.audio.stopAll()` | Stops every voice this mod has playing and returns how many. |
+
+A positional sound is attenuated by its distance to the render camera: full volume within `[Audio] Near` (150 world
+units by default), falling linearly to silence at `[Audio] Far` (1500), recalculated every frame, so a moving camera
+and a long or looping sound follow each other. There is no panning. If the camera is not available the sound plays at
+its own volume. The `Volume` setting (0 to 1) scales everything the mod plays, and at most `[Audio] MaxVoices` (default
+32, up to 64) voices play at once across all mods; a new `play` over that returns `nil, "too many voices"` and does not
+cut off a playing one. A voice stopped with `stop` or `stopAll` frees its slot at once, so a `play` right after it has room.
+
+Voices end by themselves when the sound finishes. Every voice that started before the match ended is also stopped when
+it does, and a mod's voices when that mod unloads, reloads or is disabled. A sound started from a `melange.match.end`
+handler is not stopped (the handler runs in the same frame as the stop), so it can be used for a victory sound; it plays
+on into the menu. This is expected from the code and not yet tried in game. Errors are raised only for a wrong argument type (a handle that is not a
+number, `opts` that is not a table, a `volume` or `pitch` that is not a number, `loop` that is not a boolean, `pos`
+that is not a table); everything else returns `nil, reason`.
+
+```lua
+local boom = wum.audio.load("sfx/boom.wav")      -- nil, reason if it is missing or not a usable WAV
+wum.events.on("melange.match.start", function()
+  if boom then wum.audio.play(boom, {volume = 0.8}) end                  -- plain 2D
+end)
+-- positional, a little random pitch so repeats do not sound identical:
+--   wum.audio.play(boom, {pos = {x = 120, y = 40, z = -300}, pitch = 0.9 + math.random() * 0.2})
+```
+
 ## `wum.wormsign`
 
 The match's tick clock and state hash. A tick is one 20 ms step of the game's simulation (50 per second); its hash
