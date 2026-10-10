@@ -297,10 +297,13 @@ void OnPost(SafetyHookContext& ctx) {
 
 // ---------------------------------------------------------------- Raw Input smoothing
 std::atomic<int> g_rawX{0}, g_rawY{0};
+std::atomic<uint32_t> g_rawEvents{0};  // accepted events since the last flush
 std::atomic<long long> g_rawTotX{0}, g_rawTotY{0};
 std::atomic<bool> g_rawSeen{false}, g_rawRegistered{false};
 HWND g_rawHwnd = nullptr;
 Carry g_smoothX, g_smoothY;
+RawFallback g_rawFallback;            // touched by the flush only
+std::atomic<bool> g_rawStale{false};  // mirror of g_rawFallback.stale for OnFrame
 
 bool SmoothActive() {
     return g_smoothCfg && g_rawRegistered.load(std::memory_order_relaxed) && g_rawSeen.load(std::memory_order_relaxed);
@@ -309,8 +312,19 @@ bool SmoothActive() {
 void AddRaw(LONG dx, LONG dy) {
     g_rawX.fetch_add(dx, std::memory_order_relaxed);
     g_rawY.fetch_add(dy, std::memory_order_relaxed);
+    g_rawEvents.fetch_add(1, std::memory_order_relaxed);
     g_rawTotX.fetch_add(dx, std::memory_order_relaxed);
     g_rawTotY.fetch_add(dy, std::memory_order_relaxed);
+}
+
+// The game has the mouse: a window of this process (the game window, or one it owns) is the foreground one and the
+// overlay is not capturing.
+bool GameFocused(HWND h) {
+    const HWND fg = GetForegroundWindow();
+    if (!fg) return false;
+    DWORD pid = 0;
+    if (fg != h && (!GetWindowThreadProcessId(fg, &pid) || pid != GetCurrentProcessId())) return false;
+    return !melange::overlay::Capturing();
 }
 
 void RawSink(HWND h, WPARAM wp, LPARAM lp) {
@@ -321,9 +335,9 @@ void RawSink(HWND h, WPARAM wp, LPARAM lp) {
     if (ri.header.dwType != RIM_TYPEMOUSE || (ri.data.mouse.usFlags & MOUSE_MOVE_ABSOLUTE)) return;
     const LONG dx = ri.data.mouse.lLastX, dy = ri.data.mouse.lLastY;
     if (!dx && !dy) return;
-    g_rawSeen.store(true, std::memory_order_relaxed);
     // Background input is ignored, and so is anything the overlay owns (the game gets no mouse then either).
-    if (GET_RAWINPUT_CODE_WPARAM(wp) != RIM_INPUT || GetForegroundWindow() != h || melange::overlay::Capturing()) return;
+    if (GET_RAWINPUT_CODE_WPARAM(wp) != RIM_INPUT || !GameFocused(h)) return;
+    g_rawSeen.store(true, std::memory_order_relaxed);  // only an event that is used arms the smoothing
     AddRaw(dx, dy);
 }
 
@@ -355,24 +369,40 @@ void OnFlush(SafetyHookContext& ctx) {
     ApplyInvert();
     if (!SmoothActive()) return;
     const float sens = *reinterpret_cast<float*>(svc + 0xa4);
-    *reinterpret_cast<int*>(svc + 0x78) = g_smoothX.Apply(g_rawX.exchange(0, std::memory_order_relaxed), sens);
-    *reinterpret_cast<int*>(svc + 0x7c) = g_smoothY.Apply(g_rawY.exchange(0, std::memory_order_relaxed), sens);
+    const int rawX = g_rawX.exchange(0, std::memory_order_relaxed), rawY = g_rawY.exchange(0, std::memory_order_relaxed);
+    int* gameX = reinterpret_cast<int*>(svc + 0x78);
+    int* gameY = reinterpret_cast<int*>(svc + 0x7c);
+    const uint32_t events = g_rawEvents.exchange(0, std::memory_order_relaxed);
+    const RawFallback::Result r =
+        g_rawFallback.Feed(events, *gameX, *gameY, g_rawHwnd && GameFocused(g_rawHwnd), GetTickCount64());
+    g_rawStale.store(g_rawFallback.stale, std::memory_order_relaxed);
+    if (r.becameStale || r.rearmed) {
+        g_smoothX.Reset();  // no sub-count residue carried across the switch
+        g_smoothY.Reset();
+    }
+    if (r.becameStale)
+        LOG_WARN("[controls] Raw Input stopped arriving while the mouse moves; using the game's own mouse input");
+    if (r.rearmed) LOG_INFO("[controls] Raw Input is arriving again; smoothing resumed");
+    if (!r.useRaw) return;  // stale: the game's own deltas stand
+    *gameX = g_smoothX.Apply(rawX, sens);
+    *gameY = g_smoothY.Apply(rawY, sens);
 }
 
-void RegisterRaw(HWND hwnd) {
+void RegisterRaw(HWND hwnd, bool quiet = false) {
     RAWINPUTDEVICE rid{};
     rid.usUsagePage = 1;
     rid.usUsage = 2;  // mouse; no RIDEV_INPUTSINK: only while the game window is the foreground one
     rid.hwndTarget = hwnd;
     g_rawHwnd = hwnd;  // one attempt per window
     if (!RegisterRawInputDevices(&rid, 1, sizeof rid)) {
-        LOG_WARN("[controls] RegisterRawInputDevices failed (error %lu): SmoothMouse off, the game's own mouse input is used",
-                 GetLastError());
+        if (!quiet)
+            LOG_WARN("[controls] RegisterRawInputDevices failed (error %lu): SmoothMouse off, the game's own mouse input is used",
+                     GetLastError());
         return;
     }
     g_rawRegistered = true;
     melange::render::SetRawInputSink(&RawSink);
-    LOG_INFO("[controls] Raw Input mouse registered on window %p", static_cast<void*>(hwnd));
+    if (!quiet) LOG_INFO("[controls] Raw Input mouse registered on window %p", static_cast<void*>(hwnd));
 }
 
 void UnregisterRaw() {
@@ -387,22 +417,27 @@ void UnregisterRaw() {
     g_rawHwnd = nullptr;
     g_rawX = 0;
     g_rawY = 0;
+    g_rawEvents = 0;
     g_rawSeen = false;
+    g_rawStale = false;
+    g_rawFallback.Reset();
 }
 
 void ProbeLog() {
-    static int lastCam = -2, lastAim = -2, lastTracked = -1, lastSeen = -1;
+    static int lastCam = -2, lastAim = -2, lastTracked = -1, lastSeen = -1, lastStale = -1;
     static long long lastX = 0, lastY = 0;
     static uint64_t lastRaw = 0;
     const int cam = g_camFlag, aim = g_aimFlag, seen = g_rawSeen ? 1 : 0;
     const int tracked = static_cast<int>(g_tracked.size());
-    if (cam != lastCam || aim != lastAim || tracked != lastTracked || seen != lastSeen) {
+    const int stale = g_rawStale.load(std::memory_order_relaxed) ? 1 : 0;
+    if (cam != lastCam || aim != lastAim || tracked != lastTracked || seen != lastSeen || stale != lastStale) {
+        lastStale = stale;
         lastCam = cam;
         lastAim = aim;
         lastTracked = tracked;
         lastSeen = seen;
-        LOG_INFO("[controls] probe: Camera.MouseMoved invertY=%d, Input.AimMouse invertY=%d, %d mappings tracked, rawSeen=%d smooth=%d",
-                 cam, aim, tracked, seen, SmoothActive());
+        LOG_INFO("[controls] probe: Camera.MouseMoved invertY=%d, Input.AimMouse invertY=%d, %d mappings tracked, rawSeen=%d smooth=%d stale=%d",
+                 cam, aim, tracked, seen, SmoothActive(), stale);
     }
     const uint64_t now = GetTickCount64();
     const long long tx = g_rawTotX, ty = g_rawTotY;
@@ -418,6 +453,15 @@ void OnFrame() {
     if (!g_installed) return;
     HWND hwnd = static_cast<HWND>(melange::events::GameWindow());
     if (g_smoothCfg && hwnd && hwnd != g_rawHwnd && melange::render::SubclassedWindow() == hwnd) RegisterRaw(hwnd);
+    // While Raw Input is stale something may have replaced our registration: register again, quietly, every 5 s.
+    if (g_smoothCfg && hwnd && hwnd == g_rawHwnd && g_rawStale.load(std::memory_order_relaxed)) {
+        static uint64_t lastTry = 0;
+        const uint64_t now = GetTickCount64();
+        if (now - lastTry >= 5000) {
+            lastTry = now;
+            RegisterRaw(hwnd, true);
+        }
+    }
     // The flush re-applies the flags right before it reads them; the per-frame scan is only for the probe log.
     if (g_probe) {
         ApplyInvert();

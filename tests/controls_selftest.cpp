@@ -58,6 +58,59 @@ void TestCarry(Ctx& c) {
     c.Check(r.residue == 0.0f, "carry: reset");
 }
 
+void TestRawFallback(Ctx& c) {
+    ctl::RawFallback f;
+    uint64_t t = 10000;  // ms; a flush every 16 ms
+    auto r = f.Feed(1, 3, -2, true, t);
+    c.Check(r.useRaw && !r.becameStale && !r.rearmed && !f.stale, "fallback: arms on raw");
+    bool ok = true;
+    for (int i = 0; i < 50; ++i) {
+        r = f.Feed(1, 1, 0, true, t += 16);
+        ok = ok && r.useRaw && !f.stale && !r.becameStale;
+    }
+    c.Check(ok, "fallback: stays raw while both move");
+    for (int i = 0; i < 3 * ctl::kStaleFlushes; ++i) r = f.Feed(0, 0, 0, true, t += 16);
+    c.Check(!f.stale && r.useRaw, "fallback: zero/zero flushes never trigger");
+    // Many short game-only tails after normal movements, each broken by a quiet flush, never add up.
+    ok = true;
+    for (int round = 0; round < 20; ++round) {
+        f.Feed(2, 5, 0, true, t += 16);
+        for (int i = 0; i < ctl::kStaleFlushes - 1; ++i) ok = ok && f.Feed(0, 3, 0, true, t += 16).useRaw;
+        f.Feed(0, 0, 0, true, t += 400);
+    }
+    c.Check(ok && !f.stale, "fallback: movement tails broken by quiet flushes do not add up");
+    // A run of game-only flushes right after raw stopped stays raw until the time gate passes.
+    f.Feed(1, 1, 0, true, t += 16);
+    for (int i = 0; i < 3 * ctl::kStaleFlushes; ++i) r = f.Feed(0, 4, 0, true, t += 16);
+    c.Check(!f.stale && r.useRaw, "fallback: not stale inside the time gate");
+    f.Feed(0, 0, 0, true, t += 2000);
+    for (int i = 0; i < 3 * ctl::kStaleFlushes; ++i) r = f.Feed(0, 4, 0, false, t += 16);
+    c.Check(!f.stale && r.useRaw, "fallback: unfocused game motion never trips it");
+    ok = true;
+    for (int i = 0; i < ctl::kStaleFlushes - 1; ++i) {
+        r = f.Feed(0, 4, 0, true, t += 16);
+        ok = ok && r.useRaw && !f.stale && !r.becameStale;
+    }
+    c.Check(ok, "fallback: not stale before N game-only flushes in a row");
+    r = f.Feed(0, 0, -5, true, t += 16);
+    c.Check(f.stale && !r.useRaw && r.becameStale, "fallback: stale on the Nth game-only flush");
+    r = f.Feed(0, 2, 2, true, t += 16);
+    c.Check(f.stale && !r.useRaw && !r.becameStale && !r.rearmed, "fallback: stale reported once, game deltas kept");
+    r = f.Feed(0, 0, 0, true, t += 16);
+    c.Check(f.stale && !r.useRaw, "fallback: stays stale on zero/zero");
+    r = f.Feed(2, 0, 0, true, t += 16);  // e.g. +3 then -3 within one flush: events, net zero
+    c.Check(!f.stale && r.useRaw && r.rearmed && !r.becameStale, "fallback: first raw event re-arms and is used");
+    r = f.Feed(1, 1, 1, true, t += 16);
+    c.Check(!r.rearmed && r.useRaw, "fallback: re-arm reported once");
+    f.Feed(0, 0, 0, true, t += 2000);
+    for (int i = 0; i < ctl::kStaleFlushes - 1; ++i) f.Feed(0, 1, 1, true, t += 16);
+    f.Feed(1, 1, 0, true, t += 16);  // a raw event resets the run and the clock
+    for (int i = 0; i < ctl::kStaleFlushes - 1; ++i) f.Feed(0, 1, 1, true, t += 16);
+    c.Check(!f.stale, "fallback: a raw event resets the run");
+    f.Reset();
+    c.Check(!f.stale && !f.gameOnly, "fallback: reset");
+}
+
 void TestSens(Ctx& c) {
     c.Check(ctl::ClampSensitivity(0.1) == 0.25f && ctl::ClampSensitivity(9) == 3.0f && ctl::ClampSensitivity(1.5) == 1.5f,
             "sensitivity: clamped to 0.25..3");
@@ -95,6 +148,7 @@ int main() {
     Ctx c;
     TestInvert(c);
     TestCarry(c);
+    TestRawFallback(c);
     TestSens(c);
     TestLabels(c);
     TestHotkey(c);
