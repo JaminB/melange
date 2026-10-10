@@ -1,8 +1,9 @@
 name: pages
 
 # Builds the documentation site in site/ and publishes it to GitHub Pages (https://jaminb.github.io/melange/).
-# Runs on every push to main, at the end of a release (release.yml calls it), by hand, and as a build-only check on
-# pull requests that touch the docs, the Lua API sources or the site itself.
+# Runs on every push to main, after a tag release succeeds (workflow_run: it then runs on main, which the github-pages
+# environment's branch policy allows, and builds main's current tree), by hand, and as a build-only check on pull
+# requests that touch the docs, the Lua API sources or the site itself.
 #
 # The site is the one place in this repository where npm runs. It is built only here, from site/package-lock.json,
 # and nothing it installs is ever shipped in a release.
@@ -19,7 +20,9 @@ on:
       - "site/**"
       - ".github/workflows/pages.yml"
   workflow_dispatch:
-  workflow_call:
+  workflow_run:
+    workflows: [release]
+    types: [completed]
 
 permissions: {}
 
@@ -29,6 +32,8 @@ concurrency:
 
 jobs:
   build:
+    # After a release: only one that succeeded for a pushed tag (release.yml's push trigger is tags only).
+    if: github.event_name != 'workflow_run' || (github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event == 'push')
     runs-on: ubuntu-latest
     permissions:
       contents: read

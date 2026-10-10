@@ -146,12 +146,6 @@ jobs:
           }
           if ($LASTEXITCODE) { exit 1 }
 
-  # Last step of a release: rebuild the site so its download button, changelog and version switcher show the new release.
-  pages:
-    needs: release
-    if: github.ref_type == 'tag'
-    permissions:
-      contents: read
-      pages: write
-      id-token: write
-    uses: ./.github/workflows/pages.yml
+  # When this run succeeds for a tag, pages.yml (on: workflow_run) rebuilds the site so its download button, changelog
+  # and version switcher show the new release. It is not called from here: a job of this run would carry the tag ref,
+  # which the github-pages environment's branch policy (main only) rejects.

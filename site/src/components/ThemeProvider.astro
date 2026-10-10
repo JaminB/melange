@@ -7,7 +7,8 @@ import Default from '@astrojs/starlight/components/ThemeProvider.astro';
 
 <script is:inline>
 	try {
-		if (!localStorage.getItem('starlight-theme')) localStorage.setItem('starlight-theme', 'dark');
+		// Only a missing key is a first visit: Starlight stores the Auto choice as ''.
+		if (localStorage.getItem('starlight-theme') === null) localStorage.setItem('starlight-theme', 'dark');
 	} catch {}
 </script>
 <Default {...Astro.props}><slot /></Default>
