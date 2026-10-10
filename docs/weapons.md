@@ -205,6 +205,61 @@ Not verified in a running game (built and tested offline against a fake engine o
 - Weapon names shown elsewhere (crate pickup message, end-of-match statistics, replays, the schemes screen) are read
   from other paths and may keep the vanilla name.
 
+## Replacing vanilla icons
+
+A content mod can replace the weapons-panel icon and the HUD icon of vanilla weapons with `weaponIcons` (the manifest
+form is in [spice.md](spice.md#weaponicons-replacing-vanilla-weapon-icons)), for example a weapon overhaul that turns the
+Bazooka into a ripper. It is presentation only: no container, ammo or scheme value is touched.
+
+```json
+"weaponIcons": { "kWeaponBazooka": { "panelIcon": "icons/ripper.png", "hudIcon": "kindjal.ripper.hud.tga" } }
+```
+
+**Panel icon.** The game draws panel icons from three 256x256 sheets ("Weapon Panel Icons1" to "3"), 16 slots of 64x64
+each, and a weapon's panel cell holds an icon code (sheet | slot << 8). When the registry goes live for a match (the
+same gate as clones and `weaponText`) Melange reads the code from the vanilla weapon's own panel cell and has the
+upload patcher write the PNG over that slot, the next time the sheet is uploaded. The PNG is alpha-blended onto the
+vanilla pixels, so use an opaque icon unless you want the old one to show through the transparent parts. The first
+time a slot is written its vanilla pixels are copied aside; from then on every upload of that sheet first puts the
+copies back and then writes the rules that are active, so when a match ends (or a rule is gone) the vanilla icon
+returns at the next upload of the sheet. A clone without a `panelIcon` of its own shows its base's icon, so it shows the
+replacement too.
+
+**HUD icon.** The HUD loads the active weapon's icon by file name (`Data\HUD\Weapons\bazooka.tga` and so on). The
+rule is keyed by that name, not by the worm's weapon: when the file about to load is the vanilla file of a weapon with a
+`hudIcon` rule, and the rule is armed for this match, the mod's file is loaded instead. The path and letter case are
+ignored. The weapon-to-file table is the container name without `kWeapon`/`kUtility`, lower-cased, matched to the file
+stem (`HolyHandGrenade` to `hollyhandgrenade.tga`, `HomingMissile` to `HomingMissile.tga`, a few aliases such as
+`ClusterBomb` to `clustergrenade.tga`); a weapon with no file in the table gets a warning and keeps its HUD icon. While a
+clone with its own `hudIcon` is selected, the clone's icon wins.
+
+Rules:
+
+- A rule applies only to a weapon the game has a container, a name-table slot and (for `panelIcon`) a panel cell for.
+  `hudIcon` also needs the mod's `assets/loose` as a search path and the file to exist. Anything missing is skipped with a
+  `[weapons] weaponIcons ...` warning and the vanilla icon stays; each piece (panel, HUD) fails on its own.
+- A weapon can have icons from one mod only; the later mod in load order is refused as a whole. A key can't be a clone
+  name.
+- It needs a **live content match**: in the menus, in a match with content mods off and in a match that does not allow
+  sim mods the panel and HUD are vanilla, as for clones.
+- **Every peer needs the same mod.** The rules (weapon, file names) are part of the content hash and of the weapon hash
+  (`mlg.wpn`), so a peer with different icons is a mismatch for the weapon gate, like different `weaponText`.
+- Per match the log lists which rules are armed (`weaponIcons <weapon> id N: panel=.. hud=..` and a summary line); the
+  `weapons.state` test verb lists the declared rules and what each resolved to, and the first HUD substitutions are logged.
+
+Not verified in a running game (built and tested offline against a fake engine only):
+
+- That the panel icon appears: the slot is found from the weapon's panel cell and written at the sheet's upload, which
+  works for clone slots (sheet 3, slots 9 to 15), but "Weapon Panel Icons1" and "2" have not been patched in a game.
+- **When the vanilla pixels return.** The patcher restores from its copy at the next upload of that sheet. If the game
+  builds a sheet only once per session, the texture already on the GPU keeps the mod's icon after the match until it is
+  rebuilt (a restart). Whether it is rebuilt between matches is not confirmed.
+- That the name the HUD hook sees is the bare or relative file name of the vanilla `.tga` (the match ignores any folder),
+  and that substituting a bare `<modId>.*.tga` name works the way it does for clones.
+- The weapon-to-file table is built from the file list and the container naming; names such as `kWeaponClusterBomb` or
+  `kWeaponMine` are guesses. A name that is not in the table logs a warning instead of replacing anything.
+- Online with other players, and spectators: the HUD swap is by file name, so it follows whatever the local HUD loads.
+
 ## Online behaviour
 
 - A match only creates clones when **every** peer's content matches (the same rule M2 already uses for sim

@@ -36,8 +36,11 @@ struct CloneSpec {
 };
 
 // One vanilla-weapon rename (spice.json "weaponText"); an empty name or help means that text is not renamed.
+// A weaponIcons rule travels in the same list with icon = true: weapon, then panelIcon and hudIcon (file names).
 struct TextSpec {
     std::string weapon, name, help;
+    bool icon = false;
+    std::string panelIcon, hudIcon;
 };
 
 std::string SetNumber(double v);

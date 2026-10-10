@@ -342,8 +342,55 @@ void TestIconsWriteSubIcon() {
         }
     Expect(untouched, "icons: WriteSubIcon touches only its own 64x64 cell");
 
-    Expect(!icons::WriteSubIcon(atlas.data(), atlas.size(), 8, icon.data()), "icons: sub-icon 8 (in use by vanilla) is refused");
+    Expect(!icons::WriteSubIcon(atlas.data(), atlas.size(), 16, icon.data()) && !icons::WriteSubIcon(atlas.data(), atlas.size(), -1, icon.data()),
+           "icons: sub-icons outside 0..15 are refused");
     Expect(!icons::WriteSubIcon(atlas.data(), 100, 12, icon.data()), "icons: a wrong-sized atlas buffer is refused");
+}
+
+// Replacing a vanilla weapon's own sub-icon (spice.json "weaponIcons"): any of the 16 sub-icons, snapshot and restore.
+void TestIconsVanillaSubIcon() {
+    std::vector<uint8_t> atlas(256 * 256 * 3);
+    for (size_t i = 0; i < atlas.size(); ++i) atlas[i] = static_cast<uint8_t>(i * 7 + 3);  // a recognisable "vanilla" atlas
+    const std::vector<uint8_t> vanilla = atlas;
+    std::vector<uint8_t> icon(64 * 64 * 4, 0);
+    for (int i = 0; i < 64 * 64; ++i) {
+        icon[i * 4] = 200;
+        icon[i * 4 + 1] = 100;
+        icon[i * 4 + 2] = 50;
+        icon[i * 4 + 3] = 255;
+    }
+    // Atlas 1 sub 3 -> row 3-3/4=3, column 3: the top-right cell of the bottom-up buffer.
+    Expect(icons::WriteSubIcon(atlas.data(), atlas.size(), 3, icon.data()), "icons: WriteSubIcon accepts sub-icon 3 of atlas 1");
+    const uint8_t* p = &atlas[((3 * 64 + 10) * 256 + (3 * 64 + 10)) * 3];
+    Expect(p[0] == 200 && p[1] == 100 && p[2] == 50, "icons: an opaque icon replaces sub-icon 3's pixels");
+    bool others = true;
+    for (int y = 0; y < 256; ++y)
+        for (int x = 0; x < 256; ++x) {
+            if (y >= 192 && x >= 192) continue;  // sub-icon 3's own cell
+            for (int c = 0; c < 3; ++c) others &= atlas[(y * 256 + x) * 3 + c] == vanilla[(y * 256 + x) * 3 + c];
+        }
+    Expect(others, "icons: the other 15 sub-icons keep their vanilla pixels");
+    Expect(icons::WriteSubIcon(atlas.data(), atlas.size(), 0, icon.data()) && icons::WriteSubIcon(atlas.data(), atlas.size(), 15, icon.data()),
+           "icons: the first and last sub-icons are in range");
+
+    // Snapshot of the vanilla pixels, then put back.
+    std::vector<uint8_t> keep(icons::kSubBytes);
+    std::vector<uint8_t> fresh = vanilla;
+    Expect(icons::ReadSubIcon(fresh.data(), fresh.size(), 3, keep.data()), "icons: ReadSubIcon takes a sub-icon");
+    Expect(icons::WriteSubIcon(fresh.data(), fresh.size(), 3, icon.data()) && fresh != vanilla, "icons: the patch changes the atlas");
+    Expect(icons::RestoreSubIcon(fresh.data(), fresh.size(), 3, keep.data()) && fresh == vanilla,
+           "icons: RestoreSubIcon brings the vanilla pixels back exactly");
+    // Restoring over an atlas that was never patched changes nothing (a freshly built atlas on the next upload).
+    std::vector<uint8_t> again = vanilla;
+    icons::RestoreSubIcon(again.data(), again.size(), 3, keep.data());
+    Expect(again == vanilla, "icons: restoring over a pristine atlas is a no-op");
+    // Bounds.
+    Expect(!icons::ReadSubIcon(fresh.data(), fresh.size(), 16, keep.data()) && !icons::ReadSubIcon(fresh.data(), fresh.size(), -1, keep.data()) &&
+               !icons::ReadSubIcon(fresh.data(), 100, 3, keep.data()) && !icons::ReadSubIcon(nullptr, fresh.size(), 3, keep.data()),
+           "icons: ReadSubIcon refuses a bad sub-icon, size or buffer");
+    Expect(!icons::RestoreSubIcon(fresh.data(), fresh.size(), 16, keep.data()) && !icons::RestoreSubIcon(fresh.data(), 100, 3, keep.data()) &&
+               !icons::RestoreSubIcon(fresh.data(), fresh.size(), 3, nullptr),
+           "icons: RestoreSubIcon refuses a bad sub-icon, size or buffer");
 }
 
 void TestIconsAlphaBlend() {
@@ -378,6 +425,7 @@ int main() {
     TestBanksSizeCap();
     TestBankResourceNames();
     TestIconsDownscale();
+    TestIconsVanillaSubIcon();
     TestIconsWriteSubIcon();
     TestIconsAlphaBlend();
 

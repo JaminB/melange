@@ -1,6 +1,8 @@
-// Downscale and WriteSubIcon: pure pixel math, kept apart from icons.cpp (which needs stb_image, the upload hook
+// Downscale, WriteSubIcon and the sub-icon snapshot helpers: pure pixel math, kept apart from icons.cpp (which needs stb_image, the upload hook
 // and the game) so an offline self-test can link this file alone.
 #include "assets/icons.h"
+
+#include <cstring>
 
 namespace melange::assets::icons {
 namespace {
@@ -33,7 +35,7 @@ bool Downscale(const uint8_t* rgba, int w, int h, uint8_t out[kSize * kSize * 4]
 }
 
 bool WriteSubIcon(uint8_t* atlasRgb256, size_t atlasSize, int sub, const uint8_t rgba64[kSize * kSize * 4]) {
-    if (!atlasRgb256 || !rgba64 || atlasSize != static_cast<size_t>(kAtlasBytes) || sub < kFirstSub || sub > kLastSub)
+    if (!atlasRgb256 || !rgba64 || atlasSize != static_cast<size_t>(kAtlasBytes) || sub < 0 || sub >= kSubTotal)
         return false;
     const int row = 3 - sub / 4, col = sub % 4;
     // The atlas is bottom-up but the PNG (after Downscale) is top-down, so row 0 of the icon (its visual top) must
@@ -48,6 +50,27 @@ bool WriteSubIcon(uint8_t* atlasRgb256, size_t atlasSize, int sub, const uint8_t
             for (int c = 0; c < 3; ++c) dst[c] = static_cast<uint8_t>((src[c] * a + dst[c] * (255 - a) + 127) / 255);
         }
     }
+    return true;
+}
+}  // namespace melange::assets::icons
+
+namespace melange::assets::icons {
+bool ReadSubIcon(const uint8_t* atlasRgb256, size_t atlasSize, int sub, uint8_t out[kSubBytes]) {
+    if (!atlasRgb256 || !out || atlasSize != static_cast<size_t>(kAtlasBytes) || sub < 0 || sub >= kSubTotal) return false;
+    const int row = 3 - sub / 4, col = sub % 4;
+    for (int y = 0; y < kSize; ++y)
+        memcpy(out + static_cast<size_t>(y) * kSize * 3,
+               atlasRgb256 + (static_cast<size_t>(row * kSize + y) * kAtlasDim + static_cast<size_t>(col) * kSize) * 3,
+               static_cast<size_t>(kSize) * 3);
+    return true;
+}
+
+bool RestoreSubIcon(uint8_t* atlasRgb256, size_t atlasSize, int sub, const uint8_t in[kSubBytes]) {
+    if (!atlasRgb256 || !in || atlasSize != static_cast<size_t>(kAtlasBytes) || sub < 0 || sub >= kSubTotal) return false;
+    const int row = 3 - sub / 4, col = sub % 4;
+    for (int y = 0; y < kSize; ++y)
+        memcpy(atlasRgb256 + (static_cast<size_t>(row * kSize + y) * kAtlasDim + static_cast<size_t>(col) * kSize) * 3,
+               in + static_cast<size_t>(y) * kSize * 3, static_cast<size_t>(kSize) * 3);
     return true;
 }
 }  // namespace melange::assets::icons

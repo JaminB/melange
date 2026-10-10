@@ -42,6 +42,7 @@ after its folder — every M1-era `Mods\` folder keeps working unchanged.
 | `settings` | `{key, type: bool\|int\|float\|string\|enum, default, min?, max?, options?, label}`. Drives `wum.config.get/set` and the per-mod widgets on the Mods page. |
 | `weapons` | Weapon clones, `kind: "content"` mods only — see below and [weapons.md](weapons.md). |
 | `weaponText` | New panel names and help text for vanilla weapons, `kind: "content"` mods only — see [`weaponText`](#weapontext-renaming-vanilla-weapons). |
+| `weaponIcons` | New panel and HUD icons for vanilla weapons, `kind: "content"` mods only — see [`weaponIcons`](#weaponicons-replacing-vanilla-weapon-icons). |
 | `schemes`, `factoryWeapons` | Game styles and custom-weapon presets from data files, allowed for client-only mods; see [`schemes` and `factoryWeapons`](#schemes-and-factoryweapons-game-styles-and-weapon-presets). |
 | `music` | MP3 tracks for the sudden-death music, allowed for client-only mods; see [`music`](#music-sudden-death-music). |
 | `meshes` | Mesh banks (`.xom`) under the assets root that give a weapon clone or a `wum.sim.weapon():set` its own 3D model, `kind: "content"` mods only — see [`meshes`](#meshes-custom-3d-models). |
@@ -90,6 +91,34 @@ refuses the mod. At most 64 entries per mod. Checked in two passes, like `weapon
 Whether each container exists is checked when a match starts; an entry for a weapon the game doesn't have is skipped with
 a warning. How it works, what it needs online and what is unverified in game are in
 [weapons.md](weapons.md#renaming-vanilla-weapons).
+
+## `weaponIcons`: replacing vanilla weapon icons
+
+A `kind: "content"` mod can replace the weapons-panel icon and the HUD icon of vanilla weapons, the way a clone gets its
+own with `panelIcon` and `hudIcon`:
+
+```json
+"weaponIcons": {
+  "kWeaponBazooka": { "panelIcon": "icons/ripper.png", "hudIcon": "kindjal.ripper.hud.tga" },
+  "kWeaponGrenade": { "panelIcon": "icons/pineapple.png" }
+}
+```
+
+The key is the weapon's container name, as for `weaponText` (`^k(Weapon|Utility)[A-Z][A-Za-z0-9]{2,40}$`, a vanilla weapon,
+never a clone name). At least one of `panelIcon` and `hudIcon` is needed per entry, an unknown field refuses the mod, and
+there are at most 64 entries per mod.
+
+| Field | Notes |
+|---|---|
+| `panelIcon` | A PNG path under the assets root (relative, no `..`, no drive), square, a multiple of 64 pixels up to 4096; larger images are box-filtered to 64x64. Written over the weapon's own 64x64 slot in the panel's icon sheet. |
+| `hudIcon` | A file name (no folder) under `assets/loose/`, ending `.tga` and named `<modId>.*`, so it can never shadow a vanilla file. It is loaded in place of the weapon's vanilla `Data\HUD\Weapons\*.tga`. |
+
+Checked in two passes, like `weaponText`: the shape and file-name rules (and that the key is not a clone of the same mod)
+in `spice.cpp` and `weapons/manifest.cpp`, then across mods in load order. A key may not be a clone name declared by any
+mod, and a weapon that an earlier mod already has icons for refuses the later mod as a whole (the reason names the weapon
+and the earlier mod). A weapon can have `weaponText` from one mod and `weaponIcons` from another. The rules are part of
+the content identity, so peers with different icons do not play together. How the replacement is applied, when the vanilla
+icons come back, and what is unverified in game are in [weapons.md](weapons.md#replacing-vanilla-icons).
 
 ## `levels`: map packs
 

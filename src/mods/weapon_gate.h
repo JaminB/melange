@@ -13,7 +13,7 @@ namespace melange::handshake::wpngate {
 enum class Policy : uint8_t { Refuse, Suspend };
 void Install(Policy policy, bool leaveButton);   // from the Handshake module
 Policy CurrentPolicy();
-bool LocalClones();                              // this peer declares live-capable clones or vanilla weapon renames (weaponText)
+bool LocalClones();                              // this peer declares live-capable clones, vanilla weapon renames (weaponText) or icon replacements (weaponIcons)
 
 struct View {
     bool inLobby = false, owner = false;

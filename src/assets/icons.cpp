@@ -55,20 +55,80 @@ struct Decoded {
     std::vector<uint8_t> rgba;
 };
 std::vector<Decoded> g_decoded;
-int g_patcherHandle = 0;
-bool g_warnedShape = false;
+// Replacements for vanilla sub-icons (any of the three atlases), and the vanilla pixels kept aside for them.
+struct VanillaPatch {
+    std::string modId, relPng;
+    int atlas, sub;
+    std::vector<uint8_t> rgba;  // kSize*kSize*4
+};
+struct Snapshot {
+    int atlas, sub;
+    std::vector<uint8_t> rgb;  // kSubBytes
+};
+std::vector<VanillaPatch> g_vanilla;
+std::vector<Snapshot> g_snaps;
+constexpr int kAtlases = 3;     // "Weapon Panel Icons1".."Weapon Panel Icons3"
+int g_handles[kAtlases + 1] = {};  // upload patcher per atlas, indexed 1..3
+bool g_warnedShape[kAtlases + 1] = {};
+bool g_clonesPatch = false;     // atlas 3 carries the clones' reserved sub-icons
 
-void OnUpload(const char*, uint16_t w, uint16_t h, uint32_t fmt, uint8_t* rgb, uint32_t size, void*) {
+bool HasSnapshot(int atlas) {
+    for (auto& s : g_snaps)
+        if (s.atlas == atlas) return true;
+    return false;
+}
+
+bool HasVanilla(int atlas) {
+    for (auto& v : g_vanilla)
+        if (v.atlas == atlas) return true;
+    return false;
+}
+
+void OnUpload(const char*, uint16_t w, uint16_t h, uint32_t fmt, uint8_t* rgb, uint32_t size, void* user);
+
+// A patcher stays registered for as long as it has something to write or something to put back.
+void Sync() {
+    for (int a = 1; a <= kAtlases; ++a) {
+        const bool want = (a == 3 && g_clonesPatch && !g_reservations.empty()) || HasVanilla(a) || HasSnapshot(a);
+        if (want && !g_handles[a]) {
+            const std::string name = "Weapon Panel Icons" + std::to_string(a);
+            g_handles[a] = upload::AddPatcher(name.c_str(), &OnUpload, reinterpret_cast<void*>(static_cast<intptr_t>(a)));
+        } else if (!want && g_handles[a]) {
+            upload::RemovePatcher(g_handles[a]);
+            g_handles[a] = 0;
+        }
+    }
+}
+
+void OnUpload(const char*, uint16_t w, uint16_t h, uint32_t fmt, uint8_t* rgb, uint32_t size, void* user) {
+    const int atlas = static_cast<int>(reinterpret_cast<intptr_t>(user));
+    if (atlas < 1 || atlas > kAtlases) return;
     if (w != kAtlasDim || h != kAtlasDim || fmt != kAtlasFmt || size != static_cast<uint32_t>(kAtlasBytes)) {
-        if (!g_warnedShape) {
-            LOG_ERROR("[assets] Weapon Panel Icons3 upload is %ux%u fmt %u size %u, not the expected 256x256/0/196608:"
+        if (!g_warnedShape[atlas]) {
+            LOG_ERROR("[assets] Weapon Panel Icons%d upload is %ux%u fmt %u size %u, not the expected 256x256/0/196608:"
                        " leaving panel icons unpatched",
-                       w, h, fmt, size);
-            g_warnedShape = true;
+                       atlas, w, h, fmt, size);
+            g_warnedShape[atlas] = true;
         }
         return;
     }
-    for (auto& r : g_reservations) WriteSubIcon(rgb, size, r.sub, r.rgba.data());
+    if (atlas == 3 && g_clonesPatch)
+        for (auto& r : g_reservations) WriteSubIcon(rgb, size, r.sub, r.rgba.data());
+    // The vanilla pixels first, before anything of ours is written to a sub-icon for the first time; then put every
+    // kept-aside icon back (a no-op over a freshly built atlas, the undo over one that still holds an old patch);
+    // then write the patches that are registered now.
+    for (auto& v : g_vanilla) {
+        if (v.atlas != atlas) continue;
+        bool have = false;
+        for (auto& s : g_snaps) have |= s.atlas == atlas && s.sub == v.sub;
+        if (have) continue;
+        Snapshot s{atlas, v.sub, std::vector<uint8_t>(kSubBytes)};
+        if (ReadSubIcon(rgb, size, v.sub, s.rgb.data())) g_snaps.push_back(std::move(s));
+    }
+    for (auto& s : g_snaps)
+        if (s.atlas == atlas) RestoreSubIcon(rgb, size, s.sub, s.rgb.data());
+    for (auto& v : g_vanilla)
+        if (v.atlas == atlas) WriteSubIcon(rgb, size, v.sub, v.rgba.data());
 }
 bool Decode(const std::wstring& assetsDir, const std::string& relPng, std::vector<uint8_t>* rgba, std::string* err) {
     if (!SafeRel(relPng)) {
@@ -117,13 +177,53 @@ void Preload(const std::string& modId, const std::wstring& assetsDir, const std:
 }
 
 void Activate(bool on) {
-    if (on && !g_patcherHandle && !g_reservations.empty())
-        g_patcherHandle = upload::AddPatcher("Weapon Panel Icons3", &OnUpload, nullptr);
-    else if (!on && g_patcherHandle) {
-        upload::RemovePatcher(g_patcherHandle);
-        g_patcherHandle = 0;
-    }
+    g_clonesPatch = on;
+    Sync();
 }
+
+bool PatchVanilla(const std::string& modId, const std::wstring& assetsDir, const std::string& relPng, uint32_t iconCode,
+                  std::string* err) {
+    const int atlas = static_cast<int>(iconCode & 0xff), sub = static_cast<int>((iconCode >> 8) & 0xff);
+    if (atlas < 1 || atlas > kAtlases || sub >= kSubTotal || (iconCode >> 16) != 0) {
+        if (err) *err = "the weapon's icon code names no sub-icon of the three panel atlases";
+        return false;
+    }
+    if (atlas == 3 && sub >= kFirstSub) {
+        if (err) *err = "that sub-icon belongs to the clones' panel icons";
+        return false;
+    }
+    VanillaPatch p;
+    p.modId = modId;
+    p.relPng = relPng;
+    p.atlas = atlas;
+    p.sub = sub;
+    if (const Decoded* d = Cached(modId, relPng)) {
+        if (d->rgba.empty()) {
+            if (err) *err = d->err;
+            return false;
+        }
+        p.rgba = d->rgba;
+    } else if (!Decode(assetsDir, relPng, &p.rgba, err)) {
+        return false;
+    }
+    for (auto& v : g_vanilla)
+        if (v.atlas == atlas && v.sub == sub) {
+            v = std::move(p);
+            Sync();
+            return true;
+        }
+    g_vanilla.push_back(std::move(p));
+    Sync();
+    LOG_INFO("[assets] %s: vanilla panel icon atlas %d sub-icon %d replaced by '%s'", modId.c_str(), atlas, sub, relPng.c_str());
+    return true;
+}
+
+void ClearVanilla() {
+    g_vanilla.clear();
+    Sync();  // the patchers with a snapshot stay, to put the vanilla pixels back when the atlas is next uploaded
+}
+
+uint32_t VanillaCount() { return static_cast<uint32_t>(g_vanilla.size()); }
 
 bool Reserve(const std::string& modId, const std::wstring& assetsDir, const std::string& relPng, uint32_t* iconCode,
              std::string* err) {
@@ -152,7 +252,8 @@ bool Reserve(const std::string& modId, const std::wstring& assetsDir, const std:
     r.sub = kFirstSub + static_cast<int>(g_reservations.size());
     const int sub = r.sub;
     g_reservations.push_back(std::move(r));
-    if (!g_patcherHandle) g_patcherHandle = upload::AddPatcher("Weapon Panel Icons3", &OnUpload, nullptr);
+    g_clonesPatch = true;
+    Sync();
     if (iconCode) *iconCode = 3u | static_cast<uint32_t>(sub << 8);
     LOG_INFO("[assets] %s: panel icon '%s' reserved as sub-icon %d", modId.c_str(), relPng.c_str(), sub);
     return true;

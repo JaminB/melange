@@ -35,6 +35,12 @@ public:
     virtual bool GetText(const char* key, std::string* out) = 0;
     virtual uint32_t ReserveIcon(const char* mod, const char* relPng, std::string* err) = 0;  // 0 = none
     virtual bool HudUsable(const char* mod) = 0;  // the mod's loose-file root is an engine search path
+    // A mod's <modId>.*.tga exists under its assets/loose (a missing file keeps the vanilla HUD icon).
+    virtual bool HudFileExists(const char* mod, const char* file) { (void)mod; (void)file; return true; }
+    // Weapon icon replacement (weaponIcons): write the mod's PNG over the vanilla sub-icon iconCode names (atlas | sub << 8), and
+    // drop all such patches again (the vanilla pixels return when the atlas is next uploaded).
+    virtual bool PatchPanelIcon(const char* mod, const char* relPng, uint32_t iconCode, std::string* err) = 0;
+    virtual void ClearPanelIcons() = 0;
     virtual bool EnableHooks(bool on) = 0;
     virtual uint32_t Tick() = 0;
     // The NUL-terminated string at addr, cut at max bytes; false if its first byte cannot be read. Byte by byte, so a
@@ -73,6 +79,20 @@ struct TextRule {
     std::string tagOrig;
 };
 
+// A vanilla weapon's replacement icons (weaponIcons). The panel icon is written over the sub-icon the weapon's own panel
+// cell names; the HUD icon is substituted when the game is about to load the weapon's vanilla HUD file.
+struct IconRule {
+    manifest::IconDecl decl;
+    int id = -1;                  // the weapon's slot in the name table, -1 until resolved for a match
+    uint32_t iconCode = 0;        // the vanilla panel icon code the PNG was written over (atlas | sub << 8)
+    bool panel = false, hud = false;  // armed for this match
+    const char* hudFile = nullptr;    // the vanilla HUD file name this rule replaces (static storage)
+};
+
+// The vanilla HUD icon file (Data\HUD\Weapons\<file>) of a vanilla weapon container name, nullptr when the name is not
+// in the table. The name is the container name minus kWeapon/kUtility, lower-cased, through a few aliases.
+const char* VanillaHudFile(const std::string& weapon);
+
 struct Clone {
     CloneInfo info{};
     manifest::CloneDecl decl;
@@ -90,7 +110,8 @@ public:
     Registry& operator=(const Registry&) = delete;
 
     // The frozen tables; reads the original name slots. texts = the vanilla renames (see TextRule), none by default.
-    void Configure(const std::vector<manifest::CloneDecl>& decls, const std::vector<manifest::TextDecl>& texts = {});
+    void Configure(const std::vector<manifest::CloneDecl>& decls, const std::vector<manifest::TextDecl>& texts = {},
+                   const std::vector<manifest::IconDecl>& icons = {});
     bool Init(std::string* why);                                    // match Init: every clone, or none; then the renames
     void MatchEnd();
     void TurnEnded();
@@ -101,6 +122,11 @@ public:
     uintptr_t TextName(int32_t id, uintptr_t current, bool help) const;
     uintptr_t CanUseSlot(int32_t id, uintptr_t current) const;
     const char* HudName() const;
+    // The HUD file to load instead of `incoming` (the file name or path the game is about to load): the active clone's
+    // hudIcon, else the replacement of a vanilla weapon whose HUD file `incoming` is. nullptr = leave it alone. Only
+    // answers for a vanilla weapon while its rule is armed for this match. No allocation.
+    const char* HudNameFor(const char* incoming) const;
+    bool HudIconsLive() const { return hudIconsLive_; }
 
     int Count() const { return n_; }
     bool Live() const { return live_; }
@@ -109,6 +135,10 @@ public:
     int TextCount() const { return static_cast<int>(rules_.size()); }
     int TagCount() const;  // renames whose container DisplayName is currently pointed at the rename
     const TextRule* TextAt(int i) const { return i >= 0 && i < TextCount() ? &rules_[i] : nullptr; }
+    // Vanilla icon replacements. IconsLive: at least one rule is armed (panel and/or HUD) for this match.
+    bool IconsLive() const { return iconsLive_; }
+    int IconCount() const { return static_cast<int>(iconRules_.size()); }
+    const IconRule* IconAt(int i) const { return i >= 0 && i < IconCount() ? &iconRules_[i] : nullptr; }
     int Active() const { return active_; }
     int SwappedBase() const { return swapped_ < 0 ? -1 : clones_[swapped_].info.base; }
     const Clone* At(int k) const { return k >= 0 && k < n_ ? &clones_[k] : nullptr; }
@@ -122,6 +152,9 @@ private:
     void RegisterText(Clone& c);
     void ResolveText();
     void ResetText();
+    void ResolveIcons();
+    void ResetIcons();
+    int NameSlot(const std::string& weapon, uintptr_t* slot);  // the weapon's name-table id, -1 if absent
     bool SetTag(TextRule& r, uintptr_t container);
     void RestoreTag(TextRule& r);
     uintptr_t Renamed(int32_t id, uintptr_t current, bool help) const;
@@ -144,5 +177,7 @@ private:
     std::vector<TextRule> rules_;
     int16_t ruleOf_[kEnumCount];  // name-table id -> index into rules_, -1 for none
     bool textLive_ = false;
+    std::vector<IconRule> iconRules_;
+    bool iconsLive_ = false, hudIconsLive_ = false;
 };
 }  // namespace melange::weapons::core

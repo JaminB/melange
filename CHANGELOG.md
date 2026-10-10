@@ -12,6 +12,11 @@
 - New `weaponText` manifest field for content mods: new panel names and help text for vanilla weapons, applied through
   the same hooks as weapon clones, only inside a match that allows sim mods, and part of the content identity so
   peers with different renames do not play together. A weapon renamed by two mods refuses the later one in load order.
+- New `weaponIcons` manifest field for content mods: a replacement panel icon (PNG) and/or HUD icon (`<modId>.*.tga`)
+  for vanilla weapons. The panel icon is written over the weapon's own slot in the panel's icon sheet and the HUD file
+  is swapped when the game loads the weapon's vanilla HUD icon, both only inside a match that allows sim mods; the
+  vanilla icons come back when it ends. Part of the content identity; a weapon claimed by two mods refuses the later
+  one in load order. Not yet tried in the game by the author.
 - New `meshes` manifest field for content mods: mesh banks (`.xom`, built with `xomtool convert --bundle`) under the
   assets root, loaded at the main menu through the game's own graphical resource manager (new `Meshes` module,
   `[Meshes] Enabled`) so `wum.sim.weapon(name):set("WeaponGraphicsResourceID", "<modId>.<Name>")` or a clone's `set`

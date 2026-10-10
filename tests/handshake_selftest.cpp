@@ -282,6 +282,51 @@ void TextTests(const std::vector<ContentMod>& a) {
     Expect(!BuildContentId({}, none, {}, 8, {nail}).vanilla, "renames alone are never vanilla content");
 }
 
+// Vanilla-weapon icon replacements (spice.json "weaponIcons") travel as "icon" lines beside the "text" lines: icons are
+// cosmetic, but one rule holds for all content: same content, same hash.
+void IconRuleTests(const std::vector<ContentMod>& a) {
+    const std::vector<ModMessage> none;
+    const TextSpec nail{"kWeaponBazooka", "Nail Bat", "Swing it."};
+    auto icon = [](const char* weapon, const char* panel, const char* hud) {
+        TextSpec s;
+        s.weapon = weapon;
+        s.icon = true;
+        s.panelIcon = panel;
+        s.hudIcon = hud;
+        return s;
+    };
+    const TextSpec rip = icon("kWeaponBazooka", "icons/ripper.png", "kindjal.ripper.hud.tga");
+
+    Expect(TextLine(rip) == "icon kWeaponBazooka panel=\"icons/ripper.png\" hud=\"kindjal.ripper.hud.tga\"",
+           "icon line: weapon, panel and hud file names");
+    Expect(TextLine(icon("kWeaponGrenade", "g.png", "")) == "icon kWeaponGrenade panel=\"g.png\" hud=-", "icon line: an absent hud is a dash");
+    Expect(TextLine(icon("kWeaponGrenade", "", "m.g.tga")) == "icon kWeaponGrenade panel=- hud=\"m.g.tga\"",
+           "icon line: an absent panel is a dash");
+    Expect(Contains(CanonicalText(a, none, {}, 8, {rip}), "\n" + TextLine(rip) + "\n"), "the icon line is in the canonical text");
+
+    const ContentId base = BuildContentId(a, none, {}, 8, {rip});
+    Expect(std::string(base.hash) != std::string(BuildContentId(a, none, {}).hash), "an icon rule changes the content hash");
+    auto differs = [&](std::vector<TextSpec> t, const char* what) {
+        Expect(std::string(BuildContentId(a, none, {}, 8, t).hash) != base.hash, what);
+        Expect(CloneHash16({}, 8, t) != CloneHash16({}, 8, {rip}), what);
+    };
+    differs({icon("kWeaponBazooka", "icons/other.png", "kindjal.ripper.hud.tga")}, "another panel file changes the hashes");
+    differs({icon("kWeaponBazooka", "icons/ripper.png", "kindjal.other.hud.tga")}, "another hud file changes the hashes");
+    differs({icon("kWeaponBazooka", "icons/ripper.png", "")}, "a dropped hud file changes the hashes");
+    differs({icon("kWeaponGrenade", "icons/ripper.png", "kindjal.ripper.hud.tga")}, "another weapon changes the hashes");
+    differs({}, "no icon rules hash differently from one");
+    differs({rip, nail}, "a rename beside the icons changes the hashes");
+    Expect(CloneHash16({}, 8, {nail}) != CloneHash16({}, 8, {rip}), "an icon rule is not a rename");
+    // The rename and the icons of one weapon are two lines in a fixed order, whatever order they arrive in.
+    Expect(std::string(BuildContentId(a, none, {}, 8, {rip, nail}).hash) == BuildContentId(a, none, {}, 8, {nail, rip}).hash &&
+               CloneHash16({}, 8, {rip, nail}) == CloneHash16({}, 8, {nail, rip}),
+           "the order the rules arrive in does not matter");
+    // Icon-only content is weapon content (the gate applies) and never vanilla.
+    Expect(!BuildContentId({}, none, {}, 8, {rip}).vanilla, "icons alone are never vanilla content");
+    const std::string h = CloneHash16({}, 8, {rip});
+    Expect(h.size() == 16 && BuildWpnValue({}, 8, {rip}) == "1;" + h + ";0", "mlg.wpn for an icon-only peer: zero clones");
+}
+
 LobbyMember Member(std::string name, bool hasMlg, std::string hash, std::string diff = "") {
     LobbyMember m;
     m.name = std::move(name);
@@ -470,6 +515,7 @@ void WeaponTests(const std::vector<ContentMod>& a) {
     ContentTextTests(a);
     CloneTests(a);
     TextTests(a);
+    IconRuleTests(a);
     PolicyTests();
     VanillaTests();
     GidTests();

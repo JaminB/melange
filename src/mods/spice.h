@@ -18,6 +18,9 @@ struct Weapon { std::string name, base, bank, panelIcon, hudIcon, textName, text
 // One entry of "weaponText": a vanilla weapon's new panel name and help text, checked for shape only;
 // weapons/manifest.cpp checks it against the clone names of every mod. An empty name or help means "not renamed".
 struct WeaponText { std::string weapon, name, help; int line = 0; };
+// One entry of "weaponIcons": new panel and/or HUD icon files for a vanilla weapon, checked for shape only;
+// weapons/manifest.cpp checks the file names and the clone names of every mod. An empty field means "not replaced".
+struct WeaponIcon { std::string weapon, panelIcon, hudIcon; int line = 0; };
 // One entry of the "levels" array, checked for shape only; levels/manifest.cpp checks slugs, stems and limits.
 struct Level { std::string slug, title, type = "multi", source; bool chunk = false; int line = 0; std::string sim; bool survivor = false; };
 // One entry of "schemes" / "factoryWeapons": a data file in the mod folder, checked for shape only; schemes/builder.cpp reads it.
@@ -33,6 +36,7 @@ struct Manifest {
     std::vector<Dep> dependencies, optional, conflicts; std::vector<std::string> loadAfter, messages, hashInclude;
     std::vector<Setting> settings; std::vector<Weapon> weapons;
     std::vector<WeaponText> weaponText;
+    std::vector<WeaponIcon> weaponIcons;
     std::vector<Level> levels; std::vector<DataFile> schemes, factoryWeapons; std::vector<Music> music; std::vector<MeshFile> meshes; std::wstring dir;
     std::string importerRecipe;                       // "importer": {"recipe"}: a local content importer's recipe file
     std::string generatedBy, generatedRecipe;         // "generated": a pack an importer made on this PC

@@ -63,15 +63,34 @@ std::vector<TextDecl> ParseText(const spice::Manifest& m, std::vector<Error>* er
 std::vector<TextDecl> AssignText(const std::vector<std::vector<TextDecl>>& perModInLoadOrder,
                                  const std::vector<std::string>& cloneNames, std::vector<Error>* refused);
 
-// Both passes together, for the mods in load order (index i of each list is the same mod; a mod with nothing to
-// declare in one kind has an empty entry there). A mod refused by either pass loses both its clones and its renames,
-// and the clone names that block a rename are only those of mods still accepted. All reasons are in `refused`.
+// The spice.json "weaponIcons" object: a replacement panel icon (PNG under the assets root) and/or HUD icon (a
+// <modId>.*.tga under assets/loose/) for a vanilla weapon. Presentation only; the registry applies them per match.
+struct IconDecl {
+    std::string mod, weapon, panelIcon, hudIcon;  // an empty icon = that one is not replaced
+};
+constexpr size_t kMaxIconsPerMod = 64;
+
+// Empty when refused (the reasons in *errs). Same key rules as ParseText; the file names as for a clone's icons.
+std::vector<IconDecl> ParseIcons(const spice::Manifest& m, std::vector<Error>* errs);
+// Like AssignText: a weapon claimed by an earlier mod, or a clone name, refuses the later mod as a whole.
+std::vector<IconDecl> AssignIcons(const std::vector<std::vector<IconDecl>>& perModInLoadOrder,
+                                  const std::vector<std::string>& cloneNames, std::vector<Error>* refused);
+
+// All passes together, for the mods in load order (index i of each list is the same mod; a mod with nothing to
+// declare in one kind has an empty entry there). A mod refused by any pass loses its clones, renames and icons,
+// and the clone names that block a rename or an icon are only those of mods still accepted. All reasons are in
+// `refused`. iconsPerMod may be left out (no icon rules).
 struct Resolved {
     std::vector<CloneDecl> clones;
     std::vector<TextDecl> texts;
+    std::vector<IconDecl> icons;
     std::vector<Error> refused;
 };
-Resolved Resolve(const std::vector<std::vector<CloneDecl>>& clonesPerMod, const std::vector<std::vector<TextDecl>>& textsPerMod);
+Resolved Resolve(const std::vector<std::vector<CloneDecl>>& clonesPerMod, const std::vector<std::vector<TextDecl>>& textsPerMod,
+                 const std::vector<std::vector<IconDecl>>& iconsPerMod = {});
+void FreezeIcons(std::vector<IconDecl> decls);   // once per launch, like Freeze
+bool IsIconsFrozen();
+const std::vector<IconDecl>& FrozenIcons();
 void FreezeText(std::vector<TextDecl> decls);    // once per launch, like Freeze
 bool IsTextFrozen();
 const std::vector<TextDecl>& FrozenText();

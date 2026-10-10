@@ -6,7 +6,9 @@
 #include <cstdio>
 #include <cstring>
 #include <map>
+#include <set>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "mods/spice.h"
@@ -61,6 +63,10 @@ struct Fake final : core::Engine {
     bool failTagWrite = false, failAdd = false, hooksOk = true, hooksOn = false, hud = true, failTextAdd = false;
     uint32_t icon = 0, tick = 100;
     uintptr_t cloneClassOverride = 0;
+    std::vector<std::pair<std::string, uint32_t>> patches;  // PatchPanelIcon: "mod/rel", icon code
+    std::set<std::string> missingHud;
+    bool failPatch = false;
+    int clears = 0;
 
     uintptr_t NewObj(const std::string& name, uintptr_t c) {
         const uintptr_t o = next;
@@ -187,6 +193,19 @@ struct Fake final : core::Engine {
         return icon;
     }
     bool HudUsable(const char*) override { return hud; }
+    bool HudFileExists(const char*, const char* file) override { return !missingHud.count(file); }
+    bool PatchPanelIcon(const char* mod, const char* rel, uint32_t code, std::string* err) override {
+        if (failPatch) {
+            if (err) *err = "stub refused";
+            return false;
+        }
+        patches.push_back({std::string(mod) + "/" + rel, code});
+        return true;
+    }
+    void ClearPanelIcons() override {
+        ++clears;
+        patches.clear();
+    }
     bool EnableHooks(bool on) override {
         if (on && !hooksOk) return false;
         hooksOn = on;
@@ -778,6 +797,108 @@ int CheckMods(int argc, wchar_t** argv) {
     return errs.empty() && live ? 0 : 1;
 }
 
+wm::IconDecl Icon(const char* weapon, const char* panel, const char* hud, const char* mod = "iconmod") {
+    return {mod, weapon, panel, hud};
+}
+
+void WeaponIcons() {
+    Expect(std::string(core::VanillaHudFile("kWeaponBazooka")) == "bazooka.tga" &&
+               std::string(core::VanillaHudFile("kWeaponHolyHandGrenade")) == "hollyhandgrenade.tga" &&
+               std::string(core::VanillaHudFile("kWeaponHomingMissile")) == "HomingMissile.tga" &&
+               std::string(core::VanillaHudFile("kUtilityJetPack")) == "jetpack.tga" &&
+               std::string(core::VanillaHudFile("kWeaponFatkins")) == "fatkinstrike.tga" &&
+               std::string(core::VanillaHudFile("kWeaponNoMoreNails")) == "tailnail.tga",
+           "VanillaHudFile: names, aliases and case");
+    Expect(core::VanillaHudFile("kWeaponNoSuchThing") == nullptr && core::VanillaHudFile("Bazooka") == nullptr &&
+               core::VanillaHudFile("kWeapon") == nullptr,
+           "VanillaHudFile: unknown names have no file");
+
+    Fake e;
+    core::Registry r(e);
+    r.Configure({}, {},
+                {Icon("kWeaponBazooka", "icons/a.png", "iconmod.baz.tga"), Icon("kWeaponGrenade", "icons/g.png", ""),
+                 Icon("kWeaponHolyHandGrenade", "", "iconmod.holy.tga"), Icon("kWeaponBananaBomb", "icons/b.png", ""),
+                 Icon("kWeaponNoSuch", "icons/x.png", ""), Icon("kWeaponGasCanister", "", "iconmod.gas.tga")});
+    Expect(r.IconCount() == 6 && !r.IconsLive() && !r.HudIconsLive() && !r.Live() && r.Count() == 0, "configured, not live");
+    Expect(r.HudNameFor("bazooka.tga") == nullptr && e.patches.empty() && !e.hooksOn, "not live: no HUD answer, nothing patched");
+
+    std::string why;
+    Expect(r.Init(&why), "icon-only match goes live: " + why);
+    Expect(r.IconsLive() && r.HudIconsLive() && !r.Live() && e.hooksOn, "icons live, no clone registry, hooks on");
+    // The icon code comes from the weapon's own panel cell in the game: Bazooka 0x0001 (atlas 1 sub 0), Grenade 0x0002.
+    Expect(e.patches.size() == 2 && e.patches[0] == std::make_pair(std::string("iconmod/icons/a.png"), 0x0001u) &&
+               e.patches[1] == std::make_pair(std::string("iconmod/icons/g.png"), 0x0002u),
+           "panel icons written over the weapons' own sub-icons");
+    Expect(r.IconAt(0)->id == 1 && r.IconAt(0)->panel && r.IconAt(0)->hud && r.IconAt(0)->iconCode == 0x0001, "rule 0 resolved");
+    Expect(r.IconAt(1)->id == 2 && r.IconAt(1)->panel && !r.IconAt(1)->hud, "panel-only rule");
+    Expect(r.IconAt(2)->id == 6 && !r.IconAt(2)->panel && r.IconAt(2)->hud, "HUD-only rule (no panel field)");
+    Expect(r.IconAt(3)->id == -1 && !r.IconAt(3)->panel, "a weapon without a panel cell gets no panel icon and no rule");
+    Expect(r.IconAt(4)->id == -1, "a container that does not exist is skipped");
+    Expect(r.IconAt(5)->id == 16 && r.IconAt(5)->hud, "gas canister HUD rule armed");
+
+    Expect(Str(reinterpret_cast<uintptr_t>(r.HudNameFor("bazooka.tga"))) == "iconmod.baz.tga", "HUD: bazooka.tga -> the mod's file");
+    Expect(Str(reinterpret_cast<uintptr_t>(r.HudNameFor(R"(Data\HUD\Weapons\Bazooka.TGA)"))) == "iconmod.baz.tga",
+           "HUD: path and case do not matter");
+    Expect(Str(reinterpret_cast<uintptr_t>(r.HudNameFor("data/hud/weapons/hollyhandgrenade.tga"))) == "iconmod.holy.tga",
+           "HUD: forward slashes, another weapon");
+    Expect(Str(reinterpret_cast<uintptr_t>(r.HudNameFor("gascanister.tga"))) == "iconmod.gas.tga", "HUD: gas canister");
+    Expect(r.HudNameFor("grenade.tga") == nullptr, "HUD: a weapon with no hudIcon is left alone");
+    Expect(r.HudNameFor("sheep.tga") == nullptr && r.HudNameFor("iconmod.baz.tga") == nullptr && r.HudNameFor("") == nullptr &&
+               r.HudNameFor(nullptr) == nullptr,
+           "HUD: other files, the mod's own file, empty and null are left alone");
+
+    r.MatchEnd();
+    Expect(!r.IconsLive() && !r.HudIconsLive() && e.patches.empty() && e.clears == 1 && !e.hooksOn,
+           "match end: panel patches dropped, HUD off, hooks off");
+    Expect(r.HudNameFor("bazooka.tga") == nullptr && r.IconAt(0)->id == -1, "after the match: vanilla HUD again");
+
+    // The next match arms again; an unclosed match is cleared first, so the patches are never doubled.
+    Expect(r.Init(&why) && e.patches.size() == 2 && r.Init(&why) && e.patches.size() == 2 && e.clears == 2,
+           "second match arms again; an unclosed one is cleared first");
+    r.MatchEnd();
+
+    // Failures cost only the piece that failed.
+    {
+        Fake f;
+        core::Registry q(f);
+        q.Configure({}, {}, {Icon("kWeaponBazooka", "icons/a.png", "iconmod.baz.tga")});
+        f.failPatch = true;
+        f.missingHud.insert("iconmod.baz.tga");
+        Expect(!q.Init(&why) && !q.IconsLive() && !f.hooksOn && why.find("weaponIcons") != std::string::npos,
+               "panel refused and HUD file missing: nothing live (" + why + ")");
+        Expect(q.HudNameFor("bazooka.tga") == nullptr, "a missing HUD file falls back to vanilla");
+        f.missingHud.clear();
+        Expect(q.Init(&why) && q.IconsLive() && q.HudIconsLive() && !q.IconAt(0)->panel && q.IconAt(0)->hud,
+               "panel refused, HUD file present: the HUD half still works");
+        q.MatchEnd();
+        f.failPatch = false;
+        f.hud = false;
+        Expect(q.Init(&why) && q.IconsLive() && !q.HudIconsLive() && q.IconAt(0)->panel,
+               "loose root not a search path: the panel half still works");
+        q.MatchEnd();
+    }
+    // A panel icon on a weapon with no cell, and a rule that names a weapon with no HUD file in the table.
+    {
+        Fake f;
+        core::Registry q(f);
+        q.Configure({}, {}, {Icon("kWeaponBananaBomb", "icons/b.png", "")});
+        Expect(!q.Init(&why) && !q.IconsLive() && f.patches.empty(), "no panel cell: nothing to patch, not live");
+    }
+    // Rules beside clones: the clone's own hudIcon wins while it is selected; icons survive a clone that fails.
+    {
+        Fake f;
+        core::Registry q(f);
+        auto d = Decl("kWeaponMegaBazooka", "kWeaponBazooka", 1, 29, 0);
+        d.hudIcon = "iconmod.mega.tga";
+        q.Configure({d}, {}, {Icon("kWeaponBazooka", "", "iconmod.baz.tga")});
+        Expect(q.Init(&why) && q.Live() && q.HudIconsLive(), "clone and icon rule live together: " + why);
+        Expect(Str(reinterpret_cast<uintptr_t>(q.HudNameFor("bazooka.tga"))) == "iconmod.baz.tga", "no clone selected: the vanilla rule answers");
+        q.Select(0x100);
+        Expect(Str(reinterpret_cast<uintptr_t>(q.HudNameFor("bazooka.tga"))) == "iconmod.mega.tga", "clone selected: its own hudIcon wins");
+        q.MatchEnd();
+    }
+}
+
 int wmain(int argc, wchar_t** argv) {
     if (argc > 1) return CheckMods(argc, argv);
     wchar_t tmp[MAX_PATH];
@@ -786,6 +907,7 @@ int wmain(int argc, wchar_t** argv) {
     CreateDirectoryW(g_root.c_str(), nullptr);
     Basic();
     VanillaRenames();
+    WeaponIcons();
     RenamesWithClones();
     RenamesSurviveCloneFailure();
     CloneWithoutTextOverRenamedBase();

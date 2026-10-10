@@ -741,6 +741,64 @@ bool ParseWeaponText(const json::Value& o, Manifest* out, std::vector<Error>* er
     return ok;
 }
 
+// "weaponIcons": {"kWeaponBazooka": {"panelIcon": "icons/x.png", "hudIcon": "<modId>.x.tga"}}. Replaces the panel and HUD
+// icons of vanilla weapons. Shape only here (string fields, key rules like weaponText's); the file-name rules are
+// checked in weapons/manifest.cpp, which also knows every mod's clone names.
+bool ParseWeaponIcons(const json::Value& o, Manifest* out, std::vector<Error>* errs) {
+    if (!o.IsObject()) {
+        AddError(errs, &o, "weaponIcons", "weaponIcons must be an object of weapon name -> {panelIcon, hudIcon}");
+        return false;
+    }
+    if (o.members.size() > 64) {
+        AddError(errs, &o, "weaponIcons", "at most 64 weaponIcons entries per mod");
+        return false;
+    }
+    bool ok = true;
+    std::vector<std::string> seen;
+    for (const auto& [key, item] : o.members) {
+        bool good = true;
+        if (!ValidWeaponTextKey(key)) {
+            AddError(errs, &item, "weaponIcons", "weaponIcons key '" + key + "' must match ^k(Weapon|Utility)[A-Z][A-Za-z0-9]{2,40}$");
+            good = false;
+        } else if (std::find(seen.begin(), seen.end(), key) != seen.end()) {
+            AddError(errs, &item, "weaponIcons", "weaponIcons." + key + " is listed twice");
+            good = false;
+        } else if (std::any_of(out->weapons.begin(), out->weapons.end(), [&](const Weapon& w) { return w.name == key; })) {
+            AddError(errs, &item, "weaponIcons", "weaponIcons." + key + " is a clone of this mod; give the clone its own panelIcon/hudIcon");
+            good = false;
+        }
+        seen.push_back(key);
+        if (!item.IsObject()) {
+            AddError(errs, &item, "weaponIcons", "weaponIcons." + key + " must be an object with panelIcon and/or hudIcon");
+            ok = false;
+            continue;
+        }
+        WeaponIcon w;
+        w.weapon = key;
+        w.line = item.line;
+        for (const auto& [fk, fv] : item.members) {
+            if (fk == "panelIcon" || fk == "hudIcon") {
+                if (!fv.IsString() || fv.string.empty() || fv.string.size() > 120) {
+                    AddError(errs, &fv, "weaponIcons", "weaponIcons." + key + "." + fk + " must be a file name of 1-120 characters");
+                    good = false;
+                } else {
+                    (fk == "panelIcon" ? w.panelIcon : w.hudIcon) = fv.string;
+                }
+            } else {
+                AddError(errs, &fv, "weaponIcons", "unknown weaponIcons." + key + " key '" + fk + "'");
+                good = false;
+            }
+        }
+        if (good && w.panelIcon.empty() && w.hudIcon.empty()) {
+            AddError(errs, &item, "weaponIcons", "weaponIcons." + key + " needs a panelIcon or a hudIcon");
+            good = false;
+        }
+        if (good) out->weaponIcons.push_back(std::move(w));
+        ok &= good;
+    }
+    return ok;
+}
+
 bool ParseManifestJson(const json::Value& v, const std::string& folderId, Manifest* out, std::vector<Error>* errs) {
     if (!v.IsObject()) {
         AddError(errs, &v, "", "spice.json must be a JSON object");
@@ -1016,6 +1074,14 @@ bool ParseManifestJson(const json::Value& v, const std::string& folderId, Manife
             AddError(errs, wt, "weaponText", "weaponText requires kind: \"content\"");
             ok = false;
         } else if (!ParseWeaponText(*wt, out, errs)) {
+            ok = false;
+        }
+    }
+    if (const json::Value* wi = v.Get("weaponIcons")) {
+        if (!out->content) {
+            AddError(errs, wi, "weaponIcons", "weaponIcons requires kind: \"content\"");
+            ok = false;
+        } else if (!ParseWeaponIcons(*wi, out, errs)) {
             ok = false;
         }
     }

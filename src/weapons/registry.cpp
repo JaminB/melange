@@ -1,5 +1,7 @@
 #include "weapons/registry.h"
 
+#include <windows.h>
+
 #include <algorithm>
 #include <cctype>
 #include <chrono>
@@ -7,12 +9,14 @@
 
 #include "assets/icons.h"
 #include "assets/searchpath.h"
+#include "core/game.h"
 #include "core/log.h"
 #include "core/mem.h"
 #include "melange/assets.h"
 #include "melange/bus.h"
 #include "melange/jlog.h"
 #include "melange/sim.h"
+#include "mods/thumper_internal.h"
 #include "weapons/engine.h"
 #include "weapons/hud.h"
 #include "weapons/manifest.h"
@@ -64,6 +68,20 @@ public:
         LOG_WARN("[weapons] %s: its assets/loose folder is not a search path, so the HUD keeps the base's icon", mod);
         return false;
     }
+    bool HudFileExists(const char* mod, const char* file) override {
+        thumper::Entry e;
+        if (!thumper::FindEntry(mod, &e)) return false;
+        const std::wstring path = e.dir + L"\\" + game::Widen(e.manifest.assetsRoot) + L"\\loose\\" + game::Widen(file);
+        const DWORD a = GetFileAttributesW(path.c_str());
+        return a != INVALID_FILE_ATTRIBUTES && !(a & FILE_ATTRIBUTE_DIRECTORY);
+    }
+    bool PatchPanelIcon(const char* mod, const char* rel, uint32_t iconCode, std::string* err) override {
+        char b[256] = {};
+        const bool ok = assets::PatchVanillaPanelIcon(mod, rel, iconCode, b, sizeof b);
+        if (err) *err = b;
+        return ok;
+    }
+    void ClearPanelIcons() override { assets::ClearVanillaPanelIcons(); }
     bool EnableHooks(bool on) override {
         if (on && engine::Suppressed()) {
             LOG_ERROR("[weapons] the weapon hooks are suppressed: no clones in this match");
@@ -123,7 +141,7 @@ core::Registry& Core() { return g_core; }
 
 bool Install() {
     if (g_installed) return true;
-    g_core.Configure(manifest::Frozen(), manifest::FrozenText());
+    g_core.Configure(manifest::Frozen(), manifest::FrozenText(), manifest::FrozenIcons());
     g_configured = true;
     const bool v = g_core.Count() == 0 || vid::Create(), p = panel::Create(), h = hud::Create();
     if (!(v && p && h)) {
@@ -158,6 +176,17 @@ void OnInit() {
         LOG_INFO("[weapons] match %u: %d of %d weaponText rename(s) live", sim::MatchSerial(), applied, g_core.TextCount());
         jlog::Rec("weapons", jlog::Level::Info, "weapon_text")
             .Bool("live", g_core.TextLive()).Int("declared", g_core.TextCount()).Int("applied", applied);
+    }
+    if (g_core.IconCount()) {
+        int panels = 0, huds = 0;
+        for (int i = 0; i < g_core.IconCount(); ++i) {
+            panels += g_core.IconAt(i)->panel;
+            huds += g_core.IconAt(i)->hud;
+        }
+        LOG_INFO("[weapons] match %u: weaponIcons %d panel and %d HUD icon(s) armed of %d rule(s)", sim::MatchSerial(), panels, huds,
+                 g_core.IconCount());
+        jlog::Rec("weapons", jlog::Level::Info, "weapon_icons")
+            .Bool("live", g_core.IconsLive()).Int("declared", g_core.IconCount()).Int("panel", panels).Int("hud", huds);
     }
 }
 

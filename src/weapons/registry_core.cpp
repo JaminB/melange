@@ -1,6 +1,7 @@
 #include "weapons/registry_core.h"
 
 #include <algorithm>
+#include <cctype>
 #include <cmath>
 #include <cstdio>
 #include <cstring>
@@ -12,7 +13,50 @@ namespace {
 uint32_t Ptr32(const void* p) { return static_cast<uint32_t>(reinterpret_cast<uintptr_t>(p)); }
 uintptr_t CellAddr(int cell) { return kPanel + 8 * static_cast<uintptr_t>(cell); }
 uintptr_t SlotAddr(int id) { return kNames + 4 * static_cast<uintptr_t>(id); }
+
+// Data\HUD\Weapons in the game's files (res/wum-1077-stock.tsv): the weapon icons the HUD loads by file name.
+constexpr const char* kHudFiles[] = {
+    "airstrike.tga", "alienabduction.tga", "bananabomb.tga", "baseballbat.tga", "bazooka.tga", "Binoculars.tga",
+    "bubbletrubble.tga", "clustergrenade.tga", "concretedonkey.tga", "dynamite.tga", "fatkinstrike.tga", "firepunch.tga",
+    "gascanister.tga", "girder.tga", "grenade.tga", "hollyhandgrenade.tga", "HomingMissile.tga", "icaruspotion.tga",
+    "inflatablescouser.tga", "jetpack.tga", "landmine.tga", "madcowstrike.tga", "ninjarope.tga", "oldwoman.tga",
+    "parachute.tga", "pipegun.tga", "poisonarrow.tga", "prod.tga", "raindance.tga", "secretweapon.tga", "sentrygun.tga",
+    "sheep.tga", "shotgun.tga", "skipgo.tga", "sniperrifle.tga", "starburst.tga", "superairstrike.tga", "supersheep.tga",
+    "surrender.tga", "tailnail.tga",
+};
+// Container names whose lower-cased remainder is not the file stem.
+struct HudAlias {
+    const char* name;
+    const char* stem;
+};
+constexpr HudAlias kHudAliases[] = {
+    {"holyhandgrenade", "hollyhandgrenade"}, {"clusterbomb", "clustergrenade"}, {"mine", "landmine"},
+    {"donkey", "concretedonkey"},          {"bubbletrouble", "bubbletrubble"},   {"scouser", "inflatablescouser"},
+    {"fatkin", "fatkinstrike"},            {"fatkins", "fatkinstrike"},          {"nomorenails", "tailnail"},
+    {"bat", "baseballbat"},                {"homing", "homingmissile"},
+};
+
+bool EqualsI(const char* a, const char* b) { return _stricmp(a, b) == 0; }
 }  // namespace
+
+const char* VanillaHudFile(const std::string& weapon) {
+    size_t p = 0;
+    if (weapon.compare(0, 7, "kWeapon") == 0) p = 7;
+    else if (weapon.compare(0, 8, "kUtility") == 0) p = 8;
+    else return nullptr;
+    std::string stem = weapon.substr(p);
+    for (char& c : stem) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+    for (const auto& a : kHudAliases)
+        if (stem == a.name) {
+            stem = a.stem;
+            break;
+        }
+    for (const char* f : kHudFiles) {
+        const size_t n = strlen(f) - 4;  // minus ".tga"
+        if (n == stem.size() && _strnicmp(f, stem.c_str(), n) == 0) return f;
+    }
+    return nullptr;
+}
 
 uint32_t Registry::U32(uintptr_t a) {
     uint32_t v = 0;
@@ -22,7 +66,15 @@ uint32_t Registry::U32(uintptr_t a) {
 
 bool Registry::PutU32(uintptr_t a, uint32_t v) { return e_.Write(a, &v, sizeof v); }
 
-void Registry::Configure(const std::vector<manifest::CloneDecl>& decls, const std::vector<manifest::TextDecl>& texts) {
+void Registry::Configure(const std::vector<manifest::CloneDecl>& decls, const std::vector<manifest::TextDecl>& texts,
+                         const std::vector<manifest::IconDecl>& icons) {
+    ResetIcons();
+    iconRules_.clear();
+    for (const auto& i : icons) {
+        IconRule r;
+        r.decl = i;
+        iconRules_.push_back(std::move(r));
+    }
     rules_.clear();
     rules_.reserve(texts.size());  // the hook hands out token.c_str(): the rules must not move after this
     for (const auto& t : texts) {
@@ -310,6 +362,92 @@ void Registry::ResolveText() {
     LOG_INFO("[weapons] weaponText: DisplayName set for %d of %d name rename(s)", TagCount(), named);
 }
 
+int Registry::NameSlot(const std::string& weapon, uintptr_t* slot) {
+    for (int k = 1; k < kEnumCount; ++k) {
+        const uintptr_t p = U32(SlotAddr(k));
+        std::string have;
+        if (p && e_.ReadString(p, &have, 64) && have == weapon) {
+            if (slot) *slot = p;
+            return k;
+        }
+    }
+    return -1;
+}
+
+void Registry::ResetIcons() {
+    if (iconsLive_) e_.ClearPanelIcons();  // the panel patches; the vanilla pixels return at the atlas's next upload
+    iconsLive_ = hudIconsLive_ = false;
+    for (auto& r : iconRules_) {
+        r.id = -1;
+        r.iconCode = 0;
+        r.panel = r.hud = false;
+        r.hudFile = nullptr;
+    }
+}
+
+// Per match, once: find each weapon's name-table id (the same id its panel cell carries), read its panel cell's icon
+// code from the game, hand the PNG to the engine to write over that sub-icon, and arm the HUD substitution for the
+// weapon's vanilla HUD file. Every failure costs only that rule's piece; nothing here can refuse the match.
+void Registry::ResolveIcons() {
+    ResetIcons();
+    int panels = 0, huds = 0;
+    for (auto& r : iconRules_) {
+        const std::string& w = r.decl.weapon;
+        const char* mod = r.decl.mod.c_str();
+        if (!e_.Lookup(w.c_str())) {
+            LOG_WARN("[weapons] weaponIcons %s (%s): no such container in this game, skipped", w.c_str(), mod);
+            continue;
+        }
+        const int id = NameSlot(w, nullptr);
+        if (id < 0) {
+            LOG_WARN("[weapons] weaponIcons %s (%s): not in the name table, so no panel cell or HUD file known; skipped", w.c_str(), mod);
+            continue;
+        }
+        bool dup = false;
+        for (const auto& o : iconRules_) dup |= &o != &r && o.id == id;
+        if (dup) continue;  // the manifest layer refuses two mods claiming one weapon; this is only a guard
+        if (!r.decl.panelIcon.empty()) {
+            const uint32_t code = BaseIcon(id);
+            std::string err;
+            if (!code) {
+                LOG_WARN("[weapons] weaponIcons %s (%s): the weapon has no panel cell, panel icon skipped", w.c_str(), mod);
+            } else if (!e_.PatchPanelIcon(mod, r.decl.panelIcon.c_str(), code, &err)) {
+                LOG_WARN("[weapons] weaponIcons %s (%s): panel icon %s not used (%s); the vanilla icon is shown", w.c_str(), mod,
+                         r.decl.panelIcon.c_str(), err.empty() ? "refused" : err.c_str());
+            } else {
+                r.panel = true;
+                r.iconCode = code;
+            }
+        }
+        if (!r.decl.hudIcon.empty()) {
+            const char* file = VanillaHudFile(w);
+            if (!file) {
+                LOG_WARN("[weapons] weaponIcons %s (%s): no known HUD icon file for this weapon, hudIcon skipped", w.c_str(), mod);
+            } else if (!e_.HudUsable(mod)) {
+                // HudUsable has logged why
+            } else if (!e_.HudFileExists(mod, r.decl.hudIcon.c_str())) {
+                LOG_WARN("[weapons] weaponIcons %s (%s): %s is not in the mod's assets/loose; the vanilla HUD icon is shown", w.c_str(),
+                         mod, r.decl.hudIcon.c_str());
+            } else {
+                r.hud = true;
+                r.hudFile = file;
+            }
+        }
+        if (!r.panel && !r.hud) continue;
+        r.id = id;
+        panels += r.panel;
+        huds += r.hud;
+        LOG_INFO("[weapons] weaponIcons %s id %d by %s: panel=%d (icon code %x, atlas %u sub %u) hud=%d (%s -> %s)", w.c_str(), id,
+                 mod, r.panel, static_cast<unsigned>(r.iconCode), static_cast<unsigned>(r.iconCode & 0xff),
+                 static_cast<unsigned>((r.iconCode >> 8) & 0xff), r.hud, r.hudFile ? r.hudFile : "-",
+                 r.hud ? r.decl.hudIcon.c_str() : "-");
+    }
+    iconsLive_ = panels || huds;
+    hudIconsLive_ = huds > 0;
+    if (iconsLive_)
+        LOG_INFO("[weapons] weaponIcons: %d panel icon(s) and %d HUD icon(s) armed from %d rule(s)", panels, huds, IconCount());
+}
+
 bool Registry::Init(std::string* why) {
     std::string local;
     if (!why) why = &local;
@@ -319,7 +457,8 @@ bool Registry::Init(std::string* why) {
         Reset();
     }
     ResetText();
-    if (n_ == 0 && rules_.empty()) {
+    ResetIcons();
+    if (n_ == 0 && rules_.empty() && iconRules_.empty()) {
         *why = "no clones declared";
         return false;
     }
@@ -332,10 +471,11 @@ bool Registry::Init(std::string* why) {
     }
     // Renames are display only and independent of the clones: they go live even when a clone then fails to.
     ResolveText();
+    ResolveIcons();
     if (n_ == 0) {
-        if (textLive_) return true;
+        if (textLive_ || iconsLive_) return true;
         e_.EnableHooks(false);
-        *why = "no weaponText entry could be applied";
+        *why = "no weaponText or weaponIcons entry could be applied";
         return false;
     }
     for (int k = 0; k < n_; ++k) {
@@ -436,12 +576,14 @@ void Registry::Reset() {
 }
 
 void Registry::MatchEnd() {
-    const bool was = live_, text = textLive_;
+    const bool was = live_, text = textLive_, icons = iconsLive_;
     Reset();
     ResetText();
+    ResetIcons();
     e_.EnableHooks(false);
     if (was) LOG_INFO("[weapons] match end: panel cells and name slots restored");
     else if (text) LOG_INFO("[weapons] match end: weaponText off");
+    if (icons) LOG_INFO("[weapons] match end: weaponIcons off (panel patches dropped; vanilla icons return at the next atlas upload)");
 }
 
 void Registry::TurnEnded() {
@@ -523,6 +665,17 @@ uintptr_t Registry::CanUseSlot(int32_t id, uintptr_t current) const {
 const char* Registry::HudName() const {
     if (!live_ || active_ < 0 || !clones_[active_].hud) return nullptr;
     return clones_[active_].decl.hudIcon.c_str();
+}
+
+const char* Registry::HudNameFor(const char* incoming) const {
+    if (const char* c = HudName()) return c;
+    if (!hudIconsLive_ || !incoming) return nullptr;
+    const char* base = incoming;  // the file name after the last path separator
+    for (const char* p = incoming; *p; ++p)
+        if (*p == '\\' || *p == '/') base = p + 1;
+    for (const auto& r : iconRules_)
+        if (r.hud && r.hudFile && EqualsI(base, r.hudFile)) return r.decl.hudIcon.c_str();
+    return nullptr;
 }
 
 const CloneInfo* Registry::ByDesc(uintptr_t desc) const {

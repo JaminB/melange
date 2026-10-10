@@ -79,14 +79,18 @@ std::string SetString(const std::string& v) {
 }
 
 std::string TextLine(const TextSpec& t) {
+    if (t.icon)
+        return "icon " + t.weapon + " panel=" + (t.panelIcon.empty() ? std::string("-") : SetString(t.panelIcon)) +
+               " hud=" + (t.hudIcon.empty() ? std::string("-") : SetString(t.hudIcon));
     return "text " + t.weapon + " name=" + (t.name.empty() ? std::string("-") : SetString(t.name)) +
            " help=" + (t.help.empty() ? std::string("-") : SetString(t.help));
 }
 
 namespace {
-// By weapon, so the text does not depend on the order the mods were loaded in (a weapon is renamed by one mod only).
+// By weapon (text before icons), so the text does not depend on the order the mods were loaded in (a weapon is renamed
+// by one mod only, and has icons from one mod only).
 std::string TextLines(std::vector<TextSpec> texts) {
-    std::stable_sort(texts.begin(), texts.end(), [](const TextSpec& a, const TextSpec& b) { return a.weapon < b.weapon; });
+    std::stable_sort(texts.begin(), texts.end(), [](const TextSpec& a, const TextSpec& b) { return a.weapon != b.weapon ? a.weapon < b.weapon : a.icon < b.icon; });
     std::string t;
     for (const auto& s : texts) t += TextLine(s) + "\n";
     return t;

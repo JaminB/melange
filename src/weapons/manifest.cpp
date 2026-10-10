@@ -270,21 +270,74 @@ std::vector<TextDecl> AssignText(const std::vector<std::vector<TextDecl>>& perMo
     return acc;
 }
 
-Resolved Resolve(const std::vector<std::vector<CloneDecl>>& clones, const std::vector<std::vector<TextDecl>>& texts) {
+std::vector<IconDecl> ParseIcons(const spice::Manifest& m, std::vector<Error>* errs) {
+    std::vector<IconDecl> out;
+    bool ok = true;
+    auto fail = [&](const std::string& what, const std::string& text) {
+        if (errs) errs->push_back({m.id, what + ": " + text});
+        ok = false;
+    };
+    if (m.weaponIcons.empty()) return out;
+    if (!m.content) fail("weaponIcons", "requires kind: \"content\"");
+    if (m.weaponIcons.size() > kMaxIconsPerMod) fail("weaponIcons", "at most 64 entries");
+    for (const auto& w : m.weaponIcons) {
+        const std::string tag = w.weapon.empty() ? "weaponIcons" : w.weapon;
+        if (!ValidTextKey(w.weapon)) fail(tag, "key must match ^k(Weapon|Utility)[A-Z][A-Za-z0-9]{2,40}$");
+        for (const auto& o : out)
+            if (o.weapon == w.weapon) fail(tag, "listed twice");
+        for (const auto& c : m.weapons)
+            if (c.name == w.weapon) fail(tag, "is a clone of this mod; clones have their own panelIcon and hudIcon");
+        if (w.panelIcon.empty() && w.hudIcon.empty()) fail(tag, "needs a panelIcon or a hudIcon");
+        if (!w.panelIcon.empty() && (!SafeRel(w.panelIcon) || !EndsWithI(w.panelIcon, ".png")))
+            fail(tag, "panelIcon must be a relative .png path under assets/");
+        if (!w.hudIcon.empty() &&
+            (w.hudIcon.find_first_of("/\\:") != std::string::npos || w.hudIcon.compare(0, m.id.size() + 1, m.id + ".") != 0 ||
+             !EndsWithI(w.hudIcon, ".tga")))
+            fail(tag, "hudIcon must be a .tga file name in assets/loose/ named '" + m.id + ".*'");
+        out.push_back({m.id, w.weapon, w.panelIcon, w.hudIcon});
+    }
+    if (!ok) out.clear();
+    return out;
+}
+
+std::vector<IconDecl> AssignIcons(const std::vector<std::vector<IconDecl>>& perMod, const std::vector<std::string>& cloneNames,
+                                  std::vector<Error>* refused) {
+    std::vector<IconDecl> acc;
+    for (const auto& mod : perMod) {
+        if (mod.empty()) continue;
+        std::string why;
+        for (const auto& d : mod) {
+            if (why.empty() && std::find(cloneNames.begin(), cloneNames.end(), d.weapon) != cloneNames.end())
+                why = "weaponIcons." + d.weapon + " is a clone name; clones have their own panelIcon and hudIcon";
+            for (const auto& a : acc)
+                if (why.empty() && a.weapon == d.weapon) why = d.weapon + " already has icons from " + a.mod;
+        }
+        if (!why.empty()) {
+            if (refused) refused->push_back({mod.front().mod, why});
+            continue;
+        }
+        for (const auto& d : mod) acc.push_back(d);
+    }
+    return acc;
+}
+
+Resolved Resolve(const std::vector<std::vector<CloneDecl>>& clones, const std::vector<std::vector<TextDecl>>& texts,
+                 const std::vector<std::vector<IconDecl>>& icons) {
     Resolved r;
-    const size_t n = std::max(clones.size(), texts.size());
+    const size_t n = std::max({clones.size(), texts.size(), icons.size()});
     std::vector<std::string> ids(n);
     for (size_t i = 0; i < n; ++i) {
         if (i < clones.size() && !clones[i].empty()) ids[i] = clones[i].front().mod;
         else if (i < texts.size() && !texts[i].empty()) ids[i] = texts[i].front().mod;
+        else if (i < icons.size() && !icons[i].empty()) ids[i] = icons[i].front().mod;
     }
     auto named = [&](const std::vector<Error>& list, size_t i) {
         return !ids[i].empty() && std::any_of(list.begin(), list.end(), [&](const Error& er) { return er.mod == ids[i]; });
     };
-    // Clone cells first, then renames against the clones that survived. A rename refusal removes that mod's clones,
-    // which can free a cell or a name, so the clone pass runs again. Clone refusals are recomputed every round (a mod
-    // refused only because of a mod that is gone is let back in); rename refusals are kept, so the set of removed
-    // mods only grows and the loop ends.
+    // Clone cells first, then renames and icons against the clones that survived. A rename or icon refusal removes
+    // that mod's clones, which can free a cell or a name, so the clone pass runs again. Clone refusals are recomputed
+    // every round (a mod refused only because of a mod that is gone is let back in); rename and icon refusals are
+    // kept, so the set of removed mods only grows and the loop ends.
     std::vector<bool> textOut(n, false);
     std::vector<Error> textRefusals;
     for (;;) {
@@ -293,17 +346,21 @@ Resolved Resolve(const std::vector<std::vector<CloneDecl>>& clones, const std::v
             if (!textOut[i]) cl[i] = clones[i];
         std::vector<Error> cloneErrs;
         r.clones = Assign(cl, &cloneErrs);
-        // Only clones that will exist block a rename: those of a mod refused for any reason do not count.
+        // Only clones that will exist block a rename or an icon rule: those of a mod refused for any reason do not count.
         std::vector<std::vector<TextDecl>> tx(n);
+        std::vector<std::vector<IconDecl>> ic(n);
         std::vector<std::string> cloneNames;
         for (size_t i = 0; i < n; ++i) {
             if (textOut[i] || named(cloneErrs, i)) continue;
             if (i < clones.size())
                 for (const auto& d : clones[i]) cloneNames.push_back(d.name);
             if (i < texts.size()) tx[i] = texts[i];
+            if (i < icons.size()) ic[i] = icons[i];
         }
-        std::vector<Error> textErrs;
+        std::vector<Error> textErrs, iconErrs;
         r.texts = AssignText(tx, cloneNames, &textErrs);
+        r.icons = AssignIcons(ic, cloneNames, &iconErrs);
+        textErrs.insert(textErrs.end(), iconErrs.begin(), iconErrs.end());
         bool again = false;
         for (size_t i = 0; i < n; ++i)
             if (!textOut[i] && named(textErrs, i)) textOut[i] = again = true;
@@ -316,6 +373,19 @@ Resolved Resolve(const std::vector<std::vector<CloneDecl>>& clones, const std::v
     r.refused.insert(r.refused.end(), textRefusals.begin(), textRefusals.end());
     return r;
 }
+
+std::vector<IconDecl> g_frozenIcons;
+bool g_iconsFrozen = false;
+
+void FreezeIcons(std::vector<IconDecl> decls) {
+    if (g_iconsFrozen) return;
+    g_frozenIcons = std::move(decls);
+    g_iconsFrozen = true;
+}
+
+bool IsIconsFrozen() { return g_iconsFrozen; }
+
+const std::vector<IconDecl>& FrozenIcons() { return g_frozenIcons; }
 
 void FreezeText(std::vector<TextDecl> decls) {
     if (g_textFrozen) return;

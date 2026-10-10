@@ -98,6 +98,13 @@ bool VerbState(std::string_view, void*) {
         LOG_INFO("[weapons]   text %s: id %d slot %08x key %s name=%d help=%d", t->decl.weapon.c_str(), t->id,
                  static_cast<unsigned>(t->slot), t->token.c_str(), t->text, t->help);
     }
+    LOG_INFO("[weapons]   weaponIcons: declared=%zu live=%d hudLive=%d", wm::FrozenIcons().size(), text.IconsLive(), text.HudIconsLive());
+    for (int i = 0; i < text.IconCount(); ++i) {
+        const melange::weapons::core::IconRule* t = text.IconAt(i);
+        LOG_INFO("[weapons]   icons %s by %s: id %d panel=%d (code %x) %s hud=%d %s -> %s", t->decl.weapon.c_str(), t->decl.mod.c_str(), t->id,
+                 t->panel, static_cast<unsigned>(t->iconCode), t->decl.panelIcon.c_str(), t->hud, t->hudFile ? t->hudFile : "-",
+                 t->decl.hudIcon.c_str());
+    }
     CloneInfo info[kMaxClones] = {};
     const int n = Declared(info, kMaxClones);
     for (int k = 0; k < n && k < kMaxClones; ++k)
@@ -173,9 +180,9 @@ public:
         melange::testcmd::Register("weapons.field", &VerbField);
         const size_t n = wm::Frozen().size();
         if (g_weapons) melange::weapons::behaviour::InstallLua();
-        const size_t nt = wm::FrozenText().size();
-        // Renames alone need the registry and the match lifecycle but none of the clone behaviour.
-        if (g_weapons && (n || nt) && melange::weapons::registry::Install()) {
+        const size_t nt = wm::FrozenText().size(), ni = wm::FrozenIcons().size();
+        // Renames and icon replacements alone need the registry and the match lifecycle but none of the clone behaviour.
+        if (g_weapons && (n || nt || ni) && melange::weapons::registry::Install()) {
             if (n) {
                 melange::weapons::behaviour::Install(Int("ExtraPerExplosion", 8), Bool("LogEvents", false));
                 melange::weapons::contrib::Register();
@@ -184,9 +191,9 @@ public:
             melange::lua50::OnContext(&OnContext, nullptr);
         }
         melange::jlog::Rec("weapons", melange::jlog::Level::Info, "installed")
-            .Bool("sites", sites).Bool("bases", bases).Uint("declared", n).Uint("renames", nt);
-        LOG_INFO("[weapons] installed: sites %s, bases %s, %zu clone(s) declared, %zu weaponText rename(s)",
-                 sites ? "ok" : "CHANGED", bases ? "ok" : "CHANGED", n, nt);
+            .Bool("sites", sites).Bool("bases", bases).Uint("declared", n).Uint("renames", nt).Uint("iconRules", ni);
+        LOG_INFO("[weapons] installed: sites %s, bases %s, %zu clone(s) declared, %zu weaponText rename(s), %zu weaponIcons rule(s)",
+                 sites ? "ok" : "CHANGED", bases ? "ok" : "CHANGED", n, nt, ni);
         return true;
     }
 };
@@ -209,6 +216,11 @@ public:
                 const auto t0 = std::chrono::steady_clock::now();
                 size_t n = 0;
                 for (auto& d : wm::Frozen()) {
+                    if (d.panelIcon.empty()) continue;
+                    melange::assets::PreloadPanelIcon(d.mod.c_str(), d.panelIcon.c_str());
+                    ++n;
+                }
+                for (auto& d : wm::FrozenIcons()) {
                     if (d.panelIcon.empty()) continue;
                     melange::assets::PreloadPanelIcon(d.mod.c_str(), d.panelIcon.c_str());
                     ++n;

@@ -238,9 +238,10 @@ void Install(Policy policy, bool leaveButton) {
 Policy CurrentPolicy() { return g_policy; }
 
 bool LocalClones() {
-    // Vanilla renames count as weapon content: peers must show the same names, so they get the same gate as clones.
+    // Vanilla renames and icon replacements count as weapon content: peers must show the same names and icons, so they get the same gate as clones.
     return weapons::Enabled() && ((weapons::manifest::IsFrozen() && !weapons::manifest::Frozen().empty()) ||
-                                  (weapons::manifest::IsTextFrozen() && !weapons::manifest::FrozenText().empty()));
+                                  (weapons::manifest::IsTextFrozen() && !weapons::manifest::FrozenText().empty()) ||
+                                  (weapons::manifest::IsIconsFrozen() && !weapons::manifest::FrozenIcons().empty()));
 }
 
 View Current() { return g_view; }

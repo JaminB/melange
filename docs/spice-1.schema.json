@@ -145,6 +145,22 @@
       }
     },
 
+    "weaponIcons": {
+      "type": "object",
+      "maxProperties": 64,
+      "propertyNames": { "pattern": "^k(Weapon|Utility)[A-Z][A-Za-z0-9]{2,40}$" },
+      "description": "New panel and/or HUD icon for vanilla weapons (content mods only). Presentation only: the simulation is untouched. A key may not be a clone name declared by any mod, and a weapon an earlier mod already has icons for refuses the later mod. Applies only in a live content match that every peer has with the same rules.",
+      "additionalProperties": {
+        "type": "object",
+        "additionalProperties": false,
+        "minProperties": 1,
+        "properties": {
+          "panelIcon": { "type": "string", "minLength": 1, "maxLength": 120, "pattern": "\\.[pP][nN][gG]$", "description": "A square PNG (side a multiple of 64, up to 4096) under the assets root, relative with no '..'. Written over the weapon's own panel sub-icon." },
+          "hudIcon": { "type": "string", "minLength": 1, "maxLength": 120, "pattern": "^[^/\\\\:]+\\.[tT][gG][aA]$", "description": "A .tga file name in assets/loose/ named <id>.*; loaded in place of the weapon's vanilla HUD icon." }
+        }
+      }
+    },
+
     "levels": {
       "type": "array",
       "maxItems": 32,
