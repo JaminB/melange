@@ -19,6 +19,8 @@ const wchar_t* const kLoaderDlls[] = {L"dinput8.dll", L"dsound.dll", L"winmm.dll
                                       L"winhttp.dll", L"wininet.dll", L"opengl32.dll"};
 // Files the game (or Steam) writes into its own folder: settings, engine shadow caches and logs.
 const wchar_t* const kKeepRoot[] = {L"local.cfg", L"default.cfg", L"steam_appid.txt", L"user.cfg"};
+constexpr char kLaaStuckCopy[] =
+    "WormsMayhem.exe still uses 4 GB mode: close the game (and anything holding the file) and run Restore vanilla again.";
 constexpr size_t kMaxEntries = 200000;   // a folder with more than this is not a game folder
 
 std::string N(const std::wstring& s) { return Narrow(s); }
@@ -395,14 +397,21 @@ VanillaOutcome ApplyVanilla(const VanillaContext& ctx, const std::string& planId
     }
 
     // 1b. The 4 GB bit goes back to stock while the marker (deleted below with the rest of Melange) still says it was ours.
+    // If that fails the marker stays: it is the only record that the patched exe is ours to revert.
+    bool laaStuck = false;
+    const std::wstring laaMarker = g + L"\\Melange\\laa.json";
     if (LaaMarkerPresent(g)) {
         const LaaResult l = EnsureLaa(c, false);
-        if (!l.ok) LOG_WARN("[vanilla] could not clear the 4 GB bit: %s", l.message.c_str());
+        if (!l.ok) {
+            laaStuck = true;
+            LOG_WARN("[vanilla] could not clear the 4 GB bit: %s", l.message.c_str());
+        }
     }
 
     // 2. Delete. This process's own files (Melange.exe run from the game folder) go once it has closed.
     for (const auto& r : p.remove) {
         const std::wstring full = g + L"\\" + Widen(r);
+        if (laaStuck && PathKey(full) == PathKey(laaMarker)) continue;
         if ((!c.selfExe.empty() && PathKey(c.selfExe) == PathKey(full)) || GetModuleHandleW(full.c_str())) {
             o.pending.push_back(full);
             continue;
@@ -448,6 +457,12 @@ VanillaOutcome ApplyVanilla(const VanillaContext& ctx, const std::string& planId
         o.outcome.message = "Restore vanilla didn't finish: " + std::to_string(o.failed.size()) + " file" + (o.failed.size() == 1 ? "" : "s") +
                             " could not be deleted (" + o.failed.front() + ": " + Win32Message(o.outcome.win32) +
                             "). Close programs that may be using them and try again.";
+        if (laaStuck) o.outcome.message += std::string(" ") + kLaaStuckCopy;
+        return o;
+    }
+    if (laaStuck) {
+        o.outcome.code = -32012;
+        o.outcome.message = kLaaStuckCopy;
         return o;
     }
     o.outcome.ok = true;

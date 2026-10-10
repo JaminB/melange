@@ -366,6 +366,16 @@ void TestLaa() {
     r = S::EnsureLaa(ctx, false, true);
     Expect(r.ok && r.changed && !melange::pe::IsLaaFile(exe) && melange::hashutil::Sha256HexFile(exe) == raw0, "laa: an explicit revert clears it", r.message);
 
+    // A marker that outlived the patch (Verify files, a crash, a failed delete) is dropped, and never lends ownership.
+    Put(marker, "{\"appliedBy\":\"melange\"}");
+    r = S::EnsureLaa(ctx, false);
+    Expect(r.ok && !r.changed && r.state == "unchanged" && !L::FileExists(marker) && !melange::pe::IsLaaFile(exe),
+           "laa: a stale marker on a stock exe is removed, nothing else changes", r.state);
+    melange::pe::SetLaaInFile(exe, true);
+    r = S::EnsureLaa(ctx, false);
+    Expect(r.ok && !r.changed && r.state == "external" && melange::pe::IsLaaFile(exe), "laa: a later external patch is not reverted", r.state);
+    melange::pe::SetLaaInFile(exe, false);
+
     // Refusals leave the exe as it was.
     auto other = profiles;
     other[0].sha256 = std::string(64, '0');
@@ -822,6 +832,30 @@ void TestVanillaLink() {
     Expect(!L::DirExists(g + L"\\Mods"), "vanilla link: the link itself is gone");
     Expect(Get(outside + L"\\top.txt") == "keep me too" && Get(outside + L"\\precious\\work.lua") == "keep me",
            "vanilla link: everything it pointed at is untouched");
+}
+
+// When the 4 GB bit cannot be cleared, the marker stays (it is the only record the patch is ours) and the outcome says so.
+void TestVanillaLaaStuck() {
+    Rig r = MakeRig(L"vanilla-laa");
+    const std::wstring g = r.game, exe = g + L"\\WormsMayhem.exe", marker = g + L"\\Melange\\laa.json";
+    S::StockList stock;
+    std::string err;
+    Expect(S::ParseStockList("WormsMayhem.exe\t" + std::to_string(L::FileSize(exe)) + "\r\n", &stock, &err), "vanilla laa: list parses", err);
+    S::VanillaContext v;
+    v.base = r.ctx;
+    v.stock = &stock;
+    v.replaysDir = L::Parent(g) + L"\\Documents\\Melange\\replays";
+    v.base.storeOf = [](const std::wstring&) { return std::string("steam"); };
+    Put(g + L"\\melange.asi", "asi");
+    Put(marker, "{\"appliedBy\":\"melange\"}");
+    melange::pe::SetLaaInFile(exe, true);
+    const S::VanillaPlan p = S::MakeVanillaPlan(v);
+    HANDLE lock = CreateFileW(exe.c_str(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, OPEN_EXISTING, 0, nullptr);   // no delete sharing
+    const S::VanillaOutcome o = S::ApplyVanilla(v, p.planId);
+    CloseHandle(lock);
+    Expect(!o.outcome.ok && o.outcome.message.find("still uses 4 GB mode") != std::string::npos, "vanilla laa: the failure reaches the outcome", o.outcome.message);
+    Expect(L::FileExists(marker) && melange::pe::IsLaaFile(exe) && !L::FileExists(g + L"\\melange.asi"),
+           "vanilla laa: the marker is kept, the rest of Melange is removed");
 }
 
 void TestVanilla() {
@@ -1760,6 +1794,7 @@ int main(int, char** argv) {
         TestEngineRollback();
         TestVanilla();
         TestVanillaLink();
+        TestVanillaLaaStuck();
         TestUpdateApply();
     }
     TestStockList();

@@ -76,7 +76,13 @@ LaaResult EnsureLaa(const Context& ctx, bool want, bool force) {
     uint16_t chars = 0;
     if (!pe::ReadPeFlags(exe, &chars)) return Failed("WormsMayhem.exe could not be read.", ERROR_BAD_EXE_FORMAT);
     const bool now = (chars & IMAGE_FILE_LARGE_ADDRESS_AWARE) != 0;
-    const bool marker = LaaMarkerPresent(g);
+    bool marker = LaaMarkerPresent(g);
+    if (!now && marker) {
+        // The marker only means something while the bit is set: Steam's "Verify files", a crash before the swap or a
+        // failed delete leave it behind, and it must never later pass for ownership of someone else's patch.
+        if (DeleteFileW(MarkerPath(g).c_str())) marker = false;
+        else LOG_WARN("[laa] could not remove the stale marker: %s", Win32Message(GetLastError()).c_str());
+    }
     LaaResult r;
     r.ok = true;
     if (now == want) {
@@ -116,7 +122,8 @@ LaaResult EnsureLaa(const Context& ctx, bool want, bool force) {
     if (!MoveFileExW(tmp.c_str(), exe.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH))
         return fail("Could not replace WormsMayhem.exe.", GetLastError());
 
-    if (!want) DeleteFileW(MarkerPath(g).c_str());
+    if (!want && !DeleteFileW(MarkerPath(g).c_str()) && GetLastError() != ERROR_FILE_NOT_FOUND)
+        LOG_WARN("[laa] could not remove the marker after the revert: %s", Win32Message(GetLastError()).c_str());
     ClearExeCache();
     LOG_INFO("[laa] WormsMayhem.exe: large-address-aware %s (was %s)", Bit(want), Bit(now));
     r.changed = true;

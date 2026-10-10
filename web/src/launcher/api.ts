@@ -554,3 +554,9 @@ export function laaOf(v: unknown): LaaState {
     running: bool(o, "running"), refused: strOpt(o, "refused") || undefined,
   };
 }
+
+// launcher.launch reports a failed 4 GB switch as `laa: "failed:<reason>"`; the game started anyway. Returns the reason.
+export function launchLaaFailure(v: unknown): string | undefined {
+  const l = strOpt(obj(v), "laa");
+  return l !== undefined && l.startsWith("failed:") ? l.slice(7).trim() || "unknown reason" : undefined;
+}

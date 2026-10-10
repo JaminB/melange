@@ -3,7 +3,7 @@ import type { Client } from "../../sdk/client";
 import { errorText } from "../../sdk/hooks";
 import type { LaaState } from "../api";
 import { laaOf } from "../api";
-import { LAA_NOTE, LAA_RUNNING, laaStatus } from "../copy";
+import { LAA_NO_MELANGE, LAA_NOTE, LAA_RUNNING, laaStatus } from "../copy";
 
 // Settings › Memory: the opt-in 4 GB (large-address-aware) mode. The choice is written at once (launcher.laa.set),
 // which also patches WormsMayhem.exe; the server refuses while the game runs.
@@ -29,8 +29,8 @@ export function LaaSettings({ client, running }: { client: Client; running: bool
   };
 
   if (!s) return <p class="muted small">{error ?? "Reading the game's memory setting…"}</p>;
-  const blocked = s.refused ?? (running ? LAA_RUNNING : undefined);
-  const disabled = busy || !!blocked || (!s.enabled && !s.melangeIni);
+  const blocked = s.refused ?? (running ? LAA_RUNNING : undefined) ?? (!s.enabled && !s.melangeIni ? LAA_NO_MELANGE : undefined);
+  const disabled = busy || !!blocked;
   return (
     <div class="ls-laa">
       {error ? <p class="error" role="alert">{error}</p> : null}

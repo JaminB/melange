@@ -392,7 +392,10 @@ export function windowSizeHelp(d: DisplayState): string {
 // -- Settings › Memory -----------------------------------------------------------------------------------------------
 export const LAA_NOTE = "Only changes this PC. Network games and other players are not affected.";
 export const LAA_RUNNING = "Close the game to change this: it reads it when it starts.";
-export const laaStatus = (s: LaaState): string =>
+export const LAA_NO_MELANGE = "Install Melange first.";
+export const laaLaunchFailed = (reason: string): string =>
+  `Couldn't switch the game to 4 GB mode: ${reason.replace(/[.\s]+$/, "")}. The game started with 2 GB.`;
+export const laaStatus =(s: LaaState): string =>
   s.enabled && s.active ? "On: the game can use up to 4 GB."
   : s.enabled ? "On. It takes effect the next time you start the game from Melange."
   : s.active ? "Off. The game file still has it from something other than Melange."
