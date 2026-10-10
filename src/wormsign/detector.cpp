@@ -16,6 +16,7 @@
 #include "core/events.h"
 #include "core/game.h"
 #include "core/log.h"
+#include "core/thread_guard.h"
 #include "melange/draw.h"
 #include "melange/jlog.h"
 #include "melange/lua.h"
@@ -240,42 +241,45 @@ void GameEnv::Bundle(const detect::Report& r) {
 void WriteBundle(const BundleJob& job) {
     auto in = std::make_shared<bundle::Inputs>(*job.base);
     std::thread([in, wsr = job.wsr, dir = job.dir, path = job.path] {
-        wchar_t name[256];
-        DWORD n = 256;
-        if (GetUserNameW(name, &n)) in->userName = game::Narrow(name);
-        n = 256;
-        if (GetComputerNameW(name, &n)) in->computerName = game::Narrow(name);
-        in->profileName = ProfileName();
-        std::string log;
-        if (ReadFileTail(game::DataDir() + L"\\Melange.log", 4u << 20, &log)) in->melangeLog = detect::LogTailSeconds(log, 120);
-        jlog::Flush(1000);
-        std::vector<jlog::Line> lines;
-        jlog::Tail(0, lines, 20000);
-        const double last = lines.empty() ? 0 : lines.back().t;
-        for (const jlog::Line& l : lines)
-            if (l.t >= last - 120) in->jlog += l.json + "\n";
-        in->sysinfo = sysinfo::CollectJson();
-        if (!wsr.empty()) {
-            const std::wstring tmp = path + L".wsr.tmp";
-            std::string bytes, err;
-            if (library::ExportRedacted(wsr, tmp, &err, in->salt) && ReadFileTail(tmp, kMaxRecordingBytes, &bytes))
-                in->recording.assign(bytes.begin(), bytes.end());
-            DeleteFileW(tmp.c_str());
-        }
-        std::string zip;
         std::wstring result;
-        if (bundle::BuildZip(*in, &zip)) {
-            SHCreateDirectoryExW(nullptr, dir.c_str(), nullptr);
-            HANDLE f = CreateFileW(path.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
-            if (f != INVALID_HANDLE_VALUE) {
-                DWORD w = 0;
-                const bool ok = WriteFile(f, zip.data(), static_cast<DWORD>(zip.size()), &w, nullptr) && w == zip.size();
-                CloseHandle(f);
-                if (ok) result = path;
-                else DeleteFileW(path.c_str());
+        GuardedThreadBody("wormsign-bundle", [&] {
+            wchar_t name[256];
+            DWORD n = 256;
+            if (GetUserNameW(name, &n)) in->userName = game::Narrow(name);
+            n = 256;
+            if (GetComputerNameW(name, &n)) in->computerName = game::Narrow(name);
+            in->profileName = ProfileName();
+            std::string log;
+            if (ReadFileTail(game::DataDir() + L"\\Melange.log", 4u << 20, &log)) in->melangeLog = detect::LogTailSeconds(log, 120);
+            jlog::Flush(1000);
+            std::vector<jlog::Line> lines;
+            jlog::Tail(0, lines, 20000);
+            const double last = lines.empty() ? 0 : lines.back().t;
+            for (const jlog::Line& l : lines)
+                if (l.t >= last - 120) in->jlog += l.json + "\n";
+            in->sysinfo = sysinfo::CollectJson();
+            if (!wsr.empty()) {
+                const std::wstring tmp = path + L".wsr.tmp";
+                std::string bytes, err;
+                if (library::ExportRedacted(wsr, tmp, &err, in->salt) && ReadFileTail(tmp, kMaxRecordingBytes, &bytes))
+                    in->recording.assign(bytes.begin(), bytes.end());
+                DeleteFileW(tmp.c_str());
             }
-        }
-        if (!result.empty()) library::OnBundleWritten(result);
+            std::string zip;
+            if (bundle::BuildZip(*in, &zip)) {
+                SHCreateDirectoryExW(nullptr, dir.c_str(), nullptr);
+                HANDLE f = CreateFileW(path.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+                if (f != INVALID_HANDLE_VALUE) {
+                    DWORD w = 0;
+                    const bool ok = WriteFile(f, zip.data(), static_cast<DWORD>(zip.size()), &w, nullptr) && w == zip.size();
+                    CloseHandle(f);
+                    if (ok) result = path;
+                    else DeleteFileW(path.c_str());
+                }
+            }
+            if (!result.empty()) library::OnBundleWritten(result);
+        });
+        // Queued whether or not the build failed: PickUpBundles reports a "" as a failed export.
         std::lock_guard lk(g_bundleMx);
         g_bundleDone.push_back(result);
     }).detach();

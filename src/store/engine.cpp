@@ -18,6 +18,7 @@
 #include <thread>
 
 #include "core/log.h"
+#include "core/thread_guard.h"
 #include "store/compat.h"
 #include "store/fetch.h"
 #include "store/install.h"
@@ -655,24 +656,29 @@ void Worker() {
             t = std::move(g_tasks.front());
             g_tasks.pop_front();
         }
-        switch (t.kind) {
-            case Task::Fetch: DoFetch(); break;
-            case Task::Shots: DoShots(t.id); break;
-            case Task::Add:
-            case Task::Drop:
-            case Task::Reconcile:
-                g_cancel = false;
-                if (t.kind == Task::Add) DoAdd(t);
-                else if (t.kind == Task::Drop) DoDrop(t);
-                else DoReconcile(t);
-                {
-                    std::lock_guard lk(g_mx);
-                    // A Reconcile can be queued behind a running job: stay busy until the last change ran.
-                    g_busy = std::any_of(g_tasks.begin(), g_tasks.end(), [](const Task& q) { return q.kind >= Task::Add; });
-                    g_updatesDirty = true;
-                }
-                PublishState();
-                break;
+        // One failed task is logged and the worker goes on; the busy flag below is cleared either way.
+        GuardedThreadBody("store", [&] {
+            switch (t.kind) {
+                case Task::Fetch: DoFetch(); break;
+                case Task::Shots: DoShots(t.id); break;
+                case Task::Add:
+                case Task::Drop:
+                case Task::Reconcile:
+                    g_cancel = false;
+                    if (t.kind == Task::Add) DoAdd(t);
+                    else if (t.kind == Task::Drop) DoDrop(t);
+                    else DoReconcile(t);
+                    break;
+            }
+        });
+        if (t.kind >= Task::Add) {
+            {
+                std::lock_guard lk(g_mx);
+                // A Reconcile can be queued behind a running job: stay busy until the last change ran.
+                g_busy = std::any_of(g_tasks.begin(), g_tasks.end(), [](const Task& q) { return q.kind >= Task::Add; });
+                g_updatesDirty = true;
+            }
+            PublishState();
         }
     }
 }
@@ -681,7 +687,7 @@ void Worker() {
 void EnqueueLocked(Task t) {
     if (!g_workerStarted) {
         g_workerStarted = true;
-        std::thread(&Worker).detach();
+        std::thread([] { GuardedThreadBody("store", &Worker); }).detach();
     }
     g_tasks.push_back(std::move(t));
     g_cv.notify_one();

@@ -3,6 +3,8 @@
 #include <windows.h>
 
 #include <atomic>
+#include <exception>
+#include <new>
 #include <mutex>
 #include <vector>
 
@@ -34,7 +36,18 @@ BOOL WINAPI HookSwapBuffers(HDC dc) {
     g_frames.fetch_add(1, std::memory_order_relaxed);
     g_lastFrame.store(GetTickCount64(), std::memory_order_relaxed);
     Fire(Event::Frame);
-    if (PresentHook hook = g_presentHook.load(std::memory_order_acquire)) hook(dc);
+    // No C++ exception may leave this hook: the game's frames above it have no handler for one.
+    if (PresentHook hook = g_presentHook.load(std::memory_order_acquire)) {
+        try {
+            hook(dc);
+        } catch (const std::bad_alloc&) {
+            mem::ReportOutOfMemory("present hook");
+        } catch (const std::exception& e) {
+            LOG_ERROR("present hook threw: %s", e.what());
+        } catch (...) {
+            LOG_ERROR("present hook threw a non-standard exception");
+        }
+    }
     const BOOL r = g_origSwapBuffers(dc);
     dllcall::Note("gdi32!SwapBuffers");
     return r;
@@ -49,7 +62,19 @@ void Subscribe(Event e, Callback cb) {
 void Fire(Event e) {
     std::lock_guard lk(g_mutex);
     if (e != Event::Frame) LOG_INFO("event %s", NameOf(e));
-    for (auto& cb : g_subs[static_cast<int>(e)]) cb();
+    // An allocation failure (the game is a 2 GB process) or any other exception in a subscriber must not escape into
+    // the game's frames, where it would end the process: report it and go on with the next subscriber.
+    for (auto& cb : g_subs[static_cast<int>(e)]) {
+        try {
+            cb();
+        } catch (const std::bad_alloc&) {
+            mem::ReportOutOfMemory(NameOf(e));
+        } catch (const std::exception& ex) {
+            LOG_ERROR("%s subscriber threw: %s", NameOf(e), ex.what());
+        } catch (...) {
+            LOG_ERROR("%s subscriber threw a non-standard exception", NameOf(e));
+        }
+    }
 }
 
 const char* NameOf(Event e) {

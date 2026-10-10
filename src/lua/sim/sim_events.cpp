@@ -5,6 +5,7 @@
 #include <cstring>
 
 #include "core/log.h"
+#include "core/mem.h"
 #include "lua/sim/bridge_internal.h"
 #include "lua/sim/sim_internal.h"
 
@@ -387,10 +388,17 @@ bool IsModMessage(const char* name) noexcept {
 uint32_t AddSub(int mod, const char* event, int fnRef) noexcept {
     if (LiveCallbacks(mod) >= kMaxCallbacksPerMod) return 0;
     const uint32_t h = g.nextHandle++;
-    Sub& s = g.subs[h];
-    s.mod = mod;
-    s.fnRef = fnRef;
-    s.event = event;
+    // noexcept: an allocation failure (the game is a 2 GB process) is reported and answered like "too many".
+    try {
+        Sub& s = g.subs[h];
+        s.mod = mod;
+        s.fnRef = fnRef;
+        s.event = event;
+    } catch (...) {
+        g.subs.erase(h);
+        mem::ReportOutOfMemory("sim: subscribe");
+        return 0;
+    }
     return h;
 }
 
@@ -404,11 +412,16 @@ bool RemoveSub(int mod, uint32_t handle) noexcept {
 uint32_t AddTimer(int mod, uint32_t delay, uint32_t period, int fnRef) noexcept {
     if (LiveCallbacks(mod) >= kMaxCallbacksPerMod) return 0;
     const uint32_t h = g.nextHandle++;
-    Timer& t = g.timers[h];
-    t.mod = mod;
-    t.fnRef = fnRef;
-    t.due = g.tick + delay;
-    t.period = period;
+    try {
+        Timer& t = g.timers[h];
+        t.mod = mod;
+        t.fnRef = fnRef;
+        t.due = g.tick + delay;
+        t.period = period;
+    } catch (...) {
+        mem::ReportOutOfMemory("sim: timer");
+        return 0;
+    }
     return h;
 }
 
@@ -457,10 +470,14 @@ void RecordFault(int mod, Callback* cb, const char* where, const std::string& er
 
 void ModLog(int mod, int level, const char* text) noexcept {
     const char* id = mod >= 0 && mod < static_cast<int>(g.mods.size()) ? g.mods[mod].id.c_str() : "console";
-    if (g_sink)
-        g_sink(id, level, g.tick, text);
-    else
-        LOG_INFO("[mod] %s (tick %u): %s", id, g.tick, text);
+    try {
+        if (g_sink)
+            g_sink(id, level, g.tick, text);
+        else
+            LOG_INFO("[mod] %s (tick %u): %s", id, g.tick, text);
+    } catch (...) {
+        mem::ReportOutOfMemory("sim: mod log");   // the line is lost
+    }
 }
 
 bool RegisterModMessage(const char* name, uint16_t* idOut, const std::vector<std::string>& vanillaPrefixes) {

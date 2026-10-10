@@ -13,11 +13,14 @@ extern "C" {
 #include <cstdlib>
 #include <cstring>
 #include <map>
+#include <new>
 #include <set>
 #include <string>
 #include <vector>
 
+#include "core/events.h"
 #include "core/log.h"
+#include "core/mem.h"
 #include "lua/engine50.h"
 #include "lua/sim/bridge_internal.h"
 #include "lua/sim/sim_core.h"
@@ -1150,6 +1153,24 @@ int main() {
     core::Configure(cfg);
 
     TestRegistration();
+    {
+        const auto sp = melange::mem::QueryAddressSpace();
+        Expect(sp.usedMB > 0 && sp.largestFreeMB <= sp.freeMB, "address space query is plausible");
+        Expect(melange::mem::ShouldReportOom(1) && melange::mem::ShouldReportOom(3) && !melange::mem::ShouldReportOom(4) &&
+                   !melange::mem::ShouldReportOom(999) && melange::mem::ShouldReportOom(1000),
+               "out-of-memory reports are rate limited");
+        int after = 0;
+        melange::events::Subscribe(melange::events::Event::Frame, [] { throw std::bad_alloc(); });
+        melange::events::Subscribe(melange::events::Event::Frame, [] { throw 42; });
+        melange::events::Subscribe(melange::events::Event::Frame, [&after] { ++after; });
+        bool leaked = false;
+        try {
+            melange::events::Fire(melange::events::Event::Frame);
+        } catch (...) {
+            leaked = true;
+        }
+        Expect(!leaked && after == 1, "events::Fire contains subscriber exceptions and runs the rest");
+    }
     const RunResult a = RunMatch(0x1234abcd, true);
     const RunResult b = RunMatch(0x1234abcd, false);
     const RunResult c = RunMatch(0x0badf00d, false);

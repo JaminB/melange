@@ -27,4 +27,20 @@ bool HookVTable(void* object, int index, void* hook, void** original);
 
 // SEH-guarded reads for diagnostics code poking at game memory.
 bool SafeRead(uintptr_t addr, void* out, size_t n);
+
+// The 2 GB address space of WormsMayhem.exe (it is not large-address-aware) and what is left of it. Allocation-free.
+struct AddressSpace {
+    uint32_t freeMB, largestFreeMB, usedMB;
+    bool largeAddressAware;
+};
+AddressSpace QueryAddressSpace();
+// IMAGE_FILE_LARGE_ADDRESS_AWARE in the PE header of the module loaded at `base`.
+bool IsLargeAddressAware(const void* base);
+// "address space: free 312 MB, largest block 186 MB, ..." into buf (always terminated).
+void FormatAddressSpace(const AddressSpace& s, char* buf, size_t len);
+// Rate limit of out-of-memory reports: the first 3 occurrences, then every 1000th.
+bool ShouldReportOom(uint32_t count);
+// Logs an allocation failure caught at `where` (an ERROR with the address-space summary), rate limited. Callable from
+// any thread and from a catch block: it uses fixed buffers and swallows anything it throws.
+void ReportOutOfMemory(const char* where) noexcept;
 }  // namespace melange::mem

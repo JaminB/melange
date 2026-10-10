@@ -18,6 +18,7 @@
 #include "core/events.h"
 #include "core/game.h"
 #include "core/log.h"
+#include "core/thread_guard.h"
 #include "core/mem.h"
 #include "melange/jlog.h"
 #include "melange/testcmd.h"
@@ -180,7 +181,14 @@ void Install(bool enabled, bool publish) {
     std::vector<std::string> paths;
     if (assets::crcsafe::Available())
         for (const auto& e : assets::crcsafe::Entries()) paths.push_back(e.path);
-    std::thread([paths = std::move(paths)]() mutable { Compute(std::move(paths)); }).detach();
+    std::thread([paths = std::move(paths)]() mutable {
+        bool done = false;
+        GuardedThreadBody("handshake-gid", [&] {
+            Compute(std::move(paths));
+            done = true;
+        });
+        if (!done) g_hashFailed = true;  // OurValue stays "" rather than waiting on a hash that is not coming
+    }).detach();
     events::Subscribe(events::Event::Frame, [] { Tick(); });
     g_banner = lobbybanner::Add("integrity", 30);
     testcmd::Register("handshake.gid", &VerbState);

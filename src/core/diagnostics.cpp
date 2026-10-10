@@ -4,8 +4,14 @@
 #include <shlobj.h>
 
 #include <atomic>
+#include <csignal>
 #include <cstdio>
+#include <cstdlib>
+#include <exception>
+#include <new>
+#include <stdexcept>
 #include <string>
+#include <thread>
 
 #include "core/debug.h"
 #include "core/events.h"
@@ -104,7 +110,10 @@ public:
         hangSeconds_ = Int("HangSeconds", 8);
         hotkey_ = Bool("SnapshotHotkey", true);
         selfTestCrashFrame_ = Int("SelfTestCrashAtFrame", 0);
-        selfTestCrashKind_ = Int("SelfTestCrashKind", 0);  // 0: a plain access violation; 1: one inside a handler
+        // 0: a plain access violation; 1: one inside a handler; 2: abort(); 3: an exception escaping a detached
+        // thread (std::terminate); 4: a pure virtual call; 5: a std::bad_alloc out of a frame subscriber (reported,
+        // the game goes on)
+        selfTestCrashKind_ = Int("SelfTestCrashKind", 0);
         selfTestHangFrame_ = Int("SelfTestHangAtFrame", 0);
 
         // Resolved now, not on the crash path: the shell call allocates and may load modules.
@@ -131,6 +140,14 @@ public:
         AddVectoredExceptionHandler(0, &OnFirstChance);
 
         s_prevFilter = SetUnhandledExceptionFilter(&OnUnhandledException);
+        // The CRT's own ways to end the process, which would otherwise leave no CRASH line and no dump. The
+        // terminate handler is per thread (UCRT): this covers the installing thread, and any other thread's
+        // terminate reaches abort() and so the signal handler anyway.
+        signal(SIGABRT, &OnAbortSignal);
+        signal(SIGABRT_COMPAT, &OnAbortSignal);
+        _set_purecall_handler(&OnPureCall);
+        _set_invalid_parameter_handler(&OnInvalidParameter);
+        std::set_terminate(&OnTerminate);
         // The game/CRT may try to replace our filter later; keep ours in front and chain to theirs.
         melange::mem::HookIAT("KERNEL32.dll", "SetUnhandledExceptionFilter", reinterpret_cast<void*>(&HookSetUEF),
                          reinterpret_cast<void**>(&s_origSetUEF));
@@ -142,6 +159,23 @@ public:
                     if (selfTestCrashKind_ == 1) {
                         LOG_WARN("self-test: forcing an access violation inside an exception filter (a handler fault)");
                         FaultInsideHandler();
+                    }
+                    if (selfTestCrashKind_ == 2) {
+                        LOG_WARN("self-test: calling abort()");
+                        abort();
+                    }
+                    if (selfTestCrashKind_ == 3) {
+                        LOG_WARN("self-test: throwing out of a detached thread without the guard");
+                        std::thread([] { throw std::runtime_error("self-test: unguarded thread body"); }).detach();
+                        return;
+                    }
+                    if (selfTestCrashKind_ == 4) {
+                        LOG_WARN("self-test: making a pure virtual call");
+                        PureCall();
+                    }
+                    if (selfTestCrashKind_ == 5) {
+                        LOG_WARN("self-test: throwing std::bad_alloc from a frame subscriber");
+                        throw std::bad_alloc();   // caught by events::Fire: an out-of-memory ERROR, no crash
                     }
                     LOG_WARN("self-test: forcing an access violation");
                     *reinterpret_cast<volatile int*>(0) = 1;
@@ -190,6 +224,19 @@ private:
             *reinterpret_cast<volatile int*>(0) = 1;
         } __except (FaultingFilter()) {
         }
+    }
+
+    struct PureBase {
+        virtual ~PureBase() { Call(); }   // the derived part is gone by now: this reaches the pure Run
+        void Call() { Run(); }
+        virtual void Run() = 0;
+    };
+    struct PureDerived : PureBase {
+        void Run() override {}
+    };
+    __declspec(noinline) static void PureCall() {
+        PureBase* volatile b = new PureDerived;
+        delete b;
     }
 
     static LPTOP_LEVEL_EXCEPTION_FILTER WINAPI HookSetUEF(LPTOP_LEVEL_EXCEPTION_FILTER f) {
@@ -257,6 +304,76 @@ private:
 
     static LONG WINAPI OnUnhandledException(EXCEPTION_POINTERS* ep) {
         if (s_inCrash.exchange(true)) return EXCEPTION_CONTINUE_SEARCH;
+        ReportFatal(ep, nullptr);
+        return s_prevFilter ? s_prevFilter(ep) : EXCEPTION_CONTINUE_SEARCH;
+    }
+
+    // abort(), a pure virtual call or an invalid-parameter report end the process with __fastfail, which skips the
+    // vectored handler and the unhandled-exception filter above. Each of those paths ends up here instead, with a
+    // record made up from the calling thread's own context, so the log gets a stack and the minidump is written.
+    static constexpr DWORD kStatusFatalAppExit = 0x40000015;
+    __declspec(noinline) static void ReportSynthetic(const char* reason) {
+        CONTEXT ctx{};
+        ctx.ContextFlags = CONTEXT_FULL;
+        RtlCaptureContext(&ctx);
+        EXCEPTION_RECORD rec{};
+        rec.ExceptionCode = kStatusFatalAppExit;
+        rec.ExceptionAddress = reinterpret_cast<void*>(ctx.Eip);
+        EXCEPTION_POINTERS ep{&rec, &ctx};
+        ReportFatal(&ep, reason);
+    }
+
+    // The exception in flight on this thread, when there is one (terminate and abort can run while it is still the
+    // current exception).
+    static std::string DescribeCurrentException() {
+        if (!std::current_exception()) return std::string();
+        try {
+            throw;
+        } catch (const std::exception& e) {
+            return std::string("exception in flight: ") + e.what();
+        } catch (...) {
+            return "exception in flight: non-std exception";
+        }
+    }
+
+    static void OnAbortSignal(int) {
+        if (s_inCrash.exchange(true)) return;   // already reporting (or a crash was reported): let abort() go on
+        LOG_ERROR("==== CRASH: abort() called on thread %lu", GetCurrentThreadId());
+        const std::string cur = DescribeCurrentException();
+        if (!cur.empty()) LOG_ERROR("     %s", cur.c_str());
+        ReportSynthetic("abort()");
+    }
+    static void OnPureCall() {
+        if (!s_inCrash.exchange(true)) {
+            LOG_ERROR("==== CRASH: pure virtual function call on thread %lu", GetCurrentThreadId());
+            ReportSynthetic("pure virtual call");
+        }
+        abort();
+    }
+    static void OnInvalidParameter(const wchar_t* expr, const wchar_t* func, const wchar_t* file, unsigned line, uintptr_t) {
+        if (!s_inCrash.exchange(true)) {
+            LOG_ERROR("==== CRASH: invalid parameter passed to a CRT function on thread %lu", GetCurrentThreadId());
+            if (expr || func || file)   // a release CRT passes nothing
+                LOG_ERROR("     %s in %s (%s:%u)", expr ? melange::game::Narrow(expr).c_str() : "?",
+                         func ? melange::game::Narrow(func).c_str() : "?", file ? melange::game::Narrow(file).c_str() : "?",
+                         line);
+            ReportSynthetic("invalid parameter");
+        }
+        abort();
+    }
+    static void OnTerminate() {
+        if (!s_inCrash.load()) {
+            LOG_ERROR("==== std::terminate called on thread %lu", GetCurrentThreadId());
+            const std::string cur = DescribeCurrentException();
+            if (!cur.empty()) LOG_ERROR("     %s", cur.c_str());
+        }
+        abort();   // reported by OnAbortSignal
+    }
+
+    // The report for a fatal event: log lines, registers and stack scan, the minidump, crash hooks. The caller has
+    // claimed s_inCrash. With a reason (a synthetic record from a path above, which logged its own headline) the
+    // headline is skipped.
+    static void ReportFatal(EXCEPTION_POINTERS* ep, const char* reason) {
         // First, before anything below raises (and records) exceptions of its own: SafeRead in the stack scans.
         const FirstChanceRing ring = t_firstChance;
         auto* rec = ep->ExceptionRecord;
@@ -278,9 +395,10 @@ private:
         const bool nested = haveOuter || nestedFlag;
         const DWORD ago = earlier ? GetTickCount() - earlier->tick : 0;
 
-        LOG_ERROR("==== CRASH: exception %08lx at %s%s", rec->ExceptionCode,
-                 melange::game::DescribeAddress(reinterpret_cast<uintptr_t>(rec->ExceptionAddress)).c_str(),
-                 nested ? "  [handler fault: raised while an earlier exception was being handled]" : "  [first fault]");
+        if (!reason)
+            LOG_ERROR("==== CRASH: exception %08lx at %s%s", rec->ExceptionCode,
+                     melange::game::DescribeAddress(reinterpret_cast<uintptr_t>(rec->ExceptionAddress)).c_str(),
+                     nested ? "  [handler fault: raised while an earlier exception was being handled]" : "  [first fault]");
         if (rec->ExceptionCode == EXCEPTION_ACCESS_VIOLATION && rec->NumberParameters >= 2)
             LOG_ERROR("     %s of address %08lx", rec->ExceptionInformation[0] ? "write" : "read",
                      static_cast<unsigned long>(rec->ExceptionInformation[1]));
@@ -318,12 +436,17 @@ private:
                          ago, first.c_str());
             }
         }
+        {
+            char space[200];   // fixed buffers: this path must not depend on a heap that may be what ran out
+            melange::mem::FormatAddressSpace(melange::mem::QueryAddressSpace(), space, sizeof space);
+            LOG_ERROR("     %s", space);
+        }
         melange::jlog::FlushFromCrash();
 
         const std::string crashText = melange::debug::DescribeException(*rec);
         const std::string agoText = earlier ? " (" + std::to_string(ago) + " ms earlier)" : std::string();
         snprintf(s_jobComment, sizeof s_jobComment, "Melange " MELANGE_VERSION ": %s %s; %s%s%s",
-                 nested ? "handler fault" : "crash (first fault)", crashText.c_str(),
+                 reason ? reason : nested ? "handler fault" : "crash (first fault)", crashText.c_str(),
                  first.empty() ? "no earlier exception recorded" : nested ? "first fault " : "earlier handled exception ",
                  first.c_str(), first.empty() ? "" : agoText.c_str());
 
@@ -357,7 +480,6 @@ private:
         else
             LOG_ERROR("     minidump: %s", melange::game::Narrow(path).c_str());
         melange::jlog::FlushFromCrash();
-        return s_prevFilter ? s_prevFilter(ep) : EXCEPTION_CONTINUE_SEARCH;
     }
 
     // Samples the main thread's EIP several times: a spinning wait shows a small set of repeating EIPs,
@@ -389,11 +511,32 @@ private:
     static DWORD WINAPI WatchdogThread(LPVOID param) {
         auto* self = static_cast<Diagnostics*>(param);
         bool hung = false;
-        ULONGLONG hangStart = 0, lastReport = 0;
+        ULONGLONG hangStart = 0, lastReport = 0, nextSpaceCheck = 0;
+        bool spaceLow = false, spaceLogged = false;
         for (;;) {
             Sleep(250);
             DWORD tid = melange::events::MainThreadId();
             if (!tid) continue;
+
+            // Every ~5 s: the game is a 2 GB process, and when the largest free block gets small, allocations fail.
+            if (GetTickCount64() >= nextSpaceCheck) {
+                nextSpaceCheck = GetTickCount64() + 5000;
+                const melange::mem::AddressSpace sp = melange::mem::QueryAddressSpace();
+                char line[200];
+                melange::mem::FormatAddressSpace(sp, line, sizeof line);
+                if (!spaceLogged) {
+                    spaceLogged = true;
+                    LOG_INFO("%s", line);
+                }
+                if (!spaceLow && sp.largestFreeMB < 128) {
+                    spaceLow = true;
+                    LOG_WARN("address space low: %u MB free, largest block %u MB (WormsMayhem.exe is a 2 GB process%s); "
+                             "allocations may fail and end the game",
+                             sp.freeMB, sp.largestFreeMB, sp.largeAddressAware ? "" : ", not large-address-aware");
+                } else if (spaceLow && sp.largestFreeMB > 192) {
+                    spaceLow = false;
+                }
+            }
 
             if (self->hotkey_ && (GetAsyncKeyState(VK_F12) & 1) && (GetAsyncKeyState(VK_CONTROL) & 0x8000) &&
                 (GetAsyncKeyState(VK_SHIFT) & 0x8000)) {
