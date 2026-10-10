@@ -65,6 +65,51 @@ struct Carry {
     void Reset() { residue = 0.0f; }
 };
 
+// Decides per flush whether the Raw Input counts or the game's own cursor deltas feed the mouse message. Raw Input
+// has stopped arriving (another program replaced the registration, the window was recreated) when, while the game
+// has the focus, kStaleFlushes flushes IN A ROW carry game motion but no raw event, and the last raw event is at
+// least kStaleMs old. The game's deltas are then left alone until a raw event shows up again. The time gate keeps
+// the game-only flushes at the tail of a normal movement (the cursor delta trails the raw counts) from tripping it;
+// a flush without game motion, or without the focus, breaks the run.
+constexpr int kStaleFlushes = 6;
+constexpr uint64_t kStaleMs = 750;
+struct RawFallback {
+    struct Result {
+        bool useRaw;       // overwrite the game's deltas with the raw counts
+        bool becameStale;  // this flush entered the stale state (log once)
+        bool rearmed;      // this flush left the stale state (log once)
+    };
+    bool stale = false;
+    int gameOnly = 0;
+    uint64_t lastRawMs = 0;
+    // rawEvents: accepted raw events since the last flush (an event count, so a move and its reversal within one
+    // flush still count as input). focused: the game process has the foreground and the overlay is not capturing.
+    Result Feed(uint32_t rawEvents, int gameDx, int gameDy, bool focused, uint64_t nowMs) {
+        Result r{!stale, false, false};
+        if (rawEvents) {
+            gameOnly = 0;
+            lastRawMs = nowMs;
+            if (stale) {
+                stale = false;
+                r.rearmed = true;
+            }
+            r.useRaw = true;
+        } else if (!focused || (!gameDx && !gameDy)) {
+            gameOnly = 0;
+        } else if (!stale && ++gameOnly >= kStaleFlushes && nowMs - lastRawMs >= kStaleMs) {
+            stale = true;
+            r.useRaw = false;
+            r.becameStale = true;
+        }
+        return r;
+    }
+    void Reset() {
+        stale = false;
+        gameOnly = 0;
+        lastRawMs = 0;
+    }
+};
+
 // "SPACE" -> "Space", "LCONTROL" -> "Ctrl": a short label from a keys.h name.
 inline std::string KeyLabel(const char* name) {
     if (!name || !*name) return {};

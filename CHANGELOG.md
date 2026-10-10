@@ -2,6 +2,9 @@
 
 ## 0.9.0
 
+- Fixed the mouse camera not responding (only the arrow keys worked) when Raw Input stopped arriving, for example
+  after another program replaced the mouse registration. Melange now falls back to the game's own mouse input and
+  registers Raw Input again every few seconds. On older versions, set `[Controls] SmoothMouse=0`.
 - New `wum.audio` Lua API (client VM): `ready()`, `load(rel)`, `play(handle, {volume, pitch, pos, loop})`, `stop(voice)`
   and `stopAll()`. A mod plays its own WAV files (PCM 16-bit, mono or stereo, 8-48 kHz, up to 2 MiB each, 64 sounds
   and 16 MiB per mod) through a new `Audio` module (`[Audio] Enabled`, `Volume`, `MaxVoices`, `Near`, `Far`) built on
