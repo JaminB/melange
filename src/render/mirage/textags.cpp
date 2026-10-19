@@ -57,6 +57,7 @@ using CompressedTexImage2D = void(APIENTRY*)(GLenum, GLint, GLenum, GLsizei, GLs
 using TexSubImage2D = void(APIENTRY*)(GLenum, GLint, GLint, GLint, GLsizei, GLsizei, GLenum, GLenum, const void*);
 using DeleteTextures = void(APIENTRY*)(GLsizei, const GLuint*);
 using BindTexture = void(APIENTRY*)(GLenum, GLuint);
+using BindMultiTexture = void(APIENTRY*)(GLenum, GLenum, GLuint);
 using ActiveTexture = void(APIENTRY*)(GLenum);
 using GetCompressedTexImage = void(APIENTRY*)(GLenum, GLint, void*);
 TexImage2D n_texImage2D;
@@ -64,6 +65,7 @@ TexSubImage2D n_texSubImage2D;
 CompressedTexImage2D n_compressed, n_compressedArb;
 DeleteTextures n_deleteTextures;
 BindTexture n_bindTexture;
+BindMultiTexture n_bindMultiTexture;
 ActiveTexture n_activeTexture, n_activeTextureArb;
 // Melange's own entry points (its imports are not routed through the hub): used by the read-back, which restores
 // everything it changes.
@@ -172,6 +174,13 @@ void APIENTRY HkDeleteTextures(GLsizei n, const GLuint* names) {
 void APIENTRY HkBindTexture(GLenum target, GLuint name) {
     if (target == GL_TEXTURE_2D) g_tr.Bind(name);
     n_bindTexture(target, name);
+}
+
+// EXT_direct_state_access: the Cg runtime binds a program's sampler textures to their units this way without changing
+// the active unit (the landscape's texture0 goes to unit 1, its shadow map to unit 0).
+void APIENTRY HkBindMultiTextureEXT(GLenum unit, GLenum target, GLuint name) {
+    if (target == GL_TEXTURE_2D) g_tr.SetBound(unit - kTexture0, name);
+    n_bindMultiTexture(unit, target, name);
 }
 
 void APIENTRY HkActiveTexture(GLenum unit) {
@@ -298,7 +307,9 @@ bool InstallHooks(bool atStart) {
     };
     bool ok = chain("glTexImage2D", &HkTexImage2D, &n_texImage2D) && chain("glTexSubImage2D", &HkTexSubImage2D, &n_texSubImage2D) &&
               chain("glDeleteTextures", &HkDeleteTextures, &n_deleteTextures) &&
-              chain("glBindTexture", &HkBindTexture, &n_bindTexture) && chain("glActiveTexture", &HkActiveTexture, &n_activeTexture) &&
+              chain("glBindTexture", &HkBindTexture, &n_bindTexture) &&
+              chain("glBindMultiTextureEXT", &HkBindMultiTextureEXT, &n_bindMultiTexture) &&
+              chain("glActiveTexture", &HkActiveTexture, &n_activeTexture) &&
               chain("glActiveTextureARB", &HkActiveTextureArb, &n_activeTextureArb) &&
               chain("glCompressedTexImage2D", &HkCompressed, &n_compressed) &&
               chain("glCompressedTexImage2DARB", &HkCompressedArb, &n_compressedArb);
