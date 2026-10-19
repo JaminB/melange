@@ -1,5 +1,16 @@
 # Changelog
 
+## Unreleased
+
+- GLSL replacements can sample a mod's own textures. New `wum.shaders.setTexture(file, entry, sampler, tex)` binds a
+  texture from the mod's `wum.draw.texture` to a sampler of the mod's own replacement (`entry` is a glob, `nil` unsets),
+  and `wum.draw.texture(rel, {wrap = "repeat", filter = "linear"|"nearest", layers = n})` loads a PNG for it: with
+  `layers`, a vertical strip of `n` tiles becomes one texture array (`sampler2DArray`, `#version 130`) with a full mip
+  chain per layer. Linear textures are trilinear and follow `[MirageTextures]` anisotropy. Detect the feature with
+  `if wum.shaders.setTexture then`.
+- A replacement's sampler with no Cg parameter now gets its own texture unit (8 to 13) and reads a neutral 1x1
+  texture until one is set. Before, it silently read unit 0, the model's own texture.
+
 ## 0.9.1
 
 - Fixed the crash, or the "Runtime Error! ... terminate it in an unusual way" freeze, at the end of a match. The cause

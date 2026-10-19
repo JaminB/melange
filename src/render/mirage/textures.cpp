@@ -22,6 +22,7 @@
 #include "render/mirage/engine.h"
 #include "render/mirage/hub.h"
 #include "render/mirage/stages.h"
+#include "render/mirage/textures.h"
 #include "render/mirage/textures_logic.h"
 
 namespace melange::mirage::textures {
@@ -255,6 +256,11 @@ private:
     }
 };
 }  // namespace
+
+float EffectiveAnisotropy() {
+    if (g_effective.anisotropy <= 0) return 1.f;
+    return std::max(1.f, std::min(static_cast<float>(g_effective.anisotropy), MaxAnisoSupported()));
+}
 
 MELANGE_MODULE(MirageTextures);
 }  // namespace melange::mirage::textures

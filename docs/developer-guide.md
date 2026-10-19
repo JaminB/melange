@@ -250,6 +250,40 @@ frame: `sampler2D mg_depth` (the depth buffer, in [0,1] as stored), `sampler2D m
 once a frame, at that first draw, and use texture units 14 and 15. `vec2 mg_renderScale` is the scene's size over the
 window's (see Supersampling below), for fades that count texels per pixel.
 
+A replacement can also sample the mod's own textures. Any other `sampler2D` or `sampler2DArray` it declares, with no
+Cg parameter of that name and no `mg_` prefix, gets a texture unit of its own (8 to 13, six per program at most; before
+this, such a sampler silently read unit 0, the model's own texture). It reads a neutral 1x1 texture (0.502 in every
+channel) until the mod's script binds one:
+
+```lua
+local mats = wum.draw.texture("textures/materials.png", {wrap = "repeat", filter = "linear", layers = 8})
+wum.shaders.setTexture("FixedFunction.cg", "FFFragmentMainTexLit*", "materials", mats)
+```
+
+With `layers = n` the PNG is a vertical strip of `n` equal tiles (layer 0 at the top), loaded as one
+`GL_TEXTURE_2D_ARRAY` with a full mip chain per layer; without it, an ordinary 2D texture. Linear textures are
+trilinear and get the anisotropy of `[MirageTextures]` (above) when they are bound; `filter = "nearest"` keeps only
+the base level, for data tables. Mips average every channel as stored, since alpha is data in such maps. Melange binds
+the textures when the program becomes current and again once a frame (post-FX passes may reuse the units). Only the
+mod that ships the replacement can set its samplers, and `entry` is a glob. A sampler whose type does not match the
+texture (a 2D texture for a `sampler2DArray`) reads the neutral texture, with one warning in the log.
+
+`sampler2DArray` and `texture()` need `#version 130`. The game's vertex programs reach GLSL through Cg's `glslv`
+profile, which writes no `#version` line (so GLSL 1.10) and passes everything in `gl_TexCoord[]`. A `#version 130`
+fragment replacement links with them because GLSL 1.30 still has the built-in `gl_TexCoord[]` and `gl_FragColor`: the
+`sunstone` landscape and water replacements are `#version 130` already, and the lit model replacement
+(`FixedFunction.FFFragmentMainTexLit`) with its version raised to 130 and a `sampler2DArray` added compiles and links
+with `FFVertexMainTexLitDirectional`, `FFVertexMainTexLitDirectionalSkinned` and `FFVertexMainTexLitPoint`. Keep
+reading `gl_TexCoord[n]`; do not declare your own `in` varyings, since the vertex stage does not write them.
+
+A script detects the feature with `if wum.shaders.setTexture then`. On an older Melange that is `nil`, and
+`wum.draw.texture` ignores its options table (a clamped 2D texture comes back). There, the extra sampler is left on
+unit 0 with `texture0`: a `sampler2D` reads the model's own texture, and a `sampler2DArray` sharing unit 0 with a
+`sampler2D` makes every draw of the program fail (GL refuses two sampler types on one unit), so the models vanish.
+Either require this Melange in `spice.json` (`"melange": { "range": ">=0.10.0" }`), or have the script pause such a
+replacement with `wum.shaders.enableGlsl(file, entry, false)` when `wum.shaders.setTexture` is `nil` (the game's own
+program draws instead).
+
 ### Supersampling
 
 The game's `/SSAA:<n>` cfg option (2, 4, 8 or 16 samples: 1x2, 2x2, 2x4 or 4x4) has two modes. By default it

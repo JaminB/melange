@@ -191,7 +191,7 @@ queued for the next frame; inside `wum.draw.on`, they are drawn at that stage.
 | `wum.draw.hudRect(x0, y0, x1, y1, color[, filled[, width[, frames]]])` | HUD rectangle. |
 | `wum.draw.hudText(x, y, text, color[, size[, frames]])` | HUD text. |
 | `wum.draw.hudImage(x0, y0, x1, y1, texture[, tint[, frames]])` | HUD image from `wum.draw.texture`. |
-| `wum.draw.texture(rel)` | Loads a PNG from the mod folder; returns a texture id, or `nil, err`. Freed when the mod unloads or reloads. A mod can hold 256 at a time. Textures get a full mip chain and trilinear filtering. |
+| `wum.draw.texture(rel[, opts])` | Loads a PNG from the mod folder; returns a texture id, or `nil, err`. Freed when the mod unloads or reloads. A mod can hold 256 at a time. Textures get a full mip chain and trilinear filtering. With `opts`, the texture is for a shader (see [Shader textures](#shader-textures)): `{wrap = "repeat"\|"clamp", filter = "linear"\|"nearest", layers = n}`. |
 | `wum.draw.sprite(tex, x, y, z, halfW, halfL, ax, ay, az[, color[, mode]])` | Textured world sprite; only inside a `"world"` or `"worldLate"` callback. Returns `true`, or `false` when dropped by the per-frame cap. See [Sprites](#sprites). |
 | `wum.draw.on(stage, fn)` | Calls `fn(stage)` every frame at `"world"`, `"worldLate"` or `"hud"`; returns a handle. |
 | `wum.draw.off(handle)` | Removes a draw callback. |
@@ -289,6 +289,47 @@ Every effect can be read; only the mod's own effects (`<mod id>/<effect>`) can b
 |---|---|
 | `wum.shaders.setParam(file, entry, name, v1[, v2...])` | Sets a shader parameter the mod's own `shaders\params.ini` declares, e.g. `("Landscape.cg", "*FragmentMain", "softness", 1.5)`. `entry` is the section's glob. Errors on anything else. |
 | `wum.shaders.enableGlsl(file, entry, on)` | Pauses (`false`) or resumes one of the mod's own `shaders\<File>.<Entry>.glsl` replacements, e.g. `("Landscape.cg", "LandscapeFragmentMain", false)`, so the game's own program draws again. Takes effect on the next frame and is not saved. Errors if the mod ships no such file. |
+| `wum.shaders.setTexture(file, entry, sampler, tex)` | Binds a texture from this mod's `wum.draw.texture` (or `nil` to unset) to a sampler of the mod's own `shaders\<File>.<Entry>.glsl` replacements, e.g. `("FixedFunction.cg", "FFFragmentMainTexLit*", "materials", tex)`. `entry` is a glob. Returns `true`, or `false` while GLSL replacements are off (`[MirageShaders] GlslReplace=0`). Errors on another mod's replacement or texture, or a name starting with `gl_` or `mg_`. Melange 0.10 and later; see [Shader textures](#shader-textures). |
+
+### Shader textures
+
+A GLSL replacement can sample a mod's own tileable textures, for example a set of material detail maps:
+
+```lua
+if wum.shaders.setTexture then  -- Melange 0.10 and later
+  local mats, err = wum.draw.texture("textures/materials.png", {wrap = "repeat", layers = 8})
+  if mats then
+    wum.shaders.setTexture("FixedFunction.cg", "FFFragmentMainTexLit*", "materials", mats)
+  end
+end
+```
+
+```glsl
+#version 130
+uniform sampler2D texture0;         // the engine's texture
+uniform sampler2DArray materials;   // the mod's texture array
+// ...
+vec4 m = texture(materials, vec3(uv * 8.0, layer));
+```
+
+- `opts.layers = n` (1 to 64): the PNG is a vertical strip of `n` equal tiles, layer 0 at the top, and loads as one
+  texture array (`sampler2DArray`). Without `layers` it is an ordinary 2D texture (`sampler2D`). Arrays need GL 3.0
+  and cannot be sprites. The image height must be a multiple of `n`.
+- `opts.filter`: `"linear"` (the default) is trilinear, with a full mip chain per layer and the anisotropy from
+  `[MirageTextures]` (the merged mod requests, see the developer guide). `"nearest"` keeps only the base level, for data
+  tables read with `texelFetch` or at texel centres. Mips average every channel as stored: alpha is data here.
+- `opts.wrap`: `"clamp"` (the default, to the edge) or `"repeat"`.
+- A replacement's sampler that has no Cg parameter gets its own texture unit (8 to 13, six per program at most) and
+  reads a neutral 1x1 texture, 0.502 in every channel, until a texture is set. A sampler with a Cg parameter's name
+  (`texture0`, `shadowMap`, ...) is the engine's and cannot be set.
+- `sampler2DArray` and `texture()` need `#version 130` in the replacement. A `#version 130` fragment replacement links
+  with the game's vertex programs, which Cg compiles to GLSL 1.10 writing `gl_TexCoord[]`: keep reading
+  `gl_TexCoord[n]` and writing `gl_FragColor`, which GLSL 1.30 still has.
+- On an older Melange, `wum.shaders.setTexture` is `nil`, and `wum.draw.texture` ignores `opts` and returns a clamped
+  2D texture. The extra sampler then shares unit 0 with `texture0`, and a `sampler2DArray` there makes the program's
+  draws fail. Require this Melange in `spice.json`, or pause the replacement with
+  `wum.shaders.enableGlsl(file, entry, false)` when `wum.shaders.setTexture` is `nil`. See the developer guide's
+  Shaders section.
 
 ## `wum.unsafe` (Deep Desert)
 
