@@ -153,7 +153,12 @@ void TestTracker() {
     Check(tr.Bound(0) == 7 && tr.Bound(3) == 9 && tr.Active() == 3, "binds land on the active unit");
     tr.ActiveTexture(99);
     tr.Bind(4);
-    Check(tr.Active() == 3 && tr.Bound(3) == 4, "an out-of-range unit is ignored");
+    Check(!tr.ActiveKnown() && tr.Bound(0) == lg::Tracker::kUnknown && tr.Bound(3) == lg::Tracker::kUnknown,
+          "a bind on an untracked unit forgets the bindings instead of landing on the last tracked unit");
+    tr.ResetBindings(true);
+    tr.Bind(7);
+    tr.ActiveTexture(3);
+    tr.Bind(9);
 
     uint32_t g0 = tr.Gen();
     tr.Hashed(7, 0x11, 64, 32, t);

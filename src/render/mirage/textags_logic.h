@@ -213,9 +213,11 @@ public:
         active_ = 0;
         activeKnown_ = known;
     }
+    // A unit past the tracked ones may be a real unit (GL has up to 192) or an invalid enum GL refuses, keeping the old
+    // unit: the next bind cannot be placed either way, so it forgets every binding (each is read back when needed).
     void ActiveTexture(uint32_t unit) {
         if (unit < kUnits) active_ = unit;
-        activeKnown_ = true;
+        activeKnown_ = unit < kUnits;
     }
     void Bind(uint32_t name) {
         if (activeKnown_) bound_[active_] = name;
