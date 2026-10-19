@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.10.0
 
 - New: texture tags. A client-only mod can declare `"graphics": {"textureTags": "<file>.json"}` in `spice.json`: a
   table of up to 8 numbers per texture, keyed by a 64-bit digest of the texture's base level (scheme
@@ -19,6 +19,8 @@
   anisotropy. Detect the feature with `if wum.shaders.setTexture then`.
 - Fixed: a replacement's sampler with no Cg parameter now gets its own texture unit (8 to 13) and reads a neutral 1x1
   texture until one is set. Before, it silently read unit 0, the model's own texture.
+- Fixed: texture tags follow `glBindMultiTextureEXT`, the call the Cg runtime uses to bind a draw's texture to a
+  unit other than 0 (the landscape's tiles are bound to unit 1 that way). Before, those draws kept a stale tag.
 - The GL hub has `hub::RealCaller`, so two interposers of the same GL function (texture clarity and texture tags on
   `glTexImage2D`) both see the engine's call site.
 
