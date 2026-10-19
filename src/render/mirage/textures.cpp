@@ -126,7 +126,7 @@ void Resweep() {
 
 void APIENTRY HkTexImage2D(GLenum target, GLint level, GLint internalformat, GLsizei width, GLsizei height, GLint border,
                            GLenum format, GLenum type, const void* pixels) {
-    uintptr_t caller = reinterpret_cast<uintptr_t>(_ReturnAddress());
+    uintptr_t caller = hub::RealCaller(reinterpret_cast<uintptr_t>(_ReturnAddress()));
     n_texImage2D(target, level, internalformat, width, height, border, format, type, pixels);
     // g_hooksInstalled also guards n_texParameteri: ApplyToBound needs both hooks, not just this one, chained.
     // Keyed on level 1 so only textures with a mip chain get a mipmapped min filter: on a single-level texture

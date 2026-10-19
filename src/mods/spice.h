@@ -57,6 +57,7 @@ struct Manifest {
     bool graphicsPresent = false, graphicsTrilinear = false, graphicsLodBiasSet = false;
     int graphicsAnisotropy = 0, graphicsShadowMapSize = 0;  // shadowMapSize 0 = no request
     double graphicsLodBias = 0;
+    std::string graphicsTextureTags;  // "textureTags": a texture-tag table (.json, relative to the mod folder), or ""
 };
 struct Error { std::string field; int line = 0, col = 0; std::string text; };
 bool Parse(const std::wstring& dir, Manifest* out, std::vector<Error>* errs);  // synthesises the implicit manifest

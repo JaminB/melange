@@ -25,6 +25,9 @@ struct GraphicsRequest { bool present, trilinearFilter, lodBiasSet; int anisotro
 bool GetGraphicsRequest(const char* id, GraphicsRequest* out);
 // The "graphics" block's shadowMapSize (512-4096), or 0 if the mod is unknown or asks for none.
 int ShadowMapRequest(const char* id);
+// The full path of the "graphics" block's textureTags table, written to out (cap wide chars, NUL-terminated).
+// Returns its length, or 0 if the mod is unknown, declares none, or the path does not fit.
+int TextureTagsPath(const char* id, wchar_t* out, int cap);
 bool SetEnabled(const char* id, bool on); // persisted; client-only mods apply immediately
 bool SetDeepDesert(const char* id, bool granted);
 const wchar_t* ModsDir();

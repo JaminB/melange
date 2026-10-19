@@ -562,6 +562,13 @@ add_executable(textures_selftest tests/textures_selftest.cpp)
 target_include_directories(textures_selftest PRIVATE src)
 target_compile_options(textures_selftest PRIVATE /W4 /utf-8 /permissive-)
 
+# Texture tags' pure logic: the digest (against tools/tag_digest.py's vectors), the table format and merge, the tracker.
+add_executable(textags_selftest tests/textags_selftest.cpp src/tools/json_read.cpp src/tools/hash.cpp)
+target_include_directories(textags_selftest PRIVATE src)
+target_compile_definitions(textags_selftest PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX _CRT_SECURE_NO_WARNINGS)
+target_compile_options(textags_selftest PRIVATE /W4 /utf-8 /permissive-)
+target_link_libraries(textags_selftest PRIVATE bcrypt)
+
 # Borderless fullscreen's pure logic: local.cfg, window rects, the hotkey, the scene-target size fallback.
 add_executable(display_selftest EXCLUDE_FROM_ALL tests/display_selftest.cpp)
 target_include_directories(display_selftest PRIVATE src)

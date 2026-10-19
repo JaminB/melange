@@ -210,6 +210,42 @@ at once: every texture seen so far is swept back to the new effective settings. 
 logs the effective settings, whether the upload hook is installed, and how many textures it has touched. The
 `sunstone` plugin ships this layer.
 
+### Texture tags
+
+A GLSL replacement can tell which texture it is drawing with. A client-only mod ships a texture-tag table, declared
+in its `spice.json`,
+
+```json
+"graphics": { "textureTags": "data/texture-tags.json" }
+```
+
+that gives up to 8 numbers per texture (a material class and its parameters, say), keyed by a digest of the
+texture's base level (the format and the digest are in [spice.md](spice.md#graphicstexturetags-texture-tags);
+`tools/tag_digest.py` computes the same keys from the game's XOM files or from PNGs). A replacement that declares
+
+```glsl
+uniform vec4 mg_texTag[2];
+```
+
+gets the row of the texture bound on the unit of its `texture0` sampler (the unit `cgGLGetTextureEnum` gives;
+without a `texture0`, its first Cg sampler) before each draw, or all zeros when the texture is not in any table, or
+no table is loaded. It is sent only when it changes, so it costs nothing on the GPU, and the CPU cost per draw is a
+cache compare, or a hash lookup when the texture changes.
+
+`MirageTexTags` installs nothing unless an enabled mod ships a table. With one, it hashes level 0 of every texture
+the engine's loader uploads (SHA-256, about 20 ms for 35 MB at level load), keeps GL texture name to tag, follows
+`glDeleteTextures` and name reuse, and tracks each unit's 2D binding. A texture uploaded any other way (render
+targets, a level re-specified or changed with `glTexSubImage2D`) stays untagged. A texture it never saw uploaded (a
+table enabled after the level loaded) is read back once with `glGetTexImage` the first time a replaced program draws
+with it (a one-off GPU sync per texture). Tables of several mods merge in load order, the first declaring mod winning a digest;
+enabling or disabling a mod reloads them. A table enabled while the game runs works only if the GL hub was already
+installed at start (it is whenever a mod's GLSL replacement was): otherwise it needs a restart, and the log says so.
+
+The `tags.stats` console verb logs whether tags are on, the table size, how many live textures were hashed and how
+many of them matched a tag, how many draws went out tagged and untagged, how many distinct textures were drawn either
+way, and up to 32 textures that were drawn untagged with their size and digest (what a table builder missed).
+`tags.stats reset` zeroes the draw counters.
+
 ### Shadows
 
 The game renders one shadow map for the whole level, 1024² by default (its own `/SHADOWMAP` cfg option). A
@@ -248,7 +284,8 @@ A replacement may also read the scene as it was just before the program first dr
 frame: `sampler2D mg_depth` (the depth buffer, in [0,1] as stored), `sampler2D mg_scene` (the colour) and
 `vec2 mg_nearFar`, with the main camera as `mat4 mg_view` and `mat4 mg_proj` (as in post-FX). The copies are taken
 once a frame, at that first draw, and use texture units 14 and 15. `vec2 mg_renderScale` is the scene's size over the
-window's (see Supersampling below), for fades that count texels per pixel.
+window's (see Supersampling below), for fades that count texels per pixel. `vec4 mg_texTag[2]` is the [texture tag](#texture-tags) of the
+texture the program draws with.
 
 ### Supersampling
 

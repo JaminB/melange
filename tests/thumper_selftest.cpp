@@ -298,6 +298,24 @@ void TestParse() {
         Expect(!ok && !errs.empty() && errs[0].field == "graphics.shadowMapSize", "parse: a shadowMapSize that isn't 512-4096 is rejected");
     }
     {
+        const char* json = R"({"spiceVersion": 1, "id": "tags-ok", "version": "1.0.0", "name": "X",
+            "melange": {"range": ">=0.1.0"}, "kind": "client-only", "entry": {}, "graphics": {"textureTags": "data/tags.json"}})";
+        std::wstring dir = Fixture("tags-ok", json);
+        Manifest m;
+        std::vector<Error> errs;
+        bool ok = Parse(dir, &m, &errs);
+        Expect(ok && m.graphicsPresent && m.graphicsTextureTags == "data/tags.json", "parse: graphics.textureTags read through");
+    }
+    for (const char* bad : {R"("../tags.json")", R"("C:/tags.json")", R"("tags.txt")", R"(12)", R"("/tags.json")"}) {
+        std::string json = std::string(R"({"spiceVersion": 1, "id": "tags-bad", "version": "1.0.0", "name": "X",
+            "melange": {"range": ">=0.1.0"}, "kind": "client-only", "entry": {}, "graphics": {"textureTags": )") + bad + "}}";
+        std::wstring dir = Fixture("tags-bad", json);
+        Manifest m;
+        std::vector<Error> errs;
+        bool ok = Parse(dir, &m, &errs);
+        Expect(!ok && !errs.empty() && errs[0].field == "graphics.textureTags", std::string("parse: textureTags ") + bad + " is rejected");
+    }
+    {
         const char* json = R"({"spiceVersion": 1, "id": "wrong-id", "version": "1.0.0", "name": "X",
             "melange": {"range": ">=0.1.0"}, "kind": "client-only", "entry": {}})";
         std::wstring dir = Fixture("right-folder", json);

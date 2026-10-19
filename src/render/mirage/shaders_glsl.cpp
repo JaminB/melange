@@ -25,6 +25,7 @@
 #include "render/mirage/hub.h"
 #include "render/mirage/modfs.h"
 #include "render/mirage/shaders_internal.h"
+#include "render/mirage/textags.h"
 
 namespace melange::mirage::shaders::glsl {
 namespace src = shadersrc;
@@ -144,6 +145,10 @@ struct Linked {
     std::vector<ForeignBinding> foreign;
     bool sceneDepth = false, sceneColor = false;
     GLint nearFarLoc = -1, viewLoc = -1, projLoc = -1, renderScaleLoc = -1;
+    // mg_texTag: the tag of the texture on the unit of the program's texture0 sampler, re-sent only when it changes.
+    GLint texTagLoc = -1, texTagCount = 0;
+    uint32_t texTagUnit = 0;
+    float texTagSent[8] = {};
     uint32_t paramsSeen = ~0u;
     uint32_t seen[2] = {~0u, ~0u};
     GLuint arb[2] = {};
@@ -424,6 +429,7 @@ Linked Link(src::CGprogram vp, src::CGprogram fp) {
         return l;
     }
     g_gl.UseProgram(prog);
+    int tagUnit = -1, firstUnit = -1;
     GLint n = 0;
     g_gl.GetProgramiv(prog, kActiveUniforms, &n);
     for (GLint i = 0; i < n; ++i) {
@@ -455,6 +461,14 @@ Linked Link(src::CGprogram vp, src::CGprogram fp) {
         case logic::SceneInput::RenderScale:
             l.renderScaleLoc = loc;
             continue;
+        case logic::SceneInput::TexTag:
+            if (type == kFloatVec4) {
+                l.texTagLoc = loc;
+                l.texTagCount = std::min(size, 2);
+            } else {
+                LOG_WARN("[shaders] GLSL %s: mg_texTag must be declared vec4 mg_texTag[2]; it stays 0", label[mod[0] ? 0 : 1].c_str());
+            }
+            continue;
         default:
             break;
         }
@@ -471,7 +485,10 @@ Linked Link(src::CGprogram vp, src::CGprogram fp) {
             found = true;
             if (type >= kSampler1D && type <= kSampler2DRectShadow) {
                 GLenum unit = g_cgGLGetTextureEnum ? g_cgGLGetTextureEnum(cp) : kTexture0;
-                g_gl.Uniform1i(loc, static_cast<GLint>(unit >= kTexture0 ? unit - kTexture0 : 0));
+                const int u = static_cast<int>(unit >= kTexture0 ? unit - kTexture0 : 0);
+                g_gl.Uniform1i(loc, u);
+                if (cgName == "texture0") tagUnit = u;
+                if (firstUnit < 0) firstUnit = u;
             } else {
                 l.bindings.push_back({loc, type, size, l.arb[s], static_cast<unsigned>(cg.GetParameterResourceIndex(cp))});
             }
@@ -511,6 +528,8 @@ Linked Link(src::CGprogram vp, src::CGprogram fp) {
         if (!found) LOG_WARN("[shaders] GLSL %s: uniform '%s' has no Cg parameter; it stays 0", label[mod[0] ? 0 : 1].c_str(), name);
     }
     g_gl.UseProgram(g_used);
+    // mg_texTag follows the program's texture0 sampler (the model's diffuse texture), else its first Cg sampler.
+    l.texTagUnit = static_cast<uint32_t>(tagUnit >= 0 ? tagUnit : firstUnit >= 0 ? firstUnit : 0);
     size_t sent = 0;
     for (Binding& b : l.bindings) {
         b.sent = static_cast<unsigned>(sent);
@@ -713,6 +732,12 @@ void UploadForeign(Linked& l) {
     }
 }
 
+void UploadTexTag(Linked& l) {
+    const float* t = textags::ForDraw(l.texTagUnit);
+    if (!logic::Update(l.texTagSent, t, 8)) return;
+    g_gl.Uniform4fv(l.texTagLoc, l.texTagCount, t);
+}
+
 void Upload() {
     ProfScope ps;
     if (g_prof.on) ++g_prof.uploads;
@@ -720,6 +745,7 @@ void Upload() {
     if (!l.params.empty()) UploadParams(l);
     if (l.sceneDepth || l.sceneColor || l.nearFarLoc >= 0 || l.viewLoc >= 0 || l.projLoc >= 0 || l.renderScaleLoc >= 0) BindScene(l);
     if (!l.foreign.empty()) UploadForeign(l);
+    if (l.texTagLoc >= 0) UploadTexTag(l);
     const Mirror* m[2] = {};
     for (int s = 0; s < 2; ++s) {
         auto it = g_mirror.find(l.arb[s]);

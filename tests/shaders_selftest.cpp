@@ -252,6 +252,7 @@ void TestGlslInputs() {
               gl::ClassifySceneInput("mg_nearFar") == gl::SceneInput::NearFar && gl::ClassifySceneInput("mg_view") == gl::SceneInput::View &&
               gl::ClassifySceneInput("mg_proj") == gl::SceneInput::Proj &&
               gl::ClassifySceneInput("mg_renderScale") == gl::SceneInput::RenderScale && gl::ClassifySceneInput("mg_Depth") == gl::SceneInput::None &&
+              gl::ClassifySceneInput("mg_texTag") == gl::SceneInput::TexTag && gl::ClassifySceneInput("mg_texTags") == gl::SceneInput::None &&
               gl::ClassifySceneInput("texture0") == gl::SceneInput::None,
           "scene input names");
     uint64_t none[3] = {0, 0, 0}, some[3] = {5, 0, 9}, one[1] = {1};
