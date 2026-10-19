@@ -364,6 +364,8 @@ them as `uniform vec4 mg_texTag[2]` for the texture it is drawing with
   lists every XImage's digest, `tag_digest.py <image.png>` a PNG's, and `digest_image`/`digest_ximage` do the same
   from Python. Only one-way digests and your own numbers ship: no game texture data goes into the table.
 
+Melange versions before 0.10.0 do not know the field: there `mg_texTag` stays all zeros.
+
 ## Resolution
 
 Thumper resolves the whole `Mods\` folder as one pass, deterministically:

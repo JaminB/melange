@@ -66,6 +66,24 @@ void HudImage(float x0, float y0, float x1, float y1, unsigned texture, Rgba tin
 unsigned LoadTexture(const wchar_t* pngPath);
 void FreeTexture(unsigned texture);
 
+// A PNG for shaders (shaders::SetOwnTexture): mips average every channel as stored, since alpha is data here.
+// layers > 0: the PNG is a vertical strip of that many equal tiles (layer 0 at the top), loaded as a
+// GL_TEXTURE_2D_ARRAY; needs GL 3.0 or EXT_texture_array. Linear: trilinear with a full mip chain per layer (the
+// anisotropy is set where it is bound). Nearest: GL_NEAREST, base level only, for data textures. 0 on failure, with
+// a reason in *why.
+struct TextureOptions {
+    bool repeat = false;   // GL_REPEAT, else GL_CLAMP_TO_EDGE
+    bool nearest = false;
+    int layers = 0;        // 0 = an ordinary GL_TEXTURE_2D
+};
+unsigned LoadTextureEx(const wchar_t* pngPath, const TextureOptions& o, const char** why = nullptr);
+struct TextureInfo {
+    unsigned target;       // GL_TEXTURE_2D or GL_TEXTURE_2D_ARRAY
+    int width, height, layers;
+    bool nearest;
+};
+bool GetTextureInfo(unsigned texture, TextureInfo* out);  // false for a name LoadTexture[Ex] did not return
+
 // Per-frame drawing: `fn` runs at `stage` every main pass; draw calls inside it are immediate.
 using DrawFn = void (*)(render::Stage stage, void* user);
 int AddDrawCallback(render::Stage stage, DrawFn fn, void* user, int order = 0);  // World, WorldLate, Hud only

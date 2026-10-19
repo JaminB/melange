@@ -643,6 +643,12 @@ target_compile_definitions(shaders_selftest PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX
     MELANGE_SOURCE_DIR="${CMAKE_SOURCE_DIR}")
 target_compile_options(shaders_selftest PRIVATE /W4 /utf-8 /permissive- /wd4100)
 
+# Mod textures on GLSL replacements without the game: sampler units, texture-array strips and mips, the binding table.
+add_executable(shadertex_selftest tests/shadertex_selftest.cpp src/render/mirage/shaders_source.cpp src/render/mirage/shaders_fixes.cpp)
+target_include_directories(shadertex_selftest PRIVATE src src/sdk)
+target_compile_definitions(shadertex_selftest PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX _CRT_SECURE_NO_WARNINGS)
+target_compile_options(shadertex_selftest PRIVATE /W4 /utf-8 /permissive- /wd4100)
+
 # Weapon tweaks without the game: schema lookup, snapshot/restore and the unknown-build guard.
 add_executable(tweak_selftest
     tests/tweak_selftest.cpp
