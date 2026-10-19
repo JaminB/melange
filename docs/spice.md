@@ -47,6 +47,7 @@ after its folder — every M1-era `Mods\` folder keeps working unchanged.
 | `music` | MP3 tracks for the sudden-death music, allowed for client-only mods; see [`music`](#music-sudden-death-music). |
 | `meshes` | Mesh banks (`.xom`) under the assets root that give a weapon clone or a `wum.sim.weapon():set` its own 3D model, `kind: "content"` mods only — see [`meshes`](#meshes-custom-3d-models). |
 | `vehicleMeshes` | The mesh the Airstrike and Super Airstrike helicopters are drawn with, `kind: "content"` mods with a `meshes` bank only — see [`vehicleMeshes`](#vehiclemeshes-the-airstrike-helicopters). |
+| `graphics` | Client-side rendering requests, honoured for any mod kind: `anisotropy`, `trilinearFilter`, `lodBias` (texture clarity), `shadowMapSize`, and `textureTags`, a texture-tag table for the mod's GLSL replacements (a relative path to a `.json` file, no `..`) — see [Graphics layer](developer-guide.md#texture-tags) and [`graphics.textureTags`](#graphicstexturetags-texture-tags). |
 | `defaultEnabled` | Honoured only the first time Thumper ever sees this mod id (default `true`). The shipped samples set it to `false`. |
 
 | Before: `unsafe` mod switched on | After: the consent modal |
@@ -327,6 +328,43 @@ peer runs the same rules), undone at the match end, and part of the content iden
 do not play together. How the name is found and swapped, and what is unverified in the game, is in
 [meshes.md](meshes.md#engine-picked-meshes-the-airstrike-and-super-airstrike-helicopters). Melange versions before 0.9.0
 do not know the field.
+
+## `graphics.textureTags`: texture tags
+
+```json
+"graphics": { "textureTags": "data/texture-tags.json" }
+```
+
+The file gives up to 8 numbers per texture, keyed by a digest of the texture's base level; a GLSL replacement reads
+them as `uniform vec4 mg_texTag[2]` for the texture it is drawing with
+([developer guide](developer-guide.md#texture-tags)):
+
+```json
+{
+  "version": 1,
+  "digest": "gl-level0-sha256-64",
+  "tags": {
+    "a9daaeca15600965": [3, 0.8, 0.25, 0, 0, 0, 0, 0],
+    "9a467ea8b3f1fb7e": [7, 1.5]
+  }
+}
+```
+
+- `version` must be `1`, `digest` must name the scheme `gl-level0-sha256-64` (below).
+- Each key is 16 hex digits; each row is 1 to 8 finite numbers, and missing trailing values are 0. At most 65,536
+  rows; the file may be up to 16 MiB.
+- Several enabled mods' tables merge in load order: the first mod that declares a digest wins it, and the log says how
+  many rows each later table lost that way. A table that does not parse is skipped with a warning naming the row.
+- The digest is the first 8 bytes of SHA-256 over a 20-byte header (`width`, `height`, `internalformat`, `format`,
+  `type` of the level-0 `glTexImage2D` call, five little-endian uint32) followed by level 0's bytes, rows tightly
+  packed in upload order (GL row 0 first). The engine uploads XImage format 0 as `GL_RGB8`/`GL_RGB`/`GL_UNSIGNED_BYTE`
+  and formats 1 and 2 as `GL_RGBA8`/`GL_RGBA`/`GL_UNSIGNED_BYTE`, straight from the XImage's bottom-up rows, so a
+  decoded top-down image (a PNG) is flipped first. Compressed levels hash `imageSize` bytes with `format` and `type`
+  0. [`tools/tag_digest.py`](../tools/tag_digest.py) is the reference implementation: `tag_digest.py --xom <file.xom>`
+  lists every XImage's digest, `tag_digest.py <image.png>` a PNG's, and `digest_image`/`digest_ximage` do the same
+  from Python. Only one-way digests and your own numbers ship: no game texture data goes into the table.
+
+Melange versions before 0.10.0 do not know the field: there `mg_texTag` stays all zeros.
 
 ## Resolution
 

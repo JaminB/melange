@@ -4,6 +4,7 @@
 #include <string>
 #include <vector>
 
+#include "melange/shaders.h"
 #include "render/mirage/shaders_source.h"
 
 namespace melange::mirage::shaders {
@@ -47,6 +48,10 @@ bool SetEnabled(const std::string& file, const std::string& entry, bool on);  //
 // Pause/resume by the mod that ships the file (not persisted); applied at the next program bind.
 bool SetModEnabled(const std::string& owner, const std::string& file, const std::string& entry, bool on);
 void Profile(bool on);  // on: reset and start counting; off: log the totals
+// Mod textures for a replacement's own samplers (wum.shaders.setTexture); bound at units 8..13 when it draws.
+melange::shaders::TextureResult SetModTexture(const std::string& owner, const std::string& file, const std::string& entryGlob,
+                                              const std::string& sampler, unsigned tex);
+void ForgetModTexture(unsigned tex);
 }  // namespace glsl
 
 // shaders_panel.cpp

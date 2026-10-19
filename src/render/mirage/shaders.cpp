@@ -767,6 +767,15 @@ bool SetOwnParam(const char* owner, const char* file, const char* entry, const c
     return ms::StoreParam(file, entry, param, v, n, true);
 }
 
+TextureResult SetOwnTexture(const char* owner, const char* file, const char* entry, const char* sampler, unsigned texture) {
+    if (!owner || !file || !entry || !sampler) return TextureResult::BadName;
+    return ms::glsl::SetModTexture(owner, file, entry, sampler, texture);
+}
+
+void ForgetTexture(unsigned texture) {
+    if (texture) ms::glsl::ForgetModTexture(texture);
+}
+
 bool GetParam(const char* file, const char* entry, const char* param, float* v, int n) {
     if (!file || !entry || !param || !v || n < 1) return false;
     std::lock_guard lk(ms::g_mx);

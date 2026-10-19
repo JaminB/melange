@@ -12,6 +12,8 @@
 #include <algorithm>
 #include <climits>
 #include <cstdio>
+#include <cstring>
+#include <unordered_map>
 #include <vector>
 
 #include "melange/render.h"
@@ -19,6 +21,7 @@
 #include "render/mirage/draw_gl.h"
 #include "render/mirage/draw_queue.h"
 #include "render/mirage/draw_sprites.h"
+#include "render/mirage/shadertex_logic.h"
 #include "render/mirage/stages.h"
 
 namespace {
@@ -78,6 +81,7 @@ int g_lastEnterIdx = kNumStages;
 uint64_t g_statsFrame = 0;
 Stats g_stats{};
 Stats g_frameAccum{};
+std::unordered_map<unsigned, TextureInfo> g_texInfo;  // every live LoadTexture[Ex] texture
 
 // A user draw callback faulting must not count against the Enter/Exit stage callbacks themselves (that would get
 // them removed by stages::Fault after 3 faults from any mod, wedging the whole stage; see MaybeUnregister/
@@ -357,6 +361,7 @@ unsigned LoadTexture(const wchar_t* pngPath) {
     glGetIntegerv(GL_UNPACK_ALIGNMENT, &prevAlign);
     glPixelStorei(GL_UNPACK_ALIGNMENT, 4);  // RGBA8 rows are always 4-byte aligned; only guards a stray setting
     glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, w, h, 0, GL_RGBA, GL_UNSIGNED_BYTE, pixels);
+    const int w0 = w, h0 = h;
     // Full chain down to 1x1 on the CPU (no GL 3 / FBO extension needed), so sprites minify without shimmering.
     const bool premul = mirage::drawsprites::LooksPremultiplied(pixels, static_cast<size_t>(w) * h);
     std::vector<uint8_t> a(pixels, pixels + static_cast<size_t>(w) * h * 4), b;
@@ -371,11 +376,109 @@ unsigned LoadTexture(const wchar_t* pngPath) {
     glPixelStorei(GL_UNPACK_ALIGNMENT, prevAlign);
     glBindTexture(GL_TEXTURE_2D, static_cast<GLuint>(prev));
     stbi_image_free(pixels);
+    g_texInfo[texture] = {GL_TEXTURE_2D, w0, h0, 0, false};
     return texture;
+}
+
+namespace {
+constexpr GLenum kTexture2DArray = 0x8C1A, kTextureBinding2DArray = 0x8C1D, kClampToEdge = 0x812F, kMaxArrayLayers = 0x88FF,
+                 kTextureMaxLevel = 0x813D, kRgba8 = 0x8058;
+using TexImage3D = void(APIENTRY*)(GLenum, GLint, GLint, GLsizei, GLsizei, GLsizei, GLint, GLenum, GLenum, const void*);
+
+// glTexImage3D, when the context can make texture arrays (GL 3.0, or EXT_texture_array on an older one).
+TexImage3D ArrayUpload() {
+    static bool tried = false;
+    static TexImage3D fn = nullptr;
+    if (tried) return fn;
+    tried = true;
+    const char* ver = reinterpret_cast<const char*>(glGetString(GL_VERSION));
+    const char* ext = reinterpret_cast<const char*>(glGetString(GL_EXTENSIONS));
+    const bool ok = (ver && ver[0] >= '3' && ver[0] <= '9') || (ext && strstr(ext, "GL_EXT_texture_array"));
+    PROC p = ok ? wglGetProcAddress("glTexImage3D") : nullptr;
+    if (!p && ok) p = wglGetProcAddress("glTexImage3DEXT");
+    const auto v = reinterpret_cast<intptr_t>(p);
+    fn = (p && v != 1 && v != 2 && v != 3 && v != -1) ? reinterpret_cast<TexImage3D>(p) : nullptr;
+    return fn;
+}
+}  // namespace
+
+unsigned LoadTextureEx(const wchar_t* pngPath, const TextureOptions& o, const char** why) {
+    const char* dummy = nullptr;
+    if (!why) why = &dummy;
+    *why = "cannot read the PNG";
+    if (!pngPath) return 0;
+    FILE* f = _wfopen(pngPath, L"rb");
+    if (!f) return 0;
+    int w = 0, h = 0, channels = 0;
+    unsigned char* pixels = stbi_load_from_file(f, &w, &h, &channels, STBI_rgb_alpha);
+    fclose(f);
+    if (!pixels) return 0;
+    const bool array = o.layers > 0;
+    const TexImage3D upload3d = array ? ArrayUpload() : nullptr;
+    if (array && !upload3d) {
+        stbi_image_free(pixels);
+        *why = "this GPU driver has no texture arrays (GL 3.0)";
+        return 0;
+    }
+    GLint maxSize = 2048, maxLayers = 256;
+    glGetIntegerv(GL_MAX_TEXTURE_SIZE, &maxSize);
+    if (array) glGetIntegerv(kMaxArrayLayers, &maxLayers);
+    const int layers = array ? o.layers : 1;
+    int lh = h;
+    if (!mirage::shadertex::StripLayout(w, h, layers, maxSize, array ? std::min<int>(maxLayers, mirage::shadertex::kMaxLayers) : 1, &lh, why)) {
+        stbi_image_free(pixels);
+        return 0;
+    }
+    const GLenum target = array ? kTexture2DArray : GL_TEXTURE_2D;
+    GLint prev = 0, prevAlign = 4;
+    glGetIntegerv(array ? kTextureBinding2DArray : GL_TEXTURE_BINDING_2D, &prev);
+    glGetIntegerv(GL_UNPACK_ALIGNMENT, &prevAlign);
+    while (glGetError() != GL_NO_ERROR) {
+    }
+    unsigned texture = 0;
+    glGenTextures(1, &texture);
+    glBindTexture(target, texture);
+    const GLint wrap = o.repeat ? GL_REPEAT : kClampToEdge;
+    glTexParameteri(target, GL_TEXTURE_WRAP_S, wrap);
+    glTexParameteri(target, GL_TEXTURE_WRAP_T, wrap);
+    glTexParameteri(target, GL_TEXTURE_MIN_FILTER, o.nearest ? GL_NEAREST : GL_LINEAR_MIPMAP_LINEAR);
+    glTexParameteri(target, GL_TEXTURE_MAG_FILTER, o.nearest ? GL_NEAREST : GL_LINEAR);
+    glPixelStorei(GL_UNPACK_ALIGNMENT, 4);
+    auto put = [&](GLint level, int lw, int lhh, const void* px) {
+        if (array) upload3d(target, level, kRgba8, lw, lhh, layers, 0, GL_RGBA, GL_UNSIGNED_BYTE, px);
+        else glTexImage2D(target, level, kRgba8, lw, lhh, 0, GL_RGBA, GL_UNSIGNED_BYTE, px);
+    };
+    put(0, w, lh, pixels);
+    if (o.nearest) {
+        glTexParameteri(target, kTextureMaxLevel, 0);
+    } else {
+        const std::vector<mirage::shadertex::Level> mips = mirage::shadertex::LayerMips(pixels, w, lh, layers);
+        for (size_t i = 0; i < mips.size(); ++i) put(static_cast<GLint>(i + 1), mips[i].w, mips[i].h, mips[i].px.data());
+    }
+    const bool glOk = glGetError() == GL_NO_ERROR;
+    glPixelStorei(GL_UNPACK_ALIGNMENT, prevAlign);
+    glBindTexture(target, static_cast<GLuint>(prev));
+    stbi_image_free(pixels);
+    if (!glOk) {
+        glDeleteTextures(1, &texture);
+        *why = "the GPU driver refused the texture";
+        return 0;
+    }
+    g_texInfo[texture] = {target, w, lh, array ? layers : 0, o.nearest};
+    *why = nullptr;
+    return texture;
+}
+
+bool GetTextureInfo(unsigned texture, TextureInfo* out) {
+    auto it = g_texInfo.find(texture);
+    if (it == g_texInfo.end()) return false;
+    if (out) *out = it->second;
+    return true;
 }
 
 void FreeTexture(unsigned texture) {
     if (!texture) return;
+    g_texInfo.erase(texture);
     GLuint t = texture;
     glDeleteTextures(1, &t);
 }

@@ -149,6 +149,38 @@ int HudImage(lua_State* L) {
 
 constexpr int kMaxTexturesPerGen = 256;
 
+// wum.draw.texture's options table: {wrap = "repeat"|"clamp", filter = "linear"|"nearest", layers = 1..64}.
+void CheckTextureOptions(lua_State* L, int idx, draw::TextureOptions* o) {
+    luaL_checktype(L, idx, LUA_TTABLE);
+    idx = lua_absindex(L, idx);
+    lua_pushnil(L);
+    while (lua_next(L, idx)) {
+        lua_pop(L, 1);
+        const char* k = lua_type(L, -1) == LUA_TSTRING ? lua_tostring(L, -1) : "";
+        if (strcmp(k, "wrap") && strcmp(k, "filter") && strcmp(k, "layers"))
+            luaL_argerror(L, idx, "options are wrap, filter and layers");
+    }
+    if (lua_getfield(L, idx, "wrap") != LUA_TNIL) {
+        const char* s = lua_tostring(L, -1);
+        if (!s || (strcmp(s, "repeat") && strcmp(s, "clamp"))) luaL_argerror(L, idx, "wrap must be \"repeat\" or \"clamp\"");
+        o->repeat = strcmp(s, "repeat") == 0;
+    }
+    lua_pop(L, 1);
+    if (lua_getfield(L, idx, "filter") != LUA_TNIL) {
+        const char* s = lua_tostring(L, -1);
+        if (!s || (strcmp(s, "linear") && strcmp(s, "nearest"))) luaL_argerror(L, idx, "filter must be \"linear\" or \"nearest\"");
+        o->nearest = strcmp(s, "nearest") == 0;
+    }
+    lua_pop(L, 1);
+    if (lua_getfield(L, idx, "layers") != LUA_TNIL) {
+        int isInt = 0;
+        const lua_Integer n = lua_tointegerx(L, -1, &isInt);
+        if (!isInt || n < 1 || n > 64) luaL_argerror(L, idx, "layers must be an integer from 1 to 64");
+        o->layers = static_cast<int>(n);
+    }
+    lua_pop(L, 1);
+}
+
 int Texture(lua_State* L) {
     ModRec* m = Current();
     Gen* g = CurrentGen();
@@ -160,16 +192,25 @@ int Texture(lua_State* L) {
     }
     const std::string rel = luaL_checkstring(L, 1);
     if (!SafeRelPath(rel)) return luaL_argerror(L, 1, "relative path inside the mod folder expected");
+    const bool shaderTex = !lua_isnoneornil(L, 2);
+    draw::TextureOptions opts;
+    if (shaderTex) CheckTextureOptions(L, 2, &opts);
     std::wstring w = Widen(rel);
     std::replace(w.begin(), w.end(), L'/', L'\\');
-    const unsigned tex = draw::LoadTexture((m->dir + L"\\" + w).c_str());
+    const std::wstring path = m->dir + L"\\" + w;
+    const char* why = nullptr;
+    const unsigned tex = shaderTex ? draw::LoadTextureEx(path.c_str(), opts, &why) : draw::LoadTexture(path.c_str());
     if (!tex) {
         lua_pushnil(L);
-        lua_pushfstring(L, "cannot load %s", rel.c_str());
+        if (why) lua_pushfstring(L, "cannot load %s: %s", rel.c_str(), why);
+        else lua_pushfstring(L, "cannot load %s", rel.c_str());
         return 2;
     }
     g->textures.push_back(tex);
-    g->cleanups.push_back([tex] { draw::FreeTexture(tex); });
+    g->cleanups.push_back([tex] {
+        shaders::ForgetTexture(tex);
+        draw::FreeTexture(tex);
+    });
     lua_pushinteger(L, tex);
     return 1;
 }
@@ -198,6 +239,9 @@ int Sprite(lua_State* L) {
     if (tex <= 0 || static_cast<lua_Integer>(g->spriteTexHit) != tex) {
         if (tex <= 0 || std::find(g->textures.begin(), g->textures.end(), static_cast<unsigned>(tex)) == g->textures.end())
             return luaL_argerror(L, 1, "texture id from this mod's wum.draw.texture expected");
+        draw::TextureInfo info{};
+        if (draw::GetTextureInfo(static_cast<unsigned>(tex), &info) && info.layers > 0)
+            return luaL_argerror(L, 1, "a texture array (layers=) cannot be a sprite");
         g->spriteTexHit = static_cast<unsigned>(tex);
     }
     s.texture = static_cast<unsigned>(tex);
@@ -491,6 +535,31 @@ int ShSetParam(lua_State* L) {
     return 0;
 }
 
+// wum.shaders.setTexture(file, entry, sampler, tex|nil) -> true, or false while GLSL replacements are off.
+int ShSetTexture(lua_State* L) {
+    ModRec* m = Current();
+    Gen* g = CurrentGen();
+    if (!m || !g) return luaL_error(L, "wum.shaders.setTexture needs a mod context");
+    const char* file = luaL_checkstring(L, 1);
+    const char* entry = luaL_checkstring(L, 2);
+    const char* sampler = luaL_checkstring(L, 3);
+    unsigned tex = 0;
+    if (!lua_isnoneornil(L, 4)) {
+        const lua_Integer t = luaL_checkinteger(L, 4);
+        if (t <= 0 || std::find(g->textures.begin(), g->textures.end(), static_cast<unsigned>(t)) == g->textures.end())
+            return luaL_argerror(L, 4, "texture id from this mod's wum.draw.texture expected");
+        tex = static_cast<unsigned>(t);
+    }
+    switch (shaders::SetOwnTexture(m->id.c_str(), file, entry, sampler, tex)) {
+        case shaders::TextureResult::Ok: lua_pushboolean(L, 1); return 1;
+        case shaders::TextureResult::Inactive: lua_pushboolean(L, 0); return 1;
+        case shaders::TextureResult::BadName:
+            return luaL_argerror(L, 3, "sampler name must be a GLSL identifier, not starting with gl_ or mg_");
+        default:
+            return luaL_error(L, "wum.shaders.setTexture: this mod ships no shaders\\%s.<entry>.glsl replacement matching '%s'", file, entry);
+    }
+}
+
 int ShEnableGlsl(lua_State* L) {
     ModRec* m = Current();
     const char* file = luaL_checkstring(L, 1);
@@ -522,7 +591,8 @@ void Shared(lua_State* L, int wum) {
     static const luaL_Reg kGraphics[] = {{"setShadowMapSize", GfxSetShadowMapSize}, {"shadowMap", GfxShadowMap},
                                          {"setSupersample", GfxSetSupersample},   {"supersample", GfxSupersample},
                                          {nullptr, nullptr}};
-    static const luaL_Reg kShaders[] = {{"setParam", ShSetParam}, {"enableGlsl", ShEnableGlsl}, {nullptr, nullptr}};
+    static const luaL_Reg kShaders[] = {{"setParam", ShSetParam}, {"enableGlsl", ShEnableGlsl}, {"setTexture", ShSetTexture},
+                                        {nullptr, nullptr}};
     lua_newtable(L);
     RegisterFunctions(L, -1, kGraphics);
     lua_setfield(L, wum, "graphics");

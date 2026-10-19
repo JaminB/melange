@@ -23,4 +23,8 @@ struct Rec { uint32_t frame; uint16_t fn; uint8_t pass; uint8_t flags; uint32_t 
 uint32_t ReadRing(uint32_t from, void (*sink)(const Rec&, void*), void* user);
 uint32_t RingPos();
 bool IsThunk(const void* p);
+// For an interposer that checks who made the GL call: the real caller. An interposer called by another one sees that
+// one (inside melange.asi) as its return address; this returns the caller the outermost interposer that asked saw.
+// Every interposer of a function whose callers matter passes its own _ReturnAddress() here. Render thread only.
+uintptr_t RealCaller(uintptr_t returnAddress);
 }

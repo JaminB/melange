@@ -720,6 +720,16 @@ int ShadowMapRequest(const char* id) {
     return id && thumper::FindEntry(id, &e) ? e.manifest.graphicsShadowMapSize : 0;
 }
 
+int TextureTagsPath(const char* id, wchar_t* out, int cap) {
+    thumper::Entry e;
+    if (!id || !out || cap <= 0 || !thumper::FindEntry(id, &e) || e.manifest.graphicsTextureTags.empty()) return 0;
+    std::wstring p = e.manifest.dir + L"\\" + game::Widen(e.manifest.graphicsTextureTags);
+    std::replace(p.begin(), p.end(), L'/', L'\\');
+    if (p.size() + 1 > static_cast<size_t>(cap)) return 0;
+    wcscpy_s(out, static_cast<size_t>(cap), p.c_str());
+    return static_cast<int>(p.size());
+}
+
 bool SetEnabled(const char* id, bool on) { return id && thumper::SetEnabled(id, on); }
 bool SetDeepDesert(const char* id, bool granted) { return id && thumper::SetDeepDesert(id, granted); }
 

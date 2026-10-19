@@ -5,6 +5,7 @@
 
 #include <imgui.h>
 
+#include <algorithm>
 #include <cstdio>
 #include <cstring>
 #include <filesystem>
@@ -257,6 +258,23 @@ unsigned LoadTexture(const wchar_t*) {
     ++fake::g_textures;
     return g_nextTexture++;
 }
+TextureOptions g_lastOpts;
+std::vector<unsigned> g_arrays;
+unsigned LoadTextureEx(const wchar_t* path, const TextureOptions& o, const char** why) {
+    if (wcsstr(path, L"odd.png")) {
+        *why = "image height is not a multiple of layers";
+        return 0;
+    }
+    g_lastOpts = o;
+    ++fake::g_textures;
+    if (o.layers > 0) g_arrays.push_back(g_nextTexture);
+    return g_nextTexture++;
+}
+bool GetTextureInfo(unsigned tex, TextureInfo* out) {
+    const bool array = std::find(g_arrays.begin(), g_arrays.end(), tex) != g_arrays.end();
+    *out = {array ? 0x8C1Au : 0x0DE1u, 64, 64, array ? 4 : 0, false};
+    return true;
+}
 void FreeTexture(unsigned) { --fake::g_textures; }
 int AddDrawCallback(render::Stage, DrawFn, void*, int) {
     ++fake::g_drawCbs;
@@ -314,6 +332,19 @@ bool SetOwnGlslEnabled(const char* owner, const char*, const char* entry, bool o
     g_glslOn = on;
     return true;
 }
+std::string g_texSampler;
+unsigned g_texSet = ~0u;
+std::vector<unsigned> g_texForgotten;
+bool g_texInactive = false;
+TextureResult SetOwnTexture(const char* owner, const char*, const char*, const char* sampler, unsigned tex) {
+    if (strncmp(sampler, "mg_", 3) == 0) return TextureResult::BadName;
+    if (g_texInactive) return TextureResult::Inactive;
+    if (strcmp(owner, "shtex") != 0) return TextureResult::NotOwner;
+    g_texSampler = sampler;
+    g_texSet = tex;
+    return TextureResult::Ok;
+}
+void ForgetTexture(unsigned tex) { g_texForgotten.push_back(tex); }
 }  // namespace shaders
 namespace gamestate {
 Snapshot g_snapshot{};
@@ -1168,6 +1199,59 @@ void TestSprites() {
     sandbox::UnloadMod("spr2");
 }
 
+void TestShaderTextures() {
+    SetMod("shtex", "plain = wum.draw.texture('plain.png')\n"
+                    "arr = wum.draw.texture('mat.png', {wrap = 'repeat', filter = 'linear', layers = 4})\n"
+                    "lut = wum.draw.texture('lut.png', {filter = 'nearest'})\n");
+    SetMod("shtex2", "mine = wum.draw.texture('x.png')\n");
+    Expect(sandbox::LoadMod("shtex") && sandbox::LoadMod("shtex2"), "shader texture mods load");
+    ExpectEq(Eval("shtex", "return type(wum.shaders.setTexture)"), "function", "capability flag: wum.shaders.setTexture exists");
+    ExpectEq(Eval("shtex", "local o = {} return lut ~= nil and arr ~= nil"), "true", "option textures load");
+    Expect(!draw::g_lastOpts.repeat && draw::g_lastOpts.nearest && draw::g_lastOpts.layers == 0, "nearest, clamp, 2D");
+    Eval("shtex", "arr2 = wum.draw.texture('mat.png', {wrap = 'repeat', layers = 8})");
+    Expect(draw::g_lastOpts.repeat && !draw::g_lastOpts.nearest && draw::g_lastOpts.layers == 8, "repeat, linear, 8 layers");
+    ExpectEq(Eval("shtex", "local t, e = wum.draw.texture('odd.png', {layers = 3}) return tostring(t) .. ' ' .. e"),
+             "nil cannot load odd.png: image height is not a multiple of layers", "the loader's reason reaches Lua");
+    const char* badOpts[] = {
+        "wum.draw.texture('a.png', {wrap = 'mirror'})",  "wum.draw.texture('a.png', {filter = 'cubic'})",
+        "wum.draw.texture('a.png', {layers = 0})",       "wum.draw.texture('a.png', {layers = 65})",
+        "wum.draw.texture('a.png', {layers = 1.5})",     "wum.draw.texture('a.png', {mips = false})",
+        "wum.draw.texture('a.png', 'repeat')",
+    };
+    for (const char* code : badOpts) Expect(Eval("shtex", code).rfind("ERR:", 0) == 0, std::string("raises: ") + code);
+
+    ExpectEq(Eval("shtex", "return wum.shaders.setTexture('FixedFunction.cg', 'FFFragmentMainTexLit*', 'materials', arr)"), "true",
+             "an own replacement's sampler is set");
+    ExpectEq(shaders::g_texSampler + " " + std::to_string(shaders::g_texSet), "materials " + Eval("shtex", "return arr"),
+             "sampler and texture id passed through");
+    ExpectEq(Eval("shtex", "return wum.shaders.setTexture('FixedFunction.cg', 'FFFragmentMainTexLit', 'materials', nil)"), "true",
+             "nil unsets");
+    Expect(shaders::g_texSet == 0, "nil passes texture 0");
+    Expect(Eval("shtex", "wum.shaders.setTexture('FixedFunction.cg', 'X', 'materials', 9999)").rfind("ERR:", 0) == 0, "an unknown id raises");
+    Expect(Eval("shtex", "wum.shaders.setTexture('FixedFunction.cg', 'X', 'materials', " + Eval("shtex2", "return mine") + ")").rfind("ERR:", 0) == 0,
+           "another mod's texture id raises");
+    Expect(Eval("shtex", "wum.shaders.setTexture('FixedFunction.cg', 'X', 'mg_scene', arr)").rfind("ERR:", 0) == 0, "a reserved name raises");
+    Expect(Eval("shtex2", "wum.shaders.setTexture('FixedFunction.cg', 'X', 'materials', mine)").rfind("ERR:", 0) == 0,
+           "another mod's replacement raises");
+    shaders::g_texInactive = true;
+    ExpectEq(Eval("shtex", "return wum.shaders.setTexture('FixedFunction.cg', 'X', 'materials', arr)"), "false",
+             "false while GLSL replacements are off");
+    shaders::g_texInactive = false;
+
+    draw::g_stage = render::Stage::World;
+    Expect(Eval("shtex", "return wum.draw.sprite(arr, 0, 0, 0, 1)").find("texture array") != std::string::npos, "an array is no sprite");
+    ExpectEq(Eval("shtex", "return wum.draw.sprite(lut, 0, 0, 0, 1)"), "true", "a 2D option texture can be a sprite");
+    draw::g_stage = render::Stage::Count;
+    draw::g_sprites.clear();
+
+    const unsigned arr = static_cast<unsigned>(std::stoul(Eval("shtex", "return arr")));
+    shaders::g_texForgotten.clear();
+    sandbox::UnloadMod("shtex");
+    Expect(std::find(shaders::g_texForgotten.begin(), shaders::g_texForgotten.end(), arr) != shaders::g_texForgotten.end(),
+           "unload drops the shader bindings of the mod's textures");
+    sandbox::UnloadMod("shtex2");
+}
+
 void TestInput() {
     fake::g_ctlAvail = true;
     fake::g_ctlOpts = controls::Options{};
@@ -1370,6 +1454,7 @@ int main() {
         {"unsafe", TestUnsafe},   {"panels", TestPanels},   {"menus", TestMenus},
         {"samples", TestSamples},
         {"game", TestGame},       {"graphics", TestGraphics}, {"sprites", TestSprites},
+        {"shader textures", TestShaderTextures},
         {"input", TestInput}, {"audio", TestAudio}, {"docs", TestDocs}};
     for (const auto& [name, fn] : tests) {
         const int before = g_fail;

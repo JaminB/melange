@@ -17,6 +17,7 @@
 #include "core/events.h"
 #include "core/log.h"
 #include "core/mem.h"
+#include "melange/draw.h"
 #include "melange/jlog.h"
 #include "melange/render.h"
 #include "render/mirage/engine.h"
@@ -25,6 +26,9 @@
 #include "render/mirage/hub.h"
 #include "render/mirage/modfs.h"
 #include "render/mirage/shaders_internal.h"
+#include "render/mirage/shadertex_logic.h"
+#include "render/mirage/textags.h"
+#include "render/mirage/textures.h"
 
 namespace melange::mirage::shaders::glsl {
 namespace src = shadersrc;
@@ -136,14 +140,33 @@ struct ForeignBinding {
     uint64_t seen = 0;
     float sent[16];
 };
+// Samplers with no Cg parameter, fed by the owning mod's wum.shaders.setTexture (units 8..13), and the replaced
+// stages they are looked up for (empty for a stage the engine's Cg program supplies).
+struct ModSampler {
+    std::string name;
+    shadertex::Kind kind;
+    int unit;
+    bool warned = false;
+};
+struct ModTextures {
+    std::vector<ModSampler> samplers;
+    std::string owner[2], file[2], entry[2];
+    uint64_t frame = ~0ull;  // bound in this frame...
+    uint32_t version = ~0u;  // ...from this version of the table; reset when the program activates
+};
 struct Linked {
     GLuint program = 0;
     bool failed = false;
     std::vector<Binding> bindings;
     std::vector<ParamBinding> params;
     std::vector<ForeignBinding> foreign;
+    ModTextures modTex;
     bool sceneDepth = false, sceneColor = false;
     GLint nearFarLoc = -1, viewLoc = -1, projLoc = -1, renderScaleLoc = -1;
+    // mg_texTag: the tag of the texture on the unit of the program's texture0 sampler, re-sent only when it changes.
+    GLint texTagLoc = -1, texTagCount = 0;
+    uint32_t texTagUnit = 0;
+    float texTagSent[8] = {};
     uint32_t paramsSeen = ~0u;
     uint32_t seen[2] = {~0u, ~0u};
     GLuint arb[2] = {};
@@ -371,6 +394,96 @@ bool Generate(const Prog& p, std::string* text, std::vector<src::CgVar>* vars) {
     return !text->empty();
 }
 
+// ---- Mod textures (wum.shaders.setTexture)
+std::vector<shadertex::Binding> g_modTex;
+uint32_t g_modTexVersion = 0;
+std::unordered_map<unsigned, float> g_texAniso;  // the anisotropy last given to each bound mod texture
+GLuint g_neutral[2] = {};                        // 1x1 GL_TEXTURE_2D and GL_TEXTURE_2D_ARRAY
+bool g_neutralTried[2] = {};
+GLint g_maxUnits = 0;
+constexpr GLenum kMaxTextureImageUnits = 0x8872, kTextureMaxLevel = 0x813D, kMaxAnisotropyExt = 0x84FE, kRgba8 = 0x8058,
+                 kActiveTexture = 0x84E0;
+
+bool AddModSampler(Linked& l, GLint loc, const std::string& name, GLenum type, const std::string& label) {
+    const shadertex::Kind kind = shadertex::SamplerKind(type);
+    if (kind == shadertex::Kind::None) {
+        LOG_WARN("[shaders] GLSL %s: sampler '%s' is not a sampler2D or sampler2DArray, so no mod texture can feed it; it reads unit 0",
+                 label.c_str(), name.c_str());
+        return true;
+    }
+    if (!g_maxUnits) glGetIntegerv(kMaxTextureImageUnits, &g_maxUnits);
+    const int unit = shadertex::UnitFor(static_cast<int>(l.modTex.samplers.size()), g_maxUnits);
+    if (unit < 0) {
+        LOG_WARN("[shaders] GLSL %s: sampler '%s' gets no unit (6 mod samplers at most, units 8..13; this GPU has %d); it reads unit 0",
+                 label.c_str(), name.c_str(), g_maxUnits);
+        return true;
+    }
+    g_gl.Uniform1i(loc, unit);
+    l.modTex.samplers.push_back({name, kind, unit});
+    LOG_INFO("[shaders] GLSL %s: sampler '%s' on unit %d for wum.shaders.setTexture", label.c_str(), name.c_str(), unit);
+    return true;
+}
+
+// The texture an unset sampler reads; made on the current unit the first time.
+GLuint Neutral(shadertex::Kind kind) {
+    const int i = kind == shadertex::Kind::Array ? 1 : 0;
+    if (g_neutral[i] || g_neutralTried[i]) return g_neutral[i];
+    g_neutralTried[i] = true;
+    using TexImage3D = void(WINAPI*)(GLenum, GLint, GLint, GLsizei, GLsizei, GLsizei, GLint, GLenum, GLenum, const void*);
+    TexImage3D image3d = nullptr;
+    if (i) Proc(image3d, "glTexImage3D");
+    if (i && !image3d) return 0;
+    const GLenum target = shadertex::KindTarget(kind);
+    const uint8_t px[4] = {shadertex::kNeutral, shadertex::kNeutral, shadertex::kNeutral, shadertex::kNeutral};
+    glGenTextures(1, &g_neutral[i]);
+    glBindTexture(target, g_neutral[i]);
+    glTexParameteri(target, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+    glTexParameteri(target, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+    glTexParameteri(target, kTextureMaxLevel, 0);
+    if (i) image3d(target, 0, kRgba8, 1, 1, 1, 0, GL_RGBA, GL_UNSIGNED_BYTE, px);
+    else glTexImage2D(target, 0, kRgba8, 1, 1, 0, GL_RGBA, GL_UNSIGNED_BYTE, px);
+    return g_neutral[i];
+}
+
+void BindModTextures(Linked& l) {
+    ModTextures& m = l.modTex;
+    // Post-FX passes may bind any unit between draws, so the binding is renewed once a frame as well as on activation.
+    const uint64_t f = events::FrameCount();
+    if (m.frame == f && m.version == g_modTexVersion) return;
+    m.frame = f;
+    m.version = g_modTexVersion;
+    if (!g_gl.ActiveTexture) return;
+    GLint prevUnit = static_cast<GLint>(kTexture0);
+    glGetIntegerv(kActiveTexture, &prevUnit);
+    const float aniso = textures::EffectiveAnisotropy();
+    for (ModSampler& s : m.samplers) {
+        unsigned tex = 0;
+        for (int st = 1; st >= 0 && !tex; --st)
+            if (!m.owner[st].empty()) tex = shadertex::Find(g_modTex, m.owner[st], m.file[st], m.entry[st], s.name);
+        const GLenum target = shadertex::KindTarget(s.kind);
+        draw::TextureInfo info{};
+        if (tex && (!draw::GetTextureInfo(tex, &info) || info.target != target)) {
+            if (!s.warned)
+                LOG_WARN("[shaders] GLSL sampler '%s' is a %s, but texture %u is not (layers= makes an array); it reads the neutral texture",
+                         s.name.c_str(), s.kind == shadertex::Kind::Array ? "sampler2DArray" : "sampler2D", tex);
+            s.warned = true;
+            tex = 0;
+        }
+        g_gl.ActiveTexture(kTexture0 + static_cast<GLenum>(s.unit));
+        if (!tex) {
+            glBindTexture(target, Neutral(s.kind));
+            continue;
+        }
+        glBindTexture(target, tex);
+        auto it = g_texAniso.try_emplace(tex, 1.f).first;
+        if (!info.nearest && it->second != aniso) {
+            glTexParameterf(target, kMaxAnisotropyExt, aniso);
+            it->second = aniso;
+        }
+    }
+    g_gl.ActiveTexture(static_cast<GLenum>(prevUnit));
+}
+
 int SentRegs(const Binding& b) { return b.type == kFloatMat4 ? 4 * std::min(b.count, 16) : std::min(b.count, 64); }
 
 std::string StripIndex(std::string s) {
@@ -424,6 +537,7 @@ Linked Link(src::CGprogram vp, src::CGprogram fp) {
         return l;
     }
     g_gl.UseProgram(prog);
+    int tagUnit = -1, firstUnit = -1;
     GLint n = 0;
     g_gl.GetProgramiv(prog, kActiveUniforms, &n);
     for (GLint i = 0; i < n; ++i) {
@@ -455,6 +569,14 @@ Linked Link(src::CGprogram vp, src::CGprogram fp) {
         case logic::SceneInput::RenderScale:
             l.renderScaleLoc = loc;
             continue;
+        case logic::SceneInput::TexTag:
+            if (type == kFloatVec4) {
+                l.texTagLoc = loc;
+                l.texTagCount = std::min(size, 2);
+            } else {
+                LOG_WARN("[shaders] GLSL %s: mg_texTag must be declared vec4 mg_texTag[2]; it stays 0", label[mod[0] ? 0 : 1].c_str());
+            }
+            continue;
         default:
             break;
         }
@@ -469,9 +591,12 @@ Linked Link(src::CGprogram vp, src::CGprogram fp) {
             src::CGparameter cp = cg.GetNamedParameter(progs[s], cgName.c_str());
             if (!cp) continue;
             found = true;
-            if (type >= kSampler1D && type <= kSampler2DRectShadow) {
+            if (shadertex::IsSampler(type)) {
                 GLenum unit = g_cgGLGetTextureEnum ? g_cgGLGetTextureEnum(cp) : kTexture0;
-                g_gl.Uniform1i(loc, static_cast<GLint>(unit >= kTexture0 ? unit - kTexture0 : 0));
+                const int u = static_cast<int>(unit >= kTexture0 ? unit - kTexture0 : 0);
+                g_gl.Uniform1i(loc, u);
+                if (cgName == "texture0") tagUnit = u;
+                if (firstUnit < 0) firstUnit = u;
             } else {
                 l.bindings.push_back({loc, type, size, l.arb[s], static_cast<unsigned>(cg.GetParameterResourceIndex(cp))});
             }
@@ -479,7 +604,7 @@ Linked Link(src::CGprogram vp, src::CGprogram fp) {
         // A replacement may also read the partner stage's Cg parameters by their Cg name (e.g. the vertex program's
         // `view`), whatever name Cg gave them in its generated GLSL.
         for (int s = 0; s < 2 && !found; ++s) {
-            if (mod[s] || (type >= kSampler1D && type <= kSampler2DRectShadow)) continue;
+            if (mod[s] || shadertex::IsSampler(type)) continue;
             src::CGparameter cp = cg.GetNamedParameter(progs[s], glName.c_str());
             if (!cp) continue;
             found = true;
@@ -492,7 +617,8 @@ Linked Link(src::CGprogram vp, src::CGprogram fp) {
             found = true;
             l.params.push_back({loc, type, p.file, p.entry, glName});
         }
-        if (!found && !(type >= kSampler1D && type <= kSampler2DRectShadow) && g_cgGLGetProgramID) {
+        if (!found && shadertex::IsSampler(type) && (mod[0] || mod[1])) found = AddModSampler(l, loc, glName, type, label[mod[1] ? 1 : 0]);
+        if (!found && !shadertex::IsSampler(type) && g_cgGLGetProgramID) {
             ForeignBinding fb{loc, type, size, {}};
             std::fill(std::begin(fb.sent), std::end(fb.sent), std::numeric_limits<float>::quiet_NaN());
             for (const auto& [other, op] : g_progs) {
@@ -511,6 +637,14 @@ Linked Link(src::CGprogram vp, src::CGprogram fp) {
         if (!found) LOG_WARN("[shaders] GLSL %s: uniform '%s' has no Cg parameter; it stays 0", label[mod[0] ? 0 : 1].c_str(), name);
     }
     g_gl.UseProgram(g_used);
+    // mg_texTag follows the program's texture0 sampler (the model's diffuse texture), else its first Cg sampler.
+    l.texTagUnit = static_cast<uint32_t>(tagUnit >= 0 ? tagUnit : firstUnit >= 0 ? firstUnit : 0);
+    for (int s = 0; s < 2; ++s)
+        if (mod[s]) {
+            l.modTex.owner[s] = owner[s];
+            l.modTex.file[s] = g_progs[progs[s]].file;
+            l.modTex.entry[s] = g_progs[progs[s]].entry;
+        }
     size_t sent = 0;
     for (Binding& b : l.bindings) {
         b.sent = static_cast<unsigned>(sent);
@@ -713,6 +847,12 @@ void UploadForeign(Linked& l) {
     }
 }
 
+void UploadTexTag(Linked& l) {
+    const float* t = textags::ForDraw(l.texTagUnit);
+    if (!logic::Update(l.texTagSent, t, 8)) return;
+    g_gl.Uniform4fv(l.texTagLoc, l.texTagCount, t);
+}
+
 void Upload() {
     ProfScope ps;
     if (g_prof.on) ++g_prof.uploads;
@@ -720,6 +860,8 @@ void Upload() {
     if (!l.params.empty()) UploadParams(l);
     if (l.sceneDepth || l.sceneColor || l.nearFarLoc >= 0 || l.viewLoc >= 0 || l.projLoc >= 0 || l.renderScaleLoc >= 0) BindScene(l);
     if (!l.foreign.empty()) UploadForeign(l);
+    if (!l.modTex.samplers.empty()) BindModTextures(l);
+    if (l.texTagLoc >= 0) UploadTexTag(l);
     const Mirror* m[2] = {};
     for (int s = 0; s < 2; ++s) {
         auto it = g_mirror.find(l.arb[s]);
@@ -793,7 +935,10 @@ void Update() {
         g_gl.UseProgram(want);
         g_used = want;
     }
-    if (active && active != g_active) active->seen[0] = active->seen[1] = ~0u;
+    if (active && active != g_active) {
+        active->seen[0] = active->seen[1] = ~0u;
+        active->modTex.frame = ~0ull;
+    }
     g_active = active;
 }
 
@@ -1010,5 +1155,30 @@ uint32_t ActiveCount() {
     for (const auto& [p, prog] : g_progs)
         if (prog.replaced && prog.linkedOk) ++n;
     return n;
+}
+
+melange::shaders::TextureResult SetModTexture(const std::string& owner, const std::string& file, const std::string& entryGlob,
+                                              const std::string& sampler, unsigned tex) {
+    using R = melange::shaders::TextureResult;
+    if (!shadertex::ValidSamplerName(sampler)) return R::BadName;
+    if (!g_installed) return R::Inactive;
+    bool owns = false;
+    for (const auto& [key, f] : g_files) {
+        const size_t bar = key.find('|');
+        if (f.owner == owner && bar != std::string::npos && src::IEquals(key.substr(0, bar), file) && src::Glob(entryGlob, key.substr(bar + 1)))
+            owns = true;
+    }
+    if (!owns) return R::NotOwner;
+    if (shadertex::Set(g_modTex, {owner, file, entryGlob, sampler, tex})) {
+        ++g_modTexVersion;
+        LOG_INFO("[shaders] GLSL %s:%s sampler '%s' %s by %s", file.c_str(), entryGlob.c_str(), sampler.c_str(),
+                 tex ? ("= texture " + std::to_string(tex)).c_str() : "unset", owner.c_str());
+    }
+    return R::Ok;
+}
+
+void ForgetModTexture(unsigned tex) {
+    g_texAniso.erase(tex);
+    if (shadertex::Forget(g_modTex, tex)) ++g_modTexVersion;
 }
 }  // namespace melange::mirage::shaders::glsl

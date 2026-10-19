@@ -36,6 +36,14 @@ bool GetParam(const char* file, const char* entry, const char* param, float* v, 
 // SetParam limited to a row that `owner`'s (a mod id) shaders\params.ini declares; `entry` is that row's glob.
 bool SetOwnParam(const char* owner, const char* file, const char* entry, const char* param, const float* v, int n);
 
+// Binds `texture` (from draw::LoadTexture[Ex]; 0 unsets) to the sampler `sampler` of `owner`'s own GLSL replacements
+// of `file` whose entry matches the glob `entry`. A sampler2D takes a 2D texture, a sampler2DArray an array one; an
+// unset or mismatched sampler reads a neutral 1x1 texture (0.502 in every channel). Such samplers get units 8..13.
+// Inactive: GLSL replacements are off ([MirageShaders] GlslReplace=0, or no GL hub), so nothing is bound.
+enum class TextureResult { Ok, Inactive, NotOwner, BadName };
+TextureResult SetOwnTexture(const char* owner, const char* file, const char* entry, const char* sampler, unsigned texture);
+void ForgetTexture(unsigned texture);  // before the texture is freed: drops every binding of it
+
 // Override roots added from code (mods are added automatically). Later roots win over earlier ones.
 int AddOverrideRoot(const wchar_t* dir, const char* owner);  // any thread; applies at the next load/reload
 void RemoveOverrideRoot(int handle);

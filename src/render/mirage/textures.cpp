@@ -22,6 +22,7 @@
 #include "render/mirage/engine.h"
 #include "render/mirage/hub.h"
 #include "render/mirage/stages.h"
+#include "render/mirage/textures.h"
 #include "render/mirage/textures_logic.h"
 
 namespace melange::mirage::textures {
@@ -126,7 +127,7 @@ void Resweep() {
 
 void APIENTRY HkTexImage2D(GLenum target, GLint level, GLint internalformat, GLsizei width, GLsizei height, GLint border,
                            GLenum format, GLenum type, const void* pixels) {
-    uintptr_t caller = reinterpret_cast<uintptr_t>(_ReturnAddress());
+    uintptr_t caller = hub::RealCaller(reinterpret_cast<uintptr_t>(_ReturnAddress()));
     n_texImage2D(target, level, internalformat, width, height, border, format, type, pixels);
     // g_hooksInstalled also guards n_texParameteri: ApplyToBound needs both hooks, not just this one, chained.
     // Keyed on level 1 so only textures with a mip chain get a mipmapped min filter: on a single-level texture
@@ -255,6 +256,11 @@ private:
     }
 };
 }  // namespace
+
+float EffectiveAnisotropy() {
+    if (g_effective.anisotropy <= 0) return 1.f;
+    return std::max(1.f, std::min(static_cast<float>(g_effective.anisotropy), MaxAnisoSupported()));
+}
 
 MELANGE_MODULE(MirageTextures);
 }  // namespace melange::mirage::textures

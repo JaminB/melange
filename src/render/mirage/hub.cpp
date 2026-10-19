@@ -258,6 +258,22 @@ uint32_t ReadRing(uint32_t from, void (*sink)(const Rec&, void*), void* user) {
 
 uint32_t RingPos() { return static_cast<uint32_t>(g_ringPos); }
 
+uintptr_t RealCaller(uintptr_t returnAddress) {
+    static uintptr_t lo = 0, hi = 0, outer = 0;
+    if (!lo) {
+        HMODULE self = nullptr;
+        GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                           reinterpret_cast<LPCWSTR>(&RealCaller), &self);
+        auto base = reinterpret_cast<const uint8_t*>(self);
+        auto nt = reinterpret_cast<const IMAGE_NT_HEADERS*>(base + reinterpret_cast<const IMAGE_DOS_HEADER*>(base)->e_lfanew);
+        lo = reinterpret_cast<uintptr_t>(base);
+        hi = lo + nt->OptionalHeader.SizeOfImage;
+    }
+    if (returnAddress >= lo && returnAddress < hi) return outer;
+    outer = returnAddress;
+    return returnAddress;
+}
+
 bool IsThunk(const void* p) {
     auto v = reinterpret_cast<const uint8_t*>(p);
     return g_thunks && v >= g_thunks && v < g_thunks + kMaxFn * kStride;

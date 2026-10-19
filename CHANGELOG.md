@@ -1,5 +1,29 @@
 # Changelog
 
+## 0.10.0
+
+- New: texture tags. A client-only mod can declare `"graphics": {"textureTags": "<file>.json"}` in `spice.json`: a
+  table of up to 8 numbers per texture, keyed by a 64-bit digest of the texture's base level (scheme
+  `gl-level0-sha256-64`, documented in `docs/spice.md`; `tools/tag_digest.py` is the reference implementation and
+  computes the keys from the game's XOM files or PNGs). A GLSL replacement that declares `uniform vec4 mg_texTag[2]`
+  gets the row of the texture bound on its `texture0` unit before each draw, all zeros when the texture has no tag.
+  The new `MirageTexTags` module hashes the engine's texture uploads, follows deletes and name reuse and the texture
+  units' bindings, and reads a texture back once if it never saw it uploaded. Tables of several mods merge, the first
+  declaring mod winning a digest. Nothing is hooked without a table. The `tags.stats` verb logs how many textures and
+  draws were tagged and untagged.
+- New: shader textures. A GLSL replacement can sample a mod's own textures. `wum.shaders.setTexture(file, entry,
+  sampler, tex)` binds a texture from the mod's `wum.draw.texture` to a sampler of the mod's own replacement (`entry`
+  is a glob, `nil` unsets), and `wum.draw.texture(rel, {wrap = "repeat", filter = "linear"|"nearest", layers = n})`
+  loads a PNG for it: with `layers`, a vertical strip of `n` tiles becomes one texture array (`sampler2DArray`,
+  `#version 130`) with a full mip chain per layer. Linear textures are trilinear and follow `[MirageTextures]`
+  anisotropy. Detect the feature with `if wum.shaders.setTexture then`.
+- Fixed: a replacement's sampler with no Cg parameter now gets its own texture unit (8 to 13) and reads a neutral 1x1
+  texture until one is set. Before, it silently read unit 0, the model's own texture.
+- Fixed: texture tags follow `glBindMultiTextureEXT`, the call the Cg runtime uses to bind a draw's texture to a
+  unit other than 0 (the landscape's tiles are bound to unit 1 that way). Before, those draws kept a stale tag.
+- The GL hub has `hub::RealCaller`, so two interposers of the same GL function (texture clarity and texture tags on
+  `glTexImage2D`) both see the engine's call site.
+
 ## 0.9.1
 
 - Fixed the crash, or the "Runtime Error! ... terminate it in an unusual way" freeze, at the end of a match. The cause

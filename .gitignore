@@ -8,6 +8,7 @@ dist/tools/
 !/tools/xom/
 !/tools/wsr/
 !/tools/xomtool/
+!/tools/tag_digest.py
 testenv/
 *.dmp
 *.user

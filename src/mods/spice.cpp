@@ -1058,6 +1058,15 @@ bool ParseManifestJson(const json::Value& v, const std::string& folderId, Manife
                     out->graphicsShadowMapSize = s;
                 }
             }
+            if (const json::Value* tt = gfx->Get("textureTags")) {
+                if (!tt->IsString() || !ToLower(tt->string).ends_with(".json") || !SafeRelRoot(tt->string)) {
+                    AddError(errs, tt, "graphics.textureTags",
+                             "graphics.textureTags must be a relative path to a .json file with no '..' or drive letter");
+                    ok = false;
+                } else {
+                    out->graphicsTextureTags = tt->string;
+                }
+            }
             if (const json::Value* lb = gfx->Get("lodBias")) {
                 if (!lb->IsNumber() || lb->number < -8 || lb->number > 8) {
                     AddError(errs, lb, "graphics.lodBias", "graphics.lodBias must be a number from -8 to 8");
