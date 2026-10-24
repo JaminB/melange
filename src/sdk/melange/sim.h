@@ -21,4 +21,10 @@ bool RegisterModMessage(const char* name, uint16_t* idOut);
 void FreezeModMessages();    // after this, RegisterModMessage fails
 struct Stats { uint32_t ticks, simMods, faults; double usLastTick, usP95Tick; uint32_t heapKB; };
 Stats GetStats();
+// The turn-start hold (wum.sim.holdTurn): deterministic sim state, the same on every machine at the same tick.
+// `holding`: the next turn start is deferred, `remaining` ticks to go out of `total`, deferred at tick `since`;
+// `armed`: ticks a mod asked for the next turn start that has not come yet; `holds`: holds completed this match.
+// Main thread; all zeros outside a match.
+struct TurnHold { bool holding; uint32_t remaining, total, since, armed, holds; };
+TurnHold GetTurnHold();
 }

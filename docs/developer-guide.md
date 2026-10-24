@@ -728,8 +728,35 @@ A content mod's `entry.sim` runs inside the match's own Lua VM, which is Lua 5.0
 | `wum.sim.weapon(name):get(field)`, `:set(field, v)` | Read and change a weapon's data for this match; `set` works only while the script's top-level chunk runs at match start. Field types: f32, i32, u32, u16, u8, bool and string; a u16 takes 0 to 65535 and a u32 0 to 16777216 (2^24, the most a float32 holds exactly), and a u32 above that is refused (Lua already rounds a literal 16777217 to 16777216, which is accepted); `get` of a u32 above 2^24 returns the nearest float32. u32/u16 sets are unverified in game |
 | `wum.sim.weapons.list()`, `.on(event, name, fn)`/`.off(h)`, `.explode(dx, dy, dz)`, `.active()` | Weapon clones: subscribe to a clone's `fire`/`tick`/`impact`/`explosion` events and queue extra explosions. Full reference: [weapons.md](weapons.md) |
 | `wum.sim.hash(v, ...)` | Adds numbers, strings, booleans or `nil` to this tick's state hash, for state the mod keeps in locals |
+| `wum.sim.holdTurn(ticks)`, `releaseTurn()`, `turnHold()` | Delays the next turn start by `ticks` sim ticks (1 to 3000, that is 60 s) on every machine alike; see [The turn-start hold](#the-turn-start-hold) |
 
 Every call from the game into a sim script has an instruction budget (`[SimBridge] InstrPerCall`). A callback that fails or runs out of budget three times is switched off. `dist\Mods\sim-sampler` and `dist\Mods\bazooka-plus` are examples (shipped disabled). `dist\Mods\desync-probe`, also disabled, shows how to test a mod's determinism with the desync detector ([wormsign.md](wormsign.md)).
+
+### The turn-start hold
+
+The game's match script starts every turn after the first from one Lua function, `StartTurn()`, which it calls at the
+end of the turn-end sequence (`GameLogic.Turn.Ended` -> `TurnEnded()` -> `CheckOneTeamVictory()` -> `StartTurn()`).
+`wum.sim.holdTurn(ticks)` arms a hold for the next turn start: when the script next calls `StartTurn`, Melange swallows
+the call, sends `GameLogic.RoundTime.Pause` (the engine's own switch for the round clock and `ElapsedRoundTime`; the turn
+clock is already stopped between turns) and, `ticks` ticks later, sends `GameLogic.RoundTime.Resume` and runs the
+game's `StartTurn`. Everything is driven by the sim's tick, so every machine of an online match starts the next turn at
+the same tick, and nothing waits on the camera, an active object or any other per-machine state (the hold does not use
+`GameLogic.PauseGame`, which is denied, or the game's own post-explosion camera hold).
+
+- `wum.sim.holdTurn(ticks)` returns `true`, or `nil` and a reason (`"not in a match"`, `"halted"`, `"the match script
+  has no StartTurn"`). `ticks` must be a whole number from 1 to 3000 (60 s), the hard cap; anything else raises an
+  error. Called while a hold is active, it sets the remaining ticks, and the total from the deferral stays within the
+  cap. Call it from a `GameLogic.Turn.Ended` handler to hold the turn start that follows that same turn end, or any
+  time before it.
+- `wum.sim.releaseTurn()` cancels an armed hold, or ends an active one at the end of the current tick; returns `true`
+  when there was one.
+- `wum.sim.turnHold()` returns two numbers: the ticks left in the active hold (0 when none) and the ticks armed for the
+  next turn start (0 when none). Pass them to `wum.sim.hash` if the mod's logic depends on them.
+- Events: `sim.turnHold` (`fn(name, ticks)`) when the turn start is deferred, `sim.turnHoldEnd` (`fn(name, held)`)
+  just before the deferred `StartTurn` runs. A second turn end during a hold (a worm dying while held) is swallowed
+  too: one turn starts at the release. When the round ends during the hold, the deferred `StartTurn` is dropped.
+- The client gets `melange.turnHold` `{ticks, tick, roundMsLeft}` and `melange.turnHoldEnd` `{ticks, tick,
+  roundMsLeft}` (`ticks` = ticks held) through `wum.events`, and C++ modules `melange::sim::GetTurnHold()`.
 
 With Wormsign on, every sim mod's state is part of the per-tick hash, so a mod that computes differently on two machines is caught at the tick it happens, with the mod named. Wormsign hashes the mod's globals and `wum.sim.storage` (three tables deep, in any key order; functions and userdata count by type only), and whatever the mod passes to `wum.sim.hash` in that tick. Locals and upvalues are not visible to it: a mod that keeps its state there can pass it to `wum.sim.hash`.
 

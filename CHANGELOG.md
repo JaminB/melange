@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+- New: `wum.sim.holdTurn(ticks)`, `wum.sim.releaseTurn()` and `wum.sim.turnHold()` for sim mods: a deterministic hold
+  of the next turn start, 1 to 3000 ticks (60 s). The game's `StartTurn` is deferred on every machine from the sim's
+  own tick, the round clock is paused with the engine's `GameLogic.RoundTime.Pause`/`Resume` meanwhile, and the sim
+  events `sim.turnHold`/`sim.turnHoldEnd`, the client events `melange.turnHold`/`melange.turnHoldEnd` and
+  `melange::sim::GetTurnHold()` report it (`SimTurnHold` module; `docs/developer-guide.md`, "The turn-start hold").
+
 ## 0.10.0
 
 - New: texture tags. A client-only mod can declare `"graphics": {"textureTags": "<file>.json"}` in `spice.json`: a
