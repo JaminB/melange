@@ -19,6 +19,19 @@
   `melange::sim::GetTurnHold()` report it (`SimTurnHold` module; `docs/developer-guide.md`, "The turn-start hold").
   Online, `SimTurnHoldNet` repeats the turn-end `TimeSync(-1)` right before the deferred turn start runs, so the
   spectators run to their own deferred turn start instead of pausing behind the old active player's clock.
+- New: `wum.render.cameraOverride(spec | nil)` for client mods: draws the frame from a camera of the mod's choosing
+  (`pos`, `target`, optional `up`, `fov` and a refresh lifetime `frames`), one mod at a time. It is render-only: the
+  new `MirageCamera` module swaps the render XCamera for the duration of `XOpenGLRenderManager::Render` and puts it
+  back, so the logical camera Wormsign checks is never written; culling, every pass, post-FX, sprites, meshes, the
+  HUD and `wum.render.worldToScreen` all see the override. `wum.render.camera()` gains `fov` and `overridden`, and
+  `wum.render.gameCamera()` returns the game's own camera underneath, to blend back into it. C++:
+  `melange::render::SetCameraOverride`/`ClearCameraOverride`/`CameraOverridden`/`GetGameCamera`.
+- New: `wum.game.match()`: the round and turn clocks (`roundMs`, `roundMsLeft`, `turnMs`, `turnMsLeft`),
+  `waterLevel`, `suddenDeath`, `turnsStarted` and the land bounds `landMin`/`landMax` (also in `gamestate::Match`).
+- New: `wum.draw.mesh` for world draws, in a vertex-array form (`verts`, `idx`, `tex`, `model`, `opts`) and a handle
+  form over meshes kept with `wum.draw.newMesh`/`wum.draw.freeMesh`: 8 floats per vertex (or 12 with `"pntc"` vertex
+  colours), a model matrix or `{pos, yaw, scale}`, optional CPU lighting, alpha or additive blending, culling and
+  x-ray, depth-tested against the scene.
 
 ## 0.10.0
 

@@ -3,7 +3,10 @@
 A mod's `entry.client` script (from its `spice.json`) runs in Melange's Lua 5.4 VM, the Sandbox. This page lists everything a
 client script can use. The offline self-test (`sandbox_selftest`) fails if a `wum.*` function is missing from this page.
 
-Sim scripts (`entry.sim`) run in the game's own Lua 5.0 match VM and have a different API (`wum.sim.*`); they are not covered here.
+Sim scripts (`entry.sim`) run in the game's own Lua 5.0 match VM and have a different API (`wum.sim.*`); they are not covered here. They are documented in the [developer guide](developer-guide.md#sim-scripts), including the Melange 0.11
+additions `wum.sim.worm(slot)` (worm state and the anchor), `wum.sim.worms()`, `wum.sim.land()` and the turn-start hold
+`wum.sim.holdTurn(ticks)`, `wum.sim.releaseTurn()` and `wum.sim.turnHold()`. A client mod sees a hold through the events
+`melange.turnHold` and `melange.turnHoldEnd` below.
 
 ## The environment
 
