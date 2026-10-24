@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.25)
-project(Melange VERSION 0.10.0 LANGUAGES C CXX)
+project(Melange VERSION 0.11.0 LANGUAGES C CXX)
 
 if(NOT CMAKE_SIZEOF_VOID_P EQUAL 4)
     message(FATAL_ERROR "Melange must be built for 32-bit x86 (WormsMayhem.exe is a 32-bit process). Use build.ps1.")
@@ -507,7 +507,8 @@ target_compile_options(lua50_ref PRIVATE /W0 /FI${CMAKE_SOURCE_DIR}/tests/lua50_
 add_executable(sim_selftest EXCLUDE_FROM_ALL
     tests/sim_selftest.cpp
     src/lua/sim/sim_env.cpp src/lua/sim/sim_api.cpp src/lua/sim/sim_events.cpp src/lua/sim/sim_rng.cpp
-    src/lua/sim/sim_hash.cpp src/lua/sim/sim_weapons.cpp src/lua/sim/sim_level.cpp src/weapons/behaviour_core.cpp
+    src/lua/sim/sim_hash.cpp src/lua/sim/sim_weapons.cpp src/lua/sim/sim_level.cpp src/lua/sim/sim_worms.cpp
+    src/weapons/behaviour_core.cpp
     src/wormsign/contrib.cpp
     src/core/jlog.cpp src/core/jlog_ring.cpp src/core/jlog_bus_filter.cpp
     src/core/events.cpp src/core/game.cpp src/core/pe_laa.cpp src/tools/hash.cpp src/core/mem.cpp src/core/log.cpp)

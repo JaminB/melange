@@ -728,10 +728,47 @@ A content mod's `entry.sim` runs inside the match's own Lua VM, which is Lua 5.0
 | `wum.sim.weapon(name):get(field)`, `:set(field, v)` | Read and change a weapon's data for this match; `set` works only while the script's top-level chunk runs at match start. Field types: f32, i32, u32, u16, u8, bool and string; a u16 takes 0 to 65535 and a u32 0 to 16777216 (2^24, the most a float32 holds exactly), and a u32 above that is refused (Lua already rounds a literal 16777217 to 16777216, which is accepted); `get` of a u32 above 2^24 returns the nearest float32. u32/u16 sets are unverified in game |
 | `wum.sim.weapons.list()`, `.on(event, name, fn)`/`.off(h)`, `.explode(dx, dy, dz)`, `.active()` | Weapon clones: subscribe to a clone's `fire`/`tick`/`impact`/`explosion` events and queue extra explosions. Full reference: [weapons.md](weapons.md) |
 | `wum.sim.hash(v, ...)` | Adds numbers, strings, booleans or `nil` to this tick's state hash, for state the mod keeps in locals |
+| `wum.sim.worm(slot)` | A worm by slot (0 to 15), or `nil, "no worm"` when the slot has no container. See [Worms and the anchor](#worms-and-the-anchor) |
+| `wum.sim.worms()` | The slots that have a worm container, as a list, then their count |
+| `wum.sim.land()` | The land bounds `minX, minY, minZ, maxX, maxY, maxZ` (`Land.MinBounds` and `Land.MaxBounds`), or `nil, reason` |
 
 Every call from the game into a sim script has an instruction budget (`[SimBridge] InstrPerCall`). A callback that fails or runs out of budget three times is switched off. `dist\Mods\sim-sampler` and `dist\Mods\bazooka-plus` are examples (shipped disabled). `dist\Mods\desync-probe`, also disabled, shows how to test a mod's determinism with the desync detector ([wormsign.md](wormsign.md)).
 
 With Wormsign on, every sim mod's state is part of the per-tick hash, so a mod that computes differently on two machines is caught at the tick it happens, with the mod named. Wormsign hashes the mod's globals and `wum.sim.storage` (three tables deep, in any key order; functions and userdata count by type only), and whatever the mod passes to `wum.sim.hash` in that tick. Locals and upvalues are not visible to it: a mod that keeps its state there can pass it to `wum.sim.hash`.
+
+### Worms and the anchor
+
+`wum.sim.worm(slot)` reads the worm's data container, the simulation's own state (the same bytes Wormsign hashes), so
+every machine sees the same values at the same tick. The object is a plain table with `slot` and these methods (call
+them with `:`):
+
+| Method | Returns |
+|---|---|
+| `:pos()` | `x, y, z` of the worm's feet (world units, +Y up) |
+| `:vel()` | `vx, vy, vz` in world units per millisecond |
+| `:alive()` | `true` while the worm is active, has health above 0 and is not dying or drowning (physics states 7 and 8) |
+| `:active()` | The container's active flag alone |
+| `:team()` | The team slot (0 to 3), then the worm's position in its team |
+| `:health()` | Health points |
+| `:state()` | The physics state: 0 standing, 1 jump, 2 flying, 3 sliding, 4 vaulting, 5 weapon override (rope, jetpack, ...), 6 passive, 7 dying, 8 drowning |
+| `:yaw()`, `:weapon()`, `:name()` | The facing angle (radians about +Y), the selected weapon index (`kNames` order, -1 for none), the worm's name |
+| `:anchor([on])` | Pins the worm where it stands (`on` defaults to `true`); `false` frees it. Returns `true`, or `nil, "dead"` for a worm that is not alive. A second `anchor(true)` keeps the first pin |
+| `:anchored()` | `anchored, pinned`: the flag, and whether the pin is still applied (see below) |
+| `:pin()` | `x, y, z` of the pin, or `nil` when not anchored |
+
+An anchored worm keeps its turns and can turn (A and D rotate it in place), aim, change weapon and fire, but it
+cannot walk, jump, backflip, rope, jetpack, parachute or teleport, and explosions damage it without moving it. Behind
+the call, Melange reuses the engine's own "nailed" worm (the No More Nails effect: flags `0x30` on the container),
+re-asserts it, writes the pin and a zero velocity before and after the worm's own physics step on every machine,
+refuses the flying and sliding transitions for it, and swallows its walk, jump, backflip and jetpack inputs and the
+fire input of the movement utilities (rope, parachute, jetpack, teleport). Everything it reads is simulation state
+and the anchor set only changes from sim-script calls, so the machines stay in step; the anchor set is also a
+Wormsign contributor (`melange.wormanchor`). The anchor never protects the worm: it takes normal damage, and the
+engine's drowning check reads the pinned position, so once the water rises over it (feet plus
+`Worm.Drown.HeightOffset`, 7 units in the stock data) it starts drowning like any other worm. As soon as it dies or
+starts drowning the pin is **released** (`anchored()` returns `true, false`) and the engine sinks it. Anchors end
+with the match. The `WormAnchor` module (`[WormAnchor] LogInputs=1` logs each swallowed input) holds the hooks;
+without it, or on another game build, `worm(slot)` answers `nil, "unavailable"` and `anchor` fails the same way.
 
 ## Building from source
 
