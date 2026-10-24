@@ -509,7 +509,7 @@ add_executable(sim_selftest EXCLUDE_FROM_ALL
     src/lua/sim/sim_env.cpp src/lua/sim/sim_api.cpp src/lua/sim/sim_events.cpp src/lua/sim/sim_rng.cpp
     src/lua/sim/sim_hash.cpp src/lua/sim/sim_weapons.cpp src/lua/sim/sim_level.cpp src/lua/sim/sim_worms.cpp
     src/weapons/behaviour_core.cpp
-    src/wormsign/contrib.cpp
+    src/lua/sim/turnhold_core.cpp src/wormsign/contrib.cpp
     src/core/jlog.cpp src/core/jlog_ring.cpp src/core/jlog_bus_filter.cpp
     src/core/events.cpp src/core/game.cpp src/core/pe_laa.cpp src/tools/hash.cpp src/core/mem.cpp src/core/log.cpp)
 target_include_directories(sim_selftest PRIVATE src src/sdk ${CMAKE_BINARY_DIR}/generated)

@@ -27,6 +27,7 @@ extern "C" {
 #include "lua/sim/sim_hash.h"
 #include "lua/sim/sim_weapons.h"
 #include "lua/sim/sim_worms.h"
+#include "lua/sim/turnhold.h"
 #include "melange/sim.h"
 #include "melange/wormsign.h"
 #include "weapons/behaviour.h"
@@ -1311,6 +1312,202 @@ void TestWorms() {
     core::SetSources({});
 }
 
+// The turn-start hold against the shape of the game's own stdlib.lub: Turn.Ended -> TurnEnded -> CheckOneTeamVictory
+// -> StartTurn, with StartTurn the wrapped global.
+const char kGameTurns[] = R"(
+starts = 0
+turnEnds = 0
+boom = false
+function StartTurn() if boom then error("boom") end starts = starts + 1 SendMessage("GameLogic.Turn.Started") end
+function CheckOneTeamVictory() StartTurn() end
+function TurnEnded() CheckOneTeamVictory() end
+function DoPostActivity() turnEnds = turnEnds + 1 SendMessage("GameLogic.Turn.Ended") TurnEnded() end
+)";
+
+const char kHolder[] = R"(
+local s = wum.sim.storage
+s.events = {}
+s.ticks = 20
+s.arm = true
+wum.events.on("GameLogic.Turn.Ended", function()
+  if s.arm then s.armed = tostring(wum.sim.holdTurn(s.ticks)) end
+end)
+wum.events.on("sim.turnHold", function(name, ticks)
+  local rem, armed = wum.sim.turnHold()
+  table.insert(s.events, "hold:" .. ticks .. "@" .. wum.sim.tick() .. ":" .. rem .. "/" .. armed)
+end)
+wum.events.on("sim.turnHoldEnd", function(name, held)
+  table.insert(s.events, "end:" .. held .. "@" .. wum.sim.tick())
+end)
+s.bad1 = tostring(pcall(wum.sim.holdTurn, 0))
+s.bad2 = tostring(pcall(wum.sim.holdTurn, 3001))
+s.bad3 = tostring(pcall(wum.sim.holdTurn, 2.5))
+s.bad4 = tostring(pcall(wum.sim.holdTurn, "x"))
+s.rel0 = tostring(wum.sim.releaseTurn())
+local r, a = wum.sim.turnHold()
+s.idle = r .. "/" .. a
+)";
+
+std::vector<std::string> g_holdNotes;
+void HoldNote(const melange::turnhold::Event& e, void*) {
+    g_holdNotes.push_back(std::string(e.begin ? "begin:" : "end:") + std::to_string(e.ticks) + "@" + std::to_string(e.tick) +
+                          ":" + std::to_string(e.roundMsLeft));
+}
+
+double HoldGlobal(const char* name) {
+    lua_pushstring(fake::L, name);
+    lua_rawget(fake::L, LUA_GLOBALSINDEX);
+    const double v = lua_tonumber(fake::L, -1);
+    lua_pop(fake::L, 1);
+    return v;
+}
+
+// Calls a global of the "game script" the way the engine's CallGlobal does (pcall, no arguments); the error text or "".
+std::string HoldCall(const char* name) {
+    lua_pushstring(fake::L, name);
+    lua_rawget(fake::L, LUA_GLOBALSINDEX);
+    if (lua_pcall(fake::L, 0, 0, 0) == 0) return "";
+    std::string err = lua_tostring(fake::L, -1) ? lua_tostring(fake::L, -1) : "?";
+    lua_pop(fake::L, 1);
+    return err;
+}
+
+std::string SentFrom(size_t i) {
+    std::string out;
+    for (size_t k = i; k < fake::sent.size(); ++k) out += fake::sent[k] + ";";
+    return out;
+}
+
+lua_State* HoldMatch() {
+    fake::data = {{"RoundTimeRemaining", {0, 290000, ""}}, {"FCS.GameOver", {0, 0, ""}}};
+    fake::sent.clear();
+    fake::halts.clear();
+    fake::runState = 1;
+    fake::allowAll = false;
+    fake::L = fake::NewMatchVM();
+    luaL_loadbuffer(fake::L, kGameTurns, sizeof kGameTurns - 1, "=stdlib");
+    lua_pcall(fake::L, 0, 0, 0);
+    lua_settop(fake::L, 0);
+    core::SetSources({{"holder", "1.0.0", "@holder/sim/main.lua", kHolder}});
+    core::ContextCreated(fake::L);
+    Expect(core::Init({"GameLogic.Turn.Ended", "GameLogic.Turn.Started"}, true), "turn hold: holder loaded");
+    return fake::L;
+}
+
+void HoldClose() {
+    g_log.clear();
+    core::ContextClosing(fake::L);
+    Expect(Logged(" 0 refs left"), "turn hold: the wrapper's ref is dropped at match end");
+    lua_close(fake::L);
+    fake::L = nullptr;
+}
+
+void TestTurnHold() {
+    using melange::sim::GetTurnHold;
+    melange::turnhold::Init();
+    melange::turnhold::SetNotify(&HoldNote, nullptr);
+    g_holdNotes.clear();
+    lua_State* S = HoldMatch();
+    Expect(Storage("holder", "bad1").rfind("false", 0) == 0 && Storage("holder", "bad2").rfind("false", 0) == 0 &&
+               Storage("holder", "bad3").rfind("false", 0) == 0 && Storage("holder", "bad4").rfind("false", 0) == 0,
+           "holdTurn refuses 0, 3001, 2.5 and a string: " + Storage("holder", "bad2"));
+    Expect(Storage("holder", "rel0") == "false" && Storage("holder", "idle") == "0/0", "nothing to release at the start");
+    Expect(!GetTurnHold().holding && GetTurnHold().armed == 0, "GetTurnHold idle");
+
+    // 1. A turn end arms the hold; StartTurn is deferred; the round clock is paused; the release starts the turn.
+    size_t mark = fake::sent.size();
+    Expect(HoldCall("DoPostActivity").empty(), "turn end 1 runs");
+    Expect(HoldGlobal("starts") == 0 && Storage("holder", "armed") == "true", "StartTurn deferred by the armed hold");
+    Expect(SentFrom(mark) == "GameLogic.Turn.Ended;GameLogic.RoundTime.Pause;", "round clock paused right after Turn.Ended: " + SentFrom(mark));
+    Expect(Storage("holder", "events") == "{1=hold:20@0:20/0;}", "sim.turnHold delivered with the ticks: " + Storage("holder", "events"));
+    auto h = GetTurnHold();
+    Expect(h.holding && h.remaining == 20 && h.total == 20 && h.since == 0 && h.armed == 0, "GetTurnHold during the hold");
+    for (int i = 0; i < 19; ++i) core::Update();
+    Expect(HoldGlobal("starts") == 0 && GetTurnHold().remaining == 1, "still held after 19 ticks");
+    mark = fake::sent.size();
+    core::Update();
+    Expect(HoldGlobal("starts") == 1, "the turn starts at the 20th tick");
+    Expect(SentFrom(mark) == "GameLogic.RoundTime.Resume;GameLogic.Turn.Started;", "round clock resumed before the turn starts: " + SentFrom(mark));
+    Expect(Storage("holder", "events") == "{1=hold:20@0:20/0;2=end:20@20;}", "sim.turnHoldEnd before StartTurn: " + Storage("holder", "events"));
+    h = GetTurnHold();
+    Expect(!h.holding && h.holds == 1, "GetTurnHold after the release");
+    Expect(g_holdNotes == std::vector<std::string>({"begin:20@0:290000", "end:20@20:290000"}), "client notifications: " + (g_holdNotes.empty() ? "" : g_holdNotes[0]));
+    Expect(lua_gettop(S) == 0 && fake::runState == 1 && fake::halts.empty(), "stack balanced, script running");
+
+    // 2. A second turn end during the hold: the extra StartTurn is swallowed and one turn starts.
+    Expect(HoldCall("DoPostActivity").empty() && HoldGlobal("starts") == 1, "turn end 2 deferred");
+    for (int i = 0; i < 5; ++i) core::Update();
+    Expect(HoldCall("DoPostActivity").empty() && HoldGlobal("starts") == 1, "turn end 3 during the hold swallowed");
+    Expect(GetTurnHold().remaining == 20 && GetTurnHold().total == 25, "holdTurn during a hold sets the remaining ticks");
+    for (int i = 0; i < 20; ++i) core::Update();
+    Expect(HoldGlobal("starts") == 2 && GetTurnHold().holds == 2, "exactly one turn started after two turn ends: " + std::to_string(HoldGlobal("starts")));
+
+    // 3. releaseTurn ends an active hold at the end of the tick.
+    auto e = melange::simbridge::EvalMatch("mods.holder.wum.sim.storage.ticks = 100");
+    Expect(e.ok, "console sets the holder's ticks");
+    Expect(HoldCall("DoPostActivity").empty() && HoldGlobal("starts") == 2, "turn end 4 deferred 100 ticks");
+    core::Update();
+    core::Update();
+    e = melange::simbridge::EvalMatch("return mods.holder.wum.sim.releaseTurn()");
+    Expect(e.ok && e.text == "true", "releaseTurn returns true on an active hold: " + e.text);
+    Expect(HoldGlobal("starts") == 2, "release takes effect at the tick, not inside the call");
+    core::Update();
+    Expect(HoldGlobal("starts") == 3, "released early: the turn started");
+    e = melange::simbridge::EvalMatch("return mods.holder.wum.sim.releaseTurn()");
+    Expect(e.ok && e.text == "false", "releaseTurn with nothing to release returns false");
+
+    // 4. releaseTurn cancels an armed hold before the turn end comes.
+    e = melange::simbridge::EvalMatch("return mods.holder.wum.sim.holdTurn(50), mods.holder.wum.sim.turnHold()");
+    Expect(e.ok && e.text == "true\t0\t50", "a hold armed outside a turn end: " + e.text);
+    e = melange::simbridge::EvalMatch("return mods.holder.wum.sim.releaseTurn(), mods.holder.wum.sim.turnHold()");
+    Expect(e.ok && e.text == "true\t0\t0", "releaseTurn cancels the armed hold: " + e.text);
+
+    // 5. Without a hold, StartTurn passes straight through, and its errors reach the caller unchanged.
+    Expect(melange::simbridge::EvalMatch("mods.holder.wum.sim.storage.arm = false").ok, "console turns arming off");
+    mark = fake::sent.size();
+    Expect(HoldCall("DoPostActivity").empty() && HoldGlobal("starts") == 4, "no hold: the turn starts at once");
+    Expect(SentFrom(mark) == "GameLogic.Turn.Ended;GameLogic.Turn.Started;", "no hold: nothing paused: " + SentFrom(mark));
+    lua_pushstring(S, "boom");
+    lua_pushboolean(S, 1);
+    lua_rawset(S, LUA_GLOBALSINDEX);
+    const std::string err = HoldCall("DoPostActivity");
+    Expect(err.find("boom") != std::string::npos && HoldGlobal("starts") == 4, "StartTurn's error propagates through the wrapper: " + err);
+    lua_pushstring(S, "boom");
+    lua_pushboolean(S, 0);
+    lua_rawset(S, LUA_GLOBALSINDEX);
+
+    // 6. The round ends during the hold: the deferred StartTurn is dropped, the clock still resumes.
+    Expect(melange::simbridge::EvalMatch("mods.holder.wum.sim.storage.arm = true mods.holder.wum.sim.storage.ticks = 5").ok, "console re-arms");
+    Expect(HoldCall("DoPostActivity").empty() && HoldGlobal("starts") == 4, "turn end deferred 5 ticks");
+    fake::data["FCS.GameOver"].num = 1;
+    mark = fake::sent.size();
+    for (int i = 0; i < 5; ++i) core::Update();
+    Expect(HoldGlobal("starts") == 4 && !GetTurnHold().holding, "game over during the hold: StartTurn skipped");
+    Expect(SentFrom(mark) == "GameLogic.RoundTime.Resume;", "the round clock is still resumed: " + SentFrom(mark));
+    fake::data["FCS.GameOver"].num = 0;
+
+    // 7. The cap: 3000 ticks at most, counted from the deferral, also for an extension.
+    Expect(melange::simbridge::EvalMatch("mods.holder.wum.sim.storage.ticks = 3000").ok, "console sets 3000");
+    Expect(HoldCall("DoPostActivity").empty() && GetTurnHold().remaining == 3000, "a 3000-tick hold is accepted");
+    for (int i = 0; i < 2990; ++i) core::Update();
+    e = melange::simbridge::EvalMatch("return mods.holder.wum.sim.holdTurn(3000), mods.holder.wum.sim.turnHold()");
+    Expect(e.ok && e.text == "true\t10\t0", "an extension is clamped to the cap: " + e.text);
+    for (int i = 0; i < 10; ++i) core::Update();
+    Expect(HoldGlobal("starts") == 5, "the capped hold released");
+    Expect(lua_gettop(S) == 0 && fake::runState == 1 && fake::halts.empty(), "stack balanced, script running at the end");
+    HoldClose();
+    Expect(!GetTurnHold().holding && GetTurnHold().holds == 0, "GetTurnHold zero outside a match");
+
+    // 8. A new match wraps the new VM's StartTurn again.
+    g_holdNotes.clear();
+    S = HoldMatch();
+    Expect(HoldCall("DoPostActivity").empty() && HoldGlobal("starts") == 0 && GetTurnHold().holding, "next match: deferred again");
+    for (int i = 0; i < 20; ++i) core::Update();
+    Expect(HoldGlobal("starts") == 1 && g_holdNotes.size() == 2, "next match: released");
+    HoldClose();
+    melange::turnhold::SetNotify(nullptr, nullptr);
+}
+
 int main() {
     melange::log::SetTap(&Tap);
     {
@@ -1320,9 +1517,13 @@ int main() {
         fake::CollectLib(S, "string", fake::strlib);
         fake::CollectLib(S, "table", fake::tablib);
     }
-    for (const char* n : {"GameLogic.Turn.Ended", "GameLogic.Turn.Started", "GameLogic.PauseGame", "Weapon.Fired"})
+    for (const char* n : {"GameLogic.Turn.Ended", "GameLogic.Turn.Started", "GameLogic.PauseGame", "Weapon.Fired",
+                          "GameLogic.RoundTime.Pause", "GameLogic.RoundTime.Resume"})
         fake::Reg(n);
     melange::simbridge::AddSimFunction("probe", &ProbeFn);
+    melange::simbridge::AddSimFunction("holdTurn", &melange::turnhold::LHoldTurn);
+    melange::simbridge::AddSimFunction("releaseTurn", &melange::turnhold::LReleaseTurn);
+    melange::simbridge::AddSimFunction("turnHold", &melange::turnhold::LTurnHold);
     core::SetLogSink(&Sink);
     core::Config cfg;
     cfg.instrPerCall = 200000;
@@ -1372,6 +1573,7 @@ int main() {
     TestWeapons();
     TestLevelSims();
     TestWorms();
+    TestTurnHold();
     printf("sim_selftest: %d passed, %d failed\n", g_pass, g_fail);
     return g_fail ? 1 : 0;
 }

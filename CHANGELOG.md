@@ -12,6 +12,13 @@
   (`WXWormLogicEntity::Update`, `ChangeState` and the worm's input handler, build #1077) and reuses the engine's own
   nailed-worm flags; the anchor set is the Wormsign contributor `melange.wormanchor`. Sim-script calls only, so every
   machine anchors at the same tick.
+- New: `wum.sim.holdTurn(ticks)`, `wum.sim.releaseTurn()` and `wum.sim.turnHold()` for sim mods: a deterministic hold
+  of the next turn start, 1 to 3000 ticks (60 s). The game's `StartTurn` is deferred on every machine from the sim's
+  own tick, the round clock is paused with the engine's `GameLogic.RoundTime.Pause`/`Resume` meanwhile, and the sim
+  events `sim.turnHold`/`sim.turnHoldEnd`, the client events `melange.turnHold`/`melange.turnHoldEnd` and
+  `melange::sim::GetTurnHold()` report it (`SimTurnHold` module; `docs/developer-guide.md`, "The turn-start hold").
+  Online, `SimTurnHoldNet` repeats the turn-end `TimeSync(-1)` right before the deferred turn start runs, so the
+  spectators run to their own deferred turn start instead of pausing behind the old active player's clock.
 
 ## 0.10.0
 

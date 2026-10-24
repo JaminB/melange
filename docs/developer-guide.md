@@ -731,8 +731,41 @@ A content mod's `entry.sim` runs inside the match's own Lua VM, which is Lua 5.0
 | `wum.sim.worm(slot)` | A worm by slot (0 to 15), or `nil, "no worm"` when the slot has no container. See [Worms and the anchor](#worms-and-the-anchor) |
 | `wum.sim.worms()` | The slots that have a worm container, as a list, then their count |
 | `wum.sim.land()` | The land bounds `minX, minY, minZ, maxX, maxY, maxZ` (`Land.MinBounds` and `Land.MaxBounds`), or `nil, reason` |
+| `wum.sim.holdTurn(ticks)`, `releaseTurn()`, `turnHold()` | Delays the next turn start by `ticks` sim ticks (1 to 3000, that is 60 s) on every machine alike; see [The turn-start hold](#the-turn-start-hold) |
 
 Every call from the game into a sim script has an instruction budget (`[SimBridge] InstrPerCall`). A callback that fails or runs out of budget three times is switched off. `dist\Mods\sim-sampler` and `dist\Mods\bazooka-plus` are examples (shipped disabled). `dist\Mods\desync-probe`, also disabled, shows how to test a mod's determinism with the desync detector ([wormsign.md](wormsign.md)).
+
+### The turn-start hold
+
+The game's match script starts every turn after the first from one Lua function, `StartTurn()`, which it calls at the
+end of the turn-end sequence (`GameLogic.Turn.Ended` -> `TurnEnded()` -> `CheckOneTeamVictory()` -> `StartTurn()`).
+`wum.sim.holdTurn(ticks)` arms a hold for the next turn start: when the script next calls `StartTurn`, Melange swallows
+the call, sends `GameLogic.RoundTime.Pause` (the engine's own switch for the round clock and `ElapsedRoundTime`; the turn
+clock is already stopped between turns) and, `ticks` ticks later, sends `GameLogic.RoundTime.Resume` and runs the
+game's `StartTurn`. Everything is driven by the sim's tick, so every machine of an online match starts the next turn at
+the same tick, and nothing waits on the camera, an active object or any other per-machine state (the hold does not use
+`GameLogic.PauseGame`, which is denied, or the game's own post-explosion camera hold).
+
+- `wum.sim.holdTurn(ticks)` returns `true`, or `nil` and a reason (`"not in a match"`, `"halted"`, `"the match script
+  has no StartTurn"`). `ticks` must be a whole number from 1 to 3000 (60 s), the hard cap; anything else raises an
+  error. Called while a hold is active, it sets the remaining ticks, and the total from the deferral stays within the
+  cap. Call it from a `GameLogic.Turn.Ended` handler to hold the turn start that follows that same turn end, or any
+  time before it.
+- `wum.sim.releaseTurn()` cancels an armed hold, or ends an active one at the end of the current tick; returns `true`
+  when there was one.
+- `wum.sim.turnHold()` returns two numbers: the ticks left in the active hold (0 when none) and the ticks armed for the
+  next turn start (0 when none). Pass them to `wum.sim.hash` if the mod's logic depends on them.
+- Events: `sim.turnHold` (`fn(name, ticks)`) when the turn start is deferred, `sim.turnHoldEnd` (`fn(name, held)`)
+  just before the deferred `StartTurn` runs. A second turn end during a hold (a worm dying while held) is swallowed
+  too: one turn starts at the release. When the round ends during the hold, the deferred `StartTurn` is dropped.
+- The client gets `melange.turnHold` `{ticks, tick, roundMsLeft}` and `melange.turnHoldEnd` `{ticks, tick,
+  roundMsLeft}` (`ticks` = ticks held) through `wum.events`, and C++ modules `melange::sim::GetTurnHold()`.
+- Online, the machine whose player's turn just ended sends the engine's `TimeSync(-1)` ("others run till end of
+  turn") once more right before its deferred `StartTurn` runs (`SimTurnHoldNet`). The vanilla game sends it at
+  `GameLogic.Turn.Ended`, which `Turn.Started` follows at once; across a hold the periodic time-sync of that machine
+  would otherwise leave the spectators paused 2 s short of their own deferred turn start while it waits for the new
+  player's lead. Verified on LocalNet with camera keys pressed on the spectator during the hold: both machines hold
+  and release at the same ticks, Wormsign's hashes agree, no time-sync abort.
 
 With Wormsign on, every sim mod's state is part of the per-tick hash, so a mod that computes differently on two machines is caught at the tick it happens, with the mod named. Wormsign hashes the mod's globals and `wum.sim.storage` (three tables deep, in any key order; functions and userdata count by type only), and whatever the mod passes to `wum.sim.hash` in that tick. Locals and upvalues are not visible to it: a mod that keeps its state there can pass it to `wum.sim.hash`.
 

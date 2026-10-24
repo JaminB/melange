@@ -77,6 +77,10 @@ Names:
   - `melange.match.start` `{online}`, `melange.match.end`.
   - `melange.mods.changed`: the mod list changed.
   - `melange.reload` `{id}`: a mod was hot-reloaded.
+  - `melange.turnHold` `{ticks, tick, roundMsLeft}` and `melange.turnHoldEnd` `{ticks, tick, roundMsLeft}`: a sim mod
+    held the next turn start with `wum.sim.holdTurn` (`ticks` is the hold's length, or at the end the ticks held;
+    `tick` the sim tick; `roundMsLeft` the round clock, which does not run during the hold). See the developer guide's
+    [sim scripts](developer-guide.md#the-turn-start-hold).
   - Events that C++ modules post with `melange::lua::PostEvent`.
 - **Mod events:** `mod.<id>.<name>` from `wum.events.emit`.
 
