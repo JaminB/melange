@@ -15,6 +15,7 @@
 #include "core/log.h"
 #include "core/mem.h"
 #include "render/gl_guard.h"
+#include "render/mirage/camoverride.h"
 #include "render/mirage/engine.h"
 #include "render/mirage/gputimers.h"
 
@@ -373,13 +374,16 @@ Pass CurrentPass() { return g_enabled ? static_cast<Pass>(mirage::engine::Pass()
 
 bool Ready() { return g_enabled && mirage::engine::Rm() && wglGetCurrentContext(); }
 
-bool GetCamera(Camera* out) {
+namespace {
+bool ReadEngineCamera(Camera* out) {
     if (!out) return false;
     *out = Camera{};
     uintptr_t cam = g_enabled ? mirage::engine::Cam() : 0;
-    if (!cam || !mem::SafeRead(cam + 0x14, out->view, 64) || !mem::SafeRead(cam + 0x54, out->invView, 64) ||
-        !mem::SafeRead(cam + 0x94, out->proj, 64))
-        return false;
+    return cam && mem::SafeRead(cam + 0x14, out->view, 64) && mem::SafeRead(cam + 0x54, out->invView, 64) &&
+           mem::SafeRead(cam + 0x94, out->proj, 64);
+}
+
+void Derive(Camera* out) {
     Mul(out->proj, out->view, out->viewProj);
     for (int k = 0; k < 3; ++k) {
         out->pos[k] = out->invView[12 + k];
@@ -393,6 +397,20 @@ bool GetCamera(Camera* out) {
         out->farZ = b / (a + 1.f);
     }
     out->valid = true;
+}
+}  // namespace
+
+bool GetCamera(Camera* out) {
+    if (!ReadEngineCamera(out)) return false;
+    mirage::camoverride::Adjust(out->view, out->invView, out->proj);
+    Derive(out);
+    return true;
+}
+
+bool GetGameCamera(Camera* out) {
+    if (!ReadEngineCamera(out)) return false;
+    mirage::camoverride::GameView(out->view, out->invView, out->proj);
+    Derive(out);
     return true;
 }
 

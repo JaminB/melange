@@ -610,6 +610,11 @@ target_include_directories(music_selftest PRIVATE src src/sdk)
 target_compile_definitions(music_selftest PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX _CRT_SECURE_NO_WARNINGS)
 target_compile_options(music_selftest PRIVATE /W4 /utf-8 /permissive-)
 
+# The render-only camera override without the game: look-at matrices, fov projection, validation and lifetime.
+add_executable(camoverride_selftest EXCLUDE_FROM_ALL tests/camoverride_selftest.cpp)
+target_include_directories(camoverride_selftest PRIVATE src src/sdk)
+target_compile_options(camoverride_selftest PRIVATE /W4 /utf-8 /permissive-)
+
 add_executable(draw_queue_selftest EXCLUDE_FROM_ALL tests/draw_queue_selftest.cpp)
 target_include_directories(draw_queue_selftest PRIVATE src src/sdk)
 target_compile_options(draw_queue_selftest PRIVATE /W4 /utf-8 /permissive-)

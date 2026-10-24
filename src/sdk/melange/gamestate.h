@@ -31,6 +31,8 @@ struct Match {
     uint32_t turnsStarted;            // counted from GameLogic.Turn.Started
     bool suddenDeath;                 // latched from GameLogic.ActivateSuddenDeath
     char theme[32];
+    bool haveLand;                    // landMin/landMax were read
+    Vec3 landMin, landMax;            // Land.MinBounds / Land.MaxBounds: the landscape's bounding box
 };
 struct Snapshot {
     uint64_t frame; uint32_t matchSerial;

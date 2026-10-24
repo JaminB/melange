@@ -1,7 +1,10 @@
 // wum.draw, wum.render, wum.postfx, wum.graphics and wum.shaders.
 #include <algorithm>
+#include <cmath>
 #include <cstring>
 #include <memory>
+#include <string>
+#include <vector>
 
 #include "lua/sandbox_core.h"
 #include "melange/draw.h"
@@ -9,9 +12,11 @@
 #include "melange/postfx.h"
 #include "melange/render.h"
 #include "melange/shaders.h"
+#include "render/mirage/camoverride_logic.h"
 
 namespace melange::sandbox {
 namespace {
+namespace camlogic = melange::mirage::camoverride::logic;
 void* IdPtr(uint32_t id) { return reinterpret_cast<void*>(static_cast<uintptr_t>(id)); }
 
 float Field(lua_State* L, int t, const char* name, int index, float def = 0) {
@@ -323,10 +328,9 @@ int Off(lua_State* L) {
 }
 
 // ---------------------------------------------------------------- wum.render
-int Camera(lua_State* L) {
-    render::Camera c{};
-    if (!render::GetCamera(&c) || !c.valid) return 0;
-    lua_createtable(L, 0, 5);
+// wum.render.camera() and wum.render.gameCamera(): {pos, fwd, up, near, far, fov, overridden}.
+int PushCamera(lua_State* L, const render::Camera& c) {
+    lua_createtable(L, 0, 7);
     PushVec(L, c.pos);
     lua_setfield(L, -2, "pos");
     PushVec(L, c.fwd);
@@ -337,7 +341,97 @@ int Camera(lua_State* L) {
     lua_setfield(L, -2, "near");
     lua_pushnumber(L, c.farZ);
     lua_setfield(L, -2, "far");
+    lua_pushnumber(L, camlogic::FovOf(c.proj));
+    lua_setfield(L, -2, "fov");
+    lua_pushboolean(L, render::CameraOverridden());
+    lua_setfield(L, -2, "overridden");
     return 1;
+}
+
+int Camera(lua_State* L) {
+    render::Camera c{};
+    if (!render::GetCamera(&c) || !c.valid) return 0;
+    return PushCamera(L, c);
+}
+
+int GameCamera(lua_State* L) {
+    render::Camera c{};
+    if (!render::GetGameCamera(&c) || !c.valid) return 0;
+    return PushCamera(L, c);
+}
+
+// A {x, y, z} (or {1, 2, 3}) field of the table at `t`; false when absent.
+bool VecField(lua_State* L, int t, const char* name, float out[3]) {
+    const int type = lua_getfield(L, t, name);
+    if (type == LUA_TNIL) {
+        lua_pop(L, 1);
+        return false;
+    }
+    if (type != LUA_TTABLE) luaL_error(L, "wum.render.cameraOverride: %s must be a {x, y, z} table", name);
+    CheckVec(L, -1, out);
+    lua_pop(L, 1);
+    return true;
+}
+
+// wum.render.cameraOverride({pos=, target=[, up=][, fov=][, frames=]}) -> true | false, "busy"|"unavailable";
+// wum.render.cameraOverride(nil) -> true if this mod's override was cleared.
+int CameraOverride(lua_State* L) {
+    ModRec* m = Current();
+    Gen* g = CurrentGen();
+    if (!m || !g) return luaL_error(L, "wum.render.cameraOverride needs a mod context");
+    if (lua_isnoneornil(L, 1)) {
+        lua_pushboolean(L, render::ClearCameraOverride(m));
+        return 1;
+    }
+    luaL_checktype(L, 1, LUA_TTABLE);
+    lua_pushnil(L);
+    while (lua_next(L, 1)) {
+        lua_pop(L, 1);
+        const char* k = lua_type(L, -1) == LUA_TSTRING ? lua_tostring(L, -1) : "";
+        if (strcmp(k, "pos") && strcmp(k, "target") && strcmp(k, "up") && strcmp(k, "fov") && strcmp(k, "frames"))
+            return luaL_argerror(L, 1, "fields are pos, target, up, fov and frames");
+    }
+    render::CameraOverride o{};
+    if (!VecField(L, 1, "pos", o.pos)) return luaL_argerror(L, 1, "pos = {x, y, z} expected");
+    if (!VecField(L, 1, "target", o.target)) return luaL_argerror(L, 1, "target = {x, y, z} expected");
+    if (!VecField(L, 1, "up", o.up)) o.up[1] = 1.f;
+    int frames = 0;
+    if (lua_getfield(L, 1, "fov") != LUA_TNIL) {
+        if (!lua_isnumber(L, -1)) return luaL_argerror(L, 1, "fov must be a number of degrees");
+        o.fovDeg = static_cast<float>(lua_tonumber(L, -1));
+    }
+    lua_pop(L, 1);
+    if (lua_getfield(L, 1, "frames") != LUA_TNIL) {
+        int isInt = 0;
+        const lua_Integer n = lua_tointegerx(L, -1, &isInt);
+        if (!isInt || n < 1 || n > camlogic::kMaxFrames) return luaL_argerror(L, 1, "frames must be an integer from 1 to 600");
+        frames = static_cast<int>(n);
+    }
+    lua_pop(L, 1);
+    camlogic::Spec spec{};
+    memcpy(spec.pos, o.pos, sizeof spec.pos);
+    memcpy(spec.target, o.target, sizeof spec.target);
+    memcpy(spec.up, o.up, sizeof spec.up);
+    spec.fovDeg = o.fovDeg;
+    if (const char* why = camlogic::Validate(spec)) return luaL_argerror(L, 1, why);
+    switch (render::SetCameraOverride(m, o, frames)) {
+        case render::OverrideResult::Ok:
+            if (!g->cameraCleanup) {
+                g->cameraCleanup = true;
+                g->cleanups.push_back([m] { render::ClearCameraOverride(m); });
+            }
+            lua_pushboolean(L, 1);
+            return 1;
+        case render::OverrideResult::Busy:
+            lua_pushboolean(L, 0);
+            lua_pushliteral(L, "busy");
+            return 2;
+        case render::OverrideResult::Invalid: return luaL_argerror(L, 1, "invalid camera");
+        default:
+            lua_pushboolean(L, 0);
+            lua_pushliteral(L, "unavailable");
+            return 2;
+    }
 }
 
 int WorldToScreen(lua_State* L) {
@@ -371,6 +465,329 @@ int Timing(lua_State* L) {
     lua_setfield(L, -2, "fps");
     lua_pushinteger(L, static_cast<lua_Integer>(t.frames));
     lua_setfield(L, -2, "frames");
+    return 1;
+}
+
+// ---------------------------------------------------------------- wum.draw meshes
+// Vertices: a flat array of numbers, 8 per vertex (x, y, z, nx, ny, nz, u, v) or, with format "pntc", 12 (then r, g,
+// b, a in 0..1). Indices: a flat array of 1-based vertex numbers, three per triangle.
+constexpr uint32_t kMaxMeshVerts = 16384;        // per mesh
+constexpr uint32_t kMaxMeshIndices = 49152;      // per mesh (16384 triangles)
+constexpr size_t kMaxMeshesPerGen = 64;          // wum.draw.newMesh handles alive at once
+constexpr size_t kMaxMeshVertsPerGen = 262144;   // vertices held by those handles
+constexpr uint32_t kMaxMeshCallsPerFrame = 256;  // wum.draw.mesh calls per mod and frame
+constexpr uint32_t kMaxMeshFrameVerts = 131072;  // vertices drawn per mod and frame
+constexpr float kDefaultLight[3] = {0.f, 0.936f, -0.351f};  // the landscape shader's world light (RE note U19)
+constexpr float kDefaultAmbient = 0.6f;
+}  // namespace
+
+struct MeshData {
+    std::vector<float> v;  // 12 floats per vertex: position, normal, uv, rgba
+    std::vector<uint16_t> idx;
+    uint32_t count = 0;
+};
+
+namespace {
+void ParseMeshFormat(lua_State* L, int idx, int* stride) {
+    *stride = 8;
+    if (lua_isnoneornil(L, idx)) return;
+    const char* f = luaL_checkstring(L, idx);
+    if (strcmp(f, "pnt") == 0) *stride = 8;
+    else if (strcmp(f, "pntc") == 0) *stride = 12;
+    else luaL_argerror(L, idx, "format must be \"pnt\" or \"pntc\"");
+}
+
+float RawNumber(lua_State* L, int t, lua_Integer i, int argIdx) {
+    lua_rawgeti(L, t, i);
+    int ok = 0;
+    const lua_Number n = lua_tonumberx(L, -1, &ok);
+    lua_pop(L, 1);
+    if (!ok || !std::isfinite(n)) luaL_argerror(L, argIdx, "finite numbers expected");
+    return static_cast<float>(n);
+}
+
+void ParseMesh(lua_State* L, int vIdx, int iIdx, int stride, MeshData* out) {
+    luaL_checktype(L, vIdx, LUA_TTABLE);
+    luaL_checktype(L, iIdx, LUA_TTABLE);
+    const lua_Integer nv = static_cast<lua_Integer>(lua_rawlen(L, vIdx));
+    if (nv == 0 || nv % stride)
+        luaL_argerror(L, vIdx, stride == 8 ? "8 numbers per vertex expected" : "12 numbers per vertex expected");
+    const lua_Integer count = nv / stride;
+    if (count > static_cast<lua_Integer>(kMaxMeshVerts)) luaL_argerror(L, vIdx, "too many vertices (at most 16384)");
+    const lua_Integer ni = static_cast<lua_Integer>(lua_rawlen(L, iIdx));
+    if (ni == 0 || ni % 3) luaL_argerror(L, iIdx, "3 indices per triangle expected");
+    if (ni > static_cast<lua_Integer>(kMaxMeshIndices)) luaL_argerror(L, iIdx, "too many indices (at most 49152)");
+    out->count = static_cast<uint32_t>(count);
+    out->v.assign(static_cast<size_t>(count) * 12, 1.f);
+    for (lua_Integer k = 0; k < count; ++k) {
+        float* d = &out->v[static_cast<size_t>(k) * 12];
+        for (int j = 0; j < stride; ++j) d[j] = RawNumber(L, vIdx, k * stride + j + 1, vIdx);
+        float* n = d + 3;
+        const float len = std::sqrt(n[0] * n[0] + n[1] * n[1] + n[2] * n[2]);
+        if (len > 1e-12f) {
+            n[0] /= len;
+            n[1] /= len;
+            n[2] /= len;
+        } else {
+            n[0] = 0, n[1] = 1, n[2] = 0;
+        }
+        if (stride == 12)
+            for (int j = 8; j < 12; ++j) d[j] = std::clamp(d[j], 0.f, 1.f);
+    }
+    out->idx.resize(static_cast<size_t>(ni));
+    for (lua_Integer k = 0; k < ni; ++k) {
+        lua_rawgeti(L, iIdx, k + 1);
+        int isInt = 0;
+        const lua_Integer x = lua_tointegerx(L, -1, &isInt);
+        lua_pop(L, 1);
+        if (!isInt || x < 1 || x > count) luaL_argerror(L, iIdx, "indices must be integers from 1 to the vertex count");
+        out->idx[static_cast<size_t>(k)] = static_cast<uint16_t>(x - 1);
+    }
+}
+
+// model: nil (identity), 16 numbers (glLoadMatrixf layout), or {pos=, yaw=, scale=}: translate * rotate about +Y *
+// scale. `normal` gets the matrix that takes normals to world space (the inverse transpose of the 3x3 part, row-major).
+void CheckModel(lua_State* L, int idx, float model[16], float normal[9]) {
+    static const float kId[16] = {1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1};
+    memcpy(model, kId, sizeof kId);
+    if (lua_isnoneornil(L, idx)) {
+        const float n[9] = {1, 0, 0, 0, 1, 0, 0, 0, 1};
+        memcpy(normal, n, sizeof n);
+        return;
+    }
+    luaL_checktype(L, idx, LUA_TTABLE);
+    idx = lua_absindex(L, idx);
+    if (lua_rawlen(L, idx) == 16) {
+        for (int i = 0; i < 16; ++i) model[i] = RawNumber(L, idx, i + 1, idx);
+    } else {
+        float pos[3] = {0, 0, 0}, s[3] = {1, 1, 1}, yaw = 0;
+        if (lua_getfield(L, idx, "pos") == LUA_TTABLE) CheckVec(L, -1, pos);
+        else if (!lua_isnil(L, -1)) luaL_argerror(L, idx, "model.pos must be {x, y, z}");
+        lua_pop(L, 1);
+        if (lua_getfield(L, idx, "yaw") != LUA_TNIL) {
+            if (!lua_isnumber(L, -1)) luaL_argerror(L, idx, "model.yaw must be a number (radians)");
+            yaw = static_cast<float>(lua_tonumber(L, -1));
+        }
+        lua_pop(L, 1);
+        const int st = lua_getfield(L, idx, "scale");
+        if (st == LUA_TNUMBER) s[0] = s[1] = s[2] = static_cast<float>(lua_tonumber(L, -1));
+        else if (st == LUA_TTABLE) CheckVec(L, -1, s);
+        else if (st != LUA_TNIL) luaL_argerror(L, idx, "model.scale must be a number or {x, y, z}");
+        lua_pop(L, 1);
+        const float c = std::cos(yaw), sn = std::sin(yaw);
+        // Rotation about +Y by yaw takes +Z to (sin yaw, 0, cos yaw), a worm's facing at that yaw.
+        const float m[16] = {c * s[0], 0, -sn * s[0], 0, 0, s[1], 0, 0, sn * s[2], 0, c * s[2], 0, pos[0], pos[1], pos[2], 1};
+        memcpy(model, m, sizeof m);
+    }
+    for (int i = 0; i < 16; ++i)
+        if (!std::isfinite(model[i])) luaL_argerror(L, idx, "model must be finite");
+    // M = [a b c; d e f; g h k] (row, col) from column-major model[col*4+row].
+    const float a = model[0], b = model[4], c = model[8], d = model[1], e = model[5], f = model[9], g = model[2], h = model[6],
+                k = model[10];
+    const float det = a * (e * k - f * h) - b * (d * k - f * g) + c * (d * h - e * g);
+    if (std::fabs(det) < 1e-20f) luaL_argerror(L, idx, "model must not be singular");
+    const float id = 1.f / det;
+    // (M^-1)^T is the cofactor matrix over det, row-major here: n' = R n.
+    const float r[9] = {(e * k - f * h) * id, -(d * k - f * g) * id, (d * h - e * g) * id,
+                        -(b * k - c * h) * id, (a * k - c * g) * id,  -(a * h - b * g) * id,
+                        (b * f - c * e) * id,  -(a * f - c * d) * id, (a * e - b * d) * id};
+    memcpy(normal, r, sizeof r);
+}
+
+struct MeshOpts {
+    bool lit = true, additive = false, depthWrite = true, cull = true, depthTest = true;
+    float light[3] = {kDefaultLight[0], kDefaultLight[1], kDefaultLight[2]};
+    float ambient = kDefaultAmbient;
+    draw::Rgba color = 0xffffffff;
+    int stride = 8;
+};
+
+bool BoolField(lua_State* L, int t, const char* k, bool def) {
+    const int type = lua_getfield(L, t, k);
+    bool v = def;
+    if (type == LUA_TBOOLEAN) v = lua_toboolean(L, -1) != 0;
+    else if (type != LUA_TNIL) luaL_error(L, "wum.draw.mesh: opts.%s must be a boolean", k);
+    lua_pop(L, 1);
+    return v;
+}
+
+// opts of the vertex-array form also take color and format.
+void CheckMeshOpts(lua_State* L, int idx, bool arrayForm, MeshOpts* o) {
+    if (lua_isnoneornil(L, idx)) return;
+    luaL_checktype(L, idx, LUA_TTABLE);
+    idx = lua_absindex(L, idx);
+    lua_pushnil(L);
+    while (lua_next(L, idx)) {
+        lua_pop(L, 1);
+        const char* k = lua_type(L, -1) == LUA_TSTRING ? lua_tostring(L, -1) : "";
+        static const char* kKeys[] = {"lit", "blend", "depthWrite", "cull", "xray", "light", "ambient", "color", "format"};
+        bool known = false;
+        for (const char* key : kKeys) known = known || strcmp(k, key) == 0;
+        if (!known || (!arrayForm && (strcmp(k, "color") == 0 || strcmp(k, "format") == 0)))
+            luaL_argerror(L, idx, arrayForm ? "options are lit, blend, depthWrite, cull, xray, light, ambient, color and format"
+                                            : "options are lit, blend, depthWrite, cull, xray, light and ambient");
+    }
+    o->lit = BoolField(L, idx, "lit", o->lit);
+    o->depthWrite = BoolField(L, idx, "depthWrite", o->depthWrite);
+    o->cull = BoolField(L, idx, "cull", o->cull);
+    o->depthTest = !BoolField(L, idx, "xray", false);
+    if (lua_getfield(L, idx, "blend") != LUA_TNIL) {
+        const char* b = lua_type(L, -1) == LUA_TSTRING ? lua_tostring(L, -1) : nullptr;
+        if (!b || (strcmp(b, "alpha") && strcmp(b, "additive"))) luaL_argerror(L, idx, "opts.blend must be \"alpha\" or \"additive\"");
+        o->additive = strcmp(b, "additive") == 0;
+    }
+    lua_pop(L, 1);
+    const int lt = lua_getfield(L, idx, "light");
+    if (lt == LUA_TTABLE) {
+        CheckVec(L, -1, o->light);
+        const float l = std::sqrt(o->light[0] * o->light[0] + o->light[1] * o->light[1] + o->light[2] * o->light[2]);
+        if (!(l > 1e-6f) || !std::isfinite(l)) luaL_argerror(L, idx, "opts.light must be a non-zero direction");
+        for (float& c : o->light) c /= l;
+    } else if (lt != LUA_TNIL) {
+        luaL_argerror(L, idx, "opts.light must be {x, y, z}");
+    }
+    lua_pop(L, 1);
+    if (lua_getfield(L, idx, "ambient") != LUA_TNIL) {
+        if (lua_type(L, -1) != LUA_TNUMBER) luaL_argerror(L, idx, "opts.ambient must be a number from 0 to 1");
+        o->ambient = std::clamp(static_cast<float>(lua_tonumber(L, -1)), 0.f, 1.f);
+    }
+    lua_pop(L, 1);
+    if (arrayForm) {
+        lua_getfield(L, idx, "color");
+        o->color = CheckColor(L, lua_gettop(L), 0xffffffff);
+        lua_pop(L, 1);
+        lua_getfield(L, idx, "format");
+        ParseMeshFormat(L, lua_gettop(L), &o->stride);
+        lua_pop(L, 1);
+    }
+}
+
+// The mod's texture at `idx` (nil or 0 = untextured); a texture array is refused.
+unsigned CheckMeshTexture(lua_State* L, Gen* g, int idx) {
+    if (lua_isnoneornil(L, idx)) return 0;
+    const lua_Integer t = luaL_checkinteger(L, idx);
+    if (t == 0) return 0;
+    if (t < 0 || std::find(g->textures.begin(), g->textures.end(), static_cast<unsigned>(t)) == g->textures.end())
+        luaL_argerror(L, idx, "texture id from this mod's wum.draw.texture (or nil) expected");
+    draw::TextureInfo info{};
+    if (draw::GetTextureInfo(static_cast<unsigned>(t), &info) && info.layers > 0)
+        luaL_argerror(L, idx, "a texture array (layers=) cannot texture a mesh");
+    return static_cast<unsigned>(t);
+}
+
+std::vector<draw::Vertex> g_meshScratch;
+
+// Lights (on the CPU, per vertex, in world space), tints and submits one mesh. False when over the frame budget.
+bool SubmitMesh(ModRec* m, const MeshData& d, unsigned tex, const float model[16], const float nrm[9], const MeshOpts& o) {
+    const uint64_t frame = draw::FrameSerial();
+    if (m->meshFrame != frame) {
+        m->meshFrame = frame;
+        m->meshCount = 0;
+        m->meshFrameVerts = 0;
+    }
+    if (m->meshCount >= kMaxMeshCallsPerFrame || m->meshFrameVerts + d.count > kMaxMeshFrameVerts) return false;
+    ++m->meshCount;
+    m->meshFrameVerts += d.count;
+    const float tint[4] = {(o.color & 255) / 255.f, ((o.color >> 8) & 255) / 255.f, ((o.color >> 16) & 255) / 255.f,
+                           ((o.color >> 24) & 255) / 255.f};
+    g_meshScratch.resize(d.count);
+    for (uint32_t i = 0; i < d.count; ++i) {
+        const float* s = &d.v[static_cast<size_t>(i) * 12];
+        draw::Vertex& v = g_meshScratch[i];
+        v.pos[0] = s[0], v.pos[1] = s[1], v.pos[2] = s[2];
+        v.uv[0] = s[6], v.uv[1] = s[7];
+        float shade = 1.f;
+        if (o.lit) {
+            const float n[3] = {nrm[0] * s[3] + nrm[1] * s[4] + nrm[2] * s[5], nrm[3] * s[3] + nrm[4] * s[4] + nrm[5] * s[5],
+                                nrm[6] * s[3] + nrm[7] * s[4] + nrm[8] * s[5]};
+            const float len = std::sqrt(n[0] * n[0] + n[1] * n[1] + n[2] * n[2]);
+            const float dot = len > 1e-12f ? (n[0] * o.light[0] + n[1] * o.light[1] + n[2] * o.light[2]) / len : 0.f;
+            shade = o.ambient + (1.f - o.ambient) * (dot > 0.f ? dot : 0.f);
+        }
+        v.color = Pack(Unit(s[8] * tint[0] * shade), Unit(s[9] * tint[1] * shade), Unit(s[10] * tint[2] * shade),
+                       Unit(s[11] * tint[3]));
+    }
+    uint32_t flags = 0;
+    if (o.depthTest) flags |= draw::kDepthTest;
+    if (o.depthWrite) flags |= draw::kDepthWrite;
+    if (o.additive) flags |= draw::kAdditive;
+    if (!o.cull) flags |= draw::kNoCull;
+    draw::Mesh(g_meshScratch.data(), d.count, d.idx.data(), static_cast<uint32_t>(d.idx.size()), model, tex, flags, 1);
+    return true;
+}
+
+// wum.draw.mesh(verts, idx, tex, model[, opts]) or wum.draw.mesh(handle, tex, model[, color[, opts]]) -> true, or
+// false when over the per-frame budget. Only inside a "world" or "worldLate" callback.
+int MeshDraw(lua_State* L) {
+    ModRec* m = Current();
+    Gen* g = CurrentGen();
+    if (!m || !g) return luaL_error(L, "wum.draw.mesh needs a mod context");
+    float model[16], nrm[9];
+    MeshOpts o;
+    std::shared_ptr<MeshData> keep;
+    MeshData local;
+    unsigned tex = 0;
+    if (lua_type(L, 1) == LUA_TNUMBER) {
+        const lua_Integer h = luaL_checkinteger(L, 1);
+        auto it = h > 0 ? g->meshes.find(static_cast<uint32_t>(h)) : g->meshes.end();
+        if (it == g->meshes.end()) return luaL_argerror(L, 1, "mesh handle from this mod's wum.draw.newMesh expected");
+        keep = it->second;
+        tex = CheckMeshTexture(L, g, 2);
+        CheckModel(L, 3, model, nrm);
+        o.color = CheckColor(L, 4, 0xffffffff);
+        CheckMeshOpts(L, 5, false, &o);
+    } else {
+        tex = CheckMeshTexture(L, g, 3);
+        CheckModel(L, 4, model, nrm);
+        CheckMeshOpts(L, 5, true, &o);
+        ParseMesh(L, 1, 2, o.stride, &local);
+    }
+    const render::Stage stage = draw::CurrentStage();
+    if (stage != render::Stage::World && stage != render::Stage::WorldLate)
+        return luaL_error(L, "wum.draw.mesh: only inside a wum.draw.on(\"world\" or \"worldLate\") callback");
+    lua_pushboolean(L, SubmitMesh(m, keep ? *keep : local, tex, model, nrm, o));
+    return 1;
+}
+
+// wum.draw.newMesh(verts, idx[, format]) -> handle, or nil, "too many meshes"
+int NewMesh(lua_State* L) {
+    Gen* g = CurrentGen();
+    if (!Current() || !g) return luaL_error(L, "wum.draw.newMesh needs a mod context");
+    int stride = 8;
+    ParseMeshFormat(L, 3, &stride);
+    auto d = std::make_shared<MeshData>();
+    ParseMesh(L, 1, 2, stride, d.get());
+    if (g->meshes.size() >= kMaxMeshesPerGen || g->meshVerts + d->count > kMaxMeshVertsPerGen) {
+        lua_pushnil(L);
+        lua_pushliteral(L, "too many meshes");
+        return 2;
+    }
+    if (g->nextMesh == 1)
+        g->cleanups.push_back([g] {
+            g->meshes.clear();
+            g->meshVerts = 0;
+        });
+    const uint32_t id = g->nextMesh++;
+    g->meshVerts += d->count;
+    g->meshes.emplace(id, std::move(d));
+    lua_pushinteger(L, id);
+    return 1;
+}
+
+// wum.draw.freeMesh(handle) -> true if it was one of this mod's live meshes
+int FreeMesh(lua_State* L) {
+    Gen* g = CurrentGen();
+    const lua_Integer h = luaL_checkinteger(L, 1);
+    bool ok = false;
+    if (g && h > 0) {
+        auto it = g->meshes.find(static_cast<uint32_t>(h));
+        if (it != g->meshes.end()) {
+            g->meshVerts -= it->second->count;
+            g->meshes.erase(it);
+            ok = true;
+        }
+    }
+    lua_pushboolean(L, ok);
     return 1;
 }
 
@@ -574,9 +991,11 @@ void Shared(lua_State* L, int wum) {
     static const luaL_Reg kDraw[] = {{"line", Line},       {"box", Box},         {"sphere", Sphere},     {"axes", Axes},
                                      {"quad", Quad},       {"text", Text},       {"hudLine", HudLine},   {"hudRect", HudRect},
                                      {"hudText", HudText}, {"hudImage", HudImage}, {"texture", Texture}, {"sprite", Sprite},
+                                     {"mesh", MeshDraw},   {"newMesh", NewMesh}, {"freeMesh", FreeMesh},
                                      {"on", On},           {"off", Off},         {nullptr, nullptr}};
     static const luaL_Reg kRender[] = {{"camera", Camera}, {"worldToScreen", WorldToScreen}, {"windowSize", WindowSize},
-                                       {"timing", Timing}, {nullptr, nullptr}};
+                                       {"timing", Timing}, {"cameraOverride", CameraOverride},
+                                       {"gameCamera", GameCamera}, {nullptr, nullptr}};
     static const luaL_Reg kPostfx[] = {{"list", PfxList}, {"enable", PfxEnable}, {"setParam", PfxSetParam},
                                        {"setTransient", PfxSetTransient}, {"getParam", PfxGetParam}, {nullptr, nullptr}};
     lua_newtable(L);
