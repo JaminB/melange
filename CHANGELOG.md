@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.11.0
+
+- New: `wum.sim.worm(slot)` for sim scripts: `:pos()`, `:vel()`, `:alive()`, `:active()`, `:team()`, `:health()`,
+  `:state()`, `:yaw()`, `:weapon()` and `:name()` read the worm's data container (the simulation's own state, the
+  bytes Wormsign hashes), and `:anchor(on)` pins the worm where it stands for the rest of the match: it still takes
+  turns, turns, aims and fires, but cannot walk, jump, backflip, rope, jetpack, parachute or teleport, and explosions
+  damage it without moving it. It drowns like any other worm when the water rises over it, and the pin is released as
+  soon as it dies or starts drowning. `:anchored()` and `:pin()` query it. Also `wum.sim.worms()` (the slots with a
+  container) and `wum.sim.land()` (the land bounds). The new `WormAnchor` module holds the three engine hooks
+  (`WXWormLogicEntity::Update`, `ChangeState` and the worm's input handler, build #1077) and reuses the engine's own
+  nailed-worm flags; the anchor set is the Wormsign contributor `melange.wormanchor`. Sim-script calls only, so every
+  machine anchors at the same tick.
+
 ## 0.10.0
 
 - New: texture tags. A client-only mod can declare `"graphics": {"textureTags": "<file>.json"}` in `spice.json`: a
