@@ -126,6 +126,7 @@ Read-only game state.
 | `wum.game.teams()` | The teams of the current match, an array of `{slot, name, active, ai, local}`; empty outside a match, `nil, "unavailable"` as above. |
 | `wum.game.activeWorm()` | The slot of the worm whose turn it is, or `nil`. |
 | `wum.game.theme()` | The level theme of the current match as the game names it (for example `"SPACE"`), or `nil` outside a match. |
+| `wum.game.match()` | The current match's clocks and levels, or `nil` outside a match (and on an unrecognised build or with `[GameState] Enabled=0`). See [below](#wumgamematch). |
 | `wum.game.landRay(x0, y0, z0, x1, y1, z1)` | Casts the segment from `(x0, y0, z0)` to `(x1, y1, z1)` against the land with the game's own collision code. On a hit it returns `t, nx, ny, nz`: `t` from 0 to 1 along the segment (the point is `p0 + t * (p1 - p0)`) and the unit outward surface normal there. A miss returns `nil`. See below for the details and the other results. |
 
 **`wum.game.landRay` in detail.** It runs the straight sweep the game's camera uses for its own ray casts, against the
@@ -148,6 +149,28 @@ and restored around the call, so a ray never changes the match, online or offlin
 
 Check for the function before using it, since older Melange versions do not have it: `if wum.game.landRay then ... end`.
 Melange logs the number of rays and their average and longest time at the end of each match.
+
+### `wum.game.match`
+
+`wum.game.match()` returns a table read from the game's own data, from the same snapshot as `wum.game.worms()` (read
+once per frame), or `nil` outside a match. Detect it with `if wum.game.match then ... end` (Melange 0.11 and later).
+
+| Field | Meaning |
+|---|---|
+| `roundMs`, `roundMsLeft` | The game's `RoundTime` and `RoundTimeRemaining`, integer milliseconds. |
+| `turnMs`, `turnMsLeft` | `TurnTime` and `TurnTimeRemaining`, integer milliseconds. |
+| `waterLevel` | `Water.Level`, the water surface height in world units. |
+| `suddenDeath` | `true` once `GameLogic.ActivateSuddenDeath` was seen in this match. |
+| `turnsStarted` | Turns started in this match (`GameLogic.Turn.Started`). |
+| `landMin`, `landMax` | `{x, y, z}`: the landscape's bounding box (`Land.MinBounds`, `Land.MaxBounds`). Absent until the level has reported a valid box. |
+
+The land box is the game's own. `landMin.y` is the lowest point of the land, which is usually under the water (-76 and
+-61 on the two quick-match maps tried, with the water at 0), and `landMin.x`/`z` can sit at the arena's edge rather
+than at the land (-1500 on both). `roundMs` is the round's full length from the scheme, so the time played is
+`roundMs - roundMsLeft`.
+
+These are this machine's values, for display. A client script must not feed them into anything that has to match
+between players; sim scripts read deterministic state through `wum.sim`.
 
 ## `wum.ui`
 
@@ -193,6 +216,10 @@ queued for the next frame; inside `wum.draw.on`, they are drawn at that stage.
 | `wum.draw.hudImage(x0, y0, x1, y1, texture[, tint[, frames]])` | HUD image from `wum.draw.texture`. |
 | `wum.draw.texture(rel[, opts])` | Loads a PNG from the mod folder; returns a texture id, or `nil, err`. Freed when the mod unloads or reloads. A mod can hold 256 at a time. Textures get a full mip chain and trilinear filtering. With `opts`, the texture is for a shader (see [Shader textures](#shader-textures)): `{wrap = "repeat"\|"clamp", filter = "linear"\|"nearest", layers = n}`. |
 | `wum.draw.sprite(tex, x, y, z, halfW, halfL, ax, ay, az[, color[, mode]])` | Textured world sprite; only inside a `"world"` or `"worldLate"` callback. Returns `true`, or `false` when dropped by the per-frame cap. See [Sprites](#sprites). |
+| `wum.draw.mesh(verts, idx, tex, model[, opts])` | Triangle mesh from vertex and index arrays; only inside a `"world"` or `"worldLate"` callback. Returns `true`, or `false` when over the per-frame cap. See [Meshes](#meshes). |
+| `wum.draw.mesh(handle, tex, model[, color[, opts]])` | The same for a mesh kept with `wum.draw.newMesh`. |
+| `wum.draw.newMesh(verts, idx[, format])` | Keeps a mesh in Melange so it is not sent every frame; returns an integer handle, or `nil, "too many meshes"`. Freed when the mod unloads or reloads. |
+| `wum.draw.freeMesh(handle)` | Frees a kept mesh; `true` if the handle was one of this mod's live meshes. |
 | `wum.draw.on(stage, fn)` | Calls `fn(stage)` every frame at `"world"`, `"worldLate"` or `"hud"`; returns a handle. |
 | `wum.draw.off(handle)` | Removes a draw callback. |
 
@@ -253,14 +280,133 @@ Measured cost, x86 release build on a Ryzen 7 7800X3D with a Radeon RX 7800 XT:
 - Worst case: 4096 sprites with three textures shuffled at random in depth make about 3100 draw calls. That costs
   about 0.28 ms of CPU per 1000 sprites, plus a few milliseconds of GPU time per frame. Prefer few textures.
 
+### Meshes
+
+`wum.draw.mesh` draws an indexed triangle mesh in the world, for shapes sprites cannot make: a mound of sand, a cast,
+a shell. Detect it with `if wum.draw.mesh then ... end` (Melange 0.11 and later).
+
+- `verts`: a flat array of numbers, 8 per vertex: `x, y, z, nx, ny, nz, u, v` (position, normal, texture
+  coordinate). With the format `"pntc"` (the array form's `opts.format`, or `newMesh`'s third argument) it is 12 per
+  vertex, adding `r, g, b, a` in 0..1, multiplied with everything else. Normals need not be unit length (a zero normal
+  reads as +Y). At most 16384 vertices.
+- `idx`: a flat array of 1-based vertex numbers, three per triangle (at most 49152). Front faces wind
+  counter-clockwise as seen from outside.
+- `tex`: a texture id from this mod's `wum.draw.texture`, or `nil` (or `0`) for none. A texture loaded with
+  `{wrap = "repeat"}` tiles when `u, v` go past 0..1; a texture array cannot texture a mesh. The texture is multiplied
+  with the vertex colour.
+- `model`: where the mesh goes. `nil` (the vertices are world coordinates), 16 numbers (a column-major matrix with the
+  translation in 13..15, as `glLoadMatrixf` takes it), or `{pos = {x, y, z}, yaw = radians, scale = s or {x, y, z}}`:
+  scaled, then turned about +Y by `yaw` (+Z turns to `(sin yaw, 0, cos yaw)`, a worm's facing at that `yaw`), then
+  moved to `pos`.
+- `color` (handle form) or `opts.color` (array form): a tint in any colour form; its alpha fades the mesh.
+- `opts`:
+
+| Option | Default | Meaning |
+|---|---|---|
+| `lit` | `true` | Shades each vertex `ambient + (1 - ambient) * max(0, N . light)` with its world-space normal. `false`: colours as given. |
+| `light` | `{0, 0.936, -0.351}` | The world direction toward the light (normalised); the default is the game's landscape light. |
+| `ambient` | `0.6` | 0..1. |
+| `blend` | `"alpha"` | `"alpha"` (`SRC_ALPHA, ONE_MINUS_SRC_ALPHA`) or `"additive"` (`SRC_ALPHA, ONE`). |
+| `depthWrite` | `true` | Writes depth, so later world draws (particles, sprites) behind the mesh are hidden. Turn it off for see-through meshes. |
+| `cull` | `true` | Skips back faces. `false` draws both sides. |
+| `xray` | `false` | `true` draws without the depth test, over everything. |
+| `color`, `format` | | The array form only, see above. |
+
+The mesh is depth-tested against the scene, so land and worms in front of it hide it. Lighting is computed on the CPU
+for each draw and follows `model`'s rotation: a mesh turned with `yaw` keeps its light from the same world direction.
+Meshes draw at the callback's stage before that stage's sprites, in call order (they are not sorted), so draw
+see-through meshes after opaque ones.
+
+A mod can keep 64 meshes with 262144 vertices in all. Each frame it can make 256 `wum.draw.mesh` calls drawing up to
+131072 vertices across its callbacks; past that, calls do nothing and return `false`. Bad arguments (an index out of
+range, a vertex array that is not 8 or 12 numbers per vertex, a non-finite number, another mod's texture or handle,
+an unknown option) raise an error.
+
+```lua
+-- A dome of sand at each worm's feet, built once and drawn every frame.
+local sand = wum.draw.texture("fx/sand.png", {wrap = "repeat"})
+local function dome(rings, segs, radius, height)
+  local v, idx = {}, {}
+  for r = 0, rings do
+    local t = r / rings
+    local rr, y = radius * math.sin(t * math.pi / 2), height * math.cos(t * math.pi / 2)
+    for s = 0, segs do
+      local a = s / segs * 2 * math.pi
+      local x, z = rr * math.cos(a), rr * math.sin(a)
+      for _, n in ipairs({x, y, z, x / radius, y / height, z / radius, s / segs * 4, t * 2}) do v[#v + 1] = n end
+    end
+  end
+  for r = 0, rings - 1 do
+    for s = 0, segs - 1 do
+      local a, b = r * (segs + 1) + s + 1, (r + 1) * (segs + 1) + s + 1
+      for _, i in ipairs({a, a + 1, b, a + 1, b + 1, b}) do idx[#idx + 1] = i end
+    end
+  end
+  return wum.draw.newMesh(v, idx)
+end
+local mound = dome(8, 24, 14, 6)
+wum.draw.on("world", function()
+  for _, w in ipairs(wum.game.worms() or {}) do
+    if w.alive then wum.draw.mesh(mound, sand, {pos = w.pos}, "#e8c890ff") end
+  end
+end)
+```
+
 ## `wum.render`
 
 | Name | Description |
 |---|---|
-| `wum.render.camera()` | `{pos, fwd, up, near, far}` of the main camera, or `nil`. |
+| `wum.render.camera()` | `{pos, fwd, up, near, far, fov, overridden}` of the main camera as it is drawn (with a camera override, the override's), or `nil`. `fov` is the vertical field of view in degrees; `overridden` is `true` while a camera override is set. |
+| `wum.render.gameCamera()` | The same for the game's own camera, as it would be drawn without an override (to blend back into it), or `nil`. |
+| `wum.render.cameraOverride(spec)` | Draws the frame from a camera of the mod's choosing; `nil` clears it. See [Camera override](#camera-override). |
 | `wum.render.worldToScreen(pos)` | `x, y, depth` in window pixels, or `nil` behind the camera. |
 | `wum.render.windowSize()` | `width, height`. |
 | `wum.render.timing()` | `{busyMsP50, busyMsP95, frameMsP50, fps, frames}`. |
+
+### Camera override
+
+`wum.render.cameraOverride({pos = {x, y, z}, target = {x, y, z}[, up = {x, y, z}][, fov = degrees][, frames = n]})`
+replaces the camera the frame is drawn with, for cut-scenes, tours and replays. Detect it with
+`if wum.render.cameraOverride then ... end` (Melange 0.11 and later).
+
+- `pos` is the eye and `target` the point it looks at (not the same point). `up` is the up direction (default
+  `{0, 1, 0}`; when it is parallel to the view direction the game's own fallback applies). `fov` is the vertical field
+  of view, 5 to 150 degrees (default: the game's); the aspect ratio and depth range stay the game's.
+- `frames`, 1 to 600 (default 30): the override ends by itself when it has not been set again for that many frames, so
+  a mod that stops (an error, a disabled callback) gives the camera back. Set it every frame while it should last. A
+  value set in a frame is drawn from the next frame on.
+- It also ends at the end of the match, when the mod unloads or reloads, and with `wum.render.cameraOverride(nil)`,
+  which returns `true` if the mod's own override was cleared.
+- Returns `true`; `false, "busy"` while another mod's override is set (one mod at a time); `false, "unavailable"`
+  outside a match or on an unrecognised game build. Bad fields raise an error.
+
+The override only changes the picture. The game keeps its own camera: aiming, the turn camera, the camera keys and
+the logical camera that online games and Wormsign compare between machines (reasons 6 to 10 in `docs/wormsign.md`)
+are untouched, so an override on one machine changes nothing on another. Melange puts the override into the engine's
+render camera only while the frame is drawn, and the whole frame agrees with it: the land, sea, worms, particles and
+labels, the engine's culling, `wum.draw` primitives, sprites and meshes, post-FX (`mg_proj`, `mg_invProj` and depth
+reconstruction from them) and GLSL replacements. `wum.render.camera()`, `wum.render.worldToScreen()` and positional
+`wum.audio` follow it everywhere, so HUD labels placed with them stay on their world points.
+`wum.render.gameCamera()` reads the game's camera, which keeps moving underneath.
+
+Two things still follow the game's camera, because the game decides them before drawing: the land the game fades
+out when it stands between its camera and the active worm, and the picture-in-picture view of a computer player's aim.
+
+```lua
+-- Orbit the active worm for five seconds, then hand the camera back.
+local t0 = os.clock()
+wum.events.on("melange.frame", function()
+  local t, slot = os.clock() - t0, wum.game.activeWorm()
+  if t > 5 or not slot then return end
+  for _, w in ipairs(wum.game.worms() or {}) do
+    if w.slot == slot then
+      local a, p = t * 0.8, w.pos
+      wum.render.cameraOverride{pos = {p.x + 140 * math.sin(a), p.y + 60, p.z + 140 * math.cos(a)},
+                                target = {p.x, p.y + 10, p.z}, fov = 45}
+    end
+  end
+end)
+```
 
 ## `wum.postfx`
 

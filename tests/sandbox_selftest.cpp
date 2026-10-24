@@ -6,6 +6,7 @@
 #include <imgui.h>
 
 #include <algorithm>
+#include <cmath>
 #include <cstdio>
 #include <cstring>
 #include <filesystem>
@@ -276,6 +277,26 @@ bool GetTextureInfo(unsigned tex, TextureInfo* out) {
     return true;
 }
 void FreeTexture(unsigned) { --fake::g_textures; }
+struct MeshCall {
+    std::vector<Vertex> v;
+    std::vector<uint16_t> idx;
+    float model[16];
+    bool hasModel;
+    unsigned texture;
+    uint32_t flags;
+};
+std::vector<MeshCall> g_meshes;
+void Mesh(const Vertex* v, uint32_t nv, const uint16_t* idx, uint32_t ni, const float* model, unsigned texture, uint32_t flags,
+          int) {
+    MeshCall c{};
+    c.v.assign(v, v + nv);
+    c.idx.assign(idx, idx + ni);
+    c.hasModel = model != nullptr;
+    if (model) memcpy(c.model, model, sizeof c.model);
+    c.texture = texture;
+    c.flags = flags;
+    g_meshes.push_back(std::move(c));
+}
 int AddDrawCallback(render::Stage, DrawFn, void*, int) {
     ++fake::g_drawCbs;
     return fake::g_nextHandle++;
@@ -283,7 +304,37 @@ int AddDrawCallback(render::Stage, DrawFn, void*, int) {
 void RemoveDrawCallback(int) { --fake::g_drawCbs; }
 }  // namespace draw
 namespace render {
-bool GetCamera(Camera*) { return false; }
+bool g_haveCam = false;
+Camera g_cam{}, g_gameCam{};
+bool GetCamera(Camera* c) {
+    if (!g_haveCam) return false;
+    *c = g_cam;
+    return true;
+}
+bool GetGameCamera(Camera* c) {
+    if (!g_haveCam) return false;
+    *c = g_gameCam;
+    return true;
+}
+const void* g_ovOwner = nullptr;
+CameraOverride g_ov{};
+int g_ovFrames = -1, g_ovSets = 0;
+OverrideResult g_ovResult = OverrideResult::Ok;
+OverrideResult SetCameraOverride(const void* owner, const CameraOverride& o, int frames) {
+    if (g_ovResult != OverrideResult::Ok) return g_ovResult;
+    if (g_ovOwner && g_ovOwner != owner) return OverrideResult::Busy;
+    g_ovOwner = owner;
+    g_ov = o;
+    g_ovFrames = frames;
+    ++g_ovSets;
+    return OverrideResult::Ok;
+}
+bool ClearCameraOverride(const void* owner) {
+    if (!g_ovOwner || (owner && owner != g_ovOwner)) return false;
+    g_ovOwner = nullptr;
+    return true;
+}
+bool CameraOverridden() { return g_ovOwner != nullptr; }
 bool WorldToScreen(const float*, float*, float*, float*) { return false; }
 void WindowSize(int* w, int* h) { *w = 1024, *h = 768; }
 Timing GetTiming() { return {}; }
@@ -1199,6 +1250,222 @@ void TestSprites() {
     sandbox::UnloadMod("spr2");
 }
 
+void TestMatch() {
+    gamestate::Snapshot& s = gamestate::g_snapshot;
+    gamestate::g_readable = false;
+    ExpectEq(Eval(nullptr, "return wum.game.match()"), "nil", "match() is nil without the readers");
+    s = {};
+    gamestate::g_readable = true;
+    ExpectEq(Eval(nullptr, "return wum.game.match()"), "nil", "match() is nil outside a match");
+    s.match.inMatch = true;
+    s.match.roundMs = 300000;
+    s.match.roundMsLeft = 123456;
+    s.match.turnMs = 45000;
+    s.match.turnMsLeft = 9000;
+    s.match.waterLevel = -12.5f;
+    s.match.suddenDeath = true;
+    s.match.turnsStarted = 7;
+    ExpectEq(Eval(nullptr, "local m = wum.game.match() return m.roundMs, m.roundMsLeft, m.turnMs, m.turnMsLeft, m.waterLevel, "
+                           "m.suddenDeath, m.turnsStarted, m.landMin"),
+             "300000\t123456\t45000\t9000\t-12.5\ttrue\t7\tnil", "match() fields; no land bounds before the level reports them");
+    s.match.haveLand = true;
+    s.match.landMin = {-900.f, -40.f, -250.f};
+    s.match.landMax = {1100.f, 610.f, 250.f};
+    ExpectEq(Eval(nullptr, "local m = wum.game.match() return m.landMin.x, m.landMin.y, m.landMax.y, m.landMax.z"),
+             "-900\t-40\t610\t250", "match() land bounds");
+    ExpectEq(Eval(nullptr, "return math.type(wum.game.match().roundMs)"), "integer", "times are integers");
+    s = {};
+    gamestate::g_readable = false;
+}
+
+// A one-triangle mesh in the "pnt" layout, facing +Y.
+const char* kTri = "verts = {0,0,0, 0,1,0, 0,0,  1,0,0, 0,1,0, 1,0,  0,0,1, 0,2,0, 0,1} idx = {1, 2, 3}\n";
+
+int Channel(draw::Rgba c, int k) { return static_cast<int>((c >> (8 * k)) & 255); }
+
+void TestMeshes() {
+    SetMod("msh", std::string("sand = wum.draw.texture('sand.png') arr = wum.draw.texture('mat.png', {layers = 4})\n") + kTri);
+    SetMod("msh2", std::string("mine = wum.draw.texture('x.png')\n") + kTri);
+    Expect(sandbox::LoadMod("msh") && sandbox::LoadMod("msh2"), "mesh mods load");
+    ExpectEq(Eval("msh", "return type(wum.draw.mesh), type(wum.draw.newMesh), type(wum.draw.freeMesh)"),
+             "function\tfunction\tfunction", "mesh functions exist");
+    draw::g_meshes.clear();
+    draw::g_stage = render::Stage::Count;
+    Expect(Eval("msh", "return wum.draw.mesh(verts, idx, sand)").find("only inside a wum.draw.on") != std::string::npos,
+           "outside a draw callback raises");
+    draw::g_stage = render::Stage::Hud;
+    Expect(Eval("msh", "return wum.draw.mesh(verts, idx, sand)").rfind("ERR:", 0) == 0, "a hud callback raises");
+    draw::g_stage = render::Stage::World;
+    ++draw::g_frame;
+
+    ExpectEq(Eval("msh", "return wum.draw.mesh(verts, idx, sand)"), "true", "vertex-array form");
+    Expect(draw::g_meshes.size() == 1, "one mesh submitted");
+    if (!draw::g_meshes.empty()) {
+        const draw::MeshCall& c = draw::g_meshes.back();
+        Expect(c.v.size() == 3 && c.idx.size() == 3 && c.idx[0] == 0 && c.idx[1] == 1 && c.idx[2] == 2, "1-based indices -> 0-based");
+        Expect(c.v[1].pos[0] == 1 && c.v[2].pos[2] == 1 && c.v[1].uv[0] == 1 && c.v[2].uv[1] == 1, "positions and uv");
+        ExpectEq(Eval("msh", "return sand"), std::to_string(c.texture), "texture passed through");
+        Expect(c.flags == (draw::kDepthTest | draw::kDepthWrite), "defaults: depth test and write, culled, alpha blend");
+        Expect(c.hasModel && c.model[0] == 1 && c.model[5] == 1 && c.model[10] == 1 && c.model[12] == 0, "nil model = identity");
+        // Normal +Y under the default light (0, 0.936, -0.351): 0.6 + 0.4 * 0.9363 = 0.975 -> 248.6.
+        const int r = Channel(c.v[0].color, 0);
+        Expect(r >= 248 && r <= 250 && Channel(c.v[0].color, 3) == 255, "lit by the default light: " + std::to_string(r));
+        Expect(c.v[2].color == c.v[0].color, "normals are normalised");
+    }
+    Eval("msh", "wum.draw.mesh(verts, idx, nil, nil, {lit = false})");
+    Expect(draw::g_meshes.back().v[0].color == 0xffffffffu && draw::g_meshes.back().texture == 0, "unlit and untextured");
+    Eval("msh", "wum.draw.mesh(verts, idx, 0, nil, {lit = false, color = '#ff800080'})");
+    Expect(draw::g_meshes.back().v[0].color == 0x800080ffu, "opts.color tints the array form");
+    Eval("msh", "wum.draw.mesh({0,0,0, 0,1,0, 0,0, 0.5,0.5,0.5,0.5,  1,0,0, 0,1,0, 1,0, 1,1,1,1,  0,0,1, 0,1,0, 0,1, 1,1,1,1},"
+                " idx, nil, nil, {lit = false, format = 'pntc'})");
+    Expect(Channel(draw::g_meshes.back().v[0].color, 0) == 128 && Channel(draw::g_meshes.back().v[0].color, 3) == 128 &&
+               draw::g_meshes.back().v[1].color == 0xffffffffu,
+           "pntc: per-vertex colour");
+    Eval("msh", "wum.draw.mesh(verts, idx, nil, nil, {light = {0, -1, 0}, ambient = 0.2})");
+    Expect(Channel(draw::g_meshes.back().v[0].color, 0) == 51, "a light from below leaves the ambient (0.2 -> 51)");
+    Eval("msh", "wum.draw.mesh(verts, idx, nil, {pos = {1, 2, 3}, yaw = math.pi / 2, scale = 2}, {light = {1, 0, 0}, ambient = 0})");
+    {
+        const draw::MeshCall& c = draw::g_meshes.back();
+        Expect(std::fabs(c.model[0]) < 1e-6f && std::fabs(c.model[2] + 2) < 1e-6f && std::fabs(c.model[8] - 2) < 1e-6f &&
+                   c.model[5] == 2 && c.model[12] == 1 && c.model[13] == 2 && c.model[14] == 3,
+               "model {pos, yaw, scale}: translate * rotate about +Y * scale");
+        Expect(Channel(c.v[0].color, 0) == 0, "an up normal stays up under yaw (lit from +X: dark)");
+    }
+    Eval("msh", "wum.draw.mesh({0,0,0, 0,0,1, 0,0,  1,0,0, 0,0,1, 1,0,  0,1,0, 0,0,1, 0,1}, idx, nil,"
+                " {yaw = math.pi / 2}, {light = {1, 0, 0}, ambient = 0})");
+    Expect(Channel(draw::g_meshes.back().v[0].color, 0) == 255, "a +Z normal turned by yaw pi/2 faces +X");
+    Eval("msh", "wum.draw.mesh(verts, idx, nil, {scale = {1, 4, 1}}, {light = {0, 1, 0}, ambient = 0})");
+    Expect(Channel(draw::g_meshes.back().v[0].color, 0) == 255, "non-uniform scale keeps an up normal up");
+    Eval("msh", "wum.draw.mesh(verts, idx, nil, {1,0,0,0, 0,1,0,0, 0,0,1,0, 5,6,7,1})");
+    Expect(draw::g_meshes.back().model[12] == 5 && draw::g_meshes.back().model[14] == 7, "a 16-number model matrix");
+    Eval("msh", "wum.draw.mesh(verts, idx, nil, nil, {blend = 'additive', cull = false, depthWrite = false, xray = true})");
+    Expect(draw::g_meshes.back().flags == (draw::kAdditive | draw::kNoCull), "additive, two-sided, no depth test or write");
+
+    // Persistent meshes.
+    ExpectEq(Eval("msh", "h = wum.draw.newMesh(verts, idx) return math.type(h)"), "integer", "newMesh returns an integer handle");
+    ExpectEq(Eval("msh", "return wum.draw.mesh(h, sand, {pos = {0, 10, 0}}, '#ff000080')"), "true", "handle form");
+    {
+        const draw::MeshCall& c = draw::g_meshes.back();
+        Expect(c.v.size() == 3 && c.model[13] == 10 && Channel(c.v[0].color, 1) == 0 && Channel(c.v[0].color, 3) == 128,
+               "handle form: model and tint");
+    }
+    Eval("msh", "wum.draw.mesh(h, nil, nil, nil, {lit = false, blend = 'additive'})");
+    Expect(draw::g_meshes.back().v[0].color == 0xffffffffu && (draw::g_meshes.back().flags & draw::kAdditive),
+           "handle form options");
+    const size_t before = draw::g_meshes.size();
+    const char* bad[] = {
+        "wum.draw.mesh(verts, {1, 2, 4}, sand)",                     // index past the end
+        "wum.draw.mesh(verts, {0, 1, 2}, sand)",                     // zero index
+        "wum.draw.mesh(verts, {1, 2}, sand)",                        // not a triangle list
+        "wum.draw.mesh(verts, {1, 2, 2.5}, sand)",                   // not an integer
+        "wum.draw.mesh({0, 0, 0, 0}, idx, sand)",                    // not 8 numbers per vertex
+        "wum.draw.mesh({0,0,0, 0,1,0, 0,0/0, 1,0,0, 0,1,0, 1,0, 0,0,1, 0,1,0, 0,1}, idx)",  // NaN
+        "wum.draw.mesh(verts, idx, 'sand')",                         // texture type
+        "wum.draw.mesh(verts, idx, 9999)",                           // never loaded
+        "wum.draw.mesh(verts, idx, arr)",                            // texture array
+        "wum.draw.mesh(verts, idx, nil, 5)",                         // model type
+        "wum.draw.mesh(verts, idx, nil, {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0})",  // singular
+        "wum.draw.mesh(verts, idx, nil, nil, {glow = true})",        // unknown option
+        "wum.draw.mesh(verts, idx, nil, nil, {blend = 'add'})",      // blend
+        "wum.draw.mesh(verts, idx, nil, nil, {lit = 1})",            // boolean option
+        "wum.draw.mesh(verts, idx, nil, nil, {format = 'pn'})",      // format
+        "wum.draw.mesh(verts, idx, nil, nil, {light = {0, 0, 0}})",  // zero light
+        "wum.draw.mesh(h, nil, nil, nil, {color = '#ffffff'})",      // color is the 4th argument in the handle form
+        "wum.draw.mesh(h + 100, sand)",                              // unknown handle
+        "wum.draw.newMesh(verts, idx, 'xyz')",                       // format
+    };
+    for (const char* code : bad) Expect(Eval("msh", code).rfind("ERR:", 0) == 0, std::string("raises: ") + code);
+    const std::string foreign = Eval("msh2", "return wum.draw.mesh(verts, idx, " + Eval("msh", "return sand") + ")");
+    Expect(foreign.find("texture id from this mod's wum.draw.texture") != std::string::npos, "another mod's texture is refused");
+    Expect(Eval("msh2", "return wum.draw.mesh(" + Eval("msh", "return h") + ", nil)").rfind("ERR:", 0) == 0,
+           "another mod's mesh handle is refused");
+    Expect(draw::g_meshes.size() == before, "nothing submitted by a failed call");
+    ExpectEq(Eval("msh", "return wum.draw.freeMesh(h), wum.draw.freeMesh(h)"), "true\tfalse", "freeMesh");
+    Expect(Eval("msh", "return wum.draw.mesh(h, nil)").rfind("ERR:", 0) == 0, "a freed handle is refused");
+
+    // Caps: 64 live meshes per mod; 256 mesh calls per mod and frame.
+    ExpectEq(Eval("msh", "local n = 0 for i = 1, 70 do if wum.draw.newMesh(verts, idx) then n = n + 1 end end "
+                         "return n, select(2, wum.draw.newMesh(verts, idx))"),
+             "64\ttoo many meshes", "64 meshes at most");
+    ++draw::g_frame;
+    ExpectEq(Eval("msh", "local n = 0 for i = 1, 300 do if wum.draw.mesh(2, nil) then n = n + 1 end end return n"), "256",
+             "256 mesh calls per frame");
+    ExpectEq(Eval("msh2", "return wum.draw.mesh(verts, idx)"), "true", "the frame cap is per mod");
+    ++draw::g_frame;
+    ExpectEq(Eval("msh", "return wum.draw.mesh(2, nil)"), "true", "the next frame has a fresh budget");
+    Expect(sandbox::ReloadMod("msh"), "mesh mod reloads");
+    Expect(Eval("msh", "return wum.draw.mesh(2, nil)").rfind("ERR:", 0) == 0, "a reload frees the previous version's meshes");
+
+    draw::g_stage = render::Stage::Count;
+    draw::g_meshes.clear();
+    sandbox::UnloadMod("msh");
+    sandbox::UnloadMod("msh2");
+}
+
+void TestCameraOverride() {
+    SetMod("cam", "");
+    SetMod("cam2", "");
+    Expect(sandbox::LoadMod("cam") && sandbox::LoadMod("cam2"), "camera mods load");
+    render::g_ovOwner = nullptr;
+    render::g_ovResult = render::OverrideResult::Ok;
+    ExpectEq(Eval("cam", "return wum.render.cameraOverride({pos = {0, 100, 300}, target = {0, 0, 0}, fov = 40, frames = 5})"), "true",
+             "an override is set");
+    Expect(render::g_ovOwner && render::g_ov.pos[2] == 300 && render::g_ov.target[1] == 0 && render::g_ov.up[1] == 1 &&
+               render::g_ov.fovDeg == 40 && render::g_ovFrames == 5,
+           "spec passed through; up defaults to +Y");
+    ExpectEq(Eval("cam", "return wum.render.cameraOverride({pos = {1, 2, 3}, target = {x = 4, y = 5, z = 6}, up = {0, 0, 1}})"),
+             "true", "the owner refreshes it");
+    Expect(render::g_ov.target[2] == 6 && render::g_ov.up[2] == 1 && render::g_ov.fovDeg == 0 && render::g_ovFrames == 0,
+           "x/y/z fields; fov and frames default to the game's / 30");
+    ExpectEq(Eval("cam2", "return wum.render.cameraOverride({pos = {0, 1, 0}, target = {0, 0, 0}})"), "false\tbusy",
+             "another mod's override is busy");
+    ExpectEq(Eval("cam2", "return wum.render.cameraOverride(nil)"), "false", "another mod cannot clear it");
+    const int sets = render::g_ovSets;
+    const char* bad[] = {
+        "wum.render.cameraOverride({target = {0, 0, 0}})",                              // no pos
+        "wum.render.cameraOverride({pos = {0, 0, 0}})",                                 // no target
+        "wum.render.cameraOverride({pos = {1, 1, 1}, target = {1, 1, 1}})",             // same point
+        "wum.render.cameraOverride({pos = {0, 0/0, 0}, target = {0, 0, 0}})",           // NaN
+        "wum.render.cameraOverride({pos = {0, 2e6, 0}, target = {0, 0, 0}})",           // out of range
+        "wum.render.cameraOverride({pos = {0, 1, 0}, target = {0, 0, 0}, fov = 200})",  // fov
+        "wum.render.cameraOverride({pos = {0, 1, 0}, target = {0, 0, 0}, fov = 'x'})",  // fov type
+        "wum.render.cameraOverride({pos = {0, 1, 0}, target = {0, 0, 0}, frames = 0})",  // frames
+        "wum.render.cameraOverride({pos = {0, 1, 0}, target = {0, 0, 0}, frames = 601})",
+        "wum.render.cameraOverride({pos = {0, 1, 0}, target = {0, 0, 0}, roll = 1})",  // unknown field
+        "wum.render.cameraOverride({pos = 5, target = {0, 0, 0}})",                     // pos type
+        "wum.render.cameraOverride(5)",
+    };
+    for (const char* code : bad) Expect(Eval("cam", code).rfind("ERR:", 0) == 0, std::string("raises: ") + code);
+    Expect(render::g_ovSets == sets, "nothing set by a failed call");
+
+    render::g_haveCam = true;
+    render::g_cam = {};
+    render::g_cam.proj[5] = 1.f / std::tan(30.f * 3.14159265f / 180.f);  // 60 degrees vertical
+    render::g_cam.proj[11] = -1.f;
+    render::g_cam.pos[1] = 100;
+    render::g_cam.valid = true;
+    render::g_gameCam = render::g_cam;
+    render::g_gameCam.pos[1] = 7;
+    ExpectEq(Eval("cam", "local c = wum.render.camera() return math.floor(c.fov + 0.5), c.overridden, c.pos.y"), "60\ttrue\t100",
+             "camera() reports fov and the override flag");
+    ExpectEq(Eval("cam", "return wum.render.gameCamera().pos.y"), "7", "gameCamera() reports the game's own camera");
+    ExpectEq(Eval("cam", "return wum.render.cameraOverride(nil), wum.render.cameraOverride()"), "true\tfalse",
+             "nil clears the mod's own override once");
+    ExpectEq(Eval("cam", "return wum.render.camera().overridden"), "false", "camera() after the clear");
+    render::g_haveCam = false;
+    ExpectEq(Eval("cam", "return wum.render.camera() == nil, wum.render.gameCamera() == nil"), "true\ttrue",
+             "no camera outside rendering");
+
+    ExpectEq(Eval("cam2", "return wum.render.cameraOverride({pos = {0, 1, 0}, target = {0, 0, 0}})"), "true", "another mod takes it");
+    sandbox::UnloadMod("cam2");
+    Expect(render::g_ovOwner == nullptr, "unloading the mod clears its override");
+    render::g_ovResult = render::OverrideResult::Unavailable;
+    ExpectEq(Eval("cam", "return wum.render.cameraOverride({pos = {0, 1, 0}, target = {0, 0, 0}})"), "false\tunavailable",
+             "unavailable (no match, unknown build)");
+    render::g_ovResult = render::OverrideResult::Ok;
+    sandbox::UnloadMod("cam");
+}
+
 void TestShaderTextures() {
     SetMod("shtex", "plain = wum.draw.texture('plain.png')\n"
                     "arr = wum.draw.texture('mat.png', {wrap = 'repeat', filter = 'linear', layers = 4})\n"
@@ -1453,7 +1720,8 @@ int main() {
         {"config/storage", TestConfigStorage},              {"console", TestConsole},
         {"unsafe", TestUnsafe},   {"panels", TestPanels},   {"menus", TestMenus},
         {"samples", TestSamples},
-        {"game", TestGame},       {"graphics", TestGraphics}, {"sprites", TestSprites},
+        {"game", TestGame},       {"match", TestMatch},     {"graphics", TestGraphics}, {"sprites", TestSprites},
+        {"meshes", TestMeshes},   {"camera override", TestCameraOverride},
         {"shader textures", TestShaderTextures},
         {"input", TestInput}, {"audio", TestAudio}, {"docs", TestDocs}};
     for (const auto& [name, fn] : tests) {

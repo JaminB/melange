@@ -242,6 +242,8 @@ World MakeWorld() {
     return w;
 }
 
+const float kLandLo[3] = {-900.f, -40.f, -250.f}, kLandHi[3] = {1100.f, 610.f, 250.f};
+
 void TestSnapshot() {
     World w = MakeWorld();
     g_ints = {{"CurrentTeamIndex", 1}, {"ActiveWormIndex", 7}};
@@ -254,6 +256,8 @@ void TestSnapshot() {
         {"Wind.Direction", Descriptor(kFloat, "Wind.Direction", 3.14f)},
         {"Water.Level", Descriptor(kInt, "Water.Level", 7)},  // wrong type: not read
         {"Land.Theme", Descriptor(kString, "Land.Theme", Str("ARABIAN"))},
+        {"Land.MinBounds", Descriptor(kVector, "Land.MinBounds", kLandLo, sizeof kLandLo)},
+        {"Land.MaxBounds", Descriptor(kVector, "Land.MaxBounds", kLandHi, sizeof kLandHi)},
     };
     g_gets = g_releases = 0;
     gs::Snapshot s{};
@@ -267,7 +271,9 @@ void TestSnapshot() {
     Expect(std::fabs(s.match.windSpeed - 4.5e-5f) < 1e-9f && std::fabs(s.match.windDir - 3.14f) < 1e-6f, "wind");
     Expect(s.match.waterLevel == 0.f, "a value of the wrong type is not read");
     ExpectEq(s.match.theme, "ARABIAN", "theme");
-    Expect(g_gets == g_releases && g_gets == 8, "every descriptor taken is released");
+    Expect(s.match.haveLand && s.match.landMin.y == -40.f && s.match.landMax.x == 1100.f && s.match.landMax.z == 250.f,
+           "land bounds from Land.MinBounds / Land.MaxBounds");
+    Expect(g_gets == g_releases && g_gets == 10, "every descriptor taken is released");
 
     Expect(s.teamCount == 2, "two teams (the empty inactive slot skipped)");
     ExpectEq(s.teams[1].name, "Fremen \xC3\xA9", "team name converted to UTF-8");
@@ -296,6 +302,16 @@ void TestSnapshot() {
 
     d::FillSnapshot(w.layout, d::Engine{}, d::MatchInfo{true, false, true, 5, 1}, &s);
     Expect(s.wormCount == 3 && s.match.turnMs == 0 && s.match.suddenDeath, "no engine calls: containers still read");
+    Expect(!s.match.haveLand, "no engine calls: no land bounds");
+
+    {  // bounds that are not a box (min above max) are not reported
+        const float lo[3] = {0.f, 500.f, 0.f}, hi[3] = {10.f, 100.f, 10.f};
+        g_resources["Land.MinBounds"] = Descriptor(kVector, "Land.MinBounds", lo, sizeof lo);
+        g_resources["Land.MaxBounds"] = Descriptor(kVector, "Land.MaxBounds", hi, sizeof hi);
+        d::FillSnapshot(w.layout, kEngine, d::MatchInfo{true, false, false, 3, 6}, &s);
+        Expect(!s.match.haveLand, "inverted land bounds are refused");
+    }
+    d::FillSnapshot(w.layout, d::Engine{}, d::MatchInfo{true, false, true, 5, 1}, &s);  // back to the case above
 
     const std::string js = gs::wire::SnapshotJson(s, true);
     json::Value v;
