@@ -62,7 +62,7 @@ struct Match {
     std::map<uint32_t, Timer> timers;  // handle order = creation order
     uint32_t nextHandle = 1;
     std::map<uint16_t, std::string> forwarded;  // engine id -> name
-    int engineRef[6] = {-1, -1, -1, -1, -1, -1};  // SendMessage, SendIntMessage, SendFloatMessage, SendStringMessage, GetData, SetData
+    int engineRef[7] = {-1, -1, -1, -1, -1, -1, -1};  // SendMessage, SendIntMessage, SendFloatMessage, SendStringMessage, GetData, SetData, QueryContainer
     int consoleRef = -1;
     int refs = 0;
     uint32_t faults = 0, depthDrops = 0;
@@ -74,7 +74,7 @@ struct Match {
 };
 extern Match g;
 extern Config g_cfg;
-enum EngineFn { kSend, kSendInt, kSendFloat, kSendString, kGetData, kSetData };
+enum EngineFn { kSend, kSendInt, kSendFloat, kSendString, kGetData, kSetData, kQueryContainer };
 
 // Execution context of the mod code that is running (a stack: sends can deliver to other mods synchronously).
 struct Frame {

@@ -34,6 +34,10 @@
       "reason": "Sim VM (Lua 5.0) API (Melange 0.11), mentioned in the intro and the client events; the client sandbox scan does not cover src/lua/sim."
     },
     {
+      "name": "wum.sim.scheme",
+      "reason": "Sim VM (Lua 5.0) API (Melange 0.11), mentioned in the intro and the client events; the client sandbox scan does not cover src/lua/sim."
+    },
+    {
       "name": "wum.sim.turnHold",
       "reason": "Sim VM (Lua 5.0) API (Melange 0.11), mentioned in the intro and the client events; the client sandbox scan does not cover src/lua/sim."
     }

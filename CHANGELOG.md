@@ -13,6 +13,8 @@
   nailed-worm flags; the anchor set is the Wormsign contributor `melange.wormanchor`. Sim-script calls only, so every
   machine anchors at the same tick. As the engine's nailed worm, an anchored worm's weapon panel greys out the
   weapons whose `CanBeUsedWhenTailNailed` is false (the movement utilities, melee, sheep, armour and a few more).
+- New: `wum.sim.scheme()` for sim mods: the match's game style (the `Name` of `GM.SchemeData`, read through the match
+  script's `QueryContainer`), so a content mod whose rules belong to one style can leave every other match alone.
 - New: `wum.sim.holdTurn(ticks)`, `wum.sim.releaseTurn()` and `wum.sim.turnHold()` for sim mods: a deterministic hold
   of the next turn start, 1 to 3000 ticks (60 s). The game's `StartTurn` is deferred on every machine from the sim's
   own tick, the round clock is paused with the engine's `GameLogic.RoundTime.Pause`/`Resume` meanwhile, and the sim

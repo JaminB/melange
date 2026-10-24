@@ -224,6 +224,39 @@ int __cdecl LGetData(l5::State* L) {
     return 1;
 }
 
+// The match's game style: the Name of the GM.SchemeData container ("FE.Scheme.Standard", or a mod scheme's key),
+// read through the match script's own QueryContainer, which hands the container back as a userdata whose fields
+// index like a table (the versus script reads its TurnTime and RoundTime that way). The host's style loads on every
+// machine, so a sim script can key its rules on it (a content mod's script runs in every match, whatever the style).
+int __cdecl LScheme(l5::State* L) {
+    const auto& a = l5::A();
+    if (!g.L || l5::RunState() == 0) return NilReason(L, "not in a match");
+    if (l5::RunState() == 2) return NilReason(L, "halted");
+    static bool warned = false;
+    if (!EnsureEngineRef(kQueryContainer)) {
+        if (!warned) LOG_WARN("[sim] wum.sim.scheme: the match VM has no QueryContainer global");
+        warned = true;
+        return NilReason(L, "unavailable");
+    }
+    const int top = a.gettop(L);
+    SuspendBudget();
+    a.rawgeti(L, l5::kRegistry, g.engineRef[kQueryContainer]);
+    a.pushstring(L, "GM.SchemeData");
+    const int rc = a.pcall(L, 1, 1, 0);
+    ResumeBudget();
+    const int type = rc ? l5::kTNone : a.type(L, -1);
+    if (type == l5::kTTable || type == l5::kTUserdata) {
+        a.pushstring(L, "Name");
+        a.gettable(L, -2);
+        if (IsType(L, -1, l5::kTString)) return 1;
+    }
+    if (!warned) LOG_WARN("[sim] wum.sim.scheme: QueryContainer(\"GM.SchemeData\") %s (type %d)",
+                          rc ? "failed" : "has no Name string", type);
+    warned = true;
+    a.settop(L, top);
+    return NilReason(L, "unavailable");
+}
+
 int __cdecl LSetData(l5::State* L) {
     const auto& a = l5::A();
     if (!IsType(L, 1, l5::kTString) || a.gettop(L) < 2) return Fail(L, "wum.sim.setData: expected (data id, value)");
@@ -248,7 +281,7 @@ void SetStr(l5::State* L, int t, const char* k, const char* v) {
 }
 
 const char* kEngineNames[] = {"SendMessage", "SendIntMessage", "SendFloatMessage", "SendStringMessage", "GetData",
-                              "SetData"};
+                              "SetData", "QueryContainer"};
 
 bool EnsureEngineRef(int which) {
     if (g.engineRef[which] >= 0) return true;
@@ -346,6 +379,7 @@ void PushWum(int mod) {
     SetFn(L, sim, "sendString", &LSend, mod, 3);
     SetFn(L, sim, "getData", &LGetData, mod);
     SetFn(L, sim, "setData", &LSetData, mod);
+    SetFn(L, sim, "scheme", &LScheme, mod);
     SetFn(L, sim, "hash", &LHash, mod);
     a.pushstring(L, "storage");
     a.newtable(L);

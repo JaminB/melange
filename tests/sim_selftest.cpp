@@ -101,6 +101,23 @@ int SendImpl(lua_State* S, int kind) {
 int FSend(lua_State* S) { return SendImpl(S, 0); }
 int FSendValue(lua_State* S) { return SendImpl(S, 1); }
 
+// QueryContainer("GM.SchemeData") as the versus script uses it: a table of the scheme's fields.
+int FQueryContainer(lua_State* S) {
+    const std::string name = lua_tostring(S, 1) ? lua_tostring(S, 1) : "";
+    if (name != "GM.SchemeData") {
+        Halt("Unknown container in function 'QueryContainer'");
+        return 0;
+    }
+    lua_newtable(S);
+    lua_pushstring(S, "Name");
+    lua_pushstring(S, "FE.Scheme.Test");
+    lua_settable(S, -3);
+    lua_pushstring(S, "TurnTime");
+    lua_pushnumber(S, 45000);
+    lua_settable(S, -3);
+    return 1;
+}
+
 int FGetData(lua_State* S) {
     const std::string name = lua_tostring(S, 1) ? lua_tostring(S, 1) : "";
     auto it = data.find(name);
@@ -170,6 +187,7 @@ lua_State* NewMatchVM() {
     reg("SendStringMessage", &FSendValue);
     reg("GetData", &FGetData);
     reg("SetData", &FSetData);
+    reg("QueryContainer", &FQueryContainer);
     luaL_loadbuffer(S, kLevelScript, sizeof kLevelScript - 1, "=level");
     lua_pcall(S, 0, 0, 0);
     lua_settop(S, 0);
@@ -381,6 +399,7 @@ s.setWrong = r(wum.sim.setData("Test.Int", "text"))
 s.setOk = r(wum.sim.setData("Test.Int", 7))
 s.getInt2 = r(wum.sim.getData("Test.Int"))
 s.artillery = r(wum.sim.getData("GameLogic.ArtilleryMode"))
+s.scheme = r(wum.sim.scheme())
 s.str = r(wum.sim.sendString("Melange.Test.Ping", "hello"))
 s.echo = 0
 wum.events.on("Melange.Test.Echo", function(name, v)
@@ -449,6 +468,7 @@ RunResult RunMatch(uint32_t seed, bool full) {
         Expect(Storage("sender", "setWrong") == "nil:the value must be a number", "setData type: " + Storage("sender", "setWrong"));
         Expect(Storage("sender", "setOk") == "true:nil" && Storage("sender", "getInt2") == "7:nil", "setData then getData");
         Expect(Storage("sender", "artillery") == "nil:denied", "denied data: " + Storage("sender", "artillery"));
+        Expect(Storage("sender", "scheme") == "FE.Scheme.Test:nil", "wum.sim.scheme reads GM.SchemeData.Name: " + Storage("sender", "scheme"));
         Expect(Storage("sender", "str") == "true:nil", "sendString of a mod message");
         Expect(fake::runState == 1 && fake::halts.empty(), "run state stays 1 after refused sends and data access");
     }
