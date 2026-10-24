@@ -1,4 +1,5 @@
 #pragma once
+#include <cstddef>
 #include <cstdint>
 
 #include "lua/engine50.h"
@@ -37,6 +38,13 @@ void SetNotify(NotifyFn fn, void* user);
 using BeforeStartFn = void (*)(void* user);
 void SetBeforeStartTurn(BeforeStartFn fn, void* user);
 
-// Installs the OnMatch observer that drops the wrapper's ref at match end. Idempotent; the trampolines call it too.
+// Installs the OnMatch observer that drops the wrapper's ref at match end, and the tick hook that releases a hold
+// (removed again at match end). Idempotent; holdTurn calls it, so a match without a hold adds no tick hook.
 void Init();
+void Shutdown();  // removes the observer and the tick hook (module uninstall)
+
+// The hold state of the running match as raw bytes for the "melange.turnhold" Wormsign contributor: armed, holding,
+// remaining, total, since, swallowed and holds as uint32, then paused. All zero outside a match. Returns the count.
+constexpr size_t kHashBytes = 7 * 4 + 1;
+size_t HashBytes(uint8_t* out, size_t cap);
 }  // namespace melange::turnhold

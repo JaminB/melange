@@ -755,6 +755,10 @@ the same tick, and nothing waits on the camera, an active object or any other pe
   when there was one.
 - `wum.sim.turnHold()` returns two numbers: the ticks left in the active hold (0 when none) and the ticks armed for the
   next turn start (0 when none). Pass them to `wum.sim.hash` if the mod's logic depends on them.
+- The hold state (armed, holding, remaining, total, since, swallowed, holds, paused) is the Wormsign contributor
+  `melange.turnhold`, so a hold that diverges between machines is named at the tick it does. The tick hook that
+  releases holds is added by the first `holdTurn` of a match and removed at match end: a match without a hold runs
+  without it.
 - Events: `sim.turnHold` (`fn(name, ticks)`) when the turn start is deferred, `sim.turnHoldEnd` (`fn(name, held)`)
   just before the deferred `StartTurn` runs. A second turn end during a hold (a worm dying while held) is swallowed
   too: one turn starts at the release. When the round ends during the hold, the deferred `StartTurn` is dropped.
@@ -772,8 +776,9 @@ With Wormsign on, every sim mod's state is part of the per-tick hash, so a mod t
 ### Worms and the anchor
 
 `wum.sim.worm(slot)` reads the worm's data container, the simulation's own state (the same bytes Wormsign hashes), so
-every machine sees the same values at the same tick. The object is a plain table with `slot` and these methods (call
-them with `:`):
+every machine sees the same values at the same tick. The object is a small table with `slot` whose methods are
+shared by every worm table of the match (its metatable, locked: `getmetatable(w)` answers `"worm"`), so a call
+allocates one table. Call the methods with `:` (`w:pos()`); `w.pos()` raises:
 
 | Method | Returns |
 |---|---|
@@ -790,8 +795,15 @@ them with `:`):
 | `:pin()` | `x, y, z` of the pin, or `nil` when not anchored |
 
 An anchored worm keeps its turns and can turn (A and D rotate it in place), aim, change weapon and fire, but it
-cannot walk, jump, backflip, rope, jetpack, parachute or teleport, and explosions damage it without moving it. Behind
-the call, Melange reuses the engine's own "nailed" worm (the No More Nails effect: flags `0x30` on the container),
+cannot walk, jump, backflip, rope, jetpack, parachute or teleport, and explosions damage it without moving it.
+Because it is the engine's nailed worm, the weapon panel greys out, for its turns, every weapon whose
+`CanBeUsedWhenTailNailed` is false (`WXWeaponPanelLogicEntity` 0x600b50 reads it from the weapon container), and a
+greyed cell cannot be picked, so the selection stays on the previous weapon. In the stock data that is the movement
+utilities (Ninja Rope, Jet Pack, Parachute, Teleport) and also Armour, Bridge Kit, Red Bull, Baseball Bat, Fire
+Punch, Prod, No More Nails, Old Woman, Sheep, Super Sheep, Starburst and Scouser. The fire swallowing below is the
+backstop for a movement utility that is still selected when the anchor is set.
+
+Behind the call, Melange reuses the engine's own "nailed" worm (the No More Nails effect: flags `0x30` on the container),
 re-asserts it, writes the pin and a zero velocity before and after the worm's own physics step on every machine,
 refuses the flying and sliding transitions for it, and swallows its walk, jump, backflip and jetpack inputs and the
 fire input of the movement utilities (rope, parachute, jetpack, teleport). Everything it reads is simulation state

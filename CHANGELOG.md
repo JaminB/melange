@@ -11,12 +11,14 @@
   container) and `wum.sim.land()` (the land bounds). The new `WormAnchor` module holds the three engine hooks
   (`WXWormLogicEntity::Update`, `ChangeState` and the worm's input handler, build #1077) and reuses the engine's own
   nailed-worm flags; the anchor set is the Wormsign contributor `melange.wormanchor`. Sim-script calls only, so every
-  machine anchors at the same tick.
+  machine anchors at the same tick. As the engine's nailed worm, an anchored worm's weapon panel greys out the
+  weapons whose `CanBeUsedWhenTailNailed` is false (the movement utilities, melee, sheep, armour and a few more).
 - New: `wum.sim.holdTurn(ticks)`, `wum.sim.releaseTurn()` and `wum.sim.turnHold()` for sim mods: a deterministic hold
   of the next turn start, 1 to 3000 ticks (60 s). The game's `StartTurn` is deferred on every machine from the sim's
   own tick, the round clock is paused with the engine's `GameLogic.RoundTime.Pause`/`Resume` meanwhile, and the sim
   events `sim.turnHold`/`sim.turnHoldEnd`, the client events `melange.turnHold`/`melange.turnHoldEnd` and
   `melange::sim::GetTurnHold()` report it (`SimTurnHold` module; `docs/developer-guide.md`, "The turn-start hold").
+  The hold state is the Wormsign contributor `melange.turnhold`; its tick hook exists only in a match that held.
   Online, `SimTurnHoldNet` repeats the turn-end `TimeSync(-1)` right before the deferred turn start runs, so the
   spectators run to their own deferred turn start instead of pausing behind the old active player's clock.
 - New: `wum.render.cameraOverride(spec | nil)` for client mods: draws the frame from a camera of the mod's choosing
@@ -32,6 +34,9 @@
   form over meshes kept with `wum.draw.newMesh`/`wum.draw.freeMesh`: 8 floats per vertex (or 12 with `"pntc"` vertex
   colours), a model matrix or `{pos, yaw, scale}`, optional CPU lighting, alpha or additive blending, culling and
   x-ray, depth-tested against the scene.
+- Fixed: `suddenDeath` (`wum.game.match()`, `gamestate::Match` and the Oasis match state) stayed `false` through
+  sudden death: the versus script never sends `GameLogic.ActivateSuddenDeath`. It now latches on the
+  `Comment.SuddenDeath` the script sends when sudden death starts.
 
 ## 0.10.0
 

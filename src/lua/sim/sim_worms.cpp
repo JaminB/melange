@@ -42,10 +42,31 @@ int NilReason(l5::State* L, const char* why) {
     return 2;
 }
 
-// Method calls arrive as w:fn(...) (self first) or w.fn(...): the first real argument's index.
-int ArgBase(l5::State* L) { return l5::A().type(L, 1) == l5::kTTable ? 2 : 1; }
+// The methods live in one shared table per match VM (the worm tables' metatable, kept in the registry under
+// kMethodsKey), so wum.sim.worm allocates one small table per call. They are called as w:fn(...): the slot is read
+// from self.slot. -1 when self is not a worm table (the caller raises).
+constexpr const char kMethodsKey[] = "melange.simworms.methods";
 
-int SlotOf(l5::State* L) { return static_cast<int>(l5::A().tonumber(L, l5::kGlobals - 1)); }
+int SlotOf(l5::State* L) {
+    const auto& a = l5::A();
+    if (a.type(L, 1) != l5::kTTable) return -1;
+    const int top = a.gettop(L);
+    a.pushstring(L, "slot");
+    a.rawget(L, 1);
+    int slot = -1;
+    if (a.isnumber(L, -1)) {
+        const float f = a.tonumber(L, -1);
+        if (std::floor(f) == f && f >= 0 && f < kMaxWorms) slot = static_cast<int>(f);
+    }
+    a.settop(L, top);
+    return slot;
+}
+
+// For w.fn() (no self) or a self whose slot is not 0..15.
+int BadSelf(l5::State* L) {
+    snprintf(g_err, sizeof g_err, "worm methods take the worm table: call them as w:name()");
+    return Raise(L);
+}
 
 bool ReadSlot(int slot, WormInfo* w) { return g_backend && ValidSlot(slot) && g_backend->Read(slot, w); }
 
@@ -58,77 +79,99 @@ int Push3(l5::State* L, const float v[3]) {
 }
 
 int __cdecl LPos(l5::State* L) {
+    const int slot = SlotOf(L);
+    if (slot < 0) return BadSelf(L);
     WormInfo w;
-    if (!ReadSlot(SlotOf(L), &w)) return NilReason(L, "no worm");
+    if (!ReadSlot(slot, &w)) return NilReason(L, "no worm");
     return Push3(L, w.pos);
 }
 
 int __cdecl LVel(l5::State* L) {
+    const int slot = SlotOf(L);
+    if (slot < 0) return BadSelf(L);
     WormInfo w;
-    if (!ReadSlot(SlotOf(L), &w)) return NilReason(L, "no worm");
+    if (!ReadSlot(slot, &w)) return NilReason(L, "no worm");
     return Push3(L, w.vel);
 }
 
 int __cdecl LAlive(l5::State* L) {
+    const int slot = SlotOf(L);
+    if (slot < 0) return BadSelf(L);
     WormInfo w;
-    const bool ok = ReadSlot(SlotOf(L), &w);
+    const bool ok = ReadSlot(slot, &w);
     l5::A().pushboolean(L, ok && Alive(w));
     return 1;
 }
 
 int __cdecl LActive(l5::State* L) {
+    const int slot = SlotOf(L);
+    if (slot < 0) return BadSelf(L);
     WormInfo w;
-    const bool ok = ReadSlot(SlotOf(L), &w);
+    const bool ok = ReadSlot(slot, &w);
     l5::A().pushboolean(L, ok && w.active);
     return 1;
 }
 
 int __cdecl LTeam(l5::State* L) {
+    const int slot = SlotOf(L);
+    if (slot < 0) return BadSelf(L);
     WormInfo w;
-    if (!ReadSlot(SlotOf(L), &w)) return NilReason(L, "no worm");
+    if (!ReadSlot(slot, &w)) return NilReason(L, "no worm");
     l5::A().pushnumber(L, static_cast<float>(w.team));
     l5::A().pushnumber(L, static_cast<float>(w.posInTeam));
     return 2;
 }
 
 int __cdecl LHealth(l5::State* L) {
+    const int slot = SlotOf(L);
+    if (slot < 0) return BadSelf(L);
     WormInfo w;
-    if (!ReadSlot(SlotOf(L), &w)) return NilReason(L, "no worm");
+    if (!ReadSlot(slot, &w)) return NilReason(L, "no worm");
     l5::A().pushnumber(L, static_cast<float>(w.health));
     return 1;
 }
 
 int __cdecl LState(l5::State* L) {
+    const int slot = SlotOf(L);
+    if (slot < 0) return BadSelf(L);
     WormInfo w;
-    if (!ReadSlot(SlotOf(L), &w)) return NilReason(L, "no worm");
+    if (!ReadSlot(slot, &w)) return NilReason(L, "no worm");
     l5::A().pushnumber(L, static_cast<float>(w.state));
     return 1;
 }
 
 int __cdecl LYaw(l5::State* L) {
+    const int slot = SlotOf(L);
+    if (slot < 0) return BadSelf(L);
     WormInfo w;
-    if (!ReadSlot(SlotOf(L), &w)) return NilReason(L, "no worm");
+    if (!ReadSlot(slot, &w)) return NilReason(L, "no worm");
     l5::A().pushnumber(L, w.yaw);
     return 1;
 }
 
 int __cdecl LWeapon(l5::State* L) {
+    const int slot = SlotOf(L);
+    if (slot < 0) return BadSelf(L);
     WormInfo w;
-    if (!ReadSlot(SlotOf(L), &w)) return NilReason(L, "no worm");
+    if (!ReadSlot(slot, &w)) return NilReason(L, "no worm");
     l5::A().pushnumber(L, static_cast<float>(w.weapon));
     return 1;
 }
 
 int __cdecl LName(l5::State* L) {
+    const int slot = SlotOf(L);
+    if (slot < 0) return BadSelf(L);
     WormInfo w;
-    if (!ReadSlot(SlotOf(L), &w)) return NilReason(L, "no worm");
+    if (!ReadSlot(slot, &w)) return NilReason(L, "no worm");
     l5::A().pushstring(L, w.name);
     return 1;
 }
 
 int __cdecl LAnchor(l5::State* L) {
+    const int slot = SlotOf(L);
+    if (slot < 0) return BadSelf(L);
     const auto& a = l5::A();
-    const int i = ArgBase(L);
+    const int i = 2;
     const int t = a.type(L, i);
     bool on = true;
     if (t == l5::kTBoolean) on = a.toboolean(L, i) != 0;
@@ -137,30 +180,60 @@ int __cdecl LAnchor(l5::State* L) {
         return Raise(L);
     }
     const char* why = nullptr;
-    if (!Anchor(SlotOf(L), on, &why)) return NilReason(L, why ? why : "failed");
+    if (!Anchor(slot, on, &why)) return NilReason(L, why ? why : "failed");
     a.pushboolean(L, 1);
     return 1;
 }
 
 int __cdecl LAnchored(l5::State* L) {
     const int slot = SlotOf(L);
+    if (slot < 0) return BadSelf(L);
     l5::A().pushboolean(L, Anchored(slot));
     l5::A().pushboolean(L, Pinned(slot));
     return 2;
 }
 
 int __cdecl LPin(l5::State* L) {
+    const int slot = SlotOf(L);
+    if (slot < 0) return BadSelf(L);
     float p[3];
-    if (!PinOf(SlotOf(L), p)) return NilReason(L, "not anchored");
+    if (!PinOf(slot, p)) return NilReason(L, "not anchored");
     return Push3(L, p);
 }
 
-void SetMethod(l5::State* L, int t, const char* name, l5::CFunction fn, int slot) {
+// Pushes the shared method table (also the worm tables' metatable, __index = itself), building it on first use in
+// this VM. The registry dies with the VM, so nothing needs freeing at match end.
+void PushMethods(l5::State* L) {
     const auto& a = l5::A();
-    a.pushstring(L, name);
-    a.pushnumber(L, static_cast<float>(slot));
-    a.pushcclosure(L, fn, 1);
+    a.pushstring(L, kMethodsKey);
+    a.rawget(L, l5::kRegistry);
+    if (a.type(L, -1) == l5::kTTable) return;
+    a.settop(L, a.gettop(L) - 1);
+    static const struct {
+        const char* name;
+        l5::CFunction fn;
+    } kMethods[] = {{"pos", &LPos},       {"vel", &LVel},       {"alive", &LAlive},   {"active", &LActive},
+                    {"team", &LTeam},     {"health", &LHealth}, {"state", &LState},   {"yaw", &LYaw},
+                    {"weapon", &LWeapon}, {"name", &LName},     {"anchor", &LAnchor}, {"anchored", &LAnchored},
+                    {"pin", &LPin}};
+    a.newtable(L);
+    const int t = a.gettop(L);
+    for (const auto& m : kMethods) {
+        a.pushstring(L, m.name);
+        a.pushcclosure(L, m.fn, 0);
+        a.rawset(L, t);
+    }
+    a.pushstring(L, "__index");
+    a.pushvalue(L, t);
     a.rawset(L, t);
+    // Shared by every mod in the VM: getmetatable(w) answers "worm" and setmetatable(w, ...) raises, so no mod can
+    // change another's methods.
+    a.pushstring(L, "__metatable");
+    a.pushstring(L, "worm");
+    a.rawset(L, t);
+    a.pushstring(L, kMethodsKey);
+    a.pushvalue(L, t);
+    a.rawset(L, l5::kRegistry);
 }
 }  // namespace
 
@@ -276,24 +349,14 @@ int __cdecl LWorm(l5::State* L) {
     const int slot = static_cast<int>(f);
     WormInfo w;
     if (!ReadSlot(slot, &w)) return NilReason(L, g_backend ? "no worm" : "unavailable");
+    if (!a.checkstack(L, 6)) return NilReason(L, "no stack");
     a.newtable(L);
     const int t = a.gettop(L);
     a.pushstring(L, "slot");
     a.pushnumber(L, static_cast<float>(slot));
     a.rawset(L, t);
-    SetMethod(L, t, "pos", &LPos, slot);
-    SetMethod(L, t, "vel", &LVel, slot);
-    SetMethod(L, t, "alive", &LAlive, slot);
-    SetMethod(L, t, "active", &LActive, slot);
-    SetMethod(L, t, "team", &LTeam, slot);
-    SetMethod(L, t, "health", &LHealth, slot);
-    SetMethod(L, t, "state", &LState, slot);
-    SetMethod(L, t, "yaw", &LYaw, slot);
-    SetMethod(L, t, "weapon", &LWeapon, slot);
-    SetMethod(L, t, "name", &LName, slot);
-    SetMethod(L, t, "anchor", &LAnchor, slot);
-    SetMethod(L, t, "anchored", &LAnchored, slot);
-    SetMethod(L, t, "pin", &LPin, slot);
+    PushMethods(L);
+    a.setmetatable(L, t);
     return 1;
 }
 

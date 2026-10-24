@@ -55,7 +55,7 @@ constexpr int kDataVector = 3;
 
 SafetyHookInline g_hUpdate, g_hInput, g_hChangeState;
 bool g_installed = false, g_hooksOn = false, g_logInputs = false;
-int g_tickHook = 0, g_contrib = 0;
+int g_tickHook = 0, g_contrib = 0, g_context = 0;
 uint32_t g_idsSerial = 0;
 
 // Guarded container writes: the containers live on the heap, so a plain store under SEH is enough.
@@ -325,7 +325,7 @@ public:
         sw::SetBackend(&g_backend);
         sw::SetAnchorObserver(&OnAnchor, nullptr);
         if (!sw::AddSimFunctions()) LOG_WARN("[worms] could not add every wum.sim worm function");
-        melange::lua50::OnContext(&OnContext, nullptr);
+        g_context = melange::lua50::OnContext(&OnContext, nullptr);
         g_contrib = melange::wormsign::AddContributor("melange.wormanchor", &Contrib, nullptr);
         g_installed = true;
         LOG_INFO("[worms] installed: wum.sim.worm/worms/land, anchor hooks armed per match");
@@ -336,8 +336,10 @@ public:
         SetHooks(false);
         sw::SetBackend(nullptr);
         sw::SetAnchorObserver(nullptr, nullptr);
+        if (g_context) melange::lua50::RemoveOnContext(g_context);
         if (g_tickHook) melange::sim::RemoveTickHook(g_tickHook);
         if (g_contrib) melange::wormsign::RemoveContributor(g_contrib);
+        g_context = g_tickHook = g_contrib = 0;
         g_hUpdate = {};
         g_hInput = {};
         g_hChangeState = {};

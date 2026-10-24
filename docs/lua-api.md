@@ -167,7 +167,7 @@ once per frame), or `nil` outside a match. Detect it with `if wum.game.match the
 | `roundMs`, `roundMsLeft` | The game's `RoundTime` and `RoundTimeRemaining`, integer milliseconds. |
 | `turnMs`, `turnMsLeft` | `TurnTime` and `TurnTimeRemaining`, integer milliseconds. |
 | `waterLevel` | `Water.Level`, the water surface height in world units. |
-| `suddenDeath` | `true` once `GameLogic.ActivateSuddenDeath` was seen in this match. |
+| `suddenDeath` | `true` once sudden death started in this match: the versus script sends `Comment.SuddenDeath` when the round clock runs out (`GameLogic.ActivateSuddenDeath` counts too, for scripts that send it). |
 | `turnsStarted` | Turns started in this match (`GameLogic.Turn.Started`). |
 | `landMin`, `landMax` | `{x, y, z}`: the landscape's bounding box (`Land.MinBounds`, `Land.MaxBounds`). Absent until the level has reported a valid box. |
 

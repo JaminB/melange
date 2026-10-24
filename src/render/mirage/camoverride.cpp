@@ -54,7 +54,7 @@ safetyhook::InlineHook g_hook;
 bool g_applied = false;
 uintptr_t g_cam = 0;
 uint8_t g_saved[kBlockBytes];
-float g_appliedEye[3] = {};
+uint8_t g_written[kBlockBytes];  // the block as Apply wrote it, to tell our bytes from a foreign write in Render
 bool g_verified = false;
 int g_foreignWrites = 0;
 
@@ -203,23 +203,53 @@ void Apply() {
         reinterpret_cast<uint8_t*>(cam)[kViewStale] = 0;
         reinterpret_cast<uint8_t*>(cam)[kInvStale] = 0;
     }
-    memcpy(g_appliedEye, spec.pos, sizeof g_appliedEye);
+    if (!CopyGuarded(g_written, reinterpret_cast<const void*>(cam + kBlockBegin), kBlockBytes)) memcpy(g_written, block, kBlockBytes);
     g_cam = cam;
     g_applied = true;
     ++g_n.applied;
 }
 
+// The XCamera block as fields: Restore puts back each field the frame left as Apply wrote it and keeps any field
+// something else wrote during Render.
+struct Field {
+    uintptr_t off, n;
+};
+constexpr Field kFields[] = {{kView, 64},      {kInvView, 64}, {kProj, 64}, {0xd4, kFrustum - 0xd4},
+                             {kFrustum, kOrtho - kFrustum}, {kOrtho, 4}, {kEye, 12}, {kTarget, 12},
+                             {kUp, 12},        {kViewStale, kBlockEnd - kViewStale}};
+static_assert(kView == kBlockBegin && kInvView == kView + 64 && kProj == kInvView + 64 && kEye == kOrtho + 4 &&
+              kTarget == kEye + 12 && kUp == kTarget + 12 && kViewStale == kUp + 12, "fields cover the block");
+
 void Restore() {
     if (!g_applied) return;
     g_applied = false;
-    float eye[3] = {};
-    if (!CopyGuarded(eye, reinterpret_cast<const void*>(g_cam + kEye), sizeof eye)) return;
-    if (memcmp(eye, g_appliedEye, sizeof eye) != 0) {
-        // Something set the render camera during Render: keep what it wrote rather than our stale copy.
-        if (g_foreignWrites++ < 5) LOG_WARN("[mirage] [MirageCamera] the render camera changed during Render; not restored");
+    uint8_t now[kBlockBytes];
+    if (!CopyGuarded(now, reinterpret_cast<const void*>(g_cam + kBlockBegin), kBlockBytes)) return;
+    if (memcmp(now, g_written, kBlockBytes) == 0) {
+        CopyGuarded(reinterpret_cast<void*>(g_cam + kBlockBegin), g_saved, kBlockBytes);
         return;
     }
-    CopyGuarded(reinterpret_cast<void*>(g_cam + kBlockBegin), g_saved, kBlockBytes);
+    // Something wrote the render camera during Render. Keep what it wrote, put back the game's value of every field
+    // it did not touch (so none of the override's matrices or cleared stale flags outlive the frame and get saved
+    // by the next Apply as the game's), and when it moved the eye mark the view, its inverse and the derived
+    // frustum stale so the engine rebuilds them from the new eye/target/up instead of using the restored ones.
+    uint8_t out[kBlockBytes];
+    bool eyeMoved = false;
+    for (const Field& f : kFields) {
+        const size_t o = f.off - kBlockBegin;
+        const bool foreign = memcmp(now + o, g_written + o, f.n) != 0;
+        memcpy(out + o, foreign ? now + o : g_saved + o, f.n);
+        if (foreign && (f.off == kEye || f.off == kTarget || f.off == kUp)) eyeMoved = true;
+    }
+    if (eyeMoved) {
+        out[kViewStale - kBlockBegin] = 1;
+        out[kInvStale - kBlockBegin] = 1;
+        out[kDerivedStale - kBlockBegin] = 1;
+    }
+    if (g_foreignWrites++ < 5)
+        LOG_WARN("[mirage] [MirageCamera] the render camera changed during Render%s; kept its fields, restored the rest",
+                 eyeMoved ? " (eye moved: view marked stale)" : "");
+    CopyGuarded(reinterpret_cast<void*>(g_cam + kBlockBegin), out, kBlockBytes);
 }
 
 uint32_t __stdcall HkRender(void* self, uint32_t dtMs) {

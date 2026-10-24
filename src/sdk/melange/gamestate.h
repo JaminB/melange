@@ -29,7 +29,7 @@ struct Match {
     int32_t turnMs, turnMsLeft, roundMs, roundMsLeft;
     float windSpeed, windDir, waterLevel;
     uint32_t turnsStarted;            // counted from GameLogic.Turn.Started
-    bool suddenDeath;                 // latched from GameLogic.ActivateSuddenDeath
+    bool suddenDeath;                 // latched from Comment.SuddenDeath (stdvs StartSuddenDeath) or GameLogic.ActivateSuddenDeath
     char theme[32];
     bool haveLand;                    // landMin/landMax were read
     Vec3 landMin, landMax;            // Land.MinBounds / Land.MaxBounds: the landscape's bounding box

@@ -102,7 +102,13 @@ int CallOriginal(l5::State* L) {
 int __cdecl LStartTurnWrapper(l5::State* L) {
     const auto& a = l5::A();
     Sync();
-    if (!g.L || L != g.L || s.origRef < 0) return 0;  // another VM: nothing we can call
+    if (!g.L || L != g.L || s.origRef < 0) {
+        // Not the match VM the wrapper was installed in (the bridge replaced g.L, e.g. after "match VM was never
+        // seen closing"), or its ref is gone: there is no original to call, so this StartTurn is lost. Say so.
+        LOG_WARN("[sim] turn hold: StartTurn reached the wrapper %s at tick %u: the turn start is dropped",
+                 !g.L ? "with no match VM" : L != g.L ? "from another Lua VM" : "without the original's ref", g.tick);
+        return 0;
+    }
     if (s.holding) {
         ++s.swallowed;
         LOG_WARN("[sim] turn hold: StartTurn called again during the hold at tick %u (swallowed, %u so far)", g.tick,
@@ -181,8 +187,9 @@ void OnTick(uint32_t, void*) {
     if (s.remaining == 0) Release();
 }
 
-// Match end: the VM is about to close, so the wrapper's ref goes back before the bridge counts what is left. Match
-// begin fires after the top-level chunks ran (a chunk may already have armed a hold), so it only syncs.
+// Match end: the VM is about to close, so the wrapper's ref goes back before the bridge counts what is left, and the
+// tick hook goes too (the next holdTurn adds it again), so a match that never holds runs without it. Match begin
+// fires after the top-level chunks ran (a chunk may already have armed a hold), so it only syncs.
 void OnMatch(bool begin, void*) {
     if (begin) {
         Sync();
@@ -191,6 +198,8 @@ void OnMatch(bool begin, void*) {
     if (s.holding) LOG_WARN("[sim] turn hold: the match closed with a hold active (%u ticks left)", s.remaining);
     simcore::DropRef(s.origRef);
     s = State{};
+    if (g_tickHook) sim::RemoveTickHook(g_tickHook);
+    g_tickHook = 0;
 }
 
 // Replaces the global StartTurn with the wrapper, once per match. nullptr on success, else the reason.
@@ -234,6 +243,25 @@ void Init() {
     if (!g_tickHook) g_tickHook = sim::AddTickHook(&OnTick, nullptr, 100);  // after other hooks: they see the hold's state
 }
 
+void Shutdown() {
+    if (g_tickHook) sim::RemoveTickHook(g_tickHook);
+    if (g_matchObserver) simbridge::RemoveOnMatch(g_matchObserver);
+    g_tickHook = g_matchObserver = 0;
+}
+
+size_t HashBytes(uint8_t* out, size_t cap) {
+    if (cap < kHashBytes) return 0;
+    // Only the state of the running match VM counts; a stale state (before the first Sync of a new VM) is all zero,
+    // as Sync would make it.
+    const bool live = g.L && s.serial == g.serial;
+    const uint32_t v[7] = {live ? s.armed : 0,     live && s.holding ? 1u : 0u, live ? s.remaining : 0,
+                           live ? s.total : 0,     live ? s.since : 0,          live ? s.swallowed : 0,
+                           live ? s.holds : 0};
+    memcpy(out, v, sizeof v);
+    out[sizeof v] = live && s.paused ? 1 : 0;
+    return kHashBytes;
+}
+
 int __cdecl LHoldTurn(l5::State* L) {
     const auto& a = l5::A();
     if (!a.isnumber(L, 1)) return Fail(L, "wum.sim.holdTurn: expected a number of ticks");
@@ -263,7 +291,6 @@ int __cdecl LHoldTurn(l5::State* L) {
 }
 
 int __cdecl LReleaseTurn(l5::State* L) {
-    Init();
     Sync();
     bool changed = false;
     if (g.L && L == g.L) {

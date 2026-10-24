@@ -1207,6 +1207,8 @@ s.anchored = r(w:anchored())
 s.pin = r(w:pin())
 s.other = r(wum.sim.worm(0):anchored())
 s.badArg = tostring(pcall(function() return w:anchor(5) end))
+s.meta = tostring(getmetatable(w)) .. "," .. tostring((pcall(setmetatable, w, {}))) .. "," .. tostring(getmetatable(wum.sim.worm(0)) == getmetatable(w))
+s.dot = tostring((pcall(w.pos))) .. "," .. tostring((pcall(w.pos, {slot = 99}))) .. "," .. r(w.pos({slot = 0}))
 wum.events.on("tick", function(t)
   if t == 10 then s.pos10 = r(w:pos()) s.vel10 = r(w:vel()) end
   if t == 20 then s.pinned20 = r(w:anchored()) end
@@ -1254,6 +1256,8 @@ void TestWorms() {
     Expect(Storage("worms", "anchored") == "true,true" && Storage("worms", "pin") == "1,2,3", "anchored, pinned and the pin");
     Expect(Storage("worms", "other") == "false,false", "another worm is not anchored");
     Expect(Storage("worms", "badArg") == "false", "anchor(5) raises");
+    Expect(Storage("worms", "meta") == "worm,false,true", "shared, locked method table: " + Storage("worms", "meta"));
+    Expect(Storage("worms", "dot") == "false,false,10,20,30", "w.pos() and a bad self raise; any {slot=} table works: " + Storage("worms", "dot"));
     Expect(fake.slots[1].w.flags == sw::kNailFlags && fake.slots[1].w.vel[0] == 0, "anchor pins at once: nail flags set, velocity zeroed");
     Expect(events == std::vector<std::string>({"1:on"}), "observer: one anchor");
 
@@ -1422,6 +1426,15 @@ void TestTurnHold() {
     Expect(Storage("holder", "events") == "{1=hold:20@0:20/0;}", "sim.turnHold delivered with the ticks: " + Storage("holder", "events"));
     auto h = GetTurnHold();
     Expect(h.holding && h.remaining == 20 && h.total == 20 && h.since == 0 && h.armed == 0, "GetTurnHold during the hold");
+    {
+        uint8_t hb[melange::turnhold::kHashBytes], hb2[melange::turnhold::kHashBytes];
+        uint32_t w[3];
+        Expect(melange::turnhold::HashBytes(hb, sizeof hb) == sizeof hb && melange::turnhold::HashBytes(hb2, sizeof hb2) == sizeof hb2 &&
+                   memcmp(hb, hb2, sizeof hb) == 0 && melange::turnhold::HashBytes(hb, 4) == 0,
+               "hold hash bytes: deterministic, short buffer refused");
+        memcpy(w, hb, sizeof w);
+        Expect(w[0] == 0 && w[1] == 1 && w[2] == 20 && hb[sizeof hb - 1] == 1, "hold hash bytes: not armed, holding, 20 left, paused");
+    }
     for (int i = 0; i < 19; ++i) core::Update();
     Expect(HoldGlobal("starts") == 0 && GetTurnHold().remaining == 1, "still held after 19 ticks");
     mark = fake::sent.size();
@@ -1497,14 +1510,20 @@ void TestTurnHold() {
     Expect(lua_gettop(S) == 0 && fake::runState == 1 && fake::halts.empty(), "stack balanced, script running at the end");
     HoldClose();
     Expect(!GetTurnHold().holding && GetTurnHold().holds == 0, "GetTurnHold zero outside a match");
+    Expect(!core::HasTickHooks(), "the hold's tick hook is removed at match end");
+    {
+        uint8_t hb[melange::turnhold::kHashBytes], zero[melange::turnhold::kHashBytes] = {};
+        Expect(melange::turnhold::HashBytes(hb, sizeof hb) == sizeof hb && memcmp(hb, zero, sizeof hb) == 0, "hold hash bytes all zero outside a match");
+    }
 
     // 8. A new match wraps the new VM's StartTurn again.
     g_holdNotes.clear();
     S = HoldMatch();
     Expect(HoldCall("DoPostActivity").empty() && HoldGlobal("starts") == 0 && GetTurnHold().holding, "next match: deferred again");
     for (int i = 0; i < 20; ++i) core::Update();
-    Expect(HoldGlobal("starts") == 1 && g_holdNotes.size() == 2, "next match: released");
+    Expect(HoldGlobal("starts") == 1 && g_holdNotes.size() == 2, "next match: released (holdTurn added the tick hook again)");
     HoldClose();
+    Expect(!core::HasTickHooks(), "no tick hook after the second match either");
     melange::turnhold::SetNotify(nullptr, nullptr);
 }
 
