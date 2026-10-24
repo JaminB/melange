@@ -757,6 +757,12 @@ the same tick, and nothing waits on the camera, an active object or any other pe
   too: one turn starts at the release. When the round ends during the hold, the deferred `StartTurn` is dropped.
 - The client gets `melange.turnHold` `{ticks, tick, roundMsLeft}` and `melange.turnHoldEnd` `{ticks, tick,
   roundMsLeft}` (`ticks` = ticks held) through `wum.events`, and C++ modules `melange::sim::GetTurnHold()`.
+- Online, the machine whose player's turn just ended sends the engine's `TimeSync(-1)` ("others run till end of
+  turn") once more right before its deferred `StartTurn` runs (`SimTurnHoldNet`). The vanilla game sends it at
+  `GameLogic.Turn.Ended`, which `Turn.Started` follows at once; across a hold the periodic time-sync of that machine
+  would otherwise leave the spectators paused 2 s short of their own deferred turn start while it waits for the new
+  player's lead. Verified on LocalNet with camera keys pressed on the spectator during the hold: both machines hold
+  and release at the same ticks, Wormsign's hashes agree, no time-sync abort.
 
 With Wormsign on, every sim mod's state is part of the per-tick hash, so a mod that computes differently on two machines is caught at the tick it happens, with the mod named. Wormsign hashes the mod's globals and `wum.sim.storage` (three tables deep, in any key order; functions and userdata count by type only), and whatever the mod passes to `wum.sim.hash` in that tick. Locals and upvalues are not visible to it: a mod that keeps its state there can pass it to `wum.sim.hash`.
 

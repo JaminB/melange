@@ -7,6 +7,8 @@
   own tick, the round clock is paused with the engine's `GameLogic.RoundTime.Pause`/`Resume` meanwhile, and the sim
   events `sim.turnHold`/`sim.turnHoldEnd`, the client events `melange.turnHold`/`melange.turnHoldEnd` and
   `melange::sim::GetTurnHold()` report it (`SimTurnHold` module; `docs/developer-guide.md`, "The turn-start hold").
+  Online, `SimTurnHoldNet` repeats the turn-end `TimeSync(-1)` right before the deferred turn start runs, so the
+  spectators run to their own deferred turn start instead of pausing behind the old active player's clock.
 
 ## 0.10.0
 

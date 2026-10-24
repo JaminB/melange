@@ -32,6 +32,10 @@ struct Event {
 };
 using NotifyFn = void (*)(const Event& e, void* user);
 void SetNotify(NotifyFn fn, void* user);
+// Called right before the deferred StartTurn runs (after the end notifications; not when the round is over and the
+// start is dropped). turnhold_net.cpp sends the online time-sync there.
+using BeforeStartFn = void (*)(void* user);
+void SetBeforeStartTurn(BeforeStartFn fn, void* user);
 
 // Installs the OnMatch observer that drops the wrapper's ref at match end. Idempotent; the trampolines call it too.
 void Init();

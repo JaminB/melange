@@ -32,6 +32,8 @@ struct State {
 State s;
 NotifyFn g_notify = nullptr;
 void* g_notifyUser = nullptr;
+BeforeStartFn g_beforeStart = nullptr;
+void* g_beforeStartUser = nullptr;
 int g_tickHook = 0;
 int g_matchObserver = 0;
 char g_err[256];
@@ -152,6 +154,13 @@ void Release() {
     simbridge::Dispatch("sim.turnHoldEnd", std::vector<float>{static_cast<float>(held)});
     Notify(false, held);
     if (over > 0 || s.origRef < 0 || l5::RunState() != 1 || !g.L) return;
+    if (g_beforeStart) {
+        try {
+            g_beforeStart(g_beforeStartUser);
+        } catch (...) {
+            LOG_ERROR("[sim] turn hold: the before-start observer threw");
+        }
+    }
     const auto& a = l5::A();
     const int top = a.gettop(L);
     if (!a.checkstack(L, 4)) return;
@@ -213,6 +222,11 @@ const char* InstallWrapper(l5::State* L) {
 void SetNotify(NotifyFn fn, void* user) {
     g_notify = fn;
     g_notifyUser = user;
+}
+
+void SetBeforeStartTurn(BeforeStartFn fn, void* user) {
+    g_beforeStart = fn;
+    g_beforeStartUser = user;
 }
 
 void Init() {
