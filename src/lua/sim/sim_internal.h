@@ -68,6 +68,7 @@ struct Match {
     uint32_t faults = 0, depthDrops = 0;
     int baseHeapKB = 0;
     bool heapWarned = false;
+    bool schemeWarned = false;  // wum.sim.scheme logged its failure once in this match
     std::map<uint32_t, uint32_t> cppStreams;  // sim::Random stream key -> LCG state
     bool turnPending = false;
     uint32_t turns = 0;

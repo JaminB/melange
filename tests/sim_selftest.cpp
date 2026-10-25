@@ -53,6 +53,7 @@ std::map<std::string, Datum> data;
 std::vector<std::string> sent;
 std::vector<l5::LibReg> strlib, tablib;
 std::vector<std::string> halts;
+int schemeMode = 0;  // 1: GM.SchemeData is a table whose __index raises (a Name read that errors)
 
 void Halt(const std::string& why) {
     runState = 2;
@@ -109,6 +110,17 @@ int FQueryContainer(lua_State* S) {
         return 0;
     }
     lua_newtable(S);
+    if (schemeMode == 1) {
+        lua_newtable(S);
+        lua_pushstring(S, "__index");
+        lua_pushcfunction(S, [](lua_State* T) -> int {
+            lua_pushstring(T, "scheme field read failed");
+            return lua_error(T);
+        });
+        lua_settable(S, -3);
+        lua_setmetatable(S, -2);
+        return 1;
+    }
     lua_pushstring(S, "Name");
     lua_pushstring(S, "FE.Scheme.Test");
     lua_settable(S, -3);
@@ -469,6 +481,15 @@ RunResult RunMatch(uint32_t seed, bool full) {
         Expect(Storage("sender", "setOk") == "true:nil" && Storage("sender", "getInt2") == "7:nil", "setData then getData");
         Expect(Storage("sender", "artillery") == "nil:denied", "denied data: " + Storage("sender", "artillery"));
         Expect(Storage("sender", "scheme") == "FE.Scheme.Test:nil", "wum.sim.scheme reads GM.SchemeData.Name: " + Storage("sender", "scheme"));
+        {
+            fake::schemeMode = 1;
+            const auto e = melange::simbridge::EvalMatch("return mods.sender.wum.sim.scheme()");
+            fake::schemeMode = 0;
+            Expect(e.ok && e.text == "nil	unavailable", "wum.sim.scheme: a Name read that raises is nil, unavailable: " + e.text);
+            Expect(fake::runState == 1 && fake::halts.empty(), "a raising Name read does not halt the match");
+            const auto again = melange::simbridge::EvalMatch("return mods.sender.wum.sim.scheme()");
+            Expect(again.ok && again.text == "FE.Scheme.Test", "wum.sim.scheme reads again afterwards: " + again.text);
+        }
         Expect(Storage("sender", "str") == "true:nil", "sendString of a mod message");
         Expect(fake::runState == 1 && fake::halts.empty(), "run state stays 1 after refused sends and data access");
     }
@@ -1216,7 +1237,7 @@ s.health = r(w:health())
 s.name = r(w:name(), w:state(), w:weapon())
 s.none = r(wum.sim.worm(9))
 s.badSlot = r(wum.sim.worm(1.5))
-s.raises = tostring(pcall(wum.sim.worm, "x"))
+s.raises = tostring(pcall(wum.sim.worm, "x")) .. "," .. tostring(pcall(wum.sim.worm, "1"))
 local list, n = wum.sim.worms()
 s.count = n .. ":" .. table.getn(list) .. ":" .. list[1] .. "," .. list[2] .. "," .. list[3] .. "," .. list[4]
 s.land = r(wum.sim.land())
@@ -1268,7 +1289,7 @@ void TestWorms() {
     Expect(Storage("worms", "team") == "2,1" && Storage("worms", "health") == "77", "team, posInTeam and health");
     Expect(Storage("worms", "name") == "One,0,1", "name, state and weapon: " + Storage("worms", "name"));
     Expect(Storage("worms", "none") == "nil,no worm" && Storage("worms", "badSlot") == "nil,no worm", "an empty or fractional slot is nil, reason");
-    Expect(Storage("worms", "raises") == "false", "a non-number slot raises");
+    Expect(Storage("worms", "raises") == "false,false", "a non-number slot raises, a numeric string too: " + Storage("worms", "raises"));
     Expect(Storage("worms", "count") == "4:4:0,1,2,3", "wum.sim.worms lists the slots with a container: " + Storage("worms", "count"));
     Expect(Storage("worms", "land") == "-100,0,-50,100,60,50", "wum.sim.land: " + Storage("worms", "land"));
     Expect(Storage("worms", "dead") == "nil,dead", "anchoring a dead worm is refused: " + Storage("worms", "dead"));
@@ -1367,6 +1388,7 @@ s.bad1 = tostring(pcall(wum.sim.holdTurn, 0))
 s.bad2 = tostring(pcall(wum.sim.holdTurn, 3001))
 s.bad3 = tostring(pcall(wum.sim.holdTurn, 2.5))
 s.bad4 = tostring(pcall(wum.sim.holdTurn, "x"))
+s.bad5 = tostring(pcall(wum.sim.holdTurn, "50"))
 s.rel0 = tostring(wum.sim.releaseTurn())
 local r, a = wum.sim.turnHold()
 s.idle = r .. "/" .. a
@@ -1433,8 +1455,9 @@ void TestTurnHold() {
     g_holdNotes.clear();
     lua_State* S = HoldMatch();
     Expect(Storage("holder", "bad1").rfind("false", 0) == 0 && Storage("holder", "bad2").rfind("false", 0) == 0 &&
-               Storage("holder", "bad3").rfind("false", 0) == 0 && Storage("holder", "bad4").rfind("false", 0) == 0,
-           "holdTurn refuses 0, 3001, 2.5 and a string: " + Storage("holder", "bad2"));
+               Storage("holder", "bad3").rfind("false", 0) == 0 && Storage("holder", "bad4").rfind("false", 0) == 0 &&
+               Storage("holder", "bad5").rfind("false", 0) == 0,
+           "holdTurn refuses 0, 3001, 2.5, a string and a numeric string: " + Storage("holder", "bad5"));
     Expect(Storage("holder", "rel0") == "false" && Storage("holder", "idle") == "0/0", "nothing to release at the start");
     Expect(!GetTurnHold().holding && GetTurnHold().armed == 0, "GetTurnHold idle");
 

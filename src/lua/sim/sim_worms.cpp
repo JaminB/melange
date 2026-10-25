@@ -340,7 +340,7 @@ size_t HashBytes(uint8_t* out, size_t cap) {
 
 int __cdecl LWorm(l5::State* L) {
     const auto& a = l5::A();
-    if (!a.isnumber(L, 1)) {
+    if (a.type(L, 1) != l5::kTNumber) {  // a number, not a numeric string ("1" raises like any other non-number)
         snprintf(g_err, sizeof g_err, "wum.sim.worm(slot): slot must be a number (0 to 15)");
         return Raise(L);
     }

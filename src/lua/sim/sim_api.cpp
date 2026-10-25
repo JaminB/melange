@@ -228,14 +228,21 @@ int __cdecl LGetData(l5::State* L) {
 // read through the match script's own QueryContainer, which hands the container back as a userdata whose fields
 // index like a table (the versus script reads its TurnTime and RoundTime that way). The host's style loads on every
 // machine, so a sim script can key its rules on it (a content mod's script runs in every match, whatever the style).
+// Reads field 1's "Name" under a pcall: GM.SchemeData can be userdata whose __index raises, and an unprotected
+// gettable would unwind through the mod's call (and halt nothing the mod could catch).
+int __cdecl LSchemeName(l5::State* L) {
+    l5::A().pushstring(L, "Name");
+    l5::A().gettable(L, 1);
+    return 1;
+}
+
 int __cdecl LScheme(l5::State* L) {
     const auto& a = l5::A();
     if (!g.L || l5::RunState() == 0) return NilReason(L, "not in a match");
     if (l5::RunState() == 2) return NilReason(L, "halted");
-    static bool warned = false;
     if (!EnsureEngineRef(kQueryContainer)) {
-        if (!warned) LOG_WARN("[sim] wum.sim.scheme: the match VM has no QueryContainer global");
-        warned = true;
+        if (!g.schemeWarned) LOG_WARN("[sim] wum.sim.scheme: the match VM has no QueryContainer global");
+        g.schemeWarned = true;
         return NilReason(L, "unavailable");
     }
     const int top = a.gettop(L);
@@ -243,16 +250,22 @@ int __cdecl LScheme(l5::State* L) {
     a.rawgeti(L, l5::kRegistry, g.engineRef[kQueryContainer]);
     a.pushstring(L, "GM.SchemeData");
     const int rc = a.pcall(L, 1, 1, 0);
-    ResumeBudget();
     const int type = rc ? l5::kTNone : a.type(L, -1);
+    int nameRc = 0;
     if (type == l5::kTTable || type == l5::kTUserdata) {
-        a.pushstring(L, "Name");
-        a.gettable(L, -2);
-        if (IsType(L, -1, l5::kTString)) return 1;
+        a.pushcclosure(L, &LSchemeName, 0);
+        a.insert(L, -2);  // LSchemeName, the scheme data
+        nameRc = a.pcall(L, 1, 1, 0);
+        if (!nameRc && IsType(L, -1, l5::kTString)) {
+            ResumeBudget();
+            return 1;
+        }
     }
-    if (!warned) LOG_WARN("[sim] wum.sim.scheme: QueryContainer(\"GM.SchemeData\") %s (type %d)",
-                          rc ? "failed" : "has no Name string", type);
-    warned = true;
+    ResumeBudget();
+    if (!g.schemeWarned)
+        LOG_WARN("[sim] wum.sim.scheme: QueryContainer(\"GM.SchemeData\") %s (type %d)",
+                 rc ? "failed" : nameRc ? "raised reading Name" : "has no Name string", type);
+    g.schemeWarned = true;
     a.settop(L, top);
     return NilReason(L, "unavailable");
 }
