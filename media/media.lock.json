@@ -1,0 +1,49 @@
+{
+  "format": "melange-media-lock-1",
+  "note": "The upstream artefacts the media pack repackages. scripts/media-pack.ps1 downloads each url and refuses it unless size and sha256 match; the files it extracts are checked against the sha256 in 'extract'. Nothing is built from source except holo-media.exe.",
+  "libmpv": {
+    "note": "zhongfly's LGPL x86_64 libmpv (mpv -Dgpl=false, ffmpeg without --enable-gpl or --enable-nonfree). Repackaged unmodified. sha256 is also the line in the release's sha256.txt, which the script cross-checks.",
+    "release": "2026-10-25-baa3e11d42",
+    "asset": "mpv-dev-lgpl-x86_64-20261025-git-baa3e11d42.7z",
+    "url": "https://github.com/zhongfly/mpv-winbuild/releases/download/2026-10-25-baa3e11d42/mpv-dev-lgpl-x86_64-20261025-git-baa3e11d42.7z",
+    "sha256sumsUrl": "https://github.com/zhongfly/mpv-winbuild/releases/download/2026-10-25-baa3e11d42/sha256.txt",
+    "size": 28981273,
+    "sha256": "6429ebba4b6bfc5dd18ac5ac084f00776db0db4e767ef1bfb815fc78ec5bda2a",
+    "extract": [
+      { "from": "libmpv-2.dll", "to": "libmpv-2.dll", "sha256": "0f2382ff89ef9966353dc0770b833c6a4551643452ec69fdeb373e28809bd7b4" }
+    ],
+    "headers": "include/mpv",
+    "license": "LGPL-2.1-or-later",
+    "buildRun": "https://github.com/zhongfly/mpv-winbuild/actions/runs/40191236015"
+  },
+  "deno": {
+    "note": "yt-dlp's JavaScript runtime for YouTube. MIT. sha256 is the release's .sha256sum line.",
+    "version": "2.9.8",
+    "url": "https://github.com/denoland/deno/releases/download/v2.9.8/deno-x86_64-pc-windows-msvc.zip",
+    "sha256sumUrl": "https://github.com/denoland/deno/releases/download/v2.9.8/deno-x86_64-pc-windows-msvc.zip.sha256sum",
+    "size": 42917472,
+    "sha256": "cba84b26e0df5ae7f74fc66b86a95b866872a86292ebd84fa1e959927edd93bf",
+    "extract": [
+      { "from": "deno.exe", "to": "deno.exe", "sha256": "924397800533d3eb0ed0c889b20ad70e18b970d93acd8135bc043f425e528266" }
+    ],
+    "license": "MIT"
+  },
+  "ytdlp": {
+    "note": "yt-dlp is NOT in the pack. The 'media-ytdlp' lane (scripts/media-ytdlp.ps1) takes the newest release, checks SHA2-256SUMS against the maintainers' GPG signature with the key committed as media/yt-dlp-public.key, and publishes an unsigned hash manifest.",
+    "repo": "yt-dlp/yt-dlp",
+    "asset": "yt-dlp.exe",
+    "gpgKeyFile": "media/yt-dlp-public.key",
+    "gpgKeyFingerprint": "AC0CBBE6848D6A873464AF4E57CF65933B5A7581",
+    "gpgKeySha256": "45d6b415928b5f3e228b461fa9e6d7eb56a824931c785ece00279a06c7a6d6e5",
+    "license": "Unlicense"
+  },
+  "sources": {
+    "note": "Best-effort source mirror for the LGPL libmpv (media-pack.yml, melange-media-src-<version>.tar.gz). The commits are what zhongfly's release names (mpv, ffmpeg) or what its workflow checks out (the build scripts). The other libraries inside libmpv-2.dll (libass, freetype, harfbuzz, libplacebo, dav1d and others) are as published upstream by the build scripts; their commits are not pinned here.",
+    "archives": [
+      { "name": "mpv", "repo": "mpv-player/mpv", "commit": "baa3e11d42cb7978da634a8a6a3a55fe074d01be" },
+      { "name": "ffmpeg", "repo": "FFmpeg/FFmpeg", "commit": "31855b2a7051d07a370984f5e4029826db06be1d" },
+      { "name": "zhongfly-mpv-winbuild", "repo": "zhongfly/mpv-winbuild", "commit": "b120d7d8a64d17bd40b893f585429ef3845ac766", "note": "the newest commit of the default branch before the build; the release tag itself points at an empty marker commit" },
+      { "name": "shinchiro-mpv-winbuild-cmake", "repo": "shinchiro/mpv-winbuild-cmake", "commit": "1f8d2e76255abc48f0456d9be99b4cab9c6566e6", "note": "the newest commit before the build; the workflow checks out the default branch" }
+    ]
+  }
+}
