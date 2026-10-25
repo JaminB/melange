@@ -40,6 +40,9 @@ namespace {
 namespace lobby = handshake::lobby;
 
 constexpr uint64_t kLobbyPollMs = 1000, kToastMs = 8000;
+// How long a correlation waits for an engine divergence at or before the engine's failed check: the exchange can
+// confirm one a little after the check (hashes go out every half second, COMPS waits up to 400 ms).
+constexpr uint64_t kCorrelateWaitMs = 5000;
 constexpr int kMaxPacketsPerFrame = 128;
 constexpr size_t kMaxRecordingBytes = 256u << 20;
 
@@ -56,6 +59,7 @@ uint64_t g_lobbyAdvertised = 0, g_lobbyPollMs = 0;
 uint32_t g_serial = 0;
 std::string g_correlation;
 bool g_correlated = false;
+uint64_t g_correlateSinceMs = 0;   // when the engine's failure was first seen without an engine divergence
 
 std::mutex g_bundleMx;
 std::wstring g_lastBundle;
@@ -189,7 +193,7 @@ std::string PeersJson(const std::string& salt) {
         jsonmini::Obj o;
         o.Str("peer", bundle::PeerRef(salt, v[i].steamId)).Str("state", detect::PeerStateName(v[i].state))
             .UInt("protocol", wire::kProtocol).Str("melange", v[i].melange).Str("content", v[i].content)
-            .Bool("contributorsMatch", v[i].modsCompared).UInt("compared", v[i].compared)
+            .Bool("contributorsMatch", v[i].modsCompared).Str("modsNote", v[i].modsNote).UInt("compared", v[i].compared)
             .UInt("lastCommonTick", v[i].lastCommonTick).UInt("theirTick", v[i].theirTick)
             .UInt("divergedTick", v[i].divergedTick);
         a.Raw(o.End());
@@ -315,14 +319,19 @@ void Correlate() {
     if (g_correlated || !g_det || !g_det->Flagged(&flagged)) return;
     enginecheck::Record r{};
     if (!enginecheck::FirstFailure(g_serial, &r)) return;
-    g_correlated = true;
     // The engine checks engine state, so the tick to pair its failure with is the latest divergence whose engine
-    // hashes differed, not the match's first flag: a mods-only flag earlier in the match (a mod's state, which the
-    // engine never checks) is unrelated to it.
+    // hashes differed at or before the failed check, not the match's first flag: a mods-only flag earlier in the
+    // match (a mod's state, which the engine never checks) is unrelated to it, and so is an engine divergence that
+    // started after the check. One that is still being confirmed gets kCorrelateWaitMs to arrive.
     uint32_t engineTick = 0;
-    const bool engine = g_det->EngineFlagged(&engineTick);
+    const bool engine = g_det->EngineFlagged(&engineTick, r.tick);
+    if (!engine) {
+        if (!g_correlateSinceMs) g_correlateSinceMs = NowMs();
+        if (NowMs() - g_correlateSinceMs < kCorrelateWaitMs) return;
+    }
+    g_correlated = true;
     const uint32_t tick = engine ? engineTick : flagged;
-    const char* what = engine ? "" : " (mods only: no engine divergence was seen before the check)";
+    const char* what = engine ? "" : " (mods only: no engine divergence was seen at or before the check)";
     // Every failed reason, not only the first: a camera failure (7..10) can come with worm ones (11, 13).
     const std::string reasons = enginecheck::DescribeReasons(r.reasons);
     char b[300];
@@ -394,6 +403,7 @@ void OnTick(const TickHash& h, void*) { g_det->OnTick(h); }
 void OnSessionFn(bool begin, uint32_t serial, void*) {
     g_serial = serial;
     g_correlated = false;
+    g_correlateSinceMs = 0;
     g_correlation.clear();
     if (!begin) {
         g_det->End();
@@ -436,11 +446,11 @@ void DrawPanel(void*) {
                                                                   : ImVec4(.7f, .7f, .7f, 1.f);
             if (s.state == PeerState::Diverged)
                 ImGui::TextColored(col, "diverged at %u (apart %u ticks)", s.divergedTick, s.apartTicks);
+            else if (s.state == PeerState::Exchanging && !s.modsCompared && s.modsNote[0])
+                ImGui::TextColored(col, "%s (%s)", PeerStateName(s.state), s.modsNote);
             else
                 ImGui::TextColored(col, "%s%s", PeerStateName(s.state),
-                                   s.state != PeerState::Exchanging || s.modsCompared ? ""
-                                   : s.modsUnreliable ? " (mods not compared: a contributor was skipped on one side)"
-                                                      : " (mod contributors differ)");
+                                   s.state == PeerState::Exchanging && !s.modsCompared ? " (mod contributors differ)" : "");
             ImGui::TableNextColumn();
             ImGui::Text("%u", s.lastCommonTick);
             ImGui::TableNextColumn();
@@ -465,9 +475,10 @@ bool VerbPeers(std::string_view, void*) {
              g_opt.exchange, InMatch(), g_det->MatchKey(), Tick(), n, g_det->BadPackets(), c.sent, c.bytesSent,
              c.sendFailed, c.received, c.bytesReceived);
     for (int i = 0; i < n; ++i)
-        LOG_INFO("[wormsign]   %s: %s mods=%d compared=%u lastCommon=%u theirs=%u lag=%d diverged=%u apart=%u", v[i].name,
-                 PeerStateName(v[i].state), v[i].modsCompared, v[i].compared, v[i].lastCommonTick, v[i].theirTick,
-                 v[i].lagTicks, v[i].divergedTick, v[i].apartTicks);
+        LOG_INFO("[wormsign]   %s: %s mods=%d compared=%u lastCommon=%u theirs=%u lag=%d diverged=%u apart=%u%s%s",
+                 v[i].name, PeerStateName(v[i].state), v[i].modsCompared, v[i].compared, v[i].lastCommonTick,
+                 v[i].theirTick, v[i].lagTicks, v[i].divergedTick, v[i].apartTicks, v[i].modsNote[0] ? " | " : "",
+                 v[i].modsNote);
     return true;
 }
 }  // namespace

@@ -10,13 +10,24 @@
   one evening, with every engine component equal). Contributors are no longer demoted by default (`ContribOptions`
   `demoteEvery` is 1): a slow one is logged once as slow and stays in every tick's hash. `demoteEvery > 1` is an
   opt-in whose hazard the header and `docs/wormsign.md` spell out; the mod environment digests never use it.
-- Fixed: against a peer that still demotes (Melange 0.11.1 or earlier), a mods-only mismatch whose first differing
-  contributor one side did not hash at that tick (its `COMPS` value is 0: skipped or faulted there) is no longer a
-  desync. The log says why, the mods hash is not compared with that peer for the rest of the match (the Peers panel:
-  "mods not compared: a contributor was skipped on one side"), and the engine hash still is.
+- Fixed: against a peer that still demotes (Melange 0.11.1 or earlier), a mods-only mismatch where every differing
+  contributor is one that exactly one side did not hash at that tick (its `COMPS` value is 0) and folded in as a stale
+  value is no longer a desync. The log names each skipped contributor and who skipped it, the mods hash is not
+  compared with that peer for the rest of the match (the Peers panel: "mods not compared: a contributor was skipped on
+  one side at tick N"), and the engine hash still is. A contributor that differs with both sides hashing it is still
+  a desync, named, with any skipped ones logged beside it. A contributor that faulted on one side (left out of that
+  side's mods hash, which the hashes show) is a desync too; when several zeros on one side make a fault impossible to
+  tell from a skip, the log and the panel say so.
+- Fixed: a mods-only mismatch is no longer confirmed without the peer's contributor hashes. When the `COMPS` answer
+  is not there after 400 ms Wormsign asks again and waits 2 s more; if it never comes, the mismatch is logged as
+  unconfirmed and the mods hash is no longer compared with that peer (the panel says so): no message, no bundle.
+  An engine mismatch is confirmed as before.
 - Fixed: the bundle's engine correlation ("Wormsign flagged tick N; the engine's turn-end check failed at tick M")
   paired the engine's failure with the match's first flag, even a mods-only one. It now names the latest divergence
-  whose engine hashes differed, and says "(mods only ...)" when there was none.
+  whose engine hashes differed at or before the failed check (waiting up to 5 s for one still being confirmed), and
+  says "(mods only ...)" when there was none.
+- Fixed: a divergence still waiting for `COMPS` when the match ended or the peer left could write a bundle of an
+  empty report after it had been dropped as not a desync.
 - `diff.txt` says `(not hashed on the peer at this tick: demoted or faulted there)` instead of `0000000000000000` for
   a contributor the peer did not compute, `report.json` adds `oursComputed`/`theirsComputed` per contributor, and
   when both detail records are there `diff.txt` decodes the logic-RNG distance between the two machines
