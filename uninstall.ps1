@@ -1,4 +1,5 @@
-# Removes Melange from the game folder. Logs and dumps in <game>\Melange are kept unless -Purge.
+# Removes Melange from the game folder. Logs and dumps in <game>\Melange are kept unless -Purge, which also deletes the
+# media pack (Documents\Melange\media) and the media helper's cache (AppData\LocalLow\Melange\media-cache).
 # Usage: .\uninstall.ps1 [-GameDir <path>] [-Purge]
 param([string]$GameDir = "C:\Program Files (x86)\Steam\steamapps\common\WormsXHD", [switch]$Purge)
 $ErrorActionPreference = "Stop"
@@ -15,5 +16,14 @@ if (Test-Path "$d8.melange-backup") {
     # Only remove the loader when no other .asi mods need it.
     Remove-Item $d8 -ErrorAction SilentlyContinue
 }
-if ($Purge) { Remove-Item "$GameDir\Melange" -Recurse -ErrorAction SilentlyContinue }
+if ($Purge) {
+    Remove-Item "$GameDir\Melange" -Recurse -ErrorAction SilentlyContinue
+    $docs = [Environment]::GetFolderPath("MyDocuments")
+    if ($docs -and (Test-Path "$docs\Melange\media")) {
+        Remove-Item "$docs\Melange\media" -Recurse -Force -ErrorAction SilentlyContinue
+        Write-Host "Removed the media pack ($docs\Melange\media)"
+    }
+    $low = Join-Path $env:USERPROFILE "AppData\LocalLow\Melange\media-cache"
+    if (Test-Path $low) { Remove-Item $low -Recurse -Force -ErrorAction SilentlyContinue }
+}
 Write-Host "Melange removed"
