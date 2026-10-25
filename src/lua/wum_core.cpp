@@ -396,6 +396,30 @@ int GameActiveWorm(lua_State* L) {
     return 1;
 }
 
+// wum.game.match() -> {roundMs, roundMsLeft, turnMs, turnMsLeft, waterLevel, suddenDeath, landMin, landMax} or nil.
+int GameMatch(lua_State* L) {
+    gamestate::Snapshot s;
+    if (!gamestate::Read(&s) || !s.match.inMatch) {
+        lua_pushnil(L);
+        return 1;
+    }
+    const gamestate::Match& m = s.match;
+    lua_createtable(L, 0, 10);
+    SetInt(L, "roundMs", m.roundMs);
+    SetInt(L, "roundMsLeft", m.roundMsLeft);
+    SetInt(L, "turnMs", m.turnMs);
+    SetInt(L, "turnMsLeft", m.turnMsLeft);
+    lua_pushnumber(L, m.waterLevel);
+    lua_setfield(L, -2, "waterLevel");
+    SetBool(L, "suddenDeath", m.suddenDeath);
+    SetInt(L, "turnsStarted", m.turnsStarted);
+    if (m.haveLand) {
+        SetVec(L, "landMin", m.landMin, 1.f);
+        SetVec(L, "landMax", m.landMax, 1.f);
+    }
+    return 1;
+}
+
 int GameTheme(lua_State* L) {
     gamestate::Snapshot s;
     if (gamestate::Read(&s) && s.match.inMatch && s.match.theme[0]) lua_pushstring(L, s.match.theme);
@@ -435,6 +459,7 @@ void Shared(lua_State* L, int wum) {
     static const luaL_Reg kGame[] = {{"scene", GameScene}, {"inMatch", GameInMatch}, {"online", GameOnline},
                                      {"turn", GameTurn}, {"tick", GameTick}, {"worms", GameWorms}, {"teams", GameTeams},
                                      {"activeWorm", GameActiveWorm}, {"theme", GameTheme}, {"landRay", GameLandRay},
+                                     {"match", GameMatch},
                                      {nullptr, nullptr}};
     struct Ns {
         const char* name;

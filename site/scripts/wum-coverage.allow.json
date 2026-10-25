@@ -12,6 +12,34 @@
     {
       "name": "wum.sim.storage",
       "reason": "Sim VM (Lua 5.0) API mentioned in the wum.wormsign section; the client sandbox scan does not cover src/lua/sim."
+    },
+    {
+      "name": "wum.sim.worm",
+      "reason": "Sim VM (Lua 5.0) API (Melange 0.11), mentioned in the intro and the client events; the client sandbox scan does not cover src/lua/sim."
+    },
+    {
+      "name": "wum.sim.worms",
+      "reason": "Sim VM (Lua 5.0) API (Melange 0.11), mentioned in the intro and the client events; the client sandbox scan does not cover src/lua/sim."
+    },
+    {
+      "name": "wum.sim.land",
+      "reason": "Sim VM (Lua 5.0) API (Melange 0.11), mentioned in the intro and the client events; the client sandbox scan does not cover src/lua/sim."
+    },
+    {
+      "name": "wum.sim.holdTurn",
+      "reason": "Sim VM (Lua 5.0) API (Melange 0.11), mentioned in the intro and the client events; the client sandbox scan does not cover src/lua/sim."
+    },
+    {
+      "name": "wum.sim.releaseTurn",
+      "reason": "Sim VM (Lua 5.0) API (Melange 0.11), mentioned in the intro and the client events; the client sandbox scan does not cover src/lua/sim."
+    },
+    {
+      "name": "wum.sim.scheme",
+      "reason": "Sim VM (Lua 5.0) API (Melange 0.11), mentioned in the intro and the client events; the client sandbox scan does not cover src/lua/sim."
+    },
+    {
+      "name": "wum.sim.turnHold",
+      "reason": "Sim VM (Lua 5.0) API (Melange 0.11), mentioned in the intro and the client events; the client sandbox scan does not cover src/lua/sim."
     }
   ]
 }

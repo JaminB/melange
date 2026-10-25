@@ -1,5 +1,45 @@
 # Changelog
 
+## 0.11.0
+
+- New: `wum.sim.worm(slot)` for sim scripts: `:pos()`, `:vel()`, `:alive()`, `:active()`, `:team()`, `:health()`,
+  `:state()`, `:yaw()`, `:weapon()` and `:name()` read the worm's data container (the simulation's own state, the
+  bytes Wormsign hashes), and `:anchor(on)` pins the worm where it stands for the rest of the match: it still takes
+  turns, turns, aims and fires, but cannot walk, jump, backflip, rope, jetpack, parachute or teleport, and explosions
+  damage it without moving it. It drowns like any other worm when the water rises over it, and the pin is released as
+  soon as it dies or starts drowning. `:anchored()` and `:pin()` query it. Also `wum.sim.worms()` (the slots with a
+  container) and `wum.sim.land()` (the land bounds). The new `WormAnchor` module holds the three engine hooks
+  (`WXWormLogicEntity::Update`, `ChangeState` and the worm's input handler, build #1077) and reuses the engine's own
+  nailed-worm flags; the anchor set is the Wormsign contributor `melange.wormanchor`. Sim-script calls only, so every
+  machine anchors at the same tick. As the engine's nailed worm, an anchored worm's weapon panel greys out the
+  weapons whose `CanBeUsedWhenTailNailed` is false (the movement utilities, melee, sheep, armour and a few more).
+- New: `wum.sim.scheme()` for sim mods: the match's game style (the `Name` of `GM.SchemeData`, read through the match
+  script's `QueryContainer`), so a content mod whose rules belong to one style can leave every other match alone.
+- New: `wum.sim.holdTurn(ticks)`, `wum.sim.releaseTurn()` and `wum.sim.turnHold()` for sim mods: a deterministic hold
+  of the next turn start, 1 to 3000 ticks (60 s). The game's `StartTurn` is deferred on every machine from the sim's
+  own tick, the round clock is paused with the engine's `GameLogic.RoundTime.Pause`/`Resume` meanwhile, and the sim
+  events `sim.turnHold`/`sim.turnHoldEnd`, the client events `melange.turnHold`/`melange.turnHoldEnd` and
+  `melange::sim::GetTurnHold()` report it (`SimTurnHold` module; `docs/developer-guide.md`, "The turn-start hold").
+  The hold state is the Wormsign contributor `melange.turnhold`; its tick hook exists only in a match that held.
+  Online, `SimTurnHoldNet` repeats the turn-end `TimeSync(-1)` right before the deferred turn start runs, so the
+  spectators run to their own deferred turn start instead of pausing behind the old active player's clock.
+- New: `wum.render.cameraOverride(spec | nil)` for client mods: draws the frame from a camera of the mod's choosing
+  (`pos`, `target`, optional `up`, `fov` and a refresh lifetime `frames`), one mod at a time. It is render-only: the
+  new `MirageCamera` module swaps the render XCamera for the duration of `XOpenGLRenderManager::Render` and puts it
+  back, so the logical camera Wormsign checks is never written; culling, every pass, post-FX, sprites, meshes, the
+  HUD and `wum.render.worldToScreen` all see the override. `wum.render.camera()` gains `fov` and `overridden`, and
+  `wum.render.gameCamera()` returns the game's own camera underneath, to blend back into it. C++:
+  `melange::render::SetCameraOverride`/`ClearCameraOverride`/`CameraOverridden`/`GetGameCamera`.
+- New: `wum.game.match()`: the round and turn clocks (`roundMs`, `roundMsLeft`, `turnMs`, `turnMsLeft`),
+  `waterLevel`, `suddenDeath`, `turnsStarted` and the land bounds `landMin`/`landMax` (also in `gamestate::Match`).
+- New: `wum.draw.mesh` for world draws, in a vertex-array form (`verts`, `idx`, `tex`, `model`, `opts`) and a handle
+  form over meshes kept with `wum.draw.newMesh`/`wum.draw.freeMesh`: 8 floats per vertex (or 12 with `"pntc"` vertex
+  colours), a model matrix or `{pos, yaw, scale}`, optional CPU lighting, alpha or additive blending, culling and
+  x-ray, depth-tested against the scene.
+- Fixed: `suddenDeath` (`wum.game.match()`, `gamestate::Match` and the Oasis match state) stayed `false` through
+  sudden death: the versus script never sends `GameLogic.ActivateSuddenDeath`. It now latches on the
+  `Comment.SuddenDeath` the script sends when sudden death starts.
+
 ## 0.10.0
 
 - New: texture tags. A client-only mod can declare `"graphics": {"textureTags": "<file>.json"}` in `spice.json`: a

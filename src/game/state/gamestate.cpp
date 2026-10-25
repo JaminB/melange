@@ -35,7 +35,7 @@ std::atomic<uint32_t> g_wantNow{0};
 uint64_t g_bucketStart = 0, g_lastPeriodic = 0;
 uint32_t g_wantCur = 0, g_wantPrev = 0;
 void* g_vm = nullptr;
-bus::MsgId g_turnId = bus::kInvalidId, g_sdId = bus::kInvalidId;
+bus::MsgId g_turnId = bus::kInvalidId, g_sdId = bus::kInvalidId, g_sdCommentId = bus::kInvalidId;
 uint32_t g_turnBase = 0, g_sdBase = 0, g_prevTurns = 0, g_prevSd = 0;
 Snapshot g_cache{};
 uint64_t g_cacheFrame = 0;
@@ -145,14 +145,20 @@ uint32_t Count(bus::MsgId id) {
     return id == bus::kInvalidId ? 0 : bus::CountOf(id, bus::Path::Post) + bus::CountOf(id, bus::Path::Deliver);
 }
 
+uint32_t SuddenDeathCount() { return Count(g_sdId) + Count(g_sdCommentId); }
+
 // Turns and sudden death come from the bus's own message counters, rebased when a match VM appears: no handler.
 void TrackMatch() {
     if (g_turnId == bus::kInvalidId && bus::Installed() && bus::RegistryReady()) {
         g_turnId = bus::IdOf("GameLogic.Turn.Started");
+        // The shipped versus script (stdvs.lub StartSuddenDeath) never sends GameLogic.ActivateSuddenDeath: it sets
+        // StartedSuddenDeath, sends Comment.SuddenDeath and then applies the scheme's mode (energy to 1, a draw, or
+        // Water.RiseSpeed.Current). So the comment is the signal; the message still counts for scripts that send it.
         g_sdId = bus::IdOf("GameLogic.ActivateSuddenDeath");
+        g_sdCommentId = bus::IdOf("Comment.SuddenDeath");
     }
     // The first turn can start in the very frame the VM appears, so rebase on the counts seen one frame earlier.
-    const uint32_t turns = g_turnId == bus::kInvalidId ? 0 : bus::CountOf(g_turnId, bus::Path::Post), sd = Count(g_sdId);
+    const uint32_t turns = g_turnId == bus::kInvalidId ? 0 : bus::CountOf(g_turnId, bus::Path::Post), sd = SuddenDeathCount();
     void* vm = lua50::MatchState();
     if (vm != g_vm) {
         g_vm = vm;
@@ -174,7 +180,7 @@ detail::MatchInfo Info() {
     m.serial = sim::MatchSerial();
     if (m.inMatch && g_turnId != bus::kInvalidId) {
         m.turnsStarted = bus::CountOf(g_turnId, bus::Path::Post) - g_turnBase;
-        m.suddenDeath = Count(g_sdId) != g_sdBase;
+        m.suddenDeath = SuddenDeathCount() != g_sdBase;
     }
     return m;
 }

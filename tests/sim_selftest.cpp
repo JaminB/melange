@@ -26,6 +26,8 @@ extern "C" {
 #include "lua/sim/sim_core.h"
 #include "lua/sim/sim_hash.h"
 #include "lua/sim/sim_weapons.h"
+#include "lua/sim/sim_worms.h"
+#include "lua/sim/turnhold.h"
 #include "melange/sim.h"
 #include "melange/wormsign.h"
 #include "weapons/behaviour.h"
@@ -99,6 +101,23 @@ int SendImpl(lua_State* S, int kind) {
 int FSend(lua_State* S) { return SendImpl(S, 0); }
 int FSendValue(lua_State* S) { return SendImpl(S, 1); }
 
+// QueryContainer("GM.SchemeData") as the versus script uses it: a table of the scheme's fields.
+int FQueryContainer(lua_State* S) {
+    const std::string name = lua_tostring(S, 1) ? lua_tostring(S, 1) : "";
+    if (name != "GM.SchemeData") {
+        Halt("Unknown container in function 'QueryContainer'");
+        return 0;
+    }
+    lua_newtable(S);
+    lua_pushstring(S, "Name");
+    lua_pushstring(S, "FE.Scheme.Test");
+    lua_settable(S, -3);
+    lua_pushstring(S, "TurnTime");
+    lua_pushnumber(S, 45000);
+    lua_settable(S, -3);
+    return 1;
+}
+
 int FGetData(lua_State* S) {
     const std::string name = lua_tostring(S, 1) ? lua_tostring(S, 1) : "";
     auto it = data.find(name);
@@ -168,6 +187,7 @@ lua_State* NewMatchVM() {
     reg("SendStringMessage", &FSendValue);
     reg("GetData", &FGetData);
     reg("SetData", &FSetData);
+    reg("QueryContainer", &FQueryContainer);
     luaL_loadbuffer(S, kLevelScript, sizeof kLevelScript - 1, "=level");
     lua_pcall(S, 0, 0, 0);
     lua_settop(S, 0);
@@ -379,6 +399,7 @@ s.setWrong = r(wum.sim.setData("Test.Int", "text"))
 s.setOk = r(wum.sim.setData("Test.Int", 7))
 s.getInt2 = r(wum.sim.getData("Test.Int"))
 s.artillery = r(wum.sim.getData("GameLogic.ArtilleryMode"))
+s.scheme = r(wum.sim.scheme())
 s.str = r(wum.sim.sendString("Melange.Test.Ping", "hello"))
 s.echo = 0
 wum.events.on("Melange.Test.Echo", function(name, v)
@@ -447,6 +468,7 @@ RunResult RunMatch(uint32_t seed, bool full) {
         Expect(Storage("sender", "setWrong") == "nil:the value must be a number", "setData type: " + Storage("sender", "setWrong"));
         Expect(Storage("sender", "setOk") == "true:nil" && Storage("sender", "getInt2") == "7:nil", "setData then getData");
         Expect(Storage("sender", "artillery") == "nil:denied", "denied data: " + Storage("sender", "artillery"));
+        Expect(Storage("sender", "scheme") == "FE.Scheme.Test:nil", "wum.sim.scheme reads GM.SchemeData.Name: " + Storage("sender", "scheme"));
         Expect(Storage("sender", "str") == "true:nil", "sendString of a mod message");
         Expect(fake::runState == 1 && fake::halts.empty(), "run state stays 1 after refused sends and data access");
     }
@@ -1135,6 +1157,396 @@ void TestLevelSims() {
     melange::simhash::Uninstall();
 }
 
+// wum.sim.worm / worms / land and the anchor against a fake set of worm containers with a toy physics step.
+namespace sw = melange::simworms;
+struct FakeWorms final : sw::Backend {
+    struct Slot {
+        bool valid = false;
+        sw::WormInfo w{};
+    };
+    Slot slots[sw::kMaxWorms];
+    float land[6] = {-100, 0, -50, 100, 60, 50};
+    int writes = 0;
+    bool Read(int slot, sw::WormInfo* out) override {
+        if (!slots[slot].valid) return false;
+        *out = slots[slot].w;
+        return true;
+    }
+    bool Write(int slot, const float pos[3], const float vel[3], uint32_t set, uint32_t clear) override {
+        if (!slots[slot].valid) return false;
+        ++writes;
+        memcpy(slots[slot].w.pos, pos, 12);
+        memcpy(slots[slot].w.vel, vel, 12);
+        slots[slot].w.flags = (slots[slot].w.flags | set) & ~clear;
+        return true;
+    }
+    bool Land(float out[6]) override {
+        memcpy(out, land, sizeof land);
+        return true;
+    }
+    void Step() {  // the engine's physics: velocity moves the worm
+        for (auto& s : slots)
+            for (int i = 0; i < 3; ++i) s.w.pos[i] += s.w.vel[i];
+    }
+    void Set(int slot, float x, float y, float z, uint8_t team, uint16_t health, uint32_t state, const char* name) {
+        Slot& s = slots[slot];
+        s.valid = true;
+        s.w = sw::WormInfo{};
+        s.w.active = true;
+        s.w.pos[0] = x, s.w.pos[1] = y, s.w.pos[2] = z;
+        s.w.team = team;
+        s.w.posInTeam = static_cast<uint8_t>(slot % 4);
+        s.w.health = health;
+        s.w.state = state;
+        s.w.weapon = 1;
+        snprintf(s.w.name, sizeof s.w.name, "%s", name);
+    }
+};
+
+const char kWormMod[] = R"(
+local s = wum.sim.storage
+local function r(...) local t = {} for i = 1, arg.n do t[i] = tostring(arg[i]) end return table.concat(t, ",") end
+local w = wum.sim.worm(1)
+s.has = tostring(w ~= nil) .. ":" .. w.slot
+s.pos = r(w:pos())
+s.vel = r(w:vel())
+s.alive = r(w:alive(), wum.sim.worm(2):alive(), wum.sim.worm(3):alive())
+s.team = r(w:team())
+s.health = r(w:health())
+s.name = r(w:name(), w:state(), w:weapon())
+s.none = r(wum.sim.worm(9))
+s.badSlot = r(wum.sim.worm(1.5))
+s.raises = tostring(pcall(wum.sim.worm, "x"))
+local list, n = wum.sim.worms()
+s.count = n .. ":" .. table.getn(list) .. ":" .. list[1] .. "," .. list[2] .. "," .. list[3] .. "," .. list[4]
+s.land = r(wum.sim.land())
+s.dead = r(wum.sim.worm(3):anchor(true))
+s.anch = r(w:anchor(true))
+s.again = r(w:anchor())
+s.anchored = r(w:anchored())
+s.pin = r(w:pin())
+s.other = r(wum.sim.worm(0):anchored())
+s.badArg = tostring(pcall(function() return w:anchor(5) end))
+s.meta = tostring(getmetatable(w)) .. "," .. tostring((pcall(setmetatable, w, {}))) .. "," .. tostring(getmetatable(wum.sim.worm(0)) == getmetatable(w))
+s.dot = tostring((pcall(w.pos))) .. "," .. tostring((pcall(w.pos, {slot = 99}))) .. "," .. r(w.pos({slot = 0}))
+wum.events.on("tick", function(t)
+  if t == 10 then s.pos10 = r(w:pos()) s.vel10 = r(w:vel()) end
+  if t == 20 then s.pinned20 = r(w:anchored()) end
+  if t == 30 then s.unanchor = r(w:anchor(false)) s.after = r(w:anchored()) end
+end)
+)";
+
+void TestWorms() {
+    FakeWorms fake;
+    fake.Set(0, 10, 20, 30, 0, 100, sw::kAmbulatory, "Zero");
+    fake.Set(1, 1, 2, 3, 2, 77, sw::kAmbulatory, "One");
+    fake.Set(2, 4, 5, 6, 1, 0, sw::kAmbulatory, "Dying");
+    fake.Set(3, 7, 8, 9, 3, 50, sw::kDeathThroes, "Dead");
+    fake.slots[1].w.vel[0] = 1;  // drifts one unit per tick until anchored
+    sw::SetBackend(&fake);
+    std::vector<std::string> events;
+    sw::SetAnchorObserver([](int slot, bool on, bool released, void* u) {
+        static_cast<std::vector<std::string>*>(u)->push_back(std::to_string(slot) + (on ? ":on" : released ? ":released" : ":off"));
+    }, &events);
+    Expect(sw::AddSimFunctions(), "wum.sim.worm, worms and land added");
+
+    g_modLog.clear();
+    fake::runState = 1;
+    fake::allowAll = false;
+    fake::sent.clear();
+    fake::halts.clear();
+    fake::data.clear();
+    fake::L = fake::NewMatchVM();
+    core::SetSources({{"worms", "1.0.0", "@worms/sim.lua", kWormMod}});
+    core::ContextCreated(fake::L);
+    Expect(core::Init({"GameLogic.Turn.Ended"}, true), "worm mod loaded");
+    const int th = melange::sim::AddTickHook([](uint32_t, void*) { sw::RepinAll(); }, nullptr, 10);
+
+    Expect(Storage("worms", "has") == "true:1", "wum.sim.worm(1) is a table with its slot: " + Storage("worms", "has"));
+    Expect(Storage("worms", "pos") == "1,2,3" && Storage("worms", "vel") == "1,0,0", "pos and vel read the container");
+    Expect(Storage("worms", "alive") == "true,false,false", "alive: health 0 and DeathThroes are not alive: " + Storage("worms", "alive"));
+    Expect(Storage("worms", "team") == "2,1" && Storage("worms", "health") == "77", "team, posInTeam and health");
+    Expect(Storage("worms", "name") == "One,0,1", "name, state and weapon: " + Storage("worms", "name"));
+    Expect(Storage("worms", "none") == "nil,no worm" && Storage("worms", "badSlot") == "nil,no worm", "an empty or fractional slot is nil, reason");
+    Expect(Storage("worms", "raises") == "false", "a non-number slot raises");
+    Expect(Storage("worms", "count") == "4:4:0,1,2,3", "wum.sim.worms lists the slots with a container: " + Storage("worms", "count"));
+    Expect(Storage("worms", "land") == "-100,0,-50,100,60,50", "wum.sim.land: " + Storage("worms", "land"));
+    Expect(Storage("worms", "dead") == "nil,dead", "anchoring a dead worm is refused: " + Storage("worms", "dead"));
+    Expect(Storage("worms", "anch") == "true" && Storage("worms", "again") == "true", "anchor(true) twice keeps the first pin");
+    Expect(Storage("worms", "anchored") == "true,true" && Storage("worms", "pin") == "1,2,3", "anchored, pinned and the pin");
+    Expect(Storage("worms", "other") == "false,false", "another worm is not anchored");
+    Expect(Storage("worms", "badArg") == "false", "anchor(5) raises");
+    Expect(Storage("worms", "meta") == "worm,false,true", "shared, locked method table: " + Storage("worms", "meta"));
+    Expect(Storage("worms", "dot") == "false,false,10,20,30", "w.pos() and a bad self raise; any {slot=} table works: " + Storage("worms", "dot"));
+    Expect(fake.slots[1].w.flags == sw::kNailFlags && fake.slots[1].w.vel[0] == 0, "anchor pins at once: nail flags set, velocity zeroed");
+    Expect(events == std::vector<std::string>({"1:on"}), "observer: one anchor");
+
+    uint8_t h1[sw::kHashBytes], h2[sw::kHashBytes];
+    Expect(sw::HashBytes(h1, sizeof h1) == sw::kHashBytes && sw::HashBytes(h2, sizeof h2) == sw::kHashBytes &&
+               memcmp(h1, h2, sizeof h1) == 0 && h1[14 * 1] == 1 && h1[14 * 1 + 1] == 1 && h1[0] == 0,
+           "hash bytes: per slot anchored, pinned and the pin, deterministic");
+    Expect(sw::HashBytes(h1, 10) == 0, "hash bytes refuse a short buffer");
+
+    // Each tick: the engine's physics step, the entity hook's post-step re-pin, then the script service's Update
+    // (where the mod's tick handler reads) with the sim tick hook's RepinAll after it.
+    for (int i = 1; i <= 15; ++i) {
+        fake.slots[1].w.vel[0] = 1;  // an explosion keeps pushing
+        fake.slots[0].w.vel[0] = 1;
+        fake.Step();
+        sw::RepinAll();
+        core::Update();
+    }
+    Expect(Storage("worms", "pos10") == "1,2,3" && Storage("worms", "vel10") == "0,0,0",
+           "an anchored worm stays on its pin with zero velocity: " + Storage("worms", "pos10"));
+    Expect(fake.slots[0].w.pos[0] == 25, "an unanchored worm moved 15 units");
+    Expect(fake.slots[1].w.pos[0] == 1 && fake.slots[1].w.flags == sw::kNailFlags, "the fake physics could not move the anchored worm");
+
+    fake.slots[1].w.state = sw::kDrownFloat;  // the engine's drowning check saw the pinned worm under water
+    for (int i = 16; i <= 25; ++i) {
+        fake.slots[1].w.vel[0] = 1;
+        fake.Step();
+        sw::RepinAll();
+        core::Update();
+    }
+    Expect(Storage("worms", "pinned20") == "true,false", "the pin is released once the worm drowns, the anchor stays: " + Storage("worms", "pinned20"));
+    Expect(fake.slots[1].w.pos[0] > 1, "a released worm follows the engine again (it sinks)");
+    Expect(events == std::vector<std::string>({"1:on", "1:released"}), "observer: the release");
+
+    for (int i = 26; i <= 35; ++i) core::Update();
+    Expect(Storage("worms", "unanchor") == "true" && Storage("worms", "after") == "false,false", "anchor(false) clears");
+    Expect(fake.slots[1].w.flags == 0, "anchor(false) clears the nail flags");
+    Expect(events == std::vector<std::string>({"1:on", "1:released", "1:off"}), "observer: the clear");
+    Expect(sw::AnchoredCount() == 0, "no anchors left");
+
+    // A second anchor on another worm, then the match closes: everything is forgotten.
+    const char* why = nullptr;
+    Expect(sw::Anchor(0, true, &why) && sw::AnchoredCount() == 1, "C++ Anchor on slot 0");
+    Expect(!sw::Anchor(7, true, &why) && std::string(why) == "no worm", "C++ Anchor on an empty slot: no worm");
+    sw::ResetMatch();
+    Expect(sw::AnchoredCount() == 0 && !sw::Anchored(0), "ResetMatch forgets the anchors");
+    melange::sim::RemoveTickHook(th);
+    Expect(lua_gettop(fake::L) == 0 && fake::runState == 1 && fake::halts.empty(), "stack balanced, match running");
+    core::ContextClosing(fake::L);
+    lua_close(fake::L);
+    fake::L = nullptr;
+
+    sw::SetBackend(nullptr);
+    sw::SetAnchorObserver(nullptr, nullptr);
+    Expect(!sw::Anchor(1, true, &why) && std::string(why) == "unavailable", "no backend: unavailable");
+    core::SetSources({});
+}
+
+// The turn-start hold against the shape of the game's own stdlib.lub: Turn.Ended -> TurnEnded -> CheckOneTeamVictory
+// -> StartTurn, with StartTurn the wrapped global.
+const char kGameTurns[] = R"(
+starts = 0
+turnEnds = 0
+boom = false
+function StartTurn() if boom then error("boom") end starts = starts + 1 SendMessage("GameLogic.Turn.Started") end
+function CheckOneTeamVictory() StartTurn() end
+function TurnEnded() CheckOneTeamVictory() end
+function DoPostActivity() turnEnds = turnEnds + 1 SendMessage("GameLogic.Turn.Ended") TurnEnded() end
+)";
+
+const char kHolder[] = R"(
+local s = wum.sim.storage
+s.events = {}
+s.ticks = 20
+s.arm = true
+wum.events.on("GameLogic.Turn.Ended", function()
+  if s.arm then s.armed = tostring(wum.sim.holdTurn(s.ticks)) end
+end)
+wum.events.on("sim.turnHold", function(name, ticks)
+  local rem, armed = wum.sim.turnHold()
+  table.insert(s.events, "hold:" .. ticks .. "@" .. wum.sim.tick() .. ":" .. rem .. "/" .. armed)
+end)
+wum.events.on("sim.turnHoldEnd", function(name, held)
+  table.insert(s.events, "end:" .. held .. "@" .. wum.sim.tick())
+end)
+s.bad1 = tostring(pcall(wum.sim.holdTurn, 0))
+s.bad2 = tostring(pcall(wum.sim.holdTurn, 3001))
+s.bad3 = tostring(pcall(wum.sim.holdTurn, 2.5))
+s.bad4 = tostring(pcall(wum.sim.holdTurn, "x"))
+s.rel0 = tostring(wum.sim.releaseTurn())
+local r, a = wum.sim.turnHold()
+s.idle = r .. "/" .. a
+)";
+
+std::vector<std::string> g_holdNotes;
+void HoldNote(const melange::turnhold::Event& e, void*) {
+    g_holdNotes.push_back(std::string(e.begin ? "begin:" : "end:") + std::to_string(e.ticks) + "@" + std::to_string(e.tick) +
+                          ":" + std::to_string(e.roundMsLeft));
+}
+
+double HoldGlobal(const char* name) {
+    lua_pushstring(fake::L, name);
+    lua_rawget(fake::L, LUA_GLOBALSINDEX);
+    const double v = lua_tonumber(fake::L, -1);
+    lua_pop(fake::L, 1);
+    return v;
+}
+
+// Calls a global of the "game script" the way the engine's CallGlobal does (pcall, no arguments); the error text or "".
+std::string HoldCall(const char* name) {
+    lua_pushstring(fake::L, name);
+    lua_rawget(fake::L, LUA_GLOBALSINDEX);
+    if (lua_pcall(fake::L, 0, 0, 0) == 0) return "";
+    std::string err = lua_tostring(fake::L, -1) ? lua_tostring(fake::L, -1) : "?";
+    lua_pop(fake::L, 1);
+    return err;
+}
+
+std::string SentFrom(size_t i) {
+    std::string out;
+    for (size_t k = i; k < fake::sent.size(); ++k) out += fake::sent[k] + ";";
+    return out;
+}
+
+lua_State* HoldMatch() {
+    fake::data = {{"RoundTimeRemaining", {0, 290000, ""}}, {"FCS.GameOver", {0, 0, ""}}};
+    fake::sent.clear();
+    fake::halts.clear();
+    fake::runState = 1;
+    fake::allowAll = false;
+    fake::L = fake::NewMatchVM();
+    luaL_loadbuffer(fake::L, kGameTurns, sizeof kGameTurns - 1, "=stdlib");
+    lua_pcall(fake::L, 0, 0, 0);
+    lua_settop(fake::L, 0);
+    core::SetSources({{"holder", "1.0.0", "@holder/sim/main.lua", kHolder}});
+    core::ContextCreated(fake::L);
+    Expect(core::Init({"GameLogic.Turn.Ended", "GameLogic.Turn.Started"}, true), "turn hold: holder loaded");
+    return fake::L;
+}
+
+void HoldClose() {
+    g_log.clear();
+    core::ContextClosing(fake::L);
+    Expect(Logged(" 0 refs left"), "turn hold: the wrapper's ref is dropped at match end");
+    lua_close(fake::L);
+    fake::L = nullptr;
+}
+
+void TestTurnHold() {
+    using melange::sim::GetTurnHold;
+    melange::turnhold::Init();
+    melange::turnhold::SetNotify(&HoldNote, nullptr);
+    g_holdNotes.clear();
+    lua_State* S = HoldMatch();
+    Expect(Storage("holder", "bad1").rfind("false", 0) == 0 && Storage("holder", "bad2").rfind("false", 0) == 0 &&
+               Storage("holder", "bad3").rfind("false", 0) == 0 && Storage("holder", "bad4").rfind("false", 0) == 0,
+           "holdTurn refuses 0, 3001, 2.5 and a string: " + Storage("holder", "bad2"));
+    Expect(Storage("holder", "rel0") == "false" && Storage("holder", "idle") == "0/0", "nothing to release at the start");
+    Expect(!GetTurnHold().holding && GetTurnHold().armed == 0, "GetTurnHold idle");
+
+    // 1. A turn end arms the hold; StartTurn is deferred; the round clock is paused; the release starts the turn.
+    size_t mark = fake::sent.size();
+    Expect(HoldCall("DoPostActivity").empty(), "turn end 1 runs");
+    Expect(HoldGlobal("starts") == 0 && Storage("holder", "armed") == "true", "StartTurn deferred by the armed hold");
+    Expect(SentFrom(mark) == "GameLogic.Turn.Ended;GameLogic.RoundTime.Pause;", "round clock paused right after Turn.Ended: " + SentFrom(mark));
+    Expect(Storage("holder", "events") == "{1=hold:20@0:20/0;}", "sim.turnHold delivered with the ticks: " + Storage("holder", "events"));
+    auto h = GetTurnHold();
+    Expect(h.holding && h.remaining == 20 && h.total == 20 && h.since == 0 && h.armed == 0, "GetTurnHold during the hold");
+    {
+        uint8_t hb[melange::turnhold::kHashBytes], hb2[melange::turnhold::kHashBytes];
+        uint32_t w[3];
+        Expect(melange::turnhold::HashBytes(hb, sizeof hb) == sizeof hb && melange::turnhold::HashBytes(hb2, sizeof hb2) == sizeof hb2 &&
+                   memcmp(hb, hb2, sizeof hb) == 0 && melange::turnhold::HashBytes(hb, 4) == 0,
+               "hold hash bytes: deterministic, short buffer refused");
+        memcpy(w, hb, sizeof w);
+        Expect(w[0] == 0 && w[1] == 1 && w[2] == 20 && hb[sizeof hb - 1] == 1, "hold hash bytes: not armed, holding, 20 left, paused");
+    }
+    for (int i = 0; i < 19; ++i) core::Update();
+    Expect(HoldGlobal("starts") == 0 && GetTurnHold().remaining == 1, "still held after 19 ticks");
+    mark = fake::sent.size();
+    core::Update();
+    Expect(HoldGlobal("starts") == 1, "the turn starts at the 20th tick");
+    Expect(SentFrom(mark) == "GameLogic.RoundTime.Resume;GameLogic.Turn.Started;", "round clock resumed before the turn starts: " + SentFrom(mark));
+    Expect(Storage("holder", "events") == "{1=hold:20@0:20/0;2=end:20@20;}", "sim.turnHoldEnd before StartTurn: " + Storage("holder", "events"));
+    h = GetTurnHold();
+    Expect(!h.holding && h.holds == 1, "GetTurnHold after the release");
+    Expect(g_holdNotes == std::vector<std::string>({"begin:20@0:290000", "end:20@20:290000"}), "client notifications: " + (g_holdNotes.empty() ? "" : g_holdNotes[0]));
+    Expect(lua_gettop(S) == 0 && fake::runState == 1 && fake::halts.empty(), "stack balanced, script running");
+
+    // 2. A second turn end during the hold: the extra StartTurn is swallowed and one turn starts.
+    Expect(HoldCall("DoPostActivity").empty() && HoldGlobal("starts") == 1, "turn end 2 deferred");
+    for (int i = 0; i < 5; ++i) core::Update();
+    Expect(HoldCall("DoPostActivity").empty() && HoldGlobal("starts") == 1, "turn end 3 during the hold swallowed");
+    Expect(GetTurnHold().remaining == 20 && GetTurnHold().total == 25, "holdTurn during a hold sets the remaining ticks");
+    for (int i = 0; i < 20; ++i) core::Update();
+    Expect(HoldGlobal("starts") == 2 && GetTurnHold().holds == 2, "exactly one turn started after two turn ends: " + std::to_string(HoldGlobal("starts")));
+
+    // 3. releaseTurn ends an active hold at the end of the tick.
+    auto e = melange::simbridge::EvalMatch("mods.holder.wum.sim.storage.ticks = 100");
+    Expect(e.ok, "console sets the holder's ticks");
+    Expect(HoldCall("DoPostActivity").empty() && HoldGlobal("starts") == 2, "turn end 4 deferred 100 ticks");
+    core::Update();
+    core::Update();
+    e = melange::simbridge::EvalMatch("return mods.holder.wum.sim.releaseTurn()");
+    Expect(e.ok && e.text == "true", "releaseTurn returns true on an active hold: " + e.text);
+    Expect(HoldGlobal("starts") == 2, "release takes effect at the tick, not inside the call");
+    core::Update();
+    Expect(HoldGlobal("starts") == 3, "released early: the turn started");
+    e = melange::simbridge::EvalMatch("return mods.holder.wum.sim.releaseTurn()");
+    Expect(e.ok && e.text == "false", "releaseTurn with nothing to release returns false");
+
+    // 4. releaseTurn cancels an armed hold before the turn end comes.
+    e = melange::simbridge::EvalMatch("return mods.holder.wum.sim.holdTurn(50), mods.holder.wum.sim.turnHold()");
+    Expect(e.ok && e.text == "true\t0\t50", "a hold armed outside a turn end: " + e.text);
+    e = melange::simbridge::EvalMatch("return mods.holder.wum.sim.releaseTurn(), mods.holder.wum.sim.turnHold()");
+    Expect(e.ok && e.text == "true\t0\t0", "releaseTurn cancels the armed hold: " + e.text);
+
+    // 5. Without a hold, StartTurn passes straight through, and its errors reach the caller unchanged.
+    Expect(melange::simbridge::EvalMatch("mods.holder.wum.sim.storage.arm = false").ok, "console turns arming off");
+    mark = fake::sent.size();
+    Expect(HoldCall("DoPostActivity").empty() && HoldGlobal("starts") == 4, "no hold: the turn starts at once");
+    Expect(SentFrom(mark) == "GameLogic.Turn.Ended;GameLogic.Turn.Started;", "no hold: nothing paused: " + SentFrom(mark));
+    lua_pushstring(S, "boom");
+    lua_pushboolean(S, 1);
+    lua_rawset(S, LUA_GLOBALSINDEX);
+    const std::string err = HoldCall("DoPostActivity");
+    Expect(err.find("boom") != std::string::npos && HoldGlobal("starts") == 4, "StartTurn's error propagates through the wrapper: " + err);
+    lua_pushstring(S, "boom");
+    lua_pushboolean(S, 0);
+    lua_rawset(S, LUA_GLOBALSINDEX);
+
+    // 6. The round ends during the hold: the deferred StartTurn is dropped, the clock still resumes.
+    Expect(melange::simbridge::EvalMatch("mods.holder.wum.sim.storage.arm = true mods.holder.wum.sim.storage.ticks = 5").ok, "console re-arms");
+    Expect(HoldCall("DoPostActivity").empty() && HoldGlobal("starts") == 4, "turn end deferred 5 ticks");
+    fake::data["FCS.GameOver"].num = 1;
+    mark = fake::sent.size();
+    for (int i = 0; i < 5; ++i) core::Update();
+    Expect(HoldGlobal("starts") == 4 && !GetTurnHold().holding, "game over during the hold: StartTurn skipped");
+    Expect(SentFrom(mark) == "GameLogic.RoundTime.Resume;", "the round clock is still resumed: " + SentFrom(mark));
+    fake::data["FCS.GameOver"].num = 0;
+
+    // 7. The cap: 3000 ticks at most, counted from the deferral, also for an extension.
+    Expect(melange::simbridge::EvalMatch("mods.holder.wum.sim.storage.ticks = 3000").ok, "console sets 3000");
+    Expect(HoldCall("DoPostActivity").empty() && GetTurnHold().remaining == 3000, "a 3000-tick hold is accepted");
+    for (int i = 0; i < 2990; ++i) core::Update();
+    e = melange::simbridge::EvalMatch("return mods.holder.wum.sim.holdTurn(3000), mods.holder.wum.sim.turnHold()");
+    Expect(e.ok && e.text == "true\t10\t0", "an extension is clamped to the cap: " + e.text);
+    for (int i = 0; i < 10; ++i) core::Update();
+    Expect(HoldGlobal("starts") == 5, "the capped hold released");
+    Expect(lua_gettop(S) == 0 && fake::runState == 1 && fake::halts.empty(), "stack balanced, script running at the end");
+    HoldClose();
+    Expect(!GetTurnHold().holding && GetTurnHold().holds == 0, "GetTurnHold zero outside a match");
+    Expect(!core::HasTickHooks(), "the hold's tick hook is removed at match end");
+    {
+        uint8_t hb[melange::turnhold::kHashBytes], zero[melange::turnhold::kHashBytes] = {};
+        Expect(melange::turnhold::HashBytes(hb, sizeof hb) == sizeof hb && memcmp(hb, zero, sizeof hb) == 0, "hold hash bytes all zero outside a match");
+    }
+
+    // 8. A new match wraps the new VM's StartTurn again.
+    g_holdNotes.clear();
+    S = HoldMatch();
+    Expect(HoldCall("DoPostActivity").empty() && HoldGlobal("starts") == 0 && GetTurnHold().holding, "next match: deferred again");
+    for (int i = 0; i < 20; ++i) core::Update();
+    Expect(HoldGlobal("starts") == 1 && g_holdNotes.size() == 2, "next match: released (holdTurn added the tick hook again)");
+    HoldClose();
+    Expect(!core::HasTickHooks(), "no tick hook after the second match either");
+    melange::turnhold::SetNotify(nullptr, nullptr);
+}
+
 int main() {
     melange::log::SetTap(&Tap);
     {
@@ -1144,9 +1556,13 @@ int main() {
         fake::CollectLib(S, "string", fake::strlib);
         fake::CollectLib(S, "table", fake::tablib);
     }
-    for (const char* n : {"GameLogic.Turn.Ended", "GameLogic.Turn.Started", "GameLogic.PauseGame", "Weapon.Fired"})
+    for (const char* n : {"GameLogic.Turn.Ended", "GameLogic.Turn.Started", "GameLogic.PauseGame", "Weapon.Fired",
+                          "GameLogic.RoundTime.Pause", "GameLogic.RoundTime.Resume"})
         fake::Reg(n);
     melange::simbridge::AddSimFunction("probe", &ProbeFn);
+    melange::simbridge::AddSimFunction("holdTurn", &melange::turnhold::LHoldTurn);
+    melange::simbridge::AddSimFunction("releaseTurn", &melange::turnhold::LReleaseTurn);
+    melange::simbridge::AddSimFunction("turnHold", &melange::turnhold::LTurnHold);
     core::SetLogSink(&Sink);
     core::Config cfg;
     cfg.instrPerCall = 200000;
@@ -1195,6 +1611,8 @@ int main() {
     TestDesyncProbe();
     TestWeapons();
     TestLevelSims();
+    TestWorms();
+    TestTurnHold();
     printf("sim_selftest: %d passed, %d failed\n", g_pass, g_fail);
     return g_fail ? 1 : 0;
 }

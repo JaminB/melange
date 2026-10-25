@@ -12,7 +12,24 @@ struct Camera {
     float nearZ, farZ;            // derived from proj
     bool valid;
 };
-bool GetCamera(Camera* out);  // main camera; refreshed once per main pass
+bool GetCamera(Camera* out);  // main camera; refreshed once per main pass; reflects a camera override
+// The game's own main camera, as GetCamera would report it without a camera override.
+bool GetGameCamera(Camera* out);
+
+// Render-only camera override: the main camera draws the frame from `pos` toward `target` (and, with fovDeg > 0, with
+// that vertical field of view) while the game's logical camera, which Wormsign compares between machines, is never
+// written. The engine's render camera (XCamera) holds the override only while its Render call runs and gets its own
+// values back right after, so game code outside rendering never sees it. GetCamera and WorldToScreen report it
+// everywhere. One owner at a time; it ends `frames` frames (1..600, 0 = 30) after its last refresh, at match end,
+// and on ClearCameraOverride. Main thread.
+struct CameraOverride {
+    float pos[3], target[3], up[3];
+    float fovDeg;  // 5..150, or 0 = the game's
+};
+enum class OverrideResult : uint8_t { Ok, Busy, Invalid, Unavailable };
+OverrideResult SetCameraOverride(const void* owner, const CameraOverride& o, int frames = 0);
+bool ClearCameraOverride(const void* owner);  // nullptr: any owner; true if one was cleared
+bool CameraOverridden();                       // an override is set (it draws from the next Render on)
 // Pixels, origin top-left of the window; depth in [0,1] as the depth buffer stores it. False if behind the camera.
 bool WorldToScreen(const float world[3], float* x, float* y, float* depth);
 void WindowSize(int* w, int* h);

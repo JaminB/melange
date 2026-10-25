@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.25)
-project(Melange VERSION 0.10.0 LANGUAGES C CXX)
+project(Melange VERSION 0.11.0 LANGUAGES C CXX)
 
 if(NOT CMAKE_SIZEOF_VOID_P EQUAL 4)
     message(FATAL_ERROR "Melange must be built for 32-bit x86 (WormsMayhem.exe is a 32-bit process). Use build.ps1.")
@@ -507,8 +507,9 @@ target_compile_options(lua50_ref PRIVATE /W0 /FI${CMAKE_SOURCE_DIR}/tests/lua50_
 add_executable(sim_selftest EXCLUDE_FROM_ALL
     tests/sim_selftest.cpp
     src/lua/sim/sim_env.cpp src/lua/sim/sim_api.cpp src/lua/sim/sim_events.cpp src/lua/sim/sim_rng.cpp
-    src/lua/sim/sim_hash.cpp src/lua/sim/sim_weapons.cpp src/lua/sim/sim_level.cpp src/weapons/behaviour_core.cpp
-    src/wormsign/contrib.cpp
+    src/lua/sim/sim_hash.cpp src/lua/sim/sim_weapons.cpp src/lua/sim/sim_level.cpp src/lua/sim/sim_worms.cpp
+    src/weapons/behaviour_core.cpp
+    src/lua/sim/turnhold_core.cpp src/wormsign/contrib.cpp
     src/core/jlog.cpp src/core/jlog_ring.cpp src/core/jlog_bus_filter.cpp
     src/core/events.cpp src/core/game.cpp src/core/pe_laa.cpp src/tools/hash.cpp src/core/mem.cpp src/core/log.cpp)
 target_include_directories(sim_selftest PRIVATE src src/sdk ${CMAKE_BINARY_DIR}/generated)
@@ -608,6 +609,11 @@ add_executable(music_selftest EXCLUDE_FROM_ALL
 target_include_directories(music_selftest PRIVATE src src/sdk)
 target_compile_definitions(music_selftest PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX _CRT_SECURE_NO_WARNINGS)
 target_compile_options(music_selftest PRIVATE /W4 /utf-8 /permissive-)
+
+# The render-only camera override without the game: look-at matrices, fov projection, validation and lifetime.
+add_executable(camoverride_selftest EXCLUDE_FROM_ALL tests/camoverride_selftest.cpp)
+target_include_directories(camoverride_selftest PRIVATE src src/sdk)
+target_compile_options(camoverride_selftest PRIVATE /W4 /utf-8 /permissive-)
 
 add_executable(draw_queue_selftest EXCLUDE_FROM_ALL tests/draw_queue_selftest.cpp)
 target_include_directories(draw_queue_selftest PRIVATE src src/sdk)

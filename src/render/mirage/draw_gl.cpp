@@ -210,6 +210,7 @@ void DrawMesh(const Primitive& p, uint32_t& verts) {
         glMultMatrixf(p.model);
         g_c.space = Space::Unset;
     }
+    if (p.texture) glTexEnvi(GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_MODULATE);  // restored by PopState (GL_TEXTURE_BIT)
     glEnableClientState(GL_VERTEX_ARRAY);
     glEnableClientState(GL_COLOR_ARRAY);
     glEnableClientState(GL_TEXTURE_COORD_ARRAY);

@@ -28,6 +28,7 @@ struct SettingDecl {
 };
 
 struct Gen;
+struct MeshData;  // wum.draw.newMesh (wum_render.cpp)
 struct ModRec {
     std::string id, name, version;
     std::wstring dir;
@@ -44,6 +45,8 @@ struct ModRec {
     double msFrame = 0, msAccum = 0;
     uint64_t spriteFrame = 0;  // wum.draw.sprite: per-frame budget, keyed by draw::FrameSerial()
     uint32_t spriteCount = 0;
+    uint64_t meshFrame = 0;    // wum.draw.mesh: per-frame budget, keyed by draw::FrameSerial()
+    uint32_t meshCount = 0, meshFrameVerts = 0;
     // wum.log rate limit
     uint64_t logWindow = 0;
     uint32_t logCount = 0, logDropped = 0;
@@ -80,6 +83,10 @@ struct Gen {
     std::vector<std::function<void()>> cleanups;  // run when the generation is revoked
     std::vector<unsigned> textures;  // wum.draw.texture: capped separately from kMaxHandlesPerGen (not a Callback)
     unsigned spriteTexHit = 0;       // wum.draw.sprite: the last texture id validated against `textures`
+    bool cameraCleanup = false;      // wum.render.cameraOverride: a cleanup that clears this mod's override is queued
+    std::map<uint32_t, std::shared_ptr<struct MeshData>> meshes;  // wum.draw.newMesh handles
+    uint32_t nextMesh = 1;
+    size_t meshVerts = 0;            // vertices held by `meshes`
 };
 
 // ---- VM and calls (sandbox.cpp)

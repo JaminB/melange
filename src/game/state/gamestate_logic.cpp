@@ -231,6 +231,13 @@ void FillSnapshot(const Layout& l, const Engine& e, const MatchInfo& m, Snapshot
     mt.windDir = Finite(mt.windDir);
     mt.waterLevel = Finite(mt.waterLevel);
     StringValue(e, "Land.Theme", mt.theme, sizeof mt.theme);
+    Vec3 lo{}, hi{};
+    if (Value(e, "Land.MinBounds", VarType::Vector, &lo) && Value(e, "Land.MaxBounds", VarType::Vector, &hi) && Plausible(lo) &&
+        Plausible(hi) && lo.x <= hi.x && lo.y <= hi.y && lo.z <= hi.z) {
+        mt.haveLand = true;
+        mt.landMin = lo;
+        mt.landMax = hi;
+    }
 
     for (int i = 0; i < 4; ++i) {
         const uintptr_t c = Container(l.teamHandles, i, l.teamVt);
