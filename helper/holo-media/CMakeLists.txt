@@ -28,6 +28,8 @@ if(HOLO_TORRENT)
 else()
     list(FILTER HOLO_SOURCES EXCLUDE REGEX "/src/bt/bt_libtorrent[^/]*[.]cpp$")
 endif()
+# The torrent engine's own build pieces (test target, test-source filter): src/bt is C6b's.
+include(src/bt/bt.cmake OPTIONAL)
 
 add_executable(holo-media ${HOLO_SOURCES})
 target_include_directories(holo-media PRIVATE src ${MELANGE_SRC})
