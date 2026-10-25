@@ -82,6 +82,14 @@ Melange fixes a set of bugs in Worms Ultimate Mayhem's online play: freezes, mat
 
 **Switch:** `[NetSession] FixCameraHold=1`
 
+## Desync after an oil drum explodes a tick apart
+
+**In the game:** an oil drum lights a short fuse when a blast reaches it and explodes a moment later. The fuse is measured from the game's sim clock, but between frames, when nothing is scheduled, the game fills that clock with the raw frame time instead of the tick it is on, and the raw time differs from one machine to the next by each machine's frame rate. A drum knocked by a nearby blast (for example one of several drums caught under an airstrike) reads that per-machine time, so its explosion falls on a different tick on each machine. Everything the explosion and its poison cloud roll then happens in a different order, and the turn ends with "This session is no longer available".
+
+**What Melange does:** during an online match, it rounds the drum's fuse down to the start of the tick it is on, and puts the drum's own timer back on the tick grid the way the game already does for mines. The drum then explodes at the same tick on every machine (three ticks after it is lit). Offline, the drum behaves as before.
+
+**Switch:** `[NetSession] FixDrumFuse=1`
+
 ## Crash joining a lobby on a map you don't have
 
 **In the game:** joining a host whose map is not in your game's level list crashed the game.

@@ -7,6 +7,7 @@
 #include <cstdio>
 #include <cstring>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 #include "core/events.h"
@@ -63,6 +64,7 @@ struct Fixes {
     bool resetViabilityOffset = true;
     bool releaseStuckPause = true;
     bool skipCameraHold = true;
+    bool alignDrumFuse = true;
     bool panelSelectUnderMenu = false;
 } g_fix;
 bool g_cameraHoldPatched = false;
@@ -492,7 +494,11 @@ struct MatchTrace {
 } g_matchTrace;
 bool g_traceLayers = false;
 
-void ResetMatchTrace() { g_matchTrace = MatchTrace{}; }
+std::unordered_map<uintptr_t, uint32_t> g_drumFirstUpdate;  // oil drum -> time of its first Update this match
+void ResetMatchTrace() {
+    g_matchTrace = MatchTrace{};
+    g_drumFirstUpdate.clear();
+}
 
 // True the first time `key` is seen this match, until `seen` holds kTraceKeysPerMatch keys (then says so once).
 bool FirstSeen(std::vector<uint64_t>& seen, bool& capped, uint64_t key, const char* what) {
@@ -685,6 +691,81 @@ void OnFlyCamHoldRelease(safetyhook::Context& c) {
     if (c.eax) LOG_INFO("[net] FlyCam hold released at t=%u", SimClock());
 }
 
+// Oil drum fuse (OilDrumLogicEntity.cpp). An Explosion within LandDamageRadius + 9 of the drum (handler 0x5d1e80) or
+// a Damage.Impulse with damage > 0 (0x5d1fa0) marks it "about to explode" and stamps it (+0x84) with the sim clock.
+// Its task, Update 0x5d2200 (vtable slot 6, __stdcall(this, now)), explodes it on the first run with now > stamp + 50
+// and always returns 0x14, so the scheduler (0x68d6f1) runs it again 20 ms after the task's own time.
+//
+// The bug: the sim clock (TaskManager+0x38) is only grid-aligned (a multiple of the 20 ms tick) while the scheduler is
+// dispatching a task -- it writes the task's own time there. Between frames, when no task is pending, TaskManager::Update
+// (0x68d4d4) writes the raw frame time (now - timebase) there instead, which is not on the grid and differs from one
+// machine to the next by each machine's frame timing. A Damage.Impulse is delivered off the physics step, not from a
+// scheduled task, so a drum knocked by a nearby blast reads that off-grid, per-machine clock as its stamp. Its fuse
+// (first update past stamp + 50) then crosses a tick boundary at a different tick on each machine, so the drum explodes
+// a tick apart; every RNG draw of that explosion and its poison cloud lands in a different tick, and the turn-end check
+// fails with "Random's dont match" (2026-10-24, the second drum of a Carrion Drop, 57 LCG draws apart).
+//
+// Two per-machine inputs feed the fuse, and the fix removes both during an online match: (1) FixDrumFuse snaps the stamp
+// down to the tick grid as it is written, so the fuse always measures from a grid time; (2) it returns the mine's value
+// (20 - now % 20, see 0x5cbd30) from the drum's Update when the task is off the grid, so the task itself runs on the
+// grid from its next tick on, as a mine's does. With both, the drum explodes exactly 3 ticks (60 ms) after its grid
+// stamp on every machine. Offline the engine is left alone.
+constexpr uintptr_t kDrumUpdateRet = 0x5d231d;      // mov eax,0x14 / mov fs:[0],ecx
+constexpr uintptr_t kDrumUpdateRetHook = 0x5d2322;  // after the mov eax: [esp+0x14] = drum, [esp+0x18] = now
+constexpr uintptr_t kDrumFlagExplosion = 0x5d1f2a;  // mov [esi+0x84],edx: esi = drum, edx = sim clock (Explosion)
+constexpr uintptr_t kDrumFlagImpulse = 0x5d2007;    // mov [esi+0x84],eax: esi = drum, eax = sim clock (Damage.Impulse)
+constexpr uintptr_t kDrumExplodeCheck = 0x5d227b;   // cmp byte [esi+0x68],0 once now > stamp + 50; explodes when 0
+
+uint32_t TickOf(uint32_t t) { return (t + 19) / 20; }
+
+// Snaps the stamp register down to the tick grid (during a net match) just before the engine stores it into +0x84, and
+// logs it. `reg` is edx on the Explosion path and eax on the Damage.Impulse path; neither is reused after the store.
+void OnDrumFlag(uintptr_t drum, uint32_t& reg, const char* how) {
+    const uint32_t raw = reg;
+    const bool fix = g_fix.alignDrumFuse && InNetMatch() && raw % 20 != 0;
+    if (fix) reg = (raw / 20) * 20;
+    LOG_INFO("[net] oil drum %08x about to explode: %s at t=%u (tick %u)%s -> explodes at t=%u (tick %u)",
+             static_cast<unsigned>(drum), how, raw, TickOf(raw),
+             fix ? "; stamp snapped to the 20 ms grid (FixDrumFuse)" : "", reg + 60, TickOf(reg + 60));
+    melange::jlog::Rec("net", melange::jlog::Level::Info, "oil drum flagged").Hex("drum", drum).Str("how", how)
+        .Uint("rawT", raw).Uint("stamp", reg).Uint("explodeT", reg + 60).Bool("aligned", fix).Emit();
+}
+void OnDrumFlagExplosion(safetyhook::Context& c) { OnDrumFlag(c.esi, c.edx, "Explosion"); }
+void OnDrumFlagImpulse(safetyhook::Context& c) { OnDrumFlag(c.esi, c.eax, "Damage.Impulse"); }
+
+void OnDrumExplodeCheck(safetyhook::Context& c) {
+    const uintptr_t drum = c.esi;
+    if (Read<uint8_t>(drum + 0x68)) return;  // exploded already: this run or a later one deletes it
+    const uint32_t now = Read<uint32_t>(c.esp + 0x1c), stamp = Read<uint32_t>(drum + 0x84);
+    LOG_INFO("[net] oil drum %08x explodes at t=%u (tick %u), %u ms after its stamp t=%u (tick %u); sim clock %u",
+             static_cast<unsigned>(drum), now, TickOf(now), now - stamp, stamp, TickOf(stamp), SimClock());
+    melange::jlog::Rec("net", melange::jlog::Level::Info, "oil drum explodes").Hex("drum", drum).Uint("t", now)
+        .Uint("tick", TickOf(now)).Uint("stamp", stamp).Uint("clock", SimClock()).Emit();
+}
+
+// Every drum Update, about to return 0x14 (eax). Logs each drum's first run of the match (its task phase) and, with
+// FixDrumFuse during an online match, returns 20 - now % 20 instead when the task is off the grid.
+void OnDrumUpdateRet(safetyhook::Context& c) {
+    const uintptr_t drum = Read<uint32_t>(c.esp + 0x14);
+    const uint32_t now = Read<uint32_t>(c.esp + 0x18);
+    const bool net = InNetMatch();
+    const bool fix = g_fix.alignDrumFuse && net && now % 20 != 0;
+    if (fix) c.eax = 20 - now % 20;
+    auto [it, fresh] = g_drumFirstUpdate.try_emplace(drum, now);
+    if (fresh) {
+        LOG_INFO("[net] oil drum %08x: first update at t=%u (tick %u), task phase %u%s", static_cast<unsigned>(drum), now,
+                 TickOf(now), now % 20, fix ? "; re-aligned to the 20 ms grid (FixDrumFuse)" : "");
+        melange::jlog::Rec("net", melange::jlog::Level::Info, "oil drum task").Hex("drum", drum).Uint("t", now)
+            .Uint("phase", now % 20).Bool("net", net).Bool("aligned", fix).Emit();
+    } else if (fix) {
+        LOG_INFO("[fix] FixDrumFuse: oil drum %08x task at t=%u (phase %u) re-aligned to the 20 ms grid",
+                 static_cast<unsigned>(drum), now, now % 20);
+    }
+    if (Read<uint8_t>(drum + 0x80) && !Read<uint8_t>(drum + 0x68))
+        LOG_INFO("[net] oil drum %08x update at t=%u (tick %u), stamp t=%u, not yet past stamp + 50",
+                 static_cast<unsigned>(drum), now, TickOf(now), Read<uint32_t>(drum + 0x84));
+}
+
 // FixCameraHold: while an online match runs, the register call is five NOPs (its pushes are still popped by the
 // add esp,0x10 after it, and the release path only checks the handle at +0x90 for NULL). Restored outside matches so
 // local games keep the engine's camera pause as activity.
@@ -822,6 +903,27 @@ public:
         if (g_fix.skipCameraHold && !melange::mem::Expect(kFlyCamHoldCall, {0xe8, 0x94, 0xb6, 0xfa, 0xff, 0x8b, 0x0d, 0x30, 0xd0, 0x96, 0x00})) {
             LOG_WARN("[fix] FixCameraHold: unexpected code at %08x; not installed", static_cast<unsigned>(kFlyCamHoldCall));
             g_fix.skipCameraHold = false;
+        }
+        g_fix.alignDrumFuse = Bool("FixDrumFuse", true);
+        // mov eax,0x14 / mov fs:[0],ecx | mov [esi+0x84],edx / call ecx | mov [esi+0x84],eax / call edx |
+        // cmp byte [esi+0x68],0 / jnz +0xc / mov ecx,esi / call 0x5d1370
+        if (melange::mem::Expect(kDrumUpdateRet, {0xb8, 0x14, 0x00, 0x00, 0x00, 0x64, 0x89, 0x0d, 0x00, 0x00, 0x00, 0x00}) &&
+            melange::mem::Expect(kDrumFlagExplosion, {0x89, 0x96, 0x84, 0x00, 0x00, 0x00, 0xff, 0xd1}) &&
+            melange::mem::Expect(kDrumFlagImpulse, {0x89, 0x86, 0x84, 0x00, 0x00, 0x00, 0xff, 0xd2}) &&
+            melange::mem::Expect(kDrumExplodeCheck, {0x80, 0x7e, 0x68, 0x00, 0x75, 0x0c, 0x8b, 0xce, 0xe8, 0xe8, 0xf0, 0xff, 0xff})) {
+            // The flag hooks snap the stamp to the grid (the fix) as well as trace it, so install them whenever the fix
+            // is on or we are tracing; the update-return hook does the task re-align and logs each drum's first run.
+            if (trace || g_fix.alignDrumFuse) {
+                ok &= Mid(kDrumUpdateRetHook, &OnDrumUpdateRet, "oil drum update");
+                ok &= Mid(kDrumFlagExplosion, &OnDrumFlagExplosion, "oil drum flagged by Explosion");
+                ok &= Mid(kDrumFlagImpulse, &OnDrumFlagImpulse, "oil drum flagged by Damage.Impulse");
+            }
+            if (trace) ok &= Mid(kDrumExplodeCheck, &OnDrumExplodeCheck, "oil drum explosion");
+        } else {
+            LOG_WARN("[fix] FixDrumFuse: unexpected code at one of %08x %08x %08x %08x; not installed",
+                     static_cast<unsigned>(kDrumUpdateRet), static_cast<unsigned>(kDrumFlagExplosion),
+                     static_cast<unsigned>(kDrumFlagImpulse), static_cast<unsigned>(kDrumExplodeCheck));
+            g_fix.alignDrumFuse = false;
         }
         if (traceTransport) {
             ok &= Mid(A::SteamConnCtor, &OnConnCtor, "XSteamConnection ctor");

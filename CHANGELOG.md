@@ -2,6 +2,16 @@
 
 ## 0.11.2
 
+- Fixed: an oil drum could explode a tick apart on two machines and take the match out of sync ("Random's dont
+  match" at the next turn-end check). A drum's fuse (`OilDrumLogicEntity`) measures from the sim clock it reads when
+  the blast flags it, but between frames, when no task is pending, the game writes the raw frame time into the sim
+  clock rather than a tick-aligned value, and that raw time differs from one machine to the next by each machine's
+  frame timing. A drum flagged by a `Damage.Impulse` delivered off the physics step (a drum knocked by a nearby
+  blast, as in a cluster of drums under an airstrike) reads that off-grid, per-machine time, so its explosion lands
+  on a different tick on each machine; every random draw of the explosion and its poison cloud then diverges. During
+  an online match Melange snaps the fuse stamp down to the tick grid as it is written, and re-aligns the drum's own
+  update task to the grid the way a mine's already is, so the drum explodes exactly three ticks after its grid stamp
+  on every machine. Offline the engine is left alone. `[NetSession] FixDrumFuse=1`.
 - Fixed: Wormsign reported a false desync of a mod's environment digest (`mod.<id>.env`) at the tick of the mod's
   first state change, against every player whose machine was slower. A contributor over 20 µs at the 95th percentile
   was demoted to every 10 ticks, with its last hash folded into the mods hash in between; demotion is decided from one
