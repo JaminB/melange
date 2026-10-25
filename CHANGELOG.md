@@ -1,5 +1,28 @@
 # Changelog
 
+## 0.11.2
+
+- Fixed: Wormsign reported a false desync of a mod's environment digest (`mod.<id>.env`) at the tick of the mod's
+  first state change, against every player whose machine was slower. A contributor over 20 µs at the 95th percentile
+  was demoted to every 10 ticks, with its last hash folded into the mods hash in between; demotion is decided from one
+  machine's own timing, so a demoted machine folded a stale digest into the tick where the state changed while the
+  others folded the fresh one (Sandtide's 3:00 `phase 0 -> 1` at tick 9004 flagged the same player in five matches of
+  one evening, with every engine component equal). Contributors are no longer demoted by default (`ContribOptions`
+  `demoteEvery` is 1): a slow one is logged once as slow and stays in every tick's hash. `demoteEvery > 1` is an
+  opt-in whose hazard the header and `docs/wormsign.md` spell out; the mod environment digests never use it.
+- Fixed: against a peer that still demotes (Melange 0.11.1 or earlier), a mods-only mismatch whose first differing
+  contributor one side did not hash at that tick (its `COMPS` value is 0: skipped or faulted there) is no longer a
+  desync. The log says why, the mods hash is not compared with that peer for the rest of the match (the Peers panel:
+  "mods not compared: a contributor was skipped on one side"), and the engine hash still is.
+- Fixed: the bundle's engine correlation ("Wormsign flagged tick N; the engine's turn-end check failed at tick M")
+  paired the engine's failure with the match's first flag, even a mods-only one. It now names the latest divergence
+  whose engine hashes differed, and says "(mods only ...)" when there was none.
+- `diff.txt` says `(not hashed on the peer at this tick: demoted or faulted there)` instead of `0000000000000000` for
+  a contributor the peer did not compute, `report.json` adds `oursComputed`/`theirsComputed` per contributor, and
+  when both detail records are there `diff.txt` decodes the logic-RNG distance between the two machines
+  (`# rng: ... the peer is 57 logic-RNG draws behind us`, with the tick of ours that the peer's value matches): the
+  game's logic RNG is the LCG `x * 1103515245 + 12345`.
+
 ## 0.11.1
 
 - Fixed: `wum.sim.scheme()` read the scheme's `Name` with an unprotected index, so scheme data whose read raises

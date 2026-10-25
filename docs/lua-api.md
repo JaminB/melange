@@ -601,7 +601,7 @@ its replay) that agree on a tick's hash agree on the game state at that tick.
 | automatic, `mod.<id>.env` | A digest of the mod's globals and `wum.sim.storage`, three tables deep and independent of key order. Numbers count by their stored bits, strings and booleans by value, functions, userdata and deeper tables by type only. `[Wormsign] EnvDigest` chooses when it runs: `changed` (default, after the mod's code ran), `always` or `off`. |
 | `wum.sim.hash(v, ...)`, `mod.<id>.hash` | Adds numbers (their stored bits), strings, booleans or `nil` to this tick's hash; any other type raises an error. For state kept in locals, which the digest cannot see. |
 
-C++ modules add their own contributors with `melange::wormsign::AddContributor` (`melange/wormsign.h`). A contributor that takes over 20 µs at the 95th percentile over 500 ticks is hashed only every 10 ticks from then on, and the log says so.
+C++ modules add their own contributors with `melange::wormsign::AddContributor` (`melange/wormsign.h`). A contributor that takes over 20 µs at the 95th percentile over 500 ticks is logged once as slow and keeps being hashed every tick (a contributor hashed on some ticks only would make the mods hash depend on the machine's speed; see [wormsign.md](wormsign.md), "For modules").
 
 ## Extending the API from C++
 

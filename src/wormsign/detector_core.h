@@ -29,6 +29,10 @@ class PeerCompare {
     bool Diverged() const { return diverged_; }
     uint32_t DivergedTick() const { return divTick_; }
     bool TakeNewDivergence();                       // true once, when the first mismatch was found
+    // Drops the current divergence (the mismatch turned out not to be one): the compare goes on as before it, and
+    // the next mismatching tick is a new divergence.
+    void Undiverge();
+    bool CompareMods() const { return compareMods_; }
     bool Ours(uint32_t tick, uint64_t* engine, uint64_t* mods) const;
     bool Theirs(uint32_t tick, uint64_t* engine, uint64_t* mods) const;
 
@@ -59,7 +63,8 @@ struct PeerStatus {
     uint64_t steamId;
     char name[64];
     PeerState state;
-    bool modsCompared;           // contributor lists match
+    bool modsCompared;           // contributor lists match and the peer hashes every contributor on every tick
+    bool modsUnreliable;         // the peer (or we) skipped a contributor on a tick (demoted there): mods not compared since
     uint32_t compared, lastCommonTick, theirTick, apartTicks, divergedTick;
     int32_t lagTicks;            // our latest tick minus theirs
     char melange[24], content[17];
@@ -115,7 +120,8 @@ class Detector {
     void Pump();                                              // sends HELLO/HASHES, times out requests
 
     int Peers(PeerStatus* out, int max) const;
-    bool Flagged(uint32_t* tick) const;                       // our first divergence this match
+    bool Flagged(uint32_t* tick) const;                       // our first confirmed divergence this match
+    bool EngineFlagged(uint32_t* tick) const;                 // the latest divergence whose engine hashes differed
     uint64_t MatchKey() const { return key_; }
     uint32_t BadPackets() const { return badPackets_; }
 
@@ -125,6 +131,7 @@ class Detector {
         PeerInfo info;
         wire::Hello hello;
         bool helloIn = false, badProtocol = false, engineMismatch = false, otherMatch = false;
+        bool modsUnreliable = false;   // a contributor was not hashed on one side at a compared tick (see FinishComps)
         uint64_t helloSentMs = 0;
         PeerCompare cmp;
         wire::DetailAssembly assembly;
@@ -143,6 +150,7 @@ class Detector {
     bool RateOk(std::deque<uint64_t>& q, size_t perMin);
     void Start(Peer& p);
     void FinishComps(Peer& p);
+    bool Inconclusive(Peer& p, std::string* why);   // a mods-only mismatch explained by a side's skipped contributor
     void FinishBundle(Peer& p);
 
     Env& env_;
@@ -151,7 +159,8 @@ class Detector {
     std::vector<wire::ContribName> contribs_;
     uint64_t contribHash_ = 0, key_ = 0;
     uint32_t serial_ = 0, firstTick_ = 0, latest_ = 0, lastBatch_ = 0, flaggedTick_ = 0, badPackets_ = 0;
-    bool session_ = false, haveTick_ = false, flagged_ = false;
+    uint32_t engineFlaggedTick_ = 0;
+    bool session_ = false, haveTick_ = false, flagged_ = false, engineFlagged_ = false;
 };
 
 // Flattens JSON into "path value" pairs: object members as a.b, array items as a[3]. Values are compact JSON.

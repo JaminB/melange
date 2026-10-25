@@ -5,6 +5,7 @@
 #include "miniz.h"
 #include "tools/hash.h"
 #include "tools/json_mini.h"
+#include "tools/json_read.h"
 #include "tools/redact.h"
 #include "wormsign/detector_core.h"
 
@@ -16,7 +17,64 @@ std::string Hex(uint64_t v) {
     return b;
 }
 const char* SourceName(Source s) { return s == Source::Replay ? "replay" : "peer"; }
+
+// A contributor value of 0 is "not computed on that machine at that tick" (contrib::HashesAt), not a hash.
+bool Skipped(const Contributor& c, bool ours) { return ours ? c.haveOurs && c.ours == 0 : c.haveTheirs && c.theirs == 0; }
+std::string ContribValue(const Contributor& c, bool ours) {
+    if (Skipped(c, ours)) return std::string("(not hashed ") + (ours ? "here" : "on the peer") + " at this tick: demoted or faulted there)";
+    return Hex(ours ? c.ours : c.theirs);
+}
+
+bool DetailRng(const std::string& json, uint32_t* out) {
+    json::Value v;
+    json::Error e;
+    if (json.empty() || !json::Parse(json, &v, &e)) return false;
+    const json::Value* r = v.Get("rng");
+    if (!r || !r->IsString() || r->string.size() < 3) return false;
+    char* end = nullptr;
+    const unsigned long x = strtoul(r->string.c_str(), &end, 16);
+    if (!end || *end) return false;
+    *out = static_cast<uint32_t>(x);
+    return true;
+}
 }  // namespace
+
+int RngSteps(uint32_t from, uint32_t to, int max) {
+    uint32_t x = from;
+    for (int n = 0; n <= max; ++n) {
+        if (x == to) return n;
+        x = x * 1103515245u + 12345u;
+    }
+    return -1;
+}
+
+std::string RngLine(const Inputs& in) {
+    uint32_t ours = 0, theirs = 0;
+    if (!DetailRng(in.detailLocal, &ours) || !DetailRng(in.detailPeer, &theirs)) return "";
+    char b[320];
+    if (ours == theirs) {
+        snprintf(b, sizeof b, "# rng: both 0x%08x", ours);
+        return b;
+    }
+    const int behind = RngSteps(theirs, ours), ahead = RngSteps(ours, theirs);
+    std::string at;
+    for (const auto& [tick, v] : in.rngTrail)
+        if (v == theirs) {
+            char t[80];
+            snprintf(t, sizeof t, " (= our value at the end of tick %u)", tick);
+            at = t;
+        }
+    if (behind >= 0)
+        snprintf(b, sizeof b, "# rng: ours 0x%08x, theirs 0x%08x%s: the peer is %d logic-RNG draw%s behind us", ours, theirs,
+                 at.c_str(), behind, behind == 1 ? "" : "s");
+    else if (ahead >= 0)
+        snprintf(b, sizeof b, "# rng: ours 0x%08x, theirs 0x%08x%s: the peer is %d logic-RNG draw%s ahead of us", ours, theirs,
+                 at.c_str(), ahead, ahead == 1 ? "" : "s");
+    else
+        snprintf(b, sizeof b, "# rng: ours 0x%08x, theirs 0x%08x%s: not within 65536 draws of each other (the RNG was reseeded, "
+                 "or the states are unrelated)", ours, theirs, at.c_str());
+    return b;
+}
 
 std::string PeerRef(const std::string& salt, uint64_t steamId) {
     return steamId ? "hash:" + hashutil::ShortSaltedHash(salt, std::to_string(steamId)) : std::string();
@@ -45,6 +103,9 @@ std::string ReportJson(const Inputs& in) {
         if (c.haveOurs) o.Str("ours", Hex(c.ours));
         if (c.haveTheirs) o.Str("theirs", Hex(c.theirs));
         o.Bool("differs", c.haveOurs && c.haveTheirs && c.ours != c.theirs);
+        // false: that side did not compute the contributor at this tick (demoted or faulted there); its value is 0
+        if (c.haveOurs) o.Bool("oursComputed", !Skipped(c, true));
+        if (c.haveTheirs) o.Bool("theirsComputed", !Skipped(c, false));
         contribs.Raw(o.End());
     }
     Obj engine, mods;
@@ -95,7 +156,8 @@ std::string DiffText(const Inputs& in) {
                 s += std::string("# component ") + detect::CompName(i) + " " + Hex(in.ours[i]) + " -> " + Hex(in.theirs[i]) + "\n";
     for (const Contributor& c : in.contributors)
         if (c.haveOurs && c.haveTheirs && c.ours != c.theirs)
-            s += "# contributor " + c.name + " " + Hex(c.ours) + " -> " + Hex(c.theirs) + "\n";
+            s += "# contributor " + c.name + " " + ContribValue(c, true) + " -> " + ContribValue(c, false) + "\n";
+    if (const std::string rng = RngLine(in); !rng.empty()) s += rng + "\n";
     if (!in.correlation.empty()) s += "# " + in.correlation + "\n";
     if (in.detailLocal.empty() || in.detailPeer.empty()) {
         s += std::string("# no field diff: the ") + (in.detailLocal.empty() ? "local" : "peer") + " detail record is missing\n";

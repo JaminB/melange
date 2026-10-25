@@ -35,7 +35,7 @@ struct C {
     ContribFn fn;
     void* user;
     ContribOptions opt;
-    bool dead = false, demoted = false, faulted = false, everComputed = false;
+    bool dead = false, demoted = false, faulted = false, everComputed = false, slow = false;
     uint32_t demotedAt = 0, faultedAt = 0, lastP95 = 0, winN = 0;
     uint64_t calls = 0;
     uint64_t lastHash = 0;
@@ -105,7 +105,18 @@ void Sample(C& c, int64_t dt, uint32_t tick) {
     const size_t k = contrib::kDemoteWindow * 95 / 100 - 1;
     std::nth_element(g_sortBuf, g_sortBuf + k, g_sortBuf + contrib::kDemoteWindow);
     c.lastP95 = g_sortBuf[k];
-    if (c.demoted || c.opt.demoteEvery <= 1 || c.lastP95 <= contrib::kDemoteP95Us10) return;
+    if (c.demoted || c.lastP95 <= contrib::kDemoteP95Us10) return;
+    if (c.opt.demoteEvery <= 1) {
+        // Not demotable (the default): the hash stays complete on every tick, so it stays comparable with every peer
+        // whatever this machine's speed. Said once per contributor.
+        if (c.slow) return;
+        c.slow = true;
+        LOG_WARN("[wormsign] contributor %s is slow: p95 %u.%u us over %u ticks (over %u us); still hashed every tick",
+                 c.name, c.lastP95 / 10, c.lastP95 % 10, contrib::kDemoteWindow, contrib::kDemoteP95Us10 / 10);
+        jlog::Rec("wormsign", jlog::Level::Warn, "contributor slow")
+            .Str("name", c.name).Uint("tick", tick).Uint("p95Us10", c.lastP95);
+        return;
+    }
     c.demoted = true;
     c.demotedAt = tick;
     LOG_WARN("[wormsign] contributor %s demoted at tick %u: p95 %u.%u us over %u ticks, now hashed every %u ticks",
@@ -140,6 +151,7 @@ contrib::Info InfoOf(const C& c) {
     i.inReplayCompare = c.opt.inReplayCompare;
     i.demoted = c.demoted;
     i.faulted = c.faulted;
+    i.slow = c.slow;
     i.demotedAt = c.demotedAt;
     i.faultedAt = c.faultedAt;
     i.lastP95Us10 = c.lastP95;
@@ -205,11 +217,12 @@ uint64_t HashTick(uint32_t tick) {
         s = {tick, 0, false};
         if (c.faulted) continue;
         if (c.demoted && tick % c.opt.demoteEvery) {
-            // Skipped this tick by demotion, which each machine decides from its own local timing: folding in
-            // nothing here (as if the contributor did not exist) would make the aggregate depend on which ticks
-            // each side happened to demote on, not on whether the contributor's state actually differs. Folding
-            // in its last computed hash instead keeps the aggregate identical across machines whenever the
-            // underlying state hasn't changed, and only delays detection (same as any demoted tick) when it has.
+            // Skipped this tick by demotion (opt-in, demoteEvery > 1), which each machine decides from its own
+            // timing. Folding in nothing (as if the contributor did not exist) would make the aggregate depend on
+            // which ticks this side skips; folding in the last computed hash keeps it equal to the other machines'
+            // while the state is unchanged. When the state changes on a skipped tick the two sides do differ until
+            // the next due tick, and a peer that is not demoted reports that as a desync of this contributor: the
+            // reason demotion is off by default and never used for the mod environment digests.
             if (!c.everComputed) continue;
             all = FnvV(c.lastHash, FnvV(c.nameHash, all));
             if (c.opt.inReplayCompare) rep = FnvV(c.lastHash, FnvV(c.nameHash, rep));
@@ -291,6 +304,8 @@ std::string Describe(const Info& i) {
     else if (i.demoted)
         snprintf(b, sizeof b, "hashed every %u ticks (demoted at tick %u, p95 %u.%u us)", i.demoteEvery, i.demotedAt,
                  i.lastP95Us10 / 10, i.lastP95Us10 % 10);
+    else if (i.slow)
+        snprintf(b, sizeof b, "hashed every tick (slow: p95 %u.%u us)", i.lastP95Us10 / 10, i.lastP95Us10 % 10);
     else
         snprintf(b, sizeof b, "hashed every tick");
     return b;
@@ -308,6 +323,7 @@ std::string NoteJson() {
         s += ",\"version\":" + std::to_string(i.version) + ",\"every\":" +
              std::to_string(i.demoted ? i.demoteEvery : 1) + ",\"replay\":" + (i.inReplayCompare ? "true" : "false") +
              ",\"demoted\":" + (i.demoted ? "true" : "false") + ",\"faulted\":" + (i.faulted ? "true" : "false") +
+             ",\"slow\":" + (i.slow ? "true" : "false") +
              ",\"p95Us10\":" + std::to_string(i.lastP95Us10) + ",\"text\":";
         JsonStr(s, Describe(i).c_str());
         s += "}";

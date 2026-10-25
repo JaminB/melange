@@ -376,6 +376,9 @@ void OnMatch(bool begin, void*) {
         a.settop(L, top);
         st.g = std::make_unique<KeyMap>();
         st.s = std::make_unique<KeyMap>();
+        // Default options: never demoted. EnvContrib already costs only on ticks where the mod's code ran (envDirty),
+        // and a demoted digest would fold a stale value into this machine's mods hash on the tick the mod's state
+        // changes, which every faster peer reports as a desync of mod.<id>.env.
         if (g_mode != simhash::EnvMode::Off)
             st.envHandle = wormsign::AddContributor(ContribName(m, "env").c_str(), &EnvContrib,
                                                     reinterpret_cast<void*>(static_cast<intptr_t>(i)));

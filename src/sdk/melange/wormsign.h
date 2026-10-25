@@ -36,7 +36,11 @@ void RemoveOnSession(int handle);
 
 // Hash contributors. Called at every tick end in a match, main thread, in ascending `name` order.
 // Rules: feed raw stored bytes (never floats you computed), deterministic across machines, no allocation,
-// <= 5 us. Over 20 us p95 for 500 ticks demotes it to every `demoteEvery` ticks (logged, shown in reports).
+// <= 5 us. Over 20 us p95 for 500 ticks is logged once ("slow") and shown in reports.
+// demoteEvery > 1 opts in to demotion: a contributor over that p95 is then hashed only every `demoteEvery` ticks
+// and its last hash is folded in between. Demotion is decided from one machine's own timing, so a demoted machine
+// folds a stale hash into the mods hash while a faster peer folds the fresh one: the first state change on a skipped
+// tick is reported as a desync of that contributor. Leave it at 1 (the default) for anything compared with peers.
 class Hasher {
   public:
     virtual void Bytes(const void* p, size_t n) = 0;
@@ -45,7 +49,7 @@ class Hasher {
     ~Hasher() = default;
 };
 using ContribFn = void (*)(Hasher& h, uint32_t tick, void* user);
-struct ContribOptions { uint32_t version = 1; uint32_t demoteEvery = 10; bool inReplayCompare = true; };
+struct ContribOptions { uint32_t version = 1; uint32_t demoteEvery = 1; bool inReplayCompare = true; };
 int AddContributor(const char* name, ContribFn fn, void* user, const ContribOptions& opt = {});  // "mod.<id>.<x>" or module name
 void RemoveContributor(int handle);
 

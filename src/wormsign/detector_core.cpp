@@ -77,6 +77,11 @@ bool PeerCompare::TakeNewDivergence() {
     return f;
 }
 
+void PeerCompare::Undiverge() {
+    diverged_ = fresh_ = false;
+    divTick_ = mismatchedAfter_ = 0;
+}
+
 bool PeerCompare::Ours(uint32_t tick, uint64_t* engine, uint64_t* mods) const {
     const Slot& s = ours_[tick % kSlots];
     if (!s.have || s.tick != tick) return false;
@@ -155,7 +160,7 @@ void Detector::SetPeers(const std::vector<PeerInfo>& peers) {
 }
 
 void Detector::ResetMatch(Peer& p) {
-    p.helloIn = p.otherMatch = p.engineMismatch = false;
+    p.helloIn = p.otherMatch = p.engineMismatch = p.modsUnreliable = false;
     p.hello = wire::Hello{};
     p.helloSentMs = 0;
     p.cmp.Reset();
@@ -171,8 +176,8 @@ void Detector::Begin(uint32_t serial, uint64_t matchKey, std::vector<wire::Contr
     key_ = matchKey;
     contribs_ = std::move(contribs);
     contribHash_ = wire::ContribListHash(contribs_);
-    haveTick_ = flagged_ = false;
-    firstTick_ = latest_ = lastBatch_ = flaggedTick_ = 0;
+    haveTick_ = flagged_ = engineFlagged_ = false;
+    firstTick_ = latest_ = lastBatch_ = flaggedTick_ = engineFlaggedTick_ = 0;
     for (auto& p : peers_) ResetMatch(*p);
 }
 
@@ -233,10 +238,6 @@ bool Detector::RateOk(std::deque<uint64_t>& q, size_t perMin) {
 
 void Detector::Start(Peer& p) {
     const uint32_t t = p.cmp.DivergedTick();
-    if (!flagged_) {
-        flagged_ = true;
-        flaggedTick_ = t;
-    }
     p.phase = Phase::WaitComps;
     p.phaseMs = env_.NowMs();
     Report& r = p.rep;
@@ -276,9 +277,46 @@ void Detector::Start(Peer& p) {
     env_.Note(true, b);
 }
 
+// A per-contributor value of 0 in COMPS means "not computed on that machine at that tick" (contrib::HashesAt: the
+// contributor was demoted there and skipped the tick, faulted, or was added later), not a hash of its state. A
+// mods-only mismatch whose first differing contributor is 0 on exactly one side is then not evidence of different
+// state: the skipping side folded its last computed hash into its aggregate while the other side folded the fresh
+// one. (Seen with Melange <= 0.11.1, whose default demoted a slow mod environment digest to every 10 ticks: a
+// mod's first state change on a skipped tick flagged the peer at that tick on every machine that was not demoted.)
+bool Detector::Inconclusive(Peer& p, std::string* why) {
+    const Report& r = p.rep;
+    const Divergence& d = r.div;
+    if (d.oursEngine != d.theirsEngine || d.oursMods == d.theirsMods || !r.contribListsMatch || !r.haveTheirs) return false;
+    if (r.oursContrib.size() != contribs_.size() || r.theirsContrib.size() != r.oursContrib.size()) return false;
+    for (size_t i = 0; i < r.oursContrib.size(); ++i) {
+        if (r.oursContrib[i] == r.theirsContrib[i]) continue;
+        const bool oursSkipped = r.oursContrib[i] == 0, theirsSkipped = r.theirsContrib[i] == 0;
+        if (oursSkipped == theirsSkipped) return false;
+        char b[240];
+        snprintf(b, sizeof b, "tick %u: the mods hash differs from %s only because %s did not hash %s at that tick "
+                 "(demoted or faulted there): not a desync; the mods hash is no longer compared with %s this match",
+                 d.tick, p.info.name.c_str(), theirsSkipped ? p.info.name.c_str() : "we", contribs_[i].name.c_str(),
+                 p.info.name.c_str());
+        *why = b;
+        return true;
+    }
+    return false;
+}
+
 void Detector::FinishComps(Peer& p) {
     Report& r = p.rep;
     Divergence& d = r.div;
+    std::string why;
+    if (Inconclusive(p, &why)) {
+        env_.Note(true, why);
+        p.modsUnreliable = true;
+        p.cmp.SetCompareMods(false);
+        p.cmp.Undiverge();
+        p.phase = Phase::None;
+        p.rep = Report{};
+        p.haveComps = false;
+        return;
+    }
     if (r.haveOurs && r.haveTheirs)
         for (int i = 0; i < kEngineComps; ++i)
             if (r.ours[i] != r.theirs[i]) d.compMask |= static_cast<uint8_t>(1u << i);
@@ -289,6 +327,14 @@ void Detector::FinishComps(Peer& p) {
                 snprintf(d.contrib, sizeof d.contrib, "%s", contribs_[i].name.c_str());
                 break;
             }
+    if (!flagged_) {
+        flagged_ = true;
+        flaggedTick_ = d.tick;
+    }
+    if (d.oursEngine != d.theirsEngine && (!engineFlagged_ || d.tick > engineFlaggedTick_)) {
+        engineFlagged_ = true;
+        engineFlaggedTick_ = d.tick;
+    }
     env_.Diverged(d);
     p.phase = Phase::WaitDetail;
     p.phaseMs = env_.NowMs();
@@ -341,7 +387,7 @@ void Detector::OnPacket(uint64_t from, const uint8_t* data, size_t n) {
             p.hello = h;
             p.otherMatch = false;
             p.helloIn = true;
-            p.cmp.SetCompareMods(h.contribHash == contribHash_);
+            p.cmp.SetCompareMods(h.contribHash == contribHash_ && !p.modsUnreliable);
             if (first) {
                 char b[200];
                 snprintf(b, sizeof b, "exchanging hashes with %s (Melange %s, content %s, %s)", p.info.name.c_str(),
@@ -441,7 +487,8 @@ int Detector::Peers(PeerStatus* out, int max) const {
         snprintf(s.melange, sizeof s.melange, "%s", p->hello.melange.c_str());
         snprintf(s.content, sizeof s.content, "%s", p->hello.content16.c_str());
         s.state = StateOf(*p);
-        s.modsCompared = p->helloIn && p->hello.contribHash == contribHash_;
+        s.modsCompared = p->helloIn && p->hello.contribHash == contribHash_ && !p->modsUnreliable;
+        s.modsUnreliable = p->modsUnreliable;
         s.compared = p->cmp.Compared();
         s.lastCommonTick = p->cmp.LastCommon();
         s.theirTick = p->cmp.TheirLatest();
@@ -457,6 +504,11 @@ int Detector::Peers(PeerStatus* out, int max) const {
 bool Detector::Flagged(uint32_t* tick) const {
     if (flagged_ && tick) *tick = flaggedTick_;
     return flagged_;
+}
+
+bool Detector::EngineFlagged(uint32_t* tick) const {
+    if (engineFlagged_ && tick) *tick = engineFlaggedTick_;
+    return engineFlagged_;
 }
 
 namespace {

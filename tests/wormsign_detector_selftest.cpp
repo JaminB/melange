@@ -285,6 +285,9 @@ struct Scenario {
     uint32_t ticks = 3000;
     uint32_t desyncAt = 0;         // on B from this tick on
     bool viaMods = false;          // B's mod contributor differs instead of the worms
+    // B skipped its first contributor on ticks skipAt..skipAt+9 (demoted there): it reports 0 for it and folds
+    // its last hash into its mods aggregate, so the aggregate is stale for those ticks and equal again after.
+    uint32_t skipAt = 0;
     uint32_t bLag = 0;             // B runs this many ticks behind
     uint32_t bBegin = 0;           // B's session opens at this frame (packets to it before are dropped)
     double loss = 0;
@@ -296,6 +299,8 @@ struct Scenario {
 
 struct Result {
     Side a, b;
+    bool aFlagged = false, aEngineFlagged = false;
+    uint32_t aFlaggedTick = 0, aEngineFlaggedTick = 0;
     uint64_t aLatencyMs = 0, bLatencyMs = 0;
     std::vector<detect::PeerStatus> aPeers, bPeers;
     uint64_t dropped = 0;
@@ -327,12 +332,14 @@ std::unique_ptr<Result> Run(const Scenario& s) {
         auto tick = [&](Side& side, detect::Detector& d, uint32_t t, bool isB) {
             if (t < 1 || t > s.ticks) return;
             const bool off = isB && s.desyncAt && t >= s.desyncAt;
+            const bool skipped = isB && s.skipAt && t >= s.skipAt && t < s.skipAt + 10;
             TickHash h = Hash(t, 0x77, off && !s.viaMods, off && s.viaMods);
+            if (skipped) h.mods = Hash(s.skipAt - 1, 0x77, false, false).mods;  // the stale fold-in
             side.ring[t] = h;
             std::string energy = off && !s.viaMods ? "1" : "100";
             side.detail[t] = "{\"tick\":" + std::to_string(t) + ",\"worms\":[{\"slot\":0,\"energy\":100},{\"slot\":3,\"energy\":" +
                              energy + ",\"pos\":{\"x\":1.5,\"y\":2}}]}";
-            side.contrib[t] = {off && s.viaMods ? 0xbadull : 0x1ull + t, 0x2ull + t};
+            side.contrib[t] = {skipped ? 0ull : off && s.viaMods ? 0xbadull : 0x1ull + t, 0x2ull + t};
             if (side.ring.size() > 600) {
                 side.ring.erase(side.ring.begin());
                 side.detail.erase(side.detail.begin());
@@ -360,6 +367,8 @@ std::unique_ptr<Result> Run(const Scenario& s) {
     detect::PeerStatus v[4];
     r->aPeers.assign(v, v + da.Peers(v, 4));
     r->bPeers.assign(v, v + db.Peers(v, 4));
+    r->aFlagged = da.Flagged(&r->aFlaggedTick);
+    r->aEngineFlagged = da.EngineFlagged(&r->aEngineFlaggedTick);
     da.End();
     db.End();
     r->dropped = link.dropped;
@@ -401,6 +410,8 @@ void Pair() {
             Expect(r->aLatencyMs <= 1000 && r->bLatencyMs <= 1000, b);
         }
         Expect(r->a.bundles.size() == 1 && r->b.bundles.size() == 1, "desync: one bundle each");
+        Expect(r->aFlagged && r->aFlaggedTick == 1500 && r->aEngineFlagged && r->aEngineFlaggedTick == 1500,
+               "desync: flagged as an engine divergence at 1500");
         if (r->a.bundles.size() == 1) {
             const detect::Report& rep = r->a.bundles[0];
             Expect(!rep.detailLocal.empty() && !rep.detailPeer.empty(), "desync: both detail records in the bundle");
@@ -425,6 +436,46 @@ void Pair() {
                        !strcmp(r->b.diverged[0].contrib, "mod.desync-probe.env"),
                    "mod desync: the contributor is named on both sides");
         }
+        Expect(r->aFlagged && r->aFlaggedTick == 700 && !r->aEngineFlagged, "mod desync: flagged, but not as an engine divergence");
+    }
+    // B skipped a contributor on ticks 900..909 (demoted there, as Melange <= 0.11.1 did to a slow mod environment
+    // digest): its mods aggregate is stale for those ticks and its COMPS answer has 0 for that contributor. Neither
+    // side reports a desync; both stop comparing the mods hash with the other and say so; the engine hash is still
+    // compared and a real engine desync later in the match is still found.
+    {
+        Scenario s;
+        s.skipAt = 900;
+        auto r = Run(s);
+        Expect(r->a.diverged.empty() && r->b.diverged.empty() && r->a.bundles.empty() && r->b.bundles.empty(),
+               "skipped contributor: no desync reported on either side");
+        Expect(!r->aFlagged && !r->aEngineFlagged, "skipped contributor: nothing flagged");
+        Expect(r->aPeers.size() == 1 && r->aPeers[0].state == detect::PeerState::Exchanging && !r->aPeers[0].modsCompared &&
+                   r->aPeers[0].modsUnreliable && r->aPeers[0].divergedTick == 0,
+               "skipped contributor: A exchanging, mods no longer compared, marked unreliable");
+        Expect(r->bPeers.size() == 1 && r->bPeers[0].state == detect::PeerState::Exchanging && !r->bPeers[0].modsCompared &&
+                   r->bPeers[0].modsUnreliable,
+               "skipped contributor: the skipping side B comes to the same verdict");
+        Expect(r->aPeers[0].compared >= 3000 - detect::Detector::kBatchEvery, "skipped contributor: every tick still compared");
+    }
+    {
+        Scenario s;
+        s.skipAt = 900;
+        s.desyncAt = 1500;
+        auto r = Run(s);
+        Expect(r->a.diverged.size() == 1 && r->b.diverged.size() == 1 && r->a.diverged[0].tick == 1500 &&
+                   r->a.diverged[0].compMask == (1u << kWorms),
+               "skipped contributor, then an engine desync: the engine desync is still found at its tick");
+        Expect(r->aEngineFlagged && r->aEngineFlaggedTick == 1500, "skipped contributor, then an engine desync: engine-flagged");
+    }
+    {
+        // A mods-only mismatch where both sides computed the contributor is a desync as before.
+        Scenario s;
+        s.skipAt = 900;
+        s.desyncAt = 2000;
+        s.viaMods = true;
+        auto r = Run(s);
+        Expect(r->a.diverged.empty() && r->aPeers[0].modsUnreliable,
+               "skipped contributor, then a mod desync: not seen (the mods hash is no longer compared with that peer)");
     }
     {
         Scenario s;
@@ -570,9 +621,10 @@ void Bundle() {
     in.haveOurs = in.haveTheirs = true;
     in.ours[kWorms] = 10;
     in.theirs[kWorms] = 11;
-    in.contributors = {{"mod.desync-probe.env", 1, 5, 5, true, true}};
-    in.detailLocal = R"({"worms":[{"slot":3,"energy":100}]})";
-    in.detailPeer = R"({"worms":[{"slot":3,"energy":1}]})";
+    in.contributors = {{"mod.desync-probe.env", 1, 5, 5, true, true}, {"mod.sandtide.env", 1, 0x33f3cd58fac5765bull, 0, true, true}};
+    in.detailLocal = R"({"rng":"0xe01dc3c7","worms":[{"slot":3,"energy":100}]})";
+    in.detailPeer = R"({"rng":"0x42ecc01e","worms":[{"slot":3,"energy":1}]})";
+    in.rngTrail = {{4998, 0x11111111u}, {4999, 0x42ecc01eu}, {5000, 0xe01dc3c7u}};
     in.melangeLog = "12:00:00.000 [+   1.000] [ 1] INFO C:\\Users\\Tester\\Documents peer 76561198012345678 ip 10.1.2.3\r\n";
     in.userName = "Tester";
     in.computerName = "DESKTOP-XYZ";
@@ -596,6 +648,30 @@ void Bundle() {
     Expect(diff.find("\nworms[0].energy 100 -> 1\n") != std::string::npos, "diff.txt names the changed field");
     Expect(diff.find("# component worms") != std::string::npos && diff.find("reason 5") != std::string::npos,
            "diff.txt has the component and the engine correlation");
+    Expect(diff.find("# contributor mod.sandtide.env 33f3cd58fac5765b -> (not hashed on the peer at this tick: demoted or faulted there)\n") !=
+               std::string::npos,
+           "diff.txt says a 0 contributor value was not computed on the peer");
+    Expect(report.find("\"name\":\"mod.sandtide.env\"") != std::string::npos && report.find("\"theirsComputed\":false") != std::string::npos &&
+               report.find("\"oursComputed\":true") != std::string::npos,
+           "report.json carries the computed flags");
+    Expect(diff.find("# rng: ours 0xe01dc3c7, theirs 0x42ecc01e (= our value at the end of tick 4999): the peer is 57 logic-RNG draws behind us\n") !=
+               std::string::npos,
+           ("diff.txt decodes the logic-RNG distance: " + diff).c_str());
+    Expect(bundle::RngSteps(0x42ecc01eu, 0xe01dc3c7u) == 57 && bundle::RngSteps(0xe01dc3c7u, 0x42ecc01eu) == -1 &&
+               bundle::RngSteps(5, 5) == 0,
+           "RngSteps follows the game's LCG");
+    {
+        bundle::Inputs ahead = in;
+        ahead.detailLocal = R"({"rng":"0x42ecc01e"})";
+        ahead.detailPeer = R"({"rng":"0xe01dc3c7"})";
+        ahead.rngTrail.clear();
+        Expect(bundle::RngLine(ahead) == "# rng: ours 0x42ecc01e, theirs 0xe01dc3c7: the peer is 57 logic-RNG draws ahead of us",
+               ("rng line: ahead: " + bundle::RngLine(ahead)).c_str());
+        ahead.detailPeer = R"({"rng":"0x42ecc01e"})";
+        Expect(bundle::RngLine(ahead) == "# rng: both 0x42ecc01e", "rng line: equal");
+        ahead.detailPeer = R"({"worms":[]})";
+        Expect(bundle::RngLine(ahead).empty(), "rng line: none without both values");
+    }
     const std::string log = ZipEntry(zip, "logs/Melange.log");
     Expect(log.find("Tester") == std::string::npos && log.find("76561198012345678") == std::string::npos &&
                log.find("10.1.2.3") == std::string::npos,

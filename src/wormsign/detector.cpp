@@ -216,6 +216,10 @@ void GameEnv::Bundle(const detect::Report& r) {
         if (c.haveTheirs) c.theirs = r.theirsContrib[i];
         in->contributors.push_back(c);
     }
+    for (uint32_t t = r.div.tick > 256 ? r.div.tick - 256 : 1; t <= r.div.tick; ++t) {
+        TickHash h{};
+        if (TickAt(t, &h)) in->rngTrail.push_back({t, h.rngLogic});
+    }
     in->peerName = r.peerName;
     in->peersJson = PeersJson(in->salt);
     in->engineJson = enginecheck::Json(enginecheck::Records(r.div.serial));
@@ -312,13 +316,20 @@ void Correlate() {
     enginecheck::Record r{};
     if (!enginecheck::FirstFailure(g_serial, &r)) return;
     g_correlated = true;
+    // The engine checks engine state, so the tick to pair its failure with is the latest divergence whose engine
+    // hashes differed, not the match's first flag: a mods-only flag earlier in the match (a mod's state, which the
+    // engine never checks) is unrelated to it.
+    uint32_t engineTick = 0;
+    const bool engine = g_det->EngineFlagged(&engineTick);
+    const uint32_t tick = engine ? engineTick : flagged;
+    const char* what = engine ? "" : " (mods only: no engine divergence was seen before the check)";
     // Every failed reason, not only the first: a camera failure (7..10) can come with worm ones (11, 13).
     const std::string reasons = enginecheck::DescribeReasons(r.reasons);
-    char b[160];
+    char b[300];
     if (!reasons.empty())
-        snprintf(b, sizeof b, "Wormsign flagged tick %u; the engine's turn-end check failed at tick %u (", flagged, r.tick);
+        snprintf(b, sizeof b, "Wormsign flagged tick %u%s; the engine's turn-end check failed at tick %u (", tick, what, r.tick);
     else
-        snprintf(b, sizeof b, "Wormsign flagged tick %u; the engine aborted the match at tick %u (%s)", flagged, r.tick,
+        snprintf(b, sizeof b, "Wormsign flagged tick %u%s; the engine aborted the match at tick %u (%s)", tick, what, r.tick,
                  r.error);
     g_correlation = reasons.empty() ? std::string(b) : std::string(b) + reasons + ")";
     LOG_WARN("[wormsign] %s", g_correlation.c_str());
@@ -331,8 +342,8 @@ void Correlate() {
         WriteBundle(job);
     }
     jlog::Rec("wormsign", jlog::Level::Warn, "engine correlation")
-        .Uint("flaggedTick", flagged).Uint("engineTick", r.tick)
-        .Int("lagTicks", static_cast<int64_t>(r.tick) - static_cast<int64_t>(flagged))
+        .Uint("flaggedTick", tick).Bool("engineDivergence", engine).Uint("firstFlaggedTick", flagged).Uint("engineTick", r.tick)
+        .Int("lagTicks", static_cast<int64_t>(r.tick) - static_cast<int64_t>(tick))
         .Uint("reason", enginecheck::FirstReason(r.reasons))  // the first, for readers of the single code
         .Uint("reasons", r.reasons).Str("reasonList", enginecheck::ReasonNumbers(r.reasons))
         .Str("reasonText", enginecheck::ReasonTexts(r.reasons)).Str("error", r.error);
@@ -427,7 +438,9 @@ void DrawPanel(void*) {
                 ImGui::TextColored(col, "diverged at %u (apart %u ticks)", s.divergedTick, s.apartTicks);
             else
                 ImGui::TextColored(col, "%s%s", PeerStateName(s.state),
-                                   s.state == PeerState::Exchanging && !s.modsCompared ? " (mod contributors differ)" : "");
+                                   s.state != PeerState::Exchanging || s.modsCompared ? ""
+                                   : s.modsUnreliable ? " (mods not compared: a contributor was skipped on one side)"
+                                                      : " (mod contributors differ)");
             ImGui::TableNextColumn();
             ImGui::Text("%u", s.lastCommonTick);
             ImGui::TableNextColumn();
