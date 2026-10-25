@@ -1493,7 +1493,7 @@ void TestShaderTextures() {
     const char* badOpts[] = {
         "wum.draw.texture('a.png', {wrap = 'mirror'})",  "wum.draw.texture('a.png', {filter = 'cubic'})",
         "wum.draw.texture('a.png', {layers = 0})",       "wum.draw.texture('a.png', {layers = 65})",
-        "wum.draw.texture('a.png', {layers = 1.5})",     "wum.draw.texture('a.png', {mips = false})",
+        "wum.draw.texture('a.png', {layers = 1.5})",     "wum.draw.texture('a.png', {mips = 'off'})",
         "wum.draw.texture('a.png', 'repeat')",
     };
     for (const char* code : badOpts) Expect(Eval("shtex", code).rfind("ERR:", 0) == 0, std::string("raises: ") + code);
