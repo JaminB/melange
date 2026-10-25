@@ -26,6 +26,7 @@
 #include "melange/overlay.h"
 #include "melange/testcmd.h"
 #include "render/input_logic.h"
+#include "render/input_regions.h"
 #include "render/internal.h"
 
 namespace melange::controls {
@@ -317,14 +318,14 @@ void AddRaw(LONG dx, LONG dy) {
     g_rawTotY.fetch_add(dy, std::memory_order_relaxed);
 }
 
-// The game has the mouse: a window of this process (the game window, or one it owns) is the foreground one and the
-// overlay is not capturing.
+// The game has the mouse: a window of this process (the game window, or one it owns) is the foreground one, the
+// overlay is not capturing and no mod's pointer mode has the mouse (wum.input.pointer).
 bool GameFocused(HWND h) {
     const HWND fg = GetForegroundWindow();
     if (!fg) return false;
     DWORD pid = 0;
     if (fg != h && (!GetWindowThreadProcessId(fg, &pid) || pid != GetCurrentProcessId())) return false;
-    return !melange::overlay::Capturing();
+    return !melange::overlay::Capturing() && !melange::render::modinput::OwnsMouse();
 }
 
 void RawSink(HWND h, WPARAM wp, LPARAM lp) {

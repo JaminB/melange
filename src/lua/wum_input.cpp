@@ -1,11 +1,14 @@
-// wum.input: control groups, key bindings and mouse look/aim options. The work is done by src/input/controls.cpp.
+// wum.input: control groups, key bindings and mouse look/aim options (the work is done by src/input/controls.cpp), and
+// Melange 0.12's mod input: regions, pointer mode and keyboard focus (src/render/input_regions_core.cpp).
 #include <algorithm>
+#include <cstring>
 #include <set>
 #include <string>
 #include <vector>
 
 #include "input/controls.h"
 #include "lua/sandbox_core.h"
+#include "render/input_regions.h"
 
 namespace melange::sandbox {
 namespace {
@@ -112,26 +115,148 @@ int Options(lua_State* L) {
     return 1;
 }
 
-// ---- mod input (Melange 0.12): cursor, regions, pointer mode, focus. Placeholders from C0: C2 implements them.
-int Cursor(lua_State* L) {
-    lua_pushnil(L);
-    return 1;
+// ---- mod input (Melange 0.12): cursor, regions, pointer mode, focus (render/input_regions.h). Events are owner-only
+// and come from the window procedure; the calls here only claim and query.
+namespace mi = melange::render::modinput;
+std::set<Gen*> g_inputHooked;  // generations whose teardown forgets their regions, pointer and focus
+
+void PushResult(lua_State* L, mi::Result r) {
+    if (r == mi::Result::Ok) {
+        lua_pushboolean(L, 1);
+        return;
+    }
+    lua_pushboolean(L, 0);
+    lua_pushstring(L, r == mi::Result::Busy ? "busy" : "unavailable");
 }
 
-int NotNow(lua_State* L) {
-    lua_pushboolean(L, false);
-    lua_pushstring(L, "unavailable");
+int NotForConsole(lua_State* L) {
+    lua_pushboolean(L, 0);
+    lua_pushliteral(L, "unavailable");
     return 2;
 }
 
+// A failed hot reload revokes the new generation while the old one keeps running: only the mod's current (or last)
+// generation forgets the mod's input.
+void HookInputCleanup(ModRec* m, Gen* g) {
+    if (!g || !g_inputHooked.insert(g).second) return;
+    g->cleanups.push_back([m, g] {
+        g_inputHooked.erase(g);
+        if (!m->gen || m->gen == g) mi::Forget(m->id);
+    });
+}
+
+int Cursor(lua_State* L) {
+    ModRec* m = Current();
+    float x = 0, y = 0;
+    const char* source = nullptr;
+    if (!m || !mi::Cursor(m->id, &x, &y, &source)) {
+        lua_pushnil(L);
+        return 1;
+    }
+    lua_pushnumber(L, x);
+    lua_pushnumber(L, y);
+    lua_pushstring(L, source);
+    return 3;
+}
+
+int Region(lua_State* L) {
+    size_t n = 0;
+    const char* id = luaL_checklstring(L, 1, &n);
+    if (n == 0 || n > 64) return luaL_argerror(L, 1, "region id of 1 to 64 bytes expected");
+    const float x0 = static_cast<float>(luaL_checknumber(L, 2)), y0 = static_cast<float>(luaL_checknumber(L, 3));
+    const float x1 = static_cast<float>(luaL_checknumber(L, 4)), y1 = static_cast<float>(luaL_checknumber(L, 5));
+    int frames = 2;
+    mi::Shape shape = mi::Shape::Arrow;
+    if (!lua_isnoneornil(L, 6)) {
+        luaL_checktype(L, 6, LUA_TTABLE);
+        lua_getfield(L, 6, "frames");
+        if (!lua_isnil(L, -1)) {
+            if (!lua_isinteger(L, -1)) return luaL_error(L, "wum.input.region: frames must be an integer");
+            const lua_Integer f = lua_tointeger(L, -1);
+            frames = f < 1 ? 1 : f > 600 ? 600 : static_cast<int>(f);
+        }
+        lua_pop(L, 1);
+        lua_getfield(L, 6, "cursor");
+        if (!lua_isnil(L, -1)) {
+            const char* c = lua_type(L, -1) == LUA_TSTRING ? lua_tostring(L, -1) : "";
+            if (!strcmp(c, "arrow"))
+                shape = mi::Shape::Arrow;
+            else if (!strcmp(c, "hand"))
+                shape = mi::Shape::Hand;
+            else if (!strcmp(c, "ibeam"))
+                shape = mi::Shape::IBeam;
+            else
+                return luaL_error(L, "wum.input.region: cursor must be \"arrow\", \"hand\" or \"ibeam\"");
+        }
+        lua_pop(L, 1);
+    }
+    ModRec* m = Current();
+    if (!m) return NotForConsole(L);
+    HookInputCleanup(m, CurrentGen());
+    const mi::Result r = mi::Region(m->id, m->order, std::string(id, n), x0, y0, x1, y1, frames, shape);
+    PushResult(L, r);
+    return r == mi::Result::Ok ? 1 : 2;
+}
+
 int Hover(lua_State* L) {
-    lua_pushnil(L);
+    ModRec* m = Current();
+    const std::string id = m ? mi::Hover(m->id) : std::string();
+    if (id.empty())
+        lua_pushnil(L);
+    else
+        lua_pushlstring(L, id.data(), id.size());
     return 1;
 }
 
+int Pointer(lua_State* L) {
+    luaL_checktype(L, 1, LUA_TBOOLEAN);
+    const bool on = lua_toboolean(L, 1) != 0;
+    bool clickOutside = true;
+    unsigned texture = 0;
+    Gen* g = CurrentGen();
+    if (!lua_isnoneornil(L, 2)) {
+        luaL_checktype(L, 2, LUA_TTABLE);
+        lua_getfield(L, 2, "release");
+        if (!lua_isnil(L, -1)) {
+            const char* r = lua_type(L, -1) == LUA_TSTRING ? lua_tostring(L, -1) : "";
+            if (!strcmp(r, "manual"))
+                clickOutside = false;
+            else if (strcmp(r, "click-outside") != 0)
+                return luaL_error(L, "wum.input.pointer: release must be \"click-outside\" or \"manual\"");
+        }
+        lua_pop(L, 1);
+        lua_getfield(L, 2, "cursor");
+        if (!lua_isnil(L, -1)) {
+            const lua_Integer t = lua_isinteger(L, -1) ? lua_tointeger(L, -1) : 0;
+            if (t <= 0 || !g || std::find(g->textures.begin(), g->textures.end(), static_cast<unsigned>(t)) == g->textures.end())
+                return luaL_error(L, "wum.input.pointer: cursor must be a texture of this mod (wum.draw.texture)");
+            texture = static_cast<unsigned>(t);
+        }
+        lua_pop(L, 1);
+    }
+    ModRec* m = Current();
+    if (!m) return NotForConsole(L);
+    HookInputCleanup(m, g);
+    const mi::Result r = mi::Pointer(m->id, on, clickOutside, texture);
+    PushResult(L, r);
+    return r == mi::Result::Ok ? 1 : 2;
+}
+
 int PointerActive(lua_State* L) {
-    lua_pushboolean(L, false);
+    ModRec* m = Current();
+    lua_pushboolean(L, m && mi::PointerActive(m->id));
     return 1;
+}
+
+int Focus(lua_State* L) {
+    luaL_checktype(L, 1, LUA_TBOOLEAN);
+    const bool on = lua_toboolean(L, 1) != 0;
+    ModRec* m = Current();
+    if (!m) return NotForConsole(L);
+    HookInputCleanup(m, CurrentGen());
+    const mi::Result r = mi::Focus(m->id, on);
+    PushResult(L, r);
+    return r == mi::Result::Ok ? 1 : 2;
 }
 
 void Shared(lua_State* L, int wum) {
@@ -140,11 +265,11 @@ void Shared(lua_State* L, int wum) {
                                       {"setOptions", SetOptions},
                                       {"options", Options},
                                       {"cursor", Cursor},
-                                      {"region", NotNow},
+                                      {"region", Region},
                                       {"hover", Hover},
-                                      {"pointer", NotNow},
+                                      {"pointer", Pointer},
                                       {"pointerActive", PointerActive},
-                                      {"focus", NotNow},
+                                      {"focus", Focus},
                                       {nullptr, nullptr}};
     lua_newtable(L);
     RegisterFunctions(L, -1, kInput);
