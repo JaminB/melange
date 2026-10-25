@@ -23,10 +23,13 @@
 #include "core/game.h"
 #include "core/log.h"
 #include "core/module.h"
+#include "media/media.h"
 #include "render/backend.h"
 #include "render/gl_guard.h"
 #include "render/input_logic.h"
+#include "render/input_regions.h"
 #include "render/internal.h"
+#include "render/mirage/stages_screen.h"
 #include "render/selftest.h"
 #include "melange/overlay.h"
 #include "melange/testcmd.h"
@@ -562,9 +565,34 @@ void RenderOverlay(HDC dc) {
     RecordTiming(static_cast<double>(t1.QuadPart - t0.QuadPart) * 1e6 / static_cast<double>(freq.QuadPart));
 }
 
+// Melange 0.12: video uploads, the "screen" draw stage and the mod pointer run every presented frame, shown overlay or
+// not, before ImGui. Each is SEH-guarded on its own: a fault turns that step off for the session and the game goes on.
+struct ScreenStep {
+    const char* name;
+    void (*fn)();
+    bool off;
+};
+ScreenStep g_screenSteps[] = {{"media upload", &melange::media::OnPresent, false},
+                              {"screen stage", &melange::mirage::RunScreenStage, false},
+                              {"mod pointer", &melange::render::DrawModPointer, false}};
+
+void RunScreenStep(void* step) { static_cast<ScreenStep*>(step)->fn(); }
+
+void RunScreenSteps() {
+    for (ScreenStep& st : g_screenSteps) {
+        if (st.off) continue;
+        unsigned long code = 0;
+        if (!melange::render::SehCall(&RunScreenStep, &st, &code)) {
+            st.off = true;
+            LOG_ERROR("[overlay] %s faulted (0x%08lx); it stays off for this session", st.name, code);
+        }
+    }
+}
+
 void OnPresent(void* hdc) {
     if (melange::render::HotkeysPending()) melange::render::RunPendingHotkeys();
     if (!g_initTried) FirstPresent(static_cast<HDC>(hdc));
+    RunScreenSteps();
     if (!g_visible.load(std::memory_order_relaxed)) {
         g_appliedVisible = false;
         return;

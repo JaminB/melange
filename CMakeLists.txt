@@ -160,8 +160,9 @@ target_include_directories(melange PRIVATE src src/sdk ${CMAKE_BINARY_DIR}/gener
 target_compile_definitions(melange PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX _CRT_SECURE_NO_WARNINGS)
 target_compile_options(melange PRIVATE /W4 /utf-8 /permissive- /Zi /wd4100)
 target_link_options(melange PRIVATE /DEBUG /OPT:REF /OPT:ICF /SAFESEH:NO)
+# wintrust/crypt32: the media helper's Authenticode check; advapi32/userenv: its Low-integrity token and environment.
 target_link_libraries(melange PRIVATE safetyhook::safetyhook dbghelp bcrypt ws2_32 shell32 winmm winhttp imgui miniz lua54
-    oasis_core melange_xom)
+    oasis_core melange_xom wintrust crypt32 advapi32 userenv)
 
 # Oasis core without the game: HTTP/WS corpus against a live server on 127.0.0.1, protocol and queue cases.
 add_executable(oasis_core_selftest tests/oasis_core_selftest.cpp src/oasis/auth.cpp src/oasis/webpanels.cpp
@@ -483,6 +484,7 @@ add_executable(sandbox_selftest
     tests/sandbox_selftest.cpp
     src/lua/sandbox.cpp src/lua/sandbox_limits.cpp
     src/lua/wum_core.cpp src/lua/wum_ui.cpp src/lua/wum_render.cpp src/lua/wum_unsafe.cpp src/lua/wum_input.cpp src/lua/wum_audio.cpp
+    src/lua/wum_media.cpp src/lua/wum_peer.cpp src/input/gesture.cpp
     src/audio/wav.cpp src/audio/clips.cpp
     src/tools/json_read.cpp)
 target_include_directories(sandbox_selftest PRIVATE src src/sdk)
@@ -490,6 +492,11 @@ target_compile_definitions(sandbox_selftest PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX
     MELANGE_SOURCE_DIR="${CMAKE_SOURCE_DIR}")
 target_compile_options(sandbox_selftest PRIVATE /W4 /utf-8 /permissive- /EHsc /wd4100)
 target_link_libraries(sandbox_selftest PRIVATE lua54 imgui)
+# Melange 0.12: each namespace's task adds the real (game-free) sources its cases need here; fakes go in
+# tests/sandbox_fakes_<ns>.inc. One file per owner so parallel work never edits the same file.
+foreach(part media peer input draw audio game)
+    include(${CMAKE_SOURCE_DIR}/cmake/holo/sandbox_${part}.cmake)
+endforeach()
 # Stock Lua 5.0.1 with float numbers, a stand-in for the engine's match VM in sim_selftest (never linked into the plugin).
 FetchContent_Declare(lua50
     URL https://www.lua.org/ftp/lua-5.0.1.tar.gz
@@ -787,6 +794,46 @@ target_link_libraries(wormsign_player_selftest PRIVATE miniz)
 
 # The local content importer without the game or the network: a synthetic zip built by the test (fixed timestamps),
 # recipe rules, member checks, the hash refusal, deterministic packs, placement rollback, hiding and uninstall.
+# ---- Melange 0.12 (Holo) self-tests. The shared protocol headers are header-only; every other source a test needs is
+# added by its owner in cmake/holo/<part>.cmake (target_sources / target_link_libraries), so no two tasks edit this file.
+# The media headers shared with the x64 helper, the pack installer (C4a) and the media host (C4b), all without the game.
+add_executable(media_selftest tests/media_selftest.cpp src/tools/json_read.cpp src/tools/hash.cpp src/core/log.cpp)
+target_include_directories(media_selftest PRIVATE src src/sdk ${CMAKE_BINARY_DIR}/generated)
+target_compile_definitions(media_selftest PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX _CRT_SECURE_NO_WARNINGS
+    MELANGE_SOURCE_DIR="${CMAKE_SOURCE_DIR}")
+target_compile_options(media_selftest PRIVATE /W4 /utf-8 /permissive- /EHsc)
+target_link_libraries(media_selftest PRIVATE miniz bcrypt winhttp)
+include(${CMAKE_SOURCE_DIR}/cmake/holo/media_pack.cmake)
+include(${CMAKE_SOURCE_DIR}/cmake/holo/media_host.cmake)
+
+# The peer bus's wire codec, fragmentation, rate limits, clock and gates (C3).
+add_executable(peerbus_selftest tests/peerbus_selftest.cpp)
+target_include_directories(peerbus_selftest PRIVATE src src/sdk)
+target_compile_definitions(peerbus_selftest PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX _CRT_SECURE_NO_WARNINGS)
+target_compile_options(peerbus_selftest PRIVATE /W4 /utf-8 /permissive- /EHsc)
+include(${CMAKE_SOURCE_DIR}/cmake/holo/peerbus.cmake)
+
+# Mod input routing: regions, priority, synthetic releases, pointer mode and focus rules (C2).
+add_executable(input_regions_selftest tests/input_regions_selftest.cpp)
+target_include_directories(input_regions_selftest PRIVATE src src/sdk)
+target_compile_definitions(input_regions_selftest PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX _CRT_SECURE_NO_WARNINGS)
+target_compile_options(input_regions_selftest PRIVATE /W4 /utf-8 /permissive- /EHsc)
+include(${CMAKE_SOURCE_DIR}/cmake/holo/input_regions.cmake)
+
+# Mod fonts: holo-font-1 metrics, UTF-8 layout, kerning, measure and ellipsis (C5).
+add_executable(font_selftest tests/font_selftest.cpp src/tools/json_read.cpp)
+target_include_directories(font_selftest PRIVATE src src/sdk)
+target_compile_definitions(font_selftest PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX _CRT_SECURE_NO_WARNINGS)
+target_compile_options(font_selftest PRIVATE /W4 /utf-8 /permissive- /EHsc)
+include(${CMAKE_SOURCE_DIR}/cmake/holo/font.cmake)
+
+# A stand-alone Lua 5.4 interpreter (the Sandbox's own Lua build) for plugin-side Lua tests (Holo's run_tests.py).
+# Never shipped. Build it with: cmake --build --preset x86-release --target lua54_cli
+add_executable(lua54_cli EXCLUDE_FROM_ALL ${lua_SOURCE_DIR}/lua.c)
+set_source_files_properties(${lua_SOURCE_DIR}/lua.c PROPERTIES LANGUAGE CXX)
+target_compile_options(lua54_cli PRIVATE /TP /EHsc /W1 /wd4244 /wd4267)
+target_link_libraries(lua54_cli PRIVATE lua54)
+
 add_executable(import_selftest tests/import_selftest.cpp
     src/erg/names.cpp src/erg/luagen.cpp src/erg/scene.cpp src/erg/xomutil.cpp src/erg/jsonio.cpp src/erg/patch.cpp
     src/levels/manifest.cpp src/assets/crcsafe_math.cpp src/assets/crcsafe_file.cpp

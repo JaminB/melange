@@ -35,6 +35,9 @@
 #include "melange/postfx.h"
 #include "melange/render.h"
 #include "melange/shaders.h"
+#include "media/media.h"
+#include "media/pack.h"
+#include "net/peerbus.h"
 
 namespace fake {
 struct Record {
@@ -470,6 +473,14 @@ void Release(const void* owner) {
     fake::g_audioClips.erase(owner);
 }
 }  // namespace audio
+
+// Melange 0.12 (Holo): one fakes file per namespace owner.
+#include "sandbox_fakes_media.inc"
+#include "sandbox_fakes_peer.inc"
+#include "sandbox_fakes_input.inc"
+#include "sandbox_fakes_draw.inc"
+#include "sandbox_fakes_audio.inc"
+#include "sandbox_fakes_game.inc"
 }  // namespace melange
 
 // ---------------------------------------------------------------- helpers
@@ -1673,6 +1684,36 @@ okLoad = pcall(wum.audio.load, {})
     fake::g_audioClips.clear();
 }
 
+// Owner-only events (QueueEventFor, lua::PostEventTo): only the target mod's listeners run.
+void TestOwnerEvents() {
+    SetMod("ownA", "got = 0 wum.events.on('melange.owned', function(p) got = got + p.n end)");
+    SetMod("ownB", "got = 0 wum.events.on('melange.owned', function(p) got = got + p.n end)");
+    Expect(sandbox::LoadMod("ownA") && sandbox::LoadMod("ownB"), "owner-event mods load");
+    json::Value v;
+    v.type = json::Type::Object;
+    json::Value n;
+    n.type = json::Type::Number;
+    n.number = 2;
+    v.members.emplace_back("n", n);
+    sandbox::QueueEventFor("ownA", "melange.owned", v);
+    sandbox::QueueEventFor("", "melange.owned", v);  // no owner: dropped, never broadcast
+    Expect(lua::PostEventTo("ownB", "melange.owned", "{\"n\": 5}"), "PostEventTo accepted");
+    Expect(!lua::PostEventTo("", "melange.owned", "{}"), "PostEventTo needs a mod id");
+    Frames(1);
+    ExpectEq(Eval("ownA", "return got"), "2", "QueueEventFor reaches its mod only");
+    ExpectEq(Eval("ownB", "return got"), "5", "PostEventTo reaches its mod only");
+    sandbox::UnloadMod("ownA");
+    sandbox::UnloadMod("ownB");
+}
+
+// Melange 0.12 (Holo): one cases file per namespace owner.
+#include "sandbox_cases_media.inc"
+#include "sandbox_cases_peer.inc"
+#include "sandbox_cases_input.inc"
+#include "sandbox_cases_draw.inc"
+#include "sandbox_cases_audio.inc"
+#include "sandbox_cases_game.inc"
+
 void TestDocs() {
     const std::string doc = ReadText(W(MELANGE_SOURCE_DIR) + L"\\docs\\lua-api.md");
     Expect(!doc.empty(), "docs/lua-api.md exists");
@@ -1723,7 +1764,10 @@ int main() {
         {"game", TestGame},       {"match", TestMatch},     {"graphics", TestGraphics}, {"sprites", TestSprites},
         {"meshes", TestMeshes},   {"camera override", TestCameraOverride},
         {"shader textures", TestShaderTextures},
-        {"input", TestInput}, {"audio", TestAudio}, {"docs", TestDocs}};
+        {"input", TestInput}, {"audio", TestAudio},
+        {"owner events", TestOwnerEvents}, {"media", TestMedia}, {"peer", TestPeer}, {"mod input", TestModInput},
+        {"draw screen", TestDrawScreen}, {"music", TestMusic}, {"game turn", TestGameTurn},
+        {"docs", TestDocs}};
     for (const auto& [name, fn] : tests) {
         const int before = g_fail;
         fn();

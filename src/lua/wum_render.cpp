@@ -987,12 +987,32 @@ int ShEnableGlsl(lua_State* L) {
     return 0;
 }
 
+// ---- Melange 0.12 drawing: UV images, nine-slice, mod fonts, text size, clip, video. Placeholders from C0: C5
+// implements them (and the "screen" stage, hudText's options, texture{mips=false}).
+int DrawUnavailable(lua_State* L) {
+    lua_pushnil(L);
+    lua_pushstring(L, "unavailable");
+    return 2;
+}
+
+int TextSize(lua_State* L) {
+    luaL_checkstring(L, 1);
+    lua_pushnumber(L, 0);
+    lua_pushnumber(L, 0);
+    return 2;
+}
+
+int HudClipEnd(lua_State*) { return 0; }
+
 void Shared(lua_State* L, int wum) {
     static const luaL_Reg kDraw[] = {{"line", Line},       {"box", Box},         {"sphere", Sphere},     {"axes", Axes},
                                      {"quad", Quad},       {"text", Text},       {"hudLine", HudLine},   {"hudRect", HudRect},
                                      {"hudText", HudText}, {"hudImage", HudImage}, {"texture", Texture}, {"sprite", Sprite},
                                      {"mesh", MeshDraw},   {"newMesh", NewMesh}, {"freeMesh", FreeMesh},
-                                     {"on", On},           {"off", Off},         {nullptr, nullptr}};
+                                     {"on", On},           {"off", Off},
+                                     {"hudImageUV", DrawUnavailable}, {"hudNine", DrawUnavailable}, {"font", DrawUnavailable},
+                                     {"textSize", TextSize}, {"hudClip", DrawUnavailable}, {"hudClipEnd", HudClipEnd},
+                                     {"media", DrawUnavailable}, {nullptr, nullptr}};
     static const luaL_Reg kRender[] = {{"camera", Camera}, {"worldToScreen", WorldToScreen}, {"windowSize", WindowSize},
                                        {"timing", Timing}, {"cameraOverride", CameraOverride},
                                        {"gameCamera", GameCamera}, {nullptr, nullptr}};

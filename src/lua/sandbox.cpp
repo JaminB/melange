@@ -35,6 +35,10 @@ struct Timer {
 struct Pending {
     std::string name;
     json::Value payload;
+    std::string target;  // a mod id: only that mod's listeners get it (QueueEventFor); empty = every listener
+};
+struct Posted {
+    std::string name, json, target;
 };
 struct Lib {
     std::string name;
@@ -59,7 +63,7 @@ std::vector<Timer> g_timers;
 uint64_t g_timerSeq = 0;
 std::deque<Pending> g_queue;
 std::mutex g_postMx;
-std::vector<std::pair<std::string, std::string>> g_posted;
+std::vector<Posted> g_posted;
 uint64_t g_dropped = 0, g_droppedLogged = 0, g_frame = 0;
 int g_frozenRef = LUA_NOREF, g_gRef = LUA_NOREF, g_wumRef = LUA_NOREF, g_consoleRef = LUA_NOREF;
 size_t g_consoleLibs = 0;
@@ -740,6 +744,8 @@ const char* KindName(CbKind k) {
         case CbKind::Draw: return "draw";
         case CbKind::Reload: return "reload";
         case CbKind::WebMethod: return "web method";
+        case CbKind::Media: return "media";
+        case CbKind::Peer: return "peer";
     }
     return "?";
 }
@@ -1032,7 +1038,16 @@ void QueueEvent(std::string name, json::Value payload) {
         ++g_dropped;
         return;
     }
-    g_queue.push_back({std::move(name), std::move(payload)});
+    g_queue.push_back({std::move(name), std::move(payload), {}});
+}
+
+void QueueEventFor(std::string modId, std::string name, json::Value payload) {
+    if (modId.empty()) return;  // an owner-only event never falls back to everyone
+    if (g_queue.size() >= kMaxQueue) {
+        ++g_dropped;
+        return;
+    }
+    g_queue.push_back({std::move(name), std::move(payload), std::move(modId)});
 }
 
 void AddListener(const std::string& name, uint32_t cbId) {
@@ -1061,12 +1076,12 @@ uint32_t AddTimer(uint32_t cbId, double delay, double interval) {
     return cbId;
 }
 
-void FireDirect(const std::string& name, const json::Value& payload) {
+void FireDirect(const std::string& name, const json::Value& payload, const std::string& target) {
     auto it = g_listeners.find(name);
     if (it == g_listeners.end()) return;
     std::vector<Callback*> cbs;
     for (uint32_t id : it->second)
-        if (Callback* cb = FindCallback(id); CallbackLive(cb)) cbs.push_back(cb);
+        if (Callback* cb = FindCallback(id); CallbackLive(cb) && (target.empty() || cb->gen->mod->id == target)) cbs.push_back(cb);
     std::stable_sort(cbs.begin(), cbs.end(), [](Callback* a, Callback* b) {
         return a->gen->mod->order != b->gen->mod->order ? a->gen->mod->order < b->gen->mod->order : a->id < b->id;
     });
@@ -1134,19 +1149,20 @@ void Frame() {
         m->msAccum = 0;
         m->frameInstructions = 0;
     }
-    std::vector<std::pair<std::string, std::string>> posted;
+    std::vector<Posted> posted;
     {
         std::lock_guard lk(g_postMx);
         posted.swap(g_posted);
     }
-    for (auto& [name, text] : posted) {
+    for (Posted& p : posted) {
         json::Value v;
         json::Error e;
-        if (!json::Parse(text, &v, &e) || !v.IsObject()) {
-            SysLog(2, "PostEvent: payload is not a JSON object", {}, name);
+        if (!json::Parse(p.json, &v, &e) || !v.IsObject()) {
+            SysLog(2, "PostEvent: payload is not a JSON object", {}, p.name);
             continue;
         }
-        QueueEvent(std::move(name), std::move(v));
+        if (p.target.empty()) QueueEvent(std::move(p.name), std::move(v));
+        else QueueEventFor(std::move(p.target), std::move(p.name), std::move(v));
     }
 
     const double now = NowSeconds();
@@ -1180,7 +1196,7 @@ void Frame() {
     for (size_t n = 0; n < kEventsPerFrame && !g_queue.empty(); ++n) {
         Pending p = std::move(g_queue.front());
         g_queue.pop_front();
-        FireDirect(p.name, p.payload);
+        FireDirect(p.name, p.payload, p.target);
     }
     if (g_dropped != g_droppedLogged) {
         SysLog(2, "event queue overflow", {}, std::to_string(g_dropped - g_droppedLogged) + " events dropped");
@@ -1407,7 +1423,15 @@ bool PostEvent(const char* name, const char* jsonObject) {
     if (!name || !*name || !sandbox::Running()) return false;
     std::lock_guard lk(g_postMx);
     if (g_posted.size() >= kMaxQueue) return false;
-    g_posted.emplace_back(name, jsonObject && *jsonObject ? jsonObject : "{}");
+    g_posted.push_back({name, jsonObject && *jsonObject ? jsonObject : "{}", {}});
+    return true;
+}
+
+bool PostEventTo(const char* modId, const char* name, const char* jsonObject) {
+    if (!modId || !*modId || !name || !*name || !sandbox::Running()) return false;
+    std::lock_guard lk(g_postMx);
+    if (g_posted.size() >= kMaxQueue) return false;
+    g_posted.push_back({name, jsonObject && *jsonObject ? jsonObject : "{}", modId});
     return true;
 }
 

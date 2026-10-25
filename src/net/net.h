@@ -80,6 +80,18 @@ int PlayerCount(uintptr_t ns);
 uintptr_t PlayerAt(uintptr_t ns, int idx);
 uintptr_t CurrentPlayer(uintptr_t ns);  // NetPlayer whose turn it is (0 between turns)
 
+// Melange 0.12 (wum.lobby, wum.game.turn().mine). Written by C0; C3 owns the bodies in net_session.cpp, C1 only calls.
+// The net session's phase, from the NetService state: Lobby (Init, WaitingSimChannel, WaitingGameStart), Loading
+// (WaitingConnections, WaitingLoad), Match (InGame), Results (ProcessWinOrDraw, WaitingUnload), None (no NetService
+// state, i.e. no net session). Main thread.
+enum class SessionPhase : uint8_t { None, Lobby, Loading, Match, Results };
+SessionPhase Phase();
+const char* PhaseName(SessionPhase p);  // "none", "lobby", "loading", "match", "results"
+// Whether the player whose turn it is runs on this machine (NetPlayer +0x4e of CurrentPlayer). Unknown between turns
+// and outside an online match (CurrentPlayer is 0): the caller latches the last known value across the gap.
+enum class Tri : uint8_t { Unknown, No, Yes };
+Tri CurrentPlayerIsLocal();
+
 template <class T>
 T Read(uintptr_t addr, T def = T{});
 bool WriteByte(uintptr_t addr, uint8_t v);

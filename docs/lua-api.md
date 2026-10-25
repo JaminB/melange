@@ -84,7 +84,16 @@ Names:
     held the next turn start with `wum.sim.holdTurn` (`ticks` is the hold's length, or at the end the ticks held;
     `tick` the sim tick; `roundMsLeft` the round clock, which does not run during the hold). See the developer guide's
     [sim scripts](developer-guide.md#the-turn-start-hold).
-  - Events that C++ modules post with `melange::lua::PostEvent`.
+  - `melange.turn` `{index, team, worm, mine, ai, online}`: a turn started (after the game state snapshot of that
+    frame); see `wum.game.turn()`. `melange.ui` `{weaponPanel, pause, readyIntro}`: one of `wum.game.ui()`'s flags
+    changed. (Melange 0.12)
+  - `melange.lobby.enter` `{isHost}`, `melange.lobby.leave`, `melange.lobby.members`, `melange.lobby.owner`
+    `{owner, isHost}`, `melange.lobby.phase` `{phase}`: see [`wum.lobby`](#wumlobby). (Melange 0.12)
+  - `melange.media` `{type, ...}`, `melange.input.mouse`, `melange.input.wheel`, `melange.input.key`,
+    `melange.input.char`, `melange.input.paste`: delivered **only to the mod they concern**; see
+    [`wum.media`](#wummedia) and [`wum.input`](#wuminput). (Melange 0.12)
+  - Events that C++ modules post with `melange::lua::PostEvent` (to every listener) or `melange::lua::PostEventTo`
+    (to one mod's listeners, Melange 0.12).
 - **Mod events:** `mod.<id>.<name>` from `wum.events.emit`.
 
 ## `wum.timers`
@@ -126,8 +135,9 @@ Read-only game state.
 |---|---|
 | `wum.game.scene()` | `"boot"`, `"menu"`, `"loading"` or `"match"`. |
 | `wum.game.inMatch()` | A match (including the attract demo) is running. |
-| `wum.game.online()` | The current match is an online match. |
-| `wum.game.turn()` | `{index}`: turns started in this match (`team` is not available yet). |
+| `wum.game.online()` | A net session exists: the online lobby, its loading screens, the match and its results (Melange 0.12; before 0.12 it was true only once the online match was running). |
+| `wum.game.turn()` | `{index, team, worm, ai, mine, phase}`: `index` = turns started in this match; `team` = the current team's index and `worm` = the active worm's index, both absent between turns; `ai` = the current team is computer-controlled; `mine` = the current turn is played on this machine (online: the turn owner's player is local, kept across the gap between turns; offline: the team is local and not AI); `phase` = `"intro"` (the hot-seat timer), `"play"`, `"retreat"`, `"settle"` or `"none"`. The fields after `index` are Melange 0.12. |
+| `wum.game.ui()` | `{weaponPanel, pause, readyIntro, feCursor, attract}` booleans: the weapon panel is open, a pause menu or popup is up, the "Ready?" turn intro shows, the frontend's own menu cursor is active, the attract demo runs. `nil` on an unrecognised build. Changes are also sent as `melange.ui`. (Melange 0.12) |
 | `wum.game.tick()` | Simulation ticks (50 per second) since the match started, when the sim bridge is running; otherwise 0. |
 | `wum.game.worms()` | The worms of the current match, an array of `{slot, team, name, health, alive, pos={x,y,z}, vel={x,y,z}, yaw, weapon}` (`vel` is the engine's own velocity in world units per second: the game keeps it per millisecond of game time and Melange multiplies by 1000; it is the worm's physics velocity, so it is about zero while the worm stands or walks and large while it flies, falls or is knocked back; `weapon` is the weapon id, absent when none; `yaw` is the facing angle in radians about +Y, the facing direction is `(sin yaw, 0, cos yaw)`, it is not wrapped to a range and it spins while a worm is thrown). Empty outside a match; `nil, "unavailable"` on an unrecognised game build or with `[GameState] Enabled=0`. |
 | `wum.game.teams()` | The teams of the current match, an array of `{slot, name, active, ai, local}`; empty outside a match, `nil, "unavailable"` as above. |
@@ -219,16 +229,35 @@ queued for the next frame; inside `wum.draw.on`, they are drawn at that stage.
 | `wum.draw.text(pos, text, color[, size[, frames]])` | Screen-aligned text above a world point. |
 | `wum.draw.hudLine(x0, y0, x1, y1, color[, width[, frames]])` | HUD line in window pixels (origin top-left). |
 | `wum.draw.hudRect(x0, y0, x1, y1, color[, filled[, width[, frames]]])` | HUD rectangle. |
-| `wum.draw.hudText(x, y, text, color[, size[, frames]])` | HUD text. |
+| `wum.draw.hudText(x, y, text, color[, size[, frames]])` | HUD text. Melange 0.12 also takes `wum.draw.hudText(x, y, text, color, size, opts)` with `opts`: `font` (a `wum.draw.font` id; UTF-8, kerning, a missing glyph draws `?`), `shadow` (a colour, or `false`), `shadowOffset = {dx, dy}`, `align = "left"` \| `"center"` \| `"right"`, `maxWidth` (pixels) and `ellipsis` (cut with an ellipsis at `maxWidth`). |
 | `wum.draw.hudImage(x0, y0, x1, y1, texture[, tint[, frames]])` | HUD image from `wum.draw.texture`. |
-| `wum.draw.texture(rel[, opts])` | Loads a PNG from the mod folder; returns a texture id, or `nil, err`. Freed when the mod unloads or reloads. A mod can hold 256 at a time. Textures get a full mip chain and trilinear filtering. With `opts`, the texture is for a shader (see [Shader textures](#shader-textures)): `{wrap = "repeat"\|"clamp", filter = "linear"\|"nearest", layers = n}`. |
+| `wum.draw.texture(rel[, opts])` | Loads a PNG from the mod folder; returns a texture id, or `nil, err`. Freed when the mod unloads or reloads. A mod can hold 256 at a time. Textures get a full mip chain and trilinear filtering. With `opts`, the texture is for a shader (see [Shader textures](#shader-textures)): `{wrap = "repeat"\|"clamp", filter = "linear"\|"nearest", layers = n}`. `{mips = false}` (Melange 0.12) loads a HUD texture without mips (linear filtering), which saves a quarter of its memory. From Melange 0.12, `hudImage`, `hudImageUV` and `hudNine` take only the calling mod's own textures. |
 | `wum.draw.sprite(tex, x, y, z, halfW, halfL, ax, ay, az[, color[, mode]])` | Textured world sprite; only inside a `"world"` or `"worldLate"` callback. Returns `true`, or `false` when dropped by the per-frame cap. See [Sprites](#sprites). |
 | `wum.draw.mesh(verts, idx, tex, model[, opts])` | Triangle mesh from vertex and index arrays; only inside a `"world"` or `"worldLate"` callback. Returns `true`, or `false` when over the per-frame cap. See [Meshes](#meshes). |
 | `wum.draw.mesh(handle, tex, model[, color[, opts]])` | The same for a mesh kept with `wum.draw.newMesh`. |
 | `wum.draw.newMesh(verts, idx[, format])` | Keeps a mesh in Melange so it is not sent every frame; returns an integer handle, or `nil, "too many meshes"`. Freed when the mod unloads or reloads. |
 | `wum.draw.freeMesh(handle)` | Frees a kept mesh; `true` if the handle was one of this mod's live meshes. |
-| `wum.draw.on(stage, fn)` | Calls `fn(stage)` every frame at `"world"`, `"worldLate"` or `"hud"`; returns a handle. |
+| `wum.draw.on(stage, fn)` | Calls `fn(stage)` every frame at `"world"`, `"worldLate"`, `"hud"` or `"screen"`; returns a handle. `"screen"` (Melange 0.12) runs at present time in window pixels, after the game's composite and every post effect, before the overlay, in the frontend, the lobby, loading screens and matches alike; it is never tinted or post-processed. The `hud*` primitives work there. |
+| `wum.draw.hudImageUV(x0, y0, x1, y1, tex, u0, v0, u1, v1[, tint])` | A HUD image showing only the texture rectangle `(u0, v0)`-`(u1, v1)` (0..1), for atlases. (Melange 0.12) |
+| `wum.draw.hudNine(x0, y0, x1, y1, tex, l, t, r, b[, opts])` | A nine-slice panel: `l, t, r, b` are the source insets in texture pixels; the corners are drawn at `scale * inset`, the edges and the centre are stretched. `opts`: `tint`, `scale` (default 1), `uv = {u0, v0, u1, v1}` to take the slice from part of an atlas. (Melange 0.12) |
+| `wum.draw.font(atlasPng, metricsJson)` | Loads a bitmap font from two files in the mod folder (format `holo-font-1`, see [Mod fonts](#mod-fonts)); returns a font id, or `nil, reason`. At most 4 per mod; freed on unload and reload. (Melange 0.12) |
+| `wum.draw.textSize(text, size[, opts])` | `w, h` in pixels of `text` drawn by `hudText` at `size`, with `opts.font` for a mod font. (Melange 0.12) |
+| `wum.draw.hudClip(x0, y0, x1, y1)` | Clips the following HUD primitives of this callback to the rectangle (nests 4 deep, intersecting); `wum.draw.hudClipEnd()` ends the innermost clip. Clips still open end with the callback. (Melange 0.12) |
+| `wum.draw.media(player, x0, y0, x1, y1[, opts])` | Draws a [`wum.media`](#wummedia) player's current frame into the rectangle and returns the picture rectangle `px0, py0, px1, py1`, or `nil` when there is no frame yet. `opts`: `fit = "contain"` (default, letterboxed) \| `"cover"` \| `"stretch"`, `alpha` 0..1. Only the mod that opened the player can draw it; drawing it is what keeps its frames uploading. (Melange 0.12) |
 | `wum.draw.off(handle)` | Removes a draw callback. |
+
+### Mod fonts
+
+`wum.draw.font` (Melange 0.12) reads a PNG atlas (at most 2048x2048: white glyphs with their outline baked in black, so
+the `hudText` colour tints the fill and the outline stays black) and a JSON metrics file:
+
+```json
+{"format": "holo-font-1", "size": 28, "scale": 2, "lineHeight": 34, "ascent": 26, "outline": 2,
+ "glyphs": {"65": [0, 0, 30, 36, 1, -26, 29]}, "kern": {"65,86": -2}}
+```
+
+`size` is the pixel size at scale 1, and the atlas is baked at `scale` times that. Glyph keys are Unicode code points in
+decimal, each `[x, y, w, h, xoff, yoff, adv]` in atlas pixels; `kern` pairs adjust the advance between two code points.
 
 ### Sprites
 
@@ -539,6 +568,32 @@ functions do nothing useful (`binding()` returns `nil`, `setOptions` is accepted
 Scaled motion keeps its fractional part from one mouse event to the next, so a low sensitivity does not drop slow
 movements.
 
+### Mouse regions, pointer mode and keyboard focus
+
+Melange 0.12 lets a client mod take mouse clicks and typing for its own on-screen controls, without them reaching the
+game. This is local input filtering only: a click or key a mod takes never becomes a game input, so nothing is sent to
+other players and the match cannot desynchronise. `[Input] AllowModInput=0` turns all of it off (every call then
+returns `false, "unavailable"` or `nil`).
+
+| Name | Description |
+|---|---|
+| `wum.input.cursor()` | `x, y, source` in window pixels: `source` is `"frontend"` (the game's own menu cursor, in menus and the lobby) or `"pointer"` (this mod's pointer mode in a match). `nil` in a match without pointer mode, since the game hides and re-centres the mouse there. |
+| `wum.input.region(id, x0, y0, x1, y1[, opts])` | Claims a rectangle for the next `opts.frames` frames (default 2), so renew it every frame while the control shows. While the cursor is inside, button presses, double-clicks and the wheel go to this mod instead of the game (mouse moves still reach the game, and a button release whose press the game saw is always passed on). `opts.cursor`: `"arrow"`, `"hand"` or `"ibeam"`. Returns `true`, or `false, "busy"` when another mod's region or focus has priority. `id` is a string up to 64 bytes. |
+| `wum.input.hover()` | The id of this mod's topmost region under the cursor, or `nil`. |
+| `wum.input.pointer(on[, opts])` | Pointer mode for a match: the game stops re-centring the mouse and gets no mouse input, and Melange draws a cursor (`opts.cursor` = a texture of this mod, or the default arrow). The keyboard still reaches the game. `opts.release`: `"click-outside"` (default; a click outside every region of this mod ends it and is not passed on) or `"manual"`. It also ends on `pointer(false)`, Esc (consumed), the overlay taking input, the end of the match, focus loss, unload, and when a turn of this machine's player starts. On exit the cursor goes back to the centre and the game sees no mouse jump. Returns `true`, or `false, "busy"` / `false, "unavailable"` (outside a match). |
+| `wum.input.pointerActive()` | `true` while this mod's pointer mode is on. |
+| `wum.input.focus(on)` | Keyboard focus for a text box of this mod: keys and characters go to this mod (`melange.input.key`, `melange.input.char`, `melange.input.paste`) and not to the game. Hotkeys with Ctrl, Shift or Alt still work; bare F-key hotkeys do not while focused. Ends on `focus(false)`, Esc (delivered first), the overlay taking input, focus loss or unload. Returns `true` or `false, "busy"`. |
+
+Priority: the overlay first, then the mod with focus or pointer mode, then regions (the most recently loaded mod
+first), then the game. Events, delivered at the next frame to the mod that owns the region, focus or pointer only:
+
+- `melange.input.mouse` `{region, button, down, x, y, double}`: `button` is `"left"`, `"right"`, `"middle"`, `"x1"` or `"x2"`.
+- `melange.input.wheel` `{region, delta, x, y}`: `delta` in notches (positive away from the user).
+- `melange.input.key` `{key, down, repeat, ctrl, shift, alt}`, `melange.input.char` `{text}` (UTF-8) and
+  `melange.input.paste` `{text}` (Ctrl+V: the clipboard text, at most 4096 bytes, control characters removed): focus only.
+
+A click that Melange delivered to a mod also counts as that mod's user gesture, which `wum.media.install` requires.
+
 ## `wum.audio`
 
 Plays sounds from the mod folder on this machine. It is client-only: the library exists in the client VM and not in the
@@ -581,6 +636,117 @@ end)
 -- positional, a little random pitch so repeats do not sound identical:
 --   wum.audio.play(boom, {pos = {x = 120, y = 40, z = -300}, pitch = 0.9 + math.random() * 0.2})
 ```
+
+### `wum.audio.music`
+
+Melange 0.12 lets a client mod silence the game's own music (the menu and match themes, sudden death, victory and the
+frontend music, and replacement music from mods such as Kanly's sudden-death bank) while it plays something else.
+It mutes the game's FMOD music category; sound effects, speech and ambience are untouched, the music keeps running
+silently (so nothing that waits on it changes), and the player's saved music volume is never written. Detect it with
+`if wum.audio.music then ... end`.
+
+| Name | Description |
+|---|---|
+| `wum.audio.music.available()` | `true` once the game's music category was found (a request made earlier is kept and applied then). |
+| `wum.audio.music.suppress(on[, opts])` | Asks for the game music to be silenced (`true`) or released (`false`). `opts.fade` = seconds (default 0.4, 0 = at once). Returns `true`, or `nil, "unavailable"` / `nil, "disabled"` (`[Audio] AllowMusicSuppress=0`). Each mod has one request; the music is silent while any mod asks. A mod's request is released when it unloads, reloads or is disabled. |
+| `wum.audio.music.suppressed()` | `effective, mine`: whether the music is silenced (by any mod), and whether this mod asks for it. |
+
+`wum.audio.play` also takes `{kind = "music"}` in Melange 0.12: such a sound is silenced together with the game music.
+
+## `wum.media`
+
+Melange 0.12 plays YouTube videos and playlists and torrent (magnet) videos for client mods, for watch parties such as
+the Holo plugin. Everything runs on this machine for presentation only: it is not available to sim scripts, it is not
+part of the content handshake, and nothing about it reaches the match or Wormsign. Detect it with
+`if wum.media then ... end`; a mod that needs it declares `"melange": {"range": ">=0.12.0"}`.
+
+The decoder runs in a separate 64-bit process, `holo-media.exe`, from the **media pack**: a download of about 95 MB
+from Melange's own GitHub releases, installed once per machine into `Documents\Melange\media` and shared by every mod.
+Melange checks every file of it against hashes compiled into `melange.asi`, and the helper's signature, before each
+start. Nothing is downloaded until the user clicks the mod's download button (see `wum.media.install`). YouTube items
+use yt-dlp, which Melange keeps up to date from the same releases (at most one check a day). See
+[the media helper](media-helper.md) for the details, and the developer guide for the `[Media]` settings.
+
+| Name | Description |
+|---|---|
+| `wum.media.available()` | `true`, or `false, reason`: `"disabled"` (`[Media] Enabled=0`), `"unsupported-os"` (32-bit Windows), `"unavailable"` (the module did not start). |
+| `wum.media.pack()` | The media pack: `{state, version, progress, bytes, total, downloadMB, diskMB, ytdlp, error}`. `state` is `"missing"`, `"downloading"`, `"verifying"`, `"installing"`, `"ready"`, `"updating"`, `"error"`, `"unsupported"` or `"disabled"`; `progress` 0..1 and `bytes`/`total` while downloading; `downloadMB`/`diskMB` for the consent text; `ytdlp` the installed yt-dlp version; `error` (state `"error"` only) `"hash"`, `"disk-space"`, `"network"`, `"cancelled"` or `"blocked"`. |
+| `wum.media.install()` | Starts the pack download. It must be called within 2 seconds of a click Melange delivered to this mod (a `melange.input.mouse` press and release inside one of its regions; the region must cover at most a quarter of the window and have existed for half a second): that click is the user's consent, so show the size, the source and the folder next to the button. Returns `true`, or `nil, reason`: `"gesture"`, `"busy"`, `"ready"`, `"disabled"`, `"unsupported-os"`, `"blocked"` (`[Media] AllowDownload=0`). Allowed in the menus, the lobby and matches; in a match the download is throttled (`[Media] MatchDownloadKBps`). |
+| `wum.media.cancelInstall()` | Stops a running download; returns `true`. |
+| `wum.media.classify(text)` | Checks a link the user typed or pasted. Returns `{kind = "youtube", id, playlist, live, url}` or `{kind = "magnet", infohash, name, url}`, or `nil, "unsupported-url"`. `url` is the canonical form, the only one to store or send to other players. Accepted: `https://` links to `youtube.com`, `www.`, `m.` or `music.youtube.com` (`/watch?v=`, `/playlist?list=`, `/shorts/`, `/live/`) and `youtu.be`, and `magnet:` links with a `btih` (40 hex or 32 base32 characters) or `btmh` infohash. Everything else is refused. A magnet keeps only its infohash, its name (`dn`, at most 200 bytes) and up to 8 `udp`, `http` or `https` trackers, and is at most 1024 bytes. Text is trimmed; more than 4096 bytes is refused. |
+| `wum.media.resolve(url, fn)` | Lists a YouTube playlist (or one video): calls `fn({items = {{url, id, title, duration}, ...}, title})` or `fn({error, message})` with `error` = `"ytdlp"`, `"network"`, `"private"` or `"timeout"` (30 s). Returns a request id, or `nil, reason`. At most 4 in flight per mod and 200 items per result. |
+| `wum.media.torrent(magnet[, fn])` | Starts a torrent from a magnet link (every file paused until one is played) and returns a torrent handle, or `nil, reason`: `"unsupported-url"`, `"pack"`, `"busy"` (4 open per mod), `"first-use-in-match"` (the first torrent of a session must start in the menus or the lobby, because Windows may ask to allow network access). `fn({files, name})` runs when the file list arrives, or `fn({error})`. |
+| `wum.media.open(opts)` | Opens this mod's player (one per mod) and returns it, or `nil, reason`: `"busy"`, `"pack"`, `"unsupported-url"`, `"cache-cap"`, `"helper"`. `opts`: exactly one source, `url` (a YouTube video) or `torrent` + `file` (a file index); `start` (seconds), `paused` (default `true`), `volume` 0..100 (default 70), `mute`, `quality` = 360, 480, 720 or 1080 (default 720, capped by `[Media] MaxHeight`), `speed` 0.25..4, `audioLang` and `subLang` (language codes such as `"en"` or `"pt-BR"`). |
+
+A torrent handle `t`:
+
+| Name | Description |
+|---|---|
+| `t:files()` | `{{index, path, size, video}, ...}` once the file list arrived, else `nil`. `video` is `true` for mkv, mp4, m4v, webm, avi, mov, ts and ogv files; playlists and other reference files are never playable. |
+| `t:status()` | `{down, up, peers, progress, have, metadata}`: bytes per second, peers, the played file's progress 0..1 and its bytes on disk. |
+| `t:close()` | Stops the torrent and deletes its downloaded data. Torrents are also closed when the mod unloads or reloads. The data lives in a cache folder (`[Media] TorrentCacheMB`, 8 GB by default, under `AppData\LocalLow\Melange\media-cache`) that is swept at the next start if the game exits early. While a torrent is open it uploads to other peers (`[Media] TorrentUploadKBps`), and the swarm sees this machine's IP address. |
+
+A player `p` (its methods return `nil, "closed"` after `p:close()`):
+
+| Name | Description |
+|---|---|
+| `p:play()`, `p:pause()` | |
+| `p:seek(t[, mode])` | Seeks to `t` seconds. `mode`: `"exact"` (default), `"keyframes"` (fast, while scrubbing) or `"relative"`. |
+| `p:speed(x)` | Playback rate 0.25..4, pitch kept. |
+| `p:volume(v)`, `p:mute(b)` | Volume 0..100 (already a perceptual curve), mute. |
+| `p:track(kind, id)` | Selects an audio (`kind = "audio"`) or subtitle (`"sub"`) track by its id from `p:state().tracks`; `false` turns subtitles off. |
+| `p:quality(h)` | Reopens the item at the current time with another height cap (360, 480, 720, 1080), keeping pause and speed. |
+| `p:size(w, h)` | Tells the decoder how large the picture is drawn, so it renders no more pixels than needed (at most 1280x720). |
+| `p:follow(st, hostId)` | Keeps this player in step with another machine's: `st = {e, i, s, p, r, a}` (epoch, item id, `"play"` or `"pause"`, position in seconds, rate, and the host's `wum.peer.now()` in ms at which `p` holds), `hostId` the host's SteamID string. Melange corrects the drift with the peer bus's clock: under 0.1 s nothing, up to 1.5 s a 5 % speed nudge, beyond that a seek slightly ahead; it never pauses the host. An older epoch or timestamp is ignored. `p:follow(nil)` stops following. |
+| `p:state()` | `{time, duration, paused, buffering, cacheAhead, speed, title, eof, w, h, aspect, tracks, following, drift, syncAction, helper}`: `tracks = {audio = {{id, lang, title, selected}, ...}, sub = {...}}`; `drift` is this player's position minus the followed target in seconds (`nil` if not following); `syncAction` is `"none"`, `"nudge"` or `"seek"`; `helper` is `"starting"`, `"ready"`, `"restarting"` or `"dead"`. Read it every frame; it is not pushed as events. |
+| `p:close()` | Closes the player. Players are also closed when the mod unloads or reloads. |
+
+Draw a player with `wum.draw.media`. Events come as `melange.media` to the mod they concern only, with `type`:
+`"loaded"` `{title, duration}`, `"ended"` `{reason}` (`"eof"`, `"error"` or `"stop"`), `"error"` `{code, message}`,
+`"buffering"` `{on}`, `"tracks"`, `"helper"` `{state}` (the helper restarts by itself at most once a minute, reopening
+the item where it was), `"pack"` `{state, progress}` (at most 4 times a second) and `"torrent"` `{infohash, files}`.
+Errors are raised only for a wrong argument type; everything else returns `nil, reason`.
+
+## `wum.lobby`
+
+The Steam lobby this machine is in, as client mods see it (Melange 0.12). Detect it with `if wum.lobby then ... end`.
+
+| Name | Description |
+|---|---|
+| `wum.lobby.state()` | `nil` outside a net session, else `{lobby, me, owner, isHost, phase, members}`: SteamIDs as strings; `phase` = `"lobby"`, `"loading"`, `"match"` or `"results"`; `members = {{id, name, me, host, melange, peer}, ...}` where `melange` is the member's Melange version (`nil` without Melange) and `peer` is `true` when the member has the calling mod's peer channel open. |
+| `wum.lobby.isHost()` | `true` when this machine owns the lobby; `false` outside a session. |
+
+Events (every listener): `melange.lobby.enter` `{isHost}`, `melange.lobby.leave`, `melange.lobby.members` (a member
+joined or left), `melange.lobby.owner` `{owner, isHost}` (the lobby changed hands), `melange.lobby.phase` `{phase}`.
+
+## `wum.peer`
+
+Messages between copies of the same mod on the machines of one lobby (Melange 0.12), over Steam P2P channel 6, which
+the game never uses. A mod only ever talks to its own copies: a channel reaches only members that opened the same mod's
+channel with the same version, and only once the game already has its own connection to that member, so Melange's
+traffic is never the first between two machines. None of it touches the match, the game's own channel or Wormsign.
+
+| Name | Description |
+|---|---|
+| `wum.peer.open{version = n}` | Opens this mod's channel (one per mod) and advertises `<mod id>@<version>` to the lobby; returns a channel, or `nil, reason`. |
+| `wum.peer.now()` | A monotonic clock in milliseconds (a float), the clock of every timestamp below. |
+
+A channel `ch`:
+
+| Name | Description |
+|---|---|
+| `ch:send(id, tbl[, opts])` | Sends a table (nil, booleans, numbers, strings up to 1024 bytes, tables up to 6 deep and 256 keys) to one member. `opts.reliable` (default `true`): reliable messages up to 8 KB, unreliable ones up to 900 bytes. Returns `true`, or `false, reason`: `"size"`, `"rate"` (over 20 messages or 8 KB a second to that member), `"no-peer"` (the member has not opened this channel), `"no-session"` (no game connection to the member yet), `"offline"`, `"closed"`. |
+| `ch:broadcast(tbl[, opts])` | Sends to every member that passes the same checks; returns how many. |
+| `ch:on(fn)` | `fn(from, tbl, meta)` for each message; `meta = {reliable, at}` with `at` the receive time in `wum.peer.now()` ms. |
+| `ch:onPeer(fn)` | `fn(id, up)` when a member becomes reachable on this channel (`true`) or stops being reachable (`false`). |
+| `ch:peers()` | The SteamIDs reachable now. |
+| `ch:clock(id)` | `{offset, rtt, samples}` for a member (`offset` = their clock minus mine, in ms), or `nil` before the first sample. |
+| `ch:setPresence(tbl)` | Publishes a small table (at most 256 bytes as JSON) as this machine's lobby member data for the mod, visible to every member even before any connection exists; written at most every 2 s. |
+| `ch:presence(id)` | Another member's presence table for this mod, or `nil`. |
+| `ch:close()` | Closes the channel (also on unload and reload). |
+
+Everything is reset when the lobby is left, when it changes hands and when a new lobby is joined.
+`[PeerBus] Enabled=0` turns the channel off (`wum.peer.open` then returns `nil, "unavailable"`).
 
 ## `wum.wormsign`
 

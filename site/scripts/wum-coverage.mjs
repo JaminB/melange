@@ -30,6 +30,8 @@ const ALLOW = path.join(SITE_DIR, 'scripts', 'wum-coverage.allow.json');
 const HAND_MAP = {
   // Replacements for the global rawset/setmetatable (RegisterFunctions(L, g, kRepl)), not wum.* functions.
   'src/lua/sandbox.cpp:kRepl': null,
+  // wum.audio.music, a nested namespace (three-level names are outside this check; `wum.audio.music` itself is covered).
+  'src/lua/wum_audio.cpp:kMusic': null,
 };
 
 async function walk(dir, exts) {

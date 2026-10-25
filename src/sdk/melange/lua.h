@@ -11,6 +11,8 @@ bool AddLibrary(const char* name, OpenFn fn, uint32_t flags = kLibNone);
 const char* CurrentMod();                     // id of the mod whose code is running, or nullptr
 // Client events (wum.events): delivered to Lua subscribers at the next Frame event, in post order.
 bool PostEvent(const char* name, const char* jsonObject);  // any thread
+// The same for one mod only (its own wum.events listeners); false if the queue is full or the Sandbox is not running.
+bool PostEventTo(const char* modId, const char* name, const char* jsonObject);  // any thread, Melange 0.12
 struct Stats { uint32_t mods, callbacks, faults, disabledCallbacks; uint64_t instructions, bytes; double msLastFrame; };
 Stats GetStats();
 }

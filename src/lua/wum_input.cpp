@@ -112,11 +112,39 @@ int Options(lua_State* L) {
     return 1;
 }
 
+// ---- mod input (Melange 0.12): cursor, regions, pointer mode, focus. Placeholders from C0: C2 implements them.
+int Cursor(lua_State* L) {
+    lua_pushnil(L);
+    return 1;
+}
+
+int NotNow(lua_State* L) {
+    lua_pushboolean(L, false);
+    lua_pushstring(L, "unavailable");
+    return 2;
+}
+
+int Hover(lua_State* L) {
+    lua_pushnil(L);
+    return 1;
+}
+
+int PointerActive(lua_State* L) {
+    lua_pushboolean(L, false);
+    return 1;
+}
+
 void Shared(lua_State* L, int wum) {
     static const luaL_Reg kInput[] = {{"groups", Groups},
                                       {"binding", Binding},
                                       {"setOptions", SetOptions},
                                       {"options", Options},
+                                      {"cursor", Cursor},
+                                      {"region", NotNow},
+                                      {"hover", Hover},
+                                      {"pointer", NotNow},
+                                      {"pointerActive", PointerActive},
+                                      {"focus", NotNow},
                                       {nullptr, nullptr}};
     lua_newtable(L);
     RegisterFunctions(L, -1, kInput);

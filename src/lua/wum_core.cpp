@@ -314,6 +314,11 @@ int GameTurn(lua_State* L) {
     }
     return 1;
 }
+// wum.game.ui (Melange 0.12): the game's menus and popups. Placeholder from C0: C1 implements it.
+int GameUi(lua_State* L) {
+    lua_pushnil(L);
+    return 1;
+}
 int GameTick(lua_State* L) {
     lua_pushinteger(L, Game().tick);
     return 1;
@@ -459,7 +464,7 @@ void Shared(lua_State* L, int wum) {
     static const luaL_Reg kGame[] = {{"scene", GameScene}, {"inMatch", GameInMatch}, {"online", GameOnline},
                                      {"turn", GameTurn}, {"tick", GameTick}, {"worms", GameWorms}, {"teams", GameTeams},
                                      {"activeWorm", GameActiveWorm}, {"theme", GameTheme}, {"landRay", GameLandRay},
-                                     {"match", GameMatch},
+                                     {"match", GameMatch}, {"ui", GameUi},
                                      {nullptr, nullptr}};
     struct Ns {
         const char* name;
