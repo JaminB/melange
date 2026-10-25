@@ -1,5 +1,7 @@
 // Overlay input: DirectInput keyboard hooks (vtable slots 9 GetDeviceState, 10 GetDeviceData), a subclassed game
 // window that feeds ImGui while capturing, and a SetCursorPos no-op (the game re-centres the cursor every frame).
+// The same hooks carry mod input (input_regions.h): regions and pointer mode in the window procedure, keyboard focus
+// through the key filter's capture, and the pointer's cursor-warp gate in the MouseFix slot below.
 #include <windows.h>
 #include <windowsx.h>
 #ifndef DIRECTINPUT_VERSION
@@ -21,6 +23,7 @@
 #include "core/mem.h"
 #include "core/module.h"
 #include "render/input_logic.h"
+#include "render/input_regions.h"
 #include "render/internal.h"
 #include "render/keytap.h"
 #include "melange/overlay.h"
@@ -38,6 +41,16 @@ using melange::render::IsKeyMsg;
 using melange::render::IsButtonMsg;
 using melange::render::ForImGui;
 using melange::render::CapturedFromGame;
+namespace modinput = melange::render::modinput;
+
+constexpr int kEscHandle = -1;  // the key filter's stand-in hotkey for a bare Esc that mod input eats
+
+// The keyboard is kept from the game: the overlay captures it, or a mod has focus.
+bool KeyboardCaptured() { return melange::overlay::Capturing() || modinput::OwnsKeyboard(); }
+
+bool HotkeyLive(uint8_t dik, uint8_t mods) {
+    return melange::render::HotkeyLiveWhileFocused(dik, mods, modinput::SuppressBareFKeys());
+}
 
 struct Hotkey {
     int handle;
@@ -152,7 +165,7 @@ HRESULT WINAPI HookGetDeviceData(void* self, DWORD cb, DIDEVICEOBJECTDATA* rgdod
     }
     if (!rgdod || !inOut || cb != sizeof(DIDEVICEOBJECTDATA) || (flags & DIGDD_PEEK)) return hr;
     ++g_diPolls;
-    const bool capturing = melange::overlay::Capturing();
+    const bool capturing = KeyboardCaptured();
     std::vector<int> fired;
     std::vector<uint8_t> released;
     {
@@ -160,8 +173,10 @@ HRESULT WINAPI HookGetDeviceData(void* self, DWORD cb, DIDEVICEOBJECTDATA* rgdod
         g_defs.clear();
         {
             std::lock_guard hk(g_hkMx);
-            for (const Hotkey& h : g_hotkeys) g_defs.push_back({h.handle, h.dik, h.mods});
+            for (const Hotkey& h : g_hotkeys)
+                if (HotkeyLive(h.dik, h.mods)) g_defs.push_back({h.handle, h.dik, h.mods});
         }
+        if (modinput::EatEsc()) g_defs.push_back({kEscHandle, 0x01, 0});
         g_fired.clear();
         g_released.clear();
         uint64_t droppedBefore = g_filter.Dropped();
@@ -181,6 +196,14 @@ HRESULT WINAPI HookGetDeviceData(void* self, DWORD cb, DIDEVICEOBJECTDATA* rgdod
         }
         LOG_INFO("[overlay] capture on: synthetic key release sent to the game for %s", names.c_str());
     }
+    for (auto it = fired.begin(); it != fired.end();) {
+        if (*it != kEscHandle) {
+            ++it;
+            continue;
+        }
+        it = fired.erase(it);
+        modinput::EscFromDirectInput();
+    }
     if (!fired.empty()) {
         g_hotkeysFired += fired.size();
         std::lock_guard lk(g_pendMx);
@@ -197,8 +220,9 @@ HRESULT WINAPI HookGetDeviceState(void* self, DWORD cb, void* data) {
     HRESULT hr = o.state(self, cb, data);
     if (kb && SUCCEEDED(hr) && data) {
         std::lock_guard lk(g_filterMx);
-        g_filter.FilterState(static_cast<uint8_t*>(data), cb, melange::overlay::Capturing());
-        if (!melange::overlay::Capturing()) HoldTap(static_cast<uint8_t*>(data), cb);
+        const bool capturing = KeyboardCaptured();
+        g_filter.FilterState(static_cast<uint8_t*>(data), cb, capturing);
+        if (!capturing) HoldTap(static_cast<uint8_t*>(data), cb);
     }
     return hr;
 }
@@ -278,7 +302,7 @@ using SetCursorPos_t = BOOL(WINAPI*)(int, int);
 SetCursorPos_t g_origSetCursorPos = nullptr;
 
 BOOL WINAPI HookSetCursorPos(int x, int y) {
-    if (melange::overlay::Capturing()) {
+    if (melange::overlay::Capturing() || modinput::OwnsMouse()) {
         ++g_cursorBlocked;
         return TRUE;
     }
@@ -307,7 +331,7 @@ bool IsHotkeyKeyMsg(LPARAM lp) {
     if (GetKeyState(VK_MENU) < 0) mods |= melange::render::kModAlt;
     std::lock_guard lk(g_hkMx);
     for (const Hotkey& h : g_hotkeys)
-        if (h.dik == dik && h.mods == mods) return true;
+        if (h.dik == dik && h.mods == mods && HotkeyLive(dik, mods)) return true;
     return false;
 }
 
@@ -325,6 +349,7 @@ LRESULT CALLBACK OverlayWndProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
     if (msg == WM_INPUT) {
         if (melange::render::RawInputSink sink = g_rawSink.load(std::memory_order_relaxed)) sink(h, wp, lp);
     }
+    if (msg == WM_KILLFOCUS || (msg == WM_ACTIVATEAPP && !wp)) modinput::FocusLost();
     const bool hotkeyMsg = IsKeyMsg(msg) && IsHotkeyKeyMsg(lp);
     if (g_altGuard.Drop(msg, wp, lp, hotkeyMsg) || hotkeyMsg) {
         ++g_keyMsgsDropped;
@@ -346,11 +371,28 @@ LRESULT CALLBACK OverlayWndProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
             ++g_mouseDropped;
             return unicode ? DefWindowProcW(h, msg, wp, lp) : DefWindowProcA(h, msg, wp, lp);
         }
-        if (msg == WM_KEYDOWN || msg == WM_KEYUP || msg == WM_CHAR)
+        if (msg == WM_KEYDOWN || msg == WM_KEYUP || msg == WM_CHAR) {
             ++g_keyMsgsDropped;
-        else
+        } else {
             ++g_mouseDropped;
+            modinput::NoteSwallowedByOverlay(msg, wp);
+        }
         return 0;
+    }
+    // Mod input: below the overlay, above the game. Pointer mode keeps all mouse input, raw input included.
+    if (!capturing) {
+        if (msg == WM_INPUT && modinput::OwnsMouse()) {
+            ++g_mouseDropped;
+            return unicode ? DefWindowProcW(h, msg, wp, lp) : DefWindowProcA(h, msg, wp, lp);
+        }
+        if (msg >= WM_MOUSEFIRST && msg <= WM_MOUSELAST && !modinput::RouteMouse(msg, wp, lp)) {
+            ++g_mouseDropped;
+            return 0;
+        }
+        if (IsKeyMsg(msg) && !modinput::RouteKey(msg, wp, lp)) {
+            ++g_keyMsgsDropped;
+            return 0;
+        }
     }
     return unicode ? CallWindowProcW(orig, h, msg, wp, lp) : CallWindowProcA(orig, h, msg, wp, lp);
 }
@@ -364,6 +406,7 @@ bool InstallInput() {
     bool cur = melange::mem::HookIAT("USER32.dll", "SetCursorPos", reinterpret_cast<void*>(&HookSetCursorPos),
                                 reinterpret_cast<void**>(&g_origSetCursorPos));
     g_cursorHooked = cur;
+    melange::render::InstallModInput();
     if (!di) LOG_WARN("[overlay] DINPUT8!DirectInput8Create import not hooked: hotkeys and keyboard capture will not work");
     if (!cur) LOG_WARN("[overlay] USER32!SetCursorPos import not hooked: the game will keep re-centring the cursor");
     return di;
@@ -489,6 +532,9 @@ bool ParseHotkey(const char* text, uint8_t* dik, uint8_t* mods) { return melange
 // drawn from WM_MOUSEMOVE deltas: the warp races those deltas and the menu cursor stutters. This module skips the warp
 // while a frontend MouseEntity is alive (the menu cursor is shown); aiming in a match, where no MouseEntity exists, keeps
 // the warp, so it stays unbounded. Local input only: nothing here touches the simulation.
+// The slot hook is shared with mod pointer mode (InstallWarpHook): while a mod's pointer is on there is no warp at all,
+// the cursor is kept in the window, and the exit puts the cursor back at the centre with the device's last position
+// rebased to it, so the game sees no mouse jump. With MouseFix off the hook only forwards to the original.
 namespace {
 constexpr uintptr_t kMouseSlot = 0x89ae5c;      // vtable 0x89ae14 + 0x48, holds 0x701d92
 constexpr uintptr_t kMouseWarp = 0x701d92;      // stdcall (mgr, x, y), ret 0xc, returns 0
@@ -498,6 +544,10 @@ constexpr uintptr_t kMouseDevice = 0x701348;    // cdecl (xomObject) -> mouse de
 using MouseWarp_t = int(__stdcall*)(void*, int, int);
 using MouseDevice_t = void*(__cdecl*)(void*);
 MouseWarp_t g_mouseOrig = nullptr;
+int g_warpState = 0;        // InstallWarpHook: 0 not tried, 1 hooked, -1 unexpected code (main thread)
+bool g_rebaseOk = false;    // the device +0xb0/+0xb4 layout checked (0x701348, 0x701dfb)
+bool g_mouseFixOn = false;  // the MouseFix module is installed
+void* g_lastMgr = nullptr;  // the input device manager the slot was last called with
 bool g_mouseClip = true, g_mouseProbe = false;
 bool g_mouseWasCapturing = false, g_mouseClipped = false;  // main thread only, like the slot call
 uint64_t g_mouseSlotTick = 0;                               // GetTickCount64() of the last slot call
@@ -520,22 +570,29 @@ void ApplyMouseClip() {
     if (ClipCursor(&r)) g_mouseClipped = true;
 }
 
-// The tail of what the game does on focus gain: the device's last mouse position (+0xb0/+0xb4, client pixels) becomes the
-// real cursor position, so the first WM_MOUSEMOVE after the overlay released the mouse has no delta.
-void RebaseMouse(void* mgr) {
-    HWND hwnd = static_cast<HWND>(melange::events::GameWindow());
-    POINT p;
-    if (!hwnd || !GetCursorPos(&p) || !ScreenToClient(hwnd, &p)) return;
+// The device's last mouse position (+0xb0/+0xb4, client pixels) becomes (x, y). No C++ objects: a __try frame.
+bool RebaseTo(void* mgr, int x, int y) {
     __try {
         void** vt = *static_cast<void***>(mgr);
         auto getDevice = reinterpret_cast<void*(__stdcall*)(void*, int)>(vt[0x3c / 4]);
         auto asMouse = reinterpret_cast<MouseDevice_t>(kMouseDevice);
         if (uint8_t* dev = static_cast<uint8_t*>(asMouse(getDevice(mgr, 1)))) {
-            *reinterpret_cast<int*>(dev + 0xb0) = p.x;
-            *reinterpret_cast<int*>(dev + 0xb4) = p.y;
+            *reinterpret_cast<int*>(dev + 0xb0) = x;
+            *reinterpret_cast<int*>(dev + 0xb4) = y;
+            return true;
         }
     } __except (EXCEPTION_EXECUTE_HANDLER) {
     }
+    return false;
+}
+
+// The tail of what the game does on focus gain: the device's last mouse position becomes the real cursor position,
+// so the first WM_MOUSEMOVE after the overlay released the mouse has no delta.
+void RebaseMouse(void* mgr) {
+    HWND hwnd = static_cast<HWND>(melange::events::GameWindow());
+    POINT p;
+    if (!hwnd || !GetCursorPos(&p) || !ScreenToClient(hwnd, &p)) return;
+    RebaseTo(mgr, p.x, p.y);
 }
 
 void ProbeMouse(bool capturing, bool alive) {
@@ -549,6 +606,13 @@ void ProbeMouse(bool capturing, bool alive) {
 }
 
 int __stdcall MouseSlot(void* self, int x, int y) {
+    g_lastMgr = self;
+    if (modinput::OwnsMouse()) {  // a mod's pointer: no warp, and the cursor stays in the window (the clip is re-applied)
+        g_mouseSlotTick = GetTickCount64();
+        ApplyMouseClip();
+        return 0;
+    }
+    if (!g_mouseFixOn) return g_mouseOrig(self, x, y);
     const bool capturing = melange::overlay::Capturing();
     const bool alive = FeMouseAlive();
     g_mouseSlotTick = GetTickCount64();
@@ -581,26 +645,8 @@ public:
     bool Install() override {
         g_mouseClip = Bool("Clip", true);
         g_mouseProbe = Bool("Probe", false);
-        // 0x701d92: push ebp; mov ebp,esp; sub esp,0x10; push ebx; lea eax,[ebp-8]; push eax; call [GetCursorPos]
-        if (!melange::mem::Expect(kMouseWarp, {0x55, 0x8b, 0xec, 0x83, 0xec, 0x10, 0x53, 0x8d, 0x45, 0xf8, 0x50, 0xff, 0x15, 0xa4, 0x55, 0x81, 0x00}) ||
-            // ... xor eax,eax; pop ebx; leave; ret 0xc
-            !melange::mem::Expect(0x701e18, {0x33, 0xc0, 0x5b, 0xc9, 0xc2, 0x0c, 0x00}) ||
-            // 0x89ae5c: vtable slot 18 of XomInputDeviceManagerDx -> 0x701d92
-            !melange::mem::Expect(kMouseSlot, {0x92, 0x1d, 0x70, 0x00}) ||
-            // 0x510f10: the per-frame caller; 0x510f6e: its only `mov ecx,[esi+0x48]; call ecx`
-            !melange::mem::Expect(0x510f10, {0x83, 0xec, 0x10, 0x80, 0x3d, 0x40, 0x56, 0x95, 0x00, 0x00}) ||
-            !melange::mem::Expect(0x510f6e, {0x8b, 0x4e, 0x48, 0xff, 0xd1}) ||
-            // 0x744be4: the MouseEntity factory links the new entity into class 0x97ac60 (list head at +0x34)
-            !melange::mem::Expect(0x744be4, {0xb9, 0x60, 0xac, 0x97, 0x00, 0xe8, 0x97, 0x3d, 0xef, 0xff, 0xa1, 0x88, 0xac, 0x97, 0x00}) ||
-            !melange::mem::Expect(0x638985, {0x8b, 0x51, 0x34, 0x8b, 0x44, 0x24, 0x04, 0x83, 0x60, 0x0c, 0x00, 0x89, 0x50, 0x08, 0x8b, 0x51, 0x34})) {
-            LOG_ERROR("[mousefix] unexpected code at the cursor warp, its caller or the MouseEntity list, not installed");
-            return false;
-        }
-        g_mouseOrig = reinterpret_cast<MouseWarp_t>(kMouseWarp);
-        if (!melange::mem::Put<uint32_t>(kMouseSlot, static_cast<uint32_t>(reinterpret_cast<uintptr_t>(&MouseSlot)))) {
-            LOG_ERROR("[mousefix] vtable slot 0x89ae5c not writable, not installed");
-            return false;
-        }
+        if (!melange::render::InstallWarpHook()) return false;
+        g_mouseFixOn = true;
         melange::events::Subscribe(melange::events::Event::Frame, [] {
             // The slot is not called while the game is unfocused (nor while 0x955640 is set or the manager at 0x96d188
             // is gone), so let go of the clip here once it has stopped being re-applied.
@@ -615,10 +661,82 @@ public:
     }
 
     void Uninstall() override {
+        // The slot stays hooked (mod pointer mode may need it); with MouseFix off it only forwards to the original.
+        g_mouseFixOn = false;
         ReleaseMouseClip();
-        // g_mouseOrig stays set: a slot call already in flight on the main thread still forwards to the original.
-        if (g_mouseOrig) melange::mem::Put<uint32_t>(kMouseSlot, static_cast<uint32_t>(kMouseWarp));
     }
 };
 }  // namespace
 MELANGE_MODULE(MouseFix);
+
+namespace melange::render {
+bool InstallWarpHook() {
+    if (g_warpState) return g_warpState > 0;
+    g_warpState = -1;
+    // 0x701d92: push ebp; mov ebp,esp; sub esp,0x10; push ebx; lea eax,[ebp-8]; push eax; call [GetCursorPos]
+    if (!melange::mem::Expect(kMouseWarp, {0x55, 0x8b, 0xec, 0x83, 0xec, 0x10, 0x53, 0x8d, 0x45, 0xf8, 0x50, 0xff, 0x15, 0xa4, 0x55, 0x81, 0x00}) ||
+        // ... xor eax,eax; pop ebx; leave; ret 0xc
+        !melange::mem::Expect(0x701e18, {0x33, 0xc0, 0x5b, 0xc9, 0xc2, 0x0c, 0x00}) ||
+        // 0x89ae5c: vtable slot 18 of XomInputDeviceManagerDx -> 0x701d92
+        !melange::mem::Expect(kMouseSlot, {0x92, 0x1d, 0x70, 0x00}) ||
+        // 0x510f10: the per-frame caller; 0x510f6e: its only `mov ecx,[esi+0x48]; call ecx`
+        !melange::mem::Expect(0x510f10, {0x83, 0xec, 0x10, 0x80, 0x3d, 0x40, 0x56, 0x95, 0x00, 0x00}) ||
+        !melange::mem::Expect(0x510f6e, {0x8b, 0x4e, 0x48, 0xff, 0xd1}) ||
+        // 0x744be4: the MouseEntity factory links the new entity into class 0x97ac60 (list head at +0x34)
+        !melange::mem::Expect(0x744be4, {0xb9, 0x60, 0xac, 0x97, 0x00, 0xe8, 0x97, 0x3d, 0xef, 0xff, 0xa1, 0x88, 0xac, 0x97, 0x00}) ||
+        !melange::mem::Expect(0x638985, {0x8b, 0x51, 0x34, 0x8b, 0x44, 0x24, 0x04, 0x83, 0x60, 0x0c, 0x00, 0x89, 0x50, 0x08, 0x8b, 0x51, 0x34})) {
+        LOG_ERROR("[mousefix] unexpected code at the cursor warp, its caller or the MouseEntity list, not hooked");
+        return false;
+    }
+    // 0x701348: the mouse-device cast the rebase calls; 0x701dfb: the warp's add [esi+0xb0],eax ...
+    // add [esi+0xb4],eax, the device's last position that the rebase rewrites.
+    g_rebaseOk = melange::mem::Expect(kMouseDevice, {0x56, 0x8b, 0x74, 0x24, 0x08, 0x85, 0xf6, 0x74, 0x1a, 0x8b, 0x06, 0x68, 0x0c, 0x9c, 0x97, 0x00}) &&
+                 melange::mem::Expect(0x701dfb, {0x01, 0x86, 0xb0, 0x00, 0x00, 0x00, 0x8b, 0x45, 0xf4, 0x2b, 0x45, 0xfc, 0x01, 0x86, 0xb4, 0x00, 0x00, 0x00});
+    // g_mouseOrig stays set for good: a slot call in flight on the main thread always has an original to forward to.
+    g_mouseOrig = reinterpret_cast<MouseWarp_t>(kMouseWarp);
+    if (!melange::mem::Put<uint32_t>(kMouseSlot, static_cast<uint32_t>(reinterpret_cast<uintptr_t>(&MouseSlot)))) {
+        LOG_ERROR("[mousefix] vtable slot 0x89ae5c not writable, not hooked");
+        return false;
+    }
+    g_warpState = 1;
+    LOG_INFO("[mousefix] cursor warp slot 0x89ae5c -> %p%s", reinterpret_cast<void*>(&MouseSlot),
+             g_rebaseOk ? "" : " (device layout differs: no rebase on a pointer exit)");
+    return true;
+}
+
+// Pointer-mode exit (Critique I1): the cursor goes back to where 0x510f10 warps it (the window rect's centre) through the
+// real SetCursorPos, and the device's last position becomes that centre, before the warp and the mouse messages come
+// back. The next WM_MOUSEMOVE then has no delta: no camera or aim snap.
+bool PointerExit(int* centreX, int* centreY) {
+    ReleaseMouseClip();
+    HWND hwnd = static_cast<HWND>(melange::events::GameWindow());
+    RECT wr;
+    if (!hwnd || !GetWindowRect(hwnd, &wr)) return false;
+    POINT c{(wr.left + wr.right) / 2, (wr.top + wr.bottom) / 2};
+    if (g_origSetCursorPos)
+        g_origSetCursorPos(c.x, c.y);
+    else
+        SetCursorPos(c.x, c.y);
+    if (!ScreenToClient(hwnd, &c)) return false;
+    if (!g_rebaseOk || !g_lastMgr || !RebaseTo(g_lastMgr, c.x, c.y))
+        LOG_WARN("[input] pointer exit: the mouse device position was not rebased");
+    *centreX = c.x;
+    *centreY = c.y;
+    return true;
+}
+
+// Pointer start: a release for each button the game holds, posted so it arrives in order with real input. The mod input
+// router lets exactly one release of each such button through (this one or the real one).
+void PostButtonUps(const std::vector<int>& buttons) {
+    HWND hwnd = g_subHwnd;
+    if (!hwnd || buttons.empty()) return;
+    POINT p{0, 0};
+    if (GetCursorPos(&p)) ScreenToClient(hwnd, &p);
+    for (int b : buttons) {
+        PostMessageW(hwnd, ButtonUpMsg(b), ButtonUpWParam(b), MAKELPARAM(p.x, p.y));
+        ++g_synthetic;
+    }
+    LOG_INFO("[overlay] pointer mode on: synthetic release sent to the game for %u mouse button(s)",
+             static_cast<unsigned>(buttons.size()));
+}
+}  // namespace melange::render
