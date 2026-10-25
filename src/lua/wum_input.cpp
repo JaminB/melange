@@ -213,6 +213,7 @@ int Pointer(lua_State* L) {
     const bool on = lua_toboolean(L, 1) != 0;
     bool clickOutside = true;
     unsigned texture = 0;
+    float hotX = 0, hotY = 0;
     Gen* g = CurrentGen();
     if (!lua_isnoneornil(L, 2)) {
         luaL_checktype(L, 2, LUA_TTABLE);
@@ -233,11 +234,23 @@ int Pointer(lua_State* L) {
             texture = static_cast<unsigned>(t);
         }
         lua_pop(L, 1);
+        lua_getfield(L, 2, "hot");  // {x, y}: the texture pixel of the tip
+        if (!lua_isnil(L, -1)) {
+            if (!lua_istable(L, -1)) return luaL_error(L, "wum.input.pointer: hot must be a table {x = px, y = px}");
+            lua_getfield(L, -1, "x");
+            lua_getfield(L, -2, "y");
+            if (!lua_isnumber(L, -2) || !lua_isnumber(L, -1))
+                return luaL_error(L, "wum.input.pointer: hot must be a table {x = px, y = px}");
+            hotX = static_cast<float>(lua_tonumber(L, -2));
+            hotY = static_cast<float>(lua_tonumber(L, -1));
+            lua_pop(L, 2);
+        }
+        lua_pop(L, 1);
     }
     ModRec* m = Current();
     if (!m) return NotForConsole(L);
     HookInputCleanup(m, g);
-    const mi::Result r = mi::Pointer(m->id, on, clickOutside, texture);
+    const mi::Result r = mi::Pointer(m->id, on, clickOutside, texture, hotX, hotY);
     PushResult(L, r);
     return r == mi::Result::Ok ? 1 : 2;
 }

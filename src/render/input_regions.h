@@ -36,8 +36,9 @@ bool Cursor(const std::string& mod, float* x, float* y, const char** source);
 Result Region(const std::string& mod, int order, const std::string& id, float x0, float y0, float x1, float y1,
               int frames, Shape shape);
 std::string Hover(const std::string& mod);  // "" = none
-// texture: a wum.draw.texture id of this mod (checked by the caller), 0 = the default cursor.
-Result Pointer(const std::string& mod, bool on, bool clickOutside, unsigned texture);
+// texture: a wum.draw.texture id of this mod (checked by the caller), 0 = the default cursor. hotX/hotY: the pixel of
+// the texture that sits on the pointer position (its tip), clamped to 0..255.
+Result Pointer(const std::string& mod, bool on, bool clickOutside, unsigned texture, float hotX = 0, float hotY = 0);
 bool PointerActive(const std::string& mod);
 Result Focus(const std::string& mod, bool on);
 // The mod's generation ended (unload, reload, disable): its regions, pointer mode, focus and gestures go.
@@ -84,9 +85,14 @@ struct PointerView {
     bool on = false;
     std::string owner;
     unsigned texture = 0;
+    float hotX = 0, hotY = 0;    // the texture's hotspot
     Shape shape = Shape::Arrow;  // of the owner's region under the cursor
     float x = 0, y = 0;
+    bool frontend = false;       // no pointer mode: the game's menu cursor is over a mod region (drawn on top of it)
 };
 PointerView CurrentPointer();
+// wum.draw.media at the screen stage: the picture covers the game's own frontend cursor (drawn in the scene), so core
+// draws its arrow over it while the frontend cursor is inside, like over a region. Kept for the current frame only.
+void NoteCover(float x0, float y0, float x1, float y1);
 std::string FocusOwner();
 }  // namespace melange::render::modinput

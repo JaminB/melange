@@ -245,7 +245,7 @@ void TestPure() {
 
 // ---- the core on a fake Host
 namespace host {
-bool allowed = true, overlay = false, fg = true, match = true, turn = false;
+bool allowed = true, overlay = false, fg = true, match = true, turn = false, fe = false;
 float x = 500, y = 500;
 uint64_t frame = 1, now = 100000;
 int started = 0, ended = 0;
@@ -263,7 +263,12 @@ void Install() {
         *w = kW;
         *h2 = kH;
     };
-    h.feCursor = [](float*, float*) { return false; };
+    h.feCursor = [](float* px, float* py) {
+        if (!fe) return false;
+        *px = x;
+        *py = y;
+        return true;
+    };
     h.osCursor = [](float* px, float* py) {
         *px = x;
         *py = y;
@@ -293,6 +298,10 @@ void TestCore() {
     Expect(modinput::Region("a", 1, "panel", 400, 400, 600, 600, 2, Shape::Hand) == Result::Ok, "core: region");
     ExpectEq(modinput::Hover("a"), "panel", "core: hover with the pointer");
     Expect(modinput::CurrentPointer().shape == Shape::Hand, "core: the drawn cursor takes the region's shape");
+    Expect(modinput::CurrentPointer().hotX == 0, "core: no texture, no hotspot");
+    Expect(modinput::Pointer("a", true, true, 7, 10, 300) == Result::Ok && modinput::CurrentPointer().hotX == 10 &&
+               modinput::CurrentPointer().hotY == 255 && modinput::CurrentPointer().texture == 7,
+           "core: the texture hotspot is kept (clamped to 255)");
     Expect(!modinput::RouteMouse(WM_LBUTTONDOWN, 0, 0) && !modinput::RouteMouse(WM_LBUTTONUP, 0, 0), "core: pointer click");
     Expect(host::posted.size() == 2 && host::posted[0].rfind("a melange.input.mouse {\"region\":\"panel\"", 0) == 0,
            "core: owner-only events posted");
@@ -324,6 +333,31 @@ void TestCore() {
            "core: after pointer(false) only a move at the centre reaches the game first");
     modinput::Forget("a");
     Expect(!melange::input::gesture::Recent("a", 1000000, false), "core: Forget clears the gestures");
+    // the frontend: the game's cursor is drawn under the screen stage, so core draws the region's cursor over a region
+    host::fe = true;
+    host::x = host::y = 500;
+    Expect(!modinput::CurrentPointer().on, "core: no region under the frontend cursor, nothing drawn");
+    Expect(modinput::Region("a", 1, "panel", 400, 400, 600, 600, 2, Shape::IBeam) == Result::Ok, "core: fe region");
+    {
+        const modinput::PointerView v = modinput::CurrentPointer();
+        Expect(v.on && v.frontend && v.shape == Shape::IBeam && v.owner == "a" && v.x == 500,
+               "core: the frontend cursor over a region is drawn with the region's shape");
+    }
+    host::x = 700;
+    Expect(!modinput::CurrentPointer().on, "core: the frontend cursor outside every region is the game's own");
+    host::x = 500;
+    host::overlay = true;
+    Expect(!modinput::CurrentPointer().on, "core: not while the overlay has the mouse");
+    host::overlay = false;
+    host::frame += 5;
+    modinput::Tick();
+    modinput::NoteCover(450, 450, 550, 550);
+    Expect(modinput::CurrentPointer().on && modinput::CurrentPointer().shape == Shape::Arrow,
+           "core: the frontend cursor over a media picture drawn this frame is drawn on top");
+    host::frame += 1;
+    Expect(!modinput::CurrentPointer().on, "core: a picture from an earlier frame covers nothing");
+    host::fe = false;
+    Expect(!modinput::CurrentPointer().on, "core: no frontend cursor (a match), nothing drawn");
 }
 }  // namespace
 

@@ -206,7 +206,7 @@ void DrawShape(mi::Shape shape, float x, float y, float s) {
     }
 }
 
-// The owner's texture at its own size, top-left corner on the hotspot.
+// The owner's texture at its own size, its hotspot pixel (opts.hot, default the top-left corner) on the pointer.
 void DrawTexture(unsigned tex, float x, float y) {
     GLint tw = 0, th = 0;
     glEnable(GL_TEXTURE_2D);
@@ -288,7 +288,7 @@ void DrawModPointer() {
     // Window px are pixel centres; +0.5 keeps the 1 px outline crisp.
     const float x = std::floor(v.x) + 0.5f, y = std::floor(v.y) + 0.5f;
     if (v.texture && glIsTexture(v.texture))
-        DrawTexture(v.texture, x - 0.5f, y - 0.5f);
+        DrawTexture(v.texture, x - 0.5f - std::floor(v.hotX), y - 0.5f - std::floor(v.hotY));
     else
         DrawShape(v.shape, x, y, s);
     glMatrixMode(GL_MODELVIEW);

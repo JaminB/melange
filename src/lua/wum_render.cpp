@@ -16,6 +16,7 @@
 #include "melange/render.h"
 #include "melange/shaders.h"
 #include "media/media.h"
+#include "render/input_regions.h"
 #include "render/mirage/camoverride_logic.h"
 #include "render/mirage/draw_font_core.h"
 #include "render/mirage/draw_queue.h"
@@ -1264,6 +1265,7 @@ int Media(lua_State* L) {
         return 1;
     }
     draw::HudVideo(q.x0, q.y0, q.x1, q.y1, f.texture, q.u0, q.v0, q.u1, q.v1, alpha);
+    if (alpha > 0.05f) melange::render::modinput::NoteCover(q.x0, q.y0, q.x1, q.y1);  // keeps the menu cursor visible on top
     lua_pushnumber(L, q.x0);
     lua_pushnumber(L, q.y0);
     lua_pushnumber(L, q.x1);

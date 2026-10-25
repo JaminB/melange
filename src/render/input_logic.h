@@ -537,7 +537,7 @@ inline std::string SanitizePaste(const std::wstring& w, size_t maxBytes = 4096) 
     return out;
 }
 
-// The frontend cursor (MouseEntity +0x28/+0x2c) to window pixels. The entity lives in a 640x480 space scaled by the
+// The frontend cursor (MouseEntity +0x24/+0x28) to window pixels. The entity lives in a 640x480 space scaled by the
 // game's aspect factors (0x4d4cc0: a = w/h of the render size, sx = a*0.75 and sy = 1 up to 16:9, sx = 4/3 beyond,
 // sx = sy = a*0.75 below 4:3), centred on 0 with +y up (the cursor sprite hangs at +14,-14 from the hotspot,
 // 0x744c0e), and 0x5073a0 divides by 320*sx, 240*sy for the menus' [-1, 1] mouse. The menus fill the window.

@@ -13,6 +13,7 @@ $gen = Join-Path $root "build\$Config\generated"
 $header = Join-Path $gen "media_dev_manifest.h"
 if ($Remove) {
     Remove-Item $header -ErrorAction SilentlyContinue
+    (Get-Item (Join-Path $root "src\media\pack_manifest.h")).LastWriteTime = Get-Date
     Write-Host "Removed $header; rebuild to use the compiled pack manifest again."
     exit 0
 }
@@ -59,6 +60,9 @@ if ($YtDlp) {
 & $py.Source @pyArgs (Join-Path $PSScriptRoot "gen-media-manifest.py") --dev --assemble $stage --version $version --zip $zip `
     --url $zipUrl --lane-url $laneUrl --out $header
 if ($LASTEXITCODE) { exit $LASTEXITCODE }
+# Ninja records only headers that were found, so a build made without the dev header does not know pack.cpp depends
+# on it: touch the header that includes it, or the rebuild keeps the old (placeholder or previous dev) manifest.
+(Get-Item (Join-Path $root "src\media\pack_manifest.h")).LastWriteTime = Get-Date
 Remove-Item $stage -Recurse -Force
 Write-Host "Dev pack $version -> $zip"
 Write-Host "Rebuild (build.ps1 -Config $Config) to compile it in; .\scripts\make-dev-pack.ps1 -Remove to drop it."

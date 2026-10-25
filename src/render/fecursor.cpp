@@ -1,4 +1,4 @@
-// The frontend cursor (menus, lobby, pause popups): the first MouseEntity's position, mapped to window pixels with the
+// The frontend cursor (menus, lobby, pause popups): the first MouseEntity's position (+0x24/+0x28), mapped to window pixels with the
 // game's own aspect factors (FeCursorToWindow, input_logic.h). Read-only and Expect-guarded; build #1077 only.
 // Test verb input.fecursor logs the raw and mapped values (the B1 corner sweep).
 #include <windows.h>
@@ -17,7 +17,10 @@ namespace melange::render {
 namespace {
 constexpr uintptr_t kMouseEntityList = 0x97ac94;  // MouseEntity XomClass (0x97ac60) + 0x34: the first instance, 0 = none
 constexpr uintptr_t kAspectSource = 0x9795a4;     // read by 0x4d4cc0: +0x28 / +0x2c = the render width / height
-constexpr uintptr_t kEntityX = 0x28, kEntityY = 0x2c;
+// The list holds the entity's base pointer, and its position vector sits at +0x24/+0x28/+0x2c from it: 0x744a67 runs
+// on a sub-object 4 bytes in, so its "+0x28" is +0x24 here. Measured in game (B, 1080p borderless, 2026-10-25): x spans
+// +/-426.67 (320 * 4/3 at 16:9), y +/-240, and *(0x96d188)+0x28/+0x2c held x/426.67 and y/240 of these two fields.
+constexpr uintptr_t kEntityX = 0x24, kEntityY = 0x28;
 
 int g_state = 0;  // 0 unchecked, 1 the code matches, -1 it does not (main thread)
 
