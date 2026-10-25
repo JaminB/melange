@@ -4,6 +4,7 @@
 
 #include <winhttp.h>
 
+#include <cstring>
 #include <mutex>
 #include <vector>
 
@@ -57,8 +58,17 @@ bool ReadFileUrl(const std::string& url, Sink& sink, const Options& o, std::stri
         *err = "the file is larger than the " + Mb(o.cap) + " limit";
         ok = false;
     }
-    std::vector<char> buf(64 * 1024);
     uint64_t got = 0;
+    if (ok && o.resumeFrom && o.resumeFrom < static_cast<uint64_t>(size.QuadPart)) {
+        LARGE_INTEGER at{};
+        at.QuadPart = static_cast<LONGLONG>(o.resumeFrom);
+        if (SetFilePointerEx(f, at, nullptr, FILE_BEGIN)) got = o.resumeFrom;
+    }
+    if (ok && !sink.Start(got, static_cast<uint64_t>(size.QuadPart))) {
+        *err = "cannot write the download";
+        ok = false;
+    }
+    std::vector<char> buf(64 * 1024);
     while (ok) {
         if (Cancelled(o)) {
             *err = "cancelled";
@@ -175,7 +185,10 @@ bool GetHttps(const std::string& url, Sink& sink, const Options& o, std::string*
         *err = "cancelled";
         return false;
     }
-    if (!WinHttpSendRequest(req, WINHTTP_NO_ADDITIONAL_HEADERS, 0, WINHTTP_NO_REQUEST_DATA, 0, 0, 0) ||
+    std::wstring range;
+    if (o.resumeFrom) range = L"Range: bytes=" + std::to_wstring(o.resumeFrom) + L"-";
+    if (!WinHttpSendRequest(req, range.empty() ? WINHTTP_NO_ADDITIONAL_HEADERS : range.c_str(),
+                            range.empty() ? 0 : static_cast<DWORD>(-1L), WINHTTP_NO_REQUEST_DATA, 0, 0, 0) ||
         !WinHttpReceiveResponse(req, nullptr)) {
         *err = Cancelled(o) ? "cancelled" : WinErr("download", GetLastError());
         return false;
@@ -183,7 +196,21 @@ bool GetHttps(const std::string& url, Sink& sink, const Options& o, std::string*
     DWORD status = 0, len = sizeof(status);
     WinHttpQueryHeaders(req, WINHTTP_QUERY_STATUS_CODE | WINHTTP_QUERY_FLAG_NUMBER, WINHTTP_HEADER_NAME_BY_INDEX, &status, &len,
                         WINHTTP_NO_HEADER_INDEX);
-    if (status != 200) {
+    uint64_t offset = 0, rangeTotal = 0;
+    if (status == 206 && o.resumeFrom) {
+        // Only the exact range asked for: anything else would splice the wrong bytes onto the kept part.
+        wchar_t cr[128] = {};
+        DWORD crn = sizeof(cr);
+        uint64_t first = 0, last = 0;
+        std::string crs;
+        if (WinHttpQueryHeaders(req, WINHTTP_QUERY_CONTENT_RANGE, WINHTTP_HEADER_NAME_BY_INDEX, cr, &crn, WINHTTP_NO_HEADER_INDEX))
+            for (const wchar_t* c = cr; *c; ++c) crs.push_back(*c < 0x80 ? static_cast<char>(*c) : '?');
+        if (!ParseContentRange(crs, &first, &last, &rangeTotal) || first != o.resumeFrom) {
+            *err = "the server answered a different range (" + crs + ")";
+            return false;
+        }
+        offset = first;
+    } else if (status != 200) {
         *err = "the server answered HTTP " + std::to_string(status);
         return false;
     }
@@ -197,12 +224,17 @@ bool GetHttps(const std::string& url, Sink& sink, const Options& o, std::string*
     len = sizeof(contentLength);
     const bool haveLength = WinHttpQueryHeaders(req, WINHTTP_QUERY_CONTENT_LENGTH | WINHTTP_QUERY_FLAG_NUMBER,
                                                 WINHTTP_HEADER_NAME_BY_INDEX, &contentLength, &len, WINHTTP_NO_HEADER_INDEX) != 0;
-    if (haveLength && o.cap && contentLength > o.cap) {
+    const uint64_t total = rangeTotal ? rangeTotal : haveLength ? offset + contentLength : 0;
+    if (o.cap && (total > o.cap || (haveLength && offset + contentLength > o.cap))) {
         *err = "the file is larger than the " + Mb(o.cap) + " limit";
         return false;
     }
+    if (!sink.Start(offset, total)) {
+        *err = "cannot write the download";
+        return false;
+    }
     std::vector<char> buf(64 * 1024);
-    uint64_t got = 0;
+    uint64_t got = offset;
     for (;;) {
         if (Cancelled(o)) {
             *err = "cancelled";
@@ -227,7 +259,7 @@ bool GetHttps(const std::string& url, Sink& sink, const Options& o, std::string*
             *err = "cannot write the download";
             return false;
         }
-        if (o.progress) o.progress(got, haveLength ? contentLength : 0);
+        if (o.progress) o.progress(got, total);
     }
     return true;
 }
@@ -241,6 +273,29 @@ bool Get(const std::string& url, Sink& sink, const Options& o, std::string* err)
     }
     *err = "url scheme not allowed";
     return false;
+}
+
+bool ParseContentRange(std::string_view v, uint64_t* first, uint64_t* last, uint64_t* total) {
+    auto num = [&](size_t& i, uint64_t* out) {
+        const size_t from = i;
+        uint64_t n = 0;
+        for (; i < v.size() && v[i] >= '0' && v[i] <= '9'; ++i) {
+            if (i - from >= 19) return false;
+            n = n * 10 + static_cast<uint64_t>(v[i] - '0');
+        }
+        *out = n;
+        return i > from;
+    };
+    if (v.size() < 6 || _strnicmp(v.data(), "bytes ", 6) != 0) return false;
+    size_t i = 6;
+    while (i < v.size() && v[i] == ' ') ++i;
+    if (!num(i, first) || i >= v.size() || v[i++] != '-' || !num(i, last) || i >= v.size() || v[i++] != '/') return false;
+    if (i < v.size() && v[i] == '*' && i + 1 == v.size()) {
+        *total = 0;
+    } else if (!num(i, total) || i != v.size() || *last >= *total) {
+        return false;
+    }
+    return *first <= *last;
 }
 
 void CancelActive() {
