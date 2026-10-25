@@ -9,16 +9,22 @@
 #include "core/events.h"
 #include "core/game.h"
 #include "core/log.h"
+#include "core/mem.h"
 #include "core/module.h"
+#include "game/state/turn_logic.h"
+#include "input/controls.h"
 #include "lua/engine50.h"
+#include "lua/event_names.h"
 #include "lua/sandbox_core.h"
 #include "lua/sandbox_internal.h"
 #include "melange/bus.h"
+#include "melange/gamestate.h"
 #include "melange/jlog.h"
 #include "melange/lua.h"
 #include "melange/mods.h"
 #include "melange/sim.h"
 #include "melange/testcmd.h"
+#include "net/net.h"
 #include "render/mirage/modfs.h"
 #include "tools/json_mini.h"
 
@@ -43,6 +49,11 @@ bool g_booted = false;
 bool g_turnSeen = false;
 bool g_onlineMatch = false;
 void* g_lastVm = nullptr;
+gamestate::TurnTracker g_tracker;  // phase, weapon panel and the "mine" latch (turn_logic.h)
+gamestate::UiView g_lastUi;        // what melange.ui last reported
+bool g_turnPending = false;        // GameLogic.Turn.Started seen: melange.turn goes out once the frame's snapshot is read
+constexpr uintptr_t kFrontendLayers = 0x97a614;   // the frontend layer counter: > 0 while a popup or the pause menu is up
+constexpr uintptr_t kMouseEntityList = 0x97ac94;  // the frontend cursor's instance list: non-zero while it exists
 std::set<std::wstring> g_watched;
 std::set<std::string> g_pendingReload;
 
@@ -97,6 +108,13 @@ void OnBus(const bus::MessageView& m, void*) {
 void OnTurnStarted(const bus::MessageView&, void*) {
     ++Game().turn;
     g_turnSeen = true;
+    g_turnPending = true;
+    g_tracker.OnMessage(gamestate::TurnMsg::TurnStarted);
+}
+
+// The engine's timer and panel messages that move the turn phase and the UI flags; the message travels in `user`.
+void OnTurnMsg(const bus::MessageView&, void* user) {
+    g_tracker.OnMessage(static_cast<gamestate::TurnMsg>(reinterpret_cast<uintptr_t>(user)));
 }
 
 json::Value Obj(std::initializer_list<std::pair<const char*, json::Value>> kv) {
@@ -104,6 +122,12 @@ json::Value Obj(std::initializer_list<std::pair<const char*, json::Value>> kv) {
     o.type = json::Type::Object;
     for (auto& [k, v] : kv) o.members.emplace_back(k, v);
     return o;
+}
+json::Value Num(double n) {
+    json::Value v;
+    v.type = json::Type::Number;
+    v.number = n;
+    return v;
 }
 json::Value Str(const std::string& s) {
     json::Value v;
@@ -118,6 +142,78 @@ json::Value Bool(bool b) {
     return v;
 }
 
+// Whether the player whose turn it is runs on this machine, from the net layer (online only).
+gamestate::Local CurrentLocal() {
+    switch (wum::CurrentPlayerIsLocal()) {
+        case wum::Tri::Yes: return gamestate::Local::Yes;
+        case wum::Tri::No: return gamestate::Local::No;
+        case wum::Tri::Unknown: break;
+    }
+    return gamestate::Local::Unknown;
+}
+
+// wum.game.turn()/ui() and their events, once per frame.
+void UpdateTurnUi(GameState& g, bool inMatch) {
+    gamestate::TurnInput in;
+    in.inMatch = inMatch;
+    in.online = g.online;
+    if (inMatch) {
+        gamestate::Snapshot snap;
+        if (gamestate::Read(&snap)) {
+            in.team = snap.match.currentTeam;
+            in.worm = snap.match.activeWorm;
+            for (int i = 0; i < snap.teamCount; ++i)
+                if (snap.teams[i].slot == in.team) {
+                    in.teamLocal = snap.teams[i].local;
+                    in.teamAi = snap.teams[i].ai;
+                }
+        }
+        if (in.online) in.current = CurrentLocal();
+    }
+    const gamestate::TurnView v = g_tracker.Update(in);
+    g.team = v.team;
+    g.worm = v.worm;
+    g.ai = v.ai;
+    g.mine = v.mine;
+    g.phase = gamestate::PhaseName(v.phase);
+
+    // melange.turn: at GameLogic.Turn.Started, after this frame's snapshot (so team and worm are the new turn's).
+    if (g_turnPending) {
+        g_turnPending = false;
+        if (inMatch) {
+            json::Value p = Obj({{"index", Num(g.turn)}, {"mine", Bool(v.mine)}, {"ai", Bool(v.ai)}, {"online", Bool(g.online)}});
+            if (v.team >= 0) p.members.emplace_back("team", Num(v.team));
+            if (v.worm >= 0) p.members.emplace_back("worm", Num(v.worm));
+            QueueEvent(ev::kTurn, std::move(p));
+        }
+    }
+
+    GameState::Ui& u = g.ui;
+    u.valid = game::IsKnownBuild() && g_booted;
+    gamestate::UiView ui;
+    if (u.valid) {
+        uint32_t layers = 0, cursor = 0;
+        mem::SafeRead(kFrontendLayers, &layers, sizeof layers);
+        mem::SafeRead(kMouseEntityList, &cursor, sizeof cursor);
+        ui.pause = layers > 0 && layers < 1000;
+        ui.feCursor = cursor != 0;
+        ui.weaponPanel = inMatch && g_tracker.WeaponPanel();
+        ui.readyIntro = g_tracker.ReadyIntro(v);
+        static std::vector<std::string> groups;
+        groups.clear();
+        if (controls::ActiveGroups(&groups))
+            for (const std::string& n : groups) ui.attract |= n == "AttractMode";
+    }
+    u.weaponPanel = ui.weaponPanel;
+    u.pause = ui.pause;
+    u.readyIntro = ui.readyIntro;
+    u.feCursor = ui.feCursor;
+    u.attract = ui.attract;
+    if (!ui.SameEvent(g_lastUi))
+        QueueEvent(ev::kUi, Obj({{"weaponPanel", Bool(ui.weaponPanel)}, {"pause", Bool(ui.pause)}, {"readyIntro", Bool(ui.readyIntro)}}));
+    g_lastUi = ui;
+}
+
 void UpdateGame() {
     GameState& g = Game();
     if (!g_booted && events::FrameCount() >= 30 && (!bus::Installed() || bus::RegistryReady())) g_booted = true;
@@ -126,10 +222,13 @@ void UpdateGame() {
         g_lastVm = vm;
         g.turn = 0;
         g_turnSeen = false;
+        g_turnPending = false;
+        g_tracker.Reset();
     }
     const bool inMatch = g_lua50 ? vm != nullptr : g_onlineMatch;
     const char* scene = !g_booted ? "boot" : !inMatch ? "menu" : (g_lua50 && !g_turnSeen) ? "loading" : "match";
-    g.online = g_onlineMatch;
+    // A net session in any phase (lobby, loading, match, results) counts: the match VM can appear before InGame.
+    g.online = wum::Phase() != wum::SessionPhase::None;
     g.tick = sim::Tick();
     if (inMatch != g.inMatch) {
         g.inMatch = inMatch;
@@ -139,6 +238,7 @@ void UpdateGame() {
         g.scene = scene;
         QueueEvent("melange.scene", Obj({{"scene", Str(scene)}}));
     }
+    UpdateTurnUi(g, inMatch);
 }
 
 void WatchMod(const ModRec* m) {
@@ -287,7 +387,20 @@ public:
         g_hotReload = lim.hotReload;
         if (!Start(lim)) return false;
         g_lua50 = game::IsKnownBuild() && lua50::Check();
-        if (bus::Installed()) bus::SubscribeName("GameLogic.Turn.Started", bus::Path::Post, &OnTurnStarted);
+        if (bus::Installed()) {
+            using gamestate::TurnMsg;
+            bus::SubscribeName("GameLogic.Turn.Started", bus::Path::Post, &OnTurnStarted);
+            const std::pair<const char*, TurnMsg> msgs[] = {{"GameLogic.Turn.Ended", TurnMsg::TurnEnded},
+                                                            {"Timer.StartHotSeatTimer", TurnMsg::HotSeatStart},
+                                                            {"Timer.EndHotSeatTimer", TurnMsg::HotSeatEnd},
+                                                            {"Timer.HotSeatTimedOut", TurnMsg::HotSeatEnd},
+                                                            {"Timer.StartRetreatTimer", TurnMsg::RetreatStart},
+                                                            {"Timer.StartPostActivity", TurnMsg::PostActivityStart},
+                                                            {"GameLogic.WeaponPanelOpened", TurnMsg::PanelOpened},
+                                                            {"GameLogic.WeaponPanelClosed", TurnMsg::PanelClosed}};
+            for (const auto& [name, m] : msgs)
+                bus::SubscribeName(name, bus::Path::Post, &OnTurnMsg, reinterpret_cast<void*>(static_cast<uintptr_t>(m)));
+        }
         events::Subscribe(events::Event::Frame, [] { OnFrame(); });
         events::Subscribe(events::Event::Shutdown, [] { FlushAllStorage(); });
         events::Subscribe(events::Event::MatchStart, [] { g_onlineMatch = true; });

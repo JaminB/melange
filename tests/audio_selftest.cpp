@@ -8,6 +8,7 @@
 
 #include "audio/attenuation.h"
 #include "audio/clips.h"
+#include "audio/music_gate.h"
 #include "audio/voicebook.h"
 #include "audio/wav.h"
 
@@ -265,6 +266,79 @@ void TestVoiceBook() {
     Expect(fb.StartedBefore(101).size() == 3 && fb.StartedBefore(90).empty(), "StartedBefore boundaries");
     Expect(f1 != 0 && fb.Find(f1)->startFrame == 100, "startFrame is kept");
 }
+
+void TestMusicGate() {
+    int modA, modB;
+    MusicGate g;
+    Expect(!g.Wanted() && Near(g.Level(), 1.0f) && !g.Fading() && !g.Silent(), "starts audible");
+    g.Step(10.0);
+    Expect(Near(g.Level(), 1.0f), "idle steps change nothing");
+
+    // OR across owners, one boolean per owner.
+    g.Set(&modA, true, 0.4f);
+    Expect(g.Wanted() && g.Has(&modA) && !g.Has(&modB), "an owner asks");
+    g.Set(&modA, true, 0.4f);
+    g.Set(&modB, true, 0.4f);
+    Expect(g.Wanted() && g.Has(&modB), "a second owner");
+    g.Release(&modA);
+    Expect(g.Wanted() && !g.Has(&modA), "still wanted while another owner asks");
+    g.Set(&modB, false);
+    Expect(!g.Wanted(), "the last release");
+    g.Release(&modB);
+    Expect(!g.Wanted(), "releasing an owner that never asked is harmless");
+
+    // The fade: 0.4 s from audible to silent.
+    MusicGate f;
+    double t = 100.0;
+    f.Step(t);
+    f.Set(&modA, true, 0.4f);
+    f.Step(t);
+    Expect(Near(f.Level(), 1.0f), "no time passed, no movement");
+    f.Step(t += 0.1);
+    Expect(Near(f.Level(), 0.75f) && f.Fading(), "a quarter of the fade");
+    f.Step(t += 0.2);
+    Expect(Near(f.Level(), 0.25f), "three quarters");
+    f.Step(t += 0.1);
+    Expect(f.Silent() && !f.Fading(), "silent at the end");
+    f.Step(t += 5.0);
+    Expect(f.Silent(), "stays silent");
+    // Fading back in is the reverse, and a reversal in mid-fade turns around from where it is.
+    f.Set(&modA, false, 0.4f);
+    f.Step(t += 0.1);
+    Expect(Near(f.Level(), 0.25f), "fade in");
+    f.Set(&modA, true, 0.4f);
+    f.Step(t += 0.05);
+    Expect(Near(f.Level(), 0.125f), "a reversal turns around from the current level");
+    f.Release(&modA);  // a released owner fades the music back
+    f.Step(t += 0.2);
+    f.Step(t += 0.2);
+    f.Step(t += 0.2);
+    Expect(Near(f.Level(), 1.0f), "release restores the music");
+
+    // fade = 0 is at once; negative or NaN is the default; a long gap never moves more than kMaxStep.
+    MusicGate z;
+    z.Set(&modA, true, 0.0f);
+    z.Step(1.0);
+    Expect(z.Silent(), "fade 0 mutes at once");
+    z.Set(&modA, false, 0.0f);
+    z.Step(1.0);
+    Expect(Near(z.Level(), 1.0f), "fade 0 restores at once");
+    MusicGate d;
+    d.Step(0.0);
+    d.Set(&modA, true, NAN);
+    d.Step(0.1);
+    Expect(Near(d.Level(), 0.75f), "a NaN fade is the 0.4 s default");
+    d.Set(&modA, true, -3.0f);
+    d.Step(0.3);
+    Expect(Near(d.Level(), 0.25f), "a negative fade is the default too");
+    MusicGate gap;
+    gap.Step(0.0);
+    gap.Set(&modA, true, 10.0f);
+    gap.Step(1000.0);
+    Expect(gap.Level() > 0.9f, "a long gap between frames moves at most kMaxStep");
+    gap.Step(900.0);
+    Expect(gap.Level() > 0.9f, "a clock that goes backwards does not move the level");
+}
 }  // namespace
 
 int main() {
@@ -273,6 +347,7 @@ int main() {
     TestClips();
     TestAttenuation();
     TestVoiceBook();
+    TestMusicGate();
     if (g_fail) {
         printf("audio_selftest: %d failure(s)\n", g_fail);
         return 1;

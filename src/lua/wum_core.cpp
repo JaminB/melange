@@ -4,6 +4,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
+#include <utility>
 
 #include "core/config.h"
 #include "core/game.h"
@@ -305,18 +306,41 @@ int GameOnline(lua_State* L) {
     return 1;
 }
 int GameTurn(lua_State* L) {
-    lua_createtable(L, 0, 2);
-    lua_pushinteger(L, Game().turn);
+    const GameState& g = Game();
+    lua_createtable(L, 0, 6);
+    lua_pushinteger(L, g.turn);
     lua_setfield(L, -2, "index");
-    if (Game().team >= 0) {
-        lua_pushinteger(L, Game().team);
+    if (g.team >= 0) {  // absent between turns
+        lua_pushinteger(L, g.team);
         lua_setfield(L, -2, "team");
     }
+    if (g.worm >= 0) {
+        lua_pushinteger(L, g.worm);
+        lua_setfield(L, -2, "worm");
+    }
+    lua_pushboolean(L, g.ai);
+    lua_setfield(L, -2, "ai");
+    lua_pushboolean(L, g.mine);
+    lua_setfield(L, -2, "mine");
+    lua_pushstring(L, g.phase);
+    lua_setfield(L, -2, "phase");
     return 1;
 }
-// wum.game.ui (Melange 0.12): the game's menus and popups. Placeholder from C0: C1 implements it.
+// wum.game.ui (Melange 0.12): the game's menus and popups; nil when the build is not recognised.
 int GameUi(lua_State* L) {
-    lua_pushnil(L);
+    const GameState::Ui& u = Game().ui;
+    if (!u.valid) {
+        lua_pushnil(L);
+        return 1;
+    }
+    lua_createtable(L, 0, 5);
+    const std::pair<const char*, bool> f[] = {{"weaponPanel", u.weaponPanel}, {"pause", u.pause},
+                                              {"readyIntro", u.readyIntro},   {"feCursor", u.feCursor},
+                                              {"attract", u.attract}};
+    for (const auto& [k, v] : f) {
+        lua_pushboolean(L, v);
+        lua_setfield(L, -2, k);
+    }
     return 1;
 }
 int GameTick(lua_State* L) {
