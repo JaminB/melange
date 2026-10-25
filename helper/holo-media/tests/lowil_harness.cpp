@@ -1,8 +1,10 @@
 // holo_media_lowil_test: drives holo-media.exe the way melange.asi will, as a fake core, with the helper at Low
 // integrity (Critique S2). Local only (it plays through the speakers' device, muted):
 //   holo_media_lowil_test.exe --helper <holo-media.exe> --libmpv <dll> --ytdlp <exe> --deno <exe> [--online]
+//       [--play <video file>]
 // 1. `--selftest` at Low: whoami /groups from a child shows Low Mandatory Level, a write into Documents fails, deno
-//    runs, the planted yt-dlp configs and plugins are ignored, lavfi plays into a section, WASAPI opens.
+//    runs, the planted yt-dlp configs and plugins are ignored, lavfi plays into a section, WASAPI opens; with --play,
+//    that local video file plays into the section too.
 // 2. The pipe at Low: the core-side pipe and section carry a Low mandatory label (what C4b creates), the helper starts
 //    suspended in a kill-on-close job, connects, says hello, survives garbage, an oversized line and unknown messages,
 //    answers ping, refuses an unknown player, a missing section and torrents without an engine, sweeps a dead sibling
@@ -86,6 +88,7 @@ struct Child {
     HANDLE job = nullptr, out = nullptr;
 };
 bool g_medium = false;   // --medium: the [Media] HelperLowIntegrity=0 fallback, for comparison
+std::wstring g_play;     // --play <file>: passed to the Low-integrity --selftest
 std::wstring g_keepLog;  // --keep-log <file>: a copy of the helper's log (the cache folder is deleted)
 
 // Starts `argv` at Low integrity, suspended, in a kill-on-close job, then resumes it (the core's launch order).
@@ -155,7 +158,9 @@ std::string Hex64() {
 void SelftestAtLow(const std::wstring& helper, const std::wstring& libmpv, const std::wstring& ytdlp, const std::wstring& deno,
                    const std::wstring& cache) {
     Child c;
-    if (!StartLow({helper, L"--selftest", L"--libmpv", libmpv, L"--ytdlp", ytdlp, L"--deno", deno, L"--cache", cache}, true, &c)) {
+    std::vector<std::wstring> argv = {helper, L"--selftest", L"--libmpv", libmpv, L"--ytdlp", ytdlp, L"--deno", deno, L"--cache", cache};
+    if (!g_play.empty()) argv.insert(argv.end(), {L"--play", g_play});
+    if (!StartLow(argv, true, &c)) {
         Check(false, "selftest started at Low");
         return;
     }
@@ -552,6 +557,7 @@ int wmain(int argc, wchar_t** argv) {
         if (a == L"--online") online = true;
         else if (a == L"--medium") g_medium = true;
         else if (i + 1 < argc && a == L"--keep-log") g_keepLog = argv[++i];
+        else if (i + 1 < argc && a == L"--play") g_play = argv[++i];
         else if (i + 1 < argc && a == L"--helper") helper = argv[++i];
         else if (i + 1 < argc && a == L"--libmpv") libmpv = argv[++i];
         else if (i + 1 < argc && a == L"--ytdlp") ytdlp = argv[++i];

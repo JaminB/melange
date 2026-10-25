@@ -1,7 +1,8 @@
 #pragma once
 // The helper's command line (docs/media-helper.md "Starting the helper"). Exactly the proto::arg flags, each at most
 // once; anything else, a missing value, a relative path or a pipe outside melange-holo-* refuses to start. Pure, so
-// the logic test covers it.
+// the logic test covers it. --play <file> is a developer check for --selftest only (never passed by the core): it
+// also plays one local video file through the real player path into a frame section.
 #include <cstdint>
 #include <string>
 #include <string_view>
@@ -10,7 +11,7 @@
 
 namespace holo {
 struct Args {
-    std::wstring pipe, cache, ytdlp, deno, libmpv;
+    std::wstring pipe, cache, ytdlp, deno, libmpv, play;
     uint32_t parent = 0;
     bool sweep = false, selftest = false;
 };
@@ -38,6 +39,7 @@ inline bool ParseArgs(int argc, const wchar_t* const* argv, Args* out, std::stri
     namespace a = melange::media::proto::arg;
     Args r;
     bool seen[8] = {};
+    constexpr const wchar_t kPlay[] = L"--play";
     auto fail = [&](const char* w) {
         if (why) *why = w;
         return false;
@@ -52,9 +54,9 @@ inline bool ParseArgs(int argc, const wchar_t* const* argv, Args* out, std::stri
         }
         struct Slot { const wchar_t* name; std::wstring* dst; };
         const Slot slots[] = {{a::kPipe, &r.pipe}, {a::kCache, &r.cache}, {a::kYtdlp, &r.ytdlp}, {a::kDeno, &r.deno},
-                              {a::kLibmpv, &r.libmpv}, {a::kParent, nullptr}};
+                              {a::kLibmpv, &r.libmpv}, {a::kParent, nullptr}, {kPlay, &r.play}};
         int which = -1;
-        for (int s = 0; s < 6; ++s)
+        for (int s = 0; s < 7; ++s)
             if (k == slots[s].name) which = s;
         if (which < 0) return fail("unknown argument");
         if (seen[which]) return fail("flag given twice");
@@ -80,6 +82,8 @@ inline bool ParseArgs(int argc, const wchar_t* const* argv, Args* out, std::stri
     }
     if (r.selftest) {
         if (!r.pipe.empty() || r.parent || r.sweep) return fail("--selftest runs without a pipe");
+    } else if (!r.play.empty()) {
+        return fail("--play is for --selftest only");
     } else if (r.pipe.empty() || !r.parent || r.cache.empty() || r.libmpv.empty() || r.ytdlp.empty() || r.deno.empty()) {
         return fail("missing a required flag (--pipe --parent --cache --libmpv --ytdlp --deno)");
     }

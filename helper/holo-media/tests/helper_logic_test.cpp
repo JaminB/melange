@@ -60,6 +60,8 @@ void TestArgs() {
     Check(!Parse({L"--selftest", L"--cache"}), "missing value refused");
     Check(Parse({L"--selftest"}), "bare selftest");
     Check(!Parse({L"--selftest", L"--sweep"}), "selftest with launch flags refused");
+    Check(Parse({L"--selftest", L"--play", L"C:\\v\\test.y4m"}), "selftest --play <file>");
+    Check(!Parse({L"--selftest", L"--play", L"test.y4m"}), "relative --play refused");
     Check(!Parse({L"--pipe", L"\\\\.\\pipe\\melange-holo-1-a", L"--parent", L"1"}), "launch without the paths refused");
     for (const wchar_t* pid : {L"0", L"99999999999", L"12a", L"-1"})
         Check(!Parse({L"--pipe", L"\\\\.\\pipe\\melange-holo-1-a", L"--parent", pid, L"--cache", L"C:\\c", L"--libmpv", L"C:\\l.dll", L"--ytdlp",

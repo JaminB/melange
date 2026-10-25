@@ -38,6 +38,7 @@
 #include "media/media.h"
 #include "media/pack.h"
 #include "net/peerbus.h"
+#include "net/peerbus_api.h"
 
 namespace fake {
 struct Record {

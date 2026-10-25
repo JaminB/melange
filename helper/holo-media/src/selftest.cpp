@@ -1,4 +1,4 @@
-// holo-media.exe --selftest [--libmpv <dll>] [--cache <dir>] [--ytdlp <exe>] [--deno <exe>]
+// holo-media.exe --selftest [--libmpv <dll>] [--cache <dir>] [--ytdlp <exe>] [--deno <exe>] [--play <video file>]
 // Run by media-pack.yml (C6c) and by tests/lowil_harness.cpp at Low integrity. Offline: it plays lavfi test sources
 // through the real player path (hardened options, software renderer, frame section, props) and checks frames and
 // time-pos; with --ytdlp it proves that planted yt-dlp configs and plugins are ignored (S1); at Low integrity it proves
@@ -7,6 +7,7 @@
 #include <shlobj.h>
 #include <windows.h>
 
+#include <algorithm>
 #include <cstdio>
 #include <mutex>
 #include <vector>
@@ -150,6 +151,70 @@ struct Sink {
     std::vector<pipe::Message> msgs;
 };
 
+// --play <file>: a local video file through the same player and section, start to end (a developer check of the real
+// decode path; the core never sends a local file).
+void PlayFile(Player& p, PlayerEnv& env, Sink& sink, shm::Reader& reader, const std::string& section, const std::wstring& file) {
+    LoadSpec s;
+    s.gen = 3;
+    s.shm = section;
+    s.url = Utf8(file);
+    s.paused = false;
+    s.mute = true;
+    s.volume = 0;
+    p.Size(1280, 720);
+    std::string code, why;
+    Check(p.Load(s, &code, &why), "--play: loadfile", why);
+    uint64_t frames = 0, bad = 0;
+    bool loaded = false, eof = false, varied = false;
+    int videoW = 0, videoH = 0;
+    double maxPos = -1;
+    const ULONGLONG until = GetTickCount64() + 30000;
+    while (GetTickCount64() < until && !eof) {
+        WaitForSingleObject(env.wake, 20);
+        p.Drain();
+        p.Tick();
+        shm::Frame f;
+        const auto rr = reader.Acquire(&f);
+        if (rr == shm::ReadResult::New) {
+            if (loaded) {  // frames of this item only (the sine item before it has no video)
+                ++frames;
+                const uint32_t* px = reinterpret_cast<const uint32_t*>(f.data);
+                const uint32_t first = px[0] & 0xFFFFFFu;
+                for (uint32_t i = 0; i < f.meta.w * f.meta.h && !varied; i += 997) varied = (px[i] & 0xFFFFFFu) != first;
+            }
+            reader.Release();
+        } else if (rr == shm::ReadResult::Bad) {
+            ++bad;
+        }
+        std::vector<pipe::Message> got;
+        {
+            std::lock_guard lk(sink.mu);
+            got.swap(sink.msgs);
+        }
+        for (auto& m : got) {
+            if (auto* e = std::get_if<pipe::EventEvt>(&m)) {
+                loaded = loaded || (e->name == proto::event::kFileLoaded && e->gen == 3);
+                eof = eof || (e->name == proto::event::kEndFile && e->reason == "eof" && e->gen == 3);
+            } else if (auto* pr = std::get_if<pipe::PropEvt>(&m)) {
+                if (pr->gen != 3) continue;
+                if (pr->name == proto::prop::kTimePos && pr->kind == pipe::PropEvt::Kind::Number) maxPos = (std::max)(maxPos, pr->number);
+                if (pr->name == proto::prop::kVideoParams && pr->kind == pipe::PropEvt::Kind::Video) {
+                    videoW = pr->video.w;
+                    videoH = pr->video.h;
+                }
+            } else if (auto* er = std::get_if<pipe::ErrorEvt>(&m)) {
+                Check(false, "--play: no player error", er->code + ": " + er->message);
+            }
+        }
+    }
+    Check(loaded, "--play: file-loaded event");
+    Check(eof, "--play: end-file eof event");
+    Check(frames >= 30 && bad == 0, "--play: frames published into the section", std::to_string(frames) + " read, " + std::to_string(bad) + " bad");
+    Check(varied, "--play: frames carry the picture (not blank)");
+    Check(maxPos >= 2.0, "--play: time-pos advances", std::to_string(maxPos));
+    Info("--play video-params", std::to_string(videoW) + "x" + std::to_string(videoH));
+}
+
 void PlayerChecks(const std::wstring& cache, const Args& a) {
     std::string why;
     if (!mpv::Load(a.libmpv, &why)) {
@@ -288,6 +353,7 @@ void PlayerChecks(const std::wstring& cache, const Args& a) {
     p->Drain();
     ao = p->GetString("current-ao");
     Info("audio output", ao.empty() ? "none" : ao);
+    if (!a.play.empty()) PlayFile(*p, env, sink, reader, Utf8(name), a.play);
     Player::Close(std::move(p));
     Check(Player::WaitTeardowns(5000), "player teardown");
     UnmapViewOfFile(view);

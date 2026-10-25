@@ -46,6 +46,11 @@ void operator delete[](void* p) noexcept { operator delete(p); }
 void operator delete(void* p, size_t) noexcept { operator delete(p); }
 void operator delete[](void* p, size_t) noexcept { operator delete(p); }
 
+// media_selftest_host.inc: launches the real holo-media.exe of an installed dev pack (when one is compiled in).
+namespace host_cases {
+void RealHelper(const std::wstring& packDir, const std::wstring& ytdlp);
+}
+
 namespace pack_cases {
 namespace pl = melange::media::pack::logic;
 namespace pc = melange::media::pack::core;
@@ -676,6 +681,8 @@ void Compiled() {
     if (pl::IsFileUrl(m.laneUrl))
         CHECK(pc::UpdateLane(l, m.laneUrl, kPrefix, pc::Hooks{}, &st, &action, &err, &detail) && !st.exe.empty(),
               "the dev lane installs: " + err + " " + detail);
+    // A dev pack from scripts/media-pack.ps1 -Dev carries the real helper: start it as the core does.
+    if (pc::VerifyPackFiles(l, m, &detail)) host_cases::RealHelper(l.PackDir(m.version), st.exe);
     pc::DeleteTree(l.root);
 }
 

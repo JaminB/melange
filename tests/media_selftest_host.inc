@@ -680,6 +680,71 @@ inline void EndToEnd() {
     std::filesystem::remove_all(medium, ec);
 }
 
+// The real holo-media.exe from an installed dev pack (pack_cases::Compiled), launched as the core launches it: Low
+// integrity, job, the core's pipe server and a core-made frame section. Offline: the helper's hello (real mpv and
+// libtorrent versions), the integrity level, an open that the helper must refuse without touching the network, and a
+// clean quit. Playback of a local file through the same player path is `holo-media.exe --selftest --play <file>`.
+void RealHelper(const std::wstring& packDir, const std::wstring& ytdlp) {
+    const std::wstring exe = packDir + L"\\holo-media.exe";
+    {
+        // A dev pack made from dummy files (make-dev-pack's own tests) has no runnable helper: only a real one runs.
+        std::ifstream f(exe, std::ios::binary);
+        char mz[2] = {};
+        f.read(mz, 2);
+        if (mz[0] != 'M' || mz[1] != 'Z') {
+            printf("    dev pack helper is not an executable; real helper case skipped\n");
+            return;
+        }
+    }
+    const std::wstring ll = LocalLow();
+    const std::wstring root = ll + L"\\Melange\\media-selftest-real-" + std::to_wstring(GetCurrentProcessId());
+    helper::LaunchSpec spec;
+    spec.exe = exe;
+    spec.cacheDir = root + L"\\inst";
+    std::string err;
+    CHECK(helper::PrepareCacheDir(spec.cacheDir, &err), "real: cache folder (" + err + ")");
+    spec.lowIntegrity = true;
+    spec.args = {mproto::arg::kParent, std::to_wstring(GetCurrentProcessId()), mproto::arg::kCache, spec.cacheDir, mproto::arg::kLibmpv,
+                 packDir + L"\\libmpv-2.dll", mproto::arg::kYtdlp, ytdlp.empty() ? packDir + L"\\yt-dlp.exe" : ytdlp, mproto::arg::kDeno,
+                 packDir + L"\\deno.exe", mproto::arg::kSweep};
+    {
+        helper::Session s;
+        std::vector<pipe::Message> got;
+        CHECK(StartReady(s, spec, got), "real: the installed holo-media.exe connects and says hello");
+        printf("    real helper: mpv '%s', ffmpeg '%s', libtorrent '%s'\n", s.Hello().mpv.c_str(), s.Hello().ffmpeg.c_str(),
+               s.Hello().libtorrent.c_str());
+        CHECK(s.GotHello() && !s.Hello().mpv.empty() && s.Hello().mpv != "fake", "real: hello names the real mpv");
+        CHECK(IntegrityRid(s.ProcessHandle()) == SECURITY_MANDATORY_LOW_RID, "real: the helper runs at Low integrity");
+        BOOL inJob = FALSE;
+        CHECK(IsProcessInJob(static_cast<HANDLE>(s.ProcessHandle()), nullptr, &inJob) && inJob, "real: the helper is in the job");
+        shmio::Section sec;
+        const std::string name = shmio::SectionName(GetCurrentProcessId(), helper::RandomHex(8), 7);
+        CHECK(sec.Create(name, true, &err), "real: section created (" + err + ")");
+        // A torrent item before any bt.add: the engine does not exist yet (no listen socket), so the helper refuses it.
+        pipe::OpenCmd o;
+        o.id = 7;
+        o.gen = 1;
+        o.shm = name;
+        o.ih = "0123456789abcdef0123456789abcdef01234567";
+        o.file = 0;
+        s.Send(o);
+        const bool refused = WaitFor(s, got, 5000, [&] {
+            const pipe::ErrorEvt* e = Last<pipe::ErrorEvt>(got);
+            return e && e->id == 7 && e->code == mproto::err::kTorrent;
+        });
+        CHECK(refused, "real: a torrent open before bt.add is refused with error torrent");
+        CHECK(s.GetState() == helper::Session::State::Ready, "real: the helper is still up after the refusal");
+        s.Stop(10000);  // a kill only after 10 s (it exits 0 too), so exit 0 within 5 s is the helper's own quit
+        const ULONGLONG end = GetTickCount64() + 5000;
+        DWORD code = STILL_ACTIVE;
+        while (GetTickCount64() < end && GetExitCodeProcess(static_cast<HANDLE>(s.ProcessHandle()), &code) && code == STILL_ACTIVE) Sleep(20);
+        CHECK(code == 0, "real: quit exits 0 (" + std::to_string(code) + ")");
+    }
+    Sleep(500);
+    std::error_code ec;
+    std::filesystem::remove_all(root, ec);
+}
+
 inline void Run() {
     Policy();
     Staleness();

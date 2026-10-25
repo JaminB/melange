@@ -92,8 +92,9 @@ if ($Dev) {
     if (-not $Helper) { $Helper = Join-Path $root "helper\holo-media\build\x64-release\holo-media.exe" }
     $maker = Join-Path $PSScriptRoot "make-dev-pack.ps1"
     if (-not (Test-Path $maker)) { throw "scripts\make-dev-pack.ps1 is not in this checkout (it comes with the pack installer)" }
-    $devArgs = @("-Helper", $Helper, "-Libmpv", (Get-Libmpv), "-Deno", (Get-Deno), "-Config", $Config)
-    if ($YtDlp) { $devArgs += @("-YtDlp", $YtDlp) }
+    # A hashtable: Windows PowerShell 5.1 passes the strings of an array splat to a script positionally, not as names.
+    $devArgs = @{ Helper = $Helper; Libmpv = (Get-Libmpv); Deno = (Get-Deno); Config = $Config }
+    if ($YtDlp) { $devArgs.YtDlp = $YtDlp }
     & $maker @devArgs
     exit $LASTEXITCODE
 }
