@@ -1,5 +1,7 @@
 #pragma once
+#include <cstddef>
 #include <cstdint>
+#include <string>
 #include "melange/render.h"
 namespace melange::draw {
 using Rgba = uint32_t;  // 0xAABBGGRR, as ImGui's IM_COL32
@@ -50,16 +52,67 @@ constexpr uint32_t kMaxSpritesPerStage = 65536;  // all callers together, per st
 // without depth writes or culling, sorted back to front by view depth (ties keep submission order). False (dropped)
 // outside such a callback or past kMaxSpritesPerStage. Non-finite values or halfW <= 0 are skipped and return true.
 bool DrawSprite(const Sprite& s);
-// The stage whose draw callbacks are running now (World, WorldLate or Hud), or Stage::Count outside them.
+// The stage whose draw callbacks are running now (World, WorldLate, Hud or Screen), or Stage::Count outside them.
 render::Stage CurrentStage();
 // Increments once per main pass in which any draw stage ran; a per-frame key for callers' own budgets.
 uint64_t FrameSerial();
 
-// HUD: window pixels, origin top-left; drawn at Stage::Hud (above the engine HUD).
+// HUD: window pixels, origin top-left; drawn at Stage::Hud (above the engine HUD). Called inside a Screen draw callback
+// they draw at Stage::Screen instead.
 void HudLine(float x0, float y0, float x1, float y1, Rgba c, float widthPx = 1.f, int frames = 1);
 void HudRect(float x0, float y0, float x1, float y1, Rgba c, bool filled, float widthPx = 1.f, int frames = 1);
 void HudText(float x, float y, const char* utf8, Rgba c, float sizePx = 16.f, int frames = 1);
 void HudImage(float x0, float y0, float x1, float y1, unsigned texture, Rgba tint = 0xffffffff, int frames = 1);
+
+// ---- Melange 0.12 HUD additions (same stages and queueing as the HUD calls above).
+// Only the texture rectangle (u0, v0)-(u1, v1) of `texture`.
+void HudImageUV(float x0, float y0, float x1, float y1, unsigned texture, float u0, float v0, float u1, float v1,
+                Rgba tint = 0xffffffff, int frames = 1);
+// Nine-slice: l, t, r, b are insets in texture pixels of the source rectangle `uv`; corners are drawn at scale * inset
+// (shrunk evenly when the rectangle is smaller than two corners), edges and centre stretched. Needs a LoadTexture[Ex]
+// texture (its size is known); others are dropped.
+struct NineOptions {
+    float scale = 1.f;
+    float uv[4] = {0.f, 0.f, 1.f, 1.f};
+    Rgba tint = 0xffffffff;
+};
+void HudNine(float x0, float y0, float x1, float y1, unsigned texture, float l, float t, float r, float b,
+             const NineOptions& o = {}, int frames = 1);
+
+// Text with a mod font (LoadFont) or, with font 0, the bitmap font of HudText. UTF-8; a glyph the font lacks draws as
+// '?'; kerning from the font's metrics. (x, y) is the anchor of the first line's top: its left end, centre or right end
+// by `align`. maxWidth > 0 cuts each longer line to fit, ending it with an ellipsis when `ellipsis` is set.
+enum class Align : uint8_t { Left, Center, Right };
+struct TextOptions {
+    int font = 0;
+    bool shadow = false;
+    Rgba shadowColor = 0xff000000;
+    float shadowDx = 2.f, shadowDy = 2.f;
+    Align align = Align::Left;
+    float maxWidth = 0.f;
+    bool ellipsis = true;
+};
+void HudTextEx(float x, float y, const char* utf8, Rgba c, float sizePx, const TextOptions& o, int frames = 1);
+struct TextExtent {
+    float w, h;
+};
+// The size HudTextEx draws `utf8` at (no maxWidth): the widest line by lines * line height. Main thread.
+TextExtent MeasureText(const char* utf8, float sizePx, int font = 0);
+
+// A mod font: an atlas PNG (at most 2048x2048, loaded without mips) and its holo-font-1 metrics (JSON text). Returns a
+// font id > 0, or 0 with a reason in *why. Main thread.
+int LoadFont(const wchar_t* atlasPng, const char* metricsJson, size_t metricsLen, std::string* why);
+void FreeFont(int font);
+
+// Scissor for the following HUD primitives of the running Hud or Screen draw callback: intersects with the clip
+// already open, nests 4 deep. False (nothing clipped) outside such a callback or past depth 4; HudClipEnd still pairs
+// with it. Clips left open end when the callback returns.
+bool HudClip(float x0, float y0, float x1, float y1);
+void HudClipEnd();
+
+// An opaque video frame: the RGB of (u0, v0)-(u1, v1) of `texture` with its alpha ignored, at opacity `alpha`.
+void HudVideo(float x0, float y0, float x1, float y1, unsigned texture, float u0, float v0, float u1, float v1,
+              float alpha = 1.f, int frames = 1);
 
 // A PNG loaded into a GL texture (RGBA8, trilinear with a full mip chain, clamp). 0 on failure. Mips average in
 // premultiplied space, unless every pixel already has r, g, b <= a (a premultiplied PNG), which averages as stored.
@@ -75,6 +128,7 @@ struct TextureOptions {
     bool repeat = false;   // GL_REPEAT, else GL_CLAMP_TO_EDGE
     bool nearest = false;
     int layers = 0;        // 0 = an ordinary GL_TEXTURE_2D
+    bool mips = true;      // false: base level only, linear (HUD atlases, Melange 0.12)
 };
 unsigned LoadTextureEx(const wchar_t* pngPath, const TextureOptions& o, const char** why = nullptr);
 struct TextureInfo {
@@ -86,7 +140,7 @@ bool GetTextureInfo(unsigned texture, TextureInfo* out);  // false for a name Lo
 
 // Per-frame drawing: `fn` runs at `stage` every main pass; draw calls inside it are immediate.
 using DrawFn = void (*)(render::Stage stage, void* user);
-int AddDrawCallback(render::Stage stage, DrawFn fn, void* user, int order = 0);  // World, WorldLate, Hud only
+int AddDrawCallback(render::Stage stage, DrawFn fn, void* user, int order = 0);  // World, WorldLate, Hud, Screen
 void RemoveDrawCallback(int handle);
 
 struct Stats { uint32_t primitives, vertices, callbacks; double cpuMs, gpuMs; };

@@ -13,3 +13,8 @@ struct FrameStats {
 FrameStats DrawStage(render::Stage stage, std::vector<drawqueue::Primitive>& a, std::vector<drawqueue::Primitive>& b,
                      const std::vector<draw::Sprite>& sprites);
 }  // namespace melange::mirage::drawgl
+
+namespace melange::draw {
+// draw.cpp: runs the Screen stage's draw callbacks and draws its primitives (stages_screen.cpp, at present time).
+void RunScreenPass();
+}  // namespace melange::draw

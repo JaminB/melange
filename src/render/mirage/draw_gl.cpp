@@ -6,6 +6,7 @@
 #include <cmath>
 
 #include "melange/draw.h"
+#include "render/gl_guard.h"
 #include "render/mirage/draw_font.h"
 #include "render/mirage/draw_sprites.h"
 
@@ -47,10 +48,16 @@ enum class Space { Unset, ViewSpace, World, Screen };
 struct Cache {
     Space space = Space::Unset;
     int additive = -1, depthTest = -1, depthWrite = -1, cull = -1;
+    int env = -1;  // texture environment: 0 modulate, 1 video (RGB modulated, alpha from the colour only)
     unsigned texture = ~0u;
     float lineWidth = -1;
     bool quads = false;
 } g_c;
+
+// HUD stages: hudClip's scissor stack and the viewport the window's pixels map onto (a supersampled scene FBO is
+// larger than the window).
+drawqueue::ClipStack g_clips;
+int g_viewport[4] = {0, 0, 0, 0};
 
 void EndQuads() {
     if (!g_c.quads) return;
@@ -131,6 +138,41 @@ void SetTexture(unsigned tex) {
     } else {
         glDisable(GL_TEXTURE_2D);
     }
+}
+
+constexpr GLenum kCombine = 0x8570, kCombineRgb = 0x8571, kCombineAlpha = 0x8572, kSource0Rgb = 0x8580,
+                 kSource1Rgb = 0x8581, kSource0Alpha = 0x8588, kOperand0Rgb = 0x8590, kOperand1Rgb = 0x8591,
+                 kOperand0Alpha = 0x8598, kPrimaryColor = 0x8577;
+
+// Restored by PopState (GL_TEXTURE_BIT). The video mode ignores the texture's alpha: an X byte (bgr0) may be 0.
+void SetEnv(int mode) {
+    if (g_c.env == mode) return;
+    EndQuads();
+    g_c.env = mode;
+    if (mode == 0) {
+        glTexEnvi(GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_MODULATE);
+        return;
+    }
+    glTexEnvi(GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, kCombine);
+    glTexEnvi(GL_TEXTURE_ENV, kCombineRgb, GL_MODULATE);
+    glTexEnvi(GL_TEXTURE_ENV, kSource0Rgb, GL_TEXTURE);
+    glTexEnvi(GL_TEXTURE_ENV, kOperand0Rgb, GL_SRC_COLOR);
+    glTexEnvi(GL_TEXTURE_ENV, kSource1Rgb, kPrimaryColor);
+    glTexEnvi(GL_TEXTURE_ENV, kOperand1Rgb, GL_SRC_COLOR);
+    glTexEnvi(GL_TEXTURE_ENV, kCombineAlpha, GL_REPLACE);
+    glTexEnvi(GL_TEXTURE_ENV, kSource0Alpha, kPrimaryColor);
+    glTexEnvi(GL_TEXTURE_ENV, kOperand0Alpha, GL_SRC_ALPHA);
+}
+
+void ApplyClip() {
+    EndQuads();
+    if (!g_clips.Active()) {
+        glDisable(GL_SCISSOR_TEST);
+        return;
+    }
+    const drawqueue::Scissor sc = g_clips.Top();
+    glEnable(GL_SCISSOR_TEST);
+    glScissor(sc.x, sc.y, sc.w, sc.h);
 }
 
 void SetLineWidth(float w) {
@@ -243,19 +285,22 @@ void EmitGlyphs(const std::vector<drawfont::GlyphQuad>& glyphs, float z) {
 
 std::vector<drawfont::GlyphQuad> g_glyphs;
 
+void OffsetGlyphs(std::vector<drawfont::GlyphQuad>& glyphs, float dx, float dy) {
+    for (auto& g : glyphs) {
+        g.x0 += dx;
+        g.x1 += dx;
+        g.y0 += dy;
+        g.y1 += dy;
+    }
+}
+
 void DrawWorldText(const Primitive& p, const float rgba[4], uint32_t& verts) {
     if (!drawfont::Texture()) return;
     float sx = 0, sy = 0, depth = 0;
     if (!render::WorldToScreen(p.p[0], &sx, &sy, &depth)) return;
     g_glyphs.clear();
     drawfont::Extent ext = drawfont::Layout(p.text.c_str(), p.sizePx, 0, 0, g_glyphs);
-    float dx = sx - ext.w * 0.5f, dy = sy - ext.h;  // centred above the anchor
-    for (auto& g : g_glyphs) {
-        g.x0 += dx;
-        g.x1 += dx;
-        g.y0 += dy;
-        g.y1 += dy;
-    }
+    OffsetGlyphs(g_glyphs, sx - ext.w * 0.5f, sy - ext.h);  // centred above the anchor
     SetSpace(Space::Screen);
     SetTexture(drawfont::Texture());
     BeginQuads();
@@ -337,6 +382,49 @@ void DrawSprites(const std::vector<draw::Sprite>& sprites, uint32_t& prims, uint
     verts += static_cast<uint32_t>(g_sprites.verts.size());
 }
 
+void TexturedQuad(float x0, float y0, float x1, float y1, const float uv[4], const float rgba[4]) {
+    BeginQuads();
+    glColor4fv(rgba);
+    glTexCoord2f(uv[0], uv[1]);
+    glVertex2f(x0, y0);
+    glTexCoord2f(uv[2], uv[1]);
+    glVertex2f(x1, y0);
+    glTexCoord2f(uv[2], uv[3]);
+    glVertex2f(x1, y1);
+    glTexCoord2f(uv[0], uv[3]);
+    glVertex2f(x0, y1);
+}
+
+// HudTextEx: a mod font or the bitmap font through the shared layout, with its optional shadow drawn first.
+void DrawTextEx(const Primitive& p, const float rgba[4], uint32_t& verts) {
+    const draw::TextOptions& o = p.textOpts;
+    const unsigned tex = drawfont::TextureFor(o.font);
+    if (!tex) return;
+    drawfont::LayoutOptions lo;
+    lo.align = static_cast<drawfont::Align>(o.align);
+    lo.maxWidth = o.maxWidth;
+    lo.ellipsis = o.ellipsis;
+    g_glyphs.clear();
+    drawfont::LayoutEx(o.font, p.text.c_str(), p.sizePx, p.p[0][0], p.p[0][1], lo, &g_glyphs);
+    if (g_glyphs.empty()) return;
+    SetTexture(tex);
+    SetEnv(0);
+    if (o.shadow) {
+        float s[4];
+        UnpackColor(o.shadowColor, s);
+        OffsetGlyphs(g_glyphs, o.shadowDx, o.shadowDy);
+        BeginQuads();
+        glColor4fv(s);
+        EmitGlyphs(g_glyphs, 0.f);
+        OffsetGlyphs(g_glyphs, -o.shadowDx, -o.shadowDy);
+        verts += static_cast<uint32_t>(g_glyphs.size()) * 4;
+    }
+    BeginQuads();
+    glColor4fv(rgba);
+    EmitGlyphs(g_glyphs, 0.f);
+    verts += static_cast<uint32_t>(g_glyphs.size()) * 4;
+}
+
 void DrawHudOne(const Primitive& p, uint32_t& prims, uint32_t& verts) {
     float rgba[4];
     UnpackColor(p.color, rgba);
@@ -377,10 +465,15 @@ void DrawHudOne(const Primitive& p, uint32_t& prims, uint32_t& verts) {
             verts += 4;
             break;
         case Kind::HudText: {
+            if (p.textEx) {
+                DrawTextEx(p, rgba, verts);
+                break;
+            }
             if (!drawfont::Texture()) break;
             g_glyphs.clear();
             drawfont::Layout(p.text.c_str(), p.sizePx, x0, y0, g_glyphs);
             SetTexture(drawfont::Texture());
+            SetEnv(0);
             BeginQuads();
             glColor4fv(rgba);
             EmitGlyphs(g_glyphs, 0.f);
@@ -392,6 +485,7 @@ void DrawHudOne(const Primitive& p, uint32_t& prims, uint32_t& verts) {
             float t[4];
             UnpackColor(p.color2, t);
             SetTexture(p.texture);
+            SetEnv(0);
             BeginQuads();
             glColor4fv(t);
             glTexCoord2f(0, 0);
@@ -405,6 +499,28 @@ void DrawHudOne(const Primitive& p, uint32_t& prims, uint32_t& verts) {
             verts += 4;
             break;
         }
+        case Kind::HudImageUV:
+        case Kind::HudVideo: {
+            if (!p.texture) break;
+            float t[4] = {1, 1, 1, 1};
+            if (p.kind == Kind::HudImageUV) UnpackColor(p.color2, t);
+            else t[3] = p.scalar;
+            SetTexture(p.texture);
+            SetEnv(p.kind == Kind::HudVideo ? 1 : 0);
+            TexturedQuad(x0, y0, x1, y1, p.uv, t);
+            verts += 4;
+            break;
+        }
+        case Kind::ClipPush:
+            g_clips.Push(drawqueue::ClipToScissor(x0, y0, x1, y1, g_windowW, g_windowH, g_viewport));
+            ApplyClip();
+            --prims;
+            break;
+        case Kind::ClipPop:
+            g_clips.Pop();
+            ApplyClip();
+            --prims;
+            break;
         default:
             break;
     }
@@ -414,15 +530,25 @@ void DrawHudOne(const Primitive& p, uint32_t& prims, uint32_t& verts) {
 FrameStats DrawStage(render::Stage stage, std::vector<Primitive>& a, std::vector<Primitive>& b,
                      const std::vector<draw::Sprite>& sprites) {
     FrameStats stats;
-    const bool haveSprites = !sprites.empty() && stage != render::Stage::Hud;
+    const bool hud = stage == render::Stage::Hud || stage == render::Stage::Screen;
+    const bool haveSprites = !sprites.empty() && !hud;
     if (a.empty() && b.empty() && !haveSprites) return stats;
 
     render::WindowSize(&g_windowW, &g_windowH);
     bool haveCam = render::GetCamera(&g_cam);
-    if (stage != render::Stage::Hud && !haveCam) return stats;
+    if (!hud && !haveCam) return stats;
+    if (stage == render::Stage::Screen && (g_windowW <= 0 || g_windowH <= 0)) return stats;
 
     uint32_t token = render::PushState();
     if (!token) return stats;
+    if (stage == render::Stage::Screen) {
+        // Present time: the window's back buffer, whatever the engine left bound (PopState restores both).
+        const render::gl::Caps& caps = render::gl::Load();
+        if (caps.BindFramebuffer) caps.BindFramebuffer(0x8D40 /*GL_FRAMEBUFFER*/, 0);
+        glViewport(0, 0, g_windowW, g_windowH);
+    }
+    glGetIntegerv(GL_VIEWPORT, g_viewport);
+    g_clips.Reset();
     // The atlas upload must happen outside a glBegin/glEnd batch.
     for (const auto* list : {&a, &b})
         for (const auto& p : *list)
@@ -432,7 +558,7 @@ FrameStats DrawStage(render::Stage stage, std::vector<Primitive>& a, std::vector
             }
     g_c = Cache{};
     glEnable(GL_BLEND);
-    if (stage == render::Stage::Hud) {
+    if (hud) {
         SetSpace(Space::Screen);
         SetBlend(false);
         SetDepth(false, false);

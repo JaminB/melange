@@ -13,11 +13,14 @@
 #include <climits>
 #include <cstdio>
 #include <cstring>
+#include <string>
+#include <string_view>
 #include <unordered_map>
 #include <vector>
 
 #include "melange/render.h"
 #include "melange/testcmd.h"
+#include "render/mirage/draw_font.h"
 #include "render/mirage/draw_gl.h"
 #include "render/mirage/draw_queue.h"
 #include "render/mirage/draw_sprites.h"
@@ -43,8 +46,11 @@ using mirage::drawqueue::Primitive;
 using mirage::drawqueue::RouteStage;
 using mirage::drawqueue::StageQueue;
 
-constexpr int kNumStages = 3;
-constexpr render::Stage kStageOf[kNumStages] = {render::Stage::World, render::Stage::WorldLate, render::Stage::Hud};
+// Screen (Melange 0.12) has no engine stage callbacks: RunScreenPass, called from the present hook, runs it.
+constexpr int kNumStages = 4;
+constexpr render::Stage kStageOf[kNumStages] = {render::Stage::World, render::Stage::WorldLate, render::Stage::Hud,
+                                                render::Stage::Screen};
+constexpr int kScreenIdx = 3;
 
 int IndexOf(render::Stage s) {
     for (int i = 0; i < kNumStages; ++i)
@@ -73,10 +79,13 @@ StageState g_stage[kNumStages];
 bool g_insideStage = false;
 render::Stage g_currentStage = render::Stage::Count;
 int g_nextHandle = 1;
-// FrameSerial(): stages run World, WorldLate, Hud within a main pass, so entering one at or before the last entered
-// index starts a new pass.
+// FrameSerial(): stages run World, WorldLate, Hud, Screen within a frame, so entering one at or before the last
+// entered index starts a new pass.
 uint64_t g_frameSerial = 0;
 int g_lastEnterIdx = kNumStages;
+
+// hudClip pushes made by the running draw callback (ended for it when it returns), including those past the depth cap.
+int g_clipDepth = 0;
 
 uint64_t g_statsFrame = 0;
 Stats g_stats{};
@@ -96,14 +105,27 @@ bool InvokeDrawCb(DrawFn fn, render::Stage stage, void* user, unsigned long* cod
     }
 }
 
+const char* StageLabel(render::Stage stage) { return stage == render::Stage::Screen ? "Screen" : mirage::stages::Name(stage); }
+
 void FaultDrawCb(StageState* s, int handle, render::Stage stage, unsigned long code) {
     auto it = std::find_if(s->callbacks.begin(), s->callbacks.end(), [&](const DrawCb& c) { return c.handle == handle; });
     if (it == s->callbacks.end()) return;
     ++it->faults;
-    LOG_ERROR("[draw] %s draw callback %d raised exception 0x%08lx (%d/3)", mirage::stages::Name(stage), handle, code, it->faults);
+    LOG_ERROR("[draw] %s draw callback %d raised exception 0x%08lx (%d/3)", StageLabel(stage), handle, code, it->faults);
     if (it->faults >= 3) {
-        LOG_ERROR("[draw] %s draw callback %d removed after 3 faults", mirage::stages::Name(stage), handle);
+        LOG_ERROR("[draw] %s draw callback %d removed after 3 faults", StageLabel(stage), handle);
         s->callbacks.erase(it);
+    }
+}
+
+void Submit(Kind kind, uint32_t flags, Primitive p);
+
+// Ends the clips the callback left open, so they never leak into the next callback's primitives.
+void CloseClips() {
+    for (; g_clipDepth > 0; --g_clipDepth) {
+        Primitive p;
+        p.kind = Kind::ClipPop;
+        Submit(Kind::ClipPop, 0, std::move(p));
     }
 }
 
@@ -120,7 +142,9 @@ void EnterCb(render::Stage stage, void* user) {
     std::stable_sort(sorted.begin(), sorted.end(), [](const DrawCb& a, const DrawCb& b) { return a.order < b.order; });
     for (auto& cb : sorted) {
         unsigned long code = 0;
+        g_clipDepth = 0;
         if (!InvokeDrawCb(cb.fn, stage, cb.user, &code)) FaultDrawCb(s, cb.handle, stage, code);
+        CloseClips();
     }
 }
 
@@ -154,7 +178,7 @@ void ExitCb(render::Stage stage, void* user) {
 
 void EnsureRegistered(int idx) {
     StageState& s = g_stage[idx];
-    if (s.enterHandle) return;
+    if (s.enterHandle || idx == kScreenIdx) return;
     render::Stage st = kStageOf[idx];
     s.enterHandle = render::AddStageCallback(st, &EnterCb, &s, INT_MIN);
     s.exitHandle = render::AddStageCallback(st, &ExitCb, &s, INT_MAX);
@@ -162,17 +186,18 @@ void EnsureRegistered(int idx) {
 
 void MaybeUnregister(int idx) {
     StageState& s = g_stage[idx];
-    if (!s.enterHandle || !s.queue.Idle() || !s.callbacks.empty()) return;
+    if (idx == kScreenIdx || !s.enterHandle || !s.queue.Idle() || !s.callbacks.empty()) return;
     render::RemoveStageCallback(s.enterHandle);
     render::RemoveStageCallback(s.exitHandle);
     s.enterHandle = s.exitHandle = 0;
 }
 
 void Submit(Kind kind, uint32_t flags, Primitive p) {
+    const render::Stage stage = RouteStage(kind, flags, g_insideStage ? g_currentStage : render::Stage::Count);
     // Mirage off (ini or an unrecognised exe) means AddStageCallback can never succeed; queuing anyway would grow
-    // without bound for a mod that keeps drawing every frame (EnsureRegistered just retries and fails again).
-    if (!mirage::stages::Enabled()) return;
-    render::Stage stage = RouteStage(kind, flags);
+    // without bound for a mod that keeps drawing every frame (EnsureRegistered just retries and fails again). The
+    // screen stage needs no engine stage: the present hook drains it every frame.
+    if (stage != render::Stage::Screen && !mirage::stages::Enabled()) return;
     int idx = IndexOf(stage);
     if (idx < 0) return;
     EnsureRegistered(idx);
@@ -339,6 +364,92 @@ void HudImage(float x0, float y0, float x1, float y1, unsigned texture, Rgba tin
     Submit(Kind::HudImage, 0, std::move(p));
 }
 
+namespace {
+Primitive UvPrimitive(Kind kind, float x0, float y0, float x1, float y1, unsigned texture, float u0, float v0, float u1,
+                      float v1, int frames) {
+    Primitive p;
+    p.kind = kind;
+    p.texture = texture;
+    p.framesLeft = ClampFrames(frames);
+    p.p[0][0] = x0;
+    p.p[0][1] = y0;
+    p.p[1][0] = x1;
+    p.p[1][1] = y1;
+    p.uv[0] = u0;
+    p.uv[1] = v0;
+    p.uv[2] = u1;
+    p.uv[3] = v1;
+    return p;
+}
+}  // namespace
+
+void HudImageUV(float x0, float y0, float x1, float y1, unsigned texture, float u0, float v0, float u1, float v1, Rgba tint,
+                int frames) {
+    Primitive p = UvPrimitive(Kind::HudImageUV, x0, y0, x1, y1, texture, u0, v0, u1, v1, frames);
+    p.color2 = tint;
+    Submit(Kind::HudImageUV, 0, std::move(p));
+}
+
+void HudNine(float x0, float y0, float x1, float y1, unsigned texture, float l, float t, float r, float b,
+             const NineOptions& o, int frames) {
+    auto it = g_texInfo.find(texture);
+    if (it == g_texInfo.end() || it->second.layers > 0) return;
+    mirage::drawqueue::UvQuad cells[9];
+    const int n = mirage::drawqueue::NineSlice(x0, y0, x1, y1, it->second.width, it->second.height, l, t, r, b, o.scale, o.uv, cells);
+    for (int i = 0; i < n; ++i) {
+        const auto& c = cells[i];
+        HudImageUV(c.x0, c.y0, c.x1, c.y1, texture, c.u0, c.v0, c.u1, c.v1, o.tint, frames);
+    }
+}
+
+void HudTextEx(float x, float y, const char* utf8, Rgba c, float sizePx, const TextOptions& o, int frames) {
+    Primitive p;
+    p.kind = Kind::HudText;
+    p.color = c;
+    p.sizePx = sizePx;
+    p.framesLeft = ClampFrames(frames);
+    p.p[0][0] = x;
+    p.p[0][1] = y;
+    p.text = utf8 ? utf8 : "";
+    p.textEx = true;
+    p.textOpts = o;
+    Submit(Kind::HudText, 0, std::move(p));
+}
+
+TextExtent MeasureText(const char* utf8, float sizePx, int font) {
+    const mirage::drawfont::Extent e = mirage::drawfont::LayoutEx(font, utf8, sizePx, 0, 0, {}, nullptr);
+    return {e.w, e.h};
+}
+
+bool HudClip(float x0, float y0, float x1, float y1) {
+    if (!g_insideStage || (g_currentStage != render::Stage::Hud && g_currentStage != render::Stage::Screen)) return false;
+    const bool real = g_clipDepth < mirage::drawqueue::kMaxClipDepth;
+    ++g_clipDepth;
+    Primitive p;
+    p.kind = Kind::ClipPush;
+    p.p[0][0] = x0;
+    p.p[0][1] = y0;
+    p.p[1][0] = x1;
+    p.p[1][1] = y1;
+    Submit(Kind::ClipPush, 0, std::move(p));
+    return real;
+}
+
+void HudClipEnd() {
+    if (g_clipDepth <= 0 || !g_insideStage) return;
+    --g_clipDepth;
+    Primitive p;
+    p.kind = Kind::ClipPop;
+    Submit(Kind::ClipPop, 0, std::move(p));
+}
+
+void HudVideo(float x0, float y0, float x1, float y1, unsigned texture, float u0, float v0, float u1, float v1, float alpha,
+              int frames) {
+    Primitive p = UvPrimitive(Kind::HudVideo, x0, y0, x1, y1, texture, u0, v0, u1, v1, frames);
+    p.scalar = std::clamp(alpha, 0.f, 1.f);
+    Submit(Kind::HudVideo, 0, std::move(p));
+}
+
 unsigned LoadTexture(const wchar_t* pngPath) {
     if (!pngPath) return 0;
     FILE* f = _wfopen(pngPath, L"rb");
@@ -441,7 +552,7 @@ unsigned LoadTextureEx(const wchar_t* pngPath, const TextureOptions& o, const ch
     const GLint wrap = o.repeat ? GL_REPEAT : kClampToEdge;
     glTexParameteri(target, GL_TEXTURE_WRAP_S, wrap);
     glTexParameteri(target, GL_TEXTURE_WRAP_T, wrap);
-    glTexParameteri(target, GL_TEXTURE_MIN_FILTER, o.nearest ? GL_NEAREST : GL_LINEAR_MIPMAP_LINEAR);
+    glTexParameteri(target, GL_TEXTURE_MIN_FILTER, o.nearest ? GL_NEAREST : o.mips ? GL_LINEAR_MIPMAP_LINEAR : GL_LINEAR);
     glTexParameteri(target, GL_TEXTURE_MAG_FILTER, o.nearest ? GL_NEAREST : GL_LINEAR);
     glPixelStorei(GL_UNPACK_ALIGNMENT, 4);
     auto put = [&](GLint level, int lw, int lhh, const void* px) {
@@ -449,7 +560,7 @@ unsigned LoadTextureEx(const wchar_t* pngPath, const TextureOptions& o, const ch
         else glTexImage2D(target, level, kRgba8, lw, lhh, 0, GL_RGBA, GL_UNSIGNED_BYTE, px);
     };
     put(0, w, lh, pixels);
-    if (o.nearest) {
+    if (o.nearest || !o.mips) {
         glTexParameteri(target, kTextureMaxLevel, 0);
     } else {
         const std::vector<mirage::shadertex::Level> mips = mirage::shadertex::LayerMips(pixels, w, lh, layers);
@@ -483,6 +594,32 @@ void FreeTexture(unsigned texture) {
     glDeleteTextures(1, &t);
 }
 
+int LoadFont(const wchar_t* atlasPng, const char* metricsJson, size_t metricsLen, std::string* why) {
+    std::string dummy;
+    if (!why) why = &dummy;
+    mirage::drawfont::ModFontData data;
+    if (!metricsJson || !mirage::drawfont::ParseModFont(std::string_view(metricsJson, metricsLen), &data, why)) return 0;
+    TextureOptions o;
+    o.mips = false;
+    const char* texWhy = nullptr;
+    const unsigned tex = LoadTextureEx(atlasPng, o, &texWhy);
+    if (!tex) {
+        *why = std::string("atlas: ") + (texWhy ? texWhy : "cannot read the PNG");
+        return 0;
+    }
+    const TextureInfo& info = g_texInfo[tex];
+    if (!mirage::drawfont::CheckAtlas(&data, info.width, info.height, why)) {
+        FreeTexture(tex);
+        return 0;
+    }
+    return mirage::drawfont::AddModFont(tex, std::move(data));
+}
+
+void FreeFont(int font) {
+    if (font <= 0) return;
+    if (const unsigned tex = mirage::drawfont::RemoveModFont(font)) FreeTexture(tex);
+}
+
 int AddDrawCallback(render::Stage stage, DrawFn fn, void* user, int order) {
     int idx = IndexOf(stage);
     if (idx < 0 || !fn) return 0;
@@ -503,6 +640,13 @@ void RemoveDrawCallback(int handle) {
             return;
         }
     }
+}
+
+void RunScreenPass() {
+    StageState& s = g_stage[kScreenIdx];
+    if (s.callbacks.empty() && s.queue.Idle()) return;
+    EnterCb(render::Stage::Screen, &s);
+    ExitCb(render::Stage::Screen, &s);
 }
 
 Stats GetStats() {
