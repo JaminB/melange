@@ -131,7 +131,9 @@ class Core {
     wire::Reassembler reasm_;
     wire::GlobalBudget global_;
     bool ticked_ = false, stalled_ = false;
-    double lastTick_ = 0, stallAt_ = 0;
+    double lastTick_ = 0, stallAt_ = 0, creditedFor_ = -1;
+    static constexpr double kStallCreditMs = 15000;
+    void CreditStall(double at);
     std::vector<Delivery> deliveries_;
     std::vector<PeerChange> changes_;
     Counters c_;

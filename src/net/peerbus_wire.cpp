@@ -367,18 +367,37 @@ Reassembler::Result Reassembler::Add(uint64_t from, const Header& h, const std::
     message->clear();
     for (const auto& f : p.frags) message->insert(message->end(), f.begin(), f.end());
     Erase(it);
-    if (done_.size() >= kMaxDone) {
+    MarkDone(key, nowMs);
+    if (message->size() > kMaxReliable) {
+        ++dropped_;
+        return Result::Dropped;
+    }
+    return Result::Complete;
+}
+
+void Reassembler::MarkDone(const Key& key, double nowMs) {
+    if (!done_.count(key) && done_.size() >= kMaxDone) {
         auto oldest = done_.begin();
         for (auto d = done_.begin(); d != done_.end(); ++d)
             if (d->second < oldest->second) oldest = d;
         done_.erase(oldest);
     }
     done_[key] = nowMs;
-    if (message->size() > kMaxReliable) {
+}
+
+bool Reassembler::InProgress(uint64_t from, const Header& h) const {
+    return h.nfrag > 1 && parts_.count(Key{from, h.modId, h.seq}) != 0;
+}
+
+void Reassembler::Abandon(uint64_t from, const Header& h, double nowMs) {
+    if (h.nfrag <= 1) return;
+    const Key key{from, h.modId, h.seq};
+    auto it = parts_.find(key);
+    if (it != parts_.end()) {
+        Erase(it);
         ++dropped_;
-        return Result::Dropped;
     }
-    return Result::Complete;
+    MarkDone(key, nowMs);
 }
 
 void Reassembler::Expire(double nowMs) {
@@ -428,7 +447,7 @@ void TokenBucket::Refill(double nowMs) {
         return;
     }
     if (nowMs > last_) {
-        tokens_ = (std::min)(cap_, tokens_ + (nowMs - last_) * rate_ / 1000.0);
+        if (tokens_ < cap_) tokens_ = (std::min)(cap_, tokens_ + (nowMs - last_) * rate_ / 1000.0);
         last_ = nowMs;
     }
 }
@@ -441,6 +460,11 @@ bool TokenBucket::Can(double n, double nowMs) {
 void TokenBucket::Take(double n, double nowMs) {
     Refill(nowMs);
     tokens_ -= n;
+}
+
+void TokenBucket::Credit(double upTo, double nowMs) {
+    Refill(nowMs);
+    if (tokens_ < upTo) tokens_ = upTo;
 }
 
 double TokenBucket::Tokens(double nowMs) {

@@ -203,7 +203,7 @@ void Connection::ReaderBody() {
                 lastPongMs_.store(NowMs());
                 return;
             }
-            inbox_.Push(std::move(m));
+            inbox_.Push(std::move(m), line.size());
         });
         if (split.Dropped() != longBefore) longLines_.fetch_add(split.Dropped() - longBefore);
     }

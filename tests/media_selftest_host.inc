@@ -308,6 +308,32 @@ inline void InboxCases() {
     CHECK(in.Dropped() == 300 + 1 - mproto::kMaxEventQueue, "inbox: drops counted");
     CHECK(in.Pending() == 0, "inbox: drained");
 
+    {
+        pipeio::Inbox b;
+        for (uint32_t i = 1; i <= 200; ++i) b.Push(Prop(i, mproto::prop::kTrackList, 1), 64 * 1024);
+        CHECK(b.Bytes() <= pipeio::Inbox::kMaxBytes && b.Pending() == pipeio::Inbox::kMaxBytes / (64 * 1024),
+              "inbox: held to the byte budget");
+        b.SetIdCeiling(3);
+        b.Push(Prop(4, mproto::prop::kTimePos, 1), 10);
+        pipe::EventEvt bad;
+        bad.id = 9;
+        bad.name = mproto::event::kFileLoaded;
+        const uint64_t before = b.Dropped();
+        b.Push(bad, 10);
+        b.Push(Prop(3, mproto::prop::kTimePos, 1), 10);
+        std::vector<pipe::Message> got;
+        b.Drain(&got);
+        bool sawInvented = false, sawThree = false;
+        for (const auto& m : got) {
+            if (auto* p = std::get_if<pipe::PropEvt>(&m)) {
+                sawInvented |= p->id == 4;
+                sawThree |= p->id == 3 && p->name == mproto::prop::kTimePos;
+            }
+            sawInvented |= std::holds_alternative<pipe::EventEvt>(m);
+        }
+        CHECK(!sawInvented && sawThree && b.Dropped() >= before + 2, "inbox: ids core never handed out are dropped");
+    }
+
     const helper::EnvVars parent = {{L"SystemRoot", L"C:\\Windows"}, {L"PATH", L"C:\\evil;C:\\Windows\\System32"},
                                     {L"PYTHONPATH", L"C:\\x"},        {L"PYTHONSTARTUP", L"C:\\x\\s.py"},
                                     {L"YTDLP_CONFIG", L"x"},          {L"MPV_HOME", L"C:\\mpv"},

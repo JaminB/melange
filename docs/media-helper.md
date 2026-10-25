@@ -123,8 +123,9 @@ no local web server. The magnets are canonical (infohash, name and at most 8 udp
 peers and other parameters are dropped), url seeds from the metadata are removed, and trackers in loopback, link-local
 or private address ranges are ignored. DHT, local peer discovery and trackers are on; UPnP and NAT-PMP are off
 (`[Media] TorrentUPnP`). Data lives under the helper's own cache folder and is deleted when the torrent is closed, when
-the party ends, and at the next start after a crash. The selected files of all open torrents together must fit
-`[Media] TorrentCacheMB`.
+the party ends, and at the next start after a crash. Every file any open torrent has selected, now or earlier (a
+deselected file keeps its data until the torrent closes), counts against `[Media] TorrentCacheMB`, together with the
+file being opened.
 
 ## Tests
 

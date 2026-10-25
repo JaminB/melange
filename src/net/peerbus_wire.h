@@ -104,6 +104,11 @@ class Reassembler {
     Result Add(uint64_t from, const Header& h, const std::vector<uint8_t>& body, size_t chunkMax, double nowMs,
                std::vector<uint8_t>* message);
     void Expire(double nowMs);           // drops partial messages older than kTimeoutMs
+    // True when an earlier fragment of this message started a partial (its later fragments ride on that admission).
+    bool InProgress(uint64_t from, const Header& h) const;
+    // A fragment of this message was refused (rate): drop the partial and ignore the rest of it, so a lost message
+    // never holds one of the sender's kMaxPartialPerSender slots until kTimeoutMs.
+    void Abandon(uint64_t from, const Header& h, double nowMs);
     void DropSender(uint64_t from);
     void Clear();
     size_t PartialBytes() const { return bytes_; }
@@ -130,6 +135,7 @@ class Reassembler {
     };
     static constexpr size_t kMaxDone = 256;
     void Erase(std::map<Key, Part>::iterator it);
+    void MarkDone(const Key& key, double nowMs);
     std::map<Key, Part> parts_;
     std::map<Key, double> done_;  // recently completed messages: a late duplicate fragment never starts a new partial
     size_t bytes_ = 0;
@@ -144,6 +150,7 @@ class TokenBucket {
     void Configure(double perSec, double cap);
     bool Can(double n, double nowMs);
     void Take(double n, double nowMs);   // may go below zero only when the caller skipped Can
+    void Credit(double upTo, double nowMs);  // tokens at least `upTo`, above the cap until spent (a stall's backlog)
     double Tokens(double nowMs);
 
   private:

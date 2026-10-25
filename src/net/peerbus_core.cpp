@@ -293,9 +293,13 @@ void Core::OnPacket(uint64_t from, const uint8_t* p, size_t n, double at) {
         ++c->stats.dropped;
         return;
     }
+    CreditStall(at);
+    // Whole messages are rate-limited: the first fragment to arrive decides, the rest of an admitted message is
+    // always taken (the bucket may go into debt), and a refused one is abandoned so it holds no reassembly slot.
     auto bytes = c->recvBytes.try_emplace(from, wire::kRecvBytesPerSec, wire::kRecvByteBurst).first;
     const double len = static_cast<double>(pkt.body.size());
-    if (!bytes->second.Can(len, at)) {
+    if (!reasm_.InProgress(from, pkt.h) && !bytes->second.Can(len, at)) {
+        reasm_.Abandon(from, pkt.h, at);
         ++c_.dropRate;
         ++c->stats.dropped;
         return;
@@ -323,6 +327,18 @@ void Core::OnPacket(uint64_t from, const uint8_t* p, size_t n, double at) {
     }
     ++c->stats.received;
     deliveries_.push_back({cid, from, std::move(msg), pkt.h.reliable, at});
+}
+
+// The first packet drained after a stall (a level load; Tick has not seen it yet): what waited in Steam meanwhile
+// is legitimate traffic, so every receive bucket may take up to the gap's worth (at most kStallCreditMs).
+void Core::CreditStall(double at) {
+    if (!ticked_ || at - lastTick_ <= wire::kStallMs || creditedFor_ == lastTick_) return;
+    creditedFor_ = lastTick_;
+    const double s = (std::min)(at - lastTick_, kStallCreditMs) / 1000.0;
+    for (auto& [id, c] : channels_) {
+        for (auto& [m, b] : c.recvBytes) b.Credit(wire::kRecvBytesPerSec * s, at);
+        for (auto& [m, b] : c.recvMsgs) b.Credit(wire::kRecvMsgsPerSec * s, at);
+    }
 }
 
 void Core::Tick(double nowMs) {

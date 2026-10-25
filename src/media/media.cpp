@@ -127,6 +127,7 @@ struct Torrent {
     std::vector<pipe::BtFile> files;
     pipe::BtStatusEvt status;
     int selected = -1;
+    std::set<int> touched;  // every file ever selected: the helper keeps a deselected file's data until the close
 };
 
 struct ResolveReq {
@@ -666,6 +667,11 @@ void PumpPack() {
     }
 }
 
+// The inbox drops props and events for a player id not handed out yet (pipe.h).
+void PublishIdCeiling() {
+    if (g_session && g_session->Conn()) g_session->Conn()->In().SetIdCeiling(g_nextPlayer - 1);
+}
+
 void PumpHelper() {
     if (g_launch && g_launch->done.load()) {
         std::shared_ptr<Launch> l = std::move(g_launch);
@@ -686,6 +692,7 @@ void PumpHelper() {
         }
     }
     if (!g_session) return;
+    PublishIdCeiling();
     std::vector<pipe::Message> msgs;
     g_session->Drain(&msgs);
     Dispatch(msgs);
@@ -957,12 +964,12 @@ uint32_t Open(const std::string& mod, const OpenSpec& s, std::string* reason) {
             *reason = "unsupported-url";
             return 0;
         }
-        // The selected files of every open torrent together must fit [Media] TorrentCacheMB, and this one the disk.
-        double sum = f->size;
+        // Every file any open torrent has ever selected (deselecting keeps the data on disk), plus this one,
+        // must fit [Media] TorrentCacheMB, and this one the disk.
+        double sum = 0;
         for (const auto& [id, o] : g_torrents)
-            if (id != t->id && o.selected >= 0)
-                for (const pipe::BtFile& x : o.files)
-                    if (x.index == o.selected) sum += x.size;
+            for (const pipe::BtFile& x : o.files)
+                if (o.touched.count(x.index) || (id == t->id && x.index == s.file)) sum += x.size;
         double freeBytes = 0;
         const bool diskKnown = FreeBytes(g_instanceDir.empty() ? CacheRoot() : g_instanceDir, &freeBytes);
         if (sum > static_cast<double>(g_cfg.torrentCacheMB) * 1048576.0 || (diskKnown && f->size > freeBytes)) {
@@ -975,6 +982,7 @@ uint32_t Open(const std::string& mod, const OpenSpec& s, std::string* reason) {
     }
     if (!HelperUsable(reason)) return 0;
     p->id = g_nextPlayer++;
+    PublishIdCeiling();
     p->mod = mod;
     p->paused = s.paused;
     p->mute = s.mute;
@@ -990,6 +998,7 @@ uint32_t Open(const std::string& mod, const OpenSpec& s, std::string* reason) {
         *reason = "helper";
         return 0;
     }
+    if (t) t->touched.insert(s.file);
     if (t && t->selected != s.file) {
         t->selected = s.file;
         pipe::BtSelectCmd sel;

@@ -551,6 +551,7 @@ void* g_lastMgr = nullptr;  // the input device manager the slot was last called
 bool g_mouseClip = true, g_mouseProbe = false;
 bool g_mouseWasCapturing = false, g_mouseClipped = false;  // main thread only, like the slot call
 uint64_t g_mouseSlotTick = 0;                               // GetTickCount64() of the last slot call
+bool g_exitPending = false;  // a pointer exit while unfocused: its warp and rebase wait for the next slot call
 
 bool FeMouseAlive() { return *reinterpret_cast<volatile uint32_t*>(kMouseEntityList) != 0; }
 
@@ -611,6 +612,10 @@ int __stdcall MouseSlot(void* self, int x, int y) {
         g_mouseSlotTick = GetTickCount64();
         ApplyMouseClip();
         return 0;
+    }
+    if (g_exitPending) {  // the game is foreground again: the zero-delta exit the focus loss put off
+        int cx = 0, cy = 0;
+        melange::render::PointerExit(&cx, &cy);
     }
     if (!g_mouseFixOn) return g_mouseOrig(self, x, y);
     const bool capturing = melange::overlay::Capturing();
@@ -706,12 +711,15 @@ bool InstallWarpHook() {
 
 // Pointer-mode exit (Critique I1): the cursor goes back to where 0x510f10 warps it (the window rect's centre) through the
 // real SetCursorPos, and the device's last position becomes that centre, before the warp and the mouse messages come
-// back. The next WM_MOUSEMOVE then has no delta: no camera or aim snap.
+// back. The next WM_MOUSEMOVE then has no delta: no camera or aim snap. An exit while another application has focus
+// (alt-tab) only releases the clip and never moves the user's cursor: the warp and the rebase wait for the next slot
+// call, which the game makes only once it is foreground again.
 bool PointerExit(int* centreX, int* centreY) {
     ReleaseMouseClip();
     HWND hwnd = static_cast<HWND>(melange::events::GameWindow());
+    g_exitPending = hwnd && GetForegroundWindow() != hwnd;
     RECT wr;
-    if (!hwnd || !GetWindowRect(hwnd, &wr)) return false;
+    if (g_exitPending || !hwnd || !GetWindowRect(hwnd, &wr)) return false;
     POINT c{(wr.left + wr.right) / 2, (wr.top + wr.bottom) / 2};
     if (g_origSetCursorPos)
         g_origSetCursorPos(c.x, c.y);

@@ -203,6 +203,11 @@ void TestPeer() {
     Expect(fake_peer::ChannelOf("peera") == ch3, "a failed reload keeps the channel");
     ExpectEq(Eval("peera", "return tostring(CH) .. ' ' .. tostring(CH:send('5', {}))"), "peer channel (open) true",
              "the running generation still owns it");
+    fake_peer::Deliver(ch3, 12, Bytes(Table({{Str("x"), Int(2)}})), true, 3.0);
+    fake_peer::PeerUp(ch3, 13, true);
+    Frames(1);
+    ExpectEq(Eval("peera", "return #GOT .. ':' .. GOT[#GOT].from .. ' ' .. tostring(UPS[#UPS])"), "1:12 13:true",
+             "after a failed reload the running generation still hears ch:on and ch:onPeer");
 
     // close
     ExpectEq(Eval("peera", "return tostring(CH:close())"), "true", "close()");

@@ -31,6 +31,7 @@ struct Chan {
     uint32_t serial = 0;      // the owning generation
     uint32_t prevSerial = 0;  // the generation it was taken over from, while that reload is in flight
     std::vector<uint32_t> on, onPeer;
+    std::vector<uint32_t> prevOn, prevOnPeer;  // the taken-over generation's, given back if the reload fails
 };
 std::map<std::string, Chan> g_chans;  // by mod id
 
@@ -251,9 +252,11 @@ int PeerOpen(lua_State* L) {
     auto it = g_chans.find(m->id);
     if (it != g_chans.end() && it->second.serial == g->serial) return NilFail(L, "already-open");
     if (it != g_chans.end() && it->second.version == version) {
-        // A reload: take the channel over. The old generation's callbacks die with it.
+        // A reload: take the channel over. The old generation's callbacks die with it, unless the reload fails.
         it->second.prevSerial = it->second.serial;
         it->second.serial = g->serial;
+        it->second.prevOn = std::move(it->second.on);
+        it->second.prevOnPeer = std::move(it->second.onPeer);
         it->second.on.clear();
         it->second.onPeer.clear();
     } else {
@@ -280,6 +283,10 @@ int PeerOpen(lua_State* L) {
         if (c->second.prevSerial && mod->gen && mod->gen->serial == c->second.prevSerial) {
             c->second.serial = c->second.prevSerial;  // the reload failed: the running generation keeps its channel
             c->second.prevSerial = 0;
+            c->second.on = std::move(c->second.prevOn);  // and its ch:on / ch:onPeer callbacks
+            c->second.onPeer = std::move(c->second.prevOnPeer);
+            c->second.prevOn.clear();
+            c->second.prevOnPeer.clear();
             return;
         }
         peerbus::Close(bus);

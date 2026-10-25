@@ -573,6 +573,25 @@ void TestCore() {
     Expect(a.core.Stats().dropRate - dropBefore >= 70, "a flood is dropped past the receive budget");
     a.core.TakeDeliveries();
 
+    // Whole messages are rate-limited: six 7 KB pages at once are admitted or refused whole, so the refused ones
+    // hold no reassembly slot and the next pages (within the 5 s partial timeout) still get through.
+    w::Value pageTab = Tab();
+    for (int i = 0; i < 7; ++i) pageTab.t.emplace_back(Int(i), Str(std::string(1000, static_cast<char>('a' + i))));
+    const std::vector<uint8_t> page = Enc(pageTab);
+    auto pages = [&](uint16_t seq0, int n) {
+        std::vector<std::vector<uint8_t>> out;
+        for (int k = 0; k < n; ++k)
+            for (auto& fr : w::EncodeMessage(b.core.Key(), "holo", static_cast<uint16_t>(seq0 + k), true, page)) out.push_back(fr);
+        return out;
+    };
+    net.Run(2000);
+    for (auto& fr : pages(3000, 6)) a.core.OnPacket(200, fr.data(), fr.size(), net.t);
+    const size_t burst = a.core.TakeDeliveries().size();
+    Expect(burst >= 2 && burst < 6, "a 42 KB burst: whole pages admitted (" + std::to_string(burst) + ")");
+    net.Run(2000);
+    for (auto& fr : pages(3100, 2)) a.core.OnPacket(200, fr.data(), fr.size(), net.t);
+    Expect(a.core.TakeDeliveries().size() == 2, "the refused pages left no partial behind: the next two arrive");
+
     // Dropped before delivery: a non-member (before decode), another lobby key, a mod with no channel, a bad value.
     const uint64_t nonMember = a.core.Stats().dropNonMember;
     auto f = w::EncodeMessage(a.core.Key(), "holo", 1, true, hi);
@@ -608,6 +627,13 @@ void TestCore() {
     Expect(!a.core.Clock(200, &cv) && a.core.Stats().stalls == 1, "a 2 s frame drops the clock samples");
     net.Run(1500);
     Expect(a.core.Clock(200, &cv) && std::fabs(cv.offsetMs - 1234.5) < 20, "and measures again right away");
+
+    // The backlog a stall held in Steam is legitimate: six pages drained on the first frame after a 4 s stall arrive.
+    for (auto& fr : pages(3200, 6)) net.inflight.push_back({net.t, 200, 100, fr});
+    a.got.clear();
+    net.Step(4000);
+    Expect(a.got.size() == 6 && a.core.Stats().stalls == 2, "a stall's backlog is let through (" + std::to_string(a.got.size()) + ")");
+    net.Run(1500);
 
     // The lobby changes hands: the key changes, everyone goes down, then comes back under the new key.
     a.changes.clear();
