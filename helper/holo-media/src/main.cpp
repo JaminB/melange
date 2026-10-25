@@ -1,22 +1,41 @@
-// holo-media.exe: the media helper melange.asi starts out of process (docs/media-helper.md).
-// Placeholder from Melange 0.12.0 C0: it parses nothing and plays nothing. C6a replaces it with the real helper
-// (pipe client, mpv software render into the frame section, the hardened mpv and yt-dlp options, Low integrity).
+// holo-media.exe: the media helper melange.asi starts out of process (docs/media-helper.md). It plays one mpv core
+// per player with the software renderer into the player's frame section, resolves YouTube links with yt-dlp, and
+// streams torrent files from the bt::Engine, all driven over the core's pipe. It runs at Low integrity in a job the
+// core owns, and exits when the game does or on `quit`, never because pings stop.
 #include <windows.h>
 
 #include <cstdio>
 #include <cwchar>
 
-#include "bt/bt.h"
+#include "app.h"
+#include "args.h"
 #include "media/media_proto.h"
-#include "media/pipe_codec.h"
-#include "media/shm_logic.h"
+
+namespace holo {
+int RunSelftest(const Args& a);
+}
 
 int wmain(int argc, wchar_t** argv) {
-    for (int i = 1; i < argc; ++i)
-        if (wcscmp(argv[i], L"--version") == 0) {
-            printf("holo-media %s (protocol %d, placeholder)\n", HOLO_MEDIA_VERSION, melange::media::proto::kProto);
-            return 0;
-        }
-    fprintf(stderr, "holo-media: placeholder build, no player\n");
-    return 2;
+    // No crash or missing-file dialogs: a broken helper must die quietly (the core restarts it).
+    SetErrorMode(SEM_FAILCRITICALERRORS | SEM_NOGPFAULTERRORBOX | SEM_NOOPENFILEERRORBOX);
+    // DLLs from system32 and the application folder only; never the current directory or PATH.
+    SetDefaultDllDirectories(LOAD_LIBRARY_SEARCH_DEFAULT_DIRS);
+    SetDllDirectoryW(L"");
+    if (argc == 2 && wcscmp(argv[1], L"--version") == 0) {
+        printf("holo-media %s (protocol %d)\n", HOLO_MEDIA_VERSION, melange::media::proto::kProto);
+        return 0;
+    }
+    holo::Args args;
+    std::string why;
+    if (!holo::ParseArgs(argc, argv, &args, &why)) {
+        fprintf(stderr, "holo-media: %s\n", why.c_str());
+        return 2;
+    }
+    if (args.selftest) return holo::RunSelftest(args);
+    holo::App app(args);
+    const int code = app.Run();
+    // Every player, the engine and the pipe are shut down by now; end without running library destructors, which could
+    // wait on a thread a broken decoder left behind.
+    TerminateProcess(GetCurrentProcess(), static_cast<UINT>(code));
+    return code;
 }

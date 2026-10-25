@@ -35,7 +35,7 @@ target_compile_definitions(holo-media PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX _CRT_
     HOLO_MEDIA_VERSION="${PROJECT_VERSION}")
 target_compile_options(holo-media PRIVATE /W4 /utf-8 /permissive- /Zi /EHsc)
 target_link_options(holo-media PRIVATE /DEBUG /OPT:REF /OPT:ICF)
-target_link_libraries(holo-media PRIVATE advapi32 userenv shell32 ws2_32 bcrypt)
+target_link_libraries(holo-media PRIVATE advapi32 userenv shell32 ws2_32 bcrypt crypt32)
 if(HOLO_MPV_DIR)
     target_include_directories(holo-media PRIVATE ${HOLO_MPV_DIR}/include)
     target_compile_definitions(holo-media PRIVATE HOLO_HAVE_MPV=1)
@@ -50,3 +50,18 @@ endif()
 add_executable(holo_media_shared_test tests/shared_headers_test.cpp)
 target_include_directories(holo_media_shared_test PRIVATE ${MELANGE_SRC})
 target_compile_options(holo_media_shared_test PRIVATE /W4 /utf-8 /permissive- /EHsc)
+
+# The helper's pure parts (command line, hardened options, frame fit, yt-dlp JSON, resolve mapping): no libmpv needed.
+add_executable(holo_media_logic_test tests/helper_logic_test.cpp)
+target_include_directories(holo_media_logic_test PRIVATE src ${MELANGE_SRC})
+target_compile_definitions(holo_media_logic_test PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX UNICODE _UNICODE)
+target_compile_options(holo_media_logic_test PRIVATE /W4 /utf-8 /permissive- /EHsc)
+target_link_libraries(holo_media_logic_test PRIVATE shell32)
+
+# A fake core that runs holo-media.exe at Low integrity over a Low-labelled pipe and section (local only: it plays
+# media and, with --online, fetches a YouTube video). See the header of tests/lowil_harness.cpp.
+add_executable(holo_media_lowil_test tests/lowil_harness.cpp src/sandbox.cpp src/log.cpp)
+target_include_directories(holo_media_lowil_test PRIVATE src ${MELANGE_SRC})
+target_compile_definitions(holo_media_lowil_test PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX UNICODE _UNICODE)
+target_compile_options(holo_media_lowil_test PRIVATE /W4 /utf-8 /permissive- /EHsc)
+target_link_libraries(holo_media_lowil_test PRIVATE advapi32 shell32 ole32 crypt32)
