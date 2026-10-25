@@ -8,16 +8,21 @@
 #include <map>
 #include <memory>
 
+#include <windows.h>
+
 #include "audio/attenuation.h"
 #include "audio/clips.h"
 #include "audio/mixer.h"
+#include "audio/music_gate.h"
 #include "audio/voicebook.h"
 #include "core/events.h"
 #include "core/log.h"
 #include "core/module.h"
 #include "melange/jlog.h"
 #include "melange/render.h"
+#include "media/config_keys.h"
 #include "melange/sim.h"
+#include "music/fmod_mute.h"
 
 namespace melange::audio {
 namespace {
@@ -33,6 +38,20 @@ bool g_wasInMatch = false;
 Mixer* g_mixer = nullptr;
 VoiceBook g_book;
 std::map<const void*, ClipCache> g_clips;
+
+MusicGate g_music;
+bool g_musicWas = false;  // the effective request last logged
+
+double NowSec() {
+    static const double freq = [] {
+        LARGE_INTEGER f;
+        QueryPerformanceFrequency(&f);
+        return static_cast<double>(f.QuadPart);
+    }();
+    LARGE_INTEGER t;
+    QueryPerformanceCounter(&t);
+    return static_cast<double>(t.QuadPart) / freq;
+}
 
 bool g_failed = false;
 uint64_t g_failedAt = 0;
@@ -82,8 +101,21 @@ void StopEverything(const char* why) {
     }
 }
 
+// Per frame: the fade (the FMOD side reads the same level from its update hook), and the music submix.
+void MusicFrame() {
+    fmodmute::OnFrame();
+    g_music.Step(NowSec());
+    if (g_mixer && g_mixer->Ready()) g_mixer->SetMusicGain(g_music.Level());
+    if (g_music.Wanted() != g_musicWas) {
+        g_musicWas = g_music.Wanted();
+        LOG_INFO("[audio] game music %s", g_musicWas ? "silenced by a mod" : "restored");
+        jlog::Rec("audio", jlog::Level::Info, "music_suppress").Bool("on", g_musicWas).Bool("fmod", fmodmute::Live());
+    }
+}
+
 void OnFrame() {
     if (!g_installed) return;
+    MusicFrame();
     // Offline matches do not fire MatchEnd, but their match VM goes away; online ones do both, which is harmless.
     const bool inMatch = sim::InMatch();
     if (g_wasInMatch && !inMatch) StopEverything("the match ended");
@@ -123,6 +155,7 @@ public:
         g_near = std::max(0.0f, Float("Near", 150.0f));
         g_far = Float("Far", 1500.0f);
         g_installed = true;
+        fmodmute::Install();
         // XAudio2 is not touched until a mod asks for a sound (or checks wum.audio.ready()).
         events::Subscribe(events::Event::Frame, [] { OnFrame(); });
         events::Subscribe(events::Event::MatchEnd, [] { StopEverything("the match ended"); });
@@ -187,7 +220,8 @@ uint32_t Play(const void* owner, uint32_t clipId, const PlayOpts& opts, std::str
         if (why) *why = "too many voices";
         return 0;
     }
-    if (!g_mixer->Start(id, clip, level, opts.pitch, opts.loop, why)) {
+    if (opts.music) g_mixer->SetMusicGain(g_music.Level());
+    if (!g_mixer->Start(id, clip, level, opts.pitch, opts.loop, why, opts.music)) {
         g_book.Remove(id);
         return 0;
     }
@@ -202,7 +236,27 @@ bool Stop(const void* owner, uint32_t voice) {
 size_t StopAll(const void* owner) { return StopVoices(g_book.OwnedBy(owner)); }
 
 void Release(const void* owner) {
+    g_music.Release(owner);
     StopAll(owner);
     g_clips.erase(owner);
+}
+
+bool MusicAvailable() { return g_installed && fmodmute::Live(); }
+
+const char* MusicSuppress(const void* owner, bool on, float fade) {
+    if (!media::cfg::AllowMusicSuppress()) return "disabled";
+    if (!g_installed || fmodmute::Failed()) return "unavailable";
+    g_music.Set(owner, on, fade);
+    return nullptr;
+}
+
+void MusicState(const void* owner, bool* effective, bool* mine) {
+    if (effective) *effective = g_music.Wanted();
+    if (mine) *mine = g_music.Has(owner);
+}
+
+float MusicLevel() {
+    g_music.Step(NowSec());
+    return g_music.Level();
 }
 }  // namespace melange::audio

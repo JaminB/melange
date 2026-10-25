@@ -168,6 +168,14 @@ struct GameState {
     int turn = 0;
     int team = -1;
     uint32_t tick = 0;
+    // Melange 0.12: wum.game.turn() beyond index/team, and wum.game.ui() (filled by sandbox_module.cpp each frame).
+    int worm = -1;
+    bool ai = false, mine = false;
+    const char* phase = "none";  // "intro" | "play" | "retreat" | "settle" | "none"
+    struct Ui {
+        bool valid = false;  // false on an unrecognised build: wum.game.ui() is nil
+        bool weaponPanel = false, pause = false, readyIntro = false, feCursor = false, attract = false;
+    } ui;
 };
 GameState& Game();
 
