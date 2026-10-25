@@ -1,6 +1,6 @@
 # Multiplayer fixes
 
-Melange fixes a set of bugs in Worms Ultimate Mayhem's online play: freezes, matches that end with "This session is no longer available", and crashes. Each fix runs on your own machine and needs nothing from the other players: none of them changes the format of what the game sends, and none of them checks whether the other players have Melange. So a fix only covers a bug that starts on a machine running Melange; a player without Melange can still run into the bug on their side. Whether a match between Melange and non-Melange players stays in sync with every fix on is not documented; Melange's [desync detection](wormsign.md#desync-detection) only compares with players on the same Melange version. All fixes are on by default unless a section below says otherwise, and they work with build #1077 of the game (the Steam and GOG releases) only. To turn one off, set its key to `0` in `Melange.ini`, in the section named below, and restart the game.
+Melange fixes a set of bugs in Worms Ultimate Mayhem's online play: freezes, matches that end with "This session is no longer available", and crashes. Each fix runs on your own machine, and none of them changes the format of what the game sends. All but one need nothing from the other players and never check whether they have Melange: such a fix only covers a bug that starts on a machine running Melange, and a player without Melange can still run into the bug on their side. The one exception is the [oil drum fix](#desync-after-an-oil-drum-explodes-a-tick-apart), which changes the simulation itself and therefore runs only when every player in the lobby has it; that agreement goes through the Steam lobby before the match starts, as described in its section. Whether a match between Melange and non-Melange players stays in sync with every fix on is not documented; Melange's [desync detection](wormsign.md#desync-detection) only compares with players on the same Melange version. All fixes are on by default unless a section below says otherwise, and they work with build #1077 of the game (the Steam and GOG releases) only. To turn one off, set its key to `0` in `Melange.ini`, in the section named below, and restart the game.
 
 ## Freezes after a lost packet
 
@@ -88,7 +88,17 @@ Melange fixes a set of bugs in Worms Ultimate Mayhem's online play: freezes, mat
 
 **What Melange does:** during an online match, it rounds the drum's fuse down to the start of the tick it is on, and puts the drum's own timer back on the tick grid the way the game already does for mines. The drum then explodes at the same tick on every machine (three ticks after it is lit). Offline, the drum behaves as before.
 
-**Switch:** `[NetSession] FixDrumFuse=1`
+**Who must have it:** unlike the other fixes, this one changes the simulation, so a machine that runs it against one that does not would itself cause a desync (its drum explodes a tick earlier than theirs). It therefore runs only when every machine in the match runs it, and that is agreed before the match starts:
+
+- Each Melange player publishes the sim fixes it has on in its lobby member data (`mlg.fix`, next to the content identity the [handshake](spice.md) already publishes). A player without Melange, or on Melange 0.11.1 or earlier, publishes nothing.
+- The lobby owner keeps one lobby value (`mlg.fix.on`) naming the fixes every member, itself included, has published, tagged with its own Steam id. It rewrites that value whenever a member joins, leaves or changes their data, and removes it when the members no longer all agree.
+- When the match leaves the lobby (before anything is simulated), every machine reads that one value once and keeps the decision for the whole match: the fix is on only if the value names it and was written by the lobby's current owner. A value left behind by an earlier owner never counts, and a lobby change during the match changes nothing until the next one.
+
+So with a player who lacks the fix (no Melange, an older Melange, or `FixDrumFuse=0`) the fix is off on every machine for that match, and the match behaves as without Melange. `Melange.log` says which: `FixDrumFuse: on for match N (every player in the lobby runs it)`, or `FixDrumFuse: off for match N ...` with who lacks it. Everyone deciding alike relies on the Steam lobby data having reached every member when the match starts, which it has within a moment of a change; the same holds for the content handshake.
+
+Match recordings list the fixes that ran in their header (`fixes`), and a recording that ran one is refused for [replay](wormsign.md#replays), since a replay runs offline, without it.
+
+**Switch:** `[NetSession] FixDrumFuse=1` (turning it off also turns it off for everyone you play with, that match)
 
 ## Crash joining a lobby on a map you don't have
 

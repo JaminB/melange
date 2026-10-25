@@ -403,8 +403,23 @@ void Detector::FinishComps(Peer& p) {
     Report& r = p.rep;
     Divergence& d = r.div;
     const bool modsOnly = d.oursEngine == d.theirsEngine && d.oursMods != d.theirsMods;
-    // A mods-only mismatch is judged by the contributors: without the peer's, it is not confirmed.
-    if (modsOnly && !contribs_.empty() && r.contribListsMatch && !p.haveComps) {
+    // A mods-only mismatch is judged by the contributors, and only while the lists match. The peer's HELLO can name
+    // other contributors between the mismatch and here (a later HELLO turns the mods compare off but leaves the pending
+    // divergence; one that lands before Start records the lists as differing): nothing can judge it then, so it is
+    // dropped rather than reported on stale lists.
+    if (modsOnly && (!r.contribListsMatch || !p.cmp.CompareMods())) {
+        char b[300];
+        snprintf(b, sizeof b, "tick %u: the mods hash differs from %s, but the contributor lists changed before it was "
+                 "confirmed: not a desync; the mods hash is no longer compared with %s this match (the engine hash still is)",
+                 d.tick, p.info.name.c_str(), p.info.name.c_str());
+        env_.Note(true, b);
+        char n[160];
+        snprintf(n, sizeof n, "mods not compared: contributor lists changed before a mismatch at tick %u was confirmed", d.tick);
+        DropMods(p, n);
+        return;
+    }
+    // Without the peer's contributor hashes, it is not confirmed.
+    if (modsOnly && !contribs_.empty() && !p.haveComps) {
         Unconfirmed(p);
         return;
     }

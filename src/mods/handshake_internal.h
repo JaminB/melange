@@ -98,6 +98,24 @@ std::string BuildMlgSim(const std::string& ourHash16, bool weAreVanilla, const s
 // May a sim mod run this match? Offline/local: always. Online: only if the lobby's "mlg.sim" is our hash16.
 bool GateAllowsSim(bool online, const std::string& ourHash16, const std::string& lobbySim);
 
+// Sim fixes that must run on every machine of a match or on none (NetSession's FixDrumFuse changes when an oil drum
+// explodes). Each Melange member publishes "mlg.fix" = "1;<names>": the fixes it runs, sorted and comma separated,
+// "1;" when it runs none. A member without the key is vanilla or a Melange before 0.11.2 and runs none. The lobby
+// owner publishes "mlg.fix.on" = "1;<owner steam id>;<names>": the fixes its own value and every member's name; it
+// deletes the key when there are none. A machine runs a fix in a match only when the lobby's value names it and was
+// written by the lobby's current owner, read once when the match starts: one value for everyone, so every machine
+// decides alike, and a value left behind by an earlier owner (one that has since left, or an older Melange that
+// never rewrites it) never counts.
+std::string BuildFixValue(std::vector<std::string> fixes);
+// False for a missing or malformed value (no key, or a future protocol: the member runs none); *fixes gets the names.
+bool ParseFixValue(const std::string& value, std::vector<std::string>* fixes);
+// The fixes named by `ours` and by every value in `members` (one per other member, "" for one without the key).
+std::vector<std::string> AgreedFixes(const std::string& ours, const std::vector<std::string>& members);
+std::string BuildFixOnValue(uint64_t owner, const std::vector<std::string>& agreed);  // "" when nothing is agreed
+bool ParseFixOnValue(const std::string& value, uint64_t* owner, std::vector<std::string>* fixes);
+// The lobby's "mlg.fix.on" names `fix` and was written by `currentOwner` (0: no owner known, never agreed).
+bool FixAgreed(const std::string& lobbyFixOn, uint64_t currentOwner, const std::string& fix);
+
 // Clone keys. "mlg.wpn" (member) = "1;<hash16 of the clone lines, text lines and ExtraPerExplosion>;<clone count>", ""
 // when there are neither clones nor renames (a rename-only peer still has weapon content to agree on).
 // extraPerExplosion defaults to 8, the ini default, for callers that don't care.

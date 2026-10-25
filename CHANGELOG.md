@@ -12,6 +12,13 @@
   an online match Melange snaps the fuse stamp down to the tick grid as it is written, and re-aligns the drum's own
   update task to the grid the way a mine's already is, so the drum explodes exactly three ticks after its grid stamp
   on every machine. Offline the engine is left alone. `[NetSession] FixDrumFuse=1`.
+  The fix changes the sim, so it runs only when every machine in the match runs it: each Melange player publishes the
+  sim fixes it has on in its lobby member data (`mlg.fix`), the lobby owner writes the set every member shares into
+  the lobby data (`mlg.fix.on`, with its own id), and each machine reads that one value once, when the match leaves
+  the lobby, and keeps the decision for the match. A player without Melange, on Melange 0.11.1 or earlier, or with
+  `FixDrumFuse=0` turns the fix off for everyone in that match (logged as `FixDrumFuse: off for this match` with who
+  lacks it); a value left by an earlier lobby owner never counts. Recordings list the fixes that ran in their `HEAD`
+  (`fixes`), and a recording that ran one is refused for replay, which runs offline without it.
 - Fixed: Wormsign reported a false desync of a mod's environment digest (`mod.<id>.env`) at the tick of the mod's
   first state change, against every player whose machine was slower. A contributor over 20 µs at the 95th percentile
   was demoted to every 10 ticks, with its last hash folded into the mods hash in between; demotion is decided from one

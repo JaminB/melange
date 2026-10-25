@@ -22,8 +22,9 @@ of the match setup. A replay plays the match again with those inputs and compare
 5. The panel counts the ticks compared and matched. At the first tick that differs it shows "Diverged at tick N" and
    which parts of the state differ (*diff*). The replay keeps playing so you can watch what happens next.
 
-Arming is refused while you are in a lobby or online, during a match, for a recording of an online match, for a
-recording made with another game build, and for one made with different mod content (unless
+Arming is refused while you are in a lobby or online, during a match, for a recording of an online match (or one
+that ran an agreed online sim fix such as `FixDrumFuse`, which its `HEAD` lists under `fixes`: a replay runs offline,
+without them), for a recording made with another game build, and for one made with different mod content (unless
 `[Wormsign] ReplayAnyContent=1`). A recording whose hash version differs from this build's plays without being
 compared.
 

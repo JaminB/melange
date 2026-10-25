@@ -231,6 +231,71 @@ bool GateAllowsSim(bool online, const std::string& ourHash16, const std::string&
     return !ourHash16.empty() && ourHash16 != "v" && lobbySim == ourHash16;
 }
 
+namespace {
+// A fix name is [a-z0-9.-]: anything else (and "") is dropped, so a value is always one line of plain names.
+bool FixNameOk(const std::string& n) {
+    if (n.empty()) return false;
+    for (char c : n)
+        if (!((c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '.' || c == '-')) return false;
+    return true;
+}
+std::vector<std::string> CanonicalFixes(std::vector<std::string> fixes) {
+    std::erase_if(fixes, [](const std::string& n) { return !FixNameOk(n); });
+    std::sort(fixes.begin(), fixes.end());
+    fixes.erase(std::unique(fixes.begin(), fixes.end()), fixes.end());
+    return fixes;
+}
+std::string JoinFixes(const std::vector<std::string>& fixes) {
+    std::string s;
+    for (const std::string& n : fixes) s += (s.empty() ? "" : ",") + n;
+    return s;
+}
+}  // namespace
+
+std::string BuildFixValue(std::vector<std::string> fixes) { return "1;" + JoinFixes(CanonicalFixes(std::move(fixes))); }
+
+bool ParseFixValue(const std::string& value, std::vector<std::string>* fixes) {
+    const std::vector<std::string> parts = Split(value, ';');
+    if (parts.size() != 2 || parts[0] != "1") return false;
+    if (fixes) *fixes = CanonicalFixes(Split(parts[1], ','));
+    return true;
+}
+
+std::vector<std::string> AgreedFixes(const std::string& ours, const std::vector<std::string>& members) {
+    std::vector<std::string> agreed;
+    if (!ParseFixValue(ours, &agreed)) return {};
+    for (const std::string& m : members) {
+        std::vector<std::string> theirs;
+        if (!ParseFixValue(m, &theirs)) return {};
+        std::erase_if(agreed, [&](const std::string& n) { return std::find(theirs.begin(), theirs.end(), n) == theirs.end(); });
+    }
+    return agreed;
+}
+
+std::string BuildFixOnValue(uint64_t owner, const std::vector<std::string>& agreed) {
+    const std::vector<std::string> names = CanonicalFixes(agreed);
+    if (names.empty() || !owner) return "";
+    return "1;" + std::to_string(owner) + ";" + JoinFixes(names);
+}
+
+bool ParseFixOnValue(const std::string& value, uint64_t* owner, std::vector<std::string>* fixes) {
+    const std::vector<std::string> parts = Split(value, ';');
+    if (parts.size() != 3 || parts[0] != "1" || parts[1].empty()) return false;
+    char* end = nullptr;
+    const unsigned long long id = strtoull(parts[1].c_str(), &end, 10);
+    if (!end || *end != '\0' || !id) return false;
+    if (owner) *owner = id;
+    if (fixes) *fixes = CanonicalFixes(Split(parts[2], ','));
+    return true;
+}
+
+bool FixAgreed(const std::string& lobbyFixOn, uint64_t currentOwner, const std::string& fix) {
+    uint64_t owner = 0;
+    std::vector<std::string> fixes;
+    if (!currentOwner || !ParseFixOnValue(lobbyFixOn, &owner, &fixes) || owner != currentOwner) return false;
+    return std::find(fixes.begin(), fixes.end(), fix) != fixes.end();
+}
+
 std::string CloneHash16(const std::vector<CloneSpec>& clones, int extraPerExplosion, const std::vector<TextSpec>& texts) {
     if (clones.empty() && texts.empty()) return "";
     std::string text;

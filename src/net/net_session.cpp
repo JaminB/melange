@@ -18,6 +18,7 @@
 #include "net/net.h"
 #include "melange/bus.h"
 #include "melange/jlog.h"
+#include "mods/simfix.h"
 
 namespace {
 namespace A = melange::wum::addr;
@@ -72,8 +73,15 @@ void SetCameraHoldPatch(bool on);
 bool g_panelSelectPatched = false;
 void SetPanelSelectPatch(bool on);
 void ResetMatchTrace();
+void DecideSimFixes();
+void ClearSimFixes();
 
 int g_matchNumber = 0;
+// FixDrumFuse changes the sim (when a drum explodes), so it runs only when every machine in the match runs it: decided
+// once per match from the lobby's agreed list (mods/simfix.h) when the match leaves the lobby, before the sim starts,
+// and kept until the match ends. False offline and whenever the lobby has not agreed.
+bool g_drumFuseAgreed = false;
+bool g_simFixesDecided = false;
 
 // A NetThrottle pause taken late in a match survives into the lobby (WaitingConnections turns autopause
 // off without unpausing), so the next match's task manager never runs. Mirrors AbortGame: release the
@@ -168,14 +176,17 @@ void OnStateChange(uintptr_t from, uintptr_t to) {
             DumpState("back in lobby after match");
             ResetStaleMatchState("return-to-lobby", true);
         }
+        ClearSimFixes();
         melange::events::Fire(Event::LobbyEnter);
     } else if (to == S::WaitingConnections || (to == S::WaitingLoad && from != S::WaitingConnections)) {
         // WaitingConnections can finish within one frame (seen on the joiner), so the poll may go straight to WaitingLoad.
         ++g_matchNumber;
         DumpState("match starting");
         ResetStaleMatchState("match-start", false);
+        DecideSimFixes();
     } else if (to == S::InGame) {
         LOG_INFO("[net] ===== match %d in progress =====", g_matchNumber);
+        if (!g_simFixesDecided) DecideSimFixes();  // a route that skipped the loading states (not seen; a safety net)
         SetCameraHoldPatch(true);
         SetPanelSelectPatch(true);
         ResetMatchTrace();
@@ -186,6 +197,7 @@ void OnStateChange(uintptr_t from, uintptr_t to) {
         melange::events::Fire(Event::MatchEnd);
     } else if (to == 0 && from != 0) {
         DumpState("net session closed");
+        ClearSimFixes();
         melange::events::Fire(Event::LobbyLeave);
     }
     if (to != S::InGame) {
@@ -718,11 +730,37 @@ constexpr uintptr_t kDrumExplodeCheck = 0x5d227b;   // cmp byte [esi+0x68],0 onc
 
 uint32_t TickOf(uint32_t t) { return (t + 19) / 20; }
 
-// Snaps the stamp register down to the tick grid (during a net match) just before the engine stores it into +0x84, and
-// logs it. `reg` is edx on the Explosion path and eax on the Damage.Impulse path; neither is reused after the store.
+// The agreement (see g_drumFuseAgreed): read once per match, as the match leaves the lobby. A lobby member without the
+// fix, on an older Melange or without Melange, or a lobby whose owner has not written the agreed list, turns it off on
+// every machine for that match, and a lobby data change after this point changes nothing until the next match.
+void DecideSimFixes() {
+    namespace simfix = melange::handshake::simfix;
+    g_simFixesDecided = true;
+    g_drumFuseAgreed = g_fix.alignDrumFuse && simfix::Agreed(simfix::kDrumFuse);
+    simfix::SetActive(g_drumFuseAgreed ? std::vector<std::string>{simfix::kDrumFuse} : std::vector<std::string>{});
+    std::string why;
+    if (g_drumFuseAgreed)
+        LOG_INFO("[fix] FixDrumFuse: on for match %d (every player in the lobby runs it)", g_matchNumber);
+    else if (!g_fix.alignDrumFuse)
+        LOG_INFO("[fix] FixDrumFuse: off for match %d (off in Melange.ini)", g_matchNumber);
+    else
+        LOG_WARN("[fix] FixDrumFuse: off for match %d on every machine, since not every player runs it: %s", g_matchNumber,
+                 (why = simfix::Why(simfix::kDrumFuse)).c_str());
+    melange::jlog::Rec("net", g_drumFuseAgreed || !g_fix.alignDrumFuse ? melange::jlog::Level::Info : melange::jlog::Level::Warn,
+                       "sim fixes decided").Int("match", g_matchNumber).Bool("drumFuse", g_drumFuseAgreed).Str("why", why).Emit();
+}
+void ClearSimFixes() {
+    g_drumFuseAgreed = g_simFixesDecided = false;
+    melange::handshake::simfix::SetActive({});
+}
+bool DrumFuseFixOn() { return g_drumFuseAgreed && InNetMatch(); }
+
+// Snaps the stamp register down to the tick grid (during a net match that agreed to the fix) just before the engine
+// stores it into +0x84, and logs it. `reg` is edx on the Explosion path and eax on the Damage.Impulse path; neither is
+// reused after the store.
 void OnDrumFlag(uintptr_t drum, uint32_t& reg, const char* how) {
     const uint32_t raw = reg;
-    const bool fix = g_fix.alignDrumFuse && InNetMatch() && raw % 20 != 0;
+    const bool fix = DrumFuseFixOn() && raw % 20 != 0;
     if (fix) reg = (raw / 20) * 20;
     LOG_INFO("[net] oil drum %08x about to explode: %s at t=%u (tick %u)%s -> explodes at t=%u (tick %u)",
              static_cast<unsigned>(drum), how, raw, TickOf(raw),
@@ -744,12 +782,12 @@ void OnDrumExplodeCheck(safetyhook::Context& c) {
 }
 
 // Every drum Update, about to return 0x14 (eax). Logs each drum's first run of the match (its task phase) and, with
-// FixDrumFuse during an online match, returns 20 - now % 20 instead when the task is off the grid.
+// FixDrumFuse agreed for this online match, returns 20 - now % 20 instead when the task is off the grid.
 void OnDrumUpdateRet(safetyhook::Context& c) {
     const uintptr_t drum = Read<uint32_t>(c.esp + 0x14);
     const uint32_t now = Read<uint32_t>(c.esp + 0x18);
     const bool net = InNetMatch();
-    const bool fix = g_fix.alignDrumFuse && net && now % 20 != 0;
+    const bool fix = DrumFuseFixOn() && now % 20 != 0;
     if (fix) c.eax = 20 - now % 20;
     auto [it, fresh] = g_drumFirstUpdate.try_emplace(drum, now);
     if (fresh) {
@@ -925,6 +963,8 @@ public:
                      static_cast<unsigned>(kDrumFlagImpulse), static_cast<unsigned>(kDrumExplodeCheck));
             g_fix.alignDrumFuse = false;
         }
+        // Tell the lobby we run it; it runs in a match only once every member says the same (DecideSimFixes).
+        if (g_fix.alignDrumFuse) melange::handshake::simfix::Advertise(melange::handshake::simfix::kDrumFuse);
         if (traceTransport) {
             ok &= Mid(A::SteamConnCtor, &OnConnCtor, "XSteamConnection ctor");
             ok &= Mid(A::SteamConnDtor, &OnConnDtor, "XSteamConnection dtor");

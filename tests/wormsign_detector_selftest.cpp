@@ -1000,11 +1000,108 @@ void Mutation(double seconds) {
 }
 }  // namespace
 
+// A mods-only mismatch found, then the peer's HELLO names other contributors before COMPS confirms it: dropped (not a
+// desync, no bundle, nothing flagged) and the mods hash is no longer compared with that peer. Both orders: the HELLO
+// after Start (the compare is turned off under a pending report whose lists matched) and between the mismatch and
+// Start (the report records the lists as differing).
+void HelloChange() {
+    for (int order = 0; order < 2; ++order) {
+        const char* when = order ? "HELLO before Start" : "HELLO after Start";
+        Link link;
+        Side A;
+        A.id = 76561198000000001ull;
+        A.link = &link;
+        const uint64_t bId = 76561198000000002ull;
+        detect::Detector da(A);
+        da.SetIdentity("0.2.0", "0123456789abcdef");
+        da.SetPeers({{bId, "B", "1"}});
+        const uint64_t key = wire::MatchKey(A.id, 99);
+        const std::vector<wire::ContribName> same = {{"mod.desync-probe.env", 1}, {"mod.sim-sampler.env", 1}};
+        const std::vector<wire::ContribName> other = {{"mod.desync-probe.env", 1}};
+        da.Begin(1, key, same);
+        auto hello = [&](const std::vector<wire::ContribName>& list) {
+            wire::Hello h;
+            h.engineHash = kEngineHashVersion;
+            h.matchKey = key;
+            h.firstTick = 1;
+            h.contribHash = wire::ContribListHash(list);
+            h.seenYou = true;
+            h.melange = "0.2.0";
+            h.content16 = "0123456789abcdef";
+            h.contribs = list;
+            const std::vector<uint8_t> p = wire::Encode(h);
+            da.OnPacket(bId, p.data(), p.size());
+        };
+        hello(same);
+        wire::Hashes hs;
+        hs.matchKey = key;
+        hs.firstTick = 1;
+        for (uint32_t t = 1; t <= 10; ++t) {
+            const TickHash h = Hash(t, 0x77, false, false);
+            A.ring[t] = h;
+            A.contrib[t] = {1ull + t, 2ull + t};
+            da.OnTick(h);
+            hs.present |= 1ull << (t - 1);
+            hs.ticks.push_back({h.engine, t >= 5 ? 0xbadull : h.mods});  // from tick 5 B's mods hash differs, engine equal
+        }
+        A.now = 200;
+        const std::vector<uint8_t> hp = wire::Encode(hs);
+        da.OnPacket(bId, hp.data(), hp.size());
+        if (order == 1) hello(other);
+        da.Pump();  // Start: FLAG, COMPS and DETAIL requests
+        Expect(A.Noted("tick 5 differs from B"), (std::string(when) + ": the mismatch is found at tick 5").c_str());
+        if (order == 0) hello(other);
+        wire::Comps c;
+        c.matchKey = key;
+        c.tick = 5;
+        c.have = true;
+        const TickHash h5 = Hash(5, 0x77, false, false);
+        c.engine = h5.engine;
+        c.mods = 0xbad;
+        memcpy(c.c, h5.c, sizeof c.c);
+        c.contrib = {0xbadull};  // B's one contributor
+        const std::vector<uint8_t> cp = wire::Encode(c);
+        A.now = 300;
+        da.OnPacket(bId, cp.data(), cp.size());
+        da.Pump();
+        Expect(A.diverged.empty() && A.bundles.empty(), (std::string(when) + ": not a desync, no bundle").c_str());
+        uint32_t flagged = 0;
+        Expect(!da.Flagged(&flagged), (std::string(when) + ": nothing flagged").c_str());
+        Expect(A.Noted("contributor lists changed before it was confirmed"), (std::string(when) + ": the log says why").c_str());
+        detect::PeerStatus v[2];
+        const int n = da.Peers(v, 2);
+        Expect(n == 1 && !v[0].modsCompared && strstr(v[0].modsNote, "contributor lists changed") != nullptr &&
+                   v[0].state == detect::PeerState::Exchanging,
+               (std::string(when) + ": the Peers panel says mods are not compared, and why").c_str());
+        // The compare goes on with the engine hash: an engine mismatch later is still a desync.
+        wire::Hashes hs2;
+        hs2.matchKey = key;
+        hs2.firstTick = 11;
+        for (uint32_t t = 11; t <= 20; ++t) {
+            const TickHash h = Hash(t, 0x77, false, false);
+            A.ring[t] = h;
+            A.contrib[t] = {1ull + t, 2ull + t};
+            da.OnTick(h);
+            hs2.present |= 1ull << (t - 11);
+            hs2.ticks.push_back({t >= 15 ? h.engine ^ 0x77 : h.engine, 0xbadull});
+        }
+        A.now = 400;
+        const std::vector<uint8_t> hp2 = wire::Encode(hs2);
+        da.OnPacket(bId, hp2.data(), hp2.size());
+        da.Pump();
+        A.now = 400 + detect::Detector::kCompsWaitMs + 20;
+        da.Pump();
+        Expect(A.diverged.size() == 1 && A.diverged[0].tick == 15, (std::string(when) + ": an engine desync after it is still found").c_str());
+        da.End();
+    }
+}
+
 int main(int argc, char** argv) {
     const double seconds = argc > 1 ? atof(argv[1]) : 10.0;
     Packets();
     Compare();
     Pair();
+    HelloChange();
     EnginePick();
     DiffAndTail();
     Bundle();

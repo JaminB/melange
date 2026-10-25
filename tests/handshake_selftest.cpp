@@ -568,6 +568,60 @@ void GidTests() {
     }
 }
 
+// The agreed sim fixes ("mlg.fix" per member, the owner's "mlg.fix.on"): FixDrumFuse runs in a match only when every
+// machine runs it, decided from one lobby value.
+void FixTests() {
+    using V = std::vector<std::string>;
+    constexpr uint64_t kHost = 76561198000000001ull, kOther = 76561198000000002ull;
+    Expect(BuildFixValue({}) == "1;", "mlg.fix: a Melange with every fix off publishes \"1;\"");
+    Expect(BuildFixValue({"drum"}) == "1;drum", "mlg.fix: one fix");
+    Expect(BuildFixValue({"zeta", "drum", "drum", "", "Bad Name"}) == "1;drum,zeta", "mlg.fix: sorted, deduped, bad names dropped");
+    V f;
+    Expect(ParseFixValue("1;drum", &f) && f == V{"drum"}, "mlg.fix: parses");
+    Expect(ParseFixValue("1;", &f) && f.empty(), "mlg.fix: \"1;\" is a member that runs none");
+    Expect(!ParseFixValue("", &f), "mlg.fix: no key (vanilla, or Melange before 0.11.2) does not parse");
+    Expect(!ParseFixValue("2;drum", &f) && !ParseFixValue("drum", &f), "mlg.fix: another protocol does not parse");
+
+    // The owner's decision over the members' values (ours first, then every other member).
+    Expect(AgreedFixes("1;drum", {"1;drum", "1;drum"}) == V{"drum"}, "agree: every member runs it");
+    Expect(AgreedFixes("1;drum", {}) == V{"drum"}, "agree: alone in the lobby");
+    Expect(AgreedFixes("1;drum", {"1;drum", ""}).empty(), "agree: one peer on an older Melange (no key): nothing agreed");
+    Expect(AgreedFixes("1;drum", {"", "1;drum"}).empty(), "agree: one peer without Melange: nothing agreed");
+    Expect(AgreedFixes("1;drum", {"1;drum", "1;"}).empty(), "agree: one peer with the fix off: nothing agreed");
+    Expect(AgreedFixes("1;", {"1;drum"}).empty(), "agree: the owner has it off: nothing agreed");
+    Expect(AgreedFixes("", {"1;drum"}).empty(), "agree: the owner does not publish ([Handshake] Publish=0): nothing agreed");
+    Expect(AgreedFixes("1;drum,zeta", {"1;drum", "1;drum,zeta"}) == V{"drum"}, "agree: the intersection");
+
+    // The lobby value and the reader's rule.
+    const std::string on = BuildFixOnValue(kHost, {"drum"});
+    Expect(on == "1;76561198000000001;drum", "mlg.fix.on: owner id and names");
+    Expect(BuildFixOnValue(kHost, {}).empty() && BuildFixOnValue(0, {"drum"}).empty(), "mlg.fix.on: nothing agreed, or no owner: no key");
+    uint64_t owner = 0;
+    Expect(ParseFixOnValue(on, &owner, &f) && owner == kHost && f == V{"drum"}, "mlg.fix.on: parses");
+    Expect(!ParseFixOnValue("1;x;drum", &owner, &f) && !ParseFixOnValue("1;0;drum", &owner, &f) && !ParseFixOnValue("", &owner, &f),
+           "mlg.fix.on: a malformed owner or an empty value does not parse");
+    Expect(FixAgreed(on, kHost, "drum"), "agreed: the current owner's value names it");
+    Expect(!FixAgreed(on, kHost, "zeta"), "agreed: not named");
+    Expect(!FixAgreed(on, kOther, "drum"), "agreed: a value left by an earlier owner never counts");
+    Expect(!FixAgreed(on, 0, "drum") && !FixAgreed("", kHost, "drum") && !FixAgreed("off", kHost, "drum"),
+           "agreed: no owner, no key or a malformed value: off");
+
+    // A late joiner (or a spectator without the fix) after the owner wrote the value: the owner's rewrite on the
+    // member change removes the key, so the readers on every machine decide off, together.
+    {
+        V members = {"1;drum"};
+        Expect(!BuildFixOnValue(kHost, AgreedFixes("1;drum", members)).empty(), "late joiner: agreed before they join");
+        members.push_back("");  // Melange 0.11.1: no key
+        Expect(BuildFixOnValue(kHost, AgreedFixes("1;drum", members)).empty(), "late joiner: the owner removes the key");
+        members.back() = "1;";  // Melange 0.11.2 with FixDrumFuse=0
+        Expect(BuildFixOnValue(kHost, AgreedFixes("1;drum", members)).empty(), "late joiner with the fix off: removed too");
+        members.back() = "1;drum";
+        Expect(BuildFixOnValue(kHost, AgreedFixes("1;drum", members)) == on, "late joiner with the fix: agreed again");
+    }
+    // The owner left; the new owner runs an older Melange and never rewrites the key: the stale value is not theirs.
+    Expect(!FixAgreed(on, kOther, "drum"), "owner migration to an older Melange: the old value is ignored");
+}
+
 void WeaponTests(const std::vector<ContentMod>& a) {
     ContentTextTests(a);
     CloneTests(a);
@@ -577,6 +631,7 @@ void WeaponTests(const std::vector<ContentMod>& a) {
     PolicyTests();
     VanillaTests();
     GidTests();
+    FixTests();
 }
 }  // namespace
 
