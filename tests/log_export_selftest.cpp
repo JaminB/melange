@@ -178,6 +178,32 @@ std::string FirstHash(const std::string& text) {
 }
 
 // Where the game writes a minidump (core/dump_paths.h), the same list the export reads dumps from.
+// What a user watched (wum.media) never leaves the machine in an export: links and infohashes become salted tokens.
+void TestMediaRedaction() {
+    const std::string salt = "s1";
+    const std::string in =
+        "a https://www.youtube.com/watch?v=dQw4w9WgXcQ&t=3 b \"url\":\"https://youtu.be/dQw4w9WgXcQ\" c "
+        "music.youtube.com/playlist?list=PL0123456789ab d url=https://m.youtube.com/shorts/aaaaaaaaaaa e "
+        "magnet:?xt=urn:btih:0123456789ABCDEF0123456789ABCDEF01234567&dn=Secret f "
+        "ih=0123456789abcdef0123456789abcdef01234567 g "
+        "sha256 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef h youtube rules, youtube.community i";
+    const std::string out = ex::RedactMedia(in, salt);
+    Expect(out.find("dQw4w9WgXcQ") == std::string::npos && out.find("PL0123456789ab") == std::string::npos &&
+               out.find("aaaaaaaaaaa") == std::string::npos && out.find("Secret") == std::string::npos &&
+               out.find("0123456789abcdef0123456789abcdef01234567 ") == std::string::npos,
+           "RedactMedia: links, ids, magnet names and bare infohashes are gone");
+    Expect(out.find("0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef") != std::string::npos,
+           "RedactMedia: a 64-hex SHA-256 stays");
+    Expect(out.find("youtube rules, youtube.community") != std::string::npos, "RedactMedia: the plain word youtube stays");
+    Expect(out.find("url=media:") != std::string::npos && out.find("\"url\":\"media:") != std::string::npos && out.rfind("a media:", 0) == 0,
+           "RedactMedia: only the link itself is replaced");
+    const std::string ihTok = ex::RedactMedia("0123456789abcdef0123456789abcdef01234567", salt);
+    Expect(ihTok.rfind("media:", 0) == 0 && ihTok.size() == 14 && out.find("ih=" + ihTok) != std::string::npos,
+           "RedactMedia: the same item gives the same token within an export");
+    Expect(ex::RedactMedia("0123456789abcdef0123456789abcdef01234567", "s2") != ihTok, "RedactMedia: another export, another token");
+    Expect(ex::RedactMedia("plain text, no links: 1234", salt) == "plain text, no links: 1234", "RedactMedia: other text untouched");
+}
+
 void TestDumpDirs() {
     namespace dbg = melange::debug;
     auto dirs = dbg::DumpDirs(L"C:\\Games\\WUM\\Melange", L"C:\\Users\\me\\Documents");
@@ -250,7 +276,11 @@ Fixture Build(const std::wstring& tmp) {
     WriteText(fx.fallback + L"\\2026-01-01_11-00-00_pid150\\events.jsonl", "{\"msg\":\"game 150\"}\n", s150 + kHour);
     WriteText(fx.logs + L"\\2027-01-01_00-00-00_pidabc\\events.jsonl", "{}\n", fx.s200 + 9 * kHour);
 
-    WriteText(fx.data + L"\\Melange.log", "INFO started from C:\\Users\\" + fx.user + "\\Desktop\n", fx.s200 + 2 * kHour);
+    WriteText(fx.data + L"\\Melange.log",
+              "INFO started from C:\\Users\\" + fx.user + "\\Desktop\n"
+              "INFO [media] open https://www.youtube.com/watch?v=dQw4w9WgXcQ and "
+              "magnet:?xt=urn:btih:0123456789abcdef0123456789abcdef01234567&dn=Home+Movie\n",
+              fx.s200 + 2 * kHour);
     WriteText(fx.data + L"\\Melange.prev.log", "INFO the run before\n", fx.s100 + kHour);
     WriteText(fx.data + L"\\dumps\\in-window.dmp", "MDMP", fx.s200 + kHour);
     WriteText(fx.data + L"\\dumps\\in-window-full.dmp", "MDMP", fx.s200 + kHour);
@@ -388,6 +418,10 @@ void TestLastGameFromLauncher(const Fixture& fx) {
                    !Contains(z.Read("logs/launcher/launcher.log"), "192.168.1.20"),
                "launcher.log is redacted like the rest");
         Expect(!ContainsCI(z.Read("logs/Melange.log"), fx.user), "Melange.log is redacted");
+        const std::string mlog = z.Read("logs/Melange.log");
+        Expect(!Contains(mlog, "dQw4w9WgXcQ") && !Contains(mlog, "0123456789abcdef0123456789abcdef01234567") &&
+                   !Contains(mlog, "Home+Movie") && Contains(mlog, "[media] open media:"),
+               "Melange.log: YouTube links and magnets are redacted (wum.media)");
     }
     if (fx.computer.size() >= 3)
         Expect(!ContainsCI(events, fx.computer), "the computer name is replaced");  // (by %USERNAME% if it holds it)
@@ -534,6 +568,7 @@ void TestEmpty(const Fixture& fx) {
 int main() {
     const std::wstring tmp = TempDir();
     TestParsers();
+    TestMediaRedaction();
     TestDumpDirs();
     const Fixture fx = Build(tmp);
     TestSessions(fx);
