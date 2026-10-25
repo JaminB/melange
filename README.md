@@ -44,11 +44,14 @@ Good to know:
 - **Plugins that can't load are set aside.** When Melange starts (Melange.exe or the game) and finds a plugin that this version of Melange can never load (its `spice.json` asks for another Melange version, or is broken), it doesn't leave it lying around: a Store plugin is updated to a version that works, or removed if there is none; a local one is moved to `<game>\Mods\.incompatible\`. The Plugins and Mods pages say what happened, until you dismiss it. Only then may Melange.exe contact GitHub without you opening the Store: to look for that update.
 - **Online play:** everyone in a match needs the same gameplay mods. Mods that only change your screen, such as effects and UI, don't matter to other players.
 - **Permissions:** a mod that asks for raw access to the game's memory ("Deep Desert") shows a consent dialog first. Only allow mods you trust.
+- **Video for mods (Melange 0.12):** a plugin such as Holo can play YouTube and torrent videos for a watch party. That needs the **media pack**, a download of about 95 MB (a video player library, a helper program and a JavaScript runtime, all checked against fixed hashes) that is fetched only when you click the plugin's own download button, into `Documents\Melange\media`. A YouTube video contacts YouTube; a torrent contacts its trackers and, while open, uploads to other peers, so they see your IP address. `[Media] AllowDownload=0` in `Melange.ini` blocks every download, `Enabled=0` turns the feature off. See [the media helper](docs/media-helper.md).
 - **Samples:** `dist\Mods\` has example mods, all switched off. Copy one into `<game>\Mods\` to try it (tick *Show local plugins* to see it).
 
 ## Uninstall
 
 Melange.exe's *Settings › Melange › Uninstall* removes Melange and keeps a backup. Or delete `melange.asi`, `Melange.ini` and the `Melange` and `Mods` folders from the game folder yourself. Delete `dinput8.dll` too, unless other `.asi` mods still need it.
+
+The media pack (`Documents\Melange\media`) and the video helper's cache (`AppData\LocalLow\Melange\media-cache`) are not in the game folder. `uninstall.ps1 -Purge` removes them; otherwise delete those folders yourself.
 
 To get the plain game back, *Settings › Restore vanilla* makes the game folder stock Worms Ultimate Mayhem again. It deletes, for good, every file that isn't part of the game: Melange, and also other mods such as Renewation HD, WUMPatch, ReShade, ASI loaders and plugins. The dialog names everything it found before you confirm. Your saves (kept by Steam, outside the game folder), `local.cfg` and the game's own caches and logs stay. Replays move to `Documents\Melange\replays`. If a mod had overwritten game files, Steam verifies the game afterwards (on GOG, verify in GOG Galaxy or reinstall). Melange then closes. The next time you open it, setup starts from the beginning.
 
