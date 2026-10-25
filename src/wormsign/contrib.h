@@ -19,6 +19,7 @@ struct Info {
     char name[64];
     uint32_t version, demoteEvery;
     bool inReplayCompare, demoted, faulted;
+    bool slow;                                 // a full window's p95 went over kDemoteP95Us10 (still hashed every tick unless demoted)
     uint32_t demotedAt, faultedAt;             // ticks
     uint32_t lastP95Us10;                      // p95 of the last full window, 0.1 us units
     uint64_t calls;
@@ -26,7 +27,7 @@ struct Info {
 size_t List(Info* out, size_t max);            // name order; any thread
 size_t Count();
 uint64_t ListHash();                           // FNV over the names and versions, in order: equal lists, equal hash
-std::string Describe(const Info& i);           // "hashed every tick", "hashed every 10 ticks (demoted at ...)", ...
+std::string Describe(const Info& i);           // "hashed every tick", "hashed every tick (slow: p95 ...)", "hashed every 10 ticks (demoted at ...)", ...
 std::string NoteJson();                        // the contributor list with demotions and faults, for NOTE chunks
 
 // Per-contributor hashes of the last kRingTicks ticks, for COMPS and reports.

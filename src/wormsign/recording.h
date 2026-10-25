@@ -13,6 +13,7 @@ struct Recording {
     int format = 0, engineHash = 0;
     bool complete = false, online = false;
     std::string exeBuild, contentHash, melange, contributors;  // contributors: "name@version,..." in name order
+    std::vector<std::string> fixes;                           // HEAD fixes: the agreed online sim fixes that ran
     std::vector<rec::Seed> seeds;
     std::vector<rec::Draw> draws;
     std::vector<rec::Input> inputs;                           // in call order (callT ascending)

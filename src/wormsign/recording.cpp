@@ -80,6 +80,9 @@ bool LoadRecording(const wsr::Reader& r, Recording* out, std::string* err) {
     const json::Value* online = head.Get("online");
     out->online = online && online->IsBool() && online->boolean;
     out->contributors = KeyOf(head.Get("contributors"));
+    if (const json::Value* fx = head.Get("fixes"); fx && fx->IsArray())
+        for (const json::Value& e : fx->items)
+            if (e.IsString() && !e.string.empty()) out->fixes.push_back(e.string);
     if (const json::Value* cl = head.Get("contributors"); cl && cl->IsArray())
         for (const json::Value& e : cl->items)
             out->contribNames.push_back(e.IsString() ? e.string.substr(0, e.string.find('@')) : Str(e, "name"));
@@ -142,6 +145,13 @@ std::string ArmRefusal(const Recording& rec, const ArmEnv& env) {
     if (env.online) return "replays run offline only";
     if (env.inMatch) return "finish or quit the current match first";
     if (rec.online) return "online matches cannot be replayed yet";
+    // An agreed online fix changes the sim (FixDrumFuse: when a drum explodes); a replay runs offline, where none of
+    // them is on, so it could not reproduce the recording.
+    if (!rec.fixes.empty()) {
+        std::string names;
+        for (const std::string& f : rec.fixes) names += (names.empty() ? "" : ", ") + f;
+        return "recorded with online sim fixes (" + names + ") that a replay cannot apply";
+    }
     if (!rec.exeBuild.empty() && rec.exeBuild != env.exeBuild) return "recorded with game build " + rec.exeBuild;
     if (rec.contentHash.substr(0, 16) != env.contentHash.substr(0, 16) && !env.anyContent) {
         auto shortHash = [](const std::string& h) { return h.empty() ? std::string("vanilla") : h.substr(0, 16); };

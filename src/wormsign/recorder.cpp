@@ -23,6 +23,7 @@
 #include "melange/gamestate.h"
 #include "melange/mods.h"
 #include "melange/wormsign.h"
+#include "mods/simfix.h"
 #include "tools/json_mini.h"
 #include "version.h"
 #include "wormsign/capture_internal.h"
@@ -184,6 +185,13 @@ std::string HeadJson() {
         cs.Raw(c.End());
     }
     o.Raw("contributors", cs.End());
+    // The agreed online sim fixes that run this match (NetSession decides them as the match leaves the lobby, before
+    // this): a replay cannot apply them, so the player refuses a recording that lists any.
+    std::vector<std::string> fixes;
+    StartStep("the agreed sim fixes", [&] { fixes = melange::handshake::simfix::Active(); });
+    jsonmini::Arr fx;
+    for (const std::string& f : fixes) fx.Str(f);
+    o.Raw("fixes", fx.End());
     return o.End();
 }
 

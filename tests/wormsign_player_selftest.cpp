@@ -187,6 +187,19 @@ void Recordings() {
     Expect(rec.complete && rec.format == 1 && rec.engineHash == 1 && rec.exeBuild == "1077" && !rec.online,
            "header facts");
     Expect(rec.contributors == "mod.a.env@2,mod.b.env@1", "contributor key sorted, both spellings");
+    Expect(rec.fixes.empty(), "no fixes in the header: none ran");
+    {
+        Build f = b;
+        f.head = R"({"format":1,"engineHash":1,"exeBuild":"1077","melange":"test","online":true,"fixes":["drum",""],)"
+                 R"("contentHash":"","contributors":[],"tickMs":20})";
+        Recording rf;
+        Expect(Load(WriteWsr(f), &rf, &err) && rf.online && rf.fixes.size() == 1 && rf.fixes[0] == "drum",
+               "header fixes: the agreed online sim fixes that ran, empty names dropped");
+        Expect(ArmRefusal(rf, ArmEnv{}).find("online matches") != std::string::npos, "an online recording is refused as such first");
+        rf.online = false;  // a recording that ran a fix but does not say online (or a future online replay)
+        Expect(ArmRefusal(rf, ArmEnv{}).find("sim fixes (drum)") != std::string::npos,
+               "a recording that ran an agreed fix is refused: a replay runs offline without it");
+    }
     Expect(rec.seeds.size() == 4 && rec.draws.size() == 4 && rec.inputs.size() == 40, "record counts");
     Expect(rec.firstTick == 1 && rec.lastTick == 1600 && rec.TickCount() == 1595, "tick range and gap");
     TickHash h;

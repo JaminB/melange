@@ -29,6 +29,10 @@ class PeerCompare {
     bool Diverged() const { return diverged_; }
     uint32_t DivergedTick() const { return divTick_; }
     bool TakeNewDivergence();                       // true once, when the first mismatch was found
+    // Drops the current divergence (the mismatch turned out not to be one): the compare goes on as before it, and
+    // the next mismatching tick is a new divergence.
+    void Undiverge();
+    bool CompareMods() const { return compareMods_; }
     bool Ours(uint32_t tick, uint64_t* engine, uint64_t* mods) const;
     bool Theirs(uint32_t tick, uint64_t* engine, uint64_t* mods) const;
 
@@ -59,7 +63,10 @@ struct PeerStatus {
     uint64_t steamId;
     char name[64];
     PeerState state;
-    bool modsCompared;           // contributor lists match
+    bool modsCompared;           // contributor lists match and the mods hash is still compared with this peer
+    bool modsUnreliable;         // the peer (or we) skipped a contributor on a tick (demoted there): mods not compared since
+    bool modsUnconfirmed;        // a mods-only mismatch got no contributor hashes from the peer: mods not compared since
+    char modsNote[160];          // why the mods hash is no longer compared ("" while it is), for the Peers panel
     uint32_t compared, lastCommonTick, theirTick, apartTicks, divergedTick;
     int32_t lagTicks;            // our latest tick minus theirs
     char melange[24], content[17];
@@ -99,7 +106,10 @@ class Detector {
     static constexpr uint32_t kBatchEvery = 25;       // ticks between HASHES
     static constexpr uint32_t kBatchTicks = 40;       // ticks per HASHES: each tick goes out in two batches
     static constexpr uint64_t kHelloEarlyMs = 1000, kHelloLateMs = 10000;
-    static constexpr uint64_t kCompsWaitMs = 400, kDetailWaitMs = 3000;
+    // COMPS: an engine mismatch is confirmed after kCompsWaitMs with or without the answer. A mods-only one needs the
+    // peer's contributor hashes: it asks once more and waits kCompsRetryWaitMs, then calls the mismatch unconfirmed.
+    static constexpr uint64_t kCompsWaitMs = 400, kCompsRetryWaitMs = 2000, kDetailWaitMs = 3000;
+    static constexpr size_t kMaxEngineFlags = 64;      // engine divergences remembered per match, for EngineFlagged
     static constexpr size_t kMaxPeers = 16;
     static constexpr size_t kDetailAnswersPerMin = 4, kCompsAnswersPerMin = 8;
 
@@ -115,7 +125,9 @@ class Detector {
     void Pump();                                              // sends HELLO/HASHES, times out requests
 
     int Peers(PeerStatus* out, int max) const;
-    bool Flagged(uint32_t* tick) const;                       // our first divergence this match
+    bool Flagged(uint32_t* tick) const;                       // our first confirmed divergence this match
+    // The latest confirmed divergence whose engine hashes differed, at or before `atOrBefore`.
+    bool EngineFlagged(uint32_t* tick, uint32_t atOrBefore = UINT32_MAX) const;
     uint64_t MatchKey() const { return key_; }
     uint32_t BadPackets() const { return badPackets_; }
 
@@ -125,6 +137,10 @@ class Detector {
         PeerInfo info;
         wire::Hello hello;
         bool helloIn = false, badProtocol = false, engineMismatch = false, otherMatch = false;
+        bool modsUnreliable = false;   // a contributor was not hashed on one side at a compared tick (see Analyze)
+        bool modsUnconfirmed = false;  // a mods-only mismatch never got the peer's contributor hashes (see Unconfirmed)
+        std::string modsNote;          // the Peers panel's reason while the mods hash is not compared
+        bool compsRetried = false;     // COMPS asked a second time for the current divergence
         uint64_t helloSentMs = 0;
         PeerCompare cmp;
         wire::DetailAssembly assembly;
@@ -143,6 +159,13 @@ class Detector {
     bool RateOk(std::deque<uint64_t>& q, size_t perMin);
     void Start(Peer& p);
     void FinishComps(Peer& p);
+    // A mods mismatch with both sides' contributor hashes: false when every differing contributor is one that one
+    // side did not hash (skipped by demotion there; `why` is the log line, `note` the Peers panel's), true when it
+    // is a desync, with `named` the contributor to report (-1: none) and `why` the faulted or skipped contributors
+    // to log alongside it.
+    bool Analyze(Peer& p, int* named, std::string* why, std::string* note);
+    void DropMods(Peer& p, const std::string& note);  // stop comparing the mods hash with p, drop the divergence
+    void Unconfirmed(Peer& p);                         // a mods-only mismatch without the peer's contributor hashes
     void FinishBundle(Peer& p);
 
     Env& env_;
@@ -151,6 +174,7 @@ class Detector {
     std::vector<wire::ContribName> contribs_;
     uint64_t contribHash_ = 0, key_ = 0;
     uint32_t serial_ = 0, firstTick_ = 0, latest_ = 0, lastBatch_ = 0, flaggedTick_ = 0, badPackets_ = 0;
+    std::vector<uint32_t> engineTicks_;   // confirmed engine divergences this match
     bool session_ = false, haveTick_ = false, flagged_ = false;
 };
 

@@ -1,5 +1,56 @@
 # Changelog
 
+## 0.11.2
+
+- Fixed: an oil drum could explode a tick apart on two machines and take the match out of sync ("Random's dont
+  match" at the next turn-end check). A drum's fuse (`OilDrumLogicEntity`) measures from the sim clock it reads when
+  the blast flags it, but between frames, when no task is pending, the game writes the raw frame time into the sim
+  clock rather than a tick-aligned value, and that raw time differs from one machine to the next by each machine's
+  frame timing. A drum flagged by a `Damage.Impulse` delivered off the physics step (a drum knocked by a nearby
+  blast, as in a cluster of drums under an airstrike) reads that off-grid, per-machine time, so its explosion lands
+  on a different tick on each machine; every random draw of the explosion and its poison cloud then diverges. During
+  an online match Melange snaps the fuse stamp down to the tick grid as it is written, and re-aligns the drum's own
+  update task to the grid the way a mine's already is, so the drum explodes exactly three ticks after its grid stamp
+  on every machine. Offline the engine is left alone. `[NetSession] FixDrumFuse=1`.
+  The fix changes the sim, so it runs only when every machine in the match runs it: each Melange player publishes the
+  sim fixes it has on in its lobby member data (`mlg.fix`), the lobby owner writes the set every member shares into
+  the lobby data (`mlg.fix.on`, with its own id), and each machine reads that one value once, when the match leaves
+  the lobby, and keeps the decision for the match. A player without Melange, on Melange 0.11.1 or earlier, or with
+  `FixDrumFuse=0` turns the fix off for everyone in that match (logged as `FixDrumFuse: off for this match` with who
+  lacks it); a value left by an earlier lobby owner never counts. Recordings list the fixes that ran in their `HEAD`
+  (`fixes`), and a recording that ran one is refused for replay, which runs offline without it.
+- Fixed: Wormsign reported a false desync of a mod's environment digest (`mod.<id>.env`) at the tick of the mod's
+  first state change, against every player whose machine was slower. A contributor over 20 µs at the 95th percentile
+  was demoted to every 10 ticks, with its last hash folded into the mods hash in between; demotion is decided from one
+  machine's own timing, so a demoted machine folded a stale digest into the tick where the state changed while the
+  others folded the fresh one (Sandtide's 3:00 `phase 0 -> 1` at tick 9004 flagged the same player in five matches of
+  one evening, with every engine component equal). Contributors are no longer demoted by default (`ContribOptions`
+  `demoteEvery` is 1): a slow one is logged once as slow and stays in every tick's hash. `demoteEvery > 1` is an
+  opt-in whose hazard the header and `docs/wormsign.md` spell out; the mod environment digests never use it.
+- Fixed: against a peer that still demotes (Melange 0.11.1 or earlier), a mods-only mismatch where every differing
+  contributor is one that exactly one side did not hash at that tick (its `COMPS` value is 0) and folded in as a stale
+  value is no longer a desync. The log names each skipped contributor and who skipped it, the mods hash is not
+  compared with that peer for the rest of the match (the Peers panel: "mods not compared: a contributor was skipped on
+  one side at tick N"), and the engine hash still is. A contributor that differs with both sides hashing it is still
+  a desync, named, with any skipped ones logged beside it. A contributor that faulted on one side (left out of that
+  side's mods hash, which the hashes show) is a desync too; when several zeros on one side make a fault impossible to
+  tell from a skip, the log and the panel say so.
+- Fixed: a mods-only mismatch is no longer confirmed without the peer's contributor hashes. When the `COMPS` answer
+  is not there after 400 ms Wormsign asks again and waits 2 s more; if it never comes, the mismatch is logged as
+  unconfirmed and the mods hash is no longer compared with that peer (the panel says so): no message, no bundle.
+  An engine mismatch is confirmed as before.
+- Fixed: the bundle's engine correlation ("Wormsign flagged tick N; the engine's turn-end check failed at tick M")
+  paired the engine's failure with the match's first flag, even a mods-only one. It now names the latest divergence
+  whose engine hashes differed at or before the failed check (waiting up to 5 s for one still being confirmed), and
+  says "(mods only ...)" when there was none.
+- Fixed: a divergence still waiting for `COMPS` when the match ended or the peer left could write a bundle of an
+  empty report after it had been dropped as not a desync.
+- `diff.txt` says `(not hashed on the peer at this tick: demoted or faulted there)` instead of `0000000000000000` for
+  a contributor the peer did not compute, `report.json` adds `oursComputed`/`theirsComputed` per contributor, and
+  when both detail records are there `diff.txt` decodes the logic-RNG distance between the two machines
+  (`# rng: ... the peer is 57 logic-RNG draws behind us`, with the tick of ours that the peer's value matches): the
+  game's logic RNG is the LCG `x * 1103515245 + 12345`.
+
 ## 0.11.1
 
 - Fixed: `wum.sim.scheme()` read the scheme's `Name` with an unprotected index, so scheme data whose read raises

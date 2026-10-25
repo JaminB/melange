@@ -56,6 +56,34 @@ void Fast(ws::Hasher& h, uint32_t tick, void*) {
     g_fake += 10;
     h.Val(tick);
 }
+// The same state hashed on a slow and on a fast machine (fake clock).
+uint32_t g_state = 0;
+void SlowState(ws::Hasher& h, uint32_t, void*) {
+    g_fake += 500;
+    h.Val(g_state);
+}
+void FastState(ws::Hasher& h, uint32_t, void*) {
+    g_fake += 10;
+    h.Val(g_state);
+}
+// One machine's mods hash of ticks 1..n with the state changing at `changeAt`.
+std::vector<uint64_t> Machine(ws::ContribFn fn, const ws::ContribOptions& opt, uint32_t n, uint32_t changeAt) {
+    ct::ResetSession();
+    const int h = ws::AddContributor("mod.state.env", fn, nullptr, opt);
+    g_state = 1;
+    std::vector<uint64_t> out;
+    for (uint32_t t = 1; t <= n; ++t) {
+        if (t == changeAt) g_state = 2;
+        out.push_back(ct::HashTick(t));
+    }
+    ws::RemoveContributor(h);
+    return out;
+}
+size_t FirstDifferent(const std::vector<uint64_t>& a, const std::vector<uint64_t>& b) {
+    for (size_t i = 0; i < a.size() && i < b.size(); ++i)
+        if (a[i] != b[i]) return i + 1;
+    return 0;
+}
 void Spin50(ws::Hasher& h, uint32_t tick, void*) {
     LARGE_INTEGER f, a, b;
     QueryPerformanceFrequency(&f);
@@ -161,10 +189,58 @@ void TestContrib() {
     ws::RemoveContributor(ha3);
     ws::RemoveContributor(hb2);
 
-    // Demotion with a fake clock: 50 us per call for 500 ticks.
+    // By default a slow contributor (50 us per call for 500 ticks, fake clock) is never demoted: it is warned about
+    // once and stays in every tick's hash, so its hash stays comparable with every peer.
     ct::SetClockForTest(&FakeQpc, 10000000);
-    const int hs = ws::AddContributor("mod.slow.env", &Slow, nullptr);
-    const int hf = ws::AddContributor("mod.fast.env", &Fast, nullptr);
+    {
+        const int hs0 = ws::AddContributor("mod.slow.env", &Slow, nullptr);
+        for (uint32_t t = 1; t <= 1001; ++t) ct::HashTick(t);
+        n = ct::List(info, 8);
+        Expect(n == 1 && !info[0].demoted && info[0].slow && info[0].lastP95Us10 == 500, "default: slow but not demoted");
+        Expect(ct::Describe(info[0]) == "hashed every tick (slow: p95 50.0 us)", "default: report says slow: " + ct::Describe(info[0]));
+        Expect(Logged("contributor mod.slow.env is slow: p95 50.0 us over 500 ticks"), "default: slowness logged");
+        size_t warnings = 0;
+        for (auto& l : g_log) warnings += l.find("mod.slow.env is slow") != std::string::npos;
+        Expect(warnings == 1, "default: the slow warning is logged once (two windows)");
+        ct::Entry e0[8];
+        bool computed = false;
+        const size_t k = ct::HashesAt(1001, e0, 8);
+        for (size_t i = 0; i < k; ++i)
+            if (strcmp(e0[i].name, "mod.slow.env") == 0) computed = e0[i].computed;
+        Expect(k == 1 && computed, "default: still computed at tick 1001");
+        json::Value v0;
+        json::Error err0;
+        Expect(json::Parse(ct::NoteJson(), &v0, &err0) && ct::NoteJson().find("\"slow\":true") != std::string::npos,
+               "default: NOTE JSON says slow");
+        ws::RemoveContributor(hs0);
+        g_log.clear();
+    }
+
+    // Two machines, one slow and one fast, hashing the same state that changes at tick 504 (a tick a contributor
+    // demoted to every 10 ticks skips). Opt-in demotion makes their mods hashes differ from 504 until the next due
+    // tick 510, although the state is the same on both: the hazard that keeps demotion off by default. With the
+    // default options the two machines agree on every tick.
+    {
+        ws::ContribOptions demotable;
+        demotable.demoteEvery = 10;
+        const auto slowDemoted = Machine(&SlowState, demotable, 520, 504);
+        const auto fastDemotable = Machine(&FastState, demotable, 520, 504);
+        Expect(FirstDifferent(slowDemoted, fastDemotable) == 504, "opt-in demotion: the slow machine folds a stale hash at 504");
+        Expect(slowDemoted[509 - 1] != fastDemotable[509 - 1] && slowDemoted[510 - 1] == fastDemotable[510 - 1],
+               "opt-in demotion: the two agree again at the demoted machine's next due tick");
+        const auto slowDefault = Machine(&SlowState, ws::ContribOptions{}, 520, 504);
+        const auto fastDefault = Machine(&FastState, ws::ContribOptions{}, 520, 504);
+        Expect(FirstDifferent(slowDefault, fastDefault) == 0, "default: a slow and a fast machine agree on every tick");
+        Expect(slowDefault[503 - 1] != slowDefault[504 - 1] && slowDefault[504 - 1] == fastDemotable[504 - 1],
+               "default: the state change is in the hash at its tick on both");
+        g_log.clear();
+    }
+
+    // Opt-in demotion (demoteEvery 10) with a fake clock: 50 us per call for 500 ticks.
+    ws::ContribOptions demote10;
+    demote10.demoteEvery = 10;
+    const int hs = ws::AddContributor("mod.slow.env", &Slow, nullptr, demote10);
+    const int hf = ws::AddContributor("mod.fast.env", &Fast, nullptr, demote10);
     for (uint32_t t = 1; t <= 499; ++t) ct::HashTick(t);
     n = ct::List(info, 8);
     Expect(n == 2 && !info[0].demoted && !info[1].demoted, "not demoted before 500 ticks");
@@ -197,14 +273,12 @@ void TestContrib() {
     ws::RemoveContributor(hf);
     ct::SetClockForTest(nullptr, 0);
 
-    // demoteEvery 1 never demotes; a real 50 us contributor is demoted after 500 ticks.
-    ws::ContribOptions never;
-    never.demoteEvery = 1;
-    const int hn = ws::AddContributor("mod.spin1.env", &Spin50, nullptr, never);
-    const int hr = ws::AddContributor("mod.spin.env", &Spin50, nullptr);
+    // The default never demotes; a real 50 us contributor that opted in is demoted after 500 ticks.
+    const int hn = ws::AddContributor("mod.spin1.env", &Spin50, nullptr);
+    const int hr = ws::AddContributor("mod.spin.env", &Spin50, nullptr, demote10);
     for (uint32_t t = 1; t <= 500; ++t) ct::HashTick(t);
     n = ct::List(info, 8);
-    Expect(n == 2 && info[0].demoted && !info[1].demoted, "real clock: 50 us demoted, demoteEvery=1 kept");
+    Expect(n == 2 && info[0].demoted && !info[1].demoted && info[1].slow, "real clock: 50 us opt-in demoted, default kept (slow)");
     Expect(ct::Describe(info[0]).find("hashed every 10 ticks") != std::string::npos, "real clock report");
     ws::RemoveContributor(hn);
     ws::RemoveContributor(hr);

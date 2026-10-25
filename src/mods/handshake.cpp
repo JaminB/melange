@@ -26,6 +26,7 @@
 #include "mods/handshake_gid.h"
 #include "mods/handshake_internal.h"
 #include "mods/lobby.h"
+#include "mods/simfix.h"
 #include "mods/thumper_internal.h"
 #include "mods/weapon_gate.h"
 #include "net/steam.h"
@@ -134,6 +135,15 @@ std::atomic<uint64_t> g_lobby{0};
 std::atomic<bool> g_simAllowedThisMatch{false};
 bool g_publish = true;
 bool g_simOnline = true;
+std::vector<std::string> g_simFixes;        // advertised sim fixes (simfix::Advertise), guarded by g_mx
+std::vector<std::string> g_activeSimFixes;  // the ones running in the current match, main thread
+
+// What we publish as "mlg.fix": with Publish=0 nothing goes out, so we count as a member without the key.
+std::string OurFixValue() {
+    if (!g_publish) return "";
+    std::lock_guard lk(g_mx);
+    return BuildFixValue(g_simFixes);
+}
 
 struct WalkedFile { fs::path abs; std::string rel; uint64_t sig; };
 struct CachedMod { std::string id; uint64_t sig = 0; std::vector<ContentFile> files; };
@@ -329,8 +339,11 @@ void PublishOwnMemberData() {
     if (!ids.empty()) SetLobbyMemberDataRaw(lobby, "mlg.mods", BuildModsValue(ids).c_str());
     if (!msg.empty()) SetLobbyMemberDataRaw(lobby, "mlg.msg", msg.c_str());
     if (!wpn.empty()) SetLobbyMemberDataRaw(lobby, "mlg.wpn", wpn.c_str());
+    // Always written, "1;" included: the owner tells a 0.11.2 with every fix off from an older Melange by it.
+    const std::string fix = OurFixValue();
+    SetLobbyMemberDataRaw(lobby, "mlg.fix", fix.c_str());
     jlog::Rec("handshake", jlog::Level::Info, "publish").Str("hash16", Hash16(c)).Uint("contentMods", c.contentMods)
-        .Uint("messages", c.modMessages).Str("wpn", wpn).Emit();
+        .Uint("messages", c.modMessages).Str("wpn", wpn).Str("fix", fix).Emit();
 }
 
 void RewriteMlgSimIfOwner() {
@@ -340,7 +353,7 @@ void RewriteMlgSimIfOwner() {
     { std::lock_guard lk(g_mx); c = g_content; }
     std::string ourHash16 = Hash16(c);
     SteamID me = MySteamId();
-    std::vector<std::string> memberHashes;
+    std::vector<std::string> memberHashes, memberFixes;
     int n = NumLobbyMembers(lobby);
     for (int i = 0; i < n; ++i) {
         SteamID member = LobbyMemberByIndex(lobby, i);
@@ -351,6 +364,7 @@ void RewriteMlgSimIfOwner() {
             memberHashes.push_back(hash16);
         else
             memberHashes.push_back("v");  // no (or malformed) mlg key: never matches, as a vanilla member should
+        memberFixes.push_back(LobbyMemberData(lobby, member, "mlg.fix"));
     }
     std::string sim = BuildMlgSim(ourHash16, c.vanilla, memberHashes);
     if (!sim.empty() && LobbyData(lobby, "mlg.sim") != sim) SetLobbyDataRaw(lobby, "mlg.sim", sim.c_str());
@@ -360,6 +374,14 @@ void RewriteMlgSimIfOwner() {
     const std::string have = LobbyData(lobby, "mlg.req");
     if (!req.empty() && have != req) SetLobbyDataRaw(lobby, "mlg.req", req.c_str());
     else if (req.empty() && !have.empty()) DeleteLobbyDataRaw(lobby, "mlg.req");
+    // The sim fixes every member runs, under our id; rewritten on every member or member-data change, so a member
+    // joining without one takes it away for everyone before the host can start.
+    const std::string fixOn = BuildFixOnValue(me, AgreedFixes(OurFixValue(), memberFixes));
+    const std::string haveFix = LobbyData(lobby, "mlg.fix.on");
+    if (!fixOn.empty() && haveFix != fixOn) SetLobbyDataRaw(lobby, "mlg.fix.on", fixOn.c_str());
+    else if (fixOn.empty() && !haveFix.empty()) DeleteLobbyDataRaw(lobby, "mlg.fix.on");
+    if (haveFix != fixOn)
+        jlog::Rec("handshake", jlog::Level::Info, "fix_on").Str("value", fixOn).Uint("members", static_cast<uint64_t>(memberFixes.size())).Emit();
 }
 
 std::atomic<uint32_t> g_computeGen{0};
@@ -485,6 +507,56 @@ std::string PeerMsgDiff(uint64_t steamId) {
     { std::lock_guard lk(g_mx); ours = g_msgValue; }
     return DiffMsgValues(ours, LobbyMemberData(lobby, steamId, "mlg.msg"));
 }
+
+namespace simfix {
+void Advertise(const char* name) {
+    if (!name || !*name) return;
+    std::lock_guard lk(g_mx);
+    if (std::find(g_simFixes.begin(), g_simFixes.end(), name) == g_simFixes.end()) g_simFixes.push_back(name);
+}
+std::vector<std::string> Advertised() {
+    std::lock_guard lk(g_mx);
+    return g_simFixes;
+}
+bool Agreed(const char* name) {
+    const SteamID lobby = g_lobby.load();
+    if (!lobby || !name) return false;
+    return FixAgreed(LobbyData(lobby, "mlg.fix.on"), LobbyOwner(lobby), name);
+}
+std::string Why(const char* name) {
+    const SteamID lobby = g_lobby.load();
+    if (!lobby) return "not in a Steam lobby";
+    if (!g_publish) return "this machine does not publish its fixes ([Handshake] Publish=0)";
+    std::vector<std::string> ours;
+    if (!ParseFixValue(OurFixValue(), &ours) || std::find(ours.begin(), ours.end(), name) == ours.end())
+        return "this machine does not run it";
+    std::string who;
+    const SteamID me = MySteamId();
+    for (int i = 0, n = NumLobbyMembers(lobby); i < n; ++i) {
+        const SteamID member = LobbyMemberByIndex(lobby, i);
+        if (member == me) continue;
+        std::string version, hash16, reason;
+        uint32_t cnt = 0;
+        std::vector<std::string> theirs;
+        if (!ParseMlgValue(LobbyMemberData(lobby, member, "mlg"), &version, &hash16, &cnt)) reason = "has no Melange";
+        else if (!ParseFixValue(LobbyMemberData(lobby, member, "mlg.fix"), &theirs)) reason = "runs Melange " + version + ", which has no agreed fixes";
+        else if (std::find(theirs.begin(), theirs.end(), name) == theirs.end()) reason = "runs Melange " + version + " with it off";
+        if (!reason.empty()) who += (who.empty() ? "" : "; ") + FriendName(member) + " " + reason;
+    }
+    if (!who.empty()) return who;
+    const SteamID owner = LobbyOwner(lobby);
+    uint64_t by = 0;
+    std::vector<std::string> fixes;
+    const std::string on = LobbyData(lobby, "mlg.fix.on");
+    if (!ParseFixOnValue(on, &by, &fixes))
+        return "the lobby owner (" + (owner == me ? std::string("this machine") : FriendName(owner)) + ") has not written the agreed list" +
+               (on.empty() ? "" : " (lobby value \"" + on + "\")");
+    if (by != owner) return "the lobby's agreed list was written by an earlier owner";
+    return "the lobby's agreed list (\"" + on + "\") does not name it";
+}
+void SetActive(const std::vector<std::string>& names) { g_activeSimFixes = names; }
+std::vector<std::string> Active() { return g_activeSimFixes; }
+}  // namespace simfix
 
 }  // namespace melange::handshake
 

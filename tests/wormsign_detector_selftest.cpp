@@ -1,6 +1,8 @@
 // Offline self-test for the desync detector (src/wormsign/{exchange_wire,detector_core,bundle}.cpp): packet round
-// trips and rejects, two detectors over a simulated link (clean, desync, mod contributor, loss, lag, vanilla and
-// version-mismatched peers), the field diff, the log tail, the bundle, and a timed mutation run on the decoder.
+// trips and rejects, two detectors over a simulated link (clean, desync, mod contributor, skipped and faulted
+// contributors, a slow or missing COMPS answer, loss, lag, vanilla and version-mismatched peers), the engine
+// divergence picked for a correlation, the field diff, the log tail, the bundle, and a timed mutation run on the
+// decoder.
 // Usage: wormsign_detector_selftest [mutationSeconds=10]. Exit code 0 = all passed.
 #include <windows.h>
 
@@ -20,6 +22,7 @@
 #include "wormsign/bundle.h"
 #include "wormsign/detector_core.h"
 #include "wormsign/exchange_wire.h"
+#include "wormsign/hash_engine.h"
 
 using namespace melange::wormsign;
 
@@ -215,6 +218,7 @@ struct Side final : detect::Env {
     std::map<uint32_t, std::vector<uint64_t>> contrib;
     std::vector<Divergence> diverged;
     std::vector<detect::Report> bundles;
+    std::vector<std::string> notes;
     std::map<uint64_t, int> sentTo;
     uint64_t now = 0;
     uint64_t bytesSent = 0, packetsSent = 0;
@@ -238,7 +242,12 @@ struct Side final : detect::Env {
     }
     void Diverged(const Divergence& d) override { diverged.push_back(d); }
     void Bundle(const detect::Report& r) override { bundles.push_back(r); }
-    void Note(bool, const std::string&) override {}
+    void Note(bool, const std::string& text) override { notes.push_back(text); }
+    bool Noted(const char* part) const {
+        for (const auto& n : notes)
+            if (n.find(part) != std::string::npos) return true;
+        return false;
+    }
 };
 
 struct Link {
@@ -253,12 +262,24 @@ struct Link {
     double loss = 0;
     std::mt19937 rng{7};
     uint64_t dropped = 0;
+    // COMPS answers from `compsFrom`: dropped, or delayed by compsDelayMs on top of the latency.
+    uint64_t compsFrom = 0, compsDelayMs = 0, compsSeen = 0;
+    bool compsDrop = false;
     void Push(uint64_t from, uint64_t to, const std::vector<uint8_t>& b, bool reliable, uint64_t now) {
         if (!reliable && loss > 0 && std::uniform_real_distribution<double>(0, 1)(rng) < loss) {
             ++dropped;
             return;
         }
-        q.push_back({from, to, b, reliable, now + latencyMs});
+        uint64_t extra = 0;
+        if (compsFrom && from == compsFrom) {
+            wire::Packet p;
+            if (wire::Decode(b.data(), b.size(), &p) == wire::DecodeResult::Ok && p.kind == wire::Kind::Comps) {
+                ++compsSeen;
+                if (compsDrop) return;
+                extra = compsDelayMs;
+            }
+        }
+        q.push_back({from, to, b, reliable, now + latencyMs + extra});
     }
 };
 
@@ -285,6 +306,17 @@ struct Scenario {
     uint32_t ticks = 3000;
     uint32_t desyncAt = 0;         // on B from this tick on
     bool viaMods = false;          // B's mod contributor differs instead of the worms
+    // B skipped its first contributor on ticks skipAt..skipAt+9 (demoted there): it reports 0 for it and folds
+    // its last hash into its mods aggregate, so the aggregate is stale for those ticks and equal again after.
+    uint32_t skipAt = 0;
+    bool skipBoth = false;         // B skips both contributors on those ticks
+    bool viaMods1 = false;         // with viaMods: B's second contributor differs instead of the first
+    uint32_t faultAt = 0;          // B's first contributor faults at this tick: 0 from then on, left out of its mods
+    // The mods hash is the contributors' fold, as contrib::HashTick computes it (else a stand-in that only says
+    // equal or not). Needed wherever the detector tells a faulted contributor from a skipped one.
+    bool foldMods = false;
+    bool bCompsDrop = false;       // B's COMPS answers never arrive
+    uint64_t bCompsDelayMs = 0;    // B's COMPS answers arrive this much later than other packets
     uint32_t bLag = 0;             // B runs this many ticks behind
     uint32_t bBegin = 0;           // B's session opens at this frame (packets to it before are dropped)
     double loss = 0;
@@ -296,6 +328,9 @@ struct Scenario {
 
 struct Result {
     Side a, b;
+    bool aFlagged = false, aEngineFlagged = false, aEngineBefore = false;
+    uint32_t aFlaggedTick = 0, aEngineFlaggedTick = 0, aEngineBeforeTick = 0;
+    uint64_t compsSeen = 0;
     uint64_t aLatencyMs = 0, bLatencyMs = 0;
     std::vector<detect::PeerStatus> aPeers, bPeers;
     uint64_t dropped = 0;
@@ -305,6 +340,9 @@ std::unique_ptr<Result> Run(const Scenario& s) {
     auto r = std::make_unique<Result>();
     Link link;
     link.loss = s.loss;
+    link.compsFrom = s.bCompsDrop || s.bCompsDelayMs ? 76561198000000002ull : 0;
+    link.compsDrop = s.bCompsDrop;
+    link.compsDelayMs = s.bCompsDelayMs;
     Side& A = r->a;
     Side& B = r->b;
     A.id = 76561198000000001ull;
@@ -327,12 +365,30 @@ std::unique_ptr<Result> Run(const Scenario& s) {
         auto tick = [&](Side& side, detect::Detector& d, uint32_t t, bool isB) {
             if (t < 1 || t > s.ticks) return;
             const bool off = isB && s.desyncAt && t >= s.desyncAt;
+            const bool skipped = isB && s.skipAt && t >= s.skipAt && t < s.skipAt + 10;
+            const bool faulted = isB && s.faultAt && t >= s.faultAt;
             TickHash h = Hash(t, 0x77, off && !s.viaMods, off && s.viaMods);
+            if (skipped) h.mods = Hash(s.skipAt - 1, 0x77, false, false).mods;  // the stale fold-in
+            // Per contributor: the value computed this tick (0: not computed), and what the aggregate folds in.
+            uint64_t v[2] = {off && s.viaMods && !s.viaMods1 ? 0xbadull : 0x1ull + t, off && s.viaMods && s.viaMods1 ? 0xbad1ull : 0x2ull + t};
+            uint64_t fold[2] = {v[0], v[1]};
+            if (skipped) {
+                v[0] = 0, fold[0] = 0x1ull + (s.skipAt - 1);
+                if (s.skipBoth) v[1] = 0, fold[1] = 0x2ull + (s.skipAt - 1);
+            }
+            if (faulted) v[0] = fold[0] = 0;
+            if (s.foldMods) {
+                const auto& names = isB && !s.bContribs.empty() ? s.bContribs : s.contribs;
+                uint64_t all = kFnvBasis;
+                for (size_t i = 0; i < names.size() && i < 2; ++i)
+                    if (fold[i]) all = FnvV(fold[i], FnvV(Fnv(names[i].name.data(), names[i].name.size()), all));
+                h.mods = all;
+            }
             side.ring[t] = h;
             std::string energy = off && !s.viaMods ? "1" : "100";
             side.detail[t] = "{\"tick\":" + std::to_string(t) + ",\"worms\":[{\"slot\":0,\"energy\":100},{\"slot\":3,\"energy\":" +
                              energy + ",\"pos\":{\"x\":1.5,\"y\":2}}]}";
-            side.contrib[t] = {off && s.viaMods ? 0xbadull : 0x1ull + t, 0x2ull + t};
+            side.contrib[t] = {v[0], v[1]};
             if (side.ring.size() > 600) {
                 side.ring.erase(side.ring.begin());
                 side.detail.erase(side.detail.begin());
@@ -345,9 +401,13 @@ std::unique_ptr<Result> Run(const Scenario& s) {
         if (s.bBegin && f == s.bBegin) db.Begin(1, key, bList);
         tick(A, da, f, false);
         tick(B, db, f > s.bLag ? f - s.bLag : 0, true);
-        while (!link.q.empty() && link.q.front().due <= now) {
-            Link::Msg m = std::move(link.q.front());
-            link.q.pop_front();
+        for (size_t i = 0; i < link.q.size();) {
+            if (link.q[i].due > now) {
+                ++i;
+                continue;
+            }
+            Link::Msg m = std::move(link.q[i]);
+            link.q.erase(link.q.begin() + static_cast<std::ptrdiff_t>(i));
             (m.to == A.id ? da : db).OnPacket(m.from, m.bytes.data(), m.bytes.size());
         }
         const size_t na = A.diverged.size(), nb = B.diverged.size();
@@ -360,6 +420,10 @@ std::unique_ptr<Result> Run(const Scenario& s) {
     detect::PeerStatus v[4];
     r->aPeers.assign(v, v + da.Peers(v, 4));
     r->bPeers.assign(v, v + db.Peers(v, 4));
+    r->aFlagged = da.Flagged(&r->aFlaggedTick);
+    r->aEngineFlagged = da.EngineFlagged(&r->aEngineFlaggedTick);
+    r->aEngineBefore = da.EngineFlagged(&r->aEngineBeforeTick, s.desyncAt ? s.desyncAt - 1 : 0);
+    r->compsSeen = link.compsSeen;
     da.End();
     db.End();
     r->dropped = link.dropped;
@@ -401,6 +465,9 @@ void Pair() {
             Expect(r->aLatencyMs <= 1000 && r->bLatencyMs <= 1000, b);
         }
         Expect(r->a.bundles.size() == 1 && r->b.bundles.size() == 1, "desync: one bundle each");
+        Expect(r->aFlagged && r->aFlaggedTick == 1500 && r->aEngineFlagged && r->aEngineFlaggedTick == 1500,
+               "desync: flagged as an engine divergence at 1500");
+        Expect(!r->aEngineBefore, "desync: no engine divergence at or before tick 1499");
         if (r->a.bundles.size() == 1) {
             const detect::Report& rep = r->a.bundles[0];
             Expect(!rep.detailLocal.empty() && !rep.detailPeer.empty(), "desync: both detail records in the bundle");
@@ -425,6 +492,46 @@ void Pair() {
                        !strcmp(r->b.diverged[0].contrib, "mod.desync-probe.env"),
                    "mod desync: the contributor is named on both sides");
         }
+        Expect(r->aFlagged && r->aFlaggedTick == 700 && !r->aEngineFlagged, "mod desync: flagged, but not as an engine divergence");
+    }
+    // B skipped a contributor on ticks 900..909 (demoted there, as Melange <= 0.11.1 did to a slow mod environment
+    // digest): its mods aggregate is stale for those ticks and its COMPS answer has 0 for that contributor. Neither
+    // side reports a desync; both stop comparing the mods hash with the other and say so; the engine hash is still
+    // compared and a real engine desync later in the match is still found.
+    {
+        Scenario s;
+        s.skipAt = 900;
+        auto r = Run(s);
+        Expect(r->a.diverged.empty() && r->b.diverged.empty() && r->a.bundles.empty() && r->b.bundles.empty(),
+               "skipped contributor: no desync reported on either side");
+        Expect(!r->aFlagged && !r->aEngineFlagged, "skipped contributor: nothing flagged");
+        Expect(r->aPeers.size() == 1 && r->aPeers[0].state == detect::PeerState::Exchanging && !r->aPeers[0].modsCompared &&
+                   r->aPeers[0].modsUnreliable && r->aPeers[0].divergedTick == 0,
+               "skipped contributor: A exchanging, mods no longer compared, marked unreliable");
+        Expect(r->bPeers.size() == 1 && r->bPeers[0].state == detect::PeerState::Exchanging && !r->bPeers[0].modsCompared &&
+                   r->bPeers[0].modsUnreliable,
+               "skipped contributor: the skipping side B comes to the same verdict");
+        Expect(r->aPeers[0].compared >= 3000 - detect::Detector::kBatchEvery, "skipped contributor: every tick still compared");
+    }
+    {
+        Scenario s;
+        s.skipAt = 900;
+        s.desyncAt = 1500;
+        auto r = Run(s);
+        Expect(r->a.diverged.size() == 1 && r->b.diverged.size() == 1 && r->a.diverged[0].tick == 1500 &&
+                   r->a.diverged[0].compMask == (1u << kWorms),
+               "skipped contributor, then an engine desync: the engine desync is still found at its tick");
+        Expect(r->aEngineFlagged && r->aEngineFlaggedTick == 1500, "skipped contributor, then an engine desync: engine-flagged");
+    }
+    {
+        // A mods-only mismatch where both sides computed the contributor is a desync as before.
+        Scenario s;
+        s.skipAt = 900;
+        s.desyncAt = 2000;
+        s.viaMods = true;
+        auto r = Run(s);
+        Expect(r->a.diverged.empty() && r->aPeers[0].modsUnreliable,
+               "skipped contributor, then a mod desync: not seen (the mods hash is no longer compared with that peer)");
     }
     {
         Scenario s;
@@ -434,6 +541,119 @@ void Pair() {
         auto r = Run(s);
         Expect(r->a.diverged.size() == 1 && r->a.diverged[0].tick == 900 && r->a.diverged[0].contrib[0] == 0,
                "mods hash without named contributors: flagged, no name");
+    }
+    // The same skip with the mods hash folded from the contributors, as Melange computes it: B's one zero is folded
+    // in as a stale value (its mods hash is not the fold of its computed values), so it is a demotion skip.
+    {
+        Scenario s;
+        s.skipAt = 900;
+        s.foldMods = true;
+        auto r = Run(s);
+        Expect(r->a.diverged.empty() && r->b.diverged.empty() && r->a.bundles.empty() && r->b.bundles.empty() &&
+                   r->aPeers[0].modsUnreliable && !r->aPeers[0].modsCompared,
+               "skipped contributor (folded mods): no desync, mods no longer compared");
+        Expect(r->a.Noted("B did not hash mod.desync-probe.env at that tick (demoted there)") &&
+                   r->b.Noted("we did not hash mod.desync-probe.env at that tick (demoted there)"),
+               "skipped contributor (folded mods): both logs name the skipped contributor and who skipped it");
+        Expect(strstr(r->aPeers[0].modsNote, "skipped on one side at tick 900") != nullptr &&
+                   strstr(r->aPeers[0].modsNote, "cannot tell") == nullptr,
+               "skipped contributor (folded mods): the Peers panel says why");
+    }
+    // Two differing contributors at one tick: B skipped the first (demoted there) and computed a different value of
+    // the second. The second is a real desync: reported on both sides, naming it, with the skipped one logged.
+    {
+        Scenario s;
+        s.skipAt = 900;
+        s.desyncAt = 900;
+        s.viaMods = s.viaMods1 = true;
+        s.foldMods = true;
+        auto r = Run(s);
+        Expect(r->a.diverged.size() == 1 && r->b.diverged.size() == 1 && r->a.diverged[0].tick == 900 &&
+                   r->b.diverged[0].tick == 900,
+               "one skipped, one real contributor: a desync on both sides at the tick");
+        if (r->a.diverged.size() == 1 && r->b.diverged.size() == 1)
+            Expect(!strcmp(r->a.diverged[0].contrib, "mod.sim-sampler.env") &&
+                       !strcmp(r->b.diverged[0].contrib, "mod.sim-sampler.env") && r->a.diverged[0].compMask == 0,
+                   "one skipped, one real contributor: the real one is named, not the skipped one");
+        Expect(r->a.bundles.size() == 1 && r->b.bundles.size() == 1, "one skipped, one real contributor: one bundle each");
+        Expect(r->a.Noted("mod.sim-sampler.env differs from B with both sides hashing it") &&
+                   r->a.Noted("B did not hash mod.desync-probe.env at that tick"),
+               "one skipped, one real contributor: the skipped one is still logged");
+        Expect(!r->aPeers[0].modsUnreliable, "one skipped, one real contributor: not marked unreliable");
+    }
+    // B skipped both contributors on the same ticks: every differing contributor is a skip, so no desync. With two
+    // zeros on B a fault among them cannot be ruled out, and the panel says so.
+    {
+        Scenario s;
+        s.skipAt = 900;
+        s.skipBoth = true;
+        s.foldMods = true;
+        auto r = Run(s);
+        Expect(r->a.diverged.empty() && r->b.diverged.empty() && r->a.bundles.empty() && r->b.bundles.empty() &&
+                   !r->aFlagged,
+               "all differing contributors skipped: no desync on either side");
+        Expect(r->aPeers[0].modsUnreliable && strstr(r->aPeers[0].modsNote, "cannot tell") != nullptr &&
+                   r->a.Noted("B did not hash mod.desync-probe.env") && r->a.Noted("B did not hash mod.sim-sampler.env"),
+               "all differing contributors skipped: both logged, the panel says a fault cannot be told apart");
+    }
+    // B's first contributor faults at tick 900: B's mods hash leaves it out from then on (the fold of its computed
+    // values is exactly its mods hash), which the data tells apart from a demotion skip: a desync naming it.
+    {
+        Scenario s;
+        s.faultAt = 900;
+        s.foldMods = true;
+        auto r = Run(s);
+        Expect(r->a.diverged.size() == 1 && r->b.diverged.size() == 1 && r->a.diverged[0].tick == 900 &&
+                   r->b.diverged[0].tick == 900,
+               "faulted contributor: a desync on both sides at the fault's tick");
+        if (r->a.diverged.size() == 1 && r->b.diverged.size() == 1)
+            Expect(!strcmp(r->a.diverged[0].contrib, "mod.desync-probe.env") &&
+                       !strcmp(r->b.diverged[0].contrib, "mod.desync-probe.env"),
+                   "faulted contributor: named on both sides");
+        Expect(r->a.Noted("mod.desync-probe.env is not in B's mods hash (faulted there") &&
+                   r->b.Noted("mod.desync-probe.env is not in our mods hash"),
+               "faulted contributor: the log says it faulted, and where");
+        Expect(!r->aPeers[0].modsUnreliable && r->a.bundles.size() == 1, "faulted contributor: a bundle, not unreliable");
+    }
+    // A mods-only mismatch whose COMPS answer never arrives: asked twice, then unconfirmed on A (log and panel, no
+    // desync, no bundle, nothing flagged). B got A's answer and reports the desync.
+    {
+        Scenario s;
+        s.desyncAt = 700;
+        s.viaMods = true;
+        s.bCompsDrop = true;
+        auto r = Run(s);
+        Expect(r->a.diverged.empty() && r->a.bundles.empty() && !r->aFlagged,
+               "mods-only mismatch without COMPS: not a desync on A, no bundle");
+        Expect(r->compsSeen == 2 && r->a.Noted("asking again") && r->a.Noted("unconfirmed"),
+               "mods-only mismatch without COMPS: asked twice, then logged as unconfirmed");
+        Expect(r->aPeers[0].modsUnconfirmed && !r->aPeers[0].modsCompared &&
+                   strstr(r->aPeers[0].modsNote, "not confirmed") != nullptr &&
+                   r->aPeers[0].state == detect::PeerState::Exchanging,
+               "mods-only mismatch without COMPS: the Peers panel says unconfirmed");
+        Expect(r->b.diverged.size() == 1 && r->b.diverged[0].tick == 700, "mods-only mismatch without COMPS: B still reports it");
+    }
+    // The answer arrives late, after the first wait: the second wait catches it and the desync is confirmed.
+    {
+        Scenario s;
+        s.desyncAt = 700;
+        s.viaMods = true;
+        s.bCompsDelayMs = 1000;
+        auto r = Run(s);
+        Expect(r->a.diverged.size() == 1 && r->a.diverged[0].tick == 700 &&
+                   !strcmp(r->a.diverged[0].contrib, "mod.desync-probe.env") && r->a.bundles.size() == 1 &&
+                   !r->aPeers[0].modsUnconfirmed,
+               "mods-only mismatch with a COMPS answer 1 s late: confirmed and named");
+    }
+    // An engine mismatch without COMPS keeps the old path: confirmed after the first wait.
+    {
+        Scenario s;
+        s.desyncAt = 1500;
+        s.bCompsDrop = true;
+        auto r = Run(s);
+        Expect(r->a.diverged.size() == 1 && r->a.diverged[0].tick == 1500 && r->a.diverged[0].compMask == (1u << kWorms) &&
+                   r->a.bundles.size() == 1 && r->compsSeen == 1,
+               "engine mismatch without COMPS: confirmed after one request");
     }
     // The melange.camera contributor against a peer without it (an older Melange or HashCamera=0): its mods hash
     // differs on every tick, yet only the engine hash is compared, so there is no false desync and a real one is
@@ -528,6 +748,68 @@ void Pair() {
     }
 }
 
+// ---------------------------------------------------------------- the engine divergence for a correlation
+// A with two peers: B's engine state differs from tick 1000 on, C's from 2000 on. EngineFlagged(atOrBefore) picks
+// the latest engine divergence at or before the engine check's failed tick, never a later one.
+void EnginePick() {
+    Link link;
+    Side sides[3];
+    const uint64_t ids[3] = {76561198000000011ull, 76561198000000012ull, 76561198000000013ull};
+    const uint32_t desyncAt[3] = {0, 1000, 2000};
+    std::vector<std::unique_ptr<detect::Detector>> dets;
+    const uint64_t key = wire::MatchKey(ids[0], 77);
+    const std::vector<wire::ContribName> contribs = {{"mod.desync-probe.env", 1}};
+    for (int i = 0; i < 3; ++i) {
+        sides[i].id = ids[i];
+        sides[i].link = &link;
+        dets.push_back(std::make_unique<detect::Detector>(sides[i]));
+        dets[i]->SetIdentity("0.2.0", "0123456789abcdef");
+    }
+    dets[0]->SetPeers({{ids[1], "B", "1"}, {ids[2], "C", "1"}});
+    dets[1]->SetPeers({{ids[0], "A", "1"}});
+    dets[2]->SetPeers({{ids[0], "A", "1"}});
+    for (auto& d : dets) d->Begin(1, key, contribs);
+    for (uint32_t f = 1; f <= 2600; ++f) {
+        for (int i = 0; i < 3; ++i) {
+            Side& s = sides[i];
+            s.now = f * 20ull;
+            if (f > 2200) continue;
+            const bool off = desyncAt[i] && f >= desyncAt[i];
+            const TickHash h = Hash(f, 0x30 + i, off, false);
+            s.ring[f] = h;
+            s.contrib[f] = {0x1ull + f};
+            if (s.ring.size() > 600) {
+                s.ring.erase(s.ring.begin());
+                s.contrib.erase(s.contrib.begin());
+            }
+            dets[i]->OnTick(h);
+        }
+        for (size_t i = 0; i < link.q.size();) {
+            if (link.q[i].due > f * 20ull) {
+                ++i;
+                continue;
+            }
+            Link::Msg m = std::move(link.q[i]);
+            link.q.erase(link.q.begin() + static_cast<std::ptrdiff_t>(i));
+            for (int k = 0; k < 3; ++k)
+                if (m.to == ids[k]) dets[k]->OnPacket(m.from, m.bytes.data(), m.bytes.size());
+        }
+        for (auto& d : dets) d->Pump();
+    }
+    uint32_t t = 0;
+    Expect(sides[0].diverged.size() == 2, "engine pick: A reports both peers");
+    Expect(!dets[0]->EngineFlagged(&t, 999), "engine pick: nothing at or before 999");
+    t = 0;
+    Expect(dets[0]->EngineFlagged(&t, 1000) && t == 1000, "engine pick: 1000 for a check failing at 1000");
+    t = 0;
+    Expect(dets[0]->EngineFlagged(&t, 1999) && t == 1000, "engine pick: 1000 for a check failing at 1999, not the later 2000");
+    t = 0;
+    Expect(dets[0]->EngineFlagged(&t, 2400) && t == 2000, "engine pick: 2000 for a check failing at 2400");
+    t = 0;
+    Expect(dets[0]->EngineFlagged(&t) && t == 2000, "engine pick: the latest without a bound");
+    for (auto& d : dets) d->End();
+}
+
 // ---------------------------------------------------------------- diff, tail, bundle
 void DiffAndTail() {
     std::string err;
@@ -570,9 +852,10 @@ void Bundle() {
     in.haveOurs = in.haveTheirs = true;
     in.ours[kWorms] = 10;
     in.theirs[kWorms] = 11;
-    in.contributors = {{"mod.desync-probe.env", 1, 5, 5, true, true}};
-    in.detailLocal = R"({"worms":[{"slot":3,"energy":100}]})";
-    in.detailPeer = R"({"worms":[{"slot":3,"energy":1}]})";
+    in.contributors = {{"mod.desync-probe.env", 1, 5, 5, true, true}, {"mod.sandtide.env", 1, 0x33f3cd58fac5765bull, 0, true, true}};
+    in.detailLocal = R"({"rng":"0xe01dc3c7","worms":[{"slot":3,"energy":100}]})";
+    in.detailPeer = R"({"rng":"0x42ecc01e","worms":[{"slot":3,"energy":1}]})";
+    in.rngTrail = {{4998, 0x11111111u}, {4999, 0x42ecc01eu}, {5000, 0xe01dc3c7u}};
     in.melangeLog = "12:00:00.000 [+   1.000] [ 1] INFO C:\\Users\\Tester\\Documents peer 76561198012345678 ip 10.1.2.3\r\n";
     in.userName = "Tester";
     in.computerName = "DESKTOP-XYZ";
@@ -596,6 +879,30 @@ void Bundle() {
     Expect(diff.find("\nworms[0].energy 100 -> 1\n") != std::string::npos, "diff.txt names the changed field");
     Expect(diff.find("# component worms") != std::string::npos && diff.find("reason 5") != std::string::npos,
            "diff.txt has the component and the engine correlation");
+    Expect(diff.find("# contributor mod.sandtide.env 33f3cd58fac5765b -> (not hashed on the peer at this tick: demoted or faulted there)\n") !=
+               std::string::npos,
+           "diff.txt says a 0 contributor value was not computed on the peer");
+    Expect(report.find("\"name\":\"mod.sandtide.env\"") != std::string::npos && report.find("\"theirsComputed\":false") != std::string::npos &&
+               report.find("\"oursComputed\":true") != std::string::npos,
+           "report.json carries the computed flags");
+    Expect(diff.find("# rng: ours 0xe01dc3c7, theirs 0x42ecc01e (= our value at the end of tick 4999): the peer is 57 logic-RNG draws behind us\n") !=
+               std::string::npos,
+           ("diff.txt decodes the logic-RNG distance: " + diff).c_str());
+    Expect(bundle::RngSteps(0x42ecc01eu, 0xe01dc3c7u) == 57 && bundle::RngSteps(0xe01dc3c7u, 0x42ecc01eu) == -1 &&
+               bundle::RngSteps(5, 5) == 0,
+           "RngSteps follows the game's LCG");
+    {
+        bundle::Inputs ahead = in;
+        ahead.detailLocal = R"({"rng":"0x42ecc01e"})";
+        ahead.detailPeer = R"({"rng":"0xe01dc3c7"})";
+        ahead.rngTrail.clear();
+        Expect(bundle::RngLine(ahead) == "# rng: ours 0x42ecc01e, theirs 0xe01dc3c7: the peer is 57 logic-RNG draws ahead of us",
+               ("rng line: ahead: " + bundle::RngLine(ahead)).c_str());
+        ahead.detailPeer = R"({"rng":"0x42ecc01e"})";
+        Expect(bundle::RngLine(ahead) == "# rng: both 0x42ecc01e", "rng line: equal");
+        ahead.detailPeer = R"({"worms":[]})";
+        Expect(bundle::RngLine(ahead).empty(), "rng line: none without both values");
+    }
     const std::string log = ZipEntry(zip, "logs/Melange.log");
     Expect(log.find("Tester") == std::string::npos && log.find("76561198012345678") == std::string::npos &&
                log.find("10.1.2.3") == std::string::npos,
@@ -693,11 +1000,109 @@ void Mutation(double seconds) {
 }
 }  // namespace
 
+// A mods-only mismatch found, then the peer's HELLO names other contributors before COMPS confirms it: dropped (not a
+// desync, no bundle, nothing flagged) and the mods hash is no longer compared with that peer. Both orders: the HELLO
+// after Start (the compare is turned off under a pending report whose lists matched) and between the mismatch and
+// Start (the report records the lists as differing).
+void HelloChange() {
+    for (int order = 0; order < 2; ++order) {
+        const char* when = order ? "HELLO before Start" : "HELLO after Start";
+        Link link;
+        Side A;
+        A.id = 76561198000000001ull;
+        A.link = &link;
+        const uint64_t bId = 76561198000000002ull;
+        detect::Detector da(A);
+        da.SetIdentity("0.2.0", "0123456789abcdef");
+        da.SetPeers({{bId, "B", "1"}});
+        const uint64_t key = wire::MatchKey(A.id, 99);
+        const std::vector<wire::ContribName> same = {{"mod.desync-probe.env", 1}, {"mod.sim-sampler.env", 1}};
+        const std::vector<wire::ContribName> other = {{"mod.desync-probe.env", 1}};
+        da.Begin(1, key, same);
+        auto hello = [&](const std::vector<wire::ContribName>& list) {
+            wire::Hello h;
+            h.engineHash = kEngineHashVersion;
+            h.matchKey = key;
+            h.firstTick = 1;
+            h.contribHash = wire::ContribListHash(list);
+            h.seenYou = true;
+            h.melange = "0.2.0";
+            h.content16 = "0123456789abcdef";
+            h.contribs = list;
+            const std::vector<uint8_t> p = wire::Encode(h);
+            da.OnPacket(bId, p.data(), p.size());
+        };
+        hello(same);
+        wire::Hashes hs;
+        hs.matchKey = key;
+        hs.firstTick = 1;
+        for (uint32_t t = 1; t <= 10; ++t) {
+            const TickHash h = Hash(t, 0x77, false, false);
+            A.ring[t] = h;
+            A.contrib[t] = {1ull + t, 2ull + t};
+            da.OnTick(h);
+            hs.present |= 1ull << (t - 1);
+            hs.ticks.push_back({h.engine, t >= 5 ? 0xbadull : h.mods});  // from tick 5 B's mods hash differs, engine equal
+        }
+        A.now = 200;
+        const std::vector<uint8_t> hp = wire::Encode(hs);
+        da.OnPacket(bId, hp.data(), hp.size());
+        if (order == 1) hello(other);
+        da.Pump();  // Start: FLAG, COMPS and DETAIL requests
+        Expect(A.Noted("tick 5 differs from B"), (std::string(when) + ": the mismatch is found at tick 5").c_str());
+        if (order == 0) hello(other);
+        wire::Comps c;
+        c.matchKey = key;
+        c.tick = 5;
+        c.have = true;
+        const TickHash h5 = Hash(5, 0x77, false, false);
+        c.engine = h5.engine;
+        c.mods = 0xbad;
+        memcpy(c.c, h5.c, sizeof c.c);
+        c.contrib = {0xbadull};  // B's one contributor
+        const std::vector<uint8_t> cp = wire::Encode(c);
+        A.now = 300;
+        da.OnPacket(bId, cp.data(), cp.size());
+        da.Pump();
+        Expect(A.diverged.empty() && A.bundles.empty(), (std::string(when) + ": not a desync, no bundle").c_str());
+        uint32_t flagged = 0;
+        Expect(!da.Flagged(&flagged), (std::string(when) + ": nothing flagged").c_str());
+        Expect(A.Noted("contributor lists changed before it was confirmed"), (std::string(when) + ": the log says why").c_str());
+        detect::PeerStatus v[2];
+        const int n = da.Peers(v, 2);
+        Expect(n == 1 && !v[0].modsCompared && strstr(v[0].modsNote, "contributor lists changed") != nullptr &&
+                   v[0].state == detect::PeerState::Exchanging,
+               (std::string(when) + ": the Peers panel says mods are not compared, and why").c_str());
+        // The compare goes on with the engine hash: an engine mismatch later is still a desync.
+        wire::Hashes hs2;
+        hs2.matchKey = key;
+        hs2.firstTick = 11;
+        for (uint32_t t = 11; t <= 20; ++t) {
+            const TickHash h = Hash(t, 0x77, false, false);
+            A.ring[t] = h;
+            A.contrib[t] = {1ull + t, 2ull + t};
+            da.OnTick(h);
+            hs2.present |= 1ull << (t - 11);
+            hs2.ticks.push_back({t >= 15 ? h.engine ^ 0x77 : h.engine, 0xbadull});
+        }
+        A.now = 400;
+        const std::vector<uint8_t> hp2 = wire::Encode(hs2);
+        da.OnPacket(bId, hp2.data(), hp2.size());
+        da.Pump();
+        A.now = 400 + detect::Detector::kCompsWaitMs + 20;
+        da.Pump();
+        Expect(A.diverged.size() == 1 && A.diverged[0].tick == 15, (std::string(when) + ": an engine desync after it is still found").c_str());
+        da.End();
+    }
+}
+
 int main(int argc, char** argv) {
     const double seconds = argc > 1 ? atof(argv[1]) : 10.0;
     Packets();
     Compare();
     Pair();
+    HelloChange();
+    EnginePick();
     DiffAndTail();
     Bundle();
     Mutation(seconds);

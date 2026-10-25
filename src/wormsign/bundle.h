@@ -20,6 +20,10 @@ struct Inputs {
     bool haveOurs = false, haveTheirs = false;
     bool contribListsMatch = true;
     std::vector<Contributor> contributors;
+    // Our logic RNG at the end of recent ticks (tick, value), ending at the divergence tick, newest last. With both
+    // detail records this lets diff.txt say how many draws apart the two machines are and which of our ticks the
+    // peer's value matches.
+    std::vector<std::pair<uint32_t, uint32_t>> rngTrail;
     std::string peerName;                    // as the lobby shows it; hashed in the files
     std::string peersJson = "[]";            // array; SteamIDs already hashed with `salt`
     std::string engineJson = "[]";           // array of engine validation records
@@ -35,6 +39,11 @@ struct Inputs {
 };
 
 std::string PeerRef(const std::string& salt, uint64_t steamId);   // "hash:xxxxxxxx", "" for 0
+// The game's logic RNG is the LCG x' = x * 1103515245 + 12345 (mod 2^32). Steps from `from` to `to`, -1 when `to`
+// is not within `max` draws.
+int RngSteps(uint32_t from, uint32_t to, int max = 1 << 16);
+// The "# rng ..." line of diff.txt for two detail records (their "rng" fields), "" when it cannot be said.
+std::string RngLine(const Inputs& in);
 std::string ReportJson(const Inputs& in);
 std::string DiffText(const Inputs& in);
 std::string Redact(const Inputs& in, std::string text);
