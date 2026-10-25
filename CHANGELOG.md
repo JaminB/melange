@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.11.1
+
+- Fixed: `wum.sim.scheme()` read the scheme's `Name` with an unprotected index, so scheme data whose read raises
+  unwound through the mod's call. The read is now protected and gives `nil, "unavailable"`; its warning is logged once
+  per match (it was once per session).
+- Fixed: `wum.sim.worm(slot)` and `wum.sim.holdTurn(ticks)` took a numeric string (`"1"`) as a number. They take a
+  number only now, and raise on a string like on any other wrong type.
+- Fixed: `wum.sim.holdTurn` set up its match observer and tick hook before its refusal checks, so a refused call (not
+  in a match, halted) still installed them. They are set up only for a call that passes the checks.
+- The worm anchor logs, once per match, the movement utilities an anchored worm cannot fire (`kUtilityNinjaRope`,
+  `kUtilityParachute`, `kUtilityJetpack` and the crate-only teleport `kMysteryTeleport`), and warns if one of them did
+  not resolve.
+- Docs: 0.11 adds two Wormsign contributors, `melange.wormanchor` (the anchors) and `melange.turnhold` (the turn-start
+  hold), so a 0.10 peer sees "mod contributors differ" against a 0.11 peer in a match with sim mods.
+
 ## 0.11.0
 
 - New: `wum.sim.worm(slot)` for sim scripts: `:pos()`, `:vel()`, `:alive()`, `:active()`, `:team()`, `:health()`,

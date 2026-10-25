@@ -264,15 +264,15 @@ size_t HashBytes(uint8_t* out, size_t cap) {
 
 int __cdecl LHoldTurn(l5::State* L) {
     const auto& a = l5::A();
-    if (!a.isnumber(L, 1)) return Fail(L, "wum.sim.holdTurn: expected a number of ticks");
+    if (a.type(L, 1) != l5::kTNumber) return Fail(L, "wum.sim.holdTurn: expected a number of ticks");
     const float f = a.tonumber(L, 1);
     if (!(f >= 1 && f <= static_cast<float>(kMaxTicks)) || f != static_cast<float>(static_cast<uint32_t>(f)))
         return Fail(L, "wum.sim.holdTurn: ticks must be a whole number from 1 to 3000");
     const uint32_t ticks = static_cast<uint32_t>(f);
-    Init();
     Sync();
     if (!g.L || L != g.L) return NilReason(L, "not in a match");
     if (l5::RunState() != 1) return NilReason(L, "halted");
+    Init();  // the match observer and tick hook exist only once a hold is actually asked for in a running match
     if (const char* why = InstallWrapper(L)) return NilReason(L, why);
     const char* mod = simbridge::CurrentMod();
     if (s.holding) {

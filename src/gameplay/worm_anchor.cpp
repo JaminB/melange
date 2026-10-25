@@ -26,6 +26,7 @@
 #include <windows.h>
 #include <safetyhook.hpp>
 
+#include <cstdio>
 #include <cstring>
 #include <mutex>
 
@@ -160,12 +161,25 @@ void ResolveIds() {
     for (size_t i = 0; i < kAlwaysN; ++i) g_always[i] = melange::bus::IdOf(kAlwaysBlocked[i]);
     for (size_t i = 0; i < kFireN; ++i) g_fire[i] = melange::bus::IdOf(kFireBlocked[i]);
     memset(g_movementWeapon, 0, sizeof g_movementWeapon);
+    char list[160] = "";
+    int found = 0;
     for (int i = 1; i < kWeaponNameCount; ++i) {
         char name[48] = "";
         melange::gamestate::detail::ReadCString(Rd<uintptr_t>(kWeaponNames + 4 * i), name, sizeof name);
-        for (const char* m : kMovementWeapons)
-            if (strcmp(name, m) == 0) g_movementWeapon[i] = true;
+        for (const char* m : kMovementWeapons) {
+            if (strcmp(name, m) != 0) continue;
+            g_movementWeapon[i] = true;
+            ++found;
+            const size_t len = strlen(list);
+            snprintf(list + len, sizeof list - len, "%s%s=%d", len ? " " : "", name, i);
+        }
     }
+    // The movement utilities an anchored worm cannot fire. The teleport is the crate-only kMysteryTeleport (55): no
+    // scheme stocks it, a worm gets it from a utility crate.
+    if (found == static_cast<int>(sizeof kMovementWeapons / sizeof kMovementWeapons[0]))
+        LOG_INFO("[worms] anchored worms cannot fire: %s", list);
+    else
+        LOG_WARN("[worms] only %d of the movement utilities resolved (%s): the others stay usable when anchored", found, list);
 }
 
 bool Blocked(uint16_t id, int slot) {
