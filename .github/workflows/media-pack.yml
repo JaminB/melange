@@ -245,7 +245,7 @@ jobs:
           $ErrorActionPreference = "Stop"
           $hash = (Get-FileHash -Algorithm SHA256 $env:ZIP).Hash.ToLowerInvariant()
           $notes = @"
-          Melange media pack $env:VERSION: holo-media.exe (Authenticode-signed), the unmodified zhongfly LGPL libmpv-2.dll and deno.exe. Melange downloads it on first use; each file is checked against the manifest compiled into melange.asi.
+          Melange media pack ${env:VERSION}: holo-media.exe (Authenticode-signed), the unmodified zhongfly LGPL libmpv-2.dll and deno.exe. Melange downloads it on first use; each file is checked against the manifest compiled into melange.asi.
 
           SHA-256 of $(Split-Path $env:ZIP -Leaf): ``$hash``
           Built from commit $env:GITHUB_SHA. The LGPL source mirror, when present, is the melange-media-src asset.
@@ -253,7 +253,8 @@ jobs:
           $files = @($env:ZIP)
           if ($env:SRC -and (Test-Path $env:SRC)) { $files += $env:SRC }
           if (Test-Path out\media\pack_manifest.h) { $files += "out\media\pack_manifest.h" }
-          $where = if ($env:GITHUB_REF_TYPE -eq "tag") { "--verify-tag" } else { "--target", $env:GITHUB_SHA }
+          # Always an array: splatting a lone string passes it one character per argument.
+          $where = @(if ($env:GITHUB_REF_TYPE -eq "tag") { "--verify-tag" } else { "--target", $env:GITHUB_SHA })
           gh release create $env:TAG @files @where --title "Melange media pack $env:VERSION" --notes $notes
           if ($LASTEXITCODE) { throw "release failed" }
 
