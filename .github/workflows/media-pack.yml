@@ -255,7 +255,8 @@ jobs:
           if (Test-Path out\media\pack_manifest.h) { $files += "out\media\pack_manifest.h" }
           # Always an array: splatting a lone string passes it one character per argument.
           $where = @(if ($env:GITHUB_REF_TYPE -eq "tag") { "--verify-tag" } else { "--target", $env:GITHUB_SHA })
-          gh release create $env:TAG @files @where --title "Melange media pack $env:VERSION" --notes $notes
+          # Never "latest": Melange.exe's updater reads /releases/latest and refuses a tag that is not v<version>.
+          gh release create $env:TAG @files @where --title "Melange media pack $env:VERSION" --notes $notes --latest=false
           if ($LASTEXITCODE) { throw "release failed" }
 
   lane:
