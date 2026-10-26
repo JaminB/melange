@@ -518,9 +518,7 @@ void OnLobby(peerbus::LobbyEvent e) {
     }
 }
 
-void Shared(lua_State* L, int wum) {
-    static const luaL_Reg kLobby[] = {{"state", LobbyState}, {"isHost", LobbyIsHost}, {nullptr, nullptr}};
-    static const luaL_Reg kPeer[] = {{"open", PeerOpen}, {"now", PeerNow}, {nullptr, nullptr}};
+void ChannelMeta(lua_State* L) {
     static const luaL_Reg kChannel[] = {{"send", ChSend},         {"broadcast", ChBroadcast},
                                         {"on", ChOn},             {"onPeer", ChOnPeer},
                                         {"peers", ChPeers},       {"clock", ChClock},
@@ -536,6 +534,12 @@ void Shared(lua_State* L, int wum) {
         lua_setfield(L, -2, "__metatable");  // getmetatable() hands out nothing to change
     }
     lua_pop(L, 1);
+}
+
+void Shared(lua_State* L, int wum) {
+    static const luaL_Reg kLobby[] = {{"state", LobbyState}, {"isHost", LobbyIsHost}, {nullptr, nullptr}};
+    static const luaL_Reg kPeer[] = {{"open", PeerOpen}, {"now", PeerNow}, {nullptr, nullptr}};
+    ChannelMeta(L);
     lua_newtable(L);
     RegisterFunctions(L, -1, kLobby);
     lua_setfield(L, wum, "lobby");
