@@ -495,6 +495,10 @@ void OnEvent(const pipe::EventEvt& e) {
     if (!p) return;
     if (e.name == proto::event::kFileLoaded) {
         p->loaded = true;
+        // The helper sets mpv's pause before the loadfile, so its change event (if mpv sends one at all: none when the
+        // value did not change, as for a fresh player opened playing) carries the previous gen and is dropped above.
+        // mpv applied what was last commanded, in order: start from that, later pause events correct it.
+        p->repPaused = p->paused;
         json::Value o = TypeObj("loaded");
         JSet(o, "title", JStr(p->title));
         JSet(o, "duration", JNum(p->duration));
