@@ -97,6 +97,7 @@ int App::Run() {
     pipe::HelloEvt hello;
     if (libmpvError_.empty()) ProbeVersions(env_.mpvHome, &hello.mpv, &hello.ffmpeg);
     hello.hwdec = env_.hello.hwdec;
+    hello.libtorrent = bt::EngineVersion();
     if (!pipe_.Connect(args_.pipe, args_.parent, kConnectMs, &why)) {
         HLOG("pipe: %s", why.c_str());
         return 3;

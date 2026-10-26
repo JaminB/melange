@@ -183,6 +183,39 @@ inline void Policy() {
         }
         CHECK(g.Lead() <= sync::kLeadMax + 1e-9 && g.Lead() > 2.5, "follow: a slow machine's lead grows to the 3 s cap");
     }
+    // Where a hard seek landed: a 0.5 s miss corrects the lead and is redone once; a second miss is only nudged.
+    {
+        sync::Follower f;
+        f.Update(Host(1, "a", true, 10, 1000), 1000);
+        // a player at `pos` whose newest sample (at helper time `qpc`) showed `value`: the seek it confirms is done
+        const auto at = [](double pos, double qpc, double value) {
+            sync::Local l = Playing(pos);
+            l.sampleQpcMs = qpc;
+            l.sampleValue = value;
+            return l;
+        };
+        sync::Command c = f.Step(1000, Playing(3), ready);  // seek to 10.5
+        CHECK(c.seek && std::fabs(c.seekTo - 10.5) < 1e-9, "landing: first seek");
+        c = f.Step(2500, at(12.0, 1100, 10.5), ready);  // host at 11.5, the seek landed 0.5 s ahead (it took ~0 s)
+        CHECK(c.seek && std::fabs(f.Lead() - sync::kLeadMin) < 1e-9 && std::fabs(c.seekTo - (11.5 + sync::kLeadMin)) < 1e-9,
+              "landing: 0.5 s ahead: the lead drops by the miss and the seek is redone (to " + std::to_string(c.seekTo) + ")");
+        c = f.Step(4000, at(13.4, 2600, 11.7), ready);  // host at 13, still 0.4 s ahead
+        CHECK(!c.seek && c.setSpeed && f.LastAction() == sync::Action::Nudge, "landing: a redo's miss is only nudged");
+        c = f.Step(30000, Playing(39.2), ready);  // later 0.2 s off: the plain nudge, no landing logic
+        CHECK(!c.seek && f.LastAction() == sync::Action::Nudge && std::fabs(f.Lead() - sync::kLeadMin) < 1e-9,
+              "landing: checked once per seek");
+        sync::Follower g;
+        g.Update(Host(1, "a", true, 10, 1000), 1000);
+        g.Step(1000, Playing(3), ready);
+        c = g.Step(2500, at(11.7, 1100, 10.5), ready);  // 0.2 s ahead: within the redo threshold
+        CHECK(!c.seek && g.LastAction() == sync::Action::Nudge && std::fabs(g.Lead() - 0.3) < 1e-9,
+              "landing: a small miss corrects the lead and nudges");
+        sync::Follower h;
+        h.Update(Host(1, "a", true, 10, 1000), 1000);
+        h.Step(1000, Playing(3), ready);
+        c = h.Step(2500, at(10.7, 2400, 10.5), ready);  // 0.8 s behind: the seek took 1.3 s
+        CHECK(c.seek && std::fabs(h.Lead() - 1.3) < 1e-9, "landing: behind: the lead grows and the seek is redone");
+    }
     // Live: play and pause only.
     {
         sync::Follower f;
@@ -201,10 +234,11 @@ inline void Policy() {
 // A simulated local player behind a 10 Hz sample stream delayed by 0-150 ms (Y1). With a perfect player the follow
 // settles after the first seek and never nudges; with one that runs 2 % fast it nudges but never seeks again.
 struct SimResult {
-    int nudgesLate = 0, seeksLate = 0;
+    int nudgesLate = 0, seeksLate = 0, seeks = 0;
     double maxDriftLate = 0;
+    double maxDriftAfter6s = 0;  // from 6 s on: how soon the first seek's miss is gone
 };
-SimResult Simulate(double playerError, uint32_t seed) {
+SimResult Simulate(double playerError, uint32_t seed, double seekMs = 500) {
     std::mt19937 rng(seed);
     std::uniform_real_distribution<double> delay(0, 150);
     const double offset = 12345;  // host clock = mine + offset
@@ -245,10 +279,12 @@ SimResult Simulate(double playerError, uint32_t seed) {
         if (c.seek) {
             pos = c.seekTo;
             buffering = true;
-            bufferUntil = now + 500;  // a seek takes 0.5 s here (the starting lead)
+            bufferUntil = now + seekMs;  // 0.5 s by default: the starting lead
             lastSample = c.seekTo;
             lastQpc = now;
+            ++r.seeks;
         }
+        if (now > 6000 && f.HasDrift()) r.maxDriftAfter6s = std::max(r.maxDriftAfter6s, std::fabs(f.Drift()));
         if (now > 10000) {
             r.nudgesLate += f.LastAction() == sync::Action::Nudge && c.setSpeed;
             r.seeksLate += c.seek;
@@ -266,6 +302,15 @@ inline void Staleness() {
         const SimResult b = Simulate(0.02, seed);
         CHECK(b.seeksLate == 0 && b.nudgesLate > 0 && b.maxDriftLate < 0.2,
               "follow: a 2 % fast player is nudged, never seeked (max drift " + std::to_string(b.maxDriftLate) + ")");
+        CHECK(a.seeks == 1, "follow: a seek that took the starting lead is not redone (" + std::to_string(a.seeks) + ")");
+        // In-game the first seek took almost nothing and the peer sat 0.4-1.0 s ahead for 20 s of nudging: the miss
+        // is now measured once the seek's grace is over and redone once, in either direction.
+        for (const double ms : {0.0, 100.0, 1400.0}) {
+            const SimResult c = Simulate(0, seed, ms);
+            CHECK(c.seeks == 2 && c.seeksLate == 0 && c.maxDriftAfter6s < 0.25 && c.maxDriftLate < 0.21,
+                  "follow: a " + std::to_string(int(ms)) + " ms seek: one redo, in sync within 6 s (seeks " +
+                      std::to_string(c.seeks) + ", drift after 6 s " + std::to_string(c.maxDriftAfter6s) + ")");
+        }
     }
 }
 

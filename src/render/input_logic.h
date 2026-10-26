@@ -598,6 +598,7 @@ public:
     struct Out {
         bool toGame = true;
         bool endPointer = false, endFocus = false;  // the caller ends them (pointer mode has a zero-delta exit)
+        const char* endWhy = "";                    // why pointer mode ends (for the log)
         bool paste = false;                         // Ctrl+V while focused: the caller reads the clipboard
         std::vector<ModEvent> events;
         std::vector<std::pair<std::string, bool>> marks;  // (mod, consentGrade): a click was delivered
@@ -837,6 +838,7 @@ public:
             if (!pointer_.empty() && down && !repeat) {
                 o.toGame = false;  // Esc ends pointer mode and is consumed
                 o.endPointer = true;
+                o.endWhy = "Esc";
                 LatchEsc(nowMs);
             } else if (EscLatched(nowMs)) {
                 o.toGame = false;  // the rest of the Esc press that ended pointer mode or focus
@@ -873,7 +875,10 @@ private:
             }
             o->toGame = false;
             held_[b.button] = Held{true, {}, {}, false, 0, 0, 0, 0};
-            if (clickOutside_) o->endPointer = true;  // this click is consumed
+            if (clickOutside_) {  // this click is consumed
+                o->endPointer = true;
+                o->endWhy = "a click outside every region";
+            }
             return;
         }
         o->toGame = false;

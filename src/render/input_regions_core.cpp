@@ -30,22 +30,22 @@ ModInput::Point Sample() {
     return p;
 }
 
-void EndPointerNow() {
+void EndPointerNow(const char* why) {
     if (g_in.PointerOwner().empty()) return;
     g_in.EndPointer();
     int cx = 0, cy = 0;
-    if (g_host.pointerEnded(&cx, &cy)) g_in.ArmExitGrace(g_host.nowMs(), cx, cy);
+    if (g_host.pointerEnded(why, &cx, &cy)) g_in.ArmExitGrace(g_host.nowMs(), cx, cy);
 }
 
 void Apply(ModInput::Out& o) {
     for (const ModEvent& e : o.events) g_host.post(e.mod, ModEventName(e.kind), ModEventJson(e));
     for (const auto& [mod, consent] : o.marks) input::gesture::Mark(mod.c_str(), consent);
-    if (o.endPointer) EndPointerNow();
+    if (o.endPointer) EndPointerNow(o.endWhy);
     if (o.endFocus) g_in.EndFocus();
 }
 
-void EndAll() {
-    EndPointerNow();
+void EndAll(const char* why) {
+    EndPointerNow(why);
     g_in.EndFocus();
 }
 }  // namespace
@@ -85,7 +85,7 @@ std::string Hover(const std::string& mod) {
 Result Pointer(const std::string& mod, bool on, bool clickOutside, unsigned texture, float hotX, float hotY) {
     if (!Ready()) return Result::Unavailable;
     if (!on) {
-        if (g_in.PointerOwner() == mod) EndPointerNow();
+        if (g_in.PointerOwner() == mod) EndPointerNow("the mod turned it off");
         return Result::Ok;
     }
     if (!g_host.inMatch()) return Result::Unavailable;
@@ -118,7 +118,7 @@ Result Focus(const std::string& mod, bool on) {
 }
 
 void Forget(const std::string& mod) {
-    if (g_in.PointerOwner() == mod) EndPointerNow();
+    if (g_in.PointerOwner() == mod) EndPointerNow("the mod unloaded");
     g_in.Forget(mod);
     input::gesture::Clear(mod.c_str());
 }
@@ -137,7 +137,7 @@ void EscFromDirectInput() {
     if (!g_haveHost || OwnsKeyboard()) return;
     if (OwnsMouse()) {
         g_in.LatchEsc(g_host.nowMs());
-        EndPointerNow();
+        EndPointerNow("Esc");
     }
 }
 
@@ -176,7 +176,7 @@ void NoteSwallowedByOverlay(unsigned msg, uintptr_t wp) { g_in.OverlaySwallowed(
 
 void FocusLost() {
     g_in.LoseFocus();
-    if (g_haveHost) EndAll();
+    if (g_haveHost) EndAll("focus loss");
 }
 
 void Tick() {
@@ -184,10 +184,13 @@ void Tick() {
     g_in.Expire(g_host.frame());
     if (!OwnsMouse() && !OwnsKeyboard()) return;
     if (!g_host.allowed() || g_host.overlayCapturing() || !g_host.foreground()) {
-        EndAll();
+        EndAll(!g_host.allowed() ? "mod input off" : g_host.overlayCapturing() ? "the overlay took input" : "focus loss");
         return;
     }
-    if (OwnsMouse() && (!g_host.inMatch() || g_host.myTurnStarted(false))) EndPointerNow();
+    if (OwnsMouse()) {
+        if (!g_host.inMatch()) EndPointerNow("the match ended");
+        else if (g_host.myTurnStarted(false)) EndPointerNow("a turn of mine started");
+    }
 }
 
 PointerView CurrentPointer() {

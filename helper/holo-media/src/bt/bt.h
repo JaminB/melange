@@ -81,6 +81,9 @@ public:
 // The engine of this build (bt_libtorrent*.cpp with HOLO_TORRENT=ON, bt_none.cpp otherwise). nullptr with a reason
 // when torrents are unavailable; the helper then answers every bt.* message with error{code="torrent"}.
 std::unique_ptr<Engine> CreateEngine(const Settings& s, std::string* err);
+// The torrent library's version ("2.0.11"), or "" without torrent support. Needs no engine: the hello reports it
+// before the first torrent creates one (the first bind waits for the lobby).
+std::string EngineVersion();
 
 // mpv opens a torrent file through this protocol: "holobt://<infohash>/<index>".
 inline constexpr const char kStreamProtocol[] = "holobt";

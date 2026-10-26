@@ -3,8 +3,9 @@
 // host feeds it the host's state `st`, the local player's extrapolated position and the peer bus's clock estimate once
 // per frame, and sends whatever Command comes back. Constants are Syncplay's: a 0.10 s deadband, a 5 % speed nudge up
 // to 1.5 s, beyond that an exact seek slightly ahead (the lead, learned from how long seeks take here), and 1 s of
-// grace after any seek so one correction never cascades into the next. The host never waits for a peer: a buffering
-// peer catches up by itself.
+// grace after any seek so one correction never cascades into the next. Where a hard seek actually landed is checked
+// once its grace is over: the lead is corrected by that miss, and a miss of 0.35 s or more is fixed by one more seek
+// (a 5 % nudge would need 7 s or more for it). The host never waits for a peer: a buffering peer catches up by itself.
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
@@ -19,6 +20,7 @@ inline constexpr double kNudgeSlow = 0.95, kNudgeFast = 1.05;
 inline constexpr double kGraceMs = 1000;        // no correction this long after a seek
 inline constexpr double kLeadStart = 0.5, kLeadMin = 0.2, kLeadMax = 3.0, kLeadKeep = 0.7;  // EWMA weight of the old lead
 inline constexpr double kSeekPendingMaxMs = 8000;  // a seek that never shows a fresh position is given up after this
+inline constexpr double kRefineSeek = 0.35;     // a hard seek that missed by this much is redone once, with the miss
 
 // The host's state as Holo sends it (wum.peer): epoch, item id, play or pause, position (s), rate, and the host's
 // wum.peer.now() (ms) at which `p` holds.
@@ -75,6 +77,7 @@ public:
         needHard_ = true;
         seekPending_ = false;
         graceUntil_ = 0;
+        landing_ = false;
     }
     void Reset() {
         *this = Follower();
@@ -127,12 +130,28 @@ public:
         if (wantPause) {
             if (ad > kPausedSeek || (needHard_ && ad > 0.05)) IssueSeek(nowMs, cur_.p, false, &cmd);
             needHard_ = false;
+            landing_ = false;  // a paused seek goes to p, with no lead to correct
             return finish();
         }
         const double hard = c.ready ? kHardSeek : kHardSeekNoClock;
+        const bool landed = landing_;  // the first look after a hard seek: how far off it landed
+        landing_ = false;
         if (needHard_ || ad >= hard) {
             IssueSeek(nowMs, target + lead_, true, &cmd);
             needHard_ = false;
+            landing_ = true;
+            refined_ = false;
+        } else if (landed && c.ready && ad >= kDeadband) {
+            // That seek went to target + leadUsed_ and is drift_ off now: target + leadUsed_ - drift_ would have hit.
+            lead_ = std::clamp(leadUsed_ - drift_, kLeadMin, kLeadMax);
+            if (ad >= kRefineSeek && !refined_) {
+                IssueSeek(nowMs, target + lead_, true, &cmd);
+                landing_ = true;
+                refined_ = true;  // once: a second miss is left to the nudge, so seeks never chain
+            } else {
+                speed = cur_.r * (drift_ > 0 ? kNudgeSlow : kNudgeFast);
+                action_ = Action::Nudge;
+            }
         } else if (c.ready && ad >= kDeadband) {
             speed = cur_.r * (drift_ > 0 ? kNudgeSlow : kNudgeFast);
             action_ = Action::Nudge;
@@ -155,6 +174,7 @@ private:
         seekPending_ = learn;
         seekIssuedMs_ = nowMs;
         seekTo_ = cmd->seekTo;
+        leadUsed_ = lead_;
     }
     // The first fresh position sample near the seek target, taken after the seek and while playing, ends the seek:
     // its delay is how long a seek takes on this machine and item, which the next seek leads by.
@@ -162,6 +182,7 @@ private:
         if (!seekPending_) return;
         if (nowMs - seekIssuedMs_ > kSeekPendingMaxMs) {
             seekPending_ = false;
+            landing_ = false;  // never confirmed: where it landed is unknown, so nothing is corrected by it
             return;
         }
         if (l.buffering || l.paused || l.sampleQpcMs <= seekIssuedMs_ || std::fabs(l.sampleValue - seekTo_) > 1.0) return;
@@ -177,6 +198,9 @@ private:
     bool seekPending_ = false;
     double seekIssuedMs_ = 0, seekTo_ = 0;
     double lead_ = kLeadStart;
+    double leadUsed_ = kLeadStart;  // the lead the last seek went with
+    bool landing_ = false;          // a playing hard seek was issued: check where it landed after its grace
+    bool refined_ = false;          // the last hard seek was already a redo
     Action action_ = Action::None;
     bool hasDrift_ = false;
     double drift_ = 0;

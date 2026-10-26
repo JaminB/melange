@@ -381,6 +381,8 @@ void TestEngine(const std::wstring& root) {
     CHECK(e != nullptr, "engine: " + why);
     if (!e) return;
     CHECK(e->Version().rfind("libtorrent ", 0) == 0, "version " + e->Version());
+    CHECK(!holo::bt::EngineVersion().empty() && e->Version() == "libtorrent " + holo::bt::EngineVersion(),
+          "the hello's version without an engine: " + holo::bt::EngineVersion());
 
     url::Classified cl;
     const std::string raw = "magnet:?xt=urn:btih:" + ih + "&dn=Show&tr=http%3A%2F%2F127.0.0.1%3A1%2Fannounce" +

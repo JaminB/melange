@@ -38,6 +38,11 @@ or Wormsign.
   results. Before 0.12 it was true only once the online match was running. A mod that needs the old meaning can test
   `wum.lobby.state().phase == "match"` or use the `online` field of `melange.match.start`.
 
+### Fixed
+
+- `Melange.log` no longer waits for the disk after every line. On a busy disk a burst of log lines could hold the game's
+  main thread for several seconds. Lines still reach the system cache at once, so a crash or a hang loses none.
+
 ## 0.11.2
 
 - Fixed: an oil drum could explode a tick apart on two machines and take the match out of sync ("Random's dont

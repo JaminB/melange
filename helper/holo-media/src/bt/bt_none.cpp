@@ -7,4 +7,5 @@ std::unique_ptr<Engine> CreateEngine(const Settings&, std::string* err) {
     if (err) *err = "this holo-media build has no torrent support";
     return nullptr;
 }
+std::string EngineVersion() { return {}; }
 }  // namespace holo::bt

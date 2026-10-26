@@ -73,7 +73,7 @@ struct Host {
     bool (*clipboard)(std::wstring* text);  // CF_UNICODETEXT, at most kPasteMaxUnits UTF-16 units
     bool (*pointerHook)();                  // install what pointer mode needs; false = unavailable
     void (*pointerStarted)(const std::vector<int>& heldButtons);  // release each button the game holds
-    bool (*pointerEnded)(int* centreX, int* centreY);             // zero-delta exit (PointerExit)
+    bool (*pointerEnded)(const char* why, int* centreX, int* centreY);  // zero-delta exit (PointerExit); why: for the log
     bool (*myTurnStarted)(bool reset);  // a turn of this machine's player started since the last call
     void (*post)(const std::string& mod, const char* name, const std::string& json);  // owner-only event
 };

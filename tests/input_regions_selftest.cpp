@@ -211,6 +211,7 @@ void TestPure() {
         Expect(!q.Mouse(WM_INPUT, 0, 0, 0, P(1, 1), frame, now, kW, kH).toGame, "other mouse traffic is kept in pointer mode");
         ModInput::Out o = q.Mouse(WM_MBUTTONDOWN, 0, 0, 0, P(1, 1), frame, now, kW, kH);
         Expect(!o.toGame && o.endPointer && o.events.empty(), "a click outside every region ends it, consumed");
+        Expect(std::string(o.endWhy) == "a click outside every region", "the exit names its cause for the log");
         q.EndPointer();
         q.ArmExitGrace(now, 960, 540);
         Expect(!q.Mouse(WM_MBUTTONUP, 0, 0, 0, P(1, 1), frame, now, kW, kH).toGame, "its release stays consumed");
@@ -226,6 +227,7 @@ void TestPure() {
         Expect(q.Key(WM_KEYDOWN, VK_SPACE, 0x39 << 16, 0, now).toGame, "the keyboard reaches the game in pointer mode");
         ModInput::Out esc = q.Key(WM_KEYDOWN, VK_ESCAPE, 0x01 << 16, 0, now);
         Expect(!esc.toGame && esc.endPointer, "Esc ends pointer mode");
+        Expect(std::string(esc.endWhy) == "Esc", "an Esc exit says so");
         q.EndPointer();
         Expect(q.Key(WM_KEYDOWN, VK_ESCAPE, (0x01 << 16) | (1 << 30), 0, now + 999).toGame == false, "the latch eats auto-repeat");
         Expect(q.Key(WM_KEYDOWN, VK_ESCAPE, 0x01 << 16, 0, now + 1001).toGame, "the latch ends");
@@ -278,7 +280,7 @@ void Install() {
     h.clipboard = [](std::wstring*) { return false; };
     h.pointerHook = [] { return true; };
     h.pointerStarted = [](const std::vector<int>&) { ++started; };
-    h.pointerEnded = [](int* cx, int* cy) {
+    h.pointerEnded = [](const char*, int* cx, int* cy) {
         ++ended;
         *cx = kW / 2;
         *cy = kH / 2;

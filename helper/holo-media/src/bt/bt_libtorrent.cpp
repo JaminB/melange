@@ -858,6 +858,8 @@ int LtEngine::TestCount(const std::string& ih, bool trackers) {
 }
 }  // namespace
 
+std::string EngineVersion() { return lt::version(); }
+
 std::unique_ptr<Engine> CreateEngine(const Settings& s, std::string* err) {
     if (s.cacheDir.empty()) {
         if (err) *err = "no cache folder";

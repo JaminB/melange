@@ -632,8 +632,11 @@ void Dispatch(std::vector<pipe::Message>& msgs) {
                 ErrorToPlayers("the media helper does not match this Melange");
                 return;
             }
-            LOG_INFO("[media] helper ready: mpv %s, ffmpeg %s, libtorrent %s, hwdec %s%s", h->mpv.c_str(), h->ffmpeg.c_str(),
-                     h->libtorrent.c_str(), h->hwdec.c_str(), g_session && g_session->Low() ? ", low integrity" : "");
+            // mpv's own version string starts with "mpv "; a field the helper left empty reads "none"
+            const auto shown = [](const std::string& v) { return v.empty() ? std::string("none") : v; };
+            const std::string mpvVer = h->mpv.rfind("mpv ", 0) == 0 ? h->mpv : "mpv " + shown(h->mpv);
+            LOG_INFO("[media] helper ready: %s, ffmpeg %s, libtorrent %s, hwdec %s%s", mpvVer.c_str(), shown(h->ffmpeg).c_str(),
+                     shown(h->libtorrent).c_str(), shown(h->hwdec).c_str(), g_session && g_session->Low() ? ", low integrity" : "");
             SetHState(HState::Ready);
             Replay();
         } else if (auto* p = std::get_if<pipe::PropEvt>(&m)) {

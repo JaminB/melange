@@ -47,7 +47,7 @@ inline void Install() {
         ++g_started;
         g_held = held;
     };
-    h.pointerEnded = [](int* cx, int* cy) {
+    h.pointerEnded = [](const char*, int* cx, int* cy) {
         ++g_ended;
         *cx = 640;
         *cy = 360;

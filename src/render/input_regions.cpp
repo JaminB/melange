@@ -112,11 +112,12 @@ void PointerStarted(const std::vector<int>& held) {
              mi::CurrentPointer().owner.c_str(), static_cast<unsigned>(held.size()));
 }
 
-bool PointerEnded(int* cx, int* cy) {
+bool PointerEnded(const char* why, int* cx, int* cy) {
     const bool ok = PointerExit(cx, cy);
     const bool away = !ok && GetForegroundWindow() != static_cast<HWND>(melange::events::GameWindow());
-    LOG_INFO("[input] pointer mode off%s", ok ? "" : away ? " (unfocused: the cursor is left alone until the game is back)"
-                                                         : " (no warp centre: the game may see one mouse jump)");
+    LOG_INFO("[input] pointer mode off: %s%s", why && *why ? why : "ended",
+             ok ? "" : away ? " (unfocused: the cursor is left alone until the game is back)"
+                            : " (no warp centre: the game may see one mouse jump)");
     return ok;
 }
 
