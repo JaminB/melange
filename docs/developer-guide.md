@@ -52,6 +52,9 @@ Every module has its own section in `Melange.ini`, and `Enabled=0` turns a modul
 | `Schemes` | on | Game styles and team-editor weapon presets from mods' `schemes` and `factoryWeapons` files, written to `Melange\cache\schemes\` and loaded over `DATA.LockedSchemes` and `DATA.LockedWeapons` at the frontend; installs nothing until an enabled mod declares one; build #1077 only |
 | `Music` | on | Sudden-death music from mods' `music` MP3s: a bank built under `Melange\cache\music\` and handed to the game by a `CreateFileA` hook; installs the hook at start-up and does nothing until an enabled mod declares music; build #1077 only |
 | `Audio` | on | Sound playback for mods (`wum.audio`, client VM only): WAV files from the mod folder mixed through XAudio2 2.9, loaded dynamically and started on the first sound; `Volume=1.0` (master, 0 to 1), `MaxVoices=32`, `Near=150` and `Far=1500` (world units; positional sounds fall off linearly between them). Local presentation only: nothing reaches the simulation, the wire or the handshake; not tried in game yet |
+| `Media` | on | Watch-party video for client mods (`wum.media`): YouTube and torrent playback in the separate `holo-media.exe` helper from a media pack that is downloaded once, only when a mod's button is clicked ([The media pack](#the-media-pack), [media-helper.md](media-helper.md)); `AllowDownload=0` blocks every download, `Enabled=0` turns the module off |
+| `PeerBus` | on | Steam P2P channel 6 between copies of the same client mod and the lobby view for mods (`wum.peer`, `wum.lobby`); never the game's own channel |
+| `Input` | on (`AllowModInput=1`) | Lets client mods take clicks and typing for their own controls (`wum.input` regions, pointer mode, keyboard focus); the overlay still comes first |
 | `Store` | on | The plugin store (*Thumper/Store*, the Oasis Store panel): fetches the list only when you open it ([Plugin store](#plugin-store)) |
 | `Oasis` | on | The local web app on 127.0.0.1 ([oasis.md](oasis.md)); nothing listens until you open it |
 | `Wormsign` | on | The match's tick clock and a per-tick state hash (`wum.wormsign.tick()`); records a rolling library of recent matches to `Documents\Melange\replays` (last 20 / 200 MB by default, `wum.wormsign.library()`), match replays checked tick by tick (*Wormsign/Replay*); online, it compares the hashes with other Melange players and reports the first tick where they disagree ([wormsign.md](wormsign.md)); build #1077 only |
@@ -532,6 +535,42 @@ a folder without one still loads, unchanged, as a client-only mod named after it
 
 `dist\Mods\` includes `hello-spice` and `sim-sampler` as disabled samples (`defaultEnabled: false`); a
 newly discovered mod without that flag starts enabled.
+
+## The media pack
+
+`wum.media` (Melange 0.12) plays video for client mods such as Holo in a separate 64-bit process, `holo-media.exe`
+([media-helper.md](media-helper.md) has the pack, the checks and the protocol). The settings are in `[Media]`:
+
+| Key | Default | |
+|---|---|---|
+| `Enabled` | 1 | 0 = the module does not start; `wum.media.available()` answers `false, "disabled"` |
+| `AllowDownload` | 1 | 0 = never download the media pack or yt-dlp updates |
+| `PackUrl` | empty | empty = the pack compiled into `melange.asi`; tests: `file:///...` |
+| `MatchDownloadKBps` | 2048 | pack download speed cap during a match |
+| `MaxHeight` | 1080 | highest video quality any mod may ask for (360, 480, 720 or 1080) |
+| `AudioDelayMs` | 25 | delays the video's sound to line up with the picture on screen |
+| `Hwdec` | `auto-copy` | mpv hardware decoding (`auto-copy`, `auto`, `no`) |
+| `TorrentCacheMB` | 8192 | disk space for torrent videos (the chosen files of all open torrents) |
+| `TorrentUploadKBps` | 1024 | upload cap while a torrent is open |
+| `TorrentUPnP`, `TorrentPort` | 0, 0 | 1 = open the torrent port with UPnP / NAT-PMP; port 0 = random |
+| `YtDlpUpdate` | 1 | check for a yt-dlp update at most once a day when a YouTube video is opened |
+| `HelperLowIntegrity` | 1 | run `holo-media.exe` at Low integrity (it can write only its cache folder) |
+| `CacheDir` | empty | empty = `%USERPROFILE%\AppData\LocalLow\Melange\media-cache`; must stay writable at Low integrity |
+| `AllowCustomLibmpv`, `CustomLibmpvPath` | 0, empty | 1 = load that library instead of the pack's `libmpv-2.dll`, unchecked (the LGPL's relinking right); logged |
+
+- **Privacy.** Melange itself downloads nothing unless a mod calls `wum.media.install()` within two seconds of a click the
+  user made on that mod's own button, which shows the size and the source. The pack and yt-dlp come only from this
+  project's GitHub releases over https (GitHub sees your IP address); every file is checked against a size and SHA-256
+  compiled into `melange.asi` (yt-dlp: a manifest checked against the maintainers' GPG signature). Nothing about you or
+  your game is sent. Playing a YouTube video contacts YouTube (through yt-dlp and mpv), and a torrent contacts its
+  trackers and the DHT and, while open, uploads to other peers, so the swarm sees your IP address. Both are limited to
+  what the user opens in a mod. Downloaded torrent data lives in the helper's cache folder and is deleted when the
+  torrent closes, when the party ends, and at the next start after a crash.
+- **Uninstall.** Melange.exe's uninstall does not remove the media pack;
+  `uninstall.ps1 -Purge` removes it (`Documents\Melange\media`) with the helper's cache
+  (`AppData\LocalLow\Melange\media-cache`); you can also delete those folders by hand.
+- **Release builds** never contain a developer media manifest: `scripts\release.ps1` fails if
+  `build\*\generated\media_dev_manifest.h` exists. `scripts\make-dev-pack.ps1 -Remove` deletes it.
 
 ## Plugin store
 

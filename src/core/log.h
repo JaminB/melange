@@ -1,7 +1,8 @@
 #pragma once
 #include <string>
 
-// Thread-safe line logger. Every line is flushed immediately so the log survives crashes and hangs.
+// Thread-safe line logger. Every line is written through to the system cache at once (no buffer in this process),
+// so the log survives crashes, hangs and kills; it does not wait for the disk.
 namespace melange::log {
 void Init(const std::wstring& path);
 void Write(const char* level, const char* fmt, ...);

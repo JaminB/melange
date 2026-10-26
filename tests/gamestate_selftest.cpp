@@ -13,6 +13,7 @@
 
 #include "game/state/gamestate_internal.h"
 #include "game/state/gamestate_json.h"
+#include "game/state/turn_logic.h"
 #include "oasis/state_params.h"
 #include "tools/json_read.h"
 
@@ -617,6 +618,132 @@ void TestLandRay() {
     Expect(taken == gs::kLandRaysPerFrame, "the per-frame budget caps the calls");
     Expect(b.Take(8, gs::kLandRaysPerFrame), "the budget refills on the next frame");
 }
+
+// wum.game.turn()/ui(): the phase from the timer messages, "mine" with its latch, and the change detection.
+void TestTurn() {
+    using gs::Local;
+    using gs::TurnMsg;
+    using gs::TurnPhase;
+    gs::TurnTracker t;
+    gs::TurnInput in;
+
+    // Not in a match: the view is empty and a stale phase is dropped.
+    t.OnMessage(TurnMsg::TurnStarted);
+    gs::TurnView v = t.Update(in);
+    Expect(v.team == -1 && v.worm == -1 && !v.mine && v.phase == TurnPhase::None, "outside a match the view is empty");
+
+    // Offline: mine = the team is local and not AI; the phase follows the messages.
+    in.inMatch = true;
+    in.team = 1;
+    in.worm = 6;
+    in.teamLocal = true;
+    t.OnMessage(TurnMsg::TurnStarted);
+    v = t.Update(in);
+    Expect(v.team == 1 && v.worm == 6 && v.mine && !v.ai && v.phase == TurnPhase::Play, "offline human turn");
+    in.teamAi = true;
+    v = t.Update(in);
+    Expect(v.ai && !v.mine, "a CPU team's turn is not mine even though it is local");
+    in.teamAi = false;
+    in.teamLocal = false;
+    Expect(!t.Update(in).mine, "a team that is not local is not mine");
+    in.teamLocal = true;
+    t.OnMessage(TurnMsg::RetreatStart);
+    ExpectEq(gs::PhaseName(t.Update(in).phase), "retreat", "retreat");
+    t.OnMessage(TurnMsg::PostActivityStart);
+    ExpectEq(gs::PhaseName(t.Update(in).phase), "settle", "settle");
+    t.OnMessage(TurnMsg::TurnEnded);
+    ExpectEq(gs::PhaseName(t.Update(in).phase), "none", "turn ended");
+    in.team = in.worm = -1;
+    v = t.Update(in);
+    Expect(v.team == -1 && v.worm == -1 && !v.mine && !v.ai, "between turns offline: no team, not mine");
+
+    // The Ready? intro: it may begin before or after Turn.Started, and ends with either timer message.
+    in.team = 0;
+    in.worm = 0;
+    t.OnMessage(TurnMsg::HotSeatStart);
+    v = t.Update(in);
+    Expect(v.phase == TurnPhase::Intro && t.ReadyIntro(v), "intro");
+    t.OnMessage(TurnMsg::TurnStarted);
+    Expect(t.Update(in).phase == TurnPhase::Intro, "Turn.Started after the intro began does not end it");
+    t.OnMessage(TurnMsg::HotSeatEnd);
+    Expect(t.Update(in).phase == TurnPhase::Play, "the intro ends in play");
+    t.OnMessage(TurnMsg::RetreatStart);
+    t.OnMessage(TurnMsg::HotSeatEnd);
+    Expect(t.Update(in).phase == TurnPhase::Retreat, "a late HotSeatEnd does not undo retreat");
+    t.OnMessage(TurnMsg::HotSeatStart);
+    t.OnMessage(TurnMsg::TurnEnded);
+    Expect(t.Update(in).phase == TurnPhase::None, "turn end clears an unfinished intro");
+    in.team = -1;
+    t.OnMessage(TurnMsg::TurnStarted);
+    Expect(t.Update(in).phase == TurnPhase::None, "no team: phase none whatever the messages said");
+
+    // The weapon panel: the messages open and close it; the turn end and the match end close it.
+    Expect(!t.WeaponPanel(), "panel closed");
+    t.OnMessage(TurnMsg::PanelOpened);
+    Expect(t.WeaponPanel(), "panel opened");
+    t.OnMessage(TurnMsg::PanelClosed);
+    Expect(!t.WeaponPanel(), "panel closed again");
+    t.OnMessage(TurnMsg::PanelOpened);
+    t.OnMessage(TurnMsg::TurnEnded);
+    Expect(!t.WeaponPanel(), "turn end closes the panel");
+    t.OnMessage(TurnMsg::PanelOpened);
+    t.Update(gs::TurnInput());
+    Expect(!t.WeaponPanel(), "leaving the match closes the panel");
+
+    // Online: the net layer decides; Unknown (between turns) keeps the last answer.
+    gs::TurnTracker o;
+    gs::TurnInput on;
+    on.inMatch = on.online = true;
+    on.team = 0;
+    on.worm = 1;
+    on.current = Local::Yes;
+    Expect(o.Update(on).mine, "online: my player's turn");
+    on.current = Local::No;
+    Expect(!o.Update(on).mine, "online: another player's turn");
+    on.current = Local::Yes;
+    o.Update(on);
+    on.team = on.worm = -1;
+    on.current = Local::Unknown;
+    v = o.Update(on);
+    Expect(v.mine && v.team == -1, "between turns the last value is kept (no flicker)");
+    on.team = 2;
+    Expect(o.Update(on).mine, "Unknown during a turn keeps it too");
+    on.current = Local::No;
+    o.Update(on);
+    on.current = Local::Unknown;
+    Expect(!o.Update(on).mine, "a latched No stays No");
+    on.current = Local::Yes;
+    o.Update(on);
+    on.inMatch = false;
+    o.Update(on);
+    on.inMatch = true;
+    on.current = Local::Unknown;
+    Expect(!o.Update(on).mine, "a new match starts with an empty latch");
+    on.teamAi = true;
+    on.current = Local::Yes;
+    v = o.Update(on);
+    Expect(v.ai && v.mine, "online: ai comes from the team, mine from the net layer");
+    gs::TurnTracker off;
+    gs::TurnInput offIn;
+    offIn.inMatch = true;
+    offIn.team = 0;
+    offIn.teamLocal = true;
+    Expect(off.Update(offIn).mine, "offline uses the team");
+
+    // melange.ui reports three of the five flags.
+    gs::UiView a, b;
+    Expect(a.SameEvent(b), "equal views");
+    b.feCursor = b.attract = true;
+    Expect(a.SameEvent(b), "feCursor and attract are polled, not events");
+    b.pause = true;
+    Expect(!a.SameEvent(b), "pause changes the event");
+    a = b;
+    b.weaponPanel = true;
+    Expect(!a.SameEvent(b), "weaponPanel changes the event");
+    a = b;
+    b.readyIntro = true;
+    Expect(!a.SameEvent(b), "readyIntro changes the event");
+}
 }  // namespace
 
 int main() {
@@ -624,7 +751,8 @@ int main() {
     const std::pair<const char*, void (*)()> tests[] = {{"text", TestText},         {"snapshot", TestSnapshot},
                                                          {"vars", TestVars},         {"rtti", TestRtti},
                                                          {"entities", TestEntities}, {"params", TestParams},
-                                                         {"landray", TestLandRay}};
+                                                         {"landray", TestLandRay},
+                                                         {"turn", TestTurn}};
     for (const auto& [name, fn] : tests) {
         const int before = g_fail;
         fn();

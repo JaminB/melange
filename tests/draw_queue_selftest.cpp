@@ -85,6 +85,131 @@ void TestRouting() {
     Check(RouteStage(Kind::HudRect, kDepthTest) == Stage::Hud, "routing: HUD kinds ignore flags and always go to Hud");
 }
 
+// Melange 0.12: the screen stage, nine-slice, picture fit and the clip stack.
+bool Close(float a, float b) { return std::fabs(a - b) < 1e-3f; }
+
+void TestScreenRouting() {
+    using melange::mirage::drawqueue::IsHud;
+    for (Kind k : {Kind::HudLine, Kind::HudRect, Kind::HudText, Kind::HudImage, Kind::HudImageUV, Kind::HudVideo, Kind::ClipPush,
+                   Kind::ClipPop}) {
+        Check(IsHud(k), "screen routing: every HUD kind is a HUD kind");
+        Check(RouteStage(k, 0) == Stage::Hud, "screen routing: HUD kinds outside a callback go to Hud");
+        Check(RouteStage(k, 0, Stage::Screen) == Stage::Screen, "screen routing: HUD kinds inside a Screen callback stay at Screen");
+        Check(RouteStage(k, 0, Stage::World) == Stage::Hud, "screen routing: HUD kinds inside a World callback still go to Hud");
+    }
+    Check(!IsHud(Kind::Line) && RouteStage(Kind::Line, kDepthTest, Stage::Screen) == Stage::World,
+          "screen routing: world kinds inside a Screen callback keep their world stage");
+    Check(static_cast<int>(Stage::Screen) > static_cast<int>(Stage::Count),
+          "screen routing: Screen is past Count, so the engine stage table never sees it");
+}
+
+void TestNineSlice() {
+    using melange::mirage::drawqueue::NineSlice;
+    using melange::mirage::drawqueue::UvQuad;
+    UvQuad c[9];
+    const float whole[4] = {0, 0, 1, 1};
+    // 64x32 texture, insets 8/4/16/12 at scale 1 into 200x100.
+    int n = NineSlice(10, 20, 210, 120, 64, 32, 8, 4, 16, 12, 1, whole, c);
+    Check(n == 9, "nine: nine cells");
+    Check(Close(c[0].x0, 10) && Close(c[0].x1, 18) && Close(c[0].y1, 24) && Close(c[0].u1, 8.f / 64) && Close(c[0].v1, 4.f / 32),
+          "nine: top-left corner at inset size, uv to the inset");
+    Check(Close(c[2].x0, 194) && Close(c[2].u0, 1 - 16.f / 64) && Close(c[8].y0, 108) && Close(c[8].v0, 1 - 12.f / 32),
+          "nine: right and bottom insets");
+    Check(Close(c[4].x0, 18) && Close(c[4].x1, 194) && Close(c[4].y0, 24) && Close(c[4].y1, 108), "nine: the centre stretches");
+    n = NineSlice(0, 0, 200, 100, 64, 32, 8, 4, 16, 12, 2, whole, c);
+    Check(n == 9 && Close(c[0].x1, 16) && Close(c[0].u1, 8.f / 64) && Close(c[8].y0, 76), "nine: scale grows the corners, not their uv");
+    // Corners wider than the rectangle shrink evenly (8 + 16 into 12: 4 and 8), leaving no centre column.
+    n = NineSlice(0, 0, 12, 100, 64, 32, 8, 4, 16, 12, 1, whole, c);
+    Check(n == 6 && Close(c[0].x1, 4) && Close(c[1].x0, 4) && Close(c[1].x1, 12), "nine: too narrow: corners share the width");
+    const float sub[4] = {0.5f, 0.5f, 1.f, 1.f};
+    n = NineSlice(0, 0, 100, 100, 64, 32, 4, 4, 4, 4, 1, sub, c);
+    Check(n == 9 && Close(c[0].u0, 0.5f) && Close(c[0].u1, 0.5f + 4.f / 64) && Close(c[8].u1, 1) && Close(c[8].v0, 1 - 4.f / 32),
+          "nine: uv selects part of an atlas");
+    n = NineSlice(0, 0, 100, 100, 64, 32, 40, 0, 40, 0, 1, whole, c);
+    Check(n == 3 && Close(c[0].u1, 0.5f) && Close(c[0].x1, 32), "nine: insets past the source shrink to fit it");
+    n = NineSlice(0, 0, 100, 100, 64, 32, 0, 0, 0, 0, 1, whole, c);
+    Check(n == 1 && Close(c[0].u1, 1) && Close(c[0].x1, 100), "nine: zero insets are one stretched image");
+    Check(NineSlice(10, 10, 10, 50, 64, 32, 1, 1, 1, 1, 1, whole, c) == 0, "nine: an empty rectangle draws nothing");
+    Check(NineSlice(0, 0, 10, 10, 0, 32, 1, 1, 1, 1, 1, whole, c) == 0, "nine: an unknown texture size draws nothing");
+    const float bad[4] = {0, std::numeric_limits<float>::quiet_NaN(), 1, 1};
+    Check(NineSlice(0, 0, 10, 10, 64, 32, 1, 1, 1, 1, 1, bad, c) == 0, "nine: a NaN uv draws nothing");
+    n = NineSlice(0, 0, 100, 100, 64, 32, -5, std::numeric_limits<float>::infinity(), 4, 4, -1, whole, c);
+    Check(n == 4 && Close(c[0].x1, 96), "nine: negative or infinite insets count as 0, a bad scale as 1");
+}
+
+void TestFitPicture() {
+    using melange::mirage::drawqueue::Fit;
+    using melange::mirage::drawqueue::FitPicture;
+    using melange::mirage::drawqueue::UvQuad;
+    UvQuad q{};
+    // A 16:9 picture filling 960x540 of a 1280x720 texture.
+    const float u1 = 0.75f, v1 = 0.75f;
+    Check(FitPicture(0, 0, 400, 400, 16.0 / 9, u1, v1, Fit::Contain, &q) && Close(q.x0, 0) && Close(q.x1, 400) && Close(q.y0, 87.5f) &&
+              Close(q.y1, 312.5f) && Close(q.u1, u1) && Close(q.v1, v1),
+          "fit: contain letterboxes top and bottom, whole uv");
+    Check(FitPicture(0, 0, 400, 100, 16.0 / 9, u1, v1, Fit::Contain, &q) && Close(q.y0, 0) && Close(q.y1, 100) &&
+              Close(q.x0, 200 - 88.8889f) && Close(q.x1, 200 + 88.8889f),
+          "fit: contain pillarboxes left and right");
+    Check(FitPicture(0, 0, 400, 400, 16.0 / 9, u1, v1, Fit::Cover, &q) && Close(q.x0, 0) && Close(q.y1, 400) && Close(q.v0, 0) &&
+              Close(q.v1, v1) && Close(q.u1 - q.u0, u1 * 9.f / 16) && Close(q.u0 + q.u1, u1),
+          "fit: cover keeps the rectangle and crops u around the centre");
+    Check(FitPicture(0, 0, 400, 100, 16.0 / 9, u1, v1, Fit::Cover, &q) && Close(q.u0, 0) && Close(q.v1 - q.v0, v1 * (16.f / 9) / 4) &&
+              Close(q.v0 + q.v1, v1),
+          "fit: cover crops v for a wide rectangle");
+    Check(FitPicture(5, 6, 7, 8, 0, u1, v1, Fit::Stretch, &q) && Close(q.x0, 5) && Close(q.y1, 8) && Close(q.u1, u1),
+          "fit: stretch fills, any aspect");
+    Check(!FitPicture(0, 0, 10, 10, 0, u1, v1, Fit::Contain, &q), "fit: a zero aspect cannot contain");
+    Check(!FitPicture(0, 0, 0, 10, 1, u1, v1, Fit::Stretch, &q), "fit: an empty rectangle");
+    Check(!FitPicture(0, 0, std::numeric_limits<float>::infinity(), 10, 1, u1, v1, Fit::Stretch, &q), "fit: a non-finite rectangle");
+}
+
+void TestClipStack() {
+    using melange::mirage::drawqueue::ClipStack;
+    using melange::mirage::drawqueue::ClipToScissor;
+    using melange::mirage::drawqueue::Scissor;
+    const int vp[4] = {0, 0, 800, 600};
+    Scissor s = ClipToScissor(10, 20, 110, 70, 800, 600, vp);
+    Check(s.x == 10 && s.y == 530 && s.w == 100 && s.h == 50, "clip: window rect to a bottom-left scissor");
+    s = ClipToScissor(110, 70, 10, 20, 800, 600, vp);
+    Check(s.x == 10 && s.y == 530 && s.w == 100 && s.h == 50, "clip: corners in any order");
+    s = ClipToScissor(-50, -50, 2000, 2000, 800, 600, vp);
+    Check(s.x == 0 && s.y == 0 && s.w == 800 && s.h == 600, "clip: clamped to the window");
+    s = ClipToScissor(10.5f, 20.25f, 20.5f, 30.75f, 800, 600, vp);
+    Check(s.x == 10 && s.w == 11 && s.y == 569 && s.h == 11, "clip: rounded outward");
+    const int ss[4] = {0, 0, 1600, 1200};  // a 2x supersampled scene target
+    s = ClipToScissor(10, 20, 110, 70, 800, 600, ss);
+    Check(s.x == 20 && s.y == 1060 && s.w == 200 && s.h == 100, "clip: scaled into a larger viewport");
+    const int off[4] = {100, 50, 800, 600};
+    s = ClipToScissor(0, 0, 800, 600, 800, 600, off);
+    Check(s.x == 100 && s.y == 50 && s.w == 800 && s.h == 600, "clip: offset viewport");
+    s = ClipToScissor(0, 0, 10, 10, 0, 600, vp);
+    Check(s.w == 0 && s.h == 0, "clip: no window, empty scissor");
+    s = ClipToScissor(std::numeric_limits<float>::quiet_NaN(), 0, 10, 10, 800, 600, vp);
+    Check(s.w == 0 && s.h == 0, "clip: a NaN clips everything");
+
+    ClipStack st;
+    Check(!st.Active(), "clip stack: starts empty");
+    st.Push({0, 0, 100, 100});
+    st.Push({50, 50, 100, 100});
+    Scissor t = st.Top();
+    Check(st.Depth() == 2 && t.x == 50 && t.y == 50 && t.w == 50 && t.h == 50, "clip stack: nested clips intersect");
+    st.Push({200, 200, 10, 10});
+    t = st.Top();
+    Check(t.w == 0 && t.h == 0, "clip stack: disjoint clips leave nothing");
+    st.Push({0, 0, 1000, 1000});
+    st.Push({0, 0, 1, 1});  // past the cap: counted, ignored
+    Check(st.Depth() == 5 && st.Top().w == 0, "clip stack: past depth 4 the deepest real clip stays");
+    st.Pop();
+    st.Pop();
+    st.Pop();
+    t = st.Top();
+    Check(st.Depth() == 2 && t.x == 50 && t.w == 50, "clip stack: pops pair with pushes, the cap included");
+    st.Pop();
+    st.Pop();
+    st.Pop();
+    Check(!st.Active() && st.Depth() == 0, "clip stack: extra pops are harmless");
+}
+
 void TestColorUnpack() {
     float rgba[4];
     Unpack(0xff0000ffu, rgba);  // IM_COL32(255,0,0,255): opaque red
@@ -289,6 +414,10 @@ int main() {
     TestImmediateSameFrame();
     TestOutsidePushDuringOpenWindowWaitsOnePass();
     TestRouting();
+    TestScreenRouting();
+    TestNineSlice();
+    TestFitPicture();
+    TestClipStack();
     TestColorUnpack();
     TestSpriteDrawable();
     TestSpriteGeometry();

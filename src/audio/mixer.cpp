@@ -25,15 +25,20 @@ struct EngineCallback final : IXAudio2EngineCallback {
 
 using CreateFn = HRESULT(WINAPI*)(IXAudio2**, UINT32, XAUDIO2_PROCESSOR);
 
-uint64_t FormatKey(uint16_t channels, uint32_t rate) { return (static_cast<uint64_t>(rate) << 8) | channels; }
+// Music voices send to the music submix, so a pooled voice is only reused for the same kind: bit 40 is the kind.
+uint64_t FormatKey(uint16_t channels, uint32_t rate, bool music) {
+    return (static_cast<uint64_t>(rate) << 8) | channels | (music ? (1ull << 40) : 0);
+}
 }  // namespace
 
 struct Mixer::Impl {
     HMODULE dll = nullptr;
     IXAudio2* engine = nullptr;
     IXAudio2MasteringVoice* master = nullptr;
+    IXAudio2SubmixVoice* musicBus = nullptr;  // wum.audio.play {kind="music"} voices send here; suppression scales it
     EngineCallback cb;
     float masterVolume = 1.0f;
+    float musicGain = 1.0f;
 
     struct Playing {
         IXAudio2SourceVoice* voice = nullptr;
@@ -66,6 +71,8 @@ struct Mixer::Impl {
         for (auto& [k, v] : idle)
             for (IXAudio2SourceVoice* sv : v) sv->DestroyVoice();
         idle.clear();
+        if (musicBus) musicBus->DestroyVoice();  // after every source voice that sends to it
+        musicBus = nullptr;
         if (master) master->DestroyVoice();
         master = nullptr;
         if (engine) {
@@ -116,6 +123,9 @@ bool Mixer::Init(std::string* why) {
         return false;
     }
     d.master->SetVolume(d.masterVolume);
+    // Without the bus (a failure here is not fatal) music voices simply play unrouted, i.e. are not silenced.
+    if (FAILED(d.engine->CreateSubmixVoice(&d.musicBus, 2, 44100)) || !d.musicBus) d.musicBus = nullptr;
+    else d.musicBus->SetVolume(d.musicGain);
     return true;
 }
 
@@ -130,7 +140,13 @@ void Mixer::SetMasterVolume(float v) {
     if (d_->master) d_->master->SetVolume(v);
 }
 
-bool Mixer::Start(uint32_t id, std::shared_ptr<const Clip> clip, float volume, float pitch, bool loop, std::string* why) {
+void Mixer::SetMusicGain(float g) {
+    d_->musicGain = g;
+    if (d_->musicBus) d_->musicBus->SetVolume(g);
+}
+
+bool Mixer::Start(uint32_t id, std::shared_ptr<const Clip> clip, float volume, float pitch, bool loop, std::string* why,
+                  bool music) {
     Impl& d = *d_;
     if (!Ready() || !clip) {
         if (why) *why = "audio unavailable";
@@ -141,7 +157,7 @@ bool Mixer::Start(uint32_t id, std::shared_ptr<const Clip> clip, float volume, f
         if (why) *why = "too many voices";
         return false;
     }
-    const uint64_t key = FormatKey(clip->channels, clip->rate);
+    const uint64_t key = FormatKey(clip->channels, clip->rate, music);
     IXAudio2SourceVoice* v = nullptr;
     auto& pool = d.idle[key];
     if (!pool.empty()) {
@@ -155,7 +171,9 @@ bool Mixer::Start(uint32_t id, std::shared_ptr<const Clip> clip, float volume, f
         f.wBitsPerSample = 16;
         f.nBlockAlign = static_cast<WORD>(f.nChannels * 2);
         f.nAvgBytesPerSec = f.nSamplesPerSec * f.nBlockAlign;
-        if (FAILED(d.engine->CreateSourceVoice(&v, &f, 0, kMaxPitch)) || !v) {
+        XAUDIO2_SEND_DESCRIPTOR send = {0, d.musicBus};
+        XAUDIO2_VOICE_SENDS sends = {1, &send};
+        if (FAILED(d.engine->CreateSourceVoice(&v, &f, 0, kMaxPitch, nullptr, music && d.musicBus ? &sends : nullptr)) || !v) {
             if (why) *why = "cannot create a voice";
             return false;
         }

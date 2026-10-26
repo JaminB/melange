@@ -3,16 +3,23 @@
 #include <cmath>
 #include <cstring>
 #include <memory>
+#include <set>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 #include "lua/sandbox_core.h"
+#include "lua/wum_media_handles.h"
 #include "melange/draw.h"
 #include "melange/graphics.h"
 #include "melange/postfx.h"
 #include "melange/render.h"
 #include "melange/shaders.h"
+#include "media/media.h"
+#include "render/input_regions.h"
 #include "render/mirage/camoverride_logic.h"
+#include "render/mirage/draw_font_core.h"
+#include "render/mirage/draw_queue.h"
 
 namespace melange::sandbox {
 namespace {
@@ -140,31 +147,149 @@ int HudRect(lua_State* L) {
     return 0;
 }
 
+// Raises unless every key of the options table at `idx` is one of `keys`.
+void CheckKeys(lua_State* L, int idx, std::initializer_list<const char*> keys, const char* msg) {
+    lua_pushnil(L);
+    while (lua_next(L, idx)) {
+        lua_pop(L, 1);
+        const char* k = lua_type(L, -1) == LUA_TSTRING ? lua_tostring(L, -1) : "";
+        bool known = false;
+        for (const char* key : keys) known = known || strcmp(k, key) == 0;
+        if (!known) luaL_argerror(L, idx, msg);
+    }
+}
+
+// wum.draw.font ids: id -> the loading generation's serial (fonts die with their generation).
+std::unordered_map<int, uint32_t> g_fontOwner;
+constexpr int kMaxFontsPerGen = 4;
+
+// opts.font: 0 for nil, else one of this generation's fonts (anything else raises).
+int CheckFont(lua_State* L, int t, int argIdx) {
+    const int type = lua_getfield(L, t, "font");
+    int font = 0;
+    if (type != LUA_TNIL) {
+        int isInt = 0;
+        const lua_Integer id = lua_tointegerx(L, -1, &isInt);
+        Gen* g = CurrentGen();
+        auto it = isInt ? g_fontOwner.find(static_cast<int>(id)) : g_fontOwner.end();
+        if (!g || it == g_fontOwner.end() || it->second != g->serial)
+            luaL_argerror(L, argIdx, "opts.font must be a font id from this mod's wum.draw.font");
+        font = static_cast<int>(id);
+    }
+    lua_pop(L, 1);
+    return font;
+}
+
+// hudText's options table (Melange 0.12): font, shadow, shadowOffset, align, maxWidth, ellipsis.
+void CheckTextOptions(lua_State* L, int idx, draw::TextOptions* o) {
+    idx = lua_absindex(L, idx);
+    CheckKeys(L, idx, {"font", "shadow", "shadowOffset", "align", "maxWidth", "ellipsis"},
+              "options are font, shadow, shadowOffset, align, maxWidth and ellipsis");
+    o->font = CheckFont(L, idx, idx);
+    const int st = lua_getfield(L, idx, "shadow");
+    if (st == LUA_TBOOLEAN) {
+        if (lua_toboolean(L, -1)) luaL_argerror(L, idx, "opts.shadow must be a colour or false");
+    } else if (st != LUA_TNIL) {
+        o->shadow = true;
+        o->shadowColor = CheckColor(L, lua_gettop(L), 0xff000000);
+    }
+    lua_pop(L, 1);
+    const int so = lua_getfield(L, idx, "shadowOffset");
+    if (so == LUA_TTABLE) {
+        const int t = lua_gettop(L);
+        o->shadowDx = Field(L, t, "x", 1, 2);
+        o->shadowDy = Field(L, t, "y", 2, 2);
+    } else if (so != LUA_TNIL) {
+        luaL_argerror(L, idx, "opts.shadowOffset must be {dx, dy}");
+    }
+    lua_pop(L, 1);
+    if (lua_getfield(L, idx, "align") != LUA_TNIL) {
+        const char* a = lua_type(L, -1) == LUA_TSTRING ? lua_tostring(L, -1) : "";
+        if (strcmp(a, "left") == 0) o->align = draw::Align::Left;
+        else if (strcmp(a, "center") == 0) o->align = draw::Align::Center;
+        else if (strcmp(a, "right") == 0) o->align = draw::Align::Right;
+        else luaL_argerror(L, idx, "opts.align must be \"left\", \"center\" or \"right\"");
+    }
+    lua_pop(L, 1);
+    if (lua_getfield(L, idx, "maxWidth") != LUA_TNIL) {
+        if (lua_type(L, -1) != LUA_TNUMBER) luaL_argerror(L, idx, "opts.maxWidth must be a number");
+        const float w = static_cast<float>(lua_tonumber(L, -1));
+        o->maxWidth = std::isfinite(w) && w > 0 ? w : 0;
+    }
+    lua_pop(L, 1);
+    const int el = lua_getfield(L, idx, "ellipsis");
+    if (el == LUA_TBOOLEAN) o->ellipsis = lua_toboolean(L, -1) != 0;
+    else if (el != LUA_TNIL) luaL_argerror(L, idx, "opts.ellipsis must be a boolean");
+    lua_pop(L, 1);
+}
+
+// hudText(x, y, text, color[, size[, frames]]) or, from Melange 0.12, hudText(x, y, text, color, size, opts).
 int HudText(lua_State* L) {
+    if (lua_type(L, 6) == LUA_TTABLE) {
+        draw::TextOptions o;
+        CheckTextOptions(L, 6, &o);
+        draw::HudTextEx(Num(L, 1), Num(L, 2), luaL_checkstring(L, 3), CheckColor(L, 4, 0xffffffff),
+                        static_cast<float>(luaL_optnumber(L, 5, 16)), o);
+        return 0;
+    }
     draw::HudText(Num(L, 1), Num(L, 2), luaL_checkstring(L, 3), CheckColor(L, 4, 0xffffffff),
                   static_cast<float>(luaL_optnumber(L, 5, 16)), Frames(L, 6));
     return 0;
 }
 
+bool OwnTexture(const Gen* g, lua_Integer t) {
+    return g && t > 0 && std::find(g->textures.begin(), g->textures.end(), static_cast<unsigned>(t)) != g->textures.end();
+}
+
+// hudImageUV and hudNine: this mod's own 2D texture, else a raise.
+unsigned CheckHudTexture(lua_State* L, int idx) {
+    const lua_Integer t = luaL_checkinteger(L, idx);
+    if (!OwnTexture(CurrentGen(), t)) luaL_argerror(L, idx, "texture id from this mod's wum.draw.texture expected");
+    draw::TextureInfo info{};
+    if (draw::GetTextureInfo(static_cast<unsigned>(t), &info) && info.layers > 0)
+        luaL_argerror(L, idx, "a texture array (layers=) cannot be drawn on the HUD");
+    return static_cast<unsigned>(t);
+}
+
+std::set<std::string> g_hudImageWarned;  // mods told once that hudImage dropped a texture that is not theirs
+
+// From Melange 0.12 hudImage draws only the calling mod's own textures; anything else is dropped (a warning once per
+// mod) rather than raised, so a mod written before the rule keeps running.
 int HudImage(lua_State* L) {
-    const auto tex = static_cast<unsigned>(luaL_checkinteger(L, 5));
-    draw::HudImage(Num(L, 1), Num(L, 2), Num(L, 3), Num(L, 4), tex, CheckColor(L, 6, 0xffffffff), Frames(L, 7));
+    const lua_Integer tex = luaL_checkinteger(L, 5);
+    if (!OwnTexture(CurrentGen(), tex)) {
+        const ModRec* m = Current();
+        const std::string id = m ? m->id : std::string();
+        if (g_hudImageWarned.insert(id).second)
+            SysLog(2, "wum.draw.hudImage: texture " + std::to_string(tex) +
+                          " is not one of this mod's wum.draw.texture ids; not drawn (Melange 0.12)", id);
+        return 0;
+    }
+    draw::HudImage(Num(L, 1), Num(L, 2), Num(L, 3), Num(L, 4), static_cast<unsigned>(tex), CheckColor(L, 6, 0xffffffff),
+                   Frames(L, 7));
     return 0;
 }
 
 constexpr int kMaxTexturesPerGen = 256;
 
-// wum.draw.texture's options table: {wrap = "repeat"|"clamp", filter = "linear"|"nearest", layers = 1..64}.
-void CheckTextureOptions(lua_State* L, int idx, draw::TextureOptions* o) {
+// wum.draw.texture's options table: {wrap = "repeat"|"clamp", filter = "linear"|"nearest", layers = 1..64,
+// mips = false}. Returns false when the options ask for nothing but the default HUD texture ({mips = true}).
+bool CheckTextureOptions(lua_State* L, int idx, draw::TextureOptions* o) {
     luaL_checktype(L, idx, LUA_TTABLE);
     idx = lua_absindex(L, idx);
+    bool other = false;
     lua_pushnil(L);
     while (lua_next(L, idx)) {
         lua_pop(L, 1);
         const char* k = lua_type(L, -1) == LUA_TSTRING ? lua_tostring(L, -1) : "";
-        if (strcmp(k, "wrap") && strcmp(k, "filter") && strcmp(k, "layers"))
-            luaL_argerror(L, idx, "options are wrap, filter and layers");
+        if (strcmp(k, "wrap") && strcmp(k, "filter") && strcmp(k, "layers") && strcmp(k, "mips"))
+            luaL_argerror(L, idx, "options are wrap, filter, layers and mips");
+        other = other || strcmp(k, "mips") != 0;
     }
+    const int mt = lua_getfield(L, idx, "mips");
+    if (mt == LUA_TBOOLEAN) o->mips = lua_toboolean(L, -1) != 0;
+    else if (mt != LUA_TNIL) luaL_argerror(L, idx, "mips must be a boolean");
+    lua_pop(L, 1);
     if (lua_getfield(L, idx, "wrap") != LUA_TNIL) {
         const char* s = lua_tostring(L, -1);
         if (!s || (strcmp(s, "repeat") && strcmp(s, "clamp"))) luaL_argerror(L, idx, "wrap must be \"repeat\" or \"clamp\"");
@@ -184,6 +309,7 @@ void CheckTextureOptions(lua_State* L, int idx, draw::TextureOptions* o) {
         o->layers = static_cast<int>(n);
     }
     lua_pop(L, 1);
+    return other || !o->mips;
 }
 
 int Texture(lua_State* L) {
@@ -197,9 +323,8 @@ int Texture(lua_State* L) {
     }
     const std::string rel = luaL_checkstring(L, 1);
     if (!SafeRelPath(rel)) return luaL_argerror(L, 1, "relative path inside the mod folder expected");
-    const bool shaderTex = !lua_isnoneornil(L, 2);
     draw::TextureOptions opts;
-    if (shaderTex) CheckTextureOptions(L, 2, &opts);
+    const bool shaderTex = !lua_isnoneornil(L, 2) && CheckTextureOptions(L, 2, &opts);
     std::wstring w = Widen(rel);
     std::replace(w.begin(), w.end(), L'/', L'\\');
     const std::wstring path = m->dir + L"\\" + w;
@@ -276,6 +401,7 @@ bool ParseStage(const std::string& s, render::Stage* out) {
     if (s == "world") *out = render::Stage::World;
     else if (s == "worldLate") *out = render::Stage::WorldLate;
     else if (s == "hud") *out = render::Stage::Hud;
+    else if (s == "screen") *out = render::Stage::Screen;
     else return false;
     return true;
 }
@@ -287,6 +413,7 @@ const char* StageName(render::Stage s) {
         case render::Stage::PostWorld: return "postWorld";
         case render::Stage::Hud: return "hud";
         case render::Stage::Final: return "final";
+        case render::Stage::Screen: return "screen";
         default: return "?";
     }
 }
@@ -303,7 +430,7 @@ void DrawTramp(render::Stage stage, void* user) {
 int On(lua_State* L) {
     render::Stage stage;
     const std::string s = luaL_checkstring(L, 1);
-    if (!ParseStage(s, &stage)) return luaL_argerror(L, 1, "stage must be world, worldLate or hud");
+    if (!ParseStage(s, &stage)) return luaL_argerror(L, 1, "stage must be world, worldLate, hud or screen");
     luaL_checktype(L, 2, LUA_TFUNCTION);
     Callback* cb = NewCallback(L, 2, CbKind::Draw, s);
     const uint32_t cid = cb->id;
@@ -987,12 +1114,174 @@ int ShEnableGlsl(lua_State* L) {
     return 0;
 }
 
+// ---------------------------------------------------------------- Melange 0.12 drawing
+// wum.draw.hudImageUV(x0, y0, x1, y1, tex, u0, v0, u1, v1[, tint])
+int HudImageUV(lua_State* L) {
+    const unsigned tex = CheckHudTexture(L, 5);
+    draw::HudImageUV(Num(L, 1), Num(L, 2), Num(L, 3), Num(L, 4), tex, Num(L, 6), Num(L, 7), Num(L, 8), Num(L, 9),
+                     CheckColor(L, 10, 0xffffffff));
+    return 0;
+}
+
+// wum.draw.hudNine(x0, y0, x1, y1, tex, l, t, r, b[, {tint =, scale = 1, uv = {u0, v0, u1, v1}}])
+int HudNine(lua_State* L) {
+    const unsigned tex = CheckHudTexture(L, 5);
+    draw::NineOptions o;
+    if (!lua_isnoneornil(L, 10)) {
+        luaL_checktype(L, 10, LUA_TTABLE);
+        CheckKeys(L, 10, {"tint", "scale", "uv"}, "options are tint, scale and uv");
+        lua_getfield(L, 10, "tint");
+        o.tint = CheckColor(L, lua_gettop(L), 0xffffffff);
+        lua_pop(L, 1);
+        if (lua_getfield(L, 10, "scale") != LUA_TNIL) {
+            const lua_Number sc = lua_tonumber(L, -1);
+            if (lua_type(L, -1) != LUA_TNUMBER || !(sc > 0) || !(sc <= 64)) luaL_argerror(L, 10, "opts.scale must be a number above 0");
+            o.scale = static_cast<float>(sc);
+        }
+        lua_pop(L, 1);
+        const int ut = lua_getfield(L, 10, "uv");
+        if (ut == LUA_TTABLE) {
+            const int t = lua_gettop(L);
+            for (int i = 0; i < 4; ++i) {
+                lua_rawgeti(L, t, i + 1);
+                if (lua_type(L, -1) != LUA_TNUMBER) luaL_argerror(L, 10, "opts.uv must be {u0, v0, u1, v1}");
+                o.uv[i] = static_cast<float>(lua_tonumber(L, -1));
+                lua_pop(L, 1);
+            }
+        } else if (ut != LUA_TNIL) {
+            luaL_argerror(L, 10, "opts.uv must be {u0, v0, u1, v1}");
+        }
+        lua_pop(L, 1);
+    }
+    draw::HudNine(Num(L, 1), Num(L, 2), Num(L, 3), Num(L, 4), tex, Num(L, 6), Num(L, 7), Num(L, 8), Num(L, 9), o);
+    return 0;
+}
+
+// wum.draw.font(atlasPng, metricsJson) -> font id, or nil, reason
+int Font(lua_State* L) {
+    ModRec* m = Current();
+    Gen* g = CurrentGen();
+    if (!m || !g) return luaL_error(L, "wum.draw.font needs a mod context");
+    const std::string png = luaL_checkstring(L, 1), metrics = luaL_checkstring(L, 2);
+    if (!SafeRelPath(png)) return luaL_argerror(L, 1, "relative path inside the mod folder expected");
+    if (!SafeRelPath(metrics)) return luaL_argerror(L, 2, "relative path inside the mod folder expected");
+    int held = 0;
+    for (const auto& [id, serial] : g_fontOwner) held += serial == g->serial;
+    if (held >= kMaxFontsPerGen) {
+        lua_pushnil(L);
+        lua_pushliteral(L, "too many fonts loaded");
+        return 2;
+    }
+    auto modPath = [m](const std::string& rel) {
+        std::wstring w = Widen(rel);
+        std::replace(w.begin(), w.end(), L'/', L'\\');
+        return m->dir + L"\\" + w;
+    };
+    std::string text, err;
+    if (!ReadWhole(modPath(metrics), mirage::drawfont::kMaxMetricsBytes, &text, &err)) {
+        lua_pushnil(L);
+        lua_pushfstring(L, "cannot read %s: %s", metrics.c_str(), err.c_str());
+        return 2;
+    }
+    std::string why;
+    const int font = draw::LoadFont(modPath(png).c_str(), text.data(), text.size(), &why);
+    if (!font) {
+        lua_pushnil(L);
+        lua_pushfstring(L, "cannot load font %s: %s", png.c_str(), why.c_str());
+        return 2;
+    }
+    g_fontOwner[font] = g->serial;
+    g->cleanups.push_back([font] {
+        draw::FreeFont(font);
+        g_fontOwner.erase(font);
+    });
+    lua_pushinteger(L, font);
+    return 1;
+}
+
+// wum.draw.textSize(text, size[, {font = f}]) -> w, h
+int TextSize(lua_State* L) {
+    const char* text = luaL_checkstring(L, 1);
+    const float size = static_cast<float>(luaL_optnumber(L, 2, 16));
+    int font = 0;
+    if (!lua_isnoneornil(L, 3)) {
+        luaL_checktype(L, 3, LUA_TTABLE);
+        CheckKeys(L, 3, {"font"}, "the option is font");
+        font = CheckFont(L, 3, 3);
+    }
+    const draw::TextExtent e = draw::MeasureText(text, size, font);
+    lua_pushnumber(L, e.w);
+    lua_pushnumber(L, e.h);
+    return 2;
+}
+
+// wum.draw.hudClip(x0, y0, x1, y1) -> true, or false outside a "hud"/"screen" callback or past 4 deep.
+int HudClip(lua_State* L) {
+    lua_pushboolean(L, draw::HudClip(Num(L, 1), Num(L, 2), Num(L, 3), Num(L, 4)));
+    return 1;
+}
+
+int HudClipEnd(lua_State*) {
+    draw::HudClipEnd();
+    return 0;
+}
+
+// wum.draw.media(player, x0, y0, x1, y1[, {fit = "contain"|"cover"|"stretch", alpha = 1}]) -> px0, py0, px1, py1, or
+// nil without a frame. Only the mod that opened the player gets its frame (media::FrameForDraw checks the owner).
+int Media(lua_State* L) {
+    const mediaud::PlayerUd* ud = mediaud::TestPlayer(L, 1);
+    if (!ud) return luaL_argerror(L, 1, "wum.media player expected");
+    const float x0 = Num(L, 2), y0 = Num(L, 3), x1 = Num(L, 4), y1 = Num(L, 5);
+    mirage::drawqueue::Fit fit = mirage::drawqueue::Fit::Contain;
+    float alpha = 1;
+    if (!lua_isnoneornil(L, 6)) {
+        luaL_checktype(L, 6, LUA_TTABLE);
+        CheckKeys(L, 6, {"fit", "alpha"}, "options are fit and alpha");
+        if (lua_getfield(L, 6, "fit") != LUA_TNIL) {
+            const char* f = lua_type(L, -1) == LUA_TSTRING ? lua_tostring(L, -1) : "";
+            if (strcmp(f, "contain") == 0) fit = mirage::drawqueue::Fit::Contain;
+            else if (strcmp(f, "cover") == 0) fit = mirage::drawqueue::Fit::Cover;
+            else if (strcmp(f, "stretch") == 0) fit = mirage::drawqueue::Fit::Stretch;
+            else luaL_argerror(L, 6, "opts.fit must be \"contain\", \"cover\" or \"stretch\"");
+        }
+        lua_pop(L, 1);
+        if (lua_getfield(L, 6, "alpha") != LUA_TNIL) {
+            if (lua_type(L, -1) != LUA_TNUMBER) luaL_argerror(L, 6, "opts.alpha must be a number from 0 to 1");
+            alpha = std::clamp(static_cast<float>(lua_tonumber(L, -1)), 0.f, 1.f);
+        }
+        lua_pop(L, 1);
+    }
+    ModRec* m = Current();
+    Gen* g = CurrentGen();
+    media::DrawFrame f;
+    if (!m || !g || ud->id == 0 || ud->serial != g->serial || !media::FrameForDraw(m->id.c_str(), ud->id, &f) || !f.texture) {
+        lua_pushnil(L);
+        return 1;
+    }
+    const double aspect = f.aspect > 0 ? f.aspect : (f.h > 0 ? static_cast<double>(f.w) / f.h : 0);
+    mirage::drawqueue::UvQuad q;
+    if (!mirage::drawqueue::FitPicture(x0, y0, x1, y1, aspect, f.u1, f.v1, fit, &q)) {
+        lua_pushnil(L);
+        return 1;
+    }
+    draw::HudVideo(q.x0, q.y0, q.x1, q.y1, f.texture, q.u0, q.v0, q.u1, q.v1, alpha);
+    if (alpha > 0.05f) melange::render::modinput::NoteCover(q.x0, q.y0, q.x1, q.y1);  // keeps the menu cursor visible on top
+    lua_pushnumber(L, q.x0);
+    lua_pushnumber(L, q.y0);
+    lua_pushnumber(L, q.x1);
+    lua_pushnumber(L, q.y1);
+    return 4;
+}
+
 void Shared(lua_State* L, int wum) {
     static const luaL_Reg kDraw[] = {{"line", Line},       {"box", Box},         {"sphere", Sphere},     {"axes", Axes},
                                      {"quad", Quad},       {"text", Text},       {"hudLine", HudLine},   {"hudRect", HudRect},
                                      {"hudText", HudText}, {"hudImage", HudImage}, {"texture", Texture}, {"sprite", Sprite},
                                      {"mesh", MeshDraw},   {"newMesh", NewMesh}, {"freeMesh", FreeMesh},
-                                     {"on", On},           {"off", Off},         {nullptr, nullptr}};
+                                     {"on", On},           {"off", Off},
+                                     {"hudImageUV", HudImageUV}, {"hudNine", HudNine}, {"font", Font},
+                                     {"textSize", TextSize}, {"hudClip", HudClip}, {"hudClipEnd", HudClipEnd},
+                                     {"media", Media}, {nullptr, nullptr}};
     static const luaL_Reg kRender[] = {{"camera", Camera}, {"worldToScreen", WorldToScreen}, {"windowSize", WindowSize},
                                        {"timing", Timing}, {"cameraOverride", CameraOverride},
                                        {"gameCamera", GameCamera}, {nullptr, nullptr}};

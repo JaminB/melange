@@ -48,7 +48,10 @@ enum class Stage : uint8_t {
     PostWorld,  // post-FX on the world only: after WorldLate callbacks, before worm labels and the engine HUD
     Hud,        // after the engine HUD, before Composite (still in the scene FBO)
     Final,      // post-FX on the whole frame: just before the engine's Composite copy to the back buffer
-    Count
+    Count,
+    // Not an engine stage (AddStageCallback refuses it): draw callbacks only, run at present time on the back buffer,
+    // after Composite and every post effect, before the overlay; in the frontend, lobby and loading screens too.
+    Screen,
 };
 // Runs on the main thread in the main pass only, with the engine's scene FBO bound and GL state as the engine left
 // it. The callback must leave GL state as it found it (PushState/PopState). Lower `order` runs first.

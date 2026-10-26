@@ -1,0 +1,311 @@
+name: media-pack
+
+# Two independent jobs (docs/media-helper.md, design 1.1.1 and 1.1.2 as revised by section 7):
+#
+#   pack  Builds holo-media.exe (x64, libtorrent), Authenticode-signs it in the approval-gated `release` environment,
+#         REPACKAGES zhongfly's pinned LGPL libmpv-2.dll and the pinned deno.exe (media/media.lock.json, every download
+#         checked against its pinned SHA-256; nothing is built from source but the helper), mirrors the LGPL source on a
+#         best-effort basis, runs the tests and holo-media.exe --selftest on the exact bytes of the pack, and publishes
+#         `media-v<version>` (zip + source mirror). Started by hand or by pushing a media-v* tag. A published pack is never
+#         overwritten: its hash is compiled into melange.asi.
+#   lane  Every few hours: takes the newest yt-dlp release, checks SHA2-256SUMS against the maintainers' GPG signature
+#         (key committed in media/), and publishes the UNSIGNED hash manifest media-ytdlp.json on the rolling release
+#         `media-ytdlp`. No approval gate: core verifies the SHA-256 over HTTPS and refuses a lower serial.
+
+on:
+  push:
+    tags: ["media-v*"]
+  schedule:
+    - cron: "17 */6 * * *"
+  workflow_dispatch:
+    inputs:
+      job:
+        description: What to run
+        type: choice
+        options: [pack, lane]
+        default: pack
+      version:
+        description: Pack version (the tag becomes media-v<version>); a pack run only
+        type: string
+        default: ""
+      sign:
+        description: Sign holo-media.exe with Azure Artifact Signing
+        type: boolean
+        default: true
+      publish:
+        description: Create the media-v<version> release (otherwise the files are only uploaded as run artifacts)
+        type: boolean
+        default: false
+
+permissions: {}
+
+jobs:
+  pack:
+    if: github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.job == 'pack')
+    runs-on: windows-latest
+    environment: release
+    timeout-minutes: 150
+    permissions:
+      id-token: write
+      contents: write
+    concurrency:
+      group: media-pack
+      cancel-in-progress: false
+    env:
+      SIGN: ${{ github.ref_type == 'tag' || (github.event_name == 'workflow_dispatch' && inputs.sign) }}
+      PUBLISH: ${{ github.ref_type == 'tag' || (github.event_name == 'workflow_dispatch' && inputs.publish) }}
+    defaults:
+      run:
+        shell: powershell
+    steps:
+      - name: Keep LF line endings, as in the repository
+        run: git config --global core.autocrlf false
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Pack version
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
+        run: |
+          $ErrorActionPreference = "Stop"
+          if ($env:GITHUB_REF_TYPE -eq "tag") { $v = $env:GITHUB_REF_NAME -replace '^media-v', '' } else { $v = $env:INPUT_VERSION }
+          if ($v -notmatch '^[A-Za-z0-9][A-Za-z0-9._-]{0,31}$' -or $v.EndsWith(".") -or $v.Contains("..")) { throw "bad pack version '$v'" }
+          if ($v -in "ytdlp", "dl", "cache") { throw "'$v' is a reserved name" }
+          "VERSION=$v" >> $env:GITHUB_ENV
+          "TAG=media-v$v" >> $env:GITHUB_ENV
+
+      - name: Refuse to replace a published pack
+        if: env.PUBLISH == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          # The pack's hash is compiled into melange.asi, so a tag is used once. A tag push must not already have assets.
+          $ErrorActionPreference = "Continue"
+          $assets = gh release view $env:TAG --json assets -q ".assets[].name" 2> $null
+          if ($LASTEXITCODE -eq 0 -and $assets) { throw "$env:TAG already has assets: pick a new version" }
+          $global:LASTEXITCODE = 0
+
+      - name: Fetch build tools
+        run: |
+          $ErrorActionPreference = "Stop"
+          $cache = "$env:RUNNER_TEMP\dl"
+          New-Item -ItemType Directory -Force $cache | Out-Null
+          function Get-Pinned($Url, $Sha256) {
+            $file = Join-Path $cache ([IO.Path]::GetFileName($Url))
+            curl.exe -fsSL --retry 3 -o $file $Url
+            if ($LASTEXITCODE) { throw "download failed: $Url" }
+            $got = (Get-FileHash -Algorithm SHA256 $file).Hash
+            if ($got -ne $Sha256) { throw "SHA-256 mismatch for $Url (got $got)" }
+            $file
+          }
+          $cmake = Get-Pinned "https://github.com/Kitware/CMake/releases/download/v4.4.3/cmake-4.4.3-windows-x86_64.zip" "4D52EBAB7193A698651639ED80D8D04FD903358843572CF44C7FD234CB7C26AB"
+          Expand-Archive $cmake tools\cmake
+          $ninja = Get-Pinned "https://github.com/ninja-build/ninja/releases/download/v1.13.2/ninja-win.zip" "07FC8261B42B20E71D1720B39068C2E14FFCEE6396B76FB7A795FB460B78DC65"
+          Expand-Archive $ninja tools\ninja
+
+      - name: Fetch the pinned libmpv headers
+        run: |
+          .\scripts\media-pack.ps1 -MpvDevDir "$env:RUNNER_TEMP\libmpv-dev" -Cache "$env:RUNNER_TEMP\media-dl"
+          if ($LASTEXITCODE) { throw "libmpv dev files failed" }
+
+      - name: vcpkg (pinned by helper/holo-media/vcpkg.json)
+        run: |
+          $ErrorActionPreference = "Stop"
+          $baseline = (Get-Content helper\holo-media\vcpkg.json -Raw | ConvertFrom-Json)."builtin-baseline"
+          if ($baseline -notmatch '^[0-9a-f]{40}$') { throw "no vcpkg baseline" }
+          $dir = "$env:RUNNER_TEMP\vcpkg"
+          git clone --filter=blob:none https://github.com/microsoft/vcpkg $dir
+          if ($LASTEXITCODE) { throw "vcpkg clone failed" }
+          git -C $dir checkout $baseline
+          if ($LASTEXITCODE) { throw "vcpkg checkout failed" }
+          & "$dir\bootstrap-vcpkg.bat" -disableMetrics
+          if ($LASTEXITCODE) { throw "vcpkg bootstrap failed" }
+          New-Item -ItemType Directory -Force "$env:RUNNER_TEMP\vcpkg-archives" | Out-Null
+          "VCPKG_ROOT=$dir" >> $env:GITHUB_ENV
+          "VCPKG_DEFAULT_BINARY_CACHE=$env:RUNNER_TEMP\vcpkg-archives" >> $env:GITHUB_ENV
+
+      # A cold libtorrent + Boost + OpenSSL build is about 30 minutes; the cache brings a rerun to a few.
+      - name: vcpkg binary cache
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}\vcpkg-archives
+          key: vcpkg-holo-${{ hashFiles('helper/holo-media/vcpkg.json') }}
+
+      - name: Build holo-media.exe (x64, torrents)
+        run: |
+          $ErrorActionPreference = "Stop"
+          # build.ps1 builds the presets of its own folder, so it runs from there.
+          Push-Location helper\holo-media
+          .\build.ps1 -MpvDir "$env:RUNNER_TEMP\libmpv-dev" -Vcpkg $env:VCPKG_ROOT -Torrent
+          $code = $LASTEXITCODE
+          Pop-Location
+          if ($code) { throw "helper build failed" }
+
+      - name: Helper unit tests (shared protocol on x64, helper logic, torrent engine)
+        run: |
+          $ErrorActionPreference = "Stop"
+          $b = "helper\holo-media\build\x64-release"
+          foreach ($t in "holo_media_shared_test", "holo_media_logic_test", "holo_bt_test") {
+            if (-not (Test-Path "$b\$t.exe")) { throw "$t.exe was not built" }
+            & "$b\$t.exe"
+            if ($LASTEXITCODE) { throw "$t failed ($LASTEXITCODE)" }
+          }
+
+      - name: Azure login
+        if: env.SIGN == 'true'
+        uses: azure/login@a641126d1b8aa4d1fa005f4f92df94a3a4c4c906 # v3.1.0
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Sign holo-media.exe
+        if: env.SIGN == 'true'
+        uses: azure/artifact-signing-action@c7ab2a863ab5f9a846ddb8265964877ef296ee82 # v2.0.0
+        with:
+          endpoint: ${{ vars.SIGNING_ENDPOINT }}
+          signing-account-name: ${{ vars.SIGNING_ACCOUNT }}
+          certificate-profile-name: ${{ vars.SIGNING_PROFILE }}
+          files: |
+            ${{ github.workspace }}\helper\holo-media\build\x64-release\holo-media.exe
+          file-digest: SHA256
+          timestamp-rfc3161: http://timestamp.acs.microsoft.com
+          timestamp-digest: SHA256
+          description: Melange media helper
+          description-url: https://github.com/JaminB/melange
+
+      - name: Verify the signature
+        if: env.SIGN == 'true'
+        run: |
+          $f = "helper\holo-media\build\x64-release\holo-media.exe"
+          $sig = Get-AuthenticodeSignature $f
+          Write-Host "$f $($sig.Status) $($sig.SignerCertificate.Subject)"
+          if ($sig.Status -ne "Valid" -or -not $sig.TimeStamperCertificate) { throw "$f is not validly signed and timestamped" }
+
+      - name: Source mirror (best effort)
+        continue-on-error: true
+        run: |
+          .\scripts\media-sources.ps1 -Version $env:VERSION -Out out\media
+          if ($LASTEXITCODE) { throw "no source could be mirrored" }
+
+      - name: Assemble the pack
+        run: |
+          $ErrorActionPreference = "Stop"
+          $src = "melange-media-src-$env:VERSION.tar.gz"
+          # A hashtable: Windows PowerShell 5.1 passes the strings of an array splat to a script positionally, not as names.
+          $packArgs = @{ Version = $env:VERSION; Helper = "helper\holo-media\build\x64-release\holo-media.exe"; Out = "out\media"; Cache = "$env:RUNNER_TEMP\media-dl" }
+          if (Test-Path "out\media\$src") { $packArgs.SourceArchive = $src; "SRC=out\media\$src" >> $env:GITHUB_ENV }
+          .\scripts\media-pack.ps1 @packArgs
+          if ($LASTEXITCODE) { throw "pack assembly failed" }
+          "ZIP=out\media\melange-media-$env:VERSION.zip" >> $env:GITHUB_ENV
+
+      - name: Fetch yt-dlp for the selftest (GPG-checked, same script as the lane)
+        run: |
+          .\scripts\media-ytdlp.ps1 -Out out\ytdlp-selftest -CurrentManifest none
+          if ($LASTEXITCODE) { throw "yt-dlp fetch failed" }
+
+      - name: holo-media.exe --selftest on the packed bytes
+        run: |
+          $ErrorActionPreference = "Stop"
+          $dir = "$env:RUNNER_TEMP\packtest"
+          Expand-Archive $env:ZIP $dir
+          $ytdlp = (Get-ChildItem out\ytdlp-selftest -Filter "yt-dlp-*.exe" | Select-Object -First 1).FullName
+          & "$dir\holo-media.exe" --selftest --libmpv "$dir\libmpv-2.dll" --deno "$dir\deno.exe" --ytdlp $ytdlp --cache "$env:RUNNER_TEMP\selftest-cache"
+          if ($LASTEXITCODE) { throw "holo-media --selftest failed ($LASTEXITCODE)" }
+
+      - name: Check the pack against the core's manifest rules
+        run: |
+          $ErrorActionPreference = "Stop"
+          $url = "https://github.com/$env:GITHUB_REPOSITORY/releases/download/$env:TAG/melange-media-$env:VERSION.zip"
+          if (-not (Test-Path scripts\gen-media-manifest.py)) { Write-Host "scripts\gen-media-manifest.py is not in this checkout; skipped"; exit 0 }
+          $py = Get-Command py -ErrorAction SilentlyContinue
+          if ($py) { py -3 scripts\gen-media-manifest.py --zip $env:ZIP --url $url --out out\media\pack_manifest.h } else { python scripts\gen-media-manifest.py --zip $env:ZIP --url $url --out out\media\pack_manifest.h }
+          if ($LASTEXITCODE) { throw "the pack does not pass the manifest generator" }
+
+      - name: Upload artifacts
+        if: env.PUBLISH != 'true'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: media-pack-${{ env.VERSION }}
+          path: |
+            out/media/melange-media-*.zip
+            out/media/melange-media-src-*.tar.gz
+            out/media/pack_manifest.h
+          if-no-files-found: error
+
+      - name: Publish the release
+        if: env.PUBLISH == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          $ErrorActionPreference = "Stop"
+          $hash = (Get-FileHash -Algorithm SHA256 $env:ZIP).Hash.ToLowerInvariant()
+          $notes = @"
+          Melange media pack ${env:VERSION}: holo-media.exe (Authenticode-signed), the unmodified zhongfly LGPL libmpv-2.dll and deno.exe. Melange downloads it on first use; each file is checked against the manifest compiled into melange.asi.
+
+          SHA-256 of $(Split-Path $env:ZIP -Leaf): ``$hash``
+          Built from commit $env:GITHUB_SHA. The LGPL source mirror, when present, is the melange-media-src asset.
+          "@
+          $files = @($env:ZIP)
+          if ($env:SRC -and (Test-Path $env:SRC)) { $files += $env:SRC }
+          if (Test-Path out\media\pack_manifest.h) { $files += "out\media\pack_manifest.h" }
+          # Always an array: splatting a lone string passes it one character per argument.
+          $where = @(if ($env:GITHUB_REF_TYPE -eq "tag") { "--verify-tag" } else { "--target", $env:GITHUB_SHA })
+          # Never "latest": Melange.exe's updater reads /releases/latest and refuses a tag that is not v<version>.
+          gh release create $env:TAG @files @where --title "Melange media pack $env:VERSION" --notes $notes --latest=false
+          if ($LASTEXITCODE) { throw "release failed" }
+
+  lane:
+    if: github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.job == 'lane')
+    runs-on: windows-latest
+    timeout-minutes: 20
+    permissions:
+      contents: write
+    concurrency:
+      group: media-ytdlp
+      cancel-in-progress: false
+    defaults:
+      run:
+        shell: powershell
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Check the newest yt-dlp release
+        id: ytdlp
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          .\scripts\media-ytdlp.ps1 -Out out\ytdlp -Repo $env:GITHUB_REPOSITORY
+          if ($LASTEXITCODE) { throw "yt-dlp lane failed" }
+
+      - name: Publish the lane
+        if: steps.ytdlp.outputs.changed == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          VER: ${{ steps.ytdlp.outputs.version }}
+        run: |
+          $ErrorActionPreference = "Continue"
+          gh release view media-ytdlp --json tagName 2> $null | Out-Null
+          $exists = ($LASTEXITCODE -eq 0)
+          $ErrorActionPreference = "Stop"
+          $notes = "Rolling release: the newest yt-dlp that passed the GPG check, and media-ytdlp.json (version, url, size, sha256, serial) which Melange reads. Do not edit by hand."
+          $exe = "out\ytdlp\yt-dlp-$env:VER.exe"
+          # The exe goes up first, so the manifest never names a file that is not there yet.
+          if (-not $exists) {
+            gh release create media-ytdlp $exe --target $env:GITHUB_SHA --title "yt-dlp lane" --notes $notes --latest=false
+          } else {
+            gh release upload media-ytdlp $exe --clobber
+          }
+          if ($LASTEXITCODE) { throw "uploading the yt-dlp exe failed" }
+          gh release upload media-ytdlp out\ytdlp\media-ytdlp.json --clobber
+          if ($LASTEXITCODE) { throw "uploading media-ytdlp.json failed" }
+          # Keep the three newest exes; the manifest names the newest.
+          $old = gh release view media-ytdlp --json assets -q ".assets[].name" | Where-Object { $_ -like "yt-dlp-*.exe" } | Sort-Object { [version]($_ -replace '^yt-dlp-|\.exe$', '') } -Descending | Select-Object -Skip 3
+          foreach ($n in $old) { gh release delete-asset media-ytdlp $n --yes }

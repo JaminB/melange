@@ -137,6 +137,29 @@ bool g_publish = true;
 bool g_simOnline = true;
 std::vector<std::string> g_simFixes;        // advertised sim fixes (simfix::Advertise), guarded by g_mx
 std::vector<std::string> g_activeSimFixes;  // the ones running in the current match, main thread
+// The peer bus (lobby.h, Melange 0.12): its observer and its mlg.peer value.
+std::atomic<lobby::ChangeFn> g_changeFn{nullptr};
+std::mutex g_advertMx;
+std::string g_advert;              // guarded by g_advertMx
+uint64_t g_advertWrittenIn = 0;    // the lobby we last wrote a non-empty value into, guarded by g_advertMx
+
+void NotifyChange(lobby::Change c, uint64_t member) {
+    if (const lobby::ChangeFn fn = g_changeFn.load()) fn(c, member);
+}
+
+// mlg.peer: written when it says something, or to clear what we wrote into this lobby before.
+void PublishPeerAdvert() {
+    const uint64_t lobby = g_lobby.load();
+    if (!lobby) return;
+    std::string value;
+    {
+        std::lock_guard lk(g_advertMx);
+        if (g_advert.empty() && g_advertWrittenIn != lobby) return;
+        value = g_advert;
+        g_advertWrittenIn = value.empty() ? 0 : lobby;
+    }
+    SetLobbyMemberDataRaw(lobby, "mlg.peer", value.c_str());
+}
 
 // What we publish as "mlg.fix": with Publish=0 nothing goes out, so we count as a member without the key.
 std::string OurFixValue() {
@@ -469,18 +492,25 @@ private:
         case melange::steam::kLobbyEnter:
             g_lobby = static_cast<LobbyEnterCb*>(p)->lobby;
             RecomputeAsync();
+            PublishPeerAdvert();
+            NotifyChange(lobby::Change::Enter, 0);
             break;
         case melange::steam::kLobbyChatUpdate:
-            if (static_cast<LobbyChatUpdateCb*>(p)->lobby == g_lobby.load()) RewriteMlgSimIfOwner();
+            if (static_cast<LobbyChatUpdateCb*>(p)->lobby == g_lobby.load()) {
+                RewriteMlgSimIfOwner();
+                NotifyChange(lobby::Change::Members, static_cast<LobbyChatUpdateCb*>(p)->userChanged);
+            }
             break;
         case melange::steam::kLobbyDataUpdate: {
             auto* e = static_cast<LobbyDataUpdateCb*>(p);
             if (e->lobby == g_lobby.load() && e->member != MySteamId()) RewriteMlgSimIfOwner();
+            if (e->lobby == g_lobby.load()) NotifyChange(lobby::Change::MemberData, e->member);
             break;
         }
         case melange::steam::kLobbyKicked:
             g_lobby = 0;
             g_simAllowedThisMatch = false;
+            NotifyChange(lobby::Change::Left, 0);
             break;
         default:
             break;
@@ -635,6 +665,15 @@ std::string Data(const char* key) {
     const SteamID l = g_lobby.load();
     return l ? LobbyData(l, key) : std::string();
 }
+void OnChange(ChangeFn fn) { g_changeFn = fn; }
+void SetPeerAdvert(const std::string& value) {
+    {
+        std::lock_guard lk(g_advertMx);
+        if (g_advert == value) return;
+        g_advert = value;
+    }
+    PublishPeerAdvert();
+}
 }  // namespace melange::handshake::lobby
 
 namespace {
@@ -664,6 +703,7 @@ public:
         melange::events::Subscribe(melange::events::Event::LobbyLeave, [] {
             g_lobby = 0;
             g_simAllowedThisMatch = false;
+            NotifyChange(lobby::Change::Left, 0);
             melange::jlog::Rec("handshake", melange::jlog::Level::Info, "left_lobby").Emit();
         });
         RegisterPanel();

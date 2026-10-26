@@ -57,7 +57,8 @@ struct ModRec {
     double storageWritten = 0;
 };
 
-enum class CbKind : uint8_t { Event, Timer, Panel, Menu, Hotkey, Draw, Reload, WebMethod };
+// Media: wum.media resolve/torrent callbacks; Peer: wum.peer channel on/onPeer (Melange 0.12).
+enum class CbKind : uint8_t { Event, Timer, Panel, Menu, Hotkey, Draw, Reload, WebMethod, Media, Peer };
 const char* KindName(CbKind k);
 
 struct Callback {
@@ -149,10 +150,13 @@ bool ReadManifest(ModRec* m, std::string* err);
 
 // ---- dispatch (sandbox.cpp)
 void QueueEvent(std::string name, json::Value payload);  // main thread
+// Main thread. Delivered at the next Frame like QueueEvent, but only to `modId`'s listeners (owner-only events such as
+// melange.input.*, melange.media). Event names: lua/event_names.h.
+void QueueEventFor(std::string modId, std::string name, json::Value payload);
 void AddListener(const std::string& name, uint32_t cbId);
 void RemoveListener(uint32_t cbId);
 uint32_t AddTimer(uint32_t cbId, double delay, double interval);
-void FireDirect(const std::string& name, const json::Value& payload);  // melange.* events, now
+void FireDirect(const std::string& name, const json::Value& payload, const std::string& target = {});  // now
 
 // ---- captured output for Eval (print and wum.log go here too while set)
 std::string* Capture();
@@ -164,6 +168,14 @@ struct GameState {
     int turn = 0;
     int team = -1;
     uint32_t tick = 0;
+    // Melange 0.12: wum.game.turn() beyond index/team, and wum.game.ui() (filled by sandbox_module.cpp each frame).
+    int worm = -1;
+    bool ai = false, mine = false;
+    const char* phase = "none";  // "intro" | "play" | "retreat" | "settle" | "none"
+    struct Ui {
+        bool valid = false;  // false on an unrecognised build: wum.game.ui() is nil
+        bool weaponPanel = false, pause = false, readyIntro = false, feCursor = false, attract = false;
+    } ui;
 };
 GameState& Game();
 

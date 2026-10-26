@@ -1069,3 +1069,39 @@ public:
 }  // namespace
 
 MELANGE_MODULE(NetSession);
+
+// ---------------------------------------------------------------- Melange 0.12: phase and turn ownership (net.h)
+namespace melange::wum {
+SessionPhase Phase() {
+    switch (CurrentState()) {
+        case 0: return SessionPhase::None;
+        case state::Init:
+        case state::WaitingSimChannel:
+        case state::WaitingGameStart: return SessionPhase::Lobby;
+        case state::WaitingConnections:
+        case state::WaitingLoad: return SessionPhase::Loading;
+        case state::InGame: return SessionPhase::Match;
+        case state::ProcessWinOrDraw:
+        case state::WaitingUnload: return SessionPhase::Results;
+        default: return SessionPhase::Lobby;  // an unknown state function still means a session exists
+    }
+}
+
+const char* PhaseName(SessionPhase p) {
+    switch (p) {
+        case SessionPhase::None: return "none";
+        case SessionPhase::Lobby: return "lobby";
+        case SessionPhase::Loading: return "loading";
+        case SessionPhase::Match: return "match";
+        case SessionPhase::Results: return "results";
+    }
+    return "none";
+}
+
+Tri CurrentPlayerIsLocal() {
+    const uintptr_t ns = NetService();
+    const uintptr_t cur = ns ? CurrentPlayer(ns) : 0;
+    if (!cur) return Tri::Unknown;
+    return Read<uint8_t>(cur + off::PlayerIsLocal) ? Tri::Yes : Tri::No;
+}
+}  // namespace melange::wum

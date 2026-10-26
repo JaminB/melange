@@ -6,6 +6,9 @@
 
 #include <cmath>
 #include <cstdio>
+#include <cstring>
+#include <memory>
+#include <unordered_map>
 
 namespace melange::mirage::drawfont {
 namespace {
@@ -17,7 +20,8 @@ struct State {
     ImFont* font = nullptr;
     ImFontBaked* baked[3] = {nullptr, nullptr, nullptr};
     unsigned texture = 0;
-    bool attempted = false, ready = false;
+    bool attempted = false, built = false;  // Build
+    bool uploadTried = false, ready = false;  // Init
 };
 State g_state;
 
@@ -33,35 +37,10 @@ int NearestSizeIndex(float sizePx) {
     }
     return best;
 }
-
-// Malformed input yields U+FFFD and always consumes at least one byte.
-int DecodeUtf8(const char* s, uint32_t* out) {
-    const unsigned char c0 = static_cast<unsigned char>(s[0]);
-    if (c0 < 0x80) {
-        *out = c0;
-        return 1;
-    }
-    int len = (c0 & 0xE0) == 0xC0 ? 2 : (c0 & 0xF0) == 0xE0 ? 3 : (c0 & 0xF8) == 0xF0 ? 4 : 0;
-    if (len == 0) {
-        *out = 0xFFFD;
-        return 1;
-    }
-    uint32_t cp = c0 & (0xFF >> (len + 1));
-    for (int i = 1; i < len; ++i) {
-        unsigned char c = static_cast<unsigned char>(s[i]);
-        if ((c & 0xC0) != 0x80) {
-            *out = 0xFFFD;
-            return i;
-        }
-        cp = (cp << 6) | (c & 0x3F);
-    }
-    *out = (cp > 0xFFFF) ? 0xFFFD : cp;
-    return len;
-}
 }  // namespace
 
-bool Init() {
-    if (g_state.attempted) return g_state.ready;
+bool Build() {
+    if (g_state.attempted) return g_state.built;
     g_state.attempted = true;
 
     g_state.atlas = new ImFontAtlas();
@@ -77,12 +56,22 @@ bool Init() {
         if (!g_state.baked[i]) return false;
         for (ImWchar c = kFirstChar; c <= kLastChar; ++c) g_state.baked[i]->FindGlyph(c);
     }
+    g_state.built = true;
+    return true;
+}
+
+bool Init() {
+    if (g_state.uploadTried) return g_state.ready;
+    if (!Build()) return false;
+    g_state.uploadTried = true;
 
     unsigned char* pixels = nullptr;
     int w = 0, h = 0;
     g_state.atlas->GetTexDataAsRGBA32(&pixels, &w, &h);
     if (!pixels || w <= 0 || h <= 0) return false;
 
+    GLint prev = 0;
+    glGetIntegerv(GL_TEXTURE_BINDING_2D, &prev);
     glGenTextures(1, &g_state.texture);
     glBindTexture(GL_TEXTURE_2D, g_state.texture);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
@@ -90,7 +79,7 @@ bool Init() {
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP);
     glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, w, h, 0, GL_RGBA, GL_UNSIGNED_BYTE, pixels);
-    glBindTexture(GL_TEXTURE_2D, 0);
+    glBindTexture(GL_TEXTURE_2D, static_cast<GLuint>(prev));
 
     g_state.ready = true;
     return true;
@@ -106,9 +95,10 @@ Extent Layout(const char* utf8, float sizePx, float originX, float originY, std:
     float x = originX;
     float maxH = 0;
 
-    for (const char* p = utf8; *p;) {
+    const char* end = utf8 + strlen(utf8);
+    for (const char* p = utf8; p < end;) {
         uint32_t cp = 0;
-        p += DecodeUtf8(p, &cp);
+        p += DecodeUtf8(p, end, &cp);
         if (cp == '\n') {
             extent.w = (x - originX > extent.w) ? x - originX : extent.w;
             x = originX;
@@ -137,5 +127,72 @@ Extent Layout(const char* utf8, float sizePx, float originX, float originY, std:
     extent.w = (x - originX > extent.w) ? x - originX : extent.w;
     extent.h = (maxH > 0) ? maxH : baked->Size * scale;
     return extent;
+}
+namespace {
+// The bitmap font as a GlyphSource: Latin-1 only, the bake nearest to the size scaled.
+class BitmapSource final : public GlyphSource {
+  public:
+    bool Glyph(uint32_t cp, float sizePx, GlyphMetrics* out) const override {
+        if (!g_state.built || cp < kFirstChar || cp > kLastChar) return false;
+        ImFontBaked* baked = g_state.baked[NearestSizeIndex(sizePx)];
+        const ImFontGlyph* g = baked->FindGlyph(static_cast<ImWchar>(cp));
+        if (!g) return false;
+        const float scale = sizePx / baked->Size;
+        out->x0 = g->X0 * scale;
+        out->y0 = g->Y0 * scale;
+        out->x1 = g->X1 * scale;
+        out->y1 = g->Y1 * scale;
+        out->u0 = g->U0;
+        out->v0 = g->V0;
+        out->u1 = g->U1;
+        out->v1 = g->V1;
+        out->advance = g->AdvanceX * scale;
+        out->visible = g->Visible;
+        return true;
+    }
+    float LineHeight(float sizePx) const override { return sizePx; }
+};
+
+struct ModFont {
+    unsigned texture = 0;
+    ModFontData data;
+    std::unique_ptr<ModFontSource> source;
+};
+std::unordered_map<int, ModFont> g_modFonts;
+int g_nextFont = 1;
+}  // namespace
+
+int AddModFont(unsigned texture, ModFontData&& data) {
+    const int id = g_nextFont++;
+    ModFont& f = g_modFonts[id];
+    f.texture = texture;
+    f.data = std::move(data);
+    f.source = std::make_unique<ModFontSource>(f.data);
+    return id;
+}
+
+unsigned RemoveModFont(int font) {
+    auto it = g_modFonts.find(font);
+    if (it == g_modFonts.end()) return 0;
+    const unsigned tex = it->second.texture;
+    g_modFonts.erase(it);
+    return tex;
+}
+
+unsigned TextureFor(int font) {
+    if (font == 0) return Texture();
+    auto it = g_modFonts.find(font);
+    return it == g_modFonts.end() ? 0 : it->second.texture;
+}
+
+Extent LayoutEx(int font, const char* utf8, float sizePx, float x, float y, const LayoutOptions& o, std::vector<GlyphQuad>* out) {
+    if (font == 0) {
+        static const BitmapSource kBitmap;
+        if (!Build()) return {};
+        return LayoutText(kBitmap, utf8, sizePx, x, y, o, out);
+    }
+    auto it = g_modFonts.find(font);
+    if (it == g_modFonts.end()) return {};
+    return LayoutText(*it->second.source, utf8, sizePx, x, y, o, out);
 }
 }  // namespace melange::mirage::drawfont

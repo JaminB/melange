@@ -2,6 +2,7 @@
 // The work is done by src/audio/audio.cpp; this file scopes clips and voices to the calling mod generation.
 #include <algorithm>
 #include <cmath>
+#include <cstring>
 #include <limits>
 #include <set>
 #include <string>
@@ -112,6 +113,14 @@ int Play(lua_State* L) {
             o.loop = lua_toboolean(L, -1) != 0;
         }
         lua_pop(L, 1);
+        lua_getfield(L, 2, "kind");
+        if (!lua_isnil(L, -1)) {
+            const char* k = lua_type(L, -1) == LUA_TSTRING ? lua_tostring(L, -1) : nullptr;
+            if (!k || (strcmp(k, "sfx") != 0 && strcmp(k, "music") != 0))
+                luaL_error(L, "wum.audio.play: kind must be \"sfx\" or \"music\"");
+            o.music = strcmp(k, "music") == 0;
+        }
+        lua_pop(L, 1);
         lua_getfield(L, 2, "pos");
         if (!lua_isnil(L, -1)) {
             if (lua_type(L, -1) != LUA_TTABLE) luaL_error(L, "wum.audio.play: pos must be a table {x, y, z}");
@@ -145,11 +154,58 @@ int StopAll(lua_State* L) {
     return 1;
 }
 
+// ---- wum.audio.music: silencing the game's own music (Melange 0.12). One request per mod generation; the audio module
+// ORs them, fades, and drops a generation's request in au::Release (its cleanup below).
+int MusicAvailable(lua_State* L) {
+    lua_pushboolean(L, au::MusicAvailable());
+    return 1;
+}
+
+int MusicSuppress(lua_State* L) {
+    luaL_checktype(L, 1, LUA_TBOOLEAN);
+    const bool on = lua_toboolean(L, 1) != 0;
+    float fade = -1.0f;  // the default
+    if (!lua_isnoneornil(L, 2)) {
+        luaL_checktype(L, 2, LUA_TTABLE);
+        lua_getfield(L, 2, "fade");
+        if (!lua_isnil(L, -1)) {
+            if (lua_type(L, -1) != LUA_TNUMBER) luaL_error(L, "wum.audio.music.suppress: fade must be a number");
+            const double d = lua_tonumber(L, -1);
+            if (!std::isnan(d)) fade = static_cast<float>(std::clamp(d, 0.0, 10.0));
+        }
+        lua_pop(L, 1);
+    }
+    Hook(CurrentGen());  // the request must be released when this generation goes
+    if (const char* why = au::MusicSuppress(Owner(), on, fade)) return Fail(L, why);
+    lua_pushboolean(L, 1);
+    return 1;
+}
+
+int MusicSuppressed(lua_State* L) {
+    bool effective = false, mine = false;
+    au::MusicState(Owner(), &effective, &mine);
+    lua_pushboolean(L, effective);
+    lua_pushboolean(L, mine);
+    return 2;
+}
+
+// A nested namespace: the Sandbox freezes wum's direct members only, so this table is frozen here.
+void PushMusic(lua_State* L) {
+    static const luaL_Reg kMusic[] = {{"available", MusicAvailable}, {"suppress", MusicSuppress}, {"suppressed", MusicSuppressed},
+                                      {nullptr, nullptr}};
+    lua_newtable(L);
+    RegisterFunctions(L, -1, kMusic);
+    PushFrozen(L, -1);
+    lua_remove(L, -2);
+}
+
 void Shared(lua_State* L, int wum) {
     static const luaL_Reg kAudio[] = {{"ready", Ready}, {"load", Load}, {"play", Play}, {"stop", Stop}, {"stopAll", StopAll},
                                       {nullptr, nullptr}};
     lua_newtable(L);
     RegisterFunctions(L, -1, kAudio);
+    PushMusic(L);
+    lua_setfield(L, -2, "music");
     lua_setfield(L, wum, "audio");
 }
 

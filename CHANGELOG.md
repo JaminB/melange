@@ -1,5 +1,48 @@
 # Changelog
 
+## 0.12.0
+
+Melange 0.12 is the platform release for the Holo watch-party plugin: video, a peer channel, and richer drawing and
+input for client mods. All of it is client-side presentation; none of it reaches the simulation, the content handshake
+or Wormsign.
+
+### Added
+
+- `wum.media` (client mods): plays YouTube videos and playlists (through yt-dlp) and torrent (magnet) videos in a
+  separate 64-bit process, `holo-media.exe`, so a decoder or torrent crash can never end a match. The helper, an
+  unmodified LGPL libmpv and a JavaScript runtime come as a **media pack** of about 95 MB that is downloaded once, on the
+  click of a mod's own button (`wum.media.install()` needs a user click), into `Documents\Melange\media`. Every file is
+  checked against hashes compiled into `melange.asi`, and the helper's signature, before each start. yt-dlp updates
+  separately from a hash manifest checked against the maintainers' GPG signature, at most once a day. A player follows
+  another machine's position (`p:follow`) with drift correction on the peer bus's clock. Settings: new `[Media]`
+  section (`Enabled`, `AllowDownload`, `PackUrl`, `MatchDownloadKBps`, `MaxHeight`, `AudioDelayMs`, `Hwdec`, the torrent
+  cache, upload cap, UPnP and port, `YtDlpUpdate`, `HelperLowIntegrity`, `CacheDir`, `AllowCustomLibmpv` and
+  `CustomLibmpvPath`). See `docs/media-helper.md`. Nothing is downloaded or started until a mod asks and the user
+  clicks.
+- `wum.draw.media`, a `"screen"` draw stage (window pixels, after every post effect, in menus, lobby, loading screens
+  and matches), `wum.draw.hudImageUV`, `wum.draw.hudNine` (nine-slice), `wum.draw.hudClip`/`hudClipEnd`, mod bitmap
+  fonts (`wum.draw.font`, format `holo-font-1`) and `wum.draw.textSize`.
+- `wum.input` regions, pointer mode and keyboard focus for client mods, with `melange.input.mouse`, `.wheel`, `.key`,
+  `.char` and `.paste` events (`[Input] AllowModInput`). A click delivered to a mod is the user gesture that
+  `wum.media.install` requires.
+- `wum.lobby` (the Steam lobby as client mods see it) and `wum.peer` (a Steam P2P channel 6 between copies of the same
+  client mod, with a shared clock; `[PeerBus] Enabled`).
+- Music suppression for client mods: a mod can silence the game's music while it plays something (`wum.audio.music`,
+  `[Audio] AllowMusicSuppress`).
+- `wum.game.turn()` gains `mine`, `ai` and `phase`.
+- `scripts/release.ps1` refuses to build a release when a developer media manifest (`media_dev_manifest.h`) is present.
+
+### Changed
+
+- `wum.game.online()` is true for the whole net session: the online lobby, its loading screens, the match and its
+  results. Before 0.12 it was true only once the online match was running. A mod that needs the old meaning can test
+  `wum.lobby.state().phase == "match"` or use the `online` field of `melange.match.start`.
+
+### Fixed
+
+- `Melange.log` no longer waits for the disk after every line. On a busy disk a burst of log lines could hold the game's
+  main thread for several seconds. Lines still reach the system cache at once, so a crash or a hang loses none.
+
 ## 0.11.2
 
 - Fixed: an oil drum could explode a tick apart on two machines and take the match out of sync ("Random's dont

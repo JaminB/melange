@@ -24,7 +24,10 @@ public:
     void SetMasterVolume(float v);
 
     // Starts the clip as voice `id`. The mixer keeps a reference to the clip until the engine has let go of the buffer.
-    bool Start(uint32_t id, std::shared_ptr<const Clip> clip, float volume, float pitch, bool loop, std::string* why);
+    // `music` routes the voice through the music submix (SetMusicGain), which wum.audio.music.suppress silences.
+    bool Start(uint32_t id, std::shared_ptr<const Clip> clip, float volume, float pitch, bool loop, std::string* why,
+               bool music = false);
+    void SetMusicGain(float g);  // 0..1, the submix's volume
     void SetVolume(uint32_t id, float volume);
     // Stops and flushes. The voice is recycled at once when nothing is left queued on it, else by a later Poll.
     void Stop(uint32_t id);

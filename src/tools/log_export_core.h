@@ -79,6 +79,12 @@ struct SessionDir {
 // Every session folder under `roots`, newest first; a folder reachable from two roots is listed once.
 std::vector<SessionDir> FindSessions(const std::vector<std::wstring>& roots);
 
+// -- Media redaction (Melange 0.12, wum.media): what a user watched stays out of an export. YouTube links (youtube.com,
+// youtu.be), magnet links and bare 40-hex infohashes in text become "media:<8 hex>", hashed with the export's salt, so
+// one item still matches across the files of one export but not across exports. Other hashes (the 64-hex SHA-256 of
+// pack files) and the word "youtube" on its own are kept.
+std::string RedactMedia(std::string_view text, std::string_view salt);
+
 // -- One-click destination --------------------------------------------------------------------------------------
 enum class Folder { Documents, Desktop, LocalAppData, Profile };
 std::wstring KnownFolder(Folder f);   // "" if Windows can't resolve it

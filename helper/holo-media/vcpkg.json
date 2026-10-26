@@ -1,0 +1,12 @@
+{
+  "name": "holo-media",
+  "version-string": "1.0.0",
+  "description": "holo-media.exe torrent engine dependencies (libtorrent, static, x64-windows-static). WebTorrent is off.",
+  "builtin-baseline": "dc5988cd929e0372ef68ceaddece38a95176f761",
+  "dependencies": [
+    { "name": "libtorrent", "default-features": false }
+  ],
+  "overrides": [
+    { "name": "libtorrent", "version": "2.1.2" }
+  ]
+}

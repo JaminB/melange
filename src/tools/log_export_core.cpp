@@ -7,6 +7,7 @@
 #include <shlobj.h>
 
 #include <algorithm>
+#include <cctype>
 #include <cwchar>
 #include <cwctype>
 #include <exception>
@@ -304,7 +305,7 @@ public:
              bool isText) {
         if (isText) {
             // Generated entries hold no ids, only version numbers the IPv4 pattern would hash.
-            if (sourcePath != L"(generated)") data = melange::redact::HashIdsAndIps(data, salt_);
+            if (sourcePath != L"(generated)") data = RedactMedia(melange::redact::HashIdsAndIps(data, salt_), salt_);
             if (redactUserPaths_) data = RedactUserNames(data);
             data = ExcludeComputerName(data);
         }
@@ -913,4 +914,79 @@ bool Export(const std::wstring& zipPath, const Request& rq, Result* out) {
     }
     return false;
 }
+// ---------------------------------------------------------------- media redaction
+namespace {
+bool IsHex(char c) { return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F'); }
+bool IsWordChar(char c) { return std::isalnum(static_cast<unsigned char>(c)) || c == '_' || c == '-'; }
+// Where a link ends: whitespace, a quote, a bracket or a control character.
+bool EndsLink(char c) {
+    return static_cast<unsigned char>(c) <= ' ' || c == '"' || c == '\'' || c == '<' || c == '>' || c == '`' || c == ')' || c == ']' ||
+           c == '}' || c == ',' || c == '|';
+}
+bool StartsWithCI(std::string_view s, size_t at, std::string_view p) {
+    if (at + p.size() > s.size()) return false;
+    for (size_t i = 0; i < p.size(); ++i)
+        if (std::tolower(static_cast<unsigned char>(s[at + i])) != p[i]) return false;
+    return true;
+}
+std::string MediaToken(std::string_view item, std::string_view salt) {
+    std::string key(salt);
+    key += '|';
+    for (char c : item) key += static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+    return "media:" + melange::hashutil::Sha256Hex(key.data(), key.size()).substr(0, 8);
+}
+}  // namespace
+
+std::string RedactMedia(std::string_view text, std::string_view salt) {
+    static constexpr std::string_view kHosts[] = {"youtube.com", "youtu.be", "youtube-nocookie.com"};
+    std::string out;
+    out.reserve(text.size());
+    size_t i = 0;
+    while (i < text.size()) {
+        // magnet:?... up to the end of the link
+        if (StartsWithCI(text, i, "magnet:?")) {
+            size_t e = i;
+            while (e < text.size() && !EndsLink(text[e])) ++e;
+            out += MediaToken(text.substr(i, e - i), salt);
+            i = e;
+            continue;
+        }
+        // a YouTube link: from its start (scheme or host) to its end
+        bool host = false;
+        for (std::string_view h : kHosts)
+            if (StartsWithCI(text, i, h) && (i == 0 || !IsWordChar(text[i - 1]) || text[i - 1] == '.')) {
+                const size_t after = i + h.size();
+                host = after >= text.size() || text[after] == '/' || text[after] == '?' || text[after] == ':';
+                if (host) break;
+            }
+        if (host) {
+            // back over "https://www.", "m." and the like already copied to `out`
+            size_t back = out.size();
+            while (back > 0 && !EndsLink(out[back - 1]) && out[back - 1] != '=') --back;
+            size_t e = i;
+            while (e < text.size() && !EndsLink(text[e])) ++e;
+            const std::string link = out.substr(back) + std::string(text.substr(i, e - i));
+            out.resize(back);
+            out += MediaToken(link, salt);
+            i = e;
+            continue;
+        }
+        // a bare v1 infohash: exactly 40 hex digits, not part of a longer run
+        if (IsHex(text[i]) && (i == 0 || !IsHex(text[i - 1]))) {
+            size_t e = i;
+            while (e < text.size() && IsHex(text[e])) ++e;
+            if (e - i == 40 && (e == text.size() || !IsWordChar(text[e])) && (i == 0 || !IsWordChar(text[i - 1]))) {
+                out += MediaToken(text.substr(i, 40), salt);
+                i = e;
+                continue;
+            }
+            out.append(text.substr(i, e - i));
+            i = e;
+            continue;
+        }
+        out += text[i++];
+    }
+    return out;
+}
+
 }  // namespace melange::exporter::core

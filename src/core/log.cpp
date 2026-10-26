@@ -14,11 +14,14 @@ SRWLOCK g_lock = SRWLOCK_INIT;
 ULONGLONG g_start = 0;
 std::atomic<Tap> g_tap{nullptr};
 
+// WriteFile hands the line to the system cache before it returns (there is no buffer in this process), so the line
+// survives a crash, a hang or a kill of the game. No FlushFileBuffers per line: it waits for the disk while holding
+// the lock, and on a busy disk a burst of lines stalled the main thread for 9 s (two HANG dumps, Holo LocalNet).
+// Only a power cut or an OS crash can lose the cache's tail.
 void Append(const char* s, size_t n) {
     if (g_file == INVALID_HANDLE_VALUE) return;
     DWORD written = 0;
     WriteFile(g_file, s, static_cast<DWORD>(n), &written, nullptr);
-    FlushFileBuffers(g_file);
 }
 }  // namespace
 

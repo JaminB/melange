@@ -59,6 +59,7 @@ export const GROUPS = [
 		items: [
 			{ slug: 'developer-guide', label: 'Developer guide' },
 			{ slug: 'capture-format', label: 'GL capture format' },
+			{ slug: 'media-helper', label: 'Media helper' },
 		],
 	},
 	{

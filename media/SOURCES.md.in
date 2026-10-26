@@ -1,0 +1,38 @@
+# Sources and licences of the Melange media pack {{PACKVERSION}}
+
+This pack is what Holo (and any plugin that uses `wum.media`) plays video with. Melange downloads it on first use.
+Every file is listed with its size and SHA-256 in `pack.json`, and the same list is compiled into `melange.asi`.
+
+| File | What it is | Licence | Where it comes from |
+|---|---|---|---|
+| `holo-media.exe` | The media helper (a separate 64-bit process). Melange's own code, with libtorrent, Boost and OpenSSL linked in statically. | MIT, with BSD-3-Clause (libtorrent), BSL-1.0 (Boost) and Apache-2.0 (OpenSSL) | Built by Melange's CI from `helper/holo-media` in https://github.com/JaminB/melange and Authenticode-signed |
+| `libmpv-2.dll` | mpv's player library, with FFmpeg and the video and text libraries inside it | LGPL-2.1-or-later | zhongfly's prebuilt LGPL build, repackaged **unmodified** (below) |
+| `deno.exe` | The JavaScript runtime yt-dlp needs for YouTube | MIT | {{DENO_URL}} (version {{DENO_VERSION}}) |
+
+yt-dlp (Unlicense) is not in this pack. Melange fetches it separately, so it can be updated without a new pack. It is a
+separate program that mpv starts, not part of any library.
+
+## libmpv-2.dll (LGPL)
+
+- Release: `{{LIBMPV_RELEASE}}` of https://github.com/zhongfly/mpv-winbuild
+- Download: {{LIBMPV_URL}}
+- SHA-256 of that archive: `{{LIBMPV_SHA256}}`
+- Build log of that release: {{BUILD_RUN}}
+- It is the LGPL variant: mpv is built with `-Dgpl=false` and FFmpeg without `--enable-gpl` and `--enable-nonfree`.
+- Melange does not modify it. `holo-media.exe` loads it at run time by full path, so you can replace it: put your own
+  build of the same version over `libmpv-2.dll` in the pack folder and set `[Media] AllowCustomLibmpv=1` in
+  `Melange.ini` (Melange otherwise refuses a file that is not the pinned one).
+- Licence text: `LICENSES/LGPL-2.1.txt`.
+
+### Corresponding source (LGPL-2.1 section 6)
+
+{{SOURCE_STATE}}
+
+The libraries inside `libmpv-2.dll` other than mpv and FFmpeg (libass, FreeType, HarfBuzz, FriBidi, libplacebo, dav1d,
+lcms2, zlib and others) are as published upstream by the build scripts above. Melange does not pin their commits; the
+build scripts name every one of them, and each is under its own licence.
+
+## Other notices
+
+`LICENSES/` holds the licence texts: `LGPL-2.1.txt` (libmpv), `deno-MIT.txt`, `holo-media-MIT.txt`,
+`libtorrent-BSD-3-Clause.txt`, `boost-BSL-1.0.txt` and `openssl.txt`.

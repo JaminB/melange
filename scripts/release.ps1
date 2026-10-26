@@ -11,6 +11,14 @@ try {
     # developer build) so this reconfigures from scratch with no -PrivateDir, and no out-of-tree modules are
     # compiled in. Fetched third-party sources under _deps are left alone; they are pinned by tag and identical
     # either way.
+    # A developer media pack (scripts\make-dev-pack.ps1) leaves build\<cfg>\generated\media_dev_manifest.h, which the
+    # build prefers over the pinned release manifest: such a build would accept a pack nobody published. Checked before
+    # the build (so it never compiles) and after it (so nothing generated one on the way).
+    function Assert-NoDevManifest {
+        $dev = @(Get-ChildItem (Join-Path $root "build") -Recurse -Filter "media_dev_manifest.h" -ErrorAction SilentlyContinue)
+        if ($dev.Count) { throw "$($dev[0].FullName) exists; refusing to release a build with a developer media manifest (run scripts\make-dev-pack.ps1 -Remove and rebuild)" }
+    }
+    Assert-NoDevManifest
     $buildDir = Join-Path $root "build\$Config"
     if (Test-Path $buildDir) {
         Remove-Item (Join-Path $buildDir "CMakeCache.txt") -Force -ErrorAction SilentlyContinue
@@ -18,6 +26,7 @@ try {
     }
     & "$root\build.ps1" -Config $Config
     if ($LASTEXITCODE) { throw "build failed" }
+    Assert-NoDevManifest
 
     # Primary guard: confirm the fresh CMake cache really has no private dir configured. This is the reliable
     # check, since a private module (e.g. one named "LocalNet") can't be told apart from a public one by its

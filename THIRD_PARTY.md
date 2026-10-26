@@ -763,3 +763,30 @@ LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 ```
+
+## Media pack (downloaded on request, not part of the release zip)
+
+Melange 0.12's `wum.media` plays video in a separate process from the **media pack**, which the user downloads from this
+project's GitHub releases (`media-v<version>`) when a mod's button is clicked. The pack is described by
+`media/media.lock.json`, which pins every upstream file by size and SHA-256; each pack carries its own `LICENSES\` folder
+and `SOURCES.md`.
+
+| Component | Version | Licence | Where it comes from |
+|---|---|---|---|
+| holo-media.exe | 1.0.0 | MIT | Melange (`helper/holo-media`), built and signed by Melange's CI |
+| libtorrent (inside holo-media.exe) | 2.1.2 | BSD-3-Clause | linked statically |
+| Boost (inside holo-media.exe) | as vcpkg builds libtorrent 2.1.2 | BSL-1.0 | linked statically |
+| OpenSSL (inside holo-media.exe) | as vcpkg builds libtorrent 2.1.2 | Apache-2.0 | linked statically |
+| libmpv-2.dll (mpv, FFmpeg and the libraries inside it) | release 2026-10-25-baa3e11d42 | LGPL-2.1-or-later | zhongfly's `mpv-winbuild` LGPL x86_64 build (`mpv-dev-lgpl-x86_64-20261025-git-baa3e11d42.7z`), **repackaged unmodified** |
+| deno.exe | 2.9.8 | MIT | https://github.com/denoland/deno (release v2.9.8) |
+| yt-dlp (not in the pack; fetched and updated separately) | latest release | Unlicense | https://github.com/yt-dlp/yt-dlp, checked against the maintainers' GPG signature (key fingerprint AC0CBBE6848D6A873464AF4E57CF65933B5A7581) |
+
+libmpv is the LGPL variant: mpv is built with `-Dgpl=false` and FFmpeg without `--enable-gpl` and `--enable-nonfree`.
+Melange loads it at run time by full path, so you can replace it with your own build of the same version: set
+`[Media] AllowCustomLibmpv=1` and `CustomLibmpvPath` in `Melange.ini` (Melange otherwise refuses a file that is not the
+pinned one), which is the LGPL's relinking right. The corresponding source is offered as a **best-effort source mirror**,
+`melange-media-src-<version>.tar.gz` on the same release: the mpv and FFmpeg commits named by zhongfly's release and the
+commits of the build scripts it used. The other libraries inside `libmpv-2.dll` (libass, freetype, harfbuzz, libplacebo,
+dav1d and others) are built by those scripts from their upstream sources; their commits are not pinned here, and the
+mirror may not reproduce the binary bit for bit. The licence texts (LGPL-2.1, Boost, libtorrent, OpenSSL, deno, holo-media)
+are in `media/licenses/` and in every pack.

@@ -30,6 +30,13 @@ const ALLOW = path.join(SITE_DIR, 'scripts', 'wum-coverage.allow.json');
 const HAND_MAP = {
   // Replacements for the global rawset/setmetatable (RegisterFunctions(L, g, kRepl)), not wum.* functions.
   'src/lua/sandbox.cpp:kRepl': null,
+  // wum.audio.music, a nested namespace (three-level names are outside this check; `wum.audio.music` itself is covered).
+  'src/lua/wum_audio.cpp:kMusic': null,
+  // Methods of the userdata that wum.media and wum.peer return (player:play(), channel:send(), ...), documented with
+  // their objects, not wum.* functions.
+  'src/lua/wum_media.cpp:kPlayer': null,
+  'src/lua/wum_media.cpp:kTorrent': null,
+  'src/lua/wum_peer.cpp:kChannel': null,
 };
 
 async function walk(dir, exts) {
