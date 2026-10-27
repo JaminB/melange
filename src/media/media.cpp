@@ -151,6 +151,7 @@ const char* HStateName(HState s) {
 struct Launch {
     std::atomic<bool> done{false};
     bool ok = false;
+    bool noYtdlp = false;  // started before the lane installed yt-dlp
     std::string err;
     std::unique_ptr<helper::Session> session;
     pack::Held held;
@@ -178,6 +179,8 @@ bool g_swept = false;
 bool g_btBound = false;  // a torrent was started outside a match (the firewall prompt is behind us)
 uint64_t g_idleSince = 0;
 bool g_lowHelper = true;
+bool g_noYtdlp = false;      // the running helper has no yt-dlp (relaunched once the lane installs one)
+uint64_t g_ytdlpPoll = 0;
 
 // pack events
 pack::State g_packState = pack::State::Missing;
@@ -277,8 +280,12 @@ void StartLaunch(bool sweep) {
                 spec.exe = paths.helperExe;
                 spec.cacheDir = dir;
                 spec.lowIntegrity = low;
+                // The helper needs a --ytdlp path. Before the lane installed yt-dlp it gets one that does not exist:
+                // YouTube loads then fail with "ytdlp" (which asks the lane for one), torrents still play.
+                job->noYtdlp = paths.ytdlp.empty();
+                const std::wstring ytdlp = job->noYtdlp ? dir + L"\\no-yt-dlp.exe" : paths.ytdlp;
                 spec.args = {proto::arg::kParent, std::to_wstring(GetCurrentProcessId()), proto::arg::kCache, dir,
-                             proto::arg::kLibmpv, paths.libmpv, proto::arg::kYtdlp, paths.ytdlp, proto::arg::kDeno, paths.deno};
+                             proto::arg::kLibmpv, paths.libmpv, proto::arg::kYtdlp, ytdlp, proto::arg::kDeno, paths.deno};
                 if (sweep) spec.args.push_back(proto::arg::kSweep);
                 auto s = std::make_unique<helper::Session>();
                 if (s->Start(spec, hello, pipeio::Timings{}, &job->err)) {
@@ -417,6 +424,22 @@ void ErrorToPlayers(const std::string& message) {
         JSet(o, "message", JStr(message));
         Post(p->mod, o);
     }
+    // A torrent still waiting for its file list would otherwise wait forever.
+    for (auto& [id, t] : g_torrents) {
+        if (t.delivered || !g_sink) continue;
+        t.delivered = true;
+        json::Value o = JObj();
+        JSet(o, "error", JStr("helper"));
+        g_sink->Callback(t.mod, t.token, o, false);
+    }
+}
+
+// Where each player was, so the restart reopens it there (a follower re-targets the host by itself).
+void MarkForReopen() {
+    for (auto& [id, p] : g_players) {
+        p->startAt = PosNow(*p);
+        p->loaded = false;
+    }
 }
 
 void OnBroken(const std::string& why) {
@@ -425,11 +448,7 @@ void OnBroken(const std::string& why) {
         SetHState(HState::Off);
         return;
     }
-    // Where each player was, so the restart reopens it there (a follower re-targets the host by itself).
-    for (auto& [id, p] : g_players) {
-        p->startAt = PosNow(*p);
-        p->loaded = false;
-    }
+    MarkForReopen();
     if (g_restart.Allow(static_cast<double>(Tick()))) {
         SetHState(HState::Restarting);
         StartLaunch(false);
@@ -685,6 +704,8 @@ void PumpHelper() {
         if (l->ok) {
             g_session = std::move(l->session);
             g_held = l->held;
+            g_noYtdlp = l->noYtdlp;
+            if (g_noYtdlp) LOG_WARN("[media] helper started without yt-dlp: YouTube waits for the yt-dlp lane, torrents play");
         } else {
             LOG_ERROR("[media] the helper did not start: %s", l->err.c_str());
             SetHState(HaveUsers() ? HState::Dead : HState::Off);
@@ -716,6 +737,20 @@ void PumpHelper() {
         }
     } else {
         g_idleSince = 0;
+    }
+    // Started without yt-dlp: once the lane has installed one, relaunch so YouTube plays, unless a torrent is open
+    // (a relaunch would drop its download; the idle stop or the next relaunch picks yt-dlp up then).
+    if (g_session && g_noYtdlp && g_hstate == HState::Ready && g_torrents.empty() && Tick() - g_ytdlpPoll > 2000) {
+        g_ytdlpPoll = Tick();
+        bool torrentPlayer = false;
+        for (auto& [id, p] : g_players) torrentPlayer = torrentPlayer || !p->ih.empty();
+        pack::Paths paths;
+        if (!torrentPlayer && pack::ReadyPaths(&paths) && !paths.ytdlp.empty()) {
+            EndSession("yt-dlp is installed now, relaunching");
+            MarkForReopen();
+            SetHState(HState::Restarting);
+            StartLaunch(false);
+        }
     }
 }
 

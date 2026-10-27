@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.12.1
+
+- Fixed: the media helper did not start until Melange had downloaded yt-dlp, so nothing played, not even a torrent,
+  and a mod adding a magnet link waited forever for its file list. The helper now starts without yt-dlp: torrents
+  play, YouTube loads fail with `"ytdlp"` (which asks for yt-dlp at once), and once yt-dlp is installed the helper
+  restarts by itself when no torrent is open. When the helper cannot start, a torrent's callback now gets
+  `fn({error = "helper"})` rather than nothing.
+- Fixed: the yt-dlp lane stopped at the 404 of its first run, before any `media-ytdlp.json` was published.
+
 ## 0.12.0
 
 Melange 0.12 is the platform release for the Holo watch-party plugin: video, a peer channel, and richer drawing and
