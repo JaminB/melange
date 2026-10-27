@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.12.2
+
+- Fixed: the game crashed on exit (`abort()`, "resource unavailable try again") whenever the media helper had run in
+  that session. Stopping the helper starts a short thread that waits for it to quit; when the game exits with the
+  helper still running, Windows creates no new threads, and the error escaped the helper session's destructor. The
+  helper is now ended at once in that case.
+
 ## 0.12.1
 
 - Fixed: the media helper did not start until Melange had downloaded yt-dlp, so nothing played, not even a torrent,
