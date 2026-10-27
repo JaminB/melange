@@ -321,11 +321,17 @@ void Session::Stop(uint32_t graceMs) {
     stopped_ = true;
     auto conn = conn_;
     auto proc = proc_;
-    std::thread([conn, proc, graceMs] {
-        GuardedThreadBody("media helper stop", [&] {
-            if (proc && proc->Handle() && WaitForSingleObject(proc->Handle(), graceMs) == WAIT_TIMEOUT) proc->Kill(0);
-            conn->Close("stopped");
-        });
-    }).detach();
+    try {
+        std::thread([conn, proc, graceMs] {
+            GuardedThreadBody("media helper stop", [&] {
+                if (proc && proc->Handle() && WaitForSingleObject(proc->Handle(), graceMs) == WAIT_TIMEOUT) proc->Kill(0);
+                conn->Close("stopped");
+            });
+        }).detach();
+    } catch (const std::system_error&) {
+        // No new thread while the game exits (~Session of the global session runs then): end the helper now. The pipe's
+        // own threads are gone already, so the connection is left alone.
+        if (proc) proc->Kill(0);
+    }
 }
 }  // namespace melange::media::helper
