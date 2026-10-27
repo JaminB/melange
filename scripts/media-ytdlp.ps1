@@ -60,8 +60,13 @@ $have = $null
 $cur = $CurrentManifest
 if (-not $cur) {
     $cur = Join-Path $work "current.json"
+    # A 404 is expected before the first publish. Under "Stop", Windows PowerShell 5.1 turns curl's stderr into a
+    # terminating error even when redirected, so the exit code is never seen.
+    $ErrorActionPreference = "Continue"
     curl.exe -fsSL --retry 3 -o $cur "https://github.com/$Repo/releases/download/media-ytdlp/media-ytdlp.json" 2>$null
-    if ($LASTEXITCODE) { $cur = "" }
+    $failed = $LASTEXITCODE
+    $ErrorActionPreference = "Stop"
+    if ($failed) { $cur = "" }
 }
 if ($cur -and (Test-Path $cur)) {
     try { $have = Get-Content $cur -Raw | ConvertFrom-Json } catch { $have = $null }
