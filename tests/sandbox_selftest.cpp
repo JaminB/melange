@@ -482,6 +482,7 @@ void Release(const void* owner) {
 #include "sandbox_fakes_draw.inc"
 #include "sandbox_fakes_audio.inc"
 #include "sandbox_fakes_game.inc"
+#include "sandbox_fakes_spotify.inc"
 }  // namespace melange
 
 // ---------------------------------------------------------------- helpers
@@ -1714,6 +1715,7 @@ void TestOwnerEvents() {
 #include "sandbox_cases_draw.inc"
 #include "sandbox_cases_audio.inc"
 #include "sandbox_cases_game.inc"
+#include "sandbox_cases_spotify.inc"
 
 void TestDocs() {
     const std::string doc = ReadText(W(MELANGE_SOURCE_DIR) + L"\\docs\\lua-api.md");
@@ -1768,6 +1770,7 @@ int main() {
         {"input", TestInput}, {"audio", TestAudio},
         {"owner events", TestOwnerEvents}, {"media", TestMedia}, {"peer", TestPeer}, {"mod input", TestModInput},
         {"draw screen", TestDrawScreen}, {"music", TestMusic}, {"game turn", TestGameTurn},
+        {"spotify", TestSpotify},
         {"docs", TestDocs}};
     for (const auto& [name, fn] : tests) {
         const int before = g_fail;

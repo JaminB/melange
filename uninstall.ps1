@@ -1,5 +1,6 @@
 # Removes Melange from the game folder. Logs and dumps in <game>\Melange are kept unless -Purge, which also deletes the
-# media pack (Documents\Melange\media) and the media helper's cache (AppData\LocalLow\Melange\media-cache).
+# media pack (Documents\Melange\media), the media helper's cache (AppData\LocalLow\Melange\media-cache) and the stored
+# Spotify sign-in (%LOCALAPPDATA%\Melange\spotify).
 # Usage: .\uninstall.ps1 [-GameDir <path>] [-Purge]
 param([string]$GameDir = "C:\Program Files (x86)\Steam\steamapps\common\WormsXHD", [switch]$Purge)
 $ErrorActionPreference = "Stop"
@@ -25,5 +26,12 @@ if ($Purge) {
     }
     $low = Join-Path $env:USERPROFILE "AppData\LocalLow\Melange\media-cache"
     if (Test-Path $low) { Remove-Item $low -Recurse -Force -ErrorAction SilentlyContinue }
+    if ($env:LOCALAPPDATA) {
+        $spotify = Join-Path $env:LOCALAPPDATA "Melange\spotify"
+        if (Test-Path $spotify) {
+            Remove-Item $spotify -Recurse -Force -ErrorAction SilentlyContinue
+            Write-Host "Removed the stored Spotify sign-in ($spotify)"
+        }
+    }
 }
 Write-Host "Melange removed"

@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.13.0
+
+- `wum.spotify` (client mods): music from the user's own Spotify account, for watch parties such as Holo. The user signs
+  in on Spotify's page in the browser (PKCE, no client secret), gated by a user click on the mod's own button like
+  `wum.media.install`; the redirect is served on `127.0.0.1` only during the sign-in. A mod then lists saved tracks and
+  playlists and controls playback on the user's own Spotify device through Spotify Connect (Premium). The refresh token
+  is DPAPI-encrypted in `%LOCALAPPDATA%\Melange\spotify\token.bin`; no token ever reaches Lua or the log. Melange never
+  pauses the music by itself: unloading a mod, closing its UI and `disconnect()` leave it playing. Presentation only:
+  not available to sim scripts, not part of the content handshake, nothing reaches the match or Wormsign.
+- New `[Spotify]` section: `Enabled`, `ClientId`, `RedirectPort` (8780), `RequestsPerMinute` (90). Off until `ClientId`
+  is set to the Client ID of a Spotify app the user registered (see the developer guide).
+- Internal: `store::fetch::Send` for requests with a method, headers and a body, which reads error bodies and
+  `Retry-After` and never follows redirects.
+
 ## 0.12.2
 
 - Fixed: the game crashed on exit (`abort()`, "resource unavailable try again") whenever the media helper had run in

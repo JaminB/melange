@@ -115,8 +115,9 @@ struct Handles {
     }
 };
 
-bool GetHttps(const std::string& url, Sink& sink, const Options& o, std::string* err) {
-    const ULONGLONG start = GetTickCount64();
+// The session and the connection for an https:// URL, shared by Get and Send: the system proxy (WPAD, then the
+// default), TLS 1.2/1.3, the timeouts and the session's redirect policy. `object` gets the path and query.
+bool OpenHttps(const std::string& url, const Options& o, DWORD redirectPolicy, Handles* h, std::wstring* object, std::string* err) {
     const int wn = MultiByteToWideChar(CP_UTF8, 0, url.c_str(), -1, nullptr, 0);
     std::wstring wurl(static_cast<size_t>(wn > 0 ? wn : 1), L'\0');
     MultiByteToWideChar(CP_UTF8, 0, url.c_str(), -1, wurl.data(), wn);
@@ -134,49 +135,62 @@ bool GetHttps(const std::string& url, Sink& sink, const Options& o, std::string*
         *err = "not an https:// URL";
         return false;
     }
-    std::wstring object(path, uc.dwUrlPathLength);
-    if (uc.lpszExtraInfo && uc.dwExtraInfoLength) object.append(uc.lpszExtraInfo, uc.dwExtraInfoLength);
+    object->assign(path, uc.dwUrlPathLength);
+    if (uc.lpszExtraInfo && uc.dwExtraInfoLength) object->append(uc.lpszExtraInfo, uc.dwExtraInfoLength);
 
     std::wstring agent(o.userAgent.begin(), o.userAgent.end());
-    Handles h;
-    h.session = WinHttpOpen(agent.c_str(), WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY, WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, 0);
-    if (!h.session)
-        h.session = WinHttpOpen(agent.c_str(), WINHTTP_ACCESS_TYPE_DEFAULT_PROXY, WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, 0);
-    if (!h.session) {
+    h->session = WinHttpOpen(agent.c_str(), WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY, WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, 0);
+    if (!h->session)
+        h->session = WinHttpOpen(agent.c_str(), WINHTTP_ACCESS_TYPE_DEFAULT_PROXY, WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, 0);
+    if (!h->session) {
         *err = WinErr("WinHttpOpen", GetLastError());
         return false;
     }
     DWORD protocols = WINHTTP_FLAG_SECURE_PROTOCOL_TLS1_2 | WINHTTP_FLAG_SECURE_PROTOCOL_TLS1_3;
-    if (!WinHttpSetOption(h.session, WINHTTP_OPTION_SECURE_PROTOCOLS, &protocols, sizeof(protocols))) {
+    if (!WinHttpSetOption(h->session, WINHTTP_OPTION_SECURE_PROTOCOLS, &protocols, sizeof(protocols))) {
         protocols = WINHTTP_FLAG_SECURE_PROTOCOL_TLS1_2;
-        if (!WinHttpSetOption(h.session, WINHTTP_OPTION_SECURE_PROTOCOLS, &protocols, sizeof(protocols))) {
+        if (!WinHttpSetOption(h->session, WINHTTP_OPTION_SECURE_PROTOCOLS, &protocols, sizeof(protocols))) {
             *err = "TLS 1.2 is not available on this system";
             return false;
         }
     }
-    WinHttpSetTimeouts(h.session, 10000, 10000, 10000, static_cast<int>(o.stallMs));
-    DWORD redirect = WINHTTP_OPTION_REDIRECT_POLICY_DISALLOW_HTTPS_TO_HTTP, maxRedirects = 5;
-    WinHttpSetOption(h.session, WINHTTP_OPTION_REDIRECT_POLICY, &redirect, sizeof(redirect));
-    WinHttpSetOption(h.session, WINHTTP_OPTION_MAX_HTTP_AUTOMATIC_REDIRECTS, &maxRedirects, sizeof(maxRedirects));
+    WinHttpSetTimeouts(h->session, 10000, 10000, 10000, static_cast<int>(o.stallMs));
+    DWORD redirect = redirectPolicy, maxRedirects = 5;
+    WinHttpSetOption(h->session, WINHTTP_OPTION_REDIRECT_POLICY, &redirect, sizeof(redirect));
+    WinHttpSetOption(h->session, WINHTTP_OPTION_MAX_HTTP_AUTOMATIC_REDIRECTS, &maxRedirects, sizeof(maxRedirects));
 
-    h.connect = WinHttpConnect(h.session, host, uc.nPort, 0);
-    if (!h.connect) {
+    h->connect = WinHttpConnect(h->session, host, uc.nPort, 0);
+    if (!h->connect) {
         *err = WinErr("connect", GetLastError());
         return false;
     }
+    return true;
+}
+
+// The request handle: registered for CancelActive, or owned by `h` alone (Options::registerActive = false).
+void Own(const Options& o, Handles* h, HINTERNET req) {
+    if (o.registerActive) {
+        std::lock_guard lk(g_mx);
+        g_active = req;
+        h->request = req;
+    } else {
+        h->own = req;
+    }
+}
+
+bool GetHttps(const std::string& url, Sink& sink, const Options& o, std::string* err) {
+    const ULONGLONG start = GetTickCount64();
+    Handles h;
+    std::wstring object;
+    DWORD redirect = WINHTTP_OPTION_REDIRECT_POLICY_DISALLOW_HTTPS_TO_HTTP, maxRedirects = 5;
+    if (!OpenHttps(url, o, redirect, &h, &object, err)) return false;
     const wchar_t* accept[] = {L"*/*", nullptr};
     HINTERNET req = WinHttpOpenRequest(h.connect, L"GET", object.c_str(), nullptr, WINHTTP_NO_REFERER, accept, WINHTTP_FLAG_SECURE);
     if (!req) {
         *err = WinErr("request", GetLastError());
         return false;
     }
-    if (o.registerActive) {
-        std::lock_guard lk(g_mx);
-        g_active = req;
-        h.request = req;
-    } else {
-        h.own = req;
-    }
+    Own(o, &h, req);
     DWORD features = WINHTTP_DISABLE_COOKIES | WINHTTP_DISABLE_AUTHENTICATION;
     WinHttpSetOption(req, WINHTTP_OPTION_DISABLE_FEATURE, &features, sizeof(features));
     WinHttpSetOption(req, WINHTTP_OPTION_REDIRECT_POLICY, &redirect, sizeof(redirect));
@@ -263,7 +277,145 @@ bool GetHttps(const std::string& url, Sink& sink, const Options& o, std::string*
     }
     return true;
 }
+
+// A header value as ASCII (the ones read here are ASCII; anything else becomes '?').
+std::string QueryHeader(HINTERNET req, DWORD level, const wchar_t* name) {
+    wchar_t buf[256] = {};
+    DWORD n = sizeof(buf) - sizeof(wchar_t);
+    std::string s;
+    if (WinHttpQueryHeaders(req, level, name, buf, &n, WINHTTP_NO_HEADER_INDEX))
+        for (const wchar_t* c = buf; *c; ++c) s.push_back(*c < 0x80 ? static_cast<char>(*c) : '?');
+    return s;
+}
+
+bool HeaderTokenOk(const std::string& s, bool value) {
+    if (s.empty() && !value) return false;
+    for (unsigned char c : s) {
+        if (c == '\r' || c == '\n' || c == 0 || c >= 0x80) return false;
+        if (!value && (c <= 0x20 || c == ':')) return false;
+    }
+    return true;
+}
+
+// Zeroes the wide copy of the request headers (an Authorization header) when SendHttps returns.
+struct WipeOnExit {
+    std::wstring& s;
+    ~WipeOnExit() {
+        if (!s.empty()) SecureZeroMemory(s.data(), s.size() * sizeof(wchar_t));
+    }
+};
+
+bool SendHttps(const std::string& url, const HttpRequest& rq, HttpResponse* out, const Options& o, std::string* err) {
+    const ULONGLONG start = GetTickCount64();
+    *out = HttpResponse{};
+    std::wstring headers;
+    const WipeOnExit wipeHeaders{headers};
+    std::wstring method;
+    for (char c : rq.method) {
+        if (c < 'A' || c > 'Z') {
+            *err = "bad method";
+            return false;
+        }
+        method.push_back(static_cast<wchar_t>(c));
+    }
+    if (method.empty() || method.size() > 16) {
+        *err = "bad method";
+        return false;
+    }
+    size_t headerChars = 0;
+    for (const auto& [k, v] : rq.headers) {
+        if (!HeaderTokenOk(k, false) || !HeaderTokenOk(v, true)) {
+            *err = "bad header";
+            return false;
+        }
+        headerChars += k.size() + v.size() + 4;
+    }
+    headers.reserve(headerChars);  // appended in place: no temporary or reallocated copy of a token is left behind
+    for (const auto& [k, v] : rq.headers) {
+        headers.append(k.begin(), k.end());
+        headers.append(L": ");
+        headers.append(v.begin(), v.end());
+        headers.append(L"\r\n");
+    }
+    if (rq.body.size() > 0x7fffffff) {
+        *err = "the request body is too large";
+        return false;
+    }
+    Handles h;
+    std::wstring object;
+    // Redirects are never followed, so an Authorization header cannot leave the host it was meant for.
+    DWORD redirect = WINHTTP_OPTION_REDIRECT_POLICY_NEVER;
+    if (!OpenHttps(url, o, redirect, &h, &object, err)) return false;
+    const wchar_t* accept[] = {L"*/*", nullptr};
+    HINTERNET req = WinHttpOpenRequest(h.connect, method.c_str(), object.c_str(), nullptr, WINHTTP_NO_REFERER, accept, WINHTTP_FLAG_SECURE);
+    if (!req) {
+        *err = WinErr("request", GetLastError());
+        return false;
+    }
+    Own(o, &h, req);
+    DWORD features = WINHTTP_DISABLE_COOKIES | WINHTTP_DISABLE_AUTHENTICATION;
+    WinHttpSetOption(req, WINHTTP_OPTION_DISABLE_FEATURE, &features, sizeof(features));
+    WinHttpSetOption(req, WINHTTP_OPTION_REDIRECT_POLICY, &redirect, sizeof(redirect));
+    if (Cancelled(o)) {
+        *err = "cancelled";
+        return false;
+    }
+    const DWORD bodyLen = static_cast<DWORD>(rq.body.size());
+    if (!WinHttpSendRequest(req, headers.empty() ? WINHTTP_NO_ADDITIONAL_HEADERS : headers.c_str(),
+                            headers.empty() ? 0 : static_cast<DWORD>(-1L),
+                            bodyLen ? const_cast<char*>(rq.body.data()) : WINHTTP_NO_REQUEST_DATA, bodyLen, bodyLen, 0) ||
+        !WinHttpReceiveResponse(req, nullptr)) {
+        *err = Cancelled(o) ? "cancelled" : WinErr("request", GetLastError());
+        return false;
+    }
+    DWORD status = 0, len = sizeof(status);
+    WinHttpQueryHeaders(req, WINHTTP_QUERY_STATUS_CODE | WINHTTP_QUERY_FLAG_NUMBER, WINHTTP_HEADER_NAME_BY_INDEX, &status, &len,
+                        WINHTTP_NO_HEADER_INDEX);
+    out->status = static_cast<int>(status);
+    out->retryAfter = QueryHeader(req, WINHTTP_QUERY_CUSTOM, L"Retry-After");
+    out->contentType = QueryHeader(req, WINHTTP_QUERY_CONTENT_TYPE, WINHTTP_HEADER_NAME_BY_INDEX);
+    DWORD contentLength = 0;
+    len = sizeof(contentLength);
+    const bool haveLength = WinHttpQueryHeaders(req, WINHTTP_QUERY_CONTENT_LENGTH | WINHTTP_QUERY_FLAG_NUMBER,
+                                                WINHTTP_HEADER_NAME_BY_INDEX, &contentLength, &len, WINHTTP_NO_HEADER_INDEX) != 0;
+    if (o.cap && haveLength && contentLength > o.cap) {
+        *err = "the answer is larger than the " + Mb(o.cap) + " limit";
+        return false;
+    }
+    // The body is read for every status (an API's error answer is JSON too).
+    std::vector<char> buf(64 * 1024);
+    for (;;) {
+        if (Cancelled(o)) {
+            *err = "cancelled";
+            return false;
+        }
+        if (o.totalMs && GetTickCount64() - start > o.totalMs) {
+            *err = "request: timed out";
+            return false;
+        }
+        DWORD n = 0;
+        if (!WinHttpReadData(req, buf.data(), static_cast<DWORD>(buf.size()), &n)) {
+            *err = Cancelled(o) ? "cancelled" : WinErr("request", GetLastError());
+            return false;
+        }
+        if (!n) break;
+        if (o.cap && out->body.size() + n > o.cap) {
+            *err = "the answer is larger than the " + Mb(o.cap) + " limit";
+            return false;
+        }
+        out->body.append(buf.data(), n);
+    }
+    return true;
+}
 }  // namespace
+
+bool Send(const std::string& url, const HttpRequest& req, HttpResponse* out, const Options& o, std::string* err) {
+    if (SchemeOf(url) != Scheme::Https) {
+        *err = "url scheme not allowed";
+        return false;
+    }
+    return SendHttps(url, req, out, o, err);
+}
 
 bool Get(const std::string& url, Sink& sink, const Options& o, std::string* err) {
     switch (SchemeOf(url)) {

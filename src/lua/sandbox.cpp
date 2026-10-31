@@ -746,6 +746,7 @@ const char* KindName(CbKind k) {
         case CbKind::WebMethod: return "web method";
         case CbKind::Media: return "media";
         case CbKind::Peer: return "peer";
+        case CbKind::Spotify: return "spotify";
     }
     return "?";
 }

@@ -57,8 +57,9 @@ struct ModRec {
     double storageWritten = 0;
 };
 
-// Media: wum.media resolve/torrent callbacks; Peer: wum.peer channel on/onPeer (Melange 0.12).
-enum class CbKind : uint8_t { Event, Timer, Panel, Menu, Hotkey, Draw, Reload, WebMethod, Media, Peer };
+// Media: wum.media resolve/torrent callbacks; Peer: wum.peer channel on/onPeer (Melange 0.12); Spotify: wum.spotify
+// request callbacks (Melange 0.13).
+enum class CbKind : uint8_t { Event, Timer, Panel, Menu, Hotkey, Draw, Reload, WebMethod, Media, Peer, Spotify };
 const char* KindName(CbKind k);
 
 struct Callback {

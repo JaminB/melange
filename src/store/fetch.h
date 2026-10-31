@@ -4,6 +4,8 @@
 #include <functional>
 #include <string>
 #include <string_view>
+#include <utility>
+#include <vector>
 
 // One GET into a sink: https:// through WinHTTP (TLS 1.2+, system proxy, no cookies or credentials) or file:/// from
 // disk. The caller decides which URLs are allowed (store/index.h ResolveUrl).
@@ -41,6 +43,24 @@ struct Options {
     uint64_t resumeFrom = 0;
 };
 bool Get(const std::string& url, Sink& sink, const Options& o, std::string* err);
+
+// One request with a method, headers and a body (Melange 0.13, wum.spotify's Web API calls).
+struct HttpRequest {
+    std::string method = "GET";
+    std::vector<std::pair<std::string, std::string>> headers;  // no CR/LF; refused otherwise
+    std::string body;
+};
+struct HttpResponse {
+    int status = 0;
+    std::string body;
+    std::string retryAfter;   // the Retry-After header, or empty
+    std::string contentType;
+};
+// https:// only (refuses file:// and anything else). Returns true when an HTTP response arrived (ANY status; the body
+// is read for every status up to o.cap), false on a transport failure (err set). Redirects are NOT followed
+// (WINHTTP_OPTION_REDIRECT_POLICY = NEVER), so an Authorization header never leaves the requested host. Same proxy,
+// TLS 1.2/1.3, timeouts, no-cookies and no-auto-auth as Get. o.resumeFrom and Sink are not used.
+bool Send(const std::string& url, const HttpRequest& req, HttpResponse* out, const Options& o, std::string* err);
 void CancelActive();   // any thread: closes the request in flight so a blocked read returns at once
 // "bytes 100-199/1000" (or ".../*"): first and last byte and the full length (0 for "*"). False when malformed.
 bool ParseContentRange(std::string_view v, uint64_t* first, uint64_t* last, uint64_t* total);
