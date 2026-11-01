@@ -746,6 +746,7 @@ const char* KindName(CbKind k) {
         case CbKind::WebMethod: return "web method";
         case CbKind::Media: return "media";
         case CbKind::Peer: return "peer";
+        case CbKind::Spotify: return "spotify";
     }
     return "?";
 }
@@ -916,6 +917,7 @@ void KillCallback(uint32_t id) {
     if (it == g_cbs.end()) return;
     Callback* cb = it->second.get();
     cb->dead = true;
+    std::erase(cb->gen->callbacks, id);  // a one-shot callback frees its handle (every loop over `callbacks` that kills walks a copy)
     if (cb->attached && cb->revoke) cb->revoke();
     cb->attached = false;
     if (cb->kind == CbKind::Event) RemoveListener(id);

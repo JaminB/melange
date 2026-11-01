@@ -7,6 +7,10 @@ namespace melange::sandbox::ev {
 // | "buffering" {on} | "tracks" {} | "helper" {state} | "pack" {state, progress} (at most 4 Hz) | "torrent" {infohash, files?}
 inline constexpr const char kMedia[] = "melange.media";
 
+// wum.spotify (owner only, Melange 0.13; the mods that used wum.spotify). Payload {type = "status", state, user, premium,
+// linked, error}, the same table as wum.spotify.status(): state "disconnected" | "connecting" | "connected" | "error".
+inline constexpr const char kSpotify[] = "melange.spotify";
+
 // wum.lobby (every listener)
 inline constexpr const char kLobbyEnter[] = "melange.lobby.enter";      // {isHost}
 inline constexpr const char kLobbyLeave[] = "melange.lobby.leave";      // {}

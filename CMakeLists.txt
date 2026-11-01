@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.25)
-project(Melange VERSION 0.12.2 LANGUAGES C CXX)
+project(Melange VERSION 0.13.0 LANGUAGES C CXX)
 
 if(NOT CMAKE_SIZEOF_VOID_P EQUAL 4)
     message(FATAL_ERROR "Melange must be built for 32-bit x86 (WormsMayhem.exe is a 32-bit process). Use build.ps1.")
@@ -494,7 +494,7 @@ target_compile_options(sandbox_selftest PRIVATE /W4 /utf-8 /permissive- /EHsc /w
 target_link_libraries(sandbox_selftest PRIVATE lua54 imgui)
 # Melange 0.12: each namespace's task adds the real (game-free) sources its cases need here; fakes go in
 # tests/sandbox_fakes_<ns>.inc. One file per owner so parallel work never edits the same file.
-foreach(part media peer input draw audio game)
+foreach(part media peer input draw audio game spotify)
     include(${CMAKE_SOURCE_DIR}/cmake/holo/sandbox_${part}.cmake)
 endforeach()
 # Stock Lua 5.0.1 with float numbers, a stand-in for the engine's match VM in sim_selftest (never linked into the plugin).
@@ -805,6 +805,13 @@ target_compile_options(media_selftest PRIVATE /W4 /utf-8 /permissive- /EHsc)
 target_link_libraries(media_selftest PRIVATE miniz bcrypt winhttp)
 include(${CMAKE_SOURCE_DIR}/cmake/holo/media_pack.cmake)
 include(${CMAKE_SOURCE_DIR}/cmake/holo/media_host.cmake)
+
+# wum.spotify's pure logic (Melange 0.13): PKCE, the loopback callback parser, the Web API calls, errors, the rate gate
+# and the result shapes. Portable (it also builds with g++ on Linux).
+add_executable(spotify_selftest tests/spotify_selftest.cpp src/tools/json_read.cpp)
+target_include_directories(spotify_selftest PRIVATE src)
+target_compile_definitions(spotify_selftest PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX _CRT_SECURE_NO_WARNINGS)
+target_compile_options(spotify_selftest PRIVATE /W4 /utf-8 /permissive- /EHsc)
 
 # The peer bus's wire codec, fragmentation, rate limits, clock and gates (C3).
 add_executable(peerbus_selftest tests/peerbus_selftest.cpp)

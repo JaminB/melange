@@ -92,6 +92,8 @@ Names:
   - `melange.media` `{type, ...}`, `melange.input.mouse`, `melange.input.wheel`, `melange.input.key`,
     `melange.input.char`, `melange.input.paste`: delivered **only to the mod they concern**; see
     [`wum.media`](#wummedia) and [`wum.input`](#wuminput). (Melange 0.12)
+  - `melange.spotify` `{type = "status", state, user, premium, linked, error}`: delivered only to the mods that use
+    [`wum.spotify`](#wumspotify). (Melange 0.13)
   - Events that C++ modules post with `melange::lua::PostEvent` (to every listener) or `melange::lua::PostEventTo`
     (to one mod's listeners, Melange 0.12).
 - **Mod events:** `mod.<id>.<name>` from `wum.events.emit`.
@@ -717,6 +719,69 @@ Draw a player with `wum.draw.media`. Events come as `melange.media` to the mod t
 `"buffering"` `{on}`, `"tracks"`, `"helper"` `{state}` (the helper restarts by itself at most once a minute, reopening
 the item where it was), `"pack"` `{state, progress}` (at most 4 times a second) and `"torrent"` `{infohash, files}`.
 Errors are raised only for a wrong argument type; everything else returns `nil, reason`.
+
+## `wum.spotify`
+
+Melange 0.13 lets client mods play music from the user's own Spotify account. The Holo plugin uses it for party music.
+
+Everything runs on this machine for presentation only:
+- sim scripts cannot use it;
+- it is not part of the content handshake;
+- nothing about it reaches the match or Wormsign.
+
+Detect it with `if wum.spotify then ... end`. A mod that needs it declares `"melange": {"range": ">=0.13.0"}`.
+
+**Setup.** The user registers their own Spotify app and puts its Client ID in `[Spotify] ClientId` (see the developer guide). Until then `wum.spotify.available()` is `false, "no-client-id"`.
+
+**Consent and privacy.** The user signs in on Spotify's own page in their browser. Melange opens that page only when `wum.spotify.connect()` runs within 2 seconds of a click Melange delivered to the mod: a `melange.input.mouse` press and release inside one of its regions, where the region covers at most a quarter of the window and has existed for half a second.
+- A mod only sees the account after the user clicked that mod's own button once. Melange remembers this per mod; another mod's button does not count.
+- The refresh token is stored encrypted with Windows DPAPI for the current user, in `%LOCALAPPDATA%\Melange\spotify\token.bin`.
+- No token ever reaches Lua.
+- Melange talks only to `accounts.spotify.com` and `api.spotify.com`.
+
+**Playback.** Playback happens in the user's Spotify app (desktop, phone or web player) through Spotify Connect. It needs Spotify Premium and an open device.
+
+**Melange never pauses music by itself.** Unloading or reloading a mod, closing its UI and `disconnect()` all leave the music playing.
+
+| Name | Description |
+|---|---|
+| `wum.spotify.available()` | `true`, or `false, reason`: `"disabled"` (`[Spotify] Enabled=0`), `"unavailable"` (the module did not start), `"no-client-id"` (`[Spotify] ClientId` is empty or not a 32-character id). |
+| `wum.spotify.status()` | `{state, user, premium, linked, error}`. `state` is one of: `"disconnected"`, `"connecting"` (the browser sign-in is open), `"connected"` (linked and granted to this mod) or `"error"`. `user` is the Spotify display name, present when connected. `premium` is `true` for a Premium account, `false` for a Free one, and `nil` while Melange does not know: Spotify no longer tells Development-mode apps the account's plan at sign-in, so Melange learns it from the first `play`, `pause`, `resume`, `seek` or `volume` answer (one that works means Premium, `"premium"` means Free) and sends a `melange.spotify` event when it changes. A learned Premium plan is kept with the sign-in; a learned Free one is unknown again after Melange restarts, so an upgrade is noticed. Treat `nil` as unknown, not as Free. `linked` is `true` when Melange holds a signed-in account, even one this mod was not granted yet. In that case `connect()` grants it at once without opening the browser. `error` is set when `state` is `"error"`: `"denied"` (the user refused), `"timeout"` (no answer within 3 minutes), `"network"`, `"invalid-client"` (the Client ID or redirect URI is not the registered one), `"exchange"` (any other sign-in failure) or `"revoked"` (Spotify no longer accepts the stored sign-in). |
+| `wum.spotify.connect()` | Links Spotify for this mod. It must be called within 2 seconds of a click on one of the mod's regions (see above). If no account is linked yet, it opens Spotify's sign-in page in the browser; the redirect goes to `http://127.0.0.1:<RedirectPort>/callback`, which Melange serves only during the sign-in. Returns `true` when the sign-in started, the account was granted, or it already was. Otherwise it returns `nil, reason`: `"gesture"` (no click in the last 2 seconds), `"busy"` (a sign-in is already open), `"port-busy"` (`[Spotify] RedirectPort` is in use), `"browser"` (the browser could not be opened) or one of `available()`'s reasons. The result arrives as a `melange.spotify` event. |
+| `wum.spotify.disconnect()` | Signs Melange out of Spotify for every mod. It deletes the stored sign-in, cancels queued requests (their callbacks get `{error = "auth"}`) and returns `true`. It does not stop the music. |
+| `wum.spotify.library(opts, fn)` | Lists the user's library. `opts.kind` is one of: `"tracks"` (saved songs), `"playlists"` (the user's playlists) or `"playlist"` (the songs of playlist `opts.id`, a 22-character Spotify id). `opts.offset` is an integer ≥ 0 (default 0). `opts.limit` is 1..50 (default 50). `fn` receives `{kind, items, offset, limit, total, next, skipped}`. For songs, `items = {{uri, name, artists, album, durationMs, playable}, ...}`: `uri` is a `spotify:track:` URI and `artists` is the names joined with `", "`. Local files and podcast episodes are left out and counted in `skipped`. For playlists, `items = {{id, uri, name, owner, tracks}, ...}`. `next` is `true` when more items follow. Spotify gives apps the songs only of playlists the user owns or collaborates on; for any other playlist (such as Spotify's own mixes) the request fails with `"restricted"` or `"not-found"`, or gives no items. Returns a request id, or `nil, reason`. |
+| `wum.spotify.devices(fn)` | `fn({items = {{id, name, type, active, restricted, volume}, ...}})`: the user's Spotify Connect devices. Returns a request id, or `nil, reason`. |
+| `wum.spotify.play(opts[, fn])` | Starts playback. `opts` takes exactly one of: `uri` (a `spotify:track:` URI), `uris` (1..50 of them, played in order), or `context` (a `spotify:playlist:` URI) with an optional `offset` (a 0-based index, or a track URI in it). It also takes `positionMs` (integer ≥ 0) and `deviceId` (from `devices`; default the active device). `fn({ok = true})` or `fn({error, message})`. Returns a request id, or `nil, reason`. |
+| `wum.spotify.pause([fn])`, `wum.spotify.resume([fn])` | Pauses or resumes the active device. Returns a request id, or `nil, reason`. |
+| `wum.spotify.seek(ms[, fn])` | Seeks the current track to `ms` (integer ≥ 0). Returns a request id, or `nil, reason`. |
+| `wum.spotify.volume(pct[, fn])` | Sets the active device's volume, 0..100 (an integer). Some devices, such as phones, refuse it with `"restricted"`. Returns a request id, or `nil, reason`. |
+| `wum.spotify.playback(fn)` | Reads the user's current playback. With nothing playing, or no device, it is `fn({active = false})`. Otherwise `fn({active = true, playing, uri, name, artists, durationMs, positionMs, at, device = {id, name, type, volume}, context, linkedFrom})`. `at` is the `wum.peer.now()` time in ms at which `positionMs` held: the midpoint of the request. `uri`, `name`, `artists` and `durationMs` are present only when a song plays (not an episode or an ad). `linkedFrom` is a `spotify:track:` URI, present only when Spotify relinked the song for the listener's market: it is the URI that was asked for (in `play` or a playlist), while `uri` is the one playing. Returns a request id, or `nil, reason`. |
+
+**Return values.** Every request function returns an integer request id, or `nil, reason`:
+- `"auth"`: Spotify is not connected for this mod.
+- `"busy"`: this mod has 8 requests waiting.
+- `"invalid"`: a malformed URI or id, more than one source in `play`, a number out of range, NaN, or a non-integer.
+- One of `available()`'s reasons.
+- A wrong argument type raises.
+
+**Callbacks.** Callbacks run on the main thread, once per request. A request without `fn` reports nothing. A failed request passes `{error, message}` to `fn`. `error` is one of:
+- `"auth"`: signed out, or the sign-in was revoked.
+- `"premium"`: the account is not Premium (Spotify refused the call).
+- `"no-device"`: no active Spotify device; pass `deviceId` from `devices`.
+- `"restricted"`: the device or the account refused.
+- `"not-found"`: for example a playlist id that does not exist.
+- `"bad-request"`
+- `"rate"`: Spotify's rate limit; `retryAfter` holds the seconds to wait.
+- `"network"`
+- `"timeout"`: no answer within 15 seconds, counted from the call, including the time spent waiting behind other requests.
+- `"server"`
+- `"bad-response"`
+
+Melange spaces the calls of all mods together (`[Spotify] RequestsPerMinute`, default 90) and honours Spotify's `Retry-After`. A mod that polls `playback` should do so no more than every few seconds.
+
+When a mod unloads or reloads, its waiting requests are dropped and their callbacks never run. The music keeps playing.
+
+**Event.** `melange.spotify` goes to the mods that use `wum.spotify`. Its payload is `{type = "status", state, user, premium, linked, error}`, the same as `status()`. It is sent whenever the sign-in state, the account, its known plan (`premium`) or this mod's grant changes.
 
 ## `wum.lobby`
 
