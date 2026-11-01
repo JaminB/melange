@@ -87,6 +87,7 @@ bool Has(const std::vector<std::string>& v, const std::string& s) { return std::
 struct Job {
     uint32_t rid = 0;
     std::string mod;
+    uint32_t gen = 0;  // the mod generation that asked (host::CancelGen)
     uint32_t token = 0;
     Request req;
     uint64_t deadline = 0;   // SteadyMs
@@ -96,6 +97,7 @@ struct Job {
 struct Result {
     enum class Kind { Answer, Revoked, Profile, Flow } kind = Kind::Answer;
     std::string mod;
+    uint32_t gen = 0;
     uint32_t rid = 0, token = 0;
     std::string json;      // Answer: the callback's argument
     uint64_t mid = 0;      // Answer: SteadyMs midpoint of the HTTP call
@@ -120,7 +122,10 @@ struct Shared {
     std::map<std::string, int> perMod;  // queued or running
     size_t queued = 0;                   // queued or running, all mods
     uint32_t running = 0;
+    std::string runningMod;  // the running job's mod and generation
+    uint32_t runningGen = 0;
     bool runningDropped = false;
+    int controlStreak = 0;  // control jobs taken in a row (logic::TakeControl)
     std::vector<Result> results;
     logic::RateGate gate{90};
 };
@@ -153,6 +158,7 @@ void Answer(Shared& s, const Job& j, std::string json, uint64_t mid = 0, bool pa
     if (!j.token) return;
     Result r;
     r.mod = j.mod;
+    r.gen = j.gen;
     r.rid = j.rid;
     r.token = j.token;
     r.json = std::move(json);
@@ -204,9 +210,19 @@ void Revoke(uint64_t epoch) {
     LOG_WARN("[spotify] Spotify no longer accepts the stored sign-in (revoked); sign in again");
 }
 
+// Caps a call's limits to what is left of its request's time (logic::BudgetMs). False when nothing is left.
+bool CapToDeadline(fetch::Options* o, uint64_t deadline) {
+    const uint32_t left = logic::BudgetMs(SteadyMs(), deadline, o->totalMs);
+    if (!left) return false;
+    o->totalMs = left;
+    o->stallMs = std::min(o->stallMs, left);
+    return true;
+}
+
 // The access token, refreshed when less than 60 s are left (or `force`). Worker thread. A 429 from the token endpoint
-// pauses the gate and is Err::Rate (*retryAfter set), not "auth": the account is still linked.
-Err Access(bool force, std::string* out, int* retryAfter = nullptr) {
+// pauses the gate and is Err::Rate (*retryAfter set), not "auth": the account is still linked. A refresh for a request
+// counts against that request's `deadline` (0: none).
+Err Access(bool force, std::string* out, int* retryAfter = nullptr, uint64_t deadline = 0) {
     Shared& s = S();
     std::string refresh, clientId;
     uint64_t epoch = 0;
@@ -221,6 +237,11 @@ Err Access(bool force, std::string* out, int* retryAfter = nullptr) {
         clientId = s.stored.clientId;
         epoch = s.epoch;
     }
+    fetch::Options opts = HttpOptions();
+    if (deadline && !CapToDeadline(&opts, deadline)) {
+        Wipe(refresh);
+        return Err::Timeout;
+    }
     fetch::HttpRequest rq;
     rq.method = "POST";
     rq.headers.emplace_back("Content-Type", "application/x-www-form-urlencoded");
@@ -228,7 +249,7 @@ Err Access(bool force, std::string* out, int* retryAfter = nullptr) {
     Wipe(refresh);
     fetch::HttpResponse rs;
     std::string err;
-    const bool sent = fetch::Send(logic::kTokenUrl, rq, &rs, HttpOptions(), &err);
+    const bool sent = fetch::Send(logic::kTokenUrl, rq, &rs, opts, &err);
     Wipe(rq.body);
     if (!sent) return TimedOut(err) ? Err::Timeout : Err::Network;
     logic::Tokens t;
@@ -305,6 +326,8 @@ void Finish(const Job& j, std::string json, uint64_t mid = 0, bool patchAt = fal
     Uncount(s, j);
     const bool dropped = s.running == j.rid && s.runningDropped;
     s.running = 0;
+    s.runningMod.clear();
+    s.runningGen = 0;
     s.runningDropped = false;
     if (!dropped) Answer(s, j, std::move(json), mid, patchAt);
 }
@@ -327,6 +350,7 @@ void RunBackground() {
     bool changed = false;
     {
         std::lock_guard lk(s.mx);
+        me.product = logic::ProductAtStartup(s.stored.product, me.product);  // not sent to Development-mode apps
         if (s.linked && s.epoch == epoch && (s.stored.user != me.name || s.stored.product != me.product || s.stored.userId != me.id ||
                          s.stored.country != me.country)) {
             s.stored.user = me.name;
@@ -342,12 +366,33 @@ void RunBackground() {
     if (changed) SaveCurrent();
 }
 
+// A control call's answer tells the account's plan (logic::ProductAfter): saved, and a status event when it changed.
+void LearnProduct(uint64_t epoch, Op op, bool ok, Err e) {
+    Shared& s = S();
+    {
+        std::lock_guard lk(s.mx);
+        if (!s.linked || s.epoch != epoch) return;
+        std::string p = logic::ProductAfter(s.stored.product, op, ok, e);
+        if (p == s.stored.product) return;
+        s.stored.product = std::move(p);
+        Result r;
+        r.kind = Result::Kind::Profile;
+        Push(s, std::move(r));
+    }
+    SaveCurrent();
+}
+
 void Run(const Job& j) {
     if (j.background) {
         RunBackground();
         return;
     }
     Shared& s = S();
+    uint64_t epoch = 0;
+    {
+        std::lock_guard lk(s.mx);
+        epoch = s.epoch;
+    }
     std::string method, url, body;
     if (!logic::BuildCall(j.req, &method, &url, &body)) {
         Finish(j, logic::ShapeError(Err::BadRequest, "malformed request", 0));
@@ -378,11 +423,21 @@ void Run(const Job& j) {
         }
         std::string access;
         int tokenRetry = 0;
-        const Err aerr = Access(forceRefresh, &access, &tokenRetry);
+        const Err aerr = Access(forceRefresh, &access, &tokenRetry, j.deadline);
         forceRefresh = false;
+        if (aerr == Err::Timeout) {
+            Finish(j, logic::ShapeError(Err::Timeout, "no answer within 15 seconds", 0));
+            return;
+        }
         if (aerr != Err::None) {
             Finish(j, logic::ShapeError(aerr, aerr == Err::Auth ? "Spotify is not connected" : "the Spotify sign-in could not be refreshed",
                                         tokenRetry));
+            return;
+        }
+        fetch::Options opts = HttpOptions();
+        if (!CapToDeadline(&opts, j.deadline)) {  // the refresh used up the request's time: it is not sent late
+            Wipe(access);
+            Finish(j, logic::ShapeError(Err::Timeout, "no answer within 15 seconds", 0));
             return;
         }
         fetch::HttpRequest rq;
@@ -396,14 +451,6 @@ void Run(const Job& j) {
         fetch::HttpResponse rs;
         std::string err;
         const uint64_t t0 = SteadyMs();
-        fetch::Options opts = HttpOptions();
-        {
-            // The answer must come within the request's 15 s; the first byte within what is left of them.
-            const uint64_t left = j.deadline > t0 ? j.deadline - t0 : 0;
-            const uint32_t cap = static_cast<uint32_t>(std::clamp<uint64_t>(left, 1000, opts.totalMs));
-            opts.totalMs = cap;
-            opts.stallMs = std::min(opts.stallMs, cap);
-        }
         const bool sent = fetch::Send(url, rq, &rs, opts, &err);
         const uint64_t t1 = SteadyMs();
         Wipe(rq.headers[0].second);
@@ -418,6 +465,7 @@ void Run(const Job& j) {
                 if (!logic::ShapeSuccess(j.req, rs.status, rs.body, &out)) {
                     Finish(j, logic::ShapeError(Err::BadResponse, "Spotify's answer could not be read", 0));
                 } else {
+                    LearnProduct(epoch, j.req.op, true, Err::None);
                     Finish(j, std::move(out), (t0 + t1) / 2, j.req.op == Op::Playback);
                 }
                 return;
@@ -437,22 +485,36 @@ void Run(const Job& j) {
         }
         std::string message;
         const Err e = logic::MapApiError(rs.status, rs.body, &message);
+        LearnProduct(epoch, j.req.op, false, e);
         Finish(j, logic::ShapeError(e == Err::None ? Err::BadResponse : e, message, logic::RetryAfterSeconds(rs.retryAfter)));
         return;
     }
 }
 
+// The next job. Queued requests whose 15 s passed fail with "timeout" here, so a waiting one never outlives its deadline
+// unanswered; control goes first, but a waiting read gets every few turns (logic::TakeControl).
 bool Next(Job* out) {
     Shared& s = S();
     std::unique_lock lk(s.mx);
-    s.cv.wait(lk, [&] { return g_quit.load() || !s.control.empty() || !s.read.empty(); });
-    if (g_quit) return false;
-    std::deque<Job>& q = !s.control.empty() ? s.control : s.read;
-    *out = std::move(q.front());
-    q.pop_front();
-    s.running = out->rid;
-    s.runningDropped = false;
-    return true;
+    for (;;) {
+        s.cv.wait(lk, [&] { return g_quit.load() || !s.control.empty() || !s.read.empty(); });
+        if (g_quit) return false;
+        const uint64_t now = SteadyMs();
+        for (std::deque<Job>* q : {&s.control, &s.read})
+            logic::ExpireQueued(*q, now, [&](const Job& j) {
+                Uncount(s, j);
+                Answer(s, j, logic::ShapeError(Err::Timeout, "no answer within 15 seconds", 0));
+            });
+        if (s.control.empty() && s.read.empty()) continue;
+        std::deque<Job>& q = logic::TakeControl(!s.control.empty(), !s.read.empty(), &s.controlStreak) ? s.control : s.read;
+        *out = std::move(q.front());
+        q.pop_front();
+        s.running = out->rid;
+        s.runningMod = out->mod;
+        s.runningGen = out->gen;
+        s.runningDropped = false;
+        return true;
+    }
 }
 
 void WorkerLoop() {
@@ -612,7 +674,7 @@ host::Status StatusFor(const std::string& mod) {
     } else if (granted) {
         st.state = "connected";
         st.user = user;
-        st.premium = product == "premium";
+        st.premium = logic::PremiumOf(product);
     } else {
         st.state = "disconnected";
     }
@@ -620,14 +682,15 @@ host::Status StatusFor(const std::string& mod) {
 }
 
 std::string Signature(const host::Status& st) {
-    return st.state + '\n' + st.user + '\n' + (st.premium ? '1' : '0') + (st.linked ? '1' : '0') + '\n' + st.error;
+    return st.state + '\n' + st.user + '\n' + (!st.premium ? '?' : *st.premium ? '1' : '0') + (st.linked ? '1' : '0') + '\n' + st.error;
 }
 
 json::Value StatusJson(const host::Status& st) {
     jsonmini::Obj o;
     o.Str("type", "status").Str("state", st.state);
     if (!st.user.empty()) o.Str("user", st.user);
-    o.Bool("premium", st.premium).Bool("linked", st.linked);
+    if (st.premium) o.Bool("premium", *st.premium);
+    o.Bool("linked", st.linked);
     if (!st.error.empty()) o.Str("error", st.error);
     json::Value v;
     json::Error e;
@@ -977,34 +1040,24 @@ void Disconnect(const std::string& mod) {
     EmitChanged();
 }
 
-uint32_t Submit(const std::string& mod, const logic::Request& r, uint32_t token, std::string* reason) {
+uint32_t Submit(const std::string& mod, uint32_t gen, const logic::Request& r, uint32_t token, std::string* reason) {
     Shared& s = S();
     if (!g_installed || !Granted(mod)) {
         *reason = "auth";
         return 0;
     }
-    std::string product;
     {
         std::lock_guard lk(s.mx);
-        product = s.stored.product;
         auto it = s.perMod.find(mod);
         if ((it != s.perMod.end() && it->second >= kMaxPerMod) || s.queued >= kMaxQueued) {
             *reason = "busy";
             return 0;
         }
     }
+    // A free account's control calls are sent too: Spotify answers "premium" (403 PREMIUM_REQUIRED), and an upgraded
+    // account is learned from its first call that works.
     const uint32_t rid = g_nextRid++;
     if (!g_nextRid) g_nextRid = 1;
-    // Playback control needs Premium: a known free account fails at once, without a call.
-    if (logic::IsControl(r.op) && !product.empty() && product != "premium") {
-        std::lock_guard lk(s.mx);
-        Job j;
-        j.rid = rid;
-        j.mod = mod;
-        j.token = token;
-        Answer(s, j, logic::ShapeError(Err::Premium, "Spotify Premium is required to control playback", 0));
-        return rid;
-    }
     if (!EnsureWorker()) {
         *reason = "busy";
         return 0;
@@ -1014,6 +1067,7 @@ uint32_t Submit(const std::string& mod, const logic::Request& r, uint32_t token,
         Job j;
         j.rid = rid;
         j.mod = mod;
+        j.gen = gen;
         j.token = token;
         j.req = r;
         j.deadline = SteadyMs() + kJobTimeoutMs;
@@ -1026,13 +1080,12 @@ uint32_t Submit(const std::string& mod, const logic::Request& r, uint32_t token,
     return rid;
 }
 
-void Cancel(const std::string& mod, uint32_t rid) {
-    if (!rid) return;
+void CancelGen(const std::string& mod, uint32_t gen) {
     Shared& s = S();
     std::lock_guard lk(s.mx);
     for (std::deque<Job>* q : {&s.control, &s.read}) {
         for (auto it = q->begin(); it != q->end();) {
-            if (!it->background && it->rid == rid && it->mod == mod) {
+            if (!it->background && it->gen == gen && it->mod == mod) {
                 Uncount(s, *it);
                 it = q->erase(it);
             } else {
@@ -1041,9 +1094,9 @@ void Cancel(const std::string& mod, uint32_t rid) {
         }
     }
     s.results.erase(std::remove_if(s.results.begin(), s.results.end(),
-                                   [&](const Result& r) { return r.kind == Result::Kind::Answer && r.rid == rid && r.mod == mod; }),
+                                   [&](const Result& r) { return r.kind == Result::Kind::Answer && r.gen == gen && r.mod == mod; }),
                     s.results.end());
-    if (s.running == rid) s.runningDropped = true;
+    if (s.running && s.runningGen == gen && s.runningMod == mod) s.runningDropped = true;
 }
 
 void SetSink(Sink* sink) { g_sink = sink; }

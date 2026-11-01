@@ -1,7 +1,7 @@
 // wum.spotify (Melange 0.13.0): Spotify for client mods. Presentation only, in the client Sandbox VM. The work is done
 // by src/spotify/* through host.h; this file validates every argument (spotify_logic.h) before a request is queued,
 // checks the click that connect() needs, and scopes request callbacks to the calling mod generation. A generation's
-// cleanup cancels its waiting requests and never pauses the music.
+// one cleanup cancels its waiting requests and never pauses the music.
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
@@ -128,13 +128,16 @@ int SubmitReq(lua_State* L, ModRec* m, const logic::Request& r, int fnIdx, const
         Activate(cb);
     }
     std::string why;
-    const uint32_t rid = host::Submit(m->id, r, cb ? cb->id : 0, &why);
+    Gen* g = CurrentGen();
+    const uint32_t rid = host::Submit(m->id, g->serial, r, cb ? cb->id : 0, &why);
     if (!rid) {
         if (cb) KillCallback(cb->id);
         return Fail(L, why);
     }
-    const std::string mod = m->id;
-    CurrentGen()->cleanups.push_back([mod, rid] { host::Cancel(mod, rid); });  // never pauses the music
+    if (!g->spotifyCleanup) {  // one per generation, not one per request: a mod that polls for hours adds nothing
+        g->spotifyCleanup = true;
+        g->cleanups.push_back([mod = m->id, serial = g->serial] { host::CancelGen(mod, serial); });  // never pauses the music
+    }
     lua_pushinteger(L, static_cast<lua_Integer>(rid));
     return 1;
 }
@@ -164,8 +167,10 @@ int LStatus(lua_State* L) {
         lua_pushlstring(L, st.user.data(), st.user.size());
         lua_setfield(L, -2, "user");
     }
-    lua_pushboolean(L, st.premium);
-    lua_setfield(L, -2, "premium");
+    if (st.premium) {  // nil while unknown
+        lua_pushboolean(L, *st.premium);
+        lua_setfield(L, -2, "premium");
+    }
     lua_pushboolean(L, st.linked);
     lua_setfield(L, -2, "linked");
     if (!st.error.empty()) {

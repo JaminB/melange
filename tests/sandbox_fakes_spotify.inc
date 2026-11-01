@@ -9,18 +9,19 @@ namespace fake_spotify {
 struct Submitted {
     std::string mod;
     spotify::logic::Request req;
-    uint32_t token = 0, rid = 0;
+    uint32_t token = 0, rid = 0, gen = 0;
 };
 inline bool g_available = true;
 inline std::string g_reason = "no-client-id";
-inline spotify::host::Status g_status{"disconnected", "", false, false, ""};
+inline spotify::host::Status g_status{"disconnected", "", std::nullopt, false, ""};
 inline std::set<std::string> g_granted;
 inline bool g_connectOk = true;
 inline std::string g_connectReason = "busy";
 inline std::vector<std::string> g_connects;     // mods that started a sign-in
 inline std::vector<std::string> g_disconnects;  // mods that signed out
 inline std::vector<Submitted> g_submitted;
-inline std::vector<uint32_t> g_cancelled;
+inline std::vector<uint32_t> g_cancelled;  // rids dropped by CancelGen
+inline std::vector<std::pair<std::string, uint32_t>> g_cancelGens;  // every CancelGen call
 inline std::set<std::string> g_touched;
 inline uint32_t g_nextRid = 1;
 inline spotify::host::Sink* g_sink = nullptr;
@@ -58,7 +59,7 @@ Status GetStatus(const std::string& mod) {
     if (!mod.empty() && s.state == "connected" && !fake_spotify::g_granted.count(mod)) {
         s.state = "disconnected";
         s.user.clear();
-        s.premium = false;
+        s.premium.reset();
     }
     return s;
 }
@@ -75,18 +76,19 @@ void Disconnect(const std::string& mod) {
     fake_spotify::g_disconnects.push_back(mod);
     fake_spotify::g_granted.clear();
 }
-uint32_t Submit(const std::string& mod, const logic::Request& r, uint32_t token, std::string* reason) {
+uint32_t Submit(const std::string& mod, uint32_t gen, const logic::Request& r, uint32_t token, std::string* reason) {
     if (!fake_spotify::g_granted.count(mod)) {
         *reason = "auth";
         return 0;
     }
     const uint32_t rid = fake_spotify::g_nextRid++;
-    fake_spotify::g_submitted.push_back({mod, r, token, rid});
+    fake_spotify::g_submitted.push_back({mod, r, token, rid, gen});
     return rid;
 }
-void Cancel(const std::string& mod, uint32_t rid) {
-    const fake_spotify::Submitted* s = fake_spotify::Find(rid);
-    if (s && s->mod == mod) fake_spotify::g_cancelled.push_back(rid);
+void CancelGen(const std::string& mod, uint32_t gen) {
+    fake_spotify::g_cancelGens.emplace_back(mod, gen);
+    for (const fake_spotify::Submitted& s : fake_spotify::g_submitted)
+        if (s.mod == mod && s.gen == gen && !fake_spotify::Cancelled(s.rid)) fake_spotify::g_cancelled.push_back(s.rid);
 }
 void SetSink(Sink* sink) { fake_spotify::g_sink = sink; }
 }  // namespace spotify::host

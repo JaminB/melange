@@ -11,13 +11,15 @@
 
 namespace melange::spotify::cfg {
 namespace {
+logic::WarnOnce g_warned;  // a re-read (every 2 s while a mod uses wum.spotify) warns only about a new value
+
 int IntKey(const char* section, const char* key, int def, int lo, int hi) {
     char buf[32];
     snprintf(buf, sizeof buf, "%d", def);
     config::EnsureKey(section, key, buf);
     const int v = config::GetInt(section, key, def);
     const int c = std::clamp(v, lo, hi);
-    if (c != v) LOG_WARN("[%s] %s=%d is out of range (%d..%d), using %d", section, key, v, lo, hi, c);
+    if (c != v && g_warned.First(key, std::to_string(v))) LOG_WARN("[%s] %s=%d is out of range (%d..%d), using %d", section, key, v, lo, hi, c);
     return c;
 }
 std::string StrKey(const char* section, const char* key, const char* def) {
@@ -30,7 +32,6 @@ std::string Trim(const std::string& s) {
     const size_t b = s.find_last_not_of(" \t\r\n");
     return s.substr(a, b - a + 1);
 }
-std::string g_warned;  // the last malformed ClientId warned about (once per value)
 }  // namespace
 
 Spotify ReadSpotify() {
@@ -40,8 +41,7 @@ Spotify ReadSpotify() {
     config::schema::MarkLive(S, "ClientId");
     if (id.empty() || logic::ValidClientId(id)) {
         s.clientId = id;
-    } else if (id != g_warned) {
-        g_warned = id;
+    } else if (g_warned.First("ClientId", id)) {
         LOG_WARN("[Spotify] ClientId is not a 32-character Spotify Client ID; Spotify stays off until it is");
     }
     s.redirectPort = IntKey(S, "RedirectPort", 8780, 1024, 65535);

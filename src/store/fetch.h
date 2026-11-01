@@ -43,6 +43,9 @@ struct Options {
     uint64_t resumeFrom = 0;
 };
 bool Get(const std::string& url, Sink& sink, const Options& o, std::string* err);
+// WinHTTP's resolve, connect and send timeouts: 10 s each, but no longer than o.totalMs (they come before the body,
+// where totalMs is checked).
+inline int PhaseTimeoutMs(const Options& o) { return static_cast<int>(o.totalMs && o.totalMs < 10000 ? o.totalMs : 10000); }
 
 // One request with a method, headers and a body (Melange 0.13, wum.spotify's Web API calls).
 struct HttpRequest {

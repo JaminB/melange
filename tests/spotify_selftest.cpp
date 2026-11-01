@@ -3,10 +3,12 @@
 #include <cmath>
 #include <cstdio>
 #include <cstring>
+#include <deque>
 #include <string>
 #include <vector>
 
 #include "spotify/spotify_logic.h"
+#include "store/fetch.h"
 
 using namespace melange::spotify::logic;
 namespace json = melange::json;
@@ -276,8 +278,67 @@ void TestErrors() {
     Expect(Decide(502, &a) == Action::ServerRetry && Decide(503, &a) == Action::Fail, "decide: 5xx retries once");
     Expect(Decide(404, &a) == Action::Fail, "decide: 404 fails");
 
+    // A request's call never starts after its deadline; with time left it gets at least 1 s, at most the cap.
+    Expect(BudgetMs(1000, 1000, 10000) == 0 && BudgetMs(2000, 1000, 10000) == 0, "budget: none once the deadline passed");
+    Expect(BudgetMs(1000, 1500, 10000) == 1000 && BudgetMs(1000, 8000, 10000) == 7000 && BudgetMs(0, 60000, 10000) == 10000,
+           "budget: what is left, at least 1 s, at most the cap");
+    Expect(BudgetMs(0, 300, 500) == 500 && BudgetMs(0, 5000, 500) == 500 && BudgetMs(0, 5000, 0) == 5000 && BudgetMs(0, 300, 0) == 1000,
+           "budget: a cap under 1 s holds, and a cap of 0 (no total limit) leaves what is left");
+    // WinHTTP's resolve, connect and send timeouts are capped by the request's total time.
+    melange::store::fetch::Options fo;
+    fo.totalMs = 0;
+    Expect(melange::store::fetch::PhaseTimeoutMs(fo) == 10000, "phase timeout: 10 s without a total");
+    fo.totalMs = 2500;
+    Expect(melange::store::fetch::PhaseTimeoutMs(fo) == 2500, "phase timeout: capped by the total");
+    fo.totalMs = 60000;
+    Expect(melange::store::fetch::PhaseTimeoutMs(fo) == 10000, "phase timeout: never above 10 s");
+
+    WarnOnce once;
+    Expect(once.First("RequestsPerMinute", "5") && !once.First("RequestsPerMinute", "5") && !once.First("RequestsPerMinute", "5"),
+           "warn once: a re-read of the same bad value is quiet");
+    Expect(once.First("RedirectPort", "5") && once.First("RequestsPerMinute", "7") && !once.First("RedirectPort", "5"),
+           "warn once: per key, and again for a new value");
+
     ExpectEq(ShapeError(Err::Rate, "slow down", 7), R"({"error":"rate","message":"slow down","retryAfter":7})", "error shape: rate");
     ExpectEq(ShapeError(Err::Premium, "", 7), R"({"error":"premium","message":""})", "error shape: retryAfter only for rate");
+}
+
+void TestPlanAndQueues() {
+    // status().premium: unknown (nil) when Spotify did not say; GET /me has no `product` for Development-mode apps.
+    Expect(!PremiumOf("").has_value() && PremiumOf("premium") == true && PremiumOf("free") == false && PremiumOf("open") == false,
+           "premium: unknown, true, false");
+    Expect(ProductAfter("", Op::Pause, true, Err::None) == "premium" && ProductAfter("free", Op::Play, true, Err::None) == "premium",
+           "plan: a control call that works means Premium (an upgrade is learned)");
+    Expect(ProductAfter("", Op::Play, false, Err::Premium) == "free" && ProductAfter("premium", Op::Volume, false, Err::Premium) == "free",
+           "plan: PREMIUM_REQUIRED means Free");
+    Expect(ProductAfter("open", Op::Play, false, Err::Premium) == "open", "plan: a known non-Premium plan is kept");
+    Expect(ProductAfter("", Op::Playback, true, Err::None).empty() && ProductAfter("", Op::Tracks, false, Err::Premium).empty() &&
+               ProductAfter("", Op::Pause, false, Err::NoDevice).empty() && ProductAfter("premium", Op::Seek, false, Err::Restricted) == "premium",
+           "plan: reads and other errors say nothing");
+    Expect(ProductAtStartup("premium", "") == "premium" && ProductAtStartup("free", "").empty() && ProductAtStartup("", "").empty() &&
+               ProductAtStartup("premium", "free") == "free" && ProductAtStartup("", "premium") == "premium",
+           "plan at start-up: /me wins; without it a learned Premium is kept and a learned Free is asked again (an upgrade shows)");
+
+    // The worker's turn order: a mod that keeps control calls queued cannot starve the reads.
+    int streak = 0;
+    std::string order;
+    for (int i = 0; i < 10; ++i) order += TakeControl(true, true, &streak) ? 'c' : 'r';
+    ExpectEq(order, "cccrcccrcc", "queues: a waiting read gets every 4th turn");
+    streak = 0;
+    order.clear();
+    for (int i = 0; i < 5; ++i) order += TakeControl(true, false, &streak) ? 'c' : 'r';
+    Expect(order == "ccccc" && !TakeControl(false, true, &streak) && TakeControl(true, true, &streak) && streak == 1,
+           "queues: control alone runs on; a read resets the streak");
+    struct J {
+        int id;
+        uint64_t deadline;
+        bool background;
+    };
+    std::deque<J> q{{1, 100, false}, {2, 300, false}, {3, 100, true}, {4, 200, false}};
+    std::vector<int> expired;
+    const size_t n = ExpireQueued(q, 200, [&](const J& j) { expired.push_back(j.id); });
+    Expect(n == 2 && expired == std::vector<int>{1, 4} && q.size() == 2 && q[0].id == 2 && q[1].id == 3,
+           "queues: jobs past their deadline expire while queued (a background one stays)");
 }
 
 void TestCalls() {
@@ -298,11 +359,14 @@ void TestCalls() {
     r = {};
     r.op = Op::PlaylistTracks;
     r.id = "37i9dQZF1DXcBWIGoYBM5M";
+    // Spotify's February 2026 change: /playlists/{id}/items with "item" entries (the old /tracks is gone for
+    // Development-mode apps); the fields filter asks for "item" and the older "track".
     Expect(BuildCall(r, &m, &u, &b) && m == "GET" &&
-               u == "https://api.spotify.com/v1/playlists/37i9dQZF1DXcBWIGoYBM5M/tracks?limit=50&offset=0&market=from_token&fields="
-                    "total%2Cnext%2Citems%28track%28type%2Curi%2Cname%2Cduration_ms%2Cis_playable%2Cis_local%2Cartists%28name%29%2C"
-                    "album%28name%29%29%29",
-           "call: playlist tracks with fields");
+               u == "https://api.spotify.com/v1/playlists/37i9dQZF1DXcBWIGoYBM5M/items?limit=50&offset=0&market=from_token&fields="
+                    "total%2Cnext%2Citems%28is_local%2Citem%28type%2Curi%2Cname%2Cduration_ms%2Cis_playable%2Cis_local%2C"
+                    "artists%28name%29%2Calbum%28name%29%29%2Ctrack%28type%2Curi%2Cname%2Cduration_ms%2Cis_playable%2Cis_local%2C"
+                    "artists%28name%29%2Calbum%28name%29%29%29",
+           "call: playlist items (not /tracks) with fields for item and track");
     r.id = "../me";
     Expect(!BuildCall(r, &m, &u, &b), "call: a bad playlist id");
     r = {};
@@ -388,6 +452,24 @@ void TestShapes() {
         Expect(b.Get("name")->string == std::string(199, 'n') && !b.Get("playable")->boolean && b.Get("artists")->string.empty(),
                "tracks: a name trimmed on a UTF-8 boundary, not playable");
     }
+    // GET /playlists/{id}/items: each entry's song is under "item" (with a deprecated "track" copy, or none).
+    v = J(ShapeTracks(J(R"({"total":3,"next":null,"items":[)"
+                        R"({"added_at":"x","is_local":false,"item":{"type":"track","uri":"spotify:track:4uLU6hMCjMI75M1A2tKUQC",)"
+                        R"("name":"New","duration_ms":5,"is_playable":true,"artists":[{"name":"A"}],"album":{"name":"Alb"}}},)"
+                        R"({"item":{"type":"episode","uri":"spotify:episode:4uLU6hMCjMI75M1A2tKUQC","name":"Ep"},)"
+                        R"("track":{"type":"track","uri":"spotify:track:1301WleyT98MSxVHPZCA6M","name":"Stale"}},)"
+                        R"({"is_local":true,"item":{"type":"track","uri":"spotify:local:a:b:c:1","name":"L","is_local":true}}]})"),
+                      false, 0, 50));
+    items = v.Get("items");
+    Expect(items && items->items.size() == 1 && v.Get("skipped")->number == 2 && v.Get("kind")->string == "playlist",
+           "playlist items: the item key is read (an episode item is skipped even with a track copy, a local file too)");
+    if (items && items->items.size() == 1)
+        Expect(items->items[0].Get("uri")->string == "spotify:track:4uLU6hMCjMI75M1A2tKUQC" && items->items[0].Get("name")->string == "New" &&
+                   items->items[0].Get("artists")->string == "A" && items->items[0].Get("durationMs")->number == 5,
+               "playlist items: the song's fields");
+    v = J(ShapeTracks(J(R"({"total":1,"items":[{"track":{"type":"track","uri":"spotify:track:4uLU6hMCjMI75M1A2tKUQC","name":"Old"}}]})"),
+                      false, 0, 50));
+    Expect(v.Get("items") && v.Get("items")->items.size() == 1 && v.Get("skipped")->number == 0, "playlist items: an older track-only answer still reads");
     v = J(ShapeTracks(J(R"({"items":[],"total":0,"next":null})"), false, 100, 10));
     Expect(v.Get("kind")->string == "playlist" && !v.Get("next")->boolean && v.Get("offset")->number == 100, "playlist tracks: kind, next null");
 
@@ -421,6 +503,15 @@ void TestShapes() {
                v.Get("at") && v.Get("device")->Get("volume")->number == 50 &&
                v.Get("context")->string == "spotify:playlist:37i9dQZF1DXcBWIGoYBM5M",
            "playback: a track");
+    Expect(!v.Get("linkedFrom"), "playback: no linkedFrom when Spotify did not relink");
+    const json::Value relinked = J(R"({"is_playing":true,"progress_ms":1,"item":{"type":"track","uri":"spotify:track:1301WleyT98MSxVHPZCA6M",)"
+                                   R"("name":"Song","linked_from":{"type":"track","uri":"spotify:track:4uLU6hMCjMI75M1A2tKUQC"}}})");
+    v = J(ShapePlayback(200, &relinked, 0));
+    Expect(v.Get("uri") && v.Get("uri")->string == "spotify:track:1301WleyT98MSxVHPZCA6M" && v.Get("linkedFrom") &&
+               v.Get("linkedFrom")->string == "spotify:track:4uLU6hMCjMI75M1A2tKUQC",
+           "playback: linkedFrom is the track asked for when Spotify relinked it");
+    const json::Value badLink = J(R"({"item":{"type":"track","uri":"spotify:track:1301WleyT98MSxVHPZCA6M","linked_from":{"uri":"spotify:album:x"}}})");
+    Expect(!J(ShapePlayback(200, &badLink, 0)).Get("linkedFrom"), "playback: a linked_from that is not a track URI is left out");
     const json::Value ep = J(R"({"is_playing":false,"progress_ms":1,"item":{"type":"episode","uri":"spotify:episode:x","name":"Ep"},)"
                              R"("device":{"id":"abc","name":"PC","type":"Computer"},"context":null})");
     v = J(ShapePlayback(200, &ep, 0));
@@ -447,6 +538,7 @@ int main() {
     TestErrors();
     TestCalls();
     TestShapes();
+    TestPlanAndQueues();
     printf("spotify_selftest: %d passed, %d failed\n", g_pass, g_fail);
     return g_fail ? 1 : 0;
 }

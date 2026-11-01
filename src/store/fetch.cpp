@@ -154,7 +154,8 @@ bool OpenHttps(const std::string& url, const Options& o, DWORD redirectPolicy, H
             return false;
         }
     }
-    WinHttpSetTimeouts(h->session, 10000, 10000, 10000, static_cast<int>(o.stallMs));
+    const int phase = PhaseTimeoutMs(o);
+    WinHttpSetTimeouts(h->session, phase, phase, phase, static_cast<int>(o.stallMs));
     DWORD redirect = redirectPolicy, maxRedirects = 5;
     WinHttpSetOption(h->session, WINHTTP_OPTION_REDIRECT_POLICY, &redirect, sizeof(redirect));
     WinHttpSetOption(h->session, WINHTTP_OPTION_MAX_HTTP_AUTOMATIC_REDIRECTS, &maxRedirects, sizeof(maxRedirects));

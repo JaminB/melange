@@ -9,6 +9,8 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
+#include <map>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -436,6 +438,12 @@ inline bool ParseMe(std::string_view body, Me* me) {
     me->country = TrimUtf8(StrOf(v.Get("country")), 8);
     return true;
 }
+// status().premium: true or false when the plan is known, nullopt when not (Development-mode apps no longer get
+// `product` from GET /me).
+inline std::optional<bool> PremiumOf(std::string_view product) {
+    if (product.empty()) return std::nullopt;
+    return product == "premium";
+}
 
 // ---------------------------------------------------------------- errors, Retry-After, the rate gate
 enum class Err { None, Auth, Premium, NoDevice, Restricted, NotFound, BadRequest, Rate, Network, Timeout, Server, BadResponse, Cancelled };
@@ -493,6 +501,26 @@ inline int RetryAfterSeconds(std::string_view v) {
     }
     return static_cast<int>(std::clamp<long long>(n, 1, 120));
 }
+// The time limit for one HTTP call of a request due at `deadlineMs`: what is left of it (at least 1 s), at most `capMs`
+// (0: no cap, as fetch::Options::totalMs). 0 when the deadline has passed: the call is not sent.
+inline uint32_t BudgetMs(uint64_t nowMs, uint64_t deadlineMs, uint32_t capMs) {
+    if (nowMs >= deadlineMs) return 0;
+    const uint64_t left = std::min<uint64_t>(std::max<uint64_t>(deadlineMs - nowMs, 1000), UINT32_MAX);
+    return static_cast<uint32_t>(capMs ? std::min<uint64_t>(left, capMs) : left);
+}
+// Remembers the last value warned about per key, so a re-read of the same bad setting does not log again.
+class WarnOnce {
+public:
+    bool First(const std::string& key, const std::string& value) {
+        auto [it, added] = last_.try_emplace(key, value);
+        if (!added && it->second == value) return false;
+        it->second = value;
+        return true;
+    }
+
+private:
+    std::map<std::string, std::string> last_;
+};
 
 // A token bucket of perMinute tokens refilled continuously, plus a pause (Retry-After). Pure: the caller gives the time.
 class RateGate {
@@ -553,9 +581,51 @@ inline Action Decide(int status, Attempts* a) {
     return Action::Fail;
 }
 
+// The worker's queues. Playback control goes before reads, but after kMaxControlStreak control calls in a row a waiting
+// read gets the next turn, so a mod that keeps control calls queued cannot starve the others' reads.
+inline constexpr int kMaxControlStreak = 3;
+inline bool TakeControl(bool haveControl, bool haveRead, int* streak) {
+    if (!haveControl || (haveRead && *streak >= kMaxControlStreak)) {
+        *streak = 0;
+        return false;
+    }
+    ++*streak;
+    return true;
+}
+// Removes the queued jobs (not background ones) whose deadline has passed, calling expired(job) for each first.
+template <class Queue, class Fn>
+size_t ExpireQueued(Queue& q, uint64_t nowMs, Fn&& expired) {
+    size_t n = 0;
+    for (auto it = q.begin(); it != q.end();) {
+        if (!it->background && nowMs >= it->deadline) {
+            expired(*it);
+            it = q.erase(it);
+            ++n;
+        } else {
+            ++it;
+        }
+    }
+    return n;
+}
+
 // ---------------------------------------------------------------- requests
 enum class Op { Tracks, Playlists, PlaylistTracks, Devices, Play, Pause, Resume, Seek, Volume, Playback };
 inline bool IsControl(Op op) { return op == Op::Play || op == Op::Pause || op == Op::Resume || op == Op::Seek || op == Op::Volume; }
+// The account's plan after a call: a control call that worked means "premium", one Spotify refused with
+// PREMIUM_REQUIRED means "free"; anything else leaves `current` (as does "free" for an already known non-Premium plan).
+inline std::string ProductAfter(const std::string& current, Op op, bool ok, Err e) {
+    if (!IsControl(op)) return current;
+    if (ok) return "premium";
+    if (e == Err::Premium && (current.empty() || current == "premium")) return "free";
+    return current;
+}
+// The plan after the start-up GET /me: what /me says. Without it (Development-mode apps) a learned "premium" is kept, but
+// a learned Free plan becomes unknown again: a mod that holds back control calls while premium is false (Holo) would
+// otherwise never let Melange see an upgrade.
+inline std::string ProductAtStartup(const std::string& stored, const std::string& fromMe) {
+    if (!fromMe.empty()) return fromMe;
+    return stored == "premium" ? stored : std::string();
+}
 struct Request {
     Op op = Op::Playback;
     int offset = 0, limit = 50;
@@ -569,8 +639,11 @@ struct Request {
     int volume = -1;                // Volume: 0..100
 };
 
+// GET /playlists/{id}/items (Spotify's February 2026 Web API change; /tracks is gone for Development-mode apps) wraps
+// each entry in "item"; older answers used "track". Both are asked for.
 inline constexpr const char kPlaylistFields[] =
-    "total,next,items(track(type,uri,name,duration_ms,is_playable,is_local,artists(name),album(name)))";
+    "total,next,items(is_local,item(type,uri,name,duration_ms,is_playable,is_local,artists(name),album(name)),"
+    "track(type,uri,name,duration_ms,is_playable,is_local,artists(name),album(name)))";
 
 // The HTTP call for a request. False when the request is malformed (the binding validates first; this is the last check).
 inline bool BuildCall(const Request& r, std::string* method, std::string* url, std::string* jsonBody) {
@@ -595,7 +668,7 @@ inline bool BuildCall(const Request& r, std::string* method, std::string* url, s
         case Op::PlaylistTracks:
             if (!page() || !ValidId(r.id)) return false;
             *method = "GET";
-            *url = base + "playlists/" + r.id + "/tracks?limit=" + std::to_string(r.limit) + "&offset=" + std::to_string(r.offset) +
+            *url = base + "playlists/" + r.id + "/items?limit=" + std::to_string(r.limit) + "&offset=" + std::to_string(r.offset) +
                    "&market=from_token&fields=" + PercentEncode(kPlaylistFields);
             return true;
         case Op::Devices:
@@ -675,14 +748,16 @@ inline long long IntOf(const json::Value* v, long long def = 0) {
     return v && v->IsNumber() && v->number >= -9e15 && v->number <= 9e15 ? static_cast<long long>(v->number) : def;
 }
 
-// Saved tracks (saved = true, kind "tracks") or a playlist's tracks (kind "playlist"): items[].track either way.
+// Saved tracks (saved = true, kind "tracks", items[].track) or a playlist's tracks (kind "playlist", items[].item, or
+// items[].track in older answers).
 // Kept: type "track", not is_local, a spotify:track: URI. Everything else counts in "skipped".
 inline std::string ShapeTracks(const json::Value& page, bool saved, int offset, int limit) {
     jsonmini::Arr items;
     long long skipped = 0;
     if (const json::Value* list = page.Get("items"); list && list->IsArray()) {
         for (const json::Value& it : list->items) {
-            const json::Value* t = it.Get("track");
+            const json::Value* t = it.Get("item");
+            if (!t || !t->IsObject()) t = it.Get("track");
             const std::string uri = StrOf(Member(t, "uri"));
             if (!t || !t->IsObject() || StrOf(t->Get("type")) != "track" || IsTrue(t->Get("is_local")) || IsTrue(it.Get("is_local")) ||
                 ClassifyUri(uri) != UriKind::Track) {
@@ -774,6 +849,9 @@ inline std::string ShapePlayback(int status, const json::Value* body, double at)
     if (item && item->IsObject() && StrOf(item->Get("type")) == "track") {
         const std::string uri = StrOf(item->Get("uri"));
         if (ClassifyUri(uri) == UriKind::Track) o.Str("uri", uri);
+        // Relinked for the listener's market: the track that was asked for (a playlist or play() gave this URI).
+        const std::string linked = StrOf(Member(item->Get("linked_from"), "uri"));
+        if (ClassifyUri(linked) == UriKind::Track) o.Str("linkedFrom", linked);
         o.Str("name", TrimUtf8(StrOf(item->Get("name")), kMaxText))
             .Str("artists", JoinArtists(item->Get("artists")))
             .Int("durationMs", std::max(0LL, IntOf(item->Get("duration_ms"))));

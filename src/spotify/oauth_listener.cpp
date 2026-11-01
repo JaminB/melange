@@ -60,6 +60,13 @@ void CloseAfterPeer(SOCKET c) {
     shutdown(c, SD_BOTH);
     closesocket(c);
 }
+// Closes a connection that never got an answer with a reset (SO_LINGER 0): nothing of ours is left in TIME_WAIT, which
+// a graceful close of an idle spare connection would leave if the browser closes it after us (see CloseAfterPeer).
+void CloseAbortive(SOCKET c) {
+    const LINGER l{1, 0};
+    setsockopt(c, SOL_SOCKET, SO_LINGER, reinterpret_cast<const char*>(&l), sizeof l);
+    closesocket(c);
+}
 }  // namespace
 
 bool Listener::Open(int port) {
@@ -122,8 +129,8 @@ Listener::Outcome Listener::Serve(const std::string& state, uint64_t deadlineMs,
         setsockopt(c, SOL_SOCKET, SO_RCVTIMEO, reinterpret_cast<const char*>(&timeout), sizeof timeout);
         setsockopt(c, SOL_SOCKET, SO_SNDTIMEO, reinterpret_cast<const char*>(&timeout), sizeof timeout);
         std::string head = ReadHead(c);
-        if (head.empty()) {  // a browser's spare connection that never sent anything
-            closesocket(c);
+        if (head.empty()) {  // a browser's spare connection that never sent anything (or closed at once)
+            CloseAbortive(c);
             continue;
         }
         logic::CallbackResult r = logic::ParseCallbackRequest(head, port_, state);

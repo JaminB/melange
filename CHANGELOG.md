@@ -9,6 +9,13 @@
   is DPAPI-encrypted in `%LOCALAPPDATA%\Melange\spotify\token.bin`; no token ever reaches Lua or the log. Melange never
   pauses the music by itself: unloading a mod, closing its UI and `disconnect()` leave it playing. Presentation only:
   not available to sim scripts, not part of the content handshake, nothing reaches the match or Wormsign.
+- Works with Spotify's February 2026 rules for Development-mode apps: a playlist's songs come from
+  `/playlists/{id}/items`, and since Spotify no longer reports the account's plan at sign-in, `status().premium` is
+  `nil` until the first playback control answer tells Melange (then `true` or `false`, with a `melange.spotify`
+  event; a learned Free plan is asked again after a restart). `playback` reports `linkedFrom` when Spotify relinked
+  a song for the listener's market.
+- Requests that wait longer than 15 seconds behind others fail with `"timeout"` instead of waiting on, and a mod
+  that keeps sending playback controls can no longer hold up the other mods' reads.
 - New `[Spotify]` section: `Enabled`, `ClientId`, `RedirectPort` (8780), `RequestsPerMinute` (90). Off until `ClientId`
   is set to the Client ID of a Spotify app the user registered (see the developer guide).
 - Internal: `store::fetch::Send` for requests with a method, headers and a body, which reads error bodies and

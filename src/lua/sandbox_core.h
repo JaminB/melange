@@ -86,6 +86,7 @@ struct Gen {
     std::vector<unsigned> textures;  // wum.draw.texture: capped separately from kMaxHandlesPerGen (not a Callback)
     unsigned spriteTexHit = 0;       // wum.draw.sprite: the last texture id validated against `textures`
     bool cameraCleanup = false;      // wum.render.cameraOverride: a cleanup that clears this mod's override is queued
+    bool spotifyCleanup = false;     // wum.spotify: the cleanup that cancels this generation's requests is queued
     std::map<uint32_t, std::shared_ptr<struct MeshData>> meshes;  // wum.draw.newMesh handles
     uint32_t nextMesh = 1;
     size_t meshVerts = 0;            // vertices held by `meshes`

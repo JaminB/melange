@@ -4,6 +4,7 @@
 // Results and status events reach Lua through the Sink that wum_spotify.cpp installs. No token ever crosses this
 // interface.
 #include <cstdint>
+#include <optional>
 #include <string>
 
 #include "spotify/spotify_logic.h"
@@ -18,7 +19,9 @@ void Touch(const std::string& mod);
 struct Status {
     std::string state;  // "disconnected" | "connecting" | "connected" | "error"
     std::string user;   // the display name, when connected
-    bool premium = false;
+    // When connected: true (Premium) or false (Free) once known, from GET /me or learned from a control call's answer
+    // (Development-mode apps no longer get the plan from /me); nullopt while unknown.
+    std::optional<bool> premium;
     bool linked = false;  // Melange holds a signed-in account (granted to `mod` or not)
     std::string error;    // state "error": "denied" | "timeout" | "network" | "invalid-client" | "exchange" | "revoked"
 };
@@ -30,11 +33,12 @@ bool Granted(const std::string& mod);
 bool Connect(const std::string& mod, std::string* reason);
 // Signs out for every mod; never pauses the music.
 void Disconnect(const std::string& mod);
-// Queues a Web API request. Its id (never 0), or 0 and "auth" | "busy". The answer comes through
-// Sink::Callback(mod, token, {..} | {error, message[, retryAfter]}, done = true) when token != 0.
-uint32_t Submit(const std::string& mod, const logic::Request& r, uint32_t token, std::string* reason);
-// Drops a request: a queued one is removed without a callback, a running one's answer is dropped.
-void Cancel(const std::string& mod, uint32_t rid);
+// Queues a Web API request for generation `gen` (its serial) of `mod`. Its id (never 0), or 0 and "auth" | "busy". The
+// answer comes through Sink::Callback(mod, token, {..} | {error, message[, retryAfter]}, done = true) when token != 0.
+uint32_t Submit(const std::string& mod, uint32_t gen, const logic::Request& r, uint32_t token, std::string* reason);
+// Drops every request of generation `gen` of `mod`: queued ones are removed without a callback, a running one's answer
+// is dropped. Requests of the mod's other generations (a reload's new one) are left alone.
+void CancelGen(const std::string& mod, uint32_t gen);
 
 // Delivery to Lua, installed once by wum_spotify.cpp. Both run on the main thread from the module's frame pump.
 class Sink {

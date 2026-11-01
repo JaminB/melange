@@ -1,7 +1,8 @@
 // sandbox_selftest cases for wum.spotify (Melange 0.13). Included in the test file's anonymous namespace after the
 // helpers (SetMod, Eval, Frames, Expect, ExpectEq); defines TestSpotify(), run before the docs check. The Spotify host
 // is a fake (sandbox_fakes_spotify.inc), so these cases cover the binding: argument types and values, the connect
-// click, callbacks, owner-only events and the cleanup on unload.
+// click, callbacks, owner-only events, premium unknown (nil), handles freed per answer, one cleanup per generation and the
+// cleanup on unload and reload.
 void TestSpotify() {
     namespace fs = fake_spotify;
     using spotify::logic::Op;
@@ -25,7 +26,7 @@ void TestSpotify() {
     fs::g_available = true;
     ExpectEq(Eval(nullptr, "local s = wum.spotify.status() return s.state .. ' ' .. tostring(s.premium) .. ' ' .. tostring(s.linked) .. ' ' .. "
                            "tostring(s.user) .. ' ' .. tostring(s.error)"),
-             "disconnected false false nil nil", "status(): the console sees the global state");
+             "disconnected nil false nil nil", "status(): the console sees the global state (premium unknown is nil)");
     for (const char* fn : {"connect()", "disconnect()", "library({kind = 'tracks'}, print)", "devices(print)", "play({uri = 'x'})",
                            "pause()", "resume()", "seek(1)", "volume(1)", "playback(print)"})
         Expect(has(Eval(nullptr, std::string("return pcall(function() return wum.spotify.") + fn + " end)"), "needs a mod context"),
@@ -42,10 +43,15 @@ void TestSpotify() {
     fs::g_granted.insert("spo2");
     ExpectEq(Eval("spo2", "local s = wum.spotify.status() return s.state .. ' ' .. s.user .. ' ' .. tostring(s.premium) .. ' ' .. tostring(s.linked)"),
              "connected Ann true true", "status(): the granted mod sees the account");
+    fs::g_status = {"connected", "Ann", false, true, ""};
+    ExpectEq(Eval("spo2", "return tostring(wum.spotify.status().premium)"), "false", "status(): premium false for a known Free account");
+    fs::g_status = {"connected", "Ann", std::nullopt, true, ""};
+    ExpectEq(Eval("spo2", "local s = wum.spotify.status() return s.state .. ' ' .. tostring(s.premium)"), "connected nil",
+             "status(): premium nil while the plan is unknown (not false)");
     fs::g_granted.clear();
-    fs::g_status = {"error", "", false, false, "denied"};
+    fs::g_status = {"error", "", std::nullopt, false, "denied"};
     ExpectEq(Eval("spo", "local s = wum.spotify.status() return s.state .. ' ' .. s.error"), "error denied", "status(): the error code");
-    fs::g_status = {"disconnected", "", false, false, ""};
+    fs::g_status = {"disconnected", "", std::nullopt, false, ""};
 
     // ---- connect(): a click on the mod's own region
     ExpectEq(Eval("spo", "local a, b = wum.spotify.connect() return tostring(a) .. ':' .. tostring(b)"), "nil:gesture", "connect without a click");
@@ -170,6 +176,25 @@ void TestSpotify() {
     fs::AnswerRequest(pbRid, R"({"error":"no-device","message":"No active device"})");
     ExpectEq(Eval("spo", "return PB.error .. ' ' .. PB.message"), "no-device No active device", "a failure reaches fn as {error, message}");
 
+    // ---- an answered request frees its handle, and a generation gets one cleanup however many requests it makes
+    {
+        sandbox::ModRec* rec = sandbox::FindMod("spo");
+        const size_t cleanups = rec && rec->gen ? rec->gen->cleanups.size() : 0;
+        int ok = 0;
+        for (int i = 0; i < 5000; ++i) {
+            if (Eval("spo", "return math.type(wum.spotify.playback(function(r) POLLS = (POLLS or 0) + 1 end))") != "integer") break;
+            const fs::Submitted* p = last();
+            if (p) fs::AnswerRequest(p->rid, R"({"active":false})");
+            ++ok;
+        }
+        Expect(ok == 5000, "5000 answered playback polls never run out of handles (" + std::to_string(ok) + ")");
+        ExpectEq(Eval("spo", "return tostring(POLLS)"), "5000", "every poll's callback ran");
+        Expect(rec && rec->gen && rec->gen->cleanups.size() == cleanups, "no cleanup per request (" +
+                   std::to_string(rec && rec->gen ? rec->gen->cleanups.size() : 0) + " vs " + std::to_string(cleanups) + ")");
+        const fs::Submitted* p = last();
+        Expect(p && rec && rec->gen && p->gen == rec->gen->serial, "a request carries its generation");
+    }
+
     // ---- owner-only events
     fs::EmitStatus("spo", R"({"type":"status","state":"connected","user":"Ann","premium":true,"linked":true})");
     Frames(1);
@@ -191,5 +216,21 @@ void TestSpotify() {
     Expect(fs::g_submitted.size() == submittedBefore, "unloading queues nothing (no pause)");
     fs::AnswerRequest(outRid, R"({"items":[]})");  // a late answer for an unloaded mod is dropped
     sandbox::UnloadMod("spo2");
+
+    // ---- a reload cancels the old generation's requests only, never the new one's (sent from its top level)
+    fs::g_granted.insert("spr");
+    SetMod("spr", "RID = wum.spotify.playback(function(r) PB = r end)");
+    Expect(sandbox::LoadMod("spr"), "spr loads");
+    const fs::Submitted* first = last();
+    const uint32_t oldRid = first ? first->rid : 0, oldGen = first ? first->gen : 0;
+    Expect(sandbox::ReloadMod("spr"), "spr reloads");
+    const fs::Submitted* second = last();
+    const uint32_t newRid = second ? second->rid : 0;
+    Expect(oldRid && newRid && newRid != oldRid && fs::Cancelled(oldRid), "the reload cancels the old generation's request");
+    Expect(!fs::Cancelled(newRid), "and not the new generation's");
+    Expect(fs::g_cancelGens.size() >= 1 && fs::g_cancelGens.back() == std::make_pair(std::string("spr"), oldGen), "CancelGen(mod, old serial)");
+    fs::AnswerRequest(newRid, R"({"active":false})");
+    ExpectEq(Eval("spr", "return tostring(PB and PB.active)"), "false", "the new generation's answer arrives");
+    sandbox::UnloadMod("spr");
     fs::g_granted.clear();
 }
