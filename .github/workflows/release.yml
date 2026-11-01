@@ -58,6 +58,10 @@ jobs:
           if ($LASTEXITCODE) { throw "web fetch failed" }
 
       - name: Build and stage
+        env:
+          # The built-in Spotify app's Client ID (a repository variable, not a secret: Client IDs are public). Empty or
+          # unset still builds (no built-in app; scripts\release.ps1 warns for a tag).
+          MELANGE_SPOTIFY_CLIENT_ID: ${{ vars.SPOTIFY_CLIENT_ID }}
         run: |
           .\scripts\release.ps1 -StageOnly
           $v = (Select-String CMakeLists.txt -Pattern 'project\(Melange VERSION ([0-9.]+)').Matches[0].Groups[1].Value

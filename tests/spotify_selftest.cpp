@@ -1,5 +1,6 @@
 // Offline self-test for src/spotify/spotify_logic.h (wum.spotify's pure logic; no game, no network). Portable: it also
-// builds with g++ on Linux (json_read.cpp needs a _wfopen stand-in there). Exit code 0 = all passed.
+// builds with g++ on Linux (json_read.cpp needs a _wfopen stand-in there). Exit code 0 = all passed. Melange 0.14 adds the
+// callback pages, the Client ID resolution, file and clipboard finder, the not-allowlisted heuristic and transfer.
 #include <cmath>
 #include <cstdio>
 #include <cstring>
@@ -165,18 +166,185 @@ void TestCallback() {
            "callback: two Host headers");
     Expect(ParseCallbackRequest(Head("/callback?code=a&state="), 8780, "").kind == CallbackResult::Bad, "callback: no expected state");
 
-    const std::string ok = CallbackHttpResponse(200, true), bad = CallbackHttpResponse(200, false), nf = CallbackHttpResponse(404, false);
-    Expect(ok.rfind("HTTP/1.1 200 OK\r\n", 0) == 0 && Has(ok, "Content-Type: text/html; charset=utf-8\r\n") &&
-               Has(ok, "Cache-Control: no-store\r\n") && Has(ok, "Content-Security-Policy: default-src 'none'\r\n") &&
-               Has(ok, "Connection: close\r\n") && Has(ok, "Melange is linked to Spotify."),
-           "callback page: success headers and text");
-    Expect(Has(bad, "Melange could not link Spotify.") && !Has(bad, "is linked"), "callback page: failure text");
-    Expect(nf.rfind("HTTP/1.1 404 Not Found\r\n", 0) == 0 && CallbackHttpResponse(400, false).rfind("HTTP/1.1 400 Bad Request\r\n", 0) == 0,
-           "callback page: 404 and 400");
-    for (const std::string& p : {ok, bad, nf})
-        Expect(!Has(p, "code=") && !Has(p, kState) && !Has(p, "<script"), "callback page reflects no query text");
-    const size_t cl = ok.find("Content-Length: ");
-    Expect(cl != std::string::npos && std::stoul(ok.substr(cl + 16)) == ok.size() - ok.find("\r\n\r\n") - 4, "callback page: Content-Length");
+    const std::string nf = CallbackHttpResponse(404, Page::Ok), br = CallbackHttpResponse(400, Page::Failed);
+    Expect(nf.rfind("HTTP/1.1 404 Not Found\r\n", 0) == 0 && Has(nf, "<p>Not found.</p>") && br.rfind("HTTP/1.1 400 Bad Request\r\n", 0) == 0 &&
+               Has(br, "<p>Bad request.</p>"),
+           "callback page: 404 and 400 keep their minimal bodies");
+    Expect(CallbackHttpResponse(404, Page::Failed) == nf && CallbackHttpResponse(400, Page::Ok) == br, "callback page: 404/400 ignore the page");
+}
+
+// Melange 0.14: one fixed, styled, self-contained page per outcome, with strict headers.
+void TestPages() {
+    struct P {
+        Page page;
+        const char* title;
+        const char* text;
+        bool ok;
+    };
+    const P pages[] = {
+        {Page::Ok, "Signed in to Spotify", "Go back to the game: your music is ready.", true},
+        {Page::Denied, "Sign-in cancelled", "You did not allow access. Go back to the game to try again.", false},
+        {Page::Cancelled, "Sign-in cancelled", "The sign-in was cancelled in the game. Go back to the game to try again.", false},
+        {Page::NotAllowed, "This Spotify app is not open to your account",
+         "The app only works for accounts its owner added. Go back to the game to set up your own free Spotify app.", false},
+        {Page::Failed, "Could not sign in", "Spotify's answer did not work out. Go back to the game and try again.", false},
+    };
+    std::vector<std::string> all;
+    for (const P& p : pages) {
+        const std::string r = CallbackHttpResponse(200, p.page);
+        const std::string name = std::string("page ") + p.title;
+        const size_t split = r.find("\r\n\r\n");
+        const std::string head = r.substr(0, split + 2), body = split == std::string::npos ? "" : r.substr(split + 4);
+        Expect(r.rfind("HTTP/1.1 200 OK\r\n", 0) == 0, name + ": 200");
+        Expect(Has(head, "Content-Type: text/html; charset=utf-8\r\n") && Has(head, "Cache-Control: no-store\r\n") &&
+                   Has(head,
+                       "Content-Security-Policy: default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'; "
+                       "frame-ancestors 'none'\r\n") &&
+                   Has(head, "X-Content-Type-Options: nosniff\r\n") && Has(head, "Referrer-Policy: no-referrer\r\n") &&
+                   Has(head, "Connection: close\r\n"),
+               name + ": headers (CSP, nosniff, no-referrer)");
+        const size_t cl = head.find("Content-Length: ");
+        Expect(cl != std::string::npos && std::stoul(head.substr(cl + 16)) == body.size(), name + ": Content-Length is the body's size");
+        Expect(Has(body, std::string("<h1>") + p.title + "</h1>") && Has(body, std::string("<p>") + p.text + "</p>") &&
+                   Has(body, "<p class=\"small\">You can close this tab.</p>") && Has(body, "<title>Melange - Spotify</title>"),
+               name + ": title and text");
+        Expect(Has(body, p.ok ? "<div class=\"mark\">" : "<div class=\"mark bad\">") && Has(body, p.ok ? "M5 12.5l4.5 4.5L19 7.5" : "M12 6v8"),
+               name + ": the mark");
+        Expect(!Has(body, "<script") && !Has(body, "http://") && !Has(body, "https://") && !Has(body, "<a ") && !Has(body, "<link") &&
+                   !Has(body, "<img"),
+               name + ": no script, no external URL, no link");
+        Expect(body.rfind("<!DOCTYPE html><html lang=\"en\">", 0) == 0 && body.size() > 500 && body.size() < 4000, name + ": a whole document");
+        Expect(!Has(r, "code=") && !Has(r, kState), name + ": reflects no query text");
+        all.push_back(r);
+    }
+    for (size_t i = 0; i < all.size(); ++i)
+        for (size_t j = i + 1; j < all.size(); ++j) Expect(all[i] != all[j], "pages differ " + std::to_string(i) + "/" + std::to_string(j));
+    Expect(CallbackHttpResponse(200, Page::Ok) == all[0], "the page is the same whatever was requested (no input at all)");
+    Expect(sizeof kBuiltinPorts / sizeof kBuiltinPorts[0] == 3 && kBuiltinPorts[0] == 8780 && kBuiltinPorts[1] == 8781 &&
+               kBuiltinPorts[2] == 8782,
+           "built-in app ports 8780, 8781, 8782");
+    ExpectEq(kDashboardUrl, "https://developer.spotify.com/dashboard/create", "the dashboard URL");
+}
+
+// Melange 0.14: which Client ID is used, its hint, and the in-game file.
+void TestSetup() {
+    const std::string a(32, 'a'), b = "0123456789ABCDEFabcdef0123456789", c = "ZZZZZZZZZZzzzzzzzzzz000000000000";
+    ResolvedId r = ResolveClientId(a, b, c);
+    Expect(r.id == a && r.app == "user", "resolve: a valid user ID wins");
+    r = ResolveClientId("short", b, c);
+    Expect(r.id == b && r.app == "ini", "resolve: an invalid user ID -> ini");
+    r = ResolveClientId("", "0123456789ABCDEFabcdef012345678!", c);
+    Expect(r.id == c && r.app == "builtin", "resolve: an invalid ini ID -> builtin");
+    r = ResolveClientId("", "", c);
+    Expect(r.id == c && r.app == "builtin", "resolve: only the built-in ID");
+    r = ResolveClientId("", "", "");
+    Expect(r.id.empty() && r.app.empty(), "resolve: none -> app \"\"");
+    r = ResolveClientId(std::string(33, 'a'), std::string(31, 'b'), "not valid");
+    Expect(r.id.empty() && r.app.empty(), "resolve: all invalid -> none");
+    ExpectEq(IdHint(b), "6789", "hint: the last 4 characters");
+    ExpectEq(IdHint(""), "", "hint: empty");
+
+    const std::string file = EncodeClientFile(b);
+    ExpectEq(file, R"({"v":1,"clientId":"0123456789ABCDEFabcdef0123456789"})", "client.json encoding");
+    std::string back;
+    Expect(DecodeClientFile(file, &back) && back == b, "client.json round trip");
+    back = "keep";
+    Expect(!DecodeClientFile(R"({"v":2,"clientId":"0123456789ABCDEFabcdef0123456789"})", &back) && back == "keep", "client.json: v 2 rejected");
+    Expect(!DecodeClientFile(R"({"v":1,"clientId":"0123456789ABCDEFabcdef012345678"})", &back), "client.json: 31 characters rejected");
+    Expect(!DecodeClientFile(R"({"v":1})", &back) && !DecodeClientFile(R"({"clientId":"0123456789ABCDEFabcdef0123456789"})", &back),
+           "client.json: a missing field is rejected");
+    Expect(!DecodeClientFile("", &back) && !DecodeClientFile("[1]", &back) && !DecodeClientFile(R"({"v":1,"clientId":5})", &back),
+           "client.json: garbage rejected");
+}
+
+void TestFindClientId() {
+    const std::string id = "0123456789ABCDEFabcdef0123456789", id2 = "ffffffffffffffffffffffffffffffff";
+    ExpectEq(FindClientId(id), id, "find: exact");
+    ExpectEq(FindClientId("  " + id + "\r\n"), id, "find: surrounding whitespace");
+    ExpectEq(FindClientId("Client ID: " + id), id, "find: a labelled line");
+    ExpectEq(FindClientId("Client ID\t" + id + "\nClient secret: View client secret"), id, "find: a copied dashboard block");
+    ExpectEq(FindClientId(id + " " + id2), "", "find: two IDs -> none");
+    ExpectEq(FindClientId(id.substr(0, 31)), "", "find: a 31-character run -> none");
+    ExpectEq(FindClientId(id + "x"), "", "find: a 33-character run -> none");
+    ExpectEq(FindClientId("id=" + id.substr(0, 31) + " and " + id + "xy"), "", "find: 31 and 34 runs -> none");
+    ExpectEq(FindClientId("\xC3\xA9" + id + "\xE2\x80\x8B"), id, "find: non-ASCII bytes separate runs");
+    ExpectEq(FindClientId(""), "", "find: empty");
+    ExpectEq(FindClientId("https://open.spotify.com/track/4uLU6hMCjMI75M1A2tKUQC"), "", "find: a track link is not a Client ID");
+    ExpectEq(FindClientId("token " + std::string(64, 'a')), "", "find: a 64-character secret is not one");
+}
+
+void TestNotAllowlisted() {
+    const std::string plain = "Check settings on developer.spotify.com/dashboard, the user may not be registered.";
+    const std::string jsonBody = R"({"error":{"status":403,"message":"User not registered in the Developer Dashboard"}})";
+    Expect(IsNotAllowlisted(403, plain) && IsNotAllowlisted(403, jsonBody), "not-allowlisted: both known texts");
+    Expect(IsNotAllowlisted(403, "THE USER MAY NOT BE REGISTERED"), "not-allowlisted: case-insensitive");
+    Expect(!IsNotAllowlisted(401, plain) && !IsNotAllowlisted(200, plain) && !IsNotAllowlisted(404, jsonBody), "not-allowlisted: 403 only");
+    Expect(!IsNotAllowlisted(403, "not registered") && !IsNotAllowlisted(403, "developer"), "not-allowlisted: one half is not enough");
+    Expect(!IsNotAllowlisted(403, std::string(1024, ' ') + "may not be registered"), "not-allowlisted: only the first 1024 bytes count");
+    std::string m;
+    Expect(MapApiError(403, plain + "\r\n", &m) == Err::NotAllowlisted && m == plain + "  ", "not-allowlisted: plain text, message = the text");
+    Expect(MapApiError(403, jsonBody, &m) == Err::NotAllowlisted && m == "User not registered in the Developer Dashboard",
+           "not-allowlisted: JSON message");
+    MapApiError(403, std::string(300, 'x') + " may not be registered", &m);
+    Expect(m.size() == 200, "not-allowlisted: a long text is trimmed to 200 bytes");
+    Expect(MapApiError(403, R"({"error":{"status":403,"message":"Player command failed: Premium required","reason":"PREMIUM_REQUIRED"}})", &m) ==
+               Err::Premium,
+           "not-allowlisted: PREMIUM_REQUIRED keeps premium");
+    Expect(MapApiError(401, plain, &m) == Err::Auth, "not-allowlisted: a 401 with the text stays auth");
+    Expect(MapApiError(403, R"({"error":{"status":403,"message":"Premium required; user not registered in the developer plan",)"
+                            R"("reason":"PREMIUM_REQUIRED"}})",
+                       &m) == Err::Premium,
+           "not-allowlisted: PREMIUM_REQUIRED wins even when its message matches the heuristic");
+    Expect(MapApiError(403, plain, nullptr) == Err::NotAllowlisted, "not-allowlisted: no message pointer");
+    ExpectEq(ErrName(Err::NotAllowlisted), "not-allowlisted", "error name not-allowlisted");
+    ExpectEq(ShapeError(Err::NotAllowlisted, "x", 3), R"({"error":"not-allowlisted","message":"x"})", "error shape: not-allowlisted");
+}
+
+void TestTransfer() {
+    Request r;
+    r.op = Op::Transfer;
+    r.deviceId = "abc_DEF-1";
+    std::string method, url, body;
+    Expect(BuildCall(r, &method, &url, &body) && method == "PUT" && url == std::string(kApiBase) + "me/player", "transfer: PUT /v1/me/player");
+    ExpectEq(body, R"({"device_ids":["abc_DEF-1"],"play":false})", "transfer: the body (play false)");
+    r.play = true;
+    Expect(BuildCall(r, &method, &url, &body), "transfer: play true builds");
+    ExpectEq(body, R"({"device_ids":["abc_DEF-1"],"play":true})", "transfer: the body (play true)");
+    r.deviceId = "";
+    Expect(!BuildCall(r, &method, &url, &body), "transfer: no device -> malformed");
+    r.deviceId = "bad id!";
+    Expect(!BuildCall(r, &method, &url, &body), "transfer: an invalid device -> malformed");
+    r.deviceId = std::string(129, 'a');
+    Expect(!BuildCall(r, &method, &url, &body), "transfer: a 129-character device -> malformed");
+    Expect(IsControl(Op::Transfer) && !IsControl(Op::Devices), "transfer is a control call");
+    Expect(ProductAfter("", Op::Transfer, true, Err::None) == "premium" && ProductAfter("", Op::Transfer, false, Err::Premium) == "free" &&
+               ProductAfter("premium", Op::Transfer, false, Err::NotFound) == "premium",
+           "transfer teaches the plan");
+    std::string out;
+    r.deviceId = "abc";
+    Expect(ShapeSuccess(r, 204, "", &out) && out == R"({"ok":true})", "transfer: 204 -> ok");
+
+    const json::Value v = J(ShapeDevices(J(
+        R"({"devices":[{"id":"a1","name":"Phone","type":"Smartphone","is_active":false,"is_private_session":true,"is_restricted":false,)"
+        R"("volume_percent":70,"supports_volume":false},{"id":"b2","name":"PS5","type":"GameConsole","is_active":true},)"
+        R"({"id":"c3","name":"Web","type":"Computer","is_private_session":false,"supports_volume":true},)"
+        R"({"id":"d4","name":"X","type":"Speaker","supports_volume":"yes"}]})")));
+    const json::Value* items = v.Get("items");
+    Expect(items && items->items.size() == 4, "devices: four kept");
+    if (items && items->items.size() == 4) {
+        const json::Value& p = items->items[0];
+        Expect(p.Get("private") && p.Get("private")->boolean && p.Get("supportsVolume") && !p.Get("supportsVolume")->boolean &&
+                   p.Get("type")->string == "Smartphone" && p.Get("volume")->number == 70,
+               "devices: private and supportsVolume false");
+        const json::Value& q = items->items[1];
+        Expect(q.Get("private") && !q.Get("private")->boolean && !q.Get("supportsVolume") && q.Get("type")->string == "GameConsole" &&
+                   !q.Get("volume"),
+               "devices: private false by default, supportsVolume absent when not sent");
+        Expect(items->items[2].Get("supportsVolume") && items->items[2].Get("supportsVolume")->boolean, "devices: supportsVolume true");
+        Expect(!items->items[3].Get("supportsVolume"), "devices: a non-boolean supports_volume is left out");
+    }
+    const json::Value longType = J(ShapeDevices(J(R"({"devices":[{"id":"a","type":")" + std::string(40, 'T') + R"("}]})")));
+    Expect(longType.Get("items")->items[0].Get("type")->string.size() == 32, "devices: type trimmed to 32 bytes");
 }
 
 void TestTokens() {
@@ -539,6 +707,11 @@ int main() {
     TestCalls();
     TestShapes();
     TestPlanAndQueues();
+    TestPages();
+    TestSetup();
+    TestFindClientId();
+    TestNotAllowlisted();
+    TestTransfer();
     printf("spotify_selftest: %d passed, %d failed\n", g_pass, g_fail);
     return g_fail ? 1 : 0;
 }

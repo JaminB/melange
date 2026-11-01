@@ -38,6 +38,18 @@ try {
     $privateDirValue = $cacheLine.Matches[0].Groups[1].Value.Trim()
     if ($privateDirValue) { throw "MELANGE_PRIVATE_DIR is set to '$privateDirValue'; refusing to release a build with private modules configured" }
 
+    # The built-in Spotify app (wum.spotify, Melange 0.14): build.ps1 takes it from env MELANGE_SPOTIFY_CLIENT_ID (the
+    # release workflow sets it from the repository variable SPOTIFY_CLIENT_ID). Only its last 4 characters are shown. A
+    # release without one still works (players set up their own app in the game), so this only warns: forks build too.
+    $spotifyLine = Select-String -Path $cacheFile -Pattern '^MELANGE_SPOTIFY_CLIENT_ID:STRING=(.*)$' | Select-Object -First 1
+    $spotifyId = if ($spotifyLine) { $spotifyLine.Matches[0].Groups[1].Value.Trim() } else { "" }
+    if ($spotifyId) {
+        Write-Host "Spotify built-in Client ID: set (ends $($spotifyId.Substring($spotifyId.Length - 4)))"
+    } else {
+        Write-Host "Spotify built-in Client ID: none"
+        if ($env:GITHUB_REF_TYPE -eq "tag") { Write-Warning "release without a built-in Spotify Client ID" }
+    }
+
     $verMatch = Select-String -Path "$root\CMakeLists.txt" -Pattern 'project\(Melange VERSION ([0-9.]+)' | Select-Object -First 1
     if (-not $verMatch) { throw "could not find the project version in CMakeLists.txt" }
     $version = $verMatch.Matches[0].Groups[1].Value

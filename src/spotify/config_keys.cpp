@@ -42,10 +42,12 @@ Spotify ReadSpotify() {
     if (id.empty() || logic::ValidClientId(id)) {
         s.clientId = id;
     } else if (g_warned.First("ClientId", id)) {
-        LOG_WARN("[Spotify] ClientId is not a 32-character Spotify Client ID; Spotify stays off until it is");
+        LOG_WARN("[Spotify] ClientId is not a 32-character Spotify Client ID; it is ignored");
     }
     s.redirectPort = IntKey(S, "RedirectPort", 8780, 1024, 65535);
     s.requestsPerMinute = IntKey(S, "RequestsPerMinute", 90, 10, 600);
+    config::EnsureKey(S, "ReturnToGame", "1");
+    s.returnToGame = config::GetBool(S, "ReturnToGame", true);
     return s;
 }
 }  // namespace melange::spotify::cfg

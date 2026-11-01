@@ -2,6 +2,12 @@
 // by src/spotify/* through host.h; this file validates every argument (spotify_logic.h) before a request is queued,
 // checks the click that connect() needs, and scopes request callbacks to the calling mod generation. A generation's
 // one cleanup cancels its waiting requests and never pauses the music.
+//
+// Melange 0.14.0 adds the in-game setup (setup, setClientId, pasteClientId, copy, openDashboard), cancel and transfer;
+// they always ship together, so a mod tests `wum.spotify.setup` once. The click rule (input::gesture, consent-grade,
+// within 2 s) is shared: connect() and openDashboard() consume the click; setClientId(), pasteClientId() and copy() need
+// one but leave it, so one click can paste, save and connect. Lua never sees clipboard text other than a Client ID found
+// there, and never the whole Client ID in use.
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
@@ -19,7 +25,7 @@ namespace {
 namespace host = melange::spotify::host;
 namespace logic = melange::spotify::logic;
 
-constexpr uint32_t kGestureMs = 2000;          // wum.spotify.connect: the click must be this recent
+constexpr uint32_t kGestureMs = 2000;          // the click (connect, setClientId, ...) must be this recent
 constexpr int64_t kMaxPositionMs = 0x7fffffff;  // positionMs and seek(ms)
 constexpr int64_t kMaxOffset = 100000000;       // library offsets
 constexpr size_t kMaxStr = 1024;                // a longer string field is never valid
@@ -160,7 +166,7 @@ int LStatus(lua_State* L) {
         host::Touch(mod);
     }
     const host::Status st = host::GetStatus(mod);
-    lua_createtable(L, 0, 5);
+    lua_createtable(L, 0, 6);
     lua_pushstring(L, st.state.c_str());
     lua_setfield(L, -2, "state");
     if (!st.user.empty()) {
@@ -176,6 +182,10 @@ int LStatus(lua_State* L) {
     if (!st.error.empty()) {
         lua_pushstring(L, st.error.c_str());
         lua_setfield(L, -2, "error");
+    }
+    if (!st.app.empty()) {
+        lua_pushstring(L, st.app.c_str());
+        lua_setfield(L, -2, "app");
     }
     return 1;
 }
@@ -193,6 +203,119 @@ int LConnect(lua_State* L) {
     input::gesture::Clear(m->id.c_str());  // one click, one sign-in
     SysLog(1, "spotify sign-in requested (user click)", m->id);
     return True(L);
+}
+
+// A consent-grade click on one of this mod's regions in the last 2 s (not consumed here).
+bool Clicked(const ModRec* m) { return input::gesture::Recent(m->id.c_str(), kGestureMs, true); }
+
+// The module runs (a missing Client ID does not matter for the setup functions); else *ret holds nil, reason.
+bool Up(lua_State* L, int* ret) {
+    std::string why;
+    if (host::Installed(&why)) return true;
+    *ret = Fail(L, why);
+    return false;
+}
+
+// Works in the console. The full Client ID is never returned (appHint: its last 4 characters).
+int LSetup(lua_State* L) {
+    if (ModRec* m = Current(); m && CurrentGen()) host::Touch(m->id);
+    const host::Setup st = host::GetSetup();
+    lua_createtable(L, 0, 6);
+    if (!st.app.empty()) {
+        lua_pushstring(L, st.app.c_str());
+        lua_setfield(L, -2, "app");
+        lua_pushlstring(L, st.appHint.data(), st.appHint.size());
+        lua_setfield(L, -2, "appHint");
+    }
+    lua_pushboolean(L, st.builtin);
+    lua_setfield(L, -2, "builtin");
+    lua_pushboolean(L, st.ini);
+    lua_setfield(L, -2, "ini");
+    lua_pushlstring(L, st.redirectUri.data(), st.redirectUri.size());
+    lua_setfield(L, -2, "redirectUri");
+    lua_pushstring(L, logic::kDashboardUrl);
+    lua_setfield(L, -2, "dashboardUrl");
+    return 1;
+}
+
+// id: a string (saved after trimming ASCII whitespace; "" clears) or nil (clears). Needs a click; does not consume it.
+int LSetClientId(lua_State* L) {
+    ModRec* m = NeedMod(L, "setClientId");
+    std::string id;
+    bool tooLong = false;
+    if (!lua_isnoneornil(L, 1)) {
+        if (lua_type(L, 1) != LUA_TSTRING) luaL_error(L, "wum.spotify.setClientId: id must be a string or nil");
+        size_t n = 0;
+        const char* p = lua_tolstring(L, 1, &n);
+        if (n > kMaxStr) tooLong = true;
+        else id.assign(p, n);
+    }
+    host::Touch(m->id);
+    int ret = 0;
+    if (!Up(L, &ret)) return ret;
+    if (!Clicked(m)) return Fail(L, "gesture");
+    if (tooLong) return Invalid(L);
+    const size_t a = id.find_first_not_of(" \t\r\n\f\v");
+    id = a == std::string::npos ? std::string() : id.substr(a, id.find_last_not_of(" \t\r\n\f\v") - a + 1);
+    std::string why;
+    if (!host::SetClientId(m->id, id, &why)) return Fail(L, why);
+    SysLog(1, id.empty() ? "spotify client id cleared (user click)" : "spotify client id saved (user click)", m->id);
+    return True(L);
+}
+
+// The Spotify Client ID in the clipboard (not saved). Needs a click; does not consume it.
+int LPasteClientId(lua_State* L) {
+    ModRec* m = NeedMod(L, "pasteClientId");
+    host::Touch(m->id);
+    int ret = 0;
+    if (!Up(L, &ret)) return ret;
+    if (!Clicked(m)) return Fail(L, "gesture");
+    std::string id, why;
+    if (!host::ClipboardClientId(&id, &why)) return Fail(L, why);
+    lua_pushlstring(L, id.data(), id.size());
+    return 1;
+}
+
+// copy("redirectUri"): a fixed Melange string to the clipboard. Needs a click; does not consume it.
+int LCopy(lua_State* L) {
+    ModRec* m = NeedMod(L, "copy");
+    luaL_checktype(L, 1, LUA_TSTRING);
+    size_t n = 0;
+    const char* p = lua_tolstring(L, 1, &n);
+    const std::string what(p, n);
+    host::Touch(m->id);
+    int ret = 0;
+    if (!Up(L, &ret)) return ret;
+    if (what != "redirectUri") return Invalid(L);
+    if (!Clicked(m)) return Fail(L, "gesture");
+    std::string why;
+    if (!host::CopyText(host::GetSetup().redirectUri, &why)) return Fail(L, why);
+    return True(L);
+}
+
+// Opens Spotify's "create app" page (fixed). Consumes the click.
+int LOpenDashboard(lua_State* L) {
+    ModRec* m = NeedMod(L, "openDashboard");
+    host::Touch(m->id);
+    int ret = 0;
+    if (!Up(L, &ret)) return ret;
+    if (!Clicked(m)) return Fail(L, "gesture");
+    std::string why;
+    if (!host::OpenDashboard(&why)) return Fail(L, why);
+    input::gesture::Clear(m->id.c_str());  // one click, one page
+    SysLog(1, "spotify dashboard opened (user click)", m->id);
+    return True(L);
+}
+
+// Ends an open sign-in without signing out; clears an "error" state. No click; works in the console.
+int LCancel(lua_State* L) {
+    std::string mod;
+    if (ModRec* m = Current(); m && CurrentGen()) {
+        mod = m->id;
+        host::Touch(mod);
+    }
+    lua_pushboolean(L, host::Cancel(mod));
+    return 1;
 }
 
 int LDisconnect(lua_State* L) {
@@ -367,12 +490,51 @@ int LVolume(lua_State* L) {
     return SubmitReq(L, m, r, fn, "volume");
 }
 
+// opts: deviceId (required, from devices()), play (boolean, optional). A playback control call.
+int LTransfer(lua_State* L) {
+    ModRec* m = NeedMod(L, "transfer");
+    luaL_checktype(L, 1, LUA_TTABLE);
+    const int fn = OptFn(L, 2);
+    std::string deviceId;
+    const Got gd = StrField(L, 1, "transfer", "deviceId", &deviceId);
+    bool play = false;
+    if (const int t = lua_getfield(L, 1, "play"); t != LUA_TNIL) {
+        if (t != LUA_TBOOLEAN) luaL_error(L, "wum.spotify.transfer: opts.play must be a boolean");
+        play = lua_toboolean(L, -1) != 0;
+    }
+    lua_pop(L, 1);
+    int ret = 0;
+    if (!Ready(L, m, &ret)) return ret;
+    if (gd != Got::Ok || !logic::ValidDeviceId(deviceId)) return Invalid(L);
+    logic::Request r;
+    r.op = logic::Op::Transfer;
+    r.deviceId = deviceId;
+    r.play = play;
+    return SubmitReq(L, m, r, fn, "transfer");
+}
+
 void Shared(lua_State* L, int wum) {
     host::SetSink(&g_sink);  // no per-VM state here: requests live in the host, callbacks in the generations
-    static const luaL_Reg kSpotify[] = {{"available", LAvailable}, {"status", LStatus},   {"connect", LConnect},
-                                        {"disconnect", LDisconnect}, {"library", LLibrary}, {"devices", LDevices},
-                                        {"play", LPlay},             {"pause", LPause},     {"resume", LResume},
-                                        {"seek", LSeek},             {"volume", LVolume},   {"playback", LPlayback},
+    static const luaL_Reg kSpotify[] = {{"available", LAvailable},
+                                        {"status", LStatus},
+                                        {"connect", LConnect},
+                                        {"disconnect", LDisconnect},
+                                        {"library", LLibrary},
+                                        {"devices", LDevices},
+                                        {"play", LPlay},
+                                        {"pause", LPause},
+                                        {"resume", LResume},
+                                        {"seek", LSeek},
+                                        {"volume", LVolume},
+                                        {"playback", LPlayback},
+                                        {"transfer", LTransfer},
+                                        // Melange 0.14: the in-game setup
+                                        {"setup", LSetup},
+                                        {"setClientId", LSetClientId},
+                                        {"pasteClientId", LPasteClientId},
+                                        {"copy", LCopy},
+                                        {"openDashboard", LOpenDashboard},
+                                        {"cancel", LCancel},
                                         {nullptr, nullptr}};
     lua_newtable(L);
     RegisterFunctions(L, -1, kSpotify);

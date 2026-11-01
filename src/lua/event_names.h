@@ -8,7 +8,8 @@ namespace melange::sandbox::ev {
 inline constexpr const char kMedia[] = "melange.media";
 
 // wum.spotify (owner only, Melange 0.13; the mods that used wum.spotify). Payload {type = "status", state, user, premium,
-// linked, error}, the same table as wum.spotify.status(): state "disconnected" | "connecting" | "connected" | "error".
+// linked, error, app}, the same table as wum.spotify.status(): state "disconnected" | "connecting" | "connected" | "error";
+// app (0.14) "user" | "ini" | "builtin" when a Client ID is in use.
 inline constexpr const char kSpotify[] = "melange.spotify";
 
 // wum.lobby (every listener)

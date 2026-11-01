@@ -53,7 +53,7 @@ Every module has its own section in `Melange.ini`, and `Enabled=0` turns a modul
 | `Music` | on | Sudden-death music from mods' `music` MP3s: a bank built under `Melange\cache\music\` and handed to the game by a `CreateFileA` hook; installs the hook at start-up and does nothing until an enabled mod declares music; build #1077 only |
 | `Audio` | on | Sound playback for mods (`wum.audio`, client VM only): WAV files from the mod folder mixed through XAudio2 2.9, loaded dynamically and started on the first sound; `Volume=1.0` (master, 0 to 1), `MaxVoices=32`, `Near=150` and `Far=1500` (world units; positional sounds fall off linearly between them). Local presentation only: nothing reaches the simulation, the wire or the handshake; not tried in game yet |
 | `Media` | on | Watch-party video for client mods (`wum.media`): YouTube and torrent playback in the separate `holo-media.exe` helper from a media pack that is downloaded once, only when a mod's button is clicked ([The media pack](#the-media-pack), [media-helper.md](media-helper.md)); `AllowDownload=0` blocks every download, `Enabled=0` turns the module off |
-| `Spotify` | on (needs `ClientId`) | Spotify for client mods (`wum.spotify`): sign-in in your browser, then a mod lists your library and controls playback on your own Spotify device ([Spotify](#spotify)); nothing happens until a mod's Link button is clicked |
+| `Spotify` | on | Spotify for client mods (`wum.spotify`): sign in from a mod (built-in app or your own, set up in the game; your browser opens Spotify's page), then the mod lists your library and plays on any of your Spotify Connect devices ([Spotify](#spotify)); nothing happens until a mod's Link button is clicked |
 | `PeerBus` | on | Steam P2P channel 6 between copies of the same client mod and the lobby view for mods (`wum.peer`, `wum.lobby`); never the game's own channel |
 | `Input` | on (`AllowModInput=1`) | Lets client mods take clicks and typing for their own controls (`wum.input` regions, pointer mode, keyboard focus); the overlay still comes first |
 | `Store` | on | The plugin store (*Thumper/Store*, the Oasis Store panel): fetches the list only when you open it ([Plugin store](#plugin-store)) |
@@ -575,30 +575,58 @@ newly discovered mod without that flag starts enabled.
 
 ## Spotify
 
-`wum.spotify` (Melange 0.13) lets client mods such as Holo list your Spotify library and play it on your own Spotify
-device; in a Holo watch party every member who linked Spotify plays the chosen song on their own account. The settings
-are in `[Spotify]`:
+`wum.spotify` (Melange 0.13) lets client mods such as Holo list your Spotify library and play it on any of your Spotify
+Connect devices (desktop app, phone, speaker, console, TV, web player); in a Holo watch party every member who linked
+Spotify plays the chosen song on their own account. Since Melange 0.14 you set it up in the game: the mod's Link button
+signs you in on Spotify's own page in your browser, and the game comes back to the front once you are signed in. No ini
+editing is needed. The settings are in `[Spotify]`:
 
 | Key | Default | |
 |---|---|---|
 | `Enabled` | 1 | 0 = the module does not start; `wum.spotify.available()` answers `false, "disabled"` |
-| `ClientId` | empty | the Client ID of the Spotify app you registered (below); empty = off. Read again at every sign-in, so no restart is needed |
-| `RedirectPort` | 8780 | the sign-in's redirect goes to `http://127.0.0.1:<RedirectPort>/callback`; it must match the app's Redirect URI exactly (change both together); 1024..65535 |
+| `ClientId` | empty | optional override: the Client ID of your own Spotify app, used when no Client ID was set in the game; empty = the built-in app. Read again at every sign-in, so no restart is needed |
+| `RedirectPort` | 8780 | used by your own app: the sign-in's redirect goes to `http://127.0.0.1:<RedirectPort>/callback`, which must match the app's Redirect URI exactly (change both together); 1024..65535. The built-in app uses 8780, 8781 or 8782 |
 | `RequestsPerMinute` | 90 | cap on Spotify Web API calls from all mods together (10..600) |
+| `ReturnToGame` | 1 | 0 = never bring the game to the front after the sign-in, only flash its taskbar button |
 
-**Registering a Spotify app.** Each user (or one friend for the group) registers a free app once:
+**Which Spotify app signs in.** Melange uses the first of: the Client ID set in the game (kept in
+`%LOCALAPPDATA%\Melange\spotify\client.json`), `[Spotify] ClientId`, and the app built into the release. Spotify keeps
+new apps in Development mode, where only a few accounts that the app's owner adds by hand (up to 5) may sign in. So the
+built-in app is one click for those accounts; for everyone else Spotify refuses the account, Melange reports
+`"not-allowlisted"`, and the mod offers to set up your own free app. A sign-in belongs to the app it was made with:
+setting another Client ID in the game signs you out.
+
+**Your own Spotify app.** Each user (or one friend for the group) creates a free app once. A mod such as Holo walks you
+through it in the game (it opens the dashboard and copies the Redirect URI for you):
 
 1. Go to [developer.spotify.com/dashboard](https://developer.spotify.com/dashboard) and choose **Create app**.
 2. Use any name.
-3. Set the **Redirect URI** to `http://127.0.0.1:8780/callback` exactly. Spotify refuses `localhost`; an IP literal is
-   required.
+3. Set the **Redirect URI** to `http://127.0.0.1:8780/callback` exactly (the port is `[Spotify] RedirectPort`). Spotify
+   refuses `localhost`; an IP literal is required.
 4. Tick the **Web API**.
-5. Copy the **Client ID** into `[Spotify] ClientId`. There is no client secret, because Melange uses PKCE.
+5. Copy the **Client ID** and paste it in the mod's setup (or put it in `[Spotify] ClientId`). There is no client
+   secret, because Melange uses PKCE.
 6. In Development mode, add each friend's Spotify account e-mail under **User Management**. Spotify limits how many
    users a development app may have, and every listener needs to be allowed.
 
-Playback needs Spotify Premium and an open Spotify app (desktop, phone or web player) as the device. Without them a mod
-can still list the library, and Holo shows what is playing.
+**Built-in app (maintainers).** Release builds carry one Client ID, so the accounts it allows sign in with one click:
+
+1. Create the app in the maintainer's Spotify account at
+   [developer.spotify.com/dashboard](https://developer.spotify.com/dashboard), with the Redirect URIs
+   `http://127.0.0.1:8780/callback`, `http://127.0.0.1:8781/callback` and `http://127.0.0.1:8782/callback` (Melange
+   uses the first free port), and tick the **Web API**.
+2. Add up to 5 users (their Spotify account e-mails) under **User Management**. Any other account gets
+   `"not-allowlisted"` and sets up its own app.
+3. Set the GitHub repository **variable** (not a secret: Client IDs are public, they are in every sign-in URL)
+   `SPOTIFY_CLIENT_ID` to the Client ID. The release workflow passes it to CMake as `MELANGE_SPOTIFY_CLIENT_ID`
+   (32 letters and digits; anything else fails the configure step). Without it the release builds without a built-in
+   app and `scripts\release.ps1` warns.
+4. Local builds: `.\build.ps1 -SpotifyClientId <id>`, or set the environment variable `MELANGE_SPOTIFY_CLIENT_ID`.
+   An empty value builds without one (developer builds and forks).
+
+Playback needs Spotify Premium and an open Spotify app (desktop, phone, speaker, console or web player) as the device. A
+mod can move the playback to any of your devices (`wum.spotify.transfer`). Without Premium a mod can still list the
+library, and Holo shows what is playing.
 
 - **Privacy.** Melange contacts `accounts.spotify.com` and `api.spotify.com` only after a click on a mod's Link button,
   or to refresh an already linked account. The refresh token is encrypted with Windows DPAPI for the current user in
@@ -606,7 +634,11 @@ can still list the library, and Holo shows what is playing.
   Mods never see tokens. A mod sees the library and playback only after the user clicked that mod's own Link button.
   `wum.spotify.disconnect()` removes the file; you can also revoke Melange's access under
   [spotify.com/account/apps](https://www.spotify.com/account/apps/). The browser callback listens on `127.0.0.1` only,
-  only during sign-in, for at most 3 minutes.
+  only during sign-in, for at most 3 minutes, and its page never runs a script or links anywhere.
+- **Setup.** `client.json` beside it holds only the Client ID set in the game (not a secret). For a mod's setup, Melange
+  writes to the clipboard only a fixed string (the Redirect URI) and reads from it only a Client ID (the mod never sees
+  anything else there), each after a click on the mod's button, and opens only Spotify's "create app" page in your
+  browser.
 - **Music keeps playing.** Melange never pauses Spotify by itself: closing a mod's panel, unloading it and signing out
   all leave the music on.
 

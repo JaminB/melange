@@ -21,25 +21,9 @@ void Wipe(std::string& s) {
     s.clear();
 }
 
-std::wstring Dir() {
-    PWSTR p = nullptr;
-    std::wstring root;
-    if (SUCCEEDED(SHGetKnownFolderPath(FOLDERID_LocalAppData, 0, nullptr, &p)) && p) root = p;
-    if (p) CoTaskMemFree(p);
-    if (root.empty()) return {};
-    return root + L"\\Melange\\spotify";
-}
 std::wstring FilePath() {
-    const std::wstring d = Dir();
+    const std::wstring d = Folder();
     return d.empty() ? std::wstring() : d + L"\\token.bin";
-}
-bool MakeDirs(const std::wstring& dir) {
-    if (dir.empty()) return false;
-    const DWORD a = GetFileAttributesW(dir.c_str());
-    if (a != INVALID_FILE_ATTRIBUTES) return (a & FILE_ATTRIBUTE_DIRECTORY) != 0;
-    const size_t slash = dir.find_last_of(L"\\/");
-    if (slash != std::wstring::npos && slash > 2 && !MakeDirs(dir.substr(0, slash))) return false;
-    return CreateDirectoryW(dir.c_str(), nullptr) || GetLastError() == ERROR_ALREADY_EXISTS;
 }
 DATA_BLOB EntropyBlob() {
     DATA_BLOB e{};
@@ -48,6 +32,28 @@ DATA_BLOB EntropyBlob() {
     return e;
 }
 }  // namespace
+
+std::wstring Folder() {
+    PWSTR p = nullptr;
+    std::wstring root;
+    if (SUCCEEDED(SHGetKnownFolderPath(FOLDERID_LocalAppData, 0, nullptr, &p)) && p) root = p;
+    if (p) CoTaskMemFree(p);
+    if (root.empty()) return {};
+    return root + L"\\Melange\\spotify";
+}
+
+namespace {
+bool MakeDirs(const std::wstring& dir) {
+    if (dir.empty()) return false;
+    const DWORD a = GetFileAttributesW(dir.c_str());
+    if (a != INVALID_FILE_ATTRIBUTES) return (a & FILE_ATTRIBUTE_DIRECTORY) != 0;
+    const size_t slash = dir.find_last_of(L"\\/");
+    if (slash != std::wstring::npos && slash > 2 && !MakeDirs(dir.substr(0, slash))) return false;
+    return CreateDirectoryW(dir.c_str(), nullptr) || GetLastError() == ERROR_ALREADY_EXISTS;
+}
+}  // namespace
+
+bool MakeFolder() { return MakeDirs(Folder()); }
 
 bool Load(Stored* out) {
     const std::wstring path = FilePath();
@@ -91,8 +97,8 @@ bool Load(Stored* out) {
 }
 
 bool Save(const Stored& s) {
-    const std::wstring dir = Dir();
-    if (dir.empty() || !MakeDirs(dir)) {
+    const std::wstring dir = Folder();
+    if (dir.empty() || !MakeFolder()) {
         LOG_WARN("[spotify] cannot create %%LOCALAPPDATA%%\\Melange\\spotify; the sign-in is not kept");
         return false;
     }
