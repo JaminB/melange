@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.14.0
+
+- Spotify setup in the game: release builds include a built-in Spotify app, so signing in is one click for the
+  accounts that app allows (Spotify's Development mode lets an app have only a few users). Everyone else sets up their
+  own free app from the mod's UI: `wum.spotify.setup()`, `setClientId()`, `pasteClientId()`, `copy("redirectUri")` and
+  `openDashboard()`; the Client ID is kept in `%LOCALAPPDATA%\Melange\spotify\client.json`, no `Melange.ini` editing.
+  `[Spotify] ClientId` stays as an override.
+- Sign-in: the browser page now waits for the sign-in to finish and says whether it worked, in a styled
+  self-contained page; the game comes back to the foreground by itself (`[Spotify] ReturnToGame`). `connect()` during a
+  mod's own open sign-in opens the page again; `cancel()` ends a sign-in without signing out.
+- New status/callback error `"not-allowlisted"` when Spotify refuses an account that is not registered on the app
+  (heuristic on Spotify's 403 text); `status()` and the `melange.spotify` event gain `app`.
+- Any Spotify Connect device: `wum.spotify.transfer{deviceId, play}` moves playback; `devices()` items gain `private`
+  and `supportsVolume`.
+- Build: CMake cache variable `MELANGE_SPOTIFY_CLIENT_ID` (`build.ps1 -SpotifyClientId` or env
+  `MELANGE_SPOTIFY_CLIENT_ID`; the release workflow passes the repository variable `SPOTIFY_CLIENT_ID`).
+
 ## 0.13.0
 
 - `wum.spotify` (client mods): music from the user's own Spotify account, for watch parties such as Holo. The user signs

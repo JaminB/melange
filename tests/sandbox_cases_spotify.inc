@@ -1,8 +1,10 @@
-// sandbox_selftest cases for wum.spotify (Melange 0.13). Included in the test file's anonymous namespace after the
-// helpers (SetMod, Eval, Frames, Expect, ExpectEq); defines TestSpotify(), run before the docs check. The Spotify host
-// is a fake (sandbox_fakes_spotify.inc), so these cases cover the binding: argument types and values, the connect
-// click, callbacks, owner-only events, premium unknown (nil), handles freed per answer, one cleanup per generation and the
-// cleanup on unload and reload.
+// sandbox_selftest cases for wum.spotify (Melange 0.13; 0.14 adds the in-game setup, cancel and transfer). Included in
+// the test file's anonymous namespace after the helpers (SetMod, Eval, Frames, Expect, ExpectEq); defines TestSpotify(),
+// run before the docs check. The Spotify host is a fake (sandbox_fakes_spotify.inc), so these cases cover the binding:
+// argument types and values, the click (consumed by connect and openDashboard, kept by setClientId, pasteClientId and
+// copy), callbacks, owner-only events, premium unknown (nil), handles freed per answer, one cleanup per generation and
+// the cleanup on unload and reload.
+void TestSpotifySetup();
 void TestSpotify() {
     namespace fs = fake_spotify;
     using spotify::logic::Op;
@@ -28,7 +30,8 @@ void TestSpotify() {
                            "tostring(s.user) .. ' ' .. tostring(s.error)"),
              "disconnected nil false nil nil", "status(): the console sees the global state (premium unknown is nil)");
     for (const char* fn : {"connect()", "disconnect()", "library({kind = 'tracks'}, print)", "devices(print)", "play({uri = 'x'})",
-                           "pause()", "resume()", "seek(1)", "volume(1)", "playback(print)"})
+                           "pause()", "resume()", "seek(1)", "volume(1)", "playback(print)", "setClientId('x')", "setClientId(nil)",
+                           "pasteClientId()", "copy('redirectUri')", "openDashboard()", "transfer({deviceId = 'a'})"})
         Expect(has(Eval(nullptr, std::string("return pcall(function() return wum.spotify.") + fn + " end)"), "needs a mod context"),
                std::string("console: ") + fn + " needs a mod context");
 
@@ -36,22 +39,22 @@ void TestSpotify() {
     SetMod("spo2", "evs = {} wum.events.on('melange.spotify', function(e) evs[#evs + 1] = e.type .. ':' .. e.state end)");
     Expect(sandbox::LoadMod("spo") && sandbox::LoadMod("spo2"), "spotify mods load");
 
-    fs::g_status = {"connected", "Ann", true, true, ""};
+    fs::g_status = {"connected", "Ann", true, true, "", ""};
     ExpectEq(Eval("spo", "local s = wum.spotify.status() return s.state .. ' ' .. tostring(s.linked) .. ' ' .. tostring(s.user)"),
              "disconnected true nil", "status(): linked but not granted to this mod");
     Expect(fs::g_touched.count("spo") == 1, "status() touches the mod (it gets events)");
     fs::g_granted.insert("spo2");
     ExpectEq(Eval("spo2", "local s = wum.spotify.status() return s.state .. ' ' .. s.user .. ' ' .. tostring(s.premium) .. ' ' .. tostring(s.linked)"),
              "connected Ann true true", "status(): the granted mod sees the account");
-    fs::g_status = {"connected", "Ann", false, true, ""};
+    fs::g_status = {"connected", "Ann", false, true, "", ""};
     ExpectEq(Eval("spo2", "return tostring(wum.spotify.status().premium)"), "false", "status(): premium false for a known Free account");
-    fs::g_status = {"connected", "Ann", std::nullopt, true, ""};
+    fs::g_status = {"connected", "Ann", std::nullopt, true, "", ""};
     ExpectEq(Eval("spo2", "local s = wum.spotify.status() return s.state .. ' ' .. tostring(s.premium)"), "connected nil",
              "status(): premium nil while the plan is unknown (not false)");
     fs::g_granted.clear();
-    fs::g_status = {"error", "", std::nullopt, false, "denied"};
+    fs::g_status = {"error", "", std::nullopt, false, "denied", ""};
     ExpectEq(Eval("spo", "local s = wum.spotify.status() return s.state .. ' ' .. s.error"), "error denied", "status(): the error code");
-    fs::g_status = {"disconnected", "", std::nullopt, false, ""};
+    fs::g_status = {"disconnected", "", std::nullopt, false, "", ""};
 
     // ---- connect(): a click on the mod's own region
     ExpectEq(Eval("spo", "local a, b = wum.spotify.connect() return tostring(a) .. ':' .. tostring(b)"), "nil:gesture", "connect without a click");
@@ -233,4 +236,173 @@ void TestSpotify() {
     ExpectEq(Eval("spr", "return tostring(PB and PB.active)"), "false", "the new generation's answer arrives");
     sandbox::UnloadMod("spr");
     fs::g_granted.clear();
+    TestSpotifySetup();
+}
+
+// Melange 0.14: setup(), setClientId(), pasteClientId(), copy(), openDashboard(), cancel(), transfer(), status().app.
+void TestSpotifySetup() {
+    namespace fs = fake_spotify;
+    using spotify::logic::Op;
+    auto starts = [](const std::string& s, const char* p) { return s.rfind(p, 0) == 0; };
+    auto last = []() -> const fs::Submitted* { return fs::g_submitted.empty() ? nullptr : &fs::g_submitted.back(); };
+    const std::string kId = "0123456789abcdefABCDEF0123456789";
+    auto pair = [](const char* expr) { return std::string("local a, b = ") + expr + " return tostring(a) .. ':' .. tostring(b)"; };
+
+    // ---- detection: the 0.14 functions ship together
+    for (const char* fn : {"setup", "setClientId", "pasteClientId", "copy", "openDashboard", "cancel", "transfer"})
+        ExpectEq(Eval(nullptr, std::string("return type(wum.spotify.") + fn + ")"), "function", std::string("0.14: wum.spotify.") + fn);
+
+    // ---- setup(): a table, also in the console; app and appHint only when there is an app
+    fs::g_setup = {"builtin", "wxyz", "http://127.0.0.1:8780/callback", true, false};
+    ExpectEq(Eval(nullptr, "local s = wum.spotify.setup() return s.app .. ' ' .. s.appHint .. ' ' .. tostring(s.builtin) .. ' ' .. "
+                           "tostring(s.ini) .. ' ' .. s.redirectUri .. ' ' .. s.dashboardUrl"),
+             "builtin wxyz true false http://127.0.0.1:8780/callback https://developer.spotify.com/dashboard/create", "setup() in the console");
+    SetMod("sps", "evs = {} wum.events.on('melange.spotify', function(e) evs[#evs + 1] = e.state .. '/' .. tostring(e.app) end)");
+    Expect(sandbox::LoadMod("sps"), "sps loads");
+    fs::g_setup = {"", "", "http://127.0.0.1:9000/callback", false, true};
+    ExpectEq(Eval("sps", "local s = wum.spotify.setup() return tostring(s.app) .. ' ' .. tostring(s.appHint) .. ' ' .. tostring(s.builtin) .. "
+                         "' ' .. tostring(s.ini) .. ' ' .. s.redirectUri"),
+             "nil nil false true http://127.0.0.1:9000/callback", "setup(): app and appHint absent without an app");
+    Expect(fs::g_touched.count("sps") == 1, "setup() touches the mod");
+    fs::g_setup = {"user", "6789", "http://127.0.0.1:8780/callback", true, false};
+
+    // ---- setClientId(): types, the click (kept), trimming, clearing
+    input::gesture::Clear("sps");
+    Expect(starts(Eval("sps", "return pcall(wum.spotify.setClientId, 5)"), "false"), "setClientId(5) raises");
+    Expect(starts(Eval("sps", "return pcall(wum.spotify.setClientId, {})"), "false"), "setClientId({}) raises");
+    ExpectEq(Eval("sps", pair(("wum.spotify.setClientId('" + kId + "')").c_str())), "nil:gesture", "setClientId without a click");
+    ExpectEq(Eval("sps", pair("wum.spotify.setClientId(nil)")), "nil:gesture", "setClientId(nil) without a click");
+    Expect(fs::g_setIds.empty(), "nothing saved without a click");
+    input::gesture::Mark("sps", true);
+    ExpectEq(Eval("sps", pair("wum.spotify.setClientId('bad')")), "nil:invalid", "setClientId('bad') -> invalid");
+    ExpectEq(Eval("sps", pair("wum.spotify.setClientId(string.rep('a', 1025))")), "nil:invalid", "a 1025-byte id -> invalid");
+    ExpectEq(Eval("sps", "return tostring(wum.spotify.setClientId('  " + kId + "\\n'))"), "true", "setClientId with whitespace");
+    Expect(!fs::g_setIds.empty() && fs::g_setIds.back() == std::make_pair(std::string("sps"), kId), "the host got the trimmed id");
+    ExpectEq(Eval("sps", "return tostring(wum.spotify.setClientId(nil))"), "true", "setClientId(nil) clears");
+    Expect(fs::g_setIds.back().second.empty(), "nil clears (\"\")");
+    ExpectEq(Eval("sps", "return tostring(wum.spotify.setClientId())"), "true", "setClientId() clears");
+    ExpectEq(Eval("sps", "return tostring(wum.spotify.setClientId(' \\t'))"), "true", "a blank id clears");
+    Expect(fs::g_setIds.back().second.empty(), "a blank id clears (\"\")");
+    Expect(input::gesture::Recent("sps", 2000), "setClientId leaves the click");
+    fs::g_setOk = false;
+    ExpectEq(Eval("sps", pair(("wum.spotify.setClientId('" + kId + "')").c_str())), "nil:io", "setClientId passes the host's io");
+    fs::g_setOk = true;
+    for (const char* reason : {"unavailable", "disabled"}) {
+        fs::g_installed = false;
+        fs::g_installedReason = reason;
+        ExpectEq(Eval("sps", pair(("wum.spotify.setClientId('" + kId + "')").c_str())), std::string("nil:") + reason,
+                 std::string("setClientId with the module down: ") + reason);
+    }
+    fs::g_installed = true;
+    ExpectEq(Eval(nullptr, "return select(2, pcall(wum.spotify.setClientId, 5)):find('mod context') ~= nil"), "true",
+             "setClientId in the console raises like connect (before the type check)");
+
+    // ---- one click: paste -> save -> connect
+    const size_t connects = fs::g_connects.size(), sets = fs::g_setIds.size();
+    input::gesture::Clear("sps");
+    input::gesture::Mark("sps", true);
+    ExpectEq(Eval("sps", "local id = wum.spotify.pasteClientId() local a = wum.spotify.setClientId(id) local b, c = wum.spotify.connect() "
+                         "return tostring(id) .. ' ' .. tostring(a) .. ' ' .. tostring(b) .. ':' .. tostring(c)"),
+             kId + " true true:nil", "one click: pasteClientId, setClientId, connect");
+    Expect(fs::g_setIds.size() == sets + 1 && fs::g_setIds.back().second == kId, "the pasted id was saved");
+    Expect(fs::g_connects.size() == connects + 1 && fs::g_connects.back() == "sps", "and connect started the sign-in");
+    Expect(!input::gesture::Recent("sps", 60000, false), "connect consumed the click");
+    ExpectEq(Eval("sps", pair(("wum.spotify.setClientId('" + kId + "')").c_str())), "nil:gesture", "after connect the click is gone");
+
+    // ---- pasteClientId()
+    ExpectEq(Eval("sps", pair("wum.spotify.pasteClientId()")), "nil:gesture", "pasteClientId without a click");
+    input::gesture::Mark("sps", true);
+    ExpectEq(Eval("sps", "return wum.spotify.pasteClientId()"), kId, "pasteClientId returns the id found");
+    fs::g_clipboardId = "";
+    ExpectEq(Eval("sps", pair("wum.spotify.pasteClientId()")), "nil:clipboard", "pasteClientId: nothing usable");
+    fs::g_clipboardId = kId;
+    Expect(input::gesture::Recent("sps", 2000), "pasteClientId leaves the click");
+    fs::g_installed = false;
+    fs::g_installedReason = "disabled";
+    ExpectEq(Eval("sps", pair("wum.spotify.pasteClientId()")), "nil:disabled", "pasteClientId with the module disabled");
+    fs::g_installed = true;
+
+    // ---- copy()
+    Expect(starts(Eval("sps", "return pcall(wum.spotify.copy, 1)"), "false"), "copy(1) raises");
+    Expect(starts(Eval("sps", "return pcall(wum.spotify.copy)"), "false"), "copy() raises");
+    ExpectEq(Eval("sps", pair("wum.spotify.copy('x')")), "nil:invalid", "copy('x') -> invalid");
+    ExpectEq(Eval("sps", pair("wum.spotify.copy('redirecturi')")), "nil:invalid", "copy is case-sensitive");
+    input::gesture::Clear("sps");
+    ExpectEq(Eval("sps", pair("wum.spotify.copy('redirectUri')")), "nil:gesture", "copy without a click");
+    Expect(fs::g_copies.empty(), "nothing copied without a click");
+    input::gesture::Mark("sps", true);
+    ExpectEq(Eval("sps", "return tostring(wum.spotify.copy('redirectUri'))"), "true", "copy('redirectUri')");
+    Expect(fs::g_copies.size() == 1 && fs::g_copies[0] == fs::g_setup.redirectUri, "copy wrote setup().redirectUri exactly");
+    Expect(input::gesture::Recent("sps", 2000), "copy leaves the click");
+    fs::g_copyOk = false;
+    ExpectEq(Eval("sps", pair("wum.spotify.copy('redirectUri')")), "nil:clipboard", "copy: clipboard busy");
+    fs::g_copyOk = true;
+
+    // ---- openDashboard(): consumes the click
+    input::gesture::Clear("sps");
+    ExpectEq(Eval("sps", pair("wum.spotify.openDashboard()")), "nil:gesture", "openDashboard without a click");
+    input::gesture::Mark("sps", true);
+    fs::g_dashboardOk = false;
+    ExpectEq(Eval("sps", pair("wum.spotify.openDashboard()")), "nil:browser", "openDashboard: no browser");
+    Expect(input::gesture::Recent("sps", 2000), "a failed openDashboard keeps the click");
+    fs::g_dashboardOk = true;
+    ExpectEq(Eval("sps", "return tostring(wum.spotify.openDashboard())"), "true", "openDashboard after a click");
+    Expect(fs::g_dashboards == 1, "the dashboard opened once");
+    ExpectEq(Eval("sps", pair("wum.spotify.openDashboard()")), "nil:gesture", "openDashboard consumed the click");
+    input::gesture::Mark("sps", true);
+    ExpectEq(Eval("sps", "local a = wum.spotify.openDashboard() local b, c = wum.spotify.connect() return tostring(a) .. ' ' .. tostring(b) .. ':' .. tostring(c)"),
+             "true nil:gesture", "connect after openDashboard in the same click: gesture");
+
+    // ---- cancel(): no click, console too
+    fs::g_cancelOpen = true;
+    ExpectEq(Eval(nullptr, "return tostring(wum.spotify.cancel())"), "true", "cancel() from the console");
+    Expect(!fs::g_cancels.empty() && fs::g_cancels.back().empty(), "the console cancels as \"\"");
+    fs::g_cancelOpen = false;
+    ExpectEq(Eval("sps", "return tostring(wum.spotify.cancel())"), "false", "cancel() with nothing open");
+    Expect(fs::g_cancels.back() == "sps", "cancel passes the mod");
+
+    // ---- transfer()
+    fs::g_granted.insert("sps");
+    Expect(starts(Eval("sps", "return pcall(wum.spotify.transfer, 'dev')"), "false"), "transfer: opts must be a table");
+    Expect(starts(Eval("sps", "return pcall(wum.spotify.transfer, {deviceId = 'dev', play = 'yes'})"), "false"), "transfer: play must be a boolean");
+    Expect(starts(Eval("sps", "return pcall(wum.spotify.transfer, {deviceId = 5})"), "false"), "transfer: a non-string deviceId raises");
+    Expect(starts(Eval("sps", "return pcall(wum.spotify.transfer, {deviceId = 'dev'}, 5)"), "false"), "transfer: fn must be a function");
+    const size_t before = fs::g_submitted.size();
+    ExpectEq(Eval("sps", pair("wum.spotify.transfer({})")), "nil:invalid", "transfer: deviceId missing");
+    ExpectEq(Eval("sps", pair("wum.spotify.transfer({deviceId = 'bad id!'})")), "nil:invalid", "transfer: a bad deviceId");
+    ExpectEq(Eval("sps", pair("wum.spotify.transfer({deviceId = string.rep('a', 129)})")), "nil:invalid", "transfer: a 129-character deviceId");
+    Expect(fs::g_submitted.size() == before, "nothing invalid reached the host");
+    ExpectEq(Eval("sps", "RID = wum.spotify.transfer({deviceId = 'dev_1-A', play = true}, function(r) TR = r end) return math.type(RID)"),
+             "integer", "transfer returns a request id");
+    const fs::Submitted* t = last();
+    Expect(t && t->mod == "sps" && t->req.op == Op::Transfer && t->req.deviceId == "dev_1-A" && t->req.play && t->token != 0,
+           "transfer: Request{Transfer, deviceId, play = true}");
+    if (t) fs::AnswerRequest(t->rid, R"({"ok":true})");
+    ExpectEq(Eval("sps", "return tostring(TR and TR.ok)"), "true", "transfer: the answer reaches fn");
+    ExpectEq(Eval("sps", "return math.type(wum.spotify.transfer{deviceId = 'abc'})"), "integer", "transfer without play and fn");
+    t = last();
+    Expect(t && t->req.op == Op::Transfer && !t->req.play && t->token == 0, "transfer: play defaults to false, no callback");
+    Eval("sps", "wum.spotify.transfer{deviceId = 'abc', play = false}");
+    t = last();
+    Expect(t && !t->req.play, "transfer: play = false");
+    fs::g_granted.erase("sps");
+    ExpectEq(Eval("sps", pair("wum.spotify.transfer({deviceId = 'abc'})")), "nil:auth", "transfer without a grant: auth");
+    fs::g_available = false;
+    fs::g_reason = "no-client-id";
+    ExpectEq(Eval("sps", pair("wum.spotify.transfer({deviceId = 'abc'})")), "nil:no-client-id", "transfer when unavailable");
+    fs::g_available = true;
+
+    // ---- status().app and the event's app
+    fs::g_status = {"disconnected", "", std::nullopt, false, "", "user"};
+    ExpectEq(Eval("sps", "return tostring(wum.spotify.status().app)"), "user", "status().app");
+    fs::g_status = {"error", "", std::nullopt, false, "not-allowlisted", "builtin"};
+    ExpectEq(Eval("sps", "local s = wum.spotify.status() return s.state .. ' ' .. s.error .. ' ' .. s.app .. ' ' .. tostring(s.linked)"),
+             "error not-allowlisted builtin false", "status(): not-allowlisted");
+    fs::g_status = {"disconnected", "", std::nullopt, false, "", ""};
+    ExpectEq(Eval("sps", "return tostring(wum.spotify.status().app)"), "nil", "status().app absent without an app");
+    fs::EmitStatus("sps", R"({"type":"status","state":"disconnected","linked":false,"app":"user"})");
+    Frames(1);
+    ExpectEq(Eval("sps", "return table.concat(evs, ',')"), "disconnected/user", "the event carries app");
+    sandbox::UnloadMod("sps");
+    input::gesture::Clear("sps");
 }

@@ -83,7 +83,7 @@ bool Listener::Open(int port) {
     u_long nonBlocking = 1;
     if (bind(s, reinterpret_cast<const sockaddr*>(&a), sizeof a) == SOCKET_ERROR || listen(s, 4) == SOCKET_ERROR ||
         ioctlsocket(s, FIONBIO, &nonBlocking) == SOCKET_ERROR) {
-        LOG_WARN("[spotify] cannot listen on 127.0.0.1:%d for the sign-in (error %d); is [Spotify] RedirectPort in use?", port,
+        LOG_WARN("[spotify] cannot listen on 127.0.0.1:%d for the sign-in (error %d); is another program using the port?", port,
                  WSAGetLastError());
         closesocket(s);
         return false;
@@ -98,7 +98,17 @@ void Listener::Close() {
     if (s != INVALID_SOCKET) closesocket(s);
 }
 
-Listener::Outcome Listener::Serve(const std::string& state, uint64_t deadlineMs, const std::atomic<bool>& cancel, std::string* code) {
+void Listener::Reply(uintptr_t* conn, const std::string& response) {
+    const SOCKET c = static_cast<SOCKET>(*conn);
+    *conn = static_cast<uintptr_t>(INVALID_SOCKET);
+    if (c == INVALID_SOCKET) return;
+    SendAll(c, response);
+    CloseAfterPeer(c);
+}
+
+Listener::Outcome Listener::Serve(const std::string& state, uint64_t deadlineMs, const std::atomic<bool>& cancel, std::string* code,
+                                  uintptr_t* held) {
+    *held = static_cast<uintptr_t>(INVALID_SOCKET);
     for (;;) {
         if (cancel.load()) {
             Close();
@@ -139,28 +149,33 @@ Listener::Outcome Listener::Serve(const std::string& state, uint64_t deadlineMs,
         bool done = true;
         switch (r.kind) {
             case logic::CallbackResult::NotOurs:
-                SendAll(c, logic::CallbackHttpResponse(404, false));
+                SendAll(c, logic::CallbackHttpResponse(404, logic::Page::Failed));
                 done = false;
                 break;
             case logic::CallbackResult::Bad:
-                SendAll(c, logic::CallbackHttpResponse(400, false));
+                SendAll(c, logic::CallbackHttpResponse(400, logic::Page::Failed));
                 done = false;
                 break;
             case logic::CallbackResult::Denied:
-                SendAll(c, logic::CallbackHttpResponse(200, false));
+                SendAll(c, logic::CallbackHttpResponse(200, logic::Page::Denied));
                 out = Outcome::Denied;
                 break;
             case logic::CallbackResult::OtherError:
-                SendAll(c, logic::CallbackHttpResponse(200, false));
+                SendAll(c, logic::CallbackHttpResponse(200, logic::Page::Failed));
                 out = Outcome::OtherError;
                 break;
             case logic::CallbackResult::Code:
-                SendAll(c, logic::CallbackHttpResponse(200, true));
+                // Not answered yet: the page waits for the exchange and the profile (the caller's Reply).
                 *code = std::move(r.code);
                 out = Outcome::Code;
                 break;
         }
         Wipe(r.code);
+        if (out == Outcome::Code) {
+            Close();  // nothing else is accepted: the sign-in is decided
+            *held = static_cast<uintptr_t>(c);
+            return out;
+        }
         CloseAfterPeer(c);
         if (done) {
             Close();

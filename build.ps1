@@ -1,5 +1,7 @@
-# Builds dist\melange.asi (x86). Usage: .\build.ps1 [-Config x86-release|x86-debug] [-PrivateDir <path>]
-param([string]$Config = "x86-release", [string]$PrivateDir = "")
+# Builds dist\melange.asi (x86). Usage: .\build.ps1 [-Config x86-release|x86-debug] [-PrivateDir <path>] [-SpotifyClientId <id>]
+# -SpotifyClientId: the built-in Spotify app's Client ID (32 letters and digits; default: env MELANGE_SPOTIFY_CLIENT_ID;
+# empty = none). It is always passed, so an empty value clears one an earlier build left in the CMake cache.
+param([string]$Config = "x86-release", [string]$PrivateDir = "", [string]$SpotifyClientId = $env:MELANGE_SPOTIFY_CLIENT_ID)
 $ErrorActionPreference = "Stop"
 $root = $PSScriptRoot
 $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
@@ -12,7 +14,9 @@ cmd /c "`"$vs\VC\Auxiliary\Build\vcvars32.bat`" >nul && set" | ForEach-Object {
 $cmakeDir = Get-ChildItem "$root\tools\cmake" -Directory -ErrorAction SilentlyContinue | Select-Object -First 1
 if ($cmakeDir) { $env:PATH = "$($cmakeDir.FullName)\bin;$root\tools\ninja;$env:PATH" }
 if ($PrivateDir) { $PrivateDir = (Resolve-Path $PrivateDir).Path -replace '\\', '/' }
-cmake --preset $Config -S $root "-DMELANGE_PRIVATE_DIR=$PrivateDir"
+if ($null -eq $SpotifyClientId) { $SpotifyClientId = "" }
+$SpotifyClientId = $SpotifyClientId.Trim()
+cmake --preset $Config -S $root "-DMELANGE_PRIVATE_DIR=$PrivateDir" "-DMELANGE_SPOTIFY_CLIENT_ID=$SpotifyClientId"
 if ($LASTEXITCODE) { exit $LASTEXITCODE }
 cmake --build --preset $Config
 if ($LASTEXITCODE) { exit $LASTEXITCODE }

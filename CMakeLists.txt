@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.25)
-project(Melange VERSION 0.13.0 LANGUAGES C CXX)
+project(Melange VERSION 0.14.0 LANGUAGES C CXX)
 
 if(NOT CMAKE_SIZEOF_VOID_P EQUAL 4)
     message(FATAL_ERROR "Melange must be built for 32-bit x86 (WormsMayhem.exe is a 32-bit process). Use build.ps1.")
@@ -149,6 +149,15 @@ if(MELANGE_PRIVATE_DIR)
     list(FILTER MELANGE_PRIVATE_SOURCES EXCLUDE REGEX "/overlay_tests/")
     list(APPEND MELANGE_SOURCES ${MELANGE_PRIVATE_SOURCES})
 endif()
+# The release's built-in Spotify app (wum.spotify, Melange 0.14): its Client ID, compiled into spotify.cpp through
+# generated/spotify_builtin_id.h. Empty = none (dev builds, forks). build.ps1 -SpotifyClientId or env
+# MELANGE_SPOTIFY_CLIENT_ID; the release workflow passes the repository variable SPOTIFY_CLIENT_ID. Not a secret.
+set(MELANGE_SPOTIFY_CLIENT_ID "" CACHE STRING "Built-in Spotify Client ID (32 letters/digits); empty = none")
+string(LENGTH "${MELANGE_SPOTIFY_CLIENT_ID}" _spl)
+if(NOT _spl EQUAL 0 AND (NOT _spl EQUAL 32 OR NOT MELANGE_SPOTIFY_CLIENT_ID MATCHES "^[0-9A-Za-z]+$"))
+    message(FATAL_ERROR "MELANGE_SPOTIFY_CLIENT_ID must be 32 letters and digits")
+endif()
+configure_file(src/spotify/builtin_id.h.in ${CMAKE_BINARY_DIR}/generated/spotify_builtin_id.h @ONLY)
 add_subdirectory(src/xom EXCLUDE_FROM_ALL)
 configure_file(src/core/version.h.in ${CMAKE_BINARY_DIR}/generated/version.h @ONLY)
 
@@ -806,8 +815,9 @@ target_link_libraries(media_selftest PRIVATE miniz bcrypt winhttp)
 include(${CMAKE_SOURCE_DIR}/cmake/holo/media_pack.cmake)
 include(${CMAKE_SOURCE_DIR}/cmake/holo/media_host.cmake)
 
-# wum.spotify's pure logic (Melange 0.13): PKCE, the loopback callback parser, the Web API calls, errors, the rate gate
-# and the result shapes. Portable (it also builds with g++ on Linux).
+# wum.spotify's pure logic (Melange 0.13; 0.14: the Client ID resolution, the callback pages, not-allowlisted, transfer):
+# PKCE, the loopback callback parser, the Web API calls, errors, the rate gate and the result shapes. Portable (it also
+# builds with g++ on Linux).
 add_executable(spotify_selftest tests/spotify_selftest.cpp src/tools/json_read.cpp)
 target_include_directories(spotify_selftest PRIVATE src)
 target_compile_definitions(spotify_selftest PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX _CRT_SECURE_NO_WARNINGS)
