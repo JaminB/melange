@@ -92,18 +92,19 @@ void WriteUrlFile() {
 }
 
 // Starts the server if needed and opens exactly one browser tab: the hotkey, the menu item and the panel's own
-// button all go through here. The AutoStart+AutoOpen combination (no user action at all) goes through OnFrame.
-void OpenOasisNow() {
+// button all go through here. `hash` ("#/erg") makes the shell open on that panel. The AutoStart+AutoOpen combination (no user action at all) goes through OnFrame.
+void OpenOasisNow(const char* hash = "") {
     const bool wasRunning = oasis::Running();
     if (!wasRunning) g_userOpenPending = true;
     g_lastStartFailed = !oasis::Start();
     if (g_lastStartFailed) return;  // nothing to open; the panel shows why
-    const std::string url = oasis::Url();
+    const std::string url = oasis::Url() + hash;
     OpenBrowser(url);
     LOG_INFO("[oasis] opened %s", MaskUrl(url).c_str());
 }
 
 void OnHotkeyOrMenu(void*) { OpenOasisNow(); }
+void OnMenuErg(void*) { OpenOasisNow("#/erg"); }
 
 void OnFrame() {
     const bool running = oasis::Running();
@@ -147,6 +148,8 @@ void Draw(void*) {
     if (!running) {
         ImGui::SameLine();
         if (ImGui::Button("Open Oasis")) OpenOasisNow();
+        ImGui::SameLine();
+        if (ImGui::Button("Open map editor")) OpenOasisNow("#/erg");
         if (g_lastStartFailed)
             ImGui::TextColored(ImVec4(1.f, 0.45f, 0.35f, 1.f),
                                 "Could not start: no free port in %d..%d (see Melange.log).", config::GetInt(kSection, "Port", 8765),
@@ -166,6 +169,8 @@ void Draw(void*) {
     if (ImGui::Button("Copy URL")) CopyToClipboard(url);
     ImGui::SameLine();
     if (ImGui::Button("Open in browser")) OpenBrowser(url);
+    ImGui::SameLine();
+    if (ImGui::Button("Open map editor")) OpenBrowser(url + "#/erg");
 
     const Stats s = oasis::GetStats();
     ImGui::Text("%u client(s)  %u channel(s)  %u method(s)  %llu rpc call(s)  %llu auth failure(s)", s.clients,
@@ -189,6 +194,7 @@ void Install() {
             LOG_WARN("[oasis] Hotkey '%s' not understood, no hotkey registered", hotkeyText.c_str());
     }
     overlay::AddMenuItem("Oasis/Open", &OnHotkeyOrMenu, nullptr, hotkeyText.c_str());
+    overlay::AddMenuItem("Oasis/Map editor (Erg)", &OnMenuErg, nullptr);
     events::Subscribe(events::Event::Frame, &OnFrame);
 }
 }  // namespace melange::oasis::panel

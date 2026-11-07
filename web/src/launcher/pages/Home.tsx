@@ -5,15 +5,15 @@ import { loadedSinceInstall, whenText, type SetupStatus, type UpdateStatus } fro
 import { busyNotice } from "../copy";
 import { ExportLogs } from "../components/ExportLogs";
 import { StatusCard, type Tone } from "../components/StatusCard";
-import { FolderIcon, PlugIcon, PuzzleIcon, SparkleIcon } from "../icons";
+import { ExternalLinkIcon, FolderIcon, PlugIcon, PuzzleIcon, SparkleIcon } from "../icons";
 
 export interface HomeProps {
-  client: Client; status: SetupStatus | undefined; update?: UpdateStatus; onFixGame: () => void; onOpenPlugins: () => void; onOpenSettings: () => void;
+  client: Client; status: SetupStatus | undefined; update?: UpdateStatus; onFixGame: () => void; onOpenPlugins: () => void; onOpenErg?: () => void; onOpenSettings: () => void;
 }
 
 const STORE_LABEL: Record<string, string> = { steam: "Steam", gog: "GOG", unknown: "" };
 
-export function Home({ client, status, update, onFixGame, onOpenPlugins, onOpenSettings }: HomeProps) {
+export function Home({ client, status, update, onFixGame, onOpenPlugins, onOpenErg, onOpenSettings }: HomeProps) {
   const [counts, setCounts] = useState<{ on: number; updates: number } | undefined>();
   const [storeDown, setStoreDown] = useState(false);
   const [restoreBusy, setRestoreBusy] = useState(false);
@@ -98,6 +98,11 @@ export function Home({ client, status, update, onFixGame, onOpenPlugins, onOpenS
                     actionLabel={melangeCard.action} onAction={onOpenSettings} />
         <StatusCard id="plugins" icon={<PuzzleIcon />} label="Plugins" tone={pluginsCard.tone} status={pluginsCard.text} detail={pluginsCard.detail}
                     actionLabel={!storeDown ? "Manage" : undefined} onAction={onOpenPlugins} />
+        {onOpenErg ? (
+          <StatusCard id="erg" icon={<ExternalLinkIcon />} label="Make a map" tone="ok" status="Erg map editor"
+                      detail="Shape terrain, place objects and spawns, then test or export it. Opens in your browser."
+                      actionLabel="Open editor" onAction={onOpenErg} />
+        ) : null}
       </div>
       {/* Only once Melange has run in the game: before that there is no game to export. */}
       {m.lastLoad ? (

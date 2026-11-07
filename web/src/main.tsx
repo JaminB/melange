@@ -17,6 +17,10 @@ function reloadOnce() {
   location.reload();
 }
 
+// The launcher's "Oasis tools" and "Map editor" buttons open the browser on the token URL plus "#/<panel>"; any such
+// hash shows the regular shell (whose hashPanel opens the panel) even though this server is Melange.exe's.
+const wantsShell = () => location.hash.startsWith("#/");
+
 // The page learns whether it is hosted by Melange.exe (caps includes "launcher") only once the welcome message
 // arrives; until then (or if the connection never completes) it falls back to the regular Oasis shell.
 function Root({ client }: { client: OasisClient }) {
@@ -28,9 +32,9 @@ function Root({ client }: { client: OasisClient }) {
     check();
     return client.onState(check);
   }, [client]);
-  useEffect(() => { if (launcher !== undefined) document.title = launcher ? "Melange" : "Oasis"; }, [launcher]);
+  useEffect(() => { if (launcher !== undefined) document.title = launcher && !wantsShell() ? "Melange" : "Oasis"; }, [launcher]);
   if (launcher === undefined) return <div class="boot-blank" />;
-  return launcher ? <LauncherApp client={client} /> : <ShellApp client={client} />;
+  return launcher && !wantsShell() ? <LauncherApp client={client} /> : <ShellApp client={client} />;
 }
 
 const client = createClient({ build: typeof __OASIS_BUILD__ === "string" ? __OASIS_BUILD__ : "dev", onStale: reloadOnce });

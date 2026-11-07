@@ -920,6 +920,7 @@ You need:
 - **Plugins:** enable/disable installed plugins and configure their settings. Local plugins are hidden until *Show local plugins* is on; notices say which plugins the [compatibility sweep](spice.md#compatibility-sweep) set aside, updated or removed.
 - **Store:** browse and install plugins from the plugin store.
 - **Settings:** change your game folder, switch fullscreen and pick the window size ([Display](#display)), check for updates (and switch automatic checks off), manage backups, edit plugin defaults, uninstall, or *Restore vanilla*.
+- **Oasis tools / Map editor (Erg):** sidebar buttons (and Home's *Make a map* card) that open the Oasis shell, or its Erg panel, in the default browser through `launcher.openOasis` (`src/launcher/rpc_launcher.cpp`). The window itself never shows the shell; a `#/<panel>` URL on this server does (`web/src/main.tsx`).
 - **Help:** *Export last game's logs* zips the last game's logs to the Desktop in one click.
 
 ![Melange.exe's Home page](images/launcher/home.png)

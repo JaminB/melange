@@ -171,6 +171,11 @@ export function launcherService(state, broadcast, initialScenario) {
       if (p.what === "export" && !l.exported) throw [-32000, "That export isn't there any more."];
       return {};
     },
+    "launcher.openOasis": (p) => {
+      if (p.panel !== undefined && !/^[a-z0-9-]*$/.test(p.panel)) throw [-32602, "bad panel"];
+      (l.openedOasis ??= []).push(p.panel ?? "");
+      return {};
+    },
     "launcher.exportLogs": () => {
       l.exported = true;
       return { path: "C:\\Users\\Player\\Desktop\\Melange-logs-20261005-121500.zip", bytes: 482133, entries: 23,
