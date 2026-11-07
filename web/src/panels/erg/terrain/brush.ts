@@ -17,7 +17,8 @@ export type BrushShape = "box" | "sphere";
  * "none": second-material paint removes it, restoring the loaded level's bits 8-23. */
 export type BrushMaterial = number | "column" | "none";
 
-export interface Brush { mode: BrushMode; shape: BrushShape; size: Vec3; material: BrushMaterial; }
+/** blockScale: an added block's map units per voxel (1-4, default 1); the other modes ignore it. */
+export interface Brush { mode: BrushMode; shape: BrushShape; size: Vec3; material: BrushMaterial; blockScale?: number; }
 
 export const MAX_BRUSH = 32;
 

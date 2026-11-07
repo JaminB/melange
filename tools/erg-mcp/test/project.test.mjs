@@ -64,6 +64,11 @@ test("project tools over the mock server", async () => {
     assert.equal(lv.limits.patchBytes.max, 4 << 20);
     assert.equal(lv.limits.objects.max, 256);
     assert.equal(lv.limits.ops.used, 0);
+    assert.equal(lv.limits.newFrameSide, 31);
+    assert.deepEqual(lv.limits.newFrameScale, { min: 1, max: 4 });
+    const cells = lv.frames.reduce((n, x) => n + x.voxels, 0);
+    assert.deepEqual([lv.limits.voxelCells.used, lv.limits.voxelCells.max, lv.limits.voxelCells.free], [cells, 65535, 65535 - cells]);
+    assert.deepEqual(lv.engineWarnings, []);
     assert.equal(lv.dirty, false);
     assert.ok(typeof lv.otherFrames.count === "number");
     const all = await m.tool("describe_level", { allFrames: true });

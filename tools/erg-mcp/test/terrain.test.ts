@@ -154,7 +154,8 @@ test("add_block and remove_block", async () => {
   const cc = await call(s2, "add_block", { size: [2, 2, 2], material: 1, center: [100, 200, 100], units: "map" });
   assert.equal(cc.id !== r.id, true);
   await fails(s2, "add_block", { size: [2, 2, 2], material: 1 }, /exactly one of/);
-  await fails(s2, "add_block", { size: [2, 2, 40], material: 1, at: [0, 0, 0] }, /1-32/);
+  await fails(s2, "add_block", { size: [2, 2, 40], material: 1, at: [0, 0, 0] }, /1-31/);
+  await fails(s2, "add_block", { size: [2, 2, 32], material: 1, at: [0, 0, 0] }, /1-31/);
   await fails(s2, "remove_block", { id: 6 }, /base map/);
   await fails(s2, "remove_block", { id: 12345 }, /no frame/);
   const rm = await call(s2, "remove_block", { id: r.id });
@@ -163,6 +164,43 @@ test("add_block and remove_block", async () => {
   s2.undo();
   assert.equal(s2.scene.frames.filter((f) => f.new).length, 2);
   assert.deepEqual(limitProblems(s2), []);
+});
+
+test("add_block scale: a scaled frame, its patch op, and sculpting in its own voxels", async () => {
+  const st = withScene();
+  const r = await call(st, "add_block", { size: [4, 2, 4], material: 3, scale: 2.5, center: [50, 100, 50], units: "map" });
+  assert.equal(r.scale, 2.5);
+  const f = st.scene.frames.find((x) => x.id === r.id)!;
+  assert.deepEqual(f.scale, [2.5, 2.5, 2.5]);
+  const b = r.bounds.map as { min: Vec3; max: Vec3 };
+  assert.deepEqual([b.max[0] - b.min[0], b.max[1] - b.min[1], b.max[2] - b.min[2]], [10, 5, 10], "4x2x4 voxels of 2.5 map units");
+  assert.deepEqual([b.min[0], b.min[2]], [Math.round(b.min[0]), Math.round(b.min[2])], "the corner snaps to whole units");
+  const op = st.patch().ops.find((o) => o.op === "addFrame")!;
+  assert.equal((op as { scale?: number }).scale, 2.5);
+  assert.deepEqual(limitProblems(st), []);
+  // A 2x2x2 box brush anchored in the block is 2x2x2 of its voxels, 5 map units a side.
+  const c = await call(st, "sculpt", { mode: "carve", shape: "box", size: [2, 2, 2], center: worldOf(st, r.id, [2, 1, 2]), frame: r.id });
+  assert.equal(c.changed, 8);
+  // An unscaled block writes no scale: the patch is what it was before scales existed.
+  const u = await call(st, "add_block", { size: [2, 2, 2], material: 1, center: [200, 100, 200], units: "map" });
+  assert.equal(u.scale, undefined);
+  assert.equal("scale" in st.patch().ops.filter((o) => o.op === "addFrame")[1], false);
+  await fails(st, "add_block", { size: [2, 2, 2], material: 1, center: [0, 0, 0], scale: 4.5 }, /scale|maximum/);
+});
+
+test("add_block refuses a block past the game's 65535 voxel cells and says why", async () => {
+  const st = withScene();
+  const used = st.scene.frames.reduce((n, f) => n + (f.voxels !== null ? f.size[0] * f.size[1] * f.size[2] : 0), 0);
+  const a = await call(st, "add_block", { size: [31, 31, 31], material: 1, center: [500, 0, 0], units: "map" });
+  assert.deepEqual(a.cells, { used: used + 29791, max: 65535, free: 65535 - used - 29791 });
+  await call(st, "add_block", { size: [31, 31, 31], material: 1, center: [600, 0, 0], units: "map" });
+  const left = 65535 - used - 2 * 29791;
+  await fails(st, "add_block", { size: [31, 31, 31], material: 1, center: [700, 0, 0], units: "map" }, new RegExp(`29791 cells and the level has ${left} of the game's 65535 left`));
+  const fit = Math.floor(left / (31 * 31));
+  const last = await call(st, "add_block", { size: [31, fit, 31], material: 1, center: [700, 0, 0], units: "map" });
+  assert.ok(last.cells.free >= 0 && last.cells.free < 31 * 31, JSON.stringify(last.cells));
+  await fails(st, "add_block", { size: [31, 1, 31], material: 1, center: [800, 0, 0], units: "map" }, /65535/);
+  assert.equal(st.scene.frames.filter((f) => f.new).length, 3);
 });
 
 test("block limit is 64", async () => {

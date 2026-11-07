@@ -189,7 +189,7 @@ bool BuildXan(const load::Loaded& base, const Scene& edited, const VoxelEdits& v
               *hm = obj.field("HeightMap"), *det = obj.field("Details"), *kids = obj.field("Children"), *vis = obj.field("Visible");
         if (!xs || !ys || !zs || !vox || !hm || !det || !kids || !xomutil::SetStr(obj, "Name", f.name) ||
             !xomutil::SetVec(obj, "Position", f.pos) || !xomutil::SetVec(obj, "Orientation", {0, 0, 0}) ||
-            !xomutil::SetVec(obj, "Scale", {1, 1, 1}) || !xomutil::SetVec(obj, "CentreOffset", {0, 0, 0}))
+            !xomutil::SetVec(obj, "Scale", f.scale) || !xomutil::SetVec(obj, "CentreOffset", {0, 0, 0}))
             return Fail(err, "frame " + std::to_string(f.id) + ": the base's frames have an unexpected shape");
         const std::vector<uint32_t> w = words != voxels.end() ? words->second : std::vector<uint32_t>(cells, 0);
         if (w.size() != cells) return Fail(err, "voxels: frame " + std::to_string(f.id) + " has another size");
@@ -445,7 +445,7 @@ Patch Diff(const Scene& base, const Scene& edited, const VoxelEdits& voxels, con
         if (!f.isNew) continue;
         Op add;
         add.kind = Op::Kind::AddFrame;
-        add.newFrame = {f.id, f.parent, f.name, f.pos, f.size};
+        add.newFrame = {f.id, f.parent, f.name, f.pos, f.size, f.scale[0]};
         p.ops.push_back(std::move(add));
         auto ed = voxels.find(f.id);
         if (ed == voxels.end()) continue;

@@ -96,7 +96,8 @@ export function toPatch(base: Scene, edited: Scene, voxels?: VoxelData, surround
   }
   for (const f of edited.frames) {
     if (!f.new || f.parent === null) continue;
-    ops.push({ op: "addFrame", tmp: f.id, parent: f.parent, name: f.name, pos: copyVec(f.pos), size: copyVec(f.size) });
+    ops.push({ op: "addFrame", tmp: f.id, parent: f.parent, name: f.name, pos: copyVec(f.pos), size: copyVec(f.size),
+      ...(f.scale[0] !== 1 ? { scale: f.scale[0] } : {}) });
     const e = f.voxels !== null ? voxels?.edited.get(f.voxels) : undefined;
     if (e) {
       const runs = voxelRuns(new Uint32Array(e.length), e);
@@ -191,7 +192,8 @@ export function applyPatch(scene: Scene, p: Patch, voxels?: Map<number, Uint32Ar
           voxels.set(ref, new Uint32Array(cells));
           s.blobs.push({ ref, kind: "voxels", frame: op.tmp, bytes: cells * 4 });
         }
-        s.frames.push({ id: op.tmp, new: true, parent: op.parent, name: op.name, pos: copyVec(op.pos), rot: [0, 0, 0], scale: [1, 1, 1],
+        const sc = op.scale ?? 1;
+        s.frames.push({ id: op.tmp, new: true, parent: op.parent, name: op.name, pos: copyVec(op.pos), rot: [0, 0, 0], scale: [sc, sc, sc],
           size: copyVec(op.size), voxels: ref, heightMap: null, folder: false });
         break;
       }

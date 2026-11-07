@@ -2,7 +2,7 @@
 // brush (terrain/brush.ts strokeChanges), block planner (blocks.ts) and surround painter (surround.ts dabChanges), so a
 // tool edits exactly as a mouse stroke does. Everything here edits through VoxelEdit or store.exec: one undo step each.
 import {
-  RemoveFrame, SetLevel, SurroundStroke, MAX_BRUSH, SURROUND_SIDE, apply, blockCentre, dabChanges, gridFrames, planBlock, quantizeHeight,
+  RemoveFrame, SetLevel, SurroundStroke, MAX_BRUSH, SURROUND_SIDE, apply, blockCentre, cellBudget, dabChanges, gridFrames, planBlock, quantizeHeight,
   strokeChanges, validEdit, carved, filled, isSolid, type Anchor, type Brush, type BrushMaterial, type BrushMode, type BrushShape, type EditorStore,
   type GridFrame, type SurroundBrush, type SurroundMode, type Vec3,
 } from "../core";
@@ -152,22 +152,24 @@ export function stroke(store: EditorStore, spec: StrokeSpec, centres: Vec3[], an
 
 // ------------------------------------------------------------------ blocks
 
-export interface BlockSpec { size: Vec3; material: number; at?: Vec3; center?: Vec3; units: Units; }
+export interface BlockSpec { size: Vec3; material: number; at?: Vec3; center?: Vec3; units: Units; scale?: number; }
 
 export function addBlock(store: EditorStore, s: BlockSpec) {
   if (!!s.at === !!s.center) throw new ToolError("give exactly one of `at` (the point the block rests on: x and z are its centre, y its bottom) or `center`");
   if (!(Number.isInteger(s.material) && s.material >= 0 && s.material <= 63)) throw new ToolError("material is a whole number 0-63");
   const to = (p: Vec3) => (s.units === "world" ? toMap(p) : p);
   if (s.units === "grid") throw new ToolError("blocks are placed in map or world units");
-  const bottom: Vec3 = s.at ? to(s.at) : (() => { const c = to(s.center!); return [c[0], c[1] - s.size[1] / 2, c[2]] as Vec3; })();
-  const centre = blockCentre(store.scene, bottom, s.size);
+  const scale = s.scale ?? 1;
+  const bottom: Vec3 = s.at ? to(s.at) : (() => { const c = to(s.center!); return [c[0], c[1] - (s.size[1] * scale) / 2, c[2]] as Vec3; })();
+  const centre = blockCentre(store.scene, bottom, s.size, scale);
   if (!centre) throw new ToolError("This level has no Scene frame to add blocks under");
-  const cmd = planBlock(store.scene, store.voxels, store.freshRef(), centre, s.size, s.material);
+  const cmd = planBlock(store.scene, store.voxels, store.freshRef(), centre, s.size, s.material, scale);
   if (typeof cmd === "string") throw new ToolError(cmd);
   store.exec(cmd);
   const g = frameGrids(store).find((x) => x.frame.id === cmd.frame.id)!;
   return {
-    id: cmd.frame.id, name: cmd.frame.name, size: s.size, material: s.material, voxels: s.size[0] * s.size[1] * s.size[2],
+    id: cmd.frame.id, name: cmd.frame.name, size: s.size, ...(scale !== 1 ? { scale } : {}), material: s.material, voxels: s.size[0] * s.size[1] * s.size[2],
+    cells: cellBudget(store.scene),
     bounds: { map: { min: tidy(g.bounds.min), max: tidy(g.bounds.max) }, world: { min: tidy(toWorld(g.bounds.min)), max: tidy(toWorld(g.bounds.max)) } },
     note: "the block's corner is snapped to whole Scene-frame units; sculpt or fill_box_raw can shape it",
   };

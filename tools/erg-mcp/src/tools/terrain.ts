@@ -83,18 +83,19 @@ export const tools: Tool[] = [
   },
   {
     name: "add_block",
-    description: "Add a terrain block: a new solid frame of size X x Y x Z voxels (each 1-32; at most 64 blocks per level) of one material, under the Scene frame. Its corner snaps to whole units. Give `at` (x and z are the block's centre, y its bottom: it rests on that point) or `center`. Shape it afterwards with sculpt (carve) or fill_box_raw. Answers the new frame id (negative until saved) and its bounds.",
+    description: "Add a terrain block: a new solid frame of size X x Y x Z voxels (each 1-31; at most 64 blocks per level) of one material, under the Scene frame, optionally scaled (`scale` map units per voxel, 1-4). Refused when the level's voxel frames would pass the game's 65535 cells (X*Y*Z of every voxel frame; describe_level limits.voxelCells). Its corner snaps to whole units. Give `at` (x and z are the block's centre, y its bottom: it rests on that point) or `center`. Shape it afterwards with sculpt (carve) or fill_box_raw. Answers the new frame id (negative until saved) and its bounds.",
     inputSchema: {
       type: "object", additionalProperties: false, required: ["size", "material"],
       properties: {
-        size: vec("Block size in voxels, each 1-32.", true),
+        size: vec("Block size in voxels, each 1-31.", true),
+        scale: { type: "number", minimum: 1, maximum: 4, description: "Map units per voxel, the same on every axis (default 1): a block of 31 at scale 2.5 is 77.5 map units across for the same cells." },
         material: { ...material, description: "Material 0-63 the block is filled with." },
         at: vec("The point the block rests on: [centre x, bottom y, centre z], in `units`."),
         center: vec("The block's centre, in `units`."),
         units: { type: "string", enum: ["world", "map"], description: "world (default) or map units." },
       },
     },
-    handler(s, a: { size: Vec3; material: number; at?: Vec3; center?: Vec3; units?: "world" | "map" }) {
+    handler(s, a: { size: Vec3; material: number; at?: Vec3; center?: Vec3; units?: "world" | "map"; scale?: number }) {
       const { store } = s.requireProject();
       return { ...addBlock(store, { ...a, units: a.units ?? "world" }), ...patchLeft(store) };
     },

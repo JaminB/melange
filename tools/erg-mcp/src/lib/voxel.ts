@@ -9,7 +9,7 @@
 // Words (src/erg/voxels.h): bits 0-1 solid (3) or empty (0), 2-7 material, 8-9 second-material flags, 10-15 second
 // material, 16-23 corner mask, 24-31 clear. isSolid/material/filled/carved/painted/withSecond come from terrain/voxel.ts.
 import {
-  LIMITS, SculptStroke, WORLD_PER_XAN, apply, gridFrames, index, invert, validEdit, validRunValue, voxelRuns, type Box, type EditorStore,
+  LIMITS, SculptStroke, WORLD_PER_XAN, apply, blockProblem, cellBudget, gridFrames, index, invert, validEdit, validRunValue, voxelRuns, type Box, type EditorStore,
   type Frame, type Mat3x4, type Patch, type Vec3, type VoxelRun,
 } from "../core";
 import { ToolError } from "../registry";
@@ -123,6 +123,8 @@ export interface Usage {
   frames: number; details: number;
   newFrames: { used: number; max: number };
   newFrameSide: number;
+  newFrameScale: { min: number; max: number };
+  voxelCells: { used: number; max: number; free: number; note: string };
   objects: { used: number; max: number };
   ops: { used: number; max: number };
   patchBytes: { used: number; max: number; budget: number };
@@ -137,6 +139,8 @@ export function usage(store: EditorStore, patch: Patch = store.patch()): Usage {
     frames: store.scene.frames.length, details: store.scene.details.length,
     newFrames: { used: store.scene.frames.filter((f) => f.new).length, max: LIMITS.newFrames },
     newFrameSide: LIMITS.newFrameSide,
+    newFrameScale: LIMITS.newFrameScale,
+    voxelCells: { ...cellBudget(store.scene), note: "X*Y*Z of every voxel frame, base and added, solid or empty: the game crashes loading more" },
     objects: { used: store.scene.objects?.length ?? 0, max: LIMITS.objects },
     ops: { used: patch.ops.length, max: LIMITS.ops },
     patchBytes: { used: JSON.stringify(patch).length, max: LIMITS.patchBytes, budget: PATCH_BUDGET },
@@ -144,11 +148,10 @@ export function usage(store: EditorStore, patch: Patch = store.patch()): Usage {
   };
 }
 
-/** Why a new block of this size cannot be added (count or side), or null. */
-export function newFrameProblem(store: EditorStore, size: Vec3): string | null {
-  if (store.scene.frames.filter((f) => f.new).length >= LIMITS.newFrames) return `a level holds at most ${LIMITS.newFrames} added blocks`;
-  if (!size.every((v) => Number.isInteger(v) && v >= 1 && v <= LIMITS.newFrameSide)) return `each side of a block is 1-${LIMITS.newFrameSide} voxels`;
-  return null;
+/** Why a new block of this size and scale cannot be added (count, side, scale or the game's cell budget), or null. */
+export function newFrameProblem(store: EditorStore, size: Vec3, scale = 1): string | null {
+  const why = blockProblem(store.scene, size, scale);
+  return why && why[0].toLowerCase() + why.slice(1);
 }
 
 /** Everything over a limit, then what the patch validator refuses (store.problems()). */

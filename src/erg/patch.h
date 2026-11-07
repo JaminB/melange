@@ -28,7 +28,8 @@ struct FrameAdd {
     int64_t parent = -1;                              // a base frame: Scene or under it
     std::string name;
     Vec3 pos{0, 0, 0};
-    std::array<int, 3> size{1, 1, 1};                 // 1..32 each
+    std::array<int, 3> size{1, 1, 1};                 // 1..31 each (32 is still read: kLegacyNewFrameSide)
+    double scale = 1;                                 // uniform, kMinNewFrameScale..kMaxNewFrameScale; written only when not 1
 };
 struct Op {
     enum class Kind : uint8_t { Set, Add, Remove, Voxels, AddFrame, Hmp } kind = Kind::Set;

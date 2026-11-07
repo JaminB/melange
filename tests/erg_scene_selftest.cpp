@@ -636,6 +636,8 @@ void TestV2Model() {
         {Mutate(text, "\"name\":\"CRATE_1\"", "\"name\":\"CRATE_9\""), "a knot without its detail", "CRATE_1"},
         {Mutate(text, "\"parent\":1000", "\"parent\":1"), "a new frame under the root", "Scene"},
         {Mutate(text, "\"size\":[6,31,6]", "\"size\":[33,31,6]"), "a new frame of 33 voxels", "size"},
+        {Mutate(text, "\"scale\":[1,1,1],\"size\":[6,31,6]", "\"scale\":[2,2,1],\"size\":[6,31,6]"), "a new frame scaled unevenly", "scale"},
+        {Mutate(text, "\"scale\":[1,1,1],\"size\":[6,31,6]", "\"scale\":[5,5,5],\"size\":[6,31,6]"), "a new frame scaled past 4", "scale"},
     };
     for (auto& c : sceneCases) {
         erg::Scene out;
@@ -656,6 +658,9 @@ void TestV2Model() {
         {Mutate(ptext, "\"size\":[6,31,6]", "\"size\":[6,0,6]"), "a new frame side of 0", "size"},
         {Mutate(ptext, "\"size\":[6,31,6]", "\"size\":[6,31,33]"), "a new frame side of 33", "size"},
         {Mutate(ptext, "\"size\":[6,31,6]", "\"size\":[6,31]"), "a new frame size of two sides", "size"},
+        {Mutate(ptext, "\"size\":[6,31,6]", "\"size\":[6,31,6],\"scale\":0.5"), "a new frame scale under 1", "scale"},
+        {Mutate(ptext, "\"size\":[6,31,6]", "\"size\":[6,31,6],\"scale\":4.01"), "a new frame scale over 4", "scale"},
+        {Mutate(ptext, "\"size\":[6,31,6]", "\"size\":[6,31,6],\"scale\":[2,2,2]"), "a new frame scale as a vector", "scale"},
         {Mutate(ptext, "[0,64,23]", "[0,64,16777239]"), "a voxel value with bits 24-31 set", "bits 24-31"},
     };
     for (auto& c : patchCases) {
@@ -663,6 +668,19 @@ void TestV2Model() {
         Expect(c.json != ptext && c.json != v1Patch && !erg::ParsePatch(c.json, &out, &err) && err.find(c.needle) != std::string::npos,
                "patch refused: " + c.what + " (" + err + ")");
     }
+
+    // Kept readable for projects made before the engine's 31-voxel limit was known, and an optional uniform scale.
+    for (const auto& [from, to, what] : {std::tuple{"\"size\":[6,31,6]", "\"size\":[32,31,6]", "a legacy side of 32"},
+                                         std::tuple{"\"size\":[6,31,6]", "\"size\":[6,31,6],\"scale\":2.5", "a scale of 2.5"}}) {
+        erg::Patch ok;
+        erg::Scene app = base;
+        Expect(erg::ParsePatch(Mutate(ptext, from, to), &ok, &err) && erg::ApplyPatch(app, ok, AllRules(), &err),
+               std::string("patch accepted: ") + what + " " + err);
+    }
+    erg::Scene scaled;
+    Expect(erg::ParseScene(Mutate(text, "\"scale\":[1,1,1],\"size\":[6,31,6]", "\"scale\":[2.5,2.5,2.5],\"size\":[6,31,6]"), &scaled, &err) &&
+               scaled.FindFrame(-1)->scale[1] == 2.5,
+           "scene accepted: a new frame of scale 2.5 " + err);
 
     erg::Patch bad = pback;
     for (auto& op : bad.ops)

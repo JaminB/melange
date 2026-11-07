@@ -1,27 +1,29 @@
 // Heightfield terrain: a height per column over a rectangle of the level, filled from a floor up, then packed into the
 // voxels the patch can carry. Planning is pure (nothing changes until apply()).
 //
-// The lattice. Added blocks sit under the Scene frame with their corners on its whole units (blocks.ts), so the plan
-// works in Scene-frame space: cell (x, y, z) fills [x, x+1) x [y, y+1) x [z, z+1) there, and the Scene frame must be
-// translation-only in the level (it is on the game's maps). Map = scene + t.
+// The lattice. Added blocks sit under the Scene frame (blocks.ts), so the plan works in Scene-frame space: with a voxel
+// size s (map units per voxel, the blocks' scale, 1-4), cell (x, y, z) fills [x, x+1) x [y, y+1) x [z, z+1) times s
+// there, and the Scene frame must be translation-only in the level (it is on the game's maps). Map = s * cell + t.
 //
-// The budget. A patch adds at most 64 blocks of at most 32 voxels a side (2,097,152 cells in all) with at most 2000
-// runs each, so the plan:
+// The budget. A patch adds at most 64 blocks of at most 31 voxels a side (the game asserts on 32) with at most 2000
+// runs each, and the game counts the cells of every voxel frame of the level (X*Y*Z, base and added, solid or empty) in
+// 16 bits: at most 65535 (LIMITS.voxelCells), so a block's whole box counts, not its solid voxels. The plan:
 //   1. fills what it can in voxel frames that overlap the field (no SLIPPY/PERM/TEAMBASE in the name): a voxels op on a
 //      frame costs no block, and the server takes any valid word for any cell of a base frame, empty or not. By default
 //      only frames on the lattice (translation-only, unit scale, whole-unit offset: earlier blocks; no base frame of the
 //      game's maps is) take part; "any" also fills rotated and scaled frames (not scaled under 0.9) cell by cell, which
 //      only approximates the field at its surface. Cells already solid there count as done. A frame whose runs would
 //      pass 2000 is left out.
-//   2. tiles the rest in 32x32 columns (trying four offsets each way, keeping the fewest blocks), stacks 32-high slices
+//   2. tiles the rest in 31x31 columns (trying four offsets each way, keeping the fewest blocks), stacks 31-high slices
 //      in each tile from its lowest needed cell, and trims every slice to the box of the cells it needs, so a cone's
 //      upper slices are small. A slice whose runs pass 2000 (material bands add a run per band per column) is halved
 //      along its longer side until it fits.
-//   3. when the blocks do not fit the budget (64 minus those already added, or maxBlocks), refuses, or with partial
+//   3. when the blocks do not fit the budget (64 minus those already added, or maxBlocks, and the cells left), refuses, or with partial
 //      keeps the blocks holding the most voxels, a slice only when the slice under it in its tile is kept (nothing floats),
 //      and lists what was dropped.
 import {
-  AddFrame, Group, LIMITS, SculptStroke, blockFrames, filled, frameWorld, isSolid, sceneFrame, voxelRuns, type EditorStore,
+  AddFrame, Group, LIMITS, SculptStroke, blockFrames, cellBudget, filled, frameWorld, isSolid, sceneFrame, validNewFrameScale, voxelRuns,
+  type EditorStore,
   type Frame, type Vec3, type Command,
 } from "../core";
 import { ToolError } from "../registry";
@@ -54,15 +56,22 @@ export interface FieldArgs {
   reuseFrames?: Reuse;
   maxBlocks?: number;
   partial?: boolean;
+  voxelSize?: number;                       // map units per voxel (the new blocks' scale), 1-4; default 1
+  maxCells?: number;                        // the new blocks hold at most this many of the game's cells
 }
 
 export const SIDE = LIMITS.newFrameSide;
 const MAX_COLUMNS = 512 * 512, MAX_SPAN = 1024, MAX_COLUMN = 1024;
 const OP_BYTES = 160;   // an addFrame op and its voxels op's envelope, JSON
+// In the game a one-voxel surface layer of another material over 6954 columns (a 250 x 250 island at voxel size 2.5)
+// made the landscape combiner run out of vertices (CombineLandscapeAction asserts, holes in the drawn terrain); the same
+// island in height bands, or in one material, did not. Past this many columns a surface rule gets a note.
+const SURFACE_NOTE_COLUMNS = 2500;
 
 /** The sampled field: one column per lattice cell of the rectangle. */
 export interface Field {
   k: number;                                // map units per region unit
+  s: number;                                // map units per voxel (cell)
   t: Vec3;                                  // Scene frame -> map translation
   sceneId: number | null;                   // null: no Scene frame, no blocks
   i0: number; j0: number; nx: number; nz: number;
@@ -74,7 +83,7 @@ export interface Field {
 }
 
 const num = (v: number) => tidy([v, 0, 0])[0];
-const mapOf = (f: Field, s: Vec3): Vec3 => [s[0] + f.t[0], s[1] + f.t[1], s[2] + f.t[2]];
+const mapOf = (f: Field, c: Vec3): Vec3 => [c[0] * f.s + f.t[0], c[1] * f.s + f.t[1], c[2] * f.s + f.t[2]];
 
 function checkMaterial(m: number, path: string) {
   if (!Number.isInteger(m) || m < 0 || m > 63) throw new ToolError(`${path}: a material is 0-63`);
@@ -95,23 +104,26 @@ export function sceneLattice(store: EditorStore): { id: number | null; t: Vec3 }
 /** Samples the height function over the rectangle. */
 export function sampleField(store: EditorStore, a: FieldArgs): Field {
   const k = a.units === "world" ? 1 / WORLD_PER_MAP : 1;
+  const s = a.voxelSize ?? 1;
+  if (!validNewFrameScale(s)) throw new ToolError(`voxelSize is ${LIMITS.newFrameScale.min}-${LIMITS.newFrameScale.max} map units per voxel`);
+  const kv = k / s;                         // voxels per region unit
   const { id: sceneId, t } = sceneLattice(store);
   if (!!a.expr === !!a.grid) throw new ToolError("give the height as either expr or grid");
-  const i0 = Math.round(Math.min(a.min[0], a.max[0]) * k - t[0]), i1 = Math.round(Math.max(a.min[0], a.max[0]) * k - t[0]);
-  const j0 = Math.round(Math.min(a.min[1], a.max[1]) * k - t[2]), j1 = Math.round(Math.max(a.min[1], a.max[1]) * k - t[2]);
+  const i0 = Math.round((Math.min(a.min[0], a.max[0]) * k - t[0]) / s), i1 = Math.round((Math.max(a.min[0], a.max[0]) * k - t[0]) / s);
+  const j0 = Math.round((Math.min(a.min[1], a.max[1]) * k - t[2]) / s), j1 = Math.round((Math.max(a.min[1], a.max[1]) * k - t[2]) / s);
   const nx = i1 - i0, nz = j1 - j0;
-  if (nx < 1 || nz < 1) throw new ToolError("the rectangle is less than one voxel wide (1 voxel = 1 map unit = 20 world units)");
+  if (nx < 1 || nz < 1) throw new ToolError(`the rectangle is less than one voxel wide (1 voxel = ${s} map units = ${s * WORLD_PER_MAP} world units)`);
   if (nx > MAX_SPAN || nz > MAX_SPAN || nx * nz > MAX_COLUMNS)
-    throw new ToolError(`the rectangle is ${nx}x${nz} voxels: at most ${MAX_SPAN} a side and ${MAX_COLUMNS} columns (64 blocks cover at most 256x256 at 32 high)`);
-  const floor = Math.round(a.floor * k - t[1]);
-  const depth = Math.max(0, Math.round((a.baseDepth ?? 0) * k));
+    throw new ToolError(`the rectangle is ${nx}x${nz} voxels: at most ${MAX_SPAN} a side and ${MAX_COLUMNS} columns (the game's ${LIMITS.voxelCells} cells hold about 256x256 voxels one high; a larger voxelSize covers more ground)`);
+  const floor = Math.round((a.floor * k - t[1]) / s);
+  const depth = Math.max(0, Math.round((a.baseDepth ?? 0) * kv));
   const material = a.material ?? 0;
   checkMaterial(material, "material");
   (a.materials ?? []).forEach((r, i) => checkMaterial(r.material, `materials[${i}].material`));
 
   // Region coordinates (units): x, z from the centre.
-  const cx = (i0 + i1) / 2 + t[0], cz = (j0 + j1) / 2 + t[2];
-  const W = nx / k, D = nz / k;
+  const cx = ((i0 + i1) / 2) * s + t[0], cz = ((j0 + j1) / 2) * s + t[2];
+  const W = (nx * s) / k, D = (nz * s) / k;
   let fn: (v: Vars) => number;
   if (a.expr !== undefined) {
     try {
@@ -140,7 +152,7 @@ export function sampleField(store: EditorStore, a: FieldArgs): Field {
   const vars: Vars = { x: 0, z: 0, u: 0, v: 0, r: 0, theta: 0, W, D, R: Math.min(W, D) / 2, pi: Math.PI, e: Math.E };
   for (let b = 0; b < nz; b++)
     for (let a2 = 0; a2 < nx; a2++) {
-      const mx = i0 + a2 + 0.5 + t[0], mz = j0 + b + 0.5 + t[2];
+      const mx = (i0 + a2 + 0.5) * s + t[0], mz = (j0 + b + 0.5) * s + t[2];
       vars.x = (mx - cx) / k;
       vars.z = (mz - cz) / k;
       vars.u = (a2 + 0.5) / nx;
@@ -154,7 +166,7 @@ export function sampleField(store: EditorStore, a: FieldArgs): Field {
         if (cr.rim) h += cr.rim * Math.exp(-(((r - cr.radius) / (cr.radius * 0.3)) ** 2));
       }
       if (a.maxHeight !== undefined) h = Math.min(h, a.maxHeight);
-      const hv = Math.max(0, h * k);
+      const hv = Math.max(0, h * kv);
       if (hv > MAX_COLUMN) throw new ToolError(`the height reaches ${num(h)} (${Math.round(hv)} voxels) at x ${num(mx / k)}, z ${num(mz / k)}: at most ${MAX_COLUMN} voxels; pass maxHeight`);
       const c = b * nx + a2, top = Math.round(hv);
       height[c] = hv;
@@ -173,18 +185,18 @@ export function sampleField(store: EditorStore, a: FieldArgs): Field {
   const rules = a.materials ?? [];
   const materialAt = (col: number, y: number) => {
     if (!rules.length) return material;
-    const above = (y + 0.5 - floor) / k, fromTop = hi[col] - 1 - y, s = slope[col];
+    const above = (y + 0.5 - floor) / kv, fromTop = hi[col] - 1 - y, sl = slope[col];
     for (const r of rules) {
       if (r.minHeight !== undefined && above < r.minHeight) continue;
       if (r.maxHeight !== undefined && above >= r.maxHeight) continue;
-      if (r.minSlope !== undefined && s < r.minSlope) continue;
-      if (r.maxSlope !== undefined && s > r.maxSlope) continue;
+      if (r.minSlope !== undefined && sl < r.minSlope) continue;
+      if (r.maxSlope !== undefined && sl > r.maxSlope) continue;
       if (r.surface !== undefined && fromTop >= r.surface) continue;
       return r.material;
     }
     return material;
   };
-  return { k, t, sceneId, i0, j0, nx, nz, floor, lo, hi, height, slope, materialAt };
+  return { k, s, t, sceneId, i0, j0, nx, nz, floor, lo, hi, height, slope, materialAt };
 }
 
 // ------------------------------------------------------------------ frames as canvas
@@ -212,8 +224,9 @@ const IDENTITY = [1, 0, 0, 0, 1, 0, 0, 0, 1];
 
 /** Voxel frames that overlap the field, and what each can take. A frame's cell is filled when its centre is in the
  * field; a field cell is done when its centre is in a frame cell that is solid (before or after). For a frame on the
- * lattice (translation-only, unit scale, whole-unit offset) the two are the same cells. Other frames ("any") are props
- * placed at any angle and scale, so their cells only approximate the field's (up to half a scaled voxel at the surface). */
+ * lattice (translation-only, scaled by the voxel size, offset by whole voxels) the two are the same cells. Other frames
+ * ("any") are props placed at any angle and scale, so their cells only approximate the field's (up to half a scaled voxel
+ * at the surface). */
 export function canvas(store: EditorStore, f: Field, reuse: Reuse = "aligned"): Canvas {
   const out: Canvas = { fills: [], skipped: [], covered: new Map() };
   if (reuse === "none") return out;
@@ -227,20 +240,22 @@ export function canvas(store: EditorStore, f: Field, reuse: Reuse = "aligned"): 
     const col = b * f.nx + a;
     return sy >= f.lo[col] && sy < f.hi[col] ? [col, sy - f.lo[col]] : null;
   };
+  const s = f.s;
   for (const g of grids(store)) {
     const m = g.toMap, inv = g.fromMap;
-    const x0 = Math.max(f.i0, Math.floor(g.bounds.min[0] - f.t[0])), x1 = Math.min(f.i0 + f.nx, Math.ceil(g.bounds.max[0] - f.t[0]));
-    const z0 = Math.max(f.j0, Math.floor(g.bounds.min[2] - f.t[2])), z1 = Math.min(f.j0 + f.nz, Math.ceil(g.bounds.max[2] - f.t[2]));
-    const y0 = Math.max(yMin, Math.floor(g.bounds.min[1] - f.t[1])), y1 = Math.min(yMax, Math.ceil(g.bounds.max[1] - f.t[1]));
+    const x0 = Math.max(f.i0, Math.floor((g.bounds.min[0] - f.t[0]) / s)), x1 = Math.min(f.i0 + f.nx, Math.ceil((g.bounds.max[0] - f.t[0]) / s));
+    const z0 = Math.max(f.j0, Math.floor((g.bounds.min[2] - f.t[2]) / s)), z1 = Math.min(f.j0 + f.nz, Math.ceil((g.bounds.max[2] - f.t[2]) / s));
+    const y0 = Math.max(yMin, Math.floor((g.bounds.min[1] - f.t[1]) / s)), y1 = Math.min(yMax, Math.ceil((g.bounds.max[1] - f.t[1]) / s));
     if (x0 >= x1 || z0 >= z1 || y0 >= y1) continue;
-    const unit = [m[0], m[1], m[2], m[4], m[5], m[6], m[8], m[9], m[10]].every((v, i) => Math.abs(v - IDENTITY[i]) <= 1e-6);
-    const whole = [m[3] - f.t[0], m[7] - f.t[1], m[11] - f.t[2]].every((v) => Math.abs(v - Math.round(v)) <= 1e-4);
+    const unit = [m[0], m[1], m[2], m[4], m[5], m[6], m[8], m[9], m[10]].every((v, i) => Math.abs(v - s * IDENTITY[i]) <= 1e-6);
+    const whole = [m[3] - f.t[0], m[7] - f.t[1], m[11] - f.t[2]].every((v) => Math.abs(v / s - Math.round(v / s)) <= 1e-4);
     const aligned = unit && whole;
     if (!aligned && reuse !== "any") {
-      out.skipped.push({ id: g.id, name: g.frame.name, why: unit ? "not on whole units of the Scene frame" : "rotated or scaled" });
+      out.skipped.push({ id: g.id, name: g.frame.name,
+        why: unit ? "not on whole voxels of the Scene frame's lattice" : s === 1 ? "rotated or scaled" : "rotated, or scaled other than voxelSize" });
       continue;
     }
-    if (!aligned && [0, 1, 2].some((j) => Math.hypot(m[j], m[4 + j], m[8 + j]) < 0.9)) {
+    if (!aligned && [0, 1, 2].some((j) => Math.hypot(m[j], m[4 + j], m[8 + j]) < 0.9 * s)) {
       out.skipped.push({ id: g.id, name: g.frame.name, why: "scaled down: its voxels are smaller than the lattice's" });
       continue;
     }
@@ -259,7 +274,7 @@ export function canvas(store: EditorStore, f: Field, reuse: Reuse = "aligned"): 
           const px = m[0] * (x + 0.5) + m[1] * (y + 0.5) + m[2] * (z + 0.5) + m[3] - f.t[0];
           const py = m[4] * (x + 0.5) + m[5] * (y + 0.5) + m[6] * (z + 0.5) + m[7] - f.t[1];
           const pz = m[8] * (x + 0.5) + m[9] * (y + 0.5) + m[10] * (z + 0.5) + m[11] - f.t[2];
-          const sy = Math.floor(py), c = cellOf(Math.floor(px), sy, Math.floor(pz));
+          const sy = Math.floor(py / s), c = cellOf(Math.floor(px / s), sy, Math.floor(pz / s));
           if (!c || out.covered.get(c[0])?.[c[1]]) continue;
           changes.set(i, [w, filled(f.materialAt(c[0], sy))]);
         }
@@ -271,7 +286,7 @@ export function canvas(store: EditorStore, f: Field, reuse: Reuse = "aligned"): 
         for (let sy = y0; sy < y1; sy++) {
           const c = cellOf(sx, sy, sz);
           if (!c || out.covered.get(c[0])?.[c[1]]) continue;
-          const px = sx + 0.5 + f.t[0], py = sy + 0.5 + f.t[1], pz = sz + 0.5 + f.t[2];
+          const px = (sx + 0.5) * s + f.t[0], py = (sy + 0.5) * s + f.t[1], pz = (sz + 0.5) * s + f.t[2];
           const gx = Math.floor(inv[0] * px + inv[1] * py + inv[2] * pz + inv[3]);
           const gy = Math.floor(inv[4] * px + inv[5] * py + inv[6] * pz + inv[7]);
           const gz = Math.floor(inv[8] * px + inv[9] * py + inv[10] * pz + inv[11]);
@@ -307,14 +322,22 @@ export function canvas(store: EditorStore, f: Field, reuse: Reuse = "aligned"): 
 
 // ------------------------------------------------------------------ packing
 
-export interface Piece {
+/** A box of field cells for one block: columns [x0, x1) x [z0, z1) and scene y [y0, y1), trimmed to the cells it needs.
+ * deps are the boxes it stands on (a slice on the slice under it in its tile): it is kept only when they are. */
+export interface Box {
   x0: number; x1: number; z0: number; z1: number;   // columns of the field, [x0, x1)
   y0: number; y1: number;                           // scene y, [y0, y1)
   voxels: number;
+  deps: Box[];
+}
+export interface Piece extends Box {
   runs: number;
   bytes: number;
-  stack: number; level: number;                     // its tile and slice: a slice needs the one under it
+  deps: Piece[];
 }
+
+/** The game's cells a box costs: all of it. */
+const cellsOf = (p: Omit<Box, "deps">) => (p.x1 - p.x0) * (p.y1 - p.y0) * (p.z1 - p.z0);
 
 /** The cells a column needs from blocks in [y0, y1): first, end, count. */
 function need(f: Field, cv: Canvas, col: number, y0: number, y1: number): [number, number, number] {
@@ -350,7 +373,7 @@ function trim(f: Field, cv: Canvas, x0: number, x1: number, z0: number, z1: numb
   return voxels ? { x0: bx0, x1: bx1, z0: bz0, z1: bz1, y0: by0, y1: by1, voxels } : null;
 }
 
-function words(f: Field, cv: Canvas, p: Piece): Uint32Array {
+function words(f: Field, cv: Canvas, p: Omit<Box, "deps">): Uint32Array {
   const X = p.x1 - p.x0, Y = p.y1 - p.y0, Z = p.z1 - p.z0;
   const w = new Uint32Array(X * Y * Z);
   for (let z = 0; z < Z; z++)
@@ -363,9 +386,10 @@ function words(f: Field, cv: Canvas, p: Piece): Uint32Array {
   return w;
 }
 
-/** Fills in runs and bytes; halves a piece along its longer side while its runs pass the limit. */
-function finish(f: Field, cv: Canvas, p: Omit<Piece, "runs" | "bytes">, out: Piece[]) {
-  const piece = p as Piece;
+/** A box as the pieces it becomes: runs and bytes filled in, halved along its longer side while its runs pass the
+ * limit. The pieces keep the box's deps (still boxes; pack() maps them to pieces). */
+function finish(f: Field, cv: Canvas, box: Box, out: Piece[]) {
+  const piece = { ...box } as Piece;
   const w = words(f, cv, piece);   // not kept: apply() builds them again for the blocks it adds
   const runs = voxelRuns(new Uint32Array(w.length), w);
   if (runs.length <= LIMITS.runsPerFrame) {
@@ -374,37 +398,55 @@ function finish(f: Field, cv: Canvas, p: Omit<Piece, "runs" | "bytes">, out: Pie
     out.push(piece);
     return;
   }
-  const X = p.x1 - p.x0, Y = p.y1 - p.y0, Z = p.z1 - p.z0;
+  const X = box.x1 - box.x0, Y = box.y1 - box.y0, Z = box.z1 - box.z0;
   const halves: [number, number, number, number, number, number][] = [];
-  if (X >= Z && X > 1) { const m = p.x0 + (X >> 1); halves.push([p.x0, m, p.z0, p.z1, p.y0, p.y1], [m, p.x1, p.z0, p.z1, p.y0, p.y1]); }
-  else if (Z > 1) { const m = p.z0 + (Z >> 1); halves.push([p.x0, p.x1, p.z0, m, p.y0, p.y1], [p.x0, p.x1, m, p.z1, p.y0, p.y1]); }
-  else { const m = p.y0 + (Y >> 1); halves.push([p.x0, p.x1, p.z0, p.z1, p.y0, m], [p.x0, p.x1, p.z0, p.z1, m, p.y1]); }
+  if (X >= Z && X > 1) { const m = box.x0 + (X >> 1); halves.push([box.x0, m, box.z0, box.z1, box.y0, box.y1], [m, box.x1, box.z0, box.z1, box.y0, box.y1]); }
+  else if (Z > 1) { const m = box.z0 + (Z >> 1); halves.push([box.x0, box.x1, box.z0, m, box.y0, box.y1], [box.x0, box.x1, m, box.z1, box.y0, box.y1]); }
+  else { const m = box.y0 + (Y >> 1); halves.push([box.x0, box.x1, box.z0, box.z1, box.y0, m], [box.x0, box.x1, box.z0, box.z1, m, box.y1]); }
   for (const h of halves) {
     const b = trim(f, cv, h[0], h[1], h[2], h[3], h[4], h[5]);
-    if (b) finish(f, cv, { ...b, stack: p.stack, level: p.level }, out);
+    if (b) finish(f, cv, { ...b, deps: box.deps }, out);
   }
 }
 
-/** The blocks for what the canvas leaves: the tiling offset with the fewest pieces, then the least volume. */
-export function pack(f: Field, cv: Canvas): Piece[] {
-  type Box = { x0: number; x1: number; z0: number; z1: number; y0: number; y1: number; voxels: number; stack: number; level: number };
+/** A box cut in two across `axis` (0 x, 1 y, 2 z), each half trimmed; null when it is one cell thick there. */
+function split(f: Field, cv: Canvas, b: Box, axis: 0 | 1 | 2): [Omit<Box, "deps">, Omit<Box, "deps">] | null {
+  const lo = [b.x0, b.y0, b.z0][axis], hi = [b.x1, b.y1, b.z1][axis];
+  if (hi - lo < 2) return null;
+  const m = lo + ((hi - lo) >> 1);
+  const r = (from: number, to: number) => {
+    const x = axis === 0 ? [from, to] : [b.x0, b.x1], y = axis === 1 ? [from, to] : [b.y0, b.y1], z = axis === 2 ? [from, to] : [b.z0, b.z1];
+    return trim(f, cv, x[0], x[1], z[0], z[1], y[0], y[1]);
+  };
+  const a = r(lo, m), c = r(m, hi);
+  return a && c ? [a, c] : null;
+}
+
+/** The blocks for what the canvas leaves. Tiles of 31 x 31 columns (the offset with the fewest boxes, then the least
+ * volume), stacked in 31-high slices trimmed to their cells. While the boxes hold more than `cellRoom` cells and fewer
+ * than `slots` blocks are used, the box whose halving saves the most cells is halved (in x, z or y, each half trimmed):
+ * a cone's flanks then cost their slope, not their tile's whole height. */
+export function pack(f: Field, cv: Canvas, slots = Infinity, cellRoom = Infinity): Piece[] {
   let best: Box[] | null = null, bestVolume = Infinity;
   const offsets = [0, 8, 16, 24];
   for (const ox of f.nx > SIDE ? offsets : [0])
     for (const oz of f.nz > SIDE ? offsets : [0]) {
       const boxes: Box[] = [];
-      let volume = 0, stack = 0;
+      let volume = 0;
       for (let tz = -oz; tz < f.nz; tz += SIDE)
-        for (let tx = -ox; tx < f.nx && !(best && boxes.length > best.length); tx += SIDE, stack++) {
+        for (let tx = -ox; tx < f.nx && !(best && boxes.length > best.length); tx += SIDE) {
           const x0 = Math.max(0, tx), x1 = Math.min(f.nx, tx + SIDE), z0 = Math.max(0, tz), z1 = Math.min(f.nz, tz + SIDE);
           if (x0 >= x1 || z0 >= z1) continue;
           const all = trim(f, cv, x0, x1, z0, z1, -Infinity, Infinity);
           if (!all) continue;
-          for (let y = all.y0, level = 0; y < all.y1; y += SIDE, level++) {
+          let under: Box | null = null;
+          for (let y = all.y0; y < all.y1; y += SIDE) {
             const b = trim(f, cv, all.x0, all.x1, all.z0, all.z1, y, Math.min(all.y1, y + SIDE));
             if (!b) continue;
-            boxes.push({ ...b, stack, level });
-            volume += (b.x1 - b.x0) * (b.y1 - b.y0) * (b.z1 - b.z0);
+            const box: Box = { ...b, deps: under ? [under] : [] };
+            boxes.push(box);
+            under = box;
+            volume += cellsOf(b);
           }
         }
       if (!best || boxes.length < best.length || (boxes.length === best.length && volume < bestVolume)) {
@@ -412,24 +454,60 @@ export function pack(f: Field, cv: Canvas): Piece[] {
         bestVolume = volume;
       }
     }
-  const out: Piece[] = [];
-  for (const b of best ?? []) finish(f, cv, b, out);
+  let boxes = best ?? [];
+  let total = boxes.reduce((n, b) => n + cellsOf(b), 0);
+  const cuts = new Map<Box, { save: number; axis: 0 | 1 | 2; halves: [Omit<Box, "deps">, Omit<Box, "deps">] } | null>();
+  while (total > cellRoom && boxes.length < slots) {
+    let pick: Box | null = null;
+    for (const b of boxes) {
+      if (!cuts.has(b)) {
+        let c: { save: number; axis: 0 | 1 | 2; halves: [Omit<Box, "deps">, Omit<Box, "deps">] } | null = null;
+        for (const axis of [0, 2, 1] as const) {
+          const h = split(f, cv, b, axis);
+          const save = h ? cellsOf(b) - cellsOf(h[0]) - cellsOf(h[1]) : 0;
+          if (h && save > (c?.save ?? 0)) c = { save, axis, halves: h };
+        }
+        cuts.set(b, c);
+      }
+      const c = cuts.get(b);
+      if (c && (!pick || c.save > cuts.get(pick)!.save)) pick = b;
+    }
+    if (!pick) break;
+    const { save, axis, halves } = cuts.get(pick)!;
+    // Halves side by side stand on what the box stood on; in y the upper half stands on the lower. What stood on the box
+    // now stands on both halves (in y, on the upper one).
+    const lower: Box = { ...halves[0], deps: pick.deps };
+    const upper: Box = { ...halves[1], deps: axis === 1 ? [lower] : pick.deps };
+    const on = axis === 1 ? [upper] : [lower, upper];
+    boxes = boxes.flatMap((b) => (b === pick ? [lower, upper] : [b]));
+    for (const b of boxes) if (b.deps.includes(pick)) b.deps = b.deps.flatMap((d) => (d === pick ? on : [d]));
+    total -= save;
+  }
+  const out: Piece[] = [], of = new Map<Box, Piece[]>();
+  for (const b of boxes) {
+    const n = out.length;
+    finish(f, cv, b, out);
+    of.set(b, out.slice(n));
+  }
+  for (const p of out) p.deps = (p.deps as Box[]).flatMap((d) => of.get(d) ?? []);
   return out;
 }
 
-/** Keeps at most `slots` pieces within `bytes`: the most voxels first, a slice only above a kept one. */
-export function choose(pieces: Piece[], slots: number, bytes: number): { kept: Piece[]; dropped: Piece[] } {
-  if (pieces.length <= slots && pieces.reduce((n, p) => n + p.bytes, 0) <= bytes) return { kept: pieces, dropped: [] };
+/** Keeps at most `slots` pieces within `bytes` and `cells`: the most voxels first, a piece only when what it stands on is. */
+export function choose(pieces: Piece[], slots: number, bytes: number, cells = Infinity): { kept: Piece[]; dropped: Piece[] } {
+  if (pieces.length <= slots && pieces.reduce((n, p) => n + p.bytes, 0) <= bytes && pieces.reduce((n, p) => n + cellsOf(p), 0) <= cells)
+    return { kept: pieces, dropped: [] };
   const kept = new Set<Piece>();
-  const below = (p: Piece) => pieces.filter((q) => q.stack === p.stack && q.level === p.level - 1);
-  let used = 0;
+  let used = 0, usedCells = 0;
   for (;;) {
     let pick: Piece | null = null;
     for (const p of pieces)
-      if (!kept.has(p) && used + p.bytes <= bytes && below(p).every((q) => kept.has(q)) && (!pick || p.voxels > pick.voxels)) pick = p;
+      if (!kept.has(p) && used + p.bytes <= bytes && usedCells + cellsOf(p) <= cells && p.deps.every((q) => kept.has(q)) &&
+        (!pick || p.voxels > pick.voxels)) pick = p;
     if (!pick || kept.size >= slots) break;
     kept.add(pick);
     used += pick.bytes;
+    usedCells += cellsOf(pick);
   }
   return { kept: pieces.filter((p) => kept.has(p)), dropped: pieces.filter((p) => !kept.has(p)) };
 }
@@ -452,14 +530,13 @@ export interface Plan {
 
 function pieceInfo(f: Field, p: Piece) {
   const min: Vec3 = mapOf(f, [f.i0 + p.x0, p.y0, f.j0 + p.z0]), max: Vec3 = mapOf(f, [f.i0 + p.x1, p.y1, f.j0 + p.z1]);
-  return { size: [p.x1 - p.x0, p.y1 - p.y0, p.z1 - p.z0], voxels: p.voxels, runs: p.runs,
+  return { size: [p.x1 - p.x0, p.y1 - p.y0, p.z1 - p.z0], voxels: p.voxels, cells: cellsOf(p), runs: p.runs,
     map: { min: tidy(min), max: tidy(max) }, world: { min: tidy(min.map((v) => v * WORLD_PER_MAP) as Vec3), max: tidy(max.map((v) => v * WORLD_PER_MAP) as Vec3) } };
 }
 
 export function plan(store: EditorStore, a: FieldArgs): Plan {
   const f = sampleField(store, a);
   const cv = canvas(store, f, a.reuseFrames ?? "aligned");
-  const pieces = pack(f, cv);
 
   let columns = 0, voxels = 0, top = -Infinity;
   for (let c = 0; c < f.lo.length; c++) if (f.hi[c] > f.lo[c]) { columns++; voxels += f.hi[c] - f.lo[c]; top = Math.max(top, f.hi[c]); }
@@ -474,7 +551,11 @@ export function plan(store: EditorStore, a: FieldArgs): Plan {
   const opsRoom = LIMITS.ops - patch.ops.length - cv.fills.filter((x) => x.changes.size && !x.grid.frame.new && x.grid.words.every((w, i) => w === x.grid.base[i])).length;
   const fillBytes = cv.fills.reduce((n, x) => n + x.bytes, 0);
   const byteRoom = PATCH_BUDGET - patchBytes - fillBytes;
-  const { kept, dropped } = choose(pieces, Math.min(slots, Math.floor(opsRoom / 2)), byteRoom);
+  const cells = cellBudget(store.scene);
+  const blockRoom = Math.min(slots, Math.floor(opsRoom / 2)), cellRoom = Math.max(0, Math.min(cells.free, a.maxCells ?? Infinity));
+  const pieces = pack(f, cv, blockRoom, cellRoom);
+  const { kept, dropped } = choose(pieces, blockRoom, byteRoom, cellRoom);
+  const neededCells = pieces.reduce((n, p) => n + cellsOf(p), 0), keptCells = kept.reduce((n, p) => n + cellsOf(p), 0);
 
   const blockVoxels = pieces.reduce((n, p) => n + p.voxels, 0), keptVoxels = kept.reduce((n, p) => n + p.voxels, 0);
   const fillVoxels = cv.fills.reduce((n, x) => n + x.covers, 0), solidVoxels = cv.fills.reduce((n, x) => n + x.solid, 0);
@@ -492,28 +573,37 @@ export function plan(store: EditorStore, a: FieldArgs): Plan {
       : `the field needs ${blocks(pieces.length)} and ${slots} may be added (${usedBlocks} of ${LIMITS.newFrames} already used` +
         `${a.maxBlocks !== undefined ? `, maxBlocks ${a.maxBlocks}` : ""})` +
         (pieces.reduce((n, p) => n + p.bytes, 0) > byteRoom ? ", and their runs pass the patch's size budget" : "") +
+        (neededCells > cellRoom ? `, and their boxes hold ${neededCells} voxel cells where the level has ${cells.free} of the game's ${cells.max} left (its frames hold ${cells.used}` +
+          `${a.maxCells !== undefined ? `, maxCells ${a.maxCells}` : ""})` : "") +
         `. Without ${blocks(dropped.length)} ${blockVoxels - keptVoxels} voxels are missing` +
-        (lostTop >= top ? `, up to the peak (map y ${num(lostTop + f.t[1])})` : "") +
-        ". Shrink the rectangle, lower the heights or baseDepth, use fewer material bands (each band crossing a column costs a run, and a block over 2000 runs is split), or pass partial: true to place the blocks holding the most voxels.";
+        (lostTop >= top ? `, up to the peak (map y ${num(lostTop * f.s + f.t[1])})` : "") +
+        ". Shrink the rectangle, lower the heights or baseDepth, use a larger voxelSize (a cell costs the same and covers more), use fewer material bands (each band crossing a column costs a run, and a block over 2000 runs is split), or pass partial: true to place the blocks holding the most voxels.";
   }
   if (runVoxelsAfter > LIMITS.runVoxels) why = `the patch's runs would cover ${runVoxelsAfter} voxels (at most ${LIMITS.runVoxels})`;
   const fits = !why || (!!a.partial && runVoxelsAfter <= LIMITS.runVoxels);
 
   const toW = (v: number) => num(v * WORLD_PER_MAP);
   const rect = { min: mapOf(f, [f.i0, f.floor, f.j0]), max: mapOf(f, [f.i0 + f.nx, top === -Infinity ? f.floor : top, f.j0 + f.nz]) };
+  const notes: string[] = [];
+  if ((a.materials ?? []).some((r) => r.surface !== undefined) && columns > SURFACE_NOTE_COLUMNS)
+    notes.push(`a surface rule paints a skin of another material over ${columns} columns: in a test a one-voxel skin over 6954 columns made the game's ` +
+      "landscape combiner run out of vertices (CombineLandscapeAction asserts, holes in the drawn terrain) where height bands over the same island did not; " +
+      "on a large field prefer minHeight/maxHeight or slope bands, and Test the level");
   const report = {
-    fits, ...(why ? { why } : {}),
-    region: { columns: f.nx * f.nz, size: [f.nx, f.nz], solidColumns: columns, map: { min: tidy(rect.min), max: tidy(rect.max) },
+    fits, ...(why ? { why } : {}), ...(notes.length ? { notes } : {}),
+    region: { voxelSize: f.s, columns: f.nx * f.nz, size: [f.nx, f.nz], solidColumns: columns, map: { min: tidy(rect.min), max: tidy(rect.max) },
       world: { min: tidy(rect.min.map((v) => v * WORLD_PER_MAP) as Vec3), max: tidy(rect.max.map((v) => v * WORLD_PER_MAP) as Vec3) },
-      floor: { map: f.floor + f.t[1], world: toW(f.floor + f.t[1]) }, peakVoxels: columns ? top - f.floor : 0 },
+      floor: { map: num(f.floor * f.s + f.t[1]), world: toW(f.floor * f.s + f.t[1]) }, peakVoxels: columns ? top - f.floor : 0 },
     voxels: { field: voxels, alreadySolid: solidVoxels, inFrames: fillVoxels, inBlocks: keptVoxels, dropped: blockVoxels - keptVoxels },
     frames: cv.fills.map((x) => ({ id: x.grid.id, name: x.grid.frame.name, ...(x.aligned ? {} : { approximate: true }), cellsFilled: x.changes.size, covers: x.covers, alreadySolid: x.solid, runs: x.runs })),
     ...(cv.skipped.length ? { framesSkipped: { count: cv.skipped.length,
       why: cv.skipped.reduce((o, x) => ({ ...o, [x.why]: (o[x.why] ?? 0) + 1 }), {} as Record<string, number>), list: cv.skipped.slice(0, 20) } } : {}),
-    blocks: { needed: pieces.length, placed: kept.length, runs: kept.reduce((n, p) => n + p.runs, 0), list: kept.map((p) => pieceInfo(f, p)) },
+    blocks: { needed: pieces.length, placed: kept.length, scale: f.s, cells: keptCells, runs: kept.reduce((n, p) => n + p.runs, 0), list: kept.map((p) => pieceInfo(f, p)) },
     ...(dropped.length ? { dropped: { count: dropped.length, voxels: blockVoxels - keptVoxels, list: dropped.slice(0, 100).map((p) => pieceInfo(f, p)) } } : {}),
     budget: {
       blocks: { before: usedBlocks, after: usedBlocks + (fits ? kept.length : 0), max: LIMITS.newFrames, left: LIMITS.newFrames - usedBlocks - (fits ? kept.length : 0) },
+      cells: { before: cells.used, needed: neededCells, after: cells.used + (fits ? keptCells : 0), max: cells.max, left: cells.free - (fits ? keptCells : 0),
+        note: "the game counts X*Y*Z of every voxel frame (each block's whole box) and crashes loading more than max" },
       patchBytes: { before: patchBytes, after: patchBytes + (fits ? fillBytes + keptBytes : 0), budget: PATCH_BUDGET, note: "estimated" },
       runVoxels: { after: runVoxelsAfter, max: LIMITS.runVoxels },
     },
@@ -544,9 +634,10 @@ export function apply(store: EditorStore, p: Plan): { blocks: { id: number; name
     const name = `ergblock_${n}`;
     names.add(name);
     ids.add(tmp);
-    const size: Vec3 = [pc.x1 - pc.x0, pc.y1 - pc.y0, pc.z1 - pc.z0];
-    const frame: Frame = { id: tmp, new: true, parent: f.sceneId!, name, pos: [f.i0 + pc.x0 + size[0] / 2, pc.y0 + size[1] / 2, f.j0 + pc.z0 + size[2] / 2],
-      rot: [0, 0, 0], scale: [1, 1, 1], size, voxels: store.freshRef(), heightMap: null, folder: false };
+    const size: Vec3 = [pc.x1 - pc.x0, pc.y1 - pc.y0, pc.z1 - pc.z0], s = f.s;
+    const frame: Frame = { id: tmp, new: true, parent: f.sceneId!, name,
+      pos: [(f.i0 + pc.x0 + size[0] / 2) * s, (pc.y0 + size[1] / 2) * s, (f.j0 + pc.z0 + size[2] / 2) * s],
+      rot: [0, 0, 0], scale: [s, s, s], size, voxels: store.freshRef(), heightMap: null, folder: false };
     cmds.push(new AddFrame(store.voxels, frame, words(f, p.canvas, pc)));
     made.push({ id: tmp, name });
   }

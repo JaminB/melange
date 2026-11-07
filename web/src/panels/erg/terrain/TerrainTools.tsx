@@ -25,6 +25,7 @@ export function TerrainTools({ tool, palette, names }: { tool: TerrainTool; pale
   const blocks = tool.sculptor.blockList;
   const setAxis = (i: number, v: number) => tool.setBrush({ size: b.size.map((s, k) => (k === i ? v : s)) as Vec3 });
   const kb = Math.round(tool.sculptor.patchBytes / 1024), limitKb = Math.round(LIMITS.patchBytes / 1024);
+  const cells = tool.sculptor.cells, maxSide = block ? LIMITS.newFrameSide : MAX_BRUSH, scale = b.blockScale ?? 1;
 
   return (
     <div class="erg-terrain pad" data-erg-terrain>
@@ -43,17 +44,25 @@ export function TerrainTools({ tool, palette, names }: { tool: TerrainTool; pale
       ) : null}
       <label class="row" style={{ marginTop: "8px" }}>
         <span>Size</span>
-        <input type="range" min={1} max={MAX_BRUSH} value={Math.max(...b.size)} data-size
+        <input type="range" min={1} max={maxSide} value={Math.max(...b.size)} data-size
           onInput={(e) => { const v = +(e.currentTarget as HTMLInputElement).value; tool.setBrush({ size: [v, v, v] }); }} />
         <span class="muted">{uniform ? `${b.size[0]} voxels` : b.size.join(" × ")}</span>
       </label>
       {b.shape === "box" || block ? (
         <div class="row" style={{ marginTop: "4px" }}>
           {AXES.map((ax, i) => (
-            <label>{ax} <input type="number" min={1} max={MAX_BRUSH} value={b.size[i]} style={{ width: "4em" }} data-axis={ax}
+            <label>{ax} <input type="number" min={1} max={maxSide} value={b.size[i]} style={{ width: "4em" }} data-axis={ax}
               onChange={(e) => setAxis(i, +(e.currentTarget as HTMLInputElement).value)} /></label>
           ))}
         </div>
+      ) : null}
+      {block ? (
+        <label class="row" style={{ marginTop: "4px" }} title="Map units per voxel: a larger scale covers more ground with the same cells">
+          <span>Scale</span>
+          <input type="number" min={LIMITS.newFrameScale.min} max={LIMITS.newFrameScale.max} step={0.1} value={scale} style={{ width: "5em" }}
+            data-block-scale onChange={(e) => tool.setBrush({ blockScale: +(e.currentTarget as HTMLInputElement).value })} />
+          <span class="muted">{`${+(b.size[0] * scale).toFixed(2)} × ${+(b.size[1] * scale).toFixed(2)} × ${+(b.size[2] * scale).toFixed(2)} map units`}</span>
+        </label>
       ) : null}
       {b.mode !== "carve" ? (
         <div style={{ marginTop: "10px" }}>
@@ -91,12 +100,17 @@ export function TerrainTools({ tool, palette, names }: { tool: TerrainTool; pale
           : last ? `${last.changed} voxels in ${last.frames.length} frame${last.frames.length === 1 ? "" : "s"}, ${last.ms.toFixed(1)} ms` : "Drag over the terrain to sculpt. [ and ] resize the brush."}
       </p>
       <p class="muted" data-budget>Terrain edits: {kb} KB of the patch's {limitKb} KB.</p>
+      <p class={cells.used > cells.max ? "error" : "muted"} data-cells
+        title="The game counts every cell of every voxel frame (X × Y × Z, solid or empty) and crashes loading a map past this">
+        Voxel cells: {cells.used.toLocaleString("en-US")} of the game's {cells.max.toLocaleString("en-US")}
+        {cells.used > cells.max ? " — over the limit: export, build and Test refuse this map" : ` (${cells.free.toLocaleString("en-US")} free)`}.
+      </p>
       {block || blocks.length ? (
         <div data-blocks>
           <p class="muted">Added blocks: {blocks.length} of {LIMITS.newFrames}, each side up to {LIMITS.newFrameSide} voxels.</p>
           {blocks.map((f) => (
             <div class="row between" data-block={f.name}>
-              <span>{f.name} <span class="muted">{f.size.join(" × ")}</span></span>
+              <span>{f.name} <span class="muted">{f.size.join(" × ")}{f.scale[0] !== 1 ? ` at scale ${f.scale[0]}` : ""}</span></span>
               <button class="btn" data-remove-block={f.id} onClick={() => tool.sculptor.removeBlock(f.id)}>Remove</button>
             </div>
           ))}

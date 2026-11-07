@@ -778,6 +778,78 @@ void TestNewFrames() {
     refused("TeamBase1", 13, "TEAMBASE");
     refused("LEDGE", 13, "fresh");
     refused("ergblock_0", 12, "Scene frame");
+
+    // A scaled block: "scale" is written only when it is not 1, so an unscaled patch keeps its bytes.
+    Expect(erg::WritePatch(p).find("\"scale\"") == std::string::npos, "scaled frames: an unscaled block writes no scale");
+    erg::Patch sp = p;
+    sp.ops[0].newFrame.scale = 2.5;
+    const std::string stext = erg::WritePatch(sp);
+    erg::Patch sback;
+    Expect(stext.find("\"scale\":2.5") != std::string::npos && erg::ParsePatch(stext, &sback, &err) && sback.ops[0].newFrame.scale == 2.5,
+           "scaled frames: the scale round-trips " + err);
+    Expect(erg::build::Apply(L, sback, rules, &s, &v, &err) && s.FindFrame(-1) && s.FindFrame(-1)->scale == erg::Vec3{2.5, 2.5, 2.5} &&
+               erg::ValidateScene(s, &err),
+           "scaled frames: applied with that scale on every axis " + err);
+    erg::Scene sc;
+    Expect(erg::ParseScene(erg::WriteScene(s), &sc, &err) && sc.FindFrame(-1)->scale == erg::Vec3{2.5, 2.5, 2.5},
+           "scaled frames: the scene document keeps it " + err);
+    files.clear();
+    Expect(erg::build::Build(L, s, v, {}, &files, &err), "scaled frames: build " + err);
+    out.xan = FileBytes(files, "Maps/ergtest_synth.xan");
+    erg::load::Loaded SB;
+    const erg::Frame* sbuilt = nullptr;
+    if (erg::load::LoadScene(out, &SB, &err))
+        for (const auto& fr : SB.scene.frames)
+            if (fr.name == "ergblock_0") sbuilt = &fr;
+    Expect(sbuilt && sbuilt->scale == erg::Vec3{2.5, 2.5, 2.5} && sbuilt->pos == erg::Vec3{2, 1, 3.5},
+           "scaled frames: the .xan frame has the scale " + err);
+    const erg::Patch sd = erg::build::Diff(L.scene, s, v, &L.blobs);
+    Expect(!sd.ops.empty() && sd.ops[0].kind == erg::Op::Kind::AddFrame && sd.ops[0].newFrame.scale == 2.5, "scaled frames: the diff keeps the scale");
+    for (const char* bad : {"0.5", "4.5", "\"2\"", "[2,2,2]"}) {
+        std::string t = stext;
+        t.replace(t.find("\"scale\":2.5") + 8, 3, bad);
+        erg::Patch q;
+        std::string e;
+        Expect(!erg::ParsePatch(t, &q, &e) && e.find("scale") != std::string::npos, std::string("scaled frames: scale ") + bad + " is refused: " + e);
+    }
+    erg::Scene bent = s;
+    for (auto& fr : bent.frames)
+        if (fr.isNew) fr.scale = {2, 2, 1};
+    Expect(!erg::ValidateScene(bent, &err) && err.find("scale") != std::string::npos, "scaled frames: a scene refuses a non-uniform scale");
+
+    // A block of 32 a side loads (it drew in the game before the 31 limit was known) and warns; 33 is refused.
+    erg::Patch legacy = p;
+    legacy.ops[0].newFrame.size = {32, 2, 4};
+    legacy.ops[1].runs = {{0, 256, 3 | 5 << 2}};
+    erg::Patch lback;
+    Expect(erg::ParsePatch(erg::WritePatch(legacy), &lback, &err) && erg::build::Apply(L, lback, rules, &s, &v, &err) && erg::ValidateScene(s, &err),
+           "legacy blocks: a side of 32 still loads " + err);
+    std::vector<std::string> warn = erg::EngineWarnings(s);
+    Expect(warn.size() == 1 && warn[0].find("ergblock_0") != std::string::npos && warn[0].find("31") != std::string::npos,
+           "legacy blocks: and is named in a warning");
+    Expect(erg::CheckEngineLimits(s, &err), "legacy blocks: a side of 32 is not refused");
+    Expect(erg::build::Apply(L, p, rules, &s, &v, &err) && erg::EngineWarnings(s).empty(), "legacy blocks: 31 or less warns nothing");
+    legacy.ops[0].newFrame.size = {33, 2, 4};
+    Expect(!erg::ParsePatch(erg::WritePatch(legacy), &lback, &err) && err.find("size") != std::string::npos, "legacy blocks: 33 is refused");
+
+    // The engine's 16-bit cell count: X*Y*Z of every voxel frame, base and new, solid or empty.
+    const uint64_t baseCells = erg::VoxelCells(L.scene);
+    Expect(baseCells == 1 + 4 * 3 * 2 + 2 * 2 * 2, "cells: the base's voxel frames count, the 1x1x1 folder too");
+    erg::Patch big = EmptyPatch(L, "ergtest_synth");
+    for (int k = 0; k < 3; ++k) {
+        erg::Op a;
+        a.kind = erg::Op::Kind::AddFrame;
+        a.newFrame = {-1 - k, 13, "ergblock_" + std::to_string(k), {40.0 * k, 0, 0}, {31, 31, 22}};
+        big.ops.push_back(a);
+    }
+    const bool applied = erg::build::Apply(L, big, rules, &s, &v, &err);
+    Expect(applied && erg::VoxelCells(s) == baseCells + 3 * 31 * 31 * 22 && erg::CheckEngineLimits(s, &err), "cells: three 31x31x22 blocks fit " + err);
+    big.ops[2].newFrame.size = {31, 31, 31};
+    Expect(erg::build::Apply(L, big, rules, &s, &v, &err) && !erg::CheckEngineLimits(s, &err) && err.find("65535") != std::string::npos &&
+               err.find(std::to_string(erg::VoxelCells(s))) != std::string::npos,
+           "cells: a third block of 31 cubed passes 65535 and is refused " + err);
+    warn = erg::EngineWarnings(s);
+    Expect(warn.size() == 1 && warn[0].find("will refuse") != std::string::npos, "cells: and warns");
 }
 
 void TestNegative() {
@@ -1197,6 +1269,43 @@ void TestService(const std::wstring& root) {
                              : sr.blobs.end();
         Expect(nf && nf->isNew && blob != sr.blobs.end() && blob->bytes.size() == 16 && static_cast<uint8_t>(blob->bytes[0]) == (3 | 2 << 2),
                "load project: the block and its voxels come back " + err + sr.message);
+
+        // Engine limits: a block of 32 a side saves with a warning naming it, loads, and still builds for Test.
+        const std::wstring ws = root + L"\\enginews";
+        erg::install::MakeDirs(ws);
+        erg::Patch side = block;
+        side.ops[side.ops.size() - 2].newFrame.size = {32, 1, 2};
+        sr = Call(S, "level.save", R"({"project":"harbour","patch":)" + erg::WritePatch(side) + "}");
+        const Json sw = sr.ok ? J(sr.json) : Json::Obj();
+        auto warns = [](const Json& w, const char* what) {
+            const Json* a = w.find("warnings");
+            return a && std::any_of(a->arr.begin(), a->arr.end(), [&](const Json& x) { return x.str.find(what) != std::string::npos; });
+        };
+        Expect(sr.ok && warns(sw, "block 'ergblock_0' is 32x1x2") && !warns(sw, "65535"),
+               "engine limits: a 32-side block saves with a warning that names it " + sr.message + sr.json.substr(0, 300));
+        Expect(Call(S, "level.load", R"({"project":"harbour"})").ok && S.s->BuildTest("harbour", ws).ok,
+               "engine limits: the 32-side project still loads and builds for Test");
+        // Past 65535 cells: saved with a warning, refused by Test, export (both modes) and level.build.
+        erg::Patch over = q;
+        for (int k = 0; k < 3; ++k) {
+            erg::Op a;
+            a.kind = erg::Op::Kind::AddFrame;
+            a.newFrame = {-1 - k, 13, "ergblock_" + std::to_string(k), {40.0 * k, 0, 0}, {31, 31, 31}};
+            over.ops.push_back(a);
+        }
+        sr = Call(S, "level.save", R"({"project":"harbour","patch":)" + erg::WritePatch(over) + "}");
+        const Json ow = sr.ok ? J(sr.json) : Json::Obj();
+        Expect(sr.ok && warns(ow, "crashes loading more than 65535") && !warns(ow, "asserts"),
+               "engine limits: over 65535 cells saves with a warning " + sr.message + sr.json.substr(0, 300));
+        Expect(Call(S, "level.load", R"({"project":"harbour"})").ok, "engine limits: the project still loads");
+        sr = S.s->BuildTest("harbour", ws);
+        Expect(!sr.ok && sr.code == erg::service::kBadParams && sr.message.find("65535") != std::string::npos,
+               "engine limits: Test refuses it " + sr.message);
+        for (const char* mode : {"source", "install"}) {
+            sr = Call(S, "level.export", std::string(R"({"project":"harbour","modId":"cells-over","name":"x","version":"1.0.0","mode":")") + mode + "\"}");
+            Expect(!sr.ok && sr.message.find("65535") != std::string::npos, std::string("engine limits: export ") + mode + " refuses it " + sr.message);
+        }
+        Expect(!std::filesystem::exists(std::filesystem::path(game + L"\\Mods\\cells-over")), "engine limits: nothing was written");
         sr = Call(S, "level.save", R"({"project":"harbour","patch":)" + erg::WritePatch(q) + "}");
         Expect(sr.ok, "save: without the block " + sr.message);
     }

@@ -1,5 +1,5 @@
 // Tool group "project": the connection, projects (list, new, open, save, close), undo and redo, and describe_level.
-import { WORLD_PER_XAN, isSolid, type Detail, type Role, type Vec3 } from "../core";
+import { WORLD_PER_XAN, engineWarnings, isSolid, type Detail, type Role, type Vec3 } from "../core";
 import { grids, limitProblems, tidy, toWorld, usage } from "../lib/voxel";
 import { ToolError, type Tool } from "../registry";
 import type { Session } from "../session";
@@ -78,6 +78,8 @@ export function describe(s: Session, q: FrameQuery = {}) {
     details: { total: scene.details.length, byRole: roles },
     limits: usage(store),
     problems: limitProblems(store),
+    // what the game would assert or crash on: saved with a warning, refused by export, build and test
+    engineWarnings: engineWarnings(scene),
   };
 }
 
@@ -153,7 +155,7 @@ export const tools: Tool[] = [
   },
   {
     name: "describe_level",
-    description: "The open project: voxel frames, largest first (id, size, position and bounds in map and world units, solid count), the level's extent, spawns, objects, water, theme, time of day, and usage against the patch limits (64 added blocks of at most 32 voxels a side, 2000 runs per frame, 20000 ops, 4 MB, 256 objects).",
+    description: "The open project: voxel frames, largest first (id, size, position and bounds in map and world units, solid count), the level's extent, spawns, objects, water, theme, time of day, usage against the patch limits (64 added blocks of at most 31 voxels a side, 2000 runs per frame, 20000 ops, 4 MB, 256 objects), the game's voxel cell budget (limits.voxelCells: X*Y*Z of every voxel frame, at most 65535, with cells used and free) and engineWarnings.",
     inputSchema: {
       type: "object", additionalProperties: false,
       properties: {

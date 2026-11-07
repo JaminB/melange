@@ -85,9 +85,17 @@ the mode, shape, size and material; `[` and `]` resize the brush, and Alt-drag s
 column* takes the material of the terrain above. Fill and paint stay inside the piece of terrain the stroke started
 on.
 
-**Blocks.** *Add block* places a new solid block of the brush's size (1-32 voxels a side) and material: click the
-terrain and the block rests there, its corner snapped to whole map units. A block can be sculpted like any other
-terrain, and the *Terrain* tab lists the blocks with a *Remove* button. A map holds up to 64.
+**Blocks.** *Add block* places a new solid block of the brush's size (1-31 voxels a side) and material: click the
+terrain and the block rests there, its corner snapped to whole map units. *Scale* (1-4, default 1) makes each voxel
+that many map units across, so a block of 31 at scale 2.5 is about 78 map units wide for the same cost; the game's own
+maps use scales of 1.2-2.0. A block can be sculpted like any other terrain, and the *Terrain* tab lists the blocks with
+a *Remove* button. A map holds up to 64.
+
+**The cell budget.** The game counts every cell of every voxel frame of a map, solid or empty, base and added (X x Y x
+Z of each), and crashes loading a map past 65 535. The game's maps use about 8 000-46 000, and the *Terrain* tab shows
+the current count. *Add block* refuses a block that would pass it; a project over it (made by an older Melange) still
+opens and saves, with a warning, but Export, Build and Test refuse it. Clearing base terrain does not free cells (the
+frames stay); a larger scale covers more ground with the same cells.
 
 **Second material (experimental).** *2nd material* paints one of the level's materials (named from its material file)
 over solid voxels; the voxels next to the brush take it on the corners they share, so it blends at the edge. *Remove*
@@ -245,7 +253,13 @@ Survivor copy. Packs exported by an earlier Melange keep working unchanged.
 
 - Up to 32 maps in one mod, 128 across every enabled mod at once.
 - A map title is 1-40 plain-ASCII characters.
-- Up to 64 added blocks per map, each side 1-32 voxels.
+- Up to 64 added blocks per map, each side 1-31 voxels, scale 1-4. The game asserts on a side of 32: a block of 32 made
+  by an older Melange still opens, and saving names it in a warning (remove it and add it again at 31).
+- At most 65 535 voxel cells per map, counted over every voxel frame (see [the cell budget](#terrain)): saving warns
+  past it, and Export, Build and Test refuse.
+- The game draws terrain from a mesh with a vertex budget of its own. A large area where every column's top voxel is a
+  different material from the voxel under it (a one-voxel skin) has run out of it in a test (holes in the drawn
+  terrain, `CombineLandscapeAction` lines in the log); bands of material by height did not. Test large terrain.
 - A patch (your saved edits) is capped at 20 000 operations and 4 MB — enough for any hand-made edit; if you hit
   this, split the changes into more than one exported map.
 - Not yet supported:

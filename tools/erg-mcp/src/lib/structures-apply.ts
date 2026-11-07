@@ -2,7 +2,7 @@
 // are edited with the panel's SculptStroke command, and what falls outside every frame goes into new terrain blocks
 // (AddFrame, the panel's own block command) under the Scene frame. Edits go through the same patch the panel saves.
 import {
-  AddFrame, Group, LIMITS, SculptStroke, carved, filled, isSolid, material, painted, sceneFrame, voxelRuns,
+  AddFrame, Group, LIMITS, SculptStroke, cellBudget, carved, filled, isSolid, material, painted, sceneFrame, voxelRuns,
   type EditorStore, type Frame, type Vec3,
 } from "../core";
 import { ToolError } from "../registry";
@@ -49,7 +49,7 @@ export interface StructureResult {
   newBlocks: { id: number; name: string; size: Vec3; centre: { map: Vec3; world: Vec3 }; voxels: number }[];
   outsideFrames: number;
   bounds: { map: { min: Vec3; max: Vec3 }; world: { min: Vec3; max: Vec3 } };
-  usage: { newBlocks: string; patchBytes: string; worstRuns: string };
+  usage: { newBlocks: string; patchBytes: string; worstRuns: string; voxelCells: string };
   notes: string[];
 }
 
@@ -184,6 +184,10 @@ export function applyPlan(store: EditorStore, plan: Plan, opt: ApplyOptions): St
   }
   const free = LIMITS.newFrames - store.scene.frames.filter((f) => f.new).length;
   if (blocks.length > free) throw new ToolError(`the structure needs ${blocks.length} new blocks but the level has room for ${free} (at most ${LIMITS.newFrames}); use place "existing" or a smaller structure`);
+  const cells = cellBudget(store.scene), blockCells = blocks.reduce((n, b) => n + b.frame.size[0] * b.frame.size[1] * b.frame.size[2], 0);
+  if (blockCells > cells.free)
+    throw new ToolError(`the structure's new blocks hold ${blockCells} voxel cells but the level has ${cells.free} of the game's ${cells.max} left ` +
+      `(its voxel frames hold ${cells.used}); build it inside existing frames (place "existing"), make it smaller, or remove blocks`);
   for (const b of blocks) added += b.voxels;
 
   // 3. the runs limit of the edited frames
@@ -210,6 +214,7 @@ export function applyPlan(store: EditorStore, plan: Plan, opt: ApplyOptions): St
       newBlocks: `${u.newFrames.used}/${u.newFrames.max}`,
       patchBytes: `${u.patchBytes.used}/${u.patchBytes.max} (panel budget ${u.patchBytes.budget})`,
       worstRuns: `${u.runsPerFrame.worst}/${u.runsPerFrame.max}`,
+      voxelCells: `${u.voxelCells.used}/${u.voxelCells.max}`,
     },
     notes: [
       ...notes,
@@ -221,6 +226,7 @@ export function applyPlan(store: EditorStore, plan: Plan, opt: ApplyOptions): St
   if (opt.dryRun) {
     const u = usage(store);
     u.newFrames = { used: u.newFrames.used + blocks.length, max: u.newFrames.max };
+    u.voxelCells = { ...u.voxelCells, used: u.voxelCells.used + blockCells, free: u.voxelCells.free - blockCells };
     return result(u);
   }
   if (!stroke.size && !blocks.length) throw new ToolError(`nothing was built: ${result(usage(store)).notes.join('; ')}`);

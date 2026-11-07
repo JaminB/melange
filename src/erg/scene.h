@@ -13,7 +13,15 @@ namespace melange::erg {
 constexpr std::string_view kSceneFormat = "erg-scene/1", kSceneFormat2 = "erg-scene/2";
 constexpr int kWorldPerXan = 20;
 constexpr size_t kMaxFrames = 4096, kMaxDetails = 65536, kMaxFrameVoxels = 262144;
-constexpr size_t kMaxObjects = 256, kMaxNewFrames = 64, kMaxNewFrameSide = 32, kMaxTelepadGroups = 8;
+constexpr size_t kMaxObjects = 256, kMaxNewFrames = 64, kMaxNewFrameSide = 31, kMaxTelepadGroups = 8;
+// The engine asserts on a frame side over 31 (LandFramePseudoEntity). Blocks of 32 were made before that was known and
+// drew in the game, so a scene or patch with one still loads; level.save warns about it.
+constexpr size_t kLegacyNewFrameSide = 32;
+// The engine counts the cells (X*Y*Z, solid or empty) of all of a level's voxel frames in 16 bits
+// (LandscapeLogicEntity) and crashes loading a level past this. Export, build and Test refuse such a level.
+constexpr uint64_t kMaxVoxelCells = 65535;
+// A new frame's uniform scale (map units per voxel); the game's own frames use 1.0-2.0.
+constexpr double kMinNewFrameScale = 1, kMaxNewFrameScale = 4;
 constexpr size_t kHmpSide = 100, kHmpCells = kHmpSide * kHmpSide, kHmpBytes = kHmpCells * 5;   // f32 heights + u8 blend
 
 using Vec3 = std::array<double, 3>;
@@ -51,6 +59,7 @@ struct Frame {
     int64_t voxels = -1, heightMap = -1;              // blob refs, -1 = none
     bool folder = false;                              // 1x1x1, identity rotation and scale
     bool isNew = false;                               // added by the author: id -1..-64, under the Scene frame
+                                                      // (no rotation, uniform scale 1-4)
 };
 struct Detail {
     int64_t id = 0;
@@ -132,6 +141,14 @@ struct Scene {
 
 // True when the frame is named "Scene" or has such an ancestor (new frames go only there).
 bool UnderSceneFrame(const Scene& s, int64_t frameId);
+
+// X*Y*Z summed over every frame with voxels (base and new): what the engine's 16-bit cell count sees.
+uint64_t VoxelCells(const Scene& s);
+// The engine limits a scene can break and still load here: new frames over 31 a side (a warning: such blocks drew in
+// the game) and more than 65535 cells (a crash: CheckEngineLimits refuses it). One sentence each.
+std::vector<std::string> EngineWarnings(const Scene& s);
+// False with a reason when the game would crash loading the scene (the cell count); export, build and Test call it.
+bool CheckEngineLimits(const Scene& s, std::string* err);
 
 // Parses and checks the shape, the limits and the references (frame parents, detail frames, blob refs and sizes).
 bool ParseScene(std::string_view json, Scene* out, std::string* err);

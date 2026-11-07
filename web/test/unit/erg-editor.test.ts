@@ -3,8 +3,10 @@ import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import {
   AddDetail, AddObjects, KNOT_RESOURCE, LIMITS, apply, type CommandStack, PATCH_FORMAT_2, RemoveDetail, SetDetail, SetLevel, SetObject, THEMES, applyPatch, deriveRole,
-  frameWorld, isEmptyPatch, validatePatch, validatePatchObjects, type Command, type Scene, type Vec3,
+  engineWarnings, frameWorld, isEmptyPatch, validatePatch, validatePatchObjects, validateScene, voxelCells, type Command, type Patch, type Scene,
+  type Vec3,
 } from "../../src/sdk/erg";
+import { blockProblem, cellBudget } from "../../src/panels/erg/terrain/blocks";
 import { catalogOf, objectOf } from "../../src/panels/erg/model/placing";
 import { checkScene } from "../../src/panels/erg/model/checks";
 import { clearDraft, readDraft, writeDraft } from "../../src/panels/erg/model/draft";
@@ -500,6 +502,100 @@ test("server shapes: level.list, level.new and level.themes are read defensively
 });
 
 // ------------------------------------------------------------------ blocks
+function blockStore() {
+  const s = scene12();
+  const root = s.frames.find((f) => f.parent === null)!;
+  s.frames.push({ id: 9000, parent: root.id, name: "Scene", pos: [0, 0, 0], rot: [0, 0, 0], scale: [1, 1, 1], size: [1, 1, 1], voxels: null,
+    heightMap: null, folder: true });
+  const base = loaded(s);
+  const store = new EditorStore("p1", base, loaded(structuredClone(s)));
+  const sc = new Sculptor({ scene: store.scene, voxels: store.voxels, base: store.baseVoxels, refOf: (id) => store.voxelRef(id),
+    stack: { exec: (c: Command, m?: boolean) => store.exec(c, m) } as unknown as CommandStack, remesh: () => {}, freshRef: () => store.freshRef() });
+  return { s, base, store, sc };
+}
+
+test("blocks: a scale makes bigger voxels, picked, sculpted, dropped onto, and saved as addFrame.scale", () => {
+  const { base, store, sc } = blockStore();
+  const brush: Brush = { mode: "block", shape: "box", size: [4, 2, 4], material: 5, blockScale: 2.5 };
+  const r = sc.step({ grid: sc.frames[0], center: [0.5, 0.5, 0.5], point: [100.3, 10, 50.2] }, brush);
+  assert.equal(r.refused, undefined);
+  const f = store.scene.frames.find((x) => x.id === -1)!;
+  assert.deepEqual(f.scale, [2.5, 2.5, 2.5]);
+  assert.deepEqual(f.pos, [100, 12.5, 50], "corner snapped to whole units, the centre half the scaled size from it");
+  const g = sc.frames.find((x) => x.frame.id === -1)!;
+  assert.deepEqual(g.bounds, { min: [95, 10, 45], max: [105, 15, 55] }, "4x2x4 voxels of 2.5 units");
+  // the preview box is the scaled block too
+  assert.deepEqual(sc.preview({ grid: g, center: [0.5, 0.5, 0.5], point: [0, 0, 0] }, brush).box, { min: [-5, 0, -5], max: [5, 5, 5] });
+  // pick from above lands on its top; a 1-voxel carve there clears one 2.5-unit voxel
+  const hit = sc.pick([101, 40, 51], [0, -1, 0])!;
+  assert.equal(hit.grid.frame.id, -1);
+  assert.ok(Math.abs(hit.point![1] - 15) < 1e-9, `top at ${hit.point}`);
+  assert.equal(sc.step(sc.anchor(hit, { ...brush, mode: "carve", size: [1, 1, 1] }), { mode: "carve", shape: "box", size: [1, 1, 1], material: 0 }).changed, 1);
+  const drop = (x: number, z: number) => dropPoint(store.scene, store.frames, (id) => store.voxelsOf({ id }), [x, 40, z])!.map((v) => Math.round(v * 1e6) / 1e6);
+  assert.deepEqual(drop(96, 46), [96, 15, 46], "drop to ground");
+  assert.deepEqual(drop(101, 51), [101, 12.5, 51], "into the carved voxel");
+  const p = store.patch();
+  assert.deepEqual(p.ops[0], { op: "addFrame", tmp: -1, parent: 9000, name: "ergblock_0", pos: [100, 12.5, 50], size: [4, 2, 4], scale: 2.5 });
+  assert.deepEqual(validatePatch(p).errors, []);
+  const again = new EditorStore("p1", base, withPatch(base, p));
+  assert.equal(again.patchText(), JSON.stringify(p), "a scaled block reopens as the same patch");
+  assert.deepEqual(again.scene.frames.find((x) => x.id === -1)!.scale, [2.5, 2.5, 2.5]);
+  const doc = { ...structuredClone(again.scene), format: "erg-scene/2" as const };
+  assert.deepEqual(validateScene(doc).errors.filter((e) => /frame -1/.test(e)), [], "the scaled block is a valid scene frame");
+  // an unscaled block writes no scale key: patches without scaled blocks are byte for byte what they were
+  sc.step({ grid: sc.frames[0], center: [0.5, 0.5, 0.5], point: [300, 0, 0] }, { ...brush, blockScale: undefined });
+  assert.equal("scale" in store.patch().ops.filter((o) => o.op === "addFrame")[1], false);
+  // the tool clamps the scale; the patch refuses one out of range
+  for (const [bad, why] of [[0.5, "under 1"], [4.5, "over 4"], ["2", "a string"], [[2, 2, 2], "a vector"]] as const) {
+    const q = structuredClone(p) as Patch;
+    (q.ops[0] as { scale?: unknown }).scale = bad;
+    assert.ok(validatePatch(q).errors.some((e) => /scale/.test(e)), why);
+  }
+  const bent = structuredClone(doc);
+  bent.frames.find((x) => x.id === -1)!.scale = [2.5, 2.5, 1];
+  assert.ok(validateScene(bent).errors.some((e) => /frame -1.*scale/.test(e)), "a new frame's scale is the same on every axis");
+});
+
+test("blocks: the game's 65535 voxel cells, counted over every voxel frame, refuse a block past them with the reason", () => {
+  const { store, sc } = blockStore();
+  const before = voxelCells(store.scene);
+  assert.equal(before, store.scene.frames.reduce((n, f) => n + (f.voxels !== null ? f.size[0] * f.size[1] * f.size[2] : 0), 0));
+  assert.deepEqual(sc.cells, { used: before, max: 65535, free: 65535 - before });
+  const cube: Brush = { mode: "block", shape: "box", size: [31, 31, 31], material: 1 };
+  assert.equal(sc.step({ grid: sc.frames[0], center: [0.5, 0.5, 0.5], point: [500, 0, 0] }, cube).refused, undefined);
+  assert.equal(sc.step({ grid: sc.frames[0], center: [0.5, 0.5, 0.5], point: [600, 0, 0] }, cube).refused, undefined);
+  assert.equal(sc.cells.used, before + 2 * 29791);
+  const why = sc.step({ grid: sc.frames[0], center: [0.5, 0.5, 0.5], point: [700, 0, 0] }, cube).refused ?? "";
+  assert.ok(why.includes(`31x31x31 block is 29791 cells and the level has ${65535 - before - 2 * 29791} of the game's 65535 left`), why);
+  assert.equal(store.scene.frames.filter((f) => f.new).length, 2, "nothing was added");
+  // a larger scale costs the same cells: the budget, not the footprint, is the limit
+  assert.equal(blockProblem(store.scene, [10, 10, 10], 4), null);
+  assert.ok(/cells/.test(blockProblem(store.scene, [31, 31, 31], 4) ?? ""));
+  assert.equal(cellBudget(store.scene).free, 65535 - before - 2 * 29791);
+  assert.deepEqual(engineWarnings(store.scene), []);
+});
+
+test("blocks: a 32-side block from before the 31 limit still loads and is named in a warning; 33 never was", () => {
+  const { base } = blockStore();
+  const p = new EditorStore("p1", base, loaded(structuredClone(base.scene))).patch();
+  p.format = PATCH_FORMAT_2;
+  p.ops = [{ op: "addFrame", tmp: -1, parent: 9000, name: "ergblock_0", pos: [16, 0.5, 0], size: [32, 1, 1] },
+    { op: "voxels", frame: -1, runs: [[0, 32, 3]] }];
+  assert.deepEqual(validatePatch(p).errors, [], "32 is still read");
+  const opened = new EditorStore("p1", base, withPatch(base, p));
+  assert.deepEqual(opened.patch().ops, p.ops, "and reopens unchanged");
+  const w = engineWarnings(opened.scene);
+  assert.equal(w.length, 1);
+  assert.ok(/block 'ergblock_0' is 32x1x1: the game asserts on a side over 31/.test(w[0]), w[0]);
+  (p.ops[0] as { size: Vec3 }).size = [33, 1, 1];
+  assert.ok(validatePatch(p).errors.some((e) => /size/.test(e)));
+  // past 65535 cells: the warning the server's save sends too
+  const big = structuredClone(opened.scene);
+  for (let i = 0; i < 3; i++)
+    big.frames.push({ ...big.frames.find((x) => x.id === -1)!, id: -2 - i, name: `ergblock_${i + 1}`, size: [31, 31, 31] });
+  assert.ok(engineWarnings(big).some((x) => /crashes loading more than 65535/.test(x)));
+});
+
 test("blocks: placed on the grid, sculpted, undone, removed, and round-tripped through the patch", () => {
   const s = scene12();
   const root = s.frames.find((f) => f.parent === null)!;
@@ -547,7 +643,8 @@ test("blocks: placed on the grid, sculpted, undone, removed, and round-tripped t
   store.undo();
   assert.equal(store.scene.frames.filter((x) => x.new).length, 1);
 
-  assert.ok(/up to|1-32/.test(sc.step({ grid: sc.frames[0], center: [0.5, 0.5, 0.5], point: [0, 0, 0] }, { ...brush, size: [33, 1, 1] }).refused ?? ""));
+  assert.ok(/1-31/.test(sc.step({ grid: sc.frames[0], center: [0.5, 0.5, 0.5], point: [0, 0, 0] }, { ...brush, size: [32, 1, 1] }).refused ?? ""),
+    "the game asserts on a side of 32");
   for (let i = 1; i < LIMITS.newFrames; i++)
     assert.equal(sc.step({ grid: sc.frames[0], center: [0.5, 0.5, 0.5], point: [i * 2, 0, 0] }, { ...brush, size: [1, 1, 1] }).refused, undefined);
   assert.ok(/at most 64/.test(sc.step({ grid: sc.frames[0], center: [0.5, 0.5, 0.5], point: [0, 9, 0] }, brush).refused ?? ""));

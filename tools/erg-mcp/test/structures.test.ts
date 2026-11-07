@@ -59,7 +59,7 @@ test("castle in empty space: new blocks, correct shape, one undo step, a patch t
   assert.equal(r.structure, "castle");
   assert.ok(r.voxels.added > 1000, `added ${r.voxels.added}`);
   assert.ok(r.newBlocks.length >= 2 && r.newBlocks.length <= 12, `blocks ${r.newBlocks.length}`);
-  for (const b of r.newBlocks) assert.ok(b.size.every((v: number) => v >= 1 && v <= 32));
+  for (const b of r.newBlocks) assert.ok(b.size.every((v: number) => v >= 1 && v <= 31));
   assert.equal(store.stack.depth, 1);
   assert.deepEqual(limitProblems(store), []);
   const c = blockCells(store);
@@ -228,6 +228,37 @@ test("limits: too many blocks, an oversized box, a level without a Scene frame",
   const r = await call(s2, "build_tower", { at: [500, 0, 500], dryRun: true });
   assert.ok(r.notes.some((n: string) => /no Scene frame/.test(n)));
   assert.equal(r.newBlocks.length, 0);
+});
+
+test("the game's 65535 voxel cells: a structure whose new blocks pass them is refused, dryRun reports them", async () => {
+  const { store, s } = session();
+  const dry = await call(s, "build_keep", { at: [500, 0, 500], size: [20, 20], height: 10, dryRun: true });
+  const [used, max] = dry.usage.voxelCells.split("/").map(Number);
+  assert.equal(max, 65535);
+  assert.ok(used > 0);
+  // A solid slab 31 high over 60 x 60 is about four 31-cubes: more cells than are left.
+  await assert.rejects(() => call(s, "build_keep", { at: [500, 0, 500], size: [60, 60], height: 31, foundation: 0, windows: false }),
+    /new blocks hold \d+ voxel cells but the level has \d+ of the game's 65535 left/);
+  assert.equal(store.stack.depth, 0);
+});
+
+test("a structure built into a scaled added block edits its voxels in place, in map units", async () => {
+  const { store, s } = session();
+  const { AddFrame } = await import("../src/core");
+  const sf = store.scene.frames.find((f) => f.name === "Scene")!;
+  // a 2.5-scale block of 8 x 4 x 8 voxels: 20 x 10 x 20 map units, its corner at (400, 0, 400) in the Scene frame
+  const frame = { id: -1, new: true, parent: sf.id, name: "ergblock_0", pos: [410, 5, 410], rot: [0, 0, 0], scale: [2.5, 2.5, 2.5],
+    size: [8, 4, 8], voxels: store.freshRef(), heightMap: null, folder: false } as never;
+  store.exec(new AddFrame(store.voxels, frame, new Uint32Array(8 * 4 * 8)));
+  const g = grids(store).find((x) => x.id === -1)!;
+  const at = [g.toMap[3], g.toMap[7], g.toMap[11]];
+  const r = await call(s, "build_tower", { at: [at[0] + 10, at[1] + 2.5, at[2] + 10], radius: 5, height: 5, hollow: false, place: "existing", material: 6, crenellations: false });
+  assert.equal(r.newBlocks.length, 0);
+  assert.ok(r.frames.some((f: { id: number }) => f.id === -1), JSON.stringify(r.frames));
+  const solid = grids(store).find((x) => x.id === -1)!.words.filter((w) => isSolid(w) && material(w) === 6).length;
+  // radius 5 map units is 2 voxels of 2.5: about pi * 2^2 = 12 columns, 5 map units high is 2 voxels
+  assert.ok(solid >= 16 && solid <= 32, `${solid} voxels`);
+  assert.deepEqual(limitProblems(store), []);
 });
 
 test("world units scale every length", async () => {

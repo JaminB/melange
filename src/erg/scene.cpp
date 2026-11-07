@@ -1,5 +1,6 @@
 #include "erg/scene.h"
 
+#include <algorithm>
 #include <cctype>
 #include <cmath>
 #include <unordered_map>
@@ -433,6 +434,32 @@ bool UnderSceneFrame(const Scene& s, int64_t frameId) {
     return false;
 }
 
+uint64_t VoxelCells(const Scene& s) {
+    uint64_t n = 0;
+    for (const auto& f : s.frames)
+        if (f.voxels >= 0) n += static_cast<uint64_t>(f.size[0]) * f.size[1] * f.size[2];
+    return n;
+}
+
+std::vector<std::string> EngineWarnings(const Scene& s) {
+    std::vector<std::string> out;
+    for (const auto& f : s.frames)
+        if (f.isNew && *std::max_element(f.size.begin(), f.size.end()) > static_cast<int>(kMaxNewFrameSide))
+            out.push_back("block '" + f.name + "' is " + std::to_string(f.size[0]) + "x" + std::to_string(f.size[1]) + "x" +
+                          std::to_string(f.size[2]) + ": the game asserts on a side over 31 voxels (remove it and add it again at 31)");
+    std::string err;
+    if (!CheckEngineLimits(s, &err)) out.push_back(err + "; export, build and Test will refuse");
+    return out;
+}
+
+bool CheckEngineLimits(const Scene& s, std::string* err) {
+    const uint64_t cells = VoxelCells(s);
+    if (cells > kMaxVoxelCells)
+        return Fail(err, "the level's voxel frames hold " + std::to_string(cells) + " cells (X*Y*Z, solid or empty) and the game " +
+                             "crashes loading more than " + std::to_string(kMaxVoxelCells) + ": remove or shrink blocks, or use a larger voxel scale");
+    return true;
+}
+
 bool ParseScene(std::string_view json, Scene* out, std::string* err) {
     if (json.size() > kMaxSceneBytes) return Fail(err, "the scene is larger than 16 MB");
     Json root;
@@ -646,10 +673,12 @@ bool ValidateScene(const Scene& s, std::string* err) {
         const std::string p = "frame " + std::to_string(f.id);
         if (++newFrames > kMaxNewFrames) return Fail(err, "frames: at most 64 new frames");
         if (f.id >= 0 || f.parent < 1) return Fail(err, p + ": a new frame has id -1..-64 and a frame of the base as parent");
-        if (f.rot != Vec3{0, 0, 0} || f.scale != Vec3{1, 1, 1} || f.folder || f.heightMap >= 0)
-            return Fail(err, p + ": a new frame has identity rotation and scale, no heightMap, and is not a folder");
+        const bool uniform = f.scale[0] == f.scale[1] && f.scale[1] == f.scale[2];
+        if (f.rot != Vec3{0, 0, 0} || !uniform || !(f.scale[0] >= kMinNewFrameScale && f.scale[0] <= kMaxNewFrameScale) || f.folder ||
+            f.heightMap >= 0)
+            return Fail(err, p + ": a new frame has no rotation, one scale 1..4 on every axis, no heightMap, and is not a folder");
         for (int k = 0; k < 3; ++k)
-            if (f.size[k] < 1 || f.size[k] > static_cast<int>(kMaxNewFrameSide)) return Fail(err, p + ".size: each size must be 1..32");
+            if (f.size[k] < 1 || f.size[k] > static_cast<int>(kLegacyNewFrameSide)) return Fail(err, p + ".size: each size must be 1..32");
     }
     int roots = 0;
     for (auto& f : s.frames) {

@@ -256,6 +256,11 @@ bool BuildPatch(const std::wstring& gameDir, const std::vector<install::Pack>& p
         return false;
     }
     if (!stem.empty()) scene.stem = stem;
+    if (!CheckEngineLimits(scene, &e)) {
+        if (code) *code = kBadParams;
+        if (err) *err = e;
+        return false;
+    }
     if (!build::Build(L, scene, voxels, Options(L, res, scene), out, &e)) {
         if (code) *code = kBadParams;
         if (err) *err = "build: " + e;
@@ -425,10 +430,12 @@ struct Service::Impl {
         return !c || objects::Validate(scene, *c, warnings, err);
     }
 
+    // checkObjects false (a save) only checks that the level builds: crate contents and the engine's limits are
+    // warnings there, and refused here for everything that ships or plays the level.
     bool BuildFiles(const load::Loaded& L, const Resolved& res, const Scene& scene, const build::VoxelEdits& voxels,
                     std::vector<build::File>* files, Reply* r, bool checkObjects = true) {
         std::string err;
-        if (checkObjects && !CheckObjects(scene, nullptr, &err)) {
+        if (checkObjects && (!CheckObjects(scene, nullptr, &err) || !CheckEngineLimits(scene, &err))) {
             *r = Err(kBadParams, err);
             return false;
         }
@@ -658,6 +665,7 @@ struct Service::Impl {
             }
         std::vector<std::string> notes;
         if (!CheckObjects(scene, &notes, &err)) notes.push_back(err + "; export will refuse");
+        for (auto& n : EngineWarnings(scene)) notes.push_back(n);
         for (auto& n : notes) warnings.arr.push_back(Str(n));
         Json out = Json::Obj();
         out.set("saved", Json::Bool(true));
@@ -879,8 +887,9 @@ struct Service::Impl {
         build::VoxelEdits voxels;
         Resolved res;
         if (!OpenProject(id, &L, &patch, &scene, &voxels, &res, &r, true, conn)) return r;
-        std::string script;
+        std::string script, err;
         if (!ProjectScript(id, &script, &r)) return r;
+        if (!CheckEngineLimits(scene, &err)) return Err(kBadParams, err);   // a source pack builds it later: refuse now
         patch.script = MetaOf(script);
         const std::string stem = prefix + "_" + id;
         if (!names::ValidStem(stem, prefix, &why)) return Err(kBadParams, why);
@@ -904,7 +913,6 @@ struct Service::Impl {
         }
         const std::wstring dir = env.gameDir + L"\\Mods\\" + install::Widen(modId);
         std::vector<std::string> written;
-        std::string err;
         if (!pack::WritePack(spec, dir, &written, &err)) return Err(kPolicy, "export: " + err);
         project::Meta meta;
         store.ReadMeta(id, &meta);

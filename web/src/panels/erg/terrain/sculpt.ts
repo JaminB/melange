@@ -2,7 +2,7 @@
 // frames are remeshed, and a step that would push the patch past the server's limits is refused before it is applied. The
 // block mode adds a new terrain block instead (see blocks.ts).
 import { LIMITS, RemoveFrame, voxelRuns, type Command, type CommandStack, type Frame, type Scene, type Vec3 } from "../../../sdk/erg";
-import { blockBox, blockCentre, blockFrames, blockKey, planBlock } from "./blocks";
+import { blockBox, blockCentre, blockFrames, blockKey, cellBudget, planBlock } from "./blocks";
 import { anchorAt, strokeChanges, worldBox, type Anchor, type Brush } from "./brush";
 import { pick, type Hit } from "./pick";
 import { gridFrames, overlaps, type Box, type GridFrame } from "./voxel";
@@ -91,13 +91,17 @@ export class Sculptor {
   /** The added blocks, in the order they were added. */
   get blockList(): Frame[] { return blockFrames(this.host.scene); }
 
+  /** The game's voxel cell budget: cells every voxel frame holds now (X*Y*Z), of 65535. */
+  get cells() { return cellBudget(this.host.scene); }
+
   /** Adds a block of the brush's size and material resting where the ray met the terrain. */
   placeBlock(a: Anchor, b: Brush): StepResult {
     const t0 = now();
     if (!a.point || !this.host.freshRef) return { changed: 0, frames: [], ms: now() - t0, refused: "Blocks cannot be added here" };
-    const centre = blockCentre(this.host.scene, a.point, b.size);
+    const scale = b.blockScale ?? 1;
+    const centre = blockCentre(this.host.scene, a.point, b.size, scale);
     if (!centre) return { changed: 0, frames: [], ms: now() - t0, refused: "This level has no Scene frame to add blocks under" };
-    const cmd = planBlock(this.host.scene, this.host.voxels, this.host.freshRef(), centre, b.size, typeof b.material === "number" ? b.material : 0);
+    const cmd = planBlock(this.host.scene, this.host.voxels, this.host.freshRef(), centre, b.size, typeof b.material === "number" ? b.material : 0, scale);
     if (typeof cmd === "string") return { changed: 0, frames: [], ms: now() - t0, refused: cmd };
     this.host.stack.exec(cmd);
     this.refresh();
@@ -113,8 +117,9 @@ export class Sculptor {
    * carve, the anchor frame alone for fill and paint, none for a block. */
   preview(a: Anchor, b: Brush): { box: Box; frames: number[] } {
     if (b.mode === "block") {
-      const centre = a.point && blockCentre(this.host.scene, a.point, b.size);
-      const box = centre && blockBox(this.host.scene, centre, b.size);
+      const scale = b.blockScale ?? 1;
+      const centre = a.point && blockCentre(this.host.scene, a.point, b.size, scale);
+      const box = centre && blockBox(this.host.scene, centre, b.size, scale);
       return { box: box ?? worldBox(a, b), frames: [] };
     }
     const box = worldBox(a, b);

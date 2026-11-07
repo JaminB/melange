@@ -1,14 +1,15 @@
 // The heightfield group's planner on the synthetic 12-frame level (its root renamed Scene so blocks can be added), bundled
-// for Node by test.ps1 into test/out: the expression language, sampling, packing into blocks of at most 32 a side and 2000
-// runs, stacking, the 64-block budget and partial placement, lattice-aligned frames as canvas, apply as one undo step.
+// for Node by test.ps1 into test/out: the expression language, sampling, packing into blocks of at most 31 a side and 2000
+// runs, stacking, the 64-block and 65535-cell budgets and partial placement, lattice-aligned frames as canvas, apply as one
+// undo step, and scaled voxels (voxelSize).
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
 // @ts-ignore: plain ESM test helper
 import { syntheticBlobs } from "../../../web/test/e2e/erg-mock.mjs";
-import { EditorStore, LIMITS, filled, isSolid, material, type Loaded, type Scene } from "../src/core";
+import { EditorStore, LIMITS, filled, isSolid, material, voxelCells, type Loaded, type Scene } from "../src/core";
 import { compile, fbm, noise2 } from "../src/lib/heightfield-expr";
-import { apply, plan, sampleField, type FieldArgs, type Plan } from "../src/lib/heightfield-plan";
+import { apply, canvas, pack, plan, sampleField, type FieldArgs, type Plan } from "../src/lib/heightfield-plan";
 import { grids } from "../src/lib/voxel";
 
 const scene = (): Scene => JSON.parse(readFileSync(new URL("../../../../tests/fixtures/erg/synthetic-12.json", import.meta.url), "utf8"));
@@ -53,7 +54,7 @@ function solidAdded(st: EditorStore): Map<string, number> {
 
 function blocksOk(p: Plan) {
   for (const b of p.kept) {
-    for (const s of [b.x1 - b.x0, b.y1 - b.y0, b.z1 - b.z0]) assert.ok(s >= 1 && s <= 32, `side ${s}`);
+    for (const s of [b.x1 - b.x0, b.y1 - b.y0, b.z1 - b.z0]) assert.ok(s >= 1 && s <= 31, `side ${s}`);
     assert.ok(b.runs <= LIMITS.runsPerFrame, `${b.runs} runs`);
   }
 }
@@ -130,13 +131,13 @@ test("sampling: columns, floor, crater, grid, slope and materials", () => {
 
 test("a cone packs into blocks, applies as one undo step and covers exactly the field", () => {
   const st = store();
-  const a: FieldArgs = { min: [100, 100], max: [160, 160], floor: 0, expr: "max(0, 40 - r*1.4)", material: 2,
+  const a: FieldArgs = { min: [100, 100], max: [150, 150], floor: 0, expr: "max(0, 36 - r*1.4)", material: 2,
     materials: [{ material: 7, surface: 1 }] };
   const p = plan(st, a);
   assert.ok(p.fits, p.why);
   blocksOk(p);
   assert.ok(p.kept.length > 4 && p.kept.length <= 64);
-  assert.ok(p.kept.some((b) => b.level > 0), "the cone stacks blocks");
+  assert.ok(p.kept.some((b) => b.deps.length > 0), "the cone stacks blocks");
   const voxels = p.report.voxels as { field: number; inBlocks: number; inFrames: number; alreadySolid: number };
   assert.equal(voxels.inBlocks, p.voxels);
   const r = apply(st, p);
@@ -167,38 +168,134 @@ test("a cone packs into blocks, applies as one undo step and covers exactly the 
   assert.equal(grids(st).filter((g) => g.frame.new).length, p.kept.length);
 });
 
-test("budget: 256x256 at 32 high takes all 64 blocks; more is refused, or partial", () => {
+test("budget: 64 blocks and the game's 65535 cells; more is refused, or partial", () => {
   const st = store();
-  const full = plan(st, { min: [0, 0], max: [256, 256], floor: 0, expr: "32", material: 1 });
+  const used = voxelCells(st.scene), free = LIMITS.voxelCells - used;
+  // 248x240 one voxel high: 64 tiles of up to 31x31 (59520 cells), every block the budget allows.
+  const full = plan(st, { min: [0, 0], max: [248, 240], floor: 0, expr: "1", material: 1 });
   assert.ok(full.fits, full.why);
   assert.equal(full.kept.length, 64);
   assert.equal(full.dropped.length, 0);
-  assert.equal((full.report.budget as { blocks: { left: number } }).blocks.left, 0);
-  const over = plan(st, { min: [0, 0], max: [260, 256], floor: 0, expr: "32", material: 1 });
+  const budget = full.report.budget as { blocks: { left: number }; cells: { before: number; needed: number; after: number; max: number; left: number } };
+  assert.equal(budget.blocks.left, 0);
+  assert.deepEqual(budget.cells, { ...budget.cells, before: used, needed: 248 * 240, after: used + 248 * 240, max: 65535, left: free - 248 * 240 });
+  const over = plan(st, { min: [0, 0], max: [252, 240], floor: 0, expr: "1", material: 1 });
   assert.equal(over.fits, false);
   assert.match(over.why ?? "", /needs 72 blocks and 64 may be added/);
   assert.throws(() => apply(st, over), /needs 72 blocks/);
   assert.equal(st.stack.depth, 0);
-  const capped = plan(st, { min: [0, 0], max: [64, 64], floor: 0, expr: "32", maxBlocks: 2 });
+  // Few blocks but too many cells: 2 high doubles the boxes.
+  const cells = plan(st, { min: [0, 0], max: [186, 186], floor: 0, expr: "2", material: 1 });
+  assert.equal(cells.fits, false);
+  assert.match(cells.why ?? "", new RegExp(`boxes hold ${186 * 186 * 2} voxel cells where the level has ${free} of the game's 65535 left`));
+  assert.match(cells.why ?? "", /larger voxelSize/);
+  const capped = plan(st, { min: [0, 0], max: [64, 64], floor: 0, expr: "10", maxBlocks: 2 });
   assert.equal(capped.fits, false);
   assert.match(capped.why ?? "", /maxBlocks 2/);
   // A tall volcano with too few blocks: partial keeps the biggest, nothing floats.
-  const tall: FieldArgs = { min: [-64, -64], max: [64, 64], floor: 0, expr: "max(0, 100 - r*1.6)", maxBlocks: 20 };
+  const tall: FieldArgs = { min: [-40, -40], max: [40, 40], floor: 0, expr: "max(0, 60 - r*1.6)", maxBlocks: 20 };
   const no = plan(st, tall);
   assert.equal(no.fits, false);
   const yes = plan(st, { ...tall, partial: true });
   assert.ok(yes.fits);
-  assert.equal(yes.kept.length, 20);
+  assert.ok(yes.kept.length > 0 && yes.kept.length <= 20);
   assert.ok(yes.dropped.length > 0);
   for (const b of yes.kept)
-    for (const under of yes.pieces.filter((q) => q.stack === b.stack && q.level === b.level - 1)) assert.ok(yes.kept.includes(under), "a kept slice stands on kept ones");
+    for (const under of b.deps) assert.ok(yes.kept.includes(under), "a kept slice stands on kept ones");
   const minKept = Math.min(...yes.kept.map((b) => b.voxels));
-  assert.ok(yes.dropped.every((d) => d.voxels <= minKept || yes.pieces.some((q) => q.stack === d.stack && q.level === d.level - 1 && !yes.kept.includes(q))));
+  // a dropped piece is smaller than every kept one, stands on a dropped one, or no longer fits the cells left
+  const left = (yes.report.budget as { cells: { left: number } }).cells.left;
+  const boxCells = (d: { x0: number; x1: number; y0: number; y1: number; z0: number; z1: number }) => (d.x1 - d.x0) * (d.y1 - d.y0) * (d.z1 - d.z0);
+  assert.ok(yes.dropped.every((d) => d.voxels <= minKept || d.deps.some((q) => !yes.kept.includes(q)) || boxCells(d) > left));
   apply(st, yes);
   assert.deepEqual(st.problems(), []);
-  assert.equal(st.patch().ops.filter((o) => o.op === "addFrame").length, 20);
+  assert.equal(st.patch().ops.filter((o) => o.op === "addFrame").length, yes.kept.length);
+  assert.ok(voxelCells(st.scene) <= LIMITS.voxelCells);
   const after = plan(st, { min: [300, 300], max: [340, 340], floor: 0, expr: "10" });
-  assert.equal((after.report.budget as { blocks: { before: number } }).blocks.before, 20, "blocks already added count against the budget");
+  assert.equal((after.report.budget as { blocks: { before: number } }).blocks.before, yes.kept.length, "blocks already added count against the budget");
+  assert.equal((after.report.budget as { cells: { before: number } }).cells.before, voxelCells(st.scene), "and so do their cells");
+});
+
+test("partial within the cell budget: the kept blocks fit 65535, nothing floats", () => {
+  const st = store();
+  const p = plan(st, { min: [-60, -60], max: [60, 60], floor: 0, expr: "max(0, 50 - r*0.9)", partial: true });
+  assert.ok(p.fits && p.dropped.length > 0, p.why);
+  const kept = (p.report.budget as { cells: { after: number; left: number } }).cells;
+  assert.ok(kept.after <= LIMITS.voxelCells && kept.left >= 0, JSON.stringify(kept));
+  for (const b of p.kept)
+    for (const under of b.deps) assert.ok(p.kept.includes(under));
+  apply(st, p);
+  assert.ok(voxelCells(st.scene) <= LIMITS.voxelCells);
+});
+
+test("voxelSize: scaled blocks on a lattice of that size, the same field in fewer cells", () => {
+  const field: FieldArgs = { min: [-125, -125], max: [125, 125], floor: 0, expr: "max(0, 60*(1 - r/110))", material: 2, materials: [{ material: 7, surface: 1 }] };
+  const one = plan(store(), field);
+  assert.equal(one.fits, false, "at 1 map unit per voxel a 250x250 cone 60 high passes the cell budget");
+  const st = store();
+  const p = plan(st, { ...field, voxelSize: 2.5 });
+  assert.ok(p.fits, p.why);
+  blocksOk(p);
+  assert.deepEqual((p.report.region as { size: number[] }).size, [100, 100]);
+  assert.equal((p.report.region as { voxelSize: number }).voxelSize, 2.5);
+  assert.equal((p.report.region as { peakVoxels: number }).peakVoxels, 24, "60 map units high is 24 voxels of 2.5");
+  apply(st, p);
+  assert.deepEqual(st.problems(), []);
+  assert.ok(voxelCells(st.scene) <= LIMITS.voxelCells);
+  const blocks = st.scene.frames.filter((f) => f.new);
+  assert.ok(blocks.length && blocks.every((f) => f.scale.every((v) => v === 2.5)));
+  for (const o of st.patch().ops) if (o.op === "addFrame") assert.equal(o.scale, 2.5);
+  // Every block's corner is on the 2.5 lattice and its voxels are 2.5 map units: the field's cells exactly.
+  const got = new Map<string, number>();
+  for (const g of grids(st).filter((x) => x.frame.new)) {
+    assert.ok([0, 1, 2].every((a) => Math.abs(g.toMap[a * 4 + a] - 2.5) < 1e-9));
+    const o = [g.toMap[3], g.toMap[7], g.toMap[11]].map((v) => v / 2.5);
+    assert.ok(o.every((v) => Math.abs(v - Math.round(v)) < 1e-9), `corner ${o}`);
+    const [X, Y, Z] = g.size;
+    for (let z = 0; z < Z; z++) for (let x = 0; x < X; x++) for (let y = 0; y < Y; y++)
+      if (isSolid(g.words[(z * X + x) * Y + y])) {
+        const k = `${Math.round(o[0]) + x},${Math.round(o[1]) + y},${Math.round(o[2]) + z}`;
+        got.set(k, (got.get(k) ?? 0) + 1);
+      }
+  }
+  assert.equal(got.size, p.voxels);
+  const f = p.field;
+  for (let z = 0; z < f.nz; z++)
+    for (let x = 0; x < f.nx; x++) {
+      const c = z * f.nx + x;
+      for (let y = f.lo[c]; y < f.hi[c]; y++) assert.ok(got.has(`${f.i0 + x},${y},${f.j0 + z}`), `missing ${x},${y},${z}`);
+    }
+  // A second field at the same voxel size reuses those blocks as canvas (they are on its lattice).
+  const again = plan(st, { min: [-20, -20], max: [20, 20], floor: 60, expr: "5", voxelSize: 2.5 });
+  assert.ok((again.report.frames as { approximate?: true }[]).every((x) => !x.approximate));
+  assert.throws(() => plan(st, { ...field, voxelSize: 5 }), /voxelSize is 1-4/);
+  // the surface rule over a field this large gets the game's vertex note; height bands do not
+  assert.ok((p.report.notes as string[]).some((n) => /CombineLandscapeAction/.test(n)));
+  assert.equal(plan(store(), { ...field, voxelSize: 2.5, materials: [{ material: 7, maxHeight: 10 }] }).report.notes, undefined);
+});
+
+test("cells drive the packing: boxes are halved where they waste cells, within maxCells, using more blocks", () => {
+  const cone: FieldArgs = { min: [-30, -30], max: [30, 30], floor: 0, expr: "max(0, 24 - r*0.8)", material: 1 };
+  const free = LIMITS.voxelCells - voxelCells(store().scene);
+  const s0 = store(), f0 = sampleField(s0, cone);
+  const loose = pack(f0, canvas(s0, f0));   // no budget: the 31-tiling as it is
+  const looseCells = loose.reduce((n, p) => n + (p.x1 - p.x0) * (p.y1 - p.y0) * (p.z1 - p.z0), 0);
+  assert.ok(looseCells > free, `the 31-tiling needs ${looseCells} cells`);
+  const tight = plan(store(), cone);
+  const cellsOf = (p: Plan) => (p.report.blocks as { cells: number }).cells;
+  assert.ok(tight.fits, tight.why);
+  assert.ok(cellsOf(tight) <= free, `${cellsOf(tight)} cells after halving`);
+  assert.ok(tight.kept.length > loose.length, "halving uses more blocks");
+  assert.equal((tight.report.voxels as { inBlocks: number }).inBlocks, tight.voxels, "and still places every voxel");
+  const capped = plan(store(), { ...cone, maxCells: cellsOf(tight) - 2000 });
+  assert.ok(capped.fits ? cellsOf(capped) <= cellsOf(tight) - 2000 : /maxCells/.test(capped.why ?? ""), capped.why);
+  const none = plan(store(), { ...cone, maxCells: 100 });
+  assert.equal(none.fits, false);
+  assert.match(none.why ?? "", /maxCells 100/);
+  const st = store();
+  apply(st, tight);
+  for (const b of tight.kept) for (const d of b.deps) assert.ok(tight.kept.includes(d));
+  assert.deepEqual(st.problems(), []);
 });
 
 test("a block over 2000 runs is split", () => {

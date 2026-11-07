@@ -72,7 +72,7 @@ cells are counted in a frame's grid: cell `(x, y, z)` with `y` up, centred on th
 | `list_bases` | The base levels (the game's multiplayer maps and installed map packs: key, title, theme, source) and the projects. Filters: `search`, `theme`, `source`. |
 | `new_project` | Start a project from a base: `base` (a key such as `Multi.DinerMight`), `slug` (`[a-z0-9]{1,24}`), `title`. The server picks another id when the slug is taken; the result has the id. |
 | `open_project` | Open a project by `id`: its base and current state with every voxel blob. One project is open at a time. |
-| `describe_level` | The open level: voxel frames largest first (id, size, solid count, position and bounds in map and world units; `search`, `minVoxels`, `limit`, `allFrames`), the level's extent, spawns, objects, water, theme, time of day, and the patch's usage against the limits. |
+| `describe_level` | The open level: voxel frames largest first (id, size, solid count, position and bounds in map and world units; `search`, `minVoxels`, `limit`, `allFrames`), the level's extent, spawns, objects, water, theme, time of day, the patch's usage against the limits, the game's voxel cell budget (`limits.voxelCells`: used, max 65535, free) and `engineWarnings` (blocks over 31 a side, cells over the budget). |
 | `save` | Save the open project. Refused, with nothing sent, while the patch breaks a limit or the patch validator objects (`describe_level` lists them under `problems`; undo the edit). Returns the server's warnings. |
 | `undo`, `redo` | The editor's undo stack (500 steps), shared by every tool's edits. |
 | `close` | Close the open project (refused with unsaved edits unless `discard`). |
@@ -90,7 +90,7 @@ of the anchor frame, 1-32.
 |---|---|
 | `sculpt` | One dab: `mode` (`carve`, `fill`, `paint`), `shape` (`box`, `sphere`), `size` `[x,y,z]`, `center`, and `material` 0-63 (fill and paint need it; fill also takes `materialColumn`, the material of the highest solid voxel in each column). `frame` picks the anchor, otherwise the frame holding the point. Centres snap to the middle of a voxel unless `snap` is false; `dryRun` counts without applying. Fill places voxels where the brush is, so centre it in empty cells inside a frame. |
 | `sculpt_path` | A stroke along `points` (a polyline), a dab every `spacing` map units (default half the smallest brush side), all anchored on the first point's frame (or `frame`). |
-| `add_block` | A solid block of `size` (each side 1-32, at most 64 blocks) and `material` under the Scene frame. `at` is the point it rests on (x and z its centre, y its bottom) or `center` is its middle, in world or map units; the corner snaps to whole units. Answers the new frame id (a negative id; it can change when the project is reopened, so describe_level again) and its bounds. |
+| `add_block` | A solid block of `size` (each side 1-31, at most 64 blocks) and `material` under the Scene frame, optionally `scale` (1-4 map units per voxel, default 1). `at` is the point it rests on (x and z its centre, y its bottom) or `center` is its middle, in world or map units; the corner snaps to whole units. Refused when the level's voxel frames would pass the game's 65 535 cells. Answers the new frame id (a negative id; it can change when the project is reopened, so describe_level again), its bounds and the cells left. |
 | `remove_block` | Remove a block added in this project, by frame id. |
 | `clear_base_terrain` | Carve away the solid voxels of base frames chosen by `frames`, `search` (name) and/or a `box` (voxels whose centre is in `[min, max)`); `all: true` for everything. Added blocks are kept unless `includeBlocks`. `wipe` writes empty words (0) instead of carving, which keeps each voxel's material bits; empty words merge into fewer patch runs. `dryRun` counts. |
 | `fill_box_raw` | Write a box of voxels in any voxel frame, including added blocks: `state` `solid` (with `material`) or `empty`, or a raw `word`; `only` empty or solid cells; the box is `min`/`max` in `units` (default `grid`: voxel indices, `max` exclusive). Words must be valid edits of the base word. |
@@ -101,7 +101,8 @@ of the anchor frame, 1-32.
 
 Voxel architecture. Each tool plans a structure as a list of shapes and writes it as **one undo step**: voxels of the
 frames it overlaps are edited in place (rotated and scaled frames too), and where a solid part reaches outside every
-frame it goes into new terrain blocks under the Scene frame (they count against the 64 added blocks). The answer lists
+frame it goes into new terrain blocks under the Scene frame (they count against the 64 added blocks and the game's 65 535
+voxel cells, and a structure whose new blocks would pass either is refused). The answer lists
 the voxels added, removed and repainted, the frames touched, the new blocks, the patch usage, and the structure's own
 numbers (resolved sizes, where a ramp ends). `save` then sends the same patch the panel would.
 
@@ -127,9 +128,11 @@ frame in a level whose base has no Scene frame, such as Multi.NiceToSiege, where
 | `build_bridge` | A deck from `from` to `to` (`width`, `deckThickness`), rails, and optionally piers every `pierSpacing` down to `downTo`; `arched` fills solid between the piers and carves a round arch through each bay. |
 
 Structures are sampled at the centres of the voxel cells, so in a frame whose position is not on the 1-unit lattice a
-surface can land a voxel off from its neighbour frame; new blocks sit on the Scene frame's whole-unit lattice. The
-number of added blocks is the limit for large structures: a block is at most 32 voxels a side, and only cells that
-hold something are given a block.
+surface can land a voxel off from its neighbour frame; new blocks sit on the Scene frame's whole-unit lattice. Sizes are
+map units whatever the frame's scale: a tower of radius 5 built (`place: "existing"`) into a heightfield of `voxelSize`
+2.5 is 2 of its voxels across, so detail finer than the frame's voxels is lost. The added blocks and the cells are the
+limits for large structures: a block is at most 31 voxels a side, its whole box counts against the cells, and only cells
+that hold something are given a block.
 
 ### heightfield
 
@@ -138,13 +141,16 @@ answers the plan and changes nothing, `heightfield_region` applies it as **one u
 
 | Tool | What it does |
 |---|---|
-| `heightfield_plan` | Samples the field and packs it: which frames take which cells, the blocks it needs (size, bounds in map and world units, voxels, runs), what does not fit and why, and the budget before and after (added blocks, patch bytes, run voxels). |
+| `heightfield_plan` | Samples the field and packs it: which frames take which cells, the blocks it needs (size, bounds in map and world units, voxels, cells, runs), what does not fit and why, and the budget before and after (added blocks, the game's voxel cells, patch bytes, run voxels). |
 | `heightfield_region` | The same plan, applied: frame fills and new blocks together. Refused when it does not fit, unless `partial`. Answers the plan, the new blocks' ids and names, and the patch usage. |
 
 Arguments, all lengths and heights in `units` (`map` default, or `world`):
 
-- `min`, `max`: `[x, z]` corners of the rectangle in level coordinates. They snap to the Scene frame's whole map units,
-  one column per voxel: a 96 x 96 map-unit rectangle is 9216 columns (at most 1024 a side, 262 144 in all).
+- `voxelSize`: map units per voxel, 1-4 (default 1), always in map units: the new blocks' scale. The rectangle is
+  sampled one column per voxel on a lattice of that size from the Scene frame's origin, and heights become whole
+  voxels of it.
+- `min`, `max`: `[x, z]` corners of the rectangle in level coordinates. They snap to whole voxels of the lattice: at
+  `voxelSize` 1 a 96 x 96 map-unit rectangle is 9216 columns, at 2.5 it is 1444 (at most 1024 a side, 262 144 in all).
 - `floor`: the level `y` the columns stand on. Each column is filled from `floor` (less `baseDepth`, for a skirt under
   the water line) up to `floor` + its height; a height under half a voxel leaves the column empty. `maxHeight` caps it.
 - The height, as either `expr` or `grid`:
@@ -165,19 +171,35 @@ Arguments, all lengths and heights in `units` (`map` default, or `world`):
   under 40 degrees, rock elsewhere: `[{material: 3, surface: 1, maxSlope: 40}, {material: 2, minHeight: 30}]` with
   `material: 1`.
 - `reuseFrames`: `aligned` (default), `any` or `none`; see below.
-- `maxBlocks`: add at most this many blocks, to keep some for other edits.
+- `maxBlocks` and `maxCells`: add at most this many blocks, and blocks holding at most this many of the game's cells,
+  to keep some of each for other edits (castles).
 - `partial`: when the blocks do not all fit, place the ones holding the most voxels instead of refusing. A block in a
   stack is kept only when the block under it is, so nothing floats; the answer lists what was dropped.
 
-**Packing.** A patch can add 64 blocks of at most 32 voxels a side (2 097 152 cells in all), each with at most 2000
-runs, and blocks the project already has count against the 64. The rectangle is cut into 32 x 32 tiles (four offsets
-are tried each way and the fewest blocks kept); each tile is stacked in 32-high slices from its lowest cell, and each
-slice is trimmed to the box of the cells it needs, so the slices near a volcano's peak are small and its flanks are a
-single layer. A 256 x 256 footprint 32 high takes all 64 blocks. Inside a block a column of one material is one run, so
-a 32 x 32 block uses about 1024; each extra material band a column crosses adds a run, and a block that passes 2000 is
-halved along its longer side, which costs blocks. When the field needs more blocks than are left the answer says how
-many it needs, how many voxels would be missing and whether the peak is among them: shrink the rectangle, lower the
-heights or `baseDepth`, use fewer bands, or pass `partial`.
+**Packing.** Two budgets bind. A patch can add 64 blocks of at most 31 voxels a side (the game asserts on 32), each
+with at most 2000 runs. And the game counts the cells of every voxel frame of the level, base and added, solid or
+empty (X x Y x Z of each), in 16 bits: past 65 535 it crashes loading the map, so the whole box of every block counts,
+not its solid voxels. The base's frames already take 8 000-46 000 of them (`describe_level` `limits.voxelCells`; clearing
+base terrain frees none), which leaves room for roughly 230 x 230 columns one voxel thick, whatever the voxel size: a
+larger `voxelSize` covers more ground and height with the same cells, in coarser voxels. Blocks the project already
+has count against both. The rectangle is cut into 31 x 31 tiles (four offsets are tried each way and the fewest blocks
+kept); each tile is stacked in 31-high slices from its lowest cell, and each slice is trimmed to the box of the cells
+it needs. While those boxes hold more cells than are left (or `maxCells`), and blocks are left, the box whose halving
+(in x, z or y, each half trimmed again) saves the most cells is halved, so a cone's flanks cost about their slope
+rather than their tile's whole height. Inside a block a column of one material is one run, so a 31 x 31 block uses
+about 961; each extra material band a column crosses adds a run, and a block that passes 2000 is halved along its longer
+side, which costs blocks. When the field does not fit the answer says how many blocks and cells it needs, how many
+voxels would be missing and whether the peak is among them: shrink the rectangle, lower the heights or `baseDepth`,
+raise `voxelSize`, use fewer bands, or pass `partial`. For example on Multi.DinerMight (11 652 base cells, 53 883 left)
+an island 250 map units across with a cone 60 high is about 25 600 voxels at `voxelSize` 2.5: it packs into 17 blocks of
+50 215 cells, or with `maxCells: 40000` into 23 blocks of 39 926; at `voxelSize` 1 it would need over a million cells,
+and at 2 about 60 000 even after halving. It was played in the game: it loads, worms walk on it and weapons carve it.
+
+**Materials and the game's landscape mesh.** In that test a `surface: 1` rule (a one-voxel skin of grass over rock on
+every column) made the game's landscape combiner run out of vertices (`CombineLandscapeAction` asserts in the log and
+holes in the drawn terrain); the same island in height bands, or in one material, had none. The plan adds a `notes`
+entry when a surface rule covers more than 2500 columns: on a large field use `minHeight`/`maxHeight` or slope bands,
+and Test the level.
 
 **Frames as canvas.** The server accepts a `voxels` op on any base frame for any of its cells, empty or not, as long as
 each word is valid, so filling an empty base cell costs no block, only runs (2000 per frame) and patch bytes. Before
@@ -247,9 +269,13 @@ tool is told to discard them. A failed tool answers with an error result (`isErr
 ## Limits
 
 The server's patch limits (see [erg.md](erg.md#limits)) apply as in the panel, and `describe_level` reports the usage:
-at most 64 added blocks of 1-32 voxels a side, 2000 runs of voxel changes per frame, 20 000 ops, a 4 MB patch and 256
-objects. Voxel edits that would pass the runs or size limit are refused before they are applied. The game's own maps
-are made of many small voxel frames (a few hundred, none longer than 32 voxels a side), not one large terrain grid.
+at most 64 added blocks of 1-31 voxels a side (scale 1-4), 2000 runs of voxel changes per frame, 20 000 ops, a 4 MB
+patch and 256 objects. Voxel edits that would pass the runs or size limit are refused before they are applied. The game
+adds two of its own: a voxel frame side over 31 asserts (a block of 32 from an older project still opens, and is named
+in `engineWarnings` and in the save's warnings), and more than 65 535 cells over all voxel frames crashes the game on
+load, so every tool that adds blocks refuses past it, `save` sends the server's warning, and `export`, `build` and
+`test` are refused by the server. The game's own maps are made of many small voxel frames (a few hundred, none longer
+than 31 voxels a side), not one large terrain grid.
 
 ## Adding tools
 

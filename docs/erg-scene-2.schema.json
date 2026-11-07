@@ -96,7 +96,7 @@
           },
           "new": {
             "type": "boolean",
-            "description": "An added terrain block: under the Scene frame, identity rotation and scale, each size 1-32, no heightMap."
+            "description": "An added terrain block: under the Scene frame, no rotation, one scale 1-4 on every axis, each size 1-32 (the game asserts on 32: new blocks are 1-31), no heightMap."
           },
           "parent": { "anyOf": [{"$ref": "#/$defs/index"}, {"type": "null"}], "description": "null for the root only." },
           "name": { "type": "string", "maxLength": 127 },

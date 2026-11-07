@@ -305,7 +305,7 @@ bool ParsePatch(std::string_view json, Patch* out, std::string* err) {
         } else if (v2 && kind == "addFrame") {
             op.kind = Op::Kind::AddFrame;
             FrameAdd& f = op.newFrame;
-            if (!OnlyKeys(o, {"op", "tmp", "parent", "name", "pos", "size"}, path, err) ||
+            if (!OnlyKeys(o, {"op", "tmp", "parent", "name", "pos", "size", "scale"}, path, err) ||
                 !GetInt(o, "tmp", path, -static_cast<int64_t>(kMaxNewFrames), -1, &f.tmp, err) ||
                 !GetInt(o, "parent", path, 1, 1 << 24, &f.parent, err) || !GetString(o, "name", path, &f.name, err) ||
                 !GetVec(o, "pos", path, &f.pos, err, true))
@@ -320,9 +320,11 @@ bool ParsePatch(std::string_view json, Patch* out, std::string* err) {
             for (int k = 0; k < 3; ++k) {
                 bool ok = false;
                 const int64_t v = size->arr[k].kind == Json::Kind::Number ? size->arr[k].asInt64(&ok) : -1;
-                if (!ok || v < 1 || v > static_cast<int64_t>(kMaxNewFrameSide)) return Fail(err, path + ".size: each size must be 1..32");
+                if (!ok || v < 1 || v > static_cast<int64_t>(kLegacyNewFrameSide)) return Fail(err, path + ".size: each size must be 1..32");
                 f.size[k] = static_cast<int>(v);
             }
+            if (const Json* sc = o.find("scale"); sc && !GetNumber(*sc, path + ".scale", kMinNewFrameScale, kMaxNewFrameScale, &f.scale, nullptr))
+                return Fail(err, path + ".scale: must be a number 1..4 (map units per voxel)");
         } else if (v2 && kind == "hmp") {
             op.kind = Op::Kind::Hmp;
             if (!OnlyKeys(o, {"op", "heights", "blend"}, path, err) ||
@@ -408,6 +410,7 @@ std::string WritePatch(const Patch& p) {
                 Json size = Json::Arr();
                 for (int v : f.size) size.arr.push_back(Int(v));
                 o.set("size", std::move(size));
+                if (f.scale != 1) o.set("scale", Num(f.scale));
                 break;
             }
             case Op::Kind::Hmp:
@@ -589,6 +592,7 @@ bool ApplyPatch(Scene& s, const Patch& p, const PatchRules& rules, std::string* 
                 f.name = op.newFrame.name;
                 f.pos = op.newFrame.pos;
                 f.size = op.newFrame.size;
+                f.scale = {op.newFrame.scale, op.newFrame.scale, op.newFrame.scale};
                 f.isNew = true;
                 out.frames.push_back(std::move(f));
                 break;
