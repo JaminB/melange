@@ -116,7 +116,8 @@ Melange.exe [--game <dir>] [--browser] [--serve] [--web-root <dir>]
 - The window is the launcher, not the Oasis shell. Its sidebar has *Oasis tools* and *Map editor (Erg)* buttons, and
   Home has a *Make a map* card: each calls `launcher.openOasis {panel?}`, which opens the server's token URL in the
   default browser, with `#/<panel>` appended when a panel id is given. On a launcher server a URL whose hash starts
-  with `#/` shows the regular shell on that panel instead of the launcher.
+  with `#/` shows the regular shell on that panel instead of the launcher, except the launcher's own `#/plugins...`
+  (the Import page).
 - `mods.list` reads every `Mods\<id>\spice.json` and resolves them exactly as the game would (`spice::Resolve`); a
   Deep Desert mod already granted in-game still shows Enabled, but granting it is not possible from here (Decision
   4: the browser can revoke Deep Desert but never grant it, and standalone has no consent dialog to show).

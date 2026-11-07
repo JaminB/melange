@@ -92,7 +92,8 @@ void WriteUrlFile() {
 }
 
 // Starts the server if needed and opens exactly one browser tab: the hotkey, the menu item and the panel's own
-// button all go through here. `hash` ("#/erg") makes the shell open on that panel. The AutoStart+AutoOpen combination (no user action at all) goes through OnFrame.
+// button all go through here; `hash` ("#/erg") opens the shell on that panel. The AutoStart+AutoOpen combination (no
+// user action at all) goes through OnFrame.
 void OpenOasisNow(const char* hash = "") {
     const bool wasRunning = oasis::Running();
     if (!wasRunning) g_userOpenPending = true;

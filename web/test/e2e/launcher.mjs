@@ -301,6 +301,18 @@ async function oasisLinks(browser) {
         await shell.close();
       }
     });
+    await attempt("oasis links: the launcher's own #/plugins hash still shows the launcher", async () => {
+      const own = await browser.newPage({ viewport: { width: 1120, height: 740 } });
+      own.on("pageerror", (e) => errors.push(e.message));
+      current = own;
+      try {
+        await own.goto(`${mock.url}&scenario=restore#/plugins`, { waitUntil: "load" });
+        await own.waitForSelector(".la", { timeout: 15000 });
+        check("oasis links: #/plugins is the launcher", (await own.title()) === "Melange");
+      } finally {
+        await own.close();
+      }
+    });
     check("oasis links: no page errors", errors.length === 0, errors.join(" | "));
   } finally {
     await page.close();

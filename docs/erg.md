@@ -10,8 +10,8 @@ and writes `Mods\`.
 
 Open Oasis (see [oasis.md](oasis.md)) and pick the *Erg* panel, either with the game running or from `Melange.exe`
 with it closed. Shortcuts: `Melange.exe`'s *Map editor (Erg)* button (sidebar) or *Make a map* card (Home), and in the
-game the overlay menu item *Oasis > Map editor (Erg)* or the *Open map editor* button in the Oasis panel. Editing and building a pack work either way; **Test** needs the game running, at the main menu, and
-not in a lobby.
+game the overlay menu item *Oasis > Map editor (Erg)* or the *Open map editor* button in the Oasis panel. Editing and
+building a pack work either way; **Test** needs the game running, at the main menu, and not in a lobby.
 
 ## Projects
 
