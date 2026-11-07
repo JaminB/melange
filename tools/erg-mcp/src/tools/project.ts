@@ -89,13 +89,13 @@ export const tools: Tool[] = [
       type: "object", additionalProperties: false,
       properties: {
         url: { type: "string", description: "Launch URL http://127.0.0.1:<port>/?k=<token> (or ws://.../ws?k=<token>)." },
-        gameDir: { type: "string", description: "A game folder: start Melange.exe --serve for it (closed game only)." },
-        exe: { type: "string", description: "Melange.exe to start with gameDir (default <gameDir>\\Melange.exe, or MELANGE_EXE)." },
+        gameDir: { type: "string", description: "A game folder: start its Melange.exe --serve (or MELANGE_EXE) for it (closed game only)." },
         discard,
       },
     },
-    async handler(s, a: { url?: string; gameDir?: string; exe?: string; discard?: boolean }) {
-      const c = await s.connect({ url: a.url, gameDir: a.gameDir, exe: a.exe }, a.discard);
+    async handler(s, a: { url?: string; gameDir?: string; discard?: boolean }) {
+      // No exe argument: which program runs is the user's choice (MELANGE_EXE), never the model's.
+      const c = await s.connect({ url: a.url, gameDir: a.gameDir }, a.discard);
       return { connected: true, via: c.via, url: masked(c.url), server: c.server, ergMethods: c.methods.filter((m) => m.startsWith("level")),
         test: c.methods.includes("level.test") ? "level.test is available (the game is running)" : "no level.test: start the game for Test" };
     },
@@ -167,7 +167,7 @@ export const tools: Tool[] = [
   },
   {
     name: "save",
-    description: "Save the open project (level.save with the editor's patch). Answers the server's warnings and any problems the patch validator sees.",
+    description: "Save the open project (level.save with the editor's patch). Refused before anything is sent while the patch breaks a server limit or the patch validator objects (describe_level lists the problems). Answers the server's warnings.",
     inputSchema: { type: "object", additionalProperties: false, properties: {} },
     async handler(s) {
       const r = await s.save();

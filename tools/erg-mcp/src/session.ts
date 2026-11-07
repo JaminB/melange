@@ -6,6 +6,7 @@ import {
   type ProjectInfo,
 } from "./core";
 import { connect as openConnection, type ConnectOptions, type Connection } from "./oasis";
+import { limitProblems } from "./lib/voxel";
 import { ToolError } from "./registry";
 
 const TIMEOUT = 30000;
@@ -70,7 +71,9 @@ export class Session {
     const p = this.requireProject();
     const patch = p.store.patch();
     const text = JSON.stringify(patch);
-    const problems = p.store.problems();
+    // The limits and the patch validator are checked here, before anything is sent: undo what breaks them.
+    const problems = limitProblems(p.store);
+    if (problems.length) throw Object.assign(new ToolError("not saved: the patch breaks the server's limits or rules"), { details: problems });
     const r = await p.erg.save(patch);
     if (r.saved === false) throw new ToolError("the server did not save the project");
     p.store.markSaved(text);

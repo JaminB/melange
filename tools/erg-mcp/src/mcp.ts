@@ -38,29 +38,38 @@ export class McpServer {
   }
 
   private send(m: object) { this.write(`${JSON.stringify(m)}\n`); }
-  private reply(id: Id, result: unknown) { this.send({ jsonrpc: "2.0", id, result }); }
-  private fail(id: Id, code: number, message: string) { this.send({ jsonrpc: "2.0", id, error: { code, message } }); }
+  private ok = (id: Id, result: unknown) => ({ jsonrpc: "2.0", id, result });
+  private err = (id: Id, code: number, message: string) => ({ jsonrpc: "2.0", id, error: { code, message } });
 
   async line(line: string) {
     let msg: unknown;
     try {
       msg = JSON.parse(line);
     } catch {
-      return this.fail(null, PARSE, "parse error");
+      return this.send(this.err(null, PARSE, "parse error"));
     }
     if (Array.isArray(msg)) {
-      // A batch (protocol 2025-03-26): answered one by one, which JSON-RPC allows.
-      for (const m of msg) await this.message(m);
+      // A batch (protocol 2025-03-26): answered with one array of the responses, none when it held only notifications.
+      if (!msg.length) return this.send(this.err(null, INVALID, "invalid request: empty batch"));
+      const out: object[] = [];
+      for (const m of msg) {
+        const r = await this.message(m);
+        if (r) out.push(r);
+      }
+      if (out.length) this.send(out);
       return;
     }
-    return this.message(msg);
+    const r = await this.message(msg);
+    if (r) this.send(r);
   }
 
-  private async message(m: unknown) {
+  /** The response to one message, or undefined for a notification (or a response from the client). */
+  private async message(m: unknown): Promise<object | undefined> {
     const r = m as Request;
     if (!r || typeof r !== "object" || r.jsonrpc !== "2.0" || typeof r.method !== "string") {
       // A response from the client (we send no requests) or garbage.
-      if (r && typeof r === "object" && "id" in r && !("result" in r || "error" in r)) this.fail(r.id ?? null, INVALID, "invalid request");
+      if (r && typeof r === "object" && "id" in r && !("result" in r || "error" in r)) return this.err(r.id ?? null, INVALID, "invalid request");
+      if (!r || typeof r !== "object") return this.err(null, INVALID, "invalid request");
       return;
     }
     const isCall = r.id !== undefined && r.id !== null;
@@ -69,7 +78,7 @@ export class McpServer {
       case "initialize": {
         const want = typeof p.protocolVersion === "string" ? p.protocolVersion : "";
         this.initialized = true;
-        return this.reply(r.id ?? null, {
+        return this.ok(r.id ?? null, {
           protocolVersion: PROTOCOL_VERSIONS.includes(want) ? want : PROTOCOL_VERSIONS[0],
           capabilities: { tools: { listChanged: false } },
           serverInfo: { name: this.info.name, version: this.info.version },
@@ -80,26 +89,25 @@ export class McpServer {
       case "notifications/cancelled":
         return;
       case "ping":
-        return isCall ? this.reply(r.id!, {}) : undefined;
+        return isCall ? this.ok(r.id!, {}) : undefined;
       case "tools/list":
-        return isCall ? this.reply(r.id!, { tools: this.registry.list() }) : undefined;
+        return isCall ? this.ok(r.id!, { tools: this.registry.list() }) : undefined;
       case "tools/call": {
         if (!isCall) return;
         const name = p.name;
-        if (typeof name !== "string" || !this.registry.has(name)) return this.fail(r.id!, BAD_PARAMS, `unknown tool: ${String(name)}`);
+        if (typeof name !== "string" || !this.registry.has(name)) return this.err(r.id!, BAD_PARAMS, `unknown tool: ${String(name)}`);
         const run = () => this.registry.call(this.session, name, p.arguments);
         const job = this.queue.then(run, run);
         this.queue = job.catch(() => {});
         try {
-          this.reply(r.id!, await job);
+          return this.ok(r.id!, await job);
         } catch (e) {
-          this.fail(r.id!, INTERNAL, (e as Error).message);
+          return this.err(r.id!, INTERNAL, (e as Error).message);
         }
-        return;
       }
       default:
         if (r.method.startsWith("notifications/")) return;
-        if (isCall) this.fail(r.id!, NO_METHOD, `method not found: ${r.method}${this.initialized ? "" : " (initialize first)"}`);
+        if (isCall) return this.err(r.id!, NO_METHOD, `method not found: ${r.method}${this.initialized ? "" : " (initialize first)"}`);
     }
   }
 }

@@ -9,7 +9,7 @@
 // Words (src/erg/voxels.h): bits 0-1 solid (3) or empty (0), 2-7 material, 8-9 second-material flags, 10-15 second
 // material, 16-23 corner mask, 24-31 clear. isSolid/material/filled/carved/painted/withSecond come from terrain/voxel.ts.
 import {
-  LIMITS, SculptStroke, WORLD_PER_XAN, apply, gridFrames, index, invert, validRunValue, voxelRuns, type Box, type EditorStore,
+  LIMITS, SculptStroke, WORLD_PER_XAN, apply, gridFrames, index, invert, validEdit, validRunValue, voxelRuns, type Box, type EditorStore,
   type Frame, type Mat3x4, type Patch, type Vec3, type VoxelRun,
 } from "../core";
 import { ToolError } from "../registry";
@@ -168,8 +168,8 @@ export function limitProblems(store: EditorStore): string[] {
 let strokes = 0;
 
 /** A batch of voxel writes over any frames, committed as one undo step (the panel's SculptStroke command). Writes are
- * checked as the panel's sculptor checks a brush step: valid words, at most 2000 runs per frame, the patch within its
- * budget. Reads through get() see the batch's own pending writes. */
+ * checked as the panel's sculptor checks a brush step: valid edits of the base's words (validEdit), at most 2000 runs per
+ * frame, the patch within its budget. Reads through get() see the batch's own pending writes. */
 export class VoxelEdit {
   private changes = new Map<number, Map<number, [number, number]>>();   // ref -> index -> [before, after]
   private byId = new Map<number, Grid>();
@@ -190,6 +190,8 @@ export class VoxelEdit {
   set(frameId: number, x: number, y: number, z: number, word: number) {
     if (!validRunValue(word)) throw new ToolError(`0x${word.toString(16)} is not a voxel word (bits 0-1 must be 0 or 3, bits 24-31 clear)`);
     const g = this.gridOf(frameId), i = at(g, x, y, z);
+    if (!validEdit(g.base[i], word))
+      throw new ToolError(`0x${word.toString(16)} is not a valid edit of the base word 0x${g.base[i].toString(16)} (bits 8-23 must be zero or the base's)`);
     let c = this.changes.get(g.ref);
     if (!c) this.changes.set(g.ref, (c = new Map()));
     const before = c.get(i)?.[0] ?? g.words[i];

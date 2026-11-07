@@ -68,12 +68,12 @@ cells are counted in a frame's grid: cell `(x, y, z)` with `y` up, centred on th
 
 | Tool | What it does |
 |---|---|
-| `connect` | Connect or reconnect: `url`, or `gameDir` (and `exe`) to start `Melange.exe --serve`; no arguments uses the order above. Reconnecting closes the open project (refused with unsaved edits unless `discard`). |
+| `connect` | Connect or reconnect: `url`, or `gameDir` to start `Melange.exe --serve` (`MELANGE_EXE` names another `Melange.exe`; the tool takes no program path); no arguments uses the order above. Reconnecting closes the open project (refused with unsaved edits unless `discard`). |
 | `list_bases` | The base levels (the game's multiplayer maps and installed map packs: key, title, theme, source) and the projects. Filters: `search`, `theme`, `source`. |
 | `new_project` | Start a project from a base: `base` (a key such as `Multi.DinerMight`), `slug` (`[a-z0-9]{1,24}`), `title`. The server picks another id when the slug is taken; the result has the id. |
 | `open_project` | Open a project by `id`: its base and current state with every voxel blob. One project is open at a time. |
 | `describe_level` | The open level: voxel frames largest first (id, size, solid count, position and bounds in map and world units; `search`, `minVoxels`, `limit`, `allFrames`), the level's extent, spawns, objects, water, theme, time of day, and the patch's usage against the limits. |
-| `save` | Save the open project. Returns the server's warnings and anything the patch validator objects to. |
+| `save` | Save the open project. Refused, with nothing sent, while the patch breaks a limit or the patch validator objects (`describe_level` lists them under `problems`; undo the edit). Returns the server's warnings. |
 | `undo`, `redo` | The editor's undo stack (500 steps), shared by every tool's edits. |
 | `close` | Close the open project (refused with unsaved edits unless `discard`). |
 

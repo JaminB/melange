@@ -5,7 +5,7 @@ import { readFileSync } from "node:fs";
 import { test } from "node:test";
 // @ts-ignore: plain ESM test helper
 import { syntheticBlobs } from "../../../web/test/e2e/erg-mock.mjs";
-import { EditorStore, LIMITS, filled, isSolid, planBlock, type Loaded, type Scene } from "../src/core";
+import { EditorStore, LIMITS, filled, isSolid, planBlock, withSecond, type Loaded, type Scene } from "../src/core";
 import {
   VoxelEdit, cellAt, cellCentre, columnRuns, encodeRuns, getVoxel, grid, grids, gridsAt, gridToWorld, limitProblems, mapToGrid, newFrameProblem,
   runBytes, setVoxel, toMap, toWorld, usage, voxelIndex, worldToGrid,
@@ -56,6 +56,8 @@ test("VoxelEdit: one undo step, the patch's runs, redo", () => {
   assert.equal(e.size, before === 0 ? 0 : 1);
   assert.equal(e.get(6, 0, 0, 0), 0);
   assert.throws(() => e.set(6, 0, 0, 0, 1), /not a voxel word/);
+  const second = withSecond(filled(1), 2, 0xff);   // bits 8-23 that are not the base's: the server refuses the patch
+  if ((g.base[voxelIndex(g.size, 0, 0, 0)] & 0xffff00) !== (second & 0xffff00)) assert.throws(() => e.set(6, 0, 0, 0, second), /not a valid edit/);
   e.set(6, 2, 8, 3, filled(7));
   const r = e.commit("Test edit");
   assert.ok(r.changed >= 1);

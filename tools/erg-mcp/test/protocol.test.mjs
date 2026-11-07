@@ -39,6 +39,22 @@ test("initialize, tools/list, ping, errors", async () => {
     m.proc.stdin.write("not json\n");
     await new Promise((r) => setTimeout(r, 200));
     assert.ok(m.stray.some((x) => x.error?.code === -32700), "a parse error is answered");
+
+    const exe = await m.tool("connect", { gameDir: "C:\nowhere", exe: "C:\Windows\System32\calc.exe" });
+    assert.ok(exe.isError && /exe: is not a known argument/.test(exe.text), "connect names no program to run");
+
+    // A batch is answered with one array, notifications left out; an empty batch is an invalid request.
+    m.stray.length = 0;
+    m.proc.stdin.write(`${JSON.stringify([{ jsonrpc: "2.0", id: "b1", method: "ping" }, { jsonrpc: "2.0", method: "notifications/initialized" },
+      { jsonrpc: "2.0", id: "b2", method: "no/such" }])}
+[]
+`);
+    await new Promise((r) => setTimeout(r, 300));
+    const batch = m.stray.find(Array.isArray);
+    assert.ok(batch, JSON.stringify(m.stray));
+    assert.deepEqual(batch.map((x) => x.id), ["b1", "b2"]);
+    assert.equal(batch[1].error.code, -32601);
+    assert.ok(m.stray.some((x) => !Array.isArray(x) && x.error?.code === -32600), "an empty batch is refused");
   } finally {
     await m.close();
   }

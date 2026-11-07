@@ -325,22 +325,106 @@ const FORMULA_NAMES = ["abs", "acos", "asin", "atan", "atan2", "ceil", "cos", "e
 const VARIABLES = ["x", "y", "u", "v", "h"];
 
 /** Compiles a formula of x, y (cell 0-99), u, v (0-1 across the grid) and h (the current height). Only arithmetic, comparison,
- * ?: and the Math functions listed are allowed. */
+ * ?: and the Math functions listed are allowed; it is parsed here, never handed to eval or Function. */
 export function compileFormula(src: string): (x: number, y: number, u: number, v: number, h: number) => number {
   if (src.length > 500) throw new ToolError("formula: at most 500 characters");
   if (!/^[0-9A-Za-z_\s+\-*/%(),.?:<>=!&|]*$/.test(src)) throw new ToolError("formula: only digits, names, + - * / % ( ) , . ? : < > = ! & | are allowed");
   if (/[A-Za-z_)\]]\s*\./.test(src)) throw new ToolError("formula: member access is not allowed; write sin(x), not Math.sin(x)");
-  for (const id of src.match(/[A-Za-z_][A-Za-z0-9_]*/g) ?? [])
-    if (!VARIABLES.includes(id) && !FORMULA_NAMES.includes(id)) throw new ToolError(`formula: unknown name '${id}' (variables ${VARIABLES.join(", ")}; functions ${FORMULA_NAMES.join(", ")})`);
-  let fn: (...a: number[]) => number;
-  try {
-    const M = Math as unknown as Record<string, unknown>;
-    fn = new Function(...VARIABLES, ...FORMULA_NAMES, `"use strict"; return (${src});`) as (...a: number[]) => number;
-    const names = FORMULA_NAMES.map((n) => M[n] as number);
-    return (x, y, u, v, h) => Number(fn(x, y, u, v, h, ...names));
-  } catch (e) {
-    throw new ToolError(`formula: ${(e as Error).message}`);
+  const fn = parseFormula(src);
+  return (x, y, u, v, h) => fn([x, y, u, v, h]);
+}
+
+type Formula = (vars: number[]) => number;
+const FORMULA_CONSTANTS: Record<string, number> = { PI: Math.PI, E: Math.E };
+const FORMULA_OPS = ["===", "!==", "**", "==", "!=", "<=", ">=", "&&", "||", "+", "-", "*", "/", "%", "<", ">", "!", "?", ":", "(", ")", ","];
+
+/** Parses a formula into a closure tree (never eval) with JavaScript's precedence and number semantics: ?:, || &&,
+ * == != === !==, < <= > >=, + -, * / %, unary - + !, ** (right associative), calls of the Math functions above. */
+function parseFormula(src: string): Formula {
+  const toks: { t: string; at: number }[] = [];
+  for (let i = 0; i < src.length;) {
+    if (/\s/.test(src[i])) { i++; continue; }
+    const m = /^(\d+\.?\d*|\.\d+)([eE][+-]?\d+)?|^[A-Za-z_][A-Za-z0-9_]*/.exec(src.slice(i));
+    const t = m ? m[0] : FORMULA_OPS.find((o) => src.startsWith(o, i));
+    if (!t) throw new ToolError(`formula: unexpected '${src[i]}' at character ${i + 1}`);
+    toks.push({ t, at: i });
+    i += t.length;
   }
+  let p = 0, depth = 0;
+  const peek = () => toks[p]?.t;
+  const fail = (why: string): never => { throw new ToolError(`formula: ${why} at character ${(toks[p]?.at ?? src.length) + 1}`); };
+  const take = (t: string) => { if (peek() !== t) fail(`expected '${t}'`); p++; };
+  const truthy = (v: number) => v !== 0 && !Number.isNaN(v);
+  const nest = <T>(f: () => T): T => { if (++depth > 64) fail("it nests deeper than 64"); const r = f(); depth--; return r; };
+
+  const binary = (next: () => Formula, ops: Record<string, (a: number, b: number) => number>) => (): Formula => {
+    let left = next();
+    while (peek() !== undefined && Object.hasOwn(ops, peek()!)) {
+      const f = ops[toks[p++].t], l = left, r = next();
+      left = (v) => f(l(v), r(v));
+    }
+    return left;
+  };
+  const cond = (): Formula => nest(() => {
+    const c = or();
+    if (peek() !== "?") return c;
+    p++;
+    const a = cond();
+    take(":");
+    const b = cond();
+    return (v) => (truthy(c(v)) ? a(v) : b(v));
+  });
+  const or = (): Formula => {
+    let left = and();
+    while (peek() === "||") { p++; const l = left, r = and(); left = (v) => { const a = l(v); return truthy(a) ? a : r(v); }; }
+    return left;
+  };
+  const and = (): Formula => {
+    let left = eq();
+    while (peek() === "&&") { p++; const l = left, r = eq(); left = (v) => { const a = l(v); return truthy(a) ? r(v) : a; }; }
+    return left;
+  };
+  const unary = (): Formula => nest(() => {
+    const t = peek();
+    if (t === "-") { p++; const a = unary(); return (v) => -a(v); }
+    if (t === "+") { p++; return unary(); }
+    if (t === "!") { p++; const a = unary(); return (v) => (truthy(a(v)) ? 0 : 1); }
+    const base = atom();
+    if (peek() !== "**") return base;
+    p++;
+    const ex = unary();
+    return (v) => base(v) ** ex(v);
+  });
+  const mul = binary(unary, { "*": (a, b) => a * b, "/": (a, b) => a / b, "%": (a, b) => a % b });
+  const add = binary(mul, { "+": (a, b) => a + b, "-": (a, b) => a - b });
+  const rel = binary(add, { "<": (a, b) => +(a < b), "<=": (a, b) => +(a <= b), ">": (a, b) => +(a > b), ">=": (a, b) => +(a >= b) });
+  const eq = binary(rel, { "==": (a, b) => +(a === b), "===": (a, b) => +(a === b), "!=": (a, b) => +(a !== b), "!==": (a, b) => +(a !== b) });
+  function atom(): Formula {
+    const t = peek();
+    if (t === undefined) return fail("the formula ends early");
+    if (t === "(") { p++; const inner = cond(); take(")"); return inner; }
+    if (/^[\d.]/.test(t)) { p++; const n = Number(t); return () => n; }
+    if (!/^[A-Za-z_]/.test(t)) return fail(`unexpected '${t}'`);
+    p++;
+    const vi = VARIABLES.indexOf(t);
+    if (vi >= 0) return (v) => v[vi];
+    if (Object.hasOwn(FORMULA_CONSTANTS, t)) { const n = FORMULA_CONSTANTS[t]; return () => n; }
+    if (!FORMULA_NAMES.includes(t)) return fail(`unknown name '${t}' (variables ${VARIABLES.join(", ")}; functions ${FORMULA_NAMES.join(", ")})`);
+    if (peek() !== "(") return fail(`${t} is a function: write ${t}(...)`);
+    const f = (Math as unknown as Record<string, (...a: number[]) => number>)[t];
+    p++;
+    const args: Formula[] = [];
+    if (peek() !== ")") {
+      args.push(cond());
+      while (peek() === ",") { p++; args.push(cond()); }
+    }
+    take(")");
+    return (v) => f(...args.map((a) => a(v)));
+  }
+
+  const fn = cond();
+  if (p < toks.length) fail(`unexpected '${toks[p].t}'`);
+  return fn;
 }
 
 export interface SetGrid { heights?: number[] | number[][]; formula?: string; region?: { x0: number; y0: number; x1: number; y1: number }; mix: number; }

@@ -300,3 +300,20 @@ test("compileFormula", () => {
   assert.throws(() => compileFormula("(1+"), /formula/);
   assert.throws(() => compileFormula("x".repeat(600)), /500/);
 });
+
+test("compileFormula: parsed, not evaluated as JavaScript", () => {
+  const f = (s: string, x = 3, y = 4, u = 0.25, v = 0.5, h = 0.1) => compileFormula(s)(x, y, u, v, h);
+  assert.equal(f("1 + 2 * 3 - 4 / 2"), 5);
+  assert.equal(f("2 ** 3 ** 2"), 512);
+  assert.equal(f("-x % 2"), -1);
+  assert.equal(f("x < y && y <= 4 ? 1 : 0"), 1);
+  assert.equal(f("x == 3 || 0"), 1);
+  assert.equal(f("!0 + !x"), 1);
+  assert.equal(f("0 || h"), 0.1);
+  assert.equal(f("x > 9 ? 1 : x > 2 ? 2 : 3"), 2);
+  assert.equal(f("hypot(x, y) + max(u, v, h) + sign(-2) + PI - PI"), 4.5);
+  assert.equal(f("1.5e1 + .5"), 15.5);
+  assert.ok(!Number.isFinite(f("1 / 0")));
+  for (const bad of ["x = 1", "x => 1", "sin", "PI()", "(1, 2)", "1 2", "max(1,", "x ? 1", "x && & y"])
+    assert.throws(() => compileFormula(bad), /formula/, bad);
+});
