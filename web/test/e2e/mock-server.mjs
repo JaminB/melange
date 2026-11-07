@@ -365,7 +365,9 @@ export async function startMock(opts = {}) {
     }
     const origin = req.headers.origin;
     const host = req.headers.host;
-    if (!(req.headers.cookie ?? "").includes(`oasis_s=${cookie}`) || origin !== `http://${host}`) {
+    // A client without an Origin (not a browser: erg-mcp) passes the launch token instead, as src/oasis/auth.cpp allows.
+    const byToken = origin === undefined && new URL(req.url, "http://x").searchParams.get("k") === token;
+    if (!byToken && (!(req.headers.cookie ?? "").includes(`oasis_s=${cookie}`) || origin !== `http://${host}`)) {
       sock.end("HTTP/1.1 403 Forbidden\r\n\r\n");
       return;
     }

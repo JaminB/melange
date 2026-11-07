@@ -50,6 +50,7 @@ export const GROUPS = [
 		items: [
 			{ slug: 'oasis', label: 'Oasis (web app)' },
 			{ slug: 'erg', label: 'Erg map editor' },
+			{ slug: 'erg-mcp', label: 'erg-mcp (Erg for AI agents)' },
 			{ slug: 'wormsign', label: 'Wormsign (replays, desyncs)' },
 			{ slug: 'xomtool', label: 'Sieve (xomtool)' },
 		],

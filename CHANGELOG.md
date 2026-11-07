@@ -1,5 +1,16 @@
 # Changelog
 
+## Unreleased
+
+- erg-mcp (`tools/erg-mcp/`, developer tool, not in the release zip): a Model Context Protocol server that lets an AI
+  agent edit Erg levels with the panel's own model, undo stack and patch. It connects to the game's Oasis server, or
+  starts `Melange.exe --serve` for a game folder. Tool groups: project, inspect (ASCII height maps, top-down and side
+  renders, ground queries), terrain (sculpt, blocks, surround), heightfield (planned terrain from an expression or grid
+  within the 64-block budget), structures (castles, walls, towers, ramps, tunnels, bridges), and place (spawns,
+  objects, water, theme, script, export, build, test). See docs/erg-mcp.md.
+- The Oasis mock server used by the web tests also accepts a socket with no `Origin` and the right `?k=` token, as
+  `src/oasis/auth.cpp` does. No game or Erg behaviour changed.
+
 ## 0.13.0
 
 - `wum.spotify` (client mods): music from the user's own Spotify account, for watch parties such as Holo. The user signs
