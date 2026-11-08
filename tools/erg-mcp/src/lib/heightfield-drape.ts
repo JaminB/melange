@@ -131,6 +131,8 @@ export function planDrape(store: EditorStore, a: DrapeArgs): DrapePlan {
   const report = {
     fits: !why, ...(why ? { why } : {}),
     region: { voxelSize: s, size: [f.nx, f.nz], columns: ts.reduce((n, t) => n + t.columns, 0),
+      ...(f.limited ? { slopeLimit: { relax: a.relax ?? 0, ...(a.maxGradient !== undefined ? { maxGradient: a.maxGradient } : {}), passes: f.limited.passes, steepestDegrees: Math.round(f.limited.steepest * 10) / 10,
+        note: "the field's heights smoothed (relax) and slope-limited (maxGradient) before the skin and its core are cut, so both follow the same surface" } } : {}),
       peak: ts.length ? { map: num(top * s + f.t[1]), world: num((top * s + f.t[1]) * WORLD_PER_MAP) } : null },
     skin: { thickness: T, blocks: ts.length, cells: skinCells,
       list: ts.map((t) => ({ size: [t.x1 - t.x0, T, t.z1 - t.z0], columns: t.columns, offsets: [num(Math.min(...t.corners)), num(Math.max(...t.corners))] })) },

@@ -93,7 +93,11 @@ How it behaves, from the game's code:
   those mines lie unexploded the count stays at the target, so the later checks do nothing. Start mines at or above
   the target mean it never fires at all; to keep it busy, raise the target, lower the idle turns, or turn the
   scheme's start mines off.
-- **Water destroys it.** When the water level rises more than 10 world units above its knot it explodes
+- **It drops onto the land first.** When it is placed it drops from its knot onto the land below (a sweep of at most
+  1000 world units) and stands where it lands. A sweep that hits nothing leaves it at a stale point of the match, often
+  far away and under the sea; on Tests it never landed on a smooth (draped) skin, so stand it on an undraped block
+  (erg-mcp checks this, see [erg-mcp.md](erg-mcp.md)).
+- **Water destroys it.** When the water level rises more than 10 world units above where it stands it explodes
   (`WXP_Explosion_MineMachine`) and is gone for the match.
 - There is no launch speed or spread to set: the game's data still names `MineVelocityX/Y/Z`, but they are obsolete
   and unread.
@@ -109,7 +113,8 @@ The settings, all optional (unset keeps the game's value):
 The target and the idle turns are the game's shared `kMineFactoryData`: Melange writes them when the map's match is
 set up and puts the game's values back when it ends, so no other map (and no other player's match) sees them. They
 need a game build Melange knows (the sim tweak store); on another build the map plays with the game's values and the
-log says so. *Scheme's start mines* is done by the map's own chunk, on the match's copy of the scheme.
+log says so. *Scheme's start mines* is done by the map's own chunk, on the match's copy of the scheme, whatever the scheme's own
+setting, and the log says so when the level starts (`the scheme's start mines are off`).
 
 ## Water
 

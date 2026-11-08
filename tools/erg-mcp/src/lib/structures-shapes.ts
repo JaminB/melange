@@ -107,24 +107,29 @@ export function placePoint(p: Vec3, at: Vec3, yawDeg = 0): Vec3 {
 // ------------------------------------------------------------------ openings
 
 /** A door or gate through the wall of a rectangle (half sizes hw along x, hd along z, walls `wallT` thick) on `side`,
- * centred on the side. Round-topped when the opening is at least 3 wide and 2 higher than half its width. */
-export function doorway(hw: number, hd: number, wallT: number, side: Side, width: number, height: number, y0 = 0, shift = 0): Shape {
+ * centred on the side (`shift` along it). Round-topped when the opening is at least 3 wide and 2 higher than half its
+ * width. `below` carves its floor that far under y0 at the outer face, rising to y0 at the inner face: a ramp down to
+ * ground outside that is lower than the floor, instead of a sill as high as the difference. */
+export function doorway(hw: number, hd: number, wallT: number, side: Side, width: number, height: number, y0 = 0, shift = 0, below = 0): Shape {
   const alongX = side === "n" || side === "s";
   const outer = (alongX ? hd : hw) + 1, inner = (alongX ? hd : hw) - wallT - 1;
   const sign = side === "s" || side === "e" ? 1 : -1;
   const d0 = sign > 0 ? inner : -outer, d1 = sign > 0 ? outer : -inner;
   const r = width / 2, arched = width >= 3 && height >= r + 2;
   const ux0 = -r + shift, ux1 = r + shift;
+  // the floor of the opening at depth d across the wall: y0 at the inner face, y0 - below at the outer face
+  const floorAt = (d: number) => (below > 0 ? y0 - below * Math.min(1, Math.max(0, (sign * d - inner) / (outer - inner))) : y0);
   const hit = (x: number, y: number, z: number) => {
     const u = (alongX ? x : z) - shift, d = alongX ? z : x;
-    if (d < d0 || d >= d1 || u < -r || u >= r || y < y0 || y >= y0 + height) return false;
+    if (d < d0 || d >= d1 || u < -r || u >= r || y < floorAt(d) || y >= y0 + height) return false;
     if (!arched || y < y0 + height - r) return true;
     const dy = y - (y0 + height - r);
     return u * u + dy * dy <= r * r;
   };
+  const yMin = y0 - Math.max(0, below);
   return {
     op: "carve", mat: 0, hit,
-    min: alongX ? [ux0, y0, d0] : [d0, y0, ux0], max: alongX ? [ux1, y0 + height, d1] : [d1, y0 + height, ux1],
+    min: alongX ? [ux0, yMin, d0] : [d0, yMin, ux0], max: alongX ? [ux1, y0 + height, d1] : [d1, y0 + height, ux1],
   };
 }
 
@@ -285,12 +290,17 @@ export interface CastleSpec {
   gate: Side | null;
   gateWidth: number;
   gateHeight: number;
+  /** More gates (each its own side, width, height, shift along the side and below); when given, `gate` is only the
+   * keep's door side. */
+  gates?: GateSpec[];
   material: number;
   cren: boolean;
   found: number;
 }
 
-/** A curtain wall on a rectangle with a tower on each corner, an optional keep in the courtyard and a gate. */
+export interface GateSpec { side: Side; width: number; height: number; shift: number; below: number; }
+
+/** A curtain wall on a rectangle with a tower on each corner, an optional keep in the courtyard and a gate (or gates). */
 export function castle(c: CastleSpec): Shape[] {
   const hw = c.size[0] / 2, hd = c.size[1] / 2, t = c.wallThickness, out: Shape[] = [];
   // parts, for packing new blocks one per part: 0 the foundation, 1-4 the walls, 5-8 the towers, 9 the keep
@@ -318,7 +328,8 @@ export function castle(c: CastleSpec): Shape[] {
     out.push(...tagged(keep({ size: c.keepSize, height: c.keepHeight, material: c.material, wall: Math.min(2, Math.floor(Math.min(...c.keepSize) / 3)), hollow: true,
       roof: true, door: c.gate, doorWidth: Math.min(3, c.gateWidth), doorHeight: Math.min(4, c.gateHeight), windows: true, cren: c.cren, found: c.found }), 9));
   }
-  if (c.gate) out.push(doorway(hw, hd, t, c.gate, c.gateWidth, c.gateHeight));
+  if (c.gates) for (const g of c.gates) out.push(doorway(hw, hd, t, g.side, g.width, g.height, 0, g.shift, g.below));
+  else if (c.gate) out.push(doorway(hw, hd, t, c.gate, c.gateWidth, c.gateHeight));
   return out;
 }
 

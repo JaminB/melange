@@ -173,6 +173,37 @@ async function liveMines(s: Session): Promise<Entity[]> {
   return list.filter((e) => /mine/i.test(`${e.type} ${e.label ?? ""}`) && !/factory|machine/i.test(`${e.type} ${e.label ?? ""}`));
 }
 
+/** The mine factory's own entity (MineFactoryLogicEntity) in the running match, if it exists. */
+async function factoryEntities(s: Session): Promise<Entity[]> {
+  const list = await (await s.client()).call<Entity[]>("entities.list", {}, 15000).catch((e: Error) => {
+    throw new ToolError(`entities.list refused: ${e.message} (it needs a match and [GameState] Enabled=1 in the game's Melange.ini)`);
+  });
+  return list.filter((e) => /minefactory/i.test(`${e.type} ${e.label ?? ""}`.replace(/[^a-z]/gi, "")));
+}
+
+// Why a factory is gone, from the game's code (MineFactoryLogicEntity.cpp): placed, it drops from its knot along a land
+// sweep of at most 1000 world units (0x5cf710) and takes the hit point; when the sweep hits no land it keeps whatever
+// point the last sweep of the match left (asserting bCollidesWithLand), often under the sea. On its first update it
+// explodes when the water is more than 10 world units over that point (0x5d0b52), and an explosion within its radius
+// sets it off 100 ticks later; either posts MineFactory.Deleted and it is gone for the match.
+const FACTORY_GONE = "the factory entity is not in the match: it exploded at load or since (MineFactory.Deleted). The game drops it from its knot onto the land under it (a sweep of at most 1000 world units); a sweep that hits nothing leaves it at a stale point of the match (on Caldera 2340 world units off, under the sea), and the water over that point sets it off on its first update. In the Tests the drop never landed on a draped skin, and missed undraped blocks inside Caldera's crater too: put the knot on an undraped block (a castle or keep), keep it more than 10 world units over the highest water, and Test again (place_object and save check the first two)";
+
+/** The factory entity's own state, read from its object (entity.inspect, [Oasis] RawInspect): where it settled (+0x2c,
+ * world units: the point its drop from the knot took), whether it has exploded (+0x48) or is about to (+0x50, hit by an
+ * explosion) and its fire state (+0x8c: 0 idle, 1-4 firing). Null when the game has no raw inspect. */
+async function factoryState(s: Session, handle: number): Promise<{ pos: { x: number; y: number; z: number }; exploded: boolean; hit: boolean; fireState: number } | null> {
+  if (!(await has(s, "entity.inspect"))) return null;
+  const r = await (await s.client()).call<{ hex?: string | null }>("entity.inspect", { handle, len: 0x90 }, 15000).catch(() => null);
+  const hex = r?.hex;
+  if (!hex || hex.length < 0x90 * 2) return null;
+  const at = (off: number, n: number) => hex.slice(off * 2, (off + n) * 2);
+  if (/\?/.test(at(0x2c, 12) + at(0x48, 12) + at(0x8c, 4))) return null;
+  const bytes = new Uint8Array(0x90);
+  for (let i = 0; i < 0x90; i++) bytes[i] = parseInt(hex.slice(i * 2, i * 2 + 2), 16) || 0;
+  const v = new DataView(bytes.buffer);
+  return { pos: { x: v.getFloat32(0x2c, true), y: v.getFloat32(0x30, true), z: v.getFloat32(0x34, true) }, exploded: bytes[0x48] !== 0, hit: bytes[0x50] !== 0, fireState: v.getInt32(0x8c, true) };
+}
+
 /** The bus messages of the mine factory and mines this game registers (names with "Mine" in them). */
 async function mineMessages(s: Session): Promise<string[]> {
   if (!(await has(s, "bus.names"))) return [];
@@ -336,9 +367,10 @@ export const tools: Tool[] = [
         watchSeconds: { type: "number", minimum: 0, maximum: 300, description: "Watch this long for new mines and mine messages (default 0, or 120 with untilFire)." },
         untilFire: { type: "boolean", description: "End the watch 3 s after the factory's next MineFactory.FireEnd (its mines are out), instead of at watchSeconds." },
         units: { type: "string", enum: ["map", "world"], description: "Units of the positions (default map)." },
+        alive: { type: "boolean", description: "Also answer `factoryEntity`: whether the game's MineFactoryLogicEntity exists in the match now, where it is, and how far from the project's knot (a factory that fell elsewhere or exploded at load shows here)." },
       },
     },
-    async handler(s, a: { watchSeconds?: number; untilFire?: boolean; units?: "map" | "world" }) {
+    async handler(s, a: { watchSeconds?: number; untilFire?: boolean; units?: "map" | "world"; alive?: boolean }) {
       if (!(await has(s, "entities.list"))) throw new ToolError("this game has no entities.list (Oasis's game state readers): game_mines needs the game running a Test");
       const k = a.units === "world" ? 1 : 1 / WORLD_PER_MAP;
       const out = (p: { x: number; y: number; z: number } | null) => (p ? [p.x, p.y, p.z].map((v) => Math.round(v * k * 100) / 100) : null);
@@ -374,9 +406,23 @@ export const tools: Tool[] = [
             if (!seen.has(m.handle)) { seen.set(m.handle, m); appeared.push({ handle: m.handle, type: m.type, ms: Date.now() - t0, at: out(m.pos), fromFactory: dist(m.pos) }); }
         }
         const now = watch > 0 ? await liveMines(s) : before;
+        let factoryEntity: object | undefined;
+        if (a.alive) {
+          const fe = await factoryEntities(s);
+          const off = (p: Entity["pos"]) => (p && factory ? Math.round(Math.hypot(p.x - factory[0], p.y - factory[1], p.z - factory[2]) * k * 100) / 100 : undefined);
+          const logic = fe.find((e) => /logic/i.test(e.type)) ?? fe[0];
+          const st = logic ? await factoryState(s, logic.handle) : null;
+          const far = st && factory && Math.hypot(st.pos.x - factory[0], st.pos.z - factory[2]) > 60;
+          factoryEntity = logic
+            ? { alive: true, entities: fe.map((e) => ({ handle: e.handle, type: e.type })),
+                ...(st ? { at: out(st.pos), fromKnot: off(st.pos), exploded: st.exploded, hitByExplosion: st.hit, fireState: st.fireState } : { note: "the game has no entity.inspect (or [Oasis] RawInspect=0): where it settled is not known" }),
+                ...(far ? { warning: "the factory settled far from its knot: its drop from the knot hit no land the sweep sees (a draped skin) and it took a stale point" } : {}) }
+            : { alive: false, why: factory ? FACTORY_GONE : "no factory entity in the match (and no project with a minefactory knot is open)" };
+        }
         return {
           units: a.units ?? "map", factory: factory ? { at: out({ x: factory[0], y: factory[1], z: factory[2] }), note: "the open project's minefactory knot" } : null,
           ...(a.untilFire ? { fired: firedAt !== null, ...(firedAt !== null ? { fireEndMs: firedAt - t0 } : {}) } : {}),
+          ...(factoryEntity ? { factoryEntity } : {}),
           minesBefore: before.length, mines: now.map((m) => ({ handle: m.handle, type: m.type, at: out(m.pos), fromFactory: dist(m.pos) })),
           ...(watch > 0 ? { watchedMs: Date.now() - t0, appeared, messages: { watched: names, counts, events } } : {}),
         };

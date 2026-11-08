@@ -23,7 +23,7 @@ export interface ReachOptions {
   headroom: number;       // air a worm needs above the ground
   water: number | null;   // map y; ground at or under it is not used
   gapRise?: number;       // the highest landing a gap is crossed to, above the take-off (default maxStep)
-  slopeOver?: "tread" | "riser";   // what a riser's slope is judged over (default tread)
+  slopeOver?: "tread" | "riser" | "segment" | "skin";   // what a riser's slope is judged over (default tread)
   flood?: FloodRules;     // rising water: a node is walked only while it is dry when the worm reaches it
   allow?: Uint8Array;     // per node: 0 = never walked onto (a route constraint: only the roads, or never the roads)
   slopeCap?: Float32Array;   // per node: the steepest climb onto it, degrees (a material's own maxSlope; >= 90 none)
@@ -50,29 +50,30 @@ export interface Surfaces {
   y: Float32Array;                       // per node
   voxel: Float32Array;                   // per node: the voxel height of the ground (its frame's y scale)
   material: Int16Array;                  // per node: the material of its top voxel
+  draped: Uint8Array;                    // per node: 1 when its top is a draped block's (corner offsets: a smooth skin)
   nodes: number;
 }
 
 /** Merged solid stretches of every column of the region, and the tops a worm fits on. */
 export function surfaces(gs: Grid[], r: Region, step: number, headroom: number): Surfaces {
   const w = Math.max(1, Math.ceil((r.x1 - r.x0) / step)), h = Math.max(1, Math.ceil((r.z1 - r.z0) / step));
-  const cols: { top: number; bottom: number; voxel: number; material: number }[][] = Array.from({ length: w * h }, () => []);
+  const cols: { top: number; bottom: number; voxel: number; material: number; draped: number }[][] = Array.from({ length: w * h }, () => []);
   for (const g of gs) {
     const b = g.bounds;
     if (b.max[0] <= r.x0 || b.min[0] >= r.x1 || b.max[2] <= r.z0 || b.min[2] >= r.z1) continue;
-    const vy = Math.hypot(g.toMap[1], g.toMap[5], g.toMap[9]);
+    const vy = Math.hypot(g.toMap[1], g.toMap[5], g.toMap[9]), draped = g.frame.corners ? 1 : 0;
     const i0 = Math.max(0, Math.floor((b.min[0] - r.x0) / step)), i1 = Math.min(w - 1, Math.floor((b.max[0] - r.x0) / step));
     const j0 = Math.max(0, Math.floor((b.min[2] - r.z0) / step)), j1 = Math.min(h - 1, Math.floor((b.max[2] - r.z0) / step));
     for (let j = j0; j <= j1; j++)
       for (let i = i0; i <= i1; i++)
-        for (const s of columnSpans(g, r.x0 + (i + 0.5) * step, r.z0 + (j + 0.5) * step)) cols[j * w + i].push({ top: s.top, bottom: s.bottom, voxel: vy, material: s.material });
+        for (const s of columnSpans(g, r.x0 + (i + 0.5) * step, r.z0 + (j + 0.5) * step)) cols[j * w + i].push({ top: s.top, bottom: s.bottom, voxel: vy, material: s.material, draped });
   }
-  const start = new Int32Array(w * h + 1), ys: number[] = [], vox: number[] = [], cell: number[] = [], mats: number[] = [];
+  const start = new Int32Array(w * h + 1), ys: number[] = [], vox: number[] = [], cell: number[] = [], mats: number[] = [], drp: number[] = [];
   for (let c = 0; c < w * h; c++) {
     start[c] = ys.length;
     const sp = cols[c].sort((a, b) => b.top - a.top);
     // union of overlapping or touching stretches, highest first
-    const merged: { top: number; bottom: number; voxel: number; material: number }[] = [];
+    const merged: { top: number; bottom: number; voxel: number; material: number; draped: number }[] = [];
     for (const s of sp) {
       const m = merged[merged.length - 1];
       if (m && s.top >= m.bottom - 1e-6) m.bottom = Math.min(m.bottom, s.bottom);
@@ -83,11 +84,12 @@ export function surfaces(gs: Grid[], r: Region, step: number, headroom: number):
       ys.push(merged[k].top);
       vox.push(merged[k].voxel);
       mats.push(merged[k].material);
+      drp.push(merged[k].draped);
       cell.push(c);
     }
   }
   start[w * h] = ys.length;
-  return { r, step, w, h, start, cell: Int32Array.from(cell), y: Float32Array.from(ys), voxel: Float32Array.from(vox), material: Int16Array.from(mats), nodes: ys.length };
+  return { r, step, w, h, start, cell: Int32Array.from(cell), y: Float32Array.from(ys), voxel: Float32Array.from(vox), material: Int16Array.from(mats), draped: Uint8Array.from(drp), nodes: ys.length };
 }
 
 /** reached nodes, their walking distance from the start and the node before; blocked: per reached node, the smallest
@@ -128,12 +130,17 @@ export function treadRun(S: Surfaces, b: number, dx: number, dz: number, maxStep
   return Math.min(run, cap);
 }
 
-/** The slope (degrees) a climb a -> b in direction (dx, dz) is judged at: its rise over the tread above it, or over one
- * voxel of the upper ground with slopeOver "riser"; 0 for a step of at most maxStep or a drop. */
+/** True when a climb a -> b is judged by its own segment (slopeOver "segment", or "skin" where either end is a draped
+ * skin's): the rise over the move's horizontal length, so a skin's 62-78 degree cliff face is a barrier, not a stair. */
+const bySegment = (S: Surfaces, a: number, b: number, o: ReachOptions) => o.slopeOver === "segment" || (o.slopeOver === "skin" && (S.draped[a] === 1 || S.draped[b] === 1));
+
+/** The slope (degrees) a climb a -> b in direction (dx, dz) is judged at: its rise over the tread above it, over one
+ * voxel of the upper ground with slopeOver "riser", or over the move itself (bySegment); 0 for a step of at most maxStep
+ * or a drop. */
 export function climbSlope(S: Surfaces, a: number, b: number, dx: number, dz: number, o: ReachOptions): number {
   const dy = S.y[b] - S.y[a];
   if (dy <= o.maxStep + 1e-6) return 0;
-  const run = o.slopeOver === "riser" ? S.voxel[b] : treadRun(S, b, dx, dz, o.maxStep);
+  const run = bySegment(S, a, b, o) ? S.step * Math.hypot(dx, dz) : o.slopeOver === "riser" ? S.voxel[b] : treadRun(S, b, dx, dz, o.maxStep);
   return (Math.atan2(dy, run) * 180) / Math.PI;
 }
 
@@ -148,6 +155,7 @@ export function climbs(S: Surfaces, a: number, b: number, dx: number, dz: number
   if (cap < 90 && dy > 1e-6 && (Math.atan2(dy, S.step * Math.hypot(dx, dz)) * 180) / Math.PI > cap + 1e-6) return false;
   if (dy <= o.maxStep + 1e-6) return true;
   const tan = Math.tan((Math.min(o.maxSlope, cap) * Math.PI) / 180);
+  if (bySegment(S, a, b, o)) return dy <= tan * S.step * Math.hypot(dx, dz) + 1e-6;
   if (o.slopeOver === "riser") return dy <= tan * S.voxel[b] + 1e-6;
   return dy <= S.voxel[b] + 1e-6 && dy <= tan * treadRun(S, b, dx, dz, o.maxStep) + 1e-6;
 }

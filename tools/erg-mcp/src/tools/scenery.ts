@@ -4,7 +4,8 @@
 // does not copy scenery for that reason; these tools do it on request and say so.
 import { AddDetail, Frames, Group, RemoveDetail, targetFrame, type Detail, type Scene, type Vec3 } from "../core";
 import { DEG, commit, pointOut, resolvePoint, unitsSchema, vec3, type Units } from "../lib/place-geom";
-import { tidy } from "../lib/voxel";
+import { tidy, grids } from "../lib/voxel";
+import { backdropOf, coverLevel, type BackdropPiece } from "../lib/backdrop";
 import { ToolError, type Schema, type Tool } from "../registry";
 import type { Session } from "../session";
 
@@ -75,7 +76,54 @@ export function kindOf(name: string): string {
   return k || name.toLowerCase();
 }
 
+/** A backdrop piece for the answers, in `u`. */
+function pieceOut(p: BackdropPiece, u: Units) {
+  const k = u === "world" ? 20 : 1, r = (v: number) => Math.round(v * k * 100) / 100;
+  const d = p.detail;
+  return { id: d.id, name: d.name, resource: d.resource, kind: p.kind, base: d.src !== null,
+    bounds: { min: p.bounds.min.map(r), max: p.bounds.max.map(r), ...(p.bounds.mesh ? {} : { note: "no mesh served: its position only" }) },
+    size: [0, 1, 2].map((i) => r(p.bounds.max[i] - p.bounds.min[i])), top: r(p.bounds.max[1]) };
+}
+
+const BACKDROP_NOTE = "backdrop: scenery that is a flat piece at least 40 map units both ways (plane: a ground or table plane), wholly outside the voxel frames that hold ground (distant: buildings, barrels, set pieces round the level), or wider than half of them (large); bounds are each piece's preview mesh (the Erg panel's) through its detail's matrix. coverLevel is the lowest water that covers the planes reaching out past the level (under it the sea shows the plane)";
+
 export const tools: Tool[] = [
+  {
+    name: "list_backdrop",
+    description: "The open level's backdrop: the base's scenery details round and under the playing area, each with its kind (plane, distant, large), bounds and top from its mesh, and coverLevel: the lowest water that covers the base's ground planes (a sea under it shows the plane). remove_backdrop removes them. Only the level's details: Multi.DinerMight's distant set (the table plane, the barrel, the pink buildings, the mushroom) is not among them (nor its voxel frames), so it is not listed and cannot be removed by a patch.",
+    inputSchema: { type: "object", additionalProperties: false, properties: { units: unitsSchema } },
+    async handler(s, a: { units?: Units }) {
+      const { store } = s.requireProject();
+      const u = a.units ?? "world", k = u === "world" ? 20 : 1;
+      const b = await backdropOf(s, store.scene, grids(store));
+      const c = coverLevel(b.pieces, b.extent);
+      return { units: u, count: b.pieces.length, pieces: b.pieces.map((p) => pieceOut(p, u)),
+        coverLevel: c ? { level: Math.round(c.level * k * 100) / 100, piece: c.piece.detail.id, name: c.piece.detail.name } : null,
+        water: store.scene.water.level === null ? "the level's own" : Math.round((store.scene.water.level / 20) * k * 100) / 100,
+        meshes: { measured: b.meshes, positionOnly: b.without }, note: BACKDROP_NOTE,
+        ...(b.pieces.length ? {} : { none: "no detail of this level is backdrop. The game's own distant sets (Multi.DinerMight's table plane, barrel, pink buildings and mushroom) are not details or voxel frames of the .xan, so no patch op reaches them; the base's databank (its Databank.CustomDetailBank, BUILDING on DinerMight, which set_theme does not change) is a likely source, not verified" }) };
+    },
+  },
+  {
+    name: "remove_backdrop",
+    description: "Remove the backdrop list_backdrop finds (the base's ground planes and distant set pieces), all of it or `kinds` (plane, distant, large) or `ids`; `keep` spares ids. dryRun lists what would go. One undo step. The surround ring (the .hmp heightmap) is set_surround_mode none.",
+    inputSchema: { type: "object", additionalProperties: false, properties: {
+      kinds: { type: "array", items: { type: "string", enum: ["plane", "distant", "large"] }, minItems: 1, maxItems: 3, description: "Only these kinds (default every kind)." },
+      ids: { type: "array", items: { type: "integer" }, maxItems: 2000, description: "Only these backdrop pieces." },
+      keep: { type: "array", items: { type: "integer" }, maxItems: 2000, description: "Never these." },
+      dryRun: { type: "boolean" }, units: unitsSchema } },
+    async handler(s, a: { kinds?: string[]; ids?: number[]; keep?: number[]; dryRun?: boolean; units?: Units }) {
+      const { store } = s.requireProject();
+      const u = a.units ?? "world";
+      const b = await backdropOf(s, store.scene, grids(store));
+      const list = b.pieces.filter((p) => (!a.kinds || a.kinds.includes(p.kind)) && (!a.ids || a.ids.includes(p.detail.id)) && !(a.keep ?? []).includes(p.detail.id));
+      if (!list.length) throw new ToolError(b.pieces.length ? "no backdrop piece matches" : "this level has no backdrop (list_backdrop)");
+      const out = list.map((p) => pieceOut(p, u));
+      if (a.dryRun) return { dryRun: true, wouldRemove: out.length, pieces: out };
+      commit(store, list.length === 1 ? new RemoveDetail(list[0].detail.id) : new Group(`Remove ${list.length} backdrop pieces`, list.map((p) => new RemoveDetail(p.detail.id))));
+      return { removed: out.length, pieces: out, undo: "undo puts them back", note: "the sea now shows water down to its floor; set_backdrop puts another theme's backdrop round the level" };
+    },
+  },
   {
     name: "list_scenery",
     description: "The open level's scenery and other non-gameplay details (meshes, glass and water volumes, emitters, lights, markers) with their position in the level, frame, resource and whether the base has it: filter by search, role, near a point or in a box. Use it to find a base's leftover meshes (for example a translucent box over a wiped map) and remove them with remove_scenery. Copies of scenery have no collision.",

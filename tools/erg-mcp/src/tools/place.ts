@@ -15,7 +15,11 @@ import { resolveFile, themeFile } from "../lib/materials";
 import { runTest } from "../lib/place-wait";
 import { stopHold } from "./game";
 import { CAMERA_RISE, WALL_RADIUS, spawnWarnings } from "../lib/spawn-check";
-import { tidy } from "../lib/voxel";
+import { checkFactory, factoryLines } from "../lib/factory-check";
+import { scheduleFromScript, waterByTurn } from "../lib/flood";
+import { waterBackdropWarning } from "../lib/backdrop";
+import { spansAt, waterMap } from "../lib/inspect-field";
+import { grids, tidy } from "../lib/voxel";
 import { ToolError, type Schema, type Tool } from "../registry";
 import type { Session } from "../session";
 import { validateExportForm } from "../../../../web/src/panels/erg/test/model";
@@ -59,7 +63,86 @@ function cameraWarnings(store: EditorStore, units: Units, a: CameraArgs): string
   return spawnWarnings(store, len, a.wallRadius === undefined ? WALL_RADIUS : a.wallRadius / k, a.cameraRise === undefined ? CAMERA_RISE : a.cameraRise / k);
 }
 
-interface SpawnArg extends PointArgs { worm: number; }
+interface SpawnArg extends PointArgs { worm: number; group?: string; }
+
+interface Balance { teams?: number; wormsPerTeam?: number; mode?: "height" | "interleave" }
+
+/** The worm numbers re-dealt over the given spawn positions so the teams stand alike: WORMn is worm n % perTeam of team
+ * floor(n / perTeam), as check_flood assumes. Positions are sorted by the ground they stand on, highest first, and dealt
+ * to the teams in a snake (A B B A A B B A: equal height sums for two teams), then pairs swapped between teams where that
+ * leaves fewer of a team's spawns in one `group` (a castle) without widening the teams' mean heights by more than 1 map
+ * unit. "interleave" deals A B A B down the heights instead. In a team the lowest spawn gets worm 0 (it moves first: it
+ * floods first). */
+function balanceSpawns(items: { arg: SpawnArg; map: Vec3; ground: number }[], b: Balance): number[] {
+  const teams = b.teams ?? 2, per = b.wormsPerTeam ?? Math.ceil(items.length / teams);
+  if (teams * per < items.length) throw new ToolError(`balance: ${teams} teams of ${per} hold ${teams * per} worms, fewer than the ${items.length} spawns`);
+  const order = items.map((_, i) => i).sort((x, y) => items[y].ground - items[x].ground);
+  const team = new Array<number>(items.length);
+  order.forEach((idx, rank) => {
+    const lap = Math.floor(rank / teams), k = rank % teams;
+    team[idx] = b.mode === "interleave" || lap % 2 === 0 ? k : teams - 1 - k;
+  });
+  // capacity: a team takes at most `per` (only matters for uneven counts)
+  const mean = (t: number) => { const g = items.filter((_, i) => team[i] === t).map((it) => it.ground); return g.length ? g.reduce((x, y) => x + y, 0) / g.length : 0; };
+  const spread = () => { const m = Array.from({ length: teams }, (_, t) => mean(t)); return Math.max(...m) - Math.min(...m); };
+  const dupes = () => { let d = 0; for (let t = 0; t < teams; t++) { const seen = new Map<string, number>(); items.forEach((it, i) => { if (team[i] === t && it.arg.group) seen.set(it.arg.group, (seen.get(it.arg.group) ?? 0) + 1); }); for (const n of seen.values()) d += n - 1; } return d; };
+  const limit = spread() + 1;
+  for (let pass = 0; pass < 4; pass++) {
+    let better = false;
+    for (let i = 0; i < items.length; i++) for (let j = i + 1; j < items.length; j++) {
+      if (team[i] === team[j]) continue;
+      const d0 = dupes();
+      if (!d0) break;
+      [team[i], team[j]] = [team[j], team[i]];
+      if (dupes() < d0 && spread() <= limit) better = true;
+      else [team[i], team[j]] = [team[j], team[i]];
+    }
+    if (!better) break;
+  }
+  // worm numbers: per team, lowest ground first
+  const worm = new Array<number>(items.length);
+  for (let t = 0; t < teams; t++) {
+    const mine = items.map((_, i) => i).filter((i) => team[i] === t).sort((x, y) => items[x].ground - items[y].ground);
+    mine.forEach((i, k) => { worm[i] = t * per + k; });
+  }
+  if (worm.some((w) => w > 7)) throw new ToolError("balance: the teams need worm numbers past WORM7 (give fewer teams or worms per team)");
+  return worm;
+}
+
+/** Per team: its spawns, mean and lowest ground, and the first game turn the water reaches one of them (the project's
+ * water and its script's wum.sim.waterSchedule, when it has one). */
+async function teamReport(s: Session, units: Units, teams: number, per: number) {
+  const store = s.store, k = units === "map" ? 1 : 20, gs = grids(store);
+  const r = (v: number) => Math.round(v * k * 100) / 100;
+  let waterAt: ((t: number) => number) | null = null;
+  const own = waterMap(store);
+  if (own !== null && store.scene.script?.present) {
+    try {
+      const sc = scheduleFromScript((await s.requireProject().erg.script()) ?? "");
+      if (sc) waterAt = waterByTurn(own, { schedule: sc });
+    } catch {
+      // no script to read: no flood turns
+    }
+  }
+  const out = [];
+  for (let t = 0; t < teams; t++) {
+    const rows = [];
+    for (let w = t * per; w < (t + 1) * per && w < 8; w++) {
+      const d = store.scene.details.find((x) => x.name === KNOTS[w]);
+      if (!d) continue;
+      const p = store.frames.detailWorld(d), g = spansAt(gs, p[0], p[2], p[1] + 1.5)[0]?.top ?? null;
+      let floods: number | null = null;
+      if (g !== null && waterAt) for (let turn = 1; turn <= 200; turn++) if (waterAt(turn) >= g) { floods = turn; break; }
+      rows.push({ worm: KNOTS[w], ground: g, floods });
+    }
+    const gr = rows.map((x) => x.ground).filter((x): x is number => x !== null);
+    const fl = rows.map((x) => x.floods).filter((x): x is number => x !== null);
+    out.push({ team: t, worms: rows.map((x) => x.worm), meanHeight: gr.length ? r(gr.reduce((a, b) => a + b, 0) / gr.length) : null, lowest: gr.length ? r(Math.min(...gr)) : null,
+      ...(waterAt ? { earliestFloodTurn: fl.length ? Math.min(...fl) : null } : {}) });
+  }
+  return { units, teams: out, note: `WORMn is worm n % ${per} of team floor(n / ${per}) (the Quick Game's human team has WORM0-3)` +
+    (waterAt ? "; earliestFloodTurn: the first game turn the project's water and its script's schedule reach one of the team's spawns" : "; no script schedule: no flood turns") };
+}
 
 function spawnState(store: EditorStore, units: Units) {
   const scene = store.scene;
@@ -68,34 +151,66 @@ function spawnState(store: EditorStore, units: Units) {
   return { spawnMode: scene.spawns.mode, spawns, missingKnots: KNOTS.filter((k) => !have.has(k)) };
 }
 
-function placeSpawnKnots(s: Session, a: { mode?: "random" | "knots"; spawns?: SpawnArg[]; units?: Units } & CameraArgs) {
+async function placeSpawnKnots(s: Session, a: { mode?: "random" | "knots"; spawns?: SpawnArg[]; units?: Units; balance?: Balance | boolean } & CameraArgs) {
   const store = s.store, scene = store.scene, units = a.units ?? "world";
   const mode = a.mode ?? "knots";
   const cmds: Command[] = [];
   if (scene.spawns.mode !== mode) cmds.push(new SetLevel({ spawns: mode }, `Spawn mode ${mode}`));
   const seen = new Set<number>();
-  const done: { worm: number; action: "added" | "moved"; dropped: boolean; pos: Vec3 }[] = [];
-  for (const sp of a.spawns ?? []) {
+  const done: { worm: number; action: "added" | "moved"; dropped: boolean; pos: Vec3; group?: string; was?: number }[] = [];
+  // resolve every point first; with balance the worm numbers are dealt again over them
+  const items = (a.spawns ?? []).map((sp) => {
     if (seen.has(sp.worm)) throw new ToolError(`WORM${sp.worm} is given twice`);
     seen.add(sp.worm);
-    const { map, dropped } = resolvePoint(store, sp, units, `WORM${sp.worm}`);
+    const r = resolvePoint(store, sp, units, `WORM${sp.worm}`);
+    const g = spansAt(grids(store), r.map[0], r.map[2], r.map[1] + 1.5)[0]?.top ?? r.map[1];
+    return { arg: sp, map: r.map, dropped: r.dropped, ground: g };
+  });
+  const bal: Balance | null = a.balance === true ? {} : a.balance ? a.balance : null;
+  if (bal) {
+    if (items.length < 2) throw new ToolError("balance deals the worm numbers over the given spawns: give at least two");
+    const dealt = balanceSpawns(items, bal);
+    items.forEach((it, i) => { it.arg = { ...it.arg, worm: dealt[i] }; (it as { was?: number }).was = (a.spawns ?? [])[i].worm; });
+  }
+  for (const it of items) {
+    const sp = it.arg, map = it.map, dropped = it.dropped;
     const name = KNOTS[sp.worm];
     const have = scene.details.find((d) => d.name === name);
     if (have) {
       cmds.push(new SetDetail(have.id, { pos: tidy(store.frames.toLocal(have.frame, map), 6) }, `Move ${name}`));
-      done.push({ worm: sp.worm, action: "moved", dropped, pos: pointOut(map, units) });
+      done.push({ worm: sp.worm, action: "moved", dropped, pos: pointOut(map, units), ...(sp.group ? { group: sp.group } : {}), ...(bal ? { was: (it as { was?: number }).was } : {}) });
     } else {
       const frame = targetFrame(scene, "spawn");
       cmds.push(new AddDetail(frame, { name, resource: KNOT_RESOURCE, pos: tidy(store.frames.toLocal(frame, map), 6) }));
-      done.push({ worm: sp.worm, action: "added", dropped, pos: pointOut(map, units) });
+      done.push({ worm: sp.worm, action: "added", dropped, pos: pointOut(map, units), ...(sp.group ? { group: sp.group } : {}), ...(bal ? { was: (it as { was?: number }).was } : {}) });
     }
   }
-  if (!cmds.length) return { mode, changed: false, note: "nothing to change", ...spawnState(store, units), warnings: cameraWarnings(store, units, a) };
+  const teams = bal?.teams ?? 2, per = bal?.wormsPerTeam ?? (bal ? Math.ceil(items.length / teams) : 4);
+  if (!cmds.length) return { mode, changed: false, note: "nothing to change", ...spawnState(store, units), teams: await teamReport(s, units, teams, per), warnings: cameraWarnings(store, units, a) };
   commit(store, cmds.length === 1 ? cmds[0] : new Group(a.spawns?.length ? "Place spawn knots" : `Spawn mode ${mode}`, cmds));
-  return { mode, changed: true, placed: done, ...spawnState(store, units), issues: issuesOf(store).filter((t) => /WORM|spawn/i.test(t)), warnings: cameraWarnings(store, units, a) };
+  return { mode, changed: true, placed: done, ...(bal ? { balanced: { mode: bal.mode ?? "height", teams, wormsPerTeam: per, note: "worm numbers dealt over the given positions (was: the worm asked for): heights snaked over the teams, a team's spawns spread over groups, the lowest of a team moving first" } } : {}),
+    ...spawnState(store, units), teams: await teamReport(s, units, teams, per), issues: issuesOf(store).filter((t) => /WORM|spawn/i.test(t)), warnings: cameraWarnings(store, units, a) };
 }
 
 // ------------------------------------------------------------------ objects
+
+/** The highest the project's script raises the water (map units): its wum.sim.waterSchedule's cap, or null. */
+export async function scriptWaterTop(s: Session): Promise<number | null> {
+  const p = s.requireProject();
+  if (!p.store.scene.script?.present) return null;
+  try {
+    const sc = scheduleFromScript((await p.erg.script()) ?? "");
+    return sc ? sc.cap / (sc.units === "map" ? 1 : 20) : null;
+  } catch {
+    return null;
+  }
+}
+
+/** The mine factory checked as the game places it (lib/factory-check.ts), as answer lines in the caller's units. */
+export async function factoryReport(s: Session, units: Units): Promise<string[]> {
+  const k = units === "map" ? 1 : 20;
+  return factoryLines(checkFactory(s.store, (v) => `${Math.round(v * k * 100) / 100} ${units}`, await scriptWaterTop(s)));
+}
 
 const OBJECT_TYPES = ["crate", "health", "telepad", "trigger", "mine", "oildrum", "minefactory"] as const;
 type PlaceType = (typeof OBJECT_TYPES)[number];
@@ -203,10 +318,12 @@ async function placeObject(s: Session, a: PlaceArgs) {
   }
   commit(store, cmd);
   const ids = cmd instanceof AddObjects ? cmd.ids : [cmd.detailId];
+  const factory = a.type === "minefactory" ? await factoryReport(s, units) : [];
   return {
     placed: infos(s, ids, units), dropped, ...(note ? { warning: note } : {}),
     objects: `${scene.objects?.length ?? 0} of ${LIMITS.objects}`,
-    issues: issuesOf(store).filter((t) => ids.some((id) => t.includes(`#${id} `))),
+    issues: [...issuesOf(store).filter((t) => ids.some((id) => t.includes(`#${id} `))), ...factory],
+    ...(factory.some((l) => l.startsWith("error:")) ? { factoryWillBeLost: true } : {}),
   };
 }
 
@@ -229,7 +346,7 @@ async function placeObjects(s: Session, a: { objects: (PlaceArgs & { label?: str
     objects: `${s.store.scene.objects?.length ?? 0} of ${LIMITS.objects}`, undo: "each placed item is one undo step" };
 }
 
-function listObjects(s: Session, a: { role?: string; search?: string; limit?: number; units?: Units } & CameraArgs) {
+async function listObjects(s: Session, a: { role?: string; search?: string; limit?: number; units?: Units } & CameraArgs) {
   const store = s.store, scene = store.scene, units = a.units ?? "world";
   const q = a.search?.toLowerCase();
   const roles = a.role ? [a.role] : ["spawn", "object"];
@@ -241,7 +358,7 @@ function listObjects(s: Session, a: { role?: string; search?: string; limit?: nu
     levelObjects: listed.filter((d) => d.object),
     placed: listed.filter((d) => d.role !== "spawn" && !d.object),
     counts: { objects: `${scene.objects?.length ?? 0} of ${LIMITS.objects}`, details: scene.details.length },
-    issues: [...issuesOf(store), ...cameraWarnings(store, units, a)],
+    issues: [...issuesOf(store), ...cameraWarnings(store, units, a), ...(await factoryReport(s, units))],
   };
 }
 
@@ -413,12 +530,19 @@ export const tools: Tool[] = [
         spawns: {
           type: "array", maxItems: 8, description: "The knots to place or move.",
           items: { type: "object", additionalProperties: false, required: ["worm"],
-            properties: { worm: { type: "integer", minimum: 0, maximum: 7, description: "0-7: WORM0-WORM7." }, ...pointProps } },
+            properties: { worm: { type: "integer", minimum: 0, maximum: 7, description: "0-7: WORM0-WORM7." }, ...pointProps,
+              group: { type: "string", description: "With balance: a label such as the castle the spawn is in; a team's spawns are spread over different groups." } } },
         },
+        balance: { anyOf: [{ type: "boolean" }, { type: "object", additionalProperties: false, properties: {
+          teams: { type: "integer", minimum: 1, maximum: 8 }, wormsPerTeam: { type: "integer", minimum: 1, maximum: 8 }, mode: { type: "string", enum: ["height", "interleave"] } } }],
+          description: "Deal the worm numbers again over the given positions so the teams stand alike (WORMn is worm n % wormsPerTeam of team floor(n / wormsPerTeam); default 2 teams of 4): height (default) snakes the heights over the teams (A B B A ...: equal sums) and spreads a team's spawns over different `group`s; interleave alternates A B A B. In a team the lowest spawn moves first. The answer's teams gives each team's mean and lowest spawn height and earliest flood turn." },
         units: unitsSchema, ...cameraProps,
       },
     },
-    handler: (s, a) => placeSpawnKnots(s, a),
+    handler: (s, a) => {
+      if (a.balance !== undefined && typeof a.balance !== "boolean" && (typeof a.balance !== "object" || Array.isArray(a.balance))) throw new ToolError("balance: true, or {teams, wormsPerTeam, mode}");
+      return placeSpawnKnots(s, a);
+    },
   },
   {
     name: "place_object",
@@ -464,7 +588,14 @@ export const tools: Tool[] = [
       properties: { ...idsProps, pos: vec3("New position [x,y,z] (one detail)."), by: vec3("Offset [x,y,z] added to each detail."),
         drop: { type: "boolean", description: "Drop the new position onto the terrain." }, units: unitsSchema },
     },
-    handler: (s, a) => moveDetails(s, a),
+    async handler(s, a) {
+      const r = moveDetails(s, a);
+      // the mine factory's knot moved: how the game will place it
+      const f = s.store.scene.objects?.find((o) => o.type === "minefactory");
+      const d = f && s.store.scene.details.find((x) => x.name === f.knot && x.src === null);
+      if (!d || !idsOf(a).includes(d.id)) return r;
+      return { ...r, factory: await factoryReport(s, a.units ?? "world") };
+    },
   },
   {
     name: "rotate",
@@ -520,17 +651,20 @@ export const tools: Tool[] = [
   },
   {
     name: "set_water",
-    description: "Set the water level in world units (sea level 0; -1000 to 1000), or useDefault for the map's own water.",
+    description: "Set the water level in world units (sea level 0; -1000 to 1000), or useDefault for the map's own water. The answer's backdrop gives coverLevel, the lowest water that covers the base's ground planes (list_backdrop), with a warning when the water is under it (on Multi.DinerMight a sea at -20 world shows the yellow table).",
     inputSchema: {
       type: "object", additionalProperties: false,
       properties: { level: { type: "number", minimum: -1000, maximum: 1000, description: "Water height, in world units (map units with units: map)." },
         useDefault: { type: "boolean" }, units: unitsSchema },
     },
-    handler(s, a: { level?: number; useDefault?: boolean; units?: Units }) {
+    async handler(s, a: { level?: number; useDefault?: boolean; units?: Units }) {
       if ((a.level === undefined) === !a.useDefault) throw new ToolError("give exactly one of level or useDefault: true");
       const world = a.level === undefined ? null : a.units === "map" ? a.level * 20 : a.level;
       if (world !== null && Math.abs(world) > 1000) throw new ToolError("the water level is within -1000 and 1000 world units");
-      return setLevel(s, { water: world }, "Change water", () => ({ water: { world, map: world === null ? null : world / 20 } }));
+      const r = setLevel(s, { water: world }, "Change water", () => ({ water: { world, map: world === null ? null : world / 20 } })) as Record<string, unknown>;
+      // the base's ground plane (a table, a seabed mesh) shows through a sea under it
+      const sea = world === null ? null : await waterBackdropWarning(s).catch(() => null);
+      return sea ? { ...r, backdrop: sea } : r;
     },
   },
   {

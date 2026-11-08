@@ -4,6 +4,7 @@
 import { applyDrape, planDrape, type DrapeArgs } from "../lib/heightfield-drape";
 import { usage } from "../lib/voxel";
 import type { Schema, Tool } from "../registry";
+import type { Session } from "../session";
 import { schema as field } from "./heightfield";
 
 // fitBudget is heightfield_region's: a drape packs its skin and core itself
@@ -18,18 +19,38 @@ const schema: Schema & { type: "object" } = {
     skirtTo: { type: "number", description: "Level y (units) the ground under the skin reaches down to: the core is filled from here up to just under the skin, instead of from the floor, and a hollow skin (core: false) gets one too, so a rising sea shows solid ground instead of the skin's underside and its jagged edge. The sea floor, or at least 10 map units under the water's cap. dryRun answers its cells (core.cells, core.neededCells)." },
     skirtTop: { type: "number", description: "With skirtTo: fill only under the columns whose skin dips to this level y (units) or lower (the skin's lowest corner less its thickness): the shore that the sea reaches, at a fraction of the cells. Default every column." },
     dryRun: { type: "boolean", description: "Plan and report only." },
+    estimateSkirts: { type: "boolean", description: "With dryRun: also plan the same skin as a hollow skin, with its full core, and (when skirtTo is given) with the skirt alone and with skirtTop, and answer each one's blocks and cells (skirtEstimates), to choose before building." },
   },
 };
+
+/** The same drape planned in each skirt mode: its blocks, skin and core cells, whether it fits (dryRun estimateSkirts). */
+function skirtEstimates(s: Session, a: DrapeArgs) {
+  const { skirtTo, skirtTop, core: _core, ...base } = a;
+  const modes: [string, DrapeArgs][] = [["hollow (core: false)", { ...base, core: false }], ["core (from the floor)", { ...base, core: true }]];
+  if (skirtTo !== undefined) {
+    modes.push(["skirtTo (hollow skin, ground from skirtTo)", { ...base, core: false, skirtTo }]);
+    if (skirtTop !== undefined) modes.push(["skirtTo + skirtTop (only the shore)", { ...base, core: false, skirtTo, skirtTop }]);
+  }
+  return modes.map(([mode, args]) => {
+    try {
+      const r = planDrape(s.store, args).report as { fits: boolean; why?: string; skin: { blocks: number; cells: number }; core: { blocks: number; cells: number; neededCells: number } | null };
+      return { mode, fits: r.fits, ...(r.why ? { why: r.why } : {}), blocks: r.skin.blocks + (r.core?.blocks ?? 0), skinCells: r.skin.cells, coreCells: r.core?.cells ?? 0,
+        cells: r.skin.cells + (r.core?.cells ?? 0), ...(r.core ? { coreNeededCells: r.core.neededCells } : {}) };
+    } catch (e) {
+      return { mode, fits: false, why: e instanceof Error ? e.message : String(e) };
+    }
+  });
+}
 
 export const tools: Tool[] = [
   {
     name: "heightfield_drape",
     description: "Raise a heightfield (the same arguments as heightfield_region) as a smooth skin instead of voxel terraces: blocks of up to 31 x 31 columns, `thickness` voxels thick, sheared by per-corner height offsets the game applies to drawing and collision (a cone's flanks become slopes, not rings), over the stepped field cut just under the skin (`core`). Skin blocks cost X*thickness*Z cells each. The skin is read at its sheared height by query_ground, the renders, check_reachability and drops; structures, heightfield fills and sculpt edit it unsheared, so build those before draping or away from it. dryRun answers the plan. One undo step.",
     inputSchema: schema,
-    handler(s, a: DrapeArgs & { dryRun?: boolean }) {
-      const { dryRun, ...args } = a;
+    handler(s, a: DrapeArgs & { dryRun?: boolean; estimateSkirts?: boolean }) {
+      const { dryRun, estimateSkirts, ...args } = a;
       const p = planDrape(s.store, args);
-      if (dryRun) return { ...p.report, applied: false };
+      if (dryRun) return { ...p.report, ...(estimateSkirts ? { skirtEstimates: skirtEstimates(s, args) } : {}), applied: false };
       const r = applyDrape(s.store, p);
       const u = usage(s.store);
       return { ...p.report, applied: true, added: r.blocks, undo: "undo takes the whole drape out",

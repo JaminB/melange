@@ -6,7 +6,7 @@ import { sampleField, spansAt } from "../lib/inspect-field";
 import { applyPlan, dominantMaterial, type Packing } from "../lib/structures-apply";
 import {
   SIDES, arch, bridge, castle, castleSpots, crater, flatTunnel, keep, lane, laneCut, place, placePoint, scaled, tower, tunnel, wallSegment, type Plan, type Shape,
-  type Side, type Spot,
+  type GateSpec, type Side, type Spot,
 } from "../lib/structures-shapes";
 import { grids, tidy, toWorld } from "../lib/voxel";
 import { ToolError, type Schema, type Tool } from "../registry";
@@ -30,7 +30,7 @@ const common: Record<string, Schema> = {
   drape: { type: "string", enum: ["skip", "sheared"], description: "Draped blocks (heightfield_drape's skin, corner offsets): skip (default) leaves them alone; sheared edits their cells where the game draws them (each column moved up by its corner offsets), so a ramp cut, tunnel or crater cuts through the skin too. Fills into a skin follow its shear, a voxel at a time." },
   packing: { type: "string", enum: ["tiles", "parts"], description: "How new blocks are cut. tiles (default): tiles of up to 31 voxels a side, each trimmed to what it holds. parts: a block per part (each wall, tower, the keep), merged where that costs few cells, so the air between parts (a courtyard) is in no block: fewer cells, more blocks." },
 };
-const foundation: Schema = { type: "integer", minimum: 0, maximum: 32, description: "Voxels of solid filled below the base (y) so the structure reaches the ground. Default 0." };
+const foundation: Schema = { type: "integer", minimum: 0, maximum: 32, description: "A whole number of the structure's voxels (of `scale`, so 2 at scale 1.5 is 3 map units) of solid filled below the base (y) so the structure reaches the ground. Default 0. A castle's fills its whole footprint (a 24 x 20 castle with foundation 4: about 2000-3000 cells); seat fills under the walls and towers only." };
 const rotation: Schema = { type: "number", description: "Yaw in degrees about the structure's centre (counter-clockwise seen from above; 0 = sides parallel to the map axes). Default 0." };
 const crenellations = (d: string): Schema => ({ type: "boolean", description: d });
 
@@ -122,6 +122,32 @@ const sideOf = (v: string | undefined, dflt: Side | null): Side | null => (v ===
 
 const sc = (v: Vec3, k: number): Vec3 => [v[0] * k, v[1] * k, v[2] * k];
 
+/** build_castle seat: a fill under the castle's walls, towers and keep (the placed fill shapes of parts 1-9, tested on
+ * the floor's first layer) from the ground up to the floor, where the ground is lower than the floor and at most
+ * `depth` under it. Map units. Null when no column needs it. */
+function seatShape(gs: ReturnType<typeof grids>, shapes: Shape[], floor: number, v: number, depth: number, mat: number): Shape | null {
+  const solid = shapes.filter((sh) => sh.op === "fill" && sh.part !== undefined && sh.part >= 1);
+  if (!solid.length) return null;
+  const probe = floor + 0.5 * v;
+  const min: Vec3 = [Infinity, floor - depth, Infinity], max: Vec3 = [-Infinity, floor, -Infinity];
+  for (const sh of solid) { min[0] = Math.min(min[0], sh.min[0]); min[2] = Math.min(min[2], sh.min[2]); max[0] = Math.max(max[0], sh.max[0]); max[2] = Math.max(max[2], sh.max[2]); }
+  const cache = new Map<string, number>();
+  const groundAt = (x: number, z: number) => {
+    const key = `${x},${z}`;
+    let g = cache.get(key);
+    if (g === undefined) {
+      const top = spansAt(gs, x, z, floor)[0]?.top;
+      g = top === undefined || top < floor - depth || !solid.some((sh) => x >= sh.min[0] && x < sh.max[0] && z >= sh.min[2] && z < sh.max[2] && sh.hit(x, probe, z)) ? Infinity : top;
+      cache.set(key, g);
+    }
+    return g;
+  };
+  let any = false;
+  for (let x = Math.floor(min[0]) + 0.5; x < max[0] && !any; x += 2) for (let z = Math.floor(min[2]) + 0.5; z < max[2] && !any; z += 2) if (groundAt(x, z) < floor - 0.25) any = true;
+  if (!any) return null;
+  return { op: "fill", mat, min, max, part: 0, keep: true, hit: (x, y, z) => y < floor && y >= groundAt(x, z) - 0.5 };
+}
+
 // ------------------------------------------------------------------ tools
 
 export const tools: Tool[] = [
@@ -144,6 +170,13 @@ export const tools: Tool[] = [
         gate: sideSchema("Side of the gate, or none. Default s."),
         gateWidth: { type: "number", minimum: 2, description: "Default 4." },
         gateHeight: { type: "number", minimum: 2, description: "Default 5 (round-topped from 3 wide)." },
+        gateBelow: { anyOf: [{ type: "number", minimum: 0 }, { type: "string", enum: ["auto"] }], description: "Carve the gate's floor this far (units) under the floor at its outer face, rising to the floor at the inner face: a ramp down to lower ground outside instead of a sill. auto: the floor less the ground 1.5 map units outside the gate's middle, at most the passage's length (45 degrees). Default auto with `ground`, else 0." },
+        gates: { type: "array", minItems: 1, maxItems: 8, description: "Several gates instead of `gate`: each {side, width, height (defaults gateWidth, gateHeight), offset (along the side from its middle, default 0), below (as gateBelow; default auto)}. The keep's door faces the first.",
+          items: { type: "object", additionalProperties: false, required: ["side"], properties: {
+            side: { type: "string", enum: [...SIDES] }, width: { type: "number", minimum: 2 }, height: { type: "number", minimum: 2 }, offset: { type: "number" },
+            below: { anyOf: [{ type: "number", minimum: 0 }, { type: "string", enum: ["auto"] }] } } } },
+        seat: { type: "boolean", description: "Seat it on the ground: fill under the walls, towers and keep (not the courtyard) from the ground up to the floor, column by column, where the ground is lower than the floor (down to seatDepth). The cheap replacement for a whole-footprint foundation on a slope." },
+        seatDepth: { type: "number", minimum: 0.5, description: "The deepest seat fill under the floor (units; default 8 map units): columns with no ground that close are left open." },
         crenellations: crenellations("Merlons on the walls, towers and keep. Default true."),
         scale: { type: "number", minimum: 0.5, maximum: 4, description: "Build the castle from voxels of this many map units (default 1). Lengths stay map units; the design is laid out in voxels of `scale` (walls, merlons and gates keep their rhythm in voxels) and new blocks get that scale (blockScale), so it costs about 1/scale^3 of the cells. Use place \"new\"." },
         foundation, rotation, ...groundProps, ...common,
@@ -151,6 +184,7 @@ export const tools: Tool[] = [
     },
     handler(s, a0: Common & { at: Vec3; size?: [number, number]; wallHeight?: number; wallThickness?: number; towerShape?: "round" | "square"; towerRadius?: number;
       towerHeight?: number; keep?: boolean; keepSize?: [number, number]; keepHeight?: number; gate?: string; gateWidth?: number; gateHeight?: number;
+      gateBelow?: number | "auto"; gates?: { side: Side; width?: number; height?: number; offset?: number; below?: number | "auto" }[]; seat?: boolean; seatDepth?: number;
       crenellations?: boolean; foundation?: number; rotation?: number; scale?: number; ground?: "max" | "mean" | "min"; sink?: number }) {
       finite(a0.at, "at");
       const sz0 = a0.size ?? [30 * (a0.units === "world" ? 20 : 1), 30 * (a0.units === "world" ? 20 : 1)];
@@ -174,19 +208,47 @@ export const tools: Tool[] = [
             keepSize = null;
           }
         }
-        const gate = sideOf(a.gate, "s");
+        const gate = a.gates?.length ? a.gates[0].side : sideOf(a.gate, "s");
+        if (a.gates && a.gate !== undefined) throw new ToolError("give gate or gates, not both");
+        for (const b of [a.gateBelow, ...(a.gates ?? []).map((g) => g.below)])
+          if (b !== undefined && b !== "auto" && !(typeof b === "number" && b >= 0)) throw new ToolError("a gate's below is a length of 0 or more, or \"auto\"");
         const spec = {
           size, wallHeight: wh, wallThickness: t, towerShape: a.towerShape ?? "round", towerRadius: tr, towerHeight: a.towerHeight === undefined ? wh + 3 / v : a.towerHeight * k,
           keepSize, keepHeight: a.keepHeight === undefined ? wh + 4 / v : a.keepHeight * k, gate, gateWidth: U(a.gateWidth, 4 / v), gateHeight: U(a.gateHeight, 5 / v),
           material: mat, cren: a.crenellations !== false, found: a.foundation === undefined ? 0 : a.foundation / v,
         };
         const at = sc(a.at, k0);
+        const gs = grids(s.store);
+        // a gate's below: the floor less the ground just outside its middle (auto), at most the passage's length
+        const gateList: GateSpec[] | undefined = a.gates?.length || a.gateBelow !== undefined || a.ground ? (a.gates?.length ? a.gates : [{ side: gate as Side, below: a.gateBelow }])
+          .filter((g) => g.side).map((g) => {
+            const w = U((g as { width?: number }).width, spec.gateWidth), h = U((g as { height?: number }).height, spec.gateHeight), shift = U((g as { offset?: number }).offset, 0);
+            const want = (g as { below?: number | "auto" }).below ?? (a.gates?.length || a.ground ? "auto" : 0);
+            const alongX = g.side === "n" || g.side === "s", sign = g.side === "s" || g.side === "e" ? 1 : -1;
+            const half = (alongX ? size[1] : size[0]) / 2, pass = t + 2;
+            let below = 0;
+            if (want === "auto") {
+              const out = half + 1 + 1.5 / v, loc: Vec3 = alongX ? [shift, 0, sign * out] : [sign * out, 0, shift];
+              const pm = placePoint(sc(loc, v), at, a.rotation ?? 0), top = spansAt(gs, pm[0], pm[2], at[1] + 0.5)[0];
+              if (top && top.top < at[1]) below = Math.min(pass, (at[1] - top.top) / v);
+            } else below = Math.min(pass, want * k);
+            return { side: g.side, width: w, height: h, shift, below };
+          }) : undefined;
+        if (gateList) (spec as typeof spec & { gates?: GateSpec[] }).gates = gateList;
         const shapes = place(scaled(castle(spec), v), at, a.rotation ?? 0);
+        if (a.seat) {
+          const seat = seatShape(gs, shapes, at[1], v, a.seatDepth === undefined ? 8 : a.seatDepth * k0, mat);
+          if (seat) shapes.unshift(seat);   // first: the gates' carves after it open the passage through it
+          else notes.push("seat: the ground is not lower than the floor under the walls: nothing to fill");
+        }
         spots = castleSpots(spec).map((p) => ({ kind: p.kind, at: placePoint(sc(p.at, v), at, a.rotation ?? 0) }));
         const m = (x: number) => tidy([x * v, 0, 0])[0];
         return { label: "Build castle", shapes, notes, info: { size: [m(size[0]), m(size[1])], wallHeight: m(wh), wallThickness: m(t), towerRadius: m(tr),
           towerHeight: m(spec.towerHeight), keep: keepSize ? [m(keepSize[0]), m(keepSize[1])] : null,
-          gate: gate ? { side: gate, width: m(spec.gateWidth), height: m(spec.gateHeight) } : null, courtyardFloorY: at[1], ...(v !== 1 ? { scale: v } : {}) } };
+          gate: gate ? { side: gate, width: m(spec.gateWidth), height: m(spec.gateHeight) } : null,
+          ...(gateList ? { gates: gateList.map((g) => ({ side: g.side, width: m(g.width), height: m(g.height), offset: m(g.shift), below: m(g.below) })) } : {}),
+          ...(a.seat ? { seat: { depth: a.seatDepth ?? 8 } } : {}),
+          courtyardFloorY: at[1], ...(v !== 1 ? { scale: v } : {}) } };
       }) as Record<string, unknown>;
       return { ...res, ...(settled.groundUnder ? { groundUnder: settled.groundUnder } : {}), spawnSpots: spotReport(s, spots, a.units, !!a.dryRun) };
     },

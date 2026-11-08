@@ -3,6 +3,8 @@ import { WORLD_PER_XAN, engineWarnings, isSolid, type Detail, type Role, type Ve
 import { grids, limitProblems, tidy, toWorld, usage } from "../lib/voxel";
 import { ToolError, type Tool } from "../registry";
 import type { Session } from "../session";
+import { factoryReport } from "./place";
+import { backdropOf, coverLevel, waterBackdropWarning } from "../lib/backdrop";
 
 const discard = { type: "boolean", description: "Drop unsaved edits of the open project instead of refusing." } as const;
 
@@ -201,9 +203,19 @@ export const tools: Tool[] = [
         search: { type: "string", description: "Only voxel frames whose name contains this (any case)." },
         minVoxels: { type: "integer", minimum: 0, description: "Only voxel frames with at least this many voxels." },
         limit: { type: "integer", minimum: 0, maximum: 5000, description: "Voxel frames to list (default 100)." },
+        backdrop: { type: "boolean", description: "Also list the base's backdrop (list_backdrop: ground planes and distant set pieces, with their bounds and the water that covers the planes), to hide with remove_backdrop." },
       },
     },
-    handler: (s, a: FrameQuery) => describe(s, a),
+    async handler(s, a: FrameQuery & { backdrop?: boolean }) {
+      const { backdrop, ...q } = a;
+      const d = describe(s, q);
+      if (!backdrop) return d;
+      const b = await backdropOf(s, s.store.scene, grids(s.store));
+      const c = coverLevel(b.pieces, b.extent), r = (v: number) => Math.round(v * 100) / 100;
+      return { ...(d as object), backdrop: { count: b.pieces.length, coverLevel: c ? { map: r(c.level), world: r(c.level * 20), piece: c.piece.detail.id } : null,
+        pieces: b.pieces.map((p) => ({ id: p.detail.id, name: p.detail.name, resource: p.detail.resource, kind: p.kind, top: { map: r(p.bounds.max[1]), world: r(p.bounds.max[1] * 20) },
+          size: [0, 1, 2].map((i) => r(p.bounds.max[i] - p.bounds.min[i])) })), note: "map units for size; remove_backdrop removes them, list_backdrop has their bounds" } };
+    },
   },
   {
     name: "save",
@@ -211,7 +223,10 @@ export const tools: Tool[] = [
     inputSchema: { type: "object", additionalProperties: false, properties: {} },
     async handler(s) {
       const r = await s.save();
-      return { ...r, ...state(s), patchBytes: usage(s.store).patchBytes.used };
+      // the mine factory as the game will place it: a factory the match loses at load is saved all the same, and said so
+      const factory = await factoryReport(s, "world").catch(() => [] as string[]);
+      const sea = await waterBackdropWarning(s).catch(() => null);
+      return { ...r, ...(factory.length ? { factory } : {}), ...(sea?.warning ? { water: sea } : {}), ...state(s), patchBytes: usage(s.store).patchBytes.used };
     },
   },
   {

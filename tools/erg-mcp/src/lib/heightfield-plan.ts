@@ -44,11 +44,59 @@ export interface MaterialRule {
   mask?: string;                            // an expression of the column and voxel: only where it is above 0
   masks?: string[];                         // more such expressions: only where at least one of them is above 0
   noise?: { threshold?: number; scale?: number; seed?: number; octaves?: number };   // only where noise is above threshold
-  feather?: { width: number; pattern?: Feather };   // the mask and height bounds move by a per-voxel threshold in +-width/2
+  feather?: { width: number; pattern?: Feather; cell?: number; seed?: number };   // the mask and height bounds move by a per-voxel threshold in +-width/2
+  paths?: PathMask[];                       // only within a path's width of one of these polylines (roads, switchbacks)
 }
 
-/** How a feathered rule's threshold varies per voxel: dither (a 4 x 4 ordered pattern over x, z and y) or noise (a hash). */
-export type Feather = "dither" | "noise";
+/** How a feathered rule's threshold varies: dither (a 4 x 4 ordered pattern over x, z and y), noise (a hash), blue (a
+ * 16 x 16 blue-noise tile: no checkerboard, no clumps) or perlin (smooth noise: the edge wanders in lobes). dither, noise
+ * and blue take `cell` (units; default one voxel), the size of the squares the pattern is made of; perlin takes it as
+ * its feature size (default 4 voxels). */
+export type Feather = "dither" | "noise" | "blue" | "perlin";
+
+/** A road or path for a material rule: the columns within width / 2 of the polyline `points` ([x, z], level coordinates
+ * in the call's units), narrowing linearly to taper x width at the end; or a switchback from `from` to `to` folded into
+ * `legs` straight legs `spread` wide (each leg crosses the line from -spread/2 to +spread/2, turn to turn). */
+export interface PathMask {
+  points?: [number, number][];
+  width: number;
+  taper?: number;
+  switchback?: { from: [number, number]; to: [number, number]; legs: number; spread: number };
+}
+
+/** The polyline a path mask follows, in its own units: its points, or a switchback's turns. */
+export function pathPoints(p: PathMask): [number, number][] {
+  if (p.points) return p.points;
+  const sw = p.switchback!;
+  const dx = sw.to[0] - sw.from[0], dz = sw.to[1] - sw.from[1], len = Math.hypot(dx, dz) || 1;
+  const nx = -dz / len, nz = dx / len, out: [number, number][] = [sw.from];
+  for (let i = 0; i < sw.legs - 1; i++) {
+    const t = (i + 1) / sw.legs, side = i % 2 === 0 ? 1 : -1;
+    out.push([sw.from[0] + dx * t + nx * side * sw.spread / 2, sw.from[1] + dz * t + nz * side * sw.spread / 2]);
+  }
+  out.push(sw.to);
+  return out;
+}
+
+/** A 16 x 16 blue-noise tile of thresholds in (-0.5, 0.5): the order in which a best-candidate fill (each next cell the
+ * one farthest, on the torus, from those already taken; ties by position) takes the cells. */
+const BLUE = (() => {
+  const N = 16, taken: number[] = [], rank = new Float32Array(N * N).fill(-1);
+  const d2 = (a: number, b: number) => {
+    const ax = a % N, az = (a - ax) / N, bx = b % N, bz = (b - bx) / N;
+    const dx = Math.min(Math.abs(ax - bx), N - Math.abs(ax - bx)), dz = Math.min(Math.abs(az - bz), N - Math.abs(az - bz));
+    return dx * dx + dz * dz;
+  };
+  const near = new Float32Array(N * N).fill(Infinity);
+  for (let k = 0; k < N * N; k++) {
+    let best = -1;
+    for (let c = 0; c < N * N; c++) if (rank[c] < 0 && (best < 0 || near[c] > near[best])) best = c;
+    rank[best] = k;
+    taken.push(best);
+    for (let c = 0; c < N * N; c++) near[c] = Math.min(near[c], d2(c, best));
+  }
+  return Array.from(rank, (r) => (r + 0.5) / (N * N) - 0.5);
+})();
 
 /** Second-material corner blending at material boundaries (the game's per-corner blend, as the panel's 2nd material):
  * the top `depth` voxels of each column take the most common other material among their neighbours as their second
@@ -96,6 +144,61 @@ export interface FieldArgs {
   costAt?: number[];                        // also plan at these voxel sizes and report their cost
   fitBudget?: boolean;                      // raise voxelSize (in steps of 0.25) until the field fits maxBlocks and maxCells whole
   blend?: boolean | Blend;                  // blend material boundaries per corner (default off)
+  relax?: number;                           // passes of smoothing over the heights (default 0)
+  maxGradient?: number;                     // degrees: no column steeper than this against its neighbours (default none)
+}
+
+/** Smooths and slope-limits a field's heights (voxels above the floor, one column per voxel) in place, over the columns
+ * `live` marks: `relax` passes of a 3 x 3 mean (each live neighbour counted), then `maxGradient` (degrees) by moving
+ * each too-steep pair of neighbours toward each other by half the excess (the volume stays), until none is left or 500
+ * passes. Answers the passes the limiter took and the steepest slope left, degrees. */
+export function limitSlopes(h: Float32Array, nx: number, nz: number, live: Uint8Array, relax = 0, maxGradient?: number): { passes: number; steepest: number } {
+  const tmp = new Float32Array(h.length);
+  for (let p = 0; p < relax; p++) {
+    for (let b = 0; b < nz; b++)
+      for (let a = 0; a < nx; a++) {
+        const c = b * nx + a;
+        if (!live[c]) { tmp[c] = h[c]; continue; }
+        let sum = 0, n = 0;
+        for (let dz = -1; dz <= 1; dz++) for (let dx = -1; dx <= 1; dx++) {
+          const a2 = a + dx, b2 = b + dz;
+          if (a2 < 0 || b2 < 0 || a2 >= nx || b2 >= nz || !live[b2 * nx + a2]) continue;
+          sum += h[b2 * nx + a2]; n++;
+        }
+        tmp[c] = sum / n;
+      }
+    h.set(tmp);
+  }
+  let passes = 0, steepest = 0;
+  const pairs: [number, number, number][] = [[1, 0, 1], [0, 1, 1], [1, 1, Math.SQRT2], [1, -1, Math.SQRT2]];
+  if (maxGradient !== undefined) {
+    const d = Math.tan((Math.min(89, Math.max(1, maxGradient)) * Math.PI) / 180);
+    for (; passes < 500; passes++) {
+      let moved = false;
+      for (let b = 0; b < nz; b++)
+        for (let a = 0; a < nx; a++) {
+          const c = b * nx + a;
+          if (!live[c]) continue;
+          for (const [dx, dz, run] of pairs) {
+            const a2 = a + dx, b2 = b + dz;
+            if (a2 < 0 || b2 < 0 || a2 >= nx || b2 >= nz) continue;
+            const c2 = b2 * nx + a2;
+            if (!live[c2]) continue;
+            const diff = h[c] - h[c2], excess = Math.abs(diff) - d * run;
+            if (excess <= 1e-4) continue;
+            const m = (excess / 2) * Math.sign(diff);
+            h[c] -= m; h[c2] += m;
+            moved = true;
+          }
+        }
+      if (!moved) break;
+    }
+  }
+  for (let b = 0; b < nz; b++)
+    for (let a = 0; a + 1 < nx; a++) if (live[b * nx + a] && live[b * nx + a + 1]) steepest = Math.max(steepest, Math.abs(h[b * nx + a] - h[b * nx + a + 1]));
+  for (let b = 0; b + 1 < nz; b++)
+    for (let a = 0; a < nx; a++) if (live[b * nx + a] && live[(b + 1) * nx + a]) steepest = Math.max(steepest, Math.abs(h[b * nx + a] - h[(b + 1) * nx + a]));
+  return { passes, steepest: (Math.atan(steepest) * 180) / Math.PI };
 }
 
 export const SIDE = LIMITS.newFrameSide;
@@ -118,6 +221,7 @@ export interface Field {
   lo: Int32Array; hi: Int32Array;           // per column [lo, hi): hi <= lo is no column
   height: Float32Array;                     // per column, voxels above the floor (after crater, cap)
   slope: Float32Array;                      // per column, degrees
+  limited?: { passes: number; steepest: number };   // relax / maxGradient ran: the limiter's passes and the steepest slope left
   materialAt(col: number, y: number): number;
   /** The word a field voxel is written as: filled(materialAt), with a second material at a boundary when blend is on.
    * `layered` compares a neighbour's voxel at the same depth under its own top (a drape's skin) instead of the same y. */
@@ -250,6 +354,23 @@ export function sampleField(store: EditorStore, a: FieldArgs): Field {
         hi[c] = floor + top;
       }
     }
+  // relax and maxGradient: the heights smoothed and slope-limited over the kept columns, then made whole voxels again
+  let limited: { passes: number; steepest: number } | undefined;
+  if ((a.relax ?? 0) > 0 || a.maxGradient !== undefined) {
+    if (a.relax !== undefined && !(Number.isInteger(a.relax) && a.relax >= 0 && a.relax <= 50)) throw new ToolError("relax is 0-50 passes");
+    if (a.maxGradient !== undefined && !(a.maxGradient >= 1 && a.maxGradient <= 89)) throw new ToolError("maxGradient is 1-89 degrees");
+    const keptCol = new Uint8Array(n);
+    for (let b = 0; b < nz; b++)
+      for (let a2 = 0; a2 < nx; a2++) keptCol[b * nx + a2] = height[b * nx + a2] > 0 && kept((i0 + a2 + 0.5) * s + t[0], (j0 + b + 0.5) * s + t[2]) ? 1 : 0;
+    limited = limitSlopes(height, nx, nz, keptCol, a.relax ?? 0, a.maxGradient);
+    for (let c = 0; c < n; c++) {
+      if (!keptCol[c]) continue;
+      const a2 = c % nx, b = (c - a2) / nx, hv = Math.max(0, height[c]);
+      height[c] = hv;
+      const top = edges === "round" ? Math.round(hv) : Math.floor(hv + 1 - threshold(i0 + a2, j0 + b));
+      if (top >= 1) { lo[c] = floor - depth; hi[c] = floor + top; } else { lo[c] = 0; hi[c] = 0; }
+    }
+  }
   for (let b = 0; b < nz; b++)
     for (let a2 = 0; a2 < nx; a2++) {
       const c = b * nx + a2;
@@ -282,16 +403,60 @@ export function sampleField(store: EditorStore, a: FieldArgs): Field {
   });
   rules.forEach((r, i) => {
     if (r.feather && !(Number.isFinite(r.feather.width) && r.feather.width >= 0)) throw new ToolError(`materials[${i}].feather: width is a number of 0 or more`);
+    if (r.feather?.cell !== undefined && !(r.feather.cell > 0)) throw new ToolError(`materials[${i}].feather: cell is above 0`);
   });
-  // A feathered rule's threshold at a voxel, in (-0.5, 0.5): dither, an ordered pattern over x, z and y; noise, a hash.
-  const featherAt = (pattern: Feather | undefined, ci: number, cj: number, y: number) => {
+  // A feathered rule's threshold at a voxel, in (-0.5, 0.5): dither, an ordered pattern over x, z and y; noise, a hash;
+  // blue, a blue-noise tile over x and z; perlin, smooth noise. The pattern is laid in squares of `cell` voxels.
+  const featherAt = (f: { pattern?: Feather; cell?: number; seed?: number }, ci: number, cj: number, y: number) => {
+    const pattern = f.pattern;
+    if (pattern === "perlin") {
+      const fs = f.cell === undefined ? 4 : Math.max(0.25, (f.cell * k) / s);
+      return Math.max(-0.5, Math.min(0.5, 0.6 * noise2((ci + 0.5) / fs, (cj + 0.5) / fs, f.seed ?? 0)));
+    }
+    const cv = f.cell === undefined ? 1 : Math.max(1, (f.cell * k) / s);
+    const qi = cv === 1 ? ci : Math.floor(ci / cv), qj = cv === 1 ? cj : Math.floor(cj / cv), qy = cv === 1 ? y : Math.floor(y / cv);
     if (pattern === "noise") {
-      let h = (Math.imul(ci, 0x27d4eb2d) ^ Math.imul(cj, 0x165667b1) ^ Math.imul(y, 0x9e3779b9)) >>> 0;
+      let h = (Math.imul(qi, 0x27d4eb2d) ^ Math.imul(qj, 0x165667b1) ^ Math.imul(qy, 0x9e3779b9) ^ Math.imul(f.seed ?? 0, 0x7feb352d)) >>> 0;
       h = Math.imul(h ^ (h >>> 15), 0x85ebca6b) >>> 0;
       h = Math.imul(h ^ (h >>> 13), 0xc2b2ae35) >>> 0;
       return (((h ^ (h >>> 16)) >>> 0) + 0.5) / 4294967296 - 0.5;
     }
-    return (BAYER[((((cj + y) % 4) + 4) % 4) * 4 + (((ci % 4) + 4) % 4)] + 0.5) / 16 - 0.5;
+    if (pattern === "blue") return BLUE[((((qj + 7 * (f.seed ?? 0)) % 16) + 16) % 16) * 16 + ((((qi + 11 * (f.seed ?? 0)) % 16) + 16) % 16)];
+    return (BAYER[((((qj + qy) % 4) + 4) % 4) * 4 + (((qi % 4) + 4) % 4)] + 0.5) / 16 - 0.5;
+  };
+  // A rule's paths: per column, the most any path's half width exceeds the distance to it (above 0: on the path), in
+  // the call's units, computed when first asked for.
+  const rulePaths = rules.map((r, i) => {
+    if (!r.paths) return null;
+    if (!r.paths.length) throw new ToolError(`materials[${i}].paths: give at least one path`);
+    const segs = r.paths.map((p, j) => {
+      const where = `materials[${i}].paths[${j}]`;
+      if (!(p.width > 0)) throw new ToolError(`${where}: width is above 0`);
+      if (!p.points === !p.switchback) throw new ToolError(`${where}: give points or switchback`);
+      if (p.switchback && !(Number.isInteger(p.switchback.legs) && p.switchback.legs >= 1 && p.switchback.legs <= 64 && p.switchback.spread >= 0)) throw new ToolError(`${where}.switchback: legs 1-64, spread 0 or more`);
+      const pts = pathPoints(p);
+      if (pts.length < 2 || pts.length > 512 || !pts.every((q) => Array.isArray(q) && q.length === 2 && q.every(Number.isFinite))) throw new ToolError(`${where}: 2-512 points [x, z]`);
+      let total = 0;
+      const cum = [0];
+      for (let q = 1; q < pts.length; q++) cum.push((total += Math.hypot(pts[q][0] - pts[q - 1][0], pts[q][1] - pts[q - 1][1])));
+      return { pts, cum, total: total || 1, w: p.width, taper: p.taper ?? 1 };
+    });
+    return { segs, at: new Float32Array(nx * nz).fill(NaN) };
+  });
+  const pathAt = (ri: number, col: number, mx: number, mz: number) => {
+    const rp = rulePaths[ri]!;
+    let v = rp.at[col];
+    if (!Number.isNaN(v)) return v;
+    v = -Infinity;
+    const x = mx / k, z = mz / k;
+    for (const sg of rp.segs) for (let q = 1; q < sg.pts.length; q++) {
+      const [ax, az] = sg.pts[q - 1], [bx, bz] = sg.pts[q], dx = bx - ax, dz = bz - az, l2 = dx * dx + dz * dz;
+      const tt = l2 > 0 ? Math.max(0, Math.min(1, ((x - ax) * dx + (z - az) * dz) / l2)) : 0;
+      const d = Math.hypot(x - ax - tt * dx, z - az - tt * dz), along = (sg.cum[q - 1] + tt * Math.sqrt(l2)) / sg.total;
+      v = Math.max(v, (sg.w * (1 + (sg.taper - 1) * along)) / 2 - d);
+    }
+    rp.at[col] = v;
+    return v;
   };
   const mvars: Record<string, number> = { ...vars, h: 0, y: 0, depth: 0, slope: 0 };
   const centreOf = (col: number): [number, number] => { const ai = col % nx, bj = (col - ai) / nx; return [(i0 + ai + 0.5) * s + t[0], (j0 + bj + 0.5) * s + t[2]]; };
@@ -317,7 +482,7 @@ export function sampleField(store: EditorStore, a: FieldArgs): Field {
       let fe = 0;
       if (r.feather && r.feather.width > 0) {
         const ai = col % nx, bj = (col - ai) / nx;
-        fe = featherAt(r.feather.pattern, i0 + ai, j0 + bj, y) * r.feather.width;
+        fe = featherAt(r.feather, i0 + ai, j0 + bj, y) * r.feather.width;
         shift += fe;
       }
       if (r.minHeight !== undefined && above < r.minHeight + shift) continue;
@@ -335,9 +500,10 @@ export function sampleField(store: EditorStore, a: FieldArgs): Field {
         if (exposed !== r.exposed) continue;
       }
       const ri = rules.indexOf(r);
-      if (ruleRegion[ri] || ruleMask[ri] || ruleMasks[ri] || r.noise) {
+      if (ruleRegion[ri] || ruleMask[ri] || ruleMasks[ri] || r.noise || rulePaths[ri]) {
         const [mx, mz] = centreOf(col);
         if (ruleRegion[ri] && !ruleRegion[ri]!.some((ar) => inArea(ar, mx, mz))) continue;
+        if (rulePaths[ri] && !(pathAt(ri, col, mx, mz) > fe)) continue;
         if (r.noise) {
           const sc = r.noise.scale ?? 8, oc = r.noise.octaves ?? 1, nx2 = mx / k / sc, nz2 = mz / k / sc;
           const v = oc > 1 ? fbm(nx2, nz2, r.noise.seed ?? 0, oc) : noise2(nx2, nz2, r.noise.seed ?? 0);
@@ -370,7 +536,7 @@ export function sampleField(store: EditorStore, a: FieldArgs): Field {
     if (m === undefined) { m = materialAt(col, y); if (cache.size < 2_000_000) cache.set(key, m); }
     return m;
   };
-  const field: Field = { k, s, t, sceneId, i0, j0, nx, nz, floor, runLimit, lo, hi, height, slope, materialAt,
+  const field: Field = { k, s, t, sceneId, i0, j0, nx, nz, floor, runLimit, lo, hi, height, slope, materialAt, ...(limited ? { limited } : {}),
     wordAt(col: number, y: number, layered = false) {
       if (!blendDepth || hi[col] - 1 - y >= blendDepth) return filled(materialAt(col, y));
       const own = matCached(col, y), ai = col % nx, bj = (col - ai) / nx;
@@ -911,7 +1077,8 @@ export function plan(store: EditorStore, a: FieldArgs, shape?: (f: Field) => voi
     ...(costs ? { costAt: costs } : {}),
     region: { voxelSize: f.s, edges: a.edges ?? "round", packer: a.packer ?? "tiles", columns: f.nx * f.nz, size: [f.nx, f.nz], solidColumns: columns, map: { min: tidy(rect.min), max: tidy(rect.max) },
       world: { min: tidy(rect.min.map((v) => v * WORLD_PER_MAP) as Vec3), max: tidy(rect.max.map((v) => v * WORLD_PER_MAP) as Vec3) },
-      floor: { map: num(f.floor * f.s + f.t[1]), world: toW(f.floor * f.s + f.t[1]) }, peakVoxels: columns ? top - f.floor : 0 },
+      floor: { map: num(f.floor * f.s + f.t[1]), world: toW(f.floor * f.s + f.t[1]) }, peakVoxels: columns ? top - f.floor : 0,
+      ...(f.limited ? { slopeLimit: { relax: a.relax ?? 0, ...(a.maxGradient !== undefined ? { maxGradient: a.maxGradient } : {}), passes: f.limited.passes, steepestDegrees: Math.round(f.limited.steepest * 10) / 10 } } : {}) },
     voxels: { field: voxels, alreadySolid: solidVoxels, inFrames: fillVoxels, inBlocks: keptVoxels, dropped: blockVoxels - keptVoxels },
     frames: cv.fills.map((x) => ({ id: x.grid.id, name: x.grid.frame.name, ...(x.aligned ? {} : { approximate: true }), cellsFilled: x.changes.size, covers: x.covers, alreadySolid: x.solid, runs: x.runs })),
     ...(cv.skipped.length ? { framesSkipped: { count: cv.skipped.length,
