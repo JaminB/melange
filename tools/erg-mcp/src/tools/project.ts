@@ -42,7 +42,9 @@ export function describe(s: Session, q: FrameQuery = {}) {
     const m = store.frames.detailWorld(d);
     return { map: tidy(m), world: tidy(toWorld(m)) };
   };
+  const trims = new Map((scene.trims ?? []).map((t) => [t.frame, t]));
   const voxelFrames = grids(store).map((g) => {
+    const trim = trims.get(g.id);
     let solid = 0;
     for (const w of g.words) if (isSolid(w)) solid++;
     const origin = store.frames.worldOf(g.id);
@@ -54,6 +56,8 @@ export function describe(s: Session, q: FrameQuery = {}) {
       bounds: { map: { min: tidy(g.bounds.min), max: tidy(g.bounds.max) }, world: { min: tidy(toWorld(g.bounds.min)), max: tidy(toWorld(g.bounds.max)) } },
       ...(g.frame.rot.some((r) => r) ? { rot: tidy(g.frame.rot) } : {}),
       ...(g.frame.scale.some((v) => v !== 1) ? { scale: tidy(g.frame.scale) } : {}),
+      // trim_base_frames: the box the built level keeps, and the game's cells it costs
+      ...(trim ? { trim: { min: trim.min, size: trim.size, cells: trim.size[0] * trim.size[1] * trim.size[2] } } : {}),
     };
   });
   const withVoxels = new Set(voxelFrames.map((f) => f.id));

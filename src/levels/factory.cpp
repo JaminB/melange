@@ -25,7 +25,13 @@
 //
 // Every fire is followed to its end (factory.fired on the session log, FiresJson): the mine entities that appear in
 // PlaceMines (either way) with where each appeared, then, from the sim tick, where each comes to rest (the entity list
-// moves a mine's position from its launch point to where it lies once it rests) or that it is gone. FireNow starts a
+// moves a mine's position from its launch point to where it lies once it rests) or that it is gone. A mine counts as at
+// rest once its position has not changed for kRestMs; a pause in a bounce is shorter. After the fire is logged its mines
+// are still watched (kWatchMs): a mine that moves again (knocked by a blast, sliding) gets its new final position, and
+// one that goes gets its fate, drowned (under the water when it went), destroyed (set off, or removed, after it had
+// landed) or gone before it landed (its position is still the launch point then: sunk, or set off in the air), so FiresJson
+// gives where each mine ended up, not a sample taken on its way (factory.mine on the session log for each such change).
+// FireNow starts a
 // fire outside a turn start for level.test.fireFactory: StartMineFactory (0x5cfe40) decrements the countdown, returns
 // while it is over 0, then counts the level's mines (GameLogicService +0x1d8 vector) and fires only when they are
 // fewer than NumMineActivation (read from kMineFactoryData at that moment), min(target - mines, 10) mines.
@@ -96,6 +102,11 @@ struct FiredMine {
     float spawn[3] = {}, last[3] = {};
     ULONGLONG changedAt = 0;
     bool moved = false, done = false, gone = false;
+    int moves = 0;                // position changes seen
+    int restsAfter = 0;           // times it moved again after it had come to rest (a blast, a slide)
+    bool drowned = false;         // gone with its last position under the water
+    uint32_t goneTick = 0;
+    float waterThen = NAN;        // world units, when it went
 };
 struct Fire {
     std::string stem;
@@ -104,12 +115,13 @@ struct Fire {
     bool launch = false;
     float factory[3] = {};
     ULONGLONG at = 0;
+    bool logged = false;
     std::vector<FiredMine> mines;
 };
-constexpr ULONGLONG kRestMs = 1000, kFollowMs = 20000;
+constexpr ULONGLONG kRestMs = 2500, kFollowMs = 30000, kWatchMs = 180000;
 constexpr size_t kKeepFires = 8;
 std::vector<Fire> g_following;
-std::vector<std::string> g_fired;   // the finished fires' JSON, oldest first
+std::vector<Fire> g_fired;          // the logged fires, oldest first, still watched for kWatchMs
 std::string g_trigger = "null";     // the last FireNow
 int g_tickHook = 0;
 
@@ -226,56 +238,108 @@ std::string MapVec(const float* v) {
     return b;
 }
 
+float WaterNow() {
+    gamestate::Var v{};
+    return gamestate::Var1("Water.Level", &v) ? static_cast<float>(std::atof(v.value)) : NAN;
+}
+
+// One mine of a fire: where it appeared and where it ended up (rest: its last still position, final once it is gone
+// or the watch is over), or its fate.
+std::string MineJson(const Fire& f, const FiredMine& m) {
+    jsonmini::Obj o;
+    o.UInt("handle", m.handle).Raw("spawn", MapVec(m.spawn));
+    if (m.gone) {
+        // the entity list moves a mine's position only once it rests, so one that goes before that (sunk in the sea, or
+        // set off in the air) was last seen at its launch point
+        o.Bool("gone", true).Raw("lastSeen", MapVec(m.last)).Str("fate", m.drowned ? "drowned" : m.moved ? "destroyed" : "gone before it landed")
+            .UInt("goneTick", m.goneTick);
+        if (!std::isnan(m.waterThen)) o.Float("waterMap", m.waterThen / kWorldPerMap);
+        if (m.moved && !m.restsAfter) o.Raw("rest", MapVec(m.last));
+    } else {
+        o.Raw("rest", MapVec(m.last)).Bool("settled", m.moved).Str("fate", m.moved ? "resting" : "not seen to land");
+    }
+    o.Int("moves", m.moves).Int("movedAfterRest", m.restsAfter);
+    o.Float("restFromFactoryMap", std::hypot(m.last[0] - f.factory[0], m.last[2] - f.factory[2]) / kWorldPerMap);
+    return o.End();
+}
+
+std::string FireJson(const Fire& f) {
+    jsonmini::Arr mines;
+    for (const FiredMine& m : f.mines) mines.Raw(MineJson(f, m));
+    return jsonmini::Obj().Str("stem", f.stem).UInt("tick", f.tick).UInt("turn", f.turn).Int("asked", f.asked).Bool("launch", f.launch)
+        .Raw("factory", MapVec(f.factory)).Raw("mines", mines.End()).End();
+}
+
+// One look at a fire's mines: a move updates the last position (a mine still for kRestMs is at rest); a mine no longer
+// in the entity list is gone, drowned when its last position was under the water. Returns whether every mine is at
+// rest or gone; `changed` is set when a mine of a logged fire moved again or went.
+bool Watch(Fire& f, const std::vector<MineAt>& live, ULONGLONG now, uint32_t tick, bool* changed) {
+    bool all = true;
+    for (FiredMine& m : f.mines) {
+        if (m.gone) continue;
+        const MineAt* at = nullptr;
+        for (const MineAt& l : live)
+            if (l.handle == m.handle) at = &l;
+        if (!at) {
+            m.gone = m.done = true;
+            m.goneTick = tick;
+            m.waterThen = WaterNow();
+            m.drowned = !std::isnan(m.waterThen) && m.last[1] < m.waterThen;
+            *changed |= f.logged;
+            continue;
+        }
+        if (std::hypot(at->pos[0] - m.last[0], at->pos[1] - m.last[1], at->pos[2] - m.last[2]) > 0.5f) {
+            std::memcpy(m.last, at->pos, sizeof m.last);
+            m.changedAt = now;
+            ++m.moves;
+            if (m.done && m.moved) {
+                ++m.restsAfter;
+                *changed |= f.logged;
+            }
+            m.moved = true;
+            m.done = false;
+        }
+        if ((m.moved && now - m.changedAt >= kRestMs) || (!f.logged && now - f.at >= kFollowMs)) m.done = true;
+        all &= m.done;
+    }
+    return all;
+}
+
 // The sim tick: where the followed mines are now; a fire whose mines have all rested (or gone, or past kFollowMs) is
-// done and logged.
+// logged, and then watched for kWatchMs more, a change logged as factory.mine.
 void OnTick(uint32_t tick, void*) {
-    if (g_following.empty() || tick % 5) return;
+    if ((g_following.empty() && g_fired.empty()) || tick % 5) return;
     const ULONGLONG now = GetTickCount64();
     const std::vector<MineAt> live = Mines();
     for (size_t i = 0; i < g_following.size();) {
         Fire& f = g_following[i];
-        bool all = true;
-        for (FiredMine& m : f.mines) {
-            if (m.done) continue;
-            const MineAt* at = nullptr;
-            for (const MineAt& l : live)
-                if (l.handle == m.handle) at = &l;
-            if (!at) {
-                m.done = m.gone = true;
-                continue;
-            }
-            if (std::hypot(at->pos[0] - m.last[0], at->pos[1] - m.last[1], at->pos[2] - m.last[2]) > 0.5f) {
-                std::memcpy(m.last, at->pos, sizeof m.last);
-                m.changedAt = now;
-                m.moved = true;
-            }
-            if ((m.moved && now - m.changedAt >= kRestMs) || now - f.at >= kFollowMs) m.done = true;
-            all &= m.done;
-        }
-        if (!all) {
+        bool changed = false;
+        if (!Watch(f, live, now, tick, &changed)) {
             ++i;
             continue;
         }
-        jsonmini::Arr mines;
         int rested = 0;
-        for (const FiredMine& m : f.mines) {
-            jsonmini::Obj o;
-            o.UInt("handle", m.handle).Raw("spawn", MapVec(m.spawn));
-            if (m.gone) o.Bool("gone", true).Raw("lastSeen", MapVec(m.last));
-            else o.Raw("rest", MapVec(m.last)).Bool("settled", m.moved);
-            o.Float("restFromFactoryMap", std::hypot(m.last[0] - f.factory[0], m.last[2] - f.factory[2]) / kWorldPerMap);
-            rested += !m.gone && m.moved;
-            mines.Raw(o.End());
-        }
-        const std::string mj = mines.End();
+        for (const FiredMine& m : f.mines) rested += !m.gone && m.moved;
+        jsonmini::Arr mines;
+        for (const FiredMine& m : f.mines) mines.Raw(MineJson(f, m));
         jlog::Rec("levels", jlog::Level::Info, "factory.fired").Str("stem", f.stem).Uint("tick", f.tick).Uint("turn", f.turn)
-            .Int("asked", f.asked).Bool("launch", f.launch).Raw("factory", MapVec(f.factory)).Raw("mines", mj);
+            .Int("asked", f.asked).Bool("launch", f.launch).Raw("factory", MapVec(f.factory)).Raw("mines", mines.End());
         LOG_INFO("[levels] %s: the mine factory's fire at tick %u (turn %u): %zu mines appeared, %d came to rest", f.stem.c_str(), f.tick,
                  f.turn, f.mines.size(), rested);
-        g_fired.push_back(jsonmini::Obj().Str("stem", f.stem).UInt("tick", f.tick).UInt("turn", f.turn).Int("asked", f.asked)
-                              .Bool("launch", f.launch).Raw("factory", MapVec(f.factory)).Raw("mines", mj).End());
+        f.logged = true;
+        g_fired.push_back(std::move(f));
         if (g_fired.size() > kKeepFires) g_fired.erase(g_fired.begin());
         g_following.erase(g_following.begin() + static_cast<std::ptrdiff_t>(i));
+    }
+    for (Fire& f : g_fired) {
+        if (now - f.at > kWatchMs) continue;
+        bool changed = false;
+        Watch(f, live, now, tick, &changed);
+        if (!changed) continue;
+        for (const FiredMine& m : f.mines)
+            if (m.gone ? m.goneTick == tick : m.changedAt == now)
+                jlog::Rec("levels", jlog::Level::Info, "factory.mine").Str("stem", f.stem).Uint("fireTick", f.tick).Uint("tick", tick)
+                    .Raw("mine", MineJson(f, m));
     }
 }
 
@@ -493,7 +557,7 @@ bool Position(float out[3]) {
 
 std::string FiresJson() {
     jsonmini::Arr fires;
-    for (const std::string& f : g_fired) fires.Raw(f);
+    for (const Fire& f : g_fired) fires.Raw(FireJson(f));
     return jsonmini::Obj().Raw("fires", fires.End()).Int("following", static_cast<int>(g_following.size())).Raw("trigger", g_trigger).End();
 }
 

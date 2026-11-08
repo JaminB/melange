@@ -1,6 +1,6 @@
 // erg-scene/1|2 and erg-patch/1|2: the scene the level service sends and the patch the editor saves (the C++ model is
 // src/erg/scene.h and patch.h; the JSON Schemas are docs/erg-{scene,patch}-{1,2}.schema.json). A document is /2 only when
-// it uses a /2 feature (objects, a Survivor twin, a level script, new frames, a painted surround).
+// it uses a /2 feature (objects, a Survivor twin, a level script, new frames, a painted surround, trims).
 // Positions, scales and voxel coordinates are .xan units; water is in world units (20 per .xan unit), sea level 0.
 
 export const SCENE_FORMAT = "erg-scene/1";
@@ -73,6 +73,11 @@ export type ObjectType = ObjectSpec["type"];
 export interface ScriptMeta { present: boolean; sha256: string | null; }
 /** scale: map units per voxel on every axis (1-4); absent is 1, and 1 is written by leaving it out. */
 export interface NewFrame { tmp: number; parent: number; name: string; pos: Vec3; size: Vec3; scale?: number; corners?: number[]; }
+/** A base frame's voxel box cut down to the cells [min, min + size) in the built level (scene.h FrameTrim): the scene
+ * keeps the whole grid, so voxel edits still address it, and only the game's cell count sees the kept box. Every cell
+ * outside it must be empty; a box with solid cells moves the frame by its offset from the grid's centre (its details
+ * and child frames back), an empty box keeps the frame where it is (a base frame out of the cell count for one cell). */
+export interface FrameTrim { frame: number; min: Vec3; size: Vec3; }
 /** [start, count, value] over the 100x100 surround cells, row-major: heights 0..1, blend 0..255. */
 export type HmpRun = [start: number, count: number, value: number];
 export interface HmpRuns { heights?: HmpRun[]; blend?: HmpRun[]; }
@@ -93,6 +98,8 @@ export interface Scene {
   kind?: { survivor: boolean };
   objects?: ObjectSpec[];
   script?: ScriptMeta;
+  /** erg-scene/2: base frames cut down in the build; absent or empty for none. */
+  trims?: FrameTrim[];
   /** level.load only: resource -> preview key (preview.h DetailKey), for every distinct detail resource in the
    * scene, in any theme's bundle. Not part of the saved document. */
   previews?: Record<string, string>;
@@ -106,7 +113,8 @@ export type Op =
   | { op: "remove"; src: number }
   | { op: "voxels"; frame: number; runs: VoxelRun[] }
   | ({ op: "addFrame" } & NewFrame)
-  | ({ op: "hmp" } & HmpRuns);
+  | ({ op: "hmp" } & HmpRuns)
+  | ({ op: "trimFrame" } & FrameTrim);
 
 export interface Patch {
   format: PatchFormat;
@@ -173,17 +181,34 @@ export const validCorners = (v: unknown, size: number[]): v is number[] =>
   Array.isArray(v) && v.length === (size[0] + 1) * (size[2] + 1) &&
   v.every((x) => typeof x === "number" && Number.isFinite(x) && Math.abs(x) <= LIMITS.cornerOffset);
 
-/** X*Y*Z over every frame with voxels, base and added: the count the game keeps in 16 bits (LIMITS.voxelCells). */
-export function voxelCells(s: Pick<Scene, "frames">): number {
+/** X*Y*Z over every frame with voxels, base and added (a trimmed frame's kept box): the count the game keeps in 16 bits
+ * (LIMITS.voxelCells). */
+export function voxelCells(s: Pick<Scene, "frames" | "trims">): number {
+  const trims = new Map((s.trims ?? []).map((t) => [t.frame, t.size]));
   let n = 0;
-  for (const f of s.frames) if (f.voxels !== null) n += f.size[0] * f.size[1] * f.size[2];
+  for (const f of s.frames) {
+    if (f.voxels === null) continue;
+    const size = trims.get(f.id) ?? f.size;
+    n += size[0] * size[1] * size[2];
+  }
   return n;
+}
+
+/** A trim's shape against the scene: a base frame with voxels, the box at least a cell a side and inside its grid. */
+export function trimProblem(s: Pick<Scene, "frames">, t: FrameTrim): string | null {
+  const f = s.frames.find((x) => x.id === t.frame);
+  if (!f || f.new) return `frame ${t.frame} is not a frame of the base`;
+  if (f.voxels === null) return `frame ${t.frame} has no voxels`;
+  for (let k = 0; k < 3; k++)
+    if (!Number.isInteger(t.min[k]) || !Number.isInteger(t.size[k]) || t.min[k] < 0 || t.size[k] < 1 || t.min[k] + t.size[k] > f.size[k])
+      return `frame ${t.frame}: the box must be at least 1 cell a side and inside the frame's ${f.size.join("x")} grid`;
+  return null;
 }
 
 /** What the game would assert or crash on in a scene that still loads here: added blocks over 31 a side (made before
  * the limit was known; a warning) and more cells than LIMITS.voxelCells (export, build and Test refuse). The server's
  * level.save sends the same warnings (scene.cpp EngineWarnings). */
-export function engineWarnings(s: Pick<Scene, "frames">): string[] {
+export function engineWarnings(s: Pick<Scene, "frames" | "trims">): string[] {
   const out: string[] = [];
   for (const f of s.frames)
     if (f.new && Math.max(...f.size) > LIMITS.newFrameSide)
@@ -196,12 +221,12 @@ export function engineWarnings(s: Pick<Scene, "frames">): string[] {
 
 export function sceneUsesV2(s: Scene): boolean {
   return !!s.kind?.survivor || !!s.objects?.length || !!s.script?.present || s.hmp.mode === "paint" || s.hmp.ref !== undefined ||
-    s.frames.some((f) => f.new) || s.blobs.some((b) => b.kind === "hmp");
+    s.frames.some((f) => f.new) || s.blobs.some((b) => b.kind === "hmp") || !!s.trims?.length;
 }
 
 export function patchUsesV2(p: Patch): boolean {
   return !!p.kind?.survivor || !!p.objects?.length || !!p.script?.present || p.hmp?.mode === "paint" ||
-    p.ops.some((o) => o.op === "addFrame" || o.op === "hmp" || (o.op === "voxels" && o.frame < 0));
+    p.ops.some((o) => o.op === "addFrame" || o.op === "hmp" || o.op === "trimFrame" || (o.op === "voxels" && o.frame < 0));
 }
 
 /** A /1 scene as a /2 one in memory (no /2 feature is added, so it still saves as /1). */
@@ -377,7 +402,7 @@ export function validateScene(s: unknown): Validation {
   const c = new Checker();
   if (!isObj(s)) return { ok: false, errors: ["scene: must be an object"] };
   const v2 = s.format === SCENE_FORMAT_2;
-  c.keys(s, v2 ? ["format", "stem", "title", "base", "registry", "kind", "databank", "water", "spawns", "hmp", "units", "frames", "details", "blobs", "objects", "script", "previews"]
+  c.keys(s, v2 ? ["format", "stem", "title", "base", "registry", "kind", "databank", "water", "spawns", "hmp", "units", "frames", "details", "blobs", "objects", "script", "trims", "previews"]
     : ["format", "stem", "title", "base", "registry", "databank", "water", "spawns", "hmp", "units", "frames", "details", "blobs", "previews"], "scene");
   if (s.format !== SCENE_FORMAT && !v2) c.fail("scene.format", `must be "${SCENE_FORMAT}" or "${SCENE_FORMAT_2}" (a newer format needs a newer Melange)`);
   if (!printable(s.stem, 1, 48) || (s.stem as string).includes(".")) c.fail("scene.stem", "must be 1-48 printable characters without '.'");
@@ -466,6 +491,24 @@ export function validateScene(s: unknown): Validation {
     const hmp = s.hmp as Obj | undefined;
     if (hmp?.mode === "paint" && !blobs.some((b) => isObj(b) && b.kind === "hmp")) c.fail("hmp.ref", "hmp.mode paint needs the painted surround's blob");
     if (hmp?.ref !== undefined && hmp.mode !== "paint" && hmp.mode !== "copy") c.fail("hmp.ref", "needs hmp.mode paint or copy");
+    if (s.trims !== undefined) {
+      if (!Array.isArray(s.trims) || s.trims.length > LIMITS.frames) c.fail("trims", "must be an array of at most 4096 trims");
+      else {
+        const seen = new Set<unknown>();
+        s.trims.forEach((t, i) => {
+          const p = `trims[${i}]`;
+          if (!isObj(t) || !c.keys(t, ["frame", "min", "size"], p)) return c.fail(p, "must be an object");
+          const before = c.errors.length;
+          checkTrimShape(c, t, p);
+          if (c.errors.length === before) {
+            const why = trimProblem({ frames: frames.filter(isObj) as unknown as Frame[] }, t as unknown as FrameTrim);
+            if (why) c.fail(p, why);
+          }
+          if (seen.has(t.frame)) c.fail(p, `frame ${String(t.frame)} is trimmed twice`);
+          seen.add(t.frame);
+        });
+      }
+    }
   }
   for (const f of frameById.values()) {
     let cur: unknown = f.id;
@@ -543,6 +586,7 @@ export function validatePatch(p: unknown, sizeBytes?: number): Validation {
   if (!Array.isArray(p.ops)) return { ok: false, errors: [...c.errors, "ops: must be an array"] };
   if (p.ops.length > LIMITS.ops) c.fail("ops", "at most 20000 ops");
   const runsPerFrame = new Map<number, number>();
+  const trimmed = new Set<unknown>();
   let covered = 0;
   p.ops.forEach((o, i) => {
     const path = `ops[${i}]`;
@@ -620,11 +664,24 @@ export function validatePatch(p: unknown, sizeBytes?: number): Validation {
         if (!cells) c.fail(path, "an hmp op changes at least one cell");
         break;
       }
+      case "trimFrame":
+        if (!v2) { c.fail(`${path}.op`, "unknown op 'trimFrame'"); break; }
+        if (c.keys(o, ["op", "frame", "min", "size"], path)) checkTrimShape(c, o, path);
+        if (trimmed.has(o.frame)) c.fail(`${path}.frame`, `${String(o.frame)} is trimmed by an earlier op`);
+        trimmed.add(o.frame);
+        break;
       default:
         c.fail(`${path}.op`, `unknown op '${String(o.op)}'`);
     }
   });
   return { ok: c.errors.length === 0, errors: c.errors };
+}
+
+function checkTrimShape(c: Checker, o: Obj, path: string) {
+  if (!isInt(o.frame, 1, 1 << 24)) c.fail(`${path}.frame`, "must be a frame of the base");
+  for (const [k, lo] of [["min", 0], ["size", 1]] as const)
+    if (!Array.isArray(o[k]) || (o[k] as unknown[]).length !== 3 || !(o[k] as unknown[]).every((v) => isInt(v, lo, 255)))
+      c.fail(`${path}.${k}`, `must be 3 integers ${lo}..255`);
 }
 
 /** The patch's objects against the details the patch leaves on its base (knots, limits, one added detail per knot). */

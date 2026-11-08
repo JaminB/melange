@@ -172,7 +172,13 @@ a *Remove* button. A map holds up to 64.
 Z of each), and crashes loading a map past 65 535. The game's maps use about 8 000-46 000, and the *Terrain* tab shows
 the current count. *Add block* refuses a block that would pass it; a project over it (made by an older Melange) still
 opens and saves, with a warning, but Export, Build and Test refuse it. Clearing base terrain does not free cells (the
-frames stay); a larger scale covers more ground with the same cells.
+frames stay); a larger scale covers more ground with the same cells. A base frame can be *trimmed* (erg-mcp's
+`trim_base_frames` and `remove_base_frames`; the patch's `trimFrame` op, the scene's `trims`): the built map keeps only
+a box of its grid, so only that box counts, and every solid voxel must be in it. A frame with no solid voxel is trimmed
+to one empty cell where it was (its details and child frames untouched); a box with solid voxels moves the frame by the
+box's offset from the grid's centre and its details and child frames back, so nothing moves in the map. The panel keeps
+the whole grid of a trimmed frame and shows the trimmed count; a fill outside the kept box makes saving refuse until the
+trim is widened or dropped. A frame holding a detail tied to one of its voxels (voxelPos) cannot be trimmed.
 
 **Second material (experimental).** *2nd material* paints one of the level's materials (named from its material file)
 over solid voxels; the voxels next to the brush take it on the corners they share, so it blends at the edge. *Remove*
@@ -388,8 +394,8 @@ Survivor copy. Packs exported by an earlier Melange keep working unchanged.
   `heightfield_drape` makes them, and the panel's 3D view draws such a block unsheared. The game asserts on a side of
   32: a block of 32 made by an older Melange still opens, and saving names it in a warning (remove it and add it again
   at 31).
-- At most 65 535 voxel cells per map, counted over every voxel frame (see [the cell budget](#terrain)): saving warns
-  past it, and Export, Build and Test refuse.
+- At most 65 535 voxel cells per map, counted over every voxel frame (a trimmed base frame's kept box; see [the cell
+  budget](#terrain)): saving warns past it, and Export, Build and Test refuse.
 - The game draws terrain from a mesh with a vertex budget of its own. A large area where every column's top voxel is a
   different material from the voxel under it (a one-voxel skin) has run out of it in a test (holes in the drawn
   terrain, `CombineLandscapeAction` lines in the log); bands of material by height did not. Test large terrain.

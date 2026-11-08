@@ -7,8 +7,11 @@
 // picture back (clean: without the mods' wum.draw text).
 import { appendFileSync, existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import { extentXZ, markers } from "../lib/inspect-field";
+import { extentXZ, markers, spansAt } from "../lib/inspect-field";
 import { grids } from "../lib/voxel";
+import { pieces } from "../lib/islets";
+import { cumulative, keyOfLabel, planWalk, pursue } from "../lib/walk-plan";
+import { WORM_WIDTH } from "../lib/reach";
 import { ToolError, image, type Content, type Tool } from "../registry";
 import type { Session } from "../session";
 
@@ -100,21 +103,95 @@ const has = async (s: Session, method: string) => (await s.ensure()).methods.inc
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 /** The overview preset's camera: azimuth (degrees clockwise from north, -z; default 180, from the south), elevation
- * (degrees down; default 50), distance from the level's middle (map units; default 0.95 x the level's span). */
-interface Orbit { azimuth?: number; elevation?: number; distance?: number; }
+ * (degrees down; default 50), distance from the level's middle (map units; default 0.95 x the level's span), and what it
+ * frames (`fit`): the frames' boxes (the default, as before), the solid voxels, or the island (the solid voxels over the
+ * water), each `margin` times as far as the closest pose that shows all of it in a 60 degree, 16:9 view. */
+interface Orbit { azimuth?: number; elevation?: number; distance?: number; fit?: "frames" | "solid" | "island"; margin?: number; }
+/** set_overview's framing per project id: the overview's defaults for the rest of this erg-mcp session. */
+const overviewDefaults = new Map<string, Orbit>();
 interface Cam extends Orbit { pos?: number[]; target?: number[]; fov?: number; preset?: "default" | "overview"; name?: string; }
 
 const orbitProps = {
   azimuth: { type: "number", minimum: -360, maximum: 360, description: "preset overview: the side it looks from, degrees clockwise from north (-z); default 180 (from the south)." },
   elevation: { type: "number", minimum: 5, maximum: 89, description: "preset overview: degrees it looks down (default 50)." },
-  distance: { type: "number", minimum: 1, description: "preset overview: distance from the level's middle in `units` (default 0.95 x the level's span)." },
+  distance: { type: "number", minimum: 1, description: "preset overview: distance from the level's middle in `units` (default 0.95 x the level's span; with fit solid or island, the closest that shows it all)." },
+  fit: { type: "string", enum: ["frames", "solid", "island"], description: "preset overview: what it frames: frames (default: every voxel frame's box, a wiped base's empty frames too), solid (the solid voxels) or island (the main landmass over the water, as check_islets finds it: a stray pole the base left far off is not framed), centred on it and as close as shows all of it (times margin). set_overview makes one the default." },
+  margin: { type: "number", minimum: 1, maximum: 4, description: "preset overview with fit solid or island: this many times the closest distance that shows it all (default 1.1)." },
 } as const;
+
+/** A pose (world units) in the call's units. */
+const poseOut = (c: { pos: number[]; target: number[]; fov: number }, k: number) => ({
+  pos: c.pos.map((v) => Math.round((v / k) * 100) / 100), target: c.target.map((v) => Math.round((v / k) * 100) / 100), fov: c.fov });
+
+/** The box (map units) of the level's solid voxels, those over `above` only when it is given, or null for none. */
+function solidBox(s: Session, above: number | null): { min: number[]; max: number[] } | null {
+  const min = [Infinity, Infinity, Infinity], max = [-Infinity, -Infinity, -Infinity];
+  for (const g of grids(s.store)) {
+    const [X, Y] = g.size, m = g.toMap;
+    for (let i = 0; i < g.words.length; i++) {
+      if ((g.words[i] & 3) !== 3) continue;
+      const y = i % Y, r = (i - y) / Y, x = r % X, z = (r - x) / X;
+      const cx = x + 0.5, cy = y + 0.5, cz = z + 0.5;
+      const p = [m[0] * cx + m[1] * cy + m[2] * cz + m[3], m[4] * cx + m[5] * cy + m[6] * cz + m[7], m[8] * cx + m[9] * cy + m[10] * cz + m[11]];
+      if (above !== null && p[1] <= above) continue;
+      for (let k = 0; k < 3; k++) { min[k] = Math.min(min[k], p[k] - 0.5); max[k] = Math.max(max[k], p[k] + 0.5); }
+    }
+  }
+  return min[0] === Infinity ? null : { min, max };
+}
+
+/** The island's box (map units): the largest connected piece of terrain (check_islets' main landmass) over the water,
+ * so a stray pole or sign the base left standing far off does not pull the overview back. Null without solid voxels
+ * over the water. */
+function islandBox(s: Session, water: number): { min: number[]; max: number[] } | null {
+  const all = solidBox(s, water);
+  if (!all) return null;
+  const gs = grids(s.store), r = { x0: all.min[0], z0: all.min[2], x1: all.max[0], z1: all.max[2] };
+  const step = Math.max(1, Math.max(r.x1 - r.x0, r.z1 - r.z0) / 500);
+  const main = pieces(gs, r, step).find((p) => p.top > water);
+  return main ? { min: [main.min[0], Math.max(main.min[1], water), main.min[2]], max: [main.max[0], main.max[1], main.max[2]] } : all;
+}
+
+/** The distance along (az, el) from the box's centre at which every corner of it is inside a `fov` degree view of
+ * `aspect`, times margin. Map units. */
+export function fitDistance(box: { min: number[]; max: number[] }, az: number, el: number, fov = 60, aspect = 16 / 9, margin = 1.1): number {
+  const c = [0, 1, 2].map((k) => (box.min[k] + box.max[k]) / 2);
+  const dir = [Math.cos(el) * Math.sin(az), Math.sin(el), -Math.cos(el) * Math.cos(az)];   // from the centre to the camera
+  const f = dir.map((v) => -v), right = [-f[2], 0, f[0]], rl = Math.hypot(right[0], right[2]) || 1;
+  const rx = right.map((v) => v / rl), up = [rx[1] * f[2] - rx[2] * f[1], rx[2] * f[0] - rx[0] * f[2], rx[0] * f[1] - rx[1] * f[0]];
+  const tv = Math.tan((fov * Math.PI) / 360), th = tv * aspect;
+  const corners: number[][] = [];
+  for (let i = 0; i < 8; i++) corners.push([i & 1 ? box.max[0] : box.min[0], i & 2 ? box.max[1] : box.min[1], i & 4 ? box.max[2] : box.min[2]]);
+  const fits = (d: number) => corners.every((p) => {
+    const v = [p[0] - (c[0] + dir[0] * d), p[1] - (c[1] + dir[1] * d), p[2] - (c[2] + dir[2] * d)];
+    const z = v[0] * f[0] + v[1] * f[1] + v[2] * f[2];
+    return z > 0.1 && Math.abs(v[0] * rx[0] + v[1] * rx[1] + v[2] * rx[2]) <= th * z && Math.abs(v[0] * up[0] + v[1] * up[1] + v[2] * up[2]) <= tv * z;
+  });
+  let lo = 0.1, hi = 1;
+  while (!fits(hi) && hi < 1e6) hi *= 2;
+  for (let k = 0; k < 40; k++) { const mid = (lo + hi) / 2; if (fits(mid)) hi = mid; else lo = mid; }
+  return hi * margin;
+}
 
 /** The level's own overview: above its frames' middle, looking down at 50 degrees from the south (or `o`'s), far
  * enough back for the whole extent in a 60 degree view. World units. Needs the project open (its frames). */
-function overview(s: Session, o: Orbit = {}, k = WORLD_PER_MAP): { pos: number[]; target: number[]; fov: number } {
+function overview(s: Session, o0: Orbit = {}, k = WORLD_PER_MAP): { pos: number[]; target: number[]; fov: number } {
+  const given = Object.fromEntries(Object.entries({ azimuth: o0.azimuth, elevation: o0.elevation, distance: o0.distance, fit: o0.fit, margin: o0.margin }).filter(([, v]) => v !== undefined));
+  // set_overview's defaults keep their distance in map units; a call's own is in its units
+  const def = s.project ? overviewDefaults.get(s.project.id) : undefined;
+  const o: Orbit = { ...def, ...given, ...(given.distance === undefined && def?.distance !== undefined ? { distance: (def.distance * WORLD_PER_MAP) / k } : {}) };
   const gs = grids(s.store), e = extentXZ(gs);
   if (!e) throw new ToolError("preset overview needs the level's frames: open_project the level being tested");
+  if (o.fit === "solid" || o.fit === "island") {
+    const water = s.store.scene.water.level === null ? null : s.store.scene.water.level / WORLD_PER_MAP;
+    const box = o.fit === "island" ? islandBox(s, water ?? 0) : solidBox(s, null);
+    if (!box) throw new ToolError(`preset overview fit ${o.fit}: no solid voxels${o.fit === "island" ? " over the water" : ""}`);
+    const el = ((o.elevation ?? 50) * Math.PI) / 180, az = ((o.azimuth ?? 180) * Math.PI) / 180;
+    const d = o.distance !== undefined ? (o.distance * k) / WORLD_PER_MAP : fitDistance(box, az, el, 60, 16 / 9, o.margin ?? 1.1);
+    const c = [0, 1, 2].map((i) => (box.min[i] + box.max[i]) / 2);
+    return { pos: [(c[0] + d * Math.cos(el) * Math.sin(az)) * WORLD_PER_MAP, (c[1] + d * Math.sin(el)) * WORLD_PER_MAP, (c[2] - d * Math.cos(el) * Math.cos(az)) * WORLD_PER_MAP],
+      target: c.map((v) => v * WORLD_PER_MAP), fov: 60 };
+  }
   let top = -Infinity, bottom = Infinity;
   for (const g of gs) { top = Math.max(top, g.bounds.max[1]); bottom = Math.min(bottom, g.bounds.min[1]); }
   const cx = (e.x0 + e.x1) / 2, cz = (e.z0 + e.z1) / 2, cy = Math.max(0, (Math.min(top, 200) + Math.max(bottom, -50)) / 3);
@@ -257,7 +334,9 @@ interface ProbeDeath extends ProbeWorm { tick: number; turn: number; lastAlivePo
   source?: ProbeExplosion; hits: { explosion: ProbeExplosion; distanceMap: number }[]; falls: { tick: number; fromY: number; toY: number; dropMap: number }[];
   healthSteps: { tick: number; from: number; to: number }[]; }
 interface FireRec { stem: string; tick: number; turn: number; asked: number; launch: boolean; factory: number[];
-  mines: { handle: number; spawn: number[]; rest?: number[]; settled?: boolean; gone?: boolean; lastSeen?: number[]; restFromFactoryMap: number }[]; }
+  mines: { handle: number; spawn: number[]; rest?: number[]; settled?: boolean; gone?: boolean; lastSeen?: number[]; restFromFactoryMap: number;
+    // a game that watches the mines after the fire (this branch's levels/factory.cpp): what became of each
+    fate?: "resting" | "not seen to land" | "drowned" | "destroyed" | "gone before it landed"; goneTick?: number; waterMap?: number; moves?: number; movedAfterRest?: number }[]; }
 interface ProbeAnswer {
   probe: { key: string; playing: boolean; turn: number; tick: number; spawns: ProbeWorm[]; deaths: ProbeDeath[]; explosionsSeen: number; explosions: ProbeExplosion[] };
   factory: { fires: FireRec[]; following: number; trigger: { tick: number; count: number; started: boolean; why: string; detail: string } | null };
@@ -270,10 +349,34 @@ async function probeOf(s: Session): Promise<ProbeAnswer | null> {
 
 const inUnits = (p: number[] | undefined, u: "map" | "world") => (p ? p.map((v) => Math.round(v * (u === "world" ? WORLD_PER_MAP : 1) * 100) / 100) : null);
 
-function fireOut(f: FireRec, u: "map" | "world") {
+/** The open project's ground (the top of the highest solid voxel, map units) and water, for fireOut; none without one. */
+function groundLookup(s: Session): [((x: number, z: number) => number | null)?, (number | null)?] {
+  if (!s.project) return [];
+  const gs = grids(s.store), w = s.store.scene.water.level;
+  return [(x, z) => spansAt(gs, x, z)[0]?.top ?? null, w === null ? null : w / WORLD_PER_MAP];
+}
+
+/** A fire as the answers give it: each mine's spawn and where it ended up (`rest`: the last position it was still at for
+ * 2.5 s, kept up to date while the game watches it, 3 minutes after the fire), and its `fate` on a game that records it:
+ * resting, not seen to land, drowned (gone from under the water) or destroyed (set off, or removed), with `fates` counting
+ * them. */
+export function fireOut(f: FireRec, u: "map" | "world", groundAt?: (x: number, z: number) => number | null, water?: number | null) {
   const k = u === "world" ? WORLD_PER_MAP : 1;
-  return { tick: f.tick, turn: f.turn, mines: f.mines.length, launch: f.launch, factory: inUnits(f.factory, u),
-    each: f.mines.map((m) => ({ handle: m.handle, spawn: inUnits(m.spawn, u), ...(m.gone ? { gone: true, lastSeen: inUnits(m.lastSeen, u) } : { rest: inUnits(m.rest, u), settled: !!m.settled }),
+  const fates: Record<string, number> = {};
+  for (const m of f.mines) if (m.fate) fates[m.fate] = (fates[m.fate] ?? 0) + 1;
+  // a mine gone before it landed was last seen at its launch point: with the open project, the ground under that point
+  // says whether it fell into the sea (no ground over the water there)
+  const sea = (m: FireRec["mines"][number]) => {
+    if (m.fate !== "gone before it landed" || !groundAt || !m.lastSeen) return {};
+    const g = groundAt(m.lastSeen[0], m.lastSeen[2]), w = m.waterMap ?? water ?? null;
+    return g === null || (w !== null && g <= w) ? { likely: "drowned: no ground over the water under where it fell (the open project's voxels)" }
+      : { likely: `set off before it landed, or sank elsewhere: ground at y ${Math.round(g * 100) / 100} under where it fell` };
+  };
+  return { tick: f.tick, turn: f.turn, mines: f.mines.length, launch: f.launch, factory: inUnits(f.factory, u), ...(Object.keys(fates).length ? { fates } : {}),
+    each: f.mines.map((m) => ({ handle: m.handle, spawn: inUnits(m.spawn, u),
+      ...(m.gone ? { gone: true, lastSeen: inUnits(m.lastSeen, u), ...(m.rest ? { rest: inUnits(m.rest, u) } : {}) } : { rest: inUnits(m.rest, u), settled: !!m.settled }),
+      ...(m.fate ? { fate: m.fate } : {}), ...sea(m), ...(m.goneTick !== undefined ? { goneTick: m.goneTick } : {}), ...(m.waterMap !== undefined ? { water: Math.round(m.waterMap * k * 100) / 100 } : {}),
+      ...(m.movedAfterRest ? { movedAfterRest: m.movedAfterRest } : {}),
       restFromFactory: Math.round(m.restFromFactoryMap * k * 100) / 100 })) };
 }
 
@@ -556,6 +659,28 @@ export const tools: Tool[] = [
     },
   },
   {
+    name: "set_overview",
+    description: "The open project's overview framing for the rest of this erg-mcp session: game_camera's and game_shots' preset overview then use it whenever a call does not say otherwise. `fit: \"island\"` (the solid voxels over the water) frames a small island tightly instead of every voxel frame's box (a wiped base's empty frames spread far past the island), centred on it and as close as shows all of it in the game's 60 degree view (16:9), times `margin` (default 1.1); `azimuth`, `elevation` and `distance` as the preset's. `clear: true` drops it. Answers the pose it gives (map and world units) and the box it frames. Read-only for the level: the game's own turn camera is not changed.",
+    inputSchema: {
+      type: "object", additionalProperties: false,
+      properties: { ...orbitProps, units, clear: { type: "boolean", description: "Drop the project's overview framing (the preset's defaults again)." } },
+    },
+    handler(s, a: Orbit & { units?: "map" | "world"; clear?: boolean }) {
+      const p = s.requireProject(), k = a.units === "world" ? 1 : WORLD_PER_MAP;
+      if (a.clear) { overviewDefaults.delete(p.id); return { project: p.id, cleared: true, pose: poseOut(overview(s, {}, k), k) }; }
+      const o: Orbit = { fit: a.fit ?? "island", ...(a.azimuth !== undefined ? { azimuth: a.azimuth } : {}), ...(a.elevation !== undefined ? { elevation: a.elevation } : {}),
+        ...(a.distance !== undefined ? { distance: (a.distance * k) / WORLD_PER_MAP } : {}), ...(a.margin !== undefined ? { margin: a.margin } : {}) };
+      const pose = overview(s, o, WORLD_PER_MAP);
+      overviewDefaults.set(p.id, o);
+      const water = s.store.scene.water.level === null ? null : s.store.scene.water.level / WORLD_PER_MAP;
+      const box = o.fit === "frames" ? null : o.fit === "island" ? islandBox(s, water ?? 0) : solidBox(s, null);
+      const r = (v: number) => Math.round(v * 100) / 100;
+      return { project: p.id, overview: { ...o, ...(o.distance !== undefined ? { distance: r((o.distance * WORLD_PER_MAP) / k) } : {}) }, pose: poseOut(pose, k),
+        ...(box ? { frames: { min: box.min.map((v) => r((v * WORLD_PER_MAP) / k)), max: box.max.map((v) => r((v * WORLD_PER_MAP) / k)) } } : {}),
+        note: "game_camera {preset: \"overview\"} and game_shots' {preset: \"overview\"} poses use it from now on in this session (their own azimuth, elevation, distance, fit or margin still win)" };
+    },
+  },
+  {
     name: "game_shots",
     description: "Several camera poses captured in one call, so evidence fits in a short match: for each of `cams` ({pos, target, fov} in `units`, or {preset: \"default\" | \"overview\"}, each with an optional `name`), the camera is pointed (render.camera, no mod needed), the first frame drawn from it is read back (render.shot) and written to Documents\\Melange\\shots\\<name>.png, about a tenth of a second a pose. clean (default true) hides the mods' wum.draw text in the shots. The camera goes back to the game at the end (or holds the last pose with `hold`). Answers each PNG as image content (unless images: false) and their paths. Needs the game with render.shot and a match drawing.",
     inputSchema: {
@@ -639,32 +764,50 @@ export const tools: Tool[] = [
   },
   {
     name: "game_walk",
-    description: "Walk the active worm of the running Test along waypoints, in the game, and report how far it got: the in-game check of a check_reachability route (its waypoints or path). The keys are the game's own (W, A, S, D relative to the camera; the pair nearest each bearing, steered every 0.12 s from the worm's position), sent through Melange's Automation module (test builds with [Automation] Enabled=1; gameDir or MELANGE_GAME_DIR names the game's folder). It waits for a turn of a human team in its play phase (`worm`: only that WORMn's), walks until the last waypoint is within `arrive`, the turn ends, the worm dies or `timeoutSec`, and taps jump (RETURN) where it stops making progress. Answers reached (the waypoints reached, and whether the last), where it ended and how far from the target, the climb, the time, where it got stuck, and samples of its path, in `units`.",
+    description: "Walk the active worm of the running Test in the game and report how far it got: the in-game check of a check_reachability route. Three ways to give the route: `waypoints` (straight lines from one to the next, steered at each in turn: the walk before), `path` (a dense route such as check_reachability {route: true}'s `route`: followed by pure pursuit, aiming `lookahead` along the route from the point on it nearest the worm, so it turns round pillars and keep corners with the route) or `to` ([x, z]: the route is planned from the worm's own spot over the open project's voxels with check_reachability's walk graph, the worm's width (`bodyWidth`, default 1 map unit) enforced and jumps over gaps up to 2 map units, and planned again from where it is when it stays stuck). The keys are the game's own (W, A, S, D relative to the camera; the pair nearest each bearing, steered every 0.12 s), sent through Melange's Automation module (test builds with [Automation] Enabled=1; gameDir or MELANGE_GAME_DIR names the game's folder). It waits for a turn of a human team in its play phase (`worm`: only that WORMn's), walks until the end is within `arrive`, the turn ends, the worm dies or `timeoutSec`. Where it stops making progress for 0.6 s it recovers in turn (`recover`, default true; with waypoints only jump): jump, a side step, a backflip (the game's own jump and backflip keys, read from its bindings). Answers reached (and whether the end), the route followed (`along`/`of` for a path), where it ended and how far from the end, the climb, the time, the recoveries and where it got stuck, and samples of its path, in `units`.",
     inputSchema: {
-      type: "object", additionalProperties: false, required: ["waypoints"],
+      type: "object", additionalProperties: false,
       properties: {
-        waypoints: { type: "array", minItems: 1, maxItems: 200, items: { type: "array", items: { type: "number" }, minItems: 2, maxItems: 3 }, description: "The route: [x, z] or [x, y, z] (y unused), in `units`: check_reachability's waypoints." },
-        units: { type: "string", enum: ["map", "world"], description: "Units of the waypoints and the answer (default map)." },
+        waypoints: { type: "array", minItems: 1, maxItems: 200, items: { type: "array", items: { type: "number" }, minItems: 2, maxItems: 3 }, description: "The route as waypoints: [x, z] or [x, y, z] (y unused), in `units`, walked straight from one to the next (check_reachability's waypoints)." },
+        path: { type: "array", minItems: 2, maxItems: 4000, items: { type: "array", items: { type: "number" }, minItems: 2, maxItems: 3 }, description: "A dense route ([x, z] or [x, y, z], in `units`): check_reachability {route: true}'s `route`, followed by pure pursuit." },
+        to: { type: "array", items: { type: "number" }, minItems: 2, maxItems: 3, description: "Plan the route to this point ([x, z] or [x, y, z], in `units`) from the worm's spot over the open project's voxels, and follow it." },
+        lookahead: { type: "number", minimum: 0.25, description: "With path or to: aim this far along the route ahead of the worm (default 2 map units)." },
+        bodyWidth: { type: "number", minimum: 0, description: "With to: the worm's width the planned route must fit through (default 1 map unit; 0 not enforced)." },
+        recover: { type: "boolean", description: "With path or to: when stuck, try a jump, then a side step, then a backflip, in turn (default true); false: only jump (as waypoints do)." },
+        units: { type: "string", enum: ["map", "world"], description: "Units of the route and the answer (default map)." },
         worm: { type: "integer", minimum: 0, maximum: 7, description: "Walk only this WORMn: wait for its turn (default: the first human turn that comes)." },
-        arrive: { type: "number", minimum: 0.2, description: "A waypoint is reached within this horizontal distance (units; default 1.5 map units)." },
+        arrive: { type: "number", minimum: 0.2, description: "The end (or a waypoint) is reached within this horizontal distance (units; default 1.5 map units)." },
         timeoutSec: { type: "number", minimum: 1, maximum: 300, description: "Give up after this long, waiting included (default 120)." },
-        jump: { type: "boolean", description: "Tap jump where the worm makes no progress for 0.6 s (default true)." },
+        jump: { type: "boolean", description: "Tap jump where the worm makes no progress for 0.6 s (default true; false: no recovery at all)." },
         gameDir: { type: "string", description: "The running game's folder (WormsMayhem.exe), for its Automation command file (default MELANGE_GAME_DIR)." },
       },
     },
-    async handler(s, a: { waypoints: number[][]; units?: "map" | "world"; worm?: number; arrive?: number; timeoutSec?: number; jump?: boolean; gameDir?: string }) {
+    async handler(s, a: { waypoints?: number[][]; path?: number[][]; to?: number[]; lookahead?: number; bodyWidth?: number; recover?: boolean; units?: "map" | "world"; worm?: number; arrive?: number;
+      timeoutSec?: number; jump?: boolean; gameDir?: string }) {
+      const given = [a.waypoints, a.path, a.to].filter((x) => x !== undefined).length;
+      if (given !== 1) throw new ToolError("give one of waypoints, path or to");
       const file = automationFile(a.gameDir);
       const k = a.units === "world" ? 1 : WORLD_PER_MAP;   // to world units
       const out = (v: number) => Math.round((v / k) * 100) / 100;
-      const pts = a.waypoints.map((p) => (p.length === 3 ? [p[0] * k, p[2] * k] : [p[0] * k, p[1] * k]));
-      if (!pts.every((p) => p.every(Number.isFinite))) throw new ToolError("waypoints are finite numbers");
+      const xz = (p: number[]) => (p.length === 3 ? [p[0] * k, p[2] * k] : [p[0] * k, p[1] * k]);
+      if (a.to && !s.project) throw new ToolError("to plans over the open project's voxels: open_project first (or give path)");
+      let pts = (a.waypoints ?? a.path ?? []).map(xz);
+      if (!pts.every((p) => p.every(Number.isFinite)) || (a.to && !a.to.every(Number.isFinite))) throw new ToolError("the route's points are finite numbers");
+      const follow = a.waypoints ? "waypoints" : "path";
       const arrive = (a.arrive ?? (a.units === "world" ? 30 : 1.5)) * k, limit = (a.timeoutSec ?? 120) * 1000, t0 = Date.now();
+      const look = (a.lookahead ?? (a.units === "world" ? 40 : 2)) * k;
+      const recover = a.jump !== false && a.recover !== false && follow === "path";
       const send = (lines: string[]) => appendFileSync(file, lines.join("\n") + "\n");
       // Automation reads the file every frame and removes what it ran: an unread line means the module is off
       const marker = `log erg-walk-${t0}`;
       send([marker]);
       await sleep(1500);
       if (readFileSync(file, "utf8").includes(marker)) throw new ToolError(`the game did not read ${file}: game_walk needs a Melange with the Automation module ([Automation] Enabled=1, a test build) running from that folder`);
+      // the game's own jump and backflip keys (its bindings), else Enter and Backspace
+      const bound = await evalClient(s, `local b = wum.input and wum.input.binding return tostring(b and b("Input.JumpPressed")) .. ";" .. tostring(b and b("Input.JumpBackPressed"))`).catch(() => "nil;nil");
+      const [jl, bl] = bound.split(";");
+      const keys = { jump: keyOfLabel(jl === "nil" ? null : jl) ?? "RETURN", backflip: keyOfLabel(bl === "nil" ? null : bl) ?? "BACK",
+        source: jl !== "nil" || bl !== "nil" ? `the game's bindings (${jl}, ${bl})` : "defaults (Enter, Backspace): the game's bindings were not read" };
       type W = { x: number; y: number; z: number; slot: number; team: number; phase: string; ai: boolean; alive: boolean; fx: number; fz: number };
       const read = async (): Promise<W | string> => {
         const t = await evalClient(s, WALK_LUA);
@@ -683,8 +826,24 @@ export const tools: Tool[] = [
         await sleep(400);
         w = await read();
       }
-      const start = w as W, path: number[][] = [[start.x, start.y, start.z]], stuck: number[][] = [];
-      let i = 0, held: string[] = [], lastMove = Date.now(), lastPos = [start.x, start.z], end: W = start, why = "timeout", jumps = 0;
+      const start = w as W;
+      // with to: the route planned from where the worm stands (map units), again from where it is when it stays stuck
+      const plans: { from: number[]; length: number; narrowest: number | null; points: number }[] = [];
+      const plan = (from: W) => {
+        const r = planWalk(s.project!.store, [from.x / WORLD_PER_MAP, from.y / WORLD_PER_MAP, from.z / WORLD_PER_MAP], [a.to![0] * k / WORLD_PER_MAP, (a.to!.length === 3 ? a.to![2] : a.to![1]) * k / WORLD_PER_MAP],
+          { radius: arrive / WORLD_PER_MAP, bodyWidth: a.bodyWidth === undefined ? WORM_WIDTH : (a.bodyWidth * k) / WORLD_PER_MAP });
+        if ("why" in r) return r.why;
+        plans.push({ from: [from.x, from.y, from.z].map(out), length: out(r.plan.length * WORLD_PER_MAP), narrowest: r.plan.narrowest === null ? null : out(r.plan.narrowest * WORLD_PER_MAP), points: r.plan.path.length });
+        return r.plan.path.map((p) => [p[0] * WORLD_PER_MAP, p[2] * WORLD_PER_MAP]);
+      };
+      if (a.to) {
+        const p = plan(start);
+        if (typeof p === "string") throw new ToolError(`to: ${p}`);
+        pts = p;
+      }
+      let cum = cumulative(pts);
+      const path: number[][] = [[start.x, start.y, start.z]], stuck: number[][] = [], tries: string[] = [];
+      let i = 0, seg = 0, along = 0, held: string[] = [], lastMove = Date.now(), lastPos = [start.x, start.z], end: W = start, why = "timeout", jumps = 0, ladder = 0, replans = 0;
       const hold = (want: string[]) => {
         const lines = [...held.filter((x) => !want.includes(x)).map((x) => `up ${x}`), ...want.filter((x) => !held.includes(x)).map((x) => `down ${x}`)];
         if (lines.length) send(lines);
@@ -698,13 +857,43 @@ export const tools: Tool[] = [
           if (!r.alive) { why = "the worm died"; end = r; break; }
           end = r;
           if (Math.hypot(r.x - path[path.length - 1][0], r.z - path[path.length - 1][2]) >= 10) path.push([r.x, r.y, r.z]);
-          while (i < pts.length && Math.hypot(pts[i][0] - r.x, pts[i][1] - r.z) <= arrive) i++;
-          if (i >= pts.length) { why = "arrived"; break; }
-          hold(walkKeys(pts[i][0] - r.x, pts[i][1] - r.z, r.fx, r.fz));
-          if (Math.hypot(r.x - lastPos[0], r.z - lastPos[1]) > 4) { lastPos = [r.x, r.z]; lastMove = Date.now(); }
+          let aim: number[];
+          if (follow === "waypoints") {
+            while (i < pts.length && Math.hypot(pts[i][0] - r.x, pts[i][1] - r.z) <= arrive) i++;
+            if (i >= pts.length) { why = "arrived"; break; }
+            aim = pts[i];
+          } else {
+            const last = pts[pts.length - 1];
+            if (Math.hypot(last[0] - r.x, last[1] - r.z) <= arrive) { why = "arrived"; along = cum[cum.length - 1]; break; }
+            const pp = pursue(pts, cum, seg, [r.x, r.z], look, look * 4 + 6 * WORLD_PER_MAP);
+            seg = pp.seg;
+            along = Math.max(along, pp.along);
+            aim = pp.aim;
+          }
+          hold(walkKeys(aim[0] - r.x, aim[1] - r.z, r.fx, r.fz));
+          if (Math.hypot(r.x - lastPos[0], r.z - lastPos[1]) > 4) { lastPos = [r.x, r.z]; lastMove = Date.now(); ladder = 0; }
           else if (Date.now() - lastMove > 600) {
             stuck.push([r.x, r.y, r.z]);
-            if (a.jump !== false) { send(["key RETURN 80"]); jumps++; }
+            if (a.jump !== false) {
+              const move = recover ? ladder % 3 : 0;
+              if (move === 0) { send([`key ${keys.jump} 80`]); jumps++; tries.push("jump"); }
+              else if (move === 1) {
+                // a side step: a short walk square to the aim, the side alternating, to come off a pillar's or a corner's edge
+                const side = Math.floor(ladder / 3) % 2 ? 1 : -1, dx = aim[0] - r.x, dz = aim[1] - r.z;
+                hold(walkKeys(-dz * side, dx * side, r.fx, r.fz));
+                await sleep(400);
+                tries.push("side step");
+              } else {
+                send([`key ${keys.backflip} 80`]);
+                tries.push("backflip");
+              }
+              ladder++;
+              // planned routes: from where it is now, after a whole round of recoveries
+              if (a.to && ladder % 3 === 0 && replans < 4) {
+                const p = plan(r);
+                if (typeof p !== "string") { pts = p; cum = cumulative(pts); seg = 0; replans++; tries.push("replanned"); }
+              }
+            }
             lastMove = Date.now();
           }
           await sleep(WALK_TICK_MS);
@@ -714,11 +903,16 @@ export const tools: Tool[] = [
       }
       const last = pts[pts.length - 1];
       const near = (p: number[]) => p.map(out);
+      const reached = follow === "waypoints" ? { waypoints: i, of: pts.length, target: i >= pts.length }
+        : { along: out(along), of: out(cum[cum.length - 1]), target: why === "arrived" };
       return {
-        worm: `WORM${start.slot}`, team: start.team, reached: { waypoints: i, of: pts.length, target: i >= pts.length }, stop: why,
+        worm: `WORM${start.slot}`, team: start.team, follow: a.to ? "to" : follow, reached, stop: why,
         from: near([start.x, start.y, start.z]), to: near([end.x, end.y, end.z]), toTarget: out(Math.hypot(last[0] - end.x, last[1] - end.z)), climb: out(end.y - start.y),
-        seconds: Math.round((Date.now() - t0) / 100) / 10, jumps, ...(stuck.length ? { stuckAt: stuck.slice(0, 12).map(near) } : {}), path: path.slice(0, 120).map(near),
-        units: a.units ?? "map", note: "the worm walked with the game's own keys (camera-relative W A S D, steered every 0.12 s; jump where it stopped): reached.target means it got to the last waypoint on foot in game",
+        seconds: Math.round((Date.now() - t0) / 100) / 10, jumps, ...(tries.length ? { recoveries: tries.slice(0, 40) } : {}), ...(stuck.length ? { stuckAt: stuck.slice(0, 12).map(near) } : {}),
+        ...(plans.length ? { plans } : {}), ...(follow === "path" ? { keys } : {}), path: path.slice(0, 120).map(near),
+        units: a.units ?? "map", note: follow === "waypoints"
+          ? "the worm walked with the game's own keys (camera-relative W A S D, steered every 0.12 s toward the next waypoint; jump where it stopped): reached.target means it got to the last waypoint on foot in game"
+          : "the worm followed the route with the game's own keys (camera-relative W A S D, steered every 0.12 s at the point `lookahead` along the route ahead of it; jump, side step and backflip where it stopped): reached.target means it got to the route's end on foot in game",
       };
     },
   },
@@ -829,13 +1023,13 @@ export const tools: Tool[] = [
                 ...(far ? { warning: "the factory settled far from its knot: its drop from the knot hit no land the sweep sees (a draped skin) and it took a stale point" } : {}) }
             : { alive: false, why: factory ? FACTORY_GONE : "no factory entity in the match (and no project with a minefactory knot is open)" };
         }
-        // fire: what the trigger found, then (its mines at rest, at most 25 s) the fire's mines from the game's own record
+        // fire: what the trigger found, then (its mines at rest, at most 35 s) the fire's mines from the game's own record
         let fired: object | undefined;
         if (fireAsk) {
           let pr = await probeOf(s);
-          for (const t1 = Date.now(); pr && pr.factory.trigger?.started && pr.factory.fires.length <= firesBefore && Date.now() - t1 < 25000; pr = await probeOf(s)) await sleep(500);
+          for (const t1 = Date.now(); pr && pr.factory.trigger?.started && pr.factory.fires.length <= firesBefore && Date.now() - t1 < 35000; pr = await probeOf(s)) await sleep(500);
           const trig = pr?.factory.trigger ?? null, last = pr && pr.factory.fires.length > firesBefore ? pr.factory.fires[pr.factory.fires.length - 1] : null;
-          fired = { queued, trigger: trig, ...(last ? { fire: fireOut(last, a.units ?? "map") } : { fire: null, note: trig && !trig.started ? `the factory did not fire: ${trig.why}` : "no fire record within 25 s (its mines may still be moving): game_probe's factory.fires has it later" }) };
+          fired = { queued, trigger: trig, ...(last ? { fire: fireOut(last, a.units ?? "map", ...groundLookup(s)) } : { fire: null, note: trig && !trig.started ? `the factory did not fire: ${trig.why}` : "no fire record within 35 s (its mines may still be moving): game_probe's factory.fires has it later" }) };
         }
         const answer = {
           units: a.units ?? "map", factory: factory ? { at: out({ x: factory[0], y: factory[1], z: factory[2] }), note: "the open project's minefactory knot" } : null,
@@ -893,7 +1087,7 @@ export const tools: Tool[] = [
         key: p.key, playing: p.playing, turn: p.turn, units: u,
         spawns: spawns.length ? spawns : null, ...(spawns.length ? {} : { spawnsNote: "the first turn has not started yet" }),
         deaths, explosionsSeen: p.explosionsSeen, ...(a.explosions ? { explosions: p.explosions.map(explosionOut) } : {}),
-        factory: { fires: r.factory.fires.map((f) => fireOut(f, u)), ...(r.factory.following ? { following: r.factory.following } : {}), trigger: r.factory.trigger },
+        factory: { fires: r.factory.fires.map((f) => fireOut(f, u, ...groundLookup(s))), ...(r.factory.following ? { following: r.factory.following } : {}), trigger: r.factory.trigger },
         note: "turn counts game turns from 1 (as game_state and check_flood); causes are inferred from what the probe saw (evidence), not read from the engine, which keeps no damage source; WORMn is the worm's slot (game_state's worm); knot and fromKnot only for a level in knots spawn mode",
       };
     },

@@ -4,7 +4,8 @@
 import type { EditorStore, ServerPaletteEntry as PaletteEntry, Vec3 } from "../core";
 import { extentXZ, markers, sampleField, spansAt, waterMap, type Field, type MarkerKind, type Region } from "../lib/inspect-field";
 import { Raster, SKY, VOID, WATER, hex, materialTint, shade, type Rgb } from "../lib/inspect-png";
-import { UTILITY_REACH, classify, nodeAt, ownTurn, pathStats, pathTo, search, standableAt, standing, surfaces, turnAt, type FloodRules, type ReachOptions, type Surfaces } from "../lib/reach";
+import { findHoles } from "../lib/holes";
+import { UTILITY_REACH, WORM_WIDTH, classify, nodeAt, ownTurn, pathStats, pathTo, search, standableAt, standing, surfaces, turnAt, type FloodRules, type ReachOptions, type Surfaces } from "../lib/reach";
 import { rotation, slotOf } from "../lib/turns";
 import { waterByTurn, type WaterSchedule } from "../lib/flood";
 import { scriptWater, type ScriptWater } from "../lib/script-water";
@@ -386,7 +387,7 @@ export async function queryGround(s: Session, a: { x: number; z: number; units?:
 // ------------------------------------------------------------------ check_reachability
 
 interface FloodArgs {
-  schedule?: WaterSchedule | "script"; levels?: { turn: number; level: number }[]; start?: number; every?: number; firstTurn?: number; maxTurns?: number;
+  schedule?: WaterSchedule | "script"; levels?: { turn: number; level: number }[]; rounds?: { round: number; level: number }[]; start?: number; every?: number; firstTurn?: number; maxTurns?: number;
   teams?: number; wormsPerTeam?: number; margin?: number; minMoves?: number; turnOrder?: number[]; minOwnTurns?: number; minDryMargin?: number;
   capMargin?: number;
 }
@@ -401,6 +402,7 @@ interface ReachArgs extends RegionArgs {
   maxGap?: number; headroom?: number; water?: boolean; render?: boolean; palette?: PaletteMode; slopeOver?: "tread" | "riser" | "segment" | "skin";
   walkSpeed?: number; turnTime?: number; flood?: FloodArgs; islets?: boolean;
   via?: ViaArgs; materialSlopes?: { materials: number[]; maxSlope: number }[];
+  bodyWidth?: number; bodyHeight?: number; route?: boolean;
 }
 
 /** A route constraint: the ground "on the route" is where the top voxel's material is one of `materials` (when given)
@@ -512,19 +514,23 @@ async function floodRules(s: Session, f: FloodArgs, u: Units, perTurn: number): 
   const store = s.store, own = waterMap(store);
   const start = f.start !== undefined ? inMap(f.start, u) : own;
   if (start === null) throw new ToolError("flood: the project keeps the level's own water height, which is not known here: pass flood.start (the water before the schedule)");
-  if (!f.schedule === !f.levels) throw new ToolError("flood: give schedule (as wum.sim.waterSchedule's options, or \"script\" to read the project's script) or levels ([{turn, level}])");
+  if ([f.schedule, f.levels, f.rounds].filter((x) => x !== undefined).length !== 1) throw new ToolError("flood: give one of schedule (as wum.sim.waterSchedule's options, or \"script\" to read the project's script), levels ([{turn, level}]) or rounds ([{round, level}])");
+  // rounds: wum.sim.round()'s rounds (sim.turnStarted's round), which go up once every team has had a turn: round r starts
+  // at game turn (r - 1) x teams + 1 while every team is alive
+  const teamsN = f.teams ?? 2;
+  const byRound = f.rounds?.map((e) => ({ turn: (e.round - 1) * teamsN + 1, level: e.level }));
   // levels and start are the call's units (map by default), unlike a schedule's (world by default): a value over every
   // ground of the level by far is world units given as map, which drowns every spawn at turn 1 (Caldera, iteration 6)
   if (u !== "world") {
     let ground = -Infinity;
     for (const g of grids(store)) ground = Math.max(ground, g.bounds.max[1]);
-    const over = [...(f.start !== undefined ? [f.start] : []), ...(f.levels ?? []).map((e) => e.level)].filter((v) => Number.isFinite(ground) && v > ground + 40);
+    const over = [...(f.start !== undefined ? [f.start] : []), ...(f.levels ?? byRound ?? []).map((e) => e.level)].filter((v) => Number.isFinite(ground) && v > ground + 40);
     if (over.length)
       throw new ToolError(`flood: ${over.length > 1 ? "levels" : "a level"} of ${over.slice(0, 3).join(", ")} map units is far over the level's highest ground (${r2(ground)} map): levels and start are in the call's units, map unless units: "world" (a schedule's are world unless its units say map); pass units: "world" or divide by 20`);
   }
   let schedule: WaterSchedule | undefined, from = "the call", sim: ScriptWater | null = null;
   if (f.schedule === "script") {
-    sim = await scriptWater(s, start, f.maxTurns ?? 200).catch((e: unknown) => {
+    sim = await scriptWater(s, start, f.maxTurns ?? 200, teamsN, true).catch((e: unknown) => {
       if (e instanceof ToolError) throw e;
       throw new ToolError(`flood: could not read or run the project's script: ${e instanceof Error ? e.message : String(e)}`);
     });
@@ -540,7 +546,7 @@ async function floodRules(s: Session, f: FloodArgs, u: Units, perTurn: number): 
     if (f.schedule.step === undefined || f.schedule.cap === undefined) throw new ToolError("flood.schedule: step and cap are required (as for wum.sim.waterSchedule)");
     schedule = f.schedule;
   }
-  const levels = f.levels?.map((e) => ({ turn: e.turn, level: inMap(e.level, u) }));
+  const levels = (f.levels ?? byRound)?.map((e) => ({ turn: e.turn, level: inMap(e.level, u) }));
   const waterAt = sim ? sim.waterAt : waterByTurn(start, { schedule, levels });
   const scriptInfo = sim ? { ...(sim.schedules ? { scriptSchedules: sim.schedules } : {}), ...(sim.errors ? { scriptErrors: sim.errors } : {}), ...(sim.warnings.length ? { scriptWarnings: sim.warnings } : {}) } : {};
   const every = f.every ?? 2, firstTurn = f.firstTurn ?? 1, horizon = f.maxTurns ?? 200;
@@ -550,7 +556,8 @@ async function floodRules(s: Session, f: FloodArgs, u: Units, perTurn: number): 
   for (let t = 1; t <= horizon; t++) top = Math.max(top, waterAt(t));
   return { rules, horizon, top, info: {
     from, start: r2(outUnit(start, u)), ...(schedule ? { schedule, scheduleUnits: `${schedule.units === "map" ? "map" : "world"} (wum.sim.waterSchedule's own); the answer's other lengths are ${u ?? "map"} units, and water levels are given in both` }
-      : sim ? {} : { levels: f.levels, levelsUnits: `${u ?? "map"} (the call's units)` }), ...scriptInfo,
+      : sim ? {} : { levels: f.levels ?? byRound, levelsUnits: `${u ?? "map"} (the call's units)`,
+        ...(byRound ? { rounds: f.rounds, roundTurns: `round r from game turn (r - 1) x ${teamsN} + 1 (teams ${teamsN}: wum.sim.round goes up once every team has had a turn; a team wiped out makes the rounds shorter)` } : {}) }), ...scriptInfo,
     every, firstTurn, maxTurns: horizon, perOwnTurn: r2(outUnit(perTurn, u)), waterByTurn: sample, highestWater: { map: r2(top), world: r2(top * WORLD_PER_MAP) },
     turnIndex: "game turns count from 1: game turn n is the match's n-th turn start, wum.sim.turnStarted's turn n, game_state's turn n and a waterSchedule's startTurn n (its step lands at that turn's start)",
     note: `floodsAtTurn and floods.turn are game turns (each team's turn counts one). escapes walks each start's worm perOwnTurn in each of its turns, the first in game turn ${firstTurn}, then every ${every} turns (its team picking it every time: the best case). ` +
@@ -708,7 +715,7 @@ export async function checkReachability(s: Session, a: ReachArgs) {
   if (cols > 1_000_000) throw new ToolError(`${cols} columns is too many (at most 1000000): use a larger step or a smaller region`);
   const water = a.water === false ? null : waterMap(store);
   const o: ReachOptions = { step, maxStep: L(a.maxStep, 0.5), maxSlope: a.maxSlope ?? 45, maxDrop: L(a.maxDrop, 8), maxGap: L(a.maxGap, 0), headroom: L(a.headroom, 1.5), water,
-    slopeOver: a.slopeOver ?? "tread" };
+    slopeOver: a.slopeOver ?? "tread", ...(a.bodyWidth ? { bodyWidth: L(a.bodyWidth, 0) } : {}), ...(a.bodyHeight ? { bodyHeight: L(a.bodyHeight, 1.5) } : {}) };
   const perTurn = L(a.walkSpeed, WALK_SPEED) * (a.turnTime ?? TURN_TIME);
   const flood = a.flood ? await floodRules(s, a.flood, u, perTurn) : null;
   const S = surfaces(gs, r, step, o.headroom);
@@ -761,8 +768,13 @@ export async function checkReachability(s: Session, a: ReachArgs) {
   const statsOut = (path: number[]) => {
     const st = pathStats(S, path, o);
     return { length: r2(outUnit(st.length, u)), maxSlope: Math.round(st.maxSlope * 10) / 10, maxStairSlope: Math.round(st.maxStairSlope! * 10) / 10,
-      maxStepUp: r2(outUnit(st.maxStepUp, u)), maxDrop: r2(outUnit(st.maxDrop, u)), jumps: st.jumps };
+      maxStepUp: r2(outUnit(st.maxStepUp, u)), maxDrop: r2(outUnit(st.maxDrop, u)), jumps: st.jumps,
+      // the narrowest gap walked through (spanAcross: the free width across the move at body height), null when the
+      // route is open all the way (gaps of OPEN_SPAN or more)
+      narrowest: st.narrowest ? { width: r2(outUnit(st.narrowest.width, u)), at: out(nodeAt(S, st.narrowest.node)) } : null };
   };
+  // the whole route, column by column (game_walk's `path`): at most 2000 points
+  const routeOut = (path: number[]) => (a.route ? { route: path.slice(0, 2000).map((n) => out(nodeAt(S, n))) } : {});
   // the least own turns a walk of `d` (horizontal, map units) takes, and the game turn it ends in from the first own turn
   const turnsFor = (d: number) => {
     const own = Math.max(1, Math.ceil(d / perTurn - 1e-9));
@@ -828,7 +840,7 @@ export async function checkReachability(s: Session, a: ReachArgs) {
     if (hit >= 0) {
       const path = pathTo(q, hit);
       routes.push({ name: st.name, start: st.at, walk: path, utility: [], usedAt: null, blocked: [] });
-      return { ...base, ...which, walk: r2(outUnit(q.dist[hit], u)), turns: turnsFor(q.dist[hit]), waypoints: thin(path), path: statsOut(path), ...each, ...(floodOut ? { flood: floodOut } : {}) };
+      return { ...base, ...which, walk: r2(outUnit(q.dist[hit], u)), turns: turnsFor(q.dist[hit]), waypoints: thin(path), path: statsOut(path), ...routeOut(path), ...each, ...(floodOut ? { flood: floodOut } : {}) };
     }
     // where it is stopped: the reached ground nearest the target with a climb too high next to it
     const stops: { n: number; d: number }[] = [];
@@ -848,7 +860,7 @@ export async function checkReachability(s: Session, a: ReachArgs) {
     if (c.utility) {
       const [fa, fb] = c.at ?? [n0, n0], pa = nodeAt(S, fa), pb = nodeAt(S, fb);
       needs = { utility: c.utility, usedAt: { from: out(pa), to: out(pb), rise: r2(outUnit(pb[1] - pa[1], u)), across: r2(outUnit(Math.hypot(pb[0] - pa[0], pb[2] - pa[2]), u)) },
-        path: statsOut(c.path), waypoints: thin(c.path) };
+        path: statsOut(c.path), waypoints: thin(c.path), ...routeOut(c.path) };
     } else needs = { utility: null, note: "not within a jetpack's reach either (rules.utilities)" };
     routes.push({ name: st.name, start: st.at, walk: pathTo(q, near), utility: c.path, usedAt: c.at ? nodeAt(S, c.at[0]) : null, blocked: blockedMap });
     return { ...base, closest: { at: out(nodeAt(S, near)), distance: r2(outUnit(nearD, u)) },
@@ -863,11 +875,17 @@ export async function checkReachability(s: Session, a: ReachArgs) {
   const verdict = flood ? floodVerdict(spawns as FloodSpawn[], a.flood!, u, played) : null;
   // the spawns that do not get there, by name, with why (no ground under it, under the water, or blocked)
   const notOk = spawns.filter((x) => !x.reachable).map((x) => `${x.name}${(x as { why?: string }).why ? ` (${(x as { why?: string }).why})` : ""}`);
+  // routes through a gap narrower than a worm (WORM_WIDTH, an assumption) when the body is not enforced
+  const tight = o.bodyWidth ? [] : spawns.flatMap((x) => {
+    const nw = (x as { path?: { narrowest?: { width: number } | null } }).path?.narrowest;
+    return nw && inMap(nw.width, u) < WORM_WIDTH - 1e-6 ? [`${x.name} ${nw.width}`] : [];
+  });
   const answer = {
     summary: `${ok} of ${spawns.length} reach the target on foot` + (notOk.length ? ` (not: ${notOk.slice(0, 8).join(", ")})` : "") +
       (flood ? `; ${escaped} of ${spawns.length} reach it dry with the flood (best case: a turn every ${flood.rules.every})` + (onOwn !== null ? `, ${onOwn} on their own moves in the rotation` : "") : "") +
       (verdict ? `; flood ${verdict.pass ? "PASS" : "FAIL"}${verdict.failures ? `: ${verdict.failures.join("; ")}` : ` (${verdict.checked} spawns dry through their own turn ${verdict.minOwnTurns})`}` : "") +
-      (cap && cap.within.length ? `; within ${cap.capMargin} ${u ?? "map"} of the water's cap: ${cap.within.join(", ")}` : ""),
+      (cap && cap.within.length ? `; within ${cap.capMargin} ${u ?? "map"} of the water's cap: ${cap.within.join(", ")}` : "") +
+      (tight.length ? `; through gaps narrower than a worm (${r2(outUnit(WORM_WIDTH, u))}): ${tight.join(", ")} (bodyWidth enforces it)` : ""),
     ...(verdict ? { floodVerdict: verdict } : {}),
     target: { at: out([tx, top, tz]), radius: r2(outUnit(tr, u)), surfaces: goals, note: single || list ? "the highest ground within the radius" : "the highest ground of the region" },
     ...(list ? { targets: tgs.map((t) => ({ name: t.name, at: out([t.x, t.top, t.z]), radius: r2(outUnit(t.r, u)), surfaces: t.count })),
@@ -875,6 +893,8 @@ export async function checkReachability(s: Session, a: ReachArgs) {
     rules: { step: r2(outUnit(step, u)), maxStep: r2(outUnit(o.maxStep, u)), maxSlope: o.maxSlope, maxDrop: r2(outUnit(o.maxDrop, u)), maxGap: r2(outUnit(o.maxGap, u)),
       headroom: r2(outUnit(o.headroom, u)), water: water === null ? "not used (the level's own height is unknown, or water: false)" : r2(outUnit(water, u)), units: u ?? "map",
       slopeOver: o.slopeOver, walkSpeed: r2(outUnit(perTurn / (a.turnTime ?? TURN_TIME), u)), turnTime: a.turnTime ?? TURN_TIME,
+      body: { width: o.bodyWidth ? r2(outUnit(o.bodyWidth, u)) : null, height: r2(outUnit(o.bodyHeight ?? o.headroom, u)),
+        note: `every route's narrowest gap is the free width across its moves at the worm's body height (between walls over its ground + maxStep and under + the height); with width set, a gap narrower is not walked; without, routes through gaps under ${r2(outUnit(WORM_WIDTH, u))} (a worm's width, an assumption) are named in the summary` },
       note: "walking only (no rope, jetpack or girders): a climb is taken when it is at most maxStep, or when it is a riser of at most one voxel of the ground it climbs onto and no steeper than maxSlope " +
         (o.slopeOver === "riser" ? "over one voxel of that ground" : o.slopeOver === "segment" ? "over the move itself (the rise over its horizontal length: every climb at its own slope, a skin's cliff face a barrier)"
           : o.slopeOver === "skin" ? "over the move itself where either end is a draped skin's (a skin's 62-78 degree cliff face is a barrier, not a stair), else over the tread above it"
@@ -981,6 +1001,8 @@ const floodSchema = {
     schedule: { description: "wum.sim.waterSchedule's options {startTurn, every, step, cap, from, units (world default, or map)}, or \"script\": the project's script, run turn by turn by Melange.exe's server (every waterSchedule call, phases set from turnStarted handlers, every/after timers, Water.Level writes); on the game's own server its first waterSchedule call." },
     levels: { type: "array", maxItems: 1000, items: { type: "object", additionalProperties: false, required: ["turn", "level"], properties: { turn: { type: "integer", minimum: 1 }, level: { type: "number" } } },
       description: "Or the water by turn: [{turn, level}], each level from that turn on, in the call's units: MAP unless units: \"world\" (unlike a schedule, world by default). A level far over every ground in map units is refused as world units." },
+    rounds: { type: "array", maxItems: 1000, items: { type: "object", additionalProperties: false, required: ["round", "level"], properties: { round: { type: "integer", minimum: 1 }, level: { type: "number" } } },
+      description: "Or the water by round: [{round, level}], each from that round on (wum.sim.round, sim.turnStarted's round: it goes up once every team has had a turn, so round r starts at game turn (r - 1) x teams + 1), in the call's units as levels. A script that sets the water by round from a turnStarted handler is also run as it is by schedule \"script\" on Melange.exe's server." },
     start: { type: "number", description: "The water before the flood, in the call's units (map unless units: \"world\"; default the project's water level)." },
     every: { type: "integer", minimum: 1, maximum: 64, description: "Game turns between a worm's own turns (default 2: two teams)." },
     firstTurn: { type: "integer", minimum: 1, maximum: 1000, description: "The game turn of the worm's first own turn (default 1)." },
@@ -1135,6 +1157,9 @@ export const tools: Tool[] = [
         maxDrop: { type: "number", minimum: 0, description: "The longest drop taken (default 8 map units)." },
         maxGap: { type: "number", minimum: 0, description: "Jump gaps up to this wide to ground no higher than maxStep above (default 0: walking only)." },
         headroom: { type: "number", minimum: 0.5, description: "Air a worm needs above the ground (default 1.5 map units)." },
+        bodyWidth: { type: "number", minimum: 0, description: "The worm's width in the call's units: a move into a gap narrower than this (the free width across it at body height: a gate, a keep's door, the slot between tower pillars) is not walked. Default 0: not enforced, but every route reports its narrowest gap and the summary names routes through gaps under 1 map unit." },
+        bodyHeight: { type: "number", minimum: 0.5, description: "The worm's height for the gap widths: walls are solid between its ground + maxStep and this over it (default headroom)." },
+        route: { type: "boolean", description: "Also answer each start's whole route column by column (`route`, at most 2000 points; for game_walk's path)." },
         water: { type: "boolean", description: "Treat ground at or under the project's water level as impassable (default true; the level's own water height is not known)." },
         render: { type: "boolean", description: "Also answer a top-down PNG (render_topdown's) with each start's route drawn in its colour: the walk, the route with the utility it needs (dashed), where that is used and where the walk is blocked (default false)." },
         palette: paletteSchema,
@@ -1153,7 +1178,7 @@ export const tools: Tool[] = [
       type: "object", additionalProperties: false,
       properties: {
         ...regionProps,
-        schedule: floodSchema.properties.schedule, levels: floodSchema.properties.levels, start: floodSchema.properties.start, every: floodSchema.properties.every,
+        schedule: floodSchema.properties.schedule, levels: floodSchema.properties.levels, rounds: floodSchema.properties.rounds, start: floodSchema.properties.start, every: floodSchema.properties.every,
         firstTurn: floodSchema.properties.firstTurn, maxTurns: floodSchema.properties.maxTurns, teams: floodSchema.properties.teams, wormsPerTeam: floodSchema.properties.wormsPerTeam,
         margin: floodSchema.properties.margin, minMoves: floodSchema.properties.minMoves, turnOrder: floodSchema.properties.turnOrder,
         minOwnTurns: floodSchema.properties.minOwnTurns, minDryMargin: floodSchema.properties.minDryMargin, capMargin: floodSchema.properties.capMargin,
@@ -1167,6 +1192,9 @@ export const tools: Tool[] = [
         maxStep: { type: "number", minimum: 0 }, maxSlope: { type: "number", minimum: 0, maximum: 89 }, maxDrop: { type: "number", minimum: 0 }, maxGap: { type: "number", minimum: 0 },
         slopeOver: { type: "string", enum: ["tread", "riser", "segment", "skin"] }, walkSpeed: { type: "number", minimum: 0.01 }, turnTime: { type: "number", minimum: 1, maximum: 600 },
         render: { type: "boolean" }, palette: paletteSchema,
+        bodyWidth: { type: "number", minimum: 0, description: "The worm's width in the call's units: a move into a gap narrower than this (the free width across it at body height: a gate, a keep's door, the slot between tower pillars) is not walked. Default 0: not enforced, but every route reports its narrowest gap and the summary names routes through gaps under 1 map unit." },
+        bodyHeight: { type: "number", minimum: 0.5, description: "The worm's height for the gap widths: walls are solid between its ground + maxStep and this over it (default headroom)." },
+        route: { type: "boolean", description: "Also answer each start's whole route column by column (`route`, at most 2000 points; for game_walk's path)." },
         via: { type: "object", additionalProperties: false, description: "A route constraint, to prove the roads are the climb: the ground on the route is where its top voxel's material is one of `materials` and/or `mask` is above 0 (the heightfield expression language of x, z, r, theta in the call's units, h the ground's height and material, its index). mode only (default): walk on it alone (reachable: there is a way up along the roads); avoid: never on it (not reachable: the roads are the only way). Ground within `near` (default 3 map units) of a start or the target is always walkable.",
           properties: { materials: { type: "array", items: { type: "integer", minimum: 0, maximum: 63 }, maxItems: 64 }, mask: { type: "string" }, mode: { type: "string", enum: ["only", "avoid"] }, near: { type: "number", minimum: 0 } } },
         materialSlopes: { type: "array", maxItems: 32, description: "The steepest climb onto ground of these materials (the top voxel's), degrees: any rise onto it steeper is refused, small steps too, so ash or scree flanks are not walked up while the paved road is. [{materials: [24, 36], maxSlope: 20}].",
@@ -1174,9 +1202,9 @@ export const tools: Tool[] = [
       },
     },
     handler(s, a: ReachArgs & FloodArgs) {
-      const { schedule, levels, start, every, firstTurn, maxTurns, teams, wormsPerTeam, margin, minMoves, turnOrder, minOwnTurns, minDryMargin, capMargin, ...rest } = a;
-      if (!schedule && !levels) throw new ToolError("give schedule (wum.sim.waterSchedule's options, or \"script\") or levels");
-      return checkReachability(s, { ...rest, flood: { schedule, levels, start, every, firstTurn, maxTurns, teams, wormsPerTeam, margin, minMoves, turnOrder, minOwnTurns, minDryMargin, capMargin } });
+      const { schedule, levels, rounds, start, every, firstTurn, maxTurns, teams, wormsPerTeam, margin, minMoves, turnOrder, minOwnTurns, minDryMargin, capMargin, ...rest } = a;
+      if (!schedule && !levels && !rounds) throw new ToolError("give schedule (wum.sim.waterSchedule's options, or \"script\"), levels or rounds");
+      return checkReachability(s, { ...rest, flood: { schedule, levels, rounds, start, every, firstTurn, maxTurns, teams, wormsPerTeam, margin, minMoves, turnOrder, minOwnTurns, minDryMargin, capMargin } });
     },
   },
   {
@@ -1197,6 +1225,46 @@ export const tools: Tool[] = [
       const cols = Math.ceil((r.x1 - r.x0) / step) * Math.ceil((r.z1 - r.z0) / step);
       if (cols > 1_000_000) throw new ToolError(`${cols} columns is too many (at most 1000000): use a larger step or a smaller region`);
       return compact({ region: regionInfo(r, a.units), step: r2(outUnit(step, a.units)), ...isletSummary(gs, r, step, waterMap(s.store), a.units, a.minVolume ?? 50, a.limit ?? 20) });
+    },
+  },
+  {
+    name: "check_holes",
+    description: "See-through holes in the ground of a region: a ray straight down every `step` (default 0.5 map units) over the region (x0, z0, x1, z1, or `around` {x, z, radius}: a circle such as the crater floor under the mine factory); a column whose ray hits no solid voxel over `above` (default the project's water level, else 0) is a hole, where the camera sees through the island (a plug cut out of a draped skin, a gap between a skin and an undraped block, a crater floor carved through). Draped skins are read at their sheared height and rotated frames sampled, as the other inspect tools read them. Answers the hole columns and their share, the holes grouped (largest first: cells, area, centre, box, and `through`: low ground under `above`, or the void with no voxel under it) and the seams: side-by-side columns whose top stretches do not overlap in height (ground, but a crack seen from the side: a thin skin stepping more than its thickness), with `ok` true when there is neither. Read-only.",
+    inputSchema: {
+      type: "object", additionalProperties: false,
+      properties: {
+        ...regionProps,
+        around: { type: "object", additionalProperties: false, required: ["x", "z", "radius"], properties: { x: { type: "number" }, z: { type: "number" }, radius: { type: "number", minimum: 0.1 } },
+          description: "A circle instead of (or inside) the region, in the call's units." },
+        step: { type: "number", minimum: 0.1, maximum: 8, description: "Ray spacing in the call's units (default 0.5 map units)." },
+        above: { type: "number", description: "A ray must hit ground over this height (the call's units; default the project's water level, else 0)." },
+        seams: { type: "boolean", description: "Also look for seams (default true)." },
+        limit: { type: "integer", minimum: 1, maximum: 200, description: "Hole groups to list (default 20)." },
+      },
+    },
+    handler(s, a: RegionArgs & { around?: { x: number; z: number; radius: number }; step?: number; above?: number; seams?: boolean; limit?: number }) {
+      const gs = grids(s.store), u = a.units;
+      const c = a.around && { x: inMap(a.around.x, u), z: inMap(a.around.z, u), r: inMap(a.around.radius, u) };
+      const r = c && a.x0 === undefined && a.x1 === undefined && a.z0 === undefined && a.z1 === undefined
+        ? { x0: c.x - c.r, z0: c.z - c.r, x1: c.x + c.r, z1: c.z + c.r } : region(gs, a);
+      const step = a.step === undefined ? 0.5 : inMap(a.step, u);
+      const cols = Math.ceil((r.x1 - r.x0) / step) * Math.ceil((r.z1 - r.z0) / step);
+      if (cols > 1_000_000) throw new ToolError(`${cols} columns is too many (at most 1000000): use a larger step or a smaller region`);
+      const water = waterMap(s.store), above = a.above !== undefined ? inMap(a.above, u) : water ?? 0;
+      const rep = findHoles(gs, r, step, above, c ? (x, z) => Math.hypot(x - c.x, z - c.z) <= c.r : undefined);
+      const o = (v: number) => r2(outUnit(v, u)), xz = (p: [number, number]) => [o(p[0]), o(p[1])];
+      const seams = a.seams !== false;
+      return compact({
+        ok: rep.holes === 0 && (!seams || rep.seamCount === 0),
+        summary: `${rep.holes} of ${rep.columns} rays (${Math.round(rep.fraction * 1000) / 10} %) hit no ground over ${o(above)}` +
+          (rep.clusters.length ? `, in ${rep.clusters.length} hole${rep.clusters.length > 1 ? "s" : ""} (largest ${o(rep.clusters[0].area * (u === "world" ? WORLD_PER_MAP : 1))} ${u === "world" ? "world" : "map"} units square at ${xz(rep.clusters[0].centre).join(", ")})` : "") +
+          (seams ? `; ${rep.seamCount} seam${rep.seamCount === 1 ? "" : "s"}` : ""),
+        region: regionInfo(r, u), ...(c ? { around: a.around } : {}), step: o(step), above: o(above),
+        aboveNote: a.above !== undefined ? "as given" : water !== null ? "the project's water level" : "0 (the project keeps the level's own water height)",
+        holes: { columns: rep.holes, of: rep.columns, groups: rep.clusters.slice(0, a.limit ?? 20).map((h) => ({ cells: h.cells, area: r2(h.area * (u === "world" ? WORLD_PER_MAP * WORLD_PER_MAP : 1)),
+          centre: xz(h.centre), min: xz(h.min), max: xz(h.max), through: h.through })), groupCount: rep.clusters.length },
+        ...(seams ? { seams: { count: rep.seamCount, examples: rep.seams.slice(0, 20).map((m) => ({ at: xz(m.at), gap: o(m.gap), tops: m.tops.map(o) })) } } : {}),
+      });
     },
   },
 ];

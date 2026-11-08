@@ -33,13 +33,14 @@ struct FrameAdd {
     std::vector<double> corners;                      // optional corner offsets in voxels (Frame::corners); written when set
 };
 struct Op {
-    enum class Kind : uint8_t { Set, Add, Remove, Voxels, AddFrame, Hmp } kind = Kind::Set;
+    enum class Kind : uint8_t { Set, Add, Remove, Voxels, AddFrame, Hmp, TrimFrame } kind = Kind::Set;
     int64_t src = -1;                                 // set, remove
     int64_t frame = -1;                               // add, voxels (a new frame's tmp id in /2)
     DetailFields fields;                              // set: the changed fields; add: the new detail
     std::vector<VoxelRun> runs;                       // voxels: [start, count, value] over the frame's index order
     FrameAdd newFrame;                                // addFrame
     std::vector<HmpRun> heights, blend;               // hmp: heights 0..1, blend 0..255
+    FrameTrim trim;                                   // trimFrame (/2): a base frame's kept box (Scene::trims)
 };
 struct DatabankPatch {
     std::optional<std::string> theme, timeOfDay, materialFile, heightmapBase, heightmapSecond;

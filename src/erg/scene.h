@@ -66,6 +66,16 @@ struct Frame {
                                                       // (no rotation, uniform scale 0.5-4)
     std::vector<double> corners;                      // a new frame's corner offsets, empty = zeros (kMaxCornerOffset)
 };
+// A base frame's voxel box cut down to the cells [min, min + size) (erg-scene/2 `trims`, erg-patch/2 `trimFrame`). The
+// scene keeps the whole grid, so voxel edits still address it; only the built level holds the kept box, which is what
+// the game's cell count sees. Every cell outside the box must be empty. A box with solid cells moves the frame by the
+// box's offset from the grid's centre (its details and child frames are moved back); an all-empty box keeps the frame
+// where it is: a frame of the base removed from the cell count at the cost of one cell.
+struct FrameTrim {
+    int64_t frame = 0;
+    std::array<int, 3> min{0, 0, 0}, size{1, 1, 1};
+};
+
 struct Detail {
     int64_t id = 0;
     std::optional<int64_t> src;                       // object index in the base .xan; empty for an added detail
@@ -159,8 +169,10 @@ struct Scene {
     std::vector<ObjectSpec> objects;
     ScriptMeta script;
     int64_t hmpRef = -1;                              // the painted surround's blob (hmp paint)
+    std::vector<FrameTrim> trims;                     // base frames cut down in the build (erg-scene/2)
 
     const Frame* FindFrame(int64_t id) const;
+    const FrameTrim* FindTrim(int64_t frameId) const;
     const Detail* FindDetailBySrc(int64_t src) const;
     bool UsesV2() const;                              // any erg-scene/2 feature: written as /2
 };
@@ -168,8 +180,11 @@ struct Scene {
 // True when the frame is named "Scene" or has such an ancestor (new frames go only there).
 bool UnderSceneFrame(const Scene& s, int64_t frameId);
 
-// X*Y*Z summed over every frame with voxels (base and new): what the engine's 16-bit cell count sees.
+// X*Y*Z summed over every frame with voxels (base and new; a trimmed frame's kept box): what the engine's 16-bit cell
+// count sees.
 uint64_t VoxelCells(const Scene& s);
+// A trim's shape against its frame: a base frame with voxels, the box inside its grid. One sentence on failure.
+bool ValidTrim(const Scene& s, const FrameTrim& t, std::string* err);
 // The engine limits a scene can break and still load here: new frames over 31 a side (a warning: such blocks drew in
 // the game) and more than 65535 cells (a crash: CheckEngineLimits refuses it). One sentence each.
 std::vector<std::string> EngineWarnings(const Scene& s);

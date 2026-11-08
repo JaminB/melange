@@ -2,6 +2,8 @@
 
 #include <cmath>
 #include <cstdio>
+#include <tuple>
+#include <utility>
 
 namespace melange::erg::jsonio {
 namespace {
@@ -139,6 +141,32 @@ Json CornersJson(const std::vector<double>& corners) {
     Json a = Json::Arr();
     for (double c : corners) a.arr.push_back(Num(c));
     return a;
+}
+
+bool ParseTrim(const Json& o, const std::string& path, FrameTrim* out, std::string* err) {
+    FrameTrim t;
+    if (!GetInt(o, "frame", path, 1, 1 << 24, &t.frame, err)) return false;
+    for (auto [key, dst, lo] : {std::tuple{"min", &t.min, 0}, std::tuple{"size", &t.size, 1}}) {
+        const Json* v = o.find(key);
+        if (!v || v->kind != Json::Kind::Array || v->arr.size() != 3) return Fail(err, path + "." + key, "must be 3 integers");
+        for (int k = 0; k < 3; ++k) {
+            bool ok = false;
+            const int64_t n = v->arr[k].kind == Json::Kind::Number ? v->arr[k].asInt64(&ok) : -1;
+            if (!ok || n < lo || n > 255) return Fail(err, path + "." + key, "each must be an integer in " + std::to_string(lo) + "..255");
+            (*dst)[k] = static_cast<int>(n);
+        }
+    }
+    *out = t;
+    return true;
+}
+
+void TrimFields(const FrameTrim& t, Json* o) {
+    o->set("frame", Int(t.frame));
+    for (auto [key, v] : {std::pair{"min", &t.min}, std::pair{"size", &t.size}}) {
+        Json a = Json::Arr();
+        for (int n : *v) a.arr.push_back(Int(n));
+        o->set(key, std::move(a));
+    }
 }
 
 bool GetVec(const Json& o, const char* key, const std::string& path, Vec3* out, std::string* err, bool required,

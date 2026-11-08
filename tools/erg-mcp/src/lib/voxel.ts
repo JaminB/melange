@@ -9,8 +9,8 @@
 // Words (src/erg/voxels.h): bits 0-1 solid (3) or empty (0), 2-7 material, 8-9 second-material flags, 10-15 second
 // material, 16-23 corner mask, 24-31 clear. isSolid/material/filled/carved/painted/withSecond come from terrain/voxel.ts.
 import {
-  LIMITS, SculptStroke, WORLD_PER_XAN, apply, blockProblem, cellBudget, gridFrames, index, invert, validEdit, validRunValue, voxelRuns, type Box, type EditorStore,
-  type Frame, type Mat3x4, type Patch, type Vec3, type VoxelRun,
+  LIMITS, SculptStroke, WORLD_PER_XAN, apply, blockProblem, cellBudget, gridFrames, index, invert, validEdit, validRunValue, voxelRuns, type Box, type Command,
+  type EditorStore, type Frame, type Mat3x4, type Patch, type Vec3, type VoxelRun,
 } from "../core";
 import { ToolError } from "../registry";
 
@@ -163,7 +163,28 @@ export function limitProblems(store: EditorStore): string[] {
   if (u.ops.used > u.ops.max) out.push(`${u.ops.used} ops (at most ${u.ops.max})`);
   if (u.patchBytes.used > u.patchBytes.max) out.push(`the patch is ${u.patchBytes.used} bytes (at most ${u.patchBytes.max})`);
   if (u.runsPerFrame.worst > u.runsPerFrame.max) out.push(`frame ${u.runsPerFrame.frame} needs ${u.runsPerFrame.worst} runs (at most ${u.runsPerFrame.max})`);
-  return [...out, ...store.problems()];
+  return [...out, ...trimProblems(store), ...store.problems()];
+}
+
+/** Trimmed base frames (Scene.trims) whose kept box no longer holds every solid voxel, or that hold a detail tied to a
+ * voxel: the server refuses to save or build those. */
+export function trimProblems(store: EditorStore): string[] {
+  const out: string[] = [];
+  const byId = new Map(grids(store).map((g) => [g.id, g]));
+  for (const t of store.scene.trims ?? []) {
+    const g = byId.get(t.frame);
+    if (!g) continue;
+    let outside = 0;
+    for (let i = 0; i < g.words.length; i++) {
+      if ((g.words[i] & 3) !== 3) continue;
+      const y = i % g.size[1], r = (i - y) / g.size[1], x = r % g.size[0], z = (r - x) / g.size[0];
+      if (x < t.min[0] || x >= t.min[0] + t.size[0] || y < t.min[1] || y >= t.min[1] + t.size[1] || z < t.min[2] || z >= t.min[2] + t.size[2]) outside++;
+    }
+    if (outside) out.push(`frame ${t.frame} (${g.frame.name}) is trimmed but has ${outside} solid voxels outside its kept box: trim_base_frames it again, or {clear: true}`);
+    const tied = store.scene.details.find((d) => d.frame === t.frame && d.voxelPos.some((v) => v !== 0));
+    if (tied) out.push(`frame ${t.frame} (${g.frame.name}) is trimmed but holds detail ${tied.id} '${tied.name}', tied to a voxel (voxelPos)`);
+  }
+  return out;
 }
 
 // ------------------------------------------------------------------ editing
@@ -233,12 +254,18 @@ export class VoxelEdit {
   commit(label = "Edit voxels"): { changed: number; frames: number[] } {
     const changed = this.size, frames = this.frames;
     if (!changed) return { changed, frames: [] };
+    this.store.exec(this.command(label));
+    return { changed, frames };
+  }
+
+  /** The batch as a command not yet run (to go in a Group with others as one undo step); a ToolError when check()
+   * refuses. The batch is empty afterwards. */
+  command(label = "Edit voxels"): Command {
     const why = this.check();
     if (why) throw new ToolError(why);
     const live = new Map([...this.changes].filter(([, c]) => c.size));
-    this.store.exec(new SculptStroke(label, --strokes, this.store.voxels, live, () => {}));
     this.changes = new Map();
-    return { changed, frames };
+    return new SculptStroke(label, --strokes, this.store.voxels, live, () => {});
   }
 }
 

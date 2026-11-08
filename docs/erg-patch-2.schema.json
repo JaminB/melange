@@ -199,6 +199,18 @@
                 }
               }
             }
+          },
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["op", "frame", "min", "size"],
+            "description": "Cut a base frame's voxel box down to [min, min + size) in the built level (the scene's trims; at most one per frame). Every cell outside the box must be empty after the voxels ops.",
+            "properties": {
+              "op": { "const": "trimFrame" },
+              "frame": { "type": "integer", "minimum": 1, "maximum": 16777216 },
+              "min": { "type": "array", "minItems": 3, "maxItems": 3, "items": { "type": "integer", "minimum": 0, "maximum": 255 } },
+              "size": { "type": "array", "minItems": 3, "maxItems": 3, "items": { "type": "integer", "minimum": 1, "maximum": 255 } }
+            }
           }
         ]
       }

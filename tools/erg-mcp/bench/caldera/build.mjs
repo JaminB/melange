@@ -273,10 +273,11 @@ try {
     }
     say("reach", label, `${tally[mode]} of 8 spawns reach their own road's rim end`);
   }
-  // the script's two phases (script.lua), as levels in the call's units (map), since the "script" schedule reads only its top-level call
-  // (two teams alternate, so round r starts at game turn 2r - 1)
-  const levels = sch.levels.map((w, i) => ({ turn: 2 * i + 1, level: w / 20 }));
-  const fl = await call("check_flood", { levels, start: WATER_START / 20, target: { x: rim[0], z: rim[1], radius: 5 }, maxSlope: 38, minOwnTurns: 2, minDryMargin: 1.5 }, { soft: true });
+  // the flood as script.lua makes it: Melange.exe's server runs the script turn by turn, its turnStarted handler getting the
+  // round as the game counts it; a server that cannot run it gets the same table by round (round r from game turn 2r - 1)
+  const floodArgs = { start: WATER_START / 20, target: { x: rim[0], z: rim[1], radius: 5 }, maxSlope: 38, minOwnTurns: 2, minDryMargin: 1.5 };
+  let fl = await call("check_flood", { ...floodArgs, schedule: "script" }, { soft: true });
+  if (fl.err) fl = await call("check_flood", { ...floodArgs, rounds: sch.levels.map((w, i) => ({ round: i + 1, level: w / 20 })) }, { soft: true });
   fs.writeFileSync(path.join(OUT, "flood.json"), fl.text);
   say("flood", brief(fl, 900));
   const is = await call("check_islets", {}, { soft: true });

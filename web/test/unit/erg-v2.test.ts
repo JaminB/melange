@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import {
-  applyPatch, patchUsesV2, sceneUsesV2, toPatch, upgrade, validKnot, validatePatch, validatePatchObjects, validateScene,
+  CommandStack, SetTrims, applyPatch, patchUsesV2, sceneUsesV2, toPatch, upgrade, validKnot, validatePatch, validatePatchObjects, validateScene, voxelCells,
   type Patch, type Scene,
 } from "../../src/sdk/erg";
 
@@ -122,4 +122,36 @@ test("mine factory settings are optional, range-checked and carried by applyPatc
   }
   const edited = applyPatch(upgrade(baseV2()), withFactory({ activation: 12, schemeMines: false }));
   assert.deepEqual(edited.objects!.at(-1), { knot: "minefactory", type: "minefactory", factory: { activation: 12, schemeMines: false } });
+});
+
+test("trims: a base frame's kept box counts in the cells, rides in the patch and the scene, and undoes", () => {
+  const base = upgrade(baseV2());
+  const edited = structuredClone(base);
+  const before = voxelCells(base);
+  const stack = new CommandStack(edited);
+  stack.exec(new SetTrims(new Map([[4, { frame: 4, min: [0, 0, 0], size: [1, 1, 1] }], [5, { frame: 5, min: [0, 1, 0], size: [2, 3, 4] }]])));
+  assert.equal(voxelCells(edited), before - (7 * 2 * 11 - 1) - (2 * 7 * 4 - 2 * 3 * 4));
+  assert.ok(sceneUsesV2(edited));
+  assert.ok(validateScene(edited).ok, validateScene(edited).errors.join("; "));
+  edited.stem = "mymaps_trims";
+  const p = toPatch(base, edited);
+  assert.equal(p.format, "erg-patch/2");
+  assert.deepEqual(p.ops.filter((o) => o.op === "trimFrame"), [
+    { op: "trimFrame", frame: 4, min: [0, 0, 0], size: [1, 1, 1] }, { op: "trimFrame", frame: 5, min: [0, 1, 0], size: [2, 3, 4] }]);
+  assert.ok(validatePatch(p).ok, validatePatch(p).errors.join("; "));
+  assert.deepEqual(applyPatch(base, p).trims, edited.trims);
+  stack.undo();
+  assert.equal(edited.trims, undefined);
+  assert.equal(voxelCells(edited), before);
+  assert.equal(toPatch(base, edited).format, "erg-patch/1");
+
+  const bad = (t: unknown) => validateScene({ ...structuredClone(edited), trims: [t] } as Scene).errors.join("; ");
+  assert.ok(/inside the frame/.test(bad({ frame: 4, min: [1, 0, 0], size: [7, 1, 1] })));
+  assert.ok(/no voxels/.test(bad({ frame: 1000, min: [0, 0, 0], size: [1, 1, 1] })));
+  assert.ok(/min/.test(bad({ frame: 4, min: [0, 0], size: [1, 1, 1] })));
+  const v1 = { ...p, format: "erg-patch/1" } as Patch;
+  assert.ok(/unknown op 'trimFrame'/.test(validatePatch(v1).errors.join("; ")));
+  const twice = structuredClone(p);
+  twice.ops.push({ op: "trimFrame", frame: 4, min: [0, 0, 0], size: [1, 1, 1] });
+  assert.ok(/trimmed by an earlier op/.test(validatePatch(twice).errors.join("; ")));
 });

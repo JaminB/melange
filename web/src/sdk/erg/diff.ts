@@ -104,6 +104,7 @@ export function toPatch(base: Scene, edited: Scene, voxels?: VoxelData, surround
       if (runs.length) ops.push({ op: "voxels", frame: f.id, runs });
     }
   }
+  for (const t of edited.trims ?? []) ops.push({ op: "trimFrame", frame: t.frame, min: copyVec(t.min), size: copyVec(t.size) });
   if (edited.hmp.mode === "paint" && surround) {
     const heights = cellRuns(surround.base?.heights ?? null, surround.edited.heights);
     const blend = cellRuns(surround.base?.blend ?? null, surround.edited.blend);
@@ -195,6 +196,12 @@ export function applyPatch(scene: Scene, p: Patch, voxels?: Map<number, Uint32Ar
         const sc = op.scale ?? 1;
         s.frames.push({ id: op.tmp, new: true, parent: op.parent, name: op.name, pos: copyVec(op.pos), rot: [0, 0, 0], scale: [sc, sc, sc],
           size: copyVec(op.size), voxels: ref, heightMap: null, folder: false, ...(op.corners ? { corners: op.corners.slice() } : {}) });
+        break;
+      }
+      case "trimFrame": {
+        const f = s.frames.find((x) => x.id === op.frame);
+        if (!f || f.new) throw new Error(`ops[${i}].frame: ${op.frame} is not a frame of the base`);
+        (s.trims ??= []).push({ frame: op.frame, min: copyVec(op.min), size: copyVec(op.size) });
         break;
       }
       case "hmp": {

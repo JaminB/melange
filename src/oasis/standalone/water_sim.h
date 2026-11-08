@@ -13,7 +13,9 @@
 namespace melange::oasis::standalone {
 struct WaterSim {
     int turns = 40, ticksPerTurn = 2500;
-    int turnsPerRound = 8;   // teams x worms, for wum.sim.round
+    // turns a round for wum.sim.round and sim.turnStarted's round: the teams (the game's round goes up when a team
+    // starts a turn it already had in the round, sim_events.cpp NoteTurnStart), so 2 for the Quick Game
+    int turnsPerRound = 2;
     float start = 0;         // world units: the level's water before the script
 };
 // JSON: `levels` [{turn, world, end}] (world: the water once the turn's start has run, its schedule step, handlers and

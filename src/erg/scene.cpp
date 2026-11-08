@@ -452,6 +452,12 @@ const Frame* Scene::FindFrame(int64_t id) const {
     return nullptr;
 }
 
+const FrameTrim* Scene::FindTrim(int64_t frameId) const {
+    for (auto& t : trims)
+        if (t.frame == frameId) return &t;
+    return nullptr;
+}
+
 const Detail* Scene::FindDetailBySrc(int64_t src) const {
     for (auto& d : details)
         if (d.src && *d.src == src) return &d;
@@ -459,7 +465,7 @@ const Detail* Scene::FindDetailBySrc(int64_t src) const {
 }
 
 bool Scene::UsesV2() const {
-    if (survivor || !objects.empty() || script.present || hmp == HmpMode::Paint || hmpRef >= 0) return true;
+    if (survivor || !objects.empty() || script.present || hmp == HmpMode::Paint || hmpRef >= 0 || !trims.empty()) return true;
     for (auto& f : frames)
         if (f.isNew) return true;
     for (auto& b : blobs)
@@ -480,9 +486,24 @@ bool UnderSceneFrame(const Scene& s, int64_t frameId) {
 
 uint64_t VoxelCells(const Scene& s) {
     uint64_t n = 0;
-    for (const auto& f : s.frames)
-        if (f.voxels >= 0) n += static_cast<uint64_t>(f.size[0]) * f.size[1] * f.size[2];
+    for (const auto& f : s.frames) {
+        if (f.voxels < 0) continue;
+        const auto& size = s.trims.empty() || !s.FindTrim(f.id) ? f.size : s.FindTrim(f.id)->size;
+        n += static_cast<uint64_t>(size[0]) * size[1] * size[2];
+    }
     return n;
+}
+
+bool ValidTrim(const Scene& s, const FrameTrim& t, std::string* err) {
+    const std::string p = "trim of frame " + std::to_string(t.frame);
+    const Frame* f = s.FindFrame(t.frame);
+    if (!f || f->isNew) return Fail(err, p + ": not a frame of the base");
+    if (f->voxels < 0) return Fail(err, p + ": the frame has no voxels");
+    for (int k = 0; k < 3; ++k)
+        if (t.min[k] < 0 || t.size[k] < 1 || t.min[k] + t.size[k] > f->size[k])
+            return Fail(err, p + ": the box must be at least 1 cell a side and inside the frame's " + std::to_string(f->size[0]) + "x" +
+                                 std::to_string(f->size[1]) + "x" + std::to_string(f->size[2]) + " grid");
+    return true;
 }
 
 std::vector<std::string> EngineWarnings(const Scene& s) {
@@ -519,7 +540,7 @@ bool ParseScene(std::string_view json, Scene* out, std::string* err) {
     // "previews" (level.load only, resource -> preview key; not part of the saved document) rides along here and is
     // ignored: the reply is the scene with one extra sibling key, not a scene field.
     if (v2 ? !OnlyKeys(root, {"format", "stem", "title", "base", "registry", "kind", "databank", "water", "spawns", "hmp",
-                              "units", "frames", "details", "blobs", "objects", "script", "previews"},
+                              "units", "frames", "details", "blobs", "objects", "script", "trims", "previews"},
                        "scene", err)
            : !OnlyKeys(root, {"format", "stem", "title", "base", "registry", "databank", "water", "spawns", "hmp", "units",
                               "frames", "details", "blobs", "previews"},
@@ -585,6 +606,16 @@ bool ParseScene(std::string_view json, Scene* out, std::string* err) {
         if (const Json* k = root.find("kind"); k && !ParseKind(k, &s.survivor, err)) return false;
         if (const Json* o = root.find("objects"); o && !ParseObjects(o, &s.objects, err)) return false;
         if (const Json* sc = root.find("script"); sc && !ParseScript(sc, &s.script, err)) return false;
+        if (const Json* tr = root.find("trims")) {
+            if (tr->kind != Json::Kind::Array || tr->arr.size() > kMaxFrames) return Fail(err, "trims: must be an array of at most 4096 trims");
+            for (size_t i = 0; i < tr->arr.size(); ++i) {
+                const std::string p = "trims[" + std::to_string(i) + "]";
+                FrameTrim t;
+                if (!Obj(&tr->arr[i], p, err) || !OnlyKeys(tr->arr[i], {"frame", "min", "size"}, p, err) || !ParseTrim(tr->arr[i], p, &t, err))
+                    return false;
+                s.trims.push_back(t);
+            }
+        }
     }
     const Json* units = root.find("units");
     if (!Obj(units, "units", err) || !OnlyKeys(*units, {"worldPerXan"}, "units", err) ||
@@ -754,6 +785,11 @@ bool ValidateScene(const Scene& s, std::string* err) {
             cur = frames[cur]->parent;
         }
     }
+    std::unordered_set<int64_t> trimmed;
+    for (auto& t : s.trims) {
+        if (!ValidTrim(s, t, err)) return false;
+        if (!trimmed.insert(t.frame).second) return Fail(err, "trims: frame " + std::to_string(t.frame) + " is trimmed twice");
+    }
     for (auto& f : s.frames)
         if (f.isNew && (!frames.count(f.parent) || frames[f.parent]->isNew || !UnderSceneFrame(s, f.parent)))
             return Fail(err, "frame " + std::to_string(f.id) + ": a new frame's parent must be the Scene frame or under it");
@@ -879,6 +915,15 @@ std::string WriteScene(const Scene& s) {
     if (v2) {
         root.set("objects", ObjectsJson(s.objects));
         root.set("script", ScriptJson(s.script));
+        if (!s.trims.empty()) {
+            Json trims = Json::Arr();
+            for (auto& t : s.trims) {
+                Json o = Json::Obj();
+                TrimFields(t, &o);
+                trims.arr.push_back(std::move(o));
+            }
+            root.set("trims", std::move(trims));
+        }
     }
     return Compact(root);
 }

@@ -300,6 +300,25 @@ void TestWaterSim() {
     Expect(SimulateWater(every, o, &json, &err), "water: a raise in the main chunk is reported, not fatal", err);
     Expect(json.find("{\"turn\":2,\"world\":20,\"end\":40}") != std::string::npos && json.find("boom") != std::string::npos,
            "water: every-timers step the water within turns", json);
+    // a level by round, set from a turnStarted handler (Caldera's script): the round goes up once every team had a turn,
+    // so with two teams turns 1-2 are round 1, 3-4 round 2, 5-6 round 3
+    const char* rounds =
+        "local LEVEL = { [1] = 20, [2] = 80, [3] = 140 }\n"
+        "wum.events.on(\"sim.turnStarted\", function(name, turn, round)\n"
+        "  if wum.sim.round() ~= round then error('round') end\n"
+        "  wum.sim.setData(\"Water.Level\", LEVEL[round] or 200)\n"
+        "end)\n";
+    WaterSim r;
+    r.turns = 6;
+    r.ticksPerTurn = 100;
+    Expect(SimulateWater(rounds, r, &json, &err) && json.find("{\"turn\":2,\"world\":20") != std::string::npos &&
+               json.find("{\"turn\":3,\"world\":80") != std::string::npos && json.find("{\"turn\":6,\"world\":140") != std::string::npos &&
+               json.find("\"errorCount\":0") != std::string::npos,
+           "water: rounds are the teams' (two by default)", json);
+    r.turnsPerRound = 3;
+    Expect(SimulateWater(rounds, r, &json, &err) && json.find("{\"turn\":3,\"world\":20") != std::string::npos &&
+               json.find("{\"turn\":4,\"world\":80") != std::string::npos,
+           "water: turnsPerRound sets the teams", json);
     Expect(!SimulateWater("x = = 1", o, &json, &err) && !err.empty(), "water: a syntax error fails", err);
     Expect(SimulateWater("while true do end", o, &json, &err) && json.find("too long") != std::string::npos, "water: an endless loop is cut off", json);
 }

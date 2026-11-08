@@ -32,6 +32,10 @@ bool IsHex64(std::string_view s);
 // A new frame's optional "corners": (size[0]+1)*(size[2]+1) numbers within kMaxCornerOffset; absent leaves *out empty.
 bool GetCorners(const Json& o, const std::string& path, const std::array<int, 3>& size, std::vector<double>* out, std::string* err);
 Json CornersJson(const std::vector<double>& corners);
+// A trim's fields (frame, min, size) in a scene's `trims` entry or a patch's trimFrame op; shape only (ValidTrim checks
+// it against the frame).
+bool ParseTrim(const Json& o, const std::string& path, FrameTrim* out, std::string* err);
+void TrimFields(const FrameTrim& t, Json* o);
 
 // erg-scene/2 and erg-patch/2 share these blocks.
 bool GetBool(const Json& o, const char* key, const std::string& path, bool* out, std::string* err, bool required = true);

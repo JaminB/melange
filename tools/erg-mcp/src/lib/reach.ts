@@ -10,6 +10,11 @@
 // is 45 degrees or more); a drop of at most maxDrop; optionally a jump over a gap of up to maxGap to ground no higher
 // than maxStep above. Ground at or under the water drowns a worm; with a flood (FloodRules) the water rises by turn and
 // a node is used only while it is dry when the worm gets there.
+//
+// The worm's body: every route reports its narrowest gap (spanAcross: the free width at body height between the walls
+// either side, the narrowest of four directions at each node), and with bodyWidth > 0 a move into a gap narrower than
+// that is not walked, so a gate, a keep's door or the slot between two tower pillars a worm does not fit through is a
+// barrier, not a road.
 import type { Vec3 } from "../core";
 import { columnSpans, spansAt } from "./inspect-field";
 import type { Grid } from "./voxel";
@@ -27,6 +32,8 @@ export interface ReachOptions {
   flood?: FloodRules;     // rising water: a node is walked only while it is dry when the worm reaches it
   allow?: Uint8Array;     // per node: 0 = never walked onto (a route constraint: only the roads, or never the roads)
   slopeCap?: Float32Array;   // per node: the steepest climb onto it, degrees (a material's own maxSlope; >= 90 none)
+  bodyWidth?: number;     // > 0: a move into a gap narrower than this (spanAcross) is not walked
+  bodyHeight?: number;    // the worm's height for spanAcross's walls (default headroom)
 }
 
 /** A flood for the search: the water (map y) in each game turn, and when the worm walks: `perTurn` map units along the
@@ -61,6 +68,10 @@ export interface Surfaces {
   material: Int16Array;                  // per node: the material of its top voxel
   draped: Uint8Array;                    // per node: 1 when its top is a draped block's (corner offsets: a smooth skin)
   nodes: number;
+  // every merged solid stretch of each column, highest first (walls for spanAcross): column c's are
+  // [spanStart[c], spanStart[c + 1])
+  spanStart: Int32Array; spanTop: Float32Array; spanBottom: Float32Array;
+  across?: Float32Array;                 // spanAcross's cache, per node and axis (NaN: not yet measured)
 }
 
 /** Merged solid stretches of every column of the region, and the tops a worm fits on. */
@@ -78,8 +89,10 @@ export function surfaces(gs: Grid[], r: Region, step: number, headroom: number):
         for (const s of columnSpans(g, r.x0 + (i + 0.5) * step, r.z0 + (j + 0.5) * step)) cols[j * w + i].push({ top: s.top, bottom: s.bottom, voxel: vy, material: s.material, draped });
   }
   const start = new Int32Array(w * h + 1), ys: number[] = [], vox: number[] = [], cell: number[] = [], mats: number[] = [], drp: number[] = [];
+  const spanStart = new Int32Array(w * h + 1), tops: number[] = [], bottoms: number[] = [];
   for (let c = 0; c < w * h; c++) {
     start[c] = ys.length;
+    spanStart[c] = tops.length;
     const sp = cols[c].sort((a, b) => b.top - a.top);
     // union of overlapping or touching stretches, highest first
     const merged: { top: number; bottom: number; voxel: number; material: number; draped: number }[] = [];
@@ -88,6 +101,7 @@ export function surfaces(gs: Grid[], r: Region, step: number, headroom: number):
       if (m && s.top >= m.bottom - 1e-6) m.bottom = Math.min(m.bottom, s.bottom);
       else merged.push({ ...s });
     }
+    for (const m of merged) { tops.push(m.top); bottoms.push(m.bottom); }
     for (let k = 0; k < merged.length; k++) {
       if (k > 0 && merged[k - 1].bottom - merged[k].top < headroom) continue;
       ys.push(merged[k].top);
@@ -98,8 +112,53 @@ export function surfaces(gs: Grid[], r: Region, step: number, headroom: number):
     }
   }
   start[w * h] = ys.length;
-  return { r, step, w, h, start, cell: Int32Array.from(cell), y: Float32Array.from(ys), voxel: Float32Array.from(vox), material: Int16Array.from(mats), draped: Uint8Array.from(drp), nodes: ys.length };
+  spanStart[w * h] = tops.length;
+  return { r, step, w, h, start, cell: Int32Array.from(cell), y: Float32Array.from(ys), voxel: Float32Array.from(vox), material: Int16Array.from(mats), draped: Uint8Array.from(drp), nodes: ys.length,
+    spanStart, spanTop: Float32Array.from(tops), spanBottom: Float32Array.from(bottoms) };
 }
+
+/** A worm's width, map units, for check_reachability's narrow gaps when bodyWidth is not given and game_walk's planned
+ * routes: an assumption, not read from the game. */
+export const WORM_WIDTH = 1;
+
+/** Wider than this (map units) a gap is open: spanAcross stops looking. */
+export const OPEN_SPAN = 8;
+
+/** The axis of a move's direction: 0 along x, 1 along z, 2 and 3 the diagonals. */
+const axisOf = (dx: number, dz: number) => (!dz ? 0 : !dx ? 1 : dx === dz ? 2 : 3);
+
+/** The free width across a move in direction (dx, dz) at node n, map units: perpendicular to the move, the columns either
+ * side of n's up to the first with a wall at the worm's body height (a solid stretch over n's top + maxStep, which it
+ * cannot step onto, and under its top + bodyHeight), counted with n's own; OPEN_SPAN or more is open ground. Ground
+ * that falls away is no wall (the worm's body reaches out over the edge). */
+export function spanAcross(S: Surfaces, n: number, dx: number, dz: number, maxStep: number, bodyHeight: number): number {
+  const axis = axisOf(dx, dz);
+  if (!S.across) S.across = new Float32Array(S.nodes * 4).fill(NaN);
+  const at = n * 4 + axis, had = S.across[at];
+  if (!Number.isNaN(had)) return had;
+  const px = -dz, pz = dx, len = S.step * Math.hypot(px, pz), kMax = Math.ceil(OPEN_SPAN / len) + 1;
+  const y = S.y[n], ci = S.cell[n] % S.w, cj = Math.floor(S.cell[n] / S.w);
+  const wall = (i: number, j: number) => {
+    if (i < 0 || j < 0 || i >= S.w || j >= S.h) return false;
+    const c = j * S.w + i;
+    for (let k = S.spanStart[c]; k < S.spanStart[c + 1]; k++)
+      if (S.spanTop[k] > y + maxStep + 1e-6 && S.spanBottom[k] < y + bodyHeight - 1e-6) return true;
+    return false;
+  };
+  const free = (sgn: number) => { for (let k = 1; k <= kMax; k++) if (wall(ci + sgn * px * k, cj + sgn * pz * k)) return k; return Infinity; };
+  const k1 = free(1), k2 = free(-1);
+  const v = k1 === Infinity || k2 === Infinity ? OPEN_SPAN : Math.min(OPEN_SPAN, (k1 + k2 - 1) * len);
+  S.across[at] = v;
+  return v;
+}
+
+/** The gap a worm at node n stands in: the narrowest spanAcross of the four directions (along x, along z, the two
+ * diagonals) under the options' body (maxStep, bodyHeight or headroom). A doorway is narrow across, whichever way the
+ * route steps into it (a diagonal step into a slot measured only across the diagonal would see open ground). */
+const spanOf = (S: Surfaces, n: number, _dx: number, _dz: number, o: ReachOptions) => {
+  const h = o.bodyHeight ?? o.headroom;
+  return Math.min(spanAcross(S, n, 1, 0, o.maxStep, h), spanAcross(S, n, 0, 1, o.maxStep, h), spanAcross(S, n, 1, 1, o.maxStep, h), spanAcross(S, n, 1, -1, o.maxStep, h));
+};
 
 /** reached nodes, their walking distance from the start and the node before; blocked: per reached node, the smallest
  * climb up to a neighbouring column that was too high (Infinity where none was). */
@@ -204,7 +263,8 @@ export function search(S: Surfaces, src: number, o: ReachOptions, stopAt?: Uint8
   const dryAt = (n: number, d: number) => (o.water === null || S.y[n] > o.water) && (!fl || S.y[n] > fl.waterAt(turnAt(fl, d))) && (!o.allow || !!o.allow[n]);
   let here = 0;                                     // the walk to the node being expanded
   const dry = (n: number) => dryAt(n, here);
-  const ok = (a: number, b: number, dx: number, dz: number) => climbs(S, a, b, dx, dz, o);
+  const wide = (b: number, dx: number, dz: number) => !o.bodyWidth || spanOf(S, b, Math.sign(dx), Math.sign(dz), o) >= o.bodyWidth - 1e-6;
+  const ok = (a: number, b: number, dx: number, dz: number) => climbs(S, a, b, dx, dz, o) && wide(b, dx, dz);
   // a binary heap on dist
   const heap: number[] = [];
   const push = (n: number) => {
@@ -263,6 +323,19 @@ export function search(S: Surfaces, src: number, o: ReachOptions, stopAt?: Uint8
       // a jump over a gap: along the same direction, past columns with no ground near the take-off height
       if (o.maxGap > 0 && best < 0) {
         for (let k = 2; k * d <= o.maxGap + d + 1e-6; k++) {
+          // a wall in the gap (over the take-off by more than the jump rises, and not passed under) ends the jump: a worm
+          // does not jump through a wall one column thick
+          const mi = ci + dx * (k - 1), mj = cj + dz * (k - 1);
+          if (mi < 0 || mj < 0 || mi >= S.w || mj >= S.h) break;
+          const mc = mj * S.w + mi;
+          let walled = false;
+          for (let t = S.spanStart[mc]; t < S.spanStart[mc + 1] && !walled; t++)
+            walled = S.spanTop[t] > S.y[a] + rise + 1e-6 && S.spanBottom[t] < S.y[a] + o.headroom - 1e-6;
+          // nor through a slot it does not fit (the body is checked where it flies past, not only where it lands)
+          if (o.bodyWidth)
+            for (let b = S.start[mc]; b < S.start[mc + 1] && !walled; b++)
+              walled = Math.abs(S.y[b] - S.y[a]) <= o.headroom && spanOf(S, b, dx, dz, o) < o.bodyWidth - 1e-6;
+          if (walled) break;
           const ji = ci + dx * k, jj = cj + dz * k;
           if (ji < 0 || jj < 0 || ji >= S.w || jj >= S.h) break;
           const jc = jj * S.w + ji;
@@ -271,7 +344,7 @@ export function search(S: Surfaces, src: number, o: ReachOptions, stopAt?: Uint8
             const dy = S.y[b] - S.y[a];
             if (dry(b) && dy <= rise + 1e-6 && dy >= -o.maxDrop && (land < 0 || S.y[b] > S.y[land])) land = b;
           }
-          if (land >= 0) { reach(a, land, d * k); break; }
+          if (land >= 0) { if (wide(land, dx, dz)) reach(a, land, d * k); break; }
           // a wall in the way ends the jump
           if (S.start[jc] < S.start[jc + 1] && S.y[S.start[jc]] > S.y[a] + rise) break;
         }
@@ -290,7 +363,8 @@ export function pathTo(q: Search, n: number): number[] {
 
 /** What a path asks of a worm: its length along the ground, the steepest walked segment (degrees), the highest step up
  * and the deepest drop, and the jumps (moves past the next column). */
-export interface PathStats { length: number; maxSlope: number; maxStepUp: number; maxDrop: number; jumps: number; maxStairSlope?: number; }
+export interface PathStats { length: number; maxSlope: number; maxStepUp: number; maxDrop: number; jumps: number; maxStairSlope?: number;
+  narrowest?: { width: number; node: number } | null; }
 
 const across = (S: Surfaces, a: number, b: number) => {
   const p = nodeAt(S, a), q = nodeAt(S, b);
@@ -305,9 +379,13 @@ const dirOf = (S: Surfaces, a: number, b: number): [number, number] => {
 
 /** With `o`, also maxStairSlope: the steepest climb as the rules judge it (a riser over its tread, climbSlope). */
 export function pathStats(S: Surfaces, path: number[], o?: ReachOptions): PathStats {
-  const st: PathStats = { length: 0, maxSlope: 0, maxStepUp: 0, maxDrop: 0, jumps: 0, ...(o ? { maxStairSlope: 0 } : {}) };
+  const st: PathStats = { length: 0, maxSlope: 0, maxStepUp: 0, maxDrop: 0, jumps: 0, ...(o ? { maxStairSlope: 0, narrowest: null } : {}) };
   for (let k = 1; k < path.length; k++) {
     const h = across(S, path[k - 1], path[k]), dy = S.y[path[k]] - S.y[path[k - 1]];
+    if (o) {
+      const [dx, dz] = dirOf(S, path[k - 1], path[k]), wd = spanOf(S, path[k], dx, dz, o);
+      if (wd < OPEN_SPAN && (!st.narrowest || wd < st.narrowest.width)) st.narrowest = { width: wd, node: path[k] };
+    }
     st.length += Math.hypot(h, dy);
     st.maxStepUp = Math.max(st.maxStepUp, dy);
     st.maxDrop = Math.max(st.maxDrop, -dy);
@@ -325,7 +403,9 @@ export function walks(S: Surfaces, a: number, b: number, o: ReachOptions): boole
   const h = across(S, a, b), dy = S.y[b] - S.y[a];
   if (dy < -o.maxDrop - 1e-6) return false;
   if (o.allow && !o.allow[b]) return false;
-  if (!isJump(S, h)) { const [dx, dz] = dirOf(S, a, b); return climbs(S, a, b, dx, dz, o); }
+  const [dx, dz] = dirOf(S, a, b);
+  if (o.bodyWidth && spanOf(S, b, dx, dz, o) < o.bodyWidth - 1e-6) return false;
+  if (!isJump(S, h)) return climbs(S, a, b, dx, dz, o);
   return h <= o.maxGap + S.step * Math.SQRT2 + 1e-6 && dy <= (o.gapRise ?? o.maxStep) + 1e-6;
 }
 

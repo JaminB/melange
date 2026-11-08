@@ -706,6 +706,170 @@ erg::load::BaseFiles SceneBase() {
     return f;
 }
 
+// Trims (erg-patch/2 trimFrame, erg-scene/2 trims): a base frame's voxel box cut down in the build. The scene keeps the
+// whole grid; the built .xan holds the kept box, and the game's cell count drops by the rest.
+void TestTrims() {
+    const erg::load::BaseFiles f = Base();
+    erg::load::Loaded L;
+    std::string err;
+    Expect(erg::load::LoadScene(f, &L, &err), "trims: the base loads " + err);
+    erg::PatchRules rules;
+    rules.voxels = true;
+    rules.newFrames = true;
+    auto words = [&](int64_t id) {
+        std::vector<uint32_t> w;
+        erg::voxels::Decode(L.blobs.at(L.scene.FindFrame(id)->voxels), &w, nullptr);
+        return w;
+    };
+    auto carve = [&](int64_t id, const std::vector<size_t>& cells) {
+        erg::Op op;
+        op.kind = erg::Op::Kind::Voxels;
+        op.frame = id;
+        const std::vector<uint32_t> w = words(id);
+        for (size_t c : cells) op.runs.push_back({static_cast<uint32_t>(c), 1, erg::voxels::Carved(w[c])});
+        return op;
+    };
+    auto trim = [](int64_t id, std::array<int, 3> min, std::array<int, 3> size) {
+        erg::Op op;
+        op.kind = erg::Op::Kind::TrimFrame;
+        op.frame = id;
+        op.trim = {id, min, size};
+        return op;
+    };
+    auto built = [&](const erg::Scene& s, const erg::build::VoxelEdits& v, erg::load::Loaded* B, const std::string& what) {
+        std::vector<erg::build::File> files;
+        std::string e;
+        erg::load::BaseFiles out = f;
+        bool ok = erg::build::Build(L, s, v, {}, &files, &e);
+        if (ok) {
+            out.xan = FileBytes(files, "Maps/ergtest_synth.xan");
+            ok = erg::load::LoadScene(out, B, &e);
+        }
+        Expect(ok, "trims: " + what + " builds and loads " + e);
+        return ok;
+    };
+
+    // The ledge (2x2x2, Diner6 on it) carved empty and trimmed to one cell: 7 cells fewer, nothing moves.
+    erg::Patch p = EmptyPatch(L, "ergtest_synth");
+    p.ops = {carve(14, {0, 1, 2, 3, 4, 5, 6, 7}), trim(14, {0, 0, 0}, {1, 1, 1})};
+    erg::Patch back;
+    const std::string text = erg::WritePatch(p);
+    Expect(text.find("\"op\":\"trimFrame\",\"frame\":14,\"min\":[0,0,0],\"size\":[1,1,1]") != std::string::npos &&
+               erg::ParsePatch(text, &back, &err) && back.UsesV2() && back.ops[1].kind == erg::Op::Kind::TrimFrame &&
+               back.ops[1].trim.frame == 14 && back.ops[1].trim.size == std::array<int, 3>{1, 1, 1},
+           "trims: the op round-trips as /2 " + err);
+    erg::Scene s;
+    erg::build::VoxelEdits v;
+    Expect(erg::build::Apply(L, back, rules, &s, &v, &err) && s.trims.size() == 1 && erg::VoxelCells(s) == erg::VoxelCells(L.scene) - 7 &&
+               s.FindFrame(14)->size == std::array<int, 3>{2, 2, 2} && v.at(14).size() == 8,
+           "trims: applied, the scene keeps the whole grid and counts the kept box " + err);
+    erg::Scene sc;
+    Expect(erg::ParseScene(erg::WriteScene(s), &sc, &err) && sc.trims.size() == 1 && sc.trims[0].frame == 14 && erg::WriteScene(sc) == erg::WriteScene(s),
+           "trims: the scene document keeps them " + err);
+    Expect(erg::WriteScene(L.scene).find("trims") == std::string::npos, "trims: a scene without trims writes none");
+    const erg::Patch d = erg::build::Diff(L.scene, s, v, &L.blobs);
+    erg::Scene s2;
+    erg::build::VoxelEdits v2;
+    Expect(!d.ops.empty() && d.ops.back().kind == erg::Op::Kind::TrimFrame && erg::build::Apply(L, d, rules, &s2, &v2, &err) &&
+               erg::WriteScene(s2) == erg::WriteScene(s),
+           "trims: the diff re-applies to the same scene " + err);
+    erg::load::Loaded B;
+    if (built(s, v, &B, "an emptied ledge")) {
+        const erg::Frame* lf = B.scene.FindFrame(14);
+        Expect(lf && lf->size == std::array<int, 3>{1, 1, 1} && lf->pos == erg::Vec3{1, 1, 1} && B.blobs.at(lf->voxels).size() == 4 &&
+                   B.blobs.at(lf->heightMap).size() == 16 && ByName(B.scene, "Diner6") && ByName(B.scene, "Diner6")->pos == erg::Vec3{-4, 7.25, 12.5},
+               "trims: the built ledge is one empty cell where it was, its camera untouched");
+        Expect(erg::VoxelCells(B.scene) == erg::VoxelCells(s), "trims: the built level's cells are the count the scene gave");
+    }
+
+    // Solid cells outside the box are refused, in Apply and in Build.
+    erg::Patch q = EmptyPatch(L, "ergtest_synth");
+    q.ops = {trim(14, {0, 0, 0}, {1, 1, 1})};
+    Expect(!erg::build::Apply(L, q, rules, &s2, &v2, &err) && err.find("outside its kept box") != std::string::npos,
+           "trims: solid voxels outside the box are refused: " + err);
+    erg::Scene raw = L.scene;
+    raw.trims = {{14, {0, 0, 0}, {1, 1, 1}}};
+    std::vector<erg::build::File> none;
+    Expect(!erg::build::Build(L, raw, {}, {}, &none, &err) && err.find("outside its kept box") != std::string::npos,
+           "trims: Build refuses them too: " + err);
+
+    // The rotated, scaled tower (4x3x2) with its x = 0 slice carved, kept from x = 1: the frame moves by half a voxel along
+    // its own x, its details and its child frame back, so every kept voxel, detail and the ledge stay where they were.
+    std::vector<size_t> slice;
+    for (int z = 0; z < 2; ++z)
+        for (int y = 0; y < 3; ++y) slice.push_back(static_cast<size_t>(z) * 12 + y);
+    erg::Patch t = EmptyPatch(L, "ergtest_synth");
+    t.ops = {carve(13, slice), trim(13, {1, 0, 0}, {3, 3, 2})};
+    erg::Scene ts;
+    erg::build::VoxelEdits tv;
+    erg::load::Loaded TB;
+    Expect(erg::build::Apply(L, t, rules, &ts, &tv, &err) && erg::VoxelCells(ts) == erg::VoxelCells(L.scene) - 6, "trims: the tower applies " + err);
+    if (built(ts, tv, &TB, "a trimmed tower")) {
+        const erg::Frame* tf = TB.scene.FindFrame(13);
+        erg::Mat3x4 was{}, now{}, ledgeWas{}, ledgeNow{};
+        Expect(tf && tf->size == std::array<int, 3>{3, 3, 2} && erg::VoxelWorld(L.scene, 13, &was) && erg::VoxelWorld(TB.scene, 13, &now) &&
+                   erg::FrameWorld(L.scene, 14, &ledgeWas) && erg::FrameWorld(TB.scene, 14, &ledgeNow),
+               "trims: the built tower is 3x3x2");
+        double worst = 0;
+        for (int x = 0; x < 3; ++x)
+            for (int k = 0; k < 3; ++k) {
+                const erg::Vec3 a = erg::Apply(was, {x + 1.5, k * 0.5 + 0.5, 1.0}), b = erg::Apply(now, {x + 0.5, k * 0.5 + 0.5, 1.0});
+                for (int c = 0; c < 3; ++c) worst = std::max(worst, std::fabs(a[c] - b[c]));
+            }
+        const erg::Vec3 la = erg::Apply(ledgeWas, {0.3, 0.7, 0.2}), lb = erg::Apply(ledgeNow, {0.3, 0.7, 0.2});
+        for (int c = 0; c < 3; ++c) worst = std::max(worst, std::fabs(la[c] - lb[c]));
+        for (const char* name : {"VISIBLE_Toolbox", "Diner6"}) {
+            erg::Vec3 a{}, b{};
+            const erg::Detail *da = ByName(L.scene, name), *db = ByName(TB.scene, name);
+            Expect(da && db && erg::DetailWorld(L.scene, *da, &a) && erg::DetailWorld(TB.scene, *db, &b), std::string("trims: ") + name + " is placed");
+            for (int c = 0; c < 3; ++c) worst = std::max(worst, std::fabs(a[c] - b[c]));
+        }
+        Expect(worst < 1e-5, "trims: kept voxels, the ledge and the details stay in place (off by " + std::to_string(worst) + ")");
+        std::vector<uint32_t> kept;
+        erg::voxels::Decode(TB.blobs.at(tf->voxels), &kept, nullptr);
+        const std::vector<uint32_t>& all = tv.at(13);
+        bool same = kept.size() == 18;
+        for (int z = 0; z < 2 && same; ++z)
+            for (int x = 0; x < 3; ++x)
+                for (int y = 0; y < 3; ++y) same &= kept[(static_cast<size_t>(z) * 3 + x) * 3 + y] == all[(static_cast<size_t>(z) * 4 + x + 1) * 3 + y];
+        const std::vector<uint8_t>& hm = TB.blobs.at(tf->heightMap);
+        float c0 = 0, c11 = 0;
+        if (hm.size() == 12 * 4) {
+            std::memcpy(&c0, hm.data(), 4);
+            std::memcpy(&c11, hm.data() + 11 * 4, 4);
+        }
+        Expect(same && hm.size() == 12 * 4 && c0 == 0.25f && c11 == 14 * 0.25f, "trims: the kept voxels and corner offsets are the box's");
+    }
+
+    // Refusals: a box outside the grid, a new frame, the same frame twice, a /1 patch, a detail tied to a voxel.
+    auto refused = [&](const erg::Patch& r, const char* why, const char* what) {
+        erg::Patch parsed;
+        std::string e;
+        const bool ok = erg::ParsePatch(erg::WritePatch(r), &parsed, &e) && erg::build::Apply(L, parsed, rules, &s2, &v2, &e);
+        Expect(!ok && e.find(why) != std::string::npos, std::string("trims: ") + what + " is refused: " + e);
+    };
+    erg::Patch r = EmptyPatch(L, "ergtest_synth");
+    r.ops = {trim(14, {1, 0, 0}, {2, 2, 2})};
+    refused(r, "inside the frame", "a box past the grid");
+    erg::Op nf;
+    nf.kind = erg::Op::Kind::AddFrame;
+    nf.newFrame = {-1, 13, "ergblock_0", {2, 1, 3.5}, {3, 2, 4}};
+    r.ops = {nf, trim(-1, {0, 0, 0}, {1, 1, 1})};
+    erg::Patch rp;
+    Expect(!erg::ParsePatch(erg::WritePatch(r), &rp, &err) && err.find("frame") != std::string::npos, "trims: a new frame's id is refused: " + err);
+    r.ops = {carve(14, {0, 1, 2, 3, 4, 5, 6, 7}), trim(14, {0, 0, 0}, {1, 1, 1}), trim(14, {0, 0, 0}, {1, 1, 1})};
+    refused(r, "earlier op", "a second trim of a frame");
+    std::string v1 = erg::WritePatch(p);
+    v1.replace(v1.find("erg-patch/2"), 11, "erg-patch/1");
+    Expect(!erg::ParsePatch(v1, &rp, &err) && !err.empty(), "trims: a /1 patch has no trimFrame: " + err);
+    erg::Op tie;
+    tie.kind = erg::Op::Kind::Set;
+    tie.src = ByName(L.scene, "Diner6")->src.value();
+    tie.fields.voxelPos = erg::Vec3{1, 0, 0};
+    r.ops = {tie, carve(14, {0, 1, 2, 3, 4, 5, 6, 7}), trim(14, {0, 0, 0}, {1, 1, 1})};
+    refused(r, "voxelPos", "a frame holding a detail tied to a voxel");
+}
+
 void TestNewFrames() {
     const erg::load::BaseFiles f = SceneBase();
     erg::load::Loaded L;
@@ -1721,6 +1885,7 @@ int main() {
     TestScale();
     TestVoxels();
     TestNewFrames();
+    TestTrims();
     TestSurround();
     TestNegative();
     TestBank();

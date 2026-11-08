@@ -16,6 +16,7 @@
 // fired, so a keepKnot knot on a voxel top (within ON_SURFACE) gets no advisory: whatever the sweep does, it stays there.
 // Map units throughout.
 import type { EditorStore } from "../core";
+import { findHoles } from "./holes";
 import { markers, spansAt, waterMap } from "./inspect-field";
 import { grids } from "./voxel";
 
@@ -23,6 +24,8 @@ import { grids } from "./voxel";
 export const FACTORY_DROP = 50;
 /** Water this far over the point it settled on sets it off (10 world units). */
 export const FACTORY_WATER = 0.5;
+/** The radius round the knot checked for see-through holes (check_holes), map units. */
+export const HOLE_RADIUS = 6;
 /** A keepKnot knot this close over the top of the ground under it sits on it (place_object snap "surface" puts it there). */
 export const ON_SURFACE = 0.5;
 
@@ -65,6 +68,10 @@ export function checkFactory(store: EditorStore, len: (map: number) => string, w
   if (draped && keep && !onSurface) out.warnings.push("the mine factory's knot is over a draped skin, where the game's drop has missed: with keepKnot it stays at its knot, so keep the knot on the skin's surface (snap: \"surface\")");
   if (Number.isFinite(top) && top > landY + FACTORY_WATER)
     out.problems.push(`the water (${len(top)}${waterTop !== undefined && waterTop !== null && waterTop >= (water ?? -Infinity) ? ", the script's highest" : ""}) gets more than ${len(FACTORY_WATER)} over the ground the factory lands on (${len(landY)}): it explodes${water !== null && water > landY + FACTORY_WATER ? " at load" : " when the water gets there"}`);
+  // see-through holes round the knot (check_holes): the floor the mines land on and the camera sees
+  const holes = findHoles(gs, { x0: x - HOLE_RADIUS, z0: z - HOLE_RADIUS, x1: x + HOLE_RADIUS, z1: z + HOLE_RADIUS }, 0.5, water ?? 0,
+    (px, pz) => Math.hypot(px - x, pz - z) <= HOLE_RADIUS);
+  if (holes.holes) out.warnings.push(`${holes.holes} of ${holes.columns} rays within ${len(HOLE_RADIUS)} of the mine factory's knot hit no ground over the water (see-through holes${holes.clusters.length ? `, the largest round (${holes.clusters[0].centre.map((v) => Math.round(v * 10) / 10).join(", ")})` : ""}): mines fall through them; check_holes {around} lists them`);
   if (!draped && !onSurface) out.warnings.push(`the factory's drop is the game's own sweep, and on Caldera it also missed undraped blocks inside the crater near the level's centre${keep ? " (keepKnot keeps it at its knot then)" : ""}: Test and call game_mines {alive: true} (it answers whether the factory exists and where it settled)`);
   return out;
 }

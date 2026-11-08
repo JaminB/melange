@@ -50,6 +50,17 @@
   {everyNTurns}`, spawn tread checks (a knot in solid, with no ground near under it, on an edge) with `snap: "tread"`
   and on save, build_castle's spawnSpots moved off wall edges, check_flood's `minDryMargin` default 1.5 map units and
   `capReport`, and `materialFile: "theme"` with no project open (docs/erg-mcp.md).
+- Erg trims base frames: the patch's `trimFrame` op (erg-patch/2) and the scene's `trims` keep only a box of a base
+  frame's grid in the built map, so a wiped base gives back the game's voxel cells (Multi.DinerMight's 534 frames hold
+  11 652); every solid voxel must be in the box, and a box with solid voxels moves the frame and its details and child
+  frames so nothing moves. Old projects load as before. erg-mcp: `trim_base_frames`, `remove_base_frames`; check_reachability
+  reports each route's narrowest gap at the worm's body height and `bodyWidth` refuses gaps a worm does not fit (a jump
+  no longer passes through a one-column wall), and `route` answers the whole route; game_walk follows a dense `path` by
+  pure pursuit or plans its own route `to` a point, with jump, side step and backflip when stuck; check_flood takes
+  `rounds`, and Melange.exe's script stand-in counts rounds as the game does (a team per turn, not teams x worms);
+  `check_holes` finds see-through holes and seams (and the factory check warns of holes round its knot); the factory's
+  fire records keep each mine's final position and its fate (resting, drowned, destroyed), watched for 3 minutes
+  (`levels/factory.mine`); `set_overview` and the overview's `fit: "island"` frame a small island (docs/erg-mcp.md).
 - Clean-room Test: `level.test` takes `cleanMods` (no sim mod runs in the Test match, post-FX off) and `postfx: false`,
   for the Test match only; `level.test.cleanRoom` reports it. erg-mcp's `test` passes them through.
 

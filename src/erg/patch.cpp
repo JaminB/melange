@@ -138,7 +138,9 @@ Json HmpRunsJson(const std::vector<HmpRun>& runs, bool blend) {
 bool Patch::UsesV2() const {
     if (survivor || !objects.empty() || script.present || hmp == HmpMode::Paint) return true;
     for (auto& op : ops)
-        if (op.kind == Op::Kind::AddFrame || op.kind == Op::Kind::Hmp || (op.kind == Op::Kind::Voxels && op.frame < 0)) return true;
+        if (op.kind == Op::Kind::AddFrame || op.kind == Op::Kind::Hmp || op.kind == Op::Kind::TrimFrame ||
+            (op.kind == Op::Kind::Voxels && op.frame < 0))
+            return true;
     return false;
 }
 
@@ -150,6 +152,7 @@ const char* OpName(Op::Kind k) {
         case Op::Kind::Voxels: return "voxels";
         case Op::Kind::AddFrame: return "addFrame";
         case Op::Kind::Hmp: return "hmp";
+        case Op::Kind::TrimFrame: return "trimFrame";
     }
     return "?";
 }
@@ -334,6 +337,10 @@ bool ParsePatch(std::string_view json, Patch* out, std::string* err) {
                 return false;
             if (op.heights.empty() && op.blend.empty()) return Fail(err, path + ": an hmp op changes at least one cell");
             if (p.hmp != HmpMode::Paint) return Fail(err, path + ": hmp ops need hmp.mode paint");
+        } else if (v2 && kind == "trimFrame") {
+            op.kind = Op::Kind::TrimFrame;
+            if (!OnlyKeys(o, {"op", "frame", "min", "size"}, path, err) || !ParseTrim(o, path, &op.trim, err)) return false;
+            op.frame = op.trim.frame;
         } else {
             return Fail(err, path + ".op: unknown op '" + kind + "'");
         }
@@ -419,6 +426,7 @@ std::string WritePatch(const Patch& p) {
                 if (!op.heights.empty()) o.set("heights", HmpRunsJson(op.heights, false));
                 if (!op.blend.empty()) o.set("blend", HmpRunsJson(op.blend, true));
                 break;
+            case Op::Kind::TrimFrame: TrimFields(op.trim, &o); break;
         }
         ops.arr.push_back(std::move(o));
     }
@@ -443,6 +451,7 @@ bool ValidatePatch(const Patch& p, const Scene& base, const PatchRules& rules, s
     std::unordered_map<int64_t, bool> live;           // src -> still present
     std::unordered_map<int64_t, uint64_t> newCells;   // tmp -> voxels
     std::unordered_set<std::string> frameNames;       // upper case: a new frame's name is unused
+    std::unordered_set<int64_t> trimmed;
     for (auto& f : base.frames) frameNames.insert(Upper(f.name));
     for (auto& d : base.details)
         if (d.src) live[*d.src] = true;
@@ -502,6 +511,13 @@ bool ValidatePatch(const Patch& p, const Scene& base, const PatchRules& rules, s
             case Op::Kind::Hmp:
                 if (!rules.hmpPaint) return Fail(err, path + ": surround painting is not accepted by this version");
                 break;
+            case Op::Kind::TrimFrame: {
+                if (!rules.voxels) return Fail(err, path + ": trimFrame ops are not accepted by this version");
+                std::string why;
+                if (!ValidTrim(base, op.trim, &why)) return Fail(err, path + ": " + why);
+                if (!trimmed.insert(op.trim.frame).second) return Fail(err, path + ".frame: " + std::to_string(op.trim.frame) + " is trimmed by an earlier op");
+                break;
+            }
         }
     }
     if (!p.objects.empty()) {
@@ -600,6 +616,7 @@ bool ApplyPatch(Scene& s, const Patch& p, const PatchRules& rules, std::string* 
                 out.frames.push_back(std::move(f));
                 break;
             }
+            case Op::Kind::TrimFrame: out.trims.push_back(op.trim); break;
             case Op::Kind::Voxels:
             case Op::Kind::Hmp: break;
         }

@@ -1,12 +1,13 @@
 // Tool group "terrain": sculpting with the panel's brushes (one dab or along a path), added blocks, clearing the base
 // terrain, raw box fills and the painted surround. The engine is src/lib/terrain-ops.ts.
-import { SURROUND_SIDE, type Vec3 } from "../core";
+import { SURROUND_SIDE, cellBudget, type EditorStore, type Vec3 } from "../core";
 import {
   addBlock, clearBase, compileFormula as compile, downhillPath, enableSurroundPaint, fillBox, frameGrids, patchLeft, pathPoints, pickAnchor, pointToMap, removeBlock,
   setSurroundGrid, stroke, surroundDabs, surroundSummary, taperSizes, type StrokeFilter, type Units,
 } from "../lib/terrain-ops";
 import { waterMap } from "../lib/inspect-field";
 import { paintSurface, type Shape } from "../lib/surface-paint";
+import { applyTrims, carveFrames, clearTrims, pickBaseFrames, planTrims, type TrimRow } from "../lib/trims";
 import { grids, tidy, toWorld } from "../lib/voxel";
 import { ToolError, type Schema, type Tool } from "../registry";
 
@@ -227,7 +228,7 @@ export const tools: Tool[] = [
   },
   {
     name: "remove_block",
-    description: "Remove a terrain block added in this project (by its frame id from add_block or describe_level). Base map frames cannot be removed: use clear_base_terrain.",
+    description: "Remove a terrain block added in this project (by its frame id from add_block or describe_level). Base map frames: clear_base_terrain carves their voxels, remove_base_frames takes them out of the cell count too.",
     inputSchema: { type: "object", additionalProperties: false, required: ["id"], properties: { id: { type: "integer", description: "The block's frame id." } } },
     handler(s, a: { id: number }) {
       return removeBlock(s.requireProject().store, a.id);
@@ -258,6 +259,62 @@ export const tools: Tool[] = [
         return clearBase(store, { ...a, frames: [a.frame], units: "grid" });
       }
       return { ...clearBase(store, { ...a, units: a.units ?? "world" }), ...patchLeft(store) };
+    },
+  },
+  {
+    name: "trim_base_frames",
+    description: "Give back the game's voxel cells that base-map frames spend on empty space. The game counts X*Y*Z of every voxel frame, solid or empty, against 65 535, so a wiped base (clear_base_terrain) still spends all its cells (Multi.DinerMight: 11 652). A trim keeps only a box of a base frame's grid in the built level: `keep: 'solid'` (default) the box of its solid voxels, a frame with none one empty cell; `keep: 'empty'` trims only frames with no solid voxel. The project keeps the whole grid (every tool reads and edits it as before); the box is the patch's trimFrame op (erg-patch/2: a Melange without it refuses the save). Every solid voxel must stay in the box: filling outside it later makes save refuse until you trim again or `clear`. A frame holding a detail tied to a voxel (voxelPos) is skipped. A box with solid voxels moves the frame by its offset from the grid's centre and its details and child frames back, so nothing moves in the level. Choose frames by `frames`, `search`, `box` (frames whose voxel box overlaps it) or `all`. One undo step; `dryRun` reports the cells it would free. `clear: true` drops the trims of the chosen frames (or every trim).",
+    inputSchema: {
+      type: "object", additionalProperties: false,
+      properties: {
+        frames: { type: "array", items: { type: "integer" }, minItems: 1, maxItems: 4096, description: "Base frame ids (describe_level)." },
+        search: { type: "string", description: "Frames whose name contains this (any case)." },
+        box: { type: "object", additionalProperties: false, required: ["min", "max"], properties: { min: vec("Box minimum corner."), max: vec("Box maximum corner.") }, description: "Frames whose voxel box overlaps this box." },
+        units: { type: "string", enum: ["world", "map"], description: "Units of `box`: world (default) or map." },
+        all: { type: "boolean", description: "Every base frame with voxels." },
+        keep: { type: "string", enum: ["solid", "empty"], description: "solid (default): each frame to the box of its solid voxels, an empty one to one cell; empty: only frames with no solid voxel, to one cell." },
+        clear: { type: "boolean", description: "Drop the trims of the chosen frames (every trim when none are chosen) instead." },
+        dryRun,
+      },
+    },
+    handler(s, a: { frames?: number[]; search?: string; box?: { min: Vec3; max: Vec3 }; units?: "world" | "map"; all?: boolean; keep?: "solid" | "empty"; clear?: boolean; dryRun?: boolean }) {
+      const { store } = s.requireProject();
+      const box = a.box && { min: pointToMap(a.box.min, a.units ?? "world"), max: pointToMap(a.box.max, a.units ?? "world") };
+      const before = cellBudget(store.scene);
+      if (a.clear) {
+        const only = a.frames || a.search || a.box ? pickBaseFrames(store, { ...a, box }).map((g) => g.id) : undefined;
+        const dropped = a.dryRun ? (store.scene.trims ?? []).map((t) => t.frame).filter((id) => !only || only.includes(id)) : clearTrims(store, only);
+        return { cleared: dropped, cells: { before, after: a.dryRun ? null : cellBudget(store.scene) }, ...(a.dryRun ? { dryRun: true } : {}) };
+      }
+      const plan = planTrims(store, pickBaseFrames(store, { ...a, box }), a.keep === "empty");
+      if (!a.dryRun && plan.rows.length) applyTrims(store, plan.rows, null, "Trim base frames");
+      return trimAnswer(store, plan, before, !!a.dryRun);
+    },
+  },
+  {
+    name: "remove_base_frames",
+    description: "Remove base-map voxel frames from the level: every voxel of the chosen frames is emptied (solid or not) and each is trimmed to one empty cell (trim_base_frames), so the terrain is gone and its cells are back for new blocks, at a cost of one cell a frame. The frame itself stays (its details, child frames and the base's references to it are untouched), which is how the game's own empty frames look. Choose by `frames`, `search`, `box` (frames whose voxel box overlaps it) or `all`; a frame holding a detail tied to a voxel (voxelPos) is skipped. One undo step; `dryRun` reports the cells it would free. Removing all of Multi.DinerMight's frames frees about 11 100 of its 11 652 cells.",
+    inputSchema: {
+      type: "object", additionalProperties: false,
+      properties: {
+        frames: { type: "array", items: { type: "integer" }, minItems: 1, maxItems: 4096, description: "Base frame ids (describe_level)." },
+        search: { type: "string", description: "Frames whose name contains this (any case)." },
+        box: { type: "object", additionalProperties: false, required: ["min", "max"], properties: { min: vec("Box minimum corner."), max: vec("Box maximum corner.") }, description: "Frames whose voxel box overlaps this box." },
+        units: { type: "string", enum: ["world", "map"], description: "Units of `box`: world (default) or map." },
+        all: { type: "boolean", description: "Every base frame with voxels." },
+        dryRun,
+      },
+    },
+    handler(s, a: { frames?: number[]; search?: string; box?: { min: Vec3; max: Vec3 }; units?: "world" | "map"; all?: boolean; dryRun?: boolean }) {
+      const { store } = s.requireProject();
+      const box = a.box && { min: pointToMap(a.box.min, a.units ?? "world"), max: pointToMap(a.box.max, a.units ?? "world") };
+      const before = cellBudget(store.scene);
+      const plan = planTrims(store, pickBaseFrames(store, { ...a, box }), false, true);
+      const gs = grids(store).filter((g) => plan.rows.some((r) => r.id === g.id));
+      const carve = carveFrames(store, gs);
+      const emptied = carve.size;
+      if (!a.dryRun && plan.rows.length) applyTrims(store, plan.rows, carve, "Remove base frames");
+      return { ...trimAnswer(store, plan, before, !!a.dryRun), voxelsEmptied: emptied };
     },
   },
   {
@@ -376,3 +433,15 @@ function setSurroundGridDry(a: { heights?: number[] | number[][]; formula?: stri
   }
 }
 
+function trimAnswer(store: EditorStore, plan: { rows: TrimRow[]; skipped: { id: number; name: string; why: string }[] }, before: ReturnType<typeof cellBudget>, dryRun: boolean) {
+  const freed = plan.rows.reduce((n, r) => n + r.cellsBefore - r.cellsAfter, 0);
+  return {
+    trimmed: plan.rows.length, cellsFreed: freed,
+    cells: { before, after: dryRun ? { ...before, used: before.used - freed, free: before.free + freed } : cellBudget(store.scene) },
+    frames: plan.rows.slice().sort((x, y) => (y.cellsBefore - y.cellsAfter) - (x.cellsBefore - x.cellsAfter)).slice(0, 60)
+      .map((r) => ({ id: r.id, name: r.name, size: r.size, keep: { min: r.keep.min, size: r.keep.size }, solid: r.solid, cells: [r.cellsBefore, r.cellsAfter], ...(r.moves ? { moves: true } : {}) })),
+    skipped: plan.skipped.slice(0, 60), skippedCount: plan.skipped.length,
+    note: "save writes them (the patch's trimFrame ops); the game counts the kept boxes from the next Test, export or build",
+    ...(dryRun ? { dryRun: true } : {}),
+  };
+}
