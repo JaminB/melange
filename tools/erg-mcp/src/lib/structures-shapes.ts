@@ -20,6 +20,7 @@ export interface Shape {
   hit(x: number, y: number, z: number): boolean;
   part?: number;                             // the part (a wall, a tower) its voxels belong to when blocks are packed by part
   matAt?(x: number, y: number, z: number): number;   // fill and paint: the material per cell, instead of mat
+  keep?: boolean;                            // fill: leave solid voxels as they are (only empty cells are filled)
 }
 
 export interface Plan {
@@ -58,7 +59,7 @@ export const merlon = (u: number) => ((Math.floor(u) % 3) + 3) % 3 < 2;
 export function translate(shapes: Shape[], d: Vec3): Shape[] {
   return shapes.map((s) => ({
     op: s.op, mat: s.mat, min: [s.min[0] + d[0], s.min[1] + d[1], s.min[2] + d[2]], max: [s.max[0] + d[0], s.max[1] + d[1], s.max[2] + d[2]],
-    hit: (x, y, z) => s.hit(x - d[0], y - d[1], z - d[2]), part: s.part,
+    hit: (x, y, z) => s.hit(x - d[0], y - d[1], z - d[2]), part: s.part, ...(s.keep ? { keep: true } : {}),
   }));
 }
 
@@ -68,7 +69,7 @@ export function scaled(shapes: Shape[], k: number): Shape[] {
   if (k === 1) return shapes;
   return shapes.map((s) => ({
     op: s.op, mat: s.mat, min: [s.min[0] * k, s.min[1] * k, s.min[2] * k], max: [s.max[0] * k, s.max[1] * k, s.max[2] * k],
-    hit: (x, y, z) => s.hit(x / k, y / k, z / k), part: s.part,
+    hit: (x, y, z) => s.hit(x / k, y / k, z / k), part: s.part, ...(s.keep ? { keep: true } : {}),
   }));
 }
 
@@ -88,7 +89,7 @@ export function place(shapes: Shape[], at: Vec3, yawDeg = 0): Shape[] {
       min[2] = Math.min(min[2], wz); max[2] = Math.max(max[2], wz);
     }
     return {
-      op: sh.op, mat: sh.mat, min, max, part: sh.part,
+      op: sh.op, mat: sh.mat, min, max, part: sh.part, ...(sh.keep ? { keep: true } : {}),
       hit: (x: number, y: number, z: number) => {
         const dx = x - at[0], dz = z - at[2];
         return sh.hit(c * dx - s * dz, y - at[1], s * dx + c * dz);
@@ -381,6 +382,21 @@ export function lane(l: Lane): Shape {
   };
 }
 
+/** The air over a lane: `headroom` above its top across its width (build_ramp mode cut carves it out of the terrain the
+ * ramp is cut into). */
+export function laneCut(l: Lane, headroom: number): Shape {
+  const body = lane(l), [ax, az] = l.a, [dx, dz] = l.d, hw = l.w / 2;
+  return {
+    op: "carve", mat: 0, min: [body.min[0], Math.min(l.yA, l.yB), body.min[2]], max: [body.max[0], Math.max(l.yA, l.yB) + headroom, body.max[2]],
+    hit: (x, y, z) => {
+      const u = (x - ax) * dx + (z - az) * dz, v = -(x - ax) * dz + (z - az) * dx;
+      if (u < 0 || u >= l.len || v < -hw || v >= hw) return false;
+      const top = laneTop(l, u);
+      return y >= top && y < top + headroom;
+    },
+  };
+}
+
 // ------------------------------------------------------------------ craters, tunnels, arches
 
 export interface CraterSpec {
@@ -455,6 +471,52 @@ export function tunnel(points: Vec3[], radius: number, shape: "round" | "square"
   };
   if (lining && lining.thickness > 0) out.push(...parts(radius + lining.thickness, "fill", lining.material));
   out.push(...parts(radius, "carve", 0));
+  return out;
+}
+
+export interface FlatTunnelSpec {
+  points: Vec3[];               // on the floor: y is the level worms walk on, straight (sloping) between the points
+  radius: number;               // half the width
+  shape: "round" | "square";    // round: the top `radius` of the bore is a half circle
+  headroom: number;             // floor to roof
+  floor: number;                // thickness of the floor slab filled under it where it is empty (0: none)
+  material: number;             // the floor slab's
+  lining: { material: number; thickness: number } | null;
+}
+
+/** A tunnel with a flat, walkable floor (dig_tunnel floor "flat"): per segment, a cell's distance from the segment in plan
+ * (so bends are rounded) and its height over the floor line there. Shapes: the lining shell, the floor slab (only empty
+ * cells: a floor across a gap, not a repaint of the rock), then the bore. */
+export function flatTunnel(t: FlatTunnelSpec): Shape[] {
+  const r = t.radius, H = t.headroom, out: Shape[] = [];
+  const parts = (op: Op, mat: number, grow: number, below: number, slab: boolean): Shape[] => {
+    const s: Shape[] = [];
+    for (let i = 0; i + 1 < t.points.length; i++) {
+      const a = t.points[i], b = t.points[i + 1];
+      const dx = b[0] - a[0], dy = b[1] - a[1], dz = b[2] - a[2], hl2 = dx * dx + dz * dz;
+      if (hl2 < 1e-12) continue;
+      const R = r + grow, top = slab ? 0 : H + grow;
+      const min: Vec3 = [Math.min(a[0], b[0]) - R - 1e-6, Math.min(a[1], b[1]) - below, Math.min(a[2], b[2]) - R - 1e-6];
+      const max: Vec3 = [Math.max(a[0], b[0]) + R + 1e-6, Math.max(a[1], b[1]) + top, Math.max(a[2], b[2]) + R + 1e-6];
+      s.push({
+        op, mat, min, max, ...(slab ? { keep: true } : {}),
+        hit: (x, y, z) => {
+          const f = Math.min(1, Math.max(0, ((x - a[0]) * dx + (z - a[2]) * dz) / hl2));
+          const px = x - a[0] - f * dx, pz = z - a[2] - f * dz, d2 = px * px + pz * pz;
+          if (d2 >= R * R) return false;
+          const h = y - (a[1] + f * dy);
+          if (h < -below || h >= top) return false;
+          if (slab || t.shape === "square" || h < H - r) return true;
+          const e = h - (H - r);
+          return d2 + e * e < R * R;
+        },
+      });
+    }
+    return s;
+  };
+  if (t.lining && t.lining.thickness > 0) out.push(...parts("fill", t.lining.material, t.lining.thickness, t.lining.thickness, false));
+  if (t.floor > 0) out.push(...parts("fill", t.material, 0, t.floor, true));
+  out.push(...parts("carve", 0, 0, 0, false));
   return out;
 }
 

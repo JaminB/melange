@@ -5,8 +5,8 @@ import type { Vec3 } from "../core";
 import { sampleField, spansAt } from "../lib/inspect-field";
 import { applyPlan, dominantMaterial, type Packing } from "../lib/structures-apply";
 import {
-  SIDES, arch, bridge, castle, castleSpots, crater, keep, lane, place, placePoint, scaled, tower, tunnel, wallSegment, type Plan, type Shape, type Side,
-  type Spot,
+  SIDES, arch, bridge, castle, castleSpots, crater, flatTunnel, keep, lane, laneCut, place, placePoint, scaled, tower, tunnel, wallSegment, type Plan, type Shape,
+  type Side, type Spot,
 } from "../lib/structures-shapes";
 import { grids, tidy, toWorld } from "../lib/voxel";
 import { ToolError, type Schema, type Tool } from "../registry";
@@ -271,12 +271,17 @@ export const tools: Tool[] = [
         support: { type: "string", enum: ["solid", "slab"], description: "solid (default): filled down to the lower end; slab: only `thickness` voxels under the surface." },
         thickness: { type: "number", minimum: 1, description: "Slab thickness. Default 2." },
         below: { type: "number", minimum: 0, description: "Solid support goes this far below the lower end. Default 1." },
+        mode: { type: "string", enum: ["build", "cut"], description: "build (default): a ramp of new solid on the ground. cut: the walking surface is cut into the terrain that is there (a path up a cone): the voxels above it, over its width and `headroom` high, are carved in every frame it crosses, and the support fills only empty cells under it where it passes over air, into existing frames only (place \"existing\"; never new blocks, so no block or cell cost)." },
+        headroom: { type: "number", minimum: 1, description: "mode cut: how high above the walking surface is cleared. Default 3." },
         ...common,
       },
     },
-    handler(s, a: Common & { from: Vec3; to: Vec3; width?: number; maxSlope?: number; switchback?: boolean; turn?: "left" | "right"; support?: "solid" | "slab"; thickness?: number; below?: number }) {
+    handler(s, a: Common & { from: Vec3; to: Vec3; width?: number; maxSlope?: number; switchback?: boolean; turn?: "left" | "right"; support?: "solid" | "slab"; thickness?: number; below?: number; mode?: "build" | "cut"; headroom?: number }) {
       finite(a.from, "from"); finite(a.to, "to");
-      return run(s, a, a.from, "ramp", (k, mat, U) => {
+      const cut = a.mode === "cut";
+      if (cut && a.place !== undefined && a.place !== "existing") throw new ToolError(`mode cut edits only existing frames (place "existing"), not place "${a.place}"`);
+      if (!cut && a.headroom !== undefined) throw new ToolError("headroom is for mode cut");
+      return run(s, cut ? { ...a, place: "existing" } : a, a.from, "ramp", (k, mat, U) => {
         const A = sc(a.from, k), B = sc(a.to, k), w = U(a.width, 4);
         const dx = B[0] - A[0], dz = B[2] - A[2], L = Math.hypot(dx, dz), H = B[1] - A[1];
         if (L < 1) throw new ToolError("from and to must be at least 1 apart in x and z");
@@ -292,13 +297,17 @@ export const tools: Tool[] = [
         for (let i = 0; i < legs; i++) {
           const forward = i % 2 === 0, off = sign * i * w;
           const start: [number, number] = forward ? [A[0] + p[0] * off, A[2] + p[1] * off] : [A[0] + d[0] * L + p[0] * off, A[2] + d[1] * L + p[1] * off];
-          shapes.push(lane({ a: start, d: forward ? d : [-d[0], -d[1]], len: L, w, yA: A[1] + dh * i, yB: A[1] + dh * (i + 1), floorY, thick: U(a.thickness, 2), mat }));
+          const l = { a: start, d: forward ? d : [-d[0], -d[1]] as [number, number], len: L, w, yA: A[1] + dh * i, yB: A[1] + dh * (i + 1), floorY, thick: U(a.thickness, 2), mat };
+          // cut: the support fills only air (the ground keeps its own voxels), then the air over the surface is carved
+          if (cut) shapes.push({ ...lane(l), keep: true }, laneCut(l, U(a.headroom, 3)));
+          else shapes.push(lane(l));
         }
         const last = legs - 1, lastForward = last % 2 === 0, off = sign * last * w;
         const top: Vec3 = lastForward ? [B[0] + p[0] * off, B[1], B[2] + p[1] * off] : [A[0] + p[0] * off, B[1], A[2] + p[1] * off];
         const deg = (Math.atan(Math.abs(dh) / L) * 180) / Math.PI;
-        return { label: "Build ramp", shapes, notes: legs > 1 ? [`switchback of ${legs} lanes; the top is at ${tidy(top).join(", ")} (map units)`] : [],
-          info: { slopeDegrees: tidy([deg, 0, 0])[0], lanes: legs, length: tidy([L, 0, 0])[0], rise: H, top: { map: tidy(top), world: tidy(toWorld(top)) } } };
+        return { label: cut ? "Cut ramp" : "Build ramp", shapes, notes: legs > 1 ? [`switchback of ${legs} lanes; the top is at ${tidy(top).join(", ")} (map units)`] : [],
+          info: { slopeDegrees: tidy([deg, 0, 0])[0], lanes: legs, length: tidy([L, 0, 0])[0], rise: H, top: { map: tidy(top), world: tidy(toWorld(top)) },
+            ...(cut ? { mode: "cut", headroom: U(a.headroom, 3) } : {}) } };
       });
     },
   },
@@ -360,7 +369,7 @@ export const tools: Tool[] = [
   },
   {
     name: "dig_tunnel",
-    description: "Carve a tunnel (a tube) along a polyline of points [x, y, z] through the terrain, optionally lined with a shell of another material. Carving reaches every frame it passes through. Round tubes leave a curved floor; square tubes keep a level floor across the path. One undo step.",
+    description: "Carve a tunnel (a tube) along a polyline of points [x, y, z] through the terrain, optionally lined with a shell of another material. Carving reaches every frame it passes through. Round tubes leave a curved floor; square tubes keep a level floor across the path. `floor: \"flat\"` digs a walkable tunnel instead: the points are on its floor, a flat floor that follows the slope between them (steeper than maxSlope is refused), `headroom` high. One undo step.",
     inputSchema: {
       type: "object", additionalProperties: false, required: ["points"],
       properties: {
@@ -369,17 +378,38 @@ export const tools: Tool[] = [
         shape: { type: "string", enum: ["round", "square"], description: "Default round." },
         liningMaterial: { type: "integer", minimum: 0, maximum: 63, description: "Add a lining shell of this material round the bore." },
         liningThickness: { type: "number", minimum: 1, description: "Lining thickness. Default 1." },
+        floor: { type: "string", enum: ["bore", "flat"], description: "bore (default): the points are the tube's axis and the floor is the bore's own (round: curved). flat: a walkable tunnel: the points are on its floor (y = the level worms walk on), which runs straight between them; the bore is 2 x radius wide and `headroom` high (round: the top radius is a half circle; square: a box), bends are rounded, and a floor slab `floorThickness` thick fills the empty cells under the floor (a floor across a gap or cave; in new blocks outside every frame unless place \"existing\"). A segment steeper than `maxSlope` is refused; the answer gives the steepest." },
+        headroom: { type: "number", minimum: 1.5, description: "floor flat: floor to roof. Default 2 x radius (at least 2; a worm is about 1.2 tall)." },
+        maxSlope: { type: "number", minimum: 0, maximum: 60, description: "floor flat: the steepest segment allowed, in degrees. Default 40 (worms walk about 45)." },
+        floorThickness: { type: "number", minimum: 0, description: "floor flat: thickness of the floor slab under the floor, filled only where empty (in the structure's material). Default 1; 0 for none." },
         ...common,
       },
     },
-    handler(s, a: Common & { points: Vec3[]; radius?: number; shape?: "round" | "square"; liningMaterial?: number; liningThickness?: number }) {
+    handler(s, a: Common & { points: Vec3[]; radius?: number; shape?: "round" | "square"; liningMaterial?: number; liningThickness?: number; floor?: "bore" | "flat"; headroom?: number; maxSlope?: number; floorThickness?: number }) {
       a.points.forEach((p, i) => finite(p, `points[${i}]`));
+      const flat = a.floor === "flat";
+      if (!flat && (a.headroom !== undefined || a.maxSlope !== undefined || a.floorThickness !== undefined)) throw new ToolError("headroom, maxSlope and floorThickness are for floor \"flat\"");
       return run(s, a, a.points[0], "tunnel", (k, mat, U) => {
         const pts = a.points.map((p) => sc(p, k)), r = U(a.radius, 2.5);
         let length = 0;
         for (let i = 0; i + 1 < pts.length; i++) length += Math.hypot(pts[i + 1][0] - pts[i][0], pts[i + 1][1] - pts[i][1], pts[i + 1][2] - pts[i][2]);
         if (length < 1) throw new ToolError("the points are the same place: there is no tunnel to dig");
         const lining = a.liningMaterial !== undefined ? { material: a.liningMaterial, thickness: U(a.liningThickness, 1) } : null;
+        if (flat) {
+          const maxSlope = a.maxSlope ?? 40;
+          let steepest = 0, at = -1;
+          for (let i = 0; i + 1 < pts.length; i++) {
+            const hl = Math.hypot(pts[i + 1][0] - pts[i][0], pts[i + 1][2] - pts[i][2]), dy = Math.abs(pts[i + 1][1] - pts[i][1]);
+            if (hl < 1e-9 && dy < 1e-9) continue;
+            const deg = hl < 1e-9 ? 90 : (Math.atan(dy / hl) * 180) / Math.PI;
+            if (deg > steepest) { steepest = deg; at = i; }
+          }
+          if (steepest > maxSlope + 1e-9)
+            throw new ToolError(`segment ${at} (points ${at} -> ${at + 1}) slopes ${steepest.toFixed(1)} degrees (maxSlope ${maxSlope}): add points to lengthen it, or zigzag`);
+          const headroom = U(a.headroom, Math.max(2 * r, 2)), floorT = U(a.floorThickness, 1);
+          return { label: "Dig tunnel", shapes: flatTunnel({ points: pts, radius: r, shape: a.shape ?? "round", headroom, floor: floorT, material: mat, lining }), notes: [],
+            info: { length: tidy([length, 0, 0])[0], radius: r, lined: !!lining, floor: "flat", headroom, floorThickness: floorT, steepestDegrees: tidy([steepest, 0, 0])[0] } };
+        }
         void mat;
         return { label: "Dig tunnel", shapes: tunnel(pts, r, a.shape ?? "round", lining), notes: [], info: { length: tidy([length, 0, 0])[0], radius: r, lined: !!lining } };
       });

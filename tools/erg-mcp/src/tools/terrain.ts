@@ -2,9 +2,11 @@
 // terrain, raw box fills and the painted surround. The engine is src/lib/terrain-ops.ts.
 import { SURROUND_SIDE, type Vec3 } from "../core";
 import {
-  addBlock, clearBase, compileFormula as compile, enableSurroundPaint, fillBox, frameGrids, patchLeft, pathPoints, pickAnchor, pointToMap, removeBlock, setSurroundGrid,
-  stroke, surroundDabs, surroundSummary, type Units,
+  addBlock, clearBase, compileFormula as compile, downhillPath, enableSurroundPaint, fillBox, frameGrids, patchLeft, pathPoints, pickAnchor, pointToMap, removeBlock,
+  setSurroundGrid, stroke, surroundDabs, surroundSummary, taperSizes, type Units,
 } from "../lib/terrain-ops";
+import { waterMap } from "../lib/inspect-field";
+import { grids, tidy, toWorld } from "../lib/voxel";
 import { ToolError, type Schema, type Tool } from "../registry";
 
 const vec = (description: string, integer = false): Schema => ({ type: "array", description, items: { type: integer ? "integer" : "number" }, minItems: 3, maxItems: 3 });
@@ -18,7 +20,8 @@ const brushProps = {
   size: vec("Brush size in voxels of the anchor frame, each 1-32 (a sphere of diameter 5 is [5,5,5]).", true),
   material,
   materialColumn: { type: "boolean", description: "fill only: take each voxel's material from the highest solid voxel in its column of the frame (the panel's 'column' material); ignores `material`." },
-  frame: { type: "integer", description: "Anchor frame id (describe_level). Fill and paint touch only this frame; carve reaches every frame. Default: the frame holding the point (a solid voxel there first, then the smallest)." },
+  frame: { type: "integer", description: "Anchor frame id (describe_level). Fill and paint touch only this frame (unless allFrames); carve reaches every frame. Default: the frame holding the point (a solid voxel there first, then the smallest)." },
+  allFrames: { type: "boolean", description: "Fill and paint also edit every other voxel frame the brush overlaps (rotated and scaled frames too, at their cell centres), as carve does. Default false: the anchor frame only, as the panel's brush." },
   units,
   snap: { type: "boolean", description: "Snap each dab's centre to the middle of its voxel, as the panel does (default true). false keeps fractional centres." },
   dryRun,
@@ -26,7 +29,7 @@ const brushProps = {
 
 interface Brushy {
   mode: "carve" | "fill" | "paint"; shape?: "box" | "sphere"; size: Vec3; material?: number; materialColumn?: boolean; frame?: number;
-  units?: Units; snap?: boolean; dryRun?: boolean;
+  allFrames?: boolean; units?: Units; snap?: boolean; dryRun?: boolean;
 }
 
 function spec(a: Brushy) {
@@ -54,31 +57,57 @@ export const tools: Tool[] = [
         ? pickAnchor(store, gs, [0, 0, 0], a.frame, false)
         : pickAnchor(store, gs, pointToMap(a.center, a.units ?? "world"), a.frame, a.mode === "fill");
       const at = pointToMap(a.center, a.units ?? "world", anchor);
-      return stroke(store, spec(a), [at], anchor, { snap: a.snap ?? true, dryRun: a.dryRun });
+      return stroke(store, spec(a), [at], anchor, { snap: a.snap ?? true, dryRun: a.dryRun, allFrames: a.allFrames });
     },
   },
   {
     name: "sculpt_path",
-    description: "Drag a terrain brush along a polyline: dabs every `spacing` units from the first point to the last, each seeing the one before, all anchored on the frame the stroke started on (the first point's frame, or `frame`). Fill and paint stay inside that frame, carve reaches through every frame it overlaps. One undo step; refused as a whole if a frame would need over 2000 runs or the patch outgrow its budget.",
+    description: "Drag a terrain brush along a polyline: dabs every `spacing` units from the first point to the last, each seeing the one before, all anchored on the frame the stroke started on (the first point's frame, or `frame`). Fill and paint stay inside that frame unless `allFrames`, carve reaches through every frame it overlaps. `taper` narrows (or widens) the brush along the path. `followSurface: \"downhill\"` makes the path itself: from the first point it walks downhill over the voxel ground (steepest descent, a step of `spacing`) until water, a pit, `maxLength` or `maxSteps`, and dabs along it at the ground (+ `depth`): a lava river or a stream bed; the answer gives the path. One undo step; refused as a whole if a frame would need over 2000 runs or the patch outgrow its budget.",
     inputSchema: {
       type: "object", additionalProperties: false, required: ["mode", "size", "points"],
       properties: {
         ...brushProps,
-        points: { type: "array", minItems: 1, maxItems: 500, items: vec("A path point."), description: "The path, as [x,y,z] points in `units`." },
-        spacing: { type: "number", minimum: 0.1, description: "Distance between dabs in map units (default: half the smallest brush side, at least 1)." },
+        points: { type: "array", minItems: 1, maxItems: 500, items: vec("A path point."), description: "The path, as [x,y,z] points in `units`. followSurface: only the first is used, the start (the ground under it, or the top of the ground it is in)." },
+        spacing: { type: "number", minimum: 0.1, description: "Distance between dabs in map units (default: half the smallest brush side, at least 1). followSurface: also the walk's step." },
+        taper: { type: "number", minimum: 0.05, maximum: 4, description: "Brush size at the end of the path as a multiple of `size`, linear along the path's length (0.3 narrows to 30 %; never under 1 voxel). Default 1 (no taper)." },
+        followSurface: { type: "string", enum: ["downhill"], description: "downhill: generate the path by walking downhill over the voxel ground from the first point (steepest of 16 directions, `spacing` a step; level ground is crossed straight on for up to 8 steps, it never climbs) and dab along it at the ground; stops on ground at or under the water, in a pit, at maxLength or maxSteps, or where the ground ends. Not with units grid. Use allFrames for fill and paint, since the walk crosses frames." },
+        maxLength: { type: "number", minimum: 1, description: "followSurface: the longest walk in map units (plan length). Default 400." },
+        maxSteps: { type: "integer", minimum: 1, maximum: 4000, description: "followSurface: the most steps of the walk. Default 1000." },
+        depth: { type: "number", description: "followSurface: each dab's centre is this many map units above the ground's top (negative: into it). Default -0.5, the middle of an unscaled top voxel." },
       },
     },
-    handler(s, a: Brushy & { points: Vec3[]; spacing?: number }) {
+    handler(s, a: Brushy & { points: Vec3[]; spacing?: number; taper?: number; followSurface?: "downhill"; maxLength?: number; maxSteps?: number; depth?: number }) {
       const { store } = s.requireProject();
       gridUnitsNeedFrame(a);
       const gs = frameGrids(store);
       const u = a.units ?? "world";
+      const spacing = a.spacing ?? Math.max(1, Math.min(...a.size) / 2);
+      const label = `${a.mode[0].toUpperCase()}${a.mode.slice(1)} terrain path`;
+      if (!a.followSurface && (a.maxLength !== undefined || a.maxSteps !== undefined || a.depth !== undefined)) throw new ToolError("maxLength, maxSteps and depth are for followSurface");
+      if (a.followSurface) {
+        if (u === "grid") throw new ToolError("followSurface walks the level: give the start in world or map units");
+        const walk = downhillPath(grids(store), pointToMap(a.points[0], u), { step: spacing, maxLength: a.maxLength ?? 400, maxSteps: a.maxSteps ?? 1000, water: waterMap(store) });
+        const depth = a.depth ?? -0.5;
+        const pts = walk.points.map((p) => [p[0], p[1] + depth, p[2]] as Vec3);
+        // the anchor holds the start's top voxel (a point on the ground's top face is outside a frame whose top it is)
+        const anchor = pickAnchor(store, gs, [pts[0][0], walk.points[0][1] - 0.25, pts[0][2]], a.frame, a.mode === "fill");
+        const dabs = pathPoints(pts, spacing);
+        const sizes = a.taper !== undefined && a.taper !== 1 ? taperSizes(pts, spacing, dabs.length, a.size, a.taper) : undefined;
+        const r = stroke(store, spec(a), dabs, anchor, { snap: a.snap ?? true, dryRun: a.dryRun, label, allFrames: a.allFrames, sizes });
+        const out = (p: Vec3) => tidy(u === "world" ? toWorld(p) : p);
+        return {
+          ...r, spacing, ...(a.taper !== undefined ? { taper: a.taper } : {}), pathLength: tidy([walk.length, 0, 0])[0],
+          followSurface: { stop: walk.stop, steps: walk.points.length - 1, units: u, path: walk.points.map(out), start: out(walk.points[0]), end: out(walk.points[walk.points.length - 1]),
+            drop: tidy([walk.points[0][1] - walk.points[walk.points.length - 1][1], 0, 0])[0] },
+          ...(a.points.length > 1 ? { note: "followSurface used only the first point" } : {}),
+        };
+      }
       const anchor = u === "grid" ? pickAnchor(store, gs, [0, 0, 0], a.frame, false) : pickAnchor(store, gs, pointToMap(a.points[0], u), a.frame, a.mode === "fill");
       const pts = a.points.map((p) => pointToMap(p, u, anchor));
-      const spacing = a.spacing ?? Math.max(1, Math.min(...a.size) / 2);
       const dabs = pathPoints(pts, spacing);
-      const r = stroke(store, spec(a), dabs, anchor, { snap: a.snap ?? true, dryRun: a.dryRun, label: `${a.mode[0].toUpperCase()}${a.mode.slice(1)} terrain path` });
-      return { ...r, spacing, pathLength: pts.slice(1).reduce((n, p, i) => n + Math.hypot(p[0] - pts[i][0], p[1] - pts[i][1], p[2] - pts[i][2]), 0) };
+      const sizes = a.taper !== undefined && a.taper !== 1 ? taperSizes(pts, spacing, dabs.length, a.size, a.taper) : undefined;
+      const r = stroke(store, spec(a), dabs, anchor, { snap: a.snap ?? true, dryRun: a.dryRun, label, allFrames: a.allFrames, sizes });
+      return { ...r, spacing, ...(a.taper !== undefined ? { taper: a.taper } : {}), pathLength: pts.slice(1).reduce((n, p, i) => n + Math.hypot(p[0] - pts[i][0], p[1] - pts[i][1], p[2] - pts[i][2]), 0) };
     },
   },
   {

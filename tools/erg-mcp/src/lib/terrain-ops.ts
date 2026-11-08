@@ -2,12 +2,13 @@
 // brush (terrain/brush.ts strokeChanges), block planner (blocks.ts) and surround painter (surround.ts dabChanges), so a
 // tool edits exactly as a mouse stroke does. Everything here edits through VoxelEdit or store.exec: one undo step each.
 import {
-  RemoveFrame, SetLevel, SurroundStroke, MAX_BRUSH, SURROUND_SIDE, apply, blockCentre, cellBudget, dabChanges, gridFrames, planBlock, quantizeHeight,
-  strokeChanges, validEdit, carved, filled, isSolid, type Anchor, type Brush, type BrushMaterial, type BrushMode, type BrushShape, type EditorStore,
+  RemoveFrame, SetLevel, SurroundStroke, MAX_BRUSH, SURROUND_SIDE, apply, blockCentre, brushBox, cellBudget, dabChanges, gridFrames, index, material, multiply,
+  overlaps, painted, planBlock, quantizeHeight, strokeChanges, transformBox, validEdit, carved, filled, isSolid, type Anchor, type Brush, type BrushMaterial, type BrushMode, type BrushShape, type EditorStore,
   type GridFrame, type SurroundBrush, type SurroundMode, type Vec3,
 } from "../core";
 import { ToolError } from "../registry";
-import { VoxelEdit, toMap, tidy, toWorld, usage, voxelIndex, grids } from "./voxel";
+import { spansAt } from "./inspect-field";
+import { VoxelEdit, toMap, tidy, toWorld, usage, voxelIndex, grids, type Grid } from "./voxel";
 
 export type Units = "world" | "map" | "grid";
 
@@ -101,24 +102,86 @@ function cellIndex(size: Vec3, i: number): Vec3 {
   return [x, y, (r - x) / size[0]];
 }
 
+/** The panel's brush test (brush.ts inside): a point in the anchor's voxels against a box or the ellipsoid of the size. */
+function inBrush(p: Vec3, a: Anchor, b: Brush): boolean {
+  if (b.shape === "box") {
+    for (let i = 0; i < 3; i++) if (p[i] < a.center[i] - b.size[i] / 2 || p[i] >= a.center[i] + b.size[i] / 2) return false;
+    return true;
+  }
+  let s = 0;
+  for (let i = 0; i < 3; i++) {
+    const r = b.size[i] / 2, d = p[i] - a.center[i];
+    s += (d * d) / (r * r);
+  }
+  return s <= 1 + 1e-9;
+}
+
+/** The material of the highest solid voxel in a column of the frame, or the voxel's own (brush.ts columnMaterial). */
+function columnMaterial(g: GridFrame, words: Uint32Array, x: number, z: number, own: number): number {
+  for (let y = g.frame.size[1] - 1; y >= 0; y--) {
+    const v = words[index(g.frame, x, y, z)];
+    if (isSolid(v)) return material(v);
+  }
+  return material(own);
+}
+
+/** strokeChanges with fill and paint reaching every frame the brush overlaps, as carve does (sculpt_path allFrames): each
+ * frame's cell centres are tested against the brush in the anchor's voxels, so rotated and scaled frames are edited where
+ * the brush covers them. Carve is the panel's own. Nothing is written. */
+export function strokeChangesAll(gs: GridFrame[], voxels: Map<number, Uint32Array>, a: Anchor, b: Brush): Map<number, Map<number, [number, number]>> {
+  if (b.mode !== "fill" && b.mode !== "paint") return strokeChanges(gs, voxels, a, b);
+  const out = new Map<number, Map<number, [number, number]>>();
+  const box = brushBox(a, b), world = transformBox(a.grid.toWorld, box);
+  for (const g of gs) {
+    if (!overlaps(world, g.bounds)) continue;
+    const words = voxels.get(g.ref);
+    if (!words) continue;
+    const same = g === a.grid;
+    const toAnchor = same ? null : multiply(a.grid.toLocal, g.toWorld);
+    const local = same ? box : transformBox(multiply(g.toLocal, a.grid.toWorld), box);
+    const size = g.frame.size;
+    const lo = [0, 1, 2].map((i) => Math.max(0, Math.ceil(local.min[i] - 0.5)));
+    const hi = [0, 1, 2].map((i) => Math.min(size[i] - 1, Math.floor(local.max[i] - 0.5)));
+    let changes: Map<number, [number, number]> | undefined;
+    for (let z = lo[2]; z <= hi[2]; z++)
+      for (let x = lo[0]; x <= hi[0]; x++)
+        for (let y = lo[1]; y <= hi[1]; y++) {
+          const c: Vec3 = [x + 0.5, y + 0.5, z + 0.5];
+          if (!inBrush(toAnchor ? apply(toAnchor, c) : c, a, b)) continue;
+          const i = index(g.frame, x, y, z), v = words[i];
+          const after = b.mode === "fill"
+            ? (isSolid(v) || b.material === "none" ? v : filled(b.material === "column" ? columnMaterial(g, words, x, z, v) : b.material))
+            : (isSolid(v) && typeof b.material === "number" ? painted(v, b.material) : v);
+          if (after === v) continue;
+          (changes ??= new Map()).set(i, [v, after]);
+        }
+    if (changes) out.set(g.ref, changes);
+  }
+  return out;
+}
+
 /** Applies `centres` (map units) with the brush, each dab seeing the one before, anchored on `anchor` (fill and paint touch
- * only that frame, carve reaches every frame the brush overlaps). One undo step. */
-export function stroke(store: EditorStore, spec: StrokeSpec, centres: Vec3[], anchor: GridFrame, o: { snap: boolean; dryRun?: boolean; label?: string }): StrokeResult {
+ * only that frame unless `allFrames`, carve reaches every frame the brush overlaps). `sizes` gives each dab its own brush
+ * size (a taper; voxels of the anchor, fractional allowed). One undo step. */
+export function stroke(store: EditorStore, spec: StrokeSpec, centres: Vec3[], anchor: GridFrame,
+  o: { snap: boolean; dryRun?: boolean; label?: string; allFrames?: boolean; sizes?: Vec3[] }): StrokeResult {
   const brush = brushOf(spec);
+  const changesOf = o.allFrames ? strokeChangesAll : strokeChanges;
   const gs = frameGrids(store);
   const live = new Map(store.voxels);               // working copy, cloned per blob on first write
   const cloned = new Set<number>();
   const touched = new Map<number, Set<number>>();   // ref -> word indices
   let last = "", dabs = 0;
-  for (const m of centres) {
+  for (const [n, m] of centres.entries()) {
     let c = apply(anchor.toLocal, m);
     if (o.snap) c = snapC(c);
-    const key = c.join();
+    const b = o.sizes ? { ...brush, size: o.sizes[n] } : brush;
+    const key = o.sizes ? `${c.join()}/${b.size.join()}` : c.join();
     if (key === last) continue;                     // the panel steps only when the brush moves to another voxel
     last = key;
     dabs++;
     const a: Anchor = { grid: anchor, center: c };
-    for (const [ref, changes] of strokeChanges(gs, live, a, brush)) {
+    for (const [ref, changes] of changesOf(gs, live, a, b)) {
       if (!cloned.has(ref)) { live.set(ref, live.get(ref)!.slice()); cloned.add(ref); }
       const w = live.get(ref)!, t = touched.get(ref) ?? touched.set(ref, new Set()).get(ref)!;
       for (const [i, [, after]] of changes) { w[i] = after; t.add(i); }
@@ -146,8 +209,86 @@ export function stroke(store: EditorStore, spec: StrokeSpec, centres: Vec3[], an
   return {
     mode: brush.mode, shape: brush.shape, anchorFrame: { id: anchor.frame.id, name: anchor.frame.name }, dabs, changed,
     frames: [...per].sort((a, b) => b[1] - a[1]).slice(0, 60).map(([id, n]) => ({ id, name: nameOf(store, id), changed: n })),
+    ...(o.allFrames && brush.mode !== "carve" ? { allFrames: true } : {}),
     ...(o.dryRun ? { dryRun: true } : { label }),
   };
+}
+
+/** Brush sizes for the dabs of pathPoints(points, spacing): `size` at the start, `size` x `taper` at the end, linear in the
+ * distance along the path (pathPoints puts dab k at k x spacing and the last at the end); never under 1 voxel. */
+export function taperSizes(points: Vec3[], spacing: number, dabs: number, size: Vec3, taper: number): Vec3[] {
+  let length = 0;
+  for (let i = 1; i < points.length; i++) length += Math.hypot(points[i][0] - points[i - 1][0], points[i][1] - points[i - 1][1], points[i][2] - points[i - 1][2]);
+  return Array.from({ length: dabs }, (_, k) => {
+    const t = length > 0 ? (k === dabs - 1 ? 1 : Math.min(1, (k * spacing) / length)) : 0, f = 1 + (taper - 1) * t;
+    return size.map((v) => Math.max(1, v * f)) as Vec3;
+  });
+}
+
+// ------------------------------------------------------------------ following the ground
+
+/** The top of the ground in the map column (x, z): the highest solid span over every grid that starts below `maxY` (so an
+ * overhang above is not ground, and a span the point is inside counts with its own top), or null with none. */
+export function groundAt(gs: Grid[], x: number, z: number, maxY: number): number | null {
+  for (const s of spansAt(gs, x, z)) if (s.bottom < maxY) return s.top;
+  return null;
+}
+
+export interface DownhillOptions {
+  step: number;              // map units between path points, in plan
+  maxLength: number;         // map units of plan length
+  maxSteps: number;
+  water: number | null;      // map y; the walk ends on ground at or under it
+  maxFlat?: number;          // steps across level ground before it counts as a pit (default 8)
+}
+
+export type DownhillStop = "water" | "pit" | "maxLength" | "maxSteps" | "edge";
+
+const DIRS: [number, number][] = Array.from({ length: 16 }, (_, i) => [Math.cos((i * Math.PI) / 8), Math.sin((i * Math.PI) / 8)]);
+
+/** Steepest descent over the voxel ground from `start` (map units; the ground under it, or the top of the ground it is in):
+ * each step goes `step` in plan to the lowest of 16 neighbours that is lower, or on level ground keeps its heading (within
+ * 45 degrees) for up to maxFlat steps, never climbing and never back to a place it has been. Points are on the ground
+ * (y = its top). Ends on water, in a pit (no lower or level way on), at maxLength or maxSteps, or where no ground is
+ * round it (edge). */
+export function downhillPath(gs: Grid[], start: Vec3, o: DownhillOptions): { points: Vec3[]; length: number; stop: DownhillStop } {
+  const y0 = groundAt(gs, start[0], start[2], start[1] + o.step);
+  if (y0 === null) throw new ToolError("followSurface: there is no ground under the start point");
+  const maxFlat = o.maxFlat ?? 8;
+  const points: Vec3[] = [[start[0], y0, start[2]]];
+  const seen = new Set<string>();
+  const cell = (x: number, z: number) => `${Math.round(x / o.step)},${Math.round(z / o.step)}`;
+  seen.add(cell(start[0], start[2]));
+  let heading: [number, number] | null = null, length = 0, flat = 0;
+  for (;;) {
+    const [x, y, z] = points[points.length - 1];
+    if (o.water !== null && y <= o.water + 1e-9) return { points, length, stop: "water" };
+    if (points.length - 1 >= o.maxSteps) return { points, length, stop: "maxSteps" };
+    if (length + o.step > o.maxLength + 1e-9) return { points, length, stop: "maxLength" };
+    let down: { d: [number, number]; g: number } | null = null, level: { d: [number, number]; dot: number } | null = null, any = false;
+    for (const d of DIRS) {
+      const nx = x + d[0] * o.step, nz = z + d[1] * o.step;
+      const g = groundAt(gs, nx, nz, y + 0.5);
+      if (g === null) continue;
+      any = true;
+      if (seen.has(cell(nx, nz))) continue;
+      if (g < y - 1e-6) { if (!down || g < down.g) down = { d, g }; }
+      else if (g <= y + 1e-6) {
+        const dot = heading ? heading[0] * d[0] + heading[1] * d[1] : 1;
+        if (dot >= Math.SQRT1_2 - 1e-9 && (!level || dot > level.dot)) level = { d, dot };
+      }
+    }
+    if (!any) return { points, length, stop: "edge" };
+    let d: [number, number], g: number;
+    if (down) { d = down.d; g = down.g; flat = 0; }
+    else if (level && flat < maxFlat) { d = level.d; g = y; flat++; }
+    else return { points, length, stop: "pit" };
+    const nx = x + d[0] * o.step, nz = z + d[1] * o.step;
+    points.push([nx, g, nz]);
+    seen.add(cell(nx, nz));
+    heading = d;
+    length += o.step;
+  }
 }
 
 // ------------------------------------------------------------------ blocks

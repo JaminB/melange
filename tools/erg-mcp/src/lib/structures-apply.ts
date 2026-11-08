@@ -29,7 +29,7 @@ function resolve(shapes: Shape[], x: number, y: number, z: number, word: number,
     if (x < s.min[0] || x >= s.max[0] || y < s.min[1] || y >= s.max[1] || z < s.min[2] || z >= s.max[2] || !s.hit(x, y, z)) continue;
     const mat = s.matAt ? s.matAt(x, y, z) : s.mat;
     if (s.op === "fill") {
-      if (fills && !(isSolid(word) && material(word) === mat)) word = filled(mat);
+      if (fills && !(isSolid(word) && (s.keep || material(word) === mat))) word = filled(mat);
       lastPart = s.part ?? k;
     } else if (s.op === "carve") word = carved(word);
     else if (isSolid(word)) word = painted(word, mat);
