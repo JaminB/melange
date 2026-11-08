@@ -19,3 +19,12 @@ Each item passes or fails, with evidence.
 | R6 | The mine factory is at or inside the crater, and mines are seen coming from it in play. |
 | R7 | Every spawn (8 knots, spread over the castles) can reach the volcano summit on foot or with standard utilities; ramps, switchbacks or tunnels exist; no floating debris, no unreachable or underwater spawns. |
 | R8 | It looks good and complex: varied terrain (ridges, gullies, beaches, cliffs), not boxy; theme and time of day chosen deliberately. |
+
+## Iteration 4 design (builder's notes)
+
+A single `heightfield_drape` skin (voxel 2.5, 3 thick, hollow) over a 230 x 230 rectangle gives a smooth cone: summit rim at
+71-80, castles at 11-34, a breach notch facing south with a lava flow to the shore (`terrain.mjs`). Three roads climb at
+26.6 degrees through seven pale-stone castles (shelves cut and filled; a gate at each end); `check_reachability` at
+maxSlope 38 and `check_flood` (the script's literal `waterSchedule`) pass 8 of 8; `check_islets` finds no detached
+piece. Water: first rise turn 5 (round 3), 62 world units a turn, cap 740 at turn 16. Mines: the crater factory (target 12,
+one idle turn, no start mines). Cells 49 859 of 65 535, 16 blocks.
