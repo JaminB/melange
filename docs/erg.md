@@ -15,7 +15,11 @@ not in a lobby.
 ## Projects
 
 A project is one map you're editing: a base level plus your changes, saved under
-`Documents\Melange\erg\projects\<id>\`. Opening the panel lists the game's own multiplayer maps and any project you
+`Documents\Melange\erg\projects\<id>\` (or the folder `[Erg] ProjectsDir` in `Melange.ini` names: an absolute path, or
+one relative to the game folder such as `Melange\erg\projects`). The game and `Melange.exe` each read their own game
+folder's `Melange.ini`, so they share projects only when both name the same folder: **Test** runs in the game and reads
+the game's folder, so a project made by `Melange.exe` for another install (or with another `ProjectsDir`) is not there.
+Opening the panel lists the game's own multiplayer maps and any project you
 already started; pick one to start a new project from it, or an existing project to keep going. **Save** (Ctrl+S)
 writes the project atomically; until then your edits and the undo history live in the page, and unsaved edits come
 back as a draft if you reload it. Only one server (the game or `Melange.exe`, not both) can have a given project open at
@@ -139,7 +143,7 @@ the same one a content mod's `entry.sim` gets (see *Sim scripts* in [developer-g
 after every mod's sim script and only when this map is the one being played. **Save script** (Ctrl+S) checks the text
 first and marks the line of any problem; Test saves it and runs the saved text, so an edit followed by another Test
 needs no restart. Export ships it as `sim/<slug>.lua` and names it in the level's `levels[].sim` in `spice.json`.
-`Melange.exe` checks only the script's size and encoding; the syntax is checked while the game is running.
+`Melange.exe` compiles it too (never runs it), with a stock Lua 5.0.1 parser, the same dialect as the game's.
 
 ![The Script tab with a short level script that floods the map when the goal trigger is collected](images/erg/script.png)
 
@@ -162,6 +166,7 @@ end)
 | `wum.level.trigger(knot [, opts])` | A trigger at a knot; `opts`: `index`, `radius`, `teamCollect`, `teamDestroy`, `hitpoints`, `wormCollect`. `true`, or `nil` and a reason |
 | `wum.level.crate(knot [, opts])` | A crate at a knot; `opts`: `kind` (`weapon`, `health`, `utility`), `contents`, `count`, `amount`, `hitpoints`, `parachute` |
 | `wum.events.on("sim.turnStarted", fn)` | `fn(name, turn)` at the first tick of each turn, on every machine at the same tick |
+| `wum.sim.announce(text [, seconds])` | Shows `text` (at most 160 bytes of UTF-8) centred near the top of every player's screen for `seconds` (0.5 to 15, default 4); up to three at once, the oldest replaced. Draws only: the match, Wormsign and replays are untouched, so it is safe in deterministic code. Detect it with `if wum.sim.announce then ... end` |
 
 Everything else (`wum.events`, `wum.sim.*`, `wum.log`) is the sim script API. In logs and in Wormsign the script is
 named `<mod id>:<slug>` (`erg:<project>` while testing).
@@ -265,7 +270,6 @@ Survivor copy. Packs exported by an earlier Melange keep working unchanged.
 - Not yet supported:
   - per-team or story spawn points, and story or challenge map types;
   - editing the map's generated chunk (Erg rewrites it every export; use a [level script](#level-scripts));
-  - checking a level script's syntax outside the game: `Melange.exe` checks size and encoding only;
   - enabling a pack with level scripts without a restart (see [Live packs](#live-packs)).
 - A replay recorded on a Test map only plays back correctly while your Test workspace still has the same files —
   moving on to a different edit, or exporting for real, can make an older Test recording unplayable.

@@ -41,6 +41,9 @@ export interface MaterialRule {
 
 export interface Crater { radius: number; depth: number; x?: number; z?: number; rim?: number; }
 
+/** A part of the level in x, z (the region's units): a circle or a rectangle. */
+export interface Area { x?: number; z?: number; radius?: number; min?: [number, number]; max?: [number, number]; }
+
 export interface FieldArgs {
   units?: Units;
   min: [number, number];                    // x, z (level coordinates in units)
@@ -58,6 +61,10 @@ export interface FieldArgs {
   partial?: boolean;
   voxelSize?: number;                       // map units per voxel (the new blocks' scale), 1-4; default 1
   maxCells?: number;                        // the new blocks hold at most this many of the game's cells
+  centre?: [number, number];                // x, z origin of the expression's x, z, r, theta (default the rectangle's centre)
+  clip?: Area[];                            // keep only columns whose centre is in one of these
+  exclude?: Area[];                         // leave out columns lying wholly inside one of these
+  runsHeadroom?: number;                    // runs to leave free in each new block for later edits (default 0)
 }
 
 export const SIDE = LIMITS.newFrameSide;
@@ -76,6 +83,7 @@ export interface Field {
   sceneId: number | null;                   // null: no Scene frame, no blocks
   i0: number; j0: number; nx: number; nz: number;
   floor: number;                            // floor cell (scene y)
+  runLimit: number;                         // runs a new block may hold: the limit less runsHeadroom
   lo: Int32Array; hi: Int32Array;           // per column [lo, hi): hi <= lo is no column
   height: Float32Array;                     // per column, voxels above the floor (after crater, cap)
   slope: Float32Array;                      // per column, degrees
@@ -121,8 +129,26 @@ export function sampleField(store: EditorStore, a: FieldArgs): Field {
   checkMaterial(material, "material");
   (a.materials ?? []).forEach((r, i) => checkMaterial(r.material, `materials[${i}].material`));
 
-  // Region coordinates (units): x, z from the centre.
-  const cx = ((i0 + i1) / 2) * s + t[0], cz = ((j0 + j1) / 2) * s + t[2];
+  // Region coordinates (units): x, z from the centre (the rectangle's, snapped to the lattice, unless `centre` names one:
+  // fields of different voxel sizes then share their x, z, r and theta).
+  if (a.centre && !a.centre.every(Number.isFinite)) throw new ToolError("centre: two finite numbers");
+  const cx = a.centre ? a.centre[0] * k : ((i0 + i1) / 2) * s + t[0], cz = a.centre ? a.centre[1] * k : ((j0 + j1) / 2) * s + t[2];
+  const areas = (list: Area[] | undefined, what: string) => (list ?? []).map((ar, i) => {
+    const circle = ar.radius !== undefined;
+    if (circle ? ar.x === undefined || ar.z === undefined || !(ar.radius! > 0) || ar.min || ar.max : !ar.min || !ar.max || ar.x !== undefined || ar.z !== undefined)
+      throw new ToolError(`${what}[${i}]: give either x, z and radius (a circle) or min and max (a rectangle)`);
+    return circle
+      ? { circle: true, x: ar.x! * k, z: ar.z! * k, r: ar.radius! * k, x0: 0, z0: 0, x1: 0, z1: 0 }
+      : { circle: false, x: 0, z: 0, r: 0, x0: Math.min(ar.min![0], ar.max![0]) * k, x1: Math.max(ar.min![0], ar.max![0]) * k,
+        z0: Math.min(ar.min![1], ar.max![1]) * k, z1: Math.max(ar.min![1], ar.max![1]) * k };
+  });
+  const clip = areas(a.clip, "clip"), exclude = areas(a.exclude, "exclude");
+  type A = (typeof clip)[number];
+  const inArea = (ar: A, x: number, z: number) => ar.circle ? (x - ar.x) ** 2 + (z - ar.z) ** 2 <= ar.r * ar.r : x >= ar.x0 && x <= ar.x1 && z >= ar.z0 && z <= ar.z1;
+  // clip keeps a column whose centre is inside; exclude drops one whose four corners are: a fine field clipped to an area
+  // and a coarse one excluding the same area overlap at its edge instead of leaving a gap.
+  const kept = (mx: number, mz: number) => (!clip.length || clip.some((ar) => inArea(ar, mx, mz))) &&
+    !exclude.some((ar) => [-1, 1].every((dx) => [-1, 1].every((dz) => inArea(ar, mx + (dx * s) / 2, mz + (dz * s) / 2))));
   const W = (nx * s) / k, D = (nz * s) / k;
   let fn: (v: Vars) => number;
   if (a.expr !== undefined) {
@@ -170,7 +196,7 @@ export function sampleField(store: EditorStore, a: FieldArgs): Field {
       if (hv > MAX_COLUMN) throw new ToolError(`the height reaches ${num(h)} (${Math.round(hv)} voxels) at x ${num(mx / k)}, z ${num(mz / k)}: at most ${MAX_COLUMN} voxels; pass maxHeight`);
       const c = b * nx + a2, top = Math.round(hv);
       height[c] = hv;
-      if (top >= 1) {
+      if (top >= 1 && kept(mx, mz)) {
         lo[c] = floor - depth;
         hi[c] = floor + top;
       }
@@ -196,7 +222,8 @@ export function sampleField(store: EditorStore, a: FieldArgs): Field {
     }
     return material;
   };
-  return { k, s, t, sceneId, i0, j0, nx, nz, floor, lo, hi, height, slope, materialAt };
+  const runLimit = Math.max(100, LIMITS.runsPerFrame - Math.max(0, Math.round(a.runsHeadroom ?? 0)));
+  return { k, s, t, sceneId, i0, j0, nx, nz, floor, runLimit, lo, hi, height, slope, materialAt };
 }
 
 // ------------------------------------------------------------------ frames as canvas
@@ -392,7 +419,7 @@ function finish(f: Field, cv: Canvas, box: Box, out: Piece[]) {
   const piece = { ...box } as Piece;
   const w = words(f, cv, piece);   // not kept: apply() builds them again for the blocks it adds
   const runs = voxelRuns(new Uint32Array(w.length), w);
-  if (runs.length <= LIMITS.runsPerFrame) {
+  if (runs.length <= f.runLimit) {
     piece.runs = runs.length;
     piece.bytes = runBytes(runs) + OP_BYTES;
     out.push(piece);
@@ -534,6 +561,8 @@ function pieceInfo(f: Field, p: Piece) {
     map: { min: tidy(min), max: tidy(max) }, world: { min: tidy(min.map((v) => v * WORLD_PER_MAP) as Vec3), max: tidy(max.map((v) => v * WORLD_PER_MAP) as Vec3) } };
 }
 
+let suggesting = false;   // plan() re-plans at larger voxel sizes for a suggestion, once
+
 export function plan(store: EditorStore, a: FieldArgs): Plan {
   const f = sampleField(store, a);
   const cv = canvas(store, f, a.reuseFrames ?? "aligned");
@@ -563,24 +592,54 @@ export function plan(store: EditorStore, a: FieldArgs): Plan {
   const keptBytes = kept.reduce((n, p) => n + p.bytes, 0);
   const runVoxelsAfter = runVoxels + keptVoxels + frameCells;
   let why: string | undefined;
+  const blocks = (n: number) => `${n} block${n === 1 ? "" : "s"}`;
+  // What binds, the cell budget first: while it binds the packer spends blocks halving boxes to save cells, so a block
+  // count past the limit is then its consequence rather than the cause.
+  const limitReasons = () => {
+    const cellsBind = neededCells > cellRoom;
+    const out = [
+      ...(cellsBind ? [`cell budget exceeded (${neededCells} needed, ${cellRoom} allowed): the blocks' boxes hold ${neededCells} voxel cells where the ` +
+        `level has ${cells.free} of the game's ${cells.max} left (its frames hold ${cells.used}${a.maxCells !== undefined ? `, maxCells ${a.maxCells}` : ""})`] : []),
+      ...(pieces.length > blockRoom || !cellsBind ? [`the field needs ${blocks(pieces.length)} and ${slots} may be added (${usedBlocks} of ${LIMITS.newFrames} ` +
+        `already used${a.maxBlocks !== undefined ? `, maxBlocks ${a.maxBlocks}` : ""})`] : []),
+      ...(pieces.reduce((n, p) => n + p.bytes, 0) > byteRoom ? ["their runs pass the patch's size budget"] : []),
+    ];
+    return out.join("; ");
+  };
   if (dropped.length) {
     const lostTop = Math.max(...dropped.map((p) => p.y1));
-    const blocks = (n: number) => `${n} block${n === 1 ? "" : "s"}`;
     why = f.sceneId === null
       ? `this level has no Scene frame, so no block can be added, and the frames that overlap the field leave ${blockVoxels} of its ${voxels} voxels ` +
         `(${blocks(pieces.length)} worth)` + ((a.reuseFrames ?? "aligned") === "aligned" ? `: reuseFrames: "any" also fills the rotated and scaled frames` : "") +
         ", or pass partial: true to fill only what the frames can take."
-      : `the field needs ${blocks(pieces.length)} and ${slots} may be added (${usedBlocks} of ${LIMITS.newFrames} already used` +
-        `${a.maxBlocks !== undefined ? `, maxBlocks ${a.maxBlocks}` : ""})` +
-        (pieces.reduce((n, p) => n + p.bytes, 0) > byteRoom ? ", and their runs pass the patch's size budget" : "") +
-        (neededCells > cellRoom ? `, and their boxes hold ${neededCells} voxel cells where the level has ${cells.free} of the game's ${cells.max} left (its frames hold ${cells.used}` +
-          `${a.maxCells !== undefined ? `, maxCells ${a.maxCells}` : ""})` : "") +
+      : limitReasons() +
         `. Without ${blocks(dropped.length)} ${blockVoxels - keptVoxels} voxels are missing` +
         (lostTop >= top ? `, up to the peak (map y ${num(lostTop * f.s + f.t[1])})` : "") +
         ". Shrink the rectangle, lower the heights or baseDepth, use a larger voxelSize (a cell costs the same and covers more), use fewer material bands (each band crossing a column costs a run, and a block over 2000 runs is split), or pass partial: true to place the blocks holding the most voxels.";
   }
   if (runVoxelsAfter > LIMITS.runVoxels) why = `the patch's runs would cover ${runVoxelsAfter} voxels (at most ${LIMITS.runVoxels})`;
   const fits = !why || (!!a.partial && runVoxelsAfter <= LIMITS.runVoxels);
+  // When the cells bind: the smallest voxelSize (in steps of 0.25) at which the same field fits whole.
+  let suggest: { voxelSize: number; cells: number; blocks: number } | null | undefined;
+  if (dropped.length && neededCells > cellRoom && f.sceneId !== null && !suggesting) {
+    suggesting = true;
+    suggest = null;
+    try {
+      for (let v = Math.floor(f.s * 4 + 1e-9) / 4 + 0.25; v <= LIMITS.newFrameScale.max + 1e-9; v += 0.25) {
+        const q = plan(store, { ...a, voxelSize: v, partial: false });
+        if (!q.dropped.length && !q.why) {
+          suggest = { voxelSize: v, cells: q.kept.reduce((n, p) => n + cellsOf(p), 0), blocks: q.kept.length };
+          break;
+        }
+      }
+    } catch {
+      // a voxel size the field cannot take (a span or a height cap): no suggestion from there on
+    } finally {
+      suggesting = false;
+    }
+    if (why) why += suggest ? ` At voxelSize ${suggest.voxelSize} the same field fits whole: ${blocks(suggest.blocks)} of ${suggest.cells} cells.`
+      : ` No voxelSize up to ${LIMITS.newFrameScale.max} fits it whole: shrink the rectangle, lower the heights, or raise maxCells.`;
+  }
 
   const toW = (v: number) => num(v * WORLD_PER_MAP);
   const rect = { min: mapOf(f, [f.i0, f.floor, f.j0]), max: mapOf(f, [f.i0 + f.nx, top === -Infinity ? f.floor : top, f.j0 + f.nz]) };
@@ -591,6 +650,7 @@ export function plan(store: EditorStore, a: FieldArgs): Plan {
       "on a large field prefer minHeight/maxHeight or slope bands, and Test the level");
   const report = {
     fits, ...(why ? { why } : {}), ...(notes.length ? { notes } : {}),
+    ...(suggest !== undefined ? { suggestedVoxelSize: suggest ?? "none up to 4 fits the field whole" } : {}),
     region: { voxelSize: f.s, columns: f.nx * f.nz, size: [f.nx, f.nz], solidColumns: columns, map: { min: tidy(rect.min), max: tidy(rect.max) },
       world: { min: tidy(rect.min.map((v) => v * WORLD_PER_MAP) as Vec3), max: tidy(rect.max.map((v) => v * WORLD_PER_MAP) as Vec3) },
       floor: { map: num(f.floor * f.s + f.t[1]), world: toW(f.floor * f.s + f.t[1]) }, peakVoxels: columns ? top - f.floor : 0 },

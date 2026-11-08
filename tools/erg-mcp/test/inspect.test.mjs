@@ -149,7 +149,28 @@ test("inspect tools over the mock server", async () => {
     assert.ok(!noProj.isError && Array.isArray(noProj.json.themes), noProj.text);
     const byTheme = await m.tool("list_materials", { theme: "BUILDING" });
     assert.equal(byTheme.json.palette.theme, "BUILDING");
-    assert.equal(byTheme.json.materials, null);
+    // with no project, a theme lists its own material file, with the server's texture colours
+    assert.equal(byTheme.json.materials.file, "ThemeBuilding\\ThemeBuilding.txt");
+    assert.equal(byTheme.json.materials.list.length, 8);
+    assert.deepEqual(byTheme.json.materials.list[6], { index: 6, name: "Lava", colour: "#c83c10", textured: true });
+    assert.equal(byTheme.json.materials.list[7].textured, false);
+    // a file whose separator was lost (a JSON "\d" read as "d") or written with a slash is matched to the listed one
+    const lost = await m.tool("list_materials", { materialFile: "Mapssynthetic.txt", only: "materials" });
+    assert.equal(lost.json.materials.file, "Maps\\synthetic.txt", lost.text);
+    assert.match(lost.json.materials.note, /read as Maps\\synthetic\.txt/);
+    const slash = await m.tool("list_materials", { materialFile: "maps/synthetic.txt", only: "materials" });
+    assert.equal(slash.json.materials.file, "Maps\\synthetic.txt", slash.text);
+    const none = await m.tool("list_materials", { materialFile: "Maps\\nope.txt", only: "materials" });
+    assert.match(none.json.materials.error, /could not read/);
+    assert.ok(none.json.materials.materialFiles.includes("Maps\\synthetic.txt"));
+    // the swatch sheet
+    const sw = await m.tool("preview_materials", { theme: "CAMELOT" });
+    assert.ok(!sw.isError, sw.text);
+    assert.equal(sw.content[0].type, "image");
+    const sheet = JSON.parse(sw.content[1].text);
+    assert.equal(sheet.file, "ThemeCamelot\\ThemeCamelot.txt");
+
+    assert.equal(sheet.materials[0].colour, "#4a7a30");
     assert.equal(m.stray.length, 0);
   } finally {
     await m.close();

@@ -48,6 +48,12 @@ The first tool that needs the server connects by the first of these that is set:
 4. `MELANGE_GAME_DIR`: erg-mcp starts `Melange.exe --serve --game <dir>` for that game folder (`MELANGE_EXE` names
    another `Melange.exe` than `<dir>\Melange.exe`) and stops it when it exits. Use this with the game closed.
 
+**Projects folder.** Each server keeps projects in its own game folder's `[Erg] ProjectsDir` (in that game's
+`Melange.ini`), else `Documents\Melange\erg\projects`; `connect`, `list_bases` and `new_project` answer it as
+`projectsDir`. **Test** runs in the game and reads the game's folder, so a project made through `Melange.exe --serve`
+for another install (or one whose `ProjectsDir` differs) is not seen by that game's Test: build and test against the
+same install, or give both the same `ProjectsDir`.
+
 The `connect` tool does the same, or connects to an explicit `url` or `gameDir`. A launch URL has the form
 `http://127.0.0.1:8765/?k=<token>`; erg-mcp opens `ws://127.0.0.1:8765/ws?k=<token>` with no `Origin` header, which
 the server accepts with the token. The token is never echoed back in a tool result.
@@ -68,9 +74,10 @@ cells are counted in a frame's grid: cell `(x, y, z)` with `y` up, centred on th
 
 | Tool | What it does |
 |---|---|
-| `connect` | Connect or reconnect: `url`, or `gameDir` to start `Melange.exe --serve` (`MELANGE_EXE` names another `Melange.exe`; the tool takes no program path); no arguments uses the order above. Reconnecting closes the open project (refused with unsaved edits unless `discard`). |
-| `list_bases` | The base levels (the game's multiplayer maps and installed map packs: key, title, theme, source) and the projects. Filters: `search`, `theme`, `source`. |
-| `new_project` | Start a project from a base: `base` (a key such as `Multi.DinerMight`), `slug` (`[a-z0-9]{1,24}`), `title`. The server picks another id when the slug is taken; the result has the id. |
+| `connect` | Connect or reconnect: `url`, or `gameDir` to start `Melange.exe --serve` (`MELANGE_EXE` names another `Melange.exe`; the tool takes no program path); no arguments uses the order above. Reconnecting closes the open project (refused with unsaved edits unless `discard`). Answers the server's `projectsDir`. |
+| `list_bases` | The base levels (the game's multiplayer maps and installed map packs: key, title, theme, source), the projects and `projectsDir`. Filters: `search`, `theme`, `source`. |
+| `new_project` | Start a project from a base: `base` (a key such as `Multi.DinerMight`), `slug` (`[a-z0-9]{1,24}`), `title`. Refused when a project with that slug exists (open it, `delete_project` it, or pass `allowRename: true` to take the server's next free id, such as `caldera2`, with a `warning` in the answer). |
+| `delete_project` | Delete a project's folder (patch, script, metadata) by `id`. Refused while it is open, here or in any other server (the game, `Melange.exe`): `close` it first. Exported mods are not touched; it cannot be undone. |
 | `open_project` | Open a project by `id`: its base and current state with every voxel blob. One project is open at a time. |
 | `describe_level` | The open level: voxel frames largest first (id, size, solid count, position and bounds in map and world units; `search`, `minVoxels`, `limit`, `allFrames`), the level's extent, spawns, objects, water, theme, time of day, the patch's usage against the limits, the game's voxel cell budget (`limits.voxelCells`: used, max 65535, free) and `engineWarnings` (blocks over 31 a side, cells over the budget). |
 | `save` | Save the open project. Refused, with nothing sent, while the patch breaks a limit or the patch validator objects (`describe_level` lists them under `problems`; undo the edit). Returns the server's warnings. |
@@ -90,7 +97,7 @@ of the anchor frame, 1-32.
 |---|---|
 | `sculpt` | One dab: `mode` (`carve`, `fill`, `paint`), `shape` (`box`, `sphere`), `size` `[x,y,z]`, `center`, and `material` 0-63 (fill and paint need it; fill also takes `materialColumn`, the material of the highest solid voxel in each column). `frame` picks the anchor, otherwise the frame holding the point. Centres snap to the middle of a voxel unless `snap` is false; `dryRun` counts without applying. Fill places voxels where the brush is, so centre it in empty cells inside a frame. |
 | `sculpt_path` | A stroke along `points` (a polyline), a dab every `spacing` map units (default half the smallest brush side), all anchored on the first point's frame (or `frame`). |
-| `add_block` | A solid block of `size` (each side 1-31, at most 64 blocks) and `material` under the Scene frame, optionally `scale` (1-4 map units per voxel, default 1). `at` is the point it rests on (x and z its centre, y its bottom) or `center` is its middle, in world or map units; the corner snaps to whole units. Refused when the level's voxel frames would pass the game's 65 535 cells. Answers the new frame id (a negative id; it can change when the project is reopened, so describe_level again), its bounds and the cells left. |
+| `add_block` | A solid block of `size` (each side 1-31, at most 64 blocks) and `material` under the Scene frame, optionally `scale` (1-4 map units per voxel, default 1; the game's own maps use frames scaled 1.2-2.0). `at` is the point it rests on (x and z its centre, y its bottom) or `center` is its middle, in world or map units; the corner snaps to whole units. Refused when the level's voxel frames would pass the game's 65 535 cells. Answers the new frame id (a negative id; it can change when the project is reopened, so describe_level again), its bounds and the cells left. |
 | `remove_block` | Remove a block added in this project, by frame id. |
 | `clear_base_terrain` | Carve away the solid voxels of base frames chosen by `frames`, `search` (name) and/or a `box` (voxels whose centre is in `[min, max)`); `all: true` for everything. Added blocks are kept unless `includeBlocks`. `wipe` writes empty words (0) instead of carving, which keeps each voxel's material bits; empty words merge into fewer patch runs. `dryRun` counts. |
 | `fill_box_raw` | Write a box of voxels in any voxel frame, including added blocks: `state` `solid` (with `material`) or `empty`, or a raw `word`; `only` empty or solid cells; the box is `min`/`max` in `units` (default `grid`: voxel indices, `max` exclusive). Words must be valid edits of the base word. |
@@ -109,20 +116,25 @@ numbers (resolved sizes, where a ramp ends). `save` then sends the same patch th
 Shared arguments: `material` (0-63; default the most common solid material near the structure), `place` (`auto`
 default: frames, then new blocks; `existing`: never add blocks; `new`: every solid voxel into new blocks), `dryRun`
 (plan and report, change nothing), `units` (`map` default, or `world`: every position and length of the call is world
-units). Positions are `[x, y, z]` with `y` up; the `y` of `at`/`from` is the level of the first solid layer, so the
+units), `blockScale` (map units per voxel of the new blocks, 1-4, default 1: fewer cells for the same structure in
+coarser voxels; use `place: "new"` so all of it is on that lattice) and `packing` (`tiles`, the default: tiles of up
+to 31 a side, each trimmed to what it holds; `parts`: a block per part of the structure, such as each wall, tower and
+the keep, merged where that costs at most an eighth more cells, so the air between parts, a courtyard, is in no block:
+a 24 x 24 castle with a keep takes about 40 % of the cells, in more blocks). Positions are `[x, y, z]` with `y` up; the `y` of `at`/`from` is the level of the first solid layer, so the
 structure stands on the surface at that height. Sides are map directions: `n` = -z, `s` = +z, `e` = +x, `w` = -x, before
 any `rotation` (degrees, counter-clockwise from above). A call that changes nothing fails (for example, outside every
 frame in a level whose base has no Scene frame, such as Multi.NiceToSiege, where only `place: "existing"` can work).
 
 | Tool | What it builds |
 |---|---|
-| `build_castle` | `at`, `size` [x, z], `wallHeight`, `wallThickness`, round or square corner towers (`towerShape`, `towerRadius`, `towerHeight`), a `keep` with `keepSize`, a `gate` on one side (`gateWidth`, `gateHeight`, round-topped from 3 wide), `crenellations`, `foundation` (fills the whole footprint below the floor), `rotation`. |
+| `build_castle` | `at`, `size` [x, z], `wallHeight`, `wallThickness`, round or square corner towers (`towerShape`, `towerRadius`, `towerHeight`), a `keep` with `keepSize`, a `gate` on one side (`gateWidth`, `gateHeight`, round-topped from 3 wide), `crenellations`, `foundation` (fills the whole footprint below the floor), `rotation`. `scale` (1-4) lays the castle out in voxels of that many map units (lengths stay map units; walls, merlons and gates keep their rhythm in voxels) and gives its new blocks that scale: about 1/scale^3 of the cells. The answer's `spawnSpots` lists open courtyard positions (between the curtain wall and the keep, never inside a wall passage), the middle of each wall-walk and each tower top; after a build each is checked against the voxels (`ok`, `standOn`: ground within 1.5 map units of the design and 1.5 of air above), ready for `place_spawn_knots` as `pos`. |
 | `build_wall` | A wall along `points` (each with its own base y, so it follows a slope), `closed`, `height`, `thickness`, `crenellations` (merlons 2 on, 1 off; on both edge rows of walls 3+ thick, `parapet` picks left, right, both or all), `foundation`. |
 | `build_tower` | Round or square, `radius`, `height`, `hollow` with `wallThickness` and a `door` (default south) of `doorWidth` x `doorHeight`, merlons round the rim, `foundation`. |
 | `build_keep` | A rectangular building: `size`, `height`, hollow interior at floor level, roof slab, `door`, arrow slits (`windows`), merlons on the roof rim. |
 | `build_ramp` | `from` to `to`, `width`, `maxSlope` (default 40 degrees; worms walk about 45). Steeper is refused unless `switchback` folds it into lanes side by side (`turn` left or right); the answer gives the slope, the lane count and where the top ends. `support` solid or slab. |
 | `build_stairs` | `from` to `to`, `width`, `rise` per step; the tread is the run divided by the steps and must be at least 1. |
 | `dig_crater` | A paraboloid bowl of `radius` and `depth` below the surface level `at.y`, a raised rim (`rimWidth`, `rimHeight`), optional `bowlMaterial` repaint. |
+| `sculpt_crater` | A crater shaped into the terrain that is there (a volcano's summit), `at` [x, z]: the ground is read first, the rim crest is its mean height round the `radius` circle plus `rimHeight`, the bowl is `depth` below the crest (flat inside `floorRadius`), and outside the crest the rim falls back to the ground's own slope over `rimWidth` (default radius / 2), so there is no separate wall ring. `bands` paint the new surface `bandDepth` deep (default 2) by signed distance from the crest (`from`/`to`, negative inside the bowl), first match wins. The rim is raised in `material`, by default each column's own top material (no new material change down a column, so no new runs: an added block holds at most 2000, and every band painted adds about one a column); fills above the old ground go into existing frames, else new blocks (`blockScale` gives them the field's voxel size). Refused where under half the rim circle has ground. |
 | `dig_tunnel` | Carves a round or square tube of `radius` along `points` through every frame it crosses; optional lining shell (`liningMaterial`, `liningThickness`). |
 | `build_arch` | A freestanding gateway: opening `span` wide, straight for `rise`, then semicircular; `pier`, `depth`, `crown`, `rotation`. |
 | `build_bridge` | A deck from `from` to `to` (`width`, `deckThickness`), rails, and optionally piers every `pierSpacing` down to `downTo`; `arched` fills solid between the piers and carves a round arch through each bay. |
@@ -175,6 +187,21 @@ Arguments, all lengths and heights in `units` (`map` default, or `world`):
   to keep some of each for other edits (castles).
 - `partial`: when the blocks do not all fit, place the ones holding the most voxels instead of refusing. A block in a
   stack is kept only when the block under it is, so nothing floats; the answer lists what was dropped.
+- `runsHeadroom`: leave this many of each new block's 2000 runs free for later edits (`sculpt_crater`, painted bands,
+  structures built into the blocks), which are refused when a block would pass 2000. Default 0; blocks halve sooner.
+- `centre`: `[x, z]`, the origin of the expression's `x`, `z`, `r` and `theta` (and the crater's default centre)
+  instead of the rectangle's centre, which snaps to the lattice of the voxel size.
+- `clip` and `exclude`: areas, each a circle (`x`, `z`, `radius`) or a rectangle (`min`, `max`). `clip` keeps only the
+  columns whose centre is inside one; `exclude` leaves out the columns lying wholly inside one.
+
+**Fine voxels where they matter.** The game's voxels are cubes (a word holds solid, a material and a second-material
+paint mask, no slope), so a coarse `voxelSize` makes every slope a staircase of its size. Detail costs cells, so spend
+it where it shows: two calls with the same rectangle, `expr` and `centre`, one coarse with `exclude: [circle]` and one
+fine with `clip: [circle]` (the same circle). They sample the same surface; the coarse field keeps the columns the
+circle only partly covers, so the two overlap at the edge and no gap opens. For example (tried on Multi.DinerMight) a
+240 x 240 island with a 56-high cone: the lowlands at 3 (16 blocks, 24 756 cells), the cone inside r 40 at 2.25 (9
+blocks, 24 479 cells); the whole island at 1.5 would need 195 696 cells. Use `x`, `z`, `r` in such an expression (`u`,
+`v`, `W`, `D` follow the snapped rectangle), and cap each call's `maxBlocks` so the two share the 64.
 
 **Packing.** Two budgets bind. A patch can add 64 blocks of at most 31 voxels a side (the game asserts on 32), each
 with at most 2000 runs. And the game counts the cells of every voxel frame of the level, base and added, solid or
@@ -188,9 +215,11 @@ it needs. While those boxes hold more cells than are left (or `maxCells`), and b
 (in x, z or y, each half trimmed again) saves the most cells is halved, so a cone's flanks cost about their slope
 rather than their tile's whole height. Inside a block a column of one material is one run, so a 31 x 31 block uses
 about 961; each extra material band a column crosses adds a run, and a block that passes 2000 is halved along its longer
-side, which costs blocks. When the field does not fit the answer says how many blocks and cells it needs, how many
-voxels would be missing and whether the peak is among them: shrink the rectangle, lower the heights or `baseDepth`,
-raise `voxelSize`, use fewer bands, or pass `partial`. For example on Multi.DinerMight (11 652 base cells, 53 883 left)
+side, which costs blocks. When the field does not fit the answer says what binds first: `cell budget exceeded (N needed, M allowed)` when the
+cells do (the packer then spends blocks halving boxes, so a block count past 64 is a consequence), with
+`suggestedVoxelSize` (the smallest voxelSize, in steps of 0.25, at which the same field fits whole, and its blocks and
+cells), else the blocks it needs; then how many voxels would be missing and whether the peak is among them: shrink the
+rectangle, lower the heights or `baseDepth`, raise `voxelSize`, use fewer bands, or pass `partial`. For example on Multi.DinerMight (11 652 base cells, 53 883 left)
 an island 250 map units across with a cone 60 high is about 25 600 voxels at `voxelSize` 2.5: it packs into 17 blocks of
 50 215 cells, or with `maxCells: 40000` into 23 blocks of 39 926; at `voxelSize` 1 it would need over a million cells,
 and at 2 about 60 000 even after halving. It was played in the game: it loads, worms walk on it and weapons carve it.
@@ -235,11 +264,11 @@ touches the undo stack.
 | `remove` | Delete details; an added level object's knot takes its object with it. |
 | `drop_to_ground` | Drop details onto the terrain below them. |
 | `list_objects` | Spawns, level objects with their settings, placed mines and drums (`role` and `search` pick other details), the object count, and the editor's checks (missing knots, objects under water, single telepads). |
-| `set_water`, `set_theme`, `set_time_of_day`, `set_surround_mode` | `level` in world units (-1000 to 1000) or `useDefault`; `theme`; `timeOfDay` (DAY, EVENING, NIGHT); `mode` copy, none, flat or paint. |
-| `get_script`, `put_script` | The project's Lua script. `put_script` writes it to the server at once (not an undo step, not part of `save`) and answers `problems` with line numbers and `syntaxChecked` (false when the server cannot compile Lua; the game checks it on `test`). |
+| `set_water`, `set_theme`, `set_time_of_day`, `set_surround_mode` | `level` in world units (-1000 to 1000) or `useDefault`; `theme`, and `materialFile` (`"theme"` for the theme's own file, a file name, or `"keep"`, the default: the voxels' materials are indices into the material file, which a theme change otherwise leaves as it is); `timeOfDay` (DAY, EVENING, NIGHT); `mode` copy, none, flat or paint. |
+| `get_script`, `put_script` | The project's Lua script. `put_script` writes it to the server at once (not an undo step, not part of `save`) and answers `problems` with line numbers and `syntaxChecked`: the game compiles it with its own Lua 5.0, `Melange.exe` with a stock Lua 5.0.1 parser (older versions: `false`, checked on `test`). `wum.sim.announce(text, seconds)` puts a message on every player's screen (see [erg.md](erg.md#level-scripts)). |
 | `export` | `modId`, `name`, `version` (default 1.0.0), `mode` `source` (default, shareable) or `install` (built files, this machine only), `survivor`. Saves the project first when it has unsaved edits. |
 | `build` | `modId`: build a source-mode mod's levels into map files (game closed). |
-| `test` | `level.test` in the running game: saves first, follows the `erg` channel and waits for `playing` (`waitFor` `armed` stops at the armed state; `timeoutSec`, default 60). Answers every state with its time; `tod` picks the time of day. Needs the game running at its main menu: a standalone `Melange.exe --serve` has no Test. |
+| `test` | `level.test` in the running game: saves first, follows the `erg` channel and waits for `playing` (`waitFor` `armed` stops at the armed state; `timeoutSec`, default 60). Answers every state with its time; `tod` picks the time of day. The match is the game's Quick Game (a human team against a computer team, its own scheme: turn time, team sizes and the scheme's options are not chosen here). Enabled content mods with sim code run in it beside the level script: the answer names them (`simMods`), and `cleanMods: true` refuses to start while there are any (disable them in the game; they apply at the next launch). Needs the game running at its main menu: a standalone `Melange.exe --serve` has no Test. |
 | `levels_live` | `modId` and `on`: show a pack's levels without a restart (game running, offline, at the menu). |
 
 ### inspect
@@ -247,19 +276,60 @@ touches the undo stack.
 Read-only looks at the open level; none of these changes the project. Coordinates are map units unless `units` is
 `world`; `step` (the size of a sample) is in the same units. A region that leaves out an edge means the level's extent
 on that side. Ground is the highest solid voxel of a column over every voxel frame, read at the centre of each sample
-cell. A frame that is only moved is read cell by cell (exact tops); a rotated or scaled one is sampled every half voxel
-(tops good to 0.25 voxel, and ground thinner than that can be missed).
+cell. A frame that is not rotated (moved, or scaled along its axes, as every added block whatever its scale) is read
+cell by cell (exact tops); a rotated one is sampled every half voxel (tops good to 0.25 voxel, and ground thinner than
+that can be missed). The renders tint each material with its real colour (`palette: "real"`, the default: the average
+of the material's texture, from the server; `"index"` gives a distinct hue per index to tell neighbours apart).
 
 | Tool | What it does |
 |---|---|
 | `heightmap_ascii` | Top-down text map (x right, z down, at most 200 x 200 cells): a character `0-9a-z` per cell for the top height in equal bands (listed in the key), `.` for no ground, `S` spawns, `C` crates, `T` telepads, `R` triggers, `F` the mine factory, `O` other placed objects (`markers: false` leaves them out). Rows are labelled with z and a ruler gives x. `x0`, `z0`, `x1`, `z1`, `units`, `step`. |
 | `render_topdown` | PNG top view as image content: tinted by material, shaded by height (`shading`: `both`, `height`, `material`), ground under the water level blue, markers as in the text map, axis ticks in the margin. The text part says how to turn a pixel into x and z, the material colours (with the record names) and where each marker is. `step`, `scale` (pixels per sample), region as above. |
-| `render_side` | PNG cross-section along the line `x0, z0` to `x1, z1`: every solid stretch (overhangs and caves show), water, objects within 1.5 voxels of the line, a y ruler and a distance ruler. `y0` and `y1` clip the height; `scale` is pixels per voxel. The text part has the top profile along the line. |
+| `render_side` | PNG cross-section along the line `x0, z0` to `x1, z1`: every solid stretch (overhangs and caves show), water, objects within 1.5 voxels of the line, a y ruler and a distance ruler. `y0` and `y1` clip the height; `scale` is pixels per voxel. Ground of stacked or overlapping frames is one stretch: only its top (air above) gets the light edge, so block boundaries leave no seam. The text part has the top profile along the line. |
 | `query_ground` | One column `x`, `z`: the top of the highest solid voxel (map and world y), its frame and material, `standOn` (the y a placed object rests on), whether it is under the water, and every solid stretch of the column. `below` asks for the ground under a height, such as the floor under a bridge. |
-| `list_materials` | The level's material file (names in index order, solid voxels of each in the open project, the render colour) and the theme's object palette (`name`, `resource`, `role`; `search`, `role`, `limit`). `only` leaves one half out. With no project open, pass `theme` and/or `materialFile`; with neither, it lists the themes and material files. |
+| `list_materials` | The level's material file (names in index order, solid voxels of each in the open project, the colour, `textured`: whether the server found its texture) and the theme's object palette (`name`, `resource`, `role`; `search`, `role`, `limit`). `only` leaves one half out. With no project open, pass `theme` (its own file is listed, `ThemeCamelot\ThemeCamelot.txt` for CAMELOT) and/or `materialFile`; with neither, it lists the themes and material files. A `materialFile` written with `/`, in another case, or that lost its backslash (`Mapsdinermight.txt`, a JSON `"\d"` read as `d`) is matched to the listed file, with a `note`; one that is not found answers the listed files. |
+| `preview_materials` | A swatch sheet (image content) of a material file: a tile per material in its real colour, labelled with its index, `?` where the texture was not found, and the list of names and colours. Default the open project's file; or `materialFile`, or a `theme`'s own. |
+| `check_reachability` | Can each spawn walk to the summit? A worm-walk graph over the voxels: the tops of solid ground with `headroom` (default 1.5 map units) of air, a column every `step` (default 1), joined where a worm steps up at most `maxStep` (0.5) or climbs a riser no steeper than `maxSlope` (45 degrees) over one voxel of the upper ground (the game draws a voxel step as a slope, so a cone at voxel size 2.75 is walked), drops at most `maxDrop` (8), or with `maxGap` jumps a gap to ground no higher than `maxStep`; a diagonal step needs one side column walkable too. From every spawn knot (or `from` points) to the target (`target` x, z, radius: the highest ground there; default the highest ground of the region). Per spawn: `reachable`, the walk and waypoints, or the closest point reached and `blockedAt` (where, and the climb that stops it). Ground at or under the project's water level is not walked. Walking only: no rope, jetpack or girders. |
 
 The water line is drawn only when the project sets a water level; a level that keeps its own water height has none the
 editor knows, and the renders say so. The 100 x 100 surround terrain is not part of these views.
+
+### scenery
+
+The level's scenery details (the base map's meshes, glass and neon, grass tufts, lights, sounds, cameras) and copies
+of another base's pieces. A copied piece draws in the game but has **no collision** (it is not part of the landscape:
+worms and shots pass through it), so copies are decoration only; the Erg panel does not copy scenery for that reason.
+Build walls that matter with the structure tools. Removing a base detail is a `remove` op in the patch, as the panel's.
+
+| Tool | What it does |
+|---|---|
+| `list_scenery` | The open level's details that are not spawns or objects: id, name, resource, role, frame, whether the base has it, position, rotation, scale; counts per resource. Filters: `search`, `role`, `near` {x, z, radius} (nearest first), `box` {min, max}. |
+| `remove_scenery` | Remove such details by `ids` or by the same filters (at least one); `dryRun` lists them. One undo step. The surround ring is `set_surround_mode` (`none` removes it). |
+| `list_base_scenery` | A base level's scenery pieces (default the open project's base; `Multi.StormTheCastle`, `Multi.NiceToSiege`, `Multi.HardDaysKnight` and the other Camelot maps for castle walls, towers, flags and statues), grouped by resource, with an example of each (its id, name, position, rotation and scale there). |
+| `copy_base_scenery` | `copies`: up to 64 pieces, each `id` (a detail of that base) or `resource`, at `pos` or `xz` (dropped onto the voxels), with `rot` (degrees) and `scale` (default the source's). Names keep their engine tags (`VISIBLE_`, `MORTAL_`). Refused from a base of another theme unless `allowOtherTheme` (the game may not load another theme's meshes: Test it). One undo step. |
+
+**What is left of a wiped base.** `clear_base_terrain` empties the voxel frames, but not the base's heightmap ground
+(the `.hmp` surround, `copy` by default) or its details. On Multi.DinerMight the heightmap is the green hill the diner
+stands on: with the voxels wiped and the sea risen over it, it shows as a translucent green-grey mass under the water
+(seen in the game on 2026-11-07; with `set_surround_mode {mode: "none"}` it is gone). The base also keeps 137 details:
+cameras and look-at points (65), 27 `VISIBLE_NeonStrip` (`D05_02`, the thin pink lines left floating round the old diner
+at y 6-10), 20 `VISIBLE_MORTAL_Grass` tufts (`BUILDING14`) at y 2-4, lights, sounds and the juke box. For an island in
+an open sea: `set_surround_mode {mode: "none"}` (or `flat`, or `paint` it lower), then `remove_scenery {search: "Neon"}`
+and `{search: "Grass"}`; `list_scenery {near}` finds what else is near a point.
+
+### game
+
+A look at a Test while it plays, through the running game's Oasis: these run Lua in the game's client console
+(`lua.eval`), so they need the game running with Oasis writable and offline (the console refuses online matches
+unless `[LuaConsole] MatchConsoleOnline=1`). A Test match with an idle human team ends by itself after some minutes:
+keep waits short, and stop the game before a match you do not want recorded ends.
+
+| Tool | What it does |
+|---|---|
+| `game_state` | The scene (menu, loading, match), the turn (index, team, worm, phase, ai), the water level (world and map units), turn and round time left, sudden death, worms alive per team, the sim tick. |
+| `game_wait` | Wait until `turn` turns have started, or `seconds` pass (default 120), or the match ends; answers `game_state`. |
+| `game_camera` | Draw the frame from `pos` toward `target` (map units unless `units: "world"`; `fov`) for `seconds` (at most 10; call again to hold it), or `clear`. The picture only (`wum.render.cameraOverride`): the game's camera, aiming and the match are untouched. An override belongs to a client mod, so it runs in the console of `mod` (default the first enabled mod with client code; none enabled: refused). |
+
 
 <!-- end of erg-mcp tools -->
 

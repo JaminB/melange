@@ -272,13 +272,13 @@ bool BuildPatch(const std::wstring& gameDir, const std::vector<install::Pack>& p
 const std::vector<std::string>& Methods() {
     static const std::vector<std::string> m = {"level.list",   "level.new",   "level.load",    "level.save",  "level.export",
                                                "level.build",  "level.themes", "level.palette", "level.close",  "level.objects",
-                                               "level.script.get", "level.script.put", "level.materials"};
+                                               "level.script.get", "level.script.put", "level.materials", "level.delete"};
     return m;
 }
 
 bool Mutating(std::string_view method) {
     return method == "level.new" || method == "level.save" || method == "level.export" || method == "level.build" ||
-           method == "level.script.put";
+           method == "level.script.put" || method == "level.delete";
 }
 
 struct Service::Impl {
@@ -505,6 +505,22 @@ struct Service::Impl {
         Json out = Json::Obj();
         out.set("bases", std::move(bases));
         out.set("projects", std::move(projects));
+        // where this server keeps them ([Erg] ProjectsDir, else Documents\Melange\erg\projects): the game's Test reads
+        // the game's own folder, so a project made by another server is only seen there when the folders are the same
+        out.set("projectsDir", Str(install::Narrow(store.Dir())));
+        return Ok(out);
+    }
+
+    // {project}: deletes a project's folder. Refused while any server has it open (close it first).
+    Reply Delete(const Json& p) {
+        Reply r;
+        std::string id, err;
+        if (!GetStr(p, "project", &id, &r)) return r;
+        if (!project::ValidId(id)) return Err(kBadParams, "project must be [a-z0-9]{1,24}");
+        if (!store.Exists(id)) return Err(kBadParams, "no project '" + id + "'");
+        if (!store.Remove(id, &err)) return Err(kPolicy, err);
+        Json out = Json::Obj();
+        out.set("deleted", Str(id));
         return Ok(out);
     }
 
@@ -818,12 +834,17 @@ struct Service::Impl {
         return Ok(out);
     }
 
-    // {file, base?, source?}: the record names of a level's material file, for second-material paint. A pack level's own
-    // Maps\<stem>.txt is read from the pack.
+    // {file, base?, source?, colors?, theme?}: the record names of a level's material file, for second-material paint. A
+    // pack level's own Maps\<stem>.txt is read from the pack. colors: true adds each record's colour (the average of its
+    // surface texture, looked up first in the theme's folder) and whether the texture was found ("resolved").
     Reply Materials(const Json& p) {
         Reply r;
-        std::string file, base, source, err;
-        if (!GetStr(p, "file", &file, &r) || !GetStr(p, "base", &base, &r, false) || !GetStr(p, "source", &source, &r, false)) return r;
+        std::string file, base, source, theme, err;
+        if (!GetStr(p, "file", &file, &r) || !GetStr(p, "base", &base, &r, false) || !GetStr(p, "source", &source, &r, false) ||
+            !GetStr(p, "theme", &theme, &r, false))
+            return r;
+        const Json* wantColors = p.find("colors");
+        if (wantColors && wantColors->kind != Json::Kind::Bool) return Err(kBadParams, "colors must be a boolean");
         const std::string lower = Lower(file);
         if (!PrintableAscii(file, 1, 120) || lower.size() < 5 || lower.compare(lower.size() - 4, 4, ".txt") != 0)
             return Err(kBadParams, "file must be a material file (.txt)");
@@ -841,6 +862,18 @@ struct Service::Impl {
         Json out = Json::Obj();
         out.set("file", Str(file));
         out.set("names", std::move(names));
+        if (wantColors && wantColors->boolean) {
+            std::vector<std::string> colors;
+            std::vector<bool> resolved;
+            preview::MaterialColors(theme, std::string(txt.begin(), txt.end()), &colors, &resolved);
+            Json c = Json::Arr(), res = Json::Arr();
+            for (size_t i = 0; i < colors.size(); ++i) {
+                c.arr.push_back(Str(colors[i]));
+                res.arr.push_back(Json::Bool(resolved[i]));
+            }
+            out.set("colors", std::move(c));
+            out.set("resolved", std::move(res));
+        }
         return Ok(out);
     }
 
@@ -1080,6 +1113,8 @@ Reply Service::Call(std::string_view method, std::string_view paramsJson, uint64
     if (method == "level.build") return impl_->BuildMod(p);
     if (method == "level.objects") return impl_->Objects();
     if (method == "level.materials") return impl_->Materials(p);
+    if (method == "level.delete") return impl_->Delete(p);
+
     if (method == "level.script.get") return impl_->ScriptGet(p);
     if (method == "level.script.put") return impl_->ScriptPut(p, conn);
     return Err(-32601, "unknown method");

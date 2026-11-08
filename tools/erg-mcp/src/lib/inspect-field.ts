@@ -7,15 +7,17 @@ import { inside, isSolid, material, type Grid } from "./voxel";
 export interface Span { top: number; bottom: number; frame: number; material: number; }
 
 const EPS = 1e-6;
-/** True when the grid is only moved (no rotation or scale), so a map column is exactly one grid column. */
+/** True when the grid is moved and scaled along the axes but not rotated (the game's moved frames, and every added block
+ * whatever its scale), so a map column is exactly one grid column. */
 const upright = (g: Grid) => {
   const m = g.toMap;
-  return Math.abs(m[0] - 1) < EPS && Math.abs(m[5] - 1) < EPS && Math.abs(m[10] - 1) < EPS &&
+  return m[0] > EPS && m[5] > EPS && m[10] > EPS &&
     Math.abs(m[1]) < EPS && Math.abs(m[2]) < EPS && Math.abs(m[4]) < EPS && Math.abs(m[6]) < EPS && Math.abs(m[8]) < EPS && Math.abs(m[9]) < EPS;
 };
 
-/** Solid spans of one grid at the map column (px, pz), highest first; only the highest when `topOnly`. A moved-only grid
- * is read cell by cell (exact tops); a rotated or scaled one is sampled every half voxel (tops good to 0.25). */
+/** Solid spans of one grid at the map column (px, pz), highest first; only the highest when `topOnly`. A grid that is not
+ * rotated (moved, or scaled along its axes, as every added block) is read cell by cell (exact tops); a rotated one is
+ * sampled every half voxel (tops good to 0.25). */
 export function columnSpans(g: Grid, px: number, pz: number, topOnly = false): Span[] {
   const b = g.bounds;
   if (px < b.min[0] || px >= b.max[0] || pz < b.min[2] || pz >= b.max[2]) return [];
@@ -23,15 +25,16 @@ export function columnSpans(g: Grid, px: number, pz: number, topOnly = false): S
   const [X, Y] = g.size;
   if (upright(g)) {
     const m = g.toMap;
-    const cx = Math.floor(px - m[3]), cz = Math.floor(pz - m[11]);
+    const cx = Math.floor((px - m[3]) / m[0] + 1e-9), cz = Math.floor((pz - m[11]) / m[10] + 1e-9);
     if (!inside(g.size, cx, 0, cz)) return out;
     const at = (cz * X + cx) * Y;
     for (let y = Y - 1; y >= 0; y--) {
       if (!isSolid(g.words[at + y])) continue;
-      const top = m[7] + y + 1;
+      const top = m[7] + (y + 1) * m[5];
       let lo = y;
       while (lo > 0 && isSolid(g.words[at + lo - 1])) lo--;
-      out.push({ top, bottom: m[7] + lo, frame: g.id, material: material(g.words[at + y]) });
+      out.push({ top, bottom: m[7] + lo * m[5], frame: g.id, material: material(g.words[at + y]) });
+
       if (topOnly) break;
       y = lo;
     }

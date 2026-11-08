@@ -7,12 +7,11 @@
 //
 // It connects like erg-mcp does: MELANGE_GAME_DIR (default C:\Users\Jamin\Desktop\WUMFix\testenv\C) with the game
 // closed, starting Melange.exe --serve (MELANGE_EXE names another Melange.exe; default this checkout's
-// build\x86-release\Melange.exe). The project id is `caldera`; its folder (<game>\Melange\erg\projects in a portable
-// install, else Documents\Melange\erg\projects) is deleted first, so every run starts from the base. Renders go to
+// build\x86-release\Melange.exe). The project id is `caldera`; an old one is deleted first (delete_project), so
+// every run starts from the base. Renders go to
 // --out (default out\ next to this file); the source export is copied to pack\ next to this file.
 import { spawn } from "node:child_process";
 import fs from "node:fs";
-import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -26,9 +25,6 @@ const GAME = process.env.MELANGE_GAME_DIR || "C:/Users/Jamin/Desktop/WUMFix/test
 process.env.MELANGE_EXE ??= path.join(ROOT, "build/x86-release/Melange.exe");
 const ID = "caldera";
 const MOD = "caldera";
-// A portable install (a Melange folder next to the game) keeps its projects there, otherwise Documents\Melange.
-const PROJECTS = fs.existsSync(path.join(GAME, "Melange")) ? path.join(GAME, "Melange/erg/projects")
-  : path.join(os.homedir(), "Documents/Melange/erg/projects");
 
 // ---- the design (map units: 1 voxel of the base = 1 map unit = 20 world units; y up, floor 0) ----
 //
@@ -133,15 +129,11 @@ const brief = (r, n = 300) => r.text.slice(0, n).replace(/\s+/g, " ");
 // ---- the build ----
 
 fs.mkdirSync(OUT, { recursive: true });
-// erg-mcp has no tool to delete a project, and the server lists the projects when it starts, so the old one goes first.
-const dir = path.join(PROJECTS, ID);
-if (fs.existsSync(dir)) {
-  fs.rmSync(dir, { recursive: true, force: true });
-  say("deleted the old project", dir);
-}
 const { call, stop } = await startServer();
 try {
   say("connect", brief(await call("connect", { gameDir: GAME }), 160));
+  if ((await call("list_bases", { search: "dinermight" })).json.projects.some((p) => p.id === ID))
+    say("delete the old project", brief(await call("delete_project", { id: ID }), 200));
   const np = await call("new_project", { base: "Multi.DinerMight", slug: ID, title: "Caldera" });
   if (np.json?.created?.id !== ID) throw new Error(`new_project gave id ${np.json?.created?.id}, not ${ID}`);
   await call("open_project", { id: ID });

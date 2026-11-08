@@ -12,6 +12,7 @@
 #include "melange/oasis.h"
 #include "oasis/core/router.h"
 #include "oasis/standalone/game_lock.h"
+#include "oasis/standalone/lua_check.h"
 #include "oasis/standalone/mods_provider.h"
 
 namespace melange::oasis::standalone::levelprov {
@@ -67,7 +68,10 @@ void Install(const std::wstring& gameDir, const std::wstring& projectsDir, const
     }
     env.crcCollides = [](const std::string& name) { return assets::crcsafe::Collides(g_crc, name); };
     env.readOnly = [] { return core::router::ReadOnly(); };
+    // The script's syntax, with the stock Lua 5.0 parser (the game's dialect): put_script answers syntaxChecked here too.
+    env.compile = &CompileLua50;
     g_service = std::make_unique<erg::service::Service>(std::move(env));
+
     for (const auto& m : erg::service::Methods())
         AddMethod(m.c_str(), &Handle, nullptr, kRpcServerThread | (erg::service::Mutating(m) ? kRpcMutating : kRpcNone));
     OnClientClosed(&HandleClosed, nullptr);

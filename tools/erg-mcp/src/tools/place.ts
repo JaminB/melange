@@ -11,6 +11,7 @@ import {
 import {
   DEG, commit, detailInfo, findDetail, pointOut, pointToMap, resolvePoint, unitsSchema, vec3, type PointArgs, type Units,
 } from "../lib/place-geom";
+import { resolveFile, themeFile } from "../lib/materials";
 import { runTest } from "../lib/place-wait";
 import { tidy } from "../lib/voxel";
 import { ToolError, type Schema, type Tool } from "../registry";
@@ -394,10 +395,26 @@ export const tools: Tool[] = [
   },
   {
     name: "set_theme",
-    description: "Set the level's theme (swaps the material and texture set when built; the terrain is untouched).",
-    inputSchema: { type: "object", additionalProperties: false, required: ["theme"], properties: { theme: { type: "string", enum: THEMES } } },
-    handler: (s, a: { theme: string }) => setLevel(s, { databank: { theme: a.theme } }, "Change theme", () => ({ theme: s.store.scene.databank.theme })),
+    description: "Set the level's theme (the scenery set, sky and the folder textures come from; the terrain is untouched). The voxels' materials come from the level's material file, which a theme change leaves as it is unless materialFile is given: \"theme\" for the new theme's own file, or a file name (list_materials, preview_materials). One undo step.",
+    inputSchema: { type: "object", additionalProperties: false, required: ["theme"], properties: { theme: { type: "string", enum: THEMES },
+      materialFile: { type: "string", description: "Also set the material file: \"theme\" for the theme's own (ThemeCamelot\\ThemeCamelot.txt for CAMELOT), \"keep\" (default) to leave it, or a file name such as Maps\\dinermight.txt." } } },
+    async handler(s, a: { theme: string; materialFile?: string }) {
+      const keep = a.materialFile === undefined || a.materialFile === "keep";
+      let file: string | undefined, note: string | undefined;
+      if (!keep) {
+        const r = await resolveFile(s, a.materialFile === "theme" ? themeFile(a.theme) : a.materialFile!);
+        const files = await (await s.levels()).themes().then((t) => t.materialFiles, () => null);
+        if (files && !files.includes(r.file)) throw new ToolError(`'${a.materialFile}' is not a material file of this install (list_materials lists them)`);
+        file = r.file;
+        note = r.note;
+      }
+      return setLevel(s, { databank: { theme: a.theme, ...(file ? { materialFile: file } : {}) } }, "Change theme", () => ({
+        theme: s.store.scene.databank.theme, materialFile: s.store.scene.databank.materialFile, ...(note ? { note } : {}),
+        ...(keep ? { materialNote: "the material file is unchanged: voxel materials keep their indices in it (materialFile: \"theme\" switches to the theme's own)" } : {}),
+      }));
+    },
   },
+
   {
     name: "set_time_of_day",
     description: "Set the level's time of day. Quick Game and network games load DAY whatever is set; test can pick its own.",
@@ -465,16 +482,32 @@ export const tools: Tool[] = [
       type: "object", additionalProperties: false,
       properties: { tod: { type: "string", enum: TIMES_OF_DAY, description: "Time of day for this Test (default the project's)." },
         waitFor: { type: "string", enum: ["playing", "armed"], description: "State to wait for (default playing)." },
-        timeoutSec: { type: "integer", minimum: 1, maximum: 600, description: "Stop waiting after this long (default 60)." } },
+        timeoutSec: { type: "integer", minimum: 1, maximum: 600, description: "Stop waiting after this long (default 60)." },
+        cleanMods: { type: "boolean", description: "Refuse when enabled content mods have sim code (they run in the Test beside the level script), for clean benchmark runs." } },
     },
-    async handler(s, a: { tod?: TimeOfDay; waitFor?: "playing" | "armed"; timeoutSec?: number }) {
+    async handler(s, a: { tod?: TimeOfDay; waitFor?: "playing" | "armed"; timeoutSec?: number; cleanMods?: boolean }) {
+
       const p = s.requireProject();
       const conn = await s.ensure();
       if (!conn.methods.includes("level.test")) throw new ToolError("no level.test here: Test needs the game running at its main menu (Melange.exe --serve has none)");
+      // Content mods with sim code run in every match, a Test too: name them, so a benchmark run knows it is not clean.
+      let simMods: string[] = [];
+      if (conn.methods.includes("mods.list")) {
+        try {
+          const mods = await (await s.client()).call<{ id: string; on: boolean; kind: string; hasSim?: boolean; state?: string }[]>("mods.list", {}, 15000);
+          simMods = mods.filter((m) => m.on && m.kind === "content" && m.hasSim && m.state === "enabled").map((m) => m.id);
+        } catch {
+          // an older game: no list
+        }
+      }
+      if (a.cleanMods && simMods.length)
+        throw new ToolError(`content mods with sim code are enabled and would run in the Test: ${simMods.join(", ")}. Disable them in the game (they apply at the next launch) for a clean run, or leave out cleanMods`);
       const first = await savedFirst(s, "tested");
       const sec = a.timeoutSec ?? 60;
       const run = await runTest(p.erg, { tod: a.tod, goal: a.waitFor, timeoutMs: sec * 1000 });
-      return { ...run, ...(first ? { savedFirst: true } : {}),
+      return { ...run, ...(first ? { savedFirst: true } : {}), ...(simMods.length ? { simMods, simModsNote: "these mods' sim code runs in this match beside the level script" } : {}),
+        match: "Quick Game (QuickStartHvC: a human team against a computer team) with the game's own Quick Game scheme; the scheme, turn time and team sizes are the game's, not chosen here",
+        next: "game_state, game_wait {turn}, game_camera while it plays",
         ...(run.timedOut ? { note: `no '${a.waitFor ?? "playing"}' state within ${sec} s: the Test may still be running; start the match from the game's menu if it is armed` } : {}) };
     },
   },

@@ -9,6 +9,7 @@
 #include <string>
 
 #include "oasis/standalone/ini_edit.h"
+#include "oasis/standalone/lua_check.h"
 #include "oasis/standalone/mods_provider.h"
 #include "oasis/standalone/wormsign_provider.h"
 #include "tools/json_read.h"
@@ -257,10 +258,26 @@ void TestWormsign() {
 }
 }  // namespace
 
+// The level-script syntax check: the Lua 5.0 dialect (no # or //), a line and a message on an error, never running it.
+void TestLuaCheck() {
+    using melange::oasis::standalone::CompileLua50;
+    int line = -1;
+    std::string msg;
+    Expect(CompileLua50("", &line, &msg) && line == -1, "lua: an empty script compiles");
+    Expect(CompileLua50("local t = {}\nfor k, v in pairs(t) do t[k] = v end\nwum.sim.every(1, function() error('never run') end)\n", &line, &msg),
+           "lua: a 5.0 script compiles and is not run", msg);
+    Expect(!CompileLua50("local a = 1\nb = = 2\n", &line, &msg) && line == 2 && !msg.empty() && msg.find("script.lua") == std::string::npos,
+           "lua: a syntax error has its line and message", std::to_string(line) + " " + msg);
+    Expect(!CompileLua50("local t = {}\nlocal n = #t\n", &line, &msg) && line == 2, "lua: # is not Lua 5.0", msg);
+    Expect(!CompileLua50("if true then\n", &line, &msg) && line > 0, "lua: an unclosed block", msg);
+}
+
 int main() {
     TestIni();
     TestMods();
     TestWormsign();
+    TestLuaCheck();
+
     printf("oasis_standalone_selftest: %d passed, %d failed\n", g_pass, g_fail);
     return g_fail ? 1 : 0;
 }

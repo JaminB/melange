@@ -123,3 +123,35 @@ test("a wrong token is refused, connect {url} reconnects", async () => {
     await mock.close();
   }
 });
+
+test("projects folder, new_project refuses a taken slug, delete_project", async () => {
+  const mock = await startMock({ root });
+  const m = spawnMcp({ ERG_MCP_URL: mock.url });
+  try {
+    await m.initialize();
+    const c = await m.tool("connect");
+    assert.match(c.json.projectsDir, /projects$/);
+    assert.ok(!(await m.tool("new_project", { base: "Multi.Synthetic12", slug: "mcpdel1", title: "Del" })).isError);
+    assert.match((await m.tool("list_bases")).json.projectsDir, /projects$/);
+    const taken = await m.tool("new_project", { base: "Multi.Synthetic12", slug: "mcpdel1", title: "Del" });
+    assert.ok(taken.isError && /exists in .*projects: open_project it, delete_project it first, or pass allowRename/.test(taken.text), taken.text);
+    assert.ok(!(await m.tool("open_project", { id: "mcpdel1" })).isError);
+    const open = await m.tool("delete_project", { id: "mcpdel1" });
+    assert.ok(open.isError && /open here: close it first/.test(open.text), open.text);
+    await m.tool("close");
+    const d = await m.tool("delete_project", { id: "mcpdel1" });
+    assert.ok(!d.isError, d.text);
+    assert.equal(d.json.deleted, "mcpdel1");
+    assert.ok(!(await m.tool("list_bases")).json.projects.some((p) => p.id === "mcpdel1"));
+    const gone = await m.tool("delete_project", { id: "mcpdel1" });
+    assert.ok(gone.isError && /no project/.test(gone.text), gone.text);
+    assert.ok(!(await m.tool("new_project", { base: "Multi.Synthetic12", slug: "mcpdel1", title: "Again" })).isError, "the slug is free again");
+    // the game tools are listed (they need the running game's console to do anything)
+    const names = (await m.request("tools/list", {})).result.tools.map((t) => t.name);
+    for (const n of ["game_state", "game_wait", "game_camera", "list_scenery", "remove_scenery", "list_base_scenery", "copy_base_scenery", "check_reachability", "sculpt_crater", "preview_materials", "delete_project"])
+      assert.ok(names.includes(n), n);
+  } finally {
+    await m.close();
+    await mock.close();
+  }
+});

@@ -8,6 +8,12 @@ import type { Schema, Tool } from "../registry";
 
 const pair = (what: string): Schema => ({ type: "array", items: { type: "number" }, minItems: 2, maxItems: 2, description: what });
 const material: Schema = { type: "integer", minimum: 0, maximum: 63 };
+const areas = (description: string): Schema => ({
+  type: "array", maxItems: 16, description,
+  items: { type: "object", additionalProperties: false, description: "A circle (x, z, radius) or a rectangle (min, max), in the call's units.",
+    properties: { x: { type: "number" }, z: { type: "number" }, radius: { type: "number", minimum: 0 }, min: pair("[x, z] corner."), max: pair("[x, z] corner.") } },
+});
+
 
 const schema: Schema & { type: "object" } = {
   type: "object", additionalProperties: false, required: ["min", "max", "floor"],
@@ -38,6 +44,10 @@ const schema: Schema & { type: "object" } = {
     maxBlocks: { type: "integer", minimum: 0, maximum: 64, description: "Add at most this many blocks (keep some of the 64 for other edits)." },
     maxCells: { type: "integer", minimum: 0, maximum: 65535, description: "The new blocks hold at most this many of the game's voxel cells (keep some of the 65535 for other edits, such as castles). While over it the planner halves the boxes that waste the most cells, using more blocks." },
     partial: { type: "boolean", description: "When the blocks do not all fit: place the ones holding the most voxels (never one floating over a dropped one) instead of refusing." },
+    runsHeadroom: { type: "integer", minimum: 0, maximum: 1900, description: "Leave this many of each new block's 2000 runs free (default 0), for edits after it: sculpt_crater, painted bands, structures built into the blocks. Blocks are halved sooner, so it costs blocks." },
+    centre: pair("[x, z] origin of the expression's x, z, r and theta (and the crater's default centre) instead of the rectangle's centre. Two fields of different voxelSize given the same rectangle and centre sample the same surface."),
+    clip: areas("Keep only the columns whose centre is inside one of these areas: the fine part of a multi-resolution field."),
+    exclude: areas("Leave out the columns lying wholly inside one of these areas: the coarse part of a multi-resolution field (it overlaps a field clipped to the same areas at the edge, so no gap opens)."),
   },
 };
 

@@ -15,7 +15,10 @@
 #include <cstdint>
 #include <cstring>
 #include <filesystem>
+#include <cstdio>
 #include <fstream>
+#include <map>
+#include <memory>
 #include <mutex>
 #include <system_error>
 #include <unordered_map>
@@ -650,7 +653,73 @@ bool Get(const std::string& key, const std::string& ext, Asset* out, std::string
     return true;
 }
 
+void MaterialColors(const std::string& theme, const std::string& text, std::vector<std::string>* colors, std::vector<bool>* resolved) {
+    static std::mutex mx;
+    static std::map<std::string, std::pair<std::vector<std::string>, std::vector<bool>>> cache;
+    const std::string key = hashutil::Sha256Hex((theme + "|" + text).data(), theme.size() + 1 + text.size());
+    {
+        std::lock_guard lk(mx);
+        if (auto it = cache.find(key); it != cache.end()) {
+            *colors = it->second.first;
+            *resolved = it->second.second;
+            return;
+        }
+    }
+    std::vector<MaterialRecord> records;
+    ParseMaterialFile(text, &records);
+    Index& idx = GetIndex();
+    const bool indexed = EnsureIndexBuilt(idx);  // best effort: without it every record takes its fallback colour
+    std::map<std::wstring, std::unique_ptr<Document>> docs;  // each bundle parsed once per call
+    colors->assign(records.size(), std::string());
+    resolved->assign(records.size(), false);
+    for (size_t i = 0; i < records.size(); ++i) {
+        const std::string& ref = records[i].textureRef;
+        std::array<uint8_t, 3> c{};
+        bool ok = false;
+        if (indexed && !ref.empty()) {
+            ImageLoc loc;
+            bool found = false;
+            {
+                std::lock_guard lk(idx.mx);
+                auto it = theme.empty() ? idx.imagesByLowerStem.end() : idx.imagesByLowerStem.find(Lower(ThemeFolder(theme) + "\\" + StripExt(BaseName(ref))));
+                if (it == idx.imagesByLowerStem.end()) it = idx.imagesByLowerStem.find(Lower(StripExt(BaseName(ref))));
+                if (it != idx.imagesByLowerStem.end()) {
+                    loc = it->second;
+                    found = true;
+                }
+            }
+            if (found) {
+                auto d = docs.find(loc.bundleFile);
+                if (d == docs.end()) {
+                    std::vector<uint8_t> bytes;
+                    auto doc = std::make_unique<Document>();
+                    std::string ignore;
+                    const fs::path bundlePath = fs::path(GameDirNow()) / L"Data" / L"Bundles" / loc.bundleFile;
+                    if (!ReadAll(bundlePath, &bytes) || !xom::parse(bytes.data(), bytes.size(), *doc, &ignore)) doc.reset();
+                    d = docs.emplace(loc.bundleFile, std::move(doc)).first;
+                }
+                std::string ignore;
+                const Object* img = d->second ? d->second->object(loc.ref) : nullptr;
+                xom::image::Pixels px;
+                if (img && img->type == "XImage" && SmallestMip(*img, &px, &ignore)) {
+                    c = AverageColor(px);
+                    ok = true;
+                }
+            }
+        }
+        if (!ok) c = FallbackColor(theme + "|" + std::to_string(i) + "|" + ref);
+        char hex[8];
+        snprintf(hex, sizeof hex, "#%02x%02x%02x", c[0], c[1], c[2]);
+        (*colors)[i] = hex;
+        (*resolved)[i] = ok;
+    }
+    std::lock_guard lk(mx);
+    if (cache.size() > 64) cache.clear();
+    cache[key] = {*colors, *resolved};
+}
+
 std::string ThemeAtlasIndex(const std::string& theme, std::string* error) {
+
     if (!erg::ValidTheme(theme)) {
         if (error) *error = "unknown theme";
         return {};

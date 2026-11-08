@@ -10,6 +10,22 @@
   objects, water, theme, script, export, build, test). See docs/erg-mcp.md.
 - The Oasis mock server used by the web tests also accepts a socket with no `Origin` and the right `?k=` token, as
   `src/oasis/auth.cpp` does. No game or Erg behaviour changed.
+- `wum.sim.announce(text[, seconds])` for sim mods and level scripts: an on-screen message on every player's screen
+  (the rising sea, a new round), drawn only, so the match and Wormsign are untouched. New module `[SimAnnounce]`.
+- Erg's level service: `level.delete` deletes a project (refused while any server has it open); `level.list` names
+  the projects folder (`projectsDir`); `level.materials {colors: true}` gives each material's texture colour. Melange.exe
+  now checks a level script's syntax with a stock Lua 5.0.1 parser (`syntaxChecked: true`), as the game does.
+- erg-mcp: the Caldera benchmark's fixes. heightfield: a cell-bound field says "cell budget exceeded (N needed, M
+  allowed)" and the voxelSize that fits; `centre`, `clip` and `exclude` build fine voxels where they matter inside a
+  coarse field. Structures: `blockScale` and `packing: "parts"` (no courtyard air in the blocks), `build_castle`
+  `scale` and `spawnSpots`; `sculpt_crater` shapes a crater into the terrain that is there; a 1-thick wall on a
+  whole-unit line facing +x or +z is no longer empty. Inspect: exact tops of scaled blocks, renders in the materials'
+  real colours (`preview_materials`), no seams between stacked blocks in `render_side`, `check_reachability` (a
+  worm-walk graph from each spawn to the summit); list_materials repairs a lost backslash and lists a theme's own file.
+  New: `delete_project` (and `new_project` refuses a taken slug unless `allowRename`), `set_theme {materialFile}`, the
+  scenery tools (`list_scenery`, `remove_scenery`, `list_base_scenery`, `copy_base_scenery`) and the game tools
+  (`game_state`, `game_wait`, `game_camera`); `test` names enabled sim mods (`cleanMods` refuses them).
+
 
 ## 0.13.0
 

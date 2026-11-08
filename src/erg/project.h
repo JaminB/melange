@@ -39,6 +39,9 @@ class Store {
     // A free id from `hint` (itself, else hint2, hint3, ... within 24 characters).
     std::string FreeId(const std::string& hint) const;
     bool Create(const std::string& id, const std::string& patchJson, const Meta& meta, std::string* err);
+    // Deletes the project's folder and everything in it. Refused while any server has it open (locked).
+    bool Remove(const std::string& id, std::string* err);
+
     bool ReadPatch(const std::string& id, std::string* json, std::string* err) const;
     bool WritePatch(const std::string& id, const std::string& json, std::string* err);
     // The level script, "" when the project has none; writing "" removes it.

@@ -8,6 +8,20 @@ const discard = { type: "boolean", description: "Drop unsaved edits of the open 
 
 const masked = (url: string) => url.replace(/k=[^&]+/, "k=...");
 
+const PROJECTS_NOTE = "the server's projects folder ([Erg] ProjectsDir in its game's Melange.ini, else Documents\\Melange\\erg\\projects). " +
+  "Test in the game reads the game's own folder, so a project made through Melange.exe --serve of another install is seen there only when both use the same folder.";
+
+/** The server's projects folder (level.list's projectsDir), or null from an older server. */
+async function projectsDir(s: Session): Promise<string | null> {
+  try {
+    const dir = ((await (await s.levels()).list()) as { projectsDir?: unknown }).projectsDir;
+    return typeof dir === "string" ? dir : null;
+  } catch {
+    return null;
+  }
+}
+
+
 function state(s: Session) {
   const p = s.project;
   if (!p) return { open: null };
@@ -98,8 +112,10 @@ export const tools: Tool[] = [
     async handler(s, a: { url?: string; gameDir?: string; discard?: boolean }) {
       // No exe argument: which program runs is the user's choice (MELANGE_EXE), never the model's.
       const c = await s.connect({ url: a.url, gameDir: a.gameDir }, a.discard);
+      const dir = await projectsDir(s);
       return { connected: true, via: c.via, url: masked(c.url), server: c.server, ergMethods: c.methods.filter((m) => m.startsWith("level")),
-        test: c.methods.includes("level.test") ? "level.test is available (the game is running)" : "no level.test: start the game for Test" };
+        test: c.methods.includes("level.test") ? "level.test is available (the game is running)" : "no level.test: start the game for Test",
+        ...(dir ? { projectsDir: dir, projectsNote: PROJECTS_NOTE } : {}) };
     },
   },
   {
@@ -118,12 +134,13 @@ export const tools: Tool[] = [
       const q = a.search?.toLowerCase();
       const bases = l.bases.filter((b) => (!q || `${b.key} ${b.title} ${b.stem}`.toLowerCase().includes(q)) &&
         (!a.theme || b.theme.toUpperCase() === a.theme.toUpperCase()) && (!a.source || b.source === a.source));
-      return { bases, projects: l.projects, open: s.project?.id ?? null };
+      const dir = (l as { projectsDir?: unknown }).projectsDir;
+      return { bases, projects: l.projects, open: s.project?.id ?? null, ...(typeof dir === "string" ? { projectsDir: dir } : {}) };
     },
   },
   {
     name: "new_project",
-    description: "Start a project from a base level (list_bases). The server may pick another id when the slug is taken; the answer has the id. Does not open it.",
+    description: "Start a project from a base level (list_bases). Refused when a project with that slug exists (delete_project removes one, or pass allowRename to take the server's next free id, such as caldera2; the answer then warns). Does not open it.",
     inputSchema: {
       type: "object", additionalProperties: false, required: ["base", "slug", "title"],
       properties: {
@@ -131,13 +148,34 @@ export const tools: Tool[] = [
         slug: { type: "string", description: "Project id wish: 1-24 characters a-z, 0-9." },
         title: { type: "string", description: "Level title: 1-40 printable ASCII characters." },
         source: { type: "string", enum: ["game", "pack"], description: "Where the base comes from (default: the game's)." },
+        allowRename: { type: "boolean", description: "When the slug is taken, let the server pick the next free id (slug2, slug3, ...) instead of refusing." },
       },
     },
-    async handler(s, a: { base: string; slug: string; title: string; source?: "game" | "pack" }) {
+    async handler(s, a: { base: string; slug: string; title: string; source?: "game" | "pack"; allowRename?: boolean }) {
       if (!/^[a-z0-9]{1,24}$/.test(a.slug)) throw new ToolError("slug must be 1-24 characters a-z, 0-9");
-      const r = await (await s.levels()).create(a.base, a.slug, a.title, a.source);
+      const levels = await s.levels();
+      const list = await levels.list();
+      const dir = (list as { projectsDir?: unknown }).projectsDir;
+      const where = typeof dir === "string" ? ` in ${dir}` : "";
+      if (!a.allowRename && list.projects.some((p) => p.id === a.slug))
+        throw new ToolError(`project '${a.slug}' exists${where}: open_project it, delete_project it first, or pass allowRename: true for a new id`);
+      const r = await levels.create(a.base, a.slug, a.title, a.source);
       const { patch: _patch, ...info } = r;
-      return { created: info, next: `open_project {id: "${info.id}"}` };
+      return { created: info, ...(info.id !== a.slug ? { warning: `'${a.slug}' is taken: the project's id is '${info.id}'` } : {}),
+        ...(typeof dir === "string" ? { projectsDir: dir } : {}), next: `open_project {id: "${info.id}"}` };
+    },
+  },
+  {
+    name: "delete_project",
+    description: "Delete a project: its folder (patch, script, metadata) under the server's projects folder. Refused while any server (this one, the game or Melange.exe) has it open: close it first. Cannot be undone. Exported mods are not touched.",
+    inputSchema: { type: "object", additionalProperties: false, required: ["id"], properties: { id: { type: "string", description: "Project id (list_bases lists them)." } } },
+    async handler(s, a: { id: string }) {
+      if (s.project?.id === a.id) throw new ToolError(`project '${a.id}' is open here: close it first`);
+      const conn = await s.ensure();
+      if (!conn.methods.includes("level.delete")) throw new ToolError("this server has no level.delete (an older Melange): delete the project's folder by hand");
+      const r = await (await s.client()).call<{ deleted: string }>("level.delete", { project: a.id }, 30000);
+      const dir = await projectsDir(s);
+      return { deleted: r.deleted, ...(dir ? { projectsDir: dir } : {}) };
     },
   },
   {

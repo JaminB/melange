@@ -810,6 +810,8 @@ A content mod's `entry.sim` runs inside the match's own Lua VM, which is Lua 5.0
 | `wum.sim.worms()` | The slots that have a worm container, as a list, then their count |
 | `wum.sim.land()` | The land bounds `minX, minY, minZ, maxX, maxY, maxZ` (`Land.MinBounds` and `Land.MaxBounds`), or `nil, reason` |
 | `wum.sim.holdTurn(ticks)`, `releaseTurn()`, `turnHold()` | Delays the next turn start by `ticks` sim ticks (1 to 3000, that is 60 s) on every machine alike; see [The turn-start hold](#the-turn-start-hold) |
+| `wum.sim.announce(text[, seconds])` | Shows `text` (at most 160 bytes of UTF-8) centred near the top of the screen for `seconds` (0.5 to 15, default 4), up to three at once (a fourth replaces the oldest); returns `true`. Every machine runs the sim, so every player sees it. It only draws ([SimAnnounce], after the engine's HUD): the match, Wormsign and replays are untouched, so it is safe in deterministic code. Melange 0.14; check `if wum.sim.announce then` |
+
 
 Every call from the game into a sim script has an instruction budget (`[SimBridge] InstrPerCall`). A callback that fails or runs out of budget three times is switched off. `dist\Mods\sim-sampler` and `dist\Mods\bazooka-plus` are examples (shipped disabled). `dist\Mods\desync-probe`, also disabled, shows how to test a mod's determinism with the desync detector ([wormsign.md](wormsign.md)).
 

@@ -18,6 +18,8 @@ export interface Shape {
   min: Vec3;                                 // bounding box (map units): hit() is false outside it
   max: Vec3;
   hit(x: number, y: number, z: number): boolean;
+  part?: number;                             // the part (a wall, a tower) its voxels belong to when blocks are packed by part
+  matAt?(x: number, y: number, z: number): number;   // fill and paint: the material per cell, instead of mat
 }
 
 export interface Plan {
@@ -56,9 +58,22 @@ export const merlon = (u: number) => ((Math.floor(u) % 3) + 3) % 3 < 2;
 export function translate(shapes: Shape[], d: Vec3): Shape[] {
   return shapes.map((s) => ({
     op: s.op, mat: s.mat, min: [s.min[0] + d[0], s.min[1] + d[1], s.min[2] + d[2]], max: [s.max[0] + d[0], s.max[1] + d[1], s.max[2] + d[2]],
-    hit: (x, y, z) => s.hit(x - d[0], y - d[1], z - d[2]),
+    hit: (x, y, z) => s.hit(x - d[0], y - d[1], z - d[2]), part: s.part,
   }));
 }
+
+/** Shapes made in voxels of `k` map units, scaled about their origin into map units: a design whose walls are 2 voxels
+ * thick keeps 2 voxels at any k, and its crenellations their 2-on-1-off rhythm. */
+export function scaled(shapes: Shape[], k: number): Shape[] {
+  if (k === 1) return shapes;
+  return shapes.map((s) => ({
+    op: s.op, mat: s.mat, min: [s.min[0] * k, s.min[1] * k, s.min[2] * k], max: [s.max[0] * k, s.max[1] * k, s.max[2] * k],
+    hit: (x, y, z) => s.hit(x / k, y / k, z / k), part: s.part,
+  }));
+}
+
+/** The shapes, each tagged as part `part` (for packing new blocks by part). */
+export const tagged = (shapes: Shape[], part: number): Shape[] => shapes.map((s) => ({ ...s, part }));
 
 /** Yaws local shapes by `yawDeg` about their origin (counter-clockwise seen from above, +x east, -z north), then moves the
  * origin to `at`. */
@@ -73,13 +88,19 @@ export function place(shapes: Shape[], at: Vec3, yawDeg = 0): Shape[] {
       min[2] = Math.min(min[2], wz); max[2] = Math.max(max[2], wz);
     }
     return {
-      op: sh.op, mat: sh.mat, min, max,
+      op: sh.op, mat: sh.mat, min, max, part: sh.part,
       hit: (x: number, y: number, z: number) => {
         const dx = x - at[0], dz = z - at[2];
         return sh.hit(c * dx - s * dz, y - at[1], s * dx + c * dz);
       },
     };
   });
+}
+
+/** A local point yawed and moved as place() moves shapes. */
+export function placePoint(p: Vec3, at: Vec3, yawDeg = 0): Vec3 {
+  const a = (yawDeg * Math.PI) / 180, c = Math.cos(a), s = Math.sin(a);
+  return [c * p[0] + s * p[2] + at[0], p[1] + at[1], -s * p[0] + c * p[2] + at[2]];
 }
 
 // ------------------------------------------------------------------ openings
@@ -125,6 +146,9 @@ export function wallSegment(a: Vec3, b: Vec3, t: number, h: number, mat: number,
     min[0] = Math.min(min[0], x); max[0] = Math.max(max[0], x);
     min[2] = Math.min(min[2], z); max[2] = Math.max(max[2], z);
   }
+  // The hit takes v = -hw (and u = -ext) and that edge can be the box's max side: a cell centred on it is inside the
+  // wall, so the box reaches just past it (a 1-thick wall on a whole-unit line facing +x or +z was otherwise empty).
+  for (const k of [0, 2]) { min[k] -= 1e-6; max[k] += 1e-6; }
   const body: Shape = {
     op: "fill", mat, min, max,
     hit: (x, y, z) => {
@@ -268,7 +292,8 @@ export interface CastleSpec {
 /** A curtain wall on a rectangle with a tower on each corner, an optional keep in the courtyard and a gate. */
 export function castle(c: CastleSpec): Shape[] {
   const hw = c.size[0] / 2, hd = c.size[1] / 2, t = c.wallThickness, out: Shape[] = [];
-  if (c.found > 0) out.push(box("fill", c.material, [-hw, -c.found, -hd], [hw, 0, hd]));
+  // parts, for packing new blocks one per part: 0 the foundation, 1-4 the walls, 5-8 the towers, 9 the keep
+  if (c.found > 0) out.push({ ...box("fill", c.material, [-hw, -c.found, -hd], [hw, 0, hd]), part: 0 });
   // wall centre lines, each crenellated on its outer side (the side away from the origin)
   const ring: [Vec3, Vec3][] = [
     [[-hw + t / 2, 0, -hd + t / 2], [hw - t / 2, 0, -hd + t / 2]],
@@ -276,23 +301,50 @@ export function castle(c: CastleSpec): Shape[] {
     [[hw - t / 2, 0, hd - t / 2], [-hw + t / 2, 0, hd - t / 2]],
     [[-hw + t / 2, 0, hd - t / 2], [-hw + t / 2, 0, -hd + t / 2]],
   ];
-  for (const [a, b] of ring) {
+  for (const [w, [a, b]] of ring.entries()) {
     const dx = b[0] - a[0], dz = b[2] - a[2], len = Math.hypot(dx, dz);
     const vx = -dz / len, vz = dx / len;                       // left of a->b
     const inward = ((a[0] + b[0]) / 2) * vx + ((a[2] + b[2]) / 2) * vz < 0;   // the origin lies on the +v side
-    out.push(...wallSegment(a, b, t, c.wallHeight, c.material, { cren: c.cren, parapet: inward ? "right" : "left", ext: t / 2 }));
+    out.push(...tagged(wallSegment(a, b, t, c.wallHeight, c.material, { cren: c.cren, parapet: inward ? "right" : "left", ext: t / 2 }), 1 + w));
+
   }
+  let tp = 5;
   for (const sx of [-1, 1]) for (const sz of [-1, 1]) {
-    out.push(...tower({ shape: c.towerShape, radius: c.towerRadius, height: c.towerHeight, material: c.material, hollow: false, wall: 2, door: null,
-      doorWidth: 2, doorHeight: 3, cren: c.cren, found: c.found, cx: sx * (hw - t / 2), cz: sz * (hd - t / 2) }));
+    out.push(...tagged(tower({ shape: c.towerShape, radius: c.towerRadius, height: c.towerHeight, material: c.material, hollow: false, wall: 2, door: null,
+      doorWidth: 2, doorHeight: 3, cren: c.cren, found: c.found, cx: sx * (hw - t / 2), cz: sz * (hd - t / 2) }), tp++));
   }
   if (c.keepSize) {
-    out.push(...keep({ size: c.keepSize, height: c.keepHeight, material: c.material, wall: Math.min(2, Math.floor(Math.min(...c.keepSize) / 3)), hollow: true,
-      roof: true, door: c.gate, doorWidth: Math.min(3, c.gateWidth), doorHeight: Math.min(4, c.gateHeight), windows: true, cren: c.cren, found: c.found }));
+    out.push(...tagged(keep({ size: c.keepSize, height: c.keepHeight, material: c.material, wall: Math.min(2, Math.floor(Math.min(...c.keepSize) / 3)), hollow: true,
+      roof: true, door: c.gate, doorWidth: Math.min(3, c.gateWidth), doorHeight: Math.min(4, c.gateHeight), windows: true, cren: c.cren, found: c.found }), 9));
   }
   if (c.gate) out.push(doorway(hw, hd, t, c.gate, c.gateWidth, c.gateHeight));
   return out;
 }
+
+export interface Spot { kind: "courtyard" | "rampart" | "tower"; at: Vec3; }
+
+/** Where worms can start in a castle, in its local coordinates (y = the level they stand on): the open courtyard between
+ * the curtain wall and the keep (never inside a wall passage), the middle of each wall-walk, and each tower top. */
+export function castleSpots(c: CastleSpec): Spot[] {
+  const hw = c.size[0] / 2, hd = c.size[1] / 2, t = c.wallThickness, out: Spot[] = [];
+  const ix = hw - t, iz = hd - t;                  // the courtyard's half sizes
+  if (c.keepSize) {
+    const kx = c.keepSize[0] / 2, kz = c.keepSize[1] / 2;
+    // the middle of the open band between the keep and each wall, where it is at least 1.5 wide
+    if (iz - kz >= 1.5) for (const sz of [-1, 1]) out.push({ kind: "courtyard", at: [0, 0, sz * (kz + iz) / 2] });
+    if (ix - kx >= 1.5) for (const sx of [-1, 1]) out.push({ kind: "courtyard", at: [sx * (kx + ix) / 2, 0, 0] });
+  } else {
+    out.push({ kind: "courtyard", at: [0, 0, 0] });
+    for (const sx of [-1, 1]) for (const sz of [-1, 1]) if (ix >= 4 && iz >= 4) out.push({ kind: "courtyard", at: [sx * ix / 2, 0, sz * iz / 2] });
+  }
+  // wall-walks: halfway along each side, on the inner half of the wall's top (behind the parapet)
+  const walk = Math.max(0.5, t / 4);
+  out.push({ kind: "rampart", at: [0, c.wallHeight, -hd + t / 2 + walk] }, { kind: "rampart", at: [0, c.wallHeight, hd - t / 2 - walk] },
+    { kind: "rampart", at: [-hw + t / 2 + walk, c.wallHeight, 0] }, { kind: "rampart", at: [hw - t / 2 - walk, c.wallHeight, 0] });
+  for (const sx of [-1, 1]) for (const sz of [-1, 1]) out.push({ kind: "tower", at: [sx * (hw - t / 2), c.towerHeight, sz * (hd - t / 2)] });
+  return out;
+}
+
 
 // ------------------------------------------------------------------ slopes: ramps, stairs, bridges
 

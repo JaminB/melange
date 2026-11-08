@@ -2,11 +2,13 @@
 // shape list (lib/structures-shapes.ts) at the voxel cells it overlaps, so a structure lands in the existing frames and,
 // where it reaches outside all of them, in new terrain blocks (lib/structures-apply.ts; the shared budget of 64 blocks).
 import type { Vec3 } from "../core";
-import { applyPlan, dominantMaterial } from "../lib/structures-apply";
+import { sampleField, spansAt } from "../lib/inspect-field";
+import { applyPlan, dominantMaterial, type Packing } from "../lib/structures-apply";
 import {
-  SIDES, arch, bridge, castle, crater, keep, lane, place, tower, tunnel, wallSegment, type Plan, type Shape, type Side,
+  SIDES, arch, bridge, castle, castleSpots, crater, keep, lane, place, placePoint, scaled, tower, tunnel, wallSegment, type Plan, type Shape, type Side,
+  type Spot,
 } from "../lib/structures-shapes";
-import { tidy, toWorld } from "../lib/voxel";
+import { grids, tidy, toWorld } from "../lib/voxel";
 import { ToolError, type Schema, type Tool } from "../registry";
 import type { Session } from "../session";
 
@@ -24,6 +26,8 @@ const common: Record<string, Schema> = {
   },
   dryRun: { type: "boolean", description: "Plan only: report the voxels, frames and new blocks it would use and change nothing." },
   units: { type: "string", enum: ["map", "world"], description: "Unit of every position and length in this call: map (default; 1 voxel = 1 unit) or world (map x 20, as the Erg panel shows)." },
+  blockScale: { type: "number", minimum: 1, maximum: 4, description: "Map units per voxel of the new blocks (default 1): a larger one covers the same structure with fewer of the game's 65535 cells, in coarser voxels (detail under a voxel is lost). Use place \"new\" so the whole structure is on that lattice." },
+  packing: { type: "string", enum: ["tiles", "parts"], description: "How new blocks are cut. tiles (default): tiles of up to 31 voxels a side, each trimmed to what it holds. parts: a block per part (each wall, tower, the keep), merged where that costs few cells, so the air between parts (a courtyard) is in no block: fewer cells, more blocks." },
 };
 const foundation: Schema = { type: "integer", minimum: 0, maximum: 32, description: "Voxels of solid filled below the base (y) so the structure reaches the ground. Default 0." };
 const rotation: Schema = { type: "number", description: "Yaw in degrees about the structure's centre (counter-clockwise seen from above; 0 = sides parallel to the map axes). Default 0." };
@@ -31,7 +35,7 @@ const crenellations = (d: string): Schema => ({ type: "boolean", description: d 
 
 const SIDE_NOTE = "Sides are map directions: n = -z, s = +z, e = +x, w = -x (before the rotation).";
 
-interface Common { material?: number; place?: "auto" | "existing" | "new"; dryRun?: boolean; units?: "map" | "world"; }
+interface Common { material?: number; place?: "auto" | "existing" | "new"; dryRun?: boolean; units?: "map" | "world"; blockScale?: number; packing?: Packing; }
 
 const finite = (v: number[], what: string) => { if (!v.every(Number.isFinite)) throw new ToolError(`${what} must be finite numbers`); };
 
@@ -42,12 +46,50 @@ function run(s: Session, a: Common, anchor: Vec3, structure: string, make: (k: n
   const at: Vec3 = [anchor[0] * k, anchor[1] * k, anchor[2] * k];
   const mat = a.material ?? dominantMaterial(store, at) ?? 1;
   const plan = make(k, mat, (v, d) => (v === undefined ? d : v * k));
-  const r = applyPlan(store, plan, { place: a.place ?? "auto", dryRun: !!a.dryRun });
+  const r = applyPlan(store, plan, { place: a.place ?? "auto", dryRun: !!a.dryRun, blockScale: a.blockScale, packing: a.packing });
   return { structure, material: mat, ...(a.material === undefined ? { materialNote: "chosen from the voxels near the structure; pass material to set it" } : {}), ...r,
     structureInfo: plan.info, undo: r.dryRun || !r.voxels.changed ? undefined : "undo reverts the whole structure in one step; save writes it" };
 }
 
+/** Offsets within 2 map units, nearest first (a quarter-unit grid). */
+const NEAR: [number, number][] = (() => {
+  const out: [number, number][] = [];
+  for (let i = -8; i <= 8; i++) for (let j = -8; j <= 8; j++) if ((i || j) && i * i + j * j <= 64) out.push([i / 4, j / 4]);
+  return out.sort((a, b) => a[0] ** 2 + a[1] ** 2 - b[0] ** 2 - b[1] ** 2);
+})();
+
+/** The castle's spawn spots in the caller's units; after a build, each checked against the voxels: the ground under it
+ * within 1.5 map units of where the design puts it, with 1.5 map units of air above (a worm is about 1.2 tall). */
+function spotReport(s: Session, spots: Spot[], units: "map" | "world" | undefined, dry: boolean) {
+  const k = units === "world" ? 20 : 1;
+  const gs = dry ? [] : grids(s.store);
+  const list = spots.map((p) => {
+    const out: Record<string, unknown> = { kind: p.kind, at: tidy([p.at[0] * k, p.at[1] * k, p.at[2] * k]) };
+    if (dry) return out;
+    const check = (x: number, z: number) => {
+      const all = spansAt(gs, x, z);
+      const g = all.find((q) => q.top <= p.at[1] + 1.5 + 1e-6);
+      const blocked = !!g && all.some((q) => q.top > g.top + 1e-6 && q.bottom < g.top + 1.5);
+      return { g, blocked, ok: !!g && Math.abs(g.top - p.at[1]) <= 1.5 && !blocked };
+    };
+    let x = p.at[0], z = p.at[2], c = check(x, z);
+    // the design's point can fall between the voxels of a thin or scaled wall: the nearest point within 2 map units that
+    // is ok instead
+    if (!c.ok)
+      for (const [dx, dz] of NEAR) {
+        const t = check(p.at[0] + dx, p.at[2] + dz);
+        if (t.ok) { x = p.at[0] + dx; z = p.at[2] + dz; c = t; out.at = tidy([x * k, p.at[1] * k, z * k]); out.moved = tidy([dx * k, 0, dz * k]); break; }
+      }
+    out.standOn = c.g ? tidy([x * k, c.g.top * k, z * k]) : null;
+    out.ok = c.ok;
+    if (!c.ok) out.why = !c.g ? "no ground under it" : Math.abs(c.g.top - p.at[1]) > 1.5 ? `the ground is at y ${tidy([c.g.top * k, 0, 0])[0]}, not the design's` : "no headroom";
+    return out;
+  });
+  return { note: dry ? "positions from the design (dry run: not checked against the voxels)" : "standOn is the top of the voxels there; ok spots have ground within 1.5 map units of the design and 1.5 of air above (moved: shifted that far to the nearest such point). Give them to place_spawn_knots as pos.", spots: list };
+}
+
 const sideOf = (v: string | undefined, dflt: Side | null): Side | null => (v === undefined ? dflt : v === "none" ? null : (v as Side));
+
 const sc = (v: Vec3, k: number): Vec3 => [v[0] * k, v[1] * k, v[2] * k];
 
 // ------------------------------------------------------------------ tools
@@ -55,7 +97,7 @@ const sc = (v: Vec3, k: number): Vec3 => [v[0] * k, v[1] * k, v[2] * k];
 export const tools: Tool[] = [
   {
     name: "build_castle",
-    description: "Build a castle: a rectangular curtain wall with a crenellated walkway, a tower on each corner, an optional keep in the courtyard and a gate. `at` is the centre of the footprint at floor level (y = the first solid layer; the courtyard is left as it is, use `foundation` to fill it). One undo step. " + SIDE_NOTE,
+    description: "Build a castle: a rectangular curtain wall with a crenellated walkway, a tower on each corner, an optional keep in the courtyard and a gate. `at` is the centre of the footprint at floor level (y = the first solid layer; the courtyard is left as it is, use `foundation` to fill it). `scale` builds it from larger voxels (fewer cells); `packing: \"parts\"` keeps the courtyard air out of the blocks. Answers spawnSpots: open courtyard, wall-walk and tower-top positions, checked against the voxels. One undo step. " + SIDE_NOTE,
     inputSchema: {
       type: "object", additionalProperties: false, required: ["at"],
       properties: {
@@ -73,22 +115,27 @@ export const tools: Tool[] = [
         gateWidth: { type: "number", minimum: 2, description: "Default 4." },
         gateHeight: { type: "number", minimum: 2, description: "Default 5 (round-topped from 3 wide)." },
         crenellations: crenellations("Merlons on the walls, towers and keep. Default true."),
+        scale: { type: "number", minimum: 1, maximum: 4, description: "Build the castle from voxels of this many map units (default 1). Lengths stay map units; the design is laid out in voxels of `scale` (walls, merlons and gates keep their rhythm in voxels) and new blocks get that scale (blockScale), so it costs about 1/scale^3 of the cells. Use place \"new\"." },
         foundation, rotation, ...common,
       },
     },
     handler(s, a: Common & { at: Vec3; size?: [number, number]; wallHeight?: number; wallThickness?: number; towerShape?: "round" | "square"; towerRadius?: number;
       towerHeight?: number; keep?: boolean; keepSize?: [number, number]; keepHeight?: number; gate?: string; gateWidth?: number; gateHeight?: number;
-      crenellations?: boolean; foundation?: number; rotation?: number }) {
+      crenellations?: boolean; foundation?: number; rotation?: number; scale?: number }) {
       finite(a.at, "at");
-      return run(s, a, a.at, "castle", (k, mat, U) => {
-        const size: [number, number] = a.size ? [a.size[0] * k, a.size[1] * k] : [30, 30];
-        const wh = U(a.wallHeight, 6), t = U(a.wallThickness, 3);
-        const tr = a.towerRadius === undefined ? Math.max(3, t + 1) : a.towerRadius * k, notes: string[] = [];
+      // scale v: the design is made in voxels of v map units (every length divided by v) and scaled back up once planned
+      const v = a.scale ?? 1;
+      let spots: Spot[] = [];
+      const res = run(s, { ...a, blockScale: a.blockScale ?? (v !== 1 ? v : undefined) }, a.at, "castle", (k0, mat) => {
+        const k = k0 / v, U = (x: number | undefined, d: number) => (x === undefined ? d : x * k);
+        const size: [number, number] = a.size ? [a.size[0] * k, a.size[1] * k] : [30 / v, 30 / v];
+        const wh = U(a.wallHeight, 6 / v), t = U(a.wallThickness, 3 / v);
+        const tr = a.towerRadius === undefined ? Math.max(3 / v, t + 1) : a.towerRadius * k, notes: string[] = [];
         if (size[0] < 2 * tr + 4 || size[1] < 2 * tr + 4) throw new ToolError(`the castle is too small for its towers: each side needs at least ${2 * tr + 4} (2 x tower radius + 4)`);
         if (size[0] <= 2 * t + 4 || size[1] <= 2 * t + 4) throw new ToolError("the walls leave no courtyard: make the castle bigger or the walls thinner");
         let keepSize: [number, number] | null = null;
         if (a.keep !== false) {
-          keepSize = a.keepSize ? [a.keepSize[0] * k, a.keepSize[1] * k] : [Math.max(8, Math.round(size[0] / 3)), Math.max(8, Math.round(size[1] / 3))];
+          keepSize = a.keepSize ? [a.keepSize[0] * k, a.keepSize[1] * k] : [Math.max(8 / v, Math.round(size[0] / 3)), Math.max(8 / v, Math.round(size[1] / 3))];
           if (keepSize[0] > size[0] - 2 * t - 4 || keepSize[1] > size[1] - 2 * t - 4) {
             if (a.keep === true || a.keepSize) throw new ToolError(`the keep does not fit in the courtyard (${size[0] - 2 * t - 4} x ${size[1] - 2 * t - 4} free)`);
             notes.push("no keep: the courtyard is too small for one");
@@ -97,14 +144,19 @@ export const tools: Tool[] = [
         }
         const gate = sideOf(a.gate, "s");
         const spec = {
-          size, wallHeight: wh, wallThickness: t, towerShape: a.towerShape ?? "round", towerRadius: tr, towerHeight: a.towerHeight === undefined ? wh + 3 : a.towerHeight * k,
-          keepSize, keepHeight: a.keepHeight === undefined ? wh + 4 : a.keepHeight * k, gate, gateWidth: U(a.gateWidth, 4), gateHeight: U(a.gateHeight, 5),
-          material: mat, cren: a.crenellations !== false, found: U(a.foundation, 0),
+          size, wallHeight: wh, wallThickness: t, towerShape: a.towerShape ?? "round", towerRadius: tr, towerHeight: a.towerHeight === undefined ? wh + 3 / v : a.towerHeight * k,
+          keepSize, keepHeight: a.keepHeight === undefined ? wh + 4 / v : a.keepHeight * k, gate, gateWidth: U(a.gateWidth, 4 / v), gateHeight: U(a.gateHeight, 5 / v),
+          material: mat, cren: a.crenellations !== false, found: a.foundation === undefined ? 0 : a.foundation / v,
         };
-        const shapes = place(castle(spec), sc(a.at, k), a.rotation ?? 0);
-        return { label: "Build castle", shapes, notes, info: { size, wallHeight: wh, wallThickness: t, towerRadius: tr, towerHeight: spec.towerHeight, keep: keepSize,
-          gate: gate ? { side: gate, width: spec.gateWidth, height: spec.gateHeight } : null, courtyardFloorY: a.at[1] * k } };
-      });
+        const at = sc(a.at, k0);
+        const shapes = place(scaled(castle(spec), v), at, a.rotation ?? 0);
+        spots = castleSpots(spec).map((p) => ({ kind: p.kind, at: placePoint(sc(p.at, v), at, a.rotation ?? 0) }));
+        const m = (x: number) => tidy([x * v, 0, 0])[0];
+        return { label: "Build castle", shapes, notes, info: { size: [m(size[0]), m(size[1])], wallHeight: m(wh), wallThickness: m(t), towerRadius: m(tr),
+          towerHeight: m(spec.towerHeight), keep: keepSize ? [m(keepSize[0]), m(keepSize[1])] : null,
+          gate: gate ? { side: gate, width: m(spec.gateWidth), height: m(spec.gateHeight) } : null, courtyardFloorY: at[1], ...(v !== 1 ? { scale: v } : {}) } };
+      }) as Record<string, unknown>;
+      return { ...res, spawnSpots: spotReport(s, spots, a.units, !!a.dryRun) };
     },
   },
   {
@@ -390,4 +442,86 @@ export const tools: Tool[] = [
       });
     },
   },
+  {
+    name: "sculpt_crater",
+    description: "Sculpt a crater into the terrain that is there (a volcano's summit): reads the ground, raises a rim crest round the bowl that blends into the slope outside it, carves a bowl below the crest (with an optional flat floor) and paints material bands by distance from the crest. Unlike dig_crater it follows the ground instead of a fixed level, so there is no separate wall ring. The rim is raised in material, by default each column's own top material (no new runs in the blocks); fills reach new blocks where they leave every frame (blockScale gives them the field's voxel size). Each band adds about one run per column to the blocks it paints (at most 2000 per block). One undo step.",
+    inputSchema: {
+      type: "object", additionalProperties: false, required: ["at", "radius", "depth"],
+      properties: {
+        at: { type: "array", items: { type: "number" }, minItems: 2, maxItems: 2, description: "[x, z] of the crater's centre." },
+        radius: { type: "number", minimum: 2, description: "Radius of the rim crest." },
+        depth: { type: "number", minimum: 1, description: "Depth of the floor below the crest." },
+        floorRadius: { type: "number", minimum: 0, description: "Radius of a flat floor in the middle (default 0: a round bowl)." },
+        rimHeight: { type: "number", description: "Raise the crest this far above the ground's mean height round the rim circle (default 0; negative lowers it)." },
+        rimWidth: { type: "number", minimum: 0, description: "Width outside the crest over which the rim falls back to the ground's own surface (default radius / 2)." },
+        bands: { type: "array", maxItems: 16, description: "Surface materials by signed distance from the crest (d - radius: negative inside the bowl, 0 on the crest), first match wins, painted bandDepth deep. For example lava on the floor and ash on the walls: [{material: 21, to: -8}, {material: 14, from: -8, to: 4}].",
+          items: { type: "object", additionalProperties: false, required: ["material"], properties: {
+            material: { type: "integer", minimum: 0, maximum: 63 }, from: { type: "number", description: "Distance at least this." }, to: { type: "number", description: "... and under this." } } } },
+        bandDepth: { type: "number", minimum: 0.5, description: "How deep under the new surface the bands are painted (default 2)." },
+        ...common,
+      },
+    },
+    handler(s, a: Common & { at: [number, number]; radius: number; depth: number; floorRadius?: number; rimHeight?: number; rimWidth?: number;
+      bands?: { material: number; from?: number; to?: number }[]; bandDepth?: number }) {
+      finite(a.at, "at");
+      const k = a.units === "world" ? 1 / 20 : 1;
+      const cx = a.at[0] * k, cz = a.at[1] * k, R = a.radius * k, D = a.depth * k;
+      const W = a.rimWidth === undefined ? R / 2 : a.rimWidth * k, r0 = Math.min(R * 0.95, (a.floorRadius ?? 0) * k), bandDepth = (a.bandDepth ?? 2) * k;
+      const outer = R + W;
+      // the ground before the edit, every half unit
+      const step = 0.5;
+      const gs = grids(s.store);
+      const field = sampleField(gs, { x0: cx - outer - 1, z0: cz - outer - 1, x1: cx + outer + 1, z1: cz + outer + 1 }, step);
+      const ground = (x: number, z: number) => {
+        const i = Math.floor((x - field.x0) / step), j = Math.floor((z - field.z0) / step);
+        return i < 0 || j < 0 || i >= field.w || j >= field.h ? -Infinity : field.top[j * field.w + i];
+      };
+      let sum = 0, n = 0;
+      for (let q = 0; q < 96; q++) {
+        const g = ground(cx + R * Math.cos((q / 96) * 2 * Math.PI), cz + R * Math.sin((q / 96) * 2 * Math.PI));
+        if (g > -Infinity) { sum += g; n++; }
+      }
+      if (n < 48) throw new ToolError(`there is ground under only ${n} of 96 points of the rim circle: sculpt_crater shapes terrain that is there (use dig_crater, or raise the ground first)`);
+      const crest = sum / n + (a.rimHeight ?? 0) * k, floorY = crest - D;
+      const surface = (x: number, z: number) => {
+        const d = Math.hypot(x - cx, z - cz);
+        if (d < R) { const t = Math.max(0, d - r0) / (R - r0); return floorY + D * t * t; }
+        const g = ground(x, z), w = Math.min(1, (d - R) / Math.max(1e-6, W));
+        const sm = w * w * (3 - 2 * w);
+        return g === -Infinity ? -Infinity : crest + (g - crest) * sm;
+      };
+      const bands = a.bands ?? [];
+      const bandOf = (x: number, z: number) => {
+        const sd = (Math.hypot(x - cx, z - cz) - R) / k;
+        return bands.find((b) => (b.from === undefined || sd >= b.from) && (b.to === undefined || sd < b.to));
+      };
+      const lowY = Math.min(floorY - bandDepth, Number.isFinite(field.min) ? field.min : floorY) - 1, highY = Math.max(crest, Number.isFinite(field.max) ? field.max : crest) + 1;
+      const box = (op: "fill" | "carve" | "paint", mat: number, hit: (x: number, y: number, z: number) => boolean): Shape =>
+        ({ op, mat, min: [cx - outer, lowY, cz - outer], max: [cx + outer, highY, cz + outer], hit });
+      const inside = (x: number, z: number) => Math.hypot(x - cx, z - cz) < outer;
+      // without a material the rim is raised in each column's own top material: no new material change down the
+      // column, so no new runs in the blocks it reaches (an added block holds at most 2000)
+      const groundMat = (x: number, z: number) => {
+        const i = Math.floor((x - field.x0) / step), j = Math.floor((z - field.z0) / step);
+        const m = i < 0 || j < 0 || i >= field.w || j >= field.h ? -1 : field.mat[j * field.w + i];
+        return m >= 0 ? m : 0;
+      };
+      return run(s, a, [cx / k, crest / k, cz / k], "crater", (_k, mat) => ({
+        label: "Sculpt crater",
+        shapes: [
+          // up to the new surface from the ground that is there (never under it: caves stay), then down to it
+          { ...box("fill", mat, (x, y, z) => { if (!inside(x, z)) return false; const g = ground(x, z); return g > -Infinity && y >= g && y < surface(x, z); }),
+            ...(a.material === undefined ? { matAt: (x: number, _y: number, z: number) => groundMat(x, z) } : {}) },
+          box("carve", 0, (x, y, z) => inside(x, z) && y >= surface(x, z)),
+          // one paint per band, each only where it is the first band that matches
+          ...bands.map((b) => box("paint", b.material, (x, y, z) => inside(x, z) && bandOf(x, z) === b && y < surface(x, z) && y >= surface(x, z) - bandDepth)),
+        ],
+        notes: [],
+        info: { centre: [tidy([cx / k, 0, 0])[0], tidy([cz / k, 0, 0])[0]], crestY: tidy([crest / k, 0, 0])[0], floorY: tidy([floorY / k, 0, 0])[0],
+          groundOnRim: tidy([sum / n / k, 0, 0])[0], radius: a.radius, rimWidth: tidy([W / k, 0, 0])[0], bands: bands.length },
+      }));
+    },
+  },
 ];
+
+

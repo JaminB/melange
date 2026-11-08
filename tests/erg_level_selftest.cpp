@@ -1164,6 +1164,22 @@ void TestService(const std::wstring& root) {
     Expect(r.ok && J(r.json).find("id")->str == "harbour2", "new: a free id");
     Expect(Call(S, "level.new", R"({"base":"Multi.Synth","slug":"Bad_Slug","title":"x"})").code == erg::service::kBadParams, "new: bad slug");
     Expect(Call(S, "level.new", R"({"base":"Multi.Nope","slug":"x","title":"x"})").code == erg::service::kBadParams, "new: unknown base");
+    {
+        const Json l = J(Call(S, "level.list", "{}").json);
+        const Json* dir = l.find("projectsDir");
+        Expect(dir && dir->kind == Json::Kind::String && !dir->str.empty(), "list: the projects folder");
+        auto d = Call(S, "level.delete", R"({"project":"harbour2"})");
+        bool gone = d.ok && J(d.json).find("deleted")->str == "harbour2";
+        for (const auto& pr : J(Call(S, "level.list", "{}").json).find("projects")->arr) gone &= pr.find("id")->str != "harbour2";
+        Expect(gone, "delete: the project is gone " + d.message);
+        Expect(Call(S, "level.delete", R"({"project":"harbour2"})").code == erg::service::kBadParams &&
+                   Call(S, "level.delete", R"({"project":"Bad_Slug"})").code == erg::service::kBadParams &&
+                   Call(S, "level.delete", "{}").code == erg::service::kBadParams,
+               "delete: an unknown project, a bad id, no id");
+        Expect(erg::service::Mutating("level.delete"), "delete: a mutating method");
+        d = Call(S, "level.new", R"({"base":"Multi.Synth","slug":"harbour","title":"Second"})");
+        Expect(d.ok && J(d.json).find("id")->str == "harbour2", "delete: the id is free again");
+    }
 
     r = Call(S, "level.load", R"({"project":"harbour"})");
     Expect(r.ok && erg::ParseScene(r.json, &scene, &err) && scene.stem == "ergtest_harbour" && scene.title == "Harbour Brawl",
@@ -1172,6 +1188,7 @@ void TestService(const std::wstring& root) {
         const Json loaded = J(r.json);
         const Json* pv = loaded.find("previews");
         Expect(pv && pv->kind == Json::Kind::Object, "load: the reply carries a previews object " + r.json.substr(0, 200));
+        Expect(Call(S, "level.delete", R"({"project":"harbour"})").code == erg::service::kPolicy, "delete: refused while the project is open");
     }
 
     const Json* patchJ = created.find("patch");
@@ -1317,6 +1334,17 @@ void TestService(const std::wstring& root) {
         const Json* names = mats.find("names");
         Expect(names && names->arr.size() == 2 && names->arr[0].str == "Planks" && names->arr[1].str == "Girder",
                "materials: the record names of a level's material file " + r.message);
+        Expect(!mats.find("colors"), "materials: no colours unless asked");
+        r = Call(S, "level.materials", R"({"file":"Maps\\mats.txt","colors":true,"theme":"BUILDING"})");
+        const Json withColors = r.ok ? J(r.json) : Json();
+        const Json* colors = withColors.find("colors");
+        const Json* resolved = withColors.find("resolved");
+        bool hex = colors && colors->arr.size() == 2 && resolved && resolved->arr.size() == 2;
+        for (size_t i = 0; hex && i < colors->arr.size(); ++i)
+            hex = colors->arr[i].str.size() == 7 && colors->arr[i].str[0] == '#' && resolved->arr[i].kind == Json::Kind::Bool;
+        Expect(hex, "materials: colors gives a #rrggbb colour and resolved per record " + r.json.substr(0, 200) + r.message);
+        Expect(Call(S, "level.materials", R"({"file":"Maps\\mats.txt","colors":1})").code == erg::service::kBadParams, "materials: colors is a boolean");
+
         Expect(Call(S, "level.materials", R"({"file":"ThemeCamelot\\ThemeCamelot.txt"})").ok, "materials: a theme's file");
         Expect(Call(S, "level.materials", R"({"file":"..\\..\\x.txt"})").code == erg::service::kBadParams &&
                    Call(S, "level.materials", R"({"file":"Maps\\mats.xan"})").code == erg::service::kBadParams &&
@@ -1405,6 +1433,8 @@ void TestService(const std::wstring& root) {
         Expect(other.Lock("harbour") == erg::project::LockResult::Busy, "lock: another server sees the open project as busy");
         Expect(other.Lock("harbour2") == erg::project::LockResult::Ok, "lock: an unopened project is free");
         Expect(Call(S, "level.load", R"({"project":"harbour2"})").code == erg::service::kBusy, "lock: -32002 for a project another server holds");
+        Expect(Call(S, "level.delete", R"({"project":"harbour2"})").code == erg::service::kPolicy, "delete: refused while another server holds it");
+
     }
     Expect(Call(S, "level.close", R"({"project":"harbour"})").ok, "close");
     {
@@ -1649,7 +1679,7 @@ void TestService(const std::wstring& root) {
     Expect(Call(S, "level.close", R"({"project":"harbour"})").ok, "close: read-only");
     S.oasisReadOnly = false;
     Expect(Call(S, "level.nope", "{}").code == -32601 && Call(S, "level.list", "[1]").code == erg::service::kBadParams, "unknown method, bad params");
-    Expect(erg::service::Methods().size() == 13 && erg::service::Mutating("level.save") && erg::service::Mutating("level.script.put") && !erg::service::Mutating("level.script.get") && !erg::service::Mutating("level.load"), "methods");
+    Expect(erg::service::Methods().size() == 14 && erg::service::Mutating("level.delete") && erg::service::Mutating("level.save") && erg::service::Mutating("level.script.put") && !erg::service::Mutating("level.script.get") && !erg::service::Mutating("level.load"), "methods");
 }
 }  // namespace
 
