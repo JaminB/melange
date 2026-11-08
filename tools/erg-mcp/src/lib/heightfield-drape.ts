@@ -9,7 +9,7 @@
 // Under the skin the core (optional, default on) is the usual stepped field cut down to floor(lowest corner - 0.25), so
 // its steps stay inside the skin; it is planned and packed by heightfield-plan (its cells, blocks and frames as there).
 // The skin's corner heights are the mean of the field's heights of the columns round each corner.
-import { AddFrame, Group, LIMITS, blockFrames, cellBudget, filled, type Command, type EditorStore, type Frame, type Vec3 } from "../core";
+import { AddFrame, Group, LIMITS, blockFrames, cellBudget, type Command, type EditorStore, type Frame, type Vec3 } from "../core";
 import { ToolError } from "../registry";
 import { apply, plan, sampleField, SIDE, type Field, type FieldArgs, type Plan } from "./heightfield-plan";
 import { WORLD_PER_MAP, tidy } from "./voxel";
@@ -17,6 +17,8 @@ import { WORLD_PER_MAP, tidy } from "./voxel";
 export interface DrapeArgs extends FieldArgs {
   thickness?: number;          // skin voxels, 1-8 (default 2)
   core?: boolean;              // fill under the skin with stepped blocks (default true)
+  skirtTo?: number;            // level y (units): the core reaches down to here instead of the floor (a hollow skin gets one)
+  skirtTop?: number;           // level y (units): only columns whose skin's lowest corner is at or under it get the core
 }
 
 interface Tile { x0: number; x1: number; z0: number; z1: number; y0: number; corners: number[]; columns: number; }
@@ -77,7 +79,7 @@ function skinWords(f: Field, t: Tile, T: number): Uint32Array {
       const c = (t.z0 + z) * f.nx + t.x0 + x;
       if (!live(f, c)) continue;
       // Materials as the stepped field would give its top T voxels, so height bands and surface rules carry over.
-      for (let y = 0; y < T; y++) w[(z * X + x) * T + y] = filled(f.materialAt(c, f.hi[c] - T + y));
+      for (let y = 0; y < T; y++) w[(z * X + x) * T + y] = f.wordAt(c, f.hi[c] - T + y, true);
     }
   return w;
 }
@@ -97,8 +99,16 @@ export function planDrape(store: EditorStore, a: DrapeArgs): DrapePlan {
   let why: string | undefined;
   if (ts.length > slots) why = `the skin needs ${ts.length} blocks and ${slots} may be added`;
   else if (skinCells > room) why = `the skin needs ${skinCells} cells and ${room} are left`;
-  let core: Plan | null = null;
-  if (!why && a.core !== false) {
+  // The skirt: the core's bottom moved to skirtTo (scene voxels), and only under columns whose skin dips to skirtTop.
+  const k = a.units === "world" ? 1 / WORLD_PER_MAP : 1;
+  for (const [v, what] of [[a.skirtTo, "skirtTo"], [a.skirtTop, "skirtTop"]] as const)
+    if (v !== undefined && !Number.isFinite(v)) throw new ToolError(`${what} is a level y`);
+  if (a.skirtTop !== undefined && a.skirtTo === undefined) throw new ToolError("skirtTop limits a skirt: give skirtTo too");
+  const skirt = a.skirtTo !== undefined;
+  const skirtLo = skirt ? Math.round((a.skirtTo! * k - f.t[1]) / f.s) : 0;
+  const skirtHi = a.skirtTop !== undefined ? (a.skirtTop * k - f.t[1]) / f.s : Infinity;
+  let core: Plan | null = null, skirtColumns = 0;
+  if (!why && (a.core !== false || skirt)) {
     // The core: each column cut to under its lowest corner, so the skin hides its steps.
     core = plan(store, { ...a, maxBlocks: slots - ts.length, maxCells: room - skinCells, partial: false }, (g) => {
       for (let b = 0; b < g.nz; b++)
@@ -107,9 +117,15 @@ export function planDrape(store: EditorStore, a: DrapeArgs): DrapePlan {
           if (!live(g, c)) continue;
           const m = Math.min(H[b * W + i], H[b * W + i + 1], H[(b + 1) * W + i], H[(b + 1) * W + i + 1]);
           g.hi[c] = Math.min(g.hi[c], g.floor + Math.floor(m - 0.25));
+          if (!skirt) continue;
+          // the skin's lowest corner, less its thickness: its underside there
+          if (g.floor + m - T > skirtHi) { g.hi[c] = g.lo[c]; continue; }
+          g.lo[c] = skirtLo;
+          if (g.hi[c] > g.lo[c]) skirtColumns++;
         }
     });
-    if (!core.fits) why = `the core under the skin does not fit: ${core.why ?? ""} (core: false leaves the skin hollow)`;
+    if (!core.fits) why = skirt ? `the skirt under the skin does not fit: ${core.why ?? ""} (raise skirtTo, lower skirtTop, or raise voxelSize)`
+      : `the core under the skin does not fit: ${core.why ?? ""} (core: false leaves the skin hollow)`;
   }
   const s = f.s, top = Math.max(...ts.map((t) => t.y0 + T + Math.max(...t.corners)));
   const report = {
@@ -118,7 +134,12 @@ export function planDrape(store: EditorStore, a: DrapeArgs): DrapePlan {
       peak: ts.length ? { map: num(top * s + f.t[1]), world: num((top * s + f.t[1]) * WORLD_PER_MAP) } : null },
     skin: { thickness: T, blocks: ts.length, cells: skinCells,
       list: ts.map((t) => ({ size: [t.x1 - t.x0, T, t.z1 - t.z0], columns: t.columns, offsets: [num(Math.min(...t.corners)), num(Math.max(...t.corners))] })) },
-    core: core ? { blocks: core.kept.length, cells: core.kept.reduce((n, p) => n + (p.x1 - p.x0) * (p.y1 - p.y0) * (p.z1 - p.z0), 0), inFrames: core.report.voxels } : null,
+    core: core ? { blocks: core.kept.length, cells: core.kept.reduce((n, p) => n + (p.x1 - p.x0) * (p.y1 - p.y0) * (p.z1 - p.z0), 0), inFrames: core.report.voxels,
+      neededCells: core.pieces.reduce((n, p) => n + (p.x1 - p.x0) * (p.y1 - p.y0) * (p.z1 - p.z0), 0) } : null,
+    ...(skirt ? { skirt: { to: { map: num(skirtLo * s + f.t[1]), world: num((skirtLo * s + f.t[1]) * WORLD_PER_MAP) },
+      ...(a.skirtTop !== undefined ? { top: { map: num(a.skirtTop * k), world: num(a.skirtTop * k * WORLD_PER_MAP) } } : {}), columns: skirtColumns,
+      note: "the core is filled from skirtTo up to just under the skin" + (a.skirtTop !== undefined ? " in the columns whose skin dips to skirtTop" : "") +
+        ", so a rising sea shows solid ground, not the skin's underside; core.cells is its cost" } } : {}),
     budget: { blocks: { before: used, after: used + ts.length + (core?.kept.length ?? 0), max: LIMITS.newFrames },
       cells: { before: cells.used, after: cells.used + skinCells + (core ? core.kept.reduce((n, p) => n + (p.x1 - p.x0) * (p.y1 - p.y0) * (p.z1 - p.z0), 0) : 0), max: cells.max } },
     note: "the skin's blocks carry corner offsets: the game draws and collides their columns at the field's height; the Erg panel's 3D view shows them unsheared",

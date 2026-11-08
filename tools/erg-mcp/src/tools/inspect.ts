@@ -9,6 +9,7 @@ import { scheduleFromScript, waterByTurn, type WaterSchedule } from "../lib/floo
 import { pieces } from "../lib/islets";
 import { loadMaterials, projectMaterials, resolveFile, themeFile, tintFor, type MaterialSet, type PaletteMode } from "../lib/materials";
 import { WORLD_PER_MAP, grids, isSolid, material, tidy, type Grid } from "../lib/voxel";
+import { ExprError, compile } from "../lib/heightfield-expr";
 import { ToolError, image, type Content, type Schema, type Tool } from "../registry";
 import type { Session } from "../session";
 
@@ -347,6 +348,63 @@ interface ReachArgs extends RegionArgs {
   from?: number[][]; target?: { x: number; z: number; radius?: number }; step?: number; maxStep?: number; maxSlope?: number; maxDrop?: number;
   maxGap?: number; headroom?: number; water?: boolean; render?: boolean; palette?: PaletteMode; slopeOver?: "tread" | "riser";
   walkSpeed?: number; turnTime?: number; flood?: FloodArgs; islets?: boolean;
+  via?: ViaArgs; materialSlopes?: { materials: number[]; maxSlope: number }[];
+}
+
+/** A route constraint: the ground "on the route" is where the top voxel's material is one of `materials` (when given)
+ * and `mask` is above 0 (when given); `only` walks on it alone, `avoid` never on it; within `near` of a start or the
+ * target the ground is always walkable (a spawn in a courtyard, the summit). */
+interface ViaArgs { materials?: number[]; mask?: string; mode?: "only" | "avoid"; near?: number; }
+
+/** The per-node route constraint and material slope caps, or nothing when neither is asked for. Map units in. */
+function routeRules(S: Surfaces, a: ReachArgs, u: Units, starts: Vec3[], target: { x: number; z: number; r: number }):
+  { allow?: Uint8Array; slopeCap?: Float32Array; info?: object } {
+  const out: { allow?: Uint8Array; slopeCap?: Float32Array; info?: Record<string, unknown> } = {};
+  if (a.materialSlopes?.length) {
+    const cap = new Float32Array(S.nodes).fill(90), byMat = new Map<number, number>();
+    a.materialSlopes.forEach((m, i) => {
+      if (!m.materials.length) throw new ToolError(`materialSlopes[${i}]: give at least one material`);
+      for (const k of m.materials) byMat.set(k, Math.min(byMat.get(k) ?? 90, m.maxSlope));
+    });
+    for (let n = 0; n < S.nodes; n++) cap[n] = byMat.get(S.material[n]) ?? 90;
+    out.slopeCap = cap;
+    out.info = { materialSlopes: Object.fromEntries([...byMat].map(([k, v]) => [k, v])),
+      materialSlopesNote: "any climb onto ground whose top voxel is one of these materials steeper than its maxSlope is refused, small steps too (a scree or ash flank a worm slides down)" };
+  }
+  const v = a.via;
+  if (v) {
+    if (!v.materials?.length && !v.mask) throw new ToolError("via: give materials, a mask, or both");
+    let fn: ((x: Record<string, number>) => number) | null = null;
+    if (v.mask) {
+      try {
+        fn = compile(v.mask, ["h", "material"]) as unknown as (x: Record<string, number>) => number;
+      } catch (e) {
+        if (e instanceof ExprError) throw new ToolError(`via.mask: ${e.message}`);
+        throw e;
+      }
+    }
+    const mats = v.materials?.length ? new Set(v.materials) : null, mode = v.mode ?? "only", near = v.near === undefined ? 3 : inMap(v.near, u);
+    const vars: Record<string, number> = { x: 0, z: 0, u: 0, v: 0, r: 0, theta: 0, W: 0, D: 0, R: 0, pi: Math.PI, e: Math.E, h: 0, material: 0 };
+    const allow = new Uint8Array(S.nodes);
+    let on = 0;
+    for (let n = 0; n < S.nodes; n++) {
+      const p = nodeAt(S, n);
+      let inRoute = !mats || mats.has(S.material[n]);
+      if (inRoute && fn) {
+        vars.x = outUnit(p[0], u); vars.z = outUnit(p[2], u); vars.h = outUnit(p[1], u); vars.material = S.material[n];
+        vars.r = Math.hypot(vars.x, vars.z); vars.theta = Math.atan2(vars.z, vars.x);
+        inRoute = fn(vars) > 0;
+      }
+      if (inRoute) on++;
+      const free = starts.some((q) => Math.hypot(q[0] - p[0], q[2] - p[2]) <= near) || Math.hypot(target.x - p[0], target.z - p[2]) <= target.r + near;
+      allow[n] = free || (mode === "only" ? inRoute : !inRoute) ? 1 : 0;
+    }
+    out.allow = allow;
+    out.info = { ...(out.info ?? {}), via: { mode, ...(v.materials ? { materials: v.materials } : {}), ...(v.mask ? { mask: v.mask } : {}), near: r2(outUnit(near, u)), routeSurfaces: on, of: S.nodes,
+      note: mode === "only" ? "the walk may step only onto ground on the route (and anywhere within near of a start or the target): reachable proves a route along it"
+        : "the walk never steps onto ground on the route (except within near of a start or the target): not reachable proves the route is the only way" } };
+  }
+  return out;
 }
 
 /** A worm's walking speed on level ground, map units a second (measured in a Test on 2026-11-08: worms walked 55-58
@@ -514,6 +572,9 @@ export async function checkReachability(s: Session, a: ReachArgs) {
     })
     : markers(store).filter((m) => m.kind === "spawn").map((m) => ({ name: m.name, at: m.pos }));
   if (!starts.length) throw new ToolError("the level has no spawn knots: pass from");
+  const rr = routeRules(S, a, u, starts.map((st) => st.at), { x: tx, z: tz, r: tr });
+  if (rr.allow) o.allow = rr.allow;
+  if (rr.slopeCap) o.slopeCap = rr.slopeCap;
   const statsOut = (path: number[]) => {
     const st = pathStats(S, path, o);
     return { length: r2(outUnit(st.length, u)), maxSlope: Math.round(st.maxSlope * 10) / 10, maxStairSlope: Math.round(st.maxStairSlope! * 10) / 10,
@@ -582,7 +643,7 @@ export async function checkReachability(s: Session, a: ReachArgs) {
       note: "walking only (no rope, jetpack or girders): a climb is taken when it is at most maxStep, or when it is a riser of at most one voxel of the ground it climbs onto and no steeper than maxSlope " +
         (o.slopeOver === "riser" ? "over one voxel of that ground" : "over the tread above it (the flat run to the next riser, up to 8 voxels: a staircase is judged at its average slope, the game draws voxel steps as a slope)") +
         "; drops up to maxDrop; jumps over gaps up to maxGap (0: none); ground at or under the water is not used",
-      turns: WALK_NOTE },
+      turns: WALK_NOTE, ...(rr.info ?? {}) },
     ...(flood ? { flood: flood.info } : {}),
     graph: { columns: S.w * S.h, surfaces: S.nodes },
     spawns,
@@ -778,7 +839,7 @@ export const tools: Tool[] = [
 
   {
     name: "check_reachability",
-    description: "Can each spawn walk to the summit? Builds a worm-walk graph over the voxels (the tops of solid ground with headroom, a column every `step`, joined where a worm can step up maxStep or climb a one-voxel riser whose stair, the rise over the tread above it, is no steeper than maxSlope, drop maxDrop, or optionally jump a gap of maxGap) and searches it from every spawn knot (or the `from` points) to the target (default: the highest ground; or `target` x, z, radius). Answers per spawn whether it gets there, the walk, the least turns it takes (walkSpeed x turnTime a turn), waypoints and path (length along the ground, steepest slope, the steepest stair as judged, highest step, deepest drop), or the closest point reached, where it is blocked (the climb that stops it) and needs: the cheapest utility (jump, girder, rope, jetpack; a heuristic) that gets there and where it is first used. Ground at or under the water is not walked. `flood` checks a rising sea (as check_flood); `islets` lists detached terrain (as check_islets). render: true adds a PNG of the routes.",
+    description: "Can each spawn walk to the summit? Builds a worm-walk graph over the voxels (the tops of solid ground with headroom, a column every `step`, joined where a worm can step up maxStep or climb a one-voxel riser whose stair, the rise over the tread above it, is no steeper than maxSlope, drop maxDrop, or optionally jump a gap of maxGap) and searches it from every spawn knot (or the `from` points) to the target (default: the highest ground; or `target` x, z, radius). Answers per spawn whether it gets there, the walk, the least turns it takes (walkSpeed x turnTime a turn), waypoints and path (length along the ground, steepest slope, the steepest stair as judged, highest step, deepest drop), or the closest point reached, where it is blocked (the climb that stops it) and needs: the cheapest utility (jump, girder, rope, jetpack; a heuristic) that gets there and where it is first used. Ground at or under the water is not walked. `flood` checks a rising sea (as check_flood); `islets` lists detached terrain (as check_islets). `via` constrains the walk to (or away from) a route such as the roads, and `materialSlopes` caps the climb onto given materials, to prove the roads are the way up. render: true adds a PNG of the routes.",
     inputSchema: {
       type: "object", additionalProperties: false,
       properties: {
@@ -800,6 +861,10 @@ export const tools: Tool[] = [
         water: { type: "boolean", description: "Treat ground at or under the project's water level as impassable (default true; the level's own water height is not known)." },
         render: { type: "boolean", description: "Also answer a top-down PNG (render_topdown's) with each start's route drawn in its colour: the walk, the route with the utility it needs (dashed), where that is used and where the walk is blocked (default false)." },
         palette: paletteSchema,
+        via: { type: "object", additionalProperties: false, description: "A route constraint, to prove the roads are the climb: the ground on the route is where its top voxel's material is one of `materials` and/or `mask` is above 0 (the heightfield expression language of x, z, r, theta in the call's units, h the ground's height and material, its index). mode only (default): walk on it alone (reachable: there is a way up along the roads); avoid: never on it (not reachable: the roads are the only way). Ground within `near` (default 3 map units) of a start or the target is always walkable.",
+          properties: { materials: { type: "array", items: { type: "integer", minimum: 0, maximum: 63 }, maxItems: 64 }, mask: { type: "string" }, mode: { type: "string", enum: ["only", "avoid"] }, near: { type: "number", minimum: 0 } } },
+        materialSlopes: { type: "array", maxItems: 32, description: "The steepest climb onto ground of these materials (the top voxel's), degrees: any rise onto it steeper is refused, small steps too, so ash or scree flanks are not walked up while the paved road is. [{materials: [24, 36], maxSlope: 20}].",
+          items: { type: "object", additionalProperties: false, required: ["materials", "maxSlope"], properties: { materials: { type: "array", items: { type: "integer", minimum: 0, maximum: 63 }, minItems: 1, maxItems: 64 }, maxSlope: { type: "number", minimum: 0, maximum: 89 } } } },
       },
     },
     handler: (s, a) => checkReachability(s, a),
@@ -820,6 +885,10 @@ export const tools: Tool[] = [
         maxStep: { type: "number", minimum: 0 }, maxSlope: { type: "number", minimum: 0, maximum: 89 }, maxDrop: { type: "number", minimum: 0 }, maxGap: { type: "number", minimum: 0 },
         slopeOver: { type: "string", enum: ["tread", "riser"] }, walkSpeed: { type: "number", minimum: 0.01 }, turnTime: { type: "number", minimum: 1, maximum: 600 },
         render: { type: "boolean" }, palette: paletteSchema,
+        via: { type: "object", additionalProperties: false, description: "A route constraint, to prove the roads are the climb: the ground on the route is where its top voxel's material is one of `materials` and/or `mask` is above 0 (the heightfield expression language of x, z, r, theta in the call's units, h the ground's height and material, its index). mode only (default): walk on it alone (reachable: there is a way up along the roads); avoid: never on it (not reachable: the roads are the only way). Ground within `near` (default 3 map units) of a start or the target is always walkable.",
+          properties: { materials: { type: "array", items: { type: "integer", minimum: 0, maximum: 63 }, maxItems: 64 }, mask: { type: "string" }, mode: { type: "string", enum: ["only", "avoid"] }, near: { type: "number", minimum: 0 } } },
+        materialSlopes: { type: "array", maxItems: 32, description: "The steepest climb onto ground of these materials (the top voxel's), degrees: any rise onto it steeper is refused, small steps too, so ash or scree flanks are not walked up while the paved road is. [{materials: [24, 36], maxSlope: 20}].",
+          items: { type: "object", additionalProperties: false, required: ["materials", "maxSlope"], properties: { materials: { type: "array", items: { type: "integer", minimum: 0, maximum: 63 }, minItems: 1, maxItems: 64 }, maxSlope: { type: "number", minimum: 0, maximum: 89 } } } },
       },
     },
     handler(s, a: ReachArgs & FloodArgs) {

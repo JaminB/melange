@@ -13,6 +13,7 @@ import {
 } from "../lib/place-geom";
 import { resolveFile, themeFile } from "../lib/materials";
 import { runTest } from "../lib/place-wait";
+import { stopHold } from "./game";
 import { CAMERA_RISE, WALL_RADIUS, spawnWarnings } from "../lib/spawn-check";
 import { tidy } from "../lib/voxel";
 import { ToolError, type Schema, type Tool } from "../registry";
@@ -209,6 +210,25 @@ async function placeObject(s: Session, a: PlaceArgs) {
   };
 }
 
+/** place_object {objects}: each item placed as a call of its own would place it (one undo step each), in order; an item
+ * that fails is listed with its index, label and why, and the rest go on. */
+async function placeObjects(s: Session, a: { objects: (PlaceArgs & { label?: string })[]; units?: Units }) {
+  const placed: object[] = [], failed: object[] = [];
+  for (const [i, item] of a.objects.entries()) {
+    const { label, ...one } = item;
+    const name = label ?? `objects[${i}] (${item.type})`;
+    try {
+      const r = await placeObject(s, { ...one, units: one.units ?? a.units });
+      placed.push({ index: i, ...(label ? { label } : {}), ...r });
+    } catch (e) {
+      failed.push({ index: i, ...(label ? { label } : {}), type: item.type, ...(item.xz ? { xz: item.xz } : {}), ...(item.pos ? { pos: item.pos } : {}),
+        error: `${name}: ${e instanceof Error ? e.message : String(e)}` });
+    }
+  }
+  return { placedCount: placed.length, failedCount: failed.length, ...(failed.length ? { failed } : {}), placed,
+    objects: `${s.store.scene.objects?.length ?? 0} of ${LIMITS.objects}`, undo: "each placed item is one undo step" };
+}
+
 function listObjects(s: Session, a: { role?: string; search?: string; limit?: number; units?: Units } & CameraArgs) {
   const store = s.store, scene = store.scene, units = a.units ?? "world";
   const q = a.search?.toLowerCase();
@@ -343,6 +363,35 @@ async function backToMenu(s: Session): Promise<{ fromScene: string; ms: number; 
   return { fromScene: from, ms: Date.now() - t0 };
 }
 
+/** What the game applied of the level's look once the Test plays: its time of day (level.test.applied: the frontend's
+ * value cleared so the Test build's loads, or why not) and the match's theme (wum.game.theme(), the game's Land.Theme),
+ * against what was asked; warnings where one fell back. Fields the game cannot answer are left out. */
+async function appliedLook(s: Session, asked: { theme: string; tod: string }) {
+  const conn = await s.ensure(), client = await s.client(), warnings: string[] = [];
+  const out: Record<string, unknown> = { asked };
+  if (conn.methods.includes("level.test.applied")) {
+    const r = await client.call<{ key: string; tod: { asked: string; applied: boolean; why: string } }>("level.test.applied", {}, 15000).catch(() => null);
+    if (r) {
+      const tod = r.tod.applied ? r.tod.asked : "DAY";
+      out.timeOfDay = { applied: tod, ...(r.tod.applied ? {} : { fellBack: true, why: r.tod.why || "the frontend's time of day loaded" }) };
+      if (tod !== asked.tod) warnings.push(`the time of day asked for was ${asked.tod} but the match loaded ${tod}: ${r.tod.why || "the frontend's value"}`);
+    }
+  } else out.timeOfDay = { note: "this game cannot say which time of day loaded (no level.test.applied)" };
+  if (conn.methods.includes("lua.eval")) {
+    for (let i = 0; i < 10; i++) {
+      const r = await client.call<{ ok: boolean; text: string }>("lua.eval", { target: "client", code: "return tostring(wum.game.theme())" }, 15000).catch(() => null);
+      if (r?.ok && r.text && r.text !== "nil") {
+        out.theme = { applied: r.text };
+        if (r.text.toUpperCase() !== asked.theme.toUpperCase()) warnings.push(`the theme asked for was ${asked.theme} but the match reports ${r.text}`);
+        break;
+      }
+      await new Promise((ok) => setTimeout(ok, 500));
+    }
+    if (!out.theme) out.theme = { note: "the match did not report its theme (wum.game.theme() was nil)" };
+  }
+  return { look: out, warnings };
+}
+
 async function savedFirst(s: Session, why: string) {
   const p = s.requireProject();
   if (!p.store.dirty) return undefined;
@@ -373,10 +422,12 @@ export const tools: Tool[] = [
   },
   {
     name: "place_object",
-    description: "Place an object as the Erg palette does: crate (kind weapon|health|utility, contents, count, amount, hitpoints, parachute), health (a health crate), telepad (a pair in a new group; pos2 for the second pad, default 2 map units along x), trigger (index, radius, teamCollect, teamDestroy, hitpoints, wormCollect), mine, oildrum, or minefactory (one per level; activation, inactiveTurns, schemeMines, changed later with set_mine_factory). Position by pos [x,y,z] or xz (dropped onto the terrain). Crates, telepads, triggers and the mine factory make the project format v2 (at most 256 objects). One undo step.",
+    description: "Place an object as the Erg palette does: crate (kind weapon|health|utility, contents, count, amount, hitpoints, parachute), health (a health crate), telepad (a pair in a new group; pos2 for the second pad, default 2 map units along x), trigger (index, radius, teamCollect, teamDestroy, hitpoints, wormCollect), mine, oildrum, or minefactory (one per level; activation, inactiveTurns, schemeMines, changed later with set_mine_factory). Position by pos [x,y,z] or xz (dropped onto the terrain). Crates, telepads, triggers and the mine factory make the project format v2 (at most 256 objects). One undo step. `objects` places several (up to 64, each with these fields and an optional `label`) in one call: each is its own undo step, and one that fails (nothing below to drop onto, no free knot) is listed in `failed` with its index, label and why while the rest are placed.",
     inputSchema: {
-      type: "object", additionalProperties: false, required: ["type"],
+      type: "object", additionalProperties: false,
       properties: {
+        objects: { type: "array", minItems: 1, maxItems: 64, description: "Several objects, each as one call's arguments (type, pos or xz, ...) plus an optional label naming it in the answer; the call's own units apply where an item gives none.",
+          items: { type: "object", additionalProperties: false, required: ["type"], properties: {} } },
         type: { type: "string", enum: OBJECT_TYPES },
         ...pointProps,
         pos2: vec3("telepad: position of the second pad (units like pos)."),
@@ -395,7 +446,15 @@ export const tools: Tool[] = [
         units: unitsSchema,
       },
     },
-    handler: (s, a: PlaceArgs) => placeObject(s, a),
+    handler: (s, a: PlaceArgs & { objects?: (PlaceArgs & { label?: string })[] }) => {
+      if (a.objects) {
+        const { objects, units, ...rest } = a;
+        if (Object.keys(rest).length) throw new ToolError(`objects places a list: give every other field (${Object.keys(rest).join(", ")}) inside each item`);
+        return placeObjects(s, { objects, units });
+      }
+      if (!a.type) throw new ToolError("give type (or objects, a list)");
+      return placeObject(s, a);
+    },
   },
   {
     name: "move",
@@ -561,7 +620,7 @@ export const tools: Tool[] = [
     description: "Play the project in the running game without exporting (level.test): saves unsaved edits, then follows the 'erg' channel (registering, registered, armed, starting, playing, ended, failed) and waits for 'playing' (or 'armed', where the game waits for Quick Game). Answers the states with timings. Needs the game running at its main menu; Melange.exe --serve has no Test. `restart: true` from a running Test match leaves it for the menu first (level.test.quit: the game's own GameLogic.QuitGame) and then tests the project again, so an edit is played without restarting the game.",
     inputSchema: {
       type: "object", additionalProperties: false,
-      properties: { tod: { type: "string", enum: TIMES_OF_DAY, description: "Time of day for this Test (default the project's)." },
+      properties: { tod: { type: "string", enum: TIMES_OF_DAY, description: "Time of day for this Test (default the project's own: set_time_of_day). The answer's `look` says what the match applied (time of day and theme) and `warnings` names a fallback." },
         waitFor: { type: "string", enum: ["playing", "armed"], description: "State to wait for (default playing)." },
         timeoutSec: { type: "integer", minimum: 1, maximum: 600, description: "Stop waiting after this long (default 60)." },
         cleanMods: { type: "boolean", description: "A clean room for this Test match only: enabled content mods' sim code (entry.sim) does not run, only the level script, and the post-FX stack is off (unless postfx: true), so asserts and lighting belong to the map. Nothing is changed on disk; launch-time content (weapon clones, file overrides, shader mods, client scripts) stays. On a game build without clean rooms it refuses while such mods are enabled." },
@@ -574,6 +633,7 @@ export const tools: Tool[] = [
       const conn = await s.ensure();
       if (!conn.methods.includes("level.test")) throw new ToolError("no level.test here: Test needs the game running at its main menu (Melange.exe --serve has none)");
       let restarted: { fromScene: string; ms: number; retries?: number } | undefined;
+      stopHold();   // a held camera belongs to the match being left
       if (a.restart) restarted = await backToMenu(s);
       // Content mods with sim code run in every match, a Test too: name them, so a benchmark run knows it is not clean.
       let simMods: string[] = [];
@@ -591,16 +651,19 @@ export const tools: Tool[] = [
         throw new ToolError(`content mods with sim code are enabled and would run in the Test: ${simMods.join(", ")}. This game build has no clean-room Test: disable them in the game (they apply at the next launch) for a clean run, or leave out cleanMods`);
       const first = await savedFirst(s, "tested");
       const sec = a.timeoutSec ?? 60;
-      let run = await runTest(p.erg, { tod: a.tod, goal: a.waitFor, timeoutMs: sec * 1000, cleanMods: a.cleanMods, postfx: a.postfx });
+      // the project's own time of day unless one is given: without it the frontend's (Quick Game: DAY) loads
+      const db = p.store.scene.databank, tod = a.tod ?? (TIMES_OF_DAY.includes(db.timeOfDay as TimeOfDay) ? (db.timeOfDay as TimeOfDay) : undefined);
+      let run = await runTest(p.erg, { tod, goal: a.waitFor, timeoutMs: sec * 1000, cleanMods: a.cleanMods, postfx: a.postfx });
       // Just after a match the frontend may not take Quick Game yet, and the menu's attract demo can start first: the
       // game refuses that Test (kAttractRefused); from the menu a second try starts it.
       for (let tries = 0; restarted && run.final === "failed" && /attract demo/.test(String(run.failed)) && tries < 2; tries++) {
         await new Promise((ok) => setTimeout(ok, 3000));
-        run = await runTest(p.erg, { tod: a.tod, goal: a.waitFor, timeoutMs: sec * 1000, cleanMods: a.cleanMods, postfx: a.postfx });
+        run = await runTest(p.erg, { tod, goal: a.waitFor, timeoutMs: sec * 1000, cleanMods: a.cleanMods, postfx: a.postfx });
         restarted.retries = tries + 1;
       }
       const suppressed = !!a.cleanMods && !!run.cleanRoom && !run.cleanRoom.simMods;
-      return { ...run, ...(first ? { savedFirst: true } : {}), ...(restarted ? { restarted } : {}),
+      const look = run.final === "playing" ? await appliedLook(s, { theme: db.theme, tod: tod ?? "DAY" }) : null;
+      return { ...run, ...(first ? { savedFirst: true } : {}), ...(restarted ? { restarted } : {}), ...(look ? { look: look.look, ...(look.warnings.length ? { warnings: look.warnings } : {}) } : {}),
         ...(simMods.length ? suppressed ? { simMods, simModsNote: "these mods' sim code is suppressed in this Test match (clean room)" }
           : { simMods, simModsNote: "these mods' sim code runs in this match beside the level script" } : {}),
         match: "Quick Game (QuickStartHvC: a human team against a computer team) with the game's own Quick Game scheme; the scheme, turn time and team sizes are the game's, not chosen here",
@@ -619,3 +682,10 @@ export const tools: Tool[] = [
     },
   },
 ];
+
+// place_object's objects items take the single call's fields (but not objects) and a label.
+{
+  const po = tools.find((t) => t.name === "place_object")!.inputSchema.properties!;
+  const { objects: _o, ...single } = po;
+  po.objects.items!.properties = { ...single, label: { type: "string", description: "A name for this item in the answer (default objects[i] (type))." } };
+}

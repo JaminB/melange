@@ -20,6 +20,7 @@ export interface Schema {
   minItems?: number;
   maxItems?: number;
   default?: unknown;
+  anyOf?: Schema[];             // passed to the client; the handler checks which form it got
 }
 
 export interface Tool<A = any> {

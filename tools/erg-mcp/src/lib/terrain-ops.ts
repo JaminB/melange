@@ -2,7 +2,7 @@
 // brush (terrain/brush.ts strokeChanges), block planner (blocks.ts) and surround painter (surround.ts dabChanges), so a
 // tool edits exactly as a mouse stroke does. Everything here edits through VoxelEdit or store.exec: one undo step each.
 import {
-  AddFrame, RemoveFrame, SetLevel, SurroundStroke, MAX_BRUSH, SURROUND_SIDE, apply, blockCentre, brushBox, cellBudget, dabChanges, gridFrames, index, material, multiply,
+  AddFrame, RemoveFrame, SetLevel, SurroundStroke, MAX_BRUSH, SURROUND_SIDE, apply, blockCentre, brushBox, cellBudget, cornerOffset, dabChanges, gridFrames, index, material, multiply,
   overlaps, painted, planBlock, quantizeHeight, strokeChanges, transformBox, validEdit, carved, filled, isSolid, type Anchor, type Brush, type BrushMaterial, type BrushMode, type BrushShape, type EditorStore,
   type GridFrame, type SurroundBrush, type SurroundMode, type Vec3,
 } from "../core";
@@ -30,20 +30,41 @@ function gridById(gs: GridFrame[], id: number): GridFrame {
   return g;
 }
 
-const cellOf = (g: GridFrame, mapPt: Vec3): Vec3 => apply(g.toLocal, mapPt);
+/** A level point in a frame's voxels; with `shear`, a draped block's (corner offsets) column moved back down, so the cell
+ * is the one the game draws there. */
+const cellOf = (g: GridFrame, mapPt: Vec3, shear = false): Vec3 => {
+  const q = apply(g.toLocal, mapPt);
+  if (shear && g.frame.corners) q[1] -= cornerOffset(g.frame, q[0], q[2]);
+  return q;
+};
 const within = (g: GridFrame, p: Vec3, margin: number) =>
   [0, 1, 2].every((a) => p[a] >= -margin && p[a] < g.frame.size[a] + margin);
 
+/** Which frames a stroke may edit (sculpt's frames, onlyBlocks, skipFrames), and whether draped blocks are read at their
+ * sheared height (default) or as their grid says (drape: "grid", the panel's brush). */
+export interface StrokeFilter { frames?: number[]; onlyBlocks?: boolean; skipFrames?: number[]; shear?: boolean; }
+
+export function filterOf(f: StrokeFilter | undefined): ((g: GridFrame) => boolean) | undefined {
+  if (!f || (!f.frames?.length && !f.onlyBlocks && !f.skipFrames?.length)) return undefined;
+  const only = f.frames?.length ? new Set(f.frames) : null, skip = new Set(f.skipFrames ?? []);
+  return (g) => (!only || only.has(g.frame.id)) && (!f.onlyBlocks || !!g.frame.new) && !skip.has(g.frame.id);
+}
+
 /** The frame a stroke starts on: `frameId`, or the voxel frame holding the point (a solid voxel under it first, then the
- * smallest frame); a fill may start in the empty voxel just outside a frame, so the search widens by one voxel. */
-export function pickAnchor(store: EditorStore, gs: GridFrame[], mapPt: Vec3, frameId: number | undefined, widen: boolean): GridFrame {
+ * smallest frame); a fill may start in the empty voxel just outside a frame, so the search widens by one voxel. With a
+ * filter only the frames it allows are candidates; draped blocks are read at their sheared height unless shear is false. */
+export function pickAnchor(store: EditorStore, gs: GridFrame[], mapPt: Vec3, frameId: number | undefined, widen: boolean, f?: StrokeFilter): GridFrame {
   if (frameId !== undefined) return gridById(gs, frameId);
-  const hits = (margin: number) => gs.filter((g) => within(g, cellOf(g, mapPt), margin));
+  const shear = f?.shear !== false, allow = filterOf(f);
+  if (allow) gs = gs.filter(allow);
+  const cellOf2 = (g: GridFrame, p: Vec3) => cellOf(g, p, shear);
+  const hits = (margin: number) => gs.filter((g) => within(g, cellOf2(g, mapPt), margin));
   let c = hits(0);
   if (!c.length && widen) c = hits(1);
-  if (!c.length) throw new ToolError("no voxel frame holds that point: pass `frame` (describe_level gives each frame's bounds)");
+  if (!c.length) throw new ToolError(allow ? "no voxel frame the filter allows (frames, onlyBlocks, skipFrames) holds that point: pass `frame`"
+    : "no voxel frame holds that point: pass `frame` (describe_level gives each frame's bounds)");
   const solidAt = (g: GridFrame) => {
-    const q = cellOf(g, mapPt).map(Math.floor) as Vec3;
+    const q = cellOf2(g, mapPt).map(Math.floor) as Vec3;
     return within(g, q, 0) && isSolid(store.voxels.get(g.ref)![voxelIndex(g.frame.size as Vec3, q[0], q[1], q[2])]);
   };
   const vol = (g: GridFrame) => g.frame.size[0] * g.frame.size[1] * g.frame.size[2];
@@ -161,21 +182,80 @@ export function strokeChangesAll(gs: GridFrame[], voxels: Map<number, Uint32Arra
   return out;
 }
 
+/** The brush's changes over frames that may be draped blocks (corner offsets) or filtered: each target frame's cells are
+ * tested at the place the game draws them (a draped column moved up by its bilinear corner offset, unless shear is
+ * false) against the brush in the anchor's voxels. Carve reaches every allowed frame; fill and paint the anchor only,
+ * or every allowed frame with allFrames. The same tests as strokeChanges otherwise, so an undraped, unfiltered stroke
+ * edits the same cells. Nothing is written. */
+export function strokeChangesSheared(gs: GridFrame[], voxels: Map<number, Uint32Array>, a: Anchor, b: Brush,
+  o: { allFrames?: boolean; allow?: (g: GridFrame) => boolean; shear: boolean }): Map<number, Map<number, [number, number]>> {
+  const out = new Map<number, Map<number, [number, number]>>();
+  const box = brushBox(a, b), world = transformBox(a.grid.toWorld, box);
+  const targets = (b.mode === "carve" || o.allFrames ? gs : [a.grid]).filter((g) => !o.allow || o.allow(g));
+  for (const g of targets) {
+    const words = voxels.get(g.ref);
+    if (!words) continue;
+    const corners = o.shear ? g.frame.corners : undefined;
+    let lift0 = 0, lift1 = 0;
+    if (corners) { lift0 = Math.min(...corners); lift1 = Math.max(...corners); }
+    // the frame's box with its columns moved up by the offsets' range: the brush must reach it
+    const sy = Math.hypot(g.toWorld[1], g.toWorld[5], g.toWorld[9]);
+    const reach = corners ? { min: [g.bounds.min[0], g.bounds.min[1] + lift0 * sy, g.bounds.min[2]] as Vec3, max: [g.bounds.max[0], g.bounds.max[1] + lift1 * sy, g.bounds.max[2]] as Vec3 } : g.bounds;
+    if (!overlaps(world, reach)) continue;
+    const same = g === a.grid;
+    const toAnchor = same ? null : multiply(a.grid.toLocal, g.toWorld);
+    const local = same ? box : transformBox(multiply(g.toLocal, a.grid.toWorld), box);
+    const size = g.frame.size;
+    const lo = [0, 1, 2].map((i) => Math.max(0, Math.ceil(local.min[i] - (i === 1 ? lift1 : 0) - 0.5)));
+    const hi = [0, 1, 2].map((i) => Math.min(size[i] - 1, Math.floor(local.max[i] - (i === 1 ? lift0 : 0) - 0.5)));
+    let changes: Map<number, [number, number]> | undefined;
+    for (let z = lo[2]; z <= hi[2]; z++)
+      for (let x = lo[0]; x <= hi[0]; x++) {
+        const lift = corners ? cornerOffset(g.frame, x + 0.5, z + 0.5) : 0;
+        for (let y = lo[1]; y <= hi[1]; y++) {
+          const c: Vec3 = [x + 0.5, y + 0.5 + lift, z + 0.5];
+          if (!inBrush(toAnchor ? apply(toAnchor, c) : c, a, b)) continue;
+          const i = index(g.frame, x, y, z), v = words[i];
+          const after = b.mode === "carve" ? (isSolid(v) ? carved(v) : v)
+            : b.mode === "fill" ? (isSolid(v) || b.material === "none" ? v : filled(b.material === "column" ? columnMaterial(g, words, x, z, v) : b.material))
+            : (isSolid(v) && typeof b.material === "number" ? painted(v, b.material) : v);
+          if (after === v) continue;
+          (changes ??= new Map()).set(i, [v, after]);
+        }
+      }
+    if (changes) out.set(g.ref, changes);
+  }
+  return out;
+}
+
 /** Applies `centres` (map units) with the brush, each dab seeing the one before, anchored on `anchor` (fill and paint touch
  * only that frame unless `allFrames`, carve reaches every frame the brush overlaps). `sizes` gives each dab its own brush
- * size (a taper; voxels of the anchor, fractional allowed). One undo step. */
+ * size (a taper; voxels of the anchor, fractional allowed). `filter` limits the frames edited; draped blocks (corner
+ * offsets) are edited where the game draws them unless filter.shear is false. One undo step. */
 export function stroke(store: EditorStore, spec: StrokeSpec, centres: Vec3[], anchor: GridFrame,
-  o: { snap: boolean; dryRun?: boolean; label?: string; allFrames?: boolean; sizes?: Vec3[] }): StrokeResult {
+  o: { snap: boolean; dryRun?: boolean; label?: string; allFrames?: boolean; sizes?: Vec3[]; filter?: StrokeFilter }): StrokeResult {
   const brush = brushOf(spec);
-  const changesOf = o.allFrames ? strokeChangesAll : strokeChanges;
   const gs = frameGrids(store);
+  const allow = filterOf(o.filter), shear = o.filter?.shear !== false;
+  if (allow && !allow(anchor) && brush.mode !== "carve" && !o.allFrames)
+    throw new ToolError(`the anchor frame ${anchor.frame.id} is not one the filter allows (frames, onlyBlocks, skipFrames)`);
+  // the panel's own brush where nothing is draped or filtered, so those strokes edit exactly as before
+  const special = !!allow || (shear && gs.some((g) => g.frame.corners));
+  const changesOf = special
+    ? (g2: GridFrame[], v: Map<number, Uint32Array>, an: Anchor, br: Brush) => strokeChangesSheared(g2, v, an, br, { allFrames: o.allFrames, allow, shear })
+    : o.allFrames ? strokeChangesAll : strokeChanges;
   const live = new Map(store.voxels);               // working copy, cloned per blob on first write
   const cloned = new Set<number>();
   const touched = new Map<number, Set<number>>();   // ref -> word indices
   let last = "", dabs = 0;
   for (const [n, m] of centres.entries()) {
     let c = apply(anchor.toLocal, m);
-    if (o.snap) c = snapC(c);
+    if (o.snap) {
+      // a draped anchor's cells sit on its sheared columns: snap y to the middle of the voxel there
+      const lift = shear && anchor.frame.corners ? cornerOffset(anchor.frame, Math.floor(c[0]) + 0.5, Math.floor(c[2]) + 0.5) : 0;
+      c = snapC([c[0], c[1] - lift, c[2]]);
+      c[1] += lift;
+    }
     const b = o.sizes ? { ...brush, size: o.sizes[n] } : brush;
     const key = o.sizes ? `${c.join()}/${b.size.join()}` : c.join();
     if (key === last) continue;                     // the panel steps only when the brush moves to another voxel

@@ -25,6 +25,8 @@ export interface ReachOptions {
   gapRise?: number;       // the highest landing a gap is crossed to, above the take-off (default maxStep)
   slopeOver?: "tread" | "riser";   // what a riser's slope is judged over (default tread)
   flood?: FloodRules;     // rising water: a node is walked only while it is dry when the worm reaches it
+  allow?: Uint8Array;     // per node: 0 = never walked onto (a route constraint: only the roads, or never the roads)
+  slopeCap?: Float32Array;   // per node: the steepest climb onto it, degrees (a material's own maxSlope; >= 90 none)
 }
 
 /** A flood for the search: the water (map y) in each game turn, and when the worm walks: `perTurn` map units along the
@@ -47,13 +49,14 @@ export interface Surfaces {
   cell: Int32Array;                      // per node, its column
   y: Float32Array;                       // per node
   voxel: Float32Array;                   // per node: the voxel height of the ground (its frame's y scale)
+  material: Int16Array;                  // per node: the material of its top voxel
   nodes: number;
 }
 
 /** Merged solid stretches of every column of the region, and the tops a worm fits on. */
 export function surfaces(gs: Grid[], r: Region, step: number, headroom: number): Surfaces {
   const w = Math.max(1, Math.ceil((r.x1 - r.x0) / step)), h = Math.max(1, Math.ceil((r.z1 - r.z0) / step));
-  const cols: { top: number; bottom: number; voxel: number }[][] = Array.from({ length: w * h }, () => []);
+  const cols: { top: number; bottom: number; voxel: number; material: number }[][] = Array.from({ length: w * h }, () => []);
   for (const g of gs) {
     const b = g.bounds;
     if (b.max[0] <= r.x0 || b.min[0] >= r.x1 || b.max[2] <= r.z0 || b.min[2] >= r.z1) continue;
@@ -62,14 +65,14 @@ export function surfaces(gs: Grid[], r: Region, step: number, headroom: number):
     const j0 = Math.max(0, Math.floor((b.min[2] - r.z0) / step)), j1 = Math.min(h - 1, Math.floor((b.max[2] - r.z0) / step));
     for (let j = j0; j <= j1; j++)
       for (let i = i0; i <= i1; i++)
-        for (const s of columnSpans(g, r.x0 + (i + 0.5) * step, r.z0 + (j + 0.5) * step)) cols[j * w + i].push({ top: s.top, bottom: s.bottom, voxel: vy });
+        for (const s of columnSpans(g, r.x0 + (i + 0.5) * step, r.z0 + (j + 0.5) * step)) cols[j * w + i].push({ top: s.top, bottom: s.bottom, voxel: vy, material: s.material });
   }
-  const start = new Int32Array(w * h + 1), ys: number[] = [], vox: number[] = [], cell: number[] = [];
+  const start = new Int32Array(w * h + 1), ys: number[] = [], vox: number[] = [], cell: number[] = [], mats: number[] = [];
   for (let c = 0; c < w * h; c++) {
     start[c] = ys.length;
     const sp = cols[c].sort((a, b) => b.top - a.top);
     // union of overlapping or touching stretches, highest first
-    const merged: { top: number; bottom: number; voxel: number }[] = [];
+    const merged: { top: number; bottom: number; voxel: number; material: number }[] = [];
     for (const s of sp) {
       const m = merged[merged.length - 1];
       if (m && s.top >= m.bottom - 1e-6) m.bottom = Math.min(m.bottom, s.bottom);
@@ -79,11 +82,12 @@ export function surfaces(gs: Grid[], r: Region, step: number, headroom: number):
       if (k > 0 && merged[k - 1].bottom - merged[k].top < headroom) continue;
       ys.push(merged[k].top);
       vox.push(merged[k].voxel);
+      mats.push(merged[k].material);
       cell.push(c);
     }
   }
   start[w * h] = ys.length;
-  return { r, step, w, h, start, cell: Int32Array.from(cell), y: Float32Array.from(ys), voxel: Float32Array.from(vox), nodes: ys.length };
+  return { r, step, w, h, start, cell: Int32Array.from(cell), y: Float32Array.from(ys), voxel: Float32Array.from(vox), material: Int16Array.from(mats), nodes: ys.length };
 }
 
 /** reached nodes, their walking distance from the start and the node before; blocked: per reached node, the smallest
@@ -138,8 +142,12 @@ export function climbSlope(S: Surfaces, a: number, b: number, dx: number, dz: nu
 export function climbs(S: Surfaces, a: number, b: number, dx: number, dz: number, o: ReachOptions): boolean {
   const dy = S.y[b] - S.y[a];
   if (dy < -o.maxDrop - 1e-6) return false;
+  if (o.allow && !o.allow[b]) return false;
+  // a material's own steepest climb: any rise onto it, small steps too, steeper than that is refused
+  const cap = o.slopeCap ? o.slopeCap[b] : 90;
+  if (cap < 90 && dy > 1e-6 && (Math.atan2(dy, S.step * Math.hypot(dx, dz)) * 180) / Math.PI > cap + 1e-6) return false;
   if (dy <= o.maxStep + 1e-6) return true;
-  const tan = Math.tan((o.maxSlope * Math.PI) / 180);
+  const tan = Math.tan((Math.min(o.maxSlope, cap) * Math.PI) / 180);
   if (o.slopeOver === "riser") return dy <= tan * S.voxel[b] + 1e-6;
   return dy <= S.voxel[b] + 1e-6 && dy <= tan * treadRun(S, b, dx, dz, o.maxStep) + 1e-6;
 }
@@ -150,7 +158,7 @@ export function search(S: Surfaces, src: number, o: ReachOptions, stopAt?: Uint8
   const reached = new Uint8Array(S.nodes), dist = new Float32Array(S.nodes).fill(Infinity), from = new Int32Array(S.nodes).fill(-1);
   const blocked = new Float32Array(S.nodes).fill(Infinity);
   const rise = o.gapRise ?? o.maxStep, fl = o.flood;
-  const dryAt = (n: number, d: number) => (o.water === null || S.y[n] > o.water) && (!fl || S.y[n] > fl.waterAt(turnAt(fl, d)));
+  const dryAt = (n: number, d: number) => (o.water === null || S.y[n] > o.water) && (!fl || S.y[n] > fl.waterAt(turnAt(fl, d))) && (!o.allow || !!o.allow[n]);
   let here = 0;                                     // the walk to the node being expanded
   const dry = (n: number) => dryAt(n, here);
   const ok = (a: number, b: number, dx: number, dz: number) => climbs(S, a, b, dx, dz, o);
@@ -273,6 +281,7 @@ export function pathStats(S: Surfaces, path: number[], o?: ReachOptions): PathSt
 export function walks(S: Surfaces, a: number, b: number, o: ReachOptions): boolean {
   const h = across(S, a, b), dy = S.y[b] - S.y[a];
   if (dy < -o.maxDrop - 1e-6) return false;
+  if (o.allow && !o.allow[b]) return false;
   if (!isJump(S, h)) { const [dx, dz] = dirOf(S, a, b); return climbs(S, a, b, dx, dz, o); }
   return h <= o.maxGap + S.step * Math.SQRT2 + 1e-6 && dy <= (o.gapRise ?? o.maxStep) + 1e-6;
 }

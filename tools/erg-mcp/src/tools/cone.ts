@@ -10,7 +10,7 @@ import { ToolError, type Schema, type Tool } from "../registry";
 import { schema as field } from "./heightfield";
 
 const pair = (what: string): Schema => ({ type: "array", items: { type: "number" }, minItems: 2, maxItems: 2, description: what });
-const pass = ["units", "voxelSize", "material", "materials", "reuseFrames", "maxBlocks", "maxCells", "partial", "runsHeadroom", "edges", "packer", "baseDepth", "fitBudget", "clip", "exclude"];
+const pass = ["units", "voxelSize", "material", "materials", "reuseFrames", "maxBlocks", "maxCells", "partial", "runsHeadroom", "edges", "packer", "baseDepth", "fitBudget", "clip", "exclude", "blend"];
 
 const schema: Schema & { type: "object" } = {
   type: "object", additionalProperties: false, required: ["at", "floor", "radius", "height"],
@@ -32,6 +32,8 @@ const schema: Schema & { type: "object" } = {
     smooth: { type: "boolean", description: "true (default): drape the surface (heightfield_drape: corner offsets, the flanks are slopes in the game, for drawing and collision); false: plain voxel columns (heightfield_region: terraces, see edges)." },
     thickness: { type: "integer", minimum: 1, maximum: 8, description: "smooth: the skin's voxels (default 2)." },
     core: { type: "boolean", description: "smooth: fill under the skin (default true)." },
+    skirtTo: { type: "number", description: "smooth: as heightfield_drape's skirtTo (the ground under the skin reaches down to this level y)." },
+    skirtTop: { type: "number", description: "smooth: as heightfield_drape's skirtTop." },
     dryRun: { type: "boolean", description: "Plan and report only." },
   },
 };
@@ -41,7 +43,7 @@ export const tools: Tool[] = [
     name: "sculpt_cone",
     description: "An organic cone (a volcano, a hill, a spire) standing on `floor` at `at`: a flank `profile` (concave, linear, convex, gaussian or [[t, h]] points), an outline that wanders by angle (angleNoise), roughness (surfaceNoise), radial gullies and a summit crater. smooth (default) drapes it so the flanks are real slopes in the game, not voxel stairs; smooth: false builds plain columns. Built by heightfield_drape or heightfield_region, which take its voxelSize, materials, maxBlocks, maxCells and the rest; the answer is theirs plus the expression used (to reuse in heightfield_* with the same centre). One undo step.",
     inputSchema: schema,
-    handler(s, a: ConeArgs & FieldArgs & { smooth?: boolean; thickness?: number; core?: boolean; dryRun?: boolean }) {
+    handler(s, a: ConeArgs & FieldArgs & { smooth?: boolean; thickness?: number; core?: boolean; skirtTo?: number; skirtTop?: number; dryRun?: boolean }) {
       const store = s.store;
       const { expr, half } = coneExpr(a);
       const args: FieldArgs = {
@@ -49,12 +51,12 @@ export const tools: Tool[] = [
         min: [a.at[0] - half, a.at[1] - half], max: [a.at[0] + half, a.at[1] + half], floor: a.floor, centre: a.at, expr,
       };
       const smooth = a.smooth ?? true;
-      if (!smooth && (a.thickness !== undefined || a.core !== undefined)) throw new ToolError("thickness and core are for smooth: true");
+      if (!smooth && (a.thickness !== undefined || a.core !== undefined || a.skirtTo !== undefined || a.skirtTop !== undefined)) throw new ToolError("thickness, core and the skirt are for smooth: true");
       if (smooth && a.fitBudget) throw new ToolError("fitBudget is for smooth: false (a drape packs its skin and core itself)");
       const cone = { expr, rectangle: { min: args.min, max: args.max }, centre: a.at, smooth };
       const u = () => { const x = usage(store); return { newFrames: x.newFrames, voxelCells: x.voxelCells, patchBytes: x.patchBytes, runsPerFrame: x.runsPerFrame }; };
       if (smooth) {
-        const p = planDrape(store, { ...args, thickness: a.thickness, core: a.core });
+        const p = planDrape(store, { ...args, thickness: a.thickness, core: a.core, skirtTo: a.skirtTo, skirtTop: a.skirtTop });
         if (a.dryRun) return { cone, ...p.report, applied: false };
         const r = applyDrape(store, p);
         return { cone, ...p.report, applied: true, added: r.blocks, limits: u(), undo: "undo takes the whole cone out", next: "save" };

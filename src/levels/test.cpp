@@ -42,6 +42,7 @@ bool g_ctxSub = false;
 uint32_t g_attract = 0;
 bool g_todSet = false;
 std::string g_todOld;
+TodApplied g_todLast;   // under g_mx
 
 bool Fail(char* err, size_t n, const std::string& why) {
     if (err && n) snprintf(err, n, "%s", why.c_str());
@@ -77,14 +78,15 @@ void OnStartGame(const char* text, void*) {
 }
 
 // The Test build's Databank.TimeOfDay decides while the frontend's value is empty; it is put back once the match runs.
-void ClearTod() {
+bool ClearTod() {
     std::string old;
     if (!engine::GetString(kTodName, &old) || !engine::SetString(kTodName, "")) {
         LOG_WARN("[levels] test: the time of day could not be cleared; the frontend's value loads");
-        return;
+        return false;
     }
     g_todSet = true;
     g_todOld = old;
+    return true;
 }
 
 void RestoreTod() {
@@ -167,6 +169,11 @@ uint32_t AttractRefusals() {
     return g_attract;
 }
 
+TodApplied LastTod() {
+    std::lock_guard lk(g_mx);
+    return g_todLast;
+}
+
 const char* Take(const char* frontendKey) {
     const engine::FrontendState fs = engine::ReadFrontend();
     Override::SetUp s;
@@ -191,7 +198,15 @@ const char* Take(const char* frontendKey) {
     }
     if (ev == Override::Event::Started) {
         Queue(TestState::Starting, k, frontendKey ? frontendKey : "");
-        if (tod != Tod::Default && !online && !g_todSet) ClearTod();
+        TodApplied t;
+        t.key = k;
+        t.asked = TodName(tod);
+        if (tod == Tod::Default) t.why = "no time of day asked: the frontend's choice loads (Quick Game: DAY)";
+        else if (online) t.why = "a network session: the frontend's time of day loads";
+        else if (g_todSet || ClearTod()) t.applied = true;
+        else t.why = "the frontend's time of day could not be cleared: its value loads";
+        if (!t.applied && tod != Tod::Default) LOG_WARN("[levels] test: %s asked for %s: %s", k.c_str(), t.asked.c_str(), t.why.c_str());
+        g_todLast = t;
     }
     snprintf(g_taken, sizeof g_taken, "%s", k.c_str());
     return g_taken;

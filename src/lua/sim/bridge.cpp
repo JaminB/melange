@@ -55,6 +55,9 @@ void Enable(SafetyHookInline& h, bool on, const char* what) {
 
 void RefreshInitHook() {
     if (g_installed) Enable(g_hInit, core::SourceCount() > 0 || core::HasTickHooks() || core::HasBeforeLoad(), "Init");
+    // A tick hook added during a match (level.test's harness hooks, at their first use) needs the Update hook, which Init
+    // left off when the match had no sim code to step (a clean-room Test of a level without a script).
+    if (g_installed && core::MatchL()) Enable(g_hUpdate, core::NeedsTickHooks(), "Update");
 }
 
 const std::vector<std::string>& Forwarded() {

@@ -206,6 +206,15 @@ void CleanRoomState(const Call&, Result& r, void*) {
                  .Bool("postfxOff", postfx::Suppressed()).End();
 }
 
+// level.test.applied {}: what the last Test that started applied of what it asked for: its time of day (the frontend's
+// value cleared so the Test build's loads, or why the frontend's loaded instead).
+void Applied(const Call&, Result& r, void*) {
+    const levels::test::TodApplied t = levels::test::LastTod();
+    r.json = jsonmini::Obj().Str("key", t.key)
+                 .Raw("tod", jsonmini::Obj().Str("asked", t.asked).Bool("applied", t.applied).Str("why", t.why).End())
+                 .End();
+}
+
 void Live(const Call& c, Result& r, void*) {
     json::Value p;
     std::string mod;
@@ -223,5 +232,6 @@ void InstallLevelTest() {
     AddMethod("level.test", &Test, nullptr, kRpcServerThread | kRpcMutating | kRpcGameOnly);
     AddMethod("levels.live", &Live, nullptr, kRpcMutating | kRpcGameOnly);
     AddMethod("level.test.cleanRoom", &CleanRoomState, nullptr, kRpcGameOnly);
+    AddMethod("level.test.applied", &Applied, nullptr, kRpcGameOnly);
 }
 }  // namespace melange::oasis::providers

@@ -35,12 +35,102 @@ export function waterByTurn(start: number, o: { schedule?: WaterSchedule; levels
   };
 }
 
-/** The schedule a level script sets: the first wum.sim.waterSchedule{...} with number (and units string) fields. Null when
- * the script has none; a ToolError when its options are not literals. */
+// ------------------------------------------------------------------ constants of a level script
+
+/** The script with comments and the insides of strings blanked (same length, so positions hold). */
+function blank(script: string): string {
+  return script
+    .replace(/--\[(=*)\[[\s\S]*?\]\1\]/g, (m) => m.replace(/[^\n]/g, " "))
+    .replace(/--[^\n]*/g, (m) => " ".repeat(m.length))
+    .replace(/"(?:[^"\\\n]|\\.)*"|'(?:[^'\\\n]|\\.)*'/g, (m) => m[0] + " ".repeat(m.length - 2) + m[0]);
+}
+
+/** A number expression of Lua: numbers, names bound in `env`, + - * / % ^ (right associative), unary -, parentheses. */
+export function evalNumber(src: string, env: Map<string, number>): number | null {
+  const toks = src.match(/\d+(?:\.\d*)?(?:[eE][-+]?\d+)?|\.\d+|[A-Za-z_]\w*|[-+*/%^()]|\S/g) ?? [];
+  let i = 0;
+  const peek = () => toks[i];
+  const atom = (): number | null => {
+    const t = toks[i++];
+    if (t === undefined) return null;
+    if (t === "(") { const v = sum(); return toks[i++] === ")" ? v : null; }
+    if (t === "-") { const v = power(); return v === null ? null : -v; }
+    if (/^[\d.]/.test(t)) return Number(t);
+    if (/^[A-Za-z_]/.test(t)) return env.has(t) ? env.get(t)! : null;
+    return null;
+  };
+  const power = (): number | null => {
+    const a = atom();
+    if (a === null) return null;
+    if (peek() === "^") { i++; const b = power(); return b === null ? null : a ** b; }
+    return a;
+  };
+  const product = (): number | null => {
+    let a = power();
+    while (a !== null && (peek() === "*" || peek() === "/" || peek() === "%")) {
+      const op = toks[i++], b = power();
+      if (b === null) return null;
+      a = op === "*" ? a * b : op === "/" ? a / b : a - Math.floor(a / b) * b;
+    }
+    return a;
+  };
+  const sum = (): number | null => {
+    let a = product();
+    while (a !== null && (peek() === "+" || peek() === "-")) {
+      const op = toks[i++], b = product();
+      if (b === null) return null;
+      a = op === "+" ? a + b : a - b;
+    }
+    return a;
+  };
+  const v = sum();
+  return v !== null && i === toks.length && Number.isFinite(v) ? v : null;
+}
+
+/** The script's constants: top-level `local NAME = <number expression>` (or `local A, B = 1, 2`) whose names are never
+ * assigned again anywhere, folded in order (an expression may use the constants above it). Code inside functions and
+ * blocks is not read, and a name assigned anywhere else is not a constant. */
+export function scriptConstants(script: string): Map<string, number> {
+  const code = blank(script), env = new Map<string, number>();
+  // block depth: function, if, do (for and while open with their do), repeat open; end and until close
+  const words = /\b(function|if|do|repeat|end|until|local)\b|\n/g;
+  let depth = 0;
+  const locals: { names: string[]; values: string[] }[] = [];
+  for (let m: RegExpExecArray | null; (m = words.exec(code)); ) {
+    const w = m[1];
+    if (w === "function" || w === "if" || w === "do" || w === "repeat") depth++;
+    else if (w === "end" || w === "until") depth = Math.max(0, depth - 1);
+    else if (w === "local" && depth === 0) {
+      // the statement runs to the end of its line
+      const rest = code.slice(m.index + 5).split("\n")[0];
+      const st = /^\s+([A-Za-z_]\w*(?:\s*,\s*[A-Za-z_]\w*)*)\s*=\s*(.+?)\s*;?\s*$/.exec(rest);
+      if (st && !/\bfunction\b/.test(st[2])) locals.push({ names: st[1].split(",").map((x) => x.trim()), values: st[2].split(",").map((x) => x.trim()) });
+    }
+  }
+  // a name assigned anywhere after its local (NAME = ..., not ==, <=, >=, ~=) is a variable, not a constant
+  const reassigned = (name: string) => {
+    const re = new RegExp(`(^|[^.\\w])${name}\\s*=(?!=)`, "g");
+    let n = 0;
+    for (const x of code.matchAll(re)) if (!/local\s+[\w\s,]*$/.test(code.slice(Math.max(0, x.index! - 80), x.index! + x[1].length))) n++;
+    return n > 0;
+  };
+  for (const l of locals)
+    l.names.forEach((name, k) => {
+      if (l.values[k] === undefined || reassigned(name)) return;
+      const v = evalNumber(l.values[k], env);
+      if (v !== null) env.set(name, v);
+    });
+  return env;
+}
+
+/** The schedule a level script sets: the first wum.sim.waterSchedule{...} whose fields are numbers, number expressions of
+ * the script's top-level constants (local FIRST = 5 ... startTurn = FIRST, cap = CAP * 2) or the units string. Null when
+ * the script has none; a ToolError naming the field when one cannot be worked out. */
 export function scheduleFromScript(script: string): WaterSchedule | null {
   const code = script.replace(/--\[(=*)\[[\s\S]*?\]\1\]/g, "").replace(/--[^\n]*/g, "");
   const m = /wum\.sim\.waterSchedule\s*(?:\(\s*)?\{([^}]*)\}/.exec(code);
   if (!m) return null;
+  const env = scriptConstants(script);
   const out: Record<string, number | string> = {};
   for (const part of m[1].split(",")) {
     const t = part.trim();
@@ -48,9 +138,12 @@ export function scheduleFromScript(script: string): WaterSchedule | null {
     const kv = /^([A-Za-z_]\w*)\s*=\s*(.+)$/.exec(t);
     if (!kv) throw new ToolError(`the script's waterSchedule has a field check_flood cannot read: '${t}' (pass schedule instead)`);
     const v = kv[2].trim(), str = /^["'](\w+)["']$/.exec(v);
-    if (str) out[kv[1]] = str[1];
-    else if (/^-?\d+(\.\d+)?$/.test(v)) out[kv[1]] = Number(v);
-    else throw new ToolError(`the script's waterSchedule sets ${kv[1]} = ${v}, not a literal: pass schedule instead`);
+    if (str) { out[kv[1]] = str[1]; continue; }
+    const n = evalNumber(v, env);
+    if (n === null)
+      throw new ToolError(`the script's waterSchedule sets ${kv[1]} = ${v}, not a literal number or an expression of the script's top-level constants ` +
+        `(local NAME = <number> outside any function, never assigned again${env.size ? `; found ${[...env.keys()].join(", ")}` : "; found none"}): pass schedule instead`);
+    out[kv[1]] = n;
   }
   if (typeof out.step !== "number" || typeof out.cap !== "number") throw new ToolError("the script's waterSchedule has no literal step and cap: pass schedule instead");
   if (out.units !== undefined && out.units !== "map" && out.units !== "world") throw new ToolError("the script's waterSchedule units are neither map nor world");

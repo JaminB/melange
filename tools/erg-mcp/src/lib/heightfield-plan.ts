@@ -22,7 +22,7 @@
 //      keeps the blocks holding the most voxels, a slice only when the slice under it in its tile is kept (nothing floats),
 //      and lists what was dropped.
 import {
-  AddFrame, Group, LIMITS, SculptStroke, blockFrames, cellBudget, filled, frameWorld, isSolid, sceneFrame, validNewFrameScale, voxelRuns,
+  AddFrame, Group, LIMITS, SculptStroke, blockFrames, cellBudget, filled, frameWorld, isSolid, sceneFrame, sharedCorners, validNewFrameScale, voxelRuns, withSecond,
   type EditorStore,
   type Frame, type Vec3, type Command,
 } from "../core";
@@ -42,8 +42,18 @@ export interface MaterialRule {
   jitter?: { amount: number; scale?: number; seed?: number };   // moves the height bounds by up to amount (noise)
   region?: Area[];                          // only columns whose centre is in one of these
   mask?: string;                            // an expression of the column and voxel: only where it is above 0
+  masks?: string[];                         // more such expressions: only where at least one of them is above 0
   noise?: { threshold?: number; scale?: number; seed?: number; octaves?: number };   // only where noise is above threshold
+  feather?: { width: number; pattern?: Feather };   // the mask and height bounds move by a per-voxel threshold in +-width/2
 }
+
+/** How a feathered rule's threshold varies per voxel: dither (a 4 x 4 ordered pattern over x, z and y) or noise (a hash). */
+export type Feather = "dither" | "noise";
+
+/** Second-material corner blending at material boundaries (the game's per-corner blend, as the panel's 2nd material):
+ * the top `depth` voxels of each column take the most common other material among their neighbours as their second
+ * material, on the corners they share with it. */
+export interface Blend { depth?: number; }
 
 /** The variables a material rule's mask sees beyond the field's own: the column's height above the floor (h), the voxel's
  * height above the floor (y) and its depth under the column's top (depth), all in the region's units, and the column's
@@ -85,6 +95,7 @@ export interface FieldArgs {
   packer?: Packer;                          // default tiles
   costAt?: number[];                        // also plan at these voxel sizes and report their cost
   fitBudget?: boolean;                      // raise voxelSize (in steps of 0.25) until the field fits maxBlocks and maxCells whole
+  blend?: boolean | Blend;                  // blend material boundaries per corner (default off)
 }
 
 export const SIDE = LIMITS.newFrameSide;
@@ -108,6 +119,9 @@ export interface Field {
   height: Float32Array;                     // per column, voxels above the floor (after crater, cap)
   slope: Float32Array;                      // per column, degrees
   materialAt(col: number, y: number): number;
+  /** The word a field voxel is written as: filled(materialAt), with a second material at a boundary when blend is on.
+   * `layered` compares a neighbour's voxel at the same depth under its own top (a drape's skin) instead of the same y. */
+  wordAt(col: number, y: number, layered?: boolean): number;
 }
 
 const num = (v: number) => tidy([v, 0, 0])[0];
@@ -252,15 +266,33 @@ export function sampleField(store: EditorStore, a: FieldArgs): Field {
   });
   // a rule's region, mask and noise, prepared once: the areas in map units, the mask compiled
   const ruleRegion = rules.map((r, i) => (r.region ? areas(r.region, `materials[${i}].region`) : null));
-  const ruleMask = rules.map((r, i) => {
-    if (r.mask === undefined) return null;
+  const maskFn = (src: string, path: string) => {
     try {
-      return compile(r.mask, MASK_VARIABLES) as unknown as (v: Record<string, number>) => number;
+      return compile(src, MASK_VARIABLES) as unknown as (v: Record<string, number>) => number;
     } catch (e) {
-      if (e instanceof ExprError) throw new ToolError(`materials[${i}].mask: ${e.message}`);
+      if (e instanceof ExprError) throw new ToolError(`${path}: ${e.message}`);
       throw e;
     }
+  };
+  const ruleMask = rules.map((r, i) => (r.mask === undefined ? null : maskFn(r.mask, `materials[${i}].mask`)));
+  const ruleMasks = rules.map((r, i) => {
+    if (r.masks === undefined) return null;
+    if (!r.masks.length) throw new ToolError(`materials[${i}].masks: give at least one expression`);
+    return r.masks.map((m, j) => maskFn(m, `materials[${i}].masks[${j}]`));
   });
+  rules.forEach((r, i) => {
+    if (r.feather && !(Number.isFinite(r.feather.width) && r.feather.width >= 0)) throw new ToolError(`materials[${i}].feather: width is a number of 0 or more`);
+  });
+  // A feathered rule's threshold at a voxel, in (-0.5, 0.5): dither, an ordered pattern over x, z and y; noise, a hash.
+  const featherAt = (pattern: Feather | undefined, ci: number, cj: number, y: number) => {
+    if (pattern === "noise") {
+      let h = (Math.imul(ci, 0x27d4eb2d) ^ Math.imul(cj, 0x165667b1) ^ Math.imul(y, 0x9e3779b9)) >>> 0;
+      h = Math.imul(h ^ (h >>> 15), 0x85ebca6b) >>> 0;
+      h = Math.imul(h ^ (h >>> 13), 0xc2b2ae35) >>> 0;
+      return (((h ^ (h >>> 16)) >>> 0) + 0.5) / 4294967296 - 0.5;
+    }
+    return (BAYER[((((cj + y) % 4) + 4) % 4) * 4 + (((ci % 4) + 4) % 4)] + 0.5) / 16 - 0.5;
+  };
   const mvars: Record<string, number> = { ...vars, h: 0, y: 0, depth: 0, slope: 0 };
   const centreOf = (col: number): [number, number] => { const ai = col % nx, bj = (col - ai) / nx; return [(i0 + ai + 0.5) * s + t[0], (j0 + bj + 0.5) * s + t[2]]; };
   // The top of the neighbouring column (its hi; the floor where it has none), for exposed: a voxel is exposed when
@@ -281,6 +313,13 @@ export function sampleField(store: EditorStore, a: FieldArgs): Field {
         // the column's centre in region units, so the bands wander the same way whatever the voxel size
         shift = r.jitter.amount * noise2(((i0 + ai + 0.5) * s + t[0]) / k / sc, ((j0 + bj + 0.5) * s + t[2]) / k / sc, r.jitter.seed ?? 0);
       }
+      // feather: the bounds and masks move by a threshold that varies per voxel, so an edge becomes a dithered band
+      let fe = 0;
+      if (r.feather && r.feather.width > 0) {
+        const ai = col % nx, bj = (col - ai) / nx;
+        fe = featherAt(r.feather.pattern, i0 + ai, j0 + bj, y) * r.feather.width;
+        shift += fe;
+      }
       if (r.minHeight !== undefined && above < r.minHeight + shift) continue;
       if (r.maxHeight !== undefined && above >= r.maxHeight + shift) continue;
       if (r.minSlope !== undefined && sl < r.minSlope) continue;
@@ -296,7 +335,7 @@ export function sampleField(store: EditorStore, a: FieldArgs): Field {
         if (exposed !== r.exposed) continue;
       }
       const ri = rules.indexOf(r);
-      if (ruleRegion[ri] || ruleMask[ri] || r.noise) {
+      if (ruleRegion[ri] || ruleMask[ri] || ruleMasks[ri] || r.noise) {
         const [mx, mz] = centreOf(col);
         if (ruleRegion[ri] && !ruleRegion[ri]!.some((ar) => inArea(ar, mx, mz))) continue;
         if (r.noise) {
@@ -304,12 +343,13 @@ export function sampleField(store: EditorStore, a: FieldArgs): Field {
           const v = oc > 1 ? fbm(nx2, nz2, r.noise.seed ?? 0, oc) : noise2(nx2, nz2, r.noise.seed ?? 0);
           if (!(v > (r.noise.threshold ?? 0))) continue;
         }
-        if (ruleMask[ri]) {
+        if (ruleMask[ri] || ruleMasks[ri]) {
           mvars.x = (mx - cx) / k; mvars.z = (mz - cz) / k;
           mvars.u = ((mx - t[0]) / s - i0) / nx; mvars.v = ((mz - t[2]) / s - j0) / nz;
           mvars.r = Math.hypot(mvars.x, mvars.z); mvars.theta = Math.atan2(mvars.z, mvars.x);
           mvars.h = (hi[col] - floor) / kv; mvars.y = above; mvars.depth = depth; mvars.slope = sl;
-          if (!(ruleMask[ri]!(mvars) > 0)) continue;
+          if (ruleMask[ri] && !(ruleMask[ri]!(mvars) > fe)) continue;
+          if (ruleMasks[ri] && !ruleMasks[ri]!.some((fn) => fn(mvars) > fe)) continue;
         }
       }
       return r.material;
@@ -317,7 +357,44 @@ export function sampleField(store: EditorStore, a: FieldArgs): Field {
     return material;
   };
   const runLimit = Math.max(100, LIMITS.runsPerFrame - Math.max(0, Math.round(a.runsHeadroom ?? 0)));
-  return { k, s, t, sceneId, i0, j0, nx, nz, floor, runLimit, lo, hi, height, slope, materialAt };
+  // Corner blending: a voxel among the top `depth` of its column whose neighbours (the 26 round it, in the field) include
+  // another material takes the most common such material as its second, on the corners it shares with those voxels.
+  if (a.blend !== undefined && typeof a.blend !== "boolean" && (typeof a.blend !== "object" || a.blend === null || Array.isArray(a.blend)))
+    throw new ToolError("blend is true, false or {depth}");
+  const blendDepth = !a.blend ? 0 : a.blend === true ? 1 : Math.round(a.blend.depth ?? 1);
+  if (a.blend && !(blendDepth >= 1 && blendDepth <= 8)) throw new ToolError("blend.depth is 1-8 voxels");
+  const cache = new Map<number, number>();
+  const matCached = (col: number, y: number) => {
+    const key = col * 8192 + (y - floor + 4096);
+    let m = cache.get(key);
+    if (m === undefined) { m = materialAt(col, y); if (cache.size < 2_000_000) cache.set(key, m); }
+    return m;
+  };
+  const field: Field = { k, s, t, sceneId, i0, j0, nx, nz, floor, runLimit, lo, hi, height, slope, materialAt,
+    wordAt(col: number, y: number, layered = false) {
+      if (!blendDepth || hi[col] - 1 - y >= blendDepth) return filled(materialAt(col, y));
+      const own = matCached(col, y), ai = col % nx, bj = (col - ai) / nx;
+      // the material of the field voxel at offset (dx, dy, dz), or -1 where there is none
+      const at = (dx: number, dy: number, dz: number) => {
+        const a2 = ai + dx, b2 = bj + dz;
+        if (a2 < 0 || b2 < 0 || a2 >= nx || b2 >= nz) return -1;
+        const c2 = b2 * nx + a2, y2 = (layered ? y - hi[col] + hi[c2] : y) + dy;
+        return hi[c2] > lo[c2] && y2 >= lo[c2] && y2 < hi[c2] ? matCached(c2, y2) : -1;
+      };
+      const count = new Map<number, number>();
+      for (let dy = -1; dy <= 1; dy++) for (let dz = -1; dz <= 1; dz++) for (let dx = -1; dx <= 1; dx++) {
+        if (!dx && !dy && !dz) continue;
+        const m = at(dx, dy, dz);
+        if (m >= 0 && m !== own) count.set(m, (count.get(m) ?? 0) + 1);
+      }
+      if (!count.size) return filled(own);
+      let second = -1, n = 0;
+      for (const [m, c] of count) if (c > n || (c === n && m < second)) { second = m; n = c; }
+      const mask = sharedCorners(0, 0, 0, (x2, y2, z2) => at(x2, y2, z2) === second);
+      if (!mask) return filled(own);
+      return withSecond(filled(own), second, mask);
+    } };
+  return field;
 }
 
 // ------------------------------------------------------------------ frames as canvas
@@ -398,7 +475,7 @@ export function canvas(store: EditorStore, f: Field, reuse: Reuse = "aligned"): 
           const pz = m[8] * (x + 0.5) + m[9] * (y + 0.5) + m[10] * (z + 0.5) + m[11] - f.t[2];
           const sy = Math.floor(py / s), c = cellOf(Math.floor(px / s), sy, Math.floor(pz / s));
           if (!c || out.covered.get(c[0])?.[c[1]]) continue;
-          changes.set(i, [w, filled(f.materialAt(c[0], sy))]);
+          changes.set(i, [w, f.wordAt(c[0], sy)]);
         }
     // Field cells whose centre is in a frame cell solid before or after.
     const marks: [number, number][] = [];
@@ -503,7 +580,7 @@ function words(f: Field, cv: Canvas, p: Omit<Box, "deps">): Uint32Array {
       const col = (p.z0 + z) * f.nx + p.x0 + x;
       const lo = Math.max(f.lo[col], p.y0), hi = Math.min(f.hi[col], p.y1);
       const c = cv.covered.get(col);
-      for (let y = lo; y < hi; y++) if (!c?.[y - f.lo[col]]) w[(z * X + x) * Y + (y - p.y0)] = filled(f.materialAt(col, y));
+      for (let y = lo; y < hi; y++) if (!c?.[y - f.lo[col]]) w[(z * X + x) * Y + (y - p.y0)] = f.wordAt(col, y);
     }
   return w;
 }

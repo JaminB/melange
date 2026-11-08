@@ -15,6 +15,8 @@ const schema: Schema & { type: "object" } = {
     ...fieldProps,
     thickness: { type: "integer", minimum: 1, maximum: 8, description: "The skin's voxels (default 2). The core under it is cut to its lowest corner less a quarter voxel, so where one column's corners differ by more than thickness - 1 the skin can leave air under it (not seen until dug)." },
     core: { type: "boolean", description: "Fill under the skin with the stepped field (default true; packed as heightfield_region packs, with maxBlocks/maxCells less the skin's). false: a hollow skin, about a fifth of the cells of a solid island, that weapons dig through into air." },
+    skirtTo: { type: "number", description: "Level y (units) the ground under the skin reaches down to: the core is filled from here up to just under the skin, instead of from the floor, and a hollow skin (core: false) gets one too, so a rising sea shows solid ground instead of the skin's underside and its jagged edge. The sea floor, or at least 10 map units under the water's cap. dryRun answers its cells (core.cells, core.neededCells)." },
+    skirtTop: { type: "number", description: "With skirtTo: fill only under the columns whose skin dips to this level y (units) or lower (the skin's lowest corner less its thickness): the shore that the sea reaches, at a fraction of the cells. Default every column." },
     dryRun: { type: "boolean", description: "Plan and report only." },
   },
 };

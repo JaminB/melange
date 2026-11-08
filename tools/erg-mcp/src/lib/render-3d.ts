@@ -5,6 +5,7 @@
 import type { Vec3 } from "../core";
 import type { Marker, MarkerKind, Region } from "./inspect-field";
 import type { Rgb } from "./inspect-png";
+import { FACES, MIN_AREA, gridCorner, splitQuad, triangleNormal } from "./drape-mesh";
 import { isSolid, material, type Grid } from "./voxel";
 
 // ------------------------------------------------------------------ cameras
@@ -83,26 +84,8 @@ export const lookFor = (tod: string | undefined): Look => LOOKS[(tod ?? "DAY").t
 
 // ------------------------------------------------------------------ voxel geometry
 
-/** Where a grid corner (integer lattice point x, y, z of the frame's voxels) is in the level, written to out[at..at+2].
- * Every face vertex goes through here, so a per-frame corner offset (a sheared column) belongs in this one function. */
-export function gridCorner(g: Grid, x: number, y: number, z: number, out: Float64Array, at: number) {
-  const m = g.toMap, c = g.frame?.corners;
-  // A draped block's corner offsets (heightfield_drape) move its columns up, in its own voxels: faces follow them.
-  if (c) y += c[Math.round(z) * (g.size[0] + 1) + Math.round(x)] ?? 0;
-  out[at] = m[0] * x + m[1] * y + m[2] * z + m[3];
-  out[at + 1] = m[4] * x + m[5] * y + m[6] * z + m[7];
-  out[at + 2] = m[8] * x + m[9] * y + m[10] * z + m[11];
-}
-
-// The six faces of a cell: the neighbour's offset, and the face's four corners as offsets from the cell's low corner.
-const FACES: { d: Vec3; c: Vec3[] }[] = [
-  { d: [1, 0, 0], c: [[1, 0, 0], [1, 1, 0], [1, 1, 1], [1, 0, 1]] },
-  { d: [-1, 0, 0], c: [[0, 0, 0], [0, 0, 1], [0, 1, 1], [0, 1, 0]] },
-  { d: [0, 1, 0], c: [[0, 1, 0], [0, 1, 1], [1, 1, 1], [1, 1, 0]] },
-  { d: [0, -1, 0], c: [[0, 0, 0], [1, 0, 0], [1, 0, 1], [0, 0, 1]] },
-  { d: [0, 0, 1], c: [[0, 0, 1], [1, 0, 1], [1, 1, 1], [0, 1, 1]] },
-  { d: [0, 0, -1], c: [[0, 0, 0], [0, 1, 0], [1, 1, 0], [1, 0, 0]] },
-];
+// The faces and their corners (a draped block's sheared) are drape-mesh.ts's, shared with its mesh checks.
+export { gridCorner };
 
 /** A grid's face normals in map units: the inverse transpose of its matrix (fromMap's rows, transposed), normalised. */
 function faceNormals(g: Grid): Vec3[] {
@@ -186,9 +169,9 @@ export function renderView(input: ViewInput, cam: Camera, w: number, h: number, 
   const vx = new Float64Array(8), vy = new Float64Array(8), vz = new Float64Array(8);
   const sx = new Float64Array(8), sy = new Float64Array(8), sz = new Float64Array(8);
   const qx = new Float64Array(4), qy = new Float64Array(4), qz = new Float64Array(4);
-  const quad = (pts: Float64Array, c: number): boolean => {
+  const quad = (pts: Float64Array, c: number, corners = 4): boolean => {
     let n = 0, front = 0;
-    for (let k = 0; k < 4; k++) {
+    for (let k = 0; k < corners; k++) {
       const dx = pts[k * 3] - E[0], dy = pts[k * 3 + 1] - E[1], dz = pts[k * 3 + 2] - E[2];
       qx[k] = dx * r[0] + dy * r[1] + dz * r[2];
       qy[k] = dx * u[0] + dy * u[1] + dz * u[2];
@@ -196,12 +179,12 @@ export function renderView(input: ViewInput, cam: Camera, w: number, h: number, 
       if (qz[k] >= NEAR) front++;
     }
     if (!front) return false;
-    if (front === 4) {
-      for (let k = 0; k < 4; k++) { vx[k] = qx[k]; vy[k] = qy[k]; vz[k] = qz[k]; }
-      n = 4;
+    if (front === corners) {
+      for (let k = 0; k < corners; k++) { vx[k] = qx[k]; vy[k] = qy[k]; vz[k] = qz[k]; }
+      n = corners;
     } else {
-      for (let k = 0; k < 4; k++) {   // Sutherland-Hodgman against z = NEAR
-        const j = (k + 1) & 3, ink = qz[k] >= NEAR, inj = qz[j] >= NEAR;
+      for (let k = 0; k < corners; k++) {   // Sutherland-Hodgman against z = NEAR
+        const j = (k + 1) % corners, ink = qz[k] >= NEAR, inj = qz[j] >= NEAR;
         if (ink) { vx[n] = qx[k]; vy[n] = qy[k]; vz[n] = qz[k]; n++; }
         if (ink !== inj) {
           const t = (NEAR - qz[k]) / (qz[j] - qz[k]);
@@ -224,7 +207,11 @@ export function renderView(input: ViewInput, cam: Camera, w: number, h: number, 
 
   // ---- the faces: a face of a solid cell is exposed when its neighbour in the same grid is empty or outside it
   let faces = 0, framesDrawn = 0;
-  const pts = new Float64Array(12), centre = new Float64Array(3);
+  const pts = new Float64Array(12), centre = new Float64Array(3), tri3 = new Float64Array(9);
+  const lit = (nm: Vec3) => {
+    const diff = Math.max(0, dot(nm, L)) * look.diffuse, amb = look.ambient * (0.78 + 0.22 * nm[1]);
+    return [amb + diff * look.sunColour[0], amb + diff * look.sunColour[1], amb + diff * look.sunColour[2]];
+  };
   const clip = input.clip ?? null;
   for (const g of input.grids) {
     const [X, Y, Z] = g.size, words = g.words;
@@ -251,6 +238,22 @@ export function renderView(input: ViewInput, cam: Camera, w: number, h: number, 
             if (nx >= 0 && ny >= 0 && nz >= 0 && nx < X && ny < Y && nz < Z && isSolid(words[(nz * X + nx) * Y + ny])) continue;
             const c = FACES[k].c;
             for (let v = 0; v < 4; v++) gridCorner(g, x + c[v][0], y + c[v][1], z + c[v][2], pts, v * 3);
+            if (g.frame?.corners) {
+              // a draped block's face is not flat: its two triangles are culled and lit by their own normals
+              if (!tintC) { tintC = input.tint(material(wd)); jit = 1 + 0.035 * jitter(g.id, x, y, z); }
+              const idx = splitQuad(pts);
+              for (let t = 0; t < 6; t += 3) {
+                const { n: tn, area } = triangleNormal(pts, idx[t], idx[t + 1], idx[t + 2]);
+                if (area < MIN_AREA) continue;
+                const a0 = idx[t] * 3;
+                if ((pts[a0] - E[0]) * tn[0] + (pts[a0 + 1] - E[1]) * tn[1] + (pts[a0 + 2] - E[2]) * tn[2] >= 0) continue;
+                for (let v = 0; v < 3; v++) for (let q = 0; q < 3; q++) tri3[v * 3 + q] = pts[idx[t + v] * 3 + q];
+                const li = lit(tn);
+                const rr = Math.min(255, Math.round(tintC[0] * li[0] * jit)), gg = Math.min(255, Math.round(tintC[1] * li[1] * jit)), bb = Math.min(255, Math.round(tintC[2] * li[2] * jit));
+                if (quad(tri3, (rr << 16) | (gg << 8) | bb, 3)) { faces++; drew = true; }
+              }
+              continue;
+            }
             // back faces: the eye is behind the face's plane
             const nm = normals[k];
             if ((pts[0] - E[0]) * nm[0] + (pts[1] - E[1]) * nm[1] + (pts[2] - E[2]) * nm[2] >= 0) continue;

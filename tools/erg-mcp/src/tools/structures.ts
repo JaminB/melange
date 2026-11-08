@@ -27,6 +27,7 @@ const common: Record<string, Schema> = {
   dryRun: { type: "boolean", description: "Plan only: report the voxels, frames and new blocks it would use and change nothing." },
   units: { type: "string", enum: ["map", "world"], description: "Unit of every position and length in this call: map (default; 1 voxel = 1 unit) or world (map x 20, as the Erg panel shows)." },
   blockScale: { type: "number", minimum: 0.5, maximum: 4, description: "Map units per voxel of the new blocks (default 1): a larger one covers the same structure with fewer of the game's 65535 cells, in coarser voxels (detail under a voxel is lost). Use place \"new\" so the whole structure is on that lattice." },
+  drape: { type: "string", enum: ["skip", "sheared"], description: "Draped blocks (heightfield_drape's skin, corner offsets): skip (default) leaves them alone; sheared edits their cells where the game draws them (each column moved up by its corner offsets), so a ramp cut, tunnel or crater cuts through the skin too. Fills into a skin follow its shear, a voxel at a time." },
   packing: { type: "string", enum: ["tiles", "parts"], description: "How new blocks are cut. tiles (default): tiles of up to 31 voxels a side, each trimmed to what it holds. parts: a block per part (each wall, tower, the keep), merged where that costs few cells, so the air between parts (a courtyard) is in no block: fewer cells, more blocks." },
 };
 const foundation: Schema = { type: "integer", minimum: 0, maximum: 32, description: "Voxels of solid filled below the base (y) so the structure reaches the ground. Default 0." };
@@ -35,7 +36,36 @@ const crenellations = (d: string): Schema => ({ type: "boolean", description: d 
 
 const SIDE_NOTE = "Sides are map directions: n = -z, s = +z, e = +x, w = -x (before the rotation).";
 
-interface Common { material?: number; place?: "auto" | "existing" | "new"; dryRun?: boolean; units?: "map" | "world"; blockScale?: number; packing?: Packing; }
+const groundProps: Record<string, Schema> = {
+  ground: { type: "string", enum: ["max", "mean", "min"], description: "Set at's y from the ground under the footprint instead (the top of the highest solid voxel of every frame, draped skins at their sheared height, sampled every map unit over the rotated footprint): max (the highest point, so nothing of the floor is buried; fill the gap under the low side with foundation), mean or min. The answer's groundUnder gives all three." },
+  sink: { type: "number", minimum: 0, description: "Lower the structure this far (units) under at's y, or under the ground with `ground`: bed it into a sloped or draped surface so its floor meets the ground instead of floating over a sheared skin's fraction of a voxel. Default 0." },
+};
+
+/** `at` with its y set from the ground under the footprint (half sizes hx, hz in the call's units, turned by the
+ * rotation as place() turns the structure) and lowered by sink; and what was found there, in the call's units. */
+function settle(s: Session, a: { at: Vec3; ground?: "max" | "mean" | "min"; sink?: number; units?: "map" | "world"; rotation?: number }, hx: number, hz: number):
+  { at: Vec3; groundUnder?: Record<string, unknown> } {
+  if (!a.ground) return { at: a.sink ? [a.at[0], a.at[1] - a.sink, a.at[2]] : a.at };
+  const { store } = s.requireProject();
+  const k = a.units === "world" ? 1 / 20 : 1, gs = grids(store);
+  const cx = a.at[0] * k, cz = a.at[2] * k, ex = Math.max(0.5, hx * k), ez = Math.max(0.5, hz * k);
+  const nx = Math.max(2, Math.ceil(2 * ex)), nz = Math.max(2, Math.ceil(2 * ez));
+  const tops: number[] = [];
+  for (let j = 0; j <= nz; j++)
+    for (let i = 0; i <= nx; i++) {
+      const p = placePoint([-ex + (2 * ex * i) / nx, 0, -ez + (2 * ez * j) / nz], [cx, 0, cz], a.rotation ?? 0);
+      const top = spansAt(gs, p[0], p[2])[0];
+      if (top) tops.push(top.top);
+    }
+  if (!tops.length) throw new ToolError("ground: no voxel ground under the footprint (give at's y yourself)");
+  const min = Math.min(...tops), max = Math.max(...tops), mean = tops.reduce((n, v) => n + v, 0) / tops.length;
+  const y = (a.ground === "min" ? min : a.ground === "mean" ? mean : max) - (a.sink ?? 0) * k;
+  const out = (v: number) => tidy([v / k, 0, 0])[0];
+  return { at: [a.at[0], y / k, a.at[2]], groundUnder: { min: out(min), max: out(max), mean: out(mean), samples: tops.length, of: (nx + 1) * (nz + 1), used: a.ground,
+    ...(a.sink ? { sink: a.sink } : {}), y: out(y), note: tops.length < (nx + 1) * (nz + 1) ? "part of the footprint has no ground under it" : undefined } };
+}
+
+interface Common { material?: number; place?: "auto" | "existing" | "new"; dryRun?: boolean; units?: "map" | "world"; blockScale?: number; packing?: Packing; drape?: "skip" | "sheared"; }
 
 const finite = (v: number[], what: string) => { if (!v.every(Number.isFinite)) throw new ToolError(`${what} must be finite numbers`); };
 
@@ -46,7 +76,7 @@ function run(s: Session, a: Common, anchor: Vec3, structure: string, make: (k: n
   const at: Vec3 = [anchor[0] * k, anchor[1] * k, anchor[2] * k];
   const mat = a.material ?? dominantMaterial(store, at) ?? 1;
   const plan = make(k, mat, (v, d) => (v === undefined ? d : v * k));
-  const r = applyPlan(store, plan, { place: a.place ?? "auto", dryRun: !!a.dryRun, blockScale: a.blockScale, packing: a.packing });
+  const r = applyPlan(store, plan, { place: a.place ?? "auto", dryRun: !!a.dryRun, blockScale: a.blockScale, packing: a.packing, drape: a.drape });
   return { structure, material: mat, ...(a.material === undefined ? { materialNote: "chosen from the voxels near the structure; pass material to set it" } : {}), ...r,
     structureInfo: plan.info, undo: r.dryRun || !r.voxels.changed ? undefined : "undo reverts the whole structure in one step; save writes it" };
 }
@@ -116,13 +146,15 @@ export const tools: Tool[] = [
         gateHeight: { type: "number", minimum: 2, description: "Default 5 (round-topped from 3 wide)." },
         crenellations: crenellations("Merlons on the walls, towers and keep. Default true."),
         scale: { type: "number", minimum: 0.5, maximum: 4, description: "Build the castle from voxels of this many map units (default 1). Lengths stay map units; the design is laid out in voxels of `scale` (walls, merlons and gates keep their rhythm in voxels) and new blocks get that scale (blockScale), so it costs about 1/scale^3 of the cells. Use place \"new\"." },
-        foundation, rotation, ...common,
+        foundation, rotation, ...groundProps, ...common,
       },
     },
-    handler(s, a: Common & { at: Vec3; size?: [number, number]; wallHeight?: number; wallThickness?: number; towerShape?: "round" | "square"; towerRadius?: number;
+    handler(s, a0: Common & { at: Vec3; size?: [number, number]; wallHeight?: number; wallThickness?: number; towerShape?: "round" | "square"; towerRadius?: number;
       towerHeight?: number; keep?: boolean; keepSize?: [number, number]; keepHeight?: number; gate?: string; gateWidth?: number; gateHeight?: number;
-      crenellations?: boolean; foundation?: number; rotation?: number; scale?: number }) {
-      finite(a.at, "at");
+      crenellations?: boolean; foundation?: number; rotation?: number; scale?: number; ground?: "max" | "mean" | "min"; sink?: number }) {
+      finite(a0.at, "at");
+      const sz0 = a0.size ?? [30 * (a0.units === "world" ? 20 : 1), 30 * (a0.units === "world" ? 20 : 1)];
+      const settled = settle(s, a0, sz0[0] / 2, sz0[1] / 2), a = { ...a0, at: settled.at };
       // scale v: the design is made in voxels of v map units (every length divided by v) and scaled back up once planned
       const v = a.scale ?? 1;
       let spots: Spot[] = [];
@@ -156,7 +188,7 @@ export const tools: Tool[] = [
           towerHeight: m(spec.towerHeight), keep: keepSize ? [m(keepSize[0]), m(keepSize[1])] : null,
           gate: gate ? { side: gate, width: m(spec.gateWidth), height: m(spec.gateHeight) } : null, courtyardFloorY: at[1], ...(v !== 1 ? { scale: v } : {}) } };
       }) as Record<string, unknown>;
-      return { ...res, spawnSpots: spotReport(s, spots, a.units, !!a.dryRun) };
+      return { ...res, ...(settled.groundUnder ? { groundUnder: settled.groundUnder } : {}), spawnSpots: spotReport(s, spots, a.units, !!a.dryRun) };
     },
   },
   {
@@ -207,13 +239,14 @@ export const tools: Tool[] = [
         doorWidth: { type: "number", minimum: 1, description: "Default 2." },
         doorHeight: { type: "number", minimum: 2, description: "Default 3." },
         crenellations: crenellations("Merlons round the rim. Default true."),
-        foundation, rotation, ...common,
+        foundation, rotation, ...groundProps, ...common,
       },
     },
-    handler(s, a: Common & { at: Vec3; shape?: "round" | "square"; radius?: number; height?: number; hollow?: boolean; wallThickness?: number; door?: string;
-      doorWidth?: number; doorHeight?: number; crenellations?: boolean; foundation?: number; rotation?: number }) {
-      finite(a.at, "at");
-      return run(s, a, a.at, "tower", (k, mat, U) => {
+    handler(s, a0: Common & { at: Vec3; shape?: "round" | "square"; radius?: number; height?: number; hollow?: boolean; wallThickness?: number; door?: string;
+      doorWidth?: number; doorHeight?: number; crenellations?: boolean; foundation?: number; rotation?: number; ground?: "max" | "mean" | "min"; sink?: number }) {
+      finite(a0.at, "at");
+      const r0 = a0.radius ?? 4 * (a0.units === "world" ? 20 : 1), settled = settle(s, a0, r0, r0), a = { ...a0, at: settled.at };
+      const res = run(s, a, a.at, "tower", (k, mat, U) => {
         const r = U(a.radius, 4), wall = U(a.wallThickness, 2);
         if (a.hollow && wall >= r - 0.5) throw new ToolError("the wall is as thick as the tower is wide: lower wallThickness or raise radius");
         const door = sideOf(a.door, a.hollow ? "s" : null);
@@ -221,7 +254,8 @@ export const tools: Tool[] = [
           doorWidth: U(a.doorWidth, 2), doorHeight: U(a.doorHeight, 3), cren: a.crenellations !== false, found: U(a.foundation, 0) };
         return { label: "Build tower", shapes: place(tower(spec), sc(a.at, k), a.rotation ?? 0), notes: [],
           info: { shape: spec.shape, radius: r, height: spec.height, hollow: spec.hollow, door } };
-      });
+      }) as Record<string, unknown>;
+      return settled.groundUnder ? { ...res, groundUnder: settled.groundUnder } : res;
     },
   },
   {
@@ -241,19 +275,22 @@ export const tools: Tool[] = [
         doorHeight: { type: "number", minimum: 2, description: "Default 4." },
         windows: { type: "boolean", description: "Arrow slits (1 x 2) every 4 voxels along the walls of a hollow keep. Default true." },
         crenellations: crenellations("Merlons on the roof rim. Default true."),
-        foundation, rotation, ...common,
+        foundation, rotation, ...groundProps, ...common,
       },
     },
-    handler(s, a: Common & { at: Vec3; size?: [number, number]; height?: number; wallThickness?: number; hollow?: boolean; roof?: boolean; door?: string;
-      doorWidth?: number; doorHeight?: number; windows?: boolean; crenellations?: boolean; foundation?: number; rotation?: number }) {
-      finite(a.at, "at");
-      return run(s, a, a.at, "keep", (k, mat, U) => {
+    handler(s, a0: Common & { at: Vec3; size?: [number, number]; height?: number; wallThickness?: number; hollow?: boolean; roof?: boolean; door?: string;
+      doorWidth?: number; doorHeight?: number; windows?: boolean; crenellations?: boolean; foundation?: number; rotation?: number; ground?: "max" | "mean" | "min"; sink?: number }) {
+      finite(a0.at, "at");
+      const sz0 = a0.size ?? [12 * (a0.units === "world" ? 20 : 1), 12 * (a0.units === "world" ? 20 : 1)];
+      const settled = settle(s, a0, sz0[0] / 2, sz0[1] / 2), a = { ...a0, at: settled.at };
+      const res = run(s, a, a.at, "keep", (k, mat, U) => {
         const size: [number, number] = a.size ? [a.size[0] * k, a.size[1] * k] : [12, 12], wall = U(a.wallThickness, 2);
         if (a.hollow !== false && (size[0] <= 2 * wall + 1 || size[1] <= 2 * wall + 1)) throw new ToolError("the walls leave no room inside: make the keep bigger or the walls thinner");
         const spec = { size, height: U(a.height, 10), material: mat, wall, hollow: a.hollow !== false, roof: a.roof !== false, door: sideOf(a.door, "s"),
           doorWidth: U(a.doorWidth, 3), doorHeight: U(a.doorHeight, 4), windows: a.windows !== false, cren: a.crenellations !== false, found: U(a.foundation, 0) };
         return { label: "Build keep", shapes: place(keep(spec), sc(a.at, k), a.rotation ?? 0), notes: [], info: { size, height: spec.height, door: spec.door } };
-      });
+      }) as Record<string, unknown>;
+      return settled.groundUnder ? { ...res, groundUnder: settled.groundUnder } : res;
     },
   },
   {

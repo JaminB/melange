@@ -3,7 +3,7 @@
 import { SURROUND_SIDE, type Vec3 } from "../core";
 import {
   addBlock, clearBase, compileFormula as compile, downhillPath, enableSurroundPaint, fillBox, frameGrids, patchLeft, pathPoints, pickAnchor, pointToMap, removeBlock,
-  setSurroundGrid, stroke, surroundDabs, surroundSummary, taperSizes, type Units,
+  setSurroundGrid, stroke, surroundDabs, surroundSummary, taperSizes, type StrokeFilter, type Units,
 } from "../lib/terrain-ops";
 import { waterMap } from "../lib/inspect-field";
 import { paintSurface, type Shape } from "../lib/surface-paint";
@@ -25,13 +25,19 @@ const brushProps = {
   allFrames: { type: "boolean", description: "Fill and paint also edit every other voxel frame the brush overlaps (rotated and scaled frames too, at their cell centres), as carve does. Default false: the anchor frame only, as the panel's brush." },
   units,
   snap: { type: "boolean", description: "Snap each dab's centre to the middle of its voxel, as the panel does (default true). false keeps fractional centres." },
+  frames: { type: "array", items: { type: "integer" }, minItems: 1, maxItems: 256, description: "Edit only these frames (ids from describe_level): carve a road into a skin without touching the castle block beside it, or the reverse. The anchor is picked among them." },
+  onlyBlocks: { type: "boolean", description: "Edit only blocks added in this project (heightfields, drapes, structures' blocks), never the base map's frames." },
+  skipFrames: { type: "array", items: { type: "integer" }, minItems: 1, maxItems: 256, description: "Never edit these frames." },
+  drape: { type: "string", enum: ["sheared", "grid"], description: "How a draped block (heightfield_drape's skin: corner offsets) is read: sheared (default) at the height the game draws and collides it, each column moved up by its corner offsets, so a dab on the skin's surface cuts the skin there; grid as its unsheared grid says (the Erg panel's brush, and erg-mcp before: a dab on the surface can miss the skin or punch a hole elsewhere in it)." },
   dryRun,
 } as const;
 
 interface Brushy {
   mode: "carve" | "fill" | "paint"; shape?: "box" | "sphere"; size: Vec3; material?: number; materialColumn?: boolean; frame?: number;
-  allFrames?: boolean; units?: Units; snap?: boolean; dryRun?: boolean;
+  allFrames?: boolean; units?: Units; snap?: boolean; dryRun?: boolean; frames?: number[]; onlyBlocks?: boolean; skipFrames?: number[]; drape?: "sheared" | "grid";
 }
+
+const filter = (a: Brushy): StrokeFilter => ({ frames: a.frames, onlyBlocks: a.onlyBlocks, skipFrames: a.skipFrames, shear: a.drape !== "grid" });
 
 function spec(a: Brushy) {
   if (a.materialColumn && a.mode !== "fill") throw new ToolError("materialColumn is for fill only");
@@ -80,9 +86,9 @@ export const tools: Tool[] = [
       const gs = frameGrids(store);
       const anchor = a.units === "grid"
         ? pickAnchor(store, gs, [0, 0, 0], a.frame, false)
-        : pickAnchor(store, gs, pointToMap(a.center, a.units ?? "world"), a.frame, a.mode === "fill");
+        : pickAnchor(store, gs, pointToMap(a.center, a.units ?? "world"), a.frame, a.mode === "fill", filter(a));
       const at = pointToMap(a.center, a.units ?? "world", anchor);
-      return stroke(store, spec(a), [at], anchor, { snap: a.snap ?? true, dryRun: a.dryRun, allFrames: a.allFrames });
+      return stroke(store, spec(a), [at], anchor, { snap: a.snap ?? true, dryRun: a.dryRun, allFrames: a.allFrames, filter: filter(a) });
     },
   },
   {
@@ -115,10 +121,10 @@ export const tools: Tool[] = [
         const depth = a.depth ?? -0.5;
         const pts = walk.points.map((p) => [p[0], p[1] + depth, p[2]] as Vec3);
         // the anchor holds the start's top voxel (a point on the ground's top face is outside a frame whose top it is)
-        const anchor = pickAnchor(store, gs, [pts[0][0], walk.points[0][1] - 0.25, pts[0][2]], a.frame, a.mode === "fill");
+        const anchor = pickAnchor(store, gs, [pts[0][0], walk.points[0][1] - 0.25, pts[0][2]], a.frame, a.mode === "fill", filter(a));
         const dabs = pathPoints(pts, spacing);
         const sizes = a.taper !== undefined && a.taper !== 1 ? taperSizes(pts, spacing, dabs.length, a.size, a.taper) : undefined;
-        const r = stroke(store, spec(a), dabs, anchor, { snap: a.snap ?? true, dryRun: a.dryRun, label, allFrames: a.allFrames, sizes });
+        const r = stroke(store, spec(a), dabs, anchor, { snap: a.snap ?? true, dryRun: a.dryRun, label, allFrames: a.allFrames, sizes, filter: filter(a) });
         const out = (p: Vec3) => tidy(u === "world" ? toWorld(p) : p);
         return {
           ...r, spacing, ...(a.taper !== undefined ? { taper: a.taper } : {}), pathLength: tidy([walk.length, 0, 0])[0],
@@ -127,11 +133,11 @@ export const tools: Tool[] = [
           ...(a.points.length > 1 ? { note: "followSurface used only the first point" } : {}),
         };
       }
-      const anchor = u === "grid" ? pickAnchor(store, gs, [0, 0, 0], a.frame, false) : pickAnchor(store, gs, pointToMap(a.points[0], u), a.frame, a.mode === "fill");
+      const anchor = u === "grid" ? pickAnchor(store, gs, [0, 0, 0], a.frame, false) : pickAnchor(store, gs, pointToMap(a.points[0], u), a.frame, a.mode === "fill", filter(a));
       const pts = a.points.map((p) => pointToMap(p, u, anchor));
       const dabs = pathPoints(pts, spacing);
       const sizes = a.taper !== undefined && a.taper !== 1 ? taperSizes(pts, spacing, dabs.length, a.size, a.taper) : undefined;
-      const r = stroke(store, spec(a), dabs, anchor, { snap: a.snap ?? true, dryRun: a.dryRun, label, allFrames: a.allFrames, sizes });
+      const r = stroke(store, spec(a), dabs, anchor, { snap: a.snap ?? true, dryRun: a.dryRun, label, allFrames: a.allFrames, sizes, filter: filter(a) });
       return { ...r, spacing, ...(a.taper !== undefined ? { taper: a.taper } : {}), pathLength: pts.slice(1).reduce((n, p, i) => n + Math.hypot(p[0] - pts[i][0], p[1] - pts[i][1], p[2] - pts[i][2]), 0) };
     },
   },

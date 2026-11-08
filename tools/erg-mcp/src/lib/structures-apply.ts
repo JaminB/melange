@@ -2,7 +2,7 @@
 // are edited with the panel's SculptStroke command, and what falls outside every frame goes into new terrain blocks
 // (AddFrame, the panel's own block command) under the Scene frame. Edits go through the same patch the panel saves.
 import {
-  AddFrame, Group, LIMITS, SculptStroke, cellBudget, carved, filled, isSolid, material, painted, sceneFrame, validNewFrameScale, voxelRuns,
+  AddFrame, Group, LIMITS, SculptStroke, cellBudget, carved, cornerOffset, filled, isSolid, material, painted, sceneFrame, validNewFrameScale, voxelRuns,
   type EditorStore, type Frame, type Vec3,
 } from "../core";
 import { ToolError } from "../registry";
@@ -15,7 +15,9 @@ export type Place = "auto" | "existing" | "new";
  * courtyard) is in no block. */
 export type Packing = "tiles" | "parts";
 
-export interface ApplyOptions { place: Place; dryRun: boolean; blockScale?: number; packing?: Packing; }
+/** drape: "skip" (default) leaves draped blocks (corner offsets) alone; "sheared" edits them where the game draws their
+ * cells (each column moved up by its bilinear corner offset), so a ramp or tunnel cut runs through a skin. */
+export interface ApplyOptions { place: Place; dryRun: boolean; blockScale?: number; packing?: Packing; drape?: "skip" | "sheared"; }
 
 /** The most cells a structure may sample (existing frames plus the block lattice). */
 export const MAX_CELLS = 6_000_000;
@@ -63,18 +65,29 @@ export interface StructureResult {
   notes: string[];
 }
 
-function cellRange(g: Grid, min: Vec3, max: Vec3): [Vec3, Vec3] | null {
+function cellRange(g: Grid, min: Vec3, max: Vec3, lift: [number, number] = [0, 0]): [Vec3, Vec3] | null {
   const lo: Vec3 = [Infinity, Infinity, Infinity], hi: Vec3 = [-Infinity, -Infinity, -Infinity];
   for (let k = 0; k < 8; k++) {
     const p: Vec3 = [k & 1 ? max[0] : min[0], k & 2 ? max[1] : min[1], k & 4 ? max[2] : min[2]];
     const q = [0, 1, 2].map((r) => g.fromMap[r * 4] * p[0] + g.fromMap[r * 4 + 1] * p[1] + g.fromMap[r * 4 + 2] * p[2] + g.fromMap[r * 4 + 3]);
     for (let a = 0; a < 3; a++) { lo[a] = Math.min(lo[a], q[a]); hi[a] = Math.max(hi[a], q[a]); }
   }
+  // a draped block's cells sit up to its corner offsets above their grid place
+  lo[1] -= lift[1];
+  hi[1] -= lift[0];
   const a = lo.map((v) => Math.max(0, Math.floor(v))) as Vec3, b = hi.map((v, i) => Math.min(g.size[i] - 1, Math.ceil(v))) as Vec3;
   return a.every((v, i) => v <= b[i]) ? [a, b] : null;
 }
 
 const overlap = (g: Grid, min: Vec3, max: Vec3) => g.bounds.min.every((v, a) => v < max[a]) && g.bounds.max.every((v, a) => v > min[a]);
+
+/** The range of a draped block's corner offsets in its voxels ([0, 0] for any other frame). */
+const liftRange = (g: Grid): [number, number] => (g.frame.corners ? [Math.min(...g.frame.corners), Math.max(...g.frame.corners)] : [0, 0]);
+/** Whether a grid's box, its draped columns moved up by their offsets, overlaps [min, max). */
+const overlapSheared = (g: Grid, min: Vec3, max: Vec3) => {
+  const [l0, l1] = liftRange(g), sy = Math.hypot(g.toMap[1], g.toMap[5], g.toMap[9]);
+  return g.bounds.min.every((v, a) => (a === 1 ? v + l0 * sy : v) < max[a]) && g.bounds.max.every((v, a) => (a === 1 ? v + l1 * sy : v) > min[a]);
+};
 
 /** Splits `lo..hi` (inclusive lattice cells) into blocks whose words fit the runs limit. `at` is a cell's material + 1, or
  * 0 for none. */
@@ -171,8 +184,10 @@ export function applyPlan(store: EditorStore, plan: Plan, opt: ApplyOptions): St
   const vol = (max[0] - min[0]) * (max[1] - min[1]) * (max[2] - min[2]);
   if (vol > MAX_CELLS) throw new ToolError(`the structure's box is ${Math.round(vol)} cells (at most ${MAX_CELLS}): split it into parts`);
   const notes = [...plan.notes];
-  // A draped block (corner offsets: heightfield_drape) is not where its grid says, so structures leave it alone.
-  const near = grids(store).filter((g) => overlap(g, min, max) && !g.frame.corners);
+  // A draped block (corner offsets: heightfield_drape) is not where its grid says, so structures leave it alone, unless
+  // drape "sheared" asks to edit its cells where the game draws them.
+  const sheared = opt.drape === "sheared";
+  const near = grids(store).filter((g) => (g.frame.corners ? sheared && overlapSheared(g, min, max) : overlap(g, min, max)));
   const fillsExisting = opt.place !== "new";
   const stroke = new Map<number, Map<number, [number, number]>>();
   const perFrame = new Map<number, { id: number; name: string; changed: number }>();
@@ -180,12 +195,13 @@ export function applyPlan(store: EditorStore, plan: Plan, opt: ApplyOptions): St
 
   // 1. frames that exist
   for (const g of near) {
-    const range = cellRange(g, min, max);
+    const range = cellRange(g, min, max, liftRange(g));
     if (!range) continue;
     const [lo, hi] = range;
     let c = stroke.get(g.ref);
     for (let z = lo[2]; z <= hi[2]; z++) for (let x = lo[0]; x <= hi[0]; x++) for (let y = lo[1]; y <= hi[1]; y++) {
-      const p = [0, 1, 2].map((r) => g.toMap[r * 4] * (x + 0.5) + g.toMap[r * 4 + 1] * (y + 0.5) + g.toMap[r * 4 + 2] * (z + 0.5) + g.toMap[r * 4 + 3]);
+      const cy = y + 0.5 + (g.frame.corners ? cornerOffset(g.frame, x + 0.5, z + 0.5) : 0);
+      const p = [0, 1, 2].map((r) => g.toMap[r * 4] * (x + 0.5) + g.toMap[r * 4 + 1] * cy + g.toMap[r * 4 + 2] * (z + 0.5) + g.toMap[r * 4 + 3]);
       const i = (z * g.size[0] + x) * g.size[1] + y;
       const before = g.words[i];
       const after = resolve(plan.shapes, p[0], p[1], p[2], before, fillsExisting);
@@ -229,6 +245,7 @@ export function applyPlan(store: EditorStore, plan: Plan, opt: ApplyOptions): St
         let covered = false;
         for (const g of near) {
           const q = [0, 1, 2].map((a) => g.fromMap[a * 4] * px + g.fromMap[a * 4 + 1] * py + g.fromMap[a * 4 + 2] * pz + g.fromMap[a * 4 + 3]);
+          if (g.frame.corners) q[1] -= cornerOffset(g.frame, q[0], q[2]);
           const x = Math.floor(q[0]), y = Math.floor(q[1]), z = Math.floor(q[2]);
           if (x < 0 || y < 0 || z < 0 || x >= g.size[0] || y >= g.size[1] || z >= g.size[2]) continue;
           // auto: the frame's own pass handled this cell; new: a solid voxel of the frame is already there
