@@ -4,6 +4,7 @@
 
 #include <shlobj.h>
 
+#include <cmath>
 #include <cstdio>
 #include <memory>
 
@@ -14,6 +15,8 @@
 #include "oasis/standalone/game_lock.h"
 #include "oasis/standalone/lua_check.h"
 #include "oasis/standalone/mods_provider.h"
+#include "oasis/standalone/water_sim.h"
+#include "tools/json_read.h"
 
 namespace melange::oasis::standalone::levelprov {
 namespace {
@@ -48,6 +51,50 @@ void Handle(const Call& c, Result& r, void*) {
     for (const auto& b : rep.blobs) core::QueueBinary(b.ref, "erg", b.meta, b.bytes);
 }
 
+// level.script.water {text, turns?, ticksPerTurn?, turnsPerRound?, start?}: the water the script makes by turn
+// (water_sim.h); start is world units.
+void Water(const Call& c, Result& r, void*) {
+    json::Value p;
+    json::Error e;
+    if (!json::Parse(c.paramsJson, &p, &e) || !p.IsObject()) {
+        r.ok = false, r.code = -32602, r.message = "params must be an object";
+        return;
+    }
+    const json::Value* text = p.Get("text");
+    if (!text || !text->IsString()) {
+        r.ok = false, r.code = -32602, r.message = "text: the script, a string";
+        return;
+    }
+    WaterSim o;
+    struct Int {
+        const char* key;
+        int* out;
+        int lo, hi;
+    };
+    for (const Int& f : {Int{"turns", &o.turns, 1, 1000}, Int{"ticksPerTurn", &o.ticksPerTurn, 1, 100000}, Int{"turnsPerRound", &o.turnsPerRound, 1, 64}}) {
+        const json::Value* v = p.Get(f.key);
+        if (!v || v->IsNull()) continue;
+        if (!v->IsInteger() || v->number < f.lo || v->number > f.hi) {
+            r.ok = false, r.code = -32602, r.message = std::string(f.key) + " must be a whole number from " + std::to_string(f.lo) + " to " + std::to_string(f.hi);
+            return;
+        }
+        *f.out = static_cast<int>(v->number);
+    }
+    if (const json::Value* v = p.Get("start"); v && !v->IsNull()) {
+        if (!v->IsNumber() || !(std::fabs(v->number) <= 10000)) {
+            r.ok = false, r.code = -32602, r.message = "start must be a number within -10000 and 10000 (world units)";
+            return;
+        }
+        o.start = static_cast<float>(v->number);
+    }
+    std::string out, err;
+    if (!SimulateWater(text->string, o, &out, &err)) {
+        r.ok = false, r.code = -32000, r.message = "the script does not compile: " + err;
+        return;
+    }
+    r.json = std::move(out);
+}
+
 void HandleClosed(uint64_t connId, void*) {
     if (g_service) g_service->ClientClosed(connId);
 }
@@ -74,6 +121,7 @@ void Install(const std::wstring& gameDir, const std::wstring& projectsDir, const
 
     for (const auto& m : erg::service::Methods())
         AddMethod(m.c_str(), &Handle, nullptr, kRpcServerThread | (erg::service::Mutating(m) ? kRpcMutating : kRpcNone));
+    AddMethod("level.script.water", &Water, nullptr, kRpcServerThread);
     OnClientClosed(&HandleClosed, nullptr);
 }
 }  // namespace melange::oasis::standalone::levelprov

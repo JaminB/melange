@@ -16,6 +16,7 @@
 #include "erg/names.h"
 #include "erg/quickstart.h"
 #include "levels/engine.h"
+#include "levels/factory.h"
 #include "levels/test.h"
 #include "lua/sim/bridge_internal.h"
 #include "melange/levels.h"
@@ -207,11 +208,16 @@ void CleanRoomState(const Call&, Result& r, void*) {
 }
 
 // level.test.applied {}: what the last Test that started applied of what it asked for: its time of day (the frontend's
-// value cleared so the Test build's loads, or why the frontend's loaded instead).
+// value cleared so the Test build's loads, or why the frontend's loaded instead); the sim mods and level scripts
+// loaded in the match running now (`simMods`, load order; [] outside a match); and the level's mine factory as its
+// set-up applied it (`factory`: the settings asked, what kMineFactoryData held just before, the drop; null before one).
 void Applied(const Call&, Result& r, void*) {
     const levels::test::TodApplied t = levels::test::LastTod();
+    jsonmini::Arr mods;
+    for (const std::string& id : simbridge::LoadedMods()) mods.Str(id);
     r.json = jsonmini::Obj().Str("key", t.key)
                  .Raw("tod", jsonmini::Obj().Str("asked", t.asked).Bool("applied", t.applied).Str("why", t.why).End())
+                 .Raw("simMods", mods.End()).Raw("factory", levels::factory::ReportJson())
                  .End();
 }
 

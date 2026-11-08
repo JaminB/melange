@@ -28,6 +28,7 @@
 #include "erg/names.h"
 #include "levels/csh.h"
 #include "levels/engine.h"
+#include "levels/factory.h"
 #include "levels/gate.h"
 #include "levels/hidden.h"
 #include "levels/test.h"
@@ -435,15 +436,20 @@ void CheckLastPlayed() {
 // The level's mine factory settings (the chunk's "-- minefactory:" line) go into kMineFactoryData before the level
 // loads: the factory reads NumTurnsInactive when PlaceObjects creates it, and both fields at each turn start. They go
 // through the sim tweak store, which puts the game's values back when the match VM closes, so no later match (another
-// map, or a peer's) sees them. Every machine of a match runs the same accepted chunk.
+// map, or a peer's) sees them. Every machine of a match runs the same accepted chunk. The factory's own set-up writes
+// them again just before it reads them, and keepKnot keeps it at its knot when its drop hits no land
+// (levels/factory.cpp, armed here).
 void ApplyFactory(const std::string& stem, const std::string& chunk) {
+    factory::Disarm();
     erg::luagen::ChunkSpec spec;
     if (chunk.empty() || !erg::luagen::Parse(stem, chunk, &spec)) return;
     for (const auto& o : spec.objects) {
         if (o.type != erg::ObjectType::MineFactory) continue;
+        factory::Arm(stem, o.factory);
         // The chunk drops the mines bit of the match's GM.SchemeData.Objects (1 -> 0, 3 -> 2) before
         // lib_SetupMinesAndOildrums reads it, whatever the scheme: its 15 random mines are the only start mines it places.
         if (!o.factory.schemeMines) LOG_INFO("[levels] %s: the scheme's start mines are off (no random mines)", stem.c_str());
+        if (o.factory.keepKnot) LOG_INFO("[levels] %s: the mine factory stays at its knot if its drop hits no land", stem.c_str());
         if (!o.factory.Tweaks()) continue;
         if (!tweak::Restorable()) {
             LOG_WARN("[levels] %s: the mine factory settings are skipped (the sim tweak store is inactive)", stem.c_str());
@@ -461,6 +467,7 @@ void ApplyFactory(const std::string& stem, const std::string& chunk) {
 
 void OnStart(const LevelStart& s, void*) {
     tweak::RestoreOrphans();
+    factory::Disarm();
     if (s.source == Source::Vanilla) return;
     Level l;
     {

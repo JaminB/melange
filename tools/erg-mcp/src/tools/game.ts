@@ -70,18 +70,29 @@ async function cameraMod(s: Session, want?: string): Promise<string> {
 const has = async (s: Session, method: string) => (await s.ensure()).methods.includes(method);
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
-interface Cam { pos?: number[]; target?: number[]; fov?: number; preset?: "default" | "overview"; name?: string; }
+/** The overview preset's camera: azimuth (degrees clockwise from north, -z; default 180, from the south), elevation
+ * (degrees down; default 50), distance from the level's middle (map units; default 0.95 x the level's span). */
+interface Orbit { azimuth?: number; elevation?: number; distance?: number; }
+interface Cam extends Orbit { pos?: number[]; target?: number[]; fov?: number; preset?: "default" | "overview"; name?: string; }
 
-/** The level's own overview: above its frames' middle, looking down at 50 degrees from the south, far enough back for
- * the whole extent in a 60 degree view. World units. Needs the project open (its frames). */
-function overview(s: Session): { pos: number[]; target: number[]; fov: number } {
+const orbitProps = {
+  azimuth: { type: "number", minimum: -360, maximum: 360, description: "preset overview: the side it looks from, degrees clockwise from north (-z); default 180 (from the south)." },
+  elevation: { type: "number", minimum: 5, maximum: 89, description: "preset overview: degrees it looks down (default 50)." },
+  distance: { type: "number", minimum: 1, description: "preset overview: distance from the level's middle in `units` (default 0.95 x the level's span)." },
+} as const;
+
+/** The level's own overview: above its frames' middle, looking down at 50 degrees from the south (or `o`'s), far
+ * enough back for the whole extent in a 60 degree view. World units. Needs the project open (its frames). */
+function overview(s: Session, o: Orbit = {}, k = WORLD_PER_MAP): { pos: number[]; target: number[]; fov: number } {
   const gs = grids(s.store), e = extentXZ(gs);
   if (!e) throw new ToolError("preset overview needs the level's frames: open_project the level being tested");
   let top = -Infinity, bottom = Infinity;
   for (const g of gs) { top = Math.max(top, g.bounds.max[1]); bottom = Math.min(bottom, g.bounds.min[1]); }
   const cx = (e.x0 + e.x1) / 2, cz = (e.z0 + e.z1) / 2, cy = Math.max(0, (Math.min(top, 200) + Math.max(bottom, -50)) / 3);
-  const span = Math.max(e.x1 - e.x0, e.z1 - e.z0), d = span * 0.95, el = (50 * Math.PI) / 180;
-  return { pos: [cx * WORLD_PER_MAP, (cy + d * Math.sin(el)) * WORLD_PER_MAP, (cz + d * Math.cos(el)) * WORLD_PER_MAP], target: [cx * WORLD_PER_MAP, cy * WORLD_PER_MAP, cz * WORLD_PER_MAP], fov: 60 };
+  const span = Math.max(e.x1 - e.x0, e.z1 - e.z0), d = o.distance !== undefined ? (o.distance * k) / WORLD_PER_MAP : span * 0.95;
+  const el = ((o.elevation ?? 50) * Math.PI) / 180, az = ((o.azimuth ?? 180) * Math.PI) / 180;
+  const h = d * Math.cos(el);
+  return { pos: [(cx + h * Math.sin(az)) * WORLD_PER_MAP, (cy + d * Math.sin(el)) * WORLD_PER_MAP, (cz - h * Math.cos(az)) * WORLD_PER_MAP], target: [cx * WORLD_PER_MAP, cy * WORLD_PER_MAP, cz * WORLD_PER_MAP], fov: 60 };
 }
 
 /** Points the drawn camera (world units) for `frames`, through render.camera when the game has it, else a client mod's
@@ -190,18 +201,21 @@ const FACTORY_GONE = "the factory entity is not in the match: it exploded at loa
 
 /** The factory entity's own state, read from its object (entity.inspect, [Oasis] RawInspect): where it settled (+0x2c,
  * world units: the point its drop from the knot took), whether it has exploded (+0x48) or is about to (+0x50, hit by an
- * explosion) and its fire state (+0x8c: 0 idle, 1-4 firing). Null when the game has no raw inspect. */
-async function factoryState(s: Session, handle: number): Promise<{ pos: { x: number; y: number; z: number }; exploded: boolean; hit: boolean; fireState: number } | null> {
+ * explosion), its fire state (+0x8c: 0 idle, 1-4 firing), the idle countdown (+0x88: set from NumTurnsInactive at its
+ * set-up and after each fire, decremented by each GameLogic.StartMineFactory, which fires at 0 or under) and the mines
+ * of the fire in progress (+0x84). Null when the game has no raw inspect. */
+async function factoryState(s: Session, handle: number): Promise<{ pos: { x: number; y: number; z: number }; exploded: boolean; hit: boolean; fireState: number; countdown: number; toFire: number } | null> {
   if (!(await has(s, "entity.inspect"))) return null;
   const r = await (await s.client()).call<{ hex?: string | null }>("entity.inspect", { handle, len: 0x90 }, 15000).catch(() => null);
   const hex = r?.hex;
   if (!hex || hex.length < 0x90 * 2) return null;
   const at = (off: number, n: number) => hex.slice(off * 2, (off + n) * 2);
-  if (/\?/.test(at(0x2c, 12) + at(0x48, 12) + at(0x8c, 4))) return null;
+  if (/\?/.test(at(0x2c, 12) + at(0x48, 12) + at(0x84, 12))) return null;
   const bytes = new Uint8Array(0x90);
   for (let i = 0; i < 0x90; i++) bytes[i] = parseInt(hex.slice(i * 2, i * 2 + 2), 16) || 0;
   const v = new DataView(bytes.buffer);
-  return { pos: { x: v.getFloat32(0x2c, true), y: v.getFloat32(0x30, true), z: v.getFloat32(0x34, true) }, exploded: bytes[0x48] !== 0, hit: bytes[0x50] !== 0, fireState: v.getInt32(0x8c, true) };
+  return { pos: { x: v.getFloat32(0x2c, true), y: v.getFloat32(0x30, true), z: v.getFloat32(0x34, true) }, exploded: bytes[0x48] !== 0, hit: bytes[0x50] !== 0, fireState: v.getInt32(0x8c, true),
+    countdown: v.getInt32(0x88, true), toFire: v.getInt32(0x84, true) };
 }
 
 /** The bus messages of the mine factory and mines this game registers (names with "Mine" in them). */
@@ -256,7 +270,8 @@ export const tools: Tool[] = [
       type: "object", additionalProperties: false,
       properties: {
         pos: vec3("Eye [x, y, z]."), target: vec3("Point looked at [x, y, z]."), units,
-        preset: { type: "string", enum: ["default", "overview"], description: "default: give the camera back to the game (its own turn camera); overview: the whole level (the open project's frames) from the south." },
+        preset: { type: "string", enum: ["default", "overview"], description: "default: give the camera back to the game (its own turn camera); overview: the whole level (the open project's frames), from the south 50 degrees down unless azimuth, elevation or distance say otherwise." },
+        ...orbitProps,
         fov: { type: "number", minimum: 5, maximum: 150, description: "Vertical field of view in degrees (default the game's)." },
         seconds: { type: "number", minimum: 0.1, maximum: 10, description: "How long it holds (default 5; it ends by itself after that). See hold." },
         hold: { type: "boolean", description: "Hold the pose until released: erg-mcp sets it again every 4 s (a render.camera override lasts at most 10 s) until game_camera {clear: true} (or preset default, or a pose without hold), and game_shots put it back after their own poses. game_state answers whether a camera is held. It stops by itself when the game refuses it twice (the match ended)." },
@@ -268,7 +283,7 @@ export const tools: Tool[] = [
         name: { type: "string", description: "shot: the PNG's name in Documents\\Melange\\shots (default erg_shot)." },
       },
     },
-    async handler(s, a: { pos?: number[]; target?: number[]; units?: "map" | "world"; preset?: "default" | "overview"; fov?: number; seconds?: number; clear?: boolean; mod?: string;
+    async handler(s, a: Orbit & { pos?: number[]; target?: number[]; units?: "map" | "world"; preset?: "default" | "overview"; fov?: number; seconds?: number; clear?: boolean; mod?: string;
       shot?: boolean; clean?: boolean; width?: number; name?: string; hold?: boolean }) {
       const k = a.units === "world" ? 1 : WORLD_PER_MAP;
       const frames = a.hold ? 600 : Math.max(1, Math.min(600, Math.round((a.seconds ?? 5) * 60)));
@@ -280,7 +295,8 @@ export const tools: Tool[] = [
         const c = await clearCamera(s, a.mod);
         out = { ...c, preset: "default", ...(was ? { released: { heldMs: Date.now() - was.since, refreshes: was.refreshes } } : {}), note: "the game's own camera draws again" };
       } else {
-        const cam = a.preset === "overview" ? overview(s) : (() => {
+        if (a.preset !== "overview" && (a.azimuth !== undefined || a.elevation !== undefined || a.distance !== undefined)) throw new ToolError("azimuth, elevation and distance are for preset overview");
+        const cam = a.preset === "overview" ? overview(s, a, k) : (() => {
           if (!a.pos || !a.target) throw new ToolError("give pos and target, a preset, or clear: true");
           if (![...a.pos, ...a.target].every(Number.isFinite)) throw new ToolError("pos and target are finite numbers");
           return { pos: a.pos.map((x) => x * k), target: a.target.map((x) => x * k), fov: a.fov };
@@ -308,7 +324,7 @@ export const tools: Tool[] = [
       properties: {
         cams: { type: "array", minItems: 1, maxItems: 24, items: { type: "object", additionalProperties: false, properties: {
           pos: vec3("Eye [x, y, z]."), target: vec3("Point looked at [x, y, z]."), fov: { type: "number", minimum: 5, maximum: 150 },
-          preset: { type: "string", enum: ["default", "overview"] }, name: { type: "string", description: "The PNG's name (default <prefix>_<n>)." } } } },
+          preset: { type: "string", enum: ["default", "overview"] }, ...orbitProps, name: { type: "string", description: "The PNG's name (default <prefix>_<n>)." } } } },
         units,
         prefix: { type: "string", description: "Names for shots without one: <prefix>_<n> (default erg_shots)." },
         clean: { type: "boolean", description: "Hide the mods' wum.draw primitives in the shots (default true)." },
@@ -334,7 +350,7 @@ export const tools: Tool[] = [
             if (c.pos || c.target) throw new ToolError(`cams[${i}]: preset default takes no pos or target`);
             await clearCamera(s);
           } else {
-            const cam = c.preset === "overview" ? overview(s) : (() => {
+            const cam = c.preset === "overview" ? overview(s, c, k) : (() => {
               if (!c.pos || !c.target) throw new ToolError(`cams[${i}]: give pos and target, or a preset`);
               return { pos: c.pos.map((x) => x * k), target: c.target.map((x) => x * k), fov: c.fov };
             })();
@@ -367,10 +383,16 @@ export const tools: Tool[] = [
         watchSeconds: { type: "number", minimum: 0, maximum: 300, description: "Watch this long for new mines and mine messages (default 0, or 120 with untilFire)." },
         untilFire: { type: "boolean", description: "End the watch 3 s after the factory's next MineFactory.FireEnd (its mines are out), instead of at watchSeconds." },
         units: { type: "string", enum: ["map", "world"], description: "Units of the positions (default map)." },
-        alive: { type: "boolean", description: "Also answer `factoryEntity`: whether the game's MineFactoryLogicEntity exists in the match now, where it is, and how far from the project's knot (a factory that fell elsewhere or exploded at load shows here)." },
+        alive: { type: "boolean", description: "Also answer `factoryEntity`: whether the game's MineFactoryLogicEntity exists in the match now, where it is, and how far from the project's knot (a factory that fell elsewhere or exploded at load shows here), and its countdown: idleTurnsLeft (the turn starts before it checks again; at 0 or under the next GameLogic.StartMineFactory fires when fewer mines than its target are in the level) and minesToFire." },
+        trajectories: { type: "boolean", description: "With watchSeconds: answer each mine that appeared with its path, sampled every quarter second (ms, position in `units`; at most 80 samples a mine). The position is the one entities.list reads from the mine's payload, which the game moves when the mine comes to rest: in a Test on 2026-11-08 a fired mine read its launch point (72 map units up) for about 2 s and then where it landed, so the path gives the launch and the landing, not the arc; shotsOnFire shows the flight." },
+        shotsOnFire: { type: "object", additionalProperties: false, description: "With watchSeconds: when the factory's MineFactory.Fire arrives, point the camera (render.camera) at the factory and take `count` shots (render.shot) `everyMs` apart, so the mines are seen in flight; the camera is given back after. Default pose: 60 map units south of the factory knot and 30 over it, looking at 10 over it; or pos and target (in `units`).",
+          properties: { count: { type: "integer", minimum: 1, maximum: 12, description: "Shots (default 4)." }, everyMs: { type: "integer", minimum: 100, maximum: 5000, description: "Between shots (default 500)." },
+            prefix: { type: "string", description: "PNG names <prefix>_<n> in Documents\Melange\shots (default erg_minefire)." }, pos: vec3("Eye [x, y, z]."), target: vec3("Point looked at [x, y, z]."),
+            width: { type: "integer", minimum: 64, maximum: 8192, description: "Picture width (default 960)." }, images: { type: "boolean", description: "Answer the pictures as image content (default true)." } } },
       },
     },
-    async handler(s, a: { watchSeconds?: number; untilFire?: boolean; units?: "map" | "world"; alive?: boolean }) {
+    async handler(s, a: { watchSeconds?: number; untilFire?: boolean; units?: "map" | "world"; alive?: boolean; trajectories?: boolean;
+      shotsOnFire?: { count?: number; everyMs?: number; prefix?: string; pos?: number[]; target?: number[]; width?: number; images?: boolean } }) {
       if (!(await has(s, "entities.list"))) throw new ToolError("this game has no entities.list (Oasis's game state readers): game_mines needs the game running a Test");
       const k = a.units === "world" ? 1 : 1 / WORLD_PER_MAP;
       const out = (p: { x: number; y: number; z: number } | null) => (p ? [p.x, p.y, p.z].map((v) => Math.round(v * k * 100) / 100) : null);
@@ -385,7 +407,9 @@ export const tools: Tool[] = [
       const dist = (p: { x: number; y: number; z: number } | null) => (p && factory ? Math.round(Math.hypot(p.x - factory[0], p.z - factory[2]) * k * 100) / 100 : undefined);
       const t0 = Date.now(), before = await liveMines(s), seen = new Map(before.map((m) => [m.handle, m]));
       const watch = (a.watchSeconds ?? (a.untilFire ? 120 : 0)) * 1000;
-      let firedAt: number | null = null;
+      let firedAt: number | null = null, fireStart: number | null = null;
+      if ((a.trajectories || a.shotsOnFire) && watch <= 0) throw new ToolError("trajectories and shotsOnFire watch the match: give watchSeconds (or untilFire)");
+      if (a.shotsOnFire && !((await has(s, "render.camera")) && (await has(s, "render.shot")))) throw new ToolError("shotsOnFire needs the game's render.camera and render.shot");
       const events: { name: string; ms: number; d?: unknown }[] = [];
       const counts: Record<string, number> = {};
       let unsub: (() => void) | undefined, names: string[] = [];
@@ -394,17 +418,45 @@ export const tools: Tool[] = [
         if (names.length) unsub = (await s.client()).subscribe<{ name: string; d?: unknown }>("bus", { names, path: "post", decode: true }, (m) => {
           counts[m.name] = (counts[m.name] ?? 0) + 1;
           if (m.name === "MineFactory.FireEnd" && firedAt === null) firedAt = Date.now();
+          if (m.name === "MineFactory.Fire" && fireStart === null) fireStart = Date.now();
           if (events.length < 200) events.push({ name: m.name, ms: Date.now() - t0, ...(m.d !== undefined ? { d: m.d } : {}) });
         });
       }
       if (a.untilFire && !names.includes("MineFactory.FireEnd")) throw new ToolError("untilFire needs the bus's MineFactory.FireEnd, which this game does not list (bus.names)");
+      // shots on the fire: the pose (world units) and what was taken
+      const sf = a.shotsOnFire, shots: object[] = [], pictures: Content[] = [];
+      let posed = false;
+      const firePose = () => {
+        const kk = a.units === "world" ? 1 : WORLD_PER_MAP;
+        if (sf?.pos && sf.target) return { pos: sf.pos.map((v) => v * kk), target: sf.target.map((v) => v * kk), fov: 60 };
+        if (sf?.pos || sf?.target) throw new ToolError("shotsOnFire: give both pos and target, or neither");
+        if (!factory) return overview(s);
+        return { pos: [factory[0], factory[1] + 30 * WORLD_PER_MAP, factory[2] + 60 * WORLD_PER_MAP], target: [factory[0], factory[1] + 10 * WORLD_PER_MAP, factory[2]], fov: 60 };
+      };
+      const pose = sf ? firePose() : null;
+      const tracks = new Map<number, number[][]>();
       try {
-        const appeared: { handle: number; type: string; ms: number; at: number[] | null; fromFactory?: number }[] = [];
-        while (Date.now() - t0 < watch && !(a.untilFire && firedAt !== null && Date.now() - firedAt > 3000)) {
+        const appeared: { handle: number; type: string; ms: number; at: number[] | null; fromFactory?: number; path?: number[][] }[] = [];
+        while (Date.now() - t0 < watch && !(a.untilFire && firedAt !== null && Date.now() - firedAt > 3000 && (!sf || shots.length >= (sf.count ?? 4)))) {
           await sleep(250);
-          for (const m of await liveMines(s).catch(() => [] as Entity[]))
-            if (!seen.has(m.handle)) { seen.set(m.handle, m); appeared.push({ handle: m.handle, type: m.type, ms: Date.now() - t0, at: out(m.pos), fromFactory: dist(m.pos) }); }
+          for (const m of await liveMines(s).catch(() => [] as Entity[])) {
+            if (!seen.has(m.handle)) { seen.set(m.handle, m); appeared.push({ handle: m.handle, type: m.type, ms: Date.now() - t0, at: out(m.pos), fromFactory: dist(m.pos) }); tracks.set(m.handle, []); }
+            const tr = a.trajectories ? tracks.get(m.handle) : undefined;
+            if (tr && tr.length < 80 && m.pos) tr.push([Date.now() - t0, ...out(m.pos)!]);
+          }
+          if (sf && pose && fireStart !== null && shots.length < (sf.count ?? 4) && Date.now() >= fireStart + shots.length * (sf.everyMs ?? 500)) {
+            stopHold();
+            const fr = (await setCamera(s, pose, 600)).frame;
+            posed = true;
+            const name = shotName(sf.prefix ?? "erg_minefire", shots.length + 1);
+            const p = await shot(s, name, { width: sf.width ?? 960, clean: true, minFrame: fr !== undefined ? fr + 2 : undefined });
+            shots.push({ name, path: p.path, ms: Date.now() - t0, sinceFireMs: Date.now() - fireStart, minesSeen: tracks.size });
+            if (sf.images !== false) pictures.push(image(p.png));
+          }
         }
+        if (a.trajectories) for (const ap of appeared) ap.path = tracks.get(ap.handle) ?? [];
+        if (posed) await clearCamera(s).catch(() => undefined);
+        posed = false;
         const now = watch > 0 ? await liveMines(s) : before;
         let factoryEntity: object | undefined;
         if (a.alive) {
@@ -415,19 +467,23 @@ export const tools: Tool[] = [
           const far = st && factory && Math.hypot(st.pos.x - factory[0], st.pos.z - factory[2]) > 60;
           factoryEntity = logic
             ? { alive: true, entities: fe.map((e) => ({ handle: e.handle, type: e.type })),
-                ...(st ? { at: out(st.pos), fromKnot: off(st.pos), exploded: st.exploded, hitByExplosion: st.hit, fireState: st.fireState } : { note: "the game has no entity.inspect (or [Oasis] RawInspect=0): where it settled is not known" }),
+                ...(st ? { at: out(st.pos), fromKnot: off(st.pos), exploded: st.exploded, hitByExplosion: st.hit, fireState: st.fireState, idleTurnsLeft: st.countdown, minesToFire: st.toFire }
+                  : { note: "the game has no entity.inspect (or [Oasis] RawInspect=0): where it settled is not known" }),
                 ...(far ? { warning: "the factory settled far from its knot: its drop from the knot hit no land the sweep sees (a draped skin) and it took a stale point" } : {}) }
             : { alive: false, why: factory ? FACTORY_GONE : "no factory entity in the match (and no project with a minefactory knot is open)" };
         }
-        return {
+        const answer = {
           units: a.units ?? "map", factory: factory ? { at: out({ x: factory[0], y: factory[1], z: factory[2] }), note: "the open project's minefactory knot" } : null,
           ...(a.untilFire ? { fired: firedAt !== null, ...(firedAt !== null ? { fireEndMs: firedAt - t0 } : {}) } : {}),
           ...(factoryEntity ? { factoryEntity } : {}),
           minesBefore: before.length, mines: now.map((m) => ({ handle: m.handle, type: m.type, at: out(m.pos), fromFactory: dist(m.pos) })),
           ...(watch > 0 ? { watchedMs: Date.now() - t0, appeared, messages: { watched: names, counts, events } } : {}),
+          ...(sf ? { shotsOnFire: fireStart === null ? { taken: 0, note: "no MineFactory.Fire in the watch" } : { taken: shots.length, shots } } : {}),
         };
+        return pictures.length ? { content: [...pictures, { type: "text", text: JSON.stringify(answer, null, 1) }] } : answer;
       } finally {
         unsub?.();
+        if (posed) await clearCamera(s).catch(() => undefined);
       }
     },
   },

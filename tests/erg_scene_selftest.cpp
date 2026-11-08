@@ -1019,6 +1019,27 @@ void TestFactorySettings() {
         const std::string m = Mutate(tuned, from, to);
         Expect(m != tuned && !luagen::Upgrade(stem, m, &run, &why), std::string("a hand-edited settings line is refused: ") + to);
     }
+    // keepKnot: in the patch (written only when set), and on the settings line, alone or after the others
+    {
+        erg::Patch kp;
+        const std::string withKeep = Mutate(text, "\"schemeMines\":false}", "\"schemeMines\":false,\"keepKnot\":true}");
+        Expect(erg::ParsePatch(withKeep, &kp, &err) && kp.objects.back().factory.keepKnot && erg::WritePatch(kp) == withKeep,
+               "keepKnot round-trips in the patch: " + err);
+        Expect(!erg::ParsePatch(Mutate(text, "\"schemeMines\":false}", "\"schemeMines\":false,\"keepKnot\":1}"), &kp, &err),
+               "keepKnot must be a boolean");
+        spec.objects[0].factory = {};
+        spec.objects[0].factory.keepKnot = true;
+        const std::string keep = luagen::Text(stem, spec);
+        luagen::ChunkSpec kparsed;
+        Expect(keep.find("\n-- minefactory: keepKnot=1\n") != std::string::npos && luagen::IsGenerated(stem, keep, &why) &&
+                   luagen::Parse(stem, keep, &kparsed) && kparsed.objects[0].factory.keepKnot && !kparsed.objects[0].factory.Tweaks(),
+               "keepKnot alone writes the settings line and parses back: " + why);
+        spec.objects[0].factory.activation = 9;
+        const std::string both = luagen::Text(stem, spec);
+        Expect(both.find("\n-- minefactory: activation=9 keepKnot=1\n") != std::string::npos && luagen::IsGenerated(stem, both, &why),
+               "keepKnot follows the other settings: " + why);
+        Expect(!luagen::Upgrade(stem, Mutate(keep, "keepKnot=1", "keepKnot=2"), &run, &why), "keepKnot is 1 or absent");
+    }
     luagen::ChunkSpec noFactory;
     noFactory.placeObjects = true;
     std::string orphan2 = luagen::Text(stem, noFactory);

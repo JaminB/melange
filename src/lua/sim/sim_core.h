@@ -34,6 +34,13 @@ bool IsLevelMod(int mod);
 void TurnStarted();                                      // GameLogic.Turn.Started: sim.turnStarted at the next tick
 // A clean-room Test: matches on level `key` load its level scripts but no sim mod (entry.sim); "" ends it.
 void SuppressModsOn(const std::string& key);
+// The engine side of wum.level.mine and wum.level.fireFactory (levels/factory.cpp, the game's build only; without it
+// both answer nil, "unavailable"). Each returns nullptr, or why it did nothing.
+struct LevelEngine {
+    const char* (*mine)(const float pos[3], const float vel[3]) = nullptr;   // world units; a mine made as the factory's
+    const char* (*armFactory)() = nullptr;   // the factory's idle countdown to 0: it fires at the next StartMineFactory
+};
+void SetLevelEngine(const LevelEngine& e);
 
 // Lifecycle, in engine order.
 void ContextCreated(lua50::State* L);

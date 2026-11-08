@@ -58,7 +58,10 @@ export interface StructureResult {
   dryRun: boolean;
   voxels: { added: number; removed: number; repainted: number; changed: number };
   frames: { id: number; name: string; changed: number }[];
-  newBlocks: { id: number; name: string; size: Vec3; centre: { map: Vec3; world: Vec3 }; voxels: number }[];
+  newBlocks: { id: number; name: string; size: Vec3; centre: { map: Vec3; world: Vec3 }; voxels: number; cells: number; scale: number }[];
+  /** The game's voxel cells (X x Y x Z of each frame, empty or not) this structure's new blocks take, and what the
+   * level's frames hold and have left after it (65 535 at most). */
+  cells: { newBlocks: number; level: number; free: number; max: number };
   outsideFrames: number;
   bounds: { map: { min: Vec3; max: Vec3 }; world: { min: Vec3; max: Vec3 } };
   usage: { newBlocks: string; patchBytes: string; worstRuns: string; voxelCells: string };
@@ -307,8 +310,10 @@ export function applyPlan(store: EditorStore, plan: Plan, opt: ApplyOptions): St
     newBlocks: blocks.map((b) => {
       const c = scene ? store.frames.worldOf(scene.id) : null;
       const m: Vec3 = c ? [c[3] + b.frame.pos[0], c[7] + b.frame.pos[1], c[11] + b.frame.pos[2]] : b.frame.pos;
-      return { id: b.frame.id, name: b.frame.name, size: b.frame.size, centre: { map: tidy(m), world: tidy(m.map((v) => v * 20) as Vec3) }, voxels: b.voxels };
+      return { id: b.frame.id, name: b.frame.name, size: b.frame.size, centre: { map: tidy(m), world: tidy(m.map((v) => v * 20) as Vec3) }, voxels: b.voxels,
+        cells: b.frame.size[0] * b.frame.size[1] * b.frame.size[2], scale: b.frame.scale?.[0] ?? 1 };
     }),
+    cells: { newBlocks: blockCells, level: u.voxelCells.used, free: u.voxelCells.max - u.voxelCells.used, max: u.voxelCells.max },
     outsideFrames: opt.place === "existing" ? 0 : outside,
     bounds: { map: { min: tidy(min), max: tidy(max) }, world: boxToWorld({ min, max }) },
     usage: {

@@ -10,7 +10,8 @@
 // undraped block (a castle's, or a 4 x 1 x 4 pad on the skin) at 5 places 30-66 map units from the level's centre, but
 // not on pads or a 6 x 4 x 6 block inside the crater (within about 20 of the centre, 5 tries), for reasons not found.
 // Hence: an error for a draped skin or no land in reach, a warning for water over the landing, and always a Test with
-// game_mines {alive: true} to confirm. Map units throughout.
+// game_mines {alive: true} to confirm. A factory with keepKnot (Melange 0.13+, levels/factory.cpp) stays at its knot when
+// the drop hits nothing, so for it those two are warnings and the water is checked against the knot. Map units throughout.
 import type { EditorStore } from "../core";
 import { markers, spansAt, waterMap } from "./inspect-field";
 import { grids } from "./voxel";
@@ -32,24 +33,32 @@ export interface FactoryCheck {
 export function checkFactory(store: EditorStore, len: (map: number) => string, waterTop?: number | null): FactoryCheck | null {
   const f = markers(store).find((m) => m.kind === "minefactory");
   if (!f) return null;
+  const spec = store.scene.objects?.find((o) => o.type === "minefactory");
+  const keep = !!(spec && spec.type === "minefactory" && spec.factory?.keepKnot);
   const gs = grids(store), [x, y, z] = f.pos;
   const knot: [number, number, number] = [x, y, z];
   const out: FactoryCheck = { knot, lands: null, problems: [], warnings: [] };
+  const water = waterMap(store);
+  const top = Math.max(water ?? -Infinity, waterTop ?? -Infinity);
   // the drop starts at the knot: the first solid top at or under it (a knot inside the ground lands on the top of its stretch)
   const sp = spansAt(gs, x, z).find((s) => s.bottom <= y + 1e-6);
   if (!sp || y - Math.min(sp.top, y) > FACTORY_DROP) {
-    out.problems.push(`no voxel ground within ${len(FACTORY_DROP)} under the mine factory's knot (the game's drop reaches 1000 world units): it settles at a stale point of the match and is lost at load`);
+    if (!keep) {
+      out.problems.push(`no voxel ground within ${len(FACTORY_DROP)} under the mine factory's knot (the game's drop reaches 1000 world units): it settles at a stale point of the match and is lost at load (keepKnot keeps it at its knot)`);
+      return out;
+    }
+    out.warnings.push(`no voxel ground within ${len(FACTORY_DROP)} under the mine factory's knot: with keepKnot it stays at its knot, in the air`);
+    if (Number.isFinite(top) && top > y + FACTORY_WATER) out.problems.push(`the water (${len(top)}) gets more than ${len(FACTORY_WATER)} over the factory's knot (${len(y)}): it explodes`);
     return out;
   }
   const landY = Math.min(sp.top, y), g = gs.find((q) => q.id === sp.frame), draped = !!g?.frame.corners;
   out.lands = { y: landY, frame: sp.frame, draped };
   if (sp.top > y + 1e-6) out.warnings.push(`the mine factory's knot is inside solid ground (its top is ${len(sp.top - y)} higher): put it on the surface`);
-  if (draped) out.problems.push("the mine factory's knot is over a draped skin (heightfield_drape's corner offsets): the game's drop never landed on one in the Tests (it settles at a stale point, here under the sea, and explodes at load): put it on an undraped block (a castle, keep or add_block pad) and Test with game_mines {alive: true}");
-  const water = waterMap(store);
-  const top = Math.max(water ?? -Infinity, waterTop ?? -Infinity);
+  if (draped && !keep) out.problems.push("the mine factory's knot is over a draped skin (heightfield_drape's corner offsets): the game's drop never landed on one in the Tests (it settles at a stale point, here under the sea, and explodes at load): set keepKnot (the factory then stays at its knot when its drop misses; place it with snap: \"surface\" so the knot is on the skin), or put it on an undraped block (a castle, keep or add_block pad), and Test with game_mines {alive: true}");
+  if (draped && keep) out.warnings.push("the mine factory's knot is over a draped skin, where the game's drop has missed: with keepKnot it stays at its knot, so keep the knot on the skin's surface (snap: \"surface\")");
   if (Number.isFinite(top) && top > landY + FACTORY_WATER)
     out.problems.push(`the water (${len(top)}${waterTop !== undefined && waterTop !== null && waterTop >= (water ?? -Infinity) ? ", the script's highest" : ""}) gets more than ${len(FACTORY_WATER)} over the ground the factory lands on (${len(landY)}): it explodes${water !== null && water > landY + FACTORY_WATER ? " at load" : " when the water gets there"}`);
-  if (!draped) out.warnings.push("the factory's drop is the game's own sweep, and on Caldera it also missed undraped blocks inside the crater near the level's centre: Test and call game_mines {alive: true} (it answers whether the factory exists and where it settled)");
+  if (!draped) out.warnings.push(`the factory's drop is the game's own sweep, and on Caldera it also missed undraped blocks inside the crater near the level's centre${keep ? " (keepKnot keeps it at its knot then)" : ""}: Test and call game_mines {alive: true} (it answers whether the factory exists and where it settled)`);
   return out;
 }
 

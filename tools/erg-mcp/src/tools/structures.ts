@@ -29,6 +29,7 @@ const common: Record<string, Schema> = {
   blockScale: { type: "number", minimum: 0.5, maximum: 4, description: "Map units per voxel of the new blocks (default 1): a larger one covers the same structure with fewer of the game's 65535 cells, in coarser voxels (detail under a voxel is lost). Use place \"new\" so the whole structure is on that lattice." },
   drape: { type: "string", enum: ["skip", "sheared"], description: "Draped blocks (heightfield_drape's skin, corner offsets): skip (default) leaves them alone; sheared edits their cells where the game draws them (each column moved up by its corner offsets), so a ramp cut, tunnel or crater cuts through the skin too. Fills into a skin follow its shear, a voxel at a time." },
   packing: { type: "string", enum: ["tiles", "parts"], description: "How new blocks are cut. tiles (default): tiles of up to 31 voxels a side, each trimmed to what it holds. parts: a block per part (each wall, tower, the keep), merged where that costs few cells, so the air between parts (a courtyard) is in no block: fewer cells, more blocks." },
+  costAt: { type: "array", items: { type: "number", minimum: 0.5, maximum: 4 }, minItems: 1, maxItems: 8, description: "Also plan the same structure all in new blocks (place \"new\") at each of these blockScales, changing nothing, and answer each one's blocks and the game's cells (costAt: [{blockScale, blocks, cells, fits}]), to choose a scale before building: a castle at 1.5 costs about 30 % of its cells at 1." },
 };
 const foundation: Schema = { type: "integer", minimum: 0, maximum: 32, description: "A whole number of the structure's voxels (of `scale`, so 2 at scale 1.5 is 3 map units) of solid filled below the base (y) so the structure reaches the ground. Default 0. A castle's fills its whole footprint (a 24 x 20 castle with foundation 4: about 2000-3000 cells); seat fills under the walls and towers only." };
 const rotation: Schema = { type: "number", description: "Yaw in degrees about the structure's centre (counter-clockwise seen from above; 0 = sides parallel to the map axes). Default 0." };
@@ -65,7 +66,7 @@ function settle(s: Session, a: { at: Vec3; ground?: "max" | "mean" | "min"; sink
     ...(a.sink ? { sink: a.sink } : {}), y: out(y), note: tops.length < (nx + 1) * (nz + 1) ? "part of the footprint has no ground under it" : undefined } };
 }
 
-interface Common { material?: number; place?: "auto" | "existing" | "new"; dryRun?: boolean; units?: "map" | "world"; blockScale?: number; packing?: Packing; drape?: "skip" | "sheared"; }
+interface Common { material?: number; place?: "auto" | "existing" | "new"; dryRun?: boolean; units?: "map" | "world"; blockScale?: number; packing?: Packing; drape?: "skip" | "sheared"; costAt?: number[]; }
 
 const finite = (v: number[], what: string) => { if (!v.every(Number.isFinite)) throw new ToolError(`${what} must be finite numbers`); };
 
@@ -76,8 +77,17 @@ function run(s: Session, a: Common, anchor: Vec3, structure: string, make: (k: n
   const at: Vec3 = [anchor[0] * k, anchor[1] * k, anchor[2] * k];
   const mat = a.material ?? dominantMaterial(store, at) ?? 1;
   const plan = make(k, mat, (v, d) => (v === undefined ? d : v * k));
+  // each scale's cost first, while nothing has changed
+  const costAt = a.costAt?.map((bs) => {
+    try {
+      const d = applyPlan(store, plan, { place: "new", dryRun: true, blockScale: bs, packing: a.packing, drape: a.drape });
+      return { blockScale: bs, blocks: d.newBlocks.length, cells: d.cells.newBlocks, fits: true };
+    } catch (e) {
+      return { blockScale: bs, fits: false, why: e instanceof Error ? e.message : String(e) };
+    }
+  });
   const r = applyPlan(store, plan, { place: a.place ?? "auto", dryRun: !!a.dryRun, blockScale: a.blockScale, packing: a.packing, drape: a.drape });
-  return { structure, material: mat, ...(a.material === undefined ? { materialNote: "chosen from the voxels near the structure; pass material to set it" } : {}), ...r,
+  return { structure, material: mat, ...(a.material === undefined ? { materialNote: "chosen from the voxels near the structure; pass material to set it" } : {}), ...r, ...(costAt ? { costAt } : {}),
     structureInfo: plan.info, undo: r.dryRun || !r.voxels.changed ? undefined : "undo reverts the whole structure in one step; save writes it" };
 }
 

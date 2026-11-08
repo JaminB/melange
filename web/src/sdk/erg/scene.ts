@@ -58,8 +58,10 @@ export type CrateSpec =
 export interface TriggerSpec { index: number; radius?: number; teamCollect?: number; teamDestroy?: number; hitpoints?: number; wormCollect?: boolean; }
 /** The mine factory's settings (all optional; absent = the game's kMineFactoryData). `activation`: it fires when fewer
  * than this many mines are in the level (0-255, game 20); `inactiveTurns`: turn starts it waits after it is placed
- * and after each fire (0-255, game 7); `schemeMines: false`: the scheme's 15 random start mines are not placed. */
-export interface FactorySpec { activation?: number; inactiveTurns?: number; schemeMines?: boolean; }
+ * and after each fire (0-255, game 7); `schemeMines: false`: the scheme's 15 random start mines are not placed;
+ * `keepKnot: true`: when the factory's drop from its knot hits no land, it stays at its knot instead of the match's
+ * stale sweep point (Melange 0.13+; an older game ignores it). */
+export interface FactorySpec { activation?: number; inactiveTurns?: number; schemeMines?: boolean; keepKnot?: boolean; }
 export type ObjectSpec =
   | { knot: string; type: "crate"; crate: CrateSpec }
   | { knot: string; type: "telepad"; group: number }
@@ -300,10 +302,11 @@ function checkObject(c: Checker, o: unknown, p: string) {
     case "minefactory": {
       if (!c.keys(o, ["knot", "type", "factory"], p) || o.factory === undefined) break;
       const f = o.factory;
-      if (!isObj(f) || !c.keys(f, ["activation", "inactiveTurns", "schemeMines"], `${p}.factory`)) return c.fail(`${p}.factory`, "must be an object");
+      if (!isObj(f) || !c.keys(f, ["activation", "inactiveTurns", "schemeMines", "keepKnot"], `${p}.factory`)) return c.fail(`${p}.factory`, "must be an object");
       int(f.activation, 0, 255, `${p}.factory.activation`);
       int(f.inactiveTurns, 0, 255, `${p}.factory.inactiveTurns`);
       if (f.schemeMines !== undefined && typeof f.schemeMines !== "boolean") c.fail(`${p}.factory.schemeMines`, "must be a boolean");
+      if (f.keepKnot !== undefined && typeof f.keepKnot !== "boolean") c.fail(`${p}.factory.keepKnot`, "must be a boolean");
       break;
     }
   }

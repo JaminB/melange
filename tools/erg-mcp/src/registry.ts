@@ -59,6 +59,31 @@ const typeOk = (t: Schema["type"], v: unknown) =>
   t === "object" ? !!v && typeof v === "object" && !Array.isArray(v) :
   typeof v === t;
 
+/** Edit distance, for naming the argument an unknown one was probably meant to be. */
+function distance(a: string, b: string): number {
+  const d = Array.from({ length: b.length + 1 }, (_, j) => j);
+  for (let i = 1; i <= a.length; i++) {
+    let prev = d[0];
+    d[0] = i;
+    for (let j = 1; j <= b.length; j++) {
+      const t = d[j];
+      d[j] = Math.min(d[j] + 1, d[j - 1] + 1, prev + (a[i - 1] === b[j - 1] ? 0 : 1));
+      prev = t;
+    }
+  }
+  return d[b.length];
+}
+
+/** " (did you mean x?)" for an unknown argument close to a known one (a typo, a case, or a known name that contains it:
+ * scale for blockScale), else the known arguments when there are few. */
+export function unknownHint(k: string, known: string[]): string {
+  const low = k.toLowerCase();
+  const near = known.filter((n) => n.toLowerCase() === low || n.toLowerCase().includes(low) || low.includes(n.toLowerCase()) ||
+    distance(low, n.toLowerCase()) <= Math.max(1, Math.floor(Math.min(low.length, n.length) / 3)));
+  if (near.length) return ` (did you mean ${near.slice(0, 3).join(" or ")}?)`;
+  return known.length && known.length <= 12 ? ` (the arguments are ${known.join(", ")})` : "";
+}
+
 /** The first way `v` breaks the schema, as "path: why", or null. */
 export function validate(s: Schema, v: unknown, path = "args"): string | null {
   if (!typeOk(s.type, v)) return `${path}: must be ${s.type === "integer" ? "an integer" : `a${/^[aeiou]/.test(s.type!) ? "n" : ""} ${s.type}`}`;
@@ -81,7 +106,7 @@ export function validate(s: Schema, v: unknown, path = "args"): string | null {
     for (const [k, val] of Object.entries(o)) {
       const p = s.properties?.[k];
       if (!p) {
-        if (s.additionalProperties === false) return `${path}.${k}: is not a known argument`;
+        if (s.additionalProperties === false) return `${path}.${k}: is not a known argument${unknownHint(k, Object.keys(s.properties ?? {}))}`;
         continue;
       }
       if (val === undefined) continue;

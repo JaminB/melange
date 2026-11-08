@@ -16,7 +16,8 @@ import { runTest } from "../lib/place-wait";
 import { stopHold } from "./game";
 import { CAMERA_RISE, WALL_RADIUS, spawnWarnings } from "../lib/spawn-check";
 import { checkFactory, factoryLines } from "../lib/factory-check";
-import { scheduleFromScript, waterByTurn } from "../lib/flood";
+import { scheduleFromScript } from "../lib/flood";
+import { scriptWater } from "../lib/script-water";
 import { waterBackdropWarning } from "../lib/backdrop";
 import { spansAt, waterMap } from "../lib/inspect-field";
 import { grids, tidy } from "../lib/voxel";
@@ -114,12 +115,12 @@ function balanceSpawns(items: { arg: SpawnArg; map: Vec3; ground: number }[], b:
 async function teamReport(s: Session, units: Units, teams: number, per: number) {
   const store = s.store, k = units === "map" ? 1 : 20, gs = grids(store);
   const r = (v: number) => Math.round(v * k * 100) / 100;
-  let waterAt: ((t: number) => number) | null = null;
+  let waterAt: ((t: number) => number) | null = null, waterFrom: string | undefined, waterWarnings: string[] = [];
   const own = waterMap(store);
   if (own !== null && store.scene.script?.present) {
     try {
-      const sc = scheduleFromScript((await s.requireProject().erg.script()) ?? "");
-      if (sc) waterAt = waterByTurn(own, { schedule: sc });
+      const sw = await scriptWater(s, own);
+      if (sw) ({ waterAt, from: waterFrom, warnings: waterWarnings } = sw);
     } catch {
       // no script to read: no flood turns
     }
@@ -141,7 +142,8 @@ async function teamReport(s: Session, units: Units, teams: number, per: number) 
       ...(waterAt ? { earliestFloodTurn: fl.length ? Math.min(...fl) : null } : {}) });
   }
   return { units, teams: out, note: `WORMn is worm n % ${per} of team floor(n / ${per}) (the Quick Game's human team has WORM0-3)` +
-    (waterAt ? "; earliestFloodTurn: the first game turn the project's water and its script's schedule reach one of the team's spawns" : "; no script schedule: no flood turns") };
+    (waterAt ? `; earliestFloodTurn: the first game turn the project's water and its script reach one of the team's spawns (water from ${waterFrom})` : "; no script schedule: no flood turns"),
+    ...(waterWarnings.length ? { waterWarnings } : {}) };
 }
 
 function spawnState(store: EditorStore, units: Units) {
@@ -194,13 +196,21 @@ async function placeSpawnKnots(s: Session, a: { mode?: "random" | "knots"; spawn
 
 // ------------------------------------------------------------------ objects
 
-/** The highest the project's script raises the water (map units): its wum.sim.waterSchedule's cap, or null. */
+/** The highest the project's script raises the water (map units) over 200 turns: simulated where the server can run
+ * the script, else its first wum.sim.waterSchedule's cap; null without one. */
 export async function scriptWaterTop(s: Session): Promise<number | null> {
   const p = s.requireProject();
   if (!p.store.scene.script?.present) return null;
   try {
-    const sc = scheduleFromScript((await p.erg.script()) ?? "");
-    return sc ? sc.cap / (sc.units === "map" ? 1 : 20) : null;
+    const sw = await scriptWater(s, waterMap(p.store) ?? -50);
+    if (!sw) return null;
+    if (!sw.simulated) {
+      const sc = scheduleFromScript((await p.erg.script()) ?? "");
+      return sc ? sc.cap / (sc.units === "map" ? 1 : 20) : null;
+    }
+    let top = -Infinity;
+    for (let t = 1; t <= sw.turns; t++) top = Math.max(top, sw.waterAt(t));
+    return Number.isFinite(top) ? top : null;
   } catch {
     return null;
   }
@@ -218,16 +228,16 @@ type PlaceType = (typeof OBJECT_TYPES)[number];
 interface PlaceArgs extends PointArgs {
   type: PlaceType; units?: Units; kind?: "weapon" | "health" | "utility"; contents?: string; count?: number; amount?: number;
   hitpoints?: number; parachute?: boolean; pos2?: number[]; index?: number; radius?: number; teamCollect?: number; teamDestroy?: number; wormCollect?: boolean;
-  activation?: number; inactiveTurns?: number; schemeMines?: boolean;
+  activation?: number; inactiveTurns?: number; schemeMines?: boolean; keepKnot?: boolean; snap?: "surface";
 }
 
-type FactoryArgs = Pick<PlaceArgs, "activation" | "inactiveTurns" | "schemeMines">;
-const FACTORY_GAME = { activation: 20, inactiveTurns: 7, schemeMines: true } as const;
+type FactoryArgs = Pick<PlaceArgs, "activation" | "inactiveTurns" | "schemeMines" | "keepKnot">;
+const FACTORY_GAME = { activation: 20, inactiveTurns: 7, schemeMines: true, keepKnot: false } as const;
 
 /** The factory settings after `a` is applied to `f`: a value equal to the game's is dropped (the game's value stays). */
 function factoryOf(f: FactorySpec | undefined, a: FactoryArgs): FactorySpec | undefined {
   const next: Record<string, number | boolean> = { ...(f ?? {}) };
-  for (const k of ["activation", "inactiveTurns", "schemeMines"] as const) {
+  for (const k of ["activation", "inactiveTurns", "schemeMines", "keepKnot"] as const) {
     const v = a[k];
     if (v === undefined) continue;
     if (v === FACTORY_GAME[k]) delete next[k];
@@ -240,7 +250,16 @@ const factoryProps: Record<string, Schema> = {
   activation: { type: "integer", minimum: 0, maximum: 255, description: "minefactory: it fires at a turn start when fewer than this many mines are in the level, topping up to it, at most 10 per fire (game 20; 0 never fires)." },
   inactiveTurns: { type: "integer", minimum: 0, maximum: 255, description: "minefactory: turn starts it waits after it is placed and after each fire before it checks again (game 7; 0 checks every turn)." },
   schemeMines: { type: "boolean", description: "minefactory: false = the scheme's 15 random start mines are not placed, so mines come only from the factory (oil drums stay; default true)." },
+  keepKnot: { type: "boolean", description: "minefactory: true = when the game's drop from the knot hits no land (a draped skin, the crater pads on Caldera) the factory stays at its knot instead of the match's stale sweep point, where it was lost (Melange 0.13+; default false, the game's own drop). Put the knot on the surface (place_object snap: \"surface\")." },
 };
+
+/** pos with snap "surface": the knot on the top of the ground in its column, the highest solid top at most 1 map unit
+ * over pos's y (a draped skin at its sheared height), so an object sits exactly there with no drop. */
+function snapToSurface(store: EditorStore, map: Vec3, what: string): Vec3 {
+  const tops = spansAt(grids(store), map[0], map[2]).map((s) => s.top).filter((t) => t <= map[1] + 1);
+  if (!tops.length) throw new ToolError(`${what}: snap "surface" found no ground at or under the point (x ${tidy([map[0], 0, 0])[0]}, z ${tidy([0, 0, map[2]])[2]} map)`);
+  return [map[0], Math.max(...tops), map[2]];
+}
 
 function crateOf(a: PlaceArgs): CrateSpec {
   const kind = a.type === "health" ? "health" : a.kind ?? "health";
@@ -269,7 +288,9 @@ async function contentsName(s: Session, c: CrateSpec): Promise<{ contents?: stri
 
 async function placeObject(s: Session, a: PlaceArgs) {
   const store = s.store, scene = store.scene, units = a.units ?? "world";
-  const { map, dropped } = resolvePoint(store, a, units, a.type);
+  if (a.snap && (a.pos === undefined || a.drop)) throw new ToolError("snap \"surface\" takes pos (the y says which surface: the highest at most 1 map unit over it) and no drop");
+  const r0 = resolvePoint(store, a, units, a.type);
+  const dropped = r0.dropped, map = a.snap ? snapToSurface(store, r0.map, a.type) : r0.map;
   let cmd: AddDetail | AddObjects, note: string | undefined;
   if (a.type === "mine" || a.type === "oildrum") {
     const r = place(scene, store.frames, BUILTIN.find((e) => e.id === a.type)!, map, null);
@@ -320,7 +341,7 @@ async function placeObject(s: Session, a: PlaceArgs) {
   const ids = cmd instanceof AddObjects ? cmd.ids : [cmd.detailId];
   const factory = a.type === "minefactory" ? await factoryReport(s, units) : [];
   return {
-    placed: infos(s, ids, units), dropped, ...(note ? { warning: note } : {}),
+    placed: infos(s, ids, units), dropped, ...(a.snap ? { snapped: pointOut(map, units) } : {}), ...(note ? { warning: note } : {}),
     objects: `${scene.objects?.length ?? 0} of ${LIMITS.objects}`,
     issues: [...issuesOf(store).filter((t) => ids.some((id) => t.includes(`#${id} `))), ...factory],
     ...(factory.some((l) => l.startsWith("error:")) ? { factoryWillBeLost: true } : {}),
@@ -482,16 +503,50 @@ async function backToMenu(s: Session): Promise<{ fromScene: string; ms: number; 
 
 /** What the game applied of the level's look once the Test plays: its time of day (level.test.applied: the frontend's
  * value cleared so the Test build's loads, or why not) and the match's theme (wum.game.theme(), the game's Land.Theme),
- * against what was asked; warnings where one fell back. Fields the game cannot answer are left out. */
-async function appliedLook(s: Session, asked: { theme: string; tod: string }) {
+ * against what was asked; warnings where one fell back. Fields the game cannot answer are left out. A game of Melange
+ * 0.13+ also answers the sim mods and level scripts loaded in the match (`simModsLoaded`) and the mine factory as its
+ * set-up applied it (`factory`: what kMineFactoryData held just before, what was written, where the drop put it). */
+async function appliedLook(s: Session, asked: { theme: string; tod: string; factory?: FactorySpec | null; stem?: string; script?: boolean }) {
   const conn = await s.ensure(), client = await s.client(), warnings: string[] = [];
   const out: Record<string, unknown> = { asked };
+  type Field = { asked: number; write: string; found?: number } | null;
+  type Applied = { key: string; tod: { asked: string; applied: boolean; why: string }; simMods?: string[];
+    factory?: { stem: string; activation: Field; inactiveTurns: Field; knot: number[]; settled: number[]; landed: boolean; keptKnot: boolean } | null };
   if (conn.methods.includes("level.test.applied")) {
-    const r = await client.call<{ key: string; tod: { asked: string; applied: boolean; why: string } }>("level.test.applied", {}, 15000).catch(() => null);
+    let r = await client.call<Applied>("level.test.applied", {}, 15000).catch(() => null);
+    // the factory's set-up runs as the match places its objects: wait a little for it when the level has one
+    // and for the level script among the loaded sim code, which loads as the match's VM initialises
+    const waiting = (x: Applied) => (asked.factory !== undefined && asked.factory !== null && "factory" in x && (!x.factory || x.factory.stem !== asked.stem)) ||
+      (!!asked.script && !!x.simMods && !x.simMods.length);
+    for (let i = 0; r && waiting(r) && i < 10; i++) {
+      await new Promise((ok) => setTimeout(ok, 500));
+      r = await client.call<Applied>("level.test.applied", {}, 15000).catch(() => r);
+    }
     if (r) {
       const tod = r.tod.applied ? r.tod.asked : "DAY";
       out.timeOfDay = { applied: tod, ...(r.tod.applied ? {} : { fellBack: true, why: r.tod.why || "the frontend's time of day loaded" }) };
       if (tod !== asked.tod) warnings.push(`the time of day asked for was ${asked.tod} but the match loaded ${tod}: ${r.tod.why || "the frontend's value"}`);
+      if (r.simMods) out.simModsLoaded = r.simMods;
+      if (asked.factory !== undefined && asked.factory !== null && "factory" in r) {
+        const f = r.factory && r.factory.stem === asked.stem ? r.factory : null;
+        if (!f) {
+          out.factory = { note: "the match has not set the level's mine factory up (yet): it is placed with the level's objects; game_mines {alive: true} says whether it is there" };
+        } else {
+          const w = (v: number[]) => v.map((x) => Math.round(x * 100) / 100);
+          const field = (name: string, x: Field, want: number | undefined) => {
+            if (!x) return want === undefined ? "the game's" : { asked: want, note: "not written" };
+            if (x.write !== "ok") warnings.push(`the factory's ${name} (${x.asked}) was not written: ${x.write}`);
+            if (x.found !== undefined && x.found !== x.asked) warnings.push(`kMineFactoryData.${name} held ${x.found} at the factory's set-up, not the level's ${x.asked} written at level start: something set it in between (the set-up's write put the level's back)`);
+            return { written: x.asked, write: x.write, ...(x.found !== undefined ? { heldBefore: x.found } : {}) };
+          };
+          out.factory = {
+            activation: field("NumMineActivation", f.activation, asked.factory.activation),
+            inactiveTurns: field("NumTurnsInactive", f.inactiveTurns, asked.factory.inactiveTurns),
+            dropWorld: { knot: w(f.knot), settled: w(f.settled), landed: f.landed, keptKnot: f.keptKnot },
+          };
+          if (!f.landed && !f.keptKnot) warnings.push("the mine factory's drop hit no land: it took the stale point of the match's last sweep and will likely be lost (set keepKnot)");
+        }
+      }
     }
   } else out.timeOfDay = { note: "this game cannot say which time of day loaded (no level.test.applied)" };
   if (conn.methods.includes("lua.eval")) {
@@ -566,6 +621,7 @@ export const tools: Tool[] = [
         teamCollect: { type: "integer", minimum: 0, description: "trigger: teams that collect it (default 0)." },
         teamDestroy: { type: "integer", minimum: 0, description: "trigger: teams that destroy it (default 4)." },
         wormCollect: { type: "boolean", description: "trigger: a worm collects it (default false)." },
+        snap: { type: "string", enum: ["surface"], description: "With pos (no drop): put the object exactly on the top of the ground in its column, the highest solid top at most 1 map unit over pos's y, a draped skin at its sheared height (where the game draws and collides it). No drop is involved, so a knot over a skin or in a crater sits where it is put." },
         ...factoryProps,
         units: unitsSchema,
       },
@@ -637,13 +693,13 @@ export const tools: Tool[] = [
   },
   {
     name: "set_mine_factory",
-    description: "Change the level's mine factory settings (place it first with place_object type minefactory). A value equal to the game's (activation 20, inactiveTurns 7, schemeMines true) is dropped, so the game's value applies. Melange writes activation and inactiveTurns into the game's kMineFactoryData at level start and puts the game's back when the match ends. One undo step.",
+    description: "Change the level's mine factory settings (place it first with place_object type minefactory). A value equal to the game's (activation 20, inactiveTurns 7, schemeMines true, keepKnot false) is dropped, so the game's value applies. Melange writes activation and inactiveTurns into the game's kMineFactoryData at level start and again at the factory's own set-up, just before it reads them (Melange 0.13+), and puts the game's back when the match ends; test's look.factory says what the set-up found and applied. The settings are the project's: save, and Test the same project on the same server's projects folder (a project of the same id in another game's ProjectsDir is another project). One undo step.",
     inputSchema: { type: "object", additionalProperties: false, properties: factoryProps },
     handler(s, a: FactoryArgs) {
       const store = s.store, scene = store.scene;
       const o = scene.objects?.find((x) => x.type === "minefactory");
       if (!o || o.type !== "minefactory") throw new ToolError("the level has no mine factory: place one with place_object type minefactory");
-      if (a.activation === undefined && a.inactiveTurns === undefined && a.schemeMines === undefined) throw new ToolError("give activation, inactiveTurns or schemeMines");
+      if (a.activation === undefined && a.inactiveTurns === undefined && a.schemeMines === undefined && a.keepKnot === undefined) throw new ToolError("give activation, inactiveTurns, schemeMines or keepKnot");
       const factory = factoryOf(o.factory, a);
       commit(store, new SetObject(o.knot, factory ? { knot: o.knot, type: "minefactory", factory } : { knot: o.knot, type: "minefactory" }));
       return { knot: o.knot, factory: factory ?? {}, game: FACTORY_GAME, changed: true };
@@ -787,7 +843,12 @@ export const tools: Tool[] = [
       const sec = a.timeoutSec ?? 60;
       // the project's own time of day unless one is given: without it the frontend's (Quick Game: DAY) loads
       const db = p.store.scene.databank, tod = a.tod ?? (TIMES_OF_DAY.includes(db.timeOfDay as TimeOfDay) ? (db.timeOfDay as TimeOfDay) : undefined);
-      let run = await runTest(p.erg, { tod, goal: a.waitFor, timeoutMs: sec * 1000, cleanMods: a.cleanMods, postfx: a.postfx });
+      // the game refuses a Test outside its frontend: say how to get there instead of its bare refusal
+      let run = await runTest(p.erg, { tod, goal: a.waitFor, timeoutMs: sec * 1000, cleanMods: a.cleanMods, postfx: a.postfx }).catch((e: Error) => {
+        if (/must be at the frontend/.test(e.message))
+          throw new ToolError(`${e.message}: a match is running. Pass restart: true to leave a Test match for the menu and test again in one call, or call end_match first (leaving writes the game's save, as its own Quit does)`);
+        throw e;
+      });
       // Just after a match the frontend may not take Quick Game yet, and the menu's attract demo can start first: the
       // game refuses that Test (kAttractRefused); from the menu a second try starts it.
       for (let tries = 0; restarted && run.final === "failed" && /attract demo/.test(String(run.failed)) && tries < 2; tries++) {
@@ -796,13 +857,25 @@ export const tools: Tool[] = [
         restarted.retries = tries + 1;
       }
       const suppressed = !!a.cleanMods && !!run.cleanRoom && !run.cleanRoom.simMods;
-      const look = run.final === "playing" ? await appliedLook(s, { theme: db.theme, tod: tod ?? "DAY" }) : null;
+      const fo = p.store.scene.objects?.find((o) => o.type === "minefactory");
+      const look = run.final === "playing" ? await appliedLook(s, { theme: db.theme, tod: tod ?? "DAY", factory: fo && fo.type === "minefactory" ? fo.factory ?? {} : null, stem: run.key?.replace(/^Multi\./, ""),
+        script: run.final === "playing" && !!(await (async () => (await p.erg.script()) ?? "")().catch(() => "")).trim() }) : null;
       return { ...run, ...(first ? { savedFirst: true } : {}), ...(restarted ? { restarted } : {}), ...(look ? { look: look.look, ...(look.warnings.length ? { warnings: look.warnings } : {}) } : {}),
         ...(simMods.length ? suppressed ? { simMods, simModsNote: "these mods' sim code is suppressed in this Test match (clean room)" }
           : { simMods, simModsNote: "these mods' sim code runs in this match beside the level script" } : {}),
         match: "Quick Game (QuickStartHvC: a human team against a computer team) with the game's own Quick Game scheme; the scheme, turn time and team sizes are the game's, not chosen here",
         next: "game_state, game_wait {turn}, game_camera while it plays",
         ...(run.timedOut ? { note: `no '${a.waitFor ?? "playing"}' state within ${sec} s: the Test may still be running; start the match from the game's menu if it is armed` } : {}) };
+    },
+  },
+  {
+    name: "end_match",
+    description: "Leave the running Test match for the game's main menu (level.test.quit: the game's own GameLogic.QuitGame, sent in the sim's tick) and wait until the menu is up (about 5-10 s), so the next test starts without a game restart. Only a match that test started, offline. Leaving writes the game's save (its statistics), as the game's own Quit does. Answers where the game was and how long it took; at the menu already, it says so.",
+    inputSchema: { type: "object", additionalProperties: false, properties: {} },
+    async handler(s) {
+      stopHold();
+      const r = await backToMenu(s);
+      return r ? { left: true, ...r, next: "test (the game is at its menu)" } : { left: false, note: "no match is running: the game is at its menu" };
     },
   },
   {

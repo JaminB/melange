@@ -202,7 +202,7 @@ add_executable(oasis_standalone_selftest
     tests/oasis_standalone_selftest.cpp
     src/oasis/standalone/ini_edit.cpp src/oasis/standalone/mods_provider.cpp src/oasis/standalone/json_write.cpp
     src/oasis/standalone/wormsign_provider.cpp src/wormsign/format.cpp src/wormsign/records.cpp src/store/compat.cpp
-    src/oasis/standalone/lua_check.cpp src/mods/spice.cpp src/tools/json_read.cpp src/core/log.cpp)
+    src/oasis/standalone/lua_check.cpp src/oasis/standalone/water_sim.cpp src/mods/spice.cpp src/tools/json_read.cpp src/core/log.cpp)
 target_include_directories(oasis_standalone_selftest PRIVATE src src/sdk)
 target_compile_definitions(oasis_standalone_selftest PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX _CRT_SECURE_NO_WARNINGS)
 target_compile_options(oasis_standalone_selftest PRIVATE /W4 /utf-8 /permissive-)
@@ -267,7 +267,7 @@ add_executable(melange_launcher WIN32
     ${LAUNCHER_CORE_SOURCES}
     src/oasis/standalone/register.cpp src/oasis/standalone/ini_edit.cpp src/oasis/standalone/mods_provider.cpp
     src/oasis/standalone/json_write.cpp src/oasis/standalone/wormsign_provider.cpp src/oasis/standalone/level_provider.cpp
-    src/oasis/standalone/lua_check.cpp src/oasis/rpc/erg_assets.cpp src/assets/crcsafe_math.cpp src/assets/crcsafe_file.cpp src/oasis/auth.cpp src/oasis/webpanels.cpp
+    src/oasis/standalone/lua_check.cpp src/oasis/standalone/water_sim.cpp src/oasis/rpc/erg_assets.cpp src/assets/crcsafe_math.cpp src/assets/crcsafe_file.cpp src/oasis/auth.cpp src/oasis/webpanels.cpp
     ${ERG_SERVICE_SOURCES} src/wormsign/format.cpp src/wormsign/records.cpp ${LOG_EXPORT_CORE_SOURCES}
     res/launcher.rc res/stock.rc ${CMAKE_BINARY_DIR}/generated/oasis_web.rc)
 add_dependencies(melange_launcher oasis_web)

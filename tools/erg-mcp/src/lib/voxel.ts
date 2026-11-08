@@ -190,10 +190,12 @@ export class VoxelEdit {
     return this.changes.get(g.ref)?.get(i)?.[1] ?? g.words[i];
   }
 
-  set(frameId: number, x: number, y: number, z: number, word: number) {
+  /** `second`: the word carries a second material and corner mask of its own (bits 8-23), as the panel's 2nd-material
+   * brush writes; the level service accepts those (its blend rule), so only the word's shape is checked. */
+  set(frameId: number, x: number, y: number, z: number, word: number, second = false) {
     if (!validRunValue(word)) throw new ToolError(`0x${word.toString(16)} is not a voxel word (bits 0-1 must be 0 or 3, bits 24-31 clear)`);
     const g = this.gridOf(frameId), i = at(g, x, y, z);
-    if (!validEdit(g.base[i], word))
+    if (!second && !validEdit(g.base[i], word))
       throw new ToolError(`0x${word.toString(16)} is not a valid edit of the base word 0x${g.base[i].toString(16)} (bits 8-23 must be zero or the base's)`);
     let c = this.changes.get(g.ref);
     if (!c) this.changes.set(g.ref, (c = new Map()));

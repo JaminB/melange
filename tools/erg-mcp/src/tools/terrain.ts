@@ -54,13 +54,20 @@ const surfaceProps = {
   only: { type: "array", items: { type: "integer", minimum: 0, maximum: 63 }, maxItems: 64, description: "Repaint only voxels of these materials (e.g. the rock, not a castle's walls)." },
   except: { type: "array", items: { type: "integer", minimum: 0, maximum: 63 }, maxItems: 64, description: "Never repaint voxels of these materials." },
   units: { type: "string", enum: ["world", "map"], description: "world (default, the Erg panel's) or map units, for every position, length and the mask." },
+  blend: { type: "boolean", description: "Paint the edge per corner, not per voxel: a surface voxel just outside the area whose corners reach into it takes the material as its second material on those corners (the game's per-corner blend, the panel's 2nd-material brush), so the game draws a gradient across the edge voxel instead of a step: a smooth lava flow on a skin instead of stepped red and black squares. With jitter, the edge wanders as well. Adds runs where it blends: Test the level." },
+  falloff: { type: "number", minimum: 0, maximum: 640, description: "blend: corners up to this far past the edge (in `units`) still take the material, so the gradient spreads over that width (default 0: only corners inside the area)." },
   dryRun,
 } as const;
 const shapeSchema: Schema = { type: "object", additionalProperties: false, description: "A circle (x, z, radius), a rectangle (min, max: [x, z]) or a polygon (points: [[x, z], ...]).",
   properties: { x: { type: "number" }, z: { type: "number" }, radius: { type: "number", minimum: 0 },
     min: { type: "array", items: { type: "number" }, minItems: 2, maxItems: 2 }, max: { type: "array", items: { type: "number" }, minItems: 2, maxItems: 2 },
     points: { type: "array", items: { type: "array", items: { type: "number" }, minItems: 2, maxItems: 2 }, minItems: 3, maxItems: 500 } } };
-type SurfaceArgs = { material: number; depth?: number; only?: number[]; except?: number[]; units?: "world" | "map"; dryRun?: boolean };
+type SurfaceArgs = { material: number; depth?: number; only?: number[]; except?: number[]; units?: "world" | "map"; dryRun?: boolean; blend?: boolean; falloff?: number };
+/** paintSurface's blend from the call (map units). */
+const blendOf = (a: SurfaceArgs, k: number) => {
+  if (a.falloff !== undefined && !a.blend) throw new ToolError("falloff is for blend: true");
+  return a.blend ? { falloff: (a.falloff ?? 0) / k } : undefined;
+};
 
 function shapesToMap(list: Record<string, unknown>[] | undefined, k: number): Shape[] {
   return (list ?? []).map((sh, i) => {
@@ -170,7 +177,7 @@ export const tools: Tool[] = [
       } else if (a.spacing !== undefined || a.maxLength !== undefined) throw new ToolError("spacing and maxLength are for followSurface");
       const jitter = a.jitter ? { amount: a.jitter.amount / k, scale: (a.jitter.scale ?? 8 * k) / k, seed: a.jitter.seed } : undefined;
       const r = paintSurface(store, { material: a.material, depth: (a.depth ?? k) / k, path, width: a.width / k, taper: a.taper, jitter, only: a.only, except: a.except,
-        units: a.units ?? "world", dryRun: a.dryRun, label: "Paint path" });
+        blend: blendOf(a, k), units: a.units ?? "world", dryRun: a.dryRun, label: "Paint path" });
       const out = (p: Vec3) => tidy([p[0] * k, p[1] * k, p[2] * k] as Vec3);
       return { ...r, ...(walk ? { followSurface: { stop: walk.stop, steps: walk.points.length - 1, length: tidy([walk.length * k, 0, 0])[0], start: out(walk.points[0]), end: out(walk.points[walk.points.length - 1]) } } : {}), ...patchLeft(store) };
     },
@@ -192,7 +199,7 @@ export const tools: Tool[] = [
       const k = (a.units ?? "world") === "world" ? 20 : 1;
       if (!a.shapes && !a.mask) throw new ToolError("give shapes, a mask, or both");
       const r = paintSurface(store, { material: a.material, depth: (a.depth ?? k) / k, shapes: shapesToMap(a.shapes, k), mask: a.mask, centre: a.centre?.map((v) => v / k) as [number, number] | undefined,
-        only: a.only, except: a.except, units: a.units ?? "world", dryRun: a.dryRun, label: "Paint region" });
+        only: a.only, except: a.except, blend: blendOf(a, k), units: a.units ?? "world", dryRun: a.dryRun, label: "Paint region" });
       return { ...r, ...patchLeft(store) };
     },
   },

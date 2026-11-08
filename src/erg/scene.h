@@ -109,7 +109,9 @@ struct FactorySpec {
     std::optional<int> activation;                    // NumMineActivation 0-255 (game 20; 0 never fires)
     std::optional<int> inactiveTurns;                 // NumTurnsInactive 0-255 (game 7)
     bool schemeMines = true;                          // false: the scheme's 15 random start mines are not placed
-    bool Default() const { return !activation && !inactiveTurns && schemeMines; }
+    bool keepKnot = false;                            // true: a drop that hits no land leaves it at its knot
+                                                      // (levels/factory.cpp), not at the match's stale sweep point
+    bool Default() const { return !activation && !inactiveTurns && schemeMines && !keepKnot; }
     bool Tweaks() const { return activation || inactiveTurns; }
 };
 struct ObjectSpec {

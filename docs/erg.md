@@ -109,12 +109,19 @@ The settings, all optional (unset keeps the game's value):
 | Mine target (`activation`) | 20 | Fires when fewer mines than this are in the level, topping up to it (at most 10 per fire). 0 never fires |
 | Idle turns (`inactiveTurns`) | 7 | Turn starts it waits after it is placed and after each fire. 0 checks every turn |
 | Scheme's start mines (`schemeMines`) | on | Off: the scheme's 15 random mines are not placed (its 10 oil drums still are, if the scheme has them), so mines come from the factory and the map's own placed mines only |
+| Stay at its knot (`keepKnot`, erg-mcp only) | off | On: when the factory's drop from its knot misses (no land under it, or a hit that is not under the knot, as over a draped skin), it stays at its knot instead of the stale point the game would leave it at (Melange 0.13+) |
 
 The target and the idle turns are the game's shared `kMineFactoryData`: Melange writes them when the map's match is
 set up and puts the game's values back when it ends, so no other map (and no other player's match) sees them. They
 need a game build Melange knows (the sim tweak store); on another build the map plays with the game's values and the
 log says so. *Scheme's start mines* is done by the map's own chunk, on the match's copy of the scheme, whatever the scheme's own
 setting, and the log says so when the level starts (`the scheme's start mines are off`).
+
+The level-start write alone did not reach the factory: by the time the match places it, `kMineFactoryData` holds the
+game's 20 and 7 again (Tests of 2026-11-08: a level asking for 16 and 3 found 20 and 7 at the factory's set-up, and its
+first fire came after the game's 7 idle turns). Since Melange 0.13 the factory's own set-up writes the level's values
+again just before it reads them, and the log says what it found and wrote (`the mine factory's set-up:
+kMineFactoryData.NumMineActivation 16 (was 20): ok, ...`) and where its drop put it; erg-mcp's `test` answers the same.
 
 ## Water
 
@@ -217,6 +224,8 @@ end)
 | `wum.level.knots` | Read-only table of the map's named knots, name → kind (no positions) |
 | `wum.level.trigger(knot [, opts])` | A trigger at a knot; `opts`: `index`, `radius`, `teamCollect`, `teamDestroy`, `hitpoints`, `wormCollect`. `true`, or `nil` and a reason |
 | `wum.level.crate(knot [, opts])` | A crate at a knot; `opts`: `kind` (`weapon`, `health`, `utility`), `contents`, `count`, `amount`, `hitpoints`, `parachute` |
+| `wum.level.mine(pos [, vel])` | A mine at `pos` (`{x, y, z}` or `{x = .., y = .., z = ..}`, world units), moving at `vel` (default `{0, -0.3, 0}`, the factory's own), made by the game's own mine maker as the factory's mines are. `true`, or `nil` and a reason (`before the first turn`, `unavailable` on a game Melange does not know) |
+| `wum.level.fireFactory([{now = true}])` | The map's mine factory fires at the next turn start (its idle countdown is set to 0), when fewer mines than its target are in the level; `now` sends `GameLogic.StartMineFactory` at once, so it fires in this tick. `nil` and a reason when there is no factory, it has exploded or it is firing |
 | `wum.events.on("sim.turnStarted", fn)` | `fn(name, turn, round)` at the first tick of each turn, on every machine at the same tick |
 | `wum.sim.turn()`, `wum.sim.round()` | Turns started in this match, and the round: it goes up when a team starts a turn it already had in the current round, so a team that is wiped out only shortens the round. Both 0 before the first turn |
 | `wum.sim.waterSchedule{startTurn, every, step, cap, from, units}` | Raises `Water.Level` at turn starts (see below) |
@@ -229,6 +238,17 @@ raises (a level already higher, from sudden death for instance, is kept) and nev
 `"world"` (the default) or `"map"` (x20). It runs before the turn's `sim.turnStarted` handlers, so they see the new
 level; `wum.sim.waterSchedule()` returns the next turn it steps on and the cap (world units), or `nil` once it is done,
 and `wum.sim.waterSchedule(false)` stops it. One schedule per script; a new call replaces it. Bad options raise.
+
+```lua
+-- Mines from the crater: one dropped on turn 1, and the factory fired on turn 6 whatever its idle turns.
+wum.events.on("sim.turnStarted", function(name, turn)
+  if turn == 1 then wum.level.mine({x = 0, y = 900, z = 0}) end
+  if turn == 6 then wum.level.fireFactory({ now = true }) end
+end)
+```
+
+Both run in the sim, so every machine makes the same mines at the same tick (tried in a Test on 2026-11-08: the mine
+appeared at turn 1, and the factory, idle turns 3, fired its 10 mines at the start of turn 2).
 
 ```lua
 -- Flood from turn 3, one map unit a turn, up to 8 map units (160 world); announce each round.

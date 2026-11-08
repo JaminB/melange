@@ -5,7 +5,8 @@ import type { EditorStore, ServerPaletteEntry as PaletteEntry, Vec3 } from "../c
 import { extentXZ, markers, sampleField, spansAt, waterMap, type Field, type MarkerKind, type Region } from "../lib/inspect-field";
 import { Raster, SKY, VOID, WATER, hex, materialTint, shade, type Rgb } from "../lib/inspect-png";
 import { UTILITY_REACH, classify, nodeAt, pathStats, pathTo, search, standing, surfaces, turnAt, type FloodRules, type ReachOptions, type Surfaces } from "../lib/reach";
-import { scheduleFromScript, waterByTurn, type WaterSchedule } from "../lib/flood";
+import { waterByTurn, type WaterSchedule } from "../lib/flood";
+import { scriptWater, type ScriptWater } from "../lib/script-water";
 import { pieces } from "../lib/islets";
 import { loadMaterials, projectMaterials, resolveFile, themeFile, tintFor, type MaterialSet, type PaletteMode } from "../lib/materials";
 import { WORLD_PER_MAP, grids, isSolid, material, tidy, type Grid } from "../lib/voxel";
@@ -495,14 +496,24 @@ async function floodRules(s: Session, f: FloodArgs, u: Units, perTurn: number): 
   const start = f.start !== undefined ? inMap(f.start, u) : own;
   if (start === null) throw new ToolError("flood: the project keeps the level's own water height, which is not known here: pass flood.start (the water before the schedule)");
   if (!f.schedule === !f.levels) throw new ToolError("flood: give schedule (as wum.sim.waterSchedule's options, or \"script\" to read the project's script) or levels ([{turn, level}])");
-  let schedule: WaterSchedule | undefined, from = "the call";
+  // levels and start are the call's units (map by default), unlike a schedule's (world by default): a value over every
+  // ground of the level by far is world units given as map, which drowns every spawn at turn 1 (Caldera, iteration 6)
+  if (u !== "world") {
+    let ground = -Infinity;
+    for (const g of grids(store)) ground = Math.max(ground, g.bounds.max[1]);
+    const over = [...(f.start !== undefined ? [f.start] : []), ...(f.levels ?? []).map((e) => e.level)].filter((v) => Number.isFinite(ground) && v > ground + 40);
+    if (over.length)
+      throw new ToolError(`flood: ${over.length > 1 ? "levels" : "a level"} of ${over.slice(0, 3).join(", ")} map units is far over the level's highest ground (${r2(ground)} map): levels and start are in the call's units, map unless units: "world" (a schedule's are world unless its units say map); pass units: "world" or divide by 20`);
+  }
+  let schedule: WaterSchedule | undefined, from = "the call", sim: ScriptWater | null = null;
   if (f.schedule === "script") {
-    const p = s.requireProject();
-    const text = await p.erg.script().catch((e: unknown) => { throw new ToolError(`flood: could not read the project's script: ${e instanceof Error ? e.message : String(e)}`); });
-    const sc = scheduleFromScript(text ?? "");
-    if (!sc) throw new ToolError("flood: the project's script has no wum.sim.waterSchedule{...}: pass schedule or levels");
-    schedule = sc;
-    from = "the project's script";
+    sim = await scriptWater(s, start, f.maxTurns ?? 200).catch((e: unknown) => {
+      if (e instanceof ToolError) throw e;
+      throw new ToolError(`flood: could not read or run the project's script: ${e instanceof Error ? e.message : String(e)}`);
+    });
+    if (!sim) throw new ToolError("flood: the project's script sets no water (no wum.sim.waterSchedule, no Water.Level write): pass schedule or levels");
+    from = sim.from;
+    schedule = sim.schedule;
   } else if (f.schedule) {
     if (typeof f.schedule !== "object" || Array.isArray(f.schedule)) throw new ToolError("flood.schedule: an object of wum.sim.waterSchedule's options, or \"script\"");
     for (const [k, v] of Object.entries(f.schedule)) {
@@ -513,14 +524,16 @@ async function floodRules(s: Session, f: FloodArgs, u: Units, perTurn: number): 
     schedule = f.schedule;
   }
   const levels = f.levels?.map((e) => ({ turn: e.turn, level: inMap(e.level, u) }));
-  const waterAt = waterByTurn(start, { schedule, levels });
+  const waterAt = sim ? sim.waterAt : waterByTurn(start, { schedule, levels });
+  const scriptInfo = sim ? { ...(sim.schedules ? { scriptSchedules: sim.schedules } : {}), ...(sim.errors ? { scriptErrors: sim.errors } : {}), ...(sim.warnings.length ? { scriptWarnings: sim.warnings } : {}) } : {};
   const every = f.every ?? 2, firstTurn = f.firstTurn ?? 1, horizon = f.maxTurns ?? 200;
   const rules: FloodRules = { waterAt, perTurn, firstTurn, every };
   const sample = [1, 2, 3, 5, 10, 20, 50].filter((t) => t <= horizon).map((t) => ({ turn: t, water: r2(outUnit(waterAt(t), u)), map: r2(waterAt(t)), world: r2(waterAt(t) * WORLD_PER_MAP) }));
   let top = start;
   for (let t = 1; t <= horizon; t++) top = Math.max(top, waterAt(t));
   return { rules, horizon, top, info: {
-    from, start: r2(outUnit(start, u)), ...(schedule ? { schedule, scheduleUnits: `${schedule.units === "map" ? "map" : "world"} (wum.sim.waterSchedule's own); the answer's other lengths are ${u ?? "map"} units, and water levels are given in both` } : { levels: f.levels }),
+    from, start: r2(outUnit(start, u)), ...(schedule ? { schedule, scheduleUnits: `${schedule.units === "map" ? "map" : "world"} (wum.sim.waterSchedule's own); the answer's other lengths are ${u ?? "map"} units, and water levels are given in both` }
+      : sim ? {} : { levels: f.levels, levelsUnits: `${u ?? "map"} (the call's units)` }), ...scriptInfo,
     every, firstTurn, maxTurns: horizon, perOwnTurn: r2(outUnit(perTurn, u)), waterByTurn: sample, highestWater: { map: r2(top), world: r2(top * WORLD_PER_MAP) },
     note: `floodsAtTurn and floods.turn are game turns (each team's turn counts one). escapes walks each start's worm perOwnTurn in each of its turns, the first in game turn ${firstTurn}, then every ${every} turns (its team picking it every time: the best case). ` +
       "moves (spawn knots) counts its own moves instead: its team moves every `teams` game turns and moves its worms in turn, so one worm moves once every teams x wormsPerTeam game turns; escapesOnOwnMoves walks it on those. " +
@@ -844,10 +857,10 @@ const floodSchema = {
   type: "object" as const, additionalProperties: false,
   description: "A rising sea: each start also gets the turn its ground goes under and whether a dry walk reaches the target in time (see check_flood).",
   properties: {
-    schedule: { description: "wum.sim.waterSchedule's options {startTurn, every, step, cap, from, units (world default, or map)}, or \"script\": the project's script's own call." },
+    schedule: { description: "wum.sim.waterSchedule's options {startTurn, every, step, cap, from, units (world default, or map)}, or \"script\": the project's script, run turn by turn by Melange.exe's server (every waterSchedule call, phases set from turnStarted handlers, every/after timers, Water.Level writes); on the game's own server its first waterSchedule call." },
     levels: { type: "array", maxItems: 1000, items: { type: "object", additionalProperties: false, required: ["turn", "level"], properties: { turn: { type: "integer", minimum: 1 }, level: { type: "number" } } },
-      description: "Or the water by turn: [{turn, level}], each level (the call's units) from that turn on." },
-    start: { type: "number", description: "The water before the flood, in the call's units (default the project's water level)." },
+      description: "Or the water by turn: [{turn, level}], each level from that turn on, in the call's units: MAP unless units: \"world\" (unlike a schedule, world by default). A level far over every ground in map units is refused as world units." },
+    start: { type: "number", description: "The water before the flood, in the call's units (map unless units: \"world\"; default the project's water level)." },
     every: { type: "integer", minimum: 1, maximum: 64, description: "Game turns between a worm's own turns (default 2: two teams)." },
     firstTurn: { type: "integer", minimum: 1, maximum: 1000, description: "The game turn of the worm's first own turn (default 1)." },
     maxTurns: { type: "integer", minimum: 1, maximum: 10000, description: "Turns looked ahead for floodsAtTurn (default 200)." },

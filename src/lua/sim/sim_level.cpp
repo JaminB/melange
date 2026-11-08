@@ -1,4 +1,5 @@
-// wum.level: the table a level script gets (its level, its knots, and trigger and crate spawns at a knot).
+// wum.level: the table a level script gets (its level, its knots, trigger and crate spawns at a knot, and mines: one at
+// a point, or the factory's next fire).
 // Trampolines keep only plain data alive: every raise happens after the helpers have returned.
 #include <cmath>
 #include <cstdio>
@@ -10,6 +11,7 @@
 namespace melange::simcore {
 namespace {
 char g_err[256];
+LevelEngine g_engine;
 
 int Raise(l5::State* L) {
     l5::A().pushstring(L, g_err);
@@ -172,6 +174,69 @@ int __cdecl LCrate(l5::State* L) {
     return 1;
 }
 
+// Reads table `idx` as a point: {x, y, z} or {[1], [2], [3]}, every value a finite number within `lim`.
+bool VecArg(l5::State* L, int idx, float lim, float out[3]) noexcept {
+    const auto& a = l5::A();
+    if (a.type(L, idx) != l5::kTTable) return false;
+    static const char* const kKeys[] = {"x", "y", "z"};
+    for (int i = 0; i < 3; ++i) {
+        a.pushstring(L, kKeys[i]);
+        a.rawget(L, idx);
+        if (a.type(L, -1) == l5::kTNil) {
+            a.settop(L, -2);
+            a.rawgeti(L, idx, i + 1);
+        }
+        const bool num = a.type(L, -1) == l5::kTNumber;
+        out[i] = num ? a.tonumber(L, -1) : 0;
+        a.settop(L, -2);
+        if (!num || !(std::fabs(out[i]) <= lim)) return false;
+    }
+    return true;
+}
+
+// wum.level.mine(pos [, vel]): a mine at pos (world units), moving at vel (default {0, -0.3, 0}, the factory's own),
+// made by the game's own mine maker as the factory's are, in the sim: every machine makes it at the same tick.
+int __cdecl LMine(l5::State* L) {
+    const auto& a = l5::A();
+    float pos[3], vel[3] = {0, -0.3f, 0};
+    if (!VecArg(L, 1, 100000, pos) || (a.gettop(L) >= 2 && a.type(L, 2) != l5::kTNil && !VecArg(L, 2, 1000, vel))) {
+        snprintf(g_err, sizeof g_err, "wum.level.mine: expected (pos [, vel]): {x, y, z} tables of numbers, world units");
+        return Raise(L);
+    }
+    if (!g_engine.mine) return NilReason(L, "unavailable");
+    if (g.turns == 0) return NilReason(L, "before the first turn");
+    if (const char* why = g_engine.mine(pos, vel)) return NilReason(L, why);
+    a.pushboolean(L, 1);
+    return 1;
+}
+
+// wum.level.fireFactory([{now = true}]): the level's mine factory fires at the next turn start (its idle countdown is
+// set to 0), when fewer mines than its target are in the level; `now` also sends GameLogic.StartMineFactory at once,
+// so it fires in this tick. nil and why when there is no factory, it is gone, or it is firing.
+int __cdecl LFireFactory(l5::State* L) {
+    const auto& a = l5::A();
+    if (a.gettop(L) >= 1 && a.type(L, 1) != l5::kTTable && a.type(L, 1) != l5::kTNil) {
+        snprintf(g_err, sizeof g_err, "wum.level.fireFactory: expected ([options])");
+        return Raise(L);
+    }
+    bool now = false;
+    if (a.type(L, 1) == l5::kTTable) {
+        a.pushstring(L, "now");
+        a.rawget(L, 1);
+        now = a.toboolean(L, -1) != 0;
+        a.settop(L, -2);
+    }
+    if (!g_engine.armFactory) return NilReason(L, "unavailable");
+    if (g.turns == 0) return NilReason(L, "before the first turn");
+    if (const char* why = g_engine.armFactory()) return NilReason(L, why);
+    if (now) {
+        const sim::SendResult r = DoSend(SendArgs{SendKind::Plain, "GameLogic.StartMineFactory", 0, 0, nullptr});
+        if (r != sim::SendResult::Ok) return NilReason(L, SendResultText(r));
+    }
+    a.pushboolean(L, 1);
+    return 1;
+}
+
 void SetStr(l5::State* L, int t, const char* k, const char* v) {
     l5::A().pushstring(L, k);
     l5::A().pushstring(L, v);
@@ -201,5 +266,9 @@ void PushLevel(int mod) {
     a.rawset(L, t);
     SetFn(L, t, "trigger", &LTrigger, mod);
     SetFn(L, t, "crate", &LCrate, mod);
+    SetFn(L, t, "mine", &LMine, mod);
+    SetFn(L, t, "fireFactory", &LFireFactory, mod);
 }
+
+void SetLevelEngine(const LevelEngine& e) { g_engine = e; }
 }  // namespace melange::simcore

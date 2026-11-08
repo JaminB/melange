@@ -3,7 +3,13 @@
 // ground in its column, the ground being the highest solid voxel there over every voxel frame. So a road or a lava flow
 // follows the surface across base frames and added blocks alike, and a sample over air paints nothing instead of failing.
 // One undo step through VoxelEdit (the panel's checks: runs per frame, the patch budget).
-import { cornerOffset, painted, type EditorStore, type Vec3 } from "../core";
+//
+// `blend` paints the edge per corner instead of per voxel: a surface voxel whose centre is outside the area but some of
+// whose corners are inside it (within `falloff` more) takes the material as its second material on those corners (the
+// game's per-corner blend, as the panel's 2nd-material brush and heightfield `blend`), so the game draws a gradient
+// across the boundary voxel instead of a step; on a 2.5-unit skin that is the difference between a smooth lava edge and
+// a staircase of red and black squares.
+import { CORNER_BIT, bordered, cornerOffset, painted, type EditorStore, type Vec3 } from "../core";
 import { ToolError } from "../registry";
 import { compile, ExprError, noise2 } from "./heightfield-expr";
 import { spansAt } from "./inspect-field";
@@ -22,6 +28,7 @@ export interface SurfacePaint {
   centre?: [number, number];                // map x, z the mask's r and theta are about (default 0, 0)
   units: "map" | "world";                   // of the mask's x, z, h, y and d
   jitter?: { amount: number; scale?: number; seed?: number };   // moves the band's edge (map units) by noise
+  blend?: { falloff: number };              // per-corner edge (map units past the edge a corner still counts)
   only?: number[];                          // repaint only voxels of these materials
   except?: number[];                        // never repaint these
   dryRun?: boolean;
@@ -78,12 +85,14 @@ export function paintSurface(store: EditorStore, o: SurfacePaint) {
   }
   const cum = [0];
   if (o.path) for (let i = 1; i < o.path.length; i++) cum.push(cum[i - 1] + Math.hypot(o.path[i][0] - o.path[i - 1][0], o.path[i][2] - o.path[i - 1][2]));
-  const jit = o.jitter?.amount ?? 0, maxHalf = (o.width ?? 0) / 2 * Math.max(1, o.taper ?? 1) + Math.abs(jit);
+  const fall = o.blend ? Math.max(0, o.blend.falloff) : 0;
+  const jit = o.jitter?.amount ?? 0, maxHalf = (o.width ?? 0) / 2 * Math.max(1, o.taper ?? 1) + Math.abs(jit) + fall + (o.blend ? 2 : 0);
   // the area's box in x, z: the path's, the shapes', or (a mask alone) the whole level
   let box: [number, number, number, number] | null = null;
   const grow = (b: [number, number, number, number]) => { box = box ? [Math.min(box[0], b[0]), Math.min(box[1], b[1]), Math.max(box[2], b[2]), Math.max(box[3], b[3])] : b; };
   if (o.path) for (const p of o.path) grow([p[0] - maxHalf, p[2] - maxHalf, p[0] + maxHalf, p[2] + maxHalf]);
   for (const s of o.shapes ?? []) grow(shapeBox(s));
+  if (box && o.blend) { const b: [number, number, number, number] = box; box = [b[0] - fall - 2, b[1] - fall - 2, b[2] + fall + 2, b[3] + fall + 2]; }
   const gs = grids(store);
   // ground tops by column, cached on a quarter-unit lattice (rotated frames' cells fall anywhere)
   const tops = new Map<number, number>();
@@ -102,7 +111,25 @@ export function paintSurface(store: EditorStore, o: SurfacePaint) {
   const only = o.only ? new Set(o.only) : null, except = new Set(o.except ?? []);
   const edit = new VoxelEdit(store);
   const per = new Map<number, number>();
-  let looked = 0;
+  let looked = 0, blended = 0;
+  // whether a point of a voxel in a column whose ground top is `top` is in the area; `extra` widens a path's band and
+  // a shape's edge (map units), for the blend's corners. d: the distance to the path (0 without one).
+  const inArea = (px: number, py: number, pz: number, top: number, extra: number): { d: number } | null => {
+    let d = 0;
+    if (o.path) {
+      const q = toPath(o.path, cum, px, pz);
+      const half = (o.width! / 2) * (1 + ((o.taper ?? 1) - 1) * q.t) + (jit ? jit * noise2(px / (o.jitter!.scale ?? 8), pz / (o.jitter!.scale ?? 8), o.jitter!.seed ?? 0) : 0);
+      if (q.d > half + extra) return null;
+      d = q.d;
+    }
+    if (o.shapes?.length && !o.shapes.some((s) => inShape(s, px, pz) || (extra > 0 && inShape(grown(s, extra), px, pz)))) return null;
+    if (mask) {
+      vars.x = px * k; vars.z = pz * k; vars.h = top * k; vars.y = py * k; vars.d = d * k;
+      vars.r = Math.hypot(px - cx0, pz - cz0) * k; vars.theta = Math.atan2(pz - cz0, px - cx0);
+      if (!(mask(vars) > 0)) return null;
+    }
+    return { d };
+  };
   for (const g of gs) {
     const b = g.bounds;
     if (box && (b.max[0] < box[0] || b.min[0] > box[2] || b.max[2] < box[1] || b.min[2] > box[3])) continue;
@@ -118,23 +145,27 @@ export function paintSurface(store: EditorStore, o: SurfacePaint) {
           let py = m[4] * cx + m[5] * cy + m[6] * cz + m[7];
           if (g.frame.corners) py += cornerOffset(g.frame, cx, cz) * m[5];
           looked++;
-          let d = 0;
-          if (o.path) {
-            const q = toPath(o.path, cum, px, pz);
-            const half = (o.width! / 2) * (1 + ((o.taper ?? 1) - 1) * q.t) + (jit ? jit * noise2(px / (o.jitter!.scale ?? 8), pz / (o.jitter!.scale ?? 8), o.jitter!.seed ?? 0) : 0);
-            if (q.d > half) continue;
-            d = q.d;
-          }
-          if (o.shapes?.length && !o.shapes.some((s) => inShape(s, px, pz))) continue;
           const top = groundTop(px, pz);
           if (py < top - o.depth) continue;
-          if (mask) {
-            vars.x = px * k; vars.z = pz * k; vars.h = top * k; vars.y = py * k; vars.d = d * k;
-            vars.r = Math.hypot(px - cx0, pz - cz0) * k; vars.theta = Math.atan2(pz - cz0, px - cx0);
-            if (!(mask(vars) > 0)) continue;
+          if (inArea(px, py, pz, top, 0)) {
+            edit.set(g.id, x, y, z, painted(w, o.material));
+            per.set(g.id, (per.get(g.id) ?? 0) + 1);
+            continue;
           }
-          edit.set(g.id, x, y, z, painted(w, o.material));
+          if (!o.blend) continue;
+          // the edge: the corners of this voxel that are in the area (within falloff), as second-material corners
+          let bits = 0;
+          for (let ky = 0; ky < 2; ky++)
+            for (let kz = 0; kz < 2; kz++)
+              for (let kx = 0; kx < 2; kx++) {
+                const qx = m[0] * (x + kx) + m[1] * (y + ky) + m[2] * (z + kz) + m[3], qz = m[8] * (x + kx) + m[9] * (y + ky) + m[10] * (z + kz) + m[11];
+                const qy = m[4] * (x + kx) + m[5] * (y + ky) + m[6] * (z + kz) + m[7];
+                if (inArea(qx, qy, qz, top, fall)) bits |= 1 << CORNER_BIT[ky][kz][kx];
+              }
+          if (!bits) continue;
+          edit.set(g.id, x, y, z, bordered(w, o.material, bits), true);
           per.set(g.id, (per.get(g.id) ?? 0) + 1);
+          blended++;
         }
   }
   const why = edit.check();
@@ -143,5 +174,12 @@ export function paintSurface(store: EditorStore, o: SurfacePaint) {
   if (!changed) throw new ToolError(looked ? "nothing to repaint: no solid surface voxel of another material is in the area (or every one is already that material)" : "no voxel frame has solid ground in the area");
   if (!o.dryRun) edit.commit(o.label);
   const name = (id: number) => store.scene.frames.find((f) => f.id === id)?.name ?? String(id);
-  return { changed, frames: [...per].sort((a, b) => b[1] - a[1]).slice(0, 60).map(([id, n]) => ({ id, name: name(id), changed: n })), ...(o.dryRun ? { dryRun: true } : { label: o.label }) };
+  return { changed, ...(o.blend ? { blendedEdge: blended } : {}), frames: [...per].sort((a, b) => b[1] - a[1]).slice(0, 60).map(([id, n]) => ({ id, name: name(id), changed: n })), ...(o.dryRun ? { dryRun: true } : { label: o.label }) };
+}
+
+/** A shape grown by `by` map units (circles and rectangles; a polygon is left as it is). */
+function grown(s: Shape, by: number): Shape {
+  if ("radius" in s) return { x: s.x, z: s.z, radius: s.radius + by };
+  if ("min" in s) return { min: [Math.min(s.min[0], s.max[0]) - by, Math.min(s.min[1], s.max[1]) - by], max: [Math.max(s.min[0], s.max[0]) + by, Math.max(s.min[1], s.max[1]) + by] };
+  return s;
 }

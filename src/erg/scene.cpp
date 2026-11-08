@@ -248,8 +248,9 @@ bool ParseObjects(const Json* arr, std::vector<ObjectSpec>* out, std::string* er
                 if (!f) break;
                 const std::string fp = p + ".factory";
                 int v = 0;
-                if (!Obj(f, fp, err) || !OnlyKeys(*f, {"activation", "inactiveTurns", "schemeMines"}, fp, err) ||
-                    !GetBool(*f, "schemeMines", fp, &ob.factory.schemeMines, err, false))
+                if (!Obj(f, fp, err) || !OnlyKeys(*f, {"activation", "inactiveTurns", "schemeMines", "keepKnot"}, fp, err) ||
+                    !GetBool(*f, "schemeMines", fp, &ob.factory.schemeMines, err, false) ||
+                    !GetBool(*f, "keepKnot", fp, &ob.factory.keepKnot, err, false))
                     return false;
                 if (f->find("activation")) {
                     if (!IntField(*f, "activation", fp, 0, 255, &v, err, true)) return false;
@@ -309,6 +310,7 @@ Json ObjectsJson(const std::vector<ObjectSpec>& objects) {
                 if (fs.activation) f.set("activation", Int(*fs.activation));
                 if (fs.inactiveTurns) f.set("inactiveTurns", Int(*fs.inactiveTurns));
                 if (!fs.schemeMines) f.set("schemeMines", Json::Bool(false));
+                if (fs.keepKnot) f.set("keepKnot", Json::Bool(true));
                 o.set("factory", std::move(f));
                 break;
             }
