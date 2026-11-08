@@ -327,6 +327,19 @@ of the material's texture, from the server; `"index"` gives a distinct hue per i
 The water line is drawn only when the project sets a water level; a level that keeps its own water height has none the
 editor knows, and the renders say so. The 100 x 100 surround terrain is not part of these views.
 
+### render
+
+A perspective look at the open level, to judge silhouettes (a volcano's cone, a castle's towers) before a Test.
+Read-only. Positions are map units unless `units` is `world`.
+
+| Tool | What it does |
+|---|---|
+| `render_view` | PNG 3/4 view (image content): every exposed face of every voxel frame, rotated and scaled ones through their own matrix, rasterised into a z-buffer in the material's real colour (`palette` as the inspect renders), lit per face by the time of day's sun (or moon) and an ambient term, so tops and each side of a voxel step differ; silhouette edges darkened (`edges`), the project's water level as a translucent plane, spawns and objects as small billboards in the top view's marker colours (hollow when terrain hides them), a sky gradient by `timeOfDay` (default the level's), optional `fog` (the distance that hides about 63 %). Camera: `pos` and `target`, `fov` (vertical, default 60, as `game_camera`); or `view` `nw`, `ne`, `sw`, `se` (default), from that side 35 degrees up at the distance that fits every frame's solid voxels in the level or a `region` (`clip` draws only what is inside it); `orbit` draws the four in a 2 x 2 sheet; `game` mimics the turn camera, 170 world units from `at` and 22 degrees up, on the side away from the level's middle. `azimuth` (degrees clockwise from north, -z), `elevation` and `distance` override a preset; `target` moves its centre. `width` x `height` default 960 x 540, at most 1920 x 1080; `antialias` renders 2 x 2 samples a pixel. The text part gives each camera in map and world units, the time taken, the frames drawn and each marker's pixel. A 960 x 540 view of the 400-frame synthetic level (117 000 cells, 45 000 faces) takes about 0.1 s, 0.2 s antialiased. |
+
+Faces are flat-shaded with no cast shadows, and only a voxel's first material is drawn (not the second-material paint),
+nor the base's scenery meshes or its heightmap ground. A face between two frames that touch is still drawn (hidden by
+the faces in front of it), so overlapping coplanar frames can flicker between their colours.
+
 ### scenery
 
 The level's scenery details (the base map's meshes, glass and neon, grass tufts, lights, sounds, cameras) and copies
