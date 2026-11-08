@@ -88,3 +88,9 @@ at 49 (was 58) with the inner rim raised 3 and the floor 18 wide, a 9-radius lav
 on the ash; the factory plug is 5 radius and a solid 18 x 18 block of 3-unit voxels joins it to the skin underneath
 (launch height 16). Vegetation is limited to slopes under 22 degrees below 9 map units (no green squares on the cone); roads
 are 7.2 wide with a flat bed of 3.4. 64 029 of 65 535 cells, 35 of 64 blocks, 97 MCP calls.
+
+## Iteration 11 notes
+
+- Spawns: 8 knots over 7 places (Ashgate 2, Cinder 2, Highwatch, Ember, the Tower house and Gullywatch outposts 1 each), never more than 2 in a courtyard; early movers on the low floors.
+- Flood: `schedule.mjs` derives the sea from the spawns' floors and the engine's rotation (4, 1, 5, 2, 6, 3, 7, 0): every spawn dry (1.5 map) at its worm's 3rd own turn (`check_flood` minOwnTurns 3 passes), the castle walls drowned by round 13.
+- Terrain: roads painted 1.8 wider than their bed with a dark ash shoulder, an organic lava lake with thin rivulets, an ash apron round the factory plug, no vegetation inside the rim or above 9 map units, five shallow gullies between the switchbacks. Camelot flags on tower tops (decoration, no collision; `--no-scenery` leaves them out).

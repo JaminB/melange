@@ -11,6 +11,8 @@ export const RC = 36;            // radius of the rim crest (a wide bowl: the cr
 export const FLOOR_Y = 49;       // the crater floor (the rim is 20-30 over it: a deep bowl, iteration 10)
 export const FLAT_R = 18;        // the floor is level out to this radius, the walls climb from there to the rim
 export const PLUG_RHO = 15, PLUG_TH = -1.15;   // the basalt plug of the mine factory: on the floor, off the centre, on the side the south camera sees over the breach
+export const LAKE = { c: [-5, 6], R: 8 };   // the crater's lava lake: well away from the plug (about 23 units), so the factory's landing apron stays ash
+export const APRON_R = 10.5;     // dry ash round the plug: the mines land on it and show from the crater camera
 export const BREACH = Math.PI / 2;   // +z, the south: the default camera looks from there, so the notch and the flow show
 export const SP = 0.62;          // the roads' climb per unit of length (32 degrees)
 export const BOX = 118;          // half side of the heightfield rectangle (the skin is clipped to a circle inside it)
@@ -92,7 +94,9 @@ export const TONGUES = [
 ];
 // dry gullies: deep radial cuts in the flank without lava (angle, half width in radians, depth, radius range), so the cone has ribs
 export const GULLIES = [{ a: -1.62, w: 0.075, d: 8, r0: 38, r1: 84 }, { a: 3.45, w: 0.07, d: 7.5, r0: 38, r1: 82 }, { a: 5.88, w: 0.065, d: 7, r0: 40, r1: 80 }, { a: 0.1, w: 0.06, d: 6, r0: 40, r1: 74 },
-  { a: 1.0, w: 0.055, d: 6.5, r0: 40, r1: 78 }, { a: 4.7, w: 0.06, d: 7, r0: 40, r1: 80 }, { a: 2.25, w: 0.05, d: 6, r0: 42, r1: 76 }];
+  { a: 1.0, w: 0.055, d: 6.5, r0: 40, r1: 78 }, { a: 4.7, w: 0.06, d: 7, r0: 40, r1: 80 }, { a: 2.25, w: 0.05, d: 6, r0: 42, r1: 76 },
+  // iteration 11: shallow dry gullies between the switchbacks (the flanks were a uniform cone); carved in the skin, no cells
+  { a: 0.58, w: 0.05, d: 4, r0: 38, r1: 76 }, { a: 1.78, w: 0.045, d: 4.2, r0: 38, r1: 74 }, { a: 2.92, w: 0.05, d: 4, r0: 38, r1: 78 }, { a: 4.1, w: 0.045, d: 4.2, r0: 38, r1: 76 }, { a: 5.3, w: 0.05, d: 4, r0: 38, r1: 76 }];
 const tongueAngle = (t, r) => t.a + t.wob * Math.sin(r / t.wl + t.ph) + t.dr * Math.max(0, r - t.rb);
 const tongueWidth = (t, r) => t.w0 + (t.w1 - t.w0) * Math.min(1, Math.max(0, (r - t.r0) / (t.r1 - t.r0)));
 // the tongues as one mask expression for the heightfield materials (above 0 inside any of them; the rule list holds 64, so all
@@ -242,7 +246,7 @@ export function roadMask(rd, hw = 2.7, every = 7) {
 export function island(x, z) {
   const th = Math.atan2(z, x), r = Math.hypot(x, z), rho = r * scaleAt(th);
   // the cone: ridges grow with the radius from the rim; gullies are cut under the lava tongues
-  const ridges = 1 + 0.085 * Math.cos(7 * th + 1.5 * noise(x / 40, z / 40, 9)) * smooth(RC + 2, RC + 22, rho) * smooth(8, 24, profile(rho, th));
+  const ridges = 1 + (0.1 * Math.cos(7 * th + 1.5 * noise(x / 40, z / 40, 9)) + 0.04 * Math.cos(13 * th + 2 * noise(x / 25, z / 25, 19))) * smooth(RC + 2, RC + 22, rho) * smooth(8, 24, profile(rho, th));
   let dip = 0;
   for (const t of TONGUES) {
     if (r < t.r0 || r > t.r1) continue;
