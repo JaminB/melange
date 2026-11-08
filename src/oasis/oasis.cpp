@@ -157,6 +157,8 @@ class Oasis final : public Module {
         providers::InstallErgAssetRoute(game::GameDir(), config::GetInt("Erg", "PreviewCacheMB", 512));
         providers::InstallErgChannel();
         providers::InstallLevelTest();
+        providers::InstallRenderShot();
+        providers::InstallLevelTestOps();
         providers::InstallCapture();
         providers::InstallWebPanels();
         providers::InstallWormsign();

@@ -12,7 +12,7 @@
 // build\x86-release\Melange.exe). The project id is `caldera`; an old one is deleted first (delete_project), so
 // every run starts from the base. Renders go to --out (default out\ next to this file); the source export is copied to
 // pack\ next to this file. --plan stops after the heightfield plans (nothing is applied or saved).
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -253,6 +253,9 @@ let calls = 0;
 const log = [];
 async function startServer() {
   const node = path.join(ROOT, "tools/node/node.exe");
+  // the bundle is built from this checkout's sources whenever they are newer (never a stale dist)
+  const b = spawnSync("powershell", ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", path.join(ROOT, "tools/erg-mcp/build.ps1"), "-IfStale"], { stdio: ["ignore", 2, 2] });
+  if (b.status !== 0) throw new Error("tools/erg-mcp/build.ps1 failed: fix the build before running the bench");
   const p = spawn(node, [path.join(ROOT, "tools/erg-mcp/dist/erg-mcp.mjs")], { stdio: ["pipe", "pipe", "inherit"] });
   let buf = "", id = 0;
   const pend = new Map();

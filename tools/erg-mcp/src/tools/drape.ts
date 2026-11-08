@@ -6,10 +6,13 @@ import { usage } from "../lib/voxel";
 import type { Schema, Tool } from "../registry";
 import { schema as field } from "./heightfield";
 
+// fitBudget is heightfield_region's: a drape packs its skin and core itself
+const { fitBudget: _fit, ...fieldProps } = field.properties!;
+
 const schema: Schema & { type: "object" } = {
   ...field,
   properties: {
-    ...field.properties,
+    ...fieldProps,
     thickness: { type: "integer", minimum: 1, maximum: 8, description: "The skin's voxels (default 2). The core under it is cut to its lowest corner less a quarter voxel, so where one column's corners differ by more than thickness - 1 the skin can leave air under it (not seen until dug)." },
     core: { type: "boolean", description: "Fill under the skin with the stepped field (default true; packed as heightfield_region packs, with maxBlocks/maxCells less the skin's). false: a hollow skin, about a fifth of the cells of a solid island, that weapons dig through into air." },
     dryRun: { type: "boolean", description: "Plan and report only." },

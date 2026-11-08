@@ -53,6 +53,28 @@ const filterProps: Record<string, Schema> = {
     properties: { min: vec3("[x, y, z]"), max: vec3("[x, y, z]") } },
 };
 
+/** A copy's scale: a number, [x, y, z], or either written as a string ("1.5", "1.5, 1.5, 2"); each 0.05-20. */
+export function scaleOf(v: unknown, path: string): Vec3 {
+  let x: unknown = v;
+  if (typeof x === "string") {
+    const parts = x.replace(/^\s*\[|\]\s*$/g, "").split(/[\s,]+/).filter(Boolean).map(Number);
+    x = parts.length === 1 ? parts[0] : parts;
+  }
+  const ok = (n: unknown) => typeof n === "number" && Number.isFinite(n) && n >= 0.05 && n <= 20;
+  if (ok(x)) return [x as number, x as number, x as number];
+  if (Array.isArray(x) && x.length === 3 && x.every(ok)) return x as Vec3;
+  throw new ToolError(`${path}: a scale is a number from 0.05 to 20 (uniform) or [x, y, z] of them, not ${JSON.stringify(v)}`);
+}
+
+/** What a piece is, from its detail name: the engine's tags (VISIBLE_, MORTAL_, ...) and numbers dropped, lower case
+ * ("VISIBLE_Flag", "VISIBLE_flag2" -> "flag"). */
+export function kindOf(name: string): string {
+  let k = name;
+  for (let i = 0; i < 4; i++) k = k.replace(/^(VISIBLE|MORTAL|INVISIBLE|SLIPPY|PERM|TEAMBASE|NOSHADOW|COLLIDE|NOCOLLIDE)_/i, "");
+  k = k.replace(/[_\s-]*\d+$/, "").replace(/[_\s-]+/g, " ").trim().toLowerCase();
+  return k || name.toLowerCase();
+}
+
 export const tools: Tool[] = [
   {
     name: "list_scenery",
@@ -120,6 +142,51 @@ export const tools: Tool[] = [
     },
   },
   {
+    name: "list_scenery_types",
+    description: "What kinds of scenery pieces the bases have, by name, so a piece is found without searching by hand: each kind (a detail's name without its engine tags and numbers: flag, pole, candle, tower, ...) with the resources that draw it in each base, e.g. 'flag in Multi.NiceToSiege: CAMELOT16, CAMELOT19', a count and an example detail id for copy_base_scenery. Default bases: every base of the open level's theme (or `theme`); or `bases`. `search` keeps kinds, names or resources containing it.",
+    inputSchema: { type: "object", additionalProperties: false, properties: {
+      bases: { type: "array", items: { type: "string" }, minItems: 1, maxItems: 40, description: "Base keys (list_bases); default every base of the theme." },
+      theme: { type: "string", description: "The theme whose bases are listed (default the open level's)." },
+      source: { type: "string", enum: ["game", "pack"], description: "Where the bases come from (default game)." },
+      search: { type: "string", description: "Kind, name or resource contains this (any case)." } } },
+    async handler(s, a: { bases?: string[]; theme?: string; source?: "game" | "pack"; search?: string }) {
+      const theme = a.theme ?? s.project?.store.scene.databank.theme;
+      let keys = a.bases;
+      if (!keys) {
+        if (!theme) throw new ToolError("pass bases or theme, or open a project");
+        const list = await (await s.levels()).list();
+        keys = list.bases.filter((b) => b.theme === theme && b.source === (a.source ?? "game")).map((b) => b.key);
+        if (!keys.length) throw new ToolError(`no ${a.source ?? "game"} base has theme ${theme} (list_bases lists them)`);
+      }
+      const q = a.search?.toLowerCase();
+      const kinds = new Map<string, Map<string, { resources: Map<string, number>; example: Detail }>>();
+      const failed: { base: string; error: string }[] = [];
+      for (const key of keys.slice(0, 40)) {
+        let scene: Scene;
+        try {
+          scene = await baseScene(s, key, a.source ?? "game");
+        } catch (e) {
+          failed.push({ base: key, error: e instanceof Error ? e.message : String(e) });
+          continue;
+        }
+        for (const d of scene.details) {
+          if (d.role !== "scenery") continue;
+          const kind = kindOf(d.name);
+          if (q && !`${kind} ${d.name} ${d.resource}`.toLowerCase().includes(q)) continue;
+          const per = kinds.get(kind) ?? kinds.set(kind, new Map()).get(kind)!;
+          const e = per.get(key) ?? per.set(key, { resources: new Map(), example: d }).get(key)!;
+          e.resources.set(d.resource, (e.resources.get(d.resource) ?? 0) + 1);
+        }
+      }
+      const out = [...kinds].map(([kind, per]) => {
+        const inBases = [...per].map(([base, e]) => ({ base, resources: [...e.resources.keys()].sort(), count: [...e.resources.values()].reduce((n, v) => n + v, 0), exampleId: e.example.id, exampleName: e.example.name }));
+        return { kind, count: inBases.reduce((n, b) => n + b.count, 0), in: inBases, text: inBases.map((b) => `${kind} in ${b.base}: ${b.resources.join(", ")}`).join("; ") };
+      }).sort((x, y) => y.count - x.count);
+      return { theme: theme ?? null, bases: keys, kinds: out.length, list: out.slice(0, 200), ...(failed.length ? { failed } : {}),
+        note: "copy_base_scenery takes {base, copies: [{id: exampleId}]} or {resource}; copies draw but have no collision" };
+    },
+  },
+  {
     name: "copy_base_scenery",
     description: "Place copies of a base level's scenery pieces in the open level, for decoration: each copy is `id` (a detail of that base, from list_base_scenery) or `resource`, at `pos` or `xz` (dropped onto the voxels), with its own rot (degrees) and scale (default the source's). Copies draw in the game but have NO collision: worms and shots pass through them, so build walls that matter with the structure tools. A piece of another theme than the level's may not be loaded by the game: refused unless allowOtherTheme. One undo step.",
     inputSchema: {
@@ -130,13 +197,14 @@ export const tools: Tool[] = [
           id: { type: "integer", description: "A detail id of the base." }, resource: { type: "string", description: "Or a resource: its first piece in the base." },
           pos: vec3("[x, y, z] in the level."), xz: { type: "array", items: { type: "number" }, minItems: 2, maxItems: 2, description: "[x, z]: dropped onto the voxels below." },
           drop: { type: "boolean", description: "Drop pos onto the voxels below it." },
-          rot: vec3("Rotation in degrees about x, y, z (default the source's)."), scale: { type: "number", minimum: 0.05, maximum: 20, description: "Uniform scale (default the source's)." },
+          rot: vec3("Rotation in degrees about x, y, z (default the source's)."),
+          scale: { description: "Scale (default the source's): a number (uniform, 0.05-20), [x, y, z], or the same as a string (\"1.5\")." },
         } } },
         allowOtherTheme: { type: "boolean", description: "Copy from a base of another theme than the level's (the game may not load its meshes)." },
         units: unitsSchema,
       },
     },
-    async handler(s, a: { base?: string; source?: "game" | "pack"; copies: { id?: number; resource?: string; pos?: number[]; xz?: number[]; drop?: boolean; rot?: number[]; scale?: number }[];
+    async handler(s, a: { base?: string; source?: "game" | "pack"; copies: { id?: number; resource?: string; pos?: number[]; xz?: number[]; drop?: boolean; rot?: number[]; scale?: unknown }[];
       allowOtherTheme?: boolean; units?: Units }) {
       const { store } = s.requireProject();
       const key = a.base ?? store.scene.base.key;
@@ -152,7 +220,7 @@ export const tools: Tool[] = [
         if (src.role !== "scenery") throw new ToolError(`copies[${i}]: detail ${src.id} (${src.name}) is a ${src.role}, not scenery`);
         const at = resolvePoint(store, c, u, `copies[${i}]`).map;
         const rot: Vec3 = c.rot ? [c.rot[0] / DEG, c.rot[1] / DEG, c.rot[2] / DEG] : [src.rot[0], src.rot[1], src.rot[2]];
-        const scale: Vec3 = c.scale !== undefined ? [c.scale, c.scale, c.scale] : [src.scale[0], src.scale[1], src.scale[2]];
+        const scale: Vec3 = c.scale !== undefined ? scaleOf(c.scale, `copies[${i}].scale`) : [src.scale[0], src.scale[1], src.scale[2]];
         cmds.push(new AddDetail(frame, { name: src.name, resource: src.resource, pos: store.frames.toLocal(frame, at), rot, scale }));
         placed.push({ from: src.id, name: src.name, resource: src.resource, at: pointOut(at, u) });
       });

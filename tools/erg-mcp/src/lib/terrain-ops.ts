@@ -2,7 +2,7 @@
 // brush (terrain/brush.ts strokeChanges), block planner (blocks.ts) and surround painter (surround.ts dabChanges), so a
 // tool edits exactly as a mouse stroke does. Everything here edits through VoxelEdit or store.exec: one undo step each.
 import {
-  RemoveFrame, SetLevel, SurroundStroke, MAX_BRUSH, SURROUND_SIDE, apply, blockCentre, brushBox, cellBudget, dabChanges, gridFrames, index, material, multiply,
+  AddFrame, RemoveFrame, SetLevel, SurroundStroke, MAX_BRUSH, SURROUND_SIDE, apply, blockCentre, brushBox, cellBudget, dabChanges, gridFrames, index, material, multiply,
   overlaps, painted, planBlock, quantizeHeight, strokeChanges, transformBox, validEdit, carved, filled, isSolid, type Anchor, type Brush, type BrushMaterial, type BrushMode, type BrushShape, type EditorStore,
   type GridFrame, type SurroundBrush, type SurroundMode, type Vec3,
 } from "../core";
@@ -60,7 +60,8 @@ export interface StrokeSpec {
 }
 
 export function brushOf(s: StrokeSpec): Brush {
-  if (!s.size.every((v) => Number.isInteger(v) && v >= 1 && v <= MAX_BRUSH)) throw new ToolError(`each brush size is a whole number of voxels, 1-${MAX_BRUSH}`);
+  // fractional sizes are the panel's brush too (a taper's dabs use them): a sphere of 2.5 is the cells within 1.25
+  if (!s.size.every((v) => Number.isFinite(v) && v >= 1 && v <= MAX_BRUSH)) throw new ToolError(`each brush size is 1-${MAX_BRUSH} voxels (fractions allowed)`);
   let m: BrushMaterial = s.material ?? 0;
   if (s.mode !== "carve") {
     if (s.material === undefined) throw new ToolError(`${s.mode} needs a material (0-63)`);
@@ -293,7 +294,9 @@ export function downhillPath(gs: Grid[], start: Vec3, o: DownhillOptions): { poi
 
 // ------------------------------------------------------------------ blocks
 
-export interface BlockSpec { size: Vec3; material: number; at?: Vec3; center?: Vec3; units: Units; scale?: number; dryRun?: boolean; }
+/** fill: solid (default), empty (every cell empty: a canvas the brushes and fill_box_raw fill, at the same cell cost) or
+ * hollow (a solid shell `shell` voxels thick round an empty inside, open nowhere). */
+export interface BlockSpec { size: Vec3; material: number; at?: Vec3; center?: Vec3; units: Units; scale?: number; dryRun?: boolean; fill?: "solid" | "empty" | "hollow"; shell?: number; }
 
 export function addBlock(store: EditorStore, s: BlockSpec) {
   if (!!s.at === !!s.center) throw new ToolError("give exactly one of `at` (the point the block rests on: x and z are its centre, y its bottom) or `center`");
@@ -304,15 +307,29 @@ export function addBlock(store: EditorStore, s: BlockSpec) {
   const bottom: Vec3 = s.at ? to(s.at) : (() => { const c = to(s.center!); return [c[0], c[1] - (s.size[1] * scale) / 2, c[2]] as Vec3; })();
   const centre = blockCentre(store.scene, bottom, s.size, scale);
   if (!centre) throw new ToolError("This level has no Scene frame to add blocks under");
-  const cmd = planBlock(store.scene, store.voxels, store.freshRef(), centre, s.size, s.material, scale);
-  if (typeof cmd === "string") throw new ToolError(cmd);
+  const planned = planBlock(store.scene, store.voxels, store.freshRef(), centre, s.size, s.material, scale);
+  if (typeof planned === "string") throw new ToolError(planned);
+  const fill = s.fill ?? "solid", shell = s.shell ?? 1;
+  if (s.shell !== undefined && fill !== "hollow") throw new ToolError("shell is for fill: \"hollow\"");
+  if (!(Number.isInteger(shell) && shell >= 1)) throw new ToolError("shell is a whole number of voxels, 1 or more");
+  let cmd = planned, solid = s.size[0] * s.size[1] * s.size[2];
+  if (fill !== "solid") {
+    const [X, Y, Z] = s.size, w = new Uint32Array(X * Y * Z), word = filled(s.material);
+    solid = 0;
+    if (fill === "hollow")
+      for (let z = 0; z < Z; z++)
+        for (let x = 0; x < X; x++)
+          for (let y = 0; y < Y; y++)
+            if (Math.min(x, y, z, X - 1 - x, Y - 1 - y, Z - 1 - z) < shell) { w[voxelIndex(s.size, x, y, z)] = word; solid++; }
+    cmd = new AddFrame(store.voxels, planned.frame, w);
+  }
   if (s.dryRun) {
     // the cost before it is committed: the block's whole box counts against the game's cells
     const before = cellBudget(store.scene), cost = s.size[0] * s.size[1] * s.size[2];
     const w = store.frames.worldOf(cmd.frame.parent!), t: Vec3 = w ? [w[3], w[7], w[11]] : [0, 0, 0];
     const half = s.size.map((v) => (v * scale) / 2), c = cmd.frame.pos.map((v, i) => v + t[i]);
     return {
-      dryRun: true, size: s.size, scale, material: s.material, voxels: cost,
+      dryRun: true, size: s.size, scale, material: s.material, fill, voxels: solid,
       cells: { cost, before: before.used, after: before.used + cost, max: before.max, left: before.free - cost },
       bounds: { map: { min: tidy([c[0] - half[0], c[1] - half[1], c[2] - half[2]]), max: tidy([c[0] + half[0], c[1] + half[1], c[2] + half[2]]) } },
       covers: { mapUnits: tidy(s.size.map((v) => v * scale) as Vec3), cellsPerMapUnit3: Number((1 / scale ** 3).toFixed(4)) },
@@ -321,10 +338,12 @@ export function addBlock(store: EditorStore, s: BlockSpec) {
   store.exec(cmd);
   const g = frameGrids(store).find((x) => x.frame.id === cmd.frame.id)!;
   return {
-    id: cmd.frame.id, name: cmd.frame.name, size: s.size, ...(scale !== 1 ? { scale } : {}), material: s.material, voxels: s.size[0] * s.size[1] * s.size[2],
+    frameId: cmd.frame.id, id: cmd.frame.id, name: cmd.frame.name, size: s.size, ...(scale !== 1 ? { scale } : {}), material: s.material, fill,
+    ...(fill === "hollow" ? { shell } : {}), voxels: solid,
     cells: cellBudget(store.scene),
     bounds: { map: { min: tidy(g.bounds.min), max: tidy(g.bounds.max) }, world: { min: tidy(toWorld(g.bounds.min)), max: tidy(toWorld(g.bounds.max)) } },
-    note: "the block's corner is snapped to whole Scene-frame units; sculpt or fill_box_raw can shape it",
+    note: fill === "empty" ? "an empty block: its whole box counts against the game's cells; fill it with sculpt (fill, frame: frameId), fill_box_raw or the structure tools (place: \"existing\")"
+      : "the block's corner is snapped to whole Scene-frame units; sculpt or fill_box_raw can shape it",
   };
 }
 

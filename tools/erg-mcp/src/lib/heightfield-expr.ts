@@ -130,8 +130,10 @@ type Fn = (v: Vars) => number;
 
 const KEYWORDS = ["let", "fn"];
 
-/** Compiles an expression to a function of the column's variables, or throws an ExprError saying where it is wrong. */
-export function compile(src: string): Fn {
+/** Compiles an expression to a function of the column's variables, or throws an ExprError saying where it is wrong.
+ * `extra` names more variables the caller puts in the object it passes (a mask's h, y and d). */
+export function compile(src: string, extra: readonly string[] = []): Fn {
+  const known: readonly string[] = [...VARIABLES, ...extra];
   if (typeof src !== "string" || !src.trim()) throw new ExprError("the expression is empty", 0);
   if (src.length > MAX_SOURCE) throw new ExprError(`the expression is longer than ${MAX_SOURCE} characters`, MAX_SOURCE);
   const ts = tokens(src);
@@ -238,8 +240,8 @@ export function compile(src: string): Fn {
       }
       const slot = scope?.get(t.v) ?? names.get(t.v);
       if (slot !== undefined) return () => slots[slot];
-      if (!(VARIABLES as readonly string[]).includes(t.v))
-        throw new ExprError(`unknown name '${t.v}' (variables: ${[...VARIABLES, ...names.keys()].join(", ")})`, t.at);
+      if (!known.includes(t.v))
+        throw new ExprError(`unknown name '${t.v}' (variables: ${[...known, ...names.keys()].join(", ")})`, t.at);
       const name = t.v as Variable;
       return (v) => v[name];
     }
@@ -249,7 +251,7 @@ export function compile(src: string): Fn {
   function fresh(): string {
     const t = peek();
     if (t.k !== "id") throw new ExprError("expected a name", t.at);
-    if ((VARIABLES as readonly string[]).includes(t.v) || FUNCS[t.v] || KEYWORDS.includes(t.v) || names.has(t.v) || fns.has(t.v) || scope?.has(t.v))
+    if (known.includes(t.v) || FUNCS[t.v] || KEYWORDS.includes(t.v) || names.has(t.v) || fns.has(t.v) || scope?.has(t.v))
       throw new ExprError(`'${t.v}' is already a name (variables, functions and earlier bindings cannot be bound again)`, t.at);
     p++;
     return t.v;

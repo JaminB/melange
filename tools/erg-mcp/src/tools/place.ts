@@ -316,6 +316,33 @@ function setLevel(s: Session, settings: LevelSettings, label: string, report: ()
 // ------------------------------------------------------------------ shipping
 
 /** Saves first when there are unsaved edits (export and Test work on the saved project, as in the panel). */
+/** test {restart}: from a running Test match back to the main menu (level.test.quit), waiting until the game is out
+ * of the match and not loading; at the menu already, nothing. Reads the game through the client console: inMatch(),
+ * since scene() still says "loading" through a match's first minute. */
+async function backToMenu(s: Session): Promise<{ fromScene: string; ms: number; retries?: number } | undefined> {
+  const conn = await s.ensure(), client = await s.client(), t0 = Date.now();
+  if (!conn.methods.includes("lua.eval")) throw new ToolError("restart needs lua.eval (the game's console) to see where the game is");
+  const scene = async () => {
+    const r = await client.call<{ ok: boolean; text: string }>("lua.eval", { target: "client", code: "return wum.game.inMatch() and \"match\" or wum.game.scene()" }, 15000);
+    return r.ok ? r.text : "?";
+  };
+  const from = await scene();
+  if (from !== "match" && from !== "loading") return undefined;
+  if (!conn.methods.includes("level.test.quit")) throw new ToolError("this game has no level.test.quit: leave the match from the game's menu, then test");
+  // a match still loading (its intro) is left once it is a match; the quit is sent once
+  let sent = false;
+  for (let now = from; ; now = await scene().catch(() => "?")) {
+    if (now === "match" && !sent) {
+      await client.call("level.test.quit", {}, 15000).catch((e: Error) => { throw new ToolError(`could not leave the match: ${e.message}`); });
+      sent = true;
+    } else if (now !== "match" && now !== "loading" && now !== "?") break;
+    if (Date.now() - t0 > 60000) throw new ToolError(`the game did not reach the menu within 60 s (scene '${now}')`);
+    await new Promise((ok) => setTimeout(ok, 500));
+  }
+  await new Promise((ok) => setTimeout(ok, 4000));   // the frontend settles before Quick Game is posted
+  return { fromScene: from, ms: Date.now() - t0 };
+}
+
 async function savedFirst(s: Session, why: string) {
   const p = s.requireProject();
   if (!p.store.dirty) return undefined;
@@ -531,20 +558,23 @@ export const tools: Tool[] = [
   },
   {
     name: "test",
-    description: "Play the project in the running game without exporting (level.test): saves unsaved edits, then follows the 'erg' channel (registering, registered, armed, starting, playing, ended, failed) and waits for 'playing' (or 'armed', where the game waits for Quick Game). Answers the states with timings. Needs the game running at its main menu; Melange.exe --serve has no Test.",
+    description: "Play the project in the running game without exporting (level.test): saves unsaved edits, then follows the 'erg' channel (registering, registered, armed, starting, playing, ended, failed) and waits for 'playing' (or 'armed', where the game waits for Quick Game). Answers the states with timings. Needs the game running at its main menu; Melange.exe --serve has no Test. `restart: true` from a running Test match leaves it for the menu first (level.test.quit: the game's own GameLogic.QuitGame) and then tests the project again, so an edit is played without restarting the game.",
     inputSchema: {
       type: "object", additionalProperties: false,
       properties: { tod: { type: "string", enum: TIMES_OF_DAY, description: "Time of day for this Test (default the project's)." },
         waitFor: { type: "string", enum: ["playing", "armed"], description: "State to wait for (default playing)." },
         timeoutSec: { type: "integer", minimum: 1, maximum: 600, description: "Stop waiting after this long (default 60)." },
         cleanMods: { type: "boolean", description: "A clean room for this Test match only: enabled content mods' sim code (entry.sim) does not run, only the level script, and the post-FX stack is off (unless postfx: true), so asserts and lighting belong to the map. Nothing is changed on disk; launch-time content (weapon clones, file overrides, shader mods, client scripts) stays. On a game build without clean rooms it refuses while such mods are enabled." },
-        postfx: { type: "boolean", description: "false: the post-FX stack (every effect and code pass, like the Post-FX panel's Bypass all) is off for this Test match; true with cleanMods keeps it on. Default: on, or off with cleanMods." } },
+        postfx: { type: "boolean", description: "false: the post-FX stack (every effect and code pass, like the Post-FX panel's Bypass all) is off for this Test match; true with cleanMods keeps it on. Default: on, or off with cleanMods." },
+        restart: { type: "boolean", description: "When a Test match is running: leave it for the main menu (level.test.quit), wait for the menu, then test again (default false: refused in a match). Leaving a match writes the game's save (its statistics), as the game's own Quit does." } },
     },
-    async handler(s, a: { tod?: TimeOfDay; waitFor?: "playing" | "armed"; timeoutSec?: number; cleanMods?: boolean; postfx?: boolean }) {
+    async handler(s, a: { tod?: TimeOfDay; waitFor?: "playing" | "armed"; timeoutSec?: number; cleanMods?: boolean; postfx?: boolean; restart?: boolean }) {
 
       const p = s.requireProject();
       const conn = await s.ensure();
       if (!conn.methods.includes("level.test")) throw new ToolError("no level.test here: Test needs the game running at its main menu (Melange.exe --serve has none)");
+      let restarted: { fromScene: string; ms: number; retries?: number } | undefined;
+      if (a.restart) restarted = await backToMenu(s);
       // Content mods with sim code run in every match, a Test too: name them, so a benchmark run knows it is not clean.
       let simMods: string[] = [];
       if (conn.methods.includes("mods.list")) {
@@ -561,9 +591,16 @@ export const tools: Tool[] = [
         throw new ToolError(`content mods with sim code are enabled and would run in the Test: ${simMods.join(", ")}. This game build has no clean-room Test: disable them in the game (they apply at the next launch) for a clean run, or leave out cleanMods`);
       const first = await savedFirst(s, "tested");
       const sec = a.timeoutSec ?? 60;
-      const run = await runTest(p.erg, { tod: a.tod, goal: a.waitFor, timeoutMs: sec * 1000, cleanMods: a.cleanMods, postfx: a.postfx });
+      let run = await runTest(p.erg, { tod: a.tod, goal: a.waitFor, timeoutMs: sec * 1000, cleanMods: a.cleanMods, postfx: a.postfx });
+      // Just after a match the frontend may not take Quick Game yet, and the menu's attract demo can start first: the
+      // game refuses that Test (kAttractRefused); from the menu a second try starts it.
+      for (let tries = 0; restarted && run.final === "failed" && /attract demo/.test(String(run.failed)) && tries < 2; tries++) {
+        await new Promise((ok) => setTimeout(ok, 3000));
+        run = await runTest(p.erg, { tod: a.tod, goal: a.waitFor, timeoutMs: sec * 1000, cleanMods: a.cleanMods, postfx: a.postfx });
+        restarted.retries = tries + 1;
+      }
       const suppressed = !!a.cleanMods && !!run.cleanRoom && !run.cleanRoom.simMods;
-      return { ...run, ...(first ? { savedFirst: true } : {}),
+      return { ...run, ...(first ? { savedFirst: true } : {}), ...(restarted ? { restarted } : {}),
         ...(simMods.length ? suppressed ? { simMods, simModsNote: "these mods' sim code is suppressed in this Test match (clean room)" }
           : { simMods, simModsNote: "these mods' sim code runs in this match beside the level script" } : {}),
         match: "Quick Game (QuickStartHvC: a human team against a computer team) with the game's own Quick Game scheme; the scheme, turn time and team sizes are the game's, not chosen here",

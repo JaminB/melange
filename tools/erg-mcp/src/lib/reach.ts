@@ -3,9 +3,13 @@
 // drop from one to the next, then a search from each spawn. Pure: grids in, a report out. Map units throughout.
 //
 // The rules are the walking ones, kept simple and stated in the answer: a step up is taken when it is at most maxStep,
-// or no steeper than maxSlope over one voxel of the ground it climbs onto (the game draws a voxel staircase as a slope:
-// at voxel size 2.75 a one-voxel riser is a 45 degree ramp a worm walks up); a drop of at most maxDrop; optionally a
-// jump over a gap of up to maxGap to ground no higher than maxStep above. Ground at or under the water drowns a worm.
+// or when it is one voxel riser (at most one voxel of the ground it climbs onto) and the stair it belongs to is no
+// steeper than maxSlope: the riser over the tread above it, the flat run to the next riser in the direction walked
+// (slopeOver "tread", the default: the game draws a voxel staircase as a slope, so terraces are walked at their average
+// slope), or over one voxel of the upper ground (slopeOver "riser", the rule before, under which every voxel staircase
+// is 45 degrees or more); a drop of at most maxDrop; optionally a jump over a gap of up to maxGap to ground no higher
+// than maxStep above. Ground at or under the water drowns a worm; with a flood (FloodRules) the water rises by turn and
+// a node is used only while it is dry when the worm gets there.
 import type { Vec3 } from "../core";
 import { columnSpans } from "./inspect-field";
 import type { Grid } from "./voxel";
@@ -19,7 +23,20 @@ export interface ReachOptions {
   headroom: number;       // air a worm needs above the ground
   water: number | null;   // map y; ground at or under it is not used
   gapRise?: number;       // the highest landing a gap is crossed to, above the take-off (default maxStep)
+  slopeOver?: "tread" | "riser";   // what a riser's slope is judged over (default tread)
+  flood?: FloodRules;     // rising water: a node is walked only while it is dry when the worm reaches it
 }
+
+/** A flood for the search: the water (map y) in each game turn, and when the worm walks: `perTurn` map units along the
+ * walk in each of its own turns, the first in game turn `firstTurn`, then every `every` turns. A node `d` along the walk
+ * is reached in the worm's own turn ceil(d / perTurn) and must be dry in that game turn. */
+export interface FloodRules { waterAt(turn: number): number; perTurn: number; firstTurn: number; every: number; }
+
+/** The game turn in which a worm `d` along its walk gets there (its first own turn for d = 0). */
+export const turnAt = (f: FloodRules, d: number) => f.firstTurn + Math.max(0, Math.ceil(d / f.perTurn - 1e-9) - 1) * f.every;
+
+/** The longest tread measured, in voxels of the upper ground. */
+const TREAD_VOXELS = 8;
 
 export interface Region { x0: number; z0: number; x1: number; z1: number; }
 
@@ -87,18 +104,56 @@ export function standing(S: Surfaces, p: Vec3, o: ReachOptions): number {
   return -1;
 }
 
+/** The flat run on top of a riser: from b's column on in the direction (dx, dz) while the ground stays within maxStep of
+ * the column before (a node there; the first column off it ends the tread), in map units, at most TREAD_VOXELS voxels of
+ * b's ground. */
+export function treadRun(S: Surfaces, b: number, dx: number, dz: number, maxStep: number): number {
+  const d = S.step * Math.hypot(dx, dz), cap = TREAD_VOXELS * S.voxel[b];
+  let ci = S.cell[b] % S.w, cj = Math.floor(S.cell[b] / S.w), run = d, y = S.y[b];
+  while (run < cap) {
+    ci += dx;
+    cj += dz;
+    if (ci < 0 || cj < 0 || ci >= S.w || cj >= S.h) break;
+    const nc = cj * S.w + ci;
+    let next = -1;
+    for (let n = S.start[nc]; n < S.start[nc + 1] && next < 0; n++) if (Math.abs(S.y[n] - y) <= maxStep + 1e-6) next = n;
+    if (next < 0) break;
+    y = S.y[next];
+    run += d;
+  }
+  return Math.min(run, cap);
+}
+
+/** The slope (degrees) a climb a -> b in direction (dx, dz) is judged at: its rise over the tread above it, or over one
+ * voxel of the upper ground with slopeOver "riser"; 0 for a step of at most maxStep or a drop. */
+export function climbSlope(S: Surfaces, a: number, b: number, dx: number, dz: number, o: ReachOptions): number {
+  const dy = S.y[b] - S.y[a];
+  if (dy <= o.maxStep + 1e-6) return 0;
+  const run = o.slopeOver === "riser" ? S.voxel[b] : treadRun(S, b, dx, dz, o.maxStep);
+  return (Math.atan2(dy, run) * 180) / Math.PI;
+}
+
+/** A move from a to the next column b, (dx, dz) columns away: a drop of at most maxDrop, a step of at most maxStep, or a
+ * riser of at most one voxel of the upper ground whose stair is no steeper than maxSlope (climbSlope). */
+export function climbs(S: Surfaces, a: number, b: number, dx: number, dz: number, o: ReachOptions): boolean {
+  const dy = S.y[b] - S.y[a];
+  if (dy < -o.maxDrop - 1e-6) return false;
+  if (dy <= o.maxStep + 1e-6) return true;
+  const tan = Math.tan((o.maxSlope * Math.PI) / 180);
+  if (o.slopeOver === "riser") return dy <= tan * S.voxel[b] + 1e-6;
+  return dy <= S.voxel[b] + 1e-6 && dy <= tan * treadRun(S, b, dx, dz, o.maxStep) + 1e-6;
+}
+
 /** Breadth-first over the walk graph from `src` (Dijkstra on horizontal distance; the graph is small). With `stopAt`, it
  * ends at the first such node reached (the nearest; the rest of the graph is left unexplored). */
 export function search(S: Surfaces, src: number, o: ReachOptions, stopAt?: Uint8Array): Search {
   const reached = new Uint8Array(S.nodes), dist = new Float32Array(S.nodes).fill(Infinity), from = new Int32Array(S.nodes).fill(-1);
   const blocked = new Float32Array(S.nodes).fill(Infinity);
-  const tan = Math.tan((o.maxSlope * Math.PI) / 180), rise = o.gapRise ?? o.maxStep;
-  const dry = (n: number) => o.water === null || S.y[n] > o.water;
-  const ok = (a: number, b: number) => {
-    const dy = S.y[b] - S.y[a];
-    if (dy < -o.maxDrop) return false;
-    return dy <= Math.max(o.maxStep, tan * S.voxel[b]) + 1e-6;
-  };
+  const rise = o.gapRise ?? o.maxStep, fl = o.flood;
+  const dryAt = (n: number, d: number) => (o.water === null || S.y[n] > o.water) && (!fl || S.y[n] > fl.waterAt(turnAt(fl, d)));
+  let here = 0;                                     // the walk to the node being expanded
+  const dry = (n: number) => dryAt(n, here);
+  const ok = (a: number, b: number, dx: number, dz: number) => climbs(S, a, b, dx, dz, o);
   // a binary heap on dist
   const heap: number[] = [];
   const push = (n: number) => {
@@ -123,17 +178,20 @@ export function search(S: Surfaces, src: number, o: ReachOptions, stopAt?: Uint8
   };
   dist[src] = 0;
   push(src);
-  const passable = (a: number, col: number) => {
-    for (let b = S.start[col]; b < S.start[col + 1]; b++) if (dry(b) && ok(a, b)) return true;
+  const passable = (a: number, col: number, dx: number, dz: number) => {
+    for (let b = S.start[col]; b < S.start[col + 1]; b++) if (dry(b) && ok(a, b, dx, dz)) return true;
     return false;
   };
+  // with a flood a node counts only while it is dry when the worm gets there (the water only rises, so the shortest
+  // walk to a node is also the earliest)
   const reach = (a: number, b: number, d: number) => {
-    if (dist[a] + d < dist[b]) { dist[b] = dist[a] + d; from[b] = a; push(b); }
+    if (dist[a] + d < dist[b] && (!fl || dryAt(b, dist[a] + d))) { dist[b] = dist[a] + d; from[b] = a; push(b); }
   };
   while (heap.length) {
     const a = pop();
     if (reached[a]) continue;
     reached[a] = 1;
+    here = dist[a];
     if (stopAt?.[a]) break;
     const c = S.cell[a], ci = c % S.w, cj = Math.floor(c / S.w);
     for (const [dx, dz] of DIRS) {
@@ -143,12 +201,12 @@ export function search(S: Surfaces, src: number, o: ReachOptions, stopAt?: Uint8
       let best = -1, blockedClimb = Infinity;
       for (let b = S.start[nc]; b < S.start[nc + 1]; b++) {
         if (!dry(b)) continue;
-        if (ok(a, b)) { if (best < 0 || S.y[b] > S.y[best]) best = b; }
+        if (ok(a, b, dx, dz)) { if (best < 0 || S.y[b] > S.y[best]) best = b; }
         else if (S.y[b] > S.y[a]) blockedClimb = Math.min(blockedClimb, S.y[b] - S.y[a]);
       }
       // a diagonal step needs one of the two columns beside it walkable too: a worm does not slip between two walls
       // that touch only at a corner
-      if (best >= 0 && dx && dz && !passable(a, cj * S.w + ci + dx) && !passable(a, (cj + dz) * S.w + ci)) best = -1;
+      if (best >= 0 && dx && dz && !passable(a, cj * S.w + ci + dx, dx, 0) && !passable(a, (cj + dz) * S.w + ci, 0, dz)) best = -1;
       if (best >= 0) reach(a, best, d);
       else if (blockedClimb < blocked[a]) blocked[a] = blockedClimb;
       // a jump over a gap: along the same direction, past columns with no ground near the take-off height
@@ -181,23 +239,32 @@ export function pathTo(q: Search, n: number): number[] {
 
 /** What a path asks of a worm: its length along the ground, the steepest walked segment (degrees), the highest step up
  * and the deepest drop, and the jumps (moves past the next column). */
-export interface PathStats { length: number; maxSlope: number; maxStepUp: number; maxDrop: number; jumps: number; }
+export interface PathStats { length: number; maxSlope: number; maxStepUp: number; maxDrop: number; jumps: number; maxStairSlope?: number; }
 
 const across = (S: Surfaces, a: number, b: number) => {
   const p = nodeAt(S, a), q = nodeAt(S, b);
   return Math.hypot(q[0] - p[0], q[2] - p[2]);
 };
 const isJump = (S: Surfaces, h: number) => h > S.step * Math.SQRT2 + 1e-6;
+/** The column step from a's column toward b's (each of x and z -1, 0 or 1). */
+const dirOf = (S: Surfaces, a: number, b: number): [number, number] => {
+  const ca = S.cell[a], cb = S.cell[b];
+  return [Math.sign((cb % S.w) - (ca % S.w)), Math.sign(Math.floor(cb / S.w) - Math.floor(ca / S.w))];
+};
 
-export function pathStats(S: Surfaces, path: number[]): PathStats {
-  const st: PathStats = { length: 0, maxSlope: 0, maxStepUp: 0, maxDrop: 0, jumps: 0 };
+/** With `o`, also maxStairSlope: the steepest climb as the rules judge it (a riser over its tread, climbSlope). */
+export function pathStats(S: Surfaces, path: number[], o?: ReachOptions): PathStats {
+  const st: PathStats = { length: 0, maxSlope: 0, maxStepUp: 0, maxDrop: 0, jumps: 0, ...(o ? { maxStairSlope: 0 } : {}) };
   for (let k = 1; k < path.length; k++) {
     const h = across(S, path[k - 1], path[k]), dy = S.y[path[k]] - S.y[path[k - 1]];
     st.length += Math.hypot(h, dy);
     st.maxStepUp = Math.max(st.maxStepUp, dy);
     st.maxDrop = Math.max(st.maxDrop, -dy);
     if (isJump(S, h)) st.jumps++;
-    else st.maxSlope = Math.max(st.maxSlope, (Math.atan2(Math.abs(dy), h) * 180) / Math.PI);
+    else {
+      st.maxSlope = Math.max(st.maxSlope, (Math.atan2(Math.abs(dy), h) * 180) / Math.PI);
+      if (o) { const [dx, dz] = dirOf(S, path[k - 1], path[k]); st.maxStairSlope = Math.max(st.maxStairSlope!, climbSlope(S, path[k - 1], path[k], dx, dz, o)); }
+    }
   }
   return st;
 }
@@ -206,7 +273,7 @@ export function pathStats(S: Surfaces, path: number[]): PathStats {
 export function walks(S: Surfaces, a: number, b: number, o: ReachOptions): boolean {
   const h = across(S, a, b), dy = S.y[b] - S.y[a];
   if (dy < -o.maxDrop - 1e-6) return false;
-  if (!isJump(S, h)) return dy <= Math.max(o.maxStep, Math.tan((o.maxSlope * Math.PI) / 180) * S.voxel[b]) + 1e-6;
+  if (!isJump(S, h)) { const [dx, dz] = dirOf(S, a, b); return climbs(S, a, b, dx, dz, o); }
   return h <= o.maxGap + S.step * Math.SQRT2 + 1e-6 && dy <= (o.gapRise ?? o.maxStep) + 1e-6;
 }
 

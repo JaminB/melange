@@ -1,7 +1,9 @@
 # Builds erg-mcp into tools\erg-mcp\dist\erg-mcp.mjs with the portable toolchain in tools\ (scripts\web\fetch.ps1):
 # lists the tool groups (every src\tools\*.ts) in src\tools\groups.gen.ts, type-checks with the web app's TypeScript,
-# then bundles with esbuild for Node. Usage: .\tools\erg-mcp\build.ps1 [-SkipTypeCheck]
-param([switch]$SkipTypeCheck)
+# then bundles with esbuild for Node. Usage: .\tools\erg-mcp\build.ps1 [-SkipTypeCheck] [-IfStale]
+# -IfStale builds only when dist\erg-mcp.mjs is missing or older than a source it bundles (src\ and the editor's modules
+# under web\src), so the launcher and the bench never run a stale bundle.
+param([switch]$SkipTypeCheck, [switch]$IfStale)
 $ErrorActionPreference = "Stop"
 $here = $PSScriptRoot
 $root = Split-Path (Split-Path $here -Parent) -Parent
@@ -9,6 +11,17 @@ $node = Join-Path $root "tools\node\node.exe"
 $esbuild = Join-Path $root "tools\esbuild\esbuild.exe"
 $tsc = Join-Path $root "web\node_modules\typescript\bin\tsc"
 foreach ($f in @($node, $esbuild)) { if (-not (Test-Path $f)) { throw "missing $f; run scripts\web\fetch.ps1 first" } }
+
+if ($IfStale) {
+    $bundle = Join-Path $here "dist\erg-mcp.mjs"
+    if (Test-Path $bundle) {
+        $built = (Get-Item $bundle).LastWriteTimeUtc
+        $newer = Get-ChildItem -Recurse -File -Include *.ts, *.mjs -Path (Join-Path $here "src"), (Join-Path $root "web\src\sdk"), (Join-Path $root "web\src\panels\erg") |
+            Where-Object { $_.Name -ne "groups.gen.ts" -and $_.LastWriteTimeUtc -gt $built } | Select-Object -First 1
+        if (-not $newer) { return }
+        Write-Host "erg-mcp: $($newer.FullName) is newer than the bundle; rebuilding"
+    }
+}
 
 # Tool groups: one module per file, registered in file-name order.
 $groups = @(Get-ChildItem (Join-Path $here "src\tools") -Filter *.ts | Where-Object { $_.Name -notmatch '\.gen\.ts$|\.d\.ts$' } |

@@ -28,7 +28,7 @@ import {
 } from "../core";
 import { ToolError } from "../registry";
 import { PATCH_BUDGET, WORLD_PER_MAP, grids, runBytes, tidy, type Grid } from "./voxel";
-import { compile, noise2, ExprError, type Vars } from "./heightfield-expr";
+import { compile, fbm, noise2, ExprError, type Vars } from "./heightfield-expr";
 
 export type Units = "map" | "world";
 
@@ -40,7 +40,15 @@ export interface MaterialRule {
   minDepth?: number; maxDepth?: number;     // the voxel's depth under its column's top, in the region's units
   exposed?: boolean;                        // true: only voxels with air above or beside them; false: only buried ones
   jitter?: { amount: number; scale?: number; seed?: number };   // moves the height bounds by up to amount (noise)
+  region?: Area[];                          // only columns whose centre is in one of these
+  mask?: string;                            // an expression of the column and voxel: only where it is above 0
+  noise?: { threshold?: number; scale?: number; seed?: number; octaves?: number };   // only where noise is above threshold
 }
+
+/** The variables a material rule's mask sees beyond the field's own: the column's height above the floor (h), the voxel's
+ * height above the floor (y) and its depth under the column's top (depth), all in the region's units, and the column's
+ * slope in degrees. */
+export const MASK_VARIABLES = ["h", "y", "depth", "slope"] as const;
 
 /** How a column's height becomes whole voxels: round (nearest; concentric terraces on a cone), or with a threshold that
  * varies per column, so a terrace edge breaks up instead of running as a ring: dither (an ordered 4 x 4 pattern) or
@@ -76,6 +84,7 @@ export interface FieldArgs {
   edges?: Edges;                            // default round
   packer?: Packer;                          // default tiles
   costAt?: number[];                        // also plan at these voxel sizes and report their cost
+  fitBudget?: boolean;                      // raise voxelSize (in steps of 0.25) until the field fits maxBlocks and maxCells whole
 }
 
 export const SIDE = LIMITS.newFrameSide;
@@ -238,7 +247,22 @@ export function sampleField(store: EditorStore, a: FieldArgs): Field {
   rules.forEach((r, i) => {
     if (r.jitter && !(Number.isFinite(r.jitter.amount) && (r.jitter.scale === undefined || r.jitter.scale > 0)))
       throw new ToolError(`materials[${i}].jitter: amount is a number and scale above 0`);
+    if (r.noise && !((r.noise.scale === undefined || r.noise.scale > 0) && (r.noise.octaves === undefined || (Number.isInteger(r.noise.octaves) && r.noise.octaves >= 1 && r.noise.octaves <= 8))))
+      throw new ToolError(`materials[${i}].noise: scale above 0, octaves 1-8`);
   });
+  // a rule's region, mask and noise, prepared once: the areas in map units, the mask compiled
+  const ruleRegion = rules.map((r, i) => (r.region ? areas(r.region, `materials[${i}].region`) : null));
+  const ruleMask = rules.map((r, i) => {
+    if (r.mask === undefined) return null;
+    try {
+      return compile(r.mask, MASK_VARIABLES) as unknown as (v: Record<string, number>) => number;
+    } catch (e) {
+      if (e instanceof ExprError) throw new ToolError(`materials[${i}].mask: ${e.message}`);
+      throw e;
+    }
+  });
+  const mvars: Record<string, number> = { ...vars, h: 0, y: 0, depth: 0, slope: 0 };
+  const centreOf = (col: number): [number, number] => { const ai = col % nx, bj = (col - ai) / nx; return [(i0 + ai + 0.5) * s + t[0], (j0 + bj + 0.5) * s + t[2]]; };
   // The top of the neighbouring column (its hi; the floor where it has none), for exposed: a voxel is exposed when
   // the column's top is it, or a neighbour's top is at or under it (air beside it), the field's edge included.
   const topOf = (ai: number, bj: number) => {
@@ -270,6 +294,23 @@ export function sampleField(store: EditorStore, a: FieldArgs): Field {
           exposed = fromTop === 0 || [[1, 0], [-1, 0], [0, 1], [0, -1]].some(([dx, dz]) => topOf(ai + dx, bj + dz) <= y);
         }
         if (exposed !== r.exposed) continue;
+      }
+      const ri = rules.indexOf(r);
+      if (ruleRegion[ri] || ruleMask[ri] || r.noise) {
+        const [mx, mz] = centreOf(col);
+        if (ruleRegion[ri] && !ruleRegion[ri]!.some((ar) => inArea(ar, mx, mz))) continue;
+        if (r.noise) {
+          const sc = r.noise.scale ?? 8, oc = r.noise.octaves ?? 1, nx2 = mx / k / sc, nz2 = mz / k / sc;
+          const v = oc > 1 ? fbm(nx2, nz2, r.noise.seed ?? 0, oc) : noise2(nx2, nz2, r.noise.seed ?? 0);
+          if (!(v > (r.noise.threshold ?? 0))) continue;
+        }
+        if (ruleMask[ri]) {
+          mvars.x = (mx - cx) / k; mvars.z = (mz - cz) / k;
+          mvars.u = ((mx - t[0]) / s - i0) / nx; mvars.v = ((mz - t[2]) / s - j0) / nz;
+          mvars.r = Math.hypot(mvars.x, mvars.z); mvars.theta = Math.atan2(mvars.z, mvars.x);
+          mvars.h = (hi[col] - floor) / kv; mvars.y = above; mvars.depth = depth; mvars.slope = sl;
+          if (!(ruleMask[ri]!(mvars) > 0)) continue;
+        }
       }
       return r.material;
     }
@@ -707,7 +748,8 @@ export function plan(store: EditorStore, a: FieldArgs, shape?: (f: Field) => voi
     const cellsBind = neededCells > cellRoom;
     const out = [
       ...(cellsBind ? [`cell budget exceeded (${neededCells} needed, ${cellRoom} allowed): the blocks' boxes hold ${neededCells} voxel cells where the ` +
-        `level has ${cells.free} of the game's ${cells.max} left (its frames hold ${cells.used}${a.maxCells !== undefined ? `, maxCells ${a.maxCells}` : ""})`] : []),
+        `level has ${cells.free} of the game's ${cells.max} left (its frames hold ${cells.used}${a.maxCells !== undefined ? `, maxCells ${a.maxCells}` : ""}); ` +
+        `${neededCells} is this packing's after halving boxes with up to ${blockRoom} blocks, not the least the field can cost (more blocks, a coarser voxelSize or fitBudget change it)`] : []),
       ...(pieces.length > blockRoom || !cellsBind ? [`the field needs ${blocks(pieces.length)} and ${slots} may be added (${usedBlocks} of ${LIMITS.newFrames} ` +
         `already used${a.maxBlocks !== undefined ? `, maxBlocks ${a.maxBlocks}` : ""})`] : []),
       ...(pieces.reduce((n, p) => n + p.bytes, 0) > byteRoom ? ["their runs pass the patch's size budget"] : []),
@@ -808,6 +850,38 @@ export function plan(store: EditorStore, a: FieldArgs, shape?: (f: Field) => voi
     },
   };
   return { field: f, canvas: cv, pieces, kept, dropped, fits, slots, columns, voxels, why, report };
+}
+
+/** plan(), and with fitBudget the same field at the smallest voxelSize (from the one asked, in steps of 0.25, up to 4)
+ * whose plan fits whole within maxBlocks and maxCells: blocks and cells are then chosen by the voxel size instead of by
+ * halving boxes until the 64 blocks are spent. The answer's `fitted` says which size was taken and what each one tried
+ * cost. Without fitBudget, or when the size asked fits, it is plan() as it is. */
+export function planFit(store: EditorStore, a: FieldArgs, shape?: (f: Field) => void): Plan {
+  const p = plan(store, a, shape);
+  if (!a.fitBudget) return p;
+  const asked = a.voxelSize ?? 1;
+  if (p.fits && !p.dropped.length) {
+    p.report = { fitted: { asked, voxelSize: asked, note: "the size asked fits within the budget" }, ...p.report };
+    return p;
+  }
+  const tried: object[] = [{ voxelSize: asked, blocks: p.pieces.length, cells: p.pieces.reduce((n, pc) => n + cellsOf(pc), 0), fits: false }];
+  for (let v = Math.floor(asked * 4 + 1e-9) / 4 + 0.25; v <= LIMITS.newFrameScale.max + 1e-9; v += 0.25) {
+    let q: Plan;
+    try {
+      q = plan(store, { ...a, voxelSize: v, partial: false, costAt: undefined }, shape);
+    } catch (e) {
+      tried.push({ voxelSize: v, error: e instanceof Error ? e.message : String(e) });
+      continue;
+    }
+    const whole = q.fits && !q.dropped.length;
+    tried.push({ voxelSize: v, blocks: q.pieces.length, cells: q.pieces.reduce((n, pc) => n + cellsOf(pc), 0), fits: whole });
+    if (whole) {
+      q.report = { fitted: { asked, voxelSize: v, tried }, ...q.report };
+      return q;
+    }
+  }
+  p.report = { fitted: { asked, voxelSize: null, tried, note: `no voxelSize up to ${LIMITS.newFrameScale.max} fits the field whole within the budget: shrink it, raise maxBlocks or maxCells, or pass partial` }, ...p.report };
+  return p;
 }
 
 // ------------------------------------------------------------------ apply

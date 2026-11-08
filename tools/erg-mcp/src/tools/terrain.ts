@@ -6,6 +6,7 @@ import {
   setSurroundGrid, stroke, surroundDabs, surroundSummary, taperSizes, type Units,
 } from "../lib/terrain-ops";
 import { waterMap } from "../lib/inspect-field";
+import { paintSurface, type Shape } from "../lib/surface-paint";
 import { grids, tidy, toWorld } from "../lib/voxel";
 import { ToolError, type Schema, type Tool } from "../registry";
 
@@ -17,7 +18,7 @@ const material: Schema = { description: "Material 0-63 (the palette index). fill
 const brushProps = {
   mode: { type: "string", enum: ["carve", "fill", "paint"], description: "carve clears solid voxels in every frame the brush overlaps (keeping their material bits); fill turns empty voxels solid with `material` (anchor frame only); paint changes the material of solid voxels (anchor frame only)." },
   shape: { type: "string", enum: ["box", "sphere"], description: "A voxel is inside when its centre is: a box, or the ellipsoid of the size (default sphere)." },
-  size: vec("Brush size in voxels of the anchor frame, each 1-32 (a sphere of diameter 5 is [5,5,5]).", true),
+  size: vec("Brush size in voxels of the anchor frame, each 1-32, fractions allowed (a sphere of diameter 5 is [5,5,5]; 2.5 is the cells whose centre is within 1.25)."),
   material,
   materialColumn: { type: "boolean", description: "fill only: take each voxel's material from the highest solid voxel in its column of the frame (the panel's 'column' material); ignores `material`." },
   frame: { type: "integer", description: "Anchor frame id (describe_level). Fill and paint touch only this frame (unless allFrames); carve reaches every frame. Default: the frame holding the point (a solid voxel there first, then the smallest)." },
@@ -40,6 +41,30 @@ function spec(a: Brushy) {
 const gridUnitsNeedFrame = (a: { units?: Units; frame?: number }) => {
   if (a.units === "grid" && a.frame === undefined) throw new ToolError("units 'grid' needs `frame`");
 };
+
+const surfaceProps = {
+  material: { ...material, description: "Material 0-63 to paint." },
+  depth: { type: "number", minimum: 0.01, maximum: 1280, description: "How deep under the ground's top to paint, in `units` (default 1 map unit, 20 world: the top voxel of an unscaled frame; give a frame's voxel size for a scaled one)." },
+  only: { type: "array", items: { type: "integer", minimum: 0, maximum: 63 }, maxItems: 64, description: "Repaint only voxels of these materials (e.g. the rock, not a castle's walls)." },
+  except: { type: "array", items: { type: "integer", minimum: 0, maximum: 63 }, maxItems: 64, description: "Never repaint voxels of these materials." },
+  units: { type: "string", enum: ["world", "map"], description: "world (default, the Erg panel's) or map units, for every position, length and the mask." },
+  dryRun,
+} as const;
+const shapeSchema: Schema = { type: "object", additionalProperties: false, description: "A circle (x, z, radius), a rectangle (min, max: [x, z]) or a polygon (points: [[x, z], ...]).",
+  properties: { x: { type: "number" }, z: { type: "number" }, radius: { type: "number", minimum: 0 },
+    min: { type: "array", items: { type: "number" }, minItems: 2, maxItems: 2 }, max: { type: "array", items: { type: "number" }, minItems: 2, maxItems: 2 },
+    points: { type: "array", items: { type: "array", items: { type: "number" }, minItems: 2, maxItems: 2 }, minItems: 3, maxItems: 500 } } };
+type SurfaceArgs = { material: number; depth?: number; only?: number[]; except?: number[]; units?: "world" | "map"; dryRun?: boolean };
+
+function shapesToMap(list: Record<string, unknown>[] | undefined, k: number): Shape[] {
+  return (list ?? []).map((sh, i) => {
+    const has = (n: string) => sh[n] !== undefined;
+    if (has("radius") && has("x") && has("z") && !has("min") && !has("points")) return { x: (sh.x as number) / k, z: (sh.z as number) / k, radius: (sh.radius as number) / k };
+    if (has("min") && has("max") && !has("radius") && !has("points")) return { min: (sh.min as number[]).map((v) => v / k) as [number, number], max: (sh.max as number[]).map((v) => v / k) as [number, number] };
+    if (has("points") && !has("radius") && !has("min")) return { points: (sh.points as number[][]).map((q) => [q[0] / k, q[1] / k] as [number, number]) };
+    throw new ToolError(`shapes[${i}]: give x, z and radius (a circle), min and max (a rectangle) or points (a polygon)`);
+  });
+}
 
 export const tools: Tool[] = [
   {
@@ -111,8 +136,63 @@ export const tools: Tool[] = [
     },
   },
   {
+    name: "paint_path",
+    description: "Paint a band along a path onto the ground's surface, over every voxel frame it crosses (base frames and added blocks alike): each solid voxel whose centre is within width / 2 of the path (in x, z) and within `depth` under the top of the ground in its column is repainted. The path's y is not used: it follows the surface below, and stretches over air paint nothing (no 'no voxel frame holds that point'). `taper` narrows it along its length, `jitter` makes the edge wander, `followSurface: \"downhill\"` makes the path itself from the first point (as sculpt_path's: a lava flow down a gully). A road or a lava river is one call. One undo step; refused as a whole when a frame would pass 2000 runs.",
+    inputSchema: {
+      type: "object", additionalProperties: false, required: ["material", "points", "width"],
+      properties: {
+        ...surfaceProps,
+        points: { type: "array", minItems: 1, maxItems: 2000, items: { type: "array", items: { type: "number" }, minItems: 2, maxItems: 3 }, description: "The path, [x, z] or [x, y, z] points (y is not used, except followSurface's start). followSurface: the first is the start." },
+        width: { type: "number", minimum: 0.01, description: "The band's width, in `units`." },
+        taper: { type: "number", minimum: 0.05, maximum: 4, description: "The width at the end as a multiple of `width`, linear along the path (default 1)." },
+        jitter: { type: "object", additionalProperties: false, required: ["amount"], description: "Noise on the band's edge: it moves in or out by up to `amount` (units), over features about `scale` across (units; default 8 map units).",
+          properties: { amount: { type: "number" }, scale: { type: "number", minimum: 0.01 }, seed: { type: "integer" } } },
+        followSurface: { type: "string", enum: ["downhill"], description: "Walk downhill from the first point over the voxel ground (as sculpt_path) and paint along that path." },
+        spacing: { type: "number", minimum: 0.1, description: "followSurface: the walk's step in map units (default 1)." },
+        maxLength: { type: "number", minimum: 1, description: "followSurface: the longest walk, map units (default 400)." },
+      },
+    },
+    handler(s, a: SurfaceArgs & { points: number[][]; width: number; taper?: number; jitter?: { amount: number; scale?: number; seed?: number }; followSurface?: "downhill"; spacing?: number; maxLength?: number }) {
+      const { store } = s.requireProject();
+      const k = (a.units ?? "world") === "world" ? 20 : 1;
+      const pts: Vec3[] = a.points.map((p) => (p.length === 2 ? [p[0] / k, 0, p[1] / k] : [p[0] / k, p[1] / k, p[2] / k]) as Vec3);
+      let path = pts, walk: ReturnType<typeof downhillPath> | null = null;
+      if (a.followSurface) {
+        const start: Vec3 = a.points[0].length === 3 ? pts[0] : [pts[0][0], 1e6, pts[0][2]];
+        walk = downhillPath(grids(store), start, { step: a.spacing ?? 1, maxLength: a.maxLength ?? 400, maxSteps: 4000, water: waterMap(store) });
+        path = walk.points;
+      } else if (a.spacing !== undefined || a.maxLength !== undefined) throw new ToolError("spacing and maxLength are for followSurface");
+      const jitter = a.jitter ? { amount: a.jitter.amount / k, scale: (a.jitter.scale ?? 8 * k) / k, seed: a.jitter.seed } : undefined;
+      const r = paintSurface(store, { material: a.material, depth: (a.depth ?? k) / k, path, width: a.width / k, taper: a.taper, jitter, only: a.only, except: a.except,
+        units: a.units ?? "world", dryRun: a.dryRun, label: "Paint path" });
+      const out = (p: Vec3) => tidy([p[0] * k, p[1] * k, p[2] * k] as Vec3);
+      return { ...r, ...(walk ? { followSurface: { stop: walk.stop, steps: walk.points.length - 1, length: tidy([walk.length * k, 0, 0])[0], start: out(walk.points[0]), end: out(walk.points[walk.points.length - 1]) } } : {}), ...patchLeft(store) };
+    },
+  },
+  {
+    name: "paint_region",
+    description: "Paint the ground's surface inside an area, over every voxel frame (base frames and added blocks): each solid voxel within `depth` under the top of the ground in its column whose centre is in one of `shapes` (circles, rectangles, polygons) and/or where `mask` is above 0. The mask is an expression in heightfield_region's language (noise2, fbm, smoothstep, step, lets, ...) of x, z (the level position in `units`), r, theta (about `centre`), h (the ground's top there), y (the voxel's height) and d (0 here). An ash band above 30 with ragged edges: `step(30 + 4*fbm(x/40, z/40, 3, 3), h) - 0.5`; a beach: `step(h, 4) - 0.5`. One undo step.",
+    inputSchema: {
+      type: "object", additionalProperties: false, required: ["material"],
+      properties: {
+        ...surfaceProps,
+        shapes: { type: "array", minItems: 1, maxItems: 64, items: shapeSchema, description: "Paint inside any of these (in `units`)." },
+        mask: { type: "string", description: "Paint only where this expression is above 0 (variables x, z, r, theta, h, y, d, pi, e)." },
+        centre: { type: "array", items: { type: "number" }, minItems: 2, maxItems: 2, description: "[x, z] the mask's r and theta are measured about (default 0, 0)." },
+      },
+    },
+    handler(s, a: SurfaceArgs & { shapes?: Record<string, unknown>[]; mask?: string; centre?: [number, number] }) {
+      const { store } = s.requireProject();
+      const k = (a.units ?? "world") === "world" ? 20 : 1;
+      if (!a.shapes && !a.mask) throw new ToolError("give shapes, a mask, or both");
+      const r = paintSurface(store, { material: a.material, depth: (a.depth ?? k) / k, shapes: shapesToMap(a.shapes, k), mask: a.mask, centre: a.centre?.map((v) => v / k) as [number, number] | undefined,
+        only: a.only, except: a.except, units: a.units ?? "world", dryRun: a.dryRun, label: "Paint region" });
+      return { ...r, ...patchLeft(store) };
+    },
+  },
+  {
     name: "add_block",
-    description: "Add a terrain block: a new solid frame of size X x Y x Z voxels (each 1-31; at most 64 blocks per level) of one material, under the Scene frame, optionally scaled (`scale` map units per voxel, 1-4). Refused when the level's voxel frames would pass the game's 65535 cells (X*Y*Z of every voxel frame; describe_level limits.voxelCells). Its corner snaps to whole units. Give `at` (x and z are the block's centre, y its bottom: it rests on that point) or `center`. Shape it afterwards with sculpt (carve) or fill_box_raw. Answers the new frame id (negative until saved) and its bounds.",
+    description: "Add a terrain block: a new solid frame of size X x Y x Z voxels (each 1-31; at most 64 blocks per level) of one material, under the Scene frame, optionally scaled (`scale` map units per voxel, 1-4). Refused when the level's voxel frames would pass the game's 65535 cells (X*Y*Z of every voxel frame; describe_level limits.voxelCells). Its corner snaps to whole units. Give `at` (x and z are the block's centre, y its bottom: it rests on that point) or `center`. Shape it afterwards with sculpt (carve) or fill_box_raw. `fill` empty adds an empty block (a canvas), hollow a closed shell. Answers `frameId`, the new frame's id (negative until saved; also as `id`), and its bounds.",
     inputSchema: {
       type: "object", additionalProperties: false, required: ["size", "material"],
       properties: {
@@ -123,9 +203,11 @@ export const tools: Tool[] = [
         center: vec("The block's centre, in `units`."),
         units: { type: "string", enum: ["world", "map"], description: "world (default) or map units." },
         dryRun: { type: "boolean", description: "Report the block's cost (the game's cells before and after, its bounds) without adding it." },
+        fill: { type: "string", enum: ["solid", "empty", "hollow"], description: "solid (default): every cell of `material`; empty: no solid cell (a canvas for sculpt fill, fill_box_raw or structures with place existing; the box costs its cells all the same); hollow: a closed shell `shell` voxels thick round an empty inside." },
+        shell: { type: "integer", minimum: 1, maximum: 15, description: "fill hollow: the shell's thickness in voxels (default 1)." },
       },
     },
-    handler(s, a: { size: Vec3; material: number; at?: Vec3; center?: Vec3; units?: "world" | "map"; scale?: number; dryRun?: boolean }) {
+    handler(s, a: { size: Vec3; material: number; at?: Vec3; center?: Vec3; units?: "world" | "map"; scale?: number; dryRun?: boolean; fill?: "solid" | "empty" | "hollow"; shell?: number }) {
       const { store } = s.requireProject();
       return { ...addBlock(store, { ...a, units: a.units ?? "world" }), ...patchLeft(store) };
     },

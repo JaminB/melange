@@ -2,7 +2,7 @@
 // can carry. heightfield_plan answers the packing and the budget without editing; heightfield_region applies it as one
 // undo step. The planner is src/lib/heightfield-plan.ts, the expression language src/lib/heightfield-expr.ts.
 import { FUNCTIONS, MAX_NODES, MAX_SOURCE, VARIABLES } from "../lib/heightfield-expr";
-import { apply, plan, type FieldArgs } from "../lib/heightfield-plan";
+import { MASK_VARIABLES, apply, planFit, type FieldArgs } from "../lib/heightfield-plan";
 import { usage } from "../lib/voxel";
 import type { Schema, Tool } from "../registry";
 
@@ -44,6 +44,10 @@ export const schema: Schema & { type: "object" } = {
         exposed: { type: "boolean", description: "true: only voxels with air above or beside them (the visible surface, cliff faces included); false: only buried ones." },
         jitter: { type: "object", additionalProperties: false, required: ["amount"], description: "Moves this rule's minHeight/maxHeight by up to amount (Perlin noise over x, z with feature size scale, default 8 units), so a band's edge wanders instead of running level.",
           properties: { amount: { type: "number" }, scale: { type: "number", minimum: 0.01 }, seed: { type: "integer" } } },
+        region: areas("Only columns whose centre is in one of these areas (in the call's units): a beach on one side, lava in the crater."),
+        mask: { type: "string", description: `Only where this expression (the expr language) is above 0: of the column's ${VARIABLES.join(", ")} and ${MASK_VARIABLES.join(", ")} (h the column's height above the floor, y the voxel's, depth under the column's top, all in units; slope in degrees). A lava flow down one flank: "0.3 - abs(theta - 0.8) + 0.1*noise2(x/6, z/6, 3)".` },
+        noise: { type: "object", additionalProperties: false, description: "Only where Perlin noise over x, z (feature size scale, default 8 units; octaves > 1 is fbm) is above threshold (default 0, about half the area): patches of ash, scree, grass.",
+          properties: { threshold: { type: "number" }, scale: { type: "number", minimum: 0.01 }, seed: { type: "integer" }, octaves: { type: "integer", minimum: 1, maximum: 8 } } },
       } } },
     reuseFrames: { type: "string", enum: ["aligned", "any", "none"], description: "Fill voxel frames that overlap the field before adding blocks: aligned (default) only frames on the lattice (earlier blocks; the game's base frames are all rotated, scaled or off the whole units), any also rotated and scaled frames (approximate at the surface; not frames scaled under 0.9), none no frames." },
     maxBlocks: { type: "integer", minimum: 0, maximum: 64, description: "Add at most this many blocks (keep some of the 64 for other edits)." },
@@ -54,6 +58,7 @@ export const schema: Schema & { type: "object" } = {
     clip: areas("Keep only the columns whose centre is inside one of these areas: the fine part of a multi-resolution field."),
     edges: { type: "string", enum: ["round", "dither", "noise"], description: "How a height becomes whole voxels: round (default; a cone becomes concentric terraces), dither (a 4 x 4 ordered pattern) or noise (a hash per column): the terrace edges break up into a ragged line instead of square rings, at the same cost. The game's voxels are whole cubes (no slope or partial shapes), and its mesh smooths the steps." },
     packer: { type: "string", enum: ["tiles", "greedy", "best"], description: "How blocks are cut before the cell budget halves them: tiles (default) a grid of 31 x 31 columns, greedy tiles that start on the field's own columns (fewer blocks for rings and sparse fields), best both, keeping the fewer blocks." },
+    fitBudget: { type: "boolean", description: "When the field does not fit whole within maxBlocks and maxCells (and the game's limits) at voxelSize, take the smallest coarser voxelSize (steps of 0.25, up to 4) at which it does, instead of halving boxes until the blocks are spent or refusing. The answer's fitted says the size taken and what each size tried cost. Two calls with clip and exclude (a fine summit, coarse lowlands), each with its own maxBlocks and fitBudget, choose a size per region." },
     costAt: { type: "array", maxItems: 8, items: { type: "number", minimum: 0.5, maximum: 4 }, description: "Also plan the same field at these voxel sizes and report each one's blocks and cells (costAt in the answer), to choose a size before building." },
     exclude: areas("Leave out the columns lying wholly inside one of these areas: the coarse part of a multi-resolution field (it overlaps a field clipped to the same areas at the edge, so no gap opens)."),
   },
@@ -65,7 +70,7 @@ export const tools: Tool[] = [
     description: "Dry run of heightfield_region: how the field packs into voxels without editing. Answers the cells lattice-aligned frames can take, the blocks (each at most 31 voxels a side and 2000 runs; tall fields stack them) with the game cells each costs, what does not fit, and the budget left (64 added blocks, the game's 65535 voxel cells, patch bytes, run voxels).",
     inputSchema: schema,
     handler(s, a: FieldArgs) {
-      return { ...plan(s.store, a).report, applied: false };
+      return { ...planFit(s.store, a).report, applied: false };
     },
   },
   {
@@ -74,7 +79,7 @@ export const tools: Tool[] = [
     inputSchema: schema,
     handler(s, a: FieldArgs) {
       const store = s.store;
-      const p = plan(store, a);
+      const p = planFit(store, a);
       const r = apply(store, p);
       const u = usage(store);
       return { ...p.report, applied: true, added: r.blocks, undo: "undo takes the whole heightfield out",

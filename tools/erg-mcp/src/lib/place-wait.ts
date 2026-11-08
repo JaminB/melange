@@ -23,8 +23,10 @@ export async function runTest(erg: Pick<ErgSession, "test" | "onTest">,
   const t0 = Date.now();
   const states: TestStep[] = [];
   let wake: (() => void) | undefined;
-  let key = "";
+  let key = "", answered = false;
   const add = (s: { state: string; key: string; detail: string }) => {
+    // the channel's last state can be an earlier Test's end (a restart from a match): it is not this run's
+    if (!answered && (s.state === "ended" || s.state === "failed")) return;
     if (s.key) key = s.key;
     const last = states[states.length - 1];
     if (last && last.state === s.state && last.detail === s.detail) return;
@@ -38,6 +40,7 @@ export async function runTest(erg: Pick<ErgSession, "test" | "onTest">,
     if (opts.cleanMods !== undefined) t.cleanMods = opts.cleanMods;
     if (opts.postfx !== undefined) t.postfx = opts.postfx;
     const r = await erg.test(Object.keys(t).length ? t : undefined);
+    answered = true;
     add({ state: r.state, key: r.key, detail: "" });
     const done = () => states.some((s) => STOPS[goal].has(s.state));
     while (!done()) {
