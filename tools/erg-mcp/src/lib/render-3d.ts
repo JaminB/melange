@@ -86,7 +86,9 @@ export const lookFor = (tod: string | undefined): Look => LOOKS[(tod ?? "DAY").t
 /** Where a grid corner (integer lattice point x, y, z of the frame's voxels) is in the level, written to out[at..at+2].
  * Every face vertex goes through here, so a per-frame corner offset (a sheared column) belongs in this one function. */
 export function gridCorner(g: Grid, x: number, y: number, z: number, out: Float64Array, at: number) {
-  const m = g.toMap;
+  const m = g.toMap, c = g.frame?.corners;
+  // A draped block's corner offsets (heightfield_drape) move its columns up, in its own voxels: faces follow them.
+  if (c) y += c[Math.round(z) * (g.size[0] + 1) + Math.round(x)] ?? 0;
   out[at] = m[0] * x + m[1] * y + m[2] * z + m[3];
   out[at + 1] = m[4] * x + m[5] * y + m[6] * z + m[7];
   out[at + 2] = m[8] * x + m[9] * y + m[10] * z + m[11];
