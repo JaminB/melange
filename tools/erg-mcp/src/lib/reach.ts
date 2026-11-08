@@ -18,6 +18,7 @@ export interface ReachOptions {
   maxGap: number;         // 0: no jumps
   headroom: number;       // air a worm needs above the ground
   water: number | null;   // map y; ground at or under it is not used
+  gapRise?: number;       // the highest landing a gap is crossed to, above the take-off (default maxStep)
 }
 
 export interface Region { x0: number; z0: number; x1: number; z1: number; }
@@ -86,11 +87,12 @@ export function standing(S: Surfaces, p: Vec3, o: ReachOptions): number {
   return -1;
 }
 
-/** Breadth-first over the walk graph from `src` (Dijkstra on horizontal distance; the graph is small). */
-export function search(S: Surfaces, src: number, o: ReachOptions): Search {
+/** Breadth-first over the walk graph from `src` (Dijkstra on horizontal distance; the graph is small). With `stopAt`, it
+ * ends at the first such node reached (the nearest; the rest of the graph is left unexplored). */
+export function search(S: Surfaces, src: number, o: ReachOptions, stopAt?: Uint8Array): Search {
   const reached = new Uint8Array(S.nodes), dist = new Float32Array(S.nodes).fill(Infinity), from = new Int32Array(S.nodes).fill(-1);
   const blocked = new Float32Array(S.nodes).fill(Infinity);
-  const tan = Math.tan((o.maxSlope * Math.PI) / 180);
+  const tan = Math.tan((o.maxSlope * Math.PI) / 180), rise = o.gapRise ?? o.maxStep;
   const dry = (n: number) => o.water === null || S.y[n] > o.water;
   const ok = (a: number, b: number) => {
     const dy = S.y[b] - S.y[a];
@@ -132,6 +134,7 @@ export function search(S: Surfaces, src: number, o: ReachOptions): Search {
     const a = pop();
     if (reached[a]) continue;
     reached[a] = 1;
+    if (stopAt?.[a]) break;
     const c = S.cell[a], ci = c % S.w, cj = Math.floor(c / S.w);
     for (const [dx, dz] of DIRS) {
       const ni = ci + dx, nj = cj + dz;
@@ -157,14 +160,92 @@ export function search(S: Surfaces, src: number, o: ReachOptions): Search {
           let land = -1;
           for (let b = S.start[jc]; b < S.start[jc + 1]; b++) {
             const dy = S.y[b] - S.y[a];
-            if (dry(b) && dy <= o.maxStep + 1e-6 && dy >= -o.maxDrop && (land < 0 || S.y[b] > S.y[land])) land = b;
+            if (dry(b) && dy <= rise + 1e-6 && dy >= -o.maxDrop && (land < 0 || S.y[b] > S.y[land])) land = b;
           }
           if (land >= 0) { reach(a, land, d * k); break; }
           // a wall in the way ends the jump
-          if (S.start[jc] < S.start[jc + 1] && S.y[S.start[jc]] > S.y[a] + o.maxStep) break;
+          if (S.start[jc] < S.start[jc + 1] && S.y[S.start[jc]] > S.y[a] + rise) break;
         }
       }
     }
   }
   return { reached, dist, from, blocked };
+}
+
+/** The nodes from the search's start to n, in order. */
+export function pathTo(q: Search, n: number): number[] {
+  const path: number[] = [];
+  for (let k = n; k >= 0; k = q.from[k]) path.push(k);
+  return path.reverse();
+}
+
+/** What a path asks of a worm: its length along the ground, the steepest walked segment (degrees), the highest step up
+ * and the deepest drop, and the jumps (moves past the next column). */
+export interface PathStats { length: number; maxSlope: number; maxStepUp: number; maxDrop: number; jumps: number; }
+
+const across = (S: Surfaces, a: number, b: number) => {
+  const p = nodeAt(S, a), q = nodeAt(S, b);
+  return Math.hypot(q[0] - p[0], q[2] - p[2]);
+};
+const isJump = (S: Surfaces, h: number) => h > S.step * Math.SQRT2 + 1e-6;
+
+export function pathStats(S: Surfaces, path: number[]): PathStats {
+  const st: PathStats = { length: 0, maxSlope: 0, maxStepUp: 0, maxDrop: 0, jumps: 0 };
+  for (let k = 1; k < path.length; k++) {
+    const h = across(S, path[k - 1], path[k]), dy = S.y[path[k]] - S.y[path[k - 1]];
+    st.length += Math.hypot(h, dy);
+    st.maxStepUp = Math.max(st.maxStepUp, dy);
+    st.maxDrop = Math.max(st.maxDrop, -dy);
+    if (isJump(S, h)) st.jumps++;
+    else st.maxSlope = Math.max(st.maxSlope, (Math.atan2(Math.abs(dy), h) * 180) / Math.PI);
+  }
+  return st;
+}
+
+/** True when the move a -> b is one the walking rules of o take (a step, climb or drop to the next column, or a jump). */
+export function walks(S: Surfaces, a: number, b: number, o: ReachOptions): boolean {
+  const h = across(S, a, b), dy = S.y[b] - S.y[a];
+  if (dy < -o.maxDrop - 1e-6) return false;
+  if (!isJump(S, h)) return dy <= Math.max(o.maxStep, Math.tan((o.maxSlope * Math.PI) / 180) * S.voxel[b]) + 1e-6;
+  return h <= o.maxGap + S.step * Math.SQRT2 + 1e-6 && dy <= (o.gapRise ?? o.maxStep) + 1e-6;
+}
+
+/** The reach of each utility, map units: a heuristic, stated in check_reachability's answer. */
+export const UTILITY_REACH = { jump: 3, girder: 8, rope: 40, jetpackUp: 60, jetpackAcross: 30 };
+export type Utility = "jump" | "girder" | "rope" | "jetpack";
+
+/** The walking rules widened to what each utility adds, cheapest first:
+ *   jump    gaps up to UTILITY_REACH.jump to ground no higher than maxStep;
+ *   girder  a girder of that length: gaps up to it, and steps or a gap's far side up to half of it higher;
+ *   rope    a climb of up to UTILITY_REACH.rope up a wall next to the worm (the wall is the anchor), girder gaps too;
+ *   jetpack up to jetpackUp higher and jetpackAcross across, any drop. */
+export function relaxed(o: ReachOptions, u = UTILITY_REACH): [Utility, ReachOptions][] {
+  const half = u.girder / 2;
+  return [
+    ["jump", { ...o, maxGap: Math.max(o.maxGap, u.jump) }],
+    ["girder", { ...o, maxGap: Math.max(o.maxGap, u.girder), maxStep: Math.max(o.maxStep, half), gapRise: Math.max(o.gapRise ?? o.maxStep, half) }],
+    ["rope", { ...o, maxGap: Math.max(o.maxGap, u.girder), maxStep: Math.max(o.maxStep, u.rope), gapRise: Math.max(o.gapRise ?? o.maxStep, half) }],
+    ["jetpack", { ...o, maxGap: Math.max(o.maxGap, u.jetpackAcross), maxStep: Math.max(o.maxStep, u.jetpackUp), gapRise: Math.max(o.gapRise ?? o.maxStep, u.jetpackUp), maxDrop: Infinity }],
+  ];
+}
+
+/** For a start the walking rules do not get to a goal: the cheapest utility whose widened rules do (null: none), the route
+ * then taken and where the utility is used: its first move the next cheaper rules refuse (walking's for a jump). */
+export function classify(S: Surfaces, src: number, goal: Uint8Array, o: ReachOptions, u = UTILITY_REACH):
+  { utility: Utility | null; path: number[]; at: [number, number] | null } {
+  let prev = o;
+  for (const [utility, ro] of relaxed(o, u)) {
+    const cheaper = prev;
+    prev = ro;
+    const q = search(S, src, ro, goal);
+    let hit = -1;
+    for (let n = 0; n < S.nodes; n++) if (q.reached[n] && goal[n] && (hit < 0 || q.dist[n] < q.dist[hit])) hit = n;
+    if (hit < 0) continue;
+    const path = pathTo(q, hit);
+    let at: [number, number] | null = null;
+    for (let k = 1; k < path.length && !at; k++) if (!walks(S, path[k - 1], path[k], cheaper)) at = [path[k - 1], path[k]];
+    for (let k = 1; k < path.length && !at; k++) if (!walks(S, path[k - 1], path[k], o)) at = [path[k - 1], path[k]];
+    return { utility, path, at };
+  }
+  return { utility: null, path: [], at: null };
 }

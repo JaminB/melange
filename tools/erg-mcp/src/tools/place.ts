@@ -13,6 +13,7 @@ import {
 } from "../lib/place-geom";
 import { resolveFile, themeFile } from "../lib/materials";
 import { runTest } from "../lib/place-wait";
+import { CAMERA_RISE, WALL_RADIUS, spawnWarnings } from "../lib/spawn-check";
 import { tidy } from "../lib/voxel";
 import { ToolError, type Schema, type Tool } from "../registry";
 import type { Session } from "../session";
@@ -44,6 +45,19 @@ function issuesOf(store: EditorStore, max = 30): string[] {
 
 // ------------------------------------------------------------------ spawns
 
+interface CameraArgs { wallRadius?: number; cameraRise?: number; }
+const cameraProps: Record<string, Schema> = {
+  wallRadius: { type: "number", minimum: 0, maximum: 400, description: `Spawn check: ground this close to a spawn horizontally at its turn camera's height is warned of (units; default ${WALL_RADIUS} map units, ${WALL_RADIUS * 20} world).` },
+  cameraRise: { type: "number", minimum: 0, maximum: 2000, description: `Spawn check: how far above the ground a spawn stands on its turn camera sits (units; default ${CAMERA_RISE} map units, ${CAMERA_RISE * 20} world, an assumption).` },
+};
+
+/** The spawn checks (a wall at the turn camera, ground under the water) as warning lines in the caller's units. */
+function cameraWarnings(store: EditorStore, units: Units, a: CameraArgs): string[] {
+  const k = units === "map" ? 1 : 20;
+  const len = (v: number) => `${Math.round(v * k * 100) / 100} ${units}`;
+  return spawnWarnings(store, len, a.wallRadius === undefined ? WALL_RADIUS : a.wallRadius / k, a.cameraRise === undefined ? CAMERA_RISE : a.cameraRise / k);
+}
+
 interface SpawnArg extends PointArgs { worm: number; }
 
 function spawnState(store: EditorStore, units: Units) {
@@ -53,7 +67,7 @@ function spawnState(store: EditorStore, units: Units) {
   return { spawnMode: scene.spawns.mode, spawns, missingKnots: KNOTS.filter((k) => !have.has(k)) };
 }
 
-function placeSpawnKnots(s: Session, a: { mode?: "random" | "knots"; spawns?: SpawnArg[]; units?: Units }) {
+function placeSpawnKnots(s: Session, a: { mode?: "random" | "knots"; spawns?: SpawnArg[]; units?: Units } & CameraArgs) {
   const store = s.store, scene = store.scene, units = a.units ?? "world";
   const mode = a.mode ?? "knots";
   const cmds: Command[] = [];
@@ -75,9 +89,9 @@ function placeSpawnKnots(s: Session, a: { mode?: "random" | "knots"; spawns?: Sp
       done.push({ worm: sp.worm, action: "added", dropped, pos: pointOut(map, units) });
     }
   }
-  if (!cmds.length) return { mode, changed: false, note: "nothing to change", ...spawnState(store, units) };
+  if (!cmds.length) return { mode, changed: false, note: "nothing to change", ...spawnState(store, units), warnings: cameraWarnings(store, units, a) };
   commit(store, cmds.length === 1 ? cmds[0] : new Group(a.spawns?.length ? "Place spawn knots" : `Spawn mode ${mode}`, cmds));
-  return { mode, changed: true, placed: done, ...spawnState(store, units), issues: issuesOf(store).filter((t) => /WORM|spawn/i.test(t)) };
+  return { mode, changed: true, placed: done, ...spawnState(store, units), issues: issuesOf(store).filter((t) => /WORM|spawn/i.test(t)), warnings: cameraWarnings(store, units, a) };
 }
 
 // ------------------------------------------------------------------ objects
@@ -170,7 +184,7 @@ async function placeObject(s: Session, a: PlaceArgs) {
   };
 }
 
-function listObjects(s: Session, a: { role?: string; search?: string; limit?: number; units?: Units }) {
+function listObjects(s: Session, a: { role?: string; search?: string; limit?: number; units?: Units } & CameraArgs) {
   const store = s.store, scene = store.scene, units = a.units ?? "world";
   const q = a.search?.toLowerCase();
   const roles = a.role ? [a.role] : ["spawn", "object"];
@@ -182,7 +196,7 @@ function listObjects(s: Session, a: { role?: string; search?: string; limit?: nu
     levelObjects: listed.filter((d) => d.object),
     placed: listed.filter((d) => d.role !== "spawn" && !d.object),
     counts: { objects: `${scene.objects?.length ?? 0} of ${LIMITS.objects}`, details: scene.details.length },
-    issues: issuesOf(store),
+    issues: [...issuesOf(store), ...cameraWarnings(store, units, a)],
   };
 }
 
@@ -290,7 +304,7 @@ const modId: Schema = { type: "string", description: "Mod id: a-z, 0-9, '-' and 
 export const tools: Tool[] = [
   {
     name: "place_spawn_knots",
-    description: "Set the spawn mode and place or move the spawn knots WORM0-WORM7. mode 'knots' makes worm i start on knot i (a match needs all 8); 'random' leaves the game's random spawns (existing knots stay but are unused). Each spawn is a position [x,y,z] or xz (dropped onto the terrain). An existing WORMn is moved, a missing one added. One undo step. Answers the spawns and the knots still missing.",
+    description: "Set the spawn mode and place or move the spawn knots WORM0-WORM7. mode 'knots' makes worm i start on knot i (a match needs all 8); 'random' leaves the game's random spawns (existing knots stay but are unused). Each spawn is a position [x,y,z] or xz (dropped onto the terrain). An existing WORMn is moved, a missing one added. One undo step. Answers the spawns, the knots still missing and warnings: a spawn whose turn camera may start inside a wall (ground within wallRadius at cameraRise above the ground it stands on) or that stands on ground under the water.",
     inputSchema: {
       type: "object", additionalProperties: false,
       properties: {
@@ -300,7 +314,7 @@ export const tools: Tool[] = [
           items: { type: "object", additionalProperties: false, required: ["worm"],
             properties: { worm: { type: "integer", minimum: 0, maximum: 7, description: "0-7: WORM0-WORM7." }, ...pointProps } },
         },
-        units: unitsSchema,
+        units: unitsSchema, ...cameraProps,
       },
     },
     handler: (s, a) => placeSpawnKnots(s, a),
@@ -370,11 +384,11 @@ export const tools: Tool[] = [
   },
   {
     name: "list_objects",
-    description: "The open level's spawn knots, level objects (crates with contents, telepads, triggers, the mine factory) and placed mines and oil drums, with positions, plus the editor's checks (missing knots, objects under water, telepads without a partner). role lists another role instead (e.g. scenery, light).",
+    description: "The open level's spawn knots, level objects (crates with contents, telepads, triggers, the mine factory) and placed mines and oil drums, with positions, plus the editor's checks (missing knots, objects under water, telepads without a partner) and the spawn checks (a wall at a spawn's turn camera, a spawn on ground under the water). role lists another role instead (e.g. scenery, light).",
     inputSchema: {
       type: "object", additionalProperties: false,
       properties: { role: { type: "string", description: "Only this role (default spawn and object)." }, search: { type: "string", description: "Name or resource contains this (any case)." },
-        limit: { type: "integer", minimum: 1, maximum: 5000, description: "Details to list (default 200)." }, units: unitsSchema },
+        limit: { type: "integer", minimum: 1, maximum: 5000, description: "Details to list (default 200)." }, units: unitsSchema, ...cameraProps },
     },
     handler: (s, a) => listObjects(s, a),
   },

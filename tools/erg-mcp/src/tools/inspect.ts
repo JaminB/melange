@@ -4,7 +4,7 @@
 import type { EditorStore, ServerPaletteEntry as PaletteEntry, Vec3 } from "../core";
 import { extentXZ, markers, sampleField, spansAt, waterMap, type Field, type MarkerKind, type Region } from "../lib/inspect-field";
 import { Raster, SKY, VOID, WATER, hex, materialTint, shade, type Rgb } from "../lib/inspect-png";
-import { nodeAt, search, standing, surfaces, type ReachOptions } from "../lib/reach";
+import { UTILITY_REACH, classify, nodeAt, pathStats, pathTo, search, standing, surfaces, type ReachOptions, type Surfaces } from "../lib/reach";
 import { loadMaterials, projectMaterials, resolveFile, themeFile, tintFor, type MaterialSet, type PaletteMode } from "../lib/materials";
 import { WORLD_PER_MAP, grids, isSolid, material, tidy, type Grid } from "../lib/voxel";
 import { ToolError, image, type Content, type Tool } from "../registry";
@@ -166,9 +166,11 @@ export function drawTopdown(f: Field, scale: number, opts: { water: number | nul
   return { img, px: (x: number) => MARGIN + Math.round(((x - f.x0) / f.step) * scale), pz: (z: number) => MARGIN + Math.round(((z - f.z0) / f.step) * scale) };
 }
 
-export async function renderTopdown(s: Session, a: RegionArgs & { step?: number; scale?: number; shading?: "both" | "height" | "material"; markers?: boolean; palette?: PaletteMode }): Promise<{ content: Content[] }> {
-  const store = s.store, gs = grids(store);
-  const r = region(gs, a);
+type TopdownArgs = RegionArgs & { step?: number; scale?: number; shading?: "both" | "height" | "material"; palette?: PaletteMode };
+
+/** render_topdown's picture of region r without its markers: the ground, the water and the axis ticks. */
+async function topdownView(s: Session, gs: Grid[], r: Region, a: TopdownArgs) {
+  const store = s.store;
   const longest = Math.max(r.x1 - r.x0, r.z1 - r.z0);
   const step = a.step === undefined ? (longest > 400 ? Math.ceil(longest / 400) : 1) : inMap(a.step, a.units);
   const cols = Math.ceil((r.x1 - r.x0) / step), rows = Math.ceil((r.z1 - r.z0) / step);
@@ -191,6 +193,13 @@ export async function renderTopdown(s: Session, a: RegionArgs & { step?: number;
     img.rect(MARGIN - 3, pz(z), 3, 1, LAB);
     img.text(1, pz(z) + 2, String(r2(outUnit(z, a.units))).slice(-3), LAB);
   }
+  return { f, step, scale, water, shading, pal, img, px, pz };
+}
+
+export async function renderTopdown(s: Session, a: TopdownArgs & { markers?: boolean }): Promise<{ content: Content[] }> {
+  const store = s.store, gs = grids(store);
+  const r = region(gs, a);
+  const { f, step, scale, water, shading, pal, img, px, pz } = await topdownView(s, gs, r, a);
   const placed: object[] = [];
   const mr = Math.max(2, Math.min(5, Math.round(scale / 2) + 1));
   for (const m of a.markers === false ? [] : markers(store)) {
@@ -315,7 +324,7 @@ export async function queryGround(s: Session, a: { x: number; z: number; units?:
   const out = (y: number) => ({ map: r2(y), world: r2(y * WORLD_PER_MAP) });
   const span = (q: (typeof sp)[number]) => ({ top: out(q.top), bottom: out(q.bottom), frame: q.frame, frameName: frameName(store, q.frame) ?? null, material: q.material, materialName: names?.[q.material] ?? null });
   const at = { map: [r2(px), r2(pz)], world: [r2(px * WORLD_PER_MAP), r2(pz * WORLD_PER_MAP)] };
-  if (!sp.length) return { at, ground: null, note: a.below === undefined ? "no voxel frame has ground in this column" : "no ground under that height in this column" };
+  if (!sp.length) return { at, frame: null, frameName: null, material: null, ground: null, note: a.below === undefined ? "no voxel frame has ground in this column" : "no ground under that height in this column" };
   const top = span(sp[0]);
   return {
     at, ground: top,
@@ -331,10 +340,51 @@ export async function queryGround(s: Session, a: { x: number; z: number; units?:
 
 interface ReachArgs extends RegionArgs {
   from?: number[][]; target?: { x: number; z: number; radius?: number }; step?: number; maxStep?: number; maxSlope?: number; maxDrop?: number;
-  maxGap?: number; headroom?: number; water?: boolean;
+  maxGap?: number; headroom?: number; water?: boolean; render?: boolean; palette?: PaletteMode;
 }
 
-export function checkReachability(s: Session, a: ReachArgs) {
+const ROUTE_RGB: Rgb[] = [[255, 70, 70], [70, 150, 255], [255, 210, 40], [200, 90, 255], [60, 230, 120], [255, 140, 30], [40, 230, 230], [255, 110, 200]];
+
+/** One start's routes for the picture: the walk (to the target, or to the closest point reached), the route with the
+ * utility it needs, where that is used, and where the walk is stopped. Map units. */
+interface Route { name: string; start: Vec3; walk: number[]; utility: number[]; usedAt: Vec3 | null; blocked: Vec3[]; }
+
+async function drawRoutes(s: Session, gs: Grid[], r: Region, S: Surfaces, routes: Route[], target: Vec3, u: Units, palette?: PaletteMode) {
+  const v = await topdownView(s, gs, r, { units: u, palette });
+  const { img, px, pz } = v, w = Math.max(1, Math.min(3, Math.round(v.scale / 3)));
+  const poly = (path: number[], c: Rgb, dash: number) => {
+    for (let k = 1; k < path.length; k++) {
+      const a = nodeAt(S, path[k - 1]), b = nodeAt(S, path[k]);
+      img.line(px(a[0]), pz(a[2]), px(b[0]), pz(b[2]), c, w, dash);
+    }
+  };
+  const ring = (x: number, z: number, rad: number, c: Rgb) => {
+    for (let k = 0; k < 48; k++) {
+      const t0 = (k / 48) * Math.PI * 2, t1 = ((k + 1) / 48) * Math.PI * 2;
+      img.line(px(x) + Math.round(rad * Math.cos(t0)), pz(z) + Math.round(rad * Math.sin(t0)), px(x) + Math.round(rad * Math.cos(t1)), pz(z) + Math.round(rad * Math.sin(t1)), c, 2);
+    }
+  };
+  const legend: object[] = [];
+  routes.forEach((rt, i) => {
+    const c = ROUTE_RGB[i % ROUTE_RGB.length];
+    poly(rt.utility, c, 4);
+    poly(rt.walk, c, 0);
+    for (const b of rt.blocked) img.cross(px(b[0]), pz(b[2]), 4, c);
+    if (rt.usedAt) ring(rt.usedAt[0], rt.usedAt[2], 5, c);
+    img.marker(px(rt.start[0]), pz(rt.start[2]), 3, c);
+    legend.push({ name: rt.name, colour: hex(c) });
+  });
+  ring(target[0], target[2], 8, [255, 255, 255]);
+  return {
+    image: img.png(),
+    info: { width: img.w, height: img.h, pixelsPerCell: v.scale, cellSize: `${r2(outUnit(v.step, u))} ${u ?? "map"} units`, margin: MARGIN,
+      reading: `pixel (px, py) is x ${r2(outUnit(v.f.x0, u))} + (px - ${MARGIN}) / ${v.scale} * ${r2(outUnit(v.step, u))}, and z likewise with py; x grows right, z grows down`,
+      drawn: "per start (its colour): a square at the start, a solid line for the walk (to the target, or to the closest point reached), a dashed line for the route with the utility it needs, a ring where that utility is first used, an X where the walk is blocked; the white ring is the target",
+      palette: v.pal.note, routes: legend },
+  };
+}
+
+export async function checkReachability(s: Session, a: ReachArgs) {
   const store = s.store, gs = grids(store), u = a.units;
   const L = (v: number | undefined, d: number) => (v === undefined ? d : inMap(v, u));
   const r = region(gs, a);
@@ -371,6 +421,12 @@ export function checkReachability(s: Session, a: ReachArgs) {
     })
     : markers(store).filter((m) => m.kind === "spawn").map((m) => ({ name: m.name, at: m.pos }));
   if (!starts.length) throw new ToolError("the level has no spawn knots: pass from");
+  const statsOut = (path: number[]) => {
+    const st = pathStats(S, path);
+    return { length: r2(outUnit(st.length, u)), maxSlope: Math.round(st.maxSlope * 10) / 10, maxStepUp: r2(outUnit(st.maxStepUp, u)), maxDrop: r2(outUnit(st.maxDrop, u)), jumps: st.jumps };
+  };
+  const thin = (path: number[]) => { const every = Math.max(1, Math.ceil(path.length / 12)); return path.filter((_, i) => i % every === 0 || i === path.length - 1).map((n) => out(nodeAt(S, n))); };
+  const routes: Route[] = [];
   const spawns = starts.map((st) => {
     const n0 = standing(S, st.at, o);
     if (n0 < 0) return { name: st.name, at: out(st.at), reachable: false, why: water !== null && standing(S, st.at, { ...o, water: null }) >= 0 ? "it stands at or under the water" : "no ground under it in the region" };
@@ -387,28 +443,36 @@ export function checkReachability(s: Session, a: ReachArgs) {
     for (let n = 0; n < S.nodes; n++) reached += q.reached[n];
     const base = { name: st.name, at: out(st.at), standsOn: r2(outUnit(S.y[n0], u)), reachable: hit >= 0, reachedColumns: reached, highestReached: out(nodeAt(S, high)) };
     if (hit >= 0) {
-      const path: number[] = [];
-      for (let n = hit; n >= 0; n = q.from[n]) path.push(n);
-      path.reverse();
-      const every = Math.max(1, Math.ceil(path.length / 12));
-      return { ...base, walk: r2(outUnit(q.dist[hit], u)), waypoints: path.filter((_, i) => i % every === 0 || i === path.length - 1).map((n) => out(nodeAt(S, n))) };
+      const path = pathTo(q, hit);
+      routes.push({ name: st.name, start: st.at, walk: path, utility: [], usedAt: null, blocked: [] });
+      return { ...base, walk: r2(outUnit(q.dist[hit], u)), waypoints: thin(path), path: statsOut(path) };
     }
     // where it is stopped: the reached ground nearest the target with a climb too high next to it
     const stops: { n: number; d: number }[] = [];
     for (let n = 0; n < S.nodes; n++) if (q.reached[n] && q.blocked[n] < Infinity) { const p = nodeAt(S, n); stops.push({ n, d: Math.hypot(p[0] - tx, p[2] - tz) }); }
     stops.sort((x, y) => x.d - y.d);
-    const blockedAt: object[] = [];
+    const blockedAt: object[] = [], blockedMap: Vec3[] = [];
     for (const st2 of stops) {
       const p = nodeAt(S, st2.n);
       if (blockedAt.some((b) => Math.hypot((b as { x: number }).x - p[0], (b as { z: number }).z - p[2]) < 4 * step)) continue;
       blockedAt.push({ x: p[0], z: p[2], at: out(p), climbNeeded: r2(outUnit(q.blocked[st2.n], u)) });
+      blockedMap.push(p);
       if (blockedAt.length >= 3) break;
     }
+    // the cheapest utility that gets there: the walk widened to what each adds (a heuristic, rules.utilities)
+    const c = classify(S, n0, goal, o);
+    let needs: object;
+    if (c.utility) {
+      const [fa, fb] = c.at ?? [n0, n0], pa = nodeAt(S, fa), pb = nodeAt(S, fb);
+      needs = { utility: c.utility, usedAt: { from: out(pa), to: out(pb), rise: r2(outUnit(pb[1] - pa[1], u)), across: r2(outUnit(Math.hypot(pb[0] - pa[0], pb[2] - pa[2]), u)) },
+        path: statsOut(c.path), waypoints: thin(c.path) };
+    } else needs = { utility: null, note: "not within a jetpack's reach either (rules.utilities)" };
+    routes.push({ name: st.name, start: st.at, walk: pathTo(q, near), utility: c.path, usedAt: c.at ? nodeAt(S, c.at[0]) : null, blocked: blockedMap });
     return { ...base, closest: { at: out(nodeAt(S, near)), distance: r2(outUnit(nearD, u)) },
-      blockedAt: blockedAt.map((b) => { const { x: _x, z: _z, ...rest } = b as { x: number; z: number }; return rest; }) };
+      blockedAt: blockedAt.map((b) => { const { x: _x, z: _z, ...rest } = b as { x: number; z: number }; return rest; }), needs };
   });
   const ok = spawns.filter((x) => x.reachable).length;
-  return compact({
+  const answer = {
     summary: `${ok} of ${spawns.length} reach the target on foot`,
     target: { at: out([tx, top, tz]), radius: r2(outUnit(tr, u)), surfaces: goals, note: a.target ? "the highest ground within the radius" : "the highest ground of the region" },
     rules: { step: r2(outUnit(step, u)), maxStep: r2(outUnit(o.maxStep, u)), maxSlope: o.maxSlope, maxDrop: r2(outUnit(o.maxDrop, u)), maxGap: r2(outUnit(o.maxGap, u)),
@@ -416,7 +480,16 @@ export function checkReachability(s: Session, a: ReachArgs) {
       note: "walking only (no rope, jetpack or girders): a climb is taken when it is at most maxStep, or no steeper than maxSlope over one voxel of the ground it climbs onto (the game draws a voxel step as a slope); drops up to maxDrop; jumps over gaps up to maxGap (0: none); ground at or under the water is not used" },
     graph: { columns: S.w * S.h, surfaces: S.nodes },
     spawns,
-  });
+  };
+  const U = UTILITY_REACH, lu = (v: number) => r2(outUnit(v, u));
+  Object.assign(answer.rules, { utilities: {
+    note: "a heuristic: for a start that does not walk there, the search is run again with the rules widened to each utility in turn, cheapest first; needs names the first that gets there, usedAt its first move that walking refuses",
+    jump: `gaps up to ${lu(U.jump)} to ground no higher than maxStep`, girder: `gaps up to ${lu(U.girder)}, steps and far sides up to ${lu(U.girder / 2)} higher`,
+    rope: `a climb up to ${lu(U.rope)} up the wall beside the worm (the wall is the anchor), and girder gaps`, jetpack: `up to ${lu(U.jetpackUp)} higher and ${lu(U.jetpackAcross)} across, any drop`,
+    path: "length along the ground, the steepest walked segment (degrees), the highest step up and the deepest drop on the route, and its jumps" } });
+  if (!a.render) return compact(answer);
+  const pic = await drawRoutes(s, gs, r, S, routes, [tx, top, tz], u, a.palette);
+  return { content: [image(pic.image), { type: "text", text: compact({ ...answer, image: pic.info }) }] };
 }
 
 // ------------------------------------------------------------------ list_materials
@@ -584,7 +657,7 @@ export const tools: Tool[] = [
 
   {
     name: "check_reachability",
-    description: "Can each spawn walk to the summit? Builds a worm-walk graph over the voxels (the tops of solid ground with headroom, a column every `step`, joined where a worm can step up maxStep or climb a slope no steeper than maxSlope over one voxel, drop maxDrop, or optionally jump a gap of maxGap) and searches it from every spawn knot (or the `from` points) to the target (default: the highest ground; or `target` x, z, radius). Answers per spawn whether it gets there, the walk and waypoints, or the closest point reached and where it is blocked (the climb that stops it). Ground at or under the water is not walked.",
+    description: "Can each spawn walk to the summit? Builds a worm-walk graph over the voxels (the tops of solid ground with headroom, a column every `step`, joined where a worm can step up maxStep or climb a slope no steeper than maxSlope over one voxel, drop maxDrop, or optionally jump a gap of maxGap) and searches it from every spawn knot (or the `from` points) to the target (default: the highest ground; or `target` x, z, radius). Answers per spawn whether it gets there, the walk, waypoints and path (length along the ground, steepest slope, highest step, deepest drop), or the closest point reached, where it is blocked (the climb that stops it) and needs: the cheapest utility (jump, girder, rope, jetpack; a heuristic) that gets there and where it is first used. Ground at or under the water is not walked. render: true adds a PNG of the routes.",
     inputSchema: {
       type: "object", additionalProperties: false,
       properties: {
@@ -599,6 +672,8 @@ export const tools: Tool[] = [
         maxGap: { type: "number", minimum: 0, description: "Jump gaps up to this wide to ground no higher than maxStep above (default 0: walking only)." },
         headroom: { type: "number", minimum: 0.5, description: "Air a worm needs above the ground (default 1.5 map units)." },
         water: { type: "boolean", description: "Treat ground at or under the project's water level as impassable (default true; the level's own water height is not known)." },
+        render: { type: "boolean", description: "Also answer a top-down PNG (render_topdown's) with each start's route drawn in its colour: the walk, the route with the utility it needs (dashed), where that is used and where the walk is blocked (default false)." },
+        palette: paletteSchema,
       },
     },
     handler: (s, a) => checkReachability(s, a),

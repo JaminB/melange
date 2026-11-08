@@ -88,12 +88,15 @@ test("inspect tools over the mock server", async () => {
     assert.ok(g.material >= 0 && g.material < 64);
     assert.ok(found.q.spans.count >= 1 && found.q.spans.listed[0].top.map === g.top.map);
     assert.deepEqual(found.q.standOn, g.top);
+    // the ground's frame and material at the top level too, as other tools answer them
+    assert.deepEqual([found.q.frame, found.q.frameName, found.q.material], [g.frame, g.frameName, g.material]);
     const inWorld = await m.tool("query_ground", { x: found.x * 20, z: found.z * 20, units: "world" });
     assert.equal(inWorld.json.ground.top.map, g.top.map);
     const under = await m.tool("query_ground", { x: found.x, z: found.z, below: g.bottom.map });
     assert.ok(under.json.ground === null || under.json.ground.top.map <= g.bottom.map + 1e-9);
     const nothing = await m.tool("query_ground", { x: 9999, z: 9999 });
     assert.equal(nothing.json.ground, null);
+    assert.equal(nothing.json.frame, null);
     assert.ok((await m.tool("query_ground", { x: 1 })).isError);
 
     // ---- render_topdown

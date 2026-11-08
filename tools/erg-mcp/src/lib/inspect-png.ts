@@ -83,6 +83,21 @@ export class Raster {
     this.rect(cx - r - 1, cy - r - 1, 2 * r + 3, 2 * r + 3, [0, 0, 0]);
     this.rect(cx - r, cy - r, 2 * r + 1, 2 * r + 1, c);
   }
+  /** A line from (x0, y0) to (x1, y1), `width` pixels wide; with `dash`, drawn `dash` pixels on and `dash` off. */
+  line(x0: number, y0: number, x1: number, y1: number, c: Rgb, width = 1, dash = 0) {
+    const n = Math.max(1, Math.ceil(Math.max(Math.abs(x1 - x0), Math.abs(y1 - y0)))), o = Math.floor((width - 1) / 2);
+    for (let k = 0; k <= n; k++) {
+      if (dash && Math.floor(k / dash) % 2) continue;
+      this.rect(Math.round(x0 + ((x1 - x0) * k) / n) - o, Math.round(y0 + ((y1 - y0) * k) / n) - o, width, width, c);
+    }
+  }
+  /** An X of half-size r with a dark outline, centred on (cx, cy). */
+  cross(cx: number, cy: number, r: number, c: Rgb) {
+    for (const [w, col] of [[3, [0, 0, 0] as Rgb], [1, c]] as const) {
+      this.line(cx - r, cy - r, cx + r, cy + r, col, w);
+      this.line(cx - r, cy + r, cx + r, cy - r, col, w);
+    }
+  }
   /** Digits, '-' and '.' in a 3x5 font at integer scale s; returns the width drawn. */
   text(x: number, y: number, s: string, c: Rgb, scale = 1): number {
     let cx = x;
