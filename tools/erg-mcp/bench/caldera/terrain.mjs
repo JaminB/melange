@@ -18,7 +18,7 @@ export const CLIP = 117;         // radius of that circle
 export const SEA_FLOOR = -9;     // the skin's lowest level (the offshore slope runs down to it)
 export const TREAD = 0.52;       // slope of the flank between the cliffs (27 degrees)
 // the cliff bands: the flank steps up by `a` over about 5 units at rho (wobbled by angle); roads climb through them
-export const CLIFFS = [{ rho: 47, a: 13 }, { rho: 78, a: 8 }];
+export const CLIFFS = [{ rho: 47, a: 13 }, { rho: 78, a: 6 }];
 export const BOOST = 20;         // extra height toward the summit: the cone steepens over its top third, so it is the tallest thing from every side
 
 // the flank without cliffs: a soft foot (a beach) that turns into the tread's slope; offshore the sea floor falls more gently
@@ -49,8 +49,9 @@ const gaussA = (th, c, s) => Math.exp(-((angd(th, c) / s) ** 2));
 // ---- the outline: rho is the radius the profile sees, the true radius times a factor that depends on the angle only ----
 // (a headland pushes the coast out, a cove pulls it in; noise breaks up the circle), so a road marched in rho and angle has
 // exactly the profile's height under it. Two to three times the iteration-4 irregularity.
-const HEADS = [[-0.62, 0.22, 0.07], [2.75, 0.2, 0.065], [1.25, 0.16, 0.05], [-2.0, 0.18, 0.055]];   // angle, width (rad), push (fraction)
-const COVES = [[0.10, 0.26, 0.11], [2.05, 0.2, 0.09], [4.35, 0.22, 0.1], [-1.35, 0.15, 0.08], [0.95, 0.12, 0.06]];
+const HEADS = [[-0.62, 0.22, 0.07], [2.75, 0.2, 0.065], [1.25, 0.16, 0.05], [-2.0, 0.18, 0.055], [0.38, 0.12, 0.07], [3.55, 0.13, 0.06], [5.1, 0.12, 0.055]];   // angle, width (rad), push (fraction)
+// the last one is the harbour inlet: narrow and deep, between two headlands (angle 1.62)
+const COVES = [[0.10, 0.26, 0.11], [2.05, 0.2, 0.09], [4.35, 0.22, 0.1], [-1.35, 0.15, 0.08], [0.95, 0.12, 0.06], [1.62, 0.065, 0.19], [3.15, 0.09, 0.08]];
 export function scaleAt(th) {
   let s = 1 - 0.07 * fbm(Math.cos(th) * 3.1 + 9, Math.sin(th) * 3.1 + 9, 5, 4);
   for (const [a, w, k] of HEADS) s -= k * gaussA(th, a, w);
@@ -62,18 +63,21 @@ export const rhoAt = (x, z) => Math.hypot(x, z) * scaleAt(Math.atan2(z, x));
 export const pointAt = (rho, th) => { const r = rho / scaleAt(th); return [r * Math.cos(th), r * Math.sin(th)]; };
 
 // the smooth profile: tread flank plus the cliff bands (their radius and height wander with the angle, so no ring is regular)
+// the outer band is a foothill shoulder (a wider step), the inner one a cliff
+const k0 = (k) => (k === 1 ? 1 : 0);
 export function profile(rho, th) {
   let h = F(RF - rho) + BOOST * (1 - smooth(RC - 2, RC + 46, rho));
   CLIFFS.forEach((c, k) => {
     const rk = c.rho + 4.5 * noise(Math.cos(th) * 1.6 + k * 7, Math.sin(th) * 1.6 + k * 3, 40 + k);
     const a = c.a * (0.85 + 0.15 * noise(Math.cos(th) * 2.3 + k, Math.sin(th) * 2.3, 60 + k));
-    h += a * (1 - smooth(rk - 1.75, rk + 1.75, rho));
+    h += a * (1 - smooth(rk - 1.75 - 1.5 * k0(k), rk + 1.75 + 1.5 * k0(k), rho));
   });
   return h;
 }
 
 // ---- outlying islets: rock stacks off the coast (angle, radius from the centre in map units, radius of the stack, crest above the sea) ----
-export const ISLETS = [{ th: 0.5, rho: 104, w: 6.5, top: 7 }, { th: 2.4, rho: 103, w: 6, top: 6.5 }, { th: 3.95, rho: 105, w: 6.5, top: 7 }, { th: 5.5, rho: 102, w: 5.5, top: 6 }];
+export const ISLETS = [{ th: 0.5, rho: 104, w: 6.5, top: 7 }, { th: 2.4, rho: 103, w: 6, top: 6.5 }, { th: 3.95, rho: 105, w: 6.5, top: 7 }, { th: 5.5, rho: 102, w: 5.5, top: 6 },
+  { th: 1.55, rho: 98, w: 3.2, top: 9 }, { th: 3.2, rho: 100, w: 3.6, top: 8 }, { th: 4.9, rho: 99, w: 3, top: 10 }, { th: 0.1, rho: 106, w: 3.4, top: 8 }, { th: 6.0, rho: 101, w: 3.2, top: 7 }];
 const ISLET_XZ = ISLETS.map((q) => [q.rho * Math.cos(q.th), q.rho * Math.sin(q.th)]);
 
 // ---- the lava tongues: centre angle as a function of the radius (shared by the gullies and the paint) ----
@@ -87,7 +91,8 @@ export const TONGUES = [
   { name: "sw", a: 2.62, r0: RC - 2, r1: 82, w0: 2.0, w1: 4.2, wob: 0.07, wl: 9, ph: 5.1, rb: 0, dr: 0 },
 ];
 // dry gullies: deep radial cuts in the flank without lava (angle, half width in radians, depth, radius range), so the cone has ribs
-export const GULLIES = [{ a: -1.62, w: 0.075, d: 5.5, r0: 38, r1: 80 }, { a: 3.45, w: 0.07, d: 5, r0: 38, r1: 78 }, { a: 5.88, w: 0.065, d: 4.5, r0: 40, r1: 76 }, { a: 0.1, w: 0.06, d: 4, r0: 40, r1: 70 }];
+export const GULLIES = [{ a: -1.62, w: 0.075, d: 8, r0: 38, r1: 84 }, { a: 3.45, w: 0.07, d: 7.5, r0: 38, r1: 82 }, { a: 5.88, w: 0.065, d: 7, r0: 40, r1: 80 }, { a: 0.1, w: 0.06, d: 6, r0: 40, r1: 74 },
+  { a: 1.0, w: 0.055, d: 6.5, r0: 40, r1: 78 }, { a: 4.7, w: 0.06, d: 7, r0: 40, r1: 80 }, { a: 2.25, w: 0.05, d: 6, r0: 42, r1: 76 }];
 const tongueAngle = (t, r) => t.a + t.wob * Math.sin(r / t.wl + t.ph) + t.dr * Math.max(0, r - t.rb);
 const tongueWidth = (t, r) => t.w0 + (t.w1 - t.w0) * Math.min(1, Math.max(0, (r - t.r0) / (t.r1 - t.r0)));
 // the tongues as one mask expression for the heightfield materials (above 0 inside any of them; the rule list holds 64, so all
