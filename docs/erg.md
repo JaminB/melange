@@ -128,6 +128,21 @@ first fire came after the game's 7 idle turns). Since Melange 0.13 the factory's
 again just before it reads them, and the log says what it found and wrote (`the mine factory's set-up:
 kMineFactoryData.NumMineActivation 16 (was 20): ok, ...`) and where its drop put it; erg-mcp's `test` answers the same.
 
+**A fire every N turns.** Because a fire waits on the mine count, a target of 16 with idle turns 0 can give a single
+volley for a whole match (the level keeps 16 or more mines while they lie unexploded). For fires that depend on the
+turn count alone, set the target to 255 (the level never holds that many) and the idle turns to N: the countdown starts
+at N when the factory is placed and again after each fire, each turn start takes one, and at 0 it fires, 10 mines
+(the most a fire makes). erg-mcp's `set_mine_factory {everyNTurns: N}` sets exactly that. Tried on 2026-11-08
+(Multi.DinerMight, N = 2, launch height 15, radius 6): a fire of 10 at game turn 2, the mines at rest 2-6 map units
+from the factory, until the sea rose over the factory in turn 4 and it blew up; in another run a fire on demand in
+turn 2 started the countdown again, and the fires of 10 came at turns 3, 5 and 7.
+
+**Every fire is followed** (Melange 0.13+): the mines that appear in a fire, where each appeared and where it came to
+rest (or that it was gone), go to the session log as `levels/factory.fired` (`events.jsonl`) once they all rest, and to
+`level.test.probe`. In a Test, `level.test.fireFactory {count}` makes the factory fire at once, as at a turn start
+(its countdown set to 0 and its own turn-start handler called in the next sim tick; `count` 1-10 fires that many
+whatever the target): erg-mcp's `game_mines {fire}` shoots the volley.
+
 ## Water
 
 Set a water level or leave it at the map's own default. The number is in world units, with sea level at 0; on Diner
@@ -200,6 +215,18 @@ turns the post-FX stack off; `postfx: false` turns the post-FX stack off alone (
 does). Both last until the Test match ends, fails or is disarmed, and nothing is saved. What a mod installed at
 launch stays: its weapon clones and data, file overrides, shader mods and client scripts. Testing again after another edit simply overwrites the same private copy.
 
+**What happened to the worms** (Melange 0.13+): while a Test plays, the Test probe writes every worm's position at
+the first turn (`levels/test.spawns` in the session's `events.jsonl`) and, for each worm that dies, where, when (game
+turn and tick), the water then and the likely cause (`levels/test.death`): `drown` (the engine's drowning state, or its
+feet under the water), or the source of the latest explosion that reached it (`mine`, `oildrum`, `crate`, `weapon`
+with the projectile and the weapon of the worm whose turn it was, `minefactory`, `worm`: a dying worm's own blast), or
+`fall` (the drop of its latest fall), with its hits, falls and health changes. The cause is inferred from what the
+probe saw; the game keeps no damage source. `level.test.probe` answers the same (erg-mcp's `game_probe`). The probe
+only reads, so the match is the same with or without it. In Tests on 2026-11-08 it named the five drowned worms of a
+rising sea with the water 0.5-0.95 map units over their feet, a worm knocked down 5.3 map units by a bazooka onto
+ground the sea then covered, the factory's blast when the sea reached it and the 35-damage blasts of the drowned
+worms.
+
 ## Level scripts
 
 The **Script** tab holds the map's own Lua, saved in the project as `script.lua`. It runs in the match's sandbox,
@@ -231,10 +258,11 @@ end)
 | `wum.level.crate(knot [, opts])` | A crate at a knot; `opts`: `kind` (`weapon`, `health`, `utility`), `contents`, `count`, `amount`, `hitpoints`, `parachute` |
 | `wum.level.mine(pos [, vel])` | A mine at `pos` (`{x, y, z}` or `{x = .., y = .., z = ..}`, world units), moving at `vel` (default `{0, -0.3, 0}`, the factory's own), made by the game's own mine maker as the factory's mines are. `true`, or `nil` and a reason (`before the first turn`, `unavailable` on a game Melange does not know) |
 | `wum.level.fireFactory([{now = true}])` | The map's mine factory fires at the next turn start (its idle countdown is set to 0), when fewer mines than its target are in the level; `now` sends `GameLogic.StartMineFactory` at once, so it fires in this tick. `nil` and a reason when there is no factory, it has exploded or it is firing |
+| `wum.level.water([fields])` | The water's look (and the land's light) in this map's matches, over the theme's: fields of the theme's `WaterPlaneTweaks` (the resource `Water.TweakName` names, such as `Water.PREHISTORIC.EVENING`): `opacity` (`NearOpacity`, 0-1, the water plane's alpha), `reflection` (`ReflectionStrength`, the sky's reflection), `SubtractColourScale` (lighter or darker water), `LightAmbient` and `LightDiffuse` (`{r, g, b}` 0-255: the land's ambient and sun light, the landscape shader's own), and the others by name (`ReflectionContrast`, `SpecularContrast`, `SpecularPower`, `SkyBlendColor`, `NormalIntensity`, ...). `true`, or `nil` and why; with no argument, a table of every field's value. The game reads them every frame, so a turn handler can change them mid-match (tried 2026-11-08); the theme's values come back when the match ends. Render only: the match and Wormsign are untouched. Melange 0.13+ |
 | `wum.events.on("sim.turnStarted", fn)` | `fn(name, turn, round)` at the first tick of each turn, on every machine at the same tick. `turn` counts from 1, the match's n-th turn start: the same number as `wum.game.turn().index`, erg-mcp's `game_state` turn and `check_flood`'s game turns. In a Quick Game of two teams of four, turn 1 is the human team's WORM0, then WORM4, WORM1, WORM5, ... (the teams alternate, each moves its worms in turn) |
 | `wum.sim.turn()`, `wum.sim.round()` | Turns started in this match, and the round: it goes up when a team starts a turn it already had in the current round, so a team that is wiped out only shortens the round. Both 0 before the first turn |
 | `wum.sim.waterSchedule{startTurn, every, step, cap, from, units}` | Raises `Water.Level` at turn starts (see below) |
-| `wum.sim.announce(text [, seconds])` | Shows `text` (at most 160 bytes of UTF-8) centred near the top of every player's screen for `seconds` (0.5 to 15, default 4); up to three at once, the oldest replaced. Draws only: the match, Wormsign and replays are untouched, so it is safe in deterministic code. Detect it with `if wum.sim.announce then ... end` |
+| `wum.sim.announce(text [, seconds])` | Shows `text` (at most 160 bytes of UTF-8) centred near the top of every player's screen for `seconds` (0.5 to 15, default 4); up to three at once, the oldest replaced. Draws only: the match, Wormsign and replays are untouched, so it is safe in deterministic code. Detect it with `if wum.sim.announce then ... end`. The session log has `sim/announce` when it is called and (Melange 0.13+) `sim/announce.shown` with the first frame it is drawn in at full opacity, so a screenshot from a later frame shows it |
 
 **Rising water.** `wum.sim.waterSchedule{ startTurn = 3, step = 1, cap = 8, units = "map" }` raises the water by
 `step` at the start of turn 3 and of every turn after it (every `every` turns, default 1) until it reaches `cap`; with

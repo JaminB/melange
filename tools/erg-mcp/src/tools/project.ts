@@ -3,7 +3,7 @@ import { WORLD_PER_XAN, engineWarnings, isSolid, type Detail, type Role, type Ve
 import { grids, limitProblems, tidy, toWorld, usage } from "../lib/voxel";
 import { ToolError, type Tool } from "../registry";
 import type { Session } from "../session";
-import { factoryReport } from "./place";
+import { factoryReport, spawnTreadWarnings } from "./place";
 import { backdropOf, coverLevel, waterBackdropWarning } from "../lib/backdrop";
 
 const discard = { type: "boolean", description: "Drop unsaved edits of the open project instead of refusing." } as const;
@@ -219,14 +219,16 @@ export const tools: Tool[] = [
   },
   {
     name: "save",
-    description: "Save the open project (level.save with the editor's patch). Refused before anything is sent while the patch breaks a server limit or the patch validator objects (describe_level lists the problems). Answers the server's warnings.",
+    description: "Save the open project (level.save with the editor's patch). Refused before anything is sent while the patch breaks a server limit or the patch validator objects (describe_level lists the problems). Answers the server's warnings, the mine factory's check (factory) and `spawns`: spawn knots a worm cannot stand on (inside solid, no ground within 3 map units under it, on an edge narrower than a worm), each with the nearest point that passes (place_spawn_knots {snap: \"tread\"} moves them there).",
     inputSchema: { type: "object", additionalProperties: false, properties: {} },
     async handler(s) {
       const r = await s.save();
       // the mine factory as the game will place it: a factory the match loses at load is saved all the same, and said so
       const factory = await factoryReport(s, "world").catch(() => [] as string[]);
       const sea = await waterBackdropWarning(s).catch(() => null);
-      return { ...r, ...(factory.length ? { factory } : {}), ...(sea?.warning ? { water: sea } : {}), ...state(s), patchBytes: usage(s.store).patchBytes.used };
+      // spawn knots a worm cannot stand on (in solid, no ground near under it, on an edge): saved all the same, and said so
+      const spawns = (() => { try { return spawnTreadWarnings(s.store); } catch { return [] as string[]; } })();
+      return { ...r, ...(factory.length ? { factory } : {}), ...(sea?.warning ? { water: sea } : {}), ...(spawns.length ? { spawns } : {}), ...state(s), patchBytes: usage(s.store).patchBytes.used };
     },
   },
   {

@@ -14,7 +14,8 @@ import {
 import { resolveFile, themeFile } from "../lib/materials";
 import { runTest } from "../lib/place-wait";
 import { stopHold } from "./game";
-import { CAMERA_RISE, WALL_RADIUS, spawnWarnings } from "../lib/spawn-check";
+import { CAMERA_RISE, WALL_RADIUS, nearestTread, spawnWarnings, treadAt, treadWarnings } from "../lib/spawn-check";
+import { readWaterLook, waterLookProblems, withWaterLook, type WaterLook } from "../lib/water-look";
 import { checkFactory, factoryLines } from "../lib/factory-check";
 import { scheduleFromScript } from "../lib/flood";
 import { scriptWater } from "../lib/script-water";
@@ -58,11 +59,19 @@ const cameraProps: Record<string, Schema> = {
   cameraRise: { type: "number", minimum: 0, maximum: 2000, description: `Spawn check: how far above the ground a spawn stands on its turn camera sits (units; default ${CAMERA_RISE} map units, ${CAMERA_RISE * 20} world, an assumption).` },
 };
 
-/** The spawn checks (a wall at the turn camera, ground under the water) as warning lines in the caller's units. */
+/** The spawn checks (a wall at the turn camera, ground under the water, a knot in solid, with no ground near under it
+ * or on an edge narrower than a worm) as warning lines in the caller's units. */
 function cameraWarnings(store: EditorStore, units: Units, a: CameraArgs): string[] {
   const k = units === "map" ? 1 : 20;
   const len = (v: number) => `${Math.round(v * k * 100) / 100} ${units}`;
-  return spawnWarnings(store, len, a.wallRadius === undefined ? WALL_RADIUS : a.wallRadius / k, a.cameraRise === undefined ? CAMERA_RISE : a.cameraRise / k);
+  const pt = (p: Vec3) => `[${pointOut(p, units).join(", ")}] ${units}`;
+  return [...spawnWarnings(store, len, a.wallRadius === undefined ? WALL_RADIUS : a.wallRadius / k, a.cameraRise === undefined ? CAMERA_RISE : a.cameraRise / k),
+    ...treadWarnings(store, pt)];
+}
+
+/** The tread warnings (a spawn knot in solid, with no ground near under it, on an edge) for save, in world units. */
+export function spawnTreadWarnings(store: EditorStore): string[] {
+  return treadWarnings(store, (p: Vec3) => `[${pointOut(p, "world").join(", ")}] world`);
 }
 
 interface SpawnArg extends PointArgs { worm: number; group?: string; }
@@ -169,18 +178,29 @@ function spawnState(store: EditorStore, units: Units) {
   return { spawnMode: scene.spawns.mode, spawns, missingKnots: KNOTS.filter((k) => !have.has(k)) };
 }
 
-async function placeSpawnKnots(s: Session, a: { mode?: "random" | "knots"; spawns?: SpawnArg[]; units?: Units; balance?: Balance | boolean } & CameraArgs) {
+async function placeSpawnKnots(s: Session, a: { mode?: "random" | "knots"; spawns?: SpawnArg[]; units?: Units; balance?: Balance | boolean; snap?: "tread" } & CameraArgs) {
   const store = s.store, scene = store.scene, units = a.units ?? "world";
   const mode = a.mode ?? "knots";
   const cmds: Command[] = [];
   if (scene.spawns.mode !== mode) cmds.push(new SetLevel({ spawns: mode }, `Spawn mode ${mode}`));
   const seen = new Set<number>();
   const done: { worm: number; action: "added" | "moved"; dropped: boolean; pos: Vec3; group?: string; was?: number }[] = [];
+  const snapped: { worm: number; from: Vec3; to: Vec3; why: string[] }[] = [];
   // resolve every point first; with balance the worm numbers are dealt again over them
   const items = (a.spawns ?? []).map((sp) => {
     if (seen.has(sp.worm)) throw new ToolError(`WORM${sp.worm} is given twice`);
     seen.add(sp.worm);
     const r = resolvePoint(store, sp, units, `WORM${sp.worm}`);
+    // snap: tread moves a point a worm cannot stand on to the nearest one it can
+    if (a.snap === "tread") {
+      const gs = grids(store), t = treadAt(gs, r.map);
+      if (!t.ok) {
+        const to = nearestTread(gs, r.map);
+        if (!to) throw new ToolError(`WORM${sp.worm}: ${t.problems.join("; ")}, and no point within 3 map units passes the tread checks: give another position`);
+        snapped.push({ worm: sp.worm, from: pointOut(r.map, units), to: pointOut(to, units), why: t.problems });
+        r.map = to;
+      }
+    }
     const g = spansAt(grids(store), r.map[0], r.map[2], r.map[1] + 1.5)[0]?.top ?? r.map[1];
     return { arg: sp, map: r.map, dropped: r.dropped, ground: g };
   });
@@ -206,7 +226,7 @@ async function placeSpawnKnots(s: Session, a: { mode?: "random" | "knots"; spawn
   const teams = bal?.teams ?? 2, per = bal?.wormsPerTeam ?? (bal ? Math.ceil(items.length / teams) : 4);
   if (!cmds.length) return { mode, changed: false, note: "nothing to change", ...spawnState(store, units), teams: await teamReport(s, units, teams, per), warnings: cameraWarnings(store, units, a) };
   commit(store, cmds.length === 1 ? cmds[0] : new Group(a.spawns?.length ? "Place spawn knots" : `Spawn mode ${mode}`, cmds));
-  return { mode, changed: true, placed: done, ...(bal ? { balanced: { mode: bal.mode ?? "height", teams, wormsPerTeam: per, note: "worm numbers dealt over the given positions (was: the worm asked for): heights snaked over the teams, a team's spawns spread over groups, the lowest of a team moving first" } } : {}),
+  return { mode, changed: true, placed: done, ...(snapped.length ? { snapped } : {}), ...(bal ? { balanced: { mode: bal.mode ?? "height", teams, wormsPerTeam: per, note: "worm numbers dealt over the given positions (was: the worm asked for): heights snaked over the teams, a team's spawns spread over groups, the lowest of a team moving first" } } : {}),
     ...spawnState(store, units), teams: await teamReport(s, units, teams, per), issues: issuesOf(store).filter((t) => /WORM|spawn/i.test(t)), warnings: cameraWarnings(store, units, a) };
 }
 
@@ -265,6 +285,11 @@ function factoryOf(f: FactorySpec | undefined, a: FactoryArgs): FactorySpec | un
   if (a.launchRadius !== undefined && a.launch !== false) next.launchRadius = a.launchRadius;
   return Object.keys(next).length ? (next as FactorySpec) : undefined;
 }
+
+/** everyNTurns' target: the factory fires when fewer mines than this are in the level, so 255 never stops a fire. */
+const EVERY_N_ACTIVATION = 255;
+/** How the factory decides, from its turn-start handler (levels/factory.cpp, 0x5cfe40), for the answers. */
+const FACTORY_RULE = { rule: "at each game turn start the factory takes one from its countdown (set to inactiveTurns when it is placed and after each fire); at 0 or under it fires when the level holds fewer mines than activation, min(activation - mines, 10) of them, and a fire waits while the mines are not fewer: a target of 16 with 10 mines from the first fire still standing gives a second fire of 6, then none until mines go off. everyNTurns makes it depend on the turn count alone." };
 
 const factoryProps: Record<string, Schema> = {
   activation: { type: "integer", minimum: 0, maximum: 255, description: "minefactory: it fires at a turn start when fewer than this many mines are in the level, topping up to it, at most 10 per fire (game 20; 0 never fires)." },
@@ -614,6 +639,7 @@ export const tools: Tool[] = [
         balance: { anyOf: [{ type: "boolean" }, { type: "object", additionalProperties: false, properties: {
           teams: { type: "integer", minimum: 1, maximum: 8 }, wormsPerTeam: { type: "integer", minimum: 1, maximum: 8 }, mode: { type: "string", enum: ["height", "interleave"] } } }],
           description: "Deal the worm numbers again over the given positions so the teams stand alike (WORMn is worm n % wormsPerTeam of team floor(n / wormsPerTeam); default 2 teams of 4): height (default) snakes the heights over the teams (A B B A ...: equal sums) and spreads a team's spawns over different `group`s; interleave alternates A B A B. In a team the lowest spawn moves first. The answer's teams gives each team's mean and lowest spawn height and earliest flood turn." },
+        snap: { type: "string", enum: ["tread"], description: "tread: a spawn whose point fails the tread checks (inside solid, no ground within 3 map units under it, no room for a worm over its ground, or on an edge narrower than a worm: no ground at its height 0.4 map units out in one of eight directions) is moved to the nearest point within 3 map units that passes (sampled every 0.25), and the answer's `snapped` says from where and why. Without it such a spawn is placed where asked and warned of, with the point it would snap to." },
         units: unitsSchema, ...cameraProps,
       },
     },
@@ -717,17 +743,25 @@ export const tools: Tool[] = [
   {
     name: "set_mine_factory",
     description: "Change the level's mine factory settings (place it first with place_object type minefactory). launchHeight and launchRadius (Melange 0.13+) make its mines appear over it and fall round it instead of raining onto random worms and objects (the game's). A value equal to the game's (activation 20, inactiveTurns 7, schemeMines true, keepKnot false) is dropped, so the game's value applies. Melange writes activation and inactiveTurns into the game's kMineFactoryData at level start and again at the factory's own set-up, just before it reads them (Melange 0.13+), and puts the game's back when the match ends; test's look.factory says what the set-up found and applied. The settings are the project's: save, and Test the same project on the same server's projects folder (a project of the same id in another game's ProjectsDir is another project). One undo step.",
-    inputSchema: { type: "object", additionalProperties: false, properties: factoryProps },
-    handler(s, a: FactoryArgs) {
+    inputSchema: { type: "object", additionalProperties: false, properties: { ...factoryProps,
+      everyNTurns: { type: "integer", minimum: 1, maximum: 254, description: "A fire every N game turns, whatever the level holds: sets activation 255 (the level always holds fewer mines, so the count never stops a fire) and inactiveTurns N (the factory's countdown starts at N when it is placed and again after each fire, and each turn start takes one: it fires at the start of game turn N, 2N, 3N, ...), 10 mines a fire (the game's most). Not with activation or inactiveTurns." } } },
+    handler(s, a0: FactoryArgs & { everyNTurns?: number }) {
       const store = s.store, scene = store.scene;
       const o = scene.objects?.find((x) => x.type === "minefactory");
       if (!o || o.type !== "minefactory") throw new ToolError("the level has no mine factory: place one with place_object type minefactory");
+      // everyNTurns: the two engine fields that make the fires depend on the turn count alone (levels/factory.cpp)
+      if (a0.everyNTurns !== undefined && (a0.activation !== undefined || a0.inactiveTurns !== undefined)) throw new ToolError("everyNTurns sets activation and inactiveTurns: give it alone, or those two");
+      const a: FactoryArgs = a0.everyNTurns !== undefined ? { ...a0, activation: EVERY_N_ACTIVATION, inactiveTurns: a0.everyNTurns } : a0;
+      delete (a as { everyNTurns?: number }).everyNTurns;
       if (a.activation === undefined && a.inactiveTurns === undefined && a.schemeMines === undefined && a.keepKnot === undefined && a.launchHeight === undefined &&
-        a.launchRadius === undefined && a.launch === undefined) throw new ToolError("give activation, inactiveTurns, schemeMines, keepKnot, launchHeight, launchRadius or launch");
+        a.launchRadius === undefined && a.launch === undefined) throw new ToolError("give activation, inactiveTurns, everyNTurns, schemeMines, keepKnot, launchHeight, launchRadius or launch");
       if (a.launch === true) throw new ToolError("launch: false clears the launch; set launchHeight and/or launchRadius to give one");
       const factory = factoryOf(o.factory, a);
       commit(store, new SetObject(o.knot, factory ? { knot: o.knot, type: "minefactory", factory } : { knot: o.knot, type: "minefactory" }));
-      return { knot: o.knot, factory: factory ?? {}, game: FACTORY_GAME, changed: true };
+      return { knot: o.knot, factory: factory ?? {}, game: FACTORY_GAME, changed: true, ...(a0.everyNTurns !== undefined ? { everyNTurns: {
+        n: a0.everyNTurns, mapsTo: { activation: EVERY_N_ACTIVATION, inactiveTurns: a0.everyNTurns }, firesAtGameTurns: [1, 2, 3, 4].map((i) => i * a0.everyNTurns!),
+        note: "fires of 10 mines at the start of every N-th game turn, counted from the factory's placement at level start; a fire still running at the next one is not stopped" } } : {}),
+      ...FACTORY_RULE };
     },
   },
   {
@@ -746,6 +780,39 @@ export const tools: Tool[] = [
       // the base's ground plane (a table, a seabed mesh) shows through a sea under it
       const sea = world === null ? null : await waterBackdropWarning(s).catch(() => null);
       return sea ? { ...r, backdrop: sea } : r;
+    },
+  },
+  {
+    name: "set_water_look",
+    description: "The water's look (and the land's light) in this level's matches, over the theme's: opacity (0 clear to 1 opaque: the water plane's alpha, NearOpacity), reflection (how much of the sky it reflects, ReflectionStrength), shade (SubtractColourScale: lighter or darker water), landAmbient / landDiffuse (the terrain's ambient and sun light, LightAmbient / LightDiffuse: a tint of the whole land), or any field of the theme's WaterPlaneTweaks by name in `fields` (ReflectionContrast, SpecularContrast, SpecularPower, LightSpecular [r, g, b], ...). Tried in a Test on PREHISTORIC EVENING: each takes effect in the next frame, also from a turn handler. It writes one wum.level.water{...} call (Melange 0.13+; an older game skips it) in a marked block at the top of the level script, which this tool rewrites or (clear) removes, leaving the rest of the script as it is; the game sets the fields when the match's level script starts and puts the theme's back when the match ends. The script is written at once (not an undo step). Render only: nothing the match plays changes. The theme's fog and distance haze are not here: the game's shaders (CG\\Landscape.cg, water.cg) have none, so the haze of a time of day is its sky and lighting (test {postfx: false} shows whether a post-FX mod adds more).",
+    inputSchema: { type: "object", additionalProperties: false, properties: {
+      opacity: { type: "number", minimum: 0, maximum: 1, description: "The water plane's alpha, NearOpacity (theme values about 0.6-0.9): 1 hides what is under the water, so a rising sea reads as a solid surface." },
+      reflection: { type: "number", minimum: 0, maximum: 8, description: "ReflectionStrength: how much of the environment (sky) map the water reflects (0: the water shows its own texture only, which on PREHISTORIC EVENING turned it from grey-blue to lavender in a Test)." },
+      shade: { type: "number", minimum: -4, maximum: 4, description: "SubtractColourScale: how much of the ripple texture's darker layer is taken off the water's colour (higher: lighter, paler water; 3 with opacity 0.35 made it pale pink-white in a Test)." },
+      landAmbient: { type: "array", items: { type: "number" }, minItems: 3, maxItems: 3, description: "LightAmbient [r, g, b] 0-255: the land's ambient light (the landscape shader's globalAmbient, from the same tweaks): a tint of the whole terrain. In a Test red turned the island red." },
+      landDiffuse: { type: "array", items: { type: "number" }, minItems: 3, maxItems: 3, description: "LightDiffuse [r, g, b] 0-255: the land's sunlight (globalDiffuse)." },
+      fields: { type: "object", description: "More WaterPlaneTweaks fields by name: a number, or [r, g, b(, a)] 0-255 for a colour, [x, y, z] for a vector." },
+      clear: { type: "boolean", description: "Remove the block: the theme's water again." },
+    } },
+    async handler(s, a: { opacity?: number; reflection?: number; shade?: number; landAmbient?: number[]; landDiffuse?: number[]; fields?: WaterLook; clear?: boolean }) {
+      const p = s.requireProject();
+      const look: WaterLook = { ...(a.fields ?? {}) };
+      if (a.opacity !== undefined) look.NearOpacity = a.opacity;
+      if (a.reflection !== undefined) look.ReflectionStrength = a.reflection;
+      if (a.shade !== undefined) look.SubtractColourScale = a.shade;
+      if (a.landAmbient !== undefined) look.LightAmbient = a.landAmbient;
+      if (a.landDiffuse !== undefined) look.LightDiffuse = a.landDiffuse;
+      if (a.clear && Object.keys(look).length) throw new ToolError("clear removes the block: give no fields with it");
+      if (!a.clear && !Object.keys(look).length) throw new ToolError("give opacity, reflection, shade, landAmbient, landDiffuse or fields (or clear: true)");
+      const bad = waterLookProblems(look);
+      if (bad.length) throw new ToolError(bad.join("; "));
+      const before = (await p.erg.script()) ?? "";
+      const text = withWaterLook(before, a.clear ? null : look);
+      if (text === before) return { changed: false, look: readWaterLook(before), note: "the script already sets this look" };
+      const r = await p.erg.saveScript(text);
+      if (!r.saved) throw new ToolError(`the server did not save the script: ${r.problems.map((x) => x.message ?? String(x)).join("; ")}`);
+      return { changed: true, look: a.clear ? null : look, was: readWaterLook(before), problems: r.problems, syntaxChecked: r.syntaxChecked ?? false,
+        note: a.clear ? "the block is gone: the theme's water" : "a wum.level.water{...} block at the top of the level script (Melange 0.13+): Test to see it; the game logs each field it set ([levels] water look: <container>.<field> set)" };
     },
   },
   {
@@ -840,9 +907,14 @@ export const tools: Tool[] = [
         timeoutSec: { type: "integer", minimum: 1, maximum: 600, description: "Stop waiting after this long (default 60)." },
         cleanMods: { type: "boolean", description: "A clean room for this Test match only: enabled content mods' sim code (entry.sim) does not run, only the level script, and the post-FX stack is off (unless postfx: true), so asserts and lighting belong to the map. Nothing is changed on disk; launch-time content (weapon clones, file overrides, shader mods, client scripts) stays. On a game build without clean rooms it refuses while such mods are enabled." },
         postfx: { type: "boolean", description: "false: the post-FX stack (every effect and code pass, like the Post-FX panel's Bypass all) is off for this Test match; true with cleanMods keeps it on. Default: on, or off with cleanMods." },
+        simMods: { type: "string", enum: ["all", "level-only"], description: "level-only: an isolated level Test: the other installed sim mods (Kindjal, Sandtide, ...) do not run in this match, only the level's chunk and its script, so the level's asserts and behaviour are its own; post-FX stays as it is (postfx: false turns it off too). It is cleanMods for the sim alone; all (default): every enabled sim mod runs beside the level script. The answer's cleanRoom and look.simModsLoaded say what ran." },
         restart: { type: "boolean", description: "When a Test match is running: leave it for the main menu (level.test.quit), wait for the menu, then test again (default false: refused in a match). Leaving a match writes the game's save (its statistics), as the game's own Quit does." } },
     },
-    async handler(s, a: { tod?: TimeOfDay; waitFor?: "playing" | "armed"; timeoutSec?: number; cleanMods?: boolean; postfx?: boolean; restart?: boolean }) {
+    async handler(s, a0: { tod?: TimeOfDay; waitFor?: "playing" | "armed"; timeoutSec?: number; cleanMods?: boolean; postfx?: boolean; restart?: boolean; simMods?: "all" | "level-only" }) {
+      // simMods level-only: the clean room's sim half, post-FX kept unless postfx says otherwise
+      if (a0.simMods === "level-only" && a0.cleanMods === false) throw new ToolError("simMods: \"level-only\" is a clean room for the sim: leave out cleanMods: false");
+      if (a0.simMods === "all" && a0.cleanMods) throw new ToolError("simMods: \"all\" runs every sim mod, cleanMods none: give one of them");
+      const a = a0.simMods === "level-only" ? { ...a0, cleanMods: true, postfx: a0.postfx ?? true } : a0;
 
       const p = s.requireProject();
       const conn = await s.ensure();
@@ -885,7 +957,8 @@ export const tools: Tool[] = [
       const fo = p.store.scene.objects?.find((o) => o.type === "minefactory");
       const look = run.final === "playing" ? await appliedLook(s, { theme: db.theme, tod: tod ?? "DAY", factory: fo && fo.type === "minefactory" ? fo.factory ?? {} : null, stem: run.key?.replace(/^Multi\./, ""),
         script: run.final === "playing" && !!(await (async () => (await p.erg.script()) ?? "")().catch(() => "")).trim() }) : null;
-      return { ...run, ...(first ? { savedFirst: true } : {}), ...(restarted ? { restarted } : {}), ...(look ? { look: look.look, ...(look.warnings.length ? { warnings: look.warnings } : {}) } : {}),
+      return { ...run, ...(a0.simMods ? { isolated: a0.simMods === "level-only" ? (suppressed || !simMods.length ? "level only: no other sim mod runs in this match" : "level only was asked, but the game did not apply a clean room (cleanRoom)") : "all sim mods" } : {}),
+        ...(first ? { savedFirst: true } : {}), ...(restarted ? { restarted } : {}), ...(look ? { look: look.look, ...(look.warnings.length ? { warnings: look.warnings } : {}) } : {}),
         ...(simMods.length ? suppressed ? { simMods, simModsNote: "these mods' sim code is suppressed in this Test match (clean room)" }
           : { simMods, simModsNote: "these mods' sim code runs in this match beside the level script" } : {}),
         match: "Quick Game (QuickStartHvC: a human team against a computer team) with the game's own Quick Game scheme; the scheme, turn time and team sizes are the game's, not chosen here",

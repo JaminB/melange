@@ -39,6 +39,17 @@
   the sim counts it, the turns seen and the announcements on screen, game_shots shoots on an announcement and never
   overwrites another run's pictures, game_walk walks a worm along a route in the game, and sculpt_road, packing
   "fit", `costOnly` and the drape's `steepMaterial` are new (docs/erg-mcp.md).
+- The Test probe: while a Test plays, every worm's position at turn 1 and each death with its turn, place, the water and
+  the likely cause (drowned, a mine, an oil drum, a crate, a weapon, the mine factory, a dying worm's blast, a fall) go
+  to the session log (`levels/test.spawns`, `levels/test.death`) and to `level.test.probe`. Every mine factory fire is
+  followed until its mines rest (`levels/factory.fired`: each mine's spawn and rest), and `level.test.fireFactory`
+  fires it on demand in a Test. `wum.level.water{...}` sets the theme's water look (opacity, reflection, shade) and the
+  land's light for a level's matches, put back when the match ends. `sim/announce.shown` logs the first frame an
+  announcement is drawn in. erg-mcp: `test {simMods: "level-only"}`, `game_probe`, `game_mines {fire}`, game_shots'
+  onAnnounce proves the shot is from a frame after the message was drawn, `set_water_look`, `set_mine_factory
+  {everyNTurns}`, spawn tread checks (a knot in solid, with no ground near under it, on an edge) with `snap: "tread"`
+  and on save, build_castle's spawnSpots moved off wall edges, check_flood's `minDryMargin` default 1.5 map units and
+  `capReport`, and `materialFile: "theme"` with no project open (docs/erg-mcp.md).
 - Clean-room Test: `level.test` takes `cleanMods` (no sim mod runs in the Test match, post-FX off) and `postfx: false`,
   for the Test match only; `level.test.cleanRoom` reports it. erg-mcp's `test` passes them through.
 

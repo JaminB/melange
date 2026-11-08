@@ -246,63 +246,123 @@ async function confirmPose(s: Session, cam: { pos: number[]; target: number[]; f
   return null;
 }
 
+// ------------------------------------------------------------------ the Test probe
+
+/** level.test.probe (Melange 0.13+): the Test probe's spawns and deaths (levels/probe.cpp, map units) and the mine
+ * factory's fires (levels/factory.cpp). */
+interface ProbeWorm { slot: number; team: number; posInTeam: number; name: string; pos: number[]; posWorld: number[]; health: number; state: number; }
+interface ProbeExplosion { tick: number; turn: number; at: number[]; wormDamage: number; wormDamageRadiusMap: number; source: string;
+  entity?: { handle: number; kind: string; type: string; label: string; at: number[] }; turnWorm?: number; turnWeapon?: string; }
+interface ProbeDeath extends ProbeWorm { tick: number; turn: number; lastAlivePos: number[]; cause: string; evidence: string[]; waterMap?: number; waterWorld?: number;
+  source?: ProbeExplosion; hits: { explosion: ProbeExplosion; distanceMap: number }[]; falls: { tick: number; fromY: number; toY: number; dropMap: number }[];
+  healthSteps: { tick: number; from: number; to: number }[]; }
+interface FireRec { stem: string; tick: number; turn: number; asked: number; launch: boolean; factory: number[];
+  mines: { handle: number; spawn: number[]; rest?: number[]; settled?: boolean; gone?: boolean; lastSeen?: number[]; restFromFactoryMap: number }[]; }
+interface ProbeAnswer {
+  probe: { key: string; playing: boolean; turn: number; tick: number; spawns: ProbeWorm[]; deaths: ProbeDeath[]; explosionsSeen: number; explosions: ProbeExplosion[] };
+  factory: { fires: FireRec[]; following: number; trigger: { tick: number; count: number; started: boolean; why: string; detail: string } | null };
+}
+
+async function probeOf(s: Session): Promise<ProbeAnswer | null> {
+  if (!(await has(s, "level.test.probe"))) return null;
+  return (await s.client()).call<ProbeAnswer>("level.test.probe", {}, 15000).catch(() => null);
+}
+
+const inUnits = (p: number[] | undefined, u: "map" | "world") => (p ? p.map((v) => Math.round(v * (u === "world" ? WORLD_PER_MAP : 1) * 100) / 100) : null);
+
+function fireOut(f: FireRec, u: "map" | "world") {
+  const k = u === "world" ? WORLD_PER_MAP : 1;
+  return { tick: f.tick, turn: f.turn, mines: f.mines.length, launch: f.launch, factory: inUnits(f.factory, u),
+    each: f.mines.map((m) => ({ handle: m.handle, spawn: inUnits(m.spawn, u), ...(m.gone ? { gone: true, lastSeen: inUnits(m.lastSeen, u) } : { rest: inUnits(m.rest, u), settled: !!m.settled }),
+      restFromFactory: Math.round(m.restFromFactoryMap * k * 100) / 100 })) };
+}
+
 // ------------------------------------------------------------------ announcements
 
 /** A wum.sim.announce message as the game logged it (jlog sim/announce, on Oasis's log channel): its text, the mod or
  * level script (erg:<project>) that sent it, how long it shows (Melange 0.13 logs it; 4 s, the default, before), when. */
-export interface Announce { text: string; mod?: string; seconds: number; wall: number; seq: number; }
+export interface Announce { text: string; mod?: string; seconds: number; wall: number; seq: number; id?: number; }
+/** The first frame a message was drawn in at full opacity (jlog sim/announce.shown, Melange 0.13+, with its id). */
+export interface Shown { id: number; text: string; frame: number; msAfterCall: number; wall: number; }
+
+type LogRec = { msg?: string; wall?: string; data?: { text?: string; mod?: string; seconds?: number; id?: number; frame?: number; msAfterCall?: number }; seq?: number };
+const logRec = (m: { j?: unknown }): LogRec | null => {
+  let j = m.j as LogRec | string | undefined;
+  if (typeof j === "string") try { j = JSON.parse(j); } catch { return null; }
+  return j && typeof j === "object" ? j : null;
+};
 
 const parseAnnounce = (m: { seq?: number; j?: unknown }): Announce | null => {
-  let j = m.j as { msg?: string; wall?: string; data?: { text?: string; mod?: string; seconds?: number }; seq?: number } | string | undefined;
-  if (typeof j === "string") try { j = JSON.parse(j); } catch { return null; }
-  if (!j || typeof j !== "object" || j.msg !== "announce" || typeof j.data?.text !== "string") return null;
+  const j = logRec(m);
+  if (!j || j.msg !== "announce" || typeof j.data?.text !== "string") return null;
   const wall = j.wall ? Date.parse(j.wall) : NaN;
-  return { text: j.data.text, ...(j.data.mod ? { mod: j.data.mod } : {}), seconds: j.data.seconds ?? 4, wall: Number.isFinite(wall) ? wall : Date.now(), seq: j.seq ?? m.seq ?? 0 };
+  return { text: j.data.text, ...(j.data.mod ? { mod: j.data.mod } : {}), seconds: j.data.seconds ?? 4, wall: Number.isFinite(wall) ? wall : Date.now(), seq: j.seq ?? m.seq ?? 0,
+    ...(typeof j.data.id === "number" ? { id: j.data.id } : {}) };
+};
+
+const parseShown = (m: { seq?: number; j?: unknown }): Shown | null => {
+  const j = logRec(m);
+  if (!j || j.msg !== "announce.shown" || typeof j.data?.id !== "number" || typeof j.data.frame !== "number") return null;
+  const wall = j.wall ? Date.parse(j.wall) : NaN;
+  return { id: j.data.id, text: j.data.text ?? "", frame: j.data.frame, msAfterCall: j.data.msAfterCall ?? 0, wall: Number.isFinite(wall) ? wall : Date.now() };
 };
 
 /** Follows the game's announcements: `fn` gets each one the log channel has (its backlog of the last 500 sim records,
- * then live ones). Null when the game has no log channel. */
-async function followAnnouncements(s: Session, fn: (a: Announce) => void): Promise<(() => void) | null> {
+ * then live ones), and `onShown` each first frame one was drawn in. Null when the game has no log channel. */
+async function followAnnouncements(s: Session, fn: (a: Announce) => void, onShown?: (x: Shown) => void): Promise<(() => void) | null> {
   const client = await s.client();
   if (!client.has("log")) return null;
-  return client.subscribe<{ seq?: number; j?: unknown }>("log", { cats: ["sim"], text: "announce" }, (m) => { const a = parseAnnounce(m); if (a) fn(a); });
+  return client.subscribe<{ seq?: number; j?: unknown }>("log", { cats: ["sim"], text: "announce" }, (m) => {
+    const a = parseAnnounce(m);
+    if (a) fn(a);
+    else if (onShown) { const x = parseShown(m); if (x) onShown(x); }
+  });
 }
 
 /** The announcements on the screen now and the last few, for game_state (about a third of a second to read). */
 async function announcementState(s: Session) {
-  const got: Announce[] = [];
-  const stop = await followAnnouncements(s, (a) => got.push(a)).catch(() => null);
+  const got: Announce[] = [], shown = new Map<number, Shown>();
+  const stop = await followAnnouncements(s, (a) => got.push(a), (x) => shown.set(x.id, x)).catch(() => null);
   if (!stop) return undefined;
   await sleep(300);
   stop();
   const now = Date.now(), seen = new Set<string>(), key = (a: Announce) => `${a.seq}:${a.wall}:${a.text}`;
   const list = got.filter((a) => !seen.has(key(a)) && seen.add(key(a))).sort((a, b) => a.wall - b.wall);
   const on = list.filter((a) => a.wall + a.seconds * 1000 > now);
+  // a game that logs announce.shown says the frame each was first drawn in at full opacity
+  const drawn = (a: Announce) => (a.id === undefined ? {} : shown.has(a.id) ? { shownFrame: shown.get(a.id)!.frame } : { shownFrame: null });
   return {
-    onScreen: on.map((a) => ({ text: a.text, ...(a.mod ? { mod: a.mod } : {}), secondsLeft: Math.round((a.wall + a.seconds * 1000 - now) / 100) / 10 })),
-    recent: list.slice(-5).map((a) => ({ text: a.text, ...(a.mod ? { mod: a.mod } : {}), secondsAgo: Math.round((now - a.wall) / 100) / 10, seconds: a.seconds })),
+    onScreen: on.map((a) => ({ text: a.text, ...(a.mod ? { mod: a.mod } : {}), secondsLeft: Math.round((a.wall + a.seconds * 1000 - now) / 100) / 10, ...drawn(a) })),
+    recent: list.slice(-5).map((a) => ({ text: a.text, ...(a.mod ? { mod: a.mod } : {}), secondsAgo: Math.round((now - a.wall) / 100) / 10, seconds: a.seconds, ...drawn(a) })),
     note: "wum.sim.announce messages from the game's log (this session of the game): onScreen are still drawn (the game shows up to 3 at once); game_shots onAnnounce shoots while one is up",
   };
 }
 
 /** Waits for an announcement whose text matches `match` (a case-insensitive regular expression; any without) that is
- * on the screen now or comes within `timeoutMs`. */
-async function waitAnnouncement(s: Session, match: string | undefined, timeoutMs: number): Promise<Announce> {
+ * on the screen now or comes within `timeoutMs`; on a game that logs the frame each message is first drawn in at full
+ * opacity (announce.shown, Melange 0.13+), also for that record, so a shot taken after it has the message in it. */
+async function waitAnnouncement(s: Session, match: string | undefined, timeoutMs: number): Promise<Announce & { shown?: Shown }> {
   let re: RegExp | null = null;
   if (match) try { re = new RegExp(match, "i"); } catch (e) { throw new ToolError(`onAnnounce.match: ${(e as Error).message}`); }
   const t0 = Date.now();
   let found: Announce | null = null;
+  const shown = new Map<number, Shown>();
   const stop = await followAnnouncements(s, (a) => {
     if (!found && (!re || re.test(a.text)) && a.wall + a.seconds * 1000 > Date.now() + 300) found = a;
-  });
+  }, (x) => shown.set(x.id, x));
   if (!stop) throw new ToolError("onAnnounce needs the game's log channel (Oasis): this game has none");
   try {
     while (!found && Date.now() - t0 < timeoutMs) await sleep(50);
+    // the frame it is drawn in: logged a fade-in (0.2 s) after it is announced, so wait a little for it
+    const f = found as Announce | null;
+    if (f && f.id !== undefined) for (const t1 = Date.now(); !shown.has(f.id) && Date.now() - t1 < 1500; ) await sleep(30);
   } finally {
     stop();
   }
   if (!found) throw new ToolError(`no announcement${match ? ` matching /${match}/i` : ""} came on the screen within ${Math.round(timeoutMs / 1000)} s (game_state's announcements lists the recent ones)`);
-  return found;
+  const f = found as Announce;
+  const sh = f.id !== undefined ? shown.get(f.id) : undefined;
+  return { ...f, ...(sh ? { shown: sh } : {}) };
 }
 
 // ------------------------------------------------------------------ a walk in the game
@@ -524,6 +584,7 @@ export const tools: Tool[] = [
       // onAnnounce: wait for the message, then shoot at once and not clean (the announcement is drawn with the HUD
       // primitives a clean shot hides)
       const ann = a.onAnnounce ? await waitAnnouncement(s, a.onAnnounce.match, (a.onAnnounce.timeoutSec ?? 60) * 1000) : null;
+      const shownFrame = ann?.shown?.frame;
       const cleanShots = ann ? false : a.clean ?? true;
       // a held pose pauses for the shots and comes back after them (unless they hold their own last pose)
       const paused = stopHold();
@@ -548,7 +609,9 @@ export const tools: Tool[] = [
             if (check && !check.ok) warnings.push(`${name}: the game drew from ${check.drawn!.map((v) => Math.round(v))} world, not the pose ${lastPose.pos.map((v) => Math.round(v))}: another client (a held game_camera in another erg-mcp) has the camera`);
             if (check?.retried) frame = undefined;
           }
-          const p = await shot(s, name, { width: a.width ?? 960, clean: cleanShots, minFrame: frame !== undefined ? frame + settle : undefined });
+          // with an announcement drawn: never a frame from before it was on the screen
+          const minFrame = frame !== undefined ? frame + settle : undefined, afterShown = shownFrame !== undefined ? shownFrame + 1 : undefined;
+          const p = await shot(s, name, { width: a.width ?? 960, clean: cleanShots, minFrame: minFrame !== undefined && afterShown !== undefined ? Math.max(minFrame, afterShown) : minFrame ?? afterShown });
           shots.push({ name, ...(c.preset ? { preset: c.preset } : {}), ...(c.preset === "overview" && lastPose ? { azimuth: c.azimuth ?? 180, worldPos: lastPose.pos.map((v) => Math.round(v * 10) / 10) } : {}),
             path: p.path, width: p.width, height: p.height, frame: p.frame, clean: p.clean });
           if (a.images !== false) parts.push(image(p.png));
@@ -565,7 +628,11 @@ export const tools: Tool[] = [
         const left = (ann.wall + ann.seconds * 1000 - Date.now()) / 1000;
         if (left < 0) warnings.push(`the announcement left the screen ${Math.round(-left * 10) / 10} s before the last shot: fewer poses, or a longer announce`);
       }
-      parts.push({ type: "text", text: JSON.stringify({ shots, ms: Date.now() - t0, camera, ...(ann ? { announcement: { text: ann.text, ...(ann.mod ? { mod: ann.mod } : {}), seconds: ann.seconds, shownMsBeforeFirstShot: Math.max(0, t0 - ann.wall) } } : {}),
+      const first = shots[0] as { frame?: number } | undefined;
+      parts.push({ type: "text", text: JSON.stringify({ shots, ms: Date.now() - t0, camera, ...(ann ? { announcement: { text: ann.text, ...(ann.mod ? { mod: ann.mod } : {}), seconds: ann.seconds, shownMsBeforeFirstShot: Math.max(0, t0 - ann.wall),
+        ...(ann.shown ? { shownFrame: ann.shown.frame, shownMsAfterCall: ann.shown.msAfterCall, firstShotFrame: first?.frame, proof: first?.frame !== undefined && first.frame > ann.shown.frame
+          ? `the game logged the message drawn at full opacity in frame ${ann.shown.frame}; every shot was read from a later frame while it was on the screen (${ann.seconds} s)` : "the shot's frame is not after the logged one" }
+          : { shownFrame: null, shownNote: "this game does not log the frame a message is drawn in (announce.shown, Melange 0.13+): the shot was taken while the log says it is up" }) } } : {}),
         ...(warnings.length ? { warnings } : {}) }, null, 1) });
       return { content: parts };
     },
@@ -663,6 +730,8 @@ export const tools: Tool[] = [
       properties: {
         watchSeconds: { type: "number", minimum: 0, maximum: 300, description: "Watch this long for new mines and mine messages (default 0, or 120 with untilFire)." },
         untilFire: { type: "boolean", description: "End the watch 3 s after the factory's next MineFactory.FireEnd (its mines are out), instead of at watchSeconds." },
+        fire: { anyOf: [{ type: "boolean" }, { type: "object", additionalProperties: false, properties: { count: { type: "integer", minimum: 1, maximum: 10, description: "Mines in this fire, whatever the factory's target (default: the target's own rule: min(activation - mines in the level, 10))." } } }],
+          description: "Fire the factory now (level.test.fireFactory, Melange 0.13+): at the next sim tick its countdown is set to 0 and its own turn-start handler runs, so it fires as at a turn start (a volley to watch and shoot: with shotsOnFire). Implies untilFire (watchSeconds default 60). The answer's `onDemand` gives whether it started (trigger: the mines in the level and the target it found, or why not: the level holds its target, it is gone or firing) and, once its mines rest, each mine's spawn and rest position (the game logs it as levels/factory.fired). The fire sets the factory's countdown to inactiveTurns again, as a turn-start fire does, so the next fires come that many turn starts after it." },
         units: { type: "string", enum: ["map", "world"], description: "Units of the positions (default map)." },
         alive: { type: "boolean", description: "Also answer `factoryEntity`: whether the game's MineFactoryLogicEntity exists in the match now, where it is, and how far from the project's knot (a factory that fell elsewhere or exploded at load shows here), and its countdown: idleTurnsLeft (the turn starts before it checks again; at 0 or under the next GameLogic.StartMineFactory fires when fewer mines than its target are in the level) and minesToFire." },
         trajectories: { type: "boolean", description: "With watchSeconds: answer each mine that appeared with its path, sampled every quarter second (ms, position in `units`; at most 80 samples a mine). The position is the one entities.list reads from the mine's payload, which the game moves when the mine comes to rest: in a Test on 2026-11-08 a fired mine read its launch point (72 map units up) for about 2 s and then where it landed, so the path gives the launch and the landing, not the arc; shotsOnFire shows the flight." },
@@ -672,9 +741,14 @@ export const tools: Tool[] = [
             width: { type: "integer", minimum: 64, maximum: 8192, description: "Picture width (default 960)." }, images: { type: "boolean", description: "Answer the pictures as image content (default true)." } } },
       },
     },
-    async handler(s, a: { watchSeconds?: number; untilFire?: boolean; units?: "map" | "world"; alive?: boolean; trajectories?: boolean;
+    async handler(s, a0: { watchSeconds?: number; untilFire?: boolean; units?: "map" | "world"; alive?: boolean; trajectories?: boolean; fire?: boolean | { count?: number };
       shotsOnFire?: { count?: number; everyMs?: number; prefix?: string; pos?: number[]; target?: number[]; width?: number; images?: boolean } }) {
       if (!(await has(s, "entities.list"))) throw new ToolError("this game has no entities.list (Oasis's game state readers): game_mines needs the game running a Test");
+      // fire: a volley now, watched until its mines are out
+      const fireAsk = a0.fire === undefined || a0.fire === false ? null : a0.fire === true ? {} : a0.fire;
+      if (fireAsk && !(await has(s, "level.test.fireFactory"))) throw new ToolError("this game has no level.test.fireFactory (Melange 0.13+): the factory fires at turn starts only; set_mine_factory {everyNTurns: 1} and game_mines {untilFire: true}");
+      const a = fireAsk ? { ...a0, untilFire: true, watchSeconds: a0.watchSeconds ?? 60 } : a0;
+      const firesBefore = fireAsk ? ((await probeOf(s))?.factory.fires.length ?? 0) : 0;
       const k = a.units === "world" ? 1 : 1 / WORLD_PER_MAP;
       const out = (p: { x: number; y: number; z: number } | null) => (p ? [p.x, p.y, p.z].map((v) => Math.round(v * k * 100) / 100) : null);
       // the factory knot of the open project, in world units
@@ -704,6 +778,8 @@ export const tools: Tool[] = [
         });
       }
       if (a.untilFire && !names.includes("MineFactory.FireEnd")) throw new ToolError("untilFire needs the bus's MineFactory.FireEnd, which this game does not list (bus.names)");
+      let queued: unknown = null;
+      if (fireAsk) queued = await (await s.client()).call("level.test.fireFactory", fireAsk.count ? { count: fireAsk.count } : {}, 15000);
       // shots on the fire: the pose (world units) and what was taken
       const sf = a.shotsOnFire, shots: object[] = [], pictures: Content[] = [];
       let posed = false;
@@ -753,8 +829,17 @@ export const tools: Tool[] = [
                 ...(far ? { warning: "the factory settled far from its knot: its drop from the knot hit no land the sweep sees (a draped skin) and it took a stale point" } : {}) }
             : { alive: false, why: factory ? FACTORY_GONE : "no factory entity in the match (and no project with a minefactory knot is open)" };
         }
+        // fire: what the trigger found, then (its mines at rest, at most 25 s) the fire's mines from the game's own record
+        let fired: object | undefined;
+        if (fireAsk) {
+          let pr = await probeOf(s);
+          for (const t1 = Date.now(); pr && pr.factory.trigger?.started && pr.factory.fires.length <= firesBefore && Date.now() - t1 < 25000; pr = await probeOf(s)) await sleep(500);
+          const trig = pr?.factory.trigger ?? null, last = pr && pr.factory.fires.length > firesBefore ? pr.factory.fires[pr.factory.fires.length - 1] : null;
+          fired = { queued, trigger: trig, ...(last ? { fire: fireOut(last, a.units ?? "map") } : { fire: null, note: trig && !trig.started ? `the factory did not fire: ${trig.why}` : "no fire record within 25 s (its mines may still be moving): game_probe's factory.fires has it later" }) };
+        }
         const answer = {
           units: a.units ?? "map", factory: factory ? { at: out({ x: factory[0], y: factory[1], z: factory[2] }), note: "the open project's minefactory knot" } : null,
+          ...(fired ? { onDemand: fired } : {}),
           ...(a.untilFire ? { fired: firedAt !== null, ...(firedAt !== null ? { fireEndMs: firedAt - t0 } : {}) } : {}),
           ...(factoryEntity ? { factoryEntity } : {}),
           minesBefore: before.length, mines: now.map((m) => ({ handle: m.handle, type: m.type, at: out(m.pos), fromFactory: dist(m.pos) })),
@@ -766,6 +851,51 @@ export const tools: Tool[] = [
         unsub?.();
         if (posed) await clearCamera(s).catch(() => undefined);
       }
+    },
+  },
+  {
+    name: "game_probe",
+    description: "What happened to the worms in the running (or last) Test match, from the game's Test probe (level.test.probe, Melange 0.13+; also on the session log as levels/test.spawns and levels/test.death in events.jsonl): every worm's position at turn 1 (WORMn its slot, as game_state; in a level with knot spawns, the open project's WORMn knot and how far from it the worm stood: a knot in solid or off an edge shows here), and each worm that died: when (game turn, tick), where, the water then, and the cause, inferred from what the probe saw: drown (the engine's drowning state, or its feet under the water), mine, oildrum or weapon (its latest hit: an explosion whose worm-damage radius reached it, with the source entity and the weapon of the worm whose turn it was), fall (its latest fall, the drop in map units), or unknown; `evidence` says what it was inferred from, `hits`, `falls` and `healthSteps` the history. Also the mine factory's fires (each mine's spawn and rest) and the explosions seen. `units` for the positions (default map).",
+    inputSchema: {
+      type: "object", additionalProperties: false,
+      properties: {
+        units: { type: "string", enum: ["map", "world"], description: "Units of the positions (default map)." },
+        explosions: { type: "boolean", description: "Also list every explosion seen (at most the last 64)." },
+      },
+    },
+    async handler(s, a: { units?: "map" | "world"; explosions?: boolean }) {
+      const r = await probeOf(s);
+      if (!r) throw new ToolError("this game has no level.test.probe (Melange 0.13+): the Test probe is not there; game_state and game_mines read the match instead");
+      const u = a.units ?? "map", p = r.probe;
+      if (!p.key) return { probe: null, note: "no Test has played since the game started: test first" };
+      // WORMn is the worm's slot, as game_state's worm (the Quick Game's slots: team 0 in 0-3, team 1 in 4-7)
+      const wormName = (w: { slot: number }) => `WORM${w.slot}`;
+      // the open project's knots, to set the worms' turn-1 positions against (a level in knots mode starts worm n there)
+      let knots = new Map<string, number[]>();
+      try { if (s.store.scene.spawns.mode === "knots") knots = new Map(markers(s.store).filter((m) => m.kind === "spawn").map((m) => [m.name, m.pos])); } catch { /* no project open */ }
+      const k = u === "world" ? WORLD_PER_MAP : 1, r2 = (v: number) => Math.round(v * 100) / 100;
+      const explosionOut = (x: ProbeExplosion) => ({ turn: x.turn, tick: x.tick, at: inUnits(x.at, u), source: x.source, wormDamage: x.wormDamage, radius: r2(x.wormDamageRadiusMap * k),
+        ...(x.entity ? { entity: { kind: x.entity.kind, type: x.entity.type, label: x.entity.label, handle: x.entity.handle } } : {}),
+        ...(x.turnWorm !== undefined ? { turnWormSlot: x.turnWorm } : {}), ...(x.turnWeapon ? { turnWeapon: x.turnWeapon } : {}) });
+      const spawns = p.spawns.map((w) => {
+        const n = wormName(w), kn = knots.get(n);
+        return { worm: n, name: w.name, team: w.team, slot: w.slot, at: inUnits(w.pos, u), health: w.health,
+          ...(kn ? { knot: inUnits(kn, u), fromKnot: r2(Math.hypot(w.pos[0] - kn[0], w.pos[1] - kn[1], w.pos[2] - kn[2]) * k) } : {}) };
+      });
+      const deaths = p.deaths.map((d) => ({ worm: wormName(d), name: d.name, team: d.team, slot: d.slot, turn: d.turn, tick: d.tick, cause: d.cause, evidence: d.evidence,
+        at: inUnits(d.pos, u), lastAlive: inUnits(d.lastAlivePos, u), health: d.health,
+        ...(d.waterMap !== undefined ? { water: { map: r2(d.waterMap), world: r2(d.waterWorld ?? d.waterMap * WORLD_PER_MAP), feetOverWater: r2((d.lastAlivePos[1] - d.waterMap) * k) } } : {}),
+        ...(d.source ? { source: explosionOut(d.source) } : {}),
+        ...(d.hits.length ? { hits: d.hits.map((h) => ({ ...explosionOut(h.explosion), distance: r2(h.distanceMap * k) })) } : {}),
+        ...(d.falls.length ? { falls: d.falls.map((f) => ({ tick: f.tick, drop: r2(f.dropMap * k), from: r2(f.fromY * k), to: r2(f.toY * k) })) } : {}),
+        ...(d.healthSteps.length ? { healthSteps: d.healthSteps } : {}) }));
+      return {
+        key: p.key, playing: p.playing, turn: p.turn, units: u,
+        spawns: spawns.length ? spawns : null, ...(spawns.length ? {} : { spawnsNote: "the first turn has not started yet" }),
+        deaths, explosionsSeen: p.explosionsSeen, ...(a.explosions ? { explosions: p.explosions.map(explosionOut) } : {}),
+        factory: { fires: r.factory.fires.map((f) => fireOut(f, u)), ...(r.factory.following ? { following: r.factory.following } : {}), trigger: r.factory.trigger },
+        note: "turn counts game turns from 1 (as game_state and check_flood); causes are inferred from what the probe saw (evidence), not read from the engine, which keeps no damage source; WORMn is the worm's slot (game_state's worm); knot and fromKnot only for a level in knots spawn mode",
+      };
     },
   },
 ];

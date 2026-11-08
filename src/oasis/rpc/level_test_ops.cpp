@@ -1,8 +1,10 @@
-// level.test.explode and level.test.quit: harness hooks for a running Test match (erg-mcp's test_explosion and test
-// {restart}). Both send through the match's own Lua (simbridge::EvalMatch) from a sim tick hook, so the engine handles
+// level.test.explode, level.test.quit and level.test.fireFactory: harness hooks for a running Test match (erg-mcp's
+// test_explosion, test {restart} and game_mines {fire}); level.test.probe answers the Test probe (levels/probe.cpp)
+// and the mine factory's fires (levels/factory.cpp). Both send through the match's own Lua (simbridge::EvalMatch) from a sim tick hook, so the engine handles
 // them in its deterministic phase as it does a level script's: explode sets the Explosion data container and sends
 // Explosion.Construct, the game's lib_CreateExplosion, at a named detail of the level (a knot); quit sends
-// GameLogic.QuitGame, which leaves the match for the frontend. Only while a Test the game started is playing, offline.
+// GameLogic.QuitGame, which leaves the match for the frontend. fireFactory calls the factory's own turn-start handler
+// from the same tick (levels::factory::FireNow). Only while a Test the game started is playing, offline.
 #include <windows.h>
 
 #include <algorithm>
@@ -14,6 +16,8 @@
 #include <string>
 
 #include "core/log.h"
+#include "levels/factory.h"
+#include "levels/probe.h"
 #include "lua/sim/bridge_internal.h"
 #include "melange/levels.h"
 #include "melange/sim.h"
@@ -31,6 +35,7 @@ std::string g_playing;            // the Test playing now ("" for none); main th
 std::deque<std::string> g_queue;  // engine Lua to run at the next tick; under g_mx
 int g_hook = 0;
 unsigned g_sent = 0;
+int g_fire = -1;                  // a fire to start at the next tick (its count; -1 none); under g_mx
 
 void OnState(levels::TestState s, const char* key, const char*, void*) {
     using TS = levels::TestState;
@@ -40,9 +45,16 @@ void OnState(levels::TestState s, const char* key, const char*, void*) {
 
 void OnTick(uint32_t tick, void*) {
     std::deque<std::string> q;
+    int fire = -1;
     {
         std::lock_guard lk(g_mx);
         q.swap(g_queue);
+        std::swap(fire, g_fire);
+    }
+    if (fire >= 0) {
+        std::string detail;
+        const char* why = levels::factory::FireNow(fire, &detail);
+        if (why) LOG_WARN("[erg] test: tick %u: the mine factory did not fire: %s (%s)", tick, why, detail.c_str());
     }
     for (const std::string& code : q) {
         const sandbox::EvalOut r = simbridge::EvalMatch(code);
@@ -112,11 +124,36 @@ void Quit(const Call&, Result& r, void*) {
     Queue("SendMessage('GameLogic.QuitGame')");
     r.json = jsonmini::Obj().Bool("queued", true).Str("key", g_playing).UInt("tick", sim::Tick()).End();
 }
+// level.test.fireFactory {count?}: at the next sim tick the level's mine factory fires as at a turn start (its idle
+// countdown set to 0 and its own StartMineFactory called); count 1-10 fires that many whatever the target.
+// level.test.probe says whether it started (factory.trigger) and, once its mines rest, where (factory.fires).
+void FireFactory(const Call& c, Result& r, void*) {
+    json::Value p;
+    double count = 0;
+    if (!rpc::ParseParams(c, &p, r) || !Num(p, "count", 0, 10, 0, &count, r) || !Ready(r)) return;
+    if (count != static_cast<int>(count)) {
+        Fail(r, rpc::kBadParams, "count must be a whole number from 0 to 10");
+        return;
+    }
+    {
+        std::lock_guard lk(g_mx);
+        g_fire = static_cast<int>(count);
+    }
+    r.json = jsonmini::Obj().Bool("queued", true).Int("count", static_cast<int>(count)).UInt("tick", sim::Tick()).End();
+}
+
+// level.test.probe {}: the Test probe (worm spawns at turn 1, deaths with their causes, explosions) and the mine
+// factory's fires (each mine's spawn and rest) and its last on-demand trigger. Main thread.
+void Probe(const Call&, Result& r, void*) {
+    r.json = jsonmini::Obj().Raw("probe", levels::probe::ReportJson()).Raw("factory", levels::factory::FiresJson()).End();
+}
 }  // namespace
 
 void InstallLevelTestOps() {
     levels::OnTestState(&OnState, nullptr);
     AddMethod("level.test.explode", &Explode, nullptr, kRpcMutating | kRpcGameOnly);
     AddMethod("level.test.quit", &Quit, nullptr, kRpcMutating | kRpcGameOnly);
+    AddMethod("level.test.fireFactory", &FireFactory, nullptr, kRpcMutating | kRpcGameOnly);
+    AddMethod("level.test.probe", &Probe, nullptr, kRpcGameOnly);
 }
 }  // namespace melange::oasis::providers

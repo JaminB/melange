@@ -71,7 +71,8 @@ test("check_flood: the water at each spawn's first own turns, and the verdict wi
   apply(store, plan(store, { min: [480, -12], max: [600, 12], floor: 0, expr: "2 + max(0, x + 20)*0.4", material: 1 }));
   // two teams of one: WORM0 low (ground 2), WORM1 high
   await call(s, "place_spawn_knots", { units: "map", spawns: [{ worm: 0, xz: [482, 0] }, { worm: 1, xz: [595, 0] }] });
-  const base = { units: "map", start: 1, x0: 480, z0: -12, x1: 600, z1: 12, wormsPerTeam: 1, teams: 2 };
+  // minDryMargin 0 (over the water at all): the verdict's own default is 1.5 map units since iteration 8
+  const base = { units: "map", start: 1, x0: 480, z0: -12, x1: 600, z1: 12, wormsPerTeam: 1, teams: 2, minDryMargin: 0 };
   // the sea reaches 2 at turn 4 (1 + 3 x 0.34): WORM0 moves in turns 1 and 3, so it is dry at both
   const sched = { startTurn: 2, step: 0.34, cap: 3, units: "map" };
   const ok = await call(s, "check_flood", { ...base, schedule: sched });

@@ -388,7 +388,13 @@ export async function queryGround(s: Session, a: { x: number; z: number; units?:
 interface FloodArgs {
   schedule?: WaterSchedule | "script"; levels?: { turn: number; level: number }[]; start?: number; every?: number; firstTurn?: number; maxTurns?: number;
   teams?: number; wormsPerTeam?: number; margin?: number; minMoves?: number; turnOrder?: number[]; minOwnTurns?: number; minDryMargin?: number;
+  capMargin?: number;
 }
+/** The verdict's default margin over the water, map units: a worm is knocked about and the computer team's worms walk,
+ * so ground just over the water is not dry (in the Caldera iteration-8 Test a worm drowned from ground 1.7 map units up). */
+const DRY_MARGIN = 1.5;
+/** capReport's default: spawns whose ground is within this of the water's highest level (map units) are listed. */
+const CAP_MARGIN = 3;
 interface TargetArg { x: number; z: number; radius?: number; name?: string; }
 interface ReachArgs extends RegionArgs {
   from?: number[][]; target?: { x: number; z: number; radius?: number } | "nearest"; targets?: TargetArg[]; targetMode?: "nearest" | "each"; step?: number; maxStep?: number; maxSlope?: number; maxDrop?: number;
@@ -656,11 +662,24 @@ function floodChecks(spawns: FloodSpawn[], top: number, f: FloodArgs, u: Units):
   return out;
 }
 
+/** The spawns against the water's highest level: each spawn's ground over it (map and world), nearest first, and the
+ * ones within capMargin (default CAP_MARGIN map units) of it, which knock-back or a walk puts in the water. */
+function capReport(spawns: FloodSpawn[], top: number, f: FloodArgs, u: Units) {
+  const m = f.capMargin === undefined ? CAP_MARGIN : inMap(f.capMargin, u);
+  const rows = spawns.filter((sp) => sp.flood?.ground?.map !== undefined).map((sp) => {
+    const over = sp.flood!.ground!.map - top;
+    return { name: sp.name, overCap: { map: r2(over), world: r2(over * WORLD_PER_MAP) }, within: over <= m + 1e-9 };
+  }).sort((a, b) => a.overCap.map - b.overCap.map);
+  const within = rows.filter((r) => r.within).map((r) => r.name);
+  return { cap: { map: r2(top), world: r2(top * WORLD_PER_MAP) }, capMargin: r2(outUnit(m, u)), within, spawns: rows,
+    note: "each spawn's ground over the water's highest level (the cap); within: at most capMargin over it, where knock-back, a slide or the computer team's walking puts a worm in the water before the verdict's turns are over" };
+}
+
 /** The flood's verdict: every spawn knot's ground must stay more than minDryMargin over the water (over it, with 0) at
  * the start of each of its worm's first minOwnTurns own turns (default 2: in its 2nd it can still move away), in the
  * rotation modelled. A spawn that fails is named with its own turn, the game turn and the water. */
 function floodVerdict(spawns: FloodSpawn[], f: FloodArgs, u: Units, played: (name: string) => boolean) {
-  const need = f.minOwnTurns ?? 2, margin = f.minDryMargin === undefined ? 0 : inMap(f.minDryMargin, u);
+  const need = f.minOwnTurns ?? 2, margin = f.minDryMargin === undefined ? DRY_MARGIN : inMap(f.minDryMargin, u);
   const failures: string[] = [];
   let checked = 0;
   for (const sp of spawns) {
@@ -778,7 +797,7 @@ export async function checkReachability(s: Session, a: ReachArgs) {
     const sl = slotOf(w, perTeam, teamsN);
     return { team: sl.team, worm: sl.index, turns: rot.own.get(w) ?? [], every: a.flood?.turnOrder?.length ?? teamsN * perTeam, teams: teamsN };
   };
-  const need = { ownTurns: a.flood?.minOwnTurns ?? 2, margin: a.flood?.minDryMargin === undefined ? 0 : inMap(a.flood.minDryMargin, u) };
+  const need = { ownTurns: a.flood?.minOwnTurns ?? 2, margin: a.flood?.minDryMargin === undefined ? DRY_MARGIN : inMap(a.flood.minDryMargin, u) };
   const spawns = starts.map((st, si) => {
     const n0 = stand[si];
     if (n0 < 0) {
@@ -836,6 +855,7 @@ export async function checkReachability(s: Session, a: ReachArgs) {
       blockedAt: blockedAt.map((b) => { const { x: _x, z: _z, ...rest } = b as { x: number; z: number }; return rest; }), needs, ...each, ...(floodOut ? { flood: floodOut } : {}) };
   });
   const floodWarnings = flood ? floodChecks(spawns as FloodSpawn[], flood.top, a.flood!, u) : [];
+  const cap = flood ? capReport(spawns as FloodSpawn[], flood.top, a.flood!, u) : null;
   const ok = spawns.filter((x) => x.reachable).length;
   const escaped = flood ? spawns.filter((x) => (x as { flood?: { escapes: boolean } }).flood?.escapes).length : 0;
   const onOwn = flood && rot ? spawns.filter((x) => (x as { flood?: { moves?: { escapesOnOwnMoves?: boolean } } }).flood?.moves?.escapesOnOwnMoves).length : null;
@@ -846,7 +866,8 @@ export async function checkReachability(s: Session, a: ReachArgs) {
   const answer = {
     summary: `${ok} of ${spawns.length} reach the target on foot` + (notOk.length ? ` (not: ${notOk.slice(0, 8).join(", ")})` : "") +
       (flood ? `; ${escaped} of ${spawns.length} reach it dry with the flood (best case: a turn every ${flood.rules.every})` + (onOwn !== null ? `, ${onOwn} on their own moves in the rotation` : "") : "") +
-      (verdict ? `; flood ${verdict.pass ? "PASS" : "FAIL"}${verdict.failures ? `: ${verdict.failures.join("; ")}` : ` (${verdict.checked} spawns dry through their own turn ${verdict.minOwnTurns})`}` : ""),
+      (verdict ? `; flood ${verdict.pass ? "PASS" : "FAIL"}${verdict.failures ? `: ${verdict.failures.join("; ")}` : ` (${verdict.checked} spawns dry through their own turn ${verdict.minOwnTurns})`}` : "") +
+      (cap && cap.within.length ? `; within ${cap.capMargin} ${u ?? "map"} of the water's cap: ${cap.within.join(", ")}` : ""),
     ...(verdict ? { floodVerdict: verdict } : {}),
     target: { at: out([tx, top, tz]), radius: r2(outUnit(tr, u)), surfaces: goals, note: single || list ? "the highest ground within the radius" : "the highest ground of the region" },
     ...(list ? { targets: tgs.map((t) => ({ name: t.name, at: out([t.x, t.top, t.z]), radius: r2(outUnit(t.r, u)), surfaces: t.count })),
@@ -863,6 +884,7 @@ export async function checkReachability(s: Session, a: ReachArgs) {
     ...(flood ? { flood: { ...flood.info, teams: teamsN, wormsPerTeam: perTeam,
       ...(rot ? { turnOrder: { source: a.flood?.turnOrder?.length ? "turnOrder (as given, repeated)" : "the engine's rotation: the teams alternate from team 0, each moves its living worms in turn (WORM0 game turn 1, WORM4 turn 2, WORM1 turn 3 for two teams of four); a worm drowned at a turn start is skipped",
         firstTurns: rot.byTurn.slice(0, 16).map((w, i) => ({ turn: i + 1, worm: w < 0 ? null : `WORM${w}` })) } } : {}),
+      ...(cap ? { capReport: cap } : {}),
       ...(floodWarnings.length ? { warnings: floodWarnings } : {}) } } : {}),
     graph: { columns: S.w * S.h, surfaces: S.nodes },
     spawns,
@@ -881,7 +903,24 @@ export async function checkReachability(s: Session, a: ReachArgs) {
 
 // ------------------------------------------------------------------ list_materials
 
-export async function listMaterials(s: Session, a: { materialFile?: string; theme?: string; search?: string; role?: string; limit?: number; only?: "materials" | "palette" }) {
+/** materialFile "theme" (any case): the theme's own file, Theme<Name>\Theme<Name>.txt, of `theme`, else of `base`'s theme,
+ * else of the open project's theme; without any of them an error that names the path to give. Other values are kept. */
+export async function themeKeyword(s: Session, a: { materialFile?: string; theme?: string; base?: string }): Promise<{ materialFile?: string; theme?: string; note?: string }> {
+  let theme = a.theme;
+  if (a.base) {
+    const b = (await (await s.levels()).list()).bases.find((x) => x.key.toLowerCase() === a.base!.toLowerCase());
+    if (!b) throw new ToolError(`base: no base level '${a.base}' (list_bases lists them)`);
+    theme = theme ?? b.theme;
+  }
+  if (a.materialFile === undefined || a.materialFile.trim().toLowerCase() !== "theme") return { materialFile: a.materialFile, theme };
+  const t = theme ?? s.project?.store.scene.databank.theme;
+  if (!t) throw new ToolError(`materialFile "theme" is the theme's own material file, Theme<Name>\\Theme<Name>.txt (for PREHISTORIC: ${themeFile("PREHISTORIC")}): pass theme, or base (a base level, whose theme is used), or give that path as materialFile, or open a project`);
+  return { materialFile: themeFile(t), theme: t, note: `materialFile "theme": the ${t.toUpperCase()} theme's own file, ${themeFile(t)}${a.base && !a.theme ? ` (${a.base}'s theme)` : ""}` };
+}
+
+export async function listMaterials(s: Session, a0: { materialFile?: string; theme?: string; base?: string; search?: string; role?: string; limit?: number; only?: "materials" | "palette" }) {
+  const kw = await themeKeyword(s, a0);
+  const a = { ...a0, materialFile: kw.materialFile, theme: kw.theme };
   const levels = await s.levels();
   const store = s.project?.store;
   const theme = a.theme ?? store?.scene.databank.theme;
@@ -907,7 +946,7 @@ export async function listMaterials(s: Session, a: { materialFile?: string; them
     } else {
       const tint = tintFor(m as MaterialSet);
       materials = {
-        file: m.file, ...(asked?.note ? { note: asked.note } : {}), ...(!a.materialFile && !store ? { from: `the theme's own file (${file})` } : {}),
+        file: m.file, ...(asked?.note || kw.note ? { note: [kw.note, asked?.note].filter(Boolean).join("; ") } : {}), ...(!a.materialFile && !store ? { from: `the theme's own file (${file})` } : {}),
         list: m.names.map((name, index) => ({ index, name, ...(own ? { solidVoxels: counts.get(index) ?? 0 } : {}), colour: hex(tint(index)),
           ...(m.resolved ? { textured: m.resolved[index] ?? false } : {}) }))
           .filter((e) => !q || e.name.toLowerCase().includes(q)),
@@ -953,7 +992,8 @@ const floodSchema = {
     turnOrder: { type: "array", minItems: 1, maxItems: 64, items: { type: "integer", minimum: 0, maximum: 7 },
       description: "The worms in the order the game moved them, from game turn 1 (WORMn numbers, repeated as a cycle), instead of the engine's rotation modelled (teams alternating from team 0, each moving its living worms in turn): an order game_state's turnLog observed in a Test." },
     minOwnTurns: { type: "integer", minimum: 1, maximum: 20, description: "The verdict (floodVerdict, and PASS or FAIL in the summary): each spawn knot's ground must stay more than minDryMargin over the water at the start of each of its worm's first minOwnTurns own turns (default 2)." },
-    minDryMargin: { type: "number", minimum: 0, description: "How far over the water a spawn's ground must stay through its first minOwnTurns own turns (the call's units; default 0: over it at all). 2 map units: a worm keeps its feet dry with a wave." },
+    minDryMargin: { type: "number", minimum: 0, description: "How far over the water a spawn's ground must stay through its first minOwnTurns own turns (the call's units; default 1.5 map units, 30 world: knock-back and the computer team's walking move worms, and a Test worm drowned from ground 1.7 map units up; 0: over it at all)." },
+    capMargin: { type: "number", minimum: 0, description: "flood.capReport lists every spawn's ground over the water's highest level and names those within this of it (the call's units; default 3 map units, 60 world)." },
   } as Record<string, Schema>,
 };
 
@@ -1019,8 +1059,9 @@ export const tools: Tool[] = [
     inputSchema: {
       type: "object", additionalProperties: false,
       properties: {
-        materialFile: { type: "string", description: "A material file from the themes listing (default: the open project's)." },
+        materialFile: { type: "string", description: "A material file from the themes listing (default: the open project's), or \"theme\": the theme's own file (Theme<Name>\\Theme<Name>.txt) of `theme`, of `base`'s theme or of the open project's." },
         theme: { type: "string", description: "Theme for the palette (default: the open project's)." },
+        base: { type: "string", description: "A base level key (list_bases): with no project open, its theme is the theme used (for the palette and materialFile \"theme\")." },
         search: { type: "string", description: "Keep entries whose name (or resource) contains this (any case)." },
         role: { type: "string", enum: ["scenery", "spawn", "object", "camera", "light", "emitter", "sound", "collision", "marker", "other"], description: "Palette entries of this role." },
         limit: { type: "integer", minimum: 1, maximum: 2000, description: "Palette entries to list (default 200)." },
@@ -1035,11 +1076,14 @@ export const tools: Tool[] = [
     inputSchema: {
       type: "object", additionalProperties: false,
       properties: {
-        materialFile: { type: "string", description: "A material file from list_materials' listing, e.g. Maps\\dinermight.txt or ThemeCamelot\\ThemeCamelot.txt." },
+        materialFile: { type: "string", description: "A material file from list_materials' listing, e.g. Maps\\dinermight.txt or ThemeCamelot\\ThemeCamelot.txt, or \"theme\" (the theme's own file, as list_materials)." },
+        base: { type: "string", description: "A base level key: with no project open, its theme is the theme used." },
         theme: { type: "string", description: "The theme whose folder the textures are looked up in first, and whose own file is shown when no materialFile is given and no project is open." },
       },
     },
-    async handler(s, a: { materialFile?: string; theme?: string }) {
+    async handler(s, a0: { materialFile?: string; theme?: string; base?: string }) {
+      const kw = await themeKeyword(s, a0);
+      const a = { ...a0, materialFile: kw.materialFile, theme: kw.theme };
       const store = s.project?.store;
       const theme = a.theme ?? store?.scene.databank.theme;
       const asked = a.materialFile !== undefined ? await resolveFile(s, a.materialFile) : null;
@@ -1104,7 +1148,7 @@ export const tools: Tool[] = [
   },
   {
     name: "check_flood",
-    description: "A rising sea against the spawns: for each spawn knot (or `from` point), the turn the water reaches the ground it stands on (floodsAtTurn), and whether a dry walk gets it to the summit (or `target`) in time: a place counts only while it is dry in the turn the worm gets there, the worm walking walkSpeed x turnTime in each of its own turns (the first in game turn firstTurn, then every `every` turns). The flood is `schedule` (wum.sim.waterSchedule's options: startTurn, every, step, cap, from, units; or \"script\" to read the project's script), or `levels` ([{turn, level}] in the call's units). Each spawn knot also gets `floods` (the game turn, the water and its ground in map and world units both) and `moves`: its worm's own moves (teams x wormsPerTeam game turns apart), how many it gets before its ground floods and whether a walk on those alone escapes, in the engine's worm rotation (teams alternating from team 0, each moving its living worms in turn, drowned worms skipped; or turnOrder) with `ownTurns`: the water and the ground's clearance at the start of each of its first own turns; `floodVerdict` (PASS or FAIL in the summary, naming each failing spawn, its own turn and the game turn) holds every spawn's ground more than minDryMargin over the water through its first minOwnTurns own turns (default 2, margin 0). Game turns count from 1, as wum.sim.turnStarted, game_state's turn and waterSchedule's startTurn do. `flood.warnings` names a spawn whose ground the water's top reaches (within margin) and one that floods before its worm's 2nd (or minMoves-th) move. It is check_reachability with the flood given; the other arguments are the same.",
+    description: "A rising sea against the spawns: for each spawn knot (or `from` point), the turn the water reaches the ground it stands on (floodsAtTurn), and whether a dry walk gets it to the summit (or `target`) in time: a place counts only while it is dry in the turn the worm gets there, the worm walking walkSpeed x turnTime in each of its own turns (the first in game turn firstTurn, then every `every` turns). The flood is `schedule` (wum.sim.waterSchedule's options: startTurn, every, step, cap, from, units; or \"script\" to read the project's script), or `levels` ([{turn, level}] in the call's units). Each spawn knot also gets `floods` (the game turn, the water and its ground in map and world units both) and `moves`: its worm's own moves (teams x wormsPerTeam game turns apart), how many it gets before its ground floods and whether a walk on those alone escapes, in the engine's worm rotation (teams alternating from team 0, each moving its living worms in turn, drowned worms skipped; or turnOrder) with `ownTurns`: the water and the ground's clearance at the start of each of its first own turns; `floodVerdict` (PASS or FAIL in the summary, naming each failing spawn, its own turn and the game turn) holds every spawn's ground more than minDryMargin over the water through its first minOwnTurns own turns (default 2, margin 1.5 map units), and `flood.capReport` gives every spawn's ground over the water's highest level, naming those within capMargin (default 3 map units). Game turns count from 1, as wum.sim.turnStarted, game_state's turn and waterSchedule's startTurn do. `flood.warnings` names a spawn whose ground the water's top reaches (within margin) and one that floods before its worm's 2nd (or minMoves-th) move. It is check_reachability with the flood given; the other arguments are the same.",
     inputSchema: {
       type: "object", additionalProperties: false,
       properties: {
@@ -1112,7 +1156,7 @@ export const tools: Tool[] = [
         schedule: floodSchema.properties.schedule, levels: floodSchema.properties.levels, start: floodSchema.properties.start, every: floodSchema.properties.every,
         firstTurn: floodSchema.properties.firstTurn, maxTurns: floodSchema.properties.maxTurns, teams: floodSchema.properties.teams, wormsPerTeam: floodSchema.properties.wormsPerTeam,
         margin: floodSchema.properties.margin, minMoves: floodSchema.properties.minMoves, turnOrder: floodSchema.properties.turnOrder,
-        minOwnTurns: floodSchema.properties.minOwnTurns, minDryMargin: floodSchema.properties.minDryMargin,
+        minOwnTurns: floodSchema.properties.minOwnTurns, minDryMargin: floodSchema.properties.minDryMargin, capMargin: floodSchema.properties.capMargin,
         from: { type: "array", maxItems: 64, items: { type: "array", items: { type: "number" }, minItems: 3, maxItems: 3 }, description: "Start points [x, y, z] instead of the spawn knots." },
         target: { anyOf: [{ type: "object", additionalProperties: false, required: ["x", "z"], properties: { x: { type: "number" }, z: { type: "number" }, radius: { type: "number", minimum: 0.1 } } },
           { type: "string", enum: ["nearest"] }], description: "The goal: the highest ground within radius (default 3 map units) of x, z; or \"nearest\" with targets: the nearest of them." },
@@ -1130,9 +1174,9 @@ export const tools: Tool[] = [
       },
     },
     handler(s, a: ReachArgs & FloodArgs) {
-      const { schedule, levels, start, every, firstTurn, maxTurns, teams, wormsPerTeam, margin, minMoves, turnOrder, minOwnTurns, minDryMargin, ...rest } = a;
+      const { schedule, levels, start, every, firstTurn, maxTurns, teams, wormsPerTeam, margin, minMoves, turnOrder, minOwnTurns, minDryMargin, capMargin, ...rest } = a;
       if (!schedule && !levels) throw new ToolError("give schedule (wum.sim.waterSchedule's options, or \"script\") or levels");
-      return checkReachability(s, { ...rest, flood: { schedule, levels, start, every, firstTurn, maxTurns, teams, wormsPerTeam, margin, minMoves, turnOrder, minOwnTurns, minDryMargin } });
+      return checkReachability(s, { ...rest, flood: { schedule, levels, start, every, firstTurn, maxTurns, teams, wormsPerTeam, margin, minMoves, turnOrder, minOwnTurns, minDryMargin, capMargin } });
     },
   },
   {

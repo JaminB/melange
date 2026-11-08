@@ -22,12 +22,21 @@
 // them itself instead: each over the factory's own position, launchHeight up and at a random spot within launchRadius
 // of it (an even spread over the disc), falling with the same velocity, two of the sim's randoms a mine so every machine
 // places them alike.
+//
+// Every fire is followed to its end (factory.fired on the session log, FiresJson): the mine entities that appear in
+// PlaceMines (either way) with where each appeared, then, from the sim tick, where each comes to rest (the entity list
+// moves a mine's position from its launch point to where it lies once it rests) or that it is gone. FireNow starts a
+// fire outside a turn start for level.test.fireFactory: StartMineFactory (0x5cfe40) decrements the countdown, returns
+// while it is over 0, then counts the level's mines (GameLogicService +0x1d8 vector) and fires only when they are
+// fewer than NumMineActivation (read from kMineFactoryData at that moment), min(target - mines, 10) mines.
 #include "levels/factory.h"
 
 #include <windows.h>
 
 #include <algorithm>
+#include <cctype>
 #include <cmath>
+#include <cstdio>
 #include <cstring>
 #include <mutex>
 #include <optional>
@@ -41,6 +50,8 @@
 #include "lua/sim/sim_core.h"
 #include "lua/sim/tweak.h"
 #include "melange/gamestate.h"
+#include "melange/jlog.h"
+#include "melange/sim.h"
 #include "tools/json_mini.h"
 
 namespace melange::levels::factory {
@@ -53,6 +64,8 @@ constexpr uintptr_t kCreateMine = 0x4f9c40;    // void __thiscall GameLogicServi
 constexpr uintptr_t kLogicService = 0x95aa14;  // GameLogicService*
 constexpr uintptr_t kPlaceMines = 0x5d05c0;   // void __thiscall MineFactoryLogicEntity::PlaceMines()
 constexpr uintptr_t kSimRandom = 0x68c015;    // uint32_t __cdecl (the sim's random, on its generator at 0x96d034)
+constexpr uintptr_t kStartFactory = 0x5cfe40;  // void __thiscall MineFactoryLogicEntity::StartMineFactory()
+constexpr uint32_t kMinesBegin = 0x1d8, kMinesEnd = 0x1dc;   // GameLogicService: the level's mines (a vector of 4-byte entries)
 constexpr uint32_t kPos = 0x2c, kNormal = 0x38, kExploded = 0x48, kCountdown = 0x88, kFireState = 0x8c, kToSpawn = 0x84;
 constexpr float kWorldPerMap = 20.f;
 
@@ -76,6 +89,29 @@ struct State {
 std::mutex g_mx;
 State g;
 SafetyHookInline g_hDrop, g_hPlace;
+
+// The fires being followed and the last ones done (main thread: PlaceMines and the sim tick).
+struct FiredMine {
+    uint32_t handle = 0;
+    float spawn[3] = {}, last[3] = {};
+    ULONGLONG changedAt = 0;
+    bool moved = false, done = false, gone = false;
+};
+struct Fire {
+    std::string stem;
+    uint32_t tick = 0, turn = 0;
+    int asked = 0;
+    bool launch = false;
+    float factory[3] = {};
+    ULONGLONG at = 0;
+    std::vector<FiredMine> mines;
+};
+constexpr ULONGLONG kRestMs = 1000, kFollowMs = 20000;
+constexpr size_t kKeepFires = 8;
+std::vector<Fire> g_following;
+std::vector<std::string> g_fired;   // the finished fires' JSON, oldest first
+std::string g_trigger = "null";     // the last FireNow
+int g_tickHook = 0;
 
 bool ReadVec(uintptr_t at, float out[3]) { return mem::SafeRead(at, out, sizeof(float) * 3); }
 
@@ -137,6 +173,112 @@ void __fastcall HkDrop(uintptr_t self, void*) {
 
 const char* EngineMine(const float pos[3], const float vel[3]);
 
+// The mine entities of the match and where they are (main thread).
+struct MineAt {
+    uint32_t handle;
+    float pos[3];
+};
+std::vector<MineAt> Mines() {
+    static std::vector<gamestate::Entity> ents(1024);
+    int n = gamestate::Entities(ents.data(), static_cast<int>(ents.size()));
+    n = (std::min)(n, static_cast<int>(ents.size()));
+    std::vector<MineAt> out;
+    for (int i = 0; i < n; ++i) {
+        const gamestate::Entity& e = ents[static_cast<size_t>(i)];
+        if (e.kind != gamestate::EntityKind::Projectile || !e.hasPos) continue;
+        char both[96];
+        snprintf(both, sizeof both, "%s %s", e.type, e.label);
+        for (char* c = both; *c; ++c) *c = static_cast<char>(std::tolower(static_cast<unsigned char>(*c)));
+        if (!std::strstr(both, "mine") || std::strstr(both, "factory")) continue;
+        out.push_back({e.handle, {e.pos.x, e.pos.y, e.pos.z}});
+    }
+    return out;
+}
+
+// After a PlaceMines: the mines that were not there before it are this fire's.
+void FollowFire(const std::string& stem, const std::vector<MineAt>& before, int asked, bool launch, const float at[3]) {
+    Fire f;
+    f.stem = stem;
+    f.tick = sim::Tick();
+    gamestate::Snapshot snap;
+    if (gamestate::Read(&snap) && snap.match.inMatch) f.turn = snap.match.turnsStarted;
+    f.asked = asked;
+    f.launch = launch;
+    std::memcpy(f.factory, at, sizeof f.factory);
+    f.at = GetTickCount64();
+    for (const MineAt& m : Mines()) {
+        bool old = false;
+        for (const MineAt& b : before) old |= b.handle == m.handle;
+        if (old) continue;
+        FiredMine fm;
+        fm.handle = m.handle;
+        std::memcpy(fm.spawn, m.pos, sizeof fm.spawn);
+        std::memcpy(fm.last, m.pos, sizeof fm.last);
+        fm.changedAt = f.at;
+        f.mines.push_back(fm);
+    }
+    g_following.push_back(std::move(f));
+}
+
+std::string MapVec(const float* v) {
+    char b[96];
+    snprintf(b, sizeof b, "[%.2f,%.2f,%.2f]", v[0] / kWorldPerMap, v[1] / kWorldPerMap, v[2] / kWorldPerMap);
+    return b;
+}
+
+// The sim tick: where the followed mines are now; a fire whose mines have all rested (or gone, or past kFollowMs) is
+// done and logged.
+void OnTick(uint32_t tick, void*) {
+    if (g_following.empty() || tick % 5) return;
+    const ULONGLONG now = GetTickCount64();
+    const std::vector<MineAt> live = Mines();
+    for (size_t i = 0; i < g_following.size();) {
+        Fire& f = g_following[i];
+        bool all = true;
+        for (FiredMine& m : f.mines) {
+            if (m.done) continue;
+            const MineAt* at = nullptr;
+            for (const MineAt& l : live)
+                if (l.handle == m.handle) at = &l;
+            if (!at) {
+                m.done = m.gone = true;
+                continue;
+            }
+            if (std::hypot(at->pos[0] - m.last[0], at->pos[1] - m.last[1], at->pos[2] - m.last[2]) > 0.5f) {
+                std::memcpy(m.last, at->pos, sizeof m.last);
+                m.changedAt = now;
+                m.moved = true;
+            }
+            if ((m.moved && now - m.changedAt >= kRestMs) || now - f.at >= kFollowMs) m.done = true;
+            all &= m.done;
+        }
+        if (!all) {
+            ++i;
+            continue;
+        }
+        jsonmini::Arr mines;
+        int rested = 0;
+        for (const FiredMine& m : f.mines) {
+            jsonmini::Obj o;
+            o.UInt("handle", m.handle).Raw("spawn", MapVec(m.spawn));
+            if (m.gone) o.Bool("gone", true).Raw("lastSeen", MapVec(m.last));
+            else o.Raw("rest", MapVec(m.last)).Bool("settled", m.moved);
+            o.Float("restFromFactoryMap", std::hypot(m.last[0] - f.factory[0], m.last[2] - f.factory[2]) / kWorldPerMap);
+            rested += !m.gone && m.moved;
+            mines.Raw(o.End());
+        }
+        const std::string mj = mines.End();
+        jlog::Rec("levels", jlog::Level::Info, "factory.fired").Str("stem", f.stem).Uint("tick", f.tick).Uint("turn", f.turn)
+            .Int("asked", f.asked).Bool("launch", f.launch).Raw("factory", MapVec(f.factory)).Raw("mines", mj);
+        LOG_INFO("[levels] %s: the mine factory's fire at tick %u (turn %u): %zu mines appeared, %d came to rest", f.stem.c_str(), f.tick,
+                 f.turn, f.mines.size(), rested);
+        g_fired.push_back(jsonmini::Obj().Str("stem", f.stem).UInt("tick", f.tick).UInt("turn", f.turn).Int("asked", f.asked)
+                              .Bool("launch", f.launch).Raw("factory", MapVec(f.factory)).Raw("mines", mj).End());
+        if (g_fired.size() > kKeepFires) g_fired.erase(g_fired.begin());
+        g_following.erase(g_following.begin() + static_cast<std::ptrdiff_t>(i));
+    }
+}
+
 // PlaceMines with the level's launch: the factory's mines appear over it, within launchRadius, launchHeight up.
 void __fastcall HkPlaceMines(uintptr_t self, void*) {
     erg::FactorySpec spec;
@@ -148,14 +290,14 @@ void __fastcall HkPlaceMines(uintptr_t self, void*) {
         spec = g.spec;
         stem = g.stem;
     }
-    if (!armed || !spec.Launch()) {
-        g_hPlace.thiscall<void>(self);
-        return;
-    }
     int32_t n = 0;
     float at[3] = {};
-    if (!mem::SafeRead(self + kToSpawn, &n, sizeof n) || !ReadVec(self + kPos, at) || n < 1 || n > 10) {
+    mem::SafeRead(self + kToSpawn, &n, sizeof n);
+    ReadVec(self + kPos, at);
+    const std::vector<MineAt> before = Mines();
+    if (!armed || !spec.Launch() || n < 1 || n > 10) {
         g_hPlace.thiscall<void>(self);
+        FollowFire(stem.empty() ? "?" : stem, before, n, false, at);
         return;
     }
     using Random = uint32_t(__cdecl*)();
@@ -172,6 +314,7 @@ void __fastcall HkPlaceMines(uintptr_t self, void*) {
     }
     LOG_INFO("[levels] %s: the mine factory fired %d of %d mines from %.0f over it, within %.0f (world units)", stem.c_str(), made, n,
              static_cast<double>(height), static_cast<double>(radius));
+    FollowFire(stem, before, n, true, at);
 }
 
 // The match's one MineFactoryLogicEntity, or 0.
@@ -210,6 +353,15 @@ const char* EngineArmFactory() {
     return mem::Write(f + kCountdown, &zero, sizeof zero) ? nullptr : "the factory could not be written";
 }
 
+// The level's mines as the factory counts them (GameLogicService +0x1d8), or -1.
+int LevelMines() {
+    uintptr_t svc = 0, b = 0, e = 0;
+    if (!mem::SafeRead(kLogicService, &svc, sizeof svc) || !svc || !mem::SafeRead(svc + kMinesBegin, &b, 4) ||
+        !mem::SafeRead(svc + kMinesEnd, &e, 4) || e < b)
+        return -1;
+    return static_cast<int>((e - b) / 4);
+}
+
 class LevelFactory final : public Module {
 public:
     const char* Name() const override { return "LevelFactory"; }
@@ -239,6 +391,7 @@ public:
             g_hPlace = safetyhook::create_inline(kPlaceMines, &HkPlaceMines);
             if (!g_hPlace) LOG_WARN("[levels] the mine factory's PlaceMines hook failed: launchHeight and launchRadius are skipped");
         } else LOG_WARN("[levels] the mine factory's PlaceMines differs from build #1077: launchHeight and launchRadius are skipped");
+        g_tickHook = sim::AddTickHook(&OnTick, nullptr, 70);   // follows the fires to where their mines rest
         simcore::LevelEngine e;
         e.mine = &EngineMine;
         e.armFactory = &EngineArmFactory;
@@ -246,6 +399,8 @@ public:
         return true;
     }
     void Uninstall() override {
+        if (g_tickHook) sim::RemoveTickHook(g_tickHook);
+        g_tickHook = 0;
         simcore::SetLevelEngine(simcore::LevelEngine{});
         g_hPlace = {};
         g_hDrop = {};
@@ -284,6 +439,62 @@ std::string ReportJson() {
     };
     return jsonmini::Obj().Str("stem", s.reportStem).Raw("activation", field(s.activation)).Raw("inactiveTurns", field(s.inactive))
         .Raw("knot", vec(s.knot)).Raw("settled", vec(s.settled)).Bool("landed", s.hit).Bool("keptKnot", s.keptKnot).End();
+}
+
+const char* FireNow(int count, std::string* detail) {
+    static char why[160];
+    const char* result = nullptr;
+    const uintptr_t f = g_hDrop ? FindFactory() : 0;
+    uint8_t exploded = 0;
+    int32_t fire = 0, countdown = 0;
+    const int mines = LevelMines();
+    float target = -1;
+    tweak::Get("kMineFactoryData", "NumMineActivation", &target);
+    if (!g_hDrop) result = "the mine factory hooks are not installed (another game build)";
+    else if (!f) result = "the level has no mine factory (or it is gone)";
+    else if (!mem::SafeRead(f + kExploded, &exploded, 1) || !mem::SafeRead(f + kFireState, &fire, 4)) result = "the factory is unreadable";
+    else if (exploded) result = "the factory has exploded";
+    else if (fire != 0) result = "the factory is firing";
+    else if (mines < 0) result = "the level's mines could not be counted";
+    else if (count <= 0 && target >= 0 && mines >= static_cast<int>(target)) {
+        snprintf(why, sizeof why, "the level holds %d mines, not fewer than the factory's target %g: it fires nothing (give a count)", mines,
+                 static_cast<double>(target));
+        result = why;
+    } else {
+        // the target for this call alone: the mines there plus count, so StartMineFactory fires count of them
+        const bool raise = count > 0 && target >= 0;
+        if (raise) tweak::Set("kMineFactoryData", "NumMineActivation", static_cast<float>((std::min)(255, mines + (std::min)(count, 10))));
+        const int32_t zero = 0;
+        mem::Write(f + kCountdown, &zero, sizeof zero);
+        reinterpret_cast<void(__thiscall*)(uintptr_t)>(kStartFactory)(f);
+        if (raise) tweak::Set("kMineFactoryData", "NumMineActivation", target);
+        mem::SafeRead(f + kFireState, &fire, 4);
+        if (fire == 0) result = "the factory's StartMineFactory did not start a fire";
+    }
+    int32_t toFire = 0;
+    if (f) {
+        mem::SafeRead(f + kToSpawn, &toFire, 4);
+        mem::SafeRead(f + kCountdown, &countdown, 4);
+    }
+    char d[200];
+    snprintf(d, sizeof d, "mines in the level %d, target %g, fire state %d, mines to fire %d, idle countdown %d", mines,
+             static_cast<double>(target), fire, toFire, countdown);
+    if (detail) *detail = d;
+    g_trigger = jsonmini::Obj().UInt("tick", sim::Tick()).Int("count", count).Bool("started", !result).Str("why", result ? result : "")
+                    .Str("detail", d).End();
+    LOG_INFO("[levels] the mine factory on demand: %s (%s)", result ? result : "a fire started", d);
+    return result;
+}
+
+bool Position(float out[3]) {
+    const uintptr_t f = g_hDrop ? FindFactory() : 0;
+    return f && ReadVec(f + kPos, out);
+}
+
+std::string FiresJson() {
+    jsonmini::Arr fires;
+    for (const std::string& f : g_fired) fires.Raw(f);
+    return jsonmini::Obj().Raw("fires", fires.End()).Int("following", static_cast<int>(g_following.size())).Raw("trigger", g_trigger).End();
 }
 
 MELANGE_MODULE(LevelFactory);

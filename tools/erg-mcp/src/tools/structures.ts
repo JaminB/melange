@@ -4,6 +4,7 @@
 import { cellBudget, type Vec3 } from "../core";
 import { sampleField, spansAt } from "../lib/inspect-field";
 import { standableAt, standing, surfaces } from "../lib/reach";
+import { nearestTread, treadAt } from "../lib/spawn-check";
 import { applyPlan, dominantMaterial, type Packing } from "../lib/structures-apply";
 import {
   SIDES, arch, bridge, castle, castleSpots, crater, flatTunnel, keep, lane, laneCut, place, placePoint, scaled, tower, tunnel, wallSegment, type Plan, type Shape,
@@ -162,9 +163,23 @@ function spotReport(s: Session, spots: Spot[], units: "map" | "world" | undefine
       const S = surfaces(gs, { x0: Math.floor(x) - 2, z0: Math.floor(z) - 2, x1: Math.floor(x) + 3, z1: Math.floor(z) + 3 }, 1, 1.5);
       if (standing(S, [x, p.at[1], z], { step: 1, maxStep: 0.5, maxSlope: 45, maxDrop: 8, maxGap: 0, headroom: 1.5, water: null }, gs) < 0) { out.ok = false; out.why = "a ledge too narrow for check_reachability's walk graph"; }
     }
+    // the tread a spawn knot needs (lib/spawn-check.ts): not in solid, room over it, ground round it at least half a
+    // worm out (a spot on a wall-walk's edge lets the worm slide off): snapped to the nearest point that passes
+    if (out.ok) {
+      const top = c.g!.top, t = treadAt(gs, [x, top, z]);
+      if (!t.ok) {
+        const to = nearestTread(gs, [x, top, z], 2);
+        if (to && Math.abs(to[1] - top) <= 1.5) {
+          out.tread = { snapped: true, from: tidy([x * k, top * k, z * k]), why: t.problems };
+          x = to[0]; z = to[2];
+          out.at = tidy([x * k, p.at[1] * k, z * k]);
+          out.standOn = tidy([x * k, to[1] * k, z * k]);
+        } else { out.ok = false; out.why = t.problems.join("; "); }
+      }
+    }
     return out;
   });
-  return { note: dry ? "positions from the design (dry run: not checked against the voxels)" : "standOn is the top of the voxels there; ok spots have ground within 1.5 map units of the design and 1.5 of air above (moved: shifted that far to the nearest such point). Give them to place_spawn_knots as pos.", spots: list };
+  return { note: dry ? "positions from the design (dry run: not checked against the voxels)" : "standOn is the top of the voxels there; ok spots have ground within 1.5 map units of the design and 1.5 of air above (moved: shifted that far to the nearest such point), are not in solid and have ground round them at least half a worm out (tread.snapped: moved off an edge to the nearest such point, within 2 map units). Give them to place_spawn_knots as pos.", spots: list };
 }
 
 const sideOf = (v: string | undefined, dflt: Side | null): Side | null => (v === undefined ? dflt : v === "none" ? null : (v as Side));

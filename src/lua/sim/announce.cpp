@@ -1,7 +1,9 @@
 // SimAnnounce: wum.sim.announce(text[, seconds]) for sim mods and level scripts. A message drawn on this machine's HUD,
 // centred near the top of the screen, for a few seconds: the rising sea, the next round, a goal reached. Every machine
 // runs the sim, so every player sees it; it changes nothing the match reads (the sim, Wormsign hashes and replays are
-// untouched), so it is free to call from deterministic code. Drawn at the Hud stage, after the engine's own HUD.
+// untouched), so it is free to call from deterministic code. Drawn at the Hud stage, after the engine's own HUD. The
+// first frame a message is drawn in at full opacity (its fade-in done) is logged (sim/announce.shown, with the frame and
+// the ms since the call), so a tool can prove it reached the screen and take its picture from that frame on.
 #include <windows.h>
 
 #include <algorithm>
@@ -11,6 +13,7 @@
 #include <string_view>
 #include <utility>
 
+#include "core/events.h"
 #include "core/log.h"
 #include "core/module.h"
 #include "lua/engine50.h"
@@ -29,7 +32,10 @@ constexpr float kMinSeconds = 0.5f, kMaxSeconds = 15.f, kDefaultSeconds = 4.f, k
 struct Line {
     char text[kMaxText + 1] = {};
     ULONGLONG shown = 0, until = 0;
+    uint32_t id = 0;
+    bool drawn = false;   // its first frame at full opacity was logged
 };
+uint32_t g_nextId = 0;
 std::mutex g_mx;
 Line g_lines[kLines];
 int g_stage = 0;
@@ -57,6 +63,7 @@ int __cdecl LAnnounce(l5::State* L) {
         n = kMaxText;
         while (n > 0 && (static_cast<unsigned char>(text[n]) & 0xC0) == 0x80) --n;  // not inside a UTF-8 sequence
     }
+    uint32_t id = 0;
     {
         std::lock_guard lk(g_mx);
         int slot = 0;
@@ -67,9 +74,11 @@ int __cdecl LAnnounce(l5::State* L) {
         l.text[n] = 0;
         l.shown = GetTickCount64();
         l.until = l.shown + static_cast<ULONGLONG>(seconds * 1000.f);
+        l.id = id = ++g_nextId;
+        l.drawn = false;
     }
     const char* mod = melange::simbridge::CurrentMod();
-    melange::jlog::Rec("sim", melange::jlog::Level::Info, "announce").Str("mod", mod ? mod : "?").Str("text", std::string_view(text ? text : "", n)).Float("seconds", seconds);
+    melange::jlog::Rec("sim", melange::jlog::Level::Info, "announce").Str("mod", mod ? mod : "?").Str("text", std::string_view(text ? text : "", n)).Float("seconds", seconds).Uint("id", id);
     a.pushboolean(L, 1);
     return 1;
 }
@@ -109,6 +118,20 @@ void Draw(melange::render::Stage, void*) {
         o.shadowColor = (a8 << 24);
         melange::draw::HudTextEx(cx, y, show[i].text, (a8 << 24) | 0x0050D8FFu, size, o);
         y += e.h + size * 0.6f;
+    }
+    // the first frame each message is drawn in at full opacity
+    const uint64_t frame = melange::events::FrameCount();
+    for (int i = 0; i < count; ++i) {
+        if (show[i].drawn || now - show[i].shown < static_cast<ULONGLONG>(kFadeMs / 2)) continue;
+        {
+            std::lock_guard lk(g_mx);
+            bool mine = false;
+            for (Line& l : g_lines)
+                if (l.id == show[i].id && !l.drawn) mine = l.drawn = true;
+            if (!mine) continue;
+        }
+        melange::jlog::Rec("sim", melange::jlog::Level::Info, "announce.shown").Str("text", show[i].text).Uint("frame", frame)
+            .Uint("msAfterCall", now - show[i].shown).Uint("id", show[i].id);
     }
 }
 

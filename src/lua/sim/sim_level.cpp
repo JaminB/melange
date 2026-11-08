@@ -237,6 +237,94 @@ int __cdecl LFireFactory(l5::State* L) {
     return 1;
 }
 
+WaterEngine g_water;
+
+// The engine field a wum.level.water key names: its own name, or opacity (NearOpacity) and reflection
+// (ReflectionStrength).
+const char* WaterField(const char* key) {
+    if (std::strcmp(key, "opacity") == 0) return "NearOpacity";
+    if (std::strcmp(key, "reflection") == 0) return "ReflectionStrength";
+    for (const char* const* f = g_water.fields; f && *f; ++f)
+        if (std::strcmp(*f, key) == 0) return *f;
+    return nullptr;
+}
+
+// wum.level.water([fields]): the match's water look. With a table, sets each field (opacity 0-1, reflection, or a
+// WaterPlaneTweaks field by name: a number, or {r, g, b[, a]} 0-255 for a colour, {x, y, z} for a vector) and answers
+// true, or nil and why for the first it could not set (those before it are set). With no argument, a table of every
+// field's value now. Render state only: nothing the sim reads changes, and the theme's values come back when the match
+// ends.
+int __cdecl LWater(l5::State* L) {
+    const auto& a = l5::A();
+    if (a.gettop(L) >= 1 && a.type(L, 1) != l5::kTTable && a.type(L, 1) != l5::kTNil) {
+        snprintf(g_err, sizeof g_err, "wum.level.water: expected ([fields])");
+        return Raise(L);
+    }
+    if (!g_water.set || !g_water.get) return NilReason(L, "unavailable");
+    if (a.type(L, 1) != l5::kTTable) {
+        a.newtable(L);
+        const int t = a.gettop(L);
+        for (const char* const* f = g_water.fields; f && *f; ++f) {
+            float v[4];
+            const int n = g_water.get(*f, v);
+            if (n < 1) continue;
+            a.pushstring(L, *f);
+            if (n == 1) {
+                a.pushnumber(L, v[0]);
+            } else {
+                a.newtable(L);
+                for (int i = 0; i < n; ++i) {
+                    a.pushnumber(L, v[i]);
+                    a.rawseti(L, -2, i + 1);
+                }
+            }
+            a.rawset(L, t);
+        }
+        return 1;
+    }
+    a.pushnil(L);
+    while (a.next(L, 1)) {
+        // key at -2, value at -1
+        if (a.type(L, -2) != l5::kTString) {
+            snprintf(g_err, sizeof g_err, "wum.level.water: the fields are named by strings");
+            return Raise(L);
+        }
+        char key[64];
+        snprintf(key, sizeof key, "%s", a.tostring(L, -2));
+        const char* field = WaterField(key);
+        if (!field) {
+            a.settop(L, -3);
+            snprintf(g_err, sizeof g_err, "unknown water field '%s'", key);
+            return NilReason(L, g_err);
+        }
+        float v[4] = {};
+        int n = 0;
+        if (a.type(L, -1) == l5::kTNumber) {
+            v[n++] = a.tonumber(L, -1);
+        } else if (a.type(L, -1) == l5::kTTable) {
+            for (int i = 0; i < 4; ++i) {
+                a.rawgeti(L, -1, i + 1);
+                const bool num = a.type(L, -1) == l5::kTNumber;
+                if (num) v[n++] = a.tonumber(L, -1);
+                a.settop(L, -2);
+                if (!num) break;
+            }
+        }
+        a.settop(L, -2);   // the value; the key stays for next
+        if (n == 0) {
+            snprintf(g_err, sizeof g_err, "wum.level.water: %s must be a number or a table of numbers", key);
+            return Raise(L);
+        }
+        if (const char* why = g_water.set(field, v, n)) {
+            a.settop(L, -2);
+            snprintf(g_err, sizeof g_err, "%s: %s", key, why);
+            return NilReason(L, g_err);
+        }
+    }
+    a.pushboolean(L, 1);
+    return 1;
+}
+
 void SetStr(l5::State* L, int t, const char* k, const char* v) {
     l5::A().pushstring(L, k);
     l5::A().pushstring(L, v);
@@ -268,7 +356,9 @@ void PushLevel(int mod) {
     SetFn(L, t, "crate", &LCrate, mod);
     SetFn(L, t, "mine", &LMine, mod);
     SetFn(L, t, "fireFactory", &LFireFactory, mod);
+    SetFn(L, t, "water", &LWater, mod);
 }
 
 void SetLevelEngine(const LevelEngine& e) { g_engine = e; }
+void SetWaterEngine(const WaterEngine& e) { g_water = e; }
 }  // namespace melange::simcore

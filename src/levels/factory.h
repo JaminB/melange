@@ -12,4 +12,14 @@ namespace melange::levels::factory {
 void Arm(const std::string& stem, const erg::FactorySpec& f);   // at level start; a level without one disarms
 void Disarm();
 std::string ReportJson();   // the last set-up as JSON ("null" before any): asked, found, applied, the drop
+// A fire on demand (sim tick, main thread): the idle countdown to 0 and the factory's own GameLogic.StartMineFactory
+// handler called, so it fires as at a turn start when fewer mines than its target are in the level. count (1-10, 0 for
+// the target's own rule) raises the target to the mines in the level plus count for that call alone. nullptr, or why
+// it did not start a fire; *detail says what it found.
+const char* FireNow(int count, std::string* detail);
+// The fires seen (each PlaceMines: its mines, where each appeared and where it came to rest, levels/factory.fired on
+// the session log) and the last on-demand trigger, as JSON {fires, trigger}.
+std::string FiresJson();
+// Where the match's mine factory is now (world units), main thread; false when it has none.
+bool Position(float out[3]);
 }  // namespace melange::levels::factory
