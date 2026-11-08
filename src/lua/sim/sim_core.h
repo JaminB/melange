@@ -32,6 +32,8 @@ void SetLevel(const std::string& key);                   // the level being set 
 std::string LevelDigest();                               // sha256 of this match's level scripts, comma-joined
 bool IsLevelMod(int mod);
 void TurnStarted();                                      // GameLogic.Turn.Started: sim.turnStarted at the next tick
+// A clean-room Test: matches on level `key` load its level scripts but no sim mod (entry.sim); "" ends it.
+void SuppressModsOn(const std::string& key);
 
 // Lifecycle, in engine order.
 void ContextCreated(lua50::State* L);

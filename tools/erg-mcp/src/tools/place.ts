@@ -3,9 +3,9 @@
 // surround modes), the level script, and shipping the level (export, build, test, live packs). Placing uses the Erg
 // panel's own model (model/placing.ts, ground.ts), so a placed object is the one the palette places.
 import {
-  AddDetail, AddObjects, BUILTIN, Group, KNOT_RESOURCE, KNOTS, LIMITS, PAD_SPACING, RemoveDetail, SetDetail, SetLevel, THEMES, TIMES_OF_DAY,
+  AddDetail, AddObjects, BUILTIN, Group, KNOT_RESOURCE, KNOTS, LIMITS, PAD_SPACING, RemoveDetail, SetDetail, SetLevel, SetObject, THEMES, TIMES_OF_DAY,
   catalogOf, checkScene, defaultObject, nextObjectKnot, nextTelepadGroup, objectOf, place, targetFrame,
-  type Command, type CrateSpec, type Detail, type DetailFields, type EditorStore, type LevelSettings, type ObjectSpec, type ObjectType,
+  type Command, type CrateSpec, type Detail, type DetailFields, type EditorStore, type FactorySpec, type LevelSettings, type ObjectSpec, type ObjectType,
   type TimeOfDay, type Vec3,
 } from "../core";
 import {
@@ -102,7 +102,29 @@ type PlaceType = (typeof OBJECT_TYPES)[number];
 interface PlaceArgs extends PointArgs {
   type: PlaceType; units?: Units; kind?: "weapon" | "health" | "utility"; contents?: string; count?: number; amount?: number;
   hitpoints?: number; parachute?: boolean; pos2?: number[]; index?: number; radius?: number; teamCollect?: number; teamDestroy?: number; wormCollect?: boolean;
+  activation?: number; inactiveTurns?: number; schemeMines?: boolean;
 }
+
+type FactoryArgs = Pick<PlaceArgs, "activation" | "inactiveTurns" | "schemeMines">;
+const FACTORY_GAME = { activation: 20, inactiveTurns: 7, schemeMines: true } as const;
+
+/** The factory settings after `a` is applied to `f`: a value equal to the game's is dropped (the game's value stays). */
+function factoryOf(f: FactorySpec | undefined, a: FactoryArgs): FactorySpec | undefined {
+  const next: Record<string, number | boolean> = { ...(f ?? {}) };
+  for (const k of ["activation", "inactiveTurns", "schemeMines"] as const) {
+    const v = a[k];
+    if (v === undefined) continue;
+    if (v === FACTORY_GAME[k]) delete next[k];
+    else next[k] = v;
+  }
+  return Object.keys(next).length ? (next as FactorySpec) : undefined;
+}
+
+const factoryProps: Record<string, Schema> = {
+  activation: { type: "integer", minimum: 0, maximum: 255, description: "minefactory: it fires at a turn start when fewer than this many mines are in the level, topping up to it, at most 10 per fire (game 20; 0 never fires)." },
+  inactiveTurns: { type: "integer", minimum: 0, maximum: 255, description: "minefactory: turn starts it waits after it is placed and after each fire before it checks again (game 7; 0 checks every turn)." },
+  schemeMines: { type: "boolean", description: "minefactory: false = the scheme's 15 random start mines are not placed, so mines come only from the factory (oil drums stay; default true)." },
+};
 
 function crateOf(a: PlaceArgs): CrateSpec {
   const kind = a.type === "health" ? "health" : a.kind ?? "health";
@@ -169,6 +191,9 @@ async function placeObject(s: Session, a: PlaceArgs) {
         if (a.teamDestroy !== undefined) t.teamDestroy = a.teamDestroy;
         if (a.hitpoints !== undefined) t.hitpoints = a.hitpoints;
         if (a.wormCollect !== undefined) t.wormCollect = a.wormCollect;
+      } else if (spec.type === "minefactory") {
+        const f = factoryOf(undefined, a);
+        if (f) spec.factory = f;
       }
       specs.push(spec);
       at.push(local(map));
@@ -321,7 +346,7 @@ export const tools: Tool[] = [
   },
   {
     name: "place_object",
-    description: "Place an object as the Erg palette does: crate (kind weapon|health|utility, contents, count, amount, hitpoints, parachute), health (a health crate), telepad (a pair in a new group; pos2 for the second pad, default 2 map units along x), trigger (index, radius, teamCollect, teamDestroy, hitpoints, wormCollect), mine, oildrum, or minefactory (one per level). Position by pos [x,y,z] or xz (dropped onto the terrain). Crates, telepads, triggers and the mine factory make the project format v2 (at most 256 objects). One undo step.",
+    description: "Place an object as the Erg palette does: crate (kind weapon|health|utility, contents, count, amount, hitpoints, parachute), health (a health crate), telepad (a pair in a new group; pos2 for the second pad, default 2 map units along x), trigger (index, radius, teamCollect, teamDestroy, hitpoints, wormCollect), mine, oildrum, or minefactory (one per level; activation, inactiveTurns, schemeMines, changed later with set_mine_factory). Position by pos [x,y,z] or xz (dropped onto the terrain). Crates, telepads, triggers and the mine factory make the project format v2 (at most 256 objects). One undo step.",
     inputSchema: {
       type: "object", additionalProperties: false, required: ["type"],
       properties: {
@@ -339,6 +364,7 @@ export const tools: Tool[] = [
         teamCollect: { type: "integer", minimum: 0, description: "trigger: teams that collect it (default 0)." },
         teamDestroy: { type: "integer", minimum: 0, description: "trigger: teams that destroy it (default 4)." },
         wormCollect: { type: "boolean", description: "trigger: a worm collects it (default false)." },
+        ...factoryProps,
         units: unitsSchema,
       },
     },
@@ -391,6 +417,20 @@ export const tools: Tool[] = [
         limit: { type: "integer", minimum: 1, maximum: 5000, description: "Details to list (default 200)." }, units: unitsSchema, ...cameraProps },
     },
     handler: (s, a) => listObjects(s, a),
+  },
+  {
+    name: "set_mine_factory",
+    description: "Change the level's mine factory settings (place it first with place_object type minefactory). A value equal to the game's (activation 20, inactiveTurns 7, schemeMines true) is dropped, so the game's value applies. Melange writes activation and inactiveTurns into the game's kMineFactoryData at level start and puts the game's back when the match ends. One undo step.",
+    inputSchema: { type: "object", additionalProperties: false, properties: factoryProps },
+    handler(s, a: FactoryArgs) {
+      const store = s.store, scene = store.scene;
+      const o = scene.objects?.find((x) => x.type === "minefactory");
+      if (!o || o.type !== "minefactory") throw new ToolError("the level has no mine factory: place one with place_object type minefactory");
+      if (a.activation === undefined && a.inactiveTurns === undefined && a.schemeMines === undefined) throw new ToolError("give activation, inactiveTurns or schemeMines");
+      const factory = factoryOf(o.factory, a);
+      commit(store, new SetObject(o.knot, factory ? { knot: o.knot, type: "minefactory", factory } : { knot: o.knot, type: "minefactory" }));
+      return { knot: o.knot, factory: factory ?? {}, game: FACTORY_GAME, changed: true };
+    },
   },
   {
     name: "set_water",
@@ -497,9 +537,10 @@ export const tools: Tool[] = [
       properties: { tod: { type: "string", enum: TIMES_OF_DAY, description: "Time of day for this Test (default the project's)." },
         waitFor: { type: "string", enum: ["playing", "armed"], description: "State to wait for (default playing)." },
         timeoutSec: { type: "integer", minimum: 1, maximum: 600, description: "Stop waiting after this long (default 60)." },
-        cleanMods: { type: "boolean", description: "Refuse when enabled content mods have sim code (they run in the Test beside the level script), for clean benchmark runs." } },
+        cleanMods: { type: "boolean", description: "A clean room for this Test match only: enabled content mods' sim code (entry.sim) does not run, only the level script, and the post-FX stack is off (unless postfx: true), so asserts and lighting belong to the map. Nothing is changed on disk; launch-time content (weapon clones, file overrides, shader mods, client scripts) stays. On a game build without clean rooms it refuses while such mods are enabled." },
+        postfx: { type: "boolean", description: "false: the post-FX stack (every effect and code pass, like the Post-FX panel's Bypass all) is off for this Test match; true with cleanMods keeps it on. Default: on, or off with cleanMods." } },
     },
-    async handler(s, a: { tod?: TimeOfDay; waitFor?: "playing" | "armed"; timeoutSec?: number; cleanMods?: boolean }) {
+    async handler(s, a: { tod?: TimeOfDay; waitFor?: "playing" | "armed"; timeoutSec?: number; cleanMods?: boolean; postfx?: boolean }) {
 
       const p = s.requireProject();
       const conn = await s.ensure();
@@ -514,12 +555,17 @@ export const tools: Tool[] = [
           // an older game: no list
         }
       }
-      if (a.cleanMods && simMods.length)
-        throw new ToolError(`content mods with sim code are enabled and would run in the Test: ${simMods.join(", ")}. Disable them in the game (they apply at the next launch) for a clean run, or leave out cleanMods`);
+      // A game with clean rooms lists level.test.cleanRoom; an older one ignores cleanMods, so the old refusal stays.
+      const cleanRooms = conn.methods.includes("level.test.cleanRoom");
+      if (a.cleanMods && simMods.length && !cleanRooms)
+        throw new ToolError(`content mods with sim code are enabled and would run in the Test: ${simMods.join(", ")}. This game build has no clean-room Test: disable them in the game (they apply at the next launch) for a clean run, or leave out cleanMods`);
       const first = await savedFirst(s, "tested");
       const sec = a.timeoutSec ?? 60;
-      const run = await runTest(p.erg, { tod: a.tod, goal: a.waitFor, timeoutMs: sec * 1000 });
-      return { ...run, ...(first ? { savedFirst: true } : {}), ...(simMods.length ? { simMods, simModsNote: "these mods' sim code runs in this match beside the level script" } : {}),
+      const run = await runTest(p.erg, { tod: a.tod, goal: a.waitFor, timeoutMs: sec * 1000, cleanMods: a.cleanMods, postfx: a.postfx });
+      const suppressed = !!a.cleanMods && !!run.cleanRoom && !run.cleanRoom.simMods;
+      return { ...run, ...(first ? { savedFirst: true } : {}),
+        ...(simMods.length ? suppressed ? { simMods, simModsNote: "these mods' sim code is suppressed in this Test match (clean room)" }
+          : { simMods, simModsNote: "these mods' sim code runs in this match beside the level script" } : {}),
         match: "Quick Game (QuickStartHvC: a human team against a computer team) with the game's own Quick Game scheme; the scheme, turn time and team sizes are the game's, not chosen here",
         next: "game_state, game_wait {turn}, game_camera while it plays",
         ...(run.timedOut ? { note: `no '${a.waitFor ?? "playing"}' state within ${sec} s: the Test may still be running; start the match from the game's menu if it is armed` } : {}) };

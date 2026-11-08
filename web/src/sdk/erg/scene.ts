@@ -56,11 +56,15 @@ export type CrateSpec =
   | { kind: "weapon" | "utility"; contents: string; count?: number; hitpoints?: number; parachute?: boolean }
   | { kind: "health"; amount: number; hitpoints?: number; parachute?: boolean };
 export interface TriggerSpec { index: number; radius?: number; teamCollect?: number; teamDestroy?: number; hitpoints?: number; wormCollect?: boolean; }
+/** The mine factory's settings (all optional; absent = the game's kMineFactoryData). `activation`: it fires when fewer
+ * than this many mines are in the level (0-255, game 20); `inactiveTurns`: turn starts it waits after it is placed
+ * and after each fire (0-255, game 7); `schemeMines: false`: the scheme's 15 random start mines are not placed. */
+export interface FactorySpec { activation?: number; inactiveTurns?: number; schemeMines?: boolean; }
 export type ObjectSpec =
   | { knot: string; type: "crate"; crate: CrateSpec }
   | { knot: string; type: "telepad"; group: number }
   | { knot: string; type: "trigger"; trigger: TriggerSpec }
-  | { knot: string; type: "minefactory" };
+  | { knot: string; type: "minefactory"; factory?: FactorySpec };
 export type ObjectType = ObjectSpec["type"];
 export interface ScriptMeta { present: boolean; sha256: string | null; }
 /** scale: map units per voxel on every axis (1-4); absent is 1, and 1 is written by leaving it out. */
@@ -293,9 +297,15 @@ function checkObject(c: Checker, o: unknown, p: string) {
       if (t.wormCollect !== undefined && typeof t.wormCollect !== "boolean") c.fail(`${p}.trigger.wormCollect`, "must be a boolean");
       break;
     }
-    case "minefactory":
-      c.keys(o, ["knot", "type"], p);
+    case "minefactory": {
+      if (!c.keys(o, ["knot", "type", "factory"], p) || o.factory === undefined) break;
+      const f = o.factory;
+      if (!isObj(f) || !c.keys(f, ["activation", "inactiveTurns", "schemeMines"], `${p}.factory`)) return c.fail(`${p}.factory`, "must be an object");
+      int(f.activation, 0, 255, `${p}.factory.activation`);
+      int(f.inactiveTurns, 0, 255, `${p}.factory.inactiveTurns`);
+      if (f.schemeMines !== undefined && typeof f.schemeMines !== "boolean") c.fail(`${p}.factory.schemeMines`, "must be a boolean");
       break;
+    }
   }
   if (!validKnot(o.knot as string, o.type as ObjectType, o.type === "telepad" ? (o.group as number) : 0))
     c.fail(`${p}.knot`, `'${String(o.knot)}' is not a ${String(o.type)} knot name`);

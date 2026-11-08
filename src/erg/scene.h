@@ -100,12 +100,25 @@ struct TriggerSpec {
     int hitpoints = 1;                                // 0-1000
     bool wormCollect = false;
 };
+// The mine factory's settings (optional). Unset fields keep the game's kMineFactoryData (WEAPTWK) values; set ones are
+// written there at level start and put back when the match VM closes (levels/registry.cpp, through the sim tweak
+// store). The engine's factory reads them at each turn start (stdvs sends GameLogic.StartMineFactory whenever two or
+// more alliances are left): it counts down `inactiveTurns` turn starts after it is placed and after each fire, then
+// fires at a turn start when fewer than `activation` mines are in the level, min(activation - mines, 10) of them.
+struct FactorySpec {
+    std::optional<int> activation;                    // NumMineActivation 0-255 (game 20; 0 never fires)
+    std::optional<int> inactiveTurns;                 // NumTurnsInactive 0-255 (game 7)
+    bool schemeMines = true;                          // false: the scheme's 15 random start mines are not placed
+    bool Default() const { return !activation && !inactiveTurns && schemeMines; }
+    bool Tweaks() const { return activation || inactiveTurns; }
+};
 struct ObjectSpec {
     std::string knot;
     ObjectType type = ObjectType::Crate;
     CrateSpec crate;
     int group = 0;                                    // telepad: 1-8
     TriggerSpec trigger;
+    FactorySpec factory;                              // minefactory
 };
 struct ScriptMeta {
     bool present = false;

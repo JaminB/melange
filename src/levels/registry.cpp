@@ -12,6 +12,7 @@
 #include <map>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <set>
 #include <string>
 #include <unordered_map>
@@ -31,6 +32,7 @@
 #include "levels/hidden.h"
 #include "levels/test.h"
 #include "lua/sim/bridge_internal.h"
+#include "lua/sim/tweak.h"
 #include "melange/jlog.h"
 #include "mods/thumper_internal.h"
 #include "weapons/engine.h"
@@ -430,7 +432,31 @@ void CheckLastPlayed() {
     }
 }
 
+// The level's mine factory settings (the chunk's "-- minefactory:" line) go into kMineFactoryData before the level
+// loads: the factory reads NumTurnsInactive when PlaceObjects creates it, and both fields at each turn start. They go
+// through the sim tweak store, which puts the game's values back when the match VM closes, so no later match (another
+// map, or a peer's) sees them. Every machine of a match runs the same accepted chunk.
+void ApplyFactory(const std::string& stem, const std::string& chunk) {
+    erg::luagen::ChunkSpec spec;
+    if (chunk.empty() || !erg::luagen::Parse(stem, chunk, &spec)) return;
+    for (const auto& o : spec.objects) {
+        if (o.type != erg::ObjectType::MineFactory || !o.factory.Tweaks()) continue;
+        if (!tweak::Restorable()) {
+            LOG_WARN("[levels] %s: the mine factory settings are skipped (the sim tweak store is inactive)", stem.c_str());
+            return;
+        }
+        const std::pair<const char*, std::optional<int>> fields[] = {{"NumMineActivation", o.factory.activation},
+                                                                     {"NumTurnsInactive", o.factory.inactiveTurns}};
+        for (const auto& [field, v] : fields) {
+            if (!v) continue;
+            const tweak::TweakError e = tweak::Set("kMineFactoryData", field, static_cast<float>(*v));
+            LOG_INFO("[levels] %s: kMineFactoryData.%s = %d: %s", stem.c_str(), field, *v, tweak::ToString(e));
+        }
+    }
+}
+
 void OnStart(const LevelStart& s, void*) {
+    tweak::RestoreOrphans();
     if (s.source == Source::Vanilla) return;
     Level l;
     {
@@ -447,6 +473,10 @@ void OnStart(const LevelStart& s, void*) {
         else LOG_WARN("[levels] %s: %s; the last accepted chunk runs", stem.c_str(), err.c_str());
         if (!ServeChunk(stem, err.empty() ? text : l.chunkText))
             LOG_ERROR("[levels] %s: Melange/cache/%s.lub could not be written", stem.c_str(), stem.c_str());
+        ApplyFactory(stem, err.empty() ? text : l.chunkText);
+    } else if (l.info.source == Source::Test) {
+        std::string text;   // the Test build's own chunk, which the engine runs from the Test root
+        if (roots::ReadChunk(l.root / game::Widen(stem + ".lub"), &text)) ApplyFactory(stem, text);
     }
     const auto r = csh::Guard(xan, stem, BankDir(), {l.root / L"Maps", CacheDir() / L"Maps", TestDir() / L"Maps"});
     g_cshDeleted += r.deleted;

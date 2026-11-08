@@ -1178,6 +1178,93 @@ void TestLevelSims() {
     melange::simhash::Uninstall();
 }
 
+// wum.sim.turn / round across a team elimination, and wum.sim.waterSchedule.
+const char kRounds[] = R"(
+local s = wum.sim.storage
+s.log = ""
+local ok = wum.sim.waterSchedule{ startTurn = 2, step = 1, cap = 3, units = "map" }
+local nextTurn, cap = wum.sim.waterSchedule()
+s.query = tostring(ok) .. ":" .. tostring(nextTurn) .. ":" .. tostring(cap) .. ":" .. wum.sim.turn() .. ":" .. wum.sim.round()
+s.bad = tostring(pcall(wum.sim.waterSchedule, { step = 0, cap = 1 })) .. ":" ..
+        tostring(pcall(wum.sim.waterSchedule, { step = 1, cap = 1, speed = 2 })) .. ":" ..
+        tostring(pcall(wum.sim.waterSchedule, { step = 1 })) .. ":" ..
+        tostring(pcall(wum.sim.waterSchedule, { step = 1, cap = 1, units = "feet" })) .. ":" ..
+        tostring(pcall(wum.sim.waterSchedule, { step = 1, cap = 1, startTurn = 1.5 }))
+wum.events.on("sim.turnStarted", function(ev, turn, round)
+  s.log = s.log .. turn .. ":" .. round .. ":" .. wum.sim.turn() .. ":" .. wum.sim.round() .. ":" ..
+          wum.sim.getData("Water.Level") .. "|"
+  if turn == 6 then s.after = tostring(wum.sim.waterSchedule()) .. ":" .. tostring(wum.sim.waterSchedule(false)) end
+end)
+)";
+const char kFrom[] = R"(
+wum.sim.waterSchedule{ startTurn = 1, every = 2, step = 15, cap = 100, from = 50 }
+wum.events.on("sim.turnStarted", function(ev, turn)
+  wum.sim.storage.log = (wum.sim.storage.log or "") .. turn .. "=" .. wum.sim.getData("Water.Level") .. "|"
+end)
+)";
+
+void TestTurnsAndWater() {
+    melange::simhash::Install(melange::simhash::EnvMode::Changed);
+    core::SetSources({});
+    core::SetLevelSources({Level("Multi.rnd", "rounds", kRounds), Level("Multi.frm", "from", kFrom)});
+    const auto run = [](const char* key, const std::vector<int>& teams) {
+        g_modLog.clear();
+        fake::runState = 1;
+        fake::allowAll = false;
+        fake::sent.clear();
+        fake::halts.clear();
+        fake::data.clear();
+        fake::data["Water.Level"] = {2, 0, ""};
+        fake::data["CurrentTeamIndex"] = {0, -1, ""};
+        fake::L = fake::NewMatchVM();
+        core::SetLevel(key);
+        core::ContextCreated(fake::L);
+        core::Init({}, true);
+        for (int team : teams) {
+            fake::data["CurrentTeamIndex"].num = static_cast<float>(team);
+            core::TurnStarted();
+            for (int i = 0; i < 10; ++i) core::Update();
+        }
+    };
+    // Team 1 is gone after turn 2: the round still ends when team 0 comes round again.
+    run("Multi.rnd", {0, 1, 2, 0, 2, 0});
+    Expect(Storage("pack:rounds", "query") == "true:2:60:0:0", "waterSchedule set and read back: " + Storage("pack:rounds", "query"));
+    Expect(Storage("pack:rounds", "bad") == "false:false:false:false:false", "bad schedules raise: " + Storage("pack:rounds", "bad"));
+    Expect(Storage("pack:rounds", "log") == "1:1:1:1:0|2:1:2:1:20|3:1:3:1:40|4:2:4:2:60|5:2:5:2:60|6:3:6:3:60|",
+           "turns, rounds and water steps (map units, capped): " + Storage("pack:rounds", "log"));
+    Expect(Storage("pack:rounds", "after") == "nil:false", "a finished schedule reads nil: " + Storage("pack:rounds", "after"));
+    CloseLevel();
+    // An unreadable team index counts every turn in round 1.
+    run("Multi.rnd", {-1, -1, -1});
+    Expect(Storage("pack:rounds", "log") == "1:1:1:1:0|2:1:2:1:20|3:1:3:1:40|", "no team index: one round: " + Storage("pack:rounds", "log"));
+    CloseLevel();
+    // `from`: the first step sets it, then every second turn adds the step.
+    run("Multi.frm", {0, 1, 0, 1, 0, 1, 0, 1});
+    Expect(Storage("pack:from", "log") == "1=50|2=50|3=65|4=65|5=80|6=80|7=95|8=95|", "from and every: " + Storage("pack:from", "log"));
+    CloseLevel();
+
+    // A clean-room Test: the suppressed level loads only its level script; any other level loads the sim mods too.
+    core::SetSources({{"entry", "1.0.0", "@entry/sim.lua", "x = 1"}});
+    core::SuppressModsOn("Multi.rnd");
+    core::SetLevel("Multi.rnd");
+    Expect(core::SourceCount() == 1, "clean room: only the level script counted");
+    run("Multi.rnd", {0});
+    Expect(melange::simbridge::LoadedMods() == std::vector<std::string>({"pack:rounds"}), "clean room: no sim mod loads");
+    Expect(Storage("pack:rounds", "log") == "1:1:1:1:0|", "clean room: the level script runs as before");
+    CloseLevel();
+    run("Multi.frm", {0});
+    Expect(melange::simbridge::LoadedMods() == std::vector<std::string>({"entry", "pack:from"}), "clean room: other levels keep the sim mods");
+    CloseLevel();
+    core::SuppressModsOn("");
+    run("Multi.rnd", {0});
+    Expect(melange::simbridge::LoadedMods() == std::vector<std::string>({"entry", "pack:rounds"}), "clean room ended: the sim mods load again");
+    CloseLevel();
+    core::SetSources({});
+    core::SetLevelSources({});
+    core::SetLevel("");
+    melange::simhash::Uninstall();
+}
+
 // wum.sim.worm / worms / land and the anchor against a fake set of worm containers with a toy physics step.
 namespace sw = melange::simworms;
 struct FakeWorms final : sw::Backend {
@@ -1634,6 +1721,7 @@ int main() {
     TestDesyncProbe();
     TestWeapons();
     TestLevelSims();
+    TestTurnsAndWater();
     TestWorms();
     TestTurnHold();
     printf("sim_selftest: %d passed, %d failed\n", g_pass, g_fail);

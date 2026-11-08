@@ -103,3 +103,23 @@ test("v2 refusals", () => {
   assert.equal(validatePatchObjects(dup, baseV2()).ok, false);
   assert.ok(validKnot("TP_3_12", "telepad", 3) && !validKnot("TP_3_12", "telepad", 2) && !validKnot("CRATE_256", "crate"));
 });
+
+test("mine factory settings are optional, range-checked and carried by applyPatch", () => {
+  const withFactory = (factory?: unknown) => {
+    const p = patchV2();
+    const frame = (p.ops.find((o) => o.op === "add") as { frame: number }).frame;
+    p.ops.unshift({ op: "add", frame, detail: { name: "minefactory", resource: "CheesyGrinWorm", pos: [9, 1, 2] } });
+    p.objects!.push((factory === undefined ? { knot: "minefactory", type: "minefactory" } : { knot: "minefactory", type: "minefactory", factory }) as never);
+    return p;
+  };
+  for (const f of [undefined, {}, { activation: 0 }, { activation: 255, inactiveTurns: 0, schemeMines: false }]) {
+    const p = withFactory(f);
+    assert.ok(validatePatch(p).ok, `${JSON.stringify(f)}: ${validatePatch(p).errors.join("; ")}`);
+    assert.ok(validatePatchObjects(p, baseV2()).ok, validatePatchObjects(p, baseV2()).errors.join("; "));
+  }
+  for (const f of [{ activation: 256 }, { activation: 1.5 }, { inactiveTurns: -1 }, { schemeMines: 1 }, { speed: 3 }, 7]) {
+    assert.equal(validatePatch(withFactory(f)).ok, false, JSON.stringify(f));
+  }
+  const edited = applyPatch(upgrade(baseV2()), withFactory({ activation: 12, schemeMines: false }));
+  assert.deepEqual(edited.objects!.at(-1), { knot: "minefactory", type: "minefactory", factory: { activation: 12, schemeMines: false } });
+});

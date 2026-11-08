@@ -61,7 +61,9 @@ A map's spawn mode is either:
 - **Telepad pairs** place two pads in one group: a worm on one pad comes out of the other.
 - **Triggers** have an index, a radius and the teams that collect or destroy them; a
   [level script](#level-scripts) reacts to them.
-- One **mine factory** per map. It replaces the scheme's own factory, so a match never has two.
+- One **mine factory** per map. It replaces the scheme's own factory, so a match never has two. Its Properties tab
+  sets the *mine target*, the *idle turns* and whether the scheme's own start mines are placed (see
+  [The mine factory](#the-mine-factory)).
 
 Crates, telepads, triggers and the mine factory sit on knots the game reads when the match starts. Using any of them
 saves the project as format v2 (see [Formats](#formats)).
@@ -69,6 +71,45 @@ saves the project as format v2 (see [Formats](#formats)).
 ![A crate, a telepad pair, a trigger and a mine factory placed on Diner Might, with the outliner showing only objects](images/erg/objects.png)
 
 ![The Properties tab for a placed crate: its kind, health, hit points and parachute](images/erg/properties.png)
+
+### The mine factory
+
+The factory is the game's own (`MineFactoryLogicEntity`), placed by `GameLogic.PlaceObjects` on the `minefactory` knot.
+How it behaves, from the game's code:
+
+- **It runs whatever the scheme says.** The match script (`stdvs`) reads the scheme's `MineFactoryOn` only once, in
+  its set-up, to decide whether to send `GameLogic.CreateRandMineFactory` (the scheme's factory at a random spot). The
+  map's chunk sets `MineFactoryOn = false` first, so there is never a second factory (the engine asserts on one). At
+  every turn start with two or more alliances left, `stdvs` sends `GameLogic.StartMineFactory`, and the engine passes it
+  to the level's factory, whichever made it, without looking at `MineFactoryOn`.
+- **It fires on a mine count, not a timer.** Each `StartMineFactory` counts down the *idle turns*
+  (`NumTurnsInactive`, 7 in the game's data; the count starts when the factory is placed). Once it reaches 0, the
+  factory checks at every turn start: it fires only when fewer mines than its *mine target* (`NumMineActivation`, 20)
+  are in the level, counting every mine (the scheme's, placed ones and its own), and then launches
+  min(target - mines, 10) of them and starts the idle count again. While the level holds 20 or more mines it does
+  nothing, turn after turn.
+- That is why a log shows `StartMineFactory` at every turn but only one fire: after its idle turns the factory tops
+  the level up to its target once (the scheme's 15 start mines and the map's placed ones already count), and while
+  those mines lie unexploded the count stays at the target, so the later checks do nothing. Start mines at or above
+  the target mean it never fires at all; to keep it busy, raise the target, lower the idle turns, or turn the
+  scheme's start mines off.
+- **Water destroys it.** When the water level rises more than 10 world units above its knot it explodes
+  (`WXP_Explosion_MineMachine`) and is gone for the match.
+- There is no launch speed or spread to set: the game's data still names `MineVelocityX/Y/Z`, but they are obsolete
+  and unread.
+
+The settings, all optional (unset keeps the game's value):
+
+| Setting | Game value | Effect |
+|---|---|---|
+| Mine target (`activation`) | 20 | Fires when fewer mines than this are in the level, topping up to it (at most 10 per fire). 0 never fires |
+| Idle turns (`inactiveTurns`) | 7 | Turn starts it waits after it is placed and after each fire. 0 checks every turn |
+| Scheme's start mines (`schemeMines`) | on | Off: the scheme's 15 random mines are not placed (its 10 oil drums still are, if the scheme has them), so mines come from the factory and the map's own placed mines only |
+
+The target and the idle turns are the game's shared `kMineFactoryData`: Melange writes them when the map's match is
+set up and puts the game's values back when it ends, so no other map (and no other player's match) sees them. They
+need a game build Melange knows (the sim tweak store); on another build the map plays with the game's values and the
+log says so. *Scheme's start mines* is done by the map's own chunk, on the match's copy of the scheme.
 
 ## Water
 
@@ -134,7 +175,13 @@ Press **Test** to play the map as it stands, without exporting or restarting any
 ![The Test button and its time-of-day selector, starting at the project's NIGHT](images/erg/test.png)
 
 A Test map never appears to anyone else and never starts in an online match; it's for checking your own work before
-you export. Testing again after another edit simply overwrites the same private copy.
+you export.
+
+**Clean-room Test** (erg-mcp's `test` and the `level.test` call, not yet a button): `cleanMods` keeps every enabled
+content mod's sim code (`entry.sim`) out of the Test match, so only the map's own chunk and level script run, and
+turns the post-FX stack off; `postfx: false` turns the post-FX stack off alone (as the Post-FX panel's *Bypass all*
+does). Both last until the Test match ends, fails or is disarmed, and nothing is saved. What a mod installed at
+launch stays: its weapon clones and data, file overrides, shader mods and client scripts. Testing again after another edit simply overwrites the same private copy.
 
 ## Level scripts
 
@@ -165,8 +212,27 @@ end)
 | `wum.level.knots` | Read-only table of the map's named knots, name → kind (no positions) |
 | `wum.level.trigger(knot [, opts])` | A trigger at a knot; `opts`: `index`, `radius`, `teamCollect`, `teamDestroy`, `hitpoints`, `wormCollect`. `true`, or `nil` and a reason |
 | `wum.level.crate(knot [, opts])` | A crate at a knot; `opts`: `kind` (`weapon`, `health`, `utility`), `contents`, `count`, `amount`, `hitpoints`, `parachute` |
-| `wum.events.on("sim.turnStarted", fn)` | `fn(name, turn)` at the first tick of each turn, on every machine at the same tick |
+| `wum.events.on("sim.turnStarted", fn)` | `fn(name, turn, round)` at the first tick of each turn, on every machine at the same tick |
+| `wum.sim.turn()`, `wum.sim.round()` | Turns started in this match, and the round: it goes up when a team starts a turn it already had in the current round, so a team that is wiped out only shortens the round. Both 0 before the first turn |
+| `wum.sim.waterSchedule{startTurn, every, step, cap, from, units}` | Raises `Water.Level` at turn starts (see below) |
 | `wum.sim.announce(text [, seconds])` | Shows `text` (at most 160 bytes of UTF-8) centred near the top of every player's screen for `seconds` (0.5 to 15, default 4); up to three at once, the oldest replaced. Draws only: the match, Wormsign and replays are untouched, so it is safe in deterministic code. Detect it with `if wum.sim.announce then ... end` |
+
+**Rising water.** `wum.sim.waterSchedule{ startTurn = 3, step = 1, cap = 8, units = "map" }` raises the water by
+`step` at the start of turn 3 and of every turn after it (every `every` turns, default 1) until it reaches `cap`; with
+`from`, the first step sets the level to `from` and each later one to `from` plus the steps so far. It only ever
+raises (a level already higher, from sudden death for instance, is kept) and never passes `cap`. `units` is
+`"world"` (the default) or `"map"` (x20). It runs before the turn's `sim.turnStarted` handlers, so they see the new
+level; `wum.sim.waterSchedule()` returns the next turn it steps on and the cap (world units), or `nil` once it is done,
+and `wum.sim.waterSchedule(false)` stops it. One schedule per script; a new call replaces it. Bad options raise.
+
+```lua
+-- Flood from turn 3, one map unit a turn, up to 8 map units (160 world); announce each round.
+wum.sim.waterSchedule{ startTurn = 3, step = 1, cap = 8, units = "map" }
+wum.events.on("sim.turnStarted", function(name, turn, round)
+  if round ~= lastRound and wum.sim.announce then wum.sim.announce("Round " .. round) end
+  lastRound = round
+end)
+```
 
 Everything else (`wum.events`, `wum.sim.*`, `wum.log`) is the sim script API. In logs and in Wormsign the script is
 named `<mod id>:<slug>` (`erg:<project>` while testing).

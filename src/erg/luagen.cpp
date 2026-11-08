@@ -15,6 +15,13 @@ constexpr std::string_view kPlaceLine = "SendMessage(\"GameLogic.PlaceObjects\")
 constexpr std::string_view kFactoryLines[] = {"local lock, scheme = EditContainer(\"GM.SchemeData\")\n",
                                               "scheme.MineFactoryOn = false\n", "CloseContainer(lock)\n"};
 constexpr std::string_view kFactoryKnot = "minefactory";
+// schemeMines = false: lib_SetupMinesAndOildrums (run by stdvs and Survivor after this setup) places 15 random mines
+// for Objects 1 (mines) and 3 (both) and 10 oil drums for 2 and 3; dropping the mines bit keeps the drums.
+constexpr std::string_view kNoMinesLine =
+    "if scheme.Objects == 1 then scheme.Objects = 0 elseif scheme.Objects == 3 then scheme.Objects = 2 end\n";
+// The factory's kMineFactoryData settings, a comment the engine skips: Melange applies them at level start from the
+// parsed chunk (levels/registry.cpp), so a match end can put the game's values back.
+constexpr std::string_view kFactoryTweak = "-- minefactory:";
 constexpr std::string_view kCrateCall = "ergCrate(", kTelepadCall = "lib_CreateTelepad(", kTriggerCall = "ergTrigger(";
 // Without "stdvs" in the script list (Survivor), the loader refuses a chunk that redefines a library function at load
 // (0x6998ba, checked once before Initialise). The deferred form installs its setup wrap inside Initialise instead.
@@ -222,18 +229,52 @@ std::string Chunk(const Scene& s) {
 
 
 namespace {
+// "-- minefactory: activation=15 inactiveTurns=3": the set fields, in this order.
+std::string FactoryTweakLine(const FactorySpec& f) {
+    std::string l(kFactoryTweak);
+    if (f.activation) l += " activation=" + std::to_string(*f.activation);
+    if (f.inactiveTurns) l += " inactiveTurns=" + std::to_string(*f.inactiveTurns);
+    return l + "\n";
+}
+
+// Reads the line FactoryTweakLine writes, if there is one; Upgrade's regeneration check refuses any other form.
+bool ParseFactoryTweak(std::string_view text, FactorySpec* f) {
+    const size_t at = text.find("\n" + std::string(kFactoryTweak));
+    if (at == std::string_view::npos) return true;
+    const size_t start = at + 1 + kFactoryTweak.size(), end = text.find('\n', start);
+    if (end == std::string_view::npos) return false;
+    std::string_view rest = text.substr(start, end - start);
+    while (!rest.empty()) {
+        if (rest.front() != ' ') return false;
+        rest.remove_prefix(1);
+        const size_t eq = rest.find('='), sp = rest.find(' ');
+        if (eq == std::string_view::npos || (sp != std::string_view::npos && sp < eq)) return false;
+        const std::string_view key = rest.substr(0, eq);
+        const std::string_view num = rest.substr(eq + 1, sp == std::string_view::npos ? std::string_view::npos : sp - eq - 1);
+        int v = 0;
+        if (!IntArg(num, &v) || v > 255) return false;
+        if (key == "activation") f->activation = v;
+        else if (key == "inactiveTurns") f->inactiveTurns = v;
+        else return false;
+        rest = sp == std::string_view::npos ? std::string_view{} : rest.substr(sp);
+    }
+    return true;
+}
+
 std::string Emit(std::string_view stem, const ChunkSpec& c, bool deferred) {
     if (!c.knots && !c.placeObjects && c.objects.empty() && !c.water) return {};
     bool crates = false, triggers = false;
     int factories = 0;
+    const FactorySpec* factory = nullptr;
     for (auto& o : c.objects) {
         if (!ValidateObject(o, "object", nullptr)) return {};
         crates |= o.type == ObjectType::Crate;
         triggers |= o.type == ObjectType::Trigger;
-        factories += o.type == ObjectType::MineFactory;
+        if (o.type == ObjectType::MineFactory) ++factories, factory = &o.factory;
     }
     if (factories > 1) return {};
     std::string out = Header(stem);
+    if (factory && factory->Tweaks()) out += FactoryTweakLine(*factory);
     if (c.water) out += std::string(kWater) + Num(*c.water) + ")\n";
     if (c.knots || c.placeObjects || !c.objects.empty()) {
         if (crates) out += kCrateFn;
@@ -248,8 +289,11 @@ std::string Emit(std::string_view stem, const ChunkSpec& c, bool deferred) {
             out += in + "    CloseContainer(lock)\n";
             out += in + "end\n";
         }
-        if (factories)
-            for (auto l : kFactoryLines) out += in + std::string(l);
+        if (factory) {
+            out += in + std::string(kFactoryLines[0]) + in + std::string(kFactoryLines[1]);
+            if (!factory->schemeMines) out += in + std::string(kNoMinesLine);
+            out += in + std::string(kFactoryLines[2]);
+        }
         if (factories || c.placeObjects) out += in + std::string(kPlaceLine);
         for (auto& o : c.objects)
             if (o.type != ObjectType::MineFactory) out += in + ObjectLine(o);
@@ -290,6 +334,8 @@ bool Parse(std::string_view stem, std::string_view text, ChunkSpec* out) {
         ObjectSpec f;
         f.type = ObjectType::MineFactory;
         f.knot = kFactoryKnot;
+        f.factory.schemeMines = text.find(kNoMinesLine) == std::string_view::npos;
+        if (!ParseFactoryTweak(text, &f.factory)) return false;
         c.objects.push_back(std::move(f));
     }
     size_t i = 0;

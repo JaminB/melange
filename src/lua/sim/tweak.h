@@ -76,5 +76,9 @@ TweakError Set(const char* weapon, const char* field, float value);
 uintptr_t FindContainer(const char* weaponName);
 
 void Init();  // the match-end observer (idempotent)
+// True once the match-end observer is installed: a Set made now is put back when the next match VM closes.
+bool Restorable();
+// Puts back writes made while no match VM is open (a level set-up whose match never started); no-op inside a match.
+void RestoreOrphans();
 int OpenLibrary(lua50::State* L);
 }  // namespace melange::tweak

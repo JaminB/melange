@@ -1,6 +1,8 @@
 // level.test: builds a project into the Test workspace (server thread), registers and arms it, then starts Quick Game
 // from the main thread once the level is registered at the frontend. An attract demo is ended first with a key tap,
 // since a StartGame posted during it asserts. Test states go out on the `erg` channel. levels.live changes map packs.
+// A clean-room Test (cleanMods, postfx: false) suppresses the sim mods on the Test level and turns the post-FX stack
+// off from the Test's start until it ends, fails or is disarmed; nothing is persisted.
 #include <windows.h>
 
 #include <atomic>
@@ -15,7 +17,9 @@
 #include "erg/quickstart.h"
 #include "levels/engine.h"
 #include "levels/test.h"
+#include "lua/sim/bridge_internal.h"
 #include "melange/levels.h"
+#include "melange/postfx.h"
 #include "mods/lobby.h"
 #include "oasis/providers.h"
 #include "oasis/rpc/params.h"
@@ -35,6 +39,34 @@ std::mutex g_mx;
 std::string g_startKey;
 ULONGLONG g_startBy = 0, g_nextTap = 0;
 int g_taps = 0;
+struct CleanRoom {
+    std::string key;
+    bool mods = false, postfx = true;
+};
+CleanRoom g_clean;   // the Test that asked for one; under g_mx
+
+bool OptFlag(const json::Value& v, const char* key, bool* out, Result& r) {
+    const json::Value* m = v.Get(key);
+    return !m || m->IsNull() || rpc::Flag(v, key, out, r);
+}
+
+// Main thread (the Test state events). An Idle without a key is an override that timed out.
+void OnTestState(levels::TestState s, const char* key, const char*, void*) {
+    using TS = levels::TestState;
+    CleanRoom c;
+    {
+        std::lock_guard lk(g_mx);
+        c = g_clean;
+    }
+    if (c.key.empty() || (key && *key && c.key != key)) return;
+    if ((s == TS::Starting || s == TS::Playing) && !c.postfx) postfx::SetSuppressed(true);
+    if (s != TS::Ended && s != TS::Failed && s != TS::Idle) return;
+    if (!c.postfx) postfx::SetSuppressed(false);
+    if (c.mods) simbridge::SetTestCleanRoom("");
+    LOG_INFO("[erg] test: the clean room of %s ended (%s)", c.key.c_str(), levels::test::StateName(s));
+    std::lock_guard lk(g_mx);
+    if (g_clean.key == c.key) g_clean = CleanRoom{};
+}
 
 void DeleteShadows(const std::string& stem) {
     namespace fs = std::filesystem;
@@ -95,7 +127,13 @@ void OnFrame() {
 void Test(const Call& c, Result& r, void*) {
     json::Value p;
     std::string project, todText;
-    if (!rpc::ParseParams(c, &p, r) || !rpc::Str(p, "project", &project, r) || !rpc::Str(p, "tod", &todText, r, false)) return;
+    bool cleanMods = false, postfxOn = true;
+    if (!rpc::ParseParams(c, &p, r) || !rpc::Str(p, "project", &project, r) || !rpc::Str(p, "tod", &todText, r, false) ||
+        !OptFlag(p, "cleanMods", &cleanMods, r))
+        return;
+    // cleanMods turns post-FX off too unless postfx: true says otherwise.
+    postfxOn = !cleanMods;
+    if (!OptFlag(p, "postfx", &postfxOn, r)) return;
     if (!erg::names::ValidSlug(project)) {
         Fail(r, rpc::kBadParams, "project must match [a-z0-9]{1,24}");
         return;
@@ -134,6 +172,15 @@ void Test(const Call& c, Result& r, void*) {
         Fail(r, rpc::kRefused, "could not arm the Test override");
         return;
     }
+    {
+        std::lock_guard lk(g_mx);
+        g_clean = cleanMods || !postfxOn ? CleanRoom{key, cleanMods, postfxOn} : CleanRoom{};
+    }
+    simbridge::SetTestCleanRoom(cleanMods ? key : "");
+    if (postfxOn) postfx::SetSuppressed(false);   // a clean room left over from an earlier Test that never ended
+    if (cleanMods || !postfxOn)
+        LOG_INFO("[erg] test: clean room for %s: sim mods %s, post-FX %s", key.c_str(), cleanMods ? "suppressed" : "kept",
+                 postfxOn ? "kept" : "off");
     const bool quick = g_quickOk || attract;
     if (quick) {
         std::lock_guard lk(g_mx);
@@ -142,7 +189,21 @@ void Test(const Call& c, Result& r, void*) {
         g_nextTap = 0;
         g_taps = 0;
     }
-    r.json = jsonmini::Obj().Str("key", key).Str("state", quick ? "starting" : "armed").End();
+    r.json = jsonmini::Obj().Str("key", key).Str("state", quick ? "starting" : "armed")
+                 .Raw("cleanRoom", jsonmini::Obj().Bool("simMods", !cleanMods).Bool("postfx", postfxOn).End())
+                 .End();
+}
+
+// The clean room in effect (or asked for by the armed Test); its presence also tells a client that level.test takes
+// cleanMods and postfx.
+void CleanRoomState(const Call&, Result& r, void*) {
+    CleanRoom c;
+    {
+        std::lock_guard lk(g_mx);
+        c = g_clean;
+    }
+    r.json = jsonmini::Obj().Str("key", c.key).Bool("simMods", !c.mods).Bool("postfx", c.postfx)
+                 .Bool("postfxOff", postfx::Suppressed()).End();
 }
 
 void Live(const Call& c, Result& r, void*) {
@@ -158,7 +219,9 @@ void Live(const Call& c, Result& r, void*) {
 
 void InstallLevelTest() {
     events::Subscribe(events::Event::Frame, &OnFrame);
+    levels::OnTestState(&OnTestState, nullptr);
     AddMethod("level.test", &Test, nullptr, kRpcServerThread | kRpcMutating | kRpcGameOnly);
     AddMethod("levels.live", &Live, nullptr, kRpcMutating | kRpcGameOnly);
+    AddMethod("level.test.cleanRoom", &CleanRoomState, nullptr, kRpcGameOnly);
 }
 }  // namespace melange::oasis::providers

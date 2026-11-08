@@ -5,7 +5,10 @@ import type { ErgSession, TimeOfDay } from "../core";
 export interface TestStep { state: string; key: string; detail: string; ms: number; }
 export type TestGoal = "playing" | "armed";
 
-export interface TestRun { key: string; final: string; reached: boolean; timedOut: boolean; failed: string | null; states: TestStep[]; }
+export interface TestRun {
+  key: string; final: string; reached: boolean; timedOut: boolean; failed: string | null; states: TestStep[];
+  cleanRoom?: { simMods: boolean; postfx: boolean };   // what the game applied; absent from a game without clean rooms
+}
 
 const STOPS: Record<TestGoal, ReadonlySet<string>> = {
   playing: new Set(["playing", "ended", "failed"]),
@@ -14,7 +17,8 @@ const STOPS: Record<TestGoal, ReadonlySet<string>> = {
 
 /** Starts the Test and waits for `goal` (or failed/ended) for at most `timeoutMs`. The subscription is made before the
  * call so no early state is missed; the call's own answer is the first state. */
-export async function runTest(erg: Pick<ErgSession, "test" | "onTest">, opts: { tod?: TimeOfDay; goal?: TestGoal; timeoutMs: number }): Promise<TestRun> {
+export async function runTest(erg: Pick<ErgSession, "test" | "onTest">,
+  opts: { tod?: TimeOfDay; goal?: TestGoal; timeoutMs: number; cleanMods?: boolean; postfx?: boolean }): Promise<TestRun> {
   const goal = opts.goal ?? "playing";
   const t0 = Date.now();
   const states: TestStep[] = [];
@@ -29,7 +33,11 @@ export async function runTest(erg: Pick<ErgSession, "test" | "onTest">, opts: { 
   };
   const off = erg.onTest(add);
   try {
-    const r = await erg.test(opts.tod ? { tod: opts.tod } : undefined);
+    const t: { tod?: TimeOfDay; cleanMods?: boolean; postfx?: boolean } = {};
+    if (opts.tod) t.tod = opts.tod;
+    if (opts.cleanMods !== undefined) t.cleanMods = opts.cleanMods;
+    if (opts.postfx !== undefined) t.postfx = opts.postfx;
+    const r = await erg.test(Object.keys(t).length ? t : undefined);
     add({ state: r.state, key: r.key, detail: "" });
     const done = () => states.some((s) => STOPS[goal].has(s.state));
     while (!done()) {
@@ -42,7 +50,8 @@ export async function runTest(erg: Pick<ErgSession, "test" | "onTest">, opts: { 
     }
     const hit = states.find((s) => STOPS[goal].has(s.state));
     const bad = states.find((s) => s.state === "failed");
-    return { key, final: states[states.length - 1].state, reached: !!hit && hit.state !== "failed", timedOut: !hit, failed: bad ? bad.detail || "failed" : null, states };
+    return { key, final: states[states.length - 1].state, reached: !!hit && hit.state !== "failed", timedOut: !hit, failed: bad ? bad.detail || "failed" : null, states,
+      ...(r.cleanRoom ? { cleanRoom: r.cleanRoom } : {}) };
   } finally {
     off();
   }

@@ -178,8 +178,22 @@ test("objects: crates, telepads, triggers, the mine factory, limits", async () =
     assert.deepEqual(trig.json.placed[0].object.trigger, { index: 0, radius: 80, teamCollect: 2, teamDestroy: 4, hitpoints: 1, wormCollect: true });
     const mf = await m.tool("place_object", { type: "minefactory", pos: [0, 0, 0] });
     assert.equal(mf.json.placed[0].name, "minefactory");
+    assert.equal(mf.json.placed[0].object.factory, undefined);
     const mf2 = await m.tool("place_object", { type: "minefactory", pos: [0, 0, 0] });
     assert.ok(mf2.isError && /already has a mine factory/.test(mf2.text), mf2.text);
+    // settings: a game value is dropped, the rest kept; one undo step each
+    const set1 = await m.tool("set_mine_factory", { activation: 30, inactiveTurns: 7, schemeMines: false });
+    assert.deepEqual(set1.json.factory, { activation: 30, schemeMines: false }, set1.text);
+    const set2 = await m.tool("set_mine_factory", { activation: 20, inactiveTurns: 2 });
+    assert.deepEqual(set2.json.factory, { schemeMines: false, inactiveTurns: 2 }, set2.text);
+    const none = await m.tool("set_mine_factory", {});
+    assert.ok(none.isError, none.text);
+    const tooMany = await m.tool("set_mine_factory", { activation: 256 });
+    assert.ok(tooMany.isError, tooMany.text);
+    const listed = (await m.tool("list_objects")).json.levelObjects.find((x) => x.name === "minefactory");
+    assert.deepEqual(listed.object.factory, { schemeMines: false, inactiveTurns: 2 });
+    await m.tool("set_mine_factory", { schemeMines: true, inactiveTurns: 7 });
+    assert.equal((await m.tool("list_objects")).json.levelObjects.find((x) => x.name === "minefactory").object.factory, undefined);
     const bad = await m.tool("place_object", { type: "trigger", pos: [0, 0, 0], index: 300 });
     assert.ok(bad.isError, bad.text);
 

@@ -106,4 +106,22 @@ test("runTest waits for playing, failed or the timeout", async () => {
   const instant = await runTest(fakeErg([{ delay: 1, state: "playing" }, { delay: 2, state: "playing" }], "playing"), { timeoutMs: 500 });
   assert.equal(instant.reached, true);
   assert.equal(instant.states.length, 1);
+  assert.equal(instant.cleanRoom, undefined);
+});
+
+test("runTest passes the clean-room options and reports what the game applied", async () => {
+  const seen: unknown[] = [];
+  const erg: Pick<ErgSession, "test" | "onTest"> = {
+    onTest() { return () => {}; },
+    async test(opts) {
+      seen.push(opts);
+      return { key: "Multi.k", state: "playing", ...(opts?.cleanMods || opts?.postfx === false ? { cleanRoom: { simMods: !opts?.cleanMods, postfx: opts?.postfx ?? !opts?.cleanMods } } : {}) };
+    },
+  };
+  const clean = await runTest(erg, { timeoutMs: 100, cleanMods: true });
+  assert.deepEqual(clean.cleanRoom, { simMods: false, postfx: false });
+  const dark = await runTest(erg, { timeoutMs: 100, tod: "NIGHT", postfx: false });
+  assert.deepEqual(dark.cleanRoom, { simMods: true, postfx: false });
+  await runTest(erg, { timeoutMs: 100 });
+  assert.deepEqual(seen, [{ cleanMods: true }, { tod: "NIGHT", postfx: false }, undefined]);
 });

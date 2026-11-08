@@ -421,7 +421,8 @@ at all.
 | `level.save` | `{project, patch}` → `{saved, warnings}` | validates the whole patch (`erg-patch/1` or `/2`) against its pinned base |
 | `level.export` | `{project, modId, name, version, mode: "install"\|"source", survivor?: bool}` → `{dir, files, restartRequired}` | see [erg.md](erg.md#export); `survivor` (default false) adds a [Survivor copy](erg.md#survivor-copies) |
 | `level.build` | `{modId}` → files written | rebuilds a Source-form pack's map files against this install (what its `build.ps1` also does) |
-| `level.test` | `{project, tod?}` → `{key, state}` | builds into the Test workspace, arms a one-shot override, starts Quick Game itself when the game supports it; `tod` is `DAY`, `EVENING` or `NIGHT` for this Test only |
+| `level.test` | `{project, tod?, cleanMods?, postfx?}` → `{key, state, cleanRoom: {simMods, postfx}}` | builds into the Test workspace, arms a one-shot override, starts Quick Game itself when the game supports it; `tod` is `DAY`, `EVENING` or `NIGHT` for this Test only; `cleanMods: true` runs no sim mod in the Test match (only the level's chunk and script) and turns post-FX off unless `postfx: true`; `postfx: false` turns post-FX off alone; both last until the Test ends, fails or is disarmed (see [erg.md](erg.md#testing-your-map)) |
+| `level.test.cleanRoom` | `{}` → `{key, simMods, postfx, postfxOff}` | the clean room the last `level.test` asked for (`key` "" for none) and whether post-FX is off now; its presence says `level.test` takes `cleanMods` and `postfx` |
 | `levels.live` | `{modId, on}` → `{ok, reason}` | enables or disables a maps-only pack without a restart: game only, at the main menu, offline (see [erg.md](erg.md#live-packs)) |
 | `level.themes` | `{}` → themes, times of day, material files | from the install's own `Data\Themes` |
 | `level.palette` | `{theme}` → placeable entries `{name, resource, role, preview}` | `preview` is an `/erg/assets/` key |

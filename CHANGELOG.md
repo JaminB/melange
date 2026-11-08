@@ -25,6 +25,14 @@
   New: `delete_project` (and `new_project` refuses a taken slug unless `allowRename`), `set_theme {materialFile}`, the
   scenery tools (`list_scenery`, `remove_scenery`, `list_base_scenery`, `copy_base_scenery`) and the game tools
   (`game_state`, `game_wait`, `game_camera`); `test` names enabled sim mods (`cleanMods` refuses them).
+- Erg's mine factory has settings (Properties tab, `factory` in the scene and patch, erg-mcp `place_object` and the new
+  `set_mine_factory`): the mine target and idle turns (the game's `kMineFactoryData`, applied for that map's matches
+  only and put back when the match ends) and whether the scheme's 15 random start mines are placed. Projects without
+  them are unchanged. docs/erg.md explains how the factory decides to fire.
+- Sim scripts and level scripts: `wum.sim.turn()`, `wum.sim.round()` (a round counter that survives a team being wiped
+  out; `sim.turnStarted` now also passes the round) and `wum.sim.waterSchedule{...}` (rising water at turn starts).
+- Clean-room Test: `level.test` takes `cleanMods` (no sim mod runs in the Test match, post-FX off) and `postfx: false`,
+  for the Test match only; `level.test.cleanRoom` reports it. erg-mcp's `test` passes them through.
 
 
 ## 0.13.0

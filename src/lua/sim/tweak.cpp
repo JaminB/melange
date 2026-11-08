@@ -17,10 +17,12 @@ Engine g_engine;
 char g_str[kMaxString + 1];
 char g_errbuf[320];
 bool (*g_setAllowed)() = nullptr;
+bool g_observing = false, g_vmOpen = false;
 
 uintptr_t ResolveForRestore(const char* weapon, void*) { return weapons::Container(weapon); }
 
 void OnMatchEvent(bool created, lua50::State*, void*) {
+    g_vmOpen = created;
     if (created) return;
     const size_t pending = g_engine.PendingCount();
     if (pending == 0) return;
@@ -319,7 +321,16 @@ void Init() {
         LOG_WARN("[tweak] match VM tracking unavailable: SimTweak stays inert");
         return;
     }
-    lua50::OnContext(&OnMatchEvent, nullptr);
+    g_observing = lua50::OnContext(&OnMatchEvent, nullptr) != 0;
+}
+
+bool Restorable() { return g_observing; }
+
+void RestoreOrphans() {
+    if (g_vmOpen || g_engine.PendingCount() == 0) return;
+    const size_t pending = g_engine.PendingCount();
+    g_engine.RestoreAll(&ResolveForRestore, nullptr);
+    LOG_INFO("[tweak] restored %zu field(s) written for a level that never reached its match", pending);
 }
 
 int OpenLibrary(lua50::State* L) {

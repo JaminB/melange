@@ -370,7 +370,19 @@
             "type": "object",
             "additionalProperties": false,
             "required": ["knot", "type"],
-            "properties": { "knot": {"const": "minefactory"}, "type": {"const": "minefactory"} }
+            "properties": {
+              "knot": {"const": "minefactory"}, "type": {"const": "minefactory"},
+              "factory": {
+                "type": "object",
+                "additionalProperties": false,
+                "description": "Optional settings; a field left out keeps the game's kMineFactoryData value. Written only when one is set.",
+                "properties": {
+                  "activation": { "type": "integer", "minimum": 0, "maximum": 255, "description": "NumMineActivation (game 20): at a turn start the factory fires when fewer mines than this are in the level, min(activation - mines, 10) of them; 0 never fires." },
+                  "inactiveTurns": { "type": "integer", "minimum": 0, "maximum": 255, "description": "NumTurnsInactive (game 7): turn starts the factory waits after it is placed and after each fire." },
+                  "schemeMines": { "type": "boolean", "default": true, "description": "false: the scheme's 15 random start mines are not placed (its oil drums are)." }
+                }
+              }
+            }
           }
         ]
       }

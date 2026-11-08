@@ -166,8 +166,14 @@ bool ValidateObject(const ObjectSpec& o, const std::string& p, std::string* err)
             if (t.hitpoints < 0 || t.hitpoints > 1000) return Fail(err, p + ".trigger.hitpoints: must be 0-1000");
             break;
         }
-        case ObjectType::Telepad:
-        case ObjectType::MineFactory: break;
+        case ObjectType::MineFactory: {
+            const FactorySpec& f = o.factory;
+            if (f.activation && (*f.activation < 0 || *f.activation > 255)) return Fail(err, p + ".factory.activation: must be 0-255");
+            if (f.inactiveTurns && (*f.inactiveTurns < 0 || *f.inactiveTurns > 255))
+                return Fail(err, p + ".factory.inactiveTurns: must be 0-255");
+            break;
+        }
+        case ObjectType::Telepad: break;
     }
     return true;
 }
@@ -236,9 +242,25 @@ bool ParseObjects(const Json* arr, std::vector<ObjectSpec>* out, std::string* er
                     return false;
                 break;
             }
-            case ObjectType::MineFactory:
-                if (!OnlyKeys(o, {"knot", "type"}, p, err)) return false;
+            case ObjectType::MineFactory: {
+                if (!OnlyKeys(o, {"knot", "type", "factory"}, p, err)) return false;
+                const Json* f = o.find("factory");
+                if (!f) break;
+                const std::string fp = p + ".factory";
+                int v = 0;
+                if (!Obj(f, fp, err) || !OnlyKeys(*f, {"activation", "inactiveTurns", "schemeMines"}, fp, err) ||
+                    !GetBool(*f, "schemeMines", fp, &ob.factory.schemeMines, err, false))
+                    return false;
+                if (f->find("activation")) {
+                    if (!IntField(*f, "activation", fp, 0, 255, &v, err, true)) return false;
+                    ob.factory.activation = v;
+                }
+                if (f->find("inactiveTurns")) {
+                    if (!IntField(*f, "inactiveTurns", fp, 0, 255, &v, err, true)) return false;
+                    ob.factory.inactiveTurns = v;
+                }
                 break;
+            }
         }
         if (!ValidateObject(ob, p, err)) return false;
         out->push_back(std::move(ob));
@@ -279,7 +301,17 @@ Json ObjectsJson(const std::vector<ObjectSpec>& objects) {
                 o.set("trigger", std::move(t));
                 break;
             }
-            case ObjectType::MineFactory: break;
+            case ObjectType::MineFactory: {
+                // Written only when set: a factory without settings stays byte-identical to older projects.
+                const FactorySpec& fs = ob.factory;
+                if (fs.Default()) break;
+                Json f = Json::Obj();
+                if (fs.activation) f.set("activation", Int(*fs.activation));
+                if (fs.inactiveTurns) f.set("inactiveTurns", Int(*fs.inactiveTurns));
+                if (!fs.schemeMines) f.set("schemeMines", Json::Bool(false));
+                o.set("factory", std::move(f));
+                break;
+            }
         }
         arr.arr.push_back(std::move(o));
     }

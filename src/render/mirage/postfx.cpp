@@ -45,6 +45,7 @@ bool g_installed = false, g_bypass = false, g_split = false, g_gpuTimers = true,
 bool g_noStagesLogged = false;
 int g_handles[2] = {};
 std::atomic<bool> g_rescan{false};
+std::atomic<bool> g_suppressed{false};   // postfx::SetSuppressed: off for a clean-room Test, nothing persisted
 int g_nextHandle = 1;
 LARGE_INTEGER g_t0{}, g_freq{};
 std::string g_reason;
@@ -260,7 +261,7 @@ void OnStage(Stage s, void*);
 void SyncStages() {
     for (int i = 0; i < 2; ++i) {
         bool want = false;
-        if (!g_bypass && !g_unsupported) {
+        if (!g_bypass && !g_suppressed && !g_unsupported) {
             std::lock_guard lk(g_mx);
             for (auto& e : g_effects) want |= e->stage == kStages[i] && Runnable(*e);
         }
@@ -334,7 +335,7 @@ void CompileLogged(pfx::Effect& e) {
 void OnStage(Stage s, void*) {
     const int si = StageIndex(s);
     g_passes[si] = 0;
-    if (g_bypass) return;
+    if (g_bypass || g_suppressed) return;
     std::vector<std::shared_ptr<pfx::Effect>> chain;
     {
         std::lock_guard lk(g_mx);
@@ -746,8 +747,14 @@ Stats GetStats() {
             if (e->gpuMs > 0) s.gpuMs += e->gpuMs;
             s.cpuMs += e->cpuMs;
         }
-    s.bypassed = g_bypass || !g_reason.empty();
-    s.bypassReason = g_bypass ? "bypass all" : (g_reason.empty() ? nullptr : g_reason.c_str());
+    s.bypassed = g_bypass || g_suppressed || !g_reason.empty();
+    s.bypassReason = g_bypass ? "bypass all" : g_suppressed ? "off for a Test" : (g_reason.empty() ? nullptr : g_reason.c_str());
     return s;
 }
+
+void SetSuppressed(bool on) {
+    if (g_suppressed.exchange(on) == on) return;
+    LOG_INFO("[postfx] stack %s", on ? "off for a Test" : "back on after a Test");
+}
+bool Suppressed() { return g_suppressed; }
 }  // namespace melange::postfx
