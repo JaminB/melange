@@ -75,3 +75,16 @@ one idle turn, no start mines). Cells 49 859 of 65 535, 16 blocks.
   EVENING (dusk) for the lava's glow.
 - **Checks**: reach 8 of 8 (45 and 38 degrees), road only 8 of 8, flood 8 of 8 dry, islets 0 detached, save with no warnings.
 - **Cells** 63 251 of 65 535 (31 of 64 blocks): the skin 24 117 (11 blocks), the castles about 22 000, the base 11 652.
+
+## Iteration 10 design (builder's notes)
+
+Castles are 22 across with a keep sized so that a lane 4.5-5.5 map units clear lies between the keep and the corner towers
+(`terrain.mjs` `laneOf`): both gates open into it (width = the lane, height = wall - 1 = 5), so no keep or pillar is in the
+gate line; `check_reachability` with `bodyWidth: 3.5` reaches the rim from all 8 spawns. Seawall is a small gatehouse fort
+(the cells paid for the lanes). Nobody spawns on a rampart or on the shore: all 8 are in courtyards at 16.5-29 map (Ashgate 3,
+Cinder 3, Ember, Highwatch). The flood schedule takes S = the lowest spawn less 2.5 (check_flood: dry by 1.5 at the spawn's
+own turn 2 = game turn 11 = round 6), so the shore castles drown at rounds 5-8 before anyone is there. The crater floor is
+at 49 (was 58) with the inner rim raised 3 and the floor 18 wide, a 9-radius lava lake, lava pools and hot-rock patches
+on the ash; the factory plug is 5 radius and a solid 18 x 18 block of 3-unit voxels joins it to the skin underneath
+(launch height 16). Vegetation is limited to slopes under 22 degrees below 9 map units (no green squares on the cone); roads
+are 7.2 wide with a flat bed of 3.4. 64 029 of 65 535 cells, 35 of 64 blocks, 97 MCP calls.

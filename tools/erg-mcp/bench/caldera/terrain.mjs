@@ -8,9 +8,9 @@
 // ---- numbers ----
 export const RF = 92;            // the coast, in the profile's radius (rho): the beach is at 0, the sea floor falls away outside
 export const RC = 36;            // radius of the rim crest (a wide bowl: the crater floor and the plug the mine factory stands on lie inside it)
-export const FLOOR_Y = 58;       // the crater floor (the rim is 10-20 over it)
-export const FLAT_R = 26;        // the floor is level out to this radius, the walls climb from there to the rim
-export const PLUG_RHO = 19, PLUG_TH = -1.15;   // the basalt plug of the mine factory: on the floor, off the centre, on the side the south camera sees over the breach
+export const FLOOR_Y = 49;       // the crater floor (the rim is 20-30 over it: a deep bowl, iteration 10)
+export const FLAT_R = 18;        // the floor is level out to this radius, the walls climb from there to the rim
+export const PLUG_RHO = 15, PLUG_TH = -1.15;   // the basalt plug of the mine factory: on the floor, off the centre, on the side the south camera sees over the breach
 export const BREACH = Math.PI / 2;   // +z, the south: the default camera looks from there, so the notch and the flow show
 export const SP = 0.62;          // the roads' climb per unit of length (32 degrees)
 export const BOX = 118;          // half side of the heightfield rectangle (the skin is clipped to a circle inside it)
@@ -118,14 +118,23 @@ function grad(x, z) {
 // the castles' plans: size [along the road, across it], keep, towers, stone
 // kind: castle (build_castle), ring (a round curtain wall round a round keep, on a crag), lfort (a castle with a wing and a sea gate)
 const PLANS = {
-  Strand: { kind: "castle", size: [26, 20], wallHeight: 6, towerShape: "round", towerRadius: 3.2, towerHeight: 11, keep: [7, 6], keepHeight: 10, mat: 16 },
-  Ashgate: { kind: "castle", size: [24, 18], wallHeight: 5, towerShape: "square", towerRadius: 2.6, towerHeight: 10, keep: [7, 6], keepHeight: 11, mat: 27 },
-  Cinder: { kind: "castle", size: [22, 20], wallHeight: 5, towerShape: "round", towerRadius: 2.6, towerHeight: 10, keep: [10, 9], keepHeight: 16, mat: 12 },
-  Harbour: { kind: "lfort", size: [26, 18], wing: [14, 14], wallHeight: 6, towerShape: "round", towerRadius: 3, towerHeight: 11, keep: [6, 5], keepHeight: 10, mat: 12 },
+  // keep: [along the road, across it]. The castles are 22 across so the lane between the keep and the corner towers' inner edge
+  // (laneOf) is 4.5 or more clear: both gates open into it, beside the keep, so the road never meets a keep or a pillar.
+  Strand: { kind: "castle", size: [26, 22], wallHeight: 6, towerShape: "round", towerRadius: 3.2, towerHeight: 11, keep: [7, 6], keepHeight: 10, mat: 16 },
+  Ashgate: { kind: "castle", size: [24, 22], wallHeight: 6, towerShape: "square", towerRadius: 2.6, towerHeight: 10, keep: [7, 6], keepHeight: 11, mat: 27 },
+  Cinder: { kind: "castle", size: [24, 22], wallHeight: 6, towerShape: "round", towerRadius: 2.6, towerHeight: 10, keep: [9, 7], keepHeight: 16, mat: 12 },
+  Harbour: { kind: "lfort", size: [26, 22], wing: [14, 14], wallHeight: 6, towerShape: "round", towerRadius: 3, towerHeight: 11, keep: [6, 5], keepHeight: 10, mat: 12 },
   Ember: { kind: "castle", size: [38, 12], wallHeight: 7, towerShape: "square", towerRadius: 2.8, towerHeight: 12, keep: null, keepHeight: 0, mat: 16 },
-  Seawall: { kind: "castle", size: [30, 22], wallHeight: 6, towerShape: "square", towerRadius: 3, towerHeight: 11, keep: [9, 7], keepHeight: 12, mat: 27 },
+  Seawall: { kind: "castle", size: [18, 16], wallHeight: 6, towerShape: "square", towerRadius: 3, towerHeight: 11, keep: null, keepHeight: 0, mat: 27 },   // a gatehouse fort: the cells went to the other castles' lanes
   Highwatch: { kind: "ring", size: [25, 25], ringRadius: 11, wallHeight: 6, keepRadius: 4.5, keepHeight: 14, towerRadius: 2.6, towerHeight: 10, mat: 16 },
 };
+// the lane between a castle's keep and its corner towers, on the +x / +z side of the keep: where both gates open (o = its middle
+// across the road's axis, w = its clear width, 4.5 or more). A gate's own height is the wall's less 1 (build.mjs).
+export function laneOf(pl) {
+  if (!pl.keep) return { o: 0, w: 4.5 };
+  const kh = pl.keep[1] / 2, outer = pl.size[1] / 2 - (pl.towerRadius ?? 3), w = Math.min(5.5, outer - kh);
+  return { o: Math.round((kh + kh + w) / 2 * 10) / 10, w: Math.round(w * 10) / 10 };
+}
 const GATE_SLACK = 3;            // the straight stretch overruns the castle by this on each end
 const TARGET = 0.6;              // the road's climb per unit of length on the cone
 const LEAN = 0.72;               // the least the road leans from the uphill direction (radians): it always winds round the cone
@@ -179,6 +188,7 @@ function layRoad(spec) {
       if (sd === forbid) { sd = d[0] * (ax === "x" ? 1 : 0) + d[1] * (ax === "z" ? 1 : 0) > 0 ? (ax === "x" ? "e" : "s") : (ax === "x" ? "w" : "n"); o = 0; }
       const ew = sd === "e" || sd === "w", lim = Math.max(0, (ew ? hz : hx) - tr - 3.5);
       o = Math.max(-lim, Math.min(lim, o));
+      if (pl.keep && ((ax === "x") === ew)) o = laneOf(pl).o;      // the gates on the road's axis open into the lane beside the keep
       const G = ew ? [c0[0] + (sd === "e" ? hx : -hx), c0[1] + o] : [c0[0] + o, c0[1] + (sd === "s" ? hz : -hz)];
       const nrm = { e: [1, 0], w: [-1, 0], s: [0, 1], n: [0, -1] }[sd];
       return { side: sd, offset: o, G, O: [G[0] + nrm[0] * 4, G[1] + nrm[1] * 4] };
@@ -252,7 +262,7 @@ export function island(x, z) {
   const spur = 3 + Math.max(0, noise(Math.cos(th) * 3.3 + 4, Math.sin(th) * 3.3 + 4, 17) + 0.2) * 7 * (1 - roadMaskH);
   const crest = spur * Math.exp(-(((rho - RC) / 3.6) ** 2));
   const outer = profile(Math.max(rho, RC), th) * ridges - dip + crest;
-  const crestH = profile(RC, th) + 3;
+  const crestH = profile(RC, th) + 6;      // the inner rim is raised so the bowl has walls (iteration 10)
   // the crater: a wide flat floor (the mine factory's plug stands on it), walls that climb to the rim, a rough floor
   const bowl = FLOOR_Y + (crestH - FLOOR_Y) * smooth(FLAT_R, RC - 1, rho) + 0.7 * fbm(x / 6, z / 6, 51, 2) * (1 - smooth(FLAT_R - 4, FLAT_R + 4, rho));
   let c = bowl + (outer - bowl) * smooth(RC - 4, RC + 1.5, rho);
@@ -283,11 +293,11 @@ export function island(x, z) {
     let best = 1e9, by = 0;
     for (const p of rd.pts) {
       const dx = x - p[0], dz = z - p[1];
-      if (Math.abs(dx) > 7 || Math.abs(dz) > 7) continue;
+      if (Math.abs(dx) > 8 || Math.abs(dz) > 8) continue;
       const dd = Math.hypot(dx, dz);
       if (dd < best) { best = dd; by = p[2]; }
     }
-    if (best < 7) { const w = 1 - smooth(2.6, 6.8, best); h += (by - h) * w; wRoad = Math.max(wRoad, w); }
+    if (best < 8) { const w = 1 - smooth(3.4, 7.8, best); h += (by - h) * w; wRoad = Math.max(wRoad, w); }
   }
   // fine roughness where nothing was cut
   h += 1.0 * fbm(x / 8, z / 8, 21, 2) * smooth(3, 14, h) * (1 - wShelf) * (1 - wRoad);

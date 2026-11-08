@@ -3,22 +3,23 @@
 --
 -- The sea is set once at the first turn start of each ROUND (wum.sim's own counter: it only goes up when a team starts a turn it
 -- already had in the round, so a wiped-out team shortens the round and the sea still rises). The levels are WORLD units (20 to the
--- map unit): 20 at the start; S+1 = the lowest spawn's ground + 1 map = 200 by round 6; F+1 = the highest castle wall-walk
--- + 1 map = 720 by round 13; the cap 1040 (6 map under the crater floor, the factory floor) from round 18.
--- Lowest spawn S = 9 map, highest wall-walk F = 35 map. Each message is shown once, at the first turn of its round.
+-- map unit): 20 at the start; S+1 (S = the lowest spawn's ground less 2.5, so the sea is 1.5 under it at round 6) = 300 by round 6; F+1 = the highest castle wall-walk
+-- + 1 map = 740 by round 13; the cap 860 (6 map under the crater floor, the factory floor) from round 18.
+-- Lowest spawn S = 16.5 map, highest wall-walk F = 36 map. Each message is shown once, at the first turn of its round.
 
-local LEVEL = { [1] = 20, [2] = 20, [3] = 20, [4] = 80, [5] = 140, [6] = 200, [7] = 275, [8] = 350, [9] = 425, [10] = 495, [11] = 570, [12] = 645, [13] = 720, [14] = 785, [15] = 850, [16] = 910, [17] = 975, [18] = 1040, [19] = 1040 }
-local CAP = 1040
+local LEVEL = { [1] = 20, [2] = 20, [3] = 20, [4] = 115, [5] = 205, [6] = 300, [7] = 365, [8] = 425, [9] = 490, [10] = 550, [11] = 615, [12] = 675, [13] = 740, [14] = 765, [15] = 790, [16] = 810, [17] = 835, [18] = 860, [19] = 860 }
+local CAP = 860
 local MSG = {
   [1] = "The volcano rumbles: mines fall from the crater. The sea starts rising in 3 turns. Climb the volcano!",
-  [3] = "The sea rises next turn! 3 turns until the shore castles drown!",
-  [4] = "The sea is rising. Take the roads up the volcano! 2 turns until the shore castles drown!",
-  [5] = "Strand, Harbour and Seawall fall next turn! 1 turn until the shore castles drown!",
-  [6] = "The sea reaches the Strand, Harbour and Seawall walls.",
-  [9] = "Ashgate falls next turn!",
-  [10] = "The sea reaches the Ashgate walls.",
-  [11] = "Ember and Highwatch fall next turn!",
-  [12] = "The sea reaches the Ember and Highwatch walls. Cinder falls next turn!",
+  [2] = "3 turns until the shore castles drown!",
+  [3] = "The sea rises next turn! 2 turns until the shore castles drown!",
+  [4] = "The sea is rising. Take the roads up the volcano! Strand, Harbour and Seawall fall next turn! 1 turn until the shore castles drown!",
+  [5] = "The sea reaches the Strand, Harbour and Seawall walls.",
+  [8] = "Ashgate falls next turn!",
+  [9] = "The sea reaches the Ashgate walls.",
+  [10] = "Ember falls next turn!",
+  [11] = "The sea reaches the Ember walls. Highwatch falls next turn!",
+  [12] = "The sea reaches the Highwatch walls. Cinder falls next turn!",
   [13] = "The sea reaches the Cinder walls.",
   [18] = "The sea has stopped rising. Hold the volcano!"
 }
