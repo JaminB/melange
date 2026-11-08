@@ -72,6 +72,10 @@ export function profile(rho, th) {
   return h;
 }
 
+// ---- outlying islets: rock stacks off the coast (angle, radius from the centre in map units, radius of the stack, crest above the sea) ----
+export const ISLETS = [{ th: 0.5, rho: 104, w: 6.5, top: 7 }, { th: 2.4, rho: 103, w: 6, top: 6.5 }, { th: 3.95, rho: 105, w: 6.5, top: 7 }, { th: 5.5, rho: 102, w: 5.5, top: 6 }];
+const ISLET_XZ = ISLETS.map((q) => [q.rho * Math.cos(q.th), q.rho * Math.sin(q.th)]);
+
 // ---- the lava tongues: centre angle as a function of the radius (shared by the gullies and the paint) ----
 // a: centre angle, r0 / r1: radius range, w0 / w1: half width (map units) at both ends (narrow at the crater, wide at the foot),
 // wob / wl / ph: a wander, rb / dr: a branch that leaves the line at radius rb and bends dr radians per unit of radius.
@@ -255,6 +259,11 @@ export function island(x, z) {
   let h = c;
   // rocks and bars in the shallows and on the beach
   h += 2.0 * fbm(x / 9, z / 9, 33, 2) * Math.exp(-((h / 5) ** 2));
+  // islets: a rough stack with a crest, rising out of the sea floor
+  ISLETS.forEach((q, i) => {
+    const d = Math.hypot(x - ISLET_XZ[i][0], z - ISLET_XZ[i][1]) / (q.w * (1 + 0.25 * noise(x / 5, z / 5, 70 + i)));
+    h = Math.max(h, -3 + (q.top + 3) * Math.exp(-d * d));
+  });
   // shelves under the castles (cut and fill to the castle's floor), roads cut and filled into the flank
   let wShelf = 0, wRoad = 0;
   for (const k of CASTLES) {

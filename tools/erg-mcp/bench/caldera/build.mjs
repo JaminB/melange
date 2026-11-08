@@ -5,7 +5,8 @@
 // mine factory, a coast of wide beaches, headlands and coves, lava tongues of real magma texture that run from the crater to
 // the shore, three roads that climb the cone in spirals through seven castles of different plans (a classic keep, a tower
 // house, an L-shaped harbour fort with a sea gate, a long wall on a cliff edge, a big bailey, a round keep on a crag) and a
-// level script (script.lua) that raises the sea from round 5 until only the cone and the two high castles are dry.
+// level script (script.lua) that raises the sea from turn 9 (+10 a turn, then +50) until only the cone and the two high castles are dry; the mine factory
+// launches its mines 30 over the crater (launchHeight/launchRadius), the shore castles' worms stand on the wall-walks, four islets with lights ring the coast.
 //
 //   tools\node\node.exe tools\erg-mcp\bench\caldera\build.mjs [--out <dir>] [--plan] [--no-export] [--keep-mod] [--no-scenery]
 //
@@ -39,9 +40,9 @@ const MAT = { grass: 0, olive: 2, rock: 4, grey: 6, path: 8, sand: 10, stone: 12
 const VOXEL = +(process.env.VOXEL || 2.5);       // map units per voxel of the island's skin
 const THICK = +(process.env.THICK || 3);         // voxels of skin (hollow under it: a fifth of the cells of a solid core)
 const SCALE = +(process.env.CASTLE_SCALE || 1.5);   // voxels of the castle blocks
-const WATER_START = 36;                           // world units (1.8 map): over the diner backdrop's ground planes, so the island stands in a sea from turn 1; the beaches' sand is cut to it
-// the rising sea (script.lua), world units: from turn 5 +15 a turn to 156 (turn 12), from turn 13 +50 a turn to the cap 500 (25 map: turn 19)
-const SEA = { first: 5, step: 15, cap1: 156, second: 13, step2: 50, cap: 500 };
+const WATER_START = +(process.env.WATER_START || 20);   // world units (1 map): the sea at the start is low; the beaches' sand is cut to it
+// the rising sea (script.lua), world units: from sim turn 9 (every worm has had its own turn) +10 a turn to 100 (turn 16: every worm has had two), then +50 a turn to the cap 500 (25 map: turn 24)
+const SEA = { first: 9, step: 10, cap1: 100, second: 17, step2: 50, cap: 500 };
 const FL = -T.SEA_FLOOR;                          // the skin's floor is SEA_FLOOR: a rule's heights are above it
 const hh = (v) => v + FL;
 
@@ -61,12 +62,11 @@ const MATERIALS = [
   { material: MAT.hot, minHeight: hh(FLOOR - 1), maxHeight: hh(FLOOR + 2.5), mask: `${T.FLAT_R + 2} - r`, noise: { threshold: 0.15, scale: 8, seed: 21 } },   // hot patches on the floor
   { material: MAT.hot, minHeight: hh(FLOOR + 2.5), mask: `${T.RC + 1.5} - r`, feather: { width: 3, pattern: "perlin", cell: 6 } },    // the crater's walls and rim
   { material: MAT.ash, minHeight: hh(FLOOR - 3), mask: `${T.RC + 14} - r`, feather: { width: 5, pattern: "perlin", cell: 8 }, jitter: { amount: 2.5, scale: 9, seed: 3 } },   // the floor and the summit's ash
-  { material: MAT.grey, minSlope: 46, feather: { width: 3, pattern: "perlin", cell: 6 } },                          // cliff faces
-  // ash and dark rock in irregular patches down the lower flanks, so the cone reads dark against the castles
-  { material: MAT.ash, minHeight: hh(14), maxHeight: hh(60), noise: { threshold: 0.2, scale: 14, seed: 11 } },
-  { material: MAT.grey, minHeight: hh(8), maxHeight: hh(40), noise: { threshold: 0.3, scale: 10, seed: 12 } },
-  { material: MAT.grey, minHeight: hh(36), feather: { width: 4, pattern: "perlin", cell: 9 }, jitter: { amount: 3, scale: 11, seed: 4 } },
-  { material: MAT.rock, minHeight: hh(15), feather: { width: 4, pattern: "perlin", cell: 9 }, jitter: { amount: 3, scale: 12, seed: 6 } },
+  // the cone is basalt: cliffs over 56 degrees are HotRocks (dark red-brown: hides the stretched texture of a steep face), the flanks above the
+  // foothills are VolcanoRock (the darkest ground material of the theme) with patches of HotRocks; the pale stone is left to the castles
+  { material: MAT.hot, minSlope: 56, feather: { width: 3, pattern: "perlin", cell: 6 } },
+  { material: MAT.hot, minHeight: hh(16), noise: { threshold: 0.55, scale: 11, seed: 12 } },
+  { material: MAT.ash, minHeight: hh(11), feather: { width: 4, pattern: "perlin", cell: 9 }, jitter: { amount: 3, scale: 11, seed: 4 } },
   { material: MAT.olive, minHeight: hh(8.5), feather: { width: 3, pattern: "perlin", cell: 7 }, noise: { threshold: 0.05, scale: 9, seed: 5 } },
   { material: MAT.grass, minHeight: hh(5.5), feather: { width: 2.5, pattern: "perlin", cell: 6 }, jitter: { amount: 1.5, scale: 7, seed: 8 } },
 ];
@@ -197,11 +197,12 @@ try {
   const topG = await groundOf(fx, fz);
   say("plug top", round1(topG));
   say("factory", brief(await call("place_object", { type: "minefactory", units: "map", xz: [fx, fz] }), 500));
-  say("factory settings", brief(await call("set_mine_factory", { activation: 16, inactiveTurns: 0, schemeMines: false, keepKnot: true }), 300));
+  say("factory settings", brief(await call("set_mine_factory", { activation: 16, inactiveTurns: 0, schemeMines: false, keepKnot: true, launchHeight: +(process.env.LAUNCH_H || 30), launchRadius: +(process.env.LAUNCH_R || 12) }), 300));
 
   // ---- outposts off the roads, so the island is not a ring of castles: a watchtower on the north-east headland, a tower house on
   // the western bluff, a lookout on the northern gully's lip (only while the cells last) ----
-  const OUTPOSTS = [["Pharos", -0.62, 84, 3.4, 13], ["Tower house", 3.62, 74, 3.0, 11], ["Gullywatch", -1.62, 68, 2.8, 9]];
+  const OUTPOSTS = [["Pharos", -0.85, 86, 3.4, 13], ["Tower house", 3.62, 74, 3.0, 11], ["Gullywatch", -1.62, 68, 2.8, 9],
+    ...T.ISLETS.slice(0, 3).map((q, i) => ["Islet light " + (i + 1), q.th, q.rho * T.scaleAt(q.th), 2.4, 8])];
   for (const [name, th, rho, rad, hgt] of OUTPOSTS) {
     if ((await lvl()).voxelCells.free < 1200) { say("outpost", name, "skipped: the cells are spent"); continue; }
     const [ox, oz] = T.pointAt(rho, th).map(round1);
@@ -218,11 +219,13 @@ try {
     return l[i].standOn ?? l[i].at;
   };
   fs.writeFileSync(path.join(OUT, "spots.json"), JSON.stringify(spots, null, 1));
-  // WORM0-3 are team 0, WORM4-7 team 1, and a worm moves first in turn 1 + team + 2 * index; so each team's first mover (WORM0, WORM4)
-  // stands on a shore castle (its two moves come before the sea reaches it), then low, then two high ones: one shore worm and two high per team
-  const SPAWNS = [["Strand", "courtyard", 0], ["Ashgate", "courtyard", 0], ["Cinder", "courtyard", 0], ["Highwatch", "courtyard", 0],
-                  ["Harbour", "courtyard", 0], ["Ember", "courtyard", 0], ["Highwatch", "rampart", 0], ["Cinder", "courtyard", 1]];
-  const spawns = SPAWNS.map(([n, k, i], worm) => ({ worm, pos: pick(n, k, i).map(round1) }));
+  // The turn order seen in game: team 1 and team 0 alternate, team 1 first (worms 4, 5, 6, 7) and team 0 in the order 1, 2, 3, 0, so
+  // in sim turns 1-8 the movers are 4, 1, 5, 2, 6, 3, 7, 0 and again in 9-16. The sea (script.lua) is at 100 world (5 map) by turn 16,
+  // so every worm has two turns of its own before the water can reach a spawn; the shore castles' spawns stand on the wall-walk
+  // (9-10.5 map), never in the courtyards (3-4 map), and the rest are on the lower treads and the high castles.
+  const SPAWNS = [["Strand", "rampart", 0], ["Ashgate", "courtyard", 0], ["Cinder", "courtyard", 0], ["Highwatch", "courtyard", 0],
+                  ["Harbour", "rampart", 0], ["Ember", "courtyard", 0], ["Highwatch", "rampart", 0], ["Seawall", "rampart", 0]];
+  const spawns = SPAWNS.map(([n, k, i], worm) => ({ worm, pos: pick(n, k, i).map((v) => Math.round(v * 100) / 100) }));
   say("spawns", brief(await call("place_spawn_knots", { mode: "knots", units: "map", spawns }), 800));
 
   // Camelot flags on the tower tops (no collision; Nice To Siege's pieces, another theme's meshes)
