@@ -28,3 +28,30 @@ A single `heightfield_drape` skin (voxel 2.5, 3 thick, hollow) over a 230 x 230 
 maxSlope 38 and `check_flood` (the script's literal `waterSchedule`) pass 8 of 8; `check_islets` finds no detached
 piece. Water: first rise turn 5 (round 3), 62 world units a turn, cap 740 at turn 16. Mines: the crater factory (target 12,
 one idle turn, no start mines). Cells 49 859 of 65 535, 16 blocks.
+
+## Iteration 5 design (builder's notes)
+
+- **Setting**: Prehistoric theme and its own material file (`set_theme PREHISTORIC`, `materialFile: "theme"`), NIGHT. The
+  lava is the theme's LiquidHotMagma (50) with HotRocks (51) margins and crater walls, the summit VolcanoRock (49), roads
+  path01 (8), courtyards flint (16), castles stone/flint/chipped stone. The base's diner scenery is removed.
+- **Island**: one `heightfield_drape` (voxel 2.5, skin 3 thick, clipped to a circle of 117) on a floor at -9, so the
+  beach slopes under the sea instead of ending in a slab (a coast of 79-111 units radius: headlands, coves, rocks);
+  `skirtTo`/`skirtTop` 0 fills the shore solid so the rising sea shows no hollow underside. The flank climbs in treads
+  (27 degrees) between three cliff bands (about 70 degrees, 10 high, wobbled by angle), so the roads that cut through
+  them are the way up. Grid heights are limited to 2.9 a unit (`relax`), so the 3-thick skin never folds.
+- **Materials**: distance-field masks for the roads (`sd`: exact distance to each polyline) and for the lava tongues (they
+  widen downslope), `feather` (dither) and `jitter` on every band edge: ash -> grey rock -> rock -> olive/grass -> sand.
+- **Castles** (7, `build_castle` at scale 1.5 with `foundation`, a second gate carved with `fill_box_raw`): shore 3
+  (floor 4), lower treads 2 (19, 20), high treads 2 (37, 41). Each runs along x or z, straight, and the road runs
+  through both gates; between castles the road climbs at no more than 32 degrees, in switchbacks when the way is short.
+- **Spawns** on courtyards (five) and wall-walks (three), one castle each, two on Cinder.
+- **Mine factory** on a dais in the crater, target 16, no idle turns, no start mines: it fires from the first turns.
+- **Water**: first rise turn 7 (round 4), 56 world units a turn, cap 820 (41 map units) at turn 21; announcements at turns
+  1, 7, then every 4, and at the cap. The shore castles drown around turns 11-12, the lower treads around 17-18; the two
+  high castles and the cone stay dry.
+- **Checks in the build**: `check_reachability` (45 and 38 degrees, to the rim), road only (every spawn reaches the rim
+  where its own road ends over road, flagstone and castle stone: 8 of 8) and off road (2 of 8: only the two high Cinder
+  spawns, one cliff band from the rim; the checker judges the skin's cliff as a stair so it passes at 55 degrees),
+  `check_flood` with the script, `check_islets` (no detached piece).
+- **Cells** 62 552 of 65 535 (24 of 64 blocks): the skin 28 100, the castles about 22 800, the base 11 652.
+- **Reproducibility**: `build.mjs` twice and `diff -r pack/` (see the iteration's notes).

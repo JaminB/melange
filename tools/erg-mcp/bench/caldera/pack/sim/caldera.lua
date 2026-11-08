@@ -1,14 +1,15 @@
--- Caldera: the sea rises toward the volcano from round 3, and the crater's mine factory is the only source of mines.
+-- Caldera: the sea rises toward the volcano from round 4, and the crater's mine factory is the only source of mines.
 --
--- wum.sim.waterSchedule steps the water at every turn start (two teams: two turns a round): the first rise is turn 5, the
--- first turn of round 3, and the sea climbs STEP world units a turn until it stands CAP at turn 16. The shore castles (floors
--- 11-13, wall-walks about 6 higher) go under around turns 9-10, the middle ones in the low teens, the highest (34) at the end;
--- only the upper cone (above 37 map units, the dark ash) stays dry. Everything is the sim's own turn counter, so every machine
--- floods alike. The mines come from the factory in the crater (level settings: target 12, one idle turn, no start mines).
+-- wum.sim.waterSchedule steps the water at every turn start (two teams: two turns a round): the first rise is turn 7, the
+-- first turn of round 4, and the sea climbs STEP world units a turn until it stands CAP at turn 21. The shore castles (floors
+-- 4, wall-walks about 6 higher) go under around turns 11-12, the lower treads' (floor 19-20, walls to 26) around 17-18, and the
+-- two high castles (37-41) and the cone above 41 map units (the black ash) stay dry. Everything is the sim's own turn counter,
+-- so every machine floods alike. The mines come from the factory on the crater's dais (level settings: target 16, no idle
+-- turns, no start mines), so the first ones appear on the first turns.
 
-local FIRST = 5           -- the turn the sea first rises on (round 3 with two teams)
-local STEP = 62           -- world units a turn (3.1 map units)
-local CAP = 740           -- world units: the sea's top, 37 map units; the crater floor is at 920
+local FIRST = 7           -- the turn the sea first rises on (round 4 with two teams)
+local STEP = 56           -- world units a turn (2.8 map units)
+local CAP = 820           -- world units: the sea's top, 41 map units; the crater floor is at 920
 local TOLD = { }          -- which announcements were made
 
 local function announce(key, text)
@@ -23,12 +24,12 @@ local function announce(key, text)
   wum.log.info("caldera: " .. text)
 end
 
-wum.sim.waterSchedule{ startTurn = 5, step = 62, cap = 740, units = "world" }   -- FIRST, STEP and CAP, as literals (check_flood reads this call)
+wum.sim.waterSchedule{ startTurn = 7, step = 56, cap = 820, units = "world" }   -- FIRST, STEP and CAP, as literals (check_flood reads this call)
 
 wum.events.on("sim.turnStarted", function(name, turn)
   local water = wum.sim.getData("Water.Level") or 0
   if turn == 1 then
-    announce("warn", "The volcano rumbles... the sea will rise in round 3. Climb the mountain!")
+    announce("warn", "The volcano rumbles... mines spill from the crater, and the sea will rise in round 4. Climb the mountain!")
   elseif turn == FIRST then
     announce("rise", "The sea is rising! Head for the crater!")
   elseif water >= CAP then
