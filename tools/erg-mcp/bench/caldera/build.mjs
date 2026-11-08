@@ -1,15 +1,16 @@
 // Caldera: an Erg MCP benchmark map, built only through the erg-mcp server's tools (stdio JSON-RPC, no hand-written
-// patches). A volcanic island on Multi.DinerMight: a crater at the summit holding the mine factory, six castles on
-// shelves at different heights round the flanks and the shore, a lava tube into the crater, and a level script
-// (script.lua) that raises the sea every turn until only the upper cone is dry.
+// patches). A volcanic island on Multi.DinerMight at night: a concave cone with a crater at the summit holding the mine
+// factory, gullies and three lava channels down its flanks, six castles on shelves round it, three lava tubes from the
+// castles into the crater, and a level script (script.lua) that raises the sea once per round until only the upper
+// cone is dry.
 //
-//   tools\node\node.exe tools\erg-mcp\bench\caldera\build.mjs [--out <dir>] [--no-export] [--keep-mod]
+//   tools\node\node.exe tools\erg-mcp\bench\caldera\build.mjs [--out <dir>] [--plan] [--no-export] [--keep-mod]
 //
 // It connects like erg-mcp does: MELANGE_GAME_DIR (default C:\Users\Jamin\Desktop\WUMFix\testenv\C) with the game
 // closed, starting Melange.exe --serve (MELANGE_EXE names another Melange.exe; default this checkout's
 // build\x86-release\Melange.exe). The project id is `caldera`; an old one is deleted first (delete_project), so
-// every run starts from the base. Renders go to
-// --out (default out\ next to this file); the source export is copied to pack\ next to this file.
+// every run starts from the base. Renders go to --out (default out\ next to this file); the source export is copied to
+// pack\ next to this file. --plan stops after the heightfield plans (nothing is applied or saved).
 import { spawn } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
@@ -28,62 +29,134 @@ const MOD = "caldera";
 
 // ---- the design (map units: 1 voxel of the base = 1 map unit = 20 world units; y up, floor 0) ----
 //
-// Budget (measured with heightfield_plan and dry-run castles): Diner Might's frames hold 11 652 of the game's 65 535
-// cells, leaving 53 883. The island at 2.75 map units per voxel takes about 35 800 in 25 blocks; a 16 x 16 castle with
-// a keep is one 18 x 10 x 18 block (3240 cells) and a 12 x 12 one 1568, so two large and four small castles take about
-// 12 750, leaving some 5000 for later work. At 2.5 the same island needs about 52 000 cells.
+// Budget (heightfield_plan and dry-run castles): Diner Might's frames hold 11 652 of the game's 65 535 cells, leaving
+// 53 883. Two heightfield calls share the island: a coarse one (voxel 3) for the lowlands and the cone's foot, and a
+// fine one (voxel 2) inside r 46, where the flanks, the crater and the gullies show. The castles take what is left, in
+// scale-1 blocks packed per wall.
 
-const VOXEL = 2.75;                // island voxels, map units
-const ISLAND = 120;                // half side of the heightfield rectangle
-const CELLS_ISLAND = 36000;        // cells the island may take
+const VC = 3;                      // lowland voxels, map units
+const VF = 2;                      // cone voxels
+const SLAB1 = 12, R1 = 58;         // slab under the cone's foot (height, radius)
+const SLAB2 = 24, R2 = 30;         // slab under the cone's upper flanks
+const ISLAND = 108;                // half side of the coarse heightfield rectangle
+const CELLS_COARSE = +(process.env.CC || 14000);
+const CELLS_MID = +(process.env.CM || 14000);
+const CELLS_FINE = +(process.env.CF || 14000);
 const WATER_START = -20;           // world units: the beaches are dry at the start
+const TUBE_MOUTH = 31;             // r of the lava tubes' mouths
+const CASTLE_SCALE = 1.5;         // castle voxels: a castle in scale-1 blocks packed per wall needs 9 blocks of the 64
 
-// Castle sites round the volcano: centre, shelf height (whole voxels of 2.75; the castle stands on the voxel top
-// rounded down, so its walls bed into the shelf), outer size, style. The heightfield flattens a shelf under each, and
-// the gate faces the summit. Heights from the shore up: 5.5, 8.25, 11, 16.5, 19.25, 27.5.
+// The cone: h = H (1 - r/R)^P is steepest at the top and runs out in a wide skirt; the crater is a bowl inside r = RC
+// with a flat floor, its rim blending into the slope (no separate collar).
+const H = 74, R = 100, P = 1.5, RC = 17, FLOOR_Y = 42, RIM = 2;
+const coneAt = (r) => H * Math.pow(Math.max(0, 1 - r / R), P);
+
+// Castle sites round the volcano: centre, shelf height (map units), outer size, wall material, style. The heightfield
+// flattens a shelf under each; the gate faces the summit.
 const CASTLES = [
-  { name: "Seawall",  at: [-88, 16],  h: 5.5,   size: [12, 12], mat: 12, towerShape: "square" },
-  { name: "Harbour",  at: [64, -56],  h: 8.25,  size: [16, 16], mat: 37, keep: true },
-  { name: "Headland", at: [12, 86],   h: 11,    size: [12, 12], mat: 55 },
-  { name: "Ashgate",  at: [-40, -48], h: 16.5,  size: [12, 12], mat: 12 },
-  { name: "Cinder",   at: [54, 22],   h: 19.25, size: [12, 12], mat: 37, towerShape: "square" },
-  { name: "Ember",    at: [-26, 32],  h: 27.5,  size: [16, 16], mat: 55, keep: true },
+  { name: "Seawall",  at: [-74, 12],  h: 10,   size: [16, 16], mat: 12, keep: true },
+  { name: "Harbour",  at: [52, -56],  h: 12.5, size: [16, 16], mat: 37, keep: true },
+  { name: "Headland", at: [8, 84],    h: 14,   size: [14, 14], mat: 55 },
+  { name: "Ashgate",  at: [-44, -42], h: 15,   size: [14, 14], mat: 36, towerShape: "square" },
+  { name: "Cinder",   at: [46, 20],   h: 19.5, size: [14, 14], mat: 37 },
+  { name: "Ember",    at: [-30, 28],  h: 26,   size: [16, 16], mat: 14, keep: true, towerShape: "square" },
 ];
 // Two worms in each large castle (either side of the keep), one in each of the others.
 const SPAWNS = [[0, 0], [1, 1], [2, 1], [3, 2], [4, 3], [5, 4], [6, 5], [7, 5]];
 
-// Diner Might's material file (Building theme): grass01, rock01, rock02, sand01, Road (dark asphalt, for ash) and
-// Red Metal (the reddest material it has, for the crater floor).
-const MAT = { grass: 0, rock: 4, darkRock: 6, sand: 10, ash: 14, lava: 21 };
+// Diner Might's material file (Building theme): grass01 0, rock01 4, rock02 6, sand01 10, stone 12, Road 14 (slate),
+// Red Metal 21 (lava), Tyre 24 (near black, for ash), Rubber matting 36, Brick colour 37, concrete and bricks 55.
+const MAT = { rubber: 36, grass: 0, rock: 4, darkRock: 6, sand: 10, road: 14, lava: 21, ash: 24 };
 
-function heightExpr() {
-  const coast = "(104 + 9*fbm(x/35, z/35, 11, 2))";
-  const land = `smoothstep(${coast} + 2, ${coast} - 16, r)`;
-  const lowland = `(4 + 3*fbm(x/22, z/22, 4, 3))*${land}`;
-  // A cone of about 38 degrees with a softplus foot, and seven ridges with gullies between them round the flanks.
-  const cone = "6.2*log(1 + exp((76 - r)/8))*(1 + 0.12*cos(7*theta + 1.5*noise2(x/40, z/40, 9))*smoothstep(15, 40, r))";
-  let h = `(max(${lowland}, ${cone}) + 1.2*fbm(x/9, z/9, 21, 2)*${land})`;
+// Lava gullies: angles (radians about the summit, as atan2(z, x)) of three channels cut into the flanks from the rim
+// down to r 70, painted red afterwards.
+const LAVA = [0.5, 2.5, 4.4];
+
+// The height of the island at (x, z), map units above the floor. heightfield's expr language is limited to 500 parts,
+// too few for coast, cone, gullies and six shelves, so the build sends the same surface as a grid (a height per map
+// unit, sampled bilinearly): this function is the design.
+function hash(i, j, seed) {
+  let h = (Math.imul(i, 374761393) + Math.imul(j, 668265263) + Math.imul(seed, 2147483647)) | 0;
+  h = Math.imul(h ^ (h >>> 13), 1274126177);
+  return ((h ^ (h >>> 16)) >>> 0) / 4294967295 * 2 - 1;
+}
+function noise(x, z, seed) {
+  const i = Math.floor(x), j = Math.floor(z), fx = x - i, fz = z - j;
+  const u = fx * fx * (3 - 2 * fx), v = fz * fz * (3 - 2 * fz);
+  const a = hash(i, j, seed), b = hash(i + 1, j, seed), c = hash(i, j + 1, seed), d = hash(i + 1, j + 1, seed);
+  return (a + (b - a) * u) + ((c + (d - c) * u) - (a + (b - a) * u)) * v;
+}
+function fbm(x, z, seed, oct) {
+  let sum = 0, amp = 1, norm = 0;
+  for (let o = 0; o < oct; o++) { sum += amp * noise(x, z, seed + o * 31); norm += amp; x *= 2; z *= 2; amp *= 0.5; }
+  return sum / norm;
+}
+const smooth = (e0, e1, v) => { const t = Math.min(1, Math.max(0, (v - e0) / (e1 - e0))); return t * t * (3 - 2 * t); };
+const gauss = (x, z, cx, cz, s) => Math.exp(-((x - cx) ** 2 + (z - cz) ** 2) / (2 * s * s));
+const HEADS = [[8, 92, 15, 14], [-70, -62, 13, 12]];     // headlands: centre, spread, how far they push the coast out
+const COVE = [88, -24, 12, 26];                          // a cove beside Harbour
+function height(x, z) {
+  const r = Math.hypot(x, z), theta = Math.atan2(z, x);
+  let coast = 88 + 8 * fbm(x / 45, z / 45, 11, 3) - COVE[3] * gauss(x, z, COVE[0], COVE[1], COVE[2]);
+  let cliff = 0;
+  for (const [cx, cz, s, a] of HEADS) { const w = gauss(x, z, cx, cz, s); coast += a * w; cliff = Math.max(cliff, w); }
+  const land = smooth(coast + 2, coast - 3 - 12 * (1 - cliff), r);
+  const lowland = (5 + 2.5 * fbm(x / 25, z / 25, 4, 3) + cliff * 7) * land;
+  // The cone: ridges and gullies grow with r from the rim; three lava channels are cut deeper.
+  const ridges = 1 + 0.13 * Math.cos(9 * theta + 1.5 * noise(x / 40, z / 40, 9)) * smooth(RC + 2, RC + 22, r);
+  let dip = 0;
+  for (const t of LAVA) { const q = (r * Math.atan2(Math.sin(theta - t), Math.cos(theta - t))) / 4; dip += 2.2 * Math.exp(-q * q); }
+  dip *= smooth(RC + 3, RC + 10, r) * (1 - smooth(50, 66, r));
+  const outer = coneAt(Math.max(r, RC)) * ridges - dip + RIM * Math.exp(-(((r - RC) / 2.5) * ((r - RC) / 2.5)));
+  const bowl = FLOOR_Y + (coneAt(RC) - FLOOR_Y) * smooth(5, RC, r);
+  const t = smooth(RC - 0.5, RC + 0.5, r);
+  const cone = bowl + (outer - bowl) * t;
+  let h = Math.max(lowland, cone) + 1.2 * fbm(x / 9, z / 9, 21, 2) * land;
   for (const c of CASTLES) {
     const s = Math.max(c.size[0], c.size[1]) / 2 + 3;
-    const d = `sqrt((x - ${c.at[0]})^2 + (z - ${c.at[1]})^2)`;
-    h = `lerp(${h}, ${c.h}, smoothstep(${s + 8}, ${s}, ${d}))`;
+    h += (c.h - h) * smooth(s + 8, s, Math.hypot(x - c.at[0], z - c.at[1]));
   }
-  return h;
+  return Math.max(0, h);
 }
-
-const FIELD = {
-  min: [-ISLAND, -ISLAND], max: [ISLAND, ISLAND], floor: 0, baseDepth: VOXEL, voxelSize: VOXEL, maxCells: CELLS_ISLAND,
-  expr: heightExpr(),
-  crater: { radius: 14, depth: 18, rim: 3 },  // rim about 49, floor 38.5
-  material: MAT.rock,
-  materials: [
-    { material: MAT.lava, minHeight: 36, maxHeight: 41.25, maxSlope: 20 },   // the crater floor
-    { material: MAT.ash, minHeight: 44 },                   // the summit and the crater wall
-    { material: MAT.darkRock, minHeight: 28 },              // the upper cone
-    { material: MAT.sand, maxHeight: 3 },                   // beaches
-    { material: MAT.grass, maxHeight: 12 },                 // lowlands
-  ],
+const gridOf = (min, max, base = 0) => {
+  const rows = [];
+  for (let z = min[1]; z <= max[1]; z++) {
+    const row = [];
+    for (let x = min[0]; x <= max[0]; x++) row.push(Math.round(Math.max(0, height(x, z) - base) * 100) / 100);
+    rows.push(row);
+  }
+  return rows;
 };
+
+// Materials by height above the level's floor (first rule that holds wins); the rules of a field standing on SLAB or
+// deeper are shifted by its floor.
+const MATERIALS = [
+  { material: MAT.lava, minHeight: FLOOR_Y - 2, maxHeight: FLOOR_Y + 1.5, maxSlope: 20 },   // the crater floor
+  { material: MAT.darkRock, minSlope: 55, maxHeight: 14 },                  // sea cliffs
+  { material: MAT.ash, minHeight: 46 },                                     // the summit and the crater wall: black
+  { material: MAT.ash, minHeight: 22, minSlope: 52 },                       // black ash down the steepest gullies
+  { material: MAT.rubber, minHeight: 32 },                                  // the upper cone, dark blue-grey
+  { material: MAT.road, minHeight: 20 },                                    // the middle cone, slate
+  { material: MAT.rock, minHeight: 14 },                                    // the scree at the foot
+  { material: MAT.sand, maxHeight: 3 },                                     // beaches
+];
+const matsAt = (floor) => MATERIALS.map((m) => ({ ...m, ...(m.minHeight != null ? { minHeight: m.minHeight - floor } : {}), ...(m.maxHeight != null ? { maxHeight: m.maxHeight - floor } : {}) }));
+const disc = (radius) => ({ x: 0, z: 0, radius });
+// Layers, bottom up, so every voxel size is spent where it shows: 4-unit slabs under the cone (to SLAB1 within r R1, to
+// SLAB2 within r R2), 3-unit voxels for the flanks between R2 and R1 above SLAB1 and for the lowlands, 2-unit voxels
+// for the cone above SLAB2.
+const box = (r) => ({ min: [-r - 6, -r - 6], max: [r + 6, r + 6] });
+const FIELDS = {
+  slab1: { ...box(R1), floor: 0, baseDepth: 0, voxelSize: 4, centre: [0, 0], clip: [disc(R1 + 3)], expr: String(SLAB1), material: MAT.rock, runsHeadroom: 0 },
+  slab2: { ...box(R2), floor: SLAB1, baseDepth: 0, voxelSize: 4, centre: [0, 0], clip: [disc(R2 + 3)], expr: String(SLAB2 - SLAB1), material: MAT.rock, runsHeadroom: 0 },
+  coarse: { min: [-ISLAND, -ISLAND], max: [ISLAND, ISLAND], floor: 0, baseDepth: 0, voxelSize: VC, maxCells: CELLS_COARSE,
+            centre: [0, 0], exclude: [disc(R1)], material: MAT.grass, materials: matsAt(0), runsHeadroom: 300 },
+  mid: { ...box(R1), floor: SLAB1, baseDepth: 0, voxelSize: VC, maxCells: CELLS_MID, centre: [0, 0], clip: [disc(R1)], exclude: [disc(R2)],
+         material: MAT.grass, materials: matsAt(SLAB1), runsHeadroom: 300 },
+  fine: { ...box(R2), floor: SLAB2, baseDepth: 0, voxelSize: VF, maxCells: CELLS_FINE, centre: [0, 0], clip: [disc(R2)],
+          material: MAT.grass, materials: matsAt(SLAB2), runsHeadroom: 300 },
+};
+for (const f of Object.values(FIELDS)) if (!f.expr) f.grid = gridOf(f.min, f.max, f.floor);
 
 // ---- the MCP client ----
 
@@ -138,63 +211,95 @@ try {
   if (np.json?.created?.id !== ID) throw new Error(`new_project gave id ${np.json?.created?.id}, not ${ID}`);
   await call("open_project", { id: ID });
 
-  // Setting: the base's own material set (Building), at evening; the base's terrain wiped (its frames stay, so its
-  // 11 652 cells stay spent); the sea starts below the beaches.
+  // Setting: the base's own material set (Building) at night; the base's terrain wiped (its frames stay, so its 11 652
+  // cells stay spent); the heightmap hill and the diner's neon and grass tufts removed (they show through the water);
+  // the sea starts below the beaches.
   await call("set_theme", { theme: "BUILDING" });
-  await call("set_time_of_day", { timeOfDay: "EVENING" });
+  await call("set_time_of_day", { timeOfDay: "NIGHT" });
   await call("set_water", { level: WATER_START });
+  await call("set_surround_mode", { mode: "none" });
+  for (const search of ["Neon", "Grass"]) say("remove", search, brief(await call("remove_scenery", { search }, { soft: true }), 120));
   say("clear", brief(await call("clear_base_terrain", { all: true, wipe: true }), 200));
 
-  // Island and volcano.
-  const plan = await call("heightfield_plan", FIELD);
-  const pj = plan.json;
-  say("plan: fits", pj.fits, "blocks", JSON.stringify(pj.blocks?.placed), "/", JSON.stringify(pj.blocks?.needed), "cells", JSON.stringify(pj.budget?.cells),
-    "voxels", JSON.stringify(pj.voxels), "notes", JSON.stringify(pj.notes ?? []), pj.why ?? "");
-  fs.writeFileSync(path.join(OUT, "plan.json"), plan.text);
-  if (!pj.fits) throw new Error("the island does not fit: " + (pj.why ?? ""));
-  const hf = await call("heightfield_region", FIELD);
-  say("island", JSON.stringify(hf.json.limits.voxelCells), "blocks", hf.json.limits.newFrames?.used ?? JSON.stringify(hf.json.limits.newFrames));
+  // Island and volcano: the two heightfield calls.
+  for (const [name, f] of Object.entries(FIELDS)) {
+    const plan = await call("heightfield_plan", f);
+    const pj = plan.json;
+    say("plan", name, "fits", pj.fits, "blocks", JSON.stringify(pj.blocks?.placed), "/", JSON.stringify(pj.blocks?.needed), "cells", JSON.stringify(pj.budget?.cells),
+      "voxels", JSON.stringify(pj.voxels), "notes", JSON.stringify(pj.notes ?? []), pj.why ?? "");
+    fs.writeFileSync(path.join(OUT, `plan-${name}.json`), plan.text);
+    if (!pj.fits) throw new Error(`the ${name} field does not fit: ${pj.why ?? ""}`);
+  }
+  if (flag("--plan")) { await call("close", { discard: true }, { soft: true }); throw new Error("--plan: stopped"); }
+  for (const [name, f] of Object.entries(FIELDS)) {
+    const hf = await call("heightfield_region", f);
+    say("island", name, JSON.stringify(hf.json.limits.voxelCells), "blocks", JSON.stringify(hf.json.limits.newFrames));
+  }
 
-  // Castles, in fine voxels (scale 1, new blocks) on their shelves, gates towards the summit. Each stands on the
-  // shelf's voxel top rounded down to a whole unit, so its walls bed into the coarser island voxels.
-  const castleFloor = [];
+  // Castles, in fine voxels (scale 1, new blocks, packed per wall) on their shelves, gates towards the summit. Each
+  // stands on the shelf's voxel top rounded down to a whole unit.
+  const spots = {};
   for (const c of CASTLES) {
     const [x, z] = c.at;
     const g = await call("query_ground", { x, z, units: "map" });
     const top = g.json?.standOn?.map;
     if (typeof top !== "number") throw new Error(`no ground at ${c.name}: ${g.text.slice(0, 300)}`);
     const y = Math.floor(top + 1e-6);
-    castleFloor.push(y);
+    c.floor = y;
     const gate = Math.abs(x) > Math.abs(z) ? (x > 0 ? "w" : "e") : (z > 0 ? "n" : "s");
     const big = !!c.keep;
     const r = await call("build_castle", {
       at: [x, y, z], size: c.size, wallHeight: big ? 5 : 4, wallThickness: 2, towerHeight: big ? 8 : 7, towerRadius: big ? 2.5 : 2,
       towerShape: c.towerShape ?? "round", keep: big, ...(big ? { keepSize: [6, 6], keepHeight: 9 } : {}),
-      gate, gateWidth: 3, gateHeight: big ? 4 : 3, crenellations: true, material: c.mat, place: "new",
+      gate, gateWidth: 3, gateHeight: big ? 4 : 3, crenellations: true, material: c.mat, place: "new", scale: CASTLE_SCALE,
     });
-    say("castle", c.name, "shelf", top, "floor", y, "gate", gate, "cells", r.json?.usage?.voxelCells ?? r.text.slice(0, 200));
+    spots[c.name] = r.json?.spawnSpots;
+    say("castle", c.name, "shelf", top, "floor", y, "gate", gate, "cells", JSON.stringify(r.json?.usage?.voxelCells ?? r.text.slice(0, 200)), "spots", JSON.stringify(r.json?.spawnSpots));
   }
+  fs.writeFileSync(path.join(OUT, "spots.json"), JSON.stringify(spots, null, 1));
 
-  // Two lava tubes through the crater rim, from the south flank (above Ember) and the north-east flank (above
-  // Harbour): square bores 6 wide whose floor runs from the ground at the mouth up to the crater floor, so the
-  // summit can be reached on foot without climbing the rim. The mouths are read off the terrain.
+  // Three lava tubes through the rim, each opening on the line from the summit through a castle (Ember, Cinder, Ashgate):
+  // square bores 6 wide, their floor rising from the flank's ground at the mouth to the crater floor, so a worm can
+  // walk from the castle's gate to the crater without climbing the steepest 15 units of the cone.
   const crater = (await call("query_ground", { x: 0, z: 0, units: "map" })).json.standOn.map;
-  for (const deg of [90, -40]) {
-    const a = (deg * Math.PI) / 180, at = (r) => [Math.round(r * Math.cos(a) * 10) / 10, Math.round(r * Math.sin(a) * 10) / 10];
-    const [mx, mz] = at(26), [ix, iz] = at(5);
+  for (const name of ["Ember", "Cinder", "Ashgate"]) {
+    const c = CASTLES.find((k) => k.name === name), a = Math.atan2(c.at[1], c.at[0]);
+    const at = (r) => [Math.round(r * Math.cos(a) * 10) / 10, Math.round(r * Math.sin(a) * 10) / 10];
+    const [mx, mz] = at(TUBE_MOUTH), [ix, iz] = at(5);
     const mouth = (await call("query_ground", { x: mx, z: mz, units: "map" })).json.standOn.map;
     const t = await call("dig_tunnel", { points: [[mx, mouth + 2.5, mz], [ix, crater + 3, iz]], radius: 3, shape: "square" });
-    say("tunnel", deg, "mouth", mouth, "crater", crater, "removed", t.json?.voxels?.removed);
+    say("tube", name, "mouth", mx, mz, mouth, "crater", crater, "removed", t.json?.voxels?.removed);
   }
 
-  // The mine factory on the crater floor, the spawns in the castles' courtyards.
+  // Lava: red channels painted down the three gullies, from the rim to r 70. Each point is painted in the frame that
+  // holds it (a stroke touches only its anchor's frame), so the path is cut where the frame changes.
+  for (const t of LAVA) {
+    let run = [], frame = null;
+    const flush = async () => {
+      if (run.length) await call("sculpt_path", { mode: "paint", shape: "sphere", size: [2, 2, 2], material: MAT.lava, units: "map", frame, points: run, snap: false }, { soft: true });
+      run = [];
+    };
+    for (let r = RC - 1; r <= 62; r += 2) {
+      const x = Math.round(r * Math.cos(t) * 10) / 10, z = Math.round(r * Math.sin(t) * 10) / 10;
+      const q = (await call("query_ground", { x, z, units: "map" }, { soft: true })).json;
+      if (!q?.standOn) continue;
+      const f = q.ground?.frame;
+      if (f !== frame) { await flush(); frame = f; }
+      run.push([x, q.standOn.map - 0.5, z]);
+    }
+    await flush();
+    say("lava", t);
+  }
+
+  // The mine factory in the crater bowl, the spawns in the castles' courtyards (the castle tool's own spawn spots).
   say("factory", brief(await call("place_object", { type: "minefactory", units: "map", xz: [0, 0] }), 300));
   const spawns = SPAWNS.map(([worm, ci]) => {
     const c = CASTLES[ci];
-    const pair = SPAWNS.filter((s) => s[1] === ci);
-    // Either side of the keep (between it and the curtain wall), or the middle of an open courtyard.
-    const dx = c.keep ? (pair[0][0] === worm ? -1 : 1) * (c.size[0] / 2 - 3.5) : 0;
-    return { worm, xz: [c.at[0] + dx, c.at[1]] };
+    const yard = (spots[c.name]?.spots ?? []).filter((s) => s.kind === "courtyard" && s.ok);
+    const first = SPAWNS.find((s) => s[1] === ci)[0] === worm;
+    const spot = yard[c.keep && !first ? 1 : 0];
+    if (!spot) throw new Error(`no courtyard spot at ${c.name}`);
+    return { worm, pos: spot.at };
   });
   const sp = await call("place_spawn_knots", { mode: "knots", units: "map", spawns });
   say("spawns", brief(sp, 900));
@@ -211,6 +316,9 @@ try {
   say("cells", JSON.stringify(d.json.limits.voxelCells), "blocks", JSON.stringify(d.json.limits.newFrames), "engineWarnings", JSON.stringify(d.json.engineWarnings), "problems", JSON.stringify(d.json.problems ?? []));
   const lo = await call("list_objects", {});
   fs.writeFileSync(path.join(OUT, "objects.json"), lo.text);
+  const rc = await call("check_reachability", {}, { soft: true });
+  fs.writeFileSync(path.join(OUT, "reach.json"), rc.text);
+  say("reach", brief(rc, 1500));
 
   // Renders.
   const shots = [
@@ -238,6 +346,9 @@ try {
     say("pack", pack);
   }
   await call("close", { discard: true }, { soft: true });
+} catch (e) {
+  if (!String(e.message).startsWith("--plan")) throw e;
+  say(e.message);
 } finally {
   fs.writeFileSync(path.join(OUT, "calls.json"), JSON.stringify(log, null, 1));
   say("MCP tool calls:", calls);
