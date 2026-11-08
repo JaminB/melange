@@ -1040,6 +1040,30 @@ void TestFactorySettings() {
                "keepKnot follows the other settings: " + why);
         Expect(!luagen::Upgrade(stem, Mutate(keep, "keepKnot=1", "keepKnot=2"), &run, &why), "keepKnot is 1 or absent");
     }
+    // launchHeight / launchRadius: in the patch (written only when set, 1-255 and 0-255), and on the settings line
+    {
+        erg::Patch lp;
+        const std::string withLaunch = Mutate(text, "\"schemeMines\":false}", "\"schemeMines\":false,\"launchHeight\":20,\"launchRadius\":12}");
+        Expect(erg::ParsePatch(withLaunch, &lp, &err) && lp.objects.back().factory.launchHeight == 20 && lp.objects.back().factory.launchRadius == 12 &&
+                   erg::WritePatch(lp) == withLaunch,
+               "launchHeight and launchRadius round-trip in the patch: " + err);
+        Expect(!erg::ParsePatch(Mutate(text, "\"schemeMines\":false}", "\"schemeMines\":false,\"launchHeight\":0}"), &lp, &err), "launchHeight is 1 or more");
+        Expect(!erg::ParsePatch(Mutate(text, "\"schemeMines\":false}", "\"schemeMines\":false,\"launchRadius\":256}"), &lp, &err), "launchRadius is at most 255");
+        spec.objects[0].factory = {};
+        spec.objects[0].factory.launchRadius = 12;
+        const std::string launch = luagen::Text(stem, spec);
+        luagen::ChunkSpec lparsed;
+        Expect(launch.find("\n-- minefactory: launchRadius=12\n") != std::string::npos && luagen::IsGenerated(stem, launch, &why) &&
+                   luagen::Parse(stem, launch, &lparsed) && lparsed.objects[0].factory.launchRadius == 12 && !lparsed.objects[0].factory.launchHeight &&
+                   lparsed.objects[0].factory.Launch() && !lparsed.objects[0].factory.Tweaks(),
+               "launchRadius alone writes the settings line and parses back: " + why);
+        spec.objects[0].factory.keepKnot = true;
+        spec.objects[0].factory.launchHeight = 30;
+        const std::string all = luagen::Text(stem, spec);
+        Expect(all.find("\n-- minefactory: keepKnot=1 launchHeight=30 launchRadius=12\n") != std::string::npos && luagen::IsGenerated(stem, all, &why),
+               "the launch follows keepKnot: " + why);
+        Expect(!luagen::Upgrade(stem, Mutate(launch, "launchRadius=12", "launchHeight=0"), &run, &why), "launchHeight is 1 or more on the line");
+    }
     luagen::ChunkSpec noFactory;
     noFactory.placeObjects = true;
     std::string orphan2 = luagen::Text(stem, noFactory);

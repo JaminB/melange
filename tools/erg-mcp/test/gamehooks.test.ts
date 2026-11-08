@@ -81,7 +81,9 @@ test("game_shots: several poses in one call, the camera given back", async () =>
   const t = textOf(r);
   assert.equal(t.shots.length, 3);
   assert.equal(r.content.filter((c: { type: string }) => c.type === "image").length, 3);
-  assert.deepEqual(t.shots.map((x: { name: string }) => x.name), ["a", "erg_shots_2", "erg_shots_3"]);
+  // every name is prefixed (default erg_<yyyymmdd_hhmmss>), so runs never overwrite each other's in the shared folder
+  assert.match(t.shots[0].name, /^erg_\d{8}_\d{6}_a$/);
+  assert.deepEqual(t.shots.map((x: { name: string }) => x.name.replace(/^erg_\d{8}_\d{6}_/, "")), ["a", "2", "3"]);
   assert.ok(calls.at(-1)!.m === "render.camera" && calls.at(-1)!.p.clear, "the camera goes back at the end");
   await assert.rejects(() => call(game(["lua.eval"]).s, "game_shots", { cams: [{ preset: "default" }] }), /render.camera and render.shot/);
 });

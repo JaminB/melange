@@ -127,17 +127,17 @@ export const tools: Tool[] = [
       // a camera 3 radii back to the south and up, looking at the point
       const back = Math.max(6, r * 3), cam = { pos: [p[0], p[1] + back * 0.8, p[2] + back], target: [p[0], p[1], p[2]], units: "map", fov: 55 };
       const shot = async (name: string) => {
-        const res = await call("game_camera").handler(s, { ...cam, seconds: 4, shot: true, clean: true, width: 960, name }) as { content: Content[] };
+        const res = await call("game_camera").handler(s, { ...cam, seconds: 4, shot: true, clean: true, width: 960, prefix: tag, name }) as { content: Content[] };
         parts.push(...res.content.filter((c) => c.type === "image"));
       };
       const tag = `erg_blast_${Date.now() % 100000}`;
-      if (shotsOn) await shot(`${tag}_before`);
+      if (shotsOn) await shot("before");
       const res = await (await s.client()).call<{ queued: boolean; tick: number }>("level.test.explode", {
         detail: knot.name, landRadius: r * WORLD_PER_MAP, wormDamage: a.wormDamage ?? 0, wormRadius: (a.wormRadius ?? 0) / k * WORLD_PER_MAP, impulse: a.impulse ?? 0, impulseRadius: 0,
       }, 15000).catch((e: Error) => { throw new ToolError(`level.test.explode refused: ${e.message}`); });
       await new Promise((ok) => setTimeout(ok, a.settleMs ?? 3000));
       if (shotsOn) {
-        await shot(`${tag}_after`);
+        await shot("after");
         await call("game_camera").handler(s, { clear: true });
       }
       out.game = { detail: knot.name, knotAt: pointOut(knot.at, u), queuedAtTick: res.tick, ...(shotsOn ? { shots: [`${tag}_before`, `${tag}_after`], note: "Documents\\Melange\\shots" } : {}) };

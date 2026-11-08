@@ -31,6 +31,14 @@
   them are unchanged. docs/erg.md explains how the factory decides to fire.
 - Sim scripts and level scripts: `wum.sim.turn()`, `wum.sim.round()` (a round counter that survives a team being wiped
   out; `sim.turnStarted` now also passes the round) and `wum.sim.waterSchedule{...}` (rising water at turn starts).
+- The mine factory's `launchHeight` and `launchRadius` (scene and patch, erg-mcp `set_mine_factory`): its mines appear
+  over it and fall round it instead of raining onto random worms and objects. `wum.game.turn().index` and
+  `melange.turn` no longer run one behind `sim.turnStarted` when the first turn starts in the frame the match's VM
+  appears. The `sim/announce` log record carries its `seconds`. erg-mcp: check_flood models the engine's worm rotation
+  and gives a PASS/FAIL verdict (`minOwnTurns`, `minDryMargin`, `turnOrder`), game_state answers the turn counted as
+  the sim counts it, the turns seen and the announcements on screen, game_shots shoots on an announcement and never
+  overwrites another run's pictures, game_walk walks a worm along a route in the game, and sculpt_road, packing
+  "fit", `costOnly` and the drape's `steepMaterial` are new (docs/erg-mcp.md).
 - Clean-room Test: `level.test` takes `cleanMods` (no sim mod runs in the Test match, post-FX off) and `postfx: false`,
   for the Test match only; `level.test.cleanRoom` reports it. erg-mcp's `test` passes them through.
 

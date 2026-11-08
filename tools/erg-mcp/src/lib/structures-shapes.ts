@@ -110,12 +110,12 @@ export function placePoint(p: Vec3, at: Vec3, yawDeg = 0): Vec3 {
  * centred on the side (`shift` along it). Round-topped when the opening is at least 3 wide and 2 higher than half its
  * width. `below` carves its floor that far under y0 at the outer face, rising to y0 at the inner face: a ramp down to
  * ground outside that is lower than the floor, instead of a sill as high as the difference. */
-export function doorway(hw: number, hd: number, wallT: number, side: Side, width: number, height: number, y0 = 0, shift = 0, below = 0): Shape {
+export function doorway(hw: number, hd: number, wallT: number, side: Side, width: number, height: number, y0 = 0, shift = 0, below = 0, square = false): Shape {
   const alongX = side === "n" || side === "s";
   const outer = (alongX ? hd : hw) + 1, inner = (alongX ? hd : hw) - wallT - 1;
   const sign = side === "s" || side === "e" ? 1 : -1;
   const d0 = sign > 0 ? inner : -outer, d1 = sign > 0 ? outer : -inner;
-  const r = width / 2, arched = width >= 3 && height >= r + 2;
+  const r = width / 2, arched = !square && width >= 3 && height >= r + 2;
   const ux0 = -r + shift, ux1 = r + shift;
   // the floor of the opening at depth d across the wall: y0 at the inner face, y0 - below at the outer face
   const floorAt = (d: number) => (below > 0 ? y0 - below * Math.min(1, Math.max(0, (sign * d - inner) / (outer - inner))) : y0);
@@ -328,8 +328,12 @@ export function castle(c: CastleSpec): Shape[] {
     out.push(...tagged(keep({ size: c.keepSize, height: c.keepHeight, material: c.material, wall: Math.min(2, Math.floor(Math.min(...c.keepSize) / 3)), hollow: true,
       roof: true, door: c.gate, doorWidth: Math.min(3, c.gateWidth), doorHeight: Math.min(4, c.gateHeight), windows: true, cren: c.cren, found: c.found }), 9));
   }
-  if (c.gates) for (const g of c.gates) out.push(doorway(hw, hd, t, g.side, g.width, g.height, 0, g.shift, g.below));
-  else if (c.gate) out.push(doorway(hw, hd, t, c.gate, c.gateWidth, c.gateHeight));
+  // a gate that leaves no lintel (within a voxel of the wall's top) would leave the merlons over it floating: it is cut
+  // open to the top of the merlon row instead, square
+  const open = (h: number) => h >= c.wallHeight - 1 - 1e-9;
+  const gh = (h: number) => (open(h) ? c.wallHeight + 2 : h);
+  if (c.gates) for (const g of c.gates) out.push(doorway(hw, hd, t, g.side, g.width, gh(g.height), 0, g.shift, g.below, open(g.height)));
+  else if (c.gate) out.push(doorway(hw, hd, t, c.gate, c.gateWidth, gh(c.gateHeight), 0, 0, 0, open(c.gateHeight)));
   return out;
 }
 

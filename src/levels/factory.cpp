@@ -12,6 +12,16 @@
 // With keepKnot a drop that misses leaves the factory at its knot instead of the stale point. A miss is a sweep that
 // reports no hit, or one whose point is not under the knot (the sweep is straight down; over a draped skin it reported
 // a hit 63 map units off, the stale point).
+//
+// Where the mines come from: MineFactoryLogicEntity::PlaceMines (0x5d05c0, a thiscall of no arguments) gathers the
+// positions of the living worms (0x5b27a0, 16 slots) and of the level's objects (0x4f5900/0x4f5910), then for each of
+// the m_nNumMinesToSpawn (+0x84, 1-10) mines picks one of them at random (the sim's random, 0x68c015), offsets it by a
+// random angle and radius, rejects spots too close to another, and makes the mine there high up with the velocity
+// (0, -0.3, 0) (GameLogicService::CreateMine 0x4f9c40): mines rain onto the worms, not round the factory (on Caldera
+// they landed 28-95 map units out, the worms' distances). With the level's launchHeight / launchRadius the hook makes
+// them itself instead: each over the factory's own position, launchHeight up and at a random spot within launchRadius
+// of it (an even spread over the disc), falling with the same velocity, two of the sim's randoms a mine so every machine
+// places them alike.
 #include "levels/factory.h"
 
 #include <windows.h>
@@ -41,7 +51,10 @@ constexpr int kNoHit = 1000;
 constexpr float kUnderKnot = 20;               // world units: a hit further from the knot in x, z is not under it
 constexpr uintptr_t kCreateMine = 0x4f9c40;    // void __thiscall GameLogicService::CreateMine(pos*, pos*, vel*)
 constexpr uintptr_t kLogicService = 0x95aa14;  // GameLogicService*
-constexpr uint32_t kPos = 0x2c, kNormal = 0x38, kExploded = 0x48, kCountdown = 0x88, kFireState = 0x8c;
+constexpr uintptr_t kPlaceMines = 0x5d05c0;   // void __thiscall MineFactoryLogicEntity::PlaceMines()
+constexpr uintptr_t kSimRandom = 0x68c015;    // uint32_t __cdecl (the sim's random, on its generator at 0x96d034)
+constexpr uint32_t kPos = 0x2c, kNormal = 0x38, kExploded = 0x48, kCountdown = 0x88, kFireState = 0x8c, kToSpawn = 0x84;
+constexpr float kWorldPerMap = 20.f;
 
 struct Field {
     bool asked = false;
@@ -62,7 +75,7 @@ struct State {
 };
 std::mutex g_mx;
 State g;
-SafetyHookInline g_hDrop;
+SafetyHookInline g_hDrop, g_hPlace;
 
 bool ReadVec(uintptr_t at, float out[3]) { return mem::SafeRead(at, out, sizeof(float) * 3); }
 
@@ -120,6 +133,45 @@ void __fastcall HkDrop(uintptr_t self, void*) {
     g.armed = keep.armed;
     g.spec = keep.spec;
     g.stem = keep.stem;
+}
+
+const char* EngineMine(const float pos[3], const float vel[3]);
+
+// PlaceMines with the level's launch: the factory's mines appear over it, within launchRadius, launchHeight up.
+void __fastcall HkPlaceMines(uintptr_t self, void*) {
+    erg::FactorySpec spec;
+    bool armed = false;
+    std::string stem;
+    {
+        std::lock_guard lk(g_mx);
+        armed = g.armed;
+        spec = g.spec;
+        stem = g.stem;
+    }
+    if (!armed || !spec.Launch()) {
+        g_hPlace.thiscall<void>(self);
+        return;
+    }
+    int32_t n = 0;
+    float at[3] = {};
+    if (!mem::SafeRead(self + kToSpawn, &n, sizeof n) || !ReadVec(self + kPos, at) || n < 1 || n > 10) {
+        g_hPlace.thiscall<void>(self);
+        return;
+    }
+    using Random = uint32_t(__cdecl*)();
+    const auto rnd = reinterpret_cast<Random>(kSimRandom);
+    const float height = static_cast<float>(spec.launchHeight.value_or(20)) * kWorldPerMap;
+    const float radius = static_cast<float>(spec.launchRadius.value_or(0)) * kWorldPerMap;
+    const float vel[3] = {0.f, -0.3f, 0.f};
+    int made = 0;
+    for (int i = 0; i < n; ++i) {
+        const float a = static_cast<float>(rnd() % 36000u) * (6.2831853f / 36000.f);
+        const float r = radius * std::sqrt(static_cast<float>(rnd() % 10000u) / 10000.f);
+        const float pos[3] = {at[0] + r * std::cos(a), at[1] + height, at[2] + r * std::sin(a)};
+        if (!EngineMine(pos, vel)) ++made;
+    }
+    LOG_INFO("[levels] %s: the mine factory fired %d of %d mines from %.0f over it, within %.0f (world units)", stem.c_str(), made, n,
+             static_cast<double>(height), static_cast<double>(radius));
 }
 
 // The match's one MineFactoryLogicEntity, or 0.
@@ -180,6 +232,13 @@ public:
             LOG_ERROR("[levels] the mine factory hook failed: level factory settings apply at level start only");
             return true;
         }
+        // PlaceMines: push ebp; mov ebp,esp; and esp,-8; push -1; push 0x7d81a8. The sim's random: push ebp; mov ebp,esp;
+        // mov ecx,0x96d034. Without them the launch settings are skipped and the game places its mines.
+        if (Expect(kPlaceMines, {0x55, 0x8b, 0xec, 0x83, 0xe4, 0xf8, 0x6a, 0xff, 0x68, 0xa8, 0x81, 0x7d, 0x00}) &&
+            Expect(kSimRandom, {0x55, 0x8b, 0xec, 0xb9, 0x34, 0xd0, 0x96, 0x00})) {
+            g_hPlace = safetyhook::create_inline(kPlaceMines, &HkPlaceMines);
+            if (!g_hPlace) LOG_WARN("[levels] the mine factory's PlaceMines hook failed: launchHeight and launchRadius are skipped");
+        } else LOG_WARN("[levels] the mine factory's PlaceMines differs from build #1077: launchHeight and launchRadius are skipped");
         simcore::LevelEngine e;
         e.mine = &EngineMine;
         e.armFactory = &EngineArmFactory;
@@ -188,6 +247,7 @@ public:
     }
     void Uninstall() override {
         simcore::SetLevelEngine(simcore::LevelEngine{});
+        g_hPlace = {};
         g_hDrop = {};
     }
 };

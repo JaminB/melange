@@ -19,6 +19,7 @@ declare module "node:fs" {
   export function readFileSync(path: string, encoding: "utf8"): string;
   export function readFileSync(path: string): Uint8Array;
   export function existsSync(path: string): boolean;
+  export function appendFileSync(path: string, data: string): void;
 }
 declare module "node:path" {
   export function join(...parts: string[]): string;

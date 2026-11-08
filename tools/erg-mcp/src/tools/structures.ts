@@ -1,8 +1,9 @@
 // Tool group "structures": voxel architecture written into the open level as one undo step each. Every tool samples a
 // shape list (lib/structures-shapes.ts) at the voxel cells it overlaps, so a structure lands in the existing frames and,
 // where it reaches outside all of them, in new terrain blocks (lib/structures-apply.ts; the shared budget of 64 blocks).
-import type { Vec3 } from "../core";
+import { cellBudget, type Vec3 } from "../core";
 import { sampleField, spansAt } from "../lib/inspect-field";
+import { standableAt, standing, surfaces } from "../lib/reach";
 import { applyPlan, dominantMaterial, type Packing } from "../lib/structures-apply";
 import {
   SIDES, arch, bridge, castle, castleSpots, crater, flatTunnel, keep, lane, laneCut, place, placePoint, scaled, tower, tunnel, wallSegment, type Plan, type Shape,
@@ -28,12 +29,18 @@ const common: Record<string, Schema> = {
   units: { type: "string", enum: ["map", "world"], description: "Unit of every position and length in this call: map (default; 1 voxel = 1 unit) or world (map x 20, as the Erg panel shows)." },
   blockScale: { type: "number", minimum: 0.5, maximum: 4, description: "Map units per voxel of the new blocks (default 1): a larger one covers the same structure with fewer of the game's 65535 cells, in coarser voxels (detail under a voxel is lost). Use place \"new\" so the whole structure is on that lattice." },
   drape: { type: "string", enum: ["skip", "sheared"], description: "Draped blocks (heightfield_drape's skin, corner offsets): skip (default) leaves them alone; sheared edits their cells where the game draws them (each column moved up by its corner offsets), so a ramp cut, tunnel or crater cuts through the skin too. Fills into a skin follow its shear, a voxel at a time." },
-  packing: { type: "string", enum: ["tiles", "parts"], description: "How new blocks are cut. tiles (default): tiles of up to 31 voxels a side, each trimmed to what it holds. parts: a block per part (each wall, tower, the keep), merged where that costs few cells, so the air between parts (a courtyard) is in no block: fewer cells, more blocks." },
+  packing: { type: "string", enum: ["tiles", "parts", "fit"], description: "How new blocks are cut. tiles (default): tiles of up to 31 voxels a side, each trimmed to what it holds. parts: a block per part (each wall, tower, the keep), merged where that costs few cells, so the air between parts (a courtyard) is in no block: fewer cells, more blocks. fit: the tiles, then the box whose halving saves the most cells halved again while blocks are left (maxBlocks): a rotated structure's diagonal walls in boxes that follow them (a castle at 45 degrees takes a fraction of the cells of tiles)." },
+  maxBlocks: { type: "integer", minimum: 1, maximum: 64, description: "Refuse a plan whose new blocks are more than this; packing fit splits up to it (default: the blocks the level has left)." },
+  maxCells: { type: "integer", minimum: 1, maximum: 65535, description: "Refuse a plan whose new blocks hold more of the game's voxel cells than this (keep some of the 65535 for the rest of the level)." },
+  costOnly: { type: "boolean", description: "Change nothing and answer only what the structure costs: its new blocks and the game's cells with each packing (tiles, parts, fit) at the call's blockScale, and at each costAt scale, and which fits the level's cells left. Cheaper to read than a dryRun." },
   costAt: { type: "array", items: { type: "number", minimum: 0.5, maximum: 4 }, minItems: 1, maxItems: 8, description: "Also plan the same structure all in new blocks (place \"new\") at each of these blockScales, changing nothing, and answer each one's blocks and the game's cells (costAt: [{blockScale, blocks, cells, fits}]), to choose a scale before building: a castle at 1.5 costs about 30 % of its cells at 1." },
+  scale: { type: "number", minimum: 0.5, maximum: 4, description: "The same as blockScale (build_castle's name for it): map units per voxel of the new blocks." },
 };
 const foundation: Schema = { type: "integer", minimum: 0, maximum: 32, description: "A whole number of the structure's voxels (of `scale`, so 2 at scale 1.5 is 3 map units) of solid filled below the base (y) so the structure reaches the ground. Default 0. A castle's fills its whole footprint (a 24 x 20 castle with foundation 4: about 2000-3000 cells); seat fills under the walls and towers only." };
 const rotation: Schema = { type: "number", description: "Yaw in degrees about the structure's centre (counter-clockwise seen from above; 0 = sides parallel to the map axes). Default 0." };
 const crenellations = (d: string): Schema => ({ type: "boolean", description: d });
+
+const CASTLE_SCALE: Schema = { type: "number", minimum: 0.5, maximum: 4, description: "Build the castle from voxels of this many map units (default 1). Lengths stay map units; the design is laid out in voxels of `scale` (walls, merlons and gates keep their rhythm in voxels) and new blocks get that scale (blockScale, which is accepted as the same setting), so it costs about 1/scale^3 of the cells. Use place \"new\". blockScale alone keeps the design in voxels of 1 map unit and only puts its new blocks on that lattice (as before); build_wall, build_tower and the other structure tools take scale as another name for their blockScale." };
 
 const SIDE_NOTE = "Sides are map directions: n = -z, s = +z, e = +x, w = -x (before the rotation).";
 
@@ -66,7 +73,16 @@ function settle(s: Session, a: { at: Vec3; ground?: "max" | "mean" | "min"; sink
     ...(a.sink ? { sink: a.sink } : {}), y: out(y), note: tops.length < (nx + 1) * (nz + 1) ? "part of the footprint has no ground under it" : undefined } };
 }
 
-interface Common { material?: number; place?: "auto" | "existing" | "new"; dryRun?: boolean; units?: "map" | "world"; blockScale?: number; packing?: Packing; drape?: "skip" | "sheared"; costAt?: number[]; }
+interface Common { material?: number; place?: "auto" | "existing" | "new"; dryRun?: boolean; units?: "map" | "world"; blockScale?: number; packing?: Packing; drape?: "skip" | "sheared"; costAt?: number[];
+  maxBlocks?: number; maxCells?: number; costOnly?: boolean; scale?: number; }
+
+/** `scale` as the other tools' name for blockScale (build_castle takes scale, build_wall and build_tower blockScale):
+ * both are accepted on every structure tool; given both, they must agree. build_castle's own scale also lays its design
+ * out in voxels of that size. */
+function blockScaleOf(a: Common): number | undefined {
+  if (a.scale !== undefined && a.blockScale !== undefined && Math.abs(a.scale - a.blockScale) > 1e-9) throw new ToolError(`scale (${a.scale}) and blockScale (${a.blockScale}) are the same setting here: give one`);
+  return a.blockScale ?? a.scale;
+}
 
 const finite = (v: number[], what: string) => { if (!v.every(Number.isFinite)) throw new ToolError(`${what} must be finite numbers`); };
 
@@ -77,16 +93,35 @@ function run(s: Session, a: Common, anchor: Vec3, structure: string, make: (k: n
   const at: Vec3 = [anchor[0] * k, anchor[1] * k, anchor[2] * k];
   const mat = a.material ?? dominantMaterial(store, at) ?? 1;
   const plan = make(k, mat, (v, d) => (v === undefined ? d : v * k));
+  const bs = blockScaleOf(a);
   // each scale's cost first, while nothing has changed
-  const costAt = a.costAt?.map((bs) => {
+  const costAt = a.costAt?.map((sc0) => {
     try {
-      const d = applyPlan(store, plan, { place: "new", dryRun: true, blockScale: bs, packing: a.packing, drape: a.drape });
-      return { blockScale: bs, blocks: d.newBlocks.length, cells: d.cells.newBlocks, fits: true };
+      const d = applyPlan(store, plan, { place: "new", dryRun: true, blockScale: sc0, packing: a.packing, drape: a.drape, maxBlocks: a.maxBlocks });
+      return { blockScale: sc0, blocks: d.newBlocks.length, cells: d.cells.newBlocks, fits: true };
     } catch (e) {
-      return { blockScale: bs, fits: false, why: e instanceof Error ? e.message : String(e) };
+      return { blockScale: sc0, fits: false, why: e instanceof Error ? e.message : String(e) };
     }
   });
-  const r = applyPlan(store, plan, { place: a.place ?? "auto", dryRun: !!a.dryRun, blockScale: a.blockScale, packing: a.packing, drape: a.drape });
+  if (a.costOnly) {
+    // every packing at the call's own place and scale: nothing changes
+    const free = cellBudget(store.scene).free;
+    const byPacking = (["tiles", "parts", "fit"] as Packing[]).map((p) => {
+      try {
+        const d = applyPlan(store, plan, { place: a.place ?? "auto", dryRun: true, blockScale: bs, packing: p, drape: a.drape, maxBlocks: a.maxBlocks });
+        return { packing: p, blocks: d.newBlocks.length, cells: d.cells.newBlocks, fits: a.maxCells === undefined || d.cells.newBlocks <= a.maxCells,
+          voxels: { added: d.voxels.added, removed: d.voxels.removed } };
+      } catch (e) {
+        return { packing: p, fits: false, why: e instanceof Error ? e.message : String(e) };
+      }
+    });
+    const ok = byPacking.filter((x) => x.fits && "cells" in x) as { packing: Packing; cells: number; blocks: number }[];
+    const cheapest = ok.sort((x, y) => x.cells - y.cells)[0];
+    return { structure, costOnly: true, blockScale: bs ?? 1, place: a.place ?? "auto", levelCellsFree: free, ...(a.maxCells !== undefined ? { maxCells: a.maxCells } : {}), byPacking,
+      ...(cheapest ? { cheapest: { packing: cheapest.packing, cells: cheapest.cells, blocks: cheapest.blocks } } : { cheapest: null }), ...(costAt ? { costAt } : {}),
+      structureInfo: plan.info, note: "nothing was changed; cells are the game's voxel cells (X x Y x Z of each new block) the structure's new blocks take, which must fit in levelCellsFree" };
+  }
+  const r = applyPlan(store, plan, { place: a.place ?? "auto", dryRun: !!a.dryRun, blockScale: bs, packing: a.packing, drape: a.drape, maxBlocks: a.maxBlocks, maxCells: a.maxCells });
   return { structure, material: mat, ...(a.material === undefined ? { materialNote: "chosen from the voxels near the structure; pass material to set it" } : {}), ...r, ...(costAt ? { costAt } : {}),
     structureInfo: plan.info, undo: r.dryRun || !r.voxels.changed ? undefined : "undo reverts the whole structure in one step; save writes it" };
 }
@@ -106,11 +141,10 @@ function spotReport(s: Session, spots: Spot[], units: "map" | "world" | undefine
   const list = spots.map((p) => {
     const out: Record<string, unknown> = { kind: p.kind, at: tidy([p.at[0] * k, p.at[1] * k, p.at[2] * k]) };
     if (dry) return out;
+    // the one standability rule (lib/reach.ts standableAt), which check_reachability's start uses too
     const check = (x: number, z: number) => {
-      const all = spansAt(gs, x, z);
-      const g = all.find((q) => q.top <= p.at[1] + 1.5 + 1e-6);
-      const blocked = !!g && all.some((q) => q.top > g.top + 1e-6 && q.bottom < g.top + 1.5);
-      return { g, blocked, ok: !!g && Math.abs(g.top - p.at[1]) <= 1.5 && !blocked };
+      const st = standableAt(gs, [x, p.at[1], z]);
+      return { g: st.top === null ? undefined : { top: st.top }, ok: st.ok, why: st.why };
     };
     let x = p.at[0], z = p.at[2], c = check(x, z);
     // the design's point can fall between the voxels of a thin or scaled wall: the nearest point within 2 map units that
@@ -123,6 +157,11 @@ function spotReport(s: Session, spots: Spot[], units: "map" | "world" | undefine
     out.standOn = c.g ? tidy([x * k, c.g.top * k, z * k]) : null;
     out.ok = c.ok;
     if (!c.ok) out.why = !c.g ? "no ground under it" : Math.abs(c.g.top - p.at[1]) > 1.5 ? `the ground is at y ${tidy([c.g.top * k, 0, 0])[0]}, not the design's` : "no headroom";
+    else {
+      // what check_reachability will read: the same rule, on its graph of one column a map unit (the default step)
+      const S = surfaces(gs, { x0: Math.floor(x) - 2, z0: Math.floor(z) - 2, x1: Math.floor(x) + 3, z1: Math.floor(z) + 3 }, 1, 1.5);
+      if (standing(S, [x, p.at[1], z], { step: 1, maxStep: 0.5, maxSlope: 45, maxDrop: 8, maxGap: 0, headroom: 1.5, water: null }, gs) < 0) { out.ok = false; out.why = "a ledge too narrow for check_reachability's walk graph"; }
+    }
     return out;
   });
   return { note: dry ? "positions from the design (dry run: not checked against the voxels)" : "standOn is the top of the voxels there; ok spots have ground within 1.5 map units of the design and 1.5 of air above (moved: shifted that far to the nearest such point). Give them to place_spawn_knots as pos.", spots: list };
@@ -176,7 +215,7 @@ export const tools: Tool[] = [
         towerHeight: { type: "number", minimum: 2, description: "Default wallHeight + 3." },
         keep: { type: "boolean", description: "Build a keep in the courtyard. Default true when it fits." },
         keepSize: vec2("Keep outer size [x, z]. Default a third of the castle, at least 8."),
-        keepHeight: { type: "number", minimum: 3, description: "Default wallHeight + 4." },
+        keepHeight: { type: "number", minimum: 0, description: "Default wallHeight + 4; at least 3 when a keep is built (ignored with keep: false)." },
         gate: sideSchema("Side of the gate, or none. Default s."),
         gateWidth: { type: "number", minimum: 2, description: "Default 4." },
         gateHeight: { type: "number", minimum: 2, description: "Default 5 (round-topped from 3 wide)." },
@@ -188,8 +227,7 @@ export const tools: Tool[] = [
         seat: { type: "boolean", description: "Seat it on the ground: fill under the walls, towers and keep (not the courtyard) from the ground up to the floor, column by column, where the ground is lower than the floor (down to seatDepth). The cheap replacement for a whole-footprint foundation on a slope." },
         seatDepth: { type: "number", minimum: 0.5, description: "The deepest seat fill under the floor (units; default 8 map units): columns with no ground that close are left open." },
         crenellations: crenellations("Merlons on the walls, towers and keep. Default true."),
-        scale: { type: "number", minimum: 0.5, maximum: 4, description: "Build the castle from voxels of this many map units (default 1). Lengths stay map units; the design is laid out in voxels of `scale` (walls, merlons and gates keep their rhythm in voxels) and new blocks get that scale (blockScale), so it costs about 1/scale^3 of the cells. Use place \"new\"." },
-        foundation, rotation, ...groundProps, ...common,
+        foundation, rotation, ...groundProps, ...common, scale: CASTLE_SCALE,
       },
     },
     handler(s, a0: Common & { at: Vec3; size?: [number, number]; wallHeight?: number; wallThickness?: number; towerShape?: "round" | "square"; towerRadius?: number;
@@ -202,18 +240,23 @@ export const tools: Tool[] = [
       // scale v: the design is made in voxels of v map units (every length divided by v) and scaled back up once planned
       const v = a.scale ?? 1;
       let spots: Spot[] = [];
-      const res = run(s, { ...a, blockScale: a.blockScale ?? (v !== 1 ? v : undefined) }, a.at, "castle", (k0, mat) => {
+      const res = run(s, { ...a, scale: undefined, blockScale: a.blockScale ?? (v !== 1 ? v : undefined) }, a.at, "castle", (k0, mat) => {
         const k = k0 / v, U = (x: number | undefined, d: number) => (x === undefined ? d : x * k);
+        // a design length (voxels of v) in the call's units, for the messages
+        const un = a.units === "world" ? "world" : "map", cu = (d: number) => `${tidy([(d * v) / k0, 0, 0])[0]} ${un} units`;
         const size: [number, number] = a.size ? [a.size[0] * k, a.size[1] * k] : [30 / v, 30 / v];
         const wh = U(a.wallHeight, 6 / v), t = U(a.wallThickness, 3 / v);
         const tr = a.towerRadius === undefined ? Math.max(3 / v, t + 1) : a.towerRadius * k, notes: string[] = [];
-        if (size[0] < 2 * tr + 4 || size[1] < 2 * tr + 4) throw new ToolError(`the castle is too small for its towers: each side needs at least ${2 * tr + 4} (2 x tower radius + 4)`);
-        if (size[0] <= 2 * t + 4 || size[1] <= 2 * t + 4) throw new ToolError("the walls leave no courtyard: make the castle bigger or the walls thinner");
+        if (size[0] < 2 * tr + 4 || size[1] < 2 * tr + 4)
+          throw new ToolError(`the castle is too small for its towers: each side needs at least ${cu(2 * tr + 4)} (2 x tower radius + 4 voxels${v !== 1 ? ` of ${v} map units` : ""}); size is ${cu(size[0])} x ${cu(size[1])}`);
+        if (size[0] <= 2 * t + 4 || size[1] <= 2 * t + 4)
+          throw new ToolError(`the walls leave no courtyard: each side must be over ${cu(2 * t + 4)} (2 x wallThickness + 4 voxels); size is ${cu(size[0])} x ${cu(size[1])}: make the castle bigger or the walls thinner`);
         let keepSize: [number, number] | null = null;
         if (a.keep !== false) {
+          if (a.keepHeight !== undefined && a.keepHeight * k < 3 / v - 1e-9) throw new ToolError(`keepHeight is at least ${cu(3 / v)} when a keep is built (keep: false builds none)`);
           keepSize = a.keepSize ? [a.keepSize[0] * k, a.keepSize[1] * k] : [Math.max(8 / v, Math.round(size[0] / 3)), Math.max(8 / v, Math.round(size[1] / 3))];
           if (keepSize[0] > size[0] - 2 * t - 4 || keepSize[1] > size[1] - 2 * t - 4) {
-            if (a.keep === true || a.keepSize) throw new ToolError(`the keep does not fit in the courtyard (${size[0] - 2 * t - 4} x ${size[1] - 2 * t - 4} free)`);
+            if (a.keep === true || a.keepSize) throw new ToolError(`the keep (${cu(keepSize[0])} x ${cu(keepSize[1])}) does not fit in the courtyard (${cu(size[0] - 2 * t - 4)} x ${cu(size[1] - 2 * t - 4)} free)`);
             notes.push("no keep: the courtyard is too small for one");
             keepSize = null;
           }
@@ -245,6 +288,10 @@ export const tools: Tool[] = [
             return { side: g.side, width: w, height: h, shift, below };
           }) : undefined;
         if (gateList) (spec as typeof spec & { gates?: GateSpec[] }).gates = gateList;
+        // a gate as high as the wall (or leaving a lintel under a voxel) would leave the merlons over it floating: the
+        // castle cuts them (castle(): the carve is opened to the top of the merlon row) and says so
+        for (const g of gateList ?? (gate ? [{ side: gate, height: spec.gateHeight }] : []))
+          if (g.height >= wh - 1 + 1e-9) notes.push(`gate ${g.side}: ${cu(g.height)} high in a ${cu(wh)} wall leaves no lintel, so the wall and its merlons over it are cut open to the top`);
         const shapes = place(scaled(castle(spec), v), at, a.rotation ?? 0);
         if (a.seat) {
           const seat = seatShape(gs, shapes, at[1], v, a.seatDepth === undefined ? 8 : a.seatDepth * k0, mat);

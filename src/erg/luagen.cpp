@@ -229,12 +229,15 @@ std::string Chunk(const Scene& s) {
 
 
 namespace {
-// "-- minefactory: activation=15 inactiveTurns=3 keepKnot=1": the set fields, in this order.
+// "-- minefactory: activation=15 inactiveTurns=3 keepKnot=1 launchHeight=20 launchRadius=12": the set fields, in
+// this order.
 std::string FactoryTweakLine(const FactorySpec& f) {
     std::string l(kFactoryTweak);
     if (f.activation) l += " activation=" + std::to_string(*f.activation);
     if (f.inactiveTurns) l += " inactiveTurns=" + std::to_string(*f.inactiveTurns);
     if (f.keepKnot) l += " keepKnot=1";
+    if (f.launchHeight) l += " launchHeight=" + std::to_string(*f.launchHeight);
+    if (f.launchRadius) l += " launchRadius=" + std::to_string(*f.launchRadius);
     return l + "\n";
 }
 
@@ -257,6 +260,8 @@ bool ParseFactoryTweak(std::string_view text, FactorySpec* f) {
         if (key == "activation") f->activation = v;
         else if (key == "inactiveTurns") f->inactiveTurns = v;
         else if (key == "keepKnot" && v == 1) f->keepKnot = true;
+        else if (key == "launchHeight" && v >= 1) f->launchHeight = v;
+        else if (key == "launchRadius") f->launchRadius = v;
         else return false;
         rest = sp == std::string_view::npos ? std::string_view{} : rest.substr(sp);
     }
@@ -276,7 +281,7 @@ std::string Emit(std::string_view stem, const ChunkSpec& c, bool deferred) {
     }
     if (factories > 1) return {};
     std::string out = Header(stem);
-    if (factory && (factory->Tweaks() || factory->keepKnot)) out += FactoryTweakLine(*factory);
+    if (factory && (factory->Tweaks() || factory->keepKnot || factory->Launch())) out += FactoryTweakLine(*factory);
     if (c.water) out += std::string(kWater) + Num(*c.water) + ")\n";
     if (c.knots || c.placeObjects || !c.objects.empty()) {
         if (crates) out += kCrateFn;

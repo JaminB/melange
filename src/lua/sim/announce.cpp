@@ -69,7 +69,7 @@ int __cdecl LAnnounce(l5::State* L) {
         l.until = l.shown + static_cast<ULONGLONG>(seconds * 1000.f);
     }
     const char* mod = melange::simbridge::CurrentMod();
-    melange::jlog::Rec("sim", melange::jlog::Level::Info, "announce").Str("mod", mod ? mod : "?").Str("text", std::string_view(text ? text : "", n));
+    melange::jlog::Rec("sim", melange::jlog::Level::Info, "announce").Str("mod", mod ? mod : "?").Str("text", std::string_view(text ? text : "", n)).Float("seconds", seconds);
     a.pushboolean(L, 1);
     return 1;
 }

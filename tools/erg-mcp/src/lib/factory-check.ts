@@ -11,7 +11,10 @@
 // not on pads or a 6 x 4 x 6 block inside the crater (within about 20 of the centre, 5 tries), for reasons not found.
 // Hence: an error for a draped skin or no land in reach, a warning for water over the landing, and always a Test with
 // game_mines {alive: true} to confirm. A factory with keepKnot (Melange 0.13+, levels/factory.cpp) stays at its knot when
-// the drop hits nothing, so for it those two are warnings and the water is checked against the knot. Map units throughout.
+// the drop hits nothing, so for it those two are warnings and the water is checked against the knot. In the Caldera
+// iteration-7 Test (2026-11-08) a keepKnot factory whose knot sat on the crater floor's top stood exactly on its knot and
+// fired, so a keepKnot knot on a voxel top (within ON_SURFACE) gets no advisory: whatever the sweep does, it stays there.
+// Map units throughout.
 import type { EditorStore } from "../core";
 import { markers, spansAt, waterMap } from "./inspect-field";
 import { grids } from "./voxel";
@@ -20,6 +23,8 @@ import { grids } from "./voxel";
 export const FACTORY_DROP = 50;
 /** Water this far over the point it settled on sets it off (10 world units). */
 export const FACTORY_WATER = 0.5;
+/** A keepKnot knot this close over the top of the ground under it sits on it (place_object snap "surface" puts it there). */
+export const ON_SURFACE = 0.5;
 
 export interface FactoryCheck {
   knot: [number, number, number];
@@ -53,12 +58,14 @@ export function checkFactory(store: EditorStore, len: (map: number) => string, w
   }
   const landY = Math.min(sp.top, y), g = gs.find((q) => q.id === sp.frame), draped = !!g?.frame.corners;
   out.lands = { y: landY, frame: sp.frame, draped };
+  // keepKnot with the knot on the ground's top: the factory stands on its knot whether or not the sweep hits
+  const onSurface = keep && y - landY <= ON_SURFACE + 1e-6;
   if (sp.top > y + 1e-6) out.warnings.push(`the mine factory's knot is inside solid ground (its top is ${len(sp.top - y)} higher): put it on the surface`);
   if (draped && !keep) out.problems.push("the mine factory's knot is over a draped skin (heightfield_drape's corner offsets): the game's drop never landed on one in the Tests (it settles at a stale point, here under the sea, and explodes at load): set keepKnot (the factory then stays at its knot when its drop misses; place it with snap: \"surface\" so the knot is on the skin), or put it on an undraped block (a castle, keep or add_block pad), and Test with game_mines {alive: true}");
-  if (draped && keep) out.warnings.push("the mine factory's knot is over a draped skin, where the game's drop has missed: with keepKnot it stays at its knot, so keep the knot on the skin's surface (snap: \"surface\")");
+  if (draped && keep && !onSurface) out.warnings.push("the mine factory's knot is over a draped skin, where the game's drop has missed: with keepKnot it stays at its knot, so keep the knot on the skin's surface (snap: \"surface\")");
   if (Number.isFinite(top) && top > landY + FACTORY_WATER)
     out.problems.push(`the water (${len(top)}${waterTop !== undefined && waterTop !== null && waterTop >= (water ?? -Infinity) ? ", the script's highest" : ""}) gets more than ${len(FACTORY_WATER)} over the ground the factory lands on (${len(landY)}): it explodes${water !== null && water > landY + FACTORY_WATER ? " at load" : " when the water gets there"}`);
-  if (!draped) out.warnings.push(`the factory's drop is the game's own sweep, and on Caldera it also missed undraped blocks inside the crater near the level's centre${keep ? " (keepKnot keeps it at its knot then)" : ""}: Test and call game_mines {alive: true} (it answers whether the factory exists and where it settled)`);
+  if (!draped && !onSurface) out.warnings.push(`the factory's drop is the game's own sweep, and on Caldera it also missed undraped blocks inside the crater near the level's centre${keep ? " (keepKnot keeps it at its knot then)" : ""}: Test and call game_mines {alive: true} (it answers whether the factory exists and where it settled)`);
   return out;
 }
 

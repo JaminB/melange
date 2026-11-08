@@ -99,8 +99,11 @@ How it behaves, from the game's code:
   (erg-mcp checks this, see [erg-mcp.md](erg-mcp.md)).
 - **Water destroys it.** When the water level rises more than 10 world units above where it stands it explodes
   (`WXP_Explosion_MineMachine`) and is gone for the match.
-- There is no launch speed or spread to set: the game's data still names `MineVelocityX/Y/Z`, but they are obsolete
-  and unread.
+- **Where its mines go.** The game rains them onto the level's living worms and objects: each fire picks one of them at
+  random per mine, offsets it by a random angle and radius and drops the mine from high over it (0, -0.3, 0), so on
+  Caldera they landed 28-95 map units from a crater factory, at the worms. The game's data still names
+  `MineVelocityX/Y/Z`, but they are obsolete and unread. Since Melange 0.13 `launchHeight` and `launchRadius` put them
+  round the factory instead (below).
 
 The settings, all optional (unset keeps the game's value):
 
@@ -110,6 +113,8 @@ The settings, all optional (unset keeps the game's value):
 | Idle turns (`inactiveTurns`) | 7 | Turn starts it waits after it is placed and after each fire. 0 checks every turn |
 | Scheme's start mines (`schemeMines`) | on | Off: the scheme's 15 random mines are not placed (its 10 oil drums still are, if the scheme has them), so mines come from the factory and the map's own placed mines only |
 | Stay at its knot (`keepKnot`, erg-mcp only) | off | On: when the factory's drop from its knot misses (no land under it, or a hit that is not under the knot, as over a draped skin), it stays at its knot instead of the stale point the game would leave it at (Melange 0.13+) |
+| Launch height (`launchHeight`, erg-mcp only) | unset | 1-255 map units: each mine of a fire appears this high over the factory and falls from there (20 when only the radius is set), instead of over a random worm or object (Melange 0.13+) |
+| Launch radius (`launchRadius`, erg-mcp only) | unset | 0-255 map units: the mines appear at random spots within this radius round the factory (an even spread over the disc), so they land round it: on a volcano, on the cone round the crater (Melange 0.13+). Tried on 2026-11-08 (Multi.DinerMight, height 25, radius 8): four fires of 10, 7, 2 and 7 mines, the mines at rest 5.7-14.4 map units from the factory |
 
 The target and the idle turns are the game's shared `kMineFactoryData`: Melange writes them when the map's match is
 set up and puts the game's values back when it ends, so no other map (and no other player's match) sees them. They
@@ -226,7 +231,7 @@ end)
 | `wum.level.crate(knot [, opts])` | A crate at a knot; `opts`: `kind` (`weapon`, `health`, `utility`), `contents`, `count`, `amount`, `hitpoints`, `parachute` |
 | `wum.level.mine(pos [, vel])` | A mine at `pos` (`{x, y, z}` or `{x = .., y = .., z = ..}`, world units), moving at `vel` (default `{0, -0.3, 0}`, the factory's own), made by the game's own mine maker as the factory's mines are. `true`, or `nil` and a reason (`before the first turn`, `unavailable` on a game Melange does not know) |
 | `wum.level.fireFactory([{now = true}])` | The map's mine factory fires at the next turn start (its idle countdown is set to 0), when fewer mines than its target are in the level; `now` sends `GameLogic.StartMineFactory` at once, so it fires in this tick. `nil` and a reason when there is no factory, it has exploded or it is firing |
-| `wum.events.on("sim.turnStarted", fn)` | `fn(name, turn, round)` at the first tick of each turn, on every machine at the same tick |
+| `wum.events.on("sim.turnStarted", fn)` | `fn(name, turn, round)` at the first tick of each turn, on every machine at the same tick. `turn` counts from 1, the match's n-th turn start: the same number as `wum.game.turn().index`, erg-mcp's `game_state` turn and `check_flood`'s game turns. In a Quick Game of two teams of four, turn 1 is the human team's WORM0, then WORM4, WORM1, WORM5, ... (the teams alternate, each moves its worms in turn) |
 | `wum.sim.turn()`, `wum.sim.round()` | Turns started in this match, and the round: it goes up when a team starts a turn it already had in the current round, so a team that is wiped out only shortens the round. Both 0 before the first turn |
 | `wum.sim.waterSchedule{startTurn, every, step, cap, from, units}` | Raises `Water.Level` at turn starts (see below) |
 | `wum.sim.announce(text [, seconds])` | Shows `text` (at most 160 bytes of UTF-8) centred near the top of every player's screen for `seconds` (0.5 to 15, default 4); up to three at once, the oldest replaced. Draws only: the match, Wormsign and replays are untouched, so it is safe in deterministic code. Detect it with `if wum.sim.announce then ... end` |

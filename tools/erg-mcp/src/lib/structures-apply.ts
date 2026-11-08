@@ -2,7 +2,7 @@
 // are edited with the panel's SculptStroke command, and what falls outside every frame goes into new terrain blocks
 // (AddFrame, the panel's own block command) under the Scene frame. Edits go through the same patch the panel saves.
 import {
-  AddFrame, Group, LIMITS, SculptStroke, cellBudget, carved, cornerOffset, filled, isSolid, material, painted, sceneFrame, validNewFrameScale, voxelRuns,
+  AddFrame, Group, LIMITS, SculptStroke, cellBudget, type Command, carved, cornerOffset, filled, isSolid, material, painted, sceneFrame, validNewFrameScale, voxelRuns,
   type EditorStore, type Frame, type Vec3,
 } from "../core";
 import { ToolError } from "../registry";
@@ -10,14 +10,18 @@ import { PATCH_BUDGET, boxToWorld, grids, limitProblems, tidy, usage, type Grid 
 import { planBounds, type Plan, type Shape } from "./structures-shapes";
 
 export type Place = "auto" | "existing" | "new";
-/** How new blocks are cut: tiles (default) of at most 31 cells a side, each trimmed to what it holds; or parts: a block
+/** How new blocks are cut: tiles (default) of at most 31 cells a side, each trimmed to what it holds; parts: a block
  * per part of the structure (a wall, a tower, the keep), merged where that costs few cells, so the air between parts (a
- * courtyard) is in no block. */
-export type Packing = "tiles" | "parts";
+ * courtyard) is in no block; or fit: the tiles, then the box whose halving saves the most cells halved again and again
+ * while blocks are left (maxBlocks) and a halving saves at least a twentieth of its box: a rotated castle's diagonal walls
+ * in boxes that follow them instead of a few large boxes of air. */
+export type Packing = "tiles" | "parts" | "fit";
 
 /** drape: "skip" (default) leaves draped blocks (corner offsets) alone; "sheared" edits them where the game draws their
  * cells (each column moved up by its bilinear corner offset), so a ramp or tunnel cut runs through a skin. */
-export interface ApplyOptions { place: Place; dryRun: boolean; blockScale?: number; packing?: Packing; drape?: "skip" | "sheared"; }
+export interface ApplyOptions { place: Place; dryRun: boolean; blockScale?: number; packing?: Packing; drape?: "skip" | "sheared"; maxBlocks?: number; maxCells?: number;
+  /** Commands of the same undo step, applied first (sculpt_road's re-graded skin blocks). */
+  extra?: Command[]; }
 
 /** The most cells a structure may sample (existing frames plus the block lattice). */
 export const MAX_CELLS = 6_000_000;
@@ -179,6 +183,68 @@ function partBoxes(cells: Uint8Array, parts: Int32Array, dim: Vec3): PartBox[] {
   return boxes;
 }
 
+/** packing "fit": the 31-a-side tiles trimmed to their cells, then, while there are fewer than `cap` boxes, the box and
+ * cut whose two trimmed halves save the most cells is split, as long as that saves at least a twentieth of the box (and
+ * 8 cells). A halving is searched along each axis at every cut, from each slice's own box of cells (prefix and suffix
+ * unions), so it costs the box's volume per box, not per cut. Blocks the runs limit splits later are not counted. */
+export function fitBoxes(cells: Uint8Array, dim: Vec3, cap: number): { lo: Vec3; hi: Vec3 }[] {
+  const side = LIMITS.newFrameSide, idx = (i: number, j: number, k: number) => (k * dim[0] + i) * dim[1] + j;
+  const trim = (a: Vec3, b: Vec3): { lo: Vec3; hi: Vec3 } | null => {
+    const tl: Vec3 = [Infinity, Infinity, Infinity], th: Vec3 = [-Infinity, -Infinity, -Infinity];
+    for (let k = a[2]; k <= b[2]; k++) for (let i = a[0]; i <= b[0]; i++) for (let j = a[1]; j <= b[1]; j++) {
+      if (!cells[idx(i, j, k)]) continue;
+      const c = [i, j, k];
+      for (let q = 0; q < 3; q++) { tl[q] = Math.min(tl[q], c[q]); th[q] = Math.max(th[q], c[q]); }
+    }
+    return tl[0] === Infinity ? null : { lo: tl, hi: th };
+  };
+  type Box = { lo: Vec3; hi: Vec3; cut?: { save: number; a: { lo: Vec3; hi: Vec3 }; b: { lo: Vec3; hi: Vec3 } } | null };
+  // the best halving of a box: per axis, each slice's box of cells, then every cut's two unions
+  const bestCut = (bx: Box) => {
+    let best: Box["cut"] = null;
+    const vol = boxCells(bx);
+    for (let ax = 0; ax < 3; ax++) {
+      const n = bx.hi[ax] - bx.lo[ax] + 1;
+      if (n < 2) continue;
+      const sl: ({ lo: Vec3; hi: Vec3 } | null)[] = [];
+      for (let s = 0; s < n; s++) {
+        const a: Vec3 = [...bx.lo] as Vec3, b: Vec3 = [...bx.hi] as Vec3;
+        a[ax] = b[ax] = bx.lo[ax] + s;
+        sl.push(trim(a, b));
+      }
+      const join = (p: { lo: Vec3; hi: Vec3 } | null, q: { lo: Vec3; hi: Vec3 } | null) => (!p ? q : !q ? p
+        : { lo: [0, 1, 2].map((a) => Math.min(p.lo[a], q.lo[a])) as Vec3, hi: [0, 1, 2].map((a) => Math.max(p.hi[a], q.hi[a])) as Vec3 });
+      const pre: ({ lo: Vec3; hi: Vec3 } | null)[] = [], suf: ({ lo: Vec3; hi: Vec3 } | null)[] = new Array(n).fill(null);
+      for (let s = 0; s < n; s++) pre.push(join(s ? pre[s - 1] : null, sl[s]));
+      for (let s = n - 1; s >= 0; s--) suf[s] = join(s < n - 1 ? suf[s + 1] : null, sl[s]);
+      for (let c = 1; c < n; c++) {
+        const a = pre[c - 1], b = suf[c];
+        if (!a || !b) continue;
+        const save = vol - boxCells(a) - boxCells(b);
+        if (!best || save > best.save) best = { save, a, b };
+      }
+    }
+    return best;
+  };
+  let boxes: Box[] = [];
+  for (let cz = 0; cz < dim[2]; cz += side) for (let cx = 0; cx < dim[0]; cx += side) for (let cy = 0; cy < dim[1]; cy += side) {
+    const t = trim([cx, cy, cz], [Math.min(dim[0], cx + side) - 1, Math.min(dim[1], cy + side) - 1, Math.min(dim[2], cz + side) - 1]);
+    if (t) boxes.push(t);
+  }
+  while (boxes.length < cap) {
+    let pick = -1;
+    for (let u = 0; u < boxes.length; u++) {
+      if (boxes[u].cut === undefined) boxes[u].cut = bestCut(boxes[u]);
+      const c = boxes[u].cut;
+      if (c && c.save >= Math.max(8, boxCells(boxes[u]) / 20) && (pick < 0 || c.save > boxes[pick].cut!.save)) pick = u;
+    }
+    if (pick < 0) break;
+    const c = boxes[pick].cut!;
+    boxes = [...boxes.slice(0, pick), ...boxes.slice(pick + 1), { lo: c.a.lo, hi: c.a.hi }, { lo: c.b.lo, hi: c.b.hi }];
+  }
+  return boxes.map((b) => ({ lo: b.lo, hi: b.hi }));
+}
+
 /** Writes the plan into the open project (or only counts it, with dryRun). */
 
 export function applyPlan(store: EditorStore, plan: Plan, opt: ApplyOptions): StructureResult {
@@ -263,7 +329,11 @@ export function applyPlan(store: EditorStore, plan: Plan, opt: ApplyOptions): St
       };
       const side = LIMITS.newFrameSide;
       const idx = (i: number, j: number, k: number) => (k * dim[0] + i) * dim[1] + j;
-      if (!parts) {
+      if (opt.packing === "fit") {
+        const at = (i: number, j: number, k: number) => cells[idx(i, j, k)];
+        const freeBlocks = LIMITS.newFrames - store.scene.frames.filter((f) => f.new).length;
+        for (const b of fitBoxes(cells, dim, Math.max(1, Math.min(freeBlocks, opt.maxBlocks ?? freeBlocks)))) makeBlocks(at, b.lo, b.hi, ids, store, scene.id, blocks);
+      } else if (!parts) {
         const at = (i: number, j: number, k: number) => cells[idx(i, j, k)];
         for (let cz = 0; cz < dim[2]; cz += side) for (let cx = 0; cx < dim[0]; cx += side) for (let cy = 0; cy < dim[1]; cy += side) {
           makeBlocks(at, [cx, cy, cz], [Math.min(dim[0], cx + side) - 1, Math.min(dim[1], cy + side) - 1, Math.min(dim[2], cz + side) - 1], ids, store, scene.id, blocks);
@@ -287,7 +357,11 @@ export function applyPlan(store: EditorStore, plan: Plan, opt: ApplyOptions): St
   }
   const free = LIMITS.newFrames - store.scene.frames.filter((f) => f.new).length;
   if (blocks.length > free) throw new ToolError(`the structure needs ${blocks.length} new blocks but the level has room for ${free} (at most ${LIMITS.newFrames}); use place "existing" or a smaller structure`);
+  if (opt.maxBlocks !== undefined && blocks.length > opt.maxBlocks)
+    throw new ToolError(`the structure needs ${blocks.length} new blocks, over maxBlocks ${opt.maxBlocks}${opt.packing === "fit" ? "" : " (packing \"fit\" splits within maxBlocks)"}`);
   const cells = cellBudget(store.scene), blockCells = blocks.reduce((n, b) => n + b.frame.size[0] * b.frame.size[1] * b.frame.size[2], 0);
+  if (opt.maxCells !== undefined && blockCells > opt.maxCells)
+    throw new ToolError(`the structure's new blocks hold ${blockCells} of the game's voxel cells, over maxCells ${opt.maxCells}: a larger blockScale or scale, packing "parts" or "fit", or a smaller structure (costOnly compares them)`);
   if (blockCells > cells.free)
     throw new ToolError(`the structure's new blocks hold ${blockCells} voxel cells but the level has ${cells.free} of the game's ${cells.max} left ` +
       `(its voxel frames hold ${cells.used}); build it inside existing frames (place "existing"), make it smaller, or remove blocks`);
@@ -335,11 +409,12 @@ export function applyPlan(store: EditorStore, plan: Plan, opt: ApplyOptions): St
     u.voxelCells = { ...u.voxelCells, used: u.voxelCells.used + blockCells, free: u.voxelCells.free - blockCells };
     return result(u);
   }
-  if (!stroke.size && !blocks.length) throw new ToolError(`nothing was built: ${result(usage(store)).notes.join('; ')}`);
+  if (!stroke.size && !blocks.length && !opt.extra?.length) throw new ToolError(`nothing was built: ${result(usage(store)).notes.join('; ')}`);
 
   // 4. apply as one undo step; take it back if it breaks a limit
   const before = limitProblems(store).length;
-  const cmds = [
+  const cmds: Command[] = [
+    ...(opt.extra ?? []),
     ...blocks.map((b) => new AddFrame(store.voxels, b.frame, b.words)),
     ...(stroke.size ? [new SculptStroke(plan.label, --strokeId, store.voxels, stroke, () => {})] : []),
   ];

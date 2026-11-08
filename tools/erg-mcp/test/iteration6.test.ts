@@ -67,7 +67,9 @@ test("the mine factory: keepKnot makes a skin a warning, snap puts the knot on t
   assert.deepEqual(set.factory, { keepKnot: true, activation: 16, inactiveTurns: 0 });
   const c = checkFactory(store, (v) => `${v} map`)!;
   assert.deepEqual(c.problems, [], JSON.stringify(c.problems));
-  assert.ok(c.warnings.some((w) => /keepKnot it stays at its knot/.test(w)));
+  // the knot sits on the skin's top: with keepKnot the factory stands there whatever its drop does, so no advisory
+  // (iteration 7: one on the crater floor stood exactly on its knot and fired)
+  assert.deepEqual(c.warnings, [], JSON.stringify(c.warnings));
   // the game's default (false) is dropped again
   assert.deepEqual((await call(s, "set_mine_factory", { keepKnot: false })).factory, { activation: 16, inactiveTurns: 0 });
   await assert.rejects(() => call(s, "place_object", { type: "crate", units: "map", xz: [560, 0], snap: "surface" }), /snap "surface" takes pos/);
@@ -153,7 +155,9 @@ test("unknown arguments name the one meant", () => {
   assert.match(unknownHint("hieght", ["radius", "blockScale", "height"]), /did you mean height/);
   assert.match(unknownHint("zzz", ["a", "b"]), /the arguments are a, b/);
   const t = structureTools.find((x) => x.name === "build_tower")!;
-  assert.match(validate(t.inputSchema, { at: [0, 0, 0], radius: 3, height: 5, scale: 1.5 })!, /scale: is not a known argument \(did you mean blockScale\?\)/);
+  assert.match(validate(t.inputSchema, { at: [0, 0, 0], radius: 3, height: 5, blockScal: 1.5 })!, /blockScal: is not a known argument \(did you mean blockScale\?\)/);
+  // build_tower takes build_castle's name for blockScale too (iteration 7)
+  assert.equal(validate(t.inputSchema, { at: [0, 0, 0], radius: 3, height: 5, scale: 1.5 }), null);
 });
 
 test("structures: the answer counts the new blocks' cells, and costAt plans the same structure at other block scales", async () => {

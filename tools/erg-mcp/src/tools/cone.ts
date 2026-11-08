@@ -3,7 +3,7 @@
 // crater can be cut at the top, and by default the surface is draped (heightfield_drape's corner offsets) so the flanks
 // are slopes instead of voxel stairs. The cone is an expression of the field (src/lib/cone.ts) handed to the planners.
 import { coneExpr, type ConeArgs } from "../lib/cone";
-import { applyDrape, planDrape } from "../lib/heightfield-drape";
+import { applyDrape, planDrape, type SteepMaterial } from "../lib/heightfield-drape";
 import { apply, planFit, type FieldArgs } from "../lib/heightfield-plan";
 import { usage } from "../lib/voxel";
 import { ToolError, type Schema, type Tool } from "../registry";
@@ -34,6 +34,8 @@ const schema: Schema & { type: "object" } = {
     core: { type: "boolean", description: "smooth: fill under the skin (default true)." },
     skirtTo: { type: "number", description: "smooth: as heightfield_drape's skirtTo (the ground under the skin reaches down to this level y)." },
     skirtTop: { type: "number", description: "smooth: as heightfield_drape's skirtTop." },
+    steepMaterial: { type: "object", additionalProperties: false, required: ["material"], description: "smooth: as heightfield_drape's steepMaterial (cliffs at least minSlope steep, default 50 degrees, in this material).",
+      properties: { material: { type: "integer", minimum: 0, maximum: 63 }, minSlope: { type: "number", minimum: 1, maximum: 89 }, feather: { type: "number", minimum: 0, maximum: 40 } } },
     dryRun: { type: "boolean", description: "Plan and report only." },
   },
 };
@@ -43,7 +45,7 @@ export const tools: Tool[] = [
     name: "sculpt_cone",
     description: "An organic cone (a volcano, a hill, a spire) standing on `floor` at `at`: a flank `profile` (concave, linear, convex, gaussian or [[t, h]] points), an outline that wanders by angle (angleNoise), roughness (surfaceNoise), radial gullies and a summit crater. smooth (default) drapes it so the flanks are real slopes in the game, not voxel stairs; smooth: false builds plain columns. Built by heightfield_drape or heightfield_region, which take its voxelSize, materials, maxBlocks, maxCells and the rest; the answer is theirs plus the expression used (to reuse in heightfield_* with the same centre). One undo step.",
     inputSchema: schema,
-    handler(s, a: ConeArgs & FieldArgs & { smooth?: boolean; thickness?: number; core?: boolean; skirtTo?: number; skirtTop?: number; dryRun?: boolean }) {
+    handler(s, a: ConeArgs & FieldArgs & { smooth?: boolean; thickness?: number; core?: boolean; skirtTo?: number; skirtTop?: number; steepMaterial?: SteepMaterial; dryRun?: boolean }) {
       const store = s.store;
       const { expr, half } = coneExpr(a);
       const args: FieldArgs = {
@@ -51,12 +53,12 @@ export const tools: Tool[] = [
         min: [a.at[0] - half, a.at[1] - half], max: [a.at[0] + half, a.at[1] + half], floor: a.floor, centre: a.at, expr,
       };
       const smooth = a.smooth ?? true;
-      if (!smooth && (a.thickness !== undefined || a.core !== undefined || a.skirtTo !== undefined || a.skirtTop !== undefined)) throw new ToolError("thickness, core and the skirt are for smooth: true");
+      if (!smooth && (a.thickness !== undefined || a.core !== undefined || a.skirtTo !== undefined || a.skirtTop !== undefined || a.steepMaterial !== undefined)) throw new ToolError("thickness, core, the skirt and steepMaterial are for smooth: true (terraces: a materials rule with minSlope)");
       if (smooth && a.fitBudget) throw new ToolError("fitBudget is for smooth: false (a drape packs its skin and core itself)");
       const cone = { expr, rectangle: { min: args.min, max: args.max }, centre: a.at, smooth };
       const u = () => { const x = usage(store); return { newFrames: x.newFrames, voxelCells: x.voxelCells, patchBytes: x.patchBytes, runsPerFrame: x.runsPerFrame }; };
       if (smooth) {
-        const p = planDrape(store, { ...args, thickness: a.thickness, core: a.core, skirtTo: a.skirtTo, skirtTop: a.skirtTop });
+        const p = planDrape(store, { ...args, thickness: a.thickness, core: a.core, skirtTo: a.skirtTo, skirtTop: a.skirtTop, steepMaterial: a.steepMaterial });
         if (a.dryRun) return { cone, ...p.report, applied: false };
         const r = applyDrape(store, p);
         return { cone, ...p.report, applied: true, added: r.blocks, limits: u(), undo: "undo takes the whole cone out", next: "save" };

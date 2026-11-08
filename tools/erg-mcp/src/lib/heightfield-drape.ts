@@ -9,7 +9,7 @@
 // Under the skin the core (optional, default on) is the usual stepped field cut down to floor(lowest corner - 0.25), so
 // its steps stay inside the skin; it is planned and packed by heightfield-plan (its cells, blocks and frames as there).
 // The skin's corner heights are the mean of the field's heights of the columns round each corner.
-import { AddFrame, Group, LIMITS, blockFrames, cellBudget, type Command, type EditorStore, type Frame, type Vec3 } from "../core";
+import { AddFrame, Group, LIMITS, blockFrames, cellBudget, filled, type Command, type EditorStore, type Frame, type Vec3 } from "../core";
 import { ToolError } from "../registry";
 import { apply, plan, sampleField, SIDE, type Field, type FieldArgs, type Plan } from "./heightfield-plan";
 import { WORLD_PER_MAP, tidy } from "./voxel";
@@ -19,7 +19,17 @@ export interface DrapeArgs extends FieldArgs {
   core?: boolean;              // fill under the skin with stepped blocks (default true)
   skirtTo?: number;            // level y (units): the core reaches down to here instead of the floor (a hollow skin gets one)
   skirtTop?: number;           // level y (units): only columns whose skin's lowest corner is at or under it get the core
+  steepMaterial?: SteepMaterial;   // cliffs: a skin column this steep takes this material, whatever the rules say
 }
+
+/** The skin's cliffs. A sheared skin voxel is drawn with its material's texture stretched up the face, so a top
+ * material (grass, ash) on a 60-degree face shows as vertical streaks: a column whose skin slope (from its four corners)
+ * is at least minSlope (default 50 degrees) takes `material` in every skin voxel instead, and with feather (degrees)
+ * the edge is a 4 x 4 ordered dither over minSlope +- feather / 2, not a line. */
+export interface SteepMaterial { material: number; minSlope?: number; feather?: number; }
+
+// a 4 x 4 ordered (Bayer) pattern, 0..15
+const BAYER = [0, 8, 2, 10, 12, 4, 14, 6, 3, 11, 1, 9, 15, 7, 13, 5];
 
 interface Tile { x0: number; x1: number; z0: number; z1: number; y0: number; corners: number[]; columns: number; }
 
@@ -72,19 +82,36 @@ function tiles(f: Field, H: Float32Array, T: number): Tile[] {
   return out;
 }
 
-function skinWords(f: Field, t: Tile, T: number): Uint32Array {
+function skinWords(f: Field, t: Tile, T: number, steep?: { H: ArrayLike<number>; W: number; m: SteepMaterial }): Uint32Array {
   const X = t.x1 - t.x0, Z = t.z1 - t.z0, w = new Uint32Array(X * T * Z);
   for (let z = 0; z < Z; z++)
     for (let x = 0; x < X; x++) {
       const c = (t.z0 + z) * f.nx + t.x0 + x;
       if (!live(f, c)) continue;
+      if (steep && isSteep(steep, t.x0 + x, t.z0 + z)) {
+        const word = filled(steep.m.material);
+        for (let y = 0; y < T; y++) w[(z * X + x) * T + y] = word;
+        continue;
+      }
       // Materials as the stepped field would give its top T voxels, so height bands and surface rules carry over.
       for (let y = 0; y < T; y++) w[(z * X + x) * T + y] = f.wordAt(c, f.hi[c] - T + y, true);
     }
   return w;
 }
 
-export interface DrapePlan { field: Field; T: number; tiles: Tile[]; core: Plan | null; report: Record<string, unknown>; }
+/** A skin column's slope in degrees, from its four corners' heights (voxels, so the rise over one voxel's run). */
+export function columnSlope(H: ArrayLike<number>, W: number, i: number, k: number): number {
+  const a = H[k * W + i], b = H[k * W + i + 1], c = H[(k + 1) * W + i], d = H[(k + 1) * W + i + 1];
+  return (Math.atan(Math.hypot((b - a + d - c) / 2, (c - a + d - b) / 2)) * 180) / Math.PI;
+}
+
+function isSteep(st: { H: ArrayLike<number>; W: number; m: SteepMaterial }, i: number, k: number): boolean {
+  const min = st.m.minSlope ?? 50, fe = st.m.feather ?? 0, sl = columnSlope(st.H, st.W, i, k);
+  if (fe <= 0) return sl >= min;
+  return sl >= min - fe / 2 + (fe * (BAYER[(k % 4) * 4 + (i % 4)] + 0.5)) / 16;
+}
+
+export interface DrapePlan { field: Field; T: number; tiles: Tile[]; core: Plan | null; report: Record<string, unknown>; steep?: { H: ArrayLike<number>; W: number; m: SteepMaterial }; }
 
 export function planDrape(store: EditorStore, a: DrapeArgs): DrapePlan {
   const T = Math.round(a.thickness ?? 2);
@@ -92,6 +119,8 @@ export function planDrape(store: EditorStore, a: DrapeArgs): DrapePlan {
   const f = sampleField(store, a);
   if (f.sceneId === null) throw new ToolError("this level has no Scene frame, so no block can be added: a drape needs blocks");
   const H = cornerHeights(f), W = f.nx + 1;
+  const sm = a.steepMaterial;
+  if (sm && (!Number.isInteger(sm.material) || sm.material < 0 || sm.material > 63)) throw new ToolError("steepMaterial.material is a material index 0-63");
   const ts = tiles(f, H, T);
   const skinCells = ts.reduce((n, t) => n + (t.x1 - t.x0) * T * (t.z1 - t.z0), 0);
   const used = blockFrames(store.scene).length, cells = cellBudget(store.scene);
@@ -146,7 +175,12 @@ export function planDrape(store: EditorStore, a: DrapeArgs): DrapePlan {
       cells: { before: cells.used, after: cells.used + skinCells + (core ? core.kept.reduce((n, p) => n + (p.x1 - p.x0) * (p.y1 - p.y0) * (p.z1 - p.z0), 0) : 0), max: cells.max } },
     note: "the skin's blocks carry corner offsets: the game draws and collides their columns at the field's height; the Erg panel's 3D view shows them unsheared",
   };
-  return { field: f, T, tiles: ts, core, report };
+  let steepCols = 0;
+  const steep = sm ? { H, W, m: sm } : undefined;
+  if (steep) for (const t of ts) for (let k = t.z0; k < t.z1; k++) for (let i = t.x0; i < t.x1; i++) if (live(f, k * f.nx + i) && isSteep(steep, i, k)) steepCols++;
+  if (steep) Object.assign(report, { steepMaterial: { material: sm!.material, minSlope: sm!.minSlope ?? 50, ...(sm!.feather ? { feather: sm!.feather } : {}), columns: steepCols,
+    note: "skin columns at least minSlope steep (from their corners) take this material in every skin voxel, so a cliff shows rock instead of a top texture stretched up the face" } });
+  return { field: f, T, tiles: ts, core, report, steep };
 }
 
 export function applyDrape(store: EditorStore, p: DrapePlan): { blocks: { id: number; name: string; skin: boolean }[] } {
@@ -165,7 +199,7 @@ export function applyDrape(store: EditorStore, p: DrapePlan): { blocks: { id: nu
       const frame: Frame = { id: tmp, new: true, parent: f.sceneId!, name,
         pos: [(f.i0 + t.x0 + size[0] / 2) * s, (t.y0 + size[1] / 2) * s, (f.j0 + t.z0 + size[2] / 2) * s],
         rot: [0, 0, 0], scale: [s, s, s], size, voxels: store.freshRef(), heightMap: null, folder: false, corners: t.corners };
-      cmds.push(new AddFrame(store.voxels, frame, skinWords(f, t, p.T)));
+      cmds.push(new AddFrame(store.voxels, frame, skinWords(f, t, p.T, p.steep)));
       made.push({ id: tmp, name, skin: true });
     }
     return cmds;

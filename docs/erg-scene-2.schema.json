@@ -379,7 +379,10 @@
                 "properties": {
                   "activation": { "type": "integer", "minimum": 0, "maximum": 255, "description": "NumMineActivation (game 20): at a turn start the factory fires when fewer mines than this are in the level, min(activation - mines, 10) of them; 0 never fires." },
                   "inactiveTurns": { "type": "integer", "minimum": 0, "maximum": 255, "description": "NumTurnsInactive (game 7): turn starts the factory waits after it is placed and after each fire." },
-                  "schemeMines": { "type": "boolean", "default": true, "description": "false: the scheme's 15 random start mines are not placed (its oil drums are)." }
+                  "schemeMines": { "type": "boolean", "default": true, "description": "false: the scheme's 15 random start mines are not placed (its oil drums are)." },
+                  "keepKnot": { "type": "boolean", "default": false, "description": "true: when the factory's drop from its knot hits no land it stays at its knot (Melange 0.13+)." },
+                  "launchHeight": { "type": "integer", "minimum": 1, "maximum": 255, "description": "Map units over the factory its mines appear at when it fires (20 when only launchRadius is set), instead of the game's placement over random worms and objects (Melange 0.13+)." },
+                  "launchRadius": { "type": "integer", "minimum": 0, "maximum": 255, "description": "Map units round the factory its mines appear within (default 0), so they fall round it (Melange 0.13+)." }
                 }
               }
             }

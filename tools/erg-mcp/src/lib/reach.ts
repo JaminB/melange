@@ -11,7 +11,7 @@
 // than maxStep above. Ground at or under the water drowns a worm; with a flood (FloodRules) the water rises by turn and
 // a node is used only while it is dry when the worm gets there.
 import type { Vec3 } from "../core";
-import { columnSpans } from "./inspect-field";
+import { columnSpans, spansAt } from "./inspect-field";
 import type { Grid } from "./voxel";
 
 export interface ReachOptions {
@@ -30,12 +30,21 @@ export interface ReachOptions {
 }
 
 /** A flood for the search: the water (map y) in each game turn, and when the worm walks: `perTurn` map units along the
- * walk in each of its own turns, the first in game turn `firstTurn`, then every `every` turns. A node `d` along the walk
- * is reached in the worm's own turn ceil(d / perTurn) and must be dry in that game turn. */
-export interface FloodRules { waterAt(turn: number): number; perTurn: number; firstTurn: number; every: number; }
+ * walk in each of its own turns, the first in game turn `firstTurn`, then every `every` turns, or the game turns of
+ * `turns` (its own turns as the engine's rotation gives them, irregular once worms die; past the list's end every
+ * `every` after its last). A node `d` along the walk is reached in the worm's own turn ceil(d / perTurn) and must be dry
+ * in that game turn. */
+export interface FloodRules { waterAt(turn: number): number; perTurn: number; firstTurn: number; every: number; turns?: number[]; }
+
+/** The game turn of the worm's own turn k (0 = its first). */
+export const ownTurn = (f: FloodRules, k: number) => {
+  const t = f.turns;
+  if (!t?.length) return f.firstTurn + k * f.every;
+  return k < t.length ? t[k] : t[t.length - 1] + (k - t.length + 1) * f.every;
+};
 
 /** The game turn in which a worm `d` along its walk gets there (its first own turn for d = 0). */
-export const turnAt = (f: FloodRules, d: number) => f.firstTurn + Math.max(0, Math.ceil(d / f.perTurn - 1e-9) - 1) * f.every;
+export const turnAt = (f: FloodRules, d: number) => ownTurn(f, Math.max(0, Math.ceil(d / f.perTurn - 1e-9) - 1));
 
 /** The longest tread measured, in voxels of the upper ground. */
 const TREAD_VOXELS = 8;
@@ -101,13 +110,39 @@ const DIRS: [number, number][] = [[1, 0], [-1, 0], [0, 1], [0, -1], [1, 1], [1, 
 export const nodeAt = (S: Surfaces, n: number): Vec3 =>
   [S.r.x0 + ((S.cell[n] % S.w) + 0.5) * S.step, S.y[n], S.r.z0 + (Math.floor(S.cell[n] / S.w) + 0.5) * S.step];
 
-/** The node a worm standing at p stands on: in p's column, the highest surface not above p.y + 1.5 (and not under the water). */
-export function standing(S: Surfaces, p: Vec3, o: ReachOptions): number {
+/** Whether a worm can stand at exactly (p.x, p.z) near p.y: the highest ground there whose top is at most `within` over
+ * p.y, no more than `within` under it, with `headroom` of air above it. The one standability rule: build_castle's
+ * spawnSpots, place_spawn_knots and check_reachability (through standing) all use it. Map units. */
+export function standableAt(gs: Grid[], p: Vec3, within = 1.5, headroom = 1.5): { ok: boolean; top: number | null; why?: string } {
+  const all = spansAt(gs, p[0], p[2]);
+  const g = all.find((q) => q.top <= p[1] + within + 1e-6);
+  if (!g) return { ok: false, top: null, why: "no ground under it" };
+  if (Math.abs(g.top - p[1]) > within + 1e-6) return { ok: false, top: g.top, why: `the ground is at y ${Math.round(g.top * 100) / 100}, more than ${within} from it` };
+  if (all.some((q) => q.top > g.top + 1e-6 && q.bottom < g.top + headroom - 1e-6)) return { ok: false, top: g.top, why: "no headroom over the ground" };
+  return { ok: true, top: g.top };
+}
+
+/** The node a worm standing at p stands on: in p's column, the highest surface not above p.y + 1.5 (and not under the
+ * water). The graph samples one column every `step` at its centre, which can miss a thin top (a crenellated wall-walk, a
+ * tower top between merlons) that p itself is on; with `gs`, ground standableAt p (the spawnSpots rule) is matched to
+ * the node of p's or a neighbouring column within half a map unit of its height, so the two agree. */
+export function standing(S: Surfaces, p: Vec3, o: ReachOptions, gs?: Grid[]): number {
   const i = Math.floor((p[0] - S.r.x0) / S.step), j = Math.floor((p[2] - S.r.z0) / S.step);
   if (i < 0 || j < 0 || i >= S.w || j >= S.h) return -1;
   const c = j * S.w + i;
   for (let n = S.start[c]; n < S.start[c + 1]; n++) if (S.y[n] <= p[1] + 1.5) return o.water !== null && S.y[n] <= o.water ? -1 : n;
-  return -1;
+  if (!gs) return -1;
+  const st = standableAt(gs, p, 1.5, o.headroom);
+  if (!st.ok || (o.water !== null && st.top! <= o.water)) return -1;
+  let best = -1, bestD = Infinity;
+  for (let dj = -1; dj <= 1; dj++)
+    for (let di = -1; di <= 1; di++) {
+      const ci = i + di, cj = j + dj;
+      if (ci < 0 || cj < 0 || ci >= S.w || cj >= S.h) continue;
+      const cc = cj * S.w + ci, d = Math.hypot(S.r.x0 + (ci + 0.5) * S.step - p[0], S.r.z0 + (cj + 0.5) * S.step - p[2]);
+      for (let n = S.start[cc]; n < S.start[cc + 1]; n++) if (Math.abs(S.y[n] - st.top!) <= 0.5 + 1e-6 && d < bestD) { best = n; bestD = d; }
+    }
+  return best;
 }
 
 /** The flat run on top of a riser: from b's column on in the direction (dx, dz) while the ground stays within maxStep of

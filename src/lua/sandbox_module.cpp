@@ -220,10 +220,15 @@ void UpdateGame() {
     void* vm = g_lua50 ? lua50::MatchState() : nullptr;
     if (vm != g_lastVm) {
         g_lastVm = vm;
-        g.turn = 0;
-        g_turnSeen = false;
-        g_turnPending = false;
+        // The first turn can start in the very frame the VM appears (gamestate.cpp rebases its count for the same
+        // reason): a turn counted since the last frame is the new match's turn 1, not one to drop, or wum.game.turn()
+        // and melange.turn run one behind wum.sim.turnStarted for the whole match.
+        const bool started = vm != nullptr && g_turnPending;
+        g.turn = started ? 1 : 0;
+        g_turnSeen = started;
+        g_turnPending = started;
         g_tracker.Reset();
+        if (started) g_tracker.OnMessage(gamestate::TurnMsg::TurnStarted);
     }
     const bool inMatch = g_lua50 ? vm != nullptr : g_onlineMatch;
     const char* scene = !g_booted ? "boot" : !inMatch ? "menu" : (g_lua50 && !g_turnSeen) ? "loading" : "match";

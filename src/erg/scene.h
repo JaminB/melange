@@ -111,7 +111,13 @@ struct FactorySpec {
     bool schemeMines = true;                          // false: the scheme's 15 random start mines are not placed
     bool keepKnot = false;                            // true: a drop that hits no land leaves it at its knot
                                                       // (levels/factory.cpp), not at the match's stale sweep point
-    bool Default() const { return !activation && !inactiveTurns && schemeMines && !keepKnot; }
+    // Where its mines come from (levels/factory.cpp), map units: set, each fired mine appears launchHeight over the
+    // factory (1-255, default 20 with launchRadius alone) and launchRadius round it (0-255, default 0) and falls from
+    // there, instead of the game's placement (over random worms and objects).
+    std::optional<int> launchHeight;
+    std::optional<int> launchRadius;
+    bool Default() const { return !activation && !inactiveTurns && schemeMines && !keepKnot && !Launch(); }
+    bool Launch() const { return launchHeight || launchRadius; }
     bool Tweaks() const { return activation || inactiveTurns; }
 };
 struct ObjectSpec {

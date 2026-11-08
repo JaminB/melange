@@ -18,6 +18,7 @@ import { CAMERA_RISE, WALL_RADIUS, spawnWarnings } from "../lib/spawn-check";
 import { checkFactory, factoryLines } from "../lib/factory-check";
 import { scheduleFromScript } from "../lib/flood";
 import { scriptWater } from "../lib/script-water";
+import { rotation, slotOf } from "../lib/turns";
 import { waterBackdropWarning } from "../lib/backdrop";
 import { spansAt, waterMap } from "../lib/inspect-field";
 import { grids, tidy } from "../lib/voxel";
@@ -126,23 +127,38 @@ async function teamReport(s: Session, units: Units, teams: number, per: number) 
     }
   }
   const out = [];
+  const all = new Map<number, { worm: string; ground: number | null; floods: number | null }>();
+  for (let w = 0; w < Math.min(8, teams * per); w++) {
+    const d = store.scene.details.find((x) => x.name === KNOTS[w]);
+    if (!d) continue;
+    const p = store.frames.detailWorld(d), g = spansAt(gs, p[0], p[2], p[1] + 1.5)[0]?.top ?? null;
+    let floods: number | null = null;
+    if (g !== null && waterAt) for (let turn = 1; turn <= 200; turn++) if (waterAt(turn) >= g) { floods = turn; break; }
+    all.set(w, { worm: KNOTS[w], ground: g, floods });
+  }
+  // each worm's first two own turns in the engine's rotation (lib/turns.ts), a drowned worm skipped, and the water then
+  const rot = rotation({ worms: [...all.keys()], teams, perTeam: per, horizon: 200, drownsAt: (w) => all.get(w)?.floods ?? null });
   for (let t = 0; t < teams; t++) {
-    const rows = [];
-    for (let w = t * per; w < (t + 1) * per && w < 8; w++) {
-      const d = store.scene.details.find((x) => x.name === KNOTS[w]);
-      if (!d) continue;
-      const p = store.frames.detailWorld(d), g = spansAt(gs, p[0], p[2], p[1] + 1.5)[0]?.top ?? null;
-      let floods: number | null = null;
-      if (g !== null && waterAt) for (let turn = 1; turn <= 200; turn++) if (waterAt(turn) >= g) { floods = turn; break; }
-      rows.push({ worm: KNOTS[w], ground: g, floods });
-    }
+    const rows = [...all.entries()].filter(([w]) => slotOf(w, per, teams).team === t).map(([w, x]) => {
+      const own = rot.own.get(w) ?? [];
+      const at = (k: number) => {
+        if (own[k] === undefined) return null;
+        const wl = waterAt ? waterAt(own[k]) : null;
+        return { gameTurn: own[k], ...(wl !== null ? { water: r(wl), dry: x.ground !== null && x.ground > wl } : {}) };
+      };
+      return { ...x, first: at(0), second: at(1) };
+    });
     const gr = rows.map((x) => x.ground).filter((x): x is number => x !== null);
     const fl = rows.map((x) => x.floods).filter((x): x is number => x !== null);
     out.push({ team: t, worms: rows.map((x) => x.worm), meanHeight: gr.length ? r(gr.reduce((a, b) => a + b, 0) / gr.length) : null, lowest: gr.length ? r(Math.min(...gr)) : null,
-      ...(waterAt ? { earliestFloodTurn: fl.length ? Math.min(...fl) : null } : {}) });
+      ...(waterAt ? { earliestFloodTurn: fl.length ? Math.min(...fl) : null } : {}),
+      ownTurns: rows.map((x) => ({ worm: x.worm, first: x.first, second: x.second })) });
   }
-  return { units, teams: out, note: `WORMn is worm n % ${per} of team floor(n / ${per}) (the Quick Game's human team has WORM0-3)` +
+  const wet = out.flatMap((t) => t.ownTurns.filter((x) => x.first?.dry === false || x.second?.dry === false).map((x) => x.worm));
+  return { units, teams: out, note: `WORMn is worm n % ${per} of team floor(n / ${per}) (the Quick Game's human team has WORM0-3); ownTurns: each worm's first and second own game turns in the engine's rotation ` +
+    "(the teams alternate from team 0 in game turn 1, each moves its living worms in turn, a drowned worm is skipped; game turns count from 1 as wum.sim.turnStarted's do) and the water at their start" +
     (waterAt ? `; earliestFloodTurn: the first game turn the project's water and its script reach one of the team's spawns (water from ${waterFrom})` : "; no script schedule: no flood turns"),
+    ...(wet.length ? { wetBeforeSecondTurn: wet } : {}),
     ...(waterWarnings.length ? { waterWarnings } : {}) };
 }
 
@@ -228,10 +244,10 @@ type PlaceType = (typeof OBJECT_TYPES)[number];
 interface PlaceArgs extends PointArgs {
   type: PlaceType; units?: Units; kind?: "weapon" | "health" | "utility"; contents?: string; count?: number; amount?: number;
   hitpoints?: number; parachute?: boolean; pos2?: number[]; index?: number; radius?: number; teamCollect?: number; teamDestroy?: number; wormCollect?: boolean;
-  activation?: number; inactiveTurns?: number; schemeMines?: boolean; keepKnot?: boolean; snap?: "surface";
+  activation?: number; inactiveTurns?: number; schemeMines?: boolean; keepKnot?: boolean; launchHeight?: number; launchRadius?: number; launch?: boolean; snap?: "surface";
 }
 
-type FactoryArgs = Pick<PlaceArgs, "activation" | "inactiveTurns" | "schemeMines" | "keepKnot">;
+type FactoryArgs = Pick<PlaceArgs, "activation" | "inactiveTurns" | "schemeMines" | "keepKnot" | "launchHeight" | "launchRadius" | "launch">;
 const FACTORY_GAME = { activation: 20, inactiveTurns: 7, schemeMines: true, keepKnot: false } as const;
 
 /** The factory settings after `a` is applied to `f`: a value equal to the game's is dropped (the game's value stays). */
@@ -243,6 +259,10 @@ function factoryOf(f: FactorySpec | undefined, a: FactoryArgs): FactorySpec | un
     if (v === FACTORY_GAME[k]) delete next[k];
     else next[k] = v;
   }
+  // the launch: launchHeight 0 or launch false gives the game's placement back
+  if (a.launch === false || a.launchHeight === 0) { delete next.launchHeight; if (a.launch === false) delete next.launchRadius; }
+  else if (a.launchHeight !== undefined) next.launchHeight = a.launchHeight;
+  if (a.launchRadius !== undefined && a.launch !== false) next.launchRadius = a.launchRadius;
   return Object.keys(next).length ? (next as FactorySpec) : undefined;
 }
 
@@ -251,6 +271,9 @@ const factoryProps: Record<string, Schema> = {
   inactiveTurns: { type: "integer", minimum: 0, maximum: 255, description: "minefactory: turn starts it waits after it is placed and after each fire before it checks again (game 7; 0 checks every turn)." },
   schemeMines: { type: "boolean", description: "minefactory: false = the scheme's 15 random start mines are not placed, so mines come only from the factory (oil drums stay; default true)." },
   keepKnot: { type: "boolean", description: "minefactory: true = when the game's drop from the knot hits no land (a draped skin, the crater pads on Caldera) the factory stays at its knot instead of the match's stale sweep point, where it was lost (Melange 0.13+; default false, the game's own drop). Put the knot on the surface (place_object snap: \"surface\")." },
+  launchHeight: { type: "integer", minimum: 0, maximum: 255, description: "minefactory: map units over the factory its mines appear at when it fires (Melange 0.13+; with launchRadius alone, 20): they fall from there round the factory, instead of the game's placement, which rains them onto random worms and objects (on Caldera 28-95 map units from the factory). 0 gives the game's placement back." },
+  launchRadius: { type: "integer", minimum: 0, maximum: 255, description: "minefactory: map units round the factory its mines appear within (an even spread over the disc; default 0, straight over it), so they land on the cone round a crater." },
+  launch: { type: "boolean", description: "minefactory: false clears launchHeight and launchRadius (the game's placement)." },
 };
 
 /** pos with snap "surface": the knot on the top of the ground in its column, the highest solid top at most 1 map unit
@@ -693,13 +716,15 @@ export const tools: Tool[] = [
   },
   {
     name: "set_mine_factory",
-    description: "Change the level's mine factory settings (place it first with place_object type minefactory). A value equal to the game's (activation 20, inactiveTurns 7, schemeMines true, keepKnot false) is dropped, so the game's value applies. Melange writes activation and inactiveTurns into the game's kMineFactoryData at level start and again at the factory's own set-up, just before it reads them (Melange 0.13+), and puts the game's back when the match ends; test's look.factory says what the set-up found and applied. The settings are the project's: save, and Test the same project on the same server's projects folder (a project of the same id in another game's ProjectsDir is another project). One undo step.",
+    description: "Change the level's mine factory settings (place it first with place_object type minefactory). launchHeight and launchRadius (Melange 0.13+) make its mines appear over it and fall round it instead of raining onto random worms and objects (the game's). A value equal to the game's (activation 20, inactiveTurns 7, schemeMines true, keepKnot false) is dropped, so the game's value applies. Melange writes activation and inactiveTurns into the game's kMineFactoryData at level start and again at the factory's own set-up, just before it reads them (Melange 0.13+), and puts the game's back when the match ends; test's look.factory says what the set-up found and applied. The settings are the project's: save, and Test the same project on the same server's projects folder (a project of the same id in another game's ProjectsDir is another project). One undo step.",
     inputSchema: { type: "object", additionalProperties: false, properties: factoryProps },
     handler(s, a: FactoryArgs) {
       const store = s.store, scene = store.scene;
       const o = scene.objects?.find((x) => x.type === "minefactory");
       if (!o || o.type !== "minefactory") throw new ToolError("the level has no mine factory: place one with place_object type minefactory");
-      if (a.activation === undefined && a.inactiveTurns === undefined && a.schemeMines === undefined && a.keepKnot === undefined) throw new ToolError("give activation, inactiveTurns, schemeMines or keepKnot");
+      if (a.activation === undefined && a.inactiveTurns === undefined && a.schemeMines === undefined && a.keepKnot === undefined && a.launchHeight === undefined &&
+        a.launchRadius === undefined && a.launch === undefined) throw new ToolError("give activation, inactiveTurns, schemeMines, keepKnot, launchHeight, launchRadius or launch");
+      if (a.launch === true) throw new ToolError("launch: false clears the launch; set launchHeight and/or launchRadius to give one");
       const factory = factoryOf(o.factory, a);
       commit(store, new SetObject(o.knot, factory ? { knot: o.knot, type: "minefactory", factory } : { knot: o.knot, type: "minefactory" }));
       return { knot: o.knot, factory: factory ?? {}, game: FACTORY_GAME, changed: true };
