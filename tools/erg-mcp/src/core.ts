@@ -13,7 +13,7 @@ export { ErrorCode } from "../../../web/src/sdk/protocol";
 export { EditorStore, type Loaded } from "../../../web/src/panels/erg/model/store";
 export { loadBase, openProject, withPatch } from "../../../web/src/panels/erg/model/loader";
 export { Frames, frameIndex, round, roundVec, snap, snapVec, translationOnlyFrames } from "../../../web/src/panels/erg/model/geometry";
-export { dropPoint, rayTerrain, rayVoxels } from "../../../web/src/panels/erg/model/ground";
+export { cornerOffset, dropPoint, rayTerrain, rayVoxels } from "../../../web/src/panels/erg/model/ground";
 export * from "../../../web/src/panels/erg/model/placing";
 export { Duplicate, Group, setMany } from "../../../web/src/panels/erg/model/edits";
 export { KNOTS, PLACED_OBJECTS, checkScene, type Issue } from "../../../web/src/panels/erg/model/checks";

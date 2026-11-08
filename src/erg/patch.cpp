@@ -305,7 +305,7 @@ bool ParsePatch(std::string_view json, Patch* out, std::string* err) {
         } else if (v2 && kind == "addFrame") {
             op.kind = Op::Kind::AddFrame;
             FrameAdd& f = op.newFrame;
-            if (!OnlyKeys(o, {"op", "tmp", "parent", "name", "pos", "size", "scale"}, path, err) ||
+            if (!OnlyKeys(o, {"op", "tmp", "parent", "name", "pos", "size", "scale", "corners"}, path, err) ||
                 !GetInt(o, "tmp", path, -static_cast<int64_t>(kMaxNewFrames), -1, &f.tmp, err) ||
                 !GetInt(o, "parent", path, 1, 1 << 24, &f.parent, err) || !GetString(o, "name", path, &f.name, err) ||
                 !GetVec(o, "pos", path, &f.pos, err, true))
@@ -324,7 +324,8 @@ bool ParsePatch(std::string_view json, Patch* out, std::string* err) {
                 f.size[k] = static_cast<int>(v);
             }
             if (const Json* sc = o.find("scale"); sc && !GetNumber(*sc, path + ".scale", kMinNewFrameScale, kMaxNewFrameScale, &f.scale, nullptr))
-                return Fail(err, path + ".scale: must be a number 1..4 (map units per voxel)");
+                return Fail(err, path + ".scale: must be a number 0.5..4 (map units per voxel)");
+            if (!GetCorners(o, path, f.size, &f.corners, err)) return false;
         } else if (v2 && kind == "hmp") {
             op.kind = Op::Kind::Hmp;
             if (!OnlyKeys(o, {"op", "heights", "blend"}, path, err) ||
@@ -411,6 +412,7 @@ std::string WritePatch(const Patch& p) {
                 for (int v : f.size) size.arr.push_back(Int(v));
                 o.set("size", std::move(size));
                 if (f.scale != 1) o.set("scale", Num(f.scale));
+                if (!f.corners.empty()) o.set("corners", CornersJson(f.corners));
                 break;
             }
             case Op::Kind::Hmp:
@@ -593,6 +595,7 @@ bool ApplyPatch(Scene& s, const Patch& p, const PatchRules& rules, std::string* 
                 f.pos = op.newFrame.pos;
                 f.size = op.newFrame.size;
                 f.scale = {op.newFrame.scale, op.newFrame.scale, op.newFrame.scale};
+                f.corners = op.newFrame.corners;
                 f.isNew = true;
                 out.frames.push_back(std::move(f));
                 break;

@@ -4,13 +4,21 @@
 //              R (half the shorter side), pi e
 //   functions: min max (2+ args), abs sqrt sin cos tan exp log floor ceil round pow atan2 clamp(v, lo, hi)
 //              lerp(a, b, t) step(edge, v) smoothstep(e0, e1, v) noise2(x, z, seed) fbm(x, z, seed, octaves)
+//              hypot(a, b[, c]) sign(v) mod(a, b) fract(v) select(c, a, b) (a where c > 0, else b)
+//   bindings: statements before the expression, each ending in ';':
+//              let name = expr;                  a value computed once per column
+//              fn name(a, b) = expr;             a function of its parameters (and the column's variables and the lets)
+//             A name is bound once and used after it is bound; a function may call functions bound before it (so no
+//             recursion). For example: let cone = 44*exp(-(r/26)^2); fn bump(cx, cz, h) = h*exp(-((x-cx)^2+(z-cz)^2)/50);
+//             cone + bump(30, 0, 6) + bump(-20, 10, 4)
 // noise2 is Perlin gradient noise, about -1..1 and 0 on whole coordinates; fbm sums octaves of it (lacunarity 2, gain 0.5).
 
 export const VARIABLES = ["x", "z", "u", "v", "r", "theta", "W", "D", "R", "pi", "e"] as const;
 export type Variable = (typeof VARIABLES)[number];
 export type Vars = Record<Variable, number>;
 
-const MAX_SOURCE = 2000, MAX_DEPTH = 64, MAX_NODES = 500;
+export const MAX_SOURCE = 8000, MAX_NODES = 4000;
+const MAX_DEPTH = 64, MAX_BINDINGS = 64;
 
 export class ExprError extends Error {
   constructor(message: string, readonly at: number) {
@@ -89,6 +97,11 @@ const FUNCS: Record<string, { args: [number, number]; fn: (...a: number[]) => nu
   } },
   noise2: { args: [2, 3], fn: (x, z, seed = 0) => noise2(x, z, seed) },
   fbm: { args: [2, 4], fn: (x, z, seed = 0, octaves = 4) => fbm(x, z, seed, octaves) },
+  hypot: { args: [2, 3], fn: (...a) => Math.hypot(...a) },
+  sign: { args: [1, 1], fn: Math.sign },
+  mod: { args: [2, 2], fn: (a, b) => (b === 0 ? 0 : a - b * Math.floor(a / b)) },
+  fract: { args: [1, 1], fn: (v) => v - Math.floor(v) },
+  select: { args: [3, 3], fn: (c, a, b) => (c > 0 ? a : b) },
 };
 export const FUNCTIONS = Object.keys(FUNCS);
 
@@ -106,7 +119,7 @@ function tokens(src: string): Tok[] {
     if (num) { out.push({ k: "num", v: Number(num[0]), at: i }); i += num[0].length; continue; }
     const id = /^[A-Za-z_][A-Za-z0-9_]*/.exec(src.slice(i));
     if (id) { out.push({ k: "id", v: id[0], at: i }); i += id[0].length; continue; }
-    if ("+-*/^(),".includes(c)) { out.push({ k: "op", v: c, at: i }); i++; continue; }
+    if ("+-*/^(),;=".includes(c)) { out.push({ k: "op", v: c, at: i }); i++; continue; }
     throw new ExprError(`unexpected '${c}'`, i);
   }
   out.push({ k: "end", at: src.length });
@@ -114,6 +127,8 @@ function tokens(src: string): Tok[] {
 }
 
 type Fn = (v: Vars) => number;
+
+const KEYWORDS = ["let", "fn"];
 
 /** Compiles an expression to a function of the column's variables, or throws an ExprError saying where it is wrong. */
 export function compile(src: string): Fn {
@@ -123,6 +138,7 @@ export function compile(src: string): Fn {
   let p = 0, nodes = 0;
   const peek = () => ts[p];
   const isOp = (v: string) => { const t = ts[p]; return t.k === "op" && t.v === v; };
+  const isWord = (v: string) => { const t = ts[p]; return t.k === "id" && t.v === v; };
   const expect = (v: string) => {
     if (!isOp(v)) throw new ExprError(`expected '${v}'`, ts[p].at);
     p++;
@@ -131,6 +147,14 @@ export function compile(src: string): Fn {
     if (++nodes > MAX_NODES) throw new ExprError(`the expression has more than ${MAX_NODES} parts`, at);
     if (depth > MAX_DEPTH) throw new ExprError(`the expression nests deeper than ${MAX_DEPTH}`, at);
   };
+
+  // Bindings live in one slot array per compiled expression: a let's value, or a function parameter's while the
+  // function's body runs (saved and restored round the call, so nested calls see their own arguments).
+  const slots: number[] = [];
+  const names = new Map<string, number>();                         // let name -> slot
+  const fns = new Map<string, { params: number[]; body: Fn }>();
+  const lets: { slot: number; fn: Fn }[] = [];
+  let scope: Map<string, number> | null = null;                    // a function's parameters while its body is parsed
 
   // sum := product (('+'|'-') product)*; product := unary (('*'|'/') unary)*; unary := '-' unary | power;
   // power := atom ('^' unary)?
@@ -164,6 +188,15 @@ export function compile(src: string): Fn {
     const ex = unary(d + 1);
     return (v) => Math.pow(base(v), ex(v));
   }
+  function args(d: number): Fn[] {
+    const out: Fn[] = [];
+    if (!isOp(")")) {
+      out.push(sum(d + 1));
+      while (isOp(",")) { p++; out.push(sum(d + 1)); }
+    }
+    expect(")");
+    return out;
+  }
   function atom(d: number): Fn {
     const t = peek();
     count(t.at, d);
@@ -177,35 +210,91 @@ export function compile(src: string): Fn {
     if (t.k === "id") {
       p++;
       if (isOp("(")) {
-        const f = FUNCS[t.v];
-        if (!f) throw new ExprError(`unknown function '${t.v}' (known: ${FUNCTIONS.join(", ")})`, t.at);
-        p++;
-        const args: Fn[] = [];
-        if (!isOp(")")) {
-          args.push(sum(d + 1));
-          while (isOp(",")) { p++; args.push(sum(d + 1)); }
+        const user = fns.get(t.v);
+        if (user) {
+          p++;
+          const a = args(d);
+          if (a.length !== user.params.length) throw new ExprError(`${t.v} takes ${user.params.length} arguments, not ${a.length}`, t.at);
+          const { params, body } = user;
+          return (v) => {
+            const vals = a.map((f) => f(v)), saved = params.map((s) => slots[s]);
+            params.forEach((s, i) => { slots[s] = vals[i]; });
+            const r = body(v);
+            params.forEach((s, i) => { slots[s] = saved[i]; });
+            return r;
+          };
         }
-        expect(")");
-        if (args.length < f.args[0] || args.length > f.args[1])
-          throw new ExprError(`${t.v} takes ${f.args[0] === f.args[1] ? f.args[0] : `${f.args[0]}-${f.args[1]}`} arguments, not ${args.length}`, t.at);
+        const f = FUNCS[t.v];
+        if (!f) throw new ExprError(`unknown function '${t.v}' (known: ${[...FUNCTIONS, ...fns.keys()].join(", ")})`, t.at);
+        p++;
+        const a = args(d);
+        if (a.length < f.args[0] || a.length > f.args[1])
+          throw new ExprError(`${t.v} takes ${f.args[0] === f.args[1] ? f.args[0] : `${f.args[0]}-${f.args[1]}`} arguments, not ${a.length}`, t.at);
         const fn = f.fn;
-        if (args.length === 1) { const [a] = args; return (v) => fn(a(v)); }
-        if (args.length === 2) { const [a, b] = args; return (v) => fn(a(v), b(v)); }
-        if (args.length === 3) { const [a, b, c] = args; return (v) => fn(a(v), b(v), c(v)); }
-        return (v) => fn(...args.map((a) => a(v)));
+        if (a.length === 1) { const [x] = a; return (v) => fn(x(v)); }
+        if (a.length === 2) { const [x, y] = a; return (v) => fn(x(v), y(v)); }
+        if (a.length === 3) { const [x, y, z] = a; return (v) => fn(x(v), y(v), z(v)); }
+        return (v) => fn(...a.map((x) => x(v)));
       }
+      const slot = scope?.get(t.v) ?? names.get(t.v);
+      if (slot !== undefined) return () => slots[slot];
       if (!(VARIABLES as readonly string[]).includes(t.v))
-        throw new ExprError(`unknown name '${t.v}' (variables: ${VARIABLES.join(", ")})`, t.at);
+        throw new ExprError(`unknown name '${t.v}' (variables: ${[...VARIABLES, ...names.keys()].join(", ")})`, t.at);
       const name = t.v as Variable;
       return (v) => v[name];
     }
     throw new ExprError(t.k === "end" ? "the expression ends early" : `unexpected '${t.v}'`, t.at);
   }
+  /** A new name for a binding: not a variable, a function, a keyword or one already bound. */
+  function fresh(): string {
+    const t = peek();
+    if (t.k !== "id") throw new ExprError("expected a name", t.at);
+    if ((VARIABLES as readonly string[]).includes(t.v) || FUNCS[t.v] || KEYWORDS.includes(t.v) || names.has(t.v) || fns.has(t.v) || scope?.has(t.v))
+      throw new ExprError(`'${t.v}' is already a name (variables, functions and earlier bindings cannot be bound again)`, t.at);
+    p++;
+    return t.v;
+  }
 
+  // statements: (let name = sum ; | fn name(params) = sum ;)*
+  while (isWord("let") || isWord("fn")) {
+    const kw = (ts[p++] as { v: string }).v, at = ts[p].at;
+    if (names.size + fns.size >= MAX_BINDINGS) throw new ExprError(`more than ${MAX_BINDINGS} bindings`, at);
+    const name = fresh();
+    if (kw === "let") {
+      expect("=");
+      const fn = sum(0);
+      expect(";");
+      const slot = slots.push(0) - 1;
+      names.set(name, slot);
+      lets.push({ slot, fn });
+    } else {
+      expect("(");
+      const params: number[] = [];
+      scope = new Map();
+      if (!isOp(")")) {
+        for (;;) {
+          const pn = fresh();
+          const slot = slots.push(0) - 1;
+          scope.set(pn, slot);
+          params.push(slot);
+          if (!isOp(",")) break;
+          p++;
+        }
+      }
+      expect(")");
+      expect("=");
+      const body = sum(0);
+      expect(";");
+      scope = null;
+      fns.set(name, { params, body });
+    }
+  }
   const fn = sum(0);
   if (peek().k !== "end") throw new ExprError(`unexpected '${(peek() as { v: string }).v}'`, peek().at);
+  const finite = (r: number) => (Number.isFinite(r) ? r : 0);
+  if (!lets.length) return (v) => finite(fn(v));
   return (v) => {
-    const r = fn(v);
-    return Number.isFinite(r) ? r : 0;
+    for (const l of lets) slots[l.slot] = finite(l.fn(v));
+    return finite(fn(v));
   };
 }

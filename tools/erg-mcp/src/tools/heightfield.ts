@@ -1,7 +1,7 @@
 // Tool group "heightfield": terrain from a height per column (islands, volcanoes, hills), packed into the voxels a patch
 // can carry. heightfield_plan answers the packing and the budget without editing; heightfield_region applies it as one
 // undo step. The planner is src/lib/heightfield-plan.ts, the expression language src/lib/heightfield-expr.ts.
-import { FUNCTIONS, VARIABLES } from "../lib/heightfield-expr";
+import { FUNCTIONS, MAX_NODES, MAX_SOURCE, VARIABLES } from "../lib/heightfield-expr";
 import { apply, plan, type FieldArgs } from "../lib/heightfield-plan";
 import { usage } from "../lib/voxel";
 import type { Schema, Tool } from "../registry";
@@ -15,15 +15,15 @@ const areas = (description: string): Schema => ({
 });
 
 
-const schema: Schema & { type: "object" } = {
+export const schema: Schema & { type: "object" } = {
   type: "object", additionalProperties: false, required: ["min", "max", "floor"],
   properties: {
     units: { type: "string", enum: ["map", "world"], description: "Units of every length and height here (default map: 1 voxel = 1 map unit = 20 world units)." },
-    voxelSize: { type: "number", minimum: 1, maximum: 4, description: "Map units per voxel: the new blocks' scale (default 1). The game counts every block's cells (X*Y*Z, at most 65535 over the whole level), so 2.5 covers 6.25 times the ground per cell, with voxels 2.5 map units (50 world units) across. Always map units, whatever `units` says." },
+    voxelSize: { type: "number", minimum: 0.5, maximum: 4, description: "Map units per voxel: the new blocks' scale (default 1; under 1 is finer than the base map, 0.75 played in the game). The game counts every block's cells (X*Y*Z, at most 65535 over the whole level), so 2.5 covers 6.25 times the ground per cell, with voxels 2.5 map units (50 world units) across. Always map units, whatever `units` says." },
     min: pair("[x, z] of one corner of the rectangle, level coordinates."),
     max: pair("[x, z] of the opposite corner. Corners snap to whole voxels of the Scene frame's lattice."),
     floor: { type: "number", description: "Level y the columns stand on (heights count up from here)." },
-    expr: { type: "string", description: `Height above the floor per column, e.g. "40*exp(-(r/30)^2) + 3*noise2(x/12, z/12, 7)". Variables: ${VARIABLES.join(", ")} (x, z from the rectangle's centre; u, v 0..1 across it; r, theta polar about the centre; W, D its size; R half the shorter side). Functions: ${FUNCTIONS.join(", ")}. Operators + - * / ^ and parentheses. A height under half a voxel leaves the column empty.` },
+    expr: { type: "string", description: `Height above the floor per column, e.g. "40*exp(-(r/30)^2) + 3*noise2(x/12, z/12, 7)". Variables: ${VARIABLES.join(", ")} (x, z from the rectangle's centre; u, v 0..1 across it; r, theta polar about the centre; W, D its size; R half the shorter side). Functions: ${FUNCTIONS.join(", ")}. Operators + - * / ^ and parentheses. Bindings before the expression, each ending in ';': \`let name = expr;\` (computed once per column) and \`fn name(a, b) = expr;\` (a function of its parameters, the column's variables and the lets), e.g. "let cone = 44*exp(-(r/26)^2); fn bump(cx, cz, h) = h*exp(-((x-cx)^2+(z-cz)^2)/50); cone + bump(30, 0, 6)". At most ${MAX_SOURCE} characters and ${MAX_NODES} parts. A height under half a voxel leaves the column empty (see edges).` },
     grid: { type: "array", maxItems: 512, items: { type: "array", maxItems: 512, items: { type: "number" } },
       description: "Heights instead of expr: rows along z (row 0 at min z), columns along x, stretched over the rectangle (corner values at its corners), sampled bilinearly." },
     maxHeight: { type: "number", description: "Caps every height." },
@@ -39,6 +39,11 @@ const schema: Schema & { type: "object" } = {
         minSlope: { type: "number", description: "The column's slope in degrees is at least this." },
         maxSlope: { type: "number", description: "... and at most this." },
         surface: { type: "integer", minimum: 1, description: "Only the top n voxels of a column." },
+        minDepth: { type: "number", minimum: 0, description: "The voxel's depth under its column's top (in units) is at least this: rock under a skin, lava deep in a crater." },
+        maxDepth: { type: "number", minimum: 0, description: "... and under this." },
+        exposed: { type: "boolean", description: "true: only voxels with air above or beside them (the visible surface, cliff faces included); false: only buried ones." },
+        jitter: { type: "object", additionalProperties: false, required: ["amount"], description: "Moves this rule's minHeight/maxHeight by up to amount (Perlin noise over x, z with feature size scale, default 8 units), so a band's edge wanders instead of running level.",
+          properties: { amount: { type: "number" }, scale: { type: "number", minimum: 0.01 }, seed: { type: "integer" } } },
       } } },
     reuseFrames: { type: "string", enum: ["aligned", "any", "none"], description: "Fill voxel frames that overlap the field before adding blocks: aligned (default) only frames on the lattice (earlier blocks; the game's base frames are all rotated, scaled or off the whole units), any also rotated and scaled frames (approximate at the surface; not frames scaled under 0.9), none no frames." },
     maxBlocks: { type: "integer", minimum: 0, maximum: 64, description: "Add at most this many blocks (keep some of the 64 for other edits)." },
@@ -47,6 +52,9 @@ const schema: Schema & { type: "object" } = {
     runsHeadroom: { type: "integer", minimum: 0, maximum: 1900, description: "Leave this many of each new block's 2000 runs free (default 0), for edits after it: sculpt_crater, painted bands, structures built into the blocks. Blocks are halved sooner, so it costs blocks." },
     centre: pair("[x, z] origin of the expression's x, z, r and theta (and the crater's default centre) instead of the rectangle's centre. Two fields of different voxelSize given the same rectangle and centre sample the same surface."),
     clip: areas("Keep only the columns whose centre is inside one of these areas: the fine part of a multi-resolution field."),
+    edges: { type: "string", enum: ["round", "dither", "noise"], description: "How a height becomes whole voxels: round (default; a cone becomes concentric terraces), dither (a 4 x 4 ordered pattern) or noise (a hash per column): the terrace edges break up into a ragged line instead of square rings, at the same cost. The game's voxels are whole cubes (no slope or partial shapes), and its mesh smooths the steps." },
+    packer: { type: "string", enum: ["tiles", "greedy", "best"], description: "How blocks are cut before the cell budget halves them: tiles (default) a grid of 31 x 31 columns, greedy tiles that start on the field's own columns (fewer blocks for rings and sparse fields), best both, keeping the fewer blocks." },
+    costAt: { type: "array", maxItems: 8, items: { type: "number", minimum: 0.5, maximum: 4 }, description: "Also plan the same field at these voxel sizes and report each one's blocks and cells (costAt in the answer), to choose a size before building." },
     exclude: areas("Leave out the columns lying wholly inside one of these areas: the coarse part of a multi-resolution field (it overlaps a field clipped to the same areas at the edge, so no gap opens)."),
   },
 };

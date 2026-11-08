@@ -28,7 +28,7 @@ import {
 } from "../core";
 import { ToolError } from "../registry";
 import { PATCH_BUDGET, WORLD_PER_MAP, grids, runBytes, tidy, type Grid } from "./voxel";
-import { compile, ExprError, type Vars } from "./heightfield-expr";
+import { compile, noise2, ExprError, type Vars } from "./heightfield-expr";
 
 export type Units = "map" | "world";
 
@@ -37,7 +37,15 @@ export interface MaterialRule {
   minHeight?: number; maxHeight?: number;   // the voxel's height above the floor, in the region's units
   minSlope?: number; maxSlope?: number;     // the column's slope, degrees
   surface?: number;                         // only the top n voxels of a column
+  minDepth?: number; maxDepth?: number;     // the voxel's depth under its column's top, in the region's units
+  exposed?: boolean;                        // true: only voxels with air above or beside them; false: only buried ones
+  jitter?: { amount: number; scale?: number; seed?: number };   // moves the height bounds by up to amount (noise)
 }
+
+/** How a column's height becomes whole voxels: round (nearest; concentric terraces on a cone), or with a threshold that
+ * varies per column, so a terrace edge breaks up instead of running as a ring: dither (an ordered 4 x 4 pattern) or
+ * noise (a hash per column). Both keep the field's volume on average. */
+export type Edges = "round" | "dither" | "noise";
 
 export interface Crater { radius: number; depth: number; x?: number; z?: number; rim?: number; }
 
@@ -65,6 +73,9 @@ export interface FieldArgs {
   clip?: Area[];                            // keep only columns whose centre is in one of these
   exclude?: Area[];                         // leave out columns lying wholly inside one of these
   runsHeadroom?: number;                    // runs to leave free in each new block for later edits (default 0)
+  edges?: Edges;                            // default round
+  packer?: Packer;                          // default tiles
+  costAt?: number[];                        // also plan at these voxel sizes and report their cost
 }
 
 export const SIDE = LIMITS.newFrameSide;
@@ -91,6 +102,8 @@ export interface Field {
 }
 
 const num = (v: number) => tidy([v, 0, 0])[0];
+// The 4 x 4 ordered-dither matrix (Bayer), 0-15.
+const BAYER = [0, 8, 2, 10, 12, 4, 14, 6, 3, 11, 1, 9, 15, 7, 13, 5];
 const mapOf = (f: Field, c: Vec3): Vec3 => [c[0] * f.s + f.t[0], c[1] * f.s + f.t[1], c[2] * f.s + f.t[2]];
 
 function checkMaterial(m: number, path: string) {
@@ -173,6 +186,19 @@ export function sampleField(store: EditorStore, a: FieldArgs): Field {
   }
   const cr = a.crater;
   const crx = cr?.x ?? cx / k, crz = cr?.z ?? cz / k;
+  const edges = a.edges ?? "round";
+  // The threshold a column's fraction of a voxel must pass to count, by lattice cell (so fields that share a lattice
+  // agree): 0.5 rounds; dither and noise spread it over (0, 1).
+  const threshold = (ci: number, cj: number) => {
+    if (edges === "dither") return (BAYER[(((cj % 4) + 4) % 4) * 4 + (((ci % 4) + 4) % 4)] + 0.5) / 16;
+    if (edges === "noise") {
+      let h = (Math.imul(ci, 0x27d4eb2d) ^ Math.imul(cj, 0x165667b1)) >>> 0;
+      h = Math.imul(h ^ (h >>> 15), 0x85ebca6b) >>> 0;
+      h = Math.imul(h ^ (h >>> 13), 0xc2b2ae35) >>> 0;
+      return (((h ^ (h >>> 16)) >>> 0) + 0.5) / 4294967296;
+    }
+    return 0.5;
+  };
   const n = nx * nz;
   const lo = new Int32Array(n), hi = new Int32Array(n), height = new Float32Array(n), slope = new Float32Array(n);
   const vars: Vars = { x: 0, z: 0, u: 0, v: 0, r: 0, theta: 0, W, D, R: Math.min(W, D) / 2, pi: Math.PI, e: Math.E };
@@ -194,7 +220,7 @@ export function sampleField(store: EditorStore, a: FieldArgs): Field {
       if (a.maxHeight !== undefined) h = Math.min(h, a.maxHeight);
       const hv = Math.max(0, h * kv);
       if (hv > MAX_COLUMN) throw new ToolError(`the height reaches ${num(h)} (${Math.round(hv)} voxels) at x ${num(mx / k)}, z ${num(mz / k)}: at most ${MAX_COLUMN} voxels; pass maxHeight`);
-      const c = b * nx + a2, top = Math.round(hv);
+      const c = b * nx + a2, top = edges === "round" ? Math.round(hv) : Math.floor(hv + 1 - threshold(i0 + a2, j0 + b));
       height[c] = hv;
       if (top >= 1 && kept(mx, mz)) {
         lo[c] = floor - depth;
@@ -209,15 +235,42 @@ export function sampleField(store: EditorStore, a: FieldArgs): Field {
       slope[c] = (Math.atan(Math.hypot(hx, hz)) * 180) / Math.PI;
     }
   const rules = a.materials ?? [];
+  rules.forEach((r, i) => {
+    if (r.jitter && !(Number.isFinite(r.jitter.amount) && (r.jitter.scale === undefined || r.jitter.scale > 0)))
+      throw new ToolError(`materials[${i}].jitter: amount is a number and scale above 0`);
+  });
+  // The top of the neighbouring column (its hi; the floor where it has none), for exposed: a voxel is exposed when
+  // the column's top is it, or a neighbour's top is at or under it (air beside it), the field's edge included.
+  const topOf = (ai: number, bj: number) => {
+    if (ai < 0 || bj < 0 || ai >= nx || bj >= nz) return -Infinity;
+    const c = bj * nx + ai;
+    return hi[c] > lo[c] ? hi[c] : -Infinity;
+  };
   const materialAt = (col: number, y: number) => {
     if (!rules.length) return material;
-    const above = (y + 0.5 - floor) / kv, fromTop = hi[col] - 1 - y, sl = slope[col];
+    const above = (y + 0.5 - floor) / kv, fromTop = hi[col] - 1 - y, sl = slope[col], depth = (hi[col] - y - 0.5) / kv;
+    let exposed: boolean | undefined;
     for (const r of rules) {
-      if (r.minHeight !== undefined && above < r.minHeight) continue;
-      if (r.maxHeight !== undefined && above >= r.maxHeight) continue;
+      let shift = 0;
+      if (r.jitter && (r.minHeight !== undefined || r.maxHeight !== undefined)) {
+        const ai = col % nx, bj = (col - ai) / nx, sc = r.jitter.scale ?? 8;
+        // the column's centre in region units, so the bands wander the same way whatever the voxel size
+        shift = r.jitter.amount * noise2(((i0 + ai + 0.5) * s + t[0]) / k / sc, ((j0 + bj + 0.5) * s + t[2]) / k / sc, r.jitter.seed ?? 0);
+      }
+      if (r.minHeight !== undefined && above < r.minHeight + shift) continue;
+      if (r.maxHeight !== undefined && above >= r.maxHeight + shift) continue;
       if (r.minSlope !== undefined && sl < r.minSlope) continue;
       if (r.maxSlope !== undefined && sl > r.maxSlope) continue;
       if (r.surface !== undefined && fromTop >= r.surface) continue;
+      if (r.minDepth !== undefined && depth < r.minDepth) continue;
+      if (r.maxDepth !== undefined && depth >= r.maxDepth) continue;
+      if (r.exposed !== undefined) {
+        if (exposed === undefined) {
+          const ai = col % nx, bj = (col - ai) / nx;
+          exposed = fromTop === 0 || [[1, 0], [-1, 0], [0, 1], [0, -1]].some(([dx, dz]) => topOf(ai + dx, bj + dz) <= y);
+        }
+        if (exposed !== r.exposed) continue;
+      }
       return r.material;
     }
     return material;
@@ -269,6 +322,7 @@ export function canvas(store: EditorStore, f: Field, reuse: Reuse = "aligned"): 
   };
   const s = f.s;
   for (const g of grids(store)) {
+    if (g.frame.corners) continue;   // a draped block's cells are sheared off its grid: not a canvas
     const m = g.toMap, inv = g.fromMap;
     const x0 = Math.max(f.i0, Math.floor((g.bounds.min[0] - f.t[0]) / s)), x1 = Math.min(f.i0 + f.nx, Math.ceil((g.bounds.max[0] - f.t[0]) / s));
     const z0 = Math.max(f.j0, Math.floor((g.bounds.min[2] - f.t[2]) / s)), z1 = Math.min(f.j0 + f.nz, Math.ceil((g.bounds.max[2] - f.t[2]) / s));
@@ -449,11 +503,29 @@ function split(f: Field, cv: Canvas, b: Box, axis: 0 | 1 | 2): [Omit<Box, "deps"
   return a && c ? [a, c] : null;
 }
 
-/** The blocks for what the canvas leaves. Tiles of 31 x 31 columns (the offset with the fewest boxes, then the least
- * volume), stacked in 31-high slices trimmed to their cells. While the boxes hold more than `cellRoom` cells and fewer
- * than `slots` blocks are used, the box whose halving saves the most cells is halved (in x, z or y, each half trimmed):
- * a cone's flanks then cost their slope, not their tile's whole height. */
-export function pack(f: Field, cv: Canvas, slots = Infinity, cellRoom = Infinity): Piece[] {
+/** How the field is cut into blocks before the halving: tiles (a fixed grid of 31 x 31 columns, the best of four offsets
+ * each way), greedy (each tile starts at the first column still to place, scanning rows, so a ring or a sparse field is
+ * covered by tiles that sit on its columns rather than on a grid), or best (both, keeping the fewer blocks, then cells). */
+export type Packer = "tiles" | "greedy" | "best";
+
+/** A tile's columns stacked in 31-high slices, each trimmed to the cells it needs, each on the one under it. */
+function slices(f: Field, cv: Canvas, x0: number, x1: number, z0: number, z1: number, boxes: Box[]): number {
+  const all = trim(f, cv, x0, x1, z0, z1, -Infinity, Infinity);
+  if (!all) return 0;
+  let under: Box | null = null, volume = 0;
+  for (let y = all.y0; y < all.y1; y += SIDE) {
+    const b = trim(f, cv, all.x0, all.x1, all.z0, all.z1, y, Math.min(all.y1, y + SIDE));
+    if (!b) continue;
+    const box: Box = { ...b, deps: under ? [under] : [] };
+    boxes.push(box);
+    under = box;
+    volume += cellsOf(b);
+  }
+  return volume;
+}
+
+/** Tiles on a grid: the offset with the fewest boxes, then the least volume. */
+function gridTiles(f: Field, cv: Canvas): { boxes: Box[]; volume: number } {
   let best: Box[] | null = null, bestVolume = Infinity;
   const offsets = [0, 8, 16, 24];
   for (const ox of f.nx > SIDE ? offsets : [0])
@@ -464,24 +536,58 @@ export function pack(f: Field, cv: Canvas, slots = Infinity, cellRoom = Infinity
         for (let tx = -ox; tx < f.nx && !(best && boxes.length > best.length); tx += SIDE) {
           const x0 = Math.max(0, tx), x1 = Math.min(f.nx, tx + SIDE), z0 = Math.max(0, tz), z1 = Math.min(f.nz, tz + SIDE);
           if (x0 >= x1 || z0 >= z1) continue;
-          const all = trim(f, cv, x0, x1, z0, z1, -Infinity, Infinity);
-          if (!all) continue;
-          let under: Box | null = null;
-          for (let y = all.y0; y < all.y1; y += SIDE) {
-            const b = trim(f, cv, all.x0, all.x1, all.z0, all.z1, y, Math.min(all.y1, y + SIDE));
-            if (!b) continue;
-            const box: Box = { ...b, deps: under ? [under] : [] };
-            boxes.push(box);
-            under = box;
-            volume += cellsOf(b);
-          }
+          volume += slices(f, cv, x0, x1, z0, z1, boxes);
         }
       if (!best || boxes.length < best.length || (boxes.length === best.length && volume < bestVolume)) {
         best = boxes;
         bestVolume = volume;
       }
     }
-  let boxes = best ?? [];
+  return { boxes: best ?? [], volume: bestVolume };
+}
+
+/** Tiles where the field is: scanning rows, a tile of 31 x 31 starts at the row of the first column still to place and,
+ * across, as far left as 30 columns before it where its rows have columns to place, never over a tile placed before
+ * (so tiles do not overlap, and every column is in one). */
+function greedyTiles(f: Field, cv: Canvas): { boxes: Box[]; volume: number } {
+  const todo = new Uint8Array(f.nx * f.nz);
+  for (let c = 0; c < todo.length; c++) if (need(f, cv, c, -Infinity, Infinity)[2]) todo[c] = 1;
+  const tiles: [number, number, number, number][] = [];   // x0, x1, z0, z1
+  const boxes: Box[] = [];
+  let volume = 0;
+  for (let z = 0; z < f.nz; z++)
+    for (let x = 0; x < f.nx; x++) {
+      if (!todo[z * f.nx + x]) continue;
+      const z0 = z, z1 = Math.min(f.nz, z + SIDE);
+      let lo = 0, hi = f.nx;
+      for (const [tx0, tx1, tz0, tz1] of tiles) {
+        if (tz1 <= z0 || tz0 >= z1) continue;
+        if (tx1 <= x) lo = Math.max(lo, tx1);
+        else if (tx0 > x) hi = Math.min(hi, tx0);
+      }
+      let x0 = x;
+      for (let xx = Math.max(lo, x - SIDE + 1); xx < x && x0 === x; xx++)
+        for (let zz = z0; zz < z1; zz++) if (todo[zz * f.nx + xx]) { x0 = xx; break; }
+      const x1 = Math.min(hi, x0 + SIDE);
+      tiles.push([x0, x1, z0, z1]);
+      for (let zz = z0; zz < z1; zz++) for (let xx = x0; xx < x1; xx++) todo[zz * f.nx + xx] = 0;
+      volume += slices(f, cv, x0, x1, z0, z1, boxes);
+    }
+  return { boxes, volume };
+}
+
+/** The blocks for what the canvas leaves. Tiles of 31 x 31 columns (`packer`), stacked in 31-high slices trimmed to
+ * their cells. While the boxes hold more than `cellRoom` cells and fewer than `slots` blocks are used, the box whose
+ * halving saves the most cells is halved (in x, z or y, each half trimmed): a cone's flanks then cost their slope, not
+ * their tile's whole height. */
+export function pack(f: Field, cv: Canvas, slots = Infinity, cellRoom = Infinity, packer: Packer = "tiles"): Piece[] {
+  let boxes: Box[];
+  if (packer === "tiles") boxes = gridTiles(f, cv).boxes;
+  else if (packer === "greedy") boxes = greedyTiles(f, cv).boxes;
+  else {
+    const g = gridTiles(f, cv), q = greedyTiles(f, cv);
+    boxes = q.boxes.length < g.boxes.length || (q.boxes.length === g.boxes.length && q.volume < g.volume) ? q.boxes : g.boxes;
+  }
   let total = boxes.reduce((n, b) => n + cellsOf(b), 0);
   const cuts = new Map<Box, { save: number; axis: 0 | 1 | 2; halves: [Omit<Box, "deps">, Omit<Box, "deps">] } | null>();
   while (total > cellRoom && boxes.length < slots) {
@@ -561,10 +667,12 @@ function pieceInfo(f: Field, p: Piece) {
     map: { min: tidy(min), max: tidy(max) }, world: { min: tidy(min.map((v) => v * WORLD_PER_MAP) as Vec3), max: tidy(max.map((v) => v * WORLD_PER_MAP) as Vec3) } };
 }
 
-let suggesting = false;   // plan() re-plans at larger voxel sizes for a suggestion, once
+let suggesting = false;   // plan() re-plans at other voxel sizes (a suggestion, costAt), never from inside such a plan
 
-export function plan(store: EditorStore, a: FieldArgs): Plan {
+/** `shape` reshapes the sampled field before it is packed (heightfield_drape's core: the columns under its skin). */
+export function plan(store: EditorStore, a: FieldArgs, shape?: (f: Field) => void): Plan {
   const f = sampleField(store, a);
+  shape?.(f);
   const cv = canvas(store, f, a.reuseFrames ?? "aligned");
 
   let columns = 0, voxels = 0, top = -Infinity;
@@ -582,7 +690,7 @@ export function plan(store: EditorStore, a: FieldArgs): Plan {
   const byteRoom = PATCH_BUDGET - patchBytes - fillBytes;
   const cells = cellBudget(store.scene);
   const blockRoom = Math.min(slots, Math.floor(opsRoom / 2)), cellRoom = Math.max(0, Math.min(cells.free, a.maxCells ?? Infinity));
-  const pieces = pack(f, cv, blockRoom, cellRoom);
+  const pieces = pack(f, cv, blockRoom, cellRoom, a.packer ?? "tiles");
   const { kept, dropped } = choose(pieces, blockRoom, byteRoom, cellRoom);
   const neededCells = pieces.reduce((n, p) => n + cellsOf(p), 0), keptCells = kept.reduce((n, p) => n + cellsOf(p), 0);
 
@@ -641,6 +749,24 @@ export function plan(store: EditorStore, a: FieldArgs): Plan {
       : ` No voxelSize up to ${LIMITS.newFrameScale.max} fits it whole: shrink the rectangle, lower the heights, or raise maxCells.`;
   }
 
+  // costAt: the same field planned at other voxel sizes, so the cost of finer voxels on a part is known before it is built.
+  let costs: object[] | undefined;
+  if (a.costAt?.length && !suggesting) {
+    suggesting = true;
+    try {
+      costs = [...new Set(a.costAt)].slice(0, 8).map((v) => {
+        try {
+          const q = plan(store, { ...a, voxelSize: v, partial: false, costAt: undefined });
+          return { voxelSize: v, fits: q.fits && !q.dropped.length, blocks: q.pieces.length, cells: q.pieces.reduce((n, pc) => n + cellsOf(pc), 0),
+            voxels: q.voxels, ...(q.why ? { why: q.why.split(". ")[0] } : {}) };
+        } catch (e) {
+          return { voxelSize: v, error: e instanceof Error ? e.message : String(e) };
+        }
+      });
+    } finally {
+      suggesting = false;
+    }
+  }
   const toW = (v: number) => num(v * WORLD_PER_MAP);
   const rect = { min: mapOf(f, [f.i0, f.floor, f.j0]), max: mapOf(f, [f.i0 + f.nx, top === -Infinity ? f.floor : top, f.j0 + f.nz]) };
   const notes: string[] = [];
@@ -648,10 +774,23 @@ export function plan(store: EditorStore, a: FieldArgs): Plan {
     notes.push(`a surface rule paints a skin of another material over ${columns} columns: in a test a one-voxel skin over 6954 columns made the game's ` +
       "landscape combiner run out of vertices (CombineLandscapeAction asserts, holes in the drawn terrain) where height bands over the same island did not; " +
       "on a large field prefer minHeight/maxHeight or slope bands, and Test the level");
+  // Base frames the field overlaps but aligned reuse left out: filling them costs no block and no cells.
+  const reuse = a.reuseFrames ?? "aligned";
+  if (reuse === "aligned" && pieces.length && cv.skipped.some((x) => /rotated|scaled|lattice/.test(x.why)) && !suggesting) {
+    const any = canvas(store, f, "any");
+    const free = any.fills.filter((x) => !x.aligned).reduce((n, x) => n + x.covers, 0);
+    if (free > 0) notes.push(`${any.fills.filter((x) => !x.aligned).length} base frames the field overlaps could take ${free} of its voxels at no block or cell cost with ` +
+      `reuseFrames: "any" (filled cell by cell, so their surface follows the field to within one of their own voxels)`);
+  }
+  if ((a.packer ?? "tiles") === "tiles" && pieces.length > 4 && !suggesting) {
+    const g = pack(f, cv, blockRoom, cellRoom, "greedy");
+    if (g.length < pieces.length) notes.push(`packer: "greedy" cuts this field into ${g.length} blocks (${g.reduce((n, pc) => n + cellsOf(pc), 0)} cells) instead of ${pieces.length}`);
+  }
   const report = {
     fits, ...(why ? { why } : {}), ...(notes.length ? { notes } : {}),
     ...(suggest !== undefined ? { suggestedVoxelSize: suggest ?? "none up to 4 fits the field whole" } : {}),
-    region: { voxelSize: f.s, columns: f.nx * f.nz, size: [f.nx, f.nz], solidColumns: columns, map: { min: tidy(rect.min), max: tidy(rect.max) },
+    ...(costs ? { costAt: costs } : {}),
+    region: { voxelSize: f.s, edges: a.edges ?? "round", packer: a.packer ?? "tiles", columns: f.nx * f.nz, size: [f.nx, f.nz], solidColumns: columns, map: { min: tidy(rect.min), max: tidy(rect.max) },
       world: { min: tidy(rect.min.map((v) => v * WORLD_PER_MAP) as Vec3), max: tidy(rect.max.map((v) => v * WORLD_PER_MAP) as Vec3) },
       floor: { map: num(f.floor * f.s + f.t[1]), world: toW(f.floor * f.s + f.t[1]) }, peakVoxels: columns ? top - f.floor : 0 },
     voxels: { field: voxels, alreadySolid: solidVoxels, inFrames: fillVoxels, inBlocks: keptVoxels, dropped: blockVoxels - keptVoxels },
@@ -676,7 +815,8 @@ export function plan(store: EditorStore, a: FieldArgs): Plan {
 let strokes = -1_000_000;
 
 /** Applies a plan that fits as one undo step: the frame fills, then the blocks. */
-export function apply(store: EditorStore, p: Plan): { blocks: { id: number; name: string }[] } {
+/** `extra` adds commands to the same undo step, given the block ids and names taken so far (heightfield_drape's skin). */
+export function apply(store: EditorStore, p: Plan, extra?: (ids: Set<number>, names: Set<string>) => Command[]): { blocks: { id: number; name: string }[] } {
   if (!p.fits) throw new ToolError(p.why ?? "the heightfield does not fit");
   const f = p.field;
   const cmds: Command[] = [];
@@ -701,6 +841,7 @@ export function apply(store: EditorStore, p: Plan): { blocks: { id: number; name
     cmds.push(new AddFrame(store.voxels, frame, words(f, p.canvas, pc)));
     made.push({ id: tmp, name });
   }
+  if (extra) cmds.push(...extra(ids, names));
   if (!cmds.length) throw new ToolError(p.why ? `nothing could be placed: ${p.why}` : "the field is already solid: nothing to place");
   const before = new Set(store.problems());
   store.exec(new Group("Heightfield", cmds));

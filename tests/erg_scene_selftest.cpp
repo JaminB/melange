@@ -24,6 +24,15 @@ namespace names = melange::erg::names;
 namespace luagen = melange::erg::luagen;
 namespace lm = melange::levels::manifest;
 
+// A JSON array of n copies of v.
+static std::string Corners(int n, double v) {
+    char buf[32];
+    std::snprintf(buf, sizeof buf, "%g", v);
+    std::string out = "[";
+    for (int i = 0; i < n; ++i) out += (i ? std::string(",") : std::string()) + buf;
+    return out + "]";
+}
+
 namespace {
 int g_fail = 0, g_pass = 0;
 
@@ -658,7 +667,9 @@ void TestV2Model() {
         {Mutate(ptext, "\"size\":[6,31,6]", "\"size\":[6,0,6]"), "a new frame side of 0", "size"},
         {Mutate(ptext, "\"size\":[6,31,6]", "\"size\":[6,31,33]"), "a new frame side of 33", "size"},
         {Mutate(ptext, "\"size\":[6,31,6]", "\"size\":[6,31]"), "a new frame size of two sides", "size"},
-        {Mutate(ptext, "\"size\":[6,31,6]", "\"size\":[6,31,6],\"scale\":0.5"), "a new frame scale under 1", "scale"},
+        {Mutate(ptext, "\"size\":[6,31,6]", "\"size\":[6,31,6],\"scale\":0.49"), "a new frame scale under 0.5", "scale"},
+        {Mutate(ptext, "\"size\":[6,31,6]", "\"size\":[6,31,6],\"corners\":[0,1]"), "corners of another count", "corners"},
+        {Mutate(ptext, "\"size\":[6,31,6]", "\"size\":[6,31,6],\"corners\":" + Corners(49, 64.5)), "a corner offset past 64", "corners"},
         {Mutate(ptext, "\"size\":[6,31,6]", "\"size\":[6,31,6],\"scale\":4.01"), "a new frame scale over 4", "scale"},
         {Mutate(ptext, "\"size\":[6,31,6]", "\"size\":[6,31,6],\"scale\":[2,2,2]"), "a new frame scale as a vector", "scale"},
         {Mutate(ptext, "[0,64,23]", "[0,64,16777239]"), "a voxel value with bits 24-31 set", "bits 24-31"},
@@ -671,11 +682,29 @@ void TestV2Model() {
 
     // Kept readable for projects made before the engine's 31-voxel limit was known, and an optional uniform scale.
     for (const auto& [from, to, what] : {std::tuple{"\"size\":[6,31,6]", "\"size\":[32,31,6]", "a legacy side of 32"},
-                                         std::tuple{"\"size\":[6,31,6]", "\"size\":[6,31,6],\"scale\":2.5", "a scale of 2.5"}}) {
+                                         std::tuple{"\"size\":[6,31,6]", "\"size\":[6,31,6],\"scale\":2.5", "a scale of 2.5"},
+                                         std::tuple{"\"size\":[6,31,6]", "\"size\":[6,31,6],\"scale\":0.5", "a scale of 0.5"}}) {
         erg::Patch ok;
         erg::Scene app = base;
         Expect(erg::ParsePatch(Mutate(ptext, from, to), &ok, &err) && erg::ApplyPatch(app, ok, AllRules(), &err),
                std::string("patch accepted: ") + what + " " + err);
+    }
+    // Corner offsets on a new frame: parsed, applied to the frame, written back and carried by the scene.
+    {
+        erg::Patch cp;
+        erg::Scene app = base;
+        const std::string ctext = Mutate(ptext, "\"size\":[6,31,6]", "\"size\":[6,31,6],\"corners\":" + Corners(49, -2.5));
+        Expect(erg::ParsePatch(ctext, &cp, &err) && erg::WritePatch(cp) == ctext && erg::ApplyPatch(app, cp, AllRules(), &err) &&
+                   app.FindFrame(-1)->corners.size() == 49 && app.FindFrame(-1)->corners[48] == -2.5,
+               "patch accepted: corners on a new frame " + err);
+        erg::Scene back, again;
+        Expect(erg::ParseScene(Mutate(text, "\"parent\":1000", "\"parent\":1000,\"corners\":" + Corners(49, -2.5)), &back, &err) &&
+                   back.FindFrame(-1)->corners.size() == 49 && erg::ParseScene(erg::WriteScene(back), &again, &err) &&
+                   again.FindFrame(-1)->corners == back.FindFrame(-1)->corners,
+               "the scene carries a new frame's corners: " + err);
+        erg::Scene onBase;
+        Expect(!erg::ParseScene(Mutate(text, "\"parent\":1000", "\"parent\":1000,\"corners\":[0]"), &onBase, &err) && err.find("corners") != std::string::npos,
+               "corners of the wrong count on a scene frame are refused (" + err + ")");
     }
     erg::Scene scaled;
     Expect(erg::ParseScene(Mutate(text, "\"scale\":[1,1,1],\"size\":[6,31,6]", "\"scale\":[2.5,2.5,2.5],\"size\":[6,31,6]"), &scaled, &err) &&

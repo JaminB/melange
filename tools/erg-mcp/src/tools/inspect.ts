@@ -316,8 +316,11 @@ export async function queryGround(s: Session, a: { x: number; z: number; units?:
   const span = (q: (typeof sp)[number]) => ({ top: out(q.top), bottom: out(q.bottom), frame: q.frame, frameName: frameName(store, q.frame) ?? null, material: q.material, materialName: names?.[q.material] ?? null });
   const at = { map: [r2(px), r2(pz)], world: [r2(px * WORLD_PER_MAP), r2(pz * WORLD_PER_MAP)] };
   if (!sp.length) return { at, ground: null, note: a.below === undefined ? "no voxel frame has ground in this column" : "no ground under that height in this column" };
+  const top = span(sp[0]);
   return {
-    at, ground: span(sp[0]),
+    at, ground: top,
+    // the top stretch's frame and material at the top level too, where the other tools name a frame (frame, frameName)
+    frame: top.frame, frameName: top.frameName, material: top.material, materialName: top.materialName,
     standOn: out(sp[0].top),    // the y a thing placed here rests on
     water: water === null ? "the level's own height (not known here)" : { map: r2(water), world: r2(water * WORLD_PER_MAP), groundIsUnderWater: sp[0].top <= water },
     spans: { count: sp.length, listed: sp.slice(0, a.maxSpans ?? 6).map(span), note: "highest first: every stretch of solid voxels in the column over all frames (below asks for the ground under a height)" },
@@ -514,7 +517,7 @@ export const tools: Tool[] = [
   },
   {
     name: "query_ground",
-    description: "The ground at a column (x, z): the top of the highest solid voxel (map and world y, the frame and the material), the y to stand on, whether it is under water, and every solid stretch of the column over all frames (so bridges and overhangs show; `below` asks for the ground under a given height).",
+    description: "The ground at a column (x, z): the top of the highest solid voxel (map and world y, the frame and the material, under ground; frame, frameName, material and materialName are also at the top level, as other tools name them), the y to stand on, whether it is under water, and every solid stretch of the column over all frames (so bridges and overhangs show; `below` asks for the ground under a given height).",
     inputSchema: {
       type: "object", additionalProperties: false, required: ["x", "z"],
       properties: {

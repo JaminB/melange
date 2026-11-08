@@ -268,7 +268,7 @@ test("voxelSize: scaled blocks on a lattice of that size, the same field in fewe
   // A second field at the same voxel size reuses those blocks as canvas (they are on its lattice).
   const again = plan(st, { min: [-20, -20], max: [20, 20], floor: 60, expr: "5", voxelSize: 2.5 });
   assert.ok((again.report.frames as { approximate?: true }[]).every((x) => !x.approximate));
-  assert.throws(() => plan(st, { ...field, voxelSize: 5 }), /voxelSize is 1-4/);
+  assert.throws(() => plan(st, { ...field, voxelSize: 5 }), /voxelSize is 0.5-4/);
   // the surface rule over a field this large gets the game's vertex note; height bands do not
   assert.ok((p.report.notes as string[]).some((n) => /CombineLandscapeAction/.test(n)));
   assert.equal(plan(store(), { ...field, voxelSize: 2.5, materials: [{ material: 7, maxHeight: 10 }] }).report.notes, undefined);

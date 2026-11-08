@@ -20,8 +20,12 @@ constexpr size_t kLegacyNewFrameSide = 32;
 // The engine counts the cells (X*Y*Z, solid or empty) of all of a level's voxel frames in 16 bits
 // (LandscapeLogicEntity) and crashes loading a level past this. Export, build and Test refuse such a level.
 constexpr uint64_t kMaxVoxelCells = 65535;
-// A new frame's uniform scale (map units per voxel); the game's own frames use 1.0-2.0.
-constexpr double kMinNewFrameScale = 1, kMaxNewFrameScale = 4;
+// A new frame's uniform scale (map units per voxel); the game's own frames use 1.0-2.0, and 0.75 played in the game.
+constexpr double kMinNewFrameScale = 0.5, kMaxNewFrameScale = 4;
+// A new frame's corner offsets (the .xan's HeightMap: (X+1)*(Z+1) floats, row by row along x, in voxels): the engine
+// moves each column's vertices up by the offsets at its corners (bilinear), its bottom too, for drawing and collision.
+// The game's own frames use -1.9..3.6; 20 played in the game. Optional: a new frame without them gets zeros.
+constexpr double kMaxCornerOffset = 64;
 constexpr size_t kHmpSide = 100, kHmpCells = kHmpSide * kHmpSide, kHmpBytes = kHmpCells * 5;   // f32 heights + u8 blend
 
 using Vec3 = std::array<double, 3>;
@@ -59,7 +63,8 @@ struct Frame {
     int64_t voxels = -1, heightMap = -1;              // blob refs, -1 = none
     bool folder = false;                              // 1x1x1, identity rotation and scale
     bool isNew = false;                               // added by the author: id -1..-64, under the Scene frame
-                                                      // (no rotation, uniform scale 1-4)
+                                                      // (no rotation, uniform scale 0.5-4)
+    std::vector<double> corners;                      // a new frame's corner offsets, empty = zeros (kMaxCornerOffset)
 };
 struct Detail {
     int64_t id = 0;

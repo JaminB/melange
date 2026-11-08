@@ -30,6 +30,7 @@ struct FrameAdd {
     Vec3 pos{0, 0, 0};
     std::array<int, 3> size{1, 1, 1};                 // 1..31 each (32 is still read: kLegacyNewFrameSide)
     double scale = 1;                                 // uniform, kMinNewFrameScale..kMaxNewFrameScale; written only when not 1
+    std::vector<double> corners;                      // optional corner offsets in voxels (Frame::corners); written when set
 };
 struct Op {
     enum class Kind : uint8_t { Set, Add, Remove, Voxels, AddFrame, Hmp } kind = Kind::Set;

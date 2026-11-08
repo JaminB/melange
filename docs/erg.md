@@ -90,7 +90,7 @@ column* takes the material of the terrain above. Fill and paint stay inside the 
 on.
 
 **Blocks.** *Add block* places a new solid block of the brush's size (1-31 voxels a side) and material: click the
-terrain and the block rests there, its corner snapped to whole map units. *Scale* (1-4, default 1) makes each voxel
+terrain and the block rests there, its corner snapped to whole map units. *Scale* (0.5-4, default 1) makes each voxel
 that many map units across, so a block of 31 at scale 2.5 is about 78 map units wide for the same cost; the game's own
 maps use scales of 1.2-2.0. A block can be sculpted like any other terrain, and the *Terrain* tab lists the blocks with
 a *Remove* button. A map holds up to 64.
@@ -258,8 +258,12 @@ Survivor copy. Packs exported by an earlier Melange keep working unchanged.
 
 - Up to 32 maps in one mod, 128 across every enabled mod at once.
 - A map title is 1-40 plain-ASCII characters.
-- Up to 64 added blocks per map, each side 1-31 voxels, scale 1-4. The game asserts on a side of 32: a block of 32 made
-  by an older Melange still opens, and saving names it in a warning (remove it and add it again at 31).
+- Up to 64 added blocks per map, each side 1-31 voxels, scale 0.5-4 (0.75 played in the game; under 1 is finer than
+  the base map's voxels at the same cost per cell). A block may carry corner offsets (the patch's `addFrame.corners`,
+  the frame's HeightMap, -64..64 voxels), which the game uses to shear each column up for drawing and collision; erg-mcp's
+  `heightfield_drape` makes them, and the panel's 3D view draws such a block unsheared. The game asserts on a side of
+  32: a block of 32 made by an older Melange still opens, and saving names it in a warning (remove it and add it again
+  at 31).
 - At most 65 535 voxel cells per map, counted over every voxel frame (see [the cell budget](#terrain)): saving warns
   past it, and Export, Build and Test refuse.
 - The game draws terrain from a mesh with a vertex budget of its own. A large area where every column's top voxel is a

@@ -805,12 +805,43 @@ void TestNewFrames() {
            "scaled frames: the .xan frame has the scale " + err);
     const erg::Patch sd = erg::build::Diff(L.scene, s, v, &L.blobs);
     Expect(!sd.ops.empty() && sd.ops[0].kind == erg::Op::Kind::AddFrame && sd.ops[0].newFrame.scale == 2.5, "scaled frames: the diff keeps the scale");
-    for (const char* bad : {"0.5", "4.5", "\"2\"", "[2,2,2]"}) {
+    for (const char* bad : {"0.4", "4.5", "\"2\"", "[2,2,2]"}) {
         std::string t = stext;
         t.replace(t.find("\"scale\":2.5") + 8, 3, bad);
         erg::Patch q;
         std::string e;
         Expect(!erg::ParsePatch(t, &q, &e) && e.find("scale") != std::string::npos, std::string("scaled frames: scale ") + bad + " is refused: " + e);
+    }
+    // Corner offsets: written into the built frame's HeightMap, (X+1)*(Z+1) floats; a block without them gets zeros.
+    {
+        erg::Patch cp = sback;
+        const auto& sz = cp.ops[0].newFrame.size;
+        const size_t n = static_cast<size_t>(sz[0] + 1) * (sz[2] + 1);
+        for (size_t i = 0; i < n; ++i) cp.ops[0].newFrame.corners.push_back(0.25 * static_cast<double>(i) - 1);
+        erg::Patch cback;
+        erg::Scene cs;
+        erg::build::VoxelEdits cv;
+        std::vector<erg::build::File> cf;
+        Expect(erg::ParsePatch(erg::WritePatch(cp), &cback, &err) && erg::build::Apply(L, cback, rules, &cs, &cv, &err) &&
+                   erg::build::Build(L, cs, cv, {}, &cf, &err),
+               "corners: applied and built " + err);
+        erg::load::BaseFiles cx = out;
+        cx.xan = FileBytes(cf, "Maps/ergtest_synth.xan");
+        erg::load::Loaded CB;
+        const erg::Frame* cb = nullptr;
+        if (erg::load::LoadScene(cx, &CB, &err))
+            for (const auto& fr : CB.scene.frames)
+                if (fr.name == "ergblock_0") cb = &fr;
+        bool same = cb && cb->heightMap >= 0 && CB.blobs.count(cb->heightMap) && CB.blobs[cb->heightMap].size() == n * 4;
+        for (size_t i = 0; same && i < n; ++i) {
+            float f = 0;
+            std::memcpy(&f, CB.blobs[cb->heightMap].data() + i * 4, 4);
+            same = f == static_cast<float>(cp.ops[0].newFrame.corners[i]);
+        }
+        Expect(same, "corners: the .xan frame's HeightMap holds them " + err);
+        bool zeros = sbuilt && sbuilt->heightMap >= 0 && SB.blobs.count(sbuilt->heightMap);
+        for (uint8_t b : zeros ? SB.blobs[sbuilt->heightMap] : std::vector<uint8_t>{}) zeros = zeros && b == 0;
+        Expect(zeros, "corners: a block without them has a HeightMap of zeros");
     }
     erg::Scene bent = s;
     for (auto& fr : bent.frames)

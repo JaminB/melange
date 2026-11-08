@@ -171,7 +171,8 @@ export function applyPlan(store: EditorStore, plan: Plan, opt: ApplyOptions): St
   const vol = (max[0] - min[0]) * (max[1] - min[1]) * (max[2] - min[2]);
   if (vol > MAX_CELLS) throw new ToolError(`the structure's box is ${Math.round(vol)} cells (at most ${MAX_CELLS}): split it into parts`);
   const notes = [...plan.notes];
-  const near = grids(store).filter((g) => overlap(g, min, max));
+  // A draped block (corner offsets: heightfield_drape) is not where its grid says, so structures leave it alone.
+  const near = grids(store).filter((g) => overlap(g, min, max) && !g.frame.corners);
   const fillsExisting = opt.place !== "new";
   const stroke = new Map<number, Map<number, [number, number]>>();
   const perFrame = new Map<number, { id: number; name: string; changed: number }>();

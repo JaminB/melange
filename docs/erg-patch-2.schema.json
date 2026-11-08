@@ -153,9 +153,14 @@
               },
               "scale": {
                 "type": "number",
-                "minimum": 1,
+                "minimum": 0.5,
                 "maximum": 4,
                 "description": "Map units per voxel, the same on every axis (the frame's Scale). Absent means 1 and is how 1 is written."
+              },
+              "corners": {
+                "type": "array",
+                "items": { "type": "number", "minimum": -64, "maximum": 64 },
+                "description": "Optional corner offsets in voxels, (X+1)*(Z+1) of them row by row along x: the frame's HeightMap. The game moves each column (bottom and top) up by the bilinear offset of its corners, drawn and for collision. Absent means zeros and is how zeros are written."
               }
             }
           },

@@ -200,6 +200,13 @@ bool BuildXan(const load::Loaded& base, const Scene& edited, const VoxelEdits& v
         zs->setInt(f.size[2]);
         vox->raw = Words(w);
         hm->raw.assign(corners * 4, 0);
+        if (!f.corners.empty()) {
+            if (f.corners.size() != corners) return Fail(err, "frame " + std::to_string(f.id) + ": corners do not match its size");
+            for (size_t i = 0; i < corners; ++i) {
+                const float c = static_cast<float>(f.corners[i]);
+                std::memcpy(hm->raw.data() + i * 4, &c, 4);
+            }
+        }
         det->items.clear();
         kids->items.clear();
         if (vis) vis->setInt(1);

@@ -152,7 +152,7 @@ export function stroke(store: EditorStore, spec: StrokeSpec, centres: Vec3[], an
 
 // ------------------------------------------------------------------ blocks
 
-export interface BlockSpec { size: Vec3; material: number; at?: Vec3; center?: Vec3; units: Units; scale?: number; }
+export interface BlockSpec { size: Vec3; material: number; at?: Vec3; center?: Vec3; units: Units; scale?: number; dryRun?: boolean; }
 
 export function addBlock(store: EditorStore, s: BlockSpec) {
   if (!!s.at === !!s.center) throw new ToolError("give exactly one of `at` (the point the block rests on: x and z are its centre, y its bottom) or `center`");
@@ -165,6 +165,18 @@ export function addBlock(store: EditorStore, s: BlockSpec) {
   if (!centre) throw new ToolError("This level has no Scene frame to add blocks under");
   const cmd = planBlock(store.scene, store.voxels, store.freshRef(), centre, s.size, s.material, scale);
   if (typeof cmd === "string") throw new ToolError(cmd);
+  if (s.dryRun) {
+    // the cost before it is committed: the block's whole box counts against the game's cells
+    const before = cellBudget(store.scene), cost = s.size[0] * s.size[1] * s.size[2];
+    const w = store.frames.worldOf(cmd.frame.parent!), t: Vec3 = w ? [w[3], w[7], w[11]] : [0, 0, 0];
+    const half = s.size.map((v) => (v * scale) / 2), c = cmd.frame.pos.map((v, i) => v + t[i]);
+    return {
+      dryRun: true, size: s.size, scale, material: s.material, voxels: cost,
+      cells: { cost, before: before.used, after: before.used + cost, max: before.max, left: before.free - cost },
+      bounds: { map: { min: tidy([c[0] - half[0], c[1] - half[1], c[2] - half[2]]), max: tidy([c[0] + half[0], c[1] + half[1], c[2] + half[2]]) } },
+      covers: { mapUnits: tidy(s.size.map((v) => v * scale) as Vec3), cellsPerMapUnit3: Number((1 / scale ** 3).toFixed(4)) },
+    };
+  }
   store.exec(cmd);
   const g = frameGrids(store).find((x) => x.frame.id === cmd.frame.id)!;
   return {

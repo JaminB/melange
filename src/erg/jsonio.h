@@ -29,6 +29,9 @@ bool GetVec(const Json& o, const char* key, const std::string& path, Vec3* out, 
             double limit = 1e6);
 bool OnlyKeys(const Json& o, std::initializer_list<std::string_view> keys, const std::string& path, std::string* err);
 bool IsHex64(std::string_view s);
+// A new frame's optional "corners": (size[0]+1)*(size[2]+1) numbers within kMaxCornerOffset; absent leaves *out empty.
+bool GetCorners(const Json& o, const std::string& path, const std::array<int, 3>& size, std::vector<double>* out, std::string* err);
+Json CornersJson(const std::vector<double>& corners);
 
 // erg-scene/2 and erg-patch/2 share these blocks.
 bool GetBool(const Json& o, const char* key, const std::string& path, bool* out, std::string* err, bool required = true);

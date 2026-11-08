@@ -119,6 +119,28 @@ bool GetNumber(const Json& v, const std::string& path, double lo, double hi, dou
     return true;
 }
 
+bool GetCorners(const Json& o, const std::string& path, const std::array<int, 3>& size, std::vector<double>* out, std::string* err) {
+    out->clear();
+    const Json* v = o.find("corners");
+    if (!v || v->kind == Json::Kind::Null) return true;
+    const size_t n = static_cast<size_t>(size[0] + 1) * (size[2] + 1);
+    if (v->kind != Json::Kind::Array || v->arr.size() != n)
+        return Fail(err, path + ".corners", "must be (X+1)*(Z+1) = " + std::to_string(n) + " numbers");
+    out->reserve(n);
+    for (size_t i = 0; i < n; ++i) {
+        double d = 0;
+        if (!GetNumber(v->arr[i], path + ".corners[" + std::to_string(i) + "]", -kMaxCornerOffset, kMaxCornerOffset, &d, err)) return false;
+        out->push_back(d);
+    }
+    return true;
+}
+
+Json CornersJson(const std::vector<double>& corners) {
+    Json a = Json::Arr();
+    for (double c : corners) a.arr.push_back(Num(c));
+    return a;
+}
+
 bool GetVec(const Json& o, const char* key, const std::string& path, Vec3* out, std::string* err, bool required,
             double limit) {
     const Json* v = o.find(key);

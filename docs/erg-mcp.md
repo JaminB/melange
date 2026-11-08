@@ -97,7 +97,7 @@ of the anchor frame, 1-32.
 |---|---|
 | `sculpt` | One dab: `mode` (`carve`, `fill`, `paint`), `shape` (`box`, `sphere`), `size` `[x,y,z]`, `center`, and `material` 0-63 (fill and paint need it; fill also takes `materialColumn`, the material of the highest solid voxel in each column). `frame` picks the anchor, otherwise the frame holding the point. Centres snap to the middle of a voxel unless `snap` is false; `dryRun` counts without applying. Fill places voxels where the brush is, so centre it in empty cells inside a frame. |
 | `sculpt_path` | A stroke along `points` (a polyline), a dab every `spacing` map units (default half the smallest brush side), all anchored on the first point's frame (or `frame`). |
-| `add_block` | A solid block of `size` (each side 1-31, at most 64 blocks) and `material` under the Scene frame, optionally `scale` (1-4 map units per voxel, default 1; the game's own maps use frames scaled 1.2-2.0). `at` is the point it rests on (x and z its centre, y its bottom) or `center` is its middle, in world or map units; the corner snaps to whole units. Refused when the level's voxel frames would pass the game's 65 535 cells. Answers the new frame id (a negative id; it can change when the project is reopened, so describe_level again), its bounds and the cells left. |
+| `add_block` | A solid block of `size` (each side 1-31, at most 64 blocks) and `material` under the Scene frame, optionally `scale` (0.5-4 map units per voxel, default 1; the game's own maps use frames scaled 1.2-2.0, and 0.75 played in the game: finer voxels for a crater lip or a summit at the same cost per cell). `dryRun` answers the block's cost (the game's cells before and after, its bounds) without adding it. `at` is the point it rests on (x and z its centre, y its bottom) or `center` is its middle, in world or map units; the corner snaps to whole units. Refused when the level's voxel frames would pass the game's 65 535 cells. Answers the new frame id (a negative id; it can change when the project is reopened, so describe_level again), its bounds and the cells left. |
 | `remove_block` | Remove a block added in this project, by frame id. |
 | `clear_base_terrain` | Carve away the solid voxels of base frames chosen by `frames`, `search` (name) and/or a `box` (voxels whose centre is in `[min, max)`); `all: true` for everything. Added blocks are kept unless `includeBlocks`. `wipe` writes empty words (0) instead of carving, which keeps each voxel's material bits; empty words merge into fewer patch runs. `dryRun` counts. |
 | `fill_box_raw` | Write a box of voxels in any voxel frame, including added blocks: `state` `solid` (with `material`) or `empty`, or a raw `word`; `only` empty or solid cells; the box is `min`/`max` in `units` (default `grid`: voxel indices, `max` exclusive). Words must be valid edits of the base word. |
@@ -182,6 +182,16 @@ Arguments, all lengths and heights in `units` (`map` default, or `world`):
   `surface` (only the top n voxels of a column). For example snow above 30, grass on the top voxel where the slope is
   under 40 degrees, rock elsewhere: `[{material: 3, surface: 1, maxSlope: 40}, {material: 2, minHeight: 30}]` with
   `material: 1`.
+- `materials` rules may also bound `minDepth`/`maxDepth` (the voxel's depth under its column's top, in `units`: rock
+  under a skin, lava deep in a crater), `exposed` (true: only voxels with air above or beside them, cliff faces
+  included; false: only buried ones) and `jitter` {`amount`, `scale` (default 8), `seed`}: Perlin noise moves the rule's
+  `minHeight`/`maxHeight` by up to `amount`, so a band's edge wanders instead of running level round a cone.
+- `edges`: how a height becomes whole voxels: `round` (default; a cone becomes concentric terraces), `dither` (a 4 x 4
+  ordered pattern) or `noise` (a hash per column): the terrace edges break up into a ragged line at the same cost. For
+  smooth slopes use `heightfield_drape` (below).
+- `packer`: `tiles` (default, a grid of 31 x 31 columns), `greedy` (tiles that start on the field's own columns: fewer
+  blocks for a ring or a sparse field) or `best` (both, keeping the fewer blocks). `costAt`: also plan the same field at
+  up to 8 voxel sizes and answer each one's blocks and cells (`costAt`), to choose a size first.
 - `reuseFrames`: `aligned` (default), `any` or `none`; see below.
 - `maxBlocks` and `maxCells`: add at most this many blocks, and blocks holding at most this many of the game's cells,
   to keep some of each for other edits (castles).
@@ -243,6 +253,29 @@ Multi.W3DIceIceMaybe is (all but 55 are rotated or scaled, and those 55 sit off 
 rotated and scaled frames that are not scaled under 0.9, which follows the field's surface only to within one of the
 frame's voxels; the answer marks them `approximate`. On a level with no Scene frame (Multi.W3DIceIceMaybe) no block can
 be added, so only frames can be filled.
+
+### drape
+
+| Tool | What it does |
+|---|---|
+| `heightfield_drape` | The heightfield tools' arguments (the field, `voxelSize`, `materials`, `clip`, `maxBlocks`, ...), raised as a smooth skin instead of voxel terraces: blocks of up to 31 x 31 columns, `thickness` voxels thick (1-8, default 2), whose **corner offsets** put each column on the field's height, over the stepped field cut just under the skin (`core`, default true; `false` leaves a hollow skin for about a fifth of the cells). `dryRun` answers the plan: the skin's blocks (size, columns, the offsets' range), the core's blocks and cells, the budget. One undo step. |
+
+**Corner offsets.** Every voxel frame of a .xan has a HeightMap: a float per corner of its columns ((X+1) x (Z+1), in
+voxels). The game moves each column's vertices, its bottom too, up by the bilinear offset of the column's corners, and
+uses the moved columns for drawing and for collision (seen in the game on 2026-11-07: a 24 x 4 x 24 block with offsets
+rising 3, 6 and 20 voxels across it drew and collided as a sheared slab; worms stood on it, landRay heights matched the
+offsets exactly; the game's own maps use -1.9 to 3.6, for curved roofs). Neighbouring columns share a corner, so an
+offset cannot smooth a step between two columns of different heights: only a block whose columns are all the same
+height can follow a surface, which is what the skin is. A patch carries them on `addFrame` as `corners` (-64..64,
+written only when set); a block without them has zeros, as before. Tried on Multi.DinerMight: a cone 120 map units
+across, 30 high, at `voxelSize` 2 draped in 4 skin blocks (4608 cells) over 4 core blocks: smooth flanks in the game,
+worms placed with `xz` stood on them, and a bazooka dug into the skin.
+
+The skin is read at its sheared height by `query_ground`, the renders, `check_reachability`, `place_*` drops and the
+Erg panel's drop to ground. The structure tools and `heightfield_region`'s frame filling leave a draped block alone
+(its cells are not where its grid says), and the sculpt brushes edit it as if unsheared: build structures and carve
+before draping, or beside the skin.
+The Erg panel's 3D view draws a draped block unsheared.
 
 ### place
 

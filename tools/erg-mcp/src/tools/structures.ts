@@ -26,7 +26,7 @@ const common: Record<string, Schema> = {
   },
   dryRun: { type: "boolean", description: "Plan only: report the voxels, frames and new blocks it would use and change nothing." },
   units: { type: "string", enum: ["map", "world"], description: "Unit of every position and length in this call: map (default; 1 voxel = 1 unit) or world (map x 20, as the Erg panel shows)." },
-  blockScale: { type: "number", minimum: 1, maximum: 4, description: "Map units per voxel of the new blocks (default 1): a larger one covers the same structure with fewer of the game's 65535 cells, in coarser voxels (detail under a voxel is lost). Use place \"new\" so the whole structure is on that lattice." },
+  blockScale: { type: "number", minimum: 0.5, maximum: 4, description: "Map units per voxel of the new blocks (default 1): a larger one covers the same structure with fewer of the game's 65535 cells, in coarser voxels (detail under a voxel is lost). Use place \"new\" so the whole structure is on that lattice." },
   packing: { type: "string", enum: ["tiles", "parts"], description: "How new blocks are cut. tiles (default): tiles of up to 31 voxels a side, each trimmed to what it holds. parts: a block per part (each wall, tower, the keep), merged where that costs few cells, so the air between parts (a courtyard) is in no block: fewer cells, more blocks." },
 };
 const foundation: Schema = { type: "integer", minimum: 0, maximum: 32, description: "Voxels of solid filled below the base (y) so the structure reaches the ground. Default 0." };
@@ -115,7 +115,7 @@ export const tools: Tool[] = [
         gateWidth: { type: "number", minimum: 2, description: "Default 4." },
         gateHeight: { type: "number", minimum: 2, description: "Default 5 (round-topped from 3 wide)." },
         crenellations: crenellations("Merlons on the walls, towers and keep. Default true."),
-        scale: { type: "number", minimum: 1, maximum: 4, description: "Build the castle from voxels of this many map units (default 1). Lengths stay map units; the design is laid out in voxels of `scale` (walls, merlons and gates keep their rhythm in voxels) and new blocks get that scale (blockScale), so it costs about 1/scale^3 of the cells. Use place \"new\"." },
+        scale: { type: "number", minimum: 0.5, maximum: 4, description: "Build the castle from voxels of this many map units (default 1). Lengths stay map units; the design is laid out in voxels of `scale` (walls, merlons and gates keep their rhythm in voxels) and new blocks get that scale (blockScale), so it costs about 1/scale^3 of the cells. Use place \"new\"." },
         foundation, rotation, ...common,
       },
     },

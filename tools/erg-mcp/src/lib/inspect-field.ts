@@ -1,6 +1,6 @@
 // Read-only views of the level for the inspect tools: solid spans of a (x, z) column across every voxel frame, a height
 // field over a region, and the level's markers (spawns, objects, mine factory). Map units throughout (1 voxel = 1 map unit).
-import type { EditorStore, Vec3 } from "../core";
+import { cornerOffset, type EditorStore, type Vec3 } from "../core";
 import { inside, isSolid, material, type Grid } from "./voxel";
 
 /** A solid stretch of one frame's column: from `bottom` up to `top` (map y), the material of its top voxel. */
@@ -28,12 +28,14 @@ export function columnSpans(g: Grid, px: number, pz: number, topOnly = false): S
     const cx = Math.floor((px - m[3]) / m[0] + 1e-9), cz = Math.floor((pz - m[11]) / m[10] + 1e-9);
     if (!inside(g.size, cx, 0, cz)) return out;
     const at = (cz * X + cx) * Y;
+    // An added block's corner offsets move the whole column up (draped blocks: heightfield_drape).
+    const lift = g.frame.corners ? cornerOffset(g.frame, (px - m[3]) / m[0], (pz - m[11]) / m[10]) * m[5] : 0;
     for (let y = Y - 1; y >= 0; y--) {
       if (!isSolid(g.words[at + y])) continue;
-      const top = m[7] + (y + 1) * m[5];
+      const top = m[7] + (y + 1) * m[5] + lift;
       let lo = y;
       while (lo > 0 && isSolid(g.words[at + lo - 1])) lo--;
-      out.push({ top, bottom: m[7] + lo * m[5], frame: g.id, material: material(g.words[at + y]) });
+      out.push({ top, bottom: m[7] + lo * m[5] + lift, frame: g.id, material: material(g.words[at + y]) });
 
       if (topOnly) break;
       y = lo;

@@ -65,7 +65,7 @@ test("project tools over the mock server", async () => {
     assert.equal(lv.limits.objects.max, 256);
     assert.equal(lv.limits.ops.used, 0);
     assert.equal(lv.limits.newFrameSide, 31);
-    assert.deepEqual(lv.limits.newFrameScale, { min: 1, max: 4 });
+    assert.deepEqual(lv.limits.newFrameScale, { min: 0.5, max: 4 });
     const cells = lv.frames.reduce((n, x) => n + x.voxels, 0);
     assert.deepEqual([lv.limits.voxelCells.used, lv.limits.voxelCells.max, lv.limits.voxelCells.free], [cells, 65535, 65535 - cells]);
     assert.deepEqual(lv.engineWarnings, []);

@@ -16,7 +16,7 @@ export const KNOT_RESOURCE = "CheesyGrinWorm";   // the non-visual marker every 
  * newFrameScale: an added block's uniform scale, map units per voxel. */
 export const LIMITS = {
   frames: 4096, details: 65536, frameVoxels: 262144, ops: 20000, patchBytes: 4 << 20, runsPerFrame: 2000, runVoxels: 1 << 23,
-  objects: 256, newFrames: 64, newFrameSide: 31, legacyNewFrameSide: 32, voxelCells: 65535, newFrameScale: { min: 1, max: 4 },
+  objects: 256, newFrames: 64, newFrameSide: 31, legacyNewFrameSide: 32, voxelCells: 65535, newFrameScale: { min: 0.5, max: 4 }, cornerOffset: 64,
   telepadGroups: 8, hmpSide: 100, hmpCells: 10000, hmpBytes: 50000,
 };
 
@@ -41,6 +41,9 @@ export interface Frame {
   voxels: number | null; heightMap: number | null;   // blob refs
   folder: boolean;
   new?: boolean;                                // an added block: id -1..-64, under the Scene frame
+  /** An added block's corner offsets, voxels: (X+1)*(Z+1) numbers row by row along x. The engine moves each column's
+   * vertices (its bottom too) up by the bilinear offset of its corners, drawn and for collision. Absent: zeros. */
+  corners?: number[];
 }
 export interface Detail {
   id: number; src: number | null; frame: number; name: string; resource: string;
@@ -61,7 +64,7 @@ export type ObjectSpec =
 export type ObjectType = ObjectSpec["type"];
 export interface ScriptMeta { present: boolean; sha256: string | null; }
 /** scale: map units per voxel on every axis (1-4); absent is 1, and 1 is written by leaving it out. */
-export interface NewFrame { tmp: number; parent: number; name: string; pos: Vec3; size: Vec3; scale?: number; }
+export interface NewFrame { tmp: number; parent: number; name: string; pos: Vec3; size: Vec3; scale?: number; corners?: number[]; }
 /** [start, count, value] over the 100x100 surround cells, row-major: heights 0..1, blend 0..255. */
 export type HmpRun = [start: number, count: number, value: number];
 export interface HmpRuns { heights?: HmpRun[]; blend?: HmpRun[]; }
@@ -157,6 +160,10 @@ export const validContentsName = (s: unknown): s is string => typeof s === "stri
 
 export const validNewFrameScale = (v: unknown): v is number =>
   typeof v === "number" && Number.isFinite(v) && v >= LIMITS.newFrameScale.min && v <= LIMITS.newFrameScale.max;
+/** A new frame's corner offsets for a frame of `size`: (X+1)*(Z+1) finite numbers within ±LIMITS.cornerOffset. */
+export const validCorners = (v: unknown, size: number[]): v is number[] =>
+  Array.isArray(v) && v.length === (size[0] + 1) * (size[2] + 1) &&
+  v.every((x) => typeof x === "number" && Number.isFinite(x) && Math.abs(x) <= LIMITS.cornerOffset);
 
 /** X*Y*Z over every frame with voxels, base and added: the count the game keeps in 16 bits (LIMITS.voxelCells). */
 export function voxelCells(s: Pick<Scene, "frames">): number {
@@ -397,7 +404,7 @@ export function validateScene(s: unknown): Validation {
   let roots = 0;
   frames.forEach((f, i) => {
     const p = `frames[${i}]`;
-    if (!isObj(f) || !c.keys(f, v2 ? ["id", "new", "parent", "name", "pos", "rot", "scale", "size", "voxels", "heightMap", "folder"]
+    if (!isObj(f) || !c.keys(f, v2 ? ["id", "new", "parent", "name", "pos", "rot", "scale", "size", "voxels", "heightMap", "folder", "corners"]
       : ["id", "parent", "name", "pos", "rot", "scale", "size", "voxels", "heightMap", "folder"], p)) return c.fail(p, "must be an object");
     if (f.new !== undefined && typeof f.new !== "boolean") c.fail(`${p}.new`, "must be a boolean");
     if (f.new ? !isInt(f.id, -LIMITS.newFrames, -1) : !isInt(f.id, 1, 1 << 24)) return c.fail(`${p}.id`, f.new ? "a new frame's id is -1..-64" : "must be a positive integer");
@@ -421,6 +428,7 @@ export function validateScene(s: unknown): Validation {
       if (!b || b.kind !== "heightMap" || b.frame !== f.id || b.bytes !== corners * 4) c.fail(p, "the heightMap blob does not match the frame size");
     }
     if (typeof f.folder !== "boolean") c.fail(`${p}.folder`, "must be a boolean");
+    if (f.corners !== undefined && (!f.new || !validCorners(f.corners, size))) c.fail(`${p}.corners`, "only a new frame has corners: (X+1)*(Z+1) numbers within ±64");
   });
   if (frames.length && roots !== 1) c.fail("frames", "exactly one root frame (parent null) is required");
   let newFrames = 0;
@@ -434,7 +442,7 @@ export function validateScene(s: unknown): Validation {
     const sc = f.scale as number[];
     if (!isVec(f.rot) || !(f.rot as number[]).every((v) => v === 0) || !isVec(f.scale) || !validNewFrameScale(sc[0]) || sc[1] !== sc[0] || sc[2] !== sc[0] ||
       f.folder || f.heightMap !== null)
-      c.fail(p, "a new frame has no rotation, one scale 1..4 on every axis, no heightMap, and is not a folder");
+      c.fail(p, "a new frame has no rotation, one scale 0.5..4 on every axis, no heightMap, and is not a folder");
     if (!size.every((v) => v >= 1 && v <= LIMITS.legacyNewFrameSide)) c.fail(`${p}.size`, "each size must be 1..32");
   }
   if (v2) {
@@ -564,7 +572,7 @@ export function validatePatch(p: unknown, sizeBytes?: number): Validation {
       }
       case "addFrame":
         if (!v2) { c.fail(`${path}.op`, "unknown op 'addFrame'"); break; }
-        if (!c.keys(o, ["op", "tmp", "parent", "name", "pos", "size", "scale"], path)) break;
+        if (!c.keys(o, ["op", "tmp", "parent", "name", "pos", "size", "scale", "corners"], path)) break;
         if (!isInt(o.tmp, -LIMITS.newFrames, -1) || tmps.has(o.tmp as number)) c.fail(`${path}.tmp`, "must be an unused id -1..-64");
         else tmps.add(o.tmp as number);
         if (!isInt(o.parent, 1, 1 << 24)) c.fail(`${path}.parent`, "must be a frame of the base");
@@ -572,7 +580,8 @@ export function validatePatch(p: unknown, sizeBytes?: number): Validation {
         else if (/SLIPPY|PERM|TEAMBASE/i.test(o.name)) c.fail(`${path}.name`, "may not hold SLIPPY, PERM or TEAMBASE (the engine reads them as tags)");
         if (!isVec(o.pos)) c.fail(`${path}.pos`, "must be 3 finite numbers");
         if (!Array.isArray(o.size) || o.size.length !== 3 || !o.size.every((v) => isInt(v, 1, LIMITS.legacyNewFrameSide))) c.fail(`${path}.size`, "each size must be 1..32");
-        if (o.scale !== undefined && !validNewFrameScale(o.scale)) c.fail(`${path}.scale`, "must be a number 1..4 (map units per voxel)");
+        if (o.scale !== undefined && !validNewFrameScale(o.scale)) c.fail(`${path}.scale`, "must be a number 0.5..4 (map units per voxel)");
+        if (o.corners !== undefined && (!Array.isArray(o.size) || !validCorners(o.corners, o.size as number[]))) c.fail(`${path}.corners`, "must be (X+1)*(Z+1) numbers within ±64");
         break;
       case "hmp": {
         if (!v2) { c.fail(`${path}.op`, "unknown op 'hmp'"); break; }

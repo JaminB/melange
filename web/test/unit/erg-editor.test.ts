@@ -546,10 +546,23 @@ test("blocks: a scale makes bigger voxels, picked, sculpted, dropped onto, and s
   sc.step({ grid: sc.frames[0], center: [0.5, 0.5, 0.5], point: [300, 0, 0] }, { ...brush, blockScale: undefined });
   assert.equal("scale" in store.patch().ops.filter((o) => o.op === "addFrame")[1], false);
   // the tool clamps the scale; the patch refuses one out of range
-  for (const [bad, why] of [[0.5, "under 1"], [4.5, "over 4"], ["2", "a string"], [[2, 2, 2], "a vector"]] as const) {
+  for (const [bad, why] of [[0.4, "under 0.5"], [4.5, "over 4"], ["2", "a string"], [[2, 2, 2], "a vector"]] as const) {
     const q = structuredClone(p) as Patch;
     (q.ops[0] as { scale?: unknown }).scale = bad;
     assert.ok(validatePatch(q).errors.some((e) => /scale/.test(e)), why);
+  }
+  // corner offsets (heightfield_drape's sheared blocks): (X+1)*(Z+1) numbers, kept through the patch and the scene
+  const cp = structuredClone(p) as Patch;
+  const corners = Array.from({ length: 25 }, (_, i) => i / 4 - 2);
+  (cp.ops[0] as { corners?: number[] }).corners = corners;
+  assert.deepEqual(validatePatch(cp).errors, []);
+  const sheared = new EditorStore("p2", base, withPatch(base, cp));
+  assert.deepEqual(sheared.scene.frames.find((x) => x.id === -1)!.corners, corners);
+  assert.equal(sheared.patchText(), JSON.stringify(cp), "corners reopen as the same patch");
+  assert.deepEqual(validateScene({ ...structuredClone(sheared.scene), format: "erg-scene/2" as const }).errors.filter((e) => /frame -1|corners/.test(e)), []);
+  for (const bad of [corners.slice(1), corners.map((c) => c * 40)]) {
+    (cp.ops[0] as { corners?: number[] }).corners = bad;
+    assert.ok(validatePatch(cp).errors.some((e) => /corners/.test(e)), "corners of another count or past 64 are refused");
   }
   const bent = structuredClone(doc);
   bent.frames.find((x) => x.id === -1)!.scale = [2.5, 2.5, 1];

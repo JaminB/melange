@@ -96,7 +96,12 @@
           },
           "new": {
             "type": "boolean",
-            "description": "An added terrain block: under the Scene frame, no rotation, one scale 1-4 on every axis, each size 1-32 (the game asserts on 32: new blocks are 1-31), no heightMap."
+            "description": "An added terrain block: under the Scene frame, no rotation, one scale 0.5-4 on every axis, each size 1-32 (the game asserts on 32: new blocks are 1-31), no heightMap (its corner offsets are corners)."
+          },
+          "corners": {
+            "type": "array",
+            "items": { "type": "number", "minimum": -64, "maximum": 64 },
+            "description": "A new frame's corner offsets in voxels, (X+1)*(Z+1) row by row along x (see erg-patch-2 addFrame.corners); absent means zeros. Only on a new frame."
           },
           "parent": { "anyOf": [{"$ref": "#/$defs/index"}, {"type": "null"}], "description": "null for the root only." },
           "name": { "type": "string", "maxLength": 127 },

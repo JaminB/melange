@@ -88,14 +88,15 @@ export const tools: Tool[] = [
       type: "object", additionalProperties: false, required: ["size", "material"],
       properties: {
         size: vec("Block size in voxels, each 1-31.", true),
-        scale: { type: "number", minimum: 1, maximum: 4, description: "Map units per voxel, the same on every axis (default 1): a block of 31 at scale 2.5 is 77.5 map units across for the same cells." },
+        scale: { type: "number", minimum: 0.5, maximum: 4, description: "Map units per voxel, the same on every axis (default 1; 0.5-1 is finer than the base map, for detail such as a crater lip: a cell costs the same, so a block of 31 at 0.75 covers 23.25 map units): a block of 31 at scale 2.5 is 77.5 map units across for the same cells." },
         material: { ...material, description: "Material 0-63 the block is filled with." },
         at: vec("The point the block rests on: [centre x, bottom y, centre z], in `units`."),
         center: vec("The block's centre, in `units`."),
         units: { type: "string", enum: ["world", "map"], description: "world (default) or map units." },
+        dryRun: { type: "boolean", description: "Report the block's cost (the game's cells before and after, its bounds) without adding it." },
       },
     },
-    handler(s, a: { size: Vec3; material: number; at?: Vec3; center?: Vec3; units?: "world" | "map"; scale?: number }) {
+    handler(s, a: { size: Vec3; material: number; at?: Vec3; center?: Vec3; units?: "world" | "map"; scale?: number; dryRun?: boolean }) {
       const { store } = s.requireProject();
       return { ...addBlock(store, { ...a, units: a.units ?? "world" }), ...patchLeft(store) };
     },

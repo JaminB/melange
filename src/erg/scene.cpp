@@ -554,7 +554,7 @@ bool ParseScene(std::string_view json, Scene* out, std::string* err) {
         const std::string p = "frames[" + std::to_string(i) + "]";
         const Json& fo = frames->arr[i];
         if (!Obj(&fo, p, err) ||
-            !(v2 ? OnlyKeys(fo, {"id", "new", "parent", "name", "pos", "rot", "scale", "size", "voxels", "heightMap", "folder"}, p, err)
+            !(v2 ? OnlyKeys(fo, {"id", "new", "parent", "name", "pos", "rot", "scale", "size", "voxels", "heightMap", "folder", "corners"}, p, err)
                  : OnlyKeys(fo, {"id", "parent", "name", "pos", "rot", "scale", "size", "voxels", "heightMap", "folder"}, p, err)))
             return false;
         Frame f;
@@ -579,6 +579,8 @@ bool ParseScene(std::string_view json, Scene* out, std::string* err) {
         }
         if (static_cast<size_t>(f.size[0]) * f.size[1] * f.size[2] > kMaxFrameVoxels)
             return Fail(err, p + ".size: more than 262144 voxels");
+        if (!GetCorners(fo, p, f.size, &f.corners, err)) return false;
+        if (!f.corners.empty() && !f.isNew) return Fail(err, p + ".corners: only a new frame has corners (a base frame keeps its heightMap)");
         for (auto [key, dst] : {std::pair{"voxels", &f.voxels}, std::pair{"heightMap", &f.heightMap}}) {
             const Json* r = fo.find(key);
             if (r && r->kind != Json::Kind::Null && !GetInt(fo, key, p, 0, 1 << 24, dst, err)) return false;
@@ -676,7 +678,9 @@ bool ValidateScene(const Scene& s, std::string* err) {
         const bool uniform = f.scale[0] == f.scale[1] && f.scale[1] == f.scale[2];
         if (f.rot != Vec3{0, 0, 0} || !uniform || !(f.scale[0] >= kMinNewFrameScale && f.scale[0] <= kMaxNewFrameScale) || f.folder ||
             f.heightMap >= 0)
-            return Fail(err, p + ": a new frame has no rotation, one scale 1..4 on every axis, no heightMap, and is not a folder");
+            return Fail(err, p + ": a new frame has no rotation, one scale 0.5..4 on every axis, no heightMap, and is not a folder");
+        if (!f.corners.empty() && f.corners.size() != static_cast<size_t>(f.size[0] + 1) * (f.size[2] + 1))
+            return Fail(err, p + ".corners: must be (X+1)*(Z+1) numbers");
         for (int k = 0; k < 3; ++k)
             if (f.size[k] < 1 || f.size[k] > static_cast<int>(kLegacyNewFrameSide)) return Fail(err, p + ".size: each size must be 1..32");
     }
@@ -798,6 +802,7 @@ std::string WriteScene(const Scene& s) {
         o.set("voxels", f.voxels < 0 ? Json::Null_() : Int(f.voxels));
         o.set("heightMap", f.heightMap < 0 ? Json::Null_() : Int(f.heightMap));
         o.set("folder", Json::Bool(f.folder));
+        if (!f.corners.empty()) o.set("corners", CornersJson(f.corners));
         frames.arr.push_back(std::move(o));
     }
     root.set("frames", std::move(frames));
