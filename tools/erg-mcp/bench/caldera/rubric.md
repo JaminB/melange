@@ -55,3 +55,23 @@ one idle turn, no start mines). Cells 49 859 of 65 535, 16 blocks.
   `check_flood` with the script, `check_islets` (no detached piece).
 - **Cells** 62 552 of 65 535 (24 of 64 blocks): the skin 28 100, the castles about 22 800, the base 11 652.
 - **Reproducibility**: `build.mjs` twice and `diff -r pack/` (see the iteration's notes).
+
+## Iteration 7 design (builder's notes)
+
+- **Cone**: profile = soft foot (10 units of beach) + a tread of 0.52 + two cliff bands (shore bluff at 78, 13 high at 47) +
+  a boost of 20 that steepens the top; rim 68-80, crater floor 58 (a wide bowl: floor level to r 26, walls to r 36), castles
+  at 30 and under, so the cone is the tallest thing from every side. Radial ribs (7 lobes), 4 dry gullies and 5 lava gullies.
+- **Mine factory** on a basalt plug (HotRocks, undraped blocks) standing on the crater floor at r 19 on the side the
+  south camera sees over the breach, `keepKnot: true` so it stays on its knot if the game's drop misses. Not played in game
+  this iteration.
+- **Roads** march up the cone in spirals (heading leans 41 degrees or more from uphill, climb 0.6 a unit); a castle stands
+  where the road reaches its floor and the road runs through it along a chord of the contour, through gates placed where
+  that line meets the walls. 7 castles of 6 plans: classic keep (Strand), square-towered (Ashgate), tower house (Cinder),
+  L-shaped harbour fort with a wing and a sea gate (Harbour), 38 x 12 long wall with no keep (Ember), big bailey (Seawall),
+  round keep on a crag inside a 16-sided ring (Highwatch); floors 4, 17, 30, 3, 23, 4, 26; 3 outposts (towers).
+- **Lava**: tongues of magma with a hot margin, perlin edges, stopping at the beach (`minHeight`), from the crater to the sea.
+- **Sea**: from turn 5 +15 world a turn (turn 8: 96, shore castles awash; turn 11: 141), from turn 13 +50 a turn, cap 500 in
+  turn 19 (25 map): the mid castles (17, 23) go under turns 16-19, the two high castles (26, 30) and the cone stay dry.
+  EVENING (dusk) for the lava's glow.
+- **Checks**: reach 8 of 8 (45 and 38 degrees), road only 8 of 8, flood 8 of 8 dry, islets 0 detached, save with no warnings.
+- **Cells** 63 251 of 65 535 (31 of 64 blocks): the skin 24 117 (11 blocks), the castles about 22 000, the base 11 652.

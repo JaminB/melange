@@ -1,10 +1,11 @@
 // Caldera: an Erg MCP benchmark map, built only through the erg-mcp server's tools (stdio JSON-RPC, no hand-written
 // patches). A volcanic island on Multi.DinerMight, in the Prehistoric theme's materials (volcano rock, hot rocks, liquid magma)
-// at night: a tall round cone whose flank climbs in treads between three bands of cliffs (a smooth drape skin, so the treads
-// are slopes and not stairs), a crater with a breach facing south and a dais for the mine factory, a coast of beaches, headlands
-// and coves that slopes under the sea, a few lava tongues of real magma texture that widen downslope, three roads that cut
-// through the cliffs and run through seven castles (three on the shore, two on the lower treads, two high up), and a level
-// script (script.lua) that raises the sea from round 4 until only the upper cone is dry.
+// at dusk: a tall round cone (the summit rim about 72-80 map units, the castles at 30 and under) with a cliff band half way up,
+// ribs and gullies down its flanks, a wide crater with a breach facing south, a basalt plug on the crater floor that carries the
+// mine factory, a coast of wide beaches, headlands and coves, lava tongues of real magma texture that run from the crater to
+// the shore, three roads that climb the cone in spirals through seven castles of different plans (a classic keep, a tower
+// house, an L-shaped harbour fort with a sea gate, a long wall on a cliff edge, a big bailey, a round keep on a crag) and a
+// level script (script.lua) that raises the sea from round 5 until only the cone and the two high castles are dry.
 //
 //   tools\node\node.exe tools\erg-mcp\bench\caldera\build.mjs [--out <dir>] [--plan] [--no-export] [--keep-mod] [--no-scenery]
 //
@@ -33,39 +34,41 @@ const MOD = "caldera";
 // Materials of the Prehistoric theme's file (set_theme PREHISTORIC, materialFile "theme"): grass01 0, grass02 2 (olive), rock01 4,
 // rock02 6 (grey-brown: cliff faces), path01 8 (the roads), sand01 10, stone 12, flint 16, chippedstone 27 (the castles),
 // VolcanoRock 49 (near black: the ash of the summit), LiquidHotMagma 50 (the lava), HotRocks 51 (dark red: its margins,
-// the crater walls), Metal 53 (the factory's dais).
+// the crater walls and the plug), Metal 53.
 const MAT = { grass: 0, olive: 2, rock: 4, grey: 6, path: 8, sand: 10, stone: 12, flint: 16, chipped: 27, ash: 49, magma: 50, hot: 51, metal: 53 };
 const VOXEL = +(process.env.VOXEL || 2.5);       // map units per voxel of the island's skin
 const THICK = +(process.env.THICK || 3);         // voxels of skin (hollow under it: a fifth of the cells of a solid core)
 const SCALE = +(process.env.CASTLE_SCALE || 1.5);   // voxels of the castle blocks
 const WATER_START = 36;                           // world units (1.8 map): over the diner backdrop's ground planes, so the island stands in a sea from turn 1; the beaches' sand is cut to it
+// the rising sea (script.lua), world units: from turn 5 +15 a turn to 156 (turn 12), from turn 13 +50 a turn to the cap 500 (25 map: turn 19)
+const SEA = { first: 5, step: 15, cap1: 156, second: 13, step2: 50, cap: 500 };
 const FL = -T.SEA_FLOOR;                          // the skin's floor is SEA_FLOOR: a rule's heights are above it
 const hh = (v) => v + FL;
 
-// Materials of the skin, first rule that holds wins: the roads (a distance field to each polyline), the lava (a narrow molten
-// channel inside a margin of hot rock; both widen downslope), the crater (dais, magma lake, hot walls), the black ash of the
-// summit, the cliff faces, then bands by height from grey rock down to grass and sand; every band edge is dithered and
-// wandered by noise (feather, jitter), so there are no straight steps.
+// Materials of the skin, first rule that holds wins: the castles' courtyards, the roads (a distance field to each polyline),
+// the lava (a molten channel inside a margin of hot rock; both widen downslope, run from the crater to the beach and no further),
+// the crater (a magma lake, hot patches on an ash floor, hot walls), the black ash of the summit, the cliff faces, then bands by
+// height from grey rock down to grass and sand; every band edge is wandered by noise (feather perlin, jitter), so there are no
+// straight steps and no dithered speckle.
 const FLOOR = T.FLOOR_Y;
+const courtyard = (c) => { const [x0, z0, x1, z1] = T.footRect(c, -0.5); return `min(${(x1).toFixed(1)} - x, x - ${x0.toFixed(1)}, ${z1.toFixed(1)} - z, z - ${z0.toFixed(1)})`; };
 const MATERIALS = [
-  // the castles' courtyards are flagstones (one rule: the footprint of each, a box's distance field)
-  { material: MAT.flint, masks: T.CASTLES.map((c) => { const hx = (c.axis === "x" ? c.along : c.across) / 2 - 0.5, hz = (c.axis === "x" ? c.across : c.along) / 2 - 0.5;
-      return `min(${hx.toFixed(1)} - abs(x - ${c.at[0].toFixed(1)}), ${hz.toFixed(1)} - abs(z - ${c.at[1].toFixed(1)}))`; }) },
-  ...T.ROADS.map((rd) => ({ material: MAT.path, mask: T.roadMask(rd, 2.7, 7), feather: { width: 1.4 } })),
-  { material: MAT.magma, mask: T.tonguesMask(T.TONGUES, 0.6), feather: { width: 1.2 } },
-  { material: MAT.hot, mask: T.tonguesMask(T.TONGUES, 1.0), feather: { width: 2.2 } },
-  { material: MAT.metal, minHeight: hh(FLOOR + 1), mask: "6.4 - r" },                    // the factory's dais
-  { material: MAT.magma, maxHeight: hh(FLOOR + 2.2), mask: "14.5 - r", feather: { width: 1.5 } },   // the magma lake on the crater floor
-  { material: MAT.hot, minHeight: hh(FLOOR + 2.2), mask: "30 - r", feather: { width: 2 } },         // the crater's walls and rim
-  { material: MAT.ash, minHeight: hh(37), feather: { width: 4, pattern: "perlin", cell: 8 }, jitter: { amount: 2.5, scale: 9, seed: 3 } },
+  { material: MAT.flint, masks: T.CASTLES.map(courtyard) },
+  ...T.ROADS.map((rd) => ({ material: MAT.path, mask: T.roadMask(rd, 2.9, 7), feather: { width: 1.2, pattern: "perlin", cell: 4 } })),
+  { material: MAT.magma, minHeight: hh(2.4), mask: T.tonguesMask(T.TONGUES, 0.62), feather: { width: 1.6, pattern: "perlin", cell: 5 } },
+  { material: MAT.hot, minHeight: hh(2.4), mask: T.tonguesMask(T.TONGUES, 1.0), feather: { width: 3, pattern: "perlin", cell: 5 } },
+  { material: MAT.magma, maxHeight: hh(FLOOR + 1.5), mask: "12 - r", feather: { width: 2, pattern: "perlin", cell: 5 } },                // the magma lake on the crater floor
+  { material: MAT.hot, minHeight: hh(FLOOR - 1), maxHeight: hh(FLOOR + 2.5), mask: `${T.FLAT_R + 2} - r`, noise: { threshold: 0.15, scale: 8, seed: 21 } },   // hot patches on the floor
+  { material: MAT.hot, minHeight: hh(FLOOR + 2.5), mask: `${T.RC + 1.5} - r`, feather: { width: 3, pattern: "perlin", cell: 6 } },    // the crater's walls and rim
+  { material: MAT.ash, minHeight: hh(FLOOR - 3), mask: `${T.RC + 14} - r`, feather: { width: 5, pattern: "perlin", cell: 8 }, jitter: { amount: 2.5, scale: 9, seed: 3 } },   // the floor and the summit's ash
   { material: MAT.grey, minSlope: 46, feather: { width: 3, pattern: "perlin", cell: 6 } },                          // cliff faces
   // ash and dark rock in irregular patches down the lower flanks, so the cone reads dark against the castles
-  { material: MAT.ash, minHeight: hh(11), maxHeight: hh(36), noise: { threshold: 0.18, scale: 13, seed: 11 } },
-  { material: MAT.grey, minHeight: hh(8), maxHeight: hh(30), noise: { threshold: 0.3, scale: 9, seed: 12 } },
-  { material: MAT.grey, minHeight: hh(31), feather: { width: 4, pattern: "perlin", cell: 9 }, jitter: { amount: 3, scale: 11, seed: 4 } },
+  { material: MAT.ash, minHeight: hh(14), maxHeight: hh(60), noise: { threshold: 0.2, scale: 14, seed: 11 } },
+  { material: MAT.grey, minHeight: hh(8), maxHeight: hh(40), noise: { threshold: 0.3, scale: 10, seed: 12 } },
+  { material: MAT.grey, minHeight: hh(36), feather: { width: 4, pattern: "perlin", cell: 9 }, jitter: { amount: 3, scale: 11, seed: 4 } },
   { material: MAT.rock, minHeight: hh(15), feather: { width: 4, pattern: "perlin", cell: 9 }, jitter: { amount: 3, scale: 12, seed: 6 } },
   { material: MAT.olive, minHeight: hh(8.5), feather: { width: 3, pattern: "perlin", cell: 7 }, noise: { threshold: 0.05, scale: 9, seed: 5 } },
-  { material: MAT.grass, minHeight: hh(4.2), feather: { width: 2.5, pattern: "perlin", cell: 6 }, jitter: { amount: 1.5, scale: 7, seed: 8 } },
+  { material: MAT.grass, minHeight: hh(5.5), feather: { width: 2.5, pattern: "perlin", cell: 6 }, jitter: { amount: 1.5, scale: 7, seed: 8 } },
 ];
 
 // ---- the MCP client ----
@@ -83,9 +86,11 @@ try {
   if (np.json?.created?.id !== ID) throw new Error(`new_project gave id ${np.json?.created?.id}, not ${ID}`);
   await call("open_project", { id: ID });
 
-  // Setting: the Prehistoric theme (its volcano rock, hot rocks and liquid magma materials) at night, so the ember sky sets off the cone; the base's terrain wiped (its frames stay, so its 11 652 cells stay spent); the diner's buildings, neon, signs, grass tufts and jukebox removed (they would show through the sea or poke through the cone); the sea starts below the beaches.
+  // Setting: the Prehistoric theme (its volcano rock, hot rocks and liquid magma materials) at dusk (EVENING: the lava glows
+  // against a warm sky); the base's terrain wiped (its frames stay, so its 11 652 cells stay spent); the diner's buildings, neon,
+  // signs, grass tufts and jukebox removed (they would show through the sea or poke through the cone); the sea starts below the beaches.
   await call("set_theme", { theme: "PREHISTORIC", materialFile: "theme" });
-  await call("set_time_of_day", { timeOfDay: "NIGHT" });
+  await call("set_time_of_day", { timeOfDay: process.env.TOD || "EVENING" });
   await call("set_water", { level: WATER_START });
   await call("set_surround_mode", { mode: "none" });
   const sc0 = await call("list_scenery", { limit: 1 }, { soft: true });
@@ -113,64 +118,98 @@ try {
     if (typeof top !== "number") throw new Error(`no ground at ${x}, ${z}: ${g.text.slice(0, 300)}`);
     return top;
   };
+  const lvl = async () => (await call("describe_level", { limit: 1 })).json.limits;
 
-  // ---- the castles: build_castle into new blocks of SCALE-unit voxels; a gate on the side the road comes from, a second one
-  // carved in the opposite wall so the road runs through; towers taller than the walls; a keep ----
-  const spots = {};                           // castle -> spawnSpots
+  // ---- the castles, each into new blocks of SCALE-unit voxels, a gate where its road comes in and one where it leaves ----
+  const spots = {};                           // castle -> spawn spots [{kind, at, standOn, ok}]
   const towers = [];                          // [x, y, z] of tower tops, for the flags
+  const common = { place: "new", scale: SCALE, packing: "tiles" };
+  const sizeOf = (c, w, a) => (c.axis === "x" ? [w, a] : [a, w]);        // [along the road's axis, across it] as [x, z]
+  const sideOf = (d) => (d[0] > 0 ? "e" : d[0] < 0 ? "w" : d[1] > 0 ? "s" : "n");
+  const opp = { n: "s", s: "n", e: "w", w: "e" };
+  const gateOf = (g, wall) => ({ side: g.side, offset: round1(g.offset), width: 4, height: Math.min(5, wall - 1.5) });
+  const carve = async (blocks, y, [x0, z0, x1, z1], up = 6) => {
+    for (const b of blocks ?? []) await call("fill_box_raw", { frame: b.id, state: "empty", min: [round1(x0), y - 1, round1(z0)], max: [round1(x1), y + up, round1(z1)], units: "map" }, { soft: true });
+  };
   for (const c of T.CASTLES) {
     const [cx, cz] = c.at.map(round1);
-    const y = c.floor;
+    const y = c.floor, p = c.plan;
     const g = await groundOf(cx, cz);
-    const sx = c.axis === "x" ? c.along : c.across, sz = c.axis === "x" ? c.across : c.along;
-    const p = c.plan;
-    const r = await call("build_castle", { at: [cx, y - 1, cz], size: [sx, sz], wallHeight: p.wallHeight, wallThickness: 2, towerShape: p.towerShape, towerRadius: p.towerRadius,
-      towerHeight: p.towerHeight, keep: true, keepSize: p.keep, keepHeight: p.keepHeight, gate: c.arrive, gateWidth: 5, gateHeight: 5, crenellations: true, foundation: 2,
-      material: p.mat, place: "new", scale: SCALE, packing: "tiles" });
-    // the second gate, in the wall on the other side (a box carved through it)
-    const [gx, gz] = c.depart === "e" ? [cx + sx / 2 - 1, cz] : c.depart === "w" ? [cx - sx / 2 + 1, cz] : c.depart === "s" ? [cx, cz + sz / 2 - 1] : [cx, cz - sz / 2 + 1];
-    const along = c.depart === "e" || c.depart === "w";
-    // (fill_box_raw in the castle's own blocks: a sculpt carve would also cut the skin, which it reads unsheared)
-    const hw = along ? [2.5, 2.5] : [2.5, 2.5];
-    for (const b of r.json.newBlocks ?? [])
-      await call("fill_box_raw", { frame: b.id, state: "empty", min: [round1(gx - 2.5), y - 1, round1(gz - 2.5)], max: [round1(gx + 2.5), y + 5, round1(gz + 2.5)], units: "map" }, { soft: true });
-    spots[c.name] = r.json.spawnSpots?.spots ?? [];
-    for (const s of spots[c.name]) if (s.kind === "tower" && s.ok) towers.push(s.at);
-    say("castle", c.name, c.road, "floor", y, "ground", round1(g), "at", [cx, cz].join(","), "axis", c.axis, "gates", c.arrive, c.depart, "cells", r.json.usage?.voxelCells, "blocks", r.json.usage?.newBlocks);
-  }
-  if (process.env.DEBUG_GATE) {
-    const c = T.CASTLES.find((k) => k.name === process.env.DEBUG_GATE);
-    for (const [dx, dz] of (c.axis === "z") !== !!process.env.DEBUG_CROSS ? Array.from({ length: 35 }, (_, i) => [+(process.env.DEBUG_OFF ?? 0), i - 17]) : Array.from({ length: 35 }, (_, i) => [i - 17, +(process.env.DEBUG_OFF ?? 0)])) {
-      const g = await call("query_ground", { x: round1(c.at[0] + dx), z: round1(c.at[1] + dz), units: "map" }, { soft: true });
-      say("gate-probe", dx, dz, JSON.stringify(g.json?.standOn), JSON.stringify((g.json?.stretches ?? g.json?.solid ?? []).slice(0, 4)));
+    let usage = null;
+    if (p.kind === "castle") {
+      const r = await call("build_castle", { at: [cx, y - 1, cz], size: sizeOf(c, c.along, c.across), wallHeight: p.wallHeight, wallThickness: 2, towerShape: p.towerShape, towerRadius: p.towerRadius,
+        towerHeight: p.towerHeight, keep: !!p.keep, keepSize: p.keep ?? undefined, keepHeight: p.keep ? p.keepHeight : undefined, gates: [gateOf(c.gin, p.wallHeight), gateOf(c.gout, p.wallHeight)], gateBelow: 0, crenellations: true, foundation: 2, material: p.mat, ...common });
+      spots[c.name] = r.json.spawnSpots?.spots ?? [];
+      usage = r.json.usage;
+    } else if (p.kind === "lfort") {
+      // an L: the main court on the road and a wing on the sea side, joined by a door in the shared wall; a sea gate in the wing's far wall
+      const ws = sideOf(c.wdir), [wa, wc] = p.wing;
+      const r = await call("build_castle", { at: [cx, y - 1, cz], size: sizeOf(c, c.along, c.across), wallHeight: p.wallHeight, wallThickness: 2, towerShape: p.towerShape, towerRadius: p.towerRadius,
+        towerHeight: p.towerHeight, keep: !!p.keep, keepSize: p.keep ?? undefined, keepHeight: p.keep ? p.keepHeight : undefined, gates: [gateOf(c.gin, p.wallHeight), gateOf(c.gout, p.wallHeight), { side: ws, width: 4, height: 4 }], gateBelow: 0, crenellations: true, foundation: 2, material: p.mat, ...common });
+      const wx = cx + c.wdir[0] * (c.across / 2 + wc / 2 - 2), wz = cz + c.wdir[1] * (c.across / 2 + wc / 2 - 2);
+      const w = await call("build_castle", { at: [round1(wx), y - 1, round1(wz)], size: sizeOf(c, wa, wc), wallHeight: p.wallHeight, wallThickness: 2, towerShape: p.towerShape, towerRadius: p.towerRadius - 0.4,
+        towerHeight: p.towerHeight - 2, keep: false, gates: [{ side: opp[ws], width: 4, height: 4 }, { side: ws, width: 6, height: 4.5, below: "auto" }], crenellations: true, foundation: 2, material: p.mat, ...common });
+      spots[c.name] = [...(r.json.spawnSpots?.spots ?? []), ...(w.json.spawnSpots?.spots ?? [])];
+      usage = w.json.usage;
+    } else {
+      // a round keep on a crag: a ring wall of 16 sides round a round keep set uphill of the centre, the road passing between them
+      const R = p.ringRadius, U = [-c.at[0] / Math.hypot(...c.at), -c.at[1] / Math.hypot(...c.at)];
+      const pts = Array.from({ length: 16 }, (_, i) => [round1(cx + R * Math.cos(i * Math.PI / 8)), y - 1, round1(cz + R * Math.sin(i * Math.PI / 8))]);
+      const wl = await call("build_wall", { points: pts, closed: true, height: p.wallHeight, thickness: 2.5, crenellations: true, foundation: 2, material: p.mat, place: "new", blockScale: SCALE, packing: "tiles" });
+      const kp = [round1(cx + U[0] * 6), round1(cz + U[1] * 6)];
+      const kt = await call("build_tower", { at: [kp[0], y - 1, kp[1]], radius: p.keepRadius, height: p.keepHeight, hollow: true, wallThickness: 2, door: "s", doorWidth: 3, doorHeight: 4, foundation: 2, material: p.mat, place: "new", blockScale: SCALE });
+      // the gates: where the road line meets the ring
+      for (const s of [-1, 1]) await carve(wl.json.newBlocks, y, [cx + c.T[0] * R * s - 2.5, cz + c.T[1] * R * s - 2.5, cx + c.T[0] * R * s + 2.5, cz + c.T[1] * R * s + 2.5], p.wallHeight + 2);
+      const gt = [round1(cx - U[0] * 5), round1(cz - U[1] * 5)], wt = [round1(cx - U[0] * (R - 0.5)), round1(cz - U[1] * (R - 0.5))];
+      spots[c.name] = [];
+      for (const [kind, [sx, sz]] of [["courtyard", gt], ["rampart", wt]]) {
+        const q = await call("query_ground", { x: sx, z: sz, units: "map" }, { soft: true });
+        const top = q.json?.standOn?.map;
+        spots[c.name].push({ kind, at: [sx, top, sz], standOn: [sx, top, sz], ok: typeof top === "number" });
+      }
+      usage = kt.json?.usage ?? wl.json?.usage;
+      towers.push([kp[0], y + p.keepHeight, kp[1]]);
     }
+    for (const s of spots[c.name]) if (s.kind === "tower" && s.ok) towers.push(s.at);
+    say("castle", c.name, p.kind, "floor", y, "ground", round1(g), "at", [cx, cz].join(","), "axis", c.axis, "gates", c.arrive, c.depart, "cells", usage?.voxelCells, "blocks", usage?.newBlocks);
   }
-  const dc = await call("describe_level", { limit: 1 });
-  say("cells after castles", JSON.stringify(dc.json.limits.voxelCells), "blocks", JSON.stringify(dc.json.limits.newFrames));
+  const dc = await lvl();
+  say("cells after castles", JSON.stringify(dc.voxelCells), "blocks", JSON.stringify(dc.newFrames));
 
-  // ---- utility crates: a rope or a girder on the road just after each castle's stretch ----
+  // ---- utility crates: a rope or a girder on the road just outside each castle's far gate ----
   const crates = [];
   for (const [rn, i, contents] of [["R1", 0, "kUtilityNinjaRope"], ["R1", 1, "kUtilityGirder"], ["R2", 0, "kUtilityGirder"], ["R2", 1, "kUtilityNinjaRope"], ["R3", 0, "kUtilityNinjaRope"], ["R3", 1, "kUtilityJetpack"]]) {
     const road = T.ROADS.find((r) => r.name === rn), k = road.castles[i];
-    const run = k.run, q = run[run.length - 3];
-    const px = q[0], pz = q[1];
-    const r = await call("place_object", { type: "crate", kind: "utility", contents, units: "map", xz: [round1(px), round1(pz)] }, { soft: true });
+    const q = k.run[k.run.length - 1];
+    const r = await call("place_object", { type: "crate", kind: "utility", contents, units: "map", xz: [round1(q[0]), round1(q[1])] }, { soft: true });
     crates.push(brief(r, 120));
   }
   say("crates", crates.join(" | "));
 
-  // ---- the mine factory: the drop never lands on a draped skin (docs/erg-mcp.md, "The mine factory's drop"), so it stands on a
-  // forge, a solid tower of undraped blocks on the rim crest (30 map units out, where such pads were found), over the crater;
-  // mines are fired from it high over the bowl. The scheme's start mines are off. ----
-  const FORGE_TH = +(process.env.FORGE_TH ?? 0.15), FORGE_RHO = +(process.env.FORGE_RHO ?? 29);
-  const [fx, fz] = T.pointAt(FORGE_RHO, FORGE_TH).map(round1);
+  // ---- the mine factory: on a basalt plug standing on the crater floor (the drop never lands on a draped skin, docs/erg-mcp.md,
+  // "The mine factory's drop", so the plug is a solid tower of undraped blocks). Mines are fired from it up and out over the rim.
+  // The scheme's start mines are off. ----
+  const [fx, fz] = T.pointAt(T.PLUG_RHO, T.PLUG_TH).map(round1);
   const fg = await groundOf(fx, fz);
-  const forge = await call("build_tower", { at: [fx, round1(fg - 3), fz], radius: 3, height: +(process.env.FORGE_H ?? 8), hollow: false, material: MAT.stone, foundation: 2, place: "new", blockScale: 1.5 }, { soft: true });
-  say("forge", fx, fz, "ground", round1(fg), brief(forge, 300));
+  const PLUG_H = +(process.env.PLUG_H ?? 9);
+  const plug = await call("build_tower", { at: [fx, round1(fg - 3), fz], radius: +(process.env.PLUG_R ?? 4), height: PLUG_H, hollow: false, material: MAT.hot, foundation: 2, place: "new", blockScale: 1.5 }, { soft: true });
+  say("plug", fx, fz, "floor", round1(fg), brief(plug, 300));
   const topG = await groundOf(fx, fz);
-  say("forge top", round1(topG));
+  say("plug top", round1(topG));
   say("factory", brief(await call("place_object", { type: "minefactory", units: "map", xz: [fx, fz] }), 500));
-  say("factory settings", brief(await call("set_mine_factory", { activation: 16, inactiveTurns: 0, schemeMines: false }), 300));
+  say("factory settings", brief(await call("set_mine_factory", { activation: 16, inactiveTurns: 0, schemeMines: false, keepKnot: true }), 300));
+
+  // ---- outposts off the roads, so the island is not a ring of castles: a watchtower on the north-east headland, a tower house on
+  // the western bluff, a lookout on the northern gully's lip (only while the cells last) ----
+  const OUTPOSTS = [["Pharos", -0.62, 84, 3.4, 13], ["Tower house", 3.62, 74, 3.0, 11], ["Gullywatch", -1.62, 68, 2.8, 9]];
+  for (const [name, th, rho, rad, hgt] of OUTPOSTS) {
+    if ((await lvl()).voxelCells.free < 1200) { say("outpost", name, "skipped: the cells are spent"); continue; }
+    const [ox, oz] = T.pointAt(rho, th).map(round1);
+    const og = await groundOf(ox, oz);
+    const o = await call("build_tower", { at: [ox, round1(og - 1), oz], radius: rad, height: hgt, hollow: false, foundation: 3, material: MAT.chipped, place: "new", blockScale: SCALE }, { soft: true });
+    say("outpost", name, ox, oz, "ground", round1(og), o.err ? o.text.slice(0, 200) : "ok " + JSON.stringify(o.json?.usage ?? {}).slice(0, 160));
+    if (!o.err) towers.push([ox, round1(og - 1 + hgt), oz]);
+  }
 
   // ---- the spawns: 8 knots over the seven castles, courtyards and wall-walks, low and high ----
   const pick = (name, kind, i = 0) => {
@@ -182,7 +221,7 @@ try {
   // WORM0-3 are team 0, WORM4-7 team 1, and a worm moves first in turn 1 + team + 2 * index; so each team's first mover (WORM0, WORM4)
   // stands on a shore castle (its two moves come before the sea reaches it), then low, then two high ones: one shore worm and two high per team
   const SPAWNS = [["Strand", "courtyard", 0], ["Ashgate", "courtyard", 0], ["Cinder", "courtyard", 0], ["Highwatch", "courtyard", 0],
-                  ["Harbour", "courtyard", 0], ["Ember", "courtyard", 0], ["Highwatch", "rampart", 0], ["Cinder", "rampart", 0]];
+                  ["Harbour", "courtyard", 0], ["Ember", "courtyard", 0], ["Highwatch", "rampart", 0], ["Cinder", "courtyard", 1]];
   const spawns = SPAWNS.map(([n, k, i], worm) => ({ worm, pos: pick(n, k, i).map(round1) }));
   say("spawns", brief(await call("place_spawn_knots", { mode: "knots", units: "map", spawns }), 800));
 
@@ -214,7 +253,7 @@ try {
     say("reach", label, brief(rc, 700));
   }
   // The roads are the way up: on road and castle stone alone, every spawn reaches the rim where its own road ends (each road is
-  // checked to its own end: the rim ring itself is not road); never touching them, how many do (the cliff bands are the barrier).
+  // checked to its own end: the rim ring itself is not road); never touching them, how many do (the cliff band is the barrier).
   const ROUTE = [MAT.path, MAT.stone, MAT.flint, MAT.chipped];
   const roadOf = (name) => T.CASTLES.find((c) => c.name === name).road;
   const tally = { only: 0, avoid: 0 };
@@ -227,9 +266,9 @@ try {
     }
     say("reach", label, `${tally[mode]} of 8 spawns reach their own road's rim end`);
   }
-  // the script's two phases (script.lua), as levels in world units, since the "script" schedule reads only its top-level call
-  const levels = [{ turn: 1, level: WATER_START / 20 }];   // check_flood's levels are in the call's units: map
-  for (let t = 9, w = WATER_START; w < 640; t++) { w = t <= 16 ? Math.min(84, w + 6) : Math.min(640, w + 26); levels.push({ turn: t, level: w / 20 }); }
+  // the script's two phases (script.lua), as levels in the call's units (map), since the "script" schedule reads only its top-level call
+  const levels = [{ turn: 1, level: WATER_START / 20 }];
+  for (let t = SEA.first, w = WATER_START; w < SEA.cap; t++) { w = t < SEA.second ? Math.min(SEA.cap1, w + SEA.step) : Math.min(SEA.cap, w + SEA.step2); levels.push({ turn: t, level: w / 20 }); }
   const fl = await call("check_flood", { levels, start: WATER_START / 20, target: { x: rim[0], z: rim[1], radius: 5 }, maxSlope: 38 }, { soft: true });
   fs.writeFileSync(path.join(OUT, "flood.json"), fl.text);
   say("flood", brief(fl, 900));
@@ -242,10 +281,10 @@ try {
     ["topdown", "render_topdown", { step: 1, scale: 3 }],
     ["side", "render_side", { x0: -T.BOX, z0: 0, x1: T.BOX, z1: 0, scale: 4 }],
     ["side-ns", "render_side", { x0: 0, z0: -T.BOX, x1: 0, z1: T.BOX, scale: 4 }],
-    ["view-s", "render_view", { view: "se", fog: 600 }],
-    ["view-n", "render_view", { view: "nw", fog: 600 }],
-    ["view-crater", "render_view", { pos: [0, 120, 150], target: [0, 45, 0], fov: 50, fog: 800 }],
-    ["view-shore", "render_view", { pos: [-40, 20, 120], target: [-60, 12, 20], fov: 55, fog: 800 }],
+    ["view-s", "render_view", { view: "se", fog: 900 }],
+    ["view-n", "render_view", { view: "nw", fog: 900 }],
+    ["view-crater", "render_view", { pos: [0, 150, 160], target: [0, 55, 0], fov: 50, fog: 900 }],
+    ["view-shore", "render_view", { pos: [-40, 20, 140], target: [-60, 12, 20], fov: 55, fog: 900 }],
   ];
   for (const [name, tool, args] of shots) {
     const r = await call(tool, args, { soft: true });
