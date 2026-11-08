@@ -118,8 +118,9 @@ export function surfaces(gs: Grid[], r: Region, step: number, headroom: number):
 }
 
 /** A worm's width, map units, for check_reachability's narrow gaps when bodyWidth is not given and game_walk's planned
- * routes: an assumption, not read from the game. */
-export const WORM_WIDTH = 1;
+ * routes: a worm's body measured about 11 world units across in a Test (2026-10-05), rounded up; its collision is not
+ * read from the game. */
+export const WORM_WIDTH = 0.6;
 
 /** Wider than this (map units) a gap is open: spanAcross stops looking. */
 export const OPEN_SPAN = 8;

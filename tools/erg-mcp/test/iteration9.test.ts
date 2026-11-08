@@ -125,7 +125,7 @@ test("check_reachability: every route reports its narrowest gap; bodyWidth refus
   assert.equal(thin.spawns[0].reachable, true);
   // a gap under the assumed worm width is named in the summary when the body is not enforced
   const tight = await call(s, "check_reachability", { ...base, step: 0.5 });
-  if (tight.spawns[0].path.narrowest.width < 1) assert.match(tight.summary, /narrower than a worm/);
+  if (tight.spawns[0].path.narrowest.width < 0.6) assert.match(tight.summary, /narrower than a worm/);
 });
 
 test("game_walk's route: planned through the slot for a thin worm, refused for a wide one; pure pursuit follows the corners", async () => {
