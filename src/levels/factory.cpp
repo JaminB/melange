@@ -40,6 +40,7 @@
 #include <windows.h>
 
 #include <algorithm>
+#include <atomic>
 #include <cctype>
 #include <cmath>
 #include <cstdio>
@@ -124,6 +125,10 @@ std::vector<Fire> g_following;
 std::vector<Fire> g_fired;          // the logged fires, oldest first, still watched for kWatchMs
 std::string g_trigger = "null";     // the last FireNow
 int g_tickHook = 0;
+std::atomic<uint32_t> g_fireSerial{0};   // fires seen this session (PlaceMines), for a shot after a fire
+std::atomic<ULONGLONG> g_fireAt{0};      // GetTickCount64 of the last
+/** Within this of the factory's axis (map units, horizontally) a mine at rest is "under the factory". */
+constexpr float kUnderFactoryMap = 2.5f;
 
 bool ReadVec(uintptr_t at, float out[3]) { return mem::SafeRead(at, out, sizeof(float) * 3); }
 
@@ -230,6 +235,8 @@ void FollowFire(const std::string& stem, const std::vector<MineAt>& before, int 
         f.mines.push_back(fm);
     }
     g_following.push_back(std::move(f));
+    g_fireAt = GetTickCount64();
+    ++g_fireSerial;
 }
 
 std::string MapVec(const float* v) {
@@ -268,6 +275,28 @@ std::string FireJson(const Fire& f) {
     for (const FiredMine& m : f.mines) mines.Raw(MineJson(f, m));
     return jsonmini::Obj().Str("stem", f.stem).UInt("tick", f.tick).UInt("turn", f.turn).Int("asked", f.asked).Bool("launch", f.launch)
         .Raw("factory", MapVec(f.factory)).Raw("mines", mines.End()).End();
+}
+
+// Where each mine of a logged fire ended up, one line each, in map units: its rest (or where it was last seen and its
+// fate), how far it lies from the factory's axis and how far under or over the factory, and whether that is under the
+// factory (within kUnderFactoryMap of its axis) or in the water. Whether it is in the crater is the level's to say:
+// erg-mcp's game_mines reads these with the project's ground.
+void LogWhere(const Fire& f) {
+    const float water = WaterNow();
+    int i = 0;
+    for (const FiredMine& m : f.mines) {
+        ++i;
+        const float* p = m.last;
+        const float across = std::hypot(p[0] - f.factory[0], p[2] - f.factory[2]) / kWorldPerMap, dy = (p[1] - f.factory[1]) / kWorldPerMap;
+        const bool wet = m.drowned || (!std::isnan(water) && p[1] < water);
+        char where[96];
+        snprintf(where, sizeof where, "%s%s", across <= kUnderFactoryMap ? "under the factory" : "off the factory",
+                 wet ? ", in the water" : "");
+        LOG_INFO("[levels] %s: mine %d of %zu (%u) %s (%.2f, %.2f, %.2f) map: %.2f from the factory's axis, %.2f %s it; %s", f.stem.c_str(), i,
+                 f.mines.size(), m.handle, m.gone ? (m.drowned ? "drowned, last seen at" : "gone, last seen at") : m.moved ? "rests at" : "not seen to land, at",
+                 static_cast<double>(p[0] / kWorldPerMap), static_cast<double>(p[1] / kWorldPerMap), static_cast<double>(p[2] / kWorldPerMap),
+                 static_cast<double>(across), static_cast<double>(std::fabs(dy)), dy < 0 ? "under" : "over", where);
+    }
 }
 
 // One look at a fire's mines: a move updates the last position (a mine still for kRestMs is at rest); a mine no longer
@@ -326,6 +355,7 @@ void OnTick(uint32_t tick, void*) {
             .Int("asked", f.asked).Bool("launch", f.launch).Raw("factory", MapVec(f.factory)).Raw("mines", mines.End());
         LOG_INFO("[levels] %s: the mine factory's fire at tick %u (turn %u): %zu mines appeared, %d came to rest", f.stem.c_str(), f.tick,
                  f.turn, f.mines.size(), rested);
+        LogWhere(f);
         f.logged = true;
         g_fired.push_back(std::move(f));
         if (g_fired.size() > kKeepFires) g_fired.erase(g_fired.begin());
@@ -553,6 +583,11 @@ const char* FireNow(int count, std::string* detail) {
 bool Position(float out[3]) {
     const uintptr_t f = g_hDrop ? FindFactory() : 0;
     return f && ReadVec(f + kPos, out);
+}
+
+uint32_t FireSerial(ULONGLONG* at) {
+    if (at) *at = g_fireAt.load();
+    return g_fireSerial.load();
 }
 
 std::string FiresJson() {

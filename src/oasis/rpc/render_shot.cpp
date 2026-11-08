@@ -5,6 +5,13 @@
 // Documents\Melange\shots. A clean shot first hides the mods' wum.draw primitives for a few frames (draw::HideUntil), so
 // a mod's text is not in the picture; the call then answers not ready until a frame drawn without them is there to read.
 // Both run on the main thread (the Frame event, where the GL context is current) and change only the picture.
+//
+// The turn's "Ready?" intro can draw its main view from another camera than the one the override writes (in the Caldera
+// iteration-10 Test every castle shot taken in an intro showed the worm and the HUD, the override only in the corner
+// inset), so render.camera {when: "play"} holds a pose until the turn is in play (wum.game.turn().phase) and sets it
+// then, and render.shot {requirePlay, afterCamera} answers not ready until the turn plays and the override has been drawn
+// that many frames. render.fireShot arms a pinned camera that is set when the level's mine factory fires and read back
+// `delayMs` later (the mines in flight), once per fire, written as <name>_<n>.png.
 #include <windows.h>
 #include <shlobj.h>
 
@@ -22,7 +29,10 @@
 #include "core/events.h"
 #include "core/game.h"
 #include "core/log.h"
+#include "levels/factory.h"
+#include "lua/sandbox_core.h"
 #include "melange/render.h"
+#include "melange/sim.h"
 #include "oasis/providers.h"
 #include "oasis/rpc/params.h"
 #include "render/mirage/draw_gl.h"
@@ -35,6 +45,33 @@ namespace fs = std::filesystem;
 
 const char g_owner = 0;   // the override's owner: Oasis, not a mod
 constexpr int kCleanFrames = 3;   // frames drawn without the mods' primitives before a clean shot is read
+constexpr ULONGLONG kPendingMs = 120000;   // a pose waiting for the turn's play phase is dropped after this
+
+// Main thread (the RPCs and the Frame event run there).
+struct Pose {
+    render::CameraOverride o{};
+    int frames = 30;
+};
+bool g_pending = false;           // a render.camera {when: "play"} pose waiting for the turn to play
+Pose g_pend;
+ULONGLONG g_pendSince = 0;
+uint64_t g_camFrame = 0;          // the frame the override was last set at (by render.camera or the fire shot)
+struct FireShot {
+    bool armed = false;
+    Pose pose;
+    std::string name;
+    int delayMs = 500, max = 4, holdFrames = 2, taken = 0;
+    uint32_t serial = 0;          // the fire serial it waits past
+    uint32_t firing = 0;          // the fire being shot (0: none)
+    uint64_t setFrame = 0;        // the frame its camera was set at
+    std::vector<std::string> paths;
+    std::string lastError;
+} g_fs;
+
+// The turn's phase as wum.game.turn() says it ("intro", "play", "retreat", "settle", "none"), and the Ready? intro.
+const char* Phase() { return sandbox::Game().phase; }
+bool InIntro() { return sandbox::Game().ui.readyIntro || std::strcmp(sandbox::Game().phase, "intro") == 0; }
+bool Playing() { return sim::InMatch() && std::strcmp(sandbox::Game().phase, "play") == 0 && !sandbox::Game().ui.readyIntro; }
 constexpr GLenum kReadFramebuffer = 0x8CA8, kReadFramebufferBinding = 0x8CAA, kPixelPackBuffer = 0x88EB,
                  kPixelPackBufferBinding = 0x88ED;
 
@@ -73,6 +110,7 @@ void Camera(const Call& c, Result& r, void*) {
     if (!rpc::ParseParams(c, &p, r)) return;
     const uint64_t frame = events::FrameCount();
     if (const json::Value* cl = p.Get("clear"); cl && cl->IsBool() && cl->boolean) {
+        g_pending = false;
         const bool cleared = render::ClearCameraOverride(&g_owner);
         r.json = jsonmini::Obj().Bool("cleared", cleared).UInt("frame", frame).End();
         return;
@@ -80,13 +118,32 @@ void Camera(const Call& c, Result& r, void*) {
     render::CameraOverride o{};
     o.up[1] = 1.f;
     double fov = 0, frames = 30;
+    std::string when;
     if (!Vec(p, "pos", o.pos, true, r) || !Vec(p, "target", o.target, true, r) || !Vec(p, "up", o.up, false, r) ||
-        !Num(p, "fov", 5, 150, &fov, r) || !Num(p, "frames", 1, 600, &frames, r))
+        !Num(p, "fov", 5, 150, &fov, r) || !Num(p, "frames", 1, 600, &frames, r) || !rpc::Str(p, "when", &when, r, false))
         return;
+    if (!when.empty() && when != "now" && when != "play") {
+        Fail(r, rpc::kBadParams, "when: now (default) or play");
+        return;
+    }
     o.fovDeg = static_cast<float>(fov);
+    g_pending = false;
+    if (when == "play" && !Playing()) {
+        // the turn's intro (or the gap between turns): hold the pose until the turn plays (OnFrame sets it)
+        if (!sim::InMatch()) {
+            Fail(r, rpc::kNotInMatch, "camera overrides are unavailable (no match is drawing)");
+            return;
+        }
+        g_pending = true;
+        g_pend = Pose{o, static_cast<int>(frames)};
+        g_pendSince = GetTickCount64();
+        r.json = jsonmini::Obj().Bool("set", false).Bool("pending", true).Str("phase", Phase()).UInt("frame", frame).End();
+        return;
+    }
     switch (render::SetCameraOverride(&g_owner, o, static_cast<int>(frames))) {
         case render::OverrideResult::Ok:
-            r.json = jsonmini::Obj().Bool("set", true).UInt("frame", frame).Int("frames", static_cast<int>(frames)).End();
+            g_camFrame = frame;
+            r.json = jsonmini::Obj().Bool("set", true).UInt("frame", frame).Int("frames", static_cast<int>(frames)).Str("phase", Phase()).End();
             return;
         case render::OverrideResult::Busy:
             Fail(r, rpc::kBusy, "a mod's camera override is in effect (wum.render.cameraOverride); it ends by itself, or clear it in that mod");
@@ -181,12 +238,21 @@ void Shot(const Call& c, Result& r, void*) {
         Fail(r, rpc::kBadParams, "name: 1-64 of A-Z a-z 0-9 _ - . (a file name without .png)");
         return;
     }
-    double width = 0, minFrame = 0;
-    bool clean = false;
-    if (!Num(p, "width", 64, 8192, &width, r) || !Num(p, "minFrame", 0, 1e15, &minFrame, r)) return;
+    double width = 0, minFrame = 0, afterCamera = -1;
+    bool clean = false, requirePlay = false;
+    if (!Num(p, "width", 64, 8192, &width, r) || !Num(p, "minFrame", 0, 1e15, &minFrame, r) || !Num(p, "afterCamera", 0, 600, &afterCamera, r)) return;
     if (const json::Value* v = p.Get("clean"); v && !v->IsNull() && !rpc::Flag(p, "clean", &clean, r)) return;
+    if (const json::Value* v = p.Get("requirePlay"); v && !v->IsNull() && !rpc::Flag(p, "requirePlay", &requirePlay, r)) return;
     const uint64_t frame = events::FrameCount();
+    // the turn's intro draws from another camera: wait for the turn to play, and for the override (set, or pending
+    // until the turn plays) to have been drawn afterCamera frames
+    if ((requirePlay && !Playing()) || (afterCamera >= 0 && (g_pending || !render::CameraOverridden()))) {
+        r.json = jsonmini::Obj().Bool("ready", false).UInt("frame", frame).Str("phase", Phase()).Bool("readyIntro", InIntro())
+                     .Bool("cameraPending", g_pending).Str("waiting", requirePlay && !Playing() ? "the turn to play" : "the camera override").End();
+        return;
+    }
     uint64_t ready = static_cast<uint64_t>(minFrame);
+    if (afterCamera >= 0) ready = std::max(ready, g_camFrame + static_cast<uint64_t>(afterCamera));
     if (clean) {
         // the mods' primitives are hidden through this frame and the next kCleanFrames: read once two are drawn clean
         if (!draw::HiddenAt(frame)) {
@@ -229,12 +295,138 @@ void Shot(const Call& c, Result& r, void*) {
     }
     LOG_INFO("[oasis] render.shot %s %dx%d frame %llu%s", name.c_str(), ow, oh, static_cast<unsigned long long>(frame), clean ? " (clean)" : "");
     r.json = jsonmini::Obj().Bool("ready", true).Str("path", game::Narrow(path)).Int("width", ow).Int("height", oh).UInt("bytes", len)
-                 .UInt("frame", frame).Bool("clean", draw::HiddenAt(frame)).Bool("cameraOverride", render::CameraOverridden()).End();
+                 .UInt("frame", frame).Bool("clean", draw::HiddenAt(frame)).Bool("cameraOverride", render::CameraOverridden())
+                 .Str("phase", Phase()).Bool("readyIntro", InIntro()).End();
+}
+
+// ---- the Frame event: a pending pose set once the turn plays; the fire shot
+bool WritePng(const std::string& name, std::string* path, std::string* why) {
+    int w = 0, h = 0;
+    std::vector<uint8_t> rgb;
+    if (!ReadBack(&w, &h, &rgb)) return *why = "no frame to read", false;
+    size_t len = 0;
+    void* png = tdefl_write_image_to_png_file_in_memory_ex(rgb.data(), w, h, 3, &len, 6, MZ_FALSE);
+    if (!png) return *why = "the PNG could not be encoded", false;
+    const std::wstring dir = ShotDir(), wpath = dir + L"\\" + game::Widen(name) + L".png";
+    std::error_code ec;
+    fs::create_directories(dir, ec);
+    bool ok = false;
+    if (FILE* f = _wfopen(wpath.c_str(), L"wb")) {
+        ok = fwrite(png, 1, len, f) == len;
+        fclose(f);
+    }
+    mz_free(png);
+    if (!ok) return *why = "could not write " + game::Narrow(wpath), false;
+    *path = game::Narrow(wpath);
+    return true;
+}
+
+void OnFrame() {
+    const uint64_t frame = events::FrameCount();
+    if (g_pending) {
+        if (!sim::InMatch() || GetTickCount64() - g_pendSince > kPendingMs) g_pending = false;
+        else if (Playing()) {
+            g_pending = false;
+            if (render::SetCameraOverride(&g_owner, g_pend.o, g_pend.frames) == render::OverrideResult::Ok) {
+                g_camFrame = frame;
+                LOG_INFO("[oasis] render.camera: the turn plays; the pending pose is set (frame %llu)", static_cast<unsigned long long>(frame));
+            }
+        }
+    }
+    FireShot& f = g_fs;
+    if (!f.armed) return;
+    if (!sim::InMatch()) {
+        f.armed = false;
+        f.firing = 0;
+        return;
+    }
+    ULONGLONG at = 0;
+    const uint32_t serial = levels::factory::FireSerial(&at);
+    if (!f.firing && serial != f.serial) {
+        f.serial = serial;
+        f.firing = serial;
+        f.setFrame = 0;
+    }
+    if (!f.firing || GetTickCount64() - at < static_cast<ULONGLONG>(f.delayMs)) return;
+    if (!f.setFrame) {
+        // the pose, held a few frames: the shot is read once it has been drawn holdFrames times
+        if (render::SetCameraOverride(&g_owner, f.pose.o, f.holdFrames + 30) != render::OverrideResult::Ok) {
+            f.lastError = "the camera override was refused (a mod's override is in effect?)";
+            f.firing = 0;
+            return;
+        }
+        f.setFrame = frame;
+        g_camFrame = frame;
+        return;
+    }
+    if (frame < f.setFrame + static_cast<uint64_t>(f.holdFrames)) return;
+    std::string path, why;
+    const std::string name = f.name + "_" + std::to_string(++f.taken);
+    if (WritePng(name, &path, &why)) {
+        f.paths.push_back(path);
+        LOG_INFO("[oasis] render.fireShot: %s, %d ms after the factory's fire (frame %llu)", path.c_str(), f.delayMs, static_cast<unsigned long long>(frame));
+    } else f.lastError = why;
+    render::ClearCameraOverride(&g_owner);
+    f.firing = 0;
+    if (f.taken >= f.max) f.armed = false;
+}
+
+// render.fireShot {pos, target, fov?, name, delayMs?, max?, holdFrames?} | {clear: true} | {} (the state)
+void FireShotRpc(const Call& c, Result& r, void*) {
+    json::Value p;
+    if (!rpc::ParseParams(c, &p, r)) return;
+    FireShot& f = g_fs;
+    auto state = [&] {
+        jsonmini::Arr paths;
+        for (const std::string& q : f.paths) paths.Str(q);
+        jsonmini::Obj o;
+        o.Bool("armed", f.armed).Str("name", f.name).Int("delayMs", f.delayMs).Int("taken", f.taken).Int("max", f.max).Raw("paths", paths.End())
+            .UInt("fires", levels::factory::FireSerial(nullptr));
+        if (!f.lastError.empty()) o.Str("lastError", f.lastError);
+        return o.End();
+    };
+    if (const json::Value* cl = p.Get("clear"); cl && cl->IsBool() && cl->boolean) {
+        f.armed = false;
+        f.firing = 0;
+        r.json = state();
+        return;
+    }
+    if (!p.Get("pos")) {
+        r.json = state();
+        return;
+    }
+    Pose pose;
+    pose.o.up[1] = 1.f;
+    std::string name;
+    double fov = 0, delay = 500, max = 4, hold = 2;
+    if (!Vec(p, "pos", pose.o.pos, true, r) || !Vec(p, "target", pose.o.target, true, r) || !Num(p, "fov", 5, 150, &fov, r) ||
+        !rpc::Str(p, "name", &name, r) || !Num(p, "delayMs", 0, 10000, &delay, r) || !Num(p, "max", 1, 32, &max, r) || !Num(p, "holdFrames", 1, 60, &hold, r))
+        return;
+    if (!ValidName(name) || name.size() > 56) {
+        Fail(r, rpc::kBadParams, "name: 1-56 of A-Z a-z 0-9 _ - . (the shots are <name>_<n>.png)");
+        return;
+    }
+    if (!sim::InMatch()) {
+        Fail(r, rpc::kNotInMatch, "no match is running");
+        return;
+    }
+    pose.o.fovDeg = static_cast<float>(fov);
+    f = FireShot{};
+    f.armed = true;
+    f.pose = pose;
+    f.name = name;
+    f.delayMs = static_cast<int>(delay);
+    f.max = static_cast<int>(max);
+    f.holdFrames = static_cast<int>(hold);
+    f.serial = levels::factory::FireSerial(nullptr);
+    r.json = state();
 }
 }  // namespace
 
 void InstallRenderShot() {
     AddMethod("render.camera", &Camera, nullptr, kRpcMutating | kRpcGameOnly);
     AddMethod("render.shot", &Shot, nullptr, kRpcMutating | kRpcGameOnly);
+    AddMethod("render.fireShot", &FireShotRpc, nullptr, kRpcMutating | kRpcGameOnly);
+    events::Subscribe(events::Event::Frame, [] { OnFrame(); });
 }
 }  // namespace melange::oasis::providers

@@ -203,11 +203,14 @@ function overview(s: Session, o0: Orbit = {}, k = WORLD_PER_MAP): { pos: number[
 
 /** Points the drawn camera (world units) for `frames`, through render.camera when the game has it, else a client mod's
  * console. Answers the frame it was set at (render.camera) and who owns it. */
-async function setCamera(s: Session, c: { pos: number[]; target: number[]; fov?: number }, frames: number, mod?: string): Promise<{ frame?: number; owner: string }> {
+async function setCamera(s: Session, c: { pos: number[]; target: number[]; fov?: number }, frames: number, mod?: string, whenPlay = false):
+  Promise<{ frame?: number; owner: string; pending?: boolean; phase?: string }> {
   if (!mod && (await has(s, "render.camera"))) {
-    const r = await (await s.client()).call<{ set: boolean; frame: number }>("render.camera", { pos: c.pos, target: c.target, ...(c.fov ? { fov: c.fov } : {}), frames }, 15000)
+    const r = await (await s.client()).call<{ set: boolean; frame: number; pending?: boolean; phase?: string }>("render.camera",
+      { pos: c.pos, target: c.target, ...(c.fov ? { fov: c.fov } : {}), frames, ...(whenPlay ? { when: "play" } : {}) }, 15000)
       .catch((e: Error) => { throw new ToolError(`the camera override was refused: ${e.message}`); });
-    return { frame: r.frame, owner: "oasis" };
+    // pending: the turn's intro is on; the game sets the pose when the turn plays (render.camera {when: "play"})
+    return r.pending ? { owner: "oasis", pending: true, phase: r.phase } : { frame: r.frame, owner: "oasis", ...(r.phase ? { phase: r.phase } : {}) };
   }
   const owner = await cameraMod(s, mod);
   const v = (p: number[]) => `{${p.map((x) => x.toFixed(3)).join(", ")}}`;
@@ -263,15 +266,17 @@ async function clearCamera(s: Session, mod?: string): Promise<{ cleared: boolean
 
 /** render.shot: waits for a frame at or after `minFrame` (and, clean, one drawn without the mods' primitives), then the
  * PNG the game wrote. */
-async function shot(s: Session, name: string, o: { width?: number; clean: boolean; minFrame?: number }): Promise<{ path: string; width: number; height: number; frame: number; clean: boolean; png: Uint8Array }> {
+async function shot(s: Session, name: string, o: { width?: number; clean: boolean; minFrame?: number; play?: { settle: number; waitMs: number } }):
+  Promise<{ path: string; width: number; height: number; frame: number; clean: boolean; png: Uint8Array; phase?: string; readyIntro?: boolean; waitedMs: number }> {
   if (!(await has(s, "render.shot"))) throw new ToolError("this game has no render.shot (Melange before erg-mcp's game_shots): take screenshots another way");
   const client = await s.client(), t0 = Date.now();
   for (;;) {
-    const r = await client.call<{ ready: boolean; readyAt?: number; path?: string; width?: number; height?: number; frame: number; clean?: boolean }>("render.shot",
-      { name, clean: o.clean, ...(o.width ? { width: o.width } : {}), ...(o.minFrame ? { minFrame: o.minFrame } : {}) }, 15000);
-    if (r.ready && r.path) return { path: r.path, width: r.width!, height: r.height!, frame: r.frame, clean: !!r.clean, png: readFileSync(r.path) };
-    if (Date.now() - t0 > 8000) throw new ToolError(`no frame to read after 8 s (at frame ${r.frame}, waiting for ${r.readyAt}): is the game minimised or paused?`);
-    await sleep(30);
+    const r = await client.call<{ ready: boolean; readyAt?: number; path?: string; width?: number; height?: number; frame: number; clean?: boolean; phase?: string; readyIntro?: boolean; waiting?: string }>("render.shot",
+      { name, clean: o.clean, ...(o.width ? { width: o.width } : {}), ...(o.minFrame ? { minFrame: o.minFrame } : {}), ...(o.play ? { requirePlay: true, afterCamera: o.play.settle } : {}) }, 15000);
+    if (r.ready && r.path) return { path: r.path, width: r.width!, height: r.height!, frame: r.frame, clean: !!r.clean, png: readFileSync(r.path), phase: r.phase, readyIntro: r.readyIntro, waitedMs: Date.now() - t0 };
+    if (Date.now() - t0 > (o.play?.waitMs ?? 8000))
+      throw new ToolError(r.waiting ? `no shot after ${Math.round((Date.now() - t0) / 1000)} s: waiting for ${r.waiting} (the turn's phase is ${r.phase})` : `no frame to read after 8 s (at frame ${r.frame}, waiting for ${r.readyAt}): is the game minimised or paused?`);
+    await sleep(r.waiting ? 100 : 30);
   }
 }
 
@@ -360,10 +365,39 @@ function groundLookup(s: Session): [((x: number, z: number) => number | null)?, 
  * 2.5 s, kept up to date while the game watches it, 3 minutes after the fire), and its `fate` on a game that records it:
  * resting, not seen to land, drowned (gone from under the water) or destroyed (set off, or removed), with `fates` counting
  * them. */
+/** Within this of the factory's axis (map units, horizontally) a mine is under the factory (the game logs the same). */
+const UNDER_FACTORY = 2.5;
+/** How far out from a mine the crater's rim is looked for (map units), and how much higher it must be. */
+const RIM_REACH = 40, RIM_RISE = 2;
+
+/** Where a mine lies (map units): in the water (at or under it), under the factory (within UNDER_FACTORY of its axis),
+ * in the crater (the ground rises RIM_RISE over the mine within RIM_REACH further out from the factory along the line
+ * through it: a rim between it and the outside), or outside it. */
+export function mineZone(at: number[], factory: number[], groundAt: (x: number, z: number) => number | null, water: number | null): "water" | "under the factory" | "crater" | "outside" {
+  if (water !== null && at[1] <= water) return "water";
+  const dx = at[0] - factory[0], dz = at[2] - factory[2], d = Math.hypot(dx, dz);
+  if (d <= UNDER_FACTORY) return "under the factory";
+  const ux = dx / d, uz = dz / d;
+  for (let t = 0.5; t <= RIM_REACH; t += 0.5) {
+    const g = groundAt(at[0] + ux * t, at[2] + uz * t);
+    if (g !== null && g >= at[1] + RIM_RISE) return "crater";
+  }
+  return "outside";
+}
+
 export function fireOut(f: FireRec, u: "map" | "world", groundAt?: (x: number, z: number) => number | null, water?: number | null) {
   const k = u === "world" ? WORLD_PER_MAP : 1;
   const fates: Record<string, number> = {};
   for (const m of f.mines) if (m.fate) fates[m.fate] = (fates[m.fate] ?? 0) + 1;
+  // where each mine lies, with the open project's ground: the water, under the factory, the crater or outside it
+  const zones: Record<string, number> = {};
+  const zoneOf = (m: FireRec["mines"][number]) => {
+    const at = m.rest ?? m.lastSeen;
+    if (!groundAt || !at) return {};
+    const z = m.fate === "drowned" ? "water" : mineZone(at, f.factory, groundAt, m.waterMap ?? water ?? null);
+    zones[z] = (zones[z] ?? 0) + 1;
+    return { where: z, belowFactory: Math.round((f.factory[1] - at[1]) * k * 100) / 100 };
+  };
   // a mine gone before it landed was last seen at its launch point: with the open project, the ground under that point
   // says whether it fell into the sea (no ground over the water there)
   const sea = (m: FireRec["mines"][number]) => {
@@ -372,12 +406,14 @@ export function fireOut(f: FireRec, u: "map" | "world", groundAt?: (x: number, z
     return g === null || (w !== null && g <= w) ? { likely: "drowned: no ground over the water under where it fell (the open project's voxels)" }
       : { likely: `set off before it landed, or sank elsewhere: ground at y ${Math.round(g * 100) / 100} under where it fell` };
   };
+  const each = f.mines.map((m) => ({ handle: m.handle, spawn: inUnits(m.spawn, u),
+    ...(m.gone ? { gone: true, lastSeen: inUnits(m.lastSeen, u), ...(m.rest ? { rest: inUnits(m.rest, u) } : {}) } : { rest: inUnits(m.rest, u), settled: !!m.settled }),
+    ...(m.fate ? { fate: m.fate } : {}), ...sea(m), ...zoneOf(m), ...(m.goneTick !== undefined ? { goneTick: m.goneTick } : {}), ...(m.waterMap !== undefined ? { water: Math.round(m.waterMap * k * 100) / 100 } : {}),
+    ...(m.movedAfterRest ? { movedAfterRest: m.movedAfterRest } : {}),
+    restFromFactory: Math.round(m.restFromFactoryMap * k * 100) / 100 }));
   return { tick: f.tick, turn: f.turn, mines: f.mines.length, launch: f.launch, factory: inUnits(f.factory, u), ...(Object.keys(fates).length ? { fates } : {}),
-    each: f.mines.map((m) => ({ handle: m.handle, spawn: inUnits(m.spawn, u),
-      ...(m.gone ? { gone: true, lastSeen: inUnits(m.lastSeen, u), ...(m.rest ? { rest: inUnits(m.rest, u) } : {}) } : { rest: inUnits(m.rest, u), settled: !!m.settled }),
-      ...(m.fate ? { fate: m.fate } : {}), ...sea(m), ...(m.goneTick !== undefined ? { goneTick: m.goneTick } : {}), ...(m.waterMap !== undefined ? { water: Math.round(m.waterMap * k * 100) / 100 } : {}),
-      ...(m.movedAfterRest ? { movedAfterRest: m.movedAfterRest } : {}),
-      restFromFactory: Math.round(m.restFromFactoryMap * k * 100) / 100 })) };
+    ...(Object.keys(zones).length ? { where: zones, whereRule: `with the open project's ground: water (at or under it), under the factory (within ${UNDER_FACTORY} map units of its axis), crater (the ground rises ${RIM_RISE} map units over the mine within ${RIM_REACH} further out from the factory), else outside` } : {}),
+    each };
 }
 
 // ------------------------------------------------------------------ announcements
@@ -697,14 +733,19 @@ export const tools: Tool[] = [
         clean: { type: "boolean", description: "Hide the mods' wum.draw primitives in the shots (default true)." },
         width: { type: "integer", minimum: 64, maximum: 8192, description: "Scale every picture down to this width (default 960)." },
         settleFrames: { type: "integer", minimum: 1, maximum: 120, description: "Frames drawn from a pose before it is read (default 2; more lets particles and the water move on)." },
+        waitPlay: { type: "boolean", description: "Take each pose only while the turn plays: the turn's \"Ready?\" intro draws its main view from another camera than the override (in the Caldera iteration-10 Test every castle shot taken in an intro showed the worm and the HUD), so the game holds the pose until the turn is in play (render.camera {when: \"play\"}), sets it then and the shot is read once it has been drawn settleFrames frames (default 6 with waitPlay). Each shot answers its phase. Waits at most waitSec per pose (default 60). Melange 0.13+: an older game takes the poses at once and the answer says so." },
+        waitSec: { type: "number", minimum: 1, maximum: 300, description: "waitPlay: the longest wait for the turn to play, per pose (default 60)." },
         hold: { type: "boolean", description: "Keep the last pose for 5 s instead of giving the camera back." },
         holdLast: { type: "boolean", description: "Keep the last pose until released (game_camera {clear: true}), as game_camera's hold." },
         images: { type: "boolean", description: "Answer the pictures as image content (default true); false: paths only." },
       },
     },
-    async handler(s, a: { cams: Cam[]; units?: "map" | "world"; prefix?: string; unique?: boolean; onAnnounce?: { match?: string; timeoutSec?: number }; clean?: boolean; width?: number; settleFrames?: number; hold?: boolean; holdLast?: boolean; images?: boolean }) {
+    async handler(s, a: { cams: Cam[]; units?: "map" | "world"; prefix?: string; unique?: boolean; onAnnounce?: { match?: string; timeoutSec?: number }; clean?: boolean; width?: number; settleFrames?: number;
+      waitPlay?: boolean; waitSec?: number; hold?: boolean; holdLast?: boolean; images?: boolean }) {
       if (!(await has(s, "render.camera")) || !(await has(s, "render.shot"))) throw new ToolError("game_shots needs the game's render.camera and render.shot (a Melange with them, running)");
-      const k = a.units === "world" ? 1 : WORLD_PER_MAP, t0 = Date.now(), settle = a.settleFrames ?? 2;
+      if (a.waitPlay && a.onAnnounce) throw new ToolError("waitPlay and onAnnounce both decide when to shoot: give one");
+      const k = a.units === "world" ? 1 : WORLD_PER_MAP, t0 = Date.now(), settle = a.settleFrames ?? (a.waitPlay ? 6 : 2);
+      let playSupported: boolean | undefined;
       const shots: object[] = [], parts: Content[] = [], warnings: string[] = [], prefix = a.prefix ?? `erg_${stamp()}`;
       // onAnnounce: wait for the message, then shoot at once and not clean (the announcement is drawn with the HUD
       // primitives a clean shot hides)
@@ -729,16 +770,21 @@ export const tools: Tool[] = [
             const last = (a.hold || a.holdLast) && i === a.cams.length - 1;
             lastPose = { ...cam, fov: c.fov ?? cam.fov };
             const frames = last ? (a.holdLast ? 600 : 300) : Math.max(30, settle + 20);
-            frame = (await setCamera(s, lastPose, frames)).frame;
-            const check = await confirmPose(s, lastPose, frames);
+            const set = await setCamera(s, lastPose, frames, undefined, !!a.waitPlay);
+            frame = set.frame;
+            if (a.waitPlay) playSupported = set.pending || set.phase !== undefined;
+            // a pending pose is not drawn yet: the game confirms it (afterCamera) when the turn plays
+            const check = set.pending ? null : await confirmPose(s, lastPose, frames);
             if (check && !check.ok) warnings.push(`${name}: the game drew from ${check.drawn!.map((v) => Math.round(v))} world, not the pose ${lastPose.pos.map((v) => Math.round(v))}: another client (a held game_camera in another erg-mcp) has the camera`);
             if (check?.retried) frame = undefined;
           }
           // with an announcement drawn: never a frame from before it was on the screen
           const minFrame = frame !== undefined ? frame + settle : undefined, afterShown = shownFrame !== undefined ? shownFrame + 1 : undefined;
-          const p = await shot(s, name, { width: a.width ?? 960, clean: cleanShots, minFrame: minFrame !== undefined && afterShown !== undefined ? Math.max(minFrame, afterShown) : minFrame ?? afterShown });
+          const play = a.waitPlay && playSupported && c.preset !== "default" ? { settle, waitMs: (a.waitSec ?? 60) * 1000 } : undefined;
+          const p = await shot(s, name, { width: a.width ?? 960, clean: cleanShots, minFrame: minFrame !== undefined && afterShown !== undefined ? Math.max(minFrame, afterShown) : minFrame ?? afterShown, play });
+          if (play && p.phase !== undefined && p.phase !== "play") warnings.push(`${name}: read in the turn's ${p.phase} phase`);
           shots.push({ name, ...(c.preset ? { preset: c.preset } : {}), ...(c.preset === "overview" && lastPose ? { azimuth: c.azimuth ?? 180, worldPos: lastPose.pos.map((v) => Math.round(v * 10) / 10) } : {}),
-            path: p.path, width: p.width, height: p.height, frame: p.frame, clean: p.clean });
+            path: p.path, width: p.width, height: p.height, frame: p.frame, clean: p.clean, ...(p.phase !== undefined ? { phase: p.phase } : {}), ...(play ? { waitedMs: p.waitedMs } : {}) });
           if (a.images !== false) parts.push(image(p.png));
         }
       } finally {
@@ -753,6 +799,7 @@ export const tools: Tool[] = [
         const left = (ann.wall + ann.seconds * 1000 - Date.now()) / 1000;
         if (left < 0) warnings.push(`the announcement left the screen ${Math.round(-left * 10) / 10} s before the last shot: fewer poses, or a longer announce`);
       }
+      if (a.waitPlay && playSupported === false) warnings.push("this game cannot hold a pose until the turn plays (render.camera {when}, Melange 0.13+): the poses were taken at once and may show the turn's intro");
       const first = shots[0] as { frame?: number } | undefined;
       parts.push({ type: "text", text: JSON.stringify({ shots, ms: Date.now() - t0, camera, ...(ann ? { announcement: { text: ann.text, ...(ann.mod ? { mod: ann.mod } : {}), seconds: ann.seconds, shownMsBeforeFirstShot: Math.max(0, t0 - ann.wall),
         ...(ann.shown ? { shownFrame: ann.shown.frame, shownMsAfterCall: ann.shown.msAfterCall, firstShotFrame: first?.frame, proof: first?.frame !== undefined && first.frame > ann.shown.frame
@@ -779,14 +826,18 @@ export const tools: Tool[] = [
         arrive: { type: "number", minimum: 0.2, description: "The end (or a waypoint) is reached within this horizontal distance (units; default 1.5 map units)." },
         timeoutSec: { type: "number", minimum: 1, maximum: 300, description: "Give up after this long, waiting included (default 120)." },
         jump: { type: "boolean", description: "Tap jump where the worm makes no progress for 0.6 s (default true; false: no recovery at all)." },
-        gameDir: { type: "string", description: "The running game's folder (WormsMayhem.exe), for its Automation command file (default MELANGE_GAME_DIR)." },
+        gameDir: { type: "string", description: "The running game's folder (WormsMayhem.exe), for its Automation command file (default MELANGE_GAME_DIR); only for driver keys." },
+        driver: { type: "string", enum: ["auto", "input", "keys"], description: "How the worm is moved: input posts the game's own movement inputs (Input.MoveForward ... Pressed and Released, as the keys bound to them post them) from the input service's tick (input.drive, Melange 0.13+), so it works whatever window has the focus; keys injects W A S D through the Automation module (test builds), which the game reads only while its window has the focus (in the Caldera iteration-10 Test the window lost it a third of the time and W moved no worm). auto (default): input when the game has input.drive, else keys." },
       },
     },
     async handler(s, a: { waypoints?: number[][]; path?: number[][]; to?: number[]; lookahead?: number; bodyWidth?: number; recover?: boolean; units?: "map" | "world"; worm?: number; arrive?: number;
-      timeoutSec?: number; jump?: boolean; gameDir?: string }) {
+      timeoutSec?: number; jump?: boolean; gameDir?: string; driver?: "auto" | "input" | "keys" }) {
       const given = [a.waypoints, a.path, a.to].filter((x) => x !== undefined).length;
       if (given !== 1) throw new ToolError("give one of waypoints, path or to");
-      const file = automationFile(a.gameDir);
+      const hasDrive = await has(s, "input.drive");
+      if (a.driver === "input" && !hasDrive) throw new ToolError("driver input needs the game's input.drive (Melange 0.13+ with the Controls module): use driver keys");
+      const byInput = a.driver === "input" || (a.driver !== "keys" && hasDrive);
+      const file = byInput ? null : automationFile(a.gameDir);
       const k = a.units === "world" ? 1 : WORLD_PER_MAP;   // to world units
       const out = (v: number) => Math.round((v / k) * 100) / 100;
       const xz = (p: number[]) => (p.length === 3 ? [p[0] * k, p[2] * k] : [p[0] * k, p[1] * k]);
@@ -797,17 +848,36 @@ export const tools: Tool[] = [
       const arrive = (a.arrive ?? (a.units === "world" ? 30 : 1.5)) * k, limit = (a.timeoutSec ?? 120) * 1000, t0 = Date.now();
       const look = (a.lookahead ?? (a.units === "world" ? 40 : 2)) * k;
       const recover = a.jump !== false && a.recover !== false && follow === "path";
-      const send = (lines: string[]) => appendFileSync(file, lines.join("\n") + "\n");
-      // Automation reads the file every frame and removes what it ran: an unread line means the module is off
-      const marker = `log erg-walk-${t0}`;
-      send([marker]);
-      await sleep(1500);
-      if (readFileSync(file, "utf8").includes(marker)) throw new ToolError(`the game did not read ${file}: game_walk needs a Melange with the Automation module ([Automation] Enabled=1, a test build) running from that folder`);
-      // the game's own jump and backflip keys (its bindings), else Enter and Backspace
-      const bound = await evalClient(s, `local b = wum.input and wum.input.binding return tostring(b and b("Input.JumpPressed")) .. ";" .. tostring(b and b("Input.JumpBackPressed"))`).catch(() => "nil;nil");
+      const send = (lines: string[]) => { if (file) appendFileSync(file, lines.join("\n") + "\n"); };
+      if (file) {
+        // Automation reads the file every frame and removes what it ran: an unread line means the module is off
+        const marker = `log erg-walk-${t0}`;
+        send([marker]);
+        await sleep(1500);
+        if (readFileSync(file, "utf8").includes(marker)) throw new ToolError(`the game did not read ${file}: game_walk needs a Melange with the Automation module ([Automation] Enabled=1, a test build) running from that folder`);
+      }
+      // the game's own jump and backflip keys (its bindings), else Enter and Backspace (driver keys); driver input posts
+      // the inputs themselves (Input.Jump, Input.JumpBack)
+      const bound = byInput ? "nil;nil" : await evalClient(s, `local b = wum.input and wum.input.binding return tostring(b and b("Input.JumpPressed")) .. ";" .. tostring(b and b("Input.JumpBackPressed"))`).catch(() => "nil;nil");
       const [jl, bl] = bound.split(";");
-      const keys = { jump: keyOfLabel(jl === "nil" ? null : jl) ?? "RETURN", backflip: keyOfLabel(bl === "nil" ? null : bl) ?? "BACK",
-        source: jl !== "nil" || bl !== "nil" ? `the game's bindings (${jl}, ${bl})` : "defaults (Enter, Backspace): the game's bindings were not read" };
+      const keys = byInput ? { jump: "Input.Jump", backflip: "Input.JumpBack", source: "the game's own inputs (input.drive)" }
+        : { jump: keyOfLabel(jl === "nil" ? null : jl) ?? "RETURN", backflip: keyOfLabel(bl === "nil" ? null : bl) ?? "BACK",
+          source: jl !== "nil" || bl !== "nil" ? `the game's bindings (${jl}, ${bl})` : "defaults (Enter, Backspace): the game's bindings were not read" };
+      // driver input: the held inputs are posted again every tick with a short deadline (a lost erg-mcp stops the worm)
+      const client = byInput ? await s.client() : null;
+      const MOVE: Record<string, string> = { W: "MoveForward", A: "MoveLeft", S: "MoveBackward", D: "MoveRight" };
+      let tap: { name: string; until: number } | null = null, drivePosts = 0;
+      const drive = async (want: string[]) => {
+        const names = want.map((x) => MOVE[x]);
+        if (tap && Date.now() < tap.until) names.push(tap.name);
+        const r = await client!.call<{ posts: number }>("input.drive", names.length ? { hold: names, ms: 500, replace: true } : { release: true }, 15000);
+        drivePosts = r.posts;
+      };
+      const press = async (what: "jump" | "backflip") => {
+        if (!byInput) { send([`key ${what === "jump" ? keys.jump : keys.backflip} 80`]); return; }
+        tap = { name: what === "jump" ? "Jump" : "JumpBack", until: Date.now() + 100 };
+        await drive(held);
+      };
       type W = { x: number; y: number; z: number; slot: number; team: number; phase: string; ai: boolean; alive: boolean; fx: number; fz: number };
       const read = async (): Promise<W | string> => {
         const t = await evalClient(s, WALK_LUA);
@@ -821,7 +891,7 @@ export const tools: Tool[] = [
         if (Date.now() - t0 > limit) throw new ToolError(`no ${a.worm !== undefined ? `turn of WORM${a.worm}` : "human turn"} in play within ${Math.round(limit / 1000)} s (last: ${typeof w === "string" ? w : `WORM${w.slot} team ${w.team} ${w.phase}${w.ai ? " ai" : ""}`})`);
         if (typeof w !== "string" && !w.ai && (a.worm === undefined || w.slot === a.worm)) {
           if (w.phase === "play") break;
-          if (w.phase === "intro") send(["key RETURN 60"]);
+          if (w.phase === "intro") send(["key RETURN 60"]);   // driver keys skips the Ready? intro; input waits it out
         }
         await sleep(400);
         w = await read();
@@ -844,7 +914,12 @@ export const tools: Tool[] = [
       let cum = cumulative(pts);
       const path: number[][] = [[start.x, start.y, start.z]], stuck: number[][] = [], tries: string[] = [];
       let i = 0, seg = 0, along = 0, held: string[] = [], lastMove = Date.now(), lastPos = [start.x, start.z], end: W = start, why = "timeout", jumps = 0, ladder = 0, replans = 0;
-      const hold = (want: string[]) => {
+      const hold = async (want: string[]) => {
+        if (byInput) {
+          held = want;
+          await drive(want);
+          return;
+        }
         const lines = [...held.filter((x) => !want.includes(x)).map((x) => `up ${x}`), ...want.filter((x) => !held.includes(x)).map((x) => `down ${x}`)];
         if (lines.length) send(lines);
         held = want;
@@ -870,21 +945,21 @@ export const tools: Tool[] = [
             along = Math.max(along, pp.along);
             aim = pp.aim;
           }
-          hold(walkKeys(aim[0] - r.x, aim[1] - r.z, r.fx, r.fz));
+          await hold(walkKeys(aim[0] - r.x, aim[1] - r.z, r.fx, r.fz));
           if (Math.hypot(r.x - lastPos[0], r.z - lastPos[1]) > 4) { lastPos = [r.x, r.z]; lastMove = Date.now(); ladder = 0; }
           else if (Date.now() - lastMove > 600) {
             stuck.push([r.x, r.y, r.z]);
             if (a.jump !== false) {
               const move = recover ? ladder % 3 : 0;
-              if (move === 0) { send([`key ${keys.jump} 80`]); jumps++; tries.push("jump"); }
+              if (move === 0) { await press("jump"); jumps++; tries.push("jump"); }
               else if (move === 1) {
                 // a side step: a short walk square to the aim, the side alternating, to come off a pillar's or a corner's edge
                 const side = Math.floor(ladder / 3) % 2 ? 1 : -1, dx = aim[0] - r.x, dz = aim[1] - r.z;
-                hold(walkKeys(-dz * side, dx * side, r.fx, r.fz));
+                await hold(walkKeys(-dz * side, dx * side, r.fx, r.fz));
                 await sleep(400);
                 tries.push("side step");
               } else {
-                send([`key ${keys.backflip} 80`]);
+                await press("backflip");
                 tries.push("backflip");
               }
               ladder++;
@@ -899,7 +974,8 @@ export const tools: Tool[] = [
           await sleep(WALK_TICK_MS);
         }
       } finally {
-        hold([]);
+        if (byInput) await client!.call("input.drive", { release: true }, 15000).catch(() => undefined);
+        else await hold([]);
       }
       const last = pts[pts.length - 1];
       const near = (p: number[]) => p.map(out);
@@ -910,10 +986,109 @@ export const tools: Tool[] = [
         from: near([start.x, start.y, start.z]), to: near([end.x, end.y, end.z]), toTarget: out(Math.hypot(last[0] - end.x, last[1] - end.z)), climb: out(end.y - start.y),
         seconds: Math.round((Date.now() - t0) / 100) / 10, jumps, ...(tries.length ? { recoveries: tries.slice(0, 40) } : {}), ...(stuck.length ? { stuckAt: stuck.slice(0, 12).map(near) } : {}),
         ...(plans.length ? { plans } : {}), ...(follow === "path" ? { keys } : {}), path: path.slice(0, 120).map(near),
+        driver: byInput ? { kind: "input", posts: drivePosts, note: "the game's own movement inputs, posted from its input tick (input.drive): the window's focus does not matter" }
+          : { kind: "keys", note: "W A S D through the Automation module: the game reads them only while its window has the focus" },
         units: a.units ?? "map", note: follow === "waypoints"
-          ? "the worm walked with the game's own keys (camera-relative W A S D, steered every 0.12 s toward the next waypoint; jump where it stopped): reached.target means it got to the last waypoint on foot in game"
-          : "the worm followed the route with the game's own keys (camera-relative W A S D, steered every 0.12 s at the point `lookahead` along the route ahead of it; jump, side step and backflip where it stopped): reached.target means it got to the route's end on foot in game",
+          ? "the worm walked with the game's own controls (camera-relative W A S D, steered every 0.12 s toward the next waypoint; jump where it stopped): reached.target means it got to the last waypoint on foot in game"
+          : "the worm followed the route with the game's own controls (camera-relative W A S D, steered every 0.12 s at the point `lookahead` along the route ahead of it; jump, side step and backflip where it stopped): reached.target means it got to the route's end on foot in game",
       };
+    },
+  },
+  {
+    name: "game_drive",
+    description: "Drive the active worm of the running Test for a while with the game's own inputs, whatever window has the focus: waits for a human team's turn in play (`worm`: that WORMn's), then holds `inputs` for `seconds` (W, A, S, D: the camera-relative walk, as the keys; Jump, Backflip, Fire (held: the power), AimUp, AimDown), posted as the keys bound to them post them from the game's input tick (input.drive, Melange 0.13+, the Controls module), and answers where the worm was before and after, how far it moved and climbed. The simple check that a worm walks in the game (game_walk follows a whole route the same way).",
+    inputSchema: {
+      type: "object", additionalProperties: false, required: ["inputs"],
+      properties: {
+        inputs: { type: "array", minItems: 1, maxItems: 4, items: { type: "string", enum: ["W", "A", "S", "D", "Jump", "Backflip", "Fire", "AimUp", "AimDown"] }, description: "What to hold (two walk keys walk the diagonal)." },
+        seconds: { type: "number", minimum: 0.05, maximum: 20, description: "How long to hold them (default 2)." },
+        worm: { type: "integer", minimum: 0, maximum: 7, description: "Only this WORMn's turn (default the first human turn in play)." },
+        waitSec: { type: "number", minimum: 1, maximum: 300, description: "Wait at most this long for the turn (default 90)." },
+        units: { type: "string", enum: ["map", "world"], description: "Units of the answer (default map)." },
+      },
+    },
+    async handler(s, a: { inputs: string[]; seconds?: number; worm?: number; waitSec?: number; units?: "map" | "world" }) {
+      if (!(await has(s, "input.drive"))) throw new ToolError("game_drive needs the game's input.drive (Melange 0.13+ with the Controls module)");
+      const NAME: Record<string, string> = { W: "MoveForward", A: "MoveLeft", S: "MoveBackward", D: "MoveRight", Jump: "Jump", Backflip: "JumpBack", Fire: "Fire", AimUp: "AimUp", AimDown: "AimDown" };
+      const k = a.units === "world" ? 1 : 1 / WORLD_PER_MAP, out = (v: number) => Math.round(v * k * 100) / 100;
+      const client = await s.client(), t0 = Date.now(), wait = (a.waitSec ?? 90) * 1000;
+      type W = { x: number; y: number; z: number; slot: number; team: number; phase: string; ai: boolean; alive: boolean };
+      const read = async (): Promise<W | string> => {
+        const t = await evalClient(s, WALK_LUA);
+        if (t.startsWith("none")) return t;
+        const v = t.split(",");
+        return { x: +v[0], y: +v[1], z: +v[2], slot: +v[3], team: +v[4], phase: v[5], ai: v[6] === "true", alive: v[7] === "true" };
+      };
+      let w = await read();
+      while (typeof w === "string" || w.ai || w.phase !== "play" || (a.worm !== undefined && w.slot !== a.worm)) {
+        if (Date.now() - t0 > wait) throw new ToolError(`no ${a.worm !== undefined ? `turn of WORM${a.worm}` : "human turn"} in play within ${Math.round(wait / 1000)} s (last: ${typeof w === "string" ? w : `WORM${w.slot} team ${w.team} ${w.phase}${w.ai ? " ai" : ""}`})`);
+        await sleep(300);
+        w = await read();
+      }
+      const start = w, names = a.inputs.map((x) => NAME[x]), hold = (a.seconds ?? 2) * 1000, t1 = Date.now();
+      let end: W = start, why = "held", posts = 0;
+      try {
+        while (Date.now() - t1 < hold) {
+          const r = await client.call<{ posts: number }>("input.drive", { hold: names, ms: Math.min(500, Math.max(50, hold - (Date.now() - t1))), replace: true }, 15000);
+          posts = r.posts;
+          await sleep(Math.min(200, hold));
+          const now = await read();
+          if (typeof now === "string" || now.slot !== start.slot || now.phase !== "play") { why = "the turn left play"; break; }
+          end = now;
+          if (!now.alive) { why = "the worm died"; break; }
+        }
+      } finally {
+        await client.call("input.drive", { release: true }, 15000).catch(() => undefined);
+      }
+      await sleep(400);
+      const after = await read();
+      if (typeof after !== "string" && after.slot === start.slot) end = after;
+      return { worm: `WORM${start.slot}`, team: start.team, inputs: a.inputs, heldMs: Date.now() - t1, stop: why, posts,
+        from: [start.x, start.y, start.z].map(out), to: [end.x, end.y, end.z].map(out), moved: out(Math.hypot(end.x - start.x, end.z - start.z)), climb: out(end.y - start.y),
+        units: a.units ?? "map", note: "the inputs were posted from the game's input tick as their keys post them (input.drive): no keyboard and no window focus involved" };
+    },
+  },
+  {
+    name: "game_fire_shot",
+    description: "Pin a camera for the mine factory's fires in the running Test: every time the factory fires (each PlaceMines, at a turn start or game_mines {fire}), the game points the camera at the pose `delayMs` after it (default 500: the mines in flight), holds it `holdFrames` frames, writes Documents\\\\Melange\\\\shots\\\\<prefix>_<n>.png and gives the camera back, for up to `max` fires (render.fireShot, Melange 0.13+). No watch is needed: it stays armed for the match. The default pose looks down into the crater: from 20 map units south and 25 over the open project's factory knot, at the knot. `clear` disarms it; with neither a pose nor clear it answers the state and the shots taken so far (with `images`, as pictures).",
+    inputSchema: {
+      type: "object", additionalProperties: false,
+      properties: {
+        pos: vec3("Eye [x, y, z] in `units`."), target: vec3("Point looked at [x, y, z] in `units`."), fov: { type: "number", minimum: 5, maximum: 150 },
+        units: { type: "string", enum: ["map", "world"], description: "Units of pos and target (default map)." },
+        arm: { type: "boolean", description: "Arm it with the default pose (the crater over the factory knot) when no pos is given." },
+        delayMs: { type: "integer", minimum: 0, maximum: 10000, description: "After the fire (default 500)." },
+        max: { type: "integer", minimum: 1, maximum: 32, description: "Fires to shoot before it disarms itself (default 4)." },
+        holdFrames: { type: "integer", minimum: 1, maximum: 60, description: "Frames drawn from the pose before it is read (default 2)." },
+        prefix: { type: "string", description: "The PNGs are <prefix>_<n> (default erg_fireshot_<yyyymmdd_hhmmss>)." },
+        clear: { type: "boolean", description: "Disarm it." },
+        images: { type: "boolean", description: "With the state: answer the shots taken as pictures (default false)." },
+      },
+    },
+    async handler(s, a: { pos?: number[]; target?: number[]; fov?: number; units?: "map" | "world"; arm?: boolean; delayMs?: number; max?: number; holdFrames?: number; prefix?: string; clear?: boolean; images?: boolean }) {
+      if (!(await has(s, "render.fireShot"))) throw new ToolError("this game has no render.fireShot (Melange 0.13+): use game_mines {fire, shotsOnFire} instead");
+      const client = await s.client();
+      type St = { armed: boolean; name: string; delayMs: number; taken: number; max: number; paths: string[]; fires: number; lastError?: string };
+      if (a.clear) return { ...(await client.call<St>("render.fireShot", { clear: true }, 15000)), note: "disarmed" };
+      if (!a.pos && !a.target && !a.arm) {
+        const st = await client.call<St>("render.fireShot", {}, 15000);
+        if (!a.images || !st.paths.length) return st;
+        return { content: [...st.paths.map((p) => image(readFileSync(p))), { type: "text", text: JSON.stringify(st, null, 1) }] };
+      }
+      if (!a.pos !== !a.target) throw new ToolError("give pos and target, or neither (arm: true takes the default pose over the factory knot)");
+      const kk = a.units === "world" ? 1 : WORLD_PER_MAP;
+      let pose: { pos: number[]; target: number[] };
+      if (a.pos && a.target) pose = { pos: a.pos.map((v) => v * kk), target: a.target.map((v) => v * kk) };
+      else {
+        const f = s.project ? markers(s.store).find((m) => m.kind === "minefactory") : undefined;
+        if (!f) throw new ToolError("the default pose looks at the open project's minefactory knot: open the project (or give pos and target)");
+        const [x, y, z] = f.pos;
+        pose = { pos: [x * WORLD_PER_MAP, (y + 25) * WORLD_PER_MAP, (z + 20) * WORLD_PER_MAP], target: [x * WORLD_PER_MAP, y * WORLD_PER_MAP, z * WORLD_PER_MAP] };
+      }
+      const name = uniqueName(a.prefix ?? `erg_fireshot_${stamp()}`, "fire", false).replace(/_fire$/, "");
+      const st = await client.call<St>("render.fireShot", { ...pose, ...(a.fov ? { fov: a.fov } : {}), name: name.slice(0, 56), delayMs: a.delayMs ?? 500, max: a.max ?? 4, holdFrames: a.holdFrames ?? 2 }, 15000);
+      return { ...st, pose: { pos: pose.pos.map((v) => Math.round(v / kk * 100) / 100), target: pose.target.map((v) => Math.round(v / kk * 100) / 100), units: a.units ?? "map" },
+        note: `armed: each of the next ${a.max ?? 4} factory fires is shot ${a.delayMs ?? 500} ms after it; game_fire_shot {} answers the shots taken (the game also logs each, [oasis] render.fireShot)` };
     },
   },
   {

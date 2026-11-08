@@ -17,6 +17,7 @@
 // Map units throughout.
 import type { EditorStore } from "../core";
 import { findHoles } from "./holes";
+import { checkSupport } from "./support";
 import { markers, spansAt, waterMap } from "./inspect-field";
 import { grids } from "./voxel";
 
@@ -26,6 +27,8 @@ export const FACTORY_DROP = 50;
 export const FACTORY_WATER = 0.5;
 /** The radius round the knot checked for see-through holes (check_holes), map units. */
 export const HOLE_RADIUS = 6;
+/** The radius round the knot checked for a shell over a void (check_support), map units. */
+export const SUPPORT_RADIUS = 1.5;
 /** A keepKnot knot this close over the top of the ground under it sits on it (place_object snap "surface" puts it there). */
 export const ON_SURFACE = 0.5;
 
@@ -72,7 +75,18 @@ export function checkFactory(store: EditorStore, len: (map: number) => string, w
   const holes = findHoles(gs, { x0: x - HOLE_RADIUS, z0: z - HOLE_RADIUS, x1: x + HOLE_RADIUS, z1: z + HOLE_RADIUS }, 0.5, water ?? 0,
     (px, pz) => Math.hypot(px - x, pz - z) <= HOLE_RADIUS);
   if (holes.holes) out.warnings.push(`${holes.holes} of ${holes.columns} rays within ${len(HOLE_RADIUS)} of the mine factory's knot hit no ground over the water (see-through holes${holes.clusters.length ? `, the largest round (${holes.clusters[0].centre.map((v) => Math.round(v * 10) / 10).join(", ")})` : ""}): mines fall through them; check_holes {around} lists them`);
-  if (!draped && !onSurface) out.warnings.push(`the factory's drop is the game's own sweep, and on Caldera it also missed undraped blocks inside the crater near the level's centre${keep ? " (keepKnot keeps it at its knot then)" : ""}: Test and call game_mines {alive: true} (it answers whether the factory exists and where it settled)`);
+  // a shell over a void under the knot (check_support): check_holes passes it, but a shot opens it under the factory.
+  // Only with a known water level, the base the ground must reach.
+  if (water !== null) {
+    const sup = checkSupport(gs, x, z, SUPPORT_RADIUS, 0.5, water);
+    if (sup.hollow) out.warnings.push(`${sup.hollow} of ${sup.columns} columns within ${len(SUPPORT_RADIUS)} of the mine factory's knot are a shell over a void (the thinnest ${len(sup.thinnest!.thickness)} thick, air ${len(sup.deepest!.voidBelow)} deep under it), not solid down to the water: fill under it; check_support {at} lists them`);
+  }
+  // the advisory goes for a keepKnot factory standing on its knot (onSurface); without keepKnot, or with the knot over the
+  // ground, it says what clears it
+  if (!draped && !onSurface)
+    out.warnings.push(`the factory's drop is the game's own sweep, and on Caldera it also missed undraped blocks inside the crater near the level's centre${keep
+      ? ` (keepKnot keeps it at its knot then; the knot is ${len(y - landY)} over the ground: put it on the surface with place_object {pos, snap: "surface"} or move {drop: true} and this advisory goes)`
+      : " (set_mine_factory {keepKnot: true} with the knot on the ground's top makes it stand on its knot, and this advisory goes)"}: Test and call game_mines {alive: true} (it answers whether the factory exists and where it settled)`);
   return out;
 }
 

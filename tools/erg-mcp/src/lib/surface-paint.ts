@@ -9,13 +9,16 @@
 // game's per-corner blend, as the panel's 2nd-material brush and heightfield `blend`), so the game draws a gradient
 // across the boundary voxel instead of a step; on a 2.5-unit skin that is the difference between a smooth lava edge and
 // a staircase of red and black squares.
-import { CORNER_BIT, bordered, cornerOffset, painted, type EditorStore, type Vec3 } from "../core";
+import { CORNER_BIT, bordered, cornerOffset, maskOf, painted, type EditorStore, type Vec3 } from "../core";
 import { ToolError } from "../registry";
-import { compile, ExprError, noise2 } from "./heightfield-expr";
+import { compile, ExprError, fbm, noise2 } from "./heightfield-expr";
 import { spansAt } from "./inspect-field";
 import { VoxelEdit, WORLD_PER_MAP, grids, isSolid, material } from "./voxel";
 
-export type Shape = { x: number; z: number; radius: number } | { min: [number, number]; max: [number, number] } | { points: [number, number][] };
+// A circle may wander: `wobble` makes its radius radius x (1 + amount x fbm round the circle, `lobes` bumps): an
+// organic pool or blob (paint_blob) instead of a disc.
+export type Wobble = { amount: number; lobes?: number; seed?: number };
+export type Shape = { x: number; z: number; radius: number; wobble?: Wobble } | { min: [number, number]; max: [number, number] } | { points: [number, number][] };
 
 export interface SurfacePaint {
   material: number;
@@ -29,6 +32,8 @@ export interface SurfacePaint {
   units: "map" | "world";                   // of the mask's x, z, h, y and d
   jitter?: { amount: number; scale?: number; seed?: number };   // moves the band's edge (map units) by noise
   blend?: { falloff: number };              // per-corner edge (map units past the edge a corner still counts)
+  exclude?: Shape[];                        // map units: never paint inside these
+  excludeMask?: string;                     // never where this expression is above 0
   only?: number[];                          // repaint only voxels of these materials
   except?: number[];                        // never repaint these
   dryRun?: boolean;
@@ -51,8 +56,15 @@ function toPath(path: Vec3[], cum: number[], x: number, z: number): { d: number;
   return { d: best, t: total > 0 ? at / total : 0 };
 }
 
+/** A circle's radius towards (x, z): its radius, or with a wobble the radius at that bearing. */
+function radiusAt(s: { x: number; z: number; radius: number; wobble?: Wobble }, x: number, z: number): number {
+  if (!s.wobble || !s.wobble.amount) return s.radius;
+  const th = Math.atan2(z - s.z, x - s.x), f = (s.wobble.lobes ?? 5) / (2 * Math.PI);
+  return s.radius * Math.max(0.05, 1 + s.wobble.amount * fbm(f * Math.cos(th) + 17.3, f * Math.sin(th) + 5.1, s.wobble.seed ?? 1, 3));
+}
+
 function inShape(s: Shape, x: number, z: number): boolean {
-  if ("radius" in s) return (x - s.x) ** 2 + (z - s.z) ** 2 <= s.radius * s.radius;
+  if ("radius" in s) { const r = radiusAt(s, x, z); return (x - s.x) ** 2 + (z - s.z) ** 2 <= r * r; }
   if ("min" in s) return x >= Math.min(s.min[0], s.max[0]) && x <= Math.max(s.min[0], s.max[0]) && z >= Math.min(s.min[1], s.max[1]) && z <= Math.max(s.min[1], s.max[1]);
   let inside = false;
   const p = s.points;
@@ -62,7 +74,7 @@ function inShape(s: Shape, x: number, z: number): boolean {
 }
 
 function shapeBox(s: Shape): [number, number, number, number] {
-  if ("radius" in s) return [s.x - s.radius, s.z - s.radius, s.x + s.radius, s.z + s.radius];
+  if ("radius" in s) { const r = s.radius * (1 + Math.abs(s.wobble?.amount ?? 0)); return [s.x - r, s.z - r, s.x + r, s.z + r]; }
   if ("min" in s) return [Math.min(s.min[0], s.max[0]), Math.min(s.min[1], s.max[1]), Math.max(s.min[0], s.max[0]), Math.max(s.min[1], s.max[1])];
   const xs = s.points.map((q) => q[0]), zs = s.points.map((q) => q[1]);
   return [Math.min(...xs), Math.min(...zs), Math.max(...xs), Math.max(...zs)];
@@ -74,15 +86,15 @@ export function paintSurface(store: EditorStore, o: SurfacePaint) {
   if (!o.path && !o.shapes?.length && !o.mask) throw new ToolError("give a path, shapes or a mask");
   if (o.path && !(o.width! > 0)) throw new ToolError("a path needs a width above 0");
   const k = o.units === "world" ? WORLD_PER_MAP : 1;
-  let mask: ((v: Record<string, number>) => number) | null = null;
-  if (o.mask) {
+  const compiled = (src: string, what: string) => {
     try {
-      mask = compile(o.mask, MASK_VARS) as unknown as (v: Record<string, number>) => number;
+      return compile(src, MASK_VARS) as unknown as (v: Record<string, number>) => number;
     } catch (e) {
-      if (e instanceof ExprError) throw new ToolError(`mask: ${e.message}`);
+      if (e instanceof ExprError) throw new ToolError(`${what}: ${e.message}`);
       throw e;
     }
-  }
+  };
+  const mask = o.mask ? compiled(o.mask, "mask") : null, excludeMask = o.excludeMask ? compiled(o.excludeMask, "excludeMask") : null;
   const cum = [0];
   if (o.path) for (let i = 1; i < o.path.length; i++) cum.push(cum[i - 1] + Math.hypot(o.path[i][0] - o.path[i - 1][0], o.path[i][2] - o.path[i - 1][2]));
   const fall = o.blend ? Math.max(0, o.blend.falloff) : 0;
@@ -123,10 +135,12 @@ export function paintSurface(store: EditorStore, o: SurfacePaint) {
       d = q.d;
     }
     if (o.shapes?.length && !o.shapes.some((s) => inShape(s, px, pz) || (extra > 0 && inShape(grown(s, extra), px, pz)))) return null;
-    if (mask) {
+    if (o.exclude?.some((s) => inShape(s, px, pz))) return null;
+    if (mask || excludeMask) {
       vars.x = px * k; vars.z = pz * k; vars.h = top * k; vars.y = py * k; vars.d = d * k;
       vars.r = Math.hypot(px - cx0, pz - cz0) * k; vars.theta = Math.atan2(pz - cz0, px - cx0);
-      if (!(mask(vars) > 0)) return null;
+      if (mask && !(mask(vars) > 0)) return null;
+      if (excludeMask && excludeMask(vars) > 0) return null;
     }
     return { d };
   };
@@ -148,7 +162,8 @@ export function paintSurface(store: EditorStore, o: SurfacePaint) {
           const top = groundTop(px, pz);
           if (py < top - o.depth) continue;
           if (inArea(px, py, pz, top, 0)) {
-            edit.set(g.id, x, y, z, painted(w, o.material));
+            // a voxel with a second material of its own (an earlier blend) keeps it: written as such a word
+            edit.set(g.id, x, y, z, painted(w, o.material), maskOf(w) !== 0);
             per.set(g.id, (per.get(g.id) ?? 0) + 1);
             continue;
           }
@@ -179,7 +194,7 @@ export function paintSurface(store: EditorStore, o: SurfacePaint) {
 
 /** A shape grown by `by` map units (circles and rectangles; a polygon is left as it is). */
 function grown(s: Shape, by: number): Shape {
-  if ("radius" in s) return { x: s.x, z: s.z, radius: s.radius + by };
+  if ("radius" in s) return { x: s.x, z: s.z, radius: s.radius + by, ...(s.wobble ? { wobble: { ...s.wobble, amount: (s.wobble.amount * s.radius) / (s.radius + by) } } : {}) };
   if ("min" in s) return { min: [Math.min(s.min[0], s.max[0]) - by, Math.min(s.min[1], s.max[1]) - by], max: [Math.max(s.min[0], s.max[0]) + by, Math.max(s.min[1], s.max[1]) + by] };
   return s;
 }

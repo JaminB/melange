@@ -212,6 +212,56 @@ function seatShape(gs: ReturnType<typeof grids>, shapes: Shape[], floor: number,
   return { op: "fill", mat, min, max, part: 0, keep: true, hit: (x, y, z) => y < floor && y >= groundAt(x, z) - 0.5 };
 }
 
+// ------------------------------------------------------------------ the gate lane
+
+/** build_castle's gateLane, in design voxels: a lane `width` wide from the first gate straight across the courtyard,
+ * kept clear of the keep by moving the keep aside (its door turned to the lane) or the gate along its wall into the band
+ * beside the keep. Across is the gate wall's direction (x for a north or south gate, z for east or west); "right" is
+ * the right hand of a worm walking in through the gate. */
+function gateLaneFor(a: { gateLane?: boolean | number | { width?: number; mode?: "auto" | "keep" | "gate"; side?: "left" | "right" } },
+  c: { gate: Side | null; size: [number, number]; t: number; tr: number; keepSize: [number, number] | null; gateWidth: number; shift0: number;
+    U: (x: number | undefined, d: number) => number; cu: (d: number) => string }) {
+  if (!c.gate) throw new ToolError("gateLane runs from the gate: the castle has none");
+  const o = typeof a.gateLane === "object" ? a.gateLane : {};
+  const width = typeof a.gateLane === "number" ? c.U(a.gateLane, 0) : c.U(o.width, c.gateWidth + 2);
+  if (width < c.gateWidth - 1e-9) throw new ToolError(`gateLane: the lane (${c.cu(width)}) is narrower than the gate (${c.cu(c.gateWidth)})`);
+  const ai = c.gate === "n" || c.gate === "s" ? 0 : 1;
+  const right = c.gate === "s" || c.gate === "w" ? 1 : -1;            // the across sign of a walker's right hand
+  const hw = c.size[ai] / 2, ia = hw - c.t;                            // half the wall's length, half the courtyard's across
+  const towerEdge = hw - c.t / 2 - c.tr;                               // where a corner tower starts along the gate's wall
+  const info = (mode: string, centre: number, side?: "left" | "right") => ({ mode, width, centre, ...(side ? { side } : {}) });
+  if (!c.keepSize) return { info: info("open courtyard: no keep to keep clear of", c.shift0) };
+  const ka = c.keepSize[ai] / 2, room = ia - 2;                        // the keep stays 2 voxels clear of the walls
+  if (Math.abs(c.shift0) + width / 2 > ia + 1e-9) throw new ToolError(`gateLane: a ${c.cu(width)} lane at the gate's offset does not fit the ${c.cu(2 * ia)} courtyard`);
+  const sideName = (sg: number) => (sg === right ? "right" : "left") as "left" | "right";
+  const want = o.side === undefined ? null : o.side === "right" ? right : -right;
+  const mode = o.mode ?? "auto";
+  // the keep moved aside: its near face at the lane's edge, on the side asked for or the roomier one that fits
+  const keepFits = (sg: number) => Math.abs(c.shift0 + sg * (width / 2 + ka)) + ka <= room + 1e-9;
+  if (mode !== "gate") {
+    const sides = want !== null ? [want] : [1, -1].sort((p, q) => (room - (q * c.shift0 + width / 2 + 2 * ka)) - (room - (p * c.shift0 + width / 2 + 2 * ka)));
+    const sg = sides.find(keepFits);
+    if (sg !== undefined) {
+      const along = c.shift0 + sg * (width / 2 + ka);
+      const keepAt: [number, number] = ai === 0 ? [along, 0] : [0, along];
+      const keepDoor: Side = ai === 0 ? (sg > 0 ? "w" : "e") : (sg > 0 ? "n" : "s");
+      return { keepAt, keepDoor, info: info("keep moved aside", c.shift0, sideName(sg)) };
+    }
+    if (mode === "keep") throw new ToolError(`gateLane: the keep (${c.cu(2 * ka)} across) does not fit beside a ${c.cu(width)} lane in the ${c.cu(2 * ia)} courtyard (mode keep): narrow the lane or the keep, or use mode gate`);
+  }
+  // the gate moved along its wall into the band beside the centred keep
+  if (typeof a.gateLane === "object" && o.mode === "gate" && c.shift0) throw new ToolError("gateLane mode gate places the gate itself: give no offset for it");
+  const band = ia - ka;
+  const sides = want !== null ? [want] : [right, -right];
+  for (const sg of sides) {
+    const shift = sg * (ka + band / 2);
+    if (band + 1e-9 < width || Math.abs(shift) + c.gateWidth / 2 > towerEdge + 1e-9) continue;
+    return { gateShift: shift, info: info("gate moved beside the keep", shift, sideName(sg)) };
+  }
+  throw new ToolError(`gateLane: neither fits: the keep (${c.cu(2 * ka)} across) leaves bands of ${c.cu(band)} beside it for a ${c.cu(width)} lane, and moving it aside needs ${c.cu(width + 2 * ka + 2)} of the ${c.cu(2 * ia)} courtyard; make the castle wider, the keep or the lane narrower`);
+}
+
+
 // ------------------------------------------------------------------ tools
 
 export const tools: Tool[] = [
@@ -229,7 +279,11 @@ export const tools: Tool[] = [
         towerRadius: { type: "number", minimum: 2, description: "Tower radius (half the side when square). Default max(3, wallThickness + 1)." },
         towerHeight: { type: "number", minimum: 2, description: "Default wallHeight + 3." },
         keep: { type: "boolean", description: "Build a keep in the courtyard. Default true when it fits." },
-        keepSize: vec2("Keep outer size [x, z]. Default a third of the castle, at least 8."),
+        keepSize: vec2("Keep outer size [x, z] (with keepAxes \"gate\": [across, deep], across along the gate's wall and deep away from it). Default a third of the castle, at least 8."),
+        keepAxes: { type: "string", enum: ["xz", "gate"], description: "How keepSize is read: xz (default: the castle's own x and z, before rotation, as size) or gate (relative to the first gate: [across, deep], across along the gate's wall, deep from it into the courtyard), so a keep is sized along and across the castle's gate axis whatever side the gate is on." },
+        gateLane: { anyOf: [{ type: "boolean" }, { type: "number", minimum: 1 }, { type: "object", additionalProperties: false, properties: {
+          width: { type: "number", minimum: 1 }, mode: { type: "string", enum: ["auto", "keep", "gate"] }, side: { type: "string", enum: ["left", "right"] } } }],
+          description: "A clear lane from the first gate straight across the courtyard beside the keep (true: the gate's width + 2; a number: its width; or {width, mode, side}). mode keep moves the keep aside (to `side`, left or right looking in through the gate, default the roomier) so the lane runs past it, and turns its door to the lane; mode gate keeps the keep where it is and moves the gate along its wall into the band beside the keep that is wide enough; auto (default) moves the keep when it fits, else the gate. Refused when neither fits. The answer's lane gives what was done." },
         keepHeight: { type: "number", minimum: 0, description: "Default wallHeight + 4; at least 3 when a keep is built (ignored with keep: false)." },
         gate: sideSchema("Side of the gate, or none. Default s."),
         gateWidth: { type: "number", minimum: 2, description: "Default 4." },
@@ -247,6 +301,7 @@ export const tools: Tool[] = [
     },
     handler(s, a0: Common & { at: Vec3; size?: [number, number]; wallHeight?: number; wallThickness?: number; towerShape?: "round" | "square"; towerRadius?: number;
       towerHeight?: number; keep?: boolean; keepSize?: [number, number]; keepHeight?: number; gate?: string; gateWidth?: number; gateHeight?: number;
+      keepAxes?: "xz" | "gate"; gateLane?: boolean | number | { width?: number; mode?: "auto" | "keep" | "gate"; side?: "left" | "right" };
       gateBelow?: number | "auto"; gates?: { side: Side; width?: number; height?: number; offset?: number; below?: number | "auto" }[]; seat?: boolean; seatDepth?: number;
       crenellations?: boolean; foundation?: number; rotation?: number; scale?: number; ground?: "max" | "mean" | "min"; sink?: number }) {
       finite(a0.at, "at");
@@ -270,6 +325,9 @@ export const tools: Tool[] = [
         if (a.keep !== false) {
           if (a.keepHeight !== undefined && a.keepHeight * k < 3 / v - 1e-9) throw new ToolError(`keepHeight is at least ${cu(3 / v)} when a keep is built (keep: false builds none)`);
           keepSize = a.keepSize ? [a.keepSize[0] * k, a.keepSize[1] * k] : [Math.max(8 / v, Math.round(size[0] / 3)), Math.max(8 / v, Math.round(size[1] / 3))];
+          // keepAxes gate: [across, deep] of the first gate; a gate on the east or west wall runs across along z
+          const g0 = a.gates?.length ? a.gates[0].side : sideOf(a.gate, "s");
+          if (a.keepAxes === "gate" && a.keepSize && (g0 === "e" || g0 === "w")) keepSize = [keepSize[1], keepSize[0]];
           if (keepSize[0] > size[0] - 2 * t - 4 || keepSize[1] > size[1] - 2 * t - 4) {
             if (a.keep === true || a.keepSize) throw new ToolError(`the keep (${cu(keepSize[0])} x ${cu(keepSize[1])}) does not fit in the courtyard (${cu(size[0] - 2 * t - 4)} x ${cu(size[1] - 2 * t - 4)} free)`);
             notes.push("no keep: the courtyard is too small for one");
@@ -278,19 +336,26 @@ export const tools: Tool[] = [
         }
         const gate = a.gates?.length ? a.gates[0].side : sideOf(a.gate, "s");
         if (a.gates && a.gate !== undefined) throw new ToolError("give gate or gates, not both");
+        if (a.keepAxes === "gate" && !gate) throw new ToolError("keepAxes \"gate\" reads keepSize from the gate: the castle has none");
+        // the gate lane: the keep moved aside, or the gate moved along its wall into the band beside the keep
+        const laneOut = a.gateLane !== undefined && a.gateLane !== false ? gateLaneFor(a, { gate, size, t, tr, keepSize, U, cu,
+          gateWidth: U(a.gates?.[0]?.width ?? a.gateWidth, 4 / v), shift0: U(a.gates?.[0]?.offset, 0) }) : null;
         for (const b of [a.gateBelow, ...(a.gates ?? []).map((g) => g.below)])
           if (b !== undefined && b !== "auto" && !(typeof b === "number" && b >= 0)) throw new ToolError("a gate's below is a length of 0 or more, or \"auto\"");
         const spec = {
           size, wallHeight: wh, wallThickness: t, towerShape: a.towerShape ?? "round", towerRadius: tr, towerHeight: a.towerHeight === undefined ? wh + 3 / v : a.towerHeight * k,
           keepSize, keepHeight: a.keepHeight === undefined ? wh + 4 / v : a.keepHeight * k, gate, gateWidth: U(a.gateWidth, 4 / v), gateHeight: U(a.gateHeight, 5 / v),
           material: mat, cren: a.crenellations !== false, found: a.foundation === undefined ? 0 : a.foundation / v,
+          ...(laneOut?.keepAt ? { keepAt: laneOut.keepAt, keepDoor: laneOut.keepDoor } : {}),
         };
         const at = sc(a.at, k0);
         const gs = grids(s.store);
         // a gate's below: the floor less the ground just outside its middle (auto), at most the passage's length
-        const gateList: GateSpec[] | undefined = a.gates?.length || a.gateBelow !== undefined || a.ground ? (a.gates?.length ? a.gates : [{ side: gate as Side, below: a.gateBelow }])
-          .filter((g) => g.side).map((g) => {
-            const w = U((g as { width?: number }).width, spec.gateWidth), h = U((g as { height?: number }).height, spec.gateHeight), shift = U((g as { offset?: number }).offset, 0);
+        const laneShift = laneOut?.gateShift;
+        const gateList: GateSpec[] | undefined = a.gates?.length || a.gateBelow !== undefined || a.ground || laneShift !== undefined ? (a.gates?.length ? a.gates : [{ side: gate as Side, below: a.gateBelow }])
+          .filter((g) => g.side).map((g, gi) => {
+            const w = U((g as { width?: number }).width, spec.gateWidth), h = U((g as { height?: number }).height, spec.gateHeight);
+            const shift = gi === 0 && laneShift !== undefined ? laneShift : U((g as { offset?: number }).offset, 0);
             const want = (g as { below?: number | "auto" }).below ?? (a.gates?.length || a.ground ? "auto" : 0);
             const alongX = g.side === "n" || g.side === "s", sign = g.side === "s" || g.side === "e" ? 1 : -1;
             const half = (alongX ? size[1] : size[0]) / 2, pass = t + 2;
@@ -320,6 +385,9 @@ export const tools: Tool[] = [
           gate: gate ? { side: gate, width: m(spec.gateWidth), height: m(spec.gateHeight) } : null,
           ...(gateList ? { gates: gateList.map((g) => ({ side: g.side, width: m(g.width), height: m(g.height), offset: m(g.shift), below: m(g.below) })) } : {}),
           ...(a.seat ? { seat: { depth: a.seatDepth ?? 8 } } : {}),
+          ...(spec.keepAt ? { keepAt: [m(spec.keepAt[0]), m(spec.keepAt[1])], keepDoor: spec.keepDoor } : {}),
+          ...(laneOut ? { lane: { ...laneOut.info, width: m(laneOut.info.width), centre: m(laneOut.info.centre) } } : {}),
+          ...(a.keepAxes === "gate" && keepSize ? { keepAxes: { across: m(gate === "e" || gate === "w" ? keepSize[1] : keepSize[0]), deep: m(gate === "e" || gate === "w" ? keepSize[0] : keepSize[1]) } } : {}),
           courtyardFloorY: at[1], ...(v !== 1 ? { scale: v } : {}) } };
       }) as Record<string, unknown>;
       return { ...res, ...(settled.groundUnder ? { groundUnder: settled.groundUnder } : {}), spawnSpots: spotReport(s, spots, a.units, !!a.dryRun) };

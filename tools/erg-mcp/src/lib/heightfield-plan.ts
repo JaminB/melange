@@ -22,7 +22,7 @@
 //      keeps the blocks holding the most voxels, a slice only when the slice under it in its tile is kept (nothing floats),
 //      and lists what was dropped.
 import {
-  AddFrame, Group, LIMITS, SculptStroke, blockFrames, cellBudget, filled, frameWorld, isSolid, sceneFrame, sharedCorners, validNewFrameScale, voxelRuns, withSecond,
+  AddFrame, CORNER_BIT, Group, LIMITS, SculptStroke, blockFrames, cellBudget, filled, frameWorld, isSolid, sceneFrame, sharedCorners, validNewFrameScale, voxelRuns, withSecond,
   type EditorStore,
   type Frame, type Vec3, type Command,
 } from "../core";
@@ -46,6 +46,9 @@ export interface MaterialRule {
   noise?: { threshold?: number; scale?: number; seed?: number; octaves?: number };   // only where noise is above threshold
   feather?: { width: number; pattern?: Feather; cell?: number; seed?: number };   // the mask and height bounds move by a per-voxel threshold in +-width/2
   paths?: PathMask[];                       // only within a path's width of one of these polylines (roads, switchbacks)
+  exclude?: Area[];                         // never in these areas (the crater floor for a grass rule)
+  excludeMask?: string;                     // never where this expression is above 0
+  edge?: { depth?: number };                // the rule's own edge per corner: a voxel outside it with corners inside takes it as second material
 }
 
 /** How a feathered rule's threshold varies: dither (a 4 x 4 ordered pattern over x, z and y), noise (a hash), blue (a
@@ -387,6 +390,7 @@ export function sampleField(store: EditorStore, a: FieldArgs): Field {
   });
   // a rule's region, mask and noise, prepared once: the areas in map units, the mask compiled
   const ruleRegion = rules.map((r, i) => (r.region ? areas(r.region, `materials[${i}].region`) : null));
+  const ruleExclude = rules.map((r, i) => (r.exclude ? areas(r.exclude, `materials[${i}].exclude`) : null));
   const maskFn = (src: string, path: string) => {
     try {
       return compile(src, MASK_VARIABLES) as unknown as (v: Record<string, number>) => number;
@@ -396,6 +400,13 @@ export function sampleField(store: EditorStore, a: FieldArgs): Field {
     }
   };
   const ruleMask = rules.map((r, i) => (r.mask === undefined ? null : maskFn(r.mask, `materials[${i}].mask`)));
+  const ruleExcludeMask = rules.map((r, i) => (r.excludeMask === undefined ? null : maskFn(r.excludeMask, `materials[${i}].excludeMask`)));
+  rules.forEach((r, i) => {
+    if (r.edge && (typeof r.edge !== "object" || (r.edge.depth !== undefined && !(Number.isInteger(r.edge.depth) && r.edge.depth >= 1 && r.edge.depth <= 8))))
+      throw new ToolError(`materials[${i}].edge: {depth}, depth 1-8 voxels`);
+    if (r.edge && !(r.region || r.mask !== undefined || r.masks || r.noise || r.paths))
+      throw new ToolError(`materials[${i}].edge: the rule needs an area to have an edge (region, mask, masks, noise or paths)`);
+  });
   const ruleMasks = rules.map((r, i) => {
     if (r.masks === undefined) return null;
     if (!r.masks.length) throw new ToolError(`materials[${i}].masks: give at least one expression`);
@@ -447,7 +458,14 @@ export function sampleField(store: EditorStore, a: FieldArgs): Field {
     const rp = rulePaths[ri]!;
     let v = rp.at[col];
     if (!Number.isNaN(v)) return v;
-    v = -Infinity;
+    v = pathAtPoint(ri, mx, mz);
+    rp.at[col] = v;
+    return v;
+  };
+  // the same at any point (map x, z), uncached: a column's corners for the rule's edge
+  function pathAtPoint(ri: number, mx: number, mz: number) {
+    const rp = rulePaths[ri]!;
+    let v = -Infinity;
     const x = mx / k, z = mz / k;
     for (const sg of rp.segs) for (let q = 1; q < sg.pts.length; q++) {
       const [ax, az] = sg.pts[q - 1], [bx, bz] = sg.pts[q], dx = bx - ax, dz = bz - az, l2 = dx * dx + dz * dz;
@@ -455,9 +473,8 @@ export function sampleField(store: EditorStore, a: FieldArgs): Field {
       const d = Math.hypot(x - ax - tt * dx, z - az - tt * dz), along = (sg.cum[q - 1] + tt * Math.sqrt(l2)) / sg.total;
       v = Math.max(v, (sg.w * (1 + (sg.taper - 1) * along)) / 2 - d);
     }
-    rp.at[col] = v;
     return v;
-  };
+  }
   const mvars: Record<string, number> = { ...vars, h: 0, y: 0, depth: 0, slope: 0 };
   const centreOf = (col: number): [number, number] => { const ai = col % nx, bj = (col - ai) / nx; return [(i0 + ai + 0.5) * s + t[0], (j0 + bj + 0.5) * s + t[2]]; };
   // The top of the neighbouring column (its hi; the floor where it has none), for exposed: a voxel is exposed when
@@ -467,59 +484,65 @@ export function sampleField(store: EditorStore, a: FieldArgs): Field {
     const c = bj * nx + ai;
     return hi[c] > lo[c] ? hi[c] : -Infinity;
   };
+  // Whether rule ri holds for the voxel at height y of column col; `at` (map x, z) moves the rule's area tests (region,
+  // paths, noise, masks, exclusions) to another point of the column (a corner, for the rule's edge), the height, slope
+  // and depth bounds staying the voxel's. `exposed` is the voxel's, worked out once by the caller when a rule asks.
+  const holds = (r: MaterialRule, ri: number, col: number, y: number, exp: { v?: boolean }, at?: [number, number]) => {
+    const above = (y + 0.5 - floor) / kv, fromTop = hi[col] - 1 - y, sl = slope[col], depth = (hi[col] - y - 0.5) / kv;
+    let shift = 0;
+    if (r.jitter && (r.minHeight !== undefined || r.maxHeight !== undefined)) {
+      const ai = col % nx, bj = (col - ai) / nx, sc = r.jitter.scale ?? 8;
+      // the column's centre in region units, so the bands wander the same way whatever the voxel size
+      shift = r.jitter.amount * noise2(((i0 + ai + 0.5) * s + t[0]) / k / sc, ((j0 + bj + 0.5) * s + t[2]) / k / sc, r.jitter.seed ?? 0);
+    }
+    // feather: the bounds and masks move by a threshold that varies per voxel, so an edge becomes a dithered band
+    let fe = 0;
+    if (r.feather && r.feather.width > 0) {
+      const ai = col % nx, bj = (col - ai) / nx;
+      fe = featherAt(r.feather, i0 + ai, j0 + bj, y) * r.feather.width;
+      shift += fe;
+    }
+    if (r.minHeight !== undefined && above < r.minHeight + shift) return false;
+    if (r.maxHeight !== undefined && above >= r.maxHeight + shift) return false;
+    if (r.minSlope !== undefined && sl < r.minSlope) return false;
+    if (r.maxSlope !== undefined && sl > r.maxSlope) return false;
+    if (r.surface !== undefined && fromTop >= r.surface) return false;
+    if (r.minDepth !== undefined && depth < r.minDepth) return false;
+    if (r.maxDepth !== undefined && depth >= r.maxDepth) return false;
+    if (r.exposed !== undefined) {
+      if (exp.v === undefined) {
+        const ai = col % nx, bj = (col - ai) / nx;
+        exp.v = fromTop === 0 || [[1, 0], [-1, 0], [0, 1], [0, -1]].some(([dx, dz]) => topOf(ai + dx, bj + dz) <= y);
+      }
+      if (exp.v !== r.exposed) return false;
+    }
+    if (ruleRegion[ri] || ruleMask[ri] || ruleMasks[ri] || r.noise || rulePaths[ri] || ruleExclude[ri] || ruleExcludeMask[ri]) {
+      const [mx, mz] = at ?? centreOf(col);
+      if (ruleRegion[ri] && !ruleRegion[ri]!.some((ar) => inArea(ar, mx, mz))) return false;
+      if (ruleExclude[ri] && ruleExclude[ri]!.some((ar) => inArea(ar, mx, mz))) return false;
+      // a corner's distance to the path is its own, not the column's cached one
+      if (rulePaths[ri] && !((at ? pathAtPoint(ri, mx, mz) : pathAt(ri, col, mx, mz)) > fe)) return false;
+      if (r.noise) {
+        const sc = r.noise.scale ?? 8, oc = r.noise.octaves ?? 1, nx2 = mx / k / sc, nz2 = mz / k / sc;
+        const v = oc > 1 ? fbm(nx2, nz2, r.noise.seed ?? 0, oc) : noise2(nx2, nz2, r.noise.seed ?? 0);
+        if (!(v > (r.noise.threshold ?? 0))) return false;
+      }
+      if (ruleMask[ri] || ruleMasks[ri] || ruleExcludeMask[ri]) {
+        mvars.x = (mx - cx) / k; mvars.z = (mz - cz) / k;
+        mvars.u = ((mx - t[0]) / s - i0) / nx; mvars.v = ((mz - t[2]) / s - j0) / nz;
+        mvars.r = Math.hypot(mvars.x, mvars.z); mvars.theta = Math.atan2(mvars.z, mvars.x);
+        mvars.h = (hi[col] - floor) / kv; mvars.y = above; mvars.depth = depth; mvars.slope = sl;
+        if (ruleMask[ri] && !(ruleMask[ri]!(mvars) > fe)) return false;
+        if (ruleMasks[ri] && !ruleMasks[ri]!.some((fn) => fn(mvars) > fe)) return false;
+        if (ruleExcludeMask[ri] && ruleExcludeMask[ri]!(mvars) > 0) return false;
+      }
+    }
+    return true;
+  };
   const materialAt = (col: number, y: number) => {
     if (!rules.length) return material;
-    const above = (y + 0.5 - floor) / kv, fromTop = hi[col] - 1 - y, sl = slope[col], depth = (hi[col] - y - 0.5) / kv;
-    let exposed: boolean | undefined;
-    for (const r of rules) {
-      let shift = 0;
-      if (r.jitter && (r.minHeight !== undefined || r.maxHeight !== undefined)) {
-        const ai = col % nx, bj = (col - ai) / nx, sc = r.jitter.scale ?? 8;
-        // the column's centre in region units, so the bands wander the same way whatever the voxel size
-        shift = r.jitter.amount * noise2(((i0 + ai + 0.5) * s + t[0]) / k / sc, ((j0 + bj + 0.5) * s + t[2]) / k / sc, r.jitter.seed ?? 0);
-      }
-      // feather: the bounds and masks move by a threshold that varies per voxel, so an edge becomes a dithered band
-      let fe = 0;
-      if (r.feather && r.feather.width > 0) {
-        const ai = col % nx, bj = (col - ai) / nx;
-        fe = featherAt(r.feather, i0 + ai, j0 + bj, y) * r.feather.width;
-        shift += fe;
-      }
-      if (r.minHeight !== undefined && above < r.minHeight + shift) continue;
-      if (r.maxHeight !== undefined && above >= r.maxHeight + shift) continue;
-      if (r.minSlope !== undefined && sl < r.minSlope) continue;
-      if (r.maxSlope !== undefined && sl > r.maxSlope) continue;
-      if (r.surface !== undefined && fromTop >= r.surface) continue;
-      if (r.minDepth !== undefined && depth < r.minDepth) continue;
-      if (r.maxDepth !== undefined && depth >= r.maxDepth) continue;
-      if (r.exposed !== undefined) {
-        if (exposed === undefined) {
-          const ai = col % nx, bj = (col - ai) / nx;
-          exposed = fromTop === 0 || [[1, 0], [-1, 0], [0, 1], [0, -1]].some(([dx, dz]) => topOf(ai + dx, bj + dz) <= y);
-        }
-        if (exposed !== r.exposed) continue;
-      }
-      const ri = rules.indexOf(r);
-      if (ruleRegion[ri] || ruleMask[ri] || ruleMasks[ri] || r.noise || rulePaths[ri]) {
-        const [mx, mz] = centreOf(col);
-        if (ruleRegion[ri] && !ruleRegion[ri]!.some((ar) => inArea(ar, mx, mz))) continue;
-        if (rulePaths[ri] && !(pathAt(ri, col, mx, mz) > fe)) continue;
-        if (r.noise) {
-          const sc = r.noise.scale ?? 8, oc = r.noise.octaves ?? 1, nx2 = mx / k / sc, nz2 = mz / k / sc;
-          const v = oc > 1 ? fbm(nx2, nz2, r.noise.seed ?? 0, oc) : noise2(nx2, nz2, r.noise.seed ?? 0);
-          if (!(v > (r.noise.threshold ?? 0))) continue;
-        }
-        if (ruleMask[ri] || ruleMasks[ri]) {
-          mvars.x = (mx - cx) / k; mvars.z = (mz - cz) / k;
-          mvars.u = ((mx - t[0]) / s - i0) / nx; mvars.v = ((mz - t[2]) / s - j0) / nz;
-          mvars.r = Math.hypot(mvars.x, mvars.z); mvars.theta = Math.atan2(mvars.z, mvars.x);
-          mvars.h = (hi[col] - floor) / kv; mvars.y = above; mvars.depth = depth; mvars.slope = sl;
-          if (ruleMask[ri] && !(ruleMask[ri]!(mvars) > fe)) continue;
-          if (ruleMasks[ri] && !ruleMasks[ri]!.some((fn) => fn(mvars) > fe)) continue;
-        }
-      }
-      return r.material;
-    }
+    const exp: { v?: boolean } = {};
+    for (let ri = 0; ri < rules.length; ri++) if (holds(rules[ri], ri, col, y, exp)) return rules[ri].material;
     return material;
   };
   const runLimit = Math.max(100, LIMITS.runsPerFrame - Math.max(0, Math.round(a.runsHeadroom ?? 0)));
@@ -536,8 +559,37 @@ export function sampleField(store: EditorStore, a: FieldArgs): Field {
     if (m === undefined) { m = materialAt(col, y); if (cache.size < 2_000_000) cache.set(key, m); }
     return m;
   };
+  // A rule's own edge (edge: {depth}): a voxel among the top `depth` of its column that a later rule (or the default)
+  // paints takes the edged rule's material as its second material on the corners where the rule holds (its area tested
+  // at each of the column's four corners in x, z, the height and slope bounds the voxel's), so the boundary is drawn
+  // where the mask or path really runs, between voxel centres, instead of as a staircase of whole voxels.
+  const edgeRules = rules.map((r, ri) => (r.edge ? ri : -1)).filter((ri) => ri >= 0);
+  const edgeDepth = edgeRules.reduce((m, ri) => Math.max(m, rules[ri].edge!.depth ?? 1), 0);
+  const edgeWord = (col: number, y: number): number | null => {
+    const fromTop = hi[col] - 1 - y, exp: { v?: boolean } = {};
+    let own = 0;
+    while (own < rules.length && !holds(rules[own], own, col, y, exp)) own++;
+    const mat = own < rules.length ? rules[own].material : material;
+    const ai = col % nx, bj = (col - ai) / nx;
+    for (const ri of edgeRules) {
+      if (ri >= own) break;
+      const r = rules[ri];
+      if (r.material === mat || fromTop >= (r.edge!.depth ?? 1)) continue;
+      let bits = 0;
+      for (let cz = 0; cz < 2; cz++)
+        for (let cx = 0; cx < 2; cx++)
+          if (holds(r, ri, col, y, exp, [(i0 + ai + cx) * s + t[0], (j0 + bj + cz) * s + t[2]]))
+            bits |= (1 << CORNER_BIT[1][cz][cx]) | (1 << CORNER_BIT[0][cz][cx]);
+      if (bits) return withSecond(filled(mat), r.material, bits);
+    }
+    return null;
+  };
   const field: Field = { k, s, t, sceneId, i0, j0, nx, nz, floor, runLimit, lo, hi, height, slope, materialAt, ...(limited ? { limited } : {}),
     wordAt(col: number, y: number, layered = false) {
+      if (edgeDepth && hi[col] - 1 - y < edgeDepth) {
+        const e = edgeWord(col, y);
+        if (e !== null) return e;
+      }
       if (!blendDepth || hi[col] - 1 - y >= blendDepth) return filled(materialAt(col, y));
       const own = matCached(col, y), ai = col % nx, bj = (col - ai) / nx;
       // the material of the field voxel at offset (dx, dy, dz), or -1 where there is none

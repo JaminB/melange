@@ -20,11 +20,18 @@ declare module "node:fs" {
   export function readFileSync(path: string): Uint8Array;
   export function existsSync(path: string): boolean;
   export function appendFileSync(path: string, data: string): void;
+  export function readdirSync(path: string): string[];
+  export function statSync(path: string): { isDirectory(): boolean; mtimeMs: number };
 }
 declare module "node:path" {
   export function join(...parts: string[]): string;
   export function dirname(p: string): string;
   export function resolve(...parts: string[]): string;
+  export function basename(p: string): string;
+}
+declare module "node:crypto" {
+  export interface Hash { update(data: string): Hash; digest(enc: "hex"): string; }
+  export function createHash(alg: "sha256"): Hash;
 }
 declare module "node:child_process" {
   export interface ChildProcess {

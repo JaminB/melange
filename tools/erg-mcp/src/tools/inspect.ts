@@ -8,6 +8,7 @@ import { findHoles } from "../lib/holes";
 import { UTILITY_REACH, WORM_WIDTH, classify, nodeAt, ownTurn, pathStats, pathTo, search, standableAt, standing, surfaces, turnAt, type FloodRules, type ReachOptions, type Surfaces } from "../lib/reach";
 import { rotation, slotOf } from "../lib/turns";
 import { waterByTurn, type WaterSchedule } from "../lib/flood";
+import { checkSupport, type SupportColumn } from "../lib/support";
 import { scriptWater, type ScriptWater } from "../lib/script-water";
 import { pieces } from "../lib/islets";
 import { loadMaterials, projectMaterials, resolveFile, themeFile, tintFor, type MaterialSet, type PaletteMode } from "../lib/materials";
@@ -389,7 +390,7 @@ export async function queryGround(s: Session, a: { x: number; z: number; units?:
 interface FloodArgs {
   schedule?: WaterSchedule | "script"; levels?: { turn: number; level: number }[]; rounds?: { round: number; level: number }[]; start?: number; every?: number; firstTurn?: number; maxTurns?: number;
   teams?: number; wormsPerTeam?: number; margin?: number; minMoves?: number; turnOrder?: number[]; minOwnTurns?: number; minDryMargin?: number;
-  capMargin?: number;
+  capMargin?: number; escape?: boolean; solve?: { from: number; step: number; cap: number; rounds?: number };
 }
 /** The verdict's default margin over the water, map units: a worm is knocked about and the computer team's worms walk,
  * so ground just over the water is not dry (in the Caldera iteration-8 Test a worm drowned from ground 1.7 map units up). */
@@ -569,9 +570,40 @@ async function floodRules(s: Session, f: FloodArgs, u: Units, perTurn: number): 
 /** A spawn knot's worm in the rotation (lib/turns.ts): its team and index, and the game turns it moves on. */
 interface WormMoves { team: number; worm: number; turns: number[]; every: number; teams: number; }
 
+/** The worm's way off its spawn under the rising sea, own turn by own turn while its spawn is still dry at the start of
+ * the turn: the walk (over the ground dry at that turn's start) to the nearest floor more than `margin` over the sea of
+ * the NEXT round (the water the worm must be clear of when its team's next turn comes round), its length, the own turns
+ * and seconds it takes, and whether it fits in that one turn. The latest legal round is the last own turn's round whose
+ * walk fits: a schedule may flood the spawn's ground from the round after it. Rounds count as wum.sim.round does: round r
+ * starts at game turn (r - 1) x teams + 1. */
+function escapeRows(S: Surfaces, n0: number, o: ReachOptions, f: FloodRules, mv: WormMoves, margin: number, walkSpeed: number, out: (p: Vec3) => number[], u: Units) {
+  const roundOf = (t: number) => Math.ceil(t / mv.teams), roundStart = (r: number) => (r - 1) * mv.teams + 1;
+  const rows: { own: number; gameTurn: number; round: number; water: number; nextRoundWater: number; floor: number[] | null; floorY?: number; walk?: number;
+    ownTurnsToWalk?: number; seconds?: number; inOneTurn: boolean }[] = [];
+  for (let k = 0; k < Math.min(mv.turns.length, 8); k++) {
+    const g = mv.turns[k], w = f.waterAt(g);
+    if (S.y[n0] - w < margin - 1e-9) break;                 // the spawn is no longer dry when this turn starts
+    const r = roundOf(g), next = f.waterAt(roundStart(r + 1));
+    const floor = new Uint8Array(S.nodes);
+    let any = false;
+    for (let n = 0; n < S.nodes; n++) if (S.y[n] > next + margin) { floor[n] = 1; any = true; }
+    const q = any ? search(S, n0, { ...o, water: Math.max(o.water ?? -Infinity, w), flood: undefined }, floor) : null;
+    let hit = -1;
+    if (q) for (let n = 0; n < S.nodes; n++) if (q.reached[n] && floor[n] && (hit < 0 || q.dist[n] < q.dist[hit])) hit = n;
+    const d = hit >= 0 ? q!.dist[hit] : Infinity;
+    rows.push({ own: k + 1, gameTurn: g, round: r, water: r2(outUnit(w, u)), nextRoundWater: r2(outUnit(next, u)), floor: hit >= 0 ? out(nodeAt(S, hit)) : null,
+      ...(hit >= 0 ? { floorY: r2(outUnit(S.y[hit], u)), walk: r2(outUnit(d, u)), ownTurnsToWalk: Math.max(1, Math.ceil(d / f.perTurn - 1e-9)), seconds: Math.round((d / walkSpeed) * 10) / 10 } : {}),
+      inOneTurn: d <= f.perTurn + 1e-9 });
+  }
+  const legal = [...rows].reverse().find((x) => x.inOneTurn);
+  return { latestLegalRound: legal ? legal.round : null, ...(legal ? { latestLegalOwnTurn: legal.own, latestLegalGameTurn: legal.gameTurn } : {}),
+    perOwnTurn: r2(outUnit(f.perTurn, u)), rows,
+    rule: "own turns while the spawn is dry (minDryMargin) at the turn's start: the walk over the ground dry then to the nearest floor minDryMargin over the next round's water; latestLegalRound is the last such turn's round whose walk fits in the one turn (perOwnTurn): the spawn's ground may go under from the round after it" };
+}
+
 /** One start under the flood: when its ground goes under, and whether a walk gets it to the target dry in time. */
 function floodFor(S: Surfaces, n0: number, goal: Uint8Array, o: ReachOptions, f: { rules: FloodRules; horizon: number }, out: (p: Vec3) => number[], u: Units,
-  mv: WormMoves | null, need: { ownTurns: number; margin: number }) {
+  mv: WormMoves | null, need: { ownTurns: number; margin: number }, walkSpeed?: number) {
   let floods: number | null = null;
   for (let t = 1; t <= f.horizon; t++) if (S.y[n0] <= f.rules.waterAt(t)) { floods = t; break; }
   const both = (v: number) => ({ map: r2(v), world: r2(v * WORLD_PER_MAP) });
@@ -579,6 +611,7 @@ function floodFor(S: Surfaces, n0: number, goal: Uint8Array, o: ReachOptions, f:
     ground: both(S.y[n0]),
     ...(floods !== null ? { floods: { turn: floods, water: both(f.rules.waterAt(floods)), ground: both(S.y[n0]) } } : {}),
     ...(mv ? { moves: ownMoves(S, n0, goal, o, f.rules, mv, floods, need) } : {}),
+    ...(mv && walkSpeed ? { escape: escapeRows(S, n0, o, { ...f.rules, firstTurn: mv.turns[0] ?? 1, every: mv.every, turns: mv.turns }, mv, need.margin, walkSpeed, out, u) } : {}),
   };
   return { ...floodWalk(S, n0, goal, o, f, out, u, floods), ...extra };
 }
@@ -706,6 +739,43 @@ function floodVerdict(spawns: FloodSpawn[], f: FloodArgs, u: Units, played: (nam
     rule: `each spawn knot's ground stays more than minDryMargin over the water at the start of each of its worm's first ${need} own turns, in the engine's rotation (or turnOrder); a spawn with no ground under it fails` };
 }
 
+/** flood.solve: the fastest per-round sea that keeps every played spawn's ground more than minDryMargin over the water
+ * through the round of its worm's minOwnTurns-th own turn (in the rotation modelled): from round `from` it rises by at
+ * most `step` a round up to `cap`, and in each round it is held under the lowest ground of the spawns that still need it
+ * dry. Non-decreasing (the set of spawns holding it only shrinks). Answers the levels by round, ready for rounds, and
+ * which spawn holds each held round. Call units; map by default. */
+function solveSchedule(sv: { from: number; step: number; cap: number; rounds?: number }, spawns: { name: string; ground: number | null; mv: WormMoves | null }[],
+  start: number, teams: number, need: { ownTurns: number; margin: number }, u: Units) {
+  if (!(Number.isInteger(sv.from) && sv.from >= 1)) throw new ToolError("flood.solve.from: the first round the water rises, a whole number of 1 or more");
+  if (!(sv.step > 0)) throw new ToolError("flood.solve.step: the most the water rises in a round, above 0");
+  const step = inMap(sv.step, u), cap = inMap(sv.cap, u), roundOf = (t: number) => Math.ceil(t / teams);
+  if (!(cap > start)) throw new ToolError(`flood.solve.cap (${sv.cap}) is not over the water at the start (${r2(outUnit(start, u))})`);
+  // each played spawn's hold: dry by the margin through the round of its worm's need.ownTurns-th own turn
+  const holds = spawns.flatMap((sp) => {
+    if (sp.ground === null || !sp.mv || !sp.mv.turns.length) return [];
+    const t = sp.mv.turns[Math.min(need.ownTurns, sp.mv.turns.length) - 1];
+    return [{ name: sp.name, under: sp.ground - need.margin, through: roundOf(t), ownTurn: Math.min(need.ownTurns, sp.mv.turns.length) }];
+  });
+  if (!holds.length) throw new ToolError("flood.solve needs the spawn knots' worms in the rotation (no from points, teams x wormsPerTeam covering them)");
+  const bad = holds.filter((h) => h.under <= start);
+  const last = Math.max(sv.rounds ?? 0, ...holds.map((h) => h.through + 1));
+  const levels: { round: number; level: number; heldBy?: string }[] = [];
+  let level = start;
+  for (let r = 1; r <= Math.min(last + Math.ceil((cap - start) / step) + 1, 500); r++) {
+    let want = r < sv.from ? start : Math.min(cap, level + step), heldBy: string | undefined;
+    for (const h of holds) if (h.through >= r && h.under < want) { want = h.under; heldBy = h.name; }
+    level = Math.max(level, want);
+    levels.push({ round: r, level: r2(outUnit(level, u)), ...(heldBy ? { heldBy } : {}) });
+    if (r >= last && level >= cap - 1e-9) break;
+  }
+  const capRound = levels.find((x) => inMap(x.level, u) >= cap - 1e-9)?.round ?? null;
+  return { from: sv.from, step: sv.step, cap: sv.cap, start: r2(outUnit(start, u)), levels, rounds: levels.map((x) => ({ round: x.round, level: x.level })),
+    reachesCapInRound: capRound,
+    holds: holds.map((h) => ({ spawn: h.name, dryThroughRound: h.through, ownTurn: h.ownTurn, groundLessMargin: r2(outUnit(h.under, u)) })),
+    ...(bad.length ? { warnings: bad.map((h) => `${h.name}: its ground is within minDryMargin of the water before the sea rises at all (${r2(outUnit(h.under + need.margin, u))}): move the spawn up`) } : {}),
+    note: `levels by wum.sim.round (round r from game turn (r - 1) x ${teams} + 1), in the call's units: give them back as rounds to check this schedule; heldBy names the spawn that keeps a round's sea down (its worm must still stand there dry until its own turn ${need.ownTurns})` };
+}
+
 export async function checkReachability(s: Session, a: ReachArgs) {
   const store = s.store, gs = grids(store), u = a.units;
   const L = (v: number | undefined, d: number) => (v === undefined ? d : inMap(v, u));
@@ -818,7 +888,7 @@ export async function checkReachability(s: Session, a: ReachArgs) {
       return { name: st.name, at: out(st.at), reachable: false, why: sa.ok ? "its ground is not in the walk graph (outside the region, or a ledge narrower than a step)" : `${sa.why} (within 1.5 map units of its y ${r2(outUnit(st.at[1], u))}, as build_castle's spawnSpots check)` };
     }
     const q = search(S, n0, o);
-    const floodOut = flood ? floodFor(S, n0, goal, o, flood, out, u, movesOf(st.name), need) : undefined;
+    const floodOut = flood ? floodFor(S, n0, goal, o, flood, out, u, movesOf(st.name), need, a.flood?.escape === false ? undefined : perTurn / (a.turnTime ?? TURN_TIME)) : undefined;
     let hit = -1, near = -1, nearD = Infinity, high = n0;
     for (let n = 0; n < S.nodes; n++) {
       if (!q.reached[n]) continue;
@@ -866,6 +936,8 @@ export async function checkReachability(s: Session, a: ReachArgs) {
     return { ...base, closest: { at: out(nodeAt(S, near)), distance: r2(outUnit(nearD, u)) },
       blockedAt: blockedAt.map((b) => { const { x: _x, z: _z, ...rest } = b as { x: number; z: number }; return rest; }), needs, ...each, ...(floodOut ? { flood: floodOut } : {}) };
   });
+  const solved = flood && a.flood?.solve ? solveSchedule(a.flood.solve, starts.map((st, i) => ({ name: st.name, ground: stand[i] >= 0 ? S.y[stand[i]] : null, mv: movesOf(st.name) })),
+    flood.rules.waterAt(1), teamsN, need, u) : null;
   const floodWarnings = flood ? floodChecks(spawns as FloodSpawn[], flood.top, a.flood!, u) : [];
   const cap = flood ? capReport(spawns as FloodSpawn[], flood.top, a.flood!, u) : null;
   const ok = spawns.filter((x) => x.reachable).length;
@@ -905,6 +977,7 @@ export async function checkReachability(s: Session, a: ReachArgs) {
       ...(rot ? { turnOrder: { source: a.flood?.turnOrder?.length ? "turnOrder (as given, repeated)" : "the engine's rotation: the teams alternate from team 0, each moves its living worms in turn (WORM0 game turn 1, WORM4 turn 2, WORM1 turn 3 for two teams of four); a worm drowned at a turn start is skipped",
         firstTurns: rot.byTurn.slice(0, 16).map((w, i) => ({ turn: i + 1, worm: w < 0 ? null : `WORM${w}` })) } } : {}),
       ...(cap ? { capReport: cap } : {}),
+      ...(solved ? { solvedSchedule: solved } : {}),
       ...(floodWarnings.length ? { warnings: floodWarnings } : {}) } } : {}),
     graph: { columns: S.w * S.h, surfaces: S.nodes },
     spawns,
@@ -1016,6 +1089,9 @@ const floodSchema = {
     minOwnTurns: { type: "integer", minimum: 1, maximum: 20, description: "The verdict (floodVerdict, and PASS or FAIL in the summary): each spawn knot's ground must stay more than minDryMargin over the water at the start of each of its worm's first minOwnTurns own turns (default 2)." },
     minDryMargin: { type: "number", minimum: 0, description: "How far over the water a spawn's ground must stay through its first minOwnTurns own turns (the call's units; default 1.5 map units, 30 world: knock-back and the computer team's walking move worms, and a Test worm drowned from ground 1.7 map units up; 0: over it at all)." },
     capMargin: { type: "number", minimum: 0, description: "flood.capReport lists every spawn's ground over the water's highest level and names those within this of it (the call's units; default 3 map units, 60 world)." },
+    escape: { type: "boolean", description: "Each spawn knot's escape under the flood (default true; false leaves it out): per own turn of its worm while its spawn is dry at the turn's start, the walk to the nearest floor minDryMargin over the NEXT round's water, its length, own turns and seconds (walkSpeed), and whether it fits in that one turn; latestLegalRound is the last such turn's round whose walk fits, so its ground may flood from the round after. Team sizes come from teams and wormsPerTeam (2 teams of 4: a worm moves every 8 game turns, every 4 rounds)." },
+    solve: { type: "object", additionalProperties: false, required: ["from", "step", "cap"], description: "Also solve a schedule: the fastest per-round sea that rises from round `from` by at most `step` a round to `cap` (the call's units) while every played spawn knot's ground stays minDryMargin over it through the round of its worm's minOwnTurns-th own turn (in the rotation modelled). Answers flood.solvedSchedule: the levels by round (ready to pass back as rounds), the round it reaches the cap, and which spawn holds each held round.",
+      properties: { from: { type: "integer", minimum: 1 }, step: { type: "number", minimum: 0 }, cap: { type: "number" }, rounds: { type: "integer", minimum: 1, maximum: 500, description: "Rounds to answer at least (default until every hold is past and the cap is reached)." } } },
   } as Record<string, Schema>,
 };
 
@@ -1182,6 +1258,7 @@ export const tools: Tool[] = [
         firstTurn: floodSchema.properties.firstTurn, maxTurns: floodSchema.properties.maxTurns, teams: floodSchema.properties.teams, wormsPerTeam: floodSchema.properties.wormsPerTeam,
         margin: floodSchema.properties.margin, minMoves: floodSchema.properties.minMoves, turnOrder: floodSchema.properties.turnOrder,
         minOwnTurns: floodSchema.properties.minOwnTurns, minDryMargin: floodSchema.properties.minDryMargin, capMargin: floodSchema.properties.capMargin,
+        escape: floodSchema.properties.escape, solve: floodSchema.properties.solve,
         from: { type: "array", maxItems: 64, items: { type: "array", items: { type: "number" }, minItems: 3, maxItems: 3 }, description: "Start points [x, y, z] instead of the spawn knots." },
         target: { anyOf: [{ type: "object", additionalProperties: false, required: ["x", "z"], properties: { x: { type: "number" }, z: { type: "number" }, radius: { type: "number", minimum: 0.1 } } },
           { type: "string", enum: ["nearest"] }], description: "The goal: the highest ground within radius (default 3 map units) of x, z; or \"nearest\" with targets: the nearest of them." },
@@ -1202,9 +1279,11 @@ export const tools: Tool[] = [
       },
     },
     handler(s, a: ReachArgs & FloodArgs) {
-      const { schedule, levels, rounds, start, every, firstTurn, maxTurns, teams, wormsPerTeam, margin, minMoves, turnOrder, minOwnTurns, minDryMargin, capMargin, ...rest } = a;
-      if (!schedule && !levels && !rounds) throw new ToolError("give schedule (wum.sim.waterSchedule's options, or \"script\"), levels or rounds");
-      return checkReachability(s, { ...rest, flood: { schedule, levels, rounds, start, every, firstTurn, maxTurns, teams, wormsPerTeam, margin, minMoves, turnOrder, minOwnTurns, minDryMargin, capMargin } });
+      const { schedule, levels, rounds, start, every, firstTurn, maxTurns, teams, wormsPerTeam, margin, minMoves, turnOrder, minOwnTurns, minDryMargin, capMargin, escape, solve, ...rest } = a;
+      // solve alone: the flood is the level's water held still (the solver makes the schedule)
+      const still = !schedule && !levels && !rounds && solve ? [{ round: 1, level: start ?? (waterMap(s.store) !== null ? outUnit(waterMap(s.store)!, a.units) : 0) }] : undefined;
+      if (!schedule && !levels && !rounds && !still) throw new ToolError("give schedule (wum.sim.waterSchedule's options, or \"script\"), levels or rounds (or solve alone)");
+      return checkReachability(s, { ...rest, flood: { schedule, levels, rounds: rounds ?? still, start, every, firstTurn, maxTurns, teams, wormsPerTeam, margin, minMoves, turnOrder, minOwnTurns, minDryMargin, capMargin, escape, solve } });
     },
   },
   {
@@ -1264,6 +1343,42 @@ export const tools: Tool[] = [
         holes: { columns: rep.holes, of: rep.columns, groups: rep.clusters.slice(0, a.limit ?? 20).map((h) => ({ cells: h.cells, area: r2(h.area * (u === "world" ? WORLD_PER_MAP * WORLD_PER_MAP : 1)),
           centre: xz(h.centre), min: xz(h.min), max: xz(h.max), through: h.through })), groupCount: rep.clusters.length },
         ...(seams ? { seams: { count: rep.seamCount, examples: rep.seams.slice(0, 20).map((m) => ({ at: xz(m.at), gap: o(m.gap), tops: m.tops.map(o) })) } } : {}),
+      });
+    },
+  },  {
+    name: "check_support",
+    description: "Whether the ground under a point is solid down to the base or a skin over a void, for the mine factory's knot and the mines' landing zones: every column within `radius` of `at` [x, z] (a column every `step`, default 0.5 map units) is read straight down (a draped skin at its sheared height); its top stretch (stacked or touching stretches merged) is solid when it reaches `downTo` (default the project's water level, else the bottom of the lowest voxel frame), else hollow: a shell with air under it (check_holes passes it, since its rays hit the skin). Answers the counts, the thinnest and the deepest hollow columns, the column at the point, and up to `limit` hollow columns. Read-only.",
+    inputSchema: {
+      type: "object", additionalProperties: false, required: ["at"],
+      properties: {
+        at: { type: "array", items: { type: "number" }, minItems: 2, maxItems: 3, description: "[x, z] (or [x, y, z], y unused) in the call's units." },
+        radius: { type: "number", minimum: 0, description: "The circle read round the point (the call's units; default 2 map units). 0 reads the point's column alone." },
+        step: { type: "number", minimum: 0.1, maximum: 8, description: "Column spacing (the call's units; default 0.5 map units)." },
+        downTo: { type: "number", description: "The height a column's top stretch must reach to be solid (the call's units; default the water level, else the bottom of the lowest voxel frame)." },
+        limit: { type: "integer", minimum: 0, maximum: 200, description: "Hollow columns to list (default 20)." },
+        units,
+      },
+    },
+    handler(s, a: { at: number[]; radius?: number; step?: number; downTo?: number; limit?: number; units?: "map" | "world" }) {
+      const u = a.units, gs = grids(s.store);
+      const [x, z] = a.at.length === 3 ? [a.at[0], a.at[2]] : [a.at[0], a.at[1]];
+      if (![x, z].every(Number.isFinite)) throw new ToolError("at: finite numbers");
+      const radius = a.radius === undefined ? 2 : inMap(a.radius, u), step = a.step === undefined ? 0.5 : inMap(a.step, u);
+      if ((Math.PI * radius * radius) / (step * step) > 200_000) throw new ToolError("too many columns: use a larger step or a smaller radius");
+      const water = waterMap(s.store);
+      const downTo = a.downTo !== undefined ? inMap(a.downTo, u) : water ?? undefined;
+      const rep = checkSupport(gs, inMap(x, u), inMap(z, u), radius, step, downTo, a.limit ?? 20);
+      const o = (v: number) => r2(outUnit(v, u));
+      const col = (c: SupportColumn | null) => c && { at: [o(c.x), o(c.z)], top: o(c.top), thickness: o(c.thickness), ...(c.solid ? {} : { voidBelow: o(c.voidBelow) }), solid: c.solid };
+      const looked = rep.columns - rep.empty;
+      return compact({
+        ok: rep.hollow === 0 && rep.empty === 0,
+        summary: !looked ? "no ground under the point or round it" : rep.hollow === 0
+          ? `${rep.solid} of ${rep.columns} columns are solid down to ${o(rep.downTo)}${rep.empty ? `; ${rep.empty} have no ground` : ""}`
+          : `${rep.hollow} of ${rep.columns} columns are a shell over a void (the thinnest ${o(rep.thinnest!.thickness)} thick at ${[rep.thinnest!.x, rep.thinnest!.z].map(o).join(", ")}, the deepest void ${o(rep.deepest!.voidBelow)} at ${[rep.deepest!.x, rep.deepest!.z].map(o).join(", ")})${rep.empty ? `; ${rep.empty} have no ground` : ""}: fill under it (fill_box_raw, add_block, build_tower {hollow: false}) before standing the factory or mines on it`,
+        downTo: o(rep.downTo), downToNote: a.downTo !== undefined ? "as given" : water !== null ? "the project's water level" : "the bottom of the lowest voxel frame",
+        columns: rep.columns, solid: rep.solid, hollow: rep.hollow, empty: rep.empty, centre: col(rep.centre), thinnest: col(rep.thinnest), deepest: col(rep.deepest),
+        hollowColumns: rep.hollowColumns.map(col),
       });
     },
   },

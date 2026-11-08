@@ -20,6 +20,8 @@ const char* FireNow(int count, std::string* detail);
 // The fires seen (each PlaceMines: its mines, where each appeared and where it came to rest, levels/factory.fired on
 // the session log) and the last on-demand trigger, as JSON {fires, trigger}.
 std::string FiresJson();
+// The fires seen this session (each PlaceMines) and, in *at, when the last was (GetTickCount64): a shot after a fire.
+uint32_t FireSerial(unsigned long long* at);
 // Where the match's mine factory is now (world units), main thread; false when it has none.
 bool Position(float out[3]);
 }  // namespace melange::levels::factory

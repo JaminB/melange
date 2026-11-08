@@ -5,6 +5,7 @@
 #include <windows.h>
 
 #include <cstdio>
+#include <cstring>
 #include <mutex>
 #include <string>
 #include <vector>
@@ -128,7 +129,8 @@ bool Arm(const char* key, const ArmOptions& o) {
     if (!key || !*key) return false;
     Source src = Source::Vanilla;
     const bool mod = registry::Lookup(key, &src);
-    if (!mod && !Pending(key)) return false;
+    // a game level (a baseline Test) is checked against the frontend's levels when it is taken (Take)
+    if (!mod && !Pending(key) && !(o.vanilla && std::strncmp(key, "Multi.", 6) == 0)) return false;
     if (NetSession() || handshake::lobby::Current()) return false;
     std::lock_guard lk(g_mx);
     if (!g_ovr.Arm(key, o.timeoutS, GetTickCount64(), o.tod)) return false;

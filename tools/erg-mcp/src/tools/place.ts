@@ -17,6 +17,8 @@ import { stopHold } from "./game";
 import { CAMERA_RISE, WALL_RADIUS, nearestTread, spawnWarnings, treadAt, treadWarnings } from "../lib/spawn-check";
 import { readWaterLook, waterLookProblems, withWaterLook, type WaterLook } from "../lib/water-look";
 import { checkFactory, factoryLines } from "../lib/factory-check";
+import { projectHash, readSource } from "../lib/project-hash";
+import { count, diff, summary, type AssertRun } from "../lib/assert-log";
 import { scheduleFromScript } from "../lib/flood";
 import { scriptWater } from "../lib/script-water";
 import { rotation, slotOf } from "../lib/turns";
@@ -612,6 +614,48 @@ async function appliedLook(s: Session, asked: { theme: string; tod: string; fact
   return { look: out, warnings };
 }
 
+/** The open project's hash: the patch save sends and the script on the server. */
+export async function currentHash(s: Session): Promise<string> {
+  const p = s.requireProject();
+  return projectHash(p.store.patch(), (await p.erg.script()) ?? "");
+}
+
+/** test's expectHash and source: the game's project against the built one, refused when they differ, or (sync) the
+ * source written into the game's project and the project opened again. */
+async function checkProjectFor(s: Session, a: { expectHash?: string; source?: string; sync?: boolean }) {
+  if (a.sync && !a.source) throw new ToolError("sync writes `source` into the game's project: give source");
+  if (a.expectHash !== undefined && !/^[0-9a-f]{8,64}$/.test(a.expectHash)) throw new ToolError("expectHash: 8 to 64 hex digits (lower case), as save answers projectHash");
+  const p = s.requireProject();
+  let mine = await currentHash(s);
+  const out: Record<string, unknown> = { project: p.id, projectHash: mine };
+  if (a.source) {
+    const src = readSource(a.source);
+    const theirs = projectHash(src.patch, src.script);
+    Object.assign(out, { source: src.patchFile, sourceHash: theirs, sourceScript: src.scriptFile });
+    if (theirs !== mine) {
+      if (!a.sync)
+        throw new ToolError(`the game's project '${p.id}' (${mine.slice(0, 12)}) is not the built level ${src.patchFile} (${theirs.slice(0, 12)}): a stale copy in this game's projects folder? ` +
+          "Pass sync: true to write the source into the game's project first, or build against this game (connect {gameDir}) and save");
+      if (p.store.dirty) throw new ToolError(`the game's project '${p.id}' has unsaved edits: save or discard them (close {discard: true}, open_project) before sync overwrites it`);
+      const own = p.store.patch() as unknown as Record<string, unknown>, base = src.patch.base as { key?: string } | undefined;
+      if (base?.key && (own.base as { key?: string } | undefined)?.key !== base.key)
+        throw new ToolError(`source is built on ${base.key}, the game's project '${p.id}' on ${(own.base as { key?: string }).key}: sync copies a level onto its own base only`);
+      const saved = await p.erg.save({ ...src.patch, stem: own.stem, title: own.title } as unknown as Parameters<typeof p.erg.save>[0]);
+      if (saved.saved === false) throw new ToolError("sync: the game's server did not save the source's patch");
+      const sc = await p.erg.saveScript(src.script);
+      if (!sc.saved) throw new ToolError(`sync: the game's server did not save the source's script: ${sc.problems.map((x) => x.message ?? String(x)).join("; ")}`);
+      await s.open(p.id, true);
+      mine = await currentHash(s);
+      if (mine !== theirs) throw new ToolError(`sync wrote the source, but the game's project now hashes ${mine.slice(0, 12)}, not ${theirs.slice(0, 12)}: the server changed the patch on save (${saved.warnings?.join("; ") || "no warning"})`);
+      Object.assign(out, { synced: true, projectHash: mine, note: "the source's patch and script were written into the game's project and the project opened again" });
+    } else out.matches = true;
+  }
+  if (a.expectHash && !mine.startsWith(a.expectHash))
+    throw new ToolError(`the game's project '${p.id}' hashes ${mine.slice(0, 12)}, not the expected ${a.expectHash.slice(0, 12)}: it is not the level that was built (save answers projectHash; pass source with sync: true to bring the built level over)`);
+  if (a.expectHash) out.expectHash = "matches";
+  return out;
+}
+
 async function savedFirst(s: Session, why: string) {
   const p = s.requireProject();
   if (!p.store.dirty) return undefined;
@@ -619,6 +663,119 @@ async function savedFirst(s: Session, why: string) {
   if (r.problems.length) throw new ToolError(`the project has problems and was not ${why}: ${r.problems.join("; ")}`);
   return r;
 }
+
+// ------------------------------------------------------------------ asserts and the vanilla baseline
+
+// Every Test match's asserts and GL errors (the game's log, category engine) are counted per run (lib/assert-log.ts):
+// test starts a run, end_match and the next test end it; test {map, noLevel} runs the game's own map as a baseline and
+// diffs it against the last Erg run, and test_asserts answers them.
+const assertRuns: AssertRun[] = [];
+let assertOff: (() => void) | null = null;
+
+async function startAssertRun(s: Session, label: string, kind: AssertRun["kind"]): Promise<AssertRun | null> {
+  endAssertRun();
+  const client = await s.client();
+  if (!client.has("log")) return null;
+  const run: AssertRun = { label, kind, startedAt: Date.now(), counts: new Map(), total: 0 };
+  assertRuns.push(run);
+  if (assertRuns.length > 12) assertRuns.shift();
+  // the channel sends the last 500 matching records first (its backlog): only lines logged since the run started count
+  assertOff = client.subscribe<{ j?: unknown }>("log", { cats: ["engine"] }, (m) => {
+    let j = m.j as { msg?: string; wall?: string } | string | undefined;
+    if (typeof j === "string") try { j = JSON.parse(j) as { msg?: string; wall?: string }; } catch { return; }
+    if (!j || typeof j !== "object" || typeof j.msg !== "string" || run.endedAt) return;
+    const wall = j.wall ? Date.parse(j.wall) : NaN;
+    if (Number.isFinite(wall) && wall < run.startedAt - 500) return;
+    count(run, j.msg);
+  });
+  return run;
+}
+
+export function endAssertRun() {
+  assertOff?.();
+  assertOff = null;
+  const last = assertRuns[assertRuns.length - 1];
+  if (last && !last.endedAt) last.endedAt = Date.now();
+}
+
+function dropAssertRun(run: AssertRun) {
+  if (assertRuns[assertRuns.length - 1] === run) endAssertRun();
+  const i = assertRuns.indexOf(run);
+  if (i >= 0) assertRuns.splice(i, 1);
+}
+
+const lastRun = (kind: AssertRun["kind"], before?: AssertRun) => [...assertRuns].reverse().find((r) => r.kind === kind && r !== before);
+
+// The baseline's turn reader: the game turn (turnsStarted), the phase, a computer team's turn, the active worm and its weapon.
+const BASE_LUA = `local t = wum.game.turn() local m = wum.game.match and wum.game.match() or nil local wp = nil
+for _, x in ipairs(wum.game.worms() or {}) do if x.slot == t.worm then wp = x.weapon end end
+return tostring(wum.game.inMatch()) .. ";" .. tostring(m and m.turnsStarted or t.index) .. ";" .. tostring(t.phase) .. ";" .. tostring(t.ai) .. ";" .. tostring(t.worm) .. ";" .. tostring(wp)`;
+
+/** test {map, noLevel}: the game's own map in a Quick Game with no Erg level, `turns` game turns watched (each human
+ * turn firing the selected weapon with `fire`), its asserts and GL errors counted and diffed against the last Erg run. */
+async function runBaseline(s: Session, a: { map?: string; noLevel?: boolean; turns?: number; fire?: boolean | "bazooka"; fireMs?: number; tod?: TimeOfDay; timeoutSec?: number;
+  cleanMods?: boolean; postfx?: boolean; restart?: boolean; simMods?: "all" | "level-only" }) {
+  if (!a.map || !a.noLevel) throw new ToolError("a baseline Test is test {map: \"Multi.<map>\", noLevel: true}: the game's own map with no Erg level");
+  if (!/^Multi\.[A-Za-z0-9_-]+$/.test(a.map)) throw new ToolError("map: a game level's key, Multi.<map> (list_bases lists them)");
+  const conn = await s.ensure(), client = await s.client();
+  if (!conn.methods.includes("level.test")) throw new ToolError("no level.test here: Test needs the game running at its main menu (Melange.exe --serve has none)");
+  if (a.fire && !conn.methods.includes("input.drive")) throw new ToolError("fire needs the game's input.drive (Melange 0.13+ with the Controls module)");
+  const clean = a.simMods === "level-only" ? { cleanMods: true, postfx: a.postfx ?? true } : { cleanMods: a.cleanMods, postfx: a.postfx };
+  stopHold();
+  const restarted = a.restart ? await backToMenu(s) : undefined;
+  const run = await startAssertRun(s, a.map, "baseline");
+  const erg = {
+    test: async (t?: { tod?: TimeOfDay; cleanMods?: boolean; postfx?: boolean }) => client.call<{ key: string; state: string; cleanRoom?: { simMods: boolean; postfx: boolean }; baseline?: boolean }>(
+      "level.test", { base: a.map, ...(t ?? {}) }, 120000).catch((e: Error) => {
+      if (/project/.test(e.message) && !/base/.test(e.message)) throw new ToolError(`this game has no baseline Test (level.test {base}, Melange 0.13+): ${e.message}`);
+      if (/must be at the frontend/.test(e.message)) throw new ToolError(`${e.message}: a match is running. Pass restart: true, or call end_match first`);
+      throw e;
+    }),
+    onTest: (fn: (x: { state: string; key: string; detail: string }) => void) => client.subscribe<{ state?: string; key?: string; detail?: string }>("erg", undefined, (m) => {
+      if (m && typeof m.state === "string") fn({ state: m.state, key: m.key ?? "", detail: m.detail ?? "" });
+    }),
+  };
+  const started = await runTest(erg as unknown as Parameters<typeof runTest>[0], { tod: a.tod, timeoutMs: (a.timeoutSec ?? 60) * 1000, ...clean });
+  if (started.final !== "playing") {
+    if (run) dropAssertRun(run);
+    return { ...started, baseline: a.map, note: "the baseline did not reach playing: nothing was counted" };
+  }
+  // the turns: wait for `turns` game turns to have started and the next to start (or the timeout), firing on human turns
+  const turns = a.turns ?? 3, limit = Date.now() + Math.max(60, turns * 120) * 1000;
+  const fired: { turn: number; worm: number; weapon: string; fired: boolean; why?: string }[] = [];
+  let seen = 0, firedTurn = -1, last = "";
+  for (;;) {
+    const t = await client.call<{ ok: boolean; text: string }>("lua.eval", { target: "client", code: BASE_LUA }, 15000).catch(() => ({ ok: false, text: "" }));
+    if (t.ok) {
+      last = t.text;
+      const [inMatch, turn, phase, ai, worm, weapon] = t.text.split(";");
+      if (inMatch !== "true") break;
+      seen = Math.max(seen, Number(turn) || 0);
+      if (seen > turns) break;
+      if (a.fire && phase === "play" && ai === "false" && firedTurn !== seen) {
+        firedTurn = seen;
+        await sleep(1500);   // the turn's camera settles on the worm
+        // Input.Fire fires the worm's selected weapon: with none selected (weapon nil) it does nothing
+        const none = weapon === "nil" || weapon === undefined;
+        if (!none) await client.call("input.drive", { hold: ["Input.Fire"], ms: a.fireMs ?? 700, replace: true }, 15000).catch(() => undefined);
+        fired.push({ turn: seen, worm: Number(worm), weapon, ...(none ? { fired: false, why: "no weapon selected (the game's turns start with none; selecting one is the weapon panel's)" } : { fired: true }) });
+      }
+    }
+    if (Date.now() > limit) break;
+    await sleep(500);
+  }
+  if (run) { run.turns = seen; }
+  endAssertRun();
+  const erg0 = run ? lastRun("erg", run) : undefined;
+  return { baseline: a.map, key: started.key, states: started.states, ...(restarted ? { restarted } : {}), ...(started.cleanRoom ? { cleanRoom: started.cleanRoom } : {}),
+    turnsSeen: seen, ...(seen <= turns ? { warning: `only ${seen} game turns started before the timeout (last read: ${last})` } : {}),
+    ...(a.fire ? { fired, fireNote: "each human turn fires the worm's selected weapon (Input.Fire held fireMs, the power) through input.drive; weapon is the game's weapon index of the active worm (wum.game.worms().weapon), nil when none is selected: then nothing is fired" } : {}),
+    asserts: run ? summary(run) : { note: "this game has no log channel: asserts were not counted" },
+    ...(run && erg0 ? { compare: diff(erg0, run) } : { compareNote: "no Erg Test run in this erg-mcp session to compare with: test the project, then test_asserts compares them" }),
+    next: "the match goes on: end_match leaves it (or test {restart: true} for the next Test)" };
+}
+
+const sleep = (ms: number) => new Promise((ok) => setTimeout(ok, ms));
 
 const modId: Schema = { type: "string", description: "Mod id: a-z, 0-9, '-' and '_' (it becomes the pack prefix; 'ergtest' is reserved)." };
 
@@ -745,7 +902,7 @@ export const tools: Tool[] = [
     description: "Change the level's mine factory settings (place it first with place_object type minefactory). launchHeight and launchRadius (Melange 0.13+) make its mines appear over it and fall round it instead of raining onto random worms and objects (the game's). A value equal to the game's (activation 20, inactiveTurns 7, schemeMines true, keepKnot false) is dropped, so the game's value applies. Melange writes activation and inactiveTurns into the game's kMineFactoryData at level start and again at the factory's own set-up, just before it reads them (Melange 0.13+), and puts the game's back when the match ends; test's look.factory says what the set-up found and applied. The settings are the project's: save, and Test the same project on the same server's projects folder (a project of the same id in another game's ProjectsDir is another project). One undo step.",
     inputSchema: { type: "object", additionalProperties: false, properties: { ...factoryProps,
       everyNTurns: { type: "integer", minimum: 1, maximum: 254, description: "A fire every N game turns, whatever the level holds: sets activation 255 (the level always holds fewer mines, so the count never stops a fire) and inactiveTurns N (the factory's countdown starts at N when it is placed and again after each fire, and each turn start takes one: it fires at the start of game turn N, 2N, 3N, ...), 10 mines a fire (the game's most). Not with activation or inactiveTurns." } } },
-    handler(s, a0: FactoryArgs & { everyNTurns?: number }) {
+    async handler(s, a0: FactoryArgs & { everyNTurns?: number }) {
       const store = s.store, scene = store.scene;
       const o = scene.objects?.find((x) => x.type === "minefactory");
       if (!o || o.type !== "minefactory") throw new ToolError("the level has no mine factory: place one with place_object type minefactory");
@@ -758,7 +915,10 @@ export const tools: Tool[] = [
       if (a.launch === true) throw new ToolError("launch: false clears the launch; set launchHeight and/or launchRadius to give one");
       const factory = factoryOf(o.factory, a);
       commit(store, new SetObject(o.knot, factory ? { knot: o.knot, type: "minefactory", factory } : { knot: o.knot, type: "minefactory" }));
-      return { knot: o.knot, factory: factory ?? {}, game: FACTORY_GAME, changed: true, ...(a0.everyNTurns !== undefined ? { everyNTurns: {
+      // the placement checked again with the new settings: keepKnot turns the drop's advisories into warnings or clears them
+      const issues = a.keepKnot !== undefined ? await factoryReport(s, "world") : undefined;
+      return { knot: o.knot, factory: factory ?? {}, game: FACTORY_GAME, changed: true, ...(issues ? { issues, ...(issues.some((l) => l.startsWith("error:")) ? { factoryWillBeLost: true } : {}) } : {}),
+        ...(a0.everyNTurns !== undefined ? { everyNTurns: {
         n: a0.everyNTurns, mapsTo: { activation: EVERY_N_ACTIVATION, inactiveTurns: a0.everyNTurns }, firesAtGameTurns: [1, 2, 3, 4].map((i) => i * a0.everyNTurns!),
         note: "fires of 10 mines at the start of every N-th game turn, counted from the factory's placement at level start; a fire still running at the next one is not stopped" } } : {}),
       ...FACTORY_RULE };
@@ -887,7 +1047,7 @@ export const tools: Tool[] = [
       const first = await savedFirst(s, "exported");
       const r = await (await s.client()).call<{ dir: string; files: string[]; restartRequired: boolean }>(
         "level.export", { project: p.id, ...form }, 120000);
-      return { ...r, mode: form.mode, ...(first ? { savedFirst: true, warnings: first.warnings } : {}),
+      return { ...r, mode: form.mode, projectHash: await currentHash(s).catch(() => undefined), ...(first ? { savedFirst: true, warnings: first.warnings } : {}),
         ...(form.mode === "install" ? { note: "install exports contain modified game files: keep them on this machine" } : {}) };
     },
   },
@@ -908,17 +1068,31 @@ export const tools: Tool[] = [
         cleanMods: { type: "boolean", description: "A clean room for this Test match only: enabled content mods' sim code (entry.sim) does not run, only the level script, and the post-FX stack is off (unless postfx: true), so asserts and lighting belong to the map. Nothing is changed on disk; launch-time content (weapon clones, file overrides, shader mods, client scripts) stays. On a game build without clean rooms it refuses while such mods are enabled." },
         postfx: { type: "boolean", description: "false: the post-FX stack (every effect and code pass, like the Post-FX panel's Bypass all) is off for this Test match; true with cleanMods keeps it on. Default: on, or off with cleanMods." },
         simMods: { type: "string", enum: ["all", "level-only"], description: "level-only: an isolated level Test: the other installed sim mods (Kindjal, Sandtide, ...) do not run in this match, only the level's chunk and its script, so the level's asserts and behaviour are its own; post-FX stays as it is (postfx: false turns it off too). It is cleanMods for the sim alone; all (default): every enabled sim mod runs beside the level script. The answer's cleanRoom and look.simModsLoaded say what ran." },
-        restart: { type: "boolean", description: "When a Test match is running: leave it for the main menu (level.test.quit), wait for the menu, then test again (default false: refused in a match). Leaving a match writes the game's save (its statistics), as the game's own Quit does." } },
+        restart: { type: "boolean", description: "When a Test match is running: leave it for the main menu (level.test.quit), wait for the menu, then test again (default false: refused in a match). Leaving a match writes the game's save (its statistics), as the game's own Quit does." },
+        expectHash: { type: "string", description: "The project hash the Test must play (save and export answer projectHash; a prefix of 8 or more hex digits is enough): refused, nothing started, when the game's project (the patch save sends, without stem and title, and its script) hashes otherwise. Guards against testing a stale copy of the project in another game's projects folder." },
+        source: { type: "string", description: "The built level the Test must play, on disk: a project folder (project.ergpatch.json, script.lua), an exported source pack (src\\<stem>.ergpatch.json, sim\\<stem>.lua) or a .ergpatch.json file. Its hash is compared with the game's project: refused when they differ, unless sync." },
+        sync: { type: "boolean", description: "With source: when the game's project differs, write the source's patch and script into it first (level.save and the script save on the game's own server, then the project is opened again), so the Test plays exactly the built level. Refused while the open project has unsaved edits or the source's base differs. The answer's projectCheck says what was compared and done." },
+        map: { type: "string", description: "With noLevel: true, a vanilla baseline instead of the project: the game's own level (Multi.DinerMight) in the same Quick Game with no Erg level (level.test {base}, Melange 0.13+). It watches `turns` game turns, fires the selected weapon on each human turn with `fire`, counts the game's ASSERT and GL ERROR lines (its log) and diffs them against the last Erg Test run of this erg-mcp session (`compare`: the signatures only the Erg level shows, only the baseline, and both), so whether an assert is the level's is answered from two runs. No project needs to be open. simMods, cleanMods, postfx, tod and restart apply." },
+        noLevel: { type: "boolean", description: "With map: the baseline Test (no Erg level)." },
+        turns: { type: "integer", minimum: 1, maximum: 20, description: "Baseline: game turns to watch (default 3)." },
+        fire: { anyOf: [{ type: "boolean" }, { type: "string", enum: ["bazooka"] }], description: "Baseline: on each human turn, fire the worm's selected weapon (Input.Fire held fireMs through input.drive, whatever the window's focus; \"bazooka\" says which is meant, it does not select it). A worm with no weapon selected (the Quick Game's turns started with none in the Tests) fires nothing: the answer lists each turn, the game's weapon index (nil: none) and whether it fired." },
+        fireMs: { type: "integer", minimum: 50, maximum: 3000, description: "Baseline: how long fire is held, the shot's power (default 700)." } },
     },
-    async handler(s, a0: { tod?: TimeOfDay; waitFor?: "playing" | "armed"; timeoutSec?: number; cleanMods?: boolean; postfx?: boolean; restart?: boolean; simMods?: "all" | "level-only" }) {
+    async handler(s, a0: { tod?: TimeOfDay; waitFor?: "playing" | "armed"; timeoutSec?: number; cleanMods?: boolean; postfx?: boolean; restart?: boolean; simMods?: "all" | "level-only";
+      expectHash?: string; source?: string; sync?: boolean; map?: string; noLevel?: boolean; turns?: number; fire?: boolean | "bazooka"; fireMs?: number }) {
+      if (a0.map !== undefined || a0.noLevel) return runBaseline(s, a0);
+      if (a0.turns !== undefined || a0.fire !== undefined || a0.fireMs !== undefined) throw new ToolError("turns, fire and fireMs are for the baseline Test (map, noLevel: true)");
       // simMods level-only: the clean room's sim half, post-FX kept unless postfx says otherwise
       if (a0.simMods === "level-only" && a0.cleanMods === false) throw new ToolError("simMods: \"level-only\" is a clean room for the sim: leave out cleanMods: false");
       if (a0.simMods === "all" && a0.cleanMods) throw new ToolError("simMods: \"all\" runs every sim mod, cleanMods none: give one of them");
       const a = a0.simMods === "level-only" ? { ...a0, cleanMods: true, postfx: a0.postfx ?? true } : a0;
 
-      const p = s.requireProject();
+      s.requireProject();
       const conn = await s.ensure();
       if (!conn.methods.includes("level.test")) throw new ToolError("no level.test here: Test needs the game running at its main menu (Melange.exe --serve has none)");
+      // the project the game will play, against the one that was built: refused, or synced, before anything starts
+      const projectCheck = a0.source || a0.expectHash ? await checkProjectFor(s, a0) : undefined;
+      const p = s.requireProject();
       let restarted: { fromScene: string; ms: number; retries?: number } | undefined;
       stopHold();   // a held camera belongs to the match being left
       if (a.restart) restarted = await backToMenu(s);
@@ -941,6 +1115,8 @@ export const tools: Tool[] = [
       // the project's own time of day unless one is given: without it the frontend's (Quick Game: DAY) loads
       const db = p.store.scene.databank, tod = a.tod ?? (TIMES_OF_DAY.includes(db.timeOfDay as TimeOfDay) ? (db.timeOfDay as TimeOfDay) : undefined);
       // the game refuses a Test outside its frontend: say how to get there instead of its bare refusal
+      // the match's asserts and GL errors, counted for test_asserts and a later baseline's compare
+      const asserts = await startAssertRun(s, `Multi.ergtest_${p.id}`, "erg").catch(() => null);
       let run = await runTest(p.erg, { tod, goal: a.waitFor, timeoutMs: sec * 1000, cleanMods: a.cleanMods, postfx: a.postfx }).catch((e: Error) => {
         if (/must be at the frontend/.test(e.message))
           throw new ToolError(`${e.message}: a match is running. Pass restart: true to leave a Test match for the menu and test again in one call, or call end_match first (leaving writes the game's save, as its own Quit does)`);
@@ -953,12 +1129,16 @@ export const tools: Tool[] = [
         run = await runTest(p.erg, { tod, goal: a.waitFor, timeoutMs: sec * 1000, cleanMods: a.cleanMods, postfx: a.postfx });
         restarted.retries = tries + 1;
       }
+      if (asserts && run.key) asserts.label = run.key;
+      // a Test that did not play counts nothing: what the log shows next is another match (the menu's attract demo)
+      if (asserts && run.final !== "playing" && a.waitFor !== "armed") dropAssertRun(asserts);
       const suppressed = !!a.cleanMods && !!run.cleanRoom && !run.cleanRoom.simMods;
       const fo = p.store.scene.objects?.find((o) => o.type === "minefactory");
       const look = run.final === "playing" ? await appliedLook(s, { theme: db.theme, tod: tod ?? "DAY", factory: fo && fo.type === "minefactory" ? fo.factory ?? {} : null, stem: run.key?.replace(/^Multi\./, ""),
         script: run.final === "playing" && !!(await (async () => (await p.erg.script()) ?? "")().catch(() => "")).trim() }) : null;
       return { ...run, ...(a0.simMods ? { isolated: a0.simMods === "level-only" ? (suppressed || !simMods.length ? "level only: no other sim mod runs in this match" : "level only was asked, but the game did not apply a clean room (cleanRoom)") : "all sim mods" } : {}),
-        ...(first ? { savedFirst: true } : {}), ...(restarted ? { restarted } : {}), ...(look ? { look: look.look, ...(look.warnings.length ? { warnings: look.warnings } : {}) } : {}),
+        ...(first ? { savedFirst: true } : {}), ...(restarted ? { restarted } : {}), ...(projectCheck ? { projectCheck } : {}),
+        ...(look ? { look: look.look, ...(look.warnings.length ? { warnings: look.warnings } : {}) } : {}),
         ...(simMods.length ? suppressed ? { simMods, simModsNote: "these mods' sim code is suppressed in this Test match (clean room)" }
           : { simMods, simModsNote: "these mods' sim code runs in this match beside the level script" } : {}),
         match: "Quick Game (QuickStartHvC: a human team against a computer team) with the game's own Quick Game scheme; the scheme, turn time and team sizes are the game's, not chosen here",
@@ -972,8 +1152,19 @@ export const tools: Tool[] = [
     inputSchema: { type: "object", additionalProperties: false, properties: {} },
     async handler(s) {
       stopHold();
+      endAssertRun();
       const r = await backToMenu(s);
       return r ? { left: true, ...r, next: "test (the game is at its menu)" } : { left: false, note: "no match is running: the game is at its menu" };
+    },
+  },
+  {
+    name: "test_asserts",
+    description: "The game's ASSERT and GL ERROR lines of the Test matches this erg-mcp session started, counted by signature (the line without its prefix) per run: an Erg Test (test) and the vanilla baseline (test {map, noLevel: true}); a run ends with end_match or the next test. Answers each run's totals and top signatures and, with an Erg run and a baseline, their diff: the signatures only the Erg level shows (the level's own), only the baseline, and both (the game's own), with counts per minute.",
+    inputSchema: { type: "object", additionalProperties: false, properties: { limit: { type: "integer", minimum: 1, maximum: 200, description: "Signatures per run (default 20)." } } },
+    handler(_s, a: { limit?: number }) {
+      if (!assertRuns.length) return { runs: [], note: "no Test run in this erg-mcp session yet (test counts them; a game without Oasis's log channel cannot)" };
+      const erg = lastRun("erg"), base = lastRun("baseline");
+      return { runs: assertRuns.map((r) => summary(r, a.limit ?? 20)), ...(erg && base ? { compare: diff(erg, base) } : { compareNote: "compare needs an Erg Test run and a baseline (test {map, noLevel: true}) in this session" }) };
     },
   },
   {

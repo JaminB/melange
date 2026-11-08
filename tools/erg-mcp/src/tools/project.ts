@@ -3,7 +3,7 @@ import { WORLD_PER_XAN, engineWarnings, isSolid, type Detail, type Role, type Ve
 import { grids, limitProblems, tidy, toWorld, usage } from "../lib/voxel";
 import { ToolError, type Tool } from "../registry";
 import type { Session } from "../session";
-import { factoryReport, spawnTreadWarnings } from "./place";
+import { currentHash, factoryReport, spawnTreadWarnings } from "./place";
 import { backdropOf, coverLevel, waterBackdropWarning } from "../lib/backdrop";
 
 const discard = { type: "boolean", description: "Drop unsaved edits of the open project instead of refusing." } as const;
@@ -232,7 +232,9 @@ export const tools: Tool[] = [
       const sea = await waterBackdropWarning(s).catch(() => null);
       // spawn knots a worm cannot stand on (in solid, no ground near under it, on an edge): saved all the same, and said so
       const spawns = (() => { try { return spawnTreadWarnings(s.store); } catch { return [] as string[]; } })();
-      return { ...r, ...(factory.length ? { factory } : {}), ...(sea?.warning ? { water: sea } : {}), ...(spawns.length ? { spawns } : {}), ...state(s), patchBytes: usage(s.store).patchBytes.used };
+      // the hash test {expectHash} checks the game's project against (the patch and the script, not the stem or title)
+      const projectHash = await currentHash(s).catch(() => undefined);
+      return { ...r, ...(projectHash ? { projectHash } : {}), ...(factory.length ? { factory } : {}), ...(sea?.warning ? { water: sea } : {}), ...(spawns.length ? { spawns } : {}), ...state(s), patchBytes: usage(s.store).patchBytes.used };
     },
   },
   {

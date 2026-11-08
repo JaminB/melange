@@ -1,11 +1,14 @@
 // level.test: builds a project into the Test workspace (server thread), registers and arms it, then starts Quick Game
-// from the main thread once the level is registered at the frontend. An attract demo is ended first with a key tap,
+// from the main thread once the level is registered at the frontend. {base: "Multi.<map>"} instead of a project arms
+// the game's own level, with no Erg build: a vanilla baseline Test (erg-mcp's test {map, noLevel}) whose asserts and GL
+// errors an Erg run is compared against. An attract demo is ended first with a key tap,
 // since a StartGame posted during it asserts. Test states go out on the `erg` channel. levels.live changes map packs.
 // A clean-room Test (cleanMods, postfx: false) suppresses the sim mods on the Test level and turns the post-FX stack
 // off from the Test's start until it ends, fails or is disarmed; nothing is persisted.
 #include <windows.h>
 
 #include <atomic>
+#include <cctype>
 #include <filesystem>
 #include <mutex>
 #include <string>
@@ -121,21 +124,43 @@ void OnFrame() {
     if (key.empty()) return;
     char armed[128] = {};
     if (!levels::Armed(armed, sizeof armed) || key != armed) return;
+    if (!levels::LevelHookReady()) {
+        // a baseline Test of a game level: the level-name hook goes in on this frame's levels update; start next frame
+        std::lock_guard lk(g_mx);
+        if (g_startKey.empty()) g_startKey = key;
+        return;
+    }
     const bool ok = erg::quickstart::PostQuickGame();
     LOG_INFO("[erg] test: %s registered; Quick Game %s", key.c_str(), ok ? "started" : "not available, press it to play");
 }
 
+// A game level's key: Multi. and a level file stem.
+bool ValidBaseKey(const std::string& k) {
+    if (k.size() < 7 || k.size() > 70 || k.compare(0, 6, "Multi.") != 0) return false;
+    for (size_t i = 6; i < k.size(); ++i)
+        if (!std::isalnum(static_cast<unsigned char>(k[i])) && k[i] != '_' && k[i] != '-') return false;
+    return true;
+}
+
 void Test(const Call& c, Result& r, void*) {
     json::Value p;
-    std::string project, todText;
+    std::string project, todText, base;
     bool cleanMods = false, postfxOn = true;
-    if (!rpc::ParseParams(c, &p, r) || !rpc::Str(p, "project", &project, r) || !rpc::Str(p, "tod", &todText, r, false) ||
-        !OptFlag(p, "cleanMods", &cleanMods, r))
+    if (!rpc::ParseParams(c, &p, r) || !rpc::Str(p, "project", &project, r, false) || !rpc::Str(p, "base", &base, r, false) ||
+        !rpc::Str(p, "tod", &todText, r, false) || !OptFlag(p, "cleanMods", &cleanMods, r))
         return;
     // cleanMods turns post-FX off too unless postfx: true says otherwise.
     postfxOn = !cleanMods;
     if (!OptFlag(p, "postfx", &postfxOn, r)) return;
-    if (!erg::names::ValidSlug(project)) {
+    if (project.empty() == base.empty()) {
+        Fail(r, rpc::kBadParams, "give project (an Erg project) or base (a game level, Multi.<map>, for a baseline with no Erg level)");
+        return;
+    }
+    if (!base.empty() && !ValidBaseKey(base)) {
+        Fail(r, rpc::kBadParams, "base must be a game level's key, Multi.<map> (list_bases lists them)");
+        return;
+    }
+    if (base.empty() && !erg::names::ValidSlug(project)) {
         Fail(r, rpc::kBadParams, "project must match [a-z0-9]{1,24}");
         return;
     }
@@ -157,20 +182,23 @@ void Test(const Call& c, Result& r, void*) {
         Fail(r, rpc::kBusy, "the game is loading a level; try again in a moment");
         return;
     }
-    std::string stem, title, err;
-    if (!BuildTestLevel(project, todText, static_cast<uint64_t>(c.client), &stem, &title, &err)) {
-        Fail(r, rpc::kRefused, err);
-        return;
+    std::string key = base;
+    if (base.empty()) {
+        std::string stem, title, err;
+        if (!BuildTestLevel(project, todText, static_cast<uint64_t>(c.client), &stem, &title, &err)) {
+            Fail(r, rpc::kRefused, err);
+            return;
+        }
+        DeleteShadows(stem);
+        key = erg::names::Key(stem);
+        char regErr[256] = {};
+        if (!levels::RegisterTest(stem.c_str(), title.c_str(), regErr, sizeof regErr)) {
+            Fail(r, rpc::kRefused, regErr);
+            return;
+        }
     }
-    DeleteShadows(stem);
-    const std::string key = erg::names::Key(stem);
-    char regErr[256] = {};
-    if (!levels::RegisterTest(stem.c_str(), title.c_str(), regErr, sizeof regErr)) {
-        Fail(r, rpc::kRefused, regErr);
-        return;
-    }
-    if (!levels::ArmNextLevel(key.c_str(), levels::ArmOptions{120, tod})) {
-        Fail(r, rpc::kRefused, "could not arm the Test override");
+    if (!levels::ArmNextLevel(key.c_str(), levels::ArmOptions{120, tod, !base.empty()})) {
+        Fail(r, rpc::kRefused, base.empty() ? "could not arm the Test override" : "could not arm the game level (a lobby, or another Test pending)");
         return;
     }
     {
@@ -190,7 +218,8 @@ void Test(const Call& c, Result& r, void*) {
         g_nextTap = 0;
         g_taps = 0;
     }
-    r.json = jsonmini::Obj().Str("key", key).Str("state", quick ? "starting" : "armed")
+    if (!base.empty()) LOG_INFO("[erg] test: a baseline Test of the game's own %s (no Erg level)", key.c_str());
+    r.json = jsonmini::Obj().Str("key", key).Str("state", quick ? "starting" : "armed").Bool("baseline", !base.empty())
                  .Raw("cleanRoom", jsonmini::Obj().Bool("simMods", !cleanMods).Bool("postfx", postfxOn).End())
                  .End();
 }

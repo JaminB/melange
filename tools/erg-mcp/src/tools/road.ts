@@ -131,8 +131,8 @@ export const tools: Tool[] = [{
         blocks: skins.map((x) => ({ id: x.g.id, name: x.g.frame.name, cornersMoved: x.moved })),
         note: skins.length ? "a regraded skin block is replaced by the same voxels with new corners (its id can change: describe_level again); a skin raised more than its thickness leaves air under it, lowered it leaves the core under it, which the cut carves where it lies on the road" : "no draped skin lies on the road" },
       voxels,
-      paintPath: { points: pts.filter((_, i) => i % paintEvery === 0 || i === pts.length - 1).map((p) => [out(p[0]), out(p[1])]), width: out(hw * 2), units: a.units ?? "map",
-        note: "paint_path's points and width: surface the road with a material" },
+      paintPath: { points: pts.filter((_, i) => i % paintEvery === 0 || i === pts.length - 1).map((p) => [out(p[0]), out(p[1])]), width: out(hw * 2), units: a.units ?? "map", blend: true,
+        note: "paint_path's points, width and blend: surface the road with a material; blend paints its edge per corner (the game's second-material gradient), so on a steep flank the edge follows the road instead of the voxel stairs (a heightfield or drape rule's edge does the same for a road in its materials)" },
       ...(march.stop !== "arrived" ? { warning: march.stop === "maxLength" ? "the march stopped at maxLength before reaching to: raise maxLength or maxGrade, or use switchbacks" : "the march ran off the ground (no voxels under it)" } : {}),
       undo: a.dryRun ? undefined : "undo reverts the road in one step",
     };

@@ -63,6 +63,17 @@
   (`levels/factory.mine`); `set_overview` and the overview's `fit: "island"` frame a small island (docs/erg-mcp.md).
 - Clean-room Test: `level.test` takes `cleanMods` (no sim mod runs in the Test match, post-FX off) and `postfx: false`,
   for the Test match only; `level.test.cleanRoom` reports it. erg-mcp's `test` passes them through.
+- Test tools for the Caldera iteration-10 gaps. `input.drive` holds the game's own movement, jump, aim and fire inputs
+  (posted from the input service's tick as their keys post them, so the window's focus does not matter; the Controls
+  module, offline only). `render.camera {when: "play"}` holds a pose until the turn's "Ready?" intro is over, and
+  `render.shot {requirePlay, afterCamera}` waits for it; `render.fireShot` pins a camera that is read back a set time
+  after each mine factory fire. `level.test {base: "Multi.<map>"}` plays a game level with no Erg level (a vanilla
+  baseline). The factory's fire log names where each mine came to rest (map units, from and under the factory, in the
+  water). erg-mcp: game_drive, game_fire_shot, test_asserts, check_support and paint_blob; game_walk drives through
+  input.drive, game_shots `waitPlay`, test `expectHash`/`source`/`sync` and the vanilla baseline (`map`, `noLevel`,
+  `turns`, `fire`), heightfield rules' `exclude`, `excludeMask` and per-corner `edge`, the paint tools' `exclude`,
+  build_castle `keepAxes` and `gateLane`, check_flood's per-spawn `escape` and `solve`, the mines' zones in the fire
+  records, and set_mine_factory re-checks the placement (docs/erg-mcp.md).
 
 
 ## 0.13.0

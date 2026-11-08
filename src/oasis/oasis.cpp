@@ -159,6 +159,7 @@ class Oasis final : public Module {
         providers::InstallLevelTest();
         providers::InstallRenderShot();
         providers::InstallLevelTestOps();
+        providers::InstallInputDrive();
         providers::InstallCapture();
         providers::InstallWebPanels();
         providers::InstallWormsign();

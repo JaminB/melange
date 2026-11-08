@@ -57,26 +57,35 @@ const surfaceProps = {
   units: { type: "string", enum: ["world", "map"], description: "world (default, the Erg panel's) or map units, for every position, length and the mask." },
   blend: { type: "boolean", description: "Paint the edge per corner, not per voxel: a surface voxel just outside the area whose corners reach into it takes the material as its second material on those corners (the game's per-corner blend, the panel's 2nd-material brush), so the game draws a gradient across the edge voxel instead of a step: a smooth lava flow on a skin instead of stepped red and black squares. With jitter, the edge wanders as well. Adds runs where it blends: Test the level." },
   falloff: { type: "number", minimum: 0, maximum: 640, description: "blend: corners up to this far past the edge (in `units`) still take the material, so the gradient spreads over that width (default 0: only corners inside the area)." },
+  exclude: { type: "array", minItems: 1, maxItems: 64, description: "Never paint inside these shapes (circles, rectangles, polygons, in `units`), whatever else holds: grass kept off a crater's floor, a road stopped short of a courtyard.",
+    items: { type: "object", additionalProperties: false, description: "A circle (x, z, radius), a rectangle (min, max: [x, z]) or a polygon (points: [[x, z], ...]).",
+      properties: { x: { type: "number" }, z: { type: "number" }, radius: { type: "number", minimum: 0 },
+        min: { type: "array", items: { type: "number" }, minItems: 2, maxItems: 2 }, max: { type: "array", items: { type: "number" }, minItems: 2, maxItems: 2 },
+        points: { type: "array", items: { type: "array", items: { type: "number" }, minItems: 2, maxItems: 2 }, minItems: 3, maxItems: 500 } } } },
+  excludeMask: { type: "string", description: "Never paint where this expression is above 0 (the mask's variables x, z, r, theta about `centre`, h, y, d)." },
   dryRun,
 } as const;
 const shapeSchema: Schema = { type: "object", additionalProperties: false, description: "A circle (x, z, radius), a rectangle (min, max: [x, z]) or a polygon (points: [[x, z], ...]).",
   properties: { x: { type: "number" }, z: { type: "number" }, radius: { type: "number", minimum: 0 },
     min: { type: "array", items: { type: "number" }, minItems: 2, maxItems: 2 }, max: { type: "array", items: { type: "number" }, minItems: 2, maxItems: 2 },
     points: { type: "array", items: { type: "array", items: { type: "number" }, minItems: 2, maxItems: 2 }, minItems: 3, maxItems: 500 } } };
-type SurfaceArgs = { material: number; depth?: number; only?: number[]; except?: number[]; units?: "world" | "map"; dryRun?: boolean; blend?: boolean; falloff?: number };
+type SurfaceArgs = { material: number; depth?: number; only?: number[]; except?: number[]; units?: "world" | "map"; dryRun?: boolean; blend?: boolean; falloff?: number;
+  exclude?: Record<string, unknown>[]; excludeMask?: string };
+/** paintSurface's exclusions from the call (map units). */
+const excludeOf = (a: SurfaceArgs, k: number) => ({ ...(a.exclude ? { exclude: shapesToMap(a.exclude, k, "exclude") } : {}), ...(a.excludeMask ? { excludeMask: a.excludeMask } : {}) });
 /** paintSurface's blend from the call (map units). */
 const blendOf = (a: SurfaceArgs, k: number) => {
   if (a.falloff !== undefined && !a.blend) throw new ToolError("falloff is for blend: true");
   return a.blend ? { falloff: (a.falloff ?? 0) / k } : undefined;
 };
 
-function shapesToMap(list: Record<string, unknown>[] | undefined, k: number): Shape[] {
+function shapesToMap(list: Record<string, unknown>[] | undefined, k: number, what = "shapes"): Shape[] {
   return (list ?? []).map((sh, i) => {
     const has = (n: string) => sh[n] !== undefined;
     if (has("radius") && has("x") && has("z") && !has("min") && !has("points")) return { x: (sh.x as number) / k, z: (sh.z as number) / k, radius: (sh.radius as number) / k };
     if (has("min") && has("max") && !has("radius") && !has("points")) return { min: (sh.min as number[]).map((v) => v / k) as [number, number], max: (sh.max as number[]).map((v) => v / k) as [number, number] };
     if (has("points") && !has("radius") && !has("min")) return { points: (sh.points as number[][]).map((q) => [q[0] / k, q[1] / k] as [number, number]) };
-    throw new ToolError(`shapes[${i}]: give x, z and radius (a circle), min and max (a rectangle) or points (a polygon)`);
+    throw new ToolError(`${what}[${i}]: give x, z and radius (a circle), min and max (a rectangle) or points (a polygon)`);
   });
 }
 
@@ -178,7 +187,7 @@ export const tools: Tool[] = [
       } else if (a.spacing !== undefined || a.maxLength !== undefined) throw new ToolError("spacing and maxLength are for followSurface");
       const jitter = a.jitter ? { amount: a.jitter.amount / k, scale: (a.jitter.scale ?? 8 * k) / k, seed: a.jitter.seed } : undefined;
       const r = paintSurface(store, { material: a.material, depth: (a.depth ?? k) / k, path, width: a.width / k, taper: a.taper, jitter, only: a.only, except: a.except,
-        blend: blendOf(a, k), units: a.units ?? "world", dryRun: a.dryRun, label: "Paint path" });
+        blend: blendOf(a, k), ...excludeOf(a, k), units: a.units ?? "world", dryRun: a.dryRun, label: "Paint path" });
       const out = (p: Vec3) => tidy([p[0] * k, p[1] * k, p[2] * k] as Vec3);
       return { ...r, ...(walk ? { followSurface: { stop: walk.stop, steps: walk.points.length - 1, length: tidy([walk.length * k, 0, 0])[0], start: out(walk.points[0]), end: out(walk.points[walk.points.length - 1]) } } : {}), ...patchLeft(store) };
     },
@@ -200,8 +209,47 @@ export const tools: Tool[] = [
       const k = (a.units ?? "world") === "world" ? 20 : 1;
       if (!a.shapes && !a.mask) throw new ToolError("give shapes, a mask, or both");
       const r = paintSurface(store, { material: a.material, depth: (a.depth ?? k) / k, shapes: shapesToMap(a.shapes, k), mask: a.mask, centre: a.centre?.map((v) => v / k) as [number, number] | undefined,
-        only: a.only, except: a.except, blend: blendOf(a, k), units: a.units ?? "world", dryRun: a.dryRun, label: "Paint region" });
+        only: a.only, except: a.except, blend: blendOf(a, k), ...excludeOf(a, k), units: a.units ?? "world", dryRun: a.dryRun, label: "Paint region" });
       return { ...r, ...patchLeft(store) };
+    },
+  },
+  {
+    name: "paint_blob",
+    description: "Paint an organic pool or patch onto the ground's surface (a lava lake, a pond of ash, a moss patch): a disc round `at` whose radius wanders with the bearing (`noise`: amount, the radius times 1 + amount x fbm round the circle; lobes, the bumps round it; seed), painted as paint_region paints (every voxel frame, `depth` under the top). The edge is soft by default: per corner (the game's per-corner blend, over `falloff`, default an eighth of the radius), so a voxel just outside whose corners reach into the blob takes the material as its second material on those corners and the shore is a gradient along the wandering outline instead of hard stairs of whole voxels. `blobs` paints several (each its own at, radius, noise) in one undo step. Answers what paint_region answers.",
+    inputSchema: {
+      type: "object", additionalProperties: false, required: ["material"],
+      properties: {
+        ...surfaceProps,
+        at: { type: "array", items: { type: "number" }, minItems: 2, maxItems: 3, description: "The centre [x, z] (or [x, y, z], y unused), in `units`." },
+        radius: { type: "number", minimum: 0.01, description: "The mean radius, in `units`." },
+        noise: { type: "object", additionalProperties: false, description: "How the outline wanders: amount (0-0.9 of the radius, default 0.3), lobes (bumps round the circle, default 5), seed.",
+          properties: { amount: { type: "number", minimum: 0, maximum: 0.9 }, lobes: { type: "number", minimum: 1, maximum: 40 }, seed: { type: "integer" } } },
+        soft: { type: "boolean", description: "The per-corner edge (default true; false paints whole voxels only). The same switch as blend." },
+        blobs: { type: "array", minItems: 1, maxItems: 32, description: "Several blobs instead of at, radius and noise: each {at, radius, noise}.",
+          items: { type: "object", additionalProperties: false, required: ["at", "radius"], properties: {
+            at: { type: "array", items: { type: "number" }, minItems: 2, maxItems: 3 }, radius: { type: "number", minimum: 0.01 },
+            noise: { type: "object", additionalProperties: false, properties: { amount: { type: "number", minimum: 0, maximum: 0.9 }, lobes: { type: "number", minimum: 1, maximum: 40 }, seed: { type: "integer" } } } } } },
+      },
+    },
+    handler(s, a: SurfaceArgs & { at?: number[]; radius?: number; noise?: { amount?: number; lobes?: number; seed?: number }; soft?: boolean;
+      blobs?: { at: number[]; radius: number; noise?: { amount?: number; lobes?: number; seed?: number } }[] }) {
+      const { store } = s.requireProject();
+      const k = (a.units ?? "world") === "world" ? 20 : 1;
+      if (a.blobs && (a.at !== undefined || a.radius !== undefined || a.noise)) throw new ToolError("give at, radius and noise, or blobs, not both");
+      if (!a.blobs && (a.at === undefined || a.radius === undefined)) throw new ToolError("give at and radius (one blob), or blobs");
+      if (a.soft !== undefined && a.blend !== undefined && a.soft !== a.blend) throw new ToolError("soft and blend are the same switch: give one");
+      const soft = a.soft ?? a.blend ?? true;
+      if (!soft && a.falloff !== undefined) throw new ToolError("falloff is for the soft edge (soft: true)");
+      const list = a.blobs ?? [{ at: a.at!, radius: a.radius!, noise: a.noise }];
+      const shapes: Shape[] = list.map((b, i) => {
+        const [x, z] = b.at.length === 3 ? [b.at[0], b.at[2]] : [b.at[0], b.at[1]];
+        if (![x, z, b.radius].every(Number.isFinite)) throw new ToolError(`blobs[${i}]: at and radius are finite numbers`);
+        return { x: x / k, z: z / k, radius: b.radius / k, wobble: { amount: b.noise?.amount ?? 0.3, lobes: b.noise?.lobes ?? 5, seed: b.noise?.seed ?? i + 1 } };
+      });
+      const blend = soft ? { falloff: a.falloff !== undefined ? a.falloff / k : Math.min(...list.map((b) => b.radius)) / k / 8 } : undefined;
+      const r = paintSurface(store, { material: a.material, depth: (a.depth ?? k) / k, shapes, only: a.only, except: a.except, blend, ...excludeOf(a, k),
+        units: a.units ?? "world", dryRun: a.dryRun, label: list.length > 1 ? `Paint ${list.length} blobs` : "Paint blob" });
+      return { ...r, blobs: list.length, soft, ...(blend ? { falloff: tidy([blend.falloff * k, 0, 0])[0] } : {}), ...patchLeft(store) };
     },
   },
   {

@@ -287,6 +287,10 @@ export interface CastleSpec {
   towerHeight: number;
   keepSize: [number, number] | null;
   keepHeight: number;
+  /** The keep's centre in the courtyard [x, z] (default the castle's centre) and the side its door faces (default the
+   * gate's): build_castle's gateLane moves the keep aside so a lane runs from the gate past it. */
+  keepAt?: [number, number];
+  keepDoor?: Side | null;
   gate: Side | null;
   gateWidth: number;
   gateHeight: number;
@@ -325,8 +329,9 @@ export function castle(c: CastleSpec): Shape[] {
       doorWidth: 2, doorHeight: 3, cren: c.cren, found: c.found, cx: sx * (hw - t / 2), cz: sz * (hd - t / 2) }), tp++));
   }
   if (c.keepSize) {
-    out.push(...tagged(keep({ size: c.keepSize, height: c.keepHeight, material: c.material, wall: Math.min(2, Math.floor(Math.min(...c.keepSize) / 3)), hollow: true,
-      roof: true, door: c.gate, doorWidth: Math.min(3, c.gateWidth), doorHeight: Math.min(4, c.gateHeight), windows: true, cren: c.cren, found: c.found }), 9));
+    const k = keep({ size: c.keepSize, height: c.keepHeight, material: c.material, wall: Math.min(2, Math.floor(Math.min(...c.keepSize) / 3)), hollow: true,
+      roof: true, door: c.keepDoor === undefined ? c.gate : c.keepDoor, doorWidth: Math.min(3, c.gateWidth), doorHeight: Math.min(4, c.gateHeight), windows: true, cren: c.cren, found: c.found });
+    out.push(...tagged(c.keepAt && (c.keepAt[0] || c.keepAt[1]) ? translate(k, [c.keepAt[0], 0, c.keepAt[1]]) : k, 9));
   }
   // a gate that leaves no lintel (within a voxel of the wall's top) would leave the merlons over it floating: it is cut
   // open to the top of the merlon row instead, square
@@ -345,10 +350,11 @@ export function castleSpots(c: CastleSpec): Spot[] {
   const hw = c.size[0] / 2, hd = c.size[1] / 2, t = c.wallThickness, out: Spot[] = [];
   const ix = hw - t, iz = hd - t;                  // the courtyard's half sizes
   if (c.keepSize) {
-    const kx = c.keepSize[0] / 2, kz = c.keepSize[1] / 2;
-    // the middle of the open band between the keep and each wall, where it is at least 1.5 wide
-    if (iz - kz >= 1.5) for (const sz of [-1, 1]) out.push({ kind: "courtyard", at: [0, 0, sz * (kz + iz) / 2] });
-    if (ix - kx >= 1.5) for (const sx of [-1, 1]) out.push({ kind: "courtyard", at: [sx * (kx + ix) / 2, 0, 0] });
+    const kx = c.keepSize[0] / 2, kz = c.keepSize[1] / 2, [ox, oz] = c.keepAt ?? [0, 0];
+    // the middle of the open band between the keep and each wall, where it is at least 1.5 wide (a keep moved aside for
+    // a gate lane leaves a wide band on one side and a narrow one, or none, on the other)
+    for (const sz of [-1, 1]) if (iz - sz * oz - kz >= 1.5) out.push({ kind: "courtyard", at: [ox, 0, (sz * iz + oz + sz * kz) / 2] });
+    for (const sx of [-1, 1]) if (ix - sx * ox - kx >= 1.5) out.push({ kind: "courtyard", at: [(sx * ix + ox + sx * kx) / 2, 0, oz] });
   } else {
     out.push({ kind: "courtyard", at: [0, 0, 0] });
     for (const sx of [-1, 1]) for (const sz of [-1, 1]) if (ix >= 4 && iz >= 4) out.push({ kind: "courtyard", at: [sx * ix / 2, 0, sz * iz / 2] });

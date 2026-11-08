@@ -26,8 +26,10 @@ bool RegisterTest(const char* stem, const char* title, char* err, size_t errLen)
 // or network session; disarmed on a lobby join, after one use, or after timeoutS.
 bool ArmNextLevel(const char* key, int timeoutS = 120);
 enum class Tod : uint8_t { Default, Day, Evening, Night };      // Default = what the frontend chose (Quick Game: DAY)
-struct ArmOptions { int timeoutS = 120; Tod tod = Tod::Default; };
+// vanilla: `key` may be one of the game's own levels (Multi.DinerMight), for a baseline Test with no Erg level.
+struct ArmOptions { int timeoutS = 120; Tod tod = Tod::Default; bool vanilla = false; };
 bool ArmNextLevel(const char* key, const ArmOptions& o);
+bool LevelHookReady();                            // the level-name hook is in, so an armed override can be taken
 void Disarm();
 bool Armed(char* key, size_t keyLen);
 enum class TestState : uint8_t { Idle, Registering, Registered, Armed, Starting, Playing, Ended, Failed };
