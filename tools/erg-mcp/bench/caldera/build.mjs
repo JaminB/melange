@@ -38,7 +38,7 @@ const MAT = { grass: 0, olive: 2, rock: 4, grey: 6, path: 8, sand: 10, stone: 12
 const VOXEL = +(process.env.VOXEL || 2.5);       // map units per voxel of the island's skin
 const THICK = +(process.env.THICK || 3);         // voxels of skin (hollow under it: a fifth of the cells of a solid core)
 const SCALE = +(process.env.CASTLE_SCALE || 1.5);   // voxels of the castle blocks
-const WATER_START = -20;                          // world units: the beaches are dry at the start
+const WATER_START = 36;                           // world units (1.8 map): over the diner backdrop's ground planes, so the island stands in a sea from turn 1; the beaches' sand is cut to it
 const FL = -T.SEA_FLOOR;                          // the skin's floor is SEA_FLOOR: a rule's heights are above it
 const hh = (v) => v + FL;
 
@@ -57,12 +57,15 @@ const MATERIALS = [
   { material: MAT.metal, minHeight: hh(FLOOR + 1), mask: "6.4 - r" },                    // the factory's dais
   { material: MAT.magma, maxHeight: hh(FLOOR + 2.2), mask: "14.5 - r", feather: { width: 1.5 } },   // the magma lake on the crater floor
   { material: MAT.hot, minHeight: hh(FLOOR + 2.2), mask: "30 - r", feather: { width: 2 } },         // the crater's walls and rim
-  { material: MAT.ash, minHeight: hh(37), feather: { width: 4 }, jitter: { amount: 2.5, scale: 9, seed: 3 } },
-  { material: MAT.grey, minSlope: 46, feather: { width: 3 } },                          // cliff faces
-  { material: MAT.grey, minHeight: hh(31), feather: { width: 4 }, jitter: { amount: 3, scale: 11, seed: 4 } },
-  { material: MAT.rock, minHeight: hh(15), feather: { width: 4 }, jitter: { amount: 3, scale: 12, seed: 6 } },
-  { material: MAT.olive, minHeight: hh(8), feather: { width: 3 }, noise: { threshold: 0.05, scale: 9, seed: 5 } },
-  { material: MAT.grass, minHeight: hh(2.8), feather: { width: 2.5 }, jitter: { amount: 1.5, scale: 7, seed: 8 } },
+  { material: MAT.ash, minHeight: hh(37), feather: { width: 4, pattern: "perlin", cell: 8 }, jitter: { amount: 2.5, scale: 9, seed: 3 } },
+  { material: MAT.grey, minSlope: 46, feather: { width: 3, pattern: "perlin", cell: 6 } },                          // cliff faces
+  // ash and dark rock in irregular patches down the lower flanks, so the cone reads dark against the castles
+  { material: MAT.ash, minHeight: hh(11), maxHeight: hh(36), noise: { threshold: 0.18, scale: 13, seed: 11 } },
+  { material: MAT.grey, minHeight: hh(8), maxHeight: hh(30), noise: { threshold: 0.3, scale: 9, seed: 12 } },
+  { material: MAT.grey, minHeight: hh(31), feather: { width: 4, pattern: "perlin", cell: 9 }, jitter: { amount: 3, scale: 11, seed: 4 } },
+  { material: MAT.rock, minHeight: hh(15), feather: { width: 4, pattern: "perlin", cell: 9 }, jitter: { amount: 3, scale: 12, seed: 6 } },
+  { material: MAT.olive, minHeight: hh(8.5), feather: { width: 3, pattern: "perlin", cell: 7 }, noise: { threshold: 0.05, scale: 9, seed: 5 } },
+  { material: MAT.grass, minHeight: hh(4.2), feather: { width: 2.5, pattern: "perlin", cell: 6 }, jitter: { amount: 1.5, scale: 7, seed: 8 } },
 ];
 
 // ---- the MCP client ----
@@ -156,8 +159,17 @@ try {
   }
   say("crates", crates.join(" | "));
 
-  // ---- the mine factory on the crater's dais; mines come from it alone (the scheme's start mines are off), from the first turn ----
-  say("factory", brief(await call("place_object", { type: "minefactory", units: "map", xz: [0, 0] }), 300));
+  // ---- the mine factory: the drop never lands on a draped skin (docs/erg-mcp.md, "The mine factory's drop"), so it stands on a
+  // forge, a solid tower of undraped blocks on the rim crest (30 map units out, where such pads were found), over the crater;
+  // mines are fired from it high over the bowl. The scheme's start mines are off. ----
+  const FORGE_TH = +(process.env.FORGE_TH ?? 0.15), FORGE_RHO = +(process.env.FORGE_RHO ?? 29);
+  const [fx, fz] = T.pointAt(FORGE_RHO, FORGE_TH).map(round1);
+  const fg = await groundOf(fx, fz);
+  const forge = await call("build_tower", { at: [fx, round1(fg - 3), fz], radius: 3, height: +(process.env.FORGE_H ?? 8), hollow: false, material: MAT.stone, foundation: 2, place: "new", blockScale: 1.5 }, { soft: true });
+  say("forge", fx, fz, "ground", round1(fg), brief(forge, 300));
+  const topG = await groundOf(fx, fz);
+  say("forge top", round1(topG));
+  say("factory", brief(await call("place_object", { type: "minefactory", units: "map", xz: [fx, fz] }), 500));
   say("factory settings", brief(await call("set_mine_factory", { activation: 16, inactiveTurns: 0, schemeMines: false }), 300));
 
   // ---- the spawns: 8 knots over the seven castles, courtyards and wall-walks, low and high ----
@@ -167,8 +179,10 @@ try {
     return l[i].standOn ?? l[i].at;
   };
   fs.writeFileSync(path.join(OUT, "spots.json"), JSON.stringify(spots, null, 1));
-  const SPAWNS = [["Harbour", "courtyard", 0], ["Seawall", "courtyard", 0], ["Strand", "rampart", 0], ["Ashgate", "courtyard", 0],
-                  ["Ember", "courtyard", 0], ["Cinder", "courtyard", 0], ["Highwatch", "courtyard", 0], ["Cinder", "rampart", 0]];
+  // WORM0-3 are team 0, WORM4-7 team 1, and a worm moves first in turn 1 + team + 2 * index; so each team's first mover (WORM0, WORM4)
+  // stands on a shore castle (its two moves come before the sea reaches it), then low, then two high ones: one shore worm and two high per team
+  const SPAWNS = [["Strand", "courtyard", 0], ["Ashgate", "courtyard", 0], ["Cinder", "courtyard", 0], ["Highwatch", "courtyard", 0],
+                  ["Harbour", "courtyard", 0], ["Ember", "courtyard", 0], ["Highwatch", "rampart", 0], ["Cinder", "rampart", 0]];
   const spawns = SPAWNS.map(([n, k, i], worm) => ({ worm, pos: pick(n, k, i).map(round1) }));
   say("spawns", brief(await call("place_spawn_knots", { mode: "knots", units: "map", spawns }), 800));
 
@@ -213,7 +227,10 @@ try {
     }
     say("reach", label, `${tally[mode]} of 8 spawns reach their own road's rim end`);
   }
-  const fl = await call("check_flood", { schedule: "script", target: { x: rim[0], z: rim[1], radius: 5 }, maxSlope: 38 }, { soft: true });
+  // the script's two phases (script.lua), as levels in world units, since the "script" schedule reads only its top-level call
+  const levels = [{ turn: 1, level: WATER_START / 20 }];   // check_flood's levels are in the call's units: map
+  for (let t = 9, w = WATER_START; w < 640; t++) { w = t <= 16 ? Math.min(84, w + 6) : Math.min(640, w + 26); levels.push({ turn: t, level: w / 20 }); }
+  const fl = await call("check_flood", { levels, start: WATER_START / 20, target: { x: rim[0], z: rim[1], radius: 5 }, maxSlope: 38 }, { soft: true });
   fs.writeFileSync(path.join(OUT, "flood.json"), fl.text);
   say("flood", brief(fl, 900));
   const is = await call("check_islets", {}, { soft: true });
