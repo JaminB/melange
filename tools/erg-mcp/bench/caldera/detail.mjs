@@ -17,6 +17,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { startServer, ROOT } from "./mcpclient.mjs";
 import { keepOut, CLEAR } from "./detail-keepout.mjs";
+import { rockPass } from "./detail-rock.mjs";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const argv = process.argv.slice(2);
@@ -34,17 +35,33 @@ const say = (...a) => console.log(new Date().toISOString().slice(11, 19), ...a);
 //   ctx.keepOut(x, z, r)         the first reason a prop of radius r may not stand at (x, z), or null (detail-keepout.mjs)
 //   ctx.spawns                   the level's spawn knots [[x, z], ...] (map units)
 export const PASSES = [
-  // { name: "rock", run: async (ctx) => ({ placed: 0 }) },
+  { name: "flags", run: flagsPass },
+  { name: "rock", run: rockPass },
 ];
+
+// build.mjs placed its four Camelot flags with copy_base_scenery's default WORLD units though it meant map units (tower tops at
+// map (53.7, 31, 6.4) and the like), so they stand 20 times too close to the origin, inside the volcano, and show nowhere. This pass
+// puts each where build.mjs meant (the same numbers read as map units); copies are visual-only, so the fingerprint cannot change.
+async function flagsPass(ctx) {
+  const { call } = ctx;
+  const list = (await call("list_scenery", { role: "scenery", search: "flag" })).json.details.filter((d) => !d.base && /^CAMELOT(16|19)$/.test(d.resource));
+  const bad = list.filter((d) => Math.max(...d.at.map(Math.abs)) < 200);          // world units under 10 map units from the origin: the 20x slip
+  if (!bad.length) return { fixed: 0 };
+  await call("remove_scenery", { ids: bad.map((d) => d.id) });
+  const copies = bad.map((d) => ({ resource: d.resource, pos: d.at, rot: d.rot, scale: d.scale[0] }));
+  await call("copy_base_scenery", { base: "Multi.NiceToSiege", allowOtherTheme: true, units: "map", copies });
+  return { fixed: bad.length };
+}
 
 const { call, stop, log } = await startServer();
 const report = { project: ID, passes: [], startedAt: new Date().toISOString() };
 try {
-  say("connect", (await call("connect", { gameDir: GAME })).text.slice(0, 120));
+  say("connect", (await call("connect", opt("--url") ? { url: opt("--url") } : { gameDir: GAME })).text.slice(0, 120));
   await call("open_project", { id: ID });
   const fp0 = (await call("sim_fingerprint", { detail: true })).json;
   report.before = { sim: fp0.sim, visual: fp0.visual, counts: fp0.counts };
   say("fingerprint before", fp0.sim.slice(0, 16), "visual", fp0.visual.slice(0, 16), JSON.stringify(fp0.counts));
+  if (fp0.counts.emitter > 0 || (await call("list_scenery", { search: "_dtl" })).json.total > 0) throw new Error("the project already holds the detail layer: run detail.mjs on a freshly built project (restore it or run build.mjs first)");
   const spawns = ((await call("describe_level", { limit: 1 })).json.spawns ?? []).map((s) => {
     const p = s.map ?? s.at ?? s.pos ?? [];
     return Array.isArray(p) ? [p[0], p[2] ?? p[1]] : [p.x, p.z];

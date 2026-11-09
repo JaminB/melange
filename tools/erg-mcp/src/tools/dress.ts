@@ -2,8 +2,8 @@
 // levels' sim-neutral pieces (scenery, lights, emitters, sounds: lib/sim-fingerprint.ts classifyDetail) by resource,
 // with the size of each piece's preview mesh, its theme and a category guessed from its names (rock, flora, fx), so an
 // agent picks rocks and plants without opening every base by hand.
-import { AddDetail, Frames, Group, targetFrame, type Detail, type Scene, type Vec3 } from "../core";
-import { DEG, commit, pointOut, resolvePoint, unitsSchema, vec3, type Units } from "../lib/place-geom";
+import { AddDetail, Frames, Group, dropPoint, targetFrame, type Detail, type Scene, type Vec3 } from "../core";
+import { DEG, commit, pointOut, resolvePoint, topOf, unitsSchema, vec3, type Units } from "../lib/place-geom";
 import { meshBounds } from "../lib/backdrop";
 import { classifyDetail } from "../lib/sim-fingerprint";
 import { kindOf, scaleOf } from "./scenery";
@@ -95,32 +95,71 @@ export const tools: Tool[] = [
         drop: { type: "boolean", description: "Drop pos onto the voxels below it." },
         rot: vec3("Rotation in degrees about x, y, z (default the source's)."),
         scale: { description: "Scale (default the source's): a number (0.05-20) or [x, y, z]." },
+        seat: { type: "number", minimum: 0, maximum: 0.8, description: "Seat a scenery mesh in the ground: lower it so this fraction of its height (the preview mesh at the copy's scale, upright) is below the point; 0 rests the mesh's lowest point on the point, so a base never floats." },
       } } },
+      tag: { type: "string", description: "Letters and digits. Append _<tag> to the names of scenery copies (never lights, emitters or sounds: their names pick the effect), so a pass finds and removes its own (remove_scenery {search: \"_<tag>\"}) and can run twice without doubling." },
       allowOtherTheme: { type: "boolean", description: "Copy from a base of another theme than the level's." },
+      frame: { type: "integer", description: "Put the copies in this frame (an id from describe_level {allFrames}) instead of the level's folder for their role: positions are still level positions, converted into the frame's space. The engine may place a detail from its frame's chain differently from the editor (round 1 found copies in the 'Worms' folder away from where the editor showed them): test a frame in game before relying on it." },
       units: unitsSchema,
     } },
-    async handler(s, a: { base?: string; copies: { id: number; pos?: number[]; xz?: number[]; drop?: boolean; rot?: number[]; scale?: unknown }[]; allowOtherTheme?: boolean; units?: Units }) {
+    async handler(s, a: { base?: string; copies: { id: number; pos?: number[]; xz?: number[]; drop?: boolean; rot?: number[]; scale?: unknown; seat?: number }[]; allowOtherTheme?: boolean; units?: Units; tag?: string; frame?: number }) {
       const { store } = s.requireProject();
+      if (a.tag !== undefined && !/^[A-Za-z0-9]{1,12}$/.test(a.tag)) throw new ToolError("tag: 1-12 letters or digits");
       const key = a.base ?? store.scene.base.key;
       const scene = await loadScene(s, key);
       if (scene.databank.theme !== store.scene.databank.theme && !a.allowOtherTheme)
         throw new ToolError(`${key} is ${scene.databank.theme} and this level ${store.scene.databank.theme}: pass allowOtherTheme to try (and Test it)`);
       const u = a.units ?? "world";
       const cmds: AddDetail[] = [], placed: object[] = [];
+      const bounds = new Map<string, Awaited<ReturnType<typeof meshBounds>>>();
+      for (const c of a.copies) if (c.seat !== undefined) {
+        const src = scene.details.find((d) => d.id === c.id);
+        if (src && !bounds.has(src.resource)) bounds.set(src.resource, await meshBounds(s, scene, src.resource).catch(() => null));
+      }
       a.copies.forEach((c, i) => {
         const src = scene.details.find((d) => d.id === c.id);
         if (!src) throw new ToolError(`copies[${i}]: no detail ${c.id} in ${key}`);
         const cl = classifyDetail(src);
         if (cl.cls !== "visual") throw new ToolError(`copies[${i}]: detail ${src.id} (${src.name}, ${src.resource}) is sim (${cl.why}): only scenery, lights, emitters and sounds with no engine tag are copied`);
         const at = resolvePoint(store, c, u, `copies[${i}]`).map;
-        const frame = targetFrame(store.scene, cl.role as "scenery");
+        const frame = a.frame ?? targetFrame(store.scene, cl.role as "scenery");
         const rot: Vec3 = c.rot ? [c.rot[0] / DEG, c.rot[1] / DEG, c.rot[2] / DEG] : [src.rot[0], src.rot[1], src.rot[2]];
         const scale: Vec3 = c.scale !== undefined ? scaleOf(c.scale, `copies[${i}].scale`) : [src.scale[0], src.scale[1], src.scale[2]];
-        cmds.push(new AddDetail(frame, { name: src.name, resource: src.resource, pos: store.frames.toLocal(frame, at), rot, scale }));
-        placed.push({ from: src.id, name: src.name, resource: src.resource, role: cl.role, frame, at: pointOut(at, u) });
+        if (c.seat !== undefined && cl.role === "scenery") {
+          const mb = bounds.get(src.resource);
+          if (mb) at[1] += -mb.min[1] * Math.abs(scale[1]) - c.seat * (mb.max[1] - mb.min[1]) * Math.abs(scale[1]);
+        }
+        const name = a.tag && cl.role === "scenery" ? `${src.name}_${a.tag}` : src.name;
+        cmds.push(new AddDetail(frame, { name, resource: src.resource, pos: store.frames.toLocal(frame, at), rot, scale }));
+        placed.push({ from: src.id, name, resource: src.resource, role: cl.role, frame, at: pointOut(at, u) });
       });
       commit(store, cmds.length === 1 ? cmds[0] : new Group(`Copy ${cmds.length} details`, cmds));
       return { placed, note: "decoration only: copies have no collision; sim_fingerprint should be unchanged", undo: "undo removes them all" };
+    },
+  },
+  {
+    name: "surface_sample",
+    description: "Sample the open level's ground at many points: for each [x, z] the top of the voxels under it (`y`), the slope in degrees (from the surface `step` either side) and the surface normal, or null where nothing is below. For seating decoration on the real surface (a scatter pass filters by slope and height) instead of a formula that may disagree with sheared or draped cells. Up to 4000 points per call. Read-only.",
+    inputSchema: { type: "object", additionalProperties: false, required: ["points"], properties: {
+      points: { type: "array", minItems: 1, maxItems: 4000, items: { type: "array", items: { type: "number" }, minItems: 2, maxItems: 2 }, description: "[[x, z], ...]" },
+      step: { type: "number", minimum: 0.1, maximum: 10, description: "Spacing for the slope, in map units (default 0.75)." },
+      units: unitsSchema,
+    } },
+    handler(s, a: { points: number[][]; step?: number; units?: Units }) {
+      const { store } = s.requireProject();
+      const u = a.units ?? "world", k = u === "map" ? 1 : 20, h = a.step ?? 0.75, top = topOf(store);
+      const vox = (id: number) => store.voxelsOf({ id });
+      const at = (x: number, z: number) => dropPoint(store.scene, store.frames, vox, [x, top, z])?.[1] ?? null;
+      const out = a.points.map(([px, pz]) => {
+        const x = px / k, z = pz / k, y = at(x, z);
+        if (y === null) return null;
+        const xm = at(x - h, z), xp = at(x + h, z), zm = at(x, z - h), zp = at(x, z + h);
+        const dx = ((xp ?? y) - (xm ?? y)) / ((xp !== null ? h : 0) + (xm !== null ? h : 0) || 1);
+        const dz = ((zp ?? y) - (zm ?? y)) / ((zp !== null ? h : 0) + (zm !== null ? h : 0) || 1);
+        const n = Math.hypot(dx, 1, dz);
+        return { y: r2(y * k), slope: r2(Math.atan(Math.hypot(dx, dz)) * DEG), normal: [r2(-dx / n), r2(1 / n), r2(-dz / n)] };
+      });
+      return { units: u, samples: out };
     },
   },
 ];
