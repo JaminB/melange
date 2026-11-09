@@ -5,7 +5,10 @@ import type { EditorStore, ServerPaletteEntry as PaletteEntry, Vec3 } from "../c
 import { extentXZ, markers, sampleField, spansAt, waterMap, type Field, type MarkerKind, type Region } from "../lib/inspect-field";
 import { Raster, SKY, VOID, WATER, hex, materialTint, shade, type Rgb } from "../lib/inspect-png";
 import { findHoles } from "../lib/holes";
-import { checkTrail, classifyDrops, trailReach, walkTrail } from "../lib/trail-check";
+import { EDGE_DROP, FREE_REACH, MIN_FREE_WIDTH, checkTrail, classifyDrops, trailReach, walkTrail } from "../lib/trail-check";
+
+/** The middle value of a list (0 for none). */
+const median = (v: number[]) => { if (!v.length) return 0; const s = [...v].sort((a, b) => a - b); return s[Math.floor(s.length / 2)]; };
 import { UTILITY_REACH, WORM_WIDTH, classify, nodeAt, ownTurn, pathStats, pathTo, search, standableAt, standing, surfaces, turnAt, type FloodRules, type ReachOptions, type Surfaces } from "../lib/reach";
 import { rotation, slotOf } from "../lib/turns";
 import { waterByTurn, type WaterSchedule } from "../lib/flood";
@@ -1416,6 +1419,9 @@ export const tools: Tool[] = [
         holeRadius: { type: "number", minimum: 0, description: "See-through holes within this of the centreline are reported, in `units` (default 1.5 map units)." },
         above: { type: "number", description: "A ray must meet ground over this height (default the project's water level, else 0)." },
         limit: { type: "integer", minimum: 1, maximum: 200, description: "Runs listed per trail (default 30)." },
+        edgeDrop: { type: "number", minimum: 0.25, description: "The free width: at each sample the distance from the centreline, either side, to the first column more than this under the trail's ground (or with no ground), in `units` (default 1.5 map units). A worm walks or is knocked off there; a bed 5.2 wide has 2.6 each side." },
+        freeReach: { type: "number", minimum: 1, description: "How far out the free width is measured, in `units` (default 8 map units; wider is answered as this)." },
+        minFreeWidth: { type: "number", minimum: 0, description: "A stretch whose free width, left and right together, is under this is a knife edge (`narrows`; the summary names them), in `units` (default 2 map units: a worm's body is 0.6 and the game slides it on a ridge). The SW summit leg a worm walked off in Caldera v2 round 4 was such a ridge, which no drop over maxDrop showed." },
         walk: { type: "boolean", description: "Also walk the trail with the walking rules (default true): a worm on the centreline and on each of walkOffsets, moved sample by sample over the ground at the trail's own height, each move judged as check_reachability's (a step of maxStep, a riser whose stair is no steeper than maxSlope, a drop of 8, a gap no narrower than bodyWidth); a refused move is a block (a ridge between legs, a kerb, a slot), listed per line with where, the rise and why. A trail with a block is not ok." },
         walkOffsets: { type: "array", items: { type: "number" }, minItems: 1, maxItems: 9, description: "The lines walked, as offsets from the centreline in `units` (left negative; default [-1.5, 0, 1.5] map units: the centre and the worm's shoulders)." },
         maxStep: { type: "number", minimum: 0, description: "The walk's step up always taken, in `units` (default 0.5 map units, the game's 10 world)." },
@@ -1425,13 +1431,14 @@ export const tools: Tool[] = [
       },
     },
     handler(s, a: { trails: number[][][]; names?: string[]; width?: number; margin?: number; spacing?: number; maxDrop?: number; holeRadius?: number; above?: number; limit?: number; units?: Units;
-      walk?: boolean; walkOffsets?: number[]; maxStep?: number; maxSlope?: number; bodyWidth?: number }) {
+      walk?: boolean; walkOffsets?: number[]; maxStep?: number; maxSlope?: number; bodyWidth?: number; edgeDrop?: number; freeReach?: number; minFreeWidth?: number }) {
       const u = a.units, gs = grids(s.store), water = waterMap(s.store);
       const reach = trailReach(water, { maxStep: a.maxStep === undefined ? undefined : inMap(a.maxStep, u), maxSlope: a.maxSlope, bodyWidth: a.bodyWidth === undefined ? undefined : inMap(a.bodyWidth, u) });
       const offsets = (a.walkOffsets ?? [-1.5, 0, 1.5]).map((v) => (a.walkOffsets ? inMap(v, u) : v));
       const o = { halfWidth: (a.width === undefined ? 5.2 : inMap(a.width, u)) / 2, margin: a.margin === undefined ? 1 : inMap(a.margin, u), spacing: a.spacing === undefined ? 0.25 : inMap(a.spacing, u),
         maxDrop: a.maxDrop === undefined ? 3 : inMap(a.maxDrop, u), holeRadius: a.holeRadius === undefined ? 1.5 : inMap(a.holeRadius, u),
-        above: a.above !== undefined ? inMap(a.above, u) : water ?? 0, headroom: 1.5 };
+        above: a.above !== undefined ? inMap(a.above, u) : water ?? 0, headroom: 1.5,
+        edgeDrop: a.edgeDrop === undefined ? EDGE_DROP : inMap(a.edgeDrop, u), freeReach: a.freeReach === undefined ? FREE_REACH : inMap(a.freeReach, u), minFreeWidth: a.minFreeWidth === undefined ? MIN_FREE_WIDTH : inMap(a.minFreeWidth, u) };
       const len = a.trails.reduce((n, t) => n + t.length, 0);
       if (!a.trails.every((t) => t.every((p) => p.every(Number.isFinite)))) throw new ToolError("trails: finite numbers");
       if (len > 16000) throw new ToolError(`${len} trail points: at most 16000`);
@@ -1448,11 +1455,17 @@ export const tools: Tool[] = [
         // a trail is ok without a trap, a hole, a bare stretch or a refused move on the walk: a drop that lands back on
         // the trail or has a walk back up is told, not failed
         const bad = traps + count("hole") + count("noGround") + blocks + (walk ? walk.filter((w) => w.noFooting > 0).length : 0);
+        // the knife edges: stretches whose free width (to a drop of edgeDrop either side) is under minFreeWidth
+        const knives = rep.narrows.length ? `; ${rep.narrows.length} knife-edge stretch${rep.narrows.length === 1 ? "" : "es"} (free width under ${ov(o.minFreeWidth)}: the narrowest ${ov(rep.narrowest!.width)} at [${xz(rep.narrowest!.at).join(", ")}], ${ov(rep.narrowest!.along)} along)` : "";
         return {
           name, ok: bad === 0, length: ov(rep.length), samples: rep.samples, columns: rep.columns,
-          summary: rep.runs.length || blocks ? `${name}: ${count("drop")} drop run${count("drop") === 1 ? "" : "s"} (worst ${rep.worstDrop === null ? "no ground" : ov(rep.worstDrop)}; ${traps} trap${traps === 1 ? "" : "s"}, ${landing("trail")} back on the trail, ${landing("exit")} with a way back), ${count("hole")} hole run${count("hole") === 1 ? "" : "s"}, ${count("noGround")} bare stretch${count("noGround") === 1 ? "" : "es"} of the centreline${walk ? `, ${blocks} refused move${blocks === 1 ? "" : "s"} on the walk` : ""}`
-            : `${name}: no drop over ${ov(o.maxDrop)} within ${ov(o.halfWidth + o.margin)} of the centreline, no hole within ${ov(o.holeRadius)}${walk ? ", walked on every line" : ""}`,
+          summary: (rep.runs.length || blocks ? `${name}: ${count("drop")} drop run${count("drop") === 1 ? "" : "s"} (worst ${rep.worstDrop === null ? "no ground" : ov(rep.worstDrop)}; ${traps} trap${traps === 1 ? "" : "s"}, ${landing("trail")} back on the trail, ${landing("exit")} with a way back), ${count("hole")} hole run${count("hole") === 1 ? "" : "s"}, ${count("noGround")} bare stretch${count("noGround") === 1 ? "" : "es"} of the centreline${walk ? `, ${blocks} refused move${blocks === 1 ? "" : "s"} on the walk` : ""}`
+            : `${name}: no drop over ${ov(o.maxDrop)} within ${ov(o.halfWidth + o.margin)} of the centreline, no hole within ${ov(o.holeRadius)}${walk ? ", walked on every line" : ""}`) + knives,
           drops: { runs: count("drop"), traps, backOnTrail: landing("trail"), withExit: landing("exit"), unknown: landing("unknown") },
+          freeWidth: rep.narrowest ? { narrowest: { along: ov(rep.narrowest.along), at: xz(rep.narrowest.at), width: ov(rep.narrowest.width), left: ov(rep.narrowest.left), right: ov(rep.narrowest.right) },
+            median: ov(median(rep.freeWidths.map((f) => f[1] + f[2]))), knifeEdges: rep.narrows.length,
+            narrows: rep.narrows.slice(0, a.limit ?? 30).map((n) => ({ from: ov(n.from), to: ov(n.to), at: xz(n.at), trailY: ov(n.trailY), width: ov(n.width), left: ov(n.left), right: ov(n.right) })),
+            note: `at each sample the distance from the centreline to the first column more than ${ov(o.edgeDrop)} under the trail's ground (or with no ground), left and right, up to ${ov(o.freeReach)}; a stretch under ${ov(o.minFreeWidth)} both sides together is a knife edge (narrows): widen the bed or fence it` } : null,
           runs: rep.runs.slice(0, a.limit ?? 30).map((r) => ({ kind: r.kind, side: r.side, from: ov(r.from), to: ov(r.to), at: xz(r.at), ...(r.worst !== undefined ? { worstDrop: ov(r.worst) } : r.kind === "drop" ? { worstDrop: "no ground" } : {}),
             ...(r.trailY !== undefined && r.trailY !== null ? { trailY: ov(r.trailY) } : {}),
             ...(r.landing ? { landing: { kind: r.landing.kind, at: r.landing.at.map(ov), ...(r.landing.legAlong !== undefined ? { legAlong: ov(r.landing.legAlong) } : {}), ...(r.landing.exitLength !== undefined ? { exitLength: ov(r.landing.exitLength) } : {}),
@@ -1465,6 +1478,7 @@ export const tools: Tool[] = [
         };
       });
       return { ok: per.every((p) => p.ok), summary: per.map((p) => p.summary).join("; "), trails: per, rules: { width: ov(o.halfWidth * 2), margin: ov(o.margin), spacing: ov(o.spacing), maxDrop: ov(o.maxDrop), holeRadius: ov(o.holeRadius), above: ov(o.above),
+        freeWidth: { edgeDrop: ov(o.edgeDrop), freeReach: ov(o.freeReach), minFreeWidth: ov(o.minFreeWidth) },
         walk: a.walk === false ? null : { offsets: offsets.map(ov), maxStep: ov(reach.maxStep), maxSlope: reach.maxSlope, bodyWidth: ov(reach.bodyWidth ?? 0), maxDrop: ov(reach.maxDrop) } },
         units: u ?? "map", note: "side: left or right of the direction the trail runs; from/to: along the trail from its first point; a drop is a column more than maxDrop under the trail's ground (or with no ground) within the bed and its margin (banks: columns with no ground under the trail's but a bank rising from within 3 map units over it, a cut wall, which are not drops); each drop's landing is told apart: trail (back on the trail's bed, a V-drop under a hairpin), exit (a walk back onto the trail by the walking rules), trap (no way back within 14 map units: fails the trail), unknown; a hole meets no solid over `above` within holeRadius of the centreline; walk: the trail walked on each offset line with the walking rules, a refused move (a ridge, a kerb, a slot) fails the trail" };
     },

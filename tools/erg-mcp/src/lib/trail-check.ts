@@ -31,14 +31,28 @@ export interface TrailCheckOptions {
   holeRadius: number;   // see-through holes within this of the centreline are reported
   above: number;        // a ray must meet solid over this (the water level)
   headroom: number;     // the ground at a column is the top at or under the trail's ground + this
+  edgeDrop?: number;    // the free width ends at a column more than this under the trail's ground (default 1.5)
+  freeReach?: number;   // the free width is measured out to this far either side (default 8)
+  minFreeWidth?: number;   // a stretch whose free width (both sides together) is under this is a knife edge (default 2)
 }
 
 export interface Landing { kind: "trail" | "exit" | "trap" | "unknown"; at: [number, number, number]; legAlong?: number; exitLength?: number; climbRefused?: number; why: string; }
 export interface TrailRun { kind: "drop" | "hole" | "noGround"; side: "left" | "right" | "centre"; from: number; to: number; at: [number, number]; worst?: number; trailY?: number | null; landing?: Landing; }
 export interface MineSuspect { kind: "scaledBlock" | "shearedCell"; from: number; to: number; at: [number, number]; frame: number; detail: string; }
+/** A knife-edge stretch: the free width (left + right) under minFreeWidth, with the narrowest sample. */
+export interface NarrowRun { from: number; to: number; at: [number, number]; trailY: number; width: number; left: number; right: number; }
+/** The free width at a sample: `along`, left and right (map units from the centreline to the first column a worm cannot
+ * stand on at the trail's height: a drop of more than edgeDrop, or no ground), capped at freeReach. */
+export type FreeWidth = [number, number, number];
 export interface TrailReport { length: number; samples: number; columns: number; runs: TrailRun[]; worstDrop: number | null; banks: number; skinCorners: { at: [number, number]; along: number; off: number; blocks: number }[];
   centreline: [number, number, number, number][];   // [x, z, ground y, along] of each sample with ground
-  mineSuspects: MineSuspect[]; }
+  mineSuspects: MineSuspect[];
+  freeWidths: FreeWidth[]; narrows: NarrowRun[];
+  narrowest: { along: number; at: [number, number]; width: number; left: number; right: number } | null; }
+
+/** The defaults of the free-width read (Caldera v2 round 4: the SW summit leg a worm walked off was a ridge whose bed
+ * fell away 1.5 map units a worm's width from the centreline, which no drop over maxDrop showed). */
+export const EDGE_DROP = 1.5, FREE_REACH = 8, MIN_FREE_WIDTH = 2;
 
 /** The trail's points densified every `spacing` along the horizontal: [x, z, y (NaN without), along]. */
 export function densify(pts: number[][], spacing: number): number[][] {
@@ -62,6 +76,18 @@ export function checkTrail(gs: Grid[], pts: number[][], o: TrailCheckOptions): T
   let columns = 0, worst: number | null = null, banks = 0;
   const centreline: TrailReport["centreline"] = [], suspects: MineSuspect[] = [];
   let suspect: MineSuspect | null = null;
+  // the free width: from the centreline out to the first column a worm cannot stand on at the trail's height, either
+  // side, and the knife-edge stretches where both sides together are under minFreeWidth
+  const edge = o.edgeDrop ?? EDGE_DROP, reach2 = o.freeReach ?? FREE_REACH, minFree = o.minFreeWidth ?? MIN_FREE_WIDTH;
+  const freeWidths: FreeWidth[] = [], narrows: NarrowRun[] = [];
+  let narrow: NarrowRun | null = null, narrowest: TrailReport["narrowest"] = null;
+  const freeTo = (x: number, z: number, dx: number, dz: number, trailY: number, sign: number) => {
+    for (let off = o.spacing; off <= reach2 + 1e-9; off += o.spacing) {
+      const top = spansAt(gs, x - dz * off * sign, z + dx * off * sign, trailY + o.headroom)[0];
+      if (!top || trailY - top.top > edge) return Math.round((off - o.spacing) * 1000) / 1000;
+    }
+    return reach2;
+  };
   // a run of the same finding on the same side, extended while consecutive samples have it
   const open = new Map<string, TrailRun>();
   const note = (kind: TrailRun["kind"], side: TrailRun["side"], along: number, at: [number, number], drop: number | undefined, trailY: number | null, seen: Set<string>) => {
@@ -90,6 +116,17 @@ export function checkTrail(gs: Grid[], pts: number[][], o: TrailCheckOptions): T
     const trailY = centre ? centre.top : null;
     if (!centre) note("noGround", "centre", along, [x, z], undefined, null, seen);
     else centreline.push([x, z, centre.top, along]);
+    if (centre) {
+      const left = freeTo(x, z, dx, dz, centre.top, 1), right = freeTo(x, z, dx, dz, centre.top, -1), width = Math.round((left + right) * 1000) / 1000;
+      freeWidths.push([along, left, right]);
+      if (!narrowest || width < narrowest.width) narrowest = { along, at: [x, z], width, left, right };
+      if (width < minFree - 1e-9) {
+        if (narrow && along - narrow.to <= o.spacing * 1.5 + 1e-9) {
+          narrow.to = along;
+          if (width < narrow.width) Object.assign(narrow, { at: [x, z], trailY: centre.top, width, left, right });
+        } else { narrow = { from: along, to: along, at: [x, z], trailY: centre.top, width, left, right }; narrows.push(narrow); }
+      } else narrow = null;
+    } else narrow = null;
     // ground the game let mines through in Tests, under the centreline (one run per stretch)
     const sus = centre ? mineSuspectAt(gs, centre.frame, x, z) : null;
     if (sus && suspect && suspect.kind === sus.kind && suspect.frame === centre!.frame && along - suspect.to <= o.spacing * 1.5 + 1e-9) suspect.to = along;
@@ -132,7 +169,7 @@ export function checkTrail(gs: Grid[], pts: number[][], o: TrailCheckOptions): T
     for (const s of line) { const d = Math.hypot(s[0] - c.at[0], s[1] - c.at[1]); if (d < best.d) best = { d, along: s[3] }; }
     if (best.d <= o.holeRadius + 0.6) skinCorners.push({ at: c.at, along: best.along, off: best.d, blocks: c.n });
   }
-  return { length: line[line.length - 1][3], samples: line.length, columns, runs, worstDrop: worst, banks, skinCorners, centreline, mineSuspects: suspects };
+  return { length: line[line.length - 1][3], samples: line.length, columns, runs, worstDrop: worst, banks, skinCorners, centreline, mineSuspects: suspects, freeWidths, narrows, narrowest };
 }
 
 /** Whether the ground frame under (x, z) is one the game let mines through in Tests: an upright block of a non-whole

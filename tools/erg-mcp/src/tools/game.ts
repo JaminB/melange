@@ -5,7 +5,7 @@
 // console refuses online matches unless [LuaConsole] MatchConsoleOnline=1). A game with render.camera and render.shot
 // (Melange's own Oasis methods) points the camera with no client mod, and game_camera {shot} and game_shots read the
 // picture back (clean: without the mods' wum.draw text).
-import { appendFileSync, existsSync, readFileSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { extentXZ, markers, spansAt } from "../lib/inspect-field";
 import { grids } from "../lib/voxel";
@@ -13,16 +13,32 @@ import { pieces } from "../lib/islets";
 import { cumulative, keyOfLabel, planWalk, pursue } from "../lib/walk-plan";
 import { WORM_WIDTH } from "../lib/reach";
 import { clearEye } from "../lib/eye";
-import { Raster, decodePng, type Rgb } from "../lib/inspect-png";
+import { Raster, decodePng, hex, type Rgb } from "../lib/inspect-png";
+import { centreColour, lookDelta, materialPatches } from "../lib/material-look";
+import { projectMaterials } from "../lib/materials";
+import { TRACE_LUA, attributeMove, describeMove, mergePerfRuns, offTurnMoves, parseTrace, pickPerfBase, type PerfRun, type PerfStat, type TraceSample } from "../lib/play-trace";
+import { documentsDir } from "../oasis";
 import { ToolError, image, type Content, type Tool } from "../registry";
 import type { Session } from "../session";
 
 const WORLD_PER_MAP = 20;
 
+// A lua.eval whose answer is lost is sent once more: in the Caldera v2 round-4 run one of about 1500 calls timed out
+// (turn 74) and the turn was left without a record. luaRetries counts them for the answers.
+let luaRetries = 0;
+export const luaRetryCount = () => luaRetries;
 async function evalClient(s: Session, code: string, mod?: string): Promise<string> {
   const conn = await s.ensure();
   if (!conn.methods.includes("lua.eval")) throw new ToolError("no lua.eval here: the game tools need the game running (Melange.exe --serve has no match)");
-  const r = await (await s.client()).call<{ ok: boolean; text: string }>("lua.eval", mod ? { target: "mod", mod, code } : { target: "client", code }, 15000);
+  const client = await s.client(), params = mod ? { target: "mod", mod, code } : { target: "client", code };
+  let r: { ok: boolean; text: string };
+  try {
+    r = await client.call<{ ok: boolean; text: string }>("lua.eval", params, 15000);
+  } catch (e) {
+    if (!/no answer within/i.test((e as Error).message)) throw e;
+    luaRetries++;
+    r = await client.call<{ ok: boolean; text: string }>("lua.eval", params, 15000);
+  }
   if (!r.ok) throw new ToolError(`the game's console refused: ${r.text}`);
   return r.text ?? "";
 }
@@ -218,8 +234,39 @@ function overview(s: Session, o0: Orbit = {}, k = WORLD_PER_MAP): { pos: number[
 }
 
 // game_perf's runs of this erg-mcp session, to compare a level with its baseline.
-type PerfStat = { p50: number | null; p95: number | null; n: number } | null;
-const perfRuns: { label: string; fps: PerfStat; busyMs: PerfStat; frameMs: PerfStat; gpuFrameMs: PerfStat }[] = [];
+// game_perf's runs: this process's, and the runs file (Documents\Melange\erg-mcp\perf-runs.json, the last 24 with the
+// game build each ran in), so a baseline run by one erg-mcp process is the `against` of the next one's run (Caldera v2
+// round 4: the baseline and the Erg run were two processes and the compare answered "runs: none").
+const perfRuns: PerfRun[] = [];
+const perfFile = () => { const d = documentsDir(); return d ? join(d, "Melange", "erg-mcp", "perf-runs.json") : null; };
+function savedPerfRuns(): PerfRun[] {
+  const f = perfFile();
+  if (!f || !existsSync(f)) return [];
+  try {
+    const j = JSON.parse(readFileSync(f, "utf8")) as { runs?: PerfRun[] };
+    return Array.isArray(j.runs) ? j.runs.filter((r) => r && typeof r.label === "string" && typeof r.startedAt === "number") : [];
+  } catch {
+    return [];
+  }
+}
+function savePerfRuns() {
+  const f = perfFile();
+  if (!f) return;
+  try {
+    mkdirSync(join(f, ".."), { recursive: true });
+    const runs = mergePerfRuns(perfRuns, savedPerfRuns()).map(({ from: _from, ...r }) => r);
+    writeFileSync(f, JSON.stringify({ note: "erg-mcp's game_perf runs (fps, CPU and GPU frame times), for `against` across erg-mcp processes", runs }));
+  } catch {
+    // the compare then covers this process's runs only
+  }
+}
+
+// game_play_turns' trace file: every worm's position about once a second through the run (lib/play-trace.ts), beside the
+// pictures, in Documents\Melange\erg-mcp\traces\<prefix>.json.
+function traceFile(prefix: string): string | null {
+  const d = documentsDir();
+  return d ? join(d, "Melange", "erg-mcp", "traces", `${prefix.replace(/[^A-Za-z0-9_.-]/g, "_")}.json`) : null;
+}
 
 // ------------------------------------------------------------------ poses from the worms
 
@@ -764,6 +811,40 @@ export function turnHeading(p: number[], rest: number[][], dist: number): number
 export function sidePose(q: number[], heading: number[]): { pos: number[]; target: number[] } {
   const [dx, dz] = heading, side = 10 * WORLD_PER_MAP, up = 11 * WORLD_PER_MAP, back = 2 * WORLD_PER_MAP;
   return { pos: [q[0] - dz * side - dx * back, q[1] + up, q[2] + dx * side - dz * back], target: [q[0], q[1] + 0.6 * WORLD_PER_MAP, q[2]] };
+}
+
+/** game_play_turns' stuck point (Caldera v2 round 4): the spot (world units) a walk was last stuck at or left play from,
+ * where that is along and off the trail (world units in, `out` for the answer), the open project's ground there (the
+ * top, its frame and material; a skin at its sheared height), and a close shot of it from 4 map units off the side of
+ * `heading`, 3.5 up, with the eye checked for a clear view and kept over the water. The shot's failure is in `shot`. */
+async function stuckPointOf(s: Session, at: number[], trail: number[][], why: string, heading: number[], name: string, prefix: string, width: number, clearView: boolean, out: (v: number) => number) {
+  const W = WORLD_PER_MAP, on = alongTrail(trail, trail[0].length === 3 ? at : [at[0], at[2]]);
+  let ground: Record<string, unknown> | undefined;
+  if (s.project) {
+    const gs = grids(s.store), sp = spansAt(gs, at[0] / W, at[2] / W, at[1] / W + 1.5)[0];
+    const g = sp ? gs.find((q) => q.id === sp.frame) : undefined;
+    ground = sp ? { top: out(sp.top * W), frame: sp.frame, ...(g ? { name: g.frame.name, scale: g.toMap[0], draped: !!g.frame.corners } : {}), wormOverGround: out(at[1] - sp.top * W) }
+      : { top: null, note: "no ground under the point within 1.5 map units over it (the worm was in the air, or the voxels have none there)" };
+  }
+  const [dx, dz] = heading, side = 4 * W, up = 3.5 * W;
+  let pose = { pos: [at[0] - dz * side - dx * W, at[1] + up, at[2] + dx * side - dz * W], target: [at[0], at[1] + 0.4 * W, at[2]] };
+  const views: string[] = [];
+  if (clearView && s.project) {
+    const m = (v: number[]) => v.map((x) => x / W), ce = clearEye(grids(s.store), m(pose.pos), m(pose.target), { skip: 1 });
+    if (ce.moved) { pose = { ...pose, pos: ce.eye.map((x) => x * W) }; views.push(ce.moved); }
+  }
+  const ow = overWater(pose, (await gameState(s).catch(() => ({} as GameState))).water);
+  if (ow.lifted) { pose = ow.pose; views.push(ow.lifted); }
+  let picture: string;
+  try {
+    const set = await setCamera(s, { ...pose, fov: 50 }, 40);
+    picture = (await shot(s, uniqueName(prefix, name), { clean: true, width, minFrame: set.frame !== undefined ? set.frame + 2 : undefined })).path;
+    await clearCamera(s).catch(() => undefined);
+  } catch (e) {
+    picture = `failed: ${(e as Error).message}`;
+  }
+  return { at: at.map(out), why, along: out(on.along), of: out(on.of), offTrail: out(on.off), ...(ground ? { ground } : {}), shot: picture, ...(views.length ? { eyeMoved: views } : {}),
+    note: "the exact spot the walk was last held at (or left play from), its place along the trail and off its centreline, the ground under it in the project's voxels, and a close shot of it: check_trail there, or sculpt" };
 }
 
 /** The clearance a camera keeps over the sea, map units. */
@@ -1392,11 +1473,14 @@ export const tools: Tool[] = [
         width: { type: "integer", minimum: 160, maximum: 1920, description: "Shot width (default 960)." },
         units: { type: "string", enum: ["map", "world"], description: "Units of the trails and the answer (default map)." },
         timeoutSec: { type: "number", minimum: 10, maximum: 3600, description: "Stop the run after this long (default 1800)." },
+        trace: { type: "boolean", description: "Read every worm's position about once a second through the whole run (beside the walk's own reads) and write the trace to Documents\\Melange\\erg-mcp\\traces\\<prefix>.json (`traceFile`); the answer's `offTurnMoves` lists each worm that dropped `fallDrop` or moved 2 map units while another worm played, with the trace's samples, its speed and what the Test probe saw beside it then (explosions with their source and the turn's weapon, mines at rest near it, its death), so a fall between a worm's own turns is explained (Caldera v2 round 4: WORM5 from 55.4 to 44.2 between turns 21 and 29). Default true." },
+        fallDrop: { type: "number", minimum: 0.25, description: "With trace: a worm not playing that loses this much height (units) between two samples is an off-turn move (default 1.5 map units)." },
+        stuckShots: { type: "boolean", description: "A turn whose walk ended with the turn leaving play (settle: the worm fell or slid) or needed more than 2 jumps gets `stuckPoint`: the exact spot it was last stuck at (or ended at), its place along and off the trail, the ground there (the project's voxels), and a close shot of it from 4 map units off, <prefix>_t<turn>_w<slot>_stuck.png, so a trail defect is located without guessing (default true)." },
       },
     },
     async handler(s, a: { trails: number[][][]; turns?: number; rounds?: number; walkSeconds?: number; end?: "skip" | "fire" | "wait"; weapon?: string; fireMs?: number; aimDownMs?: number;
       shots?: boolean; shotPose?: "near" | "game"; walkAhead?: number; prefix?: string; width?: number; units?: "map" | "world"; timeoutSec?: number; gameDir?: string;
-      approach?: boolean; replan?: boolean; announceShots?: boolean; clearView?: boolean; suddenDeath?: boolean }) {
+      approach?: boolean; replan?: boolean; announceShots?: boolean; clearView?: boolean; suddenDeath?: boolean; trace?: boolean; fallDrop?: number; stuckShots?: boolean }) {
       if (!(await has(s, "input.drive"))) throw new ToolError("game_play_turns drives the worms with input.drive (Melange 0.13+ with the Controls module)");
       const roundHeld = a.suddenDeath === false ? await holdRoundClock(s) : undefined;
       const canSkip = await has(s, "level.test.endTurn");
@@ -1412,8 +1496,25 @@ export const tools: Tool[] = [
       const client = await s.client(), t0 = Date.now(), limit = (a.timeoutSec ?? 1800) * 1000, prefix = a.prefix ?? `erg_${stamp()}_play`;
       const walk = tools.find((t) => t.name === "game_walk")!;
       type Turn = { turn: number; worm: string; slot: number; team: number; from: number[]; to?: number[]; along?: number; of?: number; climb?: number; stop?: string;
-        recoveries?: string[]; shots: string[]; ended?: string; error?: string; weapon?: string; weaponVia?: string; stuck?: string; approach?: object; replans?: number; eyesMoved?: string[] };
+        recoveries?: string[]; shots: string[]; ended?: string; error?: string; positionAfterError?: string; weapon?: string; weaponVia?: string; stuck?: string; stuckPoint?: object; approach?: object; replans?: number; eyesMoved?: string[] };
       const played: Turn[] = [];
+      // the trace: every worm about once a second through the run, read beside the walk's own reads (lib/play-trace.ts);
+      // a lost read is passed over, the next sample comes a second later
+      const samples: TraceSample[] = [];
+      let tracing = a.trace !== false;
+      const sampler = tracing ? (async () => {
+        while (tracing) {
+          try {
+            const smp = parseTrace(await evalClient(s, TRACE_LUA), Date.now(), WORLD_PER_MAP);
+            if (smp && smp.worms.length) samples.push(smp);
+          } catch { /* the next sample */ }
+          await sleep(1000);
+        }
+      })() : null;
+      const lastTraced = (slot: number): number[] | null => {
+        for (let i = samples.length - 1; i >= 0; i--) { const w = samples[i].worms.find((x) => x.slot === slot); if (w) return w.pos.map((v) => v * WORLD_PER_MAP); }
+        return null;
+      };
       // shotPose near: each shot on the worm where it is then, all of a turn's from the same side of its heading (the
       // trail's direction from its spot, walkAhead along it) and high over castle walls, so the ground behind it shows how
       // far it went (a pose fixed for the turn lost a worm that walked 36 map units in 12 s); the game's own turn camera
@@ -1509,8 +1610,30 @@ export const tools: Tool[] = [
             const at = alongTrail(trail, trail[0].length === 3 ? to : [to[0], to[2]]);
             rec.along = out(at.along);
             rec.of = out(at.of);
+            // a walk the turn took out of play (settle: the worm fell or slid off) or that needed more than two jumps: the
+            // exact spot it was last stuck at, where that is on the trail, the ground there, and a close shot of it
+            const jumps = Array.isArray(r.recoveries) ? (r.recoveries as string[]).filter((x) => x === "jump").length : Number(r.jumps) || 0;
+            const settled = /left play \(settle\)/.test(rec.stop);
+            if (a.stuckShots !== false && (settled || jumps > 2)) {
+              const stuckAt = Array.isArray(r.stuckAt) && (r.stuckAt as number[][]).length ? (r.stuckAt as number[][])[(r.stuckAt as number[][]).length - 1] : to;
+              rec.stuckPoint = await stuckPointOf(s, stuckAt, trail, settled ? "the turn left play (settle): the worm fell or slid from here" : `${jumps} jumps: the worm was held here`, pose?.heading ?? [0, 1],
+                `t${turn}_w${slot}_stuck`, prefix, a.width ?? 960, a.clearView !== false, out);
+            }
           } catch (e) {
             rec.error = (e as Error).message;
+            // (Caldera v2 round 4, turn 74) a lost lua.eval answer left the turn with no record: the worm's position is read
+            // again (evalClient tries a timed-out call once more), else taken from the trace's last sample of it
+            const q = await wormAt(slot).catch(() => [] as number[]);
+            const pos = q.length === 3 && q.every(Number.isFinite) ? q : lastTraced(slot);
+            if (pos && rec.from.length === 3) {
+              rec.to = pos.map(out);
+              rec.climb = out(pos[1] - rec.from[1] * k);
+              const at = alongTrail(trail, trail[0].length === 3 ? pos : [pos[0], pos[2]]);
+              rec.along = out(at.along);
+              rec.of = out(at.of);
+              rec.stop = "error";
+              rec.positionAfterError = q.length === 3 ? "the worm's position read again after the error" : "the trace's last sample of the worm (the game did not answer)";
+            }
           }
           // a walk that ended early (arrived, the turn ended) takes no middle shot; one under way is waited for
           cancelMid();
@@ -1547,8 +1670,35 @@ export const tools: Tool[] = [
         }
       } finally {
         stopAnn?.();
+        tracing = false;
       }
       await Promise.all(pendingShots);
+      if (sampler) await sampler;
+      // the trace: written beside the pictures; the moves of worms whose turn it was not, each with what the probe saw
+      let traced: Record<string, unknown> = {};
+      if (a.trace !== false) {
+        const file = traceFile(prefix);
+        try {
+          if (file) {
+            mkdirSync(join(file, ".."), { recursive: true });
+            writeFileSync(file, JSON.stringify({ prefix, units: "map", note: "every worm about once a second through game_play_turns: wall (ms), the sim tick, the game turn, the active worm's slot, each worm's slot, team, [x, y, z] and alive",
+              samples: samples.map((x) => ({ wall: x.wall, tick: x.tick, turn: x.turn, active: x.active, worms: x.worms.map((w) => [w.slot, w.team, ...w.pos, w.alive ? 1 : 0]) })) }));
+          }
+        } catch { /* the answer carries the moves */ }
+        const moves = offTurnMoves(samples, { drop: a.fallDrop === undefined ? 1.5 : a.units === "world" ? a.fallDrop / WORLD_PER_MAP : a.fallDrop });
+        const probe = moves.length ? await probeOf(s).catch(() => null) : null;
+        const pl = probe ? { explosions: probe.probe.explosions, fires: probe.factory.fires.map((f) => ({ tick: f.tick, turn: f.turn, mines: f.mines })), deaths: probe.probe.deaths.map((d) => ({ slot: d.slot, tick: d.tick, turn: d.turn, cause: d.cause })) } : {};
+        const attributed = moves.map((m) => attributeMove(m, pl));
+        const ku = a.units === "world" ? WORLD_PER_MAP : 1, cv = (p: number[]) => p.map((v) => Math.round(v * ku * 100) / 100);
+        traced = { traceSamples: samples.length, ...(file ? { traceFile: file } : {}),
+          offTurnMoves: attributed.map((m) => ({ worm: m.worm, team: m.team, kind: m.kind, turn: m.turn, activeWorm: m.activeWorm === null ? null : `WORM${m.activeWorm}`, why: describeMove(m),
+            from: cv(m.from), to: cv(m.to), drop: Math.round(m.drop * ku * 100) / 100, moved: Math.round(m.moved * ku * 100) / 100, seconds: m.seconds, fastestDrop: Math.round(m.fastestDrop * ku * 100) / 100, ticks: m.ticks,
+            samples: m.samples.slice(0, 40).map((x) => ({ tick: x.tick, pos: cv(x.pos) })),
+            ...(m.explosions ? { explosions: m.explosions.map((e) => ({ ...e, at: cv(e.at), distance: Math.round(e.distance * ku * 100) / 100 })) } : {}),
+            ...(m.mines ? { mines: m.mines.map((x) => ({ ...x, rest: cv(x.rest), distance: Math.round(x.distance * ku * 100) / 100 })) } : {}), ...(m.death ? { death: m.death } : {}) })),
+          ...(moves.length && !probe ? { offTurnNote: "the Test probe (level.test.probe) did not answer: the moves are listed without the explosions beside them" } : {}),
+          ...(moves.length ? {} : { offTurnNote: `no worm dropped ${a.fallDrop ?? 1.5} or moved 2 map units while another played` }) };
+      }
       // per worm: its turns and how far along its team's trail it stood after each
       const byWorm = new Map<number, Turn[]>();
       for (const t of played) byWorm.set(t.slot, [...(byWorm.get(t.slot) ?? []), t]);
@@ -1557,7 +1707,7 @@ export const tools: Tool[] = [
         from: ts[0].from, to: ts[ts.length - 1].to ?? null }));
       const log = turnLogOut();
       return { played: played.length, asked: want, stop: why, seconds: Math.round((Date.now() - t0) / 100) / 10, end, worms, turns: played, ...(log ? { turnLog: log } : {}),
-        ...(roundHeld ? { roundClock: roundHeld } : {}),
+        ...(roundHeld ? { roundClock: roundHeld } : {}), ...traced, ...(luaRetryCount() ? { luaEvalRetries: luaRetryCount() } : {}),
         ...(stopAnn ? { announcements: announced, ...(announced.length ? {} : { announcementsNote: "none was drawn during the run" }) } : {}),
         units: a.units ?? "map", note: "each human turn's worm walked its team's trail with the game's own inputs (input.drive) from the trail's point nearest it; along/of: how far along the trail it stood after the turn. A turn's shots look at its worm from one side of its heading (shotPose near; game: the turn camera), clean of the mods' HUD text" };
     },
@@ -1977,18 +2127,77 @@ return string.format("%.3f,%.3f,%.3f,%s,%s,%s,%s", t.fps, t.busyMsP50, t.frameMs
         const pct = (q: number) => Math.round(v[Math.min(v.length - 1, Math.floor(q * (v.length - 1) + 0.5))] * 100) / 100;
         return v.length ? { p50: pct(0.5), p95: pct(0.95), n: v.length } : null;
       };
-      const run = { label: a.label ?? s.project?.id ?? "baseline", scene: st?.scene ?? "?", seconds: Math.round((Date.now() - t0) / 100) / 10, samples: rows.length,
-        fps: stat(0), busyMs: stat(1), frameMs: stat(2), gpuFrameMs: stat(3), gpuWorldMs: stat(4), gpuPostWorldMs: stat(5), gpuFinalMs: stat(6) };
+      const game = (await s.ensure()).build;
+      const run: PerfRun = { label: a.label ?? s.project?.id ?? "baseline", scene: st?.scene ?? "?", seconds: Math.round((Date.now() - t0) / 100) / 10, samples: rows.length, startedAt: t0,
+        fps: stat(0), busyMs: stat(1), frameMs: stat(2), gpuFrameMs: stat(3), gpuWorldMs: stat(4), gpuPostWorldMs: stat(5), gpuFinalMs: stat(6), ...(game ? { game } : {}) };
       const cpuBound = !!run.busyMs && !!run.frameMs && run.busyMs.p50! >= run.frameMs.p50! * 0.85;
-      const base = a.against ? perfRuns.find((r) => r.label === a.against) : perfRuns[0];
-      if (a.against && !base) throw new ToolError(`no earlier game_perf run labelled ${a.against} (runs: ${perfRuns.map((r) => r.label).join(", ") || "none"})`);
+      // the run to compare with: this session's, else an earlier process's from the runs file (pickPerfBase)
+      const saved = savedPerfRuns(), pick = pickPerfBase(perfRuns, saved, a.against, game);
+      if (a.against && !pick.base) throw new ToolError(`no game_perf run labelled ${a.against} in this session or the runs file (runs: ${[...new Set([...perfRuns, ...saved].map((r) => r.label))].join(", ") || "none"})`);
+      const base = pick.base;
       perfRuns.push(run);
+      savePerfRuns();
       const d = (x: PerfStat, y: PerfStat) => (x?.p50 != null && y?.p50 != null ? Math.round((x.p50 - y.p50) * 100) / 100 : null);
-      const compare = base && base !== run ? { against: base.label, gpuFrameMsDelta: d(run.gpuFrameMs, base.gpuFrameMs), fpsDelta: d(run.fps, base.fps), busyMsDelta: d(run.busyMs, base.busyMs),
+      const compare = base && base !== run ? { against: base.label, ...(base.from === "saved" ? { savedRun: `an earlier erg-mcp process's run, ${new Date(base.startedAt).toISOString()}${base.game ? `, game ${base.game}` : ""}` } : {}),
+        ...(pick.note ? { note: pick.note } : {}), gpuFrameMsDelta: d(run.gpuFrameMs, base.gpuFrameMs), fpsDelta: d(run.fps, base.fps), busyMsDelta: d(run.busyMs, base.busyMs),
         verdict: run.gpuFrameMs?.p50 == null || base.gpuFrameMs?.p50 == null ? "no GPU times to compare (the timers are off or unsupported)"
           : run.gpuFrameMs.p50 <= base.gpuFrameMs.p50 * 1.15 + 0.5 ? `GPU time per frame not worse than ${base.label} (within 15 % + 0.5 ms)` : `GPU time per frame worse than ${base.label}` } : undefined;
-      return { ...run, ...(cpuBound ? { cpuBound: "the CPU's busy time is most of each frame: fps follows the CPU, not the drawing; compare gpuFrameMs" } : {}), ...(compare ? { compare } : {}),
-        runs: perfRuns.map((r) => r.label), note: "gpuFrameMs: the GPU's time for the whole frame (swap to swap); busyMs: the CPU's time in the frame before SwapBuffers; medians (p50) and 95th percentiles of the samples" };
+      const { startedAt: _t, from: _f, ...out } = run;
+      return { ...out, ...(cpuBound ? { cpuBound: "the CPU's busy time is most of each frame: fps follows the CPU, not the drawing; compare gpuFrameMs" } : {}), ...(compare ? { compare } : {}),
+        runs: perfRuns.map((r) => r.label), ...(saved.length ? { savedRuns: mergePerfRuns([], saved).map((r) => `${r.label} (${new Date(r.startedAt).toISOString()})`), runsFile: perfFile() } : {}),
+        note: "gpuFrameMs: the GPU's time for the whole frame (swap to swap); busyMs: the CPU's time in the frame before SwapBuffers; medians (p50) and 95th percentiles of the samples; every run is kept in the runs file for `against` from another erg-mcp process" };
+    },
+  },
+  {
+    name: "game_material_shots",
+    description: "The in-game look of the open project's materials, with the plugins the Test runs with (Sunstone on): for each material (or `materials`) the level's best exposed patch of it is found in the project's voxels (the ground sampled every `step`, the flattest stretch with the most of that material round it), the camera is posed `distance` map units off it, `elevation` degrees down, and a clean shot is read back (<prefix>_mat<index>_<name>.png), whose middle's mean colour is compared with the material file's swatch (preview_materials' tile, the texture's mean): per channel, in lightness and in words (lighter, darker, a colour cast). preview_materials' tile is not what the players see: the game lights and tiles the texture, and Sunstone's landscape shader adds detail per texture class (its texture tags: a stone texture gets grime, and moss where its pits face the sky), so GreySlateFloor's warm grey tile came out pale off-white with green blotches (Caldera v2 round 4). Needs the Test match running (test) and render.shot. Read-only.",
+    inputSchema: { type: "object", additionalProperties: false, properties: {
+      materials: { type: "array", maxItems: 64, items: { type: "integer", minimum: 0, maximum: 63 }, description: "Material indices to shoot (default every material exposed on the level)." },
+      prefix: { type: "string", description: "Shot names <prefix>_mat<index>_<name> (default erg_<time>_mat)." },
+      width: { type: "integer", minimum: 160, maximum: 1920, description: "Shot width (default 640)." },
+      distance: { type: "number", minimum: 1, maximum: 60, description: "The eye's distance from the patch, map units (default 6)." },
+      elevation: { type: "number", minimum: 5, maximum: 89, description: "Degrees down at the patch (default 50)." },
+      azimuth: { type: "number", minimum: 0, maximum: 360, description: "Where the eye stands, degrees clockwise from north (-z) of the patch (default 200: a little west of south, the sun behind)." },
+      step: { type: "number", minimum: 0.5, maximum: 8, description: "The ground sample spacing for finding the patches, map units (default 2)." },
+      images: { type: "boolean", description: "Also answer the pictures (default false: the paths and colours)." } } },
+    async handler(s, a: { materials?: number[]; prefix?: string; width?: number; distance?: number; elevation?: number; azimuth?: number; step?: number; images?: boolean }) {
+      s.requireProject();
+      if (!(await has(s, "render.shot"))) throw new ToolError("game_material_shots needs the game's render.shot (Melange of this branch)");
+      const st = await gameState(s);
+      if (st.scene !== "match") throw new ToolError(`no match is running (scene ${st.scene}): test the project first; the look is the match's light and the plugins the Test runs with`);
+      const gs = grids(s.store), wl = s.store.scene.water.level, water = wl === null ? null : wl / WORLD_PER_MAP;
+      const patches = materialPatches(gs, { only: a.materials, step: a.step ?? 2, water });
+      if (!patches.length) throw new ToolError(a.materials ? `none of materials ${a.materials.join(", ")} is exposed on the level's ground` : "no ground to shoot: the level has no exposed voxels over the water");
+      const mats = await projectMaterials(s), prefix = a.prefix ?? `erg_${stamp()}_mat`, W = WORLD_PER_MAP;
+      const dist = (a.distance ?? 6) * W, el = ((a.elevation ?? 50) * Math.PI) / 180, az = ((a.azimuth ?? 200) * Math.PI) / 180;
+      const dir = [Math.sin(az) * Math.cos(el), Math.sin(el), -Math.cos(az) * Math.cos(el)];
+      const shots: Record<string, unknown>[] = [], pics: Content[] = [];
+      for (const p of patches) {
+        const name = mats?.names[p.material], tidy = (name ?? `m${p.material}`).replace(/[^A-Za-z0-9]+/g, "_").replace(/^_+|_+$/g, "").slice(0, 24);
+        const target = [p.at[0] * W, (p.at[1] + 0.3) * W, p.at[2] * W];
+        let pose = { pos: [target[0] + dir[0] * dist, target[1] + dir[1] * dist, target[2] + dir[2] * dist], target };
+        const moved: string[] = [];
+        const ce = clearEye(gs, pose.pos.map((v) => v / W), pose.target.map((v) => v / W), { skip: 1 });
+        if (ce.moved) { pose = { ...pose, pos: ce.eye.map((v) => v * W) }; moved.push(ce.moved); }
+        const ow = overWater(pose, st.water);
+        if (ow.lifted) { pose = ow.pose; moved.push(ow.lifted); }
+        const rec: Record<string, unknown> = { material: p.material, slot: `P${String(p.material + 1).padStart(2, "0")}`, ...(name ? { name } : {}), at: p.at, samples: p.samples, ...(moved.length ? { eyeMoved: moved } : {}) };
+        try {
+          const set = await setCamera(s, { ...pose, fov: 50 }, 40);
+          const sh = await shot(s, uniqueName(prefix, `mat${p.material}_${tidy}`), { clean: true, width: a.width ?? 640, minFrame: set.frame !== undefined ? set.frame + 2 : undefined });
+          await clearCamera(s).catch(() => undefined);
+          const img = decodePng(sh.png), inGame = centreColour(img.rgb, img.w, img.h);
+          const swatch = mats?.colors?.[p.material] ?? null;
+          Object.assign(rec, { shot: sh.path, frame: sh.frame, inGame: hex(inGame), ...(swatch ? { swatch: hex(swatch), ...lookDelta(swatch, inGame) } : { swatch: null, note: "the server gave no texture colour for this material" }) });
+          if (a.images) pics.push(image(sh.png));
+        } catch (e) {
+          rec.error = (e as Error).message;
+        }
+        shots.push(rec);
+      }
+      const out = { prefix, materials: shots, pose: { distance: a.distance ?? 6, elevation: a.elevation ?? 50, azimuth: a.azimuth ?? 200, fov: 50 }, units: "map",
+        note: "inGame: the mean colour of the middle 30 % of the shot (the patch, lit as the match lights it, with the mods' detail); swatch: the material file's texture mean (preview_materials' tile); delta per channel, lightness 0-255, and the cast the shot leans to: what the players see of the material, not what the swatch sheet shows" };
+      return a.images ? { content: [...pics, { type: "text", text: JSON.stringify(out) }] } : out;
     },
   },
   {
