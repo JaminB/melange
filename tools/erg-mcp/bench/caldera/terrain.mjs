@@ -1,9 +1,9 @@
 // Caldera's terrain, as pure functions of the map position (map units, y up, the sea at about -1, the island centred on 0, 0):
-// a round volcanic cone whose flank climbs in treads between three bands of cliffs (so the roads that cut through the cliffs
-// are the way up), a crater with a breach facing south and a dais for the mine factory, a coast of beaches, headlands and
-// coves that slopes under the sea, a few lava tongues that follow gullies and widen downslope, three roads that run through
-// seven castle shelves (three on the shore, two on the lower treads, two high up), and the expressions (lava tongues, roads)
-// that paint them. build.mjs turns it into a height grid for heightfield_drape.
+// a round volcanic cone whose flank climbs in treads between two bands of cliffs (notched where the trails cross them), a
+// crater with a breach facing south and a dais for the mine factory, a coast of beaches, headlands and coves that slopes under
+// the sea, lava tongues down the cardinals that follow gullies and widen downslope, four switchback trails up the diagonals from
+// the four team castles' shelves near the shore to the rim, three higher castles beside them, and the expressions (lava
+// tongues, trails, courts) that paint them. build.mjs turns it into a height grid for heightfield_drape.
 
 // ---- numbers ----
 export const RF = 92;            // the coast, in the profile's radius (rho): the beach is at 0, the sea floor falls away outside
@@ -75,12 +75,21 @@ export const pointAt = (rho, th) => { const r = rho / scaleAt(th); return [r * M
 // the smooth profile: tread flank plus the cliff bands (their radius and height wander with the angle, so no ring is regular)
 // the outer band is a foothill shoulder (a wider step), the inner one a cliff
 const k0 = (k) => (k === 1 ? 1 : 0);
-export function profile(rho, th) {
+// where a trail crosses a cliff band its step is spread over NOTCH_W[k] more each side (within about NOTCH_S radians of the
+// crossing), so the switchbacks can climb it; `notch: false` is the band unnotched (the crater's rim is raised from that, so the
+// crater never moves with the trails)
+let NOTCHES = [];
+let TRAIL_ENDS = [];        // where the trails reach the rim (set once they are laid: the rim is lowered there)
+const NOTCH_W = [8, 3.5], NOTCH_S = [0.45, 0.3];
+export function profile(rho, th, notch = true) {
   let h = F(RF - rho) + BOOST * (1 - smooth(RC - 2, RC + 46, rho));
   CLIFFS.forEach((c, k) => {
     const rk = c.rho + 4.5 * noise(Math.cos(th) * 1.6 + k * 7, Math.sin(th) * 1.6 + k * 3, 40 + k);
     const a = c.a * (0.85 + 0.15 * noise(Math.cos(th) * 2.3 + k, Math.sin(th) * 2.3, 60 + k));
-    h += a * (1 - smooth(rk - 1.75 - 1.5 * k0(k), rk + 1.75 + 1.5 * k0(k), rho));
+    let wn = 0;
+    if (notch) for (const n of NOTCHES) if (n.k === k) wn = Math.max(wn, gaussA(th, n.th, NOTCH_S[k]));
+    const hw = 1.75 + 1.5 * k0(k) + NOTCH_W[k] * wn;
+    h += a * (1 - smooth(rk - hw, rk + hw, rho));
   });
   return h;
 }
@@ -95,16 +104,15 @@ const ISLET_XZ = ISLETS.map((q) => [q.rho * Math.cos(q.th), q.rho * Math.sin(q.t
 // wob / wl / ph: a wander, rb / dr: a branch that leaves the line at radius rb and bends dr radians per unit of radius.
 export const TONGUES = [
   { name: "breach", a: BREACH, r0: RC - 8, r1: 90, w0: 4.4, w1: 8.5, wob: 0.05, wl: 11, ph: 0.3, rb: 0, dr: 0, core: true },
-  { name: "breach-w", a: BREACH, r0: 48, r1: 88, w0: 1.8, w1: 3.8, wob: 0.03, wl: 9, ph: 4.0, rb: 48, dr: 0.0075 },
-  { name: "ene", a: 0.72, r0: RC - 2, r1: 88, w0: 2.4, w1: 5.2, wob: 0.06, wl: 10, ph: 2.0, rb: 0, dr: 0, core: true },
-  { name: "nw", a: -2.45, r0: RC - 2, r1: 86, w0: 2.2, w1: 4.6, wob: 0.06, wl: 13, ph: 0.9, rb: 0, dr: 0, core: true },
-  { name: "sw", a: 2.62, r0: RC - 2, r1: 82, w0: 2.0, w1: 4.2, wob: 0.07, wl: 9, ph: 5.1, rb: 0, dr: 0 },
+  { name: "breach-w", a: BREACH, r0: 48, r1: 88, w0: 1.8, w1: 3.8, wob: 0.03, wl: 9, ph: 4.0, rb: 48, dr: 0.004 },
+  { name: "east", a: 0.17, r0: RC - 2, r1: 88, w0: 2.4, w1: 5.2, wob: 0.06, wl: 10, ph: 2.0, rb: 0, dr: 0, core: true },
+  { name: "north", a: -1.53, r0: RC - 2, r1: 86, w0: 2.2, w1: 4.6, wob: 0.06, wl: 13, ph: 0.9, rb: 0, dr: 0, core: true },
+  { name: "west", a: 3.1, r0: RC - 2, r1: 84, w0: 2.0, w1: 4.4, wob: 0.07, wl: 9, ph: 5.1, rb: 0, dr: 0, core: true },
 ];
 // dry gullies: deep radial cuts in the flank without lava (angle, half width in radians, depth, radius range), so the cone has ribs
-export const GULLIES = [{ a: -1.62, w: 0.075, d: 8, r0: 38, r1: 84 }, { a: 3.45, w: 0.07, d: 7.5, r0: 38, r1: 82 }, { a: 5.88, w: 0.065, d: 7, r0: 40, r1: 80 }, { a: 0.1, w: 0.06, d: 6, r0: 40, r1: 74 },
-  { a: 1.0, w: 0.055, d: 6.5, r0: 40, r1: 78 }, { a: 4.7, w: 0.06, d: 7, r0: 40, r1: 80 }, { a: 2.25, w: 0.05, d: 6, r0: 42, r1: 76 },
-  // iteration 11: shallow dry gullies between the switchbacks (the flanks were a uniform cone); carved in the skin, no cells
-  { a: 0.58, w: 0.05, d: 4, r0: 38, r1: 76 }, { a: 1.78, w: 0.045, d: 4.2, r0: 38, r1: 74 }, { a: 2.92, w: 0.05, d: 4, r0: 38, r1: 78 }, { a: 4.1, w: 0.045, d: 4.2, r0: 38, r1: 76 }, { a: 5.3, w: 0.05, d: 4, r0: 38, r1: 76 }];
+// (v2: off the trails' diagonals, beside the lava of the cardinals)
+export const GULLIES = [{ a: -1.3, w: 0.06, d: 7, r0: 38, r1: 68 }, { a: 1.25, w: 0.06, d: 6.5, r0: 40, r1: 75 }, { a: 3.0, w: 0.06, d: 7, r0: 40, r1: 70 }, { a: -2.95, w: 0.055, d: 6, r0: 40, r1: 70 },
+  { a: -0.25, w: 0.05, d: 5, r0: 38, r1: 52 }];
 const tongueAngle = (t, r) => t.a + t.wob * Math.sin(r / t.wl + t.ph) + t.dr * Math.max(0, r - t.rb);
 const tongueWidth = (t, r) => t.w0 + (t.w1 - t.w0) * Math.min(1, Math.max(0, (r - t.r0) / (t.r1 - t.r0)));
 // the tongues as one mask expression for the heightfield materials (above 0 inside any of them; the rule list holds 64, so all
@@ -117,141 +125,226 @@ export function tonguesMask(list, scale = 1) {
   return defs + list.map(call).reduce((acc, c) => (acc ? `max(${acc}, ${c})` : c), "");
 }
 
-// ---- the roads and the castles on them ----
-// A road climbs the flank at SP a unit: its heading leans from the contour towards the top by the angle that gives SP on the
-// profile's own gradient (across a cliff band it slants through it, cut into the cliff). When the climb reaches a castle's
-// height the road runs straight and level through the castle's footprint (along the contour; the castle's shelf is cut and
-// filled to that level), then goes on climbing.
+// ---- the castles and the switchback trails ----
+// the flank under the rim (the trails are marched over it) and its gradient
 function surf0(x, z) { return profile(Math.max(rhoAt(x, z), RC), Math.atan2(z, x)); }
 function grad(x, z) {
   const e = 0.6;
   return [(surf0(x + e, z) - surf0(x - e, z)) / (2 * e), (surf0(x, z + e) - surf0(x, z - e)) / (2 * e)];
 }
-// the castles' plans: size [along the road, across it], keep, towers, stone
+// the castles' plans: size [along the trail, across it], keep, towers, stone
 // kind: castle (build_castle), ring (a round curtain wall round a round keep, on a crag), lfort (a castle with a wing and a sea gate)
+// The four team castles (Strand, Ashgate, Harbour, Seawall) have a keep or an open court, with four courtyard spawn spots or more.
 const PLANS = {
-  // keep: [along the road, across it]. The castles are 22 across so the lane between the keep and the corner towers' inner edge
-  // (laneOf) is 4.5 or more clear: both gates open into it, beside the keep, so the road never meets a keep or a pillar.
+  // keep: [along the trail, across it]. The castles are 22 across so the lane between the keep and the corner towers' inner edge
+  // (laneOf) is 4.5 or more clear: both gates open into it, beside the keep, so the trail never meets a keep or a pillar.
   Strand: { kind: "castle", size: [26, 22], wallHeight: 6, towerShape: "round", towerRadius: 3.2, towerHeight: 11, keep: [7, 6], keepHeight: 10, mat: 16 },
   Ashgate: { kind: "castle", size: [24, 22], wallHeight: 6, towerShape: "square", towerRadius: 2.6, towerHeight: 10, keep: [7, 6], keepHeight: 11, mat: 27 },
   Cinder: { kind: "castle", size: [24, 22], wallHeight: 6, towerShape: "round", towerRadius: 2.6, towerHeight: 10, keep: [9, 7], keepHeight: 16, mat: 12 },
   Harbour: { kind: "lfort", size: [26, 22], wing: [14, 14], wallHeight: 6, towerShape: "round", towerRadius: 3, towerHeight: 11, keep: [6, 5], keepHeight: 10, mat: 12 },
-  Ember: { kind: "castle", size: [38, 12], wallHeight: 7, towerShape: "square", towerRadius: 2.8, towerHeight: 12, keep: null, keepHeight: 0, mat: 16 },
-  Seawall: { kind: "castle", size: [18, 16], wallHeight: 6, towerShape: "square", towerRadius: 3, towerHeight: 11, keep: null, keepHeight: 0, mat: 27 },   // a gatehouse fort: the cells went to the other castles' lanes
+  Ember: { kind: "castle", size: [17, 15], wallHeight: 7, towerShape: "square", towerRadius: 2.6, towerHeight: 12, keep: null, keepHeight: 0, mat: 16 },   // a small square fort
+  Seawall: { kind: "castle", size: [22, 20], wallHeight: 6, towerShape: "square", towerRadius: 3, towerHeight: 11, keep: null, keepHeight: 0, mat: 27 },   // a gatehouse fort round an open court
   Highwatch: { kind: "ring", size: [25, 25], ringRadius: 11, wallHeight: 6, keepRadius: 4.5, keepHeight: 14, towerRadius: 2.6, towerHeight: 10, mat: 16 },
 };
 // the lane between a castle's keep and its corner towers, on the +x / +z side of the keep: where both gates open (o = its middle
-// across the road's axis, w = its clear width, 4.5 or more). A gate's own height is the wall's less 1 (build.mjs).
+// across the trail's axis, w = its clear width, 4.5 or more). A gate's own height is the wall's less 1 (build.mjs).
 export function laneOf(pl) {
   if (!pl.keep) return { o: 0, w: 4.5 };
   const kh = pl.keep[1] / 2, outer = pl.size[1] / 2 - (pl.towerRadius ?? 3), w = Math.min(5.5, outer - kh);
   return { o: Math.round((kh + kh + w) / 2 * 10) / 10, w: Math.round(w * 10) / 10 };
 }
-const GATE_SLACK = 3;            // the straight stretch overruns the castle by this on each end
-const TARGET = 0.6;              // the road's climb per unit of length on the cone
-const LEAN = 0.72;               // the least the road leans from the uphill direction (radians): it always winds round the cone
-// the three roads, each a march from a shore castle: [name, floor] of the castles in the order the road meets them. The road
-// starts level through the first one (along the contour, counter-clockwise from above), then climbs: each step it heads
-// at the angle from the uphill direction that gives TARGET on the profile's own gradient (across a cliff band it runs nearly along
-// the contour: a ledge cut into the cliff), its heading turning at most 0.08 radians a unit. When its height reaches the next
-// castle's floor it runs straight and level through that castle's footprint (along x or z, whichever its heading is nearer), the
-// castle's shelf being cut and filled to that floor, and goes on. The castles thus stand where the road arrives, not on a ring.
+const SKIN_DROP = 1;             // the drape skin's walking surface under the grid's height there (measured; see castleAt)
+export const CASTLE_SCALE = +(globalThis.process?.env?.CASTLE_SCALE || 1.5);   // map units per voxel of the castles (build.mjs builds them so)
+// The trails (v2: the user's "obvious trails from each castle to the top of the mountain ... in the form of switchbacks").
+// Each team has a castle near the shore, turned to the contour (build_castle's rotation: its local x runs along the contour, its
+// local +z faces the sea), and a trail of its own from it to the rim crest: in by the gate on one end wall, along the court beside
+// the keep, out by the gate on the other end (the side `dir`: +1 the bearing growing, counter-clockwise seen from above), then a
+// COLUMN of switchbacks up the flank: hairpins to alternate sides of the column's centre line (`amp` 8-17 off it), spaced so
+// that every leg climbs the same (but at least `legSep` radially apart, so a bank of the flank stands between two legs) and each
+// as wide as climbing its leg at `grade` needs (on a cliff band's notch the legs run wider). The trail's height is the flank's own
+// at each hairpin and straight between them, so each leg is one even grade (across a cliff it is cut into the top and built out
+// at the foot). The higher castles stand beside a column, a level BRANCH from their gate to the leg at their floor.
+export const TRAIL = { grade: 0.5, legSep: 9.5, ampMin: 8, ampMax: 17, bed: 2.6, end: RC + 0.5, legs: 5 };
+// team t spawns in TEAM_CASTLES[t]. castle: [name, floor, bearing, dir]; extra: [name, floor, side (+1 beyond the column on its
+// dir side, -1 the other)]. The trails stand on the diagonals, the lava runs down the cardinals and the breach faces south.
 const LAYOUT = [
-  { name: "R1", th0: -0.65, rho0: 82, stops: [["Strand", 4], ["Ashgate", 17], ["Cinder", 30]] },
-  { name: "R2", th0: 2.0, rho0: 79, stops: [["Harbour", 3], ["Ember", 23]] },
-  { name: "R3", th0: 4.1, rho0: 80, stops: [["Seawall", 4], ["Highwatch", 26]] },
+  { name: "NE", team: 0, castle: ["Strand", 5, -1.15, 1], extra: ["Cinder", 22, 1] },
+  { name: "SE", team: 1, castle: ["Ashgate", 5, 0.52, 1] },
+  { name: "SW", team: 2, castle: ["Harbour", 5, 2.75, -1], extra: ["Ember", 26, 1] },
+  { name: "NW", team: 3, castle: ["Seawall", 5, -2.75, 1], extra: ["Highwatch", 33, 1] },
 ];
+export const TEAM_CASTLES = LAYOUT.map((t) => t.castle[0]);
 
-// a castle's footprint, [x0, z0, x1, z1] in map units, grown by pad: the courtyard's box (along the road's axis by across it), and an L fort's wing on the sea side
-export function footRect(c, pad = 0) {
-  const hx = (c.axis === "x" ? c.along : c.across) / 2 + pad, hz = (c.axis === "x" ? c.across : c.along) / 2 + pad;
-  let r = [c.at[0] - hx, c.at[1] - hz, c.at[0] + hx, c.at[1] + hz];
-  const w = c.plan.wing;
-  if (w) {
-    const [wa, wc] = w, ex = c.axis === "x" ? [wa, wc] : [wc, wa], d = c.wdir;
-    const cx = c.at[0] + d[0] * (c.across / 2 + wc / 2), cz = c.at[1] + d[1] * (c.across / 2 + wc / 2);
-    r = [Math.min(r[0], cx - ex[0] / 2 - pad), Math.min(r[1], cz - ex[1] / 2 - pad), Math.max(r[2], cx + ex[0] / 2 + pad), Math.max(r[3], cz + ex[1] / 2 + pad)];
-  }
-  return r;
+// a castle's frame: ex its local +x (along the contour, the bearing shrinking), ez its local +z (out to sea); a world point's local
+// coordinates; the yaw build_castle takes (degrees, counter-clockwise seen from above: local +z goes to (sin, cos) of it)
+export const frameOf = (th) => ({ ex: [Math.sin(th), -Math.cos(th)], ez: [Math.cos(th), Math.sin(th)], yaw: Math.round((90 - th * 180 / Math.PI) * 10) / 10 });
+export const toWorld = (c, u, v) => [c.at[0] + c.f.ex[0] * u + c.f.ez[0] * v, c.at[1] + c.f.ex[1] * u + c.f.ez[1] * v];
+const toLocal = (c, x, z) => { const dx = x - c.at[0], dz = z - c.at[1]; return [dx * c.f.ex[0] + dz * c.f.ex[1], dx * c.f.ez[0] + dz * c.f.ez[1]]; };
+// a castle's footprint in its own frame: [u0, v0, u1, v1] (the court and, for an L fort, the wing on the sea side), grown by pad
+export function footBoxes(c, pad = 0) {
+  if (c.plan.kind === "ring") { const R = c.plan.ringRadius + 1.5 + pad; return [[-R, -R, R, R]]; }
+  const hx = c.along / 2 + pad, hz = c.across / 2 + pad, out = [[-hx, -hz, hx, hz]];
+  if (c.plan.wing) { const [wa, wc] = c.plan.wing, cz = c.across / 2 + wc / 2 - 2; out.push([-wa / 2 - pad, cz - wc / 2 - pad, wa / 2 + pad, cz + wc / 2 + pad]); }
+  return out;
 }
-function layRoad(spec) {
-  let [x, z] = pointAt(spec.rho0, spec.th0);
-  let psi = spec.th0 + Math.PI / 2, y = spec.stops[0][1];
-  const pts = [], castles = [];
-  const place = (k) => {
-    const [name, floor] = spec.stops[k], pl = PLANS[name];
-    // the road runs through the castle along the contour (the tangent T, counter-clockwise), centred on the castle, in through
-    // a gate in one wall and out through the opposite one; the gates are where the line meets the walls (kept off the corner towers)
-    // (a chord of the circle through the arrival point P: it ends as far from the centre as it began, so the road does not run downhill)
-    const rho0 = Math.hypot(x, z) || 1, hh0 = Math.min(pl.size[0] / 2 + GATE_SLACK, rho0 * 0.9), dth = 2 * Math.asin(hh0 / rho0), th1 = Math.atan2(z, x) + dth;
-    const P = [x, z], Q = pointAt(rhoAt(x, z), th1), cl = Math.hypot(Q[0] - P[0], Q[1] - P[1]);
-    const T = [(Q[0] - P[0]) / cl, (Q[1] - P[1]) / cl];
-    const ax = Math.abs(T[0]) >= Math.abs(T[1]) ? "x" : "z", i = ax === "x" ? 0 : 1, j = 1 - i;
-    const sg = T[i] >= 0 ? 1 : -1;
-    const len = cl, h = len / 2;
-    const c0 = [(P[0] + Q[0]) / 2, (P[1] + Q[1]) / 2];
-    // the gates: where the ray from the centre along +-T meets the walls, its place along the wall kept off the corner towers; the
-    // road goes A, out of the gate's outside, G1, across the court, G2, B (a diagonal contour makes it enter by one wall and leave by an adjacent one)
-    const hx = ax === "x" ? pl.size[0] / 2 : pl.size[1] / 2, hz = ax === "x" ? pl.size[1] / 2 : pl.size[0] / 2, tr = pl.towerRadius ?? 3;
-    const gate = (d, forbid) => {
-      if (pl.kind === "ring") return { side: null, offset: 0, G: [c0[0] + d[0] * pl.ringRadius, c0[1] + d[1] * pl.ringRadius], O: [c0[0] + d[0] * (pl.ringRadius + 4), c0[1] + d[1] * (pl.ringRadius + 4)] };
-      const tx = d[0] > 0 ? hx / d[0] : d[0] < 0 ? -hx / d[0] : 1e9, tz = d[1] > 0 ? hz / d[1] : d[1] < 0 ? -hz / d[1] : 1e9;
-      let sd = tx < tz ? (d[0] > 0 ? "e" : "w") : (d[1] > 0 ? "s" : "n"), o = tx < tz ? d[1] * tx : d[0] * tz;
-      if (sd === forbid) { sd = d[0] * (ax === "x" ? 1 : 0) + d[1] * (ax === "z" ? 1 : 0) > 0 ? (ax === "x" ? "e" : "s") : (ax === "x" ? "w" : "n"); o = 0; }
-      const ew = sd === "e" || sd === "w", lim = Math.max(0, (ew ? hz : hx) - tr - 3.5);
-      o = Math.max(-lim, Math.min(lim, o));
-      if (pl.keep && ((ax === "x") === ew)) o = laneOf(pl).o;      // the gates on the road's axis open into the lane beside the keep
-      const G = ew ? [c0[0] + (sd === "e" ? hx : -hx), c0[1] + o] : [c0[0] + o, c0[1] + (sd === "s" ? hz : -hz)];
-      const nrm = { e: [1, 0], w: [-1, 0], s: [0, 1], n: [0, -1] }[sd];
-      return { side: sd, offset: o, G, O: [G[0] + nrm[0] * 4, G[1] + nrm[1] * 4] };
-    };
-    const wside = pl.wing ? (ax === "x" ? (c0[1] >= 0 ? "s" : "n") : (c0[0] >= 0 ? "e" : "w")) : null;
-    const gin = gate([-T[0], -T[1]], wside), gout = gate(T, wside);
-    const run = [];
-    for (const [p, q] of [[P, gin.O], [gin.O, gin.G], [gin.G, gout.G], [gout.G, gout.O], [gout.O, Q]]) {
-      const n = Math.max(1, Math.round(Math.hypot(q[0] - p[0], q[1] - p[1])));
-      for (let u = run.length ? 1 : 0; u <= n; u++) run.push([p[0] + (q[0] - p[0]) * u / n, p[1] + (q[1] - p[1]) * u / n]);
-    }
-    const wdir = ax === "x" ? [0, c0[1] >= 0 ? 1 : -1] : [c0[0] >= 0 ? 1 : -1, 0];
-    castles.push({ name, road: spec.name, at: c0, floor, axis: ax, plan: pl, along: pl.size[0], across: pl.size[1], wdir, T, rho: rhoAt(c0[0], c0[1]), gin, gout,
-      arrive: gin.side, depart: gout.side, run });
-    for (const p of run) pts.push([p[0], p[1], floor]);
-    [x, z] = Q; psi = Math.atan2(T[1], T[0]) + dth / 2; y = floor;
-  };
-  place(0);
-  let next = 1;
-  for (let step = 0; step < 2500; step++) {
-    const [gx, gz] = grad(x, z), gm = Math.hypot(gx, gz) || 1e-6, ux = gx / gm, uz = gz / gm;
-    const al = Math.max(LEAN, Math.acos(Math.min(1, TARGET / gm)));
-    const rho = Math.hypot(x, z) || 1, tx = -z / rho, tz = x / rho;
-    const cand = [al, -al].map((a) => Math.atan2(ux * Math.sin(a) + uz * Math.cos(a), ux * Math.cos(a) - uz * Math.sin(a)));
-    const want = cand.reduce((b, a) => (Math.cos(a) * tx + Math.sin(a) * tz > Math.cos(b) * tx + Math.sin(b) * tz ? a : b));
-    psi += Math.max(-0.08, Math.min(0.08, angd(want, psi)));
-    x += Math.cos(psi); z += Math.sin(psi);
-    y += Math.max(-0.05, Math.min(TARGET * 0.97, surf0(x, z) - y));
-    pts.push([x, z, y]);
-    if (next < spec.stops.length && y >= spec.stops[next][1] - 0.3) { place(next); next++; continue; }
-    if (next >= spec.stops.length && rhoAt(x, z) <= RC + 3) break;
-  }
-  return { ...spec, pts, castles, end: pts[pts.length - 1] };
+// the distance from (x, z) to a castle's footprint grown by pad (0 inside)
+export function footDist(c, x, z, pad = 0) {
+  const [u, v] = toLocal(c, x, z);
+  return Math.min(...footBoxes(c, pad).map(([u0, v0, u1, v1]) => Math.hypot(Math.max(0, u0 - u, u - u1), Math.max(0, v0 - v, v - v1))));
 }
-export const ROADS = LAYOUT.map(layRoad);
-export const CASTLES = ROADS.flatMap((r) => r.castles);
+// the court as a mask expression for the heightfield materials (above 0 inside it, in the castle's frame)
+export function courtMask(c, pad = -0.5) {
+  const f = (v) => Number(v.toFixed(4));
+  const d = (k, v) => (v < 0 ? `(${k} + ${f(-v)})` : `(${k} - ${f(v)})`), X = d("x", c.at[0]), Z = d("z", c.at[1]);
+  const U = `(${X} * ${f(c.f.ex[0])} + ${Z} * ${f(c.f.ex[1])})`, V = `(${X} * ${f(c.f.ez[0])} + ${Z} * ${f(c.f.ez[1])})`;
+  return footBoxes(c, pad).map(([u0, v0, u1, v1]) => `min(${f(u1)} - ${U}, ${U} + ${f(-u0)}, ${f(v1)} - ${V}, ${V} + ${f(-v0)})`).reduce((a, b) => `max(${a}, ${b})`);
+}
+// the radius (rho) on bearing th where the ground (islandBase, the mean of the point and 8 either side along the contour) first
+// reaches y, coming in from the sea
+function rhoForFloor(th, y) {
+  for (let rho = RF + 4; rho > RC + 2; rho -= 0.25) {
+    const r = rho / scaleAt(th), g = [-8, 0, 8].map((d) => { const a = th + d / r; return islandBase(r * Math.cos(a), r * Math.sin(a)); });
+    if ((g[0] + g[1] + g[2]) / 3 >= y) return rho;
+  }
+  return RC + 2;
+}
+// a castle centred on its floor's contour at bearing th, the trail through it running `dir`: the in gate on the end wall behind,
+// the out gate on the end wall ahead (local e / w), both in the lane beside the keep (its local +z side) or the wall's middle
+function castleAt(spec, name, floor, th, dir) {
+  const pl = PLANS[name], f = frameOf(th), at = pointAt(rhoForFloor(th, floor), th);
+  // the court's top: build.mjs stands a castle at floor - 1 in voxels of CASTLE_SCALE (1.5), so its court is that rounded up to the
+  // voxel grid (floor 5: 4.5); the trail through it and the shelf round it are cut and filled to `bed`, which the drape skin
+  // stands SKIN_DROP under (query_ground on Caldera: a grid height of 5 stands at 4), so the ground outside the gates meets the court
+  // (a ring castle has no floor of its own: its walls stand at floor - 1, on the skin)
+  const court = pl.kind === "ring" ? floor - SKIN_DROP : Math.ceil((floor - 1) / CASTLE_SCALE - 1e-6) * CASTLE_SCALE;
+  const c = { name, road: spec.name, trail: spec.name, team: TEAM_CASTLES.indexOf(name), at, th, f, floor, court, bed: court + SKIN_DROP, plan: pl, along: pl.size[0], across: pl.size[1], dir };
+  // travel along -ex for dir +1 (the bearing growing): in by local e, out by local w
+  const hx = pl.kind === "ring" ? pl.ringRadius : pl.size[0] / 2, o = pl.keep ? laneOf(pl).o : 0, s = -dir;
+  const gate = (side, sgn) => ({ side: pl.kind === "ring" ? null : side, offset: o, G: toWorld(c, sgn * hx, o), O: toWorld(c, sgn * (hx + 4), o) });
+  c.gin = gate(dir > 0 ? "e" : "w", -s); c.gout = gate(dir > 0 ? "w" : "e", s);
+  c.T = [c.f.ex[0] * s, c.f.ex[1] * s];
+  c.arrive = c.gin.side; c.depart = c.gout.side;
+  c.run = line([c.gin.O, c.gin.G, c.gout.G, c.gout.O]);
+  c.rho = rhoAt(at[0], at[1]);
+  return c;
+}
+// points a map unit apart along a polyline of [x, z]
+function line(ps) {
+  const out = [ps[0]];
+  for (let i = 0; i + 1 < ps.length; i++) {
+    const [a, b] = [ps[i], ps[i + 1]], n = Math.max(1, Math.round(Math.hypot(b[0] - a[0], b[1] - a[1])));
+    for (let k = 1; k <= n; k++) out.push([a[0] + (b[0] - a[0]) * k / n, a[1] + (b[1] - a[1]) * k / n]);
+  }
+  return out;
+}
+// a column from the castle's out gate to the rim: [x, z] of its hairpins (the gate first, the rim last) and its centre bearing
+function column(c) {
+  const P = TRAIL, [ox, oz] = c.gout.O, r0 = rhoAt(ox, oz), rO = Math.hypot(ox, oz);
+  const a0 = 9, thc = Math.atan2(oz, ox) + c.dir * a0 / rO;
+  const h = (rho) => profile(rho, thc);
+  // the hairpins' radii: every leg climbs the same, at least legSep apart (the steep top gets its share by squeezing the legs below)
+  const hTop = h(P.end), n = P.legs, rs = [r0];
+  for (let j = 1; j < n; j++) {
+    const want = c.floor + (hTop - c.floor) * j / n;
+    let r = rs[j - 1] - P.legSep;
+    while (r > P.end + (n - j) * P.legSep && h(r) < want) r -= 0.25;
+    rs.push(Math.min(r, rs[j - 1] - P.legSep));
+  }
+  rs.push(P.end);
+  // each leg as wide across as climbing it at the grade needs (W), shared between its two ends: each hairpin's offset from the line
+  // is what its lower leg still needs past the hairpin below (the gate is a0 off the line), at least ampMin; the last leg ends on
+  // the rim crest, off the line to its side as a hairpin would be (the steep top gets a whole leg's width)
+  const W = rs.slice(1).map((r, j) => { const dr = rs[j] - r, L = Math.abs(h(r) - h(rs[j])) / P.grade; return Math.sqrt(Math.max(0, L * L - dr * dr)); });
+  const hp = [[ox, oz]];
+  let prevA = a0;
+  for (let j = 1; j <= n; j++) {
+    const A = Math.min(P.ampMax + (j === n ? 3 : 0), Math.max(P.ampMin, W[j - 1] - prevA)), side = (j % 2 ? 1 : -1) * c.dir;
+    const rr = rs[j] / scaleAt(thc);
+    hp.push(pointAt(rs[j], thc + side * A / rr));
+    prevA = A;
+  }
+  return { hairpins: hp, thc, rs };
+}
+// a higher castle beside a column, on the column's `side` (+1: its dir side) at its floor, as near the column as leaves its
+// footprint (and its shelf's 3) 7 clear of the trail: its out gate faces the column and a branch runs level from it to the
+// column's leg at that height
+function extraAt(spec, c, col, [name, floor, side]) {
+  const rr = rhoForFloor(col.thc, floor), rw = rr / scaleAt(col.thc);
+  const path = line(col.hairpins);
+  for (let off = 8; off < 70; off += 0.5) {
+    const th = col.thc + side * c.dir * off / rw;
+    // its trail runs toward the column: dir is the way from the castle to the column
+    const e = castleAt(spec, name, floor, th, -side * c.dir);
+    if (path.every(([x, z]) => footDist(e, x, z, 3) >= +(process.env.XCLR ?? 4))) return e;
+  }
+  throw new Error(`no room for ${name} beside the ${spec.name} column`);
+}
+function layTrail(spec) {
+  const [name, floor, th, dir] = spec.castle;
+  const c = castleAt(spec, name, floor, th, dir), col = column(c);
+  const castles = [c], branches = [];
+  if (spec.extra) { const e = extraAt(spec, c, col, spec.extra); castles.push(e); branches.push({ castle: e }); }
+  return { ...spec, castles, col, branches };
+}
+// the trail's points [x, z, y], a point a map unit: through the castle at its floor; up the column from the castle's floor, through
+// each hairpin at the flank's height on the column's line at its radius (never lower than the last plus 0.5), to the rim's height. A branch: through its
+// castle at its floor, then level to the nearest point of the trail at that height
+function trailPoints(t) {
+  const pts = t.castles[0].run.map((p) => [p[0], p[1], t.castles[0].bed]), hairpins = [];
+  t.castles[0].ptIndex = 0;
+  const hp = t.col.hairpins, ys = [t.castles[0].bed];
+  // a hairpin's height is the ground's on the column's centre line at its radius (the legs were sized on it, so each climbs as
+  // planned; a hairpin out to the side is cut in or built out by the difference)
+  const onLine = ([x, z]) => { const p = pointAt(rhoAt(x, z), t.col.thc); return islandBase(p[0], p[1]); };
+  for (let j = 1; j < hp.length; j++) ys.push(Math.max(ys[j - 1] + 0.5, onLine(hp[j])));
+  for (let j = 0; j + 1 < hp.length; j++) {
+    const [ax, az] = hp[j], [bx, bz] = hp[j + 1], m = Math.max(1, Math.round(Math.hypot(bx - ax, bz - az)));
+    for (let w = 1; w <= m; w++) pts.push([ax + (bx - ax) * w / m, az + (bz - az) * w / m, ys[j] + (ys[j + 1] - ys[j]) * w / m]);
+    if (j > 0) hairpins.push([ax, az, ys[j]]);
+  }
+  const branches = t.branches.map((b) => {
+    const e = b.castle, start = e.run.map((p) => [p[0], p[1], e.bed]);
+    // the trail's point at the castle's floor nearest its gate
+    const [gx, gz] = e.gout.O;
+    let best = null, bd = 1e9;
+    for (const p of pts) { const d = Math.hypot(p[0] - gx, p[1] - gz) + 6 * Math.abs(p[2] - e.bed); if (d < bd) { bd = d; best = p; } }
+    const link = line([e.gout.O, [best[0], best[1]]]).slice(1).map((p, i, a) => [p[0], p[1], e.bed + (best[2] - e.bed) * (i + 1) / a.length]);
+    return { ...b, pts: [...start, ...link], joins: best };
+  });
+  return { pts, hairpins, branches };
+}
+// The cliff bands are notched where a trail's column crosses them (their step spread over a wider band, so the legs can climb it
+// near the grade): the bearings are the columns' own, from a first layout.
+NOTCHES = LAYOUT.map(layTrail).flatMap((t) => [{ k: 0, th: t.col.thc }, { k: 1, th: t.col.thc }]);
+const LAID = LAYOUT.map(layTrail);
+// the rim is lowered where a trail ends on it (islandBase), so the trail ends are known before the heights are taken
+TRAIL_ENDS = LAID.map((t) => t.col.hairpins[t.col.hairpins.length - 1]);
+export const TRAILS = LAID.map((t) => { const { pts, hairpins, branches } = trailPoints(t); return { ...t, pts, hairpins, branches, end: pts[pts.length - 1] }; });
+export const ROADS = TRAILS;
+export const CASTLES = TRAILS.flatMap((r) => r.castles);
+export const notches = () => NOTCHES;
+// every polyline whose bed is cut into the flank: the branches first, then the trails (a later bed wins where they meet, and a
+// branch runs level beside its trail to the junction)
+const BEDS = [...TRAILS.flatMap((t) => t.branches.map((b) => b.pts)), ...TRAILS.map((t) => t.pts)];
 
-// a road as a mask expression (above 0 within `hw` of its line; the distance field is exact, so the edge is as smooth as the
-// material grid allows): the polyline is cut to a segment every `every` points
+// a trail and its branches as a mask expression (above 0 within `hw` of a line; the distance field is exact, so the edge is as
+// smooth as the material grid allows): each polyline is cut to a segment every `every` points (and at every hairpin: a leg is straight)
 export function roadMask(rd, hw = 2.7, every = 7) {
   const f = (v) => Number(v.toFixed(1));
-  const pts = rd.pts.filter((_, i, a) => i % every === 0 || i === a.length - 1);
   const segs = [];
-  for (let i = 0; i + 1 < pts.length; i++) segs.push(`sd(${f(pts[i][0])}, ${f(pts[i][1])}, ${f(pts[i + 1][0])}, ${f(pts[i + 1][1])})`);
+  for (const line of [rd.pts, ...(rd.branches ?? []).map((b) => b.pts)]) {
+    const keep = new Set((rd.hairpins ?? []).map((h) => `${f(h[0])},${f(h[1])}`));
+    const pts = line.filter((p, i, a) => i % every === 0 || i === a.length - 1 || keep.has(`${f(p[0])},${f(p[1])}`));
+    for (let i = 0; i + 1 < pts.length; i++) segs.push(`sd(${f(pts[i][0])}, ${f(pts[i][1])}, ${f(pts[i + 1][0])}, ${f(pts[i + 1][1])})`);
+  }
   const defs = "fn tt(ax, az, bx, bz) = clamp(((x - ax) * (bx - ax) + (z - az) * (bz - az)) / max(0.0001, (bx - ax) ^ 2 + (bz - az) ^ 2), 0, 1); " +
     "fn sd(ax, az, bx, bz) = hypot(x - (ax + (bx - ax) * tt(ax, az, bx, bz)), z - (az + (bz - az) * tt(ax, az, bx, bz))); ";
   return `${defs}${hw} - ${segs.reduce((acc, c) => (acc ? `min(${acc}, ${c})` : c), "")}`;
 }
 
 // ---- the height of the island at (x, z), map units above the sea's zero (negative: the sea floor, down to SEA_FLOOR) ----
-export function island(x, z) {
+// islandBase: the ground before the castles' shelves and the trails' beds are cut into it (the trails' hairpins take its height)
+export function islandBase(x, z) {
   const th = Math.atan2(z, x), r = Math.hypot(x, z), rho = r * scaleAt(th);
   // the cone: ridges grow with the radius from the rim; gullies are cut under the lava tongues
   const ridges = 1 + (0.1 * Math.cos(7 * th + 1.5 * noise(x / 40, z / 40, 9)) + 0.04 * Math.cos(13 * th + 2 * noise(x / 25, z / 25, 19))) * smooth(RC + 2, RC + 22, rho) * smooth(8, 24, profile(rho, th));
@@ -268,13 +361,13 @@ export function island(x, z) {
     dip = Math.max(dip, g.d * Math.exp(-q * q) * smooth(g.r0, g.r0 + 8, rho) * (1 - smooth(g.r1 - 8, g.r1, rho)));
   }
   dip *= smooth(RC + 1, RC + 6, rho);
-  // the rim: spurs of varied height (never a regular row of teeth), lower where a road reaches it
+  // the rim: spurs of varied height (never a regular row of teeth), lower where a trail reaches it
   let roadMaskH = 0;
-  for (const rd of ROADS) roadMaskH = Math.max(roadMaskH, Math.exp(-((angd(th, Math.atan2(rd.end[1], rd.end[0])) / 0.2) ** 2)));
+  for (const e of TRAIL_ENDS) roadMaskH = Math.max(roadMaskH, Math.exp(-((angd(th, Math.atan2(e[1], e[0])) / 0.2) ** 2)));
   const spur = 3 + Math.max(0, noise(Math.cos(th) * 3.3 + 4, Math.sin(th) * 3.3 + 4, 17) + 0.2) * 7 * (1 - roadMaskH);
   const crest = spur * Math.exp(-(((rho - RC) / 3.6) ** 2));
   const outer = profile(Math.max(rho, RC), th) * ridges - dip + crest;
-  const crestH = profile(RC, th) + 6;      // the inner rim is raised so the bowl has walls (iteration 10)
+  const crestH = profile(RC, th, false) + 6;      // the inner rim is raised so the bowl has walls (iteration 10)
   // the crater: a wide flat floor (the mine factory's plug stands on it), walls that climb to the rim, a rough floor
   const bowl = FLOOR_Y + (crestH - FLOOR_Y) * smooth(FLAT_R, RC - 1, rho) + 0.7 * fbm(x / 6, z / 6, 51, 2) * (1 - smooth(FLAT_R - 4, FLAT_R + 4, rho));
   let c = bowl + (outer - bowl) * smooth(RC - 4, RC + 1.5, rho);
@@ -291,25 +384,29 @@ export function island(x, z) {
     const d = Math.hypot(x - ISLET_XZ[i][0], z - ISLET_XZ[i][1]) / (q.w * (1 + 0.25 * noise(x / 5, z / 5, 70 + i)));
     h = Math.max(h, -3 + (q.top + 3) * Math.exp(-d * d));
   });
+  return h;
+}
+export function island(x, z) {
+  let h = islandBase(x, z);
   // shelves under the castles (cut and fill to the castle's floor), roads cut and filled into the flank
   let wShelf = 0, wRoad = 0;
   for (const k of CASTLES) {
-    const [x0, z0, x1, z1] = footRect(k, 3);
-    const d = Math.hypot(Math.max(0, x0 - x, x - x1), Math.max(0, z0 - z, z - z1));
+    if (Math.abs(x - k.at[0]) > 40 || Math.abs(z - k.at[1]) > 40) continue;
+    const d = footDist(k, x, z, 3);
     if (d > 6) continue;
     const w = smooth(6, 0, d);
-    h += (k.floor - h) * w;
+    h += (k.bed - h) * w;
     wShelf = Math.max(wShelf, w);
   }
-  for (const rd of ROADS) {
+  for (const pl of BEDS) {
     let best = 1e9, by = 0;
-    for (const p of rd.pts) {
+    for (const p of pl) {
       const dx = x - p[0], dz = z - p[1];
-      if (Math.abs(dx) > 8 || Math.abs(dz) > 8) continue;
+      if (Math.abs(dx) > 7 || Math.abs(dz) > 7) continue;
       const dd = Math.hypot(dx, dz);
       if (dd < best) { best = dd; by = p[2]; }
     }
-    if (best < 8) { const w = 1 - smooth(3.4, 7.8, best); h += (by - h) * w; wRoad = Math.max(wRoad, w); }
+    if (best < 7) { const w = 1 - smooth(TRAIL.bed, TRAIL.bed + 3.2, best); h += (by - h) * w; wRoad = Math.max(wRoad, w); }
   }
   // fine roughness where nothing was cut
   h += 1.0 * fbm(x / 8, z / 8, 21, 2) * smooth(3, 14, h) * (1 - wShelf) * (1 - wRoad);

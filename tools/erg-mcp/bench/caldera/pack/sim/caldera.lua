@@ -3,29 +3,31 @@
 --
 -- The sea is set once at the first turn start of each ROUND (wum.sim's own counter: it only goes up when a team starts a turn it
 -- already had in the round, so a wiped-out team shortens the round and the sea still rises). The levels are WORLD units (20 to the
--- map unit): 20 at the start; each spawn is dry (1.5 map under the floor) at its worm's 3rd own turn (round caps ["10:295","11:295","12:465","9:275","10:415","11:545","12:545"]); F+1 = the highest castle wall-walk
--- + 1 map = 740 by round 13; the cap 860 (6 map under the crater floor, the factory floor) from round 18.
--- Lowest spawn S = 15.35 map, highest wall-walk F = 36 map. Each message is shown once, at the first turn of its round.
+-- map unit): 20 at the start; every spawn dry (1.55 map under its floor) through its worm's 3rd own turn (4 teams of
+-- 2: round 6, at most 55); the shore castles' wall-walks + 1 map by round 10; F+1 = the highest castle
+-- wall-walk + 1 map = 780 by round 15; the cap 860 (6 map under the crater floor, the factory floor) from round 16.
+-- Lowest spawn S = 4.5 map, highest wall-walk F = 38 map. Each message is shown once, at the first turn of its round.
 
-local LEVEL = { [1] = 20, [2] = 20, [3] = 20, [4] = 60, [5] = 105, [6] = 145, [7] = 190, [8] = 230, [9] = 275, [10] = 295, [11] = 295, [12] = 465, [13] = 740, [14] = 760, [15] = 785, [16] = 810, [17] = 835, [18] = 860, [19] = 860 }
+local LEVEL = { [1] = 20, [2] = 20, [3] = 20, [4] = 30, [5] = 40, [6] = 55, [7] = 95, [8] = 140, [9] = 185, [10] = 230, [11] = 340, [12] = 450, [13] = 560, [14] = 670, [15] = 780, [16] = 860, [17] = 860 }
 local CAP = 860
 local MSG = {
-  [1] = "The volcano rumbles: mines fall from the crater. The sea starts rising in 3 turns. Climb the volcano!",
-  [3] = "The sea rises next turn!",
-  [4] = "The sea is rising. Take the roads up the volcano!",
-  [5] = "3 turns until the shore castles drown!",
-  [6] = "Harbour falls next turn! 2 turns until the shore castles drown!",
-  [7] = "The sea reaches the Harbour walls. Strand and Seawall fall next turn! 1 turn until the shore castles drown!",
-  [8] = "The sea reaches the Strand and Seawall walls.",
-  [11] = "Ashgate falls next turn!",
-  [12] = "The sea reaches the Ashgate walls. Cinder, Ember and Highwatch fall next turn!",
-  [13] = "The sea reaches the Cinder, Ember and Highwatch walls.",
-  [18] = "The sea has stopped rising. Hold the volcano!"
+  [1] = "The volcano rumbles: mines fall from the crater. The sea starts rising in 3 rounds. Take the switchbacks up the volcano!",
+  [3] = "The sea rises next round!",
+  [4] = "The sea is rising. Climb the trails!",
+  [7] = "3 rounds until the shore castles drown!",
+  [8] = "2 rounds until the shore castles drown!",
+  [9] = "Strand, Ashgate, Harbour and Seawall fall next round!",
+  [10] = "The sea reaches the Strand, Ashgate, Harbour and Seawall walls.",
+  [12] = "Cinder falls next round!",
+  [13] = "The sea reaches the Cinder walls. Ember falls next round!",
+  [14] = "The sea reaches the Ember walls. Highwatch falls next round!",
+  [15] = "The sea reaches the Highwatch walls.",
+  [16] = "The sea has stopped rising. Hold the volcano!"
 }
 local lastRound = 0
 
 wum.events.on("sim.turnStarted", function(name, turn, round)
-  if round == nil or round < 1 then round = math.floor((turn + 1) / 2) end
+  if round == nil or round < 1 then round = math.floor((turn + 3) / 4) end
   if round == lastRound then return end
   lastRound = round
   local w = LEVEL[round] or CAP

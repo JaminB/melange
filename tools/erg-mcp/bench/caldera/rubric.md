@@ -7,18 +7,21 @@ up the volcano to survive. The volcano is where the mines are spawned from."
 The map is built only through the erg-mcp server's tools, by `build.mjs` here (see its header for how to run it); the
 level script is `script.lua`, and `pack/` is the source export of the last build.
 
-Each item passes or fails, with evidence.
+Each item passes or fails, with in-game evidence. The rubric of v2 (the user's directions of 2026-11-09: obvious
+switchback trails from every castle to the summit, mines from launchers on the caldera's sides, four human teams each
+spawning in its own castle, every worm steered, checks with Sunstone on):
 
 | | Item |
 |---|---|
-| R1 | Builds via the MCP from `tools/erg-mcp/bench/caldera/build.mjs` reproducibly; `level.save` has no warnings; export (source) succeeds; within 65 535 cells. |
-| R2 | Loads and plays in game with no asserts or errors in `Melange.log`; fps not worse than vanilla maps (about 36 in the harness). |
-| R3 | The volcano clearly reads as a volcano from the default (overview) camera: a tall central cone, a crater at the summit, volcanic materials (dark rock or ash; a lava-like colour if a material allows), distinctly taller than everything else. |
-| R4 | Castles: at least 5 recognisable castles (walls, towers, crenellations, keep or gate) scattered around the island at varied heights, made of voxels so they collide and are destructible; optionally decorative Camelot scenery copies near them. |
-| R5 | Ocean all around; the water starts low and rises (level script) so that over about 10-15 turns the lowlands and the castles near the shore flood and only the upper volcano stays dry; the rise is announced (a message) and is deterministic sim code. |
-| R6 | The mine factory is at or inside the crater, and mines are seen coming from it in play. |
-| R7 | Every spawn (8 knots, spread over the castles) can reach the volcano summit on foot or with standard utilities; ramps, switchbacks or tunnels exist; no floating debris, no unreachable or underwater spawns. |
-| R8 | It looks good and complex: varied terrain (ridges, gullies, beaches, cliffs), not boxy; theme and time of day chosen deliberately. |
+| R1 | Builds via the MCP from `tools/erg-mcp/bench/caldera/build.mjs` reproducibly; `level.save` has no warnings; source export succeeds; within 65 535 cells. |
+| R2 | Loads and plays with Sunstone ON and no asserts beyond the vanilla baseline (a vanilla Multi.DinerMight run in the same build with Sunstone on, bazooka fire, counted in the same session); fps not worse than that vanilla run. |
+| R3 | The volcano clearly reads as a volcano from the overview: tall central cone, crater, volcanic materials, distinctly taller than everything. |
+| R4 | At least 5 recognisable voxel castles at varied heights, destructible; EVERY team spawns all its worms inside its OWN castle (4 teams in 4 different castles); no worm spawns outside a castle. |
+| R5 | Ocean all round; the water rises (deterministic level script) so over about 10-15 rounds the lowlands and shore castles flood and only the upper volcano stays dry; the rise is announced on screen. |
+| R6 | Mines come from the volcano and land ON the volcano/caldera, not all over the island: either the central factory with a constrained launch range or several launchers on the caldera sides. Screenshot mines in flight. |
+| R7 | An OBVIOUS switchback trail (zig-zag, readable from the overview, distinct material, wide enough for a worm with margin, walkable gradient) runs from EVERY castle to the summit. In the test every worm is steered up its trail; at least one worm per team is screenshotted climbing it (start/middle/end) and reaches at least the upper cone. No unreachable or underwater spawns. |
+| R8 | It looks good and complex: varied terrain, not boxy; theme/time of day deliberate. |
+| R9 | The test used 4 HUMAN teams (no CPU teams) and the tester steered every worm on every turn it took. |
 
 ## Iteration 4 design (builder's notes)
 
@@ -94,3 +97,27 @@ are 7.2 wide with a flat bed of 3.4. 64 029 of 65 535 cells, 35 of 64 blocks, 97
 - Spawns: 8 knots over 7 places (Ashgate 2, Cinder 2, Highwatch, Ember, the Tower house and Gullywatch outposts 1 each), never more than 2 in a courtyard; early movers on the low floors.
 - Flood: `schedule.mjs` derives the sea from the spawns' floors and the engine's rotation (4, 1, 5, 2, 6, 3, 7, 0): every spawn dry (1.5 map) at its worm's 3rd own turn (`check_flood` minOwnTurns 3 passes), the castle walls drowned by round 13.
 - Terrain: roads painted 1.8 wider than their bed with a dark ash shoulder, an organic lava lake with thin rivulets, an ash apron round the factory plug, no vegetation inside the rim or above 9 map units, five shallow gullies between the switchbacks. Camelot flags on tower tops (decoration, no collision; `--no-scenery` leaves them out).
+
+## v2 round 1 (builder's notes)
+
+- **Teams and castles**: four team castles near the shore, each turned to its contour (`build_castle` `rotation`, local x along
+  the contour, local +z to the sea), court at 4.5 map: Strand (team 0, NE), Ashgate (team 1, SE), Harbour (team 2, SW, the L fort
+  with a sea gate), Seawall (team 3, NW). `place_spawn_knots {mode: "teams"}`: team t's knots WORM4t..4t+3 are four courtyard spots
+  of its own castle (16 knots; the test plays two worms a team). Three higher castles beside the trails: Cinder (court 21, by the NE
+  trail), Ember (a small square fort, court 25.5, by the SW trail), Highwatch (the ring castle, 32, by the NW trail), each with a
+  level branch from its gate to its trail.
+- **Trails** (`terrain.mjs`, laid out, not marched): from each team castle's far gate a column of five legs and four hairpins up
+  its diagonal of the cone to the rim crest; hairpins spread so every leg climbs alike and at least 9.5 apart radially, each leg as
+  wide (8-17 off the column's line, 20 for the last) as climbing it at 0.5 a unit needs; heights straight between hairpins, taken
+  on the column's line. Path stone over the 5.2-wide bed with a dark ash shoulder; the cliff bands are notched where a column
+  crosses them. The lava runs down the cardinals (east, north, west tongues) and the breach faces south.
+- **Checks in the build**: trail and castle stone alone, at 38 degrees and the worm's 0.6 width, take all 16 team spawns to their
+  own trail's rim end; never touching them, none (the trails are the way up); any route, 16 of 16 at 45 and 38; no detached
+  piece (a rotated merlon left joined by a corner is emptied with `fill_box_raw` after `check_islets` finds it).
+- **Sea** (`schedule.mjs`, four teams of two): dry under every spawn through its worm's 3rd own turn (round 6, at most 55
+  world), the shore castles' wall-walks + 1 by round 10, every castle's by round 15, the cap 860 (6 under the crater floor, under
+  the launchers' pads) from round 16.
+- **Mines**: the mines report's setup (four launchers at 23 from the crater's centre on 6 x 6 hot-rock pads, launchHeight 14,
+  launchRadius 2, everyNTurns 3, no scheme mines, keepKnot); the crater is unchanged (its rim is raised from the unnotched profile).
+- **Cells** 64 348 of 65 535 (37 of 64 blocks): the base's frames removed (`remove_base_frames`: 11 652 cells to 610), the skin
+  about 29 000, the seven castles about 33 000. 135 MCP calls; two builds give the same projectHash and pack.

@@ -1,46 +1,50 @@
 // Caldera's flood, derived from the map instead of tuned by feel. All heights in map units, the sea in world units (20 to the map).
-//   Spawns (iteration 11): every spawn's floor stays DRY_MARGIN (1.5) over the water at the start of its worm's first 3 own turns. With 8
-//   worms the engine's rotation is 4, 1, 5, 2, 6, 3, 7, 0 from game turn 1, a worm's own turn n is game turn (its place + 17 for the 3rd),
-//   a round is two game turns; so the sea at round ceil((place + 17) / 2) is at most (floor - 1.5) * 20 for that worm, and the sea is
-//   the line through those caps (earlier movers on the lowest floors, the last on the highest).
-//   F = the highest castle wall-walk: the sea reaches F + 1 by round ROUND_F (13): the castles' walls, not the spawn floors, are what drowns then.
-//   the cap = the crater floor less CAP_BELOW (6): the mine factory explodes when the water is more than 10 world over it
-// Between those the level is linear in the round, and the round (wum.sim's own counter, which a wiped-out team only shortens) is
-// what script.lua reads, so every machine floods alike. The announcements are built from the same numbers: one a round at most,
-// in player terms (the castles' names, turns until the shore drowns).
-export const ROUND_START = 3, ROUND_F = 13, ROUND_CAP = 18, CAP_BELOW = 6, DRY_MARGIN = 1.55;
-export const MOVER_ORDER = [4, 1, 5, 2, 6, 3, 7, 0];             // the worm of each place in the turn rotation (game turn 1 first)
-export const thirdTurnRound = (worm) => Math.ceil((MOVER_ORDER.indexOf(worm) + 1 + 17) / 2);
+//   Spawns (v2: four human teams, each in its own castle near the shore): every spawn's floor stays DRY_MARGIN (1.55) over the
+//   water at the start of its worm's first 3 own turns. The engine's rotation: the teams take turns from team 0 and each moves its
+//   worms in turn, so worm p of team t has its own turn n in game turn t + 1 + teams * p + teams * wormsPerTeam * (n - 1); a round
+//   is `teams` game turns (wum.sim's round: it goes up once every team has had a turn), so the sea at that round is at most
+//   (floor - 1.55) * 20 for that worm. The sea holds under that until the last of those rounds.
+//   The shore castles: the sea reaches their highest wall-walk + 1 by ROUND_SHORE (10).
+//   F = the highest castle wall-walk: the sea reaches F + 1 by ROUND_F (15): every castle is under by then.
+//   the cap = the crater floor less CAP_BELOW (6), from ROUND_CAP: the mine factory explodes when the water is more than 10 world
+//   over it, and the launchers stand on the crater's walls over the floor.
+// Between those the level is linear in the round, and the round is what script.lua reads, so every machine floods alike. The
+// announcements are built from the same numbers: one a round at most, in player terms (the castles' names, rounds until the
+// shore castles drown).
+export const ROUND_START = 3, ROUND_SHORE = 10, ROUND_F = 15, ROUND_CAP = 16, CAP_BELOW = 6, DRY_MARGIN = 1.55, OWN_TURNS = 3;
+// the round of a worm's n-th own turn (worm p of team t)
+export const ownTurnRound = (team, place, n, teams, wormsPerTeam) => Math.ceil((team + 1 + teams * place + teams * wormsPerTeam * (n - 1)) / teams);
 
-export function schedule({ startWorld, spawns, F, craterFloor, castles }) {
-  const lowest = Math.min(...spawns.map((sp) => sp.y));
+// spawns: [{worm, team, place, y}] (place: the worm's place in its team; only the worms that play, place < wormsPerTeam, count)
+// castles: [{name, top (wall-walk), shore}]
+export function schedule({ startWorld, spawns, teams, wormsPerTeam, F, craterFloor, castles }) {
+  const playing = spawns.filter((sp) => sp.place < wormsPerTeam);
+  const lowest = Math.min(...playing.map((sp) => sp.y));
   const cap = Math.round((craterFloor - CAP_BELOW) * 20);
-  // the envelope of the spawns' caps: at round r the sea is at most the lowest cap of any worm whose 3rd own turn is at round r or later
-  const due = spawns.map((sp) => ({ r: thirdTurnRound(sp.worm), c: Math.floor((sp.y - DRY_MARGIN) * 20 / 5) * 5 })).filter((d) => d.r < ROUND_F);
-  const env = (r) => Math.min(Infinity, ...due.filter((d) => d.r >= r).map((d) => d.c));
-  const pts = [[ROUND_START, startWorld]];
-  for (const r of [...new Set(due.map((d) => d.r))].sort((a, b) => a - b)) if (r > ROUND_START) pts.push([r, Math.max(pts[pts.length - 1][1], env(r))]);
-  pts.push([ROUND_F, Math.round((F + 1) * 20)], [ROUND_CAP, cap]);
+  const due = playing.map((sp) => ({ worm: sp.worm, r: ownTurnRound(sp.team, sp.place, OWN_TURNS, teams, wormsPerTeam), c: Math.floor((sp.y - DRY_MARGIN) * 20 / 5) * 5 }));
+  const dryRound = Math.max(...due.map((d) => d.r)), dryCap = Math.min(...due.map((d) => d.c));
+  const shoreTop = Math.max(...castles.filter((c) => c.shore).map((c) => c.top));
+  const pts = [[ROUND_START, startWorld], [dryRound, Math.max(startWorld, dryCap)], [ROUND_SHORE, Math.round((shoreTop + 1) * 20)], [ROUND_F, Math.round((F + 1) * 20)], [ROUND_CAP, cap]];
   const level = (r) => {
     if (r <= pts[0][0]) return startWorld;
-    for (let i = 1; i < pts.length; i++) if (r <= pts[i][0]) { const [r0, w0] = pts[i - 1], [r1, w1] = pts[i]; return Math.floor((w0 + (w1 - w0) * (r - r0) / (r1 - r0)) / 5) * 5; }
+    for (let i = 1; i < pts.length; i++) if (r <= pts[i][0]) { const [r0, w0] = pts[i - 1], [r1, w1] = pts[i]; return Math.min(cap, Math.floor((w0 + (w1 - w0) * (r - r0) / (r1 - r0)) / 5) * 5); }
     return cap;
   };
   const levels = [];
   for (let r = 1; r <= ROUND_CAP + 1; r++) levels.push(level(r));
-  const caps = due.map((d) => ({ round: d.r, cap: d.c }));
   const reach = (topMap) => levels.findIndex((w) => w >= topMap * 20) + 1;      // first round whose level covers a wall-walk
   const msg = {};
   const add = (r, t) => { if (r >= 1) (msg[r] ??= []).push(t); };
   const and = (l) => (l.length > 1 ? l.slice(0, -1).join(", ") + " and " + l[l.length - 1] : l[0]);
-  add(1, "The volcano rumbles: mines fall from the crater. The sea starts rising in " + ROUND_START + " turns. Climb the volcano!");
-  add(ROUND_START, "The sea rises next turn!");
-  add(ROUND_START + 1, "The sea is rising. Take the roads up the volcano!");
+  const rise = levels.findIndex((w) => w > startWorld) + 1;
+  add(1, "The volcano rumbles: mines fall from the crater. The sea starts rising in " + (rise - 1) + " rounds. Take the switchbacks up the volcano!");
+  add(rise - 1, "The sea rises next round!");
+  add(rise, "The sea is rising. Climb the trails!");
   const byRound = {};
   for (const c of castles) (byRound[reach(c.top)] ??= []).push(c.name);
-  for (const [r, names] of Object.entries(byRound)) { add(+r - 1, and(names) + (names.length > 1 ? " fall next turn!" : " falls next turn!")); add(+r, "The sea reaches the " + and(names) + (names.length > 1 ? " walls." : " walls.")); }
+  for (const [r, names] of Object.entries(byRound)) { add(+r - 1, and(names) + (names.length > 1 ? " fall next round!" : " falls next round!")); add(+r, "The sea reaches the " + and(names) + " walls."); }
   const shore = castles.filter((c) => c.shore), shoreRound = Math.max(...shore.map((c) => reach(c.top)));
-  for (const n of [3, 2, 1]) add(shoreRound - n, n + (n > 1 ? " turns" : " turn") + " until the shore castles drown!");
+  for (const n of [3, 2]) add(shoreRound - n, n + " rounds until the shore castles drown!");
   add(levels.findIndex((w) => w >= cap) + 1, "The sea has stopped rising. Hold the volcano!");
   const messages = {};
   for (const [r, l] of Object.entries(msg)) {
@@ -49,7 +53,7 @@ export function schedule({ startWorld, spawns, F, craterFloor, castles }) {
     if (Buffer.byteLength(t) > 160) t = l[0];
     messages[r] = t;
   }
-  return { levels, messages, cap, S: lowest, F, caps, reach: Object.fromEntries(castles.map((c) => [c.name, reach(c.top)])), shoreRound };
+  return { levels, messages, cap, S: lowest, F, dryRound, dryCap, caps: due, reach: Object.fromEntries(castles.map((c) => [c.name, reach(c.top)])), shoreRound, teams, wormsPerTeam };
 }
 
 export function luaOf(sch) {
@@ -61,8 +65,9 @@ export function luaOf(sch) {
 --
 -- The sea is set once at the first turn start of each ROUND (wum.sim's own counter: it only goes up when a team starts a turn it
 -- already had in the round, so a wiped-out team shortens the round and the sea still rises). The levels are WORLD units (20 to the
--- map unit): ${sch.levels[0]} at the start; each spawn is dry (1.5 map under the floor) at its worm's 3rd own turn (round caps ${JSON.stringify(sch.caps.map((d) => d.round + ':' + d.cap))}); F+1 = the highest castle wall-walk
--- + 1 map = ${sch.levels[12]} by round 13; the cap ${sch.cap} (6 map under the crater floor, the factory floor) from round 18.
+-- map unit): ${sch.levels[0]} at the start; every spawn dry (1.55 map under its floor) through its worm's 3rd own turn (${sch.teams} teams of
+-- ${sch.wormsPerTeam}: round ${sch.dryRound}, at most ${sch.dryCap}); the shore castles' wall-walks + 1 map by round ${ROUND_SHORE}; F+1 = the highest castle
+-- wall-walk + 1 map = ${sch.levels[ROUND_F - 1]} by round ${ROUND_F}; the cap ${sch.cap} (6 map under the crater floor, the factory floor) from round ${ROUND_CAP}.
 -- Lowest spawn S = ${sch.S} map, highest wall-walk F = ${sch.F} map. Each message is shown once, at the first turn of its round.
 
 local LEVEL = { ${lv} }
@@ -73,7 +78,7 @@ local MSG = {
 local lastRound = 0
 
 wum.events.on("sim.turnStarted", function(name, turn, round)
-  if round == nil or round < 1 then round = math.floor((turn + 1) / 2) end
+  if round == nil or round < 1 then round = math.floor((turn + ${sch.teams - 1}) / ${sch.teams}) end
   if round == lastRound then return end
   lastRound = round
   local w = LEVEL[round] or CAP
