@@ -16,7 +16,7 @@ import { runTest, type TestTeam } from "../lib/place-wait";
 import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { documentsDir } from "../oasis";
-import { automationFile, holdRoundClock, stopHold } from "./game";
+import { automationFile, holdRoundClock, stopHold, tools as gameTools } from "./game";
 import { CAMERA_RISE, WALL_RADIUS, nearestTread, spawnWarnings, treadAt, treadWarnings } from "../lib/spawn-check";
 import { readWaterLook, waterLookProblems, withWaterLook, type WaterLook } from "../lib/water-look";
 import { checkFactory, factoryLines } from "../lib/factory-check";
@@ -753,6 +753,13 @@ function saveRuns() {
   }
 }
 const allRuns = () => mergeRuns(assertRuns.filter((r) => r.from !== "saved"), savedRuns());
+// This process's own runs against every run, the file's too: test_asserts answers the session's by default, so a run
+// another erg-mcp process made (another tester's, hours before) is not paired with this session's unnoticed (Caldera v2
+// round 3: a 4-assert baseline from 11:45 stood beside the 14:03 run); scope "all" reads them all, each saved run labelled.
+const PROCESS_START = Date.now();
+const sessionRuns = () => assertRuns.filter((r) => r.from !== "saved" && r.startedAt >= PROCESS_START - 1000);
+export type AssertScope = "session" | "all";
+const runsFor = (scope: AssertScope | undefined) => (scope === "all" ? allRuns() : sessionRuns());
 
 async function startAssertRun(s: Session, label: string, kind: AssertRun["kind"]): Promise<AssertRun | null> {
   endAssertRun();
@@ -796,15 +803,19 @@ return tostring(wum.game.inMatch()) .. ";" .. tostring(m and m.turnsStarted or t
 /** test {map, noLevel}: the game's own map in a Quick Game with no Erg level, `turns` game turns watched (each human
  * turn firing the selected weapon with `fire`), its asserts and GL errors counted and diffed against the last Erg run. */
 async function runBaseline(s: Session, a: { map?: string; noLevel?: boolean; turns?: number; fire?: boolean | "bazooka"; fireMs?: number; tod?: TimeOfDay; timeoutSec?: number;
-  cleanMods?: boolean; postfx?: boolean; restart?: boolean; simMods?: "all" | "level-only"; teams?: TestTeam[]; gameDir?: string }) {
+  cleanMods?: boolean; postfx?: boolean; restart?: boolean; simMods?: "all" | "level-only"; teams?: TestTeam[]; gameDir?: string; perf?: boolean | number }) {
   if (!a.map || !a.noLevel) throw new ToolError("a baseline Test is test {map: \"Multi.<map>\", noLevel: true}: the game's own map with no Erg level");
   if (!/^Multi\.[A-Za-z0-9_-]+$/.test(a.map)) throw new ToolError("map: a game level's key, Multi.<map> (list_bases lists them)");
   const conn = await s.ensure(), client = await s.client();
   if (!conn.methods.includes("level.test")) throw new ToolError("no level.test here: Test needs the game running at its main menu (Melange.exe --serve has none)");
   if (a.fire && !conn.methods.includes("input.drive")) throw new ToolError("fire needs the game's input.drive (Melange 0.13+ with the Controls module)");
-  // fire "bazooka" takes it from the weapon panel first: a right click opens it, a click takes its highlighted first cell
-  // (Automation module: test builds, the game window focused)
-  const panel = a.fire === "bazooka" ? automationFile(a.gameDir) : null;
+  // fire "bazooka" takes it first: level.test.selectWeapon (this branch's Melange: the panel's own message sent in the
+  // sim, whatever the window's focus or DirectInput's polls) where the game has it, else from the weapon panel (a right
+  // click opens it, a click takes its highlighted first cell; Automation module: test builds, the game window focused).
+  // In the Caldera v2 round-3 baseline the panel's clicks took nothing (the injected mouse read polls=0), every turn's
+  // weapon stayed nil and R2 could not be scored, so a fire that never happens is now an error, not a quiet nil.
+  const direct = a.fire === "bazooka" && conn.methods.includes("level.test.selectWeapon");
+  const panel = a.fire === "bazooka" && !direct ? automationFile(a.gameDir) : null;
   const clean = a.simMods === "level-only" ? { cleanMods: true, postfx: a.postfx ?? true } : { cleanMods: a.cleanMods, postfx: a.postfx };
   stopHold();
   const restarted = a.restart ? await backToMenu(s) : undefined;
@@ -840,32 +851,52 @@ async function runBaseline(s: Session, a: { map?: string; noLevel?: boolean; tur
       if (a.fire && phase === "play" && ai === "false" && firedTurn !== seen) {
         firedTurn = seen;
         await sleep(1500);   // the turn's camera settles on the worm
-        let wp = weapon;
-        if (panel) {
+        let wp = weapon, took: string | undefined;
+        if (direct) {
+          took = await client.call<{ weapon: number; name: string }>("level.test.selectWeapon", { weapon: "kWeaponBazooka" }, 15000)
+            .then((r) => `level.test.selectWeapon: ${r.name} (${r.weapon})`, (e: Error) => `level.test.selectWeapon refused: ${e.message}`);
+        } else if (panel) {
           appendFileSync(panel, ["click right", "wait 500", "click", "wait 300", ""].join("\n"));
-          await sleep(1600);
-          const r = await client.call<{ ok: boolean; text: string }>("lua.eval", { target: "client", code: BASE_LUA }, 15000).catch(() => ({ ok: false, text: "" }));
-          if (r.ok) wp = r.text.split(";")[5];
+          took = "the weapon panel's first cell (Automation clicks)";
+        }
+        if (direct || panel) {
+          // the sim applies the pick at its next tick; the panel's clicks take about 1.5 s
+          for (let i = 0; i < (direct ? 8 : 1) && (wp === "nil" || wp === weapon); i++) {
+            await sleep(direct ? 250 : 1600);
+            const r = await client.call<{ ok: boolean; text: string }>("lua.eval", { target: "client", code: BASE_LUA }, 15000).catch(() => ({ ok: false, text: "" }));
+            if (r.ok) wp = r.text.split(";")[5];
+          }
         }
         // Input.Fire fires the worm's selected weapon: with none selected (weapon nil) it does nothing
         const none = wp === "nil" || wp === undefined;
         if (!none) await client.call("input.drive", { hold: ["Input.Fire"], ms: a.fireMs ?? 700, replace: true }, 15000).catch(() => undefined);
-        fired.push({ turn: seen, worm: Number(worm), weapon: wp, ...(panel ? { panel: weapon === wp ? "the panel's pick did not change the weapon" : `taken from the panel (was ${weapon})` } : {}),
-          ...(none ? { fired: false, why: `no weapon selected (the game's turns start with none${panel ? "; the panel's click did not take one: is the game window focused?" : "; fire: \"bazooka\" takes it from the weapon panel"})` } : { fired: true }) });
+        fired.push({ turn: seen, worm: Number(worm), weapon: wp, ...(took ? { selected: weapon === wp ? `${took}: the pick did not change the weapon` : `${took} (was ${weapon})` } : {}),
+          ...(none ? { fired: false, why: `no weapon selected (the game's turns start with none${panel ? "; the panel's click did not take one: is the game window focused?" : direct ? "; level.test.selectWeapon did not take" : "; fire: \"bazooka\" takes it first"})` } : { fired: true }) });
       }
     }
     if (Date.now() > limit) break;
     await sleep(500);
   }
   if (run) { run.turns = seen; }
+  // the frame cost while the match plays, in the same session (the rubric's R2: fps against the Erg run's)
+  const perf: unknown = a.perf ? await Promise.resolve(gameTools.find((t) => t.name === "game_perf")!.handler(s, { seconds: a.perf === true ? 10 : a.perf, label: "baseline" })).catch((e: Error) => ({ error: e.message })) : undefined;
   endAssertRun();
-  // the last Erg run of this game, this process's or an earlier one's (the runs file)
-  const erg0 = run ? [...allRuns()].reverse().find((r) => r.kind === "erg" && (!run.game || !r.game || r.game === run.game)) : undefined;
+  // the last Erg run of this game: this session's first, else an earlier erg-mcp process's (the runs file), said so
+  const ergOf = (rs: AssertRun[]) => (run ? [...rs].reverse().find((r) => r.kind === "erg" && (!run.game || !r.game || r.game === run.game)) : undefined);
+  const erg0 = ergOf(sessionRuns()) ?? ergOf(allRuns());
+  // a fire asked for that never happened is an error: the asserts of a baseline that fired nothing are not a baseline
+  // for a level whose matches fire (the run is kept and counted all the same: test_asserts lists it)
+  if (a.fire && !fired.some((f) => f.fired)) {
+    const why = fired.length ? fired.map((f) => `turn ${f.turn}: ${f.why ?? "not fired"}`).join("; ") : `no human turn in play was seen in ${seen} turns`;
+    throw new ToolError(`the baseline fired nothing: ${why}. Asserts counted all the same: ${run ? `${run.total} (${run.counts.size} signatures)` : "not counted"}; the match goes on (end_match leaves it). ${direct ? "level.test.selectWeapon took no weapon: is a human turn in play?" : "Use a Melange of this branch (level.test.selectWeapon selects the weapon in the sim, without the panel or DirectInput)"}`);
+  }
   return { baseline: a.map, key: started.key, states: started.states, ...(restarted ? { restarted } : {}), ...(started.cleanRoom ? { cleanRoom: started.cleanRoom } : {}),
     turnsSeen: seen, ...(seen <= turns ? { warning: `only ${seen} game turns started before the timeout (last read: ${last})` } : {}),
-    ...(a.fire ? { fired, fireNote: "each human turn fires the worm's selected weapon (Input.Fire held fireMs, the power) through input.drive; weapon is the game's weapon index of the active worm (wum.game.worms().weapon), nil when none is selected: then nothing is fired" } : {}),
+    ...(a.fire ? { fired, fireNote: "each human turn fires the worm's selected weapon (Input.Fire held fireMs, the power) through input.drive; weapon is the game's weapon index of the active worm (wum.game.worms().weapon), taken first by level.test.selectWeapon (this branch's Melange) or the weapon panel" } : {}),
     asserts: run ? summary(run) : { note: "this game has no log channel: asserts were not counted" },
-    ...(run && erg0 ? { compare: diff(erg0, run) } : { compareNote: "no Erg Test run of this game yet (this process's or an earlier one's) to compare with: test the project, then test_asserts compares them" }),
+    ...(perf ? { perf } : {}),
+    ...(run && erg0 ? { compare: diff(erg0, run), ...(erg0.from === "saved" ? { compareFrom: `the Erg run is an earlier erg-mcp process's (${new Date(erg0.startedAt).toISOString()}, the runs file); this session has none: test the project in this session for a same-session pair` } : {}) }
+      : { compareNote: "no Erg Test run of this game yet (this process's or an earlier one's) to compare with: test the project, then test_asserts compares them" }),
     next: "the match goes on: end_match leaves it (or test {restart: true} for the next Test)" };
 }
 
@@ -1180,6 +1211,8 @@ export const tools: Tool[] = [
         sync: { type: "boolean", description: "With source: when the game's project differs, write the source's patch and script into it first (level.save and the script save on the game's own server, then the project is opened again), so the Test plays exactly the built level. Refused while the open project has unsaved edits or the source's base differs. The answer's projectCheck says what was compared and done." },
         map: { type: "string", description: "With noLevel: true, a vanilla baseline instead of the project: the game's own level (Multi.DinerMight) in the same Quick Game with no Erg level (level.test {base}, Melange 0.13+). It watches `turns` game turns, fires the selected weapon on each human turn with `fire`, counts the game's ASSERT and GL ERROR lines (its log) and diffs them against the last Erg Test run of this erg-mcp session (`compare`: the signatures only the Erg level shows, only the baseline, and both), so whether an assert is the level's is answered from two runs. No project needs to be open. simMods, cleanMods, postfx, tod and restart apply." },
         noLevel: { type: "boolean", description: "With map: the baseline Test (no Erg level)." },
+        baseline: { type: "boolean", description: "The vanilla baseline in one word: map Multi.DinerMight, noLevel, fire \"bazooka\" on each human turn (level.test.selectWeapon, this branch's Melange), 4 turns, perf 10 s, with the other arguments (teams, tod, postfx, restart) as given, so Sunstone's post-FX stays on unless postfx: false. Answers the asserts, the fps and GPU frame time (perf) and the compare with this session's Erg run; an error when nothing fired." },
+        perf: { anyOf: [{ type: "boolean" }, { type: "number", minimum: 1, maximum: 120 }], description: "Baseline: after the turns, sample the frame cost (game_perf, labelled baseline) for this many seconds (true: 10), in the same session as the Erg run's." },
         suddenDeath: { type: "boolean", description: "false: no sudden death in this Test: once it plays, the round clock is held (level.test.roundTime {hold}: paused at once and again at every turn start until the Test ends), so the Quick Game's sudden death (30 minutes in: the water raised past the level's cap and every worm's health set to 1, Caldera v2 round 2) never comes in a long harness run; the turn clock runs as before. The answer's roundClock shows the round time left standing still. Default: the scheme's own." },
         turns: { type: "integer", minimum: 1, maximum: 20, description: "Baseline: game turns to watch (default 3)." },
         fire: { anyOf: [{ type: "boolean" }, { type: "string", enum: ["bazooka"] }], description: "Baseline: on each human turn, fire the worm's selected weapon (Input.Fire held fireMs through input.drive, whatever the window's focus). \"bazooka\" takes it from the weapon panel first (a right click opens the panel and a click takes its highlighted first cell, the bazooka, through the Automation module: test builds with the game window focused, gameDir or MELANGE_GAME_DIR). A worm with no weapon selected (the Quick Game's turns start with none) fires nothing: the answer lists each turn, the game's weapon index (nil: none) and whether it fired." },
@@ -1192,12 +1225,13 @@ export const tools: Tool[] = [
     },
     async handler(s, a0: { tod?: TimeOfDay; waitFor?: "playing" | "armed"; timeoutSec?: number; cleanMods?: boolean; postfx?: boolean; restart?: boolean; simMods?: "all" | "level-only";
       expectHash?: string; source?: string; sync?: boolean; map?: string; noLevel?: boolean; turns?: number; fire?: boolean | "bazooka"; fireMs?: number; teams?: TestTeam[]; gameDir?: string;
-      suddenDeath?: boolean }) {
+      suddenDeath?: boolean; baseline?: boolean; perf?: boolean | number }) {
+      if (a0.baseline) a0 = { map: "Multi.DinerMight", noLevel: true, fire: "bazooka", turns: 4, perf: true, ...a0 };
       if (a0.map !== undefined || a0.noLevel) {
         const b = await runBaseline(s, a0);
         return a0.suddenDeath === false && (b as { key?: string; states?: unknown }).states ? { ...b, roundClock: await holdRoundClock(s).catch((e: Error) => ({ held: false, note: e.message })) } : b;
       }
-      if (a0.turns !== undefined || a0.fire !== undefined || a0.fireMs !== undefined) throw new ToolError("turns, fire and fireMs are for the baseline Test (map, noLevel: true)");
+      if (a0.turns !== undefined || a0.fire !== undefined || a0.fireMs !== undefined || a0.perf !== undefined) throw new ToolError("turns, fire, fireMs and perf are for the baseline Test (map, noLevel: true, or baseline: true)");
       // simMods level-only: the clean room's sim half, post-FX kept unless postfx says otherwise
       if (a0.simMods === "level-only" && a0.cleanMods === false) throw new ToolError("simMods: \"level-only\" is a clean room for the sim: leave out cleanMods: false");
       if (a0.simMods === "all" && a0.cleanMods) throw new ToolError("simMods: \"all\" runs every sim mod, cleanMods none: give one of them");
@@ -1277,15 +1311,16 @@ export const tools: Tool[] = [
   {
     name: "test_asserts",
     description: "The game's ASSERT and GL ERROR lines of the Test matches erg-mcp started, counted by signature (the line without its prefix) per run: an Erg Test (test) and the vanilla baseline (test {map, noLevel: true}); a run ends with end_match or the next test. Ended runs are kept in Documents\Melange\erg-mcp\assert-runs.json (the last 24), so a baseline run by one erg-mcp process and the Erg Test of a later one are compared too (the last Erg run against the last baseline of the same game build). Answers each run's totals and top signatures and, with an Erg run and a baseline, their diff: the signatures only the Erg level shows (the level's own), only the baseline, and both (the game's own), with counts per minute.",
-    inputSchema: { type: "object", additionalProperties: false, properties: { limit: { type: "integer", minimum: 1, maximum: 200, description: "Signatures per run (default 20)." } } },
-    handler(_s, a: { limit?: number }) {
-      const runs = allRuns();
-      if (!runs.length) return { runs: [], note: "no Test run yet (test counts them; a game without Oasis's log channel cannot)" };
+    inputSchema: { type: "object", additionalProperties: false, properties: { limit: { type: "integer", minimum: 1, maximum: 200, description: "Signatures per run (default 20)." },
+      scope: { type: "string", enum: ["session", "all"], description: "session (default): the runs this erg-mcp process started (since it launched), so the compare pairs this session's Erg Test with this session's baseline and nothing else; all: also the runs file's (earlier erg-mcp processes', each labelled savedRun), as before." } } },
+    handler(_s, a: { limit?: number; scope?: AssertScope }) {
+      const runs = runsFor(a.scope), others = a.scope === "all" ? 0 : allRuns().length - runs.length;
+      if (!runs.length) return { runs: [], scope: a.scope ?? "session", note: `no Test run in this erg-mcp session yet (test counts them; a game without Oasis's log channel cannot)${others ? `; ${others} run${others > 1 ? "s" : ""} of earlier erg-mcp processes in the runs file: test_asserts {scope: "all"}` : ""}` };
       const { erg, base } = pairOf(runs);
       const from = (r: AssertRun) => (r.from === "saved" ? { savedRun: `an earlier erg-mcp process's run, ${new Date(r.startedAt).toISOString()}` } : {});
-      return { runs: runs.map((r) => ({ ...summary(r, a.limit ?? 20), ...from(r) })),
+      return { scope: a.scope ?? "session", runs: runs.map((r) => ({ ...summary(r, a.limit ?? 20), ...from(r) })), ...(others ? { otherProcesses: `${others} run${others > 1 ? "s" : ""} of earlier erg-mcp processes left out: test_asserts {scope: "all"} lists them` } : {}),
         ...(erg && base ? { compare: { ...diff(erg, base), ...(erg.from === "saved" || base.from === "saved" ? { note: "a run from an earlier erg-mcp process (the runs file, Documents\\Melange\\erg-mcp\\assert-runs.json) is in the pair" } : {}) } }
-          : { compareNote: `compare needs an Erg Test run and a vanilla baseline (test {map, noLevel: true}) of the same game: there is ${erg ? "no baseline" : "no Erg run"} yet` }) };
+          : { compareNote: `compare needs an Erg Test run and a vanilla baseline (test {baseline: true}) of the same game in this session: there is ${erg ? "no baseline" : "no Erg run"} yet${others ? " (earlier processes' runs: scope \"all\")" : ""}` }) };
     },
   },
   {

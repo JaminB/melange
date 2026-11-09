@@ -5,7 +5,7 @@ import type { EditorStore, ServerPaletteEntry as PaletteEntry, Vec3 } from "../c
 import { extentXZ, markers, sampleField, spansAt, waterMap, type Field, type MarkerKind, type Region } from "../lib/inspect-field";
 import { Raster, SKY, VOID, WATER, hex, materialTint, shade, type Rgb } from "../lib/inspect-png";
 import { findHoles } from "../lib/holes";
-import { checkTrail } from "../lib/trail-check";
+import { checkTrail, classifyDrops, trailReach, walkTrail } from "../lib/trail-check";
 import { UTILITY_REACH, WORM_WIDTH, classify, nodeAt, ownTurn, pathStats, pathTo, search, standableAt, standing, surfaces, turnAt, type FloodRules, type ReachOptions, type Surfaces } from "../lib/reach";
 import { rotation, slotOf } from "../lib/turns";
 import { waterByTurn, type WaterSchedule } from "../lib/flood";
@@ -1222,7 +1222,7 @@ export const tools: Tool[] = [
   },
   {
     name: "preview_materials",
-    description: "A swatch sheet of a material file (image content): one tile per material in its real colour (the average of its texture, from the server), labelled with its index, and the list of names, colours and whether the texture was found. Default: the open project's material file; or a materialFile, or a theme's own file (theme). Use it to choose materials for heightfield bands and structures.",
+    description: "A swatch sheet of a material file (image content): one tile per material in P01-P64 order (the material file's record order, index 0-63: tile i is record P(i + 1)), each in its real colour (the average of its texture, from the server; the server gives no texture image, so a tile is the texture's mean colour, not a thumbnail), labelled with its index and its P slot, and the list of names, slots, colours and whether the texture was found. Default: the open project's material file; or a materialFile, or a theme's own file (theme). Use it to choose materials for heightfield bands, trails and structures; render_view draws the voxels in these colours, per-corner blends included.",
     inputSchema: {
       type: "object", additionalProperties: false,
       properties: {
@@ -1242,20 +1242,21 @@ export const tools: Tool[] = [
       const own = !!store && file === store.scene.databank.materialFile;
       const m = await loadMaterials(s, file, theme, own ? { key: store!.scene.base.key, source: store!.scene.base.source } : undefined);
       if (!m.names.length) throw new ToolError(`${file} has no material records`);
-      const tint = tintFor(m), TW = 72, TH = 40, COLS = 8, rows = Math.ceil(m.names.length / COLS);
+      const tint = tintFor(m), TW = 72, TH = 44, COLS = 8, rows = Math.ceil(m.names.length / COLS);
       const img = new Raster(COLS * TW + 2, rows * TH + 2, [30, 30, 34]);
       m.names.forEach((_, i) => {
         const x = 2 + (i % COLS) * TW, y = 2 + Math.floor(i / COLS) * TH, c = tint(i);
         img.rect(x, y, TW - 2, TH - 2, c);
         const light = c[0] * 0.3 + c[1] * 0.59 + c[2] * 0.11 > 140;
         img.text(x + 3, y + 3, String(i), light ? [0, 0, 0] : [255, 255, 255]);
-        if (m.resolved && !m.resolved[i]) img.text(x + 3, y + TH - 12, "?", light ? [0, 0, 0] : [255, 255, 255]);
+        img.text(x + 3, y + TH - 13, `P${String(i + 1).padStart(2, "0")}`, light ? [0, 0, 0] : [255, 255, 255]);
+        if (m.resolved && !m.resolved[i]) img.text(x + TW - 14, y + TH - 13, "?", light ? [0, 0, 0] : [255, 255, 255]);
       });
       const info = {
         file: m.file, theme: theme ?? null, ...(asked?.note ? { note: asked.note } : {}),
-        reading: `tile i is at column i % ${COLS}, row floor(i / ${COLS}); a '?' marks a material whose texture the server did not find (a stand-in colour)`,
+        reading: `tiles in P01-P64 order (the file's record order): tile i (record P${"${String(i + 1).padStart(2, '0')}"}) is at column i % ${COLS}, row floor(i / ${COLS}); a '?' marks a material whose texture the server did not find (a stand-in colour); the colour is the texture's mean, the server serves no texture image`,
         colours: m.colors ? "each material's texture colour" : "the server gave no texture colours: distinct hues per index",
-        materials: m.names.map((name, index) => ({ index, name, colour: hex(tint(index)), ...(m.resolved ? { textured: m.resolved[index] ?? false } : {}) })),
+        materials: m.names.map((name, index) => ({ index, slot: `P${String(index + 1).padStart(2, "0")}`, name, colour: hex(tint(index)), ...(m.resolved ? { textured: m.resolved[index] ?? false } : {}) })),
       };
       return { content: [image(img.png()), { type: "text", text: compact(info) }] };
     },
@@ -1401,7 +1402,7 @@ export const tools: Tool[] = [
   },
   {
     name: "check_trail",
-    description: "The ground across walking trails, column by column: along each trail (`trails`, points [x, z] or [x, y, z] in `units`; give y on a switchback so the leg under or over is not taken for it) every `spacing` (default 0.25 map units) the trail's ground (the top at or under its own height) is compared with every column across the bed (`width`, default 5.2) and `margin` (default 1) either side: a column more than `maxDrop` (default 3) under it, or with no ground, is an edge a worm walks or is knocked off (a drop), and a column within `holeRadius` (default 1.5) of the centreline whose ray straight down meets no solid over the water (`above`, default the project's water level) is a hole. check_reachability's walk graph keeps to ground it can stand on, so it passes a trail with a broken edge or a pit in the bed; this reads every column. Answers per trail `ok` (no drop, hole or bare centreline), the runs of each finding (kind, side, from/to along the trail, the worst drop and where), and `skinCorners`: corners within holeRadius + 0.6 of the centreline where four draped skin blocks meet (in the Caldera v2 Test mines and worms fell through the skin within about 0.4 map units of each corner of the crater's skin block though the voxels are solid there; a test island's corners held: probe such a corner in the game with game_mine_drop {trails}). Read-only.",
+    description: "The ground across walking trails, column by column, and the trail walked: along each trail (`trails`, points [x, z] or [x, y, z] in `units`; give y on a switchback so the leg under or over is not taken for it) every `spacing` (default 0.25 map units) the trail's ground (the top at or under its own height) is compared with every column across the bed (`width`, default 5.2) and `margin` (default 1) either side: a column more than `maxDrop` (default 3) under it, or with no ground, is an edge a worm walks or is knocked off (a drop), and a column within `holeRadius` (default 1.5) of the centreline whose ray straight down meets no solid over the water (`above`, default the project's water level) is a hole. Each drop's landing is told apart (`landing`): trail (it lands back on the trail's bed: a harmless V-drop onto the leg under a hairpin), exit (a walk back onto the trail by the walking rules, with its length), trap (no walkable way back within 14 map units: a trough a worm stays in, which FAILS the trail; the NW 6.1 drop of Caldera v2 round 3 is where team 3 got stuck) or unknown. With `walk` (default true) the trail is also walked on its centreline and at walkOffsets (default +-1.5) with the worm's body width and the game's step and stair rules, so a ridge between two legs every column of which has ground is caught as a refused move (fails the trail). mineSuspects lists ground of the kinds that let mines through in Tests. check_reachability's walk graph keeps to ground it can stand on, so it passes a trail with a broken edge or a pit in the bed; this reads every column. Answers per trail `ok` (no drop, hole or bare centreline), the runs of each finding (kind, side, from/to along the trail, the worst drop and where), and `skinCorners`: corners within holeRadius + 0.6 of the centreline where four draped skin blocks meet (in the Caldera v2 Test mines and worms fell through the skin within about 0.4 map units of each corner of the crater's skin block though the voxels are solid there; a test island's corners held: probe such a corner in the game with game_mine_drop {trails}). Read-only.",
     inputSchema: {
       type: "object", additionalProperties: false, required: ["trails"],
       properties: {
@@ -1415,11 +1416,19 @@ export const tools: Tool[] = [
         holeRadius: { type: "number", minimum: 0, description: "See-through holes within this of the centreline are reported, in `units` (default 1.5 map units)." },
         above: { type: "number", description: "A ray must meet ground over this height (default the project's water level, else 0)." },
         limit: { type: "integer", minimum: 1, maximum: 200, description: "Runs listed per trail (default 30)." },
+        walk: { type: "boolean", description: "Also walk the trail with the walking rules (default true): a worm on the centreline and on each of walkOffsets, moved sample by sample over the ground at the trail's own height, each move judged as check_reachability's (a step of maxStep, a riser whose stair is no steeper than maxSlope, a drop of 8, a gap no narrower than bodyWidth); a refused move is a block (a ridge between legs, a kerb, a slot), listed per line with where, the rise and why. A trail with a block is not ok." },
+        walkOffsets: { type: "array", items: { type: "number" }, minItems: 1, maxItems: 9, description: "The lines walked, as offsets from the centreline in `units` (left negative; default [-1.5, 0, 1.5] map units: the centre and the worm's shoulders)." },
+        maxStep: { type: "number", minimum: 0, description: "The walk's step up always taken, in `units` (default 0.5 map units, the game's 10 world)." },
+        maxSlope: { type: "number", minimum: 0, maximum: 89, description: "The walk's steepest stair, degrees (default 45)." },
+        bodyWidth: { type: "number", minimum: 0, description: "The worm's width for the walk, in `units` (default 0.6 map units, its collision radius 0.3 either side)." },
         units,
       },
     },
-    handler(s, a: { trails: number[][][]; names?: string[]; width?: number; margin?: number; spacing?: number; maxDrop?: number; holeRadius?: number; above?: number; limit?: number; units?: Units }) {
+    handler(s, a: { trails: number[][][]; names?: string[]; width?: number; margin?: number; spacing?: number; maxDrop?: number; holeRadius?: number; above?: number; limit?: number; units?: Units;
+      walk?: boolean; walkOffsets?: number[]; maxStep?: number; maxSlope?: number; bodyWidth?: number }) {
       const u = a.units, gs = grids(s.store), water = waterMap(s.store);
+      const reach = trailReach(water, { maxStep: a.maxStep === undefined ? undefined : inMap(a.maxStep, u), maxSlope: a.maxSlope, bodyWidth: a.bodyWidth === undefined ? undefined : inMap(a.bodyWidth, u) });
+      const offsets = (a.walkOffsets ?? [-1.5, 0, 1.5]).map((v) => (a.walkOffsets ? inMap(v, u) : v));
       const o = { halfWidth: (a.width === undefined ? 5.2 : inMap(a.width, u)) / 2, margin: a.margin === undefined ? 1 : inMap(a.margin, u), spacing: a.spacing === undefined ? 0.25 : inMap(a.spacing, u),
         maxDrop: a.maxDrop === undefined ? 3 : inMap(a.maxDrop, u), holeRadius: a.holeRadius === undefined ? 1.5 : inMap(a.holeRadius, u),
         above: a.above !== undefined ? inMap(a.above, u) : water ?? 0, headroom: 1.5 };
@@ -1430,21 +1439,34 @@ export const tools: Tool[] = [
       const per = a.trails.map((t, i) => {
         const pts = t.map((p) => p.map((v) => inMap(v, u)));
         const rep = checkTrail(gs, pts, o);
+        classifyDrops(gs, rep, o, reach);
+        const walk = a.walk === false ? null : walkTrail(gs, pts, offsets, o, reach);
         const count = (k: string) => rep.runs.filter((r) => r.kind === k).length;
+        const landing = (k: string) => rep.runs.filter((r) => r.kind === "drop" && r.landing?.kind === k).length;
+        const traps = landing("trap"), blocks = walk ? walk.reduce((n, w) => n + w.blockedCount, 0) : 0;
         const name = a.names?.[i] ?? `trail${i}`;
+        // a trail is ok without a trap, a hole, a bare stretch or a refused move on the walk: a drop that lands back on
+        // the trail or has a walk back up is told, not failed
+        const bad = traps + count("hole") + count("noGround") + blocks + (walk ? walk.filter((w) => w.noFooting > 0).length : 0);
         return {
-          name, ok: rep.runs.length === 0, length: ov(rep.length), samples: rep.samples, columns: rep.columns,
-          summary: rep.runs.length ? `${name}: ${count("drop")} drop run${count("drop") === 1 ? "" : "s"} (worst ${rep.worstDrop === null ? "no ground" : ov(rep.worstDrop)}), ${count("hole")} hole run${count("hole") === 1 ? "" : "s"}, ${count("noGround")} bare stretch${count("noGround") === 1 ? "" : "es"} of the centreline`
-            : `${name}: no drop over ${ov(o.maxDrop)} within ${ov(o.halfWidth + o.margin)} of the centreline and no hole within ${ov(o.holeRadius)}`,
+          name, ok: bad === 0, length: ov(rep.length), samples: rep.samples, columns: rep.columns,
+          summary: rep.runs.length || blocks ? `${name}: ${count("drop")} drop run${count("drop") === 1 ? "" : "s"} (worst ${rep.worstDrop === null ? "no ground" : ov(rep.worstDrop)}; ${traps} trap${traps === 1 ? "" : "s"}, ${landing("trail")} back on the trail, ${landing("exit")} with a way back), ${count("hole")} hole run${count("hole") === 1 ? "" : "s"}, ${count("noGround")} bare stretch${count("noGround") === 1 ? "" : "es"} of the centreline${walk ? `, ${blocks} refused move${blocks === 1 ? "" : "s"} on the walk` : ""}`
+            : `${name}: no drop over ${ov(o.maxDrop)} within ${ov(o.halfWidth + o.margin)} of the centreline, no hole within ${ov(o.holeRadius)}${walk ? ", walked on every line" : ""}`,
+          drops: { runs: count("drop"), traps, backOnTrail: landing("trail"), withExit: landing("exit"), unknown: landing("unknown") },
           runs: rep.runs.slice(0, a.limit ?? 30).map((r) => ({ kind: r.kind, side: r.side, from: ov(r.from), to: ov(r.to), at: xz(r.at), ...(r.worst !== undefined ? { worstDrop: ov(r.worst) } : r.kind === "drop" ? { worstDrop: "no ground" } : {}),
-            ...(r.trailY !== undefined && r.trailY !== null ? { trailY: ov(r.trailY) } : {}) })),
+            ...(r.trailY !== undefined && r.trailY !== null ? { trailY: ov(r.trailY) } : {}),
+            ...(r.landing ? { landing: { kind: r.landing.kind, at: r.landing.at.map(ov), ...(r.landing.legAlong !== undefined ? { legAlong: ov(r.landing.legAlong) } : {}), ...(r.landing.exitLength !== undefined ? { exitLength: ov(r.landing.exitLength) } : {}),
+              ...(r.landing.climbRefused !== undefined ? { climbRefused: ov(r.landing.climbRefused) } : {}), why: r.landing.why } } : {}) })),
           ...(rep.runs.length > (a.limit ?? 30) ? { runsCount: rep.runs.length } : {}),
           ...(rep.banks ? { banks: rep.banks } : {}),
+          ...(walk ? { walk: walk.map((w) => ({ offset: ov(w.offset), ok: w.ok, segments: w.segments, ...(w.noFooting ? { noFooting: w.noFooting } : {}), ...(w.blockedCount ? { blockedCount: w.blockedCount, blocked: w.blocked.map((b) => ({ along: ov(b.along), at: xz(b.at), rise: ov(b.rise), run: ov(b.run), why: b.why })) } : {}) })) } : {}),
+          ...(rep.mineSuspects.length ? { mineSuspects: rep.mineSuspects.slice(0, 40).map((m) => ({ kind: m.kind, from: ov(m.from), to: ov(m.to), at: xz(m.at), frame: m.frame, detail: m.detail })), mineSuspectsNote: "ground of the kinds that let mines through in Tests (a block of a non-whole scale; a skin cell sheared more than a voxel across itself): not proven causes; game_mine_drop {trails} there says whether it holds" } : {}),
           ...(rep.skinCorners.length ? { skinCorners: rep.skinCorners.map((c) => ({ at: xz(c.at), along: ov(c.along), off: ov(c.off), blocks: c.blocks })) } : {}),
         };
       });
-      return { ok: per.every((p) => p.ok), summary: per.map((p) => p.summary).join("; "), trails: per, rules: { width: ov(o.halfWidth * 2), margin: ov(o.margin), spacing: ov(o.spacing), maxDrop: ov(o.maxDrop), holeRadius: ov(o.holeRadius), above: ov(o.above) },
-        units: u ?? "map", note: "side: left or right of the direction the trail runs; from/to: along the trail from its first point; a drop is a column more than maxDrop under the trail's ground (or with no ground) within the bed and its margin (banks: columns with no ground under the trail's but a bank rising from within 3 map units over it, a cut wall, which are not drops); a hole meets no solid over `above` within holeRadius of the centreline" };
+      return { ok: per.every((p) => p.ok), summary: per.map((p) => p.summary).join("; "), trails: per, rules: { width: ov(o.halfWidth * 2), margin: ov(o.margin), spacing: ov(o.spacing), maxDrop: ov(o.maxDrop), holeRadius: ov(o.holeRadius), above: ov(o.above),
+        walk: a.walk === false ? null : { offsets: offsets.map(ov), maxStep: ov(reach.maxStep), maxSlope: reach.maxSlope, bodyWidth: ov(reach.bodyWidth ?? 0), maxDrop: ov(reach.maxDrop) } },
+        units: u ?? "map", note: "side: left or right of the direction the trail runs; from/to: along the trail from its first point; a drop is a column more than maxDrop under the trail's ground (or with no ground) within the bed and its margin (banks: columns with no ground under the trail's but a bank rising from within 3 map units over it, a cut wall, which are not drops); each drop's landing is told apart: trail (back on the trail's bed, a V-drop under a hairpin), exit (a walk back onto the trail by the walking rules), trap (no way back within 14 map units: fails the trail), unknown; a hole meets no solid over `above` within holeRadius of the centreline; walk: the trail walked on each offset line with the walking rules, a refused move (a ridge, a kerb, a slot) fails the trail" };
     },
   },
   {

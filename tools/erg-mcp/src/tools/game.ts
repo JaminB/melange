@@ -766,6 +766,59 @@ export function sidePose(q: number[], heading: number[]): { pos: number[]; targe
   return { pos: [q[0] - dz * side - dx * back, q[1] + up, q[2] + dx * side - dz * back], target: [q[0], q[1] + 0.6 * WORLD_PER_MAP, q[2]] };
 }
 
+/** The clearance a camera keeps over the sea, map units. */
+export const OVER_WATER = 1.5;
+
+/** A pose (world units) lifted so its eye, and a target under the sea, stand OVER_WATER over the match's water `water`
+ * (world units, the level now): late in a flood the side pose on a worm at the shore, the castle preset's low eye and
+ * the fire camera's pose sank under the risen sea and the shots showed its underside (Caldera v2 round 3). `lifted` says
+ * what moved; nothing without a water level. */
+export function overWater<P extends { pos: number[]; target: number[] }>(pose: P, water: number | undefined | null): { pose: P; lifted?: string } {
+  if (water === undefined || water === null || !Number.isFinite(water)) return { pose };
+  const floor = water + OVER_WATER * WORLD_PER_MAP, m = (v: number) => Math.round((v / WORLD_PER_MAP) * 100) / 100;
+  const dy = Math.max(0, floor - pose.pos[1]), ty = Math.max(0, floor - pose.target[1]);
+  if (dy <= 0 && ty <= 0) return { pose };
+  const parts = [dy > 0 ? `the eye raised ${m(dy)} map units` : "", ty > 0 ? `the target raised ${m(ty)}` : ""].filter(Boolean);
+  return { pose: { ...pose, pos: [pose.pos[0], pose.pos[1] + dy, pose.pos[2]], target: ty > 0 ? [pose.target[0], pose.target[1] + ty, pose.target[2]] : pose.target },
+    lifted: `${parts.join(", ")} to clear the water (${m(water)} map, + ${OVER_WATER})` };
+}
+
+// ------------------------------------------------------------------ the weapon
+
+/** Selects a weapon for the active worm, as the weapon panel's pick does: level.test.selectWeapon (this branch's Melange:
+ * the panel's own Weapon.DelayedPanelChanged sent in the sim, whatever the window's focus or DirectInput's polls) where
+ * the game has it, else the Automation module's panel clicks (a right click opens the panel, a click takes its highlighted
+ * first cell, the bazooka: test builds, the game window focused, the bazooka alone). The worm's weapon is read back
+ * (wum.game.worms().weapon) until it is set; a ToolError when none was taken. In the Caldera v2 round-3 baseline the
+ * clicks took nothing (the injected mouse reported polls=0) and nothing ever fired. */
+export async function selectWeapon(s: Session, weapon: string | number, gameDir?: string): Promise<{ weapon: number; name?: string; via: string; before: string; ms: number }> {
+  const client = await s.client(), t0 = Date.now();
+  const st = await gameState(s);
+  if (st.scene !== "match" || st.worm === undefined) throw new ToolError(`no match turn to select a weapon in (scene ${st.scene}): test first`);
+  if (st.ai) throw new ToolError(`the turn is a computer team's (WORM${st.worm}): a weapon is selected on a human turn`);
+  const slot = st.worm;
+  const read = () => evalClient(s, `for _, w in ipairs(wum.game.worms() or {}) do if w.slot == ${slot} then return tostring(w.weapon) end end return "nil"`).catch(() => "?");
+  const before = await read();
+  let via: string, name: string | undefined, want: number | undefined;
+  if (await has(s, "level.test.selectWeapon")) {
+    const r = await client.call<{ weapon: number; name: string }>("level.test.selectWeapon", { weapon }, 15000)
+      .catch((e: Error) => { throw new ToolError(`level.test.selectWeapon refused ${JSON.stringify(weapon)}: ${e.message}`); });
+    name = r.name; want = r.weapon;
+    via = "level.test.selectWeapon (Weapon.DelayedPanelChanged, the panel's own message, sent in the sim)";
+  } else {
+    if (weapon !== "bazooka" && weapon !== "kWeaponBazooka" && weapon !== 1)
+      throw new ToolError("this game has no level.test.selectWeapon (a Melange of the erg-mcp branch): only the bazooka can be taken here, from the weapon panel's first cell (weapon \"bazooka\"; Automation module, the game window focused)");
+    appendFileSync(automationFile(gameDir), ["click right", "wait 500", "click", "wait 300", ""].join("\n"));
+    via = "the weapon panel (Automation module: a right click, then a click on its first cell, the bazooka)";
+  }
+  // the sim applies the pick at its next tick (the clicks take about 1.5 s): read until the weapon is the one asked
+  let after = before;
+  for (let i = 0; i < 12 && (after === "nil" || after === "?" || (want !== undefined ? after !== String(want) : after === before)); i++) { await sleep(250); after = await read(); }
+  if (after === "nil" || after === "?") throw new ToolError(`no weapon selected ${Math.round((Date.now() - t0) / 100) / 10} s after ${via}: the worm's weapon reads ${after} (was ${before}); is the turn in play (game_state phase play)?`);
+  if (want !== undefined && after !== String(want)) throw new ToolError(`the worm's weapon reads ${after} after ${via}, not ${want} (${name}): the pick was not applied (a weapon the scheme does not give, or a delay on it?)`);
+  return { weapon: Number(after), ...(name ? { name } : {}), via, before, ms: Date.now() - t0 };
+}
+
 const withMap = (st: GameState) => ({ ...st, ...(st.water !== undefined ? { waterMap: Math.round((st.water / WORLD_PER_MAP) * 100) / 100 } : {}) });
 
 const units = { type: "string", enum: ["map", "world"], description: "Units of pos and target: map (default, as the other tools) or world (map x 20, the game's)." } as const;
@@ -864,12 +917,12 @@ export const tools: Tool[] = [
         })();
         if (a.preset === "overview" && (a.pos || a.target)) throw new ToolError("preset overview takes no pos or target");
         stopHold();
-        const pose = { ...cam, fov: a.fov ?? cam.fov };
+        const ow = overWater({ ...cam, fov: a.fov ?? cam.fov }, (await gameState(s).catch(() => ({} as GameState))).water), pose = ow.pose;
         const r = await setCamera(s, pose, frames, a.mod);
         if (!a.mod) { shotPose = pose; shotFrames = frames; }
         frame = r.frame;
         if (a.hold) startHold(s, pose, a.mod);
-        out = { set: true, owner: r.owner, ...(a.mod ? { mod: a.mod } : {}), frames, ...(a.preset ? { preset: a.preset } : {}), worldPos: cam.pos, worldTarget: cam.target,
+        out = { set: true, owner: r.owner, ...(a.mod ? { mod: a.mod } : {}), ...(ow.lifted ? { lifted: ow.lifted } : {}), frames, ...(a.preset ? { preset: a.preset } : {}), worldPos: cam.pos, worldTarget: cam.target,
           ...(a.hold ? { held: true, note: "held until game_camera {clear: true} (set again every 4 s)" } : { note: "it ends by itself after the frames; game_camera {clear: true} ends it now; hold: true keeps it" }) };
       }
       if (!a.shot) return out;
@@ -942,6 +995,7 @@ export const tools: Tool[] = [
       if (!(await has(s, "render.camera")) || !(await has(s, "render.shot"))) throw new ToolError("game_shots needs the game's render.camera and render.shot (a Melange with them, running)");
       if (a.waitPlay && a.onAnnounce) throw new ToolError("waitPlay and onAnnounce both decide when to shoot: give one");
       const k = a.units === "world" ? 1 : WORLD_PER_MAP, t0 = Date.now(), settle = a.settleFrames ?? (a.waitPlay ? 6 : 2);
+      const waterNow = (await gameState(s).catch(() => ({} as GameState))).water;   // every pose is kept over the sea as it stands now
       let playSupported: boolean | undefined;
       const shots: object[] = [], parts: Content[] = [], warnings: string[] = [], prefix = a.prefix ?? `erg_${stamp()}`;
       const castleWorms = new Map<number, string[] | undefined>(), moved = new Map<number, string>();
@@ -978,6 +1032,8 @@ export const tools: Tool[] = [
               return { ...pose, pos: ce.eye.map((x) => x * WORLD_PER_MAP) };
             })();
             if ((cam as { from?: string }).from) warnings.push(`${name}: ${(cam as { from?: string }).from}`);
+            const ow = overWater(cam, waterNow);
+            if (ow.lifted) { Object.assign(cam, ow.pose); warnings.push(`${name}: ${ow.lifted}`); }
             castleWorms.set(i, framed);
             const last = (a.hold || a.holdLast) && i === a.cams.length - 1;
             lastPose = { ...cam, fov: c.fov ?? cam.fov };
@@ -1320,7 +1376,7 @@ export const tools: Tool[] = [
         rounds: { type: "integer", minimum: 1, maximum: 20, description: "Rounds to play when turns is not given: each living worm moves once a round (default 2)." },
         walkSeconds: { type: "number", minimum: 2, maximum: 120, description: "Walk each worm at most this long (default 20; a Quick Game turn is about 45 s)." },
         end: { type: "string", enum: ["skip", "fire", "wait"], description: "How a turn ends after the walk: skip (default where the game has level.test.endTurn), fire (Input.Fire held fireMs), wait (the turn time runs out)." },
-        weapon: { type: "string", enum: ["bazooka"], description: "With end fire: take this weapon first from the weapon panel (the panel opened with a right click and its highlighted first cell, the bazooka, clicked, through the Automation module: test builds, the game window focused, gameDir or MELANGE_GAME_DIR). A turn starts with no weapon, so fire without it fires nothing. Writing the worm's weapon into its container instead hung the turn (2026-11-08)." },
+        weapon: { type: "string", description: "With end fire: take this weapon first (game_select_weapon: level.test.selectWeapon on this branch's Melange, any weapon by engine name such as kWeaponBazooka or bazooka, or an id; an older game takes the bazooka alone, from the weapon panel's first cell through the Automation module: test builds, the game window focused, gameDir or MELANGE_GAME_DIR). A turn starts with no weapon, so fire without it fires nothing. Writing the worm's weapon into its container instead hung the turn (2026-11-08)." },
         gameDir: { type: "string", description: "With weapon: the running game's folder, for its Automation command file (default MELANGE_GAME_DIR)." },
         fireMs: { type: "integer", minimum: 50, maximum: 3000, description: "With end fire: how long fire is held, the shot's power (default 300)." },
         aimDownMs: { type: "integer", minimum: 0, maximum: 3000, description: "With end fire: hold AimDown this long first (default 0)." },
@@ -1338,7 +1394,7 @@ export const tools: Tool[] = [
         timeoutSec: { type: "number", minimum: 10, maximum: 3600, description: "Stop the run after this long (default 1800)." },
       },
     },
-    async handler(s, a: { trails: number[][][]; turns?: number; rounds?: number; walkSeconds?: number; end?: "skip" | "fire" | "wait"; weapon?: "bazooka"; fireMs?: number; aimDownMs?: number;
+    async handler(s, a: { trails: number[][][]; turns?: number; rounds?: number; walkSeconds?: number; end?: "skip" | "fire" | "wait"; weapon?: string; fireMs?: number; aimDownMs?: number;
       shots?: boolean; shotPose?: "near" | "game"; walkAhead?: number; prefix?: string; width?: number; units?: "map" | "world"; timeoutSec?: number; gameDir?: string;
       approach?: boolean; replan?: boolean; announceShots?: boolean; clearView?: boolean; suddenDeath?: boolean }) {
       if (!(await has(s, "input.drive"))) throw new ToolError("game_play_turns drives the worms with input.drive (Melange 0.13+ with the Controls module)");
@@ -1347,7 +1403,8 @@ export const tools: Tool[] = [
       const end = a.end ?? (canSkip ? "skip" : "wait");
       if (end === "skip" && !canSkip) throw new ToolError("end skip needs level.test.endTurn (this branch's Melange): use end wait or fire");
       if (a.weapon && end !== "fire") throw new ToolError("weapon selects what end fire fires: give end: \"fire\"");
-      const panel = a.weapon ? automationFile(a.gameDir) : null;
+      // the weapon: level.test.selectWeapon where the game has it, else the Automation panel clicks (a gameDir is needed then)
+      if (a.weapon && !(await has(s, "level.test.selectWeapon"))) automationFile(a.gameDir);
       const k = a.units === "world" ? 1 : WORLD_PER_MAP, out = (v: number) => Math.round((v / k) * 100) / 100;
       const trails = a.trails.map((t) => t.map((p) => p.map((v) => v * k)));   // world units
       if (!trails.every((t) => t.every((p) => p.every(Number.isFinite)))) throw new ToolError("trails: finite numbers");
@@ -1355,7 +1412,7 @@ export const tools: Tool[] = [
       const client = await s.client(), t0 = Date.now(), limit = (a.timeoutSec ?? 1800) * 1000, prefix = a.prefix ?? `erg_${stamp()}_play`;
       const walk = tools.find((t) => t.name === "game_walk")!;
       type Turn = { turn: number; worm: string; slot: number; team: number; from: number[]; to?: number[]; along?: number; of?: number; climb?: number; stop?: string;
-        recoveries?: string[]; shots: string[]; ended?: string; error?: string; weapon?: string; stuck?: string; approach?: object; replans?: number; eyesMoved?: string[] };
+        recoveries?: string[]; shots: string[]; ended?: string; error?: string; weapon?: string; weaponVia?: string; stuck?: string; approach?: object; replans?: number; eyesMoved?: string[] };
       const played: Turn[] = [];
       // shotPose near: each shot on the worm where it is then, all of a turn's from the same side of its heading (the
       // trail's direction from its spot, walkAhead along it) and high over castle walls, so the ground behind it shows how
@@ -1378,6 +1435,9 @@ export const tools: Tool[] = [
               if (ce.moved) { pose = { ...pose, pos: ce.eye.map((x) => x * WORLD_PER_MAP) }; views?.push(`${name}: ${ce.moved}`); }
               else if (!ce.clear) views?.push(`${name}: no eye near the side pose has a clear view of the worm (shot as posed)`);
             }
+            // never under the risen sea: a late turn's worm at the old shore had its side pose under the water
+            const ow = overWater(pose, (await gameState(s).catch(() => ({} as GameState))).water);
+            if (ow.lifted) { pose = ow.pose; views?.push(`${name}: ${ow.lifted}`); }
             const set = await setCamera(s, { ...pose, fov: 60 }, 40);
             minFrame = set.frame !== undefined ? set.frame + 2 : undefined;
           }
@@ -1463,11 +1523,12 @@ export const tools: Tool[] = [
             if (end === "skip") {
               rec.ended = await client.call("level.test.endTurn", {}, 15000).then(() => "skipped (level.test.endTurn)", (e: Error) => `endTurn refused: ${e.message}`);
             } else if (end === "fire") {
-              if (panel) {
-                appendFileSync(panel, ["click right", "wait 500", "click", "wait 300", ""].join("\n"));
-                await sleep(1600);
-              }
-              const wp = await evalClient(s, `for _, w in ipairs(wum.game.worms() or {}) do if w.slot == ${slot} then return tostring(w.weapon) end end return "nil"`).catch(() => "?");
+              let wp: string;
+              if (a.weapon) {
+                const sel = await selectWeapon(s, a.weapon, a.gameDir).then((r) => ({ ok: true as const, ...r }), (e: Error) => ({ ok: false as const, error: e.message }));
+                wp = sel.ok ? String(sel.weapon) : "nil";
+                rec.weaponVia = sel.ok ? `${sel.name ?? sel.weapon} by ${sel.via} in ${sel.ms} ms` : sel.error;
+              } else wp = await evalClient(s, `for _, w in ipairs(wum.game.worms() or {}) do if w.slot == ${slot} then return tostring(w.weapon) end end return "nil"`).catch(() => "?");
               rec.weapon = wp;
               if (a.aimDownMs) {
                 await client.call("input.drive", { hold: ["Input.AimDown"], ms: a.aimDownMs, replace: true }, 15000).catch(() => undefined);
@@ -1497,8 +1558,49 @@ export const tools: Tool[] = [
       const log = turnLogOut();
       return { played: played.length, asked: want, stop: why, seconds: Math.round((Date.now() - t0) / 100) / 10, end, worms, turns: played, ...(log ? { turnLog: log } : {}),
         ...(roundHeld ? { roundClock: roundHeld } : {}),
-        ...(stopAnn ? { announcements: announced.length ? announced : "none was drawn during the run" } : {}),
+        ...(stopAnn ? { announcements: announced, ...(announced.length ? {} : { announcementsNote: "none was drawn during the run" }) } : {}),
         units: a.units ?? "map", note: "each human turn's worm walked its team's trail with the game's own inputs (input.drive) from the trail's point nearest it; along/of: how far along the trail it stood after the turn. A turn's shots look at its worm from one side of its heading (shotPose near; game: the turn camera), clean of the mods' HUD text" };
+    },
+  },
+  {
+    name: "game_select_weapon",
+    description: "Select a weapon for the active worm in the running Test, the engine's own way: level.test.selectWeapon (a Melange of this branch) sends the weapon panel's own message, Weapon.DelayedPanelChanged <id>, in the sim's tick, so the pick needs neither the panel, nor its clicks, nor DirectInput (the Automation module's injected mouse reported polls=0 in the Caldera v2 round-3 baseline and no weapon was ever taken). `weapon`: the engine's name (kWeaponBazooka, or bazooka, kUtilityNinjaRope ...) or its id (1-68; the bazooka is 1). Answers the worm's weapon read back (wum.game.worms().weapon), the name, how it was taken and how long it took; an error when the worm's weapon did not change to it. On an older game only the bazooka can be taken, from the panel's first cell through the Automation module (test builds, the game window focused, gameDir or MELANGE_GAME_DIR). A human turn in play is needed (game_state: phase play, ai false).",
+    inputSchema: { type: "object", additionalProperties: false, required: ["weapon"], properties: {
+      weapon: { anyOf: [{ type: "string" }, { type: "integer", minimum: 1, maximum: 68 }], description: "The engine's weapon name (kWeaponBazooka, bazooka, kWeaponGrenade ...) or id (1-68)." },
+      gameDir: { type: "string", description: "Older game (no level.test.selectWeapon): the running game's folder, for its Automation command file (default MELANGE_GAME_DIR)." } } },
+    async handler(s, a: { weapon: string | number; gameDir?: string }) {
+      const r = await selectWeapon(s, a.weapon, a.gameDir);
+      return { ...r, note: "the active worm's weapon now (wum.game.worms().weapon); game_fire fires it, or input.drive Input.Fire" };
+    },
+  },
+  {
+    name: "game_fire",
+    description: "Fire the active worm's weapon in the running Test: with `weapon`, select it first (game_select_weapon: level.test.selectWeapon, the engine's own weapon-select path), aim with Input.AimUp or Input.AimDown held `aimUpMs` / `aimDownMs`, then hold Input.Fire for `fireMs` (the shot's power; a bazooka at 300 ms lands near the worm), all through input.drive (the game's own inputs, whatever window has the focus). A turn starts with no weapon selected, so without `weapon` the worm's selected weapon must already be one (the answer's `weapon`; an error when it is nil: nothing would fire). Answers the weapon fired, how it was selected and whether the turn left its play phase after the shot (`fired`: the game's retreat after a fire, read from game_state). The vanilla baseline (test {baseline: true}) does this on every human turn itself.",
+    inputSchema: { type: "object", additionalProperties: false, properties: {
+      weapon: { anyOf: [{ type: "string" }, { type: "integer", minimum: 1, maximum: 68 }], description: "Select this weapon first (the engine's name or id, as game_select_weapon)." },
+      fireMs: { type: "integer", minimum: 50, maximum: 3000, description: "How long Input.Fire is held, the shot's power (default 500)." },
+      aimDownMs: { type: "integer", minimum: 0, maximum: 3000, description: "Hold Input.AimDown this long first (default 0)." },
+      aimUpMs: { type: "integer", minimum: 0, maximum: 3000, description: "Hold Input.AimUp this long first (default 0)." },
+      gameDir: { type: "string", description: "Older game (no level.test.selectWeapon): the running game's folder, for the Automation command file (default MELANGE_GAME_DIR)." } } },
+    async handler(s, a: { weapon?: string | number; fireMs?: number; aimDownMs?: number; aimUpMs?: number; gameDir?: string }) {
+      if (!(await has(s, "input.drive"))) throw new ToolError("game_fire needs the game's input.drive (Melange 0.13+ with the Controls module)");
+      const client = await s.client();
+      const sel = a.weapon !== undefined ? await selectWeapon(s, a.weapon, a.gameDir) : null;
+      const st = await gameState(s);
+      if (st.scene !== "match" || st.worm === undefined) throw new ToolError(`no match turn to fire in (scene ${st.scene}): test first`);
+      if (st.phase !== "play") throw new ToolError(`the turn is not in play (phase ${st.phase ?? "?"}): wait for the next turn's play phase (game_wait)`);
+      const wp = sel ? String(sel.weapon) : await evalClient(s, `for _, w in ipairs(wum.game.worms() or {}) do if w.slot == ${st.worm} then return tostring(w.weapon) end end return "nil"`).catch(() => "?");
+      if (wp === "nil" || wp === "?") throw new ToolError(`WORM${st.worm} has no weapon selected (${wp}): give weapon (game_select_weapon), the game's turns start with none`);
+      const drive = async (input: string, ms: number) => { await client.call("input.drive", { hold: [input], ms, replace: true }, 15000); await sleep(ms + 150); };
+      if (a.aimDownMs) await drive("Input.AimDown", a.aimDownMs);
+      if (a.aimUpMs) await drive("Input.AimUp", a.aimUpMs);
+      const fireMs = a.fireMs ?? 500;
+      await drive("Input.Fire", fireMs);
+      await sleep(600);
+      const after = await gameState(s);
+      const fired = after.scene !== "match" || after.turn !== st.turn || after.phase !== "play";
+      return { worm: `WORM${st.worm}`, turn: st.turn, weapon: Number(wp), ...(sel ? { selected: { name: sel.name, via: sel.via, ms: sel.ms } } : {}), fireMs, fired, phaseAfter: after.phase ?? null,
+        note: fired ? "the turn left its play phase after the shot (the game's retreat): the weapon fired" : "the turn is still in play after the fire was held: a weapon with no immediate shot (a utility, a charge), a greyed-out one (a scheme delay or none left), or the fire was ignored" };
     },
   },
   {
@@ -1542,6 +1644,9 @@ export const tools: Tool[] = [
         const [x, y, z] = f.pos;
         pose = { pos: [x * WORLD_PER_MAP, (y + 25) * WORLD_PER_MAP, (z + 20) * WORLD_PER_MAP], target: [x * WORLD_PER_MAP, y * WORLD_PER_MAP, z * WORLD_PER_MAP] };
       }
+      // over the sea as it stands now (the fires come later, when a flood may be higher: give pos over the schedule's cap)
+      const ow = overWater(pose, (await gameState(s).catch(() => ({} as GameState))).water);
+      pose = ow.pose;
       const name = uniqueName(a.prefix ?? `erg_fireshot_${stamp()}`, "fire", false).replace(/_fire$/, "");
       // re-arming answers the shots of the arming it replaces (render.fireShot starts a new count)
       const before = await client.call<St>("render.fireShot", {}, 15000).catch(() => null);
@@ -1556,6 +1661,7 @@ export const tools: Tool[] = [
       if (Object.keys(extra).length && st.perFire === undefined) throw new ToolError("this game's render.fireShot ignored perFire and track (a Melange before this branch): the shots are one a fire from the pinned pose");
       return { ...st, pose: { pos: pose.pos.map((v) => Math.round(v / kk * 100) / 100), target: pose.target.map((v) => Math.round(v / kk * 100) / 100), units: a.units ?? "map" },
         ...(before && before.paths.length ? { previousArming: { name: before.name, taken: before.taken, paths: before.paths } } : {}),
+        ...(ow.lifted ? { lifted: ow.lifted } : {}),
         note: `armed: ${a.perFire && a.perFire > 1 ? `${a.perFire} shots a fire, ${a.everyMs ?? 250} ms apart from ` : "each factory fire is shot "}${a.delayMs ?? 500} ms after it, ${a.max ?? 4} shots in all${track ? `, the camera following the fire's first mine from ${track} map units` : ""}; game_fire_shot {} answers the shots taken (the game also logs each, [oasis] render.fireShot)` };
     },
   },

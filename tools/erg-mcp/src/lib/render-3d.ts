@@ -6,7 +6,30 @@ import type { Vec3 } from "../core";
 import type { Marker, MarkerKind, Region } from "./inspect-field";
 import type { Rgb } from "./inspect-png";
 import { FACES, MIN_AREA, gridCorner, splitQuad, triangleNormal } from "./drape-mesh";
-import { isSolid, material, type Grid } from "./voxel";
+import { isSolid, maskOf, material, secondOf, type Grid } from "./voxel";
+
+// ------------------------------------------------------------------ per-corner blends
+
+// The top face's corners (FACES[2]: (x0 z0), (x0 z1), (x1 z1), (x1 z0)) and the bit each has in a word's corner mask
+// (terrain/blend.ts CORNER_BIT, top row: [[3, 2], [1, 0]] indexed [z][x]). The game blends the second material in over
+// the corners whose bit is set; render_view approximates it per triangle: the top face is split in two and each triangle
+// is tinted the mix of the two materials by how many of its three corners carry the second one (0, 1/3, 2/3, 1), so a
+// blended trail edge reads as a gradient of two or three steps instead of a flat tile of the first material.
+const TOP_CORNER_BITS = [3, 1, 0, 2];
+const TOP_TRIS = [[0, 1, 2], [0, 2, 3]];
+
+/** The tints of the top face's two triangles for a word with a second material, or null when it has none. */
+export function topBlendTints(wd: number, tint: (m: number) => Rgb): [Rgb, Rgb] | null {
+  const m2 = secondOf(wd);
+  if (m2 < 0) return null;
+  const mask = maskOf(wd);
+  if (!mask) return null;
+  const a = tint(material(wd)), b = tint(m2);
+  return TOP_TRIS.map((t) => {
+    const n = t.filter((v) => (mask >>> TOP_CORNER_BITS[v]) & 1).length, f = n / 3;
+    return [0, 1, 2].map((i) => Math.round(a[i] * (1 - f) + b[i] * f)) as Rgb;
+  }) as [Rgb, Rgb];
+}
 
 // ------------------------------------------------------------------ cameras
 
@@ -259,6 +282,16 @@ export function renderView(input: ViewInput, cam: Camera, w: number, h: number, 
             if ((pts[0] - E[0]) * nm[0] + (pts[1] - E[1]) * nm[1] + (pts[2] - E[2]) * nm[2] >= 0) continue;
             if (!tintC) { tintC = input.tint(material(wd)); jit = 1 + 0.035 * jitter(g.id, x, y, z); }
             const li = light[k];
+            // a top with a second material on some corners: two triangles, each the mix of its corners
+            const bl = k === 2 ? topBlendTints(wd, input.tint) : null;
+            if (bl) {
+              for (let t = 0; t < 2; t++) {
+                for (let v = 0; v < 3; v++) for (let q = 0; q < 3; q++) tri3[v * 3 + q] = pts[TOP_TRIS[t][v] * 3 + q];
+                const c = bl[t], rr = Math.min(255, Math.round(c[0] * li[0] * jit)), gg = Math.min(255, Math.round(c[1] * li[1] * jit)), bb = Math.min(255, Math.round(c[2] * li[2] * jit));
+                if (quad(tri3, (rr << 16) | (gg << 8) | bb, 3)) { faces++; drew = true; }
+              }
+              continue;
+            }
             const rr = Math.min(255, Math.round(tintC[0] * li[0] * jit)), gg = Math.min(255, Math.round(tintC[1] * li[1] * jit)), bb = Math.min(255, Math.round(tintC[2] * li[2] * jit));
             if (quad(pts, (rr << 16) | (gg << 8) | bb)) { faces++; drew = true; }
           }

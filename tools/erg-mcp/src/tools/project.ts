@@ -1,10 +1,11 @@
 // Tool group "project": the connection, projects (list, new, open, save, close), undo and redo, and describe_level.
-import { WORLD_PER_XAN, engineWarnings, isSolid, type Detail, type Role, type Vec3 } from "../core";
+import { WORLD_PER_XAN, engineWarnings, isSolid, type Detail, type EditorStore, type Role, type Vec3 } from "../core";
 import { grids, limitProblems, tidy, toWorld, usage } from "../lib/voxel";
 import { ToolError, type Tool } from "../registry";
 import type { Session } from "../session";
 import { currentHash, factoryReport, spawnTreadWarnings } from "./place";
 import { backdropOf, coverLevel, waterBackdropWarning } from "../lib/backdrop";
+import { drapePokes, pokeLines } from "../lib/drape-pokes";
 
 const discard = { type: "boolean", description: "Drop unsaved edits of the open project instead of refusing." } as const;
 
@@ -100,7 +101,20 @@ export function describe(s: Session, q: FrameQuery = {}) {
     problems: limitProblems(store),
     // what the game would assert or crash on: saved with a warning, refused by export, build and test
     engineWarnings: engineWarnings(scene),
+    // added blocks whose top pokes out of a draped skin's surface (a plug meant to lie under it)
+    ...pokeReport(store),
   };
+}
+
+/** The undraped added blocks that poke out of a draped skin (lib/drape-pokes), as a `drape` field with the lines, or
+ * nothing. A failing read (a frame with no voxels) is no warning. */
+function pokeReport(store: EditorStore): { drape?: { pokes: ReturnType<typeof drapePokes>; warnings: string[] } } {
+  try {
+    const pokes = drapePokes(grids(store));
+    return pokes.length ? { drape: { pokes: pokes.map((p) => ({ ...p, maxOver: Math.round(p.maxOver * 100) / 100, at: p.at.map((v) => Math.round(v * 100) / 100) as [number, number], blockTop: Math.round(p.blockTop * 100) / 100, skinTop: Math.round(p.skinTop * 100) / 100 })), warnings: pokeLines(pokes) } } : {};
+  } catch {
+    return {};
+  }
 }
 
 export const tools: Tool[] = [
@@ -237,7 +251,7 @@ export const tools: Tool[] = [
       const spawns = (() => { try { return spawnTreadWarnings(s.store); } catch { return [] as string[]; } })();
       // the hash test {expectHash} checks the game's project against (the patch and the script, not the stem or title)
       const projectHash = await currentHash(s).catch(() => undefined);
-      return { ...r, ...(projectHash ? { projectHash } : {}), ...(factory.length ? { factory } : {}), ...(sea?.warning ? { water: sea } : {}), ...(spawns.length ? { spawns } : {}), ...state(s), patchBytes: usage(s.store).patchBytes.used };
+      return { ...r, ...(projectHash ? { projectHash } : {}), ...(factory.length ? { factory } : {}), ...(sea?.warning ? { water: sea } : {}), ...(spawns.length ? { spawns } : {}), ...pokeReport(s.store), ...state(s), patchBytes: usage(s.store).patchBytes.used };
     },
   },
   {

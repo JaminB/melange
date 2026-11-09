@@ -238,7 +238,7 @@ class Wormsign final : public melange::Module {
             LOG_ERROR("[wormsign] the %s contributor could not be added", ws::kCameraContrib);
         melange::simhash::Install(mode);
         melange::lua::AddLibrary("wormsign", &OpenLib);
-        ws::library::Configure(keepMatches, static_cast<uint32_t>(maxMB > 0 ? maxMB : 200));
+        ws::library::Configure(keepMatches, static_cast<uint32_t>(maxMB > 0 ? maxMB : 200), record);
         if (ws::recorder::Install()) {
             ws::recorder::SetRecordEnabled(record);
             ws::recorder::SetDetailEnabled(recordDetail);

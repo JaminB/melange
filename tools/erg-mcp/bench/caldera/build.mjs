@@ -422,6 +422,10 @@ try {
   const tc = await call("check_trail", { trails: trailLines, names: trailNames, width: T.TRAIL.bed * 2, margin: 1 }, { soft: true });
   fs.writeFileSync(path.join(OUT, "trails.json"), tc.text);
   say("trails", brief(tc, 900));
+  // (v2 round 3) a trap beside a trail (a drop with no walkable way back onto it: team 3 stayed in the NW trough) or a move
+  // the walk refuses (a ridge between legs) fails the build; a V-drop onto the leg under is told and passes. TRAIL_SOFT=1 logs only.
+  const trailFails = (tc.json?.trails ?? []).filter((t) => (t.drops?.traps ?? 0) > 0 || (t.walk ?? []).some((w) => !w.ok));
+  if (trailFails.length && !process.env.TRAIL_SOFT) throw new Error(`check_trail: ${trailFails.map((t) => `${t.name}: ${t.summary}`).join("; ")} (TRAIL_SOFT=1 to build anyway)`);
   say("waypoints", JSON.stringify(waypoints.map((w) => ({ team: w.team, castle: w.castle, n: w.waypoints.length, summit: w.summit }))));
 
   // Checks: every spawn reaches a trail's rim end on foot with the worm's real width (any trail), then each team's spawns

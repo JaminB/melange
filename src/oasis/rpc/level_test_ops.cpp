@@ -1,4 +1,4 @@
-// level.test.explode, level.test.quit, level.test.endTurn, level.test.fireFactory and level.test.dropMines: harness hooks for a running
+// level.test.explode, level.test.quit, level.test.endTurn, level.test.selectWeapon, level.test.fireFactory and level.test.dropMines: harness hooks for a running
 // Test match (erg-mcp's test_explosion, test {restart}, game_mines {fire} and game_mines {probe}); level.test.probe answers the Test probe (levels/probe.cpp)
 // and the mine factory's fires (levels/factory.cpp). Both send through the match's own Lua (simbridge::EvalMatch) from a sim tick hook, so the engine handles
 // them in its deterministic phase as it does a level script's: explode sets the Explosion data container and sends
@@ -35,6 +35,7 @@
 #include "oasis/providers.h"
 #include "oasis/rpc/params.h"
 #include "tools/json_mini.h"
+#include "weapons/engine.h"
 
 namespace melange::oasis::providers {
 namespace {
@@ -166,6 +167,51 @@ void EndTurn(const Call&, Result& r, void*) {
     r.json = jsonmini::Obj().Bool("queued", true).UInt("tick", sim::Tick()).End();
 }
 
+// level.test.selectWeapon {weapon: id | "kWeaponBazooka" | "bazooka"}: the active worm takes that weapon, as the weapon
+// panel's pick does: Weapon.DelayedPanelChanged <id> is sent in the sim's tick (the panel sends the same replicated at
+// 0x600d0c, and every machine's WXWeaponPanelLogicEntity::HandleMessage 0x603b70 then sets the worm's weapon from it), so
+// a test tool selects a weapon without the panel, its clicks or DirectInput: the Automation module's injected mouse
+// reported polls=0 in the Caldera v2 round-3 baseline, no bazooka was ever taken and nothing fired. Offline matches
+// only (Queue). Answers the id and the engine's name; wum.game.worms()[slot].weapon reads it back a tick later.
+void SelectWeapon(const Call& c, Result& r, void*) {
+    json::Value p;
+    if (!rpc::ParseParams(c, &p, r)) return;
+    const json::Value* w = p.Get("weapon");
+    int id = -1;
+    if (w && w->IsNumber()) {
+        id = static_cast<int>(w->number);
+    } else if (w && w->IsString()) {
+        auto lower = [](std::string s) {
+            for (char& ch : s) ch = static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
+            return s;
+        };
+        const std::string want = lower(w->string);
+        for (int i = 1; i < 0x45 && id < 0; ++i) {
+            const char* n = weapons::engine::EnumName(i);
+            if (!n) continue;
+            const std::string name = lower(n);
+            if (name == want || name == "kweapon" + want || name == "kutility" + want || name == "kmystery" + want) id = i;
+        }
+        if (id < 0) {
+            Fail(r, rpc::kBadParams, "weapon: a weapon id (1-68) or the engine's name, kWeaponBazooka (or bazooka)");
+            return;
+        }
+    } else {
+        Fail(r, rpc::kBadParams, "weapon: a weapon id (1-68) or the engine's name, kWeaponBazooka (or bazooka)");
+        return;
+    }
+    if (id < 1 || id >= 0x45) {
+        Fail(r, rpc::kBadParams, "weapon: an id from 1 to 68");
+        return;
+    }
+    if (!Ready(r)) return;
+    char code[96];
+    snprintf(code, sizeof code, "SendIntMessage('Weapon.DelayedPanelChanged', %d)", id);
+    Queue(code);
+    const char* name = weapons::engine::EnumName(id);
+    r.json = jsonmini::Obj().Bool("queued", true).Int("weapon", id).Str("name", name ? name : "").UInt("tick", sim::Tick()).End();
+}
+
 // level.test.fireFactory {count?}: at the next sim tick the level's mine factory fires as at a turn start (its idle
 // countdown set to 0 and its own StartMineFactory called); count 1-10 fires that many whatever the target.
 // level.test.probe says whether it started (factory.trigger) and, once its mines rest, where (factory.fires).
@@ -259,6 +305,7 @@ void InstallLevelTestOps() {
     AddMethod("level.test.explode", &Explode, nullptr, kRpcMutating | kRpcGameOnly);
     AddMethod("level.test.quit", &Quit, nullptr, kRpcMutating | kRpcGameOnly);
     AddMethod("level.test.endTurn", &EndTurn, nullptr, kRpcMutating | kRpcGameOnly);
+    AddMethod("level.test.selectWeapon", &SelectWeapon, nullptr, kRpcMutating | kRpcGameOnly);
     AddMethod("level.test.fireFactory", &FireFactory, nullptr, kRpcMutating | kRpcGameOnly);
     AddMethod("level.test.dropMines", &DropMines, nullptr, kRpcMutating | kRpcGameOnly);
     AddMethod("level.test.probe", &Probe, nullptr, kRpcGameOnly);
