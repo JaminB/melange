@@ -81,6 +81,14 @@ export function checkFactory(store: EditorStore, len: (map: number) => string, w
     const sup = checkSupport(gs, x, z, SUPPORT_RADIUS, 0.5, water);
     if (sup.hollow) out.warnings.push(`${sup.hollow} of ${sup.columns} columns within ${len(SUPPORT_RADIUS)} of the mine factory's knot are a shell over a void (the thinnest ${len(sup.thinnest!.thickness)} thick, air ${len(sup.deepest!.voidBelow)} deep under it), not solid down to the water: fill under it; check_support {at} lists them`);
   }
+  // launchers (world units in the spec): each erupts its share of a fire from 1 map unit over it, so one under the water
+  // (or that the script's water reaches) throws its mines from the sea
+  const launchers = spec && spec.type === "minefactory" ? spec.factory?.launchers ?? [] : [];
+  launchers.forEach((l, i) => {
+    const ly = l[1] / 20;
+    if (Number.isFinite(top) && top > ly) out.warnings.push(`launcher ${i} (${len(l[0] / 20)}, ${len(ly)}, ${len(l[2] / 20)}) is under the water (${len(top)}${waterTop !== undefined && waterTop !== null && waterTop >= (water ?? -Infinity) ? ", the script's highest" : ""}): its mines start in the sea`);
+    if (!spansAt(gs, l[0] / 20, l[2] / 20).length) out.warnings.push(`launcher ${i} has no ground under it: it throws from the air (fine, but put it on a caldera side to read as a vent)`);
+  });
   // the advisory goes for a keepKnot factory standing on its knot (onSurface); without keepKnot, or with the knot over the
   // ground, it says what clears it
   if (!draped && !onSurface)

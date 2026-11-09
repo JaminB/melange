@@ -1,21 +1,24 @@
-// level.test.explode, level.test.quit, level.test.endTurn and level.test.fireFactory: harness hooks for a running Test match (erg-mcp's
-// test_explosion, test {restart} and game_mines {fire}); level.test.probe answers the Test probe (levels/probe.cpp)
+// level.test.explode, level.test.quit, level.test.endTurn, level.test.fireFactory and level.test.dropMines: harness hooks for a running
+// Test match (erg-mcp's test_explosion, test {restart}, game_mines {fire} and game_mines {probe}); level.test.probe answers the Test probe (levels/probe.cpp)
 // and the mine factory's fires (levels/factory.cpp). Both send through the match's own Lua (simbridge::EvalMatch) from a sim tick hook, so the engine handles
 // them in its deterministic phase as it does a level script's: explode sets the Explosion data container and sends
 // Explosion.Construct, the game's lib_CreateExplosion, at a named detail of the level (a knot); quit sends
 // GameLogic.QuitGame, which leaves the match for the frontend; endTurn sends Timer.TurnTimedOut, the turn timer's own
 // message, which ends the turn playing now as the timer running out does (a tester's skip; GameLogic.EndTurn alone only
 // deactivated the worm and the turn ran on to its timer: tried 2026-11-08). fireFactory calls the factory's own turn-start handler
-// from the same tick (levels::factory::FireNow). Only while a Test the game started is playing, offline.
+// from the same tick (levels::factory::FireNow); dropMines makes mines at points in that tick (levels::factory::Mine), to find
+// the ground a mine lands on and the ground it falls through. Only while a Test the game started is playing, offline.
 #include <windows.h>
 
 #include <algorithm>
+#include <array>
 #include <cctype>
 #include <cmath>
 #include <cstdio>
 #include <deque>
 #include <mutex>
 #include <string>
+#include <vector>
 
 #include "core/log.h"
 #include "levels/factory.h"
@@ -38,6 +41,7 @@ std::deque<std::string> g_queue;  // engine Lua to run at the next tick; under g
 int g_hook = 0;
 unsigned g_sent = 0;
 int g_fire = -1;                  // a fire to start at the next tick (its count; -1 none); under g_mx
+std::vector<std::array<float, 6>> g_drops;   // mines to make at the next tick (pos, vel); under g_mx
 
 void OnState(levels::TestState s, const char* key, const char*, void*) {
     using TS = levels::TestState;
@@ -48,11 +52,16 @@ void OnState(levels::TestState s, const char* key, const char*, void*) {
 void OnTick(uint32_t tick, void*) {
     std::deque<std::string> q;
     int fire = -1;
+    std::vector<std::array<float, 6>> drops;
     {
         std::lock_guard lk(g_mx);
         q.swap(g_queue);
         std::swap(fire, g_fire);
+        drops.swap(g_drops);
     }
+    int made = 0;
+    for (const auto& d : drops) made += !levels::factory::Mine(d.data(), d.data() + 3);
+    if (!drops.empty()) LOG_INFO("[erg] test: tick %u: %d of %zu mines dropped", tick, made, drops.size());
     if (fire >= 0) {
         std::string detail;
         const char* why = levels::factory::FireNow(fire, &detail);
@@ -152,6 +161,49 @@ void FireFactory(const Call& c, Result& r, void*) {
     r.json = jsonmini::Obj().Bool("queued", true).Int("count", static_cast<int>(count)).UInt("tick", sim::Tick()).End();
 }
 
+// level.test.dropMines {points: [[x, y, z], ...], vel?: [x, y, z]}: world units (vel per ms, default the factory's own
+// (0, -0.3, 0)), 1-64 points: at the next sim tick a mine is made at each, as the factory makes its own.
+void DropMines(const Call& c, Result& r, void*) {
+    json::Value p;
+    if (!rpc::ParseParams(c, &p, r)) return;
+    auto vec = [](const json::Value* v, float* out, double lim) {
+        if (!v || !v->IsArray() || v->items.size() != 3) return false;
+        for (size_t k = 0; k < 3; ++k) {
+            const json::Value& n = v->items[k];
+            if (!n.IsNumber() || !std::isfinite(n.number) || std::fabs(n.number) > lim) return false;
+            out[k] = static_cast<float>(n.number);
+        }
+        return true;
+    };
+    const json::Value* pts = p.Get("points");
+    if (!pts || !pts->IsArray() || pts->items.empty() || pts->items.size() > 64) {
+        Fail(r, rpc::kBadParams, "points: 1-64 [x, y, z] points, world units");
+        return;
+    }
+    float vel[3] = {0.f, -0.3f, 0.f};
+    const json::Value* v = p.Get("vel");
+    if (v && !v->IsNull() && !vec(v, vel, 10)) {
+        Fail(r, rpc::kBadParams, "vel: [x, y, z], world units per ms, each within 10");
+        return;
+    }
+    std::vector<std::array<float, 6>> drops;
+    for (const json::Value& pt : pts->items) {
+        std::array<float, 6> d{};
+        if (!vec(&pt, d.data(), 100000)) {
+            Fail(r, rpc::kBadParams, "points: each [x, y, z] within 100000 world units");
+            return;
+        }
+        std::copy(vel, vel + 3, d.begin() + 3);
+        drops.push_back(d);
+    }
+    if (!Ready(r)) return;
+    {
+        std::lock_guard lk(g_mx);
+        g_drops.insert(g_drops.end(), drops.begin(), drops.end());
+    }
+    r.json = jsonmini::Obj().Bool("queued", true).Int("count", static_cast<int>(drops.size())).UInt("tick", sim::Tick()).End();
+}
+
 // level.test.probe {}: the Test probe (worm spawns at turn 1, deaths with their causes, explosions) and the mine
 // factory's fires (each mine's spawn and rest) and its last on-demand trigger. Main thread.
 void Probe(const Call&, Result& r, void*) {
@@ -165,6 +217,7 @@ void InstallLevelTestOps() {
     AddMethod("level.test.quit", &Quit, nullptr, kRpcMutating | kRpcGameOnly);
     AddMethod("level.test.endTurn", &EndTurn, nullptr, kRpcMutating | kRpcGameOnly);
     AddMethod("level.test.fireFactory", &FireFactory, nullptr, kRpcMutating | kRpcGameOnly);
+    AddMethod("level.test.dropMines", &DropMines, nullptr, kRpcMutating | kRpcGameOnly);
     AddMethod("level.test.probe", &Probe, nullptr, kRpcGameOnly);
 }
 }  // namespace melange::oasis::providers

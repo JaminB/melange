@@ -117,6 +117,8 @@ struct TriggerSpec {
 // store). The engine's factory reads them at each turn start (stdvs sends GameLogic.StartMineFactory whenever two or
 // more alliances are left): it counts down `inactiveTurns` turn starts after it is placed and after each fire, then
 // fires at a turn start when fewer than `activation` mines are in the level, min(activation - mines, 10) of them.
+inline constexpr size_t kMaxLaunchers = 8;
+inline constexpr int kMaxLauncherCoord = 100000;   // world units
 struct FactorySpec {
     std::optional<int> activation;                    // NumMineActivation 0-255 (game 20; 0 never fires)
     std::optional<int> inactiveTurns;                 // NumTurnsInactive 0-255 (game 7)
@@ -128,8 +130,13 @@ struct FactorySpec {
     // there, instead of the game's placement (over random worms and objects).
     std::optional<int> launchHeight;
     std::optional<int> launchRadius;
+    // Launchers (world units, at most kMaxLaunchers): set, a fire's mines are shared out over them and each erupts
+    // straight up from a spot within launchRadius of its launcher (1 map unit over the launcher's height, the spots kept
+    // apart), tops out launchHeight over it and falls back there, instead of falling over the factory. The engine runs one factory a match (GameLogicService asserts "Only allowed one mine factory at
+    // a time"), so several launch points are this one factory's.
+    std::vector<std::array<int, 3>> launchers;
     bool Default() const { return !activation && !inactiveTurns && schemeMines && !keepKnot && !Launch(); }
-    bool Launch() const { return launchHeight || launchRadius; }
+    bool Launch() const { return launchHeight || launchRadius || !launchers.empty(); }
     bool Tweaks() const { return activation || inactiveTurns; }
 };
 struct ObjectSpec {

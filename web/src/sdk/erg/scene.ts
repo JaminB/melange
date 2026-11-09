@@ -64,8 +64,11 @@ export interface TriggerSpec { index: number; radius?: number; teamCollect?: num
  * `keepKnot: true`: when the factory's drop from its knot hits no land, it stays at its knot instead of the match's
  * stale sweep point (Melange 0.13+; an older game ignores it); `launchHeight` (1-255) and `launchRadius` (0-255), map
  * units: each mine it fires appears that high over it and within that radius round it and falls from there, instead of
- * the game's placement over random worms and objects (Melange 0.13+; an older game ignores them). */
-export interface FactorySpec { activation?: number; inactiveTurns?: number; schemeMines?: boolean; keepKnot?: boolean; launchHeight?: number; launchRadius?: number; }
+ * the game's placement over random worms and objects (Melange 0.13+; an older game ignores them). `launchers` (1-8
+ * [x, y, z] points, whole world units within 100000): a fire's mines are shared out over them and each erupts straight
+ * up from a spot within `launchRadius` of its launcher, `launchHeight` high, and falls back there (the engine runs one
+ * factory a match, so these are the one factory's launch points; Melange 0.13+). */
+export interface FactorySpec { activation?: number; inactiveTurns?: number; schemeMines?: boolean; keepKnot?: boolean; launchHeight?: number; launchRadius?: number; launchers?: [number, number, number][]; }
 export type ObjectSpec =
   | { knot: string; type: "crate"; crate: CrateSpec }
   | { knot: string; type: "telepad"; group: number }
@@ -331,13 +334,21 @@ function checkObject(c: Checker, o: unknown, p: string) {
     case "minefactory": {
       if (!c.keys(o, ["knot", "type", "factory"], p) || o.factory === undefined) break;
       const f = o.factory;
-      if (!isObj(f) || !c.keys(f, ["activation", "inactiveTurns", "schemeMines", "keepKnot", "launchHeight", "launchRadius"], `${p}.factory`)) return c.fail(`${p}.factory`, "must be an object");
+      if (!isObj(f) || !c.keys(f, ["activation", "inactiveTurns", "schemeMines", "keepKnot", "launchHeight", "launchRadius", "launchers"], `${p}.factory`)) return c.fail(`${p}.factory`, "must be an object");
       int(f.activation, 0, 255, `${p}.factory.activation`);
       int(f.inactiveTurns, 0, 255, `${p}.factory.inactiveTurns`);
       if (f.schemeMines !== undefined && typeof f.schemeMines !== "boolean") c.fail(`${p}.factory.schemeMines`, "must be a boolean");
       if (f.keepKnot !== undefined && typeof f.keepKnot !== "boolean") c.fail(`${p}.factory.keepKnot`, "must be a boolean");
       int(f.launchHeight, 1, 255, `${p}.factory.launchHeight`);
       int(f.launchRadius, 0, 255, `${p}.factory.launchRadius`);
+      if (f.launchers !== undefined) {
+        const ls = f.launchers;
+        if (!Array.isArray(ls) || ls.length < 1 || ls.length > 8) c.fail(`${p}.factory.launchers`, "must be 1-8 [x, y, z] points");
+        else ls.forEach((pt, i) => {
+          if (!Array.isArray(pt) || pt.length !== 3 || !pt.every((v) => Number.isInteger(v) && Math.abs(v as number) <= 100000))
+            c.fail(`${p}.factory.launchers[${i}]`, "must be [x, y, z], whole world units within 100000");
+        });
+      }
       break;
     }
   }

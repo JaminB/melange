@@ -121,6 +121,34 @@ The settings, all optional (unset keeps the game's value):
 | Stay at its knot (`keepKnot`, erg-mcp only) | off | On: when the factory's drop from its knot misses (no land under it, or a hit that is not under the knot, as over a draped skin), it stays at its knot instead of the stale point the game would leave it at (Melange 0.13+) |
 | Launch height (`launchHeight`, erg-mcp only) | unset | 1-255 map units: each mine of a fire appears this high over the factory and falls from there (20 when only the radius is set), instead of over a random worm or object (Melange 0.13+) |
 | Launch radius (`launchRadius`, erg-mcp only) | unset | 0-255 map units: the mines appear at random spots within this radius round the factory (an even spread over the disc), so they land round it: on a volcano, on the cone round the crater (Melange 0.13+). Tried on 2026-11-08 (Multi.DinerMight, height 25, radius 8): four fires of 10, 7, 2 and 7 mines, the mines at rest 5.7-14.4 map units from the factory |
+| Launchers (`launchers`, erg-mcp only) | none | 1-8 launch points (world units in the patch): a fire's mines are shared out over them, from a random one in turn, and each erupts straight up from a spot within the launch radius of its launcher (1 map unit over the launcher's height; a fire's spots kept 1.5 map units apart where they can be), tops out the launch height over it and falls back there. Stand each on flat ground at least the radius wide, where a dropped mine holds (below). Put them on the sides of a caldera and the mines come from there (Melange 0.13+ of the erg-mcp branch; an older Melange plays the game's placement) |
+
+**One factory a match.** The engine keeps a single mine factory: a second one (the scheme's
+`GameLogic.CreateRandMineFactory` sent into a level that has its own) trips `ASSERT(m_MineFactoryId == kTaskIdInvalid &&
+"Only allowed one mine factory at a time")` in `GameLogicService.cpp` (tried 2026-11-08, testenv B), so a level cannot
+place several. Launchers are the one factory's launch points instead. The game's own placement is what scatters mines
+over the whole map: on a flat 60 x 60 island with four worms in its corners, three fires of 10 without a launch
+setting put every mine 11-36 map units from the factory, by the worms (`outside` in game_mines; with
+`launchRadius` 10 Caldera's round-11 fires stayed within 10). A public Melange without these settings plays the
+game's placement.
+
+**How a mine flies.** The velocity the game's mine maker takes is in world units per millisecond (the factory's own
+drop is (0, -0.3, 0), 300 world units a second down), and a mine falls at 2.5e-4 world units per ms² (250 world
+units, 12.5 map units, per second²): measured on 2026-11-08 with `wum.level.mine` throws of 0.05-0.8 from 20, 160 and
+560 world units over a flat island, every landing where that gravity puts it. A mine that lands moving sideways
+faster than about 0.05 world units/ms often sinks into the voxel ground (on a solid block it came to rest inside it, at
+the next layer; on Caldera's crater skin it fell through to the sea: arcs thrown across the crater from launchers on its
+walls lost 25 of 30 mines on 2026-11-08), while straight falls and near-vertical lobs rested on the top every time. That
+is why launchers erupt their mines straight up and land them round themselves, not across the map.
+
+**Ground a mine falls through.** A mine does not always stop on the voxels a worm stands on. On Caldera (2026-11-09,
+testenv B, erg-mcp's `game_mine_drop`: one mine dropped 8 map units over each point) the crater's draped skin let most
+dropped mines through to the base's ground under the sea, where they drowned, and so did whole 6 x 6 pads of solid
+undraped blocks: of eight pads round the crater at the same height, four held every mine dropped on them, run after
+run and in two builds that made them in another order, and four held none, while worms stood on all eight. Where it
+happens follows no rule found (not the frame, its order, its draping, the camera, nor the side of the map); a small
+flat island of one undraped block held all 30 mines of three volleys. So check the ground: drop mines on the spots a
+level's mines are meant to land on, and keep the launchers where they hold.
 
 The target and the idle turns are the game's shared `kMineFactoryData`: Melange writes them when the map's match is
 set up and puts the game's values back when it ends, so no other map (and no other player's match) sees them. They

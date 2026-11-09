@@ -32,7 +32,10 @@
 - Sim scripts and level scripts: `wum.sim.turn()`, `wum.sim.round()` (a round counter that survives a team being wiped
   out; `sim.turnStarted` now also passes the round) and `wum.sim.waterSchedule{...}` (rising water at turn starts).
 - The mine factory's `launchHeight` and `launchRadius` (scene and patch, erg-mcp `set_mine_factory`): its mines appear
-  over it and fall round it instead of raining onto random worms and objects. `wum.game.turn().index` and
+  over it and fall round it instead of raining onto random worms and objects. Its `launchers` (1-8 points) make the
+  mines erupt from those points and land round them, so a volcano's mines come from the sides of its caldera
+  (`level.test.dropMines` and erg-mcp's `game_mine_drop` check that the ground there holds a mine); the engine allows one factory a match, so these are its launch points. Projects without them are
+  unchanged. `wum.game.turn().index` and
   `melange.turn` no longer run one behind `sim.turnStarted` when the first turn starts in the frame the match's VM
   appears. The `sim/announce` log record carries its `seconds`. erg-mcp: check_flood models the engine's worm rotation
   and gives a PASS/FAIL verdict (`minOwnTurns`, `minDryMargin`, `turnOrder`), game_state answers the turn counted as

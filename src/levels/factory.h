@@ -22,6 +22,9 @@ const char* FireNow(int count, std::string* detail);
 std::string FiresJson();
 // The fires seen this session (each PlaceMines) and, in *at, when the last was (GetTickCount64): a shot after a fire.
 uint32_t FireSerial(unsigned long long* at);
+// A mine at pos moving at vel (world units, per ms), made by the game's own mine maker as the factory's are; sim tick
+// (main thread). nullptr, or why not.
+const char* Mine(const float pos[3], const float vel[3]);
 // Where the match's mine factory is now (world units), main thread; false when it has none.
 bool Position(float out[3]);
 }  // namespace melange::levels::factory

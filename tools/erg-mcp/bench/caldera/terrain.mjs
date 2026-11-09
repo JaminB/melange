@@ -12,6 +12,14 @@ export const FLOOR_Y = 49;       // the crater floor (the rim is 20-30 over it: 
 export const FLAT_R = 18;        // the floor is level out to this radius, the walls climb from there to the rim
 export const PLUG_RHO = 15, PLUG_TH = -1.15;   // the basalt plug of the mine factory: on the floor, off the centre, on the side the south camera sees over the breach
 export const LAKE = { c: [-5, 6], R: 8 };   // the crater's lava lake: well away from the plug (about 23 units), so the factory's landing apron stays ash
+// The mine factory's launchers [rho, th]: low on the crater's inner walls (rho 23, just up from the level floor at FLAT_R,
+// well under the rim crest at RC), each on a 6 x 6 pad. The bearings are the eighths round the crater (from an eighth off
+// the plug's) whose pads held a dropped mine in the game: erg-mcp's game_mine_drop on 2026-11-09 (testenv B) put five
+// mines on each of eight such pads, twice; the pads at -0.365 (east), 1.206 and 1.992 (either side of the breach) and
+// 5.133 (north) held every one, the four others (0.421, 2.777, 3.562, 4.348) none, the same pads every time, while worms
+// stand on all of them (docs/erg.md, the mine factory: why is not known). LAUNCHER_TH overrides them for such a probe.
+export const LAUNCHERS = (process.env.LAUNCHER_TH ? process.env.LAUNCHER_TH.split(",").map(Number) : [-0.365, 1.206, 1.992, 5.133])
+  .map((th) => [23, th]);
 export const APRON_R = 10.5;     // dry ash round the plug: the mines land on it and show from the crater camera
 export const BREACH = Math.PI / 2;   // +z, the south: the default camera looks from there, so the notch and the flow show
 export const SP = 0.62;          // the roads' climb per unit of length (32 degrees)

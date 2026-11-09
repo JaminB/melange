@@ -23,6 +23,18 @@
 // of it (an even spread over the disc), falling with the same velocity, two of the sim's randoms a mine so every machine
 // places them alike.
 //
+// With launchers (several launch points, the one engine factory's: GameLogicService asserts "Only allowed one mine
+// factory at a time" when a second is made, tried 2026-11-08) the fire's mines are shared out over them, starting at a
+// random one, and each erupts straight up from a spot within launchRadius of its launcher, 1 map unit over the
+// launcher's height, so it tops out launchHeight over that and falls back onto the spot. The spots of a fire are kept
+// kMinApart from each other where they can be. The velocity CreateMine takes is in world units per millisecond, and a
+// mine falls at kMineGravity (measured on 2026-11-08, testenv B: throws of 0.05-0.8 from 20, 160 and 560 over a flat
+// island landed where 2.5e-4 world units/ms^2 puts them, within the quarter-second sampling). A mine landing while
+// moving sideways (about 0.05 world units/ms or more) often sank into the voxels (on a solid block it came to rest a
+// layer down; arcs thrown across Caldera's crater lost 25 of 30), while straight falls and lobs rested on the top, so the
+// mines go straight up and down. Some ground lets even those through (on Caldera four of eight launcher pads held no
+// mine, the same pads every time; docs/erg.md): level.test.dropMines finds it.
+//
 // Every fire is followed to its end (factory.fired on the session log, FiresJson): the mine entities that appear in
 // PlaceMines (either way) with where each appeared, then, from the sim tick, where each comes to rest (the entity list
 // moves a mine's position from its launch point to where it lies once it rests) or that it is gone. A mine counts as at
@@ -75,6 +87,9 @@ constexpr uintptr_t kStartFactory = 0x5cfe40;  // void __thiscall MineFactoryLog
 constexpr uint32_t kMinesBegin = 0x1d8, kMinesEnd = 0x1dc;   // GameLogicService: the level's mines (a vector of 4-byte entries)
 constexpr uint32_t kPos = 0x2c, kNormal = 0x38, kExploded = 0x48, kCountdown = 0x88, kFireState = 0x8c, kToSpawn = 0x84;
 constexpr float kWorldPerMap = 20.f;
+constexpr float kMineGravity = 2.5e-4f;        // world units per ms^2: a mine's fall (CreateMine's velocity is per ms)
+constexpr float kMinApart = 30.f;              // world units: a launcher's mines start at least this far apart, if they can
+constexpr int kSpotTries = 12;
 
 struct Field {
     bool asked = false;
@@ -373,7 +388,8 @@ void OnTick(uint32_t tick, void*) {
     }
 }
 
-// PlaceMines with the level's launch: the factory's mines appear over it, within launchRadius, launchHeight up.
+// PlaceMines with the level's launch: the factory's mines appear over it, within launchRadius, launchHeight up, or
+// erupt from its launchers and land within launchRadius of them.
 void __fastcall HkPlaceMines(uintptr_t self, void*) {
     erg::FactorySpec spec;
     bool armed = false;
@@ -400,6 +416,34 @@ void __fastcall HkPlaceMines(uintptr_t self, void*) {
     const float radius = static_cast<float>(spec.launchRadius.value_or(0)) * kWorldPerMap;
     const float vel[3] = {0.f, -0.3f, 0.f};
     int made = 0;
+    if (!spec.launchers.empty()) {
+        const uint32_t count = static_cast<uint32_t>(spec.launchers.size());
+        const uint32_t first = rnd() % count;
+        const float up = std::sqrt(2.f * kMineGravity * height);   // tops out launchHeight over where it starts
+        std::vector<std::array<float, 2>> spots;
+        for (int i = 0; i < n; ++i) {
+            const auto& l = spec.launchers[(first + static_cast<uint32_t>(i)) % count];
+            // a spot within launchRadius of the launcher, the farthest of kSpotTries from the fire's other spots
+            float best[2] = {static_cast<float>(l[0]), static_cast<float>(l[2])}, bestGap = -1;
+            for (int t = 0; t < kSpotTries; ++t) {
+                const float a = static_cast<float>(rnd() % 36000u) * (6.2831853f / 36000.f);
+                const float r = radius * std::sqrt(static_cast<float>(rnd() % 10000u) / 10000.f);
+                const float p[2] = {static_cast<float>(l[0]) + r * std::cos(a), static_cast<float>(l[2]) + r * std::sin(a)};
+                float gap = 1e9f;
+                for (const auto& q : spots) gap = (std::min)(gap, std::hypot(p[0] - q[0], p[1] - q[1]));
+                if (gap > bestGap) best[0] = p[0], best[1] = p[1], bestGap = gap;
+                if (gap >= kMinApart) break;
+            }
+            spots.push_back({best[0], best[1]});
+            const float from[3] = {best[0], static_cast<float>(l[1]) + kWorldPerMap, best[1]};
+            const float v[3] = {0.f, up, 0.f};
+            if (!EngineMine(from, v)) ++made;
+        }
+        LOG_INFO("[levels] %s: the mine factory threw %d of %d mines from %zu launchers, %.0f up, within %.0f of each (world units)",
+                 stem.c_str(), made, n, spec.launchers.size(), static_cast<double>(height), static_cast<double>(radius));
+        FollowFire(stem, before, n, true, at);
+        return;
+    }
     for (int i = 0; i < n; ++i) {
         const float a = static_cast<float>(rnd() % 36000u) * (6.2831853f / 36000.f);
         const float r = radius * std::sqrt(static_cast<float>(rnd() % 10000u) / 10000.f);
@@ -579,6 +623,8 @@ const char* FireNow(int count, std::string* detail) {
     LOG_INFO("[levels] the mine factory on demand: %s (%s)", result ? result : "a fire started", d);
     return result;
 }
+
+const char* Mine(const float pos[3], const float vel[3]) { return g_hDrop ? EngineMine(pos, vel) : "the mine factory hooks are not installed (another game build)"; }
 
 bool Position(float out[3]) {
     const uintptr_t f = g_hDrop ? FindFactory() : 0;

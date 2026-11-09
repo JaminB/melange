@@ -48,7 +48,7 @@ export function ObjectProps({ o, set, catalog }: { o: ObjectSpec; set(o: ObjectS
     // Unset fields keep the game's values; a field set back to the game's value is dropped, so the patch stays minimal.
     const f = o.factory ?? {};
     const put = (k: "activation" | "inactiveTurns" | "schemeMines", v: number | boolean, game: number | boolean) => {
-      const next: Record<string, number | boolean> = { ...f };
+      const next: Record<string, unknown> = { ...f };
       if (v === game) delete next[k];
       else next[k] = v;
       set(Object.keys(next).length ? { ...o, factory: next as FactorySpec } : { knot: o.knot, type: o.type });

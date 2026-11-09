@@ -171,6 +171,11 @@ bool ValidateObject(const ObjectSpec& o, const std::string& p, std::string* err)
             if (f.activation && (*f.activation < 0 || *f.activation > 255)) return Fail(err, p + ".factory.activation: must be 0-255");
             if (f.inactiveTurns && (*f.inactiveTurns < 0 || *f.inactiveTurns > 255))
                 return Fail(err, p + ".factory.inactiveTurns: must be 0-255");
+            if (f.launchers.size() > kMaxLaunchers) return Fail(err, p + ".factory.launchers: at most 8");
+            for (const auto& l : f.launchers)
+                for (int c : l)
+                    if (c < -kMaxLauncherCoord || c > kMaxLauncherCoord)
+                        return Fail(err, p + ".factory.launchers: coordinates must be within 100000 world units");
             break;
         }
         case ObjectType::Telepad: break;
@@ -248,7 +253,7 @@ bool ParseObjects(const Json* arr, std::vector<ObjectSpec>* out, std::string* er
                 if (!f) break;
                 const std::string fp = p + ".factory";
                 int v = 0;
-                if (!Obj(f, fp, err) || !OnlyKeys(*f, {"activation", "inactiveTurns", "schemeMines", "keepKnot", "launchHeight", "launchRadius"}, fp, err) ||
+                if (!Obj(f, fp, err) || !OnlyKeys(*f, {"activation", "inactiveTurns", "schemeMines", "keepKnot", "launchHeight", "launchRadius", "launchers"}, fp, err) ||
                     !GetBool(*f, "schemeMines", fp, &ob.factory.schemeMines, err, false) ||
                     !GetBool(*f, "keepKnot", fp, &ob.factory.keepKnot, err, false))
                     return false;
@@ -267,6 +272,25 @@ bool ParseObjects(const Json* arr, std::vector<ObjectSpec>* out, std::string* er
                 if (f->find("launchRadius")) {
                     if (!IntField(*f, "launchRadius", fp, 0, 255, &v, err, true)) return false;
                     ob.factory.launchRadius = v;
+                }
+                if (const Json* ls = f->find("launchers")) {
+                    // [[x, y, z], ...] world units, 1-8 of them
+                    const std::string lp = fp + ".launchers";
+                    if (ls->kind != Json::Kind::Array || ls->arr.empty() || ls->arr.size() > kMaxLaunchers)
+                        return Fail(err, lp + ": must be an array of 1-8 [x, y, z] points");
+                    for (size_t li = 0; li < ls->arr.size(); ++li) {
+                        const Json& pt = ls->arr[li];
+                        const std::string pp = lp + "[" + std::to_string(li) + "]";
+                        if (pt.kind != Json::Kind::Array || pt.arr.size() != 3) return Fail(err, pp + ": must be [x, y, z]");
+                        std::array<int, 3> at{};
+                        for (size_t k = 0; k < 3; ++k) {
+                            double d = 0;
+                            if (!GetNumber(pt.arr[k], pp, -kMaxLauncherCoord, kMaxLauncherCoord, &d, err)) return false;
+                            if (d != std::floor(d)) return Fail(err, pp + ": world units must be whole numbers");
+                            at[k] = static_cast<int>(d);
+                        }
+                        ob.factory.launchers.push_back(at);
+                    }
                 }
                 break;
             }
@@ -321,6 +345,15 @@ Json ObjectsJson(const std::vector<ObjectSpec>& objects) {
                 if (fs.keepKnot) f.set("keepKnot", Json::Bool(true));
                 if (fs.launchHeight) f.set("launchHeight", Int(*fs.launchHeight));
                 if (fs.launchRadius) f.set("launchRadius", Int(*fs.launchRadius));
+                if (!fs.launchers.empty()) {
+                    Json ls = Json::Arr();
+                    for (const auto& l : fs.launchers) {
+                        Json pt = Json::Arr();
+                        for (int c : l) pt.arr.push_back(Int(c));
+                        ls.arr.push_back(std::move(pt));
+                    }
+                    f.set("launchers", std::move(ls));
+                }
                 o.set("factory", std::move(f));
                 break;
             }

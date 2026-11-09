@@ -1086,6 +1086,36 @@ void TestFactorySettings() {
                "the launch follows keepKnot: " + why);
         Expect(!luagen::Upgrade(stem, Mutate(launch, "launchRadius=12", "launchHeight=0"), &run, &why), "launchHeight is 1 or more on the line");
     }
+    // launchers: [[x, y, z], ...] world units in the patch (1-8, whole numbers), x:y:z/... on the settings line
+    {
+        erg::Patch lp;
+        const std::string withL = Mutate(text, "\"schemeMines\":false}", "\"schemeMines\":false,\"launchRadius\":10,\"launchers\":[[-300,900,40],[260,880,-120]]}");
+        Expect(erg::ParsePatch(withL, &lp, &err) && lp.objects.back().factory.launchers.size() == 2 &&
+                   lp.objects.back().factory.launchers[0] == std::array<int, 3>{-300, 900, 40} && erg::WritePatch(lp) == withL,
+               "launchers round-trip in the patch: " + err);
+        Expect(lp.objects.back().factory.Launch() && !lp.objects.back().factory.Default(), "launchers are a launch");
+        Expect(!erg::ParsePatch(Mutate(text, "\"schemeMines\":false}", "\"schemeMines\":false,\"launchers\":[]}"), &lp, &err), "launchers is not empty");
+        Expect(!erg::ParsePatch(Mutate(text, "\"schemeMines\":false}", "\"schemeMines\":false,\"launchers\":[[1,2]]}"), &lp, &err), "a launcher is [x, y, z]");
+        Expect(!erg::ParsePatch(Mutate(text, "\"schemeMines\":false}", "\"schemeMines\":false,\"launchers\":[[1.5,2,3]]}"), &lp, &err), "whole world units");
+        Expect(!erg::ParsePatch(Mutate(text, "\"schemeMines\":false}", "\"schemeMines\":false,\"launchers\":[[100001,2,3]]}"), &lp, &err), "within 100000");
+        Expect(!erg::ParsePatch(Mutate(text, "\"schemeMines\":false}",
+                                       "\"schemeMines\":false,\"launchers\":[[0,0,0],[0,0,0],[0,0,0],[0,0,0],[0,0,0],[0,0,0],[0,0,0],[0,0,0],[0,0,0]]}"),
+                                &lp, &err),
+               "at most 8 launchers");
+        spec.objects[0].factory = {};
+        spec.objects[0].factory.launchRadius = 10;
+        spec.objects[0].factory.launchers = {{-300, 900, 40}, {260, 880, -120}};
+        const std::string ltext = luagen::Text(stem, spec);
+        luagen::ChunkSpec lparsed;
+        Expect(ltext.find("\n-- minefactory: launchRadius=10 launchers=-300:900:40/260:880:-120\n") != std::string::npos &&
+                   luagen::IsGenerated(stem, ltext, &why) && luagen::Parse(stem, ltext, &lparsed) &&
+                   lparsed.objects[0].factory.launchers == spec.objects[0].factory.launchers,
+               "launchers go on the settings line and parse back: " + why);
+        Expect(!luagen::Upgrade(stem, Mutate(ltext, "launchers=-300:900:40/260:880:-120", "launchers=-300:900"), &run, &why), "a launcher on the line is x:y:z");
+        Expect(!luagen::Upgrade(stem, Mutate(ltext, "launchers=-300:900:40/260:880:-120", "launchers=-300:900:40/"), &run, &why), "no empty launcher");
+        spec.objects[0].factory.launchers.clear();
+        Expect(luagen::Text(stem, spec).find("launchers") == std::string::npos, "no launchers, no launchers key");
+    }
     luagen::ChunkSpec noFactory;
     noFactory.placeObjects = true;
     std::string orphan2 = luagen::Text(stem, noFactory);

@@ -112,12 +112,13 @@ test("mine factory settings are optional, range-checked and carried by applyPatc
     p.objects!.push((factory === undefined ? { knot: "minefactory", type: "minefactory" } : { knot: "minefactory", type: "minefactory", factory }) as never);
     return p;
   };
-  for (const f of [undefined, {}, { activation: 0 }, { activation: 255, inactiveTurns: 0, schemeMines: false }]) {
+  for (const f of [undefined, {}, { activation: 0 }, { activation: 255, inactiveTurns: 0, schemeMines: false }, { launchRadius: 10, launchers: [[-300, 900, 40], [260, 880, -120]] }]) {
     const p = withFactory(f);
     assert.ok(validatePatch(p).ok, `${JSON.stringify(f)}: ${validatePatch(p).errors.join("; ")}`);
     assert.ok(validatePatchObjects(p, baseV2()).ok, validatePatchObjects(p, baseV2()).errors.join("; "));
   }
-  for (const f of [{ activation: 256 }, { activation: 1.5 }, { inactiveTurns: -1 }, { schemeMines: 1 }, { speed: 3 }, 7]) {
+  for (const f of [{ activation: 256 }, { activation: 1.5 }, { inactiveTurns: -1 }, { schemeMines: 1 }, { speed: 3 }, 7, { launchers: [] }, { launchers: [[1, 2]] },
+    { launchers: [[1.5, 2, 3]] }, { launchers: [[100001, 0, 0]] }, { launchers: Array.from({ length: 9 }, () => [0, 0, 0]) }]) {
     assert.equal(validatePatch(withFactory(f)).ok, false, JSON.stringify(f));
   }
   const edited = applyPatch(upgrade(baseV2()), withFactory({ activation: 12, schemeMines: false }));

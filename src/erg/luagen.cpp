@@ -235,8 +235,8 @@ std::string Chunk(const Scene& s) {
 
 
 namespace {
-// "-- minefactory: activation=15 inactiveTurns=3 keepKnot=1 launchHeight=20 launchRadius=12": the set fields, in
-// this order.
+// "-- minefactory: activation=15 inactiveTurns=3 keepKnot=1 launchHeight=20 launchRadius=12 launchers=-300:900:40/...":
+// the set fields, in this order (launchers: x:y:z world units, one per launcher, separated by '/').
 std::string FactoryTweakLine(const FactorySpec& f) {
     std::string l(kFactoryTweak);
     if (f.activation) l += " activation=" + std::to_string(*f.activation);
@@ -244,7 +244,40 @@ std::string FactoryTweakLine(const FactorySpec& f) {
     if (f.keepKnot) l += " keepKnot=1";
     if (f.launchHeight) l += " launchHeight=" + std::to_string(*f.launchHeight);
     if (f.launchRadius) l += " launchRadius=" + std::to_string(*f.launchRadius);
+    for (size_t i = 0; i < f.launchers.size(); ++i) {
+        const auto& p = f.launchers[i];
+        l += (i ? "/" : " launchers=") + std::to_string(p[0]) + ":" + std::to_string(p[1]) + ":" + std::to_string(p[2]);
+    }
     return l + "\n";
+}
+
+// "x:y:z/x:y:z": 1-kMaxLaunchers points of signed whole world units within kMaxLauncherCoord.
+bool ParseLaunchers(std::string_view v, std::vector<std::array<int, 3>>* out) {
+    out->clear();
+    while (true) {
+        std::array<int, 3> p{};
+        for (size_t k = 0; k < 3; ++k) {
+            const bool neg = !v.empty() && v.front() == '-';
+            if (neg) v.remove_prefix(1);
+            if (v.empty() || v.front() < '0' || v.front() > '9') return false;
+            int64_t n = 0;
+            while (!v.empty() && v.front() >= '0' && v.front() <= '9') {
+                n = n * 10 + (v.front() - '0');
+                if (n > kMaxLauncherCoord) return false;
+                v.remove_prefix(1);
+            }
+            p[k] = static_cast<int>(neg ? -n : n);
+            if (k < 2) {
+                if (v.empty() || v.front() != ':') return false;
+                v.remove_prefix(1);
+            }
+        }
+        out->push_back(p);
+        if (out->size() > kMaxLaunchers) return false;
+        if (v.empty()) return true;
+        if (v.front() != '/') return false;
+        v.remove_prefix(1);
+    }
 }
 
 // Reads the line FactoryTweakLine writes, if there is one; Upgrade's regeneration check refuses any other form.
@@ -262,6 +295,11 @@ bool ParseFactoryTweak(std::string_view text, FactorySpec* f) {
         const std::string_view key = rest.substr(0, eq);
         const std::string_view num = rest.substr(eq + 1, sp == std::string_view::npos ? std::string_view::npos : sp - eq - 1);
         int v = 0;
+        if (key == "launchers") {
+            if (!f->launchers.empty() || !ParseLaunchers(num, &f->launchers)) return false;
+            rest = sp == std::string_view::npos ? std::string_view{} : rest.substr(sp);
+            continue;
+        }
         if (!IntArg(num, &v) || v > 255) return false;
         if (key == "activation") f->activation = v;
         else if (key == "inactiveTurns") f->inactiveTurns = v;

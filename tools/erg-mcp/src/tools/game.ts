@@ -1435,6 +1435,54 @@ export const tools: Tool[] = [
     },
   },
   {
+    name: "game_mine_drop",
+    description: "Whether the ground holds a mine, in the running Test (level.test.dropMines, Melange of this branch): one mine is made at each point (`points`, [x, z] or [x, y, z] in `units`, default map; [x, z] starts `height` (default 8 map units) over the open project's ground top in that column, [x, y, z] at y), falling as the factory's own (0, -0.3, 0) unless `vel` ([x, y, z] world units per ms); after `seconds` (default 10) each point says `held` (a new mine at rest within 1.5 map units of it, at most 1.5 under the ground top: it landed there), `low` (a new mine near it but lower: it went through the top to something under it) or `gone` (none: fell through to the water and drowned, or went off). Answers the counts and each point. Use it to choose a mine factory's launchers and landing zones: in Tests on 2026-11-08 a mine fell straight through Caldera's crater ground (the draped skin and solid undraped pads alike) everywhere west of x 7 map and held everywhere east of x 12, on the same frames, while worms stood on both; launchers must stand where the drops hold.",
+    inputSchema: {
+      type: "object", additionalProperties: false, required: ["points"],
+      properties: {
+        points: { type: "array", minItems: 1, maxItems: 64, items: { type: "array", items: { type: "number" }, minItems: 2, maxItems: 3 } },
+        height: { type: "number", minimum: 0.5, maximum: 100, description: "Map units over the ground top for [x, z] points (default 8)." },
+        vel: { type: "array", items: { type: "number" }, minItems: 3, maxItems: 3, description: "The mines' start velocity, world units per ms (default the factory's (0, -0.3, 0))." },
+        seconds: { type: "number", minimum: 3, maximum: 60, description: "How long to let them land (default 10)." },
+        units: { type: "string", enum: ["map", "world"] },
+      },
+    },
+    async handler(s, a: { points: number[][]; height?: number; vel?: number[]; seconds?: number; units?: "map" | "world" }) {
+      if (!(await has(s, "level.test.dropMines"))) throw new ToolError("this game has no level.test.dropMines (a Melange of the erg-mcp branch): Test with that build");
+      if (!(await has(s, "entities.list"))) throw new ToolError("this game has no entities.list ([GameState] Enabled=1 in its Melange.ini)");
+      const k = (a.units ?? "map") === "world" ? 1 / WORLD_PER_MAP : 1, h = a.height ?? 8;
+      // each point in map units, with the ground top under it (the open project's) when there is one
+      const pts = a.points.map((p, i) => {
+        if (!p.every(Number.isFinite)) throw new ToolError(`points[${i}]: numbers`);
+        const x = p[0] * k, z = (p.length === 3 ? p[2] : p[1]) * k;
+        let top: number | null = null;
+        try {
+          const tops = spansAt(grids(s.store), x, z).map((sp) => sp.top);
+          if (tops.length) top = Math.max(...tops);
+        } catch {
+          // no project open: [x, y, z] points only
+        }
+        if (p.length === 2 && top === null) throw new ToolError(`points[${i}]: no ground in the open project's column at (${p[0]}, ${p[1]}): give [x, y, z]`);
+        return { at: [x, p.length === 3 ? p[1] * k : top! + h, z], top };
+      });
+      const before = new Set((await liveMines(s)).map((m) => m.handle));
+      const queued = await (await s.client()).call("level.test.dropMines", { points: pts.map((p) => p.at.map((v) => v * WORLD_PER_MAP)), ...(a.vel ? { vel: a.vel } : {}) }, 15000);
+      await new Promise((r) => setTimeout(r, (a.seconds ?? 10) * 1000));
+      const fresh = (await liveMines(s)).filter((m) => !before.has(m.handle) && m.pos).map((m) => ({ x: m.pos!.x / WORLD_PER_MAP, y: m.pos!.y / WORLD_PER_MAP, z: m.pos!.z / WORLD_PER_MAP }));
+      const r1 = (v: number) => Math.round(v * 100) / 100;
+      const counts = { held: 0, low: 0, gone: 0 };
+      const each = pts.map((p) => {
+        const near = fresh.filter((m) => Math.hypot(m.x - p.at[0], m.z - p.at[2]) <= 1.5).sort((u, v) => v.y - u.y)[0];
+        const ground = p.top ?? p.at[1];
+        const verdict = !near ? "gone" : near.y >= ground - 1.5 ? "held" : "low";
+        counts[verdict]++;
+        return { at: p.at.map(r1), groundTop: p.top === null ? null : r1(p.top), verdict, ...(near ? { mine: [near.x, near.y, near.z].map(r1) } : {}) };
+      });
+      return { units: "map", queued, counts, points: each,
+        note: "held: the mine lies on the ground at the point; low: it went through the top to something under it; gone: no mine near the point (through to the water, drowned, or set off)" };
+    },
+  },
+  {
     name: "game_probe",
     description: "What happened to the worms in the running (or last) Test match, from the game's Test probe (level.test.probe, Melange 0.13+; also on the session log as levels/test.spawns and levels/test.death in events.jsonl): every worm's position at turn 1 (WORMn its slot, as game_state; in a level with knot spawns, the open project's WORMn knot and how far from it the worm stood: a knot in solid or off an edge shows here), and each worm that died: when (game turn, tick), where, the water then, and the cause, inferred from what the probe saw: drown (the engine's drowning state, or its feet under the water), mine, oildrum or weapon (its latest hit: an explosion whose worm-damage radius reached it, with the source entity and the weapon of the worm whose turn it was), fall (its latest fall, the drop in map units), or unknown; `evidence` says what it was inferred from, `hits`, `falls` and `healthSteps` the history. Also the mine factory's fires (each mine's spawn and rest) and the explosions seen. `units` for the positions (default map).",
     inputSchema: {
