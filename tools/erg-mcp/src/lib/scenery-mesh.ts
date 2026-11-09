@@ -4,6 +4,7 @@
 // needs to pick dark rock for a basalt cone. Map units (the mesh's xan units divided by WORLD_PER_XAN, as
 // backdrop.ts's meshBounds). Pure parsing plus a fetch cache per server.
 import { WORLD_PER_XAN, apply as applyMat, type Detail, type Frames, type Vec3 } from "../core";
+import { tintOf } from "./tint";
 import type { Session } from "../session";
 
 export type Rgb = [number, number, number];
@@ -128,7 +129,13 @@ export async function placedMeshes(s: Session, frames: Frames, details: Detail[]
       const q = applyMat(mat, [m.tris[i], m.tris[i + 1], m.tris[i + 2]]);
       out[i] = q[0]; out[i + 1] = q[1]; out[i + 2] = q[2];
     }
-    meshes.push({ tris: out, rgb: m.albedo, detail: d.id });
+    meshes.push({ tris: out, rgb: tintRgb(d.name) ?? m.albedo, detail: d.id });
   }
   return { meshes, without: [...without] };
+}
+
+/** A tinted copy ("_tint<rrggbb>") draws in its tint (what Sunstone shows in the game), else null. */
+function tintRgb(name: string): [number, number, number] | null {
+  const t = tintOf(name);
+  return t ? [1, 3, 5].map((i) => parseInt(t.slice(i, i + 2), 16)) as [number, number, number] : null;
 }

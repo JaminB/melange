@@ -2,6 +2,7 @@
 // levels' sim-neutral pieces (scenery, lights, emitters, sounds: lib/sim-fingerprint.ts classifyDetail) by resource,
 // with the size of each piece's preview mesh, its theme and a category guessed from its names (rock, flora, fx), so an
 // agent picks rocks and plants without opening every base by hand.
+import { withTint } from "../lib/tint";
 import { AddDetail, Frames, Group, dropPoint, targetFrame, type Detail, type Scene, type Vec3 } from "../core";
 import { DEG, commit, pointOut, resolvePoint, topOf, unitsSchema, vec3, type Units } from "../lib/place-geom";
 import { meshBounds } from "../lib/backdrop";
@@ -114,13 +115,15 @@ export const tools: Tool[] = [
         rot: vec3("Rotation in degrees about x, y, z (default the source's)."),
         scale: { description: "Scale (default the source's): a number (0.05-20) or [x, y, z]." },
         seat: { type: "number", minimum: 0, maximum: 0.8, description: "Seat a scenery mesh in the ground: lower it so this fraction of its height (the preview mesh at the copy's scale, upright) is below the point; 0 rests the mesh's lowest point on the point, so a base never floats." },
+        tint: { type: "string", description: "\"#rrggbb\": recolour this scenery copy (overrides the call's tint; tint_scenery has the details)." },
       } } },
+      tint: { type: "string", description: "\"#rrggbb\": recolour every scenery copy toward this colour (a \"_tint<rrggbb>\" name tag Sunstone's model shaders read; the texture's detail is kept; Sunstone off: the piece's own texture). Visual only." },
       tag: { type: "string", description: "Letters and digits. Append _<tag> to the names of scenery copies (never lights, emitters or sounds: their names pick the effect), so a pass finds and removes its own (remove_scenery {search: \"_<tag>\"}) and can run twice without doubling." },
       allowOtherTheme: { type: "boolean", description: "Copy from a base of another theme than the level's." },
       frame: { type: "integer", description: "Put the copies in this frame (an id from describe_level {allFrames}) instead of the level's folder for their role: positions are still level positions, converted into the frame's space. The engine may place a detail from its frame's chain differently from the editor (round 1 found copies in the 'Worms' folder away from where the editor showed them): test a frame in game before relying on it." },
       units: unitsSchema,
     } },
-    async handler(s, a: { base?: string; copies: { id: number; pos?: number[]; xz?: number[]; drop?: boolean; rot?: number[]; scale?: unknown; seat?: number }[]; allowOtherTheme?: boolean; units?: Units; tag?: string; frame?: number }) {
+    async handler(s, a: { base?: string; copies: { id: number; pos?: number[]; xz?: number[]; drop?: boolean; rot?: number[]; scale?: unknown; seat?: number; tint?: string }[]; allowOtherTheme?: boolean; units?: Units; tag?: string; frame?: number; tint?: string }) {
       const { store } = s.requireProject();
       if (a.tag !== undefined && !/^[A-Za-z0-9]{1,12}$/.test(a.tag)) throw new ToolError("tag: 1-12 letters or digits");
       const key = a.base ?? store.scene.base.key;
@@ -147,7 +150,10 @@ export const tools: Tool[] = [
           const mb = bounds.get(src.resource);
           if (mb) at[1] += -mb.min[1] * Math.abs(scale[1]) - c.seat * (mb.max[1] - mb.min[1]) * Math.abs(scale[1]);
         }
-        const name = a.tag && cl.role === "scenery" ? `${src.name}_${a.tag}` : src.name;
+        const tagged = a.tag && cl.role === "scenery" ? `${src.name}_${a.tag}` : src.name;
+        const tint = cl.role === "scenery" ? c.tint ?? a.tint : undefined;
+        let name = tagged;
+        if (tint !== undefined) { try { name = withTint(tagged, tint); } catch (e) { throw new ToolError(`copies[${i}].${(e as Error).message}`); } }
         cmds.push(new AddDetail(frame, { name, resource: src.resource, pos: store.frames.toLocal(frame, at), rot, scale }));
         placed.push({ from: src.id, name, resource: src.resource, role: cl.role, frame, at: pointOut(at, u) });
       });

@@ -8,6 +8,7 @@ import { meshBounds } from "../lib/backdrop";
 import { classifyDetail } from "../lib/sim-fingerprint";
 import { ARCHETYPES, composeCrag, footprint, kitbash, rng, tiltTo, type Archetype, type V3 } from "../lib/scatter";
 import { loadScene } from "./dress";
+import { withTint } from "../lib/tint";
 import { ToolError, type Tool } from "../registry";
 
 const r2 = (v: number) => Math.round(v * 100) / 100;
@@ -28,7 +29,9 @@ export const tools: Tool[] = [
         yaw: { type: "number", description: "Degrees; default downhill (the +x of the crag faces down the slope)." },
         sink: { type: "number", minimum: 0, maximum: 0.9 },
         align: { type: "number", minimum: 0, maximum: 1 },
+        tint: { type: "string", description: "\"#rrggbb\" for this crag's pieces (overrides the call's tint)." },
       } } },
+      tint: { type: "string", description: "\"#rrggbb\": recolour every piece toward this colour (a \"_tint<rrggbb>\" name tag Sunstone's model shaders read; tint_scenery has the details). Visual only." },
       sink: { description: "Fraction of each crag's height below its lowest footprint sample: a number, or [lo, hi] (default 0.35).", anyOf: [{ type: "number", minimum: 0, maximum: 0.9 }, { type: "array", items: { type: "number", minimum: 0, maximum: 0.9 }, minItems: 2, maxItems: 2 }] },
       align: { type: "number", minimum: 0, maximum: 1, description: "How far toward the slope normal (0 upright, 1 square to the ground; default 0.5, spires 0.3)." },
       maxTilt: { type: "number", minimum: 0, maximum: 60, description: "Most lean from upright, degrees (default 15)." },
@@ -41,8 +44,8 @@ export const tools: Tool[] = [
       dry: { type: "boolean", description: "Answer the poses only; place nothing." },
       units: unitsSchema,
     } },
-    async handler(s, a: { base?: string; id: number; crags: { xz: number[]; height: number; width?: number; archetype?: Archetype; seed?: number; yaw?: number; sink?: number; align?: number }[];
-      sink?: number | number[]; conform?: boolean; align?: number; maxTilt?: number; jitter?: number; stretch?: number; step?: number; tag?: string; allowOtherTheme?: boolean; dry?: boolean; units?: Units }) {
+    async handler(s, a: { base?: string; id: number; crags: { xz: number[]; height: number; width?: number; archetype?: Archetype; seed?: number; yaw?: number; sink?: number; align?: number; tint?: string }[];
+      sink?: number | number[]; tint?: string; conform?: boolean; align?: number; maxTilt?: number; jitter?: number; stretch?: number; step?: number; tag?: string; allowOtherTheme?: boolean; dry?: boolean; units?: Units }) {
       const { store } = s.requireProject();
       const tag = a.tag ?? "dtl";
       if (!/^[A-Za-z0-9]{1,12}$/.test(tag)) throw new ToolError("tag: 1-12 letters or digits");
@@ -84,7 +87,7 @@ export const tools: Tool[] = [
         const lows = pieces.map((_, j) => Math.min(...fp.pts.slice(1 + j * 8, 9 + j * 8).map(([px, pz]) => ground(px, pz) ?? Infinity), ...(j === 0 ? [y0] : [])));
         const cr = composeCrag(pieces, mesh, x, z, yaw, t.m, a.conform === false ? low : lows.map((v) => (Number.isFinite(v) ? v : low)), sink);
         for (const p of cr.poses)
-          cmds.push(new AddDetail(frame, { name: `${src.name}_${tag}`, resource: src.resource, pos: store.frames.toLocal(frame, p.pos), rot: p.rot.map((v) => v / DEG) as Vec3, scale: p.scale }));
+          cmds.push(new AddDetail(frame, { name: withTint(`${src.name}_${tag}`, c.tint ?? a.tint ?? null), resource: src.resource, pos: store.frames.toLocal(frame, p.pos), rot: p.rot.map((v) => v / DEG) as Vec3, scale: p.scale }));
         crags.push({ i, archetype: kind, pieces: cr.poses.length, at: [r2(x * k), r2(z * k)], groundLow: r2(low * k), groundSpread: r2((Math.max(...ys) - low) * k), sink: r2(sink),
           tilt: r2(t.tilt), slope: r2(Math.acos(normal[1]) * DEG), bottom: r2(cr.bottom * k), top: r2(cr.top * k), above: r2((cr.top - Math.max(...ys)) * k), radius: r2(cr.radius * k),
           ...(a.dry ? { poses: cr.poses.map((p) => ({ pos: p.pos.map((v) => r2(v * k)), rot: p.rot.map(r2), scale: p.scale.map((v) => Math.round(v * 1000) / 1000) })) } : {}) });

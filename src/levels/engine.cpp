@@ -139,6 +139,8 @@ DecideFn g_decide = nullptr;
 void* g_decideUser = nullptr;
 SafetyHookMid g_levelHook;
 char g_override[128] = {};
+char g_loading[128] = {};       // the key the last level set-up loads (after the hook's override)
+char g_loadingFrom[128] = {};   // ...and the frontend's key it was asked for
 
 using Clock = std::chrono::steady_clock;
 std::atomic<int64_t> g_loadingSinceMs{0};
@@ -158,9 +160,12 @@ void OnLevelName(safetyhook::Context& c) {
     const char* cur = reinterpret_cast<const char*>(Rd<uintptr_t>(slot));
     char name[128] = {};
     if (cur) mem::SafeRead(reinterpret_cast<uintptr_t>(cur), name, sizeof name - 1);
+    strncpy_s(g_loading, name, _TRUNCATE);
+    strncpy_s(g_loadingFrom, name, _TRUNCATE);
     const char* want = g_decide(name, g_decideUser);
     if (!want || !*want || std::strcmp(want, name) == 0) return;
     strncpy_s(g_override, want, _TRUNCATE);
+    strncpy_s(g_loading, want, _TRUNCATE);
     *reinterpret_cast<const char**>(slot) = g_override;
 }
 
@@ -324,6 +329,11 @@ bool GetFloat(const char* name, float* v) {
 bool SetFloat(const char* name, float v) {
     if (!name || !*name || !FnOk(kSetFloat)) return false;
     return RawSetFloat(name, v) >= 0;
+}
+
+const char* LoadingLevelKey(const char** from) {
+    if (from) *from = g_loadingFrom;
+    return g_loading;
 }
 
 const char* CurrentLevelKey() {

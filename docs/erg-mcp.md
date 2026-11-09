@@ -817,3 +817,41 @@ Findings (testenv D, Sunstone 2.3.1, 2026-11-09):
 - **The cone has almost no free room for rock.** The trail band (bed, shoulder and kerb out to 7.5 from each centreline) of seven switchback columns with legs 9.5 apart covers nearly all of the flanks. Only 248 points of a 1.5-unit grid are dry, under 50 degrees and at least 2.8 from every keep-out. The summit's outer wall is a 70-degree cliff, where a crag seated under its lowest sample vanishes into the face. So the rock goes where there is room: flank pockets between the columns, the coast, the crater floor and walls between the pads, the tongue edges and the headlands.
 - **Seating under the lowest sample buries a crag on a slope**: on a 27-degree tread, a crag that sinks 35% of its height under the footprint's lowest sample has its top under the highest sample. That is why `conform` (each piece seated on its own ground) is the default. Scree and rubble also sink less (12-25%).
 - **Horror5 does not draw dark in the game.** Its preview albedo (#36374a) says nothing about the game's look: in a Test it is a pale blue-grey cobbled boulder, lighter than the basalt terrain. A material override cannot fix it either: Sunstone's scenery shader (`FixedFunction.FFFragmentMainTexLit.glsl`) colours a model by its texture times the light and never reads the XMaterial's Diffuse or Ambient. Darker rock needs a different texture, either a mod mesh bank (`src/assets/meshbank.h`, which levels cannot load yet) or an engine texture override. The probe found no dark in-game rock: Pirate5 and PIRATE10 draw as a yellow rock with red veins, and WILDWEST6 was not seen.
+
+## Detail layer, round 4 (rock: basalt tint, crater clumps, headland breakers, low scree): what the tools gained and what the game showed
+
+**Per-copy tint.** A scenery copy whose name ends in a tint tag, `_tint<rrggbb>` (`VISIBLE_dtl_tint3a302b`), is drawn recoloured
+toward that colour. The name is the scenery channel of `sim_fingerprint` (copies have no collision), so a tint never changes the
+sim (unit test `test/tint.test.ts`; Caldera's `sim` hash 2fab0781... before and after every pass). The pieces:
+
+| Where | What |
+|---|---|
+| erg-mcp `tint_scenery` (`src/tools/tint.ts`, `src/lib/tint.ts`) | Sets (or with `color: "none"` removes) the tag on scenery copies chosen by `ids`, `search` or `near`; `ramp` [[y, "#rrggbb"], ...] colours each copy by its height. Base details, lights, emitters and sounds are skipped. One undo step; `dryRun`. |
+| `copy_base_details {tint}`, `place_crags {tint}` | The same tag at placement: a call-wide `tint`, or one per copy / per crag. |
+| `render_view {scenery: true}` | A tinted copy draws in its tint offline (`scenery-mesh.ts`), so a pass is judged in the colour the game shows. |
+| Melange `MirageTints` (`src/render/mirage/tints.cpp`, `tints_logic.h`) | When a match's level changes, reads its `.xan`/`.XOM` from the engine's search roots (the Erg Test workspace, map packs, Data) and keeps every tinted detail's world position and scale. Before each draw of a GLSL replacement that declares `uniform vec4 mg_tint`, the draw's world matrix (the vertex program's `model * view` times the main camera's inverse view: the engine sends the object's transform in `view`, `model` is identity) is matched to the table: its position (map x 20) within 0.02 + 2% of the scale of a tinted detail and its scale within 4%. `mg_tint` is the colour with a = 1, else (1, 1, 1, 0). `tints.stats` and `tints.probe` (automation verbs) log the table and the matches. An Erg Test plays another level than `WXD.Level.Current` names, so the level hook now keeps the key it loaded (`levels::engine::LoadingLevelKey`). |
+| Sunstone (branch `sunstone-tint` of melange-plugins) | The four model shaders (`FixedFunction.FFFragmentMain{Lit,TexLit,LitCol,TexLitCol}`) declare `mg_tint`; at a = 1 the albedo becomes the colour times the texel's luminance / 0.5 (the texture's light and dark detail kept). a = 0 (every other draw, and a Melange that does not feed it) leaves the albedo alone, so other maps are unchanged. |
+
+Sunstone off, a tinted copy draws in its own texture (Horror5's pale blue-grey): checked in testenv D, no error, `tints.stats`
+0 lookups.
+
+**Clean shots hide the engine HUD.** Melange `MirageNoHud` (`src/render/mirage/nohud.cpp`): while a clean `render.shot` hides the
+mods' primitives (`draw::HiddenAt`, so `game_shots`/`game_camera` with `clean`, the default), the scene colour is copied aside at
+PostWorld (after the world and its post-FX) and back at Hud (after the engine HUD), so worm names, energy, team bars, timer and
+wind are not in the picture; the frame's Final post-FX still run. Only those frames.
+
+Bench (`detail-rock.mjs` round 4): every crag is tinted (`BASALT` #2e2724, #3a302b, #342b27, #30302c; mixed toward #4a2c24 within
+8 of the lava and on the crater floor); the crater holds a few large clumps (a 5-7 tor at the wall's foot with 2-3 blocks of
+1.9-3.5 leaning on it) and no crust round the lava lake (single blocks on the floor read as mines at any size); sea stacks and
+breakers must have dry land within 3.5 and 2 of their foot (no lone pieces in the sea); a low scree class of flat slabs (2.4-3.4
+times as wide as tall, a mid grey-brown #5c534b-#70665c) stands in the kerb band outside the walked bed and its shoulder
+(`detail-keepout.mjs keepOutLow`), showing 0.1-0.4 over the footprint's mean ground. `detail-verify.mjs` checks low pieces
+against the walked bed and flags anything under 1.7 tall on the open crater floor.
+
+Findings (testenv D, Sunstone 2.3.1 + `sunstone-tint`, 2026-11-09):
+- The engine's draw matrices: position in world units (map x 20) but the detail's own scale (not x 20).
+- Horror5 tinted #3a302b reads as dark basalt beside the cone's black rock; a slight warm cast is visible near the lava.
+- Low scree in the basalt colour read as black dots (mine-like) on the grey-green kerbs; as lighter flat slabs in tight
+  patches they read as stone, but are faint at gameplay distance.
+- The lone dark lump off the south-west shore in the oblique shot is not the detail layer: it is in the undressed level too
+  (build.mjs's voxels). The layer's own south stack now stands beside it.

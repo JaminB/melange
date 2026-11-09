@@ -71,3 +71,16 @@ export function keepOutFoot(x, z, rx, rz, yaw, spawns = [], pad = 0.5) {
   }
   return null;
 }
+
+// ---- round 4: low scree may stand in the kerb band (the kerb ridge between the walked bed and TRAIL_BAND) but never on the
+// walked surface: the bed and its level shoulder (WALKED from the centreline) plus `pad`. Everything else as keepOutFoot.
+export const WALKED = T.TRAIL.bed + T.TRAIL.shoulder;
+/** keepOutFoot for a low piece (visible height under 0.4): the trail test stops at the walked bed, not the kerb band. */
+export function keepOutLow(x, z, rx, rz, yaw, spawns = [], pad = 1) {
+  for (const [px, pz] of footPoints(x, z, rx, rz, yaw)) {
+    if (trailDist(px, pz) < WALKED + pad) return "walked bed";
+    const why = keepOut(px, pz, 0, spawns);
+    if (why && why !== "trail") return why;
+  }
+  return null;
+}
