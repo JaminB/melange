@@ -224,6 +224,20 @@ The round-4 critique applied (`terrain.mjs`, `build.mjs`, `schedule.mjs`):
   walked off it from 63 to 43.5.
 - **Trail material**: path02 (9), a warm brown worn-path texture. In the round-4 game, GreySlateFloor came out pale
   off-white with green blotches, close to the white castle stone.
+  The in-game look was checked in testenv B with Sunstone on, using `game_material_shots` (shots `calv2r5b_mat_*`,
+  `calv2r5b_close_*`, `calv2r5b_summit_*`, `calv2r5b_ov_*`). Mean colour of each material in the game:
+
+  | Material | In game |
+  |---|---|
+  | path02 (the trail) | #b9913f, golden ochre |
+  | chippedstone (castles) | #6d7974 |
+  | flint (castles) | #5a6c7e |
+  | stone (castles) | #718181 |
+  | rock02 | #303c4a |
+  | VolcanoRock | #1e2427 |
+  | HotRocks | #683624 |
+
+  The trail is the only warm, light ground on the cone.
 - **Banks**: the banks beside the beds, within 4 past the level shoulder, take three 3 x 3 smoothing passes after relax()
   (`smoothBanks`), then relax() again.
 - **Launcher pad at (9.6, -21.4)** (the tester's "south" pad): two voxels were added on its west side, their top one voxel
