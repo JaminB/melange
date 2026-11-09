@@ -5,13 +5,14 @@
 // console refuses online matches unless [LuaConsole] MatchConsoleOnline=1). A game with render.camera and render.shot
 // (Melange's own Oasis methods) points the camera with no client mod, and game_camera {shot} and game_shots read the
 // picture back (clean: without the mods' wum.draw text).
-import { appendFileSync, existsSync, readFileSync } from "node:fs";
+import { appendFileSync, existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { extentXZ, markers, spansAt } from "../lib/inspect-field";
 import { grids } from "../lib/voxel";
 import { pieces } from "../lib/islets";
 import { cumulative, keyOfLabel, planWalk, pursue } from "../lib/walk-plan";
 import { WORM_WIDTH } from "../lib/reach";
+import { Raster, decodePng, type Rgb } from "../lib/inspect-png";
 import { ToolError, image, type Content, type Tool } from "../registry";
 import type { Session } from "../session";
 
@@ -109,7 +110,7 @@ const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 interface Orbit { azimuth?: number; elevation?: number; distance?: number; fit?: "frames" | "solid" | "island"; margin?: number; }
 /** set_overview's framing per project id: the overview's defaults for the rest of this erg-mcp session. */
 const overviewDefaults = new Map<string, Orbit>();
-interface Cam extends Orbit { pos?: number[]; target?: number[]; fov?: number; preset?: "default" | "overview"; name?: string; }
+interface Cam extends Orbit { pos?: number[]; target?: number[]; fov?: number; preset?: "default" | "overview" | "castle"; name?: string; at?: number[]; radius?: number; team?: number; }
 
 const orbitProps = {
   azimuth: { type: "number", minimum: -360, maximum: 360, description: "preset overview: the side it looks from, degrees clockwise from north (-z); default 180 (from the south)." },
@@ -199,6 +200,84 @@ function overview(s: Session, o0: Orbit = {}, k = WORLD_PER_MAP): { pos: number[
   const el = ((o.elevation ?? 50) * Math.PI) / 180, az = ((o.azimuth ?? 180) * Math.PI) / 180;
   const h = d * Math.cos(el);
   return { pos: [(cx + h * Math.sin(az)) * WORLD_PER_MAP, (cy + d * Math.sin(el)) * WORLD_PER_MAP, (cz - h * Math.cos(az)) * WORLD_PER_MAP], target: [cx * WORLD_PER_MAP, cy * WORLD_PER_MAP, cz * WORLD_PER_MAP], fov: 60 };
+}
+
+// game_perf's runs of this erg-mcp session, to compare a level with its baseline.
+type PerfStat = { p50: number | null; p95: number | null; n: number } | null;
+const perfRuns: { label: string; fps: PerfStat; busyMs: PerfStat; frameMs: PerfStat; gpuFrameMs: PerfStat }[] = [];
+
+// ------------------------------------------------------------------ poses from the worms
+
+/** Every worm in the match (world units): slot, team, alive, position. */
+const WORMS_LUA = `local o = {}
+for _, w in ipairs(wum.game.worms() or {}) do o[#o + 1] = string.format("%s,%s,%s,%.2f,%.2f,%.2f", tostring(w.slot), tostring(w.team), tostring(w.alive), w.pos.x, w.pos.y, w.pos.z) end
+return table.concat(o, ";")`;
+type WormAt = { slot: number; team: number; alive: boolean; pos: number[] };
+async function wormsNow(s: Session): Promise<WormAt[]> {
+  const t = await evalClient(s, WORMS_LUA);
+  return t.split(";").filter(Boolean).map((r) => { const v = r.split(","); return { slot: +v[0], team: +v[1], alive: v[2] === "true", pos: [+v[3], +v[4], +v[5]] }; })
+    .filter((w) => w.pos.every(Number.isFinite));
+}
+
+/** A pose (world units) along (azimuth, elevation) from the box's centre (map units) that shows all of it. */
+function poseOnBox(box: { min: number[]; max: number[] }, azDeg: number, elDeg: number, margin: number): { pos: number[]; target: number[]; fov: number } {
+  const el = (elDeg * Math.PI) / 180, az = (azDeg * Math.PI) / 180, d = fitDistance(box, az, el, 60, 16 / 9, margin);
+  const c = [0, 1, 2].map((i) => (box.min[i] + box.max[i]) / 2);
+  return { pos: [(c[0] + d * Math.cos(el) * Math.sin(az)) * WORLD_PER_MAP, (c[1] + d * Math.sin(el)) * WORLD_PER_MAP, (c[2] - d * Math.cos(el) * Math.cos(az)) * WORLD_PER_MAP],
+    target: c.map((v) => v * WORLD_PER_MAP), fov: 60 };
+}
+
+/** The overview preset's pose: the open project's (overview), or with none open (a baseline: test {map, noLevel}) the
+ * box of the worms in the match padded by 25 map units, which is where the game is played. */
+async function overviewOf(s: Session, o: Orbit, k: number): Promise<{ pos: number[]; target: number[]; fov: number; from?: string }> {
+  if (s.project) return overview(s, o, k);
+  const ws = (await wormsNow(s).catch(() => [])).filter((w) => w.alive);
+  if (!ws.length) throw new ToolError("preset overview with no project open frames the match's worms, and none was found: open_project the tested level, or give pos and target");
+  const min = [0, 1, 2].map((i) => Math.min(...ws.map((w) => w.pos[i] / WORLD_PER_MAP)) - (i === 1 ? 5 : 25)), max = [0, 1, 2].map((i) => Math.max(...ws.map((w) => w.pos[i] / WORLD_PER_MAP)) + (i === 1 ? 10 : 25));
+  return { ...poseOnBox({ min, max }, o.azimuth ?? 180, o.elevation ?? 50, o.margin ?? 1.1), from: `no project is open: the box of the ${ws.length} worms in the match, padded 25 map units` };
+}
+
+/** The castle preset's pose: a sphere of `radius` round `at` (map units) and the worms of `team` (or every worm within
+ * 1.5 radii), seen from `azimuth` (default from outside the island: away from x = z = 0) and `elevation` (default 55). */
+function castlePose(at: number[], radius: number, worms: WormAt[], team: number | undefined, az?: number, el?: number) {
+  const mine = worms.filter((w) => w.alive && (team !== undefined ? w.team === team : Math.hypot(w.pos[0] / WORLD_PER_MAP - at[0], w.pos[2] / WORLD_PER_MAP - at[2]) <= radius * 1.5));
+  const pts = [...mine.map((w) => w.pos.map((v) => v / WORLD_PER_MAP)), [at[0] - radius, at[1] - 1, at[2] - radius], [at[0] + radius, at[1] + radius * 0.5, at[2] + radius]];
+  const box = { min: [0, 1, 2].map((i) => Math.min(...pts.map((p) => p[i]))), max: [0, 1, 2].map((i) => Math.max(...pts.map((p) => p[i]))) };
+  const azDeg = az ?? (Math.hypot(at[0], at[2]) > 1 ? (Math.atan2(at[0], -at[2]) * 180) / Math.PI : 180);
+  return { pose: poseOnBox(box, azDeg, el ?? 55, 1.12), worms: mine.map((w) => `WORM${w.slot}`) };
+}
+
+const TEAM_RGB: Rgb[] = [[235, 64, 52], [66, 133, 244], [52, 199, 89], [250, 204, 21]];
+
+/** Where world point q falls in a w x h picture from a pose (world units, vertical fov), or null behind the camera. */
+export function project(pose: { pos: number[]; target: number[]; fov: number }, q: number[], w: number, h: number): [number, number] | null {
+  const f0 = [0, 1, 2].map((i) => pose.target[i] - pose.pos[i]), fl = Math.hypot(...f0), f = f0.map((v) => v / fl);
+  const r0 = [-f[2], 0, f[0]], rl = Math.hypot(r0[0], r0[2]) || 1, r = r0.map((v) => v / rl);
+  const u = [r[1] * f[2] - r[2] * f[1], r[2] * f[0] - r[0] * f[2], r[0] * f[1] - r[1] * f[0]];
+  const v = [0, 1, 2].map((i) => q[i] - pose.pos[i]), z = v[0] * f[0] + v[1] * f[1] + v[2] * f[2];
+  if (z <= 0.1) return null;
+  const tv = Math.tan((pose.fov * Math.PI) / 360), th = tv * (w / h);
+  const x = (v[0] * r[0] + v[1] * r[1] + v[2] * r[2]) / (th * z), y = (v[0] * u[0] + v[1] * u[1] + v[2] * u[2]) / (tv * z);
+  return [((x + 1) / 2) * w, ((1 - y) / 2) * h];
+}
+
+/** The shot with each living worm ringed in its team's colour and its slot number over it: <shot>_labels.png. */
+function labelShot(path: string, png: Uint8Array, pose: { pos: number[]; target: number[]; fov: number }, worms: WormAt[]) {
+  const pic = Raster.of(decodePng(png)), list: object[] = [];
+  for (const wm of worms.filter((x) => x.alive)) {
+    const c = project(pose, [wm.pos[0], wm.pos[1] + 0.6 * WORLD_PER_MAP, wm.pos[2]], pic.w, pic.h);
+    const inView = !!c && c[0] >= 0 && c[1] >= 0 && c[0] < pic.w && c[1] < pic.h;
+    list.push({ worm: `WORM${wm.slot}`, team: wm.team, ...(c ? { px: c.map(Math.round) } : {}), inView });
+    if (!inView) continue;
+    const col = TEAM_RGB[wm.team % 4], [cx, cy] = c!.map(Math.round);
+    pic.ring(cx, cy, 13, col, 2);
+    const txt = String(wm.slot), tw = txt.length * 16 - 4;
+    pic.rect(cx - tw / 2 - 3, cy - 46, tw + 6, 26, [0, 0, 0]);
+    pic.text(cx - tw / 2, cy - 43, txt, col, 4);
+  }
+  const out = path.replace(/\.png$/i, "") + "_labels.png";
+  writeFileSync(out, pic.png());
+  return { labelled: out, worms: list };
 }
 
 /** Points the drawn camera (world units) for `frames`, through render.camera when the game has it, else a client mod's
@@ -624,6 +703,28 @@ export function restOfTrail(trail: number[][], p: number[]): number[][] {
   return [start, ...trail.slice(at.seg + 1).map((q) => [...q])];
 }
 
+/** game_play_turns' approach: a worm at `p` (world units) more than 1.5 map units off the start of the rest of its trail
+ * (`rest`, world units, [x, z] or [x, y, z]) gets a route planned over the open project's voxels to it, or to a point a
+ * few map units further on when that one is not reachable (inside a wall); null when the worm is on the trail or no
+ * project is open. `lead` is the route's points ([x, y, z] world units), `length` its length (world). */
+export function approachRoute(s: Session, p: number[], rest: number[][]): { lead?: number[][]; length?: number; why?: string } | null {
+  if (!s.project || !rest.length) return null;
+  const W = WORLD_PER_MAP, y3 = (q: number[]) => (q.length === 3 ? q[1] : NaN), xz = (q: number[]) => [q[0], q[q.length - 1]];
+  const r0 = xz(rest[0]);
+  if (Math.hypot(r0[0] - p[0], r0[1] - p[2]) <= 1.5 * W && !(Math.abs(y3(rest[0]) - p[1]) > 2.5 * W)) return null;
+  let why = "";
+  for (const ahead of [0, 2, 4, 7]) {
+    const q = ahead ? aheadOn(rest, ahead * W) : r0;
+    // the trail's height there (a switchback's leg), from the nearest of its points with one
+    let ty = NaN, best = Infinity;
+    for (const v of rest) { const d = Math.hypot(v[0] - q[0], v[v.length - 1] - q[1]); if (Number.isFinite(y3(v)) && d < best) { best = d; ty = y3(v); } }
+    const r = planWalk(s.project.store, [p[0] / W, p[1] / W, p[2] / W], [q[0] / W, q[1] / W], { radius: 1, bodyWidth: WORM_WIDTH, ...(Number.isFinite(ty) ? { toY: ty / W } : {}) });
+    if ("plan" in r) return { lead: r.plan.path.map((v) => [v[0] * W, v[1] * W, v[2] * W]), length: r.plan.length * W };
+    why = r.why;
+  }
+  return { why };
+}
+
 /** The point `dist` (world units, horizontal) along a trail from its first point, or its last. */
 function aheadOn(trail: number[][], dist: number): number[] {
   const xz = (q: number[]) => [q[0], q[q.length - 1]];
@@ -659,12 +760,25 @@ export const tools: Tool[] = [
   {
     name: "game_state",
     description: "The running match as the game sees it: scene (menu, loading, match), the turn (counted from 1 as wum.sim.turnStarted and check_flood count, team, the active worm's slot, phase, ai), turnLog (the turns seen so far, and turnOrder for check_flood once every turn from 1 was seen), water level (world and map units), turn and round time left, sudden death, worms alive per team, and the sim tick. Needs the game running (after test).",
-    inputSchema: { type: "object", additionalProperties: false, properties: {} },
-    async handler(s) {
+    inputSchema: { type: "object", additionalProperties: false, properties: {
+      announceShot: { type: "boolean", description: "When a wum.sim.announce message is on the screen and the game logged the frame it was first drawn in at full opacity (shownFrame), also shoot the game's own view from a later frame (render.shot, not clean: the message is drawn with the HUD): picture evidence of the announcement, answered as `announcementShot` (path, frame, the text). Nothing is shot when none is up." },
+      prefix: { type: "string", description: "announceShot: the PNG's name prefix (default erg_<yyyymmdd_hhmmss>): <prefix>_announce.png." },
+      width: { type: "integer", minimum: 160, maximum: 1920, description: "announceShot: the picture's width (default 960)." } } },
+    async handler(s, a: { announceShot?: boolean; prefix?: string; width?: number }) {
       const st = await gameState(s);
       noteTurn(st);
       const log = turnLogOut(), ann = st.scene === "match" ? await announcementState(s) : undefined;
-      return { ...withMap(st), turnNote: TURN_NOTE, ...(log ? { turnLog: log } : {}), ...(ann ? { announcements: ann } : {}), camera: holdState() };
+      // announceShot: the game's view while the newest message that was drawn is still up
+      let announcementShot: object | undefined;
+      if (a.announceShot && ann) {
+        const up = ann.onScreen.filter((x) => typeof (x as { shownFrame?: number | null }).shownFrame === "number").pop() as { text: string; shownFrame: number; secondsLeft: number } | undefined;
+        if (!up) announcementShot = { taken: false, why: ann.onScreen.length ? "the message on the screen has no logged shownFrame yet (fading in, or a game that does not log announce.shown)" : "no announcement is on the screen" };
+        else {
+          const p = await shot(s, uniqueName(a.prefix, "announce"), { clean: false, width: a.width ?? 960, minFrame: up.shownFrame + 1 });
+          announcementShot = { taken: true, path: p.path, frame: p.frame, text: up.text, shownFrame: up.shownFrame, secondsLeft: up.secondsLeft };
+        }
+      }
+      return { ...withMap(st), turnNote: TURN_NOTE, ...(log ? { turnLog: log } : {}), ...(ann ? { announcements: ann } : {}), ...(announcementShot ? { announcementShot } : {}), camera: holdState() };
     },
   },
   {
@@ -728,7 +842,7 @@ export const tools: Tool[] = [
         out = { ...c, preset: "default", ...(was ? { released: { heldMs: Date.now() - was.since, refreshes: was.refreshes } } : {}), note: "the game's own camera draws again" };
       } else {
         if (a.preset !== "overview" && (a.azimuth !== undefined || a.elevation !== undefined || a.distance !== undefined)) throw new ToolError("azimuth, elevation and distance are for preset overview");
-        const cam = a.preset === "overview" ? overview(s, a, k) : (() => {
+        const cam = a.preset === "overview" ? await overviewOf(s, a, k) : (() => {
           if (!a.pos || !a.target) throw new ToolError("give pos and target, a preset, or clear: true");
           if (![...a.pos, ...a.target].every(Number.isFinite)) throw new ToolError("pos and target are finite numbers");
           return { pos: a.pos.map((x) => x * k), target: a.target.map((x) => x * k), fov: a.fov };
@@ -785,7 +899,12 @@ export const tools: Tool[] = [
       properties: {
         cams: { type: "array", minItems: 1, maxItems: 24, items: { type: "object", additionalProperties: false, properties: {
           pos: vec3("Eye [x, y, z]."), target: vec3("Point looked at [x, y, z]."), fov: { type: "number", minimum: 5, maximum: 150 },
-          preset: { type: "string", enum: ["default", "overview"] }, ...orbitProps, name: { type: "string", description: "The PNG's name after the prefix: <prefix>_<name> (default <prefix>_<n>)." } } } },
+          preset: { type: "string", enum: ["default", "overview", "castle"], description: "default: the game's own camera; overview: the whole level (with no project open, as in a baseline test {map, noLevel}: the box of the match's worms); castle: a wide pose on a castle and its worms (`at`, `radius`, `team`), labelled (labels)." },
+          ...orbitProps,
+          at: vec3("preset castle: the castle's centre [x, y, z] (its courtyard floor), in `units`."),
+          radius: { type: "number", minimum: 1, description: "preset castle: the castle's half size (to its far corner), in `units` (default 14 map units)." },
+          team: { type: "integer", minimum: 0, maximum: 3, description: "preset castle: also frame this team's living worms wherever they are (default: the worms within 1.5 radii)." },
+          name: { type: "string", description: "The PNG's name after the prefix: <prefix>_<name> (default <prefix>_<n>)." } } } },
         units,
         prefix: { type: "string", description: "Every PNG is <prefix>_<name> (a cam's name, else its number), so runs never overwrite each other's in the shared shots folder; default erg_<yyyymmdd_hhmmss> of the call." },
         unique: { type: "boolean", description: "A name this erg-mcp wrote before gets _2, _3, ... (default true; false overwrites it)." },
@@ -799,15 +918,17 @@ export const tools: Tool[] = [
         hold: { type: "boolean", description: "Keep the last pose for 5 s instead of giving the camera back." },
         holdLast: { type: "boolean", description: "Keep the last pose until released (game_camera {clear: true}), as game_camera's hold." },
         images: { type: "boolean", description: "Answer the pictures as image content (default true); false: paths only." },
+        labels: { type: "boolean", description: "Also write <name>_labels.png beside each shot: every living worm in view ringed in its team's colour (0 red, 1 blue, 2 green, 3 yellow) with its slot number (WORMn) over it, placed from the pose, and answer the worms' places in the picture (default true for preset castle, else false). The game's own name tags are too small to read in a wide shot." },
       },
     },
     async handler(s, a: { cams: Cam[]; units?: "map" | "world"; prefix?: string; unique?: boolean; onAnnounce?: { match?: string; timeoutSec?: number }; clean?: boolean; width?: number; settleFrames?: number;
-      waitPlay?: boolean; waitSec?: number; hold?: boolean; holdLast?: boolean; images?: boolean }) {
+      waitPlay?: boolean; waitSec?: number; hold?: boolean; holdLast?: boolean; images?: boolean; labels?: boolean }) {
       if (!(await has(s, "render.camera")) || !(await has(s, "render.shot"))) throw new ToolError("game_shots needs the game's render.camera and render.shot (a Melange with them, running)");
       if (a.waitPlay && a.onAnnounce) throw new ToolError("waitPlay and onAnnounce both decide when to shoot: give one");
       const k = a.units === "world" ? 1 : WORLD_PER_MAP, t0 = Date.now(), settle = a.settleFrames ?? (a.waitPlay ? 6 : 2);
       let playSupported: boolean | undefined;
       const shots: object[] = [], parts: Content[] = [], warnings: string[] = [], prefix = a.prefix ?? `erg_${stamp()}`;
+      const castleWorms = new Map<number, string[] | undefined>();
       // onAnnounce: wait for the message, then shoot at once and not clean (the announcement is drawn with the HUD
       // primitives a clean shot hides)
       const ann = a.onAnnounce ? await waitAnnouncement(s, a.onAnnounce.match, (a.onAnnounce.timeoutSec ?? 60) * 1000) : null;
@@ -824,10 +945,18 @@ export const tools: Tool[] = [
             if (c.pos || c.target) throw new ToolError(`cams[${i}]: preset default takes no pos or target`);
             await clearCamera(s);
           } else {
-            const cam = c.preset === "overview" ? overview(s, c, k) : (() => {
+            let framed: string[] | undefined;
+            const cam = c.preset === "overview" ? await overviewOf(s, c, k) : c.preset === "castle" ? await (async () => {
+              if (!c.at) throw new ToolError(`cams[${i}]: preset castle needs at (the castle's centre)`);
+              const cp = castlePose(c.at.map((x) => (x * k) / WORLD_PER_MAP), ((c.radius ?? 14 * WORLD_PER_MAP / k) * k) / WORLD_PER_MAP, await wormsNow(s), c.team, c.azimuth, c.elevation);
+              framed = cp.worms;
+              return cp.pose;
+            })() : (() => {
               if (!c.pos || !c.target) throw new ToolError(`cams[${i}]: give pos and target, or a preset`);
               return { pos: c.pos.map((x) => x * k), target: c.target.map((x) => x * k), fov: c.fov };
             })();
+            if ((cam as { from?: string }).from) warnings.push(`${name}: ${(cam as { from?: string }).from}`);
+            castleWorms.set(i, framed);
             const last = (a.hold || a.holdLast) && i === a.cams.length - 1;
             lastPose = { ...cam, fov: c.fov ?? cam.fov };
             const frames = last ? (a.holdLast ? 600 : 300) : Math.max(30, settle + 20);
@@ -844,8 +973,13 @@ export const tools: Tool[] = [
           const play = a.waitPlay && playSupported && c.preset !== "default" ? { settle, waitMs: (a.waitSec ?? 60) * 1000 } : undefined;
           const p = await shot(s, name, { width: a.width ?? 960, clean: cleanShots, minFrame: minFrame !== undefined && afterShown !== undefined ? Math.max(minFrame, afterShown) : minFrame ?? afterShown, play });
           if (play && p.phase !== undefined && p.phase !== "play") warnings.push(`${name}: read in the turn's ${p.phase} phase`);
+          // labels: the worms ringed and numbered over a copy of the shot, placed from the pose drawn
+          const pose = lastPose as Held["cam"] | null;
+          const labels = c.preset !== "default" && pose && (a.labels ?? c.preset === "castle")
+            ? await wormsNow(s).then((ws) => labelShot(p.path, p.png, { pos: pose.pos, target: pose.target, fov: pose.fov ?? 60 }, ws)).catch((e: Error) => ({ labelError: e.message })) : null;
           shots.push({ name, ...(c.preset ? { preset: c.preset } : {}), ...(c.preset === "overview" && lastPose ? { azimuth: c.azimuth ?? 180, worldPos: lastPose.pos.map((v) => Math.round(v * 10) / 10) } : {}),
-            path: p.path, width: p.width, height: p.height, frame: p.frame, clean: p.clean, ...(p.phase !== undefined ? { phase: p.phase } : {}), ...(play ? { waitedMs: p.waitedMs } : {}) });
+            ...(castleWorms.get(i) ? { framedWorms: castleWorms.get(i) } : {}),
+            path: p.path, width: p.width, height: p.height, frame: p.frame, clean: p.clean, ...(p.phase !== undefined ? { phase: p.phase } : {}), ...(play ? { waitedMs: p.waitedMs } : {}), ...(labels ?? {}) });
           if (a.images !== false) parts.push(image(p.png));
         }
       } finally {
@@ -882,6 +1016,7 @@ export const tools: Tool[] = [
         lookahead: { type: "number", minimum: 0.25, description: "With path or to: aim this far along the route ahead of the worm (default 2 map units)." },
         bodyWidth: { type: "number", minimum: 0, description: "With to: the worm's width the planned route must fit through (default 0.6 map units, a worm's body; 0 not enforced)." },
         recover: { type: "boolean", description: "With path or to: when stuck, try a jump, then a side step, then a backflip, in turn (default true); false: only jump (as waypoints do)." },
+        replan: { type: "boolean", description: "With path and a project open: after each round of recoveries that leaves the worm stuck, back off its heading and plan a route over the open project's voxels (check_reachability's walk graph, the worm's width enforced) from where it is to the path a little further on, and follow that before the rest of the path, at most 4 times a walk (default true). The pursuit aims straight along the path, so a path that cuts a corner past a pillar or a keep held the worm against it for whole turns (Caldera v2 round 1: Ashgate's WORM2, 4 turns) while jumps and side steps kept the same heading." },
         units: { type: "string", enum: ["map", "world"], description: "Units of the route and the answer (default map)." },
         worm: { type: "integer", minimum: 0, maximum: 15, description: "Walk only this WORMn: wait for its turn (default: the first human turn that comes)." },
         arrive: { type: "number", minimum: 0.2, description: "The end (or a waypoint) is reached within this horizontal distance (units; default 1.5 map units)." },
@@ -891,7 +1026,7 @@ export const tools: Tool[] = [
         driver: { type: "string", enum: ["auto", "input", "keys"], description: "How the worm is moved: input posts the game's own movement inputs (Input.MoveForward ... Pressed and Released, as the keys bound to them post them) from the input service's tick (input.drive, Melange 0.13+), so it works whatever window has the focus; keys injects W A S D through the Automation module (test builds), which the game reads only while its window has the focus (in the Caldera iteration-10 Test the window lost it a third of the time and W moved no worm). auto (default): input when the game has input.drive, else keys." },
       },
     },
-    async handler(s, a: { waypoints?: number[][]; path?: number[][]; to?: number[]; lookahead?: number; bodyWidth?: number; recover?: boolean; units?: "map" | "world"; worm?: number; arrive?: number;
+    async handler(s, a: { waypoints?: number[][]; path?: number[][]; to?: number[]; lookahead?: number; bodyWidth?: number; recover?: boolean; replan?: boolean; units?: "map" | "world"; worm?: number; arrive?: number;
       timeoutSec?: number; jump?: boolean; gameDir?: string; driver?: "auto" | "input" | "keys" }) {
       const given = [a.waypoints, a.path, a.to].filter((x) => x !== undefined).length;
       if (given !== 1) throw new ToolError("give one of waypoints, path or to");
@@ -904,6 +1039,8 @@ export const tools: Tool[] = [
       const xz = (p: number[]) => (p.length === 3 ? [p[0] * k, p[2] * k] : [p[0] * k, p[1] * k]);
       if (a.to && !s.project) throw new ToolError("to plans over the open project's voxels: open_project first (or give path)");
       let pts = (a.waypoints ?? a.path ?? []).map(xz);
+      // a path's heights (world units; NaN without): a replanned stretch ends on the path's own leg of a switchback
+      let ys = (a.path ?? []).map((p) => (p.length === 3 ? p[1] * k : NaN));
       if (!pts.every((p) => p.every(Number.isFinite)) || (a.to && !a.to.every(Number.isFinite))) throw new ToolError("the route's points are finite numbers");
       const follow = a.waypoints ? "waypoints" : "path";
       const arrive = (a.arrive ?? (a.units === "world" ? 30 : 1.5)) * k, limit = (a.timeoutSec ?? 120) * 1000, t0 = Date.now();
@@ -972,8 +1109,35 @@ export const tools: Tool[] = [
         if (typeof p === "string") throw new ToolError(`to: ${p}`);
         pts = p;
       }
+      // path: when stuck after a round of recoveries, a route from the worm to the path a little further on (world units
+      // in and out), spliced in front of the rest of the path
+      const replanPath = follow === "path" && !a.to && a.replan !== false && recover && !!s.project;
+      const detour = (r: W, fromAlong: number): string | null => {
+        const want = fromAlong + Math.max(look * 3, 6 * WORLD_PER_MAP);
+        let j = 0;
+        while (j < pts.length - 1 && cum[j + 1] < want) j++;
+        const t = j < pts.length - 1 && cum[j + 1] > cum[j] ? Math.min(1, Math.max(0, (want - cum[j]) / (cum[j + 1] - cum[j]))) : 0;
+        const tx = j < pts.length - 1 ? pts[j][0] + (pts[j + 1][0] - pts[j][0]) * t : pts[j][0], tz = j < pts.length - 1 ? pts[j][1] + (pts[j + 1][1] - pts[j][1]) * t : pts[j][1];
+        const ty = j < pts.length - 1 && Number.isFinite(ys[j]) && Number.isFinite(ys[j + 1]) ? ys[j] + (ys[j + 1] - ys[j]) * t : ys[j];
+        // round what held it: the spots it got stuck on are not walked, and a route twice the worm's width is tried first
+        // (a route along a keep's wall at the worm's own width held Strand's WORM0 in its corner, Caldera v2 round 2)
+        const body = a.bodyWidth === undefined ? WORM_WIDTH : (a.bodyWidth * k) / WORLD_PER_MAP;
+        const avoid = heldAhead.slice(-6).map((q) => ({ x: q[0] / WORLD_PER_MAP, z: q[1] / WORLD_PER_MAP, r: 0.8 }));
+        let r2: ReturnType<typeof planWalk> = { why: "not planned" };
+        for (const [bw, av] of [[body * 2, avoid], [body, avoid], [body, []]] as [number, typeof avoid][]) {
+          r2 = planWalk(s.project!.store, [r.x / WORLD_PER_MAP, r.y / WORLD_PER_MAP, r.z / WORLD_PER_MAP], [tx / WORLD_PER_MAP, tz / WORLD_PER_MAP],
+            { radius: 1.5, bodyWidth: bw, ...(av.length ? { avoid: av } : {}), ...(Number.isFinite(ty) ? { toY: ty / WORLD_PER_MAP } : {}) });
+          if ("plan" in r2) break;
+        }
+        if ("why" in r2) return r2.why;
+        const lead = r2.plan.path.map((p) => [p[0] * WORLD_PER_MAP, p[2] * WORLD_PER_MAP]);
+        plans.push({ from: [r.x, r.y, r.z].map(out), length: out(r2.plan.length * WORLD_PER_MAP), narrowest: r2.plan.narrowest === null ? null : out(r2.plan.narrowest * WORLD_PER_MAP), points: lead.length });
+        pts = [...lead, [tx, tz], ...pts.slice(j + 1)];
+        ys = [...r2.plan.path.map((p) => p[1] * WORLD_PER_MAP), ty, ...ys.slice(j + 1)];
+        return null;
+      };
       let cum = cumulative(pts);
-      const path: number[][] = [[start.x, start.y, start.z]], stuck: number[][] = [], tries: string[] = [];
+      const path: number[][] = [[start.x, start.y, start.z]], stuck: number[][] = [], tries: string[] = [], heldAhead: number[][] = [];
       let i = 0, seg = 0, along = 0, held: string[] = [], lastMove = Date.now(), lastPos = [start.x, start.z], end: W = start, why = "timeout", jumps = 0, ladder = 0, replans = 0;
       const hold = async (want: string[]) => {
         if (byInput) {
@@ -1010,6 +1174,8 @@ export const tools: Tool[] = [
           if (Math.hypot(r.x - lastPos[0], r.z - lastPos[1]) > 4) { lastPos = [r.x, r.z]; lastMove = Date.now(); ladder = 0; }
           else if (Date.now() - lastMove > 600) {
             stuck.push([r.x, r.y, r.z]);
+            // what held it: the ground a map unit ahead on the heading it was stuck on (a replan keeps off it)
+            { const dx = aim[0] - r.x, dz = aim[1] - r.z, l = Math.hypot(dx, dz) || 1; heldAhead.push([r.x + (dx / l) * WORLD_PER_MAP, r.z + (dz / l) * WORLD_PER_MAP]); }
             if (a.jump !== false) {
               const move = recover ? ladder % 3 : 0;
               if (move === 0) { await press("jump"); jumps++; tries.push("jump"); }
@@ -1028,6 +1194,16 @@ export const tools: Tool[] = [
               if (a.to && ladder % 3 === 0 && replans < 4) {
                 const p = plan(r);
                 if (typeof p !== "string") { pts = p; cum = cumulative(pts); seg = 0; replans++; tries.push("replanned"); }
+              }
+              // a path: off the heading it is stuck on (a short walk straight back), then a route round what holds it
+              if (replanPath && ladder % 3 === 0 && replans < 4) {
+                await hold(walkKeys(r.x - aim[0], r.z - aim[1], r.fx, r.fz));
+                await sleep(450);
+                await hold([]);
+                const at = await read();
+                const why2 = detour(typeof at === "string" ? r : at, along);
+                if (why2 === null) { cum = cumulative(pts); seg = 0; along = 0; replans++; tries.push("backed off, replanned"); }
+                else tries.push(`replan failed: ${why2}`);
               }
             }
             lastMove = Date.now();
@@ -1128,6 +1304,9 @@ export const tools: Tool[] = [
         shots: { type: "boolean", description: "Shoot each worm at the start, middle and end of its walk (default true)." },
         shotPose: { type: "string", enum: ["near", "game"], description: "near (default): each shot on the worm where it is then, all of a turn's from the same side of its heading along the trail (10 map units off, 11 up, over castle walls), looking down at it, so the ground behind it shows how far it went; game: the game's own turn camera (low and far back, following the worm: a cone or a wall can hide it)." },
         walkAhead: { type: "number", minimum: 1, maximum: 40, description: "With shotPose near: the heading is from the worm's spot to this far along its trail (map units, default 6)." },
+        approach: { type: "boolean", description: "A worm more than 1.5 map units off its trail first walks a route planned over the open project's voxels (check_reachability's walk graph, the worm's width enforced) to the trail's point nearest it, then the trail (default true with a project open; the turn's `approach` says what was planned). Without it the pursuit heads straight for the trail, through a keep's pillar if one is in the way." },
+        replan: { type: "boolean", description: "game_walk's replan: a worm stuck after a round of recoveries backs off and walks a route planned round what holds it to its trail further on (default true with a project open)." },
+        announceShots: { type: "boolean", description: "While the turns play, shoot the game's own view (not clean: the message is drawn with the HUD) each time a wum.sim.announce message is first drawn at full opacity (the game's announce.shown record, Melange of this branch): <prefix>_ann<n>.png, listed in the answer's `announcements` with the text and the frames (default true)." },
         prefix: { type: "string", description: "Shot names <prefix>_t<turn>_w<slot>_<start|mid|end> (default erg_<time>_play)." },
         width: { type: "integer", minimum: 160, maximum: 1920, description: "Shot width (default 960)." },
         units: { type: "string", enum: ["map", "world"], description: "Units of the trails and the answer (default map)." },
@@ -1135,7 +1314,8 @@ export const tools: Tool[] = [
       },
     },
     async handler(s, a: { trails: number[][][]; turns?: number; rounds?: number; walkSeconds?: number; end?: "skip" | "fire" | "wait"; weapon?: "bazooka"; fireMs?: number; aimDownMs?: number;
-      shots?: boolean; shotPose?: "near" | "game"; walkAhead?: number; prefix?: string; width?: number; units?: "map" | "world"; timeoutSec?: number; gameDir?: string }) {
+      shots?: boolean; shotPose?: "near" | "game"; walkAhead?: number; prefix?: string; width?: number; units?: "map" | "world"; timeoutSec?: number; gameDir?: string;
+      approach?: boolean; replan?: boolean; announceShots?: boolean }) {
       if (!(await has(s, "input.drive"))) throw new ToolError("game_play_turns drives the worms with input.drive (Melange 0.13+ with the Controls module)");
       const canSkip = await has(s, "level.test.endTurn");
       const end = a.end ?? (canSkip ? "skip" : "wait");
@@ -1149,7 +1329,7 @@ export const tools: Tool[] = [
       const client = await s.client(), t0 = Date.now(), limit = (a.timeoutSec ?? 1800) * 1000, prefix = a.prefix ?? `erg_${stamp()}_play`;
       const walk = tools.find((t) => t.name === "game_walk")!;
       type Turn = { turn: number; worm: string; slot: number; team: number; from: number[]; to?: number[]; along?: number; of?: number; climb?: number; stop?: string;
-        recoveries?: string[]; shots: string[]; ended?: string; error?: string; weapon?: string; stuck?: string };
+        recoveries?: string[]; shots: string[]; ended?: string; error?: string; weapon?: string; stuck?: string; approach?: object; replans?: number };
       const played: Turn[] = [];
       // shotPose near: each shot on the worm where it is then, all of a turn's from the same side of its heading (the
       // trail's direction from its spot, walkAhead along it) and high over castle walls, so the ground behind it shows how
@@ -1175,80 +1355,102 @@ export const tools: Tool[] = [
       let st = await gameState(s);
       noteTurn(st);
       if (st.scene !== "match") throw new ToolError(`no match is running (scene ${st.scene}): test first`);
+      // the level script's announcements: a shot of the game's own view (with its HUD) as each is first drawn at full
+      // opacity; the log channel's backlog (records from before this call) is passed over
+      const announced: { text: string; shownFrame: number; shot?: string; frame?: number; error?: string }[] = [], pendingShots: Promise<void>[] = [];
+      const stopAnn = a.announceShots !== false && (await has(s, "render.shot")) ? await followAnnouncements(s, () => undefined, (x) => {
+        if (x.wall < t0 - 500) return;
+        const rec = { text: x.text, shownFrame: x.frame } as (typeof announced)[number];
+        announced.push(rec);
+        pendingShots.push(shot(s, uniqueName(prefix, `ann${announced.length}`), { clean: false, width: a.width ?? 960, minFrame: x.frame + 1 })
+          .then((r) => { rec.shot = r.path; rec.frame = r.frame; }, (e: Error) => { rec.error = e.message; }));
+      }).catch(() => null) : null;
       const alive = Object.values(st.aliveByTeam).reduce((x, y) => x + y, 0);
       const want = a.turns ?? (a.rounds ?? 2) * Math.max(1, alive);
       let lastTurn = -1, why = "done", cancelMid = () => {};
-      while (played.length < want) {
-        if (Date.now() - t0 > limit) { why = "timeout"; break; }
-        st = await gameState(s);
-        noteTurn(st);
-        if (st.scene !== "match") { why = `the match ended (scene ${st.scene})`; break; }
-        if (st.turn === undefined || st.turn === lastTurn || st.phase !== "play" || st.worm === undefined) { await sleep(300); continue; }
-        if (st.ai) { lastTurn = st.turn; await sleep(500); continue; }   // a computer team's turn is not steered
-        lastTurn = st.turn;
-        const turn = st.turn, slot = st.worm, team = st.team ?? 0, trail = trailOf(team);
-        const p = await wormAt(slot);
-        const rec: Turn = { turn, worm: `WORM${slot}`, slot, team, from: p.length === 3 ? p.map(out) : [], shots: [] };
-        played.push(rec);
-        const rest = p.length === 3 && p.every(Number.isFinite) ? restOfTrail(trail, trail[0].length === 3 ? p : [p[0], p[2]]) : trail;
-        const pose = p.length === 3 && p.every(Number.isFinite) ? { slot, heading: turnHeading(p, rest, (a.walkAhead ?? 6) * WORLD_PER_MAP) } : null;
-        await shotAt(`t${turn}_w${slot}_start`, rec.shots, pose);
-        const walkSec = a.walkSeconds ?? 20;
-        // the middle shot from a timer while the walk runs (the walk steers by the game's own camera, which a shot leaves);
-        // a walk that ends first cancels it, so it never fires in a later turn
-        let midStarted = false;
-        const midShot = new Promise<void>((ok) => {
-          const timer = setTimeout(() => { midStarted = true; shotAt(`t${turn}_w${slot}_mid`, rec.shots, pose).then(ok, ok); }, (walkSec * 1000) / 2);
-          cancelMid = () => { if (!midStarted) { clearTimeout(timer); ok(); } };
-        });
-        try {
-          const r = await walk.handler(s, { path: rest, units: "world", worm: slot, timeoutSec: walkSec, arrive: 1.5 * WORLD_PER_MAP }) as Record<string, unknown>;
-          const to = r.to as number[], from = r.from as number[];
-          rec.to = to.map(out);
-          rec.climb = out(to[1] - from[1]);
-          rec.stop = String(r.stop);
-          // a worm that did not move at all is most often inside solid ground: in the hx4 harness run (2026-11-08) the
-          // wiped base's heightmap ground stood 1.5 map units over the courtyard knots and no worm could walk or jump
-          if (Math.hypot(to[0] - from[0], to[2] - from[2]) < 0.3 * WORLD_PER_MAP && rec.stop !== "arrived")
-            rec.stuck = "the worm did not move: is it inside solid ground (a base's heightmap ground over its spot: set_surround_mode none) or boxed in?";
-          if (Array.isArray(r.recoveries)) rec.recoveries = (r.recoveries as string[]).slice(0, 12);
-          const at = alongTrail(trail, trail[0].length === 3 ? to : [to[0], to[2]]);
-          rec.along = out(at.along);
-          rec.of = out(at.of);
-        } catch (e) {
-          rec.error = (e as Error).message;
+      try {
+        while (played.length < want) {
+          if (Date.now() - t0 > limit) { why = "timeout"; break; }
+          st = await gameState(s);
+          noteTurn(st);
+          if (st.scene !== "match") { why = `the match ended (scene ${st.scene})`; break; }
+          if (st.turn === undefined || st.turn === lastTurn || st.phase !== "play" || st.worm === undefined) { await sleep(300); continue; }
+          if (st.ai) { lastTurn = st.turn; await sleep(500); continue; }   // a computer team's turn is not steered
+          lastTurn = st.turn;
+          const turn = st.turn, slot = st.worm, team = st.team ?? 0, trail = trailOf(team);
+          const p = await wormAt(slot);
+          const rec: Turn = { turn, worm: `WORM${slot}`, slot, team, from: p.length === 3 ? p.map(out) : [], shots: [] };
+          played.push(rec);
+          const rest = p.length === 3 && p.every(Number.isFinite) ? restOfTrail(trail, trail[0].length === 3 ? p : [p[0], p[2]]) : trail;
+          // a worm off its trail (a spawn in a courtyard, knocked aside) walks a planned route to it first: pursuit straight
+          // at the trail's nearest point ran Ashgate's WORM2 into the keep's pillar for 4 turns (Caldera v2 round 1)
+          const route = p.length === 3 && p.every(Number.isFinite) && a.approach !== false ? approachRoute(s, p, rest) : null;
+          if (route?.why) rec.approach = { planned: false, why: route.why };
+          else if (route?.lead) rec.approach = { planned: true, from: p.map(out), length: out(route.length!), points: route.lead.length };
+          const pose = p.length === 3 && p.every(Number.isFinite) ? { slot, heading: turnHeading(p, rest, (a.walkAhead ?? 6) * WORLD_PER_MAP) } : null;
+          await shotAt(`t${turn}_w${slot}_start`, rec.shots, pose);
+          const walkSec = a.walkSeconds ?? 20;
+          // the middle shot from a timer while the walk runs (the walk steers by the game's own camera, which a shot leaves);
+          // a walk that ends first cancels it, so it never fires in a later turn
+          let midStarted = false;
+          const midShot = new Promise<void>((ok) => {
+            const timer = setTimeout(() => { midStarted = true; shotAt(`t${turn}_w${slot}_mid`, rec.shots, pose).then(ok, ok); }, (walkSec * 1000) / 2);
+            cancelMid = () => { if (!midStarted) { clearTimeout(timer); ok(); } };
+          });
+          try {
+            const r = await walk.handler(s, { path: route?.lead ? [...route.lead, ...rest] : rest, units: "world", worm: slot, timeoutSec: walkSec, arrive: 1.5 * WORLD_PER_MAP,
+              ...(a.replan === false ? { replan: false } : {}) }) as Record<string, unknown>;
+            const to = r.to as number[], from = r.from as number[];
+            rec.to = to.map(out);
+            rec.climb = out(to[1] - from[1]);
+            rec.stop = String(r.stop);
+            // a worm that did not move at all is most often inside solid ground: in the hx4 harness run (2026-11-08) the
+            // wiped base's heightmap ground stood 1.5 map units over the courtyard knots and no worm could walk or jump
+            if (Math.hypot(to[0] - from[0], to[2] - from[2]) < 0.3 * WORLD_PER_MAP && rec.stop !== "arrived")
+              rec.stuck = "the worm did not move: is it inside solid ground (a base's heightmap ground over its spot: set_surround_mode none) or boxed in?";
+            if (Array.isArray(r.recoveries)) rec.recoveries = (r.recoveries as string[]).slice(0, 12);
+            if (Array.isArray(r.plans) && r.plans.length) rec.replans = r.plans.length;
+            const at = alongTrail(trail, trail[0].length === 3 ? to : [to[0], to[2]]);
+            rec.along = out(at.along);
+            rec.of = out(at.of);
+          } catch (e) {
+            rec.error = (e as Error).message;
+          }
+          // a walk that ended early (arrived, the turn ended) takes no middle shot; one under way is waited for
+          cancelMid();
+          await midShot;
+          if (!midStarted && a.shots !== false) rec.shots.push(`mid: none (the walk ended before ${walkSec / 2} s)`);
+          await shotAt(`t${turn}_w${slot}_end`, rec.shots, pose);
+          const now = await gameState(s);
+          if (now.turn === turn && now.phase === "play") {
+            if (end === "skip") {
+              rec.ended = await client.call("level.test.endTurn", {}, 15000).then(() => "skipped (level.test.endTurn)", (e: Error) => `endTurn refused: ${e.message}`);
+            } else if (end === "fire") {
+              if (panel) {
+                appendFileSync(panel, ["click right", "wait 500", "click", "wait 300", ""].join("\n"));
+                await sleep(1600);
+              }
+              const wp = await evalClient(s, `for _, w in ipairs(wum.game.worms() or {}) do if w.slot == ${slot} then return tostring(w.weapon) end end return "nil"`).catch(() => "?");
+              rec.weapon = wp;
+              if (a.aimDownMs) {
+                await client.call("input.drive", { hold: ["Input.AimDown"], ms: a.aimDownMs, replace: true }, 15000).catch(() => undefined);
+                await sleep(a.aimDownMs + 100);
+              }
+              await client.call("input.drive", { hold: ["Input.Fire"], ms: a.fireMs ?? 300, replace: true }, 15000).catch(() => undefined);
+              rec.ended = wp === "nil" ? "fire held, but the worm had no weapon selected (nothing fired)" : `fired (weapon ${wp}${a.weapon ? `, ${a.weapon} asked` : ""})`;
+            } else rec.ended = "the turn time ran out";
+          } else rec.ended = "the turn had ended";
+          // the next turn: after the turn change, a shot's flight and the Ready? intro
+          for (const tw = Date.now(); Date.now() - tw < 90000; await sleep(400)) {
+            const n = await gameState(s);
+            noteTurn(n);
+            if (n.scene !== "match" || (n.turn !== undefined && n.turn !== turn)) break;
+          }
         }
-        // a walk that ended early (arrived, the turn ended) takes no middle shot; one under way is waited for
-        cancelMid();
-        await midShot;
-        if (!midStarted && a.shots !== false) rec.shots.push(`mid: none (the walk ended before ${walkSec / 2} s)`);
-        await shotAt(`t${turn}_w${slot}_end`, rec.shots, pose);
-        const now = await gameState(s);
-        if (now.turn === turn && now.phase === "play") {
-          if (end === "skip") {
-            rec.ended = await client.call("level.test.endTurn", {}, 15000).then(() => "skipped (level.test.endTurn)", (e: Error) => `endTurn refused: ${e.message}`);
-          } else if (end === "fire") {
-            if (panel) {
-              appendFileSync(panel, ["click right", "wait 500", "click", "wait 300", ""].join("\n"));
-              await sleep(1600);
-            }
-            const wp = await evalClient(s, `for _, w in ipairs(wum.game.worms() or {}) do if w.slot == ${slot} then return tostring(w.weapon) end end return "nil"`).catch(() => "?");
-            rec.weapon = wp;
-            if (a.aimDownMs) {
-              await client.call("input.drive", { hold: ["Input.AimDown"], ms: a.aimDownMs, replace: true }, 15000).catch(() => undefined);
-              await sleep(a.aimDownMs + 100);
-            }
-            await client.call("input.drive", { hold: ["Input.Fire"], ms: a.fireMs ?? 300, replace: true }, 15000).catch(() => undefined);
-            rec.ended = wp === "nil" ? "fire held, but the worm had no weapon selected (nothing fired)" : `fired (weapon ${wp}${a.weapon ? `, ${a.weapon} asked` : ""})`;
-          } else rec.ended = "the turn time ran out";
-        } else rec.ended = "the turn had ended";
-        // the next turn: after the turn change, a shot's flight and the Ready? intro
-        for (const tw = Date.now(); Date.now() - tw < 90000; await sleep(400)) {
-          const n = await gameState(s);
-          noteTurn(n);
-          if (n.scene !== "match" || (n.turn !== undefined && n.turn !== turn)) break;
-        }
+      } finally {
+        stopAnn?.();
       }
+      await Promise.all(pendingShots);
       // per worm: its turns and how far along its team's trail it stood after each
       const byWorm = new Map<number, Turn[]>();
       for (const t of played) byWorm.set(t.slot, [...(byWorm.get(t.slot) ?? []), t]);
@@ -1257,6 +1459,7 @@ export const tools: Tool[] = [
         from: ts[0].from, to: ts[ts.length - 1].to ?? null }));
       const log = turnLogOut();
       return { played: played.length, asked: want, stop: why, seconds: Math.round((Date.now() - t0) / 100) / 10, end, worms, turns: played, ...(log ? { turnLog: log } : {}),
+        ...(stopAnn ? { announcements: announced.length ? announced : "none was drawn during the run" } : {}),
         units: a.units ?? "map", note: "each human turn's worm walked its team's trail with the game's own inputs (input.drive) from the trail's point nearest it; along/of: how far along the trail it stood after the turn. A turn's shots look at its worm from one side of its heading (shotPose near; game: the turn camera), clean of the mods' HUD text" };
     },
   },
@@ -1436,50 +1639,156 @@ export const tools: Tool[] = [
   },
   {
     name: "game_mine_drop",
-    description: "Whether the ground holds a mine, in the running Test (level.test.dropMines, Melange of this branch): one mine is made at each point (`points`, [x, z] or [x, y, z] in `units`, default map; [x, z] starts `height` (default 8 map units) over the open project's ground top in that column, [x, y, z] at y), falling as the factory's own (0, -0.3, 0) unless `vel` ([x, y, z] world units per ms); after `seconds` (default 10) each point says `held` (a new mine at rest within 1.5 map units of it, at most 1.5 under the ground top: it landed there), `low` (a new mine near it but lower: it went through the top to something under it) or `gone` (none: fell through to the water and drowned, or went off). Answers the counts and each point. Use it to choose a mine factory's launchers and landing zones: in Tests on 2026-11-08 a mine fell straight through Caldera's crater ground (the draped skin and solid undraped pads alike) everywhere west of x 7 map and held everywhere east of x 12, on the same frames, while worms stood on both; launchers must stand where the drops hold.",
+    description: "Whether the ground holds a mine, in the running Test (level.test.dropMines, Melange of this branch): one mine is made at each point (`points`, [x, z] or [x, y, z] in `units`, default map; [x, z] starts `height` (default 8 map units) over the open project's ground top in that column, [x, y, z] at y), falling as the factory's own (0, -0.3, 0) unless `vel` ([x, y, z] world units per ms); after `seconds` (default 10) each point says `held` (a new mine at rest within 1.5 map units of it, at most 1.5 under the ground top: it landed there), `low` (a new mine near it but lower: it went through the top to something under it) or `gone` (none: fell through to the water and drowned, or went off). Answers the counts and each point. Use it to choose a mine factory's launchers and landing zones: in Tests on 2026-11-08 a mine fell straight through Caldera's crater ground (the draped skin and solid undraped pads alike) everywhere west of x 7 map and held everywhere east of x 12, on the same frames, while worms stood on both; launchers must stand where the drops hold. `trails` probes walking routes instead (a pre-test, in a Test match of its own before the worms are walked: the mines stay where they land): along each trail (points [x, z] or [x, y, z]; give y on a switchback) a mine every `spacing` (default 3 map units) on the centreline and one on each shoulder (`shoulder`, default 2.6: half a 5.2 bed), each over the ground at the trail's own height, in batches of 64; points within `avoidWorms` (default 8) of a living worm are skipped (a mine there would go off under it); a probe whose mine went off (an explosion the Test probe saw within 2.5 map units: mines 3 apart set each other off in chains) is `setOff`, not a failure. Answers per trail the counts and every point that did not hold (where along the trail, centre or left/right): a void under a trail that check_reachability's graph and check_trail cannot see (Caldera v2 round 1: two worms fell 31 map units through the SW trail beside a corner of the crater's skin block, where every mine dropped fell through too).",
     inputSchema: {
-      type: "object", additionalProperties: false, required: ["points"],
+      type: "object", additionalProperties: false,
       properties: {
-        points: { type: "array", minItems: 1, maxItems: 64, items: { type: "array", items: { type: "number" }, minItems: 2, maxItems: 3 } },
+        points: { type: "array", minItems: 1, maxItems: 64, items: { type: "array", items: { type: "number" }, minItems: 2, maxItems: 3 },
+          description: "Points to drop a mine on ([x, z] or [x, y, z] in `units`), all at once: keep it under about 30 (the game keeps about 30 mines and removes the oldest past that, so the first of a larger drop read as gone)." },
+        trails: { type: "array", minItems: 1, maxItems: 8, items: { type: "array", minItems: 2, maxItems: 4000, items: { type: "array", items: { type: "number" }, minItems: 2, maxItems: 3 } },
+          description: "Instead of points: trails ([x, z] or [x, y, z] points in `units`) to probe along, centre and shoulders." },
+        spacing: { type: "number", minimum: 1, maximum: 50, description: "trails: map units between probes along a trail (default 3)." },
+        shoulder: { type: "number", minimum: 0, maximum: 20, description: "trails: map units from the centreline to each shoulder probe (default 2.6; 0: the centreline only)." },
+        avoidWorms: { type: "number", minimum: 0, maximum: 50, description: "trails: skip probes this close to a living worm, map units (default 8)." },
+        batch: { type: "integer", minimum: 1, maximum: 30, description: "trails: mines dropped at once (default 24). The game keeps about 30 mines and removes the oldest past that, so a larger drop loses its first mines (they read as gone)." },
         height: { type: "number", minimum: 0.5, maximum: 100, description: "Map units over the ground top for [x, z] points (default 8)." },
         vel: { type: "array", items: { type: "number" }, minItems: 3, maxItems: 3, description: "The mines' start velocity, world units per ms (default the factory's (0, -0.3, 0))." },
         seconds: { type: "number", minimum: 3, maximum: 60, description: "How long to let them land (default 10)." },
         units: { type: "string", enum: ["map", "world"] },
       },
     },
-    async handler(s, a: { points: number[][]; height?: number; vel?: number[]; seconds?: number; units?: "map" | "world" }) {
+    async handler(s, a: { points?: number[][]; trails?: number[][][]; spacing?: number; shoulder?: number; avoidWorms?: number; batch?: number; height?: number; vel?: number[]; seconds?: number; units?: "map" | "world" }) {
+      if (!!a.points === !!a.trails) throw new ToolError("give points or trails");
       if (!(await has(s, "level.test.dropMines"))) throw new ToolError("this game has no level.test.dropMines (a Melange of the erg-mcp branch): Test with that build");
       if (!(await has(s, "entities.list"))) throw new ToolError("this game has no entities.list ([GameState] Enabled=1 in its Melange.ini)");
       const k = (a.units ?? "map") === "world" ? 1 / WORLD_PER_MAP : 1, h = a.height ?? 8;
-      // each point in map units, with the ground top under it (the open project's) when there is one
-      const pts = a.points.map((p, i) => {
-        if (!p.every(Number.isFinite)) throw new ToolError(`points[${i}]: numbers`);
-        const x = p[0] * k, z = (p.length === 3 ? p[2] : p[1]) * k;
-        let top: number | null = null;
-        try {
-          const tops = spansAt(grids(s.store), x, z).map((sp) => sp.top);
-          if (tops.length) top = Math.max(...tops);
-        } catch {
-          // no project open: [x, y, z] points only
-        }
-        if (p.length === 2 && top === null) throw new ToolError(`points[${i}]: no ground in the open project's column at (${p[0]}, ${p[1]}): give [x, y, z]`);
-        return { at: [x, p.length === 3 ? p[1] * k : top! + h, z], top };
-      });
-      const before = new Set((await liveMines(s)).map((m) => m.handle));
-      const queued = await (await s.client()).call("level.test.dropMines", { points: pts.map((p) => p.at.map((v) => v * WORLD_PER_MAP)), ...(a.vel ? { vel: a.vel } : {}) }, 15000);
-      await new Promise((r) => setTimeout(r, (a.seconds ?? 10) * 1000));
-      const fresh = (await liveMines(s)).filter((m) => !before.has(m.handle) && m.pos).map((m) => ({ x: m.pos!.x / WORLD_PER_MAP, y: m.pos!.y / WORLD_PER_MAP, z: m.pos!.z / WORLD_PER_MAP }));
       const r1 = (v: number) => Math.round(v * 100) / 100;
-      const counts = { held: 0, low: 0, gone: 0 };
-      const each = pts.map((p) => {
-        const near = fresh.filter((m) => Math.hypot(m.x - p.at[0], m.z - p.at[2]) <= 1.5).sort((u, v) => v.y - u.y)[0];
-        const ground = p.top ?? p.at[1];
-        const verdict = !near ? "gone" : near.y >= ground - 1.5 ? "held" : "low";
-        counts[verdict]++;
-        return { at: p.at.map(r1), groundTop: p.top === null ? null : r1(p.top), verdict, ...(near ? { mine: [near.x, near.y, near.z].map(r1) } : {}) };
+      // the ground top in a column (map units), the open project's; under `below` when given (a trail's own leg)
+      const topAt = (x: number, z: number, below?: number): number | null => {
+        try {
+          const sp = spansAt(grids(s.store), x, z, below ?? Infinity);
+          return sp.length ? Math.max(...sp.map((q) => q.top)) : null;
+        } catch {
+          return null;   // no project open: [x, y, z] points only
+        }
+      };
+      type Probe = { at: number[]; top: number | null; trail?: number; along?: number; side?: string };
+      // a mine that went off (an explosion the Test probe saw within 2.5 map units of its point) is `setOff`, not `gone`:
+      // in the first trail probe (Caldera v2 round 2) mines 3 apart went off in chains along whole legs, which read as
+      // ground that does not hold
+      const drop = async (pts: Probe[]) => {
+        const seen0 = (await probeOf(s))?.probe.explosionsSeen ?? null;
+        const before = new Set((await liveMines(s)).map((m) => m.handle));
+        const queued = await (await s.client()).call("level.test.dropMines", { points: pts.map((p) => p.at.map((v) => v * WORLD_PER_MAP)), ...(a.vel ? { vel: a.vel } : {}) }, 15000);
+        await new Promise((r) => setTimeout(r, (a.seconds ?? 10) * 1000));
+        const fresh = (await liveMines(s)).filter((m) => !before.has(m.handle) && m.pos).map((m) => ({ x: m.pos!.x / WORLD_PER_MAP, y: m.pos!.y / WORLD_PER_MAP, z: m.pos!.z / WORLD_PER_MAP }));
+        const pr = seen0 === null ? null : await probeOf(s);
+        const blasts = pr ? pr.probe.explosions.slice(-Math.min(pr.probe.explosions.length, Math.max(0, pr.probe.explosionsSeen - seen0!))) : [];
+        return { queued, explosions: pr ? pr.probe.explosionsSeen - seen0! : null, each: pts.map((p) => {
+          const near = fresh.filter((m) => Math.hypot(m.x - p.at[0], m.z - p.at[2]) <= 1.5).sort((u, v) => v.y - u.y)[0];
+          const ground = p.top ?? p.at[1];
+          const verdict = near ? (near.y >= ground - 1.5 ? "held" : "low") : blasts.some((b) => Math.hypot(b.at[0] - p.at[0], b.at[2] - p.at[2]) <= 2.5) ? "setOff" : "gone";
+          return { at: p.at.map(r1), groundTop: p.top === null ? null : r1(p.top), verdict, ...(near ? { mine: [near.x, near.y, near.z].map(r1) } : {}),
+            ...(p.trail !== undefined ? { trail: p.trail, along: r1(p.along!), side: p.side } : {}) };
+        }) };
+      };
+      if (a.points) {
+        // each point in map units, with the ground top under it (the open project's) when there is one
+        const pts = a.points.map((p, i) => {
+          if (!p.every(Number.isFinite)) throw new ToolError(`points[${i}]: numbers`);
+          const x = p[0] * k, z = (p.length === 3 ? p[2] : p[1]) * k, top = topAt(x, z);
+          if (p.length === 2 && top === null) throw new ToolError(`points[${i}]: no ground in the open project's column at (${p[0]}, ${p[1]}): give [x, y, z]`);
+          return { at: [x, p.length === 3 ? p[1] * k : top! + h, z], top };
+        });
+        const r = await drop(pts);
+        const counts: Record<string, number> = { held: 0, low: 0, gone: 0 };
+        for (const e of r.each) counts[e.verdict] = (counts[e.verdict] ?? 0) + 1;
+        return { units: "map", queued: r.queued, counts, points: r.each, ...(r.explosions !== null ? { explosions: r.explosions } : {}),
+          note: "held: the mine lies on the ground at the point; low: it went through the top to something under it; setOff: it went off (an explosion near the point); gone: no mine near the point and no explosion (through to the water, drowned)" };
+      }
+      // trails: probes along each, centre and shoulders, over the ground at the trail's own height
+      if (!s.project) throw new ToolError("trails are probed over the open project's ground: open_project the tested level");
+      const worms = (await wormsNow(s).catch(() => [])).filter((w) => w.alive).map((w) => w.pos.map((v) => v / WORLD_PER_MAP));
+      const spacing = a.spacing ?? 3, sh = a.shoulder ?? 2.6, avoid = a.avoidWorms ?? 8;
+      const probes: Probe[] = [], skipped: object[] = [], noGround: { trail: number; along: number; side: string; at: number[] }[] = [];
+      const sides: [string, number][] = sh > 0 ? [["centre", 0], ["left", sh], ["right", -sh]] : [["centre", 0]];
+      a.trails!.forEach((t, ti) => {
+        const q = t.map((p) => p.map((v) => v * k));
+        let along = 0, carry = 0;
+        for (let i = 0; i + 1 < q.length; i++) {
+          const A = q[i], B = q[i + 1], ax = A[0], az = A[A.length - 1], bx = B[0], bz = B[B.length - 1], L = Math.hypot(bx - ax, bz - az);
+          if (L < 1e-6) continue;
+          const ux = (bx - ax) / L, uz = (bz - az) / L, ya = A.length === 3 ? A[1] : NaN, yb = B.length === 3 ? B[1] : NaN;
+          let d = carry;
+          for (; d <= L + 1e-9; d += spacing) {
+            const x = ax + ux * d, z = az + uz * d, y = ya + ((yb - ya) * d) / L;
+            for (const [side, o] of sides) {
+              const px = x - uz * o, pz = z + ux * o;
+              if (worms.some((w) => Math.hypot(w[0] - px, w[2] - pz) < avoid)) { skipped.push({ trail: ti, along: r1(along + d), side, why: "a worm is near" }); continue; }
+              const top = topAt(px, pz, Number.isFinite(y) ? y + 2.5 : undefined);
+              if (top === null) { noGround.push({ trail: ti, along: r1(along + d), side, at: [r1(px), r1(pz)] }); continue; }
+              probes.push({ at: [px, top + h, pz], top, trail: ti, along: along + d, side });
+            }
+          }
+          carry = d - L;
+          along += L;
+        }
       });
-      return { units: "map", queued, counts, points: each,
-        note: "held: the mine lies on the ground at the point; low: it went through the top to something under it; gone: no mine near the point (through to the water, drowned, or set off)" };
+      if (probes.length > 1024) throw new ToolError(`${probes.length} probes: at most 1024 (raise spacing)`);
+      // batches of `batch` (default 24) dealt round the whole list (probe i in batch i % n), so the mines of a batch are far
+      // apart. The game keeps about 30 mines: past that the oldest go as new ones are made (Caldera v2 round 2: of every
+      // 64 dropped at once the first 30-odd vanished without a blast, which read as ground that does not hold), so a
+      // batch stays under it and is read before the next one is dropped
+      const results: Awaited<ReturnType<typeof drop>>["each"] = [];
+      const nb = Math.ceil(probes.length / (a.batch ?? 24));
+      let blasts = 0;
+      for (let b = 0; b < nb; b++) { const r = await drop(probes.filter((_, i) => i % nb === b)); results.push(...r.each); blasts += r.explosions ?? 0; }
+      const per = a.trails!.map((_, ti) => {
+        const mine = results.filter((r) => r.trail === ti).sort((x, y) => (x.along ?? 0) - (y.along ?? 0)), counts = { held: 0, low: 0, gone: 0, setOff: 0 };
+        for (const r of mine) counts[r.verdict as keyof typeof counts]++;
+        const bad = mine.filter((r) => r.verdict === "gone" || r.verdict === "low").map((r) => ({ along: r.along, side: r.side, at: r.at, verdict: r.verdict, ...(r.mine ? { mine: r.mine } : {}) }));
+        return { trail: ti, probes: mine.length, counts, ok: bad.length === 0 && !noGround.some((g) => g.trail === ti), ...(bad.length ? { notHeld: bad.slice(0, 60) } : {}),
+          ...(counts.setOff ? { setOffAt: mine.filter((r) => r.verdict === "setOff").map((r) => r.along).slice(0, 60) } : {}) };
+      });
+      return { units: "map", trails: per, ok: per.every((t) => t.ok), probes: probes.length, explosions: blasts, ...(skipped.length ? { skipped: skipped.slice(0, 40), skippedCount: skipped.length } : {}),
+        ...(noGround.length ? { noGround: noGround.slice(0, 40) } : {}),
+        note: "every probe is a mine dropped from `height` over the ground at the trail's own height; held: it lies on the trail; low: it went through to something under it; gone: no mine and no explosion near it (through to the water); setOff: it went off (another mine's blast, a worm near), so the ground there was not tested: probe it again with a wider spacing. The mines stay: probe in a Test of its own, end_match, then Test again to walk the worms" };
+    },
+  },
+  {
+    name: "game_perf",
+    description: "Frame cost of the running game over `seconds` (default 10): fps and the CPU's busy time per frame (wum.render.timing) and the GPU's own time per frame (gpuMs: the whole frame and its stages, the Mirage GPU timers that gltrace.gpu reads), sampled every `everyMs`, as medians and 95th percentiles. fps alone cannot show a graphics regression where the game is CPU-bound (testenv B: about 36 fps on the menu and in every match), so compare gpuFrameMs: each run is kept for this erg-mcp session under `label` (default the open project's id, or baseline with none open), and `against` (a label, default the first run) answers the difference. Read-only; needs the game running (the GPU timers are [Mirage] GpuTimers=1, the default).",
+    inputSchema: { type: "object", additionalProperties: false, properties: {
+      seconds: { type: "number", minimum: 1, maximum: 120, description: "How long to sample (default 10)." },
+      everyMs: { type: "integer", minimum: 50, maximum: 2000, description: "Sample spacing (default 200)." },
+      label: { type: "string", description: "The run's name for comparing (default the open project's id, or baseline)." },
+      against: { type: "string", description: "Compare with this earlier run (default the first run of the session, when this is not it)." } } },
+    async handler(s, a: { seconds?: number; everyMs?: number; label?: string; against?: string }) {
+      const code = `local t = wum.render.timing() local g = t.gpuMs or {}
+return string.format("%.3f,%.3f,%.3f,%s,%s,%s,%s", t.fps, t.busyMsP50, t.frameMsP50, tostring(g.frame), tostring(g.world), tostring(g.postWorld), tostring(g.final))`;
+      const st = await gameState(s).catch(() => null);
+      const rows: number[][] = [], t0 = Date.now(), dur = (a.seconds ?? 10) * 1000, every = a.everyMs ?? 200;
+      while (Date.now() - t0 < dur) {
+        rows.push((await evalClient(s, code)).split(",").map((x) => (x === "nil" ? NaN : Number(x))));
+        await sleep(every);
+      }
+      const stat = (i: number): PerfStat => {
+        const v = rows.map((r) => r[i]).filter(Number.isFinite).sort((x, y) => x - y);
+        const pct = (q: number) => Math.round(v[Math.min(v.length - 1, Math.floor(q * (v.length - 1) + 0.5))] * 100) / 100;
+        return v.length ? { p50: pct(0.5), p95: pct(0.95), n: v.length } : null;
+      };
+      const run = { label: a.label ?? s.project?.id ?? "baseline", scene: st?.scene ?? "?", seconds: Math.round((Date.now() - t0) / 100) / 10, samples: rows.length,
+        fps: stat(0), busyMs: stat(1), frameMs: stat(2), gpuFrameMs: stat(3), gpuWorldMs: stat(4), gpuPostWorldMs: stat(5), gpuFinalMs: stat(6) };
+      const cpuBound = !!run.busyMs && !!run.frameMs && run.busyMs.p50! >= run.frameMs.p50! * 0.85;
+      const base = a.against ? perfRuns.find((r) => r.label === a.against) : perfRuns[0];
+      if (a.against && !base) throw new ToolError(`no earlier game_perf run labelled ${a.against} (runs: ${perfRuns.map((r) => r.label).join(", ") || "none"})`);
+      perfRuns.push(run);
+      const d = (x: PerfStat, y: PerfStat) => (x?.p50 != null && y?.p50 != null ? Math.round((x.p50 - y.p50) * 100) / 100 : null);
+      const compare = base && base !== run ? { against: base.label, gpuFrameMsDelta: d(run.gpuFrameMs, base.gpuFrameMs), fpsDelta: d(run.fps, base.fps), busyMsDelta: d(run.busyMs, base.busyMs),
+        verdict: run.gpuFrameMs?.p50 == null || base.gpuFrameMs?.p50 == null ? "no GPU times to compare (the timers are off or unsupported)"
+          : run.gpuFrameMs.p50 <= base.gpuFrameMs.p50 * 1.15 + 0.5 ? `GPU time per frame not worse than ${base.label} (within 15 % + 0.5 ms)` : `GPU time per frame worse than ${base.label}` } : undefined;
+      return { ...run, ...(cpuBound ? { cpuBound: "the CPU's busy time is most of each frame: fps follows the CPU, not the drawing; compare gpuFrameMs" } : {}), ...(compare ? { compare } : {}),
+        runs: perfRuns.map((r) => r.label), note: "gpuFrameMs: the GPU's time for the whole frame (swap to swap); busyMs: the CPU's time in the frame before SwapBuffers; medians (p50) and 95th percentiles of the samples" };
     },
   },
   {

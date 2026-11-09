@@ -119,7 +119,10 @@ export const tools: Tool[] = [
       // No exe argument: which program runs is the user's choice (MELANGE_EXE), never the model's.
       const c = await s.connect({ url: a.url, gameDir: a.gameDir }, a.discard);
       const dir = await projectsDir(s);
-      return { connected: true, via: c.via, url: masked(c.url), server: c.server, ergMethods: c.methods.filter((m) => m.startsWith("level")),
+      // a served Melange.exe is the game folder's own unless MELANGE_EXE names another: often older than this erg-mcp
+      const warnings = c.via.startsWith("Melange.exe --serve") && !process.env.MELANGE_EXE
+        ? ["MELANGE_EXE is unset, so the game folder's own Melange.exe serves: when it is older than this erg-mcp it refuses newer project formats (open_project of a team-spawn project fails with spawns.mode: must be \"random\" or \"knots\"); set MELANGE_EXE to the Melange.exe built with this erg-mcp"] : [];
+      return { connected: true, via: c.via, url: masked(c.url), server: c.server, ...(c.build ? { build: c.build } : {}), ...(warnings.length ? { warnings } : {}), ergMethods: c.methods.filter((m) => m.startsWith("level")),
         test: c.methods.includes("level.test") ? "level.test is available (the game is running)" : "no level.test: start the game for Test",
         ...(dir ? { projectsDir: dir, projectsNote: PROJECTS_NOTE } : {}) };
     },

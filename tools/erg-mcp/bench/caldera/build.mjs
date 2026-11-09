@@ -304,12 +304,22 @@ try {
   fs.writeFileSync(path.join(HERE, "script.lua"), script);
   say("script", brief(await call("put_script", { text: script }), 300));
 
+  // ---- R4: a blast point on each team castle's uphill wall (local -z), for the test's destructibility step (test_explosion
+  // {game: true, from} sets an explosion off there with shots before and after from outside the wall) ----
+  const blasts = T.CASTLES.filter((c) => c.team >= 0).sort((a, b) => a.team - b.team).map((c) => {
+    const [x, z] = T.toWorld(c, 0, -(c.across / 2 - 1)), [ex, ez] = T.toWorld(c, 0, -(c.across / 2 + 16));
+    return { castle: c.name, team: c.team, at: [round1(x), round1(c.court + 2.5), round1(z)], from: [round1(ex), round1(c.court + 11), round1(ez)], court: c.court, centre: c.at.map(round1) };
+  });
+  const bp = await call("place_blast_points", { points: blasts.map((b) => b.at), units: "map" });
+  (bp.json?.placed ?? []).forEach((p, i) => { blasts[i].knot = p.name; });
+  say("blast points", brief(bp, 300));
+
   const sv = await call("save");
   say("save", brief(sv, 900));
   const d = await call("describe_level", { limit: 100 });
   fs.writeFileSync(path.join(OUT, "describe.json"), d.text);
   say("cells", JSON.stringify(d.json.limits.voxelCells), "blocks", JSON.stringify(d.json.limits.newFrames), "engineWarnings", JSON.stringify(d.json.engineWarnings), "problems", JSON.stringify(d.json.problems ?? []));
-  const lo = await call("list_objects", {});
+  const lo = await call("list_objects", { outsideFrames: "summary" });
   fs.writeFileSync(path.join(OUT, "objects.json"), lo.text);
 
   // ---- the tester's waypoints: per team, from its castle's court (the lane beside the keep) out of the far gate and up its trail,
@@ -329,6 +339,12 @@ try {
     return { team: t.team, castle: c.name, trail: t.name, worms: [4 * t.team, 4 * t.team + 1, 4 * t.team + 2, 4 * t.team + 3], spawns: [0, 1, 2, 3].map((i) => spawnAt(4 * t.team + i)), summit: wp[wp.length - 1], waypoints: wp };
   });
   fs.writeFileSync(path.join(OUT, "waypoints.json"), JSON.stringify(waypoints, null, 1));
+  fs.writeFileSync(path.join(OUT, "blasts.json"), JSON.stringify(blasts, null, 1));
+  // every column across each trail's bed and a margin: no drop over 3 and no hole a worm falls through (check_reachability's
+  // graph keeps to the ground it stands on, so it passes a broken edge); skin corners near a trail are named to probe in game
+  const tc = await call("check_trail", { trails: T.TRAILS.map((t) => t.pts.map((p) => [round1(p[0]), round1(p[2]), round1(p[1])])), names: T.TRAILS.map((t) => t.name), width: T.TRAIL.bed * 2, margin: 1 }, { soft: true });
+  fs.writeFileSync(path.join(OUT, "trails.json"), tc.text);
+  say("trails", brief(tc, 900));
   say("waypoints", JSON.stringify(waypoints.map((w) => ({ team: w.team, castle: w.castle, n: w.waypoints.length, summit: w.summit }))));
 
   // Checks: every spawn reaches a trail's rim end on foot with the worm's real width (any trail), then each team's spawns
@@ -354,7 +370,8 @@ try {
   }
   // the flood as script.lua makes it: Melange.exe's server runs the script turn by turn, its turnStarted handler getting the
   // round as the game counts it (teams turns a round)
-  const floodArgs = { start: WATER_START / 20, targets: ends, maxSlope: 45, bodyWidth: WORM_W, minOwnTurns: 3, minDryMargin: 1.5, teams: TEAMS, wormsPerTeam: 4 };
+  // team knots: check_flood reads WORMk as team floor(k / 4)'s worm k % 4, and the Test plays WORMS_PER_TEAM of them
+  const floodArgs = { start: WATER_START / 20, targets: ends, maxSlope: 45, bodyWidth: WORM_W, minOwnTurns: 3, minDryMargin: 1.5, teams: TEAMS, wormsPerTeam: WORMS_PER_TEAM };
   let fl = await call("check_flood", { ...floodArgs, schedule: "script" }, { soft: true });
   if (fl.err) fl = await call("check_flood", { ...floodArgs, rounds: sch.levels.map((w, i) => ({ round: i + 1, level: w / 20 })) }, { soft: true });
   fs.writeFileSync(path.join(OUT, "flood.json"), fl.text);

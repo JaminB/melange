@@ -121,3 +121,15 @@ are 7.2 wide with a flat bed of 3.4. 64 029 of 65 535 cells, 35 of 64 blocks, 97
   launchRadius 2, everyNTurns 3, no scheme mines, keepKnot); the crater is unchanged (its rim is raised from the unnotched profile).
 - **Cells** 64 348 of 65 535 (37 of 64 blocks): the base's frames removed (`remove_base_frames`: 11 652 cells to 610), the skin
   about 29 000, the seven castles about 33 000. 135 MCP calls; two builds give the same projectHash and pack.
+
+## v2 round 2 harness (2026-11-09)
+
+- `play.mjs` is the in-game test, through the erg-mcp tools only: the vanilla baseline (asserts, its overview, its GPU time
+  per frame with `game_perf`), a probe match that drops a mine along every trail's centre and shoulders (`game_mine_drop
+  {trails}`), then the Test: spawns, a wide labelled shot of each team castle with its worms (`game_shots` preset castle),
+  the announcement shot (`game_state {announceShot}`), one wall of each team castle blasted with shots before and after
+  (`test_explosion {game}`, its eye picked clear of the ground, at the build's blast points, `out/blasts.json`), the GPU time against the baseline, every
+  worm walked up its trail (`game_play_turns`: a planned approach to the trail, a replan when stuck, a shot of each
+  announcement), the asserts against the baseline.
+- `build.mjs` places the blast points, checks every trail column by column (`check_trail`, `out/trails.json`, with the
+  skin corners near each trail) and checks the flood with the Test's two worms a team (team knots).

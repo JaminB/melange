@@ -14,6 +14,7 @@ declare const process: {
 };
 declare const Buffer: {
   from(data: ArrayBuffer | ArrayLike<number> | string, encoding?: "base64" | "utf8"): Uint8Array & { toString(encoding?: "base64" | "utf8"): string };
+  concat(list: Uint8Array[]): Uint8Array;
 };
 declare module "node:fs" {
   export function readFileSync(path: string, encoding: "utf8"): string;
@@ -22,7 +23,7 @@ declare module "node:fs" {
   export function appendFileSync(path: string, data: string): void;
   export function readdirSync(path: string): string[];
   export function statSync(path: string): { isDirectory(): boolean; mtimeMs: number };
-  export function writeFileSync(path: string, data: string): void;
+  export function writeFileSync(path: string, data: string | Uint8Array): void;
   export function mkdirSync(path: string, opts?: { recursive?: boolean }): void;
   export function cpSync(from: string, to: string, opts?: { recursive?: boolean; force?: boolean; preserveTimestamps?: boolean }): void;
   export function rmSync(path: string, opts?: { recursive?: boolean; force?: boolean }): void;

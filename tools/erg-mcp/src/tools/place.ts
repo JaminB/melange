@@ -459,19 +459,32 @@ async function placeObjects(s: Session, a: { objects: (PlaceArgs & { label?: str
     objects: `${s.store.scene.objects?.length ?? 0} of ${LIMITS.objects}`, undo: "each placed item is one undo step" };
 }
 
-async function listObjects(s: Session, a: { role?: string; search?: string; limit?: number; units?: Units } & CameraArgs) {
+// The editor's "outside every terrain frame" warning: a base's cameras, look-at points and props stay where they were
+// after remove_base_frames empties the frames under them (about 21 on Caldera), and say nothing about the level.
+const OUTSIDE = /outside every terrain frame/;
+
+async function listObjects(s: Session, a: { role?: string; search?: string; limit?: number; units?: Units; outsideFrames?: "list" | "summary" | "none" } & CameraArgs) {
   const store = s.store, scene = store.scene, units = a.units ?? "world";
   const q = a.search?.toLowerCase();
   const roles = a.role ? [a.role] : ["spawn", "object"];
   const all = scene.details.filter((d) => roles.includes(d.role) && (!q || `${d.name} ${d.resource}`.toLowerCase().includes(q)));
-  const listed = all.slice(0, a.limit ?? 200).map((d) => detailInfo(store, d, units));
+  // world units (this tool's default) also give each position in map units, the unit of check_reachability, query_ground
+  // and the other inspect tools
+  const listed = all.slice(0, a.limit ?? 200).map((d) => {
+    const info = detailInfo(store, d, units);
+    return units === "world" ? { ...info, mapPos: pointOut(store.frames.detailWorld(d), "map") } : info;
+  });
+  const editor = issuesOf(store, Infinity), outside = editor.filter((t) => OUTSIDE.test(t)), rest = editor.filter((t) => !OUTSIDE.test(t));
+  const mode = a.outsideFrames ?? "list";
+  const shown = mode === "list" ? issuesOf(store) : [...rest.slice(0, 30), ...(mode === "summary" && outside.length ? [`warn: ${outside.length} detail${outside.length === 1 ? " is" : "s are"} outside every terrain frame (a removed base's cameras, look-at points and props; outsideFrames: "list" names them)`] : [])];
   return {
     spawnMode: scene.spawns.mode, water: scene.water.level, units, matching: all.length, listed: listed.length,
     spawns: listed.filter((d) => d.role === "spawn"),
     levelObjects: listed.filter((d) => d.object),
     placed: listed.filter((d) => d.role !== "spawn" && !d.object),
     counts: { objects: `${scene.objects?.length ?? 0} of ${LIMITS.objects}`, details: scene.details.length },
-    issues: [...issuesOf(store), ...cameraWarnings(store, units, a), ...(await factoryReport(s, units))],
+    issues: [...shown, ...cameraWarnings(store, units, a), ...(await factoryReport(s, units))],
+    ...(units === "world" ? { unitsNote: "pos and localPos are world units (this tool's default; units: \"map\" lists map units); mapPos is the same position in map units, as check_reachability, query_ground and the other inspect tools give them" } : {}),
   };
 }
 
@@ -954,7 +967,8 @@ export const tools: Tool[] = [
     inputSchema: {
       type: "object", additionalProperties: false,
       properties: { role: { type: "string", description: "Only this role (default spawn and object)." }, search: { type: "string", description: "Name or resource contains this (any case)." },
-        limit: { type: "integer", minimum: 1, maximum: 5000, description: "Details to list (default 200)." }, units: unitsSchema, ...cameraProps },
+        limit: { type: "integer", minimum: 1, maximum: 5000, description: "Details to list (default 200)." }, units: unitsSchema, ...cameraProps,
+        outsideFrames: { type: "string", enum: ["list", "summary", "none"], description: "The editor's \"outside every terrain frame\" warnings, which a removed base's cameras, look-at points and props raise (about 21 on Caldera after remove_base_frames): list (default) names each, summary counts them in one line, none leaves them out. The other checks are listed whatever this is." } },
     },
     handler: (s, a) => listObjects(s, a),
   },

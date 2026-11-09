@@ -148,7 +148,14 @@ undraped blocks: of eight pads round the crater at the same height, four held ev
 run and in two builds that made them in another order, and four held none, while worms stood on all eight. Where it
 happens follows no rule found (not the frame, its order, its draping, the camera, nor the side of the map); a small
 flat island of one undraped block held all 30 mines of three volleys. So check the ground: drop mines on the spots a
-level's mines are meant to land on, and keep the launchers where they hold.
+level's mines are meant to land on, and keep the launchers where they hold. One place it always happens on Caldera:
+within about 0.4 map units of each corner of the crater's skin block, where four draped skin blocks meet, every mine
+dropped fell through (10 of 10, twice), and in the Caldera v2 Test two worms walking the SW trail fell 31 map units
+through the skin 1.1 map units off its centreline at one of those corners; 0.6 units from the corner, and on the
+blocks' edges away from it, mines held. A test island's corners of 2 x 2 skin blocks (flat, sloped and steep, 2 and 3
+voxels thick) held every mine, so not every such corner does it and the cause is in the engine. erg-mcp's `check_trail`
+lists the skin corners near a trail and `game_mine_drop {trails}` probes a trail's centre and shoulders before worms
+are walked on it.
 
 The target and the idle turns are the game's shared `kMineFactoryData`: Melange writes them when the map's match is
 set up and puts the game's values back when it ends, so no other map (and no other player's match) sees them. They

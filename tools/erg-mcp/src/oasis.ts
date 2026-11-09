@@ -12,7 +12,7 @@ import { join } from "node:path";
 import { createClient, type OasisClient } from "./core";
 
 export interface ConnectOptions { url?: string; gameDir?: string; exe?: string; }
-export interface Connection { client: OasisClient; url: string; via: string; server: string; methods: string[]; }
+export interface Connection { client: OasisClient; url: string; via: string; server: string; methods: string[]; build?: string; }
 
 const OPEN_TIMEOUT = 10000;
 const SPAWN_TIMEOUT = 30000;
@@ -102,7 +102,7 @@ export function open(url: string, via: string): Promise<Connection> {
         return reject(err);
       }
       const w = client.welcome()!;
-      resolve({ client, url, via, server: w.server, methods: w.methods });
+      resolve({ client, url, via, server: w.server, methods: w.methods, build: w.build });
     };
     const timer = setTimeout(() => done(new Error(`no welcome from ${ws.replace(/k=[^&]+/, "k=...")} within ${OPEN_TIMEOUT / 1000} s`)), OPEN_TIMEOUT);
     const off = client.onState((s) => {

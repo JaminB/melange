@@ -1,6 +1,7 @@
 // A small RGB raster and PNG encoder for the inspect tools (zlib from node:zlib; no dependencies), plus the colours and
-// the 3x5 digit font the renders use.
-import { deflateSync } from "node:zlib";
+// the 3x5 digit font the renders use, and a decoder for the game's own shots (8-bit RGB or RGBA, not interlaced) so
+// labels can be drawn over them.
+import { deflateSync, inflateSync } from "node:zlib";
 
 export type Rgb = [number, number, number];
 
@@ -42,6 +43,40 @@ export function encodePng(w: number, h: number, rgb: Uint8Array): Uint8Array {
   let at = 0;
   for (const p of parts) { out.set(p, at); at += p.length; }
   return out;
+}
+
+/** The pixels of an 8-bit RGB or RGBA, non-interlaced PNG (render.shot's), as RGB bytes; throws on anything else. */
+export function decodePng(png: Uint8Array): { w: number; h: number; rgb: Uint8Array } {
+  const be = (i: number) => ((png[i] << 24) | (png[i + 1] << 16) | (png[i + 2] << 8) | png[i + 3]) >>> 0;
+  if (png.length < 33 || png[1] !== 80 || png[2] !== 78 || png[3] !== 71) throw new Error("png: not a PNG");
+  let at = 8, w = 0, h = 0, type = 0;
+  const idat: Uint8Array[] = [];
+  while (at + 8 <= png.length) {
+    const len = be(at), kind = String.fromCharCode(png[at + 4], png[at + 5], png[at + 6], png[at + 7]), data = png.subarray(at + 8, at + 8 + len);
+    if (kind === "IHDR") {
+      w = be(at + 8); h = be(at + 12); type = data[9];
+      if (data[8] !== 8 || (type !== 2 && type !== 6) || data[12] !== 0) throw new Error(`png: only 8-bit RGB or RGBA without interlace (depth ${data[8]}, type ${type}, interlace ${data[12]})`);
+    } else if (kind === "IDAT") idat.push(data);
+    else if (kind === "IEND") break;
+    at += 12 + len;
+  }
+  const bpp = type === 6 ? 4 : 3, stride = w * bpp;
+  const raw = inflateSync(Buffer.concat(idat)), out = new Uint8Array(w * h * 3), cur = new Uint8Array(stride), prev = new Uint8Array(stride);
+  for (let y = 0; y < h; y++) {
+    const f = raw[y * (stride + 1)], row = raw.subarray(y * (stride + 1) + 1, (y + 1) * (stride + 1));
+    for (let i = 0; i < stride; i++) {
+      const a = i >= bpp ? cur[i - bpp] : 0, b = prev[i], c = i >= bpp ? prev[i - bpp] : 0;
+      let v = row[i];
+      if (f === 1) v += a;
+      else if (f === 2) v += b;
+      else if (f === 3) v += (a + b) >> 1;
+      else if (f === 4) { const p0 = a + b - c, pa = Math.abs(p0 - a), pb = Math.abs(p0 - b), pc = Math.abs(p0 - c); v += pa <= pb && pa <= pc ? a : pb <= pc ? b : c; }
+      cur[i] = v & 255;
+    }
+    for (let x = 0; x < w; x++) { out.set(cur.subarray(x * bpp, x * bpp + 3), (y * w + x) * 3); }
+    prev.set(cur);
+  }
+  return { w, h, rgb: out };
 }
 
 const GLYPHS: Record<string, string> = {
@@ -108,7 +143,23 @@ export class Raster {
     }
     return cx - x;
   }
+  /** A ring of radius r, `width` pixels thick, with a dark edge, centred on (cx, cy). */
+  ring(cx: number, cy: number, r: number, c: Rgb, width = 2) {
+    for (const [rr, col] of [[r + width, [0, 0, 0] as Rgb], [r, c]] as const) {
+      const steps = Math.max(24, Math.ceil(rr * 6));
+      for (let k = 0; k < steps; k++) {
+        const a0 = (k / steps) * 2 * Math.PI, a1 = ((k + 1) / steps) * 2 * Math.PI;
+        this.line(cx + rr * Math.cos(a0), cy + rr * Math.sin(a0), cx + rr * Math.cos(a1), cy + rr * Math.sin(a1), col, width);
+      }
+    }
+  }
   png(): Uint8Array { return encodePng(this.w, this.h, this.data); }
+  /** A raster holding a decoded picture's pixels. */
+  static of(p: { w: number; h: number; rgb: Uint8Array }): Raster {
+    const r = new Raster(p.w, p.h);
+    r.data.set(p.rgb);
+    return r;
+  }
 }
 
 export const hex = (c: Rgb) => `#${c.map((v) => v.toString(16).padStart(2, "0")).join("")}`;

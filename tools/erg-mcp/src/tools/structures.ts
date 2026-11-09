@@ -390,7 +390,17 @@ export const tools: Tool[] = [
           ...(a.keepAxes === "gate" && keepSize ? { keepAxes: { across: m(gate === "e" || gate === "w" ? keepSize[1] : keepSize[0]), deep: m(gate === "e" || gate === "w" ? keepSize[0] : keepSize[1]) } } : {}),
           courtyardFloorY: at[1], ...(v !== 1 ? { scale: v } : {}) } };
       }) as Record<string, unknown>;
-      return { ...res, ...(settled.groundUnder ? { groundUnder: settled.groundUnder } : {}), spawnSpots: spotReport(s, spots, a.units, !!a.dryRun) };
+      const spotsOut = spotReport(s, spots, a.units, !!a.dryRun);
+      // the courtyard's walking height as built: the floor asked snaps to the castle's voxels (scale 1.5 at floor 4 makes a
+      // court of 4.5), so trails and shelves outside the gates are cut to the measured top, not the y asked for
+      const courtTops = (spotsOut.spots as { kind: string; ok?: boolean; standOn?: number[] | null }[]).filter((x) => x.kind === "courtyard" && x.ok && x.standOn).map((x) => x.standOn![1]).sort((x, y) => x - y);
+      const asked = (res as { structureInfo?: { courtyardFloorY?: number } }).structureInfo?.courtyardFloorY;
+      const court = !a.dryRun && courtTops.length && asked !== undefined ? (() => {
+        const kk = a.units === "world" ? 20 : 1, top = courtTops[Math.floor(courtTops.length / 2)];
+        return { courtyard: { askedY: tidy([asked * kk, 0, 0])[0], walkY: top, snappedBy: tidy([top - asked * kk, 0, 0])[0], spots: courtTops.length,
+          note: "walkY: the top of the courtyard's voxels under its spawn spots (the median), where a worm stands; the floor asked snaps to the castle's voxels (scale), so meet the gates with walkY, not the y asked for" } };
+      })() : {};
+      return { ...res, ...court, ...(settled.groundUnder ? { groundUnder: settled.groundUnder } : {}), spawnSpots: spotsOut };
     },
   },
   {

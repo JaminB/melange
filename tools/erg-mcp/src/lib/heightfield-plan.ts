@@ -126,6 +126,7 @@ export interface FieldArgs {
   min: [number, number];                    // x, z (level coordinates in units)
   max: [number, number];
   floor: number;                            // y the columns stand on
+  keepFloor?: boolean;                      // heights from floor as given, not from the lattice height it snaps to
   expr?: string;
   grid?: number[][];                        // rows along z (row 0 at min z), columns along x
   maxHeight?: number;
@@ -149,6 +150,16 @@ export interface FieldArgs {
   blend?: boolean | Blend;                  // blend material boundaries per corner (default off)
   relax?: number;                           // passes of smoothing over the heights (default 0)
   maxGradient?: number;                     // degrees: no column steeper than this against its neighbours (default none)
+}
+
+/** Where the field's heights stand: the floor asked and the lattice height it snapped to (map units), the shift, and
+ * the y a height h has its ground at; a warning when the snap moves every height. */
+export function floorReport(f: Field) {
+  const used = f.floor * f.s + f.t[1], shift = used - f.floorAsked, n = (v: number) => Math.round(v * 1000) / 1000;
+  const base = f.keepFloor ? f.floorAsked : used;
+  return { asked: n(f.floorAsked), lattice: n(used), shift: n(shift), keepFloor: f.keepFloor,
+    surface: `a height h has its ground at y = ${n(base)} + h (map units${f.s !== 1 ? `; a stepped column rounds to whole voxels of ${f.s}` : ""})`,
+    ...(Math.abs(shift) > 1e-6 && !f.keepFloor ? { warning: `the floor ${n(f.floorAsked)} is off the ${f.s}-unit lattice and snapped to ${n(used)}: every height stands ${n(Math.abs(shift))} map units ${shift < 0 ? "lower" : "higher"} than floor + h (keepFloor: true counts from ${n(f.floorAsked)}, or give a floor on the lattice)` } : {}) };
 }
 
 /** Smooths and slope-limits a field's heights (voxels above the floor, one column per voxel) in place, over the columns
@@ -220,6 +231,8 @@ export interface Field {
   sceneId: number | null;                   // null: no Scene frame, no blocks
   i0: number; j0: number; nx: number; nz: number;
   floor: number;                            // floor cell (scene y)
+  floorAsked: number;                       // the floor asked for, map y (the heights count from floorAsked with keepFloor)
+  keepFloor: boolean;
   runLimit: number;                         // runs a new block may hold: the limit less runsHeadroom
   lo: Int32Array; hi: Int32Array;           // per column [lo, hi): hi <= lo is no column
   height: Float32Array;                     // per column, voxels above the floor (after crater, cap)
@@ -266,7 +279,8 @@ export function sampleField(store: EditorStore, a: FieldArgs): Field {
   if (nx < 1 || nz < 1) throw new ToolError(`the rectangle is less than one voxel wide (1 voxel = ${s} map units = ${s * WORLD_PER_MAP} world units)`);
   if (nx > MAX_SPAN || nz > MAX_SPAN || nx * nz > MAX_COLUMNS)
     throw new ToolError(`the rectangle is ${nx}x${nz} voxels: at most ${MAX_SPAN} a side and ${MAX_COLUMNS} columns (the game's ${LIMITS.voxelCells} cells hold about 256x256 voxels one high; a larger voxelSize covers more ground)`);
-  const floor = Math.round((a.floor * k - t[1]) / s);
+  // the floor on the lattice; keepFloor counts the heights from the floor as asked (the remainder added to every height)
+  const floorExact = (a.floor * k - t[1]) / s, floor = Math.round(floorExact), lift = a.keepFloor ? floorExact - floor : 0;
   const depth = Math.max(0, Math.round((a.baseDepth ?? 0) * kv));
   const material = a.material ?? 0;
   checkMaterial(material, "material");
@@ -348,7 +362,7 @@ export function sampleField(store: EditorStore, a: FieldArgs): Field {
         if (cr.rim) h += cr.rim * Math.exp(-(((r - cr.radius) / (cr.radius * 0.3)) ** 2));
       }
       if (a.maxHeight !== undefined) h = Math.min(h, a.maxHeight);
-      const hv = Math.max(0, h * kv);
+      const hv = Math.max(0, h * kv + (h * kv > 0 ? lift : 0));
       if (hv > MAX_COLUMN) throw new ToolError(`the height reaches ${num(h)} (${Math.round(hv)} voxels) at x ${num(mx / k)}, z ${num(mz / k)}: at most ${MAX_COLUMN} voxels; pass maxHeight`);
       const c = b * nx + a2, top = edges === "round" ? Math.round(hv) : Math.floor(hv + 1 - threshold(i0 + a2, j0 + b));
       height[c] = hv;
@@ -584,7 +598,7 @@ export function sampleField(store: EditorStore, a: FieldArgs): Field {
     }
     return null;
   };
-  const field: Field = { k, s, t, sceneId, i0, j0, nx, nz, floor, runLimit, lo, hi, height, slope, materialAt, ...(limited ? { limited } : {}),
+  const field: Field = { k, s, t, sceneId, i0, j0, nx, nz, floor, floorAsked: a.floor * k, keepFloor: !!a.keepFloor, runLimit, lo, hi, height, slope, materialAt, ...(limited ? { limited } : {}),
     wordAt(col: number, y: number, layered = false) {
       if (edgeDepth && hi[col] - 1 - y < edgeDepth) {
         const e = edgeWord(col, y);
@@ -1129,7 +1143,7 @@ export function plan(store: EditorStore, a: FieldArgs, shape?: (f: Field) => voi
     ...(costs ? { costAt: costs } : {}),
     region: { voxelSize: f.s, edges: a.edges ?? "round", packer: a.packer ?? "tiles", columns: f.nx * f.nz, size: [f.nx, f.nz], solidColumns: columns, map: { min: tidy(rect.min), max: tidy(rect.max) },
       world: { min: tidy(rect.min.map((v) => v * WORLD_PER_MAP) as Vec3), max: tidy(rect.max.map((v) => v * WORLD_PER_MAP) as Vec3) },
-      floor: { map: num(f.floor * f.s + f.t[1]), world: toW(f.floor * f.s + f.t[1]) }, peakVoxels: columns ? top - f.floor : 0,
+      floor: { map: num(f.floor * f.s + f.t[1]), world: toW(f.floor * f.s + f.t[1]), ...floorReport(f) }, peakVoxels: columns ? top - f.floor : 0,
       ...(f.limited ? { slopeLimit: { relax: a.relax ?? 0, ...(a.maxGradient !== undefined ? { maxGradient: a.maxGradient } : {}), passes: f.limited.passes, steepestDegrees: Math.round(f.limited.steepest * 10) / 10 } } : {}) },
     voxels: { field: voxels, alreadySolid: solidVoxels, inFrames: fillVoxels, inBlocks: keptVoxels, dropped: blockVoxels - keptVoxels },
     frames: cv.fills.map((x) => ({ id: x.grid.id, name: x.grid.frame.name, ...(x.aligned ? {} : { approximate: true }), cellsFilled: x.changes.size, covers: x.covers, alreadySolid: x.solid, runs: x.runs })),

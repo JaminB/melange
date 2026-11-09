@@ -10,8 +10,9 @@ import { grids } from "./voxel";
 export interface Plan { path: Vec3[]; length: number; narrowest: number | null; rules: ReachOptions; }
 
 /** The walk from `from` (where the worm stands) to within `radius` of `to` ([x, z]) over the project's voxels, as a dense
- * route (a point per column), or null with why. `margin` pads the searched box round the two points. */
-export function planWalk(store: EditorStore, from: Vec3, to: [number, number], opts: { radius?: number; bodyWidth?: number; maxGap?: number; maxSlope?: number; step?: number; margin?: number } = {}):
+ * route (a point per column), or null with why. `margin` pads the searched box round the two points; `toY` takes only
+ * the ground near that height as the end. */
+export function planWalk(store: EditorStore, from: Vec3, to: [number, number], opts: { radius?: number; bodyWidth?: number; maxGap?: number; maxSlope?: number; step?: number; margin?: number; toY?: number; ySpan?: number; avoid?: { x: number; z: number; r: number }[] } = {}):
   { plan: Plan } | { why: string } {
   const gs = grids(store), step = opts.step ?? 1, pad = opts.margin ?? 24;
   const r = { x0: Math.min(from[0], to[0]) - pad, z0: Math.min(from[2], to[1]) - pad, x1: Math.max(from[0], to[0]) + pad, z1: Math.max(from[2], to[1]) + pad };
@@ -20,9 +21,21 @@ export function planWalk(store: EditorStore, from: Vec3, to: [number, number], o
   const S = surfaces(gs, r, step, o.headroom);
   const n0 = standing(S, from, o, gs);
   if (n0 < 0) return { why: `no walk-graph ground under the worm at (${from.map((v) => Math.round(v * 10) / 10).join(", ")})` };
+  // avoid: ground near the spots a worm got stuck on is not walked (the start's own node excepted), so a replanned route
+  // goes another way round instead of back into the corner that held it
+  if (opts.avoid?.length) {
+    const allow = new Uint8Array(S.nodes).fill(1);
+    for (let n = 0; n < S.nodes; n++) { const q = nodeAt(S, n); if (n !== n0 && opts.avoid.some((v) => Math.hypot(q[0] - v.x, q[2] - v.z) <= v.r)) allow[n] = 0; }
+    o.allow = allow;
+  }
   const goal = new Uint8Array(S.nodes), rad = opts.radius ?? 1.5;
   let goals = 0;
-  for (let n = 0; n < S.nodes; n++) { const p = nodeAt(S, n); if (Math.hypot(p[0] - to[0], p[2] - to[1]) <= rad) { goal[n] = 1; goals++; } }
+  // toY: only ground within ySpan (default 2.5) of that height is the goal (a switchback's legs stacked over each other)
+  const ySpan = opts.ySpan ?? 2.5;
+  for (let n = 0; n < S.nodes; n++) {
+    const p = nodeAt(S, n);
+    if (Math.hypot(p[0] - to[0], p[2] - to[1]) <= rad && (opts.toY === undefined || Math.abs(p[1] - opts.toY) <= ySpan)) { goal[n] = 1; goals++; }
+  }
   if (!goals) return { why: `no ground within ${rad} of the target` };
   const q = search(S, n0, o, goal);
   let hit = -1;

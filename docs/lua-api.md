@@ -411,7 +411,7 @@ end)
 | `wum.render.cameraOverride(spec)` | Draws the frame from a camera of the mod's choosing; `nil` clears it. See [Camera override](#camera-override). |
 | `wum.render.worldToScreen(pos)` | `x, y, depth` in window pixels, or `nil` behind the camera. |
 | `wum.render.windowSize()` | `width, height`. |
-| `wum.render.timing()` | `{busyMsP50, busyMsP95, frameMsP50, fps, frames}`. |
+| `wum.render.timing()` | `{busyMsP50, busyMsP95, frameMsP50, fps, frames, gpuMs}`. `gpuMs` (where the GPU timers are supported): the GPU time of the last timed frame, ms: `frame` (the whole swap-to-swap command stream), `world`, `worldLate`, `postWorld`, `hud`, `final` (each present once read). fps can be CPU-bound (testenv B: near 36 whatever is drawn), so compare `gpuMs.frame` for a graphics cost. |
 
 ### Camera override
 

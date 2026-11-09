@@ -5,6 +5,7 @@ import type { EditorStore, ServerPaletteEntry as PaletteEntry, Vec3 } from "../c
 import { extentXZ, markers, sampleField, spansAt, waterMap, type Field, type MarkerKind, type Region } from "../lib/inspect-field";
 import { Raster, SKY, VOID, WATER, hex, materialTint, shade, type Rgb } from "../lib/inspect-png";
 import { findHoles } from "../lib/holes";
+import { checkTrail } from "../lib/trail-check";
 import { UTILITY_REACH, WORM_WIDTH, classify, nodeAt, ownTurn, pathStats, pathTo, search, standableAt, standing, surfaces, turnAt, type FloodRules, type ReachOptions, type Surfaces } from "../lib/reach";
 import { rotation, slotOf } from "../lib/turns";
 import { waterByTurn, type WaterSchedule } from "../lib/flood";
@@ -510,6 +511,14 @@ async function drawRoutes(s: Session, gs: Grid[], r: Region, S: Surfaces, routes
   };
 }
 
+/** The teams a flood check assumes when the call gives none: with spawns.mode teams the teams that have knots (team t's
+ * are WORM4t..4t+3), else 2 (the Quick Game's). */
+function defaultTeams(store: EditorStore): number {
+  if (store.scene.spawns.mode !== "teams") return 2;
+  const ks = markers(store).filter((m) => m.kind === "spawn").map((m) => /^WORM(\d{1,2})$/.exec(m.name)).filter((m): m is RegExpExecArray => !!m).map((m) => Number(m[1]));
+  return ks.length ? Math.max(...ks.map((k) => Math.floor(k / 4))) + 1 : 2;
+}
+
 /** The flood a check runs with: the water by game turn and when a worm walks. */
 async function floodRules(s: Session, f: FloodArgs, u: Units, perTurn: number): Promise<{ rules: FloodRules; info: object; horizon: number; top: number }> {
   const store = s.store, own = waterMap(store);
@@ -518,7 +527,7 @@ async function floodRules(s: Session, f: FloodArgs, u: Units, perTurn: number): 
   if ([f.schedule, f.levels, f.rounds].filter((x) => x !== undefined).length !== 1) throw new ToolError("flood: give one of schedule (as wum.sim.waterSchedule's options, or \"script\" to read the project's script), levels ([{turn, level}]) or rounds ([{round, level}])");
   // rounds: wum.sim.round()'s rounds (sim.turnStarted's round), which go up once every team has had a turn: round r starts
   // at game turn (r - 1) x teams + 1 while every team is alive
-  const teamsN = f.teams ?? 2;
+  const teamsN = f.teams ?? defaultTeams(store);
   const byRound = f.rounds?.map((e) => ({ turn: (e.round - 1) * teamsN + 1, level: e.level }));
   // levels and start are the call's units (map by default), unlike a schedule's (world by default): a value over every
   // ground of the level by far is world units given as map, which drowns every spawn at turn 1 (Caldera, iteration 6)
@@ -832,7 +841,11 @@ export async function checkReachability(s: Session, a: ReachArgs) {
     : markers(store).filter((m) => m.kind === "spawn").map((m) => ({ name: m.name, at: m.pos }));
   if (!starts.length) throw new ToolError("the level has no spawn knots: pass from");
   const rr = routeRules(S, a, u, starts.map((st) => st.at), { x: tx, z: tz, r: tr }, tgs.slice(1));
-  const teamsN = a.flood?.teams ?? 2, perTeam = a.flood?.wormsPerTeam ?? Math.max(1, Math.ceil(starts.length / teamsN));
+  // spawns.mode teams: team t's knots are WORM4t..4t+3 (place_spawn_knots), so the teams default to the teams with knots
+  // and the worms a team to its knots (4); the match's own worms per team are the test's (wormsPerTeam)
+  const teamKnots = !a.from && store.scene.spawns.mode === "teams";
+  const teamsN = a.flood?.teams ?? (teamKnots ? defaultTeams(store) : 2);
+  const perTeam = a.flood?.wormsPerTeam ?? (teamKnots ? 4 : Math.max(1, Math.ceil(starts.length / teamsN)));
   if (rr.allow) o.allow = rr.allow;
   if (rr.slopeCap) o.slopeCap = rr.slopeCap;
   const statsOut = (path: number[]) => {
@@ -855,13 +868,22 @@ export async function checkReachability(s: Session, a: ReachArgs) {
   // the worm rotation (lib/turns.ts) for the spawn knots: a worm whose ground is under the water at a turn start is dead
   // from then on, so its team's others move sooner
   const stand = starts.map((st) => standing(S, st.at, o, gs));
-  const knotOf = (name: string) => { const m = /^WORM(\d)$/.exec(name); return m ? Number(m[1]) : null; };
+  // a knot's worm: its slot in the match (WORMn as game_state names the worms); a teams knot WORMk is team floor(k / 4)'s
+  // worm k % 4, which is slot team x wormsPerTeam + k % 4, and not in the match past wormsPerTeam
+  const knotOf = (name: string) => {
+    const m = /^WORM(\d{1,2})$/.exec(name);
+    if (!m || Number(m[1]) > 15) return null;
+    const k = Number(m[1]);
+    if (!teamKnots) return k;
+    const team = Math.floor(k / 4), place = k % 4;
+    return team < teamsN && place < perTeam ? team * perTeam + place : -1;
+  };
   let rot: ReturnType<typeof rotation> | null = null;
   if (flood && !a.from) {
     const order = a.flood?.turnOrder;
-    if (order?.some((w) => !Number.isInteger(w) || w < 0 || w > 7)) throw new ToolError("turnOrder: worm numbers 0-7 (WORMn), in the order the game moved them from game turn 1");
+    if (order?.some((w) => !Number.isInteger(w) || w < 0 || w > 15)) throw new ToolError("turnOrder: worm numbers 0-15 (WORMn, the worms' slots as game_state names them), in the order the game moved them from game turn 1");
     const ground = new Map<number, number>();
-    starts.forEach((st, i) => { const w = knotOf(st.name); if (w !== null && stand[i] >= 0) ground.set(w, S.y[stand[i]]); });
+    starts.forEach((st, i) => { const w = knotOf(st.name); if (w !== null && w >= 0 && stand[i] >= 0) ground.set(w, S.y[stand[i]]); });
     const drownsAt = (w: number) => {
       const g = ground.get(w);
       if (g === undefined) return 1;
@@ -869,13 +891,13 @@ export async function checkReachability(s: Session, a: ReachArgs) {
       return null;
     };
     // the match has teams x wormsPerTeam worms: knots past them are not played
-    rot = rotation({ worms: starts.map((st) => knotOf(st.name)).filter((w): w is number => w !== null && w < teamsN * perTeam).sort((x, y) => x - y), teams: teamsN, perTeam,
+    rot = rotation({ worms: starts.map((st) => knotOf(st.name)).filter((w): w is number => w !== null && w >= 0 && w < teamsN * perTeam).sort((x, y) => x - y), teams: teamsN, perTeam,
       horizon: flood.horizon, order, drownsAt });
   }
   const movesOf = (name: string): WormMoves | null => {
     const w = knotOf(name);
     // a knot whose worm is not in the match (past teams x wormsPerTeam, or not in turnOrder) has no moves
-    if (w === null || !rot || !rot.own.has(w) || (a.flood?.turnOrder?.length && !a.flood.turnOrder.includes(w))) return null;
+    if (w === null || w < 0 || !rot || !rot.own.has(w) || (a.flood?.turnOrder?.length && !a.flood.turnOrder.includes(w))) return null;
     const sl = slotOf(w, perTeam, teamsN);
     return { team: sl.team, worm: sl.index, turns: rot.own.get(w) ?? [], every: a.flood?.turnOrder?.length ?? teamsN * perTeam, teams: teamsN };
   };
@@ -943,7 +965,7 @@ export async function checkReachability(s: Session, a: ReachArgs) {
   const ok = spawns.filter((x) => x.reachable).length;
   const escaped = flood ? spawns.filter((x) => (x as { flood?: { escapes: boolean } }).flood?.escapes).length : 0;
   const onOwn = flood && rot ? spawns.filter((x) => (x as { flood?: { moves?: { escapesOnOwnMoves?: boolean } } }).flood?.moves?.escapesOnOwnMoves).length : null;
-  const played = (name: string) => { const w = knotOf(name); return w === null || (a.flood?.turnOrder?.length ? a.flood.turnOrder.includes(w) : w < teamsN * perTeam); };
+  const played = (name: string) => { const w = knotOf(name); return w === null || (w >= 0 && (a.flood?.turnOrder?.length ? a.flood.turnOrder.includes(w) : w < teamsN * perTeam)); };
   const verdict = flood ? floodVerdict(spawns as FloodSpawn[], a.flood!, u, played) : null;
   // the spawns that do not get there, by name, with why (no ground under it, under the water, or blocked)
   const notOk = spawns.filter((x) => !x.reachable).map((x) => `${x.name}${(x as { why?: string }).why ? ` (${(x as { why?: string }).why})` : ""}`);
@@ -1080,11 +1102,11 @@ const floodSchema = {
     every: { type: "integer", minimum: 1, maximum: 64, description: "Game turns between a worm's own turns (default 2: two teams)." },
     firstTurn: { type: "integer", minimum: 1, maximum: 1000, description: "The game turn of the worm's first own turn (default 1)." },
     maxTurns: { type: "integer", minimum: 1, maximum: 10000, description: "Turns looked ahead for floodsAtTurn (default 200)." },
-    teams: { type: "integer", minimum: 1, maximum: 8, description: "Teams in the match, for each spawn's own moves (default 2, the Quick Game)." },
-    wormsPerTeam: { type: "integer", minimum: 1, maximum: 8, description: "Worms per team (default the spawn knots / teams): WORMn is worm n % wormsPerTeam of team floor(n / wormsPerTeam)." },
+    teams: { type: "integer", minimum: 1, maximum: 8, description: "Teams in the match, for each spawn's own moves (default 2, the Quick Game; with spawns.mode teams, the teams that have knots)." },
+    wormsPerTeam: { type: "integer", minimum: 1, maximum: 8, description: "Worms per team (default the spawn knots / teams; with spawns.mode teams 4, the knots a team has): WORMn is worm n % wormsPerTeam of team floor(n / wormsPerTeam). With spawns.mode teams the knots are the teams' (WORM4t..4t+3 for team t, place_spawn_knots): knot WORMk stands for team floor(k / 4)'s worm k % 4, the match's worm (slot) floor(k / 4) x wormsPerTeam + k % 4, and a knot past wormsPerTeam is not in the match (give the Test's own, e.g. 2 for test {teams: [{human: true, worms: 2}, ...]})." },
     margin: { type: "number", minimum: 0, description: "Warn when the water's top comes within this of a spawn's ground (the call's units; default 1 map unit, 20 world)." },
     minMoves: { type: "integer", minimum: 2, maximum: 20, description: "Warn when a spawn floods before its worm's move this many (default 3; before the 2nd move is always warned)." },
-    turnOrder: { type: "array", minItems: 1, maxItems: 64, items: { type: "integer", minimum: 0, maximum: 7 },
+    turnOrder: { type: "array", minItems: 1, maxItems: 64, items: { type: "integer", minimum: 0, maximum: 15 },
       description: "The worms in the order the game moved them, from game turn 1 (WORMn numbers, repeated as a cycle), instead of the engine's rotation modelled (teams alternating from team 0, each moving its living worms in turn): an order game_state's turnLog observed in a Test." },
     minOwnTurns: { type: "integer", minimum: 1, maximum: 20, description: "The verdict (floodVerdict, and PASS or FAIL in the summary): each spawn knot's ground must stay more than minDryMargin over the water at the start of each of its worm's first minOwnTurns own turns (default 2)." },
     minDryMargin: { type: "number", minimum: 0, description: "How far over the water a spawn's ground must stay through its first minOwnTurns own turns (the call's units; default 1.5 map units, 30 world: knock-back and the computer team's walking move worms, and a Test worm drowned from ground 1.7 map units up; 0: over it at all)." },
@@ -1345,7 +1367,55 @@ export const tools: Tool[] = [
         ...(seams ? { seams: { count: rep.seamCount, examples: rep.seams.slice(0, 20).map((m) => ({ at: xz(m.at), gap: o(m.gap), tops: m.tops.map(o) })) } } : {}),
       });
     },
-  },  {
+  },
+  {
+    name: "check_trail",
+    description: "The ground across walking trails, column by column: along each trail (`trails`, points [x, z] or [x, y, z] in `units`; give y on a switchback so the leg under or over is not taken for it) every `spacing` (default 0.25 map units) the trail's ground (the top at or under its own height) is compared with every column across the bed (`width`, default 5.2) and `margin` (default 1) either side: a column more than `maxDrop` (default 3) under it, or with no ground, is an edge a worm walks or is knocked off (a drop), and a column within `holeRadius` (default 1.5) of the centreline whose ray straight down meets no solid over the water (`above`, default the project's water level) is a hole. check_reachability's walk graph keeps to ground it can stand on, so it passes a trail with a broken edge or a pit in the bed; this reads every column. Answers per trail `ok` (no drop, hole or bare centreline), the runs of each finding (kind, side, from/to along the trail, the worst drop and where), and `skinCorners`: corners within holeRadius + 0.6 of the centreline where four draped skin blocks meet (in the Caldera v2 Test mines and worms fell through the skin within about 0.4 map units of each corner of the crater's skin block though the voxels are solid there; a test island's corners held: probe such a corner in the game with game_mine_drop {trails}). Read-only.",
+    inputSchema: {
+      type: "object", additionalProperties: false, required: ["trails"],
+      properties: {
+        trails: { type: "array", minItems: 1, maxItems: 16, items: { type: "array", minItems: 2, maxItems: 4000, items: { type: "array", items: { type: "number" }, minItems: 2, maxItems: 3 } },
+          description: "Trails: polylines of [x, z] or [x, y, z] points in `units` (game_play_turns' trails)." },
+        names: { type: "array", items: { type: "string" }, description: "A name per trail for the answer (default trail0, trail1, ...)." },
+        width: { type: "number", minimum: 0.5, description: "The bed's width in `units` (default 5.2 map units)." },
+        margin: { type: "number", minimum: 0, description: "Looked at past each edge of the bed, in `units` (default 1 map unit)." },
+        spacing: { type: "number", minimum: 0.1, maximum: 2, description: "Sample spacing along and across, in `units` (default 0.25 map units)." },
+        maxDrop: { type: "number", minimum: 0.5, description: "A column this far under the trail's ground is a drop, in `units` (default 3 map units)." },
+        holeRadius: { type: "number", minimum: 0, description: "See-through holes within this of the centreline are reported, in `units` (default 1.5 map units)." },
+        above: { type: "number", description: "A ray must meet ground over this height (default the project's water level, else 0)." },
+        limit: { type: "integer", minimum: 1, maximum: 200, description: "Runs listed per trail (default 30)." },
+        units,
+      },
+    },
+    handler(s, a: { trails: number[][][]; names?: string[]; width?: number; margin?: number; spacing?: number; maxDrop?: number; holeRadius?: number; above?: number; limit?: number; units?: Units }) {
+      const u = a.units, gs = grids(s.store), water = waterMap(s.store);
+      const o = { halfWidth: (a.width === undefined ? 5.2 : inMap(a.width, u)) / 2, margin: a.margin === undefined ? 1 : inMap(a.margin, u), spacing: a.spacing === undefined ? 0.25 : inMap(a.spacing, u),
+        maxDrop: a.maxDrop === undefined ? 3 : inMap(a.maxDrop, u), holeRadius: a.holeRadius === undefined ? 1.5 : inMap(a.holeRadius, u),
+        above: a.above !== undefined ? inMap(a.above, u) : water ?? 0, headroom: 1.5 };
+      const len = a.trails.reduce((n, t) => n + t.length, 0);
+      if (!a.trails.every((t) => t.every((p) => p.every(Number.isFinite)))) throw new ToolError("trails: finite numbers");
+      if (len > 16000) throw new ToolError(`${len} trail points: at most 16000`);
+      const ov = (v: number) => r2(outUnit(v, u)), xz = (p: [number, number]) => [ov(p[0]), ov(p[1])];
+      const per = a.trails.map((t, i) => {
+        const pts = t.map((p) => p.map((v) => inMap(v, u)));
+        const rep = checkTrail(gs, pts, o);
+        const count = (k: string) => rep.runs.filter((r) => r.kind === k).length;
+        const name = a.names?.[i] ?? `trail${i}`;
+        return {
+          name, ok: rep.runs.length === 0, length: ov(rep.length), samples: rep.samples, columns: rep.columns,
+          summary: rep.runs.length ? `${name}: ${count("drop")} drop run${count("drop") === 1 ? "" : "s"} (worst ${rep.worstDrop === null ? "no ground" : ov(rep.worstDrop)}), ${count("hole")} hole run${count("hole") === 1 ? "" : "s"}, ${count("noGround")} bare stretch${count("noGround") === 1 ? "" : "es"} of the centreline`
+            : `${name}: no drop over ${ov(o.maxDrop)} within ${ov(o.halfWidth + o.margin)} of the centreline and no hole within ${ov(o.holeRadius)}`,
+          runs: rep.runs.slice(0, a.limit ?? 30).map((r) => ({ kind: r.kind, side: r.side, from: ov(r.from), to: ov(r.to), at: xz(r.at), ...(r.worst !== undefined ? { worstDrop: ov(r.worst) } : r.kind === "drop" ? { worstDrop: "no ground" } : {}),
+            ...(r.trailY !== undefined && r.trailY !== null ? { trailY: ov(r.trailY) } : {}) })),
+          ...(rep.runs.length > (a.limit ?? 30) ? { runsCount: rep.runs.length } : {}),
+          ...(rep.skinCorners.length ? { skinCorners: rep.skinCorners.map((c) => ({ at: xz(c.at), along: ov(c.along), off: ov(c.off), blocks: c.blocks })) } : {}),
+        };
+      });
+      return { ok: per.every((p) => p.ok), summary: per.map((p) => p.summary).join("; "), trails: per, rules: { width: ov(o.halfWidth * 2), margin: ov(o.margin), spacing: ov(o.spacing), maxDrop: ov(o.maxDrop), holeRadius: ov(o.holeRadius), above: ov(o.above) },
+        units: u ?? "map", note: "side: left or right of the direction the trail runs; from/to: along the trail from its first point; a drop is a column more than maxDrop under the trail's ground (or with no ground) within the bed and its margin; a hole meets no solid over `above` within holeRadius of the centreline" };
+    },
+  },
+  {
     name: "check_support",
     description: "Whether the ground under a point is solid down to the base or a skin over a void, for the mine factory's knot and the mines' landing zones: every column within `radius` of `at` [x, z] (a column every `step`, default 0.5 map units) is read straight down (a draped skin at its sheared height); its top stretch (stacked or touching stretches merged) is solid when it reaches `downTo` (default the project's water level, else the bottom of the lowest voxel frame), else hollow: a shell with air under it (check_holes passes it, since its rays hit the skin). Answers the counts, the thinnest and the deepest hollow columns, the column at the point, and up to `limit` hollow columns. Read-only.",
     inputSchema: {
