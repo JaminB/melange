@@ -772,3 +772,30 @@ Test before trusting it. `bench/caldera/detail-inventory.md` lists the candidate
 New in `dress.ts`: `surface_sample {points: [[x, z]], step, units}` answers the voxels' top, the slope and the normal at each point (up to 4000), so a scatter pass seats props on the real surface (the draped skin differs from the terrain formula by up to 10 map units on the flanks); `copy_base_details` gained `seat` (sink a scenery mesh by a fraction of its height, resting its lowest point on the point at 0), `tag` (appends `_<tag>` to scenery names so a pass can find and remove its own with `remove_scenery {search}`) and `frame` (the frame the copies go into).
 
 Findings (testenv D, Sunstone 2.3.1, 2026-11-09): the round-0 contact sheet's mismatched tiles came from shooting without `waitPlay` (the intro camera); with `waitPlay: true` every tile shows its own piece and copies stand where the editor puts them, other themes' pieces included (a mossy white boulder, gold twin rocks, tan nuggets, skulls, leafy plants all draw in the PREHISTORIC level). The round-0 limit that placement was wrong does not stand. A different slip was found in `build.mjs`: its four Camelot flags went in with `copy_base_scenery`'s default world units though the numbers are map units, so they stood 20 times too near the origin, inside the volcano; `detail.mjs`'s `flags` pass puts them where `build.mjs` meant. No base piece is dark basalt: rock pieces are pale (white-moss, tan, gold), so rock detail by scenery reads as bleached outcrops on the black cone. Bench: `detail-rock.mjs` (the rock pass), `detail-verify.mjs` (the readability check on the saved project).
+
+## Detail layer, round 2 (rock: scale, palette, three tiers): what the tools gained and what the game showed
+
+New: `render_view {scenery: true}` draws the level's scenery details (base pieces and copies) by their preview meshes,
+flat-shaded in each mesh's average texture colour, so a dressing pass is judged offline without a Test (the text part
+gives `scenery`: details, meshes drawn, triangles, resources with no mesh; lights and emitters are not drawn).
+`scenery_catalog` answers each scenery piece's `albedo` (#rrggbb, the average of its texture, the GLB's baseColorFactor)
+and `luminance` (0-1), with `sort: "dark" | "light"` and `maxLuminance`. Code: `src/lib/scenery-mesh.ts` (GLB triangles
+and colour), `src/lib/scenery-view.ts`, render-3d.ts's optional `meshes` input. Bench: `detail-keepout.mjs keepOutFoot`
+tests a prop's footprint ellipse (13 points) against the trail band (bed, shoulder and kerb out to `KERB.to`) and the
+other keep-outs instead of its seed point with a wide buffer.
+
+Findings (testenv D, Sunstone 2.3.1, 2026-11-09):
+- **Scale is honoured.** Horror5 copies at scale 0.93, 1.87, 3.74, 7.48 and 12.46 (3 to 40 map units) all drew where the
+  editor put them, seen from 60 to 400 map units away: no draw-distance or bounding cull. A strongly non-uniform scale
+  ([2, 6, 2]) draws but lights pale (its normals are stretched): keep squash mild.
+- **ARABIAN6 never draws in this level** (PREHISTORIC): five copies at scales 3.25 and 5, with the source's rotation and
+  upright, none showed; that is why round 1's 5x test rock "vanished". **Other themes' resources may resolve to something
+  else**: CAMELOT16 and CAMELOT19 (the castles' flags) draw as purple plant pods on the tower tops. A piece's offline
+  preview (by resource name) is therefore not proof of what the game draws: check each new resource once in a Test.
+- **The darkest rock**: Horror5 (Multi.W3DAppleCoreIsland, albedo #36374a, luminance 0.04) draws in game as a faceted
+  blue-grey boulder, darker and cooler than round 1's moss, tan and gold pieces, though lighter than its albedo suggests
+  under the game's lighting. The other dark pieces are dead trees (Horror2, Horror3, HORROR1) and props.
+- **The trails cover most of the cone**: seven switchback columns with legs 9.5 apart leave few flank spots for a
+  15-unit footprint, so heroes are searched (a 1.5-unit grid of each point's largest clear radius), not fixed.
+- Particle emitters are cut from the layer: their replay neutrality proof needs a Wormsign replay, which arms only for a
+  Quick Game from the main menu, not an Erg Test. Point lights stay (render-only).

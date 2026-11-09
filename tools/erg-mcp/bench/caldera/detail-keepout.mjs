@@ -47,3 +47,27 @@ export function keepOut(x, z, r = 0, spawns = []) {
   if (Math.hypot(x - PLUG[0], z - PLUG[1]) < Math.max(CLEAR.plug, CLEAR.apron) + r) return "mine factory";
   return null;
 }
+
+// ---- round 2: footprint-aware keep-out. A prop's footprint is an ellipse (half axes rx, rz, turned by yaw degrees);
+// it may not reach into the trail band (the bed, the shoulder and the kerb out to KERB.to, plus `pad`), nor the
+// castles, spawns, pads or the factory (as keepOut, tested at each footprint point). Testing the real footprint instead
+// of the seed point with one wide buffer lets big rocks sit on the flank faces between switchbacks.
+export const TRAIL_BAND = Math.max(T.KERB?.to ?? 7.5, T.TRAIL.bed + T.TRAIL.shoulder + 1);
+/** The footprint's points: the centre and 12 points on the ellipse. */
+export function footPoints(x, z, rx, rz, yaw = 0) {
+  const c = Math.cos(yaw * Math.PI / 180), s = Math.sin(yaw * Math.PI / 180), pts = [[x, z]];
+  for (let i = 0; i < 12; i++) {
+    const a = i / 12 * Math.PI * 2, ex = Math.cos(a) * rx, ez = Math.sin(a) * rz;
+    pts.push([x + ex * c - ez * s, z + ex * s + ez * c]);
+  }
+  return pts;
+}
+/** The first reason the footprint may not stand there, or null. pad: extra clearance from the trail band (map units). */
+export function keepOutFoot(x, z, rx, rz, yaw, spawns = [], pad = 0.5) {
+  for (const [px, pz] of footPoints(x, z, rx, rz, yaw)) {
+    if (trailDist(px, pz) < TRAIL_BAND + pad) return "trail";
+    const why = keepOut(px, pz, 0, spawns);
+    if (why && why !== "trail") return why;
+  }
+  return null;
+}

@@ -127,6 +127,7 @@ export interface ViewInput {
   fog?: number;                // map units at which fog hides about 63 % (0 or none: no fog)
   clip?: Region | null;        // draw only voxels whose centre is in this xz box
   edges?: boolean;             // darken silhouette edges (default true)
+  meshes?: { tris: ArrayLike<number>; rgb: Rgb }[];   // extra triangles (scenery meshes, map units, 9 numbers each), drawn two-sided in a flat colour
 }
 
 export interface PlacedMarker { kind: MarkerKind; name: string; pos: Vec3; px: [number, number]; visible: boolean; }
@@ -298,6 +299,22 @@ export function renderView(input: ViewInput, cam: Camera, w: number, h: number, 
         }
       }
     if (drew) framesDrawn++;
+  }
+  // ---- extra meshes (render_view {scenery: true}): two-sided, lit by the normal that faces the eye
+  for (const m of input.meshes ?? []) {
+    const t = m.tris;
+    for (let i = 0; i + 8 < t.length; i += 9) {
+      for (let q = 0; q < 9; q++) tri3[q] = t[i + q];
+      const ux = tri3[3] - tri3[0], uy = tri3[4] - tri3[1], uz = tri3[5] - tri3[2], wx = tri3[6] - tri3[0], wy = tri3[7] - tri3[1], wz = tri3[8] - tri3[2];
+      let nx = uy * wz - uz * wy, ny = uz * wx - ux * wz, nz = ux * wy - uy * wx;
+      const nl = Math.hypot(nx, ny, nz);
+      if (nl < 1e-12) continue;
+      nx /= nl; ny /= nl; nz /= nl;
+      if ((tri3[0] - E[0]) * nx + (tri3[1] - E[1]) * ny + (tri3[2] - E[2]) * nz > 0) { nx = -nx; ny = -ny; nz = -nz; }
+      const li = lit([nx, ny, nz]);
+      const rr = Math.min(255, Math.round(m.rgb[0] * li[0])), gg = Math.min(255, Math.round(m.rgb[1] * li[1])), bb = Math.min(255, Math.round(m.rgb[2] * li[2]));
+      if (quad(tri3, (rr << 16) | (gg << 8) | bb, 3)) faces++;
+    }
   }
 
   // ---- shading per pixel: sky, water, fog, edges

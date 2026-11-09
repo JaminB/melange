@@ -8,6 +8,7 @@ import { meshBounds } from "../lib/backdrop";
 import { classifyDetail } from "../lib/sim-fingerprint";
 import { kindOf, scaleOf } from "./scenery";
 import { tidy } from "../lib/voxel";
+import { hex, luminance, sceneryMesh } from "../lib/scenery-mesh";
 import { ToolError, type Tool } from "../registry";
 import type { Session } from "../session";
 
@@ -32,7 +33,7 @@ const r2 = (v: number) => Math.round(v * 100) / 100;
 export const tools: Tool[] = [
   {
     name: "scenery_catalog",
-    description: "The base levels' sim-neutral pieces for decoration, by resource: scenery meshes, lights, emitters and sounds whose names carry no engine tag but VISIBLE (sim_fingerprint's visual channels), each with its base and theme, role, kinds (names without tags and numbers), count, an example detail (id, name, scale, rot) for copy_base_scenery, the preview mesh's size in map units (`meshSize`, unscaled, and `size` at the example's scale; null where the server serves no mesh) and `category` guessed from its names and resource (rock, flora, fx; empty when nothing matched). Default: every game base; or `bases`, `themes`. Filters: `roles`, `category`, `search`. `sizes: false` skips the mesh fetches. Read-only; works with no project open.",
+    description: "The base levels' sim-neutral pieces for decoration, by resource: scenery meshes, lights, emitters and sounds whose names carry no engine tag but VISIBLE (sim_fingerprint's visual channels), each with its base and theme, role, kinds (names without tags and numbers), count, an example detail (id, name, scale, rot) for copy_base_scenery, the preview mesh's size in map units (`meshSize`, unscaled, and `size` at the example's scale; null where the server serves no mesh), its `albedo` (#rrggbb, the average of its texture) and `luminance` (0-1) and `category` guessed from its names and resource (rock, flora, fx; empty when nothing matched). Default: every game base; or `bases`, `themes`. Filters: `roles`, `category`, `search`. `sizes: false` skips the mesh fetches. Read-only; works with no project open.",
     inputSchema: { type: "object", additionalProperties: false, properties: {
       bases: { type: "array", items: { type: "string" }, minItems: 1, maxItems: 80, description: "Base keys (list_bases); default every game base (or those of `themes`)." },
       themes: { type: "array", items: { type: "string" }, minItems: 1, maxItems: 11, description: "Only bases of these themes." },
@@ -42,8 +43,10 @@ export const tools: Tool[] = [
       sizes: { type: "boolean", description: "Fetch each resource's preview mesh for its size (default true)." },
       includeSim: { type: "boolean", description: "Also list the details sim_fingerprint counts as sim (other roles, tagged names), each with `sim`: why. Not for decoration: to see what a base has (default false)." },
       limit: { type: "integer", minimum: 1, maximum: 2000, description: "Resources to answer (default 400)." },
+      sort: { type: "string", enum: ["count", "dark", "light"], description: "Order: count (default, most used first), dark or light (by the mesh's albedo luminance; pieces with no mesh last)." },
+      maxLuminance: { type: "number", minimum: 0, maximum: 1, description: "Only pieces whose albedo luminance (0 black - 1 white) is at most this: dark rock for a basalt cone." },
     } },
-    async handler(s, a: { bases?: string[]; themes?: string[]; roles?: string[]; category?: string; search?: string; sizes?: boolean; limit?: number; includeSim?: boolean }) {
+    async handler(s, a: { bases?: string[]; themes?: string[]; roles?: string[]; category?: string; search?: string; sizes?: boolean; limit?: number; includeSim?: boolean; sort?: string; maxLuminance?: number }) {
       const list = await (await s.levels()).list();
       let bases = list.bases.filter((b) => b.source === "game");
       if (a.bases) bases = a.bases.map((k) => { const b = list.bases.find((x) => x.key === k); if (!b) throw new ToolError(`no base ${k} (list_bases)`); return b; });
@@ -67,17 +70,30 @@ export const tools: Tool[] = [
       }
       let out = [...rows.values()].map((r) => ({ r, category: categoryOf(`${[...r.names].join(" ")} ${r.resource}`) }));
       if (a.category) out = out.filter((x) => (a.category === "none" ? !x.category.length : x.category.includes(a.category!)));
-      out = out.sort((x, y) => y.r.count - x.r.count).slice(0, a.limit ?? 400);
+      out = out.sort((x, y) => y.r.count - x.r.count);
+      const lum = new Map<string, { albedo: string; luminance: number } | null>();
+      if (a.sizes !== false && (a.sort === "dark" || a.sort === "light" || a.maxLuminance !== undefined)) {
+        for (const { r } of out) if (r.role === "scenery" && !lum.has(r.resource.toLowerCase())) {
+          const m = await sceneryMesh(s, r.resource);
+          lum.set(r.resource.toLowerCase(), m && { albedo: hex(m.albedo), luminance: luminance(m.albedo) });
+        }
+        const L = (x: (typeof out)[number]) => lum.get(x.r.resource.toLowerCase())?.luminance;
+        if (a.maxLuminance !== undefined) out = out.filter((x) => (L(x) ?? 2) <= a.maxLuminance!);
+        if (a.sort === "dark" || a.sort === "light") out.sort((x, y) => ((L(x) ?? 9) - (L(y) ?? 9)) * (a.sort === "dark" ? 1 : -1) || y.r.count - x.r.count);
+      }
+      out = out.slice(0, a.limit ?? 400);
       const answer = [];
       for (const { r, category } of out) {
         let meshSize: number[] | null = null;
         if (a.sizes !== false && (r.role === "scenery" || r.sim)) {
           const m = await meshBounds(s, r.scene, r.resource).catch(() => null);
           if (m) meshSize = [0, 1, 2].map((i) => r2(m.max[i] - m.min[i]));
+          if (!lum.has(r.resource.toLowerCase()) && r.role === "scenery") { const mm = await sceneryMesh(s, r.resource); lum.set(r.resource.toLowerCase(), mm && { albedo: hex(mm.albedo), luminance: luminance(mm.albedo) }); }
         }
+        const al = lum.get(r.resource.toLowerCase());
         const sc = r.example.scale;
         answer.push({ resource: r.resource, base: r.base, theme: r.theme, role: r.role, ...(r.sim ? { sim: r.sim } : {}), category, kinds: [...r.kinds].slice(0, 6), names: [...r.names].slice(0, 4), count: r.count,
-          meshSize, size: meshSize ? meshSize.map((v, i) => r2(v * Math.abs(sc[i]))) : null,
+          meshSize, ...(al ? { albedo: al.albedo, luminance: al.luminance } : {}), size: meshSize ? meshSize.map((v, i) => r2(v * Math.abs(sc[i]))) : null,
           example: { id: r.example.id, name: r.example.name, at: tidy(new Frames(r.scene).detailWorld(r.example)), rot: tidy(r.example.rot.map((v) => v * DEG) as Vec3), scale: tidy(sc) } });
       }
       return { bases: bases.length, resources: rows.size, answered: answer.length, units: "map", list: answer, ...(failed.length ? { failed } : {}),
