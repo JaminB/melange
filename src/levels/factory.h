@@ -22,6 +22,17 @@ const char* FireNow(int count, std::string* detail);
 std::string FiresJson();
 // The fires seen this session (each PlaceMines) and, in *at, when the last was (GetTickCount64): a shot after a fire.
 uint32_t FireSerial(unsigned long long* at);
+// The last fire's first mine, for a camera that follows it in flight (render.fireShot {track}): where it appeared (world
+// units), its upward speed then (world units per ms: the launchers' eruption, or -0.3 for a mine dropped from over the
+// factory), the gravity it falls at, the fire's serial and when it was (GetTickCount64). false before any fire whose
+// mines were seen.
+struct Flight {
+    float from[3] = {};
+    float vy = 0, gravity = 0;
+    uint32_t serial = 0;
+    unsigned long long at = 0;
+};
+bool LastFlight(Flight* out);
 // A mine at pos moving at vel (world units, per ms), made by the game's own mine maker as the factory's are; sim tick
 // (main thread). nullptr, or why not.
 const char* Mine(const float pos[3], const float vel[3]);

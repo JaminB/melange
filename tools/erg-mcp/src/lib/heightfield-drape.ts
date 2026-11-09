@@ -20,7 +20,16 @@ export interface DrapeArgs extends FieldArgs {
   skirtTo?: number;            // level y (units): the core reaches down to here instead of the floor (a hollow skin gets one)
   skirtTop?: number;           // level y (units): only columns whose skin's lowest corner is at or under it get the core
   steepMaterial?: SteepMaterial;   // cliffs: a skin column this steep takes this material, whatever the rules say
+  tileOrigin?: [number, number];   // x, z (units): a corner of the skin's 31 x 31 tiling falls here (snapped to the lattice)
+  cornersOff?: CornersOff;         // the tiling shifted so the corners where four skin blocks meet keep off these paths
 }
+
+/** Where four skin blocks meet, the game lets mines and worms through the skin (within about 0.4 map units of the
+ * corner, Caldera v2 rounds 1 and 2), which the builders plugged by hand under each corner near a trail. `paths`
+ * (polylines of [x, z] or [x, y, z] in units: the trails): the tiling is shifted (0-30 columns along x and z) so every
+ * such corner is at least `distance` (default 4 map units) from them where a shift does that, else as far as one can,
+ * the fewest skin blocks first. */
+export interface CornersOff { paths: number[][][]; distance?: number; }
 
 /** The skin's cliffs. A sheared skin voxel is drawn with its material's texture stretched up the face, so a top
  * material (grass, ash) on a 60-degree face shows as vertical streaks: a column whose skin slope (from its four corners)
@@ -55,14 +64,77 @@ function cornerHeights(f: Field): Float32Array {
 
 const live = (f: Field, c: number) => f.hi[c] > f.lo[c];
 
-/** The skin's tiles: 31 x 31 columns, each a slab `T` thick placed so its offsets are centred. */
-function tiles(f: Field, H: Float32Array, T: number): Tile[] {
+/** The column ranges [from, to) of a tiling of n columns whose tile edges fall on o (mod SIDE). */
+export function tileRanges(n: number, o: number): [number, number][] {
+  const out: [number, number][] = [], r = ((o % SIDE) + SIDE) % SIDE;
+  for (let a = r ? r - SIDE : 0; a < n; a += SIDE) if (Math.min(n, a + SIDE) > Math.max(0, a)) out.push([Math.max(0, a), Math.min(n, a + SIDE)]);
+  return out;
+}
+
+/** The lattice corners (i, k) where four skin blocks of the tiling meet: an inner tile edge both ways with a live column
+ * in each of the four cells round it. */
+export function meetCorners(f: Field, ox: number, oz: number): [number, number][] {
+  const xs = tileRanges(f.nx, ox).slice(1).map((r) => r[0]), zs = tileRanges(f.nz, oz).slice(1).map((r) => r[0]), out: [number, number][] = [];
+  for (const k of zs)
+    for (const i of xs) if (live(f, (k - 1) * f.nx + i - 1) && live(f, (k - 1) * f.nx + i) && live(f, k * f.nx + i - 1) && live(f, k * f.nx + i)) out.push([i, k]);
+  return out;
+}
+
+/** The tiling's shift (columns along x and z) for cornersOff: the meeting corners' distance from the paths at each of
+ * the 31 x 31 shifts; the shifts with every corner at least `distance` off first (else the largest least distance),
+ * then the fewest blocks, then the smallest shift. Distances in map units. */
+export function shiftOff(f: Field, c: CornersOff, k: number): { ox: number; oz: number; least: number | null; corners: number; blocks: number; atZero: number | null } {
+  const segs: number[][] = [];
+  for (const p of c.paths) for (let i = 0; i + 1 < p.length; i++) { const A = p[i], B = p[i + 1]; segs.push([A[0] * k, A[A.length - 1] * k, B[0] * k, B[B.length - 1] * k]); }
+  if (!segs.length || !segs.every((s) => s.every(Number.isFinite))) throw new ToolError("cornersOff.paths: paths of at least two finite points");
+  const want = c.distance ?? 4, W = f.nx + 1, dist = new Float64Array(W * (f.nz + 1)).fill(NaN);
+  const at = (i: number, kk: number) => {
+    const j = kk * W + i;
+    if (Number.isNaN(dist[j])) {
+      const x = f.t[0] + (f.i0 + i) * f.s, z = f.t[2] + (f.j0 + kk) * f.s;
+      let best = Infinity;
+      for (const [ax, az, bx, bz] of segs) {
+        const dx = bx - ax, dz = bz - az, l2 = dx * dx + dz * dz, u = l2 ? Math.max(0, Math.min(1, ((x - ax) * dx + (z - az) * dz) / l2)) : 0;
+        best = Math.min(best, Math.hypot(x - ax - u * dx, z - az - u * dz));
+      }
+      dist[j] = best;
+    }
+    return dist[j];
+  };
+  const blocksOf = (ox: number, oz: number) => {
+    let n = 0;
+    for (const [z0, z1] of tileRanges(f.nz, oz))
+      for (const [x0, x1] of tileRanges(f.nx, ox)) {
+        let any = false;
+        for (let b = z0; b < z1 && !any; b++) for (let a = x0; a < x1; a++) if (live(f, b * f.nx + a)) { any = true; break; }
+        if (any) n++;
+      }
+    return n;
+  };
+  type Pick = { ox: number; oz: number; least: number | null; corners: number; blocks: number; ok: boolean; size: number };
+  let best: Pick | null = null, atZero: number | null = null;
+  for (let ox = 0; ox < (f.nx > SIDE ? SIDE : 1); ox++)
+    for (let oz = 0; oz < (f.nz > SIDE ? SIDE : 1); oz++) {
+      const cs = meetCorners(f, ox, oz);
+      const least = cs.length ? Math.min(...cs.map(([i, kk]) => at(i, kk))) : null;
+      if (ox === 0 && oz === 0) atZero = least;
+      const p: Pick = { ox, oz, least, corners: cs.length, blocks: blocksOf(ox, oz), ok: least === null || least >= want, size: Math.min(ox, SIDE - ox) + Math.min(oz, SIDE - oz) };
+      const la = least ?? Infinity, lb = best?.least ?? Infinity;
+      const better = !best || (p.ok !== best.ok ? p.ok : !p.ok && la !== lb ? la > lb : p.blocks !== best.blocks ? p.blocks < best.blocks : p.size < best.size);
+      if (better) best = p;
+    }
+  return { ox: best!.ox, oz: best!.oz, least: best!.least, corners: best!.corners, blocks: best!.blocks, atZero };
+}
+
+/** The skin's tiles: 31 x 31 columns (tile edges on ox, oz mod 31), each a slab `T` thick placed so its offsets are
+ * centred. */
+function tiles(f: Field, H: Float32Array, T: number, ox = 0, oz = 0): Tile[] {
   const W = f.nx + 1, out: Tile[] = [];
-  for (let tz = 0; tz < f.nz; tz += SIDE)
-    for (let tx = 0; tx < f.nx; tx += SIDE) {
+  for (const [tz, tz1] of tileRanges(f.nz, oz))
+    for (const [tx, tx1] of tileRanges(f.nx, ox)) {
       let x0 = Infinity, x1 = -Infinity, z0 = Infinity, z1 = -Infinity, columns = 0;
-      for (let b = tz; b < Math.min(f.nz, tz + SIDE); b++)
-        for (let a = tx; a < Math.min(f.nx, tx + SIDE); a++)
+      for (let b = tz; b < tz1; b++)
+        for (let a = tx; a < tx1; a++)
           if (live(f, b * f.nx + a)) { x0 = Math.min(x0, a); x1 = Math.max(x1, a + 1); z0 = Math.min(z0, b); z1 = Math.max(z1, b + 1); columns++; }
       if (!columns) continue;
       let lo = Infinity, hi = -Infinity;
@@ -121,7 +193,25 @@ export function planDrape(store: EditorStore, a: DrapeArgs): DrapePlan {
   const H = cornerHeights(f), W = f.nx + 1;
   const sm = a.steepMaterial;
   if (sm && (!Number.isInteger(sm.material) || sm.material < 0 || sm.material > 63)) throw new ToolError("steepMaterial.material is a material index 0-63");
-  const ts = tiles(f, H, T);
+  // the tiling's origin: tileOrigin's lattice column, or the shift that keeps the meeting corners off cornersOff's paths
+  if (a.tileOrigin && a.cornersOff) throw new ToolError("tileOrigin and cornersOff both place the tiling: give one");
+  const ku = a.units === "world" ? 1 / WORLD_PER_MAP : 1;
+  let ox = 0, oz = 0, tiling: Record<string, unknown> | undefined;
+  if (a.tileOrigin) {
+    if (a.tileOrigin.length !== 2 || !a.tileOrigin.every(Number.isFinite)) throw new ToolError("tileOrigin: [x, z]");
+    ox = Math.round((a.tileOrigin[0] * ku - f.t[0]) / f.s - f.i0);
+    oz = Math.round((a.tileOrigin[1] * ku - f.t[2]) / f.s - f.j0);
+    tiling = { origin: { columns: [ox, oz], map: [num(f.t[0] + (f.i0 + ox) * f.s), num(f.t[2] + (f.j0 + oz) * f.s)] },
+      note: "a corner of the skin's tiling falls on origin (tileOrigin snapped to the lattice); tiles are 31 columns from there both ways" };
+  } else if (a.cornersOff) {
+    const sh = shiftOff(f, a.cornersOff, ku), want = a.cornersOff.distance ?? 4;
+    ox = sh.ox; oz = sh.oz;
+    tiling = { shift: [ox, oz], meetingCorners: sh.corners, leastDistance: sh.least === null ? null : num(sh.least), unshifted: sh.atZero === null ? null : num(sh.atZero), wanted: want,
+      ...(sh.least !== null && sh.least < want ? { warning: `no shift keeps every meeting corner ${want} map units off the paths: the nearest is ${num(sh.least)} off (plug under it, or another voxelSize)` } : {}),
+      note: "the skin's tiling shifted this many columns along x and z, so the corners where four skin blocks meet (where the game lets mines and worms through) keep off the paths; leastDistance: the nearest such corner's distance from a path (unshifted: the same without the shift), map units" };
+  }
+  const ts = tiles(f, H, T, ox, oz);
+  const corners4 = meetCorners(f, ox, oz).map(([i, kk]) => [num(f.t[0] + (f.i0 + i) * f.s), num(f.t[2] + (f.j0 + kk) * f.s)]);
   const skinCells = ts.reduce((n, t) => n + (t.x1 - t.x0) * T * (t.z1 - t.z0), 0);
   const used = blockFrames(store.scene).length, cells = cellBudget(store.scene);
   const slots = Math.min(LIMITS.newFrames - used, a.maxBlocks ?? Infinity), room = Math.min(cells.free, a.maxCells ?? Infinity);
@@ -166,7 +256,7 @@ export function planDrape(store: EditorStore, a: DrapeArgs): DrapePlan {
       // where the skin's walking surface stands for a field height: the floor snapped to the lattice moves it (Caldera's
       // floor -9 at voxel 2.5 snapped to -10, which builders took for the skin standing 1 under the grid)
       floor: floorReport(f) },
-    skin: { thickness: T, blocks: ts.length, cells: skinCells,
+    skin: { thickness: T, blocks: ts.length, cells: skinCells, meetingCorners: corners4.slice(0, 64), ...(tiling ? { tiling } : {}),
       list: ts.map((t) => ({ size: [t.x1 - t.x0, T, t.z1 - t.z0], columns: t.columns, offsets: [num(Math.min(...t.corners)), num(Math.max(...t.corners))] })) },
     core: core ? { blocks: core.kept.length, cells: core.kept.reduce((n, p) => n + (p.x1 - p.x0) * (p.y1 - p.y0) * (p.z1 - p.z0), 0), inFrames: core.report.voxels,
       neededCells: core.pieces.reduce((n, p) => n + (p.x1 - p.x0) * (p.y1 - p.y0) * (p.z1 - p.z0), 0) } : null,

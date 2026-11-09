@@ -7,7 +7,7 @@
 import { AddDetail, Group, carved, targetFrame, type Vec3 } from "../core";
 import { commit, pointOut, unitsSchema, vec3, type Units } from "../lib/place-geom";
 import { VoxelEdit, WORLD_PER_MAP, grids, isSolid, type Grid } from "../lib/voxel";
-import { spansAt } from "../lib/inspect-field";
+import { blocked, clearEye } from "../lib/eye";
 import { ToolError, type Content, type Tool } from "../registry";
 import type { Session } from "../session";
 import { tools as gameTools } from "./game";
@@ -57,18 +57,8 @@ function knotNear(s: Session, p: Vec3, within: number) {
 
 const call = (name: string) => gameTools.find((t) => t.name === name)!;
 
-/** Whether the segment from eye to p (map units) passes through solid voxels, sampled every half unit, leaving out the
- * last `skip` units next to p (the wall being shot). */
-export function blocked(gs: Grid[], eye: number[], p: number[], skip = 2): boolean {
-  const d = Math.hypot(eye[0] - p[0], eye[1] - p[1], eye[2] - p[2]), n = Math.ceil(d / 0.5);
-  for (let i = 0; i < n; i++) {
-    const t = i / n;
-    if (d * (1 - t) < skip) break;
-    const q = [eye[0] + (p[0] - eye[0]) * t, eye[1] + (p[1] - eye[1]) * t, eye[2] + (p[2] - eye[2]) * t];
-    if (spansAt(gs, q[0], q[2]).some((sp) => q[1] < sp.top && q[1] > sp.bottom)) return true;
-  }
-  return false;
-}
+// blocked: whether solid voxels lie on the line of sight from an eye to a point (lib/eye.ts, shared with the climb shots)
+export { blocked };
 
 /** The shots' eye for a blast at p (map units): `back` away, the first of eight bearings (south first) and three heights
  * whose line of sight to p is clear of the project's voxels (a pose fixed to the south looked from inside Caldera's
@@ -124,11 +114,12 @@ export const tools: Tool[] = [
       impulse: { type: "number", minimum: 0, maximum: 100, description: "game: the push on worms (default 0)." },
       shots: { type: "boolean", description: "game: shots before and after (default true)." },
       settleMs: { type: "integer", minimum: 0, maximum: 15000, description: "game: how long after the explosion the after shot is taken (default 3000: the smoke has thinned)." },
-      from: vec3("game: the shots' eye [x, y, z] in `units`, looking at the point (default: 4 radii back, at least 8 map units, from the first of eight bearings, south first, and three heights whose line of sight to the point is clear of the project's voxels; the answer's eye gives it)."),
+      from: vec3("game: the shots' eye [x, y, z] in `units`, looking at the point (default: 4 radii back, at least 8 map units, from the first of eight bearings, south first, and three heights whose line of sight to the point is clear of the project's voxels; the answer's eye gives it). An eye inside the ground, within 0.75 map units of it, or with voxels between it and the point is moved to the nearest one in open air with a clear view (raised, nearer or farther, turned round the point: the answer's eyeMoved says how), unless keepFrom."),
+      keepFrom: { type: "boolean", description: "game: shoot from `from` as given even when it is inside the ground or has no clear view (default false: it is moved)." },
       prefix: { type: "string", description: "game: the shots' name prefix: <prefix>_before.png and <prefix>_after.png (default erg_blast_<n>)." },
       cells: { type: "boolean", description: "List the removed cells per frame (default false: counts only)." } } },
     async handler(s, a: { at: number[]; radius: number; units?: Units; apply?: boolean; game?: boolean; wormDamage?: number; wormRadius?: number; impulse?: number; shots?: boolean; settleMs?: number; cells?: boolean;
-      from?: number[]; prefix?: string }) {
+      from?: number[]; keepFrom?: boolean; prefix?: string }) {
       const { store } = s.requireProject();
       const u = a.units ?? "world", k = u === "world" ? WORLD_PER_MAP : 1;
       const p: Vec3 = [a.at[0] / k, a.at[1] / k, a.at[2] / k], r = a.radius / k;
@@ -157,7 +148,9 @@ export const tools: Tool[] = [
       // a camera 3 radii back to the south and up, looking at the point
       // the eye: `from`, else the first pose with a clear view of the point (warned when none is, or `from` is not)
       const gs = grids(store), back = Math.max(8, r * 4), fromMap = a.from ? [a.from[0] / k, a.from[1] / k, a.from[2] / k] : null;
-      const pick = fromMap ? { eye: fromMap, clear: !blocked(gs, fromMap, p) } : blastEye(gs, p, back);
+      // a given eye is checked too: the Caldera v2 round-2 builder's blast cameras stood inside the volcano
+      const fixed = fromMap && !a.keepFrom ? clearEye(gs, fromMap, p, { minDistance: back / 2 }) : null;
+      const pick: { eye: number[]; clear: boolean; moved?: string | null } = fixed ?? (fromMap ? { eye: fromMap, clear: !blocked(gs, fromMap, p) } : blastEye(gs, p, back));
       const cam = { pos: pick.eye, target: [p[0], p[1], p[2]], units: "map", fov: 55 };
       const shot = async (name: string) => {
         const res = await call("game_camera").handler(s, { ...cam, seconds: 4, shot: true, clean: true, width: 960, prefix: tag, name }) as { content: Content[] };
@@ -174,7 +167,7 @@ export const tools: Tool[] = [
         await call("game_camera").handler(s, { clear: true });
       }
       out.game = { detail: knot.name, knotAt: pointOut(knot.at, u), queuedAtTick: res.tick, ...(shotsOn ? { shots: [`${tag}_before`, `${tag}_after`], note: "Documents\\Melange\\shots",
-        eye: pointOut(pick.eye as Vec3, u), ...(pick.clear ? {} : { warning: a.from ? "solid voxels lie between `from` and the point: the shots may show the inside of the ground" : "no pose round the point has a clear view of it: the shots look from the south" }) } : {}) };
+        eye: pointOut(pick.eye as Vec3, u), ...(pick.moved ? { eyeMoved: `from was inside the ground or had no clear view of the point: ${pick.moved}` } : {}), ...(pick.clear ? {} : { warning: a.from ? "solid voxels lie between `from` and the point: the shots may show the inside of the ground" : "no pose round the point has a clear view of it: the shots look from the south" }) } : {}) };
       return { content: [...parts, { type: "text", text: JSON.stringify(out, null, 1) }] };
     },
   },

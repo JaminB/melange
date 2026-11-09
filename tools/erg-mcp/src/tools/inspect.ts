@@ -25,10 +25,27 @@ const num = (d: string) => ({ type: "number", description: d }) as const;
 const regionProps = {
   x0: num("Region west edge (default: the level's extent)."), z0: num("Region north edge."),
   x1: num("Region east edge."), z1: num("Region south edge."), units,
+  region: { type: "object", additionalProperties: false, description: "The region as one object {x0, z0, x1, z1} (render_view's form), instead of the flat x0, z0, x1, z1; an edge given both ways must agree.",
+    properties: { x0: { type: "number" }, z0: { type: "number" }, x1: { type: "number" }, z1: { type: "number" } } },
 } as const;
 
 type Units = "map" | "world" | undefined;
-interface RegionArgs { x0?: number; z0?: number; x1?: number; z1?: number; units?: "map" | "world"; }
+interface RegionArgs { x0?: number; z0?: number; x1?: number; z1?: number; units?: "map" | "world"; region?: { x0?: number; z0?: number; x1?: number; z1?: number }; }
+
+/** The flat edges of a region given flat (x0, z0, x1, z1) or as region {x0, z0, x1, z1} (render_view's form, which the
+ * docs and render_view use and render_topdown refused in the Caldera v2 round-2 run). */
+export function flatRegion(a: RegionArgs): RegionArgs {
+  if (!a.region) return a;
+  const out: RegionArgs = { ...a };
+  for (const k of ["x0", "z0", "x1", "z1"] as const) {
+    const v = a.region[k];
+    if (v === undefined) continue;
+    if (a[k] !== undefined && a[k] !== v) throw new ToolError(`${k} is given twice (${a[k]} and region.${k} ${v}): give one`);
+    out[k] = v;
+  }
+  delete out.region;
+  return out;
+}
 
 /** Map units from the caller's. */
 const inMap = (v: number, u: Units) => (u === "world" ? v / WORLD_PER_MAP : v);
@@ -37,7 +54,8 @@ const outUnit = (v: number, u: Units) => (u === "world" ? v * WORLD_PER_MAP : v)
 const r2 = (v: number) => Math.round(v * 100) / 100;
 
 /** The region asked for; an edge left out is the level's extent on that side. */
-function region(gs: Grid[], a: RegionArgs): Region {
+function region(gs: Grid[], a0: RegionArgs): Region {
+  const a = flatRegion(a0);
   const ext = extentXZ(gs);
   if (!ext) throw new ToolError("the level has no voxel frames");
   const r: Region = {
@@ -414,8 +432,8 @@ interface ViaArgs { materials?: number[]; mask?: string; mode?: "only" | "avoid"
 
 /** The per-node route constraint and material slope caps, or nothing when neither is asked for. Map units in. */
 function routeRules(S: Surfaces, a: ReachArgs, u: Units, starts: Vec3[], target: { x: number; z: number; r: number }, more: { x: number; z: number; r: number }[] = []):
-  { allow?: Uint8Array; slopeCap?: Float32Array; info?: object } {
-  const out: { allow?: Uint8Array; slopeCap?: Float32Array; info?: Record<string, unknown> } = {};
+  { allow?: Uint8Array; allowFor?: (start: Vec3) => Uint8Array; slopeCap?: Float32Array; info?: object } {
+  const out: { allow?: Uint8Array; allowFor?: (start: Vec3) => Uint8Array; slopeCap?: Float32Array; info?: Record<string, unknown> } = {};
   if (a.materialSlopes?.length) {
     const cap = new Float32Array(S.nodes).fill(90), byMat = new Map<number, number>();
     a.materialSlopes.forEach((m, i) => {
@@ -441,7 +459,7 @@ function routeRules(S: Surfaces, a: ReachArgs, u: Units, starts: Vec3[], target:
     }
     const mats = v.materials?.length ? new Set(v.materials) : null, mode = v.mode ?? "only", near = v.near === undefined ? 3 : inMap(v.near, u);
     const vars: Record<string, number> = { x: 0, z: 0, u: 0, v: 0, r: 0, theta: 0, W: 0, D: 0, R: 0, pi: Math.PI, e: Math.E, h: 0, material: 0 };
-    const allow = new Uint8Array(S.nodes);
+    const allow = new Uint8Array(S.nodes), base = new Uint8Array(S.nodes);
     let on = 0;
     for (let n = 0; n < S.nodes; n++) {
       const p = nodeAt(S, n);
@@ -452,13 +470,23 @@ function routeRules(S: Surfaces, a: ReachArgs, u: Units, starts: Vec3[], target:
         inRoute = fn(vars) > 0;
       }
       if (inRoute) on++;
-      const free = starts.some((q) => Math.hypot(q[0] - p[0], q[2] - p[2]) <= near) || [target, ...more].some((t) => Math.hypot(t.x - p[0], t.z - p[2]) <= t.r + near);
-      allow[n] = free || (mode === "only" ? inRoute : !inRoute) ? 1 : 0;
+      base[n] = [target, ...more].some((t) => Math.hypot(t.x - p[0], t.z - p[2]) <= t.r + near) || (mode === "only" ? inRoute : !inRoute) ? 1 : 0;
+      const free = starts.some((q) => Math.hypot(q[0] - p[0], q[2] - p[2]) <= near);
+      allow[n] = free || base[n] ? 1 : 0;
     }
     out.allow = allow;
+    // each start walks with its own free zone only: with every start's zone free, a zone round one start bridged a gap
+    // off the route on another's walk, so a check from several starts passed where the single spawn failed (Caldera v2
+    // round 2)
+    out.allowFor = (q: Vec3) => {
+      const own = base.slice();
+      for (let n = 0; n < S.nodes; n++) if (!own[n]) { const p = nodeAt(S, n); if (Math.hypot(q[0] - p[0], q[2] - p[2]) <= near) own[n] = 1; }
+      return own;
+    };
     out.info = { ...(out.info ?? {}), via: { mode, ...(v.materials ? { materials: v.materials } : {}), ...(v.mask ? { mask: v.mask } : {}), near: r2(outUnit(near, u)), routeSurfaces: on, of: S.nodes,
-      note: mode === "only" ? "the walk may step only onto ground on the route (and anywhere within near of a start or the target): reachable proves a route along it"
-        : "the walk never steps onto ground on the route (except within near of a start or the target): not reachable proves the route is the only way" } };
+      note: (mode === "only" ? "the walk may step only onto ground on the route (and anywhere within near of its own start or the target): reachable proves a route along it"
+        : "the walk never steps onto ground on the route (except within near of its own start or the target): not reachable proves the route is the only way") +
+        "; each start is walked on its own, with only its own start's near zone free, so another start's zone never bridges its walk" } };
   }
   return out;
 }
@@ -903,6 +931,8 @@ export async function checkReachability(s: Session, a: ReachArgs) {
   };
   const need = { ownTurns: a.flood?.minOwnTurns ?? 2, margin: a.flood?.minDryMargin === undefined ? DRY_MARGIN : inMap(a.flood.minDryMargin, u) };
   const spawns = starts.map((st, si) => {
+    // via: this start's own near zone only (rr.allowFor), never the other starts'
+    if (rr.allowFor && starts.length > 1) o.allow = rr.allowFor(st.at);
     const n0 = stand[si];
     if (n0 < 0) {
       if (water !== null && standing(S, st.at, { ...o, water: null }, gs) >= 0) return { name: st.name, at: out(st.at), reachable: false, why: "it stands at or under the water" };
@@ -1346,7 +1376,8 @@ export const tools: Tool[] = [
     handler(s, a: RegionArgs & { around?: { x: number; z: number; radius: number }; step?: number; above?: number; seams?: boolean; limit?: number }) {
       const gs = grids(s.store), u = a.units;
       const c = a.around && { x: inMap(a.around.x, u), z: inMap(a.around.z, u), r: inMap(a.around.radius, u) };
-      const r = c && a.x0 === undefined && a.x1 === undefined && a.z0 === undefined && a.z1 === undefined
+      const fa = flatRegion(a);
+      const r = c && fa.x0 === undefined && fa.x1 === undefined && fa.z0 === undefined && fa.z1 === undefined
         ? { x0: c.x - c.r, z0: c.z - c.r, x1: c.x + c.r, z1: c.z + c.r } : region(gs, a);
       const step = a.step === undefined ? 0.5 : inMap(a.step, u);
       const cols = Math.ceil((r.x1 - r.x0) / step) * Math.ceil((r.z1 - r.z0) / step);
@@ -1408,11 +1439,12 @@ export const tools: Tool[] = [
           runs: rep.runs.slice(0, a.limit ?? 30).map((r) => ({ kind: r.kind, side: r.side, from: ov(r.from), to: ov(r.to), at: xz(r.at), ...(r.worst !== undefined ? { worstDrop: ov(r.worst) } : r.kind === "drop" ? { worstDrop: "no ground" } : {}),
             ...(r.trailY !== undefined && r.trailY !== null ? { trailY: ov(r.trailY) } : {}) })),
           ...(rep.runs.length > (a.limit ?? 30) ? { runsCount: rep.runs.length } : {}),
+          ...(rep.banks ? { banks: rep.banks } : {}),
           ...(rep.skinCorners.length ? { skinCorners: rep.skinCorners.map((c) => ({ at: xz(c.at), along: ov(c.along), off: ov(c.off), blocks: c.blocks })) } : {}),
         };
       });
       return { ok: per.every((p) => p.ok), summary: per.map((p) => p.summary).join("; "), trails: per, rules: { width: ov(o.halfWidth * 2), margin: ov(o.margin), spacing: ov(o.spacing), maxDrop: ov(o.maxDrop), holeRadius: ov(o.holeRadius), above: ov(o.above) },
-        units: u ?? "map", note: "side: left or right of the direction the trail runs; from/to: along the trail from its first point; a drop is a column more than maxDrop under the trail's ground (or with no ground) within the bed and its margin; a hole meets no solid over `above` within holeRadius of the centreline" };
+        units: u ?? "map", note: "side: left or right of the direction the trail runs; from/to: along the trail from its first point; a drop is a column more than maxDrop under the trail's ground (or with no ground) within the bed and its margin (banks: columns with no ground under the trail's but a bank rising from within 3 map units over it, a cut wall, which are not drops); a hole meets no solid over `above` within holeRadius of the centreline" };
     },
   },
   {

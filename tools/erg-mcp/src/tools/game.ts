@@ -12,6 +12,7 @@ import { grids } from "../lib/voxel";
 import { pieces } from "../lib/islets";
 import { cumulative, keyOfLabel, planWalk, pursue } from "../lib/walk-plan";
 import { WORM_WIDTH } from "../lib/reach";
+import { clearEye } from "../lib/eye";
 import { Raster, decodePng, type Rgb } from "../lib/inspect-png";
 import { ToolError, image, type Content, type Tool } from "../registry";
 import type { Session } from "../session";
@@ -101,6 +102,20 @@ async function cameraMod(s: Session, want?: string): Promise<string> {
 }
 
 const has = async (s: Session, method: string) => (await s.ensure()).methods.includes(method);
+
+/** Sudden death off for the rest of the Test: the round clock held (level.test.roundTime {hold: true}: paused now and
+ * at every turn start), and the round time left before and a second after, to show it stopped. */
+export async function holdRoundClock(s: Session): Promise<{ held: boolean; roundMsLeft?: [number | null, number | null]; note: string }> {
+  if (!(await has(s, "level.test.roundTime"))) throw new ToolError("suddenDeath: false holds the round clock with level.test.roundTime (this branch's Melange): this game has none");
+  const left = async () => { try { const v = Number(await evalClient(s, "local m = wum.game.match and wum.game.match() return m and m.roundMsLeft or nil")); return Number.isFinite(v) ? v : null; } catch { return null; } };
+  const before = await left();
+  await (await s.client()).call("level.test.roundTime", { hold: true }, 15000).catch((e: Error) => { throw new ToolError(`level.test.roundTime refused: ${e.message}`); });
+  await sleep(1500);
+  const a = await left();
+  await sleep(1500);
+  const b = await left();
+  return { held: true, roundMsLeft: [before, b], note: a !== null && b !== null && a === b ? "the round clock stands still (read 1.5 s apart): no sudden death in this Test" : "the round clock was asked to hold; it read " + JSON.stringify([before, a, b]) + " (ms left)" };
+}
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 /** The overview preset's camera: azimuth (degrees clockwise from north, -z; default 180, from the south), elevation
@@ -110,7 +125,7 @@ const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 interface Orbit { azimuth?: number; elevation?: number; distance?: number; fit?: "frames" | "solid" | "island"; margin?: number; }
 /** set_overview's framing per project id: the overview's defaults for the rest of this erg-mcp session. */
 const overviewDefaults = new Map<string, Orbit>();
-interface Cam extends Orbit { pos?: number[]; target?: number[]; fov?: number; preset?: "default" | "overview" | "castle"; name?: string; at?: number[]; radius?: number; team?: number; }
+interface Cam extends Orbit { pos?: number[]; target?: number[]; fov?: number; preset?: "default" | "overview" | "castle"; name?: string; at?: number[]; radius?: number; team?: number; clearView?: boolean; }
 
 const orbitProps = {
   azimuth: { type: "number", minimum: -360, maximum: 360, description: "preset overview: the side it looks from, degrees clockwise from north (-z); default 180 (from the south)." },
@@ -904,7 +919,8 @@ export const tools: Tool[] = [
           at: vec3("preset castle: the castle's centre [x, y, z] (its courtyard floor), in `units`."),
           radius: { type: "number", minimum: 1, description: "preset castle: the castle's half size (to its far corner), in `units` (default 14 map units)." },
           team: { type: "integer", minimum: 0, maximum: 3, description: "preset castle: also frame this team's living worms wherever they are (default: the worms within 1.5 radii)." },
-          name: { type: "string", description: "The PNG's name after the prefix: <prefix>_<name> (default <prefix>_<n>)." } } } },
+          name: { type: "string", description: "The PNG's name after the prefix: <prefix>_<name> (default <prefix>_<n>)." },
+          clearView: { type: "boolean", description: "With pos and target: check the eye against the open project's voxels first, and when it is inside the ground, within 0.75 map units of it, or has voxels between it and the target, move it to the nearest eye in open air with a clear view (raised, nearer or farther, turned round the target); the shot's eyeMoved says how (default false: as given)." } } } },
         units,
         prefix: { type: "string", description: "Every PNG is <prefix>_<name> (a cam's name, else its number), so runs never overwrite each other's in the shared shots folder; default erg_<yyyymmdd_hhmmss> of the call." },
         unique: { type: "boolean", description: "A name this erg-mcp wrote before gets _2, _3, ... (default true; false overwrites it)." },
@@ -928,7 +944,7 @@ export const tools: Tool[] = [
       const k = a.units === "world" ? 1 : WORLD_PER_MAP, t0 = Date.now(), settle = a.settleFrames ?? (a.waitPlay ? 6 : 2);
       let playSupported: boolean | undefined;
       const shots: object[] = [], parts: Content[] = [], warnings: string[] = [], prefix = a.prefix ?? `erg_${stamp()}`;
-      const castleWorms = new Map<number, string[] | undefined>();
+      const castleWorms = new Map<number, string[] | undefined>(), moved = new Map<number, string>();
       // onAnnounce: wait for the message, then shoot at once and not clean (the announcement is drawn with the HUD
       // primitives a clean shot hides)
       const ann = a.onAnnounce ? await waitAnnouncement(s, a.onAnnounce.match, (a.onAnnounce.timeoutSec ?? 60) * 1000) : null;
@@ -953,7 +969,13 @@ export const tools: Tool[] = [
               return cp.pose;
             })() : (() => {
               if (!c.pos || !c.target) throw new ToolError(`cams[${i}]: give pos and target, or a preset`);
-              return { pos: c.pos.map((x) => x * k), target: c.target.map((x) => x * k), fov: c.fov };
+              const pose = { pos: c.pos.map((x) => x * k), target: c.target.map((x) => x * k), fov: c.fov };
+              if (!c.clearView) return pose;
+              if (!s.project) throw new ToolError(`cams[${i}]: clearView reads the open project's voxels: open_project the tested level`);
+              const m = (v: number[]) => v.map((x) => x / WORLD_PER_MAP), ce = clearEye(grids(s.store), m(pose.pos), m(pose.target), { skip: 1 });
+              if (ce.moved) moved.set(i, ce.moved);
+              else if (!ce.clear) warnings.push(`${name}: no eye near pos is in open air with a clear view of the target: shot as given`);
+              return { ...pose, pos: ce.eye.map((x) => x * WORLD_PER_MAP) };
             })();
             if ((cam as { from?: string }).from) warnings.push(`${name}: ${(cam as { from?: string }).from}`);
             castleWorms.set(i, framed);
@@ -979,6 +1001,7 @@ export const tools: Tool[] = [
             ? await wormsNow(s).then((ws) => labelShot(p.path, p.png, { pos: pose.pos, target: pose.target, fov: pose.fov ?? 60 }, ws)).catch((e: Error) => ({ labelError: e.message })) : null;
           shots.push({ name, ...(c.preset ? { preset: c.preset } : {}), ...(c.preset === "overview" && lastPose ? { azimuth: c.azimuth ?? 180, worldPos: lastPose.pos.map((v) => Math.round(v * 10) / 10) } : {}),
             ...(castleWorms.get(i) ? { framedWorms: castleWorms.get(i) } : {}),
+            ...(moved.get(i) ? { eyeMoved: `the eye was inside the ground or had no clear view of the target: ${moved.get(i)}` } : {}),
             path: p.path, width: p.width, height: p.height, frame: p.frame, clean: p.clean, ...(p.phase !== undefined ? { phase: p.phase } : {}), ...(play ? { waitedMs: p.waitedMs } : {}), ...(labels ?? {}) });
           if (a.images !== false) parts.push(image(p.png));
         }
@@ -1304,6 +1327,8 @@ export const tools: Tool[] = [
         shots: { type: "boolean", description: "Shoot each worm at the start, middle and end of its walk (default true)." },
         shotPose: { type: "string", enum: ["near", "game"], description: "near (default): each shot on the worm where it is then, all of a turn's from the same side of its heading along the trail (10 map units off, 11 up, over castle walls), looking down at it, so the ground behind it shows how far it went; game: the game's own turn camera (low and far back, following the worm: a cone or a wall can hide it)." },
         walkAhead: { type: "number", minimum: 1, maximum: 40, description: "With shotPose near: the heading is from the worm's spot to this far along its trail (map units, default 6)." },
+        clearView: { type: "boolean", description: "With shotPose near and a project open: each shot's eye is checked against the project's voxels and, when it is inside the ground, within 0.75 map units of it, or has voxels between it and the worm, moved to the nearest eye in open air with a clear view (raised, nearer or farther, turned round the worm); a turn's eyesMoved lists the moves (default true)." },
+        suddenDeath: { type: "boolean", description: "false: hold the round clock for the run (level.test.roundTime {hold}: paused now and at every turn start), so the scheme's sudden death never comes; a run of many rounds otherwise meets the Quick Game's at 30 minutes, which raises the water past a level's cap and sets every worm's health to 1 (Caldera v2 round 2). The hold lasts until the Test ends; test {suddenDeath: false} sets it from the start. Default: as the match is." },
         approach: { type: "boolean", description: "A worm more than 1.5 map units off its trail first walks a route planned over the open project's voxels (check_reachability's walk graph, the worm's width enforced) to the trail's point nearest it, then the trail (default true with a project open; the turn's `approach` says what was planned). Without it the pursuit heads straight for the trail, through a keep's pillar if one is in the way." },
         replan: { type: "boolean", description: "game_walk's replan: a worm stuck after a round of recoveries backs off and walks a route planned round what holds it to its trail further on (default true with a project open)." },
         announceShots: { type: "boolean", description: "While the turns play, shoot the game's own view (not clean: the message is drawn with the HUD) each time a wum.sim.announce message is first drawn at full opacity (the game's announce.shown record, Melange of this branch): <prefix>_ann<n>.png, listed in the answer's `announcements` with the text and the frames (default true)." },
@@ -1315,8 +1340,9 @@ export const tools: Tool[] = [
     },
     async handler(s, a: { trails: number[][][]; turns?: number; rounds?: number; walkSeconds?: number; end?: "skip" | "fire" | "wait"; weapon?: "bazooka"; fireMs?: number; aimDownMs?: number;
       shots?: boolean; shotPose?: "near" | "game"; walkAhead?: number; prefix?: string; width?: number; units?: "map" | "world"; timeoutSec?: number; gameDir?: string;
-      approach?: boolean; replan?: boolean; announceShots?: boolean }) {
+      approach?: boolean; replan?: boolean; announceShots?: boolean; clearView?: boolean; suddenDeath?: boolean }) {
       if (!(await has(s, "input.drive"))) throw new ToolError("game_play_turns drives the worms with input.drive (Melange 0.13+ with the Controls module)");
+      const roundHeld = a.suddenDeath === false ? await holdRoundClock(s) : undefined;
       const canSkip = await has(s, "level.test.endTurn");
       const end = a.end ?? (canSkip ? "skip" : "wait");
       if (end === "skip" && !canSkip) throw new ToolError("end skip needs level.test.endTurn (this branch's Melange): use end wait or fire");
@@ -1329,7 +1355,7 @@ export const tools: Tool[] = [
       const client = await s.client(), t0 = Date.now(), limit = (a.timeoutSec ?? 1800) * 1000, prefix = a.prefix ?? `erg_${stamp()}_play`;
       const walk = tools.find((t) => t.name === "game_walk")!;
       type Turn = { turn: number; worm: string; slot: number; team: number; from: number[]; to?: number[]; along?: number; of?: number; climb?: number; stop?: string;
-        recoveries?: string[]; shots: string[]; ended?: string; error?: string; weapon?: string; stuck?: string; approach?: object; replans?: number };
+        recoveries?: string[]; shots: string[]; ended?: string; error?: string; weapon?: string; stuck?: string; approach?: object; replans?: number; eyesMoved?: string[] };
       const played: Turn[] = [];
       // shotPose near: each shot on the worm where it is then, all of a turn's from the same side of its heading (the
       // trail's direction from its spot, walkAhead along it) and high over castle walls, so the ground behind it shows how
@@ -1337,13 +1363,22 @@ export const tools: Tool[] = [
       // sits low and far back (a cone or a wall between hid the worm in the first run). game: that camera.
       const near = a.shotPose !== "game";
       const wormAt = async (slot: number) => (await evalClient(s, `for _, w in ipairs(wum.game.worms() or {}) do if w.slot == ${slot} then return w.pos.x .. "," .. w.pos.y .. "," .. w.pos.z end end return ""`)).split(",").map(Number);
-      const shotAt = async (name: string, list: string[], aim: { slot: number; heading: number[] } | null) => {
+      const shotAt = async (name: string, list: string[], aim: { slot: number; heading: number[] } | null, views?: string[]) => {
         if (a.shots === false) return;
         try {
           let minFrame: number | undefined;
           const q = near && aim ? await wormAt(aim.slot) : [];
           if (q.length === 3 && q.every(Number.isFinite)) {
-            const set = await setCamera(s, { ...sidePose(q, aim!.heading), fov: 60 }, 40);
+            let pose = sidePose(q, aim!.heading);
+            // the side pose checked against the open project's voxels: in the Caldera v2 round-2 run it stood inside the
+            // cone's rock or behind a castle wall (c1_t3_w0_start, c1_t1_w4_mid, c1_t3_w0_end); moved to the nearest eye in
+            // open air with a clear line of sight to the worm (raised, nearer or farther, turned round it)
+            if (a.clearView !== false && s.project) {
+              const m = (v: number[]) => v.map((x) => x / WORLD_PER_MAP), ce = clearEye(grids(s.store), m(pose.pos), m(pose.target), { skip: 1 });
+              if (ce.moved) { pose = { ...pose, pos: ce.eye.map((x) => x * WORLD_PER_MAP) }; views?.push(`${name}: ${ce.moved}`); }
+              else if (!ce.clear) views?.push(`${name}: no eye near the side pose has a clear view of the worm (shot as posed)`);
+            }
+            const set = await setCamera(s, { ...pose, fov: 60 }, 40);
             minFrame = set.frame !== undefined ? set.frame + 2 : undefined;
           }
           list.push((await shot(s, uniqueName(prefix, name), { clean: true, width: a.width ?? 960, minFrame })).path);
@@ -1388,13 +1423,14 @@ export const tools: Tool[] = [
           if (route?.why) rec.approach = { planned: false, why: route.why };
           else if (route?.lead) rec.approach = { planned: true, from: p.map(out), length: out(route.length!), points: route.lead.length };
           const pose = p.length === 3 && p.every(Number.isFinite) ? { slot, heading: turnHeading(p, rest, (a.walkAhead ?? 6) * WORLD_PER_MAP) } : null;
-          await shotAt(`t${turn}_w${slot}_start`, rec.shots, pose);
+          const views: string[] = [];
+          await shotAt(`t${turn}_w${slot}_start`, rec.shots, pose, views);
           const walkSec = a.walkSeconds ?? 20;
           // the middle shot from a timer while the walk runs (the walk steers by the game's own camera, which a shot leaves);
           // a walk that ends first cancels it, so it never fires in a later turn
           let midStarted = false;
           const midShot = new Promise<void>((ok) => {
-            const timer = setTimeout(() => { midStarted = true; shotAt(`t${turn}_w${slot}_mid`, rec.shots, pose).then(ok, ok); }, (walkSec * 1000) / 2);
+            const timer = setTimeout(() => { midStarted = true; shotAt(`t${turn}_w${slot}_mid`, rec.shots, pose, views).then(ok, ok); }, (walkSec * 1000) / 2);
             cancelMid = () => { if (!midStarted) { clearTimeout(timer); ok(); } };
           });
           try {
@@ -1420,7 +1456,8 @@ export const tools: Tool[] = [
           cancelMid();
           await midShot;
           if (!midStarted && a.shots !== false) rec.shots.push(`mid: none (the walk ended before ${walkSec / 2} s)`);
-          await shotAt(`t${turn}_w${slot}_end`, rec.shots, pose);
+          await shotAt(`t${turn}_w${slot}_end`, rec.shots, pose, views);
+          if (views.length) rec.eyesMoved = views;
           const now = await gameState(s);
           if (now.turn === turn && now.phase === "play") {
             if (end === "skip") {
@@ -1459,6 +1496,7 @@ export const tools: Tool[] = [
         from: ts[0].from, to: ts[ts.length - 1].to ?? null }));
       const log = turnLogOut();
       return { played: played.length, asked: want, stop: why, seconds: Math.round((Date.now() - t0) / 100) / 10, end, worms, turns: played, ...(log ? { turnLog: log } : {}),
+        ...(roundHeld ? { roundClock: roundHeld } : {}),
         ...(stopAnn ? { announcements: announced.length ? announced : "none was drawn during the run" } : {}),
         units: a.units ?? "map", note: "each human turn's worm walked its team's trail with the game's own inputs (input.drive) from the trail's point nearest it; along/of: how far along the trail it stood after the turn. A turn's shots look at its worm from one side of its heading (shotPose near; game: the turn camera), clean of the mods' HUD text" };
     },
@@ -1473,17 +1511,21 @@ export const tools: Tool[] = [
         units: { type: "string", enum: ["map", "world"], description: "Units of pos and target (default map)." },
         arm: { type: "boolean", description: "Arm it with the default pose (the crater over the factory knot) when no pos is given." },
         delayMs: { type: "integer", minimum: 0, maximum: 10000, description: "After the fire (default 500)." },
-        max: { type: "integer", minimum: 1, maximum: 32, description: "Fires to shoot before it disarms itself (default 4)." },
+        max: { type: "integer", minimum: 1, maximum: 512, description: "Shots to take before it disarms itself (default 4; a game before this branch's Melange takes at most 32: arm it again within the session for more, which answers the shots taken so far and starts a new count)." },
+        perFire: { type: "integer", minimum: 1, maximum: 12, description: "Shots per fire, `everyMs` apart from delayMs on (default 1): the flight's rise, top and fall in one volley." },
+        everyMs: { type: "integer", minimum: 50, maximum: 5000, description: "With perFire: between a fire's shots (default 250)." },
+        track: { anyOf: [{ type: "boolean" }, { type: "number", minimum: 1, maximum: 200 }], description: "Follow the fire's first mine in flight (this branch's Melange): each shot's eye is this many map units from where the mine is then (true: 12), on the pose's own bearing (from pos to target, or the default's from the south) and a third of that over it, looking at the mine, so it fills the picture instead of a dot over the crater. Where the mine is comes from its start, its upward speed and the gravity (the game's own numbers: a launcher's mine rises launchHeight and falls back to its spot), so the camera chases it without reading it. With perFire 3-6 and everyMs 300-500 the shots cover a launcher mine's 3 s flight." },
         holdFrames: { type: "integer", minimum: 1, maximum: 60, description: "Frames drawn from the pose before it is read (default 2)." },
         prefix: { type: "string", description: "The PNGs are <prefix>_<n> (default erg_fireshot_<yyyymmdd_hhmmss>)." },
         clear: { type: "boolean", description: "Disarm it." },
         images: { type: "boolean", description: "With the state: answer the shots taken as pictures (default false)." },
       },
     },
-    async handler(s, a: { pos?: number[]; target?: number[]; fov?: number; units?: "map" | "world"; arm?: boolean; delayMs?: number; max?: number; holdFrames?: number; prefix?: string; clear?: boolean; images?: boolean }) {
+    async handler(s, a: { pos?: number[]; target?: number[]; fov?: number; units?: "map" | "world"; arm?: boolean; delayMs?: number; max?: number; holdFrames?: number; prefix?: string; clear?: boolean; images?: boolean;
+      perFire?: number; everyMs?: number; track?: boolean | number }) {
       if (!(await has(s, "render.fireShot"))) throw new ToolError("this game has no render.fireShot (Melange 0.13+): use game_mines {fire, shotsOnFire} instead");
       const client = await s.client();
-      type St = { armed: boolean; name: string; delayMs: number; taken: number; max: number; paths: string[]; fires: number; lastError?: string };
+      type St = { armed: boolean; name: string; delayMs: number; taken: number; max: number; paths: string[]; fires: number; lastError?: string; perFire?: number; everyMs?: number; track?: number };
       if (a.clear) return { ...(await client.call<St>("render.fireShot", { clear: true }, 15000)), note: "disarmed" };
       if (!a.pos && !a.target && !a.arm) {
         const st = await client.call<St>("render.fireShot", {}, 15000);
@@ -1501,9 +1543,20 @@ export const tools: Tool[] = [
         pose = { pos: [x * WORLD_PER_MAP, (y + 25) * WORLD_PER_MAP, (z + 20) * WORLD_PER_MAP], target: [x * WORLD_PER_MAP, y * WORLD_PER_MAP, z * WORLD_PER_MAP] };
       }
       const name = uniqueName(a.prefix ?? `erg_fireshot_${stamp()}`, "fire", false).replace(/_fire$/, "");
-      const st = await client.call<St>("render.fireShot", { ...pose, ...(a.fov ? { fov: a.fov } : {}), name: name.slice(0, 56), delayMs: a.delayMs ?? 500, max: a.max ?? 4, holdFrames: a.holdFrames ?? 2 }, 15000);
+      // re-arming answers the shots of the arming it replaces (render.fireShot starts a new count)
+      const before = await client.call<St>("render.fireShot", {}, 15000).catch(() => null);
+      const track = a.track === true ? 12 : typeof a.track === "number" ? a.track : 0;
+      const extra = { ...(a.perFire && a.perFire > 1 ? { perFire: a.perFire, everyMs: a.everyMs ?? 250 } : {}), ...(track ? { track: track * WORLD_PER_MAP } : {}) };
+      const st = await client.call<St>("render.fireShot", { ...pose, ...(a.fov ? { fov: a.fov } : {}), name: name.slice(0, 56), delayMs: a.delayMs ?? 500, max: a.max ?? 4, holdFrames: a.holdFrames ?? 2, ...extra }, 15000)
+        .catch((e: Error) => {
+          if (/max must be/.test(e.message) && (a.max ?? 4) > 32) throw new ToolError(`this game's render.fireShot takes at most 32 shots an arming (a Melange before this branch): arm it with max 32 and again (game_fire_shot) when they are taken, or update the game (${e.message})`);
+          if (/perFire|everyMs|track/.test(e.message) || (Object.keys(extra).length && /unknown|must be/.test(e.message))) throw new ToolError(`this game's render.fireShot has no perFire or track (a Melange before this branch): ${e.message}`);
+          throw e;
+        });
+      if (Object.keys(extra).length && st.perFire === undefined) throw new ToolError("this game's render.fireShot ignored perFire and track (a Melange before this branch): the shots are one a fire from the pinned pose");
       return { ...st, pose: { pos: pose.pos.map((v) => Math.round(v / kk * 100) / 100), target: pose.target.map((v) => Math.round(v / kk * 100) / 100), units: a.units ?? "map" },
-        note: `armed: each of the next ${a.max ?? 4} factory fires is shot ${a.delayMs ?? 500} ms after it; game_fire_shot {} answers the shots taken (the game also logs each, [oasis] render.fireShot)` };
+        ...(before && before.paths.length ? { previousArming: { name: before.name, taken: before.taken, paths: before.paths } } : {}),
+        note: `armed: ${a.perFire && a.perFire > 1 ? `${a.perFire} shots a fire, ${a.everyMs ?? 250} ms apart from ` : "each factory fire is shot "}${a.delayMs ?? 500} ms after it, ${a.max ?? 4} shots in all${track ? `, the camera following the fire's first mine from ${track} map units` : ""}; game_fire_shot {} answers the shots taken (the game also logs each, [oasis] render.fireShot)` };
     },
   },
   {
@@ -1522,17 +1575,23 @@ export const tools: Tool[] = [
         shotsOnFire: { type: "object", additionalProperties: false, description: "With watchSeconds: when the factory's MineFactory.Fire arrives, point the camera (render.camera) at the factory and take `count` shots (render.shot) `everyMs` apart, so the mines are seen in flight; the camera is given back after. Default pose: 60 map units south of the factory knot and 30 over it, looking at 10 over it; or pos and target (in `units`).",
           properties: { count: { type: "integer", minimum: 1, maximum: 12, description: "Shots (default 4)." }, everyMs: { type: "integer", minimum: 100, maximum: 5000, description: "Between shots (default 500)." },
             prefix: { type: "string", description: "PNG names <prefix>_<n> in Documents\Melange\shots (default erg_minefire_<yyyymmdd_hhmmss>)." }, pos: vec3("Eye [x, y, z]."), target: vec3("Point looked at [x, y, z]."),
-            width: { type: "integer", minimum: 64, maximum: 8192, description: "Picture width (default 960)." }, images: { type: "boolean", description: "Answer the pictures as image content (default true)." } } },
+            width: { type: "integer", minimum: 64, maximum: 8192, description: "Picture width (default 960)." }, images: { type: "boolean", description: "Answer the pictures as image content (default true)." },
+            track: { anyOf: [{ type: "boolean" }, { type: "number", minimum: 1, maximum: 200 }], description: "Chase the fire's first mine instead of the fixed pose (this branch's Melange: the game's own fire camera, render.fireShot {track}, armed for this fire): each shot's eye this many map units from where the mine is then (true: 12) on the pose's bearing, looking at it, the count shots everyMs apart from 200 ms after the mines appear (everyMs default 400 with track: a launcher's mine flies about 3 s). Refused while game_fire_shot is armed (it is the same camera): use game_fire_shot {track} there." } } },
       },
     },
     async handler(s, a0: { watchSeconds?: number; untilFire?: boolean; units?: "map" | "world"; alive?: boolean; trajectories?: boolean; fire?: boolean | { count?: number };
-      shotsOnFire?: { count?: number; everyMs?: number; prefix?: string; pos?: number[]; target?: number[]; width?: number; images?: boolean } }) {
+      shotsOnFire?: { count?: number; everyMs?: number; prefix?: string; pos?: number[]; target?: number[]; width?: number; images?: boolean; track?: boolean | number } }) {
       if (!(await has(s, "entities.list"))) throw new ToolError("this game has no entities.list (Oasis's game state readers): game_mines needs the game running a Test");
       // fire: a volley now, watched until its mines are out
       const fireAsk = a0.fire === undefined || a0.fire === false ? null : a0.fire === true ? {} : a0.fire;
       if (fireAsk && !(await has(s, "level.test.fireFactory"))) throw new ToolError("this game has no level.test.fireFactory (Melange 0.13+): the factory fires at turn starts only; set_mine_factory {everyNTurns: 1} and game_mines {untilFire: true}");
       const a = fireAsk ? { ...a0, untilFire: true, watchSeconds: a0.watchSeconds ?? 60 } : a0;
-      const firesBefore = fireAsk ? ((await probeOf(s))?.factory.fires.length ?? 0) : 0;
+      // the fire's record is matched, not counted: the game keeps its last 8 fires, so once 8 were logged the count
+      // stayed 8 and every later burst read "no fire record" (Caldera v2 round 2). The trigger this call makes is the one
+      // that differs from the trigger before it, and its fire the first record not there before, from its tick on.
+      const pr0 = fireAsk ? await probeOf(s) : null;
+      const fireId = (x: FireRec) => `${x.stem}:${x.tick}:${x.turn}:${x.mines.map((q) => q.handle).join(",")}`;
+      const trigBefore = JSON.stringify(pr0?.factory.trigger ?? null), firesBefore = new Set((pr0?.factory.fires ?? []).map(fireId));
       const k = a.units === "world" ? 1 : 1 / WORLD_PER_MAP;
       const out = (p: { x: number; y: number; z: number } | null) => (p ? [p.x, p.y, p.z].map((v) => Math.round(v * k * 100) / 100) : null);
       // the factory knot of the open project, in world units
@@ -1562,8 +1621,6 @@ export const tools: Tool[] = [
         });
       }
       if (a.untilFire && !names.includes("MineFactory.FireEnd")) throw new ToolError("untilFire needs the bus's MineFactory.FireEnd, which this game does not list (bus.names)");
-      let queued: unknown = null;
-      if (fireAsk) queued = await (await s.client()).call("level.test.fireFactory", fireAsk.count ? { count: fireAsk.count } : {}, 15000);
       // shots on the fire: the pose (world units) and what was taken
       const sf = a.shotsOnFire, shots: object[] = [], pictures: Content[] = [];
       let posed = false;
@@ -1575,17 +1632,38 @@ export const tools: Tool[] = [
         return { pos: [factory[0], factory[1] + 30 * WORLD_PER_MAP, factory[2] + 60 * WORLD_PER_MAP], target: [factory[0], factory[1] + 10 * WORLD_PER_MAP, factory[2]], fov: 60 };
       };
       const pose = sf ? firePose() : null;
+      // track: the game's fire camera chases the fire's first mine (render.fireShot {track}), armed before the fire
+      const trackMap = sf?.track === true ? 12 : typeof sf?.track === "number" ? sf.track : 0;
+      type FsSt = { armed: boolean; taken: number; paths: string[]; perFire?: number; lastError?: string };
+      let tracking: { name: string; count: number } | null = null;
+      if (sf && trackMap && pose) {
+        if (!(await has(s, "render.fireShot"))) throw new ToolError("shotsOnFire.track needs the game's render.fireShot (this branch's Melange)");
+        const cl = await s.client(), st0 = await cl.call<FsSt>("render.fireShot", {}, 15000);
+        if (st0.armed) throw new ToolError("shotsOnFire.track uses the game's fire camera, which game_fire_shot has armed: give game_fire_shot {track} there, or game_fire_shot {clear: true} first");
+        const name = uniqueName(sf.prefix ?? `erg_minefire_${stamp()}`, "track").slice(0, 56), count = sf.count ?? 4;
+        const st = await cl.call<FsSt>("render.fireShot", { pos: pose.pos, target: pose.target, fov: pose.fov ?? 60, name, delayMs: 200, max: count, holdFrames: 2, perFire: count,
+          everyMs: sf.everyMs ?? 400, track: trackMap * WORLD_PER_MAP }, 15000);
+        if (st.perFire === undefined) throw new ToolError("this game's render.fireShot has no track (a Melange before this branch)");
+        tracking = { name, count };
+      }
+      let queued: unknown = null;
+      if (fireAsk) queued = await (await s.client()).call("level.test.fireFactory", fireAsk.count ? { count: fireAsk.count } : {}, 15000);
+      let trackTaken = 0, lastTrackRead = 0;
       const tracks = new Map<number, number[][]>();
       try {
         const appeared: { handle: number; type: string; ms: number; at: number[] | null; fromFactory?: number; path?: number[][] }[] = [];
-        while (Date.now() - t0 < watch && !(a.untilFire && firedAt !== null && Date.now() - firedAt > 3000 && (!sf || shots.length >= (sf.count ?? 4)))) {
+        while (Date.now() - t0 < watch && !(a.untilFire && firedAt !== null && Date.now() - firedAt > 3000 && (!sf || (tracking ? trackTaken >= tracking.count : shots.length >= (sf.count ?? 4))))) {
           await sleep(250);
+          if (tracking && Date.now() - lastTrackRead > 1000) {
+            lastTrackRead = Date.now();
+            trackTaken = (await (await s.client()).call<FsSt>("render.fireShot", {}, 15000).catch(() => ({ taken: trackTaken } as FsSt))).taken;
+          }
           for (const m of await liveMines(s).catch(() => [] as Entity[])) {
             if (!seen.has(m.handle)) { seen.set(m.handle, m); appeared.push({ handle: m.handle, type: m.type, ms: Date.now() - t0, at: out(m.pos), fromFactory: dist(m.pos) }); tracks.set(m.handle, []); }
             const tr = a.trajectories ? tracks.get(m.handle) : undefined;
             if (tr && tr.length < 80 && m.pos) tr.push([Date.now() - t0, ...out(m.pos)!]);
           }
-          if (sf && pose && fireStart !== null && shots.length < (sf.count ?? 4) && Date.now() >= fireStart + shots.length * (sf.everyMs ?? 500)) {
+          if (sf && pose && !tracking && fireStart !== null && shots.length < (sf.count ?? 4) && Date.now() >= fireStart + shots.length * (sf.everyMs ?? 500)) {
             stopHold();
             const fr = (await setCamera(s, pose, 600)).frame;
             posed = true;
@@ -1596,6 +1674,15 @@ export const tools: Tool[] = [
           }
         }
         if (a.trajectories) for (const ap of appeared) ap.path = tracks.get(ap.handle) ?? [];
+        if (tracking) {
+          const cl = await s.client(), st = await cl.call<FsSt>("render.fireShot", {}, 15000);
+          await cl.call("render.fireShot", { clear: true }, 15000).catch(() => undefined);
+          for (const [i, p] of st.paths.entries()) {
+            shots.push({ name: `${tracking.name}_${i + 1}`, path: p, tracked: `chasing the fire's first mine from ${trackMap} map units` });
+            if (sf!.images !== false) { try { pictures.push(image(readFileSync(p))); } catch { /* the path is still answered */ } }
+          }
+          if (st.lastError) shots.push({ error: st.lastError });
+        }
         if (posed) await clearCamera(s).catch(() => undefined);
         posed = false;
         const now = watch > 0 ? await liveMines(s) : before;
@@ -1613,13 +1700,19 @@ export const tools: Tool[] = [
                 ...(far ? { warning: "the factory settled far from its knot: its drop from the knot hit no land the sweep sees (a draped skin) and it took a stale point" } : {}) }
             : { alive: false, why: factory ? FACTORY_GONE : "no factory entity in the match (and no project with a minefactory knot is open)" };
         }
-        // fire: what the trigger found, then (its mines at rest, at most 35 s) the fire's mines from the game's own record
+        // fire: what the trigger found, then (its mines at rest, at most 45 s) the fire's mines from the game's own record
         let fired: object | undefined;
         if (fireAsk) {
-          let pr = await probeOf(s);
-          for (const t1 = Date.now(); pr && pr.factory.trigger?.started && pr.factory.fires.length <= firesBefore && Date.now() - t1 < 35000; pr = await probeOf(s)) await sleep(500);
-          const trig = pr?.factory.trigger ?? null, last = pr && pr.factory.fires.length > firesBefore ? pr.factory.fires[pr.factory.fires.length - 1] : null;
-          fired = { queued, trigger: trig, ...(last ? { fire: fireOut(last, a.units ?? "map", ...groundLookup(s)) } : { fire: null, note: trig && !trig.started ? `the factory did not fire: ${trig.why}` : "no fire record within 35 s (its mines may still be moving): game_probe's factory.fires has it later" }) };
+          const mine = (p: ProbeAnswer | null): { trig: ProbeAnswer["factory"]["trigger"]; rec: FireRec | null } => {
+            const tr = p?.factory.trigger;
+            if (!p || !tr || JSON.stringify(tr) === trigBefore) return { trig: null, rec: null };
+            return { trig: tr, rec: p.factory.fires.filter((x) => x.tick >= tr.tick && !firesBefore.has(fireId(x))).sort((x, y) => x.tick - y.tick)[0] ?? null };
+          };
+          let pr = await probeOf(s), m = mine(pr);
+          // the trigger runs at the next sim tick, the record once the fire's mines rest (at most 30 s)
+          for (const t1 = Date.now(); pr && !m.rec && (m.trig ? m.trig.started : true) && Date.now() - t1 < 45000; m = mine(pr)) { await sleep(500); pr = await probeOf(s); }
+          const trig = m.trig ?? pr?.factory.trigger ?? null, last = m.rec;
+          fired = { queued, trigger: trig, ...(last ? { fire: fireOut(last, a.units ?? "map", ...groundLookup(s)) } : { fire: null, note: m.trig && !m.trig.started ? `the factory did not fire: ${m.trig.why}` : !m.trig ? "the game did not run the fire's trigger within 45 s (is the match paused?)" : "no fire record within 45 s of the trigger (its mines may still be moving): game_probe's factory.fires has it later (the fire whose tick is at or after the trigger's)" }) };
         }
         const answer = {
           units: a.units ?? "map", factory: factory ? { at: out({ x: factory[0], y: factory[1], z: factory[2] }), note: "the open project's minefactory knot" } : null,
@@ -1628,12 +1721,13 @@ export const tools: Tool[] = [
           ...(factoryEntity ? { factoryEntity } : {}),
           minesBefore: before.length, mines: now.map((m) => ({ handle: m.handle, type: m.type, at: out(m.pos), fromFactory: dist(m.pos) })),
           ...(watch > 0 ? { watchedMs: Date.now() - t0, appeared, messages: { watched: names, counts, events } } : {}),
-          ...(sf ? { shotsOnFire: fireStart === null ? { taken: 0, note: "no MineFactory.Fire in the watch" } : { taken: shots.length, shots } } : {}),
+          ...(sf ? { shotsOnFire: fireStart === null && !shots.length ? { taken: 0, note: "no MineFactory.Fire in the watch" } : { taken: shots.length, shots } } : {}),
         };
         return pictures.length ? { content: [...pictures, { type: "text", text: JSON.stringify(answer, null, 1) }] } : answer;
       } finally {
         unsub?.();
         if (posed) await clearCamera(s).catch(() => undefined);
+        if (tracking) await (await s.client()).call("render.fireShot", { clear: true }, 15000).catch(() => undefined);
       }
     },
   },

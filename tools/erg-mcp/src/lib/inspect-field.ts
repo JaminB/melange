@@ -25,7 +25,11 @@ export function columnSpans(g: Grid, px: number, pz: number, topOnly = false): S
   const [X, Y] = g.size;
   if (upright(g)) {
     const m = g.toMap;
-    const cx = Math.floor((px - m[3]) / m[0] + 1e-9), cz = Math.floor((pz - m[11]) / m[10] + 1e-9);
+    // the column is inside the bounds, so its cell is too: a point a hair under a block's far edge (x -40 - 1e-12 on a
+    // skin tile that ends at -40) rounded up past the last cell while the tile beyond starts only at -40, and the column
+    // read as no ground (check_trail's and check_holes' false holes on skin-tile edges, Caldera v2 round 2)
+    const cx = Math.min(X - 1, Math.max(0, Math.floor((px - m[3]) / m[0] + 1e-9)));
+    const cz = Math.min(g.size[2] - 1, Math.max(0, Math.floor((pz - m[11]) / m[10] + 1e-9)));
     if (!inside(g.size, cx, 0, cz)) return out;
     const at = (cz * X + cx) * Y;
     // An added block's corner offsets move the whole column up (draped blocks: heightfield_drape).

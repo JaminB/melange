@@ -142,6 +142,8 @@ std::string g_trigger = "null";     // the last FireNow
 int g_tickHook = 0;
 std::atomic<uint32_t> g_fireSerial{0};   // fires seen this session (PlaceMines), for a shot after a fire
 std::atomic<ULONGLONG> g_fireAt{0};      // GetTickCount64 of the last
+Flight g_flight;                         // the last fire's first mine (main thread: PlaceMines, render.fireShot's frame)
+bool g_hasFlight = false;
 /** Within this of the factory's axis (map units, horizontally) a mine at rest is "under the factory". */
 constexpr float kUnderFactoryMap = 2.5f;
 
@@ -228,7 +230,7 @@ std::vector<MineAt> Mines() {
 }
 
 // After a PlaceMines: the mines that were not there before it are this fire's.
-void FollowFire(const std::string& stem, const std::vector<MineAt>& before, int asked, bool launch, const float at[3]) {
+void FollowFire(const std::string& stem, const std::vector<MineAt>& before, int asked, bool launch, const float at[3], float vy) {
     Fire f;
     f.stem = stem;
     f.tick = sim::Tick();
@@ -249,9 +251,18 @@ void FollowFire(const std::string& stem, const std::vector<MineAt>& before, int 
         fm.changedAt = f.at;
         f.mines.push_back(fm);
     }
+    const bool seen = !f.mines.empty();
+    if (seen) std::memcpy(g_flight.from, f.mines.front().spawn, sizeof g_flight.from);
     g_following.push_back(std::move(f));
     g_fireAt = GetTickCount64();
     ++g_fireSerial;
+    if (seen) {
+        g_flight.vy = vy;
+        g_flight.gravity = kMineGravity;
+        g_flight.serial = g_fireSerial.load();
+        g_flight.at = g_fireAt.load();
+        g_hasFlight = true;
+    }
 }
 
 std::string MapVec(const float* v) {
@@ -407,7 +418,7 @@ void __fastcall HkPlaceMines(uintptr_t self, void*) {
     const std::vector<MineAt> before = Mines();
     if (!armed || !spec.Launch() || n < 1 || n > 10) {
         g_hPlace.thiscall<void>(self);
-        FollowFire(stem.empty() ? "?" : stem, before, n, false, at);
+        FollowFire(stem.empty() ? "?" : stem, before, n, false, at, -0.3f);
         return;
     }
     using Random = uint32_t(__cdecl*)();
@@ -441,7 +452,7 @@ void __fastcall HkPlaceMines(uintptr_t self, void*) {
         }
         LOG_INFO("[levels] %s: the mine factory threw %d of %d mines from %zu launchers, %.0f up, within %.0f of each (world units)",
                  stem.c_str(), made, n, spec.launchers.size(), static_cast<double>(height), static_cast<double>(radius));
-        FollowFire(stem, before, n, true, at);
+        FollowFire(stem, before, n, true, at, up);
         return;
     }
     for (int i = 0; i < n; ++i) {
@@ -452,7 +463,7 @@ void __fastcall HkPlaceMines(uintptr_t self, void*) {
     }
     LOG_INFO("[levels] %s: the mine factory fired %d of %d mines from %.0f over it, within %.0f (world units)", stem.c_str(), made, n,
              static_cast<double>(height), static_cast<double>(radius));
-    FollowFire(stem, before, n, true, at);
+    FollowFire(stem, before, n, true, at, vel[1]);
 }
 
 // The match's one MineFactoryLogicEntity, or 0.
@@ -629,6 +640,12 @@ const char* Mine(const float pos[3], const float vel[3]) { return g_hDrop ? Engi
 bool Position(float out[3]) {
     const uintptr_t f = g_hDrop ? FindFactory() : 0;
     return f && ReadVec(f + kPos, out);
+}
+
+bool LastFlight(Flight* out) {
+    if (!g_hasFlight) return false;
+    *out = g_flight;
+    return true;
 }
 
 uint32_t FireSerial(ULONGLONG* at) {

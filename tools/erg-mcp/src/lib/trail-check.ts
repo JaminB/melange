@@ -1,7 +1,8 @@
 // check_trail: the ground across a walking trail. The centreline is sampled every `spacing` (map units); at each sample
 // the trail's ground (the top at or under the trail's own height, so a switchback's leg is not confused with the leg
 // over it) is compared with the ground across the bed and a margin either side: a column more than `maxDrop` under the
-// trail's ground (or with no ground at all) is an edge a worm can step or be knocked off, and a column within
+// trail's ground (or with no ground at all) is an edge a worm can step or be knocked off (a column whose only ground is
+// a bank rising from just over the trail, a cut wall, is counted as a bank, not a drop), and a column within
 // `holeRadius` of the centreline whose ray straight down meets no solid over the water (`above`) is a hole the camera
 // and a worm see through. check_reachability's walk graph keeps to the ground it can stand on, so it passes a trail with
 // a crumbling edge or a pit in its bed; this reads every column. It also lists the corners where four draped skin blocks
@@ -23,7 +24,7 @@ export interface TrailCheckOptions {
 }
 
 export interface TrailRun { kind: "drop" | "hole" | "noGround"; side: "left" | "right" | "centre"; from: number; to: number; at: [number, number]; worst?: number; trailY?: number | null; }
-export interface TrailReport { length: number; samples: number; columns: number; runs: TrailRun[]; worstDrop: number | null; skinCorners: { at: [number, number]; along: number; off: number; blocks: number }[]; }
+export interface TrailReport { length: number; samples: number; columns: number; runs: TrailRun[]; worstDrop: number | null; banks: number; skinCorners: { at: [number, number]; along: number; off: number; blocks: number }[]; }
 
 /** The trail's points densified every `spacing` along the horizontal: [x, z, y (NaN without), along]. */
 export function densify(pts: number[][], spacing: number): number[][] {
@@ -44,7 +45,7 @@ export function densify(pts: number[][], spacing: number): number[][] {
 export function checkTrail(gs: Grid[], pts: number[][], o: TrailCheckOptions): TrailReport {
   const line = densify(pts, o.spacing), runs: TrailRun[] = [];
   const reach = o.halfWidth + o.margin, n = Math.max(1, Math.round(reach / o.spacing));
-  let columns = 0, worst: number | null = null;
+  let columns = 0, worst: number | null = null, banks = 0;
   // a run of the same finding on the same side, extended while consecutive samples have it
   const open = new Map<string, TrailRun>();
   const note = (kind: TrailRun["kind"], side: TrailRun["side"], along: number, at: [number, number], drop: number | undefined, trailY: number | null, seen: Set<string>) => {
@@ -78,6 +79,10 @@ export function checkTrail(gs: Grid[], pts: number[][], o: TrailCheckOptions): T
       if (Math.abs(off) <= o.holeRadius + 1e-9 && !spansAt(gs, px, pz).some((sp) => sp.top > o.above + 1e-6)) note("hole", side, along, [px, pz], undefined, trailY, seen);
       if (trailY === null) continue;
       const top = spansAt(gs, px, pz, trailY + o.headroom)[0];
+      // no ground under the trail's but a bank rising from just over it (a cut wall: a skin's shell whose underside is
+      // within twice the headroom of the trail's ground) is not an edge to fall off; Caldera v2 round 2 listed the NW
+      // trail's uphill banks as "no ground" drops. Ground higher than that over nothing is an overhang over a drop.
+      if (!top && spansAt(gs, px, pz).some((sp) => sp.bottom >= trailY + o.headroom - 1e-6 && sp.bottom <= trailY + 2 * o.headroom + 1e-6)) { banks++; continue; }
       const drop = top ? trailY - top.top : Infinity;
       if (drop > o.maxDrop) {
         note("drop", side, along, [px, pz], Number.isFinite(drop) ? drop : undefined, trailY, seen);
@@ -105,5 +110,5 @@ export function checkTrail(gs: Grid[], pts: number[][], o: TrailCheckOptions): T
     for (const s of line) { const d = Math.hypot(s[0] - c.at[0], s[1] - c.at[1]); if (d < best.d) best = { d, along: s[3] }; }
     if (best.d <= o.holeRadius + 0.6) skinCorners.push({ at: c.at, along: best.along, off: best.d, blocks: c.n });
   }
-  return { length: line[line.length - 1][3], samples: line.length, columns, runs, worstDrop: worst, skinCorners };
+  return { length: line[line.length - 1][3], samples: line.length, columns, runs, worstDrop: worst, banks, skinCorners };
 }

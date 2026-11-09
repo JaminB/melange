@@ -11,7 +11,10 @@
 // inset), so render.camera {when: "play"} holds a pose until the turn is in play (wum.game.turn().phase) and sets it
 // then, and render.shot {requirePlay, afterCamera} answers not ready until the turn plays and the override has been drawn
 // that many frames. render.fireShot arms a pinned camera that is set when the level's mine factory fires and read back
-// `delayMs` later (the mines in flight), once per fire, written as <name>_<n>.png.
+// `delayMs` later (the mines in flight), `perFire` times `everyMs` apart, written as <name>_<n>.png. With `track` the
+// camera follows the fire's first mine (levels::factory::LastFlight: its start, its upward speed and the gravity, so
+// where it is at each shot), `track` world units from it on the pinned pose's own bearing and a third of that over it,
+// so the mine fills the picture instead of a dot over the crater (the Caldera v2 round-2 flight shots).
 #include <windows.h>
 #include <shlobj.h>
 
@@ -46,6 +49,7 @@ namespace fs = std::filesystem;
 const char g_owner = 0;   // the override's owner: Oasis, not a mod
 constexpr int kCleanFrames = 3;   // frames drawn without the mods' primitives before a clean shot is read
 constexpr ULONGLONG kPendingMs = 120000;   // a pose waiting for the turn's play phase is dropped after this
+constexpr double kMaxFireShots = 512;      // render.fireShot's max: a run of 8+ volleys at several shots each in one arming
 
 // Main thread (the RPCs and the Frame event run there).
 struct Pose {
@@ -61,6 +65,8 @@ struct FireShot {
     Pose pose;
     std::string name;
     int delayMs = 500, max = 4, holdFrames = 2, taken = 0;
+    int perFire = 1, everyMs = 250, ofFire = 0;   // shots per fire, apart, and taken of the fire being shot
+    float track = 0;              // world units: follow the fire's first mine from this far (0: the pinned pose)
     uint32_t serial = 0;          // the fire serial it waits past
     uint32_t firing = 0;          // the fire being shot (0: none)
     uint64_t setFrame = 0;        // the frame its camera was set at
@@ -346,11 +352,26 @@ void OnFrame() {
         f.serial = serial;
         f.firing = serial;
         f.setFrame = 0;
+        f.ofFire = 0;
     }
-    if (!f.firing || GetTickCount64() - at < static_cast<ULONGLONG>(f.delayMs)) return;
+    if (!f.firing || GetTickCount64() - at < static_cast<ULONGLONG>(f.delayMs + f.ofFire * f.everyMs)) return;
     if (!f.setFrame) {
-        // the pose, held a few frames: the shot is read once it has been drawn holdFrames times
-        if (render::SetCameraOverride(&g_owner, f.pose.o, f.holdFrames + 30) != render::OverrideResult::Ok) {
+        // the pose, held a few frames: the shot is read once it has been drawn holdFrames times; tracking, the pinned
+        // pose's bearing moved onto where the fire's first mine is now
+        render::CameraOverride o = f.pose.o;
+        levels::factory::Flight fl;
+        if (f.track > 0 && levels::factory::LastFlight(&fl) && fl.serial == f.firing) {
+            // a mine that has come back down past where it started is taken to rest there
+            const float tms = static_cast<float>(GetTickCount64() - fl.at), down = fl.vy > 0 ? 2.f * fl.vy / fl.gravity : 0.f;
+            const float tt = fl.vy > 0 ? (std::min)(tms, down) : tms;
+            const float m[3] = {fl.from[0], fl.from[1] + fl.vy * tt - 0.5f * fl.gravity * tt * tt, fl.from[2]};
+            float dx = o.target[0] - o.pos[0], dz = o.target[2] - o.pos[2];
+            const float l = std::hypot(dx, dz);
+            if (l > 1e-3f) dx /= l, dz /= l; else dx = 0, dz = -1;
+            o.pos[0] = m[0] - dx * f.track, o.pos[1] = m[1] + f.track / 3.f, o.pos[2] = m[2] - dz * f.track;
+            std::memcpy(o.target, m, sizeof m);
+        }
+        if (render::SetCameraOverride(&g_owner, o, f.holdFrames + 30) != render::OverrideResult::Ok) {
             f.lastError = "the camera override was refused (a mod's override is in effect?)";
             f.firing = 0;
             return;
@@ -366,12 +387,18 @@ void OnFrame() {
         f.paths.push_back(path);
         LOG_INFO("[oasis] render.fireShot: %s, %d ms after the factory's fire (frame %llu)", path.c_str(), f.delayMs, static_cast<unsigned long long>(frame));
     } else f.lastError = why;
-    render::ClearCameraOverride(&g_owner);
-    f.firing = 0;
-    if (f.taken >= f.max) f.armed = false;
+    f.setFrame = 0;
+    if (++f.ofFire >= f.perFire || f.taken >= f.max) {
+        render::ClearCameraOverride(&g_owner);
+        f.firing = 0;
+    }
+    if (f.taken >= f.max) {
+        render::ClearCameraOverride(&g_owner);
+        f.armed = false;
+    }
 }
 
-// render.fireShot {pos, target, fov?, name, delayMs?, max?, holdFrames?} | {clear: true} | {} (the state)
+// render.fireShot {pos, target, fov?, name, delayMs?, max?, holdFrames?, perFire?, everyMs?, track?} | {clear: true} | {} (the state)
 void FireShotRpc(const Call& c, Result& r, void*) {
     json::Value p;
     if (!rpc::ParseParams(c, &p, r)) return;
@@ -380,7 +407,8 @@ void FireShotRpc(const Call& c, Result& r, void*) {
         jsonmini::Arr paths;
         for (const std::string& q : f.paths) paths.Str(q);
         jsonmini::Obj o;
-        o.Bool("armed", f.armed).Str("name", f.name).Int("delayMs", f.delayMs).Int("taken", f.taken).Int("max", f.max).Raw("paths", paths.End())
+        o.Bool("armed", f.armed).Str("name", f.name).Int("delayMs", f.delayMs).Int("perFire", f.perFire).Int("everyMs", f.everyMs)
+            .Float("track", f.track).Int("taken", f.taken).Int("max", f.max).Raw("paths", paths.End())
             .UInt("fires", levels::factory::FireSerial(nullptr));
         if (!f.lastError.empty()) o.Str("lastError", f.lastError);
         return o.End();
@@ -398,9 +426,10 @@ void FireShotRpc(const Call& c, Result& r, void*) {
     Pose pose;
     pose.o.up[1] = 1.f;
     std::string name;
-    double fov = 0, delay = 500, max = 4, hold = 2;
+    double fov = 0, delay = 500, max = 4, hold = 2, per = 1, every = 250, track = 0;
     if (!Vec(p, "pos", pose.o.pos, true, r) || !Vec(p, "target", pose.o.target, true, r) || !Num(p, "fov", 5, 150, &fov, r) ||
-        !rpc::Str(p, "name", &name, r) || !Num(p, "delayMs", 0, 10000, &delay, r) || !Num(p, "max", 1, 32, &max, r) || !Num(p, "holdFrames", 1, 60, &hold, r))
+        !rpc::Str(p, "name", &name, r) || !Num(p, "delayMs", 0, 10000, &delay, r) || !Num(p, "max", 1, kMaxFireShots, &max, r) || !Num(p, "holdFrames", 1, 60, &hold, r) ||
+        !Num(p, "perFire", 1, 12, &per, r) || !Num(p, "everyMs", 50, 5000, &every, r) || !Num(p, "track", 0, 4000, &track, r))
         return;
     if (!ValidName(name) || name.size() > 56) {
         Fail(r, rpc::kBadParams, "name: 1-56 of A-Z a-z 0-9 _ - . (the shots are <name>_<n>.png)");
@@ -418,6 +447,9 @@ void FireShotRpc(const Call& c, Result& r, void*) {
     f.delayMs = static_cast<int>(delay);
     f.max = static_cast<int>(max);
     f.holdFrames = static_cast<int>(hold);
+    f.perFire = static_cast<int>(per);
+    f.everyMs = static_cast<int>(every);
+    f.track = static_cast<float>(track);
     f.serial = levels::factory::FireSerial(nullptr);
     r.json = state();
 }

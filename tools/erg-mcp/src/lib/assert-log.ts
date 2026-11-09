@@ -13,6 +13,31 @@ export interface AssertRun {
   counts: Map<string, number>;
   total: number;
   turns?: number;                 // game turns the run saw (a baseline's own count)
+  game?: string;                  // the game it ran in (its Melange build and launch URL's port), so runs of one game pair up
+  from?: string;                  // "saved": read back from the runs file (another erg-mcp process's run)
+}
+
+/** A run as the runs file keeps it (JSON: the counts as [signature, n] pairs). */
+export interface SavedRun { label: string; kind: AssertRun["kind"]; startedAt: number; endedAt?: number; counts: [string, number][]; total: number; turns?: number; game?: string; }
+export const toSaved = (r: AssertRun): SavedRun => ({ label: r.label, kind: r.kind, startedAt: r.startedAt, ...(r.endedAt ? { endedAt: r.endedAt } : {}), counts: [...r.counts],
+  total: r.total, ...(r.turns !== undefined ? { turns: r.turns } : {}), ...(r.game ? { game: r.game } : {}) });
+export const fromSaved = (r: SavedRun): AssertRun => ({ ...r, counts: new Map(r.counts), from: "saved" });
+
+/** The runs of memory and of the runs file together (one per label and start, memory's first), oldest first, the last
+ * `keep`. Every erg-mcp process keeps its own runs in memory: the Caldera v2 round-2 tester ran the vanilla baseline in
+ * one process and the Erg Test in the next, so test_asserts had no pair to compare; the runs file carries them over. */
+export function mergeRuns(mem: AssertRun[], saved: SavedRun[], keep = 24): AssertRun[] {
+  const key = (r: { label: string; startedAt: number }) => `${r.label}@${r.startedAt}`, seen = new Set(mem.map(key));
+  return [...saved.filter((r) => !seen.has(key(r))).map(fromSaved), ...mem].sort((a, b) => a.startedAt - b.startedAt).slice(-keep);
+}
+
+/** The Erg run and the baseline to compare: the last Erg run, and the last baseline of the same game (any game when the
+ * runs do not say), else none. */
+export function pairOf(runs: AssertRun[]): { erg?: AssertRun; base?: AssertRun } {
+  const erg = [...runs].reverse().find((r) => r.kind === "erg");
+  const bases = [...runs].reverse().filter((r) => r.kind === "baseline");
+  const base = bases.find((r) => !erg?.game || !r.game || r.game === erg.game) ?? undefined;
+  return { erg, base };
 }
 
 /** The signature of an engine log line that is an assert or a GL error, else null. */

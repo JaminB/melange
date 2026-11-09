@@ -49,13 +49,13 @@ try {
   }
   await run("open", "open_project", { id: "caldera" });
   if (STEPS.includes("probe")) {
-    await run("probe_test", "test", { teams, timeoutSec: 240 });
+    await run("probe_test", "test", { teams, timeoutSec: 240, suddenDeath: false });
     const r = await run("probe_mines", "game_mine_drop", { trails, spacing: 3, shoulder: 2.6, seconds: 8 });
     for (const t of r.json?.trails ?? []) L("probe trail", W[t.trail].trail, JSON.stringify(t.counts), JSON.stringify((t.notHeld ?? []).slice(0, 12)));
     await run("probe_end", "end_match", {});
   }
   if (STEPS.includes("play")) {
-    await run("test", "test", { teams, timeoutSec: 240 });
+    await run("test", "test", { teams, timeoutSec: 240, suddenDeath: false });
     const pr = await run("spawns", "game_probe", {});
     L("spawns", JSON.stringify((pr.json?.spawns ?? []).map((w) => [w.worm, w.team, w.knotName, w.fromKnot])));
     await run("announce", "game_state", { announceShot: true, prefix: `${P}_t1` });

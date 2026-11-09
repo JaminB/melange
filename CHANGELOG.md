@@ -77,6 +77,15 @@
   `turns`, `fire`), heightfield rules' `exclude`, `excludeMask` and per-corner `edge`, the paint tools' `exclude`,
   build_castle `keepAxes` and `gateLane`, check_flood's per-spawn `escape` and `solve`, the mines' zones in the fire
   records, and set_mine_factory re-checks the placement (docs/erg-mcp.md).
+- Test tools for the Caldera v2 round-2 gaps. `level.test.roundTime {hold}` pauses the round clock for the rest of a
+  Test (again at each turn start), so a long harness run never reaches the scheme's sudden death. `render.fireShot`
+  takes `perFire`, `everyMs` and `track` (the camera follows the fire's first mine in flight) and up to 512 shots.
+  erg-mcp: `test`/`game_play_turns` `suddenDeath: false`; save's projectHash matches the saved project's (object
+  defaults); the climb, blast and `game_shots {clearView}` cameras keep their eye in open air with a clear view;
+  game_mines matches its fire record past the game's last 8; test_asserts compares runs across erg-mcp processes;
+  check_reachability walks each start with its own route zone; columns on a block's edge no longer read as holes and
+  check_trail counts cut banks apart from drops; the region object in every region tool; heightfield_drape
+  `tileOrigin` and `cornersOff` (docs/erg-mcp.md).
 
 
 ## 0.13.0

@@ -137,11 +137,20 @@ try {
 
   // ---- the island: one drape skin over the whole rectangle (the height is terrain.mjs's island()) ----
   const grid = T.relax(T.gridOf(-T.BOX, T.BOX, 1));
+  // trails and branches as check_trail's polylines ([x, y, z]; y on a switchback, so the leg over or under is not taken for it)
+  const trailLines = T.TRAILS.flatMap((t) => [t.pts, ...t.branches.map((b) => b.pts)].map((pl) => pl.map((p) => [round1(p[0]), round1(p[2]), round1(p[1])])));
+  const trailNames = T.TRAILS.flatMap((t) => [t.name, ...t.branches.map((b) => `${t.name}-${b.castle.name}`)]);
+  // round 3: the skin's tiling shifted so the corners where four skin blocks meet keep off the trails (heightfield_drape
+  // cornersOff, 2.5 map units: 4 needs a 13th skin block and the skirt no longer fits); a corner still near one gets its plug
+  // below. CORNERS_OFF=0 keeps the tiling at the min corner.
+  const cornersOff = +(process.env.CORNERS_OFF ?? 2.5);
   const field = { min: [-T.BOX, -T.BOX], max: [T.BOX, T.BOX], centre: [0, 0], floor: T.SEA_FLOOR, voxelSize: VOXEL, grid, clip: [{ x: 0, z: 0, radius: T.CLIP }],
     thickness: THICK, core: false, material: MAT.sand, materials: MATERIALS, maxBlocks: 20,
     // the shore's columns (the skin dips to the sea's zero there) are solid from zero up, so the sea never shows the skin's hollow underside
-    skirtTo: +(process.env.SKIRT_TO ?? 0), skirtTop: +(process.env.SKIRT_TOP ?? 0) };
+    skirtTo: +(process.env.SKIRT_TO ?? 0), skirtTop: +(process.env.SKIRT_TOP ?? 0),
+    ...(cornersOff > 0 ? { cornersOff: { paths: trailLines, distance: cornersOff } } : {}) };
   const plan = await call("heightfield_drape", { ...field, dryRun: true });
+  say("skin tiling", JSON.stringify(plan.json.skin?.tiling ?? null), "meeting corners", JSON.stringify(plan.json.skin?.meetingCorners ?? []));
   say("plan fits", plan.json.fits, "skin", JSON.stringify({ blocks: plan.json.skin?.blocks, cells: plan.json.skin?.cells }), "budget", JSON.stringify(plan.json.budget?.cells), plan.json.why ?? "", JSON.stringify(plan.json.notes ?? []));
   fs.writeFileSync(path.join(OUT, "plan-drape.json"), plan.text);
   if (flag("--plan")) { await call("close", { discard: true }, { soft: true }); throw new Error("--plan: stopped"); }
@@ -154,9 +163,6 @@ try {
     return top;
   };
   const lvl = async () => (await call("describe_level", { limit: 1 })).json.limits;
-  // trails and branches as check_trail's polylines ([x, y, z]; y on a switchback, so the leg over or under is not taken for it)
-  const trailLines = T.TRAILS.flatMap((t) => [t.pts, ...t.branches.map((b) => b.pts)].map((pl) => pl.map((p) => [round1(p[0]), round1(p[2]), round1(p[1])])));
-  const trailNames = T.TRAILS.flatMap((t) => [t.name, ...t.branches.map((b) => `${t.name}-${b.castle.name}`)]);
 
   // ---- the skin's corners: where four draped skin blocks meet, the game lets a worm or a mine through the skin within about 0.4
   // map units of the corner (round 1: both SW worms fell 31 units there, beside Ember; the mine probes at the other three).

@@ -7,7 +7,11 @@
 // message, which ends the turn playing now as the timer running out does (a tester's skip; GameLogic.EndTurn alone only
 // deactivated the worm and the turn ran on to its timer: tried 2026-11-08). fireFactory calls the factory's own turn-start handler
 // from the same tick (levels::factory::FireNow); dropMines makes mines at points in that tick (levels::factory::Mine), to find
-// the ground a mine lands on and the ground it falls through. Only while a Test the game started is playing, offline.
+// the ground a mine lands on and the ground it falls through. roundTime {hold} pauses the round clock
+// (GameLogic.RoundTime.Pause, the message the turn hold sends; TimerLogicEntity then stops counting RoundTimeRemaining)
+// and pauses it again at every turn start while held, so a long harness run never reaches the Quick Game's sudden death
+// (30 minutes: in the Caldera v2 round-2 run it raised the water past the level's cap and set every worm's health to 1).
+// Only while a Test the game started is playing, offline.
 #include <windows.h>
 
 #include <algorithm>
@@ -23,6 +27,7 @@
 #include "core/log.h"
 #include "levels/factory.h"
 #include "levels/probe.h"
+#include "melange/gamestate.h"
 #include "lua/sim/bridge_internal.h"
 #include "melange/levels.h"
 #include "melange/sim.h"
@@ -42,22 +47,40 @@ int g_hook = 0;
 unsigned g_sent = 0;
 int g_fire = -1;                  // a fire to start at the next tick (its count; -1 none); under g_mx
 std::vector<std::array<float, 6>> g_drops;   // mines to make at the next tick (pos, vel); under g_mx
+bool g_roundHeld = false;         // level.test.roundTime {hold: true}; under g_mx
+uint32_t g_heldTurn = UINT32_MAX; // the turn the round clock was last paused in (sim thread)
+unsigned g_pauses = 0;            // pauses sent while held
 
 void OnState(levels::TestState s, const char* key, const char*, void*) {
     using TS = levels::TestState;
     if (s == TS::Playing && key && *key) g_playing = key;
-    else if (s == TS::Ended || s == TS::Failed || s == TS::Idle) g_playing.clear();
+    else if (s == TS::Ended || s == TS::Failed || s == TS::Idle) {
+        g_playing.clear();
+        std::lock_guard lk(g_mx);
+        g_roundHeld = false;
+    }
 }
 
 void OnTick(uint32_t tick, void*) {
     std::deque<std::string> q;
     int fire = -1;
     std::vector<std::array<float, 6>> drops;
+    bool held = false;
     {
         std::lock_guard lk(g_mx);
         q.swap(g_queue);
         std::swap(fire, g_fire);
         drops.swap(g_drops);
+        held = g_roundHeld;
+    }
+    // the round clock held: paused again once in each turn (a level script's turn hold resumes it before its turn starts)
+    if (held && tick % 25 == 0) {
+        gamestate::Snapshot snap;
+        if (gamestate::Read(&snap) && snap.match.inMatch && snap.match.turnsStarted != g_heldTurn) {
+            g_heldTurn = snap.match.turnsStarted;
+            q.push_back("SendMessage('GameLogic.RoundTime.Pause')");
+            ++g_pauses;
+        }
     }
     int made = 0;
     for (const auto& d : drops) made += !levels::factory::Mine(d.data(), d.data() + 3);
@@ -204,6 +227,26 @@ void DropMines(const Call& c, Result& r, void*) {
     r.json = jsonmini::Obj().Bool("queued", true).Int("count", static_cast<int>(drops.size())).UInt("tick", sim::Tick()).End();
 }
 
+// level.test.roundTime {hold: bool}: hold pauses the round clock now and again at each turn start until the Test ends
+// (or hold: false, which resumes it), so the scheme's sudden death never comes; the turn clock runs as before.
+void RoundTime(const Call& c, Result& r, void*) {
+    json::Value p;
+    if (!rpc::ParseParams(c, &p, r)) return;
+    const json::Value* h = p.Get("hold");
+    if (!h || !h->IsBool()) {
+        Fail(r, rpc::kBadParams, "hold must be true or false");
+        return;
+    }
+    if (!Ready(r)) return;
+    {
+        std::lock_guard lk(g_mx);
+        g_roundHeld = h->boolean;
+        if (!h->boolean) g_queue.push_back("SendMessage('GameLogic.RoundTime.Resume')");
+    }
+    if (h->boolean) g_heldTurn = UINT32_MAX;
+    r.json = jsonmini::Obj().Bool("held", h->boolean).UInt("pausesSent", g_pauses).UInt("tick", sim::Tick()).End();
+}
+
 // level.test.probe {}: the Test probe (worm spawns at turn 1, deaths with their causes, explosions) and the mine
 // factory's fires (each mine's spawn and rest) and its last on-demand trigger. Main thread.
 void Probe(const Call&, Result& r, void*) {
@@ -219,5 +262,6 @@ void InstallLevelTestOps() {
     AddMethod("level.test.fireFactory", &FireFactory, nullptr, kRpcMutating | kRpcGameOnly);
     AddMethod("level.test.dropMines", &DropMines, nullptr, kRpcMutating | kRpcGameOnly);
     AddMethod("level.test.probe", &Probe, nullptr, kRpcGameOnly);
+    AddMethod("level.test.roundTime", &RoundTime, nullptr, kRpcMutating | kRpcGameOnly);
 }
 }  // namespace melange::oasis::providers
