@@ -9,6 +9,7 @@ import { classifyDetail } from "../lib/sim-fingerprint";
 import { kindOf, scaleOf } from "./scenery";
 import { tidy } from "../lib/voxel";
 import { hex, luminance, sceneryMesh } from "../lib/scenery-mesh";
+import { drawCheck } from "../lib/scatter";
 import { ToolError, type Tool } from "../registry";
 import type { Session } from "../session";
 
@@ -20,7 +21,7 @@ const CATEGORY: [string, RegExp][] = [
 export const categoryOf = (text: string) => CATEGORY.filter(([, re]) => re.test(text)).map(([c]) => c);
 
 const sceneCache = new WeakMap<object, Map<string, Promise<Scene>>>();
-async function loadScene(s: Session, key: string): Promise<Scene> {
+export async function loadScene(s: Session, key: string): Promise<Scene> {
   const c = await s.client();
   let per = sceneCache.get(c);
   if (!per) sceneCache.set(c, (per = new Map()));
@@ -33,7 +34,7 @@ const r2 = (v: number) => Math.round(v * 100) / 100;
 export const tools: Tool[] = [
   {
     name: "scenery_catalog",
-    description: "The base levels' sim-neutral pieces for decoration, by resource: scenery meshes, lights, emitters and sounds whose names carry no engine tag but VISIBLE (sim_fingerprint's visual channels), each with its base and theme, role, kinds (names without tags and numbers), count, an example detail (id, name, scale, rot) for copy_base_scenery, the preview mesh's size in map units (`meshSize`, unscaled, and `size` at the example's scale; null where the server serves no mesh), its `albedo` (#rrggbb, the average of its texture) and `luminance` (0-1) and `category` guessed from its names and resource (rock, flora, fx; empty when nothing matched). Default: every game base; or `bases`, `themes`. Filters: `roles`, `category`, `search`. `sizes: false` skips the mesh fetches. Read-only; works with no project open.",
+    description: "The base levels' sim-neutral pieces for decoration, by resource: scenery meshes, lights, emitters and sounds whose names carry no engine tag but VISIBLE (sim_fingerprint's visual channels), each with its base and theme, role, kinds (names without tags and numbers), count, an example detail (id, name, scale, rot) for copy_base_scenery, the preview mesh's size in map units (`meshSize`, unscaled, and `size` at the example's scale; null where the server serves no mesh), its `albedo` (#rrggbb, the average of its texture) and `luminance` (0-1) and `category` guessed from its names and resource (rock, flora, fx; empty when nothing matched) and, with a project open, `inLevel`: whether the piece is known to draw in a level of the open level's theme (another theme's piece may not draw or may draw as something else; lib/scatter.ts DRAW_CHECKS holds what Tests showed). Default: every game base; or `bases`, `themes`. Filters: `roles`, `category`, `search`. `sizes: false` skips the mesh fetches. Read-only; works with no project open.",
     inputSchema: { type: "object", additionalProperties: false, properties: {
       bases: { type: "array", items: { type: "string" }, minItems: 1, maxItems: 80, description: "Base keys (list_bases); default every game base (or those of `themes`)." },
       themes: { type: "array", items: { type: "string" }, minItems: 1, maxItems: 11, description: "Only bases of these themes." },
@@ -83,6 +84,7 @@ export const tools: Tool[] = [
       }
       out = out.slice(0, a.limit ?? 400);
       const answer = [];
+      const levelTheme = s.project?.store.scene.databank.theme ?? null;
       for (const { r, category } of out) {
         let meshSize: number[] | null = null;
         if (a.sizes !== false && (r.role === "scenery" || r.sim)) {
@@ -93,7 +95,7 @@ export const tools: Tool[] = [
         const al = lum.get(r.resource.toLowerCase());
         const sc = r.example.scale;
         answer.push({ resource: r.resource, base: r.base, theme: r.theme, role: r.role, ...(r.sim ? { sim: r.sim } : {}), category, kinds: [...r.kinds].slice(0, 6), names: [...r.names].slice(0, 4), count: r.count,
-          meshSize, ...(al ? { albedo: al.albedo, luminance: al.luminance } : {}), size: meshSize ? meshSize.map((v, i) => r2(v * Math.abs(sc[i]))) : null,
+          meshSize, ...(al ? { albedo: al.albedo, luminance: al.luminance } : {}), ...(levelTheme && r.role === "scenery" ? { inLevel: drawCheck(levelTheme, r.theme, r.resource) } : {}), size: meshSize ? meshSize.map((v, i) => r2(v * Math.abs(sc[i]))) : null,
           example: { id: r.example.id, name: r.example.name, at: tidy(new Frames(r.scene).detailWorld(r.example)), rot: tidy(r.example.rot.map((v) => v * DEG) as Vec3), scale: tidy(sc) } });
       }
       return { bases: bases.length, resources: rows.size, answered: answer.length, units: "map", list: answer, ...(failed.length ? { failed } : {}),

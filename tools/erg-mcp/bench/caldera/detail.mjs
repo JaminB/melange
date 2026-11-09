@@ -39,18 +39,15 @@ export const PASSES = [
   { name: "rock", run: rockPass },
 ];
 
-// build.mjs placed its four Camelot flags with copy_base_scenery's default WORLD units though it meant map units (tower tops at
-// map (53.7, 31, 6.4) and the like), so they stand 20 times too close to the origin, inside the volcano, and show nowhere. This pass
-// puts each where build.mjs meant (the same numbers read as map units); copies are visual-only, so the fingerprint cannot change.
+// build.mjs places four Camelot flags (CAMELOT16, CAMELOT19 of Multi.NiceToSiege) for the castles' towers, in world units though
+// its numbers are map units, so they stand inside the volcano and show nowhere; round 1 moved them to the tower tops, where
+// the game drew them as purple plant pods (another theme's resources resolve to something else in this PREHISTORIC level).
+// Round 3 removes them (scenery copies: visual only, the fingerprint cannot change).
 async function flagsPass(ctx) {
   const { call } = ctx;
   const list = (await call("list_scenery", { role: "scenery", search: "flag" })).json.details.filter((d) => !d.base && /^CAMELOT(16|19)$/.test(d.resource));
-  const bad = list.filter((d) => Math.max(...d.at.map(Math.abs)) < 200);          // world units under 10 map units from the origin: the 20x slip
-  if (!bad.length) return { fixed: 0 };
-  await call("remove_scenery", { ids: bad.map((d) => d.id) });
-  const copies = bad.map((d) => ({ resource: d.resource, pos: d.at, rot: d.rot, scale: d.scale[0] }));
-  await call("copy_base_scenery", { base: "Multi.NiceToSiege", allowOtherTheme: true, units: "map", copies });
-  return { fixed: bad.length };
+  if (list.length) await call("remove_scenery", { ids: list.map((d) => d.id) });
+  return { removed: list.length };
 }
 
 const { call, stop, log } = await startServer();
