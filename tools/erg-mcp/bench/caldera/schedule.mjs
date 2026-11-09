@@ -10,7 +10,9 @@
 //   over it, and the launchers stand on the crater's walls over the floor.
 // Between those the level is linear in the round, and the round is what script.lua reads, so every machine floods alike. The
 // announcements are built from the same numbers: one a round at most, in player terms (the castles' names, rounds until the
-// shore castles drown).
+// shore castles drown), each at most MSG_MAX characters (v2 round 5: the game's banner is one line, and round 4's 120-character
+// turn-1 text was cut off at about 60).
+export const MSG_MAX = 46;
 export const ROUND_START = 3, ROUND_SHORE = 10, ROUND_F = 15, ROUND_CAP = 16, CAP_BELOW = 6, DRY_MARGIN = 1.55, OWN_TURNS = 3;
 // the round of a worm's n-th own turn (worm p of team t)
 export const ownTurnRound = (team, place, n, teams, wormsPerTeam) => Math.ceil((team + 1 + teams * place + teams * wormsPerTeam * (n - 1)) / teams);
@@ -37,20 +39,27 @@ export function schedule({ startWorld, spawns, teams, wormsPerTeam, F, craterFlo
   const add = (r, t) => { if (r >= 1) (msg[r] ??= []).push(t); };
   const and = (l) => (l.length > 1 ? l.slice(0, -1).join(", ") + " and " + l[l.length - 1] : l[0]);
   const rise = levels.findIndex((w) => w > startWorld) + 1;
-  add(1, "The volcano rumbles: mines fall from the crater. The sea starts rising in " + (rise - 1) + " rounds. Take the switchbacks up the volcano!");
+  add(1, "Mines erupt! The sea rises in " + (rise - 1) + " rounds.");
   add(rise - 1, "The sea rises next round!");
-  add(rise, "The sea is rising. Climb the trails!");
+  add(rise, "The sea is rising. Climb the switchbacks!");
   const byRound = {};
   for (const c of castles) (byRound[reach(c.top)] ??= []).push(c.name);
-  for (const [r, names] of Object.entries(byRound)) { add(+r - 1, and(names) + (names.length > 1 ? " fall next round!" : " falls next round!")); add(+r, "The sea reaches the " + and(names) + " walls."); }
+  // the shore castles together as "the shore castles" (four names do not fit on the banner)
   const shore = castles.filter((c) => c.shore), shoreRound = Math.max(...shore.map((c) => reach(c.top)));
+  const nameOf = (names) => (names.length > 2 && names.every((n) => shore.some((c) => c.name === n)) ? "The shore castles" : and(names));
+  for (const [r, names] of Object.entries(byRound)) {
+    const who = nameOf(names), many = names.length > 1;
+    add(+r - 1, who + (many ? " flood next round!" : " floods next round!"));
+    add(+r, "The sea reaches " + (who === "The shore castles" ? "the shore castles" : who) + (many ? "' walls." : "'s walls."));
+  }
   for (const n of [3, 2]) add(shoreRound - n, n + " rounds until the shore castles drown!");
   add(levels.findIndex((w) => w >= cap) + 1, "The sea has stopped rising. Hold the volcano!");
   const messages = {};
   for (const [r, l] of Object.entries(msg)) {
-    // the countdown and the 'falls next' go together; at most 160 bytes
+    // the countdown and the 'floods next' go together while they fit on the banner, else the first alone
     let t = l.join(" ");
-    if (Buffer.byteLength(t) > 160) t = l[0];
+    if (t.length > MSG_MAX) t = l[0];
+    if (t.length > MSG_MAX) throw new Error(`announcement for round ${r} is ${t.length} characters (at most ${MSG_MAX}): ${t}`);
     messages[r] = t;
   }
   return { levels, messages, cap, S: lowest, F, dryRound, dryCap, caps: due, reach: Object.fromEntries(castles.map((c) => [c.name, reach(c.top)])), shoreRound, teams, wormsPerTeam };

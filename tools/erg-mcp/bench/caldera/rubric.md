@@ -208,3 +208,43 @@ Checks:
   warnings beyond the factory's known shell note.
 - Cells 63 126 of 65 535 (43 of 64 blocks). 205 MCP calls. Two builds give the same projectHash (4cb20bb4...) and a
   byte-identical pack.
+
+## v2 round 5 (builder's notes)
+
+The round-4 critique applied (`terrain.mjs`, `build.mjs`, `schedule.mjs`):
+
+- **Summit legs**: every trail's last leg is 6.6 wide (`TRAIL.top`, 3.3 half width) past its landing. It is widened on its
+  uphill side only, so the leg under it in the hairpin's V keeps its room. The leg ends on a level summit terrace about 9
+  across (`TRAIL.summit`, 4.4 half width).
+- **Summit walls**: a low wall of dark basalt runs along the downhill edge of each last leg. It starts past the hairpin's V,
+  where the leg under it no longer lies beside the wall's spot, and runs round the terrace from the downhill side, over the
+  far end, to the uphill side. It is built from 2-unit voxels, one voxel thick, with its inner face on the bed's edge and a
+  foot 8 deep down the cut bank. The wall's top stands about 1.0-2.2 over the bed. 1-unit walls cost 2 400 cells and left
+  slots under the wall that check_trail called traps. Round 4's SW summit leg had a 5-wide bed between drops, and a worm
+  walked off it from 63 to 43.5.
+- **Trail material**: path02 (9), a warm brown worn-path texture. In the round-4 game, GreySlateFloor came out pale
+  off-white with green blotches, close to the white castle stone.
+- **Banks**: the banks beside the beds, within 4 past the level shoulder, take three 3 x 3 smoothing passes after relax()
+  (`smoothBanks`), then relax() again.
+- **Launcher pad at (9.6, -21.4)** (the tester's "south" pad): two voxels were added on its west side, their top one voxel
+  over the lip. A catch slab of 1-unit voxels sits a unit under the dish's west half.
+- **Leak plugs**: 2-unit voxels (3 x 2 x 3), each under the lowest ground of its footprint. The plug at (-44.1, -34.3) was
+  rebuilt, and plugs were added under round 4's trail-probe misses at (54.44, -58.17), (36.95, 34.75) and (-45.21, -34.45).
+  The probes' y is 8 over the ground, so query_ground atOrBelow finds the trail's surface.
+- **Announcements**: at most 46 characters (`MSG_MAX`), so each fits the banner. Turn 1 says "Mines erupt! The sea rises in 3
+  rounds.", and the four shore castles are called "the shore castles".
+
+Checks:
+
+- `check_trail`: no trap or hole. The centreline walk is clean on all four team trails.
+- SW with the full gate (`TRAIL_GATE=SW`): it **fails**. The 1.5-left line has 4 refused rises, all on leg 4. The 1.5-right
+  line has 7: one at the castle exit (along 34), two on leg 2 (85, 88) and four on leg 4 (146-150). Each is a rise of
+  0.50-0.63 over half a unit (45-52 degrees).
+- **Why SW still fails**: on the upper cone the trail climbs about 1.3 a unit of radius, so stacked legs need about 15
+  between centrelines for two level 5-wide beds and a bank of 2.9 a unit between them. Near each hairpin they are closer.
+  Things tried with no gain on SW, or a loss on another trail: shoulder 1.5 or 2.5, no berm, both relax() pin rules, no
+  easing, an even climb, a 0.42 design grade, leg spacing 10.2 or 10.8, and 3 or 4 legs.
+- Trail-only at 38 degrees: 16 of 16 team spawns reach their own rim end. Flood PASS, and the cap of 860 sits under the
+  launcher pads. No detached pieces. The save warns only the factory's known shell note.
+- Cells 63 968 of 65 535 (59 of 64 blocks). 228 MCP calls. Two builds give the same projectHash (42f8d388...) and a
+  byte-identical pack.

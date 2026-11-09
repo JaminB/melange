@@ -11,17 +11,17 @@
 local LEVEL = { [1] = 20, [2] = 20, [3] = 20, [4] = 30, [5] = 40, [6] = 55, [7] = 95, [8] = 140, [9] = 185, [10] = 230, [11] = 340, [12] = 450, [13] = 560, [14] = 670, [15] = 780, [16] = 860, [17] = 860 }
 local CAP = 860
 local MSG = {
-  [1] = "The volcano rumbles: mines fall from the crater. The sea starts rising in 3 rounds. Take the switchbacks up the volcano!",
+  [1] = "Mines erupt! The sea rises in 3 rounds.",
   [3] = "The sea rises next round!",
-  [4] = "The sea is rising. Climb the trails!",
+  [4] = "The sea is rising. Climb the switchbacks!",
   [7] = "3 rounds until the shore castles drown!",
   [8] = "2 rounds until the shore castles drown!",
-  [9] = "Strand, Ashgate, Harbour and Seawall fall next round!",
-  [10] = "The sea reaches the Strand, Ashgate, Harbour and Seawall walls.",
-  [12] = "Cinder falls next round!",
-  [13] = "The sea reaches the Cinder walls. Ember falls next round!",
-  [14] = "The sea reaches the Ember walls. Highwatch falls next round!",
-  [15] = "The sea reaches the Highwatch walls.",
+  [9] = "The shore castles flood next round!",
+  [10] = "The sea reaches the shore castles' walls.",
+  [12] = "Cinder floods next round!",
+  [13] = "The sea reaches Cinder's walls.",
+  [14] = "The sea reaches Ember's walls.",
+  [15] = "The sea reaches Highwatch's walls.",
   [16] = "The sea has stopped rising. Hold the volcano!"
 }
 local lastRound = 0

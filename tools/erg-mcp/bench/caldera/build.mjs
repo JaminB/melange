@@ -24,6 +24,13 @@
 // flagstone (GreySlateFloor: the pale dinoegg02 read as snow up close) with the dark kerb line kept; the launcher pads of 2-unit voxels
 // (the pads and plugs that let mines through were all 1.5-unit blocks, docs/erg-mcp.md) and the leak plugs put in after the castles,
 // so the NE one comes up under the castle block's top; per-castle camera poses from the sea (out/castles.json) that clear the cone.
+// v2 round 5: the trails' bed in path02 (a warm brown path texture: GreySlateFloor came out pale off-white with green blotches in the game,
+// close to the white castle stone, game_material_shots); the last leg of every trail 6.6 wide (widened on its uphill side) to a level
+// summit terrace about 9 across, with a low wall (1 over the bed) of dark basalt on its downhill edge and round the terrace (round 4's SW
+// summit leg was a 5-wide bed between drops where a worm walked off); the banks beside the beds smoothed (the sheared teeth along the bed
+// edges up close); the north launcher pad (by the tester's names the south one, at 9.6, -21.4) widened west with a higher rim and a
+// catch slab under its dish (3 mines in 40 volleys left it to the west); the leak plugs in 2-unit voxels under the trail's own surface,
+// with round 4's three trail probe misses; the announcements cut to one banner line (schedule.mjs MSG_MAX).
 // Default game dir is testenv B (the tester's).
 //
 //   tools\node\node.exe tools\erg-mcp\bench\caldera\build.mjs [--out <dir>] [--plan] [--trails] [--no-export] [--keep-mod] [--no-scenery]
@@ -61,8 +68,9 @@ const WORM_W = 0.6;                               // a worm's body, map units (c
 // the crater walls and the plug), Metal 53.
 // dinoegg02 26 (pale cream, cracked like flagstones: the trails' bed in v2 round 3, far paler than path01's yellow, the beach sand's hue),
 // GreySlateFloor 19 (a warm grey slate floor of laid flags: the trails' bed since v2 round 4, darker than dinoegg02 and still far paler than the basalt)
-const MAT = { grass: 0, olive: 2, rock: 4, grey: 6, path: 8, sand: 10, stone: 12, flint: 16, slate: 19, flag: 26, chipped: 27, ash: 49, magma: 50, hot: 51, metal: 53 };
-const TRAIL_MAT = +(process.env.TRAIL_MAT ?? MAT.slate);
+// path02 9 (warm brown worn path, #a26b2a: the trails' bed since v2 round 5)
+const MAT = { grass: 0, olive: 2, rock: 4, grey: 6, path: 8, path2: 9, sand: 10, stone: 12, flint: 16, slate: 19, flag: 26, chipped: 27, ash: 49, magma: 50, hot: 51, metal: 53 };
+const TRAIL_MAT = +(process.env.TRAIL_MAT ?? MAT.path2);
 const VOXEL = +(process.env.VOXEL || 2.5);       // map units per voxel of the island's skin
 const THICK = +(process.env.THICK || 3);         // voxels of skin (hollow under it: a fifth of the cells of a solid core)
 const SCALE = T.CASTLE_SCALE;                    // voxels of the castle blocks (CASTLE_SCALE, read by terrain.mjs: the courts' height depends on it)
@@ -157,7 +165,7 @@ try {
   say("cells before", JSON.stringify(d0.json.limits.voxelCells));
 
   // ---- the island: one drape skin over the whole rectangle (the height is terrain.mjs's island()) ----
-  const grid = T.relax(T.soften(T.gridOf(-T.BOX, T.BOX, 1)));
+  const grid = T.smoothBanks(T.relax(T.soften(T.gridOf(-T.BOX, T.BOX, 1))));
   // trails and branches as check_trail's polylines ([x, y, z]; y on a switchback, so the leg over or under is not taken for it)
   const trailLines = T.TRAILS.flatMap((t) => [t.pts, ...t.branches.map((b) => b.pts)].map((pl) => pl.map((p) => [round1(p[0]), round1(p[2]), round1(p[1])])));
   const trailNames = T.TRAILS.flatMap((t) => [t.name, ...t.branches.map((b) => `${t.name}-${b.castle.name}`)]);
@@ -269,19 +277,65 @@ try {
   // quarter unit under the ground there, so whatever goes through it lands on them. (v2 round 4) after the castles: (44.7, -70.44) is
   // the top of a castle block at 10.5 over the skin at 4.5 (round 3's plug went under the skin and caught nothing), so its plug now
   // comes up under that top; and the round-3 misses (54.44, -58.17) and (-44.1, -34.3), skin cells sheared across themselves
-  const LEAKS = (process.env.LEAKS ?? "44.7,-70.44;58.97,-60.73;54.44,-58.17;-44.1,-34.3").split(";").filter(Boolean).map((q) => q.split(",").map(Number));
+  // (v2 round 5) in 2-unit voxels (3 x 2 x 3: 6 x 4 x 6 map; the 1.5-unit blocks were the ones that let mines through, the 2-unit pads held),
+  // and round 4's trail probe misses [x, z, y]: y is the trail's height there, so the plug goes under the surface at or below it (a
+  // switchback's legs lie over each other), not under the highest ground at the point
+  const LEAKS = (process.env.LEAKS ?? "44.7,-70.44;58.97,-60.73;54.44,-58.17,18.39;-44.1,-34.3;36.95,34.75,57.73;-45.21,-34.45,37.39").split(";").filter(Boolean).map((q) => q.split(",").map(Number));
   const leakPlugs = [];
-  for (const [lx, lz] of LEAKS) {
-    // (v2 round 4) under the lowest ground over its 4 x 4 footprint (round 3's plugs, set by the middle, poked out of a sloping skin),
+  const surfAt = async (x, z, yHint) => {
+    if (yHint === undefined) return groundOf(x, z);
+    const q = await call("query_ground", { x: round2(x), z: round2(z), units: "map", mode: "atOrBelow", y: yHint + 1 }, { soft: true });
+    const y = q.json?.standOn?.map;
+    return typeof y === "number" ? y : groundOf(x, z);
+  };
+  for (const [lx, lz, ly] of LEAKS) {
+    // (v2 round 4) under the lowest ground over its footprint (round 3's plugs, set by the middle, poked out of a sloping skin),
     // or on a castle (its block's top over the skin) under the top at the point
     const gs = [];
-    for (const [dx, dz] of [[-2, -2], [2, -2], [-2, 2], [2, 2]]) gs.push(await groundOf(lx + dx, lz + dz));
+    for (const [dx, dz] of [[-3, -3], [3, -3], [-3, 3], [3, 3]]) gs.push(await surfAt(lx + dx, lz + dz, ly));
     const onCastle = T.CASTLES.some((c) => T.footDist(c, lx, lz, 0) < 1);
-    const top = await groundOf(lx, lz), y0 = Math.floor((onCastle ? top : Math.min(top, ...gs)) - 0.25) - 3;
-    const r = await call("add_block", { size: [4, 3, 4], scale: 1, at: [lx, y0, lz], units: "map", fill: "solid", material: MAT.ash }, { soft: true });
-    leakPlugs.push({ at: [lx, lz], skin: round2(top), plugTop: y0 + 3, block: r.json?.name ?? r.text.slice(0, 160) });
+    const top = await surfAt(lx, lz, ly), y0 = round1((onCastle ? top : Math.min(top, ...gs)) - 0.25 - 4);
+    const r = await call("add_block", { size: [3, 2, 3], scale: 2, at: [lx, y0, lz], units: "map", fill: "solid", material: MAT.ash }, { soft: true });
+    leakPlugs.push({ at: [lx, lz], trailY: ly ?? null, skin: round2(top), plugTop: round1(y0 + 4), block: r.json?.name ?? r.text.slice(0, 160) });
   }
   say("leak plugs", JSON.stringify(leakPlugs));
+
+  // ---- (v2 round 5) the summit walls: a low wall of dark basalt, one 2-unit voxel thick and about 1 over the bed, along the downhill edge
+  // of every trail's last leg from past its landing (its inner face on the bed's edge) and on round the summit terrace from the downhill
+  // side over the far end to the uphill side, so a worm on the top leg or the terrace cannot walk off it (round 4: a worm walked off the
+  // SW summit leg, 63 to 43.5). Its foot runs SUMMIT_FOUND down the cut bank's drop, so no wall hangs over a slot a worm falls into (round 5's
+  // first walls, 1-unit voxels with a 3-unit foot, left two such slots on the NW that check_trail named traps, and cost 2 400 cells:
+  // in 2-unit voxels the four cost about 200, and the wall's top stands 0.6-1.9 over the bed, out/summit-walls.json). SUMMIT_WALLS=0
+  // leaves them out ----
+  const WSCALE = +(process.env.SUMMIT_SCALE ?? 2), WALL_OFF = +(process.env.WALL_OFF ?? WSCALE / 2);
+  const summitWalls = [];
+  if (+(process.env.SUMMIT_WALLS ?? 1)) {
+    const plans = T.TRAILS.map((t) => {
+      const iL = t.pinAt[t.pinAt.length - 1], n = t.pts.length, end = t.pts[n - 1], a = t.pts[iL];
+      const L = Math.hypot(end[0] - a[0], end[1] - a[1]), d = [(end[0] - a[0]) / L, (end[1] - a[1]) / L];
+      let nd = [-d[1], d[0]];
+      const m = t.pts[Math.round((iL + n - 1) / 2)];
+      if (T.islandBase(m[0] + nd[0] * 5, m[1] + nd[1] * 5) > T.islandBase(m[0] - nd[0] * 5, m[1] - nd[1] * 5)) nd = [-nd[0], -nd[1]];
+      const base = (y) => round1(y - 1 - 1.5), pts = [];
+      // the wall starts past the last point whose wall spot stands on or beside a lower leg (the hairpin's V: round 5's first build put
+      // the SE wall's foot on the leg under it, a 4-high step on that leg's centreline)
+      const spot = (p) => { const o = T.TRAIL.bed + (p[3] ?? 0) + WALL_OFF; return [p[0] + nd[0] * o, p[1] + nd[1] * o]; };
+      const lower = [...t.pts.slice(0, iL - 1), ...t.branches.flatMap((b) => b.pts)];
+      let i0 = iL + T.TRAIL.flat + 3;
+      for (let i = i0; i < n - 4; i++) { const [qx, qz] = spot(t.pts[i]); if (lower.some((q) => Math.hypot(q[0] - qx, q[1] - qz) < T.TRAIL.bed + 2.5)) i0 = i + 1; }
+      for (let i = i0; i < n - 4; i += 3) { const p = t.pts[i], [qx, qz] = spot(p); pts.push([round1(qx), base(p[2]), round1(qz)]); }
+      const R = T.TRAIL.summit + WALL_OFF;
+      for (let k = 0; k <= 6; k++) { const g = Math.PI * k / 6, v = [nd[0] * Math.cos(g) + d[0] * Math.sin(g), nd[1] * Math.cos(g) + d[1] * Math.sin(g)]; pts.push([round1(end[0] + v[0] * R), base(end[2]), round1(end[1] + v[1] * R)]); }
+      return { trail: t.name, from: i0, of: n - 1 - iL, points: pts };
+    });
+    for (const pl of plans) {
+      const w = await call("build_wall", { points: pl.points, height: 2.5, thickness: WSCALE, crenellations: false, foundation: +(process.env.SUMMIT_FOUND ?? 8), material: MAT.ash,
+        place: "new", blockScale: WSCALE, packing: "fit", maxBlocks: +(process.env.SUMMIT_WALL_BLOCKS ?? 3), units: "map" }, { soft: true });
+      summitWalls.push({ trail: pl.trail, scale: WSCALE, points: pl.points.length, from: pl.from, frames: (w.json?.newBlocks ?? []).map((q) => q.id), cells: w.json?.cells?.newBlocks ?? null, err: w.err ? w.text.slice(0, 200) : undefined });
+    }
+    fs.writeFileSync(path.join(OUT, "summit-walls.json"), JSON.stringify(plans, null, 1));
+  }
+  say("summit walls built", JSON.stringify(summitWalls));
   const dc = await lvl();
   say("cells after castles", JSON.stringify(dc.voxelCells), "blocks", JSON.stringify(dc.newFrames));
 
@@ -329,6 +383,15 @@ try {
     const pad = await call("add_block", { size: [PN, ny + 1, PN], scale: PS, at: [lx, bottom, lz], units: "map", fill: "solid", material: MAT.hot }, { soft: true });
     const lip = pad.err ? null : await call("fill_box_raw", { frame: pad.json.frameId, state: "empty", units: "grid", min: [1, ny, 1], max: [PN - 1, ny + 1, PN - 1] }, { soft: true });
     say("launcher pad", lx, lz, "ground", round1(Math.min(...gs)), "-", round1(Math.max(...gs)), pad.err ? pad.text.slice(0, 200) : brief(pad, 160), "lip", lip ? brief(lip, 120) : "-");
+    // (v2 round 5) the pad whose mines leaked west in round 4 (3 of 40 volleys' mines left the pad at 9.6, -21.4 by its west edge, to the
+    // crater floor at 43): 2 voxels more on the west, their top one voxel over the lip (a rim 4 over the dish there), and a catch slab of
+    // 1-unit voxels a unit under the dish's floor over its west half, so a mine that goes through the dish lands on it
+    if (!pad.err && T.pointAt(rho, th)[0] > 0 && T.pointAt(rho, th)[1] < -15) {
+      const dish = bottom + ny * PS, wx = round1(lx - PN * PS / 2 - PS);
+      const ext = await call("add_block", { size: [2, ny + 2, PN], scale: PS, at: [wx, bottom, lz], units: "map", fill: "solid", material: MAT.hot }, { soft: true });
+      const cat = await call("add_block", { size: [4, 1, 6], scale: 1, at: [round1(lx - 1.5), round1(dish - 2), lz], units: "map", fill: "solid", material: MAT.hot }, { soft: true });
+      say("pad west rim", wx, ext.err ? ext.text.slice(0, 200) : brief(ext, 200), "catch slab", cat.err ? cat.text.slice(0, 200) : brief(cat, 200));
+    }
     LAUNCHERS.push([lx, lz]);
   }
   say("factory settings", brief(await call("set_mine_factory", { everyNTurns: +(process.env.VOLLEY_EVERY || 3), schemeMines: false, keepKnot: true, launchHeight: +(process.env.LAUNCH_H || 14), launchRadius: LAUNCH_R,
@@ -347,7 +410,10 @@ try {
   // ---- floating bits: a rotated castle's merlon can end up joined to nothing but a corner; check_islets finds them and each is
   // emptied out of its block (fill_box_raw over the piece's box) ----
   const isl = await call("check_islets", {}, { soft: true });
+  // (v2 round 5) never a summit wall's own frames: a wall over a cut bank's drop stands on the bed's edge, joined to the skin only there
+  const wallFrames = new Set(summitWalls.flatMap((w) => w.frames ?? []));
   for (const pc of (isl.json?.list ?? []).filter((q) => q.debris && q.frames?.length)) {
+    if (pc.frames.some((fr) => wallFrames.has(fr))) { say("debris kept (a summit wall)", JSON.stringify(pc.min), JSON.stringify(pc.max), pc.frames.join(",")); continue; }
     for (const fr of pc.frames) say("debris", JSON.stringify(pc.min), JSON.stringify(pc.max), "frame", fr, brief(await call("fill_box_raw", { frame: fr, state: "empty", units: "map", min: pc.min.map((v) => v - 0.5), max: pc.max.map((v) => v + 0.5) }, { soft: true }), 160));
   }
 
@@ -428,8 +494,11 @@ try {
     const hp = t.col.hairpins;
     for (let j = 1; j < hp.length; j++) {
       const a = hp[j - 1], b = hp[j];
+      // (v2 round 5) the last leg's middle and end from the trail's own points (its line moved uphill when it widened): the end is the
+      // middle of the summit terrace
+      if (j === hp.length - 1) { const iL = t.pinAt[t.pinAt.length - 1], m = t.pts[Math.round((iL + t.pts.length - 1) / 2)]; push(m[0], m[1], m[2]); push(t.end[0], t.end[1], t.end[2]); continue; }
       push((a[0] + b[0]) / 2, (a[1] + b[1]) / 2);
-      push(b[0], b[1], j === hp.length - 1 ? t.end[2] : t.hairpins[j - 1]?.[2]);
+      push(b[0], b[1], t.hairpins[j - 1]?.[2]);
     }
     // each spawn's own route: its lead-in (the spot, the court's middle when the spot is behind it, the out gate, the point outside
     // it) and then the trail from its first leg
@@ -471,9 +540,10 @@ try {
   // (v2 round 4) on the four team trails the centreline walk is the gate (the tester steers the centreline); the walks 1.5 to either
   // side are logged: where two legs stack on the steep upper cone the bank between them leans into the edge of the lower bed (relax()
   // has no room for the step at 2.9 a unit), rises of 0.5-0.7 over half a unit there. TRAIL_GATE=all fails on any line, as round 3.
-  const gateAll = process.env.TRAIL_GATE === "all", team = new Set(T.TRAILS.map((t) => t.name));
+  // (v2 round 5) TRAIL_GATE=SW,NE (trail names) is the full gate on those trails only
+  const gateAll = process.env.TRAIL_GATE === "all", team = new Set(T.TRAILS.map((t) => t.name)), gateOn = new Set((process.env.TRAIL_GATE ?? "").split(",").filter(Boolean));
   const trailFails = (tc.json?.trails ?? []).filter((t) => (t.drops?.traps ?? 0) > 0 ||
-    (t.walk ?? []).some((w) => !w.ok && (gateAll || (w.offset === 0 && team.has(t.name)))));
+    (t.walk ?? []).some((w) => !w.ok && (gateAll || gateOn.has(t.name) || (w.offset === 0 && team.has(t.name)))));
   say("trail walks", JSON.stringify((tc.json?.trails ?? []).map((t) => [t.name, (t.walk ?? []).map((w) => [w.offset, w.blockedCount ?? 0])])));
   if (trailFails.length && !process.env.TRAIL_SOFT) throw new Error(`check_trail: ${trailFails.map((t) => `${t.name}: ${t.summary}`).join("; ")} (TRAIL_SOFT=1 to build anyway)`);
   say("waypoints", JSON.stringify(waypoints.map((w) => ({ team: w.team, castle: w.castle, n: w.waypoints.length, summit: w.summit }))));
@@ -529,6 +599,11 @@ try {
       return [`close-trail-${t.name}`, "render_view", { pos: [round1(h[0] + c[0] * 45), round1(h[2] + 30), round1(h[1] + c[1] * 45)], target: [round1(h[0] - c[0] * 6), round1(h[2] + 4), round1(h[1] - c[1] * 6)], fov: 55, fog: 900 }];
     }),
     ...castleCams.filter((k) => k.pos).map((k) => [`cam-${k.castle}`, "render_view", { pos: k.pos, target: k.target, fov: k.fov, fog: 900 }]),
+    // (v2 round 5) each summit terrace and its wall, from out on the trail's bearing and above
+    ...T.TRAILS.map((t) => {
+      const e = t.end, th = Math.atan2(e[1], e[0]), c = [Math.cos(th), Math.sin(th)];
+      return [`summit-${t.name}`, "render_view", { pos: [round1(e[0] + c[0] * 26), round1(e[2] + 20), round1(e[1] + c[1] * 26)], target: [round1(e[0] - c[0] * 6), round1(e[2] - 2), round1(e[1] - c[1] * 6)], fov: 55, fog: 900 }];
+    }),
   ];
   for (const [name, tool, args] of shots) {
     const r = await call(tool, args, { soft: true });
