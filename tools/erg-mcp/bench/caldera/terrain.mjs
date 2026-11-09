@@ -186,13 +186,16 @@ export const CASTLE_SCALE = +(globalThis.process?.env?.CASTLE_SCALE || 1.5);   /
 // v2 round 4: a level LANDING at every hairpin ("a wide, flat landing at least 8 units across"): each leg runs level for `flat` either
 // side of a hairpin and the bed widens to `land` (half width) round it, tapering back to `bed` over `landTaper` along the legs; the legs
 // are sized for the climb plus their level ends, so the grade between stays near `grade` (a spec's own grade overrides it: the NW)
-export const TRAIL = { grade: +(globalThis.process?.env?.TRAIL_GRADE ?? 0.5), legSep: +(globalThis.process?.env?.TRAIL_LEGSEP ?? 9.5), ampMin: 8, ampMax: +(globalThis.process?.env?.AMP_MAX ?? 20), bed: 2.6, end: RC + 0.5, legs: 5, even: +(globalThis.process?.env?.TRAIL_EVEN ?? 0.7), ease: 0.5, lead: +(globalThis.process?.env?.TRAIL_LEAD ?? 24),
+export const TRAIL = { grade: +(globalThis.process?.env?.TRAIL_GRADE ?? 0.5), legSep: +(globalThis.process?.env?.TRAIL_LEGSEP ?? 9.5), ampMin: 8, ampMax: +(globalThis.process?.env?.AMP_MAX ?? 20), bed: 2.6, end: RC + 0.5, legs: +(globalThis.process?.env?.TRAIL_LEGS ?? 5), even: +(globalThis.process?.env?.TRAIL_EVEN ?? 0.7), ease: +(globalThis.process?.env?.TRAIL_EASE ?? 0.5), lead: +(globalThis.process?.env?.TRAIL_LEAD ?? 24),
   endAmp: +(globalThis.process?.env?.TRAIL_END_AMP ?? 0.6),
   flat: +(globalThis.process?.env?.TRAIL_FLAT ?? 3), land: +(globalThis.process?.env?.TRAIL_LAND ?? 4.6), landTaper: 5,
   // (v2 round 4) the bed is cut level `shoulder` past its painted edge before the bank or the kerb starts: a skin cell whose far corner
   // stood on the cut bank tilted the bed under it (check_trail's walk refused rises of 0.5-0.9 over half a unit on the centreline:
   // the flat facets up close); the kerb moves out with it
-  shoulder: +(globalThis.process?.env?.TRAIL_SHOULDER ?? 2) };
+  shoulder: +(globalThis.process?.env?.TRAIL_SHOULDER ?? 2),
+  // (v2 round 5) the last leg's bed `top` (half width) from its landing on, and a level terrace `summit` (half width) round the rim end:
+  // round 4's SW summit leg was a 5-wide bed between drops where a worm walked off; build.mjs fences its downhill edge with a low wall
+  top: +(globalThis.process?.env?.TRAIL_TOP ?? 3.3), summit: +(globalThis.process?.env?.TRAIL_SUMMIT ?? 4.4) };
 // The berm (v2 round 4: "at every hairpin, fill the inside of the V between consecutive legs up to the upper leg's height"): inside the
 // wedge between a hairpin's two legs, wherever the two legs' centrelines are less than `gap` apart (summed distances), the ground is
 // raised (never cut) to the upper leg's height at that point, fading out over the last `fade`: a stray worm stays on the upper leg's
@@ -404,6 +407,17 @@ function trailPoints(t) {
     const k = Math.min(Infinity, ...pinAt.map((q) => Math.abs(q - i)));
     p[3] = Math.round(extra * (1 - smooth(TRAIL.flat, TRAIL.flat + TRAIL.landTaper, k)) * 100) / 100;
   }
+  // (v2 round 5) the last leg widens to TRAIL.top past its landing, on its uphill side only (its line moves uphill by the extra: the leg
+  // under it, in the hairpin's V, keeps its room), and the last 6 points to the summit terrace
+  const iL = pinAt[pinAt.length - 1], [lx0, lz0] = hp[hp.length - 2], [lx1, lz1] = hp[hp.length - 1], lL = Math.hypot(lx1 - lx0, lz1 - lz0);
+  let un = [-(lz1 - lz0) / lL, (lx1 - lx0) / lL];
+  const mid = [(lx0 + lx1) / 2, (lz0 + lz1) / 2];
+  if (islandBase(mid[0] + un[0] * 4, mid[1] + un[1] * 4) < islandBase(mid[0] - un[0] * 4, mid[1] - un[1] * 4)) un = [-un[0], -un[1]];
+  for (let i = iL; i < pts.length; i++) {
+    const top = (TRAIL.top - TRAIL.bed) * smooth(TRAIL.flat, TRAIL.flat + TRAIL.landTaper, i - iL), sum = (TRAIL.summit - TRAIL.bed) * (1 - smooth(0, 6, pts.length - 1 - i));
+    pts[i][0] += un[0] * top; pts[i][1] += un[1] * top;
+    pts[i][3] = Math.round(Math.max(pts[i][3], top, sum) * 100) / 100;
+  }
   const branches = t.branches.map((b) => {
     const e = b.castle, start = e.run.map((p) => [p[0], p[1], e.bed]);
     // the trail's point at the castle's floor nearest its gate
@@ -475,9 +489,14 @@ export function roadMask(rd, hw = 2.7, every = 7) {
   }
   // (v2 round 4) each hairpin's landing: a disc TRAIL.land - TRAIL.bed wider than the bed
   for (const h of rd.hairpins ?? []) segs.push(`(hypot(x - ${f(h[0])}, z - ${f(h[1])}) - ${f(TRAIL.land - TRAIL.bed)})`);
+  // (v2 round 5) the widened last leg and the summit terrace: a disc every 2 points of the bed's own extra width (away from the landings)
+  const pins = rd.pinAt ?? [];
+  (rd.pts ?? []).forEach((p, i) => { if ((p[3] ?? 0) >= 0.3 && i % 2 === 0 && pins.every((q) => Math.abs(q - i) > TRAIL.flat + 1)) segs.push(`(hypot(x - ${f(p[0])}, z - ${f(p[1])}) - ${f(p[3])})`); });
   const defs = "fn tt(ax, az, bx, bz) = clamp(((x - ax) * (bx - ax) + (z - az) * (bz - az)) / max(0.0001, (bx - ax) ^ 2 + (bz - az) ^ 2), 0, 1); " +
     "fn sd(ax, az, bx, bz) = hypot(x - (ax + (bx - ax) * tt(ax, az, bx, bz)), z - (az + (bz - az) * tt(ax, az, bx, bz))); ";
-  return `${defs}${hw} - ${segs.reduce((acc, c) => (acc ? `min(${acc}, ${c})` : c), "")}`;
+  // (v2 round 5) a balanced tree of min()s: the expression nests at most 64 deep, and a left fold of round 5's 90 or so terms did not
+  const tree = (l) => (l.length === 1 ? l[0] : `min(${tree(l.slice(0, l.length >> 1))}, ${tree(l.slice(l.length >> 1))})`);
+  return `${defs}${hw} - ${tree(segs)}`;
 }
 
 // the kerbs' lines (v2 round 3: "a darker kerb line on the downhill edge so each zigzag leg shows as a stripe"): along every bed,
@@ -556,7 +575,8 @@ export function islandBase(x, z) {
 // `pin` (an object) gets pin = true where the column is a kerb or a castle's court, which relax() keeps (round 3: not a bed: a pinned bed
 // makes relax() put a cut wall's whole excess into the wall, 2.9 a unit from the bed's edge, and the skin's 2.5-unit corners then tilt
 // the bed across: round 2, the NW trail)
-const BED_PIN = !!+(globalThis.process?.env?.BED_PIN ?? 1);   // (v2 round 4) BED_PIN=0: the bed unpinned, as in round 3
+const BED_PIN = !!+(globalThis.process?.env?.BED_PIN ?? 1);
+const BANK_W = +(globalThis.process?.env?.BANK_W ?? 4);   // (v2 round 4) BED_PIN=0: the bed unpinned, as in round 3
 export function island(x, z, pin = null) {
   let h = islandBase(x, z);
   // shelves under the castles (cut and fill to the castle's floor), roads cut and filled into the flank
@@ -623,19 +643,22 @@ export function island(x, z, pin = null) {
     // of a step steeper than its limit took half the excess), tilting the bed across; pinned, the cut bank takes it all
     pin.pin = (kerbed && kerbD <= KERB.to) || (BED_PIN && dMin <= TRAIL.bed + TRAIL.shoulder) || CASTLES.some((k) => Math.abs(x - k.at[0]) < 40 && Math.abs(z - k.at[1]) < 40 && footDist(k, x, z, 0) < 1);
     pin.soft = kerbed && !pin.pin ? 1 : kerbed ? 2 : 0;
+    // (v2 round 5) the bank beside a bed (past its level shoulder, within BANK_W): smoothed after relax (smoothBanks), so the skin's
+    // 2.5-unit cells along a bed's edge do not draw a row of sheared teeth where a cut wall meets the shoulder
+    pin.bank = !pin.pin && !kerbed && dMin > TRAIL.bed + TRAIL.shoulder && dMin < TRAIL.bed + TRAIL.shoulder + BANK_W;
   }
   return Math.max(SEA_FLOOR, h);
 }
 // the heights above SEA_FLOOR, one row per z, one column per x (the drape call clips them to the circle CLIP)
 // (rows.pins: the same rows of island()'s pin, for relax)
 export function gridOf(min = -BOX, max = BOX, step = 1) {
-  const rows = [], pins = [], softs = [], q = { pin: false, soft: 0 };
+  const rows = [], pins = [], softs = [], banks = [], q = { pin: false, soft: 0, bank: false };
   for (let z = min; z <= max + 1e-6; z += step) {
-    const row = [], pr = [], sr = [];
-    for (let x = min; x <= max + 1e-6; x += step) { row.push(Math.round((island(x, z, q) - SEA_FLOOR) * 100) / 100); pr.push(q.pin); sr.push(q.soft); }
-    rows.push(row); pins.push(pr); softs.push(sr);
+    const row = [], pr = [], sr = [], br = [];
+    for (let x = min; x <= max + 1e-6; x += step) { row.push(Math.round((island(x, z, q) - SEA_FLOOR) * 100) / 100); pr.push(q.pin); sr.push(q.soft); br.push(q.bank); }
+    rows.push(row); pins.push(pr); softs.push(sr); banks.push(br);
   }
-  rows.pins = pins; rows.softs = softs;
+  rows.pins = pins; rows.softs = softs; rows.banks = banks;
   return rows;
 }
 // the kerbs softened (v2 round 3): each kerb column (rows.softs) takes the 3 x 3 mean of the grid round it, `passes` times, so the
@@ -653,6 +676,23 @@ export function soften(rows, passes = +(globalThis.process?.env?.SOFTEN ?? 2)) {
     }
   }
   return rows;
+}
+// (v2 round 5) the banks beside the beds (rows.banks) smoothed after relax: each takes the 3 x 3 mean round it, `passes` times (round 4's
+// close shots showed jagged triangle teeth along the bed edges, where a cut wall stood 2.9 a unit from the level shoulder); relax() runs
+// again after it, so no step is over the limit. BANK_SMOOTH=0 leaves them.
+export function smoothBanks(rows, passes = +(globalThis.process?.env?.BANK_SMOOTH ?? 3)) {
+  const n = rows.length, m = rows[0].length, bk = rows.banks;
+  if (!bk || passes <= 0) return rows;
+  for (let p = 0; p < passes; p++) {
+    const src = rows.map((r) => r.slice());
+    for (let j = 1; j + 1 < n; j++) for (let i = 1; i + 1 < m; i++) {
+      if (!bk[j][i]) continue;
+      let sum = 0;
+      for (let dj = -1; dj <= 1; dj++) for (let di = -1; di <= 1; di++) sum += src[j + dj][i + di];
+      rows[j][i] = Math.round(sum / 9 * 100) / 100;
+    }
+  }
+  return relax(rows);
 }
 // no step between neighbouring columns steeper than `limit` map units a unit (about 71 degrees at 2.9): a few passes of thermal
 // relaxation over a grid made by gridOf, so the drape skin never folds (its blocks are only 3 voxels thick)
