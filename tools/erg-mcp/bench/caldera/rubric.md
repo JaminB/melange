@@ -133,3 +133,39 @@ are 7.2 wide with a flat bed of 3.4. 64 029 of 65 535 cells, 35 of 64 blocks, 97
   announcement), the asserts against the baseline.
 - `build.mjs` places the blast points, checks every trail column by column (`check_trail`, `out/trails.json`, with the
   skin corners near each trail) and checks the flood with the Test's two worms a team (team knots).
+
+## v2 round 2 (builder's notes)
+
+The round-1 critique: both SW worms fell 31 units through the trail beside Ember, one Ashgate spawn was boxed against the
+keep, and the trails had no lip on their downhill side.
+
+- **The fall**: it was at a corner where four draped skin blocks meet. The skin is cut into 31-column tiles from the field's
+  corner, so the four corners of the middle tile are at (+-40 or 37.5, +-40 or 37.5), on the diagonals the trails climb. The
+  game lets a worm or a mine through within about 0.4 of such a corner (docs/erg.md). The build lists the corners within 12 of
+  any trail or branch (`check_trail` `skinCorners`) and puts a plug under each: 3 x 4 x 3 undraped 1-unit voxels whose top is
+  flush with the skin at the corner or under it, so whatever falls through lands at most a unit lower (4 plugs, 144 cells).
+  There is no solid fill under the whole trail: the skin is one continuous sheet away from those corners, and a core under
+  four 160-unit diagonal trails would cost axis-aligned boxes the 65 535 cells cannot hold.
+- **Trails** (`terrain.mjs`):
+  - Each column starts `lead` 24 along the contour beyond its castle's out gate (was 9). Round 1's second legs passed 3-5 units
+    from the uphill walls, over a 15-unit drop into the court; now every leg above the court stays 9.7 or more from its castle.
+  - The climb is evened: each hairpin's height moves 0.7 of the way to an even grade over the whole column, and each leg
+    eases into and out of a hairpin (half its mean grade there). The steepest stretch is about 31 degrees, down from 40.
+  - Every leg has a kerb on its downhill side and round each hairpin tip. It stands 1.2 over the bed from 3.1 to 5.6 off
+    the centreline, on a berm at the bed's height out to 7.5. Between two legs it is the upper leg's kerb. `relax()` keeps
+    the kerb cells (and the courts) pinned, so its ramp eats the berm, not the kerb.
+- **Spawns**: each team's four knots are on the line between its castle's two gates (the lane beside the keep, 2.7 clear of it
+  on either side): 3.5 and 8 either side of the court's middle, the two played worms on the out gate's side first.
+  `query_ground` checks the floor and the headroom of each. `waypoints.json` gives each spawn its own `routes`: the spot, the
+  court's middle when the spot is behind it, the out gate, the point outside, then the trail.
+- **Checks in the build**:
+  - Trail-only at 38 degrees and the worm's width: 16 of 16 team spawns reach their own trail's rim end. Off the trail none
+    do, and any route takes 16 of 16 at 45 and 38.
+  - `check_trail` finds no drop over 3 off any bed's outer side. What is left are 3-4.6 drops where a leg's 3.6 margin
+    overlaps the leg below it near a hairpin (onto the trail).
+  - Its "no ground" and "hole" columns at exactly x or z = -40 are the skin tiles' seam as the reader samples it:
+    `query_ground` reads solid ground on both sides.
+  - Flood PASS. 0 detached pieces. Save with no warnings.
+- **Sea** and **mines**: unchanged (the same schedule from the same castle floors; the cap 860 world, 43 map, is under the
+  launcher pads at 48+).
+- **Cells** 62 670 of 65 535 (41 of 64 blocks); 162 MCP calls. Two builds give the same projectHash (f5dc0f39...).

@@ -11,6 +11,9 @@
 // every castle by round 15, then stops 6 under the crater floor; announcements in player terms. The mine factory fires a
 // volley every 3 turns (everyNTurns) from four launchers on the crater's inner walls: its mines erupt 14 up and land within 2
 // of them (launchers on vent pads, launchHeight 14, launchRadius 2). Sea stacks and islets with lights ring the coast.
+// v2 round 2: a kerb about a unit high on the downhill side of every leg and round every hairpin's tip (terrain.mjs KERB); a
+// solid plug under each corner where four skin blocks meet near a trail (round 1's SW worms and the mine probes fell through
+// the skin there, docs/erg.md); the team spawns on the line between the castle's gates, and each spawn's own lead-in waypoints.
 // Default game dir is testenv B (the tester's).
 //
 //   tools\node\node.exe tools\erg-mcp\bench\caldera\build.mjs [--out <dir>] [--plan] [--no-export] [--keep-mod] [--no-scenery]
@@ -151,6 +154,24 @@ try {
     return top;
   };
   const lvl = async () => (await call("describe_level", { limit: 1 })).json.limits;
+  // trails and branches as check_trail's polylines ([x, y, z]; y on a switchback, so the leg over or under is not taken for it)
+  const trailLines = T.TRAILS.flatMap((t) => [t.pts, ...t.branches.map((b) => b.pts)].map((pl) => pl.map((p) => [round1(p[0]), round1(p[2]), round1(p[1])])));
+  const trailNames = T.TRAILS.flatMap((t) => [t.name, ...t.branches.map((b) => `${t.name}-${b.castle.name}`)]);
+
+  // ---- the skin's corners: where four draped skin blocks meet, the game lets a worm or a mine through the skin within about 0.4
+  // map units of the corner (round 1: both SW worms fell 31 units there, beside Ember; the mine probes at the other three).
+  // Each corner within 12 of a trail gets a plug of undraped 1-unit voxels, 3 x 4 x 3, its top flush with the skin at the corner
+  // or under it (a quarter unit, rounded down): whatever falls through the skin there lands on it a unit lower at most ----
+  const cornerScan = await call("check_trail", { trails: trailLines, names: trailNames, width: T.TRAIL.bed * 2, margin: 1, holeRadius: 11.4 }, { soft: true });
+  const corners = new Map();
+  for (const tr of cornerScan.json?.trails ?? []) for (const c of tr.skinCorners ?? []) corners.set(c.at.join(","), { at: c.at, off: Math.min(c.off, corners.get(c.at.join(","))?.off ?? 1e9), trail: tr.name });
+  const plugs = [];
+  for (const c of corners.values()) {
+    const [cx, cz] = c.at, top = await groundOf(cx, cz), y0 = Math.floor(top - 0.25) - 4;
+    const r = await call("add_block", { size: [3, 4, 3], scale: 1, at: [cx, y0, cz], units: "map", fill: "solid", material: c.off < T.TRAIL.bed ? MAT.path : MAT.ash }, { soft: true });
+    plugs.push({ at: [cx, cz], trail: c.trail, off: round2(c.off), skin: round2(top), plugTop: y0 + 4, block: r.json?.name ?? r.text.slice(0, 160) });
+  }
+  say("skin corner plugs", JSON.stringify(plugs));
 
   // ---- the castles, each into new blocks of SCALE-unit voxels, turned to the contour (local x along it, local +z to the sea),
   // a gate in each end wall where its trail comes in and goes out ----
@@ -269,11 +290,20 @@ try {
   // teams: the engine deals no team spawns, so the level's script chunk puts each worm on its team's knot at match start) ----
   fs.writeFileSync(path.join(OUT, "spots.json"), JSON.stringify(spots, null, 1));
   const spawns = [];
-  T.TEAM_CASTLES.forEach((name, t) => {
-    const court = (spots[name] || []).filter((s) => s.kind === "courtyard" && s.ok);
-    if (court.length < 4) throw new Error(`${name} has ${court.length} courtyard spots, not 4: ${JSON.stringify(spots[name]).slice(0, 300)}`);
-    for (let i = 0; i < 4; i++) spawns.push({ worm: 4 * t + i, pos: (court[i].standOn ?? court[i].at).map(round2), group: name });
-  });
+  // (v2 round 2) each spot on the line between the castle's gates (terrain.mjs laneSpawns: never against the keep), checked here:
+  // the floor a worm at the court's height stands on, with room for it (query_ground atOrBelow, passableAt)
+  const spawnCheck = [];
+  for (const [t, name] of T.TEAM_CASTLES.entries()) {
+    const c = T.CASTLES.find((k) => k.name === name);
+    for (const [i, [x, z]] of T.laneSpawns(c).entries()) {
+      const q = await call("query_ground", { x: round2(x), z: round2(z), units: "map", mode: "atOrBelow", y: c.court + 1 }, { soft: true });
+      const y = q.json?.standOn?.map, pass = q.json?.passableAt?.passable;
+      spawnCheck.push({ worm: 4 * t + i, castle: name, at: [round2(x), round2(z)], standOn: y, passable: pass, material: q.json?.material });
+      if (typeof y !== "number" || Math.abs(y - c.court) > 0.75) throw new Error(`${name} spawn ${i} at ${round1(x)}, ${round1(z)}: no court floor (${q.text.slice(0, 300)})`);
+      spawns.push({ worm: 4 * t + i, pos: [round2(x), round2(y), round2(z)], group: name });
+    }
+  }
+  say("spawn spots", JSON.stringify(spawnCheck));
   const ps = await call("place_spawn_knots", { mode: "teams", units: "map", spawns, snap: "tread" });
   say("spawns", brief(ps, 1200));
   const placed = new Map((ps.json?.placed ?? []).map((p) => [p.worm, p.pos]));
@@ -336,13 +366,20 @@ try {
       push((a[0] + b[0]) / 2, (a[1] + b[1]) / 2);
       push(b[0], b[1], j === hp.length - 1 ? t.end[2] : t.hairpins[j - 1]?.[2]);
     }
-    return { team: t.team, castle: c.name, trail: t.name, worms: [4 * t.team, 4 * t.team + 1, 4 * t.team + 2, 4 * t.team + 3], spawns: [0, 1, 2, 3].map((i) => spawnAt(4 * t.team + i)), summit: wp[wp.length - 1], waypoints: wp };
+    // each spawn's own route: its lead-in (the spot, the court's middle when the spot is behind it, the out gate, the point outside
+    // it) and then the trail from its first leg
+    const routes = [0, 1, 2, 3].map((i) => {
+      const w = 4 * t.team + i, sp = spawnAt(w);
+      const lead = T.leadIn(c, [sp[0], sp[2]]).map(([x, z]) => [round1(x), round1(c.court), round1(z)]);
+      return { worm: w, waypoints: [...lead, ...wp.slice(3)] };
+    });
+    return { team: t.team, castle: c.name, trail: t.name, worms: [4 * t.team, 4 * t.team + 1, 4 * t.team + 2, 4 * t.team + 3], spawns: [0, 1, 2, 3].map((i) => spawnAt(4 * t.team + i)), summit: wp[wp.length - 1], waypoints: wp, routes };
   });
   fs.writeFileSync(path.join(OUT, "waypoints.json"), JSON.stringify(waypoints, null, 1));
   fs.writeFileSync(path.join(OUT, "blasts.json"), JSON.stringify(blasts, null, 1));
   // every column across each trail's bed and a margin: no drop over 3 and no hole a worm falls through (check_reachability's
   // graph keeps to the ground it stands on, so it passes a broken edge); skin corners near a trail are named to probe in game
-  const tc = await call("check_trail", { trails: T.TRAILS.map((t) => t.pts.map((p) => [round1(p[0]), round1(p[2]), round1(p[1])])), names: T.TRAILS.map((t) => t.name), width: T.TRAIL.bed * 2, margin: 1 }, { soft: true });
+  const tc = await call("check_trail", { trails: trailLines, names: trailNames, width: T.TRAIL.bed * 2, margin: 1 }, { soft: true });
   fs.writeFileSync(path.join(OUT, "trails.json"), tc.text);
   say("trails", brief(tc, 900));
   say("waypoints", JSON.stringify(waypoints.map((w) => ({ team: w.team, castle: w.castle, n: w.waypoints.length, summit: w.summit }))));
