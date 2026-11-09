@@ -183,7 +183,24 @@ export const CASTLE_SCALE = +(globalThis.process?.env?.CASTLE_SCALE || 1.5);   /
 // at the foot). The higher castles stand beside a column, a level BRANCH from their gate to the leg at their floor. The column's
 // centre line is `lead` beyond the out gate along the contour (v2 round 2: 24, was 9), so no leg runs over its castle's court or
 // shelf (round 1's second legs passed 3-5 from the uphill walls, over a 15-unit drop into the court).
-export const TRAIL = { grade: 0.5, legSep: 9.5, ampMin: 8, ampMax: +(globalThis.process?.env?.AMP_MAX ?? 17), bed: 2.6, end: RC + 0.5, legs: 5, even: +(globalThis.process?.env?.TRAIL_EVEN ?? 0.7), ease: 0.5, lead: +(globalThis.process?.env?.TRAIL_LEAD ?? 24) };
+// v2 round 4: a level LANDING at every hairpin ("a wide, flat landing at least 8 units across"): each leg runs level for `flat` either
+// side of a hairpin and the bed widens to `land` (half width) round it, tapering back to `bed` over `landTaper` along the legs; the legs
+// are sized for the climb plus their level ends, so the grade between stays near `grade` (a spec's own grade overrides it: the NW)
+export const TRAIL = { grade: +(globalThis.process?.env?.TRAIL_GRADE ?? 0.5), legSep: +(globalThis.process?.env?.TRAIL_LEGSEP ?? 9.5), ampMin: 8, ampMax: +(globalThis.process?.env?.AMP_MAX ?? 20), bed: 2.6, end: RC + 0.5, legs: 5, even: +(globalThis.process?.env?.TRAIL_EVEN ?? 0.7), ease: 0.5, lead: +(globalThis.process?.env?.TRAIL_LEAD ?? 24),
+  endAmp: +(globalThis.process?.env?.TRAIL_END_AMP ?? 0.6),
+  flat: +(globalThis.process?.env?.TRAIL_FLAT ?? 3), land: +(globalThis.process?.env?.TRAIL_LAND ?? 4.6), landTaper: 5,
+  // (v2 round 4) the bed is cut level `shoulder` past its painted edge before the bank or the kerb starts: a skin cell whose far corner
+  // stood on the cut bank tilted the bed under it (check_trail's walk refused rises of 0.5-0.9 over half a unit on the centreline:
+  // the flat facets up close); the kerb moves out with it
+  shoulder: +(globalThis.process?.env?.TRAIL_SHOULDER ?? 2) };
+// The berm (v2 round 4: "at every hairpin, fill the inside of the V between consecutive legs up to the upper leg's height"): inside the
+// wedge between a hairpin's two legs, wherever the two legs' centrelines are less than `gap` apart (summed distances), the ground is
+// raised (never cut) to the upper leg's height at that point, fading out over the last `fade`: a stray worm stays on the upper leg's
+// level instead of falling into a trough between the legs (team 3's NW worms stuck in one in round 3); the lower leg's bed is cut out of
+// it as a bank. BERM_GAP=0 leaves the V's ground as it is.
+// The berm's side over the lower leg is a bank of at most `bank` a unit from just off that leg's bed (`foot` past its edge), so the lower
+// bed is never lifted (relax() would split a taller step between the two and tilt the bed).
+export const BERM = { gap: +(globalThis.process?.env?.BERM_GAP ?? 17), fade: 4, bank: 2.4, foot: TRAIL.shoulder };
 // The kerb (v2 round 2: "raised outer kerbs or lips about 1 unit high on the downhill side, so a worm that overshoots a hairpin
 // cannot drop off a leg"): where the ground beside a bed falls away (the fill side of a leg, the tip of a hairpin), a lip `h` over
 // the bed's height, level from `from` to `to` off the centreline (2.5 wide: the skin's columns are 2.5 apart, so every leg has a
@@ -195,14 +212,18 @@ export const TRAIL = { grade: 0.5, legSep: 9.5, ampMin: 8, ampMax: +(globalThis.
 // of pyramids along each leg (the sawtooth of c1_t2_w6_mid), a level shelf samples the same at every corner; its columns are also
 // softened (soften(): a 3 x 3 mean) before relax. `to` (the pinned part) is the shelf's whole width now.
 const KENV = (k, d) => +(globalThis.process?.env?.[k] ?? d);
-export const KERB = { h: KENV("KERB_H", 1), from: KENV("KERB_FROM", 4.6), to: KENV("KERB_TO", 7.5), berm: KENV("KERB_BERM", 7.5), out: KENV("KERB_OUT", 12), anySide: !!+(globalThis.process?.env?.KERB_ANY ?? 0), clear: +(globalThis.process?.env?.KERB_CLEAR ?? 1.5) };
+// (v2 round 4) the lip rises from the level shoulder's edge (TRAIL.shoulder past the bed) to its height by KERB.from, 1 further out
+// (round 3: from the bed's edge by 4.6); the pinned shelf ends at `to` as before (a wider one met the next leg's shoulder up a steep
+// flank, and relax() tilted both)
+export const KERB = { h: KENV("KERB_H", 1), from: KENV("KERB_FROM", TRAIL.bed + TRAIL.shoulder + 1), to: KENV("KERB_TO", 7.5), berm: KENV("KERB_BERM", 7.5), out: KENV("KERB_OUT", 12), anySide: !!+(globalThis.process?.env?.KERB_ANY ?? 0), clear: +(globalThis.process?.env?.KERB_CLEAR ?? 1.5) };
 // team t spawns in TEAM_CASTLES[t]. castle: [name, floor, bearing, dir]; extra: [name, floor, side (+1 beyond the column on its
 // dir side, -1 the other)]. The trails stand on the diagonals, the lava runs down the cardinals and the breach faces south.
 const LAYOUT = [
   { name: "NE", team: 0, castle: ["Strand", 5, -1.15, 1], extra: ["Cinder", 22, 1] },
   { name: "SE", team: 1, castle: ["Ashgate", 5, 0.52, 1] },
   { name: "SW", team: 2, castle: ["Harbour", 5, 2.75, -1], extra: ["Ember", 26, 1] },
-  { name: "NW", team: 3, castle: ["Seawall", 5, -2.75, 1], extra: ["Highwatch", 33, 1] },
+  // (v2 round 4) the NW legs at a gentler grade: its legs 3-4 were the steepest a worm met in round 3
+  { name: "NW", team: 3, castle: ["Seawall", 5, -2.75, 1], extra: ["Highwatch", 33, 1], grade: +(globalThis.process?.env?.NW_GRADE ?? 0.44) },
 ];
 export const TEAM_CASTLES = LAYOUT.map((t) => t.castle[0]);
 
@@ -297,11 +318,14 @@ function column(c) {
   // each leg as wide across as climbing it at the grade needs (W), shared between its two ends: each hairpin's offset from the line
   // is what its lower leg still needs past the hairpin below (the gate is a0 off the line), at least ampMin; the last leg ends on
   // the rim crest, off the line to its side as a hairpin would be (the steep top gets a whole leg's width)
-  const W = rs.slice(1).map((r, j) => { const dr = rs[j] - r, L = Math.abs(h(r) - h(rs[j])) / P.grade; return Math.sqrt(Math.max(0, L * L - dr * dr)); });
+  // (v2 round 4) plus the level stretch at each hairpin end of the leg
+  const W = rs.slice(1).map((r, j) => { const dr = rs[j] - r, L = Math.abs(h(r) - h(rs[j])) / (c.grade ?? P.grade) + P.flat * ((j > 0 ? 1 : 0) + (j + 1 < n ? 1 : 0)); return Math.sqrt(Math.max(0, L * L - dr * dr)); });
   const hp = [[ox, oz]];
   let prevA = a0;
   for (let j = 1; j <= n; j++) {
-    const A = Math.min(P.ampMax + (j === n ? 3 : 0), Math.max(P.ampMin, W[j - 1] - prevA)), side = (j % 2 ? 1 : -1) * c.dir;
+    // (v2 round 4) the last leg ends TRAIL.endAmp of its width off the line (round 3: all of it, ampMax + 3): its rim end stood over
+    // the hairpin two below, 26 higher and 13 off, and relax() tilted both legs' beds to fit the bank between them
+    const A0 = Math.min(P.ampMax + (j === n ? 3 : 0), Math.max(P.ampMin, W[j - 1] - prevA)), A = j === n ? A0 * P.endAmp : A0, side = (j % 2 ? 1 : -1) * c.dir;
     const rr = rs[j] / scaleAt(thc);
     hp.push(pointAt(rs[j], thc + side * A / rr));
     prevA = A;
@@ -324,7 +348,9 @@ function extraAt(spec, c, col, [name, floor, side]) {
 }
 function layTrail(spec) {
   const [name, floor, th, dir] = spec.castle;
-  const c = castleAt(spec, name, floor, th, dir), col = column(c);
+  const c = castleAt(spec, name, floor, th, dir);
+  c.grade = spec.grade;
+  const col = column(c);
   const castles = [c], branches = [];
   if (spec.extra) { const e = extraAt(spec, c, col, spec.extra); castles.push(e); branches.push({ castle: e }); }
   return { ...spec, castles, col, branches };
@@ -332,6 +358,7 @@ function layTrail(spec) {
 // the trail's points [x, z, y], a point a map unit: through the castle at its floor; up the column from the castle's floor, through
 // each hairpin at the flank's height on the column's line at its radius (never lower than the last plus 0.5), to the rim's height. A branch: through its
 // castle at its floor, then level to the nearest point of the trail at that height
+const BRANCH_GRADE = +(globalThis.process?.env?.BRANCH_GRADE ?? 0.3);
 function trailPoints(t) {
   const pts = t.castles[0].run.map((p) => [p[0], p[1], t.castles[0].bed]), hairpins = [];
   t.castles[0].ptIndex = 0;
@@ -360,21 +387,36 @@ function trailPoints(t) {
     const u = t - (1 - q);
     return y1 + c * (1 - 2 * q) + c * u + (b - c) * u * u / (2 * q);
   };
+  // (v2 round 4) a leg is level for TRAIL.flat from each hairpin end (the landing), then eases into its climb
+  const pinAt = [];          // the index in pts of each interior hairpin
   for (let j = 0; j + 1 < hp.length; j++) {
     const [ax, az] = hp[j], [bx, bz] = hp[j + 1], m = Math.max(1, Math.round(Math.hypot(bx - ax, bz - az)));
-    for (let w = 1; w <= m; w++) pts.push([ax + (bx - ax) * w / m, az + (bz - az) * w / m, ys[j] + (ys[j + 1] - ys[j]) * prof(w / m, j > 0, j + 2 < hp.length)]);
-    if (j > 0) hairpins.push([ax, az, ys[j]]);
+    const f0 = j > 0 ? Math.min(0.3, TRAIL.flat / m) : 0, f1 = j + 2 < hp.length ? Math.min(0.3, TRAIL.flat / m) : 0;
+    if (j > 0) { hairpins.push([ax, az, ys[j]]); pinAt.push(pts.length - 1); }
+    for (let w = 1; w <= m; w++) {
+      const u = Math.min(1, Math.max(0, (w / m - f0) / (1 - f0 - f1)));
+      pts.push([ax + (bx - ax) * w / m, az + (bz - az) * w / m, ys[j] + (ys[j + 1] - ys[j]) * prof(u, j > 0, j + 2 < hp.length)]);
+    }
+  }
+  // the landing: each point's bed is TRAIL.land - TRAIL.bed wider (p[3]) within TRAIL.flat of a hairpin along the trail, tapering over landTaper
+  const extra = TRAIL.land - TRAIL.bed;
+  for (const [i, p] of pts.entries()) {
+    const k = Math.min(Infinity, ...pinAt.map((q) => Math.abs(q - i)));
+    p[3] = Math.round(extra * (1 - smooth(TRAIL.flat, TRAIL.flat + TRAIL.landTaper, k)) * 100) / 100;
   }
   const branches = t.branches.map((b) => {
     const e = b.castle, start = e.run.map((p) => [p[0], p[1], e.bed]);
     // the trail's point at the castle's floor nearest its gate
     const [gx, gz] = e.gout.O;
     let best = null, bd = 1e9;
-    for (const p of pts) { const d = Math.hypot(p[0] - gx, p[1] - gz) + 6 * Math.abs(p[2] - e.bed); if (d < bd) { bd = d; best = p; } }
+    // (v2 round 4) the nearest point the link can reach at BRANCH_GRADE or less (a height difference over that costs 6 a unit): round 3's
+    // level-only choice ran the SW branch 58 units at 26.5 through the V of the SW trail's second hairpin and the NE branch 63 units
+    // along a causeway up to 19 over the flank
+    for (const p of pts) { const h = Math.hypot(p[0] - gx, p[1] - gz), d = h + 6 * Math.max(0, Math.abs(p[2] - e.bed) - BRANCH_GRADE * h); if (d < bd) { bd = d; best = p; } }
     const link = line([e.gout.O, [best[0], best[1]]]).slice(1).map((p, i, a) => [p[0], p[1], e.bed + (best[2] - e.bed) * (i + 1) / a.length]);
     return { ...b, pts: [...start, ...link], joins: best };
   });
-  return { pts, hairpins, branches };
+  return { pts, hairpins, branches, pinAt };
 }
 // The cliff bands are notched where a trail's column crosses them (their step spread over a wider band, so the legs can climb it
 // near the grade): the bearings are the columns' own, from a first layout.
@@ -382,13 +424,44 @@ NOTCHES = LAYOUT.map(layTrail).flatMap((t) => CLIFFS.map((c, k) => ({ k, th: t.c
 const LAID = LAYOUT.map(layTrail);
 // the rim is lowered where a trail ends on it (islandBase), so the trail ends are known before the heights are taken
 TRAIL_ENDS = LAID.map((t) => t.col.hairpins[t.col.hairpins.length - 1]);
-export const TRAILS = LAID.map((t) => { const { pts, hairpins, branches } = trailPoints(t); return { ...t, pts, hairpins, branches, end: pts[pts.length - 1] }; });
+export const TRAILS = LAID.map((t) => { const { pts, hairpins, branches, pinAt } = trailPoints(t); return { ...t, pts, hairpins, branches, pinAt, end: pts[pts.length - 1] }; });
 export const ROADS = TRAILS;
 export const CASTLES = TRAILS.flatMap((r) => r.castles);
 export const notches = () => NOTCHES;
 // every polyline whose bed is cut into the flank: the branches first, then the trails (a later bed wins where they meet, and a
 // branch runs level beside its trail to the junction)
 const BEDS = [...TRAILS.flatMap((t) => t.branches.map((b) => b.pts)), ...TRAILS.map((t) => t.pts)];
+
+// (v2 round 4) the V of every hairpin: the hairpin H, the unit vectors along its lower leg (back down, ua) and upper leg (on up, ub),
+// their lengths, and the upper leg's points from H (one a map unit), for bermAt
+const VEES = TRAILS.flatMap((t) => t.pinAt.map((iH, k) => {
+  const iA = k ? t.pinAt[k - 1] : 0, iB = t.pinAt[k + 1] ?? t.pts.length - 1, H = t.pts[iH], A = t.pts[iA], B = t.pts[iB];
+  const unit = (P) => { const L = Math.hypot(P[0] - H[0], P[1] - H[1]); return [(P[0] - H[0]) / L, (P[1] - H[1]) / L, L]; };
+  const [uax, uaz, lenA] = unit(A), [ubx, ubz, lenB] = unit(B);
+  return { H, ua: [uax, uaz], ub: [ubx, ubz], lenA, lenB, up: t.pts.slice(iH, iB + 1), down: t.pts.slice(iA, iH + 1).reverse() };
+}));
+// the berm's height at (x, z), or -1e9 outside every V: inside the wedge between a hairpin's legs (both coordinates along them
+// positive), where the two centrelines are less than BERM.gap apart, the upper leg's height at the point's place along it, blended
+// into the ground `h` over the last BERM.fade of the gap
+function bermAt(x, z, h) {
+  let out = -1e9;
+  for (const V of VEES) {
+    const vx = x - V.H[0], vz = z - V.H[1];
+    if (Math.abs(vx) > 45 || Math.abs(vz) > 45) continue;
+    const det = V.ua[0] * V.ub[1] - V.ua[1] * V.ub[0];
+    if (Math.abs(det) < 0.05) continue;
+    const a = (vx * V.ub[1] - vz * V.ub[0]) / det, b = (V.ua[0] * vz - V.ua[1] * vx) / det;
+    if (a <= 0 || b <= 0) continue;
+    const sa = vx * V.ua[0] + vz * V.ua[1], sb = vx * V.ub[0] + vz * V.ub[1];
+    if (sa > V.lenA || sb > V.lenB - 2) continue;
+    const da = Math.abs(vx * V.ua[1] - vz * V.ua[0]), gap = da + Math.abs(vx * V.ub[1] - vz * V.ub[0]);
+    if (gap >= BERM.gap) continue;
+    const lo = V.down[Math.min(V.down.length - 1, Math.max(0, Math.round(sa)))];
+    const y = Math.min(V.up[Math.min(V.up.length - 1, Math.max(0, Math.round(sb)))][2], lo[2] + BERM.bank * Math.max(0, da - TRAIL.bed - (lo[3] ?? 0) - BERM.foot));
+    out = Math.max(out, h + (y - h) * (1 - smooth(BERM.gap - BERM.fade, BERM.gap, gap)));
+  }
+  return out;
+}
 
 // a trail and its branches as a mask expression (above 0 within `hw` of a line; the distance field is exact, so the edge is as
 // smooth as the material grid allows): each polyline is cut to a segment every `every` points (and at every hairpin: a leg is straight)
@@ -400,6 +473,8 @@ export function roadMask(rd, hw = 2.7, every = 7) {
     const pts = line.filter((p, i, a) => i % every === 0 || i === a.length - 1 || keep.has(`${f(p[0])},${f(p[1])}`));
     for (let i = 0; i + 1 < pts.length; i++) segs.push(`sd(${f(pts[i][0])}, ${f(pts[i][1])}, ${f(pts[i + 1][0])}, ${f(pts[i + 1][1])})`);
   }
+  // (v2 round 4) each hairpin's landing: a disc TRAIL.land - TRAIL.bed wider than the bed
+  for (const h of rd.hairpins ?? []) segs.push(`(hypot(x - ${f(h[0])}, z - ${f(h[1])}) - ${f(TRAIL.land - TRAIL.bed)})`);
   const defs = "fn tt(ax, az, bx, bz) = clamp(((x - ax) * (bx - ax) + (z - az) * (bz - az)) / max(0.0001, (bx - ax) ^ 2 + (bz - az) ^ 2), 0, 1); " +
     "fn sd(ax, az, bx, bz) = hypot(x - (ax + (bx - ax) * tt(ax, az, bx, bz)), z - (az + (bz - az) * tt(ax, az, bx, bz))); ";
   return `${defs}${hw} - ${segs.reduce((acc, c) => (acc ? `min(${acc}, ${c})` : c), "")}`;
@@ -418,8 +493,9 @@ export function kerbLines(off = (KERB.from + KERB.to) / 2) {
       const a = pl[Math.max(0, i - 1)], b = pl[Math.min(pl.length - 1, i + 1)], p = pl[i];
       const L = Math.hypot(b[0] - a[0], b[1] - a[1]) || 1, nx = -(b[1] - a[1]) / L, nz = (b[0] - a[0]) / L;
       let side = 0, drop = 0.4;
-      for (const sg of [-1, 1]) { const d = p[2] - islandBase(p[0] + sg * nx * off, p[1] + sg * nz * off); if (d > drop) { drop = d; side = sg; } }
-      const q = [p[0] + side * nx * off, p[1] + side * nz * off];
+      const o = off + (p[3] ?? 0);
+      for (const sg of [-1, 1]) { const d = p[2] - islandBase(p[0] + sg * nx * o, p[1] + sg * nz * o); if (d > drop) { drop = d; side = sg; } }
+      const q = [p[0] + side * nx * o, p[1] + side * nz * o];
       const ok = side !== 0 && !TRAIL_ENDS.some((e) => Math.hypot(q[0] - e[0], q[1] - e[1]) < 3.5) &&
         !CASTLES.some((k) => Math.abs(q[0] - k.at[0]) < 40 && Math.abs(q[1] - k.at[1]) < 40 && footDist(k, q[0], q[1], 0) < 1.5);
       if (!ok || (curSide && side !== curSide)) flush();
@@ -477,9 +553,10 @@ export function islandBase(x, z) {
   });
   return h;
 }
-// `pin` (an object) gets pin = true where the column is a kerb or a castle's court, which relax() keeps (not a bed: a pinned bed
+// `pin` (an object) gets pin = true where the column is a kerb or a castle's court, which relax() keeps (round 3: not a bed: a pinned bed
 // makes relax() put a cut wall's whole excess into the wall, 2.9 a unit from the bed's edge, and the skin's 2.5-unit corners then tilt
 // the bed across: round 2, the NW trail)
+const BED_PIN = !!+(globalThis.process?.env?.BED_PIN ?? 1);   // (v2 round 4) BED_PIN=0: the bed unpinned, as in round 3
 export function island(x, z, pin = null) {
   let h = islandBase(x, z);
   // shelves under the castles (cut and fill to the castle's floor), roads cut and filled into the flank
@@ -492,30 +569,43 @@ export function island(x, z, pin = null) {
     h += (k.bed - h) * w;
     wShelf = Math.max(wShelf, w);
   }
+  // (v2 round 4) the berm inside each hairpin's V, raised to the upper leg's height (BERM)
+  if (BERM.gap > 0) h = Math.max(h, bermAt(x, z, h));
   const hCut = h;
   let dMin = 1e9, yMin = 0, kerb = -1e9, kerbD = 1e9;
   // a kerb point: off a bed by d, whose height y is over the ground here (the ground falls away from it); every leg that passes
   // counts, not only the nearest, so the bank between two legs has the upper leg's kerb too (the nearest is the lower leg there)
-  const kerbOf = (d, y) => hCut + (y + KERB.h * smooth(TRAIL.bed, KERB.from, d) * (KERB.berm > KERB.to ? 1 - smooth(KERB.to, KERB.berm, d) : 1) - hCut) * (1 - smooth(KERB.berm, KERB.out, d));
+  const kerbOf = (d, y) => hCut + (y + KERB.h * smooth(TRAIL.bed + TRAIL.shoulder, KERB.from, d) * (KERB.berm > KERB.to ? 1 - smooth(KERB.to, KERB.berm, d) : 1) - hCut) * (1 - smooth(KERB.berm, KERB.out, d));
   // (v2 round 3) a leg's kerb keeps KERB.clear off another leg's bed (a bed point over 1.5 higher or lower within bed + clear of the
   // column): the level shelf beside a hairpin's tip otherwise lifts the skin's corners on the other leg's edge, a 1.2 step on the bed
   // (the trail-only walk stuck at the SE and SW third hairpins)
   const cands = [], near = [];
   for (const pl of BEDS) {
     let best = 1e9, by = 0;
-    const ds = pl.map((p) => (Math.abs(x - p[0]) > 10 || Math.abs(z - p[1]) > 10 ? Infinity : Math.hypot(x - p[0], z - p[1])));
-    for (const [i, p] of pl.entries()) {
-      const dd = ds[i];
-      if (dd === Infinity) continue;
-      if (dd < best) { best = dd; by = p[2]; }
+    // (v2 round 4) a landing point's bed is p[3] wider: its distance is taken from that wider edge
+    const ds = pl.map((p) => (Math.abs(x - p[0]) > 14 || Math.abs(z - p[1]) > 14 ? Infinity : Math.hypot(x - p[0], z - p[1]) - (p[3] ?? 0)));
+    // (v2 round 4) the height at a point's foot on the polyline (the segment to the nearer neighbour, its height and widening
+    // interpolated), not the nearest point's own: round 3's beds and kerbs were stairs of a map unit's tread (one riser of the leg's
+    // climb per point; check_trail's walk met them as rises of 0.5-0.7 over half a unit)
+    const foot = (i) => {
+      const p = pl[i], q = pl[(ds[i - 1] ?? Infinity) < (ds[i + 1] ?? Infinity) ? i - 1 : i + 1];
+      if (!q) return [ds[i], p[2]];
+      const ex = q[0] - p[0], ez = q[1] - p[1], L2 = ex * ex + ez * ez || 1, t = Math.min(1, Math.max(0, ((x - p[0]) * ex + (z - p[1]) * ez) / L2));
+      const w = (p[3] ?? 0) + ((q[3] ?? 0) - (p[3] ?? 0)) * t;
+      return [Math.hypot(x - p[0] - ex * t, z - p[1] - ez * t) - w, p[2] + (q[2] - p[2]) * t];
+    };
+    for (const [i, p0] of pl.entries()) {
+      if (ds[i] === Infinity) continue;
+      const [dd, py] = foot(i), p = [p0[0], p0[1], py];
+      if (dd < best) { best = dd; by = py; }
       // (v2 round 3) a kerb from the nearest point of each leg that passes (a local minimum of the distance along the polyline) only:
       // round 2 took every point within reach, so a column took the kerb of a point several units up the leg, as high as that point
       // (an uneven kerb, higher and lower column by column: part of the sawtooth)
-      if (!(dd <= (ds[i - 1] ?? Infinity) && dd <= (ds[i + 1] ?? Infinity))) continue;
-      if (dd < TRAIL.bed + KERB.clear) near.push(p[2]);
+      if (!(ds[i] <= (ds[i - 1] ?? Infinity) && ds[i] <= (ds[i + 1] ?? Infinity))) continue;
+      if (dd < TRAIL.bed + TRAIL.shoulder + KERB.clear) near.push(p[2]);
       if (dd > TRAIL.bed && dd < KERB.out && (KERB.anySide || hCut < p[2] + 0.5)) cands.push([kerbOf(dd, p[2]), dd, p[2]]);
     }
-    if (best < 7) { const w = 1 - smooth(TRAIL.bed, TRAIL.bed + 3.2, best); h += (by - h) * w; wRoad = Math.max(wRoad, w); }
+    if (best < 7 + TRAIL.shoulder) { const w = 1 - smooth(TRAIL.bed + TRAIL.shoulder, TRAIL.bed + TRAIL.shoulder + 3.2, best); h += (by - h) * w; wRoad = Math.max(wRoad, w); }
     if (best < dMin) { dMin = best; yMin = by; }
   }
   for (const [k, dd, y] of cands) if (k > kerb && !near.some((q) => Math.abs(q - y) > 1.5)) { kerb = k; kerbD = dd; }
@@ -529,7 +619,9 @@ export function island(x, z, pin = null) {
     kerbed = true;
   }
   if (pin) {
-    pin.pin = (kerbed && kerbD <= KERB.to) || CASTLES.some((k) => Math.abs(x - k.at[0]) < 40 && Math.abs(z - k.at[1]) < 40 && footDist(k, x, z, 0) < 1);
+    // (v2 round 4) and the bed with its level shoulder: relax() lifted the bed's uphill edge by up to 8 under a tall cut (each column
+    // of a step steeper than its limit took half the excess), tilting the bed across; pinned, the cut bank takes it all
+    pin.pin = (kerbed && kerbD <= KERB.to) || (BED_PIN && dMin <= TRAIL.bed + TRAIL.shoulder) || CASTLES.some((k) => Math.abs(x - k.at[0]) < 40 && Math.abs(z - k.at[1]) < 40 && footDist(k, x, z, 0) < 1);
     pin.soft = kerbed && !pin.pin ? 1 : kerbed ? 2 : 0;
   }
   return Math.max(SEA_FLOOR, h);
@@ -564,27 +656,38 @@ export function soften(rows, passes = +(globalThis.process?.env?.SOFTEN ?? 2)) {
 }
 // no step between neighbouring columns steeper than `limit` map units a unit (about 71 degrees at 2.9): a few passes of thermal
 // relaxation over a grid made by gridOf, so the drape skin never folds (its blocks are only 3 voxels thick)
-export function relax(rows, limit = 2.9, passes = 60) {
-  const n = rows.length, m = rows[0].length, pins = rows.pins;
-  for (let p = 0; p < passes; p++) {
+const RELAX_SHARE = !!+(globalThis.process?.env?.RELAX_SHARE ?? 1);
+// (v2 round 4) the pinned passes run until nothing moves (at most `passes`), then unpinned passes until no step is over the limit:
+// two pinned columns a column or two apart and more than twice the limit apart in height (a bed beside another leg's kerb, a court
+// beside a cut) can never both hold, and round 3's 60 passes left about 2 400 steps over the limit, up to 17 high (skin cells sheared
+// across themselves: the kind check_trail names as mine-leak suspects). RELAX_FINAL=0 skips the unpinned passes.
+const RELAX_FINAL = !!+(globalThis.process?.env?.RELAX_FINAL ?? 1);
+export function relax(rows, limit = 2.9, passes = +(globalThis.process?.env?.RELAX_PASSES ?? 400)) {
+  const n = rows.length, m = rows[0].length;
+  const sweep = (pins) => {
     let moved = 0;
     for (let j = 0; j < n; j++) for (let i = 0; i < m; i++) {
       for (const [dj, di] of [[0, 1], [1, 0]]) {
         const jj = j + dj, ii = i + di;
         if (jj >= n || ii >= m) continue;
         const d = rows[j][i] - rows[jj][ii];
-        if (Math.abs(d) <= limit) continue;
+        if (Math.abs(d) <= limit + 1e-9) continue;
         // a pinned column (a kerb or a court: rows.pins) keeps its height and the other takes the whole excess (two
         // pinned columns share it, as before: between two legs the bank gives, so the skin never folds)
+        // (v2 round 4) two pinned columns: the higher gives it all (the lower leg's bed in a hairpin's V stays level under the upper
+        // leg's edge; RELAX_SHARE=1: both give half, as before)
         let pa = pins?.[j][i], pb = pins?.[jj][ii];
-        if (pa && pb) pa = pb = false;
+        if (pa && pb) { if (RELAX_SHARE) pa = pb = false; else if (d > 0) pa = false; else pb = false; }
         const k = (Math.abs(d) - limit) * Math.sign(d) * (pa || pb ? 1 : 0.5);
         if (!pa) rows[j][i] -= k;
         if (!pb) rows[jj][ii] += k;
         moved++;
       }
     }
-    if (!moved) break;
-  }
+    return moved;
+  };
+  for (let p = 0; p < passes; p++) if (!sweep(rows.pins)) break;
+  if (RELAX_FINAL) for (let p = 0; p < 4000; p++) if (!sweep(null)) break;
+  for (const r of rows) for (let i = 0; i < m; i++) r[i] = Math.round(r[i] * 100) / 100;
   return rows;
 }

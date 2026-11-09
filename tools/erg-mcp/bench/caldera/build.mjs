@@ -19,15 +19,21 @@
 // rounded ridge (softened) instead of a 1-unit step the skin's corners drew as a sawtooth; the skin's tiling shifted off the trails
 // (cornersOff); ledges and scree on the flanks between the trails and a wider inner cliff band; plugs under the round-2 NE
 // probe misses; a lip round every launcher pad (one mine ran off the north pad into the crater in round 2).
+// v2 round 4: a level landing 9 across at every hairpin and a berm filling each hairpin's V up to the upper leg (terrain.mjs TRAIL.flat,
+// TRAIL.land, BERM: round 3's NW worms stuck in a trough between legs 3 and 4), the NW legs at a gentler grade; the bed in grey slate
+// flagstone (GreySlateFloor: the pale dinoegg02 read as snow up close) with the dark kerb line kept; the launcher pads of 2-unit voxels
+// (the pads and plugs that let mines through were all 1.5-unit blocks, docs/erg-mcp.md) and the leak plugs put in after the castles,
+// so the NE one comes up under the castle block's top; per-castle camera poses from the sea (out/castles.json) that clear the cone.
 // Default game dir is testenv B (the tester's).
 //
-//   tools\node\node.exe tools\erg-mcp\bench\caldera\build.mjs [--out <dir>] [--plan] [--no-export] [--keep-mod] [--no-scenery]
+//   tools\node\node.exe tools\erg-mcp\bench\caldera\build.mjs [--out <dir>] [--plan] [--trails] [--no-export] [--keep-mod] [--no-scenery]
 //
 // It connects like erg-mcp does: MELANGE_GAME_DIR (default C:\Users\Jamin\Desktop\WUMFix\testenv\B) with the game
 // closed, starting Melange.exe --serve (MELANGE_EXE names another Melange.exe; default this checkout's
 // build\x86-release\Melange.exe). The project id is `caldera`; an old one is deleted first (delete_project), so
 // every run starts from the base. Renders go to --out (default out\ next to this file); the source export is copied to
-// pack\ next to this file. --plan stops after the heightfield plan (nothing is applied or saved). The terrain itself
+// pack\ next to this file. --plan stops after the heightfield plan (nothing is applied or saved); --trails after check_trail
+// on the bare skin (out\trails-skin.json; nothing saved). The terrain itself
 // (the height, the trails, the castle sites, the lava tongues) is terrain.mjs; the MCP client is mcpclient.mjs.
 import fs from "node:fs";
 import path from "node:path";
@@ -53,9 +59,10 @@ const WORM_W = 0.6;                               // a worm's body, map units (c
 // rock02 6 (grey-brown: cliff faces), path01 8 (the trails), sand01 10, stone 12, flint 16, chippedstone 27 (the castles),
 // VolcanoRock 49 (near black: the ash of the summit), LiquidHotMagma 50 (the lava), HotRocks 51 (dark red: its margins,
 // the crater walls and the plug), Metal 53.
-// dinoegg02 26 (pale cream, cracked like flagstones: the trails' bed since v2 round 3, far paler than path01's yellow, the beach sand's hue)
-const MAT = { grass: 0, olive: 2, rock: 4, grey: 6, path: 8, sand: 10, stone: 12, flint: 16, flag: 26, chipped: 27, ash: 49, magma: 50, hot: 51, metal: 53 };
-const TRAIL_MAT = +(process.env.TRAIL_MAT ?? MAT.flag);
+// dinoegg02 26 (pale cream, cracked like flagstones: the trails' bed in v2 round 3, far paler than path01's yellow, the beach sand's hue),
+// GreySlateFloor 19 (a warm grey slate floor of laid flags: the trails' bed since v2 round 4, darker than dinoegg02 and still far paler than the basalt)
+const MAT = { grass: 0, olive: 2, rock: 4, grey: 6, path: 8, sand: 10, stone: 12, flint: 16, slate: 19, flag: 26, chipped: 27, ash: 49, magma: 50, hot: 51, metal: 53 };
+const TRAIL_MAT = +(process.env.TRAIL_MAT ?? MAT.slate);
 const VOXEL = +(process.env.VOXEL || 2.5);       // map units per voxel of the island's skin
 const THICK = +(process.env.THICK || 3);         // voxels of skin (hollow under it: a fifth of the cells of a solid core)
 const SCALE = T.CASTLE_SCALE;                    // voxels of the castle blocks (CASTLE_SCALE, read by terrain.mjs: the courts' height depends on it)
@@ -170,6 +177,14 @@ try {
   if (flag("--plan")) { await call("close", { discard: true }, { soft: true }); throw new Error("--plan: stopped"); }
   const hf = await call("heightfield_drape", field);
   say("island", JSON.stringify(hf.json.budget?.cells ?? hf.json.limits?.voxelCells), "notes", JSON.stringify(hf.json.notes ?? []));
+  // --trails: check_trail on the bare skin and stop (nothing saved): a quick loop on the trails' shape
+  if (flag("--trails")) {
+    const tq = await call("check_trail", { trails: trailLines, names: trailNames, width: T.TRAIL.bed * 2, margin: 1 }, { soft: true });
+    fs.writeFileSync(path.join(OUT, "trails-skin.json"), tq.text);
+    for (const t of tq.json?.trails ?? []) say("trail", t.name, t.summary, JSON.stringify((t.walk ?? []).map((w) => [w.offset, w.blockedCount ?? 0])));
+    await call("close", { discard: true }, { soft: true });
+    throw new Error("--plan: --trails stopped");
+  }
   const groundOf = async (x, z) => {
     const g = await call("query_ground", { x, z, units: "map" });
     const top = g.json?.standOn?.map;
@@ -197,17 +212,6 @@ try {
     plugs.push({ at: [cx, cz], trail: c.trail, off: round2(c.off), skin: round2(top), plugTop: y0 + 3, block: r.json?.name ?? r.text.slice(0, 160) });
   }
   say("skin corner plugs", JSON.stringify(plugs));
-  // (v2 round 3) plugs under the round-2 trail probes that missed (game_mine_drop on the NE trail: a mine fell to 4.74 at (44.7, -70.44)
-  // near the start, and was gone at (58.97, -60.73) on the right shoulder about 30 along): 4 x 3 x 4 of 1-unit voxels, the top a
-  // quarter unit under the skin there, so whatever goes through the skin lands on them
-  const LEAKS = (process.env.LEAKS ?? "44.7,-70.44;58.97,-60.73").split(";").filter(Boolean).map((q) => q.split(",").map(Number));
-  const leakPlugs = [];
-  for (const [lx, lz] of LEAKS) {
-    const top = await groundOf(lx, lz), y0 = Math.floor(top - 0.25) - 3;
-    const r = await call("add_block", { size: [4, 3, 4], scale: 1, at: [lx, y0, lz], units: "map", fill: "solid", material: MAT.ash }, { soft: true });
-    leakPlugs.push({ at: [lx, lz], skin: round2(top), plugTop: y0 + 3, block: r.json?.name ?? r.text.slice(0, 160) });
-  }
-  say("leak plugs", JSON.stringify(leakPlugs));
 
   // ---- the castles, each into new blocks of SCALE-unit voxels, turned to the contour (local x along it, local +z to the sea),
   // a gate in each end wall where its trail comes in and goes out ----
@@ -260,6 +264,24 @@ try {
     }
     say("castle", c.name, p.kind, "team", c.team, "floor", y, "ground", round1(g), "at", [cx, cz].join(","), "yaw", yaw, "gates", c.arrive, c.depart, "cells", usage?.voxelCells, "blocks", usage?.newBlocks);
   }
+  // (v2 round 3) plugs under the round-2 trail probes that missed (game_mine_drop on the NE trail: a mine fell to 4.74 at (44.7, -70.44)
+  // near the start, and was gone at (58.97, -60.73) on the right shoulder about 30 along): 4 x 3 x 4 of 1-unit voxels, the top a
+  // quarter unit under the ground there, so whatever goes through it lands on them. (v2 round 4) after the castles: (44.7, -70.44) is
+  // the top of a castle block at 10.5 over the skin at 4.5 (round 3's plug went under the skin and caught nothing), so its plug now
+  // comes up under that top; and the round-3 misses (54.44, -58.17) and (-44.1, -34.3), skin cells sheared across themselves
+  const LEAKS = (process.env.LEAKS ?? "44.7,-70.44;58.97,-60.73;54.44,-58.17;-44.1,-34.3").split(";").filter(Boolean).map((q) => q.split(",").map(Number));
+  const leakPlugs = [];
+  for (const [lx, lz] of LEAKS) {
+    // (v2 round 4) under the lowest ground over its 4 x 4 footprint (round 3's plugs, set by the middle, poked out of a sloping skin),
+    // or on a castle (its block's top over the skin) under the top at the point
+    const gs = [];
+    for (const [dx, dz] of [[-2, -2], [2, -2], [-2, 2], [2, 2]]) gs.push(await groundOf(lx + dx, lz + dz));
+    const onCastle = T.CASTLES.some((c) => T.footDist(c, lx, lz, 0) < 1);
+    const top = await groundOf(lx, lz), y0 = Math.floor((onCastle ? top : Math.min(top, ...gs)) - 0.25) - 3;
+    const r = await call("add_block", { size: [4, 3, 4], scale: 1, at: [lx, y0, lz], units: "map", fill: "solid", material: MAT.ash }, { soft: true });
+    leakPlugs.push({ at: [lx, lz], skin: round2(top), plugTop: y0 + 3, block: r.json?.name ?? r.text.slice(0, 160) });
+  }
+  say("leak plugs", JSON.stringify(leakPlugs));
   const dc = await lvl();
   say("cells after castles", JSON.stringify(dc.voxelCells), "blocks", JSON.stringify(dc.newFrames));
 
@@ -298,11 +320,14 @@ try {
     const gs = [];
     for (const dx of [-3, 0, 3]) for (const dz of [-3, 0, 3]) gs.push(await groundOf(round1(lx + dx), round1(lz + dz)));
     const bottom = round1(Math.min(...gs) - 1.5), top = Math.max(...gs) + 0.5;
-    // (v2 round 3) a lip: the pad is 6 x 6 voxels (9 x 9 map) with a ring one voxel over its 6 x 6 dish, so a mine that bounces stays
-    // on it (round 2: one ran off the north pad and fell through the crater's skin)
-    const ny = Math.ceil((top - bottom) / 1.5);
-    const pad = await call("add_block", { size: [6, ny + 1, 6], scale: 1.5, at: [lx, bottom, lz], units: "map", fill: "solid", material: MAT.hot }, { soft: true });
-    const lip = pad.err ? null : await call("fill_box_raw", { frame: pad.json.frameId, state: "empty", units: "grid", min: [1, ny, 1], max: [5, ny + 1, 5] }, { soft: true });
+    // (v2 round 3) a lip: a ring one voxel over the pad's dish, so a mine that bounces stays on it (round 2: one ran off the north pad
+    // and fell through the crater's skin). (v2 round 4) 5 x 5 voxels of 2 map units (10 x 10 map, a 6 x 6 dish): the 1.5-unit pads
+    // held mines at four bearings only and lost one in ten off the north pad's edge, the 1-unit blocks held every mine (docs/erg-mcp.md:
+    // mines through the ground); PAD_SCALE=1.5 is round 3's pad
+    const PS = +(process.env.PAD_SCALE ?? 2), PN = PS === 2 ? 5 : 6;
+    const ny = Math.ceil((top - bottom) / PS);
+    const pad = await call("add_block", { size: [PN, ny + 1, PN], scale: PS, at: [lx, bottom, lz], units: "map", fill: "solid", material: MAT.hot }, { soft: true });
+    const lip = pad.err ? null : await call("fill_box_raw", { frame: pad.json.frameId, state: "empty", units: "grid", min: [1, ny, 1], max: [PN - 1, ny + 1, PN - 1] }, { soft: true });
     say("launcher pad", lx, lz, "ground", round1(Math.min(...gs)), "-", round1(Math.max(...gs)), pad.err ? pad.text.slice(0, 200) : brief(pad, 160), "lip", lip ? brief(lip, 120) : "-");
     LAUNCHERS.push([lx, lz]);
   }
@@ -417,6 +442,25 @@ try {
   });
   fs.writeFileSync(path.join(OUT, "waypoints.json"), JSON.stringify(waypoints, null, 1));
   fs.writeFileSync(path.join(OUT, "blasts.json"), JSON.stringify(blasts, null, 1));
+  // (v2 round 4) a camera pose on each castle for the Test's castle shots (round 3's castle preset, framing the team's worms too, put
+  // the eye inside the cone once they had climbed): from the sea on the castle's own seaward axis, looking down into its court, the
+  // nearest of a few distances whose line of sight clears the ground (terrain.mjs island(), 2 under the line) until the last sixth,
+  // about 50 degrees down so the court shows over the seaward wall
+  const castleCams = T.CASTLES.map((c) => {
+    const tgt = [c.at[0], c.court + 2, c.at[1]];
+    for (const [D, H] of [[24, 30], [28, 36], [32, 42], [38, 50], [44, 58], [50, 68]]) {
+      const pos = [c.at[0] + c.f.ez[0] * D, c.court + H, c.at[1] + c.f.ez[1] * D];
+      let clear = true;
+      for (let k = 1; k < 50 && clear; k++) { const q = pos.map((v, i) => v + (tgt[i] - v) * k / 50); if (k < 42 && T.island(q[0], q[2]) > q[1] - 2) clear = false; }
+      if (!clear) continue;
+      const dx = pos[0] - tgt[0], dz = pos[2] - tgt[2];
+      return { castle: c.name, team: c.team, court: c.court, centre: c.at.map(round1), pos: pos.map(round1), target: tgt.map(round1), fov: 55, units: "map",
+        azimuth: Math.round(Math.atan2(dx, -dz) * 180 / Math.PI), elevation: Math.round(Math.atan2(H - 2, Math.hypot(dx, dz)) * 180 / Math.PI) };
+    }
+    return { castle: c.name, team: c.team, court: c.court, centre: c.at.map(round1), pos: null, note: "no clear pose from the sea" };
+  });
+  fs.writeFileSync(path.join(OUT, "castles.json"), JSON.stringify(castleCams, null, 1));
+  say("castle cams", JSON.stringify(castleCams.map((k) => [k.castle, k.pos, k.azimuth, k.elevation])));
   // every column across each trail's bed and a margin: no drop over 3 and no hole a worm falls through (check_reachability's
   // graph keeps to the ground it stands on, so it passes a broken edge); skin corners near a trail are named to probe in game
   const tc = await call("check_trail", { trails: trailLines, names: trailNames, width: T.TRAIL.bed * 2, margin: 1 }, { soft: true });
@@ -424,7 +468,13 @@ try {
   say("trails", brief(tc, 900));
   // (v2 round 3) a trap beside a trail (a drop with no walkable way back onto it: team 3 stayed in the NW trough) or a move
   // the walk refuses (a ridge between legs) fails the build; a V-drop onto the leg under is told and passes. TRAIL_SOFT=1 logs only.
-  const trailFails = (tc.json?.trails ?? []).filter((t) => (t.drops?.traps ?? 0) > 0 || (t.walk ?? []).some((w) => !w.ok));
+  // (v2 round 4) on the four team trails the centreline walk is the gate (the tester steers the centreline); the walks 1.5 to either
+  // side are logged: where two legs stack on the steep upper cone the bank between them leans into the edge of the lower bed (relax()
+  // has no room for the step at 2.9 a unit), rises of 0.5-0.7 over half a unit there. TRAIL_GATE=all fails on any line, as round 3.
+  const gateAll = process.env.TRAIL_GATE === "all", team = new Set(T.TRAILS.map((t) => t.name));
+  const trailFails = (tc.json?.trails ?? []).filter((t) => (t.drops?.traps ?? 0) > 0 ||
+    (t.walk ?? []).some((w) => !w.ok && (gateAll || (w.offset === 0 && team.has(t.name)))));
+  say("trail walks", JSON.stringify((tc.json?.trails ?? []).map((t) => [t.name, (t.walk ?? []).map((w) => [w.offset, w.blockedCount ?? 0])])));
   if (trailFails.length && !process.env.TRAIL_SOFT) throw new Error(`check_trail: ${trailFails.map((t) => `${t.name}: ${t.summary}`).join("; ")} (TRAIL_SOFT=1 to build anyway)`);
   say("waypoints", JSON.stringify(waypoints.map((w) => ({ team: w.team, castle: w.castle, n: w.waypoints.length, summit: w.summit }))));
 
@@ -473,6 +523,12 @@ try {
       const th = t.col.thc, c = [Math.cos(th), Math.sin(th)];
       return [`view-trail-${t.name}`, "render_view", { pos: [round1(c[0] * 150), 85, round1(c[1] * 150)], target: [round1(c[0] * 58), 30, round1(c[1] * 58)], fov: 55, fog: 900 }];
     }),
+    // (v2 round 4) close views of each trail's middle legs (the landings and berms), and the castle cameras of out/castles.json
+    ...T.TRAILS.map((t) => {
+      const h = t.hairpins[1], th = t.col.thc, c = [Math.cos(th), Math.sin(th)];
+      return [`close-trail-${t.name}`, "render_view", { pos: [round1(h[0] + c[0] * 45), round1(h[2] + 30), round1(h[1] + c[1] * 45)], target: [round1(h[0] - c[0] * 6), round1(h[2] + 4), round1(h[1] - c[1] * 6)], fov: 55, fog: 900 }];
+    }),
+    ...castleCams.filter((k) => k.pos).map((k) => [`cam-${k.castle}`, "render_view", { pos: k.pos, target: k.target, fov: k.fov, fog: 900 }]),
   ];
   for (const [name, tool, args] of shots) {
     const r = await call(tool, args, { soft: true });

@@ -1459,7 +1459,7 @@ export const tools: Tool[] = [
               ...(r.landing.climbRefused !== undefined ? { climbRefused: ov(r.landing.climbRefused) } : {}), why: r.landing.why } } : {}) })),
           ...(rep.runs.length > (a.limit ?? 30) ? { runsCount: rep.runs.length } : {}),
           ...(rep.banks ? { banks: rep.banks } : {}),
-          ...(walk ? { walk: walk.map((w) => ({ offset: ov(w.offset), ok: w.ok, segments: w.segments, ...(w.noFooting ? { noFooting: w.noFooting } : {}), ...(w.blockedCount ? { blockedCount: w.blockedCount, blocked: w.blocked.map((b) => ({ along: ov(b.along), at: xz(b.at), rise: ov(b.rise), run: ov(b.run), why: b.why })) } : {}) })) } : {}),
+          ...(walk ? { walk: walk.map((w) => ({ offset: ov(w.offset), ok: w.ok, segments: w.segments, ...(w.noFooting ? { noFooting: w.noFooting } : {}), ...(w.turns ? { turns: w.turns } : {}), ...(w.blockedCount ? { blockedCount: w.blockedCount, blocked: w.blocked.map((b) => ({ along: ov(b.along), at: xz(b.at), rise: ov(b.rise), run: ov(b.run), why: b.why })) } : {}) })) } : {}),
           ...(rep.mineSuspects.length ? { mineSuspects: rep.mineSuspects.slice(0, 40).map((m) => ({ kind: m.kind, from: ov(m.from), to: ov(m.to), at: xz(m.at), frame: m.frame, detail: m.detail })), mineSuspectsNote: "ground of the kinds that let mines through in Tests (a block of a non-whole scale; a skin cell sheared more than a voxel across itself): not proven causes; game_mine_drop {trails} there says whether it holds" } : {}),
           ...(rep.skinCorners.length ? { skinCorners: rep.skinCorners.map((c) => ({ at: xz(c.at), along: ov(c.along), off: ov(c.off), blocks: c.blocks })) } : {}),
         };

@@ -169,3 +169,42 @@ keep, and the trails had no lip on their downhill side.
 - **Sea** and **mines**: unchanged (the same schedule from the same castle floors; the cap 860 world, 43 map, is under the
   launcher pads at 48+).
 - **Cells** 62 670 of 65 535 (41 of 64 blocks); 162 MCP calls. Two builds give the same projectHash (f5dc0f39...).
+
+## v2 round 4 (builder's notes)
+
+The round-3 critique applied (`terrain.mjs`, `build.mjs`):
+
+- **Landings**: every hairpin is a level landing about 9 across. Each leg runs level for 3 either side of the hairpin and
+  the bed widens to 4.6 half width round it (`TRAIL.flat`, `TRAIL.land`). The legs are sized for the climb plus the level ends.
+- **Berms**: inside every hairpin's V, wherever the two legs' centrelines are less than 17 apart, the ground is raised to
+  the upper leg's height (`BERM`). Its side over the lower leg is a bank of at most 2.4 a unit from just off that bed, so
+  the lower bed is never lifted. Across every V the relaxed grid now has no dip deeper than 0.6 (the kerb's lip).
+- **NW**: legs at a 0.44 grade (the others 0.5). The steepest 3-unit stretch is 0.55-0.62 on every trail, and the NW is no
+  steeper than the rest.
+- **The bed**: level 2 past its painted edge before the bank or the kerb starts (`TRAIL.shoulder`). Pinned in `relax()`.
+  Each column takes the height at its foot on the polyline, not the nearest point's (round 3's beds were stairs of a
+  map unit's tread). The material is GreySlateFloor (19), a warm grey slate floor, with the dark VolcanoRock kerb line kept.
+- **relax()** now runs to convergence and then unpinned until no step is over 2.9. Round 3's 60 passes left about 2 400
+  steps over the limit, up to 17 high: skin cells sheared across themselves, the kind check_trail names as mine-leak
+  suspects.
+- **Branches** ramp at up to 0.3 to the nearest point of their trail (round 3: level only, so the SW branch ran 58 units
+  through the V of the SW trail's second hairpin). The last leg ends 0.6 of its width off the column's line (was all of it),
+  so the rim end no longer stands over the hairpin two below.
+- **Mines**: the launcher pads are 2-unit voxels (5 x 5 with a 3 x 3 dish), not 1.5. The leak plugs go in after the
+  castles: the NE one is now under the castle block's top at 10.5 (plug top 10). Plugs were added at (54.44, -58.17) and
+  (-44.1, -34.3), each under the lowest ground of its footprint.
+- **Cameras**: `out/castles.json` gives a pose on each castle from the sea, about 49 degrees down, whose line of sight clears
+  the ground. It replaces the castle preset, which framed the team's worms too and put the eye in the cone.
+
+Checks:
+
+- `check_trail`: no trap or hole on any trail. The centreline walk is clean on all four team trails and on the Cinder
+  branch.
+- Walks 1.5 either side of the centreline are logged, not gated. They have 4-39 rises of 0.5-0.7 over half a unit, on the
+  uphill side of the upper legs. There, two legs stack on the steep upper cone, and the bank between them leans into the
+  bed's edge: a drape corner is the mean of the four columns round it, and relax() has no room for the step.
+  `TRAIL_GATE=all` fails the build on them as round 3 did.
+- Trail-only at 38 degrees: 16 of 16 team spawns reach their own rim end. Flood PASS. 0 detached pieces. Save with no
+  warnings beyond the factory's known shell note.
+- Cells 63 126 of 65 535 (43 of 64 blocks). 205 MCP calls. Two builds give the same projectHash (4cb20bb4...) and a
+  byte-identical pack.

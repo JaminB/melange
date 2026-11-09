@@ -87,6 +87,15 @@ test("check_trail: the walk catches a ridge across the trail every column of whi
   assert.ok(w2[0].ok, JSON.stringify(w2));
 });
 
+test("check_trail: an offset line round a hairpin's tip jumps, and the walk takes that as a new segment, not a refused move", () => {
+  // a flat plateau, the trail out along z = 10 and back along z = 14 (a hairpin at x 30): the offset lines jump round the tip
+  const flat = [block(-1, [-10, 0, -5], [60, 10, 30], 1, () => 8)];
+  const walk = walkTrail(flat, [[2, 10, 8], [30, 10, 8], [30, 14, 8], [2, 14, 8]], [-1.5, 0, 1.5], opts, trailReach(null));
+  for (const w of walk) assert.ok(w.ok, JSON.stringify(w));
+  assert.ok(walk.filter((w) => w.offset !== 0).every((w) => w.turns >= 1), JSON.stringify(walk.map((w) => [w.offset, w.turns])));
+  assert.equal(walk.find((w) => w.offset === 0)!.turns, 0);
+});
+
 test("check_trail: mine-ground suspects are a block of a non-whole scale and a skin cell sheared more than a voxel", () => {
   const gs = [block(-1, [0, 0, 0], [10, 8, 10], 1.5, () => 6), block(-2, [20, 0, 0], [8, 4, 8], 2.5, () => 10, 1, (x) => (x >= 30 ? 6 : 0)), block(-3, [40, 0, 0], [8, 8, 8], 2, () => 6)];
   assert.equal(mineSuspectAt(gs, -1, 5, 5)?.kind, "scaledBlock");

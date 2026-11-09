@@ -212,13 +212,15 @@ export function classifyDrops(gs: Grid[], rep: TrailReport, o: TrailCheckOptions
 // ------------------------------------------------------------------ the walk itself
 
 export interface WalkBlock { along: number; at: [number, number]; rise: number; run: number; why: string; }
-export interface WalkLine { offset: number; ok: boolean; segments: number; blocked: WalkBlock[]; blockedCount: number; noFooting: number; }
+export interface WalkLine { offset: number; ok: boolean; segments: number; blocked: WalkBlock[]; blockedCount: number; noFooting: number; turns: number; }
 
 /** Walks the trail with the walking rules: on the centreline and on each of `offsets` (map units, left negative) a worm
  * is moved sample by sample over the ground at the trail's own height (a leg under a hairpin is not taken for the leg
  * over it), each move judged by check_reachability's rules (walks: a step of maxStep, a riser whose stair is no steeper
  * than maxSlope, a drop of maxDrop, a gap no narrower than bodyWidth). A move refused is a block: a ridge between legs, a
- * kerb too high, a slot too narrow. */
+ * kerb too high, a slot too narrow. Where an offset line turns sharper than its offset allows (the inside of a hairpin runs
+ * back on itself, the outside jumps round the tip), its point moves more than a few samples' length at once: that is no
+ * move a worm makes, so the walk starts a new segment there (`turns` counts them) instead of judging the jump. */
 export function walkTrail(gs: Grid[], pts: number[][], offsets: number[], o: TrailCheckOptions, reach: ReachOptions): WalkLine[] {
   const line = densify(pts, o.spacing), r2 = (v: number) => Math.round(v * 100) / 100;
   let x0 = Infinity, z0 = Infinity, x1 = -Infinity, z1 = -Infinity;
@@ -227,7 +229,7 @@ export function walkTrail(gs: Grid[], pts: number[][], offsets: number[], o: Tra
   const S = surfaces(gs, { x0: x0 - R, z0: z0 - R, x1: x1 + R, z1: z1 + R }, reach.step, reach.headroom);
   return offsets.map((off) => {
     const blocked: WalkBlock[] = [];
-    let prev = -1, noFooting = 0, segments = 0;
+    let prev = -1, noFooting = 0, segments = 0, turns = 0, lx = NaN, lz = NaN;
     for (let i = 0; i < line.length; i++) {
       const [x, z, y, along] = line[i];
       const p = line[Math.max(0, i - 1)], q = line[Math.min(line.length - 1, i + 1)];
@@ -235,6 +237,10 @@ export function walkTrail(gs: Grid[], pts: number[][], offsets: number[], o: Tra
       const l = Math.hypot(dx, dz) || 1;
       dx /= l; dz /= l;
       const px = x - dz * off, pz = z + dx * off, below = Number.isFinite(y) ? y + 2.5 : Infinity;
+      // (Caldera v2 round 4) an offset line's jump round a sharp turn is not a move: a new segment from here
+      const jump = off !== 0 && Number.isFinite(lx) && Math.hypot(px - lx, pz - lz) > Math.max(1, 4 * o.spacing);
+      lx = px; lz = pz;
+      if (jump) { turns++; prev = -1; }
       const g = spansAt(gs, px, pz, below)[0];
       const n = g ? standing(S, [px, g.top + 0.1, pz], reach, gs) : -1;
       if (n < 0) { noFooting++; prev = -1; continue; }
@@ -250,6 +256,6 @@ export function walkTrail(gs: Grid[], pts: number[][], offsets: number[], o: Tra
       }
       prev = n;
     }
-    return { offset: off, ok: blocked.length === 0, segments, blocked: blocked.slice(0, 20), blockedCount: blocked.length, noFooting };
+    return { offset: off, ok: blocked.length === 0, segments, blocked: blocked.slice(0, 20), blockedCount: blocked.length, noFooting, turns };
   });
 }
