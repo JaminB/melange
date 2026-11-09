@@ -398,7 +398,22 @@
                   "schemeMines": { "type": "boolean", "default": true, "description": "false: the scheme's 15 random start mines are not placed (its oil drums are)." },
                   "keepKnot": { "type": "boolean", "default": false, "description": "true: when the factory's drop from its knot hits no land it stays at its knot (Melange 0.13+)." },
                   "launchHeight": { "type": "integer", "minimum": 1, "maximum": 255, "description": "Map units over the factory its mines appear at when it fires (20 when only launchRadius is set), instead of the game's placement over random worms and objects (Melange 0.13+)." },
-                  "launchRadius": { "type": "integer", "minimum": 0, "maximum": 255, "description": "Map units round the factory its mines appear within (default 0), so they fall round it (Melange 0.13+)." }
+                  "launchRadius": { "type": "integer", "minimum": 0, "maximum": 255, "description": "Map units round the factory its mines appear within (default 0), so they fall round it (Melange 0.13+)." },
+                  "launchers": { "type": "array", "minItems": 1, "maxItems": 8, "items": { "type": "array", "minItems": 3, "maxItems": 3, "items": { "type": "integer", "minimum": -100000, "maximum": 100000 } }, "description": "1-8 launch points [x, y, z], whole world units: a fire's mines are shared out over them and erupt straight up from within launchRadius of each (Melange 0.13+ of the erg-mcp branch)." },
+                  "throw": {
+                    "type": "object", "additionalProperties": false, "required": ["maxRange"],
+                    "description": "The mines are lobbed out from the launchers (or the factory) to landing points minRange-maxRange map units away and landed by Melange where the flight meets the land (the erg-mcp branch). Fields at their defaults are left out when written.",
+                    "properties": {
+                      "minRange": { "type": "integer", "minimum": 0, "maximum": 500, "default": 0 },
+                      "maxRange": { "type": "integer", "minimum": 1, "maximum": 500 },
+                      "apex": { "type": "integer", "minimum": 1, "maximum": 255, "default": 15, "description": "Map units the arc tops out over the higher of its ends." },
+                      "pattern": { "type": "string", "enum": ["random", "ring", "targets"], "default": "random" },
+                      "avoidWater": { "type": "boolean", "default": true, "description": "A landing point whose ground is under the water is drawn again." },
+                      "targets": { "type": "array", "maxItems": 16, "items": { "type": "array", "minItems": 2, "maxItems": 2, "items": { "type": "integer", "minimum": -100000, "maximum": 100000 } }, "description": "[x, z] whole world units; pattern targets aims targetShare % of a fire's mines within scatter of one of them." },
+                      "scatter": { "type": "integer", "minimum": 0, "maximum": 255, "default": 10 },
+                      "targetShare": { "type": "integer", "minimum": 0, "maximum": 100, "default": 50 }
+                    }
+                  }
                 }
               }
             }

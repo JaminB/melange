@@ -396,6 +396,13 @@ try {
   }
   say("factory settings", brief(await call("set_mine_factory", { everyNTurns: +(process.env.VOLLEY_EVERY || 3), schemeMines: false, keepKnot: true, launchHeight: +(process.env.LAUNCH_H || 14), launchRadius: LAUNCH_R,
     units: "map", launchers: LAUNCHERS }), 900));
+  // (mines outward, 2026-11-09: the owner wants the mines all over the island, castles included) the throw: the launchers lob
+  // their mines 20-115 map units out, 40 % of each volley aimed within 12 of a team castle's court, the rest anywhere over the
+  // land (a landing point in the sea is drawn again), arcs topping out 25 over the higher end; Melange lands each where its
+  // flight meets the land (docs/erg.md, Where a thrown mine lands). MINES_THROW=0 keeps round 5's straight-up eruptions.
+  if (process.env.MINES_THROW !== "0")
+    say("throw", brief(await call("set_mine_factory", { units: "map", throw: { minRange: +(process.env.THROW_MIN || 20), maxRange: +(process.env.THROW_MAX || 115), apex: +(process.env.THROW_APEX || 25),
+      pattern: "targets", targets: T.CASTLES.filter((c) => c.team >= 0).map((c) => c.at.map(round1)), scatter: 12, targetShare: 40 } }), 600));
 
   // ---- lights on three of the islets (only while the cells last) ----
   for (const [i, q] of T.ISLETS.slice(0, 3).entries()) {

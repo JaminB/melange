@@ -273,6 +273,59 @@ void DropMines(const Call& c, Result& r, void*) {
     r.json = jsonmini::Obj().Bool("queued", true).Int("count", static_cast<int>(drops.size())).UInt("tick", sim::Tick()).End();
 }
 
+// level.test.landRay {segments: [[x0, y0, z0, x1, y1, z1], ...]}: world units, 1-64 segments: the game's own land sweep
+// along each (gamestate::LandRay, the straight sweep the camera ray cast uses), answered as the hit point and normal, or a
+// miss, so the ground a thrown mine will meet can be read where it is meant to land (Caldera's mines fell through ground
+// worms stood on). Main thread.
+void LandRayOp(const Call& c, Result& r, void*) {
+    json::Value p;
+    if (!rpc::ParseParams(c, &p, r)) return;
+    const json::Value* segs = p.Get("segments");
+    if (!segs || !segs->IsArray() || segs->items.empty() || segs->items.size() > 64) {
+        Fail(r, rpc::kBadParams, "segments: 1-64 [x0, y0, z0, x1, y1, z1], world units");
+        return;
+    }
+    if (!sim::InMatch()) {
+        Fail(r, rpc::kNotInMatch, "no match is running");
+        return;
+    }
+    auto vec3 = [](float x, float y, float z) {
+        char b[96];
+        snprintf(b, sizeof b, "[%.17g,%.17g,%.17g]", static_cast<double>(x), static_cast<double>(y), static_cast<double>(z));
+        return std::string(b);
+    };
+    jsonmini::Arr out;
+    for (const json::Value& sv : segs->items) {
+        float v[6];
+        bool ok = sv.IsArray() && sv.items.size() == 6;
+        for (size_t k = 0; ok && k < 6; ++k) {
+            const json::Value& n = sv.items[k];
+            ok = n.IsNumber() && std::isfinite(n.number) && std::fabs(n.number) <= 100000;
+            if (ok) v[k] = static_cast<float>(n.number);
+        }
+        if (!ok) {
+            Fail(r, rpc::kBadParams, "segments: each [x0, y0, z0, x1, y1, z1] within 100000 world units");
+            return;
+        }
+        gamestate::LandHit h{};
+        const gamestate::LandRayResult res = gamestate::LandRay({v[0], v[1], v[2]}, {v[3], v[4], v[5]}, &h);
+        jsonmini::Obj o;
+        switch (res) {
+            case gamestate::LandRayResult::Hit:
+                o.Bool("hit", true).Float("t", h.t)
+                    .Raw("at", vec3(v[0] + (v[3] - v[0]) * h.t, v[1] + (v[4] - v[1]) * h.t, v[2] + (v[5] - v[2]) * h.t))
+                    .Raw("normal", vec3(h.normal.x, h.normal.y, h.normal.z));
+                break;
+            case gamestate::LandRayResult::Miss: o.Bool("hit", false); break;
+            case gamestate::LandRayResult::Budget: o.Bool("hit", false).Str("error", "budget"); break;
+            case gamestate::LandRayResult::Invalid: o.Bool("hit", false).Str("error", "invalid"); break;
+            default: o.Bool("hit", false).Str("error", "unavailable"); break;
+        }
+        out.Raw(o.End());
+    }
+    r.json = jsonmini::Obj().Raw("rays", out.End()).UInt("tick", sim::Tick()).End();
+}
+
 // level.test.roundTime {hold: bool}: hold pauses the round clock now and again at each turn start until the Test ends
 // (or hold: false, which resumes it), so the scheme's sudden death never comes; the turn clock runs as before.
 void RoundTime(const Call& c, Result& r, void*) {
@@ -308,6 +361,7 @@ void InstallLevelTestOps() {
     AddMethod("level.test.selectWeapon", &SelectWeapon, nullptr, kRpcMutating | kRpcGameOnly);
     AddMethod("level.test.fireFactory", &FireFactory, nullptr, kRpcMutating | kRpcGameOnly);
     AddMethod("level.test.dropMines", &DropMines, nullptr, kRpcMutating | kRpcGameOnly);
+    AddMethod("level.test.landRay", &LandRayOp, nullptr, kRpcGameOnly);
     AddMethod("level.test.probe", &Probe, nullptr, kRpcGameOnly);
     AddMethod("level.test.roundTime", &RoundTime, nullptr, kRpcMutating | kRpcGameOnly);
 }

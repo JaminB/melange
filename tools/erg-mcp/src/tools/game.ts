@@ -479,8 +479,11 @@ interface ProbeExplosion { tick: number; turn: number; at: number[]; wormDamage:
 interface ProbeDeath extends ProbeWorm { tick: number; turn: number; lastAlivePos: number[]; cause: string; evidence: string[]; waterMap?: number; waterWorld?: number;
   source?: ProbeExplosion; hits: { explosion: ProbeExplosion; distanceMap: number }[]; falls: { tick: number; fromY: number; toY: number; dropMap: number }[];
   healthSteps: { tick: number; from: number; to: number }[]; }
-interface FireRec { stem: string; tick: number; turn: number; asked: number; launch: boolean; factory: number[];
+interface FireRec { stem: string; tick: number; turn: number; asked: number; launch: boolean; thrown?: boolean; factory: number[];
   mines: { handle: number; spawn: number[]; rest?: number[]; settled?: boolean; gone?: boolean; lastSeen?: number[]; restFromFactoryMap: number;
+    // a thrown mine (this branch): where it was aimed, how it came down (melange: landed at the land sweep's hit; engine: the
+    // engine's own rest; water; lost) and how far from its target it lies
+    target?: number[]; landing?: "melange" | "engine" | "water" | "lost" | ""; restFromTargetMap?: number;
     // a game that watches the mines after the fire (this branch's levels/factory.cpp): what became of each
     fate?: "resting" | "not seen to land" | "drowned" | "destroyed" | "gone before it landed"; goneTick?: number; waterMap?: number; moves?: number; movedAfterRest?: number }[]; }
 interface ProbeAnswer {
@@ -551,8 +554,11 @@ export function fireOut(f: FireRec, u: "map" | "world", groundAt?: (x: number, z
     ...(m.gone ? { gone: true, lastSeen: inUnits(m.lastSeen, u), ...(m.rest ? { rest: inUnits(m.rest, u) } : {}) } : { rest: inUnits(m.rest, u), settled: !!m.settled }),
     ...(m.fate ? { fate: m.fate } : {}), ...sea(m), ...zoneOf(m), ...(m.goneTick !== undefined ? { goneTick: m.goneTick } : {}), ...(m.waterMap !== undefined ? { water: Math.round(m.waterMap * k * 100) / 100 } : {}),
     ...(m.movedAfterRest ? { movedAfterRest: m.movedAfterRest } : {}),
+    ...(m.target ? { target: inUnits(m.target, u), landing: m.landing || "in flight", ...(m.restFromTargetMap !== undefined ? { restFromTarget: Math.round(m.restFromTargetMap * k * 100) / 100 } : {}) } : {}),
     restFromFactory: Math.round(m.restFromFactoryMap * k * 100) / 100 }));
-  return { tick: f.tick, turn: f.turn, mines: f.mines.length, launch: f.launch, factory: inUnits(f.factory, u), ...(Object.keys(fates).length ? { fates } : {}),
+  const landings: Record<string, number> = {};
+  for (const m of f.mines) if (m.target) landings[m.landing || "in flight"] = (landings[m.landing || "in flight"] ?? 0) + 1;
+  return { tick: f.tick, turn: f.turn, mines: f.mines.length, launch: f.launch, ...(f.thrown ? { thrown: true, landings } : {}), factory: inUnits(f.factory, u), ...(Object.keys(fates).length ? { fates } : {}),
     ...(Object.keys(zones).length ? { where: zones, whereRule: `with the open project's ground: water (at or under it), under the factory (within ${UNDER_FACTORY} map units of its axis), crater (the ground rises ${RIM_RISE} map units over the mine within ${RIM_REACH} further out from the factory), else outside` } : {}),
     each };
 }

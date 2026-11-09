@@ -119,6 +119,22 @@ struct TriggerSpec {
 // fires at a turn start when fewer than `activation` mines are in the level, min(activation - mines, 10) of them.
 inline constexpr size_t kMaxLaunchers = 8;
 inline constexpr int kMaxLauncherCoord = 100000;   // world units
+inline constexpr size_t kMaxThrowTargets = 16;
+inline constexpr int kMaxThrowRange = 500;         // map units
+enum class ThrowPattern : uint8_t { Random, Ring, Targets };
+const char* ThrowPatternName(ThrowPattern p);                 // "random" | "ring" | "targets"
+bool ParseThrowPattern(std::string_view s, ThrowPattern* out);
+struct ThrowSpec {
+    int minRange = 0;                                 // map units from the launch point, 0-500
+    int maxRange = 1;                                 // map units, minRange-500 (1 or more)
+    int apex = 15;                                    // map units the arc tops out over the higher end, 1-255
+    ThrowPattern pattern = ThrowPattern::Random;
+    bool avoidWater = true;
+    std::vector<std::array<int, 2>> targets;          // world units (x, z), at most kMaxThrowTargets; pattern targets
+    int scatter = 10;                                 // map units round a target a mine lands within, 0-255
+    int targetShare = 50;                             // % of a fire's mines aimed at the targets, 0-100
+    bool operator==(const ThrowSpec&) const = default;
+};
 struct FactorySpec {
     std::optional<int> activation;                    // NumMineActivation 0-255 (game 20; 0 never fires)
     std::optional<int> inactiveTurns;                 // NumTurnsInactive 0-255 (game 7)
@@ -135,8 +151,16 @@ struct FactorySpec {
     // apart), tops out launchHeight over it and falls back there, instead of falling over the factory. The engine runs one factory a match (GameLogicService asserts "Only allowed one mine factory at
     // a time"), so several launch points are this one factory's.
     std::vector<std::array<int, 3>> launchers;
+    // The throw (levels/factory.cpp): set, each fired mine is lobbed from its launcher (or the factory) to a landing
+    // point minRange-maxRange map units away, chosen by `pattern` (random: any bearing; ring: the fire's mines spread
+    // evenly round the compass; targets: targetShare % of them at one of `targets` (world units x, z), within
+    // `scatter` of it, the rest random), the arc topping out `apex` map units over the higher of its ends. With
+    // avoidWater a landing point whose ground (the engine's own land sweep) is under the water is drawn again. Melange
+    // then lands each mine where its flight first meets the land (the engine's mine collision lets them through some
+    // ground: docs/erg.md), instead of erupting straight up.
+    std::optional<ThrowSpec> throwing;
     bool Default() const { return !activation && !inactiveTurns && schemeMines && !keepKnot && !Launch(); }
-    bool Launch() const { return launchHeight || launchRadius || !launchers.empty(); }
+    bool Launch() const { return launchHeight || launchRadius || !launchers.empty() || throwing; }
     bool Tweaks() const { return activation || inactiveTurns; }
 };
 struct ObjectSpec {

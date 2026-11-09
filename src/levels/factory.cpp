@@ -35,6 +35,26 @@
 // mines go straight up and down. Some ground lets even those through (on Caldera four of eight launcher pads held no
 // mine, the same pads every time; docs/erg.md): level.test.dropMines finds it.
 //
+// The throw (FactorySpec::throwing, 2026-11-09): each mine of a fire is lobbed from its launcher (or the factory) at a
+// landing point minRange-maxRange map units out (pattern random, ring or targets), the ground there read with the
+// engine's own straight land sweep (gamestate::LandRay, 0x466ae0) so a point in the sea is drawn again, and its
+// velocity is the ballistic one that tops out `apex` over the higher end. Melange then lands it itself: every sim tick
+// the mine's analytic position (the parabolic payload keeps m_vInitialPosition +0x28, m_vInitialVelocity +0x34,
+// m_vAcceleration +0x40 and m_tInitialTime +0x1a0, and moves nothing until a collision re-bases them) is swept from
+// the last tick's with LandRay, and at the first hit the mine is put there and the engine's own come-to-rest
+// (ParabolicPayloadLogicEntity 0x5758c0: posts the landing, zeroes the velocity and acceleration, arms the proximity
+// fuse through the usual rest path) is called on it. Why: the engine's mine collision (the collider service's step
+// 0x5150e0, the same sweep over 20 ticks from the sphere's bottom) lets mines through some voxel frames while a
+// straight sweep of the same function hits them: on Caldera (2026-11-09, testenv B) LandRay found the ground top at
+// all 84 probe columns while straight drops at the 28 launcher-pad columns all fell through; on a 24-block test
+// level two blocks (ids -1 and -13, grass01 and dinoegg02 at scale 1) let 6 of 6 drops through in one match and held
+// 16 of 16 drops and 4 sideways throws (0.05-0.3 world units/ms, resting at the top, no sinking) in the next, with 12
+// materials and scales 1, 2 and 2.5 holding alike: the miss is frame-wise and state-dependent, not a matter of
+// material, scale or height, and its state (the land's broadphase mask and ray cache, which LandRay saves and puts back
+// round its own calls, are the candidates) was not pinned down. Landing at the straight sweep's hit also leaves no
+// sideways speed to slide or sink on. If the engine collides first (a worm, an object, a frame it does see), the mine is
+// rested at the contact point when the ground is within 2 map units of it, else its new parabola is followed.
+//
 // Every fire is followed to its end (factory.fired on the session log, FiresJson): the mine entities that appear in
 // PlaceMines (either way) with where each appeared, then, from the sim tick, where each comes to rest (the entity list
 // moves a mine's position from its launch point to where it lies once it rests) or that it is gone. A mine counts as at
@@ -88,6 +108,15 @@ constexpr uint32_t kMinesBegin = 0x1d8, kMinesEnd = 0x1dc;   // GameLogicService
 constexpr uint32_t kPos = 0x2c, kNormal = 0x38, kExploded = 0x48, kCountdown = 0x88, kFireState = 0x8c, kToSpawn = 0x84;
 constexpr float kWorldPerMap = 20.f;
 constexpr float kMineGravity = 2.5e-4f;        // world units per ms^2: a mine's fall (CreateMine's velocity is per ms)
+// The parabolic payload (vtable 0x85b504): its flight's base, and the come-to-rest the collision path calls once the
+// velocity after a bounce is zero (ParabolicPayloadLogicEntity.cpp 0x22c-0x25c: the landing message, m_vInitialVelocity
+// and m_vAcceleration zeroed, the expiry clamped).
+constexpr uintptr_t kParaRest = 0x5758c0, kTaskManager = 0x96d030;
+constexpr uint32_t kPInitPos = 0x28, kPInitVel = 0x34, kPAccel = 0x40, kPInitTime = 0x1a0, kTmClock = 0x38;
+constexpr uint32_t kMaxFlightMs = 20000;       // a thrown mine not down by then is let go
+constexpr int kTargetTries = 6;                // landing points drawn before a mine falls back to straight up
+constexpr float kRestSnap = 2.f * kWorldPerMap;   // a bounce's contact point this close to the land (either way) rests there
+constexpr float kThrowLift = 2.5f * kWorldPerMap;   // world units a thrown mine appears over its launch point (see the throw)
 constexpr float kMinApart = 30.f;              // world units: a launcher's mines start at least this far apart, if they can
 constexpr int kSpotTries = 12;
 
@@ -116,6 +145,9 @@ SafetyHookInline g_hDrop, g_hPlace;
 struct FiredMine {
     uint32_t handle = 0;
     float spawn[3] = {}, last[3] = {};
+    bool thrown = false;          // a throw: aimed at target (world units)
+    float target[3] = {};
+    const char* landing = "";     // thrown: "melange" (landed at the sweep's hit), "engine" (the engine's own rest), "water", "lost", "" (in flight)
     ULONGLONG changedAt = 0;
     bool moved = false, done = false, gone = false;
     int moves = 0;                // position changes seen
@@ -129,6 +161,7 @@ struct Fire {
     uint32_t tick = 0, turn = 0;
     int asked = 0;
     bool launch = false;
+    bool thrown = false;
     float factory[3] = {};
     ULONGLONG at = 0;
     bool logged = false;
@@ -144,10 +177,31 @@ std::atomic<uint32_t> g_fireSerial{0};   // fires seen this session (PlaceMines)
 std::atomic<ULONGLONG> g_fireAt{0};      // GetTickCount64 of the last
 Flight g_flight;                         // the last fire's first mine (main thread: PlaceMines, render.fireShot's frame)
 bool g_hasFlight = false;
+bool g_restOk = false;                   // kParaRest matches build #1077 (Install)
+bool g_landRayWarned = false;
+
+// A thrown mine Melange lands (main thread: PlaceMines and the sim tick).
+struct Guided {
+    uint32_t handle = 0;
+    uintptr_t object = 0, vtable = 0;   // the entity at launch: a changed vtable means the object is gone (freed, reused)
+    bool parabolic = false;
+    float p0[3] = {}, v0[3] = {}, a[3] = {};   // the parabola last seen (the engine re-bases it at a collision)
+    uint32_t t0 = 0, lastT = 0;
+    float target[3] = {};
+    uint32_t fireTick = 0;
+    bool pinned = false;        // landed: held at `at` while the engine leaves it at rest (see GuideThrown)
+    float at[3] = {};
+    int rePins = 0;
+};
+std::vector<Guided> g_guided;
+struct Throw {       // one mine of a throw, for pairing the entities that appear with their targets
+    float from[3], target[3], vel[3];
+};
 /** Within this of the factory's axis (map units, horizontally) a mine at rest is "under the factory". */
 constexpr float kUnderFactoryMap = 2.5f;
 
 bool ReadVec(uintptr_t at, float out[3]) { return mem::SafeRead(at, out, sizeof(float) * 3); }
+float WaterNow();
 
 void ApplyField(const char* name, const std::optional<int>& v, Field* f) {
     *f = Field{};
@@ -211,6 +265,8 @@ const char* EngineMine(const float pos[3], const float vel[3]);
 struct MineAt {
     uint32_t handle;
     float pos[3];
+    uintptr_t object = 0, vtable = 0;
+    bool parabolic = false;   // the entity list's class is ParabolicPayloadLogicEntity (the come-to-rest below is its)
 };
 std::vector<MineAt> Mines() {
     static std::vector<gamestate::Entity> ents(1024);
@@ -224,13 +280,225 @@ std::vector<MineAt> Mines() {
         snprintf(both, sizeof both, "%s %s", e.type, e.label);
         for (char* c = both; *c; ++c) *c = static_cast<char>(std::tolower(static_cast<unsigned char>(*c)));
         if (!std::strstr(both, "mine") || std::strstr(both, "factory")) continue;
-        out.push_back({e.handle, {e.pos.x, e.pos.y, e.pos.z}});
+        out.push_back({e.handle, {e.pos.x, e.pos.y, e.pos.z}, e.object, e.vtable, std::strcmp(e.type, "ParabolicPayloadLogicEntity") == 0});
     }
     return out;
 }
 
-// After a PlaceMines: the mines that were not there before it are this fire's.
-void FollowFire(const std::string& stem, const std::vector<MineAt>& before, int asked, bool launch, const float at[3], float vy) {
+uint32_t LogicTime() {
+    uintptr_t tm = 0;
+    uint32_t t = 0;
+    return mem::SafeRead(kTaskManager, &tm, sizeof tm) && tm && mem::SafeRead(tm + kTmClock, &t, sizeof t) ? t : 0;
+}
+
+// The land under (x, z) by the engine's straight sweep: the top's world y, or nothing (no land: the sea, or outside).
+std::optional<float> GroundAt(float x, float z, float fromY) {
+    const float top = (std::max)(3600.f, fromY + 1000.f);
+    gamestate::LandHit h{};
+    if (gamestate::LandRay({x, top, z}, {x, top - 4000.f, z}, &h) != gamestate::LandRayResult::Hit) return std::nullopt;
+    return top - 4000.f * h.t;
+}
+
+// The velocity (world units per ms) that lobs a mine from `from` to `to`, topping out apexWorld over the higher end.
+void ThrowVelocity(const float from[3], const float to[3], float apexWorld, float out[3]) {
+    const float apexY = (std::max)(from[1], to[1]) + (std::max)(apexWorld, kWorldPerMap);
+    const float vy = std::sqrt(2.f * kMineGravity * (apexY - from[1]));
+    const float tUp = vy / kMineGravity, tDown = std::sqrt(2.f * (apexY - to[1]) / kMineGravity), total = tUp + tDown;
+    out[0] = (to[0] - from[0]) / total;
+    out[1] = vy;
+    out[2] = (to[2] - from[2]) / total;
+}
+
+// Where a thrown mine is at logic time t on its parabola.
+void At(const Guided& g, uint32_t t, float out[3]) {
+    const float dt = static_cast<float>(static_cast<int32_t>(t - g.t0));
+    for (int k = 0; k < 3; ++k) out[k] = g.p0[k] + g.v0[k] * dt + 0.5f * g.a[k] * dt * dt;
+}
+
+bool ReadParabola(uintptr_t obj, float p0[3], float v0[3], float a[3], uint32_t* t0) {
+    return mem::SafeRead(obj + kPInitPos, p0, 12) && mem::SafeRead(obj + kPInitVel, v0, 12) && mem::SafeRead(obj + kPAccel, a, 12) &&
+           mem::SafeRead(obj + kPInitTime, t0, 4);
+}
+
+// The mine put at rest at `at`: its flight's base moved there and the engine's own come-to-rest run on it (or, on
+// another build, the velocity and acceleration zeroed by hand).
+bool RestAt(uintptr_t obj, bool parabolic, const float at[3], uint32_t now) {
+    if (!mem::Write(obj + kPInitPos, at, 12) || !mem::Write(obj + kPInitTime, &now, 4)) return false;
+    if (g_restOk && parabolic) {
+        reinterpret_cast<void(__thiscall*)(uintptr_t)>(kParaRest)(obj);
+        return true;
+    }
+    const float zero[3] = {0, 0, 0};
+    return mem::Write(obj + kPInitVel, zero, 12) && mem::Write(obj + kPAccel, zero, 12);
+}
+
+void SetLanding(uint32_t handle, const char* how, const float* at) {
+    for (std::vector<Fire>* fires : {&g_following, &g_fired})
+        for (Fire& f : *fires)
+            for (FiredMine& m : f.mines)
+                if (m.handle == handle) {
+                    m.landing = how;
+                    if (at) std::memcpy(m.last, at, sizeof m.last);
+                }
+}
+
+bool Guiding(uint32_t handle) {
+    for (const Guided& g : g_guided)
+        if (g.handle == handle) return !g.pinned;
+    return false;
+}
+
+// Every sim tick: each thrown mine still in flight is swept from where it was last tick to where it is now, and
+// landed at the first hit. See the throw notes at the top.
+void GuideThrown(uint32_t tick) {
+    if (g_guided.empty()) return;
+    const uint32_t now = LogicTime();
+    const float water = WaterNow();
+    for (size_t i = 0; i < g_guided.size();) {
+        Guided& g = g_guided[i];
+        float p0[3], v0[3], a[3];
+        uint32_t t0 = 0;
+        uintptr_t vt = 0;
+        const bool alive = mem::SafeRead(g.object, &vt, sizeof vt) && vt == g.vtable && ReadParabola(g.object, p0, v0, a, &t0);
+        auto drop = [&](const char* how, const float* at) {
+            SetLanding(g.handle, how, at);
+            g_guided.erase(g_guided.begin() + static_cast<std::ptrdiff_t>(i));
+        };
+        auto pin = [&](const float* at) {
+            SetLanding(g.handle, "melange", at);
+            std::memcpy(g.at, at, sizeof g.at);
+            g.pinned = true;
+            ++i;
+        };
+        if (!alive || !now) {
+            if (g.pinned) {
+                if (g.rePins) LOG_INFO("[levels] thrown mine %u is gone (set off, or removed) after %d re-pins at its landing", g.handle, g.rePins);
+                g_guided.erase(g_guided.begin() + static_cast<std::ptrdiff_t>(i));
+            } else {
+                LOG_INFO("[levels] thrown mine %u let go at tick %u: %s", g.handle, tick, !now ? "no sim clock" : !alive ? "its entity is gone" : "unreadable");
+                drop("lost", nullptr);
+            }
+            continue;
+        }
+        if (g.pinned) {
+            // landed: the engine keeps simulating a resting mine's contact with the ground, and where its own sweep does
+            // not see the ground it lets the mine fall or roll through (the Caldera volley run of 2026-11-09: 32 of 58
+            // landed mines ended 2-12 map units under the land the game's own vertical ray finds at their spot, 11 of
+            // them on the shore shelf under a 4.5 beach), so a mine at rest is held where it landed: moved with no
+            // velocity or acceleration of its own, it is put back. A blast that gives it a velocity frees it.
+            const bool still = v0[0] == 0.f && v0[1] == 0.f && v0[2] == 0.f && a[0] == 0.f && a[1] == 0.f && a[2] == 0.f;
+            if (!still) {
+                LOG_INFO("[levels] thrown mine %u was set moving again at tick %u (%.3f, %.3f, %.3f per ms): no longer held", g.handle, tick, v0[0], v0[1], v0[2]);
+                g_guided.erase(g_guided.begin() + static_cast<std::ptrdiff_t>(i));
+                continue;
+            }
+            if (std::fabs(p0[0] - g.at[0]) + std::fabs(p0[1] - g.at[1]) + std::fabs(p0[2] - g.at[2]) > 0.3f) {
+                if (!g.rePins)
+                    LOG_INFO("[levels] thrown mine %u moved at rest from (%.1f, %.1f, %.1f) to (%.1f, %.1f, %.1f) at tick %u; held at its landing", g.handle, g.at[0], g.at[1],
+                             g.at[2], p0[0], p0[1], p0[2], tick);
+                ++g.rePins;
+                mem::Write(g.object + kPInitPos, g.at, 12);
+                SetLanding(g.handle, "melange", g.at);
+            }
+            ++i;
+            continue;
+        }
+        auto differs = [](const float* x, const float* y) { return std::fabs(x[0] - y[0]) + std::fabs(x[1] - y[1]) + std::fabs(x[2] - y[2]) > 1e-6f; };
+        // CreateMine leaves the velocity and acceleration zero; the engine launches the mine (its flight's base) on a later
+        // tick, which is when the parabola to follow is known
+        if (!differs(g.v0, g.a) && g.v0[0] == 0.f && g.v0[1] == 0.f && g.v0[2] == 0.f) {
+            if (differs(v0, g.v0) || differs(a, g.a)) {
+                std::memcpy(g.p0, p0, 12), std::memcpy(g.v0, v0, 12), std::memcpy(g.a, a, 12);
+                g.t0 = t0;
+                g.lastT = (std::min)(now, t0);
+                if (i == 0)
+                    LOG_INFO("[levels] thrown mine %u launched by the engine at tick %u: (%.3f, %.3f, %.3f) per ms, gravity %.5f, since %u (sim clock %u)", g.handle, tick,
+                             v0[0], v0[1], v0[2], -a[1], t0, now);
+            } else if (now - g.t0 > 2000) {
+                LOG_WARN("[levels] thrown mine %u was never launched by the engine (no velocity after 2 s); let go", g.handle);
+                drop("lost", nullptr);
+                continue;
+            }
+            ++i;
+            continue;
+        }
+        const bool rebased = t0 != g.t0 || differs(p0, g.p0) || differs(v0, g.v0) || differs(a, g.a);
+        if (rebased) {
+            // the engine collided with something: at rest already, or bouncing
+            const float speed = std::hypot(v0[0], v0[1], v0[2]), accel = std::hypot(a[0], a[1], a[2]);
+            gamestate::LandHit h{};
+            const gamestate::Vec3 up{p0[0], p0[1] + kRestSnap, p0[2]}, down{p0[0], p0[1] - kRestSnap, p0[2]};
+            const bool nearLand = gamestate::LandRay(up, down, &h) == gamestate::LandRayResult::Hit;
+            if (speed == 0.f && accel == 0.f) {
+                // the engine's own rest; lifted onto the land if it sank in
+                if (nearLand) {
+                    const float top = up.y - 2.f * kRestSnap * h.t;
+                    if (top > p0[1] + 1.f) {
+                        const float at[3] = {p0[0], top, p0[2]};
+                        mem::Write(g.object + kPInitPos, at, 12);
+                        LOG_INFO("[levels] thrown mine %u: the engine rested it %.1f world units under the land; lifted onto it", g.handle, top - p0[1]);
+                    }
+                }
+                SetLanding(g.handle, "engine", p0);
+                std::memcpy(g.at, p0, sizeof g.at);
+                if (nearLand) {
+                    const float top = up.y - 2.f * kRestSnap * h.t;
+                    if (top > p0[1] + 1.f) g.at[1] = top;
+                }
+                g.pinned = true;
+                ++i;
+                continue;
+            }
+            if (nearLand) {
+                const float at[3] = {p0[0], up.y - 2.f * kRestSnap * h.t, p0[2]};
+                RestAt(g.object, g.parabolic, at, now);
+                LOG_INFO("[levels] thrown mine %u: bounced at tick %u; rested on the land there (%.1f, %.1f, %.1f)", g.handle, tick, at[0], at[1], at[2]);
+                pin(at);
+                continue;
+            }
+            // off a worm or an object in the air: its new parabola is followed
+            std::memcpy(g.p0, p0, 12), std::memcpy(g.v0, v0, 12), std::memcpy(g.a, a, 12);
+            g.t0 = t0;
+            g.lastT = now;
+            ++i;
+            continue;
+        }
+        float prev[3], cur[3];
+        At(g, g.lastT, prev);
+        At(g, now, cur);
+        if (!std::isnan(water) && cur[1] < water - 2.f * kWorldPerMap) {
+            drop("water", cur);
+            continue;
+        }
+        if (now - g.t0 > kMaxFlightMs) {
+            drop("lost", cur);
+            continue;
+        }
+        gamestate::LandHit h{};
+        const gamestate::LandRayResult r = gamestate::LandRay({prev[0], prev[1], prev[2]}, {cur[0], cur[1], cur[2]}, &h);
+        if (r == gamestate::LandRayResult::Hit) {
+            float at[3];
+            for (int k = 0; k < 3; ++k) at[k] = prev[k] + (cur[k] - prev[k]) * h.t;
+            if (RestAt(g.object, g.parabolic, at, now)) {
+                LOG_INFO("[levels] thrown mine %u landed at tick %u, %u ms out: (%.1f, %.1f, %.1f) world, %.1f map from its target", g.handle, tick,
+                         now - g.t0, at[0], at[1], at[2], std::hypot(at[0] - g.target[0], at[2] - g.target[2]) / kWorldPerMap);
+                pin(at);
+            } else drop("lost", at);
+            continue;
+        }
+        if (r == gamestate::LandRayResult::Unavailable || r == gamestate::LandRayResult::Budget) {
+            if (!g_landRayWarned) LOG_WARN("[levels] the land sweep is unavailable: thrown mines land by the engine's own collision");
+            g_landRayWarned = true;
+        }
+        g.lastT = now;
+        ++i;
+    }
+}
+
+// After a PlaceMines: the mines that were not there before it are this fire's. With `throws` (a throw's mines, each
+// from a launch point at a target) each new mine is paired with the throw it appeared at and guided to the land.
+void FollowFire(const std::string& stem, const std::vector<MineAt>& before, int asked, bool launch, const float at[3], float vy,
+                const std::vector<Throw>* throws = nullptr) {
     Fire f;
     f.stem = stem;
     f.tick = sim::Tick();
@@ -238,8 +506,11 @@ void FollowFire(const std::string& stem, const std::vector<MineAt>& before, int 
     if (gamestate::Read(&snap) && snap.match.inMatch) f.turn = snap.match.turnsStarted;
     f.asked = asked;
     f.launch = launch;
+    f.thrown = throws && !throws->empty();
     std::memcpy(f.factory, at, sizeof f.factory);
     f.at = GetTickCount64();
+    std::vector<bool> used(throws ? throws->size() : 0, false);
+    const Throw* first = nullptr;
     for (const MineAt& m : Mines()) {
         bool old = false;
         for (const MineAt& b : before) old |= b.handle == m.handle;
@@ -249,6 +520,43 @@ void FollowFire(const std::string& stem, const std::vector<MineAt>& before, int 
         std::memcpy(fm.spawn, m.pos, sizeof fm.spawn);
         std::memcpy(fm.last, m.pos, sizeof fm.last);
         fm.changedAt = f.at;
+        if (throws) {
+            // the throw this mine appeared at: its launch point and (several mines leave one point) the velocity
+            // CreateMine gave it, read back from the payload, each throw taken once
+            float mv[3] = {0, 0, 0};
+            const bool hasVel = mem::SafeRead(m.object + kPInitVel, mv, 12);
+            size_t best = SIZE_MAX;
+            float bestD = 1e9f;
+            for (size_t i = 0; i < throws->size(); ++i) {
+                if (used[i]) continue;
+                const Throw& t = (*throws)[i];
+                float d = std::hypot(t.from[0] - m.pos[0], t.from[1] - m.pos[1], t.from[2] - m.pos[2]);
+                if (hasVel) d += 1000.f * std::hypot(t.vel[0] - mv[0], t.vel[1] - mv[1], t.vel[2] - mv[2]);
+                if (d < bestD) bestD = d, best = i;
+            }
+            if (best != SIZE_MAX && bestD < kWorldPerMap) {
+                used[best] = true;
+                const Throw& t = (*throws)[best];
+                if (!first) first = &t;
+                fm.thrown = true;
+                std::memcpy(fm.target, t.target, sizeof fm.target);
+                Guided g;
+                g.handle = m.handle;
+                g.object = m.object;
+                g.vtable = m.vtable;
+                g.parabolic = m.parabolic;
+                g.fireTick = f.tick;
+                if (ReadParabola(m.object, g.p0, g.v0, g.a, &g.t0)) {
+                    g.lastT = g.t0;
+                    std::memcpy(g.target, t.target, sizeof g.target);
+                    if (g_guided.empty())
+                        LOG_INFO("[levels] thrown mine %u (%s, vtable 0x%x): from (%.0f, %.0f, %.0f) at (%.3f, %.3f, %.3f) per ms, gravity (%.5f, %.5f, %.5f), since %u (sim clock %u)",
+                                 m.handle, m.parabolic ? "parabolic" : "other", static_cast<unsigned>(m.vtable), g.p0[0], g.p0[1], g.p0[2], g.v0[0], g.v0[1], g.v0[2],
+                                 g.a[0], g.a[1], g.a[2], g.t0, LogicTime());
+                    g_guided.push_back(g);
+                } else fm.landing = "lost";
+            }
+        }
         f.mines.push_back(fm);
     }
     const bool seen = !f.mines.empty();
@@ -257,7 +565,9 @@ void FollowFire(const std::string& stem, const std::vector<MineAt>& before, int 
     g_fireAt = GetTickCount64();
     ++g_fireSerial;
     if (seen) {
-        g_flight.vy = vy;
+        g_flight.vy = first ? first->vel[1] : vy;
+        g_flight.vx = first ? first->vel[0] : 0.f;
+        g_flight.vz = first ? first->vel[2] : 0.f;
         g_flight.gravity = kMineGravity;
         g_flight.serial = g_fireSerial.load();
         g_flight.at = g_fireAt.load();
@@ -293,6 +603,10 @@ std::string MineJson(const Fire& f, const FiredMine& m) {
     }
     o.Int("moves", m.moves).Int("movedAfterRest", m.restsAfter);
     o.Float("restFromFactoryMap", std::hypot(m.last[0] - f.factory[0], m.last[2] - f.factory[2]) / kWorldPerMap);
+    if (m.thrown) {
+        o.Raw("target", MapVec(m.target)).Str("landing", m.landing);
+        o.Float("restFromTargetMap", std::hypot(m.last[0] - m.target[0], m.last[2] - m.target[2]) / kWorldPerMap);
+    }
     return o.End();
 }
 
@@ -300,7 +614,7 @@ std::string FireJson(const Fire& f) {
     jsonmini::Arr mines;
     for (const FiredMine& m : f.mines) mines.Raw(MineJson(f, m));
     return jsonmini::Obj().Str("stem", f.stem).UInt("tick", f.tick).UInt("turn", f.turn).Int("asked", f.asked).Bool("launch", f.launch)
-        .Raw("factory", MapVec(f.factory)).Raw("mines", mines.End()).End();
+        .Bool("thrown", f.thrown).Raw("factory", MapVec(f.factory)).Raw("mines", mines.End()).End();
 }
 
 // Where each mine of a logged fire ended up, one line each, in map units: its rest (or where it was last seen and its
@@ -355,6 +669,8 @@ bool Watch(Fire& f, const std::vector<MineAt>& live, ULONGLONG now, uint32_t tic
             m.done = false;
         }
         if ((m.moved && now - m.changedAt >= kRestMs) || (!f.logged && now - f.at >= kFollowMs)) m.done = true;
+        // a thrown mine still in flight is not done, whatever its flight's base did (the engine re-bases it in the air)
+        if (m.thrown && !f.logged && Guiding(m.handle) && now - f.at < kFollowMs) m.done = false;
         all &= m.done;
     }
     return all;
@@ -363,6 +679,7 @@ bool Watch(Fire& f, const std::vector<MineAt>& live, ULONGLONG now, uint32_t tic
 // The sim tick: where the followed mines are now; a fire whose mines have all rested (or gone, or past kFollowMs) is
 // logged, and then watched for kWatchMs more, a change logged as factory.mine.
 void OnTick(uint32_t tick, void*) {
+    GuideThrown(tick);
     if ((g_following.empty() && g_fired.empty()) || tick % 5) return;
     const ULONGLONG now = GetTickCount64();
     const std::vector<MineAt> live = Mines();
@@ -378,7 +695,7 @@ void OnTick(uint32_t tick, void*) {
         jsonmini::Arr mines;
         for (const FiredMine& m : f.mines) mines.Raw(MineJson(f, m));
         jlog::Rec("levels", jlog::Level::Info, "factory.fired").Str("stem", f.stem).Uint("tick", f.tick).Uint("turn", f.turn)
-            .Int("asked", f.asked).Bool("launch", f.launch).Raw("factory", MapVec(f.factory)).Raw("mines", mines.End());
+            .Int("asked", f.asked).Bool("launch", f.launch).Bool("thrown", f.thrown).Raw("factory", MapVec(f.factory)).Raw("mines", mines.End());
         LOG_INFO("[levels] %s: the mine factory's fire at tick %u (turn %u): %zu mines appeared, %d came to rest", f.stem.c_str(), f.tick,
                  f.turn, f.mines.size(), rested);
         LogWhere(f);
@@ -427,6 +744,75 @@ void __fastcall HkPlaceMines(uintptr_t self, void*) {
     const float radius = static_cast<float>(spec.launchRadius.value_or(0)) * kWorldPerMap;
     const float vel[3] = {0.f, -0.3f, 0.f};
     int made = 0;
+    if (spec.throwing) {
+        // the throw: each mine from a launch point (the launchers in turn from a random one, else the factory), lobbed
+        // at a landing point of the pattern whose ground the land sweep finds (and, with avoidWater, above the water)
+        const erg::ThrowSpec& t = *spec.throwing;
+        const float water = WaterNow();
+        const uint32_t count = static_cast<uint32_t>(spec.launchers.size());
+        const uint32_t first = count ? rnd() % count : 0;
+        const float base = static_cast<float>(rnd() % 36000u) * (6.2831853f / 36000.f);
+        const uint32_t firstTarget = t.targets.empty() ? 0 : rnd() % static_cast<uint32_t>(t.targets.size());
+        const float minR = static_cast<float>(t.minRange) * kWorldPerMap, maxR = static_cast<float>(t.maxRange) * kWorldPerMap;
+        std::vector<Throw> throws;
+        int fellBack = 0, atTargets = 0;
+        for (int i = 0; i < n; ++i) {
+            // kThrowLift over the launch point: a mine made within its own radius (about a map unit) of the ground is
+            // rested by the engine at once (the collider step's sweep starts at the sphere's bottom), floating where
+            // it appeared: seen on 2026-11-09 with mines made 1 map unit over a flat block (velocity and acceleration
+            // zeroed on their first tick), while 8 over it flew
+            float from[3];
+            if (count) {
+                const auto& l = spec.launchers[(first + static_cast<uint32_t>(i)) % count];
+                from[0] = static_cast<float>(l[0]), from[1] = static_cast<float>(l[1]) + kThrowLift, from[2] = static_cast<float>(l[2]);
+            } else from[0] = at[0], from[1] = at[1] + kThrowLift, from[2] = at[2];
+            bool aimed = false;
+            Throw th{};
+            std::memcpy(th.from, from, sizeof th.from);
+            for (int tries = 0; tries < kTargetTries && !aimed; ++tries) {
+                float x, z;
+                const bool aimTarget = t.pattern == erg::ThrowPattern::Targets && !t.targets.empty() && static_cast<int>(rnd() % 100u) < t.targetShare;
+                if (aimTarget) {
+                    const auto& g = t.targets[(firstTarget + static_cast<uint32_t>(i)) % static_cast<uint32_t>(t.targets.size())];
+                    const float a = static_cast<float>(rnd() % 36000u) * (6.2831853f / 36000.f);
+                    const float r = static_cast<float>(t.scatter) * kWorldPerMap * std::sqrt(static_cast<float>(rnd() % 10000u) / 10000.f);
+                    x = static_cast<float>(g[0]) + r * std::cos(a), z = static_cast<float>(g[1]) + r * std::sin(a);
+                } else {
+                    float a;
+                    if (t.pattern == erg::ThrowPattern::Ring && n > 1) {
+                        const float step = 6.2831853f / static_cast<float>(n);
+                        a = base + step * static_cast<float>(i) + (static_cast<float>(rnd() % 10000u) / 10000.f - 0.5f) * step * 0.5f;
+                    } else a = static_cast<float>(rnd() % 36000u) * (6.2831853f / 36000.f);
+                    // even over the annulus
+                    const float u = static_cast<float>(rnd() % 10000u) / 10000.f;
+                    const float r = std::sqrt(minR * minR + (maxR * maxR - minR * minR) * u);
+                    x = from[0] + r * std::cos(a), z = from[2] + r * std::sin(a);
+                }
+                const std::optional<float> ground = GroundAt(x, z, from[1]);
+                if (!ground) continue;
+                if (t.avoidWater && !std::isnan(water) && *ground < water + kWorldPerMap) continue;
+                th.target[0] = x, th.target[1] = *ground, th.target[2] = z;
+                aimed = true;
+                atTargets += aimTarget;
+            }
+            if (!aimed) {
+                // no landing point found (the sea all round, or no land sweep): straight up, as the launchers' eruption
+                ++fellBack;
+                th.target[0] = from[0], th.target[1] = from[1] - kWorldPerMap, th.target[2] = from[2];
+                th.vel[0] = th.vel[2] = 0.f;
+                th.vel[1] = std::sqrt(2.f * kMineGravity * (std::max)(height, kWorldPerMap));
+            } else ThrowVelocity(from, th.target, static_cast<float>(t.apex) * kWorldPerMap, th.vel);
+            if (!EngineMine(from, th.vel)) {
+                ++made;
+                throws.push_back(th);
+            }
+        }
+        LOG_INFO("[levels] %s: the mine factory threw %d of %d mines from %s at landing points %d-%d map units out (%s%s, apex %d), %d at the targets, %d straight up (no landing point found)",
+                 stem.c_str(), made, n, count ? "its launchers" : "the factory", t.minRange, t.maxRange, erg::ThrowPatternName(t.pattern),
+                 t.avoidWater ? ", clear of the water" : "", t.apex, atTargets, fellBack);
+        FollowFire(stem, before, n, true, at, throws.empty() ? 0.f : throws.front().vel[1], &throws);
+        return;
+    }
     if (!spec.launchers.empty()) {
         const uint32_t count = static_cast<uint32_t>(spec.launchers.size());
         const uint32_t first = rnd() % count;
@@ -540,7 +926,10 @@ public:
             g_hPlace = safetyhook::create_inline(kPlaceMines, &HkPlaceMines);
             if (!g_hPlace) LOG_WARN("[levels] the mine factory's PlaceMines hook failed: launchHeight and launchRadius are skipped");
         } else LOG_WARN("[levels] the mine factory's PlaceMines differs from build #1077: launchHeight and launchRadius are skipped");
-        g_tickHook = sim::AddTickHook(&OnTick, nullptr, 70);   // follows the fires to where their mines rest
+        // ParabolicPayloadLogicEntity's come-to-rest: push -1; mov eax, fs:[0]; push 0x7c9786 (its handler frame)
+        g_restOk = Expect(kParaRest, {0x6a, 0xff, 0x64, 0xa1, 0x00, 0x00, 0x00, 0x00, 0x68, 0x86, 0x97, 0x7c, 0x00});
+        if (!g_restOk) LOG_WARN("[levels] the parabolic payload's come-to-rest differs from build #1077: a thrown mine is stopped by hand");
+        g_tickHook = sim::AddTickHook(&OnTick, nullptr, 70);   // follows the fires to where their mines rest, lands the thrown ones
         simcore::LevelEngine e;
         e.mine = &EngineMine;
         e.armFactory = &EngineArmFactory;
@@ -550,6 +939,7 @@ public:
     void Uninstall() override {
         if (g_tickHook) sim::RemoveTickHook(g_tickHook);
         g_tickHook = 0;
+        g_guided.clear();
         simcore::SetLevelEngine(simcore::LevelEngine{});
         g_hPlace = {};
         g_hDrop = {};

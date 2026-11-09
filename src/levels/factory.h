@@ -29,6 +29,7 @@ uint32_t FireSerial(unsigned long long* at);
 struct Flight {
     float from[3] = {};
     float vy = 0, gravity = 0;
+    float vx = 0, vz = 0;       // a thrown mine's sideways speed (world units per ms); 0 for an eruption or a drop
     uint32_t serial = 0;
     unsigned long long at = 0;
 };
