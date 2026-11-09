@@ -50,7 +50,9 @@ struct Cache {
     uint32_t name = lg::Tracker::kUnknown, gen = 0;
     const float* tag = kZero;
     bool tagged = false;
+    uint64_t digest = 0;  // the texture's digest when it is hashed, else 0
 } g_cache;
+uint64_t g_lastDigest = 0;  // the digest of the texture the last ForDraw saw (0 unknown)
 
 using TexImage2D = void(APIENTRY*)(GLenum, GLint, GLint, GLsizei, GLsizei, GLint, GLenum, GLenum, const void*);
 using CompressedTexImage2D = void(APIENTRY*)(GLenum, GLint, GLenum, GLsizei, GLsizei, GLint, GLsizei, const void*);
@@ -404,6 +406,7 @@ public:
 bool Active() { return g_active; }
 
 const float* ForDraw(uint32_t unit) {
+    g_lastDigest = 0;
     if (!g_active) return kZero;
     uint32_t name = g_tr.Bound(unit);
     if (name == lg::Tracker::kUnknown) {
@@ -426,6 +429,7 @@ const float* ForDraw(uint32_t unit) {
         g_cache.gen = g_tr.Gen();
         g_cache.tagged = e && e->row >= 0 && static_cast<size_t>(e->row) < g_table.tags.size();
         g_cache.tag = g_cache.tagged ? g_table.tags[static_cast<size_t>(e->row)].data() : kZero;
+        g_cache.digest = e && e->hashed ? e->digest : 0;
         if (lg::Tracker::Entry* m = name ? g_tr.FindMut(name) : nullptr) {
             if (g_cache.tagged && !m->drawnTagged) m->drawnTagged = true, ++g_st.distinctTagged;
             if (!g_cache.tagged && !m->drawnUntagged) m->drawnUntagged = true, ++g_st.distinctUntagged;
@@ -433,8 +437,11 @@ const float* ForDraw(uint32_t unit) {
     }
     if (g_cache.tagged) ++g_st.drawsTagged;
     else ++g_st.drawsUntagged;
+    g_lastDigest = g_cache.digest;
     return g_cache.tag;
 }
+
+uint64_t LastDigest() { return g_lastDigest; }
 
 MELANGE_MODULE(MirageTexTags);
 }  // namespace melange::mirage::textags

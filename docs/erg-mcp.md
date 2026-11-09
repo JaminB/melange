@@ -855,3 +855,40 @@ Findings (testenv D, Sunstone 2.3.1 + `sunstone-tint`, 2026-11-09):
   patches they read as stone, but are faint at gameplay distance.
 - The lone dark lump off the south-west shore in the oblique shot is not the detail layer: it is in the undressed level too
   (build.mjs's voxels). The layer's own south stack now stands beside it.
+
+## Detail layer, round 5 (rock: landscape tint, cliff strata, clusters, lint): what the tools gained and what the game showed
+
+**Landscape tint.** A level may recolour one of its landscape TEXTURES (the tiles the voxels and drapes draw with), keeping the
+texture's detail: a scenery copy (no collision) named `..._landtint_ltint<16-hex texture digest><rrggbb>` carries the tag.
+
+| Where | What |
+|---|---|
+| erg-mcp `tint_landscape` (`src/tools/landtint.ts`, `src/lib/landtint.ts`) | `tints: [{texture: "P05" \| digest, color}]` or `{material: "path02" \| index, faces: side \| top \| all, color}`; color `"none"` removes; `list: true` answers the level's tints and the Prehistoric materials' tiles. One carrier per texture at scale 0.05 under the level (replaced, never stacked). The Prehistoric tiles' digests and ThemePrehistoric.txt's records are tables in `lib/landtint.ts` (digests by sunstone `tools/tag_digest.py --xom` on `Data\Bundles\Bundl16.xom`). |
+| Melange `MirageTints` + `MirageTexTags` | `tints_logic.h ParseLandTag`; the level's land tags are read with the per-copy tints. A GLSL replacement that declares `uniform vec4 mg_landTint` gets the colour (a = 1) of the texture bound on its texture0 unit, matched by its texture-tag digest (`textags::LastDigest()`); else (1, 1, 1, 0). Needs a texture-tag table loaded (Sunstone ships one). `tints.stats` logs the land tints and how many land draws were tinted. |
+| Sunstone (`sunstone-tint` branch) | `Landscape.LandscapeFragmentMain` / `HeightMapFragmentMain`: at a = 1 the albedo is the colour times the texel's luminance over the texture's mean (its smallest mip). |
+
+Neutral by construction: the carrier's name is the scenery channel of `sim_fingerprint`. Caldera's `sim` hash
+`60be5861...` was the same before and after every pass and after a save and reopen.
+
+**Cluster planning and lint** (`src/tools/cluster.ts`, `src/lib/cluster.ts`, `src/lib/dress-lint.ts`):
+
+| Tool | What it does |
+|---|---|
+| `plan_clusters` | Children with a size gradient round anchors on the real ground. `outcrop` gives 2-4 blocks on the downhill side, from 55% down to 30% of the anchor. `scree` gives a fan of 4-8 flat slabs (0.8-1.6) past the anchor's foot, the toe's the biggest. `skirt` puts debris on the contact line, more of it downhill. Answers crag specs for `place_crags`. Read-only. |
+| `lint_dressing` | Groups a layer's copies into clumps (as drawn, in their tint) and answers three things. First, mine suspects: a clump under 1.5 across, darker than linear luminance 0.12, on walkable dry ground. Second, contact: hovering or buried clumps. Third, density per band of ground height: clumps and pieces per 1000 square map units, the covered share and the size classes. Read-only. |
+
+Findings (testenv D, Sunstone 2.3.1 + `sunstone-tint`, 2026-11-09):
+- **The pale slivers were side textures.** The steep faces of a tile draw with its material's side texture. Prehistoric's
+  path02 and grass01 sides are P05 (#9b9893); rock02, grass02 and GreySlateFloor sides are P07 (#848387). Tinting those two
+  textures to #3b3531 and #46403b removed every pale blue-grey sliver from the flank, trail and castle shots (1221 of 10175
+  land draws tinted). Castles (P13, P18, P30), the trails' top (P10), sand (P11) and lava are other textures.
+- **There is almost no free gentle ground for medium rock.** A free-ground map of the island on 2.5-unit cells counted 1943
+  cells of trail bed and kerb band and 623 of castle and pad keep-outs. Outside those, 718 cells were over 58 degrees, 389
+  were 42-58 degrees and 321 were gentle. Switchback legs 9.5 apart leave nothing between them. Crags seated on the lowest
+  ground vanish into steep faces, and lava ribs on the gully banks (65-72 degree walls) did too. So the medium scale went
+  onto the cliffs: `bench/caldera/detail-cliff.mjs` sets strata of 2-4 blocks (1.8-4) centred on the face and sunk 45%
+  (`copy_base_details {seat}`). Ribs now stand on the bank's lip, the first ground under 58 degrees.
+- The tint is drawn as colour x texel luminance / 0.5, and Horror5's texels average 0.23, so a tint draws at about 45% of
+  its value: mid-grey scree needs about #a39b91.
+- Perf with Sunstone on (B's game closed, testenv D, oblique camera, 15 s): undressed 37.5 fps, GPU 4.6 ms p50; dressed
+  (308 pieces + land tint) 36.2 fps, GPU 6.3 ms p50 (p95 9.3). The game is CPU-bound at about 37 fps.

@@ -1,3 +1,7 @@
+// Round 5: the lava red-shift is capped at 30% within 3 units of lava (tintAt); the slope-break and low scree are gone
+// (invisible at gameplay distance); medium-scale outcrops, lava-bank ribs on the lip, switchback cut-banks, foot skirts
+// and mid-grey scree fans are planned with erg-mcp plan_clusters (detail-cliff.mjs does the cliff strata, detail-lint.mjs
+// removes mine lookalikes).
 // Detail layer, round 4: every piece is TINTED to dark warm basalt (erg-mcp place_crags {tint}: a "_tint<rrggbb>" name tag
 // Melange's MirageTints hands to Sunstone's model shaders, so Horror5's pale blue-grey texture draws as basalt; Sunstone off:
 // its own texture), with a slight red cast near the lava; the crater rubble is a few large clumps pressed against the walls
@@ -54,19 +58,24 @@ const padDist = (x, z) => Math.min(...PADS.map((p) => Math.hypot(p[0] - x, p[1] 
 // tongue, the lake, the crater floor) a slight red cast, strongest at the lava's edge.
 export const BASALT = ["#2e2724", "#3a302b", "#342b27", "#30302c"];
 export const SCORCHED = "#4a2c24";
-export const SCREE = ["#665d54", "#5c534b", "#70665c"];
+// round 5: mid grey (Sunstone draws the tint times the texel's luminance / 0.5, and Horror5's texels average 0.23, so these
+// draw near #4a4641, a mid grey beside the basalt): the scree fan's three steps, the toe's the lightest
+export const SCREE = ["#958d84", "#a39b91", "#aca49a"];
 const hx = (c) => [1, 3, 5].map((i) => parseInt(c.slice(i, i + 2), 16));
 const mix = (a, b, t) => "#" + hx(a).map((v, i) => Math.round(v + (hx(b)[i] - v) * Math.max(0, Math.min(1, t))).toString(16).padStart(2, "0")).join("");
-/** The lava's nearness at (x, z), 0 (none within 8) to 1 (at its edge). */
+/** The lava's nearness at (x, z), 0 (none within 3) to 1 (at its edge). Round 5: 3 units, not 8 (the judge: "cap the lava
+ * red-shift at about 30% and only allow it within about 3 units of lava"). */
+export const HEAT_REACH = 3;
 export function lavaHeat(x, z) {
   let d = Infinity;
-  for (let m = 0.5; m <= 8; m += 1.5) if (onTongue(x, z, m)) { d = m; break; }
+  for (let m = 0.25; m <= HEAT_REACH; m += 0.5) if (onTongue(x, z, m)) { d = m; break; }
   d = Math.min(d, Math.max(0, Math.hypot(x - T.LAKE.c[0], z - T.LAKE.c[1]) - T.LAKE.R));
-  return d >= 8 ? 0 : 1 - d / 8;
+  return d >= HEAT_REACH ? 0 : 1 - d / HEAT_REACH;
 }
+/** The crag's colour: its basalt, mixed toward the scorched red-brown by at most 30% at the lava's edge. */
 export function tintAt(x, z, seed) {
-  const base = BASALT[seed % BASALT.length], heat = Math.max(lavaHeat(x, z), T.rhoAt(x, z) < T.FLAT_R + 2 ? 0.35 : 0);
-  return heat > 0 ? mix(base, SCORCHED, 0.25 + 0.6 * heat) : base;
+  const base = BASALT[seed % BASALT.length], heat = lavaHeat(x, z);
+  return heat > 0 ? mix(base, SCORCHED, 0.3 * heat) : base;
 }
 
 export async function rockPass(ctx) {
@@ -107,7 +116,7 @@ export async function rockPass(ctx) {
       const why = o.low ? keepOutLow(c.x, c.z, rad, rad, 0, ctx.spawns, o.pad ?? 1) : keepOutFoot(c.x, c.z, rad, rad, 0, ctx.spawns, o.pad ?? 0.5);
       if (why) { rej(c.tier, why.replace(/^castle .*/, "castle")); continue; }
       if (o.padClear && padDist(c.x, c.z) < o.padClear + rad) { rej(c.tier, "near a pad"); continue; }
-      if (onTongue(c.x, c.z, Math.min(rad, 4) + 0.3)) { rej(c.tier, "lava"); continue; }
+      if (onTongue(c.x, c.z, o.lavaMargin ?? Math.min(rad, 4) + 0.3)) { rej(c.tier, "lava"); continue; }
       if (Math.hypot(c.x - T.LAKE.c[0], c.z - T.LAKE.c[1]) < T.LAKE.R + 0.6 + rad * 0.6) { rej(c.tier, "lava lake"); continue; }
       if (o.sea) { if (d.groundLow > WATER - 0.6) { rej(c.tier, "not sea"); continue; } }
       else if (o.waterline) { if (d.groundLow < WATER - 1.4 || d.groundLow > WATER + 0.9) { rej(c.tier, "not waterline"); continue; } }
@@ -118,7 +127,11 @@ export async function rockPass(ctx) {
       // a low piece leans with the slope (align 0.95): what shows is its top over the footprint's MEAN ground, not its highest sample
       const vis = d.top - d.groundLow - d.groundSpread / 2;
       if (o.low && (vis > 0.4 || d.above > 0.4 || vis < 0.1)) { rej(c.tier, vis < 0.1 ? "buried" : "shows over 0.4"); continue; }
-      if (!o.sea && !o.low && d.above < (o.show !== undefined ? c.height * o.show : Math.max(c.height * 0.15, Math.min(1, c.height * 0.3)))) { rej(c.tier, "buried in a step"); if (process.env.DTL_DEBUG && (stats.dbg ??= []).length < 12) stats.dbg.push({ tier: c.tier, h: +c.height.toFixed(1), a: c.archetype, ...Object.fromEntries(["groundLow", "groundSpread", "sink", "slope", "above", "radius", "top", "bottom"].map((k) => [k, d[k]])) }); continue; }
+      // round 5 (o.mean): on the steep free ground between the switchback columns (45-70 degrees) the top is always under the
+      // footprint's highest sample; what reads is how far the block stands out of the slope at its centre: its top over the
+      // footprint's MEAN ground, at least 35% of its height (and 0.6)
+      if (o.mean && !o.sea && vis < Math.max(o.meanMin ?? 0.6, c.height * (o.meanShow ?? 0.35))) { rej(c.tier, "flush with the slope"); continue; }
+      if (!o.mean && !o.sea && !o.low && d.above < (o.show !== undefined ? c.height * o.show : Math.max(c.height * 0.15, Math.min(1, c.height * 0.3)))) { rej(c.tier, "buried in a step"); if (process.env.DTL_DEBUG && (stats.dbg ??= []).length < 12) stats.dbg.push({ tier: c.tier, h: +c.height.toFixed(1), a: c.archetype, ...Object.fromEntries(["groundLow", "groundSpread", "sink", "slope", "above", "radius", "top", "bottom"].map((k) => [k, d[k]])) }); continue; }
       if (placed.some((p) => Math.hypot(p.x - c.x, p.z - c.z) < (p.r + rad) * (o.overlap ?? 0.8))) { rej(c.tier, "overlap"); continue; }
       ok.push(c);
       placed.push({ x: c.x, z: c.z, r: rad });
@@ -226,41 +239,6 @@ export async function rockPass(ctx) {
   }
   stats.secondaries = (await crags(sec, { allowCrater: true, overlap: 0.7, padClear: 9, sink: [0.2, 0.3], show: 0.25 })).length;
 
-  // ---------------- scree at slope breaks and cliff feet: along radial lines on the real surface, where the ground above is
-  // steeper than here by 14 degrees or more and here is under 38 degrees, a fan runs downhill for 2-6 units with the
-  // biggest blocks at its toe. Faces over 60 degrees take almost nothing (3% of the candidates).
-  const lines = [], lth = [];
-  for (let th = 0; th < Math.PI * 2; th += 0.028) { const pts = []; for (let rho = T.RC + 1; rho <= 92; rho += 1) pts.push(T.pointAt(rho, th)); lines.push(pts); lth.push(th); }
-  const ls = await sample(lines.flat());
-  const scree = [];
-  const patchy = (x, z) => T.noise(x * 0.16, z * 0.16, 77) > -0.15;
-  lines.forEach((pts, k) => {
-    const s = ls.slice(k * pts.length, (k + 1) * pts.length);
-    for (let i = 3; i < s.length - 1; i++) {
-      if (!s[i] || !s[i - 2] || !s[i - 3]) continue;
-      const above = Math.max(s[i - 2].slope, s[i - 3].slope), here = s[i].slope;
-      const [x, z] = pts[i];
-      if (here > 60) { if (R() < 0.03) scree.push({ x, z, height: 0.5 + R() * 0.4, archetype: "single", tier: "scree", kind: "steep face" }); continue; }
-      if (above - here < 12 || here > 42 || !patchy(x, z) || R() > 0.85) continue;
-      const len = 2 + R() * 4, n = 2 + Math.floor(R() * 4);
-      for (let q = 0; q < n; q++) {
-        const t = R(), [px, pz] = T.pointAt(T.rhoAt(x, z) + t * len, lth[k] + (R() - 0.5) * 0.04);
-        const size = (0.45 + t * 1.9) * (0.75 + R() * 0.5);          // small near the break, big at the toe
-        scree.push({ x: px, z: pz, height: size, width: size * (0.9 + R() * 0.6), archetype: "single", tier: "scree", kind: "slope break", align: 0.9 });
-      }
-      i += 3;
-    }
-  });
-  // the lava tongues' edges, in patches, graded: small against the lava, bigger further out
-  for (const t of T.TONGUES) for (let r = t.r0 + 3; r < t.r1 - 2; r += 1.6) for (const side of [-1, 1]) {
-    const { a, w } = tongueAt(t, r), off = R(), th = a + side * (w + 1.0 + off * 2.2) / r, x = r * Math.cos(th), z = r * Math.sin(th);
-    if (!patchy(x, z) || R() > 0.7) continue;
-    const size = (0.5 + off * 1.6) * (0.75 + R() * 0.5);
-    scree.push({ x, z, height: size, width: size * 1.2, archetype: "single", tier: "scree", kind: "lava edge", align: 0.9 });
-  }
-  for (const c of scree) c.width ??= c.height * 1.1;
-  stats.scree = (await crags(scree, { overlap: 0.9, sink: [0.12, 0.22], padClear: 8, show: 0.25 })).length;
-
   // ---------------- the crater (round 4): a few LARGE clumps pressed against the inner walls between the pads, a big tor
   // at the wall's foot with two or three blocks of at least 1.9 leaning on it (round 3's small blobs on the open floor read as
   // mines or pickups).
@@ -304,29 +282,106 @@ export async function rockPass(ctx) {
   stats.breakersAlone = shore.length - landed.length;
   stats.breakers = (await crags(landed, { waterline: true, overlap: 0.75, sink: 0.25, show: 0.3 })).length;
 
-  // ---------------- low scree (round 4): the cone body between the switchbacks is all kerb band, where nothing tall may
-  // stand; low pieces (showing 0.08-0.4 over the ground) may, outside the walked bed and its shoulder. Patches by noise,
-  // sparser high up, none on the summit terraces or within reach of a pad.
-  const low = [];
-  for (let x = -92; x <= 92; x += 2.2) for (let z = -92; z <= 92; z += 2.2) {
+  // ================= round 5: the MEDIUM scale. Round 4's judge: "at gameplay distance the cone body is unchanged ... the
+  // medium scale (outcrops of 2-6 units, rock ribs along the lava channels, ledges along switchback cut-banks) is missing".
+  // Every cluster is planned by erg-mcp plan_clusters (an anchor and children with a size gradient on its downhill side),
+  // then filtered by crags() like everything else (keep-outs on the whole footprint, lava, water, overlap, seating).
+  const plan = async (anchors, mode, extra = {}) => anchors.length ? (await call("plan_clusters", { anchors: anchors.map((a) => ({ xz: [+a.x.toFixed(2), +a.z.toFixed(2)], size: +a.height.toFixed(2), radius: +((a.dry?.radius ?? a.height * 0.6)).toFixed(2) })), mode, units: "map", seed: seed++, ...extra })).json.children : [];
+  const kidsOf = (anchors, kids, tier, kind, more = {}) => kids.map((k) => ({ x: k.xz[0], z: k.xz[1], height: k.height, width: k.width, archetype: k.archetype, align: k.align, sink: k.sink, tier, kind, tint: more.tint?.(k, anchors[k.parent]) ?? anchors[k.parent].tint ?? tintAt(anchors[k.parent].x, anchors[k.parent].z, anchors[k.parent].seed) }));
+
+  // ---------------- outcrops: anchors of 3.2-6 on the free ground of the cone and the coast (the same clear-radius grid as
+  // the heroes, a finer 2-unit step, clear radius from 2), spaced by a Poisson-like greedy pick that falls off toward the
+  // shore (more rock up the cone, where nothing grows; the shore band is left for flora), in noise patches; each sheds 2-4
+  // children (55% to 30% of it) on its downhill side: clusters of 3-5 with a size gradient.
+  const og = [];
+  for (let x = -104; x <= 104; x += 1.5) for (let z = -104; z <= 104; z += 1.5) {
     const rho = T.rhoAt(x, z);
-    if (rho < T.RC + 8 || rho > 90) continue;
-    const td = trailDist(x, z);
-    if (td < WALKED + 1.4 || td > TRAIL_BAND + 4) continue;
-    if (T.noise(x * 0.11, z * 0.11, 123) < 0.05 || R() > 0.75 - 0.35 * (90 - rho) / 50) continue;
-    // a patch: 3-5 flat slabs (2.4-3.4 times as wide as tall) within a unit of each other, the toe's slabs the biggest; in
-    // a mid grey-brown a step lighter than the crags, so a slab reads as stone lying on the slope, not as a hole or a mine
-    const n = 4 + Math.floor(R() * 4);
-    for (let q = 0; q < n; q++) {
-      const px = x + (R() - 0.5) * 2.4, pz = z + (R() - 0.5) * 2.4, size = 0.5 + R() * 0.25;
-      low.push({ x: px, z: pz, height: size, width: size * (2.4 + R()), archetype: "single", tier: "low scree", kind: "low scree", align: 1, sink: 0.06, tint: SCREE[q % SCREE.length] });
+    if (rho > 100 || rho < T.RC + 2) continue;
+    let r = Math.min(5, trailDist(x, z) - TRAIL_BAND - 0.6);
+    while (r >= 1.6 && keepOut(x, z, r, ctx.spawns)) r -= 0.4;
+    if (r < 1.6 || onTongue(x, z, r * 0.6 + 0.4)) continue;
+    og.push({ x, z, rho, r });
+  }
+  const ogs = await sample(og.map((p) => [p.x, p.z]));
+  for (let i = og.length - 1; i >= 0; i--) if (!ogs[i] || ogs[i].y < WATER + 0.6 || ogs[i].slope > 62) og.splice(i, 1); else og[i].slope = ogs[i].slope;
+  stats.outcropSpots = og.length;
+  const wantOut = (p) => (0.25 + 0.75 * Math.min(1, Math.max(0, (96 - p.rho) / 40))) * (T.noise(p.x * 0.07, p.z * 0.07, 211) > -0.25 ? 1 : 0.3);
+  og.forEach((p) => { p.w = wantOut(p) * (0.6 + 0.4 * R()); });
+  og.sort((p, q) => q.w - p.w || q.r - p.r);
+  const outAnchors = [];
+  for (const p of og) {
+    if (outAnchors.length >= 70) break;
+    if (heroes.some((h) => Math.hypot(h.x - p.x, h.z - p.z) < 7) || outAnchors.some((h) => Math.hypot(h.x - p.x, h.z - p.z) < 6.5)) continue;
+    const height = Math.min(6, Math.max(2.6, p.r * 1.4 * (0.8 + R() * 0.4)));
+    outAnchors.push({ x: p.x, z: p.z, height, width: height * (1.2 + R() * 0.4), archetype: pick([["tor", 3], ["ledge", 2], ["single", 2]]), tier: "outcrop", kind: "outcrop anchor", align: 0.7 });
+  }
+  const outs = await crags(outAnchors, { overlap: 0.8, sink: [0.2, 0.3], padClear: 9, shore: 0.2, mean: true });
+  const outKids = await crags(kidsOf(outs, await plan(outs, "outcrop", { count: [2, 4] }), "outcrop", "outcrop child"), { overlap: 0.5, padClear: 8, shore: 0.2, mean: true, meanMin: 0.35 });
+  stats.outcrops = outs.length; stats.outcropChildren = outKids.length;
+
+  // ---------------- rock ribs: both banks of each lava channel, a broken line of low elongated blocks just off the lava
+  // (1.4-2.6 out from the tongue's edge), long axis along the flow (the default yaw is downhill: the channels run down the
+  // fall line), heights 1.4-2.8 growing down the cone, with gaps where the noise says so.
+  // the channels are cut as gullies whose banks are 65-72 degree walls, where a seated block vanishes into the face: each
+  // station searches outward from the lava's edge for the bank's LIP (the first ground under 42 degrees within 7) and the
+  // rib stands there, lining the channel from above.
+  const stations = [];
+  for (const t of T.TONGUES) for (let r = t.r0 + 2; r < t.r1 - 1; r += 2.3) for (const side of [-1, 1]) {
+    if (T.noise(r * 0.18, side * 3 + t.a * 7, 307) < -0.35) continue;
+    const { a, w } = tongueAt(t, r), pts = [];
+    for (let off = w + 0.8; off <= w + 7; off += 0.6) { const th = a + side * off / r; pts.push([r * Math.cos(th), r * Math.sin(th)]); }
+    stations.push({ t, r, pts });
+  }
+  const ss = await sample(stations.flatMap((st) => st.pts));
+  const ribs = [];
+  let si = 0;
+  for (const st of stations) {
+    const s0 = ss.slice(si, si + st.pts.length); si += st.pts.length;
+    const j = s0.findIndex((q) => q && q.slope < 58 && q.y > WATER + 0.5);
+    if (j < 0) { rej("rib", "no lip"); continue; }
+    const [x, z] = st.pts[Math.min(st.pts.length - 1, j + 1)];
+    const k = Math.min(1, Math.max(0, (st.r - st.t.r0) / (st.t.r1 - st.t.r0))), height = 1.4 + 1.4 * k * (0.7 + R() * 0.6);
+    ribs.push({ x, z, height, width: height * (1.5 + R() * 0.5), archetype: R() < 0.3 ? "ledge" : "single", tier: "rib", kind: "lava rib", align: 0.8, sink: 0.25 });
+  }
+  stats.ribs = (await crags(ribs, { overlap: 0.55, padClear: 8, shore: 0.4, mean: true, lavaMargin: 0 })).length;
+
+  // ---------------- switchback cut-banks: the outside of every hairpin, past the kerb band, an arc of 3-6 blocks (2-3.6)
+  // standing like the bank the trail was cut from.
+  const cut = [];
+  for (const t of T.TRAILS) for (const hp of t.hairpins ?? []) {
+    let bi = 0, bd = Infinity;
+    t.pts.forEach((p, i) => { const d = Math.hypot(p[0] - hp[0], p[1] - hp[1]); if (d < bd) { bd = d; bi = i; } });
+    const pa = t.pts[Math.max(0, bi - 6)], pb = t.pts[Math.min(t.pts.length - 1, bi + 6)];
+    let ox = hp[0] - (pa[0] + pb[0]) / 2, oz = hp[1] - (pa[1] + pb[1]) / 2;
+    const ol = Math.hypot(ox, oz);
+    if (ol < 0.5) continue;
+    ox /= ol; oz /= ol;
+    const base = Math.atan2(oz, ox), n = 3 + Math.floor(R() * 4), rad = TRAIL_BAND + 3.2;
+    for (let i = 0; i < n; i++) {
+      const ang = base + (i / Math.max(1, n - 1) - 0.5) * 1.6 + (R() - 0.5) * 0.2, d = rad + R() * 1.2, height = 2 + R() * 1.6;
+      cut.push({ x: hp[0] + Math.cos(ang) * d, z: hp[1] + Math.sin(ang) * d, height, width: height * (1.3 + R() * 0.4), archetype: R() < 0.4 ? "tor" : "single", tier: "cutbank", kind: "cut-bank", align: 0.75 });
     }
   }
-  stats.lowScree = (await crags(low, { low: true, overlap: 0.45, sink: 0.06, padClear: 8 })).length;
+  stats.cutbanks = (await crags(cut, { overlap: 0.55, padClear: 8, shore: 0.4, mean: true })).length;
+
+  // ---------------- foot skirts (round 4's judge: Seawall's and Harbour's crags hover over the seam, "dropped in"): every
+  // land hero and outcrop anchor gets debris on its contact line, more of it downhill, in the scree's mid grey and at least
+  // 0.9 (dark small pieces at a crag's foot on the sand read as mines in the round-5 Test).
+  const landBig = [...heroes, ...outs].filter((h) => h.dry && h.dry.groundLow > WATER);
+  const skirt = await crags(kidsOf(landBig, await plan(landBig, "skirt", { count: [3, 6], minSize: 0.9 }), "skirt", "foot skirt", { tint: (k) => SCREE[Math.floor(k.ring * 2.99)] }),
+    { allowCrater: true, overlap: 0.45, padClear: 7, shore: 0.2, mean: true, meanMin: 0.2, meanShow: 0.3, sink: [0.25, 0.35] });
+  stats.skirts = skirt.length;
+
+  // ---------------- scree that reads (judge: "clusters of 4-8 slabs, 0.8-1.6 in size, mid-grey value, on the downhill side
+  // of outcrops"): a fan below each outcrop anchor and each flank hero, a mid grey a few steps lighter than the basalt
+  // (the tint is drawn as colour x texel luminance / 0.5, and Horror5's texels average 0.23: #a39b91 draws a mid grey).
+  const screeFrom = [...outs.filter(() => R() < 0.75), ...heroes.filter((h) => h.zone === "flank")];
+  const sc = kidsOf(screeFrom, await plan(screeFrom, "scree", { count: [4, 8] }), "scree", "scree fan", { tint: (k) => SCREE[Math.floor(k.ring * 2.99)] });
+  stats.scree = (await crags(sc, { overlap: 0.45, padClear: 8, shore: 0.2, mean: true, meanMin: 0.2, meanShow: 0.3, sink: [0.1, 0.16] })).length;
 
   stats.heroes = heroes.length;
   stats.crags = placed.length;
-  say?.("rock", JSON.stringify({ heroes: stats.heroes, sea: stats.sea, sec: stats.secondaries, scree: stats.scree, crater: stats.crater, breakers: stats.breakers, lowScree: stats.lowScree, pieces: stats.pieces }));
+  say?.("rock", JSON.stringify({ heroes: stats.heroes, sea: stats.sea, sec: stats.secondaries, outcrops: stats.outcrops, outKids: stats.outcropChildren, ribs: stats.ribs, cutbanks: stats.cutbanks, skirts: stats.skirts, scree: stats.scree, crater: stats.crater, breakers: stats.breakers, pieces: stats.pieces }));
   ctx.rockOut = { heroes: heroes.map((h) => ({ x: +h.x.toFixed(1), z: +h.z.toFixed(1), height: +h.height.toFixed(1), kind: h.kind, dry: h.dry })), sea: sea.map((h) => ({ x: +h.x.toFixed(1), z: +h.z.toFixed(1), height: +h.height.toFixed(1), dry: h.dry })) };
   return stats;
 }

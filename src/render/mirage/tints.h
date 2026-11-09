@@ -11,6 +11,9 @@ namespace melange::mirage::tints {
 // view (the engine sends the object's transform in either), matched to the table. The detail's colour with a = 1, or
 // (1, 1, 1, 0). Main thread, GL context current.
 const float* ForDraw(const float* model, const float* view);
+// The landscape tint ("_ltint" tags, tints_logic.h) of the level being played for a texture of this digest (textags.h):
+// the colour with a = 1, or (1, 1, 1, 0). 0 (unknown texture) is never tinted.
+const float* ForLandTexture(uint64_t digest);
 // True while the level being played has tinted details (Upload can skip the lookup when false).
 bool Any();
 }  // namespace melange::mirage::tints

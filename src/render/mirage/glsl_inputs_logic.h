@@ -7,7 +7,7 @@
 #include <string_view>
 
 namespace melange::mirage::shaders::glsl::logic {
-enum class SceneInput { None, Depth, Color, NearFar, View, Proj, RenderScale, TexTag, Tint };
+enum class SceneInput { None, Depth, Color, NearFar, View, Proj, RenderScale, TexTag, Tint, LandTint };
 
 inline SceneInput ClassifySceneInput(std::string_view name) {
     if (name == "mg_depth") return SceneInput::Depth;
@@ -18,6 +18,7 @@ inline SceneInput ClassifySceneInput(std::string_view name) {
     if (name == "mg_renderScale") return SceneInput::RenderScale;
     if (name == "mg_texTag") return SceneInput::TexTag;  // vec4[2]: the texture tag of the texture0 unit (textags.h)
     if (name == "mg_tint") return SceneInput::Tint;      // vec4: the scenery tint of the drawn detail (tints.h)
+    if (name == "mg_landTint") return SceneInput::LandTint;  // vec4: the level's landscape tint of the texture0 texture (tints.h)
     return SceneInput::None;
 }
 

@@ -18,6 +18,9 @@ import { fileURLToPath } from "node:url";
 import { startServer, ROOT } from "./mcpclient.mjs";
 import { keepOut, CLEAR } from "./detail-keepout.mjs";
 import { rockPass } from "./detail-rock.mjs";
+import { landPass } from "./detail-land.mjs";
+import { cliffPass } from "./detail-cliff.mjs";
+import { lintPass } from "./detail-lint.mjs";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const argv = process.argv.slice(2);
@@ -36,7 +39,10 @@ const say = (...a) => console.log(new Date().toISOString().slice(11, 19), ...a);
 //   ctx.spawns                   the level's spawn knots [[x, z], ...] (map units)
 export const PASSES = [
   { name: "flags", run: flagsPass },
+  { name: "land", run: landPass },
   { name: "rock", run: rockPass },
+  { name: "cliff", run: cliffPass },
+  { name: "lint", run: lintPass },
 ];
 
 // build.mjs places four Camelot flags (CAMELOT16, CAMELOT19 of Multi.NiceToSiege) for the castles' towers, in world units though
@@ -58,7 +64,7 @@ try {
   const fp0 = (await call("sim_fingerprint", { detail: true })).json;
   report.before = { sim: fp0.sim, visual: fp0.visual, counts: fp0.counts };
   say("fingerprint before", fp0.sim.slice(0, 16), "visual", fp0.visual.slice(0, 16), JSON.stringify(fp0.counts));
-  if (fp0.counts.emitter > 0 || (await call("list_scenery", { search: "_dtl" })).json.total > 0) throw new Error("the project already holds the detail layer: run detail.mjs on a freshly built project (restore it or run build.mjs first)");
+  if (fp0.counts.emitter > 0 || (await call("list_scenery", { search: "_dtl" })).json.total > 0 || (await call("list_scenery", { search: "_landtint" })).json.total > 0) throw new Error("the project already holds the detail layer: run detail.mjs on a freshly built project (restore it or run build.mjs first)");
   const spawns = ((await call("describe_level", { limit: 1 })).json.spawns ?? []).map((s) => {
     const p = s.map ?? s.at ?? s.pos ?? [];
     return Array.isArray(p) ? [p[0], p[2] ?? p[1]] : [p.x, p.z];

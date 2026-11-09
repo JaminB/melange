@@ -254,7 +254,8 @@ void TestGlslInputs() {
               gl::ClassifySceneInput("mg_proj") == gl::SceneInput::Proj &&
               gl::ClassifySceneInput("mg_renderScale") == gl::SceneInput::RenderScale && gl::ClassifySceneInput("mg_Depth") == gl::SceneInput::None &&
               gl::ClassifySceneInput("mg_texTag") == gl::SceneInput::TexTag && gl::ClassifySceneInput("mg_texTags") == gl::SceneInput::None &&
-              gl::ClassifySceneInput("texture0") == gl::SceneInput::None && gl::ClassifySceneInput("mg_tint") == gl::SceneInput::Tint,
+              gl::ClassifySceneInput("texture0") == gl::SceneInput::None && gl::ClassifySceneInput("mg_tint") == gl::SceneInput::Tint &&
+              gl::ClassifySceneInput("mg_landTint") == gl::SceneInput::LandTint,
           "scene input names");
     uint64_t none[3] = {0, 0, 0}, some[3] = {5, 0, 9}, one[1] = {1};
     Check(gl::Freshest(none, 3) == -1 && gl::Freshest(some, 3) == 2 && gl::Freshest(one, 1) == 0 && gl::Freshest(some, 0) == -1,
@@ -275,6 +276,17 @@ void TestTints() {
               !tl::ParseTag("VISIBLE_Rock", c) && !tl::ParseTag("VISIBLE_tint_tint", c),
           "malformed tint tags are ignored");
     Check(tl::ParseTag("A_tint000000_tintffffff", c) && c[2] == 1.f, "the last tint tag wins");
+    {
+        uint64_t d = 0;
+        Check(tl::ParseLandTag("VISIBLE_Horror5_dtl_ltintbfb9ab5911ad8e293d3632", &d, c) && d == 0xbfb9ab5911ad8e29ull && c[0] == 0x3d / 255.f &&
+                  c[2] == 0x32 / 255.f,
+              "land tint tag: digest and colour");
+        Check(tl::ParseLandTag("X_ltint049e2021928ca5e7aabbcc_dtl", &d, c) && d == 0x049e2021928ca5e7ull, "land tint tag followed by another tag");
+        Check(!tl::ParseLandTag("X_ltint049e2021928ca5e7aabb", &d, c) && !tl::ParseLandTag("X_ltint049e2021928ca5e7aabbccd", &d, c) &&
+                  !tl::ParseLandTag("X_ltintz49e2021928ca5e7aabbcc", &d, c),
+              "malformed land tint tags are not tags");
+        Check(!tl::ParseTag("X_ltint049e2021928ca5e7aabbcc", c), "a land tint tag is not a per-copy tint tag");
+    }
     tl::Table t;
     tl::Entry e;
     e.pos[0] = 10.f, e.pos[1] = 2.f, e.pos[2] = -30.f, e.scale = 3.f, e.rgba[0] = 0.2f;

@@ -6,6 +6,8 @@
 #include <windows.h>
 
 #include <algorithm>
+#include <array>
+#include <unordered_map>
 #include <cmath>
 #include <cstdlib>
 #include <string>
@@ -30,11 +32,12 @@ namespace melange::mirage::tints {
 namespace {
 namespace lg = logic;
 lg::Table g_table;
+std::unordered_map<uint64_t, std::array<float, 4>> g_land;  // landscape tints of the level, by texture digest
 std::string g_key;             // the level key the table was built for ("" none)
 uint64_t g_checked = 0;        // frame of the last key check
 const float kWhite[4] = {1.f, 1.f, 1.f, 0.f};
 struct Stats {
-    uint64_t lookups = 0, hits = 0;
+    uint64_t lookups = 0, hits = 0, landLookups = 0, landHits = 0;
     std::string file;
     size_t details = 0;
 } g_st;
@@ -65,6 +68,7 @@ bool FindLevel(const std::string& stem, erg::load::BaseFiles* f, std::wstring* w
 
 void Load(const std::string& key) {
     g_table.Set({});
+    g_land.clear();
     g_st = Stats{};
     levels::engine::Details d;
     if (!levels::engine::LevelDetails(key.c_str(), &d) || !erg::install::ValidFileStem(d.file)) return;
@@ -81,6 +85,9 @@ void Load(const std::string& key) {
     }
     std::vector<lg::Entry> out;
     for (const erg::Detail& det : L.scene.details) {
+        uint64_t digest = 0;
+        float land[3];
+        if (lg::ParseLandTag(det.name, &digest, land) && digest) g_land[digest] = {land[0], land[1], land[2], 1.f};
         lg::Entry e;
         if (!lg::ParseTag(det.name, e.rgba)) continue;
         erg::Mat3x4 m;
@@ -98,6 +105,7 @@ void Load(const std::string& key) {
     }
     g_st.details = L.scene.details.size();
     g_st.file = erg::install::Narrow(where) + "\\" + d.file;
+    if (!g_land.empty()) LOG_INFO("[tints] %s: %zu landscape texture tints", key.c_str(), g_land.size());
     if (!out.empty()) LOG_INFO("[tints] %s: %zu tinted scenery details of %zu (%s)", key.c_str(), out.size(), g_st.details, g_st.file.c_str());
     g_table.Set(std::move(out));
 }
@@ -110,6 +118,7 @@ void OnFrame() {
         if (!g_key.empty()) {
             g_key.clear();
             g_table.Set({});
+            g_land.clear();
         }
         return;
     }
@@ -125,8 +134,11 @@ void OnFrame() {
 
 // tints.stats: the table and the draws matched since it was loaded; with an argument, every entry.
 bool VerbStats(std::string_view args, void*) {
-    LOG_INFO("[tints] level '%s' (%s): %zu tinted of %zu details; %llu lookups, %llu matched", g_key.c_str(), g_st.file.c_str(),
-             g_table.Size(), g_st.details, static_cast<unsigned long long>(g_st.lookups), static_cast<unsigned long long>(g_st.hits));
+    LOG_INFO("[tints] level '%s' (%s): %zu tinted of %zu details; %llu lookups, %llu matched; %zu landscape texture tints, %llu land draws "
+             "tinted of %llu", g_key.c_str(), g_st.file.c_str(), g_table.Size(), g_st.details, static_cast<unsigned long long>(g_st.lookups),
+             static_cast<unsigned long long>(g_st.hits), g_land.size(), static_cast<unsigned long long>(g_st.landHits),
+             static_cast<unsigned long long>(g_st.landLookups));
+    for (const auto& [d, c] : g_land) LOG_INFO("[tints]   land texture %016llx -> %.3f %.3f %.3f", static_cast<unsigned long long>(d), c[0], c[1], c[2]);
     if (!args.empty())
         for (const lg::Entry& e : g_table.Entries())
             LOG_INFO("[tints]   at %.3f %.3f %.3f scale %.3f colour %.3f %.3f %.3f", e.pos[0], e.pos[1], e.pos[2], e.scale, e.rgba[0], e.rgba[1], e.rgba[2]);
@@ -169,6 +181,16 @@ void Mul(const float* a, const float* b, float* out) {
 }  // namespace
 
 bool Any() { return g_table.Size() > 0; }
+
+const float* ForLandTexture(uint64_t digest) {
+    if (g_land.empty()) return kWhite;
+    ++g_st.landLookups;
+    if (!digest) return kWhite;
+    auto it = g_land.find(digest);
+    if (it == g_land.end()) return kWhite;
+    ++g_st.landHits;
+    return it->second.data();
+}
 
 const float* ForDraw(const float* model, const float* view) {
     if ((!model && !view) || g_table.Size() == 0) return kWhite;

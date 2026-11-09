@@ -173,6 +173,9 @@ struct Linked {
     int modelIndex = -1;  // the `model` parameter's first register in the vertex program, -1 when it has none
     int viewIndex = -1;   // ...and the `view` parameter's (the engine may send the object's transform in it)
     float tintSent[4] = {-1.f, -1.f, -1.f, -1.f};
+    // mg_landTint: the level's landscape tint (tints.h) of the texture on the texture0 unit (by its textags digest).
+    GLint landTintLoc = -1;
+    float landTintSent[4] = {-1.f, -1.f, -1.f, -1.f};
     uint32_t paramsSeen = ~0u;
     uint32_t seen[2] = {~0u, ~0u};
     GLuint arb[2] = {};
@@ -600,6 +603,16 @@ Linked Link(src::CGprogram vp, src::CGprogram fp) {
                 LOG_WARN("[shaders] GLSL %s: mg_tint must be declared vec4; it stays 0", label[mod[0] ? 0 : 1].c_str());
             }
             continue;
+        case logic::SceneInput::LandTint:
+            if (type == kFloatVec4) {
+                l.landTintLoc = loc;
+                const float white[4] = {1.f, 1.f, 1.f, 0.f};
+                g_gl.Uniform4fv(loc, 1, white);
+                std::copy(white, white + 4, l.landTintSent);
+            } else {
+                LOG_WARN("[shaders] GLSL %s: mg_landTint must be declared vec4; it stays 0", label[mod[0] ? 0 : 1].c_str());
+            }
+            continue;
         default:
             break;
         }
@@ -885,6 +898,14 @@ void UploadTint(Linked& l, const Mirror* vm) {
     g_gl.Uniform4fv(l.tintLoc, 1, t);
 }
 
+// After UploadTexTag when the program also declares mg_texTag (textags::ForDraw has seen the texture0 binding).
+void UploadLandTint(Linked& l) {
+    if (l.texTagLoc < 0) textags::ForDraw(l.texTagUnit);
+    const float* t = tints::ForLandTexture(textags::LastDigest());
+    if (!logic::Update(l.landTintSent, t, 4)) return;
+    g_gl.Uniform4fv(l.landTintLoc, 1, t);
+}
+
 void Upload() {
     ProfScope ps;
     if (g_prof.on) ++g_prof.uploads;
@@ -894,6 +915,7 @@ void Upload() {
     if (!l.foreign.empty()) UploadForeign(l);
     if (!l.modTex.samplers.empty()) BindModTextures(l);
     if (l.texTagLoc >= 0) UploadTexTag(l);
+    if (l.landTintLoc >= 0) UploadLandTint(l);
     const Mirror* m[2] = {};
     for (int s = 0; s < 2; ++s) {
         auto it = g_mirror.find(l.arb[s]);

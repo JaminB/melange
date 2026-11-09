@@ -10,4 +10,7 @@ bool Active();
 // The tag (8 floats) for the texture bound on `unit` now, all zero when it is unknown, untagged or no table is loaded.
 // Called from a replaced program's Upload() before each draw, GL context current; counts the draw for tags.stats.
 const float* ForDraw(uint32_t unit);
+// The digest of the texture the last ForDraw call found bound (textags_logic.h's scheme), 0 when it was unknown, not
+// hashed or no table is loaded. Landscape tints (tints.h) key on it.
+uint64_t LastDigest();
 }  // namespace melange::mirage::textags
