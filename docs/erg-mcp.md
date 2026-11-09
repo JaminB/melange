@@ -724,3 +724,45 @@ editor's commands, so every edit is one undo step and `save` sends the panel's p
 
 Tests: `.\tools\erg-mcp\test.ps1` builds the bundle and runs `tools/erg-mcp/test/`: the MCP protocol, the tools
 against the mock Oasis server (`web/test/e2e/mock-server.mjs`) and the helpers on the synthetic levels.
+
+## Detail layer (sim-neutral decoration)
+
+Decoration that changes nothing the game simulates: rock detail, flora, smoke, steam and light, added as a separate pass
+after a map is built (the Caldera bench: `bench/caldera/detail.mjs` runs after `build.mjs` on the saved project and
+never edits `build.mjs` or `terrain.mjs`). Three tool groups serve it: `fingerprint`, `dress` and `scenery`.
+
+| Tool | What it does |
+|---|---|
+| `sim_fingerprint` | A sha256 (`sim`) of everything that can change what the simulation does, with a 16-hex hash per part (`parts`: `base`, `databank`, `kind`, `water`, `spawnMode`, `surround` (mode, and the painted heights and blend), `frames` (every frame with its transform, size, name tags and drape corners), `trims`, `objects` (with the mine factory's settings), `script` (the server's text, normalised), `voxels` (every frame's words masked to bits 0-1 and 8-23: occupancy and the second material's flags, material and corner mask, which shapes collision), `spawnKnots`, `objectKnots`, `cameras` (cameras and look-at points: the engine hash reads the logical camera, and `ERGBLAST_` knots are look-at points), `otherSimDetails`), and `visual`, the same over the channels below (`visualParts`: `scenery`, `light`, `emitter`, `sound`, `paint`: the primary material, bits 2-7, of solid voxels). Details are hashed by content, sorted, so new ids never change it. `against` (an earlier answer or its `sim`) answers `same` and the parts that differ; `detail: true` adds a hash per voxel frame (then `against` names the frames) and the sim details with why each is sim. `strict` counts emitters, sounds and paint as sim. About 15 ms on Caldera (577 voxel frames). |
+| `scenery_catalog` | The bases' visual-channel details by resource (default every game base; `bases`, `themes`, `roles`, `category` rock/flora/fx/none guessed from names, `search`): theme, role, kinds, count, the preview mesh's size (`meshSize`, and `size` at the example's scale), an example detail (id, name, position, rotation, scale) to copy. `includeSim` also lists the details the fingerprint counts as sim, with why. Works with no project open. |
+| `copy_base_details` | `copy_base_scenery` for every visual channel: copies of a base's scenery meshes, lights (`PNTLGHT r g b radius`), particle emitters (the name picks the effect) and sound effects, by `id`, at `pos` or `xz`, with `rot` and `scale`; refused for a detail the fingerprint counts as sim (a knot, a camera, a collision volume, a name tagged MORTAL, ...), so a dressing pass cannot change the sim through it. One undo step. |
+
+A detail is visual when its role (derived from its name and resource as the server does) is scenery, light, emitter or
+sound and its name carries no tag the engine may act on (MORTAL, COLLIDE, PERM, SLIPPY, TEAMBASE, and names of knots:
+WORM, CRATE, MINE, TRIG, TELEPAD, ERGBLAST, STATUE, SPAWN). Everything else, including role `other` (a name without
+VISIBLE/PROP/STANDIN), is sim.
+
+**Channel verdicts** (Caldera v2 round 4 in testenv D, 2026-11-09; the evidence is the round-0 run of
+`bench/caldera/detail-probe.mjs`, which placed 32 scenery copies from 20 bases of 9 themes, an orange point light, the
+volcano plume, two steam vents, a tall bonfire, thick steam, a smoke emitter, wind and creaking-tree sounds and a 4 x 1 x 4
+primary repaint, then played a Test of the dressed level and one of the undressed level with Sunstone on):
+
+| Channel | Verdict | Evidence |
+|---|---|---|
+| Scenery copies (VISIBLE_, no other tag) | neutral | No collision (worms and shots pass through: scenery section). Not read by the engine hash (worms, teams, projectiles, RNG states, camera). The fingerprint is the same with them (unit test; the probe). In the dressed Test every worm stood on the same knot at the same point at turn 1 (game_probe) as in the undressed one, and the entity list held the same entities but for the emitters. |
+| MORTAL_ scenery (most bases' grass tufts, TyrannoSawUs' rocks and bones) | sim | Explosions remove them (a sim event); not proven harmless, so the fingerprint and `copy_base_details` treat them as sim. |
+| Lights (`PNTLGHT ...`) | neutral | Render-only: no entity in the match's entity list (the dressed and undressed lists differ only by the emitters), no RNG movement (below). |
+| Sounds (`Sound Effect`) | neutral (audio) | No entity in the match's entity list; no RNG movement (below). The emitter-named ones (`Emitter_Snd...`) are emitters. |
+| Emitters (`EMITTER_...`, `Particle Emitter`) | neutral as far as can be measured; `strict` counts them sim | Each becomes a `ParticleEmitterEffectEntity` (an Other entity: dressed 30, undressed 24, the six new emitters; no worm, projectile or physics object). With them drawing in view, the logic RNG moved on 4 of 85 idle ticks against 3 of the same 85 ticks undressed (the same turn, team 2 worm 4), so no emitter draws the logic RNG per tick; the second RNG moved on 38 against 32. Two live Tests are seeded differently (the worms' names differ), so this is not a tick-for-tick proof: a Wormsign replay of an undressed match played on the dressed level (every tick's engine hash compared) is the strict proof, not run yet. |
+| Primary paint (bits 2-7 of a solid voxel) | neutral by data | The theme's material file (`ThemePrehistoric.txt`) holds texture names only (six lines per record, no physics field); slipperiness and indestructibility are frame-name tags (SLIPPY, PERM), not materials. Team 3's worms spawned beside the repainted patch of the Seawall court at the same points at turn 1 as without it. Not proven in play beyond that (no worm walked on it, no explosion compared). |
+| Second material, corner mask (bits 8-23), blends | sim | The corner mask shapes collision (docs/erg.md). `paint_* {blend: true}` and heightfield `blend` are sim. |
+
+**Limits found.** `paint_region` and `sculpt {mode: "paint"}` cannot repaint Caldera's draped skin: its words carry a
+second material, and the editor's paint check refuses a word whose bits 8-23 differ from the base word's (`0x444f43 is not
+a valid edit of the base word 0x0`), while paint_region answers "nothing to repaint"; the castles' undraped blocks repaint.
+The bases' details hold no trees, palms, ferns, vines, dead trees, large boulders, cliffs or crystals: only small props
+(grass, flowers, 1-2 unit rocks, eggs, skulls, cacti, mushrooms); big rocks are scaled copies. In the round-0 Test the
+copies did not stand where the editor put them: copies placed at y 8 map over the sea drew at the water's surface and
+offset from their grid cells (the contact sheet's tiles show neighbouring pieces), although `list_scenery` reads them at
+the asked position in frame 508 (`Worms`, the folder `targetFrame` picks for scenery on Caldera): check a copy's place in a
+Test before trusting it. `bench/caldera/detail-inventory.md` lists the candidates.
