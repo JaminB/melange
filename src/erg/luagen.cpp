@@ -235,8 +235,10 @@ std::string Chunk(const Scene& s) {
 
 
 namespace {
-// "-- minefactory: activation=15 inactiveTurns=3 keepKnot=1 launchHeight=20 launchRadius=12 launchers=-300:900:40/...":
-// the set fields, in this order (launchers: x:y:z world units, one per launcher, separated by '/').
+// "-- minefactory: activation=15 inactiveTurns=3 keepKnot=1 launchHeight=20 launchRadius=12 launchers=-300:900:40/...
+// throw=min:max:apex:pattern:avoidWater:scatter:targetShare targets=x:z/x:z": the set fields, in this order (launchers:
+// x:y:z world units, one per launcher, separated by '/'; throw: every field, the pattern by name; targets: x:z world
+// units, only with a throw).
 std::string FactoryTweakLine(const FactorySpec& f) {
     std::string l(kFactoryTweak);
     if (f.activation) l += " activation=" + std::to_string(*f.activation);
@@ -248,7 +250,62 @@ std::string FactoryTweakLine(const FactorySpec& f) {
         const auto& p = f.launchers[i];
         l += (i ? "/" : " launchers=") + std::to_string(p[0]) + ":" + std::to_string(p[1]) + ":" + std::to_string(p[2]);
     }
+    if (f.throwing) {
+        const ThrowSpec& t = *f.throwing;
+        l += " throw=" + std::to_string(t.minRange) + ":" + std::to_string(t.maxRange) + ":" + std::to_string(t.apex) + ":" +
+             ThrowPatternName(t.pattern) + ":" + (t.avoidWater ? "1" : "0") + ":" + std::to_string(t.scatter) + ":" + std::to_string(t.targetShare);
+        for (size_t i = 0; i < t.targets.size(); ++i) l += (i ? "/" : " targets=") + std::to_string(t.targets[i][0]) + ":" + std::to_string(t.targets[i][1]);
+    }
     return l + "\n";
+}
+
+// A signed whole number of at most kMaxLauncherCoord, taken off the front of v.
+bool TakeInt(std::string_view* v, int* out) {
+    const bool neg = !v->empty() && v->front() == '-';
+    if (neg) v->remove_prefix(1);
+    if (v->empty() || v->front() < '0' || v->front() > '9') return false;
+    int64_t n = 0;
+    while (!v->empty() && v->front() >= '0' && v->front() <= '9') {
+        n = n * 10 + (v->front() - '0');
+        if (n > kMaxLauncherCoord) return false;
+        v->remove_prefix(1);
+    }
+    *out = static_cast<int>(neg ? -n : n);
+    return true;
+}
+
+// "min:max:apex:pattern:avoidWater:scatter:targetShare"
+bool ParseThrow(std::string_view v, ThrowSpec* t) {
+    auto field = [&](int* out) {
+        if (!TakeInt(&v, out)) return false;
+        if (v.empty() || v.front() != ':') return false;
+        v.remove_prefix(1);
+        return true;
+    };
+    if (!field(&t->minRange) || !field(&t->maxRange) || !field(&t->apex)) return false;
+    const size_t colon = v.find(':');
+    if (colon == std::string_view::npos || !ParseThrowPattern(v.substr(0, colon), &t->pattern)) return false;
+    v.remove_prefix(colon + 1);
+    int water = 0;
+    if (!field(&water) || water < 0 || water > 1 || !field(&t->scatter) || !TakeInt(&v, &t->targetShare) || !v.empty()) return false;
+    t->avoidWater = water == 1;
+    return true;
+}
+
+// "x:z/x:z": 1-kMaxThrowTargets points of signed whole world units.
+bool ParseTargets(std::string_view v, std::vector<std::array<int, 2>>* out) {
+    out->clear();
+    while (true) {
+        std::array<int, 2> p{};
+        if (!TakeInt(&v, &p[0]) || v.empty() || v.front() != ':') return false;
+        v.remove_prefix(1);
+        if (!TakeInt(&v, &p[1])) return false;
+        out->push_back(p);
+        if (out->size() > kMaxThrowTargets) return false;
+        if (v.empty()) return true;
+        if (v.front() != '/') return false;
+        v.remove_prefix(1);
+    }
 }
 
 // "x:y:z/x:y:z": 1-kMaxLaunchers points of signed whole world units within kMaxLauncherCoord.
@@ -297,6 +354,19 @@ bool ParseFactoryTweak(std::string_view text, FactorySpec* f) {
         int v = 0;
         if (key == "launchers") {
             if (!f->launchers.empty() || !ParseLaunchers(num, &f->launchers)) return false;
+            rest = sp == std::string_view::npos ? std::string_view{} : rest.substr(sp);
+            continue;
+        }
+        if (key == "throw") {
+            ThrowSpec t;
+            if (f->throwing || !ParseThrow(num, &t)) return false;
+            f->throwing = t;
+            rest = sp == std::string_view::npos ? std::string_view{} : rest.substr(sp);
+            continue;
+        }
+        if (key == "targets") {
+            // after the throw it belongs to, once
+            if (!f->throwing || !f->throwing->targets.empty() || !ParseTargets(num, &f->throwing->targets)) return false;
             rest = sp == std::string_view::npos ? std::string_view{} : rest.substr(sp);
             continue;
         }

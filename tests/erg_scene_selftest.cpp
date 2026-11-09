@@ -1121,6 +1121,60 @@ void TestFactorySettings() {
     std::string orphan2 = luagen::Text(stem, noFactory);
     orphan2.insert(orphan2.find('\n') + 1, "-- minefactory: activation=5\n");
     Expect(!luagen::IsGenerated(stem, orphan2, &why), "settings without a factory are refused");
+    // throw: {maxRange, minRange?, apex?, pattern?, avoidWater?, targets?, scatter?, targetShare?} in the patch (the defaults
+    // left out when written), "throw=min:max:apex:pattern:water:scatter:share targets=x:z/..." on the settings line
+    {
+        erg::Patch lp;
+        const std::string least = Mutate(text, "\"schemeMines\":false}", "\"schemeMines\":false,\"throw\":{\"maxRange\":40}}");
+        Expect(erg::ParsePatch(least, &lp, &err) && lp.objects.back().factory.throwing && lp.objects.back().factory.throwing->maxRange == 40 &&
+                   lp.objects.back().factory.throwing->minRange == 0 && lp.objects.back().factory.throwing->apex == 15 &&
+                   lp.objects.back().factory.throwing->pattern == erg::ThrowPattern::Random && lp.objects.back().factory.throwing->avoidWater &&
+                   lp.objects.back().factory.throwing->scatter == 10 && lp.objects.back().factory.throwing->targetShare == 50 && erg::WritePatch(lp) == least,
+               "a throw of maxRange alone round-trips with its defaults: " + err);
+        Expect(lp.objects.back().factory.Launch() && !lp.objects.back().factory.Default(), "a throw is a launch");
+        const std::string full = Mutate(text, "\"schemeMines\":false}",
+                                        "\"schemeMines\":false,\"throw\":{\"minRange\":20,\"maxRange\":110,\"apex\":20,\"pattern\":\"targets\",\"avoidWater\":false,"
+                                        "\"targets\":[[-1500,300],[1200,-800]],\"scatter\":12,\"targetShare\":40}}");
+        Expect(erg::ParsePatch(full, &lp, &err) && lp.objects.back().factory.throwing->pattern == erg::ThrowPattern::Targets &&
+                   lp.objects.back().factory.throwing->targets.size() == 2 && lp.objects.back().factory.throwing->targets[1] == std::array<int, 2>{1200, -800} &&
+                   !lp.objects.back().factory.throwing->avoidWater && erg::WritePatch(lp) == full,
+               "a full throw round-trips in the patch: " + err);
+        const std::string dflt = Mutate(text, "\"schemeMines\":false}", "\"schemeMines\":false,\"throw\":{\"minRange\":0,\"maxRange\":40,\"apex\":15,\"pattern\":\"random\"}}");
+        Expect(erg::ParsePatch(dflt, &lp, &err) && erg::WritePatch(lp) == least, "defaults given are left out when written");
+        Expect(!erg::ParsePatch(Mutate(text, "\"schemeMines\":false}", "\"schemeMines\":false,\"throw\":{\"minRange\":10}}"), &lp, &err), "a throw needs maxRange");
+        Expect(!erg::ParsePatch(Mutate(text, "\"schemeMines\":false}", "\"schemeMines\":false,\"throw\":{\"minRange\":50,\"maxRange\":40}}"), &lp, &err), "maxRange is not under minRange");
+        Expect(!erg::ParsePatch(Mutate(text, "\"schemeMines\":false}", "\"schemeMines\":false,\"throw\":{\"maxRange\":501}}"), &lp, &err), "maxRange is at most 500");
+        Expect(!erg::ParsePatch(Mutate(text, "\"schemeMines\":false}", "\"schemeMines\":false,\"throw\":{\"maxRange\":40,\"pattern\":\"spiral\"}}"), &lp, &err), "the pattern is named");
+        Expect(!erg::ParsePatch(Mutate(text, "\"schemeMines\":false}", "\"schemeMines\":false,\"throw\":{\"maxRange\":40,\"pattern\":\"targets\"}}"), &lp, &err), "pattern targets needs targets");
+        Expect(!erg::ParsePatch(Mutate(text, "\"schemeMines\":false}", "\"schemeMines\":false,\"throw\":{\"maxRange\":40,\"targets\":[[1.5,2]]}}"), &lp, &err), "targets are whole world units");
+        Expect(!erg::ParsePatch(Mutate(text, "\"schemeMines\":false}", "\"schemeMines\":false,\"throw\":{\"maxRange\":40,\"range\":1}}"), &lp, &err), "no unknown throw key");
+        // the settings line
+        luagen::ChunkSpec tspec = spec;
+        tspec.objects[0].factory = {};
+        erg::ThrowSpec th;
+        th.minRange = 20, th.maxRange = 110, th.apex = 20, th.pattern = erg::ThrowPattern::Targets, th.avoidWater = false, th.scatter = 12, th.targetShare = 40;
+        th.targets = {{-1500, 300}, {1200, -800}};
+        tspec.objects[0].factory.throwing = th;
+        tspec.objects[0].factory.launchers = {{-300, 900, 40}};
+        const std::string ttext = luagen::Text(stem, tspec);
+        luagen::ChunkSpec tparsed;
+        Expect(ttext.find("\n-- minefactory: launchers=-300:900:40 throw=20:110:20:targets:0:12:40 targets=-1500:300/1200:-800\n") != std::string::npos &&
+                   luagen::IsGenerated(stem, ttext, &why) && luagen::Parse(stem, ttext, &tparsed) && tparsed.objects[0].factory.throwing &&
+                   *tparsed.objects[0].factory.throwing == th && tparsed.objects[0].factory.launchers.size() == 1,
+               "the throw goes on the settings line after the launchers and parses back: " + why);
+        tspec.objects[0].factory.throwing->targets.clear();
+        tspec.objects[0].factory.throwing->pattern = erg::ThrowPattern::Ring;
+        tspec.objects[0].factory.launchers.clear();
+        const std::string ring = luagen::Text(stem, tspec);
+        Expect(ring.find("\n-- minefactory: throw=20:110:20:ring:0:12:40\n") != std::string::npos && ring.find("targets=") == std::string::npos &&
+                   luagen::IsGenerated(stem, ring, &why),
+               "a throw without targets writes no targets key: " + why);
+        Expect(!luagen::Upgrade(stem, Mutate(ring, "throw=20:110:20:ring:0:12:40", "throw=20:110:20:spiral:0:12:40"), &run, &why), "the pattern on the line is named");
+        Expect(!luagen::Upgrade(stem, Mutate(ring, "throw=20:110:20:ring:0:12:40", "throw=20:110:20:ring:2:12:40"), &run, &why), "avoidWater on the line is 0 or 1");
+        Expect(!luagen::Upgrade(stem, Mutate(ring, "throw=20:110:20:ring:0:12:40", "throw=20:110:20:ring:0:12"), &run, &why), "the throw on the line has every field");
+        Expect(!luagen::Upgrade(stem, Mutate(ring, "throw=20:110:20:ring:0:12:40", "throw=20:110:20:ring:0:12:40 targets=1:2 targets=3:4"), &run, &why), "targets once");
+        Expect(!luagen::Upgrade(stem, Mutate(ring, " throw=20:110:20:ring:0:12:40", " targets=1:2"), &run, &why), "targets need a throw");
+    }
 }
 
 void TestManifestV2() {

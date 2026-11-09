@@ -97,6 +97,22 @@ bool IntField(const Json& o, const char* key, const std::string& p, int64_t lo, 
 }
 }  // namespace
 
+const char* ThrowPatternName(ThrowPattern p) {
+    switch (p) {
+        case ThrowPattern::Ring: return "ring";
+        case ThrowPattern::Targets: return "targets";
+        default: return "random";
+    }
+}
+
+bool ParseThrowPattern(std::string_view s, ThrowPattern* out) {
+    if (s == "random") *out = ThrowPattern::Random;
+    else if (s == "ring") *out = ThrowPattern::Ring;
+    else if (s == "targets") *out = ThrowPattern::Targets;
+    else return false;
+    return true;
+}
+
 bool IsObjectKnot(std::string_view n) {
     if (n == "minefactory" || IndexAfter(n, "CRATE_") || IndexAfter(n, "TRIG_")) return true;
     return n.size() > 5 && n[3] >= '1' && n[3] <= '8' && IndexAfter(n, std::string("TP_") + n[3] + "_");
@@ -176,6 +192,21 @@ bool ValidateObject(const ObjectSpec& o, const std::string& p, std::string* err)
                 for (int c : l)
                     if (c < -kMaxLauncherCoord || c > kMaxLauncherCoord)
                         return Fail(err, p + ".factory.launchers: coordinates must be within 100000 world units");
+            if (f.throwing) {
+                const ThrowSpec& t = *f.throwing;
+                if (t.minRange < 0 || t.minRange > kMaxThrowRange) return Fail(err, p + ".factory.throw.minRange: must be 0-500");
+                if (t.maxRange < 1 || t.maxRange > kMaxThrowRange || t.maxRange < t.minRange)
+                    return Fail(err, p + ".factory.throw.maxRange: must be 1-500 and not under minRange");
+                if (t.apex < 1 || t.apex > 255) return Fail(err, p + ".factory.throw.apex: must be 1-255");
+                if (t.scatter < 0 || t.scatter > 255) return Fail(err, p + ".factory.throw.scatter: must be 0-255");
+                if (t.targetShare < 0 || t.targetShare > 100) return Fail(err, p + ".factory.throw.targetShare: must be 0-100");
+                if (t.targets.size() > kMaxThrowTargets) return Fail(err, p + ".factory.throw.targets: at most 16");
+                for (const auto& g : t.targets)
+                    for (int c : g)
+                        if (c < -kMaxLauncherCoord || c > kMaxLauncherCoord)
+                            return Fail(err, p + ".factory.throw.targets: coordinates must be within 100000 world units");
+                if (t.pattern == ThrowPattern::Targets && t.targets.empty()) return Fail(err, p + ".factory.throw: pattern targets needs targets");
+            }
             break;
         }
         case ObjectType::Telepad: break;
@@ -253,7 +284,7 @@ bool ParseObjects(const Json* arr, std::vector<ObjectSpec>* out, std::string* er
                 if (!f) break;
                 const std::string fp = p + ".factory";
                 int v = 0;
-                if (!Obj(f, fp, err) || !OnlyKeys(*f, {"activation", "inactiveTurns", "schemeMines", "keepKnot", "launchHeight", "launchRadius", "launchers"}, fp, err) ||
+                if (!Obj(f, fp, err) || !OnlyKeys(*f, {"activation", "inactiveTurns", "schemeMines", "keepKnot", "launchHeight", "launchRadius", "launchers", "throw"}, fp, err) ||
                     !GetBool(*f, "schemeMines", fp, &ob.factory.schemeMines, err, false) ||
                     !GetBool(*f, "keepKnot", fp, &ob.factory.keepKnot, err, false))
                     return false;
@@ -291,6 +322,40 @@ bool ParseObjects(const Json* arr, std::vector<ObjectSpec>* out, std::string* er
                         }
                         ob.factory.launchers.push_back(at);
                     }
+                }
+                if (const Json* th = f->find("throw")) {
+                    const std::string tp = fp + ".throw";
+                    ThrowSpec t;
+                    if (!Obj(th, tp, err) ||
+                        !OnlyKeys(*th, {"minRange", "maxRange", "apex", "pattern", "avoidWater", "targets", "scatter", "targetShare"}, tp, err) ||
+                        !IntField(*th, "minRange", tp, 0, kMaxThrowRange, &t.minRange, err, false) ||
+                        !IntField(*th, "maxRange", tp, 1, kMaxThrowRange, &t.maxRange, err, true) ||
+                        !IntField(*th, "apex", tp, 1, 255, &t.apex, err, false) || !IntField(*th, "scatter", tp, 0, 255, &t.scatter, err, false) ||
+                        !IntField(*th, "targetShare", tp, 0, 100, &t.targetShare, err, false) ||
+                        !GetBool(*th, "avoidWater", tp, &t.avoidWater, err, false))
+                        return false;
+                    if (const Json* pt = th->find("pattern")) {
+                        if (pt->kind != Json::Kind::String || !ParseThrowPattern(pt->str, &t.pattern))
+                            return Fail(err, tp + ".pattern: must be random, ring or targets");
+                    }
+                    if (const Json* ts = th->find("targets")) {
+                        const std::string lp = tp + ".targets";
+                        if (ts->kind != Json::Kind::Array || ts->arr.size() > kMaxThrowTargets) return Fail(err, lp + ": must be an array of at most 16 [x, z] points");
+                        for (size_t li = 0; li < ts->arr.size(); ++li) {
+                            const Json& pt = ts->arr[li];
+                            const std::string pp = lp + "[" + std::to_string(li) + "]";
+                            if (pt.kind != Json::Kind::Array || pt.arr.size() != 2) return Fail(err, pp + ": must be [x, z]");
+                            std::array<int, 2> at{};
+                            for (size_t k = 0; k < 2; ++k) {
+                                double d = 0;
+                                if (!GetNumber(pt.arr[k], pp, -kMaxLauncherCoord, kMaxLauncherCoord, &d, err)) return false;
+                                if (d != std::floor(d)) return Fail(err, pp + ": world units must be whole numbers");
+                                at[k] = static_cast<int>(d);
+                            }
+                            t.targets.push_back(at);
+                        }
+                    }
+                    ob.factory.throwing = t;
                 }
                 break;
             }
@@ -353,6 +418,28 @@ Json ObjectsJson(const std::vector<ObjectSpec>& objects) {
                         ls.arr.push_back(std::move(pt));
                     }
                     f.set("launchers", std::move(ls));
+                }
+                if (fs.throwing) {
+                    // the defaults left out, as the other settings are
+                    const ThrowSpec& t = *fs.throwing;
+                    Json th = Json::Obj();
+                    if (t.minRange) th.set("minRange", Int(t.minRange));
+                    th.set("maxRange", Int(t.maxRange));
+                    if (t.apex != 15) th.set("apex", Int(t.apex));
+                    if (t.pattern != ThrowPattern::Random) th.set("pattern", Str(ThrowPatternName(t.pattern)));
+                    if (!t.avoidWater) th.set("avoidWater", Json::Bool(false));
+                    if (!t.targets.empty()) {
+                        Json ts = Json::Arr();
+                        for (const auto& g : t.targets) {
+                            Json pt = Json::Arr();
+                            for (int c : g) pt.arr.push_back(Int(c));
+                            ts.arr.push_back(std::move(pt));
+                        }
+                        th.set("targets", std::move(ts));
+                    }
+                    if (t.scatter != 10) th.set("scatter", Int(t.scatter));
+                    if (t.targetShare != 50) th.set("targetShare", Int(t.targetShare));
+                    f.set("throw", std::move(th));
                 }
                 o.set("factory", std::move(f));
                 break;

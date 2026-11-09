@@ -20,7 +20,7 @@ import { automationFile, holdRoundClock, stopHold, tools as gameTools } from "./
 import { CAMERA_RISE, WALL_RADIUS, nearestTread, spawnWarnings, treadAt, treadWarnings } from "../lib/spawn-check";
 import { readWaterLook, waterLookProblems, withWaterLook, type WaterLook } from "../lib/water-look";
 import { checkFactory, factoryLines } from "../lib/factory-check";
-import { projectHash, readSource } from "../lib/project-hash";
+import { projectHash, readSource, storedThrow } from "../lib/project-hash";
 import { count, diff, fromSaved, mergeRuns, pairOf, summary, toSaved, type AssertRun, type SavedRun } from "../lib/assert-log";
 import { scheduleFromScript } from "../lib/flood";
 import { scriptWater } from "../lib/script-water";
@@ -273,10 +273,13 @@ interface PlaceArgs extends PointArgs {
   hitpoints?: number; parachute?: boolean; pos2?: number[]; index?: number; radius?: number; teamCollect?: number; teamDestroy?: number; wormCollect?: boolean;
   activation?: number; inactiveTurns?: number; schemeMines?: boolean; keepKnot?: boolean; launchHeight?: number; launchRadius?: number; launch?: boolean; snap?: "surface";
   launchers?: number[][];
+  throw?: ThrowArg | false;
 }
+/** set_mine_factory / place_object's `throw`: the spec's fields, targets in the call's units ([x, z]). */
+interface ThrowArg { minRange?: number; maxRange?: number; apex?: number; pattern?: "random" | "ring" | "targets"; avoidWater?: boolean; targets?: number[][]; scatter?: number; targetShare?: number; }
 
 type FactoryArgs = Pick<PlaceArgs, "activation" | "inactiveTurns" | "schemeMines" | "keepKnot" | "launchHeight" | "launchRadius" | "launch"> & {
-  launchers?: [number, number, number][] };
+  launchers?: [number, number, number][]; throw?: (Omit<ThrowArg, "targets"> & { targets?: [number, number][] }) | boolean };
 const FACTORY_GAME = { activation: 20, inactiveTurns: 7, schemeMines: true, keepKnot: false } as const;
 
 /** The factory settings after `a` is applied to `f`: a value equal to the game's is dropped (the game's value stays). */
@@ -295,14 +298,50 @@ function factoryOf(f: FactorySpec | undefined, a: FactoryArgs): FactorySpec | un
   const out = next as FactorySpec;
   if (a.launch === false || (a.launchers && !a.launchers.length)) delete out.launchers;
   else if (a.launchers) out.launchers = a.launchers;
+  // the throw: merged into the one there (so a later call can change one field), stored as the server stores it
+  if (a.launch === false || a.throw === false) delete out.throw;
+  else if (a.throw === true) throw new ToolError("throw: give its settings as an object ({maxRange, ...}), or false to clear the throw");
+  else if (a.throw) {
+    const merged = { ...(out.throw ?? {}), ...a.throw } as Record<string, unknown>;
+    if (typeof merged.maxRange !== "number") throw new ToolError("throw.maxRange: the farthest landing point (map units from the launch point) is required");
+    if (typeof merged.minRange === "number" && merged.minRange > (merged.maxRange as number)) throw new ToolError("throw.minRange must not be over throw.maxRange");
+    if (merged.pattern === "targets" && !(Array.isArray(merged.targets) && merged.targets.length)) throw new ToolError("throw.pattern targets needs throw.targets");
+    out.throw = storedThrow(merged) as unknown as FactorySpec["throw"];
+  }
   return Object.keys(out).length ? out : undefined;
+}
+
+/** The throw's targets in whole world units ([x, z] in `units`). */
+function throwWorld(t: ThrowArg | boolean | undefined, units: Units): FactoryArgs["throw"] {
+  if (!t || t === true) return t;
+  const { targets, ...rest } = t;
+  if (targets === undefined) return rest;
+  if (targets.length > 16) throw new ToolError("throw.targets: at most 16");
+  const k = units === "map" ? 20 : 1;
+  return { ...rest, targets: targets.map((p, i) => {
+    if (!Array.isArray(p) || p.length !== 2 || !p.every(Number.isFinite)) throw new ToolError(`throw.targets[${i}]: [x, z]`);
+    const w = [Math.round(p[0] * k), Math.round(p[1] * k)] as [number, number];
+    if (w.some((v) => Math.abs(v) > 100000)) throw new ToolError(`throw.targets[${i}]: within 100000 world units`);
+    return w;
+  }) };
 }
 
 /** Mine gravity (world units per ms^2) and the eruption levels/factory.cpp throws a launcher's mines on, for the answers. */
 const MINE_GRAVITY = 2.5e-4;
 function launchPlan(store: EditorStore, f: FactorySpec) {
   const c = checkFactory(store, (v) => String(v));
-  if (!c || !f.launchers) return [];
+  if (!c) return [];
+  if (f.throw) {
+    // the throw: from each launcher (or the factory), landing points minRange-maxRange out; the longest arc's flight,
+    // level ground assumed (levels/factory.cpp tops the arc out apex over the higher end)
+    const t = f.throw, apex = (t.apex ?? 15) * 20, up = Math.sqrt(2 * MINE_GRAVITY * apex), ms = 2 * up / MINE_GRAVITY;
+    const from = f.launchers?.length ? f.launchers : [[c.knot[0] * 20, c.knot[1] * 20, c.knot[2] * 20] as [number, number, number]];
+    return from.map((l, i) => ({ launcher: f.launchers?.length ? i : "factory", at: l.map((v) => v / 20), landsBetween: [t.minRange ?? 0, t.maxRange], pattern: String(t.pattern ?? "random"),
+      apexOverEnds: apex / 20, flightSeconds: Math.round(ms / 100) / 10, sidewaysAtMax: Math.round(t.maxRange * 20 / ms * 1000) / 1000,
+      ...(t.targets?.length ? { targets: t.targets.map((g) => [g[0] / 20, g[1] / 20]), scatter: t.scatter ?? 10, targetShare: t.targetShare ?? 50 } : {}),
+      landing: "Melange lands each mine where its flight first meets the land (the engine's own land sweep), so it rests on the ground it hits" }));
+  }
+  if (!f.launchers) return [];
   const h = (f.launchHeight ?? 20) * 20, up = Math.sqrt(2 * MINE_GRAVITY * h);
   const ms = up / MINE_GRAVITY + Math.sqrt(2 * (h + 20) / MINE_GRAVITY);
   return f.launchers.map((l, i) => ({ launcher: i, at: l.map((v) => v / 20), toFactory: Math.round(Math.hypot(l[0] / 20 - c.knot[0], l[2] / 20 - c.knot[2]) * 10) / 10,
@@ -343,6 +382,16 @@ const factoryProps: Record<string, Schema> = {
   launchHeight: { type: "integer", minimum: 0, maximum: 255, description: "minefactory: map units over the factory its mines appear at when it fires (Melange 0.13+; with launchRadius alone, 20): they fall from there round the factory, instead of the game's placement, which rains them onto random worms and objects (on Caldera 28-95 map units from the factory). 0 gives the game's placement back." },
   launchRadius: { type: "integer", minimum: 0, maximum: 255, description: "minefactory: map units round the factory its mines appear within (an even spread over the disc; default 0, straight over it), so they land on the cone round a crater." },
   launch: { type: "boolean", description: "minefactory: false clears launchHeight, launchRadius and launchers (the game's placement)." },
+  throw: { anyOf: [{ type: "boolean" }, { type: "object", additionalProperties: false, properties: {
+    minRange: { type: "integer", minimum: 0, maximum: 500, description: "The nearest landing point, map units from the launch point (default 0)." },
+    maxRange: { type: "integer", minimum: 1, maximum: 500, description: "The farthest landing point, map units (required the first time)." },
+    apex: { type: "integer", minimum: 1, maximum: 255, description: "Map units the arc tops out over the higher of its ends (default 15): higher clears ridges and takes longer." },
+    pattern: { type: "string", enum: ["random", "ring", "targets"], description: "random (default): any bearing, even over the band; ring: a fire's mines spread evenly round the compass; targets: targetShare % of them at one of `targets`, the rest random." },
+    avoidWater: { type: "boolean", description: "A landing point whose ground is under the water is drawn again (default true; 6 draws, then straight up)." },
+    targets: { type: "array", maxItems: 16, items: { type: "array", items: { type: "number" }, minItems: 2, maxItems: 2 }, description: "[x, z] points in `units` (castle courts, say) for pattern targets; stored as whole world units." },
+    scatter: { type: "integer", minimum: 0, maximum: 255, description: "Map units round a target a mine aimed at it lands within (default 10)." },
+    targetShare: { type: "integer", minimum: 0, maximum: 100, description: "Percent of a fire's mines aimed at the targets, the rest random over the band (default 50)." } } }],
+    description: "minefactory (the erg-mcp branch's Melange): throw the mines OUT instead of straight up: each mine of a fire is lobbed from its launcher (the launchers in turn; without launchers, from the factory) at a landing point minRange-maxRange map units away whose ground the game's own land sweep finds, on a ballistic arc topping out `apex` over the higher end, and Melange lands it where its flight first meets the land (the engine's mine collision let mines through some ground, and landing them at the straight sweep's hit also leaves no sideways speed to sink on: docs/erg.md). Later calls merge into the throw there (give one field to change it); false clears it (launch: false does too). The answer's launchPlan gives each launch point's band, pattern, flight and sideways speed." },
   launchers: { type: "array", maxItems: 8, items: { type: "array", items: { type: "number" }, minItems: 2, maxItems: 3 },
     description: "minefactory: 1-8 launch points, [x, y, z] or [x, z] (on the top of the ground in that column), in `units` (Melange 0.13+ of this branch): a fire's mines are shared out over them (from a random one, in turn) and each erupts straight up from a spot within launchRadius of its launcher (1 map unit over the launcher's height, the fire's spots kept 1.5 map units apart where they can be), tops out launchHeight (default 20) over it and falls back onto the spot: stand each launcher on flat ground at least launchRadius wide (a pad) and check with game_mine_drop that the ground there holds a mine (on Caldera half the crater did not: the mine fell through to the sea). The game runs one factory a match (a second trips its 'Only allowed one mine factory at a time' assert, tried 2026-11-08), so these are the one factory's launch points. [] clears them. A mine's flight is the engine's (velocity in world units per ms, falling at 2.5e-4 world units/ms^2, measured 2026-11-08)." },
 };
@@ -423,7 +472,7 @@ async function placeObject(s: Session, a: PlaceArgs) {
         if (a.hitpoints !== undefined) t.hitpoints = a.hitpoints;
         if (a.wormCollect !== undefined) t.wormCollect = a.wormCollect;
       } else if (spec.type === "minefactory") {
-        const f = factoryOf(undefined, { ...a, launchers: launchersWorld(store, a.launchers, units) });
+        const f = factoryOf(undefined, { ...a, launchers: launchersWorld(store, a.launchers, units), throw: throwWorld(a.throw, units) });
         if (f) spec.factory = f;
       }
       specs.push(spec);
@@ -1033,28 +1082,30 @@ export const tools: Tool[] = [
   },
   {
     name: "set_mine_factory",
-    description: "Change the level's mine factory settings (place it first with place_object type minefactory). launchHeight and launchRadius (Melange 0.13+) make its mines appear over it and fall round it instead of raining onto random worms and objects (the game's); launchers (1-8 points, in `units`) make them erupt from those points (the sides of a caldera) and land round them, and the answer's launchPlan gives each launcher's flight and landing radius (check the ground holds mines with game_mine_drop). A value equal to the game's (activation 20, inactiveTurns 7, schemeMines true, keepKnot false) is dropped, so the game's value applies. Melange writes activation and inactiveTurns into the game's kMineFactoryData at level start and again at the factory's own set-up, just before it reads them (Melange 0.13+), and puts the game's back when the match ends; test's look.factory says what the set-up found and applied. The settings are the project's: save, and Test the same project on the same server's projects folder (a project of the same id in another game's ProjectsDir is another project). One undo step.",
+    description: "Change the level's mine factory settings (place it first with place_object type minefactory). launchHeight and launchRadius (Melange 0.13+) make its mines appear over it and fall round it instead of raining onto random worms and objects (the game's); launchers (1-8 points, in `units`) make them erupt from those points (the sides of a caldera) and land round them, and the answer's launchPlan gives each launcher's flight and landing radius (check the ground holds mines with game_mine_drop); `throw` {minRange, maxRange, pattern, targets, ...} lobs them OUT from the launchers (or the factory) to landing points over the whole island, Melange landing each where its flight meets the land (this branch). A value equal to the game's (activation 20, inactiveTurns 7, schemeMines true, keepKnot false) is dropped, so the game's value applies. Melange writes activation and inactiveTurns into the game's kMineFactoryData at level start and again at the factory's own set-up, just before it reads them (Melange 0.13+), and puts the game's back when the match ends; test's look.factory says what the set-up found and applied. The settings are the project's: save, and Test the same project on the same server's projects folder (a project of the same id in another game's ProjectsDir is another project). One undo step.",
     inputSchema: { type: "object", additionalProperties: false, properties: { ...factoryProps, units: unitsSchema,
       everyNTurns: { type: "integer", minimum: 1, maximum: 254, description: "A fire every N game turns, whatever the level holds: sets activation 255 (the level always holds fewer mines, so the count never stops a fire) and inactiveTurns N (the factory's countdown starts at N when it is placed and again after each fire, and each turn start takes one: it fires at the start of game turn N, 2N, 3N, ...), 10 mines a fire (the game's most). Not with activation or inactiveTurns." } } },
-    async handler(s, a1: Omit<FactoryArgs, "launchers"> & { everyNTurns?: number; launchers?: number[][]; units?: Units }) {
+    async handler(s, a1: Omit<FactoryArgs, "launchers" | "throw"> & { everyNTurns?: number; launchers?: number[][]; throw?: ThrowArg | false; units?: Units }) {
       const store = s.store, scene = store.scene;
       const o = scene.objects?.find((x) => x.type === "minefactory");
       if (!o || o.type !== "minefactory") throw new ToolError("the level has no mine factory: place one with place_object type minefactory");
       const { units: lu, ...rest } = a1;
-      const a0: FactoryArgs & { everyNTurns?: number } = { ...rest, launchers: launchersWorld(store, a1.launchers, lu ?? "world") };
+      const a0: FactoryArgs & { everyNTurns?: number } = { ...rest, launchers: launchersWorld(store, a1.launchers, lu ?? "world"), throw: throwWorld(a1.throw, lu ?? "world") };
       if (a0.launchers === undefined) delete a0.launchers;
+      if (a0.throw === undefined) delete a0.throw;
       // everyNTurns: the two engine fields that make the fires depend on the turn count alone (levels/factory.cpp)
       if (a0.everyNTurns !== undefined && (a0.activation !== undefined || a0.inactiveTurns !== undefined)) throw new ToolError("everyNTurns sets activation and inactiveTurns: give it alone, or those two");
       const a: FactoryArgs = a0.everyNTurns !== undefined ? { ...a0, activation: EVERY_N_ACTIVATION, inactiveTurns: a0.everyNTurns } : a0;
       delete (a as { everyNTurns?: number }).everyNTurns;
       if (a.activation === undefined && a.inactiveTurns === undefined && a.schemeMines === undefined && a.keepKnot === undefined && a.launchHeight === undefined &&
-        a.launchRadius === undefined && a.launch === undefined && a.launchers === undefined) throw new ToolError("give activation, inactiveTurns, everyNTurns, schemeMines, keepKnot, launchHeight, launchRadius, launchers or launch");
+        a.launchRadius === undefined && a.launch === undefined && a.launchers === undefined && a.throw === undefined)
+        throw new ToolError("give activation, inactiveTurns, everyNTurns, schemeMines, keepKnot, launchHeight, launchRadius, launchers, throw or launch");
       if (a.launch === true) throw new ToolError("launch: false clears the launch; set launchHeight, launchRadius and/or launchers to give one");
       const factory = factoryOf(o.factory, a);
       commit(store, new SetObject(o.knot, factory ? { knot: o.knot, type: "minefactory", factory } : { knot: o.knot, type: "minefactory" }));
       // the placement checked again with the new settings: keepKnot turns the drop's advisories into warnings or clears them
       const issues = a.keepKnot !== undefined || a.launchers !== undefined ? await factoryReport(s, "world") : undefined;
-      return { knot: o.knot, factory: factory ?? {}, game: FACTORY_GAME, changed: true, ...(factory?.launchers ? { launchPlan: launchPlan(store, factory) } : {}), ...(issues ? { issues, ...(issues.some((l) => l.startsWith("error:")) ? { factoryWillBeLost: true } : {}) } : {}),
+      return { knot: o.knot, factory: factory ?? {}, game: FACTORY_GAME, changed: true, ...(factory?.launchers || factory?.throw ? { launchPlan: launchPlan(store, factory) } : {}), ...(issues ? { issues, ...(issues.some((l) => l.startsWith("error:")) ? { factoryWillBeLost: true } : {}) } : {}),
         ...(a0.everyNTurns !== undefined ? { everyNTurns: {
         n: a0.everyNTurns, mapsTo: { activation: EVERY_N_ACTIVATION, inactiveTurns: a0.everyNTurns }, firesAtGameTurns: [1, 2, 3, 4].map((i) => i * a0.everyNTurns!),
         note: "fires of 10 mines at the start of every N-th game turn, counted from the factory's placement at level start; a fire still running at the next one is not stopped" } } : {}),

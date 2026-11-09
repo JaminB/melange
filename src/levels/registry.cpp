@@ -450,7 +450,11 @@ void ApplyFactory(const std::string& stem, const std::string& chunk) {
         // lib_SetupMinesAndOildrums reads it, whatever the scheme: its 15 random mines are the only start mines it places.
         if (!o.factory.schemeMines) LOG_INFO("[levels] %s: the scheme's start mines are off (no random mines)", stem.c_str());
         if (o.factory.keepKnot) LOG_INFO("[levels] %s: the mine factory stays at its knot if its drop hits no land", stem.c_str());
-        if (!o.factory.launchers.empty())
+        if (o.factory.throwing)
+            LOG_INFO("[levels] %s: the mine factory throws its mines from %s at landing points %d-%d map units out (%s), landed by Melange at the land sweep's hit",
+                     stem.c_str(), o.factory.launchers.empty() ? "itself" : "its launchers", o.factory.throwing->minRange, o.factory.throwing->maxRange,
+                     erg::ThrowPatternName(o.factory.throwing->pattern));
+        else if (!o.factory.launchers.empty())
             LOG_INFO("[levels] %s: the mine factory's mines erupt from %zu launchers, %d map units up, and land within %d of them",
                      stem.c_str(), o.factory.launchers.size(), o.factory.launchHeight.value_or(20), o.factory.launchRadius.value_or(0));
         else if (o.factory.Launch())

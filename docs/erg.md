@@ -122,6 +122,7 @@ The settings, all optional (unset keeps the game's value):
 | Launch height (`launchHeight`, erg-mcp only) | unset | 1-255 map units: each mine of a fire appears this high over the factory and falls from there (20 when only the radius is set), instead of over a random worm or object (Melange 0.13+) |
 | Launch radius (`launchRadius`, erg-mcp only) | unset | 0-255 map units: the mines appear at random spots within this radius round the factory (an even spread over the disc), so they land round it: on a volcano, on the cone round the crater (Melange 0.13+). Tried on 2026-11-08 (Multi.DinerMight, height 25, radius 8): four fires of 10, 7, 2 and 7 mines, the mines at rest 5.7-14.4 map units from the factory |
 | Launchers (`launchers`, erg-mcp only) | none | 1-8 launch points (world units in the patch): a fire's mines are shared out over them, from a random one in turn, and each erupts straight up from a spot within the launch radius of its launcher (1 map unit over the launcher's height; a fire's spots kept 1.5 map units apart where they can be), tops out the launch height over it and falls back there. Stand each on flat ground at least the radius wide, where a dropped mine holds (below). Put them on the sides of a caldera and the mines come from there (Melange 0.13+ of the erg-mcp branch; an older Melange plays the game's placement) |
+| Throw (`throw`, erg-mcp only) | none | `{minRange, maxRange, apex, pattern, avoidWater, targets, scatter, targetShare}`: each mine of a fire is lobbed OUT from its launcher (the launchers in turn; without launchers, from the factory) to a landing point `minRange`-`maxRange` map units away (0-500; `maxRange` is the one required field), chosen by `pattern`: `random` (any bearing, an even spread over the band), `ring` (a fire's mines spread evenly round the compass) or `targets` (`targetShare` % of them, default 50, land within `scatter` map units, default 10, of one of up to 16 `targets`, [x, z] world units in the patch: the castles, say; the rest random). The ground at the landing point is read with the game's own land sweep, and with `avoidWater` (default true) a point in the sea is drawn again (6 draws, then that mine goes straight up). The arc tops out `apex` map units (default 15) over the higher of its ends: the velocity is the ballistic one for the engine's gravity. Melange then lands each mine itself where its flight first meets the land (below: **Where a thrown mine lands**), so it rests on whatever it hits, draped skins included, and leaves no sideways speed to slide or sink on (the erg-mcp branch's Melange; an older Melange plays the game's placement) |
 
 **One factory a match.** The engine keeps a single mine factory: a second one (the scheme's
 `GameLogic.CreateRandMineFactory` sent into a level that has its own) trips `ASSERT(m_MineFactoryId == kTaskIdInvalid &&
@@ -139,7 +140,34 @@ units, 12.5 map units, per second²): measured on 2026-11-08 with `wum.level.min
 faster than about 0.05 world units/ms often sinks into the voxel ground (on a solid block it came to rest inside it, at
 the next layer; on Caldera's crater skin it fell through to the sea: arcs thrown across the crater from launchers on its
 walls lost 25 of 30 mines on 2026-11-08), while straight falls and near-vertical lobs rested on the top every time. That
-is why launchers erupt their mines straight up and land them round themselves, not across the map.
+is why launchers erupt their mines straight up and land them round themselves, not across the map. (On 2026-11-09 four
+sideways landings of 0.05-0.3 world units/ms on a flat 1-unit block all rested on its top: the sinking is not a rule of
+the engine's bounce but another face of the fall-through below, which the throw's own landing side-steps.)
+
+**Where a thrown mine lands (the throw, 2026-11-09).** A thrown mine is not left to the engine's collision. The
+parabolic payload keeps its flight as a base (`m_vInitialPosition` +0x28, `m_vInitialVelocity` +0x34,
+`m_vAcceleration` +0x40, `m_tInitialTime` +0x1a0, `ParabolicPayloadLogicEntity`) and moves nothing until a collision
+re-bases it, so Melange knows where the mine is at any sim time. Every sim tick (`levels/factory.cpp`, GuideThrown) it
+sweeps the mine's step since the last tick with the engine's own straight land sweep (`gamestate::LandRay`, the
+camera's ray cast at 0x466ae0, the query's globals saved and put back) and, at the first hit, moves the base there and
+runs the payload's own come-to-rest (`ParabolicPayloadLogicEntity` 0x5758c0: the landing message, velocity and
+acceleration zeroed, the proximity fuse armed through the usual rest path). If the engine collides first (a worm, an
+object, ground it does see), the mine is rested at its contact point when land is within 2 map units of it, else its
+new arc is followed; one that goes under the water is left to the engine's drowning. The game's fire record
+(`factory.fired`, erg-mcp `game_mines`) says for each thrown mine its `target`, its `landing` (`melange`: landed at the
+sweep's hit; `engine`: the engine's own rest; `water`; `lost`) and how far from its target it lies.
+
+Why: the engine's own mine collision misses ground that the same sweep hits. In the game the mine's step is the
+collider service's (0x5150e0): the same land sweep (0x466ae0) over the next 20 ticks from the bottom of the mine's
+sphere, so a mine that falls through a frame is one that sweep did not report. On Caldera (2026-11-09, testenv B)
+`level.test.landRay` straight down found the ground top at all 84 probe columns (the four launcher pads, three rings in
+the crater, four rings on the flanks, to 0.03 map units of the project's top) while straight drops at the 28 pad
+columns all fell through and the other 56 held; on a 24-block test level (12 materials at scales 1 and 2) two blocks
+let 6 of 6 drops through in one match and held 16 of 16 drops in the next, the land sweep hitting them both times. So
+the miss is frame-wise and state-dependent, not a matter of material, scale, height or geometry; what state the game's
+own sweep carries between calls that Melange's does not (the land's broadphase mask and ray cache, which LandRay saves
+and restores around its own calls) was not pinned down. Landing thrown mines at Melange's own sweep hit is the fix at
+the layer Melange owns; the engine's drops and the game's own placement are untouched.
 
 **Ground a mine falls through.** A mine does not always stop on the voxels a worm stands on. On Caldera (2026-11-09,
 testenv B, erg-mcp's `game_mine_drop`: one mine dropped 8 map units over each point) the crater's draped skin let most

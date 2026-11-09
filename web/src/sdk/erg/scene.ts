@@ -67,8 +67,14 @@ export interface TriggerSpec { index: number; radius?: number; teamCollect?: num
  * the game's placement over random worms and objects (Melange 0.13+; an older game ignores them). `launchers` (1-8
  * [x, y, z] points, whole world units within 100000): a fire's mines are shared out over them and each erupts straight
  * up from a spot within `launchRadius` of its launcher, `launchHeight` high, and falls back there (the engine runs one
- * factory a match, so these are the one factory's launch points; Melange 0.13+). */
-export interface FactorySpec { activation?: number; inactiveTurns?: number; schemeMines?: boolean; keepKnot?: boolean; launchHeight?: number; launchRadius?: number; launchers?: [number, number, number][]; }
+ * factory a match, so these are the one factory's launch points; Melange 0.13+). `throw`: each fired mine is lobbed
+ * from its launcher (or the factory) at a landing point `minRange`-`maxRange` map units out, chosen by `pattern`
+ * (random: any bearing; ring: a fire's mines spread round the compass; targets: `targetShare` % of them within
+ * `scatter` map units of one of `targets`, [x, z] whole world units, the rest random), the arc topping out `apex` map
+ * units over the higher end; `avoidWater` (default true) draws a landing point in the sea again; Melange lands each
+ * mine where its flight first meets the land (the erg-mcp branch's Melange; an older game ignores it). */
+export interface ThrowSpec { minRange?: number; maxRange: number; apex?: number; pattern?: "random" | "ring" | "targets"; avoidWater?: boolean; targets?: [number, number][]; scatter?: number; targetShare?: number; }
+export interface FactorySpec { activation?: number; inactiveTurns?: number; schemeMines?: boolean; keepKnot?: boolean; launchHeight?: number; launchRadius?: number; launchers?: [number, number, number][]; throw?: ThrowSpec; }
 export type ObjectSpec =
   | { knot: string; type: "crate"; crate: CrateSpec }
   | { knot: string; type: "telepad"; group: number }
@@ -334,7 +340,7 @@ function checkObject(c: Checker, o: unknown, p: string) {
     case "minefactory": {
       if (!c.keys(o, ["knot", "type", "factory"], p) || o.factory === undefined) break;
       const f = o.factory;
-      if (!isObj(f) || !c.keys(f, ["activation", "inactiveTurns", "schemeMines", "keepKnot", "launchHeight", "launchRadius", "launchers"], `${p}.factory`)) return c.fail(`${p}.factory`, "must be an object");
+      if (!isObj(f) || !c.keys(f, ["activation", "inactiveTurns", "schemeMines", "keepKnot", "launchHeight", "launchRadius", "launchers", "throw"], `${p}.factory`)) return c.fail(`${p}.factory`, "must be an object");
       int(f.activation, 0, 255, `${p}.factory.activation`);
       int(f.inactiveTurns, 0, 255, `${p}.factory.inactiveTurns`);
       if (f.schemeMines !== undefined && typeof f.schemeMines !== "boolean") c.fail(`${p}.factory.schemeMines`, "must be a boolean");
@@ -348,6 +354,29 @@ function checkObject(c: Checker, o: unknown, p: string) {
           if (!Array.isArray(pt) || pt.length !== 3 || !pt.every((v) => Number.isInteger(v) && Math.abs(v as number) <= 100000))
             c.fail(`${p}.factory.launchers[${i}]`, "must be [x, y, z], whole world units within 100000");
         });
+      }
+      if (f.throw !== undefined) {
+        const t = f.throw, tp = `${p}.factory.throw`;
+        if (!isObj(t) || !c.keys(t, ["minRange", "maxRange", "apex", "pattern", "avoidWater", "targets", "scatter", "targetShare"], tp)) c.fail(tp, "must be an object");
+        else {
+          int(t.minRange, 0, 500, `${tp}.minRange`);
+          if (t.maxRange === undefined) c.fail(`${tp}.maxRange`, "is required");
+          else int(t.maxRange, 1, 500, `${tp}.maxRange`);
+          if (typeof t.minRange === "number" && typeof t.maxRange === "number" && t.maxRange < t.minRange) c.fail(`${tp}.maxRange`, "must not be under minRange");
+          int(t.apex, 1, 255, `${tp}.apex`);
+          int(t.scatter, 0, 255, `${tp}.scatter`);
+          int(t.targetShare, 0, 100, `${tp}.targetShare`);
+          if (t.pattern !== undefined && !["random", "ring", "targets"].includes(t.pattern as string)) c.fail(`${tp}.pattern`, "must be random, ring or targets");
+          if (t.avoidWater !== undefined && typeof t.avoidWater !== "boolean") c.fail(`${tp}.avoidWater`, "must be a boolean");
+          if (t.targets !== undefined) {
+            if (!Array.isArray(t.targets) || t.targets.length > 16) c.fail(`${tp}.targets`, "must be at most 16 [x, z] points");
+            else t.targets.forEach((pt, i) => {
+              if (!Array.isArray(pt) || pt.length !== 2 || !pt.every((v) => Number.isInteger(v) && Math.abs(v as number) <= 100000))
+                c.fail(`${tp}.targets[${i}]`, "must be [x, z], whole world units within 100000");
+            });
+          }
+          if (t.pattern === "targets" && !(Array.isArray(t.targets) && t.targets.length)) c.fail(tp, "pattern targets needs targets");
+        }
       }
       break;
     }

@@ -63,6 +63,34 @@ test("launchers: map points to whole world units, [x, z] on the ground's top, a 
   await assert.rejects(() => call(s, "set_mine_factory", { launchers: Array.from({ length: 9 }, () => [0, 0, 0]) }), /at most 8|maxItems|must NOT have more/);
 });
 
+test("throw: set in the server's stored form, targets in the call's units, merged by later calls, cleared by false, planned", async () => {
+  const { store, s } = session();
+  apply(store, plan(store, { min: [480, -10], max: [520, 10], floor: 0, expr: "4", material: 1 }));
+  await call(s, "place_object", { type: "minefactory", units: "map", pos: [500, 4, 0], snap: "surface", keepKnot: true, throw: { maxRange: 40, apex: 15, pattern: "random" } });
+  assert.deepEqual(spec(store), { keepKnot: true, throw: { maxRange: 40 } }, "defaults given are left out, as the server stores them");
+  const r = await call(s, "set_mine_factory", { units: "map", throw: { minRange: 10, pattern: "targets", targets: [[515.04, 2], [490, -5]], scatter: 6, targetShare: 40 } });
+  assert.deepEqual(spec(store)!.throw, { minRange: 10, maxRange: 40, pattern: "targets", targets: [[10301, 40], [9800, -100]], scatter: 6, targetShare: 40 },
+    "a later call merges into the throw there; targets become whole world units");
+  assert.equal(r.launchPlan.length, 1);
+  assert.equal(r.launchPlan[0].launcher, "factory", "without launchers the factory is the launch point");
+  assert.deepEqual(r.launchPlan[0].landsBetween, [10, 40]);
+  assert.ok(r.launchPlan[0].flightSeconds > 1.5 && r.launchPlan[0].flightSeconds < 5, String(r.launchPlan[0].flightSeconds));
+  await assert.rejects(() => call(s, "set_mine_factory", { throw: { minRange: 50 } }), /minRange must not be over/);
+  await assert.rejects(() => call(s, "set_mine_factory", { throw: true }), /give its settings/);
+  await assert.rejects(() => call(s, "set_mine_factory", { throw: { maxRange: 600 } }), /1-500|maximum|at most/);
+  await call(s, "set_mine_factory", { units: "map", launchers: [[515, 0]] });
+  const r2 = await call(s, "set_mine_factory", { throw: { apex: 20 } });
+  assert.equal(r2.launchPlan[0].launcher, 0, "with launchers the plan is per launcher");
+  assert.equal(r2.launchPlan[0].apexOverEnds, 20);
+  await call(s, "set_mine_factory", { throw: false });
+  assert.equal(spec(store)!.throw, undefined, "false clears the throw");
+  assert.ok(spec(store)!.launchers, "and leaves the launchers");
+  await call(s, "set_mine_factory", { throw: { maxRange: 30 } });
+  await call(s, "set_mine_factory", { launch: false });
+  assert.deepEqual(spec(store), { keepKnot: true }, "launch false clears the throw too");
+  await assert.rejects(() => call(s, "place_object", { type: "minefactory", units: "map", pos: [490, 4, 0], snap: "surface", throw: { maxRange: 20, pattern: "targets" } }), /needs throw.targets|already has/);
+});
+
 test("launchers: one under the water is warned of", async () => {
   const { store, s } = session();
   apply(store, plan(store, { min: [480, -10], max: [520, 10], floor: 0, expr: "4", material: 1 }));

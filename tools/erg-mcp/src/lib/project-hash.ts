@@ -43,8 +43,24 @@ export function storedObject(o: Record<string, unknown>): Record<string, unknown
     if (f.schemeMines === false) set.schemeMines = false;
     if (f.keepKnot === true) set.keepKnot = true;
     if (Array.isArray(f.launchers) && f.launchers.length) set.launchers = f.launchers;
+    if (f.throw && typeof f.throw === "object") set.throw = storedThrow(f.throw as Record<string, unknown>);
     if (Object.keys(set).length) out.factory = set;
   } else return o;
+  return out;
+}
+
+/** A throw as the server stores it (src/erg/scene.cpp): maxRange always, the other fields only off their defaults
+ * (minRange 0, apex 15, pattern random, avoidWater true, scatter 10, targetShare 50), targets only when there are any. */
+export function storedThrow(t: Record<string, unknown>): Record<string, unknown> {
+  const out: Record<string, unknown> = {};
+  if (typeof t.minRange === "number" && t.minRange !== 0) out.minRange = t.minRange;
+  out.maxRange = t.maxRange;
+  if (typeof t.apex === "number" && t.apex !== 15) out.apex = t.apex;
+  if (typeof t.pattern === "string" && t.pattern !== "random") out.pattern = t.pattern;
+  if (t.avoidWater === false) out.avoidWater = false;
+  if (Array.isArray(t.targets) && t.targets.length) out.targets = t.targets;
+  if (typeof t.scatter === "number" && t.scatter !== 10) out.scatter = t.scatter;
+  if (typeof t.targetShare === "number" && t.targetShare !== 50) out.targetShare = t.targetShare;
   return out;
 }
 
