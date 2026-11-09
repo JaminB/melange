@@ -9,9 +9,9 @@
 // Under the skin the core (optional, default on) is the usual stepped field cut down to floor(lowest corner - 0.25), so
 // its steps stay inside the skin; it is planned and packed by heightfield-plan (its cells, blocks and frames as there).
 // The skin's corner heights are the mean of the field's heights of the columns round each corner.
-import { AddFrame, Group, LIMITS, blockFrames, cellBudget, filled, type Command, type EditorStore, type Frame, type Vec3 } from "../core";
+import { AddFrame, Group, LIMITS, blockFrames, cellBudget, filled, validNewFrameScale, type Command, type EditorStore, type Frame, type Vec3 } from "../core";
 import { ToolError } from "../registry";
-import { apply, floorReport, plan, sampleField, SIDE, type Field, type FieldArgs, type Plan } from "./heightfield-plan";
+import { floorReport, plan, planCommands, sampleField, SIDE, type Area, type Field, type FieldArgs, type Plan } from "./heightfield-plan";
 import { WORLD_PER_MAP, tidy } from "./voxel";
 
 export interface DrapeArgs extends FieldArgs {
@@ -22,7 +22,19 @@ export interface DrapeArgs extends FieldArgs {
   steepMaterial?: SteepMaterial;   // cliffs: a skin column this steep takes this material, whatever the rules say
   tileOrigin?: [number, number];   // x, z (units): a corner of the skin's 31 x 31 tiling falls here (snapped to the lattice)
   cornersOff?: CornersOff;         // the tiling shifted so the corners where four skin blocks meet keep off these paths
+  refine?: Refine;                 // a finer skin along the trails (or in areas), the coarse one cut out there
 }
+
+/** Fine voxels where they matter on a skin (Caldera v2 round 4): with one voxelSize for the whole skin, a 2.5-unit
+ * column cannot hold a trail bed 5 wide and its banks, so the banks lean into the bed and narrow ridges form on the
+ * steep upper cone. `refine` drapes the same field again at `voxelSize` (finer than the skin's) over the zone within
+ * `distance` (default 4 map units) of `paths` (polylines of [x, z] or [x, y, z] in units) and/or inside `clip` areas,
+ * and cuts the coarse skin's columns lying wholly inside the zone out, so the two overlap by the coarse columns the
+ * zone only partly covers (as the heightfield tools' clip and exclude recipe) and no gap opens. The fine field counts
+ * its heights from the coarse skin's lattice floor (keepFloor), its relax passes are scaled by the ratio of the voxel
+ * sizes squared so both smooth over the same distance, and its tiling is shifted off the paths (cornersOff) unless
+ * tileOrigin says otherwise. One undo step with the coarse skin. */
+export interface Refine { voxelSize: number; paths?: number[][][]; distance?: number; clip?: Area[]; }
 
 /** Where four skin blocks meet, the game lets mines and worms through the skin (within about 0.4 map units of the
  * corner, Caldera v2 rounds 1 and 2), which the builders plugged by hand under each corner near a trail. `paths`
@@ -183,9 +195,70 @@ function isSteep(st: { H: ArrayLike<number>; W: number; m: SteepMaterial }, i: n
   return sl >= min - fe / 2 + (fe * (BAYER[(k % 4) * 4 + (i % 4)] + 0.5)) / 16;
 }
 
-export interface DrapePlan { field: Field; T: number; tiles: Tile[]; core: Plan | null; report: Record<string, unknown>; steep?: { H: ArrayLike<number>; W: number; m: SteepMaterial }; }
+export interface DrapePlan { field: Field; T: number; tiles: Tile[]; core: Plan | null; report: Record<string, unknown>; steep?: { H: ArrayLike<number>; W: number; m: SteepMaterial };
+  parts?: DrapePlan[];   // with refine: the coarse skin (cut out over the zone) and the fine one, applied together
+}
 
+/** The refine zone (map units): within `distance` of one of the paths' segments, or inside one of the clip areas. */
+export function refineZone(r: Refine, k: number): (x: number, z: number) => boolean {
+  const segs: number[][] = [];
+  for (const p of r.paths ?? []) for (let i = 0; i + 1 < p.length; i++) { const A = p[i], B = p[i + 1]; segs.push([A[0] * k, A[A.length - 1] * k, B[0] * k, B[B.length - 1] * k]); }
+  if ((r.paths ?? []).some((p) => p.length < 2) || !segs.every((s) => s.every(Number.isFinite))) throw new ToolError("refine.paths: paths of at least two finite points");
+  const d = (r.distance ?? 4) * k;
+  const areas = (r.clip ?? []).map((ar, i) => {
+    const circle = ar.radius !== undefined;
+    if (circle ? ar.x === undefined || ar.z === undefined || !(ar.radius! > 0) : !ar.min || !ar.max) throw new ToolError(`refine.clip[${i}]: give either x, z and radius (a circle) or min and max (a rectangle)`);
+    return circle ? (x: number, z: number) => (x - ar.x! * k) ** 2 + (z - ar.z! * k) ** 2 <= (ar.radius! * k) ** 2
+      : (x: number, z: number) => x >= Math.min(ar.min![0], ar.max![0]) * k && x <= Math.max(ar.min![0], ar.max![0]) * k && z >= Math.min(ar.min![1], ar.max![1]) * k && z <= Math.max(ar.min![1], ar.max![1]) * k;
+  });
+  if (!segs.length && !areas.length) throw new ToolError("refine: give paths (with distance) and/or clip areas");
+  return (x, z) => {
+    for (const [ax, az, bx, bz] of segs) {
+      const dx = bx - ax, dz = bz - az, l2 = dx * dx + dz * dz, u = l2 ? Math.max(0, Math.min(1, ((x - ax) * dx + (z - az) * dz) / l2)) : 0;
+      if (Math.hypot(x - ax - u * dx, z - az - u * dz) <= d) return true;
+    }
+    return areas.some((f) => f(x, z));
+  };
+}
+
+/** The drape, with `refine` the coarse skin cut out over the zone and a fine skin over it (one undo step). */
 export function planDrape(store: EditorStore, a: DrapeArgs): DrapePlan {
+  if (!a.refine) return planDrapeOne(store, a);
+  const { refine, ...rest } = a, s = a.voxelSize ?? 1, fs = refine.voxelSize;
+  if (!validNewFrameScale(fs)) throw new ToolError(`refine.voxelSize is ${LIMITS.newFrameScale.min}-${LIMITS.newFrameScale.max} map units per voxel`);
+  if (!(fs < s)) throw new ToolError(`refine.voxelSize (${fs}) must be finer than the skin's voxelSize (${s})`);
+  const k = a.units === "world" ? 1 / WORLD_PER_MAP : 1, zone = refineZone(refine, k);
+  // the fine skin first, so the coarse one gets what the budget leaves; its heights count from the coarse lattice's floor
+  const coarseField = sampleField(store, { ...rest, keepColumn: undefined });
+  const floorUnits = (coarseField.floor * coarseField.s + coarseField.t[1]) / k;
+  const passes = Math.min(50, Math.round((a.relax ?? 0) * (s / fs) ** 2));
+  const fineArgs: DrapeArgs = { ...rest, voxelSize: fs, floor: floorUnits, keepFloor: true, ...(a.relax ? { relax: passes } : {}),
+    ...(a.tileOrigin ? {} : { cornersOff: a.cornersOff ?? (refine.paths?.length ? { paths: refine.paths, distance: refine.distance ?? 4 } : undefined) }),
+    keepColumn: (mx, mz) => zone(mx, mz) };
+  if (!fineArgs.cornersOff) delete fineArgs.cornersOff;
+  const fine = planDrapeOne(store, fineArgs);
+  const fineBlocks = fine.tiles.length + (fine.core?.kept.length ?? 0), fineCells = Number((fine.report.skin as { cells: number }).cells) + ((fine.report.core as { cells: number } | null)?.cells ?? 0);
+  // a coarse column lying wholly in the zone (its four corners) is left to the fine skin; the coarse skin gets the
+  // blocks and cells the fine one leaves of the budget
+  const cells = cellBudget(store.scene), used = blockFrames(store.scene).length;
+  const coarse = planDrapeOne(store, { ...rest, maxBlocks: Math.max(0, Math.min(a.maxBlocks ?? Infinity, LIMITS.newFrames - used) - fineBlocks), maxCells: Math.max(0, Math.min(a.maxCells ?? Infinity, cells.free) - fineCells),
+    keepColumn: (mx, mz, sz) => ![-1, 1].every((dx) => [-1, 1].every((dz) => zone(mx + (dx * sz) / 2, mz + (dz * sz) / 2))) });
+  const why = fine.report.why ? `the fine skin (refine): ${fine.report.why}` : coarse.report.why ? `the coarse skin, after the fine one's ${fineBlocks} blocks and ${fineCells} cells: ${coarse.report.why}` : undefined;
+  const c = (p: DrapePlan) => ({ skin: p.report.skin as { blocks: number; cells: number; meetingCorners: number[][]; tiling?: unknown }, core: p.report.core as { blocks: number; cells: number } | null, region: p.report.region as { columns: number } });
+  const cc = c(coarse), fc = c(fine);
+  const blocks = cc.skin.blocks + (cc.core?.blocks ?? 0) + fc.skin.blocks + (fc.core?.blocks ?? 0), total = cc.skin.cells + (cc.core?.cells ?? 0) + fc.skin.cells + (fc.core?.cells ?? 0);
+  const report = { ...coarse.report, fits: !why, ...(why ? { why } : {}),
+    refine: { voxelSize: fs, ...(refine.paths ? { paths: refine.paths.length, distance: refine.distance ?? 4 } : {}), ...(refine.clip ? { clip: refine.clip.length } : {}), columns: fc.region.columns,
+      floor: { map: num(floorUnits * k), note: "the fine skin's heights count from the coarse skin's lattice floor (keepFloor), so the two surfaces meet" },
+      ...(a.relax ? { relax: passes, note2: `the coarse skin's ${a.relax} relax passes scaled by (${s} / ${fs})^2, so both smooth over the same distance` } : {}),
+      skin: fc.skin, core: fc.core, coarseColumnsCut: (coarse.report.region as { columns: number }).columns, fineReport: { fits: fine.report.fits, ...(fine.report.why ? { why: fine.report.why } : {}) },
+      note: "a second skin at refine.voxelSize over the zone (within distance of the paths, or the clip areas), the coarse skin's columns wholly inside the zone left out; they overlap by the coarse columns the zone only partly covers, as clip and exclude do, so no gap opens; check_trail the trails and probe the fine skin's meetingCorners with game_mine_drop" },
+    budget: { blocks: { before: used, after: used + blocks, max: LIMITS.newFrames }, cells: { before: cells.used, after: cells.used + total, max: cells.max } },
+    note: `${coarse.report.note}; with refine the answer's skin and core are the coarse skin's and refine's the fine one's` };
+  return { ...coarse, report, parts: [coarse, fine] };
+}
+
+function planDrapeOne(store: EditorStore, a: DrapeArgs): DrapePlan {
   const T = Math.round(a.thickness ?? 2);
   if (!(T >= 1 && T <= 8)) throw new ToolError("thickness is 1-8 voxels");
   const f = sampleField(store, a);
@@ -276,32 +349,41 @@ export function planDrape(store: EditorStore, a: DrapeArgs): DrapePlan {
   return { field: f, T, tiles: ts, core, report, steep };
 }
 
+/** The skin's AddFrame commands for one plan, the block ids and names in `taken` extended. */
+function skinCommands(store: EditorStore, p: DrapePlan, taken: { ids: Set<number>; names: Set<string> }, made: { id: number; name: string; skin: boolean }[]): Command[] {
+  const f = p.field, s = f.s, { ids, names } = taken, cmds: Command[] = [];
+  let n = 0, tmp = -1;
+  for (const t of p.tiles) {
+    while (names.has(`ergdrape_${n}`)) n++;
+    while (ids.has(tmp)) tmp--;
+    if (tmp < -LIMITS.newFrames) throw new ToolError(`a level holds at most ${LIMITS.newFrames} added blocks`);
+    const name = `ergdrape_${n}`, size: Vec3 = [t.x1 - t.x0, p.T, t.z1 - t.z0];
+    names.add(name);
+    ids.add(tmp);
+    const frame: Frame = { id: tmp, new: true, parent: f.sceneId!, name,
+      pos: [(f.i0 + t.x0 + size[0] / 2) * s, (t.y0 + size[1] / 2) * s, (f.j0 + t.z0 + size[2] / 2) * s],
+      rot: [0, 0, 0], scale: [s, s, s], size, voxels: store.freshRef(), heightMap: null, folder: false, corners: t.corners };
+    cmds.push(new AddFrame(store.voxels, frame, skinWords(f, t, p.T, p.steep)));
+    made.push({ id: tmp, name, skin: true });
+  }
+  return cmds;
+}
+
+/** Applies the drape as one undo step: each part's core (frame fills, then blocks) and skin; with refine the coarse
+ * part and the fine one together. */
 export function applyDrape(store: EditorStore, p: DrapePlan): { blocks: { id: number; name: string; skin: boolean }[] } {
   if (p.report.why) throw new ToolError(String(p.report.why));
-  const f = p.field, s = f.s, made: { id: number; name: string; skin: boolean }[] = [];
-  const skin = (ids: Set<number>, names: Set<string>): Command[] => {
-    const cmds: Command[] = [];
-    let n = 0, tmp = -1;
-    for (const t of p.tiles) {
-      while (names.has(`ergdrape_${n}`)) n++;
-      while (ids.has(tmp)) tmp--;
-      if (tmp < -LIMITS.newFrames) throw new ToolError(`a level holds at most ${LIMITS.newFrames} added blocks`);
-      const name = `ergdrape_${n}`, size: Vec3 = [t.x1 - t.x0, p.T, t.z1 - t.z0];
-      names.add(name);
-      ids.add(tmp);
-      const frame: Frame = { id: tmp, new: true, parent: f.sceneId!, name,
-        pos: [(f.i0 + t.x0 + size[0] / 2) * s, (t.y0 + size[1] / 2) * s, (f.j0 + t.z0 + size[2] / 2) * s],
-        rot: [0, 0, 0], scale: [s, s, s], size, voxels: store.freshRef(), heightMap: null, folder: false, corners: t.corners };
-      cmds.push(new AddFrame(store.voxels, frame, skinWords(f, t, p.T, p.steep)));
-      made.push({ id: tmp, name, skin: true });
+  const made: { id: number; name: string; skin: boolean }[] = [], cmds: Command[] = [];
+  const taken = { ids: new Set(blockFrames(store.scene).map((x) => x.id)), names: new Set(store.scene.frames.map((x) => x.name.toLowerCase())) };
+  for (const part of p.parts ?? [p]) {
+    if (part.core) {
+      if (!part.core.fits) throw new ToolError(part.core.why ?? "the core under the skin does not fit");
+      const r = planCommands(store, part.core, taken);
+      cmds.push(...r.cmds);
+      made.push(...r.blocks.map((b) => ({ ...b, skin: false })));
     }
-    return cmds;
-  };
-  if (p.core) {
-    const r = apply(store, p.core, skin);
-    return { blocks: [...r.blocks.map((b) => ({ ...b, skin: false })), ...made] };
+    cmds.push(...skinCommands(store, part, taken, made));
   }
-  const cmds = skin(new Set(blockFrames(store.scene).map((x) => x.id)), new Set(store.scene.frames.map((x) => x.name.toLowerCase())));
   if (!cmds.length) throw new ToolError("the field has no columns: nothing to drape");
   const before = new Set(store.problems());
   store.exec(new Group("Heightfield drape", cmds));

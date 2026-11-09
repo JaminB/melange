@@ -21,7 +21,7 @@ import { CAMERA_RISE, WALL_RADIUS, nearestTread, spawnWarnings, treadAt, treadWa
 import { readWaterLook, waterLookProblems, withWaterLook, type WaterLook } from "../lib/water-look";
 import { checkFactory, factoryLines } from "../lib/factory-check";
 import { projectHash, readSource } from "../lib/project-hash";
-import { count, diff, mergeRuns, pairOf, summary, toSaved, type AssertRun, type SavedRun } from "../lib/assert-log";
+import { count, diff, fromSaved, mergeRuns, pairOf, summary, toSaved, type AssertRun, type SavedRun } from "../lib/assert-log";
 import { scheduleFromScript } from "../lib/flood";
 import { scriptWater } from "../lib/script-water";
 import { rotation, slotOf } from "../lib/turns";
@@ -1316,11 +1316,19 @@ export const tools: Tool[] = [
     handler(_s, a: { limit?: number; scope?: AssertScope }) {
       const runs = runsFor(a.scope), others = a.scope === "all" ? 0 : allRuns().length - runs.length;
       if (!runs.length) return { runs: [], scope: a.scope ?? "session", note: `no Test run in this erg-mcp session yet (test counts them; a game without Oasis's log channel cannot)${others ? `; ${others} run${others > 1 ? "s" : ""} of earlier erg-mcp processes in the runs file: test_asserts {scope: "all"}` : ""}` };
-      const { erg, base } = pairOf(runs);
+      const pair = pairOf(runs), erg = pair.erg;
+      let base = pair.base, standIn: string | undefined;
+      // this session has an Erg run and no baseline: the runs file's latest baseline of the same game build stands in,
+      // said so (Caldera v2 round 4: the baseline ran in one erg-mcp process and the Erg Test in the next, and the
+      // session-scoped compare had no pair unless the tester asked for scope "all")
+      if (a.scope !== "all" && erg && !base) {
+        const sb = pairOf([...savedRuns().map(fromSaved).filter((r) => r.kind === "baseline"), erg]).base;
+        if (sb) { base = sb; standIn = `this session has no baseline: the runs file's latest baseline of the same game build stands in (${sb.label}, ${new Date(sb.startedAt).toISOString()}, an earlier erg-mcp process's run); test {baseline: true} in this session for a same-session pair`; }
+      }
       const from = (r: AssertRun) => (r.from === "saved" ? { savedRun: `an earlier erg-mcp process's run, ${new Date(r.startedAt).toISOString()}` } : {});
-      return { scope: a.scope ?? "session", runs: runs.map((r) => ({ ...summary(r, a.limit ?? 20), ...from(r) })), ...(others ? { otherProcesses: `${others} run${others > 1 ? "s" : ""} of earlier erg-mcp processes left out: test_asserts {scope: "all"} lists them` } : {}),
-        ...(erg && base ? { compare: { ...diff(erg, base), ...(erg.from === "saved" || base.from === "saved" ? { note: "a run from an earlier erg-mcp process (the runs file, Documents\\Melange\\erg-mcp\\assert-runs.json) is in the pair" } : {}) } }
-          : { compareNote: `compare needs an Erg Test run and a vanilla baseline (test {baseline: true}) of the same game in this session: there is ${erg ? "no baseline" : "no Erg run"} yet${others ? " (earlier processes' runs: scope \"all\")" : ""}` }) };
+      return { scope: a.scope ?? "session", runs: [...runs, ...(standIn && base ? [base] : [])].map((r) => ({ ...summary(r, a.limit ?? 20), ...from(r) })), ...(others ? { otherProcesses: `${others} run${others > 1 ? "s" : ""} of earlier erg-mcp processes left out: test_asserts {scope: "all"} lists them` } : {}),
+        ...(erg && base ? { compare: { ...diff(erg, base), ...(standIn ? { standIn } : erg.from === "saved" || base.from === "saved" ? { note: "a run from an earlier erg-mcp process (the runs file, Documents\\Melange\\erg-mcp\\assert-runs.json) is in the pair" } : {}) } }
+          : { compareNote: `compare needs an Erg Test run and a vanilla baseline (test {baseline: true}) of the same game: there is ${erg ? "no baseline in this session or the runs file for this game build" : "no Erg run"} yet${others ? " (earlier processes' runs: scope \"all\")" : ""}` }) };
     },
   },
   {

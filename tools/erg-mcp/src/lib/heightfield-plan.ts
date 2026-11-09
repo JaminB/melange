@@ -150,6 +150,9 @@ export interface FieldArgs {
   blend?: boolean | Blend;                  // blend material boundaries per corner (default off)
   relax?: number;                           // passes of smoothing over the heights (default 0)
   maxGradient?: number;                     // degrees: no column steeper than this against its neighbours (default none)
+  // internal (never from a tool's arguments): keep a column by its centre (map units) and the voxel size, after clip
+  // and exclude; heightfield_drape's refine cuts the fine zone out of the coarse skin and clips the fine one to it
+  keepColumn?: (mx: number, mz: number, s: number) => boolean;
 }
 
 /** Where the field's heights stand: the floor asked and the lattice height it snapped to (map units), the shift, and
@@ -305,7 +308,8 @@ export function sampleField(store: EditorStore, a: FieldArgs): Field {
   // clip keeps a column whose centre is inside; exclude drops one whose four corners are: a fine field clipped to an area
   // and a coarse one excluding the same area overlap at its edge instead of leaving a gap.
   const kept = (mx: number, mz: number) => (!clip.length || clip.some((ar) => inArea(ar, mx, mz))) &&
-    !exclude.some((ar) => [-1, 1].every((dx) => [-1, 1].every((dz) => inArea(ar, mx + (dx * s) / 2, mz + (dz * s) / 2))));
+    !exclude.some((ar) => [-1, 1].every((dx) => [-1, 1].every((dz) => inArea(ar, mx + (dx * s) / 2, mz + (dz * s) / 2)))) &&
+    (!a.keepColumn || a.keepColumn(mx, mz, s));
   const W = (nx * s) / k, D = (nz * s) / k;
   let fn: (v: Vars) => number;
   if (a.expr !== undefined) {
@@ -1202,13 +1206,31 @@ let strokes = -1_000_000;
 /** `extra` adds commands to the same undo step, given the block ids and names taken so far (heightfield_drape's skin). */
 export function apply(store: EditorStore, p: Plan, extra?: (ids: Set<number>, names: Set<string>) => Command[]): { blocks: { id: number; name: string }[] } {
   if (!p.fits) throw new ToolError(p.why ?? "the heightfield does not fit");
+  const names = new Set(store.scene.frames.map((fr) => fr.name.toLowerCase()));
+  const ids = new Set(blockFrames(store.scene).map((fr) => fr.id));
+  const { cmds, blocks: made } = planCommands(store, p, { ids, names });
+  if (extra) cmds.push(...extra(ids, names));
+  if (!cmds.length) throw new ToolError(p.why ? `nothing could be placed: ${p.why}` : "the field is already solid: nothing to place");
+  const before = new Set(store.problems());
+  store.exec(new Group("Heightfield", cmds));
+  const fresh = store.problems().filter((x) => !before.has(x));
+  if (fresh.length) {
+    store.undo();
+    throw Object.assign(new ToolError("the heightfield would make the patch invalid, so it was not applied"), { details: fresh });
+  }
+  return { blocks: made };
+}
+
+/** A plan's commands (the frame fills, then its blocks), not yet run: `taken` holds the block ids and names used so far
+ * and gets the new ones, so several plans go into one undo step (heightfield_drape's refine: a coarse skin and a fine
+ * one along the trails). */
+export function planCommands(store: EditorStore, p: Plan, taken: { ids: Set<number>; names: Set<string> }): { cmds: Command[]; blocks: { id: number; name: string }[] } {
   const f = p.field;
   const cmds: Command[] = [];
   const changes = new Map<number, Map<number, [number, number]>>();
   for (const x of p.canvas.fills) if (x.changes.size) changes.set(x.grid.ref, new Map(x.changes));
   if (changes.size) cmds.push(new SculptStroke("Heightfield", --strokes, store.voxels, changes, () => {}));
-  const names = new Set(store.scene.frames.map((fr) => fr.name.toLowerCase()));
-  const ids = new Set(blockFrames(store.scene).map((fr) => fr.id));
+  const { ids, names } = taken;
   const made: { id: number; name: string }[] = [];
   let n = 0, tmp = -1;
   for (const pc of p.kept) {
@@ -1225,14 +1247,5 @@ export function apply(store: EditorStore, p: Plan, extra?: (ids: Set<number>, na
     cmds.push(new AddFrame(store.voxels, frame, words(f, p.canvas, pc)));
     made.push({ id: tmp, name });
   }
-  if (extra) cmds.push(...extra(ids, names));
-  if (!cmds.length) throw new ToolError(p.why ? `nothing could be placed: ${p.why}` : "the field is already solid: nothing to place");
-  const before = new Set(store.problems());
-  store.exec(new Group("Heightfield", cmds));
-  const fresh = store.problems().filter((x) => !before.has(x));
-  if (fresh.length) {
-    store.undo();
-    throw Object.assign(new ToolError("the heightfield would make the patch invalid, so it was not applied"), { details: fresh });
-  }
-  return { blocks: made };
+  return { cmds, blocks: made };
 }
