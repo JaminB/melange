@@ -14,6 +14,11 @@
 // v2 round 2: a kerb about a unit high on the downhill side of every leg and round every hairpin's tip (terrain.mjs KERB); a
 // solid plug under each corner where four skin blocks meet near a trail (round 1's SW worms and the mine probes fell through
 // the skin there, docs/erg.md); the team spawns on the line between the castle's gates, and each spawn's own lead-in waypoints.
+// v2 round 3: the trails' bed in pale cracked flagstone (dinoegg02, far paler than the beach sand) with a dark VolcanoRock kerb line on
+// the downhill edge of every leg (terrain.mjs kerbLines), so each leg reads as a stripe from the oblique overview; the kerb a
+// rounded ridge (softened) instead of a 1-unit step the skin's corners drew as a sawtooth; the skin's tiling shifted off the trails
+// (cornersOff); ledges and scree on the flanks between the trails and a wider inner cliff band; plugs under the round-2 NE
+// probe misses; a lip round every launcher pad (one mine ran off the north pad into the crater in round 2).
 // Default game dir is testenv B (the tester's).
 //
 //   tools\node\node.exe tools\erg-mcp\bench\caldera\build.mjs [--out <dir>] [--plan] [--no-export] [--keep-mod] [--no-scenery]
@@ -48,7 +53,9 @@ const WORM_W = 0.6;                               // a worm's body, map units (c
 // rock02 6 (grey-brown: cliff faces), path01 8 (the trails), sand01 10, stone 12, flint 16, chippedstone 27 (the castles),
 // VolcanoRock 49 (near black: the ash of the summit), LiquidHotMagma 50 (the lava), HotRocks 51 (dark red: its margins,
 // the crater walls and the plug), Metal 53.
-const MAT = { grass: 0, olive: 2, rock: 4, grey: 6, path: 8, sand: 10, stone: 12, flint: 16, chipped: 27, ash: 49, magma: 50, hot: 51, metal: 53 };
+// dinoegg02 26 (pale cream, cracked like flagstones: the trails' bed since v2 round 3, far paler than path01's yellow, the beach sand's hue)
+const MAT = { grass: 0, olive: 2, rock: 4, grey: 6, path: 8, sand: 10, stone: 12, flint: 16, flag: 26, chipped: 27, ash: 49, magma: 50, hot: 51, metal: 53 };
+const TRAIL_MAT = +(process.env.TRAIL_MAT ?? MAT.flag);
 const VOXEL = +(process.env.VOXEL || 2.5);       // map units per voxel of the island's skin
 const THICK = +(process.env.THICK || 3);         // voxels of skin (hollow under it: a fifth of the cells of a solid core)
 const SCALE = T.CASTLE_SCALE;                    // voxels of the castle blocks (CASTLE_SCALE, read by terrain.mjs: the courts' height depends on it)
@@ -78,8 +85,10 @@ const RIVULETS = [
 const MATERIALS = [
   { material: MAT.flint, masks: T.CASTLES.map((c) => T.courtMask(c)) },
   // the trails: the pale band is the bed, edged with a dark ash shoulder (also over the bank between two legs) that hides the voxel staircase
-  ...T.TRAILS.map((rd) => ({ material: MAT.path, mask: T.roadMask(rd, T.TRAIL.bed, 5), feather: { width: 0.4, pattern: "perlin", cell: 3 }, edge: { depth: 1 } })),
-  ...T.TRAILS.map((rd) => ({ material: MAT.ash, mask: T.roadMask(rd, T.TRAIL.bed + 1.8, 5), feather: { width: 1, pattern: "perlin", cell: 3 }, exclude: [{ x: 0, z: 0, radius: T.RC - 2 }] })),
+  ...T.TRAILS.map((rd) => ({ material: TRAIL_MAT, mask: T.roadMask(rd, T.TRAIL.bed, 5), feather: { width: 0.4, pattern: "perlin", cell: 3 }, edge: { depth: 1 } })),
+  // the kerb line: dark VolcanoRock along the downhill edge of every leg (over the kerb's ridge), then a narrower dark shoulder on both sides
+  { material: MAT.ash, paths: T.kerbLines().map((points) => ({ points, width: 3 })), feather: { width: 0.6, pattern: "perlin", cell: 3 }, edge: { depth: 1 } },
+  ...T.TRAILS.map((rd) => ({ material: MAT.ash, mask: T.roadMask(rd, T.TRAIL.bed + 1.4, 5), feather: { width: 1, pattern: "perlin", cell: 3 }, exclude: [{ x: 0, z: 0, radius: T.RC - 2 }] })),
   { material: MAT.magma, minHeight: hh(2.4), mask: T.tonguesMask(T.TONGUES, 0.62), feather: { width: 1.6, pattern: "perlin", cell: 5 } },
   { material: MAT.hot, minHeight: hh(2.4), mask: T.tonguesMask(T.TONGUES, 1.0), feather: { width: 3, pattern: "perlin", cell: 5 } },
   // the crater floor: dry ash apron round the plug first (the mines land on it), the lava lake (organic shore) with thin rivulets and an ash ring round it
@@ -92,7 +101,12 @@ const MATERIALS = [
   { material: MAT.ash, minHeight: hh(FLOOR - 3), mask: `${T.RC + 14} - r`, feather: { width: 5, pattern: "perlin", cell: 8 }, jitter: { amount: 2.5, scale: 9, seed: 3 } },   // the floor and the summit's ash
   // the cone is basalt: cliffs over 56 degrees are HotRocks (dark red-brown: hides the stretched texture of a steep face), the flanks above the
   // foothills are VolcanoRock (the darkest ground material of the theme) with patches of HotRocks; the pale stone is left to the castles and trails
+  // (v2 round 3) the steep faces in three rocks, not one slab: grey rock in streaks, dark basalt in patches, hot rock the rest
+  { material: MAT.grey, minHeight: hh(14), minSlope: 48, mask: `r - ${T.RC + 3}`, noise: { threshold: 0.4, scale: 6, seed: 33 }, feather: { width: 0.5, pattern: "perlin", cell: 5 } },
+  { material: MAT.ash, minSlope: 56, mask: `r - ${T.RC + 3}`, noise: { threshold: 0.25, scale: 10, seed: 34 }, feather: { width: 0.5, pattern: "perlin", cell: 5 } },
   { material: MAT.hot, minSlope: 56, feather: { width: 3, pattern: "perlin", cell: 6 } },
+  // scree (v2 round 3): grey rock in patches on the steeper flank under the cliffs and on the ledges' risers, between the trails
+  { material: MAT.grey, minHeight: hh(12), minSlope: 30, maxSlope: 56, mask: `r - ${T.RC + 6}`, noise: { threshold: 0.25, scale: 7, seed: 31 }, feather: { width: 0.5, pattern: "perlin", cell: 5 } },
   { material: MAT.hot, minHeight: hh(16), noise: { threshold: 0.55, scale: 11, seed: 12 } },
   { material: MAT.ash, minHeight: hh(11), feather: { width: 4, pattern: "perlin", cell: 9 }, jitter: { amount: 3, scale: 11, seed: 4 } },
   // vegetation: only on gentle lowland ground (a green skirt of olive and grass, under 22 degrees and under 9 map units), in patches; steeper ground at the
@@ -136,7 +150,7 @@ try {
   say("cells before", JSON.stringify(d0.json.limits.voxelCells));
 
   // ---- the island: one drape skin over the whole rectangle (the height is terrain.mjs's island()) ----
-  const grid = T.relax(T.gridOf(-T.BOX, T.BOX, 1));
+  const grid = T.relax(T.soften(T.gridOf(-T.BOX, T.BOX, 1)));
   // trails and branches as check_trail's polylines ([x, y, z]; y on a switchback, so the leg over or under is not taken for it)
   const trailLines = T.TRAILS.flatMap((t) => [t.pts, ...t.branches.map((b) => b.pts)].map((pl) => pl.map((p) => [round1(p[0]), round1(p[2]), round1(p[1])])));
   const trailNames = T.TRAILS.flatMap((t) => [t.name, ...t.branches.map((b) => `${t.name}-${b.castle.name}`)]);
@@ -172,12 +186,28 @@ try {
   const corners = new Map();
   for (const tr of cornerScan.json?.trails ?? []) for (const c of tr.skinCorners ?? []) corners.set(c.at.join(","), { at: c.at, off: Math.min(c.off, corners.get(c.at.join(","))?.off ?? 1e9), trail: tr.name });
   const plugs = [];
+  // (v2 round 3: the tiling is shifted off the trails, cornersOff, so only a corner within 1.5 of a bed's edge still gets one, 2 x 3 x 2 and
+  // its top under the lowest skin round the corner: round 2's 3 x 4 x 3 plugs on a steep flank stood out of the slope as dark cubes)
   for (const c of corners.values()) {
-    const [cx, cz] = c.at, top = await groundOf(cx, cz), y0 = Math.floor(top - 0.25) - 4;
-    const r = await call("add_block", { size: [3, 4, 3], scale: 1, at: [cx, y0, cz], units: "map", fill: "solid", material: c.off < T.TRAIL.bed ? MAT.path : MAT.ash }, { soft: true });
-    plugs.push({ at: [cx, cz], trail: c.trail, off: round2(c.off), skin: round2(top), plugTop: y0 + 4, block: r.json?.name ?? r.text.slice(0, 160) });
+    if (c.off > T.TRAIL.bed + 1.5) continue;
+    const [cx, cz] = c.at, gs = [];
+    for (const [dx, dz] of [[-1, -1], [1, -1], [-1, 1], [1, 1], [0, 0]]) gs.push(await groundOf(cx + dx, cz + dz));
+    const top = Math.min(...gs), y0 = Math.floor(top - 0.25) - 3;
+    const r = await call("add_block", { size: [2, 3, 2], scale: 1, at: [cx, y0, cz], units: "map", fill: "solid", material: MAT.ash }, { soft: true });
+    plugs.push({ at: [cx, cz], trail: c.trail, off: round2(c.off), skin: round2(top), plugTop: y0 + 3, block: r.json?.name ?? r.text.slice(0, 160) });
   }
   say("skin corner plugs", JSON.stringify(plugs));
+  // (v2 round 3) plugs under the round-2 trail probes that missed (game_mine_drop on the NE trail: a mine fell to 4.74 at (44.7, -70.44)
+  // near the start, and was gone at (58.97, -60.73) on the right shoulder about 30 along): 4 x 3 x 4 of 1-unit voxels, the top a
+  // quarter unit under the skin there, so whatever goes through the skin lands on them
+  const LEAKS = (process.env.LEAKS ?? "44.7,-70.44;58.97,-60.73").split(";").filter(Boolean).map((q) => q.split(",").map(Number));
+  const leakPlugs = [];
+  for (const [lx, lz] of LEAKS) {
+    const top = await groundOf(lx, lz), y0 = Math.floor(top - 0.25) - 3;
+    const r = await call("add_block", { size: [4, 3, 4], scale: 1, at: [lx, y0, lz], units: "map", fill: "solid", material: MAT.ash }, { soft: true });
+    leakPlugs.push({ at: [lx, lz], skin: round2(top), plugTop: y0 + 3, block: r.json?.name ?? r.text.slice(0, 160) });
+  }
+  say("leak plugs", JSON.stringify(leakPlugs));
 
   // ---- the castles, each into new blocks of SCALE-unit voxels, turned to the contour (local x along it, local +z to the sea),
   // a gate in each end wall where its trail comes in and goes out ----
@@ -268,8 +298,12 @@ try {
     const gs = [];
     for (const dx of [-3, 0, 3]) for (const dz of [-3, 0, 3]) gs.push(await groundOf(round1(lx + dx), round1(lz + dz)));
     const bottom = round1(Math.min(...gs) - 1.5), top = Math.max(...gs) + 0.5;
-    const pad = await call("add_block", { size: [4, Math.ceil((top - bottom) / 1.5), 4], scale: 1.5, at: [lx, bottom, lz], units: "map", fill: "solid", material: MAT.hot }, { soft: true });
-    say("launcher pad", lx, lz, "ground", round1(Math.min(...gs)), "-", round1(Math.max(...gs)), pad.err ? pad.text.slice(0, 200) : brief(pad, 160));
+    // (v2 round 3) a lip: the pad is 6 x 6 voxels (9 x 9 map) with a ring one voxel over its 6 x 6 dish, so a mine that bounces stays
+    // on it (round 2: one ran off the north pad and fell through the crater's skin)
+    const ny = Math.ceil((top - bottom) / 1.5);
+    const pad = await call("add_block", { size: [6, ny + 1, 6], scale: 1.5, at: [lx, bottom, lz], units: "map", fill: "solid", material: MAT.hot }, { soft: true });
+    const lip = pad.err ? null : await call("fill_box_raw", { frame: pad.json.frameId, state: "empty", units: "grid", min: [1, ny, 1], max: [5, ny + 1, 5] }, { soft: true });
+    say("launcher pad", lx, lz, "ground", round1(Math.min(...gs)), "-", round1(Math.max(...gs)), pad.err ? pad.text.slice(0, 200) : brief(pad, 160), "lip", lip ? brief(lip, 120) : "-");
     LAUNCHERS.push([lx, lz]);
   }
   say("factory settings", brief(await call("set_mine_factory", { everyNTurns: +(process.env.VOLLEY_EVERY || 3), schemeMines: false, keepKnot: true, launchHeight: +(process.env.LAUNCH_H || 14), launchRadius: LAUNCH_R,
@@ -399,7 +433,7 @@ try {
     fs.writeFileSync(path.join(OUT, `reach-${label}.json`), rc.text);
     say("reach", label, brief(rc, 700));
   }
-  const ROUTE = [MAT.path, MAT.stone, MAT.flint, MAT.chipped];
+  const ROUTE = [TRAIL_MAT, MAT.stone, MAT.flint, MAT.chipped];
   const tally = { only: 0, avoid: 0 };
   for (const [label, mode] of [["trailonly", "only"], ["offtrail", "avoid"]]) {
     for (const [k, t] of T.TRAILS.entries()) {

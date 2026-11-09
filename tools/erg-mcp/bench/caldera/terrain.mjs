@@ -28,7 +28,10 @@ export const CLIP = 117;         // radius of that circle
 export const SEA_FLOOR = -9;     // the skin's lowest level (the offshore slope runs down to it)
 export const TREAD = 0.52;       // slope of the flank between the cliffs (27 degrees)
 // the cliff bands: the flank steps up by `a` over about 5 units at rho (wobbled by angle); roads climb through them
-export const CLIFFS = [{ rho: 47, a: 13 }, { rho: 78, a: 6 }];
+// v2 round 3: the inner band split in two steps (43.5 and 51.5, 7 each) with a ledge between them, so the upper cone reads as stepped
+// rock instead of one sheer slab (CLIFF_SPLIT=0 keeps round 2's single band at 47, 13 high)
+const SPLIT = +(globalThis.process?.env?.CLIFF_SPLIT ?? 1);
+export const CLIFFS = SPLIT ? [{ rho: 43.5, a: 7 }, { rho: 78, a: 6 }, { rho: 51.5, a: 7 }] : [{ rho: 47, a: 13 }, { rho: 78, a: 6 }];
 export const BOOST = 20;         // extra height toward the summit: the cone steepens over its top third, so it is the tallest thing from every side
 
 // the flank without cliffs: a soft foot (a beach) that turns into the tread's slope; offshore the sea floor falls more gently
@@ -74,13 +77,14 @@ export const pointAt = (rho, th) => { const r = rho / scaleAt(th); return [r * M
 
 // the smooth profile: tread flank plus the cliff bands (their radius and height wander with the angle, so no ring is regular)
 // the outer band is a foothill shoulder (a wider step), the inner one a cliff
-const k0 = (k) => (k === 1 ? 1 : 0);
 // where a trail crosses a cliff band its step is spread over NOTCH_W[k] more each side (within about NOTCH_S radians of the
 // crossing), so the switchbacks can climb it; `notch: false` is the band unnotched (the crater's rim is raised from that, so the
 // crater never moves with the trails)
 let NOTCHES = [];
 let TRAIL_ENDS = [];        // where the trails reach the rim (set once they are laid: the rim is lowered there)
-const NOTCH_W = [8, 3.5], NOTCH_S = [0.45, 0.3];
+const NOTCH_W = [8, 3.5, 6], NOTCH_S = [0.45, 0.3, 0.4];
+// each band's half width (v2 round 3: the inner cliff spread from 1.75 to 3, so it reads as a steep rock band, not a sheer slab)
+const CLIFF_HW = SPLIT ? [2.4, 3.25, 2.4] : [+(globalThis.process?.env?.CLIFF_HW ?? 3), 3.25];
 export function profile(rho, th, notch = true) {
   let h = F(RF - rho) + BOOST * (1 - smooth(RC - 2, RC + 46, rho));
   CLIFFS.forEach((c, k) => {
@@ -88,10 +92,23 @@ export function profile(rho, th, notch = true) {
     const a = c.a * (0.85 + 0.15 * noise(Math.cos(th) * 2.3 + k, Math.sin(th) * 2.3, 60 + k));
     let wn = 0;
     if (notch) for (const n of NOTCHES) if (n.k === k) wn = Math.max(wn, gaussA(th, n.th, NOTCH_S[k]));
-    const hw = 1.75 + 1.5 * k0(k) + NOTCH_W[k] * wn;
+    const hw = CLIFF_HW[k] + NOTCH_W[k] * wn;
     h += a * (1 - smooth(rk - hw, rk + hw, rho));
   });
   return h;
+}
+
+// ---- ledges on the flanks (v2 round 3: "soften the cone flanks between the trails with a few terraces or ledges"): the outer
+// flank's height pulled toward a staircase of `step` (wandering with noise) by `mix`, each step a ledge for `flat` of it and a
+// steeper riser above, fading in over the foothills and out toward the rim; the trails' hairpins take islandBase's height, so the
+// legs are laid over the ledged flank
+const RIBS = +(globalThis.process?.env?.RIBS ?? 2.4);
+export const LEDGES = { step: 5.5, flat: 0.45, mix: +(globalThis.process?.env?.LEDGE_MIX ?? 0.55) };
+function ledged(h, x, z, rho) {
+  const m = LEDGES.mix * smooth(8, 16, h) * (1 - smooth(RC + 4, RC + 1, rho)) * (0.6 + 0.4 * noise(x / 18, z / 18, 78));
+  if (m <= 0) return h;
+  const s = LEDGES.step * (1 + 0.15 * noise(x / 30, z / 30, 77)), q = h / s, f = q - Math.floor(q);
+  return h + ((Math.floor(q) + smooth(LEDGES.flat, 1, f)) * s - h) * m;
 }
 
 // ---- outlying islets: rock stacks off the coast (angle, radius from the centre in map units, radius of the stack, crest above the sea) ----
@@ -173,7 +190,12 @@ export const TRAIL = { grade: 0.5, legSep: 9.5, ampMin: 8, ampMax: +(globalThis.
 // row of corners on it), on a berm at the bed's height out to `berm` that falls to the ground by `out` (relax() turns a step
 // steeper than 2.9 a unit into a ramp that eats into its top, so the berm runs on past the kerb and the ramp eats the berm,
 // not the kerb); not inside a castle (its footprint and 1.5 round it: the gates) or within 3.5 of a trail's rim end
-export const KERB = { h: +(globalThis.process?.env?.KERB_H ?? 1.2), from: 3.1, to: 5.6, berm: 7.5, out: 9.5 };
+// v2 round 3: the kerb is a level shelf 1 over the bed (was a ridge 1.2 high, 2.5 wide, back down to the bed's height on the berm),
+// rising over 2 from the bed's edge and level out to the berm's end: a ridge that narrow on the skin's 2.5-unit corners drew as a row
+// of pyramids along each leg (the sawtooth of c1_t2_w6_mid), a level shelf samples the same at every corner; its columns are also
+// softened (soften(): a 3 x 3 mean) before relax. `to` (the pinned part) is the shelf's whole width now.
+const KENV = (k, d) => +(globalThis.process?.env?.[k] ?? d);
+export const KERB = { h: KENV("KERB_H", 1), from: KENV("KERB_FROM", 4.6), to: KENV("KERB_TO", 7.5), berm: KENV("KERB_BERM", 7.5), out: KENV("KERB_OUT", 12), anySide: !!+(globalThis.process?.env?.KERB_ANY ?? 0), clear: +(globalThis.process?.env?.KERB_CLEAR ?? 1.5) };
 // team t spawns in TEAM_CASTLES[t]. castle: [name, floor, bearing, dir]; extra: [name, floor, side (+1 beyond the column on its
 // dir side, -1 the other)]. The trails stand on the diagonals, the lava runs down the cardinals and the breach faces south.
 const LAYOUT = [
@@ -356,7 +378,7 @@ function trailPoints(t) {
 }
 // The cliff bands are notched where a trail's column crosses them (their step spread over a wider band, so the legs can climb it
 // near the grade): the bearings are the columns' own, from a first layout.
-NOTCHES = LAYOUT.map(layTrail).flatMap((t) => [{ k: 0, th: t.col.thc }, { k: 1, th: t.col.thc }]);
+NOTCHES = LAYOUT.map(layTrail).flatMap((t) => CLIFFS.map((c, k) => ({ k, th: t.col.thc })));
 const LAID = LAYOUT.map(layTrail);
 // the rim is lowered where a trail ends on it (islandBase), so the trail ends are known before the heights are taken
 TRAIL_ENDS = LAID.map((t) => t.col.hairpins[t.col.hairpins.length - 1]);
@@ -383,6 +405,31 @@ export function roadMask(rd, hw = 2.7, every = 7) {
   return `${defs}${hw} - ${segs.reduce((acc, c) => (acc ? `min(${acc}, ${c})` : c), "")}`;
 }
 
+// the kerbs' lines (v2 round 3: "a darker kerb line on the downhill edge so each zigzag leg shows as a stripe"): along every bed,
+// the line `off` to the side whose ground (islandBase, before the cut) lies under the bed, as [x, z] polylines for a material
+// rule's `paths` (at most 64, of 2-512 points each); none where the side changes (a hairpin's tip, a level stretch), inside a
+// castle or its gates, or at a trail's rim end
+export function kerbLines(off = (KERB.from + KERB.to) / 2) {
+  const out = [];
+  for (const pl of BEDS) {
+    let cur = [], curSide = 0;
+    const flush = () => { for (let i = 0; i + 1 < cur.length; i += 500) out.push(cur.slice(i, i + 512)); cur = []; curSide = 0; };
+    for (let i = 0; i < pl.length; i++) {
+      const a = pl[Math.max(0, i - 1)], b = pl[Math.min(pl.length - 1, i + 1)], p = pl[i];
+      const L = Math.hypot(b[0] - a[0], b[1] - a[1]) || 1, nx = -(b[1] - a[1]) / L, nz = (b[0] - a[0]) / L;
+      let side = 0, drop = 0.4;
+      for (const sg of [-1, 1]) { const d = p[2] - islandBase(p[0] + sg * nx * off, p[1] + sg * nz * off); if (d > drop) { drop = d; side = sg; } }
+      const q = [p[0] + side * nx * off, p[1] + side * nz * off];
+      const ok = side !== 0 && !TRAIL_ENDS.some((e) => Math.hypot(q[0] - e[0], q[1] - e[1]) < 3.5) &&
+        !CASTLES.some((k) => Math.abs(q[0] - k.at[0]) < 40 && Math.abs(q[1] - k.at[1]) < 40 && footDist(k, q[0], q[1], 0) < 1.5);
+      if (!ok || (curSide && side !== curSide)) flush();
+      if (ok) { cur.push([Math.round(q[0] * 10) / 10, Math.round(q[1] * 10) / 10]); curSide = side; }
+    }
+    flush();
+  }
+  return out.slice(0, 64);
+}
+
 // ---- the height of the island at (x, z), map units above the sea's zero (negative: the sea floor, down to SEA_FLOOR) ----
 // islandBase: the ground before the castles' shelves and the trails' beds are cut into it (the trails' hairpins take its height)
 export function islandBase(x, z) {
@@ -407,7 +454,10 @@ export function islandBase(x, z) {
   for (const e of TRAIL_ENDS) roadMaskH = Math.max(roadMaskH, Math.exp(-((angd(th, Math.atan2(e[1], e[0])) / 0.2) ** 2)));
   const spur = 3 + Math.max(0, noise(Math.cos(th) * 3.3 + 4, Math.sin(th) * 3.3 + 4, 17) + 0.2) * 7 * (1 - roadMaskH);
   const crest = spur * Math.exp(-(((rho - RC) / 3.6) ** 2));
-  const outer = profile(Math.max(rho, RC), th) * ridges - dip + crest;
+  // (v2 round 3) ribs and runnels down the steep upper cone: noise stretched along the fall line (about 7 across, 22 down), up to
+  // 2.4 high, from just outside the rim to the foothills, so the steep faces between the trails are fluted rock, not flat slabs
+  const ribs = RIBS * fbm(th * r / 7, rho / 22, 91, 2) * smooth(RC + 2, RC + 7, rho) * (1 - smooth(62, 76, rho));
+  const outer = ledged(profile(Math.max(rho, RC), th) * ridges - dip + ribs, x, z, rho) + crest;
   const crestH = profile(RC, th, false) + 6;      // the inner rim is raised so the bowl has walls (iteration 10)
   // the crater: a wide flat floor (the mine factory's plug stands on it), walls that climb to the rim, a rough floor
   const bowl = FLOOR_Y + (crestH - FLOOR_Y) * smooth(FLAT_R, RC - 1, rho) + 0.7 * fbm(x / 6, z / 6, 51, 2) * (1 - smooth(FLAT_R - 4, FLAT_R + 4, rho));
@@ -444,43 +494,72 @@ export function island(x, z, pin = null) {
   }
   const hCut = h;
   let dMin = 1e9, yMin = 0, kerb = -1e9, kerbD = 1e9;
-  // a kerb point: off a bed by d, whose height y is over the ground here (the ground falls away from it); every point of every bed
+  // a kerb point: off a bed by d, whose height y is over the ground here (the ground falls away from it); every leg that passes
   // counts, not only the nearest, so the bank between two legs has the upper leg's kerb too (the nearest is the lower leg there)
-  const kerbOf = (d, y) => hCut + (y + KERB.h * smooth(TRAIL.bed, KERB.from, d) * (1 - smooth(KERB.to, KERB.berm, d)) - hCut) * (1 - smooth(KERB.berm, KERB.out, d));
+  const kerbOf = (d, y) => hCut + (y + KERB.h * smooth(TRAIL.bed, KERB.from, d) * (KERB.berm > KERB.to ? 1 - smooth(KERB.to, KERB.berm, d) : 1) - hCut) * (1 - smooth(KERB.berm, KERB.out, d));
+  // (v2 round 3) a leg's kerb keeps KERB.clear off another leg's bed (a bed point over 1.5 higher or lower within bed + clear of the
+  // column): the level shelf beside a hairpin's tip otherwise lifts the skin's corners on the other leg's edge, a 1.2 step on the bed
+  // (the trail-only walk stuck at the SE and SW third hairpins)
+  const cands = [], near = [];
   for (const pl of BEDS) {
     let best = 1e9, by = 0;
-    for (const p of pl) {
-      const dx = x - p[0], dz = z - p[1];
-      if (Math.abs(dx) > 10 || Math.abs(dz) > 10) continue;
-      const dd = Math.hypot(dx, dz);
+    const ds = pl.map((p) => (Math.abs(x - p[0]) > 10 || Math.abs(z - p[1]) > 10 ? Infinity : Math.hypot(x - p[0], z - p[1])));
+    for (const [i, p] of pl.entries()) {
+      const dd = ds[i];
+      if (dd === Infinity) continue;
       if (dd < best) { best = dd; by = p[2]; }
-      if (dd > TRAIL.bed && dd < KERB.out && hCut < p[2] + 0.5) { const k = kerbOf(dd, p[2]); if (k > kerb) { kerb = k; kerbD = dd; } }
+      // (v2 round 3) a kerb from the nearest point of each leg that passes (a local minimum of the distance along the polyline) only:
+      // round 2 took every point within reach, so a column took the kerb of a point several units up the leg, as high as that point
+      // (an uneven kerb, higher and lower column by column: part of the sawtooth)
+      if (!(dd <= (ds[i - 1] ?? Infinity) && dd <= (ds[i + 1] ?? Infinity))) continue;
+      if (dd < TRAIL.bed + KERB.clear) near.push(p[2]);
+      if (dd > TRAIL.bed && dd < KERB.out && (KERB.anySide || hCut < p[2] + 0.5)) cands.push([kerbOf(dd, p[2]), dd, p[2]]);
     }
     if (best < 7) { const w = 1 - smooth(TRAIL.bed, TRAIL.bed + 3.2, best); h += (by - h) * w; wRoad = Math.max(wRoad, w); }
     if (best < dMin) { dMin = best; yMin = by; }
   }
+  for (const [k, dd, y] of cands) if (k > kerb && !near.some((q) => Math.abs(q - y) > 1.5)) { kerb = k; kerbD = dd; }
   // fine roughness where nothing was cut
   h += 1.0 * fbm(x / 8, z / 8, 21, 2) * smooth(3, 14, h) * (1 - wShelf) * (1 - wRoad);
   // the kerb on the downhill side of the beds (none on a bed itself)
   let kerbed = false;
   if (KERB.h > 0 && dMin > TRAIL.bed && kerb > -1e9 && !TRAIL_ENDS.some((e) => Math.hypot(x - e[0], z - e[1]) < 3.5) &&
-      !CASTLES.some((k) => Math.abs(x - k.at[0]) < 40 && Math.abs(z - k.at[1]) < 40 && footDist(k, x, z, 0) < 1.5)) {
+      !CASTLES.some((k) => Math.abs(x - k.at[0]) < 40 && Math.abs(z - k.at[1]) < 40 && footDist(k, x, z, 0) < 1.5) && (!KERB.anySide || kerb > h)) {
     h = Math.max(h, kerb);
     kerbed = true;
   }
-  if (pin) pin.pin = (kerbed && kerbD <= KERB.to) || CASTLES.some((k) => Math.abs(x - k.at[0]) < 40 && Math.abs(z - k.at[1]) < 40 && footDist(k, x, z, 0) < 1);
+  if (pin) {
+    pin.pin = (kerbed && kerbD <= KERB.to) || CASTLES.some((k) => Math.abs(x - k.at[0]) < 40 && Math.abs(z - k.at[1]) < 40 && footDist(k, x, z, 0) < 1);
+    pin.soft = kerbed && !pin.pin ? 1 : kerbed ? 2 : 0;
+  }
   return Math.max(SEA_FLOOR, h);
 }
 // the heights above SEA_FLOOR, one row per z, one column per x (the drape call clips them to the circle CLIP)
 // (rows.pins: the same rows of island()'s pin, for relax)
 export function gridOf(min = -BOX, max = BOX, step = 1) {
-  const rows = [], pins = [], q = { pin: false };
+  const rows = [], pins = [], softs = [], q = { pin: false, soft: 0 };
   for (let z = min; z <= max + 1e-6; z += step) {
-    const row = [], pr = [];
-    for (let x = min; x <= max + 1e-6; x += step) { row.push(Math.round((island(x, z, q) - SEA_FLOOR) * 100) / 100); pr.push(q.pin); }
-    rows.push(row); pins.push(pr);
+    const row = [], pr = [], sr = [];
+    for (let x = min; x <= max + 1e-6; x += step) { row.push(Math.round((island(x, z, q) - SEA_FLOOR) * 100) / 100); pr.push(q.pin); sr.push(q.soft); }
+    rows.push(row); pins.push(pr); softs.push(sr);
   }
-  rows.pins = pins;
+  rows.pins = pins; rows.softs = softs;
+  return rows;
+}
+// the kerbs softened (v2 round 3): each kerb column (rows.softs) takes the 3 x 3 mean of the grid round it, `passes` times, so the
+// kerb is a rounded ridge the skin's 2.5-unit corners sample evenly along a leg instead of a 1-unit step they catch or miss
+export function soften(rows, passes = +(globalThis.process?.env?.SOFTEN ?? 2)) {
+  const n = rows.length, m = rows[0].length, sf = rows.softs;
+  if (!sf) return rows;
+  for (let p = 0; p < passes; p++) {
+    const src = rows.map((r) => r.slice());
+    for (let j = 1; j + 1 < n; j++) for (let i = 1; i + 1 < m; i++) {
+      if (!sf[j][i]) continue;
+      let sum = 0;
+      for (let dj = -1; dj <= 1; dj++) for (let di = -1; di <= 1; di++) sum += src[j + dj][i + di];
+      rows[j][i] = Math.round(sum / 9 * 100) / 100;
+    }
+  }
   return rows;
 }
 // no step between neighbouring columns steeper than `limit` map units a unit (about 71 degrees at 2.9): a few passes of thermal
