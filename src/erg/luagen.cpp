@@ -8,6 +8,11 @@ namespace melange::erg::luagen {
 namespace {
 constexpr std::string_view kWater = "SetData(\"Water.Level\", ";
 constexpr std::string_view kKnotLine = "worm.Spawn = \"WORM\" .. i\n";
+// Team spawns: the setup deals the slots team by team in slot order (lib_SetupMultiplayerWorm sets Active and
+// TeamIndex and counts WormIndex up; the engine sets PositionInTeam only later, so it reads 0 here: tried in a Quick
+// Game on 2026-11-08), so a worm's place in its team is how many of its team's worms came before it.
+constexpr std::string_view kTeamTest = "if worm.Active and worm.TeamIndex < 4 then\n";
+constexpr std::string_view kTeamLine = "if p < 4 then worm.Spawn = \"WORM\" .. (worm.TeamIndex * 4 + p) end\n";
 constexpr std::string_view kPlaceLine = "SendMessage(\"GameLogic.PlaceObjects\")\n";
 // The level's factory replaces the scheme's: stdvs reads MineFactoryOn after this setup to send CreateRandMineFactory,
 // and a second factory trips the engine's one-factory assert. GM.SchemeData is the match's copy of the scheme, which
@@ -211,6 +216,7 @@ bool ParseObjectLine(std::string_view line, ObjectSpec* o) {
 ChunkSpec SpecOf(const Scene& s) {
     ChunkSpec c;
     c.knots = s.spawns == SpawnMode::Knots;
+    c.teams = s.spawns == SpawnMode::Teams;
     c.placeObjects = HasNamedDetail(s, "mine") || HasNamedDetail(s, "oildrum");
     c.objects = s.objects;
     c.water = s.water;
@@ -219,7 +225,7 @@ ChunkSpec SpecOf(const Scene& s) {
 
 bool Needed(const Scene& s) {
     const ChunkSpec c = SpecOf(s);
-    return c.knots || c.placeObjects || !c.objects.empty() || c.water.has_value();
+    return c.knots || c.teams || c.placeObjects || !c.objects.empty() || c.water.has_value();
 }
 
 std::string Chunk(const Scene& s) {
@@ -269,7 +275,8 @@ bool ParseFactoryTweak(std::string_view text, FactorySpec* f) {
 }
 
 std::string Emit(std::string_view stem, const ChunkSpec& c, bool deferred) {
-    if (!c.knots && !c.placeObjects && c.objects.empty() && !c.water) return {};
+    if (!c.knots && !c.teams && !c.placeObjects && c.objects.empty() && !c.water) return {};
+    if (c.knots && c.teams) return {};
     bool crates = false, triggers = false;
     int factories = 0;
     const FactorySpec* factory = nullptr;
@@ -283,7 +290,7 @@ std::string Emit(std::string_view stem, const ChunkSpec& c, bool deferred) {
     std::string out = Header(stem);
     if (factory && (factory->Tweaks() || factory->keepKnot || factory->Launch())) out += FactoryTweakLine(*factory);
     if (c.water) out += std::string(kWater) + Num(*c.water) + ")\n";
-    if (c.knots || c.placeObjects || !c.objects.empty()) {
+    if (c.knots || c.teams || c.placeObjects || !c.objects.empty()) {
         if (crates) out += kCrateFn;
         if (triggers) out += kTriggerFn;
         out += deferred ? kDeferredOpen : kLegacyOpen;
@@ -293,6 +300,18 @@ std::string Emit(std::string_view stem, const ChunkSpec& c, bool deferred) {
             out += in + "for i = 0, 7 do\n";
             out += in + "    local lock, worm = EditContainer(lib_GetWormContainerName(i))\n";
             out += in + "    " + std::string(kKnotLine);
+            out += in + "    CloseContainer(lock)\n";
+            out += in + "end\n";
+        }
+        if (c.teams) {
+            out += in + "local placed = {0, 0, 0, 0}\n";
+            out += in + "for i = 0, 15 do\n";
+            out += in + "    local lock, worm = EditContainer(lib_GetWormContainerName(i))\n";
+            out += in + "    " + std::string(kTeamTest);
+            out += in + "        local p = placed[worm.TeamIndex + 1]\n";
+            out += in + "        placed[worm.TeamIndex + 1] = p + 1\n";
+            out += in + "        " + std::string(kTeamLine);
+            out += in + "    end\n";
             out += in + "    CloseContainer(lock)\n";
             out += in + "end\n";
         }
@@ -336,6 +355,7 @@ bool Parse(std::string_view stem, std::string_view text, ChunkSpec* out) {
     ChunkSpec c;
     c.water = WaterIn(text);
     c.knots = text.find(kKnotLine) != std::string_view::npos;
+    c.teams = text.find(kTeamLine) != std::string_view::npos;
     c.placeObjects = text.find(kPlaceLine) != std::string_view::npos;
     if (text.find(kFactoryLines[1]) != std::string_view::npos) {
         ObjectSpec f;

@@ -1,9 +1,11 @@
-// level.test.explode, level.test.quit and level.test.fireFactory: harness hooks for a running Test match (erg-mcp's
+// level.test.explode, level.test.quit, level.test.endTurn and level.test.fireFactory: harness hooks for a running Test match (erg-mcp's
 // test_explosion, test {restart} and game_mines {fire}); level.test.probe answers the Test probe (levels/probe.cpp)
 // and the mine factory's fires (levels/factory.cpp). Both send through the match's own Lua (simbridge::EvalMatch) from a sim tick hook, so the engine handles
 // them in its deterministic phase as it does a level script's: explode sets the Explosion data container and sends
 // Explosion.Construct, the game's lib_CreateExplosion, at a named detail of the level (a knot); quit sends
-// GameLogic.QuitGame, which leaves the match for the frontend. fireFactory calls the factory's own turn-start handler
+// GameLogic.QuitGame, which leaves the match for the frontend; endTurn sends Timer.TurnTimedOut, the turn timer's own
+// message, which ends the turn playing now as the timer running out does (a tester's skip; GameLogic.EndTurn alone only
+// deactivated the worm and the turn ran on to its timer: tried 2026-11-08). fireFactory calls the factory's own turn-start handler
 // from the same tick (levels::factory::FireNow). Only while a Test the game started is playing, offline.
 #include <windows.h>
 
@@ -124,6 +126,14 @@ void Quit(const Call&, Result& r, void*) {
     Queue("SendMessage('GameLogic.QuitGame')");
     r.json = jsonmini::Obj().Bool("queued", true).Str("key", g_playing).UInt("tick", sim::Tick()).End();
 }
+// level.test.endTurn {}: the turn playing now ends (Timer.TurnTimedOut, sent in the sim's tick), so a test tool need not
+// fire a weapon or wait out the turn time to go on to the next worm (the next turn's intro came 11 s later in a Test).
+void EndTurn(const Call&, Result& r, void*) {
+    if (!Ready(r)) return;
+    Queue("SendMessage('Timer.TurnTimedOut')");
+    r.json = jsonmini::Obj().Bool("queued", true).UInt("tick", sim::Tick()).End();
+}
+
 // level.test.fireFactory {count?}: at the next sim tick the level's mine factory fires as at a turn start (its idle
 // countdown set to 0 and its own StartMineFactory called); count 1-10 fires that many whatever the target.
 // level.test.probe says whether it started (factory.trigger) and, once its mines rest, where (factory.fires).
@@ -153,6 +163,7 @@ void InstallLevelTestOps() {
     levels::OnTestState(&OnState, nullptr);
     AddMethod("level.test.explode", &Explode, nullptr, kRpcMutating | kRpcGameOnly);
     AddMethod("level.test.quit", &Quit, nullptr, kRpcMutating | kRpcGameOnly);
+    AddMethod("level.test.endTurn", &EndTurn, nullptr, kRpcMutating | kRpcGameOnly);
     AddMethod("level.test.fireFactory", &FireFactory, nullptr, kRpcMutating | kRpcGameOnly);
     AddMethod("level.test.probe", &Probe, nullptr, kRpcGameOnly);
 }

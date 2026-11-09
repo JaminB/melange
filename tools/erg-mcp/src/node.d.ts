@@ -22,6 +22,11 @@ declare module "node:fs" {
   export function appendFileSync(path: string, data: string): void;
   export function readdirSync(path: string): string[];
   export function statSync(path: string): { isDirectory(): boolean; mtimeMs: number };
+  export function writeFileSync(path: string, data: string): void;
+  export function mkdirSync(path: string, opts?: { recursive?: boolean }): void;
+  export function cpSync(from: string, to: string, opts?: { recursive?: boolean; force?: boolean; preserveTimestamps?: boolean }): void;
+  export function rmSync(path: string, opts?: { recursive?: boolean; force?: boolean }): void;
+  export function renameSync(from: string, to: string): void;
 }
 declare module "node:path" {
   export function join(...parts: string[]): string;
@@ -44,4 +49,5 @@ declare module "node:child_process" {
     kill(): boolean;
   }
   export function spawn(cmd: string, args: string[], opts: { cwd?: string; stdio?: ("ignore" | "pipe")[]; windowsHide?: boolean }): ChildProcess;
+  export function execFileSync(cmd: string, args: string[], opts: { encoding: "utf8"; windowsHide?: boolean; timeout?: number }): string;
 }

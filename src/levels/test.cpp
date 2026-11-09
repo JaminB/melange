@@ -5,6 +5,7 @@
 #include <windows.h>
 
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <mutex>
 #include <string>
@@ -16,6 +17,7 @@
 #include "levels/engine.h"
 #include "levels/registry.h"
 #include "lua/engine50.h"
+#include "melange/gamestate.h"
 #include "melange/jlog.h"
 #include "melange/sim.h"
 #include "mods/lobby.h"
@@ -44,6 +46,9 @@ uint32_t g_attract = 0;
 bool g_todSet = false;
 std::string g_todOld;
 TodApplied g_todLast;   // under g_mx
+std::string g_wormsKey;                // SetTeamWorms; under g_mx
+std::array<uint8_t, 4> g_worms{};
+bool g_wormsDue = false;               // the override for g_wormsKey was taken; written again at the VM's creation
 
 bool Fail(char* err, size_t n, const std::string& why) {
     if (err && n) snprintf(err, n, "%s", why.c_str());
@@ -51,6 +56,41 @@ bool Fail(char* err, size_t n, const std::string& why) {
 }
 
 void Queue(TestState s, const std::string& key, const std::string& detail) { g_events.push_back({s, key, detail}); }
+
+// GM.GameInitData (0x190): NumberOfTeams u32 at +0x14, each team's NumOfWorms u32 at kWormsAt (re/notes gamestate-m3).
+constexpr uint32_t kWormsAt[4] = {0x34, 0x9c, 0xfc, 0x154};
+
+bool PokeWorms(uintptr_t init, const std::array<uint8_t, 4>& worms, uint32_t* teams, uint32_t was[4]) {
+    __try {
+        *teams = *reinterpret_cast<uint32_t*>(init + 0x14);
+        if (*teams < 1 || *teams > 4) return false;
+        for (uint32_t i = 0; i < *teams; ++i) {
+            uint32_t* n = reinterpret_cast<uint32_t*>(init + kWormsAt[i]);
+            was[i] = *n;
+            if (worms[i]) *n = worms[i];
+        }
+        return true;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return false;
+    }
+}
+
+// Main thread, under g_mx.
+void WriteTeamWorms(const char* when) {
+    gamestate::Var v;
+    uintptr_t init = 0;
+    if (gamestate::Var1("GM.GameInitData", &v) && v.type == gamestate::VarType::Container) {
+        const char* a = std::strstr(v.value, "\"addr\":");
+        if (a) init = static_cast<uintptr_t>(std::strtoull(a + 7, nullptr, 10));
+    }
+    uint32_t teams = 0, was[4] = {};
+    if (!init || !PokeWorms(init, g_worms, &teams, was)) {
+        LOG_WARN("[levels] test: %s: the worms per team could not be set (GM.GameInitData unreadable); the Quick Game's own count plays", when);
+        return;
+    }
+    LOG_INFO("[levels] test: %s: worms per team %u,%u,%u,%u for %u teams (were %u,%u,%u,%u)", when, g_worms[0], g_worms[1], g_worms[2],
+             g_worms[3], teams, was[0], was[1], was[2], was[3]);
+}
 
 bool NetSession() {
     if (!wum::NetService()) return false;
@@ -103,6 +143,10 @@ void OnContext(bool created, lua50::State*, void*) {
     if (!created) return;
     std::lock_guard lk(g_mx);
     RestoreTod();
+    if (g_wormsDue) {
+        g_wormsDue = false;
+        WriteTeamWorms("the match VM");
+    }
 }
 }  // namespace
 
@@ -176,6 +220,13 @@ TodApplied LastTod() {
     return g_todLast;
 }
 
+void SetTeamWorms(const std::string& key, const std::array<uint8_t, 4>& worms) {
+    std::lock_guard lk(g_mx);
+    g_wormsKey = key;
+    g_worms = worms;
+    g_wormsDue = false;
+}
+
 const char* Take(const char* frontendKey) {
     const engine::FrontendState fs = engine::ReadFrontend();
     Override::SetUp s;
@@ -209,6 +260,11 @@ const char* Take(const char* frontendKey) {
         else t.why = "the frontend's time of day could not be cleared: its value loads";
         if (!t.applied && tod != Tod::Default) LOG_WARN("[levels] test: %s asked for %s: %s", k.c_str(), t.asked.c_str(), t.why.c_str());
         g_todLast = t;
+        if (!g_wormsKey.empty() && g_wormsKey == k) {
+            WriteTeamWorms("the level set-up");
+            g_wormsDue = true;
+            g_wormsKey.clear();
+        }
     }
     snprintf(g_taken, sizeof g_taken, "%s", k.c_str());
     return g_taken;

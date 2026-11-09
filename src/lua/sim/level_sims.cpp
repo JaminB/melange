@@ -95,8 +95,8 @@ std::vector<std::pair<std::string, std::string>> LevelKnots(const std::string& s
     std::vector<std::pair<std::string, std::string>> out;
     erg::luagen::ChunkSpec spec;
     if (chunkText.empty() || !erg::luagen::Parse(stem, chunkText, &spec)) return out;
-    if (spec.knots)
-        for (int i = 0; i < 8; ++i) out.emplace_back("WORM" + std::to_string(i), "spawn");
+    if (spec.knots || spec.teams)
+        for (int i = 0; i < (spec.teams ? 16 : 8); ++i) out.emplace_back("WORM" + std::to_string(i), "spawn");
     for (const auto& o : spec.objects)
         if (!o.knot.empty()) out.emplace_back(o.knot, erg::ObjectTypeName(o.type));
     return out;

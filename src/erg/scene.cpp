@@ -391,7 +391,7 @@ Role DeriveRole(std::string_view name, std::string_view resource) {
     return Role::Other;
 }
 
-const char* SpawnModeName(SpawnMode m) { return m == SpawnMode::Knots ? "knots" : "random"; }
+const char* SpawnModeName(SpawnMode m) { return m == SpawnMode::Knots ? "knots" : m == SpawnMode::Teams ? "teams" : "random"; }
 const char* HmpModeName(HmpMode m) {
     return m == HmpMode::None ? "none" : m == HmpMode::Flat ? "flat" : m == HmpMode::Paint ? "paint" : "copy";
 }
@@ -399,6 +399,7 @@ const char* HmpModeName(HmpMode m) {
 bool ParseSpawnMode(std::string_view s, SpawnMode* out) {
     if (s == "random") *out = SpawnMode::Random;
     else if (s == "knots") *out = SpawnMode::Knots;
+    else if (s == "teams") *out = SpawnMode::Teams;
     else return false;
     return true;
 }
@@ -592,7 +593,7 @@ bool ParseScene(std::string_view json, Scene* out, std::string* err) {
     const Json* sp = root.find("spawns");
     if (!Obj(sp, "spawns", err) || !OnlyKeys(*sp, {"mode"}, "spawns", err) || !GetString(*sp, "mode", "spawns", &mode, err))
         return false;
-    if (!ParseSpawnMode(mode, &s.spawns)) return Fail(err, "spawns.mode: must be \"random\" or \"knots\"");
+    if (!ParseSpawnMode(mode, &s.spawns)) return Fail(err, "spawns.mode: must be \"random\", \"knots\" or \"teams\"");
     const Json* hmp = root.find("hmp");
     if (!Obj(hmp, "hmp", err) || !(v2 ? OnlyKeys(*hmp, {"mode", "ref"}, "hmp", err) : OnlyKeys(*hmp, {"mode"}, "hmp", err)) ||
         !GetString(*hmp, "mode", "hmp", &mode, err))

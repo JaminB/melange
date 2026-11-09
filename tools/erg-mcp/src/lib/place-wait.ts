@@ -2,6 +2,8 @@
 // starting, playing, ended, failed) until the Test reaches the state the caller waits for, fails, or times out.
 import type { ErgSession, TimeOfDay } from "../core";
 
+export interface TestTeam { human?: boolean; worms?: number; }
+
 export interface TestStep { state: string; key: string; detail: string; ms: number; }
 export type TestGoal = "playing" | "armed";
 
@@ -18,7 +20,7 @@ const STOPS: Record<TestGoal, ReadonlySet<string>> = {
 /** Starts the Test and waits for `goal` (or failed/ended) for at most `timeoutMs`. The subscription is made before the
  * call so no early state is missed; the call's own answer is the first state. */
 export async function runTest(erg: Pick<ErgSession, "test" | "onTest">,
-  opts: { tod?: TimeOfDay; goal?: TestGoal; timeoutMs: number; cleanMods?: boolean; postfx?: boolean }): Promise<TestRun> {
+  opts: { tod?: TimeOfDay; goal?: TestGoal; timeoutMs: number; cleanMods?: boolean; postfx?: boolean; teams?: TestTeam[] }): Promise<TestRun> {
   const goal = opts.goal ?? "playing";
   const t0 = Date.now();
   const states: TestStep[] = [];
@@ -35,10 +37,11 @@ export async function runTest(erg: Pick<ErgSession, "test" | "onTest">,
   };
   const off = erg.onTest(add);
   try {
-    const t: { tod?: TimeOfDay; cleanMods?: boolean; postfx?: boolean } = {};
+    const t: { tod?: TimeOfDay; cleanMods?: boolean; postfx?: boolean; teams?: TestTeam[] } = {};
     if (opts.tod) t.tod = opts.tod;
     if (opts.cleanMods !== undefined) t.cleanMods = opts.cleanMods;
     if (opts.postfx !== undefined) t.postfx = opts.postfx;
+    if (opts.teams) t.teams = opts.teams;
     const r = await erg.test(Object.keys(t).length ? t : undefined);
     answered = true;
     add({ state: r.state, key: r.key, detail: "" });

@@ -3,7 +3,7 @@
 // surround modes), the level script, and shipping the level (export, build, test, live packs). Placing uses the Erg
 // panel's own model (model/placing.ts, ground.ts), so a placed object is the one the palette places.
 import {
-  AddDetail, AddObjects, BUILTIN, Group, KNOT_RESOURCE, KNOTS, LIMITS, PAD_SPACING, RemoveDetail, SetDetail, SetLevel, SetObject, THEMES, TIMES_OF_DAY,
+  AddDetail, AddObjects, BUILTIN, Group, KNOT_RESOURCE, KNOTS, LIMITS, TEAM_KNOTS, PAD_SPACING, RemoveDetail, SetDetail, SetLevel, SetObject, THEMES, TIMES_OF_DAY,
   catalogOf, checkScene, defaultObject, nextObjectKnot, nextTelepadGroup, objectOf, place, targetFrame,
   type Command, type CrateSpec, type Detail, type DetailFields, type EditorStore, type FactorySpec, type LevelSettings, type ObjectSpec, type ObjectType,
   type TimeOfDay, type Vec3,
@@ -12,8 +12,9 @@ import {
   DEG, commit, detailInfo, findDetail, pointOut, pointToMap, resolvePoint, unitsSchema, vec3, type PointArgs, type Units,
 } from "../lib/place-geom";
 import { resolveFile, themeFile } from "../lib/materials";
-import { runTest } from "../lib/place-wait";
-import { stopHold } from "./game";
+import { runTest, type TestTeam } from "../lib/place-wait";
+import { appendFileSync } from "node:fs";
+import { automationFile, stopHold } from "./game";
 import { CAMERA_RISE, WALL_RADIUS, nearestTread, spawnWarnings, treadAt, treadWarnings } from "../lib/spawn-check";
 import { readWaterLook, waterLookProblems, withWaterLook, type WaterLook } from "../lib/water-look";
 import { checkFactory, factoryLines } from "../lib/factory-check";
@@ -140,12 +141,12 @@ async function teamReport(s: Session, units: Units, teams: number, per: number) 
   const out = [];
   const all = new Map<number, { worm: string; ground: number | null; floods: number | null }>();
   for (let w = 0; w < Math.min(8, teams * per); w++) {
-    const d = store.scene.details.find((x) => x.name === KNOTS[w]);
+    const d = store.scene.details.find((x) => x.name === TEAM_KNOTS[w]);
     if (!d) continue;
     const p = store.frames.detailWorld(d), g = spansAt(gs, p[0], p[2], p[1] + 1.5)[0]?.top ?? null;
     let floods: number | null = null;
     if (g !== null && waterAt) for (let turn = 1; turn <= 200; turn++) if (waterAt(turn) >= g) { floods = turn; break; }
-    all.set(w, { worm: KNOTS[w], ground: g, floods });
+    all.set(w, { worm: TEAM_KNOTS[w], ground: g, floods });
   }
   // each worm's first two own turns in the engine's rotation (lib/turns.ts), a drowned worm skipped, and the water then
   const rot = rotation({ worms: [...all.keys()], teams, perTeam: per, horizon: 200, drownsAt: (w) => all.get(w)?.floods ?? null });
@@ -177,10 +178,10 @@ function spawnState(store: EditorStore, units: Units) {
   const scene = store.scene;
   const spawns = scene.details.filter((d) => d.role === "spawn").map((d) => detailInfo(store, d, units));
   const have = new Set(scene.details.map((d) => d.name));
-  return { spawnMode: scene.spawns.mode, spawns, missingKnots: KNOTS.filter((k) => !have.has(k)) };
+  return { spawnMode: scene.spawns.mode, spawns, missingKnots: (scene.spawns.mode === "teams" ? TEAM_KNOTS : KNOTS).filter((k) => !have.has(k)) };
 }
 
-async function placeSpawnKnots(s: Session, a: { mode?: "random" | "knots"; spawns?: SpawnArg[]; units?: Units; balance?: Balance | boolean; snap?: "tread" } & CameraArgs) {
+async function placeSpawnKnots(s: Session, a: { mode?: "random" | "knots" | "teams"; spawns?: SpawnArg[]; units?: Units; balance?: Balance | boolean; snap?: "tread" } & CameraArgs) {
   const store = s.store, scene = store.scene, units = a.units ?? "world";
   const mode = a.mode ?? "knots";
   const cmds: Command[] = [];
@@ -191,6 +192,7 @@ async function placeSpawnKnots(s: Session, a: { mode?: "random" | "knots"; spawn
   // resolve every point first; with balance the worm numbers are dealt again over them
   const items = (a.spawns ?? []).map((sp) => {
     if (seen.has(sp.worm)) throw new ToolError(`WORM${sp.worm} is given twice`);
+    if (sp.worm > 7 && mode !== "teams") throw new ToolError(`WORM${sp.worm}: knots spawns use WORM0-WORM7; WORM8-WORM15 are for mode teams (team floor(n / 4)'s worm n % 4)`);
     seen.add(sp.worm);
     const r = resolvePoint(store, sp, units, `WORM${sp.worm}`);
     // snap: tread moves a point a worm cannot stand on to the nearest one it can
@@ -214,7 +216,7 @@ async function placeSpawnKnots(s: Session, a: { mode?: "random" | "knots"; spawn
   }
   for (const it of items) {
     const sp = it.arg, map = it.map, dropped = it.dropped;
-    const name = KNOTS[sp.worm];
+    const name = TEAM_KNOTS[sp.worm];
     const have = scene.details.find((d) => d.name === name);
     if (have) {
       cmds.push(new SetDetail(have.id, { pos: tidy(store.frames.toLocal(have.frame, map), 6) }, `Move ${name}`));
@@ -225,7 +227,8 @@ async function placeSpawnKnots(s: Session, a: { mode?: "random" | "knots"; spawn
       done.push({ worm: sp.worm, action: "added", dropped, pos: pointOut(map, units), ...(sp.group ? { group: sp.group } : {}), ...(bal ? { was: (it as { was?: number }).was } : {}) });
     }
   }
-  const teams = bal?.teams ?? 2, per = bal?.wormsPerTeam ?? (bal ? Math.ceil(items.length / teams) : 4);
+  // mode teams: WORMn is team floor(n / 4)'s worm n % 4, whatever the slots (the generated chunk deals them so)
+  const teams = bal?.teams ?? (mode === "teams" ? 4 : 2), per = mode === "teams" ? 4 : bal?.wormsPerTeam ?? (bal ? Math.ceil(items.length / teams) : 4);
   if (!cmds.length) return { mode, changed: false, note: "nothing to change", ...spawnState(store, units), teams: await teamReport(s, units, teams, per), warnings: cameraWarnings(store, units, a) };
   commit(store, cmds.length === 1 ? cmds[0] : new Group(a.spawns?.length ? "Place spawn knots" : `Spawn mode ${mode}`, cmds));
   return { mode, changed: true, placed: done, ...(snapped.length ? { snapped } : {}), ...(bal ? { balanced: { mode: bal.mode ?? "height", teams, wormsPerTeam: per, note: "worm numbers dealt over the given positions (was: the worm asked for): heights snaked over the teams, a team's spawns spread over groups, the lowest of a team moving first" } } : {}),
@@ -714,18 +717,21 @@ return tostring(wum.game.inMatch()) .. ";" .. tostring(m and m.turnsStarted or t
 /** test {map, noLevel}: the game's own map in a Quick Game with no Erg level, `turns` game turns watched (each human
  * turn firing the selected weapon with `fire`), its asserts and GL errors counted and diffed against the last Erg run. */
 async function runBaseline(s: Session, a: { map?: string; noLevel?: boolean; turns?: number; fire?: boolean | "bazooka"; fireMs?: number; tod?: TimeOfDay; timeoutSec?: number;
-  cleanMods?: boolean; postfx?: boolean; restart?: boolean; simMods?: "all" | "level-only" }) {
+  cleanMods?: boolean; postfx?: boolean; restart?: boolean; simMods?: "all" | "level-only"; teams?: TestTeam[]; gameDir?: string }) {
   if (!a.map || !a.noLevel) throw new ToolError("a baseline Test is test {map: \"Multi.<map>\", noLevel: true}: the game's own map with no Erg level");
   if (!/^Multi\.[A-Za-z0-9_-]+$/.test(a.map)) throw new ToolError("map: a game level's key, Multi.<map> (list_bases lists them)");
   const conn = await s.ensure(), client = await s.client();
   if (!conn.methods.includes("level.test")) throw new ToolError("no level.test here: Test needs the game running at its main menu (Melange.exe --serve has none)");
   if (a.fire && !conn.methods.includes("input.drive")) throw new ToolError("fire needs the game's input.drive (Melange 0.13+ with the Controls module)");
+  // fire "bazooka" takes it from the weapon panel first: a right click opens it, a click takes its highlighted first cell
+  // (Automation module: test builds, the game window focused)
+  const panel = a.fire === "bazooka" ? automationFile(a.gameDir) : null;
   const clean = a.simMods === "level-only" ? { cleanMods: true, postfx: a.postfx ?? true } : { cleanMods: a.cleanMods, postfx: a.postfx };
   stopHold();
   const restarted = a.restart ? await backToMenu(s) : undefined;
   const run = await startAssertRun(s, a.map, "baseline");
   const erg = {
-    test: async (t?: { tod?: TimeOfDay; cleanMods?: boolean; postfx?: boolean }) => client.call<{ key: string; state: string; cleanRoom?: { simMods: boolean; postfx: boolean }; baseline?: boolean }>(
+    test: async (t?: { tod?: TimeOfDay; cleanMods?: boolean; postfx?: boolean; teams?: TestTeam[] }) => client.call<{ key: string; state: string; cleanRoom?: { simMods: boolean; postfx: boolean }; baseline?: boolean }>(
       "level.test", { base: a.map, ...(t ?? {}) }, 120000).catch((e: Error) => {
       if (/project/.test(e.message) && !/base/.test(e.message)) throw new ToolError(`this game has no baseline Test (level.test {base}, Melange 0.13+): ${e.message}`);
       if (/must be at the frontend/.test(e.message)) throw new ToolError(`${e.message}: a match is running. Pass restart: true, or call end_match first`);
@@ -735,7 +741,7 @@ async function runBaseline(s: Session, a: { map?: string; noLevel?: boolean; tur
       if (m && typeof m.state === "string") fn({ state: m.state, key: m.key ?? "", detail: m.detail ?? "" });
     }),
   };
-  const started = await runTest(erg as unknown as Parameters<typeof runTest>[0], { tod: a.tod, timeoutMs: (a.timeoutSec ?? 60) * 1000, ...clean });
+  const started = await runTest(erg as unknown as Parameters<typeof runTest>[0], { tod: a.tod, timeoutMs: (a.timeoutSec ?? 60) * 1000, ...clean, teams: a.teams });
   if (started.final !== "playing") {
     if (run) dropAssertRun(run);
     return { ...started, baseline: a.map, note: "the baseline did not reach playing: nothing was counted" };
@@ -755,10 +761,18 @@ async function runBaseline(s: Session, a: { map?: string; noLevel?: boolean; tur
       if (a.fire && phase === "play" && ai === "false" && firedTurn !== seen) {
         firedTurn = seen;
         await sleep(1500);   // the turn's camera settles on the worm
+        let wp = weapon;
+        if (panel) {
+          appendFileSync(panel, ["click right", "wait 500", "click", "wait 300", ""].join("\n"));
+          await sleep(1600);
+          const r = await client.call<{ ok: boolean; text: string }>("lua.eval", { target: "client", code: BASE_LUA }, 15000).catch(() => ({ ok: false, text: "" }));
+          if (r.ok) wp = r.text.split(";")[5];
+        }
         // Input.Fire fires the worm's selected weapon: with none selected (weapon nil) it does nothing
-        const none = weapon === "nil" || weapon === undefined;
+        const none = wp === "nil" || wp === undefined;
         if (!none) await client.call("input.drive", { hold: ["Input.Fire"], ms: a.fireMs ?? 700, replace: true }, 15000).catch(() => undefined);
-        fired.push({ turn: seen, worm: Number(worm), weapon, ...(none ? { fired: false, why: "no weapon selected (the game's turns start with none; selecting one is the weapon panel's)" } : { fired: true }) });
+        fired.push({ turn: seen, worm: Number(worm), weapon: wp, ...(panel ? { panel: weapon === wp ? "the panel's pick did not change the weapon" : `taken from the panel (was ${weapon})` } : {}),
+          ...(none ? { fired: false, why: `no weapon selected (the game's turns start with none${panel ? "; the panel's click did not take one: is the game window focused?" : "; fire: \"bazooka\" takes it from the weapon panel"})` } : { fired: true }) });
       }
     }
     if (Date.now() > limit) break;
@@ -777,20 +791,28 @@ async function runBaseline(s: Session, a: { map?: string; noLevel?: boolean; tur
 
 const sleep = (ms: number) => new Promise((ok) => setTimeout(ok, ms));
 
+/** What the Test's match is: the Quick Game start the teams pick, with the worms each team was given. */
+export function teamsLine(teams?: TestTeam[]): string {
+  if (!teams) return "Quick Game (QuickStartHvC: a human team against a computer team) with the game's own Quick Game scheme; the scheme, turn time and team sizes are the game's, not chosen here";
+  const all = teams.every((t) => t.human !== false);
+  const start = all ? ["", "", "QuickStartHvH", "QuickStartHvHvH", "QuickStartHvHvHvH"][teams.length] : "QuickStartHvC";
+  return `Quick Game (${start}: ${teams.map((t, i) => `team ${i} ${t.human === false ? "computer" : "human"}, ${t.worms ?? 4} worms`).join("; ")}) with the game's own Quick Game scheme and turn time`;
+}
+
 const modId: Schema = { type: "string", description: "Mod id: a-z, 0-9, '-' and '_' (it becomes the pack prefix; 'ergtest' is reserved)." };
 
 export const tools: Tool[] = [
   {
     name: "place_spawn_knots",
-    description: "Set the spawn mode and place or move the spawn knots WORM0-WORM7. mode 'knots' makes worm i start on knot i (a match needs all 8); 'random' leaves the game's random spawns (existing knots stay but are unused). Each spawn is a position [x,y,z] or xz (dropped onto the terrain). An existing WORMn is moved, a missing one added. One undo step. Answers the spawns, the knots still missing and warnings: a spawn whose turn camera may start inside a wall (ground within wallRadius at cameraRise above the ground it stands on) or that stands on ground under the water.",
+    description: "Set the spawn mode and place or move the spawn knots WORM0-WORM7 (WORM0-WORM15 in mode teams). mode 'knots' makes worm i start on knot i (a match needs all 8); 'teams' makes each worm start on WORM<4 x team + its place in the team> whatever slots the match deals (team 0 on WORM0-3, team 1 on WORM4-7, team 2 on WORM8-11, team 3 on WORM12-15), so with a castle per team every team spawns in its own castle (a 2-team game needs WORM0-7, four teams WORM0-15; Test's teams sets the match's teams and worms); 'random' leaves the game's random spawns (existing knots stay but are unused). Each spawn is a position [x,y,z] or xz (dropped onto the terrain). An existing WORMn is moved, a missing one added. One undo step. Answers the spawns, the knots still missing and warnings: a spawn whose turn camera may start inside a wall (ground within wallRadius at cameraRise above the ground it stands on) or that stands on ground under the water.",
     inputSchema: {
       type: "object", additionalProperties: false,
       properties: {
-        mode: { type: "string", enum: ["random", "knots"], description: "Spawn mode (default knots)." },
+        mode: { type: "string", enum: ["random", "knots", "teams"], description: "Spawn mode (default knots)." },
         spawns: {
-          type: "array", maxItems: 8, description: "The knots to place or move.",
+          type: "array", maxItems: 16, description: "The knots to place or move.",
           items: { type: "object", additionalProperties: false, required: ["worm"],
-            properties: { worm: { type: "integer", minimum: 0, maximum: 7, description: "0-7: WORM0-WORM7." }, ...pointProps,
+            properties: { worm: { type: "integer", minimum: 0, maximum: 15, description: "0-7: WORM0-WORM7; with mode teams 0-15 (team floor(n / 4)'s worm n % 4)." }, ...pointProps,
               group: { type: "string", description: "With balance: a label such as the castle the spawn is in; a team's spawns are spread over different groups." } } },
         },
         balance: { anyOf: [{ type: "boolean" }, { type: "object", additionalProperties: false, properties: {
@@ -1075,11 +1097,16 @@ export const tools: Tool[] = [
         map: { type: "string", description: "With noLevel: true, a vanilla baseline instead of the project: the game's own level (Multi.DinerMight) in the same Quick Game with no Erg level (level.test {base}, Melange 0.13+). It watches `turns` game turns, fires the selected weapon on each human turn with `fire`, counts the game's ASSERT and GL ERROR lines (its log) and diffs them against the last Erg Test run of this erg-mcp session (`compare`: the signatures only the Erg level shows, only the baseline, and both), so whether an assert is the level's is answered from two runs. No project needs to be open. simMods, cleanMods, postfx, tod and restart apply." },
         noLevel: { type: "boolean", description: "With map: the baseline Test (no Erg level)." },
         turns: { type: "integer", minimum: 1, maximum: 20, description: "Baseline: game turns to watch (default 3)." },
-        fire: { anyOf: [{ type: "boolean" }, { type: "string", enum: ["bazooka"] }], description: "Baseline: on each human turn, fire the worm's selected weapon (Input.Fire held fireMs through input.drive, whatever the window's focus; \"bazooka\" says which is meant, it does not select it). A worm with no weapon selected (the Quick Game's turns started with none in the Tests) fires nothing: the answer lists each turn, the game's weapon index (nil: none) and whether it fired." },
-        fireMs: { type: "integer", minimum: 50, maximum: 3000, description: "Baseline: how long fire is held, the shot's power (default 700)." } },
+        fire: { anyOf: [{ type: "boolean" }, { type: "string", enum: ["bazooka"] }], description: "Baseline: on each human turn, fire the worm's selected weapon (Input.Fire held fireMs through input.drive, whatever the window's focus). \"bazooka\" takes it from the weapon panel first (a right click opens the panel and a click takes its highlighted first cell, the bazooka, through the Automation module: test builds with the game window focused, gameDir or MELANGE_GAME_DIR). A worm with no weapon selected (the Quick Game's turns start with none) fires nothing: the answer lists each turn, the game's weapon index (nil: none) and whether it fired." },
+        fireMs: { type: "integer", minimum: 50, maximum: 3000, description: "Baseline: how long fire is held, the shot's power (default 700)." },
+        gameDir: { type: "string", description: "Baseline with fire \"bazooka\": the running game's folder, for its Automation command file (the weapon panel's clicks; default MELANGE_GAME_DIR)." },
+        teams: { type: "array", minItems: 2, maxItems: 4, items: { type: "object", additionalProperties: false, properties: {
+          human: { type: "boolean", description: "A human team (default true): the tester steers its worms (game_play_turns, game_walk)." },
+          worms: { type: "integer", minimum: 1, maximum: 4, description: "Its worms (default the Quick Game's four)." } } },
+          description: "The match's teams (Melange 0.13+ with team starts): 2-4 human teams (the Quick Game's 2-4 player starts, QuickStartHvH ... HvHvHvH) or a human team then a computer team (the default, QuickStartHvC), each with `worms` 1-4 (written into the match's set-up before the worms are dealt). E.g. [{human: true, worms: 2}, {human: true, worms: 2}, {human: true, worms: 2}, {human: true, worms: 2}]: four human teams of two, no computer team; with spawns.mode teams each team stands on its own knots (WORM<4 x team + place>). The baseline takes it too." } },
     },
     async handler(s, a0: { tod?: TimeOfDay; waitFor?: "playing" | "armed"; timeoutSec?: number; cleanMods?: boolean; postfx?: boolean; restart?: boolean; simMods?: "all" | "level-only";
-      expectHash?: string; source?: string; sync?: boolean; map?: string; noLevel?: boolean; turns?: number; fire?: boolean | "bazooka"; fireMs?: number }) {
+      expectHash?: string; source?: string; sync?: boolean; map?: string; noLevel?: boolean; turns?: number; fire?: boolean | "bazooka"; fireMs?: number; teams?: TestTeam[]; gameDir?: string }) {
       if (a0.map !== undefined || a0.noLevel) return runBaseline(s, a0);
       if (a0.turns !== undefined || a0.fire !== undefined || a0.fireMs !== undefined) throw new ToolError("turns, fire and fireMs are for the baseline Test (map, noLevel: true)");
       // simMods level-only: the clean room's sim half, post-FX kept unless postfx says otherwise
@@ -1117,7 +1144,7 @@ export const tools: Tool[] = [
       // the game refuses a Test outside its frontend: say how to get there instead of its bare refusal
       // the match's asserts and GL errors, counted for test_asserts and a later baseline's compare
       const asserts = await startAssertRun(s, `Multi.ergtest_${p.id}`, "erg").catch(() => null);
-      let run = await runTest(p.erg, { tod, goal: a.waitFor, timeoutMs: sec * 1000, cleanMods: a.cleanMods, postfx: a.postfx }).catch((e: Error) => {
+      let run = await runTest(p.erg, { tod, goal: a.waitFor, timeoutMs: sec * 1000, cleanMods: a.cleanMods, postfx: a.postfx, teams: a.teams }).catch((e: Error) => {
         if (/must be at the frontend/.test(e.message))
           throw new ToolError(`${e.message}: a match is running. Pass restart: true to leave a Test match for the menu and test again in one call, or call end_match first (leaving writes the game's save, as its own Quit does)`);
         throw e;
@@ -1126,7 +1153,7 @@ export const tools: Tool[] = [
       // game refuses that Test (kAttractRefused); from the menu a second try starts it.
       for (let tries = 0; restarted && run.final === "failed" && /attract demo/.test(String(run.failed)) && tries < 2; tries++) {
         await new Promise((ok) => setTimeout(ok, 3000));
-        run = await runTest(p.erg, { tod, goal: a.waitFor, timeoutMs: sec * 1000, cleanMods: a.cleanMods, postfx: a.postfx });
+        run = await runTest(p.erg, { tod, goal: a.waitFor, timeoutMs: sec * 1000, cleanMods: a.cleanMods, postfx: a.postfx, teams: a.teams });
         restarted.retries = tries + 1;
       }
       if (asserts && run.key) asserts.label = run.key;
@@ -1141,7 +1168,7 @@ export const tools: Tool[] = [
         ...(look ? { look: look.look, ...(look.warnings.length ? { warnings: look.warnings } : {}) } : {}),
         ...(simMods.length ? suppressed ? { simMods, simModsNote: "these mods' sim code is suppressed in this Test match (clean room)" }
           : { simMods, simModsNote: "these mods' sim code runs in this match beside the level script" } : {}),
-        match: "Quick Game (QuickStartHvC: a human team against a computer team) with the game's own Quick Game scheme; the scheme, turn time and team sizes are the game's, not chosen here",
+        match: teamsLine(a.teams),
         next: "game_state, game_wait {turn}, game_camera while it plays",
         ...(run.timedOut ? { note: `no '${a.waitFor ?? "playing"}' state within ${sec} s: the Test may still be running; start the match from the game's menu if it is armed` } : {}) };
     },

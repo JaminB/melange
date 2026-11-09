@@ -673,11 +673,14 @@ struct Service::Impl {
             store.WriteMeta(id, meta, nullptr);
         }
         Json warnings = Json::Arr();
-        if (patch.spawns == SpawnMode::Knots)
-            for (int i = 0; i < 8; ++i) {
+        if (patch.spawns == SpawnMode::Knots || patch.spawns == SpawnMode::Teams)
+            for (int i = 0; i < (patch.spawns == SpawnMode::Teams ? 16 : 8); ++i) {
                 const std::string k = "WORM" + std::to_string(i);
                 if (std::none_of(scene.details.begin(), scene.details.end(), [&](const Detail& d) { return d.name == k; }))
-                    warnings.arr.push_back(Str("spawns.mode is knots but there is no detail named " + k + "; export will refuse"));
+                    warnings.arr.push_back(Str(patch.spawns == SpawnMode::Teams
+                                                   ? "spawns.mode is teams but there is no detail named " + k + " (team " +
+                                                         std::to_string(i / 4) + "'s worm " + std::to_string(i % 4) + ")"
+                                                   : "spawns.mode is knots but there is no detail named " + k + "; export will refuse"));
             }
         std::vector<std::string> notes;
         if (!CheckObjects(scene, &notes, &err)) notes.push_back(err + "; export will refuse");

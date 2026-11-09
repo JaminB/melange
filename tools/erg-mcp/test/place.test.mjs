@@ -65,6 +65,13 @@ test("spawn knots, drop, move, rotate, scale, remove, undo", async () => {
     const twice = await m.tool("place_spawn_knots", { spawns: [{ worm: 1, pos: [0, 0, 0] }, { worm: 1, pos: [1, 0, 0] }] });
     assert.ok(twice.isError && /twice/.test(twice.text), twice.text);
     assert.ok((await m.tool("place_spawn_knots", { spawns: [{ worm: 8, pos: [0, 0, 0] }] })).isError);
+    // knots by team: WORM8-WORM15 are team 2's and team 3's knots (WORMn is team floor(n / 4)'s worm n % 4)
+    const byTeam = await m.tool("place_spawn_knots", { mode: "teams", spawns: [{ worm: 12, pos: [10, 0, 10] }, { worm: 9, pos: [20, 0, 10] }] });
+    assert.ok(!byTeam.isError, byTeam.text);
+    assert.equal(byTeam.json.spawnMode, "teams");
+    assert.deepEqual(byTeam.json.placed.map((p) => p.worm), [12, 9]);
+    assert.ok(byTeam.json.missingKnots.includes("WORM15") && !byTeam.json.missingKnots.includes("WORM12"), JSON.stringify(byTeam.json.missingKnots));
+    assert.ok(!(await m.tool("undo", {})).isError);
 
     // rotate (degrees), scale
     const r1 = await m.tool("rotate", { id: w0.id, rot: [0, 90, 0] });

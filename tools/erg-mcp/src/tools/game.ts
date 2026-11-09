@@ -527,7 +527,7 @@ export function walkKeys(dx: number, dz: number, fx: number, fz: number): string
   return [["W"], ["W", "D"], ["D"], ["S", "D"], ["S"], ["S", "A"], ["A"], ["W", "A"]][sector];
 }
 
-function automationFile(gameDir?: string): string {
+export function automationFile(gameDir?: string): string {
   const dir = gameDir ?? process.env.MELANGE_GAME_DIR;
   if (!dir) throw new ToolError("game_walk drives the worm through Melange's Automation module: give gameDir (the game's folder) or set MELANGE_GAME_DIR");
   const data = join(dir, "Melange");
@@ -587,6 +587,67 @@ async function mineMessages(s: Session): Promise<string[]> {
   if (!(await has(s, "bus.names"))) return [];
   const names = await (await s.client()).call<{ name: string }[]>("bus.names", {}, 15000).catch(() => []);
   return names.map((n) => n.name).filter((n) => /mine/i.test(n)).slice(0, 64);
+}
+
+// ------------------------------------------------------------------ playing the turns
+
+/** Where a point is along a trail ([x, z] or [x, y, z] points, one unit): the nearest point on its segments (in 3D when
+ * both have y, so a switchback's legs stacked over each other are told apart), how far along it that is, and how far off. */
+export function alongTrail(trail: number[][], p: number[]): { seg: number; along: number; of: number; off: number } {
+  const xyz = (q: number[]) => (q.length === 3 ? q : [q[0], NaN, q[1]]);
+  const P = xyz(p);
+  let cum = 0, best = { seg: 0, along: 0, off: Infinity };
+  for (let i = 0; i < trail.length - 1; i++) {
+    const a = xyz(trail[i]), b = xyz(trail[i + 1]);
+    const useY = [a[1], b[1], P[1]].every(Number.isFinite);
+    const d = [b[0] - a[0], useY ? b[1] - a[1] : 0, b[2] - a[2]], l2 = d[0] * d[0] + d[1] * d[1] + d[2] * d[2];
+    const v = [P[0] - a[0], useY ? P[1] - a[1] : 0, P[2] - a[2]];
+    const t = l2 ? Math.max(0, Math.min(1, (v[0] * d[0] + v[1] * d[1] + v[2] * d[2]) / l2)) : 0;
+    const off = Math.hypot(v[0] - t * d[0], v[1] - t * d[1], v[2] - t * d[2]);
+    const len = Math.hypot(b[0] - a[0], b[2] - a[2]);
+    if (off < best.off - 1e-9) best = { seg: i, along: cum + t * len, off };
+    cum += len;
+  }
+  if (trail.length === 1) return { seg: 0, along: 0, of: 0, off: Math.hypot(P[0] - trail[0][0], P[2] - xyz(trail[0])[2]) };
+  return { ...best, of: cum };
+}
+
+/** The rest of a trail from the point on it nearest p: that point, then the trail's later points. */
+export function restOfTrail(trail: number[][], p: number[]): number[][] {
+  if (trail.length < 2) return trail.map((q) => [...q]);
+  const at = alongTrail(trail, p), a = trail[at.seg], b = trail[at.seg + 1];
+  const len = Math.hypot(b[0] - a[0], b[b.length - 1] - a[a.length - 1]);
+  let before = 0;
+  for (let i = 0; i < at.seg; i++) before += Math.hypot(trail[i + 1][0] - trail[i][0], trail[i + 1][trail[i + 1].length - 1] - trail[i][trail[i].length - 1]);
+  const t = len ? (at.along - before) / len : 0;
+  const start = a.map((v, k) => v + (b[k] - v) * t);
+  return [start, ...trail.slice(at.seg + 1).map((q) => [...q])];
+}
+
+/** The point `dist` (world units, horizontal) along a trail from its first point, or its last. */
+function aheadOn(trail: number[][], dist: number): number[] {
+  const xz = (q: number[]) => [q[0], q[q.length - 1]];
+  let left = dist;
+  for (let i = 0; i < trail.length - 1; i++) {
+    const a = xz(trail[i]), b = xz(trail[i + 1]), l = Math.hypot(b[0] - a[0], b[1] - a[1]);
+    if (l >= left && l > 0) return [a[0] + ((b[0] - a[0]) * left) / l, a[1] + ((b[1] - a[1]) * left) / l];
+    left -= l;
+  }
+  return xz(trail[trail.length - 1]);
+}
+
+/** A turn's heading (horizontal unit vector): from the worm's spot `p` toward the point `dist` (world units) along the
+ * rest of its trail. */
+export function turnHeading(p: number[], rest: number[][], dist: number): number[] {
+  const ahead = aheadOn(rest, dist), dx = ahead[0] - p[0], dz = ahead[1] - p[2], l = Math.hypot(dx, dz);
+  return l < 1e-6 ? [0, 1] : [dx / l, dz / l];
+}
+
+/** A shot pose (world units) on the worm at `q`, from its left side of `heading` (10 map units off, 2 back, 11 up, over
+ * castle walls), so every shot of a turn looks the same way and the ground behind the worm shows how far it went. */
+export function sidePose(q: number[], heading: number[]): { pos: number[]; target: number[] } {
+  const [dx, dz] = heading, side = 10 * WORLD_PER_MAP, up = 11 * WORLD_PER_MAP, back = 2 * WORLD_PER_MAP;
+  return { pos: [q[0] - dz * side - dx * back, q[1] + up, q[2] + dx * side - dz * back], target: [q[0], q[1] + 0.6 * WORLD_PER_MAP, q[2]] };
 }
 
 const withMap = (st: GameState) => ({ ...st, ...(st.water !== undefined ? { waterMap: Math.round((st.water / WORLD_PER_MAP) * 100) / 100 } : {}) });
@@ -822,7 +883,7 @@ export const tools: Tool[] = [
         bodyWidth: { type: "number", minimum: 0, description: "With to: the worm's width the planned route must fit through (default 0.6 map units, a worm's body; 0 not enforced)." },
         recover: { type: "boolean", description: "With path or to: when stuck, try a jump, then a side step, then a backflip, in turn (default true); false: only jump (as waypoints do)." },
         units: { type: "string", enum: ["map", "world"], description: "Units of the route and the answer (default map)." },
-        worm: { type: "integer", minimum: 0, maximum: 7, description: "Walk only this WORMn: wait for its turn (default: the first human turn that comes)." },
+        worm: { type: "integer", minimum: 0, maximum: 15, description: "Walk only this WORMn: wait for its turn (default: the first human turn that comes)." },
         arrive: { type: "number", minimum: 0.2, description: "The end (or a waypoint) is reached within this horizontal distance (units; default 1.5 map units)." },
         timeoutSec: { type: "number", minimum: 1, maximum: 300, description: "Give up after this long, waiting included (default 120)." },
         jump: { type: "boolean", description: "Tap jump where the worm makes no progress for 0.6 s (default true; false: no recovery at all)." },
@@ -1002,7 +1063,7 @@ export const tools: Tool[] = [
       properties: {
         inputs: { type: "array", minItems: 1, maxItems: 4, items: { type: "string", enum: ["W", "A", "S", "D", "Jump", "Backflip", "Fire", "AimUp", "AimDown"] }, description: "What to hold (two walk keys walk the diagonal)." },
         seconds: { type: "number", minimum: 0.05, maximum: 20, description: "How long to hold them (default 2)." },
-        worm: { type: "integer", minimum: 0, maximum: 7, description: "Only this WORMn's turn (default the first human turn in play)." },
+        worm: { type: "integer", minimum: 0, maximum: 15, description: "Only this WORMn's turn (default the first human turn in play)." },
         waitSec: { type: "number", minimum: 1, maximum: 300, description: "Wait at most this long for the turn (default 90)." },
         units: { type: "string", enum: ["map", "world"], description: "Units of the answer (default map)." },
       },
@@ -1046,6 +1107,157 @@ export const tools: Tool[] = [
       return { worm: `WORM${start.slot}`, team: start.team, inputs: a.inputs, heldMs: Date.now() - t1, stop: why, posts,
         from: [start.x, start.y, start.z].map(out), to: [end.x, end.y, end.z].map(out), moved: out(Math.hypot(end.x - start.x, end.z - start.z)), climb: out(end.y - start.y),
         units: a.units ?? "map", note: "the inputs were posted from the game's input tick as their keys post them (input.drive): no keyboard and no window focus involved" };
+    },
+  },
+  {
+    name: "game_play_turns",
+    description: "Play the running Test's turns with every human worm, one call for a whole run: for each turn it takes the active worm (a human team's; a computer team's turn is waited out), walks it along its team's trail (`trails`: a route per team, such as its castle's switchbacks to the summit) from the point of the trail nearest the worm with game_walk's driver (the game's own inputs through input.drive, pure pursuit along the trail; jump, side step and backflip where it is stuck) for at most `walkSeconds`, shoots that worm at the start, the middle and the end of its walk (the game's own turn camera, which follows the active worm; render.shot, clean), then ends the turn (`end`: skip, the default where the game has level.test.endTurn: Timer.TurnTimedOut, the turn timer's own message; fire: Input.Fire held `fireMs`, `weapon` selecting one first; wait: the turn time runs out) and goes on, for `turns` turns or `rounds` rounds (a round: every living worm once). Answers each turn (worm, team, from, to, along/of its trail, climb, stop, recoveries, shots, how it ended) and per worm its progress over the run. Make the match with test {teams: [{human: true, worms: 2}, ... x4]} for four human teams; with spawns.mode teams each team starts on its own knots. Needs input.drive and render.shot (Melange 0.13+).",
+    inputSchema: {
+      type: "object", additionalProperties: false, required: ["trails"],
+      properties: {
+        trails: { type: "array", minItems: 1, maxItems: 4, items: { type: "array", minItems: 2, maxItems: 4000, items: { type: "array", items: { type: "number" }, minItems: 2, maxItems: 3 } },
+          description: "One trail per team (trails[t] for team t; a team without one takes the last given): points [x, z] or [x, y, z] in `units` (give y: a switchback's legs over each other are told apart by it), followed by pure pursuit from the point nearest the worm, so each worm carries on from where it stands." },
+        turns: { type: "integer", minimum: 1, maximum: 200, description: "Turns to play (default: `rounds` rounds)." },
+        rounds: { type: "integer", minimum: 1, maximum: 20, description: "Rounds to play when turns is not given: each living worm moves once a round (default 2)." },
+        walkSeconds: { type: "number", minimum: 2, maximum: 120, description: "Walk each worm at most this long (default 20; a Quick Game turn is about 45 s)." },
+        end: { type: "string", enum: ["skip", "fire", "wait"], description: "How a turn ends after the walk: skip (default where the game has level.test.endTurn), fire (Input.Fire held fireMs), wait (the turn time runs out)." },
+        weapon: { type: "string", enum: ["bazooka"], description: "With end fire: take this weapon first from the weapon panel (the panel opened with a right click and its highlighted first cell, the bazooka, clicked, through the Automation module: test builds, the game window focused, gameDir or MELANGE_GAME_DIR). A turn starts with no weapon, so fire without it fires nothing. Writing the worm's weapon into its container instead hung the turn (2026-11-08)." },
+        gameDir: { type: "string", description: "With weapon: the running game's folder, for its Automation command file (default MELANGE_GAME_DIR)." },
+        fireMs: { type: "integer", minimum: 50, maximum: 3000, description: "With end fire: how long fire is held, the shot's power (default 300)." },
+        aimDownMs: { type: "integer", minimum: 0, maximum: 3000, description: "With end fire: hold AimDown this long first (default 0)." },
+        shots: { type: "boolean", description: "Shoot each worm at the start, middle and end of its walk (default true)." },
+        shotPose: { type: "string", enum: ["near", "game"], description: "near (default): each shot on the worm where it is then, all of a turn's from the same side of its heading along the trail (10 map units off, 11 up, over castle walls), looking down at it, so the ground behind it shows how far it went; game: the game's own turn camera (low and far back, following the worm: a cone or a wall can hide it)." },
+        walkAhead: { type: "number", minimum: 1, maximum: 40, description: "With shotPose near: the heading is from the worm's spot to this far along its trail (map units, default 6)." },
+        prefix: { type: "string", description: "Shot names <prefix>_t<turn>_w<slot>_<start|mid|end> (default erg_<time>_play)." },
+        width: { type: "integer", minimum: 160, maximum: 1920, description: "Shot width (default 960)." },
+        units: { type: "string", enum: ["map", "world"], description: "Units of the trails and the answer (default map)." },
+        timeoutSec: { type: "number", minimum: 10, maximum: 3600, description: "Stop the run after this long (default 1800)." },
+      },
+    },
+    async handler(s, a: { trails: number[][][]; turns?: number; rounds?: number; walkSeconds?: number; end?: "skip" | "fire" | "wait"; weapon?: "bazooka"; fireMs?: number; aimDownMs?: number;
+      shots?: boolean; shotPose?: "near" | "game"; walkAhead?: number; prefix?: string; width?: number; units?: "map" | "world"; timeoutSec?: number; gameDir?: string }) {
+      if (!(await has(s, "input.drive"))) throw new ToolError("game_play_turns drives the worms with input.drive (Melange 0.13+ with the Controls module)");
+      const canSkip = await has(s, "level.test.endTurn");
+      const end = a.end ?? (canSkip ? "skip" : "wait");
+      if (end === "skip" && !canSkip) throw new ToolError("end skip needs level.test.endTurn (this branch's Melange): use end wait or fire");
+      if (a.weapon && end !== "fire") throw new ToolError("weapon selects what end fire fires: give end: \"fire\"");
+      const panel = a.weapon ? automationFile(a.gameDir) : null;
+      const k = a.units === "world" ? 1 : WORLD_PER_MAP, out = (v: number) => Math.round((v / k) * 100) / 100;
+      const trails = a.trails.map((t) => t.map((p) => p.map((v) => v * k)));   // world units
+      if (!trails.every((t) => t.every((p) => p.every(Number.isFinite)))) throw new ToolError("trails: finite numbers");
+      const trailOf = (team: number) => trails[Math.min(team, trails.length - 1)];
+      const client = await s.client(), t0 = Date.now(), limit = (a.timeoutSec ?? 1800) * 1000, prefix = a.prefix ?? `erg_${stamp()}_play`;
+      const walk = tools.find((t) => t.name === "game_walk")!;
+      type Turn = { turn: number; worm: string; slot: number; team: number; from: number[]; to?: number[]; along?: number; of?: number; climb?: number; stop?: string;
+        recoveries?: string[]; shots: string[]; ended?: string; error?: string; weapon?: string; stuck?: string };
+      const played: Turn[] = [];
+      // shotPose near: each shot on the worm where it is then, all of a turn's from the same side of its heading (the
+      // trail's direction from its spot, walkAhead along it) and high over castle walls, so the ground behind it shows how
+      // far it went (a pose fixed for the turn lost a worm that walked 36 map units in 12 s); the game's own turn camera
+      // sits low and far back (a cone or a wall between hid the worm in the first run). game: that camera.
+      const near = a.shotPose !== "game";
+      const wormAt = async (slot: number) => (await evalClient(s, `for _, w in ipairs(wum.game.worms() or {}) do if w.slot == ${slot} then return w.pos.x .. "," .. w.pos.y .. "," .. w.pos.z end end return ""`)).split(",").map(Number);
+      const shotAt = async (name: string, list: string[], aim: { slot: number; heading: number[] } | null) => {
+        if (a.shots === false) return;
+        try {
+          let minFrame: number | undefined;
+          const q = near && aim ? await wormAt(aim.slot) : [];
+          if (q.length === 3 && q.every(Number.isFinite)) {
+            const set = await setCamera(s, { ...sidePose(q, aim!.heading), fov: 60 }, 40);
+            minFrame = set.frame !== undefined ? set.frame + 2 : undefined;
+          }
+          list.push((await shot(s, uniqueName(prefix, name), { clean: true, width: a.width ?? 960, minFrame })).path);
+          if (minFrame !== undefined) await clearCamera(s).catch(() => undefined);
+        } catch (e) {
+          list.push(`${name}: failed: ${(e as Error).message}`);
+        }
+      };
+      let st = await gameState(s);
+      noteTurn(st);
+      if (st.scene !== "match") throw new ToolError(`no match is running (scene ${st.scene}): test first`);
+      const alive = Object.values(st.aliveByTeam).reduce((x, y) => x + y, 0);
+      const want = a.turns ?? (a.rounds ?? 2) * Math.max(1, alive);
+      let lastTurn = -1, why = "done", cancelMid = () => {};
+      while (played.length < want) {
+        if (Date.now() - t0 > limit) { why = "timeout"; break; }
+        st = await gameState(s);
+        noteTurn(st);
+        if (st.scene !== "match") { why = `the match ended (scene ${st.scene})`; break; }
+        if (st.turn === undefined || st.turn === lastTurn || st.phase !== "play" || st.worm === undefined) { await sleep(300); continue; }
+        if (st.ai) { lastTurn = st.turn; await sleep(500); continue; }   // a computer team's turn is not steered
+        lastTurn = st.turn;
+        const turn = st.turn, slot = st.worm, team = st.team ?? 0, trail = trailOf(team);
+        const p = await wormAt(slot);
+        const rec: Turn = { turn, worm: `WORM${slot}`, slot, team, from: p.length === 3 ? p.map(out) : [], shots: [] };
+        played.push(rec);
+        const rest = p.length === 3 && p.every(Number.isFinite) ? restOfTrail(trail, trail[0].length === 3 ? p : [p[0], p[2]]) : trail;
+        const pose = p.length === 3 && p.every(Number.isFinite) ? { slot, heading: turnHeading(p, rest, (a.walkAhead ?? 6) * WORLD_PER_MAP) } : null;
+        await shotAt(`t${turn}_w${slot}_start`, rec.shots, pose);
+        const walkSec = a.walkSeconds ?? 20;
+        // the middle shot from a timer while the walk runs (the walk steers by the game's own camera, which a shot leaves);
+        // a walk that ends first cancels it, so it never fires in a later turn
+        let midStarted = false;
+        const midShot = new Promise<void>((ok) => {
+          const timer = setTimeout(() => { midStarted = true; shotAt(`t${turn}_w${slot}_mid`, rec.shots, pose).then(ok, ok); }, (walkSec * 1000) / 2);
+          cancelMid = () => { if (!midStarted) { clearTimeout(timer); ok(); } };
+        });
+        try {
+          const r = await walk.handler(s, { path: rest, units: "world", worm: slot, timeoutSec: walkSec, arrive: 1.5 * WORLD_PER_MAP }) as Record<string, unknown>;
+          const to = r.to as number[], from = r.from as number[];
+          rec.to = to.map(out);
+          rec.climb = out(to[1] - from[1]);
+          rec.stop = String(r.stop);
+          // a worm that did not move at all is most often inside solid ground: in the hx4 harness run (2026-11-08) the
+          // wiped base's heightmap ground stood 1.5 map units over the courtyard knots and no worm could walk or jump
+          if (Math.hypot(to[0] - from[0], to[2] - from[2]) < 0.3 * WORLD_PER_MAP && rec.stop !== "arrived")
+            rec.stuck = "the worm did not move: is it inside solid ground (a base's heightmap ground over its spot: set_surround_mode none) or boxed in?";
+          if (Array.isArray(r.recoveries)) rec.recoveries = (r.recoveries as string[]).slice(0, 12);
+          const at = alongTrail(trail, trail[0].length === 3 ? to : [to[0], to[2]]);
+          rec.along = out(at.along);
+          rec.of = out(at.of);
+        } catch (e) {
+          rec.error = (e as Error).message;
+        }
+        // a walk that ended early (arrived, the turn ended) takes no middle shot; one under way is waited for
+        cancelMid();
+        await midShot;
+        if (!midStarted && a.shots !== false) rec.shots.push(`mid: none (the walk ended before ${walkSec / 2} s)`);
+        await shotAt(`t${turn}_w${slot}_end`, rec.shots, pose);
+        const now = await gameState(s);
+        if (now.turn === turn && now.phase === "play") {
+          if (end === "skip") {
+            rec.ended = await client.call("level.test.endTurn", {}, 15000).then(() => "skipped (level.test.endTurn)", (e: Error) => `endTurn refused: ${e.message}`);
+          } else if (end === "fire") {
+            if (panel) {
+              appendFileSync(panel, ["click right", "wait 500", "click", "wait 300", ""].join("\n"));
+              await sleep(1600);
+            }
+            const wp = await evalClient(s, `for _, w in ipairs(wum.game.worms() or {}) do if w.slot == ${slot} then return tostring(w.weapon) end end return "nil"`).catch(() => "?");
+            rec.weapon = wp;
+            if (a.aimDownMs) {
+              await client.call("input.drive", { hold: ["Input.AimDown"], ms: a.aimDownMs, replace: true }, 15000).catch(() => undefined);
+              await sleep(a.aimDownMs + 100);
+            }
+            await client.call("input.drive", { hold: ["Input.Fire"], ms: a.fireMs ?? 300, replace: true }, 15000).catch(() => undefined);
+            rec.ended = wp === "nil" ? "fire held, but the worm had no weapon selected (nothing fired)" : `fired (weapon ${wp}${a.weapon ? `, ${a.weapon} asked` : ""})`;
+          } else rec.ended = "the turn time ran out";
+        } else rec.ended = "the turn had ended";
+        // the next turn: after the turn change, a shot's flight and the Ready? intro
+        for (const tw = Date.now(); Date.now() - tw < 90000; await sleep(400)) {
+          const n = await gameState(s);
+          noteTurn(n);
+          if (n.scene !== "match" || (n.turn !== undefined && n.turn !== turn)) break;
+        }
+      }
+      // per worm: its turns and how far along its team's trail it stood after each
+      const byWorm = new Map<number, Turn[]>();
+      for (const t of played) byWorm.set(t.slot, [...(byWorm.get(t.slot) ?? []), t]);
+      const worms = [...byWorm.entries()].sort((x, y) => x[0] - y[0]).map(([slot, ts]) => ({ worm: `WORM${slot}`, team: ts[0].team, turns: ts.length,
+        along: ts.map((t) => t.along ?? null), of: ts[ts.length - 1].of ?? null, climb: Math.round(ts.reduce((x, t) => x + (t.climb ?? 0), 0) * 100) / 100,
+        from: ts[0].from, to: ts[ts.length - 1].to ?? null }));
+      const log = turnLogOut();
+      return { played: played.length, asked: want, stop: why, seconds: Math.round((Date.now() - t0) / 100) / 10, end, worms, turns: played, ...(log ? { turnLog: log } : {}),
+        units: a.units ?? "map", note: "each human turn's worm walked its team's trail with the game's own inputs (input.drive) from the trail's point nearest it; along/of: how far along the trail it stood after the turn. A turn's shots look at its worm from one side of its heading (shotPose near; game: the turn camera), clean of the mods' HUD text" };
     },
   },
   {
@@ -1241,15 +1453,27 @@ export const tools: Tool[] = [
       const wormName = (w: { slot: number }) => `WORM${w.slot}`;
       // the open project's knots, to set the worms' turn-1 positions against (a level in knots mode starts worm n there)
       let knots = new Map<string, number[]>();
-      try { if (s.store.scene.spawns.mode === "knots") knots = new Map(markers(s.store).filter((m) => m.kind === "spawn").map((m) => [m.name, m.pos])); } catch { /* no project open */ }
+      let byTeam = false;
+      try {
+        const mode = s.store.scene.spawns.mode;
+        if (mode === "knots" || mode === "teams") knots = new Map(markers(s.store).filter((m) => m.kind === "spawn").map((m) => [m.name, m.pos]));
+        byTeam = mode === "teams";
+      } catch { /* no project open */ }
+      // spawns.mode teams: a worm's knot is WORM<4 x team + its place in the team>, the place counted in slot order (as
+      // the generated chunk deals them)
+      const knotOf = (w: { slot: number; team: number }) => {
+        if (!byTeam) return wormName(w);
+        const place = p.spawns.filter((x) => x.team === w.team && x.slot < w.slot).length;
+        return place < 4 ? `WORM${w.team * 4 + place}` : "";
+      };
       const k = u === "world" ? WORLD_PER_MAP : 1, r2 = (v: number) => Math.round(v * 100) / 100;
       const explosionOut = (x: ProbeExplosion) => ({ turn: x.turn, tick: x.tick, at: inUnits(x.at, u), source: x.source, wormDamage: x.wormDamage, radius: r2(x.wormDamageRadiusMap * k),
         ...(x.entity ? { entity: { kind: x.entity.kind, type: x.entity.type, label: x.entity.label, handle: x.entity.handle } } : {}),
         ...(x.turnWorm !== undefined ? { turnWormSlot: x.turnWorm } : {}), ...(x.turnWeapon ? { turnWeapon: x.turnWeapon } : {}) });
       const spawns = p.spawns.map((w) => {
-        const n = wormName(w), kn = knots.get(n);
+        const n = wormName(w), kname = knotOf(w), kn = knots.get(kname);
         return { worm: n, name: w.name, team: w.team, slot: w.slot, at: inUnits(w.pos, u), health: w.health,
-          ...(kn ? { knot: inUnits(kn, u), fromKnot: r2(Math.hypot(w.pos[0] - kn[0], w.pos[1] - kn[1], w.pos[2] - kn[2]) * k) } : {}) };
+          ...(kn ? { knot: inUnits(kn, u), ...(byTeam ? { knotName: kname } : {}), fromKnot: r2(Math.hypot(w.pos[0] - kn[0], w.pos[1] - kn[1], w.pos[2] - kn[2]) * k) } : {}) };
       });
       const deaths = p.deaths.map((d) => ({ worm: wormName(d), name: d.name, team: d.team, slot: d.slot, turn: d.turn, tick: d.tick, cause: d.cause, evidence: d.evidence,
         at: inUnits(d.pos, u), lastAlive: inUnits(d.lastAlivePos, u), health: d.health,
@@ -1263,7 +1487,7 @@ export const tools: Tool[] = [
         spawns: spawns.length ? spawns : null, ...(spawns.length ? {} : { spawnsNote: "the first turn has not started yet" }),
         deaths, explosionsSeen: p.explosionsSeen, ...(a.explosions ? { explosions: p.explosions.map(explosionOut) } : {}),
         factory: { fires: r.factory.fires.map((f) => fireOut(f, u, ...groundLookup(s))), ...(r.factory.following ? { following: r.factory.following } : {}), trigger: r.factory.trigger },
-        note: "turn counts game turns from 1 (as game_state and check_flood); causes are inferred from what the probe saw (evidence), not read from the engine, which keeps no damage source; WORMn is the worm's slot (game_state's worm); knot and fromKnot only for a level in knots spawn mode",
+        note: "turn counts game turns from 1 (as game_state and check_flood); causes are inferred from what the probe saw (evidence), not read from the engine, which keeps no damage source; WORMn is the worm's slot (game_state's worm); knot and fromKnot only for a level in knots or teams spawn mode (teams: knotName, the team's knot the worm stood on: WORM<4 x team + its place in the team>)",
       };
     },
   },

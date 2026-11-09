@@ -35,7 +35,9 @@ const char* RoleName(Role r);
 bool ParseRole(std::string_view s, Role* out);
 Role DeriveRole(std::string_view name, std::string_view resource);
 
-enum class SpawnMode : uint8_t { Random, Knots };
+// Knots: worm slot i on the knot WORMi (WORM0-7). Teams: each worm on WORM<4 x team + its place in the team>
+// (WORM0-15), whatever slots the Quick Game deals, so a team's worms stand at its own four knots.
+enum class SpawnMode : uint8_t { Random, Knots, Teams };
 enum class HmpMode : uint8_t { Copy, None, Flat, Paint };
 const char* SpawnModeName(SpawnMode m);
 const char* HmpModeName(HmpMode m);

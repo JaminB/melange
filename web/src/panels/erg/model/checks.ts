@@ -6,15 +6,25 @@ import { overFrame, type Frames } from "./geometry";
 export interface Issue { level: "error" | "warn"; text: string; detail?: number; }
 
 export const KNOTS = Array.from({ length: 8 }, (_, i) => `WORM${i}`);
+/** spawns.mode teams: team t's worm p stands on WORM<4t + p>. */
+export const TEAM_KNOTS = Array.from({ length: 16 }, (_, i) => `WORM${i}`);
 export const PLACED_OBJECTS = ["mine", "oildrum"];
 
 export function checkScene(scene: Scene, frames: Frames, patchErrors: string[] = []): Issue[] {
   const out: Issue[] = [];
   const knots = new Map<string, number[]>();
-  for (const d of scene.details) if (KNOTS.includes(d.name)) knots.set(d.name, [...(knots.get(d.name) ?? []), d.id]);
+  const named = scene.spawns.mode === "teams" ? TEAM_KNOTS : KNOTS;
+  for (const d of scene.details) if (named.includes(d.name)) knots.set(d.name, [...(knots.get(d.name) ?? []), d.id]);
   if (scene.spawns.mode === "knots") {
     const missing = KNOTS.filter((k) => !knots.has(k));
     if (missing.length) out.push({ level: "error", text: `Spawn mode is knots but ${missing.join(", ")} ${missing.length > 1 ? "are" : "is"} missing` });
+  }
+  if (scene.spawns.mode === "teams") {
+    // a 2-team game uses WORM0-7, four teams WORM0-15: the first eight are needed, the rest warned of
+    const missing = TEAM_KNOTS.filter((k) => !knots.has(k));
+    const needed = missing.filter((k) => KNOTS.includes(k)), more = missing.filter((k) => !KNOTS.includes(k));
+    if (needed.length) out.push({ level: "error", text: `Spawn mode is teams but ${needed.join(", ")} ${needed.length > 1 ? "are" : "is"} missing` });
+    if (more.length) out.push({ level: "warn", text: `Spawn mode is teams but ${more.join(", ")} ${more.length > 1 ? "are" : "is"} missing: a third or fourth team's worms have no knot` });
   }
   for (const [name, ids] of knots)
     if (ids.length > 1) out.push({ level: "warn", text: `${ids.length} details are named ${name}; the game uses one of them`, detail: ids[1] });

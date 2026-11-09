@@ -780,6 +780,14 @@ std::vector<luagen::ChunkSpec> ChunkBranches() {
     luagen::ChunkSpec noMines = lone;
     noMines.objects[0].factory.schemeMines = false;
     out.push_back(noMines);
+    luagen::ChunkSpec teams;   // spawns.mode teams: each worm on its team's knot
+    teams.teams = true;
+    out.push_back(teams);
+    luagen::ChunkSpec teamsAll = noMines;
+    teamsAll.teams = true;
+    teamsAll.placeObjects = true;
+    teamsAll.water = 30;
+    out.push_back(teamsAll);
     all.objects.insert(all.objects.begin() + 2, factory);
     out.push_back(all);
     luagen::ChunkSpec max;
@@ -832,7 +840,7 @@ void TestChunkGrammar() {
     for (const auto& c : ChunkBranches()) {
         const std::string t = luagen::Text(stem, c), old = luagen::LegacyText(stem, c);
         std::string run;
-        const bool needsWrap = c.knots || c.placeObjects || !c.objects.empty();
+        const bool needsWrap = c.knots || c.teams || c.placeObjects || !c.objects.empty();
         // Nothing at top level touches a library function: Survivor's strict check runs before Initialise.
         const size_t init = t.find("function Initialise()\n");
         const std::string top = t.substr(0, init);
@@ -856,6 +864,20 @@ void TestChunkGrammar() {
         Expect(!luagen::Upgrade(stem, hybrid, &run, &why), "a legacy chunk with extra lines is refused");
     }
     Expect(!luagen::IsGenerated("other_stem", luagen::Text(stem, ChunkBranches().back()), &why), "a chunk of another stem is refused");
+    {
+        luagen::ChunkSpec t;
+        t.teams = true;
+        const std::string text = luagen::Text(stem, t);
+        Expect(text.find("for i = 0, 15 do\n") != std::string::npos &&
+                   text.find("if p < 4 then worm.Spawn = \"WORM\" .. (worm.TeamIndex * 4 + p) end\n") != std::string::npos &&
+                   text.find("worm.Spawn = \"WORM\" .. i\n") == std::string::npos,
+               "team spawns put each worm on WORM<4 x team + place>, not WORMi");
+        t.knots = true;
+        Expect(luagen::Text(stem, t).empty(), "knot and team spawns together are refused");
+        erg::SpawnMode m = erg::SpawnMode::Random;
+        Expect(erg::ParseSpawnMode("teams", &m) && m == erg::SpawnMode::Teams && std::string(erg::SpawnModeName(m)) == "teams",
+               "spawns.mode teams parses and names itself");
+    }
     luagen::ChunkSpec mf;
     erg::ObjectSpec f;
     f.knot = "minefactory";

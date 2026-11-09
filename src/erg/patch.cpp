@@ -228,7 +228,7 @@ bool ParsePatch(std::string_view json, Patch* out, std::string* err) {
     if (const Json* sp = root.find("spawns")) {
         if (!Obj(sp, "spawns", err) || !OnlyKeys(*sp, {"mode"}, "spawns", err) || !GetString(*sp, "mode", "spawns", &mode, err))
             return false;
-        if (!ParseSpawnMode(mode, &p.spawns)) return Fail(err, "spawns.mode: must be \"random\" or \"knots\"");
+        if (!ParseSpawnMode(mode, &p.spawns)) return Fail(err, "spawns.mode: must be \"random\", \"knots\" or \"teams\"");
     }
     if (const Json* hmp = root.find("hmp")) {
         if (!Obj(hmp, "hmp", err) || !OnlyKeys(*hmp, {"mode"}, "hmp", err) || !GetString(*hmp, "mode", "hmp", &mode, err))

@@ -4,7 +4,10 @@ import { validatePatch, validateScene, type Patch, type Scene } from "./scene";
 
 export type TimeOfDay = "DAY" | "EVENING" | "NIGHT";
 export interface ScriptProblem { line: number; message: string; }
-export interface TestOptions { tod?: TimeOfDay; cleanMods?: boolean; postfx?: boolean; }
+/** A Test team: human (default true) and its worms (1-4; the Quick Game's own four when left out). */
+export interface TestTeam { human?: boolean; worms?: number; }
+/** teams: the Quick Game start, 2-4 human teams or a human then a computer team (the default, QuickStartHvC). */
+export interface TestOptions { tod?: TimeOfDay; cleanMods?: boolean; postfx?: boolean; teams?: TestTeam[]; }
 
 export interface ErgSession {
   load(project: string): Promise<{ scene: Scene; blobs: Map<number, ArrayBuffer> }>;
@@ -68,6 +71,7 @@ export function createErgSession(client: Client, opts: SessionOptions = {}): Erg
       if (opts?.tod) params.tod = opts.tod;
       if (opts?.cleanMods !== undefined) params.cleanMods = opts.cleanMods;
       if (opts?.postfx !== undefined) params.postfx = opts.postfx;
+      if (opts?.teams) params.teams = opts.teams;
       return client.call<{ key: string; state: string; cleanRoom?: { simMods: boolean; postfx: boolean } }>("level.test", params, callTimeout);
     },
     async script() {

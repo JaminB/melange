@@ -25,7 +25,9 @@ export type Role = "scenery" | "spawn" | "object" | "camera" | "light" | "emitte
 export const ROLES: readonly Role[] = ["scenery", "spawn", "object", "camera", "light", "emitter", "sound", "collision", "marker", "other"];
 export const THEMES = ["ARABIAN", "WILDWEST", "CAMELOT", "PREHISTORIC", "BUILDING", "ARCTIC", "ENGLAND", "HORROR", "LUNAR", "PIRATE", "WAR"] as const;
 export const TIMES_OF_DAY = ["DAY", "EVENING", "NIGHT"] as const;
-export type SpawnMode = "random" | "knots";
+/** random: the game places the worms; knots: worm slot i on the knot WORMi (WORM0-7); teams: each worm on
+ * WORM<4 x team + its place in the team> (WORM0-15), so a team's worms stand at its own four knots. */
+export type SpawnMode = "random" | "knots" | "teams";
 export type HmpMode = "copy" | "none" | "flat" | "paint";
 
 export interface Sha256Set { xan: string; xom: string; hmp: string | null; }
@@ -417,7 +419,7 @@ export function validateScene(s: unknown): Validation {
   else c.fail("databank", "must be an object");
   checkWater(c, s.water);
   if (s.previews !== undefined) checkPreviews(c, s.previews);
-  checkMode(c, s.spawns, "spawns", ["random", "knots"]);
+  checkMode(c, s.spawns, "spawns", ["random", "knots", "teams"]);
   checkMode(c, s.hmp, "hmp", v2 ? ["copy", "none", "flat", "paint"] : ["copy", "none", "flat"], v2 ? ["ref"] : []);
   if (v2) {
     if (s.kind !== undefined) checkKind(c, s.kind);
@@ -581,7 +583,7 @@ export function validatePatch(p: unknown, sizeBytes?: number): Validation {
     }
   }
   if (p.water !== undefined) checkWater(c, p.water);
-  if (p.spawns !== undefined) checkMode(c, p.spawns, "spawns", ["random", "knots"]);
+  if (p.spawns !== undefined) checkMode(c, p.spawns, "spawns", ["random", "knots", "teams"]);
   if (p.hmp !== undefined) checkMode(c, p.hmp, "hmp", v2 ? ["copy", "none", "flat", "paint"] : ["copy", "none", "flat"]);
   if (!Array.isArray(p.ops)) return { ok: false, errors: [...c.errors, "ops: must be an array"] };
   if (p.ops.length > LIMITS.ops) c.fail("ops", "at most 20000 ops");

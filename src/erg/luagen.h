@@ -14,13 +14,14 @@ constexpr size_t kMaxChunkBytes = 32768;
 // Everything the chunk encodes: knot spawns, PlaceObjects, the level objects (in order) and the water level.
 struct ChunkSpec {
     bool knots = false;
+    bool teams = false;                                    // knots by team: WORM<4 x team + place> (spawns.mode teams)
     bool placeObjects = false;                             // mine, oildrum
     std::vector<ObjectSpec> objects;
     std::optional<double> water;
 };
 ChunkSpec SpecOf(const Scene& s);
 
-bool Needed(const Scene& s);                               // knot spawns, placed objects, level objects or a water level
+bool Needed(const Scene& s);                               // knot or team spawns, placed objects, level objects or a water level
 std::string Chunk(const Scene& s);
 std::string Text(std::string_view stem, const ChunkSpec& spec);   // "" when nothing to do or an object is refused
 std::string Text(std::string_view stem, bool knots, bool objects, std::optional<double> water);   // "" when nothing to do

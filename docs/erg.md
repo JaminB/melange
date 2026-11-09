@@ -50,6 +50,12 @@ A map's spawn mode is either:
   map.
 - **Knots:** place up to 8 numbered markers (`WORM0`..`WORM7`); worm *i* always starts on marker *i*. Every match
   needs all 8, even in smaller games — the map simply won't use the markers past the worm count.
+- **Knots by team:** sixteen markers (`WORM0`..`WORM15`), four per team: team 1's worms start on `WORM0`..`WORM3`,
+  team 2's on `WORM4`..`WORM7`, team 3's on `WORM8`..`WORM11` and team 4's on `WORM12`..`WORM15`, the first worm of a
+  team on its first marker, whatever slots the match deals the worms (a game of four teams of two puts team 2 on
+  `WORM4` and `WORM5`, not on `WORM2` and `WORM3` as plain knots would). Put each team's four markers in its own base
+  and every team starts there. A two-team game needs `WORM0`..`WORM7`; the checks warn when `WORM8`..`WORM15` are
+  missing, which a third or fourth team needs. A team's fifth and sixth worms start at random.
 
 ![Diner Might with knot spawns: the outliner filtered to the eight WORM knots, WORM2 selected](images/erg/spawns.png)
 
@@ -209,6 +215,12 @@ Press **Test** to play the map as it stands, without exporting or restarting any
 4. If your game build supports starting a match from the editor directly, Test starts Quick Game itself. Otherwise
    the status line asks you to press Quick Game yourself — the override is already armed, so that press loads your
    map.
+
+The Test match is the Quick Game: a human team against a computer team. A test tool can ask for other teams
+(`level.test {teams}`, erg-mcp's `test {teams}`): two to four human teams, as the Quick Game's 2-4 player starts make,
+or a human team then a computer team, each with one to four worms. The worm counts are written into the match's
+set-up before the level script deals the worms, so a test of four human teams of two plays eight worms, and with
+knots by team each team starts on its own markers.
 
 ![The Test button and its time-of-day selector, starting at the project's NIGHT](images/erg/test.png)
 

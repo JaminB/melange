@@ -4,9 +4,12 @@
 // errors an Erg run is compared against. An attract demo is ended first with a key tap,
 // since a StartGame posted during it asserts. Test states go out on the `erg` channel. levels.live changes map packs.
 // A clean-room Test (cleanMods, postfx: false) suppresses the sim mods on the Test level and turns the post-FX stack
-// off from the Test's start until it ends, fails or is disarmed; nothing is persisted.
+// off from the Test's start until it ends, fails or is disarmed; nothing is persisted. {teams: [{human, worms}, ...]}
+// picks the Quick Game's start (a human against a computer team, the default, or 2-4 human teams) and the worms each
+// team has (1-4; the Quick Game's own four when left out).
 #include <windows.h>
 
+#include <array>
 #include <atomic>
 #include <cctype>
 #include <filesystem>
@@ -40,7 +43,7 @@ constexpr ULONGLONG kStartWaitMs = 15000, kTapEveryMs = 1500;
 
 std::atomic<bool> g_atFrontend{false}, g_inLobby{false}, g_quickOk{false}, g_attract{false}, g_loading{false};
 std::mutex g_mx;
-std::string g_startKey;
+std::string g_startKey, g_startMode;   // the Quick Game start to post ("" for the default, HvC)
 ULONGLONG g_startBy = 0, g_nextTap = 0;
 int g_taps = 0;
 struct CleanRoom {
@@ -130,8 +133,14 @@ void OnFrame() {
         if (g_startKey.empty()) g_startKey = key;
         return;
     }
-    const bool ok = erg::quickstart::PostQuickGame();
-    LOG_INFO("[erg] test: %s registered; Quick Game %s", key.c_str(), ok ? "started" : "not available, press it to play");
+    std::string mode;
+    {
+        std::lock_guard lk(g_mx);
+        mode = g_startMode;
+    }
+    const bool ok = erg::quickstart::PostQuickGame(mode.empty() ? nullptr : mode.c_str());
+    LOG_INFO("[erg] test: %s registered; Quick Game %s%s%s", key.c_str(), ok ? "started" : "not available, press it to play",
+             mode.empty() ? "" : " as ", mode.c_str());
 }
 
 // A game level's key: Multi. and a level file stem.
@@ -139,6 +148,35 @@ bool ValidBaseKey(const std::string& k) {
     if (k.size() < 7 || k.size() > 70 || k.compare(0, 6, "Multi.") != 0) return false;
     for (size_t i = 6; i < k.size(); ++i)
         if (!std::isalnum(static_cast<unsigned char>(k[i])) && k[i] != '_' && k[i] != '-') return false;
+    return true;
+}
+
+// teams: [{human: bool, worms?: 1-4}, ...]: two to four teams, every one human (QuickStartHvH ... HvHvHvH) or a human
+// and a computer team (QuickStartHvC, the default), the only starts the frontend has.
+bool ParseTeams(const json::Value& p, std::string* mode, std::array<uint8_t, 4>* worms, Result& r) {
+    const json::Value* t = p.Get("teams");
+    if (!t || t->IsNull()) return true;
+    if (!t->IsArray() || t->items.size() < 2 || t->items.size() > 4)
+        return Fail(r, rpc::kBadParams, "teams: an array of 2 to 4 teams, each {human: true|false, worms?: 1-4}");
+    int humans = 0;
+    for (size_t i = 0; i < t->items.size(); ++i) {
+        const json::Value& e = t->items[i];
+        bool human = true;
+        if (!e.IsObject()) return Fail(r, rpc::kBadParams, "teams: each team is an object {human, worms}");
+        if (!OptFlag(e, "human", &human, r)) return false;
+        humans += human;
+        if (const json::Value* w = e.Get("worms"); w && !w->IsNull()) {
+            if (!w->IsNumber() || w->number < 1 || w->number > 4 || w->number != static_cast<int>(w->number))
+                return Fail(r, rpc::kBadParams, "teams: worms is a whole number from 1 to 4");
+            (*worms)[i] = static_cast<uint8_t>(w->number);
+        }
+    }
+    const size_t n = t->items.size();
+    if (humans == static_cast<int>(n)) *mode = erg::quickstart::kModes[n - 1];
+    else if (n == 2 && humans == 1 && !(t->items[1].Get("human") && t->items[1].Get("human")->IsBool() && t->items[1].Get("human")->boolean))
+        *mode = erg::quickstart::kModes[0];
+    else
+        return Fail(r, rpc::kBadParams, "teams: the Quick Game starts 2-4 human teams, or a human team then a computer team");
     return true;
 }
 
@@ -152,6 +190,9 @@ void Test(const Call& c, Result& r, void*) {
     // cleanMods turns post-FX off too unless postfx: true says otherwise.
     postfxOn = !cleanMods;
     if (!OptFlag(p, "postfx", &postfxOn, r)) return;
+    std::string mode;
+    std::array<uint8_t, 4> worms{};
+    if (!ParseTeams(p, &mode, &worms, r)) return;
     if (project.empty() == base.empty()) {
         Fail(r, rpc::kBadParams, "give project (an Erg project) or base (a game level, Multi.<map>, for a baseline with no Erg level)");
         return;
@@ -204,7 +245,9 @@ void Test(const Call& c, Result& r, void*) {
     {
         std::lock_guard lk(g_mx);
         g_clean = cleanMods || !postfxOn ? CleanRoom{key, cleanMods, postfxOn} : CleanRoom{};
+        g_startMode = mode == erg::quickstart::kModes[0] ? "" : mode;
     }
+    levels::test::SetTeamWorms(worms == std::array<uint8_t, 4>{} ? "" : key, worms);
     simbridge::SetTestCleanRoom(cleanMods ? key : "");
     if (postfxOn) postfx::SetSuppressed(false);   // a clean room left over from an earlier Test that never ended
     if (cleanMods || !postfxOn)
@@ -219,7 +262,11 @@ void Test(const Call& c, Result& r, void*) {
         g_taps = 0;
     }
     if (!base.empty()) LOG_INFO("[erg] test: a baseline Test of the game's own %s (no Erg level)", key.c_str());
+    jsonmini::Arr wormsOut;
+    for (uint8_t w : worms) wormsOut.Raw(std::to_string(w));
     r.json = jsonmini::Obj().Str("key", key).Str("state", quick ? "starting" : "armed").Bool("baseline", !base.empty())
+                 .Str("quickStart", mode.empty() ? erg::quickstart::kModes[0] : mode.c_str())
+                 .Raw("teamWorms", wormsOut.End())
                  .Raw("cleanRoom", jsonmini::Obj().Bool("simMods", !cleanMods).Bool("postfx", postfxOn).End())
                  .End();
 }

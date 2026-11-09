@@ -1,4 +1,5 @@
 #pragma once
+#include <array>
 #include <cstdint>
 #include <string>
 
@@ -71,4 +72,8 @@ struct TodApplied {
     bool applied = false;
 };
 TodApplied LastTod();
+// Worms per team for the Test of `key` (0: the Quick Game's own count, four): written into GM.GameInitData's
+// T1..T4_NumOfWorms when the override is taken and again when the match VM is created, before the level's Initialise
+// sets the worms up (lib_SetupMultiplayerWormsAndTeams). An empty key clears it.
+void SetTeamWorms(const std::string& key, const std::array<uint8_t, 4>& worms);
 }  // namespace melange::levels::test
