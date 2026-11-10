@@ -93,13 +93,14 @@ void Load(const std::string& key) {
         erg::Mat3x4 m;
         if (!erg::FrameWorld(L.scene, det.frame, &m)) continue;
         const erg::Vec3 p = erg::Apply(m, det.pos);
-        double s = 0;
+        double col[3];
+        float sc[3];
         for (int k = 0; k < 3; ++k) {
-            const double col = std::sqrt(m.m[0][k] * m.m[0][k] + m.m[1][k] * m.m[1][k] + m.m[2][k] * m.m[2][k]);
-            s += col * std::fabs(det.scale[k]);
+            col[k] = std::sqrt(m.m[0][k] * m.m[0][k] + m.m[1][k] * m.m[1][k] + m.m[2][k] * m.m[2][k]);
+            sc[k] = std::fabs(det.scale[k]);
         }
         for (int k = 0; k < 3; ++k) e.pos[k] = static_cast<float>(p[k]);
-        e.scale = static_cast<float>(s / 3);
+        e.scale = lg::DetailScale(col, sc);
         e.rgba[3] = 1.f;
         out.push_back(e);
     }

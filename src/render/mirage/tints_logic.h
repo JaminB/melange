@@ -15,7 +15,7 @@
 namespace melange::mirage::tints::logic {
 struct Entry {
     float pos[3] = {};    // world position of the detail, map units
-    float scale = 1.f;    // mean axis scale of the detail's world matrix
+    float scale = 1.f;    // RMS axis scale of the detail's world matrix (DetailScale)
     float rgba[4] = {1.f, 1.f, 1.f, 1.f};
 };
 
@@ -69,17 +69,28 @@ inline bool ParseLandTag(std::string_view name, uint64_t* digest, float rgb[3]) 
     return found;
 }
 
-// Mean length of the three linear rows of a Cg float4x4 as the engine sends it (four registers, rows; row 3 the
-// translation for mul(float4(p, 1), model)).
+// The RMS axis scale of the linear part of a Cg float4x4 as the engine sends it (four registers, rows; row 3 the
+// translation for mul(float4(p, 1), model)): sqrt(sum of the nine squares / 3), the same whether the rows or the columns
+// hold the axes and however the detail is turned, so a strongly non-uniform scale under a rotation (an erg-mcp
+// place_aligned slab, [1.2, 0.3, 0.4] at any yaw) matches its detail; the mean of the row lengths (before 2026-11-10) did
+// not. For a uniform scale it is that scale, as before.
 inline float RowScale(const float* m) {
     float s = 0.f;
-    for (int r = 0; r < 3; ++r) s += std::sqrt(m[r * 4] * m[r * 4] + m[r * 4 + 1] * m[r * 4 + 1] + m[r * 4 + 2] * m[r * 4 + 2]);
-    return s / 3.f;
+    for (int r = 0; r < 3; ++r) s += m[r * 4] * m[r * 4] + m[r * 4 + 1] * m[r * 4 + 1] + m[r * 4 + 2] * m[r * 4 + 2];
+    return std::sqrt(s / 3.f);
+}
+// The same RMS scale for a detail: its frame's axis lengths (`frame`, the world matrix's column norms) times its own
+// per-axis scale.
+inline float DetailScale(const double frame[3], const float scale[3]) {
+    double s = 0;
+    for (int k = 0; k < 3; ++k) s += (frame[k] * scale[k]) * (frame[k] * scale[k]);
+    return static_cast<float>(std::sqrt(s / 3));
 }
 
 class Table {
   public:
     static constexpr float kCell = 8.f;
+    static constexpr float kExact = 0.002f;   // map units: a draw this near a tinted detail's origin is that detail
     // Units the engine's model matrices may use relative to map units (the engine's world is map units x 20).
     static constexpr float kUnits[2] = {1.f, 20.f};
 
@@ -106,10 +117,14 @@ class Table {
                     if (it == grid_.end()) continue;
                     for (uint32_t i : it->second) {
                         const Entry& e = entries_[i];
+                        const float d0 = t[0] - e.pos[0], d1 = t[1] - e.pos[1], d2 = t[2] - e.pos[2], dd = d0 * d0 + d1 * d1 + d2 * d2;
+                        // at the detail's origin to within kExact the draw is the detail whatever its scale: some meshes carry
+                        // their own node scale (the Pirate grass tufts draw at 1/7.5 of the detail's), so the scale test
+                        // would miss them (round 6 tints.probe: every untinted draw at 0.000 map units was such a piece)
+                        if (dd <= kExact * kExact) return &e;
                         if (std::fabs(s - e.scale) > 0.04f * e.scale && std::fabs(s / k - e.scale) > 0.04f * e.scale) continue;
                         const float tol = 0.02f + 0.02f * e.scale;
-                        const float d0 = t[0] - e.pos[0], d1 = t[1] - e.pos[1], d2 = t[2] - e.pos[2];
-                        if (d0 * d0 + d1 * d1 + d2 * d2 <= tol * tol) return &e;
+                        if (dd <= tol * tol) return &e;
                     }
                 }
         }

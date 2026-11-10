@@ -19,16 +19,22 @@ import { startServer, ROOT } from "./mcpclient.mjs";
 import { keepOut, CLEAR } from "./detail-keepout.mjs";
 import { rockPass } from "./detail-rock.mjs";
 import { landPass } from "./detail-land.mjs";
-import { cliffPass } from "./detail-cliff.mjs";
+import { ledgePass } from "./detail-ledge.mjs";
+import { crownPass } from "./detail-crown.mjs";
+import { coastPass } from "./detail-coast.mjs";
+import { floraPass } from "./detail-flora.mjs";
 import { lintPass } from "./detail-lint.mjs";
+import { perchPass } from "./detail-perch.mjs";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const argv = process.argv.slice(2);
 const opt = (f, d) => { const i = argv.indexOf(f); return i >= 0 ? argv[i + 1] : d; };
 const OUT = path.resolve(opt("--out", path.join(HERE, "out", "detail")));
 const ID = opt("--project", process.env.CALDERA_ID || "caldera");
+const BUILD_OUT = opt("--build-out", path.join(HERE, "out"));   // build.mjs's --out (castles.json: the castle cameras the perched lint reads)
 const GAME = process.env.MELANGE_GAME_DIR || "C:/Users/Jamin/Desktop/WUMFix/testenv/D";
 process.env.MELANGE_EXE ??= path.join(ROOT, "build/x86-release/Melange.exe");
+export const DETAIL_BUDGET = +(process.env.DTL_BUDGET ?? 505);
 const ONLY = opt("--passes", "") ? opt("--passes").split(",") : null;
 fs.mkdirSync(OUT, { recursive: true });
 const say = (...a) => console.log(new Date().toISOString().slice(11, 19), ...a);
@@ -41,8 +47,14 @@ export const PASSES = [
   { name: "flags", run: flagsPass },
   { name: "land", run: landPass },
   { name: "rock", run: rockPass },
-  { name: "cliff", run: cliffPass },
+  // round 6: horizontal strata bands replace round 5's boulder "strata" (detail-cliff.mjs, removed); columnar crowns on the
+  // crests and cliff tops; the coast (stacks, half-sunk blocks, stepped columns); the first flora; the perched lint
+  { name: "ledge", run: ledgePass },
+  { name: "crown", run: crownPass },
+  { name: "coast", run: coastPass },
+  { name: "flora", run: floraPass },
   { name: "lint", run: lintPass },
+  { name: "perch", run: perchPass },
 ];
 
 // build.mjs places four Camelot flags (CAMELOT16, CAMELOT19 of Multi.NiceToSiege) for the castles' towers, in world units though
@@ -63,20 +75,34 @@ try {
   await call("open_project", { id: ID });
   const fp0 = (await call("sim_fingerprint", { detail: true })).json;
   report.before = { sim: fp0.sim, visual: fp0.visual, counts: fp0.counts };
+  const script0 = (await call("get_script", {}, { soft: true })).text;
   say("fingerprint before", fp0.sim.slice(0, 16), "visual", fp0.visual.slice(0, 16), JSON.stringify(fp0.counts));
-  if (fp0.counts.emitter > 0 || (await call("list_scenery", { search: "_dtl" })).json.total > 0 || (await call("list_scenery", { search: "_landtint" })).json.total > 0) throw new Error("the project already holds the detail layer: run detail.mjs on a freshly built project (restore it or run build.mjs first)");
+  if (fp0.counts.emitter > 0 || (await Promise.all(["_dtl", "_ldg", "_flo"].map(async (q) => (await call("list_scenery", { search: q })).json.total))).some((n) => n > 0) || (await call("list_scenery", { search: "_landtint" })).json.total > 0) throw new Error("the project already holds the detail layer: run detail.mjs on a freshly built project (restore it or run build.mjs first)");
   const spawns = ((await call("describe_level", { limit: 1 })).json.spawns ?? []).map((s) => {
     const p = s.map ?? s.at ?? s.pos ?? [];
     return Array.isArray(p) ? [p[0], p[2] ?? p[1]] : [p.x, p.z];
   }).filter((p) => Number.isFinite(p[0]) && Number.isFinite(p[1]));
-  const ctx = { call, keepOut: (x, z, r = 0) => keepOut(x, z, r, spawns), spawns, clear: CLEAR, say };
+  const ctx = { call, buildOut: BUILD_OUT, keepOut: (x, z, r = 0) => keepOut(x, z, r, spawns), spawns, clear: CLEAR, say };
   for (const p of PASSES) {
     if (ONLY && !ONLY.includes(p.name)) continue;
+    if (p.name === "flora") {
+      // the layer's DETAIL BUDGET (round 6): the level with 546 details crashed the game at load twice (WormsMayhem+0x1d0fad, a
+      // null read; the 2 GB address space had 224 MB free), 520 loaded; not pinned to count or memory, so the layer keeps the
+      // level's details (the fingerprint's count, sim and visual) at DETAIL_BUDGET or under, and the flora takes what is left
+      const c = (await call("sim_fingerprint", {})).json.counts;
+      ctx.floraMax = Math.max(0, DETAIL_BUDGET - (c.simDetails + c.scenery + c.light + c.emitter + c.sound));
+      say("budget", DETAIL_BUDGET, "flora may add", ctx.floraMax);
+    }
     const t0 = Date.now();
     const stats = await p.run(ctx);
     const fp = (await call("sim_fingerprint", { against: fp0 })).json;
     report.passes.push({ name: p.name, ms: Date.now() - t0, stats, simSame: fp.against.same, visualParts: fp.against.visualParts });
     say("pass", p.name, JSON.stringify(stats).slice(0, 300), "sim", fp.against.same ? "unchanged" : "CHANGED " + JSON.stringify(fp.against.simParts));
+    if (!fp.against.same && fp.against.simParts?.includes("script")) {
+      // keep both texts for the diagnosis (round 6: one run's script part changed under a pass that never touches it)
+      fs.writeFileSync(path.join(OUT, "script-before.lua"), script0);
+      fs.writeFileSync(path.join(OUT, "script-after.lua"), (await call("get_script", {}, { soft: true })).text);
+    }
     if (!fp.against.same) throw new Error(`pass ${p.name} changed the sim (${JSON.stringify(fp.against)}): nothing is saved`);
   }
   const fp1 = (await call("sim_fingerprint", { against: fp0, detail: true })).json;

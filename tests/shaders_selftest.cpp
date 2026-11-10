@@ -300,12 +300,35 @@ void TestTints() {
     Check(t.Find(m) && t.Find(m)->rgba[0] == 0.4f, "the neighbour one unit away takes its own");
     m[12] = 10.3f;
     Check(!t.Find(m), "a draw off the detail's position is not tinted");
-    m[12] = 10.f, m[0] = m[5] = m[10] = 1.f;
-    Check(!t.Find(m), "a draw at the position with another scale (a worm walking past) is not tinted");
+    // (round 6: a draw within kExact, 0.002 map units, of the detail's origin is the detail whatever its scale: meshes with
+    // their own node scale; a worm walking past is never that exact)
+    m[12] = 10.05f, m[0] = m[5] = m[10] = 1.f;
+    Check(!t.Find(m), "a draw near the position with another scale (a worm walking past) is not tinted");
+    m[12] = 10.f;
     float w[16] = {3, 0, 0, 0, 0, 3, 0, 0, 0, 0, 3, 0, 200, 40, -600, 1};
     Check(t.Find(w) && t.Find(w)->rgba[0] == 0.2f, "world positions (map x 20) with the detail's own scale match too (what the game draws)");
     m[0] = m[5] = m[10] = 3.f, m[12] = 7.99f;
     Check(!t.Find(m), "grid cell borders do not hide or invent matches");
+    {
+        // a slab: scale (1.2, 0.3, 0.4) turned 40 degrees about y, in Cg rows (row k = the axis k scaled and turned)
+        tl::Entry g;
+        const double frame[3] = {1, 1, 1};
+        const float sc[3] = {1.2f, 0.3f, 0.4f};
+        g.pos[0] = 40.f, g.pos[1] = 5.f, g.pos[2] = 40.f, g.scale = tl::DetailScale(frame, sc), g.rgba[0] = 0.6f;
+        tl::Table ts;
+        ts.Set({g});
+        const float c = std::cos(0.698f), s = std::sin(0.698f);
+        float rows[16] = {1.2f * c, 0, -1.2f * s, 0, 0, 0.3f, 0, 0, 0.4f * s, 0, 0.4f * c, 0, 40, 5, 40, 1};
+        Check(ts.Find(rows) && ts.Find(rows)->rgba[0] == 0.6f, "a rotated non-uniform slab matches its detail (rows hold the axes)");
+        float cols[16] = {1.2f * c, 0, 0.4f * s, 0, 0, 0.3f, 0, 0, -1.2f * s, 0, 0.4f * c, 0, 40, 5, 40, 1};
+        Check(ts.Find(cols) && ts.Find(cols)->rgba[0] == 0.6f, "... and so does the transposed layout (columns hold the axes)");
+        float node[16] = {0.04f, 0, 0, 0, 0, 0.04f, 0, 0, 0, 0, 0.04f, 0, 800, 100, 800, 1};
+        Check(ts.Find(node) && ts.Find(node)->rgba[0] == 0.6f, "a mesh with its own node scale, drawn exactly at the detail's origin, takes its tint");
+        node[12] = 800.4f;
+        Check(!ts.Find(node), "... but not 0.02 map units off it with another scale");
+        const float three[3] = {3.f, 3.f, 3.f};
+        Check(std::fabs(tl::DetailScale(frame, three) - 3.f) < 1e-6f, "a uniform scale is that scale");
+    }
     t.Set({});
     Check(t.Size() == 0 && !t.Find(w), "an empty table matches nothing");
 }

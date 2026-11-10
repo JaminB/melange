@@ -892,3 +892,52 @@ Findings (testenv D, Sunstone 2.3.1 + `sunstone-tint`, 2026-11-09):
   its value: mid-grey scree needs about #a39b91.
 - Perf with Sunstone on (B's game closed, testenv D, oblique camera, 15 s): undressed 37.5 fps, GPU 4.6 ms p50; dressed
   (308 pieces + land tint) 36.2 fps, GPU 6.3 ms p50 (p95 9.3). The game is CPU-bound at about 37 fps.
+
+## Detail layer, round 6 (rock vocabulary, coast, first flora): what the tools gained and what the game showed
+
+New tool group `ledge` (`src/tools/ledge.ts`, pure code in `src/lib/ledge.ts`, tests `test/ledge.test.ts`):
+
+| Tool | What it does |
+|---|---|
+| `place_aligned` | Copies of one base scenery mesh laid ALONG THE SURFACE: each piece a slab of `size` [length, thickness, depth] (any non-uniform size), its length along the slope's contour (or a `tangent`), its depth out of the face (the horizontal downhill pitched toward the normal by `pitch`, 0 a level shelf, 1 a plate on the face), sunk `embed` of its depth into the face; `pos` + `normal` (or `xz`, sampled), `lift`, `jitter`, `tint`, `dry` (answers each piece's `front`, top, bottom). |
+| `plan_ledges` | Strata for a region's steep faces (`box` or `centre` + `radius`, `exclude` circles, `minY`): faces are connected cells over `minSlope`; band heights absolute (`heights`), level and shared by every face (`spacing` + `offset`) or `count` per face; each band's contour traced, chained into polylines and cut into slabs (`length`, `gap`, `breaks`) to hand to `place_aligned`. Read-only. |
+| `find_crests` | Ridge-crest and cliff-top polylines (`kinds`), each point with its outward direction and drop: where crowns change the silhouette. Read-only. |
+| `lint_perched` | The clumps of a layer whose underside shows from given cameras (`cams` [{name, pos}]) over the ground beneath them: a block glued to a wall or hanging over a channel. Read-only. |
+
+Per-copy tint and non-uniform scale already existed (`copy_base_details {tint, scale: [x, y, z]}`); what was missing was
+the game honouring both at once (below).
+
+**Melange `MirageTints` matching** (`src/render/mirage/tints_logic.h`, selftests in `tests/shaders_selftest.cpp`): a draw is
+matched to its tinted detail by position and scale. The scale was the mean length of the matrix's rows against the mean
+of the detail's axis scales, which differ once a strongly non-uniform piece is turned (a [1.2, 0.3, 0.4] slab at any yaw),
+so `place_aligned` slabs drew untinted (Horror5's pale blue-grey). Both sides are now the RMS axis scale (rotation and
+layout invariant; equal to the old value for a uniform scale). And a draw within 0.002 map units of a tinted detail's
+origin is that detail whatever its scale: meshes with their own node scale (the Pirate grass tufts draw at 1/7.5 of the
+detail's) never matched (`tints.probe` showed every untinted draw at 0.000 map units was such a piece). In the round-6
+Test, 147312 of 209880 tint lookups matched (108936 of 214608 before the fixes, same level).
+
+Bench: `detail-ledge.mjs` (strata bands, replaces round 5's boulder `detail-cliff.mjs`), `detail-crown.mjs` (columnar
+crowns on crests and cliff tops), `detail-coast.mjs` (sea-stack groups with a size gradient, half-submerged blocks with
+their feet in the bed, stepped columns at the waterline, the shore castles' beaches left bare), `detail-flora.mjs` (grass
+clusters on the sand ring, the green patches and the castle aprons), `detail-perch.mjs` (`lint_perched` over the fixed
+camera set; removes what it flags). The rock palette is one charcoal-slate family (`BASALT`, `SCREE`, `STRATA`), none
+lighter than the castle stone; the headland breakers are gone (the coast pass does the waterline). Strata are tagged
+`_ldg` (they overhang their faces on purpose, so the perched lint, which reads `_dtl`, skips them), flora `_flo`;
+`detail-verify.mjs` checks all three.
+
+Findings (testenv D, Sunstone 2.3.1 + `sunstone-tint`, 2026-11-10):
+- **A level with too many details crashes the game at load.** Caldera dressed to 546 details (by the project's add and
+  remove ops; the game's own count is about 8 more) faulted twice at `WormsMayhem.exe+0x1d0fad` (a null read) while
+  loading, with 224 MB of the 2 GB address space free (largest block 63 MB; the game is not large-address-aware); 520
+  loaded, and so did each part of the layer alone. Not pinned to the count or to memory. `detail.mjs` keeps the level at
+  `DETAIL_BUDGET` (505, the fingerprint's count of sim and visual details; `DTL_BUDGET`) and the flora takes what is left.
+  The first flora (ENGLAND2/3, CAMELOT1, PIRATE1, WAR3 from four more bases) is not why: the layer without it loaded.
+- **A squashed boulder is a lens.** Horror5 flattened to a 3 : 1 : 0.6 slab draws as a disc ("mushroom cap") when it
+  stands half out of a face; mostly sunk (60%+) only its lip shows, but from the side the lip still reads as a lens, not a
+  bed of rock. Strata that read as layers need a slab mesh (a mod mesh bank) or many more, longer, overlapping pieces.
+- **Base `Multi.W3DAppleCoreIsland`'s PIRATE11-13** ("leafy", albedo #647b49) draw as pale rounded stones in this level:
+  not flora.
+- Sunstone off, the tinted rock draws in its own pale blue-grey texture and the flora in its own greens (no error).
+- `sim_fingerprint` with the game server gone answers a different `script` part instead of failing (round 6: a long
+  `find_crests` on the whole island, 86 s, outlived the server connection, and the pass was refused as a sim change).
+  `find_crests` now samples heights with one drop each (about 25 s on Caldera); keep regions small.

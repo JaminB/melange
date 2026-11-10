@@ -14,7 +14,9 @@ try {
   await call("connect", opt("--url") ? { url: opt("--url") } : { gameDir: process.env.MELANGE_GAME_DIR || "C:/Users/Jamin/Desktop/WUMFix/testenv/D" });
   await call("open_project", { id: opt("--project", "caldera") });
   const spawns = ((await call("describe_level", { limit: 1 })).json.spawns ?? []).map((s) => [s.map[0], s.map[2]]);
-  const d = (await call("list_scenery", { search: "_dtl", units: "map", limit: 2000 })).json.details;
+  // round 6: the rock (_dtl), the strata (_ldg) and the flora (_flo)
+  const d = [];
+  for (const q of ["_dtl", "_ldg", "_flo"]) d.push(...(await call("list_scenery", { search: q, units: "map", limit: 2000 })).json.details);
   // round 3: each piece's footprint (Horror5's 3.11 x 3.21 box at its x and z scale, 0.85 of the half side) must be clear too,
   // and a piece under the water is a fault only when no _dtl piece within 4 of it shows above the water (the lower blocks
   // of a kitbashed sea stack are sunk on purpose under the ones that show)

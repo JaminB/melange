@@ -1,3 +1,6 @@
+// Round 6: ONE PALETTE (the judge: "warm brown against charcoal ... the light grey rounded pebbles read as snowballs"): every
+// crag charcoal-slate, the scree and skirts a slate grey that draws darker than the castle stone; the headland breakers are
+// gone (detail-coast.mjs does the waterline: stacks, half-submerged blocks, stepped columns).
 // Round 5: the lava red-shift is capped at 30% within 3 units of lava (tintAt); the slope-break and low scree are gone
 // (invisible at gameplay distance); medium-scale outcrops, lava-bank ribs on the lip, switchback cut-banks, foot skirts
 // and mid-grey scree fans are planned with erg-mcp plan_clusters (detail-cliff.mjs does the cliff strata, detail-lint.mjs
@@ -56,11 +59,13 @@ const padDist = (x, z) => Math.min(...PADS.map((p) => Math.hypot(p[0] - x, p[1] 
 
 // Round 4 palette: dark warm basalt, a few values so neighbouring crags do not read as one cast; within reach of the lava (a
 // tongue, the lake, the crater floor) a slight red cast, strongest at the lava's edge.
-export const BASALT = ["#2e2724", "#3a302b", "#342b27", "#30302c"];
+// round 6: cool charcoal-slate (round 4-5's warm browns read as another stone beside the charcoal cone)
+export const BASALT = ["#3b3c40", "#34353a", "#3f4045", "#37383c"];
 export const SCORCHED = "#4a2c24";
 // round 5: mid grey (Sunstone draws the tint times the texel's luminance / 0.5, and Horror5's texels average 0.23, so these
 // draw near #4a4641, a mid grey beside the basalt): the scree fan's three steps, the toe's the lightest
-export const SCREE = ["#958d84", "#a39b91", "#aca49a"];
+// round 6: slate, drawing near #373a3d-#3f4245 (round 5's #a39b91 drew as light pebbles, brighter than the castle stone)
+export const SCREE = ["#787c82", "#80848a", "#878b90"];
 const hx = (c) => [1, 3, 5].map((i) => parseInt(c.slice(i, i + 2), 16));
 const mix = (a, b, t) => "#" + hx(a).map((v, i) => Math.round(v + (hx(b)[i] - v) * Math.max(0, Math.min(1, t))).toString(16).padStart(2, "0")).join("");
 /** The lava's nearness at (x, z), 0 (none within 3) to 1 (at its edge). Round 5: 3 units, not 8 (the judge: "cap the lava
@@ -280,7 +285,8 @@ export async function rockPass(ctx) {
   const bring = await sample(shore.flatMap((c) => Array.from({ length: 8 }, (_, j) => [c.x + 2 * Math.cos(j * 0.785), c.z + 2 * Math.sin(j * 0.785)])));
   const landed = shore.filter((c, i) => bring.slice(i * 8, i * 8 + 8).some((q) => q && q.y >= WATER + 0.2));
   stats.breakersAlone = shore.length - landed.length;
-  stats.breakers = (await crags(landed, { waterline: true, overlap: 0.75, sink: 0.25, show: 0.3 })).length;
+  // round 6: the breakers are left to detail-coast.mjs (a size gradient and pieces half in the water, not one line of one size)
+  stats.breakers = 0;
 
   // ================= round 5: the MEDIUM scale. Round 4's judge: "at gameplay distance the cone body is unchanged ... the
   // medium scale (outcrops of 2-6 units, rock ribs along the lava channels, ledges along switchback cut-banks) is missing".
