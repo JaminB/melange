@@ -314,7 +314,7 @@ void LandRayOp(const Call& c, Result& r, void*) {
             case gamestate::LandRayResult::Hit:
                 o.Bool("hit", true).Float("t", h.t)
                     .Raw("at", vec3(v[0] + (v[3] - v[0]) * h.t, v[1] + (v[4] - v[1]) * h.t, v[2] + (v[5] - v[2]) * h.t))
-                    .Raw("normal", vec3(h.normal.x, h.normal.y, h.normal.z));
+                    .Raw("normal", vec3(h.normal.x, h.normal.y, h.normal.z)).Int("frame", h.frame);   // 65535: the heightmap
                 break;
             case gamestate::LandRayResult::Miss: o.Bool("hit", false); break;
             case gamestate::LandRayResult::Budget: o.Bool("hit", false).Str("error", "budget"); break;

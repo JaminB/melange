@@ -149,13 +149,38 @@ parabolic payload keeps its flight as a base (`m_vInitialPosition` +0x28, `m_vIn
 `m_vAcceleration` +0x40, `m_tInitialTime` +0x1a0, `ParabolicPayloadLogicEntity`) and moves nothing until a collision
 re-bases it, so Melange knows where the mine is at any sim time. Every sim tick (`levels/factory.cpp`, GuideThrown) it
 sweeps the mine's step since the last tick with the engine's own straight land sweep (`gamestate::LandRay`, the
-camera's ray cast at 0x466ae0, the query's globals saved and put back) and, at the first hit, moves the base there and
-runs the payload's own come-to-rest (`ParabolicPayloadLogicEntity` 0x5758c0: the landing message, velocity and
-acceleration zeroed, the proximity fuse armed through the usual rest path). If the engine collides first (a worm, an
-object, ground it does see), the mine is rested at its contact point when land is within 2 map units of it, else its
-new arc is followed; one that goes under the water is left to the engine's drowning. The game's fire record
-(`factory.fired`, erg-mcp `game_mines`) says for each thrown mine its `target`, its `landing` (`melange`: landed at the
-sweep's hit; `engine`: the engine's own rest; `water`; `lost`) and how far from its target it lies.
+camera's ray cast at 0x466ae0, the query's globals saved and put back) and, at the first hit on a top face, rests the
+mine there: its base 0.75 map units over the hit (the engine's own rest height: its collider sweeps from the bottom of
+the mine's sphere, so a base put on the land itself is half in it and the engine pops it out, which is what set 84 of
+the 120 held mines of the first round moving), the land frame the sweep hit written into the payload as its own land
+collision would (+0x190/+0x18c: the payload's expiry asks the landscape about that frame and the game asserts on a
+frame id past its list, LandscapeLogicEntity.cpp:1987, which crashed a second Test of one process in round 1 when a
+rested mine kept a fresh payload's garbage there), then the payload's own come-to-rest (`ParabolicPayloadLogicEntity`
+0x5758c0: the landing message, velocity and acceleration zeroed, the proximity fuse armed through the usual rest
+path). A hit on a wall or a ceiling (the face's normal within 60 degrees of level) does not rest the mine on the face:
+it is dropped from just off the face, still, under gravity, and the next hit (the floor at the wall's foot) lands it
+(after three such hits it rests on the face). If the engine collides first (a worm, an object, ground it does see),
+the mine is left where the engine rested it (lifted onto the land when its base is under it), or rested on the land
+within 2 map units of a bounce, else its new arc is followed; one that goes under the water is left to the engine's
+drowning.
+
+A landed mine is then **held**: the engine keeps simulating the mine's flight in some state of its own after
+Melange's landing (its collision events come 5-8 ticks later, 5-15 map units on, at ground its own sweep does see; then
+it bounces, rests elsewhere, or reaches the water), and each of those collisions writes the parabola again (round 1: 84
+of 120 held mines "set moving", 32 of 58 under the land). Where that state lives was not found (not in the payload's
+0x1c8 bytes, whose only positions are the base and the rest record at +0x12c/+0x138/+0x1a8 that the come-to-rest fills,
+which Melange stills so it never carries the last sweep's junk velocity; the 0x74-byte colliders of 0x514b90 never tick
+for a mine). So the hold keeps the mine where Melange landed it, where it is drawn and where its fuse goes off; a mine
+whose engine twin reaches the water is deleted by the engine (`destroyed` in the fire record, 19 of 150 in round 2's
+long run), which is the one loss left. A held mine moved
+at rest is put back; one given a velocity is rested again where it landed, unless an
+explosion went off within its own radius (plus 1.5 map units) of the mine in the last 15 ticks, which frees it (the
+blast's physics play, as for any mine). Every 50 ticks a held mine is checked against the land straight under it (a
+short sweep from just over the mine, so a roof further up is not seen) and lifted onto it when its base is under the
+top. The game's fire record (`factory.fired`, erg-mcp `game_mines`) says for each thrown mine its `target`, its
+`landing` (`melange`: landed at the sweep's hit; `engine`: the engine's own rest; `water`; `lost`), how far from its
+target it lies and, under `held`, how often it was put back (`rePins`), rested again (`velPins`), dropped off a wall
+(`deflects`), lifted (`lifts`), whether a blast freed it and the land frame it rests on.
 
 Why: the engine's own mine collision misses ground that the same sweep hits. In the game the mine's step is the
 collider service's (0x5150e0): the same land sweep (0x466ae0) over the next 20 ticks from the bottom of the mine's

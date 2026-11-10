@@ -71,6 +71,8 @@ enum class LandRayResult : uint8_t { Hit, Miss, Unavailable, Budget, Invalid };
 struct LandHit {
     float t;                          // 0..1 along a->b
     Vec3 normal;                      // unit; the land's outward surface normal at the hit
+    uint16_t frame;                   // the land frame hit (the engine's index into its frame list), 0xffff: the heightmap
+    uint16_t aux;                     // the sweep's second word about the hit (what the engine keeps beside the frame)
 };
 constexpr int kLandRaysPerFrame = 256;       // all callers together; more in one frame: Budget
 constexpr float kLandRayMaxLength = 4096.f;  // a longer segment is searched over its first 4096 units only

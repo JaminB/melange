@@ -58,7 +58,7 @@ int WalkEntities(const Layout& l, Entity* out, int max);
 
 // LandRay without the game. One engine sweep runs origin + step * k for k in [0, ticks]; `time` is the hit's k (the
 // engine's float hit time) and `normal` the raw normal it computed. False: the sweep could not run (fault, bad pointers).
-struct RawLandHit { bool hit; float time; Vec3 normal; };
+struct RawLandHit { bool hit; float time; Vec3 normal; uint16_t frame; uint16_t aux; };   // frame 0xffff: the heightmap
 using LandSweep = bool (*)(const Vec3& origin, const Vec3& step, int ticks, RawLandHit* out);
 constexpr int kLandRayTicks = 1000;                     // the engine's own ray cast steps a segment in 1000
 bool InWorld(const Vec3& v);                            // finite and within +-1e6 on every axis

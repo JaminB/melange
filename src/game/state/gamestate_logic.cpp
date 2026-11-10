@@ -524,6 +524,8 @@ LandRayResult SegmentLandRay(LandSweep sweep, const Vec3& a, const Vec3& b, Land
     if (!r.hit || !std::isfinite(r.time) || r.time > static_cast<float>(kLandRayTicks)) return LandRayResult::Miss;
     const float s = r.time > 0.f ? r.time / static_cast<float>(kLandRayTicks) : 0.f;
     out->t = (std::min)(s * frac, 1.f);
+    out->frame = r.frame;
+    out->aux = r.aux;
     const Vec3& n = r.normal;
     const float nl = std::sqrt(n.x * n.x + n.y * n.y + n.z * n.z);  // NaN or inf for a bad normal
     if (std::isfinite(nl) && nl > 1e-6f) out->normal = Vec3{n.x / nl, n.y / nl, n.z / nl};

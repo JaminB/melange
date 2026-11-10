@@ -123,6 +123,24 @@ test("mine factory settings are optional, range-checked and carried by applyPatc
   }
   const edited = applyPatch(upgrade(baseV2()), withFactory({ activation: 12, schemeMines: false }));
   assert.deepEqual(edited.objects!.at(-1), { knot: "minefactory", type: "minefactory", factory: { activation: 12, schemeMines: false } });
+  // the throw (erg-mcp's mines round 2): every field validates, the bad ones are refused, and a project saved by the
+  // panel keeps them all (applyPatch then toPatch round-trips the object as it came)
+  const throwing = { activation: 255, inactiveTurns: 2, keepKnot: true, launchers: [[-300, 900, 40], [260, 880, -120]],
+    throw: { minRange: 20, maxRange: 115, apex: 25, pattern: "targets", avoidWater: true, scatter: 12, targetShare: 40, targets: [[652, -1456], [1424, 816], [-1538, 634], [-1510, -624]] } };
+  for (const f of [throwing, { throw: { maxRange: 30 } }, { throw: { maxRange: 30, pattern: "ring", avoidWater: false } }]) {
+    const p = withFactory(f);
+    assert.ok(validatePatch(p).ok, `${JSON.stringify(f)}: ${validatePatch(p).errors.join("; ")}`);
+    assert.ok(validatePatchObjects(p, baseV2()).ok, validatePatchObjects(p, baseV2()).errors.join("; "));
+  }
+  for (const f of [{ throw: {} }, { throw: { maxRange: 0 } }, { throw: { minRange: 50, maxRange: 30 } }, { throw: { maxRange: 30, pattern: "spiral" } }, { throw: { maxRange: 30, pattern: "targets" } },
+    { throw: { maxRange: 30, targets: [[1.5, 2]] } }, { throw: { maxRange: 30, apex: 0 } }, { throw: { maxRange: 30, targetShare: 101 } }, { throw: { maxRange: 30, lift: 2 } }]) {
+    assert.equal(validatePatch(withFactory(f)).ok, false, JSON.stringify(f));
+  }
+  const thrown = applyPatch(upgrade(baseV2()), withFactory(throwing));
+  assert.deepEqual(thrown.objects!.at(-1), { knot: "minefactory", type: "minefactory", factory: throwing });
+  const back = toPatch(upgrade(baseV2()), thrown);
+  assert.deepEqual(back.objects!.find((o) => o.knot === "minefactory"), { knot: "minefactory", type: "minefactory", factory: throwing });
+  assert.ok(validatePatch(back).ok, validatePatch(back).errors.join("; "));
 });
 
 test("trims: a base frame's kept box counts in the cells, rides in the patch and the scene, and undoes", () => {
