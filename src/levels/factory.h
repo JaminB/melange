@@ -32,6 +32,11 @@ struct Flight {
     float vx = 0, vz = 0;       // a thrown mine's sideways speed (world units per ms); 0 for an eruption or a drop
     uint32_t serial = 0;
     unsigned long long at = 0;
+    // the mine followed (the fire's first thrown one) and, once Melange has landed it (or it went into the sea), where
+    // it lies (world units): a camera following the flight stays there instead of running on along the launch arc
+    uint32_t handle = 0;
+    bool landed = false;
+    float landedAt[3] = {};
 };
 bool LastFlight(Flight* out);
 // A mine at pos moving at vel (world units, per ms), made by the game's own mine maker as the factory's are; sim tick

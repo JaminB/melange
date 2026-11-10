@@ -173,6 +173,18 @@ constexpr float kMinApart = 30.f;              // world units: a launcher's mine
 // log says so (the round-4 run, Caldera: volleys of 10, 10, 10, then 3 and 1 as the island filled to 31 mines).
 constexpr int kPayloadPool = 32, kPoolKeep = 4;
 constexpr int kSpotTries = 12;
+// The sea reaching a held mine (mines round 4, 2026-11-10): the engine drowns a payload through its queued
+// Payload.CollideWithWater, solved at its launch (or its own collision) for the arc's crossing of the water plane; a mine
+// at rest on land has no crossing queued, and a held one had its launch arc's event dropped, so when the sea rose over a
+// held mine nothing came: in round 3's run 7 mines lay under the water alive, the factory's count never dropped and it
+// fired nothing after turn 12 (idleTurnsLeft -46). So every tick a held mine whose base is kDrownOver under the water is
+// let go and handed to the engine's own drowning: the payload's event post (0x574c40, a thiscall: the message name's id,
+// the ms from the flight's base time, and the position, velocity and third vector a PayloadEventMessage carries) with 0
+// ms delivers the message to the payload at once (0x68b89e), and its handler for Payload.CollideWithWater (0x577cc4)
+// runs the water contact (vtable +0x4c) from the payload's own position, as the engine's queued event would. The name's
+// id is the engine's MessageName at 0x95e2b8 (0x68bbe6: a thiscall, create = 1, the id in ax).
+constexpr uintptr_t kPostEvent = 0x574c40, kWaterName = 0x95e2b8, kNameId = 0x68bbe6;
+constexpr float kDrownOver = 1.f * kWorldPerMap;   // world units of water over a held mine's base before it is drowned
 
 struct Field {
     bool asked = false;
@@ -214,6 +226,7 @@ struct FiredMine {
     int rePins = 0, velPins = 0, deflects = 0, lifts = 0;
     int dropped = 0;              // stale flight events of the engine's kept from it while held (see kStaleEvents)
     bool freed = false;
+    bool sunk = false;            // the sea reached it while held: handed to the engine's drowning (kPostEvent)
     int frame = -1;               // the land frame it rests on (-1: not landed by Melange; 65535: the heightmap)
 };
 struct Fire {
@@ -238,6 +251,8 @@ std::atomic<ULONGLONG> g_fireAt{0};      // GetTickCount64 of the last
 Flight g_flight;                         // the last fire's first mine (main thread: PlaceMines, render.fireShot's frame)
 bool g_hasFlight = false;
 bool g_restOk = false;                   // kParaRest matches build #1077 (Install)
+bool g_drownOk = false;                  // kPostEvent and kNameId match build #1077 (Install)
+int g_drowned = 0;                       // held mines handed to the engine's drowning this match
 bool g_landRayWarned = false;
 
 // A thrown mine Melange lands (main thread: PlaceMines and the sim tick).
@@ -424,6 +439,39 @@ bool RestAt(uintptr_t obj, bool parabolic, const float at[3], uint32_t now, uint
     return ok;
 }
 
+// The mine drowned by the engine: its own Payload.CollideWithWater, built and delivered as the engine's queued one would
+// be (see kPostEvent). false on another build.
+bool DrownNow(uintptr_t obj, const float at[3], uint32_t now) {
+    if (!g_drownOk) return false;
+    // the water contact expects a payload in motion (it normalises the velocity and re-bases the parabola: a still one
+    // trips PayloadLogicEntity.cpp:590, XVector3.h:683 and ParabolicPayloadLogicEntity.cpp:625, seen in the round-4
+    // experiment), so the mine is set falling gently from where it lies first, as one dropping into the sea would be
+    const float down[3] = {0, -0.02f, 0}, grav[3] = {0, -kMineGravity, 0};
+    mem::Write(obj + kPInitPos, at, 12);
+    mem::Write(obj + kPInitVel, down, 12);
+    mem::Write(obj + kPAccel, grav, 12);
+    mem::Write(obj + kPInitTime, &now, 4);
+    const uint32_t id = reinterpret_cast<uint16_t(__thiscall*)(uintptr_t, int)>(kNameId)(kWaterName, 1);
+    const float up[3] = {0, 1, 0};
+    reinterpret_cast<void(__thiscall*)(uintptr_t, uint32_t, int, const float*, const float*, const float*)>(kPostEvent)(obj, id, 0, at, down, up);
+    return true;
+}
+
+// Whether (x, z) (world units) lies within `radius` world units of one of the throw's avoid lines.
+bool NearAvoid(const erg::ThrowSpec& t, float x, float z, float radius) {
+    for (const auto& line : t.avoid) {
+        for (size_t i = 1; i < line.size(); ++i) {
+            const float ax = static_cast<float>(line[i - 1][0]), az = static_cast<float>(line[i - 1][1]);
+            const float bx = static_cast<float>(line[i][0]), bz = static_cast<float>(line[i][1]);
+            const float dx = bx - ax, dz = bz - az, l2 = dx * dx + dz * dz;
+            float u = l2 > 0.f ? ((x - ax) * dx + (z - az) * dz) / l2 : 0.f;
+            u = (std::min)(1.f, (std::max)(0.f, u));
+            if (std::hypot(x - (ax + u * dx), z - (az + u * dz)) <= radius) return true;
+        }
+    }
+    return false;
+}
+
 // The land top at (x, z) by a short straight-down sweep from `fromY` to `fromY - depth`: its y, normal and frame.
 struct LocalLand { float top; uint16_t frame, aux; gamestate::Vec3 normal; };
 std::optional<LocalLand> LandBelow(float x, float fromY, float z, float depth) {
@@ -562,6 +610,11 @@ void GuideThrown(uint32_t tick) {
             g.pinned = true;
             g.pinnedAt = tick;
             g.frame = frame, g.aux = aux;
+            if (g_hasFlight && g_flight.handle == g.handle) {
+                // the fire's first mine is down: a camera following it (render.fireShot {track}) stays on the landing
+                g_flight.landed = true;
+                std::memcpy(g_flight.landedAt, at, sizeof g_flight.landedAt);
+            }
             record();
             ++i;
         };
@@ -589,6 +642,16 @@ void GuideThrown(uint32_t tick) {
             continue;
         }
         if (g.pinned) {
+            if (!std::isnan(water) && g.at[1] + kDrownOver < water) {
+                // the sea has reached it: no longer held, and drowned by the engine's own water contact (see kDrownOver)
+                const bool sunk = DrownNow(g.object, g.at, now);
+                if (sunk) ++g_drowned;
+                Note(g.handle, [&](FiredMine& m) { m.sunk = sunk; });
+                LOG_INFO("[levels] thrown mine %u at (%.1f, %.1f, %.1f) is under the water (%.1f) at tick %u: let go%s (%d drowned this match)", g.handle, g.at[0], g.at[1], g.at[2], water,
+                         tick, sunk ? " and handed to the engine's drowning" : " (another game build: left to the engine)", g_drowned);
+                g_guided.erase(g_guided.begin() + static_cast<std::ptrdiff_t>(i));
+                continue;
+            }
             const bool still = v0[0] == 0.f && v0[1] == 0.f && v0[2] == 0.f && a[0] == 0.f && a[1] == 0.f && a[2] == 0.f;
             if (!still) {
                 if (const Blast* b = BlastNear(g.at, tick)) {
@@ -686,6 +749,10 @@ void GuideThrown(uint32_t tick) {
         At(g, g.lastT, prev);
         At(g, now, cur);
         if (!std::isnan(water) && cur[1] < water - 2.f * kWorldPerMap) {
+            if (g_hasFlight && g_flight.handle == g.handle) {
+                g_flight.landed = true;
+                std::memcpy(g_flight.landedAt, cur, sizeof g_flight.landedAt);
+            }
             drop("water", cur);
             continue;
         }
@@ -806,7 +873,18 @@ void FollowFire(const std::string& stem, const std::vector<MineAt>& before, int 
         f.mines.push_back(fm);
     }
     const bool seen = !f.mines.empty();
-    if (seen) std::memcpy(g_flight.from, f.mines.front().spawn, sizeof g_flight.from);
+    // the mine a tracking camera follows: the first thrown one (its landing is noted in GuideThrown), else the first seen
+    uint32_t followed = 0;
+    if (seen) {
+        followed = f.mines.front().handle;
+        for (const FiredMine& m : f.mines)
+            if (m.thrown) {
+                followed = m.handle;
+                break;
+            }
+        for (const FiredMine& m : f.mines)
+            if (m.handle == followed) std::memcpy(g_flight.from, m.spawn, sizeof g_flight.from);
+    }
     g_following.push_back(std::move(f));
     g_fireAt = GetTickCount64();
     ++g_fireSerial;
@@ -817,6 +895,9 @@ void FollowFire(const std::string& stem, const std::vector<MineAt>& before, int 
         g_flight.gravity = kMineGravity;
         g_flight.serial = g_fireSerial.load();
         g_flight.at = g_fireAt.load();
+        g_flight.handle = followed;
+        g_flight.landed = false;
+        std::memset(g_flight.landedAt, 0, sizeof g_flight.landedAt);
         g_hasFlight = true;
     }
 }
@@ -849,7 +930,7 @@ std::string MineJson(const Fire& f, const FiredMine& m) {
     }
     o.Int("moves", m.moves).Int("movedAfterRest", m.restsAfter);
     if (m.thrown) {
-        o.Int("rePins", m.rePins).Int("velPins", m.velPins).Int("deflects", m.deflects).Int("lifts", m.lifts).Int("dropped", m.dropped).Bool("freed", m.freed);
+        o.Int("rePins", m.rePins).Int("velPins", m.velPins).Int("deflects", m.deflects).Int("lifts", m.lifts).Int("dropped", m.dropped).Bool("freed", m.freed).Bool("sunk", m.sunk);
         if (m.frame >= 0) o.Int("frame", m.frame);
     }
     o.Float("restFromFactoryMap", std::hypot(m.last[0] - f.factory[0], m.last[2] - f.factory[2]) / kWorldPerMap);
@@ -990,6 +1071,11 @@ void __fastcall HkPlaceMines(uintptr_t self, void*) {
     }
     using Random = uint32_t(__cdecl*)();
     const auto rnd = reinterpret_cast<Random>(kSimRandom);
+    // the throw's volley: at most that many a fire, whatever the engine asked (a smaller, steadier rain)
+    if (spec.throwing && spec.throwing->volley > 0 && n > spec.throwing->volley) {
+        LOG_INFO("[levels] %s: the mine factory's fire of %d is capped at the throw's volley of %d", stem.c_str(), n, spec.throwing->volley);
+        n = spec.throwing->volley;
+    }
     // the pool's room (see kPayloadPool): a fire past it would delete the oldest mines
     const int live = PayloadsLive(), room = (std::max)(0, kPayloadPool - kPoolKeep - live);
     if (n > room) {
@@ -1011,8 +1097,9 @@ void __fastcall HkPlaceMines(uintptr_t self, void*) {
         const float base = static_cast<float>(rnd() % 36000u) * (6.2831853f / 36000.f);
         const uint32_t firstTarget = t.targets.empty() ? 0 : rnd() % static_cast<uint32_t>(t.targets.size());
         const float minR = static_cast<float>(t.minRange) * kWorldPerMap, maxR = static_cast<float>(t.maxRange) * kWorldPerMap;
+        const float avoidR = static_cast<float>(t.avoidRadius) * kWorldPerMap;
         std::vector<Throw> throws;
-        int fellBack = 0, atTargets = 0, wetAimed = 0;
+        int fellBack = 0, atTargets = 0, wetAimed = 0, avoided = 0;
         for (int i = 0; i < n; ++i) {
             // kThrowLift over the launch point: a mine made within its own radius (about a map unit) of the ground is
             // rested by the engine at once (the collider step's sweep starts at the sphere's bottom), floating where
@@ -1049,6 +1136,11 @@ void __fastcall HkPlaceMines(uintptr_t self, void*) {
                     const float r = std::sqrt(minR * minR + (maxR * maxR - minR * minR) * u);
                     x = from[0] + r * std::cos(a), z = from[2] + r * std::sin(a);
                 }
+                if (avoidR > 0.f && !t.avoid.empty() && NearAvoid(t, x, z, avoidR)) {
+                    // a corridor the mines keep off (a trail): drawn again
+                    ++avoided;
+                    continue;
+                }
                 const std::optional<float> ground = GroundAt(x, z, from[1]);
                 if (!ground) continue;
                 if (t.avoidWater && !std::isnan(water) && *ground < water + kWorldPerMap) {
@@ -1076,9 +1168,9 @@ void __fastcall HkPlaceMines(uintptr_t self, void*) {
                 throws.push_back(th);
             }
         }
-        LOG_INFO("[levels] %s: the mine factory threw %d of %d mines from %s at landing points %d-%d map units out (%s%s, apex %d), %d at the targets, %d at the highest wet ground drawn (no dry point in %d), %d straight up (no landing point found)",
+        LOG_INFO("[levels] %s: the mine factory threw %d of %d mines from %s at landing points %d-%d map units out (%s%s, apex %d), %d at the targets, %d at the highest wet ground drawn (no dry point in %d), %d straight up (no landing point found), %d draws within %d of an avoid line drawn again",
                  stem.c_str(), made, n, count ? "its launchers" : "the factory", t.minRange, t.maxRange, erg::ThrowPatternName(t.pattern),
-                 t.avoidWater ? ", clear of the water" : "", t.apex, atTargets, wetAimed, kTargetTries, fellBack);
+                 t.avoidWater ? ", clear of the water" : "", t.apex, atTargets, wetAimed, kTargetTries, fellBack, avoided, t.avoidRadius);
         FollowFire(stem, before, n, true, at, throws.empty() ? 0.f : throws.front().vel[1], &throws);
         return;
     }
@@ -1197,6 +1289,10 @@ public:
         } else LOG_WARN("[levels] the mine factory's PlaceMines differs from build #1077: launchHeight and launchRadius are skipped");
         // ParabolicPayloadLogicEntity's come-to-rest: push -1; mov eax, fs:[0]; push 0x7c9786 (its handler frame)
         g_restOk = Expect(kParaRest, {0x6a, 0xff, 0x64, 0xa1, 0x00, 0x00, 0x00, 0x00, 0x68, 0x86, 0x97, 0x7c, 0x00});
+        // its event post: mov eax, fs:[0]; push -1; push 0x7d4ebb; and the message name's id: push ebp; mov ebp, esp; sub esp, 0x14; mov [ebp-0xc], ecx
+        g_drownOk = Expect(kPostEvent, {0x64, 0xa1, 0x00, 0x00, 0x00, 0x00, 0x6a, 0xff, 0x68, 0xbb, 0x4e, 0x7d, 0x00}) &&
+                    Expect(kNameId, {0x55, 0x8b, 0xec, 0x83, 0xec, 0x14, 0x89, 0x4d, 0xf4});
+        if (!g_drownOk) LOG_WARN("[levels] the payload's event post differs from build #1077: a held mine the sea reaches is let go, not drowned");
         g_tickHook = sim::AddTickHook(&OnTick, nullptr, 70);   // follows the fires to where their mines rest, lands the thrown ones
         if (bus::Installed()) {
             g_subBlast = bus::SubscribeAll(bus::Path::Post, &OnBlast);   // the blasts that may free a held mine
@@ -1246,6 +1342,7 @@ void Disarm() {
     g_fired.clear();
     g_blasts.clear();
     g_hasFlight = false;
+    g_drowned = 0;
 }
 
 std::string ReportJson() {
@@ -1335,7 +1432,8 @@ uint32_t FireSerial(ULONGLONG* at) {
 std::string FiresJson() {
     jsonmini::Arr fires;
     for (const Fire& f : g_fired) fires.Raw(FireJson(f));
-    return jsonmini::Obj().Raw("fires", fires.End()).Int("following", static_cast<int>(g_following.size())).Raw("trigger", g_trigger).End();
+    return jsonmini::Obj().Raw("fires", fires.End()).Int("following", static_cast<int>(g_following.size())).Int("held", static_cast<int>(g_guided.size()))
+        .Int("drowned", g_drowned).Raw("trigger", g_trigger).End();
 }
 
 MELANGE_MODULE(LevelFactory);

@@ -13,7 +13,7 @@ import { apply, plan } from "../src/lib/heightfield-plan";
 import { spansAt } from "../src/lib/inspect-field";
 import { Raster } from "../src/lib/inspect-png";
 import { centreColour, lookDelta, materialPatches } from "../src/lib/material-look";
-import { attributeMove, describeMove, mergePerfRuns, offTurnMoves, parseTrace, pickPerfBase, type PerfRun, type TraceSample } from "../src/lib/play-trace";
+import { attributeMove, cleanTrace, describeMove, mergePerfRuns, offTurnMoves, parseTrace, pickPerfBase, type PerfRun, type TraceSample } from "../src/lib/play-trace";
 import { checkTrail, type TrailCheckOptions } from "../src/lib/trail-check";
 import { grids, type Grid } from "../src/lib/voxel";
 import { validate } from "../src/registry";
@@ -79,6 +79,24 @@ test("offTurnMoves: a worm that drops while another plays is one event with its 
   assert.equal(offTurnMoves([sample(0, 1, 1, 0, [[5, 2, [0, 10, 0]]]), sample(1000, 2, 1, 0, [[5, 2, [0.5, 9.5, 0.5]]])]).length, 0);
   // a move at a higher threshold is not one
   assert.equal(offTurnMoves(t, { drop: 12 }).length, 0);
+  // (mines round 4) a trace glitch: WORM0 read 130 map units away for one sample and back the next (round 3's second match) is a
+  // wrong read, put back and listed, not a slide and a fall; a real move that stays is still a move
+  const g: TraceSample[] = [
+    sample(0, 9000, 4, 2, [[0, 0, [47.54, 24.61, -50.28]], [2, 1, [10, 60, 10]]]),
+    sample(1000, 9052, 4, 2, [[0, 0, [-36.29, 16.82, 53.01]], [2, 1, [10, 60, 10]]]),
+    sample(2000, 9100, 4, 2, [[0, 0, [47.54, 24.61, -50.28]], [2, 1, [10, 60, 10]]]),
+    sample(3000, 9150, 4, 2, [[0, 0, [47.54, 24.61, -50.28]], [2, 1, [10, 60, 10]]]),
+  ];
+  const c = cleanTrace(g);
+  assert.equal(c.glitches.length, 1);
+  assert.deepEqual(c.glitches[0], { slot: 0, tick: 9052, read: [-36.29, 16.82, 53.01], was: [47.54, 24.61, -50.28] });
+  assert.deepEqual(c.samples[1].worms[0].pos, [47.54, 24.61, -50.28]);
+  assert.deepEqual(g[1].worms[0].pos, [-36.29, 16.82, 53.01], "the samples given are not changed");
+  assert.equal(offTurnMoves(g).length, 0, "the glitch is no off-turn move");
+  assert.equal(offTurnMoves(g, { glitch: 0 }).length, 1, "without the cleaning it would be one");
+  const stays: TraceSample[] = [g[0], g[1], sample(2000, 9100, 4, 2, [[0, 0, [-36.29, 16.82, 53.01]], [2, 1, [10, 60, 10]]])];
+  assert.equal(cleanTrace(stays).glitches.length, 0, "a worm that stays where it was read is no glitch");
+  assert.equal(offTurnMoves(stays).length, 1);
 });
 
 test("attributeMove: an explosion beside the move in its ticks makes it a blast with the turn's weapon; a mine at rest and the worm's death are named", () => {

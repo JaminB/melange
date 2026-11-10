@@ -61,6 +61,10 @@ export function storedThrow(t: Record<string, unknown>): Record<string, unknown>
   if (Array.isArray(t.targets) && t.targets.length) out.targets = t.targets;
   if (typeof t.scatter === "number" && t.scatter !== 10) out.scatter = t.scatter;
   if (typeof t.targetShare === "number" && t.targetShare !== 50) out.targetShare = t.targetShare;
+  // the volley cap and the avoid corridors (mines round 4), only when set, so older projects hash as before
+  if (typeof t.volley === "number" && t.volley !== 0) out.volley = t.volley;
+  if (typeof t.avoidRadius === "number" && t.avoidRadius !== 0) out.avoidRadius = t.avoidRadius;
+  if (Array.isArray(t.avoid) && t.avoid.length) out.avoid = t.avoid;
   return out;
 }
 

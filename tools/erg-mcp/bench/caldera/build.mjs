@@ -304,6 +304,23 @@ try {
     leakPlugs.push({ at: [lx, lz], trailY: ly ?? null, skin: round2(top), plugTop: round1(y0 + 4), block: r.json?.name ?? r.text.slice(0, 160) });
   }
   say("leak plugs", JSON.stringify(leakPlugs));
+  // (mines round 4) a solid core under the SW trail's fourth leg: in round 3's match a thrown mine's blast and the blasts after it
+  // holed the 7.5-thick skin there (bed about 31.6 at (-43, 38), hollow underneath), a worm fell 26 units into the cone and
+  // drowned and a second died at the hole. The cells left (about 1 500 of 65 535, 5 blocks of 64) do not stretch to a fill under
+  // every trail, so this leg, the one proven to fail, gets two blocks of 2-unit voxels, 8 along the leg, 4 across the bed's middle
+  // and 16 deep, their flat top a quarter unit under the lowest bed height over each footprint (the skin and the block overlap, so
+  // the bed stays solid 16 and more below it); the other trails are kept clear of landing mines by the throw's avoid lines
+  // instead. CORE_FILLS: "x,z,y,halfAlong,halfAcross" per block (map units; y the bed's height there, for the leg's surface).
+  const CORE_FILLS = (process.env.CORE_FILLS ?? "-52.9,36.6,29,4,2;-46.6,38.2,31.5,4,2").split(";").filter(Boolean).map((q) => q.split(",").map(Number));
+  const coreFills = [];
+  for (const [fx, fz, fy, ha, hc] of CORE_FILLS) {
+    const gs = [];
+    for (const [dx, dz] of [[-ha, -hc], [ha, -hc], [-ha, hc], [ha, hc], [0, 0], [-ha, 0], [ha, 0]]) gs.push(await surfAt(fx + dx, fz + dz, fy));
+    const top = Math.min(...gs), depth = 16, y0 = round1(top - 0.25 - depth);
+    const r = await call("add_block", { size: [ha, depth / 2, hc], scale: 2, at: [fx - ha, y0, fz - hc], units: "map", fill: "solid", material: MAT.ash }, { soft: true });
+    coreFills.push({ at: [fx, fz], bed: round2(top), fillTop: round1(y0 + depth), fillBottom: y0, block: r.json?.name ?? r.text.slice(0, 160) });
+  }
+  say("core fills under the SW trail", JSON.stringify(coreFills));
 
   // ---- (v2 round 5) the summit walls: a low wall of dark basalt, one 2-unit voxel thick and about 1 over the bed, along the downhill edge
   // of every trail's last leg from past its landing (its inner face on the bed's edge) and on round the summit terrace from the downhill
@@ -410,12 +427,22 @@ try {
   say("factory settings", brief(await call("set_mine_factory", { ...cadence, schemeMines: false, keepKnot: true, launchHeight: +(process.env.LAUNCH_H || 14), launchRadius: LAUNCH_R,
     units: "map", launchers: LAUNCHERS }), 900));
   // (mines outward, 2026-11-09: the owner wants the mines all over the island, castles included) the throw: the launchers lob
-  // their mines 20-115 map units out, 40 % of each volley aimed within 12 of a team castle's court, the rest anywhere over the
+  // their mines 20-115 map units out, a share of each volley aimed within 12 of a team castle's court, the rest anywhere over the
   // land (a landing point in the sea is drawn again), arcs topping out 25 over the higher end; Melange lands each where its
   // flight meets the land (docs/erg.md, Where a thrown mine lands). MINES_THROW=0 keeps round 5's straight-up eruptions.
+  // (mines round 4) the castle share down from 40 to 25 % (round 3's landing map crowded the four castles and left the inner
+  // and NW slopes thin); a volley of MINES_VOLLEY (4) a fire, so the 24 come in 6 volleys over the first rounds and the top-ups
+  // after that stay small (round 3's three volleys of 10 filled the target by turn 9 and the island saw no fire until mines went);
+  // the mines keep MINES_AVOID (5) map units off the trails and their branches (round 3: mine blasts on the SW trail holed the
+  // 7.5-thick shell over the hollow cone and two worms fell through it and drowned; a mine's blast reaches about 2.5, the bed's
+  // half-width is 2.6). Each trail's polyline is thinned to at most 32 points for the throw's avoid lines.
+  const AVOID_R = +(process.env.MINES_AVOID ?? 5), VOLLEY = +(process.env.MINES_VOLLEY ?? 4), CASTLE_SHARE = +(process.env.MINES_CASTLE_SHARE ?? 25);
+  const thin = (pts, max = 32) => { if (pts.length <= max) return pts; const out = []; for (let i = 0; i < max; i++) out.push(pts[Math.round(i * (pts.length - 1) / (max - 1))]); return out; };
+  const avoidLines = AVOID_R > 0 ? trailLines.map((pl) => thin(pl.map((p) => [p[0], p[2]]))) : [];
   if (process.env.MINES_THROW !== "0")
     say("throw", brief(await call("set_mine_factory", { units: "map", throw: { minRange: +(process.env.THROW_MIN || 20), maxRange: +(process.env.THROW_MAX || 115), apex: +(process.env.THROW_APEX || 25),
-      pattern: "targets", targets: T.CASTLES.filter((c) => c.team >= 0).map((c) => c.at.map(round1)), scatter: 12, targetShare: 40 } }), 600));
+      pattern: "targets", targets: T.CASTLES.filter((c) => c.team >= 0).map((c) => c.at.map(round1)), scatter: 12, targetShare: CASTLE_SHARE,
+      ...(VOLLEY > 0 ? { volley: VOLLEY } : {}), ...(avoidLines.length ? { avoidRadius: AVOID_R, avoid: avoidLines } : {}) } }), 600));
 
   // ---- lights on three of the islets (only while the cells last) ----
   for (const [i, q] of T.ISLETS.slice(0, 3).entries()) {

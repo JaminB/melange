@@ -1174,6 +1174,36 @@ void TestFactorySettings() {
         Expect(!luagen::Upgrade(stem, Mutate(ring, "throw=20:110:20:ring:0:12:40", "throw=20:110:20:ring:0:12"), &run, &why), "the throw on the line has every field");
         Expect(!luagen::Upgrade(stem, Mutate(ring, "throw=20:110:20:ring:0:12:40", "throw=20:110:20:ring:0:12:40 targets=1:2 targets=3:4"), &run, &why), "targets once");
         Expect(!luagen::Upgrade(stem, Mutate(ring, " throw=20:110:20:ring:0:12:40", " targets=1:2"), &run, &why), "targets need a throw");
+        // the volley cap and the avoid corridors (mines round 4): in the patch only when set, on the settings line as two more
+        // fields after targetShare (a line of the first seven is an older project's) and an avoid key of x:z/x:z lines split by '|'
+        const std::string corr = Mutate(text, "\"schemeMines\":false}",
+                                        "\"schemeMines\":false,\"throw\":{\"maxRange\":110,\"volley\":4,\"avoidRadius\":5,\"avoid\":[[[-1600,700],[-900,900],[-400,600]],[[600,-1500],[1000,-900]]]}}");
+        Expect(erg::ParsePatch(corr, &lp, &err) && lp.objects.back().factory.throwing->volley == 4 && lp.objects.back().factory.throwing->avoidRadius == 5 &&
+                   lp.objects.back().factory.throwing->avoid.size() == 2 && lp.objects.back().factory.throwing->avoid[0].size() == 3 &&
+                   lp.objects.back().factory.throwing->avoid[1][1] == std::array<int, 2>{1000, -900} && erg::WritePatch(lp) == corr,
+               "volley, avoidRadius and avoid round-trip in the patch: " + err);
+        Expect(!erg::ParsePatch(Mutate(text, "\"schemeMines\":false}", "\"schemeMines\":false,\"throw\":{\"maxRange\":40,\"volley\":11}}"), &lp, &err), "volley is at most 10");
+        Expect(!erg::ParsePatch(Mutate(text, "\"schemeMines\":false}", "\"schemeMines\":false,\"throw\":{\"maxRange\":40,\"avoidRadius\":51}}"), &lp, &err), "avoidRadius is at most 50");
+        Expect(!erg::ParsePatch(Mutate(text, "\"schemeMines\":false}", "\"schemeMines\":false,\"throw\":{\"maxRange\":40,\"avoid\":[[[1,2],[3,4]]]}}"), &lp, &err), "avoid needs avoidRadius");
+        Expect(!erg::ParsePatch(Mutate(text, "\"schemeMines\":false}", "\"schemeMines\":false,\"throw\":{\"maxRange\":40,\"avoidRadius\":5,\"avoid\":[[[1,2]]]}}"), &lp, &err), "an avoid line has 2 points or more");
+        Expect(!erg::ParsePatch(Mutate(text, "\"schemeMines\":false}", "\"schemeMines\":false,\"throw\":{\"maxRange\":40,\"avoidRadius\":5,\"avoid\":[[[1.5,2],[3,4]]]}}"), &lp, &err), "avoid points are whole world units");
+        tspec.objects[0].factory.throwing->volley = 4;
+        tspec.objects[0].factory.throwing->avoidRadius = 5;
+        tspec.objects[0].factory.throwing->avoid = {{{-1600, 700}, {-900, 900}, {-400, 600}}, {{600, -1500}, {1000, -900}}};
+        const std::string corrLine = luagen::Text(stem, tspec);
+        luagen::ChunkSpec cparsed;
+        Expect(corrLine.find("\n-- minefactory: throw=20:110:20:ring:0:12:40:4:5 avoid=-1600:700/-900:900/-400:600|600:-1500/1000:-900\n") != std::string::npos &&
+                   luagen::IsGenerated(stem, corrLine, &why) && luagen::Parse(stem, corrLine, &cparsed) && cparsed.objects[0].factory.throwing &&
+                   *cparsed.objects[0].factory.throwing == *tspec.objects[0].factory.throwing,
+               "the volley, avoid radius and avoid lines go on the settings line and parse back: " + why);
+        Expect(!luagen::Upgrade(stem, Mutate(corrLine, "throw=20:110:20:ring:0:12:40:4:5", "throw=20:110:20:ring:0:12:40:4"), &run, &why), "the volley and avoid radius come together");
+        Expect(!luagen::Upgrade(stem, Mutate(corrLine, "throw=20:110:20:ring:0:12:40:4:5", "throw=20:110:20:ring:0:12:40:0:0"), &run, &why), "both at their defaults are left off the line");
+        Expect(!luagen::Upgrade(stem, Mutate(corrLine, "throw=20:110:20:ring:0:12:40:4:5", "throw=20:110:20:ring:0:12:40:4:0"), &run, &why), "avoid lines need the radius");
+        Expect(!luagen::Upgrade(stem, Mutate(corrLine, " avoid=-1600:700/-900:900/-400:600|600:-1500/1000:-900", " avoid=-1600:700|600:-1500/1000:-900"), &run, &why), "an avoid line on the settings line has 2 points or more");
+        luagen::ChunkSpec oparsed;
+        Expect(luagen::Parse(stem, ring, &oparsed) && oparsed.objects[0].factory.throwing && oparsed.objects[0].factory.throwing->volley == 0 &&
+                   oparsed.objects[0].factory.throwing->avoidRadius == 0 && oparsed.objects[0].factory.throwing->avoid.empty(),
+               "an older line of seven throw fields parses with no volley and no avoid");
     }
 }
 

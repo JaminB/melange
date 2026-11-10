@@ -58,12 +58,36 @@ export interface NearbyMine { fireTick: number; fireTurn: number; rest: number[]
 
 const r2 = (v: number) => Math.round(v * 100) / 100;
 
+/** A trace glitch: one sample in which a worm is read far from where it was (`glitch` map units or more, default 20) and
+ * the next sample has it back within a map unit of where it was, as the mines round-3 second match showed for WORM0
+ * (jumps of 100 and more map units to other worms' spots and back inside 1 s, while it stood still: a wrong position read,
+ * not a move). Such samples are put back to the position before them and listed. */
+export interface TraceGlitch { slot: number; tick: number; read: [number, number, number]; was: [number, number, number]; }
+export function cleanTrace(samples: TraceSample[], glitchAt = 20): { samples: TraceSample[]; glitches: TraceGlitch[] } {
+  const glitches: TraceGlitch[] = [];
+  const out = samples.map((s) => ({ ...s, worms: s.worms.map((w) => ({ ...w })) }));
+  for (let i = 1; i + 1 < out.length; i++) {
+    for (const w of out[i].worms) {
+      const p = out[i - 1].worms.find((x) => x.slot === w.slot), n = out[i + 1].worms.find((x) => x.slot === w.slot);
+      if (!p || !n || !p.alive || !w.alive) continue;
+      const d = Math.hypot(w.pos[0] - p.pos[0], w.pos[1] - p.pos[1], w.pos[2] - p.pos[2]);
+      const back = Math.hypot(n.pos[0] - p.pos[0], n.pos[1] - p.pos[1], n.pos[2] - p.pos[2]);
+      if (d >= glitchAt && back < 1) {
+        glitches.push({ slot: w.slot, tick: out[i].tick, read: w.pos, was: p.pos });
+        w.pos = p.pos;
+      }
+    }
+  }
+  return { samples: out, glitches };
+}
+
 /** The moves of worms whose turn it was not: between two consecutive samples a worm not active in either dropped
  * `drop` (default 1.5 map units) or moved `moved` (default 2) horizontally; consecutive such steps of one worm are one
  * event. A dead worm's samples are passed over (its death is the probe's), and a sample where the worm is missing ends
- * the event. */
-export function offTurnMoves(samples: TraceSample[], o: { drop?: number; moved?: number } = {}): OffTurnMove[] {
+ * the event. Trace glitches (cleanTrace) are put back first, unless `glitch` is 0. */
+export function offTurnMoves(samples: TraceSample[], o: { drop?: number; moved?: number; glitch?: number } = {}): OffTurnMove[] {
   const dropAt = o.drop ?? 1.5, movedAt = o.moved ?? 2, out: OffTurnMove[] = [];
+  if (o.glitch !== 0) samples = cleanTrace(samples, o.glitch).samples;
   const open = new Map<number, OffTurnMove>();
   for (let i = 1; i < samples.length; i++) {
     const a = samples[i - 1], b = samples[i], seen = new Set<number>();

@@ -361,10 +361,12 @@ void OnFrame() {
         render::CameraOverride o = f.pose.o;
         levels::factory::Flight fl;
         if (f.track > 0 && levels::factory::LastFlight(&fl) && fl.serial == f.firing) {
-            // a mine that has come back down past where it started is taken to rest there
+            // where the followed mine is: once Melange has landed it (or it went into the sea) its landing, else its launch
+            // arc, and a mine that has come back down past where it started is taken to rest there
             const float tms = static_cast<float>(GetTickCount64() - fl.at), down = fl.vy > 0 ? 2.f * fl.vy / fl.gravity : 0.f;
             const float tt = fl.vy > 0 ? (std::min)(tms, down) : tms;
-            const float m[3] = {fl.from[0] + fl.vx * tt, fl.from[1] + fl.vy * tt - 0.5f * fl.gravity * tt * tt, fl.from[2] + fl.vz * tt};
+            float m[3] = {fl.from[0] + fl.vx * tt, fl.from[1] + fl.vy * tt - 0.5f * fl.gravity * tt * tt, fl.from[2] + fl.vz * tt};
+            if (fl.landed) std::memcpy(m, fl.landedAt, sizeof m);
             float dx = o.target[0] - o.pos[0], dz = o.target[2] - o.pos[2];
             const float l = std::hypot(dx, dz);
             if (l > 1e-3f) dx /= l, dz /= l; else dx = 0, dz = -1;

@@ -411,7 +411,10 @@
                       "avoidWater": { "type": "boolean", "default": true, "description": "A landing point whose ground is under the water is drawn again." },
                       "targets": { "type": "array", "maxItems": 16, "items": { "type": "array", "minItems": 2, "maxItems": 2, "items": { "type": "integer", "minimum": -100000, "maximum": 100000 } }, "description": "[x, z] whole world units; pattern targets aims targetShare % of a fire's mines within scatter of one of them." },
                       "scatter": { "type": "integer", "minimum": 0, "maximum": 255, "default": 10 },
-                      "targetShare": { "type": "integer", "minimum": 0, "maximum": 100, "default": 50 }
+                      "targetShare": { "type": "integer", "minimum": 0, "maximum": 100, "default": 50 },
+                      "volley": { "type": "integer", "minimum": 0, "maximum": 10, "default": 0, "description": "At most this many mines a fire, whatever the engine's min(activation - mines, 10) asked; 0: the engine's count." },
+                      "avoidRadius": { "type": "integer", "minimum": 0, "maximum": 50, "default": 0, "description": "Map units a landing point keeps off each avoid line; 0: none." },
+                      "avoid": { "type": "array", "maxItems": 8, "items": { "type": "array", "minItems": 2, "maxItems": 32, "items": { "type": "array", "minItems": 2, "maxItems": 2, "items": { "type": "integer", "minimum": -100000, "maximum": 100000 } } }, "description": "Polylines of [x, z] whole world units (trails, say): a landing point within avoidRadius of one is drawn again. Needs avoidRadius." }
                     }
                   }
                 }

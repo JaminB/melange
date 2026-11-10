@@ -276,10 +276,11 @@ interface PlaceArgs extends PointArgs {
   throw?: ThrowArg | false;
 }
 /** set_mine_factory / place_object's `throw`: the spec's fields, targets in the call's units ([x, z]). */
-interface ThrowArg { minRange?: number; maxRange?: number; apex?: number; pattern?: "random" | "ring" | "targets"; avoidWater?: boolean; targets?: number[][]; scatter?: number; targetShare?: number; }
+interface ThrowArg { minRange?: number; maxRange?: number; apex?: number; pattern?: "random" | "ring" | "targets"; avoidWater?: boolean; targets?: number[][]; scatter?: number; targetShare?: number;
+  volley?: number; avoidRadius?: number; avoid?: number[][][]; }
 
 type FactoryArgs = Pick<PlaceArgs, "activation" | "inactiveTurns" | "schemeMines" | "keepKnot" | "launchHeight" | "launchRadius" | "launch"> & {
-  launchers?: [number, number, number][]; throw?: (Omit<ThrowArg, "targets"> & { targets?: [number, number][] }) | boolean };
+  launchers?: [number, number, number][]; throw?: (Omit<ThrowArg, "targets" | "avoid"> & { targets?: [number, number][]; avoid?: [number, number][][] }) | boolean };
 const FACTORY_GAME = { activation: 20, inactiveTurns: 7, schemeMines: true, keepKnot: false } as const;
 
 /** The factory settings after `a` is applied to `f`: a value equal to the game's is dropped (the game's value stays). */
@@ -306,24 +307,36 @@ function factoryOf(f: FactorySpec | undefined, a: FactoryArgs): FactorySpec | un
     if (typeof merged.maxRange !== "number") throw new ToolError("throw.maxRange: the farthest landing point (map units from the launch point) is required");
     if (typeof merged.minRange === "number" && merged.minRange > (merged.maxRange as number)) throw new ToolError("throw.minRange must not be over throw.maxRange");
     if (merged.pattern === "targets" && !(Array.isArray(merged.targets) && merged.targets.length)) throw new ToolError("throw.pattern targets needs throw.targets");
+    if (Array.isArray(merged.avoid) && merged.avoid.length && !merged.avoidRadius) throw new ToolError("throw.avoid needs throw.avoidRadius (map units the mines keep off each line)");
     out.throw = storedThrow(merged) as unknown as FactorySpec["throw"];
   }
   return Object.keys(out).length ? out : undefined;
 }
 
-/** The throw's targets in whole world units ([x, z] in `units`). */
+/** The throw's targets and avoid lines in whole world units ([x, z] in `units`). */
 function throwWorld(t: ThrowArg | boolean | undefined, units: Units): FactoryArgs["throw"] {
   if (!t || t === true) return t;
-  const { targets, ...rest } = t;
-  if (targets === undefined) return rest;
-  if (targets.length > 16) throw new ToolError("throw.targets: at most 16");
+  const { targets, avoid, ...rest } = t;
   const k = units === "map" ? 20 : 1;
-  return { ...rest, targets: targets.map((p, i) => {
-    if (!Array.isArray(p) || p.length !== 2 || !p.every(Number.isFinite)) throw new ToolError(`throw.targets[${i}]: [x, z]`);
+  const point = (p: number[], what: string): [number, number] => {
+    if (!Array.isArray(p) || p.length !== 2 || !p.every(Number.isFinite)) throw new ToolError(`${what}: [x, z]`);
     const w = [Math.round(p[0] * k), Math.round(p[1] * k)] as [number, number];
-    if (w.some((v) => Math.abs(v) > 100000)) throw new ToolError(`throw.targets[${i}]: within 100000 world units`);
+    if (w.some((v) => Math.abs(v) > 100000)) throw new ToolError(`${what}: within 100000 world units`);
     return w;
-  }) };
+  };
+  const out: FactoryArgs["throw"] = { ...rest };
+  if (targets !== undefined) {
+    if (targets.length > 16) throw new ToolError("throw.targets: at most 16");
+    out.targets = targets.map((p, i) => point(p, `throw.targets[${i}]`));
+  }
+  if (avoid !== undefined) {
+    if (!Array.isArray(avoid) || avoid.length > 8) throw new ToolError("throw.avoid: at most 8 lines");
+    out.avoid = avoid.map((ln, i) => {
+      if (!Array.isArray(ln) || ln.length < 2 || ln.length > 32) throw new ToolError(`throw.avoid[${i}]: 2-32 [x, z] points (thin a longer line out)`);
+      return ln.map((p, j) => point(p, `throw.avoid[${i}][${j}]`));
+    });
+  }
+  return out;
 }
 
 /** Mine gravity (world units per ms^2) and the eruption levels/factory.cpp throws a launcher's mines on, for the answers. */
@@ -339,7 +352,8 @@ function launchPlan(store: EditorStore, f: FactorySpec) {
     return from.map((l, i) => ({ launcher: f.launchers?.length ? i : "factory", at: l.map((v) => v / 20), landsBetween: [t.minRange ?? 0, t.maxRange], pattern: String(t.pattern ?? "random"),
       apexOverEnds: apex / 20, flightSeconds: Math.round(ms / 100) / 10, sidewaysAtMax: Math.round(t.maxRange * 20 / ms * 1000) / 1000,
       ...(t.targets?.length ? { targets: t.targets.map((g) => [g[0] / 20, g[1] / 20]), scatter: t.scatter ?? 10, targetShare: t.targetShare ?? 50 } : {}),
-      landing: "Melange lands each mine where its flight first meets the land (the engine's own land sweep), so it rests on the ground it hits" }));
+      ...(t.volley ? { volley: t.volley } : {}), ...(t.avoid?.length ? { avoidLines: t.avoid.length, avoidRadius: t.avoidRadius ?? 0 } : {}),
+      landing: "Melange lands each mine where its flight first meets the land (the engine's own land sweep), so it rests on the ground it hits; a held mine the sea reaches is handed to the engine's drowning" }));
   }
   if (!f.launchers) return [];
   const h = (f.launchHeight ?? 20) * 20, up = Math.sqrt(2 * MINE_GRAVITY * h);
@@ -390,7 +404,11 @@ const factoryProps: Record<string, Schema> = {
     avoidWater: { type: "boolean", description: "A landing point whose ground is under the water is drawn again (default true; 6 draws, then straight up)." },
     targets: { type: "array", maxItems: 16, items: { type: "array", items: { type: "number" }, minItems: 2, maxItems: 2 }, description: "[x, z] points in `units` (castle courts, say) for pattern targets; stored as whole world units." },
     scatter: { type: "integer", minimum: 0, maximum: 255, description: "Map units round a target a mine aimed at it lands within (default 10)." },
-    targetShare: { type: "integer", minimum: 0, maximum: 100, description: "Percent of a fire's mines aimed at the targets, the rest random over the band (default 50)." } } }],
+    targetShare: { type: "integer", minimum: 0, maximum: 100, description: "Percent of a fire's mines aimed at the targets, the rest random over the band (default 50)." },
+    volley: { type: "integer", minimum: 0, maximum: 10, description: "At most this many mines a fire, whatever the engine's min(activation - mines, 10) asked (default 0: the engine's count): a smaller volley more often spreads the landings over the match." },
+    avoidRadius: { type: "integer", minimum: 0, maximum: 50, description: "Map units the landing points keep off each `avoid` line (default 0: none); the blast of a mine reaches about 2.5 map units, so a trail bed half 2.6 wide wants 5." },
+    avoid: { type: "array", maxItems: 8, items: { type: "array", minItems: 2, maxItems: 32, items: { type: "array", items: { type: "number" }, minItems: 2, maxItems: 2 } },
+      description: "Up to 8 polylines of 2-32 [x, z] points in `units` (the trails, say): a landing point within avoidRadius of one is drawn again, so the mines keep off the corridors worms walk; stored as whole world units. [] clears them." } } }],
     description: "minefactory (the erg-mcp branch's Melange): throw the mines OUT instead of straight up: each mine of a fire is lobbed from its launcher (the launchers in turn; without launchers, from the factory) at a landing point minRange-maxRange map units away whose ground the game's own land sweep finds, on a ballistic arc topping out `apex` over the higher end, and Melange lands it where its flight first meets the land (the engine's mine collision let mines through some ground, and landing them at the straight sweep's hit also leaves no sideways speed to sink on: docs/erg.md). Later calls merge into the throw there (give one field to change it); false clears it (launch: false does too). The answer's launchPlan gives each launch point's band, pattern, flight and sideways speed." },
   launchers: { type: "array", maxItems: 8, items: { type: "array", items: { type: "number" }, minItems: 2, maxItems: 3 },
     description: "minefactory: 1-8 launch points, [x, y, z] or [x, z] (on the top of the ground in that column), in `units` (Melange 0.13+ of this branch): a fire's mines are shared out over them (from a random one, in turn) and each erupts straight up from a spot within launchRadius of its launcher (1 map unit over the launcher's height, the fire's spots kept 1.5 map units apart where they can be), tops out launchHeight (default 20) over it and falls back onto the spot: stand each launcher on flat ground at least launchRadius wide (a pad) and check with game_mine_drop that the ground there holds a mine (on Caldera half the crater did not: the mine fell through to the sea). The game runs one factory a match (a second trips its 'Only allowed one mine factory at a time' assert, tried 2026-11-08), so these are the one factory's launch points. [] clears them. A mine's flight is the engine's (velocity in world units per ms, falling at 2.5e-4 world units/ms^2, measured 2026-11-08)." },
