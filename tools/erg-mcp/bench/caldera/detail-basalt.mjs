@@ -19,7 +19,7 @@ import path from "node:path";
 import * as T from "./terrain.mjs";
 import { keepOutFoot } from "./detail-keepout.mjs";
 import { rng, onTongue } from "./detail-rock.mjs";
-import { generate } from "./meshes/gen.mjs";
+import { generate, ROCK_VARIANTS } from "./meshes/gen.mjs";
 
 const WATER = 1;
 const PADS = T.LAUNCHERS.map(([rho, th]) => T.pointAt(rho, th));
@@ -30,16 +30,17 @@ export function meshBoxes() {
   return BOXES;
 }
 export const TALUS_MAX = +(process.env.DTL_TALUS_MAX ?? 200);
-export const LEDGE_MAX = +(process.env.DTL_LEDGE_MAX ?? 45);
+// round 11: 0 (the round-10 judge: the ledges "read as walkable platforms or grates next to trails": a readability defect)
+export const LEDGE_MAX = +(process.env.DTL_LEDGE_MAX ?? 0);
 export const COLUMNS_MAX = +(process.env.DTL_COLUMNS_MAX ?? 8);
 
-const sampler = (call) => async (pts) => {
+export const sampler = (call) => async (pts) => {
   const res = [];
   for (let i = 0; i < pts.length; i += 3500) res.push(...(await call("surface_sample", { points: pts.slice(i, i + 3500), units: "map", step: 0.8 })).json.samples);
   return res;
 };
-const contact = (n) => Math.acos(Math.max(-1, Math.min(1, n[1] / (Math.hypot(...n) || 1)))) * 180 / Math.PI;
-function clearOf(ctx, rocks = []) {
+export const contact = (n) => Math.acos(Math.max(-1, Math.min(1, n[1] / (Math.hypot(...n) || 1)))) * 180 / Math.PI;
+export function clearOf(ctx, rocks = []) {
   return (x, z, rx, rz = rx, yaw = 0) => {
     if (T.rhoAt(x, z) < T.FLAT_R + 1) return "crater floor";
     if (onTongue(x, z, Math.max(rx, rz) * 0.6 + 0.8)) return "lava";
@@ -61,7 +62,7 @@ async function rockFootprints(call, tags) {
 
 // ---------------------------------------------------------------- talus fans
 /** One fan below a foot site: [x, z, size, kind, embed]: big at the toe, small at the apex, a half-buried skirt (lib/slope-break.ts's talusFan). */
-function fan(site, n, length, big, small, R) {
+export function fan(site, n, length, big, small, R) {
   const out = [], base = Math.atan2(site.down[1], site.down[0]), spread = 0.95;
   for (let i = 0; i < n; i++) {
     const t = Math.sqrt((i + 0.5) / n) * (0.85 + 0.15 * R());
@@ -76,7 +77,7 @@ function fan(site, n, length, big, small, R) {
 }
 
 /** A free caldera.Boulder piece of width `size` resting on ground g, `embed` of its height buried, flattened by `flat`. */
-function boulderPiece(B, x, z, g, size, embed, flat, R, tint) {
+export function boulderPiece(B, x, z, g, size, embed, flat, R, tint) {
   const w = B.max[0] - B.min[0], h = B.max[1] - B.min[1], s = size / w, sy = s * flat, buried = embed * h * sy;
   // tilt toward the ground's normal (a resting stone follows its bed), a little random roll, any yaw
   const n = g.normal, tx = Math.atan2(n[2], n[1]) * 180 / Math.PI * 0.7, tz = -Math.atan2(n[0], n[1]) * 180 / Math.PI * 0.7;
@@ -85,7 +86,7 @@ function boulderPiece(B, x, z, g, size, embed, flat, R, tint) {
 }
 
 export async function talusPass(ctx) {
-  const { call } = ctx, R = rng(20261110), B = meshBoxes()["caldera.Boulder"], sample = sampler(call);
+  const { call } = ctx, R = rng(20261110), sample = sampler(call);
   const stats = { sites: 0, runs: 0, fans: 0, pieces: 0, rejected: {}, byKind: {} };
   const rej = (why) => { stats.rejected[why] = (stats.rejected[why] ?? 0) + 1; };
   const clear = clearOf(ctx);
@@ -128,12 +129,33 @@ export async function talusPass(ctx) {
     place.push({ ...p, g });
   });
   place.splice(TALUS_MAX);
-  const list = place.map((p) => boulderPiece(B, p.x, p.z, p.g, p.size, p.kind === "skirt" ? p.embed : p.embed * 0.85, p.kind === "skirt" ? 0.55 : 0.7 + R() * 0.15, R));
-  for (let i = 0; i < list.length; i += 200) stats.pieces += (await call("place_mod_mesh", { resource: "caldera.Boulder", box: B, stem: "talus", units: "map", tag: "tal", pieces: list.slice(i, i + 200) })).json.placed;
+  // round 11: the faceted variants by the piece's place in the fan: big blocks and wedges at the toe, slabs and blocks in
+  // the body, shards and slabs at the apex and in the half-buried skirt (a slab is flat already: no extra squash)
+  const byVar = new Map();
+  for (const p of place) {
+    const v = talusVariant(p.kind, R), B = meshBoxes()[v], slab = v === "caldera.Slab";
+    const piece = boulderPiece(B, p.x, p.z, p.g, p.size, p.kind === "skirt" ? p.embed : p.embed * 0.85, slab ? 1 : p.kind === "skirt" ? 0.7 : 0.8 + R() * 0.15, R);
+    if (!byVar.has(v)) byVar.set(v, []);
+    byVar.get(v).push(piece);
+  }
+  stats.byVariant = {};
+  for (const [v, list] of byVar) {
+    stats.byVariant[v] = list.length;
+    for (let i = 0; i < list.length; i += 200) stats.pieces += (await call("place_mod_mesh", { resource: v, box: meshBoxes()[v], stem: "talus", units: "map", tag: "tal", pieces: list.slice(i, i + 200) })).json.placed;
+  }
   for (const p of place) stats.byKind[p.kind] = (stats.byKind[p.kind] ?? 0) + 1;
   stats.fans = new Set(place.map((p) => p.site)).size;
   ctx.say?.("talus", JSON.stringify({ sites: stats.sites, fans: stats.fans, pieces: stats.pieces, byKind: stats.byKind }));
   return stats;
+}
+
+/** Round 11: the faceted variant for a talus piece of this kind. */
+export function talusVariant(kind, R) {
+  const r = R();
+  if (kind === "toe") return r < 0.55 ? "caldera.Boulder" : "caldera.Wedge";
+  if (kind === "body") return r < 0.4 ? "caldera.Boulder" : r < 0.7 ? "caldera.Slab" : "caldera.Wedge";
+  if (kind === "apex") return r < 0.5 ? "caldera.Shard" : r < 0.8 ? "caldera.Wedge" : "caldera.Slab";
+  return r < 0.6 ? "caldera.Shard" : "caldera.Slab";   // skirt
 }
 
 // ---------------------------------------------------------------- strata ledges
@@ -227,5 +249,26 @@ export async function basaltPass(ctx) {
   const small = over.filter((o) => { const d = dtl.get(o.id); return d && 2.95 * Math.max(...(d.scale ?? [1, 1, 1]).map(Math.abs)) < 2.6; }).map((o) => o.id);
   if (small.length) await call("remove_scenery", { ids: small });
   lint._dtl = { checked: dtl.size, over: over.length, removed: small.length };
-  return { swapped: r.json.changed, fromBox: r.json.fromBox, lint: Object.fromEntries(Object.entries(lint).map(([k, v]) => [k, { checked: v.checked, over: v.over, removed: v.removed }])) };
+  // round 11: the swapped rocks take the faceted variants by their proportions (a flat copy a slab, a small one a shard,
+  // the rest blocks and wedges), each filling the box its copy had; then no caldera.* copy keeps a tint tag (their albedo
+  // is baked: meshes/gen.mjs), so every renderer draws the same warm basalt
+  const R = rng(20261113), boxes = meshBoxes(), want = new Map();
+  for (const d of (await call("list_scenery", { search: "caldera.Boulder", units: "map", limit: 2000 })).json.details) {
+    if (!/_dtl/.test(d.name)) continue;
+    const s = (d.scale ?? [1, 1, 1]).map(Math.abs), w = Math.max(s[0], s[2]) * 2.9, flat = s[1] / Math.max(s[0], s[2]);
+    const v = w < 1.3 ? (R() < 0.7 ? "caldera.Shard" : "caldera.Slab") : flat < 0.6 ? "caldera.Slab" : R() < 0.55 ? "caldera.Boulder" : R() < 0.7 ? "caldera.Wedge" : "caldera.Slab";
+    if (v === "caldera.Boulder") continue;
+    if (!want.has(v)) want.set(v, []);
+    want.get(v).push(d.id);
+  }
+  const variants = {};
+  for (const [v, ids] of want) {
+    const q = await call("swap_mesh", { ids, from: "caldera.Boulder", to: v, fromBox: boxes["caldera.Boulder"], toBox: boxes[v] }, { soft: true });
+    if (q.err) throw new Error("swap_mesh variant: " + q.text.slice(0, 300));
+    variants[v] = q.json.changed;
+  }
+  const untint = [];
+  for (const v of ROCK_VARIANTS) for (const d of (await call("list_scenery", { search: v, units: "map", limit: 2000 })).json.details) if (/_tint[0-9a-f]{6}/.test(d.name)) untint.push(d.id);
+  if (untint.length) await call("tint_scenery", { ids: untint, color: "none" });
+  return { swapped: r.json.changed, variants, untinted: untint.length, fromBox: r.json.fromBox, lint: Object.fromEntries(Object.entries(lint).map(([k, v]) => [k, { checked: v.checked, over: v.over, removed: v.removed }])) };
 }

@@ -32,6 +32,7 @@ import { retintPass } from "./detail-retint.mjs";
 import { lawnPass } from "./detail-lawn.mjs";
 import { talusPass, ledgePass, columnsPass, basaltPass } from "./detail-basalt.mjs";
 import { alonePass } from "./detail-alone.mjs";
+import { stringsPass, beachPass, tumblePass, rimPass, flora2Pass, lint11Pass } from "./detail-r11.mjs";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const argv = process.argv.slice(2);
@@ -48,7 +49,8 @@ process.env.MELANGE_EXE ??= path.join(ROOT, "build/x86-release/Melange.exe");
 // Sunstone on, the oblique, B idle): undressed 4.95 / 4.62 ms, rock only 6.08, flora only 6.09, both (544 details) 6.57:
 // most of the cost comes with the first dressed props, not with each one
 // round 10: 820 (the talus fans, ledges and columns of Caldera's own meshes; the flora's new pockets and weeds)
-export const DETAIL_BUDGET = +(process.env.DTL_BUDGET ?? 820);
+// round 11: 980 (the judge's flora target of 350-450 pieces, the crater rim breakup; the 34 ledges are gone)
+export const DETAIL_BUDGET = +(process.env.DTL_BUDGET ?? 980);
 const ONLY = opt("--passes", "") ? opt("--passes").split(",") : null;
 fs.mkdirSync(OUT, { recursive: true });
 const say = (...a) => console.log(new Date().toISOString().slice(11, 19), ...a);
@@ -91,6 +93,16 @@ export const PASSES = [
   { name: "perch", run: perchPass },
   { name: "alone", run: alonePass },
   { name: "basalt", run: basaltPass },
+  // round 11 (detail-r11.mjs; the round-10 judge's list): the faceted, warm caldera.* variants (meshes/gen.mjs, assigned by
+  // talusPass and basaltPass, untinted); vertical rock strings to talus fans; no stones on the beaches; the shore's hero
+  // stacks to graded tumbles (no piece over 2.0); the crater rim's breakup; flora at the bends' fill side, hedge rows on the
+  // lawn edges and scrub in the dry and ash belts; the mine look-alike lint once more
+  { name: "strings", run: stringsPass },
+  { name: "beach", run: beachPass },
+  { name: "tumble", run: tumblePass },
+  { name: "rim", run: rimPass },
+  { name: "flora2", run: flora2Pass },
+  { name: "lint11", run: lint11Pass },
 ];
 
 // build.mjs places four Camelot flags (CAMELOT16, CAMELOT19 of Multi.NiceToSiege) for the castles' towers, in world units though

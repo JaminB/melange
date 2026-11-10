@@ -110,8 +110,11 @@ const RECIPES = {
 };
 // round 9: clumps further apart and fewer of them; no edge sprinkles
 // round 10: more clumps where the ground allows (the shore, the greens, the cliff feet and the dry belt), still clumps apart
-const SEP = { wall: 3.8, cliff: 5.5, rock: 6, edge: 2.2, lawn: 4.5, green: 4.6, shore: 4.2, dry: 6, ash: 8, pocket: 6 };
-const CAP = { wall: 50, cliff: 20, rock: 16, edge: 0, lawn: 24, green: 30, shore: 40, dry: 20, ash: 10, pocket: 26 };
+// round 11 (the round-10 judge: "total ~350-450 pieces, clustered"; every zone but the shore ran out of candidates, the shore
+// hit its cap): clumps closer together in every zone, the shore's cap up, and the lawn tiles' edges planted again (a low
+// grass-and-leaf group straddling each edge, "to mask the hard edges")
+const SEP = { wall: 3.2, cliff: 4.2, rock: 4.5, edge: 2.4, lawn: 3.4, green: 3.6, shore: 3.3, dry: 4.5, ash: 5.5, pocket: 5 };
+const CAP = { wall: 50, cliff: 30, rock: 24, edge: 26, lawn: 30, green: 40, shore: 75, dry: 30, ash: 16, pocket: 30 };
 const MIN_H = 0.36;                                    // no plant drawn shorter (about half a worm)
 const FLORA_TOP = 27;                                  // bare ash and rock above
 // the height ramp: [y, colour] (the plants' tint drawn as colour x texel luminance / 0.5)

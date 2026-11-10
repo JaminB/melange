@@ -77,7 +77,7 @@ export async function slabPass(ctx) {
       // [length along the contour, height of the band on the face, depth out of it]
       // each slab 2.6-3.3 times the step between them: one continuous lip (round 9 first try, 1.5 times, read as beads)
       const len = (end ? 3.6 : 5.2) + R() * 1.2, thick = 1.0 + R() * 0.3, depth = 1.8 + R() * 0.6;
-      const yaw = Math.atan2(s.tangent[1], s.tangent[0]);
+      const yaw = Math.atan2(s.tangent[1], s.tangent[0]) * 180 / Math.PI;   // keepOutFoot takes degrees (was radians before round 11)
       const why = clear(s.pos[0], s.pos[2], len / 2, depth * 0.45, yaw);
       if (why) { bad = why; return; }
       pieces.push({ pos: s.pos.map((v) => +v.toFixed(2)), normal: s.normal, tangent: s.tangent, size: [+len.toFixed(2), +thick.toFixed(2), +depth.toFixed(2)],
