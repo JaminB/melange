@@ -171,8 +171,25 @@ void EndTurn(const Call&, Result& r, void*) {
 // panel's pick does: Weapon.DelayedPanelChanged <id> is sent in the sim's tick (the panel sends the same replicated at
 // 0x600d0c, and every machine's WXWeaponPanelLogicEntity::HandleMessage 0x603b70 then sets the worm's weapon from it), so
 // a test tool selects a weapon without the panel, its clicks or DirectInput: the Automation module's injected mouse
-// reported polls=0 in the Caldera v2 round-3 baseline, no bazooka was ever taken and nothing fired. Offline matches
-// only (Queue). Answers the id and the engine's name; wum.game.worms()[slot].weapon reads it back a tick later.
+// reported polls=0 in the Caldera v2 round-3 baseline, no bazooka was ever taken and nothing fired. Only the panel's
+// weapons (OnPanel): any other id is refused before it is sent. Offline matches only (Queue). Answers the id and the
+// engine's name; wum.game.worms()[slot].weapon reads it back a tick later.
+//
+// The weapon panel's grid (#1077's static table at weapons::engine::kPanel, 7 rows of 6 cells of {id, icon}; 67,
+// kWeaponUndefined, is an empty cell) holds every id the game itself ever selects. LogicalWeaponManagerService::
+// WeaponSelected (0x565d30) handles an id it has no case for by looking up the weapon's container by its enum name and
+// dereferences the result unchecked at 0x566486: ids off the panel (32, kWeaponOneAfterLast; 44-47, kUtilityDoubleDamage,
+// CrateShower, CrateSpy and Armour, crate and scheme effects with no container) crashed the game there (c0000005, read
+// of 0) when level.test.selectWeapon sent them (Caldera weapons round 1, 2026-11-10), on any level. 30 and 31
+// (kWeaponClusterBomb, kWeaponBananette) are sub-munitions, not on the panel either.
+bool OnPanel(int id) {
+    if (id == 0x43) return false;
+    const auto* cells = reinterpret_cast<const int32_t*>(weapons::engine::kPanel);
+    for (int k = 0; k < 7 * 6; ++k)
+        if (cells[k * 2] == id) return true;
+    return false;
+}
+
 void SelectWeapon(const Call& c, Result& r, void*) {
     json::Value p;
     if (!rpc::ParseParams(c, &p, r)) return;
@@ -202,6 +219,15 @@ void SelectWeapon(const Call& c, Result& r, void*) {
     }
     if (id < 1 || id >= 0x45) {
         Fail(r, rpc::kBadParams, "weapon: an id from 1 to 68");
+        return;
+    }
+    if (!OnPanel(id)) {
+        const char* n = weapons::engine::EnumName(id);
+        char b[256];
+        snprintf(b, sizeof b,
+                 "weapon %d (%s) is not on the weapon panel, so the game never selects it: only the panel's weapons "
+                 "(kWeaponBazooka-kWeaponSuperAirstrike 1-29 and kUtilityGirder-kUtilityBinoculars 34-43) can be taken", id, n ? n : "?");
+        Fail(r, rpc::kBadParams, b);
         return;
     }
     if (!Ready(r)) return;
