@@ -40,6 +40,10 @@ SubId Subscribe(MsgId id, Path path, Handler fn, void* user = nullptr);
 SubId SubscribeName(const char* name, Path path, Handler fn, void* user = nullptr);  // resolves once the registry is ready
 SubId SubscribeAll(Path path, Handler fn, void* user = nullptr);  // every id; keep it cheap
 void Unsubscribe(SubId id);
+// From inside a Post handler: the message being observed is not given to the engine's Post (nothing is delivered; Post
+// answers 0 to its caller, which still owns the message object). The flag lasts for this one message; outside a Post
+// handler, or on the Deliver path, it does nothing.
+void DropCurrent();
 
 // Message-name registry.
 bool RegistryReady();                     // table pointer non-null and >= 1 name
@@ -73,6 +77,7 @@ bool Decode(const MessageView& m, JsonOut& out);  // false if no decoder for m.v
 
 struct Stats { uint64_t posts, deliveries, handlerCalls, handlerFaults; double avgHookUs; };
 Stats GetStats();
+uint64_t Dropped();   // messages kept from the engine by DropCurrent, this session
 uint32_t CountOf(MsgId id, Path path);  // since start
 bool Installed();                        // hooks live (false on unknown exe or when [EventBus] Enabled=0)
 }

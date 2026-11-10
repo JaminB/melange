@@ -164,23 +164,41 @@ the mine is left where the engine rested it (lifted onto the land when its base 
 within 2 map units of a bounce, else its new arc is followed; one that goes under the water is left to the engine's
 drowning.
 
-A landed mine is then **held**: the engine keeps simulating the mine's flight in some state of its own after
-Melange's landing (its collision events come 5-8 ticks later, 5-15 map units on, at ground its own sweep does see; then
-it bounces, rests elsewhere, or reaches the water), and each of those collisions writes the parabola again (round 1: 84
-of 120 held mines "set moving", 32 of 58 under the land). Where that state lives was not found (not in the payload's
-0x1c8 bytes, whose only positions are the base and the rest record at +0x12c/+0x138/+0x1a8 that the come-to-rest fills,
-which Melange stills so it never carries the last sweep's junk velocity; the 0x74-byte colliders of 0x514b90 never tick
-for a mine). So the hold keeps the mine where Melange landed it, where it is drawn and where its fuse goes off; a mine
-whose engine twin reaches the water is deleted by the engine (`destroyed` in the fire record, 19 of 150 in round 2's
-long run), which is the one loss left. A held mine moved
-at rest is put back; one given a velocity is rested again where it landed, unless an
+A landed mine is then **held**, and the engine's own flight events for it are dropped. Why (found 2026-11-10,
+testenv B: the payload read every second through volleys, the session's bus log and the disassembly): a payload's
+flight events are queued ahead. At launch, and after each collision of its own, the payload's Update sweeps its
+parabola with the land sweep and solves its plane crossings (the water, the expiry and disarm planes), and for each
+builds a `PayloadEventMessage` (payloadId, the sim time, the position and velocity on the arc at that time) that the
+game's delayed-message pump posts when the time comes (`Payload.CollideWithLand`, `CollideWithWater`,
+`CollideWithExpiryPlane`, `CollideWithDisarmPlane`); the payload then acts on the message's contact (the bounce written
+into the parabola, the come-to-rest, the sinking). The payload itself holds only the current parabola (its 0x1c8 bytes
+and the memory round them hold no second copy; its rest record at +0x12c/+0x138/+0x1a8 is filled by the come-to-rest
+from the last sweep's globals, which Melange stills). So a mine Melange lands keeps the parabola Melange wrote while the
+events its launch queued still arrive at the OLD arc's contacts: `CollideWithLand` 5-8 ticks on at the ground the
+engine's sweep did see past the skin (round 1: 84 of 120 held mines "set moving"), then `CollideWithWater` at the sea
+floor 1-3 s later ("moved at rest" to the sea floor, the mine sunk in the engine's eyes; round 3: 99 of 158 mines). So
+Melange keeps those four events from the engine while a mine is held (a bus Post handler drops a message whose
+payloadId is a held mine, `bus::DropCurrent`): in the round-4 check of 60 thrown mines, 54 stale events were dropped and
+no held mine was set moving or moved (rounds 1-3: a third to two thirds of them). The genuine events of a mine at rest
+come another way (a blast's impulse, the water reaching it), so those still play, and a held mine moved
+at rest is still put back and one given a velocity rested again where it landed, unless an
 explosion went off within its own radius (plus 1.5 map units) of the mine in the last 15 ticks, which frees it (the
 blast's physics play, as for any mine). Every 50 ticks a held mine is checked against the land straight under it (a
 short sweep from just over the mine, so a roof further up is not seen) and lifted onto it when its base is under the
 top. The game's fire record (`factory.fired`, erg-mcp `game_mines`) says for each thrown mine its `target`, its
 `landing` (`melange`: landed at the sweep's hit; `engine`: the engine's own rest; `water`; `lost`), how far from its
 target it lies and, under `held`, how often it was put back (`rePins`), rested again (`velPins`), dropped off a wall
-(`deflects`), lifted (`lifts`), whether a blast freed it and the land frame it rests on.
+(`deflects`), lifted (`lifts`), how many stale flight events were dropped (`dropped`), whether a blast freed it and the
+land frame it rests on.
+
+**The payload pool.** The engine keeps 32 slots for every `ParabolicPayloadLogicEntity` (mines, shells, grenades): a
+match's first payloads took handles 120-151 and the 33rd came back as 120 + 4096, the slot's next generation, and the
+mine that lay in that slot was deleted the instant the new one was made (round 3: every volley past about 30 live mines
+removed 4-10 of the earlier ones, `destroyed` in the fire record; a weapon shot does the same). So a Melange fire is
+trimmed to the pool's room with one slot kept for a shot (the log: `the mine factory's fire of 10 is trimmed to 3: 28
+payloads are live and the engine's pool holds 32`), and a level that fires on a turn count alone (`everyNTurns`:
+activation 255) fills the island to about 30 mines and then throws only what the worms have set off. A target under 30
+(`activation`) fires only while fewer mines than that lie about, the game's own way of staying under the pool.
 
 Why: the engine's own mine collision misses ground that the same sweep hits. In the game the mine's step is the
 collider service's (0x5150e0): the same land sweep (0x466ae0) over the next 20 ticks from the bottom of the mine's
