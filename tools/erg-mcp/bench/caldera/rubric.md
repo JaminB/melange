@@ -4,8 +4,17 @@ The brief (the user's words): "an extremely complex map with a volcano in the ce
 throughout. It is of course surrounded by an ocean that will rise and the worms must move toward the center of the map
 up the volcano to survive. The volcano is where the mines are spawned from."
 
-The map is built only through the erg-mcp server's tools, by `build.mjs` here (see its header for how to run it); the
-level script is `script.lua`, and `pack/` is the source export of the last build.
+The map is built only through the erg-mcp server's tools, by `build.mjs` here (see its header for how to run it), and
+`pack/` is the source export of the last build. The map has no level script (since 2026-11-10, below).
+
+**The sea is the standard sudden death (the owner, 2026-11-10).** "It is important that the water rises with whatever the
+time is configured to just like any other map when sudden death begins." The scripted rising sea (`script.lua`, generated
+by `schedule.mjs`: a level a round and on-screen announcements) is gone, and with it every text the map showed. The level
+only sets the sea's starting level, 20 world units (1 map unit, under every beach and spawn), in its chunk as vanilla levels
+do; the pack has no scheme and nothing else touches the water. The sea rises when the scheme's sudden death begins, at the
+scheme's round time and water speed (tested in testenv B on the Quick Game scheme: 20 world units through the round, then
++8 a turn from the first sudden-death turn: 28, 36, ... 92 at turn 11). The rounds' notes below that describe a schedule,
+announcements or `check_flood` against the script are history.
 
 Each item passes or fails, with in-game evidence. The rubric of v2 (the user's directions of 2026-11-09: obvious
 switchback trails from every castle to the summit, mines from launchers on the caldera's sides, four human teams each
@@ -17,7 +26,7 @@ spawning in its own castle, every worm steered, checks with Sunstone on):
 | R2 | Loads and plays with Sunstone ON and no asserts beyond the vanilla baseline (a vanilla Multi.DinerMight run in the same build with Sunstone on, bazooka fire, counted in the same session); fps not worse than that vanilla run. |
 | R3 | The volcano clearly reads as a volcano from the overview: tall central cone, crater, volcanic materials, distinctly taller than everything. |
 | R4 | At least 5 recognisable voxel castles at varied heights, destructible; EVERY team spawns all its worms inside its OWN castle (4 teams in 4 different castles); no worm spawns outside a castle. |
-| R5 | Ocean all round; the water rises (deterministic level script) so over about 10-15 rounds the lowlands and shore castles flood and only the upper volcano stays dry; the rise is announced on screen. |
+| R5 | Ocean all round, starting under every beach and spawn; the water rises as on any other map, by the scheme's own sudden death (its round time and water speed), so the lowlands and shore castles flood first and the volcano last. The map shows no instruction or announcement text and sets no water beyond its start level. (Until 2026-11-10: a deterministic level script raised it over 10-15 rounds with on-screen announcements.) |
 | R6 | Mines come from the volcano and land ON the volcano/caldera, not all over the island: either the central factory with a constrained launch range or several launchers on the caldera sides. Screenshot mines in flight. |
 | R7 | An OBVIOUS switchback trail (zig-zag, readable from the overview, distinct material, wide enough for a worm with margin, walkable gradient) runs from EVERY castle to the summit. In the test every worm is steered up its trail; at least one worm per team is screenshotted climbing it (start/middle/end) and reaches at least the upper cone. No unreachable or underwater spawns. |
 | R8 | It looks good and complex: varied terrain, not boxy; theme/time of day deliberate. |
