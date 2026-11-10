@@ -121,6 +121,9 @@ inline constexpr size_t kMaxLaunchers = 8;
 inline constexpr int kMaxLauncherCoord = 100000;   // world units
 inline constexpr size_t kMaxThrowTargets = 16;
 inline constexpr int kMaxThrowRange = 500;         // map units
+inline constexpr size_t kMaxAvoidLines = 8, kMaxAvoidPoints = 32;
+inline constexpr int kMaxAvoidRadius = 50;         // map units
+inline constexpr int kMaxVolley = 10;              // the engine fires at most 10 a time
 enum class ThrowPattern : uint8_t { Random, Ring, Targets };
 const char* ThrowPatternName(ThrowPattern p);                 // "random" | "ring" | "targets"
 bool ParseThrowPattern(std::string_view s, ThrowPattern* out);
@@ -133,6 +136,11 @@ struct ThrowSpec {
     std::vector<std::array<int, 2>> targets;          // world units (x, z), at most kMaxThrowTargets; pattern targets
     int scatter = 10;                                 // map units round a target a mine lands within, 0-255
     int targetShare = 50;                             // % of a fire's mines aimed at the targets, 0-100
+    int volley = 0;                                   // 1-10: at most this many mines a fire; 0: the engine's min(target - mines, 10)
+    // Corridors the mines keep off (trails, say): a landing point within avoidRadius map units of one of the `avoid`
+    // polylines (world units x, z) is drawn again. 0: none.
+    int avoidRadius = 0;                              // map units, 0-50
+    std::vector<std::vector<std::array<int, 2>>> avoid;   // at most kMaxAvoidLines lines of 2-kMaxAvoidPoints points
     bool operator==(const ThrowSpec&) const = default;
 };
 struct FactorySpec {

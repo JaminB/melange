@@ -290,15 +290,18 @@ int RunPost(void* msg, uintptr_t caller, PostForward forward, void* ctx) {
     const bool sample = (g_seq & kSampleMask) == 0;
     const uint64_t c0 = sample ? __rdtsc() : 0;
     ++t.depth;
+    // a handler may Post again while it runs: keep the outer message's drop state across this nested one
+    const bool outerObserve = t.inPostObserve, outerDrop = t.drop;
     t.drop = false;
     if (msg) {
         t.inPostObserve = true;
         Observe(Path::Post, static_cast<const uint8_t*>(msg), -1, caller, t);
-        t.inPostObserve = false;
     }
-    if (t.drop) {
+    const bool dropped = t.drop;
+    t.inPostObserve = outerObserve;
+    t.drop = outerDrop;
+    if (dropped) {
         // a handler kept this message from the engine (bus::DropCurrent): nothing is delivered
-        t.drop = false;
         --t.depth;
         if (sample) AddSample(__rdtsc() - c0);
         ++g_dropped;

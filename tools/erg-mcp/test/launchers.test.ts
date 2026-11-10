@@ -82,6 +82,19 @@ test("throw: set in the server's stored form, targets in the call's units, merge
   const r2 = await call(s, "set_mine_factory", { throw: { apex: 20 } });
   assert.equal(r2.launchPlan[0].launcher, 0, "with launchers the plan is per launcher");
   assert.equal(r2.launchPlan[0].apexOverEnds, 20);
+  // (mines round 4) the volley cap and the avoid corridors: lines in the call's units, stored whole world units, with their radius
+  const r3 = await call(s, "set_mine_factory", { units: "map", throw: { volley: 4, avoidRadius: 5, avoid: [[[500, -8], [505.04, -2], [510, 4]], [[490, 6], [495, 8]]] } });
+  assert.equal(spec(store)!.throw!.volley, 4);
+  assert.equal(spec(store)!.throw!.avoidRadius, 5);
+  assert.deepEqual(spec(store)!.throw!.avoid, [[[10000, -160], [10101, -40], [10200, 80]], [[9800, 120], [9900, 160]]], "avoid lines become whole world units");
+  assert.equal(r3.launchPlan[0].volley, 4);
+  assert.equal(r3.launchPlan[0].avoidLines, 2);
+  await assert.rejects(() => call(s, "set_mine_factory", { throw: { avoidRadius: 0 } }), /needs throw.avoidRadius/);
+  await assert.rejects(() => call(s, "set_mine_factory", { units: "map", throw: { avoid: [[[1, 2]]] } }), /2-32/);
+  await assert.rejects(() => call(s, "set_mine_factory", { throw: { volley: 11 } }), /0-10|maximum|at most/);
+  await call(s, "set_mine_factory", { throw: { avoid: [], avoidRadius: 0, volley: 0 } });
+  assert.equal(spec(store)!.throw!.avoid, undefined, "[] clears the avoid lines");
+  assert.equal(spec(store)!.throw!.volley, undefined, "0 clears the volley cap");
   await call(s, "set_mine_factory", { throw: false });
   assert.equal(spec(store)!.throw, undefined, "false clears the throw");
   assert.ok(spec(store)!.launchers, "and leaves the launchers");

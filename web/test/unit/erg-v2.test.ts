@@ -125,15 +125,19 @@ test("mine factory settings are optional, range-checked and carried by applyPatc
   assert.deepEqual(edited.objects!.at(-1), { knot: "minefactory", type: "minefactory", factory: { activation: 12, schemeMines: false } });
   // the throw (erg-mcp's mines round 2): every field validates, the bad ones are refused, and a project saved by the
   // panel keeps them all (applyPatch then toPatch round-trips the object as it came)
+  // (mines round 4) the volley cap and the avoid corridors: whole world units, at most 8 lines of 2-32 points, with their radius
   const throwing = { activation: 255, inactiveTurns: 2, keepKnot: true, launchers: [[-300, 900, 40], [260, 880, -120]],
-    throw: { minRange: 20, maxRange: 115, apex: 25, pattern: "targets", avoidWater: true, scatter: 12, targetShare: 40, targets: [[652, -1456], [1424, 816], [-1538, 634], [-1510, -624]] } };
-  for (const f of [throwing, { throw: { maxRange: 30 } }, { throw: { maxRange: 30, pattern: "ring", avoidWater: false } }]) {
+    throw: { minRange: 20, maxRange: 115, apex: 25, pattern: "targets", avoidWater: true, scatter: 12, targetShare: 40, targets: [[652, -1456], [1424, 816], [-1538, 634], [-1510, -624]],
+      volley: 4, avoidRadius: 5, avoid: [[[696, -1554], [934, -1448], [1164, -1136], [1322, -858]], [[-1636, 676], [-1372, 836], [-1096, 1004]]] } };
+  for (const f of [throwing, { throw: { maxRange: 30 } }, { throw: { maxRange: 30, pattern: "ring", avoidWater: false } }, { throw: { maxRange: 30, volley: 10 } }]) {
     const p = withFactory(f);
     assert.ok(validatePatch(p).ok, `${JSON.stringify(f)}: ${validatePatch(p).errors.join("; ")}`);
     assert.ok(validatePatchObjects(p, baseV2()).ok, validatePatchObjects(p, baseV2()).errors.join("; "));
   }
   for (const f of [{ throw: {} }, { throw: { maxRange: 0 } }, { throw: { minRange: 50, maxRange: 30 } }, { throw: { maxRange: 30, pattern: "spiral" } }, { throw: { maxRange: 30, pattern: "targets" } },
-    { throw: { maxRange: 30, targets: [[1.5, 2]] } }, { throw: { maxRange: 30, apex: 0 } }, { throw: { maxRange: 30, targetShare: 101 } }, { throw: { maxRange: 30, lift: 2 } }]) {
+    { throw: { maxRange: 30, targets: [[1.5, 2]] } }, { throw: { maxRange: 30, apex: 0 } }, { throw: { maxRange: 30, targetShare: 101 } }, { throw: { maxRange: 30, lift: 2 } },
+    { throw: { maxRange: 30, volley: 11 } }, { throw: { maxRange: 30, avoidRadius: 51 } }, { throw: { maxRange: 30, avoid: [[[1, 2], [3, 4]]] } }, { throw: { maxRange: 30, avoidRadius: 5, avoid: [[[1, 2]]] } },
+    { throw: { maxRange: 30, avoidRadius: 5, avoid: [[[1.5, 2], [3, 4]]] } }, { throw: { maxRange: 30, avoidRadius: 5, avoid: Array.from({ length: 9 }, () => [[0, 0], [1, 1]]) } }]) {
     assert.equal(validatePatch(withFactory(f)).ok, false, JSON.stringify(f));
   }
   const thrown = applyPatch(upgrade(baseV2()), withFactory(throwing));
@@ -141,6 +145,12 @@ test("mine factory settings are optional, range-checked and carried by applyPatc
   const back = toPatch(upgrade(baseV2()), thrown);
   assert.deepEqual(back.objects!.find((o) => o.knot === "minefactory"), { knot: "minefactory", type: "minefactory", factory: throwing });
   assert.ok(validatePatch(back).ok, validatePatch(back).errors.join("; "));
+  // the Erg panel's factory properties (ui/Properties.tsx put) set one field by spreading the rest, so the erg-mcp-only
+  // fields (launchers, throw with its volley and avoid) ride through an edit of the target in the panel
+  const panelEdit = { ...(thrown.objects!.at(-1) as unknown as { factory: Record<string, unknown> }).factory, activation: 12 };
+  const edited2 = applyPatch(upgrade(baseV2()), withFactory(panelEdit));
+  assert.deepEqual(edited2.objects!.at(-1), { knot: "minefactory", type: "minefactory", factory: { ...throwing, activation: 12 } });
+  assert.ok(validatePatch(toPatch(upgrade(baseV2()), edited2)).ok);
 });
 
 test("trims: a base frame's kept box counts in the cells, rides in the patch and the scene, and undoes", () => {

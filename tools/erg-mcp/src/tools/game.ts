@@ -16,7 +16,7 @@ import { clearEye } from "../lib/eye";
 import { Raster, decodePng, hex, type Rgb } from "../lib/inspect-png";
 import { centreColour, lookDelta, materialPatches } from "../lib/material-look";
 import { projectMaterials } from "../lib/materials";
-import { TRACE_LUA, attributeMove, describeMove, mergePerfRuns, offTurnMoves, parseTrace, pickPerfBase, type PerfRun, type PerfStat, type TraceSample } from "../lib/play-trace";
+import { TRACE_LUA, attributeMove, cleanTrace, describeMove, mergePerfRuns, offTurnMoves, parseTrace, pickPerfBase, type PerfRun, type PerfStat, type TraceSample } from "../lib/play-trace";
 import { documentsDir } from "../oasis";
 import { ToolError, image, type Content, type Tool } from "../registry";
 import type { Session } from "../session";
@@ -490,10 +490,12 @@ interface FireRec { stem: string; tick: number; turn: number; asked: number; lau
     // rest, rested again after the engine gave it a velocity with no blast about, dropped off walls, lifted out of the land,
     // freed by a blast; `dropped`: the engine's stale flight events (its launch arc's land, water and plane contacts, queued
     // before Melange landed it) kept from it while held (mines round 4); the land frame it rests on (65535: the heightmap)
-    rePins?: number; velPins?: number; deflects?: number; lifts?: number; dropped?: number; freed?: boolean; frame?: number }[]; }
+    // `sunk`: the sea reached it while held and it was handed to the engine's drowning (mines round 4)
+    rePins?: number; velPins?: number; deflects?: number; lifts?: number; dropped?: number; freed?: boolean; sunk?: boolean; frame?: number }[]; }
 interface ProbeAnswer {
   probe: { key: string; playing: boolean; turn: number; tick: number; spawns: ProbeWorm[]; deaths: ProbeDeath[]; explosionsSeen: number; explosions: ProbeExplosion[] };
-  factory: { fires: FireRec[]; following: number; trigger: { tick: number; count: number; started: boolean; why: string; detail: string } | null };
+  // `held`: thrown mines Melange holds at their landing now; `drowned`: held mines the sea reached and the engine was given to drown (mines round 4)
+  factory: { fires: FireRec[]; following: number; held?: number; drowned?: number; trigger: { tick: number; count: number; started: boolean; why: string; detail: string } | null };
 }
 
 async function probeOf(s: Session): Promise<ProbeAnswer | null> {
@@ -560,7 +562,7 @@ export function fireOut(f: FireRec, u: "map" | "world", groundAt?: (x: number, z
     ...(m.fate ? { fate: m.fate } : {}), ...sea(m), ...zoneOf(m), ...(m.goneTick !== undefined ? { goneTick: m.goneTick } : {}), ...(m.waterMap !== undefined ? { water: Math.round(m.waterMap * k * 100) / 100 } : {}),
     ...(m.movedAfterRest ? { movedAfterRest: m.movedAfterRest } : {}),
     ...(m.target ? { target: inUnits(m.target, u), landing: m.landing || "in flight", ...(m.restFromTargetMap !== undefined ? { restFromTarget: Math.round(m.restFromTargetMap * k * 100) / 100 } : {}),
-      ...(m.rePins !== undefined ? { held: { rePins: m.rePins, velPins: m.velPins ?? 0, deflects: m.deflects ?? 0, lifts: m.lifts ?? 0, dropped: m.dropped ?? 0, freed: !!m.freed, ...(m.frame !== undefined && m.frame >= 0 ? { frame: m.frame } : {}) } } : {}) } : {}),
+      ...(m.rePins !== undefined ? { held: { rePins: m.rePins, velPins: m.velPins ?? 0, deflects: m.deflects ?? 0, lifts: m.lifts ?? 0, dropped: m.dropped ?? 0, freed: !!m.freed, ...(m.sunk ? { sunk: true } : {}), ...(m.frame !== undefined && m.frame >= 0 ? { frame: m.frame } : {}) } } : {}) } : {}),
     restFromFactory: Math.round(m.restFromFactoryMap * k * 100) / 100 }));
   const landings: Record<string, number> = {};
   for (const m of f.mines) if (m.target) landings[m.landing || "in flight"] = (landings[m.landing || "in flight"] ?? 0) + 1;
@@ -1697,7 +1699,9 @@ export const tools: Tool[] = [
               samples: samples.map((x) => ({ wall: x.wall, tick: x.tick, turn: x.turn, active: x.active, worms: x.worms.map((w) => [w.slot, w.team, ...w.pos, w.alive ? 1 : 0]) })) }));
           }
         } catch { /* the answer carries the moves */ }
-        const moves = offTurnMoves(samples, { drop: a.fallDrop === undefined ? 1.5 : a.units === "world" ? a.fallDrop / WORLD_PER_MAP : a.fallDrop });
+        // a one-sample jump and back is a wrong position read, not a move (mines round 3's second match): put back and listed
+        const cleaned = cleanTrace(samples);
+        const moves = offTurnMoves(cleaned.samples, { drop: a.fallDrop === undefined ? 1.5 : a.units === "world" ? a.fallDrop / WORLD_PER_MAP : a.fallDrop, glitch: 0 });
         const probe = moves.length ? await probeOf(s).catch(() => null) : null;
         const pl = probe ? { explosions: probe.probe.explosions, fires: probe.factory.fires.map((f) => ({ tick: f.tick, turn: f.turn, mines: f.mines })), deaths: probe.probe.deaths.map((d) => ({ slot: d.slot, tick: d.tick, turn: d.turn, cause: d.cause })) } : {};
         const attributed = moves.map((m) => attributeMove(m, pl));
@@ -1709,6 +1713,8 @@ export const tools: Tool[] = [
             ...(m.explosions ? { explosions: m.explosions.map((e) => ({ ...e, at: cv(e.at), distance: Math.round(e.distance * ku * 100) / 100 })) } : {}),
             ...(m.mines ? { mines: m.mines.map((x) => ({ ...x, rest: cv(x.rest), distance: Math.round(x.distance * ku * 100) / 100 })) } : {}), ...(m.death ? { death: m.death } : {}) })),
           ...(moves.length && !probe ? { offTurnNote: "the Test probe (level.test.probe) did not answer: the moves are listed without the explosions beside them" } : {}),
+          ...(cleaned.glitches.length ? { traceGlitches: cleaned.glitches.slice(0, 40).map((g) => ({ worm: `WORM${g.slot}`, tick: g.tick, read: cv(g.read), was: cv(g.was) })),
+            traceGlitchNote: `${cleaned.glitches.length} sample(s) read a worm 20 map units or more from where it stood and the next sample had it back: wrong position reads (mines round 3's second match: WORM0 at other worms' spots for one sample), put back before the off-turn moves were taken` } : {}),
           ...(moves.length ? {} : { offTurnNote: `no worm dropped ${a.fallDrop ?? 1.5} or moved 2 map units while another played` }) };
       }
       // per worm: its turns and how far along its team's trail it stood after each
@@ -2264,7 +2270,8 @@ return string.format("%.3f,%.3f,%.3f,%s,%s,%s,%s", t.fps, t.busyMsP50, t.frameMs
         key: p.key, playing: p.playing, turn: p.turn, units: u,
         spawns: spawns.length ? spawns : null, ...(spawns.length ? {} : { spawnsNote: "the first turn has not started yet" }),
         deaths, explosionsSeen: p.explosionsSeen, ...(a.explosions ? { explosions: p.explosions.map(explosionOut) } : {}),
-        factory: { fires: r.factory.fires.map((f) => fireOut(f, u, ...groundLookup(s))), ...(r.factory.following ? { following: r.factory.following } : {}), trigger: r.factory.trigger },
+        factory: { fires: r.factory.fires.map((f) => fireOut(f, u, ...groundLookup(s))), ...(r.factory.following ? { following: r.factory.following } : {}),
+          ...(r.factory.held !== undefined ? { held: r.factory.held } : {}), ...(r.factory.drowned !== undefined ? { drowned: r.factory.drowned } : {}), trigger: r.factory.trigger },
         note: "turn counts game turns from 1 (as game_state and check_flood); causes are inferred from what the probe saw (evidence), not read from the engine, which keeps no damage source; WORMn is the worm's slot (game_state's worm); knot and fromKnot only for a level in knots or teams spawn mode (teams: knotName, the team's knot the worm stood on: WORM<4 x team + its place in the team>)",
       };
     },

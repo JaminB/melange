@@ -206,6 +206,17 @@ bool ValidateObject(const ObjectSpec& o, const std::string& p, std::string* err)
                         if (c < -kMaxLauncherCoord || c > kMaxLauncherCoord)
                             return Fail(err, p + ".factory.throw.targets: coordinates must be within 100000 world units");
                 if (t.pattern == ThrowPattern::Targets && t.targets.empty()) return Fail(err, p + ".factory.throw: pattern targets needs targets");
+                if (t.volley < 0 || t.volley > kMaxVolley) return Fail(err, p + ".factory.throw.volley: must be 0-10");
+                if (t.avoidRadius < 0 || t.avoidRadius > kMaxAvoidRadius) return Fail(err, p + ".factory.throw.avoidRadius: must be 0-50");
+                if (t.avoid.size() > kMaxAvoidLines) return Fail(err, p + ".factory.throw.avoid: at most 8 lines");
+                for (const auto& line : t.avoid) {
+                    if (line.size() < 2 || line.size() > kMaxAvoidPoints) return Fail(err, p + ".factory.throw.avoid: each line has 2-32 points");
+                    for (const auto& g : line)
+                        for (int c : g)
+                            if (c < -kMaxLauncherCoord || c > kMaxLauncherCoord)
+                                return Fail(err, p + ".factory.throw.avoid: coordinates must be within 100000 world units");
+                }
+                if (!t.avoid.empty() && !t.avoidRadius) return Fail(err, p + ".factory.throw.avoid: needs avoidRadius");
             }
             break;
         }
@@ -327,11 +338,13 @@ bool ParseObjects(const Json* arr, std::vector<ObjectSpec>* out, std::string* er
                     const std::string tp = fp + ".throw";
                     ThrowSpec t;
                     if (!Obj(th, tp, err) ||
-                        !OnlyKeys(*th, {"minRange", "maxRange", "apex", "pattern", "avoidWater", "targets", "scatter", "targetShare"}, tp, err) ||
+                        !OnlyKeys(*th, {"minRange", "maxRange", "apex", "pattern", "avoidWater", "targets", "scatter", "targetShare", "volley", "avoidRadius", "avoid"}, tp, err) ||
                         !IntField(*th, "minRange", tp, 0, kMaxThrowRange, &t.minRange, err, false) ||
                         !IntField(*th, "maxRange", tp, 1, kMaxThrowRange, &t.maxRange, err, true) ||
                         !IntField(*th, "apex", tp, 1, 255, &t.apex, err, false) || !IntField(*th, "scatter", tp, 0, 255, &t.scatter, err, false) ||
                         !IntField(*th, "targetShare", tp, 0, 100, &t.targetShare, err, false) ||
+                        !IntField(*th, "volley", tp, 0, kMaxVolley, &t.volley, err, false) ||
+                        !IntField(*th, "avoidRadius", tp, 0, kMaxAvoidRadius, &t.avoidRadius, err, false) ||
                         !GetBool(*th, "avoidWater", tp, &t.avoidWater, err, false))
                         return false;
                     if (const Json* pt = th->find("pattern")) {
@@ -353,6 +366,31 @@ bool ParseObjects(const Json* arr, std::vector<ObjectSpec>* out, std::string* er
                                 at[k] = static_cast<int>(d);
                             }
                             t.targets.push_back(at);
+                        }
+                    }
+                    if (const Json* av = th->find("avoid")) {
+                        // polylines of [x, z] whole world units: the corridors the mines keep off
+                        const std::string lp = tp + ".avoid";
+                        if (av->kind != Json::Kind::Array || av->arr.size() > kMaxAvoidLines) return Fail(err, lp + ": must be an array of at most 8 lines");
+                        for (size_t li = 0; li < av->arr.size(); ++li) {
+                            const Json& ln = av->arr[li];
+                            const std::string lq = lp + "[" + std::to_string(li) + "]";
+                            if (ln.kind != Json::Kind::Array || ln.arr.size() < 2 || ln.arr.size() > kMaxAvoidPoints) return Fail(err, lq + ": must be 2-32 [x, z] points");
+                            std::vector<std::array<int, 2>> line;
+                            for (size_t pi = 0; pi < ln.arr.size(); ++pi) {
+                                const Json& pt = ln.arr[pi];
+                                const std::string pp = lq + "[" + std::to_string(pi) + "]";
+                                if (pt.kind != Json::Kind::Array || pt.arr.size() != 2) return Fail(err, pp + ": must be [x, z]");
+                                std::array<int, 2> at{};
+                                for (size_t k = 0; k < 2; ++k) {
+                                    double d = 0;
+                                    if (!GetNumber(pt.arr[k], pp, -kMaxLauncherCoord, kMaxLauncherCoord, &d, err)) return false;
+                                    if (d != std::floor(d)) return Fail(err, pp + ": world units must be whole numbers");
+                                    at[k] = static_cast<int>(d);
+                                }
+                                line.push_back(at);
+                            }
+                            t.avoid.push_back(std::move(line));
                         }
                     }
                     ob.factory.throwing = t;
@@ -439,6 +477,21 @@ Json ObjectsJson(const std::vector<ObjectSpec>& objects) {
                     }
                     if (t.scatter != 10) th.set("scatter", Int(t.scatter));
                     if (t.targetShare != 50) th.set("targetShare", Int(t.targetShare));
+                    if (t.volley) th.set("volley", Int(t.volley));
+                    if (t.avoidRadius) th.set("avoidRadius", Int(t.avoidRadius));
+                    if (!t.avoid.empty()) {
+                        Json av = Json::Arr();
+                        for (const auto& line : t.avoid) {
+                            Json ln = Json::Arr();
+                            for (const auto& g : line) {
+                                Json pt = Json::Arr();
+                                for (int c : g) pt.arr.push_back(Int(c));
+                                ln.arr.push_back(std::move(pt));
+                            }
+                            av.arr.push_back(std::move(ln));
+                        }
+                        th.set("avoid", std::move(av));
+                    }
                     f.set("throw", std::move(th));
                 }
                 o.set("factory", std::move(f));

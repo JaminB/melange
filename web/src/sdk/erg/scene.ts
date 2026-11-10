@@ -72,8 +72,12 @@ export interface TriggerSpec { index: number; radius?: number; teamCollect?: num
  * (random: any bearing; ring: a fire's mines spread round the compass; targets: `targetShare` % of them within
  * `scatter` map units of one of `targets`, [x, z] whole world units, the rest random), the arc topping out `apex` map
  * units over the higher end; `avoidWater` (default true) draws a landing point in the sea again; Melange lands each
- * mine where its flight first meets the land (the erg-mcp branch's Melange; an older game ignores it). */
-export interface ThrowSpec { minRange?: number; maxRange: number; apex?: number; pattern?: "random" | "ring" | "targets"; avoidWater?: boolean; targets?: [number, number][]; scatter?: number; targetShare?: number; }
+ * mine where its flight first meets the land (the erg-mcp branch's Melange; an older game ignores it). `volley` (1-10):
+ * at most that many mines a fire, whatever the engine's min(target - mines, 10) asked; `avoid` (up to 8 polylines of
+ * 2-32 [x, z] whole world units) with `avoidRadius` (1-50 map units): a landing point within the radius of one of the
+ * lines (a trail) is drawn again. */
+export interface ThrowSpec { minRange?: number; maxRange: number; apex?: number; pattern?: "random" | "ring" | "targets"; avoidWater?: boolean; targets?: [number, number][]; scatter?: number; targetShare?: number;
+  volley?: number; avoidRadius?: number; avoid?: [number, number][][]; }
 export interface FactorySpec { activation?: number; inactiveTurns?: number; schemeMines?: boolean; keepKnot?: boolean; launchHeight?: number; launchRadius?: number; launchers?: [number, number, number][]; throw?: ThrowSpec; }
 export type ObjectSpec =
   | { knot: string; type: "crate"; crate: CrateSpec }
@@ -357,7 +361,7 @@ function checkObject(c: Checker, o: unknown, p: string) {
       }
       if (f.throw !== undefined) {
         const t = f.throw, tp = `${p}.factory.throw`;
-        if (!isObj(t) || !c.keys(t, ["minRange", "maxRange", "apex", "pattern", "avoidWater", "targets", "scatter", "targetShare"], tp)) c.fail(tp, "must be an object");
+        if (!isObj(t) || !c.keys(t, ["minRange", "maxRange", "apex", "pattern", "avoidWater", "targets", "scatter", "targetShare", "volley", "avoidRadius", "avoid"], tp)) c.fail(tp, "must be an object");
         else {
           int(t.minRange, 0, 500, `${tp}.minRange`);
           if (t.maxRange === undefined) c.fail(`${tp}.maxRange`, "is required");
@@ -366,6 +370,19 @@ function checkObject(c: Checker, o: unknown, p: string) {
           int(t.apex, 1, 255, `${tp}.apex`);
           int(t.scatter, 0, 255, `${tp}.scatter`);
           int(t.targetShare, 0, 100, `${tp}.targetShare`);
+          int(t.volley, 0, 10, `${tp}.volley`);
+          int(t.avoidRadius, 0, 50, `${tp}.avoidRadius`);
+          if (t.avoid !== undefined) {
+            if (!Array.isArray(t.avoid) || t.avoid.length > 8) c.fail(`${tp}.avoid`, "must be at most 8 lines");
+            else t.avoid.forEach((ln, i) => {
+              if (!Array.isArray(ln) || ln.length < 2 || ln.length > 32) c.fail(`${tp}.avoid[${i}]`, "must be 2-32 [x, z] points");
+              else ln.forEach((pt, k) => {
+                if (!Array.isArray(pt) || pt.length !== 2 || !pt.every((v) => Number.isInteger(v) && Math.abs(v as number) <= 100000))
+                  c.fail(`${tp}.avoid[${i}][${k}]`, "must be [x, z], whole world units within 100000");
+              });
+            });
+            if (Array.isArray(t.avoid) && t.avoid.length && !t.avoidRadius) c.fail(`${tp}.avoid`, "needs avoidRadius");
+          }
           if (t.pattern !== undefined && !["random", "ring", "targets"].includes(t.pattern as string)) c.fail(`${tp}.pattern`, "must be random, ring or targets");
           if (t.avoidWater !== undefined && typeof t.avoidWater !== "boolean") c.fail(`${tp}.avoidWater`, "must be a boolean");
           if (t.targets !== undefined) {

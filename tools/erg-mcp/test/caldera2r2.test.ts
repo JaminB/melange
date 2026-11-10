@@ -63,6 +63,11 @@ test("projectHash: the patch save sends and the project the server wrote hash th
     { knot: "minefactory", type: "minefactory", factory: { throw: { maxRange: 40 } } });
   assert.deepEqual(storedObject({ knot: "minefactory", type: "minefactory", factory: { throw: { minRange: 5, maxRange: 40, pattern: "ring", avoidWater: false, targets: [[1, 2]], targetShare: 60 } } }),
     { knot: "minefactory", type: "minefactory", factory: { throw: { minRange: 5, maxRange: 40, pattern: "ring", avoidWater: false, targets: [[1, 2]], targetShare: 60 } } });
+  // (mines round 4) the volley cap and the avoid corridors hash only when set, so a project without them hashes as before
+  assert.deepEqual(storedObject({ knot: "minefactory", type: "minefactory", factory: { throw: { maxRange: 40, volley: 0, avoidRadius: 0, avoid: [] } } }),
+    { knot: "minefactory", type: "minefactory", factory: { throw: { maxRange: 40 } } });
+  assert.deepEqual(storedObject({ knot: "minefactory", type: "minefactory", factory: { throw: { maxRange: 40, volley: 4, avoidRadius: 5, avoid: [[[1, 2], [3, 4]]] } } }),
+    { knot: "minefactory", type: "minefactory", factory: { throw: { maxRange: 40, volley: 4, avoidRadius: 5, avoid: [[[1, 2], [3, 4]]] } } });
 });
 
 test("a column a hair under a skin tile's far edge reads the tile's ground (no false hole), as does the column on the edge", () => {

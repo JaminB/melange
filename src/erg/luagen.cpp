@@ -236,9 +236,11 @@ std::string Chunk(const Scene& s) {
 
 namespace {
 // "-- minefactory: activation=15 inactiveTurns=3 keepKnot=1 launchHeight=20 launchRadius=12 launchers=-300:900:40/...
-// throw=min:max:apex:pattern:avoidWater:scatter:targetShare targets=x:z/x:z": the set fields, in this order (launchers:
-// x:y:z world units, one per launcher, separated by '/'; throw: every field, the pattern by name; targets: x:z world
-// units, only with a throw).
+// throw=min:max:apex:pattern:avoidWater:scatter:targetShare[:volley:avoidRadius] targets=x:z/x:z avoid=x:z/x:z|x:z/x:z":
+// the set fields, in this order (launchers: x:y:z world units, one per launcher, separated by '/'; throw: every field,
+// the pattern by name, the volley and avoid radius only when either is set (older lines have the first seven); targets:
+// x:z world units, only with a throw; avoid: the corridor lines, points x:z world units separated by '/', lines by '|',
+// only with a throw).
 std::string FactoryTweakLine(const FactorySpec& f) {
     std::string l(kFactoryTweak);
     if (f.activation) l += " activation=" + std::to_string(*f.activation);
@@ -254,7 +256,12 @@ std::string FactoryTweakLine(const FactorySpec& f) {
         const ThrowSpec& t = *f.throwing;
         l += " throw=" + std::to_string(t.minRange) + ":" + std::to_string(t.maxRange) + ":" + std::to_string(t.apex) + ":" +
              ThrowPatternName(t.pattern) + ":" + (t.avoidWater ? "1" : "0") + ":" + std::to_string(t.scatter) + ":" + std::to_string(t.targetShare);
+        if (t.volley || t.avoidRadius) l += ":" + std::to_string(t.volley) + ":" + std::to_string(t.avoidRadius);
         for (size_t i = 0; i < t.targets.size(); ++i) l += (i ? "/" : " targets=") + std::to_string(t.targets[i][0]) + ":" + std::to_string(t.targets[i][1]);
+        for (size_t i = 0; i < t.avoid.size(); ++i) {
+            l += i ? "|" : " avoid=";
+            for (size_t k = 0; k < t.avoid[i].size(); ++k) l += (k ? "/" : "") + std::to_string(t.avoid[i][k][0]) + ":" + std::to_string(t.avoid[i][k][1]);
+        }
     }
     return l + "\n";
 }
@@ -274,7 +281,7 @@ bool TakeInt(std::string_view* v, int* out) {
     return true;
 }
 
-// "min:max:apex:pattern:avoidWater:scatter:targetShare"
+// "min:max:apex:pattern:avoidWater:scatter:targetShare[:volley:avoidRadius]"
 bool ParseThrow(std::string_view v, ThrowSpec* t) {
     auto field = [&](int* out) {
         if (!TakeInt(&v, out)) return false;
@@ -287,13 +294,19 @@ bool ParseThrow(std::string_view v, ThrowSpec* t) {
     if (colon == std::string_view::npos || !ParseThrowPattern(v.substr(0, colon), &t->pattern)) return false;
     v.remove_prefix(colon + 1);
     int water = 0;
-    if (!field(&water) || water < 0 || water > 1 || !field(&t->scatter) || !TakeInt(&v, &t->targetShare) || !v.empty()) return false;
+    if (!field(&water) || water < 0 || water > 1 || !field(&t->scatter) || !TakeInt(&v, &t->targetShare)) return false;
     t->avoidWater = water == 1;
+    if (v.empty()) return true;
+    // the two later fields, together (a line of the first seven is an older project's)
+    if (v.front() != ':') return false;
+    v.remove_prefix(1);
+    if (!field(&t->volley) || !TakeInt(&v, &t->avoidRadius) || !v.empty()) return false;
+    if (t->volley < 0 || t->volley > kMaxVolley || t->avoidRadius < 0 || t->avoidRadius > kMaxAvoidRadius || (!t->volley && !t->avoidRadius)) return false;
     return true;
 }
 
-// "x:z/x:z": 1-kMaxThrowTargets points of signed whole world units.
-bool ParseTargets(std::string_view v, std::vector<std::array<int, 2>>* out) {
+// "x:z/x:z": 1-maxPoints points of signed whole world units.
+bool ParsePoints(std::string_view v, std::vector<std::array<int, 2>>* out, size_t maxPoints) {
     out->clear();
     while (true) {
         std::array<int, 2> p{};
@@ -301,10 +314,25 @@ bool ParseTargets(std::string_view v, std::vector<std::array<int, 2>>* out) {
         v.remove_prefix(1);
         if (!TakeInt(&v, &p[1])) return false;
         out->push_back(p);
-        if (out->size() > kMaxThrowTargets) return false;
+        if (out->size() > maxPoints) return false;
         if (v.empty()) return true;
         if (v.front() != '/') return false;
         v.remove_prefix(1);
+    }
+}
+bool ParseTargets(std::string_view v, std::vector<std::array<int, 2>>* out) { return ParsePoints(v, out, kMaxThrowTargets); }
+
+// "x:z/x:z|x:z/x:z": 1-kMaxAvoidLines lines of 2-kMaxAvoidPoints points.
+bool ParseAvoid(std::string_view v, std::vector<std::vector<std::array<int, 2>>>* out) {
+    out->clear();
+    while (true) {
+        const size_t bar = v.find('|');
+        std::vector<std::array<int, 2>> line;
+        if (!ParsePoints(v.substr(0, bar), &line, kMaxAvoidPoints) || line.size() < 2) return false;
+        out->push_back(std::move(line));
+        if (out->size() > kMaxAvoidLines) return false;
+        if (bar == std::string_view::npos) return true;
+        v.remove_prefix(bar + 1);
     }
 }
 
@@ -367,6 +395,12 @@ bool ParseFactoryTweak(std::string_view text, FactorySpec* f) {
         if (key == "targets") {
             // after the throw it belongs to, once
             if (!f->throwing || !f->throwing->targets.empty() || !ParseTargets(num, &f->throwing->targets)) return false;
+            rest = sp == std::string_view::npos ? std::string_view{} : rest.substr(sp);
+            continue;
+        }
+        if (key == "avoid") {
+            // after the throw it belongs to, once, and only with its radius
+            if (!f->throwing || !f->throwing->avoid.empty() || !f->throwing->avoidRadius || !ParseAvoid(num, &f->throwing->avoid)) return false;
             rest = sp == std::string_view::npos ? std::string_view{} : rest.substr(sp);
             continue;
         }
