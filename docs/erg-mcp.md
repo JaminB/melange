@@ -1116,3 +1116,75 @@ Findings (testenv D, Sunstone 2.3.1 from `sunstone-tint`, 2026-11-10):
   The dressed level costs about +1.8 ms (under the judge's 2 ms). Most of it arrives with the first dressed props, not with each one. The game is CPU-bound at 36 fps either way.
 - `prop_pixels` at the fixed cameras: the flora's median size is 6.4 px at the oblique camera and 11-54 px at the others. 10 of 192 plants are under 3 px at the oblique, and none is under 3 px in every camera.
 - `MESH_POOL_MELANGE` stays at `0.14.0`: no release carries `[Fixes] MeshInstances` yet (the latest tag is v0.13.0).
+
+## Detail layer, round 10 (Caldera's own meshes, talus fans, flora vocabulary): what the tools gained and what the game showed
+
+**Mod meshes as level scenery work.** A scenery copy whose resource is a mod mesh (`<modId>.<Name>`, from a bank a content
+mod lists in its spice.json `meshes`, docs/spice.md) draws in a level like a vanilla piece: the engine creates level details
+by GRM name, so it finds the mod's descriptor. Shown in testenv D with Sunstone on (scratchpad
+`caldet/r10/caldet_r10_meshcheck_sheet.png`):
+- The banks loaded from the manifest at the menu (`[meshes] 3 bank(s) loaded from 1 mod(s), 3 mesh(es), sections 486, 487, 488`). This is the first in-game run of the manifest load; earlier it had only run through the `mesh.load` verb.
+- The meshes are registered in scene bin 8 (the module's default), while the game's own scenery uses bin 16 (`mesh.resolve HORROR5`). They draw anyway.
+- The per-copy tint (`_tint<rrggbb>`, Melange `mg_tint`) recolours them like any other copy.
+- A test mod without `melange.range` is moved to `Mods\.incompatible` at launch. Every content mod needs that field.
+
+New tool group `meshbank` (`src/tools/meshbank.ts`; pure code in `src/lib/slope-break.ts`; tests in `test/meshbank.test.ts`):
+
+| Tool | What it does |
+|---|---|
+| `place_mod_mesh` | Places scenery copies of a mod mesh. `resource` is `<modId>.<Name>` and `box` is its bounds in map units (the editor has no preview of a mod mesh). Each piece is either free (`pos`/`xz`, `rot`, `scale`) or aligned like `place_aligned` (`size`, normal, `tangent`, `pitch`, `embed`). Each copy is named `VISIBLE_<stem>_<tag>`, plus the tint tag: a visual scenery copy. |
+| `swap_mesh` | Re-points copies of one mesh at another. Each copy is rescaled per axis and moved so that the new mesh fills the old one's box (`toBox`, and `fromBox` or `fromBase`'s preview). Names, tints and rotations are kept. |
+| `plan_slope_break` | Finds the feet of steep faces: gentle ground (`footMax`, default 32 degrees) with a face (`faceMin`, default 45) rising at least `rise` above it within 2 x `probe` uphill. The sites are chained into runs along the contour, each with `down` (where a fan spreads). With `fans` it also answers graded talus fans (big at the toe, small at the apex, a half-buried skirt), each piece with its ground contact angle and `ok`. Read-only. |
+| `lint_contact` | The ground's contact angle under a layer's props. Lists those over `maxDeg` (default 50; `limit` how many), and removes them with `remove`. |
+
+**Caldera's meshes** (`bench/caldera/meshes/`):
+- `gen.mjs` writes three procedural, seeded models with their 128 x 128 mid-grey basalt textures:
+  - `caldera.Boulder`: a weathered boulder, 642 vertices, smooth normals. It replaces the 25-vertex HORROR5 shard.
+  - `caldera.Ledge`: three strata slabs, each stepped back from the one below.
+  - `caldera.Columns`: seven hexagonal basalt columns.
+- `build.mjs` turns each model into a bank with `xomtool convert --bundle`:
+  - The shader is copied from the game's HORROR5 (`Bundl31.xom`) with the new texture.
+  - The copied `XMaterial` is then made **matte**: Specular and Fresnel go from 0.3/0.275/0.175 at power 8 to 0. That sheen is what made the round-9 stacks read as glossy crystal under Sunstone's Blinn-Phong.
+- The banks are built output (they carry a copy of the game's shader). They are not committed. Build them with `tools\node\node.exe tools\erg-mcp\bench\caldera\meshes\build.mjs <outDir>`.
+- **To ship** them, the Caldera pack must list them: copy the banks to `pack/assets/meshes/` and add `"meshes": [{"file": "assets/meshes/caldera.Boulder.xom"}, ...]` to `pack/spice.json`. `build.mjs`'s export writes that manifest, so this is the reconcile step on erg-mcp (not done here).
+- Without the banks, the copies draw nothing. The level still loads, but the rock layer is missing.
+
+Bench (`detail.mjs`; `build.mjs` and `terrain.mjs` are unchanged):
+- **Cliff piles: off** (`DTL_CLIFF=1` turns them back on). The round-9 judge said they read as "strings of black beads stuck to near-vertical faces".
+- **Talus fans** (`detail-basalt.mjs` `talusPass`, `plan_slope_break`, tag `_tal`) at the slope break below each cliff, not on the face:
+  - big boulders at the toe, small ones at the apex, and a skirt of half-buried pieces
+  - no piece where the ground's contact angle is over 50 degrees
+  - on walkable ground (under 20 degrees) only a low skirt stone, and none on the open beach
+- **Strata ledges** (`ledgePass`, `plan_contour`, tag `_ldg`): one `caldera.Ledge` per site on the 45-75 degree faces.
+  - Each lies level along the contour and is sunk past half its depth.
+  - They are 6-9 long and 1.9-2.7 thick. At 3.4-5.6 long they read as dashes in game.
+  - They come in patches: never within 9 of another on a neighbouring contour.
+  - The footprint test now takes the yaw in degrees, as `keepOutFoot` expects (round 9's slab pass passed radians).
+- **Columns** (`columnsPass`, tag `_col`) on cliff tops. On Caldera every candidate was inside a keep-out (trail 26, castle 9, lava 6), so none were placed.
+- **Matte basalt everywhere** (`basaltPass`):
+  - Every HORROR5 copy left (the rock pass, the crowns, the coast stacks and their skirts) is swapped to `caldera.Boulder`.
+  - The rock pass's small stones (under 2.6 across) on ground over 50 degrees are removed. These were the beads on the faces.
+- **Offshore**: a mass that does not touch the shore stays only when it is a big stack (a piece of 8 or more across).
+- **Retint** covers `_tal`, `_ldg` and `_col` too. Every rock copy is tinted by band. Only the flowers are untinted, as accents on purpose.
+- **Flora** (`detail-flora.mjs`): three new pieces, each checked once in game (scratchpad `caldet/r10/caldet_r10_flora_check_sheet.png`):
+  - StormTheCastle CAMELOT4 draws as a low sprawling leafy weed (`weed`).
+  - WindyWizard CAMELOT10 draws as a spiky succulent with red tips (`succulent`, the dry slopes' "cactus"), not the mushrooms its name says.
+  - ThisGameDoesDragon / StormTheCastle CAMELOT1 draw as a fine spiky grass (`grass`).
+  - Out: W3DTreeVillageTrouble ENGLAND1 and W3DHelterSkelter ENGLAND3, tiny tufts.
+- Flora layout changes:
+  - Weeds and grass join the lush recipes, and the succulent joins the hardy ones.
+  - Shore clumps are tight, with nothing further than 1.1 from the core.
+  - The hardy zones (dry, ash and the trail pockets) take ground up to 48 degrees.
+  - Clumps are placed closer together on the shore, the greens, the cliff feet and the dry belt.
+- **No lone plants** (`detail-alone.mjs`): a plant below 14 with no other plant within 1.6 is removed. These were the judge's "single fern sprites" on the beach.
+- `DETAIL_BUDGET` is 820. The flora is limited by sites, not by the budget.
+
+Findings:
+- **Trail pockets do not exist on Caldera.** The judge asked for sheltered pockets on 20-45 degree benches by the trails' outer kerbs. The switchback legs are 9.5 apart (`TRAIL.legSep`), and the trail keep-out band is 7.5 plus the plants' pad. So the ground between two legs is inside one leg's band or the other's. The 24 pocket candidates found were all on the uphill (cut) side, so none were planted.
+- **Usable gentle ground is the limit for flora.** About 300 shore sites, 43 green, 31 cliff-foot, 20 dry. The cone's flanks are 45-75 degrees and stay bare of plants.
+
+**Request to the map (erg-mcp), the lawn edges.** The round-9 judge: "the square lawn tiles are still the loudest wrong shape in the castle shots: the bright squares at the Seawall and Strand fronts, and the green checker at Harbour left. Tinting cannot fix a hard 90-degree tile edge on organic sand." The detail layer cannot change them:
+- The tiles are the draped skin's primary material.
+- The editor refuses a repaint of a word that carries a second material and a corner mask (sim).
+- Asked of the map: blend the grass cells' corners into the sand (per-corner blends), or paint the lawns with an irregular, noise-edged mask instead of whole cells. Either way the patches' outlines would be rounded.
+- Shots: scratchpad `caldet/r10/shots/caldet_r10_castle_Seawall.png`, `caldet_r10_castle_Strand.png` and `caldet_r10_castle_Harbour.png`.

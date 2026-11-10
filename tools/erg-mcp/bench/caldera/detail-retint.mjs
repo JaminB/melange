@@ -11,7 +11,8 @@ export const ROCK_BANDS = [
 ];
 export async function retintPass(ctx) {
   const out = {};
-  for (const q of ["_dtl", "_cpl", "_slb"]) {
+  // round 10: the talus fans, strata ledges and column clusters (the caldera.* meshes, detail-basalt.mjs) take the bands too
+  for (const q of ["_dtl", "_cpl", "_slb", "_tal", "_ldg", "_col"]) {
     const r = (await ctx.call("tint_scenery", { search: q, ramp: ROCK_BANDS, units: "map" }, { soft: true }));
     out[q] = r.err ? r.text.slice(0, 120) : (r.json?.changed ?? r.json?.count ?? r.json?.tinted ?? "ok");
   }

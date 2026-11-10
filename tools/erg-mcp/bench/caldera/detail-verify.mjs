@@ -17,7 +17,8 @@ try {
   const spawns = ((await call("describe_level", { limit: 1 })).json.spawns ?? []).map((s) => [s.map[0], s.map[2]]);
   // round 6: the rock (_dtl), the strata (_ldg) and the flora (_flo)
   const d = [];
-  for (const q of ["_dtl", "_ldg", "_flo", "_cpl", "_slb"]) d.push(...(await call("list_scenery", { search: q, units: "map", limit: 2000 })).json.details);
+  // round 10: the talus fans (_tal) and column clusters (_col) of Caldera's own meshes too (their boxes are close to Horror5's)
+  for (const q of ["_dtl", "_ldg", "_flo", "_cpl", "_slb", "_tal", "_col"]) d.push(...(await call("list_scenery", { search: q, units: "map", limit: 2000 })).json.details);
   // round 3: each piece's footprint (Horror5's 3.11 x 3.21 box at its x and z scale, 0.85 of the half side) must be clear too,
   // and a piece under the water is a fault only when no _dtl piece within 4 of it shows above the water (the lower blocks
   // of a kitbashed sea stack are sunk on purpose under the ones that show)
@@ -50,7 +51,7 @@ try {
   const bad = rockish.filter((x) => why(x)).concat(badFlo);
   const whyAny = (x) => (isFlo(x) ? whyFlo(x) : why(x));
   const tinted = d.filter((x) => /_tint[0-9a-f]{6}/.test(x.name)).length;
-  const byTag = Object.fromEntries(["_dtl", "_ldg", "_cpl", "_flo", "_slb"].map((t) => [t, d.filter((x) => x.name.includes(t)).length]));
+  const byTag = Object.fromEntries(["_dtl", "_ldg", "_cpl", "_flo", "_slb", "_tal", "_col"].map((t) => [t, d.filter((x) => x.name.includes(t)).length]));
   console.log(JSON.stringify({ props: d.length, byTag, low: rockish.filter(low).length, plants: plants.length, tinted, violations: bad.length, floraViolations: badFlo.length, first: bad.slice(0, 5).map((x) => [x.name, x.at, whyAny(x)]) }));
   await call("close", { discard: true });
   if (bad.length) process.exitCode = 1;

@@ -30,6 +30,8 @@ import { supportPass } from "./detail-support.mjs";
 import { slabPass } from "./detail-slab.mjs";
 import { retintPass } from "./detail-retint.mjs";
 import { lawnPass } from "./detail-lawn.mjs";
+import { talusPass, ledgePass, columnsPass, basaltPass } from "./detail-basalt.mjs";
+import { alonePass } from "./detail-alone.mjs";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const argv = process.argv.slice(2);
@@ -45,7 +47,8 @@ process.env.MELANGE_EXE ??= path.join(ROOT, "build/x86-release/Melange.exe");
 // draw count before adding anything"; fewer, bigger props: round 8's level held 573 details). Round 9 measured (testenv D,
 // Sunstone on, the oblique, B idle): undressed 4.95 / 4.62 ms, rock only 6.08, flora only 6.09, both (544 details) 6.57:
 // most of the cost comes with the first dressed props, not with each one
-export const DETAIL_BUDGET = +(process.env.DTL_BUDGET ?? 580);
+// round 10: 820 (the talus fans, ledges and columns of Caldera's own meshes; the flora's new pockets and weeds)
+export const DETAIL_BUDGET = +(process.env.DTL_BUDGET ?? 820);
 const ONLY = opt("--passes", "") ? opt("--passes").split(",") : null;
 fs.mkdirSync(OUT, { recursive: true });
 const say = (...a) => console.log(new Date().toISOString().slice(11, 19), ...a);
@@ -69,16 +72,25 @@ export const PASSES = [
   // round 8: the strata rows are gone (the judge: "better none than necklaces": a round rock mesh in a row reads as beads);
   // the cliff piles are laid along their faces with talus below; the offshore singles are cleared; every rock clump hanging
   // off a steep face with no ground or talus under it is removed (detail-support.mjs); then the flora
-  { name: "cliff", run: cliffPass },
+  // round 10: the cliff piles are gone (the round-9 judge: "strings of black beads stuck to near-vertical faces"): TALUS FANS
+  // at the foot of the cliffs replace them; strata LEDGES on the bare steep faces, COLUMNS on cliff tops, and every HORROR5
+  // copy re-pointed at the matte caldera.Boulder, all Caldera's own mod meshes (detail-basalt.mjs, meshes/); no plant left
+  // alone (detail-alone.mjs); the offshore masses off the shore are gone
+  ...(process.env.DTL_CLIFF === "1" ? [{ name: "cliff", run: cliffPass }] : []),
   { name: "crown", run: crownPass },
   { name: "coast", run: coastPass },
   { name: "offshore", run: offshorePass },
+  { name: "talus", run: talusPass },
+  { name: "ledge", run: ledgePass },
+  { name: "columns", run: columnsPass },
   { name: "slab", run: slabPass },
   { name: "retint", run: retintPass },
   { name: "support", run: supportPass },
   { name: "flora", run: floraPass },
   { name: "lint", run: lintPass },
   { name: "perch", run: perchPass },
+  { name: "alone", run: alonePass },
+  { name: "basalt", run: basaltPass },
 ];
 
 // build.mjs places four Camelot flags (CAMELOT16, CAMELOT19 of Multi.NiceToSiege) for the castles' towers, in world units though
@@ -101,7 +113,7 @@ try {
   report.before = { sim: fp0.sim, visual: fp0.visual, counts: fp0.counts };
   const script0 = (await call("get_script", {}, { soft: true })).text;
   say("fingerprint before", fp0.sim.slice(0, 16), "visual", fp0.visual.slice(0, 16), JSON.stringify(fp0.counts));
-  if (fp0.counts.emitter > 0 || (await Promise.all(["_dtl", "_ldg", "_flo", "_cpl", "_slb"].map(async (q) => (await call("list_scenery", { search: q })).json.total))).some((n) => n > 0) || (await call("list_scenery", { search: "_landtint" })).json.total > 0) throw new Error("the project already holds the detail layer: run detail.mjs on a freshly built project (restore it or run build.mjs first)");
+  if (fp0.counts.emitter > 0 || (await Promise.all(["_dtl", "_ldg", "_flo", "_cpl", "_slb", "_tal", "_col"].map(async (q) => (await call("list_scenery", { search: q })).json.total))).some((n) => n > 0) || (await call("list_scenery", { search: "_landtint" })).json.total > 0) throw new Error("the project already holds the detail layer: run detail.mjs on a freshly built project (restore it or run build.mjs first)");
   const spawns = ((await call("describe_level", { limit: 1 })).json.spawns ?? []).map((s) => {
     const p = s.map ?? s.at ?? s.pos ?? [];
     return Array.isArray(p) ? [p[0], p[2] ?? p[1]] : [p.x, p.z];

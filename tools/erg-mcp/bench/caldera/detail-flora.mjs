@@ -49,6 +49,18 @@ import { keepOutFlora, FLORA_WALL } from "./detail-keepout.mjs";
 import { rng, onTongue } from "./detail-rock.mjs";
 
 const WATER = 1;
+// round 10: the nearest point of any trail centreline (the pockets' outer-kerb test)
+let TRAIL_LINES = null;
+function nearestTrail(x, z) {
+  TRAIL_LINES ??= T.TRAILS.flatMap((t) => [t.pts, ...(t.branches ?? []).map((b) => b.pts).filter(Boolean)]);
+  let best = { d: Infinity, p: [x, z] };
+  for (const pl of TRAIL_LINES) for (let i = 1; i < pl.length; i++) {
+    const a = pl[i - 1], b = pl[i], dx = b[0] - a[0], dz = b[1] - a[1], L = dx * dx + dz * dz;
+    const t = L ? Math.max(0, Math.min(1, ((x - a[0]) * dx + (z - a[1]) * dz) / L)) : 0, px = a[0] + t * dx, pz = a[1] + t * dz, d = Math.hypot(x - px, z - pz);
+    if (d < best.d) best = { d, p: [px, pz] };
+  }
+  return best;
+}
 export const FLORA = {
   bush: [{ base: "Multi.GhostHill", resource: "WILDWEST2", mul: 0.95 }, { base: "Multi.DoomCanyon", resource: "WILDWEST2", mul: 1.5 },
     { base: "Multi.StormTheCastle", resource: "CAMELOT2", mul: 1.3 }, { base: "Multi.StormTheCastle", resource: "CAMELOT3", mul: 1.25 }],
@@ -60,37 +72,55 @@ export const FLORA = {
   tuft: [{ base: "Multi.JoustAboutIt", resource: "CAMELOT1", mul: 1.1 }, { base: "Multi.RobInTheHood", resource: "CAMELOT1", mul: 0.75 }],
   tussock: [{ base: "Multi.Escape", resource: "PREHISTORIC1", mul: 1.2 }],
   agave: [{ base: "Multi.GhostHill", resource: "WILDWEST1", mul: 0.85 }, { base: "Multi.DoomCanyon", resource: "WILDWEST1", mul: 0.8 }],
+  // round 10 (each checked once in game: scratchpad caldet/r10/caldet_r10_flora_check_sheet.png): StormTheCastle CAMELOT4 draws
+  // as a low sprawling leafy weed; WindyWizard CAMELOT10 (a "mushroom" by its name) as a spiky succulent with red tips; the
+  // CAMELOT1 of ThisGameDoesDragon / StormTheCastle as a fine spiky grass. Out: W3DTreeVillageTrouble ENGLAND1 and
+  // W3DHelterSkelter ENGLAND3 (tiny tufts: specks at gameplay distance).
+  weed: [{ base: "Multi.StormTheCastle", resource: "CAMELOT4", mul: 1.35 }],
+  succulent: [{ base: "Multi.WindyWizard", resource: "CAMELOT10", mul: 1.0 }],
+  grass: [{ base: "Multi.ThisGameDoesDragon", resource: "CAMELOT1", mul: 0.95 }, { base: "Multi.StormTheCastle", resource: "CAMELOT1", mul: 0.5 }],
 };
 const UNTINTED = new Set(["flower"]);
 // one palette: the tint draws as colour x the texel's luminance / 0.5; the lush greens lean yellow-green like the grass tiles
 export const GREENS = {
   bush: ["#5c9f3a", "#66a842", "#539336"], shrub: ["#6aac44", "#74b34a"], leaf: ["#86c740", "#7cbf3c"], tuft: ["#92cb4c", "#9ccf52"],
-  tussock: ["#88c447", "#80bd43"], agave: ["#8fae5a", "#97b35f"],
+  tussock: ["#88c447", "#80bd43"], agave: ["#8fae5a", "#97b35f"], weed: ["#6aa83e"], grass: ["#94c84e"], succulent: ["#8fa86a"],
 };
 export const DRY = { tussock: ["#a9b05c", "#9ea656"], tuft: ["#bdb46e", "#b0aa66"], agave: ["#9aa86a", "#8f9f62", "#a6ad70"], leaf: ["#a3ad60"] };
 export const DUNE = { tussock: ["#a8b860", "#9db058"], tuft: ["#b3be68", "#a9b862"], leaf: ["#9fb35c"] };
 
 // cluster recipes: rings [kind, count range, radius range, keep chance]
+// round 10 (the round-9 judge: the flora is all on edges, "single fern sprites sprinkled on open sand read as debris"; the
+// focus: lush grass, weeds and flowers on the castle greens, aprons and the lower shore, sparse hardy tufts and cacti on the
+// dry mid slopes): the weeds and fine grass join the lush recipes, the succulent the hardy ones, the shore clumps are tight
+// (no satellite further than 1.1 from the core), and POCKETS of planting sit on the 20-42 degree benches just below the
+// trails' outer kerbs (the downhill side, off the kerb band)
 const RECIPES = {
+  pocket: [["tussock", [1, 2], [0, 0.6], 1], ["grass", [1, 2], [0.4, 1.0], 0.85], ["weed", [0, 1], [0.5, 1.1], 0.6], ["succulent", [0, 1], [0.7, 1.3], 0.5], ["flower", [0, 1], [0.6, 1.2], 0.4]],
   // round 9: tight masses (members overlapping within 0.5-1.6 of the core), one or two satellites
   mass: [["bush", [1, 2], [0, 0.6], 1], ["shrub", [2, 3], [0.6, 1.3], 0.9], ["tussock", [1, 2], [0.9, 1.6], 0.8], ["flower", [0, 1], [0.8, 1.5], 0.7], ["tuft", [1, 2], [1.4, 2.4], 0.6]],
-  hardy: [["agave", [1, 2], [0, 0.6], 1], ["tussock", [1, 2], [0.6, 1.4], 0.8], ["tuft", [1, 2], [1.0, 2.0], 0.6]],
+  hardy: [["agave", [1, 2], [0, 0.6], 1], ["succulent", [1, 2], [0.5, 1.1], 0.8], ["tussock", [1, 2], [0.6, 1.4], 0.8], ["tuft", [1, 2], [1.0, 2.0], 0.6]],
   ash: [["tuft", [1, 2], [0, 0.6], 1], ["tussock", [0, 1], [0.5, 1.1], 0.5]],
   hedge: [["bush", [2, 4], [0, 0], 1], ["shrub", [1, 2], [1.0, 1.8], 0.85], ["flower", [1, 2], [1.4, 2.4], 0.7], ["tuft", [2, 3], [1.8, 3.2], 0.6], ["leaf", [1, 2], [1.6, 3.0], 0.5]],
-  green: [["shrub", [1, 2], [0, 0.5], 1], ["tussock", [1, 2], [0.5, 1.2], 0.85], ["tuft", [2, 3], [0.7, 1.5], 0.75], ["flower", [1, 2], [0.6, 1.3], 0.7], ["tuft", [0, 1], [1.8, 2.6], 0.5]],
-  lawn: [["tuft", [2, 3], [0, 0.7], 1], ["flower", [1, 2], [0.3, 0.9], 0.85], ["tussock", [1, 1], [0.6, 1.2], 0.7], ["leaf", [0, 1], [0.8, 1.3], 0.5]],
+  green: [["shrub", [1, 2], [0, 0.5], 1], ["weed", [1, 2], [0.4, 1.0], 0.85], ["tussock", [1, 2], [0.5, 1.2], 0.85], ["grass", [1, 2], [0.7, 1.4], 0.75], ["flower", [1, 2], [0.6, 1.3], 0.7]],
+  lawn: [["grass", [1, 2], [0, 0.6], 1], ["weed", [1, 1], [0.3, 0.8], 0.85], ["flower", [1, 2], [0.3, 0.9], 0.85], ["tussock", [1, 1], [0.6, 1.1], 0.7], ["tuft", [0, 1], [0.7, 1.1], 0.5]],
   edge: [["leaf", [1, 2], [0, 0.5], 1], ["tuft", [1, 2], [0.3, 0.9], 0.85], ["leaf", [0, 1], [0.5, 1.1], 0.5]],
-  shore: [["tuft", [2, 3], [0, 0.8], 1], ["tussock", [1, 2], [0.5, 1.3], 0.8], ["flower", [0, 1], [0.6, 1.2], 0.5]],
-  dry: [["agave", [1, 1], [0, 0.4], 1], ["tuft", [1, 2], [0.6, 1.4], 0.65], ["tussock", [0, 1], [0.7, 1.4], 0.5]],
+  shore: [["tussock", [1, 1], [0, 0.4], 1], ["grass", [2, 3], [0.2, 0.8], 1], ["weed", [1, 1], [0.4, 0.9], 0.8], ["flower", [0, 1], [0.5, 1.0], 0.6], ["tuft", [0, 1], [0.6, 1.1], 0.5]],
+  dry: [["succulent", [1, 1], [0, 0.4], 1], ["agave", [0, 1], [0.4, 0.9], 0.6], ["tuft", [1, 2], [0.6, 1.3], 0.65], ["tussock", [0, 1], [0.7, 1.3], 0.5]],
 };
 // round 9: clumps further apart and fewer of them; no edge sprinkles
-const SEP = { wall: 3.8, cliff: 6, rock: 6, edge: 2.2, lawn: 4.5, green: 5.5, shore: 5, dry: 8, ash: 9 };
-const CAP = { wall: 50, cliff: 14, rock: 14, edge: 0, lawn: 20, green: 22, shore: 20, dry: 16, ash: 10 };
+// round 10: more clumps where the ground allows (the shore, the greens, the cliff feet and the dry belt), still clumps apart
+const SEP = { wall: 3.8, cliff: 5.5, rock: 6, edge: 2.2, lawn: 4.5, green: 4.6, shore: 4.2, dry: 6, ash: 8, pocket: 6 };
+const CAP = { wall: 50, cliff: 20, rock: 16, edge: 0, lawn: 24, green: 30, shore: 40, dry: 20, ash: 10, pocket: 26 };
 const MIN_H = 0.36;                                    // no plant drawn shorter (about half a worm)
 const FLORA_TOP = 27;                                  // bare ash and rock above
 // the height ramp: [y, colour] (the plants' tint drawn as colour x texel luminance / 0.5)
 export const FLORA_RAMP = [[0, "#6c9c40"], [6, "#6a9a3e"], [10, "#7a9846"], [14, "#8c9c52"], [18, "#a09f62"], [22, "#a59f80"], [27, "#9c998c"]];
-const LOW_ONLY = new Set(["lawn", "edge", "shore"]);   // walkable ground: nothing over 0.65 tall
+const LOW_ONLY = new Set(["lawn", "edge", "shore"]);
+// round 10: the trails' outer-kerb pockets: this far from a trail's centreline (past the kerb band and the plants' 0.5 pad)
+const POCKET = [6.8, 11];
+const HARDY_SLOPE = 48;
+const HARDY = new Set(["succulent", "agave", "tuft", "tussock", "grass"]);   // walkable ground: nothing over 0.65 tall
 const LUSH_Y = 14;
 const SAND_Y = 4;                                     // under this the slopes are the sand ring, not lava rock                                    // masses above this are hardy (agave and grass), not bushes
 const HEDGE_AT = 1.5;                                 // a hedge bush's centre from the wall (its footprint ~0.7 from it)
@@ -141,7 +171,9 @@ export async function floraPass(ctx) {
   }
   const gs = await sample(grid);
   const pts = [];
-  grid.forEach(([x, z], i) => { const g = gs[i]; if (g && g.y > WATER + 0.6 && g.y < FLORA_TOP && g.slope < (g.y < SAND_Y ? 55 : 42)) pts.push({ x, z, g }); });
+  // round 10: the hardy zones (dry, ash, the trail pockets) take ground up to HARDY_SLOPE (succulents and grass cling to steeper
+  // ash than the lush recipes); every other zone keeps its own limit under 42
+  grid.forEach(([x, z], i) => { const g = gs[i]; if (g && g.y > WATER + 0.6 && g.y < FLORA_TOP && g.slope < (g.y < SAND_Y ? 55 : HARDY_SLOPE)) pts.push({ x, z, g }); });
   // cliff feet: the ground 2.5 uphill (against the horizontal normal) is a steep face
   const low = pts.filter((p) => p.g.y < 30);
   const up = await sample(low.map((p) => { const n = p.g.normal, l = Math.hypot(n[0], n[2]) || 1; return [p.x - n[0] / l * 2.5, p.z - n[2] / l * 2.5]; }));
@@ -182,20 +214,28 @@ export async function floraPass(ctx) {
     if (lava(x, z, 1.5) || inRock(x, z)) continue;
     if (keepOutFlora(x, z, 1.0, 1.0, 0, ctx.spawns, 0.4)) continue;
     const wallD = Math.min(...T.CASTLES.map((c) => T.footDist(c, x, z, 0)));
+    const tn = nearestTrail(x, z);
     const rockD = Math.min(Infinity, ...bigRocks.map((k) => Math.hypot(k.x - x, k.z - z) - k.r));
     const n = T.noise(x * 0.07, z * 0.07, 733);
     let zone = null, w = 0;
     if (wallD > 1.2 && wallD < 2.2 && g.y < 14 && g.slope < 35) { zone = "wall"; w = 1.5 - wallD * 0.1; }
+    else if (tn.d > POCKET[0] && tn.d < POCKET[1] && g.slope >= 20 && g.slope < 46 && g.y > 4 && g.y < 24 && wallD > 3) { zone = "pocket"; w = (1.2 - g.y / 60) * (n > -0.3 ? 1 : 0.4); }
     else if (p.cliff && g.slope < 38 && wallD > 3) { zone = "cliff"; w = 1.3 - g.y / 60; }
     else if (rockD > 0 && rockD < 2.5 && g.y < 26 && g.slope < 38) { zone = "rock"; w = 1.15 - g.y / 60; }
     else if (g.y >= 4 && g.y < 9.5 && g.slope < 24) { zone = "lawn"; w = (n > -0.35 ? 1 : 0.35) * 0.95; }
     else if (g.y >= 3.5 && g.y < 12 && g.slope < 40) { zone = "green"; w = (n > -0.15 ? 1 : 0.2) * (1.05 - (g.y - 3.5) / 20); }
     else if (g.y < 3.5 && g.slope < 55) { zone = "shore"; w = (0.45 + 0.45 * (g.y - WATER - 0.6) / 2.9) * (n > -0.1 ? 1 : 0.25); }
-    else if (g.y >= 12 && g.y < 20 && g.slope < 40) { zone = "dry"; w = 0.75 * (1 - (g.y - 12) / 16) * (n > -0.05 ? 1 : 0.2); }
-    else if (g.y >= 20 && g.y < FLORA_TOP && g.slope < 36) { zone = "ash"; w = 0.45 * (1 - (g.y - 20) / 9) * (n > 0.1 ? 1 : 0.15); }
+    else if (g.y >= 12 && g.y < 20 && g.slope < HARDY_SLOPE) { zone = "dry"; w = 0.75 * (1 - (g.y - 12) / 16) * (n > -0.05 ? 1 : 0.2); }
+    else if (g.y >= 20 && g.y < FLORA_TOP && g.slope < 46) { zone = "ash"; w = 0.45 * (1 - (g.y - 20) / 9) * (n > 0.1 ? 1 : 0.15); }
     if (!zone) continue;
     stats.candidates[zone] = (stats.candidates[zone] ?? 0) + 1;
-    cands.push({ x, z, g, zone, w: w * (0.65 + 0.35 * R()), wallD });
+    cands.push({ x, z, g, zone, w: w * (0.65 + 0.35 * R()), wallD, tn });
+  }
+  // round 10: a pocket is on the trail's OUTER (downhill) side: the bed at the nearest centreline point stands over it
+  {
+    const pk = cands.filter((c) => c.zone === "pocket"), bed = await sample(pk.map((c) => c.tn.p));
+    pk.forEach((c, i) => { if (!bed[i] || bed[i].y < c.g.y + 0.6) c.w = 0; });
+    stats.candidates.pocketOuter = pk.filter((c) => c.w > 0).length;
   }
   cands.sort((a, b) => b.w - a.w);
   const centres = [];
@@ -208,7 +248,7 @@ export async function floraPass(ctx) {
   // round 9: the budget is shared out by zone in turn (the walls' hedges, the lush shore, the greens and lawns, then the
   // cliff feet, rock bases and the hardy belt), each zone's best sites first, so no zone takes it all
   {
-    const ORDER = ["wall", "shore", "green", "lawn", "cliff", "rock", "dry", "ash", "edge"], byZ = new Map(ORDER.map((z) => [z, []]));
+    const ORDER = ["wall", "shore", "green", "lawn", "pocket", "cliff", "rock", "dry", "ash", "edge"], byZ = new Map(ORDER.map((z) => [z, []]));
     for (const c of centres) byZ.get(c.zone)?.push(c);
     const out = [];
     for (let k = 0; out.length < centres.length; k++) for (const z of ORDER) { const c = byZ.get(z)[k]; if (c) out.push(c); }
@@ -261,16 +301,18 @@ export async function floraPass(ctx) {
       if (!g || g.y < WATER + 0.5) { rej("water"); continue; }
       let kind = m.kind;
       // bare faces stay bare: nothing over 42 degrees, but for low grass on the sand slopes just over the beach (under 55)
-      if (g.slope > 42 && !(g.y < SAND_Y && g.slope <= 55 && ["tuft", "leaf", "tussock"].includes(kind))) { rej("bare face (over 42 degrees)"); continue; }
+      if (g.slope > 42 && !(g.y < SAND_Y && g.slope <= 55 && ["tuft", "leaf", "tussock"].includes(kind)) && !(["dry", "ash", "pocket"].includes(zone) && g.slope <= HARDY_SLOPE && HARDY.has(kind))) { rej("bare face (over 42 degrees)"); continue; }
       // no bush out on the flat beach (the castle walls count as a steep face uphill: those are the hedges' job)
       if (kind === "bush" && zone !== "wall" && g.y < 3.5 && g.slope < 15) kind = "shrub";
       // walkable ground gets low plants only; a bush only at a wall, a cliff foot or a rock base (never on an open slope or sand)
-      if (LOW_ONLY.has(zone) && (kind === "bush" || kind === "shrub" || kind === "agave")) kind = "leaf";
+      if (LOW_ONLY.has(zone) && (kind === "bush" || kind === "shrub" || kind === "agave" || kind === "succulent")) kind = "leaf";
       if (kind === "bush" && !(zone === "wall" || zone === "cliff" || zone === "rock")) kind = "shrub";
-      if (zone === "dry" && !["agave", "tuft", "tussock"].includes(kind)) kind = "tuft";
+      if (zone === "dry" && !["agave", "succulent", "tuft", "tussock"].includes(kind)) kind = "tuft";
+      // round 10: the pockets high up are hardy (no weed or flower over 16)
+      if (zone === "pocket" && g.y > 16 && (kind === "weed" || kind === "flower")) kind = "tussock";
       if (zone === "ash" && kind !== "tussock") kind = "tuft";
       // round 9: the low sprouts only on the lawns (elsewhere they read as specks)
-      if (kind === "leaf" && zone !== "lawn") kind = "tuft";
+      if (kind === "leaf" && zone !== "lawn") kind = "grass";
       const opts = ids[kind], p = opts[Math.floor(R() * opts.length)];
       let mul = (p.mul ?? 1) * m.s * (kind === "bush" ? 0.85 + R() * 0.4 : 1);
       // a hedge bush's footprint must clear the plants' wall keep-out: shrink a big one to fit its seat
