@@ -235,3 +235,18 @@ Changes, from the round-11 judge's list (`detail-r12.mjs`, passes `chips`, `beac
 
 Run (testenv D, erg-mcp `92df935` rebuilt from scratch with `build.mjs --no-export`): sim `926ed2c04a9a4791d0d65d388b0739edb97873e610b93ae477797d083c696d2e` before, after all 29 passes and after save and reopen (31 `simSame` true, 0 false). `detail-verify`: 667 props, 0 violations, 0 flora violations. 779 details. Perf (testenv B running, so overlapped): GPU frame p50 / p95 8.70 / 9.97 ms (round 11: 7.52 / 8.44), 36 fps.
 Shipping: `ship.mjs` rewrote the committed `pack/`; an install of the pack (range lowered to 0.13 as in round 11) logs `4 bank(s) loaded from 1 mod(s)` and draws the rock. Evidence: scratchpad `caldet/r12/`.
+
+## Round 13 (dress: cohesion at the material level)
+
+From the round-12 judge's next focus (`detail-r13.mjs`, passes `ground` after `lawn`; `toe`, `debris`, `darken`, `lint13` after `lint12`):
+- **ground** (primary paint only, bits 2-7 of solid voxels: the fingerprint's visual `paint` part; never the second material or the corner mask).
+  - *steep*: a draped skin cell whose steepest top triangle is over 50 degrees and whose material has a pale side tile (path02, grass01/02, rock02, GreySlateFloor: P05 / P07) takes VolcanoRock. These were the grey-blue wedge faces. The round-5 tint of P05 / P07 never reached players: it needs the `sunstone-tint` shaders, which the released Sunstone lacks. 344 cells. At 40 degrees the flank's warm dust aprons went dark too and the dust broke into square islands, so the threshold is 50.
+  - *shore*: the checker under the castles goes. Flat basalt squares on the beach (under 6.5 high, under 30 degrees) become sand (49 cells). Grass and sand in the shore band are repainted from one fbm field: sand, olive grass02 patches, grass01 cores (57 to sand, 58 to grass02, 3 to grass01).
+  - erg-mcp `paint_region` / `paint_path` masks gained the variable `s` (the column's steepest-triangle slope from its frame's corner offsets) for this.
+- **toe**: rock groups (an anchor of 1.7-2.6 plus 2-4 smaller pieces) at the foot of cliff faces on 42-66 degree ground just outside the trail kerbs: 13 groups, 40 pieces. Few sites qualify because the keep-outs cover most of the cone.
+- **darken**: four DARK variants of the faceted rocks (`caldera.BoulderDark`, `SlabDark`, `WedgeDark`, `ShardDark`, sections 492-495: the same hulls, a darker basalt albedo, 30 % of the dust). Every rock not lying on walkable dust, ash, sand or grass takes its dark variant: the crater (70), bare basalt and lava rock (133) and steep ground (10). The shore's graded tumbles (names `tumble` / `btum`) and the beach keep the warm stone (156).
+- **debris**: removes lone or tipped-up small blocks on beach ground (2 on this build).
+
+Run (testenv D, the round-12 undressed project = `erg-mcp` `92df935`): sim `926ed2c04a9a4791d0d65d388b0739edb97873e610b93ae477797d083c696d2e` before, after all 35 passes and after save and reopen. `detail-verify`: 745 props (`_dtl` 308, `_tal` 61, `_flo` 376), 0 violations, 0 flora violations; 857 details. The pack ships 8 banks. An install of the pack (range lowered to 0.13), built with its `build.ps1`, logs `8 bank(s) loaded from 1 mod(s)`, and a match on the installed `Multi.caldera_caldera` draws the rock as the project does.
+
+Perf (testenv D, Sunstone on, the oblique, testenv B running in all three runs): dressed 8.80 / 8.71 ms GPU p50, undressed 5.88, 36 fps in all. Round 12 measured 8.70 the same way with 779 details.

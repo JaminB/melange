@@ -62,7 +62,7 @@ const surfaceProps = {
       properties: { x: { type: "number" }, z: { type: "number" }, radius: { type: "number", minimum: 0 },
         min: { type: "array", items: { type: "number" }, minItems: 2, maxItems: 2 }, max: { type: "array", items: { type: "number" }, minItems: 2, maxItems: 2 },
         points: { type: "array", items: { type: "array", items: { type: "number" }, minItems: 2, maxItems: 2 }, minItems: 3, maxItems: 500 } } } },
-  excludeMask: { type: "string", description: "Never paint where this expression is above 0 (the mask's variables x, z, r, theta about `centre`, h, y, d)." },
+  excludeMask: { type: "string", description: "Never paint where this expression is above 0 (the mask's variables x, z, r, theta about `centre`, h, y, d, s)." },
   dryRun,
 } as const;
 const shapeSchema: Schema = { type: "object", additionalProperties: false, description: "A circle (x, z, radius), a rectangle (min, max: [x, z]) or a polygon (points: [[x, z], ...]).",
@@ -200,7 +200,7 @@ export const tools: Tool[] = [
       properties: {
         ...surfaceProps,
         shapes: { type: "array", minItems: 1, maxItems: 64, items: shapeSchema, description: "Paint inside any of these (in `units`)." },
-        mask: { type: "string", description: "Paint only where this expression is above 0 (variables x, z, r, theta, h, y, d, pi, e)." },
+        mask: { type: "string", description: "Paint only where this expression is above 0 (variables x, z, r, theta, h, y, d, pi, e; s is the column's slope in degrees from its frame's corner offsets, 0 on a frame without them)." },
         centre: { type: "array", items: { type: "number" }, minItems: 2, maxItems: 2, description: "[x, z] the mask's r and theta are measured about (default 0, 0)." },
       },
     },

@@ -32,8 +32,16 @@ export const MESHES = {
   Slab: { section: 489, texture: "basalt7", make: () => hullRock("slab", 1202) },
   Wedge: { section: 490, texture: "basalt5", make: () => hullRock("wedge", 1303) },
   Shard: { section: 491, texture: "basalt5", make: () => hullRock("shard", 1404) },
+  // round 13 (the round-12 judge: the rim and crater stacks "read as pale beige cardboard boxes stacked on black basalt...
+  // they should sit darker than the dust and close to the basalt"): the same four hulls with a DARK basalt albedo and almost
+  // no ash dust, for rock that stands on bare basalt (detail-r13.mjs `darken`); the warm, dusty four stay on dust and ash
+  BoulderDark: { section: 492, texture: "basaltD7", make: () => hullRock("blocky", 1101) },
+  SlabDark: { section: 493, texture: "basaltD7", make: () => hullRock("slab", 1202) },
+  WedgeDark: { section: 494, texture: "basaltD5", make: () => hullRock("wedge", 1303) },
+  ShardDark: { section: 495, texture: "basaltD5", make: () => hullRock("shard", 1404) },
 };
 export const ROCK_VARIANTS = ["caldera.Boulder", "caldera.Slab", "caldera.Wedge", "caldera.Shard"];
+export const DARK_VARIANTS = Object.fromEntries(ROCK_VARIANTS.map((v) => [v, `${v}Dark`]));
 
 function rng(seed) { let s = seed >>> 0; return () => ((s = (s * 1664525 + 1013904223) >>> 0) / 4294967296); }
 // value noise in 3D (smooth), seeded
@@ -206,9 +214,13 @@ function columns() {
 // round 11 in game: the band tints' own values (#46403b, #3b3531) drew as a cool mid grey under the level's sky light (the
 // terrain's landscape shader darkens far more): the albedo is pulled darker and browner so the lit stone reads warm basalt
 // round 12: the round-11 judge: "reads charcoal to near-black in game": the albedo is about 1.8x brighter and warmer (first try 2.3x drew pale grey-beige) (a warm brown basalt, ash dust on top)
-const ALBEDO = { basalt7: [0x6c, 0x53, 0x3c], basalt5: [0x5b, 0x46, 0x33] }, DUST = [0x98, 0x82, 0x64];
+// round 13: basaltD7 / basaltD5, the dark variants: a basalt between round 11's near-black and round 12's warm brown, with a
+// third of the dust (DUST_SHARE), so a stack on bare rock sits near the terrain's VolcanoRock value
+const ALBEDO = { basalt7: [0x6c, 0x53, 0x3c], basalt5: [0x5b, 0x46, 0x33], basaltD7: [0x55, 0x45, 0x37], basaltD5: [0x4c, 0x3e, 0x32] }, DUST = [0x98, 0x82, 0x64];
+const DUST_SHARE = { basaltD7: 0.3, basaltD5: 0.3 };
 function rockTexture(kind) {
-  const W = 128, R = rng(kind === "basalt7" ? 47 : 45), n = noise3(kind === "basalt7" ? 7707 : 5505), px = Buffer.alloc(W * W * 3), base = ALBEDO[kind];
+  const seven = kind.endsWith("7"), ds = DUST_SHARE[kind] ?? 1;
+  const W = 128, R = rng(seven ? 47 : 45), n = noise3(seven ? 7707 : 5505), px = Buffer.alloc(W * W * 3), base = ALBEDO[kind];
   const pits = Array.from({ length: 60 }, () => [R() * W, R() * W, 0.6 + R() * 1.6]);
   for (let y = 0; y < W; y++) for (let x = 0; x < W; x++) {
     const a = (x / W) * Math.PI * 2, tx = Math.cos(a) * 2, ty = Math.sin(a) * 2;
@@ -216,7 +228,7 @@ function rockTexture(kind) {
     let v = 1 + 0.16 * nv + 0.08 * fine + (R() - 0.5) * 0.08;
     for (const [px0, py0, r] of pits) { let dx = Math.abs(x - px0), dy = Math.abs(y - py0); dx = Math.min(dx, W - dx); dy = Math.min(dy, W - dy); const d = Math.hypot(dx, dy); if (d < r) v -= 0.35 * (1 - d / r); }
     // dust share: the tops 0.35-0.6 in noise patches; the sides about 0.24 at their top fading to 0 at the foot
-    const dust = y < 64 ? Math.max(0, Math.min(0.65, 0.42 + 0.35 * n(tx * 2 + 4, ty * 2, y / 12))) : Math.max(0, 0.24 * (1 - (y - 64) / 50) + 0.08 * fine);
+    const dust = ds * (y < 64 ? Math.max(0, Math.min(0.65, 0.42 + 0.35 * n(tx * 2 + 4, ty * 2, y / 12))) : Math.max(0, 0.24 * (1 - (y - 64) / 50) + 0.08 * fine));
     const o = (y * W + x) * 3;
     for (let k = 0; k < 3; k++) px[o + k] = Math.max(0, Math.min(255, Math.round((base[k] * (1 - dust) + DUST[k] * dust) * v)));
   }

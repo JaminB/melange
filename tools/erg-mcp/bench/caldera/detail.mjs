@@ -33,6 +33,7 @@ import { lawnPass } from "./detail-lawn.mjs";
 import { talusPass, ledgePass, columnsPass, basaltPass } from "./detail-basalt.mjs";
 import { alonePass } from "./detail-alone.mjs";
 import { chipsPass, beachTumblePass, screePass, accentPass, lint12Pass } from "./detail-r12.mjs";
+import { groundPass, toePass, darkenPass, debrisPass } from "./detail-r13.mjs";
 import { stringsPass, beachPass, tumblePass, rimPass, flora2Pass, lint11Pass } from "./detail-r11.mjs";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
@@ -68,6 +69,9 @@ export const PASSES = [
   // the bare flank faces (detail-slab.mjs, erg-mcp plan_contour); one rock tint per elevation band (detail-retint.mjs);
   // flora as fewer, bigger clumps with a height ramp from lush to ash (detail-flora.mjs)
   { name: "lawn", run: lawnPass },
+  // round 13 (detail-r13.mjs): the base terrain's own look by primary paint: steep pale-sided skin cells to basalt, the
+  // shore's checker to one noise field of sand, olive meadow and green cores (before the flora, which follows the lawns)
+  { name: "ground", run: groundPass },
   { name: "rock", run: rockPass },
   // round 6: horizontal strata bands replace round 5's boulder "strata" (detail-cliff.mjs, removed); columnar crowns on the
   // crests and cliff tops; the coast (stacks, half-sunk blocks, stepped columns); the first flora; the perched lint
@@ -111,6 +115,12 @@ export const PASSES = [
   { name: "scree", run: screePass },
   { name: "accent", run: accentPass },
   { name: "lint12", run: lint12Pass },
+  // round 13: rock groups at the cliff toes outside the kerbs; the beach's lone and tipped small blocks; the rock on bare
+  // basalt and in the crater to the dark variants; the mine look-alike lint once more
+  { name: "toe", run: toePass },
+  { name: "debris", run: debrisPass },
+  { name: "darken", run: darkenPass },
+  { name: "lint13", run: lint12Pass },
 ];
 
 // build.mjs places four Camelot flags (CAMELOT16, CAMELOT19 of Multi.NiceToSiege) for the castles' towers, in world units though

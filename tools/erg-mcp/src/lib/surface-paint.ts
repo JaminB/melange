@@ -40,7 +40,18 @@ export interface SurfacePaint {
   label: string;
 }
 
-const MASK_VARS = ["h", "y", "d"] as const;
+const MASK_VARS = ["h", "y", "d", "s"] as const;
+
+/** The slope in degrees of column (x, z) of a frame from its four corner offsets (0 for a frame without corners): the
+ * steepest of the four triangles its top quad can split into (either diagonal), since the game draws a steep triangle of
+ * a draped skin with its material's side texture (Caldera's pale slivers: docs/erg-mcp.md, detail layer). */
+export function frameColumnSlope(f: { size: number[]; corners?: ArrayLike<number> | null }, x: number, z: number): number {
+  const c = f.corners;
+  if (!c) return 0;
+  const W = f.size[0] + 1, a = c[z * W + x], b = c[z * W + x + 1], e = c[(z + 1) * W + x], g = c[(z + 1) * W + x + 1];
+  const t = Math.max(Math.hypot(b - a, e - a), Math.hypot(b - a, g - b), Math.hypot(g - e, e - a), Math.hypot(g - e, g - b));
+  return (Math.atan(t) * 180) / Math.PI;
+}
 
 /** Distance in x, z from p to the polyline, and how far along it (0-1) the nearest point is. */
 function toPath(path: Vec3[], cum: number[], x: number, z: number): { d: number; t: number } {
@@ -119,7 +130,7 @@ export function paintSurface(store: EditorStore, o: SurfacePaint) {
     return t;
   };
   const [cx0, cz0] = o.centre ?? [0, 0];
-  const vars: Record<string, number> = { x: 0, z: 0, u: 0, v: 0, r: 0, theta: 0, W: 0, D: 0, R: 0, pi: Math.PI, e: Math.E, h: 0, y: 0, d: 0 };
+  const vars: Record<string, number> = { x: 0, z: 0, u: 0, v: 0, r: 0, theta: 0, W: 0, D: 0, R: 0, pi: Math.PI, e: Math.E, h: 0, y: 0, d: 0, s: 0 };
   const only = o.only ? new Set(o.only) : null, except = new Set(o.except ?? []);
   const edit = new VoxelEdit(store);
   const per = new Map<number, number>();
@@ -159,6 +170,7 @@ export function paintSurface(store: EditorStore, o: SurfacePaint) {
           let py = m[4] * cx + m[5] * cy + m[6] * cz + m[7];
           if (g.frame.corners) py += cornerOffset(g.frame, cx, cz) * m[5];
           looked++;
+          vars.s = frameColumnSlope(g.frame, x, z);
           const top = groundTop(px, pz);
           if (py < top - o.depth) continue;
           if (inArea(px, py, pz, top, 0)) {
