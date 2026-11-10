@@ -1,1 +1,1 @@
-{"spiceVersion":1,"id":"caldera","version":"2.0.0","name":"Caldera","melange":{"range":">=0.2.0"},"kind":"content","defaultEnabled":false,"levels":[{"slug":"caldera","title":"Caldera","type":"multi","chunk":true,"source":"src/caldera.ergpatch.json","sim":"sim/caldera.lua"}]}
+{"spiceVersion":1,"id":"caldera","version":"2.0.0","name":"Caldera","melange":{"range":">=0.2.0"},"kind":"content","defaultEnabled":false,"levels":[{"slug":"caldera","title":"Caldera","type":"multi","chunk":true,"source":"src/caldera.ergpatch.json"}]}
