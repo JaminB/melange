@@ -205,7 +205,8 @@ function columns() {
 // the sides, from dustier at row 64 (a face's top) to the bare dark stone at row 127 (its foot); vesicles and a fine grain
 // round 11 in game: the band tints' own values (#46403b, #3b3531) drew as a cool mid grey under the level's sky light (the
 // terrain's landscape shader darkens far more): the albedo is pulled darker and browner so the lit stone reads warm basalt
-const ALBEDO = { basalt7: [0x3c, 0x30, 0x27], basalt5: [0x33, 0x29, 0x22] }, DUST = [0x6e, 0x5c, 0x48];
+// round 12: the round-11 judge: "reads charcoal to near-black in game": the albedo is about 1.8x brighter and warmer (first try 2.3x drew pale grey-beige) (a warm brown basalt, ash dust on top)
+const ALBEDO = { basalt7: [0x6c, 0x53, 0x3c], basalt5: [0x5b, 0x46, 0x33] }, DUST = [0x98, 0x82, 0x64];
 function rockTexture(kind) {
   const W = 128, R = rng(kind === "basalt7" ? 47 : 45), n = noise3(kind === "basalt7" ? 7707 : 5505), px = Buffer.alloc(W * W * 3), base = ALBEDO[kind];
   const pits = Array.from({ length: 60 }, () => [R() * W, R() * W, 0.6 + R() * 1.6]);

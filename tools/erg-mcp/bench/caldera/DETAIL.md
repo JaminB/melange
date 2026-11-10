@@ -222,3 +222,16 @@ Evidence:
   - `caldet_r11_pairs_before_after.png` (r10 undressed vs r11 dressed: the undressed level is the same)
   - `detail.log`, `dressed/detail.json`, `verify.json`
 - Per-round evidence: `caldet/r0` to `caldet/r10`.
+
+## Round 12 (dress)
+
+Changes, from the round-11 judge's list (`detail-r12.mjs`, passes `chips`, `beachtum`, `scree`, `accent`, `lint12` after `lint11`):
+- **Rock albedo:** the baked texture is about 1.8x brighter and warmer (`meshes/gen.mjs`: basalt7 #6c533c, basalt5 #5b4633, dust #988264). Round 11's values drew near-black in game. A first try at 2.3x drew pale grey-beige, so it was pulled back.
+- **chips:** removes lone shore chips and a big flat slab. On this build it removed 0: the black chips were the outer ring of the round-11 tumbles, which now read as graded stones with the lighter albedo.
+- **beachtum:** seated 7-piece graded tumbles (1.8-2.2 / 1.1-1.5 / 0.6-0.9) on beach ground: only 3 sites pass the keep-outs (4 pieces).
+- **scree:** mid-scale rock groups (anchor 2.4-3.2 on steep ground, low flat-lying 1.0-1.8 stones on walkable ash) outside the trail band: 12 sites, 70 pieces. Almost all non-steep cone ground lies inside a trail's keep-out (1422 of ~4100 samples), so the flanks can hold few groups without breaking the readability rule.
+- **accent:** 11 scrub and accent plants beside the scree groups (bush cores capped at 2.4 tall, only on slopes over 18 degrees).
+- `columns` still places 0 (every candidate is in a keep-out); the talus placer places 61 pieces.
+
+Run (testenv D, erg-mcp `92df935` rebuilt from scratch with `build.mjs --no-export`): sim `926ed2c04a9a4791d0d65d388b0739edb97873e610b93ae477797d083c696d2e` before, after all 29 passes and after save and reopen (31 `simSame` true, 0 false). `detail-verify`: 667 props, 0 violations, 0 flora violations. 779 details. Perf (testenv B running, so overlapped): GPU frame p50 / p95 8.70 / 9.97 ms (round 11: 7.52 / 8.44), 36 fps.
+Shipping: `ship.mjs` rewrote the committed `pack/`; an install of the pack (range lowered to 0.13 as in round 11) logs `4 bank(s) loaded from 1 mod(s)` and draws the rock. Evidence: scratchpad `caldet/r12/`.

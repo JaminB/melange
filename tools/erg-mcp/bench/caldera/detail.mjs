@@ -32,6 +32,7 @@ import { retintPass } from "./detail-retint.mjs";
 import { lawnPass } from "./detail-lawn.mjs";
 import { talusPass, ledgePass, columnsPass, basaltPass } from "./detail-basalt.mjs";
 import { alonePass } from "./detail-alone.mjs";
+import { chipsPass, beachTumblePass, screePass, accentPass, lint12Pass } from "./detail-r12.mjs";
 import { stringsPass, beachPass, tumblePass, rimPass, flora2Pass, lint11Pass } from "./detail-r11.mjs";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
@@ -103,6 +104,13 @@ export const PASSES = [
   { name: "rim", run: rimPass },
   { name: "flora2", run: flora2Pass },
   { name: "lint11", run: lint11Pass },
+  // round 12 (detail-r12.mjs): black chips and the lone slab off the beaches, seated graded beach tumbles, mid-scale rock
+  // groups and taller accent plants on the cone flanks, the lint once more
+  { name: "chips", run: chipsPass },
+  { name: "beachtum", run: beachTumblePass },
+  { name: "scree", run: screePass },
+  { name: "accent", run: accentPass },
+  { name: "lint12", run: lint12Pass },
 ];
 
 // build.mjs places four Camelot flags (CAMELOT16, CAMELOT19 of Multi.NiceToSiege) for the castles' towers, in world units though
