@@ -282,6 +282,47 @@ int main() {
     Unsubscribe(delSub);  // twice: harmless
     Unsubscribe(0);
 
+    Section("dispatch: DropCurrent keeps a Post from the engine");
+    {
+        const MsgId dropId = Id(3), innerId = Id(4);
+        FakeMsg dropMsg(0x81aa14, dropId, 8), innerMsg(0x81aa14, innerId, 8);
+        static int forwards = 0;
+        static FakeMsg* inner = nullptr;
+        static int mode = 0;   // 0: drop; 1: drop, then Post a nested message; 2: Post a nested message, then drop
+        inner = &innerMsg;
+        const detail::PostForward counted = [](void*, void*) { ++forwards; return 5; };
+        const Handler dropper = [](const MessageView&, void*) {
+            if (mode == 2) detail::RunPost(inner->raw(), 0, [](void*, void*) { ++forwards; return 5; }, nullptr);
+            DropCurrent();
+            if (mode == 1) detail::RunPost(inner->raw(), 0, [](void*, void*) { ++forwards; return 5; }, nullptr);
+        };
+        SubId dropSub = Subscribe(dropId, Path::Post, dropper);
+        Recorder dropDel;
+        SubId dropDelSub = Subscribe(dropId, Path::Deliver, &Record, &dropDel);
+        for (int m = 0; m < 3; ++m) {
+            mode = m;
+            forwards = 0;
+            const uint64_t before = Dropped();
+            const int dr = detail::RunPost(dropMsg.raw(), 0, counted, nullptr);
+            CHECK(dr == 0);                                   // nothing delivered: Post answers 0
+            CHECK(forwards == (m ? 1 : 0));                   // only the nested (not dropped) message went on
+            CHECK(Dropped() == before + 1);
+        }
+        // the next message is not dropped, nor one outside a handler, nor on the Deliver path
+        Unsubscribe(dropSub);
+        DropCurrent();
+        forwards = 0;
+        CHECK(detail::RunPost(dropMsg.raw(), 0, counted, nullptr) == 5 && forwards == 1);
+        const Handler delDropper = [](const MessageView&, void*) { DropCurrent(); };
+        SubId dd = Subscribe(dropId, Path::Deliver, delDropper);
+        const uint64_t before = Dropped();
+        detail::RunDeliver(nullptr, dropMsg.raw(), -1, 1, 0, &DeliverOrig, nullptr);
+        forwards = 0;
+        CHECK(detail::RunPost(dropMsg.raw(), 0, counted, nullptr) == 5 && forwards == 1 && Dropped() == before);
+        Unsubscribe(dd);
+        Unsubscribe(dropDelSub);
+    }
+
     Section("dispatch: (un)subscribe from inside a handler");
     FakeMsg exMsg(0x854184, Id(kSlotExplosion), 0x4c);
     g_selfSub = Subscribe(Id(kSlotExplosion), Path::Post, &SelfUnsub);
