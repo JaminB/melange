@@ -171,6 +171,8 @@ export function laneOf(pl) {
   return { o: Math.round((kh + kh + w) / 2 * 10) / 10, w: Math.round(w * 10) / 10 };
 }
 const SKIN_DROP = 1;             // the drape skin's walking surface under the grid's height there (measured; see castleAt)
+// (polish) the skin under a walled castle's footprint (shrunk by COURT_IN) is sunk this far under its court: island(), the court flicker
+const COURT_SINK = +(globalThis.process?.env?.COURT_SINK ?? 0.3), COURT_IN = +(globalThis.process?.env?.COURT_IN ?? 0.25);
 export const CASTLE_SCALE = +(globalThis.process?.env?.CASTLE_SCALE || 1.5);   // map units per voxel of the castles (build.mjs builds them so)
 // The trails (v2: the user's "obvious trails from each castle to the top of the mountain ... in the form of switchbacks").
 // Each team has a castle near the shore, turned to the contour (build_castle's rotation: its local x runs along the contour, its
@@ -637,6 +639,16 @@ export function island(x, z, pin = null) {
       !CASTLES.some((k) => Math.abs(x - k.at[0]) < 40 && Math.abs(z - k.at[1]) < 40 && footDist(k, x, z, 0) < 1.5) && (!KERB.anySide || kerb > h)) {
     h = Math.max(h, kerb);
     kerbed = true;
+  }
+  // (polish) the skin under a castle's court sunk COURT_SINK under the court: the shelf put the skin's surface exactly on the castle
+  // block's floor top (both at `court`, two frames' faces in one plane), and the two z-fought in the game, the court floor flickering
+  // in stripes and patches of the skin's flint and the castle's stone as the camera moved with a worm (Sunstone on or off). The sunk
+  // skin lies inside the castle's floor voxels (1.5 thick), hidden; the floor a worm stands on is the castle's, as before. A skin
+  // cell across the footprint's edge leans down into it by up to COURT_SINK just outside (under the walls, or in a gate's mouth).
+  // A ring castle has no floor of its own (its court is the skin), so it keeps it. COURT_SINK=0: as before.
+  if (COURT_SINK > 0) for (const k of CASTLES) {
+    if (k.plan.kind === "ring" || Math.abs(x - k.at[0]) > 40 || Math.abs(z - k.at[1]) > 40) continue;
+    if (footDist(k, x, z, -COURT_IN) === 0) h = Math.min(h, k.bed - COURT_SINK);
   }
   if (pin) {
     // (v2 round 4) and the bed with its level shoulder: relax() lifted the bed's uphill edge by up to 8 under a tall cut (each column
