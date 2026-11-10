@@ -27,6 +27,9 @@ import { lintPass } from "./detail-lint.mjs";
 import { perchPass } from "./detail-perch.mjs";
 import { offshorePass } from "./detail-offshore.mjs";
 import { supportPass } from "./detail-support.mjs";
+import { slabPass } from "./detail-slab.mjs";
+import { retintPass } from "./detail-retint.mjs";
+import { lawnPass } from "./detail-lawn.mjs";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const argv = process.argv.slice(2);
@@ -38,7 +41,11 @@ const GAME = process.env.MELANGE_GAME_DIR || "C:/Users/Jamin/Desktop/WUMFix/test
 process.env.MELANGE_EXE ??= path.join(ROOT, "build/x86-release/Melange.exe");
 // round 7: 1100 (round 6's 505 was the engine's 550-instance mesh pool, which Melange's [Fixes] MeshInstances now raises to
 // 2000: the rest is headroom for worms' hats, thrown mines and effects)
-export const DETAIL_BUDGET = +(process.env.DTL_BUDGET ?? 1100);
+// round 9: 560 (the round-8 judge: round 7's dressed level cost 8.4 ms of GPU frame time against 4.9 undressed: "cut the
+// draw count before adding anything"; fewer, bigger props: round 8's level held 573 details). Round 9 measured (testenv D,
+// Sunstone on, the oblique, B idle): undressed 4.95 / 4.62 ms, rock only 6.08, flora only 6.09, both (544 details) 6.57:
+// most of the cost comes with the first dressed props, not with each one
+export const DETAIL_BUDGET = +(process.env.DTL_BUDGET ?? 580);
 const ONLY = opt("--passes", "") ? opt("--passes").split(",") : null;
 fs.mkdirSync(OUT, { recursive: true });
 const say = (...a) => console.log(new Date().toISOString().slice(11, 19), ...a);
@@ -50,6 +57,11 @@ const say = (...a) => console.log(new Date().toISOString().slice(11, 19), ...a);
 export const PASSES = [
   { name: "flags", run: flagsPass },
   { name: "land", run: landPass },
+  // round 9: the lawn tiles' textures pulled to a muted olive green (detail-lawn.mjs); blunt shore stacks with boulder skirts
+  // and no specks (detail-coast.mjs, detail-offshore.mjs); round rim-rock cliff piles (detail-cliff.mjs); contour slabs on
+  // the bare flank faces (detail-slab.mjs, erg-mcp plan_contour); one rock tint per elevation band (detail-retint.mjs);
+  // flora as fewer, bigger clumps with a height ramp from lush to ash (detail-flora.mjs)
+  { name: "lawn", run: lawnPass },
   { name: "rock", run: rockPass },
   // round 6: horizontal strata bands replace round 5's boulder "strata" (detail-cliff.mjs, removed); columnar crowns on the
   // crests and cliff tops; the coast (stacks, half-sunk blocks, stepped columns); the first flora; the perched lint
@@ -61,6 +73,8 @@ export const PASSES = [
   { name: "crown", run: crownPass },
   { name: "coast", run: coastPass },
   { name: "offshore", run: offshorePass },
+  { name: "slab", run: slabPass },
+  { name: "retint", run: retintPass },
   { name: "support", run: supportPass },
   { name: "flora", run: floraPass },
   { name: "lint", run: lintPass },
@@ -87,7 +101,7 @@ try {
   report.before = { sim: fp0.sim, visual: fp0.visual, counts: fp0.counts };
   const script0 = (await call("get_script", {}, { soft: true })).text;
   say("fingerprint before", fp0.sim.slice(0, 16), "visual", fp0.visual.slice(0, 16), JSON.stringify(fp0.counts));
-  if (fp0.counts.emitter > 0 || (await Promise.all(["_dtl", "_ldg", "_flo", "_cpl"].map(async (q) => (await call("list_scenery", { search: q })).json.total))).some((n) => n > 0) || (await call("list_scenery", { search: "_landtint" })).json.total > 0) throw new Error("the project already holds the detail layer: run detail.mjs on a freshly built project (restore it or run build.mjs first)");
+  if (fp0.counts.emitter > 0 || (await Promise.all(["_dtl", "_ldg", "_flo", "_cpl", "_slb"].map(async (q) => (await call("list_scenery", { search: q })).json.total))).some((n) => n > 0) || (await call("list_scenery", { search: "_landtint" })).json.total > 0) throw new Error("the project already holds the detail layer: run detail.mjs on a freshly built project (restore it or run build.mjs first)");
   const spawns = ((await call("describe_level", { limit: 1 })).json.spawns ?? []).map((s) => {
     const p = s.map ?? s.at ?? s.pos ?? [];
     return Array.isArray(p) ? [p[0], p[2] ?? p[1]] : [p.x, p.z];

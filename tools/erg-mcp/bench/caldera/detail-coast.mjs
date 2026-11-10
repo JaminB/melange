@@ -9,6 +9,11 @@
 // gets a run of 3-5 columns from the beach out into the sea, each lower than the last (3.2 down to 0.6 over the water),
 // touching, like a broken basalt causeway. Stacks are kitbashed (place_crags "stack", seated in the bed); blocks and
 // columns are place_aligned copies at explicit heights. Charcoal basalt, wet-dark at the foot.
+// Round 9 (the round-8 judge: "the 3 tall pointed monoliths look like obsidian crystals or alien spires, not sea stacks ...
+// no wave-cut base ... no smaller rocks around them"; "make the shore spires shorter and blunter, give each a skirt of 3-5
+// smaller seated boulders at the waterline, and drop the scattered single offshore specks"): the main stack is 5-7.5 over the
+// water and squat (a kitbashed tor 4.8-6 across), the middle one 2.5-3.5; every stack gets 3-5 boulders round its foot, half
+// out of the water; the lone small stacks and the half-submerged blocks scattered along the shore are gone.
 import * as T from "./terrain.mjs";
 import { keepOutFoot } from "./detail-keepout.mjs";
 import { ROCK, rng, BASALT } from "./detail-rock.mjs";
@@ -55,19 +60,20 @@ export async function coastPass(ctx) {
     if (s.kind === "stacks") {
       // round 7: a STRONG size gradient (the judge: "uniformly sized dark dots"): one big stack 10-15 over the water, a
       // middle one 4-6, a small one or two 1.5-2.5, smaller with distance from the main one
-      const main = { xz: at(3 + R() * 2.5, (R() - 0.5) * 3), above: (10 + R() * 5) * s.g, w: 4.2 + R() * 1, role: "main" };
-      const mids = [{ xz: at(4 + R() * 3, (R() < 0.5 ? 1 : -1) * (4.5 + R() * 2)), above: (4 + R() * 2) * s.g, w: 2.6 + R() * 0.6, role: "mid" }];
+      // round 9: hugging the headland (out 1-2.5), so a stack and its skirt join the shore instead of reading as debris offshore
+      const main = { xz: at(1 + R() * 1.5, (R() - 0.5) * 3), above: (5 + R() * 2.5) * s.g, w: 4.8 + R() * 1.2, role: "main" };
+      const mids = [{ xz: at(1.5 + R() * 1.5, (R() < 0.5 ? 1 : -1) * (4 + R() * 1.5)), above: (2.5 + R()) * s.g, w: 3 + R() * 0.6, role: "mid" }];
       // the small ones are single blocks standing on the bed (a kitbashed stack this low sank under the water in round 7's
       // first run): placed with the talus below
-      for (let i = 0, n = 1 + (R() < 0.6 ? 1 : 0); i < n; i++) aligned.push({ xz: at(4 + R() * 3, (i % 2 ? 1 : -1) * (7 + R() * 3)), above: (1.6 + R()) * s.g, w: 1.5 + R() * 0.4, role: "small", site: s });
+      for (let i = 0, n = 0; i < n; i++) aligned.push({ xz: at(4 + R() * 3, (i % 2 ? 1 : -1) * (7 + R() * 3)), above: (1.6 + R()) * s.g, w: 1.5 + R() * 0.4, role: "small", site: s });
       // the blocks hug the waterline (the bed falls fast offshore): 0-3 out, along the shore either side of the stacks
-      const blocks = Array.from({ length: 5 + Math.floor(R() * 3) }, (_, i) => { const t = i / 6; return { xz: at(R() * 3 + t, (R() - 0.5) * 16), h: (2.8 - t * 1.4) * (0.8 + R() * 0.4), role: "block" }; });
+      const blocks = Array.from({ length: 0 }, (_, i) => { const t = i / 6; return { xz: at(R() * 3 + t, (R() - 0.5) * 16), h: (2.8 - t * 1.4) * (0.8 + R() * 0.4), role: "block" }; });
       crags.push(...[main, ...mids].map((c) => ({ ...c, site: s })));
       aligned.push(...blocks.map((b) => ({ ...b, site: s })));
     } else {
       // a run of columns from the beach out: each lower than the last, touching
       const n = 3 + Math.floor(R() * 3), w = 1.4 + R() * 0.4, side = (R() - 0.5) * 6;
-      for (let i = 0; i < n; i++) aligned.push({ xz: at(-1 + i * w * 0.92, side + (R() - 0.5) * 0.4), top: WATER + (3.2 - (i / (n - 1)) * 2.6) * s.g, w: w * (0.9 + R() * 0.2), role: "step", site: s, i });
+      for (let i = 0; i < n; i++) aligned.push({ xz: at(-1 + i * w * 0.92, side + (R() - 0.5) * 0.4), top: WATER + (1.8 - (i / (n - 1)) * 1.3) * s.g, w: w * (0.9 + R() * 0.2), role: "step", site: s, i });
     }
   }
   // ---- stacks: kitbashed, from the sea bed (seated 30% of their height under the lowest bed sample)
@@ -75,11 +81,14 @@ export async function coastPass(ctx) {
   const stackSpecs = [];
   crags.forEach((c, i) => {
     const b = bed[i];
-    if (!b || b.y > WATER - 0.5) { rej("stack not in the sea"); return; }
+    if (!b || b.y > WATER - 0.15) { rej("stack not in the sea"); return; }   // round 9: shallow water at the headland counts
     const why = clearAt(c.xz[0], c.xz[1], c.w * 0.7);
     if (why) { rej(why); return; }
+    // round 9: no stack in deep water (its total height from the bed made a 10-unit needle of a 6-unit stack), and every
+    // stack at least 0.7 as wide as its whole height: squat, blunt, never a crystal
+    if (b.y < WATER - 3) { rej("stack in deep water"); return; }
     const height = (WATER + c.above - (b.y - 1)) / 0.7;
-    stackSpecs.push({ xz: c.xz.map((v) => +v.toFixed(2)), height: +height.toFixed(2), width: +Math.min(4.8, c.w).toFixed(2), archetype: "stack", seed: 9000 + i, tint: BASALT[i % BASALT.length], role: c.role });
+    stackSpecs.push({ xz: c.xz.map((v) => +v.toFixed(2)), height: +height.toFixed(2), width: +Math.min(8, Math.max(c.w, height * 0.7)).toFixed(2), archetype: "tor", seed: 9000 + i, tint: BASALT[i % BASALT.length], role: c.role });
   });
   if (stackSpecs.length) {
     const r = (await call("place_crags", { base: ROCK.base, id: row.example.id, allowOtherTheme: true, units: "map", tag: "dtl", sink: 0.3, align: 0.1, maxTilt: 6, jitter: 3, crags: stackSpecs.map(({ role, ...c }) => c) })).json;
@@ -90,10 +99,10 @@ export async function coastPass(ctx) {
   const talus = [];
   for (const st of stackSpecs) {
     if (st.role === "small") continue;
-    const n = st.role === "main" ? 4 + Math.floor(R() * 3) : 2 + Math.floor(R() * 2);
+    const n = 3 + Math.floor(R() * 3);
     for (let i = 0; i < n; i++) {
-      const a = R() * Math.PI * 2, d = st.width * (0.55 + R() * 0.45);
-      talus.push({ xz: [st.xz[0] + Math.cos(a) * d, st.xz[1] + Math.sin(a) * d], w: st.width * (0.22 + R() * 0.14) * (1 - i / (n * 2.2)), role: "talus" });
+      const a = (i / n) * Math.PI * 2 + (R() - 0.5) * 0.9, d = st.width * (0.5 + R() * 0.3);
+      talus.push({ xz: [st.xz[0] + Math.cos(a) * d, st.xz[1] + Math.sin(a) * d], w: st.width * (0.26 + R() * 0.12) * (1 - i / (n * 2.2)), role: "talus" });
     }
   }
   // the small stacks: bottom on the bed, `above` over the water
@@ -148,7 +157,8 @@ export async function coastPass(ctx) {
         pitch: 0.3, embed: 0.5, jitter: [+((R() - 0.5) * 16).toFixed(1), +(R() * 360 - 180).toFixed(1), +((R() - 0.5) * 16).toFixed(1)], tint: BASALT[i % BASALT.length] });
       stats.blocks++;
     } else {
-      const bottom = Math.min(b.y, WATER) - 0.5, h = a.top - bottom, w = Math.max(a.w, h / 2.2);
+      // round 9: blunt (at least as wide as tall over the water: the round-8 columns read as crystal spires on the shore shot)
+      const bottom = Math.min(b.y, WATER) - 0.5, h = a.top - bottom, w = Math.max(a.w, h / 1.15);
       if (b.y < WATER - 3) { rej("step in deep water"); return; }
       const why = clearAt(a.xz[0], a.xz[1], w * 0.6);
       if (why) { rej(why); return; }

@@ -40,7 +40,8 @@ export async function offshorePass(ctx) {
   const masses = [];
   for (const g of info) {
     const near = masses.find((m) => Math.hypot(m.cx - g.cx, m.cz - g.cz) < 10);
-    if ((g.mass && !near) || g.shore) { if (g.mass) masses.push(g); kept.push({ n: g.grp.length, at: [+g.cx.toFixed(1), +g.cz.toFixed(1)], mass: g.mass, shore: g.shore }); }
+    // round 9: a small group touching the shore is a speck too unless it has 3 pieces (a stepped causeway)
+    if ((g.mass && !near) || (g.shore && g.grp.length >= 3)) { if (g.mass) masses.push(g); kept.push({ n: g.grp.length, at: [+g.cx.toFixed(1), +g.cz.toFixed(1)], mass: g.mass, shore: g.shore }); }
     else remove.push(...g.grp);
   }
   if (remove.length) await call("remove_scenery", { ids: remove.map((p) => p.x.id) });

@@ -1061,3 +1061,58 @@ Findings (testenv D, Sunstone 2.3.1 with `sunstone-tint`, 2026-11-10):
   - W3DAppleCoreIsland Pirate3 and W3DNobodyRidesForFree Pirate1 draw as low two-leaf sprouts.
 - **Most of the bright lawn tiles are inside keep-outs** (the castle aprons and courts, and the trail band). 284 tile-edge points were found, but only 13 edge groups were clear to plant. The checkerboard needs a terrain-paint change on the map side; this layer cannot fix it.
 - **Usable ground for plants is small.** The trails' bands, the castles and the steep cone leave about 200 cluster sites, so the island's flora is 213 pieces and the budget is not the limit.
+
+## Detail layer, round 9 (flora clumps, lawn tint, blunt coast, perf by category): what the tools gained and what the game showed
+
+New tool group `artpass` (`src/tools/artpass.ts`; pure code in `src/lib/contour.ts`, `src/lib/prop-pixels.ts` and `src/lib/perf-guard.ts`; tests in `test/artpass.test.ts`):
+
+| Tool | What it does |
+|---|---|
+| `plan_contour` | Contour-following placement sites. The ground is sampled on a grid over an area, iso-height lines are traced (marching squares) at given levels, and sites are laid along them every `spacing`, each with the ground normal, the horizontal contour `tangent` and the slope. Consecutive sites in a slope band form runs. The output feeds `place_aligned` directly. Read-only. |
+| `prop_pixels` | The on-screen size of a layer's props per camera: the projected diameter of each placed mesh's bounding sphere. Answers, per camera, the props in view, how many are under `minPx` (default 3) and the median size, plus `subPixel`: props under minPx in every camera that sees them. There is no occlusion test, so a prop behind the volcano counts as in view. Read-only. |
+| `game_overlap` | The WormsMayhem games running outside `gameDir`, each with its test folder. `clear` is true when there are none. |
+| `game_perf_guarded` | `game_perf` that refuses to measure while another folder's game runs. With `allowOverlap` it measures anyway, flags the run and labels it `_OVERLAP`. It checks again after the run. |
+
+Bench (`detail.mjs`; `build.mjs` and `terrain.mjs` are unchanged):
+- **Lawn tint** (`detail-lawn.mjs`). The lawn tiles are the top faces of grass01 and grass02 (textures P01 and P03, blends P02 and P04). `tint_landscape` pulls them from the saturated placeholder green to a muted olive green, a step darker than the plants. This is sim-neutral: a scenery carrier's name, proven by the fingerprint.
+  - The tiles' square EDGES cannot be fixed by this layer. The primary material (bits 2-7) is the per-cell paint and counts as visual, but on the draped skin the editor refuses a repaint, because the word carries a second material and corner mask (sim).
+  - **Terrain-paint request for the map (erg-mcp):** round off or break up the grass cells with per-corner blends or an irregular mask.
+- **Cliff piles** (`detail-cliff.mjs`) are drawn like the crater rim's rounded boulders:
+  - near-round proportions, at 0.6-0.8 of round 8's size
+  - sunk 60-65%, at any yaw
+  - at most 18 anchors, with one sibling each
+- **Coast** (`detail-coast.mjs`, `detail-offshore.mjs`):
+  - The stacks are squat tors 5-7.5 over the water, at least 0.7 as wide as their whole height, and never in water deeper than 3. They hug the headland.
+  - Each stack has a skirt of 3-5 boulders.
+  - The lone small stacks and the scattered half-submerged blocks are gone.
+  - The stepped causeway columns are no taller than they are wide.
+  - Offshore, a small group touching the shore is kept only when it has 3 or more pieces.
+- **Rock pass** (`detail-rock.mjs`): the flank heroes have no spire archetype (only ledges and tors, at most 14 tall). The sea stacks are tors.
+- **One rock tint per elevation band** (`detail-retint.mjs`). `tint_scenery {ramp}` sets a stepped ramp over every `_dtl`, `_cpl` and `_slb` copy: wet-dark at the waterline, then the lower cone, the middle cone, and the rim.
+- **Flank slabs** (`detail-slab.mjs`, `plan_contour`): **off by default** (`DTL_SLAB_MAX=0`).
+  - The judge asked for 25-45 degree ground. On Caldera that ground is the trails': a probe found 39 clear sites under 45 degrees against about 1500 at 45-75 degrees.
+  - On the steep faces, the rock mesh drawn as slabs read as a row of beads at 1.5x overlap, and as a chain of links at 2.6-3.3x (scratchpad `caldet/r9/caldet_r9_slab_trials.png`).
+  - A real slab or ledge mesh needs the mod mesh-bank import, which is not built.
+- **Flora** (`detail-flora.mjs`):
+  - Fewer, tighter clumps (members within 0.5-1.6 of the core), placed further apart.
+  - No plant under 0.36 tall. The low sprouts grow on the lawns only. The tile-edge sprinkles are gone.
+  - One height ramp: lush green on the shore, greens and aprons, then olive scrub, straw above 16, grey-straw ash above 22, and nothing above 27.
+  - The lower shore is lush (grass and flowers).
+  - An ash zone holds single straw tufts.
+  - The budget is shared out by zone in turn.
+  - No new pieces: every resource used was checked in game in rounds 7-8.
+- `DETAIL_BUDGET` is 580 (round 8: 1100). The dressed level holds 547 details (round 8: 573).
+
+Findings (testenv D, Sunstone 2.3.1 from `sunstone-tint`, 2026-11-10):
+- **Perf.** Oblique camera, Sunstone on, testenv B idle, `game_perf_guarded` with no overlap, gpuFrameMs p50:
+
+  | Level | gpuFrameMs p50 |
+  |---|---|
+  | undressed | 4.95, then 4.62 |
+  | rock only (304 props) | 6.08 |
+  | flora only (187 props) | 6.09 |
+  | both (438 props) | 6.57 |
+
+  The dressed level costs about +1.8 ms (under the judge's 2 ms). Most of it arrives with the first dressed props, not with each one. The game is CPU-bound at 36 fps either way.
+- `prop_pixels` at the fixed cameras: the flora's median size is 6.4 px at the oblique camera and 11-54 px at the others. 10 of 192 plants are under 3 px at the oblique, and none is under 3 px in every camera.
+- `MESH_POOL_MELANGE` stays at `0.14.0`: no release carries `[Fixes] MeshInstances` yet (the latest tag is v0.13.0).

@@ -1,3 +1,14 @@
+// Round 9 (the round-8 judge: "at oblique and flank distance there is no flora at all, because 213 pieces at this scale come
+// out as sub-pixel green dots"; "fewer, bigger clumps (0.4-0.6 of a worm's height, not specks) on the lower green slopes,
+// with lush to scrub to bare ash by height"; the focus: lush grass, weeds and flowers on the castle greens, aprons and the
+// lower shore, sparse hardy tufts and cacti on the dry mid slopes, nothing near the crater):
+//   - CLUMPS, not sprinkles: every cluster is a tight mass (its members within 0.5-1.6 of the core, overlapping) with a few
+//     satellites, and the clusters stand further apart (SEP up, CAP down); the tile-edge sprinkles ("edge") are gone (the
+//     lawn tint does that job: detail-lawn.mjs)
+//   - no specks: every plant is drawn at least MIN_H tall (0.36, about half a worm), the low sprouts only on the lawns
+//   - one colour ramp by height instead of three palettes: lush green on the shore, greens and aprons, olive scrub on the
+//     lower slopes, straw over 16, grey-straw ash over 22, nothing over 27 (FLORA_TOP); copies jittered in value and hue
+//   - the lower shore is lush (grass and flowers), not dune tufts; an ASH zone (20-27) has single sparse straw tufts
 // Detail layer round 8: FLORA, the volcanic island's plant community (round 7 brought the first clustered masses; the
 // round-7 judge: every bush the same saturated dark-green ball with no size falloff or tint variance; the bright lawn tiles
 // still bare checkerboard squares; bushes on a 60-degree bare lava face; a hedge of bushes on walkable beach sand in front of
@@ -61,21 +72,42 @@ export const DUNE = { tussock: ["#a8b860", "#9db058"], tuft: ["#b3be68", "#a9b86
 
 // cluster recipes: rings [kind, count range, radius range, keep chance]
 const RECIPES = {
-  mass: [["bush", [1, 2], [0, 0.8], 1], ["shrub", [2, 3], [1.1, 2.0], 0.9], ["flower", [1, 2], [1.4, 2.4], 0.7], ["tussock", [1, 3], [1.8, 3.0], 0.7], ["tuft", [2, 4], [2.4, 4.0], 0.55], ["leaf", [1, 3], [2.2, 3.8], 0.5]],
-  hardy: [["agave", [1, 2], [0, 0.8], 1], ["tussock", [1, 2], [1.0, 2.2], 0.8], ["tuft", [2, 4], [1.6, 3.4], 0.6]],
+  // round 9: tight masses (members overlapping within 0.5-1.6 of the core), one or two satellites
+  mass: [["bush", [1, 2], [0, 0.6], 1], ["shrub", [2, 3], [0.6, 1.3], 0.9], ["tussock", [1, 2], [0.9, 1.6], 0.8], ["flower", [0, 1], [0.8, 1.5], 0.7], ["tuft", [1, 2], [1.4, 2.4], 0.6]],
+  hardy: [["agave", [1, 2], [0, 0.6], 1], ["tussock", [1, 2], [0.6, 1.4], 0.8], ["tuft", [1, 2], [1.0, 2.0], 0.6]],
+  ash: [["tuft", [1, 2], [0, 0.6], 1], ["tussock", [0, 1], [0.5, 1.1], 0.5]],
   hedge: [["bush", [2, 4], [0, 0], 1], ["shrub", [1, 2], [1.0, 1.8], 0.85], ["flower", [1, 2], [1.4, 2.4], 0.7], ["tuft", [2, 3], [1.8, 3.2], 0.6], ["leaf", [1, 2], [1.6, 3.0], 0.5]],
-  green: [["shrub", [1, 2], [0, 0.8], 1], ["tussock", [1, 3], [1.0, 2.2], 0.85], ["flower", [1, 3], [1.2, 2.6], 0.75], ["tuft", [2, 4], [2.0, 3.6], 0.55], ["leaf", [1, 3], [2.0, 3.4], 0.5]],
-  lawn: [["flower", [1, 2], [0, 0.6], 1], ["leaf", [2, 3], [0.6, 1.6], 0.85], ["tuft", [2, 4], [1.0, 2.6], 0.7], ["tussock", [0, 1], [1.4, 2.4], 0.5]],
+  green: [["shrub", [1, 2], [0, 0.5], 1], ["tussock", [1, 2], [0.5, 1.2], 0.85], ["tuft", [2, 3], [0.7, 1.5], 0.75], ["flower", [1, 2], [0.6, 1.3], 0.7], ["tuft", [0, 1], [1.8, 2.6], 0.5]],
+  lawn: [["tuft", [2, 3], [0, 0.7], 1], ["flower", [1, 2], [0.3, 0.9], 0.85], ["tussock", [1, 1], [0.6, 1.2], 0.7], ["leaf", [0, 1], [0.8, 1.3], 0.5]],
   edge: [["leaf", [1, 2], [0, 0.5], 1], ["tuft", [1, 2], [0.3, 0.9], 0.85], ["leaf", [0, 1], [0.5, 1.1], 0.5]],
-  shore: [["tuft", [1, 2], [0, 0.6], 1], ["tussock", [0, 1], [0.6, 1.6], 0.6], ["tuft", [1, 3], [1.0, 2.2], 0.6]],
-  dry: [["agave", [1, 1], [0, 0.4], 1], ["tuft", [1, 3], [0.9, 2.0], 0.65], ["tussock", [0, 1], [1.0, 2.0], 0.5]],
+  shore: [["tuft", [2, 3], [0, 0.8], 1], ["tussock", [1, 2], [0.5, 1.3], 0.8], ["flower", [0, 1], [0.6, 1.2], 0.5]],
+  dry: [["agave", [1, 1], [0, 0.4], 1], ["tuft", [1, 2], [0.6, 1.4], 0.65], ["tussock", [0, 1], [0.7, 1.4], 0.5]],
 };
-const SEP = { wall: 3.8, cliff: 4.5, rock: 4.5, edge: 2.2, lawn: 3.2, green: 4, shore: 5, dry: 5.5 };
-const CAP = { wall: 50, cliff: 30, rock: 34, edge: 70, lawn: 40, green: 45, shore: 40, dry: 44 };
+// round 9: clumps further apart and fewer of them; no edge sprinkles
+const SEP = { wall: 3.8, cliff: 6, rock: 6, edge: 2.2, lawn: 4.5, green: 5.5, shore: 5, dry: 8, ash: 9 };
+const CAP = { wall: 50, cliff: 14, rock: 14, edge: 0, lawn: 20, green: 22, shore: 20, dry: 16, ash: 10 };
+const MIN_H = 0.36;                                    // no plant drawn shorter (about half a worm)
+const FLORA_TOP = 27;                                  // bare ash and rock above
+// the height ramp: [y, colour] (the plants' tint drawn as colour x texel luminance / 0.5)
+export const FLORA_RAMP = [[0, "#6c9c40"], [6, "#6a9a3e"], [10, "#7a9846"], [14, "#8c9c52"], [18, "#a09f62"], [22, "#a59f80"], [27, "#9c998c"]];
 const LOW_ONLY = new Set(["lawn", "edge", "shore"]);   // walkable ground: nothing over 0.65 tall
 const LUSH_Y = 14;
 const SAND_Y = 4;                                     // under this the slopes are the sand ring, not lava rock                                    // masses above this are hardy (agave and grass), not bushes
 const HEDGE_AT = 1.5;                                 // a hedge bush's centre from the wall (its footprint ~0.7 from it)
+
+const hx = (c) => [1, 3, 5].map((i) => parseInt(c.slice(i, i + 2), 16));
+const toHex = (v) => "#" + v.map((x) => Math.max(0, Math.min(255, Math.round(x))).toString(16).padStart(2, "0")).join("");
+/** The ramp's colour at height y, jittered (value +-8%, a little warmth), darker and greyer at a clump's rim (f over 0.55). */
+export function rampTint(y, f, R) {
+  let i = 0;
+  while (i + 1 < FLORA_RAMP.length && FLORA_RAMP[i + 1][0] <= y) i++;
+  const [y0, c0] = FLORA_RAMP[i], [y1, c1] = FLORA_RAMP[Math.min(i + 1, FLORA_RAMP.length - 1)];
+  const t = y1 > y0 ? Math.max(0, Math.min(1, (y - y0) / (y1 - y0))) : 0;
+  const a = hx(c0), b = hx(c1), c = a.map((v, k) => v + (b[k] - v) * t);
+  const v = 1 + (R() - 0.5) * 0.16, warm = (R() - 0.5) * 10, rim = f > 0.55 ? 0.9 : 1;
+  const grey = (c[0] + c[1] + c[2]) / 3, sat = f > 0.55 ? 0.85 : 1;
+  return toHex(c.map((x, k) => (grey + (x - grey) * sat) * v * rim + (k === 0 ? warm : k === 2 ? -warm : 0)));
+}
 
 export async function floraPass(ctx) {
   const { call } = ctx, R = rng(20261216);
@@ -88,20 +120,6 @@ export async function floraPass(ctx) {
     const sz = row.size ?? row.meshSize ?? [1, 1, 1];
     (ids[kind] ??= []).push({ ...p, id: row.example.id, sc: row.example.scale ?? [1, 1, 1], r: 0.5 * Math.max(sz[0], sz[2]), h: sz[1] });
   }
-  // per-copy tint variance: core and rim variants of every palette colour (erg-mcp tint_variants)
-  const variants = {};
-  for (const [pname, pal] of Object.entries({ GREENS, DRY, DUNE })) for (const [kind, cols] of Object.entries(pal)) {
-    const seed = 31 + kind.length * 7 + pname.length * 3;
-    const core = (await call("tint_variants", { palette: cols, count: 8, seed, hue: 9, sat: 0.14, value: 0.16 })).json.palette.flatMap((p) => p.variants);
-    const rim = (await call("tint_variants", { palette: cols, count: 8, seed: seed + 1000, hue: 9, sat: 0.14, value: 0.16, falloff: 1 })).json.palette.flatMap((p) => p.variants);
-    variants[`${pname}:${kind}`] = { core, rim };
-  }
-  const tintOf = (pname, kind, f) => {
-    const v = variants[`${pname}:${kind}`] ?? variants[`GREENS:${kind}`];
-    if (!v) return null;
-    const list = f > 0.55 ? v.rim : v.core;
-    return list[Math.floor(R() * list.length)];
-  };
   const sample = async (pts) => {
     const res = [];
     for (let i = 0; i < pts.length; i += 3500) res.push(...(await call("surface_sample", { points: pts.slice(i, i + 3500), units: "map", step: 0.8 })).json.samples);
@@ -109,7 +127,7 @@ export async function floraPass(ctx) {
   };
   // the rock already placed (its footprints: plants grow round them, not inside them)
   const rocks = [];
-  for (const q of ["_dtl", "_cpl"]) for (const d of (await call("list_scenery", { search: q, units: "map", limit: 2000 })).json.details) {
+  for (const q of ["_dtl", "_cpl", "_slb"]) for (const d of (await call("list_scenery", { search: q, units: "map", limit: 2000 })).json.details) {
     const s = d.scale ?? [1, 1, 1];
     rocks.push({ x: d.at[0], y: d.at[1], z: d.at[2], r: 0.7 * 1.55 * Math.max(Math.abs(s[0]), Math.abs(s[2])), h: 2.05 * Math.abs(s[1]) });
   }
@@ -123,7 +141,7 @@ export async function floraPass(ctx) {
   }
   const gs = await sample(grid);
   const pts = [];
-  grid.forEach(([x, z], i) => { const g = gs[i]; if (g && g.y > WATER + 0.6 && g.y < 32 && g.slope < (g.y < SAND_Y ? 55 : 42)) pts.push({ x, z, g }); });
+  grid.forEach(([x, z], i) => { const g = gs[i]; if (g && g.y > WATER + 0.6 && g.y < FLORA_TOP && g.slope < (g.y < SAND_Y ? 55 : 42)) pts.push({ x, z, g }); });
   // cliff feet: the ground 2.5 uphill (against the horizontal normal) is a steep face
   const low = pts.filter((p) => p.g.y < 30);
   const up = await sample(low.map((p) => { const n = p.g.normal, l = Math.hypot(n[0], n[2]) || 1; return [p.x - n[0] / l * 2.5, p.z - n[2] / l * 2.5]; }));
@@ -172,8 +190,9 @@ export async function floraPass(ctx) {
     else if (rockD > 0 && rockD < 2.5 && g.y < 26 && g.slope < 38) { zone = "rock"; w = 1.15 - g.y / 60; }
     else if (g.y >= 4 && g.y < 9.5 && g.slope < 24) { zone = "lawn"; w = (n > -0.35 ? 1 : 0.35) * 0.95; }
     else if (g.y >= 3.5 && g.y < 12 && g.slope < 40) { zone = "green"; w = (n > -0.15 ? 1 : 0.2) * (1.05 - (g.y - 3.5) / 20); }
-    else if (g.y < 3.5 && g.slope < 55) { zone = "shore"; w = (0.35 + 0.45 * (g.y - WATER - 0.6) / 2.9) * (n > -0.1 ? 1 : 0.25); }
-    else if (g.y >= 12 && g.y < 30 && g.slope < 40) { zone = "dry"; w = 0.75 * (1 - (g.y - 12) / 24) * (n > -0.05 ? 1 : 0.2); }
+    else if (g.y < 3.5 && g.slope < 55) { zone = "shore"; w = (0.45 + 0.45 * (g.y - WATER - 0.6) / 2.9) * (n > -0.1 ? 1 : 0.25); }
+    else if (g.y >= 12 && g.y < 20 && g.slope < 40) { zone = "dry"; w = 0.75 * (1 - (g.y - 12) / 16) * (n > -0.05 ? 1 : 0.2); }
+    else if (g.y >= 20 && g.y < FLORA_TOP && g.slope < 36) { zone = "ash"; w = 0.45 * (1 - (g.y - 20) / 9) * (n > 0.1 ? 1 : 0.15); }
     if (!zone) continue;
     stats.candidates[zone] = (stats.candidates[zone] ?? 0) + 1;
     cands.push({ x, z, g, zone, w: w * (0.65 + 0.35 * R()), wallD });
@@ -186,8 +205,17 @@ export async function floraPass(ctx) {
     if (centres.some((o) => Math.hypot(o.x - c.x, o.z - c.z) < ((o.zone === "edge") !== (c.zone === "edge") ? 1.6 : Math.min(SEP[o.zone], SEP[c.zone])))) continue;
     centres.push(c); stats.clusters[c.zone] = (stats.clusters[c.zone] ?? 0) + 1;
   }
+  // round 9: the budget is shared out by zone in turn (the walls' hedges, the lush shore, the greens and lawns, then the
+  // cliff feet, rock bases and the hardy belt), each zone's best sites first, so no zone takes it all
+  {
+    const ORDER = ["wall", "shore", "green", "lawn", "cliff", "rock", "dry", "ash", "edge"], byZ = new Map(ORDER.map((z) => [z, []]));
+    for (const c of centres) byZ.get(c.zone)?.push(c);
+    const out = [];
+    for (let k = 0; out.length < centres.length; k++) for (const z of ORDER) { const c = byZ.get(z)[k]; if (c) out.push(c); }
+    centres.splice(0, centres.length, ...out);
+  }
   // ---- members
-  const recipeOf = (c) => c.zone === "wall" ? "hedge" : (c.zone === "cliff" || c.zone === "rock") ? (c.g.y < LUSH_Y ? "mass" : "hardy") : c.zone;
+  const recipeOf = (c) => c.zone === "wall" ? "hedge" : (c.zone === "cliff" || c.zone === "rock") ? (c.g.y < LUSH_Y ? "mass" : c.g.y < 20 ? "hardy" : "ash") : c.zone;
   const clusters = centres.map((c) => {
     const recipe = RECIPES[recipeOf(c)], mem = [];
     // a hedge runs along the wall: its bushes step along the wall's tangent; the rest fans out away from the wall
@@ -240,19 +268,23 @@ export async function floraPass(ctx) {
       if (LOW_ONLY.has(zone) && (kind === "bush" || kind === "shrub" || kind === "agave")) kind = "leaf";
       if (kind === "bush" && !(zone === "wall" || zone === "cliff" || zone === "rock")) kind = "shrub";
       if (zone === "dry" && !["agave", "tuft", "tussock"].includes(kind)) kind = "tuft";
-      if (zone === "shore" && kind === "flower") kind = "tuft";
+      if (zone === "ash" && kind !== "tussock") kind = "tuft";
+      // round 9: the low sprouts only on the lawns (elsewhere they read as specks)
+      if (kind === "leaf" && zone !== "lawn") kind = "tuft";
       const opts = ids[kind], p = opts[Math.floor(R() * opts.length)];
       let mul = (p.mul ?? 1) * m.s * (kind === "bush" ? 0.85 + R() * 0.4 : 1);
       // a hedge bush's footprint must clear the plants' wall keep-out: shrink a big one to fit its seat
       if (zone === "wall" && kind === "bush" && p.r * mul > HEDGE_AT - FLORA_WALL - 0.08) mul = (HEDGE_AT - FLORA_WALL - 0.08) / p.r;
+      // round 9: no specks: at least MIN_H tall (walkable ground still caps it at 0.65)
+      if (p.h * mul < MIN_H) mul = MIN_H / p.h;
       const rad = p.r * mul, height = p.h * mul;
       if (LOW_ONLY.has(zone) && height > 0.65) { rej("too tall for walkable ground"); continue; }
       if (lava(m.x, m.z, rad + 0.5)) { rej("lava"); continue; }
       if (inRock(m.x, m.z, -0.2)) { rej("in a rock"); continue; }
       const why = keepOutFlora(m.x, m.z, rad, rad, 0, ctx.spawns, 0.5);
       if (why) { rej(why); continue; }
-      const pname = zone === "dry" || ((zone === "cliff" || zone === "rock") && g.y >= LUSH_Y) ? "DRY" : zone === "shore" ? "DUNE" : "GREENS";
-      const tint = UNTINTED.has(kind) ? null : tintOf(pname, kind, m.f);
+      // round 9: one colour ramp by height (lush, scrub, straw, ash), jittered per copy, darker and greyer toward the rim
+      const tint = UNTINTED.has(kind) ? null : rampTint(g.y, m.f, R);
       list.push({ base: p.base, kind, copy: { id: p.id, xz: [+m.x.toFixed(2), +m.z.toFixed(2)], seat: g.slope > 30 ? 0.3 : g.slope > 18 ? 0.22 : 0.12,
         rot: [Math.round((R() - 0.5) * (kind === "bush" ? 6 : 10)), Math.round(R() * 360), Math.round((R() - 0.5) * (kind === "bush" ? 6 : 10))],
         scale: p.sc.map((v) => +(v * mul).toFixed(3)), ...(tint ? { tint } : {}) } });

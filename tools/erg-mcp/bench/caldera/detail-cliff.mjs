@@ -20,6 +20,12 @@
 // and siblings of 70% and 50% beside it, stepping a little up or down), so the walls between the switchback columns and
 // the crater's inner walls read as layered basalt instead of smooth paint. Kept clear like everything else: the whole
 // footprint (and an overhang margin) off the trail band, castles, spawns, pads and the factory, off the lava.
+// Round 9 (the round-8 judge: the piles at Seawall's upper right and Harbour's upper left are "tall, faceted, dark
+// crystal-like stacks that look stacked in the air ... too big for the castle towers next to them and too shiny"; "swap the
+// faceted dark crystal cliff piles for the rounded rim-rock pieces at 0.6-0.8x their current scale" and seat them fully):
+// every pile is now drawn like the crater rim's boulders: near-round proportions (1.05 : 0.92 : 1, no long stretched axis
+// whose flat facets catch the sky light), 0.6-0.8 of round 8's size, sunk 62% of its depth into the face, any yaw (so no
+// two show the same facet), and at most 18 anchors with one sibling each; the tint is the elevation band's (detail-retint.mjs).
 import * as T from "./terrain.mjs";
 import { keepOutFoot } from "./detail-keepout.mjs";
 import { ROCK, rng, onTongue, lavaHeat } from "./detail-rock.mjs";
@@ -67,10 +73,10 @@ export async function cliffPass(ctx) {
   faces.sort((a, b) => b.w - a.w);
   const anchors = [];
   for (const p of faces) {
-    if (anchors.length >= 160) break;
+    if (anchors.length >= 18) break;
     if (p.w < 0.2) break;
     if (anchors.some((a) => Math.hypot(a.x - p.x, a.z - p.z) < 5) || others.some((o) => Math.hypot(o.x - p.x, o.z - p.z) < o.r + 2.5)) continue;
-    const size = 1.8 + R() * 2.2, why = clear(p.x, p.z, size * 0.75 + 0.3);
+    const size = (1.8 + R() * 2.2) * (0.6 + R() * 0.2), why = clear(p.x, p.z, size * 0.75 + 0.3);
     if (why) { rej(why); continue; }
     anchors.push({ ...p, size });
   }
@@ -78,7 +84,7 @@ export async function cliffPass(ctx) {
   const sibs = [];
   for (const a of anchors) {
     const n = a.g.normal, l = Math.hypot(n[0], n[2]) || 1, dx = n[0] / l, dz = n[2] / l, cx = -dz, cz = dx;
-    const k = 1 + Math.floor(R() * 3);
+    const k = 1;
     for (let i = 0; i < k; i++) {
       const side = i % 2 ? -1 : 1, f = i < 2 ? 0.7 : 0.5, d = a.size * (0.75 + 0.25 * R()) * (1 + Math.floor(i / 2) * 0.9);
       sibs.push({ x: a.x + cx * side * d + dx * (R() - 0.5) * 0.6, z: a.z + cz * side * d + dz * (R() - 0.5) * 0.6, size: a.size * f * (0.85 + 0.3 * R()), parent: a });
@@ -117,10 +123,10 @@ export async function cliffPass(ctx) {
     const heat = lavaHeat(b.x, b.z), base = CLIFF[i % CLIFF.length], n = b.g.normal, l = Math.hypot(n[0], n[2]) || 1;
     const talus = b.kind === "talus", sz = b.size;
     return { pos: [+b.x.toFixed(2), +b.g.y.toFixed(2), +b.z.toFixed(2)], normal: n.map((v) => +v.toFixed(3)), tangent: [+(-n[2] / l).toFixed(3), +(n[0] / l).toFixed(3)],
-      size: talus ? [+(sz * (1.2 + R() * 0.3)).toFixed(2), +(sz * (0.75 + R() * 0.15)).toFixed(2), +(sz * (0.9 + R() * 0.2)).toFixed(2)]
-        : [+(sz * (1.2 + R() * 0.15)).toFixed(2), +(sz * (0.9 + R() * 0.12)).toFixed(2), +(sz * (1.0 + R() * 0.12)).toFixed(2)],
-      pitch: talus ? 0.15 : 0.2, embed: talus ? 0.45 : +(0.52 + R() * 0.08).toFixed(2),
-      jitter: [+((R() - 0.5) * 8).toFixed(1), +((R() - 0.5) * 24).toFixed(1), +((R() - 0.5) * 8).toFixed(1)],
+      size: talus ? [+(sz * (1.1 + R() * 0.2)).toFixed(2), +(sz * (0.8 + R() * 0.15)).toFixed(2), +(sz * (0.95 + R() * 0.15)).toFixed(2)]
+        : [+(sz * (1.0 + R() * 0.1)).toFixed(2), +(sz * (0.88 + R() * 0.08)).toFixed(2), +(sz * (0.95 + R() * 0.1)).toFixed(2)],
+      pitch: talus ? 0.15 : 0.1, embed: talus ? 0.5 : +(0.6 + R() * 0.05).toFixed(2),
+      jitter: [+((R() - 0.5) * 10).toFixed(1), +(R() * 360 - 180).toFixed(1), +((R() - 0.5) * 10).toFixed(1)],
       tint: heat > 0 ? mix(base, SCORCHED, 0.3 * heat) : base };
   });
   for (let i = 0; i < pieces.length; i += 200) {

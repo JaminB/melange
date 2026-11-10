@@ -176,12 +176,13 @@ export async function rockPass(ctx) {
   grid.sort((p, q) => q.r - p.r || p.x - q.x || p.z - q.z);
   const ZONES = [
     // the outer rim slope: low ledges and tors, none taller than 8 (a pad is 6 across), 15 clear of any pad
-    { kind: "rim", lo: T.RC + 2, hi: T.RC + 12, n: 6, h: [5.5, 8], sep: 16, arch: [["ledge", 3], ["tor", 2], ["spire", 1]], padClear: 12 },
+    { kind: "rim", lo: T.RC + 2, hi: T.RC + 12, n: 6, h: [5.5, 8], sep: 16, arch: [["ledge", 3], ["tor", 2]], padClear: 12 },
     // the inner crater wall between the pads: low ledges leaning on the wall
     { kind: "wall", lo: T.FLAT_R + 3, hi: T.RC - 3, n: 4, h: [4.5, 7], sep: 14, arch: [["ledge", 3], ["tor", 1]], padClear: 12, crater: true,
       ok: (p) => Math.hypot(p.x - T.LAKE.c[0], p.z - T.LAKE.c[1]) > T.LAKE.R + 5 + p.r && angDiff(Math.atan2(p.z, p.x), T.BREACH) > 0.35 },
     // the flanks between the switchback columns: the big crags
-    { kind: "flank", lo: T.RC + 9, hi: 94, n: 26, h: [6, 18], sep: 9, arch: [["spire", 5], ["ledge", 3], ["tor", 2]] },
+    // round 9: no spires (the round-8 judge: "tall pointed monoliths ... read as obsidian crystals or alien spires"): blunt tors and ledges
+    { kind: "flank", lo: T.RC + 9, hi: 94, n: 26, h: [6, 14], sep: 9, arch: [["ledge", 3], ["tor", 3]] },
   ];
   const heroes = [];
   for (const zn of ZONES) {
@@ -220,8 +221,9 @@ export async function rockPass(ctx) {
   for (const h of headlands) {
     const ux = Math.cos(h.th), uz = Math.sin(h.th), vx = -uz, vz = ux, n = 3 + (R() < 0.5 ? 1 : 0), cl = [];
     for (let i = 0; i < n * 3; i++) {
-      const out = 1 + R() * 3.5, side = (R() - 0.5) * 7, above = (i === 0 ? 11 : 5.5 + R() * 4);       // the cluster's main stack first
-      cl.push({ x: h.pt[0] + ux * out + vx * side, z: h.pt[1] + uz * out + vz * side, above, archetype: "stack", tier: "sea", kind: "sea stack", sink: 0.3 });
+      const out = 1 + R() * 3.5, side = (R() - 0.5) * 7, above = (i === 0 ? 6 : 3 + R() * 1.8);       // the cluster's main stack first
+      // round 9: shorter and blunter (squat tors, not needle stacks)
+      cl.push({ x: h.pt[0] + ux * out + vx * side, z: h.pt[1] + uz * out + vz * side, above, archetype: "tor", tier: "sea", kind: "sea stack", sink: 0.3 });
     }
     // the stack reaches `above` over the water from its sea bed (a unit under the centre's ground, for the footprint's lowest)
     const bed = await sample(cl.map((c) => [c.x, c.z]));
@@ -229,7 +231,7 @@ export async function rockPass(ctx) {
     const ring = await sample(cl.flatMap((c) => Array.from({ length: 10 }, (_, j) => [c.x + 3.5 * Math.cos(j * 0.628), c.z + 3.5 * Math.sin(j * 0.628)])));
     const touches = (i) => ring.slice(i * 10, i * 10 + 10).some((q) => q && q.y >= WATER + 0.2);
     const ready = cl.filter((c, i) => bed[i] && bed[i].y < WATER - 0.6 && touches(i));
-    for (const c of ready) { const b = bed[cl.indexOf(c)].y - 1; c.height = (WATER + c.above - b) / (1 - c.sink); c.width = Math.min(4.5, Math.max(2.4, c.above * 0.38)); }
+    for (const c of ready) { const b = bed[cl.indexOf(c)].y - 1; c.height = (WATER + c.above - b) / (1 - c.sink); c.width = Math.min(8, Math.max(3, c.above * 0.85, c.height * 0.7)); }
     let got = 0;
     for (const c of ready) { if (got >= n) break; const k = await crags([c], { sea: true, overlap: 1.1, sink: 0.3 }); if (k.length) { sea.push(k[0]); got++; } }
   }
