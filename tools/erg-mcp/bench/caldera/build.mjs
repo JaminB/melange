@@ -44,7 +44,8 @@
 // closed, starting Melange.exe --serve (MELANGE_EXE names another Melange.exe; default this checkout's
 // build\x86-release\Melange.exe). The project id is `caldera`; an old one is deleted first (delete_project), so
 // every run starts from the base. Renders go to --out (default out\ next to this file); the source export is copied to
-// pack\ next to this file. --plan stops after the heightfield plan (nothing is applied or saved); --trails after check_trail
+// pack\ next to this file. --plan stops after the heightfield plan (nothing is applied or saved); --inner after the cone's inner shell and
+// its checks (the shell's top against the skin's along the block's edge); --trails after check_trail
 // on the bare skin (out\trails-skin.json; nothing saved). The terrain itself
 // (the height, the trails, the castle sites, the lava tongues) is terrain.mjs; the MCP client is mcpclient.mjs.
 import fs from "node:fs";
@@ -170,6 +171,15 @@ try {
 
   // ---- the island: one drape skin over the whole rectangle (the height is terrain.mjs's island()) ----
   const grid = T.smoothBanks(T.relax(T.soften(T.gridOf(-T.BOX, T.BOX, 1))));
+  // (weapons round 2, 2026-11-10) the offshore sea floor is left out: a column whose island() height is under OFFSHORE_CUT (map y; the
+  // sea stands at 1 at the start and only rises, and its floor is -3) is emptied (height 0), so the skin ends in the shallows round the
+  // island and the islets instead of running out over the whole -3 floor to CLIP. Those columns were about 8 000 cells of the skin's
+  // 24 000 and showed only as the sea's pale disc; the cells pay for the cone's inner shell below. The grid is cut after relax and
+  // smoothBanks, so every column kept is exactly as before. OFFSHORE_CUT=-99 keeps the whole floor.
+  const OFFSHORE_CUT = +(process.env.OFFSHORE_CUT ?? -2.4);
+  let offshoreCut = 0;
+  for (const row of grid) for (let i = 0; i < row.length; i++) if (row[i] + T.SEA_FLOOR < OFFSHORE_CUT) { row[i] = 0; offshoreCut++; }
+  say("offshore floor under", OFFSHORE_CUT, "cut", offshoreCut, "grid cells of", grid.length * grid[0].length);
   // trails and branches as check_trail's polylines ([x, y, z]; y on a switchback, so the leg over or under is not taken for it)
   const trailLines = T.TRAILS.flatMap((t) => [t.pts, ...t.branches.map((b) => b.pts)].map((pl) => pl.map((p) => [round1(p[0]), round1(p[2]), round1(p[1])])));
   const trailNames = T.TRAILS.flatMap((t) => [t.name, ...t.branches.map((b) => `${t.name}-${b.castle.name}`)]);
@@ -177,18 +187,101 @@ try {
   // cornersOff, 2.5 map units: 4 needs a 13th skin block and the skirt no longer fits); a corner still near one gets its plug
   // below. CORNERS_OFF=0 keeps the tiling at the min corner.
   const cornersOff = +(process.env.CORNERS_OFF ?? 2.5);
+  // (weapons round 2) the tiling is pinned where cornersOff put it with the whole sea floor (shift [0, 30]: a tile corner at x -40, z -42.5),
+  // so cutting the offshore columns moves no skin block and no meeting corner (the plugs and the mine probes stay valid).
+  // TILE_ORIGIN=off lets cornersOff choose again.
+  const tileOrigin = (process.env.TILE_ORIGIN ?? "-40,-42.5") === "off" ? null : (process.env.TILE_ORIGIN ?? "-40,-42.5").split(",").map(Number);
   const field = { min: [-T.BOX, -T.BOX], max: [T.BOX, T.BOX], centre: [0, 0], floor: T.SEA_FLOOR, voxelSize: VOXEL, grid, clip: [{ x: 0, z: 0, radius: T.CLIP }],
     thickness: THICK, core: false, material: MAT.sand, materials: MATERIALS, maxBlocks: 20,
     // the shore's columns (the skin dips to the sea's zero there) are solid from zero up, so the sea never shows the skin's hollow underside
     skirtTo: +(process.env.SKIRT_TO ?? 0), skirtTop: +(process.env.SKIRT_TOP ?? 0),
-    ...(cornersOff > 0 ? { cornersOff: { paths: trailLines, distance: cornersOff } } : {}) };
+    ...(tileOrigin ? { tileOrigin } : cornersOff > 0 ? { cornersOff: { paths: trailLines, distance: cornersOff } } : {}) };
+  // ---- (weapons round 2, 2026-11-10) the cone's inner shell. The skin is 3 voxels (7.5 map units) over nothing: in the weapons test an
+  // Air Strike's first bombs holed the slope, the later ones and the Fatkins payload fell 40-50 units into the hollow cone, the game's
+  // follow camera went in after them (a dark cavern with the sea at its floor) and 11 columns were left with no ground at all. A second,
+  // coarser drape (INNER_VOXEL-unit voxels, INNER_THICK of them) follows the same surface INNER_DROP under it: one block of 31 x 31
+  // columns over the cone (x, z in [-60, 64]: the summit, the crater and the flanks to past the cliff bands; a solid core at any voxel size
+  // would be about four times the cells of the skin and there are 1 400 left). Its top is the skin's underside plus half a unit (the
+  // two overlap, so no air lies between them; the coarse surface sags under the fine one at a crest by a unit or two and rises into
+  // the skin at a gully, never above the skin's top: checked below). Breaching the slope now takes 7.5 + 16 units of rock, and a
+  // payload that gets through the skin lands on the shell a unit or two down instead of in the void. keepFloor: the heights count from
+  // the floor as given (the skin's own floor snapped a unit lower: its surface is grid - 1). INNER_THICK=0 leaves it out. ----
+  const INNER = { voxel: +(process.env.INNER_VOXEL ?? 4), thick: +(process.env.INNER_THICK ?? 4), lo: +(process.env.INNER_LO ?? -60), hi: +(process.env.INNER_HI ?? 64), drop: +(process.env.INNER_DROP ?? THICK * VOXEL - 0.5) };
+  // At the block's edge a corner takes the mean of the two columns inside it (sampled 2 units in), so on a slope rising inward the
+  // edge stands up to twice the slope too high (at x 20, z -60 the lower cliff band rises 2.9 a unit and the shell's top came out
+  // 0.6 over the skin). Within INNER_EDGE of the edge the grid is eroded first (the least height within INNER_ERODE each way), so the
+  // shell's top there is under the skin by the band's relief, never over it.
+  const EDGE = { width: +(process.env.INNER_EDGE ?? 6), erode: +(process.env.INNER_ERODE ?? 4) };
+  const innerField = () => {
+    const a = INNER.lo + T.BOX, b = INNER.hi + T.BOX;    // grid indices (1-unit grid from -BOX)
+    const n = b - a + 1;
+    const raw = grid.slice(a, b + 1).map((row) => row.slice(a, b + 1));
+    const sub = raw.map((row, j) => row.map((v, i) => {
+      if (!(v > 0)) return 0;
+      const d = Math.min(i, j, n - 1 - i, n - 1 - j);
+      let m = v;
+      if (d < EDGE.width) for (let dj = -EDGE.erode; dj <= EDGE.erode; dj++) for (let di = -EDGE.erode; di <= EDGE.erode; di++) { const r = grid[a + j + dj]?.[a + i + di]; if (r > 0 && r < m) m = r; }
+      return Math.max(0, round2(m - 1 - INNER.drop));
+    }));
+    return { min: [INNER.lo, INNER.lo], max: [INNER.hi, INNER.hi], centre: [0, 0], floor: T.SEA_FLOOR, keepFloor: true, voxelSize: INNER.voxel, grid: sub,
+      thickness: INNER.thick, core: false, material: MAT.ash, maxBlocks: 1, tileOrigin: [INNER.lo, INNER.lo] };
+  };
   const plan = await call("heightfield_drape", { ...field, dryRun: true });
   say("skin tiling", JSON.stringify(plan.json.skin?.tiling ?? null), "meeting corners", JSON.stringify(plan.json.skin?.meetingCorners ?? []));
   say("plan fits", plan.json.fits, "skin", JSON.stringify({ blocks: plan.json.skin?.blocks, cells: plan.json.skin?.cells }), "budget", JSON.stringify(plan.json.budget?.cells), plan.json.why ?? "", JSON.stringify(plan.json.notes ?? []));
   fs.writeFileSync(path.join(OUT, "plan-drape.json"), plan.text);
-  if (flag("--plan")) { await call("close", { discard: true }, { soft: true }); throw new Error("--plan: stopped"); }
+  if (flag("--plan")) {
+    if (INNER.thick > 0) {
+      const ip = await call("heightfield_drape", { ...innerField(), dryRun: true }, { soft: true });
+      say("inner shell plan", ip.err ? ip.text.slice(0, 400) : JSON.stringify({ fits: ip.json.fits, why: ip.json.why, skin: { blocks: ip.json.skin?.blocks, cells: ip.json.skin?.cells, list: ip.json.skin?.list }, floor: ip.json.region?.floor, peak: ip.json.region?.peak }));
+    }
+    await call("close", { discard: true }, { soft: true }); throw new Error("--plan: stopped");
+  }
   const hf = await call("heightfield_drape", field);
   say("island", JSON.stringify(hf.json.budget?.cells ?? hf.json.limits?.voxelCells), "notes", JSON.stringify(hf.json.notes ?? []));
+  if (INNER.thick > 0) {
+    // the ground before and after the inner shell, read as the game reads it: on the trails (every point of their lines) and on a
+    // 5-unit lattice over the cone; the inner shell must change none of it (a point where it did would be a bump a worm meets)
+    const probes = [];
+    for (const pl of trailLines) for (const p of pl) probes.push([p[0], p[2]]);
+    for (let z = INNER.lo; z <= INNER.hi; z += 5) for (let x = INNER.lo; x <= INNER.hi; x += 5) probes.push([x, z]);
+    const groundRead = async () => { const out = []; for (const [x, z] of probes) { const g = await call("query_ground", { x, z, units: "map" }, { soft: true }); out.push(g.json?.standOn?.map ?? null); } return out; };
+    const before = await groundRead();
+    const inner = await call("heightfield_drape", innerField());
+    const innerName = inner.json?.added?.[0]?.name ?? null;
+    say("inner shell frame", innerName);
+    say("inner shell", JSON.stringify({ budget: inner.json.budget, skin: { blocks: inner.json.skin?.blocks, cells: inner.json.skin?.cells, list: inner.json.skin?.list }, floor: inner.json.region?.floor, peak: inner.json.region?.peak, notes: inner.json.notes ?? [] }));
+    const after = await groundRead();
+    const moved = probes.map((p, i) => ({ at: p, before: before[i], after: after[i] })).filter((q) => q.before !== q.after && !(q.before == null && q.after == null) && (q.before == null || q.after == null || Math.abs(q.before - q.after) > 0.01));
+    // under the skin: the inner shell's span at a few points of the cone (the holes of the weapons test and the crater), from the
+    // column's spans (the skin's, the shell's): gap = the skin's underside less the shell's top (negative: they overlap)
+    const under = [];
+    for (const [x, z] of [[-40.8, -15], [-47, -9], [13.9, -29], [-46, -34], [0, 0], [30, 30], [-20, 45], [20, -60], [30, -60], [0, 62]]) {
+      const q = (await call("query_ground", { x, z, units: "map", maxSpans: 8 }, { soft: true })).json;
+      const sp = (q?.spans?.listed ?? []).map((s) => ({ frame: s.frameName, top: s.top?.map, bottom: s.bottom?.map }));
+      const skin = sp.find((s) => /^ergdrape_\d+$/.test(s.frame) && s.frame !== innerName), shell = sp.find((s) => s.frame === innerName);
+      under.push({ at: [x, z], standOn: q?.standOn?.map ?? null, skin: skin ? [skin.bottom, skin.top] : null, shell: shell ? [shell.bottom, shell.top] : null, gap: skin && shell ? round2(skin.bottom - shell.top) : null, spans: sp.length });
+    }
+    say("inner shell under the skin (gap = the skin's underside less the shell's top; negative: overlap):", JSON.stringify(under));
+    if (moved.length) {
+      say("inner shell MOVED the ground at", moved.length, "of", probes.length, "probes:", JSON.stringify(moved.slice(0, 20)));
+      for (const m of moved.slice(0, 3)) say("moved probe", JSON.stringify(m.at), brief(await call("query_ground", { x: m.at[0], z: m.at[1], units: "map", maxSpans: 8 }, { soft: true }), 1500));
+      if (!flag("--inner")) throw new Error("the inner shell rises above the skin: lower INNER_DROP or raise INNER_VOXEL");
+    } else say("inner shell: the ground is the same at all", probes.length, "probes");
+    if (flag("--inner")) {
+      // the shell's top along two lines across the block's edge, against the skin's
+      for (const [name, pts] of [["x=20, z -62..-44", Array.from({ length: 19 }, (_, i) => [20, -62 + i])], ["z=-60, x 10..34", Array.from({ length: 13 }, (_, i) => [10 + 2 * i, -60])], ["z=-59, x 10..34", Array.from({ length: 13 }, (_, i) => [10 + 2 * i, -59])]]) {
+        const row = [];
+        for (const [x, z] of pts) {
+          const q = (await call("query_ground", { x, z, units: "map", maxSpans: 8 }, { soft: true })).json;
+          const sp = q?.spans?.listed ?? [], sh = sp.find((s) => s.frameName === innerName), sk = sp.find((s) => s.frameName !== innerName);
+          row.push(`${x},${z}: skin ${sk?.top?.map ?? "-"} shell ${sh?.top?.map ?? "-"}`);
+        }
+        say("profile", name, row.join(" | "));
+      }
+      await call("close", { discard: true }, { soft: true }); throw new Error("--plan: --inner stopped");
+    }
+  }
   // --trails: check_trail on the bare skin and stop (nothing saved): a quick loop on the trails' shape
   if (flag("--trails")) {
     const tq = await call("check_trail", { trails: trailLines, names: trailNames, width: T.TRAIL.bed * 2, margin: 1 }, { soft: true });

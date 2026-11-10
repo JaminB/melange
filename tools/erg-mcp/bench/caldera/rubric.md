@@ -51,6 +51,14 @@ one idle turn, no start mines). Cells 49 859 of 65 535, 16 blocks.
   `skirtTo`/`skirtTop` 0 fills the shore solid so the rising sea shows no hollow underside. The flank climbs in treads
   (27 degrees) between three cliff bands (about 70 degrees, 10 high, wobbled by angle), so the roads that cut through
   them are the way up. Grid heights are limited to 2.9 a unit (`relax`), so the 3-thick skin never folds.
+- **The cone's inner shell** (weapons round 2, 2026-11-10): the 7.5-thick skin over a void was breached by an Air Strike's
+  first bombs, and the later bombs, the Fatkins payload and a Gas Canister fell 40-50 units into the hollow cone with the
+  follow camera after them. A second `heightfield_drape` (one block of 31 x 31 columns, 4-unit voxels, 4 thick, `keepFloor`,
+  VolcanoRock) follows the same surface 7 units down over x, z in [-60, 64], so the skin and the shell overlap by half a unit
+  and the slope is 23.5 units of rock; near the block's edge the grid is eroded (the least height within 4) so the coarse edge
+  never rises into the skin (build.mjs checks the ground at 1 520 probes before and after: unchanged). Its 3 844 cells come
+  from the sea floor: the skin's columns under -2.4 (the sea's floor is -3, the sea starts at 1) are left out, so the skin ends
+  in the shallows and the tiling is pinned (`tileOrigin` -40, -42.5) where `cornersOff` had put it. Cells 64 187 of 65 535.
 - **Materials**: distance-field masks for the roads (`sd`: exact distance to each polyline) and for the lava tongues (they
   widen downslope), `feather` (dither) and `jitter` on every band edge: ash -> grey rock -> rock -> olive/grass -> sand.
 - **Castles** (7, `build_castle` at scale 1.5 with `foundation`, a second gate carved with `fill_box_raw`): shore 3
