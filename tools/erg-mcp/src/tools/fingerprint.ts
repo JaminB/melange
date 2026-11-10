@@ -2,6 +2,15 @@
 // decoration pass (bench/caldera/detail.mjs) can prove it changed nothing the game's simulation reads.
 import { diffFingerprints, simFingerprint, type Fingerprint } from "../lib/sim-fingerprint";
 import { ToolError, type Tool } from "../registry";
+import { ErrorCode } from "../core";
+
+/** True when the error is the server answering that it has no level.script.get (an older server, the mock): the only case the
+ * fingerprint may use the scene's script metadata instead of the text. */
+export function scriptUnsupported(e: unknown): boolean {
+  const code = (e as { code?: unknown })?.code;
+  return code === ErrorCode.UnknownMethod;
+}
+const errText = (e: unknown) => String((e as Error)?.message ?? e).slice(0, 200);
 
 export const tools: Tool[] = [
   {
@@ -19,7 +28,10 @@ export const tools: Tool[] = [
       let script: string, scriptFrom = "server";
       try {
         script = (await p.erg.script()) ?? "";
-      } catch {
+      } catch (e) {
+        // only a server WITHOUT the method falls back; a lost connection, a timeout or a fault fails the tool (round 6: a
+        // dead connection answered the metadata hash, a different `script` part, instead of an error)
+        if (!scriptUnsupported(e)) throw new ToolError(`sim_fingerprint: the level script could not be read (${errText(e)}); the fingerprint is not computed (reconnect and retry)`);
         const meta = p.store.scene.script;
         script = `meta:${meta?.present ? meta.sha256 ?? "present" : "none"}`;
         scriptFrom = "metadata";

@@ -19,7 +19,8 @@ import { startServer, ROOT } from "./mcpclient.mjs";
 import { keepOut, CLEAR } from "./detail-keepout.mjs";
 import { rockPass } from "./detail-rock.mjs";
 import { landPass } from "./detail-land.mjs";
-import { ledgePass } from "./detail-ledge.mjs";
+import { strataPass } from "./detail-strata.mjs";
+import { cliffPass } from "./detail-cliff.mjs";
 import { crownPass } from "./detail-crown.mjs";
 import { coastPass } from "./detail-coast.mjs";
 import { floraPass } from "./detail-flora.mjs";
@@ -34,7 +35,9 @@ const ID = opt("--project", process.env.CALDERA_ID || "caldera");
 const BUILD_OUT = opt("--build-out", path.join(HERE, "out"));   // build.mjs's --out (castles.json: the castle cameras the perched lint reads)
 const GAME = process.env.MELANGE_GAME_DIR || "C:/Users/Jamin/Desktop/WUMFix/testenv/D";
 process.env.MELANGE_EXE ??= path.join(ROOT, "build/x86-release/Melange.exe");
-export const DETAIL_BUDGET = +(process.env.DTL_BUDGET ?? 505);
+// round 7: 1100 (round 6's 505 was the engine's 550-instance mesh pool, which Melange's [Fixes] MeshInstances now raises to
+// 2000: the rest is headroom for worms' hats, thrown mines and effects)
+export const DETAIL_BUDGET = +(process.env.DTL_BUDGET ?? 1100);
 const ONLY = opt("--passes", "") ? opt("--passes").split(",") : null;
 fs.mkdirSync(OUT, { recursive: true });
 const say = (...a) => console.log(new Date().toISOString().slice(11, 19), ...a);
@@ -49,7 +52,10 @@ export const PASSES = [
   { name: "rock", run: rockPass },
   // round 6: horizontal strata bands replace round 5's boulder "strata" (detail-cliff.mjs, removed); columnar crowns on the
   // crests and cliff tops; the coast (stacks, half-sunk blocks, stepped columns); the first flora; the perched lint
-  { name: "ledge", run: ledgePass },
+  // round 7: continuous strata ROWS on 4-6 hero faces replace round 6's isolated lens slabs (detail-ledge.mjs, kept for
+  // reference, no longer run); round 5's cliff piles come back (crater rim, flanks)
+  { name: "strata", run: strataPass },
+  { name: "cliff", run: cliffPass },
   { name: "crown", run: crownPass },
   { name: "coast", run: coastPass },
   { name: "flora", run: floraPass },
@@ -77,7 +83,7 @@ try {
   report.before = { sim: fp0.sim, visual: fp0.visual, counts: fp0.counts };
   const script0 = (await call("get_script", {}, { soft: true })).text;
   say("fingerprint before", fp0.sim.slice(0, 16), "visual", fp0.visual.slice(0, 16), JSON.stringify(fp0.counts));
-  if (fp0.counts.emitter > 0 || (await Promise.all(["_dtl", "_ldg", "_flo"].map(async (q) => (await call("list_scenery", { search: q })).json.total))).some((n) => n > 0) || (await call("list_scenery", { search: "_landtint" })).json.total > 0) throw new Error("the project already holds the detail layer: run detail.mjs on a freshly built project (restore it or run build.mjs first)");
+  if (fp0.counts.emitter > 0 || (await Promise.all(["_dtl", "_ldg", "_flo", "_cpl"].map(async (q) => (await call("list_scenery", { search: q })).json.total))).some((n) => n > 0) || (await call("list_scenery", { search: "_landtint" })).json.total > 0) throw new Error("the project already holds the detail layer: run detail.mjs on a freshly built project (restore it or run build.mjs first)");
   const spawns = ((await call("describe_level", { limit: 1 })).json.spawns ?? []).map((s) => {
     const p = s.map ?? s.at ?? s.pos ?? [];
     return Array.isArray(p) ? [p[0], p[2] ?? p[1]] : [p.x, p.z];
@@ -86,9 +92,10 @@ try {
   for (const p of PASSES) {
     if (ONLY && !ONLY.includes(p.name)) continue;
     if (p.name === "flora") {
-      // the layer's DETAIL BUDGET (round 6): the level with 546 details crashed the game at load twice (WormsMayhem+0x1d0fad, a
-      // null read; the 2 GB address space had 224 MB free), 520 loaded; not pinned to count or memory, so the layer keeps the
-      // level's details (the fingerprint's count, sim and visual) at DETAIL_BUDGET or under, and the flora takes what is left
+      // the layer's DETAIL BUDGET: round 6's crash at load with 546 details (WormsMayhem+0x1d0fad) was the engine's mesh-instance
+      // pool running out (550, "Out of mesh instances": round 7 pinned it in a full dump); Melange raises the pool (see
+      // docs/erg-mcp.md round 7), and the layer keeps the level's details (the fingerprint's count, sim and visual) at
+      // DETAIL_BUDGET or under, the flora taking what is left
       const c = (await call("sim_fingerprint", {})).json.counts;
       ctx.floraMax = Math.max(0, DETAIL_BUDGET - (c.simDetails + c.scenery + c.light + c.emitter + c.sound));
       say("budget", DETAIL_BUDGET, "flora may add", ctx.floraMax);
@@ -108,6 +115,9 @@ try {
   const fp1 = (await call("sim_fingerprint", { against: fp0, detail: true })).json;
   report.after = { sim: fp1.sim, visual: fp1.visual, counts: fp1.counts, against: fp1.against };
   if (!fp1.against.same) throw new Error(`the detail layer changed the sim: ${JSON.stringify(fp1.against)}`);
+  // round 7: the engine budget left (erg-mcp detail_budget: the mesh-instance pool from the game folder's Melange.ini)
+  report.budget = (await call("detail_budget", { gameDir: GAME }, { soft: true })).json;
+  say("budget", JSON.stringify(report.budget && { details: report.budget.details, pool: report.budget.pool, headroom: report.budget.headroom, vanillaHeadroom: report.budget.vanillaHeadroom }));
   if (argv.includes("--dry")) {
     say("--dry: not saved");
     await call("close", { discard: true });

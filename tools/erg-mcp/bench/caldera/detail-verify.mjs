@@ -5,7 +5,8 @@
 //   tools\node\node.exe tools\erg-mcp\bench\caldera\detail-verify.mjs --url <server url>|(default testenv D) [--project caldera]
 import path from "node:path";
 import { startServer, ROOT } from "./mcpclient.mjs";
-import { keepOut, keepOutFoot, keepOutLow } from "./detail-keepout.mjs";
+import { keepOut, keepOutFoot, keepOutLow, keepOutFlora } from "./detail-keepout.mjs";
+import { FLORA } from "./detail-flora.mjs";
 import * as T from "./terrain.mjs";
 const argv = process.argv.slice(2), opt = (f, d) => { const i = argv.indexOf(f); return i >= 0 ? argv[i + 1] : d; };
 process.env.MELANGE_EXE ??= path.join(ROOT, "build/x86-release/Melange.exe");
@@ -16,7 +17,7 @@ try {
   const spawns = ((await call("describe_level", { limit: 1 })).json.spawns ?? []).map((s) => [s.map[0], s.map[2]]);
   // round 6: the rock (_dtl), the strata (_ldg) and the flora (_flo)
   const d = [];
-  for (const q of ["_dtl", "_ldg", "_flo"]) d.push(...(await call("list_scenery", { search: q, units: "map", limit: 2000 })).json.details);
+  for (const q of ["_dtl", "_ldg", "_flo", "_cpl"]) d.push(...(await call("list_scenery", { search: q, units: "map", limit: 2000 })).json.details);
   // round 3: each piece's footprint (Horror5's 3.11 x 3.21 box at its x and z scale, 0.85 of the half side) must be clear too,
   // and a piece under the water is a fault only when no _dtl piece within 4 of it shows above the water (the lower blocks
   // of a kitbashed sea stack are sunk on purpose under the ones that show)
@@ -31,9 +32,25 @@ try {
       : keepOut(x.at[0], x.at[2], 0, spawns) || (foot(x) > 0.3 && keepOutFoot(x.at[0], x.at[2], foot(x) * 0.6, foot(x) * 0.6, 0, spawns, 0) && "footprint"))
     || (T.rhoAt(x.at[0], x.at[2]) < T.FLAT_R - 0.5 && height(x) < 1.7 && !d.some((y) => y !== x && height(y) >= 3 && Math.hypot(y.at[0] - x.at[0], y.at[2] - x.at[2]) < 3.5) && "small on the crater floor")
     || (top(x) < 1 && !shows.some((y) => Math.hypot(y.at[0] - x.at[0], y.at[2] - x.at[2]) < 4) && "sunk");
-  const bad = d.filter((x) => why(x));
+  // round 7: plants are checked with their own footprint (the catalog mesh at the copy's scale) and the flora rule (they may
+  // grow against a castle's outer walls, never on the trail band, spawns, pads or the factory); a plant over 1.3 tall (a
+  // bush) must stand at a wall, a cliff foot, a rock base or on a slope: reported, not a violation (the pass decides that)
+  const mesh = {};
+  for (const p of Object.values(FLORA).flat()) {
+    const row = (await call("scenery_catalog", { bases: [p.base], roles: ["scenery"], search: p.resource, limit: 10 })).json.list.find((r) => r.resource === p.resource);
+    if (row) mesh[p.resource] = row.meshSize;
+  }
+  const isFlo = (x) => /_flo/.test(x.name);
+  const floR = (x) => { const m = mesh[x.resource] ?? [1, 1, 1], s = x.scale ?? [1, 1, 1]; return 0.5 * Math.max(m[0] * Math.abs(s[0]), m[2] * Math.abs(s[2])); };
+  const whyFlo = (x) => keepOutFlora(x.at[0], x.at[2], floR(x) * 0.8, floR(x) * 0.8, 0, spawns, 0.3);
+  const plants = d.filter(isFlo);
+  const rockish = d.filter((x) => !isFlo(x));
+  const badFlo = plants.filter((x) => whyFlo(x));
+  const bad = rockish.filter((x) => why(x)).concat(badFlo);
+  const whyAny = (x) => (isFlo(x) ? whyFlo(x) : why(x));
   const tinted = d.filter((x) => /_tint[0-9a-f]{6}/.test(x.name)).length;
-  console.log(JSON.stringify({ props: d.length, low: d.filter(low).length, tinted, violations: bad.length, first: bad.slice(0, 5).map((x) => [x.name, x.at, why(x)]) }));
+  const byTag = Object.fromEntries(["_dtl", "_ldg", "_cpl", "_flo"].map((t) => [t, d.filter((x) => x.name.includes(t)).length]));
+  console.log(JSON.stringify({ props: d.length, byTag, low: rockish.filter(low).length, plants: plants.length, tinted, violations: bad.length, floraViolations: badFlo.length, first: bad.slice(0, 5).map((x) => [x.name, x.at, whyAny(x)]) }));
   await call("close", { discard: true });
   if (bad.length) process.exitCode = 1;
 } finally { await stop(); }

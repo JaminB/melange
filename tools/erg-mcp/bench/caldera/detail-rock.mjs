@@ -65,7 +65,9 @@ export const SCORCHED = "#4a2c24";
 // round 5: mid grey (Sunstone draws the tint times the texel's luminance / 0.5, and Horror5's texels average 0.23, so these
 // draw near #4a4641, a mid grey beside the basalt): the scree fan's three steps, the toe's the lightest
 // round 6: slate, drawing near #373a3d-#3f4245 (round 5's #a39b91 drew as light pebbles, brighter than the castle stone)
-export const SCREE = ["#787c82", "#80848a", "#878b90"];
+// round 7: two steps darker (the judge: "the pale untinted stone beside the Harbour crag": a foot-skirt piece at #878b90 drew
+// as a pale blue-grey stone in the sun); now between the basalt and the round-6 slate
+export const SCREE = ["#5c5f64", "#62656a", "#686b70"];
 const hx = (c) => [1, 3, 5].map((i) => parseInt(c.slice(i, i + 2), 16));
 const mix = (a, b, t) => "#" + hx(a).map((v, i) => Math.round(v + (hx(b)[i] - v) * Math.max(0, Math.min(1, t))).toString(16).padStart(2, "0")).join("");
 /** The lava's nearness at (x, z), 0 (none within 3) to 1 (at its edge). Round 5: 3 units, not 8 (the judge: "cap the lava
@@ -285,8 +287,9 @@ export async function rockPass(ctx) {
   const bring = await sample(shore.flatMap((c) => Array.from({ length: 8 }, (_, j) => [c.x + 2 * Math.cos(j * 0.785), c.z + 2 * Math.sin(j * 0.785)])));
   const landed = shore.filter((c, i) => bring.slice(i * 8, i * 8 + 8).some((q) => q && q.y >= WATER + 0.2));
   stats.breakersAlone = shore.length - landed.length;
-  // round 6: the breakers are left to detail-coast.mjs (a size gradient and pieces half in the water, not one line of one size)
-  stats.breakers = 0;
+  // round 7: restored (round 6 left them to detail-coast.mjs and the judge missed round 5's cliff-foot boulder cluster on
+  // the shore: "the cliff foot is now bare")
+  stats.breakers = (await crags(landed, { waterline: true, overlap: 0.75, sink: 0.25, show: 0.3 })).length;
 
   // ================= round 5: the MEDIUM scale. Round 4's judge: "at gameplay distance the cone body is unchanged ... the
   // medium scale (outcrops of 2-6 units, rock ribs along the lava channels, ledges along switchback cut-banks) is missing".

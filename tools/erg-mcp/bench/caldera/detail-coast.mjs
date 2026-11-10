@@ -53,8 +53,13 @@ export async function coastPass(ctx) {
     const ux = Math.cos(s.th), uz = Math.sin(s.th), vx = -uz, vz = ux;
     const at = (out, side) => [s.pt[0] + ux * out + vx * side, s.pt[1] + uz * out + vz * side];
     if (s.kind === "stacks") {
-      const main = { xz: at(3 + R() * 2.5, (R() - 0.5) * 3), above: (7 + R() * 5) * s.g, w: 3.2 + R() * 1.2, role: "main" };
-      const mids = Array.from({ length: 2 + (R() < 0.5 ? 1 : 0) }, (_, i) => ({ xz: at(4 + R() * 5, (i % 2 ? 1 : -1) * (4 + R() * 3.5)), above: (3 + R() * 3) * s.g, w: 2.2 + R() * 0.8, role: "mid" }));
+      // round 7: a STRONG size gradient (the judge: "uniformly sized dark dots"): one big stack 10-15 over the water, a
+      // middle one 4-6, a small one or two 1.5-2.5, smaller with distance from the main one
+      const main = { xz: at(3 + R() * 2.5, (R() - 0.5) * 3), above: (10 + R() * 5) * s.g, w: 4.2 + R() * 1, role: "main" };
+      const mids = [{ xz: at(4 + R() * 3, (R() < 0.5 ? 1 : -1) * (4.5 + R() * 2)), above: (4 + R() * 2) * s.g, w: 2.6 + R() * 0.6, role: "mid" }];
+      // the small ones are single blocks standing on the bed (a kitbashed stack this low sank under the water in round 7's
+      // first run): placed with the talus below
+      for (let i = 0, n = 1 + (R() < 0.6 ? 1 : 0); i < n; i++) aligned.push({ xz: at(4 + R() * 3, (i % 2 ? 1 : -1) * (7 + R() * 3)), above: (1.6 + R()) * s.g, w: 1.5 + R() * 0.4, role: "small", site: s });
       // the blocks hug the waterline (the bed falls fast offshore): 0-3 out, along the shore either side of the stacks
       const blocks = Array.from({ length: 5 + Math.floor(R() * 3) }, (_, i) => { const t = i / 6; return { xz: at(R() * 3 + t, (R() - 0.5) * 16), h: (2.8 - t * 1.4) * (0.8 + R() * 0.4), role: "block" }; });
       crags.push(...[main, ...mids].map((c) => ({ ...c, site: s })));
@@ -80,12 +85,56 @@ export async function coastPass(ctx) {
     const r = (await call("place_crags", { base: ROCK.base, id: row.example.id, allowOtherTheme: true, units: "map", tag: "dtl", sink: 0.3, align: 0.1, maxTilt: 6, jitter: 3, crags: stackSpecs.map(({ role, ...c }) => c) })).json;
     stats.pieces += r.placed; stats.stacks = r.crags.length;
   }
+  // round 7: TALUS at each stack's foot (the judge: "put talus at their feet" so they seat into the water): 3-6 fallen blocks
+  // round the main and middle stacks, a quarter to a third of the stack's width, half out of the water, their feet on the bed
+  const talus = [];
+  for (const st of stackSpecs) {
+    if (st.role === "small") continue;
+    const n = st.role === "main" ? 4 + Math.floor(R() * 3) : 2 + Math.floor(R() * 2);
+    for (let i = 0; i < n; i++) {
+      const a = R() * Math.PI * 2, d = st.width * (0.55 + R() * 0.45);
+      talus.push({ xz: [st.xz[0] + Math.cos(a) * d, st.xz[1] + Math.sin(a) * d], w: st.width * (0.22 + R() * 0.14) * (1 - i / (n * 2.2)), role: "talus" });
+    }
+  }
+  // the small stacks: bottom on the bed, `above` over the water
+  const smalls = aligned.filter((a) => a.role === "small");
+  const sb = await sample(smalls.map((t) => t.xz));
+  smalls.forEach((t, i) => {
+    const b = sb[i];
+    aligned.splice(aligned.indexOf(t), 1);
+    if (!b || b.y > WATER - 0.3) { rej("small stack: not in the sea"); return; }
+    const h = WATER + t.above - (b.y - 0.15);
+    if (h > 6) { rej("small stack: deep water"); return; }
+    const why = clearAt(t.xz[0], t.xz[1], t.w * 0.6);
+    if (why) { rej("small stack: " + why); return; }
+    talus.push({ xz: t.xz, w: t.w, h, bedY: b.y, normal: b.normal, role: "talus", fixed: true });
+  });
+  const tb = await sample(talus.map((t) => t.xz));
+  talus.forEach((t, i) => {
+    const b = tb[i];
+    if (t.fixed) { aligned.push(t); stats.smallStacks = (stats.smallStacks ?? 0) + 1; return; }
+    if (!b) { rej("talus: no ground"); return; }
+    // tall enough to reach the bed with a lip of 25-55% of its width over the water
+    const lip = t.w * (0.25 + R() * 0.3), h = Math.max(t.w * 0.8, WATER + lip - (b.y - 0.15));
+    if (h > t.w * 2.6 || h > 4.5) { rej("talus: deep water"); return; }
+    const why = clearAt(t.xz[0], t.xz[1], t.w * 0.6);
+    if (why) { rej("talus: " + why); return; }
+    aligned.push({ ...t, h, bedY: b.y, normal: b.normal });
+  });
   // ---- half-submerged blocks and step columns: explicit heights, feet in the sea bed
   const ab = await sample(aligned.map((a) => a.xz));
   const pieces = [];
   aligned.forEach((a, i) => {
     const b = ab[i];
     if (!b) { rej("no ground"); return; }
+    if (a.role === "talus") {
+      // bottom on the bed (0.15 under it), so the centre is bed - 0.15 + h / 2; posed like the blocks below
+      const c2 = a.bedY - 0.15 + a.h / 2;
+      pieces.push({ pos: [+a.xz[0].toFixed(2), +c2.toFixed(2), +a.xz[1].toFixed(2)], normal: [b.normal[0], b.normal[1], b.normal[2]], size: [+(a.w * 1.2).toFixed(2), +a.h.toFixed(2), +a.w.toFixed(2)],
+        pitch: 0.3, embed: 0.5, jitter: [+((R() - 0.5) * 30).toFixed(1), +(R() * 360 - 180).toFixed(1), +((R() - 0.5) * 30).toFixed(1)], tint: BASALT[i % BASALT.length] });
+      stats.talus = (stats.talus ?? 0) + 1;
+      return;
+    }
     if (a.role === "block") {
       // about half over the water; the foot must reach the bed (no block floating in the sea), the top must clear the water
       if (b.y > WATER - 0.15) { rej("block on dry ground"); return; }

@@ -84,3 +84,20 @@ export function keepOutLow(x, z, rx, rz, yaw, spawns = [], pad = 1) {
   }
   return null;
 }
+
+// ---- round 7: flora may grow AGAINST a castle's outer walls (the judge: "big tussock masses against castle walls"): the
+// court, gates and spawns are inside the footprint or covered by the trail branch into the gate and the spawn circles, so
+// a plant only keeps FLORA_WALL from the footprint itself; everything else as keepOutFoot (trail band + pad, spawns, pads,
+// the factory).
+export const FLORA_WALL = 0.6;
+/** keepOutFoot for a plant: the castle clearance is FLORA_WALL from the footprint instead of CLEAR.castle. */
+export function keepOutFlora(x, z, rx, rz, yaw, spawns = [], pad = 0.5) {
+  for (const [px, pz] of footPoints(x, z, rx, rz, yaw)) {
+    if (trailDist(px, pz) < TRAIL_BAND + pad) return "trail";
+    for (const c of T.CASTLES) if (T.footDist(c, px, pz, FLORA_WALL) === 0) return "castle";
+    for (const s of spawns) if (Math.hypot(px - s[0], pz - s[1]) < CLEAR.spawn) return "spawn";
+    for (const p of PADS) if (Math.hypot(px - p[0], pz - p[1]) < CLEAR.pad) return "launcher pad";
+    if (Math.hypot(px - PLUG[0], pz - PLUG[1]) < Math.max(CLEAR.plug, CLEAR.apron)) return "mine factory";
+  }
+  return null;
+}

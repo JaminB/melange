@@ -941,3 +941,64 @@ Findings (testenv D, Sunstone 2.3.1 + `sunstone-tint`, 2026-11-10):
 - `sim_fingerprint` with the game server gone answers a different `script` part instead of failing (round 6: a long
   `find_crests` on the whole island, 86 s, outlived the server connection, and the pass was refused as a sim change).
   `find_crests` now samples heights with one drop each (about 25 s on Caldera); keep regions small.
+
+## Detail layer, round 7 (the load crash pinned, strata rows, flora): what the tools gained and what the game showed
+
+**The load crash at `WormsMayhem+0x1d0fad` is the engine's mesh-instance pool.** A full-memory dump of a 600-detail Caldera
+(testenv D, `[Diagnostics] FullMemoryDumps=1`) logged `Xrm | Out of mesh instances - all 550 instances have been used!`
+just before the fault. The crash site is `OilDrumGraphicEntity` creating its mesh through the GRM's `CreateResource`
+wrapper (`0x6f3d95`, `ebp` = `0x80004005` in both round-6 dumps) and dereferencing the null instance. The pool
+(`0x6b2930`: count `0x97000c`, `0xd0` bytes per instance, free stack `0x970014`/`0x970018`) is sized once at start-up from
+the static property `GRM.MaxMeshes` = `"550"` in the `{name, value}` table at `0x853948`, read through `0x643427` by the
+GRM's init (`0x6afd7e`). Every drawn detail, worm hat, thrown mine and effect mesh takes one. So the crash depends on the
+count of drawn meshes, not on the bases, memory (the GRM's 7500-slot name table was 2979 full) or address space.
+
+- **Melange `[Fixes] MeshInstances`** (default 2000; 0 or 550 and under = vanilla; capped at 4000) points the property's
+  value at a larger number before the GRM starts (`src/gameplay/fixes.cpp`). It logs `GRM.MaxMeshes 2000` at install and
+  `the engine's mesh pool holds 2000 instances` once the app is up. The same 600-detail level that crashed then loaded and
+  played. It costs 208 bytes per instance (about 300 KB more) and touches graphics only. **A player without the fix still
+  crashes on a level over about 540 details:** the dressed Caldera needs Melange with this fix.
+- **erg-mcp `detail_budget`** (new group `budget`: `src/tools/budget.ts`, `src/lib/budget.ts`, `test/budget.test.ts`)
+  reports the open level's details (sim and visual) against that pool. It reads the pool from a game folder's
+  `Melange.ini` or takes `pool`. `reserve` (default 250) is what the match itself needs. It answers `headroom` and
+  `vanillaHeadroom`.
+- **`sim_fingerprint` fails hard on a lost connection.** Only an unknown-method answer (a server without
+  `level.script.get`, the mock) falls back to the scene's script metadata. A disconnect, timeout or fault is a tool error
+  (`test/fingerprint-dead.test.mjs` closes the mock mid-session).
+
+Bench (`detail.mjs`, budget 1100 details, which `detail_budget` reports at the end):
+- `detail-strata.mjs` replaces round 6's lens slabs (`detail-ledge.mjs` stays but no longer runs). `plan_ledges` bands
+  are scored by how squarely their face looks at the oblique and flank cameras. The best clear runs on 4-6 faces become
+  continuous rows of 4-8 overlapping chunks (3 : 1, 0.55 of a piece's length apart, level, sunk to a 25-30% lip) in a
+  near-black charcoal (`#232427`-`#2d2e31`). The tint is the only material control a copy has, so dark is the only way to
+  weaken the highlight.
+- `detail-cliff.mjs` (round 5's face piles) is back in the charcoal palette, tagged `_cpl`, so the perched lint leaves it
+  alone. That lint removed 160 of the piles in the first run.
+- The rock pass's headland breakers are back (the cliff-foot cluster). The scree and skirt tints are two steps darker:
+  round 6's "pale untinted stone beside the Harbour crag" was a foot-skirt piece at `#878b90`.
+- Coast: a strong size gradient (main stack 10-15 over the water, a middle one 4-6, small single blocks 1.6-2.6 standing on
+  the bed) and talus at the stacks' feet (blocks a quarter of the stack's width, feet on the bed, a lip over the water).
+- `detail-flora.mjs` was rewritten:
+  - Clustered masses: wall hedges, cliff feet, rock bases, lawns, green slopes, shore dunes and dry slopes.
+  - Each cluster is a core plus rings falling in size and density.
+  - Bushes grow only at walls, cliff feet, rock bases or on slopes. Lawns get only low pieces.
+  - One lush-to-straw palette.
+  - `detail-keepout.mjs keepOutFlora` lets plants grow against a castle's outer walls (0.6 from the footprint) and keeps
+    everything else as before.
+  - `detail-verify.mjs` checks plants with their own footprints.
+
+Findings (testenv D, Sunstone 2.3.1 + `sunstone-tint`, 2026-11-09):
+- **Theme substitution, checked in the game** (scratchpad `caldet/r7/caldet_r7_flora_check_sheet.png`):
+  - GhostHill's `WILDWEST18` grass draws as a dinosaur **skull** in this PREHISTORIC level, and its `WILDWEST1` cactus as
+    a big agave-like grass clump.
+  - `WILDWEST2` draws as a leafy bush with a trunk (true to the catalog).
+  - `ENGLAND2`/`ENGLAND3` draw as low round bushes.
+  - `CAMELOT1`, `HORROR1` and `ENGLAND1` all draw as the same small spiky tuft.
+  - `PREHISTORIC8` is a blue bulb flower that reads as a pickup.
+  - `ENGLAND7` daisies are invisible at gameplay distance.
+- The strata rows read as a dark contour line from the flank, but from that distance still as a chain of beads. The rock
+  mesh is round, so a ledge that reads as rock needs a slab mesh (a mod mesh bank).
+- Perf (oblique camera, Sunstone on, nothing else running), dressed against undressed:
+  - fps p50 34.8 against 36.9.
+  - CPU busy 30.6 against 30.5 ms per frame (the game is CPU-bound).
+  - GPU frame 8.4 against 4.9 ms.

@@ -1,125 +1,196 @@
-// Detail layer round 6: FLORA in the low-risk zones (round 5's judge: "the castle aprons, the green grass patches by the
-// castles and the sand ring are all flat, and nothing living grows anywhere"). A volcanic island's hardy lowland: small,
-// low clusters of grass and shrubs, never cacti or toy-coloured flowers, from the catalog's non-MORTAL grass pieces (MORTAL
-// tufts are sim: explosions remove them); see FLORA for which bases. Tinted toward a muted, sun-dried palette (olive, sage, straw) so the four themes' greens read as one plant
-// community against the basalt; Sunstone off they draw their own colours.
-//   sand ring     y 1.7-4.4 (dry sand above the wet strip), under 20 degrees: sparse dune-grass clumps of 3-6 tufts,
-//                 denser toward the vegetation line, none on the wet sand
-//   green patches y 4-9.5 (the build's grass and olive bands), under 22 degrees: a shrub or two with tussocks round them,
-//                 in noise patches, density falling off with height
-//   castle aprons 3.5-8 from each castle's footprint (outside its keep-out), under 30 degrees: tufts hugging the walls'
-//                 feet, more at the corners
-// Clusters, not sprinkles: each cluster is a core (the biggest piece) and children falling in size outward. Every piece keeps
-// its footprint off the trail band (bed, shoulder and kerb), the courts, spawns and pads like the rock; nothing over 1.3
-// tall, so no worm is hidden and nothing a worm walks through looks broken. Tagged _flo.
+// Detail layer round 7: FLORA, the volcanic island's plant community (round 6's judge: "it exists but is not visible as
+// dressing ... 2-4x the scale and real clustering: big tussock masses against castle walls, rock bases and cliff feet, a
+// brighter green tint, the judge's assets, something that reads at flank distance").
+//
+// Pieces: each was checked once in the game in this PREHISTORIC level (round 7 scratchpad caldet/r7/caldet_r7_flora_check_
+// sheet.png), since another theme's resource can draw as something else here (GhostHill's WILDWEST18 "grass" draws as a
+// dinosaur skull, LandWormsForgot's PREHISTORIC8 is a blue bulb that reads as a pickup: both out):
+//   bush     GhostHill WILDWEST2         a leafy bush with a trunk, about 1.7 tall: the masses' cores, the flank-distance read
+//   shrub    W3DEarnYourCrust ENGLAND2/3 a low round dark bush: the masses' first ring
+//   tussock  Escape PREHISTORIC1, GhostHill WILDWEST1 (draws as an agave-like spiky clump here)  big spiky grass
+//   tuft     JoustAboutIt CAMELOT1, W3DAppleCoreIsland PIRATE1 (round 6's)  small grass
+//   cover    JoustAboutIt CAMELOT4       a low leafy ground plant with flowers
+// Where (a volcanic island: lush low, hardy higher, nothing near the crater):
+//   wall       against a castle's outer walls (0.6-2.6 from its footprint, under 14): hedges of bushes along the wall
+//              (shrubs instead where the ground there is under 15 degrees)
+//   cliff foot gentle ground under a steep face (the ground 2.5 uphill is over 50 degrees), under 30
+//   rock base  round the larger crags of the rock pass, under 26
+//   lawn       the build's painted grass and olive lawns (4-9.5, under 24 degrees, walkable): LOW plants only (flat tussock,
+//              cover, tufts), never a shrub or bush
+//   green      the lower slopes and greens, 3.5-12: shrubs, tussocks and cover in noise patches
+//   shore      the dry sand over the waterline, under 3.5: sparse dune clumps
+//   dry        the mid slopes, 12-30: sparse hardy clumps (agave and straw tufts), thinning upward
+// Each cluster has a core and rings falling in size and in density outward (the outer members are dropped more often), so
+// masses read as masses and fade into the ground; the bushes (the only pieces over 1.3) grow only at walls, cliff feet,
+// rock bases or on slopes over 25 degrees, never where worms walk. Every member's footprint keeps clear of the trail band,
+// spawns, pads and the factory (detail-keepout.mjs keepOutFlora; castles: only their walls' footprint), off the lava and
+// off the crater (rho under RC + 10). One palette: lush greens low (brighter than round 6's olive), sage and straw higher.
+// Tagged _flo.
 import * as T from "./terrain.mjs";
-import { keepOut, keepOutFoot, CLEAR } from "./detail-keepout.mjs";
+import { keepOutFlora } from "./detail-keepout.mjs";
 import { rng, onTongue } from "./detail-rock.mjs";
 
 const WATER = 1;
-// the pieces (scenery_catalog rows; h = the example's map height). Round 6's first Test with the judge's list (ENGLAND2/3 of
-// W3DEarnYourCrust, CAMELOT1 of JoustAboutIt, PIRATE1 of W3DShiverMeTimbers, WAR3 of W3DHoldUntilRelieved) CRASHED at load: the
-// game is not large-address-aware and had 224 MB of its 2 GB free (largest block 63 MB) when it faulted; every other base
-// a level copies from loads that base's resources too. So the flora comes from the base the rock already loads
-// (Multi.W3DAppleCoreIsland: its grass tufts and low leafy plants) and from the level's own theme (PREHISTORIC1 grass).
 export const FLORA = {
-  // (PIRATE11-13, the base's "leafy" pieces, drew as pale rounded stones by the Harbour court in round 6's Test: out; the
-  // cluster's core is a big leafy grass mat instead)
-  shrub: [{ base: "Multi.W3DAppleCoreIsland", resource: "Pirate3", h: 0.37, mul: 1.7 }],
-  mat: [{ base: "Multi.W3DAppleCoreIsland", resource: "Pirate3", h: 0.37 }, { base: "Multi.LandWormsForgot", resource: "PREHISTORIC1", h: 0.21 }],
-  tuft: [{ base: "Multi.W3DAppleCoreIsland", resource: "PIRATE1", h: 0.3, mul: 1.3 }, { base: "Multi.W3DAppleCoreIsland", resource: "PIRATE3", h: 0.18, mul: 1.5 }],
-  tussock: [{ base: "Multi.W3DAppleCoreIsland", resource: "PIRATE1", h: 0.3, mul: 1.9 }],
+  bush: [{ base: "Multi.GhostHill", resource: "WILDWEST2", r: 0.85, h: 1.66 }],
+  shrub: [{ base: "Multi.W3DEarnYourCrust", resource: "ENGLAND2", r: 0.65, h: 0.6, mul: 1.9 }, { base: "Multi.W3DEarnYourCrust", resource: "ENGLAND3", r: 0.65, h: 0.6, mul: 1.9 }],
+  tussock: [{ base: "Multi.Escape", resource: "PREHISTORIC1", r: 1.15, h: 0.45, mul: 1.2 }, { base: "Multi.GhostHill", resource: "WILDWEST1", r: 1.0, h: 0.9 }],
+  tuft: [{ base: "Multi.JoustAboutIt", resource: "CAMELOT1", r: 0.85, h: 0.5, mul: 1.1 }, { base: "Multi.W3DAppleCoreIsland", resource: "PIRATE1", r: 0.4, h: 0.3, mul: 1.6 }],
+  cover: [{ base: "Multi.JoustAboutIt", resource: "CAMELOT4", r: 0.6, h: 0.3, mul: 1.4 }],
 };
-// sun-dried greens (the tint draws as colour x the texel's luminance / 0.5)
-export const GREENS = { shrub: ["#7f8f4e", "#738545", "#86904f"], mat: ["#93955a", "#8a8f55"], tuft: ["#a6a066", "#9c9a62"], tussock: ["#8c9455", "#7f8a4d"] };
+// drawn radius and height per unit of the piece's own scale multiplier (r, h: at the example's scale), for the readability check
+export const FLORA_SIZE = Object.fromEntries(Object.values(FLORA).flat().map((p) => [p.resource, { r: p.r, h: p.h }]));
+// one palette: the tint draws as colour x the texel's luminance / 0.5
+export const GREENS = {
+  bush: ["#4f9a3a", "#5aa443", "#468f35"], shrub: ["#5fa846", "#6bb04c", "#579f40"], tussock: ["#86c34e", "#7cba48", "#92c955"],
+  tuft: ["#9ccd5c", "#a8d264"], cover: ["#78b84a", "#84c050"],
+};
+export const DRY = { tussock: ["#a9b05c", "#9ea656", "#b4b466"], tuft: ["#bdb46e", "#b0aa66"], cover: ["#a3ad60"] };
+export const DUNE = { tussock: ["#a8b860", "#9db058"], tuft: ["#b3be68", "#a9b862"], cover: ["#9fb35c"] };
+
+// cluster recipes: rings [kind, count range, radius range, keep chance]
+const RECIPES = {
+  mass: [["bush", [1, 2], [0, 0.9], 1], ["shrub", [2, 4], [1.1, 2.0], 0.9], ["tussock", [2, 4], [1.8, 3.0], 0.75], ["tuft", [3, 5], [2.6, 4.2], 0.6], ["cover", [1, 3], [2.2, 4.2], 0.55]],
+  hedge: [["bush", [2, 3], [0, 0], 1], ["shrub", [1, 3], [0.9, 1.8], 0.9], ["tussock", [1, 3], [1.6, 2.6], 0.75], ["tuft", [2, 4], [2.2, 3.6], 0.6], ["cover", [1, 2], [1.6, 3.2], 0.5]],
+  green: [["shrub", [1, 2], [0, 0.8], 1], ["tussock", [2, 4], [1.0, 2.2], 0.85], ["cover", [2, 3], [1.4, 2.8], 0.7], ["tuft", [2, 5], [2.0, 3.6], 0.55]],
+  shore: [["tussock", [1, 1], [0, 0], 1], ["tuft", [2, 4], [0.9, 2.2], 0.75], ["tussock", [0, 1], [1.4, 2.4], 0.5]],
+  dry: [["tussock", [1, 2], [0, 0.9], 1], ["tuft", [1, 3], [1.0, 2.2], 0.6]],
+  lawn: [["tussock", [1, 1], [0, 0], 1], ["cover", [2, 3], [0.8, 1.8], 0.85], ["tuft", [3, 5], [1.2, 2.8], 0.7], ["tussock", [0, 1], [1.6, 2.6], 0.5]],
+};
+const RECIPE_OF = { wall: "hedge", cliff: "mass", rock: "mass", lawn: "lawn", green: "green", shore: "shore", dry: "dry" };
+const SEP = { wall: 4.5, cliff: 5.5, rock: 5.5, lawn: 4, green: 5, shore: 6, dry: 7.5 };
+const CAP = { wall: 50, cliff: 30, rock: 36, lawn: 45, green: 50, shore: 26, dry: 30 };
 
 export async function floraPass(ctx) {
-  const { call } = ctx, R = rng(20261115);
-  const stats = { clusters: { sand: 0, green: 0, apron: 0 }, pieces: 0, byKind: {}, rejected: {} };
+  const { call } = ctx, R = rng(20261215);
+  const stats = { clusters: {}, pieces: 0, byKind: {}, byBase: {}, rejected: {}, candidates: {} };
   const rej = (why) => { stats.rejected[why] = (stats.rejected[why] ?? 0) + 1; };
-  // resolve each piece's example id
   const ids = {};
   for (const [kind, list] of Object.entries(FLORA)) for (const p of list) {
     const row = (await call("scenery_catalog", { bases: [p.base], roles: ["scenery"], search: p.resource, limit: 10 })).json.list.find((r) => r.resource === p.resource);
     if (!row) throw new Error(`no ${p.resource} in ${p.base}`);
-    (ids[kind] ??= []).push({ ...p, id: row.example.id, mesh: row.meshSize, sc: row.example.scale });
+    (ids[kind] ??= []).push({ ...p, id: row.example.id, sc: row.example.scale ?? [1, 1, 1] });
   }
   const sample = async (pts) => {
     const res = [];
     for (let i = 0; i < pts.length; i += 3500) res.push(...(await call("surface_sample", { points: pts.slice(i, i + 3500), units: "map", step: 0.8 })).json.samples);
     return res;
   };
-  // candidate cluster centres: a 2-unit grid over the lowland ring and round the castles
+  // the rock already placed (its footprints: plants grow round them, not inside them)
+  const rocks = [];
+  for (const q of ["_dtl", "_ldg", "_cpl"]) for (const d of (await call("list_scenery", { search: q, units: "map", limit: 2000 })).json.details) {
+    const s = d.scale ?? [1, 1, 1];
+    rocks.push({ x: d.at[0], y: d.at[1], z: d.at[2], r: 0.7 * 1.55 * Math.max(Math.abs(s[0]), Math.abs(s[2])), h: 2.05 * Math.abs(s[1]) });
+  }
+  const inRock = (x, z, pad = 0) => rocks.some((k) => Math.hypot(k.x - x, k.z - z) < k.r * 0.85 + pad);
+  const lava = (x, z, m) => onTongue(x, z, m) || Math.hypot(x - T.LAKE.c[0], z - T.LAKE.c[1]) < T.LAKE.R + 2 + m;
+  // ---- candidate centres on a 1.5 grid
   const grid = [];
-  for (let x = -112; x <= 112; x += 2) for (let z = -112; z <= 112; z += 2) {
-    const rho = T.rhoAt(x, z);
-    if (rho < T.RC + 20) continue;
-    grid.push([x + (R() - 0.5) * 1.2, z + (R() - 0.5) * 1.2]);
+  for (let x = -114; x <= 114; x += 1.5) for (let z = -114; z <= 114; z += 1.5) {
+    if (T.rhoAt(x, z) < T.RC + 10) continue;
+    grid.push([x + (R() - 0.5) * 0.9, z + (R() - 0.5) * 0.9]);
   }
   const gs = await sample(grid);
+  const pts = [];
+  grid.forEach(([x, z], i) => { const g = gs[i]; if (g && g.y > WATER + 0.6 && g.y < 32 && g.slope < 58) pts.push({ x, z, g }); });
+  // cliff feet: the ground 2.5 uphill (against the horizontal normal) is a steep face
+  const low = pts.filter((p) => p.g.slope < 42 && p.g.y < 30);
+  const up = await sample(low.map((p) => { const n = p.g.normal, l = Math.hypot(n[0], n[2]) || 1; return [p.x - n[0] / l * 2.5, p.z - n[2] / l * 2.5]; }));
+  low.forEach((p, i) => { if (up[i] && up[i].slope > 46 && up[i].y > p.g.y + 1) p.cliff = true; });
+  const bigRocks = rocks.filter((k) => k.h >= 1.6 && k.y < 26);
   const cands = [];
-  grid.forEach(([x, z], i) => {
-    const g = gs[i];
-    if (!g) return;
-    const near = T.CASTLES.map((c) => T.footDist(c, x, z, 0)).reduce((a, b) => Math.min(a, b), Infinity);
-    let zone = null;
-    // (the island's lowland is steep where it is free: the gentle ground is courts, trails and their landings, and the
-    // sampled beach runs 30-50 degrees, so the grasses take slopes up to 40-45 degrees)
-    if (near > CLEAR.castle + 0.5 && near < 8 && g.slope < 42 && g.y > WATER + 1) zone = "apron";
-    else if (g.y >= 4 && g.y <= 9.5 && g.slope < 42) zone = "green";
-    else if (g.y >= WATER + 0.7 && g.y < 4.4 && g.slope < 46) zone = "sand";
-    if (!zone) return;
-    if (onTongue(x, z, 2)) return;
-    if (keepOut(x, z, 1.2, ctx.spawns)) return;
-    // weights: sand denser toward the vegetation line, green patchy and thinning upward, aprons dense at corners (near < 5)
-    const n = T.noise(x * 0.08, z * 0.08, 611);
-    const w = zone === "sand" ? (g.y - WATER - 0.7) / 3 * (n > -0.1 ? 1 : 0.2)
-      : zone === "green" ? (n > -0.3 ? 1 : 0.25) * (1 - (g.y - 4) / 9)
-      : 1.2 - (near - 3.5) / 8;
-    cands.push({ x, z, g, zone, w: w * (0.6 + 0.4 * R()), near });
-  });
-  stats.candidates = cands.reduce((m, c) => (m[c.zone] = (m[c.zone] ?? 0) + 1, m), {});
+  for (const p of pts) {
+    const { x, z, g } = p;
+    if (lava(x, z, 1.5) || inRock(x, z)) continue;
+    if (keepOutFlora(x, z, 1.2, 1.2, 0, ctx.spawns, 0.5)) continue;
+    const wallD = Math.min(...T.CASTLES.map((c) => T.footDist(c, x, z, 0)));
+    const rockD = Math.min(Infinity, ...bigRocks.map((k) => Math.hypot(k.x - x, k.z - z) - k.r));
+    const n = T.noise(x * 0.07, z * 0.07, 733);
+    let zone = null, w = 0;
+    if (wallD > 0.6 && wallD < 2.6 && g.y < 14) { zone = "wall"; w = 1.5 - wallD * 0.1; }
+    else if (p.cliff) { zone = "cliff"; w = 1.3 - g.y / 60; }
+    else if (rockD > 0 && rockD < 2.5 && g.y < 26) { zone = "rock"; w = 1.15 - g.y / 60; }
+    // the build's painted lawns (grass and olive, 4-9 map units, under 22 degrees: walkable): LOW plants only
+    else if (g.y >= 4 && g.y < 9.5 && g.slope < 24) { zone = "lawn"; w = (n > -0.35 ? 1 : 0.35) * 0.95; }
+    else if (g.y >= 3.5 && g.y < 12 && g.slope < 55) { zone = "green"; w = (n > -0.15 ? 1 : 0.2) * (1.05 - (g.y - 3.5) / 20); }
+    else if (g.y < 3.5 && g.slope < 50) { zone = "shore"; w = (0.3 + 0.5 * (g.y - WATER - 0.6) / 2.9) * (n > 0 ? 1 : 0.25); }
+    else if (g.y >= 12 && g.y < 30 && g.slope < 56) { zone = "dry"; w = 0.55 * (1 - (g.y - 12) / 22) * (n > 0.1 ? 1 : 0.15); }
+    if (!zone) continue;
+    stats.candidates[zone] = (stats.candidates[zone] ?? 0) + 1;
+    cands.push({ x, z, g, zone, w: w * (0.65 + 0.35 * R()), wallD });
+  }
   cands.sort((a, b) => b.w - a.w);
-  const sep = { sand: 6, green: 5, apron: 3.5 }, cap = { sand: 40, green: 45, apron: 45 };
   const centres = [];
   for (const c of cands) {
-    if (c.w < 0.15 || stats.clusters[c.zone] >= cap[c.zone]) continue;
-    if (centres.some((o) => Math.hypot(o.x - c.x, o.z - c.z) < Math.min(sep[o.zone], sep[c.zone]))) continue;
-    centres.push(c); stats.clusters[c.zone]++;
+    if (c.w < 0.12 || (stats.clusters[c.zone] ?? 0) >= CAP[c.zone]) continue;
+    if (centres.some((o) => Math.hypot(o.x - c.x, o.z - c.z) < Math.min(SEP[o.zone], SEP[c.zone]))) continue;
+    centres.push(c); stats.clusters[c.zone] = (stats.clusters[c.zone] ?? 0) + 1;
   }
-  // the members of each cluster: a core and children falling in size outward
-  const members = [];
-  for (const c of centres) {
-    const plan = c.zone === "sand" ? { core: "mat", kids: ["tuft", "tuft", "tuft", "mat", "tuft"], n: [3, 6], r: 2.2 }
-      : c.zone === "green" ? { core: "shrub", kids: ["tussock", "tussock", "mat", "shrub", "tuft", "tussock"], n: [3, 6], r: 2.4 }
-      : { core: R() < 0.5 ? "shrub" : "tussock", kids: ["tussock", "tuft", "mat", "tussock"], n: [2, 4], r: 1.8 };
-    const n = plan.n[0] + Math.floor(R() * (plan.n[1] - plan.n[0] + 1));
-    members.push({ x: c.x, z: c.z, kind: plan.core, s: 1 + R() * 0.25, zone: c.zone });
-    for (let i = 0; i < n; i++) {
-      const a = R() * Math.PI * 2, d = plan.r * (0.35 + 0.65 * Math.sqrt((i + 1) / n)) * (0.8 + R() * 0.4);
-      members.push({ x: c.x + Math.cos(a) * d, z: c.z + Math.sin(a) * d, kind: plan.kids[i % plan.kids.length], s: (1 - 0.35 * (i / n)) * (0.75 + R() * 0.3), zone: c.zone });
+  // ---- members
+  const clusters = centres.map((c) => {
+    const recipe = RECIPES[RECIPE_OF[c.zone]], mem = [];
+    // a hedge runs along the wall: its bushes step along the wall's tangent (perpendicular to the way out of the castle)
+    let tx = 1, tz = 0;
+    if (c.zone === "wall") {
+      const cs = T.CASTLES.reduce((a, k) => (T.footDist(k, c.x, c.z, 0) < T.footDist(a, c.x, c.z, 0) ? k : a));
+      const ox = c.x - cs.at[0], oz = c.z - cs.at[1], L = Math.hypot(ox, oz) || 1;
+      const n = c.g.normal, nl = Math.hypot(n[0], n[2]);
+      const [ux, uz] = nl > 0.15 ? [n[0] / nl, n[2] / nl] : [ox / L, oz / L];
+      tx = -uz; tz = ux;
+    }
+    for (const [kind, [n0, n1], [r0, r1], keep] of recipe) {
+      const n = n0 + Math.floor(R() * (n1 - n0 + 1));
+      for (let i = 0; i < n; i++) {
+        if (R() > keep) continue;
+        let x, z;
+        if (c.zone === "wall" && kind === "bush") { const d = (i - (n - 1) / 2) * 1.3 + (R() - 0.5) * 0.3; x = c.x + tx * d; z = c.z + tz * d; }
+        else { const a = R() * Math.PI * 2, d = r0 + (r1 - r0) * Math.sqrt(R()); x = c.x + Math.cos(a) * d; z = c.z + Math.sin(a) * d; }
+        // size falls off outward a little
+        const fall = r1 > 0 ? 1 - 0.25 * (Math.hypot(x - c.x, z - c.z) / Math.max(1, r1)) : 1;
+        mem.push({ x, z, kind, s: (0.85 + R() * 0.35) * fall });
+      }
+    }
+    return { c, mem };
+  });
+  const ms = await sample(clusters.flatMap((k) => k.mem.map((m) => [m.x, m.z])));
+  const room0 = ctx.floraMax ?? (process.env.DTL_FLORA_MAX ? +process.env.DTL_FLORA_MAX : Infinity);
+  const byBase = new Map();
+  let room = room0, k0 = 0;
+  for (const cl of clusters) {
+    const list = [];
+    for (let i = 0; i < cl.mem.length; i++) {
+      const m = cl.mem[i], g = ms[k0 + i];
+      if (!g || g.y < WATER + 0.5) { rej("water"); continue; }
+      if (g.slope > 62) { rej("steep"); continue; }
+      const zone = cl.c.zone;
+      // bushes only where worms do not walk: walls, cliff feet, rock bases, or slopes over 25 degrees
+      let kind = m.kind;
+      if (kind === "bush" && !((zone === "wall" && g.slope > 15) || zone === "cliff" || zone === "rock" || g.slope > 25)) kind = "shrub";
+      if (zone === "lawn" && (kind === "shrub" || kind === "bush")) kind = "tussock";
+      if (zone === "dry" && kind !== "tussock" && kind !== "tuft") kind = "tuft";
+      const opts = ids[kind], p = zone === "dry" && kind === "tussock" ? opts.find((o) => o.resource === "WILDWEST1") ?? opts[0]
+        : zone === "lawn" && kind === "tussock" ? opts.find((o) => o.resource === "PREHISTORIC1") ?? opts[0] : opts[Math.floor(R() * opts.length)];
+      const mul = (p.mul ?? 1) * m.s * (kind === "bush" ? 0.95 + R() * 0.5 : 1);
+      const rad = p.r * mul;
+      if (lava(m.x, m.z, rad + 0.5)) { rej("lava"); continue; }
+      if (inRock(m.x, m.z, -0.2)) { rej("in a rock"); continue; }
+      const why = keepOutFlora(m.x, m.z, rad, rad, 0, ctx.spawns, 0.5);
+      if (why) { rej(why); continue; }
+      const pal = zone === "dry" ? DRY : zone === "shore" ? DUNE : GREENS, cols = pal[kind] ?? GREENS[kind];
+      list.push({ base: p.base, kind, copy: { id: p.id, xz: [+m.x.toFixed(2), +m.z.toFixed(2)], seat: g.slope > 40 ? 0.32 : g.slope > 25 ? 0.25 : 0.12,
+        rot: [Math.round((R() - 0.5) * (kind === "bush" ? 6 : 10)), Math.round(R() * 360), Math.round((R() - 0.5) * (kind === "bush" ? 6 : 10))],
+        scale: p.sc.map((v) => +(v * mul).toFixed(3)), tint: cols[Math.floor(R() * cols.length)] } });
+    }
+    k0 += cl.mem.length;
+    if (list.length > room) { rej("over the detail budget"); continue; }
+    room -= list.length;
+    for (const it of list) {
+      if (!byBase.has(it.base)) byBase.set(it.base, []);
+      byBase.get(it.base).push(it.copy);
+      stats.byKind[it.kind] = (stats.byKind[it.kind] ?? 0) + 1;
+      stats.byBase[it.base] = (stats.byBase[it.base] ?? 0) + 1;
     }
   }
-  const ms = await sample(members.map((m) => [m.x, m.z]));
-  const byBase = new Map();
-  members.forEach((m, i) => {
-    const g = ms[i];
-    if (!g || g.y < WATER + 0.5) { rej("water"); return; }
-    if (g.slope > 50) { rej("steep"); return; }
-    const p = ids[m.kind][Math.floor(R() * ids[m.kind].length)];
-    const scale = m.s * (p.sc?.[0] ?? 1) * (p.mul ?? 1), foot = Math.max(p.mesh?.[0] ?? 1, p.mesh?.[2] ?? 1) * scale / 2;
-    if (p.h * m.s * (p.mul ?? 1) > 1.35) { rej("too tall"); return; }
-    const why = keepOutFoot(m.x, m.z, foot, foot, 0, ctx.spawns, 0.5);
-    if (why) { rej(why.replace(/^castle .*/, "castle")); return; }
-    if (onTongue(m.x, m.z, foot + 1)) { rej("lava"); return; }
-    if (!byBase.has(p.base)) byBase.set(p.base, []);
-    byBase.get(p.base).push({ id: p.id, xz: [+m.x.toFixed(2), +m.z.toFixed(2)], seat: g.slope > 25 ? 0.22 : 0.12, rot: [0, Math.round(R() * 360), 0], scale: +scale.toFixed(3),
-      tint: GREENS[m.kind][Math.floor(R() * GREENS[m.kind].length)] });
-    stats.byKind[m.kind] = (stats.byKind[m.kind] ?? 0) + 1;
-  });
-  // a cap (DTL_FLORA_MAX, or ctx.floraMax from the layer's detail budget)
-  let room = ctx.floraMax ?? (process.env.DTL_FLORA_MAX ? +process.env.DTL_FLORA_MAX : Infinity);
-  for (const [base, copies] of byBase) { if (copies.length > room) copies.splice(room); room -= copies.length; }
   for (const [base, copies] of byBase) for (let i = 0; i < copies.length; i += 200) {
     const r = (await call("copy_base_details", { base, allowOtherTheme: true, units: "map", tag: "flo", copies: copies.slice(i, i + 200) })).json;
     stats.pieces += r.placed.length;
