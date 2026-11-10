@@ -34,6 +34,7 @@ import { talusPass, ledgePass, columnsPass, basaltPass } from "./detail-basalt.m
 import { alonePass } from "./detail-alone.mjs";
 import { chipsPass, beachTumblePass, screePass, accentPass, lint12Pass } from "./detail-r12.mjs";
 import { groundPass, toePass, darkenPass, debrisPass } from "./detail-r13.mjs";
+import { shorePass, plinthPass, smoothPass, beachPass as beach14Pass, seamPass, massPass, meadowPass } from "./detail-r14.mjs";
 import { stringsPass, beachPass, tumblePass, rimPass, flora2Pass, lint11Pass } from "./detail-r11.mjs";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
@@ -72,6 +73,11 @@ export const PASSES = [
   // round 13 (detail-r13.mjs): the base terrain's own look by primary paint: steep pale-sided skin cells to basalt, the
   // shore's checker to one noise field of sand, olive meadow and green cores (before the flora, which follows the lawns)
   { name: "ground", run: groundPass },
+  // round 14 (detail-r14.mjs): the castle beaches' checker to sand with round earth patches (no grass tile on the shore),
+  // Highwatch's white flint plinth to slate and basalt, and a majority filter on the cone's cells (the single-cell teeth)
+  { name: "shore", run: shorePass },
+  { name: "plinth", run: plinthPass },
+  { name: "smooth", run: smoothPass },
   { name: "rock", run: rockPass },
   // round 6: horizontal strata bands replace round 5's boulder "strata" (detail-cliff.mjs, removed); columnar crowns on the
   // crests and cliff tops; the coast (stacks, half-sunk blocks, stepped columns); the first flora; the perched lint
@@ -121,6 +127,13 @@ export const PASSES = [
   { name: "debris", run: debrisPass },
   { name: "darken", run: darkenPass },
   { name: "lint13", run: lint12Pass },
+  // round 14: the beach's black cubes back to warm stone, rock groups along the dust / basalt seams (gameplay-scale anchors),
+  // low meadow flora fringing the shore's earth patches, the lint once more
+  { name: "beach14", run: beach14Pass },
+  { name: "seam", run: seamPass },
+  { name: "mass", run: massPass },
+  { name: "meadow", run: meadowPass },
+  { name: "lint14", run: lint12Pass },
 ];
 
 // build.mjs places four Camelot flags (CAMELOT16, CAMELOT19 of Multi.NiceToSiege) for the castles' towers, in world units though

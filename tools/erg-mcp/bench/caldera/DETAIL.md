@@ -250,3 +250,42 @@ From the round-12 judge's next focus (`detail-r13.mjs`, passes `ground` after `l
 Run (testenv D, the round-12 undressed project = `erg-mcp` `92df935`): sim `926ed2c04a9a4791d0d65d388b0739edb97873e610b93ae477797d083c696d2e` before, after all 35 passes and after save and reopen. `detail-verify`: 745 props (`_dtl` 308, `_tal` 61, `_flo` 376), 0 violations, 0 flora violations; 857 details. The pack ships 8 banks. An install of the pack (range lowered to 0.13), built with its `build.ps1`, logs `8 bank(s) loaded from 1 mod(s)`, and a match on the installed `Multi.caldera_caldera` draws the rock as the project does.
 
 Perf (testenv D, Sunstone on, the oblique, testenv B running in all three runs): dressed 8.80 / 8.71 ms GPU p50, undressed 5.88, 36 fps in all. Round 12 measured 8.70 the same way with 779 details.
+
+## Round 14 (dress: the beaches' tile grid, Highwatch's plinth, the edges)
+
+From the round-13 judge's next focus (`detail-r14.mjs`; passes `shore`, `plinth`, `smooth` after `ground`; `beach14`, `seam`, `mass`, `meadow`, `lint14` after `lint13`). `erg-mcp` `b73f35b` is merged; it changed only `level.test.selectWeapon` (C++ and `game.ts`), not the map, so the undressed project is still `92df935`'s build (fingerprint `926ed2c0…`).
+
+The paint passes work on the skin's own cells: a 2.5-unit grid whose edges lie on multiples of 2.5. Each cell is repainted through a small rectangle round its centre, with `only` limited to the cell's old material.
+- **shore** (primary paint):
+  - Every dark or lava-rock square on the flat shore becomes sand: VolcanoRock, HotRocks and rock01/02. On the team castles' shelves this applies up to 3.2 over the court, and elsewhere under 5.5 high and under 40 degrees. Magma, the flows, stays. 139 cells.
+  - Every grass square under 10 high becomes sand, or sand01blend (P12: the same sand with pebbles, its sides P11) inside 11 round, wobbly patches on the flat shelves. No grass tile is left on the shore band, so there are no lime rectangles.
+  - A sweep then paints any grass voxel left under 10 high (31), and any dark voxel on a team castle's shelf (482), to sand. These were cells whose sample point fell under a wall and answered the wall's material. The sweep goes 20 deep, because those columns also hold a tower.
+  - The castles' own materials (12, 16, 27) are never in `only`.
+  - A first try used path01 (P09, a dry earth) for the patches. In game it still read as a beige checker, so the patches now use P12.
+- **plinth** (primary paint): Highwatch's ring walls are flint, like its plinth, so only voxels under the court's top are painted.
+  - Inside the ring the court takes GreySlateFloor (P23): 57 voxels.
+  - The square's margin outside the ring takes the trails' dust (path02): 16.
+  - Its steep sides take VolcanoRock: 16.
+  - The white slab is gone. A first try painted by cell and darkened the walls; that was fixed before any shot was kept.
+- **smooth** (primary paint):
+  - A majority filter over the cone's cells off the trail bed and shoulder, the castles, pads and lava tongues: a dust, basalt or hot-rock cell with 3 or fewer of its 8 neighbours alike, and 5 or more of one other, takes that material. It runs twice, and dust never goes onto ground over 46 degrees. 41 cells.
+  - Then the confetti: HotRocks clusters of 3 cells or fewer take VolcanoRock. 32 cells.
+  - 2348 of the 3255 cone cells lie in the trail band. The zigzag the judge saw on trail_NE is mostly the trail's own ash shoulder over the banks between legs, so it stays.
+- **beach14**: dark variants on beach ground (under 7.5, rho over 76) go back to the warm stone (31). Lone small pieces are removed (1).
+- **seam**: rock groups along light/dark ground boundaries outside the keep-outs: 6 sites, 18 pieces. On the cone 496 of 564 edge points are inside the trail band (the dust is the trail beds), so most sites are at the cone's foot.
+- **mass**: gameplay-scale outcrops: a warm Wedge anchor of 3.2-4.4 with a block and a short talus on 28-68 degree shoulders. 3 sites, 5 pieces. Almost no ground qualifies: 2220 points fail on slope, 958 on the trail and 212 on existing rock.
+- **meadow**: low plants (grass, tussock, weed, flowers, all 0.8 tall or less) on a jittered grid over each shore patch, dense at its rim: 58 plants.
+
+Run (testenv D, the round-12 undressed project = `erg-mcp` `92df935`):
+- The sim fingerprint was `926ed2c04a9a4791d0d65d388b0739edb97873e610b93ae477797d083c696d2e` before, after each of the 43 passes and after save and reopen (43 "sim unchanged", 0 changed).
+- `detail-verify`: 740 props (`_dtl` 330, `_tal` 61, `_flo` 349), 0 violations, 0 flora violations. The level holds 852 details.
+- The pack ships the same 8 banks. An install of the pack (range lowered to 0.13), built with its `build.ps1`, logs `8 bank(s) loaded from 1 mod(s)`. A match on the installed `Multi.caldera_caldera` (852 details) draws the rock as the project Test does.
+
+Perf (testenv D, Sunstone on, testenv B idle: `game_overlap` clear; the same procedure for both, the 12 shots then 30 s):
+
+| | GPU frame p50 / p95 | fps p50 |
+|---|---|---|
+| undressed | 4.39 / 4.80 ms | 36.5 |
+| dressed | 8.93 / 10.18 ms | 35.9 |
+
+Tool gaps left: the trail beds and their ash shoulders make up the cone's material edges, and the readability keep-outs cover almost all the ground beside them. A sim-neutral edge blend, a terrain-side decal or a texture blend in the released Sunstone is still the only way to soften those edges.
