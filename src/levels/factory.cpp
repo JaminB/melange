@@ -125,16 +125,29 @@ constexpr uint32_t kPLandFrame = 0x190, kPLandAux = 0x18c;
 // The payload's rest record: the come-to-rest 0x5758c0 copies the parabola base into +0x12c, the LAST SWEEP'S end velocity
 // (the globals 0x96e878..0x96e880) into +0x138 and the clock into +0x1a8. In the engine's own rest path that velocity is
 // its own sweep's zero; called by Melange on a mine the engine never collided it is whatever the last sweep anywhere left,
-// so every rest Melange makes stills the record too (+0x12c the rest, +0x138 zero, +0x1a8 the clock). What was NOT pinned
-// down (2026-11-09, testenv B, bus log and entity.inspect): after a Melange landing the engine still flies the mine on
-// along its old arc in some state of its own (Payload.CollideWithLand events 5-8 ticks later, 5-15 map units on, at the
-// ground its own sweep does see; then bounces, Payload.Rest elsewhere, or Payload.CollideWithWater, Sunk and Deleted),
-// each of its collisions writing the parabola, which the hold puts back. That state is not in the payload's 0x1c8 bytes
-// (the only positions there are the base and this record) and the 0x74-byte colliders of 0x514b90 (vtable 0x853f84,
-// tick 0x515570) never tick for a mine (a hook on 0x515570 saw no call through two volleys). So a landed mine stays where
-// Melange put it (the hold) and goes off there, but one whose engine twin reaches the water is deleted ("destroyed" in
-// the fire record; 19 of 150 in round 2's long run) and the hold's put-backs are the twin's collisions, not blasts.
+// so every rest Melange makes stills the record too (+0x12c the rest, +0x138 zero, +0x1a8 the clock). The engine's "twin"
+// that flew on along the old arc after a Melange landing (rounds 1-3) was its queued flight events: see kStaleEvents.
 constexpr uint32_t kPMotionPos = 0x12c, kPMotionVel = 0x138, kPMotionTime = 0x1a8;
+// The engine's "twin" of rounds 1-3, found on 2026-11-10 (testenv B: entity.inspect over volleys, the session's bus log,
+// the disassembly): the payload's flight events are QUEUED AHEAD. At launch (and after each collision of its own) the
+// payload's Update sweeps its parabola with the land sweep (0x574e90 round 0x466ae0) and solves its plane crossings
+// (the water, the expiry and disarm planes), and for each builds a PayloadEventMessage (vtable 0x85be94, built at
+// 0x57aa0c: payloadId +8, the sim time +0xc, the position +0x10 and velocity +0x1c of the parabola at that time) that
+// the game's delayed-message pump (0x69a4e0, its queues 0x96e79c/0x96e7b4) Posts (0x6910e4) when the time comes, named
+// Payload.CollideWithLand / CollideWithWater / CollideWithExpiryPlane / CollideWithDisarmPlane; the payload then acts on
+// the message's contact (the bounce written into the parabola, the come-to-rest, the sinking). The payload itself holds
+// nothing but the current parabola (its 0x1c8 bytes, and the 16 KB round it, were read every second through a volley:
+// no second copy, and +0x58, the only time field, stays -1 in flight). So a mine Melange lands keeps the parabola
+// Melange wrote, while the events its launch queued still arrive at the OLD arc's contacts (CollideWithLand 5-8 ticks
+// on at the ground the engine's sweep did see past the skin, then CollideWithWater at the sea floor 1-3 s later, both
+// carrying the launch arc's velocity): those were the round-1 "set moving" and the "moved at rest" put-backs, and a
+// mine whose stale CollideWithWater went through was sunk in the engine's eyes and deleted at a later volley (99 of 158
+// mines in round 3 had one; 79 of those were deleted, none of the other 59). So the stale events of a held mine are kept
+// from the engine: a Post handler on those four names drops a message whose payloadId is a pinned mine (bus::DropCurrent).
+// The genuine events of a mine at rest come another way (a blast's impulse, the water reaching it), so those still play.
+constexpr const char* kStaleEvents[] = {"Payload.CollideWithLand", "Payload.CollideWithWater", "Payload.CollideWithExpiryPlane",
+                                        "Payload.CollideWithDisarmPlane"};
+constexpr uint32_t kEventPayloadId = 0x8, kEventPos = 0x10;
 constexpr uintptr_t kExplosionVt = 0x854184;      // ExplosionMessage (core/bus_decoders.cpp): impulse epicentre +0x14, radii +0x34/0x38/0x3c
 // World units a resting mine's base sits over the land: 0, the engine's own rest height. Measured in testenv B on
 // 2026-11-09 (round2/measure): the 15 scheme mines of a vanilla DinerMight match and 2 straight drops all rested with their
@@ -148,10 +161,17 @@ constexpr float kBuriedProbe = 4.f * kWorldPerMap;   // how far under a held min
 constexpr int kMaxDeflects = 3;                   // wall hits a thrown mine is dropped off before it is rested on the face
 constexpr uint32_t kEngineRestEvery = 20;         // ticks between the engine's come-to-rest on one fighting mine
 constexpr uint32_t kMaxFlightMs = 20000;       // a thrown mine not down by then is let go
-constexpr int kTargetTries = 6;                // landing points drawn before a mine falls back to straight up
+constexpr int kTargetTries = 24;               // landing points drawn for a dry one (round 3: 6 left half of a late volley straight up)
 constexpr float kRestSnap = 2.f * kWorldPerMap;   // a bounce's contact point this close to the land (either way) rests there
 constexpr float kThrowLift = 2.5f * kWorldPerMap;   // world units a thrown mine appears over its launch point (see the throw)
 constexpr float kMinApart = 30.f;              // world units: a launcher's mines start at least this far apart, if they can
+// The engine's payload pool: 32 slots for every ParabolicPayloadLogicEntity (mines, shells, grenades; the handles of a
+// match's first payloads ran 120-151 and the 33rd came back as 120 + 4096, the slot's next generation). The 33rd payload
+// takes the OLDEST slot and deletes what lay there: in round 3 every volley past about 30 live mines removed 4-10 of the
+// earlier mines the instant it was made (seen as "destroyed" in the fire record), and a weapon shot would do the same. So
+// a Melange fire is trimmed to the pool's room, kPoolKeep slots kept for the worms' shots (a cluster's pieces), and the
+// log says so (the round-4 run, Caldera: volleys of 10, 10, 10, then 3 and 1 as the island filled to 31 mines).
+constexpr int kPayloadPool = 32, kPoolKeep = 4;
 constexpr int kSpotTries = 12;
 
 struct Field {
@@ -192,6 +212,7 @@ struct FiredMine {
     // a thrown mine's landing, counted (see GuideThrown): put back after the engine moved it at rest, rested again after
     // it was given a velocity with no blast about, dropped off walls, lifted out of the land; freed by a blast
     int rePins = 0, velPins = 0, deflects = 0, lifts = 0;
+    int dropped = 0;              // stale flight events of the engine's kept from it while held (see kStaleEvents)
     bool freed = false;
     int frame = -1;               // the land frame it rests on (-1: not landed by Melange; 65535: the heightmap)
 };
@@ -234,6 +255,7 @@ struct Guided {
     int velPins = 0;            // rested again after the engine gave it a velocity with no blast about
     int deflects = 0;           // wall (or ceiling) hits it was dropped off
     int lifts = 0;              // lifted onto the land it was found under
+    int dropped = 0;            // the engine's stale flight events kept from it (kStaleEvents)
     uint32_t lastEngineRest = 0;   // tick of the last come-to-rest Melange ran on it
     uint32_t pinnedAt = 0;      // tick it was pinned
     uint16_t frame = 0xffff, aux = 0;   // the land frame it rests on, as written into the payload
@@ -245,6 +267,7 @@ struct Blast {          // an ExplosionMessage posted in the match (main thread,
 };
 std::vector<Blast> g_blasts;
 bus::SubId g_subBlast = 0;
+bus::SubId g_subStale[4] = {};
 std::vector<Guided> g_guided;
 struct Throw {       // one mine of a throw, for pairing the entities that appear with their targets
     float from[3], target[3], vel[3];
@@ -335,6 +358,16 @@ std::vector<MineAt> Mines() {
         out.push_back({e.handle, {e.pos.x, e.pos.y, e.pos.z}, e.object, e.vtable, std::strcmp(e.type, "ParabolicPayloadLogicEntity") == 0});
     }
     return out;
+}
+
+// The live payloads of the match (every projectile entity: mines, shells in flight, ...), for the pool's room.
+int PayloadsLive() {
+    static std::vector<gamestate::Entity> ents(1024);
+    int n = gamestate::Entities(ents.data(), static_cast<int>(ents.size()));
+    n = (std::min)(n, static_cast<int>(ents.size()));
+    int live = 0;
+    for (int i = 0; i < n; ++i) live += ents[static_cast<size_t>(i)].kind == gamestate::EntityKind::Projectile;
+    return live;
 }
 
 uint32_t LogicTime() {
@@ -443,6 +476,26 @@ void OnBlast(const bus::MessageView& m, void*) {
     g_blasts.push_back(b);
 }
 
+// A flight event of the engine's (kStaleEvents) being posted: for a mine Melange holds it is the launch arc's, queued before
+// the landing, so it is kept from the engine (main thread, inside Post).
+void OnStaleEvent(const bus::MessageView& m, void*) {
+    uint32_t id = 0;
+    if (!m.Get(kEventPayloadId, id)) return;
+    for (Guided& g : g_guided) {
+        if (g.handle != id || !g.pinned) continue;
+        bus::DropCurrent();
+        ++g.dropped;
+        Note(g.handle, [&](FiredMine& fm) { fm.dropped = g.dropped; });
+        if (g.dropped <= 2) {
+            float at[3] = {0, 0, 0};
+            m.Read(kEventPos, at, sizeof at);
+            LOG_INFO("[levels] thrown mine %u: the engine's %s for its launch arc at (%.1f, %.1f, %.1f) was dropped (held at its landing; %d so far)", g.handle, m.name, at[0],
+                     at[1], at[2], g.dropped);
+        }
+        return;
+    }
+}
+
 void SetLanding(uint32_t handle, const char* how, const float* at) {
     for (std::vector<Fire>* fires : {&g_following, &g_fired})
         for (Fire& f : *fires)
@@ -474,11 +527,11 @@ bool Guiding(uint32_t handle) {
 // first (a worm, an object, a frame it does see) is honoured: at rest already, it is left (lifted onto the land when its
 // base is under it); bouncing with land within kRestSnap, rested on it; else its new parabola is followed.
 //
-// The hold: the engine keeps simulating a resting mine's contact with the ground, and where its own sweep misses the
-// ground it drops the mine through (teleports its base to what it does find, the sea floor often) or pops it out
-// (round 1: 84 of 120 held mines were set moving again, 32 of 58 ended 2-12 map units under the land the straight sweep
-// finds). So a held mine is put back wherever the engine moves it, and rested again whenever the engine gives it a
-// velocity, unless an explosion went off within its radius (plus kBlastReach) in the last kBlastTicks ticks: that
+// The hold: the engine's flight events queued at the launch (kStaleEvents) still arrived at the old arc's contacts after a
+// Melange landing and moved the mine (round 1: 84 of 120 held mines were set moving again, 32 of 58 ended 2-12 map units
+// under the land the straight sweep finds); those are now dropped while the mine is held (OnStaleEvent). The hold stays
+// as the safety net: a held mine is put back wherever the engine moves it, and rested again whenever the engine gives it
+// a velocity, unless an explosion went off within its radius (plus kBlastReach) in the last kBlastTicks ticks: that
 // impulse frees the mine (the blast's own physics play). A mine given a velocity more than once in kEngineRestEvery
 // ticks gets the engine's come-to-rest again (so its state is the engine's own resting one), else it is stilled by hand.
 // Every kBuriedEvery ticks a held mine is checked against the land under it (a short sweep from just over it) and lifted
@@ -499,7 +552,7 @@ void GuideThrown(uint32_t tick) {
         };
         auto record = [&]() {
             Note(g.handle, [&](FiredMine& m) {
-                m.rePins = g.rePins, m.velPins = g.velPins, m.deflects = g.deflects, m.lifts = g.lifts;
+                m.rePins = g.rePins, m.velPins = g.velPins, m.deflects = g.deflects, m.lifts = g.lifts, m.dropped = g.dropped;
                 m.frame = g.pinned ? g.frame : -1;
             });
         };
@@ -525,8 +578,9 @@ void GuideThrown(uint32_t tick) {
         };
         if (!alive || !now) {
             if (g.pinned) {
-                if (g.rePins || g.velPins)
-                    LOG_INFO("[levels] thrown mine %u is gone (set off, or removed) after %d put-backs and %d re-rests at its landing", g.handle, g.rePins, g.velPins);
+                if (g.rePins || g.velPins || g.dropped)
+                    LOG_INFO("[levels] thrown mine %u is gone (set off, or removed) after %d put-backs, %d re-rests and %d stale flight events dropped at its landing", g.handle,
+                             g.rePins, g.velPins, g.dropped);
                 g_guided.erase(g_guided.begin() + static_cast<std::ptrdiff_t>(i));
             } else {
                 LOG_INFO("[levels] thrown mine %u let go at tick %u: %s", g.handle, tick, !now ? "no sim clock" : !alive ? "its entity is gone" : "unreadable");
@@ -795,7 +849,7 @@ std::string MineJson(const Fire& f, const FiredMine& m) {
     }
     o.Int("moves", m.moves).Int("movedAfterRest", m.restsAfter);
     if (m.thrown) {
-        o.Int("rePins", m.rePins).Int("velPins", m.velPins).Int("deflects", m.deflects).Int("lifts", m.lifts).Bool("freed", m.freed);
+        o.Int("rePins", m.rePins).Int("velPins", m.velPins).Int("deflects", m.deflects).Int("lifts", m.lifts).Int("dropped", m.dropped).Bool("freed", m.freed);
         if (m.frame >= 0) o.Int("frame", m.frame);
     }
     o.Float("restFromFactoryMap", std::hypot(m.last[0] - f.factory[0], m.last[2] - f.factory[2]) / kWorldPerMap);
@@ -936,6 +990,13 @@ void __fastcall HkPlaceMines(uintptr_t self, void*) {
     }
     using Random = uint32_t(__cdecl*)();
     const auto rnd = reinterpret_cast<Random>(kSimRandom);
+    // the pool's room (see kPayloadPool): a fire past it would delete the oldest mines
+    const int live = PayloadsLive(), room = (std::max)(0, kPayloadPool - kPoolKeep - live);
+    if (n > room) {
+        LOG_INFO("[levels] %s: the mine factory's fire of %d is trimmed to %d: %d payloads are live and the engine's pool holds %d (the 33rd deletes the oldest)", stem.c_str(),
+                 n, room, live, kPayloadPool);
+        n = room;
+    }
     const float height = static_cast<float>(spec.launchHeight.value_or(20)) * kWorldPerMap;
     const float radius = static_cast<float>(spec.launchRadius.value_or(0)) * kWorldPerMap;
     const float vel[3] = {0.f, -0.3f, 0.f};
@@ -951,7 +1012,7 @@ void __fastcall HkPlaceMines(uintptr_t self, void*) {
         const uint32_t firstTarget = t.targets.empty() ? 0 : rnd() % static_cast<uint32_t>(t.targets.size());
         const float minR = static_cast<float>(t.minRange) * kWorldPerMap, maxR = static_cast<float>(t.maxRange) * kWorldPerMap;
         std::vector<Throw> throws;
-        int fellBack = 0, atTargets = 0;
+        int fellBack = 0, atTargets = 0, wetAimed = 0;
         for (int i = 0; i < n; ++i) {
             // kThrowLift over the launch point: a mine made within its own radius (about a map unit) of the ground is
             // rested by the engine at once (the collider step's sweep starts at the sphere's bottom), floating where
@@ -965,6 +1026,10 @@ void __fastcall HkPlaceMines(uintptr_t self, void*) {
             bool aimed = false;
             Throw th{};
             std::memcpy(th.from, from, sizeof th.from);
+            // the highest wet ground drawn, taken when no dry point turns up in kTargetTries (a late flood: the lowlands
+            // under the sea), rather than straight up onto the launcher
+            bool wetFound = false;
+            float wet[3] = {0, -1e9f, 0};
             for (int tries = 0; tries < kTargetTries && !aimed; ++tries) {
                 float x, z;
                 const bool aimTarget = t.pattern == erg::ThrowPattern::Targets && !t.targets.empty() && static_cast<int>(rnd() % 100u) < t.targetShare;
@@ -986,10 +1051,18 @@ void __fastcall HkPlaceMines(uintptr_t self, void*) {
                 }
                 const std::optional<float> ground = GroundAt(x, z, from[1]);
                 if (!ground) continue;
-                if (t.avoidWater && !std::isnan(water) && *ground < water + kWorldPerMap) continue;
+                if (t.avoidWater && !std::isnan(water) && *ground < water + kWorldPerMap) {
+                    if (*ground > wet[1]) wet[0] = x, wet[1] = *ground, wet[2] = z, wetFound = true;
+                    continue;
+                }
                 th.target[0] = x, th.target[1] = *ground, th.target[2] = z;
                 aimed = true;
                 atTargets += aimTarget;
+            }
+            if (!aimed && wetFound) {
+                ++wetAimed;
+                std::memcpy(th.target, wet, sizeof th.target);
+                aimed = true;
             }
             if (!aimed) {
                 // no landing point found (the sea all round, or no land sweep): straight up, as the launchers' eruption
@@ -1003,9 +1076,9 @@ void __fastcall HkPlaceMines(uintptr_t self, void*) {
                 throws.push_back(th);
             }
         }
-        LOG_INFO("[levels] %s: the mine factory threw %d of %d mines from %s at landing points %d-%d map units out (%s%s, apex %d), %d at the targets, %d straight up (no landing point found)",
+        LOG_INFO("[levels] %s: the mine factory threw %d of %d mines from %s at landing points %d-%d map units out (%s%s, apex %d), %d at the targets, %d at the highest wet ground drawn (no dry point in %d), %d straight up (no landing point found)",
                  stem.c_str(), made, n, count ? "its launchers" : "the factory", t.minRange, t.maxRange, erg::ThrowPatternName(t.pattern),
-                 t.avoidWater ? ", clear of the water" : "", t.apex, atTargets, fellBack);
+                 t.avoidWater ? ", clear of the water" : "", t.apex, atTargets, wetAimed, kTargetTries, fellBack);
         FollowFire(stem, before, n, true, at, throws.empty() ? 0.f : throws.front().vel[1], &throws);
         return;
     }
@@ -1125,8 +1198,10 @@ public:
         // ParabolicPayloadLogicEntity's come-to-rest: push -1; mov eax, fs:[0]; push 0x7c9786 (its handler frame)
         g_restOk = Expect(kParaRest, {0x6a, 0xff, 0x64, 0xa1, 0x00, 0x00, 0x00, 0x00, 0x68, 0x86, 0x97, 0x7c, 0x00});
         g_tickHook = sim::AddTickHook(&OnTick, nullptr, 70);   // follows the fires to where their mines rest, lands the thrown ones
-        if (bus::Installed()) g_subBlast = bus::SubscribeAll(bus::Path::Post, &OnBlast);   // the blasts that may free a held mine
-        else LOG_WARN("[levels] no event bus: a held thrown mine is never freed by a blast");
+        if (bus::Installed()) {
+            g_subBlast = bus::SubscribeAll(bus::Path::Post, &OnBlast);   // the blasts that may free a held mine
+            for (size_t i = 0; i < 4; ++i) g_subStale[i] = bus::SubscribeName(kStaleEvents[i], bus::Path::Post, &OnStaleEvent);
+        } else LOG_WARN("[levels] no event bus: a held thrown mine is never freed by a blast, and the engine's stale flight events reach it");
         simcore::LevelEngine e;
         e.mine = &EngineMine;
         e.armFactory = &EngineArmFactory;
@@ -1138,6 +1213,10 @@ public:
         g_tickHook = 0;
         if (g_subBlast) bus::Unsubscribe(g_subBlast);
         g_subBlast = 0;
+        for (bus::SubId& id : g_subStale) {
+            if (id) bus::Unsubscribe(id);
+            id = 0;
+        }
         g_guided.clear();
         g_blasts.clear();
         simcore::SetLevelEngine(simcore::LevelEngine{});

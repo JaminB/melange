@@ -71,6 +71,7 @@ std::atomic<uint32_t> g_bits[kPaths][0x10000 / 32];
 std::atomic<uint32_t> g_allCount[kPaths];
 std::atomic<uint32_t> g_count[kPaths][0x10000];
 uint64_t g_seq = 0;
+std::atomic<uint64_t> g_dropped{0};   // messages a Post handler kept from the engine (DropCurrent)
 uint64_t g_calls[kPaths] = {};
 uint64_t g_handlerCalls = 0;
 uint64_t g_handlerFaults = 0;
@@ -107,6 +108,8 @@ const Calibration g_cal;
 struct Tls {
     uint16_t depth;
     uint16_t postN;  // may exceed kMaxPostStack; only the first kMaxPostStack entries are stored
+    bool inPostObserve;  // a Post handler is running (DropCurrent is honoured)
+    bool drop;           // a Post handler asked for this message to be kept from the engine
     const void* post[kMaxPostStack];
 };
 thread_local Tls t_tls;
@@ -287,7 +290,20 @@ int RunPost(void* msg, uintptr_t caller, PostForward forward, void* ctx) {
     const bool sample = (g_seq & kSampleMask) == 0;
     const uint64_t c0 = sample ? __rdtsc() : 0;
     ++t.depth;
-    if (msg) Observe(Path::Post, static_cast<const uint8_t*>(msg), -1, caller, t);
+    t.drop = false;
+    if (msg) {
+        t.inPostObserve = true;
+        Observe(Path::Post, static_cast<const uint8_t*>(msg), -1, caller, t);
+        t.inPostObserve = false;
+    }
+    if (t.drop) {
+        // a handler kept this message from the engine (bus::DropCurrent): nothing is delivered
+        t.drop = false;
+        --t.depth;
+        if (sample) AddSample(__rdtsc() - c0);
+        ++g_dropped;
+        return 0;
+    }
     if (t.postN < kMaxPostStack) t.post[t.postN] = msg;
     ++t.postN;
     if (sample) AddSample(__rdtsc() - c0);
@@ -380,6 +396,13 @@ Stats GetStats() {
 }
 
 uint32_t CountOf(MsgId id, Path path) { return g_count[PathIndex(path)][id].load(std::memory_order_relaxed); }
+
+void DropCurrent() {
+    Tls& t = t_tls;
+    if (t.inPostObserve) t.drop = true;
+}
+
+uint64_t Dropped() { return g_dropped.load(std::memory_order_relaxed); }
 
 bool Installed() { return g_installed.load(); }
 

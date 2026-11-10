@@ -488,8 +488,9 @@ interface FireRec { stem: string; tick: number; turn: number; asked: number; lau
     fate?: "resting" | "not seen to land" | "drowned" | "destroyed" | "gone before it landed"; goneTick?: number; waterMap?: number; moves?: number; movedAfterRest?: number;
     // the hold on a landed thrown mine (this branch's levels/factory.cpp, mines round 2): put back after the engine moved it at
     // rest, rested again after the engine gave it a velocity with no blast about, dropped off walls, lifted out of the land,
-    // freed by a blast; the land frame it rests on (65535: the heightmap)
-    rePins?: number; velPins?: number; deflects?: number; lifts?: number; freed?: boolean; frame?: number }[]; }
+    // freed by a blast; `dropped`: the engine's stale flight events (its launch arc's land, water and plane contacts, queued
+    // before Melange landed it) kept from it while held (mines round 4); the land frame it rests on (65535: the heightmap)
+    rePins?: number; velPins?: number; deflects?: number; lifts?: number; dropped?: number; freed?: boolean; frame?: number }[]; }
 interface ProbeAnswer {
   probe: { key: string; playing: boolean; turn: number; tick: number; spawns: ProbeWorm[]; deaths: ProbeDeath[]; explosionsSeen: number; explosions: ProbeExplosion[] };
   factory: { fires: FireRec[]; following: number; trigger: { tick: number; count: number; started: boolean; why: string; detail: string } | null };
@@ -559,7 +560,7 @@ export function fireOut(f: FireRec, u: "map" | "world", groundAt?: (x: number, z
     ...(m.fate ? { fate: m.fate } : {}), ...sea(m), ...zoneOf(m), ...(m.goneTick !== undefined ? { goneTick: m.goneTick } : {}), ...(m.waterMap !== undefined ? { water: Math.round(m.waterMap * k * 100) / 100 } : {}),
     ...(m.movedAfterRest ? { movedAfterRest: m.movedAfterRest } : {}),
     ...(m.target ? { target: inUnits(m.target, u), landing: m.landing || "in flight", ...(m.restFromTargetMap !== undefined ? { restFromTarget: Math.round(m.restFromTargetMap * k * 100) / 100 } : {}),
-      ...(m.rePins !== undefined ? { held: { rePins: m.rePins, velPins: m.velPins ?? 0, deflects: m.deflects ?? 0, lifts: m.lifts ?? 0, freed: !!m.freed, ...(m.frame !== undefined && m.frame >= 0 ? { frame: m.frame } : {}) } } : {}) } : {}),
+      ...(m.rePins !== undefined ? { held: { rePins: m.rePins, velPins: m.velPins ?? 0, deflects: m.deflects ?? 0, lifts: m.lifts ?? 0, dropped: m.dropped ?? 0, freed: !!m.freed, ...(m.frame !== undefined && m.frame >= 0 ? { frame: m.frame } : {}) } } : {}) } : {}),
     restFromFactory: Math.round(m.restFromFactoryMap * k * 100) / 100 }));
   const landings: Record<string, number> = {};
   for (const m of f.mines) if (m.target) landings[m.landing || "in flight"] = (landings[m.landing || "in flight"] ?? 0) + 1;
