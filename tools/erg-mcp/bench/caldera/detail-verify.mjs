@@ -38,7 +38,8 @@ try {
   const mesh = {};
   for (const p of Object.values(FLORA).flat()) {
     const row = (await call("scenery_catalog", { bases: [p.base], roles: ["scenery"], search: p.resource, limit: 10 })).json.list.find((r) => r.resource === p.resource);
-    if (row) mesh[p.resource] = row.meshSize;
+    // round 8: two bases can share a resource name (CAMELOT3 is a flower in one and a bush in another): keep the larger
+    if (row) mesh[p.resource] = mesh[p.resource] ? mesh[p.resource].map((v, i) => Math.max(v, row.meshSize[i])) : row.meshSize;
   }
   const isFlo = (x) => /_flo/.test(x.name);
   const floR = (x) => { const m = mesh[x.resource] ?? [1, 1, 1], s = x.scale ?? [1, 1, 1]; return 0.5 * Math.max(m[0] * Math.abs(s[0]), m[2] * Math.abs(s[2])); };

@@ -1,3 +1,12 @@
+// Round 8 (the round-7 judge: the piles "read as rounded blobs perched on ledges edges-up, not seated in the ground"; "sink
+// 30-40%, rotate the long axis to the slope, and add 1-2 small talus pieces downslope of each pile so they read as fallen"):
+// every block is now laid with place_aligned instead of a free copy: its LONG axis (1.35 of its size) along the face's
+// contour, chunky (1.2 : 0.9 : 1, not squashed: a flattened rock mesh reads as a lens), its depth out of the face pitched
+// 0.2 toward the face (it leans into the slope), on faces of 45-60 degrees only (not on near-vertical walls),
+// sunk 55% of its depth into the face (about 35% of the block under the ground line), and each anchor sheds one or two
+// talus blocks (0.28-0.45 of its size, flatter) at its downhill foot, 0.6-0.95 of its size below its centre, overlapping
+// its lower edge and sunk into the face (under 64 degrees there): a pile then reads as fallen rock with its debris below it.
+// detail-support.mjs (erg-mcp lint_support) removes any pile still hanging off its face afterwards.
 // Round 7: RESTORED (round 6 replaced it with lens strata and the judge missed round 5's crater-rim piles and flank piles,
 // "the rock pass from r5 still carries most of the value"), in the one charcoal palette, and kept off round 7's strata rows
 // (detail-strata.mjs runs first and leaves its pieces in ctx.strataOut). Tagged _cpl: a pile stands out of its face on
@@ -26,7 +35,6 @@ const PADS = T.LAUNCHERS.map(([rho, th]) => T.pointAt(rho, th));
 export async function cliffPass(ctx) {
   const { call } = ctx, R = rng(20261109);
   const row = (await call("scenery_catalog", { bases: [ROCK.base], roles: ["scenery"], search: ROCK.resource, limit: 5 })).json.list.find((r) => r.resource === ROCK.resource);
-  const meshH = row.meshSize[1];
   const sample = async (pts) => {
     const res = [];
     for (let i = 0; i < pts.length; i += 3500) res.push(...(await call("surface_sample", { points: pts.slice(i, i + 3500), units: "map", step: 1.2 })).json.samples);
@@ -51,7 +59,8 @@ export async function cliffPass(ctx) {
     grid.push({ x: x + (R() - 0.5), z: z + (R() - 0.5), rho });
   }
   const gs = await sample(grid.map((p) => [p.x, p.z]));
-  const faces = grid.map((p, i) => ({ ...p, g: gs[i] })).filter((p) => p.g && p.g.slope >= 52 && p.g.y > WATER + 1.2);
+  // round 8: faces of 45-60 degrees only (a pile on a near-vertical wall has nothing to rest on: the judge's floating cluster)
+  const faces = grid.map((p, i) => ({ ...p, g: gs[i] })).filter((p) => p.g && p.g.slope >= 45 && p.g.slope <= 60 && p.g.y > WATER + 1.2);
   stats.faces = faces.length;
   // a patchy spread: noise patches, denser up the cone; the greedy pick keeps strata 6.5 apart
   faces.forEach((p) => { p.w = (T.noise(p.x * 0.09, p.z * 0.09, 401) + 0.6) * (0.6 + 0.4 * Math.min(1, (96 - p.rho) / 50)) * (0.7 + 0.6 * R()); });
@@ -79,22 +88,46 @@ export async function cliffPass(ctx) {
   const blocks = anchors.map((a) => ({ ...a, kind: "anchor" }));
   sibs.forEach((s, i) => {
     const g = ss[i];
-    if (!g || g.slope < 45 || g.y < WATER + 1) { rej("sibling off the face"); return; }
+    if (!g || g.slope < 40 || g.slope > 62 || g.y < WATER + 1) { rej("sibling off the face"); return; }
     const why = clear(s.x, s.z, s.size * 0.75 + 0.3);
     if (why) { rej(why); return; }
     blocks.push({ ...s, g, kind: "sibling" });
   });
   stats.anchors = anchors.length;
-  const copies = blocks.map((b, i) => {
-    const s = b.size / meshH, heat = lavaHeat(b.x, b.z), base = CLIFF[i % CLIFF.length];
-    return { id: row.example.id, pos: [+b.x.toFixed(2), +b.g.y.toFixed(2), +b.z.toFixed(2)], seat: 0.45,
-      rot: [Math.round((R() - 0.5) * 16), Math.round(R() * 360), Math.round((R() - 0.5) * 16)],
-      scale: [+(s * (1 + R() * 0.25)).toFixed(3), +(s * (0.75 + R() * 0.2)).toFixed(3), +(s * (1 + R() * 0.25)).toFixed(3)],
+  // talus: 1-2 per anchor, downslope (the ground's horizontal normal points downhill)
+  const tal = [];
+  for (const a of anchors) {
+    const n = a.g.normal, l = Math.hypot(n[0], n[2]) || 1, dx = n[0] / l, dz = n[2] / l;
+    for (let i = 0, k = 1 + (R() < 0.55 ? 1 : 0); i < k; i++) {
+      // at the pile's downhill foot, overlapping its lower edge (a face this steep holds no stone further down)
+      const d = a.size * (0.6 + R() * 0.35), side = (R() - 0.5) * a.size * 0.9;
+      tal.push({ x: a.x + dx * d - dz * side, z: a.z + dz * d + dx * side, size: a.size * (0.28 + R() * 0.17), parent: a });
+    }
+  }
+  const ts = await sample(tal.map((t) => [t.x, t.z]));
+  tal.forEach((t, i) => {
+    const g = ts[i];
+    if (!g || g.slope > 64 || g.y < WATER + 0.6 || g.y > t.parent.g.y) { rej("talus: no resting ground"); return; }
+    if (T.rhoAt(t.x, t.z) < T.FLAT_R + 1) { rej("talus: on the crater floor"); return; }   // a small stone there reads as a mine
+    const why = clear(t.x, t.z, t.size * 0.75 + 0.3);
+    if (why) { rej("talus: " + why); return; }
+    blocks.push({ ...t, g, kind: "talus" });
+  });
+  const pieces = blocks.map((b, i) => {
+    const heat = lavaHeat(b.x, b.z), base = CLIFF[i % CLIFF.length], n = b.g.normal, l = Math.hypot(n[0], n[2]) || 1;
+    const talus = b.kind === "talus", sz = b.size;
+    return { pos: [+b.x.toFixed(2), +b.g.y.toFixed(2), +b.z.toFixed(2)], normal: n.map((v) => +v.toFixed(3)), tangent: [+(-n[2] / l).toFixed(3), +(n[0] / l).toFixed(3)],
+      size: talus ? [+(sz * (1.2 + R() * 0.3)).toFixed(2), +(sz * (0.75 + R() * 0.15)).toFixed(2), +(sz * (0.9 + R() * 0.2)).toFixed(2)]
+        : [+(sz * (1.2 + R() * 0.15)).toFixed(2), +(sz * (0.9 + R() * 0.12)).toFixed(2), +(sz * (1.0 + R() * 0.12)).toFixed(2)],
+      pitch: talus ? 0.15 : 0.2, embed: talus ? 0.45 : +(0.52 + R() * 0.08).toFixed(2),
+      jitter: [+((R() - 0.5) * 8).toFixed(1), +((R() - 0.5) * 24).toFixed(1), +((R() - 0.5) * 8).toFixed(1)],
       tint: heat > 0 ? mix(base, SCORCHED, 0.3 * heat) : base };
   });
-  for (let i = 0; i < copies.length; i += 200) {
-    await call("copy_base_details", { base: ROCK.base, allowOtherTheme: true, units: "map", tag: "cpl", copies: copies.slice(i, i + 200) });
+  for (let i = 0; i < pieces.length; i += 200) {
+    await call("place_aligned", { base: ROCK.base, id: row.example.id, allowOtherTheme: true, units: "map", tag: "cpl", pieces: pieces.slice(i, i + 200) });
   }
+  const copies = pieces;
+  stats.talus = blocks.filter((b) => b.kind === "talus").length;
   stats.pieces = copies.length;
   stats.sizes = { "2.4+": blocks.filter((b) => b.size >= 2.4).length, "1.2-2.4": blocks.filter((b) => b.size < 2.4 && b.size >= 1.2).length, "<1.2": blocks.filter((b) => b.size < 1.2).length };
   ctx.say?.("cliff", JSON.stringify({ faces: stats.faces, anchors: stats.anchors, pieces: stats.pieces }));

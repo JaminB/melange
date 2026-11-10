@@ -909,6 +909,9 @@ struct Service::Impl {
         if (mode != "install" && mode != "source") return Err(kBadParams, "mode must be \"install\" or \"source\"");
         const Json* surv = p.find("survivor");
         if (surv && surv->kind != Json::Kind::Bool) return Err(kBadParams, "survivor must be a boolean");
+        const Json* mrange = p.find("melangeRange");   // optional: spice.json melange.range (default >=0.2.0)
+        if (mrange && (mrange->kind != Json::Kind::String || mrange->str.size() > 64 || !spice::ValidRange(mrange->str)))
+            return Err(kBadParams, "melangeRange must be a semver range such as \">=0.14.0\"");
         std::string why;
         const std::string prefix = names::Prefix(modId);
         if (!ValidModId(modId) || !names::ValidPrefix(prefix, &why))
@@ -940,6 +943,7 @@ struct Service::Impl {
         spec.source = mode == "source";
         spec.chunk = luagen::Needed(scene);
         spec.survivor = surv && surv->boolean;
+        if (mrange) spec.melangeRange = mrange->str;
         spec.patchJson = WritePatch(patch);
         spec.script = std::move(script);
         if (!spec.source) {

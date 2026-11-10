@@ -19,13 +19,14 @@ import { startServer, ROOT } from "./mcpclient.mjs";
 import { keepOut, CLEAR } from "./detail-keepout.mjs";
 import { rockPass } from "./detail-rock.mjs";
 import { landPass } from "./detail-land.mjs";
-import { strataPass } from "./detail-strata.mjs";
 import { cliffPass } from "./detail-cliff.mjs";
 import { crownPass } from "./detail-crown.mjs";
 import { coastPass } from "./detail-coast.mjs";
 import { floraPass } from "./detail-flora.mjs";
 import { lintPass } from "./detail-lint.mjs";
 import { perchPass } from "./detail-perch.mjs";
+import { offshorePass } from "./detail-offshore.mjs";
+import { supportPass } from "./detail-support.mjs";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const argv = process.argv.slice(2);
@@ -52,12 +53,15 @@ export const PASSES = [
   { name: "rock", run: rockPass },
   // round 6: horizontal strata bands replace round 5's boulder "strata" (detail-cliff.mjs, removed); columnar crowns on the
   // crests and cliff tops; the coast (stacks, half-sunk blocks, stepped columns); the first flora; the perched lint
-  // round 7: continuous strata ROWS on 4-6 hero faces replace round 6's isolated lens slabs (detail-ledge.mjs, kept for
-  // reference, no longer run); round 5's cliff piles come back (crater rim, flanks)
-  { name: "strata", run: strataPass },
+  // round 7: continuous strata ROWS on 4-6 hero faces replaced round 6's isolated lens slabs; round 5's cliff piles came back
+  // round 8: the strata rows are gone (the judge: "better none than necklaces": a round rock mesh in a row reads as beads);
+  // the cliff piles are laid along their faces with talus below; the offshore singles are cleared; every rock clump hanging
+  // off a steep face with no ground or talus under it is removed (detail-support.mjs); then the flora
   { name: "cliff", run: cliffPass },
   { name: "crown", run: crownPass },
   { name: "coast", run: coastPass },
+  { name: "offshore", run: offshorePass },
+  { name: "support", run: supportPass },
   { name: "flora", run: floraPass },
   { name: "lint", run: lintPass },
   { name: "perch", run: perchPass },
@@ -117,6 +121,9 @@ try {
   if (!fp1.against.same) throw new Error(`the detail layer changed the sim: ${JSON.stringify(fp1.against)}`);
   // round 7: the engine budget left (erg-mcp detail_budget: the mesh-instance pool from the game folder's Melange.ini)
   report.budget = (await call("detail_budget", { gameDir: GAME }, { soft: true })).json;
+  // round 8: the ship gate (erg-mcp export raises the pack's melange.range by this when the level needs the bigger mesh pool)
+  report.ship = report.budget?.ship;
+  say("ship", JSON.stringify(report.ship));
   say("budget", JSON.stringify(report.budget && { details: report.budget.details, pool: report.budget.pool, headroom: report.budget.headroom, vanillaHeadroom: report.budget.vanillaHeadroom }));
   if (argv.includes("--dry")) {
     say("--dry: not saved");

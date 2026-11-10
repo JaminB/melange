@@ -200,6 +200,13 @@ export const DRAW_CHECKS: Record<string, Record<string, string>> = {
     arabian6: "never draws (any scale or rotation)",
     camelot16: "draws as a purple plant pod",
     camelot19: "draws as a purple plant pod",
+    // detail layer rounds 7-8 (scratchpad caldet/r7 and r8 flora check sheets); resource names that draw the same in every base
+    wildwest1: "draws as a big agave-like spiky grass clump (GhostHill, DoomCanyon)",
+    wildwest2: "draws as a leafy bush with a trunk (GhostHill, DoomCanyon)",
+    wildwest15: "draws as a turtle shell: reads as a pickup",
+    wildwest16: "draws as a stack of green and purple bulbs: reads as a pickup",
+    wildwest18: "draws as a dinosaur skull",
+    england7: "draws too small to see at gameplay distance",
   },
 };
 

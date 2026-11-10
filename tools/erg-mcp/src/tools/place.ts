@@ -31,6 +31,7 @@ import { grids, tidy } from "../lib/voxel";
 import { ToolError, type Schema, type Tool } from "../registry";
 import type { Session } from "../session";
 import { validateExportForm } from "../../../../web/src/panels/erg/test/model";
+import { exportGate } from "../lib/ship-gate-export";
 
 const pointProps: Record<string, Schema> = {
   pos: vec3("Position [x, y, z] in the level (units, default world). Give this or xz."),
@@ -1225,17 +1226,19 @@ export const tools: Tool[] = [
     inputSchema: {
       type: "object", additionalProperties: false, required: ["modId", "name"],
       properties: { modId, name: { type: "string", description: "Display name (1-64 printable characters)." }, version: { type: "string", description: "x.y.z (default 1.0.0)." },
-        mode: { type: "string", enum: ["source", "install"] }, survivor: { type: "boolean", description: "Also list the level in Survivor's Prebuilt maps (default false)." } },
+        mode: { type: "string", enum: ["source", "install"] }, survivor: { type: "boolean", description: "Also list the level in Survivor's Prebuilt maps (default false)." },
+        melangeRange: { type: "string", description: "spice.json melange.range (a semver range such as \">=0.14.0\"). Default: \">=0.2.0\", raised automatically to the Melange that enlarges the mesh pool when the level has more details than the vanilla pool loads (lib/ship-gate.ts); the answer's gate says which and why." } },
     },
-    async handler(s, a: { modId: string; name: string; version?: string; mode?: "source" | "install"; survivor?: boolean }) {
+    async handler(s, a: { modId: string; name: string; version?: string; mode?: "source" | "install"; survivor?: boolean; melangeRange?: string }) {
       const p = s.requireProject();
       const form = { modId: a.modId, name: a.name, version: a.version ?? "1.0.0", mode: a.mode ?? "source", survivor: !!a.survivor };
       const bad = validateExportForm(form);
       if (bad.length) throw new ToolError(bad.join("; "));
       const first = await savedFirst(s, "exported");
+      const gate = exportGate(p.store, a.melangeRange);
       const r = await (await s.client()).call<{ dir: string; files: string[]; restartRequired: boolean }>(
-        "level.export", { project: p.id, ...form }, 120000);
-      return { ...r, mode: form.mode, projectHash: await currentHash(s).catch(() => undefined), ...(first ? { savedFirst: true, warnings: first.warnings } : {}),
+        "level.export", { project: p.id, ...form, ...(gate.gated ? { melangeRange: gate.melangeRange } : {}) }, 120000);
+      return { ...r, mode: form.mode, gate, projectHash: await currentHash(s).catch(() => undefined), ...(first ? { savedFirst: true, warnings: first.warnings } : {}),
         ...(form.mode === "install" ? { note: "install exports contain modified game files: keep them on this machine" } : {}) };
     },
   },

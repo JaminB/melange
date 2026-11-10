@@ -1002,3 +1002,62 @@ Findings (testenv D, Sunstone 2.3.1 + `sunstone-tint`, 2026-11-09):
   - fps p50 34.8 against 36.9.
   - CPU busy 30.6 against 30.5 ms per frame (the game is CPU-bound).
   - GPU frame 8.4 against 4.9 ms.
+
+## Detail layer, round 8 (flora starts, rock cleanup, ship gate): what the tools gained and what the game showed
+
+New tool group `propcheck` (`src/tools/propcheck.ts`; pure code in `src/lib/prop-support.ts` and `src/lib/tint-jitter.ts`;
+tests in `test/propcheck.test.ts`):
+
+| Tool | What it does |
+|---|---|
+| `lint_support` | The ground support of a layer's props (`search` name fragments, default `_dtl`), read as drawn and grouped into clumps. Each clump's footprint is sampled on a grid. A sample is in contact where the ground reaches the clump's underside there. A clump on ground over `minSlope` (default 55 degrees) needs `minContact` (default 0.6) of its footprint in contact, or another clump under its downhill edge (talus or a ledge). Answers the unsupported clumps. Read-only. |
+| `surface_material` | The top voxel's primary material at up to 4000 points. Used to find where a painted band's cells change, such as the edges of the grass tiles. Read-only. |
+| `tint_variants` | Seeded hue, saturation and value jitter of a palette. With `falloff`, a colour gets darker and greyer toward a cluster's rim. |
+
+**Ship gate.** A level with more details than the vanilla 550-instance mesh pool can load now declares the Melange it needs:
+- `src/lib/ship-gate.ts` sets the limit: `VANILLA_SAFE_DETAILS` is 450, and `MESH_POOL_MELANGE` is the first release with `[Fixes] MeshInstances`.
+- `export` raises the pack's `spice.json` `melange.range` to `>=MESH_POOL_MELANGE` and answers `gate`. You can also pass your own `melangeRange`.
+- `level.export` (C++, `src/erg/pack.*`, `service.cpp`) takes an optional `melangeRange`. It is checked with `spice::ValidRange`, and the default is still `>=0.2.0`. There are selftests in `erg_pack_selftest`.
+- `detail_budget` answers `ship`.
+
+Every Melange since 0.2 checks the range before it offers a pack, so an older Melange refuses the dressed level instead of crashing in it. **`MESH_POOL_MELANGE` is `0.14.0`, a guess.** The fix is unreleased and the tree is at 0.13.0. Set the constant to the release the fix ships in.
+
+`lib/scatter.ts` `DRAW_CHECKS` gained the flora draw checks whose resource draws the same in every base:
+- WILDWEST1 draws as an agave clump.
+- WILDWEST2 draws as a leafy bush.
+- WILDWEST15 draws as a turtle shell.
+- WILDWEST16 draws as stacked bulbs.
+- WILDWEST18 draws as a skull.
+- ENGLAND7 is too small to see.
+
+Bench changes (`detail.mjs`; `build.mjs` and `terrain.mjs` are unchanged):
+- **Strata rows: removed.** The round-7 judge said a round rock mesh in a row reads as beads: "better none than necklaces". `detail-strata.mjs` and `detail-ledge.mjs` are deleted.
+- **Cliff piles** (`detail-cliff.mjs`) are now laid with `place_aligned`:
+  - They are chunky (1.2 : 0.9 : 1), because a flattened rock mesh read as a lens again in the first run.
+  - The long axis runs along the contour, pitched 0.2 into the slope and sunk 52-60% of its depth.
+  - They stand on faces of 45-60 degrees only. On near-vertical walls they floated: the judge's trail_NE cluster.
+  - One or two talus blocks sit at each pile's downhill foot, never on the crater floor.
+- **`detail-offshore.mjs`** groups the rock copies standing in the sea and removes the groups that are neither a mass nor touching the shore. Of two masses within 10 units of each other, only the bigger stays.
+- **`detail-support.mjs`** runs `lint_support` over `_dtl` and `_cpl` and removes the unsupported clumps.
+- **`detail-flora.mjs`** was rewritten. The pieces are listed in its header, and each was checked once in a Test (scratchpad `caldet/r8/caldet_r8_flora_check_sheet.png`).
+  - Bush silhouettes are now WILDWEST2 and StormTheCastle CAMELOT2/3.
+  - Flowering plants (CAMELOT3, CAMELOT4) are left untinted as accents.
+  - New low sprouts: Pirate3, Pirate1 and PIRATE1.
+  - Hedge bushes are seated 1.5 from a castle's footprint, so their footprint sits about 0.7 from the wall.
+  - Bushes grow only at walls, cliff feet and rock bases, never on the flat beach.
+  - Nothing grows on ground over 42 degrees. Low grass is allowed up to 55 degrees on the sand slopes under 4.
+  - Lawn-edge groups straddle the grass tiles' edges.
+  - Masses above 14 become hardy clumps (agave and grass).
+  - Each copy's tint is jittered by `tint_variants`.
+
+Findings (testenv D, Sunstone 2.3.1 with `sunstone-tint`, 2026-11-10):
+- **Theme substitution:**
+  - StormTheCastle CAMELOT2 and CAMELOT3 draw as leafy bushes.
+  - ThisGameDoesDragon and JoustAboutIt CAMELOT3 draw as a leafy flowering plant.
+  - JoustAboutIt CAMELOT10 is invisible.
+  - RobInTheHood CAMELOT1 draws as a spiky grass.
+  - DoomCanyon WILDWEST1 and WILDWEST2 draw as GhostHill's (an agave and a bush).
+  - EndOfTheLine WILDWEST15 draws as a turtle shell and WILDWEST16 as stacked bulbs: both are out.
+  - W3DAppleCoreIsland Pirate3 and W3DNobodyRidesForFree Pirate1 draw as low two-leaf sprouts.
+- **Most of the bright lawn tiles are inside keep-outs** (the castle aprons and courts, and the trail band). 284 tile-edge points were found, but only 13 edge groups were clear to plant. The checkerboard needs a terrain-paint change on the map side; this layer cannot fix it.
+- **Usable ground for plants is small.** The trails' bands, the castles and the steep cone leave about 200 cluster sites, so the island's flora is 213 pieces and the budget is not the limit.
