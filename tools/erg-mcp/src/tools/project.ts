@@ -6,6 +6,7 @@ import type { Session } from "../session";
 import { currentHash, factoryReport, spawnTreadWarnings } from "./place";
 import { backdropOf, coverLevel, waterBackdropWarning } from "../lib/backdrop";
 import { drapePokes, pokeLines } from "../lib/drape-pokes";
+import { landBounds } from "../lib/height-line";
 
 const discard = { type: "boolean", description: "Drop unsaved edits of the open project instead of refusing." } as const;
 
@@ -73,6 +74,8 @@ export function describe(s: Session, q: FrameQuery = {}) {
   for (const d of scene.details) roles[d.role] = (roles[d.role] ?? 0) + 1;
   const knotOf = new Map(scene.details.filter((d) => d.src === null).map((d) => [d.name, d]));
   const water = scene.water.level;
+  const lb = landBounds(grids(store));
+  const r2 = (v: number) => Math.round(v * 100) / 100, both = (m: number) => ({ map: r2(m), world: r2(m * WORLD_PER_XAN) });
   return {
     project: { id: info.id, title: scene.title, stem: scene.stem, base: scene.base.key, source: scene.base.source, file: scene.base.file },
     ...state(s),
@@ -82,6 +85,8 @@ export function describe(s: Session, q: FrameQuery = {}) {
     water: { world: water, map: water === null ? null : water / WORLD_PER_XAN, note: water === null ? "the level's own water height" : undefined },
     spawnMode: scene.spawns.mode, surround: scene.hmp.mode, survivor: !!scene.kind?.survivor, script: !!scene.script?.present,
     extent: voxelFrames.length ? { map: { min: tidy(extent.min), max: tidy(extent.max) }, world: { min: tidy(toWorld(extent.min)), max: tidy(toWorld(extent.max)) } } : null,
+    // the engine's landscape box (what wum.sim.land() reads) and the frame that sets each end: check_height_line's input
+    landBounds: lb ? { minY: both(lb.minY), maxY: both(lb.maxY), minFrame: { id: lb.minFrame, name: lb.minFrameName }, maxFrame: { id: lb.maxFrame, name: lb.maxFrameName } } : null,
     voxelFrames: { total: voxelFrames.length, matching: listed.length, listed: Math.min(limit, listed.length),
       solid: voxelFrames.reduce((n, f) => n + f.solid, 0), order: "largest first" },
     frames: listed.slice(0, limit),
@@ -216,7 +221,7 @@ export const tools: Tool[] = [
   },
   {
     name: "describe_level",
-    description: "The open project: voxel frames, largest first (id, size, position and bounds in map and world units, solid count), the level's extent, spawns, objects, water, theme, time of day, usage against the patch limits (64 added blocks of at most 31 voxels a side, 2000 runs per frame, 20000 ops, 4 MB, 256 objects), the game's voxel cell budget (limits.voxelCells: X*Y*Z of every voxel frame, at most 65535, with cells used and free) and engineWarnings.",
+    description: "The open project: voxel frames, largest first (id, size, position and bounds in map and world units, solid count), the level's extent, `landBounds` (the engine's landscape box: min and max y in map and world units and the frame setting each end), spawns, objects, water, theme, time of day, usage against the patch limits (64 added blocks of at most 31 voxels a side, 2000 runs per frame, 20000 ops, 4 MB, 256 objects), the game's voxel cell budget (limits.voxelCells: X*Y*Z of every voxel frame, at most 65535, with cells used and free) and engineWarnings.",
     inputSchema: {
       type: "object", additionalProperties: false,
       properties: {
