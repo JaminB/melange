@@ -183,8 +183,15 @@ passed 87 / 87 in rounds 6-8. This looks environmental and was not caused by thi
 
 ## The judge's final scores
 
-A professional game-asset designer judged each round in game, with Sunstone on and the same cameras every round. The
-final verdict, after round 10, was re-checked on the reconcile run (`caldet_r11_*`):
+A professional game-asset designer judged each round in game, with Sunstone on and the same cameras every round.
+
+**Final, after round 14** (the polish run's goal was overall 6 or more; see "Final reconcile and check" at the end):
+
+| rock | flora | cohesion | readability | technical | overall | sim neutral |
+|---|---|---|---|---|---|---|
+| 5.5 | 5.5 | 6 | 7 | 8 | 6 | yes |
+
+The earlier verdict, after round 10, re-checked on the round-11 reconcile run (`caldet_r11_*`):
 
 | rock | flora | cohesion | readability | technical | overall | sim neutral |
 |---|---|---|---|---|---|---|
@@ -289,3 +296,33 @@ Perf (testenv D, Sunstone on, testenv B idle: `game_overlap` clear; the same pro
 | dressed | 8.93 / 10.18 ms | 35.9 |
 
 Tool gaps left: the trail beds and their ash shoulders make up the cone's material edges, and the readability keep-outs cover almost all the ground beside them. A sim-neutral edge blend, a terrain-side decal or a texture blend in the released Sunstone is still the only way to soften those edges.
+
+## Final reconcile and check (2026-11-10, after round 14)
+
+`erg-mcp` `30c4996` (the cone's inner shell) is merged; the merge touched only `build.mjs`, `rubric.md` and the pack.
+- **Rebuild** (testenv B, project id `calfinal` so the shared `caldera` project was not touched mid-build): `build.mjs`,
+  then `detail.mjs` (43 passes), then `ship.mjs` from the `caldera` project. The undressed export equals `erg-mcp`'s
+  committed `pack/src/caldera.ergpatch.json` except its `stem`, so it is `erg-mcp`'s map.
+- **Sim neutral:** fingerprint `7e3c5c6b629225dafb2473946d06e8ab718b329bc9d2c815df7579212ca3e20c` before the layer, after
+  each of the 43 passes and after save and reopen (43 "sim unchanged"). Counts before: voxelFrames 594, solidVoxels 30664,
+  simDetails 91. The level holds 860 details; the 8 mesh banks are byte-identical to round 14's.
+- **Tests:** `tools/erg-mcp/test.ps1` 266 / 266. Gate 1 on the merged tree: `build.ps1` built; web unit pass; `-Erg`
+  34 / 34; `-Panels` 86 / 87 (the same environmental `shell: layout and theme remembered` as above; `web/` is unchanged
+  from `erg-mcp`); `selftest.ps1` all C++ selftests pass except `launcher_selftest` 260 / 261, which needs
+  `tools\ual\dinput8.dll`, missing in this worktree only.
+
+In game (testenv B, private build of this tree, Sunstone on, the final pack installed fresh with only `melange.range`
+lowered to 0.13, `8 bank(s) loaded from 1 mod(s)`):
+- **Versus > Deathmatch on the installed `Caldera`**, four human teams of four, a temporary game style (150 s round,
+  60 s turns, Raise Water, fast). The sea stood at 20 until the round clock ran out, then sudden death began at turn 4
+  and the sea rose 20, 36, 52, 68 (+16 a turn, the fast speed). No on-screen text from the map in any turn
+  (`announcements` empty every turn).
+- **Courts:** a 10-frame burst from the follow camera of a worm walking in its court shows no stripes or patches.
+- **Air Strike** (Test match on the same project, closed-loop aim): across the volcano at the summit side and at the
+  crater floor. The helicopter flies at y 77, at least 8 over the ground under its path; all 12 bombs exploded on the
+  cone or the crater floor, none fell through (round 3 saw 3 of 6 at the crater on `erg-mcp` before the inner shell).
+- **Perf:** 35.4 fps, GPU frame p50 8.5 ms (Versus, installed pack); 34.7 fps, 7.3 ms (Test).
+- The Versus match drew in a dark blue evening light; the same level in a Test match draws in daylight.
+
+Evidence: scratchpad `caldera/polish/final/` (`final_01..08_*.png`, `sheet_*.png`, `match/rows.json`,
+`airsum_final.jsonl`, `fin_as_*_track.json`, `detail.log`, `dressed/detail.json`).
