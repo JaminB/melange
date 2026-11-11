@@ -35,5 +35,5 @@ std::string TwinKey(const std::string& stem);           // "Multi.<stem>.S"
 std::vector<std::string> SurvivorScripts(const LevelDecl& d);   // Survivor (+ the stem when the chunk runs there)
 bool ValidSimPath(const std::string& p);                // relative, under sim/, .lua, no "..", at most 200 characters
 bool CheckSimText(std::string_view bytes, std::string* why);   // <= 256 KB, UTF-8 without a BOM or ESC
-constexpr const char* kNotBuilt = "not built: open Erg and press Build, or run build.ps1";
+constexpr const char* kNotBuilt = "not built: start the game from Melange.exe, or open Erg and press Build";
 }  // namespace melange::levels::manifest

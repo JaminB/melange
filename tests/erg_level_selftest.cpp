@@ -26,6 +26,7 @@
 #include "erg/project.h"
 #include "erg/scene.h"
 #include "erg/service.h"
+#include "erg/stamp.h"
 #include "erg/voxels.h"
 #include "erg/xomutil.h"
 #include "levels/manifest.h"
@@ -1306,6 +1307,7 @@ void TestService(const std::wstring& root) {
     env.crcCollides = [](const std::string& n) { return _stricmp(n.c_str(), "SCRIPTS.XOM") == 0; };
     env.inSession = [raw](const std::string&) { return raw->inLobby; };
     env.readOnly = [raw] { return raw->oasisReadOnly; };
+    env.melangeVersion = "9.9.9";   // level.build stamps the pack (erg/stamp.h)
     // A stand-in for the engine's parser: "= =" is its one syntax error.
     env.compile = [](const std::string& text, int* line, std::string* message) {
         const size_t at = text.find("= =");
@@ -1835,6 +1837,50 @@ void TestService(const std::wstring& root) {
         Expect(r.ok && r.json.find(R"("mod":"data-maps","built":true)") != std::string::npos, "list: a pack under assets.root reads as built " + r.json);
         S.packs.clear();
         RemoveTree(other);
+    }
+    {
+        // The build stamp Melange.exe's auto-build reads (erg/stamp.h): written by level.build, stale when an input
+        // changes, missing without it or a level file, failed when the last build from today's inputs failed.
+        namespace st = erg::stamp;
+        melange::spice::Manifest m;
+        std::vector<melange::spice::Error> errs;
+        Expect(melange::spice::Parse(mod, &m, &errs), "stamp: the pack parses");
+        std::string in, why;
+        st::Record rec;
+        Expect(st::Read(mod, &rec) && rec.ok && rec.melange == "9.9.9" && !rec.inputs.empty(), "stamp: level.build wrote it");
+        Expect(st::Check(mod, m, "9.9.9", game, &in, &why) == st::State::Built && in == rec.inputs, "stamp: built " + why);
+        Expect(st::Check(mod, m, "9.9.9", game, &in, &why) == st::State::Built, "stamp: a second check is still built (cached hashes)");
+        Expect(st::Check(mod, m, "9.9.10", game, &in, &why) == st::State::Stale && why.find("9.9.9") != std::string::npos,
+               "stamp: another Melange version is stale " + why);
+        erg::Patch flat = pack;
+        flat.hmp = erg::HmpMode::None;
+        Put(mod + L"\\src\\harbour.ergpatch.json", erg::WritePatch(flat));
+        Expect(st::Check(mod, m, "9.9.9", game, &in, &why) == st::State::Stale, "stamp: a changed source patch is stale " + why);
+        Put(mod + L"\\src\\harbour.ergpatch.json", erg::WritePatch(pack));
+        Expect(st::Check(mod, m, "9.9.9", game, &in, &why) == st::State::Built, "stamp: the same bytes again are built " + why);
+        const std::wstring xom = mod + L"\\assets\\levels\\my_maps_harbour.XOM";
+        std::vector<uint8_t> keep;
+        erg::install::ReadFile(xom, 1u << 26, &keep, &err);
+        DeleteFileW(xom.c_str());
+        Expect(st::Check(mod, m, "9.9.9", game, &in, &why) == st::State::Missing && why.find("my_maps_harbour.XOM") != std::string::npos,
+               "stamp: a missing level file is missing " + why);
+        r = Call(S, "level.build", R"({"modId":"my-maps"})");
+        Expect(r.ok && r.json.find(R"("stamped":true)") != std::string::npos && st::Check(mod, m, "9.9.9", game, &in, &why) == st::State::Built,
+               "stamp: a rebuild is built again " + r.message);
+        st::Record failed;
+        failed.inputs = in;
+        failed.melange = "9.9.9";
+        failed.error = "boom";
+        Expect(st::Write(mod, failed), "stamp: a failure can be recorded");
+        Expect(st::Check(mod, m, "9.9.9", game, &in, &why) == st::State::Failed && why == "boom", "stamp: failed with today's inputs " + why);
+        Expect(st::Check(mod, m, "9.9.10", game, &in, &why) == st::State::Stale, "stamp: a failure is retried when an input changes " + why);
+        DeleteFileW((mod + L"\\" + st::kFile).c_str());
+        Expect(st::Check(mod, m, "9.9.9", game, &in, &why) == st::State::Missing, "stamp: no stamp is missing " + why);
+        melange::spice::Manifest none = m;
+        for (auto& l : none.levels) l.source.clear();
+        Expect(st::Check(mod, none, "9.9.9", game, &in, &why) == st::State::None, "stamp: a pack without sources needs nothing");
+        r = Call(S, "level.build", R"({"modId":"my-maps"})");
+        Expect(r.ok && st::Check(mod, m, "9.9.9", game, &in, &why) == st::State::Built, "stamp: built once more " + r.message);
     }
     S.readOnly = true;
     Expect(Call(S, "level.build", R"({"modId":"my-maps"})").code == erg::service::kReadOnly, "build: -32003 while Mods is read-only");

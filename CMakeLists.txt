@@ -132,7 +132,7 @@ set_source_files_properties(${CMAKE_BINARY_DIR}/generated/oasis_web.rc PROPERTIE
 set(ERG_SERVICE_SOURCES
     src/erg/scene.cpp src/erg/patch.cpp src/erg/names.cpp src/erg/jsonio.cpp src/erg/xomutil.cpp src/erg/load.cpp
     src/erg/build.cpp src/erg/bank.cpp src/erg/install.cpp src/erg/project.cpp src/erg/service.cpp src/erg/pack.cpp src/erg/luagen.cpp src/erg/voxels.cpp src/erg/objects.cpp src/erg/hmp.cpp
-    src/erg/preview.cpp src/levels/manifest.cpp src/mods/spice.cpp src/tools/json_read.cpp src/tools/hash.cpp
+    src/erg/preview.cpp src/erg/stamp.cpp src/levels/manifest.cpp src/mods/spice.cpp src/tools/json_read.cpp src/tools/hash.cpp
     src/core/log.cpp)
 
 # Every .cpp under src/ is compiled into the plugin.
@@ -262,7 +262,7 @@ set(LOG_EXPORT_CORE_SOURCES
 # Melange.exe: the desktop app. The standalone Oasis server plus setup, plugins and the Store, shown in WebView2.
 include(cmake/webview2.cmake)
 add_executable(melange_launcher WIN32
-    src/launcher/main.cpp src/launcher/app.cpp src/launcher/window.cpp src/launcher/store_host.cpp
+    src/launcher/main.cpp src/launcher/app.cpp src/launcher/window.cpp src/launcher/store_host.cpp src/launcher/autobuild.cpp
     src/launcher/rpc_setup.cpp src/launcher/rpc_launcher.cpp src/launcher/rpc_plugins.cpp src/launcher/rpc_import.cpp src/launcher/rpc_display.cpp src/launcher/rpc_laa.cpp src/launcher/update_host.cpp
     ${LAUNCHER_CORE_SOURCES}
     src/oasis/standalone/register.cpp src/oasis/standalone/ini_edit.cpp src/oasis/standalone/mods_provider.cpp

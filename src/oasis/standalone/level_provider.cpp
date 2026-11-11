@@ -100,6 +100,21 @@ void HandleClosed(uint64_t connId, void*) {
 }
 }  // namespace
 
+std::wstring GameDir() { return g_service ? g_gameDir : std::wstring(); }
+
+bool Build(const std::string& modId, std::string* replyJson, std::string* err) {
+    if (!g_service) return *err = "the level service is off ([Erg] Enabled=0)", false;
+    std::string id;
+    for (char c : modId) {
+        if (c == '"' || c == '\\' || static_cast<unsigned char>(c) < 0x20) return *err = "bad mod id", false;
+        id.push_back(c);
+    }
+    erg::service::Reply rep = g_service->Call("level.build", "{\"modId\":\"" + id + "\"}");
+    if (!rep.ok) return *err = rep.message.empty() ? "the build failed" : rep.message, false;
+    *replyJson = std::move(rep.json);
+    return true;
+}
+
 void Install(const std::wstring& gameDir, const std::wstring& projectsDir, const std::string& melangeVersion) {
     g_gameDir = gameDir;
     g_version = melangeVersion;
@@ -117,6 +132,7 @@ void Install(const std::wstring& gameDir, const std::wstring& projectsDir, const
     env.readOnly = [] { return core::router::ReadOnly(); };
     // The script's syntax, with the stock Lua 5.0 parser (the game's dialect): put_script answers syntaxChecked here too.
     env.compile = &CompileLua50;
+    env.melangeVersion = melangeVersion;
     g_service = std::make_unique<erg::service::Service>(std::move(env));
 
     for (const auto& m : erg::service::Methods())

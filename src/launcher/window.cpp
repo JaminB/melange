@@ -13,6 +13,7 @@
 #include "WebView2.h"
 #include "core/log.h"
 #include "launcher/app.h"
+#include "launcher/autobuild.h"
 #include "launcher/store_host.h"
 #include "launcher/util.h"
 #include "melange/oasis.h"
@@ -56,6 +57,7 @@ void Pump() {
         storehost::Sync();
         storehost::Tick();
         store::Tick();
+        autobuild::Tick();
     }
     if (g_idleExit) {
         if (oasis::Clients() > 0) g_lastClient = std::chrono::steady_clock::now();

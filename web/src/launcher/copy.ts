@@ -1,6 +1,6 @@
 // The wizard's words (spec §5.3) as pure data: one function per family of states, each returning {title, body}.
 // A unit test asserts every member of every union this file switches on produces non-empty title and body.
-import type { Candidate, DisplaySize, DisplayState, DllInfo, GameCheck, LaaState, ImportContent, ImportJob, ImportSource, Importer, Plan, SetupProgress, SetupStatus, Store, UpdateApplied, UpdateStatus, VanillaGroup, Verdict } from "./api";
+import type { Candidate, DisplaySize, DisplayState, DllInfo, GameCheck, LaaState, ImportContent, MapPack, MapsStatus, ImportJob, ImportSource, Importer, Plan, SetupProgress, SetupStatus, Store, UpdateApplied, UpdateStatus, VanillaGroup, Verdict } from "./api";
 import { LauncherErrorCode, fingerprintShort, hashShort, sizeText, whenText } from "./api";
 
 export interface Copy { title: string; body: string[]; }
@@ -400,3 +400,32 @@ export const laaStatus =(s: LaaState): string =>
   : s.enabled ? "On. It takes effect the next time you start the game from Melange."
   : s.active ? "Off. The game file still has it from something other than Melange."
   : "Off: the game uses up to 2 GB.";
+
+// -- Map packs Melange.exe builds by itself (autobuild) ------------------------------------------------------------
+// The quiet status line over every page while packs are built, or after a build failed; undefined when there is
+// nothing to say.
+export function mapsLine(s: MapsStatus | undefined): string | undefined {
+  if (!s) return undefined;
+  if (s.active && s.of > 0) {
+    const what = s.current ? `Building map pack ${s.current}` : "Building map packs";
+    return `${what} (${Math.max(1, s.step)}/${s.of})…${s.waitingLaunch ? " The game starts when it's done." : ""}`;
+  }
+  if (s.waitingLaunch) return "Checking map packs… The game starts in a moment.";
+  const failed = s.packs.filter((p) => p.state === "failed");
+  if (failed.length === 1) return `Map pack ${failed[0].name} could not be built: ${failed[0].error ?? "unknown error"}. Its maps are left out.`;
+  if (failed.length > 1) return `${failed.length} map packs could not be built (${failed.map((p) => p.name).join(", ")}). Their maps are left out; see Plugins.`;
+  return undefined;
+}
+
+// A plugin row's map line on the Plugins page (undefined when built or not a map pack).
+export function mapPackText(p: MapPack | undefined, autoBuild: boolean): string | undefined {
+  if (!p) return undefined;
+  switch (p.state) {
+    case "building": return "Building its maps…";
+    case "queued": return "Its maps are built next.";
+    case "missing":
+    case "stale": return autoBuild ? "Maps not built yet: Melange builds them before the game starts." : "Maps not built: open Erg and press Build ([Erg] AutoBuildMaps is off).";
+    case "failed": return `Maps not built: ${p.error ?? "the build failed"}`;
+    default: return undefined;
+  }
+}
