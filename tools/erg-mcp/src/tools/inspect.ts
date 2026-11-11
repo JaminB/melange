@@ -9,7 +9,8 @@ import { EDGE_DROP, FREE_REACH, MIN_FREE_WIDTH, checkTrail, classifyDrops, trail
 
 /** The middle value of a list (0 for none). */
 const median = (v: number[]) => { if (!v.length) return 0; const s = [...v].sort((a, b) => a - b); return s[Math.floor(s.length / 2)]; };
-import { UTILITY_REACH, WORM_WIDTH, classify, nodeAt, ownTurn, pathStats, pathTo, search, standableAt, standing, surfaces, turnAt, type FloodRules, type ReachOptions, type Surfaces } from "../lib/reach";
+import { UTILITY_REACH, WORM_WIDTH, centredPath, classify, nodeAt, ownTurn, pathStats, pathTo, search, standableAt, standing, surfaces, turnAt, type FloodRules, type ReachOptions, type Surfaces } from "../lib/reach";
+import { findTraps, type Trap } from "../lib/pits";
 import { rotation, slotOf } from "../lib/turns";
 import { waterByTurn, type WaterSchedule } from "../lib/flood";
 import { checkSupport, type SupportColumn } from "../lib/support";
@@ -256,7 +257,22 @@ export async function renderTopdown(s: Session, a: TopdownArgs & { markers?: boo
 
 // ------------------------------------------------------------------ render_side
 
-export async function renderSide(s: Session, a: { x0: number; z0: number; x1: number; z1: number; units?: "map" | "world"; y0?: number; y1?: number; scale?: number; palette?: PaletteMode }) {
+/** A colour given as "#rrggbb" or [r, g, b]. */
+export function rgbOf(c: string | number[] | undefined, fallback: Rgb): Rgb {
+  if (c === undefined) return fallback;
+  if (typeof c === "string") {
+    const m = /^#?([0-9a-f]{6})$/i.exec(c.trim());
+    if (!m) throw new ToolError(`a colour is "#rrggbb" or [r, g, b], not "${c}"`);
+    return [parseInt(m[1].slice(0, 2), 16), parseInt(m[1].slice(2, 4), 16), parseInt(m[1].slice(4, 6), 16)];
+  }
+  if (c.length !== 3 || c.some((v) => !(v >= 0 && v <= 255))) throw new ToolError("a colour is \"#rrggbb\" or [r, g, b] with each 0-255");
+  return [Math.round(c[0]), Math.round(c[1]), Math.round(c[2])];
+}
+
+/** A height line render_side draws over the cut: a sand line, a flood cap, a design height. */
+export interface SideLine { y: number; colour?: string | number[]; label?: string; dash?: boolean }
+
+export async function renderSide(s: Session, a: { x0: number; z0: number; x1: number; z1: number; units?: "map" | "world"; y0?: number; y1?: number; scale?: number; palette?: PaletteMode; lines?: SideLine[] }) {
   const store = s.store, gs = grids(store);
   const pal = await renderTint(s, a.palette);
   const ax = inMap(a.x0, a.units), az = inMap(a.z0, a.units), bx = inMap(a.x1, a.units), bz = inMap(a.z1, a.units);
@@ -316,6 +332,19 @@ export async function renderSide(s: Session, a: { x0: number; z0: number; x1: nu
     near.push({ kind: m.kind, name: m.name, along: r2(outUnit(along, a.units)), y: r2(outUnit(m.pos[1], a.units)) });
   }
   const LAB: Rgb = [20, 20, 20];
+  // height lines over the cut (after the ground, so a line under the surface still shows): 2 pixels, dashed 8 on 8 off
+  // unless dash is false, the label at the right end above the line
+  const drawn: object[] = [];
+  for (const [i, l] of (a.lines ?? []).entries()) {
+    const y = inMap(l.y, a.units), c = rgbOf(l.colour, [220, 40, 30]);
+    const shown = y >= lo && y <= hi;
+    if (shown) {
+      const row = yPix(y);
+      for (let p = 0; p < n * xPer; p += 8) if (l.dash === false || (p >> 3) % 2 === 0) img.rect(left + p, row - 1, Math.min(8, n * xPer - p), 2, c);
+      if (l.label) { const t = l.label.slice(0, 40); img.text(Math.max(left + 2, left + n * xPer - 6 * t.length - 4), row - 10 < MARGIN ? row + 3 : row - 9, t, c); }
+    }
+    drawn.push({ index: i, y: r2(outUnit(y, a.units)), ...(l.label ? { label: l.label } : {}), colour: hex(c), ...(shown ? { row: yPix(y) } : { shown: false, why: `outside the y shown (${r2(outUnit(lo, a.units))} to ${r2(outUnit(hi, a.units))})` }) });
+  }
   const tickY = [1, 2, 5, 10, 20, 50, 100, 200].find((t) => t * yScale >= 24) ?? 500;
   for (let y = Math.ceil(lo / tickY) * tickY; y <= hi; y += tickY) {
     img.rect(left - 3, yPix(y), 3, 1, LAB);
@@ -338,6 +367,7 @@ export async function renderSide(s: Session, a: { x0: number; z0: number; x1: nu
     topProfile: { note: "[distance along the line, highest ground y] (null: none), about 80 samples", points: profile },
     materials: [...usedMat].map((m) => ({ index: m, name: names?.[m] ?? null, colour: hex(pal.tint(m)) })),
     markersNearLine: near,
+    ...(a.lines?.length ? { lines: drawn } : {}),
   };
   return { content: [image(img.png()), { type: "text", text: compact(info) }] };
 }
@@ -407,6 +437,80 @@ export async function queryGround(s: Session, a: { x: number; z: number; units?:
   };
 }
 
+// ------------------------------------------------------------------ check_pits
+
+interface PitArgs extends RegionArgs { step?: number; maxStep?: number; maxSlope?: number; slopeOver?: "tread" | "riser" | "segment" | "skin"; headroom?: number; water?: boolean; maxGap?: number;
+  maxArea?: number; minClimb?: number; from?: number[][]; bodyWidth?: number; islets?: boolean; limit?: number; maxDrop?: number; }
+
+/** The pits of the open level (lib/pits): closed hollows a worm walks or drops into and cannot walk out of. */
+export function checkPits(store: EditorStore, a: PitArgs) {
+  const gs = grids(store), u = a.units;
+  const L = (v: number | undefined, d: number) => (v === undefined ? d : inMap(v, u));
+  const r = region(gs.filter((g) => g.words.some(isSolid)), a);
+  const step = L(a.step, 1);
+  const cols = Math.ceil((r.x1 - r.x0) / step) * Math.ceil((r.z1 - r.z0) / step);
+  if (cols > 1_000_000) throw new ToolError(`${cols} columns is too many (at most 1000000): use a larger step or a smaller region`);
+  const water = a.water === false ? null : waterMap(store);
+  const o: ReachOptions = { step, maxStep: L(a.maxStep, 0.5), maxSlope: a.maxSlope ?? 45, maxDrop: L(a.maxDrop, 8), maxGap: L(a.maxGap, 0), headroom: L(a.headroom, 1.5), water,
+    slopeOver: a.slopeOver ?? "skin", ...(a.bodyWidth ? { bodyWidth: L(a.bodyWidth, 0) } : {}) };
+  const S = surfaces(gs, r, step, o.headroom);
+  if (!S.nodes) throw new ToolError("no ground in the region");
+  const k2 = u === "world" ? WORLD_PER_MAP * WORLD_PER_MAP : 1;
+  if (a.maxArea !== undefined && !(a.maxArea > 0)) throw new ToolError("maxArea is an area over 0");
+  const found = findTraps(S, o, { maxArea: a.maxArea === undefined ? TRAP_AREA : a.maxArea / k2, minClimb: a.minClimb === undefined ? 0 : inMap(a.minClimb, u) });
+  const out = (p: Vec3) => p.map((v) => r2(outUnit(v, u)));
+  // which starts (the spawn knots, or from) walk or drop into each: the walk from each under the caller's rules
+  const starts: { name: string; at: Vec3 }[] = a.from
+    ? a.from.map((p, i) => {
+      if (p.length !== 3 || !p.every(Number.isFinite)) throw new ToolError(`from[${i}]: [x, y, z]`);
+      return { name: `from[${i}]`, at: [inMap(p[0], u), inMap(p[1], u), inMap(p[2], u)] as Vec3 };
+    })
+    : markers(store).filter((m) => m.kind === "spawn").map((m) => ({ name: m.name, at: m.pos }));
+  const reachedBy: string[][] = found.traps.map(() => []);
+  if (found.traps.length) for (const st of starts) {
+    const n0 = standing(S, st.at, o, gs);
+    if (n0 < 0) continue;
+    const q = search(S, n0, o), hit = new Set<number>();
+    for (let n = 0; n < S.nodes; n++) if (q.reached[n] && found.trapOf[n] >= 0) hit.add(found.trapOf[n]);
+    for (const id of hit) reachedBy[id].push(st.name);
+  }
+  const rows = found.traps.map((t, i) => ({ t, by: reachedBy[i] }));
+  const pitRows = rows.filter((x) => x.t.kind === "pit").sort((x, y) => (y.by.length ? 1 : 0) - (x.by.length ? 1 : 0) || y.t.climbOut! - x.t.climbOut!);
+  const isl = rows.filter((x) => x.t.kind === "islet");
+  const row = (x: { t: Trap; by: string[] }) => ({ at: out(x.t.at), floorY: r2(outUnit(x.t.floor, u)), ...(x.t.kind === "pit" ? { climbOut: r2(outUnit(x.t.climbOut!, u)), rimAt: out(x.t.exitAt!) } : {}),
+    area: r2(x.t.area * k2), columns: x.t.nodes.length, box: { min: x.t.min.map((v) => r2(outUnit(v, u))), max: x.t.max.map((v) => r2(outUnit(v, u))) },
+    ...(x.by.length ? { reachedFrom: x.by.slice(0, 16) } : {}) });
+  const limit = a.limit ?? 30, entered = pitRows.filter((x) => x.by.length).length;
+  return {
+    ok: pitRows.length === 0,
+    summary: pitRows.length ? `${pitRows.length} pit${pitRows.length === 1 ? "" : "s"} a worm cannot walk out of` + (starts.length ? `, ${entered} of them walked or dropped into from a start` : "") +
+      `; the deepest needs a climb of ${r2(outUnit(Math.max(...pitRows.map((x) => x.t.climbOut!)), u))}` : "no pit: every hollow has a walk out",
+    pits: pitRows.slice(0, limit).map(row), ...(pitRows.length > limit ? { more: pitRows.length - limit } : {}),
+    islets: a.islets ? isl.slice(0, limit).map(row) : { count: isl.length, note: "ground with no other ground beside it (a rock in the sea, a ledge over the void): islets: true lists them" },
+    rules: { step: r2(outUnit(step, u)), maxStep: r2(outUnit(o.maxStep, u)), maxSlope: o.maxSlope, slopeOver: o.slopeOver, maxGap: r2(outUnit(o.maxGap, u)), headroom: r2(outUnit(o.headroom, u)),
+      maxArea: r2((a.maxArea === undefined ? TRAP_AREA : a.maxArea / k2) * k2), water: water === null ? "not used" : r2(outUnit(water, u)), units: u ?? "map",
+      note: "the walk graph check_reachability builds (the same steps, stairs and gaps), read as a directed graph with every drop allowed: a pit is ground from which every walk stays inside maxArea, each of its exits a climb over the limit (climbOut: the least of them, onto rimAt); a plateau is no pit (a worm drops off it); slopeOver defaults to skin here (a draped skin's face is judged at its own slope), so a hollow whose sides a staircase rule would pass is still found; reachedFrom: the starts (spawn knots, or from) whose walk under these rules (drops up to maxDrop) gets into it. Fill it (heightfield fillBasins, a brush), cut a ramp, or leave it on purpose" },
+    graph: { columns: S.w * S.h, surfaces: S.nodes },
+  };
+}
+
+/** save's advisory lists pits whose least climb out is at least this (map units): a worm's own jump clears less. */
+export const ADVISORY_CLIMB = 1;
+
+/** save's advisory: the pits of the level as warning lines (at most `limit`), nothing when there is none or the level
+ * is too large to read quickly. */
+export function pitWarnings(store: EditorStore, limit = 6): string[] {
+  try {
+    const r = checkPits(store, { units: "map", minClimb: ADVISORY_CLIMB }) as { pits: { at: number[]; climbOut?: number; area: number; reachedFrom?: string[] }[]; more?: number };
+    const lines = r.pits.slice(0, limit).map((p) => `a pit at (${p.at[0]}, ${p.at[2]}), floor y ${p.at[1]}: ${p.area} map units squared, the least climb out is ${p.climbOut}` +
+      (p.reachedFrom?.length ? `; a worm from ${p.reachedFrom.slice(0, 4).join(", ")} walks or drops into it` : "") + " (check_pits; heightfield fillBasins fills such hollows)");
+    const rest = r.pits.length - lines.length + (r.more ?? 0);
+    return rest > 0 ? [...lines, `${rest} more pit${rest === 1 ? "" : "s"}: check_pits lists them`] : lines;
+  } catch {
+    return [];
+  }
+}
+
 // ------------------------------------------------------------------ check_reachability
 
 interface FloodArgs {
@@ -426,7 +530,11 @@ interface ReachArgs extends RegionArgs {
   walkSpeed?: number; turnTime?: number; flood?: FloodArgs; islets?: boolean;
   via?: ViaArgs; materialSlopes?: { materials: number[]; maxSlope: number }[];
   bodyWidth?: number; bodyHeight?: number; route?: boolean;
+  traps?: "report" | "avoid"; trapArea?: number; centre?: boolean;
 }
+
+/** A closed area up to this size (map units squared) is a trap; larger is a part of the map (a walled court). */
+export const TRAP_AREA = 400;
 
 /** A route constraint: the ground "on the route" is where the top voxel's material is one of `materials` (when given)
  * and `mask` is above 0 (when given); `only` walks on it alone, `avoid` never on it; within `near` of a start or the
@@ -879,22 +987,51 @@ export async function checkReachability(s: Session, a: ReachArgs) {
   const perTeam = a.flood?.wormsPerTeam ?? (teamKnots ? 4 : Math.max(1, Math.ceil(starts.length / teamsN)));
   if (rr.allow) o.allow = rr.allow;
   if (rr.slopeCap) o.slopeCap = rr.slopeCap;
+  // traps (lib/pits): pits a worm walks into and not out of, under the same rules with every drop allowed; reported on
+  // the routes that cross one (report) or kept off the routes (avoid: the start's own and the targets' stay walkable)
+  if (a.traps !== undefined && a.traps !== "report" && a.traps !== "avoid") throw new ToolError("traps: \"report\" or \"avoid\"");
+  if (a.trapArea !== undefined && !(a.trapArea > 0)) throw new ToolError("trapArea is an area over 0");
+  const tp = a.traps ? findTraps(S, o, { maxArea: a.trapArea === undefined ? TRAP_AREA : a.trapArea / (u === "world" ? WORLD_PER_MAP * WORLD_PER_MAP : 1), minClimb: 0 }) : null;
+  const pits = tp ? tp.traps.map((t, i) => ({ i, t })).filter((x) => x.t.kind === "pit") : [];
+  const trapOut = (t: Trap) => ({ at: out(t.at), floorY: r2(outUnit(t.floor, u)), climbOut: r2(outUnit(t.climbOut!, u)), rimAt: out(t.exitAt!), area: r2(t.area * (u === "world" ? WORLD_PER_MAP * WORLD_PER_MAP : 1)), columns: t.nodes.length });
+  const crossed = (path: number[]) => {
+    if (!tp) return [] as number[];
+    const ids = new Set<number>();
+    for (const n of path) { const id = tp.trapOf[n]; if (id >= 0 && tp.traps[id].kind === "pit") ids.add(id); }
+    return [...ids];
+  };
+  const allow0 = o.allow;
+  /** `allow` with the pits' nodes taken out, but for the pits of `keep` (nodes: the start, the goals). */
+  const offTraps = (allow: Uint8Array | undefined, keep: number[]) => {
+    if (!tp || a.traps !== "avoid" || !pits.length) return allow;
+    const kept = new Set(keep.map((n) => tp.trapOf[n]).filter((id) => id >= 0));
+    const m = allow ? Uint8Array.from(allow) : new Uint8Array(S.nodes).fill(1);
+    for (const { i, t } of pits) if (!kept.has(i)) for (const n of t.nodes) m[n] = 0;
+    return m;
+  };
+  // openings narrower than twice a worm's width, and the route's points through the middle of each gap (centre)
+  const NARROW = 2 * (o.bodyWidth || WORM_WIDTH);
+  const pointsOf = (path: number[]) => (a.centre ? centredPath(S, path, o, NARROW).points : path.map((n) => nodeAt(S, n)));
   const statsOut = (path: number[]) => {
     const st = pathStats(S, path, o);
+    const ops = centredPath(S, path, o, NARROW).openings, tc = crossed(path);
     return { length: r2(outUnit(st.length, u)), maxSlope: Math.round(st.maxSlope * 10) / 10, maxStairSlope: Math.round(st.maxStairSlope! * 10) / 10,
       maxStepUp: r2(outUnit(st.maxStepUp, u)), maxDrop: r2(outUnit(st.maxDrop, u)), jumps: st.jumps,
       // the narrowest gap walked through (spanAcross: the free width across the move at body height), null when the
       // route is open all the way (gaps of OPEN_SPAN or more)
-      narrowest: st.narrowest ? { width: r2(outUnit(st.narrowest.width, u)), at: out(nodeAt(S, st.narrowest.node)) } : null };
+      narrowest: st.narrowest ? { width: r2(outUnit(st.narrowest.width, u)), at: out(nodeAt(S, st.narrowest.node)) } : null,
+      // openings under twice a worm's width on the route (walls both sides): the gap's width and its middle
+      ...(ops.length ? { narrowOpenings: ops.slice(0, 12).map((op) => ({ width: r2(outUnit(op.width, u)), centre: out(op.centre) })) } : {}),
+      ...(tc.length ? { crossesPits: tc.map((id) => trapOut(tp!.traps[id])) } : {}) };
   };
   // the whole route, column by column (game_walk's `path`): at most 2000 points
-  const routeOut = (path: number[]) => (a.route ? { route: path.slice(0, 2000).map((n) => out(nodeAt(S, n))) } : {});
+  const routeOut = (path: number[]) => (a.route ? { route: pointsOf(path).slice(0, 2000).map((p) => out(p)) } : {});
   // the least own turns a walk of `d` (horizontal, map units) takes, and the game turn it ends in from the first own turn
   const turnsFor = (d: number) => {
     const own = Math.max(1, Math.ceil(d / perTurn - 1e-9));
     return { ownTurns: own, ...(flood ? { arrivesTurn: turnAt(flood.rules, d) } : {}) };
   };
-  const thin = (path: number[]) => { const every = Math.max(1, Math.ceil(path.length / 12)); return path.filter((_, i) => i % every === 0 || i === path.length - 1).map((n) => out(nodeAt(S, n))); };
+  const thin = (path: number[]) => { const every = Math.max(1, Math.ceil(path.length / 12)); return pointsOf(path).filter((_, i) => i % every === 0 || i === path.length - 1).map((p) => out(p)); };
   const routes: Route[] = [];
   // the worm rotation (lib/turns.ts) for the spawn knots: a worm whose ground is under the water at a turn start is dead
   // from then on, so its team's others move sooner
@@ -937,12 +1074,21 @@ export async function checkReachability(s: Session, a: ReachArgs) {
     // via: this start's own near zone only (rr.allowFor), never the other starts'
     if (rr.allowFor && starts.length > 1) o.allow = rr.allowFor(st.at);
     const n0 = stand[si];
+    if (tp && a.traps === "avoid") {
+      const keep = n0 >= 0 ? [n0] : [];
+      for (let n = 0; n < S.nodes; n++) if (goal[n] && tp.trapOf[n] >= 0) keep.push(n);
+      o.allow = offTraps(rr.allowFor && starts.length > 1 ? o.allow : allow0, keep);
+    }
     if (n0 < 0) {
       if (water !== null && standing(S, st.at, { ...o, water: null }, gs) >= 0) return { name: st.name, at: out(st.at), reachable: false, why: "it stands at or under the water" };
       const sa = standableAt(gs, st.at, 1.5, o.headroom);
       return { name: st.name, at: out(st.at), reachable: false, why: sa.ok ? "its ground is not in the walk graph (outside the region, or a ledge narrower than a step)" : `${sa.why} (within 1.5 map units of its y ${r2(outUnit(st.at[1], u))}, as build_castle's spawnSpots check)` };
     }
     const q = search(S, n0, o);
+    // the pits this start's walk gets into (a walk never crosses one: there is no way out of it)
+    const entered = new Set<number>();
+    if (tp) for (let n = 0; n < S.nodes; n++) if (q.reached[n] && tp.trapOf[n] >= 0 && tp.traps[tp.trapOf[n]].kind === "pit") entered.add(tp.trapOf[n]);
+    const pitsOut = entered.size ? { pitsReached: [...entered].slice(0, 8).map((id) => trapOut(tp!.traps[id])) } : {};
     const floodOut = flood ? floodFor(S, n0, goal, o, flood, out, u, movesOf(st.name), need, a.flood?.escape === false ? undefined : perTurn / (a.turnTime ?? TURN_TIME)) : undefined;
     let hit = -1, near = -1, nearD = Infinity, high = n0;
     for (let n = 0; n < S.nodes; n++) {
@@ -954,7 +1100,7 @@ export async function checkReachability(s: Session, a: ReachArgs) {
     }
     let reached = 0;
     for (let n = 0; n < S.nodes; n++) reached += q.reached[n];
-    const base = { name: st.name, at: out(st.at), standsOn: r2(outUnit(S.y[n0], u)), reachable: hit >= 0, reachedColumns: reached, highestReached: out(nodeAt(S, high)) };
+    const base = { name: st.name, at: out(st.at), standsOn: r2(outUnit(S.y[n0], u)), reachable: hit >= 0, reachedColumns: reached, highestReached: out(nodeAt(S, high)), ...pitsOut };
     // with several targets: the one reached first, and each target's own walk (mode each)
     const which = list && hit >= 0 ? { reachedTarget: tgs[goalOwner[hit]].name } : {};
     const each = list && a.targetMode === "each" ? { perTarget: tgs.map((t) => {
@@ -1012,7 +1158,11 @@ export async function checkReachability(s: Session, a: ReachArgs) {
       (flood ? `; ${escaped} of ${spawns.length} reach it dry with the flood (best case: a turn every ${flood.rules.every})` + (onOwn !== null ? `, ${onOwn} on their own moves in the rotation` : "") : "") +
       (verdict ? `; flood ${verdict.pass ? "PASS" : "FAIL"}${verdict.failures ? `: ${verdict.failures.join("; ")}` : ` (${verdict.checked} spawns dry through their own turn ${verdict.minOwnTurns})`}` : "") +
       (cap && cap.within.length ? `; within ${cap.capMargin} ${u ?? "map"} of the water's cap: ${cap.within.join(", ")}` : "") +
-      (tight.length ? `; through gaps narrower than a worm (${r2(outUnit(WORM_WIDTH, u))}): ${tight.join(", ")} (bodyWidth enforces it)` : ""),
+      (tight.length ? `; through gaps narrower than a worm (${r2(outUnit(WORM_WIDTH, u))}): ${tight.join(", ")} (bodyWidth enforces it)` : "") +
+      (tp ? `; ${pits.length} pit${pits.length === 1 ? "" : "s"} a worm cannot walk out of` + (a.traps === "avoid" ? " (kept off the routes)"
+        : (() => { const on = spawns.filter((x) => (x as { pitsReached?: unknown[] }).pitsReached?.length).map((x) => x.name); return on.length ? `, walked or dropped into from ${on.slice(0, 8).join(", ")}` : ""; })()) : ""),
+    ...(tp ? { traps: { mode: a.traps, pits: pits.length, islets: tp.traps.length - pits.length, list: pits.slice(0, 12).map((x) => trapOut(x.t)),
+      note: "a pit: ground from which every walk under these rules (any drop allowed) stays within trapArea, all its exits being climbs over the limit; climbOut is the least of them (to rimAt); a start's pitsReached are the pits its walk gets into (a route never crosses one: there is no way out, so a target past a pit is reached round it or not at all); islets (no ground beside them at all) are counted, not listed; check_pits lists them all" } } : {}),
     ...(verdict ? { floodVerdict: verdict } : {}),
     target: { at: out([tx, top, tz]), radius: r2(outUnit(tr, u)), surfaces: goals, note: single || list ? "the highest ground within the radius" : "the highest ground of the region" },
     ...(list ? { targets: tgs.map((t) => ({ name: t.name, at: out([t.x, t.top, t.z]), radius: r2(outUnit(t.r, u)), surfaces: t.count })),
@@ -1186,6 +1336,12 @@ export const tools: Tool[] = [
         y0: num("Lowest y shown (default: the lowest ground on the line)."), y1: num("Highest y shown (default: the highest)."),
         scale: { type: "integer", minimum: 1, maximum: 32, description: "Pixels per voxel in y (default fits about 700 pixels)." },
         palette: paletteSchema,
+        lines: { type: "array", maxItems: 16, description: "Height lines drawn across the cut, over the ground: a sand line, a flood cap, a design height. The answer's `lines` gives each one's pixel row (or says it is outside the y shown).",
+          items: { type: "object", additionalProperties: false, required: ["y"], properties: {
+            y: num("The line's height, in the call's units."),
+            colour: { description: "\"#rrggbb\" or [r, g, b] (default red).", anyOf: [{ type: "string" }, { type: "array", items: { type: "number", minimum: 0, maximum: 255 }, minItems: 3, maxItems: 3 }] },
+            label: { type: "string", description: "Text drawn at the line's right end (at most 40 characters are drawn)." },
+            dash: { type: "boolean", description: "Dashed (default true); false draws it solid." } } } },
       },
     },
     handler: (s, a) => renderSide(s, a),
@@ -1292,6 +1448,9 @@ export const tools: Tool[] = [
         bodyWidth: { type: "number", minimum: 0, description: "The worm's width in the call's units: a move into a gap narrower than this (the free width across it at body height: a gate, a keep's door, the slot between tower pillars) is not walked. Default 0: not enforced, but every route reports its narrowest gap and the summary names routes through gaps under 0.6 map units (a worm's body, about 11 world units)." },
         bodyHeight: { type: "number", minimum: 0.5, description: "The worm's height for the gap widths: walls are solid between its ground + maxStep and this over it (default headroom)." },
         route: { type: "boolean", description: "Also answer each start's whole route column by column (`route`, at most 2000 points; for game_walk's path)." },
+        traps: { type: "string", enum: ["report", "avoid"], description: "Pits a worm walks or drops into and cannot walk out of (check_pits' rule under this call's rules: ground from which every walk, any drop allowed, stays inside trapArea). report: the answer's `traps` lists them, each start says the pits its walk gets into (pitsReached) and the summary names those starts. avoid: the pits are also taken out of the graph (the start's own and a target's stay), so reachedColumns and the routes count only ground a worm can leave again. A route never crosses a pit (there is no way out of one): what this adds is knowing that a worm walking the area can end in one. Default: not looked for." },
+        trapArea: { type: "number", minimum: 0.01, description: "traps: a closed area up to this size is a pit, in the call's units squared (default 400 map units squared); a larger one is a part of the map (a walled court)." },
+        centre: { type: "boolean", description: "Answer waypoints and route through the middle of each opening (walls both sides within 6 map units, the narrowest of the four directions) instead of on the walked columns: the shortest walk cuts a gate's corner along its jamb, a steered worm should aim for the middle. Default false. Every path also lists narrowOpenings: the openings under twice a worm's width (bodyWidth, else 0.6) with their width and middle; widths are whole columns of `step`." },
         water: { type: "boolean", description: "Treat ground at or under the project's water level as impassable (default true; the level's own water height is not known)." },
         render: { type: "boolean", description: "Also answer a top-down PNG (render_topdown's) with each start's route drawn in its colour: the walk, the route with the utility it needs (dashed), where that is used and where the walk is blocked (default false)." },
         palette: paletteSchema,
@@ -1302,6 +1461,31 @@ export const tools: Tool[] = [
       },
     },
     handler: (s, a) => checkReachability(s, a),
+  },
+  {
+    name: "check_pits",
+    description: "Pits a worm cannot walk out of: closed hollows of the ground whose every exit is a climb over the walking limit (a sheer-sided hole in a dune field, a sunken court with no stair, a moat floor). It reads check_reachability's walk graph the other way: the same steps, stairs and gaps as a directed graph with every drop allowed (a worm can always jump off a ledge, so a plateau is no pit), and a pit is ground from which every walk stays inside `maxArea`. check_reachability alone passes a route across such a hollow (each move is a legal drop or step) and a steered worm then sits in it. Answers `ok`, the pits (the lowest point, the floor, climbOut: the least climb that would get out and rimAt where, the area, the box, and reachedFrom: the spawn knots or `from` points whose walk gets into it), islets counted apart (ground with nothing beside it), and the rules. slopeOver defaults to skin (a draped skin's face at its own slope). save runs it with the defaults and lists what it finds as `pits` warnings (advisory: the level is saved all the same). Read-only.",
+    inputSchema: {
+      type: "object", additionalProperties: false,
+      properties: {
+        ...regionProps,
+        step: { type: "number", minimum: 0.25, maximum: 8, description: "Column spacing in the call's units (default 1 map unit)." },
+        maxStep: { type: "number", minimum: 0, description: "A step up a worm always takes (default 0.5 map units): raise it to the height a jump or backflip clears to list only pits those do not get out of." },
+        maxSlope: { type: "number", minimum: 0, maximum: 89, description: "Degrees, as check_reachability (default 45)." },
+        slopeOver: { type: "string", enum: ["tread", "riser", "segment", "skin"], description: "As check_reachability; default skin here." },
+        maxGap: { type: "number", minimum: 0, description: "Jumps over gaps up to this wide (default 0)." },
+        headroom: { type: "number", minimum: 0.5, description: "Air a worm needs above the ground (default 1.5 map units)." },
+        bodyWidth: { type: "number", minimum: 0, description: "The worm's width: gaps narrower are not walked (default: not enforced)." },
+        water: { type: "boolean", description: "Ground at or under the project's water level is not ground (default true)." },
+        maxArea: { type: "number", minimum: 0.01, description: "A closed area up to this size is a pit, in the call's units squared (default 400 map units squared)." },
+        minClimb: { type: "number", minimum: 0, description: "Leave out pits whose least climb out is under this (the call's units; default 0)." },
+        maxDrop: { type: "number", minimum: 0, description: "The longest drop a start's walk takes for reachedFrom (default 8 map units); the pits themselves are found with every drop allowed." },
+        from: { type: "array", maxItems: 64, items: { type: "array", items: { type: "number" }, minItems: 3, maxItems: 3 }, description: "Start points [x, y, z] for reachedFrom, instead of the spawn knots." },
+        islets: { type: "boolean", description: "List the islets too (default: only their count)." },
+        limit: { type: "integer", minimum: 1, maximum: 200, description: "Pits listed (default 30), those a start reaches first, then the deepest." },
+      },
+    },
+    handler: (s, a) => checkPits(s.store, a),
   },
   {
     name: "check_flood",
@@ -1328,6 +1512,9 @@ export const tools: Tool[] = [
         bodyWidth: { type: "number", minimum: 0, description: "The worm's width in the call's units: a move into a gap narrower than this (the free width across it at body height: a gate, a keep's door, the slot between tower pillars) is not walked. Default 0: not enforced, but every route reports its narrowest gap and the summary names routes through gaps under 0.6 map units (a worm's body, about 11 world units)." },
         bodyHeight: { type: "number", minimum: 0.5, description: "The worm's height for the gap widths: walls are solid between its ground + maxStep and this over it (default headroom)." },
         route: { type: "boolean", description: "Also answer each start's whole route column by column (`route`, at most 2000 points; for game_walk's path)." },
+        traps: { type: "string", enum: ["report", "avoid"], description: "Pits a worm walks or drops into and cannot walk out of (check_pits' rule under this call's rules: ground from which every walk, any drop allowed, stays inside trapArea). report: the answer's `traps` lists them, each start says the pits its walk gets into (pitsReached) and the summary names those starts. avoid: the pits are also taken out of the graph (the start's own and a target's stay), so reachedColumns and the routes count only ground a worm can leave again. A route never crosses a pit (there is no way out of one): what this adds is knowing that a worm walking the area can end in one. Default: not looked for." },
+        trapArea: { type: "number", minimum: 0.01, description: "traps: a closed area up to this size is a pit, in the call's units squared (default 400 map units squared); a larger one is a part of the map (a walled court)." },
+        centre: { type: "boolean", description: "Answer waypoints and route through the middle of each opening (walls both sides within 6 map units, the narrowest of the four directions) instead of on the walked columns: the shortest walk cuts a gate's corner along its jamb, a steered worm should aim for the middle. Default false. Every path also lists narrowOpenings: the openings under twice a worm's width (bodyWidth, else 0.6) with their width and middle; widths are whole columns of `step`." },
         via: { type: "object", additionalProperties: false, description: "A route constraint, to prove the roads are the climb: the ground on the route is where its top voxel's material is one of `materials` and/or `mask` is above 0 (the heightfield expression language of x, z, r, theta in the call's units, h the ground's height and material, its index). mode only (default): walk on it alone (reachable: there is a way up along the roads); avoid: never on it (not reachable: the roads are the only way). Ground within `near` (default 3 map units) of a start or the target is always walkable.",
           properties: { materials: { type: "array", items: { type: "integer", minimum: 0, maximum: 63 }, maxItems: 64 }, mask: { type: "string" }, mode: { type: "string", enum: ["only", "avoid"] }, near: { type: "number", minimum: 0 } } },
         materialSlopes: { type: "array", maxItems: 32, description: "The steepest climb onto ground of these materials (the top voxel's), degrees: any rise onto it steeper is refused, small steps too, so ash or scree flanks are not walked up while the paved road is. [{materials: [24, 36], maxSlope: 20}].",

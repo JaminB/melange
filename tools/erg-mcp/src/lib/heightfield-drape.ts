@@ -370,6 +370,7 @@ function planDrapeOne(store: EditorStore, a: DrapeArgs): DrapePlan {
     region: { voxelSize: s, size: [f.nx, f.nz], columns: ts.reduce((n, t) => n + t.columns, 0),
       ...(f.limited ? { slopeLimit: { relax: a.relax ?? 0, ...(a.maxGradient !== undefined ? { maxGradient: a.maxGradient } : {}), passes: f.limited.passes, steepestDegrees: Math.round(f.limited.steepest * 10) / 10,
         note: "the field's heights smoothed (relax) and slope-limited (maxGradient) before the skin and its core are cut, so both follow the same surface" } } : {}),
+      ...(f.basins ? { basins: f.basins } : {}),
       peak: ts.length ? { map: num(top * s + f.t[1]), world: num((top * s + f.t[1]) * WORLD_PER_MAP) } : null,
       // where the skin's walking surface stands for a field height: the floor snapped to the lattice moves it (Caldera's
       // floor -9 at voxel 2.5 snapped to -10, which builders took for the skin standing 1 under the grid)

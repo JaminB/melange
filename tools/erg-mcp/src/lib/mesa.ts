@@ -85,9 +85,14 @@ export function mesaField(store: EditorStore, a: MesaArgs, extra: Partial<FieldA
   const rj = st.riserJitter ?? 0;
   if (!(rj >= 0 && rj <= 0.5)) throw new ToolError("strata.riserJitter is 0-0.5 (a fraction of a riser)");
   const wM = tr.width === undefined ? (walkable ? Math.max(4, 3 * s) : 0) : tr.width * k;
-  if (walkable && wM < Math.max(MIN_WALK_TREAD, 2 * s)) throw new ToolError(`tread.width ${round3(wM * ku)} is too narrow to walk: a walkable tread is at least ${round3(Math.max(MIN_WALK_TREAD, 2 * s) * ku)} (tread.walkable: false makes a sheer cliff)`);
-  if (!walkable && tr.width !== undefined && tr.width > 0) throw new ToolError("tread.width is for walkable treads; tread.walkable: false is a sheer cliff (no tread)");
-  const jitM = Math.min(tr.jitter === undefined ? (walkable ? 0.25 * wM : 0) : tr.jitter * k, walkable ? 0.45 * wM : 0.9 * s);
+  // a walkable tread is two voxels at least: a small mesa takes finer voxels (voxelSize up to half the width), or
+  // walkable: false, where a width is a setback only (each step that far inside the one under it: a stepped face with
+  // ledges that are not promised walkable, down to a fraction of a voxel) and no width is a sheer wall
+  if (walkable && wM < Math.max(MIN_WALK_TREAD, 2 * s)) throw new ToolError(`tread.width ${round3(wM * ku)} is too narrow to walk at voxelSize ${s}: a walkable tread is at least ${round3(Math.max(MIN_WALK_TREAD, 2 * s) * ku)} (2 voxels, and ${MIN_WALK_TREAD} map units). ` +
+    `For a small mesa: voxelSize ${Math.max(0.5, Math.floor((wM / 2) * 4) / 4)} or finer makes this width walkable${wM < MIN_WALK_TREAD ? " (not here: it is under the least a worm stands on)" : ""}; tread.walkable: false with the same width keeps the stepped face as ledges that are not promised walkable, and with no width makes a sheer cliff`);
+  if (!walkable && tr.width !== undefined && !(tr.width >= 0)) throw new ToolError("tread.width is 0 or more");
+  const setback = !walkable && wM > 0;
+  const jitM = Math.min(tr.jitter === undefined ? (walkable ? 0.25 * wM : 0) : tr.jitter * k, walkable || setback ? 0.45 * wM : 0.9 * s);
   if (tr.jitter !== undefined && !(tr.jitter >= 0)) throw new ToolError("tread.jitter is 0 or more");
   const jScale = (tr.scale ?? Math.max(6, 4 * s)) * k;
   const wobAmt = (wob?.amount ?? 0) * k, wobScale = (wob?.scale ?? 12) * k;
@@ -110,7 +115,7 @@ export function mesaField(store: EditorStore, a: MesaArgs, extra: Partial<FieldA
   let acc = 0;
   for (let i = 0; i < n; i++) { acc += weights[i]; level.push(talusH + (Hs * acc) / wsum); }
   level[n - 1] = Hm;
-  const inset = (i: number) => (walkable ? i * wM : 0);            // step i (0-based) starts this far inside the outline
+  const inset = (i: number) => i * wM;                             // step i (0-based) starts this far inside the outline (0: sheer)
 
   // the outline
   let cx = 0, cz = 0, bx0: number, bx1: number, bz0: number, bz1: number;
@@ -175,7 +180,7 @@ export function mesaField(store: EditorStore, a: MesaArgs, extra: Partial<FieldA
       grid[2 * b + 1][2 * c + 1] = hu;
       if (h > 0) pts.push([x, z]);
     }
-  if (!plateauCols) throw new ToolError(`the plateau is gone: ${n} steps of ${round3(wM * ku)} tread need an outline at least ${round3(inset(n - 1) * ku)} deep (reduce strata.step to ${Math.max(1, step - 1)} or tread.width, or make the mesa larger)`);
+  if (!plateauCols) throw new ToolError(`the plateau is gone: ${n} steps of ${round3(wM * ku)} tread need an outline at least ${round3(inset(n - 1) * ku)} deep (raise strata.step to ${Math.min(16, step + 1)} for fewer steps, reduce tread.width, use a finer voxelSize, or make the mesa larger)`);
   // the even samples (column corners) carry their neighbour's height; the field never reads them but through rounding
   for (let r = 0; r < rows; r++) for (let c = 0; c < cols; c += 2) grid[r][c] = grid[r][Math.min(cols - 1, c + 1)] ?? 0;
   for (let r = 0; r < rows; r += 2) for (let c = 0; c < cols; c++) grid[r][c] = grid[Math.min(rows - 1, r + 1)][c];
@@ -238,11 +243,22 @@ export function mesaField(store: EditorStore, a: MesaArgs, extra: Partial<FieldA
   const min: [number, number] = [(t[0] + i0 * s) * ku, (t[2] + j0 * s) * ku], max: [number, number] = [(t[0] + i1 * s) * ku, (t[2] + j1 * s) * ku];
   const args: FieldArgs = { ...extra, units: a.units ?? "map", voxelSize: s, min, max, floor: a.floor, keepFloor, grid, materials: rules };
   const um = (v: number) => round3(v * ku);
+  // the exposed step tops as built: each level rounds to whole voxels over the lattice floor (the field's own rounding)
+  const builtY = (h: number) => (Math.round(floorExact) + vox(h * ku)) * s + t[1];
+  const stepWidth = (i: number) => (i === n - 1 ? null : wM);
+  const ledges = [
+    ...(ta ? [{ kind: "talus top" as const, h: talusH, width: null as number | null, walk: false }] : []),
+    ...level.map((h, i) => ({ kind: i === n - 1 ? "plateau" as const : "step" as const, h, width: stepWidth(i), walk: i === n - 1 || walkable })),
+  ].filter((l, i, all) => l.kind !== "step" || wM > 0 || i === all.length - 1).map((l) => ({ kind: l.kind, y: { map: round3(builtY(l.h)), world: round3(builtY(l.h) * WORLD_PER_MAP) },
+    ...(l.width !== null ? { width: um(l.width) } : {}), walkable: l.walk }));
   const info = {
     topY: { map: round3(a.top * k), world: round3(a.top * k * WORLD_PER_MAP) },
     height: { map: round3(Hm), world: round3(Hm * WORLD_PER_MAP) },
     steps: n, riser: { map: round3(riser0), voxels: step }, risers: level.map((v, i) => round3((v - (i ? level[i - 1] : talusH)) * ku)),
-    tread: { walkable, width: um(walkable ? wM : 0), jitter: um(jitM) },
+    tread: { walkable, width: um(wM), jitter: um(jitM), ...(setback ? { setback: true } : {}) },
+    // every exposed top a worm or a sand line meets, as built (whole voxels), lowest first: the talus' top, each step's
+    // tread (none on a sheer face) and the plateau
+    ledges,
     plateau: { columns: plateauCols, area: round3(plateauCols * s * s * ku * ku), deepest: um(plateauMax) },
     talus: ta ? { height: um(talusH), width: um(talusW), profile: ta.profile ?? "linear" } : null,
     strataBands: bandCount,

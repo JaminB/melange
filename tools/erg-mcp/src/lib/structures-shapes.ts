@@ -225,6 +225,36 @@ export function wallSegment(a: Vec3, b: Vec3, t: number, h: number, mat: number,
 
 // ------------------------------------------------------------------ towers and keeps
 
+/** A roof on a tower's top: a solid of revolution standing on the top floor (y = the tower's height), inside the merlon
+ * ring when the tower is crenellated. dome: a sphere cap (height <= radius) or half an ellipsoid; onion: a neck, a bulge a
+ * tenth wider than the base a third of the way up, then a taper to a point; cone: straight to a point. `tip` paints the
+ * topmost `tipHeight` (a finial). */
+export interface RoofSpec { style: "dome" | "onion" | "cone"; radius: number; height: number; material: number; tip?: number; tipHeight?: number; }
+
+/** The least radius of a cone's or an onion's top (design voxels): a voxel centre half a voxel off the axis is inside. */
+export const TIP_RADIUS = 0.75;
+
+/** An onion dome's width (1 = the base circle's radius) at t, 0 at its foot to 1 at its tip. */
+export function onionProfile(t: number): number {
+  if (t <= 0.3) return 0.85 + 0.25 * Math.sin((t / 0.3) * (Math.PI / 2));
+  return 1.1 * Math.pow(Math.cos(((t - 0.3) / 0.7) * (Math.PI / 2)), 0.8);
+}
+
+/** The roof's shape with its base centre at (cx, y0, cz). */
+export function roof(r: RoofSpec, cx: number, y0: number, cz: number): Shape {
+  const R = r.radius, h = r.height, w = r.style === "onion" ? R * 1.1 : R;
+  let inside: (d2: number, y: number) => boolean;
+  // a pointed roof thinner than a voxel near its tip would end short of its height: it keeps a stub of TIP_RADIUS
+  if (r.style === "cone") inside = (d2, y) => { const q = Math.max(TIP_RADIUS, R * (1 - (y - y0) / h)); return d2 < q * q; };
+  else if (r.style === "onion") inside = (d2, y) => { const q = Math.max(TIP_RADIUS, R * onionProfile((y - y0) / h)); return d2 < q * q; };
+  else if (h <= R) { const S = (R * R + h * h) / (2 * h), yc = y0 + h - S; inside = (d2, y) => d2 + (y - yc) ** 2 < S * S; }
+  else inside = (d2, y) => d2 / (R * R) + ((y - y0) / h) ** 2 < 1;
+  const s: Shape = { op: "fill", mat: r.material, min: [cx - w, y0, cz - w], max: [cx + w, y0 + h, cz + w],
+    hit: (x, y, z) => y >= y0 && y < y0 + h && inside((x - cx) ** 2 + (z - cz) ** 2, y) };
+  if (r.tip !== undefined) { const from = y0 + h - (r.tipHeight ?? 1), tip = r.tip; s.matAt = (_x, y) => (y >= from - 1e-9 ? tip : r.material); }
+  return s;
+}
+
 export interface TowerSpec {
   shape: "round" | "square";
   radius: number;               // round: radius; square: half the side
@@ -239,6 +269,7 @@ export interface TowerSpec {
   found: number;
   cx?: number; cz?: number;     // centre in local coordinates (default 0)
   style?: MatStyle;
+  roof?: RoofSpec;              // on the top floor (a solid tower's top, a hollow tower's rim is roofed over)
 }
 
 /** A tower on its floor level: solid or hollow (open top, floor at y = 0), with a door and crenellations round the rim. */
@@ -266,6 +297,8 @@ export function tower(t: TowerSpec): Shape[] {
   }
   if (t.hollow && r - t.wall > 0.5) out.push(body("carve", r - t.wall, 0, h + 2));
   if (t.door) out.push(...translate([doorway(r, r, t.wall, t.door, t.doorWidth, t.doorHeight)], [cx, 0, cz]));
+  // after the hollow's carve (which reaches 2 over the rim), so the roof closes the tower
+  if (t.roof) out.push(roof(t.roof, cx, h, cz));
   return out;
 }
 
@@ -347,6 +380,20 @@ export interface CastleSpec {
   cren: boolean;
   found: number;
   style?: MatStyle;                 // bands and trim by height above the floor, on the walls, towers, keep and foundation
+  /** A roof per corner tower, in TOWER_CORNERS' order (nw, sw, ne, se); null leaves that tower's top open. */
+  towerRoofs?: (RoofSpec | null)[];
+}
+
+/** The corner towers in the order castle() builds them (parts 5-8): x west to east, z north (-z) to south. */
+export const TOWER_CORNERS = ["nw", "sw", "ne", "se"] as const;
+export type TowerCorner = typeof TOWER_CORNERS[number];
+
+/** Each corner tower's centre at its top floor, in the castle's local coordinates, with its roof (if any). */
+export function castleTowers(c: CastleSpec): { corner: TowerCorner; at: Vec3; roof: RoofSpec | null }[] {
+  const hw = c.size[0] / 2, hd = c.size[1] / 2, t = c.wallThickness, out: { corner: TowerCorner; at: Vec3; roof: RoofSpec | null }[] = [];
+  let i = 0;
+  for (const sx of [-1, 1]) for (const sz of [-1, 1]) { out.push({ corner: TOWER_CORNERS[i], at: [sx * (hw - t / 2), c.towerHeight, sz * (hd - t / 2)], roof: c.towerRoofs?.[i] ?? null }); i++; }
+  return out;
 }
 
 export interface GateSpec { side: Side; width: number; height: number; shift: number; below: number; }
@@ -373,7 +420,8 @@ export function castle(c: CastleSpec): Shape[] {
   let tp = 5;
   for (const sx of [-1, 1]) for (const sz of [-1, 1]) {
     out.push(...tagged(tower({ shape: c.towerShape, radius: c.towerRadius, height: c.towerHeight, material: c.material, hollow: false, wall: 2, door: null,
-      doorWidth: 2, doorHeight: 3, cren: c.cren, found: c.found, style: c.style, cx: sx * (hw - t / 2), cz: sz * (hd - t / 2) }), tp++));
+      doorWidth: 2, doorHeight: 3, cren: c.cren, found: c.found, style: c.style, cx: sx * (hw - t / 2), cz: sz * (hd - t / 2),
+      ...(c.towerRoofs?.[tp - 5] ? { roof: c.towerRoofs[tp - 5]! } : {}) }), tp++));
   }
   if (c.keepSize) {
     const k = keep({ size: c.keepSize, height: c.keepHeight, material: c.material, wall: Math.min(2, Math.floor(Math.min(...c.keepSize) / 3)), hollow: true,
@@ -410,7 +458,8 @@ export function castleSpots(c: CastleSpec): Spot[] {
   const walk = Math.max(0.5, t / 4);
   out.push({ kind: "rampart", at: [0, c.wallHeight, -hd + t / 2 + walk] }, { kind: "rampart", at: [0, c.wallHeight, hd - t / 2 - walk] },
     { kind: "rampart", at: [-hw + t / 2 + walk, c.wallHeight, 0] }, { kind: "rampart", at: [hw - t / 2 - walk, c.wallHeight, 0] });
-  for (const sx of [-1, 1]) for (const sz of [-1, 1]) out.push({ kind: "tower", at: [sx * (hw - t / 2), c.towerHeight, sz * (hd - t / 2)] });
+  // a roofed tower's top is no place to stand
+  for (const tw of castleTowers(c)) if (!tw.roof) out.push({ kind: "tower", at: tw.at });
   return out;
 }
 

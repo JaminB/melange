@@ -2,7 +2,7 @@
 // of each, on the Shape interface of structures-shapes.ts. Pure functions in local coordinates (the structure's origin on
 // the ground, y up) and map units; the tool scales the caller's units and places the result.
 import type { Vec3 } from "../core";
-import { place, styleMat, type MatBand, type MatStyle, type Shape, type Trim } from "./structures-shapes";
+import { onionProfile, place, styleMat, type MatBand, type MatStyle, type Shape, type Trim } from "./structures-shapes";
 
 export type CompoundKind = "box" | "cylinder" | "cone" | "dome" | "tiers";
 export type DomeProfile = "round" | "onion";
@@ -29,8 +29,7 @@ export interface CompoundSpec {
 /** The width of an onion dome's profile (1 at the base circle's radius) at t, 0 at its foot to 1 at its tip: a neck, a
  * bulge a third of the way up that is a tenth wider than the base, then a taper to a point. */
 export function onionWidth(t: number): number {
-  if (t <= 0.3) return 0.85 + 0.25 * Math.sin((t / 0.3) * (Math.PI / 2));
-  return 1.1 * Math.pow(Math.cos(((t - 0.3) / 0.7) * (Math.PI / 2)), 0.8);
+  return onionProfile(t);
 }
 
 /** The height of a tiers shape, in map units. */

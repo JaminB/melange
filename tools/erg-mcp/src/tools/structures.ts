@@ -9,6 +9,7 @@ import { applyPlan, dominantMaterial, type Packing } from "../lib/structures-app
 import {
   SIDES, arch, bridge, planBounds, castle, castleSpots, crater, flatTunnel, hasStyle, keep, lane, laneCut, place, placePoint, scaled, tower, tunnel, wallSegment, type Plan, type Shape,
   type GateSpec, type MatStyle, type Side, type Spot,
+  castleTowers, TOWER_CORNERS, type CastleSpec, type RoofSpec, type TowerCorner, type TowerSpec,
 } from "../lib/structures-shapes";
 import { compound, tiersHeight, type CompoundSpec } from "../lib/structures-compound";
 import { grids, tidy, toWorld } from "../lib/voxel";
@@ -33,6 +34,7 @@ const common: Record<string, Schema> = {
   drape: { type: "string", enum: ["skip", "sheared"], description: "Draped blocks (heightfield_drape's skin, corner offsets): skip (default) leaves them alone; sheared edits their cells where the game draws them (each column moved up by its corner offsets), so a ramp cut, tunnel or crater cuts through the skin too. Fills into a skin follow its shear, a voxel at a time." },
   packing: { type: "string", enum: ["tiles", "parts", "fit"], description: "How new blocks are cut. tiles (default): tiles of up to 31 voxels a side, each trimmed to what it holds. parts: a block per part (each wall, tower, the keep), merged where that costs few cells, so the air between parts (a courtyard) is in no block: fewer cells, more blocks. fit: the tiles, then the box whose halving saves the most cells halved again while blocks are left (maxBlocks): a rotated structure's diagonal walls in boxes that follow them (a castle at 45 degrees takes a fraction of the cells of tiles)." },
   maxBlocks: { type: "integer", minimum: 1, maximum: 64, description: "Refuse a plan whose new blocks are more than this; packing fit splits up to it (default: the blocks the level has left)." },
+  onSkin: { type: "boolean", description: "The structure stands on a draped skin on purpose (boulders bedded into dunes, a kerb, a low plinth): its new blocks are named ergonskin_N instead of ergblock_N, and save's and describe_level's drape.pokes advisory (a low undraped block poking out of a skin: a plug that should lie under it) leaves them out. Default false." },
   maxCells: { type: "integer", minimum: 1, maximum: 65535, description: "Refuse a plan whose new blocks hold more of the game's voxel cells than this (keep some of the 65535 for the rest of the level)." },
   costOnly: { type: "boolean", description: "Change nothing and answer only what the structure costs: its new blocks and the game's cells with each packing (tiles, parts, fit) at the call's blockScale, and at each costAt scale, and which fits the level's cells left. Cheaper to read than a dryRun." },
   costAt: { type: "array", items: { type: "number", minimum: 0.5, maximum: 4 }, minItems: 1, maxItems: 8, description: "Also plan the same structure all in new blocks (place \"new\") at each of these blockScales, changing nothing, and answer each one's blocks and the game's cells (costAt: [{blockScale, blocks, cells, fits}]), to choose a scale before building: a castle at 1.5 costs about 30 % of its cells at 1." },
@@ -100,6 +102,31 @@ const styleInfo = (a: { bands?: BandIn[]; trim?: TrimIn }, st: MatStyle | undefi
   (st ? { style: { ...(a.bands?.length ? { bands: a.bands.length } : {}), ...(a.trim ? { trim: a.trim } : {}) } } : {});
 const CAP_NOTE = "trim.merlonCap: crenellations is off, so there are no merlons to cap";
 
+interface RoofIn { style: "dome" | "onion" | "cone"; radius?: number; height?: number; material?: number; tipMaterial?: number; tipHeight?: number; }
+const roofProps: Record<string, Schema> = {
+  style: { type: "string", enum: ["dome", "onion", "cone"], description: "dome: a sphere cap (height up to the radius) or half an ellipsoid (taller); onion: a neck, a bulge a tenth wider than the radius a third of the way up, a taper to a point; cone: straight to a point." },
+  radius: { type: "number", minimum: 0.5, description: "The roof's base radius. Default: the tower's radius, less the merlon ring (one voxel) when the tower is crenellated." },
+  height: { type: "number", minimum: 0.5, description: "Default: the radius (dome), 1.6 x the radius (onion), 1.5 x the radius (cone)." },
+  material: matIdx,
+  tipMaterial: { ...matIdx, description: "Paints the topmost tipHeight of the roof (a finial)." },
+  tipHeight: { type: "number", minimum: 0.01, description: "Default one voxel." },
+};
+const ROOF_NOTE = "A roof is built from the structure's own voxels (blockScale / scale): at 1.5 a radius of 4 is under 3 voxels and reads as stacked tiles. For a smooth dome build it apart with build_compound (kind dome) at a blockScale of 0.75 or less on the positions structureInfo.towers gives.";
+const roofSchema = (what: string): Schema => ({ type: "object", additionalProperties: false, required: ["style"], description: `A roof on ${what}: a dome, onion dome or cone standing on the top floor. ${ROOF_NOTE} Unset, the top stays open (as before).`, properties: roofProps });
+
+/** A roof in design voxels (k = voxels per call unit), the defaults filled in. */
+function roofOf(r: RoofIn | undefined, k: number, towerRadius: number, cren: boolean, mat: number, what: string): RoofSpec | undefined {
+  if (r === undefined) return undefined;
+  if (r === null || typeof r !== "object" || !["dome", "onion", "cone"].includes(r.style)) throw new ToolError(`${what}: {style: "dome" | "onion" | "cone", radius, height, material, tipMaterial, tipHeight}`);
+  const idx = (v: unknown, w: string) => { if (typeof v !== "number" || !Number.isInteger(v) || v < 0 || v > 63) throw new ToolError(`${what}.${w} is a material index 0-63`); return v; };
+  const radius = r.radius === undefined ? Math.max(1, towerRadius - (cren ? 1 : 0)) : r.radius * k;
+  if (!(radius > 0)) throw new ToolError(`${what}.radius is over 0`);
+  const height = r.height === undefined ? radius * (r.style === "dome" ? 1 : r.style === "onion" ? 1.6 : 1.5) : r.height * k;
+  if (!(height > 0)) throw new ToolError(`${what}.height is over 0`);
+  return { style: r.style, radius, height, material: r.material === undefined ? mat : idx(r.material, "material"),
+    ...(r.tipMaterial !== undefined ? { tip: idx(r.tipMaterial, "tipMaterial"), tipHeight: r.tipHeight === undefined ? 1 : r.tipHeight * k } : {}) };
+}
+
 const CASTLE_SCALE: Schema = { type: "number", minimum: 0.5, maximum: 4, description: "Build the castle from voxels of this many map units (default 1). Lengths stay map units; the design is laid out in voxels of `scale` (walls, merlons and gates keep their rhythm in voxels) and new blocks get that scale (blockScale, which is accepted as the same setting), so it costs about 1/scale^3 of the cells. Use place \"new\". blockScale alone keeps the design in voxels of 1 map unit and only puts its new blocks on that lattice (as before); build_wall, build_tower and the other structure tools take scale as another name for their blockScale." };
 
 const SIDE_NOTE = "Sides are map directions: n = -z, s = +z, e = +x, w = -x (before the rotation).";
@@ -134,7 +161,7 @@ function settle(s: Session, a: { at: Vec3; ground?: "max" | "mean" | "min"; sink
 }
 
 interface Common { material?: number; place?: "auto" | "existing" | "new"; dryRun?: boolean; units?: "map" | "world"; blockScale?: number; packing?: Packing; drape?: "skip" | "sheared"; costAt?: number[];
-  maxBlocks?: number; maxCells?: number; costOnly?: boolean; scale?: number; }
+  maxBlocks?: number; maxCells?: number; costOnly?: boolean; scale?: number; onSkin?: boolean; }
 
 /** `scale` as the other tools' name for blockScale (build_castle takes scale, build_wall and build_tower blockScale):
  * both are accepted on every structure tool; given both, they must agree. build_castle's own scale also lays its design
@@ -181,7 +208,7 @@ function run(s: Session, a: Common, anchor: Vec3, structure: string, make: (k: n
       ...(cheapest ? { cheapest: { packing: cheapest.packing, cells: cheapest.cells, blocks: cheapest.blocks } } : { cheapest: null }), ...(costAt ? { costAt } : {}),
       structureInfo: plan.info, note: "nothing was changed; cells are the game's voxel cells (X x Y x Z of each new block) the structure's new blocks take, which must fit in levelCellsFree" };
   }
-  const r = applyPlan(store, plan, { place: a.place ?? "auto", dryRun: !!a.dryRun, blockScale: bs, packing: a.packing, drape: a.drape, maxBlocks: a.maxBlocks, maxCells: a.maxCells });
+  const r = applyPlan(store, plan, { place: a.place ?? "auto", dryRun: !!a.dryRun, blockScale: bs, packing: a.packing, drape: a.drape, maxBlocks: a.maxBlocks, maxCells: a.maxCells, onSkin: a.onSkin });
   return { structure, material: mat, ...(a.material === undefined ? { materialNote: "chosen from the voxels near the structure; pass material to set it" } : {}), ...r, ...(costAt ? { costAt } : {}),
     structureInfo: plan.info, undo: r.dryRun || !r.voxels.changed ? undefined : "undo reverts the whole structure in one step; save writes it" };
 }
@@ -428,6 +455,9 @@ export const tools: Tool[] = [
         crenellations: crenellations("Merlons on the walls, towers and keep. Default true."),
         bands: bandsSchema("the floor, on the foundation, walls, towers and keep alike"),
         trim: trimSchema("the walls, towers and keep", true),
+        towerRoof: { ...roofSchema("each corner tower"), properties: { ...roofProps,
+          only: { type: "array", items: { type: "string", enum: ["nw", "sw", "ne", "se"] }, minItems: 1, maxItems: 4, description: "Roof only these corner towers (before the rotation: n = -z, w = -x). Default all four." },
+          materials: { type: "object", additionalProperties: false, description: "A roof material per corner, over `material`: {nw, sw, ne, se}.", properties: { nw: matIdx, sw: matIdx, ne: matIdx, se: matIdx } } } },
         foundation, rotation, ...groundProps, ...common, scale: CASTLE_SCALE,
       },
     },
@@ -435,7 +465,8 @@ export const tools: Tool[] = [
       towerHeight?: number; keep?: boolean; keepSize?: [number, number]; keepHeight?: number; gate?: string; gateWidth?: number; gateHeight?: number;
       keepAxes?: "xz" | "gate"; gateLane?: boolean | number | { width?: number; mode?: "auto" | "keep" | "gate"; side?: "left" | "right" };
       gateBelow?: number | "auto"; gates?: { side: Side; width?: number; height?: number; offset?: number; below?: number | "auto" }[]; seat?: boolean; seatDepth?: number;
-      crenellations?: boolean; foundation?: number; rotation?: number; scale?: number; ground?: "max" | "mean" | "min"; sink?: number; bands?: BandIn[]; trim?: TrimIn }) {
+      crenellations?: boolean; foundation?: number; rotation?: number; scale?: number; ground?: "max" | "mean" | "min"; sink?: number; bands?: BandIn[]; trim?: TrimIn;
+      towerRoof?: RoofIn & { only?: TowerCorner[]; materials?: Partial<Record<TowerCorner, number>> } }) {
       finite(a0.at, "at");
       const sz0 = a0.size ?? [30 * (a0.units === "world" ? 20 : 1), 30 * (a0.units === "world" ? 20 : 1)];
       const settled = settle(s, a0, sz0[0] / 2, sz0[1] / 2), a = { ...a0, at: settled.at };
@@ -482,7 +513,13 @@ export const tools: Tool[] = [
           material: mat, cren: a.crenellations !== false, found: a.foundation === undefined ? 0 : a.foundation / v,
           ...(laneOut?.keepAt ? { keepAt: laneOut.keepAt, keepDoor: laneOut.keepDoor } : {}),
           ...(style ? { style } : {}),
-        };
+        } as CastleSpec;
+        if (a.towerRoof !== undefined) {
+          const { only, materials, ...rf } = a.towerRoof ?? ({} as NonNullable<typeof a.towerRoof>);
+          if (only !== undefined && (!Array.isArray(only) || only.some((c) => !TOWER_CORNERS.includes(c)))) throw new ToolError("towerRoof.only is a list of nw, sw, ne, se");
+          spec.towerRoofs = TOWER_CORNERS.map((c) => (only && !only.includes(c) ? null
+            : roofOf({ ...rf, ...(materials?.[c] !== undefined ? { material: materials[c] } : {}) }, k, tr, spec.cren, mat, "towerRoof")!));
+        }
         const at = sc(a.at, k0);
         const gs = grids(s.store);
         // a gate's below: the floor less the ground just outside its middle (auto), at most the passage's length
@@ -502,7 +539,7 @@ export const tools: Tool[] = [
             } else below = Math.min(pass, want * k);
             return { side: g.side, width: w, height: h, shift, below };
           }) : undefined;
-        if (gateList) (spec as typeof spec & { gates?: GateSpec[] }).gates = gateList;
+        if (gateList) spec.gates = gateList;
         // a gate as high as the wall (or leaving a lintel under a voxel) would leave the merlons over it floating: the
         // castle cuts them (castle(): the carve is opened to the top of the merlon row) and says so
         for (const g of gateList ?? (gate ? [{ side: gate, height: spec.gateHeight }] : []))
@@ -515,8 +552,15 @@ export const tools: Tool[] = [
         }
         spots = castleSpots(spec).map((p) => ({ kind: p.kind, at: placePoint(sc(p.at, v), at, a.rotation ?? 0) }));
         const m = (x: number) => tidy([x * v, 0, 0])[0];
+        // the corner towers as built: the centre of each top floor (the call's units), and its roof
+        const towers = castleTowers(spec).map((tw) => {
+          const p = placePoint(sc(tw.at, v), at, a.rotation ?? 0);
+          const u = (x: number) => tidy([x / k0, 0, 0])[0];
+          return { corner: tw.corner, at: [u(p[0]), u(p[1]), u(p[2])], topY: u(p[1]), radius: u(tr * v),
+            ...(tw.roof ? { roof: { style: tw.roof.style, radius: u(tw.roof.radius * v), height: u(tw.roof.height * v), tipY: u(p[1] + tw.roof.height * v), material: tw.roof.material } } : {}) };
+        });
         return { label: "Build castle", shapes, notes, info: { size: [m(size[0]), m(size[1])], wallHeight: m(wh), wallThickness: m(t), towerRadius: m(tr),
-          towerHeight: m(spec.towerHeight), keep: keepSize ? [m(keepSize[0]), m(keepSize[1])] : null,
+          towerHeight: m(spec.towerHeight), towers, keep: keepSize ? [m(keepSize[0]), m(keepSize[1])] : null,
           gate: gate ? { side: gate, width: m(spec.gateWidth), height: m(spec.gateHeight) } : null,
           ...(gateList ? { gates: gateList.map((g) => ({ side: g.side, width: m(g.width), height: m(g.height), offset: m(g.shift), below: m(g.below) })) } : {}),
           ...(a.seat ? { seat: { depth: a.seatDepth ?? 8 } } : {}),
@@ -591,12 +635,13 @@ export const tools: Tool[] = [
         doorHeight: { type: "number", minimum: 2, description: "Default 3." },
         crenellations: crenellations("Merlons round the rim. Default true."),
         bands: bandsSchema("the base"), trim: trimSchema("the tower", true),
+        roof: roofSchema("the tower"),
         foundation, rotation, ...groundProps, ...common,
       },
     },
     handler(s, a0: Common & { at: Vec3; shape?: "round" | "square"; radius?: number; height?: number; hollow?: boolean; wallThickness?: number; door?: string;
       doorWidth?: number; doorHeight?: number; crenellations?: boolean; foundation?: number; rotation?: number; ground?: "max" | "mean" | "min"; sink?: number;
-      bands?: BandIn[]; trim?: TrimIn }) {
+      bands?: BandIn[]; trim?: TrimIn; roof?: RoofIn }) {
       finite(a0.at, "at");
       const r0 = a0.radius ?? 4 * (a0.units === "world" ? 20 : 1), settled = settle(s, a0, r0, r0), a = { ...a0, at: settled.at };
       const res = run(s, a, a.at, "tower", (k, mat, U) => {
@@ -604,10 +649,15 @@ export const tools: Tool[] = [
         if (a.hollow && wall >= r - 0.5) throw new ToolError("the wall is as thick as the tower is wide: lower wallThickness or raise radius");
         const door = sideOf(a.door, a.hollow ? "s" : null);
         const spec = { shape: a.shape ?? "round", radius: r, height: U(a.height, 14), material: mat, hollow: !!a.hollow, wall, door,
-          doorWidth: U(a.doorWidth, 2), doorHeight: U(a.doorHeight, 3), cren: a.crenellations !== false, found: U(a.foundation, 0), style: matStyle(a, k) };
+          doorWidth: U(a.doorWidth, 2), doorHeight: U(a.doorHeight, 3), cren: a.crenellations !== false, found: U(a.foundation, 0), style: matStyle(a, k) } as TowerSpec;
+        const rf = roofOf(a.roof, k, r, spec.cren, mat, "roof");
+        if (rf) spec.roof = rf;
         const notes = spec.style?.trim?.merlonCap !== undefined && !spec.cren ? [CAP_NOTE] : [];
-        return { label: "Build tower", shapes: place(tower(spec), sc(a.at, k), a.rotation ?? 0), notes,
-          info: { shape: spec.shape, radius: r, height: spec.height, hollow: spec.hollow, door, ...styleInfo(a, spec.style) } };
+        const base = sc(a.at, k), o = (x: number) => tidy([x / k, 0, 0])[0];
+        return { label: "Build tower", shapes: place(tower(spec), base, a.rotation ?? 0), notes,
+          info: { shape: spec.shape, radius: r, height: spec.height, hollow: spec.hollow, door, ...styleInfo(a, spec.style),
+            towers: [{ at: [o(base[0]), o(base[1] + spec.height), o(base[2])], topY: o(base[1] + spec.height), radius: o(r),
+              ...(rf ? { roof: { style: rf.style, radius: o(rf.radius), height: o(rf.height), tipY: o(base[1] + spec.height + rf.height), material: rf.material } } : {}) }] } };
       }) as Record<string, unknown>;
       return settled.groundUnder ? { ...res, groundUnder: settled.groundUnder } : res;
     },

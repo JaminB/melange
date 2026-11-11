@@ -153,6 +153,61 @@ export function spanAcross(S: Surfaces, n: number, dx: number, dz: number, maxSt
   return v;
 }
 
+/** The free columns either side of node n across a move in direction (dx, dz): [plus, minus], the steps along the
+ * perpendicular (-dz, dx) and against it to the first column with a wall at the worm's body height (spanAcross's rule),
+ * Infinity where there is none within OPEN_SPAN. */
+export function freeSides(S: Surfaces, n: number, dx: number, dz: number, maxStep: number, bodyHeight: number): [number, number] {
+  const px = -dz, pz = dx, len = S.step * Math.hypot(px, pz), kMax = Math.ceil(OPEN_SPAN / len) + 1;
+  const y = S.y[n], ci = S.cell[n] % S.w, cj = Math.floor(S.cell[n] / S.w);
+  const wall = (i: number, j: number) => {
+    if (i < 0 || j < 0 || i >= S.w || j >= S.h) return false;
+    const c = j * S.w + i;
+    for (let k = S.spanStart[c]; k < S.spanStart[c + 1]; k++)
+      if (S.spanTop[k] > y + maxStep + 1e-6 && S.spanBottom[k] < y + bodyHeight - 1e-6) return true;
+    return false;
+  };
+  const free = (sgn: number) => { for (let k = 1; k <= kMax; k++) if (wall(ci + sgn * px * k, cj + sgn * pz * k)) return k; return Infinity; };
+  return [free(1), free(-1)];
+}
+
+/** An opening a path goes through: walls both sides of it within CENTRE_SPAN. `centre` is the middle of the gap at
+ * the node's height, `width` the free width (whole columns: a multiple of the step along x or z, of step x 1.41 on a
+ * diagonal). */
+export interface Opening { node: number; width: number; centre: Vec3; }
+
+/** An opening wider than this (map units) is a room, not a gate: its routes are not centred. */
+export const CENTRE_SPAN = 6;
+
+/** Where a path's node k stands between walls: the narrowest of the four directions with a wall on both sides (a gate is
+ * narrow across, whichever way the route steps into it), when it is at most CENTRE_SPAN wide; null on open ground. */
+export function openingAt(S: Surfaces, path: number[], k: number, o: ReachOptions): Opening | null {
+  const n = path[k], p = nodeAt(S, n);
+  let best: Opening | null = null;
+  for (const [dx, dz] of [[1, 0], [0, 1], [1, 1], [1, -1]] as const) {
+    const [plus, minus] = freeSides(S, n, dx, dz, o.maxStep, o.bodyHeight ?? o.headroom);
+    if (plus === Infinity || minus === Infinity) continue;
+    const width = (plus + minus - 1) * S.step * Math.hypot(dx, dz), half = (plus - minus) / 2;
+    if (width <= CENTRE_SPAN + 1e-6 && (!best || width < best.width - 1e-6)) best = { node: n, width, centre: [p[0] + half * -dz * S.step, p[1], p[2] + half * dx * S.step] };
+  }
+  return best;
+}
+
+/** A path's points with each node that stands in an opening moved to the middle of its gap (a route through a gate runs
+ * through its centre, not along a jamb, which is where the shortest walk cuts the corner); and the openings narrower
+ * than `narrow`, one per run of consecutive nodes (the narrowest of the run). */
+export function centredPath(S: Surfaces, path: number[], o: ReachOptions, narrow: number): { points: Vec3[]; openings: Opening[] } {
+  const points: Vec3[] = [], openings: Opening[] = [];
+  let run: Opening | null = null;
+  for (let k = 0; k < path.length; k++) {
+    const op = openingAt(S, path, k, o);
+    points.push(op ? op.centre : nodeAt(S, path[k]));
+    if (op && op.width < narrow - 1e-6) { if (!run || op.width < run.width) run = op; }
+    else if (run) { openings.push(run); run = null; }
+  }
+  if (run) openings.push(run);
+  return { points, openings };
+}
+
 /** The gap a worm at node n stands in: the narrowest spanAcross of the four directions (along x, along z, the two
  * diagonals) under the options' body (maxStep, bodyHeight or headroom). A doorway is narrow across, whichever way the
  * route steps into it (a diagonal step into a slot measured only across the diagonal would see open ground). */

@@ -29,6 +29,7 @@ import {
 import { ToolError } from "../registry";
 import { PATCH_BUDGET, WORLD_PER_MAP, grids, runBytes, tidy, type Grid } from "./voxel";
 import { compile, fbm, noise2, ExprError, type Vars } from "./heightfield-expr";
+import { GROUND, OUTLET, WALL, basins, fillBasins, spillLevels } from "./basins";
 
 export type Units = "map" | "world";
 
@@ -121,6 +122,13 @@ export interface Crater { radius: number; depth: number; x?: number; z?: number;
 /** A part of the level in x, z (the region's units): a circle or a rectangle. */
 export interface Area { x?: number; z?: number; radius?: number; min?: [number, number]; max?: [number, number]; }
 
+/** fillBasins: every column lying more than `maxDepth` (units, default 0) under the level its basin spills at is raised
+ * to that level less maxDepth, so no closed depression deeper than maxDepth is left in the field (a pit a worm walks
+ * into and not out of: where a pad's flat ring cuts a dune trough off). What falls off the field leaves: the rectangle's
+ * edge, columns outside `clip` and columns with no ground are outlets, and so is ground at or under `outletBelow` (a
+ * level y in units: the sea). Columns inside `exclude` are walls (a structure stands there). */
+export interface BasinFill { maxDepth?: number; outletBelow?: number; }
+
 export interface FieldArgs {
   units?: Units;
   min: [number, number];                    // x, z (level coordinates in units)
@@ -150,6 +158,7 @@ export interface FieldArgs {
   blend?: boolean | Blend;                  // blend material boundaries per corner (default off)
   relax?: number;                           // passes of smoothing over the heights (default 0)
   maxGradient?: number;                     // degrees: no column steeper than this against its neighbours (default none)
+  fillBasins?: boolean | BasinFill;         // no closed basins: depressions filled to their spill height (default off)
   // internal (never from a tool's arguments): keep a column by its centre (map units) and the voxel size, after clip
   // and exclude; heightfield_drape's refine cuts the fine zone out of the coarse skin and clips the fine one to it
   keepColumn?: (mx: number, mz: number, s: number) => boolean;
@@ -241,6 +250,7 @@ export interface Field {
   height: Float32Array;                     // per column, voxels above the floor (after crater, cap)
   slope: Float32Array;                      // per column, degrees
   limited?: { passes: number; steepest: number };   // relax / maxGradient ran: the limiter's passes and the steepest slope left
+  basins?: Record<string, unknown>;         // fillBasins ran: what it found and raised (the plan's report)
   materialAt(col: number, y: number): number;
   /** The word a field voxel is written as: filled(materialAt), with a second material at a boundary when blend is on.
    * `layered` compares a neighbour's voxel at the same depth under its own top (a drape's skin) instead of the same y. */
@@ -307,9 +317,9 @@ export function sampleField(store: EditorStore, a: FieldArgs): Field {
   const inArea = (ar: A, x: number, z: number) => ar.circle ? (x - ar.x) ** 2 + (z - ar.z) ** 2 <= ar.r * ar.r : x >= ar.x0 && x <= ar.x1 && z >= ar.z0 && z <= ar.z1;
   // clip keeps a column whose centre is inside; exclude drops one whose four corners are: a fine field clipped to an area
   // and a coarse one excluding the same area overlap at its edge instead of leaving a gap.
-  const kept = (mx: number, mz: number) => (!clip.length || clip.some((ar) => inArea(ar, mx, mz))) &&
-    !exclude.some((ar) => [-1, 1].every((dx) => [-1, 1].every((dz) => inArea(ar, mx + (dx * s) / 2, mz + (dz * s) / 2)))) &&
-    (!a.keepColumn || a.keepColumn(mx, mz, s));
+  const clipped = (mx: number, mz: number) => clip.length > 0 && !clip.some((ar) => inArea(ar, mx, mz));
+  const excluded = (mx: number, mz: number) => exclude.some((ar) => [-1, 1].every((dx) => [-1, 1].every((dz) => inArea(ar, mx + (dx * s) / 2, mz + (dz * s) / 2))));
+  const kept = (mx: number, mz: number) => !clipped(mx, mz) && !excluded(mx, mz) && (!a.keepColumn || a.keepColumn(mx, mz, s));
   const W = (nx * s) / k, D = (nz * s) / k;
   let fn: (v: Vars) => number;
   if (a.expr !== undefined) {
@@ -377,6 +387,17 @@ export function sampleField(store: EditorStore, a: FieldArgs): Field {
     }
   // relax and maxGradient: the heights smoothed and slope-limited over the kept columns, then made whole voxels again
   let limited: { passes: number; steepest: number } | undefined;
+  let basinFill: Field["basins"];
+  // the columns' whole-voxel tops again from the heights, after a pass that moved them
+  const retop = (isKept: (c: number) => boolean) => {
+    for (let c = 0; c < n; c++) {
+      if (!isKept(c)) continue;
+      const a2 = c % nx, b = (c - a2) / nx, hv = Math.max(0, height[c]);
+      height[c] = hv;
+      const top = edges === "round" ? Math.round(hv) : Math.floor(hv + 1 - threshold(i0 + a2, j0 + b));
+      if (top >= 1) { lo[c] = floor - depth; hi[c] = floor + top; } else { lo[c] = 0; hi[c] = 0; }
+    }
+  };
   if ((a.relax ?? 0) > 0 || a.maxGradient !== undefined) {
     if (a.relax !== undefined && !(Number.isInteger(a.relax) && a.relax >= 0 && a.relax <= 50)) throw new ToolError("relax is 0-50 passes");
     if (a.maxGradient !== undefined && !(a.maxGradient >= 1 && a.maxGradient <= 89)) throw new ToolError("maxGradient is 1-89 degrees");
@@ -391,6 +412,35 @@ export function sampleField(store: EditorStore, a: FieldArgs): Field {
       const top = edges === "round" ? Math.round(hv) : Math.floor(hv + 1 - threshold(i0 + a2, j0 + b));
       if (top >= 1) { lo[c] = floor - depth; hi[c] = floor + top; } else { lo[c] = 0; hi[c] = 0; }
     }
+  }
+  // fillBasins: after relax and maxGradient (which can close a trough off), so the surface that is built has none
+  if (a.fillBasins) {
+    const o: BasinFill = a.fillBasins === true ? {} : a.fillBasins;
+    if (o === null || typeof o !== "object") throw new ToolError("fillBasins is true or {maxDepth, outletBelow}");
+    if (o.maxDepth !== undefined && !(Number.isFinite(o.maxDepth) && o.maxDepth >= 0)) throw new ToolError("fillBasins.maxDepth is a depth of 0 or more");
+    if (o.outletBelow !== undefined && !Number.isFinite(o.outletBelow)) throw new ToolError("fillBasins.outletBelow is a level y");
+    // a height of hv voxels above the lattice floor has its ground there (keepFloor's lift is already in the heights)
+    const groundY = (hv: number) => ((floor + hv) * s + t[1]) / k;
+    const kind = new Uint8Array(n), wasKept = new Uint8Array(n);
+    for (let b = 0; b < nz; b++)
+      for (let a2 = 0; a2 < nx; a2++) {
+        const c = b * nx + a2, mx = (i0 + a2 + 0.5) * s + t[0], mz = (j0 + b + 0.5) * s + t[2];
+        wasKept[c] = hi[c] > lo[c] ? 1 : 0;
+        kind[c] = excluded(mx, mz) ? WALL
+          : a2 === 0 || b === 0 || a2 === nx - 1 || b === nz - 1 || clipped(mx, mz) || !(height[c] > 0) || (o.outletBelow !== undefined && groundY(height[c]) <= o.outletBelow + 1e-4) ? OUTLET : GROUND;
+      }
+    const before = Float32Array.from(height);
+    const maxDepth = (o.maxDepth ?? 0) * kv;
+    const spill0 = spillLevels(before, nx, nz, kind);
+    const found = basins(before, nx, nz, kind, spill0, maxDepth);
+    const r = fillBasins(height, nx, nz, kind, maxDepth);
+    const u = (v: number) => num(v / kv), at = (x: number, z: number) => [num(((i0 + x + 0.5) * s + t[0]) / k), num(((j0 + z + 0.5) * s + t[2]) / k)];
+    basinFill = { maxDepth: o.maxDepth ?? 0, ...(o.outletBelow !== undefined ? { outletBelow: o.outletBelow } : {}), basins: found.length, columnsRaised: r.raised, mostRaised: u(r.most),
+      volume: num((r.volume * s * s * s) / (k * k * k)),
+      largest: found.slice(0, 8).map((b) => ({ at: at(b.at[0], b.at[1]), columns: b.cells, depth: b.walledIn ? null : u(b.deepest), floorY: num(groundY(b.floor)), spillY: b.walledIn ? null : num(groundY(b.spill)),
+        ...(b.walledIn ? { walledIn: true } : {}) })),
+      note: "basins: closed depressions deeper than maxDepth before the fill (largest first, at the deepest column, depth and levels in the call's units); each column deeper than maxDepth under its basin's spill level was raised to that level less maxDepth; a walledIn basin (exclude areas all round it, no outlet) is left as it is" };
+    if (r.raised) retop((c) => !!wasKept[c] || (kind[c] === GROUND && height[c] !== before[c] && kept((i0 + (c % nx) + 0.5) * s + t[0], (j0 + Math.floor(c / nx) + 0.5) * s + t[2])));
   }
   for (let b = 0; b < nz; b++)
     for (let a2 = 0; a2 < nx; a2++) {
@@ -602,7 +652,7 @@ export function sampleField(store: EditorStore, a: FieldArgs): Field {
     }
     return null;
   };
-  const field: Field = { k, s, t, sceneId, i0, j0, nx, nz, floor, floorAsked: a.floor * k, keepFloor: !!a.keepFloor, runLimit, lo, hi, height, slope, materialAt, ...(limited ? { limited } : {}),
+  const field: Field = { k, s, t, sceneId, i0, j0, nx, nz, floor, floorAsked: a.floor * k, keepFloor: !!a.keepFloor, runLimit, lo, hi, height, slope, materialAt, ...(limited ? { limited } : {}), ...(basinFill ? { basins: basinFill } : {}),
     wordAt(col: number, y: number, layered = false) {
       if (edgeDepth && hi[col] - 1 - y < edgeDepth) {
         const e = edgeWord(col, y);
@@ -1148,7 +1198,8 @@ export function plan(store: EditorStore, a: FieldArgs, shape?: (f: Field) => voi
     region: { voxelSize: f.s, edges: a.edges ?? "round", packer: a.packer ?? "tiles", columns: f.nx * f.nz, size: [f.nx, f.nz], solidColumns: columns, map: { min: tidy(rect.min), max: tidy(rect.max) },
       world: { min: tidy(rect.min.map((v) => v * WORLD_PER_MAP) as Vec3), max: tidy(rect.max.map((v) => v * WORLD_PER_MAP) as Vec3) },
       floor: { map: num(f.floor * f.s + f.t[1]), world: toW(f.floor * f.s + f.t[1]), ...floorReport(f) }, peakVoxels: columns ? top - f.floor : 0,
-      ...(f.limited ? { slopeLimit: { relax: a.relax ?? 0, ...(a.maxGradient !== undefined ? { maxGradient: a.maxGradient } : {}), passes: f.limited.passes, steepestDegrees: Math.round(f.limited.steepest * 10) / 10 } } : {}) },
+      ...(f.limited ? { slopeLimit: { relax: a.relax ?? 0, ...(a.maxGradient !== undefined ? { maxGradient: a.maxGradient } : {}), passes: f.limited.passes, steepestDegrees: Math.round(f.limited.steepest * 10) / 10 } } : {}),
+      ...(f.basins ? { basins: f.basins } : {}) },
     voxels: { field: voxels, alreadySolid: solidVoxels, inFrames: fillVoxels, inBlocks: keptVoxels, dropped: blockVoxels - keptVoxels },
     frames: cv.fills.map((x) => ({ id: x.grid.id, name: x.grid.frame.name, ...(x.aligned ? {} : { approximate: true }), cellsFilled: x.changes.size, covers: x.covers, alreadySolid: x.solid, runs: x.runs })),
     ...(cv.skipped.length ? { framesSkipped: { count: cv.skipped.length,

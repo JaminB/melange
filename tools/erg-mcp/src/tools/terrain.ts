@@ -52,6 +52,7 @@ const gridUnitsNeedFrame = (a: { units?: Units; frame?: number }) => {
 const surfaceProps = {
   material: { ...material, description: "Material 0-63 to paint." },
   depth: { type: "number", minimum: 0.01, maximum: 1280, description: "How deep under the ground's top to paint, in `units` (default 1 map unit, 20 world: the top voxel of an unscaled frame; give a frame's voxel size for a scaled one)." },
+  depthFrom: { type: "string", enum: ["centre", "top"], description: "What depth is measured to: a voxel's centre (default: a voxel taller than 2 x depth is never painted, so depth 1 leaves a 3-unit voxel alone) or its top face (the top voxel of every column is painted whatever its frame's scale, and each voxel under it whose top is less than depth down). When the centre rule leaves top voxels out, the answer's skippedByDepth (or the refusal) says how tall they are and what depth takes them." },
   only: { type: "array", items: { type: "integer", minimum: 0, maximum: 63 }, maxItems: 64, description: "Repaint only voxels of these materials (e.g. the rock, not a castle's walls)." },
   except: { type: "array", items: { type: "integer", minimum: 0, maximum: 63 }, maxItems: 64, description: "Never repaint voxels of these materials." },
   units: { type: "string", enum: ["world", "map"], description: "world (default, the Erg panel's) or map units, for every position, length and the mask." },
@@ -69,10 +70,10 @@ const shapeSchema: Schema = { type: "object", additionalProperties: false, descr
   properties: { x: { type: "number" }, z: { type: "number" }, radius: { type: "number", minimum: 0 },
     min: { type: "array", items: { type: "number" }, minItems: 2, maxItems: 2 }, max: { type: "array", items: { type: "number" }, minItems: 2, maxItems: 2 },
     points: { type: "array", items: { type: "array", items: { type: "number" }, minItems: 2, maxItems: 2 }, minItems: 3, maxItems: 500 } } };
-type SurfaceArgs = { material: number; depth?: number; only?: number[]; except?: number[]; units?: "world" | "map"; dryRun?: boolean; blend?: boolean; falloff?: number;
+type SurfaceArgs = { material: number; depth?: number; depthFrom?: "centre" | "top"; only?: number[]; except?: number[]; units?: "world" | "map"; dryRun?: boolean; blend?: boolean; falloff?: number;
   exclude?: Record<string, unknown>[]; excludeMask?: string };
 /** paintSurface's exclusions from the call (map units). */
-const excludeOf = (a: SurfaceArgs, k: number) => ({ ...(a.exclude ? { exclude: shapesToMap(a.exclude, k, "exclude") } : {}), ...(a.excludeMask ? { excludeMask: a.excludeMask } : {}) });
+const excludeOf = (a: SurfaceArgs, k: number) => ({ ...(a.depthFrom ? { depthFrom: a.depthFrom } : {}), ...(a.exclude ? { exclude: shapesToMap(a.exclude, k, "exclude") } : {}), ...(a.excludeMask ? { excludeMask: a.excludeMask } : {}) });
 /** paintSurface's blend from the call (map units). */
 const blendOf = (a: SurfaceArgs, k: number) => {
   if (a.falloff !== undefined && !a.blend) throw new ToolError("falloff is for blend: true");

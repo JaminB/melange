@@ -5,6 +5,7 @@ import path from "node:path";
 import { budget, DEFAULT_RESERVE, meshPoolFromIni } from "../lib/budget";
 import { simFingerprint } from "../lib/sim-fingerprint";
 import { shipRange } from "../lib/ship-gate";
+import { shipFeatures } from "../lib/ship-gate-export";
 import { ToolError, type Tool } from "../registry";
 
 export const tools: Tool[] = [
@@ -27,7 +28,7 @@ export const tools: Tool[] = [
         const r = meshPoolFromIni(fs.existsSync(f) ? fs.readFileSync(f, "utf8") : null);
         pool = r.pool; from = r.from;
       }
-      return { ...budget(details, pool, a.reserve ?? DEFAULT_RESERVE), poolFrom: from, counts: c, ship: shipRange(details) };
+      return { ...budget(details, pool, a.reserve ?? DEFAULT_RESERVE), poolFrom: from, counts: c, ship: shipRange(details, undefined, shipFeatures(p.store)) };
     },
   },
 ];

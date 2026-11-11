@@ -1,1 +1,3 @@
 media/yt-dlp-public.key -text
+# Built map packs are compared byte for byte with a fresh export (bench ship checks): never convert their line ends.
+tools/erg-mcp/bench/*/pack/** -text

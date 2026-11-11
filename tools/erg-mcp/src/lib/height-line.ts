@@ -1,24 +1,29 @@
 // The engine's landscape box and a height line over it (Sandtide's sand line): pure, for describe_level's landBounds and
-// check_height_line. The box is the union of the voxel frames' boxes (map y), the end each frame sets is named.
-import type { Grid } from "./voxel";
+// check_height_line. The box is the union of the boxes of the voxel frames that hold ground (map y), the end each frame
+// sets is named. A frame with no solid voxel is left out: the game builds its box from the land there is, so a base frame
+// emptied by remove_base_frames (DinerMight's crane, 278 map units up) does not move the line (Dustcrown: the game logged
+// land Y -400 to 1110 while every frame's box gave -1678 to 5559).
+import { isSolid, type Grid } from "./voxel";
 
 export interface LandBounds {
   minY: number; maxY: number;              // map units
   minFrame: number; maxFrame: number;      // the frame whose box sets each end
   minFrameName: string; maxFrameName: string;
+  emptySkipped: number;                    // voxel frames with no solid voxel, left out of the box
 }
 
-/** The land box's vertical extent from the voxel frames; null when there are none. Sandtide reads the same box from
- * wum.sim.land() (Land.MinBounds / MaxBounds), which the engine builds from every voxel frame. */
-export function landBounds(gs: Pick<Grid, "id" | "frame" | "bounds">[]): LandBounds | null {
+/** The land box's vertical extent from the voxel frames that hold a solid voxel; null when there are none. Sandtide reads
+ * the same box from wum.sim.land() (Land.MinBounds / MaxBounds). A grid given without its words counts as holding ground. */
+export function landBounds(gs: (Pick<Grid, "id" | "frame" | "bounds"> & { words?: Uint32Array })[]): LandBounds | null {
   type G = Pick<Grid, "id" | "frame" | "bounds">;
-  let lo: G | null = null, hi: G | null = null;
+  let lo: G | null = null, hi: G | null = null, emptySkipped = 0;
   for (const g of gs) {
+    if (g.words && !g.words.some(isSolid)) { emptySkipped++; continue; }
     if (!lo || g.bounds.min[1] < lo.bounds.min[1]) lo = g;
     if (!hi || g.bounds.max[1] > hi.bounds.max[1]) hi = g;
   }
   if (!lo || !hi) return null;
-  return { minY: lo.bounds.min[1], maxY: hi.bounds.max[1], minFrame: lo.id, maxFrame: hi.id, minFrameName: lo.frame.name, maxFrameName: hi.frame.name };
+  return { minY: lo.bounds.min[1], maxY: hi.bounds.max[1], minFrame: lo.id, maxFrame: hi.id, minFrameName: lo.frame.name, maxFrameName: hi.frame.name, emptySkipped };
 }
 
 export interface HeightLine {

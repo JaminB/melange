@@ -23,6 +23,10 @@ export type Shape = { x: number; z: number; radius: number; wobble?: Wobble } | 
 export interface SurfacePaint {
   material: number;
   depth: number;                            // map units under the ground's top that are painted (1: the top voxel)
+  // what is measured against depth: the voxel's centre (the default, the rule since the tool was made) or its top face.
+  // With "centre" a voxel taller than 2 x depth is never painted (a 3-unit plinth voxel and depth 1); "top" paints every
+  // voxel whose top face is less than depth under the ground's top, so the top voxel always is, whatever its frame's scale.
+  depthFrom?: "centre" | "top";
   path?: Vec3[];                            // map units; the band is `width` across (x, z only)
   width?: number;                           // map units
   taper?: number;                           // the band's width at the end as a multiple of width
@@ -135,6 +139,8 @@ export function paintSurface(store: EditorStore, o: SurfacePaint) {
   const edit = new VoxelEdit(store);
   const per = new Map<number, number>();
   let looked = 0, blended = 0;
+  // surface voxels in the area that only the depth rule left out, and the tallest of them (for the refusal's reason)
+  let tooDeep = 0, tallest = 0;
   // whether a point of a voxel in a column whose ground top is `top` is in the area; `extra` widens a path's band and
   // a shape's edge (map units), for the blend's corners. d: the distance to the path (0 without one).
   const inArea = (px: number, py: number, pz: number, top: number, extra: number): { d: number } | null => {
@@ -159,6 +165,7 @@ export function paintSurface(store: EditorStore, o: SurfacePaint) {
     const b = g.bounds;
     if (box && (b.max[0] < box[0] || b.min[0] > box[2] || b.max[2] < box[1] || b.min[2] > box[3])) continue;
     const m = g.toMap, [X, Y, Z] = g.size;
+    const tall = Math.hypot(m[1], m[5], m[9]), lift = o.depthFrom === "top" ? tall / 2 : 0;
     for (let z = 0; z < Z; z++)
       for (let x = 0; x < X; x++)
         for (let y = 0; y < Y; y++) {
@@ -172,7 +179,11 @@ export function paintSurface(store: EditorStore, o: SurfacePaint) {
           looked++;
           vars.s = frameColumnSlope(g.frame, x, z);
           const top = groundTop(px, pz);
-          if (py < top - o.depth) continue;
+          if (o.depthFrom === "top" ? py + lift <= top - o.depth + 1e-9 : py < top - o.depth) {
+            // the column's top voxel, in the area, left out by the centre rule alone: counted, so a refusal can say why
+            if (o.depthFrom !== "top" && py + tall / 2 >= top - 1e-6 && inArea(px, py, pz, top, 0)) { tooDeep++; tallest = Math.max(tallest, tall); }
+            continue;
+          }
           if (inArea(px, py, pz, top, 0)) {
             // a voxel with a second material of its own (an earlier blend) keeps it: written as such a word
             edit.set(g.id, x, y, z, painted(w, o.material), maskOf(w) !== 0);
@@ -198,10 +209,13 @@ export function paintSurface(store: EditorStore, o: SurfacePaint) {
   const why = edit.check();
   if (why) throw new ToolError(why);
   const changed = edit.size;
-  if (!changed) throw new ToolError(looked ? "nothing to repaint: no solid surface voxel of another material is in the area (or every one is already that material)" : "no voxel frame has solid ground in the area");
+  const r2 = (v: number) => Math.round(v * 100) / 100;
+  // depth is measured to a voxel's centre: a frame whose voxels are taller than 2 x depth has no centre within it
+  const deepWhy = tooDeep ? `${tooDeep} top voxel${tooDeep === 1 ? "" : "s"} in the area ${tooDeep === 1 ? "is" : "are"} up to ${r2(tallest)} map units tall, so ${tooDeep === 1 ? "its" : "their"} centre is ${r2(tallest / 2)} under the ground's top, deeper than depth ${r2(o.depth)} (measured to the voxel's centre): give depth >= ${r2(tallest / 2)} map units, or depthFrom: "top"` : "";
+  if (!changed) throw new ToolError(tooDeep ? `nothing painted: ${deepWhy}` : looked ? "nothing to repaint: no solid surface voxel of another material is in the area (or every one is already that material)" : "no voxel frame has solid ground in the area");
   if (!o.dryRun) edit.commit(o.label);
   const name = (id: number) => store.scene.frames.find((f) => f.id === id)?.name ?? String(id);
-  return { changed, ...(o.blend ? { blendedEdge: blended } : {}), frames: [...per].sort((a, b) => b[1] - a[1]).slice(0, 60).map(([id, n]) => ({ id, name: name(id), changed: n })), ...(o.dryRun ? { dryRun: true } : { label: o.label }) };
+  return { changed, ...(tooDeep ? { skippedByDepth: { topVoxels: tooDeep, tallest: r2(tallest), why: deepWhy } } : {}), ...(o.blend ? { blendedEdge: blended } : {}), frames: [...per].sort((a, b) => b[1] - a[1]).slice(0, 60).map(([id, n]) => ({ id, name: name(id), changed: n })), ...(o.dryRun ? { dryRun: true } : { label: o.label }) };
 }
 
 /** A shape grown by `by` map units (circles and rectangles; a polygon is left as it is). */

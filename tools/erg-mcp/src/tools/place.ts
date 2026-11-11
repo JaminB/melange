@@ -1345,7 +1345,7 @@ export const tools: Tool[] = [
       type: "object", additionalProperties: false, required: ["modId", "name"],
       properties: { modId, name: { type: "string", description: "Display name (1-64 printable characters)." }, version: { type: "string", description: "x.y.z (default 1.0.0)." },
         mode: { type: "string", enum: ["source", "install"] }, survivor: { type: "boolean", description: "Also list the level in Survivor's Prebuilt maps (default false)." },
-        melangeRange: { type: "string", description: "spice.json melange.range (a semver range such as \">=0.14.0\"). Default: \">=0.2.0\", raised automatically to the Melange that enlarges the mesh pool when the level has more details than the vanilla pool loads (lib/ship-gate.ts); the answer's gate says which and why." } },
+        melangeRange: { type: "string", description: "spice.json melange.range (a semver range such as \">=0.14.0\"). Default: \">=0.2.0\", raised automatically to the newest Melange a feature the level uses needs (lib/ship-gate.ts): more details than the vanilla mesh pool loads or meshes of the pack's own bank (0.14.0), spawns.mode areas (0.15.0). The answer's gate says which and why (needs), and warns when a range given here admits an older Melange than the level needs. A Melange the range does not admit quarantines the pack, and build says so." } },
     },
     async handler(s, a: { modId: string; name: string; version?: string; mode?: "source" | "install"; survivor?: boolean; melangeRange?: string }) {
       const p = s.requireProject();

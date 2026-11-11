@@ -88,7 +88,10 @@ test("a sheer wall: tread.walkable false puts every step at the outline", async 
   assert.equal(topAt(c, 520 + 19.5, 0.5), 12);
   assert.equal(topAt(c, 520 + 20.5, 0.5), 0);
   assert.equal(topAt(c, 520 + 15, 0.5), 12);
-  assert.throws(() => tool.handler(session().s, { ...BASE, tread: { walkable: false, width: 4 } }), /sheer cliff/);
+  // with a width, walkable: false is a setback (a stepped face), not a refusal (round 2)
+  const sb: any = await tool.handler(session().s, { ...BASE, tread: { walkable: false, width: 4, jitter: 0 } });
+  assert.equal(sb.mesa.tread.setback, true);
+  assert.equal(sb.mesa.tread.width, 4);
 });
 
 test("risers vary by riserJitter but always reach the top; treads wander by jitter", async () => {

@@ -4,8 +4,9 @@ import { grids, limitProblems, tidy, toWorld, usage } from "../lib/voxel";
 import { ToolError, type Tool } from "../registry";
 import type { Session } from "../session";
 import { currentHash, factoryReport, spawnTreadWarnings } from "./place";
+import { pitWarnings } from "./inspect";
 import { backdropOf, coverLevel, waterBackdropWarning } from "../lib/backdrop";
-import { drapePokes, pokeLines } from "../lib/drape-pokes";
+import { drapePokes, onSkinBlocks, pokeLines } from "../lib/drape-pokes";
 import { landBounds } from "../lib/height-line";
 
 const discard = { type: "boolean", description: "Drop unsaved edits of the open project instead of refusing." } as const;
@@ -86,7 +87,7 @@ export function describe(s: Session, q: FrameQuery = {}) {
     spawnMode: scene.spawns.mode, surround: scene.hmp.mode, survivor: !!scene.kind?.survivor, script: !!scene.script?.present,
     extent: voxelFrames.length ? { map: { min: tidy(extent.min), max: tidy(extent.max) }, world: { min: tidy(toWorld(extent.min)), max: tidy(toWorld(extent.max)) } } : null,
     // the engine's landscape box (what wum.sim.land() reads) and the frame that sets each end: check_height_line's input
-    landBounds: lb ? { minY: both(lb.minY), maxY: both(lb.maxY), minFrame: { id: lb.minFrame, name: lb.minFrameName }, maxFrame: { id: lb.maxFrame, name: lb.maxFrameName } } : null,
+    landBounds: lb ? { minY: both(lb.minY), maxY: both(lb.maxY), minFrame: { id: lb.minFrame, name: lb.minFrameName }, maxFrame: { id: lb.maxFrame, name: lb.maxFrameName }, emptyFramesSkipped: lb.emptySkipped } : null,
     voxelFrames: { total: voxelFrames.length, matching: listed.length, listed: Math.min(limit, listed.length),
       solid: voxelFrames.reduce((n, f) => n + f.solid, 0), order: "largest first" },
     frames: listed.slice(0, limit),
@@ -113,10 +114,10 @@ export function describe(s: Session, q: FrameQuery = {}) {
 
 /** The undraped added blocks that poke out of a draped skin (lib/drape-pokes), as a `drape` field with the lines, or
  * nothing. A failing read (a frame with no voxels) is no warning. */
-function pokeReport(store: EditorStore): { drape?: { pokes: ReturnType<typeof drapePokes>; warnings: string[] } } {
+function pokeReport(store: EditorStore): { drape?: { pokes: ReturnType<typeof drapePokes>; warnings: string[]; onSkinBlocks?: number } } {
   try {
-    const pokes = drapePokes(grids(store));
-    return pokes.length ? { drape: { pokes: pokes.map((p) => ({ ...p, maxOver: Math.round(p.maxOver * 100) / 100, at: p.at.map((v) => Math.round(v * 100) / 100) as [number, number], blockTop: Math.round(p.blockTop * 100) / 100, skinTop: Math.round(p.skinTop * 100) / 100 })), warnings: pokeLines(pokes) } } : {};
+    const gs = grids(store), pokes = drapePokes(gs), tagged = onSkinBlocks(gs);
+    return pokes.length ? { drape: { ...(tagged ? { onSkinBlocks: tagged } : {}), pokes: pokes.map((p) => ({ ...p, maxOver: Math.round(p.maxOver * 100) / 100, at: p.at.map((v) => Math.round(v * 100) / 100) as [number, number], blockTop: Math.round(p.blockTop * 100) / 100, skinTop: Math.round(p.skinTop * 100) / 100 })), warnings: pokeLines(pokes) } } : {};
   } catch {
     return {};
   }
@@ -221,7 +222,7 @@ export const tools: Tool[] = [
   },
   {
     name: "describe_level",
-    description: "The open project: voxel frames, largest first (id, size, position and bounds in map and world units, solid count), the level's extent, `landBounds` (the engine's landscape box: min and max y in map and world units and the frame setting each end), spawns, objects, water, theme, time of day, usage against the patch limits (64 added blocks of at most 31 voxels a side, 2000 runs per frame, 20000 ops, 4 MB, 256 objects), the game's voxel cell budget (limits.voxelCells: X*Y*Z of every voxel frame, at most 65535, with cells used and free) and engineWarnings.",
+    description: "The open project: voxel frames, largest first (id, size, position and bounds in map and world units, solid count), the level's extent, `landBounds` (the engine's landscape box: min and max y in map and world units and the frame setting each end; voxel frames with no solid voxel, such as base frames emptied by remove_base_frames, are left out and counted in emptyFramesSkipped), spawns, objects, water, theme, time of day, usage against the patch limits (64 added blocks of at most 31 voxels a side, 2000 runs per frame, 20000 ops, 4 MB, 256 objects), the game's voxel cell budget (limits.voxelCells: X*Y*Z of every voxel frame, at most 65535, with cells used and free) and engineWarnings.",
     inputSchema: {
       type: "object", additionalProperties: false,
       properties: {
@@ -254,9 +255,11 @@ export const tools: Tool[] = [
       const sea = await waterBackdropWarning(s).catch(() => null);
       // spawn knots a worm cannot stand on (in solid, no ground near under it, on an edge): saved all the same, and said so
       const spawns = (() => { try { return spawnTreadWarnings(s.store); } catch { return [] as string[]; } })();
+      // pits a worm cannot walk out of (check_pits with its defaults): advisory
+      const pits = pitWarnings(s.store);
       // the hash test {expectHash} checks the game's project against (the patch and the script, not the stem or title)
       const projectHash = await currentHash(s).catch(() => undefined);
-      return { ...r, ...(projectHash ? { projectHash } : {}), ...(factory.length ? { factory } : {}), ...(sea?.warning ? { water: sea } : {}), ...(spawns.length ? { spawns } : {}), ...pokeReport(s.store), ...state(s), patchBytes: usage(s.store).patchBytes.used };
+      return { ...r, ...(projectHash ? { projectHash } : {}), ...(factory.length ? { factory } : {}), ...(sea?.warning ? { water: sea } : {}), ...(spawns.length ? { spawns } : {}), ...(pits.length ? { pits } : {}), ...pokeReport(s.store), ...state(s), patchBytes: usage(s.store).patchBytes.used };
     },
   },
   {

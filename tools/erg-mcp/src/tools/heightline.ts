@@ -19,7 +19,7 @@ interface Args {
 
 export const tools: Tool[] = [{
   name: "check_height_line",
-  description: "Where a height line falls against the land: Sandtide's sand line (`preset: \"sandtide\"`, fraction 0.25), or any `fraction` of the land box above its base, or a fixed `y`. The land box is the engine's landscape box from the voxel frames (describe_level `landBounds`: min and max y and the frame that sets each end). The base is the water at start when the land reaches under it (minY < water < maxY, the engine's own Water.Level: here the project's water level or `water`), else minY; the line is base + fraction x (maxY - base). Answers the line (map and world), the base and its kind, each spawn knot's height and ground and which side of the line it is (below: cursed by Sandtide; near: within `band`, default 40 world units, of the line; above), every standable surface sampled (a column every `step`) counted by side with its area and its lowest and highest, the near-the-line surfaces grouped in 4-unit cells (centre, heights, area; `limit` of them, default 20) and `flagged`: the knots and surface groups within the band. Warns when the water is at or under the land's bottom or over its top, when the line is outside the land box, and when every surface is on one side of it. Inspection only: the project is not changed. The box's top end is often one tall frame; its tip sets the line, so raise or lower that frame and ask again. Not the game's own number: the box here is the frames' boxes (a draped skin's box is its corner extremes), so compare with the in-game `sandtide: sand line at Y` log line and trust that.",
+  description: "Where a height line falls against the land: Sandtide's sand line (`preset: \"sandtide\"`, fraction 0.25), or any `fraction` of the land box above its base, or a fixed `y`. The land box is the engine's landscape box from the voxel frames (describe_level `landBounds`: min and max y and the frame that sets each end; frames with no solid voxel are left out). The base is the water at start when the land reaches under it (minY < water < maxY, the engine's own Water.Level: here the project's water level or `water`), else minY; the line is base + fraction x (maxY - base). Answers the line (map and world), the base and its kind, each spawn knot's height and ground and which side of the line it is (below: cursed by Sandtide; near: within `band`, default 40 world units, of the line; above), every standable surface sampled (a column every `step`) counted by side with its area and its lowest and highest, the near-the-line surfaces grouped in 4-unit cells (centre, heights, area; `limit` of them, default 20) and `flagged`: the knots and surface groups within the band. Warns when the water is at or under the land's bottom or over its top, when the line is outside the land box, and when every surface is on one side of it. Inspection only: the project is not changed. The box's top end is often one tall frame; its tip sets the line, so raise or lower that frame and ask again. Not the game's own number: the box here is the frames' boxes (a draped skin's box is its corner extremes), so compare with the in-game `sandtide: sand line at Y` log line and trust that.",
   inputSchema: {
     type: "object", additionalProperties: false,
     properties: {
@@ -37,7 +37,7 @@ export const tools: Tool[] = [{
   handler(s, a: Args) {
     const store = s.requireProject().store, gs = grids(store);
     const lb = landBounds(gs);
-    if (!lb) throw new ToolError("the level has no voxel frames");
+    if (!lb) throw new ToolError("the level has no voxel frame with ground in it");
     const given = [a.preset !== undefined, a.fraction !== undefined, a.y !== undefined].filter(Boolean).length;
     if (given !== 1) throw new ToolError("give one of preset (\"sandtide\"), fraction or y");
     const inMap = (v: number) => (a.units === "world" ? v / WORLD_PER_MAP : v);
@@ -90,7 +90,7 @@ export const tools: Tool[] = [{
     const bySide = (side: Side) => spawns.filter((p) => p.side === side).length;
     return {
       line: both(h.line), base: { ...both(h.base), kind: h.baseKind }, fraction: h.fraction,
-      landBounds: { minY: both(lb.minY), maxY: both(lb.maxY), minFrame: lb.minFrame, maxFrame: lb.maxFrame },
+      landBounds: { minY: both(lb.minY), maxY: both(lb.maxY), minFrame: lb.minFrame, maxFrame: lb.maxFrame, emptyFramesSkipped: lb.emptySkipped },
       water: water === null ? "the level's own height (not known here; pass water): the base is minY" : both(water),
       band: both(band),
       spawns: { below: bySide("below"), near: bySide("near"), above: bySide("above"), list: spawns },
