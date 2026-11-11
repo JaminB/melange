@@ -326,3 +326,14 @@ lowered to 0.13, `8 bank(s) loaded from 1 mod(s)`):
 
 Evidence: scratchpad `caldera/polish/final/` (`final_01..08_*.png`, `sheet_*.png`, `match/rows.json`,
 `airsum_final.jsonl`, `fin_as_*_track.json`, `detail.log`, `dressed/detail.json`).
+
+## Reconcile: weapons round 4 (2026-11-10)
+
+`erg-mcp` `195539e` (the `LevelLandMask` engine fix: no-ground columns and bombs through the crater floor) and `b3388f6`
+(a 12 x 4 x 12 slab of 3-unit voxels under the crater floor's inner shell, so a Concrete Donkey stops on the floor) are
+merged. Rebuild in testenv B with this tree's Melange.exe: `build.mjs` (its undressed export equals `erg-mcp`'s
+committed `pack/src/caldera.ergpatch.json`), `detail.mjs` (43 passes, 43 "sim unchanged", reopened unchanged), `ship.mjs`.
+- **Sim neutral:** fingerprint `fd3c3765a2e214ae37ce00829d9c4f9e3b163223df8d27559589c1d5481416b9` before the layer, after
+  every pass and after save and reopen. Counts before: voxelFrames 595, solidVoxels 31240, simDetails 91. `spice.json`
+  (range `>=0.14.0`) and the 8 mesh banks are unchanged; only the level patch changed.
+- **Tests:** `tools/erg-mcp/test.ps1` 266 / 266.

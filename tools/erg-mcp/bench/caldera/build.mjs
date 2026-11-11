@@ -474,6 +474,31 @@ try {
   // its top reaches 4-5 into the skin (the floor less 7.5 is the underside), so it is joined to the island, not a floating piece
   const fill = await call("add_block", { size: [6, Math.ceil((fg - 9) / 3), 6], scale: 3, at: [fx, 4, fz], units: "map", fill: "solid", material: MAT.hot }, { soft: true });
   say("crater fill", fill.err ? fill.text.slice(0, 300) : brief(fill, 260));
+  // (weapons round 4, 2026-11-10) a slab under the crater floor's shell. A Concrete Donkey bores about 8 map units a bounce
+  // and bounces four times: on the flat floor (48) it rested at 38 and 30, then its last blast opened the inner shell's
+  // underside (25.6) and it fell to the sea (round 4: 3 of 3 on the floor; on the rim, the summit and the flanks the skin
+  // and the shell held it). A solid block of 3-unit voxels, CRATER_SLAB n x n columns round the centre and d voxels deep,
+  // its top one unit up into the shell (far under the skin's underside, so the floor a worm walks on does not move: checked
+  // on a 3-unit lattice over it), takes the floor's rock down to about 14. CRATER_SLAB=0 leaves it out.
+  const SLAB = (process.env.CRATER_SLAB ?? "12,4").split(",").map(Number);
+  if (SLAB[0] > 0) {
+    const half = SLAB[0] * 3 / 2, pts = [];
+    for (let z = -half; z <= half; z += 3) for (let x = -half; x <= half; x += 3) pts.push([x, z]);
+    const before = [], bottoms = [];
+    for (const [x, z] of pts) {
+      const q = (await call("query_ground", { x, z, units: "map", maxSpans: 8 }, { soft: true })).json;
+      before.push(q?.standOn?.map ?? null);
+      const sp = (q?.spans?.listed ?? []).filter((s) => /^ergdrape_\d+$/.test(s.frameName ?? ""));   // the skin and the shell, not the plug's fill
+      if (sp.length) bottoms.push(Math.min(...sp.map((s) => s.bottom?.map ?? Infinity)));
+    }
+    const top = Math.floor(Math.min(...bottoms)) + 1, y0 = top - 3 * SLAB[1];
+    const slab = await call("add_block", { size: [SLAB[0], SLAB[1], SLAB[0]], scale: 3, at: [0, y0, 0], units: "map", fill: "solid", material: MAT.hot }, { soft: true });
+    const after = [];
+    for (const [x, z] of pts) after.push((await call("query_ground", { x, z, units: "map" }, { soft: true })).json?.standOn?.map ?? null);
+    const moved = pts.filter((_, i) => before[i] !== after[i]);
+    say("crater slab", slab.err ? slab.text.slice(0, 300) : brief(slab, 260), "from", y0, "to", top, "the shell's lowest underside over it", round2(Math.min(...bottoms)), "ground the same at", pts.length - moved.length, "of", pts.length);
+    if (moved.length) throw new Error(`the crater slab moved the ground at ${JSON.stringify(moved.slice(0, 8))}`);
+  }
   const topG = await groundOf(fx, fz);
   say("plug top", round1(topG));
   say("factory", brief(await call("place_object", { type: "minefactory", units: "map", xz: [fx, fz] }), 500));
