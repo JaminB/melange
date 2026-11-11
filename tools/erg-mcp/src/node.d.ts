@@ -22,12 +22,19 @@ declare module "node:fs" {
   export function existsSync(path: string): boolean;
   export function appendFileSync(path: string, data: string): void;
   export function readdirSync(path: string): string[];
-  export function statSync(path: string): { isDirectory(): boolean; mtimeMs: number };
+  export function statSync(path: string): { isDirectory(): boolean; mtimeMs: number; size: number };
   export function writeFileSync(path: string, data: string | Uint8Array): void;
   export function mkdirSync(path: string, opts?: { recursive?: boolean }): void;
   export function cpSync(from: string, to: string, opts?: { recursive?: boolean; force?: boolean; preserveTimestamps?: boolean }): void;
   export function rmSync(path: string, opts?: { recursive?: boolean; force?: boolean }): void;
   export function renameSync(from: string, to: string): void;
+  export function mkdtempSync(prefix: string): string;
+}
+declare module "node:os" {
+  export function tmpdir(): string;
+}
+declare module "node:zlib" {
+  export function deflateSync(data: Uint8Array, opts?: { level?: number }): Uint8Array;
 }
 declare module "node:path" {
   export function join(...parts: string[]): string;

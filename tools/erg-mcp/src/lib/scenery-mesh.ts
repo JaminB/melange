@@ -101,8 +101,18 @@ export function glbMesh(bytes: Uint8Array, unit = 1): MeshData | null {
 
 const cache = new Map<string, Promise<MeshData | null>>();
 
+/** Mod meshes the session knows (build_rock_bank registers its rocks): the server has no preview of a mod mesh. */
+const modMeshes = new Map<string, MeshData>();
+export function registerModMesh(resource: string, tris: Float32Array, albedo: Rgb): void {
+  const min: Vec3 = [Infinity, Infinity, Infinity], max: Vec3 = [-Infinity, -Infinity, -Infinity];
+  for (let i = 0; i < tris.length; i += 3) for (let k = 0; k < 3; k++) { min[k] = Math.min(min[k], tris[i + k]); max[k] = Math.max(max[k], tris[i + k]); }
+  modMeshes.set(resource.toLowerCase(), { tris, albedo, min, max });
+}
+
 /** A resource's preview mesh (map units) and albedo from the connected server, or null where it serves none. */
 export async function sceneryMesh(s: Session, resource: string): Promise<MeshData | null> {
+  const mod = modMeshes.get(resource.toLowerCase());
+  if (mod) return mod;
   const conn = await s.ensure();
   const base = new URL(conn.url), token = base.searchParams.get("k"), key = `mesh_${resource.toLowerCase()}`;
   const ck = `${base.host}|${key}`;
