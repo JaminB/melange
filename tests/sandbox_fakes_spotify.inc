@@ -1,5 +1,6 @@
-// sandbox_selftest fakes for wum.spotify (Melange 0.13): link-time stand-ins for spotify::host:: (spotify/host.h), so
-// wum_spotify.cpp runs without the network, the browser or DPAPI. Included inside namespace melange, after the other
+// sandbox_selftest fakes for wum.spotify (Melange 0.13; 0.14.1 adds the setup, clipboard, dashboard and cancel stand-ins):
+// link-time stand-ins for spotify::host:: (spotify/host.h), so wum_spotify.cpp runs without the network, the browser,
+// the clipboard or DPAPI. Included inside namespace melange, after the other
 // fakes. The fake host keeps a small model the cases inspect (fake_spotify::*) and delivers answers and status events
 // on request. The real host's logic is tested by spotify_selftest.
 }  // namespace melange
@@ -13,7 +14,7 @@ struct Submitted {
 };
 inline bool g_available = true;
 inline std::string g_reason = "no-client-id";
-inline spotify::host::Status g_status{"disconnected", "", std::nullopt, false, ""};
+inline spotify::host::Status g_status{"disconnected", "", std::nullopt, false, "", ""};
 inline std::set<std::string> g_granted;
 inline bool g_connectOk = true;
 inline std::string g_connectReason = "busy";
@@ -25,6 +26,21 @@ inline std::vector<std::pair<std::string, uint32_t>> g_cancelGens;  // every Can
 inline std::set<std::string> g_touched;
 inline uint32_t g_nextRid = 1;
 inline spotify::host::Sink* g_sink = nullptr;
+// Melange 0.14.1
+inline bool g_installed = true;
+inline std::string g_installedReason = "unavailable";
+inline spotify::host::Setup g_setup{"builtin", "wxyz", "http://127.0.0.1:8780/callback", true, false};
+inline std::vector<std::pair<std::string, std::string>> g_setIds;  // every SetClientId (mod, trimmed id)
+inline bool g_setOk = true;
+inline std::string g_setReason = "io";
+inline std::string g_clipboardId = "0123456789abcdefABCDEF0123456789";  // "" = nothing usable
+inline std::string g_clipboardReason = "clipboard";
+inline std::vector<std::string> g_copies;  // what CopyText put on the clipboard
+inline bool g_copyOk = true;
+inline int g_dashboards = 0;  // OpenDashboard calls that worked
+inline bool g_dashboardOk = true;
+inline bool g_cancelOpen = false;          // what Cancel returns
+inline std::vector<std::string> g_cancels;  // every Cancel (mod; "" = the console)
 
 inline json::Value Parse(const std::string& s) {
     json::Value v;
@@ -91,4 +107,49 @@ void CancelGen(const std::string& mod, uint32_t gen) {
         if (s.mod == mod && s.gen == gen && !fake_spotify::Cancelled(s.rid)) fake_spotify::g_cancelled.push_back(s.rid);
 }
 void SetSink(Sink* sink) { fake_spotify::g_sink = sink; }
+bool Installed(std::string* reason) {
+    if (!fake_spotify::g_installed) *reason = fake_spotify::g_installedReason;
+    return fake_spotify::g_installed;
+}
+Setup GetSetup() { return fake_spotify::g_setup; }
+bool SetClientId(const std::string& mod, const std::string& trimmedId, std::string* reason) {
+    if (!trimmedId.empty() && !logic::ValidClientId(trimmedId)) {
+        *reason = "invalid";
+        return false;
+    }
+    if (!fake_spotify::g_setOk) {
+        *reason = fake_spotify::g_setReason;
+        return false;
+    }
+    fake_spotify::g_setIds.emplace_back(mod, trimmedId);
+    return true;
+}
+bool ClipboardClientId(std::string* id, std::string* reason) {
+    if (fake_spotify::g_clipboardId.empty()) {
+        *reason = fake_spotify::g_clipboardReason;
+        return false;
+    }
+    *id = fake_spotify::g_clipboardId;
+    return true;
+}
+bool CopyText(const std::string& utf8, std::string* reason) {
+    if (!fake_spotify::g_copyOk) {
+        *reason = "clipboard";
+        return false;
+    }
+    fake_spotify::g_copies.push_back(utf8);
+    return true;
+}
+bool OpenDashboard(std::string* reason) {
+    if (!fake_spotify::g_dashboardOk) {
+        *reason = "browser";
+        return false;
+    }
+    ++fake_spotify::g_dashboards;
+    return true;
+}
+bool Cancel(const std::string& mod) {
+    fake_spotify::g_cancels.push_back(mod);
+    return fake_spotify::g_cancelOpen;
+}
 }  // namespace spotify::host

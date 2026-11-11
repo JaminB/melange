@@ -2,6 +2,13 @@
 // (PKCE, a loopback listener), and sends every mod's Web API requests through one worker with a shared rate gate.
 // Presentation only, client VM only: nothing here reaches the match, the handshake or Wormsign.
 //
+// Melange 0.14.1: the Client ID in use is the first valid one of the ID set in the game (client_store.h), [Spotify]
+// ClientId and the one built into the release (CMake MELANGE_SPOTIFY_CLIENT_ID); the built-in app redirects to the first
+// free one of 8780..8782. The browser's callback is answered once the sign-in finished, then the game is brought back to
+// the front. Spotify's "user not registered" 403 (an app in Development mode) becomes the error "not-allowlisted".
+// The clipboard is touched only by the binding's pasteClientId()/copy() (after a click), the dashboard opened only by
+// openDashboard().
+//
 // Network: nothing is sent until a mod's connect() runs on a user click (the binding checks it), except the token
 // refresh for an account the user already linked. Hosts: accounts.spotify.com and api.spotify.com only, https only,
 // redirects never followed. Tokens never reach Lua and are never logged; the refresh token is kept DPAPI-encrypted
@@ -36,6 +43,7 @@
 #include "core/module.h"
 #include "core/thread_guard.h"
 #include "net/peerbus.h"
+#include "spotify/client_store.h"
 #include "spotify/config_keys.h"
 #include "spotify/host.h"
 #include "spotify/oauth_listener.h"
@@ -44,6 +52,15 @@
 #include "store/fetch.h"
 #include "tools/json_mini.h"
 #include "tools/json_read.h"
+
+// The release's built-in Spotify app (CMake MELANGE_SPOTIFY_CLIENT_ID, generated/spotify_builtin_id.h). Empty in dev
+// builds and forks; a build without the generated header (a test harness) may pass -DMELANGE_SPOTIFY_BUILTIN_ID=...
+#if __has_include("spotify_builtin_id.h")
+#include "spotify_builtin_id.h"
+#endif
+#ifndef MELANGE_SPOTIFY_BUILTIN_ID
+#define MELANGE_SPOTIFY_BUILTIN_ID ""
+#endif
 
 namespace melange::spotify {
 namespace {
@@ -56,6 +73,10 @@ constexpr uint64_t kJobTimeoutMs = 15000;    // a request fails with "timeout" t
 constexpr uint64_t kFlowTimeoutMs = 180000;  // the browser sign-in
 constexpr int kMaxPerMod = 8;                // queued or running, per mod
 constexpr size_t kMaxQueued = 64;            // queued or running, all mods
+constexpr const char kBuiltinId[] = MELANGE_SPOTIFY_BUILTIN_ID;
+
+// The built-in Client ID when it is valid, else "" (CMake checks it; this is the last check).
+std::string BuiltinId() { return logic::ValidClientId(kBuiltinId) ? std::string(kBuiltinId) : std::string(); }
 
 uint64_t SteadyMs() {
     return static_cast<uint64_t>(
@@ -95,7 +116,7 @@ struct Job {
 };
 
 struct Result {
-    enum class Kind { Answer, Revoked, Profile, Flow } kind = Kind::Answer;
+    enum class Kind { Answer, Revoked, NotAllowed, Profile, Flow } kind = Kind::Answer;
     std::string mod;
     uint32_t gen = 0;
     uint32_t rid = 0, token = 0;
@@ -186,8 +207,9 @@ void FailQueuedLocked(Shared& s) {
     }
 }
 
-// Signed out by Spotify (invalid_grant): forget the sign-in unless it changed meanwhile. Worker thread.
-void Revoke(uint64_t epoch) {
+// Signed out by Spotify: forget the sign-in unless it changed meanwhile, and tell the pump why (`kind`: Revoked for an
+// invalid_grant, NotAllowed for an account the app does not allow). Worker thread.
+void SignOutBy(uint64_t epoch, Result::Kind kind) {
     Shared& s = S();
     {
         std::lock_guard sl(s.saveMx);
@@ -202,13 +224,17 @@ void Revoke(uint64_t epoch) {
             ++s.epoch;
             FailQueuedLocked(s);
             Result r;
-            r.kind = Result::Kind::Revoked;
+            r.kind = kind;
             Push(s, std::move(r));
         }
         tokens::Delete();
     }
-    LOG_WARN("[spotify] Spotify no longer accepts the stored sign-in (revoked); sign in again");
+    if (kind == Result::Kind::NotAllowed)
+        LOG_WARN("[spotify] Spotify says this account is not registered on the app (Development mode); signed out");
+    else
+        LOG_WARN("[spotify] Spotify no longer accepts the stored sign-in (revoked); sign in again");
 }
+void Revoke(uint64_t epoch) { SignOutBy(epoch, Result::Kind::Revoked); }
 
 // Caps a call's limits to what is left of its request's time (logic::BudgetMs). False when nothing is left.
 bool CapToDeadline(fetch::Options* o, uint64_t deadline) {
@@ -296,8 +322,10 @@ Err Access(bool force, std::string* out, int* retryAfter = nullptr, uint64_t dea
     return Err::None;
 }
 
-// GET /v1/me with an access token.
-bool FetchMe(const std::string& access, logic::Me* me, bool* transport) {
+// GET /v1/me with an access token. NotAllowlisted: Spotify's 403 for an account the (Development-mode) app does not
+// allow (logic::IsNotAllowlisted).
+enum class MeResult { Ok, Transport, NotAllowlisted, Failed };
+MeResult FetchMe(const std::string& access, logic::Me* me) {
     fetch::HttpRequest rq;
     rq.headers.emplace_back("Authorization", "Bearer " + access);
     fetch::HttpResponse rs;
@@ -309,8 +337,12 @@ bool FetchMe(const std::string& access, logic::Me* me, bool* transport) {
     }
     const bool sent = fetch::Send(std::string(logic::kApiBase) + "me", rq, &rs, HttpOptions(), &err);
     Wipe(rq.headers[0].second);
-    *transport = !sent;
-    return sent && rs.status == 200 && logic::ParseMe(rs.body, me);
+    MeResult out = MeResult::Failed;
+    if (!sent) out = MeResult::Transport;
+    else if (logic::IsNotAllowlisted(rs.status, rs.body)) out = MeResult::NotAllowlisted;
+    else if (rs.status == 200 && logic::ParseMe(rs.body, me)) out = MeResult::Ok;
+    Wipe(rs.body);
+    return out;
 }
 
 // ---------------------------------------------------------------- the worker ("spotify-api")
@@ -343,10 +375,13 @@ void RunBackground() {
     std::string access;
     if (Access(true, &access) != Err::None) return;
     logic::Me me;
-    bool transport = false;
-    const bool ok = FetchMe(access, &me, &transport);
+    const MeResult got = FetchMe(access, &me);
     Wipe(access);
-    if (!ok) return;
+    if (got == MeResult::NotAllowlisted) {
+        SignOutBy(epoch, Result::Kind::NotAllowed);
+        return;
+    }
+    if (got != MeResult::Ok) return;
     bool changed = false;
     {
         std::lock_guard lk(s.mx);
@@ -486,6 +521,7 @@ void Run(const Job& j) {
         std::string message;
         const Err e = logic::MapApiError(rs.status, rs.body, &message);
         LearnProduct(epoch, j.req.op, false, e);
+        if (e == Err::NotAllowlisted) SignOutBy(epoch, Result::Kind::NotAllowed);  // queued requests fail with "auth"
         Finish(j, logic::ShapeError(e == Err::None ? Err::BadResponse : e, message, logic::RetryAfterSeconds(rs.retryAfter)));
         return;
     }
@@ -547,6 +583,7 @@ bool EnsureWorker() {
 struct FlowArgs {
     uint64_t id = 0;
     std::string mod, clientId, verifier, state;
+    std::string app;  // "user" | "ini" | "builtin", for the log
     int port = 0;
     std::shared_ptr<oauth::Listener> listener;
     std::shared_ptr<std::atomic<bool>> cancel;
@@ -580,10 +617,15 @@ void Exchange(FlowArgs& a, const std::string& code, Result* r) {
         return;
     }
     logic::Me me;
-    bool transport = false;
-    if (!FetchMe(t.access, &me, &transport)) {
-        r->error = transport ? "network" : "exchange";
-        LOG_WARN("[spotify] sign-in: the account could not be read");
+    const MeResult got = FetchMe(t.access, &me);
+    if (got != MeResult::Ok) {
+        if (got == MeResult::NotAllowlisted) {
+            r->error = "not-allowlisted";
+            LOG_WARN("[spotify] sign-in: Spotify says this account is not registered on the app (Development mode)");
+        } else {
+            r->error = got == MeResult::Transport ? "network" : "exchange";
+            LOG_WARN("[spotify] sign-in: the account could not be read");
+        }
         Wipe(t.access);
         Wipe(t.refresh);
         return;
@@ -608,16 +650,48 @@ void Exchange(FlowArgs& a, const std::string& code, Result* r) {
     r->ok = true;
 }
 
+// The browser's held callback request: answered exactly once, also when something below throws.
+struct HeldReply {
+    uintptr_t conn = ~static_cast<uintptr_t>(0);
+    void Send(logic::Page page) {
+        if (conn == ~static_cast<uintptr_t>(0)) return;
+        try {
+            oauth::Listener::Reply(&conn, logic::CallbackHttpResponse(200, page));
+        } catch (...) {
+            oauth::Listener::Reply(&conn, std::string());  // no page (out of memory): the connection is still closed
+        }
+    }
+    ~HeldReply() { Send(logic::Page::Failed); }  // a no-op once answered
+};
+
+logic::Page PageFor(const Result& r) {
+    if (r.ok) return logic::Page::Ok;
+    if (r.error == "not-allowlisted") return logic::Page::NotAllowed;
+    if (r.cancelled) return logic::Page::Cancelled;
+    return logic::Page::Failed;
+}
+
 void RunFlow(FlowArgs& a) {
     Result r;
     r.kind = Result::Kind::Flow;
     r.flowId = a.id;
     r.mod = a.mod;
     std::string code;
-    switch (a.listener->Serve(a.state, GetTickCount64() + kFlowTimeoutMs, *a.cancel, &code)) {
+    HeldReply held;
+    switch (a.listener->Serve(a.state, GetTickCount64() + kFlowTimeoutMs, *a.cancel, &code, &held.conn)) {
         case oauth::Listener::Outcome::Code:
-            if (a.cancel->load() || g_quit) r.cancelled = true;
-            else Exchange(a, code, &r);
+            // The browser waits for this answer (the exchange and the profile, up to ~20 s), so its page tells the outcome.
+            if (a.cancel->load() || g_quit) {
+                r.cancelled = true;
+            } else {
+                try {
+                    Exchange(a, code, &r);
+                } catch (const std::exception& e) {
+                    LOG_ERROR("[spotify] sign-in: %s", e.what());
+                    if (!r.ok) r.error = "exchange";
+                }
+            }
+            held.Send(PageFor(r));
             break;
         case oauth::Listener::Outcome::Denied: r.error = "denied"; break;
         case oauth::Listener::Outcome::OtherError: r.error = "exchange"; break;
@@ -638,6 +712,8 @@ bool Random(uint8_t* p, size_t n) { return BCryptGenRandom(nullptr, p, static_ca
 bool g_installed = false;
 cfg::Spotify g_cfg;
 uint64_t g_cfgAt = 0;
+std::string g_userId;             // the Client ID set in the game (client.json), "" = none
+std::string g_clientId, g_app;    // the Client ID in use and where it comes from ("user" | "ini" | "builtin" | "")
 host::Sink* g_sink = nullptr;
 std::set<std::string> g_touched;
 std::map<std::string, std::string> g_sent;  // the last status each touched mod was told
@@ -648,11 +724,32 @@ bool g_loadPending = false;  // Install ran; the stored sign-in is not read yet 
 struct Flow {
     uint64_t id = 0;
     std::string mod;
+    std::string url;  // the authorize page, opened again by the same mod's connect()
     std::shared_ptr<oauth::Listener> listener;
     std::shared_ptr<std::atomic<bool>> cancel;
 };
 std::unique_ptr<Flow> g_flow;
 uint64_t g_nextFlow = 1;
+
+void ResetFlow() {
+    if (!g_flow) return;
+    Wipe(g_flow->url);
+    g_flow.reset();
+}
+// Ends the open sign-in: its thread stops (or drops its late result: the pump matches flow ids), the port is freed.
+void CancelFlow() {
+    if (!g_flow) return;
+    g_flow->cancel->store(true);
+    g_flow->listener->Close();
+    ResetFlow();
+}
+
+// The Client ID in use (logic::ResolveClientId): the game's, Melange.ini's, then the built-in one.
+void ApplyEffective() {
+    logic::ResolvedId r = logic::ResolveClientId(g_userId, g_cfg.clientId, BuiltinId());
+    g_clientId = std::move(r.id);
+    g_app = std::move(r.app);
+}
 
 host::Status StatusFor(const std::string& mod) {
     Shared& s = S();
@@ -678,11 +775,13 @@ host::Status StatusFor(const std::string& mod) {
     } else {
         st.state = "disconnected";
     }
+    st.app = g_app;
     return st;
 }
 
 std::string Signature(const host::Status& st) {
-    return st.state + '\n' + st.user + '\n' + (!st.premium ? '?' : *st.premium ? '1' : '0') + (st.linked ? '1' : '0') + '\n' + st.error;
+    return st.state + '\n' + st.user + '\n' + (!st.premium ? '?' : *st.premium ? '1' : '0') + (st.linked ? '1' : '0') + '\n' + st.error +
+           '\n' + st.app;
 }
 
 json::Value StatusJson(const host::Status& st) {
@@ -692,6 +791,7 @@ json::Value StatusJson(const host::Status& st) {
     if (st.premium) o.Bool("premium", *st.premium);
     o.Bool("linked", st.linked);
     if (!st.error.empty()) o.Str("error", st.error);
+    if (!st.app.empty()) o.Str("app", st.app);
     json::Value v;
     json::Error e;
     json::Parse(o.End(), &v, &e);
@@ -710,17 +810,20 @@ void EmitChanged() {
     }
 }
 
-// The stored sign-in, read once on the main thread (never in DllMain: DPAPI and the shell are not loader-lock safe).
-// A sign-in made with another ClientId does not count (the file is left alone). No network here.
+// The Client ID set in the game and the stored sign-in, read once on the main thread (never in DllMain: DPAPI and the
+// shell are not loader-lock safe). A sign-in made with another Client ID does not count (the file is left alone). No
+// network here.
 void EnsureLoaded() {
     if (!g_loadPending || !g_installed) return;
     g_loadPending = false;
+    if (std::string id; clientfile::Load(&id)) g_userId = std::move(id);
+    ApplyEffective();
     Shared& s = S();
     tokens::Stored st;
     bool have = false;
     {
         std::lock_guard sl(s.saveMx);
-        have = !g_cfg.clientId.empty() && tokens::Load(&st) && st.clientId == g_cfg.clientId;
+        have = !g_clientId.empty() && tokens::Load(&st) && st.clientId == g_clientId;
     }
     {
         std::lock_guard lk(s.mx);
@@ -731,21 +834,22 @@ void EnsureLoaded() {
         }
     }
     Wipe(st.refresh);
-    LOG_INFO("[spotify] %s", g_cfg.clientId.empty() ? "no ClientId: off" : have ? "signed in" : "not signed in");
+    LOG_INFO("[spotify] app: %s; %s", g_app.empty() ? "none" : g_app.c_str(), have ? "signed in" : "not signed in");
+    EmitChanged();  // a mod touched before this (none, normally) learns `app`
 }
 
-// The ClientId changed: the stored sign-in counts only for the app it was made with.
+// The Client ID in use changed: the stored sign-in counts only for the app it was made with.
 void Relink() {
     Shared& s = S();
     {
         std::lock_guard lk(s.mx);
-        if (s.linked && s.stored.clientId == g_cfg.clientId) return;
+        if (s.linked && s.stored.clientId == g_clientId) return;
     }
     tokens::Stored st;
     bool have = false;
     {
         std::lock_guard sl(s.saveMx);
-        have = !g_cfg.clientId.empty() && tokens::Load(&st) && st.clientId == g_cfg.clientId;
+        have = !g_clientId.empty() && tokens::Load(&st) && st.clientId == g_clientId;
     }
     {
         std::lock_guard lk(s.mx);
@@ -766,14 +870,77 @@ void RefreshCfg(bool force) {
     const uint64_t now = GetTickCount64();
     if (!force && g_cfgAt && now - g_cfgAt < 2000) return;
     g_cfgAt = now;
-    const std::string before = g_cfg.clientId;
     g_cfg = cfg::ReadSpotify();
     {
         Shared& s = S();
         std::lock_guard lk(s.mx);
         s.gate.SetPerMinute(g_cfg.requestsPerMinute);
     }
-    if (g_cfg.clientId != before) Relink();
+    const std::string before = g_clientId, beforeApp = g_app;
+    ApplyEffective();
+    if (g_clientId != before) Relink();
+    if (g_clientId != before || g_app != beforeApp) EmitChanged();  // `app` is in the status
+}
+
+// The sign-in finished in the browser: the game comes back to the front, once (main thread). Windows lets a process
+// take the foreground only in some cases (the foreground lock): the browser holds it now, so the call is made with the
+// input of the foreground window's thread attached, as Windows documents for this case. That is legitimate here: the
+// user just finished, in the browser, an action they started from the game for the game, and it happens once per
+// sign-in. When Windows still refuses, the taskbar button flashes until the game is activated. ReturnToGame=0: only the
+// flash.
+void FocusGame(bool bringToFront) {
+    HWND h = static_cast<HWND>(events::GameWindow());
+    if (!h || !IsWindow(h)) return;
+    if (bringToFront) {
+        if (IsIconic(h)) ShowWindow(h, SW_RESTORE);
+        HWND fg = GetForegroundWindow();
+        if (fg == h) return;
+        const DWORD fgTid = fg ? GetWindowThreadProcessId(fg, nullptr) : 0, me = GetCurrentThreadId();
+        const bool att = fgTid && fgTid != me && AttachThreadInput(me, fgTid, TRUE);
+        BringWindowToTop(h);
+        SetForegroundWindow(h);
+        SetActiveWindow(h);
+        if (att) AttachThreadInput(me, fgTid, FALSE);
+    } else if (GetForegroundWindow() == h) {
+        return;
+    }
+    const bool front = GetForegroundWindow() == h;
+    if (!front) {
+        FLASHWINFO f{sizeof f, h, FLASHW_ALL | FLASHW_TIMERNOFG, 0, 0};
+        FlashWindowEx(&f);
+    }
+    if (bringToFront) LOG_INFO("[spotify] brought the game to the front after the sign-in (%s)", front ? "ok" : "flashed");
+    else LOG_INFO("[spotify] flashed the game's taskbar button after the sign-in (ReturnToGame=0)");
+}
+
+// Every mod is signed out and an open sign-in ends (Disconnect, or a new Client ID set in the game). Main thread.
+void SignOutAll() {
+    EnsureLoaded();
+    Shared& s = S();
+    CancelFlow();
+    {
+        std::lock_guard sl(s.saveMx);
+        {
+            std::lock_guard lk(s.mx);
+            s.linked = false;
+            Wipe(s.stored.refresh);
+            s.stored = {};
+            Wipe(s.access);
+            s.accessExpires = 0;
+            ++s.epoch;
+            FailQueuedLocked(s);
+        }
+        tokens::Delete();
+    }
+    g_bgQueued = false;
+}
+
+// The clipboard, opened for the game's window (one retry: another program may hold it for a moment).
+bool OpenClip() {
+    HWND h = static_cast<HWND>(events::GameWindow());
+    if (OpenClipboard(h)) return true;
+    Sleep(20);
+    return OpenClipboard(h) != 0;
 }
 
 // The start-up refresh, once, when a granted mod first asks.
@@ -803,7 +970,7 @@ void Pump() {
     }
     const uint64_t steadyNow = SteadyMs();
     const double peerNow = peerbus::NowMs();
-    bool emit = false;
+    bool emit = false, focus = false;
     for (Result& r : rs) {
         switch (r.kind) {
             case Result::Kind::Answer: {
@@ -822,10 +989,16 @@ void Pump() {
                 g_bgQueued = false;
                 emit = true;
                 break;
+            case Result::Kind::NotAllowed:
+                g_error = "not-allowlisted";
+                g_bgQueued = false;
+                emit = true;
+                break;
             case Result::Kind::Profile: emit = true; break;
             case Result::Kind::Flow:
                 if (!g_flow || g_flow->id != r.flowId) break;  // a cancelled sign-in
-                g_flow.reset();
+                ResetFlow();
+                if (!r.cancelled && r.error != "timeout") focus = true;  // the user finished in the browser
                 if (r.ok) {
                     g_error.clear();
                     g_bgQueued = true;  // the token and the profile are fresh
@@ -839,6 +1012,7 @@ void Pump() {
         }
     }
     if (emit) EmitChanged();
+    if (focus) FocusGame(g_cfg.returnToGame);
 }
 
 class Spotify final : public Module {
@@ -861,7 +1035,7 @@ public:
         g_loadPending = true;
         events::Subscribe(events::Event::Frame, [] { Pump(); });
         g_installed = true;
-        LOG_INFO("[spotify] installed (%s)", g_cfg.clientId.empty() ? "no ClientId: off" : "the stored sign-in is read at the first frame");
+        LOG_INFO("[spotify] installed (built-in app: %s)", BuiltinId().empty() ? "no" : "yes");
         return true;
     }
     // Reached only from DllMain on FreeLibrary: stop the threads at their next check, free the redirect port. No joins.
@@ -872,7 +1046,7 @@ public:
             g_flow->cancel->store(true);
             g_flow->listener->Close();
         }
-        S().cv.notify_all();
+        S().cv.notify_all();  // g_flow itself is left alone: no frees inside DllMain
     }
 };
 }  // namespace
@@ -880,13 +1054,21 @@ MELANGE_MODULE(Spotify);
 
 // ---------------------------------------------------------------- host.h (wum.spotify)
 namespace host {
+bool Installed(std::string* reason) {
+    if (!g_installed || g_quit) {
+        *reason = !g_quit && !config::GetBool("Spotify", "Enabled", true) ? "disabled" : "unavailable";
+        return false;
+    }
+    return true;
+}
+
 bool Available(std::string* reason) {
     if (!g_installed) {
         *reason = config::GetBool("Spotify", "Enabled", true) ? "unavailable" : "disabled";
         return false;
     }
     RefreshCfg(false);
-    if (g_cfg.clientId.empty()) {
+    if (g_clientId.empty()) {
         *reason = "no-client-id";
         return false;
     }
@@ -918,13 +1100,29 @@ bool Connect(const std::string& mod, std::string* reason) {
         return false;
     }
     RefreshCfg(true);
-    if (g_cfg.clientId.empty()) {
+    if (g_clientId.empty()) {
         *reason = "no-client-id";
         return false;
     }
     if (!g_flow && !g_error.empty()) {  // an "error" state ends at the next connect()
         g_error.clear();
         EmitChanged();
+    }
+    // 0. A sign-in is open: the mod that started it gets the same page again (the user closed the tab, or it is behind
+    // the game); the 3-minute deadline is not extended. Another mod's sign-in: "busy" (one at a time).
+    if (g_flow) {
+        if (g_flow->mod != mod) {
+            *reason = "busy";
+            return false;
+        }
+        const HINSTANCE r = ShellExecuteW(nullptr, L"open", game::Widen(g_flow->url).c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+        if (reinterpret_cast<INT_PTR>(r) <= 32) {
+            *reason = "browser";
+            LOG_WARN("[spotify] the browser could not be opened again for the sign-in");
+            return false;
+        }
+        LOG_INFO("[spotify] sign-in page opened again (for %s)", mod.c_str());
+        return true;
     }
     Shared& s = S();
     // 1. Linked already: grant it to this mod, no browser.
@@ -945,18 +1143,24 @@ bool Connect(const std::string& mod, std::string* reason) {
         }
         return true;
     }
-    // 2. One sign-in at a time.
-    if (g_flow) {
-        *reason = "busy";
-        return false;
-    }
-    // 3. The redirect listener, bound here so a taken port is reported at once.
+    // 2. The redirect listener, bound here so a taken port is reported at once. The built-in app has three registered
+    // redirect URIs (logic::kBuiltinPorts): the first free port is used. The user's own app: [Spotify] RedirectPort.
     auto listener = std::make_shared<oauth::Listener>();
-    if (!listener->Open(g_cfg.redirectPort)) {
+    int port = 0;
+    if (g_app == "builtin") {
+        for (const int p : logic::kBuiltinPorts)
+            if (listener->Open(p)) {
+                port = p;
+                break;
+            }
+    } else if (listener->Open(g_cfg.redirectPort)) {
+        port = g_cfg.redirectPort;
+    }
+    if (!port) {
         *reason = "port-busy";
         return false;
     }
-    // 4. The secrets.
+    // 3. The secrets.
     uint8_t rnd[48], st[16];
     if (!Random(rnd, sizeof rnd) || !Random(st, sizeof st)) {
         listener->Close();
@@ -966,16 +1170,17 @@ bool Connect(const std::string& mod, std::string* reason) {
     FlowArgs a;
     a.id = g_nextFlow++;
     a.mod = mod;
-    a.clientId = g_cfg.clientId;
-    a.port = g_cfg.redirectPort;
+    a.clientId = g_clientId;
+    a.app = g_app;
+    a.port = port;
     a.verifier = logic::PkceVerifier(rnd, sizeof rnd);
     a.state = logic::Base64Url(st, sizeof st);
     SecureZeroMemory(rnd, sizeof rnd);
     SecureZeroMemory(st, sizeof st);
     a.listener = listener;
     a.cancel = std::make_shared<std::atomic<bool>>(false);
-    // 5. The authorize page, on Spotify's own host only.
-    const std::string url = logic::AuthorizeUrl(a.clientId, logic::RedirectUri(a.port), a.state, logic::PkceChallenge(a.verifier));
+    // 4. The authorize page, on Spotify's own host only.
+    std::string url = logic::AuthorizeUrl(a.clientId, logic::RedirectUri(a.port), a.state, logic::PkceChallenge(a.verifier));
     if (url.rfind(logic::kAuthorizePrefix, 0) != 0) {
         listener->Close();
         *reason = "browser";
@@ -984,6 +1189,7 @@ bool Connect(const std::string& mod, std::string* reason) {
     auto flow = std::make_unique<Flow>();
     flow->id = a.id;
     flow->mod = mod;
+    flow->url = url;
     flow->listener = listener;
     flow->cancel = a.cancel;
     // The listener's thread starts before the browser opens, so a page never leads nowhere.
@@ -998,46 +1204,148 @@ bool Connect(const std::string& mod, std::string* reason) {
     Wipe(a.verifier);
     Wipe(a.state);
     const HINSTANCE r = ShellExecuteW(nullptr, L"open", game::Widen(url).c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+    Wipe(url);
     if (reinterpret_cast<INT_PTR>(r) <= 32) {
         flow->cancel->store(true);
         listener->Close();
+        Wipe(flow->url);
         *reason = "browser";
         LOG_WARN("[spotify] the browser could not be opened for the sign-in");
         return false;
     }
-    // 6. Connecting.
+    // 5. Connecting.
     g_flow = std::move(flow);
-    LOG_INFO("[spotify] sign-in opened in the browser (for %s)", mod.c_str());
+    LOG_INFO("[spotify] sign-in opened in the browser (for %s, %s app, port %d)", mod.c_str(), a.app.c_str(), a.port);
     EmitChanged();
     return true;
 }
 
-void Disconnect(const std::string& mod) {
+bool Cancel(const std::string& mod) {
     EnsureLoaded();
-    Shared& s = S();
-    if (g_flow) {
-        g_flow->cancel->store(true);
-        g_flow->listener->Close();
-        g_flow.reset();
+    const bool was = g_flow != nullptr;
+    if (was) {
+        CancelFlow();
+        LOG_INFO("[spotify] sign-in cancelled (by %s)", mod.empty() ? "the console" : mod.c_str());
     }
-    {
-        std::lock_guard sl(s.saveMx);
-        {
-            std::lock_guard lk(s.mx);
-            s.linked = false;
-            Wipe(s.stored.refresh);
-            s.stored = {};
-            Wipe(s.access);
-            s.accessExpires = 0;
-            ++s.epoch;
-            FailQueuedLocked(s);
-        }
-        tokens::Delete();
-    }
+    if (!g_error.empty()) g_error.clear();
+    EmitChanged();
+    return was;
+}
+
+void Disconnect(const std::string& mod) {
+    SignOutAll();
     g_error.clear();
-    g_bgQueued = false;
     LOG_INFO("[spotify] signed out (by %s)", mod.c_str());
     EmitChanged();
+}
+
+Setup GetSetup() {
+    Setup st;
+    st.builtin = !BuiltinId().empty();
+    if (!g_installed) {
+        st.redirectUri = logic::RedirectUri(8780);
+        return st;
+    }
+    RefreshCfg(false);
+    st.app = g_app;
+    if (!g_app.empty()) st.appHint = logic::IdHint(g_clientId);
+    st.ini = logic::ValidClientId(g_cfg.clientId);
+    st.redirectUri = logic::RedirectUri(g_cfg.redirectPort);
+    return st;
+}
+
+bool SetClientId(const std::string& mod, const std::string& trimmedId, std::string* reason) {
+    if (!g_installed || g_quit) {
+        *reason = "unavailable";
+        return false;
+    }
+    RefreshCfg(true);  // `changed` below compares with the Client ID in use now (an ini edit may not be read yet)
+    if (!trimmedId.empty() && !logic::ValidClientId(trimmedId)) {
+        *reason = "invalid";
+        return false;
+    }
+    if (trimmedId == g_userId) {  // already saved: nothing to write, but an "error" state ends
+        if (!g_error.empty()) {
+            g_error.clear();
+            EmitChanged();
+        }
+        return true;
+    }
+    if (!(trimmedId.empty() ? clientfile::Delete() : clientfile::Save(trimmedId))) {
+        *reason = "io";
+        return false;
+    }
+    const logic::ResolvedId next = logic::ResolveClientId(trimmedId, g_cfg.clientId, BuiltinId());
+    const bool changed = next.id != g_clientId;
+    bool wasLinked = false;
+    {
+        Shared& sh = S();
+        std::lock_guard lk(sh.mx);
+        wasLinked = sh.linked;
+    }
+    if (changed) SignOutAll();  // a sign-in belongs to the Client ID it was made with
+    g_userId = trimmedId;
+    g_error.clear();
+    RefreshCfg(true);  // the Client ID in use and its app (Relink finds no sign-in after SignOutAll)
+    EmitChanged();
+    LOG_INFO("[spotify] Client ID %s in the game by %s (now: %s app%s)", trimmedId.empty() ? "cleared" : "set", mod.c_str(),
+             g_app.empty() ? "no" : g_app.c_str(), changed && wasLinked ? "; signed out" : "");
+    return true;
+}
+
+bool ClipboardClientId(std::string* id, std::string* reason) {
+    *reason = "clipboard";
+    if (!OpenClip()) return false;
+    std::wstring w;
+    if (HANDLE data = GetClipboardData(CF_UNICODETEXT)) {
+        if (const wchar_t* p = static_cast<const wchar_t*>(GlobalLock(data))) {
+            const size_t cap = std::min<size_t>(4096, GlobalSize(data) / sizeof(wchar_t));
+            size_t n = 0;
+            while (n < cap && p[n]) ++n;
+            w.assign(p, n);
+            GlobalUnlock(data);
+        }
+    }
+    CloseClipboard();
+    std::string text = game::Narrow(w);
+    if (!w.empty()) SecureZeroMemory(w.data(), w.size() * sizeof(wchar_t));  // the clipboard may hold anything
+    std::string found = logic::FindClientId(text);
+    Wipe(text);
+    if (found.empty()) return false;
+    *id = std::move(found);
+    reason->clear();
+    return true;
+}
+
+bool CopyText(const std::string& utf8, std::string* reason) {
+    *reason = "clipboard";
+    const std::wstring w = game::Widen(utf8);
+    if (!OpenClip()) return false;
+    bool ok = false;
+    if (EmptyClipboard()) {
+        if (HGLOBAL mem = GlobalAlloc(GMEM_MOVEABLE, (w.size() + 1) * sizeof(wchar_t))) {
+            if (void* p = GlobalLock(mem)) {
+                memcpy(p, w.c_str(), (w.size() + 1) * sizeof(wchar_t));
+                GlobalUnlock(mem);
+                ok = SetClipboardData(CF_UNICODETEXT, mem) != nullptr;  // the clipboard owns `mem` from here
+            }
+            if (!ok) GlobalFree(mem);
+        }
+    }
+    CloseClipboard();
+    if (ok) reason->clear();
+    return ok;
+}
+
+bool OpenDashboard(std::string* reason) {
+    const HINSTANCE r = ShellExecuteW(nullptr, L"open", game::Widen(logic::kDashboardUrl).c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+    if (reinterpret_cast<INT_PTR>(r) <= 32) {
+        *reason = "browser";
+        LOG_WARN("[spotify] the browser could not be opened for the Spotify dashboard");
+        return false;
+    }
+    LOG_INFO("[spotify] opened the Spotify dashboard in the browser");
+    return true;
 }
 
 uint32_t Submit(const std::string& mod, uint32_t gen, const logic::Request& r, uint32_t token, std::string* reason) {

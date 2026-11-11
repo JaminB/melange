@@ -1,7 +1,8 @@
 #pragma once
-// wum.spotify's pure logic (Melange 0.13.0): PKCE (base64url, SHA-256), the authorize URL, the loopback callback
-// parser and its fixed page, the token and profile responses, the Web API calls each request makes, the error mapping,
-// Retry-After and the rate gate, and the JSON each result gives Lua. Header-only and portable: no windows.h, only std,
+// wum.spotify's pure logic (Melange 0.13.0; 0.14.1 adds the Client ID resolution and its file, the clipboard Client ID
+// finder, the "not-allowlisted" heuristic, transfer and the styled callback pages): PKCE (base64url, SHA-256), the
+// authorize URL, the loopback callback parser and its fixed pages, the token and profile responses, the Web API calls
+// each request makes, the error mapping, Retry-After and the rate gate, and the JSON each result gives Lua. Header-only and portable: no windows.h, only std,
 // tools/json_read.h and tools/json_mini.h, so tests/spotify_selftest.cpp also builds with g++ on Linux. spotify.cpp
 // (the module), wum_spotify.cpp (the binding) and token_store.cpp use it.
 #include <algorithm>
@@ -178,6 +179,11 @@ inline constexpr const char kScopes[] =
 inline constexpr const char kAuthorizePrefix[] = "https://accounts.spotify.com/authorize?";
 inline constexpr const char kTokenUrl[] = "https://accounts.spotify.com/api/token";
 inline constexpr const char kApiBase[] = "https://api.spotify.com/v1/";
+// wum.spotify.openDashboard() opens this fixed page (creating the user's own Spotify app); nothing else is ever opened.
+inline constexpr char kDashboardUrl[] = "https://developer.spotify.com/dashboard/create";
+// The built-in app's redirect ports: the first free one is used (the maintainer registers all three redirect URIs).
+// [Spotify] RedirectPort is for the user's own app only.
+inline constexpr int kBuiltinPorts[] = {8780, 8781, 8782};
 
 inline std::string AuthorizeUrl(const std::string& clientId, const std::string& redirectUri, const std::string& state,
                                 const std::string& challenge) {
@@ -220,6 +226,60 @@ inline bool ValidDeviceId(std::string_view s) {  // ^[0-9A-Za-z_-]{1,128}$
     for (char c : s)
         if (!Alnum(c) && c != '_' && c != '-') return false;
     return true;
+}
+
+// ---------------------------------------------------------------- the Client ID (Melange 0.14.1)
+// Which Spotify app signs in: the first valid one of the ID set in the game (client.json), [Spotify] ClientId in
+// Melange.ini, and the one built into the release. An invalid value at any level is skipped.
+struct ResolvedId {
+    std::string id;
+    std::string app;  // "user" | "ini" | "builtin" | ""
+};
+inline ResolvedId ResolveClientId(std::string_view user, std::string_view ini, std::string_view builtin) {
+    if (ValidClientId(user)) return {std::string(user), "user"};
+    if (ValidClientId(ini)) return {std::string(ini), "ini"};
+    if (ValidClientId(builtin)) return {std::string(builtin), "builtin"};
+    return {};
+}
+// setup().appHint: the last 4 characters (the full ID is never handed to Lua).
+inline std::string IdHint(std::string_view id) { return std::string(id.size() <= 4 ? id : id.substr(id.size() - 4)); }
+// %LOCALAPPDATA%\Melange\spotify\client.json: {"v":1,"clientId":"..."} (not a secret).
+inline std::string EncodeClientFile(const std::string& id) { return jsonmini::Obj().Int("v", 1).Str("clientId", id).End(); }
+inline bool DecodeClientFile(std::string_view text, std::string* id) {
+    json::Value v;
+    json::Error e;
+    if (!json::Parse(text, &v, &e) || !v.IsObject()) return false;
+    const json::Value* ver = v.Get("v");
+    const json::Value* cid = v.Get("clientId");
+    if (!ver || !ver->IsNumber() || ver->number != 1 || !cid || !cid->IsString() || !ValidClientId(cid->string)) return false;
+    *id = cid->string;
+    return true;
+}
+// wum.spotify.pasteClientId(): the Client ID in the clipboard's text. The trimmed text when it is exactly 32 letters and
+// digits; else the one maximal [0-9A-Za-z] run of exactly 32 characters (a pasted "Client ID: <id>" line). Two such
+// runs, or none: "". Any other byte (non-ASCII too) separates runs.
+inline std::string FindClientId(std::string_view text) {
+    auto space = [](char c) { return c == ' ' || c == '\t' || c == '\r' || c == '\n' || c == '\f' || c == '\v'; };
+    std::string_view t = text;
+    while (!t.empty() && space(t.front())) t.remove_prefix(1);
+    while (!t.empty() && space(t.back())) t.remove_suffix(1);
+    if (ValidClientId(t)) return std::string(t);
+    std::string_view found;
+    int runs = 0;
+    for (size_t i = 0; i < text.size();) {
+        if (!Alnum(text[i])) {
+            ++i;
+            continue;
+        }
+        size_t j = i;
+        while (j < text.size() && Alnum(text[j])) ++j;
+        if (j - i == 32) {
+            found = text.substr(i, 32);
+            ++runs;
+        }
+        i = j;
+    }
+    return runs == 1 ? std::string(found) : std::string();
 }
 
 // ---------------------------------------------------------------- the loopback callback
@@ -356,20 +416,70 @@ inline CallbackResult ParseCallbackRequest(std::string_view head, int port, std:
     return r;
 }
 
-// The whole HTTP/1.1 answer to the browser: a fixed page that never reflects any input.
-inline std::string CallbackHttpResponse(int status, bool ok) {
+// The page the browser shows after the redirect (Melange 0.14.1: answered once the sign-in finished).
+enum class Page { Ok, Denied, Cancelled, NotAllowed, Failed };
+// The whole HTTP/1.1 answer to the browser: a fixed, self-contained page that never reflects any input (no script, no
+// external URL, no link). 200: the styled page for `page`; 404 and 400: a minimal "Not found." / "Bad request.".
+inline std::string CallbackHttpResponse(int status, Page page) {
     const char* reason = status == 200 ? "OK" : status == 404 ? "Not Found" : status == 400 ? "Bad Request" : "Error";
-    std::string body =
-        "<!DOCTYPE html><html><head><meta charset=\"utf-8\"><title>Melange</title></head>"
-        "<body style=\"font-family:sans-serif;margin:3em\"><p>";
-    if (status == 404) body += "Not found.";
-    else if (ok) body += "Melange is linked to Spotify. You can close this tab and go back to the game.";
-    else body += "Melange could not link Spotify. Go back to the game and try again.";
-    body += "</p></body></html>";
+    std::string body;
+    if (status != 200) {
+        body = "<!DOCTYPE html><html><head><meta charset=\"utf-8\"><title>Melange</title></head>"
+               "<body style=\"font-family:sans-serif;margin:3em\"><p>";
+        body += status == 404 ? "Not found." : "Bad request.";
+        body += "</p></body></html>";
+    } else {
+        const char* title = "Could not sign in";
+        const char* text = "Spotify's answer did not work out. Go back to the game and try again.";
+        switch (page) {
+            case Page::Ok:
+                title = "Signed in to Spotify";
+                text = "Go back to the game: your music is ready.";
+                break;
+            case Page::Denied:
+                title = "Sign-in cancelled";
+                text = "You did not allow access. Go back to the game to try again.";
+                break;
+            case Page::Cancelled:
+                title = "Sign-in cancelled";
+                text = "The sign-in was cancelled in the game. Go back to the game to try again.";
+                break;
+            case Page::NotAllowed:
+                title = "This Spotify app is not open to your account";
+                text = "The app only works for accounts its owner added. Go back to the game to set up your own free Spotify app.";
+                break;
+            case Page::Failed: break;
+        }
+        const bool ok = page == Page::Ok;
+        body =
+            "<!DOCTYPE html><html lang=\"en\"><head><meta charset=\"utf-8\">"
+            "<meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"><title>Melange - Spotify</title><style>"
+            "html,body{height:100%;margin:0}body{display:flex;align-items:center;justify-content:center;background:#0f1a20;"
+            "color:#e8eef2;font:16px/1.5 \"Segoe UI\",system-ui,sans-serif}.card{max-width:420px;margin:24px;padding:36px 32px;"
+            "background:#16252e;border:1px solid #24414f;border-radius:16px;text-align:center;box-shadow:0 12px 40px rgba(0,0,0,.45)}"
+            ".mark{width:64px;height:64px;margin:0 auto 18px;border-radius:50%;display:flex;align-items:center;"
+            "justify-content:center;background:#1db954}.mark.bad{background:#e8a33d}h1{font-size:22px;margin:0 0 8px;"
+            "font-weight:600}p{margin:0;color:#b6c4cc}.small{margin-top:18px;font-size:13px;color:#7d909b}</style></head>"
+            "<body><main class=\"card\"><div class=\"";
+        body += ok ? "mark" : "mark bad";
+        body += "\">";
+        body += ok ? "<svg width=\"34\" height=\"34\" viewBox=\"0 0 24 24\" aria-hidden=\"true\"><path d=\"M5 12.5l4.5 4.5L19 7.5\" "
+                     "fill=\"none\" stroke=\"#fff\" stroke-width=\"2.6\" stroke-linecap=\"round\" stroke-linejoin=\"round\"/></svg>"
+                   : "<svg width=\"34\" height=\"34\" viewBox=\"0 0 24 24\" aria-hidden=\"true\"><path d=\"M12 6v8\" stroke=\"#fff\" "
+                     "stroke-width=\"2.6\" stroke-linecap=\"round\"/><circle cx=\"12\" cy=\"18\" r=\"1.5\" fill=\"#fff\"/></svg>";
+        body += "</div><h1>";
+        body += title;
+        body += "</h1><p>";
+        body += text;
+        body += "</p><p class=\"small\">You can close this tab.</p></main></body></html>";
+    }
     std::string s = "HTTP/1.1 " + std::to_string(status) + " " + reason + "\r\n";
     s += "Content-Type: text/html; charset=utf-8\r\n";
     s += "Cache-Control: no-store\r\n";
-    s += "Content-Security-Policy: default-src 'none'\r\n";
+    s += "Content-Security-Policy: default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'; "
+         "frame-ancestors 'none'\r\n";
+    s += "X-Content-Type-Options: nosniff\r\n";
+    s += "Referrer-Policy: no-referrer\r\n";
     s += "Connection: close\r\n";
     s += "Content-Length: " + std::to_string(body.size()) + "\r\n\r\n";
     s += body;
@@ -446,7 +556,10 @@ inline std::optional<bool> PremiumOf(std::string_view product) {
 }
 
 // ---------------------------------------------------------------- errors, Retry-After, the rate gate
-enum class Err { None, Auth, Premium, NoDevice, Restricted, NotFound, BadRequest, Rate, Network, Timeout, Server, BadResponse, Cancelled };
+enum class Err {
+    None, Auth, Premium, NoDevice, Restricted, NotFound, BadRequest, Rate, Network, Timeout, Server, BadResponse, Cancelled,
+    NotAllowlisted
+};
 inline const char* ErrName(Err e) {
     switch (e) {
         case Err::None: return "";
@@ -462,8 +575,21 @@ inline const char* ErrName(Err e) {
         case Err::Server: return "server";
         case Err::BadResponse: return "bad-response";
         case Err::Cancelled: return "cancelled";
+        case Err::NotAllowlisted: return "not-allowlisted";
     }
     return "";
+}
+// A heuristic (Melange 0.14.1): Spotify refused an account that is not under the app's User Management (an app in
+// Development mode). Spotify answers 403 with a text such as "Check settings on developer.spotify.com/dashboard, the user
+// may not be registered." or "User not registered in the Developer Dashboard", as plain text or inside the JSON
+// error.message. There is no documented reason code, so the first 1024 bytes of the raw body are matched, lowercased.
+inline bool IsNotAllowlisted(int status, std::string_view body) {
+    if (status != 403) return false;
+    std::string low(body.substr(0, 1024));
+    for (char& c : low)
+        if (c >= 'A' && c <= 'Z') c = static_cast<char>(c - 'A' + 'a');
+    const bool notRegistered = low.find("not registered") != std::string::npos;
+    return low.find("may not be registered") != std::string::npos || (notRegistered && low.find("developer") != std::string::npos);
 }
 // A Web API answer that is not 2xx. Reads Spotify's {"error": {"status", "message", "reason"}}; message <= 200 bytes.
 inline Err MapApiError(int status, std::string_view body, std::string* message) {
@@ -482,6 +608,15 @@ inline Err MapApiError(int status, std::string_view body, std::string* message) 
     if (message) *message = TrimUtf8(msg, 200);
     if (status >= 200 && status < 300) return Err::None;
     if (status == 401) return Err::Auth;
+    if (reason != "PREMIUM_REQUIRED" && IsNotAllowlisted(status, body)) {  // PREMIUM_REQUIRED keeps its meaning
+        if (message && message->empty()) {  // a plain-text answer: its text, control characters as spaces
+            std::string raw(body.substr(0, 1024));
+            for (char& c : raw)
+                if (static_cast<unsigned char>(c) < 0x20 || c == 0x7f) c = ' ';
+            *message = TrimUtf8(raw, 200);
+        }
+        return Err::NotAllowlisted;
+    }
     if (status == 403) return reason == "PREMIUM_REQUIRED" ? Err::Premium : Err::Restricted;
     if (status == 404)
         return reason == "NO_ACTIVE_DEVICE" || msg.find("No active device") != std::string::npos ? Err::NoDevice : Err::NotFound;
@@ -609,8 +744,10 @@ size_t ExpireQueued(Queue& q, uint64_t nowMs, Fn&& expired) {
 }
 
 // ---------------------------------------------------------------- requests
-enum class Op { Tracks, Playlists, PlaylistTracks, Devices, Play, Pause, Resume, Seek, Volume, Playback };
-inline bool IsControl(Op op) { return op == Op::Play || op == Op::Pause || op == Op::Resume || op == Op::Seek || op == Op::Volume; }
+enum class Op { Tracks, Playlists, PlaylistTracks, Devices, Play, Pause, Resume, Seek, Volume, Playback, Transfer };
+inline bool IsControl(Op op) {
+    return op == Op::Play || op == Op::Pause || op == Op::Resume || op == Op::Seek || op == Op::Volume || op == Op::Transfer;
+}
 // The account's plan after a call: a control call that worked means "premium", one Spotify refused with
 // PREMIUM_REQUIRED means "free"; anything else leaves `current` (as does "free" for an already known non-Premium plan).
 inline std::string ProductAfter(const std::string& current, Op op, bool ok, Err e) {
@@ -635,8 +772,9 @@ struct Request {
     int offsetIndex = -1;           // Play with context: 0-based position, or
     std::string offsetUri;          //   a track URI in it
     int64_t positionMs = -1;        // Play (>= 0 to set), Seek
-    std::string deviceId;           // empty: the active device
+    std::string deviceId;           // empty: the active device (Transfer: required, the target)
     int volume = -1;                // Volume: 0..100
+    bool play = false;              // Transfer: start playback there (false keeps the current state)
 };
 
 // GET /playlists/{id}/items (Spotify's February 2026 Web API change; /tracks is gone for Development-mode apps) wraps
@@ -724,6 +862,12 @@ inline bool BuildCall(const Request& r, std::string* method, std::string* url, s
         case Op::Playback:
             *method = "GET";
             *url = base + "me/player?market=from_token";
+            return true;
+        case Op::Transfer:
+            if (!ValidDeviceId(r.deviceId)) return false;
+            *method = "PUT";
+            *url = base + "me/player";
+            *jsonBody = jsonmini::Obj().Raw("device_ids", jsonmini::Arr().Str(r.deviceId).End()).Bool("play", r.play).End();
             return true;
     }
     return false;
@@ -832,8 +976,10 @@ inline std::string ShapeDevices(const json::Value& body) {
                 .Str("name", TrimUtf8(StrOf(d.Get("name")), kMaxText))
                 .Str("type", TrimUtf8(StrOf(d.Get("type")), 32))
                 .Bool("active", IsTrue(d.Get("is_active")))
-                .Bool("restricted", IsTrue(d.Get("is_restricted")));
+                .Bool("restricted", IsTrue(d.Get("is_restricted")))
+                .Bool("private", IsTrue(d.Get("is_private_session")));
             if (const json::Value* vol = d.Get("volume_percent"); vol && vol->IsNumber()) o.Int("volume", IntOf(vol));
+            if (const json::Value* sv = d.Get("supports_volume"); sv && sv->IsBool()) o.Bool("supportsVolume", sv->boolean);
             items.Raw(o.End());
         }
     }
