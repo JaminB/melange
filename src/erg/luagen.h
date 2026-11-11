@@ -1,4 +1,5 @@
 #pragma once
+#include <cstdint>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -15,6 +16,7 @@ constexpr size_t kMaxChunkBytes = 32768;
 struct ChunkSpec {
     bool knots = false;
     bool teams = false;                                    // knots by team: WORM<4 x team + place> (spawns.mode teams)
+    std::optional<SpawnAreas> areas;                       // spawns.mode areas (the names are the scene's: "" here)
     bool placeObjects = false;                             // mine, oildrum
     std::vector<ObjectSpec> objects;
     std::optional<double> water;
@@ -36,4 +38,12 @@ bool IsGenerated(std::string_view stem, std::string_view text, std::string* why)
 // Like IsGenerated, but a byte-exact legacy chunk is accepted too; *out is the chunk to run (always the current form).
 bool Upgrade(std::string_view stem, std::string_view text, std::string* out, std::string* why);
 bool Parse(std::string_view stem, std::string_view text, ChunkSpec* out);   // the literal lines only; no equality check
+
+// spawns.mode areas. The chunk passes its areas to Melange's ergSpawnDeal(spec, teams) (levels/spawn_deal.cpp) as
+// "group:knots/...;step/step:opposite/...;a-b/..." (AreasSpec; no names), which answers each team's area by the match's
+// seed. DealAreas is that deal: per team rank (the match's teams in TeamIndex order, 0-based) the area index, or -1 for
+// a team past the areas. Without a seed it is the chunk's fallback: each step's lowest unused area, the teams in order.
+std::string AreasSpec(const SpawnAreas& a);
+bool ParseAreasSpec(std::string_view spec, SpawnAreas* out);   // names "", validated (ValidateSpawnAreas with names)
+std::vector<int> DealAreas(const SpawnAreas& a, int teams, std::optional<uint32_t> seed);
 }  // namespace melange::erg::luagen

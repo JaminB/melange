@@ -26,8 +26,24 @@ export const ROLES: readonly Role[] = ["scenery", "spawn", "object", "camera", "
 export const THEMES = ["ARABIAN", "WILDWEST", "CAMELOT", "PREHISTORIC", "BUILDING", "ARCTIC", "ENGLAND", "HORROR", "LUNAR", "PIRATE", "WAR"] as const;
 export const TIMES_OF_DAY = ["DAY", "EVENING", "NIGHT"] as const;
 /** random: the game places the worms; knots: worm slot i on the knot WORMi (WORM0-7); teams: each worm on
- * WORM<4 x team + its place in the team> (WORM0-15), so a team's worms stand at its own four knots. */
-export type SpawnMode = "random" | "knots" | "teams";
+ * WORM<4 x team + its place in the team> (WORM0-15), so a team's worms stand at its own four knots; areas: the match
+ * deals each team one of spawns.areas from its seed (SpawnAreas), and a team's worms stand on its area's knots. */
+export type SpawnMode = "random" | "knots" | "teams" | "areas";
+/** spawns.mode areas. Area i's knots are the next `knots` WORM<n> after the earlier areas' (area 0 on WORM0..). At
+ * match start Melange deals the pattern's steps in order, each an unused area of its group picked by the match's seed
+ * ("group:opposite": the partner, by `opposite`, of an area dealt earlier when it has one), then the rest in a seeded
+ * order, and shuffles the match's teams over the dealt areas. A team past the areas, or a worm past its area's knots,
+ * keeps the game's random spawn. */
+export interface SpawnArea { name: string; group: string; knots: number; }
+export interface Spawns { mode: SpawnMode; areas?: SpawnArea[]; pattern?: string[]; opposite?: [number, number][]; }
+export const SPAWN_AREA_LIMITS = { areas: 8, knotsPerArea: 8, knots: 32, steps: 8 } as const;
+const GROUP_RE = /^[a-z][a-z0-9_]{0,15}$/;
+/** The first WORM<n> of area i (the earlier areas' knots). */
+export function areaFirstKnot(areas: readonly SpawnArea[], i: number): number {
+  let n = 0;
+  for (let k = 0; k < i && k < areas.length; k++) n += areas[k].knots;
+  return n;
+}
 export type HmpMode = "copy" | "none" | "flat" | "paint";
 
 export interface Sha256Set { xan: string; xom: string; hmp: string | null; }
@@ -104,7 +120,7 @@ export interface Scene {
   registry: Registry;
   databank: Databank;
   water: { level: number | null };
-  spawns: { mode: SpawnMode };
+  spawns: Spawns;
   hmp: { mode: HmpMode; ref?: number };
   units: { worldPerXan: number };
   frames: Frame[];
@@ -137,7 +153,7 @@ export interface Patch {
   base: PatchBase;
   databank?: Partial<Databank>;
   water?: { level: number | null };
-  spawns?: { mode: SpawnMode };
+  spawns?: Spawns;
   hmp?: { mode: HmpMode };
   ops: Op[];
   kind?: { survivor: boolean };
@@ -300,6 +316,59 @@ function checkBase(c: Checker, b: unknown, withFile: boolean) {
 
 function checkMode(c: Checker, v: unknown, path: string, modes: readonly string[], extra: readonly string[] = []) {
   if (!isObj(v) || !c.keys(v, ["mode", ...extra], path) || !modes.includes(v.mode as string)) c.fail(`${path}.mode`, `must be one of ${modes.join(", ")}`);
+}
+
+/** The spawns block (the server's jsonio ParseSpawns): mode, and with mode areas the areas, pattern and opposite pairs. */
+function checkSpawns(c: Checker, v: unknown) {
+  if (!isObj(v) || !c.keys(v, ["mode", "areas", "pattern", "opposite"], "spawns")) return c.fail("spawns", "must be an object");
+  const modes = ["random", "knots", "teams", "areas"];
+  if (!modes.includes(v.mode as string)) return c.fail("spawns.mode", `must be one of ${modes.join(", ")}`);
+  if (v.mode !== "areas") {
+    for (const k of ["areas", "pattern", "opposite"]) if (v[k] !== undefined) c.fail(`spawns.${k}`, "is only for spawns.mode \"areas\"");
+    return;
+  }
+  const L = SPAWN_AREA_LIMITS;
+  if (!Array.isArray(v.areas) || v.areas.length < 1 || v.areas.length > L.areas) return c.fail("spawns.areas", `must be an array of 1-${L.areas} areas`);
+  const names = new Set<string>(), groups = new Set<string>();
+  let knots = 0;
+  v.areas.forEach((a: unknown, i: number) => {
+    const p = `spawns.areas[${i}]`;
+    if (!isObj(a) || !c.keys(a, ["name", "group", "knots"], p)) return c.fail(p, "must be {name, group, knots}");
+    if (!printable(a.name, 1, 24)) c.fail(`${p}.name`, "must be 1-24 printable characters");
+    else if (names.has(a.name as string)) c.fail(`${p}.name`, `'${a.name}' is used twice`);
+    names.add(a.name as string);
+    if (typeof a.group !== "string" || !GROUP_RE.test(a.group)) c.fail(`${p}.group`, "must match [a-z][a-z0-9_]{0,15}");
+    else groups.add(a.group);
+    if (!isInt(a.knots, 1, L.knotsPerArea)) c.fail(`${p}.knots`, `must be an integer in 1..${L.knotsPerArea}`);
+    else knots += a.knots as number;
+  });
+  if (knots > L.knots) c.fail("spawns.areas", `the areas hold ${knots} knots, more than ${L.knots} (WORM0-WORM${L.knots - 1})`);
+  if (v.pattern !== undefined) {
+    if (!Array.isArray(v.pattern) || v.pattern.length > L.steps) c.fail("spawns.pattern", `must be an array of at most ${L.steps} steps`);
+    else v.pattern.forEach((st: unknown, i: number) => {
+      const g = typeof st === "string" ? st.replace(/:opposite$/, "") : "";
+      if (!GROUP_RE.test(g)) c.fail(`spawns.pattern[${i}]`, "must be \"<group>\" or \"<group>:opposite\"");
+      else if (!groups.has(g)) c.fail(`spawns.pattern[${i}]`, `no area is in group '${g}'`);
+    });
+  }
+  if (v.opposite !== undefined) {
+    if (!Array.isArray(v.opposite) || v.opposite.length > L.areas) return c.fail("spawns.opposite", `must be an array of at most ${L.areas} pairs`);
+    const paired = new Set<number>(), n = v.areas.length;
+    v.opposite.forEach((pr: unknown, i: number) => {
+      const p = `spawns.opposite[${i}]`;
+      if (!Array.isArray(pr) || pr.length !== 2 || !pr.every((x) => isInt(x, 0, n - 1)) || pr[0] === pr[1])
+        return c.fail(p, `must be two different area indexes in 0..${n - 1}`);
+      if (paired.has(pr[0]) || paired.has(pr[1])) return c.fail(p, "an area is in at most one pair");
+      paired.add(pr[0]); paired.add(pr[1]);
+    });
+  }
+}
+
+/** The spawns block's problems ("path: why"), none when the server would take it. */
+export function spawnsProblems(v: unknown): string[] {
+  const c = new Checker();
+  checkSpawns(c, v);
+  return c.errors;
 }
 
 const OBJ_TYPES = ["crate", "telepad", "trigger", "minefactory"];
@@ -476,7 +545,7 @@ export function validateScene(s: unknown): Validation {
   else c.fail("databank", "must be an object");
   checkWater(c, s.water);
   if (s.previews !== undefined) checkPreviews(c, s.previews);
-  checkMode(c, s.spawns, "spawns", ["random", "knots", "teams"]);
+  checkSpawns(c, s.spawns);
   checkMode(c, s.hmp, "hmp", v2 ? ["copy", "none", "flat", "paint"] : ["copy", "none", "flat"], v2 ? ["ref"] : []);
   if (v2) {
     if (s.kind !== undefined) checkKind(c, s.kind);
@@ -640,7 +709,7 @@ export function validatePatch(p: unknown, sizeBytes?: number): Validation {
     }
   }
   if (p.water !== undefined) checkWater(c, p.water);
-  if (p.spawns !== undefined) checkMode(c, p.spawns, "spawns", ["random", "knots", "teams"]);
+  if (p.spawns !== undefined) checkSpawns(c, p.spawns);
   if (p.hmp !== undefined) checkMode(c, p.hmp, "hmp", v2 ? ["copy", "none", "flat", "paint"] : ["copy", "none", "flat"]);
   if (!Array.isArray(p.ops)) return { ok: false, errors: [...c.errors, "ops: must be an array"] };
   if (p.ops.length > LIMITS.ops) c.fail("ops", "at most 20000 ops");

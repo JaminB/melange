@@ -31,6 +31,7 @@
 #include "levels/factory.h"
 #include "levels/gate.h"
 #include "levels/hidden.h"
+#include "levels/spawn_deal.h"
 #include "levels/test.h"
 #include "lua/sim/bridge_internal.h"
 #include "lua/sim/tweak.h"
@@ -604,6 +605,7 @@ void OnFrame() {
         if (g_packsDone) CheckLastPlayed();
     }
     test::OnFrame(front && g_frontendFrames >= kSettleFrames);
+    spawndeal::OnFrame();
     gate::Tick();
 }
 

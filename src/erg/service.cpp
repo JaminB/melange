@@ -683,6 +683,14 @@ struct Service::Impl {
                                                          std::to_string(i / 4) + "'s worm " + std::to_string(i % 4) + ")"
                                                    : "spawns.mode is knots but there is no detail named " + k + "; export will refuse"));
             }
+        if (patch.spawns == SpawnMode::Areas)
+            for (size_t a = 0; a < patch.spawnAreas.areas.size(); ++a)
+                for (int i = 0; i < patch.spawnAreas.areas[a].knots; ++i) {
+                    const std::string k = "WORM" + std::to_string(patch.spawnAreas.First(a) + i);
+                    if (std::none_of(scene.details.begin(), scene.details.end(), [&](const Detail& d) { return d.name == k; }))
+                        warnings.arr.push_back(Str("spawns.mode is areas but there is no detail named " + k + " (area '" +
+                                                   patch.spawnAreas.areas[a].name + "' knot " + std::to_string(i) + ")"));
+                }
         std::vector<std::string> notes;
         if (!CheckObjects(scene, &notes, &err)) notes.push_back(err + "; export will refuse");
         for (auto& n : EngineWarnings(scene)) notes.push_back(n);

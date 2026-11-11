@@ -3,10 +3,10 @@
 // surround modes), the level script, and shipping the level (export, build, test, live packs). Placing uses the Erg
 // panel's own model (model/placing.ts, ground.ts), so a placed object is the one the palette places.
 import {
-  AddDetail, AddObjects, BUILTIN, Group, KNOT_RESOURCE, KNOTS, LIMITS, TEAM_KNOTS, PAD_SPACING, RemoveDetail, SetDetail, SetLevel, SetObject, THEMES, TIMES_OF_DAY,
-  catalogOf, checkScene, defaultObject, nextObjectKnot, nextTelepadGroup, objectOf, place, targetFrame,
+  AddDetail, AddObjects, AREA_KNOTS, BUILTIN, Group, KNOT_RESOURCE, KNOTS, LIMITS, TEAM_KNOTS, PAD_SPACING, RemoveDetail, SPAWN_AREA_LIMITS, SetDetail, SetLevel, SetObject, THEMES, TIMES_OF_DAY,
+  areaFirstKnot, catalogOf, checkScene, defaultObject, nextObjectKnot, nextTelepadGroup, objectOf, place, spawnsProblems, targetFrame,
   type Command, type CrateSpec, type Detail, type DetailFields, type EditorStore, type FactorySpec, type LevelSettings, type ObjectSpec, type ObjectType,
-  type TimeOfDay, type Vec3,
+  type SpawnArea, type Spawns, type TimeOfDay, type Vec3,
 } from "../core";
 import {
   DEG, commit, detailInfo, findDetail, pointOut, pointToMap, resolvePoint, unitsSchema, vec3, type PointArgs, type Units,
@@ -18,6 +18,7 @@ import { join } from "node:path";
 import { documentsDir } from "../oasis";
 import { automationFile, holdRoundClock, stopHold, tools as gameTools } from "./game";
 import { CAMERA_RISE, WALL_RADIUS, nearestTread, spawnWarnings, treadAt, treadWarnings } from "../lib/spawn-check";
+import { dealPreview } from "../lib/spawn-deal";
 import { expandWaterPreset, readWaterLook, waterLookProblems, WATER_PRESETS, withWaterLook, type WaterLook } from "../lib/water-look";
 import { checkFactory, factoryLines } from "../lib/factory-check";
 import { projectHash, readSource, storedThrow } from "../lib/project-hash";
@@ -177,14 +178,89 @@ async function teamReport(s: Session, units: Units, teams: number, per: number) 
     ...(waterWarnings.length ? { waterWarnings } : {}) };
 }
 
+/** The knots the spawn mode needs: WORM0-7 (knots), WORM0-15 (teams), the areas' knots (areas). */
+function neededKnots(sp: Spawns): string[] {
+  if (sp.mode === "areas") return AREA_KNOTS.slice(0, (sp.areas ?? []).reduce((n, a) => n + a.knots, 0));
+  return sp.mode === "teams" ? TEAM_KNOTS : KNOTS;
+}
+
 function spawnState(store: EditorStore, units: Units) {
   const scene = store.scene;
   const spawns = scene.details.filter((d) => d.role === "spawn").map((d) => detailInfo(store, d, units));
   const have = new Set(scene.details.map((d) => d.name));
-  return { spawnMode: scene.spawns.mode, spawns, missingKnots: (scene.spawns.mode === "teams" ? TEAM_KNOTS : KNOTS).filter((k) => !have.has(k)) };
+  return { spawnMode: scene.spawns.mode, spawns, missingKnots: neededKnots(scene.spawns).filter((k) => !have.has(k)) };
 }
 
-async function placeSpawnKnots(s: Session, a: { mode?: "random" | "knots" | "teams"; spawns?: SpawnArg[]; units?: Units; balance?: Balance | boolean; snap?: "tread" } & CameraArgs) {
+interface AreaArg { name: string; group: string; knots: PointArgs[]; }
+
+/** spawns.mode areas: the areas' knots are WORM<n> in area order (area 0 from WORM0); each match deals the teams over
+ * the areas from its seed (lib/spawn-deal.ts, Melange's DealAreas). */
+async function placeSpawnAreas(s: Session, a: { areas?: AreaArg[]; pattern?: string[]; opposite?: (number | string)[][]; spawns?: SpawnArg[]; balance?: unknown; units?: Units; snap?: "tread" } & CameraArgs) {
+  const store = s.store, scene = store.scene, units = a.units ?? "world";
+  if (a.spawns?.length || a.balance) throw new ToolError("mode areas places its knots per area: give areas [{name, group, knots: [{xz: [x, z]}, ...]}, ...], not spawns or balance");
+  const prev = scene.spawns.mode === "areas" ? scene.spawns : null;
+  if (!a.areas && !prev) throw new ToolError("mode areas needs areas: [{name, group, knots: [{xz: [x, z]}, ...]}, ...] (each area 1-8 knots)");
+  const areas: SpawnArea[] = a.areas ? a.areas.map((ar) => ({ name: ar.name, group: ar.group, knots: ar.knots.length })) : structuredClone(prev!.areas ?? []);
+  const index = (v: number | string, where: string) => {
+    const i = typeof v === "number" ? v : areas.findIndex((x) => x.name === v);
+    if (!Number.isInteger(i) || i < 0 || i >= areas.length) throw new ToolError(`${where}: ${JSON.stringify(v)} is not an area (give an area name or index 0-${areas.length - 1})`);
+    return i;
+  };
+  const opposite = a.opposite ? a.opposite.map((pr, k) => {
+    if (pr.length !== 2) throw new ToolError(`opposite[${k}]: give two areas [a, b]`);
+    return [index(pr[0], `opposite[${k}]`), index(pr[1], `opposite[${k}]`)] as [number, number];
+  }) : a.areas ? undefined : prev?.opposite;
+  const pattern = a.pattern ?? (a.areas ? undefined : prev?.pattern);
+  const next: Spawns = { mode: "areas", areas, ...(pattern?.length ? { pattern } : {}), ...(opposite?.length ? { opposite } : {}) };
+  const bad = spawnsProblems(next);
+  if (bad.length) throw new ToolError(bad.join("; "));
+  const cmds: Command[] = [];
+  if (JSON.stringify(scene.spawns) !== JSON.stringify(next)) cmds.push(new SetLevel({ spawnSetup: next }, "Spawn areas"));
+  const snapped: { knot: string; from: Vec3; to: Vec3; why: string[] }[] = [];
+  const placed: { area: string; knots: { knot: string; action: "added" | "moved"; dropped: boolean; pos: Vec3 }[] }[] = [];
+  (a.areas ?? []).forEach((ar, i) => {
+    const first = areaFirstKnot(areas, i), out: (typeof placed)[number]["knots"] = [];
+    ar.knots.forEach((pt, k) => {
+      const name = `WORM${first + k}`;
+      const r = resolvePoint(store, pt, units, name);
+      if (a.snap === "tread") {
+        const gs = grids(store), t = treadAt(gs, r.map);
+        if (!t.ok) {
+          const to = nearestTread(gs, r.map);
+          if (!to) throw new ToolError(`${name} (area ${ar.name}): ${t.problems.join("; ")}, and no point within 3 map units passes the tread checks: give another position`);
+          snapped.push({ knot: name, from: pointOut(r.map, units), to: pointOut(to, units), why: t.problems });
+          r.map = to;
+        }
+      }
+      const have = scene.details.find((d) => d.name === name);
+      if (have) cmds.push(new SetDetail(have.id, { pos: tidy(store.frames.toLocal(have.frame, r.map), 6) }, `Move ${name}`));
+      else {
+        const frame = targetFrame(scene, "spawn");
+        cmds.push(new AddDetail(frame, { name, resource: KNOT_RESOURCE, pos: tidy(store.frames.toLocal(frame, r.map), 6) }));
+      }
+      out.push({ knot: name, action: have ? "moved" : "added", dropped: r.dropped, pos: pointOut(r.map, units) });
+    });
+    placed.push({ area: ar.name, knots: out });
+  });
+  if (cmds.length) commit(store, cmds.length === 1 ? cmds[0] : new Group("Place spawn areas", cmds));
+  const total = areas.reduce((n, x) => n + x.knots, 0);
+  const unused = store.scene.details.filter((d) => /^WORM\d+$/.test(d.name) && Number(d.name.slice(4)) >= total).map((d) => d.name);
+  const spec = { areas, pattern: next.pattern, opposite: next.opposite };
+  return {
+    mode: "areas", changed: cmds.length > 0, ...(cmds.length ? {} : { note: "nothing to change" }),
+    areas: areas.map((x, i) => ({ index: i, name: x.name, group: x.group, knots: Array.from({ length: x.knots }, (_, k) => `WORM${areaFirstKnot(areas, i) + k}`) })),
+    pattern: next.pattern ?? [], opposite: (next.opposite ?? []).map(([p, q]) => [areas[p].name, areas[q].name]),
+    ...(placed.length ? { placed } : {}), ...(snapped.length ? { snapped } : {}),
+    deal: [2, 3, 4].map((t) => dealPreview(spec, t)),
+    dealNote: "each match deals the teams over the areas from its seed (every machine alike): the pattern's steps in order (each an unused area of its group; group:opposite the partner of an area dealt earlier), then the rest in a seeded order, the teams shuffled over them; a team's worms stand on its area's knots in slot order. deal: for 2-4 teams, the sets of areas 1000 seeds give and their share; fixed: the deal without Melange's ergSpawnDeal (the chunk's fallback), by team. A team past the areas, or a worm past its area's knots, keeps the game's random spawn.",
+    ...(unused.length ? { unusedKnots: unused, unusedNote: "WORM knots past the areas' are not used in mode areas (remove_object removes them)" } : {}),
+    ...spawnState(store, units), issues: issuesOf(store).filter((t) => /WORM|spawn/i.test(t)), warnings: cameraWarnings(store, units, a),
+  };
+}
+
+async function placeSpawnKnots(s: Session, a: { mode?: "random" | "knots" | "teams" | "areas"; spawns?: SpawnArg[]; units?: Units; balance?: Balance | boolean; snap?: "tread"; areas?: AreaArg[]; pattern?: string[]; opposite?: (number | string)[][] } & CameraArgs) {
+  if (a.mode === "areas") return placeSpawnAreas(s, a);
+  if (a.areas || a.pattern || a.opposite) throw new ToolError("areas, pattern and opposite are for mode areas");
   const store = s.store, scene = store.scene, units = a.units ?? "world";
   const mode = a.mode ?? "knots";
   const cmds: Command[] = [];
@@ -983,11 +1059,23 @@ const modId: Schema = { type: "string", description: "Mod id: a-z, 0-9, '-' and 
 export const tools: Tool[] = [
   {
     name: "place_spawn_knots",
-    description: "Set the spawn mode and place or move the spawn knots WORM0-WORM7 (WORM0-WORM15 in mode teams). mode 'knots' makes worm i start on knot i (a match needs all 8); 'teams' makes each worm start on WORM<4 x team + its place in the team> whatever slots the match deals (team 0 on WORM0-3, team 1 on WORM4-7, team 2 on WORM8-11, team 3 on WORM12-15), so with a castle per team every team spawns in its own castle (a 2-team game needs WORM0-7, four teams WORM0-15; Test's teams sets the match's teams and worms); 'random' leaves the game's random spawns (existing knots stay but are unused). Each spawn is a position [x,y,z] or xz (dropped onto the terrain). An existing WORMn is moved, a missing one added. One undo step. Answers the spawns, the knots still missing and warnings: a spawn whose turn camera may start inside a wall (ground within wallRadius at cameraRise above the ground it stands on) or that stands on ground under the water.",
+    description: "Set the spawn mode and place or move the spawn knots WORM0-WORM7 (WORM0-WORM15 in mode teams). mode 'knots' makes worm i start on knot i (a match needs all 8); 'teams' makes each worm start on WORM<4 x team + its place in the team> whatever slots the match deals (team 0 on WORM0-3, team 1 on WORM4-7, team 2 on WORM8-11, team 3 on WORM12-15), so with a castle per team every team spawns in its own castle (a 2-team game needs WORM0-7, four teams WORM0-15; Test's teams sets the match's teams and worms); 'areas' (Melange after 0.14.1) deals each team one of `areas` per match from the match's seed, the same on every machine (pattern: the order the groups are dealt in, e.g. ['sand', 'sand:opposite', 'palace', 'sand'] gives 2 teams two opposite sand areas, 3 teams + the palace; opposite: the area pairs facing each other), and a team's worms stand on its area's knots (area 0's knots WORM0.., then area 1's; at most 8 areas, 8 knots each, 32 in all) - give areas [{name, group, knots: [{xz}, ...]}], not spawns; the answer's deal lists what 2-4 teams get over 1000 seeds; 'random' leaves the game's random spawns (existing knots stay but are unused). Each spawn is a position [x,y,z] or xz (dropped onto the terrain). An existing WORMn is moved, a missing one added. One undo step. Answers the spawns, the knots still missing and warnings: a spawn whose turn camera may start inside a wall (ground within wallRadius at cameraRise above the ground it stands on) or that stands on ground under the water.",
     inputSchema: {
       type: "object", additionalProperties: false,
       properties: {
-        mode: { type: "string", enum: ["random", "knots", "teams"], description: "Spawn mode (default knots)." },
+        mode: { type: "string", enum: ["random", "knots", "teams", "areas"], description: "Spawn mode (default knots)." },
+        areas: {
+          type: "array", minItems: 1, maxItems: SPAWN_AREA_LIMITS.areas, description: "Mode areas: the spawn areas in order (area i's knots follow area i-1's: WORM0.. for area 0). Given, they replace the level's areas (and its pattern and opposite pairs unless given too); omitted, the level's areas stay and pattern / opposite change alone.",
+          items: { type: "object", additionalProperties: false, required: ["name", "group", "knots"], properties: {
+            name: { type: "string", description: "A label (1-24 printable characters, unique), e.g. 'SAND W'." },
+            group: { type: "string", description: "[a-z][a-z0-9_]{0,15}: the area's group for the pattern, e.g. 'sand' or 'palace'." },
+            knots: { type: "array", minItems: 1, maxItems: SPAWN_AREA_LIMITS.knotsPerArea, description: "The area's knots, in the order its team's worms take them (worm 0 of the team on the first).",
+              items: { type: "object", additionalProperties: false, properties: { ...pointProps } } } } },
+        },
+        pattern: { type: "array", maxItems: SPAWN_AREA_LIMITS.steps, items: { type: "string" },
+          description: "Mode areas: the groups in deal order; 'group:opposite' takes the opposite partner of an area dealt earlier (by `opposite`) when it is free. The areas the pattern leaves are dealt after it in a seeded order." },
+        opposite: { type: "array", maxItems: SPAWN_AREA_LIMITS.areas, items: { type: "array", minItems: 2, maxItems: 2, items: { anyOf: [{ type: "string" }, { type: "integer" }] } },
+          description: "Mode areas: pairs of areas facing each other, by name or index, e.g. [['SAND W', 'SAND E'], ['SAND N', 'SAND S']]; an area is in at most one pair." },
         spawns: {
           type: "array", maxItems: 16, description: "The knots to place or move.",
           items: { type: "object", additionalProperties: false, required: ["worm"],

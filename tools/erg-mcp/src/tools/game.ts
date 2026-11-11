@@ -5,6 +5,7 @@
 // console refuses online matches unless [LuaConsole] MatchConsoleOnline=1). A game with render.camera and render.shot
 // (Melange's own Oasis methods) points the camera with no client mod, and game_camera {shot} and game_shots read the
 // picture back (clean: without the mods' wum.draw text).
+import { areaFirstKnot, type SpawnArea } from "../core";
 import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { extentXZ, markers, spansAt } from "../lib/inspect-field";
@@ -2238,14 +2239,31 @@ return string.format("%.3f,%.3f,%.3f,%s,%s,%s,%s", t.fps, t.busyMsP50, t.frameMs
       // the open project's knots, to set the worms' turn-1 positions against (a level in knots mode starts worm n there)
       let knots = new Map<string, number[]>();
       let byTeam = false;
+      let areas: SpawnArea[] | null = null;
       try {
         const mode = s.store.scene.spawns.mode;
-        if (mode === "knots" || mode === "teams") knots = new Map(markers(s.store).filter((m) => m.kind === "spawn").map((m) => [m.name, m.pos]));
+        if (mode === "knots" || mode === "teams" || mode === "areas") knots = new Map(markers(s.store).filter((m) => m.kind === "spawn").map((m) => [m.name, m.pos]));
         byTeam = mode === "teams";
+        if (mode === "areas") areas = s.store.scene.spawns.areas ?? [];
       } catch { /* no project open */ }
+      // spawns.mode areas: the match dealt each team an area from its seed (Melange's log: "spawn areas: seed"); the
+      // team's area is read back as the one whose knot is nearest its first worm, and each worm checked against its
+      // place there
+      const areaOfTeam = new Map<number, number>();
+      if (areas) for (const w of [...p.spawns].sort((x, y) => x.slot - y.slot)) {
+        if (areaOfTeam.has(w.team)) continue;
+        let best = -1, bestD = Infinity;
+        areas.forEach((ar, i) => { for (let k = 0; k < ar.knots; k++) { const kn = knots.get(`WORM${areaFirstKnot(areas!, i) + k}`); if (!kn) continue;
+          const d = Math.hypot(w.pos[0] - kn[0], w.pos[1] - kn[1], w.pos[2] - kn[2]); if (d < bestD) { bestD = d; best = i; } } });
+        if (best >= 0) areaOfTeam.set(w.team, best);
+      }
       // spawns.mode teams: a worm's knot is WORM<4 x team + its place in the team>, the place counted in slot order (as
       // the generated chunk deals them)
       const knotOf = (w: { slot: number; team: number }) => {
+        if (areas) {
+          const ai = areaOfTeam.get(w.team), place = p.spawns.filter((x) => x.team === w.team && x.slot < w.slot).length;
+          return ai !== undefined && place < areas[ai].knots ? `WORM${areaFirstKnot(areas, ai) + place}` : "";
+        }
         if (!byTeam) return wormName(w);
         const place = p.spawns.filter((x) => x.team === w.team && x.slot < w.slot).length;
         return place < 4 ? `WORM${w.team * 4 + place}` : "";
@@ -2257,7 +2275,8 @@ return string.format("%.3f,%.3f,%.3f,%s,%s,%s,%s", t.fps, t.busyMsP50, t.frameMs
       const spawns = p.spawns.map((w) => {
         const n = wormName(w), kname = knotOf(w), kn = knots.get(kname);
         return { worm: n, name: w.name, team: w.team, slot: w.slot, at: inUnits(w.pos, u), health: w.health,
-          ...(kn ? { knot: inUnits(kn, u), ...(byTeam ? { knotName: kname } : {}), fromKnot: r2(Math.hypot(w.pos[0] - kn[0], w.pos[1] - kn[1], w.pos[2] - kn[2]) * k) } : {}) };
+          ...(areas && areaOfTeam.has(w.team) ? { area: areas[areaOfTeam.get(w.team)!].name } : {}),
+          ...(kn ? { knot: inUnits(kn, u), ...(byTeam || areas ? { knotName: kname } : {}), fromKnot: r2(Math.hypot(w.pos[0] - kn[0], w.pos[1] - kn[1], w.pos[2] - kn[2]) * k) } : {}) };
       });
       const deaths = p.deaths.map((d) => ({ worm: wormName(d), name: d.name, team: d.team, slot: d.slot, turn: d.turn, tick: d.tick, cause: d.cause, evidence: d.evidence,
         at: inUnits(d.pos, u), lastAlive: inUnits(d.lastAlivePos, u), health: d.health,
@@ -2272,7 +2291,7 @@ return string.format("%.3f,%.3f,%.3f,%s,%s,%s,%s", t.fps, t.busyMsP50, t.frameMs
         deaths, explosionsSeen: p.explosionsSeen, ...(a.explosions ? { explosions: p.explosions.map(explosionOut) } : {}),
         factory: { fires: r.factory.fires.map((f) => fireOut(f, u, ...groundLookup(s))), ...(r.factory.following ? { following: r.factory.following } : {}),
           ...(r.factory.held !== undefined ? { held: r.factory.held } : {}), ...(r.factory.drowned !== undefined ? { drowned: r.factory.drowned } : {}), trigger: r.factory.trigger },
-        note: "turn counts game turns from 1 (as game_state and check_flood); causes are inferred from what the probe saw (evidence), not read from the engine, which keeps no damage source; WORMn is the worm's slot (game_state's worm); knot and fromKnot only for a level in knots or teams spawn mode (teams: knotName, the team's knot the worm stood on: WORM<4 x team + its place in the team>)",
+        note: "turn counts game turns from 1 (as game_state and check_flood); causes are inferred from what the probe saw (evidence), not read from the engine, which keeps no damage source; WORMn is the worm's slot (game_state's worm); knot and fromKnot only for a level in knots, teams or areas spawn mode (teams: knotName, the team's knot the worm stood on: WORM<4 x team + its place in the team>; areas: area, the area whose knot is nearest the team's first worm, and knotName, that area's knot for the worm's place in its team)",
       };
     },
   },

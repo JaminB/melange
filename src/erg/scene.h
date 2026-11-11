@@ -36,13 +36,43 @@ bool ParseRole(std::string_view s, Role* out);
 Role DeriveRole(std::string_view name, std::string_view resource);
 
 // Knots: worm slot i on the knot WORMi (WORM0-7). Teams: each worm on WORM<4 x team + its place in the team>
-// (WORM0-15), whatever slots the Quick Game deals, so a team's worms stand at its own four knots.
-enum class SpawnMode : uint8_t { Random, Knots, Teams };
+// (WORM0-15), whatever slots the Quick Game deals, so a team's worms stand at its own four knots. Areas: the match
+// deals each team one spawn area (SpawnAreas) from its seed, and a team's worms stand on its area's knots.
+enum class SpawnMode : uint8_t { Random, Knots, Teams, Areas };
 enum class HmpMode : uint8_t { Copy, None, Flat, Paint };
 const char* SpawnModeName(SpawnMode m);
 const char* HmpModeName(HmpMode m);
 bool ParseSpawnMode(std::string_view s, SpawnMode* out);
 bool ParseHmpMode(std::string_view s, HmpMode* out);
+
+// spawns.mode areas: named areas of knots in groups (e.g. "sand", "palace"). Area i's knots are the next `knots`
+// WORM<n> after the earlier areas' (area 0 on WORM0.., in area order). At match start the generated chunk asks Melange
+// for the deal (levels/spawn_deal.cpp): the pattern's steps in order, each an unused area of its group (picked from the
+// match's seed, so every peer deals alike; "opposite" picks the partner of an area dealt earlier, by the `opposite`
+// pairs, when it has one), then the areas the pattern left in a seeded order; the match's teams are shuffled over the
+// dealt areas by the same seed. A team past the areas keeps the game's random spawns, as does a worm past its area's knots.
+constexpr size_t kMaxSpawnAreas = 8, kMaxAreaKnots = 8, kMaxAreaKnotsTotal = 32, kMaxDealSteps = 8;
+struct SpawnArea {
+    std::string name;                                 // 1-24 printable ASCII; the scene's only (the chunk has none)
+    std::string group;                                // [a-z][a-z0-9_]{0,15}
+    int knots = 4;                                    // 1..kMaxAreaKnots
+    bool operator==(const SpawnArea&) const = default;
+};
+struct DealStep {
+    std::string group;
+    bool opposite = false;                            // "group:opposite"
+    bool operator==(const DealStep&) const = default;
+};
+struct SpawnAreas {
+    std::vector<SpawnArea> areas;                     // 1..kMaxSpawnAreas, at most kMaxAreaKnotsTotal knots in all
+    std::vector<DealStep> pattern;                    // 0..kMaxDealSteps; each group names an area's group
+    std::vector<std::array<int, 2>> opposite;         // area index pairs; an area is in at most one pair
+    int Knots() const;                                // the areas' knots in all
+    int First(size_t area) const;                     // the area's first WORM<n>
+    bool operator==(const SpawnAreas&) const = default;
+};
+bool ValidGroupName(std::string_view s);
+bool ValidateSpawnAreas(const SpawnAreas& a, std::string* err);   // "spawns.<field>: why"
 
 struct Sha256Set { std::string xan, xom, hmp; };      // lower-case hex; hmp "" when the base has none
 struct BaseRef {
@@ -201,6 +231,7 @@ struct Scene {
     DatabankInfo databank;
     std::optional<double> water;                      // world units; empty = the stdvs/Tweak default
     SpawnMode spawns = SpawnMode::Random;
+    SpawnAreas spawnAreas;                            // spawns.mode areas only
     HmpMode hmp = HmpMode::Copy;
     int worldPerXan = kWorldPerXan;
     std::vector<Frame> frames;

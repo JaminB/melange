@@ -58,6 +58,17 @@ A map's spawn mode is either:
   `WORM4` and `WORM5`, not on `WORM2` and `WORM3` as plain knots would). Put each team's four markers in its own base
   and every team starts there. A two-team game needs `WORM0`..`WORM7`; the checks warn when `WORM8`..`WORM15` are
   missing, which a third or fourth team needs. A team's fifth and sixth worms start at random.
+- **Areas dealt per match** (Melange after 0.14.1): named spawn areas, each in a group (for example four `sand` areas and one
+  `palace`), with 1-8 markers each (at most 8 areas and 32 markers, `WORM0`..`WORM31`: area 1's markers first, then
+  area 2's, and so on). At the start of every match Melange deals each team one area from the match's seed, so every
+  machine of a network game and a replay deal the same: first the **deal pattern**'s groups in order (each an unused
+  area of that group; `group:opposite` takes the partner of an area dealt earlier, by the **opposite pairs**, when it
+  is free), then the areas the pattern left in a seeded order, and the match's teams are shuffled over the dealt areas.
+  A team's worms start on its area's markers in order. With the pattern `sand, sand:opposite, palace, sand` and the
+  pairs west-east and north-south, two teams start on facing sand areas, three add the palace and four are three sand
+  areas and the palace. A team past the areas, or a worm past its area's markers, starts at random. The Level tab
+  edits the areas (name, group, markers), the pattern and the pairs; the checks flag an area's missing markers. A
+  Melange of 0.14.1 or older refuses such a map's project (`spawns: unknown key 'areas'`).
 
 ![Diner Might with knot spawns: the outliner filtered to the eight WORM knots, WORM2 selected](images/erg/spawns.png)
 

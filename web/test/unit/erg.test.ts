@@ -5,7 +5,7 @@ import { createClient } from "../../src/sdk/client";
 import {
   AddDetail, CommandStack, RemoveDetail, SetDetail, SetLevel, SetVoxels, apply, applyPatch, createErgSession, deriveRole, frameLocal,
   frameWorld, isEmptyPatch,
-  toPatch, validatePatch, validateScene, voxelRuns, type Command, type Patch, type Scene, type Vec3,
+  spawnsProblems, toPatch, validatePatch, validateScene, voxelRuns, type Command, type Patch, type Scene, type Vec3,
 } from "../../src/sdk/erg";
 
 const fixture = (name: string) => readFileSync(new URL(`../../../tests/fixtures/erg/${name}`, import.meta.url), "utf8");
@@ -290,4 +290,43 @@ test("an Erg session loads a scene and its blobs", async () => {
   s.recv({ t: "res", id: save.id, r: { saved: true, warnings: [] } });
   assert.deepEqual(await saving, { saved: true, warnings: [] });
   c.close();
+});
+
+test("spawns.mode areas: the areas block validates like the server's, rides through the patch and SetLevel undoes", () => {
+  const base = scene12();
+  const areas = {
+    mode: "areas" as const, areas: [{ name: "SAND W", group: "sand", knots: 4 }, { name: "SAND E", group: "sand", knots: 4 }, { name: "PALACE", group: "palace", knots: 4 }],
+    pattern: ["sand", "sand:opposite", "palace"], opposite: [[0, 1]] as [number, number][],
+  };
+  assert.deepEqual(spawnsProblems(areas), []);
+  for (const [bad, why] of [
+    [{ ...areas, pattern: ["dunes"] }, /no area is in group 'dunes'/],
+    [{ ...areas, opposite: [[0, 0]] }, /two different area indexes/],
+    [{ ...areas, opposite: [[0, 1], [1, 2]] }, /at most one pair/],
+    [{ ...areas, areas: [...areas.areas, { name: "SAND W", group: "sand", knots: 1 }] }, /used twice/],
+    [{ ...areas, areas: Array.from({ length: 5 }, (_, i) => ({ name: `A${i}`, group: "a", knots: 8 })), pattern: [], opposite: [] }, /40 knots/],
+    [{ mode: "teams", areas: areas.areas }, /only for spawns.mode "areas"/],
+    [{ ...areas, areas: [{ name: "X", group: "Sand", knots: 4 }], pattern: [], opposite: [] }, /group/],
+  ] as const) assert.match(spawnsProblems(bad).join("; "), why, JSON.stringify(bad));
+  const edited = structuredClone(base);
+  const stack = new CommandStack(edited);
+  stack.exec(new SetLevel({ spawnSetup: areas }, "Spawn areas"));
+  assert.deepEqual(edited.spawns, areas);
+  assert.ok(validateScene(edited).ok, validateScene(edited).errors.join("; "));
+  const p = toPatch(base, edited);
+  assert.deepEqual(p.spawns, areas);
+  assert.ok(validatePatch(p).ok, validatePatch(p).errors.join("; "));
+  assert.ok(!isEmptyPatch(p, base));
+  assert.deepEqual(applyPatch(base, p).spawns, areas);
+  stack.undo();
+  assert.deepEqual(edited.spawns, base.spawns);
+  // the mode alone: areas starts from the default two areas, any other mode drops them
+  stack.exec(new SetLevel({ spawns: "areas" }, "Change spawns"));
+  assert.equal(edited.spawns.areas?.length, 2);
+  assert.ok(validateScene(edited).ok);
+  stack.exec(new SetLevel({ spawns: "teams" }, "Change spawns"));
+  assert.deepEqual(edited.spawns, { mode: "teams" });
+  // an old-style patch keeps its plain mode
+  assert.deepEqual(toPatch(base, base).spawns, { mode: base.spawns.mode });
+  assert.ok(isEmptyPatch(toPatch(base, base), base));
 });

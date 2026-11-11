@@ -1,7 +1,7 @@
 // Every edit is a Command (the three.js editor's pattern); the stack lives in the tab.
 import {
   KNOT_RESOURCE, deriveRole, type Databank, type Detail, type DetailFields, type Frame, type FrameTrim, type HmpMode, type ObjectSpec,
-  type Scene, type SpawnMode, type Vec3,
+  type Scene, type SpawnMode, type Spawns, type Vec3,
 } from "./scene";
 
 export interface Command { label: string; do(s: Scene): void; undo(s: Scene): void; merge?(next: Command): boolean; }
@@ -186,7 +186,9 @@ export class SetObject implements Command {
   }
 }
 
-/** Level settings: water (world units, null = default), spawn and surround modes, databank keys, title. */
+/** Level settings: water (world units, null = default), spawn and surround modes, databank keys, title. Changing the
+ * spawn mode to areas keeps no earlier areas: it starts from two areas of four knots (DEFAULT_SPAWN_AREAS); spawnSetup
+ * sets the whole spawns block (the areas, pattern and opposite pairs). */
 export class SetLevel implements Command {
   private before?: LevelSettings;
   constructor(private after: LevelSettings, readonly label = "Change level settings") {}
@@ -203,14 +205,18 @@ export class SetLevel implements Command {
 }
 
 export interface LevelSettings {
-  title?: string; water?: number | null; spawns?: SpawnMode; hmp?: HmpMode; databank?: Partial<Databank>;
+  title?: string; water?: number | null; spawns?: SpawnMode; spawnSetup?: Spawns; hmp?: HmpMode; databank?: Partial<Databank>;
 }
+
+export const DEFAULT_SPAWN_AREAS: Spawns = {
+  mode: "areas", areas: [{ name: "Area 1", group: "area", knots: 4 }, { name: "Area 2", group: "area", knots: 4 }],
+};
 
 function readSettings(s: Scene, keys: LevelSettings): LevelSettings {
   const out: LevelSettings = {};
   if (keys.title !== undefined) out.title = s.title;
   if (keys.water !== undefined) out.water = s.water.level;
-  if (keys.spawns !== undefined) out.spawns = s.spawns.mode;
+  if (keys.spawns !== undefined || keys.spawnSetup !== undefined) out.spawnSetup = structuredClone(s.spawns);
   if (keys.hmp !== undefined) out.hmp = s.hmp.mode;
   if (keys.databank) {
     out.databank = {};
@@ -222,7 +228,9 @@ function readSettings(s: Scene, keys: LevelSettings): LevelSettings {
 function writeSettings(s: Scene, v: LevelSettings) {
   if (v.title !== undefined) s.title = v.title;
   if (v.water !== undefined) s.water = { level: v.water };
-  if (v.spawns !== undefined) s.spawns = { mode: v.spawns };
+  if (v.spawnSetup !== undefined) s.spawns = structuredClone(v.spawnSetup);
+  else if (v.spawns !== undefined && v.spawns !== s.spawns.mode)
+    s.spawns = v.spawns === "areas" ? structuredClone(DEFAULT_SPAWN_AREAS) : { mode: v.spawns };
   if (v.hmp !== undefined) s.hmp = { mode: v.hmp };
   if (v.databank) s.databank = { ...s.databank, ...v.databank };
 }

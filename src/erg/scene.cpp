@@ -564,7 +564,9 @@ Role DeriveRole(std::string_view name, std::string_view resource) {
     return Role::Other;
 }
 
-const char* SpawnModeName(SpawnMode m) { return m == SpawnMode::Knots ? "knots" : m == SpawnMode::Teams ? "teams" : "random"; }
+const char* SpawnModeName(SpawnMode m) {
+    return m == SpawnMode::Knots ? "knots" : m == SpawnMode::Teams ? "teams" : m == SpawnMode::Areas ? "areas" : "random";
+}
 const char* HmpModeName(HmpMode m) {
     return m == HmpMode::None ? "none" : m == HmpMode::Flat ? "flat" : m == HmpMode::Paint ? "paint" : "copy";
 }
@@ -573,7 +575,65 @@ bool ParseSpawnMode(std::string_view s, SpawnMode* out) {
     if (s == "random") *out = SpawnMode::Random;
     else if (s == "knots") *out = SpawnMode::Knots;
     else if (s == "teams") *out = SpawnMode::Teams;
+    else if (s == "areas") *out = SpawnMode::Areas;
     else return false;
+    return true;
+}
+
+int SpawnAreas::Knots() const {
+    int n = 0;
+    for (const auto& a : areas) n += a.knots;
+    return n;
+}
+
+int SpawnAreas::First(size_t area) const {
+    int n = 0;
+    for (size_t i = 0; i < area && i < areas.size(); ++i) n += areas[i].knots;
+    return n;
+}
+
+bool ValidGroupName(std::string_view s) {
+    if (s.empty() || s.size() > 16 || s[0] < 'a' || s[0] > 'z') return false;
+    for (char c : s)
+        if (!((c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '_')) return false;
+    return true;
+}
+
+bool ValidateSpawnAreas(const SpawnAreas& a, std::string* err) {
+    if (a.areas.empty() || a.areas.size() > kMaxSpawnAreas)
+        return Fail(err, "spawns.areas: must hold 1-" + std::to_string(kMaxSpawnAreas) + " areas");
+    for (size_t i = 0; i < a.areas.size(); ++i) {
+        const auto& ar = a.areas[i];
+        const std::string p = "spawns.areas[" + std::to_string(i) + "]";
+        if (!PrintableAscii(ar.name, 1, 24)) return Fail(err, p + ".name: must be 1-24 printable characters");
+        for (size_t k = 0; k < i; ++k)
+            if (a.areas[k].name == ar.name) return Fail(err, p + ".name: '" + ar.name + "' is used twice");
+        if (!ValidGroupName(ar.group)) return Fail(err, p + ".group: must match [a-z][a-z0-9_]{0,15}");
+        if (ar.knots < 1 || ar.knots > static_cast<int>(kMaxAreaKnots))
+            return Fail(err, p + ".knots: must be an integer in 1.." + std::to_string(kMaxAreaKnots));
+    }
+    if (a.Knots() > static_cast<int>(kMaxAreaKnotsTotal))
+        return Fail(err, "spawns.areas: the areas hold " + std::to_string(a.Knots()) + " knots, more than " +
+                             std::to_string(kMaxAreaKnotsTotal) + " (WORM0-WORM" + std::to_string(kMaxAreaKnotsTotal - 1) + ")");
+    if (a.pattern.size() > kMaxDealSteps) return Fail(err, "spawns.pattern: at most " + std::to_string(kMaxDealSteps) + " steps");
+    for (size_t i = 0; i < a.pattern.size(); ++i) {
+        const auto& st = a.pattern[i];
+        bool known = false;
+        for (const auto& ar : a.areas) known |= ar.group == st.group;
+        if (!ValidGroupName(st.group) || !known)
+            return Fail(err, "spawns.pattern[" + std::to_string(i) + "]: no area is in group '" + st.group + "'");
+    }
+    if (a.opposite.size() > kMaxSpawnAreas) return Fail(err, "spawns.opposite: at most " + std::to_string(kMaxSpawnAreas) + " pairs");
+    std::vector<bool> paired(a.areas.size(), false);
+    for (size_t i = 0; i < a.opposite.size(); ++i) {
+        const auto& [x, y] = a.opposite[i];
+        const std::string p = "spawns.opposite[" + std::to_string(i) + "]";
+        const int n = static_cast<int>(a.areas.size());
+        if (x < 0 || y < 0 || x >= n || y >= n || x == y)
+            return Fail(err, p + ": must be two different area indexes in 0.." + std::to_string(n - 1));
+        if (paired[x] || paired[y]) return Fail(err, p + ": an area is in at most one pair");
+        paired[x] = paired[y] = true;
+    }
     return true;
 }
 
@@ -763,10 +823,7 @@ bool ParseScene(std::string_view json, Scene* out, std::string* err) {
         s.water = w;
     }
     std::string mode;
-    const Json* sp = root.find("spawns");
-    if (!Obj(sp, "spawns", err) || !OnlyKeys(*sp, {"mode"}, "spawns", err) || !GetString(*sp, "mode", "spawns", &mode, err))
-        return false;
-    if (!ParseSpawnMode(mode, &s.spawns)) return Fail(err, "spawns.mode: must be \"random\", \"knots\" or \"teams\"");
+    if (!ParseSpawns(root.find("spawns"), &s.spawns, &s.spawnAreas, err)) return false;
     const Json* hmp = root.find("hmp");
     if (!Obj(hmp, "hmp", err) || !(v2 ? OnlyKeys(*hmp, {"mode", "ref"}, "hmp", err) : OnlyKeys(*hmp, {"mode"}, "hmp", err)) ||
         !GetString(*hmp, "mode", "hmp", &mode, err))
@@ -1030,9 +1087,7 @@ std::string WriteScene(const Scene& s) {
     Json water = Json::Obj();
     water.set("level", s.water ? Num(*s.water) : Json::Null_());
     root.set("water", std::move(water));
-    Json sp = Json::Obj();
-    sp.set("mode", Str(SpawnModeName(s.spawns)));
-    root.set("spawns", std::move(sp));
+    root.set("spawns", SpawnsJson(s.spawns, s.spawnAreas));
     Json hmp = Json::Obj();
     hmp.set("mode", Str(HmpModeName(s.hmp)));
     if (s.hmpRef >= 0) hmp.set("ref", Int(s.hmpRef));

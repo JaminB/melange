@@ -1,6 +1,7 @@
 // Level settings: title, theme, time of day, material file, heightmap textures, water, spawn mode and surround.
 import { SetLevel, THEMES, TIMES_OF_DAY, printable, type Databank, type HmpMode, type LevelSettings as Settings, type SpawnMode } from "../../../sdk/erg";
 import type { EditorStore } from "../model/store";
+import { SpawnAreasEditor } from "./SpawnAreas";
 
 export interface ThemeInfo { themes: string[]; times: string[]; materialFiles: string[]; }
 
@@ -87,8 +88,10 @@ export function LevelSettings({ store, themes }: Props) {
           <option value="random">Random (the game picks)</option>
           <option value="knots">Knots WORM0-WORM7</option>
           <option value="teams">Knots by team WORM0-WORM15</option>
+          <option value="areas">Areas dealt per match WORM0-WORM31</option>
         </select>
       </label>
+      {s.spawns.mode === "areas" ? <SpawnAreasEditor spawns={s.spawns} set={(v) => set({ spawnSetup: v }, "Change spawn areas")} /> : null}
       <label class="erg-field"><span class="erg-label">Surround</span>
         <select value={s.hmp.mode} onChange={(e) => set({ hmp: (e.target as HTMLSelectElement).value as HmpMode }, "Change surround")} data-field="hmp">
           <option value="copy">Copy the base's</option>

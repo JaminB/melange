@@ -1,6 +1,6 @@
 // The validation list: missing or doubled spawn knots, objects under water, details outside every frame, and anything
 // the patch validator refuses.
-import { WORLD_PER_XAN, type Scene } from "../../../sdk/erg";
+import { WORLD_PER_XAN, areaFirstKnot, type Scene } from "../../../sdk/erg";
 import { overFrame, type Frames } from "./geometry";
 
 export interface Issue { level: "error" | "warn"; text: string; detail?: number; }
@@ -8,12 +8,14 @@ export interface Issue { level: "error" | "warn"; text: string; detail?: number;
 export const KNOTS = Array.from({ length: 8 }, (_, i) => `WORM${i}`);
 /** spawns.mode teams: team t's worm p stands on WORM<4t + p>. */
 export const TEAM_KNOTS = Array.from({ length: 16 }, (_, i) => `WORM${i}`);
+/** spawns.mode areas: area i's knots follow the earlier areas' (at most WORM0-WORM31). */
+export const AREA_KNOTS = Array.from({ length: 32 }, (_, i) => `WORM${i}`);
 export const PLACED_OBJECTS = ["mine", "oildrum"];
 
 export function checkScene(scene: Scene, frames: Frames, patchErrors: string[] = []): Issue[] {
   const out: Issue[] = [];
   const knots = new Map<string, number[]>();
-  const named = scene.spawns.mode === "teams" ? TEAM_KNOTS : KNOTS;
+  const named = scene.spawns.mode === "teams" ? TEAM_KNOTS : scene.spawns.mode === "areas" ? AREA_KNOTS : KNOTS;
   for (const d of scene.details) if (named.includes(d.name)) knots.set(d.name, [...(knots.get(d.name) ?? []), d.id]);
   if (scene.spawns.mode === "knots") {
     const missing = KNOTS.filter((k) => !knots.has(k));
@@ -25,6 +27,15 @@ export function checkScene(scene: Scene, frames: Frames, patchErrors: string[] =
     const needed = missing.filter((k) => KNOTS.includes(k)), more = missing.filter((k) => !KNOTS.includes(k));
     if (needed.length) out.push({ level: "error", text: `Spawn mode is teams but ${needed.join(", ")} ${needed.length > 1 ? "are" : "is"} missing` });
     if (more.length) out.push({ level: "warn", text: `Spawn mode is teams but ${more.join(", ")} ${more.length > 1 ? "are" : "is"} missing: a third or fourth team's worms have no knot` });
+  }
+  if (scene.spawns.mode === "areas") {
+    // every area's knots are needed: a team dealt that area stands there
+    const areas = scene.spawns.areas ?? [];
+    areas.forEach((a, i) => {
+      const first = areaFirstKnot(areas, i);
+      const missing = Array.from({ length: a.knots }, (_, k) => `WORM${first + k}`).filter((k) => !knots.has(k));
+      if (missing.length) out.push({ level: "error", text: `Spawn area ${a.name} needs ${missing.join(", ")}` });
+    });
   }
   for (const [name, ids] of knots)
     if (ids.length > 1) out.push({ level: "warn", text: `${ids.length} details are named ${name}; the game uses one of them`, detail: ids[1] });
