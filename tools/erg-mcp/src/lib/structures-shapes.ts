@@ -60,6 +60,7 @@ export function translate(shapes: Shape[], d: Vec3): Shape[] {
   return shapes.map((s) => ({
     op: s.op, mat: s.mat, min: [s.min[0] + d[0], s.min[1] + d[1], s.min[2] + d[2]], max: [s.max[0] + d[0], s.max[1] + d[1], s.max[2] + d[2]],
     hit: (x, y, z) => s.hit(x - d[0], y - d[1], z - d[2]), part: s.part, ...(s.keep ? { keep: true } : {}),
+    ...(s.matAt ? { matAt: (x: number, y: number, z: number) => s.matAt!(x - d[0], y - d[1], z - d[2]) } : {}),
   }));
 }
 
@@ -70,6 +71,7 @@ export function scaled(shapes: Shape[], k: number): Shape[] {
   return shapes.map((s) => ({
     op: s.op, mat: s.mat, min: [s.min[0] * k, s.min[1] * k, s.min[2] * k], max: [s.max[0] * k, s.max[1] * k, s.max[2] * k],
     hit: (x, y, z) => s.hit(x / k, y / k, z / k), part: s.part, ...(s.keep ? { keep: true } : {}),
+    ...(s.matAt ? { matAt: (x: number, y: number, z: number) => s.matAt!(x / k, y / k, z / k) } : {}),
   }));
 }
 
@@ -94,6 +96,10 @@ export function place(shapes: Shape[], at: Vec3, yawDeg = 0): Shape[] {
         const dx = x - at[0], dz = z - at[2];
         return sh.hit(c * dx - s * dz, y - at[1], s * dx + c * dz);
       },
+      ...(sh.matAt ? { matAt: (x: number, y: number, z: number) => {
+        const dx = x - at[0], dz = z - at[2];
+        return sh.matAt!(c * dx - s * dz, y - at[1], s * dx + c * dz);
+      } } : {}),
     };
   });
 }

@@ -7,9 +7,10 @@ import { standableAt, standing, surfaces } from "../lib/reach";
 import { nearestTread, treadAt } from "../lib/spawn-check";
 import { applyPlan, dominantMaterial, type Packing } from "../lib/structures-apply";
 import {
-  SIDES, arch, bridge, castle, castleSpots, crater, flatTunnel, keep, lane, laneCut, place, placePoint, scaled, tower, tunnel, wallSegment, type Plan, type Shape,
+  SIDES, arch, bridge, planBounds, castle, castleSpots, crater, flatTunnel, keep, lane, laneCut, place, placePoint, scaled, tower, tunnel, wallSegment, type Plan, type Shape,
   type GateSpec, type Side, type Spot,
 } from "../lib/structures-shapes";
+import { compound, tiersHeight, type CompoundSpec } from "../lib/structures-compound";
 import { grids, tidy, toWorld } from "../lib/voxel";
 import { ToolError, type Schema, type Tool } from "../registry";
 import type { Session } from "../session";
@@ -262,6 +263,64 @@ function gateLaneFor(a: { gateLane?: boolean | number | { width?: number; mode?:
 }
 
 
+// ------------------------------------------------------------------ build_compound
+
+const COMPOUND_KINDS = ["box", "cylinder", "cone", "dome", "tiers"] as const;
+interface CompoundEntry { kind: (typeof COMPOUND_KINDS)[number]; carve?: boolean; at?: Vec3; material?: number; part?: number; bands?: { from?: number; to?: number; material: number }[];
+  size?: [number, number]; height?: number; radius?: number; topRadius?: number; profile?: "round" | "onion"; steps?: number; riser?: number; ledge?: number; round?: boolean; }
+
+const COMPOUND_FIELDS: Record<string, readonly string[]> = {
+  box: ["size", "height"], cylinder: ["radius", "height"], cone: ["radius", "height", "topRadius"], dome: ["radius", "height", "profile"],
+  tiers: ["steps", "riser", "ledge", "round", "size", "radius"],
+};
+
+/** The list's entries as specs in map units (k = map units per call unit), every field checked for its kind. */
+function compoundSpecs(list: CompoundEntry[], k: number, mat: number): CompoundSpec[] {
+  const pos = (v: unknown, what: string, i: number) => {
+    if (typeof v !== "number" || !Number.isFinite(v) || v <= 0) throw new ToolError(`shapes[${i}] (${list[i].kind}): ${what} is required and must be over 0`);
+    return v * k;
+  };
+  return list.map((e, i) => {
+    if (!COMPOUND_FIELDS[e.kind]) throw new ToolError(`shapes[${i}]: kind must be one of ${COMPOUND_KINDS.join(", ")}`);
+    const own = new Set(COMPOUND_FIELDS[e.kind]);
+    for (const f of Object.keys(COMPOUND_FIELDS).flatMap((n) => COMPOUND_FIELDS[n])) if (!own.has(f) && (e as unknown as Record<string, unknown>)[f] !== undefined)
+      throw new ToolError(`shapes[${i}]: ${f} is not a setting of a ${e.kind} (a ${e.kind} takes ${[...own].join(", ")})`);
+    const at: Vec3 = e.at ? [e.at[0] * k, e.at[1] * k, e.at[2] * k] : [0, 0, 0];
+    if (!at.every(Number.isFinite)) throw new ToolError(`shapes[${i}]: at must be finite numbers`);
+    if (e.carve && e.bands?.length) throw new ToolError(`shapes[${i}]: bands paint a fill's material: a carve has none`);
+    const c: CompoundSpec = { kind: e.kind, carve: !!e.carve, at, material: e.material ?? mat, ...(e.part !== undefined ? { part: e.part } : {}) };
+    if (e.bands?.length) c.bands = e.bands.map((b) => ({ from: (b.from ?? 0) * k, to: b.to === undefined ? Infinity : b.to * k, material: b.material }));
+    if (e.kind === "box") {
+      if (!e.size || !e.size.every((v) => Number.isFinite(v) && v > 0)) throw new ToolError(`shapes[${i}] (box): size [x, z] is required and must be over 0`);
+      c.size = [e.size[0] * k, e.size[1] * k]; c.height = pos(e.height, "height", i);
+    } else if (e.kind === "cylinder") { c.radius = pos(e.radius, "radius", i); c.height = pos(e.height, "height", i); }
+    else if (e.kind === "cone") {
+      c.radius = pos(e.radius, "radius", i); c.height = pos(e.height, "height", i);
+      if (e.topRadius !== undefined) {
+        if (!(e.topRadius >= 0)) throw new ToolError(`shapes[${i}] (cone): topRadius must be 0 or more`);
+        c.topRadius = e.topRadius * k;
+      }
+    } else if (e.kind === "dome") { c.radius = pos(e.radius, "radius", i); c.height = pos(e.height ?? e.radius, "height", i); c.profile = e.profile ?? "round"; }
+    else {
+      c.round = !!e.round;
+      if (c.round) c.radius = pos(e.radius, "radius (round tiers)", i);
+      else {
+        if (e.radius !== undefined) throw new ToolError(`shapes[${i}] (tiers): radius is for round tiers; give size`);
+        if (!e.size || !e.size.every((v) => Number.isFinite(v) && v > 0)) throw new ToolError(`shapes[${i}] (tiers): size [x, z] of the base step is required and must be over 0`);
+        c.size = [e.size[0] * k, e.size[1] * k];
+      }
+      if (!Number.isInteger(e.steps) || e.steps! < 1 || e.steps! > 64) throw new ToolError(`shapes[${i}] (tiers): steps is a whole number 1-64`);
+      c.steps = e.steps; c.riser = pos(e.riser, "riser", i);
+      if (typeof e.ledge !== "number" || !(e.ledge >= 0)) throw new ToolError(`shapes[${i}] (tiers): ledge (how far each step is inset on every side) is required and 0 or more`);
+      c.ledge = e.ledge * k;
+      const half = c.round ? c.radius! : Math.min(c.size![0], c.size![1]) / 2;
+      if (c.ledge * (c.steps! - 1) >= half) throw new ToolError(`shapes[${i}] (tiers): ${c.steps} steps inset ${e.ledge} on each side leave nothing of the top step (the base is ${tidy([(half * 2) / k, 0, 0])[0]} across): fewer steps or a smaller ledge`);
+      c.height = tiersHeight({ steps: c.steps!, riser: c.riser });
+    }
+    return c;
+  });
+}
+
 // ------------------------------------------------------------------ tools
 
 export const tools: Tool[] = [
@@ -501,6 +560,67 @@ export const tools: Tool[] = [
         const spec = { size, height: U(a.height, 10), material: mat, wall, hollow: a.hollow !== false, roof: a.roof !== false, door: sideOf(a.door, "s"),
           doorWidth: U(a.doorWidth, 3), doorHeight: U(a.doorHeight, 4), windows: a.windows !== false, cren: a.crenellations !== false, found: U(a.foundation, 0) };
         return { label: "Build keep", shapes: place(keep(spec), sc(a.at, k), a.rotation ?? 0), notes: [], info: { size, height: spec.height, door: spec.door } };
+      }) as Record<string, unknown>;
+      return settled.groundUnder ? { ...res, groundUnder: settled.groundUnder } : res;
+    },
+  },
+  {
+    name: "build_compound",
+    description: "Build one structure from an ordered list of solids: box, cylinder, cone (a frustum or a spire), dome (sphere cap or onion) and tiers (a stepped pyramid: base size, steps, riser height, ledge depth), each a fill or a carve (`carve: true`) with its own material, `part` and height `bands`. A later shape wins where shapes overlap, so a carve opens a niche or an arch in an earlier fill and a later fill closes it again. For plinths and stepped bases, domed towers, spires and niches that the castle builders do not draw. `at` is the compound's origin (y = the level its first shape's base stands on); each shape's own `at` is its base centre relative to it (default [0, 0, 0]). `blockScale`/`scale` (map units per voxel of the new blocks) cuts the cells; `ground`/`sink` seat it; `costOnly`, `costAt` and `maxCells` price it first. One undo step. " + SIDE_NOTE,
+    inputSchema: {
+      type: "object", additionalProperties: false, required: ["at", "shapes"],
+      properties: {
+        at: vec3("Origin [x, y, z]: y is the level the shapes' bases stand on."),
+        shapes: {
+          type: "array", minItems: 1, maxItems: 128,
+          description: "The shapes, applied in this order.",
+          items: {
+            type: "object", additionalProperties: false, required: ["kind"],
+            properties: {
+              kind: { type: "string", enum: [...COMPOUND_KINDS], description: "box: size [x, z] and height. cylinder: radius, height. cone: radius (at the base), height, topRadius (default 0, a point). dome: radius (of its base circle), height (default radius), profile round (a sphere cap: a hemisphere at height = radius, flatter below it, a half ellipsoid above it; default) or onion (a neck, a bulge a third of the way up a tenth wider than the base circle, a taper to a point). tiers: a stepped pyramid of `steps` steps `riser` high, the base step `size` [x, z] (or `radius` with round: true), each next step inset by `ledge` on every side; its height is steps x riser." },
+              carve: { type: "boolean", description: "Empty the shape instead of filling it (niches, arches, a hollow). Default false." },
+              at: vec3("The shape's base centre [x, y, z], relative to the compound's origin. Default [0, 0, 0]."),
+              material: { type: "integer", minimum: 0, maximum: 63, description: "Material 0-63 of a fill. Default: the call's material." },
+              part: { type: "integer", minimum: 0, description: "The part this fill belongs to for packing \"parts\" (one block per part, merged where that costs few cells): give the plinth, a wing and a dome each their own. Default: each shape its own." },
+              bands: { type: "array", minItems: 1, maxItems: 16, description: "Material by height above this shape's base (a fill only): the first band holding a cell's height wins, the shape's material elsewhere.",
+                items: { type: "object", additionalProperties: false, required: ["material"], properties: {
+                  from: { type: "number", description: "Height the band starts at. Default 0." }, to: { type: "number", description: "Height it ends at (exclusive). Default: the top." },
+                  material: { type: "integer", minimum: 0, maximum: 63 } } } },
+              size: vec2("box and tiers: the footprint [x, z] (tiers: of the base step)."),
+              height: { type: "number", minimum: 0.01, description: "box, cylinder, cone, dome." },
+              radius: { type: "number", minimum: 0.01, description: "cylinder, cone (base), dome (base circle), tiers with round." },
+              topRadius: { type: "number", minimum: 0, description: "cone: the radius at the top. Default 0." },
+              profile: { type: "string", enum: ["round", "onion"], description: "dome: the profile. Default round." },
+              steps: { type: "integer", minimum: 1, maximum: 64, description: "tiers: the number of steps." },
+              riser: { type: "number", minimum: 0.01, description: "tiers: the height of each step." },
+              ledge: { type: "number", minimum: 0, description: "tiers: how far each step is inset from the one below, on every side (the depth of the ledge)." },
+              round: { type: "boolean", description: "tiers: round steps (give radius) instead of rectangular ones." },
+            },
+          },
+        },
+        rotation, ...groundProps, ...common,
+      },
+    },
+    handler(s, a0: Common & { at: Vec3; shapes: CompoundEntry[]; rotation?: number; ground?: "max" | "mean" | "min"; sink?: number }) {
+      finite(a0.at, "at");
+      if (!Array.isArray(a0.shapes) || !a0.shapes.length) throw new ToolError("shapes is a list of at least one shape");
+      const k = a0.units === "world" ? 1 / 20 : 1;
+      // the footprint, to set the ground under it (the material is a placeholder: run() chooses the real one)
+      const fills0 = compoundSpecs(a0.shapes, k, 0).filter((c) => !c.carve);
+      if (!fills0.length) throw new ToolError("every shape is a carve: there is nothing to build (put a fill first)");
+      const foot = planBounds(compound(fills0, [0, 0, 0], 0));
+      const hx = Math.max(Math.abs(foot.min[0]), Math.abs(foot.max[0])) / k, hz = Math.max(Math.abs(foot.min[2]), Math.abs(foot.max[2])) / k;
+      const settled = settle(s, a0, hx, hz), a = { ...a0, at: settled.at };
+      const res = run(s, a, a.at, "compound", (k2, mat) => {
+        const specs = compoundSpecs(a.shapes, k2, mat), fills = specs.filter((c) => !c.carve);
+        const shapes = compound(specs, sc(a.at, k2), a.rotation ?? 0);
+        const fb = planBounds(compound(fills, [0, 0, 0], 0)), o = (v: number) => tidy([v / k2, 0, 0])[0];
+        const tip = a.at[1] * k2 + fb.max[1];
+        return { label: "Build compound", shapes, notes: [],
+          info: { shapes: specs.length, fills: fills.length, carves: specs.length - fills.length,
+            size: [o(fb.max[0] - fb.min[0]), o(fb.max[1] - fb.min[1]), o(fb.max[2] - fb.min[2])],
+            footprint: { x: [o(fb.min[0]), o(fb.max[0])], z: [o(fb.min[2]), o(fb.max[2])] },
+            tipY: { map: tidy([tip, 0, 0])[0], world: tidy([tip * 20, 0, 0])[0] } } };
       }) as Record<string, unknown>;
       return settled.groundUnder ? { ...res, groundUnder: settled.groundUnder } : res;
     },
