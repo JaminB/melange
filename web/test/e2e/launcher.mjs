@@ -270,6 +270,56 @@ async function installedHome(browser) {
   }
 }
 
+// Oasis tools / Map editor (Erg): buttons call launcher.openOasis (the browser itself is the server's); a "#/erg" URL on
+// a launcher server shows the Oasis shell with the Erg panel instead of the launcher.
+async function oasisLinks(browser) {
+  const mock = await startMock({ root, launcher: true });
+  const { page, errors } = await openPage(browser, mock, "restore");
+  try {
+    await attempt("oasis links: buttons call launcher.openOasis", async () => {
+      await page.waitForSelector(".la", { timeout: 10000 });
+      check("oasis links: no dead anchor to #oasis left", (await page.locator('a[href="/#oasis"]').count()) === 0);
+      await page.locator('[data-open-oasis=""]').click();
+      await page.locator('[data-open-oasis="erg"]').click();
+      await page.locator('[data-card-action="erg"]').click();
+      await page.waitForTimeout(300);
+      const opened = mock.state.launcher.openedOasis ?? [];
+      check("oasis links: Oasis tools, Map editor and the Make a map card", JSON.stringify(opened) === JSON.stringify(["", "erg", "erg"]), JSON.stringify(opened));
+      check("oasis links: no error shown", (await page.locator("[data-oasis-error]").count()) === 0);
+    });
+    await attempt("oasis links: #/erg on a launcher server shows the shell with Erg", async () => {
+      const shell = await browser.newPage({ viewport: { width: 1280, height: 800 } });
+      shell.on("pageerror", (e) => errors.push(e.message));
+      current = shell;
+      try {
+        await shell.goto(`${mock.url}&scenario=restore#/erg`, { waitUntil: "load" });
+        await shell.waitForSelector('nav [data-panel="erg"]', { timeout: 15000 });
+        await shell.waitForSelector('[data-panel-host="erg"]', { timeout: 15000 });
+        check("oasis links: shell, not the launcher", (await shell.locator(".la").count()) === 0 && (await shell.title()) === "Oasis");
+        check("oasis links: the Erg panel is open", (await shell.locator('[data-panel-host="erg"]').count()) === 1);
+      } finally {
+        await shell.close();
+      }
+    });
+    await attempt("oasis links: the launcher's own #/plugins hash still shows the launcher", async () => {
+      const own = await browser.newPage({ viewport: { width: 1120, height: 740 } });
+      own.on("pageerror", (e) => errors.push(e.message));
+      current = own;
+      try {
+        await own.goto(`${mock.url}&scenario=restore#/plugins`, { waitUntil: "load" });
+        await own.waitForSelector(".la", { timeout: 15000 });
+        check("oasis links: #/plugins is the launcher", (await own.title()) === "Melange");
+      } finally {
+        await own.close();
+      }
+    });
+    check("oasis links: no page errors", errors.length === 0, errors.join(" | "));
+  } finally {
+    await page.close();
+    await mock.close();
+  }
+}
+
 // One click from Help: spinner, then "Saved to Desktop · Show in folder"; Home offers the same once Melange has run.
 async function helpExportLogs(browser) {
   const mock = await startMock({ root, launcher: true });
@@ -760,7 +810,7 @@ async function displaySettings(browser) {
 const browser = await chromium.launch({ channel: "msedge", headless: true });
 try {
   for (const scenario of [
-    foundInstallRecommended, notFound, wrongBuild, ualPresent, reshadeBackupAndRestore, installedHome, helpExportLogs, pluginsBusy,
+    foundInstallRecommended, notFound, wrongBuild, ualPresent, reshadeBackupAndRestore, installedHome, oasisLinks, helpExportLogs, pluginsBusy,
     importDownloadFlow, importLocalFileFlow, importHashErrorFlow, importCancelFlow, importStaleAndDamaged, updateReady, restoreVanilla, displaySettings,
   ]) {
     try {

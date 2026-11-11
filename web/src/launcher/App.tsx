@@ -59,6 +59,7 @@ export function LauncherApp({ client }: { client: Client }) {
   const [launchError, setLaunchError] = useState<string>();
   const [launching, setLaunching] = useState(false);
   const [laaNotice, setLaaNotice] = useState<string>();
+  const [oasisError, setOasisError] = useState<string>();
   const [vanilla, setVanilla] = useState<VanillaResult>();
 
   useEffect(() => {
@@ -119,6 +120,10 @@ export function LauncherApp({ client }: { client: Client }) {
     setLaaNotice(why ? laaLaunchFailed(why) : undefined);
   };
 
+  const openOasis = (panel?: string) => {
+    setOasisError(undefined);
+    client.call("launcher.openOasis", panel ? { panel } : {}).catch((e) => setOasisError(errorText(e)));
+  };
   const launch = async () => {
     setLaunching(true);
     setLaunchError(undefined);
@@ -173,15 +178,17 @@ export function LauncherApp({ client }: { client: Client }) {
               {p.icon(16)}<span class="la-tab-label">{p.label}</span>
             </button>
           ))}
-          <a class="la-tab" href="/#oasis" target="_blank" rel="noreferrer"><ExternalLinkIcon size={16} /><span class="la-tab-label">Oasis tools</span></a>
+          <button class="la-tab" data-open-oasis="" onClick={() => openOasis()}><ExternalLinkIcon size={16} /><span class="la-tab-label">Oasis tools</span></button>
+          <button class="la-tab" data-open-oasis="erg" onClick={() => openOasis("erg")}><ExternalLinkIcon size={16} /><span class="la-tab-label">Map editor (Erg)</span></button>
         </nav>
         <main class="la-content" aria-label={PAGES.find((p) => p.id === page)?.label}>
           <div class="la-content-inner">
+            {oasisError ? <p class="hint" role="status" data-oasis-error>{oasisError}</p> : null}
             {laaNotice ? <p class="hint" role="status" data-laa-launch-failed>{laaNotice}</p> : null}
             <UpdateBanner client={client} update={update} gameRunning={!!status?.running} />
             {importPlugin ? <Import client={client} plugin={importPlugin} onBack={() => setImportPlugin(undefined)} />
               : page === "home" ? <Home client={client} status={status} update={update} onFixGame={() => { dispatch({ type: "goto", step: "find" }); setInWizard(true); }}
-                                      onOpenPlugins={() => setPage("plugins")} onOpenSettings={() => setPage("settings")} />
+                                      onOpenPlugins={() => setPage("plugins")} onOpenErg={() => openOasis("erg")} onOpenSettings={() => setPage("settings")} />
               : page === "plugins" ? <Plugins client={client} status={status} onOpenStore={() => setPage("store")} onOpenImport={setImportPlugin} />
               : page === "store" ? <Store client={client} />
               : page === "settings" ? <Settings client={client} status={status} update={update} theme={launcher?.theme ?? "system"} onTheme={setTheme}

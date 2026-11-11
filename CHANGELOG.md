@@ -92,6 +92,12 @@
   check_trail counts cut banks apart from drops; the region object in every region tool; heightfield_drape
   `tileOrigin` and `cornersOff` (docs/erg-mcp.md).
 
+- Melange.exe: the dead *Oasis tools* link now works, and a new *Map editor (Erg)* button and a *Make a map* card on
+  Home open Oasis, or the Erg map editor, in the default browser (`launcher.openOasis`). A `#/<panel>` URL on the
+  launcher's server shows the regular Oasis shell on that panel.
+- Overlay: *Oasis > Map editor (Erg)* in the menu and an *Open map editor* button in the Oasis panel open the browser
+  on the Erg panel.
+- Docs: how to open Oasis and Erg; dropped the `--no-open` flag from `oasis.md`, which `Melange.exe` never accepted.
 
 ## 0.13.0
 

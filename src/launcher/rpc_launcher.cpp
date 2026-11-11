@@ -20,6 +20,7 @@
 #include "launcher/setup/running.h"
 #include "launcher/util.h"
 #include "launcher/window.h"
+#include "oasis/core/server.h"
 #include "oasis/standalone/register.h"
 #include "store/store.h"
 #include "tools/json_mini.h"
@@ -150,6 +151,22 @@ void OpenPath(const Call& c, Result& r, void*) {
     r.json = "{}";
 }
 
+// The Oasis shell (the logs, console, Erg map editor...) in the default browser: the launcher's own window is not
+// the shell, and WebView2 does not open new windows. {panel?} is a panel id ("erg"); the page opens on it through
+// the shell's #/<panel> route. The token URL is the server's own, so the browser connects like any other client.
+void OpenOasis(const Call& c, Result& r, void*) {
+    json::Value p;
+    if (!Params(c, r, &p)) return;
+    const std::string panel = Str(p, "panel");
+    for (const char ch : panel)
+        if (!((ch >= 'a' && ch <= 'z') || (ch >= '0' && ch <= '9') || ch == '-')) return Fail(r, -32602, "bad panel");
+    std::string url = oasis::core::LaunchUrl();
+    if (url.empty()) return Fail(r, -32000, "The local server isn't running.");
+    if (!panel.empty()) url += "#/" + panel;
+    ShellExecuteW(app::Window(), L"open", Widen(url).c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+    r.json = "{}";
+}
+
 // One click: the last game's logs (the newest session folder, the replays and desync bundles its pid wrote, dumps
 // and engine logs from its time window, launcher.log) zipped to the Desktop by the same core and redaction as the
 // in-game export, then shown selected in Explorer unless {reveal: false}. Runs on the server thread: an export
@@ -267,6 +284,7 @@ void InstallLauncher() {
     oasis::AddMethod("launcher.setTheme", &SetTheme, nullptr, kRpcMutating);
     oasis::AddMethod("launcher.launch", &Launch, nullptr, oasis::kRpcNone);
     oasis::AddMethod("launcher.openPath", &OpenPath, nullptr, oasis::kRpcNone);
+    oasis::AddMethod("launcher.openOasis", &OpenOasis, nullptr, oasis::kRpcNone);
     oasis::AddMethod("launcher.exportLogs", &ExportLogs, nullptr, kRpcServerThread);
     oasis::AddMethod("launcher.shortcuts", &Shortcuts, nullptr, kRpcServerThread | kRpcMutating);
     oasis::AddMethod("launcher.quit", &Quit, nullptr, kRpcMutating);

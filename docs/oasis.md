@@ -88,6 +88,14 @@ methods; `node web/test/e2e/mock-server.mjs --root web/dist` prints a link you c
 - The build is deterministic: the same sources and lock give the same bundle, and the bundle's build id is a hash of
   its inputs.
 
+## Opening it
+
+- **In the game:** press Ctrl+Shift+O (`[Oasis] Hotkey`), choose *Oasis > Open* in the overlay menu, or press *Open
+  Oasis* in the Oasis panel. *Oasis > Map editor (Erg)* and the panel's *Open map editor* button open the browser
+  straight on the Erg panel (`#/erg`).
+- **From Melange.exe:** the *Oasis tools* and *Map editor (Erg)* buttons in the sidebar (see below).
+- Any panel can be opened directly by adding `#/<panel id>` to the launch URL.
+
 ## Standalone: `Melange.exe`
 
 `Melange.exe` ships next to `melange.asi` and serves the same app and protocol with the game closed: past session
@@ -104,8 +112,12 @@ Melange.exe [--game <dir>] [--browser] [--serve] [--web-root <dir>]
 - **While a real Melange instance is running** (detected by the same `Local\Melange-<hash>` mutex the .asi holds),
   `mods.setEnabled` and `ini.set` are refused with `-32003`: the running game owns those files. With the game
   closed, `Melange.exe` writes them itself (`Mods\thumper-state.json`, `Melange.ini`) the same way the overlay would.
-- `--web-root <dir>` serves a folder instead of the embedded bundle (development); `--no-open` skips the browser
-  (scripted or headless use).
+- `--web-root <dir>` serves a folder instead of the embedded bundle (development).
+- The window is the launcher, not the Oasis shell. Its sidebar has *Oasis tools* and *Map editor (Erg)* buttons, and
+  Home has a *Make a map* card: each calls `launcher.openOasis {panel?}`, which opens the server's token URL in the
+  default browser, with `#/<panel>` appended when a panel id is given. On a launcher server a URL whose hash starts
+  with `#/` shows the regular shell on that panel instead of the launcher, except the launcher's own `#/plugins...`
+  (the Import page).
 - `mods.list` reads every `Mods\<id>\spice.json` and resolves them exactly as the game would (`spice::Resolve`); a
   Deep Desert mod already granted in-game still shows Enabled, but granting it is not possible from here (Decision
   4: the browser can revoke Deep Desert but never grant it, and standalone has no consent dialog to show).
