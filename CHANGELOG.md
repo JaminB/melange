@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Erg maps: ground no longer lets bombs, mines and drops through where a base frame was removed. The engine's land
+  broadphase writes a set bit for every tree leaf a sweep passes, and frames that Erg's `remove_base_frames` empties
+  stay in that tree as leaves with no land frame, so the frame mask went out of step and the sweep tested the wrong
+  frames (Caldera: 66 no-ground columns at match start, Air Strike bombs through the crater floor to the sea). New
+  module `[LevelLandMask]` makes such a leaf write no bit; it acts only on pack and Test levels. See docs/erg.md.
 - erg-mcp (`tools/erg-mcp/`, developer tool, not in the release zip): a Model Context Protocol server that lets an AI
   agent edit Erg levels with the panel's own model, undo stack and patch. It connects to the game's Oasis server, or
   starts `Melange.exe --serve` for a game folder. Tool groups: project, inspect (ASCII height maps, top-down and side
