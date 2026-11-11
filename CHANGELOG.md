@@ -1,109 +1,76 @@
 # Changelog
 
-## Unreleased
+## 0.14.0
 
-- Erg maps: the drawn camera no longer rests inside the land. On Caldera a Fatkins payload that drowned in the sea
-  inside the hollow volcano held the game's camera inside the cone for about 8 s. New module `[LevelCamera]`: on pack
-  and Test levels, when the game's eye is inside solid land or deep under the land's top, the frame is drawn from a
-  camera moved out of it (in along its line of sight, or lifted over the land); roofed courts are left alone.
-  Render-only (the game's camera, the match and Wormsign are untouched); nothing changes on the game's own maps.
-  `Clearance` and `MinDepth` in the ini; test verb `camera.lift`. See docs/erg.md.
-- Erg maps: ground no longer lets bombs, mines and drops through where a base frame was removed. The engine's land
-  broadphase writes a set bit for every tree leaf a sweep passes, and frames that Erg's `remove_base_frames` empties
-  stay in that tree as leaves with no land frame, so the frame mask went out of step and the sweep tested the wrong
-  frames (Caldera: 66 no-ground columns at match start, Air Strike bombs through the crater floor to the sea). New
-  module `[LevelLandMask]` makes such a leaf write no bit; it acts only on pack and Test levels. See docs/erg.md.
+Map making: an AI-driven builder for Erg (erg-mcp), map packs that build themselves, and engine fixes that make large
+Erg maps such as Caldera (the Foldspace plugin) play right.
+
+### Added
+
+- `Melange.exe` builds map packs by itself: at start, after the Store installs or updates a plugin, after one is switched
+  on and at *Launch game*, every enabled pack whose maps ship as source and are not built (or are out of date) is built
+  with the same `level.build` as Erg's *Build* button. A stamp in `Mods\<id>\.ergbuild.json` (outside the assets, so the
+  multiplayer content hash is unchanged) records what it was built from, so a second start builds nothing. A status line
+  shows progress and a launch waits for the builds; a failed pack stays not built with its error on the Plugins page.
+  `[Erg] AutoBuildMaps=0` turns it off. See docs/erg.md.
+- Melange.exe: the dead *Oasis tools* link now works, and a new *Map editor (Erg)* button and a *Make a map* card on Home
+  open Oasis or the Erg map editor in the default browser (`launcher.openOasis`). In the game's overlay, *Oasis > Map
+  editor (Erg)* and an *Open map editor* button in the Oasis panel do the same.
+- Erg's mine factory has settings (Properties tab, `factory` in the scene and patch): its target and idle turns (the
+  game's `kMineFactoryData`, for that map's matches only), the scheme's start mines on or off, a launch height and radius,
+  up to 8 launchers, and a `throw` (erg-mcp) that lobs each mine out to a landing band, ring or set of targets, away from
+  the sea and from walking corridors, with a volley cap. Melange lands thrown mines itself with the game's land sweep, so
+  they rest on whatever they hit, and hands a held mine the rising sea covers to the engine's own drowning.
+- Level scripts and sim mods: `wum.sim.turn()`, `wum.sim.round()`, `wum.sim.waterSchedule{...}`, `wum.sim.announce(text[,
+  seconds])` (an on-screen message, drawn only; module `[SimAnnounce]`) and `wum.level.water{...}` (the theme's water look
+  and the land's light for a level's matches). `wum.game.turn().index` and `melange.turn` no longer run one behind
+  `sim.turnStarted` when the first turn starts in the frame the match's VM appears.
+- Testing a map: the Test probe logs each worm's start and each death with its likely cause (`levels/test.spawns`,
+  `levels/test.death`, `level.test.probe`) and follows every mine factory fire until its mines rest
+  (`levels/factory.fired`). Clean-room Test (`level.test {cleanMods, postfx}`). Test-only calls for tools:
+  `input.drive`, `render.camera {when: "play"}`, `render.shot {requirePlay, afterCamera}`, `render.fireShot`,
+  `level.test {base, teams}`, `level.test.roundTime {hold}`, `level.test.fireFactory`, `level.test.dropMines`,
+  `level.test.landRay` and `level.test.selectWeapon` (the weapon panel's weapons only). Erg's level service:
+  `level.delete`, `level.list` names the projects folder, `level.materials {colors}`, and Melange.exe checks a level
+  script's syntax with a stock Lua 5.0.1 parser.
 - erg-mcp (`tools/erg-mcp/`, developer tool, not in the release zip): a Model Context Protocol server that lets an AI
-  agent edit Erg levels with the panel's own model, undo stack and patch. It connects to the game's Oasis server, or
-  starts `Melange.exe --serve` for a game folder. Tool groups: project, inspect (ASCII height maps, top-down and side
-  renders, ground queries), terrain (sculpt, blocks, surround), heightfield (planned terrain from an expression or grid
-  within the 64-block budget), structures (castles, walls, towers, ramps, tunnels, bridges), and place (spawns,
-  objects, water, theme, script, export, build, test). See docs/erg-mcp.md.
-- The Oasis mock server used by the web tests also accepts a socket with no `Origin` and the right `?k=` token, as
-  `src/oasis/auth.cpp` does. No game or Erg behaviour changed.
-- `wum.sim.announce(text[, seconds])` for sim mods and level scripts: an on-screen message on every player's screen
-  (the rising sea, a new round), drawn only, so the match and Wormsign are untouched. New module `[SimAnnounce]`.
-- Erg's level service: `level.delete` deletes a project (refused while any server has it open); `level.list` names
-  the projects folder (`projectsDir`); `level.materials {colors: true}` gives each material's texture colour. Melange.exe
-  now checks a level script's syntax with a stock Lua 5.0.1 parser (`syntaxChecked: true`), as the game does.
-- erg-mcp: the Caldera benchmark's fixes. heightfield: a cell-bound field says "cell budget exceeded (N needed, M
-  allowed)" and the voxelSize that fits; `centre`, `clip` and `exclude` build fine voxels where they matter inside a
-  coarse field. Structures: `blockScale` and `packing: "parts"` (no courtyard air in the blocks), `build_castle`
-  `scale` and `spawnSpots`; `sculpt_crater` shapes a crater into the terrain that is there; a 1-thick wall on a
-  whole-unit line facing +x or +z is no longer empty. Inspect: exact tops of scaled blocks, renders in the materials'
-  real colours (`preview_materials`), no seams between stacked blocks in `render_side`, `check_reachability` (a
-  worm-walk graph from each spawn to the summit); list_materials repairs a lost backslash and lists a theme's own file.
-  New: `delete_project` (and `new_project` refuses a taken slug unless `allowRename`), `set_theme {materialFile}`, the
-  scenery tools (`list_scenery`, `remove_scenery`, `list_base_scenery`, `copy_base_scenery`) and the game tools
-  (`game_state`, `game_wait`, `game_camera`); `test` names enabled sim mods (`cleanMods` refuses them).
-- Erg's mine factory has settings (Properties tab, `factory` in the scene and patch, erg-mcp `place_object` and the new
-  `set_mine_factory`): the mine target and idle turns (the game's `kMineFactoryData`, applied for that map's matches
-  only and put back when the match ends) and whether the scheme's 15 random start mines are placed. Projects without
-  them are unchanged. docs/erg.md explains how the factory decides to fire.
-- Sim scripts and level scripts: `wum.sim.turn()`, `wum.sim.round()` (a round counter that survives a team being wiped
-  out; `sim.turnStarted` now also passes the round) and `wum.sim.waterSchedule{...}` (rising water at turn starts).
-- The mine factory's `launchHeight` and `launchRadius` (scene and patch, erg-mcp `set_mine_factory`): its mines appear
-  over it and fall round it instead of raining onto random worms and objects. Its `launchers` (1-8 points) make the
-  mines erupt from those points and land round them, so a volcano's mines come from the sides of its caldera
-  (`level.test.dropMines` and erg-mcp's `game_mine_drop` check that the ground there holds a mine); the engine allows one factory a match, so these are its launch points. Projects without them are
-  unchanged. `wum.game.turn().index` and
-  `melange.turn` no longer run one behind `sim.turnStarted` when the first turn starts in the frame the match's VM
-  appears. The `sim/announce` log record carries its `seconds`. erg-mcp: check_flood models the engine's worm rotation
-  and gives a PASS/FAIL verdict (`minOwnTurns`, `minDryMargin`, `turnOrder`), game_state answers the turn counted as
-  the sim counts it, the turns seen and the announcements on screen, game_shots shoots on an announcement and never
-  overwrites another run's pictures, game_walk walks a worm along a route in the game, and sculpt_road, packing
-  "fit", `costOnly` and the drape's `steepMaterial` are new (docs/erg-mcp.md).
-- The Test probe: while a Test plays, every worm's position at turn 1 and each death with its turn, place, the water and
-  the likely cause (drowned, a mine, an oil drum, a crate, a weapon, the mine factory, a dying worm's blast, a fall) go
-  to the session log (`levels/test.spawns`, `levels/test.death`) and to `level.test.probe`. Every mine factory fire is
-  followed until its mines rest (`levels/factory.fired`: each mine's spawn and rest), and `level.test.fireFactory`
-  fires it on demand in a Test. `wum.level.water{...}` sets the theme's water look (opacity, reflection, shade) and the
-  land's light for a level's matches, put back when the match ends. `sim/announce.shown` logs the first frame an
-  announcement is drawn in. erg-mcp: `test {simMods: "level-only"}`, `game_probe`, `game_mines {fire}`, game_shots'
-  onAnnounce proves the shot is from a frame after the message was drawn, `set_water_look`, `set_mine_factory
-  {everyNTurns}`, spawn tread checks (a knot in solid, with no ground near under it, on an edge) with `snap: "tread"`
-  and on save, build_castle's spawnSpots moved off wall edges, check_flood's `minDryMargin` default 1.5 map units and
-  `capReport`, and `materialFile: "theme"` with no project open (docs/erg-mcp.md).
-- Erg trims base frames: the patch's `trimFrame` op (erg-patch/2) and the scene's `trims` keep only a box of a base
-  frame's grid in the built map, so a wiped base gives back the game's voxel cells (Multi.DinerMight's 534 frames hold
-  11 652); every solid voxel must be in the box, and a box with solid voxels moves the frame and its details and child
-  frames so nothing moves. Old projects load as before. erg-mcp: `trim_base_frames`, `remove_base_frames`; check_reachability
-  reports each route's narrowest gap at the worm's body height and `bodyWidth` refuses gaps a worm does not fit (a jump
-  no longer passes through a one-column wall), and `route` answers the whole route; game_walk follows a dense `path` by
-  pure pursuit or plans its own route `to` a point, with jump, side step and backflip when stuck; check_flood takes
-  `rounds`, and Melange.exe's script stand-in counts rounds as the game does (a team per turn, not teams x worms);
-  `check_holes` finds see-through holes and seams (and the factory check warns of holes round its knot); the factory's
-  fire records keep each mine's final position and its fate (resting, drowned, destroyed), watched for 3 minutes
-  (`levels/factory.mine`); `set_overview` and the overview's `fit: "island"` frame a small island (docs/erg-mcp.md).
-- Clean-room Test: `level.test` takes `cleanMods` (no sim mod runs in the Test match, post-FX off) and `postfx: false`,
-  for the Test match only; `level.test.cleanRoom` reports it. erg-mcp's `test` passes them through.
-- Test tools for the Caldera iteration-10 gaps. `input.drive` holds the game's own movement, jump, aim and fire inputs
-  (posted from the input service's tick as their keys post them, so the window's focus does not matter; the Controls
-  module, offline only). `render.camera {when: "play"}` holds a pose until the turn's "Ready?" intro is over, and
-  `render.shot {requirePlay, afterCamera}` waits for it; `render.fireShot` pins a camera that is read back a set time
-  after each mine factory fire. `level.test {base: "Multi.<map>"}` plays a game level with no Erg level (a vanilla
-  baseline). The factory's fire log names where each mine came to rest (map units, from and under the factory, in the
-  water). erg-mcp: game_drive, game_fire_shot, test_asserts, check_support and paint_blob; game_walk drives through
-  input.drive, game_shots `waitPlay`, test `expectHash`/`source`/`sync` and the vanilla baseline (`map`, `noLevel`,
-  `turns`, `fire`), heightfield rules' `exclude`, `excludeMask` and per-corner `edge`, the paint tools' `exclude`,
-  build_castle `keepAxes` and `gateLane`, check_flood's per-spawn `escape` and `solve`, the mines' zones in the fire
-  records, and set_mine_factory re-checks the placement (docs/erg-mcp.md).
-- Test tools for the Caldera v2 round-2 gaps. `level.test.roundTime {hold}` pauses the round clock for the rest of a
-  Test (again at each turn start), so a long harness run never reaches the scheme's sudden death. `render.fireShot`
-  takes `perFire`, `everyMs` and `track` (the camera follows the fire's first mine in flight) and up to 512 shots.
-  erg-mcp: `test`/`game_play_turns` `suddenDeath: false`; save's projectHash matches the saved project's (object
-  defaults); the climb, blast and `game_shots {clearView}` cameras keep their eye in open air with a clear view;
-  game_mines matches its fire record past the game's last 8; test_asserts compares runs across erg-mcp processes;
-  check_reachability walks each start with its own route zone; columns on a block's edge no longer read as holes and
-  check_trail counts cut banks apart from drops; the region object in every region tool; heightfield_drape
-  `tileOrigin` and `cornersOff` (docs/erg-mcp.md).
+  agent edit Erg levels with the panel's own model, undo stack and patch, over the game's Oasis server or
+  `Melange.exe --serve`. Tool groups: project, inspect (height maps, renders, ground and reachability checks), terrain,
+  heightfield, structures (castles, walls, towers, ramps, tunnels, bridges), place (spawns, objects, the mine factory,
+  water, theme, script, export, build, test), scenery and detail (`sim_fingerprint` proves a dressing pass leaves the
+  sim alone), and game tools that play and photograph a Test match. Its benchmark map, Caldera (a volcano with four
+  castles, switchback trails, mine launchers and a rising sea), is a repo fixture. See docs/erg-mcp.md.
 
-- Melange.exe: the dead *Oasis tools* link now works, and a new *Map editor (Erg)* button and a *Make a map* card on
-  Home open Oasis, or the Erg map editor, in the default browser (`launcher.openOasis`). A `#/<panel>` URL on the
-  launcher's server shows the regular Oasis shell on that panel.
-- Overlay: *Oasis > Map editor (Erg)* in the menu and an *Open map editor* button in the Oasis panel open the browser
-  on the Erg panel.
-- Docs: how to open Oasis and Erg; dropped the `--no-open` flag from `oasis.md`, which `Melange.exe` never accepted.
+### Fixed
+
+- Ground no longer lets bombs, mines and drops through where a base frame was removed. Frames that Erg empties stay in
+  the engine's land tree as leaves with no land frame, which put the sweep's frame mask out of step (Caldera: 66
+  no-ground columns at match start, Air Strike bombs through the crater floor to the sea). New module
+  `[LevelLandMask]`; it acts only on pack and Test levels.
+- The drawn camera no longer rests inside the land. On Caldera a Fatkins payload that drowned in the sea inside the
+  hollow volcano held the game's camera inside the cone for about 8 s. New module `[LevelCamera]`: on pack and Test
+  levels, when the game's eye is inside solid land or deep under the land's top (`MinDepth`), the frame is drawn from a
+  camera moved out of it (in along its line of sight, or lifted over the land); roofed courts are left alone.
+  Render-only: the game's camera, the match and Wormsign are untouched. Test verb `camera.lift`.
+- A level with more than about 540 drawn details no longer crashes at load: `[Fixes] MeshInstances` raises the engine's
+  mesh-instance pool from 550 to 2000 (build #1077 only). A map pack that needs it asks for Melange 0.14.0 or later
+  (Caldera's 860 details do).
+- Event bus: a `Post` handler that dropped its message and then posted another (or the reverse) no longer loses the
+  drop.
+
+### Changed
+
+- Erg follows the engine's voxel limits: a block is 1-31 voxels a side (the game asserts on 32) and a map holds at most
+  65 535 voxel cells (more crashes the game at load); saving warns, and Export, Build and Test refuse. Added blocks take a
+  scale of 0.5-4 and corner offsets (sheared columns, erg-mcp's `heightfield_drape`). The patch's `trimFrame` op
+  (erg-patch/2) keeps only a box of a base frame, so a wiped base gives its voxel cells back.
+- `[Wormsign] Record=0` also turns replay retention off: a launch that records nothing never deletes a replay or a desync
+  bundle (test launches had pruned players' recordings).
+- Caldera ships its rock meshes in one bank (`caldera.Rocks.xom`, was 8): every bank a pack lists takes one of the 44
+  mod mesh sections all enabled mods share, and Caldera's 8 with Kindjal's 38 left Kindjal's SlugGun and StoneDonkey
+  unloaded. A map pack should ship its meshes in as few banks as it can.
+- Docs: how to open Oasis and Erg; dropped the `--no-open` flag from `oasis.md`, which `Melange.exe` never accepted. The
+  Oasis mock server used by the web tests accepts a socket with no `Origin` and the right `?k=` token, as the game does.
 
 ## 0.13.0
 

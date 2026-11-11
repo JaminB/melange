@@ -7,8 +7,7 @@
 
 /** The detail count a level may hold and still load on the vanilla 550-instance pool with the match's own meshes. */
 export const VANILLA_SAFE_DETAILS = 450;
-/** The first Melange release that raises the pool ([Fixes] MeshInstances). The fix is unreleased when this was written
- * (the tree is 0.13.0, tagged without it): set this to the version it ships in. */
+/** The first Melange release that raises the pool ([Fixes] MeshInstances): 0.14.0. */
 export const MESH_POOL_MELANGE = "0.14.0";
 export const DEFAULT_RANGE = ">=0.2.0";
 

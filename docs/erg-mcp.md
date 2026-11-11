@@ -1020,7 +1020,7 @@ tests in `test/propcheck.test.ts`):
 - `level.export` (C++, `src/erg/pack.*`, `service.cpp`) takes an optional `melangeRange`. It is checked with `spice::ValidRange`, and the default is still `>=0.2.0`. There are selftests in `erg_pack_selftest`.
 - `detail_budget` answers `ship`.
 
-Every Melange since 0.2 checks the range before it offers a pack, so an older Melange refuses the dressed level instead of crashing in it. **`MESH_POOL_MELANGE` is `0.14.0`, a guess.** The fix is unreleased and the tree is at 0.13.0. Set the constant to the release the fix ships in.
+Every Melange since 0.2 checks the range before it offers a pack, so an older Melange refuses the dressed level instead of crashing in it. `MESH_POOL_MELANGE` is `0.14.0`, the release `[Fixes] MeshInstances` ships in.
 
 `lib/scatter.ts` `DRAW_CHECKS` gained the flora draw checks whose resource draws the same in every base:
 - WILDWEST1 draws as an agave clump.
@@ -1115,7 +1115,7 @@ Findings (testenv D, Sunstone 2.3.1 from `sunstone-tint`, 2026-11-10):
 
   The dressed level costs about +1.8 ms (under the judge's 2 ms). Most of it arrives with the first dressed props, not with each one. The game is CPU-bound at 36 fps either way.
 - `prop_pixels` at the fixed cameras: the flora's median size is 6.4 px at the oblique camera and 11-54 px at the others. 10 of 192 plants are under 3 px at the oblique, and none is under 3 px in every camera.
-- `MESH_POOL_MELANGE` stays at `0.14.0`: no release carries `[Fixes] MeshInstances` yet (the latest tag is v0.13.0).
+- `MESH_POOL_MELANGE` stays at `0.14.0`, the release that carries `[Fixes] MeshInstances`.
 
 ## Detail layer, round 10 (Caldera's own meshes, talus fans, flora vocabulary): what the tools gained and what the game showed
 

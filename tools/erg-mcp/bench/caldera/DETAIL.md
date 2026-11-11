@@ -101,8 +101,8 @@ The committed `pack/` on this branch is now the dressed pack. A merge from `erg-
 running `build.mjs`, `detail.mjs` and `ship.mjs` again.
 
 Two things a fresh install needs, both checked in testenv D on 2026-11-10:
-- **Melange 0.14.0 or later.** On this branch's Melange (0.13.0) the compat check moves the pack to `Mods\.incompatible`.
-  The in-game check therefore used a copy of the pack with only `melange.range` lowered.
+- **Melange 0.14.0 or later.** On a Melange before 0.14.0 the compat check moves the pack to `Mods\.incompatible`.
+  The in-game checks before the version bump used a copy of the pack with only `melange.range` lowered.
 - **A built level.** A source pack whose `assets/levels` is missing is refused ("not built"). A refused pack is
   Incompatible, so its mesh banks do not load either. After `build.ps1`, the log shows `4 bank(s) loaded from 1 mod(s)`
   and the rock draws, with both the released Sunstone 2.1.0 and `sunstone-tint`.
