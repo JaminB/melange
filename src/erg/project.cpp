@@ -5,6 +5,8 @@
 #include <algorithm>
 #include <cstdio>
 #include <ctime>
+#include <filesystem>
+
 
 #include "erg/install.h"
 #include "erg/jsonio.h"
@@ -99,6 +101,21 @@ bool Store::Create(const std::string& id, const std::string& patchJson, const Me
     if (!install::MakeDirs(dir_)) return Fail(err, "cannot create " + install::Narrow(dir_));
     if (!CreateDirectoryW(Path(id, nullptr).c_str(), nullptr)) return Fail(err, "project '" + id + "' exists already");
     return WriteMeta(id, meta, err) && WritePatch(id, patchJson, err);
+}
+
+bool Store::Remove(const std::string& id, std::string* err) {
+    if (!ValidId(id)) return Fail(err, "a project id is [a-z0-9]{1,24}");
+    if (!Exists(id)) return Fail(err, "no project '" + id + "'");
+    if (Locked(id)) return Fail(err, "project '" + id + "' is open: close it first");
+    // Another server holding it has its .lock open without sharing; taking the lock here proves no one does.
+    const LockResult lr = Lock(id, 0);
+    if (lr == LockResult::Busy) return Fail(err, "project '" + id + "' is open in another server (the game or Melange.exe)");
+    if (lr != LockResult::Ok) return Fail(err, "project '" + id + "' could not be locked for deleting");
+    Unlock(id, 0);
+    std::error_code ec;
+    std::filesystem::remove_all(std::filesystem::path(Path(id, nullptr)), ec);
+    if (ec || Exists(id)) return Fail(err, "could not delete project '" + id + "': " + ec.message());
+    return true;
 }
 
 bool Store::ReadPatch(const std::string& id, std::string* json, std::string* err) const {

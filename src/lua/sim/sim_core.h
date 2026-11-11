@@ -32,6 +32,25 @@ void SetLevel(const std::string& key);                   // the level being set 
 std::string LevelDigest();                               // sha256 of this match's level scripts, comma-joined
 bool IsLevelMod(int mod);
 void TurnStarted();                                      // GameLogic.Turn.Started: sim.turnStarted at the next tick
+// A clean-room Test: matches on level `key` load its level scripts but no sim mod (entry.sim); "" ends it.
+void SuppressModsOn(const std::string& key);
+// The engine side of wum.level.mine and wum.level.fireFactory (levels/factory.cpp, the game's build only; without it
+// both answer nil, "unavailable"). Each returns nullptr, or why it did nothing.
+struct LevelEngine {
+    const char* (*mine)(const float pos[3], const float vel[3]) = nullptr;   // world units; a mine made as the factory's
+    const char* (*armFactory)() = nullptr;   // the factory's idle countdown to 0: it fires at the next StartMineFactory
+};
+void SetLevelEngine(const LevelEngine& e);
+// The engine side of wum.level.water (levels/water_look.cpp): the match's water look, a field of the theme's
+// WaterPlaneTweaks container (its name in Water.TweakName). set writes n numbers (1 for a number field, 3 or 4 for a
+// colour or a vector) and returns nullptr or why not; get reads one into out (at most 4) and returns how many, or -1.
+// Everything set is put back when the match's VM closes.
+struct WaterEngine {
+    const char* (*set)(const char* field, const float* v, int n) = nullptr;
+    int (*get)(const char* field, float out[4]) = nullptr;
+    const char* const* fields = nullptr;   // the names it knows, nullptr-terminated
+};
+void SetWaterEngine(const WaterEngine& e);
 
 // Lifecycle, in engine order.
 void ContextCreated(lua50::State* L);

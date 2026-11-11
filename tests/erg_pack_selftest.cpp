@@ -230,6 +230,19 @@ void TestPackInstall(const fs::path& base) {
     Expect(melange::spice::Parse(dir3.wstring(), &tm, &errs) && errs.empty() && tm.levels.size() == 1 && tm.levels[0].survivor &&
                tm.levels[0].chunk,
            "spice.json records survivor:true for a Survivor copy");
+    Expect(manifest.find("\"range\":\">=0.2.0\"") != std::string::npos, "the default melange.range is >=0.2.0");
+    auto gated = BasicSpec("sample", /*source=*/false, /*withChunk=*/true);
+    gated.melangeRange = ">=0.14.0";
+    const fs::path dir4 = base / "install-range" / "erg-pack-test";
+    Expect(erg::pack::WritePack(gated, dir4.wstring(), &files, &err), "install export with a melange range succeeds: " + err);
+    melange::spice::Manifest gm;
+    errs.clear();
+    Expect(melange::spice::Parse(dir4.wstring(), &gm, &errs) && errs.empty() && gm.melangeRange == ">=0.14.0",
+           "spice.json carries the asked melange.range");
+    gated.melangeRange = "newest please";
+    const fs::path dir5 = base / "install-badrange" / "erg-pack-test";
+    Expect(!erg::pack::WritePack(gated, dir5.wstring(), &files, &err) && !FileExists(dir5 / "spice.json"),
+           "a melange range that is not a semver range is refused before anything is written");
 }
 
 void TestPackSource(const fs::path& base) {

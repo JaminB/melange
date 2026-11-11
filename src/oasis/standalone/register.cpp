@@ -239,6 +239,7 @@ void ModsSetEnabled(const oa::Call& c, oa::Result& r, void*) {
     const int rc = modsprov::SetEnabled(game, id->string, on->boolean);
     if (rc == 0) return Refuse(r, -32602, "no such mod");
     if (rc < 0) return Refuse(r, -32000, "could not write thumper-state.json");
+    if (on->boolean && g_host.modsChanged) g_host.modsChanged();
     r.json = "true";
 }
 

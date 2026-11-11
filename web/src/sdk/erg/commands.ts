@@ -1,7 +1,7 @@
 // Every edit is a Command (the three.js editor's pattern); the stack lives in the tab.
 import {
-  KNOT_RESOURCE, deriveRole, type Databank, type Detail, type DetailFields, type Frame, type HmpMode, type ObjectSpec, type Scene,
-  type SpawnMode, type Vec3,
+  KNOT_RESOURCE, deriveRole, type Databank, type Detail, type DetailFields, type Frame, type FrameTrim, type HmpMode, type ObjectSpec,
+  type Scene, type SpawnMode, type Vec3,
 } from "./scene";
 
 export interface Command { label: string; do(s: Scene): void; undo(s: Scene): void; merge?(next: Command): boolean; }
@@ -255,6 +255,26 @@ export class RemoveFrame implements Command {
   constructor(private voxels: Map<number, Uint32Array>, readonly id: number) {}
   do(s: Scene) { this.removed = takeFrame(s, this.voxels, this.id); }
   undo(s: Scene) { if (this.removed) putFrame(s, this.voxels, this.removed.frame, this.removed.words, this.removed.at); }
+}
+
+/** Sets or clears (null) the trims of base frames (Scene.trims), by frame id; undo puts each frame's trim back. */
+export class SetTrims implements Command {
+  readonly label = "Trim frames";
+  private before = new Map<number, FrameTrim | null>();
+  constructor(private changes: Map<number, FrameTrim | null>) {}
+  do(s: Scene) {
+    this.before.clear();
+    for (const id of this.changes.keys()) this.before.set(id, s.trims?.find((t) => t.frame === id) ?? null);
+    putTrims(s, this.changes);
+  }
+  undo(s: Scene) { putTrims(s, this.before); }
+}
+
+function putTrims(s: Scene, changes: Map<number, FrameTrim | null>) {
+  const kept = (s.trims ?? []).filter((t) => !changes.has(t.frame));
+  for (const [id, t] of changes) if (t) kept.push({ frame: id, min: [...t.min] as Vec3, size: [...t.size] as Vec3 });
+  if (kept.length) s.trims = kept;
+  else delete s.trims;
 }
 
 function putFrame(s: Scene, voxels: Map<number, Uint32Array>, f: Frame, words: Uint32Array, at: number) {

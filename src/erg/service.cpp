@@ -1,4 +1,5 @@
 #include "erg/service.h"
+#include "erg/stamp.h"
 
 #include <algorithm>
 #include <cctype>
@@ -256,6 +257,11 @@ bool BuildPatch(const std::wstring& gameDir, const std::vector<install::Pack>& p
         return false;
     }
     if (!stem.empty()) scene.stem = stem;
+    if (!CheckEngineLimits(scene, &e)) {
+        if (code) *code = kBadParams;
+        if (err) *err = e;
+        return false;
+    }
     if (!build::Build(L, scene, voxels, Options(L, res, scene), out, &e)) {
         if (code) *code = kBadParams;
         if (err) *err = "build: " + e;
@@ -267,13 +273,13 @@ bool BuildPatch(const std::wstring& gameDir, const std::vector<install::Pack>& p
 const std::vector<std::string>& Methods() {
     static const std::vector<std::string> m = {"level.list",   "level.new",   "level.load",    "level.save",  "level.export",
                                                "level.build",  "level.themes", "level.palette", "level.close",  "level.objects",
-                                               "level.script.get", "level.script.put", "level.materials"};
+                                               "level.script.get", "level.script.put", "level.materials", "level.delete"};
     return m;
 }
 
 bool Mutating(std::string_view method) {
     return method == "level.new" || method == "level.save" || method == "level.export" || method == "level.build" ||
-           method == "level.script.put";
+           method == "level.script.put" || method == "level.delete";
 }
 
 struct Service::Impl {
@@ -425,10 +431,12 @@ struct Service::Impl {
         return !c || objects::Validate(scene, *c, warnings, err);
     }
 
+    // checkObjects false (a save) only checks that the level builds: crate contents and the engine's limits are
+    // warnings there, and refused here for everything that ships or plays the level.
     bool BuildFiles(const load::Loaded& L, const Resolved& res, const Scene& scene, const build::VoxelEdits& voxels,
                     std::vector<build::File>* files, Reply* r, bool checkObjects = true) {
         std::string err;
-        if (checkObjects && !CheckObjects(scene, nullptr, &err)) {
+        if (checkObjects && (!CheckObjects(scene, nullptr, &err) || !CheckEngineLimits(scene, &err))) {
             *r = Err(kBadParams, err);
             return false;
         }
@@ -498,6 +506,22 @@ struct Service::Impl {
         Json out = Json::Obj();
         out.set("bases", std::move(bases));
         out.set("projects", std::move(projects));
+        // where this server keeps them ([Erg] ProjectsDir, else Documents\Melange\erg\projects): the game's Test reads
+        // the game's own folder, so a project made by another server is only seen there when the folders are the same
+        out.set("projectsDir", Str(install::Narrow(store.Dir())));
+        return Ok(out);
+    }
+
+    // {project}: deletes a project's folder. Refused while any server has it open (close it first).
+    Reply Delete(const Json& p) {
+        Reply r;
+        std::string id, err;
+        if (!GetStr(p, "project", &id, &r)) return r;
+        if (!project::ValidId(id)) return Err(kBadParams, "project must be [a-z0-9]{1,24}");
+        if (!store.Exists(id)) return Err(kBadParams, "no project '" + id + "'");
+        if (!store.Remove(id, &err)) return Err(kPolicy, err);
+        Json out = Json::Obj();
+        out.set("deleted", Str(id));
         return Ok(out);
     }
 
@@ -650,14 +674,18 @@ struct Service::Impl {
             store.WriteMeta(id, meta, nullptr);
         }
         Json warnings = Json::Arr();
-        if (patch.spawns == SpawnMode::Knots)
-            for (int i = 0; i < 8; ++i) {
+        if (patch.spawns == SpawnMode::Knots || patch.spawns == SpawnMode::Teams)
+            for (int i = 0; i < (patch.spawns == SpawnMode::Teams ? 16 : 8); ++i) {
                 const std::string k = "WORM" + std::to_string(i);
                 if (std::none_of(scene.details.begin(), scene.details.end(), [&](const Detail& d) { return d.name == k; }))
-                    warnings.arr.push_back(Str("spawns.mode is knots but there is no detail named " + k + "; export will refuse"));
+                    warnings.arr.push_back(Str(patch.spawns == SpawnMode::Teams
+                                                   ? "spawns.mode is teams but there is no detail named " + k + " (team " +
+                                                         std::to_string(i / 4) + "'s worm " + std::to_string(i % 4) + ")"
+                                                   : "spawns.mode is knots but there is no detail named " + k + "; export will refuse"));
             }
         std::vector<std::string> notes;
         if (!CheckObjects(scene, &notes, &err)) notes.push_back(err + "; export will refuse");
+        for (auto& n : EngineWarnings(scene)) notes.push_back(n);
         for (auto& n : notes) warnings.arr.push_back(Str(n));
         Json out = Json::Obj();
         out.set("saved", Json::Bool(true));
@@ -810,12 +838,17 @@ struct Service::Impl {
         return Ok(out);
     }
 
-    // {file, base?, source?}: the record names of a level's material file, for second-material paint. A pack level's own
-    // Maps\<stem>.txt is read from the pack.
+    // {file, base?, source?, colors?, theme?}: the record names of a level's material file, for second-material paint. A
+    // pack level's own Maps\<stem>.txt is read from the pack. colors: true adds each record's colour (the average of its
+    // surface texture, looked up first in the theme's folder) and whether the texture was found ("resolved").
     Reply Materials(const Json& p) {
         Reply r;
-        std::string file, base, source, err;
-        if (!GetStr(p, "file", &file, &r) || !GetStr(p, "base", &base, &r, false) || !GetStr(p, "source", &source, &r, false)) return r;
+        std::string file, base, source, theme, err;
+        if (!GetStr(p, "file", &file, &r) || !GetStr(p, "base", &base, &r, false) || !GetStr(p, "source", &source, &r, false) ||
+            !GetStr(p, "theme", &theme, &r, false))
+            return r;
+        const Json* wantColors = p.find("colors");
+        if (wantColors && wantColors->kind != Json::Kind::Bool) return Err(kBadParams, "colors must be a boolean");
         const std::string lower = Lower(file);
         if (!PrintableAscii(file, 1, 120) || lower.size() < 5 || lower.compare(lower.size() - 4, 4, ".txt") != 0)
             return Err(kBadParams, "file must be a material file (.txt)");
@@ -833,6 +866,18 @@ struct Service::Impl {
         Json out = Json::Obj();
         out.set("file", Str(file));
         out.set("names", std::move(names));
+        if (wantColors && wantColors->boolean) {
+            std::vector<std::string> colors;
+            std::vector<bool> resolved;
+            preview::MaterialColors(theme, std::string(txt.begin(), txt.end()), &colors, &resolved);
+            Json c = Json::Arr(), res = Json::Arr();
+            for (size_t i = 0; i < colors.size(); ++i) {
+                c.arr.push_back(Str(colors[i]));
+                res.arr.push_back(Json::Bool(resolved[i]));
+            }
+            out.set("colors", std::move(c));
+            out.set("resolved", std::move(res));
+        }
         return Ok(out);
     }
 
@@ -865,6 +910,9 @@ struct Service::Impl {
         if (mode != "install" && mode != "source") return Err(kBadParams, "mode must be \"install\" or \"source\"");
         const Json* surv = p.find("survivor");
         if (surv && surv->kind != Json::Kind::Bool) return Err(kBadParams, "survivor must be a boolean");
+        const Json* mrange = p.find("melangeRange");   // optional: spice.json melange.range (default >=0.2.0)
+        if (mrange && (mrange->kind != Json::Kind::String || mrange->str.size() > 64 || !spice::ValidRange(mrange->str)))
+            return Err(kBadParams, "melangeRange must be a semver range such as \">=0.14.0\"");
         std::string why;
         const std::string prefix = names::Prefix(modId);
         if (!ValidModId(modId) || !names::ValidPrefix(prefix, &why))
@@ -879,8 +927,9 @@ struct Service::Impl {
         build::VoxelEdits voxels;
         Resolved res;
         if (!OpenProject(id, &L, &patch, &scene, &voxels, &res, &r, true, conn)) return r;
-        std::string script;
+        std::string script, err;
         if (!ProjectScript(id, &script, &r)) return r;
+        if (!CheckEngineLimits(scene, &err)) return Err(kBadParams, err);   // a source pack builds it later: refuse now
         patch.script = MetaOf(script);
         const std::string stem = prefix + "_" + id;
         if (!names::ValidStem(stem, prefix, &why)) return Err(kBadParams, why);
@@ -895,6 +944,7 @@ struct Service::Impl {
         spec.source = mode == "source";
         spec.chunk = luagen::Needed(scene);
         spec.survivor = surv && surv->boolean;
+        if (mrange) spec.melangeRange = mrange->str;
         spec.patchJson = WritePatch(patch);
         spec.script = std::move(script);
         if (!spec.source) {
@@ -904,7 +954,6 @@ struct Service::Impl {
         }
         const std::wstring dir = env.gameDir + L"\\Mods\\" + install::Widen(modId);
         std::vector<std::string> written;
-        std::string err;
         if (!pack::WritePack(spec, dir, &written, &err)) return Err(kPolicy, "export: " + err);
         project::Meta meta;
         store.ReadMeta(id, &meta);
@@ -1002,9 +1051,23 @@ struct Service::Impl {
             o.set("files", std::move(files));
             levels.arr.push_back(std::move(o));
         }
+        // Every level is written: record what they were built from, so Melange.exe knows the pack is built
+        // (a stamp that cannot be written only means the next start builds it again).
+        bool stamped = false;
+        if (!env.melangeVersion.empty()) {
+            stamp::Record rec;
+            std::string why;
+            if (stamp::Inputs(dir, m, env.melangeVersion, env.gameDir, &rec.inputs, &why)) {
+                rec.ok = true;
+                rec.melange = env.melangeVersion;
+                rec.at = stamp::Now();
+                stamped = stamp::Write(dir, rec);
+            }
+        }
         Json out = Json::Obj();
         out.set("modId", Str(modId));
         out.set("dir", Str(install::Narrow(dir)));
+        out.set("stamped", Json::Bool(stamped));
         out.set("levels", std::move(levels));
         out.set("skipped", std::move(skipped));
         return Ok(out);
@@ -1072,6 +1135,8 @@ Reply Service::Call(std::string_view method, std::string_view paramsJson, uint64
     if (method == "level.build") return impl_->BuildMod(p);
     if (method == "level.objects") return impl_->Objects();
     if (method == "level.materials") return impl_->Materials(p);
+    if (method == "level.delete") return impl_->Delete(p);
+
     if (method == "level.script.get") return impl_->ScriptGet(p);
     if (method == "level.script.put") return impl_->ScriptPut(p, conn);
     return Err(-32601, "unknown method");

@@ -12,6 +12,7 @@
 #include "lua/wum_media_handles.h"
 #include "melange/draw.h"
 #include "melange/graphics.h"
+#include "melange/gltrace.h"
 #include "melange/postfx.h"
 #include "melange/render.h"
 #include "melange/shaders.h"
@@ -592,6 +593,20 @@ int Timing(lua_State* L) {
     lua_setfield(L, -2, "fps");
     lua_pushinteger(L, static_cast<lua_Integer>(t.frames));
     lua_setfield(L, -2, "frames");
+    // The GPU's own time for the last frames that returned a result (gltrace.gpu's timers), ms: `frame` the whole
+    // swap-to-swap command stream, then the stages. fps is CPU-bound on some machines (testenv B near 36), so a
+    // graphics regression shows here and not in fps. Absent where the timers are not supported or not yet read.
+    if (gltrace::GpuTimerSupported()) {
+        static const char* kNames[] = {"frame", "world", "worldLate", "postWorld", "hud", "final"};
+        lua_createtable(L, 0, 6);
+        for (int i = 0; i < static_cast<int>(gltrace::GpuRegion::Count); ++i) {
+            const gltrace::GpuTime g = gltrace::GetGpuTime(static_cast<gltrace::GpuRegion>(i));
+            if (!g.valid) continue;
+            lua_pushnumber(L, g.ms);
+            lua_setfield(L, -2, kNames[i]);
+        }
+        lua_setfield(L, -2, "gpuMs");
+    }
     return 1;
 }
 

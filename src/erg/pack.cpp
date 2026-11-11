@@ -137,6 +137,8 @@ bool WritePack(const PackSpec& spec, const std::wstring& dir, std::vector<std::s
     const std::string stem = prefix + "_" + spec.slug;
     if (!names::ValidStem(stem, prefix, &why)) return Fail(err, why);
     if (!spec.script.empty() && !levels::manifest::CheckSimText(spec.script, &why)) return Fail(err, "script.lua: " + why);
+    if (!spec.melangeRange.empty() && !spice::ValidRange(spec.melangeRange))
+        return Fail(err, "melangeRange '" + spec.melangeRange + "' is not a semver range");
 
     Existing existing;
     if (!ReadExisting(dir, spec.slug, &existing, err)) return false;
@@ -160,7 +162,9 @@ bool WritePack(const PackSpec& spec, const std::wstring& dir, std::vector<std::s
     jsonmini::Obj manifest;
     manifest.Int("spiceVersion", 1).Str("id", spec.modId).Str("version", spec.version);
     manifest.Str("name", existing.present && !existing.name.empty() ? existing.name : spec.name);
-    manifest.Raw("melange", R"({"range":">=0.2.0"})");
+    jsonmini::Obj melange;
+    melange.Str("range", spec.melangeRange.empty() ? std::string(">=0.2.0") : spec.melangeRange);
+    manifest.Raw("melange", melange.End());
     manifest.Str("kind", "content").Bool("defaultEnabled", false);
     manifest.Raw("levels", levels.End());
     const std::string manifestJson = manifest.End();

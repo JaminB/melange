@@ -17,4 +17,8 @@ FrameStats DrawStage(render::Stage stage, std::vector<drawqueue::Primitive>& a, 
 namespace melange::draw {
 // draw.cpp: runs the Screen stage's draw callbacks and draws its primitives (stages_screen.cpp, at present time).
 void RunScreenPass();
+// The mods' primitives (every stage, wum.draw) are not drawn through frame `frame` (events::FrameCount()); their
+// callbacks still run and their queues still drain. For a clean screenshot (render.shot). Main thread.
+void HideUntil(uint64_t frame);
+bool HiddenAt(uint64_t frame);
 }  // namespace melange::draw

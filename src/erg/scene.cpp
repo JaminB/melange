@@ -1,5 +1,6 @@
 #include "erg/scene.h"
 
+#include <algorithm>
 #include <cctype>
 #include <cmath>
 #include <unordered_map>
@@ -96,6 +97,22 @@ bool IntField(const Json& o, const char* key, const std::string& p, int64_t lo, 
 }
 }  // namespace
 
+const char* ThrowPatternName(ThrowPattern p) {
+    switch (p) {
+        case ThrowPattern::Ring: return "ring";
+        case ThrowPattern::Targets: return "targets";
+        default: return "random";
+    }
+}
+
+bool ParseThrowPattern(std::string_view s, ThrowPattern* out) {
+    if (s == "random") *out = ThrowPattern::Random;
+    else if (s == "ring") *out = ThrowPattern::Ring;
+    else if (s == "targets") *out = ThrowPattern::Targets;
+    else return false;
+    return true;
+}
+
 bool IsObjectKnot(std::string_view n) {
     if (n == "minefactory" || IndexAfter(n, "CRATE_") || IndexAfter(n, "TRIG_")) return true;
     return n.size() > 5 && n[3] >= '1' && n[3] <= '8' && IndexAfter(n, std::string("TP_") + n[3] + "_");
@@ -165,8 +182,45 @@ bool ValidateObject(const ObjectSpec& o, const std::string& p, std::string* err)
             if (t.hitpoints < 0 || t.hitpoints > 1000) return Fail(err, p + ".trigger.hitpoints: must be 0-1000");
             break;
         }
-        case ObjectType::Telepad:
-        case ObjectType::MineFactory: break;
+        case ObjectType::MineFactory: {
+            const FactorySpec& f = o.factory;
+            if (f.activation && (*f.activation < 0 || *f.activation > 255)) return Fail(err, p + ".factory.activation: must be 0-255");
+            if (f.inactiveTurns && (*f.inactiveTurns < 0 || *f.inactiveTurns > 255))
+                return Fail(err, p + ".factory.inactiveTurns: must be 0-255");
+            if (f.launchers.size() > kMaxLaunchers) return Fail(err, p + ".factory.launchers: at most 8");
+            for (const auto& l : f.launchers)
+                for (int c : l)
+                    if (c < -kMaxLauncherCoord || c > kMaxLauncherCoord)
+                        return Fail(err, p + ".factory.launchers: coordinates must be within 100000 world units");
+            if (f.throwing) {
+                const ThrowSpec& t = *f.throwing;
+                if (t.minRange < 0 || t.minRange > kMaxThrowRange) return Fail(err, p + ".factory.throw.minRange: must be 0-500");
+                if (t.maxRange < 1 || t.maxRange > kMaxThrowRange || t.maxRange < t.minRange)
+                    return Fail(err, p + ".factory.throw.maxRange: must be 1-500 and not under minRange");
+                if (t.apex < 1 || t.apex > 255) return Fail(err, p + ".factory.throw.apex: must be 1-255");
+                if (t.scatter < 0 || t.scatter > 255) return Fail(err, p + ".factory.throw.scatter: must be 0-255");
+                if (t.targetShare < 0 || t.targetShare > 100) return Fail(err, p + ".factory.throw.targetShare: must be 0-100");
+                if (t.targets.size() > kMaxThrowTargets) return Fail(err, p + ".factory.throw.targets: at most 16");
+                for (const auto& g : t.targets)
+                    for (int c : g)
+                        if (c < -kMaxLauncherCoord || c > kMaxLauncherCoord)
+                            return Fail(err, p + ".factory.throw.targets: coordinates must be within 100000 world units");
+                if (t.pattern == ThrowPattern::Targets && t.targets.empty()) return Fail(err, p + ".factory.throw: pattern targets needs targets");
+                if (t.volley < 0 || t.volley > kMaxVolley) return Fail(err, p + ".factory.throw.volley: must be 0-10");
+                if (t.avoidRadius < 0 || t.avoidRadius > kMaxAvoidRadius) return Fail(err, p + ".factory.throw.avoidRadius: must be 0-50");
+                if (t.avoid.size() > kMaxAvoidLines) return Fail(err, p + ".factory.throw.avoid: at most 8 lines");
+                for (const auto& line : t.avoid) {
+                    if (line.size() < 2 || line.size() > kMaxAvoidPoints) return Fail(err, p + ".factory.throw.avoid: each line has 2-32 points");
+                    for (const auto& g : line)
+                        for (int c : g)
+                            if (c < -kMaxLauncherCoord || c > kMaxLauncherCoord)
+                                return Fail(err, p + ".factory.throw.avoid: coordinates must be within 100000 world units");
+                }
+                if (!t.avoid.empty() && !t.avoidRadius) return Fail(err, p + ".factory.throw.avoid: needs avoidRadius");
+            }
+            break;
+        }
+        case ObjectType::Telepad: break;
     }
     return true;
 }
@@ -235,9 +289,114 @@ bool ParseObjects(const Json* arr, std::vector<ObjectSpec>* out, std::string* er
                     return false;
                 break;
             }
-            case ObjectType::MineFactory:
-                if (!OnlyKeys(o, {"knot", "type"}, p, err)) return false;
+            case ObjectType::MineFactory: {
+                if (!OnlyKeys(o, {"knot", "type", "factory"}, p, err)) return false;
+                const Json* f = o.find("factory");
+                if (!f) break;
+                const std::string fp = p + ".factory";
+                int v = 0;
+                if (!Obj(f, fp, err) || !OnlyKeys(*f, {"activation", "inactiveTurns", "schemeMines", "keepKnot", "launchHeight", "launchRadius", "launchers", "throw"}, fp, err) ||
+                    !GetBool(*f, "schemeMines", fp, &ob.factory.schemeMines, err, false) ||
+                    !GetBool(*f, "keepKnot", fp, &ob.factory.keepKnot, err, false))
+                    return false;
+                if (f->find("activation")) {
+                    if (!IntField(*f, "activation", fp, 0, 255, &v, err, true)) return false;
+                    ob.factory.activation = v;
+                }
+                if (f->find("inactiveTurns")) {
+                    if (!IntField(*f, "inactiveTurns", fp, 0, 255, &v, err, true)) return false;
+                    ob.factory.inactiveTurns = v;
+                }
+                if (f->find("launchHeight")) {
+                    if (!IntField(*f, "launchHeight", fp, 1, 255, &v, err, true)) return false;
+                    ob.factory.launchHeight = v;
+                }
+                if (f->find("launchRadius")) {
+                    if (!IntField(*f, "launchRadius", fp, 0, 255, &v, err, true)) return false;
+                    ob.factory.launchRadius = v;
+                }
+                if (const Json* ls = f->find("launchers")) {
+                    // [[x, y, z], ...] world units, 1-8 of them
+                    const std::string lp = fp + ".launchers";
+                    if (ls->kind != Json::Kind::Array || ls->arr.empty() || ls->arr.size() > kMaxLaunchers)
+                        return Fail(err, lp + ": must be an array of 1-8 [x, y, z] points");
+                    for (size_t li = 0; li < ls->arr.size(); ++li) {
+                        const Json& pt = ls->arr[li];
+                        const std::string pp = lp + "[" + std::to_string(li) + "]";
+                        if (pt.kind != Json::Kind::Array || pt.arr.size() != 3) return Fail(err, pp + ": must be [x, y, z]");
+                        std::array<int, 3> at{};
+                        for (size_t k = 0; k < 3; ++k) {
+                            double d = 0;
+                            if (!GetNumber(pt.arr[k], pp, -kMaxLauncherCoord, kMaxLauncherCoord, &d, err)) return false;
+                            if (d != std::floor(d)) return Fail(err, pp + ": world units must be whole numbers");
+                            at[k] = static_cast<int>(d);
+                        }
+                        ob.factory.launchers.push_back(at);
+                    }
+                }
+                if (const Json* th = f->find("throw")) {
+                    const std::string tp = fp + ".throw";
+                    ThrowSpec t;
+                    if (!Obj(th, tp, err) ||
+                        !OnlyKeys(*th, {"minRange", "maxRange", "apex", "pattern", "avoidWater", "targets", "scatter", "targetShare", "volley", "avoidRadius", "avoid"}, tp, err) ||
+                        !IntField(*th, "minRange", tp, 0, kMaxThrowRange, &t.minRange, err, false) ||
+                        !IntField(*th, "maxRange", tp, 1, kMaxThrowRange, &t.maxRange, err, true) ||
+                        !IntField(*th, "apex", tp, 1, 255, &t.apex, err, false) || !IntField(*th, "scatter", tp, 0, 255, &t.scatter, err, false) ||
+                        !IntField(*th, "targetShare", tp, 0, 100, &t.targetShare, err, false) ||
+                        !IntField(*th, "volley", tp, 0, kMaxVolley, &t.volley, err, false) ||
+                        !IntField(*th, "avoidRadius", tp, 0, kMaxAvoidRadius, &t.avoidRadius, err, false) ||
+                        !GetBool(*th, "avoidWater", tp, &t.avoidWater, err, false))
+                        return false;
+                    if (const Json* pt = th->find("pattern")) {
+                        if (pt->kind != Json::Kind::String || !ParseThrowPattern(pt->str, &t.pattern))
+                            return Fail(err, tp + ".pattern: must be random, ring or targets");
+                    }
+                    if (const Json* ts = th->find("targets")) {
+                        const std::string lp = tp + ".targets";
+                        if (ts->kind != Json::Kind::Array || ts->arr.size() > kMaxThrowTargets) return Fail(err, lp + ": must be an array of at most 16 [x, z] points");
+                        for (size_t li = 0; li < ts->arr.size(); ++li) {
+                            const Json& pt = ts->arr[li];
+                            const std::string pp = lp + "[" + std::to_string(li) + "]";
+                            if (pt.kind != Json::Kind::Array || pt.arr.size() != 2) return Fail(err, pp + ": must be [x, z]");
+                            std::array<int, 2> at{};
+                            for (size_t k = 0; k < 2; ++k) {
+                                double d = 0;
+                                if (!GetNumber(pt.arr[k], pp, -kMaxLauncherCoord, kMaxLauncherCoord, &d, err)) return false;
+                                if (d != std::floor(d)) return Fail(err, pp + ": world units must be whole numbers");
+                                at[k] = static_cast<int>(d);
+                            }
+                            t.targets.push_back(at);
+                        }
+                    }
+                    if (const Json* av = th->find("avoid")) {
+                        // polylines of [x, z] whole world units: the corridors the mines keep off
+                        const std::string lp = tp + ".avoid";
+                        if (av->kind != Json::Kind::Array || av->arr.size() > kMaxAvoidLines) return Fail(err, lp + ": must be an array of at most 8 lines");
+                        for (size_t li = 0; li < av->arr.size(); ++li) {
+                            const Json& ln = av->arr[li];
+                            const std::string lq = lp + "[" + std::to_string(li) + "]";
+                            if (ln.kind != Json::Kind::Array || ln.arr.size() < 2 || ln.arr.size() > kMaxAvoidPoints) return Fail(err, lq + ": must be 2-32 [x, z] points");
+                            std::vector<std::array<int, 2>> line;
+                            for (size_t pi = 0; pi < ln.arr.size(); ++pi) {
+                                const Json& pt = ln.arr[pi];
+                                const std::string pp = lq + "[" + std::to_string(pi) + "]";
+                                if (pt.kind != Json::Kind::Array || pt.arr.size() != 2) return Fail(err, pp + ": must be [x, z]");
+                                std::array<int, 2> at{};
+                                for (size_t k = 0; k < 2; ++k) {
+                                    double d = 0;
+                                    if (!GetNumber(pt.arr[k], pp, -kMaxLauncherCoord, kMaxLauncherCoord, &d, err)) return false;
+                                    if (d != std::floor(d)) return Fail(err, pp + ": world units must be whole numbers");
+                                    at[k] = static_cast<int>(d);
+                                }
+                                line.push_back(at);
+                            }
+                            t.avoid.push_back(std::move(line));
+                        }
+                    }
+                    ob.factory.throwing = t;
+                }
                 break;
+            }
         }
         if (!ValidateObject(ob, p, err)) return false;
         out->push_back(std::move(ob));
@@ -278,7 +437,66 @@ Json ObjectsJson(const std::vector<ObjectSpec>& objects) {
                 o.set("trigger", std::move(t));
                 break;
             }
-            case ObjectType::MineFactory: break;
+            case ObjectType::MineFactory: {
+                // Written only when set: a factory without settings stays byte-identical to older projects.
+                const FactorySpec& fs = ob.factory;
+                if (fs.Default()) break;
+                Json f = Json::Obj();
+                if (fs.activation) f.set("activation", Int(*fs.activation));
+                if (fs.inactiveTurns) f.set("inactiveTurns", Int(*fs.inactiveTurns));
+                if (!fs.schemeMines) f.set("schemeMines", Json::Bool(false));
+                if (fs.keepKnot) f.set("keepKnot", Json::Bool(true));
+                if (fs.launchHeight) f.set("launchHeight", Int(*fs.launchHeight));
+                if (fs.launchRadius) f.set("launchRadius", Int(*fs.launchRadius));
+                if (!fs.launchers.empty()) {
+                    Json ls = Json::Arr();
+                    for (const auto& l : fs.launchers) {
+                        Json pt = Json::Arr();
+                        for (int c : l) pt.arr.push_back(Int(c));
+                        ls.arr.push_back(std::move(pt));
+                    }
+                    f.set("launchers", std::move(ls));
+                }
+                if (fs.throwing) {
+                    // the defaults left out, as the other settings are
+                    const ThrowSpec& t = *fs.throwing;
+                    Json th = Json::Obj();
+                    if (t.minRange) th.set("minRange", Int(t.minRange));
+                    th.set("maxRange", Int(t.maxRange));
+                    if (t.apex != 15) th.set("apex", Int(t.apex));
+                    if (t.pattern != ThrowPattern::Random) th.set("pattern", Str(ThrowPatternName(t.pattern)));
+                    if (!t.avoidWater) th.set("avoidWater", Json::Bool(false));
+                    if (!t.targets.empty()) {
+                        Json ts = Json::Arr();
+                        for (const auto& g : t.targets) {
+                            Json pt = Json::Arr();
+                            for (int c : g) pt.arr.push_back(Int(c));
+                            ts.arr.push_back(std::move(pt));
+                        }
+                        th.set("targets", std::move(ts));
+                    }
+                    if (t.scatter != 10) th.set("scatter", Int(t.scatter));
+                    if (t.targetShare != 50) th.set("targetShare", Int(t.targetShare));
+                    if (t.volley) th.set("volley", Int(t.volley));
+                    if (t.avoidRadius) th.set("avoidRadius", Int(t.avoidRadius));
+                    if (!t.avoid.empty()) {
+                        Json av = Json::Arr();
+                        for (const auto& line : t.avoid) {
+                            Json ln = Json::Arr();
+                            for (const auto& g : line) {
+                                Json pt = Json::Arr();
+                                for (int c : g) pt.arr.push_back(Int(c));
+                                ln.arr.push_back(std::move(pt));
+                            }
+                            av.arr.push_back(std::move(ln));
+                        }
+                        th.set("avoid", std::move(av));
+                    }
+                    f.set("throw", std::move(th));
+                }
+                o.set("factory", std::move(f));
+                break;
+            }
         }
         arr.arr.push_back(std::move(o));
     }
@@ -346,7 +564,7 @@ Role DeriveRole(std::string_view name, std::string_view resource) {
     return Role::Other;
 }
 
-const char* SpawnModeName(SpawnMode m) { return m == SpawnMode::Knots ? "knots" : "random"; }
+const char* SpawnModeName(SpawnMode m) { return m == SpawnMode::Knots ? "knots" : m == SpawnMode::Teams ? "teams" : "random"; }
 const char* HmpModeName(HmpMode m) {
     return m == HmpMode::None ? "none" : m == HmpMode::Flat ? "flat" : m == HmpMode::Paint ? "paint" : "copy";
 }
@@ -354,6 +572,7 @@ const char* HmpModeName(HmpMode m) {
 bool ParseSpawnMode(std::string_view s, SpawnMode* out) {
     if (s == "random") *out = SpawnMode::Random;
     else if (s == "knots") *out = SpawnMode::Knots;
+    else if (s == "teams") *out = SpawnMode::Teams;
     else return false;
     return true;
 }
@@ -407,6 +626,12 @@ const Frame* Scene::FindFrame(int64_t id) const {
     return nullptr;
 }
 
+const FrameTrim* Scene::FindTrim(int64_t frameId) const {
+    for (auto& t : trims)
+        if (t.frame == frameId) return &t;
+    return nullptr;
+}
+
 const Detail* Scene::FindDetailBySrc(int64_t src) const {
     for (auto& d : details)
         if (d.src && *d.src == src) return &d;
@@ -414,7 +639,7 @@ const Detail* Scene::FindDetailBySrc(int64_t src) const {
 }
 
 bool Scene::UsesV2() const {
-    if (survivor || !objects.empty() || script.present || hmp == HmpMode::Paint || hmpRef >= 0) return true;
+    if (survivor || !objects.empty() || script.present || hmp == HmpMode::Paint || hmpRef >= 0 || !trims.empty()) return true;
     for (auto& f : frames)
         if (f.isNew) return true;
     for (auto& b : blobs)
@@ -433,6 +658,47 @@ bool UnderSceneFrame(const Scene& s, int64_t frameId) {
     return false;
 }
 
+uint64_t VoxelCells(const Scene& s) {
+    uint64_t n = 0;
+    for (const auto& f : s.frames) {
+        if (f.voxels < 0) continue;
+        const auto& size = s.trims.empty() || !s.FindTrim(f.id) ? f.size : s.FindTrim(f.id)->size;
+        n += static_cast<uint64_t>(size[0]) * size[1] * size[2];
+    }
+    return n;
+}
+
+bool ValidTrim(const Scene& s, const FrameTrim& t, std::string* err) {
+    const std::string p = "trim of frame " + std::to_string(t.frame);
+    const Frame* f = s.FindFrame(t.frame);
+    if (!f || f->isNew) return Fail(err, p + ": not a frame of the base");
+    if (f->voxels < 0) return Fail(err, p + ": the frame has no voxels");
+    for (int k = 0; k < 3; ++k)
+        if (t.min[k] < 0 || t.size[k] < 1 || t.min[k] + t.size[k] > f->size[k])
+            return Fail(err, p + ": the box must be at least 1 cell a side and inside the frame's " + std::to_string(f->size[0]) + "x" +
+                                 std::to_string(f->size[1]) + "x" + std::to_string(f->size[2]) + " grid");
+    return true;
+}
+
+std::vector<std::string> EngineWarnings(const Scene& s) {
+    std::vector<std::string> out;
+    for (const auto& f : s.frames)
+        if (f.isNew && *std::max_element(f.size.begin(), f.size.end()) > static_cast<int>(kMaxNewFrameSide))
+            out.push_back("block '" + f.name + "' is " + std::to_string(f.size[0]) + "x" + std::to_string(f.size[1]) + "x" +
+                          std::to_string(f.size[2]) + ": the game asserts on a side over 31 voxels (remove it and add it again at 31)");
+    std::string err;
+    if (!CheckEngineLimits(s, &err)) out.push_back(err + "; export, build and Test will refuse");
+    return out;
+}
+
+bool CheckEngineLimits(const Scene& s, std::string* err) {
+    const uint64_t cells = VoxelCells(s);
+    if (cells > kMaxVoxelCells)
+        return Fail(err, "the level's voxel frames hold " + std::to_string(cells) + " cells (X*Y*Z, solid or empty) and the game " +
+                             "crashes loading more than " + std::to_string(kMaxVoxelCells) + ": remove or shrink blocks, or use a larger voxel scale");
+    return true;
+}
+
 bool ParseScene(std::string_view json, Scene* out, std::string* err) {
     if (json.size() > kMaxSceneBytes) return Fail(err, "the scene is larger than 16 MB");
     Json root;
@@ -448,7 +714,7 @@ bool ParseScene(std::string_view json, Scene* out, std::string* err) {
     // "previews" (level.load only, resource -> preview key; not part of the saved document) rides along here and is
     // ignored: the reply is the scene with one extra sibling key, not a scene field.
     if (v2 ? !OnlyKeys(root, {"format", "stem", "title", "base", "registry", "kind", "databank", "water", "spawns", "hmp",
-                              "units", "frames", "details", "blobs", "objects", "script", "previews"},
+                              "units", "frames", "details", "blobs", "objects", "script", "trims", "previews"},
                        "scene", err)
            : !OnlyKeys(root, {"format", "stem", "title", "base", "registry", "databank", "water", "spawns", "hmp", "units",
                               "frames", "details", "blobs", "previews"},
@@ -500,7 +766,7 @@ bool ParseScene(std::string_view json, Scene* out, std::string* err) {
     const Json* sp = root.find("spawns");
     if (!Obj(sp, "spawns", err) || !OnlyKeys(*sp, {"mode"}, "spawns", err) || !GetString(*sp, "mode", "spawns", &mode, err))
         return false;
-    if (!ParseSpawnMode(mode, &s.spawns)) return Fail(err, "spawns.mode: must be \"random\" or \"knots\"");
+    if (!ParseSpawnMode(mode, &s.spawns)) return Fail(err, "spawns.mode: must be \"random\", \"knots\" or \"teams\"");
     const Json* hmp = root.find("hmp");
     if (!Obj(hmp, "hmp", err) || !(v2 ? OnlyKeys(*hmp, {"mode", "ref"}, "hmp", err) : OnlyKeys(*hmp, {"mode"}, "hmp", err)) ||
         !GetString(*hmp, "mode", "hmp", &mode, err))
@@ -514,6 +780,16 @@ bool ParseScene(std::string_view json, Scene* out, std::string* err) {
         if (const Json* k = root.find("kind"); k && !ParseKind(k, &s.survivor, err)) return false;
         if (const Json* o = root.find("objects"); o && !ParseObjects(o, &s.objects, err)) return false;
         if (const Json* sc = root.find("script"); sc && !ParseScript(sc, &s.script, err)) return false;
+        if (const Json* tr = root.find("trims")) {
+            if (tr->kind != Json::Kind::Array || tr->arr.size() > kMaxFrames) return Fail(err, "trims: must be an array of at most 4096 trims");
+            for (size_t i = 0; i < tr->arr.size(); ++i) {
+                const std::string p = "trims[" + std::to_string(i) + "]";
+                FrameTrim t;
+                if (!Obj(&tr->arr[i], p, err) || !OnlyKeys(tr->arr[i], {"frame", "min", "size"}, p, err) || !ParseTrim(tr->arr[i], p, &t, err))
+                    return false;
+                s.trims.push_back(t);
+            }
+        }
     }
     const Json* units = root.find("units");
     if (!Obj(units, "units", err) || !OnlyKeys(*units, {"worldPerXan"}, "units", err) ||
@@ -527,7 +803,7 @@ bool ParseScene(std::string_view json, Scene* out, std::string* err) {
         const std::string p = "frames[" + std::to_string(i) + "]";
         const Json& fo = frames->arr[i];
         if (!Obj(&fo, p, err) ||
-            !(v2 ? OnlyKeys(fo, {"id", "new", "parent", "name", "pos", "rot", "scale", "size", "voxels", "heightMap", "folder"}, p, err)
+            !(v2 ? OnlyKeys(fo, {"id", "new", "parent", "name", "pos", "rot", "scale", "size", "voxels", "heightMap", "folder", "corners"}, p, err)
                  : OnlyKeys(fo, {"id", "parent", "name", "pos", "rot", "scale", "size", "voxels", "heightMap", "folder"}, p, err)))
             return false;
         Frame f;
@@ -552,6 +828,8 @@ bool ParseScene(std::string_view json, Scene* out, std::string* err) {
         }
         if (static_cast<size_t>(f.size[0]) * f.size[1] * f.size[2] > kMaxFrameVoxels)
             return Fail(err, p + ".size: more than 262144 voxels");
+        if (!GetCorners(fo, p, f.size, &f.corners, err)) return false;
+        if (!f.corners.empty() && !f.isNew) return Fail(err, p + ".corners: only a new frame has corners (a base frame keeps its heightMap)");
         for (auto [key, dst] : {std::pair{"voxels", &f.voxels}, std::pair{"heightMap", &f.heightMap}}) {
             const Json* r = fo.find(key);
             if (r && r->kind != Json::Kind::Null && !GetInt(fo, key, p, 0, 1 << 24, dst, err)) return false;
@@ -646,10 +924,14 @@ bool ValidateScene(const Scene& s, std::string* err) {
         const std::string p = "frame " + std::to_string(f.id);
         if (++newFrames > kMaxNewFrames) return Fail(err, "frames: at most 64 new frames");
         if (f.id >= 0 || f.parent < 1) return Fail(err, p + ": a new frame has id -1..-64 and a frame of the base as parent");
-        if (f.rot != Vec3{0, 0, 0} || f.scale != Vec3{1, 1, 1} || f.folder || f.heightMap >= 0)
-            return Fail(err, p + ": a new frame has identity rotation and scale, no heightMap, and is not a folder");
+        const bool uniform = f.scale[0] == f.scale[1] && f.scale[1] == f.scale[2];
+        if (f.rot != Vec3{0, 0, 0} || !uniform || !(f.scale[0] >= kMinNewFrameScale && f.scale[0] <= kMaxNewFrameScale) || f.folder ||
+            f.heightMap >= 0)
+            return Fail(err, p + ": a new frame has no rotation, one scale 0.5..4 on every axis, no heightMap, and is not a folder");
+        if (!f.corners.empty() && f.corners.size() != static_cast<size_t>(f.size[0] + 1) * (f.size[2] + 1))
+            return Fail(err, p + ".corners: must be (X+1)*(Z+1) numbers");
         for (int k = 0; k < 3; ++k)
-            if (f.size[k] < 1 || f.size[k] > static_cast<int>(kMaxNewFrameSide)) return Fail(err, p + ".size: each size must be 1..32");
+            if (f.size[k] < 1 || f.size[k] > static_cast<int>(kLegacyNewFrameSide)) return Fail(err, p + ".size: each size must be 1..32");
     }
     int roots = 0;
     for (auto& f : s.frames) {
@@ -676,6 +958,11 @@ bool ValidateScene(const Scene& s, std::string* err) {
             if (hops > s.frames.size()) return Fail(err, "frame " + std::to_string(f.id) + ": the parent chain has a cycle");
             cur = frames[cur]->parent;
         }
+    }
+    std::unordered_set<int64_t> trimmed;
+    for (auto& t : s.trims) {
+        if (!ValidTrim(s, t, err)) return false;
+        if (!trimmed.insert(t.frame).second) return Fail(err, "trims: frame " + std::to_string(t.frame) + " is trimmed twice");
     }
     for (auto& f : s.frames)
         if (f.isNew && (!frames.count(f.parent) || frames[f.parent]->isNew || !UnderSceneFrame(s, f.parent)))
@@ -769,6 +1056,7 @@ std::string WriteScene(const Scene& s) {
         o.set("voxels", f.voxels < 0 ? Json::Null_() : Int(f.voxels));
         o.set("heightMap", f.heightMap < 0 ? Json::Null_() : Int(f.heightMap));
         o.set("folder", Json::Bool(f.folder));
+        if (!f.corners.empty()) o.set("corners", CornersJson(f.corners));
         frames.arr.push_back(std::move(o));
     }
     root.set("frames", std::move(frames));
@@ -801,6 +1089,15 @@ std::string WriteScene(const Scene& s) {
     if (v2) {
         root.set("objects", ObjectsJson(s.objects));
         root.set("script", ScriptJson(s.script));
+        if (!s.trims.empty()) {
+            Json trims = Json::Arr();
+            for (auto& t : s.trims) {
+                Json o = Json::Obj();
+                TrimFields(t, &o);
+                trims.arr.push_back(std::move(o));
+            }
+            root.set("trims", std::move(trims));
+        }
     }
     return Compact(root);
 }

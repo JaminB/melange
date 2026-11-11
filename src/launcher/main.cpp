@@ -13,6 +13,7 @@
 
 #include "core/log.h"
 #include "launcher/app.h"
+#include "launcher/autobuild.h"
 #include "launcher/rpc.h"
 #include "launcher/store_host.h"
 #include "launcher/update_host.h"
@@ -169,6 +170,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int) {
     sh.writeGate = &WriteGateFn;
     sh.version = MELANGE_VERSION;
     sh.defaultsIni = &DefaultsIniFn;
+    sh.modsChanged = [] { L::autobuild::Request("a plugin was switched on or off"); };
     melange::oasis::standalone::RegisterStandalone(sh);
     if (const std::wstring game = L::app::GameDir(); !game.empty() && L::DirExists(game)) melange::oasis::standalone::RegisterLevels(game);
     L::rpc::InstallSetup();
@@ -179,6 +181,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int) {
     L::rpc::InstallLaa();
     L::storehost::Install();
     L::updatehost::Install();
+    L::autobuild::Install();
     L::updatehost::Start(!opts.serve);   // --serve is for tests: no automatic look at GitHub
     L::app::StartChannel();
 

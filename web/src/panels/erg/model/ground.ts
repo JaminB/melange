@@ -1,6 +1,6 @@
 // Rays against the voxels themselves (no mesh needed): "drop to ground" and picking a place on the terrain. Grids are
 // centred on their frames (Frames.gridOf).
-import type { Scene, Vec3 } from "../../../sdk/erg";
+import type { Frame, Scene, Vec3 } from "../../../sdk/erg";
 import { isSolid } from "../terrain/mesher";
 import type { Frames } from "./geometry";
 
@@ -38,7 +38,21 @@ export function rayVoxels(size: readonly number[], voxels: Uint32Array, o: Vec3,
   return null;
 }
 
-/** The nearest terrain hit along a level ray (t in units of |d|), or null. */
+/** An added block's corner offset (voxels, Frame.corners) at grid (gx, gz): bilinear between the four corners of the
+ * column, 0 without corners. The game moves the whole column up by it, bottom and top. */
+export function cornerOffset(f: Pick<Frame, "size" | "corners">, gx: number, gz: number): number {
+  const c = f.corners;
+  if (!c) return 0;
+  const X = f.size[0], Z = f.size[2];
+  const x = Math.min(X, Math.max(0, gx)), z = Math.min(Z, Math.max(0, gz));
+  const i = Math.min(X - 1, Math.floor(x)), k = Math.min(Z - 1, Math.floor(z)), fx = x - i, fz = z - k;
+  const r0 = k * (X + 1), r1 = r0 + X + 1;
+  const a = c[r0 + i] + (c[r0 + i + 1] - c[r0 + i]) * fx, b = c[r1 + i] + (c[r1 + i + 1] - c[r1 + i]) * fx;
+  return a + (b - a) * fz;
+}
+
+/** The nearest terrain hit along a level ray (t in units of |d|), or null. A block with corner offsets is read as if
+ * the ray's origin moved down by the offset under it: exact for a vertical ray (a drop), close for others. */
 export function rayTerrain(scene: Scene, frames: Frames, voxelsOf: (id: number) => Uint32Array | undefined, p: Vec3, d: Vec3): number | null {
   let best: number | null = null;
   for (const f of scene.frames) {
@@ -51,6 +65,7 @@ export function rayTerrain(scene: Scene, frames: Frames, voxelsOf: (id: number) 
       inv[4] * p[0] + inv[5] * p[1] + inv[6] * p[2] + inv[7],
       inv[8] * p[0] + inv[9] * p[1] + inv[10] * p[2] + inv[11],
     ];
+    if (f.corners) o[1] -= cornerOffset(f, o[0], o[2]);
     const ld: Vec3 = [
       inv[0] * d[0] + inv[1] * d[1] + inv[2] * d[2],
       inv[4] * d[0] + inv[5] * d[1] + inv[6] * d[2],

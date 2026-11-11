@@ -22,6 +22,8 @@ std::optional<core::LevelSource> g_test;
 std::mutex g_mx;                                     // the Test script arrives on a server thread
 std::optional<core::LevelSource> g_pendingTest;
 std::atomic<bool> g_testChanged{false};
+std::string g_pendingClean;
+std::atomic<bool> g_cleanChanged{false};
 
 core::LevelSource ToSource(const melange::simbridge::LevelSim& s) {
     core::LevelSource l;
@@ -47,6 +49,14 @@ void OnLevelStart(const melange::levels::LevelStart& s, void*) { core::SetLevel(
 void OnTurnStarted(const melange::bus::MessageView&, void*) { core::TurnStarted(); }
 
 void OnFrame() {
+    if (g_cleanChanged.exchange(false)) {
+        std::string key;
+        {
+            std::lock_guard lk(g_mx);
+            key = g_pendingClean;
+        }
+        core::SuppressModsOn(key);
+    }
     if (!g_testChanged.exchange(false)) return;
     {
         std::lock_guard lk(g_mx);
@@ -75,12 +85,18 @@ void SetTestLevelSim(const LevelSim& s) {
     g_testChanged = true;
 }
 
+void SetTestCleanRoom(const std::string& key) {
+    std::lock_guard lk(g_mx);
+    g_pendingClean = key;
+    g_cleanChanged = true;
+}
+
 std::vector<std::pair<std::string, std::string>> LevelKnots(const std::string& stem, const std::string& chunkText) {
     std::vector<std::pair<std::string, std::string>> out;
     erg::luagen::ChunkSpec spec;
     if (chunkText.empty() || !erg::luagen::Parse(stem, chunkText, &spec)) return out;
-    if (spec.knots)
-        for (int i = 0; i < 8; ++i) out.emplace_back("WORM" + std::to_string(i), "spawn");
+    if (spec.knots || spec.teams)
+        for (int i = 0; i < (spec.teams ? 16 : 8); ++i) out.emplace_back("WORM" + std::to_string(i), "spawn");
     for (const auto& o : spec.objects)
         if (!o.knot.empty()) out.emplace_back(o.knot, erg::ObjectTypeName(o.type));
     return out;

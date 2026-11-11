@@ -1,6 +1,6 @@
 // The terrain tool as the viewport drives it: rays in .xan units (the view divides world positions by 20) from pointer
 // hover, down, drag and up. A drag is one undo step; a step runs only when the brush moves to another voxel.
-import type { Vec3 } from "../../../sdk/erg";
+import { LIMITS, type Vec3 } from "../../../sdk/erg";
 import { MAX_BRUSH, type Anchor, type Brush } from "./brush";
 import type { Box } from "./voxel";
 import type { Sculptor, StepResult } from "./sculpt";
@@ -21,6 +21,10 @@ export class TerrainTool {
     const next = { ...this.brush, ...b };
     next.size = next.size.map((v) => Math.min(MAX_BRUSH, Math.max(1, Math.round(v)))) as Vec3;
     if (typeof next.material === "number") next.material = Math.min(63, Math.max(0, Math.round(next.material)));
+    if (next.blockScale !== undefined) {
+      const s = Number.isFinite(next.blockScale) ? next.blockScale : 1;
+      next.blockScale = Math.min(LIMITS.newFrameScale.max, Math.max(LIMITS.newFrameScale.min, Math.round(s * 100) / 100));
+    }
     if ((next.material === "column" && next.mode !== "fill") || (next.material === "none" && next.mode !== "second")) next.material = 0;
     this.brush = next;
     this.emit();

@@ -138,7 +138,7 @@
             "type": "object",
             "additionalProperties": false,
             "required": ["op", "tmp", "parent", "name", "pos", "size"],
-            "description": "A new terrain block under the Scene frame (or a frame under it), identity rotation and scale, all voxels empty until voxels ops fill it. pos is its centre in the parent's space: the engine centres a frame's voxels on its position. The name is unused by any frame and holds none of SLIPPY, PERM or TEAMBASE (any case). At most 64.",
+            "description": "A new terrain block under the Scene frame (or a frame under it), no rotation, all voxels empty until voxels ops fill it. Each side is 1-31 voxels: the game asserts on 32 or more, but 32 is still read for older projects (level.save warns). pos is its centre in the parent's space: the engine centres a frame's voxels on its position. The name is unused by any frame and holds none of SLIPPY, PERM or TEAMBASE (any case). At most 64.",
             "properties": {
               "op": { "const": "addFrame" },
               "tmp": { "type": "integer", "minimum": -64, "maximum": -1 },
@@ -150,6 +150,17 @@
                 "minItems": 3,
                 "maxItems": 3,
                 "items": { "type": "integer", "minimum": 1, "maximum": 32 }
+              },
+              "scale": {
+                "type": "number",
+                "minimum": 0.5,
+                "maximum": 4,
+                "description": "Map units per voxel, the same on every axis (the frame's Scale). Absent means 1 and is how 1 is written."
+              },
+              "corners": {
+                "type": "array",
+                "items": { "type": "number", "minimum": -64, "maximum": 64 },
+                "description": "Optional corner offsets in voxels, (X+1)*(Z+1) of them row by row along x: the frame's HeightMap. The game moves each column (bottom and top) up by the bilinear offset of its corners, drawn and for collision. Absent means zeros and is how zeros are written."
               }
             }
           },
@@ -187,6 +198,18 @@
                   ]
                 }
               }
+            }
+          },
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["op", "frame", "min", "size"],
+            "description": "Cut a base frame's voxel box down to [min, min + size) in the built level (the scene's trims; at most one per frame). Every cell outside the box must be empty after the voxels ops.",
+            "properties": {
+              "op": { "const": "trimFrame" },
+              "frame": { "type": "integer", "minimum": 1, "maximum": 16777216 },
+              "min": { "type": "array", "minItems": 3, "maxItems": 3, "items": { "type": "integer", "minimum": 0, "maximum": 255 } },
+              "size": { "type": "array", "minItems": 3, "maxItems": 3, "items": { "type": "integer", "minimum": 1, "maximum": 255 } }
             }
           }
         ]

@@ -27,6 +27,7 @@
 #include "lua/sandbox_internal.h"
 #include "melange/draw.h"
 #include "melange/gamestate.h"
+#include "melange/gltrace.h"
 #include "melange/graphics.h"
 #include "melange/jlog.h"
 #include "melange/lua.h"
@@ -343,6 +344,10 @@ bool WorldToScreen(const float*, float*, float*, float*) { return false; }
 void WindowSize(int* w, int* h) { *w = 1024, *h = 768; }
 Timing GetTiming() { return {}; }
 }  // namespace render
+namespace gltrace {
+bool GpuTimerSupported() { return false; }
+GpuTime GetGpuTime(GpuRegion) { return {-1.0, false}; }
+}  // namespace gltrace
 namespace postfx {
 size_t ListEffects(EffectInfo* out, size_t max) {
     if (max < 2) return 0;

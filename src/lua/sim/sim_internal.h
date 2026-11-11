@@ -31,6 +31,12 @@ struct Mod {
     bool level = false;              // a level script (wum.level, "level." contributors)
     std::string levelKey, stem, sha256;
     std::vector<std::pair<std::string, std::string>> knots;
+    // wum.sim.waterSchedule: Water.Level steps at turn starts (world units), applied before sim.turnStarted.
+    struct Water {
+        bool on = false, hasFrom = false;
+        uint32_t start = 1, every = 1, applied = 0;
+        float step = 0, cap = 0, from = 0;
+    } water;
 };
 
 struct Callback {
@@ -72,6 +78,9 @@ struct Match {
     std::map<uint32_t, uint32_t> cppStreams;  // sim::Random stream key -> LCG state
     bool turnPending = false;
     uint32_t turns = 0;
+    // wum.sim.round(): a round ends when a team starts a turn that already started one in it (CurrentTeamIndex at the
+    // turn start), so eliminated teams only shorten the round. roundTeams is a bit per team index.
+    uint32_t rounds = 0, roundTeams = 0;
 };
 extern Match g;
 extern Config g_cfg;
@@ -109,6 +118,7 @@ bool IsModMessage(const char* name) noexcept;
 uint32_t AddSub(int mod, const char* event, int fnRef) noexcept;  // 0 when the mod has too many
 bool RemoveSub(int mod, uint32_t handle) noexcept;
 uint32_t AddTimer(int mod, uint32_t delay, uint32_t period, int fnRef) noexcept;
+void NoteTurnStart();  // counts the turn and the round, then steps the water schedules (Update, before sim.turnStarted)
 bool CancelTimer(int mod, uint32_t handle) noexcept;
 void DropModCallbacks(int mod);
 void DeliverEvent(const char* event, PushArgs push, const void* ctx);
@@ -129,6 +139,9 @@ struct SendArgs {
 };
 sim::SendResult DoSend(const SendArgs& a);
 const char* SetDataAt(l5::State* L, const char* name, int v);  // pre-checked SetData of stack slot v; nullptr or why
+// Host side (never from a trampoline): a pre-checked GetData of a number, and SetData of one; nullptr or why.
+const char* GetDataNumber(const char* name, float* out);
+const char* SetDataNumber(const char* name, float v);
 const char* SendResultText(sim::SendResult r);
 
 // sim_level.cpp

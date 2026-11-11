@@ -5,7 +5,8 @@ client script can use. The offline self-test (`sandbox_selftest`) fails if a `wu
 
 Sim scripts (`entry.sim`) run in the game's own Lua 5.0 match VM and have a different API (`wum.sim.*`); they are not covered here. They are documented in the [developer guide](developer-guide.md#sim-scripts), including the Melange 0.11
 additions `wum.sim.worm(slot)` (worm state and the anchor), `wum.sim.worms()`, `wum.sim.land()` and the turn-start hold
-`wum.sim.holdTurn(ticks)`, `wum.sim.releaseTurn()` and `wum.sim.turnHold()`. A client mod sees a hold through the events
+`wum.sim.holdTurn(ticks)`, `wum.sim.releaseTurn()` and `wum.sim.turnHold()`, and the turn and round counters
+`wum.sim.turn()` and `wum.sim.round()` and the rising-water helper `wum.sim.waterSchedule{...}`. A client mod sees a hold through the events
 `melange.turnHold` and `melange.turnHoldEnd` below.
 
 ## The environment
@@ -138,7 +139,7 @@ Read-only game state.
 | `wum.game.scene()` | `"boot"`, `"menu"`, `"loading"` or `"match"`. |
 | `wum.game.inMatch()` | A match (including the attract demo) is running. |
 | `wum.game.online()` | A net session exists: the online lobby, its loading screens, the match and its results (Melange 0.12; before 0.12 it was true only once the online match was running). |
-| `wum.game.turn()` | `{index, team, worm, ai, mine, phase}`: `index` = turns started in this match; `team` = the current team's index and `worm` = the active worm's index, both absent between turns; `ai` = the current team is computer-controlled; `mine` = the current turn is played on this machine (online: the turn owner's player is local, kept across the gap between turns; offline: the team is local and not AI); `phase` = `"intro"` (the hot-seat timer), `"play"`, `"retreat"`, `"settle"` or `"none"`. The fields after `index` are Melange 0.12. |
+| `wum.game.turn()` | `{index, team, worm, ai, mine, phase}`: `index` = turns started in this match, counted from 1 as `sim.turnStarted`'s `turn` is (before Melange 0.13 a first turn that started in the frame the match's VM appeared was missed, so `index` ran one behind for the whole match); `team` = the current team's index and `worm` = the active worm's index, both absent between turns; `ai` = the current team is computer-controlled; `mine` = the current turn is played on this machine (online: the turn owner's player is local, kept across the gap between turns; offline: the team is local and not AI); `phase` = `"intro"` (the hot-seat timer), `"play"`, `"retreat"`, `"settle"` or `"none"`. The fields after `index` are Melange 0.12. |
 | `wum.game.ui()` | `{weaponPanel, pause, readyIntro, feCursor, attract}` booleans: the weapon panel is open, a pause menu or popup is up, the "Ready?" turn intro shows, the frontend's own menu cursor is active, the attract demo runs. `nil` on an unrecognised build. Changes are also sent as `melange.ui`. (Melange 0.12) |
 | `wum.game.tick()` | Simulation ticks (50 per second) since the match started, when the sim bridge is running; otherwise 0. |
 | `wum.game.worms()` | The worms of the current match, an array of `{slot, team, name, health, alive, pos={x,y,z}, vel={x,y,z}, yaw, weapon}` (`vel` is the engine's own velocity in world units per second: the game keeps it per millisecond of game time and Melange multiplies by 1000; it is the worm's physics velocity, so it is about zero while the worm stands or walks and large while it flies, falls or is knocked back; `weapon` is the weapon id, absent when none; `yaw` is the facing angle in radians about +Y, the facing direction is `(sin yaw, 0, cos yaw)`, it is not wrapped to a range and it spins while a worm is thrown). Empty outside a match; `nil, "unavailable"` on an unrecognised game build or with `[GameState] Enabled=0`. |
@@ -405,12 +406,12 @@ end)
 
 | Name | Description |
 |---|---|
-| `wum.render.camera()` | `{pos, fwd, up, near, far, fov, overridden}` of the main camera as it is drawn (with a camera override, the override's), or `nil`. `fov` is the vertical field of view in degrees; `overridden` is `true` while a camera override is set. |
+| `wum.render.camera()` | `{pos, fwd, up, near, far, fov, overridden}` of the main camera as it is drawn (with a camera override, the override's; on a pack or Test level, after `[LevelCamera]` moved it out of the land), or `nil`. `fov` is the vertical field of view in degrees; `overridden` is `true` while a camera override is set. |
 | `wum.render.gameCamera()` | The same for the game's own camera, as it would be drawn without an override (to blend back into it), or `nil`. |
 | `wum.render.cameraOverride(spec)` | Draws the frame from a camera of the mod's choosing; `nil` clears it. See [Camera override](#camera-override). |
 | `wum.render.worldToScreen(pos)` | `x, y, depth` in window pixels, or `nil` behind the camera. |
 | `wum.render.windowSize()` | `width, height`. |
-| `wum.render.timing()` | `{busyMsP50, busyMsP95, frameMsP50, fps, frames}`. |
+| `wum.render.timing()` | `{busyMsP50, busyMsP95, frameMsP50, fps, frames, gpuMs}`. `gpuMs` (where the GPU timers are supported): the GPU time of the last timed frame, ms: `frame` (the whole swap-to-swap command stream), `world`, `worldLate`, `postWorld`, `hud`, `final` (each present once read). fps can be CPU-bound (testenv B: near 36 whatever is drawn), so compare `gpuMs.frame` for a graphics cost. |
 
 ### Camera override
 

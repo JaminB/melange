@@ -4,11 +4,18 @@ import { validatePatch, validateScene, type Patch, type Scene } from "./scene";
 
 export type TimeOfDay = "DAY" | "EVENING" | "NIGHT";
 export interface ScriptProblem { line: number; message: string; }
+/** A Test team: human (default true) and its worms (1-4; the Quick Game's own four when left out). */
+export interface TestTeam { human?: boolean; worms?: number; }
+/** teams: the Quick Game start, 2-4 human teams or a human then a computer team (the default, QuickStartHvC). */
+export interface TestOptions { tod?: TimeOfDay; cleanMods?: boolean; postfx?: boolean; teams?: TestTeam[]; }
 
 export interface ErgSession {
   load(project: string): Promise<{ scene: Scene; blobs: Map<number, ArrayBuffer> }>;
   save(patch: Patch): Promise<{ saved: boolean; warnings: string[] }>;
-  test(opts?: { tod?: TimeOfDay }): Promise<{ key: string; state: string }>;
+  /** cleanMods: no sim mod runs in the Test match (only the level script) and post-FX is off; postfx: false turns
+   * post-FX off alone (or keeps it, with cleanMods, when true). cleanRoom in the answer says what the game applied;
+   * a game without clean rooms leaves it out. */
+  test(opts?: TestOptions): Promise<{ key: string; state: string; cleanRoom?: { simMods: boolean; postfx: boolean } }>;
   onTest(fn: (s: { state: string; key: string; detail: string }) => void): () => void;
   /** The project's level script (script.lua), "" when it has none. */
   script(): Promise<string>;
@@ -58,9 +65,14 @@ export function createErgSession(client: Client, opts: SessionOptions = {}): Erg
       if (!v.ok) throw new ErgError("the patch is invalid", v.errors);
       return client.call<{ saved: boolean; warnings: string[] }>("level.save", { project, patch }, callTimeout);
     },
-    async test(opts?: { tod?: TimeOfDay }) {
+    async test(opts?: TestOptions) {
       if (!project) throw new ErgError("no project is open");
-      return client.call<{ key: string; state: string }>("level.test", opts?.tod ? { project, tod: opts.tod } : { project }, callTimeout);
+      const params: Record<string, unknown> = { project };
+      if (opts?.tod) params.tod = opts.tod;
+      if (opts?.cleanMods !== undefined) params.cleanMods = opts.cleanMods;
+      if (opts?.postfx !== undefined) params.postfx = opts.postfx;
+      if (opts?.teams) params.teams = opts.teams;
+      return client.call<{ key: string; state: string; cleanRoom?: { simMods: boolean; postfx: boolean } }>("level.test", params, callTimeout);
     },
     async script() {
       if (!project) throw new ErgError("no project is open");

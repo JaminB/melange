@@ -12,6 +12,7 @@
 #include <map>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <set>
 #include <string>
 #include <unordered_map>
@@ -27,10 +28,12 @@
 #include "erg/names.h"
 #include "levels/csh.h"
 #include "levels/engine.h"
+#include "levels/factory.h"
 #include "levels/gate.h"
 #include "levels/hidden.h"
 #include "levels/test.h"
 #include "lua/sim/bridge_internal.h"
+#include "lua/sim/tweak.h"
 #include "melange/jlog.h"
 #include "mods/thumper_internal.h"
 #include "weapons/engine.h"
@@ -430,7 +433,51 @@ void CheckLastPlayed() {
     }
 }
 
+// The level's mine factory settings (the chunk's "-- minefactory:" line) go into kMineFactoryData before the level
+// loads: the factory reads NumTurnsInactive when PlaceObjects creates it, and both fields at each turn start. They go
+// through the sim tweak store, which puts the game's values back when the match VM closes, so no later match (another
+// map, or a peer's) sees them. Every machine of a match runs the same accepted chunk. The factory's own set-up writes
+// them again just before it reads them, and keepKnot keeps it at its knot when its drop hits no land
+// (levels/factory.cpp, armed here).
+void ApplyFactory(const std::string& stem, const std::string& chunk) {
+    factory::Disarm();
+    erg::luagen::ChunkSpec spec;
+    if (chunk.empty() || !erg::luagen::Parse(stem, chunk, &spec)) return;
+    for (const auto& o : spec.objects) {
+        if (o.type != erg::ObjectType::MineFactory) continue;
+        factory::Arm(stem, o.factory);
+        // The chunk drops the mines bit of the match's GM.SchemeData.Objects (1 -> 0, 3 -> 2) before
+        // lib_SetupMinesAndOildrums reads it, whatever the scheme: its 15 random mines are the only start mines it places.
+        if (!o.factory.schemeMines) LOG_INFO("[levels] %s: the scheme's start mines are off (no random mines)", stem.c_str());
+        if (o.factory.keepKnot) LOG_INFO("[levels] %s: the mine factory stays at its knot if its drop hits no land", stem.c_str());
+        if (o.factory.throwing)
+            LOG_INFO("[levels] %s: the mine factory throws its mines from %s at landing points %d-%d map units out (%s), landed by Melange at the land sweep's hit",
+                     stem.c_str(), o.factory.launchers.empty() ? "itself" : "its launchers", o.factory.throwing->minRange, o.factory.throwing->maxRange,
+                     erg::ThrowPatternName(o.factory.throwing->pattern));
+        else if (!o.factory.launchers.empty())
+            LOG_INFO("[levels] %s: the mine factory's mines erupt from %zu launchers, %d map units up, and land within %d of them",
+                     stem.c_str(), o.factory.launchers.size(), o.factory.launchHeight.value_or(20), o.factory.launchRadius.value_or(0));
+        else if (o.factory.Launch())
+            LOG_INFO("[levels] %s: the mine factory's mines appear %d map units over it, within %d of it", stem.c_str(), o.factory.launchHeight.value_or(20),
+                     o.factory.launchRadius.value_or(0));
+        if (!o.factory.Tweaks()) continue;
+        if (!tweak::Restorable()) {
+            LOG_WARN("[levels] %s: the mine factory settings are skipped (the sim tweak store is inactive)", stem.c_str());
+            return;
+        }
+        const std::pair<const char*, std::optional<int>> fields[] = {{"NumMineActivation", o.factory.activation},
+                                                                     {"NumTurnsInactive", o.factory.inactiveTurns}};
+        for (const auto& [field, v] : fields) {
+            if (!v) continue;
+            const tweak::TweakError e = tweak::Set("kMineFactoryData", field, static_cast<float>(*v));
+            LOG_INFO("[levels] %s: kMineFactoryData.%s = %d: %s", stem.c_str(), field, *v, tweak::ToString(e));
+        }
+    }
+}
+
 void OnStart(const LevelStart& s, void*) {
+    tweak::RestoreOrphans();
+    factory::Disarm();
     if (s.source == Source::Vanilla) return;
     Level l;
     {
@@ -447,6 +494,10 @@ void OnStart(const LevelStart& s, void*) {
         else LOG_WARN("[levels] %s: %s; the last accepted chunk runs", stem.c_str(), err.c_str());
         if (!ServeChunk(stem, err.empty() ? text : l.chunkText))
             LOG_ERROR("[levels] %s: Melange/cache/%s.lub could not be written", stem.c_str(), stem.c_str());
+        ApplyFactory(stem, err.empty() ? text : l.chunkText);
+    } else if (l.info.source == Source::Test) {
+        std::string text;   // the Test build's own chunk, which the engine runs from the Test root
+        if (roots::ReadChunk(l.root / game::Widen(stem + ".lub"), &text)) ApplyFactory(stem, text);
     }
     const auto r = csh::Guard(xan, stem, BankDir(), {l.root / L"Maps", CacheDir() / L"Maps", TestDir() / L"Maps"});
     g_cshDeleted += r.deleted;

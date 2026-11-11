@@ -28,6 +28,7 @@
 #include "render/mirage/shaders_internal.h"
 #include "render/mirage/shadertex_logic.h"
 #include "render/mirage/textags.h"
+#include "render/mirage/tints.h"
 #include "render/mirage/textures.h"
 
 namespace melange::mirage::shaders::glsl {
@@ -167,6 +168,14 @@ struct Linked {
     GLint texTagLoc = -1, texTagCount = 0;
     uint32_t texTagUnit = 0;
     float texTagSent[8] = {};
+    // mg_tint: the scenery tint (tints.h) of the detail the vertex program's `model` places the draw at.
+    GLint tintLoc = -1;
+    int modelIndex = -1;  // the `model` parameter's first register in the vertex program, -1 when it has none
+    int viewIndex = -1;   // ...and the `view` parameter's (the engine may send the object's transform in it)
+    float tintSent[4] = {-1.f, -1.f, -1.f, -1.f};
+    // mg_landTint: the level's landscape tint (tints.h) of the texture on the texture0 unit (by its textags digest).
+    GLint landTintLoc = -1;
+    float landTintSent[4] = {-1.f, -1.f, -1.f, -1.f};
     uint32_t paramsSeen = ~0u;
     uint32_t seen[2] = {~0u, ~0u};
     GLuint arb[2] = {};
@@ -577,6 +586,33 @@ Linked Link(src::CGprogram vp, src::CGprogram fp) {
                 LOG_WARN("[shaders] GLSL %s: mg_texTag must be declared vec4 mg_texTag[2]; it stays 0", label[mod[0] ? 0 : 1].c_str());
             }
             continue;
+        case logic::SceneInput::Tint:
+            if (type == kFloatVec4) {
+                l.tintLoc = loc;
+                if (!mod[0]) {
+                    if (src::CGparameter cp = cg.GetNamedParameter(progs[0], "model"))
+                        l.modelIndex = static_cast<int>(cg.GetParameterResourceIndex(cp));
+                    if (src::CGparameter cp = cg.GetNamedParameter(progs[0], "view"))
+                        l.viewIndex = static_cast<int>(cg.GetParameterResourceIndex(cp));
+                }
+                cg.Drain();
+                const float white[4] = {1.f, 1.f, 1.f, 0.f};
+                g_gl.Uniform4fv(loc, 1, white);
+                std::copy(white, white + 4, l.tintSent);
+            } else {
+                LOG_WARN("[shaders] GLSL %s: mg_tint must be declared vec4; it stays 0", label[mod[0] ? 0 : 1].c_str());
+            }
+            continue;
+        case logic::SceneInput::LandTint:
+            if (type == kFloatVec4) {
+                l.landTintLoc = loc;
+                const float white[4] = {1.f, 1.f, 1.f, 0.f};
+                g_gl.Uniform4fv(loc, 1, white);
+                std::copy(white, white + 4, l.landTintSent);
+            } else {
+                LOG_WARN("[shaders] GLSL %s: mg_landTint must be declared vec4; it stays 0", label[mod[0] ? 0 : 1].c_str());
+            }
+            continue;
         default:
             break;
         }
@@ -853,6 +889,23 @@ void UploadTexTag(Linked& l) {
     g_gl.Uniform4fv(l.texTagLoc, l.texTagCount, t);
 }
 
+void UploadTint(Linked& l, const Mirror* vm) {
+    auto regs = [&](int index) -> const float* {
+        return index >= 0 && vm && vm->v.size() >= (static_cast<size_t>(index) + 4) * 4u ? vm->v.data() + index * 4 : nullptr;
+    };
+    const float* t = tints::ForDraw(regs(l.modelIndex), regs(l.viewIndex));
+    if (!logic::Update(l.tintSent, t, 4)) return;
+    g_gl.Uniform4fv(l.tintLoc, 1, t);
+}
+
+// After UploadTexTag when the program also declares mg_texTag (textags::ForDraw has seen the texture0 binding).
+void UploadLandTint(Linked& l) {
+    if (l.texTagLoc < 0) textags::ForDraw(l.texTagUnit);
+    const float* t = tints::ForLandTexture(textags::LastDigest());
+    if (!logic::Update(l.landTintSent, t, 4)) return;
+    g_gl.Uniform4fv(l.landTintLoc, 1, t);
+}
+
 void Upload() {
     ProfScope ps;
     if (g_prof.on) ++g_prof.uploads;
@@ -862,11 +915,13 @@ void Upload() {
     if (!l.foreign.empty()) UploadForeign(l);
     if (!l.modTex.samplers.empty()) BindModTextures(l);
     if (l.texTagLoc >= 0) UploadTexTag(l);
+    if (l.landTintLoc >= 0) UploadLandTint(l);
     const Mirror* m[2] = {};
     for (int s = 0; s < 2; ++s) {
         auto it = g_mirror.find(l.arb[s]);
         if (it != g_mirror.end()) m[s] = &it->second;
     }
+    if (l.tintLoc >= 0) UploadTint(l, m[0]);
     uint32_t v0 = m[0] ? m[0]->version : 0, v1 = m[1] ? m[1]->version : 0;
     if (v0 == l.seen[0] && v1 == l.seen[1]) return;
     l.seen[0] = v0;

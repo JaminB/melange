@@ -4,15 +4,18 @@
 // messages: the invert flags and the numbers handed to the mouse-message poster 0x505990 are changed there, so peers
 // and Wormsign recordings receive the final values like any other input. Nothing reads or writes TWEAK data, camera
 // state, SetCamera, the ActiveObject list, the save file or anything run on the receiving side, and no engine message
-// is posted from here.
+// is posted from here except by the drive (Drive, for test tools), which posts a key's own button messages through the
+// service's button poster on the sending side, as a key press does.
 #include <windows.h>
 
 #include <safetyhook.hpp>
 
+#include <algorithm>
 #include <atomic>
 #include <cstdio>
 #include <cstring>
 #include <memory>
+#include <mutex>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -24,7 +27,9 @@
 #include "input/controls.h"
 #include "melange/bus.h"
 #include "melange/overlay.h"
+#include "melange/sim.h"
 #include "melange/testcmd.h"
+#include "mods/lobby.h"
 #include "render/input_logic.h"
 #include "render/input_regions.h"
 #include "render/internal.h"
@@ -37,6 +42,7 @@ constexpr uintptr_t kPost = 0x505990;          // thiscall(svc, msgId, x, y), re
 constexpr uintptr_t kTick = 0x5060e0;          // per-tick service update; svc is the first stack argument
 constexpr uintptr_t kCameraMgrPtr = 0x95c370;  // CameraManager*
 constexpr uintptr_t kBlimpView = 0x51d8f0;     // thiscall(CameraManager*) -> bool, read-only
+constexpr uintptr_t kPostButton = 0x5056b0;    // thiscall(svc, msgId), ret 4: posts a plain Message (a key's Pressed/Released)
 constexpr int kGroupCount = 19;
 constexpr uintptr_t kGroupStride = 0x30;
 
@@ -353,11 +359,72 @@ bool VerbRaw(std::string_view args, void*) {
     return true;
 }
 
-// Mid hook at the entry of 0x5060e0: raw motion alone must still make the service flush on the next tick.
+// ---------------------------------------------------------------- the drive (erg-mcp's game_walk, test {fire})
+// A held input is the engine's own button message pair (Input.MoveForwardPressed ... Released), posted from the input
+// service's tick through its button poster 0x5056b0, the call a key press makes: the worm walks as it does for a held
+// key, whatever window has the focus (an injected key goes through DirectInput, which the game reads only while it has
+// the focus, and a key held across a focus change is lost). Offline only; every input ends at its deadline or the
+// match's end.
+constexpr const char* kDriveInputs[] = {"Input.MoveForward", "Input.MoveBackward", "Input.MoveLeft", "Input.MoveRight",
+                                         "Input.Jump",        "Input.JumpBack",     "Input.Fire",     "Input.AimUp",
+                                         "Input.AimDown"};
+struct DriveInput {
+    std::string name;
+    ULONGLONG until = 0;   // held while now < until
+    bool posted = false;   // Pressed posted, Released not yet
+};
+std::mutex g_driveMx;
+std::vector<DriveInput> g_drive;
+uint64_t g_drivePosts = 0;
+std::string g_driveLast;   // the last post that failed, for DriveNow
+
+bool CallPost(uint32_t svc, uint32_t id) {
+    __try {
+        reinterpret_cast<void(__thiscall*)(uint32_t, uint32_t)>(kPostButton)(svc, id);
+        return true;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return false;
+    }
+}
+
+bool PostButton(uint32_t svc, const std::string& msg) {
+    const melange::bus::MsgId id = melange::bus::IdOf(msg);
+    if (id == melange::bus::kInvalidId) {
+        g_driveLast = msg + " is not a registered message";
+        return false;
+    }
+    if (!CallPost(svc, id)) {
+        g_driveLast = msg + " faulted";
+        return false;
+    }
+    ++g_drivePosts;
+    return true;
+}
+
+// Main thread, the service's tick: post what changed since the last tick.
+void DriveTick(uint32_t svc) {
+    std::lock_guard lk(g_driveMx);
+    if (g_drive.empty()) return;
+    const bool live = melange::sim::InMatch() && melange::handshake::lobby::Current() == 0;
+    const ULONGLONG now = GetTickCount64();
+    for (DriveInput& d : g_drive) {
+        const bool want = live && now < d.until;
+        if (want && !d.posted) d.posted = PostButton(svc, d.name + "Pressed");
+        else if (!want && d.posted) {
+            if (live) PostButton(svc, d.name + "Released");
+            d.posted = false;
+        }
+    }
+    std::erase_if(g_drive, [&](const DriveInput& d) { return !d.posted && !(live && now < d.until); });
+}
+
+// Mid hook at the entry of 0x5060e0: the drive's posts; raw motion alone must still make the service flush on the
+// next tick.
 void OnTick(SafetyHookContext& ctx) {
-    if (!SmoothActive() || (!g_rawX.load(std::memory_order_relaxed) && !g_rawY.load(std::memory_order_relaxed))) return;
     uint32_t svc = 0;
     if (!Rd(ctx.esp + 4, svc) || !svc || svc != SvcAddr()) return;
+    DriveTick(svc);
+    if (!SmoothActive() || (!g_rawX.load(std::memory_order_relaxed) && !g_rawY.load(std::memory_order_relaxed))) return;
     *reinterpret_cast<uint8_t*>(svc + 0x75) |= 1;
 }
 
@@ -511,7 +578,9 @@ public:
             !mem::Expect(kTick, {0x64, 0xa1, 0x00, 0x00, 0x00, 0x00, 0x6a, 0xff, 0x68, 0xd8, 0xbe, 0x7d, 0x00, 0x50, 0x64, 0x89,
                                  0x25, 0x00, 0x00, 0x00, 0x00, 0x56, 0x8b, 0x74, 0x24, 0x14}) ||
             // 0x51d8f0 blimp-like view predicate
-            !mem::Expect(kBlimpView, {0x56, 0x8b, 0xf1, 0x83, 0xbe, 0xbc, 0x02, 0x00, 0x00, 0xff, 0x74, 0x04, 0x32, 0xc0, 0x5e, 0xc3})) {
+            !mem::Expect(kBlimpView, {0x56, 0x8b, 0xf1, 0x83, 0xbe, 0xbc, 0x02, 0x00, 0x00, 0xff, 0x74, 0x04, 0x32, 0xc0, 0x5e, 0xc3}) ||
+            // 0x5056b0 button poster: mov eax,fs:[0]; push -1; push SEH handler 7CF38Bh
+            !mem::Expect(kPostButton, {0x64, 0xa1, 0x00, 0x00, 0x00, 0x00, 0x6a, 0xff, 0x68, 0x8b, 0xf3, 0x7c, 0x00})) {
             LOG_ERROR("[controls] unexpected code in the input translation service, not installed");
             return false;
         }
@@ -547,6 +616,37 @@ MELANGE_MODULE(Controls);
 }  // namespace
 
 bool Available() { return g_installed; }
+
+bool Drive(const std::vector<std::string>& inputs, int ms, bool replace, std::string* why) {
+    if (!g_installed) return *why = "the Controls module is not installed", false;
+    if (melange::handshake::lobby::Current() != 0) return *why = "not in a lobby or an online match", false;
+    if (!melange::sim::InMatch()) return *why = "no match is running", false;
+    for (const std::string& n : inputs)
+        if (std::find(std::begin(kDriveInputs), std::end(kDriveInputs), n) == std::end(kDriveInputs))
+            return *why = n + " is not an input the drive holds", false;
+    const ULONGLONG until = GetTickCount64() + static_cast<ULONGLONG>(ms < 0 ? 0 : ms);
+    std::lock_guard lk(g_driveMx);
+    if (replace)
+        for (DriveInput& d : g_drive)
+            if (std::find(inputs.begin(), inputs.end(), d.name) == inputs.end()) d.until = 0;   // released at the next tick
+    for (const std::string& n : inputs) {
+        auto it = std::find_if(g_drive.begin(), g_drive.end(), [&](const DriveInput& d) { return d.name == n; });
+        if (it == g_drive.end()) g_drive.push_back({n, until, false});
+        else it->until = until;
+    }
+    return true;
+}
+
+DriveState DriveNow() {
+    std::lock_guard lk(g_driveMx);
+    DriveState st;
+    const ULONGLONG now = GetTickCount64();
+    for (const DriveInput& d : g_drive)
+        if (d.posted || now < d.until) st.held.push_back({d.name, d.posted, now < d.until ? static_cast<int>(d.until - now) : 0});
+    st.posts = g_drivePosts;
+    st.lastError = g_driveLast;
+    return st;
+}
 
 void SetOptions(const Options& o, const void* owner) {
     g_opt = o;

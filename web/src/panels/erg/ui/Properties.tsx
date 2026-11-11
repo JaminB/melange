@@ -2,7 +2,7 @@
 // .xan units and radians.
 import { JsonTree } from "../../../sdk/ui";
 import {
-  WORLD_PER_XAN, printable, type CrateKind, type Detail, type DetailFields, type ObjectSpec, type Vec3,
+  WORLD_PER_XAN, printable, type CrateKind, type Detail, type DetailFields, type FactorySpec, type ObjectSpec, type Vec3,
 } from "../../../sdk/erg";
 import { round } from "../model/geometry";
 import { objectOf, type ObjectCatalog } from "../model/placing";
@@ -44,8 +44,25 @@ const TEAMS = ["any team", ...Array.from({ length: 8 }, (_, i) => `team ${i + 1}
 export function ObjectProps({ o, set, catalog }: { o: ObjectSpec; set(o: ObjectSpec): void; catalog?: ObjectCatalog }) {
   if (o.type === "telepad")
     return <div class="erg-field" data-erg-object="telepad"><span class="erg-label">Telepad</span><span>group {o.group}: a worm on one pad of the group comes out of another</span></div>;
-  if (o.type === "minefactory")
-    return <p class="hint" data-erg-object="minefactory">Mine factory. It replaces the scheme's own factory, so a match never has two.</p>;
+  if (o.type === "minefactory") {
+    // Unset fields keep the game's values; a field set back to the game's value is dropped, so the patch stays minimal.
+    const f = o.factory ?? {};
+    const put = (k: "activation" | "inactiveTurns" | "schemeMines", v: number | boolean, game: number | boolean) => {
+      const next: Record<string, unknown> = { ...f };
+      if (v === game) delete next[k];
+      else next[k] = v;
+      set(Object.keys(next).length ? { ...o, factory: next as FactorySpec } : { knot: o.knot, type: o.type });
+    };
+    return (
+      <div data-erg-object="minefactory">
+        <p class="hint">Mine factory. It replaces the scheme's own factory, so a match never has two. At a turn start it fires when
+          fewer mines than its target are in the map (up to 10 at a time), then waits its idle turns.</p>
+        <NumInput label="Mine target" name="factory.activation" value={f.activation ?? 20} lo={0} hi={255} onSet={(v) => put("activation", v, 20)} />
+        <NumInput label="Idle turns" name="factory.inactiveTurns" value={f.inactiveTurns ?? 7} lo={0} hi={255} onSet={(v) => put("inactiveTurns", v, 7)} />
+        <Check label="Scheme's start mines" name="factory.schemeMines" value={f.schemeMines ?? true} onSet={(v) => put("schemeMines", v, true)} />
+      </div>
+    );
+  }
   if (o.type === "trigger") {
     const t = o.trigger;
     const put = (f: Partial<typeof t>) => set({ ...o, trigger: { ...t, ...f } });

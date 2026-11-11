@@ -86,6 +86,7 @@ export function LevelSettings({ store, themes }: Props) {
         <select value={s.spawns.mode} onChange={(e) => set({ spawns: (e.target as HTMLSelectElement).value as SpawnMode }, "Change spawns")} data-field="spawns">
           <option value="random">Random (the game picks)</option>
           <option value="knots">Knots WORM0-WORM7</option>
+          <option value="teams">Knots by team WORM0-WORM15</option>
         </select>
       </label>
       <label class="erg-field"><span class="erg-label">Surround</span>

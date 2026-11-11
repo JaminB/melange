@@ -4,6 +4,7 @@
 #include <safetyhook.hpp>
 
 #include <atomic>
+#include <cstdio>
 #include <initializer_list>
 #include <vector>
 
@@ -88,6 +89,48 @@ void OnSchemeName(safetyhook::Context& c) {
                  static_cast<int>(code), count, melange::crashfix::kUnknownScheme);
 }
 
+// The engine's mesh-instance pool. XGraphicalResourceManager sizes it once, at start-up, from the static property
+// "GRM.MaxMeshes" = "550" (the {name, value} string table at 0x853948, read through 0x643427 by 0x6afd7e and set by
+// 0x6b2930: count at 0x97000c, 0xd0 bytes per instance). Every drawn detail, worm hat and effect mesh takes one, so a level
+// with ~540 details runs out at load ("Out of mesh instances - all 550 instances have been used!"); CreateResource answers
+// E_FAIL and OilDrumGraphicEntity (0x5d0fad) and others dereference the null instance: a crash. Pointing the value at a
+// larger number before the GRM starts raises the pool (it is graphics only: nothing the simulation reads).
+constexpr uintptr_t kMaxMeshesName = 0x853970, kMaxMeshesValue = 0x853974, kMeshPoolCount = 0x97000c;
+constexpr int kVanillaMeshes = 550, kMaxMeshInstances = 4000;
+char g_maxMeshes[8] = {};
+bool g_meshesLogged = false;
+
+bool RaiseMeshInstances(int want) {
+    uint32_t name = 0, value = 0;
+    if (!melange::mem::SafeRead(kMaxMeshesName, &name, 4) || !melange::mem::SafeRead(kMaxMeshesValue, &value, 4) ||
+        !melange::mem::Expect(name, {'G', 'R', 'M', '.', 'M', 'a', 'x', 'M', 'e', 's', 'h', 'e', 's', 0}) ||
+        !melange::mem::Expect(value, {'5', '5', '0', 0})) {
+        LOG_WARN("[fixes] MeshInstances: the GRM.MaxMeshes property is not build #1077's; not raised");
+        return false;
+    }
+    uint16_t now = 0;
+    if (melange::mem::SafeRead(kMeshPoolCount, &now, 2) && now) {
+        LOG_WARN("[fixes] MeshInstances: the mesh pool already holds %u instances (Melange loaded late); not raised", now);
+        return false;
+    }
+    snprintf(g_maxMeshes, sizeof g_maxMeshes, "%d", want);
+    if (!melange::mem::Put<uint32_t>(kMaxMeshesValue, static_cast<uint32_t>(reinterpret_cast<uintptr_t>(g_maxMeshes)))) {
+        LOG_ERROR("[fixes] MeshInstances: write failed");
+        return false;
+    }
+    LOG_INFO("[fixes] MeshInstances: GRM.MaxMeshes %d (vanilla %d)", want, kVanillaMeshes);
+    return true;
+}
+
+// once the app is up: the pool's real size (proves the property was read after the patch)
+void LogMeshPool() {
+    if (g_meshesLogged) return;
+    uint16_t n = 0;
+    if (!melange::mem::SafeRead(kMeshPoolCount, &n, 2) || !n) return;
+    g_meshesLogged = true;
+    LOG_INFO("[fixes] MeshInstances: the engine's mesh pool holds %u instances", n);
+}
+
 bool Guard(const char* name, uintptr_t check, std::initializer_list<int> bytes, uintptr_t site,
            safetyhook::MidHookFn fn) {
     if (!melange::mem::Expect(check, bytes)) {
@@ -126,6 +169,10 @@ public:
                           melange::mem::Expect(kResolveFloat, {0x6A, 0xFF, 0x68, 0x38, 0x93, 0x7C, 0x00});
             melange::events::Subscribe(melange::events::Event::Frame, &ApplyPendingSepia);
         }
+        // 0 or anything up to the vanilla 550 leaves the engine's pool alone
+        const int meshes = Int("MeshInstances", 2000);
+        if (meshes > kVanillaMeshes && RaiseMeshInstances(meshes < kMaxMeshInstances ? meshes : kMaxMeshInstances))
+            melange::events::Subscribe(melange::events::Event::Frame, &LogMeshPool);
         if (Bool("SchemeCode", true))
             Guard("SchemeCode", kSchemeCheck,
                   {0x3B, 0x7C, 0x24, 0x08, 0x8B, 0xF0, 0x7E, 0x14, 0x68, 0x10, 0xE0, 0x86, 0x00, 0x68, 0xE8, 0x01, 0x00,

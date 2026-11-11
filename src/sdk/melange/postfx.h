@@ -35,4 +35,8 @@ void RemoveCodePass(int handle);
 
 struct Stats { uint32_t effects, activePasses; double gpuMs, cpuMs; bool bypassed; const char* bypassReason; };
 Stats GetStats();
+// The whole stack off (as with Bypass all) until SetSuppressed(false), for an Erg clean-room Test; the user's own
+// Bypass all and every effect's saved state are left alone. Any thread; applied at the next frame.
+void SetSuppressed(bool on);
+bool Suppressed();
 }

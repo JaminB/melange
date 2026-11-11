@@ -9,7 +9,8 @@
 #include "levels/engine.h"
 #include "melange/bus.h"
 
-// The Quick Game popup posts WXMsg.StartGame("QuickStartHvC") as a StringMessage. The message is
+// The Quick Game popup posts WXMsg.StartGame("QuickStartHvC") as a StringMessage (its 2-4 player starts post
+// QuickStartHvH, QuickStartHvHvH and QuickStartHvHvHvH: every team human, four worms each). The message is
 // allocated by the frontend's message factory and posted on the same event bus melange/bus.h observes.
 namespace melange::erg::quickstart {
 namespace {
@@ -50,11 +51,18 @@ bool Available() {
     return fs.valid && !fs.attractRunning && fs.state != kInGame;
 }
 
-bool PostQuickGame() {
+bool ValidMode(const char* mode) {
+    for (const char* m : kModes)
+        if (mode && std::strcmp(mode, m) == 0) return true;
+    return false;
+}
+
+bool PostQuickGame(const char* mode) {
+    if (mode && !ValidMode(mode)) return false;
     if (!Available()) return false;
     const bus::MsgId id = bus::IdOf(kStartGame);
     if (id == bus::kInvalidId) return false;
-    strncpy_s(g_text, kQuickStart, _TRUNCATE);
+    strncpy_s(g_text, mode ? mode : kQuickStart, _TRUNCATE);
     return RawPost(id, g_text);
 }
 }  // namespace melange::erg::quickstart

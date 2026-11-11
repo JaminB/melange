@@ -1,4 +1,5 @@
 // Module "MirageDraw": world and HUD drawing API (melange/draw.h).
+#include "core/events.h"
 #include "core/log.h"
 #include "core/module.h"
 #include "melange/draw.h"
@@ -156,7 +157,8 @@ void ExitCb(render::Stage stage, void* user) {
     // faulting); draw whatever was queued for immediate drawing and otherwise treat the pass as empty.
     static std::vector<Primitive> kEmptyPass;
     std::vector<Primitive>& pass = s->activePass ? *s->activePass : kEmptyPass;
-    mirage::drawgl::FrameStats fs = mirage::drawgl::DrawStage(stage, pass, s->queue.Immediate(), s->sprites);
+    mirage::drawgl::FrameStats fs{};
+    if (!HiddenAt(events::FrameCount())) fs = mirage::drawgl::DrawStage(stage, pass, s->queue.Immediate(), s->sprites);
     s->sprites.clear();
 
     uint64_t frame = render::GetTiming().frames;
@@ -641,6 +643,10 @@ void RemoveDrawCallback(int handle) {
         }
     }
 }
+
+uint64_t g_hideUntil = 0;   // through this frame the mods' primitives are not drawn (render.shot's clean shots)
+void HideUntil(uint64_t frame) { g_hideUntil = std::max(g_hideUntil, frame); }
+bool HiddenAt(uint64_t frame) { return g_hideUntil && frame <= g_hideUntil; }
 
 void RunScreenPass() {
     StageState& s = g_stage[kScreenIdx];

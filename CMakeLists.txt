@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.25)
-project(Melange VERSION 0.13.0 LANGUAGES C CXX)
+project(Melange VERSION 0.14.0 LANGUAGES C CXX)
 
 if(NOT CMAKE_SIZEOF_VOID_P EQUAL 4)
     message(FATAL_ERROR "Melange must be built for 32-bit x86 (WormsMayhem.exe is a 32-bit process). Use build.ps1.")
@@ -132,7 +132,7 @@ set_source_files_properties(${CMAKE_BINARY_DIR}/generated/oasis_web.rc PROPERTIE
 set(ERG_SERVICE_SOURCES
     src/erg/scene.cpp src/erg/patch.cpp src/erg/names.cpp src/erg/jsonio.cpp src/erg/xomutil.cpp src/erg/load.cpp
     src/erg/build.cpp src/erg/bank.cpp src/erg/install.cpp src/erg/project.cpp src/erg/service.cpp src/erg/pack.cpp src/erg/luagen.cpp src/erg/voxels.cpp src/erg/objects.cpp src/erg/hmp.cpp
-    src/erg/preview.cpp src/levels/manifest.cpp src/mods/spice.cpp src/tools/json_read.cpp src/tools/hash.cpp
+    src/erg/preview.cpp src/erg/stamp.cpp src/levels/manifest.cpp src/mods/spice.cpp src/tools/json_read.cpp src/tools/hash.cpp
     src/core/log.cpp)
 
 # Every .cpp under src/ is compiled into the plugin.
@@ -202,11 +202,11 @@ add_executable(oasis_standalone_selftest
     tests/oasis_standalone_selftest.cpp
     src/oasis/standalone/ini_edit.cpp src/oasis/standalone/mods_provider.cpp src/oasis/standalone/json_write.cpp
     src/oasis/standalone/wormsign_provider.cpp src/wormsign/format.cpp src/wormsign/records.cpp src/store/compat.cpp
-    src/mods/spice.cpp src/tools/json_read.cpp src/core/log.cpp)
+    src/oasis/standalone/lua_check.cpp src/oasis/standalone/water_sim.cpp src/mods/spice.cpp src/tools/json_read.cpp src/core/log.cpp)
 target_include_directories(oasis_standalone_selftest PRIVATE src src/sdk)
 target_compile_definitions(oasis_standalone_selftest PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX _CRT_SECURE_NO_WARNINGS)
 target_compile_options(oasis_standalone_selftest PRIVATE /W4 /utf-8 /permissive-)
-target_link_libraries(oasis_standalone_selftest PRIVATE miniz)
+target_link_libraries(oasis_standalone_selftest PRIVATE miniz lua50_ref)
 
 # Melange.exe's setup logic without a window: detection, validation, loader identity, the install engine, plugin
 # settings. Shared by the launcher and its self-test.
@@ -262,12 +262,12 @@ set(LOG_EXPORT_CORE_SOURCES
 # Melange.exe: the desktop app. The standalone Oasis server plus setup, plugins and the Store, shown in WebView2.
 include(cmake/webview2.cmake)
 add_executable(melange_launcher WIN32
-    src/launcher/main.cpp src/launcher/app.cpp src/launcher/window.cpp src/launcher/store_host.cpp
+    src/launcher/main.cpp src/launcher/app.cpp src/launcher/window.cpp src/launcher/store_host.cpp src/launcher/autobuild.cpp
     src/launcher/rpc_setup.cpp src/launcher/rpc_launcher.cpp src/launcher/rpc_plugins.cpp src/launcher/rpc_import.cpp src/launcher/rpc_display.cpp src/launcher/rpc_laa.cpp src/launcher/update_host.cpp
     ${LAUNCHER_CORE_SOURCES}
     src/oasis/standalone/register.cpp src/oasis/standalone/ini_edit.cpp src/oasis/standalone/mods_provider.cpp
     src/oasis/standalone/json_write.cpp src/oasis/standalone/wormsign_provider.cpp src/oasis/standalone/level_provider.cpp
-    src/oasis/rpc/erg_assets.cpp src/assets/crcsafe_math.cpp src/assets/crcsafe_file.cpp src/oasis/auth.cpp src/oasis/webpanels.cpp
+    src/oasis/standalone/lua_check.cpp src/oasis/standalone/water_sim.cpp src/oasis/rpc/erg_assets.cpp src/assets/crcsafe_math.cpp src/assets/crcsafe_file.cpp src/oasis/auth.cpp src/oasis/webpanels.cpp
     ${ERG_SERVICE_SOURCES} src/wormsign/format.cpp src/wormsign/records.cpp ${LOG_EXPORT_CORE_SOURCES}
     res/launcher.rc res/stock.rc ${CMAKE_BINARY_DIR}/generated/oasis_web.rc)
 add_dependencies(melange_launcher oasis_web)
@@ -279,8 +279,9 @@ target_include_directories(melange_launcher PRIVATE src src/sdk res ${CMAKE_BINA
 target_compile_definitions(melange_launcher PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX _CRT_SECURE_NO_WARNINGS UNICODE _UNICODE)
 target_compile_options(melange_launcher PRIVATE /W4 /utf-8 /permissive- /Zi)
 target_link_options(melange_launcher PRIVATE /DEBUG /MANIFEST:NO)
+# lua50_ref (below): the level-script syntax check of Melange.exe's level service (oasis/standalone/lua_check.cpp).
 target_link_libraries(melange_launcher PRIVATE oasis_core melange_store melange_import melange_xom webview2_loader bcrypt version shlwapi ole32 shell32
-    comctl32 dwmapi winhttp wintrust crypt32)
+    comctl32 dwmapi winhttp wintrust crypt32 lua50_ref)
 
 add_executable(json_read_selftest tests/json_read_selftest.cpp src/tools/json_read.cpp)
 target_include_directories(json_read_selftest PRIVATE src)
@@ -497,7 +498,9 @@ target_link_libraries(sandbox_selftest PRIVATE lua54 imgui)
 foreach(part media peer input draw audio game spotify)
     include(${CMAKE_SOURCE_DIR}/cmake/holo/sandbox_${part}.cmake)
 endforeach()
-# Stock Lua 5.0.1 with float numbers, a stand-in for the engine's match VM in sim_selftest (never linked into the plugin).
+# Stock Lua 5.0.1 with float numbers, a stand-in for the engine's match VM in sim_selftest, and Melange.exe's level-script
+# syntax check (never linked into the plugin).
+
 FetchContent_Declare(lua50
     URL https://www.lua.org/ftp/lua-5.0.1.tar.gz
     URL_HASH SHA256=7a09d0e70dcaff7feae97cf9c154da05b1e5b92eaea2df7150b54bcaf8f3b9c6

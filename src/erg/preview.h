@@ -37,8 +37,15 @@ bool Get(const std::string& key, const std::string& ext, Asset* out, std::string
 // "materials":[{"index":0,"name":"BeigeRock/Grass01","resolved":true}, ...]}. "" + *error if theme is invalid.
 std::string ThemeAtlasIndex(const std::string& theme, std::string* error = nullptr);
 
+// The colour of each record of a material file (its text, as a level's Maps\<stem>.txt or a theme's own file): the
+// average of the record's surface texture as "#rrggbb", the texture looked up in the theme's folder first (theme may be
+// ""), then anywhere. resolved[i] is false where the texture was not found; that record gets the atlas's stable fallback
+// colour. Results are kept for the process session.
+void MaterialColors(const std::string& theme, const std::string& text, std::vector<std::string>* colors, std::vector<bool>* resolved);
+
 // Deletes least-recently-served cache files until the cache is at or under [Erg] PreviewCacheMB.
 void TrimCache();
+
 
 struct Stats { uint32_t hits = 0, misses = 0, conversions = 0, failed = 0; uint64_t cacheBytes = 0; };
 Stats GetStats();

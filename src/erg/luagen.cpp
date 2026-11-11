@@ -8,6 +8,11 @@ namespace melange::erg::luagen {
 namespace {
 constexpr std::string_view kWater = "SetData(\"Water.Level\", ";
 constexpr std::string_view kKnotLine = "worm.Spawn = \"WORM\" .. i\n";
+// Team spawns: the setup deals the slots team by team in slot order (lib_SetupMultiplayerWorm sets Active and
+// TeamIndex and counts WormIndex up; the engine sets PositionInTeam only later, so it reads 0 here: tried in a Quick
+// Game on 2026-11-08), so a worm's place in its team is how many of its team's worms came before it.
+constexpr std::string_view kTeamTest = "if worm.Active and worm.TeamIndex < 4 then\n";
+constexpr std::string_view kTeamLine = "if p < 4 then worm.Spawn = \"WORM\" .. (worm.TeamIndex * 4 + p) end\n";
 constexpr std::string_view kPlaceLine = "SendMessage(\"GameLogic.PlaceObjects\")\n";
 // The level's factory replaces the scheme's: stdvs reads MineFactoryOn after this setup to send CreateRandMineFactory,
 // and a second factory trips the engine's one-factory assert. GM.SchemeData is the match's copy of the scheme, which
@@ -15,6 +20,13 @@ constexpr std::string_view kPlaceLine = "SendMessage(\"GameLogic.PlaceObjects\")
 constexpr std::string_view kFactoryLines[] = {"local lock, scheme = EditContainer(\"GM.SchemeData\")\n",
                                               "scheme.MineFactoryOn = false\n", "CloseContainer(lock)\n"};
 constexpr std::string_view kFactoryKnot = "minefactory";
+// schemeMines = false: lib_SetupMinesAndOildrums (run by stdvs and Survivor after this setup) places 15 random mines
+// for Objects 1 (mines) and 3 (both) and 10 oil drums for 2 and 3; dropping the mines bit keeps the drums.
+constexpr std::string_view kNoMinesLine =
+    "if scheme.Objects == 1 then scheme.Objects = 0 elseif scheme.Objects == 3 then scheme.Objects = 2 end\n";
+// The factory's kMineFactoryData settings, a comment the engine skips: Melange applies them at level start from the
+// parsed chunk (levels/registry.cpp), so a match end can put the game's values back.
+constexpr std::string_view kFactoryTweak = "-- minefactory:";
 constexpr std::string_view kCrateCall = "ergCrate(", kTelepadCall = "lib_CreateTelepad(", kTriggerCall = "ergTrigger(";
 // Without "stdvs" in the script list (Survivor), the loader refuses a chunk that redefines a library function at load
 // (0x6998ba, checked once before Initialise). The deferred form installs its setup wrap inside Initialise instead.
@@ -204,6 +216,7 @@ bool ParseObjectLine(std::string_view line, ObjectSpec* o) {
 ChunkSpec SpecOf(const Scene& s) {
     ChunkSpec c;
     c.knots = s.spawns == SpawnMode::Knots;
+    c.teams = s.spawns == SpawnMode::Teams;
     c.placeObjects = HasNamedDetail(s, "mine") || HasNamedDetail(s, "oildrum");
     c.objects = s.objects;
     c.water = s.water;
@@ -212,7 +225,7 @@ ChunkSpec SpecOf(const Scene& s) {
 
 bool Needed(const Scene& s) {
     const ChunkSpec c = SpecOf(s);
-    return c.knots || c.placeObjects || !c.objects.empty() || c.water.has_value();
+    return c.knots || c.teams || c.placeObjects || !c.objects.empty() || c.water.has_value();
 }
 
 std::string Chunk(const Scene& s) {
@@ -222,20 +235,204 @@ std::string Chunk(const Scene& s) {
 
 
 namespace {
+// "-- minefactory: activation=15 inactiveTurns=3 keepKnot=1 launchHeight=20 launchRadius=12 launchers=-300:900:40/...
+// throw=min:max:apex:pattern:avoidWater:scatter:targetShare[:volley:avoidRadius] targets=x:z/x:z avoid=x:z/x:z|x:z/x:z":
+// the set fields, in this order (launchers: x:y:z world units, one per launcher, separated by '/'; throw: every field,
+// the pattern by name, the volley and avoid radius only when either is set (older lines have the first seven); targets:
+// x:z world units, only with a throw; avoid: the corridor lines, points x:z world units separated by '/', lines by '|',
+// only with a throw).
+std::string FactoryTweakLine(const FactorySpec& f) {
+    std::string l(kFactoryTweak);
+    if (f.activation) l += " activation=" + std::to_string(*f.activation);
+    if (f.inactiveTurns) l += " inactiveTurns=" + std::to_string(*f.inactiveTurns);
+    if (f.keepKnot) l += " keepKnot=1";
+    if (f.launchHeight) l += " launchHeight=" + std::to_string(*f.launchHeight);
+    if (f.launchRadius) l += " launchRadius=" + std::to_string(*f.launchRadius);
+    for (size_t i = 0; i < f.launchers.size(); ++i) {
+        const auto& p = f.launchers[i];
+        l += (i ? "/" : " launchers=") + std::to_string(p[0]) + ":" + std::to_string(p[1]) + ":" + std::to_string(p[2]);
+    }
+    if (f.throwing) {
+        const ThrowSpec& t = *f.throwing;
+        l += " throw=" + std::to_string(t.minRange) + ":" + std::to_string(t.maxRange) + ":" + std::to_string(t.apex) + ":" +
+             ThrowPatternName(t.pattern) + ":" + (t.avoidWater ? "1" : "0") + ":" + std::to_string(t.scatter) + ":" + std::to_string(t.targetShare);
+        if (t.volley || t.avoidRadius) l += ":" + std::to_string(t.volley) + ":" + std::to_string(t.avoidRadius);
+        for (size_t i = 0; i < t.targets.size(); ++i) l += (i ? "/" : " targets=") + std::to_string(t.targets[i][0]) + ":" + std::to_string(t.targets[i][1]);
+        for (size_t i = 0; i < t.avoid.size(); ++i) {
+            l += i ? "|" : " avoid=";
+            for (size_t k = 0; k < t.avoid[i].size(); ++k) l += (k ? "/" : "") + std::to_string(t.avoid[i][k][0]) + ":" + std::to_string(t.avoid[i][k][1]);
+        }
+    }
+    return l + "\n";
+}
+
+// A signed whole number of at most kMaxLauncherCoord, taken off the front of v.
+bool TakeInt(std::string_view* v, int* out) {
+    const bool neg = !v->empty() && v->front() == '-';
+    if (neg) v->remove_prefix(1);
+    if (v->empty() || v->front() < '0' || v->front() > '9') return false;
+    int64_t n = 0;
+    while (!v->empty() && v->front() >= '0' && v->front() <= '9') {
+        n = n * 10 + (v->front() - '0');
+        if (n > kMaxLauncherCoord) return false;
+        v->remove_prefix(1);
+    }
+    *out = static_cast<int>(neg ? -n : n);
+    return true;
+}
+
+// "min:max:apex:pattern:avoidWater:scatter:targetShare[:volley:avoidRadius]"
+bool ParseThrow(std::string_view v, ThrowSpec* t) {
+    auto field = [&](int* out) {
+        if (!TakeInt(&v, out)) return false;
+        if (v.empty() || v.front() != ':') return false;
+        v.remove_prefix(1);
+        return true;
+    };
+    if (!field(&t->minRange) || !field(&t->maxRange) || !field(&t->apex)) return false;
+    const size_t colon = v.find(':');
+    if (colon == std::string_view::npos || !ParseThrowPattern(v.substr(0, colon), &t->pattern)) return false;
+    v.remove_prefix(colon + 1);
+    int water = 0;
+    if (!field(&water) || water < 0 || water > 1 || !field(&t->scatter) || !TakeInt(&v, &t->targetShare)) return false;
+    t->avoidWater = water == 1;
+    if (v.empty()) return true;
+    // the two later fields, together (a line of the first seven is an older project's)
+    if (v.front() != ':') return false;
+    v.remove_prefix(1);
+    if (!field(&t->volley) || !TakeInt(&v, &t->avoidRadius) || !v.empty()) return false;
+    if (t->volley < 0 || t->volley > kMaxVolley || t->avoidRadius < 0 || t->avoidRadius > kMaxAvoidRadius || (!t->volley && !t->avoidRadius)) return false;
+    return true;
+}
+
+// "x:z/x:z": 1-maxPoints points of signed whole world units.
+bool ParsePoints(std::string_view v, std::vector<std::array<int, 2>>* out, size_t maxPoints) {
+    out->clear();
+    while (true) {
+        std::array<int, 2> p{};
+        if (!TakeInt(&v, &p[0]) || v.empty() || v.front() != ':') return false;
+        v.remove_prefix(1);
+        if (!TakeInt(&v, &p[1])) return false;
+        out->push_back(p);
+        if (out->size() > maxPoints) return false;
+        if (v.empty()) return true;
+        if (v.front() != '/') return false;
+        v.remove_prefix(1);
+    }
+}
+bool ParseTargets(std::string_view v, std::vector<std::array<int, 2>>* out) { return ParsePoints(v, out, kMaxThrowTargets); }
+
+// "x:z/x:z|x:z/x:z": 1-kMaxAvoidLines lines of 2-kMaxAvoidPoints points.
+bool ParseAvoid(std::string_view v, std::vector<std::vector<std::array<int, 2>>>* out) {
+    out->clear();
+    while (true) {
+        const size_t bar = v.find('|');
+        std::vector<std::array<int, 2>> line;
+        if (!ParsePoints(v.substr(0, bar), &line, kMaxAvoidPoints) || line.size() < 2) return false;
+        out->push_back(std::move(line));
+        if (out->size() > kMaxAvoidLines) return false;
+        if (bar == std::string_view::npos) return true;
+        v.remove_prefix(bar + 1);
+    }
+}
+
+// "x:y:z/x:y:z": 1-kMaxLaunchers points of signed whole world units within kMaxLauncherCoord.
+bool ParseLaunchers(std::string_view v, std::vector<std::array<int, 3>>* out) {
+    out->clear();
+    while (true) {
+        std::array<int, 3> p{};
+        for (size_t k = 0; k < 3; ++k) {
+            const bool neg = !v.empty() && v.front() == '-';
+            if (neg) v.remove_prefix(1);
+            if (v.empty() || v.front() < '0' || v.front() > '9') return false;
+            int64_t n = 0;
+            while (!v.empty() && v.front() >= '0' && v.front() <= '9') {
+                n = n * 10 + (v.front() - '0');
+                if (n > kMaxLauncherCoord) return false;
+                v.remove_prefix(1);
+            }
+            p[k] = static_cast<int>(neg ? -n : n);
+            if (k < 2) {
+                if (v.empty() || v.front() != ':') return false;
+                v.remove_prefix(1);
+            }
+        }
+        out->push_back(p);
+        if (out->size() > kMaxLaunchers) return false;
+        if (v.empty()) return true;
+        if (v.front() != '/') return false;
+        v.remove_prefix(1);
+    }
+}
+
+// Reads the line FactoryTweakLine writes, if there is one; Upgrade's regeneration check refuses any other form.
+bool ParseFactoryTweak(std::string_view text, FactorySpec* f) {
+    const size_t at = text.find("\n" + std::string(kFactoryTweak));
+    if (at == std::string_view::npos) return true;
+    const size_t start = at + 1 + kFactoryTweak.size(), end = text.find('\n', start);
+    if (end == std::string_view::npos) return false;
+    std::string_view rest = text.substr(start, end - start);
+    while (!rest.empty()) {
+        if (rest.front() != ' ') return false;
+        rest.remove_prefix(1);
+        const size_t eq = rest.find('='), sp = rest.find(' ');
+        if (eq == std::string_view::npos || (sp != std::string_view::npos && sp < eq)) return false;
+        const std::string_view key = rest.substr(0, eq);
+        const std::string_view num = rest.substr(eq + 1, sp == std::string_view::npos ? std::string_view::npos : sp - eq - 1);
+        int v = 0;
+        if (key == "launchers") {
+            if (!f->launchers.empty() || !ParseLaunchers(num, &f->launchers)) return false;
+            rest = sp == std::string_view::npos ? std::string_view{} : rest.substr(sp);
+            continue;
+        }
+        if (key == "throw") {
+            ThrowSpec t;
+            if (f->throwing || !ParseThrow(num, &t)) return false;
+            f->throwing = t;
+            rest = sp == std::string_view::npos ? std::string_view{} : rest.substr(sp);
+            continue;
+        }
+        if (key == "targets") {
+            // after the throw it belongs to, once
+            if (!f->throwing || !f->throwing->targets.empty() || !ParseTargets(num, &f->throwing->targets)) return false;
+            rest = sp == std::string_view::npos ? std::string_view{} : rest.substr(sp);
+            continue;
+        }
+        if (key == "avoid") {
+            // after the throw it belongs to, once, and only with its radius
+            if (!f->throwing || !f->throwing->avoid.empty() || !f->throwing->avoidRadius || !ParseAvoid(num, &f->throwing->avoid)) return false;
+            rest = sp == std::string_view::npos ? std::string_view{} : rest.substr(sp);
+            continue;
+        }
+        if (!IntArg(num, &v) || v > 255) return false;
+        if (key == "activation") f->activation = v;
+        else if (key == "inactiveTurns") f->inactiveTurns = v;
+        else if (key == "keepKnot" && v == 1) f->keepKnot = true;
+        else if (key == "launchHeight" && v >= 1) f->launchHeight = v;
+        else if (key == "launchRadius") f->launchRadius = v;
+        else return false;
+        rest = sp == std::string_view::npos ? std::string_view{} : rest.substr(sp);
+    }
+    return true;
+}
+
 std::string Emit(std::string_view stem, const ChunkSpec& c, bool deferred) {
-    if (!c.knots && !c.placeObjects && c.objects.empty() && !c.water) return {};
+    if (!c.knots && !c.teams && !c.placeObjects && c.objects.empty() && !c.water) return {};
+    if (c.knots && c.teams) return {};
     bool crates = false, triggers = false;
     int factories = 0;
+    const FactorySpec* factory = nullptr;
     for (auto& o : c.objects) {
         if (!ValidateObject(o, "object", nullptr)) return {};
         crates |= o.type == ObjectType::Crate;
         triggers |= o.type == ObjectType::Trigger;
-        factories += o.type == ObjectType::MineFactory;
+        if (o.type == ObjectType::MineFactory) ++factories, factory = &o.factory;
     }
     if (factories > 1) return {};
     std::string out = Header(stem);
+    if (factory && (factory->Tweaks() || factory->keepKnot || factory->Launch())) out += FactoryTweakLine(*factory);
     if (c.water) out += std::string(kWater) + Num(*c.water) + ")\n";
-    if (c.knots || c.placeObjects || !c.objects.empty()) {
+    if (c.knots || c.teams || c.placeObjects || !c.objects.empty()) {
         if (crates) out += kCrateFn;
         if (triggers) out += kTriggerFn;
         out += deferred ? kDeferredOpen : kLegacyOpen;
@@ -248,8 +445,23 @@ std::string Emit(std::string_view stem, const ChunkSpec& c, bool deferred) {
             out += in + "    CloseContainer(lock)\n";
             out += in + "end\n";
         }
-        if (factories)
-            for (auto l : kFactoryLines) out += in + std::string(l);
+        if (c.teams) {
+            out += in + "local placed = {0, 0, 0, 0}\n";
+            out += in + "for i = 0, 15 do\n";
+            out += in + "    local lock, worm = EditContainer(lib_GetWormContainerName(i))\n";
+            out += in + "    " + std::string(kTeamTest);
+            out += in + "        local p = placed[worm.TeamIndex + 1]\n";
+            out += in + "        placed[worm.TeamIndex + 1] = p + 1\n";
+            out += in + "        " + std::string(kTeamLine);
+            out += in + "    end\n";
+            out += in + "    CloseContainer(lock)\n";
+            out += in + "end\n";
+        }
+        if (factory) {
+            out += in + std::string(kFactoryLines[0]) + in + std::string(kFactoryLines[1]);
+            if (!factory->schemeMines) out += in + std::string(kNoMinesLine);
+            out += in + std::string(kFactoryLines[2]);
+        }
         if (factories || c.placeObjects) out += in + std::string(kPlaceLine);
         for (auto& o : c.objects)
             if (o.type != ObjectType::MineFactory) out += in + ObjectLine(o);
@@ -285,11 +497,14 @@ bool Parse(std::string_view stem, std::string_view text, ChunkSpec* out) {
     ChunkSpec c;
     c.water = WaterIn(text);
     c.knots = text.find(kKnotLine) != std::string_view::npos;
+    c.teams = text.find(kTeamLine) != std::string_view::npos;
     c.placeObjects = text.find(kPlaceLine) != std::string_view::npos;
     if (text.find(kFactoryLines[1]) != std::string_view::npos) {
         ObjectSpec f;
         f.type = ObjectType::MineFactory;
         f.knot = kFactoryKnot;
+        f.factory.schemeMines = text.find(kNoMinesLine) == std::string_view::npos;
+        if (!ParseFactoryTweak(text, &f.factory)) return false;
         c.objects.push_back(std::move(f));
     }
     size_t i = 0;

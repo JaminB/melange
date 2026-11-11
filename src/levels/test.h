@@ -1,4 +1,5 @@
 #pragma once
+#include <array>
 #include <cstdint>
 #include <string>
 
@@ -64,4 +65,15 @@ const char* Take(const char* frontendKey);
 void OnFrame(bool atFrontend);
 bool Pending(const std::string& key);
 uint32_t AttractRefusals();
+// The time of day the last Test that started asked for, and whether it was applied: the frontend's value cleared so the
+// Test build's Databank.TimeOfDay loads (applied), or kept (asked "" = the frontend's choice, or why it fell back).
+struct TodApplied {
+    std::string key, asked, why;   // asked: "", "DAY", "EVENING" or "NIGHT"
+    bool applied = false;
+};
+TodApplied LastTod();
+// Worms per team for the Test of `key` (0: the Quick Game's own count, four): written into GM.GameInitData's
+// T1..T4_NumOfWorms when the override is taken and again when the match VM is created, before the level's Initialise
+// sets the worms up (lib_SetupMultiplayerWormsAndTeams). An empty key clears it.
+void SetTeamWorms(const std::string& key, const std::array<uint8_t, 4>& worms);
 }  // namespace melange::levels::test
