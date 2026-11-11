@@ -122,8 +122,17 @@ test("bands paint by height above each shape's base, through a rotation too", as
     assert.equal(c.get("500,30,500"), 8);
     assert.ok(!has(c, 500, 31, 500) && !has(c, 500, 21, 500));
   }
+  // fromY / toY (the call's bands' spelling) work on a shape's bands too
+  {
+    const { store, s } = session();
+    await call(s, { at: [500, 20, 500], material: 1, shapes: [{ kind: "cylinder", at: [0, 2, 0], radius: 5, height: 9, bands: [{ fromY: 0, toY: 3, material: 7 }, { fromY: 6, material: 8 }] }] });
+    const c = blockCells(store);
+    assert.deepEqual([c.get("500,24,500"), c.get("500,25,500"), c.get("500,28,500")], [7, 1, 8]);
+  }
   const { s } = session();
   await assert.rejects(call(s, { at: [0, 0, 0], shapes: [{ kind: "box", size: [4, 4], height: 4 }, { kind: "box", carve: true, size: [2, 2], height: 2, bands: [{ material: 2 }] }] }), /bands paint a fill/);
+  await assert.rejects(call(s, { at: [0, 0, 0], shapes: [{ kind: "box", size: [4, 4], height: 4, bands: [{ from: 1, fromY: 1, material: 2 }] }] }), /not both/);
+  await assert.rejects(call(s, { at: [0, 0, 0], shapes: [{ kind: "box", size: [4, 4], height: 4, bands: [{ from: 3, to: 1, material: 2 }] }] }), /from must be under to/);
 });
 
 test("cone: a spire narrows to its tip, a frustum keeps its top radius", async () => {

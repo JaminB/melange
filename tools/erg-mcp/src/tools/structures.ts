@@ -324,7 +324,7 @@ function gateLaneFor(a: { gateLane?: boolean | number | { width?: number; mode?:
 // ------------------------------------------------------------------ build_compound
 
 const COMPOUND_KINDS = ["box", "cylinder", "cone", "dome", "tiers"] as const;
-interface CompoundEntry { kind: (typeof COMPOUND_KINDS)[number]; carve?: boolean; at?: Vec3; material?: number; part?: number; bands?: { from?: number; to?: number; material: number }[]; trim?: TrimIn;
+interface CompoundEntry { kind: (typeof COMPOUND_KINDS)[number]; carve?: boolean; at?: Vec3; material?: number; part?: number; bands?: { from?: number; to?: number; fromY?: number; toY?: number; material: number }[]; trim?: TrimIn;
   size?: [number, number]; height?: number; radius?: number; topRadius?: number; profile?: "round" | "onion"; steps?: number; riser?: number; ledge?: number; round?: boolean; }
 
 const COMPOUND_FIELDS: Record<string, readonly string[]> = {
@@ -348,7 +348,14 @@ function compoundSpecs(list: CompoundEntry[], k: number, mat: number, dflt: { ba
     if (!at.every(Number.isFinite)) throw new ToolError(`shapes[${i}]: at must be finite numbers`);
     if (e.carve && e.bands?.length) throw new ToolError(`shapes[${i}]: bands paint a fill's material: a carve has none`);
     const c: CompoundSpec = { kind: e.kind, carve: !!e.carve, at, material: e.material ?? mat, ...(e.part !== undefined ? { part: e.part } : {}) };
-    if (e.bands?.length) c.bands = e.bands.map((b) => ({ from: (b.from ?? 0) * k, to: b.to === undefined ? Infinity : b.to * k, material: b.material }));
+    // a shape's band takes from/to, or fromY/toY as the call's bands spell them
+    if (e.bands?.length) c.bands = e.bands.map((b, j) => {
+      if ((b.from !== undefined && b.fromY !== undefined) || (b.to !== undefined && b.toY !== undefined))
+        throw new ToolError(`shapes[${i}].bands[${j}]: give from or fromY (and to or toY), not both`);
+      const from = b.from ?? b.fromY, to = b.to ?? b.toY;
+      if (from !== undefined && to !== undefined && !(from < to)) throw new ToolError(`shapes[${i}].bands[${j}]: from must be under to`);
+      return { from: (from ?? 0) * k, to: to === undefined ? Infinity : to * k, material: b.material };
+    });
     else if (dStyle?.bands && !e.carve) c.bands = dStyle.bands;
     // the call's bands and trim are for every fill; a shape's own trim replaces the call's
     if (e.trim !== undefined && e.carve) throw new ToolError(`shapes[${i}]: trim paints a fill's material: a carve has none`);
@@ -664,6 +671,7 @@ export const tools: Tool[] = [
               bands: { type: "array", minItems: 1, maxItems: 16, description: "Material by height above this shape's base (a fill only): the first band holding a cell's height wins, the shape's material elsewhere.",
                 items: { type: "object", additionalProperties: false, required: ["material"], properties: {
                   from: { type: "number", description: "Height the band starts at. Default 0." }, to: { type: "number", description: "Height it ends at (exclusive). Default: the top." },
+                  fromY: { type: "number", description: "Another name for from (the call's bands spell it so)." }, toY: { type: "number", description: "Another name for to." },
                   material: { type: "integer", minimum: 0, maximum: 63 } } } },
               trim: { ...trimSchema("this shape", false), description: "This shape's own trim (a fill only), instead of the call's: top (the topmost layer of the shape, topDepth thick) and course ({y, material, height}: a stripe at height y above the shape's base). Unset: the call's trim." },
               size: vec2("box and tiers: the footprint [x, z] (tiers: of the base step)."),
