@@ -154,6 +154,42 @@ void TestLifetime() {
     Expect(lg::Clear(st, nullptr) && !st.active, "a null owner clears any");
     Expect(lg::Set(st, &a, s, 3, 300, 7) == lg::SetResult::Ok, "free again after a clear");
 }
+
+void TestLift() {
+    float e[3], t[3];
+    const float eye[3] = {488, 144, 526}, target[3] = {528, -10, -16};
+    Expect(!lg::Lift(eye, target, NAN, NAN, 30, e, t), "no land over the eye: not lifted");
+    Expect(!lg::Lift(eye, target, 140, 1200, 30, e, t), "land under the eye: not lifted");
+    Expect(!lg::Lift(eye, target, 145, 1200, 30, e, t), "a grazing eye (within the slack) is left alone");
+    // the Fatkins hold on Caldera: eye inside the cone, target under the summit
+    Expect(lg::Lift(eye, target, 1216, 1320, 30, e, t), "an eye under the land is lifted");
+    Expect(Near(t[1], 1320) && Near(t[0], 528) && Near(t[2], -16), "the target moves up to the land's top over it");
+    Expect(Near(e[1], 144 + 1330) && Near(e[0], 488) && Near(e[2], 526), "the eye keeps its height over the target");
+    // a target over the land: only the eye moves, to the clearance
+    Expect(lg::Lift(eye, target, 1216, NAN, 30, e, t) && Near(e[1], 1246) && Near(t[1], -10), "no land at the target: eye to the clearance");
+    const float tgtUp[3] = {528, 1500, -16};
+    Expect(lg::Lift(eye, tgtUp, 1216, 1320, 30, e, t) && Near(e[1], 1246) && Near(t[1], 1500), "a target over its land stays");
+    Expect(!lg::Buried(100, NAN) && !lg::Buried(100, 101) && lg::Buried(100, 103), "buried: NaN, slack, under");
+    // Caldera: the Fatkins hold inside the cone (1072 under), a turn camera under Ashgate's roofed court (167 under)
+    Expect(lg::InLand(144, 1216, false, 300), "deep in the hollow cone: moved");
+    Expect(!lg::InLand(133, 300, false, 300), "under a roof, in the open: left alone");
+    Expect(lg::InLand(133, 300, true, 300), "inside solid land: moved however shallow");
+    Expect(!lg::InLand(133, NAN, true, 300) && !lg::InLand(299, 300, true, 300), "no land over it, or grazing: left alone");
+}
+
+void TestPullIn() {
+    // a turn camera inside a castle wall behind the worm: the wall's face 300 units from the worm on a 500-unit line
+    const float target[3] = {1488, 95, 933}, eye[3] = {1488, 395, 1333};  // 500 away (300 up, 400 along z)
+    float e[3] = {0, 0, 0};
+    Expect(lg::PullIn(eye, target, 0.6f, 30, e), "pulled in before the face");
+    const float d = std::sqrt((e[0] - target[0]) * (e[0] - target[0]) + (e[1] - target[1]) * (e[1] - target[1]) + (e[2] - target[2]) * (e[2] - target[2]));
+    Expect(Near(d, 270, 1e-2f), "clearance short of the hit (300 - 30)");
+    Expect(Near(e[1], 95 + 300 * 0.54f, 1e-2f) && Near(e[2], 933 + 400 * 0.54f, 1e-2f), "on the same line, same view direction");
+    Expect(!lg::PullIn(eye, target, 0.08f, 30, e), "land right behind the target (40 - 30 < 100): refused");
+    Expect(!lg::PullIn(eye, target, 0.25f, 30, e), "a pulled-in eye nearer than 100 (125 - 30): refused");
+    Expect(!lg::PullIn(eye, target, NAN, 30, e) && !lg::PullIn(eye, target, 1.5f, 30, e), "bad hit times are refused");
+    Expect(!lg::PullIn(target, target, 0.5f, 30, e), "eye on the target: refused");
+}
 }  // namespace
 
 int main() {
@@ -162,6 +198,8 @@ int main() {
     TestFov();
     TestValidate();
     TestLifetime();
+    TestLift();
+    TestPullIn();
     printf("camoverride_selftest: %d passed, %d failed\n", g_pass, g_fail);
     return g_fail ? 1 : 0;
 }

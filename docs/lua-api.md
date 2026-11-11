@@ -406,7 +406,7 @@ end)
 
 | Name | Description |
 |---|---|
-| `wum.render.camera()` | `{pos, fwd, up, near, far, fov, overridden}` of the main camera as it is drawn (with a camera override, the override's), or `nil`. `fov` is the vertical field of view in degrees; `overridden` is `true` while a camera override is set. |
+| `wum.render.camera()` | `{pos, fwd, up, near, far, fov, overridden}` of the main camera as it is drawn (with a camera override, the override's; on a pack or Test level, after `[LevelCamera]` moved it out of the land), or `nil`. `fov` is the vertical field of view in degrees; `overridden` is `true` while a camera override is set. |
 | `wum.render.gameCamera()` | The same for the game's own camera, as it would be drawn without an override (to blend back into it), or `nil`. |
 | `wum.render.cameraOverride(spec)` | Draws the frame from a camera of the mod's choosing; `nil` clears it. See [Camera override](#camera-override). |
 | `wum.render.worldToScreen(pos)` | `x, y, depth` in window pixels, or `nil` behind the camera. |

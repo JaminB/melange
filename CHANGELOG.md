@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Erg maps: the drawn camera no longer rests inside the land. On Caldera a Fatkins payload that drowned in the sea
+  inside the hollow volcano held the game's camera inside the cone for about 8 s. New module `[LevelCamera]`: on pack
+  and Test levels, when the game's eye is inside solid land or deep under the land's top, the frame is drawn from a
+  camera moved out of it (in along its line of sight, or lifted over the land); roofed courts are left alone.
+  Render-only (the game's camera, the match and Wormsign are untouched); nothing changes on the game's own maps.
+  `Clearance` and `MinDepth` in the ini; test verb `camera.lift`. See docs/erg.md.
 - Erg maps: ground no longer lets bombs, mines and drops through where a base frame was removed. The engine's land
   broadphase writes a set bit for every tree leaf a sweep passes, and frames that Erg's `remove_base_frames` empties
   stay in that tree as leaves with no land frame, so the frame mask went out of step and the sweep tested the wrong

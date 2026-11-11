@@ -386,6 +386,22 @@ rising sea with the water 0.5-0.95 map units over their feet, a worm knocked dow
 ground the sea then covered, the factory's blast when the sea reached it and the 35-damage blasts of the drowned
 worms.
 
+**The camera inside the land** (Melange 0.14+): the game's cameras put their eye where its own maps leave room, and a
+map with a hollow mountain can put it inside one. On Caldera, before its crater floor got a slab, a Fatkins payload that
+bored through the volcano's shell drowned in the sea inside it, and the game's drown camera then held the eye inside
+the cone, looking at that sea, for about 8 seconds; the same cameras can also pass through a mountain for a frame or two
+between turns. Melange's `LevelCamera` module (on by default, `[LevelCamera] Enabled=0` turns it off) watches the drawn
+camera on pack and Test levels: when the eye is inside solid land, or more than `MinDepth` (default 300 world units,
+15 map units) under the land's top, it draws that frame from a camera moved out of the land. A camera looking at
+something in the open moves in along its own line of sight to `Clearance` (default 30 world units) short of the land,
+so it keeps the same view from closer; otherwise it is lifted over the land, by as much as its target is under it. Land
+over the eye alone is not enough: Caldera's castles have roofed courts where a worm's turn camera sits under the roof
+and sees the worm well, and that view is left as it is. It changes the picture only: the game's own camera (which
+aiming, the turn camera's next move and Wormsign use) is untouched, so a match plays the same with it on or off and
+players in one match may differ. It does nothing on the game's own maps. Cost: one land sweep a frame (a few
+microseconds), up to five while the eye is under land; frame time on Caldera was the same with it on, lifting, and off.
+The test verb `camera.lift probe x y z tx ty tz [frames] [raw]` draws what it does with a given camera pose.
+
 ## Level scripts
 
 The **Script** tab holds the map's own Lua, saved in the project as `script.lua`. It runs in the match's sandbox,
