@@ -195,10 +195,10 @@ export function drawTopdown(f: Field, scale: number, opts: { water: number | nul
   return { img, px: (x: number) => MARGIN + Math.round(((x - f.x0) / f.step) * scale), pz: (z: number) => MARGIN + Math.round(((z - f.z0) / f.step) * scale) };
 }
 
-type TopdownArgs = RegionArgs & { step?: number; scale?: number; shading?: "both" | "height" | "material"; palette?: PaletteMode };
+export type TopdownArgs = RegionArgs & { step?: number; scale?: number; shading?: "both" | "height" | "material"; palette?: PaletteMode };
 
 /** render_topdown's picture of region r without its markers: the ground, the water and the axis ticks. */
-async function topdownView(s: Session, gs: Grid[], r: Region, a: TopdownArgs) {
+export async function topdownView(s: Session, gs: Grid[], r: Region, a: TopdownArgs) {
   const store = s.store;
   const longest = Math.max(r.x1 - r.x0, r.z1 - r.z0);
   const step = a.step === undefined ? (longest > 400 ? Math.ceil(longest / 400) : 1) : inMap(a.step, a.units);
