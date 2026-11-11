@@ -508,10 +508,12 @@ foreach(part media peer input draw audio game spotify)
     include(${CMAKE_SOURCE_DIR}/cmake/holo/sandbox_${part}.cmake)
 endforeach()
 # Stock Lua 5.0.1 with float numbers, a stand-in for the engine's match VM in sim_selftest, and Melange.exe's level-script
-# syntax check (never linked into the plugin).
+# syntax check (never linked into the plugin). CMake tries the URLs in order; the second is lua.org's own mirror at PUC-Rio,
+# for when lua.org is down. The hash pins the same file either way.
 
 FetchContent_Declare(lua50
     URL https://www.lua.org/ftp/lua-5.0.1.tar.gz
+        https://www.tecgraf.puc-rio.br/lua/ftp/lua-5.0.1.tar.gz
     URL_HASH SHA256=7a09d0e70dcaff7feae97cf9c154da05b1e5b92eaea2df7150b54bcaf8f3b9c6
     DOWNLOAD_EXTRACT_TIMESTAMP TRUE
     SOURCE_SUBDIR not-a-cmake-project)
