@@ -236,7 +236,12 @@ Arguments, all lengths and heights in `units` (`map` default, or `world`):
     `lerp(a, b, t)`, `step(edge, v)`, `smoothstep(e0, e1, v)`, `noise2(x, z, seed)` (Perlin noise, about -1 to 1) and
     `fbm(x, z, seed, octaves)`. Division by 0 gives 0. For example a volcano 44 high with a rough skin:
     `max(0, 44*exp(-(r/26)^2) + 3*fbm(x/10, z/10, 7, 3))`.
-    Also `hypot(a, b[, c])`, `sign`, `mod(a, b)`, `fract`, `select(c, a, b)` (a where c > 0, else b). Bindings before
+    Also the terrain shapers `dunes(x, z, dirDeg, wavelength, height[, asym[, seed]])` (transverse dunes, 0 to `height`: crests
+    across the wind direction `dirDeg` in degrees from +x towards +z, one per `wavelength`; `asym` 0-1, default 0.5, is 0 a
+    symmetric cosine and 1 a long windward ramp of 85% of the wavelength ending in a slip face of 15%; the crest lines
+    wander by noise and the crest height varies 80-100% along them, both from `seed`) and `ridged(x, z, scale[, octaves[,
+    seed]])` (ridged multifractal noise, 0 to 1, sharp crest lines and broad hollows; `scale` is the feature size, `octaves`
+    1-8, default 4). A dune field: `3 + dunes(x, z, 20, 40, 6, 0.6, 3) + 1.5*ridged(x, z, 14, 3, 5)`. `hypot(a, b[, c])`, `sign`, `mod(a, b)`, `fract`, `select(c, a, b)` (a where c > 0, else b). Bindings before
     the expression, each ending in `;`: `let name = expr;` (computed once per column) and `fn name(a, b) = expr;` (a
     function of its parameters, the column's variables and the lets), e.g.
     `let cone = 44*exp(-(r/26)^2); fn bump(cx, cz, h) = h*exp(-((x-cx)^2+(z-cz)^2)/50); cone + bump(30, 0, 6)`. A name
@@ -385,6 +390,15 @@ ash) on a steep face shows as vertical streaks. `steepMaterial` gives every skin
 its four corners) is at least `minSlope` that material instead, whatever the `materials` rules say: cliffs in rock.
 `feather` (degrees) dithers the edge over minSlope +- feather / 2 (a 4 x 4 ordered pattern). The plan's
 `steepMaterial.columns` counts them. `sculpt_cone` takes it too.
+
+**Crests and hollows.** `crestMaterial` and `troughMaterial` ({`material`, `minCurvature`, `radius`, `feather`}) paint the skin by
+local curvature, for dunes: a column whose surface bulges up (the Laplacian of the skin's heights, measured against its four
+neighbours `radius` map units away, default one voxel, is under -`minCurvature`) takes the crest material in every skin voxel,
+one that dips (over +`minCurvature`) the trough material. `minCurvature` is per map unit (default 0.01; a dune 6 high over a
+40-unit wavelength reads about 0.07 at its crest); `feather` (the same unit) dithers the edge. `steepMaterial` wins over both
+and a crest over a trough. Off unless given: a drape without them is unchanged. The plan's `curveMaterials` counts the
+columns of each. Use them with the `dunes` expression: `dunes(...)` for the surface, then `crestMaterial: {material: 4,
+minCurvature: 0.03}` for the pale crest line.
 
 What the skirt modes cost, from a dry run on Multi.DinerMight (base terrain wiped) of a cone 30 high, `30*exp(-(r/30)^2)` over 120 x 120 map units at `voxelSize` 2.5 with `relax: 2` (2026-11-08; scale with the field): a hollow skin 3640 cells in 4 blocks; with its core from the floor 13 891 (8 blocks); `skirtTo: -6` (the hollow skin over ground from -6) 21 629; and with `skirtTop: 4` (only under the shore) 12 485. The skirt goes down to `skirtTo` everywhere it is filled, so it costs more than a core from a floor above that; `skirtTop` keeps it to the shore. Ask `estimateSkirts` for the field at hand.
 

@@ -20,6 +20,8 @@ export interface DrapeArgs extends FieldArgs {
   skirtTo?: number;            // level y (units): the core reaches down to here instead of the floor (a hollow skin gets one)
   skirtTop?: number;           // level y (units): only columns whose skin's lowest corner is at or under it get the core
   steepMaterial?: SteepMaterial;   // cliffs: a skin column this steep takes this material, whatever the rules say
+  crestMaterial?: CurveMaterial;   // dune crests: a skin column curving up (a ridge) this much takes this material
+  troughMaterial?: CurveMaterial;  // the hollows between: a column curving down this much takes this one
   tileOrigin?: [number, number];   // x, z (units): a corner of the skin's 31 x 31 tiling falls here (snapped to the lattice)
   cornersOff?: CornersOff;         // the tiling shifted so the corners where four skin blocks meet keep off these paths
   refine?: Refine;                 // a finer skin along the trails (or in areas), the coarse one cut out there
@@ -48,6 +50,37 @@ export interface CornersOff { paths: number[][][]; distance?: number; }
  * is at least minSlope (default 50 degrees) takes `material` in every skin voxel instead, and with feather (degrees)
  * the edge is a 4 x 4 ordered dither over minSlope +- feather / 2, not a line. */
 export interface SteepMaterial { material: number; minSlope?: number; feather?: number; }
+
+/** Materials by local curvature (heights from the skin's corners): a column's centre height against the mean of its
+ * four neighbours `radius` map units away (default one voxel) gives the Laplacian, 4 * (mean - centre) * s / (n * s)^2 per
+ * map unit for n columns. A crest (the surface bulging up: Laplacian under -minCurvature) takes crestMaterial, a trough
+ * (over +minCurvature) troughMaterial, in every skin voxel; steepMaterial wins over both and a crest over a trough.
+ * minCurvature is per map unit (default 0.01: a dune of 6 map units over a 40-unit wavelength reads about 0.07 at its
+ * crest). feather (same unit) dithers the edge over minCurvature +- feather / 2 as steepMaterial's does. */
+export interface CurveMaterial { material: number; minCurvature?: number; radius?: number; feather?: number; }
+
+interface Curve { H: ArrayLike<number>; W: number; nx: number; nz: number; s: number; crest?: CurveMaterial; trough?: CurveMaterial; }
+
+/** The column's Laplacian (1 / map unit) at a ring of n columns, heights from the corner lattice. */
+export function columnCurvature(c: { H: ArrayLike<number>; W: number; nx: number; nz: number; s: number }, i: number, k: number, radius?: number): number {
+  const n = Math.max(1, Math.round((radius ?? c.s) / c.s));
+  const at = (a: number, b: number) => {
+    a = Math.min(Math.max(a, 0), c.nx - 1); b = Math.min(Math.max(b, 0), c.nz - 1);
+    return (c.H[b * c.W + a] + c.H[b * c.W + a + 1] + c.H[(b + 1) * c.W + a] + c.H[(b + 1) * c.W + a + 1]) / 4;
+  };
+  const m = (at(i - n, k) + at(i + n, k) + at(i, k - n) + at(i, k + n)) / 4;
+  return (4 * (m - at(i, k)) * c.s) / ((n * c.s) ** 2);
+}
+
+/** The curvature rule a column falls under (crest first), or undefined. */
+function curveRule(c: Curve, i: number, k: number): "crest" | "trough" | undefined {
+  for (const [r, sign, name] of [[c.crest, -1, "crest"], [c.trough, 1, "trough"]] as const) {
+    if (!r) continue;
+    const min = r.minCurvature ?? 0.01, fe = r.feather ?? 0, cv = sign * columnCurvature(c, i, k, r.radius);
+    if (fe <= 0 ? cv >= min : cv >= min - fe / 2 + (fe * (BAYER[(k % 4) * 4 + (i % 4)] + 0.5)) / 16) return name;
+  }
+  return undefined;
+}
 
 // a 4 x 4 ordered (Bayer) pattern, 0..15
 const BAYER = [0, 8, 2, 10, 12, 4, 14, 6, 3, 11, 1, 9, 15, 7, 13, 5];
@@ -166,7 +199,7 @@ function tiles(f: Field, H: Float32Array, T: number, ox = 0, oz = 0): Tile[] {
   return out;
 }
 
-function skinWords(f: Field, t: Tile, T: number, steep?: { H: ArrayLike<number>; W: number; m: SteepMaterial }): Uint32Array {
+function skinWords(f: Field, t: Tile, T: number, steep?: { H: ArrayLike<number>; W: number; m: SteepMaterial }, curve?: Curve): Uint32Array {
   const X = t.x1 - t.x0, Z = t.z1 - t.z0, w = new Uint32Array(X * T * Z);
   for (let z = 0; z < Z; z++)
     for (let x = 0; x < X; x++) {
@@ -174,6 +207,12 @@ function skinWords(f: Field, t: Tile, T: number, steep?: { H: ArrayLike<number>;
       if (!live(f, c)) continue;
       if (steep && isSteep(steep, t.x0 + x, t.z0 + z)) {
         const word = filled(steep.m.material);
+        for (let y = 0; y < T; y++) w[(z * X + x) * T + y] = word;
+        continue;
+      }
+      const rule = curve && curveRule(curve, t.x0 + x, t.z0 + z);
+      if (rule) {
+        const word = filled(curve![rule]!.material);
         for (let y = 0; y < T; y++) w[(z * X + x) * T + y] = word;
         continue;
       }
@@ -195,7 +234,7 @@ function isSteep(st: { H: ArrayLike<number>; W: number; m: SteepMaterial }, i: n
   return sl >= min - fe / 2 + (fe * (BAYER[(k % 4) * 4 + (i % 4)] + 0.5)) / 16;
 }
 
-export interface DrapePlan { field: Field; T: number; tiles: Tile[]; core: Plan | null; report: Record<string, unknown>; steep?: { H: ArrayLike<number>; W: number; m: SteepMaterial };
+export interface DrapePlan { field: Field; T: number; tiles: Tile[]; core: Plan | null; report: Record<string, unknown>; steep?: { H: ArrayLike<number>; W: number; m: SteepMaterial }; curve?: Curve;
   parts?: DrapePlan[];   // with refine: the coarse skin (cut out over the zone) and the fine one, applied together
 }
 
@@ -266,6 +305,12 @@ function planDrapeOne(store: EditorStore, a: DrapeArgs): DrapePlan {
   const H = cornerHeights(f), W = f.nx + 1;
   const sm = a.steepMaterial;
   if (sm && (!Number.isInteger(sm.material) || sm.material < 0 || sm.material > 63)) throw new ToolError("steepMaterial.material is a material index 0-63");
+  for (const [r, what] of [[a.crestMaterial, "crestMaterial"], [a.troughMaterial, "troughMaterial"]] as const) {
+    if (!r) continue;
+    if (!Number.isInteger(r.material) || r.material < 0 || r.material > 63) throw new ToolError(`${what}.material is a material index 0-63`);
+    for (const [v, n] of [[r.minCurvature, "minCurvature"], [r.radius, "radius"], [r.feather, "feather"]] as const)
+      if (v !== undefined && !(Number.isFinite(v) && v >= 0 && (n !== "radius" || v > 0))) throw new ToolError(`${what}.${n} is a ${n === "radius" ? "positive" : "non-negative"} number`);
+  }
   // the tiling's origin: tileOrigin's lattice column, or the shift that keeps the meeting corners off cornersOff's paths
   if (a.tileOrigin && a.cornersOff) throw new ToolError("tileOrigin and cornersOff both place the tiling: give one");
   const ku = a.units === "world" ? 1 / WORLD_PER_MAP : 1;
@@ -346,7 +391,19 @@ function planDrapeOne(store: EditorStore, a: DrapeArgs): DrapePlan {
   if (steep) for (const t of ts) for (let k = t.z0; k < t.z1; k++) for (let i = t.x0; i < t.x1; i++) if (live(f, k * f.nx + i) && isSteep(steep, i, k)) steepCols++;
   if (steep) Object.assign(report, { steepMaterial: { material: sm!.material, minSlope: sm!.minSlope ?? 50, ...(sm!.feather ? { feather: sm!.feather } : {}), columns: steepCols,
     note: "skin columns at least minSlope steep (from their corners) take this material in every skin voxel, so a cliff shows rock instead of a top texture stretched up the face" } });
-  return { field: f, T, tiles: ts, core, report, steep };
+  const curve: Curve | undefined = a.crestMaterial || a.troughMaterial ? { H, W, nx: f.nx, nz: f.nz, s: f.s, crest: a.crestMaterial, trough: a.troughMaterial } : undefined;
+  if (curve) {
+    const count = { crest: 0, trough: 0 };
+    for (const t of ts) for (let k = t.z0; k < t.z1; k++) for (let i = t.x0; i < t.x1; i++) {
+      if (!live(f, k * f.nx + i) || (steep && isSteep(steep, i, k))) continue;
+      const r = curveRule(curve, i, k);
+      if (r) count[r]++;
+    }
+    const part = (r: CurveMaterial | undefined, n: number) => r ? { material: r.material, minCurvature: r.minCurvature ?? 0.01, radius: num(r.radius ?? f.s), ...(r.feather ? { feather: r.feather } : {}), columns: n } : undefined;
+    Object.assign(report, { curveMaterials: { ...(curve.crest ? { crest: part(curve.crest, count.crest) } : {}), ...(curve.trough ? { trough: part(curve.trough, count.trough) } : {}),
+      note: "skin columns whose surface curves up (crest) or down (trough) by at least minCurvature per map unit take that material in every skin voxel, steepMaterial first" } });
+  }
+  return { field: f, T, tiles: ts, core, report, steep, curve };
 }
 
 /** The skin's AddFrame commands for one plan, the block ids and names in `taken` extended. */
@@ -363,7 +420,7 @@ function skinCommands(store: EditorStore, p: DrapePlan, taken: { ids: Set<number
     const frame: Frame = { id: tmp, new: true, parent: f.sceneId!, name,
       pos: [(f.i0 + t.x0 + size[0] / 2) * s, (t.y0 + size[1] / 2) * s, (f.j0 + t.z0 + size[2] / 2) * s],
       rot: [0, 0, 0], scale: [s, s, s], size, voxels: store.freshRef(), heightMap: null, folder: false, corners: t.corners };
-    cmds.push(new AddFrame(store.voxels, frame, skinWords(f, t, p.T, p.steep)));
+    cmds.push(new AddFrame(store.voxels, frame, skinWords(f, t, p.T, p.steep, p.curve)));
     made.push({ id: tmp, name, skin: true });
   }
   return cmds;

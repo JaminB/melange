@@ -10,6 +10,11 @@ import { schema as field } from "./heightfield";
 // fitBudget is heightfield_region's: a drape packs its skin and core itself
 const { fitBudget: _fit, ...fieldProps } = field.properties!;
 
+/** crestMaterial / troughMaterial: a material by local curvature of the skin (steepMaterial wins over both). */
+const curve = (what: string, rule: string): Schema => ({ type: "object", additionalProperties: false, required: ["material"],
+  description: `${what} by curvature: ${rule}, whatever the materials rules give it (steepMaterial still wins, and a crest over a trough). A dune's sand then reads lighter on the crest and darker in the hollow. minCurvature is per map unit (default 0.01; a dune 6 high over a 40-unit wavelength reads about 0.07 at its crest); radius (map units, default one voxel) is how far the neighbours are sampled, so a coarse skin or noisy field wants a larger one; feather (the same unit as minCurvature) dithers the edge. The plan's curveMaterials gives the column counts.`,
+  properties: { material: { type: "integer", minimum: 0, maximum: 63 }, minCurvature: { type: "number", minimum: 0 }, radius: { type: "number", minimum: 0.01 }, feather: { type: "number", minimum: 0 } } });
+
 const schema: Schema & { type: "object" } = {
   ...field,
   properties: {
@@ -20,6 +25,8 @@ const schema: Schema & { type: "object" } = {
     skirtTop: { type: "number", description: "With skirtTo: fill only under the columns whose skin dips to this level y (units) or lower (the skin's lowest corner less its thickness): the shore that the sea reaches, at a fraction of the cells. Default every column." },
     steepMaterial: { type: "object", additionalProperties: false, required: ["material"], description: "Cliffs in rock: a skin column whose slope (from its four corners) is at least minSlope takes `material` in every skin voxel, whatever the materials rules give it. A sheared skin voxel's texture is stretched up its face, so a top material on a steep face shows vertical streaks; a rock material reads as a cliff. feather (degrees) dithers the edge over minSlope +- feather / 2.",
       properties: { material: { type: "integer", minimum: 0, maximum: 63 }, minSlope: { type: "number", minimum: 1, maximum: 89, description: "Degrees (default 50)." }, feather: { type: "number", minimum: 0, maximum: 40, description: "Degrees of dithered edge (default 0)." } } },
+    crestMaterial: curve("Dune crests", "a skin column whose surface curves up (a ridge: the Laplacian of the skin's heights under -minCurvature) takes its material in every skin voxel"),
+    troughMaterial: curve("The hollows between dunes", "a skin column whose surface curves down (a hollow: the Laplacian over minCurvature) takes its material in every skin voxel"),
     tileOrigin: { type: "array", items: { type: "number" }, minItems: 2, maxItems: 2, description: "[x, z] in units: a corner of the skin's tiling (its blocks of 31 x 31 columns) falls here, snapped to the lattice, instead of at the region's min corner. Where four skin blocks meet the game lets mines and worms through (Caldera v2): put those corners where no one walks." },
     cornersOff: { type: "object", additionalProperties: false, required: ["paths"], description: "Instead of tileOrigin: the tiling shifted (0-30 columns along x and z) so every corner where four skin blocks meet is at least `distance` (map units, default 4) from `paths` (the trails: polylines of [x, z] or [x, y, z] in units) where a shift does that, else as far as one can; the fewest blocks first. The answer's skin.tiling gives the shift and the nearest corner's distance (unshifted: without the shift), skin.meetingCorners lists the corners: no plug under a corner near a trail is needed.",
       properties: { paths: { type: "array", minItems: 1, maxItems: 32, items: { type: "array", minItems: 2, maxItems: 4000, items: { type: "array", items: { type: "number" }, minItems: 2, maxItems: 3 } } },
