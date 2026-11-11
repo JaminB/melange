@@ -7,8 +7,8 @@ import { standableAt, standing, surfaces } from "../lib/reach";
 import { nearestTread, treadAt } from "../lib/spawn-check";
 import { applyPlan, dominantMaterial, type Packing } from "../lib/structures-apply";
 import {
-  SIDES, arch, bridge, planBounds, castle, castleSpots, crater, flatTunnel, keep, lane, laneCut, place, placePoint, scaled, tower, tunnel, wallSegment, type Plan, type Shape,
-  type GateSpec, type Side, type Spot,
+  SIDES, arch, bridge, planBounds, castle, castleSpots, crater, flatTunnel, hasStyle, keep, lane, laneCut, place, placePoint, scaled, tower, tunnel, wallSegment, type Plan, type Shape,
+  type GateSpec, type MatStyle, type Side, type Spot,
 } from "../lib/structures-shapes";
 import { compound, tiersHeight, type CompoundSpec } from "../lib/structures-compound";
 import { grids, tidy, toWorld } from "../lib/voxel";
@@ -41,6 +41,64 @@ const common: Record<string, Schema> = {
 const foundation: Schema = { type: "integer", minimum: 0, maximum: 32, description: "A whole number of the structure's voxels (of `scale`, so 2 at scale 1.5 is 3 map units) of solid filled below the base (y) so the structure reaches the ground. Default 0. A castle's fills its whole footprint (a 24 x 20 castle with foundation 4: about 2000-3000 cells); seat fills under the walls and towers only." };
 const rotation: Schema = { type: "number", description: "Yaw in degrees about the structure's centre (counter-clockwise seen from above; 0 = sides parallel to the map axes). Default 0." };
 const crenellations = (d: string): Schema => ({ type: "boolean", description: d });
+const matIdx: Schema = { type: "integer", minimum: 0, maximum: 63 };
+const bandsSchema = (what: string): Schema => ({
+  type: "array", minItems: 1, maxItems: 16,
+  description: `Material by height: [{fromY, toY, material}], the first band holding a cell's height wins, the call's material elsewhere. Heights are above ${what}, from the first solid layer up (a foundation is below 0). fromY defaults to the bottom, toY (exclusive) to the top. Unset, nothing changes.`,
+  items: { type: "object", additionalProperties: false, required: ["material"], properties: {
+    fromY: { type: "number", description: "Height the band starts at. Default: below everything." }, toY: { type: "number", description: "Height it ends at (exclusive). Default: above everything." }, material: matIdx } },
+});
+const trimSchema = (what: string, cap: boolean): Schema => ({
+  type: "object", additionalProperties: false,
+  description: `Trim materials: top (the topmost layer of ${what}, topDepth thick, default 1), ${cap ? "merlonCap (the merlon row), " : ""}course ({y, material, height}: one stripe at height y above the floor, height thick, default 1). A course beats top and merlonCap, which beat bands. Unset, nothing changes. With a blockScale over 1 a layer thinner than a voxel can vanish: give topDepth or the course height a whole voxel.`,
+  properties: {
+    top: matIdx, topDepth: { type: "number", minimum: 0.01, description: "How thick top is. Default 1." },
+    ...(cap ? { merlonCap: matIdx } : {}),
+    course: { type: "object", additionalProperties: false, required: ["y", "material"], properties: { y: { type: "number" }, material: matIdx, height: { type: "number", minimum: 0.01, description: "Default 1." } } },
+  },
+});
+interface BandIn { fromY?: number; toY?: number; material: number; }
+interface TrimIn { top?: number; topDepth?: number; merlonCap?: number; course?: { y: number; material: number; height?: number }; }
+
+/** bands and trim as a MatStyle in design voxels (k = voxels per call unit), every field checked; undefined when neither is given. */
+function matStyle(a: { bands?: BandIn[]; trim?: TrimIn }, k: number, opts: { cap: boolean } = { cap: true }): MatStyle | undefined {
+  const mat = (v: unknown, w: string) => {
+    if (typeof v !== "number" || !Number.isInteger(v) || v < 0 || v > 63) throw new ToolError(`${w} is a material index 0-63`);
+    return v;
+  };
+  const st: MatStyle = {};
+  if (a.bands !== undefined) {
+    if (!Array.isArray(a.bands) || a.bands.length > 16) throw new ToolError("bands is a list of at most 16 {fromY, toY, material}");
+    st.bands = a.bands.map((b, i) => {
+      for (const f of [b.fromY, b.toY]) if (f !== undefined && !Number.isFinite(f)) throw new ToolError(`bands[${i}]: fromY and toY are numbers`);
+      if (b.fromY !== undefined && b.toY !== undefined && !(b.fromY < b.toY)) throw new ToolError(`bands[${i}]: fromY must be under toY`);
+      return { from: b.fromY === undefined ? -Infinity : b.fromY * k, to: b.toY === undefined ? Infinity : b.toY * k, material: mat(b.material, `bands[${i}].material`) };
+    });
+  }
+  if (a.trim !== undefined) {
+    const t = a.trim, out: NonNullable<MatStyle["trim"]> = {};
+    if (t === null || typeof t !== "object") throw new ToolError("trim is an object: {top, merlonCap, course}");
+    if (t.top !== undefined) {
+      out.top = mat(t.top, "trim.top");
+      if (t.topDepth !== undefined) { if (!(t.topDepth > 0)) throw new ToolError("trim.topDepth is over 0"); out.topDepth = t.topDepth * k; }
+    } else if (t.topDepth !== undefined) throw new ToolError("trim.topDepth goes with trim.top");
+    if (t.merlonCap !== undefined) {
+      if (!opts.cap) throw new ToolError("trim.merlonCap is for the tools with crenellations (castle, wall, tower, keep)");
+      out.merlonCap = mat(t.merlonCap, "trim.merlonCap");
+    }
+    if (t.course !== undefined) {
+      if (!Number.isFinite(t.course.y)) throw new ToolError("trim.course.y is a height");
+      if (t.course.height !== undefined && !(t.course.height > 0)) throw new ToolError("trim.course.height is over 0");
+      out.course = { y: t.course.y * k, material: mat(t.course.material, "trim.course.material"), ...(t.course.height !== undefined ? { h: t.course.height * k } : {}) };
+    }
+    st.trim = out;
+  }
+  return hasStyle(st) ? st : undefined;
+}
+/** What the answer says about a style (as asked, in the call's units). */
+const styleInfo = (a: { bands?: BandIn[]; trim?: TrimIn }, st: MatStyle | undefined) =>
+  (st ? { style: { ...(a.bands?.length ? { bands: a.bands.length } : {}), ...(a.trim ? { trim: a.trim } : {}) } } : {});
+const CAP_NOTE = "trim.merlonCap: crenellations is off, so there are no merlons to cap";
 
 const CASTLE_SCALE: Schema = { type: "number", minimum: 0.5, maximum: 4, description: "Build the castle from voxels of this many map units (default 1). Lengths stay map units; the design is laid out in voxels of `scale` (walls, merlons and gates keep their rhythm in voxels) and new blocks get that scale (blockScale, which is accepted as the same setting), so it costs about 1/scale^3 of the cells. Use place \"new\". blockScale alone keeps the design in voxels of 1 map unit and only puts its new blocks on that lattice (as before); build_wall, build_tower and the other structure tools take scale as another name for their blockScale." };
 
@@ -266,7 +324,7 @@ function gateLaneFor(a: { gateLane?: boolean | number | { width?: number; mode?:
 // ------------------------------------------------------------------ build_compound
 
 const COMPOUND_KINDS = ["box", "cylinder", "cone", "dome", "tiers"] as const;
-interface CompoundEntry { kind: (typeof COMPOUND_KINDS)[number]; carve?: boolean; at?: Vec3; material?: number; part?: number; bands?: { from?: number; to?: number; material: number }[];
+interface CompoundEntry { kind: (typeof COMPOUND_KINDS)[number]; carve?: boolean; at?: Vec3; material?: number; part?: number; bands?: { from?: number; to?: number; material: number }[]; trim?: TrimIn;
   size?: [number, number]; height?: number; radius?: number; topRadius?: number; profile?: "round" | "onion"; steps?: number; riser?: number; ledge?: number; round?: boolean; }
 
 const COMPOUND_FIELDS: Record<string, readonly string[]> = {
@@ -275,7 +333,8 @@ const COMPOUND_FIELDS: Record<string, readonly string[]> = {
 };
 
 /** The list's entries as specs in map units (k = map units per call unit), every field checked for its kind. */
-function compoundSpecs(list: CompoundEntry[], k: number, mat: number): CompoundSpec[] {
+function compoundSpecs(list: CompoundEntry[], k: number, mat: number, dflt: { bands?: BandIn[]; trim?: TrimIn } = {}): CompoundSpec[] {
+  const dStyle = matStyle(dflt, k, { cap: false });
   const pos = (v: unknown, what: string, i: number) => {
     if (typeof v !== "number" || !Number.isFinite(v) || v <= 0) throw new ToolError(`shapes[${i}] (${list[i].kind}): ${what} is required and must be over 0`);
     return v * k;
@@ -290,6 +349,11 @@ function compoundSpecs(list: CompoundEntry[], k: number, mat: number): CompoundS
     if (e.carve && e.bands?.length) throw new ToolError(`shapes[${i}]: bands paint a fill's material: a carve has none`);
     const c: CompoundSpec = { kind: e.kind, carve: !!e.carve, at, material: e.material ?? mat, ...(e.part !== undefined ? { part: e.part } : {}) };
     if (e.bands?.length) c.bands = e.bands.map((b) => ({ from: (b.from ?? 0) * k, to: b.to === undefined ? Infinity : b.to * k, material: b.material }));
+    else if (dStyle?.bands && !e.carve) c.bands = dStyle.bands;
+    // the call's bands and trim are for every fill; a shape's own trim replaces the call's
+    if (e.trim !== undefined && e.carve) throw new ToolError(`shapes[${i}]: trim paints a fill's material: a carve has none`);
+    const trim = e.trim !== undefined ? matStyle({ trim: e.trim }, k, { cap: false })?.trim : dStyle?.trim;
+    if (trim && !e.carve) c.trim = trim;
     if (e.kind === "box") {
       if (!e.size || !e.size.every((v) => Number.isFinite(v) && v > 0)) throw new ToolError(`shapes[${i}] (box): size [x, z] is required and must be over 0`);
       c.size = [e.size[0] * k, e.size[1] * k]; c.height = pos(e.height, "height", i);
@@ -355,6 +419,8 @@ export const tools: Tool[] = [
         seat: { type: "boolean", description: "Seat it on the ground: fill under the walls, towers and keep (not the courtyard) from the ground up to the floor, column by column, where the ground is lower than the floor (down to seatDepth). The cheap replacement for a whole-footprint foundation on a slope." },
         seatDepth: { type: "number", minimum: 0.5, description: "The deepest seat fill under the floor (units; default 8 map units): columns with no ground that close are left open." },
         crenellations: crenellations("Merlons on the walls, towers and keep. Default true."),
+        bands: bandsSchema("the floor, on the foundation, walls, towers and keep alike"),
+        trim: trimSchema("the walls, towers and keep", true),
         foundation, rotation, ...groundProps, ...common, scale: CASTLE_SCALE,
       },
     },
@@ -362,7 +428,7 @@ export const tools: Tool[] = [
       towerHeight?: number; keep?: boolean; keepSize?: [number, number]; keepHeight?: number; gate?: string; gateWidth?: number; gateHeight?: number;
       keepAxes?: "xz" | "gate"; gateLane?: boolean | number | { width?: number; mode?: "auto" | "keep" | "gate"; side?: "left" | "right" };
       gateBelow?: number | "auto"; gates?: { side: Side; width?: number; height?: number; offset?: number; below?: number | "auto" }[]; seat?: boolean; seatDepth?: number;
-      crenellations?: boolean; foundation?: number; rotation?: number; scale?: number; ground?: "max" | "mean" | "min"; sink?: number }) {
+      crenellations?: boolean; foundation?: number; rotation?: number; scale?: number; ground?: "max" | "mean" | "min"; sink?: number; bands?: BandIn[]; trim?: TrimIn }) {
       finite(a0.at, "at");
       const sz0 = a0.size ?? [30 * (a0.units === "world" ? 20 : 1), 30 * (a0.units === "world" ? 20 : 1)];
       const settled = settle(s, a0, sz0[0] / 2, sz0[1] / 2), a = { ...a0, at: settled.at };
@@ -401,11 +467,14 @@ export const tools: Tool[] = [
           gateWidth: U(a.gates?.[0]?.width ?? a.gateWidth, 4 / v), shift0: U(a.gates?.[0]?.offset, 0) }) : null;
         for (const b of [a.gateBelow, ...(a.gates ?? []).map((g) => g.below)])
           if (b !== undefined && b !== "auto" && !(typeof b === "number" && b >= 0)) throw new ToolError("a gate's below is a length of 0 or more, or \"auto\"");
+        const style = matStyle(a, k);
+        if (style?.trim?.merlonCap !== undefined && a.crenellations === false) notes.push(CAP_NOTE);
         const spec = {
           size, wallHeight: wh, wallThickness: t, towerShape: a.towerShape ?? "round", towerRadius: tr, towerHeight: a.towerHeight === undefined ? wh + 3 / v : a.towerHeight * k,
           keepSize, keepHeight: a.keepHeight === undefined ? wh + 4 / v : a.keepHeight * k, gate, gateWidth: U(a.gateWidth, 4 / v), gateHeight: U(a.gateHeight, 5 / v),
           material: mat, cren: a.crenellations !== false, found: a.foundation === undefined ? 0 : a.foundation / v,
           ...(laneOut?.keepAt ? { keepAt: laneOut.keepAt, keepDoor: laneOut.keepDoor } : {}),
+          ...(style ? { style } : {}),
         };
         const at = sc(a.at, k0);
         const gs = grids(s.store);
@@ -447,7 +516,7 @@ export const tools: Tool[] = [
           ...(spec.keepAt ? { keepAt: [m(spec.keepAt[0]), m(spec.keepAt[1])], keepDoor: spec.keepDoor } : {}),
           ...(laneOut ? { lane: { ...laneOut.info, width: m(laneOut.info.width), centre: m(laneOut.info.centre) } } : {}),
           ...(a.keepAxes === "gate" && keepSize ? { keepAxes: { across: m(gate === "e" || gate === "w" ? keepSize[1] : keepSize[0]), deep: m(gate === "e" || gate === "w" ? keepSize[0] : keepSize[1]) } } : {}),
-          courtyardFloorY: at[1], ...(v !== 1 ? { scale: v } : {}) } };
+          courtyardFloorY: at[1], ...(v !== 1 ? { scale: v } : {}), ...styleInfo(a, style) } };
       }) as Record<string, unknown>;
       const spotsOut = spotReport(s, spots, a.units, !!a.dryRun);
       // the courtyard's walking height as built: the floor asked snaps to the castle's voxels (scale 1.5 at floor 4 makes a
@@ -474,23 +543,27 @@ export const tools: Tool[] = [
         thickness: { type: "number", minimum: 1, description: "Default 2." },
         crenellations: crenellations("Merlons one row above the top (2 on, 1 off). Default true."),
         parapet: { type: "string", enum: ["both", "left", "right", "all"], description: "Which edge rows carry merlons when the wall is 3+ thick (left = left of the direction of travel); thinner walls are crenellated across. Default both." },
+        bands: bandsSchema("each segment's base line (the wall slopes with its points)"),
+        trim: trimSchema("the wall", true),
         foundation, ...common,
       },
     },
-    handler(s, a: Common & { points: Vec3[]; closed?: boolean; height?: number; thickness?: number; crenellations?: boolean; parapet?: "both" | "left" | "right" | "all"; foundation?: number }) {
+    handler(s, a: Common & { points: Vec3[]; closed?: boolean; height?: number; thickness?: number; crenellations?: boolean; parapet?: "both" | "left" | "right" | "all"; foundation?: number;
+      bands?: BandIn[]; trim?: TrimIn }) {
       a.points.forEach((p, i) => finite(p, `points[${i}]`));
       return run(s, a, a.points[0], "wall", (k, mat, U) => {
+        const style = matStyle(a, k), notes = style?.trim?.merlonCap !== undefined && a.crenellations === false ? [CAP_NOTE] : [];
         const pts = a.points.map((p) => sc(p, k));
         if (a.closed) pts.push(pts[0]);
         const h = U(a.height, 5), t = U(a.thickness, 2);
         const shapes: Shape[] = [];
         let length = 0;
         for (let i = 0; i + 1 < pts.length; i++) {
-          shapes.push(...wallSegment(pts[i], pts[i + 1], t, h, mat, { found: U(a.foundation, 0), cren: a.crenellations !== false, parapet: a.parapet ?? "both" }));
+          shapes.push(...wallSegment(pts[i], pts[i + 1], t, h, mat, { found: U(a.foundation, 0), cren: a.crenellations !== false, parapet: a.parapet ?? "both", ...(style ? { style } : {}) }));
           length += Math.hypot(pts[i + 1][0] - pts[i][0], pts[i + 1][2] - pts[i][2]);
         }
         if (!shapes.length) throw new ToolError("all points are in the same place in x and z: there is no wall to build");
-        return { label: "Build wall", shapes, notes: [], info: { segments: pts.length - 1, length: tidy([length, 0, 0])[0], height: h, thickness: t } };
+        return { label: "Build wall", shapes, notes, info: { segments: pts.length - 1, length: tidy([length, 0, 0])[0], height: h, thickness: t, ...styleInfo(a, style) } };
       });
     },
   },
@@ -510,11 +583,13 @@ export const tools: Tool[] = [
         doorWidth: { type: "number", minimum: 1, description: "Default 2." },
         doorHeight: { type: "number", minimum: 2, description: "Default 3." },
         crenellations: crenellations("Merlons round the rim. Default true."),
+        bands: bandsSchema("the base"), trim: trimSchema("the tower", true),
         foundation, rotation, ...groundProps, ...common,
       },
     },
     handler(s, a0: Common & { at: Vec3; shape?: "round" | "square"; radius?: number; height?: number; hollow?: boolean; wallThickness?: number; door?: string;
-      doorWidth?: number; doorHeight?: number; crenellations?: boolean; foundation?: number; rotation?: number; ground?: "max" | "mean" | "min"; sink?: number }) {
+      doorWidth?: number; doorHeight?: number; crenellations?: boolean; foundation?: number; rotation?: number; ground?: "max" | "mean" | "min"; sink?: number;
+      bands?: BandIn[]; trim?: TrimIn }) {
       finite(a0.at, "at");
       const r0 = a0.radius ?? 4 * (a0.units === "world" ? 20 : 1), settled = settle(s, a0, r0, r0), a = { ...a0, at: settled.at };
       const res = run(s, a, a.at, "tower", (k, mat, U) => {
@@ -522,9 +597,10 @@ export const tools: Tool[] = [
         if (a.hollow && wall >= r - 0.5) throw new ToolError("the wall is as thick as the tower is wide: lower wallThickness or raise radius");
         const door = sideOf(a.door, a.hollow ? "s" : null);
         const spec = { shape: a.shape ?? "round", radius: r, height: U(a.height, 14), material: mat, hollow: !!a.hollow, wall, door,
-          doorWidth: U(a.doorWidth, 2), doorHeight: U(a.doorHeight, 3), cren: a.crenellations !== false, found: U(a.foundation, 0) };
-        return { label: "Build tower", shapes: place(tower(spec), sc(a.at, k), a.rotation ?? 0), notes: [],
-          info: { shape: spec.shape, radius: r, height: spec.height, hollow: spec.hollow, door } };
+          doorWidth: U(a.doorWidth, 2), doorHeight: U(a.doorHeight, 3), cren: a.crenellations !== false, found: U(a.foundation, 0), style: matStyle(a, k) };
+        const notes = spec.style?.trim?.merlonCap !== undefined && !spec.cren ? [CAP_NOTE] : [];
+        return { label: "Build tower", shapes: place(tower(spec), sc(a.at, k), a.rotation ?? 0), notes,
+          info: { shape: spec.shape, radius: r, height: spec.height, hollow: spec.hollow, door, ...styleInfo(a, spec.style) } };
       }) as Record<string, unknown>;
       return settled.groundUnder ? { ...res, groundUnder: settled.groundUnder } : res;
     },
@@ -546,11 +622,13 @@ export const tools: Tool[] = [
         doorHeight: { type: "number", minimum: 2, description: "Default 4." },
         windows: { type: "boolean", description: "Arrow slits (1 x 2) every 4 voxels along the walls of a hollow keep. Default true." },
         crenellations: crenellations("Merlons on the roof rim. Default true."),
+        bands: bandsSchema("the base"), trim: trimSchema("the walls and roof", true),
         foundation, rotation, ...groundProps, ...common,
       },
     },
     handler(s, a0: Common & { at: Vec3; size?: [number, number]; height?: number; wallThickness?: number; hollow?: boolean; roof?: boolean; door?: string;
-      doorWidth?: number; doorHeight?: number; windows?: boolean; crenellations?: boolean; foundation?: number; rotation?: number; ground?: "max" | "mean" | "min"; sink?: number }) {
+      doorWidth?: number; doorHeight?: number; windows?: boolean; crenellations?: boolean; foundation?: number; rotation?: number; ground?: "max" | "mean" | "min"; sink?: number;
+      bands?: BandIn[]; trim?: TrimIn }) {
       finite(a0.at, "at");
       const sz0 = a0.size ?? [12 * (a0.units === "world" ? 20 : 1), 12 * (a0.units === "world" ? 20 : 1)];
       const settled = settle(s, a0, sz0[0] / 2, sz0[1] / 2), a = { ...a0, at: settled.at };
@@ -558,8 +636,9 @@ export const tools: Tool[] = [
         const size: [number, number] = a.size ? [a.size[0] * k, a.size[1] * k] : [12, 12], wall = U(a.wallThickness, 2);
         if (a.hollow !== false && (size[0] <= 2 * wall + 1 || size[1] <= 2 * wall + 1)) throw new ToolError("the walls leave no room inside: make the keep bigger or the walls thinner");
         const spec = { size, height: U(a.height, 10), material: mat, wall, hollow: a.hollow !== false, roof: a.roof !== false, door: sideOf(a.door, "s"),
-          doorWidth: U(a.doorWidth, 3), doorHeight: U(a.doorHeight, 4), windows: a.windows !== false, cren: a.crenellations !== false, found: U(a.foundation, 0) };
-        return { label: "Build keep", shapes: place(keep(spec), sc(a.at, k), a.rotation ?? 0), notes: [], info: { size, height: spec.height, door: spec.door } };
+          doorWidth: U(a.doorWidth, 3), doorHeight: U(a.doorHeight, 4), windows: a.windows !== false, cren: a.crenellations !== false, found: U(a.foundation, 0), style: matStyle(a, k) };
+        const notes = spec.style?.trim?.merlonCap !== undefined && !spec.cren ? [CAP_NOTE] : [];
+        return { label: "Build keep", shapes: place(keep(spec), sc(a.at, k), a.rotation ?? 0), notes, info: { size, height: spec.height, door: spec.door, ...styleInfo(a, spec.style) } };
       }) as Record<string, unknown>;
       return settled.groundUnder ? { ...res, groundUnder: settled.groundUnder } : res;
     },
@@ -586,6 +665,7 @@ export const tools: Tool[] = [
                 items: { type: "object", additionalProperties: false, required: ["material"], properties: {
                   from: { type: "number", description: "Height the band starts at. Default 0." }, to: { type: "number", description: "Height it ends at (exclusive). Default: the top." },
                   material: { type: "integer", minimum: 0, maximum: 63 } } } },
+              trim: { ...trimSchema("this shape", false), description: "This shape's own trim (a fill only), instead of the call's: top (the topmost layer of the shape, topDepth thick) and course ({y, material, height}: a stripe at height y above the shape's base). Unset: the call's trim." },
               size: vec2("box and tiers: the footprint [x, z] (tiers: of the base step)."),
               height: { type: "number", minimum: 0.01, description: "box, cylinder, cone, dome." },
               radius: { type: "number", minimum: 0.01, description: "cylinder, cone (base), dome (base circle), tiers with round." },
@@ -598,21 +678,23 @@ export const tools: Tool[] = [
             },
           },
         },
+        bands: bandsSchema("each shape's base (on every fill without bands of its own)"),
+        trim: trimSchema("each fill", false),
         rotation, ...groundProps, ...common,
       },
     },
-    handler(s, a0: Common & { at: Vec3; shapes: CompoundEntry[]; rotation?: number; ground?: "max" | "mean" | "min"; sink?: number }) {
+    handler(s, a0: Common & { at: Vec3; shapes: CompoundEntry[]; rotation?: number; ground?: "max" | "mean" | "min"; sink?: number; bands?: BandIn[]; trim?: TrimIn }) {
       finite(a0.at, "at");
       if (!Array.isArray(a0.shapes) || !a0.shapes.length) throw new ToolError("shapes is a list of at least one shape");
       const k = a0.units === "world" ? 1 / 20 : 1;
       // the footprint, to set the ground under it (the material is a placeholder: run() chooses the real one)
-      const fills0 = compoundSpecs(a0.shapes, k, 0).filter((c) => !c.carve);
+      const fills0 = compoundSpecs(a0.shapes, k, 0, a0).filter((c) => !c.carve);
       if (!fills0.length) throw new ToolError("every shape is a carve: there is nothing to build (put a fill first)");
       const foot = planBounds(compound(fills0, [0, 0, 0], 0));
       const hx = Math.max(Math.abs(foot.min[0]), Math.abs(foot.max[0])) / k, hz = Math.max(Math.abs(foot.min[2]), Math.abs(foot.max[2])) / k;
       const settled = settle(s, a0, hx, hz), a = { ...a0, at: settled.at };
       const res = run(s, a, a.at, "compound", (k2, mat) => {
-        const specs = compoundSpecs(a.shapes, k2, mat), fills = specs.filter((c) => !c.carve);
+        const specs = compoundSpecs(a.shapes, k2, mat, a), fills = specs.filter((c) => !c.carve);
         const shapes = compound(specs, sc(a.at, k2), a.rotation ?? 0);
         const fb = planBounds(compound(fills, [0, 0, 0], 0)), o = (v: number) => tidy([v / k2, 0, 0])[0];
         const tip = a.at[1] * k2 + fb.max[1];

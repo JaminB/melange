@@ -56,6 +56,40 @@ export const cylinder = (op: Op, mat: number, cx: number, cz: number, r: number,
 /** Two cells on, one off along a running coordinate: the crenellations. */
 export const merlon = (u: number) => ((Math.floor(u) % 3) + 3) % 3 < 2;
 
+// ------------------------------------------------------------------ material bands and trim
+
+/** A material by height above the structure's floor (or its base line, for a wall): [from, to) in voxels. */
+export interface MatBand { from: number; to: number; material: number; }
+
+/** Trim: the topmost layer of the body (`top`, `topDepth` thick, default 1), the merlon row (`merlonCap`) and one stripe at
+ * height `course.y` (`course.h` thick, default 1). */
+export interface Trim { top?: number; topDepth?: number; merlonCap?: number; course?: { y: number; material: number; h?: number }; }
+
+/** Material bands and trim for a structure's fills. Unset (or empty), the shapes are left exactly as they are. */
+export interface MatStyle { bands?: MatBand[]; trim?: Trim; }
+
+export const hasStyle = (st?: MatStyle): st is MatStyle =>
+  !!st && (!!st.bands?.length || (!!st.trim && (st.trim.top !== undefined || st.trim.merlonCap !== undefined || st.trim.course !== undefined)));
+
+/** The material of a fill cell at height `d` above the structure's floor. `top` is the height of the body's top (its top
+ * layer is the voxel row under it), `cap` marks the merlon row. Precedence: course, then top (merlonCap on the merlons),
+ * then the first band holding d, then the shape's own material. */
+export function styleMat(mat: number, st: MatStyle, d: number, top: number | undefined, cap = false): number {
+  const t = st.trim;
+  if (t?.course && d >= t.course.y && d < t.course.y + (t.course.h ?? 1)) return t.course.material;
+  if (cap) { if (t?.merlonCap !== undefined) return t.merlonCap; }
+  else if (t?.top !== undefined && top !== undefined && d >= top - (t.topDepth ?? 1) && d < top) return t.top;
+  if (st.bands) for (const b of st.bands) if (d >= b.from && d < b.to) return b.material;
+  return mat;
+}
+
+/** The shape with its material styled by height above y = 0 (fills only; a shape without style comes back as it is). */
+export function styled(s: Shape, st: MatStyle | undefined, top?: number, cap = false): Shape {
+  if (!hasStyle(st) || s.op === "carve") return s;
+  const base = s.matAt;
+  return { ...s, matAt: (x, y, z) => styleMat(base ? base(x, y, z) : s.mat, st, y, top, cap) };
+}
+
 export function translate(shapes: Shape[], d: Vec3): Shape[] {
   return shapes.map((s) => ({
     op: s.op, mat: s.mat, min: [s.min[0] + d[0], s.min[1] + d[1], s.min[2] + d[2]], max: [s.max[0] + d[0], s.max[1] + d[1], s.max[2] + d[2]],
@@ -146,7 +180,7 @@ export type Parapet = "left" | "right" | "both" | "all";
 /** One wall segment from (ax, ay, az) to (bx, by, bz), a rectangle in plan `t` thick (extended `ext` past both ends) and
  * `h` high above the sloping base line, `found` voxels of foundation below it, and optionally crenellations one row
  * above the top. Left of the direction a->b is +v where v = (-dz, dx). Parts: the body and the merlons. */
-export function wallSegment(a: Vec3, b: Vec3, t: number, h: number, mat: number, o: { found?: number; cren?: boolean; parapet?: Parapet; ext?: number } = {}): Shape[] {
+export function wallSegment(a: Vec3, b: Vec3, t: number, h: number, mat: number, o: { found?: number; cren?: boolean; parapet?: Parapet; ext?: number; style?: MatStyle } = {}): Shape[] {
   const dx = b[0] - a[0], dz = b[2] - a[2], len = Math.hypot(dx, dz);
   if (len < 1e-9) return [];
   const ux = dx / len, uz = dz / len, found = o.found ?? 0, ext = o.ext ?? t / 2, hw = t / 2;
@@ -170,6 +204,9 @@ export function wallSegment(a: Vec3, b: Vec3, t: number, h: number, mat: number,
       return y >= yb - found && y < yb + h;
     },
   };
+  const st = hasStyle(o.style) ? o.style : undefined;
+  // styled by height above the (sloping) base line
+  if (st) body.matAt = (x, y, z) => styleMat(mat, st, y - base(uv(x, z)[0]), h);
   if (!o.cren) return [body];
   const parapet = t < 3 ? "all" : o.parapet ?? "both";
   const merlons: Shape = {
@@ -182,6 +219,7 @@ export function wallSegment(a: Vec3, b: Vec3, t: number, h: number, mat: number,
       return parapet === "all" || (parapet === "left" ? v >= hw - 1 : parapet === "right" ? v < -hw + 1 : Math.abs(v) >= hw - 1);
     },
   };
+  if (st) merlons.matAt = (x, y, z) => styleMat(mat, st, y - base(uv(x, z)[0]), h, true);
   return [body, merlons];
 }
 
@@ -200,6 +238,7 @@ export interface TowerSpec {
   cren: boolean;
   found: number;
   cx?: number; cz?: number;     // centre in local coordinates (default 0)
+  style?: MatStyle;
 }
 
 /** A tower on its floor level: solid or hollow (open top, floor at y = 0), with a door and crenellations round the rim. */
@@ -211,10 +250,10 @@ export function tower(t: TowerSpec): Shape[] {
   const body = (op: Op, rr: number, y0: number, y1: number): Shape => ({
     op, mat: t.material, min: [cx - rr, y0, cz - rr], max: [cx + rr, y1, cz + rr], hit: (x, y, z) => y >= y0 && y < y1 && inRing(x, z, rr),
   });
-  out.push(body("fill", r, -t.found, h));
+  out.push(styled(body("fill", r, -t.found, h), t.style, h));
   if (t.cren) {
     const n = Math.max(6, Math.round(2 * Math.PI * r));
-    out.push({
+    out.push(styled({
       op: "fill", mat: t.material, min: [cx - r, h, cz - r], max: [cx + r, h + 1, cz + r],
       hit: (x, y, z) => {
         if (y < h || y >= h + 1 || !inRing(x, z, r) || inRing(x, z, r - 1)) return false;
@@ -223,7 +262,7 @@ export function tower(t: TowerSpec): Shape[] {
         const p = Math.abs(dx) > Math.abs(dz) ? Math.floor(dz) + (dx > 0 ? 1000 : 2000) : Math.floor(dx) + (dz > 0 ? 3000 : 4000);
         return merlon(p);
       },
-    });
+    }, t.style, h, true));
   }
   if (t.hollow && r - t.wall > 0.5) out.push(body("carve", r - t.wall, 0, h + 2));
   if (t.door) out.push(...translate([doorway(r, r, t.wall, t.door, t.doorWidth, t.doorHeight)], [cx, 0, cz]));
@@ -243,21 +282,22 @@ export interface KeepSpec {
   windows: boolean;
   cren: boolean;
   found: number;
+  style?: MatStyle;
 }
 
 /** A rectangular keep centred on the origin: walls `wall` thick, a floor-level interior, a flat roof one layer thick with
  * crenellations on its rim, a door and arrow slits. */
 export function keep(k: KeepSpec): Shape[] {
   const hw = k.size[0] / 2, hd = k.size[1] / 2, h = k.height, w = k.wall;
-  const out: Shape[] = [box("fill", k.material, [-hw, -k.found, -hd], [hw, h, hd])];
+  const out: Shape[] = [styled(box("fill", k.material, [-hw, -k.found, -hd], [hw, h, hd]), k.style, h)];
   if (k.cren) {
-    out.push({
+    out.push(styled({
       op: "fill", mat: k.material, min: [-hw, h, -hd], max: [hw, h + 1, hd],
       hit: (x, y, z) => {
         if (y < h || y >= h + 1 || (Math.abs(x) < hw - 1 && Math.abs(z) < hd - 1)) return false;
         return merlon(Math.abs(x) >= hw - 1 && Math.abs(z) < hd - 1 ? z + 500 : x + 500);
       },
-    });
+    }, k.style, h, true));
   }
   if (k.hollow) {
     const top = k.roof ? h - 1 : h + 2;
@@ -306,6 +346,7 @@ export interface CastleSpec {
   material: number;
   cren: boolean;
   found: number;
+  style?: MatStyle;                 // bands and trim by height above the floor, on the walls, towers, keep and foundation
 }
 
 export interface GateSpec { side: Side; width: number; height: number; shift: number; below: number; }
@@ -314,7 +355,7 @@ export interface GateSpec { side: Side; width: number; height: number; shift: nu
 export function castle(c: CastleSpec): Shape[] {
   const hw = c.size[0] / 2, hd = c.size[1] / 2, t = c.wallThickness, out: Shape[] = [];
   // parts, for packing new blocks one per part: 0 the foundation, 1-4 the walls, 5-8 the towers, 9 the keep
-  if (c.found > 0) out.push({ ...box("fill", c.material, [-hw, -c.found, -hd], [hw, 0, hd]), part: 0 });
+  if (c.found > 0) out.push({ ...styled(box("fill", c.material, [-hw, -c.found, -hd], [hw, 0, hd]), c.style), part: 0 });
   // wall centre lines, each crenellated on its outer side (the side away from the origin)
   const ring: [Vec3, Vec3][] = [
     [[-hw + t / 2, 0, -hd + t / 2], [hw - t / 2, 0, -hd + t / 2]],
@@ -326,17 +367,17 @@ export function castle(c: CastleSpec): Shape[] {
     const dx = b[0] - a[0], dz = b[2] - a[2], len = Math.hypot(dx, dz);
     const vx = -dz / len, vz = dx / len;                       // left of a->b
     const inward = ((a[0] + b[0]) / 2) * vx + ((a[2] + b[2]) / 2) * vz < 0;   // the origin lies on the +v side
-    out.push(...tagged(wallSegment(a, b, t, c.wallHeight, c.material, { cren: c.cren, parapet: inward ? "right" : "left", ext: t / 2 }), 1 + w));
+    out.push(...tagged(wallSegment(a, b, t, c.wallHeight, c.material, { cren: c.cren, parapet: inward ? "right" : "left", ext: t / 2, style: c.style }), 1 + w));
 
   }
   let tp = 5;
   for (const sx of [-1, 1]) for (const sz of [-1, 1]) {
     out.push(...tagged(tower({ shape: c.towerShape, radius: c.towerRadius, height: c.towerHeight, material: c.material, hollow: false, wall: 2, door: null,
-      doorWidth: 2, doorHeight: 3, cren: c.cren, found: c.found, cx: sx * (hw - t / 2), cz: sz * (hd - t / 2) }), tp++));
+      doorWidth: 2, doorHeight: 3, cren: c.cren, found: c.found, style: c.style, cx: sx * (hw - t / 2), cz: sz * (hd - t / 2) }), tp++));
   }
   if (c.keepSize) {
     const k = keep({ size: c.keepSize, height: c.keepHeight, material: c.material, wall: Math.min(2, Math.floor(Math.min(...c.keepSize) / 3)), hollow: true,
-      roof: true, door: c.keepDoor === undefined ? c.gate : c.keepDoor, doorWidth: Math.min(3, c.gateWidth), doorHeight: Math.min(4, c.gateHeight), windows: true, cren: c.cren, found: c.found });
+      roof: true, door: c.keepDoor === undefined ? c.gate : c.keepDoor, doorWidth: Math.min(3, c.gateWidth), doorHeight: Math.min(4, c.gateHeight), windows: true, cren: c.cren, found: c.found, style: c.style });
     out.push(...tagged(c.keepAt && (c.keepAt[0] || c.keepAt[1]) ? translate(k, [c.keepAt[0], 0, c.keepAt[1]]) : k, 9));
   }
   // a gate that leaves no lintel (within a voxel of the wall's top) would leave the merlons over it floating: it is cut

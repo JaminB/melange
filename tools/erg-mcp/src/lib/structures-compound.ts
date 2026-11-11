@@ -2,12 +2,12 @@
 // of each, on the Shape interface of structures-shapes.ts. Pure functions in local coordinates (the structure's origin on
 // the ground, y up) and map units; the tool scales the caller's units and places the result.
 import type { Vec3 } from "../core";
-import { place, type Shape } from "./structures-shapes";
+import { place, styleMat, type MatBand, type MatStyle, type Shape, type Trim } from "./structures-shapes";
 
 export type CompoundKind = "box" | "cylinder" | "cone" | "dome" | "tiers";
 export type DomeProfile = "round" | "onion";
 
-export interface CompoundBand { from: number; to: number; material: number; }
+export type CompoundBand = MatBand;
 
 /** One entry of the list, every length in map units. */
 export interface CompoundSpec {
@@ -17,6 +17,7 @@ export interface CompoundSpec {
   material: number;
   part?: number;
   bands?: CompoundBand[];                    // material by height above the shape's base (fill only): the first band holding y wins
+  trim?: Trim;                               // fill only: top (the topmost layer of the shape) and course (a stripe a voxel high), by height above the shape's base
   size?: [number, number];                   // box and tiers: footprint [x, z] (tiers: the base step's)
   height?: number;                           // box, cylinder, cone, dome
   radius?: number;                           // cylinder, cone (base), dome (the base circle), tiers with round (the base step's)
@@ -79,9 +80,10 @@ export function compoundShape(c: CompoundSpec): Shape {
   const full = hit;
   const s: Shape = { op, mat: c.material, min, max, hit: (x, y, z) => x >= min[0] && x < max[0] && y >= min[1] && y < max[1] && z >= min[2] && z < max[2] && full(x, y, z) };
   if (c.part !== undefined) s.part = c.part;
-  if (!c.carve && c.bands?.length) {
-    const bands = c.bands;
-    s.matAt = (_x, y) => { const d = y - y0; for (const b of bands) if (d >= b.from && d < b.to) return b.material; return c.material; };
+  const st: MatStyle = { bands: c.bands, trim: c.trim };
+  if (!c.carve && (c.bands?.length || c.trim?.top !== undefined || c.trim?.course)) {
+    const h = max[1] - y0;
+    s.matAt = (_x, y) => styleMat(c.material, st, y - y0, h);
   }
   return s;
 }
