@@ -24,7 +24,7 @@ Every module has its own section in `Melange.ini`, and `Enabled=0` turns a modul
 |---|---|---|
 | `NetTransport` | on | Retransmits any lost packet, and re-acknowledges duplicates so a lost ACK can't stall the peer |
 | `NetSession` | on | Resets the match state the game leaves behind, and traces the match lifecycle |
-| `Fixes` | on | Fixes crashes in the game itself, one switch each: closing the game after an online or LAN session (`NetServiceExit`) or during or after a match (`AiServiceExit`), and the `/SEPIA` launch option crashing at startup and not tinting the screen (`SepiaSwitch`), and joining a host whose game style is one this game lacks (`SchemeCode`); build #1077 only |
+| `Fixes` | on | Fixes crashes in the game itself, one switch each: closing the game after an online or LAN session (`NetServiceExit`) or during or after a match (`AiServiceExit`), and the `/SEPIA` launch option crashing at startup and not tinting the screen (`SepiaSwitch`), joining a host whose game style is one this game lacks (`SchemeCode`), and a level with more than about 540 drawn details crashing at load (`MeshInstances`, the engine's mesh-instance pool, raised from 550 to 2000); build #1077 only |
 | `Diagnostics` | on | Crash handler, hang watchdog and minidumps |
 | `Overlay` | on | The in-game overlay (`ToggleKey`, `PassthroughKey`) |
 | `MouseFix` | off | Menu cursor stutter fix: skips the engine's per-frame cursor re-centre while the frontend cursor is shown (aiming in a match is unchanged), keeps the cursor inside the window (`Clip=1`), and re-syncs the mouse after the overlay releases it. Local input only, nothing to agree with other players; build #1077 only (`Probe=1` logs the gate) |
@@ -577,7 +577,7 @@ newly discovered mod without that flag starts enabled.
 
 `wum.spotify` (Melange 0.13) lets client mods such as Holo list your Spotify library and play it on any of your Spotify
 Connect devices (desktop app, phone, speaker, console, TV, web player); in a Holo watch party every member who linked
-Spotify plays the chosen song on their own account. Since Melange 0.14 you set it up in the game: the mod's Link button
+Spotify plays the chosen song on their own account. Since Melange 0.14.1 you set it up in the game: the mod's Link button
 signs you in on Spotify's own page in your browser, and the game comes back to the front once you are signed in. No ini
 editing is needed. The settings are in `[Spotify]`:
 
@@ -830,6 +830,8 @@ A content mod's `entry.sim` runs inside the match's own Lua VM, which is Lua 5.0
 | `wum.events.on(name, fn)`, `off(handle)` | The engine messages the match script receives (`GameLogic.Turn.Ended`, `Weapon.Fired`, ...), registered mod messages (`fn(name, value)`), and `"tick"` |
 | `wum.sim.after/every(ticks, fn)`, `cancel(handle)` | Timers in simulation ticks (50 per second) |
 | `wum.sim.tick()` | Ticks since the match started |
+| `wum.sim.turn()`, `wum.sim.round()` | Turns started in this match (the `turn` of `sim.turnStarted`, which is `fn(name, turn, round)`), and the round: it goes up when a team starts a turn it already had in the current round (the game's `CurrentTeamIndex` at the turn's first tick), so a team that is wiped out only shortens the round. Both are 0 before the first turn; when the team index cannot be read every turn counts in round 1. Counted before `sim.turnStarted` runs, on every machine alike |
+| `wum.sim.waterSchedule(opts)`, `(false)`, `()` | Raises `Water.Level` at turn starts: `opts` = `step` and `cap` (required), `startTurn` (default 1), `every` (turns, default 1), `from` (the level the first step sets) and `units` (`"world"`, the default, or `"map"`, x20). It only raises and never passes `cap`, steps before the turn's `sim.turnStarted` handlers, and stops at the cap. `()` returns the next turn it steps on and the cap, or `nil`; `(false)` stops it. One per script; bad options raise. See [erg.md](erg.md#level-scripts) |
 | `wum.sim.random([m[, n]])`, `randomFloat()` | A random stream per mod, seeded by the match; `math.random` is the same stream |
 | `wum.sim.send(name[, v])`, `sendInt/sendFloat/sendString` | Send an engine message; returns `true`, or `nil` and a reason, and never stops the match script |
 | `wum.sim.getData(id)`, `setData(id, v)` | Read and write the game's data values, checked the same way |
@@ -842,6 +844,8 @@ A content mod's `entry.sim` runs inside the match's own Lua VM, which is Lua 5.0
 | `wum.sim.worms()` | The slots that have a worm container, as a list, then their count |
 | `wum.sim.land()` | The land bounds `minX, minY, minZ, maxX, maxY, maxZ` (`Land.MinBounds` and `Land.MaxBounds`), or `nil, reason` |
 | `wum.sim.holdTurn(ticks)`, `releaseTurn()`, `turnHold()` | Delays the next turn start by `ticks` sim ticks (1 to 3000, that is 60 s) on every machine alike; see [The turn-start hold](#the-turn-start-hold) |
+| `wum.sim.announce(text[, seconds])` | Shows `text` (at most 160 bytes of UTF-8) centred near the top of the screen for `seconds` (0.5 to 15, default 4), up to three at once (a fourth replaces the oldest); returns `true`. Every machine runs the sim, so every player sees it. It only draws ([SimAnnounce], after the engine's HUD): the match, Wormsign and replays are untouched, so it is safe in deterministic code. Melange 0.14; check `if wum.sim.announce then` |
+
 
 Every call from the game into a sim script has an instruction budget (`[SimBridge] InstrPerCall`). A callback that fails or runs out of budget three times is switched off. `dist\Mods\sim-sampler` and `dist\Mods\bazooka-plus` are examples (shipped disabled). `dist\Mods\desync-probe`, also disabled, shows how to test a mod's determinism with the desync detector ([wormsign.md](wormsign.md)).
 
@@ -952,6 +956,7 @@ You need:
 - **Plugins:** enable/disable installed plugins and configure their settings. Local plugins are hidden until *Show local plugins* is on; notices say which plugins the [compatibility sweep](spice.md#compatibility-sweep) set aside, updated or removed.
 - **Store:** browse and install plugins from the plugin store.
 - **Settings:** change your game folder, switch fullscreen and pick the window size ([Display](#display)), check for updates (and switch automatic checks off), manage backups, edit plugin defaults, uninstall, or *Restore vanilla*.
+- **Oasis tools / Map editor (Erg):** sidebar buttons (and Home's *Make a map* card) that open the Oasis shell, or its Erg panel, in the default browser through `launcher.openOasis` (`src/launcher/rpc_launcher.cpp`). The window itself never shows the shell; a `#/<panel>` URL on this server does (`web/src/main.tsx`).
 - **Help:** *Export last game's logs* zips the last game's logs to the Desktop in one click.
 
 ![Melange.exe's Home page](images/launcher/home.png)

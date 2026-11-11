@@ -1,6 +1,6 @@
 // erg-scene/1|2 and erg-patch/1|2: the scene the level service sends and the patch the editor saves (the C++ model is
 // src/erg/scene.h and patch.h; the JSON Schemas are docs/erg-{scene,patch}-{1,2}.schema.json). A document is /2 only when
-// it uses a /2 feature (objects, a Survivor twin, a level script, new frames, a painted surround).
+// it uses a /2 feature (objects, a Survivor twin, a level script, new frames, a painted surround, trims).
 // Positions, scales and voxel coordinates are .xan units; water is in world units (20 per .xan unit), sea level 0.
 
 export const SCENE_FORMAT = "erg-scene/1";
@@ -11,9 +11,13 @@ export type SceneFormat = typeof SCENE_FORMAT | typeof SCENE_FORMAT_2;
 export type PatchFormat = typeof PATCH_FORMAT | typeof PATCH_FORMAT_2;
 export const WORLD_PER_XAN = 20;
 export const KNOT_RESOURCE = "CheesyGrinWorm";   // the non-visual marker every knot detail uses (spawns and objects)
+/** newFrameSide: the game asserts on a frame side over 31; legacyNewFrameSide: blocks of 32 made before that was known
+ * still load (level.save warns). voxelCells: the game counts X*Y*Z of every voxel frame in 16 bits and crashes past it.
+ * newFrameScale: an added block's uniform scale, map units per voxel. */
 export const LIMITS = {
   frames: 4096, details: 65536, frameVoxels: 262144, ops: 20000, patchBytes: 4 << 20, runsPerFrame: 2000, runVoxels: 1 << 23,
-  objects: 256, newFrames: 64, newFrameSide: 32, telepadGroups: 8, hmpSide: 100, hmpCells: 10000, hmpBytes: 50000,
+  objects: 256, newFrames: 64, newFrameSide: 31, legacyNewFrameSide: 32, voxelCells: 65535, newFrameScale: { min: 0.5, max: 4 }, cornerOffset: 64,
+  telepadGroups: 8, hmpSide: 100, hmpCells: 10000, hmpBytes: 50000,
 };
 
 export type Vec3 = [number, number, number];
@@ -21,7 +25,9 @@ export type Role = "scenery" | "spawn" | "object" | "camera" | "light" | "emitte
 export const ROLES: readonly Role[] = ["scenery", "spawn", "object", "camera", "light", "emitter", "sound", "collision", "marker", "other"];
 export const THEMES = ["ARABIAN", "WILDWEST", "CAMELOT", "PREHISTORIC", "BUILDING", "ARCTIC", "ENGLAND", "HORROR", "LUNAR", "PIRATE", "WAR"] as const;
 export const TIMES_OF_DAY = ["DAY", "EVENING", "NIGHT"] as const;
-export type SpawnMode = "random" | "knots";
+/** random: the game places the worms; knots: worm slot i on the knot WORMi (WORM0-7); teams: each worm on
+ * WORM<4 x team + its place in the team> (WORM0-15), so a team's worms stand at its own four knots. */
+export type SpawnMode = "random" | "knots" | "teams";
 export type HmpMode = "copy" | "none" | "flat" | "paint";
 
 export interface Sha256Set { xan: string; xom: string; hmp: string | null; }
@@ -37,6 +43,9 @@ export interface Frame {
   voxels: number | null; heightMap: number | null;   // blob refs
   folder: boolean;
   new?: boolean;                                // an added block: id -1..-64, under the Scene frame
+  /** An added block's corner offsets, voxels: (X+1)*(Z+1) numbers row by row along x. The engine moves each column's
+   * vertices (its bottom too) up by the bilinear offset of its corners, drawn and for collision. Absent: zeros. */
+  corners?: number[];
 }
 export interface Detail {
   id: number; src: number | null; frame: number; name: string; resource: string;
@@ -49,14 +58,41 @@ export type CrateSpec =
   | { kind: "weapon" | "utility"; contents: string; count?: number; hitpoints?: number; parachute?: boolean }
   | { kind: "health"; amount: number; hitpoints?: number; parachute?: boolean };
 export interface TriggerSpec { index: number; radius?: number; teamCollect?: number; teamDestroy?: number; hitpoints?: number; wormCollect?: boolean; }
+/** The mine factory's settings (all optional; absent = the game's kMineFactoryData). `activation`: it fires when fewer
+ * than this many mines are in the level (0-255, game 20); `inactiveTurns`: turn starts it waits after it is placed
+ * and after each fire (0-255, game 7); `schemeMines: false`: the scheme's 15 random start mines are not placed;
+ * `keepKnot: true`: when the factory's drop from its knot hits no land, it stays at its knot instead of the match's
+ * stale sweep point (Melange 0.13+; an older game ignores it); `launchHeight` (1-255) and `launchRadius` (0-255), map
+ * units: each mine it fires appears that high over it and within that radius round it and falls from there, instead of
+ * the game's placement over random worms and objects (Melange 0.13+; an older game ignores them). `launchers` (1-8
+ * [x, y, z] points, whole world units within 100000): a fire's mines are shared out over them and each erupts straight
+ * up from a spot within `launchRadius` of its launcher, `launchHeight` high, and falls back there (the engine runs one
+ * factory a match, so these are the one factory's launch points; Melange 0.13+). `throw`: each fired mine is lobbed
+ * from its launcher (or the factory) at a landing point `minRange`-`maxRange` map units out, chosen by `pattern`
+ * (random: any bearing; ring: a fire's mines spread round the compass; targets: `targetShare` % of them within
+ * `scatter` map units of one of `targets`, [x, z] whole world units, the rest random), the arc topping out `apex` map
+ * units over the higher end; `avoidWater` (default true) draws a landing point in the sea again; Melange lands each
+ * mine where its flight first meets the land (the erg-mcp branch's Melange; an older game ignores it). `volley` (1-10):
+ * at most that many mines a fire, whatever the engine's min(target - mines, 10) asked; `avoid` (up to 8 polylines of
+ * 2-32 [x, z] whole world units) with `avoidRadius` (1-50 map units): a landing point within the radius of one of the
+ * lines (a trail) is drawn again. */
+export interface ThrowSpec { minRange?: number; maxRange: number; apex?: number; pattern?: "random" | "ring" | "targets"; avoidWater?: boolean; targets?: [number, number][]; scatter?: number; targetShare?: number;
+  volley?: number; avoidRadius?: number; avoid?: [number, number][][]; }
+export interface FactorySpec { activation?: number; inactiveTurns?: number; schemeMines?: boolean; keepKnot?: boolean; launchHeight?: number; launchRadius?: number; launchers?: [number, number, number][]; throw?: ThrowSpec; }
 export type ObjectSpec =
   | { knot: string; type: "crate"; crate: CrateSpec }
   | { knot: string; type: "telepad"; group: number }
   | { knot: string; type: "trigger"; trigger: TriggerSpec }
-  | { knot: string; type: "minefactory" };
+  | { knot: string; type: "minefactory"; factory?: FactorySpec };
 export type ObjectType = ObjectSpec["type"];
 export interface ScriptMeta { present: boolean; sha256: string | null; }
-export interface NewFrame { tmp: number; parent: number; name: string; pos: Vec3; size: Vec3; }
+/** scale: map units per voxel on every axis (1-4); absent is 1, and 1 is written by leaving it out. */
+export interface NewFrame { tmp: number; parent: number; name: string; pos: Vec3; size: Vec3; scale?: number; corners?: number[]; }
+/** A base frame's voxel box cut down to the cells [min, min + size) in the built level (scene.h FrameTrim): the scene
+ * keeps the whole grid, so voxel edits still address it, and only the game's cell count sees the kept box. Every cell
+ * outside it must be empty; a box with solid cells moves the frame by its offset from the grid's centre (its details
+ * and child frames back), an empty box keeps the frame where it is (a base frame out of the cell count for one cell). */
+export interface FrameTrim { frame: number; min: Vec3; size: Vec3; }
 /** [start, count, value] over the 100x100 surround cells, row-major: heights 0..1, blend 0..255. */
 export type HmpRun = [start: number, count: number, value: number];
 export interface HmpRuns { heights?: HmpRun[]; blend?: HmpRun[]; }
@@ -77,6 +113,8 @@ export interface Scene {
   kind?: { survivor: boolean };
   objects?: ObjectSpec[];
   script?: ScriptMeta;
+  /** erg-scene/2: base frames cut down in the build; absent or empty for none. */
+  trims?: FrameTrim[];
   /** level.load only: resource -> preview key (preview.h DetailKey), for every distinct detail resource in the
    * scene, in any theme's bundle. Not part of the saved document. */
   previews?: Record<string, string>;
@@ -90,7 +128,8 @@ export type Op =
   | { op: "remove"; src: number }
   | { op: "voxels"; frame: number; runs: VoxelRun[] }
   | ({ op: "addFrame" } & NewFrame)
-  | ({ op: "hmp" } & HmpRuns);
+  | ({ op: "hmp" } & HmpRuns)
+  | ({ op: "trimFrame" } & FrameTrim);
 
 export interface Patch {
   format: PatchFormat;
@@ -150,14 +189,59 @@ export function isObjectKnot(name: string): boolean {
 
 export const validContentsName = (s: unknown): s is string => typeof s === "string" && /^[A-Za-z][A-Za-z0-9_]{0,62}$/.test(s);
 
+export const validNewFrameScale = (v: unknown): v is number =>
+  typeof v === "number" && Number.isFinite(v) && v >= LIMITS.newFrameScale.min && v <= LIMITS.newFrameScale.max;
+/** A new frame's corner offsets for a frame of `size`: (X+1)*(Z+1) finite numbers within ±LIMITS.cornerOffset. */
+export const validCorners = (v: unknown, size: number[]): v is number[] =>
+  Array.isArray(v) && v.length === (size[0] + 1) * (size[2] + 1) &&
+  v.every((x) => typeof x === "number" && Number.isFinite(x) && Math.abs(x) <= LIMITS.cornerOffset);
+
+/** X*Y*Z over every frame with voxels, base and added (a trimmed frame's kept box): the count the game keeps in 16 bits
+ * (LIMITS.voxelCells). */
+export function voxelCells(s: Pick<Scene, "frames" | "trims">): number {
+  const trims = new Map((s.trims ?? []).map((t) => [t.frame, t.size]));
+  let n = 0;
+  for (const f of s.frames) {
+    if (f.voxels === null) continue;
+    const size = trims.get(f.id) ?? f.size;
+    n += size[0] * size[1] * size[2];
+  }
+  return n;
+}
+
+/** A trim's shape against the scene: a base frame with voxels, the box at least a cell a side and inside its grid. */
+export function trimProblem(s: Pick<Scene, "frames">, t: FrameTrim): string | null {
+  const f = s.frames.find((x) => x.id === t.frame);
+  if (!f || f.new) return `frame ${t.frame} is not a frame of the base`;
+  if (f.voxels === null) return `frame ${t.frame} has no voxels`;
+  for (let k = 0; k < 3; k++)
+    if (!Number.isInteger(t.min[k]) || !Number.isInteger(t.size[k]) || t.min[k] < 0 || t.size[k] < 1 || t.min[k] + t.size[k] > f.size[k])
+      return `frame ${t.frame}: the box must be at least 1 cell a side and inside the frame's ${f.size.join("x")} grid`;
+  return null;
+}
+
+/** What the game would assert or crash on in a scene that still loads here: added blocks over 31 a side (made before
+ * the limit was known; a warning) and more cells than LIMITS.voxelCells (export, build and Test refuse). The server's
+ * level.save sends the same warnings (scene.cpp EngineWarnings). */
+export function engineWarnings(s: Pick<Scene, "frames" | "trims">): string[] {
+  const out: string[] = [];
+  for (const f of s.frames)
+    if (f.new && Math.max(...f.size) > LIMITS.newFrameSide)
+      out.push(`block '${f.name}' is ${f.size.join("x")}: the game asserts on a side over ${LIMITS.newFrameSide} voxels (remove it and add it again at ${LIMITS.newFrameSide})`);
+  const cells = voxelCells(s);
+  if (cells > LIMITS.voxelCells)
+    out.push(`the level's voxel frames hold ${cells} cells (X*Y*Z, solid or empty) and the game crashes loading more than ${LIMITS.voxelCells}`);
+  return out;
+}
+
 export function sceneUsesV2(s: Scene): boolean {
   return !!s.kind?.survivor || !!s.objects?.length || !!s.script?.present || s.hmp.mode === "paint" || s.hmp.ref !== undefined ||
-    s.frames.some((f) => f.new) || s.blobs.some((b) => b.kind === "hmp");
+    s.frames.some((f) => f.new) || s.blobs.some((b) => b.kind === "hmp") || !!s.trims?.length;
 }
 
 export function patchUsesV2(p: Patch): boolean {
   return !!p.kind?.survivor || !!p.objects?.length || !!p.script?.present || p.hmp?.mode === "paint" ||
-    p.ops.some((o) => o.op === "addFrame" || o.op === "hmp" || (o.op === "voxels" && o.frame < 0));
+    p.ops.some((o) => o.op === "addFrame" || o.op === "hmp" || o.op === "trimFrame" || (o.op === "voxels" && o.frame < 0));
 }
 
 /** A /1 scene as a /2 one in memory (no /2 feature is added, so it still saves as /1). */
@@ -257,9 +341,62 @@ function checkObject(c: Checker, o: unknown, p: string) {
       if (t.wormCollect !== undefined && typeof t.wormCollect !== "boolean") c.fail(`${p}.trigger.wormCollect`, "must be a boolean");
       break;
     }
-    case "minefactory":
-      c.keys(o, ["knot", "type"], p);
+    case "minefactory": {
+      if (!c.keys(o, ["knot", "type", "factory"], p) || o.factory === undefined) break;
+      const f = o.factory;
+      if (!isObj(f) || !c.keys(f, ["activation", "inactiveTurns", "schemeMines", "keepKnot", "launchHeight", "launchRadius", "launchers", "throw"], `${p}.factory`)) return c.fail(`${p}.factory`, "must be an object");
+      int(f.activation, 0, 255, `${p}.factory.activation`);
+      int(f.inactiveTurns, 0, 255, `${p}.factory.inactiveTurns`);
+      if (f.schemeMines !== undefined && typeof f.schemeMines !== "boolean") c.fail(`${p}.factory.schemeMines`, "must be a boolean");
+      if (f.keepKnot !== undefined && typeof f.keepKnot !== "boolean") c.fail(`${p}.factory.keepKnot`, "must be a boolean");
+      int(f.launchHeight, 1, 255, `${p}.factory.launchHeight`);
+      int(f.launchRadius, 0, 255, `${p}.factory.launchRadius`);
+      if (f.launchers !== undefined) {
+        const ls = f.launchers;
+        if (!Array.isArray(ls) || ls.length < 1 || ls.length > 8) c.fail(`${p}.factory.launchers`, "must be 1-8 [x, y, z] points");
+        else ls.forEach((pt, i) => {
+          if (!Array.isArray(pt) || pt.length !== 3 || !pt.every((v) => Number.isInteger(v) && Math.abs(v as number) <= 100000))
+            c.fail(`${p}.factory.launchers[${i}]`, "must be [x, y, z], whole world units within 100000");
+        });
+      }
+      if (f.throw !== undefined) {
+        const t = f.throw, tp = `${p}.factory.throw`;
+        if (!isObj(t) || !c.keys(t, ["minRange", "maxRange", "apex", "pattern", "avoidWater", "targets", "scatter", "targetShare", "volley", "avoidRadius", "avoid"], tp)) c.fail(tp, "must be an object");
+        else {
+          int(t.minRange, 0, 500, `${tp}.minRange`);
+          if (t.maxRange === undefined) c.fail(`${tp}.maxRange`, "is required");
+          else int(t.maxRange, 1, 500, `${tp}.maxRange`);
+          if (typeof t.minRange === "number" && typeof t.maxRange === "number" && t.maxRange < t.minRange) c.fail(`${tp}.maxRange`, "must not be under minRange");
+          int(t.apex, 1, 255, `${tp}.apex`);
+          int(t.scatter, 0, 255, `${tp}.scatter`);
+          int(t.targetShare, 0, 100, `${tp}.targetShare`);
+          int(t.volley, 0, 10, `${tp}.volley`);
+          int(t.avoidRadius, 0, 50, `${tp}.avoidRadius`);
+          if (t.avoid !== undefined) {
+            if (!Array.isArray(t.avoid) || t.avoid.length > 8) c.fail(`${tp}.avoid`, "must be at most 8 lines");
+            else t.avoid.forEach((ln, i) => {
+              if (!Array.isArray(ln) || ln.length < 2 || ln.length > 32) c.fail(`${tp}.avoid[${i}]`, "must be 2-32 [x, z] points");
+              else ln.forEach((pt, k) => {
+                if (!Array.isArray(pt) || pt.length !== 2 || !pt.every((v) => Number.isInteger(v) && Math.abs(v as number) <= 100000))
+                  c.fail(`${tp}.avoid[${i}][${k}]`, "must be [x, z], whole world units within 100000");
+              });
+            });
+            if (Array.isArray(t.avoid) && t.avoid.length && !t.avoidRadius) c.fail(`${tp}.avoid`, "needs avoidRadius");
+          }
+          if (t.pattern !== undefined && !["random", "ring", "targets"].includes(t.pattern as string)) c.fail(`${tp}.pattern`, "must be random, ring or targets");
+          if (t.avoidWater !== undefined && typeof t.avoidWater !== "boolean") c.fail(`${tp}.avoidWater`, "must be a boolean");
+          if (t.targets !== undefined) {
+            if (!Array.isArray(t.targets) || t.targets.length > 16) c.fail(`${tp}.targets`, "must be at most 16 [x, z] points");
+            else t.targets.forEach((pt, i) => {
+              if (!Array.isArray(pt) || pt.length !== 2 || !pt.every((v) => Number.isInteger(v) && Math.abs(v as number) <= 100000))
+                c.fail(`${tp}.targets[${i}]`, "must be [x, z], whole world units within 100000");
+            });
+          }
+          if (t.pattern === "targets" && !(Array.isArray(t.targets) && t.targets.length)) c.fail(tp, "pattern targets needs targets");
+        }
+      }
       break;
+    }
   }
   if (!validKnot(o.knot as string, o.type as ObjectType, o.type === "telepad" ? (o.group as number) : 0))
     c.fail(`${p}.knot`, `'${String(o.knot)}' is not a ${String(o.type)} knot name`);
@@ -324,7 +461,7 @@ export function validateScene(s: unknown): Validation {
   const c = new Checker();
   if (!isObj(s)) return { ok: false, errors: ["scene: must be an object"] };
   const v2 = s.format === SCENE_FORMAT_2;
-  c.keys(s, v2 ? ["format", "stem", "title", "base", "registry", "kind", "databank", "water", "spawns", "hmp", "units", "frames", "details", "blobs", "objects", "script", "previews"]
+  c.keys(s, v2 ? ["format", "stem", "title", "base", "registry", "kind", "databank", "water", "spawns", "hmp", "units", "frames", "details", "blobs", "objects", "script", "trims", "previews"]
     : ["format", "stem", "title", "base", "registry", "databank", "water", "spawns", "hmp", "units", "frames", "details", "blobs", "previews"], "scene");
   if (s.format !== SCENE_FORMAT && !v2) c.fail("scene.format", `must be "${SCENE_FORMAT}" or "${SCENE_FORMAT_2}" (a newer format needs a newer Melange)`);
   if (!printable(s.stem, 1, 48) || (s.stem as string).includes(".")) c.fail("scene.stem", "must be 1-48 printable characters without '.'");
@@ -339,7 +476,7 @@ export function validateScene(s: unknown): Validation {
   else c.fail("databank", "must be an object");
   checkWater(c, s.water);
   if (s.previews !== undefined) checkPreviews(c, s.previews);
-  checkMode(c, s.spawns, "spawns", ["random", "knots"]);
+  checkMode(c, s.spawns, "spawns", ["random", "knots", "teams"]);
   checkMode(c, s.hmp, "hmp", v2 ? ["copy", "none", "flat", "paint"] : ["copy", "none", "flat"], v2 ? ["ref"] : []);
   if (v2) {
     if (s.kind !== undefined) checkKind(c, s.kind);
@@ -368,7 +505,7 @@ export function validateScene(s: unknown): Validation {
   let roots = 0;
   frames.forEach((f, i) => {
     const p = `frames[${i}]`;
-    if (!isObj(f) || !c.keys(f, v2 ? ["id", "new", "parent", "name", "pos", "rot", "scale", "size", "voxels", "heightMap", "folder"]
+    if (!isObj(f) || !c.keys(f, v2 ? ["id", "new", "parent", "name", "pos", "rot", "scale", "size", "voxels", "heightMap", "folder", "corners"]
       : ["id", "parent", "name", "pos", "rot", "scale", "size", "voxels", "heightMap", "folder"], p)) return c.fail(p, "must be an object");
     if (f.new !== undefined && typeof f.new !== "boolean") c.fail(`${p}.new`, "must be a boolean");
     if (f.new ? !isInt(f.id, -LIMITS.newFrames, -1) : !isInt(f.id, 1, 1 << 24)) return c.fail(`${p}.id`, f.new ? "a new frame's id is -1..-64" : "must be a positive integer");
@@ -392,6 +529,7 @@ export function validateScene(s: unknown): Validation {
       if (!b || b.kind !== "heightMap" || b.frame !== f.id || b.bytes !== corners * 4) c.fail(p, "the heightMap blob does not match the frame size");
     }
     if (typeof f.folder !== "boolean") c.fail(`${p}.folder`, "must be a boolean");
+    if (f.corners !== undefined && (!f.new || !validCorners(f.corners, size))) c.fail(`${p}.corners`, "only a new frame has corners: (X+1)*(Z+1) numbers within ±64");
   });
   if (frames.length && roots !== 1) c.fail("frames", "exactly one root frame (parent null) is required");
   let newFrames = 0;
@@ -402,14 +540,34 @@ export function validateScene(s: unknown): Validation {
     const par = frameById.get(f.parent as number);
     if (!par || par.new || !underScene(frameById, f.parent as number)) c.fail(p, "a new frame's parent must be the Scene frame or under it");
     const size = f.size as number[];
-    if (!isVec(f.rot) || !(f.rot as number[]).every((v) => v === 0) || !isVec(f.scale) || !(f.scale as number[]).every((v) => v === 1) || f.folder || f.heightMap !== null)
-      c.fail(p, "a new frame has identity rotation and scale, no heightMap, and is not a folder");
-    if (!size.every((v) => v >= 1 && v <= LIMITS.newFrameSide)) c.fail(`${p}.size`, "each size must be 1..32");
+    const sc = f.scale as number[];
+    if (!isVec(f.rot) || !(f.rot as number[]).every((v) => v === 0) || !isVec(f.scale) || !validNewFrameScale(sc[0]) || sc[1] !== sc[0] || sc[2] !== sc[0] ||
+      f.folder || f.heightMap !== null)
+      c.fail(p, "a new frame has no rotation, one scale 0.5..4 on every axis, no heightMap, and is not a folder");
+    if (!size.every((v) => v >= 1 && v <= LIMITS.legacyNewFrameSide)) c.fail(`${p}.size`, "each size must be 1..32");
   }
   if (v2) {
     const hmp = s.hmp as Obj | undefined;
     if (hmp?.mode === "paint" && !blobs.some((b) => isObj(b) && b.kind === "hmp")) c.fail("hmp.ref", "hmp.mode paint needs the painted surround's blob");
     if (hmp?.ref !== undefined && hmp.mode !== "paint" && hmp.mode !== "copy") c.fail("hmp.ref", "needs hmp.mode paint or copy");
+    if (s.trims !== undefined) {
+      if (!Array.isArray(s.trims) || s.trims.length > LIMITS.frames) c.fail("trims", "must be an array of at most 4096 trims");
+      else {
+        const seen = new Set<unknown>();
+        s.trims.forEach((t, i) => {
+          const p = `trims[${i}]`;
+          if (!isObj(t) || !c.keys(t, ["frame", "min", "size"], p)) return c.fail(p, "must be an object");
+          const before = c.errors.length;
+          checkTrimShape(c, t, p);
+          if (c.errors.length === before) {
+            const why = trimProblem({ frames: frames.filter(isObj) as unknown as Frame[] }, t as unknown as FrameTrim);
+            if (why) c.fail(p, why);
+          }
+          if (seen.has(t.frame)) c.fail(p, `frame ${String(t.frame)} is trimmed twice`);
+          seen.add(t.frame);
+        });
+      }
+    }
   }
   for (const f of frameById.values()) {
     let cur: unknown = f.id;
@@ -482,11 +640,12 @@ export function validatePatch(p: unknown, sizeBytes?: number): Validation {
     }
   }
   if (p.water !== undefined) checkWater(c, p.water);
-  if (p.spawns !== undefined) checkMode(c, p.spawns, "spawns", ["random", "knots"]);
+  if (p.spawns !== undefined) checkMode(c, p.spawns, "spawns", ["random", "knots", "teams"]);
   if (p.hmp !== undefined) checkMode(c, p.hmp, "hmp", v2 ? ["copy", "none", "flat", "paint"] : ["copy", "none", "flat"]);
   if (!Array.isArray(p.ops)) return { ok: false, errors: [...c.errors, "ops: must be an array"] };
   if (p.ops.length > LIMITS.ops) c.fail("ops", "at most 20000 ops");
   const runsPerFrame = new Map<number, number>();
+  const trimmed = new Set<unknown>();
   let covered = 0;
   p.ops.forEach((o, i) => {
     const path = `ops[${i}]`;
@@ -533,14 +692,16 @@ export function validatePatch(p: unknown, sizeBytes?: number): Validation {
       }
       case "addFrame":
         if (!v2) { c.fail(`${path}.op`, "unknown op 'addFrame'"); break; }
-        if (!c.keys(o, ["op", "tmp", "parent", "name", "pos", "size"], path)) break;
+        if (!c.keys(o, ["op", "tmp", "parent", "name", "pos", "size", "scale", "corners"], path)) break;
         if (!isInt(o.tmp, -LIMITS.newFrames, -1) || tmps.has(o.tmp as number)) c.fail(`${path}.tmp`, "must be an unused id -1..-64");
         else tmps.add(o.tmp as number);
         if (!isInt(o.parent, 1, 1 << 24)) c.fail(`${path}.parent`, "must be a frame of the base");
         if (typeof o.name !== "string" || !/^[A-Za-z0-9_]{1,31}$/.test(o.name)) c.fail(`${path}.name`, "must be 1-31 letters, digits or '_'");
         else if (/SLIPPY|PERM|TEAMBASE/i.test(o.name)) c.fail(`${path}.name`, "may not hold SLIPPY, PERM or TEAMBASE (the engine reads them as tags)");
         if (!isVec(o.pos)) c.fail(`${path}.pos`, "must be 3 finite numbers");
-        if (!Array.isArray(o.size) || o.size.length !== 3 || !o.size.every((v) => isInt(v, 1, LIMITS.newFrameSide))) c.fail(`${path}.size`, "each size must be 1..32");
+        if (!Array.isArray(o.size) || o.size.length !== 3 || !o.size.every((v) => isInt(v, 1, LIMITS.legacyNewFrameSide))) c.fail(`${path}.size`, "each size must be 1..32");
+        if (o.scale !== undefined && !validNewFrameScale(o.scale)) c.fail(`${path}.scale`, "must be a number 0.5..4 (map units per voxel)");
+        if (o.corners !== undefined && (!Array.isArray(o.size) || !validCorners(o.corners, o.size as number[]))) c.fail(`${path}.corners`, "must be (X+1)*(Z+1) numbers within ±64");
         break;
       case "hmp": {
         if (!v2) { c.fail(`${path}.op`, "unknown op 'hmp'"); break; }
@@ -562,11 +723,24 @@ export function validatePatch(p: unknown, sizeBytes?: number): Validation {
         if (!cells) c.fail(path, "an hmp op changes at least one cell");
         break;
       }
+      case "trimFrame":
+        if (!v2) { c.fail(`${path}.op`, "unknown op 'trimFrame'"); break; }
+        if (c.keys(o, ["op", "frame", "min", "size"], path)) checkTrimShape(c, o, path);
+        if (trimmed.has(o.frame)) c.fail(`${path}.frame`, `${String(o.frame)} is trimmed by an earlier op`);
+        trimmed.add(o.frame);
+        break;
       default:
         c.fail(`${path}.op`, `unknown op '${String(o.op)}'`);
     }
   });
   return { ok: c.errors.length === 0, errors: c.errors };
+}
+
+function checkTrimShape(c: Checker, o: Obj, path: string) {
+  if (!isInt(o.frame, 1, 1 << 24)) c.fail(`${path}.frame`, "must be a frame of the base");
+  for (const [k, lo] of [["min", 0], ["size", 1]] as const)
+    if (!Array.isArray(o[k]) || (o[k] as unknown[]).length !== 3 || !(o[k] as unknown[]).every((v) => isInt(v, lo, 255)))
+      c.fail(`${path}.${k}`, `must be 3 integers ${lo}..255`);
 }
 
 /** The patch's objects against the details the patch leaves on its base (knots, limits, one added detail per knot). */

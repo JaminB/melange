@@ -19,6 +19,9 @@ struct PackSpec {
     std::vector<File> levelFiles;                          // built by the level service
     std::string patchJson;
     std::string script;                                    // the level script as sim/<slug>.lua; "" for none
+    std::string melangeRange;                              // spice.json melange.range ("" = ">=0.2.0"): a level that needs a
+                                                           // newer Melange (e.g. [Fixes] MeshInstances) says so here
 };
+// Refused when melangeRange is set and not a valid semver range.
 bool WritePack(const PackSpec& spec, const std::wstring& dir, std::vector<std::string>* files, std::string* err);
 }  // namespace melange::erg::pack

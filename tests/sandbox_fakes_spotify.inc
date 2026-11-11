@@ -1,4 +1,4 @@
-// sandbox_selftest fakes for wum.spotify (Melange 0.13; 0.14 adds the setup, clipboard, dashboard and cancel stand-ins):
+// sandbox_selftest fakes for wum.spotify (Melange 0.13; 0.14.1 adds the setup, clipboard, dashboard and cancel stand-ins):
 // link-time stand-ins for spotify::host:: (spotify/host.h), so wum_spotify.cpp runs without the network, the browser,
 // the clipboard or DPAPI. Included inside namespace melange, after the other
 // fakes. The fake host keeps a small model the cases inspect (fake_spotify::*) and delivers answers and status events
@@ -26,7 +26,7 @@ inline std::vector<std::pair<std::string, uint32_t>> g_cancelGens;  // every Can
 inline std::set<std::string> g_touched;
 inline uint32_t g_nextRid = 1;
 inline spotify::host::Sink* g_sink = nullptr;
-// Melange 0.14
+// Melange 0.14.1
 inline bool g_installed = true;
 inline std::string g_installedReason = "unavailable";
 inline spotify::host::Setup g_setup{"builtin", "wxyz", "http://127.0.0.1:8780/callback", true, false};

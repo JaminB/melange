@@ -80,6 +80,16 @@ function scenarioFixture(name) {
       const r = scenarioFixture("update-ready");
       return { ...r, status: { ...r.status, running: true, game: { ...r.status.game, running: true } } };
     }
+    // Map packs Melange.exe builds by itself (autobuild): one pack not built yet, so Launch game waits for its build.
+    case "maps-build": {
+      const r = scenarioFixture("restore");
+      return { ...r, maps: { packs: [{ id: "big-crates", name: "Big Crates", state: "missing", error: "no build stamp" }] } };
+    }
+    // ...and one whose build failed: a warning line and its row on Plugins; Launch game starts the game at once.
+    case "maps-failed": {
+      const r = scenarioFixture("restore");
+      return { ...r, maps: { packs: [{ id: "big-crates", name: "Big Crates", state: "failed", error: "caldera: the base level's sha256 does not match" }] } };
+    }
     // Settings › Display with the stock launcher's exclusive fullscreen (/FS) in local.cfg.
     case "display-fs": {
       const r = scenarioFixture("restore");
@@ -134,6 +144,9 @@ export function launcherService(state, broadcast, initialScenario) {
     l.display = { localCfg: f.localCfg ?? "/W:1280 /H:720 /REFRESH:59 /SSAA:1 /SHADOWMAP:1024 /CONFIG:user.cfg\r\n",
       fullscreen: false, enabled: true, hotkey: "Alt+RETURN", writes: 0 };
     l.laa = { enabled: false, active: false };   // Melange.ini [Game] LargeAddressAware and the exe bit
+    // maps.status: the packs Melange.exe builds (src/launcher/autobuild.h); `launched` counts game starts.
+    l.maps = { enabled: true, active: false, step: 0, of: 0, current: "", waitingLaunch: false, packs: [], ...(f.maps ?? {}) };
+    l.launched = 0;
   };
   apply(l.scenario);
 
@@ -141,6 +154,27 @@ export function launcherService(state, broadcast, initialScenario) {
   const publicStatus = () => JSON.parse(JSON.stringify(l.status));
   const pushStatus = () => broadcast("setup", { status: publicStatus() });
   const updateStatus = () => JSON.parse(JSON.stringify(l.update));
+  const mapsStatus = () => JSON.parse(JSON.stringify(l.maps));
+  const pushMaps = (extra = {}) => broadcast("maps", { status: mapsStatus(), ...extra });
+  // Mirrors autobuild.cpp: unbuilt or stale packs are built one by one, then the waiting launch runs.
+  const buildMaps = () => {
+    const todo = l.maps.packs.filter((p) => p.state === "missing" || p.state === "stale");
+    todo.forEach((p) => { p.state = "queued"; });
+    Object.assign(l.maps, { active: true, of: todo.length, step: 0 });
+    todo.forEach((p, i) => later(600 * (i + 1), () => {
+      for (const q of todo.slice(0, i)) q.state = "built";
+      p.state = "building";
+      p.error = undefined;
+      Object.assign(l.maps, { step: i + 1, current: p.name });
+      pushMaps();
+    }));
+    later(600 * (todo.length + 1), () => {
+      for (const q of todo) q.state = "built";
+      Object.assign(l.maps, { active: false, current: "", waitingLaunch: false });
+      l.launched++;
+      pushMaps({ launch: { ok: true } });
+    });
+  };
 
   const findCandidate = (path) => l.candidates.find((c) => c.path === path);
   // Mirrors the real server: setup.*/plugins.setSettings refuse with -32002 while a recommended-plugins batch
@@ -166,9 +200,24 @@ export function launcherService(state, broadcast, initialScenario) {
       ...(l.resume ? { resume: l.resume } : {}) }),
     "launcher.quit": () => { l.quit = true; return {}; },
     "launcher.setTheme": (p) => { l.theme = p.theme === "light" || p.theme === "dark" ? p.theme : "system"; return {}; },
-    "launcher.launch": () => ({ how: l.status.game?.store === "steam" ? "steam" : "exe" }),
+    "launcher.launch": () => {
+      if (l.maps.enabled && l.maps.packs.some((p) => p.state === "missing" || p.state === "stale")) {
+        l.maps.waitingLaunch = true;
+        buildMaps();
+        later(10, () => pushMaps());
+        return { how: "after-build" };
+      }
+      l.launched++;
+      return { how: l.status.game?.store === "steam" ? "steam" : "exe" };
+    },
+    "maps.status": () => mapsStatus(),
     "launcher.openPath": (p) => {
       if (p.what === "export" && !l.exported) throw [-32000, "That export isn't there any more."];
+      return {};
+    },
+    "launcher.openOasis": (p) => {
+      if (p.panel !== undefined && !/^[a-z0-9-]*$/.test(p.panel)) throw [-32602, "bad panel"];
+      (l.openedOasis ??= []).push(p.panel ?? "");
       return {};
     },
     "launcher.exportLogs": () => {
@@ -330,6 +379,7 @@ export function launcherService(state, broadcast, initialScenario) {
     handlers,
     status: publicStatus,
     updateStatus,
+    mapsStatus,
     setScenario: apply,
     close: () => { for (const t of l.timers) clearTimeout(t); l.timers.clear(); },
   };

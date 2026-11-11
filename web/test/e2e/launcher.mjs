@@ -270,6 +270,56 @@ async function installedHome(browser) {
   }
 }
 
+// Oasis tools / Map editor (Erg): buttons call launcher.openOasis (the browser itself is the server's); a "#/erg" URL on
+// a launcher server shows the Oasis shell with the Erg panel instead of the launcher.
+async function oasisLinks(browser) {
+  const mock = await startMock({ root, launcher: true });
+  const { page, errors } = await openPage(browser, mock, "restore");
+  try {
+    await attempt("oasis links: buttons call launcher.openOasis", async () => {
+      await page.waitForSelector(".la", { timeout: 10000 });
+      check("oasis links: no dead anchor to #oasis left", (await page.locator('a[href="/#oasis"]').count()) === 0);
+      await page.locator('[data-open-oasis=""]').click();
+      await page.locator('[data-open-oasis="erg"]').click();
+      await page.locator('[data-card-action="erg"]').click();
+      await page.waitForTimeout(300);
+      const opened = mock.state.launcher.openedOasis ?? [];
+      check("oasis links: Oasis tools, Map editor and the Make a map card", JSON.stringify(opened) === JSON.stringify(["", "erg", "erg"]), JSON.stringify(opened));
+      check("oasis links: no error shown", (await page.locator("[data-oasis-error]").count()) === 0);
+    });
+    await attempt("oasis links: #/erg on a launcher server shows the shell with Erg", async () => {
+      const shell = await browser.newPage({ viewport: { width: 1280, height: 800 } });
+      shell.on("pageerror", (e) => errors.push(e.message));
+      current = shell;
+      try {
+        await shell.goto(`${mock.url}&scenario=restore#/erg`, { waitUntil: "load" });
+        await shell.waitForSelector('nav [data-panel="erg"]', { timeout: 15000 });
+        await shell.waitForSelector('[data-panel-host="erg"]', { timeout: 15000 });
+        check("oasis links: shell, not the launcher", (await shell.locator(".la").count()) === 0 && (await shell.title()) === "Oasis");
+        check("oasis links: the Erg panel is open", (await shell.locator('[data-panel-host="erg"]').count()) === 1);
+      } finally {
+        await shell.close();
+      }
+    });
+    await attempt("oasis links: the launcher's own #/plugins hash still shows the launcher", async () => {
+      const own = await browser.newPage({ viewport: { width: 1120, height: 740 } });
+      own.on("pageerror", (e) => errors.push(e.message));
+      current = own;
+      try {
+        await own.goto(`${mock.url}&scenario=restore#/plugins`, { waitUntil: "load" });
+        await own.waitForSelector(".la", { timeout: 15000 });
+        check("oasis links: #/plugins is the launcher", (await own.title()) === "Melange");
+      } finally {
+        await own.close();
+      }
+    });
+    check("oasis links: no page errors", errors.length === 0, errors.join(" | "));
+  } finally {
+    await page.close();
+    await mock.close();
+  }
+}
+
 // One click from Help: spinner, then "Saved to Desktop · Show in folder"; Home offers the same once Melange has run.
 async function helpExportLogs(browser) {
   const mock = await startMock({ root, launcher: true });
@@ -335,6 +385,63 @@ async function pluginsBusy(browser) {
   } finally {
     await page.close();
     await mock.close();
+  }
+}
+
+// Map packs Melange.exe builds by itself (src/launcher/autobuild.h): Launch game waits for an unbuilt pack, the status
+// line counts the build, the game starts by itself after it; a failed pack warns and does not hold the launch.
+async function mapsAutoBuild(browser) {
+  const mock = await startMock({ root, launcher: true });
+  const { page, errors } = await openPage(browser, mock, "maps-build");
+  try {
+    await attempt("maps: Plugins says an unbuilt pack is built before the game starts", async () => {
+      await page.waitForSelector(".la", { timeout: 10000 });
+      check("maps: no status line while nothing is building", (await page.locator("[data-maps-status]").count()) === 0);
+      await page.locator('[data-page-tab="plugins"]').click();
+      await page.waitForSelector('[data-plugin="big-crates"] [data-map-pack="missing"]', { timeout: 10000 });
+      const t = (await page.locator('[data-plugin="big-crates"] [data-map-pack]').textContent()) ?? "";
+      check("maps: the row says Melange builds it", /builds them before the game starts/.test(t), t);
+    });
+    await attempt("maps: Launch game builds first, shows progress, then starts the game", async () => {
+      await page.locator(".la-launch").click();
+      await page.waitForSelector('[data-maps-status="building"]', { timeout: 5000 });
+      await page.waitForFunction(() => /Big Crates/.test(document.querySelector("[data-maps-status]")?.textContent ?? ""), undefined, { timeout: 5000 });
+      const line = (await page.locator("[data-maps-status]").textContent()) ?? "";
+      check("maps: the status line names the pack and counts", /Building map pack Big Crates \(1\/1\)…/.test(line), line);
+      check("maps: the launch button says it is building", /Building maps/.test((await page.locator(".la-launch").textContent()) ?? ""));
+      check("maps: the game has not started yet", mock.state.launcher.launched === 0);
+      await shot(page, "40-maps-building");
+      await page.waitForSelector('[data-plugin="big-crates"] [data-map-pack="building"]', { timeout: 5000 });
+      await page.waitForFunction(() => !document.querySelector("[data-maps-status]"), undefined, { timeout: 10000 });
+      check("maps: the game started after the build", mock.state.launcher.launched === 1);
+      check("maps: the row no longer says not built", (await page.locator('[data-plugin="big-crates"] [data-map-pack]').count()) === 0);
+      check("maps: the launch button is back", !(await page.locator(".la-launch").isDisabled()));
+      check("maps: no launch error", !(await page.locator(".la-launch").getAttribute("title")));
+    });
+    check("maps-build scenario: no page errors", errors.length === 0, errors.join(" | "));
+  } finally {
+    await page.close();
+    await mock.close();
+  }
+  const mock2 = await startMock({ root, launcher: true });
+  const f = await openPage(browser, mock2, "maps-failed");
+  try {
+    await attempt("maps: a failed pack warns, keeps its error on Plugins, and never holds the launch", async () => {
+      await f.page.waitForSelector('[data-maps-status="note"]', { timeout: 10000 });
+      const line = (await f.page.locator("[data-maps-status]").textContent()) ?? "";
+      check("maps: the warning names the pack and its error", /Big Crates could not be built: caldera: the base level's sha256/.test(line), line);
+      await f.page.locator('[data-page-tab="plugins"]').click();
+      await f.page.waitForSelector('[data-plugin="big-crates"] [data-map-pack="failed"]', { timeout: 10000 });
+      check("maps: the row keeps the error", /sha256 does not match/.test((await f.page.locator('[data-plugin="big-crates"] [data-map-pack]').textContent()) ?? ""));
+      await shot(f.page, "41-maps-failed");
+      await f.page.locator(".la-launch").click();
+      await f.page.waitForTimeout(300);
+      check("maps: the game started at once", mock2.state.launcher.launched === 1);
+    });
+    check("maps-failed scenario: no page errors", f.errors.length === 0, f.errors.join(" | "));
+  } finally {
+    await f.page.close();
+    await mock2.close();
   }
 }
 
@@ -760,7 +867,7 @@ async function displaySettings(browser) {
 const browser = await chromium.launch({ channel: "msedge", headless: true });
 try {
   for (const scenario of [
-    foundInstallRecommended, notFound, wrongBuild, ualPresent, reshadeBackupAndRestore, installedHome, helpExportLogs, pluginsBusy,
+    foundInstallRecommended, notFound, wrongBuild, ualPresent, reshadeBackupAndRestore, installedHome, oasisLinks, helpExportLogs, pluginsBusy, mapsAutoBuild,
     importDownloadFlow, importLocalFileFlow, importHashErrorFlow, importCancelFlow, importStaleAndDamaged, updateReady, restoreVanilla, displaySettings,
   ]) {
     try {

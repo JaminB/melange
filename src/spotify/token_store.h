@@ -9,7 +9,7 @@
 
 namespace melange::spotify::tokens {
 // %LOCALAPPDATA%\Melange\spotify ("" when Windows does not tell LocalAppData). client_store.cpp keeps client.json here
-// too (Melange 0.14).
+// too (Melange 0.14.1).
 std::wstring Folder();
 // Creates Folder() and its parents. False when it cannot.
 bool MakeFolder();

@@ -306,7 +306,9 @@ bool Peek(uintptr_t addr, void* out, uint32_t n) { return detail::PeekGuarded(ad
 namespace {
 constexpr uintptr_t kSweep = 0x466ae0, kLandNormal = 0x482010, kLandscape = 0x955638, kHeightmap = 0x952ad4,
                     kFrames = 0x955740, kLandVt = 0x81c810, kHeightmapVt = 0x81babc, kFilter = 0x952d00,
-                    kHitTick = 0x952cfc, kHitTime = 0x952cf8;
+                    kHitTick = 0x952cfc, kHitTime = 0x952cf8,
+                    kHitFrame = 0x952ce8, kHitAux = 0x952c64;   // the hit's land frame (word; 0xffff: the heightmap) and the
+                                                                 // word the payload keeps beside it (+0x18c; 0x574fe7)
 constexpr struct { uintptr_t at; uint32_t n; } kScratch[] = {
     {0x94ef8c, 0x4}, {0x952ab0, 0x78}, {0x952c28, 0x148}, {0x952f50, 0x16c}, {0x962698, 0x1}};
 constexpr uint32_t kScratchBytes = 0x4 + 0x78 + 0x148 + 0x16c + 0x1;
@@ -361,7 +363,8 @@ using SweepFn = void(__cdecl*)(const float* origin, const float* step, const flo
 using NormalFn = const float*(__cdecl*)();
 
 // The raw engine calls; no C++ objects with destructors here (SEH).
-bool CallSweep(const float* origin, const float* step, int ticks, int* hitTick, float* hitTime, float* normal) {
+bool CallSweep(const float* origin, const float* step, int ticks, int* hitTick, float* hitTime, float* normal, uint16_t* frame,
+               uint16_t* aux) {
     static const float kZero[3] = {0.f, 0.f, 0.f};
     __try {
         *reinterpret_cast<volatile uint8_t*>(kFilter) = 0;  // no frame filter (some sim callers set it around a sweep)
@@ -371,6 +374,10 @@ bool CallSweep(const float* origin, const float* step, int ticks, int* hitTick, 
         if (*hitTick != ticks + 1) {
             const float* n = reinterpret_cast<NormalFn>(kLandNormal)();
             normal[0] = n[0], normal[1] = n[1], normal[2] = n[2];
+            // the frame the sweep hit, as the payload's land collision records it (0x574fe7: +0x190 from 0x952ce8, +0x18c
+            // from 0x952c64), read before the globals go back
+            *frame = *reinterpret_cast<const volatile uint16_t*>(kHitFrame);
+            *aux = *reinterpret_cast<const volatile uint16_t*>(kHitAux);
         }
         return true;
     } __except (EXCEPTION_EXECUTE_HANDLER) {
@@ -396,9 +403,10 @@ bool EngineSweep(const Vec3& origin, const Vec3& step, int ticks, detail::RawLan
     const float o[3] = {origin.x, origin.y, origin.z}, st[3] = {step.x, step.y, step.z};
     int32_t tick = ticks + 1;
     float time = 0.f, n[3] = {0.f, 0.f, 0.f};
+    uint16_t frame = 0xffff, aux = 0;
     unsigned int x87 = 0, sse = 0, unused = 0;
     __control87_2(0, 0, &x87, &sse);
-    const bool ran = CallSweep(o, st, ticks, &tick, &time, n);
+    const bool ran = CallSweep(o, st, ticks, &tick, &time, n, &frame, &aux);
     if (!ran) {  // a fault mid-sweep can leave values on the x87 stack: empty it, keep the game's control words
         constexpr unsigned int kAll = _MCW_DN | _MCW_EM | _MCW_IC | _MCW_RC | _MCW_PC;
         _fpreset();
@@ -418,7 +426,7 @@ bool EngineSweep(const Vec3& origin, const Vec3& step, int ticks, detail::RawLan
                  ran ? "restoring its globals" : "in the engine");
         return false;
     }
-    *out = detail::RawLandHit{tick != ticks + 1, time, Vec3{n[0], n[1], n[2]}};
+    *out = detail::RawLandHit{tick != ticks + 1, time, Vec3{n[0], n[1], n[2]}, frame, aux};
     return true;
 }
 

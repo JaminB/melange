@@ -10,6 +10,7 @@
 
 #include "render/mirage/glsl_inputs_logic.h"
 #include "render/mirage/glsl_toggle_logic.h"
+#include "render/mirage/tints_logic.h"
 #include "render/mirage/shaders_source.h"
 
 using namespace melange::mirage::shadersrc;
@@ -253,7 +254,8 @@ void TestGlslInputs() {
               gl::ClassifySceneInput("mg_proj") == gl::SceneInput::Proj &&
               gl::ClassifySceneInput("mg_renderScale") == gl::SceneInput::RenderScale && gl::ClassifySceneInput("mg_Depth") == gl::SceneInput::None &&
               gl::ClassifySceneInput("mg_texTag") == gl::SceneInput::TexTag && gl::ClassifySceneInput("mg_texTags") == gl::SceneInput::None &&
-              gl::ClassifySceneInput("texture0") == gl::SceneInput::None,
+              gl::ClassifySceneInput("texture0") == gl::SceneInput::None && gl::ClassifySceneInput("mg_tint") == gl::SceneInput::Tint &&
+              gl::ClassifySceneInput("mg_landTint") == gl::SceneInput::LandTint,
           "scene input names");
     uint64_t none[3] = {0, 0, 0}, some[3] = {5, 0, 9}, one[1] = {1};
     Check(gl::Freshest(none, 3) == -1 && gl::Freshest(some, 3) == 2 && gl::Freshest(one, 1) == 0 && gl::Freshest(some, 0) == -1,
@@ -264,7 +266,75 @@ void TestGlslInputs() {
     Check(!gl::Update(cache, same, 3), "only the first n values are compared");
 }
 
+void TestTints() {
+    namespace tl = melange::mirage::tints::logic;
+    float c[3] = {};
+    Check(tl::ParseTag("VISIBLE_Horror5_dtl_tint3a302B", c) && c[0] == 0x3a / 255.f && c[1] == 0x30 / 255.f && c[2] == 0x2b / 255.f,
+          "tint tag at the end of a name, either case");
+    Check(tl::ParseTag("VISIBLE_Rock_tint102030_dtl", c) && c[0] == 0x10 / 255.f, "tint tag followed by another tag");
+    Check(!tl::ParseTag("VISIBLE_Rock_tint10203", c) && !tl::ParseTag("VISIBLE_Rock_tint1020304", c) && !tl::ParseTag("VISIBLE_Rock_tintxx2030", c) &&
+              !tl::ParseTag("VISIBLE_Rock", c) && !tl::ParseTag("VISIBLE_tint_tint", c),
+          "malformed tint tags are ignored");
+    Check(tl::ParseTag("A_tint000000_tintffffff", c) && c[2] == 1.f, "the last tint tag wins");
+    {
+        uint64_t d = 0;
+        Check(tl::ParseLandTag("VISIBLE_Horror5_dtl_ltintbfb9ab5911ad8e293d3632", &d, c) && d == 0xbfb9ab5911ad8e29ull && c[0] == 0x3d / 255.f &&
+                  c[2] == 0x32 / 255.f,
+              "land tint tag: digest and colour");
+        Check(tl::ParseLandTag("X_ltint049e2021928ca5e7aabbcc_dtl", &d, c) && d == 0x049e2021928ca5e7ull, "land tint tag followed by another tag");
+        Check(!tl::ParseLandTag("X_ltint049e2021928ca5e7aabb", &d, c) && !tl::ParseLandTag("X_ltint049e2021928ca5e7aabbccd", &d, c) &&
+                  !tl::ParseLandTag("X_ltintz49e2021928ca5e7aabbcc", &d, c),
+              "malformed land tint tags are not tags");
+        Check(!tl::ParseTag("X_ltint049e2021928ca5e7aabbcc", c), "a land tint tag is not a per-copy tint tag");
+    }
+    tl::Table t;
+    tl::Entry e;
+    e.pos[0] = 10.f, e.pos[1] = 2.f, e.pos[2] = -30.f, e.scale = 3.f, e.rgba[0] = 0.2f;
+    tl::Entry f = e;
+    f.pos[0] = 11.f, f.rgba[0] = 0.4f;
+    t.Set({e, f});
+    // Cg rows: a uniform scale of 3 and the translation in row 3.
+    float m[16] = {3, 0, 0, 0, 0, 3, 0, 0, 0, 0, 3, 0, 10, 2, -30, 1};
+    Check(t.Find(m) && t.Find(m)->rgba[0] == 0.2f, "a draw at a tinted detail takes its tint");
+    m[12] = 11.f;
+    Check(t.Find(m) && t.Find(m)->rgba[0] == 0.4f, "the neighbour one unit away takes its own");
+    m[12] = 10.3f;
+    Check(!t.Find(m), "a draw off the detail's position is not tinted");
+    // (round 6: a draw within kExact, 0.002 map units, of the detail's origin is the detail whatever its scale: meshes with
+    // their own node scale; a worm walking past is never that exact)
+    m[12] = 10.05f, m[0] = m[5] = m[10] = 1.f;
+    Check(!t.Find(m), "a draw near the position with another scale (a worm walking past) is not tinted");
+    m[12] = 10.f;
+    float w[16] = {3, 0, 0, 0, 0, 3, 0, 0, 0, 0, 3, 0, 200, 40, -600, 1};
+    Check(t.Find(w) && t.Find(w)->rgba[0] == 0.2f, "world positions (map x 20) with the detail's own scale match too (what the game draws)");
+    m[0] = m[5] = m[10] = 3.f, m[12] = 7.99f;
+    Check(!t.Find(m), "grid cell borders do not hide or invent matches");
+    {
+        // a slab: scale (1.2, 0.3, 0.4) turned 40 degrees about y, in Cg rows (row k = the axis k scaled and turned)
+        tl::Entry g;
+        const double frame[3] = {1, 1, 1};
+        const float sc[3] = {1.2f, 0.3f, 0.4f};
+        g.pos[0] = 40.f, g.pos[1] = 5.f, g.pos[2] = 40.f, g.scale = tl::DetailScale(frame, sc), g.rgba[0] = 0.6f;
+        tl::Table ts;
+        ts.Set({g});
+        const float c = std::cos(0.698f), s = std::sin(0.698f);
+        float rows[16] = {1.2f * c, 0, -1.2f * s, 0, 0, 0.3f, 0, 0, 0.4f * s, 0, 0.4f * c, 0, 40, 5, 40, 1};
+        Check(ts.Find(rows) && ts.Find(rows)->rgba[0] == 0.6f, "a rotated non-uniform slab matches its detail (rows hold the axes)");
+        float cols[16] = {1.2f * c, 0, 0.4f * s, 0, 0, 0.3f, 0, 0, -1.2f * s, 0, 0.4f * c, 0, 40, 5, 40, 1};
+        Check(ts.Find(cols) && ts.Find(cols)->rgba[0] == 0.6f, "... and so does the transposed layout (columns hold the axes)");
+        float node[16] = {0.04f, 0, 0, 0, 0, 0.04f, 0, 0, 0, 0, 0.04f, 0, 800, 100, 800, 1};
+        Check(ts.Find(node) && ts.Find(node)->rgba[0] == 0.6f, "a mesh with its own node scale, drawn exactly at the detail's origin, takes its tint");
+        node[12] = 800.4f;
+        Check(!ts.Find(node), "... but not 0.02 map units off it with another scale");
+        const float three[3] = {3.f, 3.f, 3.f};
+        Check(std::fabs(tl::DetailScale(frame, three) - 3.f) < 1e-6f, "a uniform scale is that scale");
+    }
+    t.Set({});
+    Check(t.Size() == 0 && !t.Find(w), "an empty table matches nothing");
+}
+
 int main() {
+    TestTints();
     TestGlslToggle();
     TestGlslInputs();
     TestText();

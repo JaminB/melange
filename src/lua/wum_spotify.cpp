@@ -3,7 +3,7 @@
 // checks the click that connect() needs, and scopes request callbacks to the calling mod generation. A generation's
 // one cleanup cancels its waiting requests and never pauses the music.
 //
-// Melange 0.14.0 adds the in-game setup (setup, setClientId, pasteClientId, copy, openDashboard), cancel and transfer;
+// Melange 0.14.1 adds the in-game setup (setup, setClientId, pasteClientId, copy, openDashboard), cancel and transfer;
 // they always ship together, so a mod tests `wum.spotify.setup` once. The click rule (input::gesture, consent-grade,
 // within 2 s) is shared: connect() and openDashboard() consume the click; setClientId(), pasteClientId() and copy() need
 // one but leave it, so one click can paste, save and connect. Lua never sees clipboard text other than a Client ID found
@@ -528,7 +528,7 @@ void Shared(lua_State* L, int wum) {
                                         {"volume", LVolume},
                                         {"playback", LPlayback},
                                         {"transfer", LTransfer},
-                                        // Melange 0.14: the in-game setup
+                                        // Melange 0.14.1: the in-game setup
                                         {"setup", LSetup},
                                         {"setClientId", LSetClientId},
                                         {"pasteClientId", LPasteClientId},

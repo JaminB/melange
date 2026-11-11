@@ -11,6 +11,7 @@ bool AddString(const char* name, const char* value, uint32_t section = 12);   //
 bool GetFloat(const char* name, float* v);                          // 0x50b7f0
 bool SetFloat(const char* name, float v);                           // 0x50bac0
 const char* CurrentLevelKey();                                      // WXD.Level.Current
+const char* LoadingLevelKey(const char** from = nullptr);   // the key the last hooked level set-up loaded, after the override; from: the frontend's key ("" before one)
 bool AtFrontend();                                                  // Game.Scope == 0 and no match VM
 bool AddRoot(const char* gameRelDir);                               // assets::searchpath::Add
 constexpr uintptr_t kSetUp = 0x4ec370, kLevelName = 0x4ec46e, kPickerKeep = 0x4c2f48, kPickerLock = 0x72f96e,

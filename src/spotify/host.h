@@ -1,5 +1,5 @@
 #pragma once
-// The Spotify host as wum.spotify sees it (wum_spotify.cpp), Melange 0.13.0; 0.14.0 adds the in-game setup (Installed,
+// The Spotify host as wum.spotify sees it (wum_spotify.cpp), Melange 0.13.0; 0.14.1 adds the in-game setup (Installed,
 // GetSetup, SetClientId, the clipboard, the dashboard), Cancel and Status::app. Main thread only. Implemented by
 // spotify.cpp; sandbox_selftest fakes it (tests/sandbox_fakes_spotify.inc), so the Lua binding is tested offline.
 // Results and status events reach Lua through the Sink that wum_spotify.cpp installs. No token, and never a whole Client
@@ -41,7 +41,7 @@ bool Connect(const std::string& mod, std::string* reason);
 // empty `mod` is the console.
 bool Cancel(const std::string& mod);
 
-// ---- the in-game setup (Melange 0.14)
+// ---- the in-game setup (Melange 0.14.1)
 struct Setup {
     std::string app;          // "user" | "ini" | "builtin" | ""
     std::string appHint;      // the last 4 characters of the Client ID in use ("" when app is "")

@@ -9,6 +9,10 @@ dist/tools/
 !/tools/wsr/
 !/tools/xomtool/
 !/tools/tag_digest.py
+!/tools/erg-mcp/
+/tools/erg-mcp/dist/
+/tools/erg-mcp/src/tools/groups.gen.ts
+/tools/erg-mcp/test/out/
 testenv/
 *.dmp
 *.user

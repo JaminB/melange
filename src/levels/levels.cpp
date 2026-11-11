@@ -1,5 +1,6 @@
 // Levels: map packs, Erg Test levels and the online map gate. This file owns the module, the ini section, the hooks,
 // the observers and the state verbs; registration lives in registry.
+#include <atomic>
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
@@ -25,6 +26,7 @@ namespace lv = melange::levels;
 namespace eng = melange::levels::engine;
 
 bool g_enabled = false, g_hooks = false;
+std::atomic<bool> g_wantHooks{false};   // a baseline Test of a game level needs the level-name hook without mod levels
 lv::registry::Config g_cfg;
 
 template <class Fn>
@@ -144,7 +146,7 @@ public:
             lv::live::Install();
             melange::events::Subscribe(melange::events::Event::Frame, [] {
                 lv::registry::OnFrame();
-                if (!g_hooks && lv::registry::HasModLevels()) lv::internal::InstallHooks();
+                if (!g_hooks && (lv::registry::HasModLevels() || g_wantHooks)) lv::internal::InstallHooks();
             });
         }
         melange::jlog::Rec("levels", melange::jlog::Level::Info, "installed")
@@ -180,8 +182,11 @@ bool ArmNextLevel(const char* key, int timeoutS) { return ArmNextLevel(key, ArmO
 
 bool ArmNextLevel(const char* key, const ArmOptions& o) {
     if (!g_enabled || !key || !*key || InLobby()) return false;
+    if (o.vanilla) g_wantHooks = true;   // installed on the main thread's next frame (LevelHookReady)
     return registry::Arm(key, o);
 }
+
+bool LevelHookReady() { return g_enabled && g_hooks; }
 
 void Disarm() {
     if (g_enabled) registry::Disarm();

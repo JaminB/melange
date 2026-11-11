@@ -1,5 +1,5 @@
 #pragma once
-// wum.spotify's pure logic (Melange 0.13.0; 0.14.0 adds the Client ID resolution and its file, the clipboard Client ID
+// wum.spotify's pure logic (Melange 0.13.0; 0.14.1 adds the Client ID resolution and its file, the clipboard Client ID
 // finder, the "not-allowlisted" heuristic, transfer and the styled callback pages): PKCE (base64url, SHA-256), the
 // authorize URL, the loopback callback parser and its fixed pages, the token and profile responses, the Web API calls
 // each request makes, the error mapping, Retry-After and the rate gate, and the JSON each result gives Lua. Header-only and portable: no windows.h, only std,
@@ -228,7 +228,7 @@ inline bool ValidDeviceId(std::string_view s) {  // ^[0-9A-Za-z_-]{1,128}$
     return true;
 }
 
-// ---------------------------------------------------------------- the Client ID (Melange 0.14)
+// ---------------------------------------------------------------- the Client ID (Melange 0.14.1)
 // Which Spotify app signs in: the first valid one of the ID set in the game (client.json), [Spotify] ClientId in
 // Melange.ini, and the one built into the release. An invalid value at any level is skipped.
 struct ResolvedId {
@@ -416,7 +416,7 @@ inline CallbackResult ParseCallbackRequest(std::string_view head, int port, std:
     return r;
 }
 
-// The page the browser shows after the redirect (Melange 0.14: answered once the sign-in finished).
+// The page the browser shows after the redirect (Melange 0.14.1: answered once the sign-in finished).
 enum class Page { Ok, Denied, Cancelled, NotAllowed, Failed };
 // The whole HTTP/1.1 answer to the browser: a fixed, self-contained page that never reflects any input (no script, no
 // external URL, no link). 200: the styled page for `page`; 404 and 400: a minimal "Not found." / "Bad request.".
@@ -579,7 +579,7 @@ inline const char* ErrName(Err e) {
     }
     return "";
 }
-// A heuristic (Melange 0.14): Spotify refused an account that is not under the app's User Management (an app in
+// A heuristic (Melange 0.14.1): Spotify refused an account that is not under the app's User Management (an app in
 // Development mode). Spotify answers 403 with a text such as "Check settings on developer.spotify.com/dashboard, the user
 // may not be registered." or "User not registered in the Developer Dashboard", as plain text or inside the JSON
 // error.message. There is no documented reason code, so the first 1024 bytes of the raw body are matched, lowercased.

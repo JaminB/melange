@@ -18,6 +18,7 @@ using Clock = std::chrono::steady_clock;
 std::vector<ModSource> g_sources;
 std::vector<LevelSource> g_levelSources;
 std::string g_levelKey;
+std::string g_cleanKey;   // SuppressModsOn: a match on this level loads only its level scripts
 uint32_t g_serial = 0;
 LogSink g_sink = nullptr;
 void (*g_hooksChanged)() = nullptr;
@@ -169,7 +170,16 @@ void SetSources(std::vector<ModSource> mods) {
     if (g_hooksChanged) g_hooksChanged();
 }
 
-size_t SourceCount() { return g_sources.size() + LevelCount(); }
+bool Clean() { return !g_cleanKey.empty() && g_levelKey == g_cleanKey; }
+
+size_t SourceCount() { return (Clean() ? 0 : g_sources.size()) + LevelCount(); }
+
+void SuppressModsOn(const std::string& key) {
+    if (key == g_cleanKey) return;
+    g_cleanKey = key;
+    if (!key.empty()) LOG_INFO("[sim] sim mods are suppressed in matches on %s (a clean-room Test)", key.c_str());
+    if (g_hooksChanged) g_hooksChanged();
+}
 
 void SetLevelSources(std::vector<LevelSource> sources) {
     g_levelSources = std::move(sources);
@@ -193,6 +203,43 @@ bool IsLevelMod(int mod) { return mod >= 0 && mod < static_cast<int>(g.mods.size
 
 void TurnStarted() {
     if (g.L) g.turnPending = true;   // the first turn starts before Init loads the sims
+}
+
+// At the first tick of a turn, on every machine alike: CurrentTeamIndex and Water.Level are simulation state.
+void NoteTurnStart() {
+    ++g.turns;
+    float team = -1;
+    const bool known = !GetDataNumber("CurrentTeamIndex", &team) && team >= 0 && team < 32;
+    if (!known) {
+        if (g.rounds == 0) g.rounds = 1;   // the turn counts in the current round
+    } else {
+        const uint32_t bit = 1u << static_cast<uint32_t>(team);
+        if (g.rounds == 0 || (g.roundTeams & bit)) {
+            ++g.rounds;
+            g.roundTeams = 0;
+        }
+        g.roundTeams |= bit;
+    }
+    for (int i = 0; i < static_cast<int>(g.mods.size()); ++i) {
+        Mod::Water& w = g.mods[i].water;
+        if (!g.mods[i].loaded || !w.on || g.turns < w.start || (g.turns - w.start) % w.every) continue;
+        float cur = 0;
+        if (const char* why = GetDataNumber("Water.Level", &cur)) {
+            ModLog(i, 2, (std::string("waterSchedule: Water.Level unreadable (") + why + "); the schedule stops").c_str());
+            w.on = false;
+            continue;
+        }
+        const float target = std::min(w.cap, w.hasFrom ? w.from + w.step * static_cast<float>(w.applied) : cur + w.step);
+        ++w.applied;
+        if (target > cur) {
+            if (const char* why = SetDataNumber("Water.Level", target)) {
+                ModLog(i, 2, (std::string("waterSchedule: setting Water.Level failed (") + why + "); the schedule stops").c_str());
+                w.on = false;
+                continue;
+            }
+        }
+        if (std::max(cur, target) >= w.cap) w.on = false;   // at the cap: done
+    }
 }
 void SetLogSink(LogSink fn) { g_sink = fn; }
 void SetHooksChanged(void (*fn)()) { g_hooksChanged = fn; }
@@ -219,7 +266,12 @@ bool Init(const std::vector<std::string>& forwarded, bool gateOpen) {
         if (id != 0xffff) g.forwarded[id] = n;
     }
     std::vector<const ModSource*> srcs;
-    for (auto& s : g_sources) srcs.push_back(&s);
+    const bool clean = Clean();
+    if (clean && !g_sources.empty())
+        LOG_INFO("[sim] match %u: %zu sim mod(s) suppressed for this clean-room Test", g.serial, g_sources.size());
+    if (!clean)
+        for (auto& s : g_sources) srcs.push_back(&s);
+    const size_t modCount = srcs.size();
     std::vector<const LevelSource*> levels;
     for (auto& s : g_levelSources)
         if (ForLevel(s, g_levelKey)) levels.push_back(&s);
@@ -241,8 +293,8 @@ bool Init(const std::vector<std::string>& forwarded, bool gateOpen) {
         m.version = s.version;
         m.chunkName = s.chunkName;
         m.rng = g.seed ^ Fnv1a(s.id.c_str());
-        if (k >= g_sources.size()) {
-            const LevelSource& l = *levels[k - g_sources.size()];
+        if (k >= modCount) {
+            const LevelSource& l = *levels[k - modCount];
             m.level = true;
             m.levelKey = l.key;
             m.stem = l.stem;
@@ -320,7 +372,8 @@ void Update() {
         DeliverEvent("tick", &PushTick, &tick);
         if (g.turnPending) {
             g.turnPending = false;
-            const std::vector<float> turn{static_cast<float>(++g.turns)};
+            NoteTurnStart();
+            const std::vector<float> turn{static_cast<float>(g.turns), static_cast<float>(g.rounds)};
             const DispatchFloats d{"sim.turnStarted", &turn};
             DeliverEvent(d.event, &PushDispatch, &d);
         }

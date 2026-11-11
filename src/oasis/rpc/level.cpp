@@ -22,6 +22,7 @@
 #include "oasis/core/router.h"
 #include "oasis/providers.h"
 #include "tools/json_read.h"
+#include "version.h"
 
 namespace melange::oasis::providers {
 namespace {
@@ -123,6 +124,7 @@ bool BuildTestLevel(const std::string& project, const std::string& tod, uint64_t
 void InstallLevels() {
     config::EnsureKey("Erg", "Enabled", "1");
     config::EnsureKey("Erg", "ProjectsDir", "");
+    config::EnsureKey("Erg", "AutoBuildMaps", "1");   // read by Melange.exe (launcher/autobuild.h)
     if (!config::GetBool("Erg", "Enabled", true)) {
         LOG_INFO("[erg] level service off ([Erg] Enabled=0)");
         return;
@@ -137,6 +139,7 @@ void InstallLevels() {
     env.crcCollides = [](const std::string& name) { return assets::crcsafe::Collides(g_crc, name); };
     env.inSession = [](const std::string& id) { return ModActive(id) && levels::gate::InLobby(); };
     env.readOnly = [] { return core::router::ReadOnly(); };
+    env.melangeVersion = MELANGE_VERSION;
     if (lua50::Check())
         env.compile = [](const std::string& text, int* line, std::string* message) {
             return lua50::Compile(text, line, message) != lua50::Compiled::SyntaxError;

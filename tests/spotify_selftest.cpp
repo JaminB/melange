@@ -1,5 +1,5 @@
 // Offline self-test for src/spotify/spotify_logic.h (wum.spotify's pure logic; no game, no network). Portable: it also
-// builds with g++ on Linux (json_read.cpp needs a _wfopen stand-in there). Exit code 0 = all passed. Melange 0.14 adds the
+// builds with g++ on Linux (json_read.cpp needs a _wfopen stand-in there). Exit code 0 = all passed. Melange 0.14.1 adds the
 // callback pages, the Client ID resolution, file and clipboard finder, the not-allowlisted heuristic and transfer.
 #include <cmath>
 #include <cstdio>
@@ -173,7 +173,7 @@ void TestCallback() {
     Expect(CallbackHttpResponse(404, Page::Failed) == nf && CallbackHttpResponse(400, Page::Ok) == br, "callback page: 404/400 ignore the page");
 }
 
-// Melange 0.14: one fixed, styled, self-contained page per outcome, with strict headers.
+// Melange 0.14.1: one fixed, styled, self-contained page per outcome, with strict headers.
 void TestPages() {
     struct P {
         Page page;
@@ -226,7 +226,7 @@ void TestPages() {
     ExpectEq(kDashboardUrl, "https://developer.spotify.com/dashboard/create", "the dashboard URL");
 }
 
-// Melange 0.14: which Client ID is used, its hint, and the in-game file.
+// Melange 0.14.1: which Client ID is used, its hint, and the in-game file.
 void TestSetup() {
     const std::string a(32, 'a'), b = "0123456789ABCDEFabcdef0123456789", c = "ZZZZZZZZZZzzzzzzzzzz000000000000";
     ResolvedId r = ResolveClientId(a, b, c);

@@ -1,5 +1,5 @@
 // The level service for the mock server, over the committed synthetic scenes (tests/fixtures/erg): level.list,
-// level.new, level.load (the scene, then one bin frame per blob), level.save, level.themes, level.palette and
+// level.new, level.delete, level.materials, level.load (the scene, then one bin frame per blob), level.save, level.themes, level.palette and
 // level.close, with the terrain generated from each frame's size. No game file is involved.
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
@@ -80,7 +80,10 @@ function applyPatch(scene, p) {
   return s;
 }
 
+const MATERIAL_FILES = ["ThemeBuilding\\ThemeBuilding.txt", "ThemeCamelot\\ThemeCamelot.txt", "Maps\\synthetic.txt"];
+
 export function ergService(state) {
+
   const projects = new Map();
   state.erg = { projects, saves: 0, loads: 0 };
   const info = (p) => ({ id: p.id, title: p.title, stem: p.stem, base: p.base, modified: p.modified, built: false });
@@ -103,13 +106,27 @@ export function ergService(state) {
     return { value: scene, [AFTER]: (c) => { for (const [ref, data] of sent) c.sendBinary(ref, data); } };
   };
   return {
-    methods: ["level.list", "level.new", "level.load", "level.save", "level.themes", "level.palette", "level.close"],
-    mutating: ["level.new", "level.save"],
+    methods: ["level.list", "level.new", "level.load", "level.save", "level.themes", "level.palette", "level.close", "level.materials", "level.delete"],
+    mutating: ["level.new", "level.save", "level.delete"],
     handlers: {
       "level.list": () => ({
         bases: BASES.map((b) => ({ key: b.key, stem: b.file.replace(".json", ""), title: b.title, source: "game", theme: "BUILDING" })),
         projects: [...projects.values()].map(info),
+        projectsDir: "C:\\mock\\Melange\\erg\\projects",
       }),
+      "level.delete": (p) => {
+        if (!projects.has(p.project)) throw [-32602, `no project '${p.project}'`];
+        projects.delete(p.project);
+        return { deleted: p.project };
+      },
+      // The material files of the themes listing: eight records; colors: a fixed colour per record, the last unresolved.
+      "level.materials": (p) => {
+        if (!MATERIAL_FILES.includes(p.file)) throw [-32602, `material file '${p.file}': not found`];
+        const names = ["Grass", "Rock", "DarkRock", "Sand", "Ash", "Snow", "Lava", "Missing"];
+        return { file: p.file, names, ...(p.colors === true ? {
+          colors: ["#4a7a30", "#807870", "#3c3836", "#d8c890", "#504c4a", "#f0f0f4", "#c83c10", "#9a7fb4"],
+          resolved: names.map((_, i) => i < 7) } : {}) };
+      },
       "level.new": (p) => {
         if (typeof p.slug !== "string" || !/^[a-z0-9]{1,24}$/.test(p.slug)) throw [-32602, "slug must be 1-24 characters a-z, 0-9"];
         if (typeof p.title !== "string" || !/^[\x20-\x7e]{1,40}$/.test(p.title)) throw [-32602, "title must be 1-40 printable characters"];
@@ -139,8 +156,7 @@ export function ergService(state) {
         state.erg.saves++;
         return { saved: true, warnings: [] };
       },
-      "level.themes": () => ({ themes: THEMES, timesOfDay: ["DAY", "EVENING", "NIGHT"],
-        materialFiles: ["ThemeBuilding\\ThemeBuilding.txt", "ThemeCamelot\\ThemeCamelot.txt"] }),
+      "level.themes": () => ({ themes: THEMES, timesOfDay: ["DAY", "EVENING", "NIGHT"], materialFiles: MATERIAL_FILES }),
       "level.palette": () => [
         { name: "oildrum", resource: "OilDrum", role: "object", preview: "" },
         { name: "mine", resource: "Mine", role: "object", preview: "" },

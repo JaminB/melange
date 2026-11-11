@@ -48,6 +48,9 @@ struct LevelSim {
 };
 void SetLevelSims(std::vector<LevelSim> sims);          // at launch from the frozen content set; Test adds one
 void SetTestLevelSim(const LevelSim& s);                // offline Test only; replaced per Test
+// A clean-room Test (level.test cleanMods): matches on level `key` load no sim mod, only the level script; "" ends
+// it. Any thread; applied at the next frame, like the Test script.
+void SetTestCleanRoom(const std::string& key);
 // The knots a generated chunk places (objects by kind, and WORM0-7 as "spawn" when it uses knot spawns).
 std::vector<std::pair<std::string, std::string>> LevelKnots(const std::string& stem, const std::string& chunkText);
 std::string LevelSimDigest();                           // sha256 of this match's level script text; "" for none

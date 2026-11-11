@@ -59,8 +59,15 @@ bool g_verified = false;
 int g_foreignWrites = 0;
 
 struct Counters {
-    uint64_t applied = 0, sets = 0, expired = 0, matchEnds = 0, cleared = 0, busy = 0, skipped = 0;
+    uint64_t applied = 0, sets = 0, expired = 0, matchEnds = 0, cleared = 0, busy = 0, skipped = 0, autoApplied = 0;
 } g_n;
+
+// The automatic correction (SetAuto): its function, and the spec it drew last and on which frame, so GetCamera outside
+// Render (overlays, worldToScreen) agrees with the frame it follows. Main thread only.
+AutoFn g_auto = nullptr;
+logic::Spec g_autoSpec{};
+uint64_t g_autoFrame = 0;
+bool g_autoValid = false;
 
 bool Check() {
     if (g_checked) return g_ok;
@@ -146,16 +153,38 @@ void Build(const logic::Spec& s, const float gameProj[16], Matrices* m) {
 
 void Apply() {
     logic::Spec spec;
+    bool fromAuto = false;
     {
         std::lock_guard lk(g_mx);
         Expire();
-        if (!g_st.active) return;
-        spec = g_st.spec;
+        if (g_st.active) spec = g_st.spec;
+        else if (g_auto && sim::InMatch()) fromAuto = true;
+        else {
+            g_autoValid = false;
+            return;
+        }
     }
     const uintptr_t cam = MainCamera();
     if (!cam || !CopyGuarded(g_saved, reinterpret_cast<const void*>(cam + kBlockBegin), kBlockBytes)) {
-        ++g_n.skipped;
+        if (!fromAuto) ++g_n.skipped;
+        g_autoValid = false;
         return;
+    }
+    if (fromAuto) {
+        // The game's own eye/target/up for this frame; the correction draws only when it asks to.
+        const float* eye = reinterpret_cast<const float*>(g_saved + (kEye - kBlockBegin));
+        const float* target = reinterpret_cast<const float*>(g_saved + (kTarget - kBlockBegin));
+        const float* up = reinterpret_cast<const float*>(g_saved + (kUp - kBlockBegin));
+        spec = logic::Spec{};
+        memcpy(spec.up, up, sizeof spec.up);
+        if (!g_auto(eye, target, up, spec.pos, spec.target) || logic::Validate(spec)) {
+            g_autoValid = false;
+            return;
+        }
+        g_autoSpec = spec;
+        g_autoFrame = events::FrameCount();
+        g_autoValid = true;
+        ++g_n.autoApplied;
     }
     const float* savedProj = reinterpret_cast<const float*>(g_saved + (kProj - kBlockBegin));
     const float* savedFrustum = reinterpret_cast<const float*>(g_saved + (kFrustum - kBlockBegin));
@@ -187,7 +216,7 @@ void Apply() {
         ++g_n.skipped;
         return;
     }
-    if (!g_verified) {
+    if (!g_verified && !fromAuto) {
         // Once per session: let the engine rebuild both matrices from eye/target/up and compare.
         g_verified = true;
         reinterpret_cast<uint8_t*>(cam)[kViewStale] = 1;
@@ -206,7 +235,7 @@ void Apply() {
     if (!CopyGuarded(g_written, reinterpret_cast<const void*>(cam + kBlockBegin), kBlockBytes)) memcpy(g_written, block, kBlockBytes);
     g_cam = cam;
     g_applied = true;
-    ++g_n.applied;
+    if (!fromAuto) ++g_n.applied;
 }
 
 // The XCamera block as fields: Restore puts back each field the frame left as Apply wrote it and keeps any field
@@ -285,11 +314,12 @@ void OnFrame() {
 bool VerbStats(std::string_view, void*) {
     std::lock_guard lk(g_mx);
     LOG_INFO("[mirage] camera.override: active=%d hook=%d applied=%llu sets=%llu expired=%llu matchEnds=%llu cleared=%llu "
-             "busy=%llu skipped=%llu foreign=%d",
+             "busy=%llu skipped=%llu foreign=%d auto=%d autoApplied=%llu",
              g_st.active ? 1 : 0, g_hook ? 1 : 0, static_cast<unsigned long long>(g_n.applied),
              static_cast<unsigned long long>(g_n.sets), static_cast<unsigned long long>(g_n.expired),
              static_cast<unsigned long long>(g_n.matchEnds), static_cast<unsigned long long>(g_n.cleared),
-             static_cast<unsigned long long>(g_n.busy), static_cast<unsigned long long>(g_n.skipped), g_foreignWrites);
+             static_cast<unsigned long long>(g_n.busy), static_cast<unsigned long long>(g_n.skipped), g_foreignWrites,
+             g_auto ? 1 : 0, static_cast<unsigned long long>(g_n.autoApplied));
     return true;
 }
 
@@ -299,9 +329,14 @@ bool g_installed = false;
 void Adjust(float view[16], float invView[16], float proj[16]) {
     if (g_applied) return;  // inside Render the engine camera already holds it
     std::lock_guard lk(g_mx);
-    if (!g_st.active || !g_hook) return;
+    if (!g_hook) return;
+    const logic::Spec* s = g_st.active ? &g_st.spec : nullptr;
+    // the correction drawn in the frame just rendered (or the one before, between Render and the next frame's)
+    if (!s && g_autoValid && g_auto && GetCurrentThreadId() == events::MainThreadId() && events::FrameCount() - g_autoFrame <= 1)
+        s = &g_autoSpec;
+    if (!s) return;
     Matrices m;
-    Build(g_st.spec, proj, &m);
+    Build(*s, proj, &m);
     memcpy(view, m.view, sizeof m.view);
     memcpy(invView, m.inv, sizeof m.inv);
     if (proj[11] != 0.f) memcpy(proj, m.proj, sizeof m.proj);
@@ -312,6 +347,19 @@ void GameView(float view[16], float invView[16], float proj[16]) {
     memcpy(view, g_saved + (kView - kBlockBegin), 64);
     memcpy(invView, g_saved + (kInvView - kBlockBegin), 64);
     memcpy(proj, g_saved + (kProj - kBlockBegin), 64);
+}
+
+void SetAuto(AutoFn fn) {
+    bool installNow = false;
+    {
+        std::lock_guard lk(g_mx);
+        g_auto = fn;
+        g_autoValid = false;
+        if (!fn || !g_installed || !g_ok) return;
+        g_wantHook = true;
+        installNow = !g_hook && render::CurrentPass() == render::Pass::None && GetCurrentThreadId() == events::MainThreadId();
+    }
+    if (installNow) InstallHook();
 }
 
 class MirageCamera final : public melange::Module {

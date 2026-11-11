@@ -1,0 +1,1190 @@
+# erg-mcp: Erg for AI agents
+
+erg-mcp is a [Model Context Protocol](https://modelcontextprotocol.io) server in front of Erg (see [erg.md](erg.md)).
+It lets an MCP client such as Claude Code open an Erg project, look at the level and edit it, with the same model the
+Erg panel uses: the same commands, the same undo stack, and the same patch on save. It is a developer tool in this
+repository (`tools/erg-mcp/`), not part of the release zip.
+
+It talks to the same local server the Erg panel does (`melange.asi` with the game running, or `Melange.exe` with it
+closed), over the Oasis protocol (see [oasis.md](oasis.md)). It never reads `Data\` or writes `Mods\` itself.
+
+## Running it
+
+It needs the portable toolchain (`.\scripts\web\fetch.ps1`, which also fetches the web app's TypeScript). Build it
+with:
+
+```powershell
+.\tools\erg-mcp\build.ps1
+```
+
+That writes `tools\erg-mcp\dist\erg-mcp.mjs`. `tools\erg-mcp\erg-mcp.cmd` runs it with the pinned Node from
+`tools\node`, and builds it first when `dist` is missing or older than a source it bundles (`build.ps1 -IfStale`: the
+files of `src\` and the editor's modules under `web\src`), so a checkout never runs a stale bundle; the Caldera bench
+(`bench\caldera\build.mjs`) does the same before it starts the server. The server speaks MCP over stdin and stdout, one
+JSON-RPC message per line; it logs to stderr only.
+
+For Claude Code, add it to `.mcp.json` in the project you work from:
+
+```json
+{
+  "mcpServers": {
+    "erg": {
+      "command": "C:\\path\\to\\melange\\tools\\erg-mcp\\erg-mcp.cmd",
+      "env": { "MELANGE_GAME_DIR": "C:\\Games\\Worms Ultimate Mayhem" }
+    }
+  }
+}
+```
+
+Leave out `env` to use the game while it runs (the next section). `erg-mcp.cmd --list-tools` prints every tool and its
+group.
+
+## Connecting
+
+The first tool that needs the server connects by the first of these that is set:
+
+1. `--url <launch url>` on the command line;
+2. the `ERG_MCP_URL` environment variable;
+3. `Documents\Melange\oasis_url.txt`, which the game writes while its Oasis runs (a file left by a game that has since
+   closed is skipped);
+4. `MELANGE_GAME_DIR`: erg-mcp starts `Melange.exe --serve --game <dir>` for that game folder (`MELANGE_EXE` names
+   another `Melange.exe` than `<dir>\Melange.exe`) and stops it when it exits. Use this with the game closed.
+
+**Projects folder.** Each server keeps projects in its own game folder's `[Erg] ProjectsDir` (in that game's
+`Melange.ini`), else `Documents\Melange\erg\projects`; `connect`, `list_bases` and `new_project` answer it as
+`projectsDir`. **Test** runs in the game and reads the game's folder, so a project made through `Melange.exe --serve`
+for another install (or one whose `ProjectsDir` differs) is not seen by that game's Test: build and test against the
+same install, or give both the same `ProjectsDir`.
+
+The `connect` tool does the same, or connects to an explicit `url` or `gameDir`. A launch URL has the form
+`http://127.0.0.1:8765/?k=<token>`; erg-mcp opens `ws://127.0.0.1:8765/ws?k=<token>` with no `Origin` header, which
+the server accepts with the token. The token is never echoed back in a tool result.
+
+**Test** (`level.test`) is offered only by the game's server, as in the panel.
+
+## Units
+
+Positions in tool results are **map units**, the level file's own units, in which one voxel is one unit, unless a
+field says `world`. World units are map units x 20: what the Erg panel shows, and the unit of the water level. Voxel
+cells are counted in a frame's grid: cell `(x, y, z)` with `y` up, centred on the frame's position.
+
+## Tools
+
+<!-- erg-mcp tools: each group adds its own subsection below. -->
+
+### project
+
+| Tool | What it does |
+|---|---|
+| `connect` | Connect or reconnect: `url`, or `gameDir` to start `Melange.exe --serve` (`MELANGE_EXE` names another `Melange.exe`; the tool takes no program path); no arguments uses the order above. Reconnecting closes the open project (refused with unsaved edits unless `discard`). Answers the server's `projectsDir`. The answer gives the server's `build`; when erg-mcp starts `Melange.exe --serve` and `MELANGE_EXE` is unset (the game folder's own Melange.exe serves, often older than this erg-mcp) it says so in `warnings`. |
+| `list_bases` | The base levels (the game's multiplayer maps and installed map packs: key, title, theme, source), the projects and `projectsDir`. Filters: `search`, `theme`, `source`. |
+| `new_project` | Start a project from a base: `base` (a key such as `Multi.DinerMight`), `slug` (`[a-z0-9]{1,24}`), `title`. Refused when a project with that slug exists (open it, `delete_project` it, or pass `allowRename: true` to take the server's next free id, such as `caldera2`, with a `warning` in the answer). |
+| `delete_project` | Delete a project's folder (patch, script, metadata) by `id`. Refused while it is open, here or in any other server (the game, `Melange.exe`): `close` it first. Exported mods are not touched; it cannot be undone. |
+| `open_project` | Open a project by `id`: its base and current state with every voxel blob. One project is open at a time. A server older than the project's format refuses it (a game folder's own Melange.exe answers `spawns.mode: must be "random" or "knots"` for a team-spawn project): the error says the server is older than the project's format, names its build and says to set `MELANGE_EXE` to a Melange.exe of this branch (Caldera v2 round 1). |
+| `describe_level` | The open level: voxel frames largest first (id, size, solid count, position and bounds in map and world units; `search`, `minVoxels`, `limit`, `allFrames`), the level's extent, spawns, objects, water, theme, time of day, the patch's usage against the limits, the game's voxel cell budget (`limits.voxelCells`: used, max 65535, free; a trimmed base frame counts its kept box, given as the frame's `trim`) and `engineWarnings` (blocks over 31 a side, cells over the budget). `backdrop: true` adds the base's backdrop (as `list_backdrop`). |
+| `save` | Save the open project. Refused, with nothing sent, while the patch breaks a limit or the patch validator objects (`describe_level` lists them under `problems`; undo the edit). Returns the server's warnings, `factory` (the mine factory checked as the game places it, see place), `water` when the water is under the base's ground plane (see scenery) and `spawns`: spawn knots a worm cannot stand on (the tread checks under **Spawn checks**, with the nearest point that passes). It also answers `projectHash`: the patch (without its stem and title) and the script, hashed, which `test {expectHash}` checks the game's project against (export answers it too). The hash takes the patch in the form the server stores it (each crate and trigger with every field, the defaults filled in; a mine factory with only the settings that are set), so the patch save sends, the project file the server wrote, an exported pack and the project opened again hash the same: before, a crate placed without a `count` hashed differently from the saved project's `count: 1`, and `test {expectHash: <save's projectHash>}` refused the level just built (Caldera v2 round 2: f5dc0f39 against a9798d62). `drape` lists undraped added blocks whose top pokes out of a draped skin's surface by up to 3 map units (a plug meant to lie under the skin standing out of its slope; a block higher than that anywhere is a structure on the skin and is left alone), with the worst column; describe_level answers the same. |
+| `undo`, `redo` | The editor's undo stack (500 steps), shared by every tool's edits. |
+| `close` | Close the open project (refused with unsaved edits unless `discard`). |
+
+### terrain
+
+Sculpt with the Terrain tab's own brushes, add and remove blocks, clear the base map's terrain, write voxels directly
+and paint the surround. Each call is one undo step. Strokes use the panel's brush code, so a tool edits exactly as a
+mouse stroke does: carve reaches every frame the brush overlaps, fill and paint touch only the frame the stroke started
+on (the anchor) unless `allFrames` is set, and a stroke is refused as a whole when a frame would need over 2000 runs or
+the patch outgrow its budget. Coordinates are in `units`: `world` (default), `map` or `grid` (voxel cells of `frame`). Brush sizes are voxels
+of the anchor frame, 1-32, fractions allowed (a sphere of 2.5 takes the cells whose centre is within 1.25 of it).
+
+`sculpt` and `sculpt_path` also take `frames` (edit only these frame ids; the anchor is picked among them), `onlyBlocks`
+(only blocks added in this project) and `skipFrames` (never these), so a road can be cut into a skin without touching
+the castle block beside it. A draped block (`heightfield_drape`'s skin, corner offsets) is read where the game draws it:
+each of its cells is tested at its column's sheared height, the anchor is found there and a snapped centre sits in the
+middle of a sheared voxel, so a dab on the skin's surface cuts the skin there (`drape: "grid"` reads it as its unsheared
+grid says, the Erg panel's brush and erg-mcp's before, where a dab on the surface missed the skin or holed it
+elsewhere). A stroke over undraped frames with no filter is the panel's brush, as before.
+
+| Tool | What it does |
+|---|---|
+| `sculpt` | One dab (it and `sculpt_path` take `allFrames`: fill and paint also edit every other frame the brush overlaps, rotated and scaled ones at their cell centres, as carve does; default false, the panel's anchor-only brush): `mode` (`carve`, `fill`, `paint`), `shape` (`box`, `sphere`), `size` `[x,y,z]`, `center`, and `material` 0-63 (fill and paint need it; fill also takes `materialColumn`, the material of the highest solid voxel in each column). `frame` picks the anchor, otherwise the frame holding the point. Centres snap to the middle of a voxel unless `snap` is false; `dryRun` counts without applying. Fill places voxels where the brush is, so centre it in empty cells inside a frame. |
+| `sculpt_path` | A stroke along `points` (a polyline), a dab every `spacing` map units (default half the smallest brush side), all anchored on the first point's frame (or `frame`). `taper` is the brush size at the end as a multiple of `size` (0.3 narrows to 30 %, linear along the path's length, never under 1 voxel). `followSurface: "downhill"` makes the path from the first point (the ground under it): it walks downhill over the voxel ground by steepest descent (16 directions, a step of `spacing`; level ground is crossed straight on for up to 8 steps; it never climbs) until ground at or under the water, a pit, `maxLength` (map units, default 400), `maxSteps` (default 1000) or the edge of the ground, and dabs along it with each centre `depth` map units above the ground's top (default -0.5, the middle of an unscaled top voxel). The answer's `followSurface` gives the `path` (in `units`), why it stopped (`stop`), its steps and drop. A lava river is a paint stroke with `followSurface`, `allFrames` and a `taper`. Not with units `grid`. |
+| `paint_path` | Paint a band `width` wide along `points` ([x, z], or [x, y, z] with y unused) onto the ground's surface over every voxel frame it crosses, base frames and added blocks alike: each solid voxel whose centre is within width / 2 of the path in x, z and within `depth` under the top of the ground in its column (the highest solid voxel there over every frame; default 1 map unit, the top voxel) takes `material`. Stretches over air paint nothing instead of failing. `taper` narrows it along its length, `jitter` {amount, scale, seed} makes the edge wander, `only` / `except` limit the materials repainted, `followSurface: "downhill"` makes the path from the first point as `sculpt_path`'s does. A road or a lava river is one call (sculpt dabs touch only the frame they start in, and took about 300 calls on the Caldera bench). |
+| `paint_region` | The same surface paint inside `shapes` (circles `x, z, radius`, rectangles `min, max`, polygons `points`) and/or where `mask` is above 0: an expression in the heightfield language of `x`, `z` (the level position in `units`), `r`, `theta` (about `centre`), `h` (the ground's top there), `y` (the voxel's height), `d` and `s` (the slope in degrees of the steepest triangle of the column's top, from its frame's corner offsets, 0 on a frame without them: a draped skin's cliffs are `s - 45`). A beach: `mask: "step(h, 4) - 0.5"`. |
+| `paint_blob` | An organic pool or patch on the ground's surface (a lava lake, an ash pond): a disc round `at` whose radius wanders with the bearing (`noise`: `amount`, the radius times 1 + amount x fbm round the circle, default 0.3; `lobes`, default 5; `seed`), painted as paint_region paints it, with a soft edge by default (`soft`, the same switch as `blend`: per corner over `falloff`, default an eighth of the radius), so the shore is a gradient along the wandering outline instead of hard stairs of whole voxels (the Caldera iteration-10 lava pools). `blobs` paints several in one undo step. |
+
+`paint_path` and `paint_region` take `blend: true`: the edge is painted per corner instead of per voxel. A surface
+voxel whose centre is outside the area but some of whose corners are inside it (or within `falloff`, in `units`, past
+its edge) takes the material as its second material on those corners, the game's per-corner blend (the panel's
+2nd-material brush, heightfield `blend`), so the game draws a gradient across the edge voxel: a lava flow on a 2.5-unit
+skin gets a smooth edge instead of stepped red and black squares. With `jitter` the edge also wanders (Perlin noise).
+The answer's `blendedEdge` counts those voxels. Blending adds runs where it paints: Test the level.
+
+`paint_path`, `paint_region` and `paint_blob` take `exclude` (shapes, as paint_region's, never painted whatever else
+holds: grass kept off a crater's floor) and `excludeMask` (an expression in the mask's language: never where it is above
+0). A voxel that already carries a second material (an earlier blend) is repainted with it kept.
+| `add_block` | A solid block of `size` (each side 1-31, at most 64 blocks) and `material` under the Scene frame, optionally `scale` (0.5-4 map units per voxel, default 1; the game's own maps use frames scaled 1.2-2.0, and 0.75 played in the game: finer voxels for a crater lip or a summit at the same cost per cell). `dryRun` answers the block's cost (the game's cells before and after, its bounds) without adding it. `at` is the point it rests on (x and z its centre, y its bottom) or `center` is its middle, in world or map units; the corner snaps to whole units. Refused when the level's voxel frames would pass the game's 65 535 cells. `fill`: `solid` (default), `empty` (no solid cell: a canvas for `sculpt` fill, `fill_box_raw` or structures with `place: "existing"`; its box costs its cells all the same) or `hollow` (a closed shell `shell` voxels thick, default 1). Answers `frameId`, the new frame id (also as `id`; a negative id, which can change when the project is reopened, so describe_level again), its bounds and the cells left. |
+| `remove_block` | Remove a block added in this project, by frame id. |
+| `trim_base_frames` | Give back the cells base frames spend on empty space: the game counts X*Y*Z of every voxel frame, solid or empty, so a wiped base still spends all of them (Multi.DinerMight: 11 652). A trim keeps a box of a base frame's grid in the built level: `keep: "solid"` (default) the box of its solid voxels, a frame with none one empty cell; `keep: "empty"` only frames with no solid voxel. Choose by `frames`, `search`, `box` (frames whose voxel box overlaps it, in `units`) or `all`. The project keeps the whole grid, so every tool reads and edits it as before; save writes the patch's `trimFrame` op (erg-patch/2), and the game's count is the trimmed one from the next Test, export or build. Every solid voxel must stay in the box: a fill outside it is a `problems` line (and save refuses) until the frame is trimmed again or `clear: true` drops the trims. A box holding solid voxels moves the frame by its offset from the grid's centre and its details and child frames back (`moves` in the answer), so nothing moves in the level; a frame holding a detail tied to a voxel (voxelPos) is skipped. One undo step; `dryRun` answers the cells it would free. |
+| `remove_base_frames` | Remove base frames from the level: every word of their grids emptied and each trimmed to one empty cell, one undo step (the frame object stays, with its details, child frames and the base's references, as the game's own empty frames are). Same choosers and `dryRun`; `voxelsEmptied` counts the words. Tried on 2026-11-08 (testenv B, Multi.DinerMight): `remove_base_frames {all: true}` took the level from 11 652 cells to 674 (442 frames trimmed to one cell, the rest folders or frames of one cell), and the Test loaded and played with a block island in their place; `trim_base_frames {all: true}` on the untouched base (boxes with solid voxels, frames moved) drew the diner, the bridge and the road in the same place as the untrimmed level from two fixed cameras. |
+| `clear_base_terrain` | Carve away the solid voxels of base frames chosen by `frames`, `search` (name) and/or a `box` (voxels whose centre is in `[min, max)`); `all: true` for everything. Added blocks are kept unless `includeBlocks`. `wipe` writes empty words (0) instead of carving, which keeps each voxel's material bits; empty words merge into fewer patch runs. `dryRun` counts. |
+| `fill_box_raw` | Write a box of voxels in any voxel frame, including added blocks: `state` `solid` (with `material`) or `empty`, or a raw `word`; `only` empty or solid cells; the box is `min`/`max` in `units` (default `grid`: voxel indices, `max` exclusive). Words must be valid edits of the base word. |
+| `paint_surround` | The painted surround, a 100x100 height grid (heights 0-1, row-major, cell `(x, y)`). `raise`, `lower`, `flatten` (to `level`) and `smooth` dab the panel's brush at `points` (`radius` 1-25, `strength`, `passes`); `set_grid` writes `heights` (100 rows of 100, or 10 000 numbers) or a `formula` of `x`, `y`, `u`, `v`, `h` over a `region`, moved `mix` of the way. The first call switches the level to a painted surround. |
+| `read_surround` | The surround heights: min, max, mean and block averages (`step`), and the exact cells of a small `region`. |
+
+### structures
+
+Voxel architecture. Each tool plans a structure as a list of shapes and writes it as **one undo step**: voxels of the
+frames it overlaps are edited in place (rotated and scaled frames too), and where a solid part reaches outside every
+frame it goes into new terrain blocks under the Scene frame (they count against the 64 added blocks and the game's 65 535
+voxel cells, and a structure whose new blocks would pass either is refused). The answer lists
+the voxels added, removed and repainted, the frames touched, the new blocks, the patch usage, and the structure's own
+numbers (resolved sizes, where a ramp ends). `save` then sends the same patch the panel would.
+
+Shared arguments: `material` (0-63; default the most common solid material near the structure), `place` (`auto`
+default: frames, then new blocks; `existing`: never add blocks; `new`: every solid voxel into new blocks), `dryRun`
+(plan and report, change nothing), `units` (`map` default, or `world`: every position and length of the call is world
+units), `blockScale` (map units per voxel of the new blocks, 1-4, default 1: fewer cells for the same structure in
+coarser voxels; use `place: "new"` so all of it is on that lattice) and `packing` (`tiles`, the default: tiles of up
+to 31 a side, each trimmed to what it holds; `parts`: a block per part of the structure, such as each wall, tower and
+the keep, merged where that costs at most an eighth more cells, so the air between parts, a courtyard, is in no block:
+a 24 x 24 castle with a keep takes about 40 % of the cells, in more blocks), `costAt` (up to 8 blockScales: the same
+structure is also planned all in new blocks at each, changing nothing, and the answer's `costAt` gives each one's blocks
+and the game's cells, or why it does not fit, to choose a scale first: a castle at 1.5 costs about 30 % of its cells at
+1), `costOnly` (change nothing and answer only the cost: the new blocks and the game's cells with each packing,
+`tiles`, `parts` and `fit`, at the call's blockScale and at each `costAt` scale, the cheapest, and the level's cells
+left), `maxBlocks` and `maxCells` (refuse a plan whose new blocks pass them, to keep some of the 64 and the 65 535 for
+the rest of the level), `scale` (on every structure tool the same as `blockScale`: build_castle's name for it; given
+both, they must agree; build_castle's own `scale` also lays the castle out in voxels of that size, as before) and
+`drape` (`skip`, the default, leaves draped
+blocks alone; `sheared` edits their cells where the game draws them, so a cut ramp, a tunnel or a crater cuts through a
+skin too). Every answer counts the game's cells its new blocks take (`cells`: `newBlocks`, and the level's `level`,
+`free` and `max` after it; each of `newBlocks` has its `cells` and `scale`). Positions are `[x, y, z]` with `y` up; the `y` of `at`/`from` is the level of the first solid layer, so the
+structure stands on the surface at that height. Sides are map directions: `n` = -z, `s` = +z, `e` = +x, `w` = -x, before
+any `rotation` (degrees, counter-clockwise from above). A call that changes nothing fails (for example, outside every
+frame in a level whose base has no Scene frame, such as Multi.NiceToSiege, where only `place: "existing"` can work).
+
+| Tool | What it builds |
+|---|---|
+| `build_castle` | `at`, `size` [x, z], `wallHeight`, `wallThickness`, round or square corner towers (`towerShape`, `towerRadius`, `towerHeight`), a `keep` with `keepSize`, a `gate` on one side (`gateWidth`, `gateHeight`, round-topped from 3 wide), `crenellations`, `foundation` (fills the whole footprint below the floor), `rotation`. `scale` (1-4) lays the castle out in voxels of that many map units (lengths stay map units; walls, merlons and gates keep their rhythm in voxels) and gives its new blocks that scale: about 1/scale^3 of the cells. The answer's `spawnSpots` lists open courtyard positions (between the curtain wall and the keep, never inside a wall passage), the middle of each wall-walk and each tower top; after a build each is checked against the voxels (`ok`, `standOn`: ground within 1.5 map units of the design and 1.5 of air above) and against the tread a worm needs (the spawn checks' tread rule below: not in solid, ground round it at least half a worm out): a spot on a wall-walk's edge is moved to the nearest point within 2 map units that passes (`tread.snapped`, with where from and why), else it is not `ok`; ready for `place_spawn_knots` as `pos`. `ground` (`max`, `mean` or `min`; also on `build_tower` and `build_keep`) sets `at`'s y from the ground under the rotated footprint (the top of the highest solid voxel, a skin at its sheared height, sampled every map unit) and `sink` lowers the structure that far under it, so it beds into a slope or a skin instead of floating over a fraction of a voxel; the answer's `groundUnder` gives the min, max and mean found. `gates` takes several gates instead of `gate` ({`side`, `width`, `height`, `offset` along the side, `below`}; the keep's door faces the first). A gate's `below` (also `gateBelow` for `gate`) carves its floor that far under the castle's floor at the outer face, rising to the floor at the inner face: a ramp down to lower ground outside instead of a sill as high as the difference (the 1.5-unit threshold of a castle set with `ground: "max"` on a slope). `auto` takes the floor less the ground 1.5 map units outside the gate's middle, at most the passage's length (45 degrees); it is the default for `gates` and with `ground`, else 0 (as before). `foundation` is a whole number of the castle's voxels (of `scale`) and fills the whole footprint (a 24 x 20 castle with foundation 4: 2000-3000 cells); `seat: true` instead fills under the walls, towers and keep only, column by column from the ground up to the floor where the ground is lower (down to `seatDepth`, default 8 map units), before the gates are carved through it. The answer's `courtyard` gives where a worm walks in it as built: `askedY` (the floor asked for), `walkY` (the top of the courtyard's voxels under its spawn spots, the median) and `snappedBy`: at `scale` 1.5 a castle at y 4 has its court at 4.5, so the trail and shelf outside its gates are cut to `walkY`, not to the y asked for. |
+| `build_wall` | A wall along `points` (each with its own base y, so it follows a slope), `closed`, `height`, `thickness`, `crenellations` (merlons 2 on, 1 off; on both edge rows of walls 3+ thick, `parapet` picks left, right, both or all), `foundation`. |
+| `build_tower` | Round or square, `radius`, `height`, `hollow` with `wallThickness` and a `door` (default south) of `doorWidth` x `doorHeight`, merlons round the rim, `foundation`. |
+| `build_keep` | A rectangular building: `size`, `height`, hollow interior at floor level, roof slab, `door`, arrow slits (`windows`), merlons on the roof rim. |
+| `build_ramp` | `from` to `to`, `width`, `maxSlope` (default 40 degrees; worms walk about 45). Steeper is refused unless `switchback` folds it into lanes side by side (`turn` left or right); the answer gives the slope, the lane count and where the top ends. `support` solid or slab. `mode: "cut"` cuts the walking surface into the terrain that is there instead of building on it (a path up a cone, at no block cost): the voxels above the surface, over the ramp's width and `headroom` high (default 3 map units), are carved in every frame it crosses, and the support fills only empty cells under it where it passes over air, into existing frames only (`place: "existing"`; any other `place` is refused). A switchback's later lanes run back over the flank, so where they pass over air outside every frame there is no ramp: pick `from` and `to` so the lanes stay in the terrain. |
+| `build_stairs` | `from` to `to`, `width`, `rise` per step; the tread is the run divided by the steps and must be at least 1. |
+| `dig_crater` | A paraboloid bowl of `radius` and `depth` below the surface level `at.y`, a raised rim (`rimWidth`, `rimHeight`), optional `bowlMaterial` repaint. |
+| `sculpt_crater` | A crater shaped into the terrain that is there (a volcano's summit), `at` [x, z]: the ground is read first, the rim crest is its mean height round the `radius` circle plus `rimHeight`, the bowl is `depth` below the crest (flat inside `floorRadius`), and outside the crest the rim falls back to the ground's own slope over `rimWidth` (default radius / 2), so there is no separate wall ring. `bands` paint the new surface `bandDepth` deep (default 2) by signed distance from the crest (`from`/`to`, negative inside the bowl), first match wins. The rim is raised in `material`, by default each column's own top material (no new material change down a column, so no new runs: an added block holds at most 2000, and every band painted adds about one a column); fills above the old ground go into existing frames, else new blocks (`blockScale` gives them the field's voxel size). Refused where under half the rim circle has ground. |
+| `dig_tunnel` | Carves a round or square tube of `radius` along `points` through every frame it crosses; optional lining shell (`liningMaterial`, `liningThickness`). `floor: "flat"` digs a walkable tunnel: the points are on its floor (y = the level worms walk on), a flat floor that runs straight between them, `2 x radius` wide and `headroom` high (default 2 x radius, at least 2; round: the top `radius` is a half circle), with rounded bends and a floor slab `floorThickness` thick (default 1, 0 for none) filled in the structure's material where the cells under the floor are empty (across a cave; outside every frame it goes into new blocks unless `place: "existing"`). A segment steeper than `maxSlope` (default 40 degrees) is refused; the answer gives `steepestDegrees`. |
+| `build_arch` | A freestanding gateway: opening `span` wide, straight for `rise`, then semicircular; `pier`, `depth`, `crown`, `rotation`. |
+| `build_bridge` | A deck from `from` to `to` (`width`, `deckThickness`), rails, and optionally piers every `pierSpacing` down to `downTo`; `arched` fills solid between the piers and carves a round arch through each bay. |
+
+**Rotated structures.** A new block is never rotated, so a castle at 45 degrees in `tiles` packing is a few large
+boxes mostly of air. `packing: "fit"` starts from the tiles and halves again and again the box whose halving (trimmed
+to what each half holds) saves the most cells, while blocks are left (`maxBlocks`, default the level's) and a halving
+saves at least a twentieth of its box: the boxes follow the diagonal walls. On the synthetic level a 24 x 24 castle with
+no keep at 45 degrees took under 80 % of the tiles' cells in fit (the test's floor; `costOnly` answers each packing's
+figure for the castle at hand).
+
+**Keep and gate lane.** `keepAxes: "gate"` reads build_castle's `keepSize` as [across, deep] of the first gate (across
+along the gate's wall, deep from it into the courtyard), so a keep is sized along and across the castle's gate axis
+whatever side the gate is on (`xz`, the default, reads it in the castle's own x and z, as `size`). `gateLane` keeps a
+straight lane from the first gate across the courtyard clear of the keep (`true`: the gate's width + 2; a number: its
+width; or {`width`, `mode`, `side`}): mode `keep` moves the keep aside (to `side`, left or right of a worm walking in,
+default the roomier side; at least 2 voxels from the walls) and turns its door to the lane; mode `gate` leaves the keep
+centred and moves the gate along its wall into the band beside the keep that is wide enough (clear of the corner
+towers); `auto` (default) moves the keep when it fits, else the gate, and a lane that fits neither is refused. The
+answer's `structureInfo` gives `lane` (what was done, its width and centre), `keepAt` and `keepDoor`; `spawnSpots` give
+the courtyard bands round the moved keep.
+
+**Gates.** A gate that leaves no lintel (its height within a voxel of the wall's) is cut open to the top of the merlon
+row, square, so no merlon floats over it; the answer's `notes` say so for each such gate. build_castle's fit errors give
+their lengths in the call's units (`each side needs at least 14 map units ...; size is 8 x 8 map units`), and
+`keepHeight` is checked only when a keep is built (`keep: false, keepHeight: 0` is accepted).
+
+Structures are sampled at the centres of the voxel cells, so in a frame whose position is not on the 1-unit lattice a
+surface can land a voxel off from its neighbour frame; new blocks sit on the Scene frame's whole-unit lattice. Sizes are
+map units whatever the frame's scale: a tower of radius 5 built (`place: "existing"`) into a heightfield of `voxelSize`
+2.5 is 2 of its voxels across, so detail finer than the frame's voxels is lost. The added blocks and the cells are the
+limits for large structures: a block is at most 31 voxels a side, its whole box counts against the cells, and only cells
+that hold something are given a block.
+
+### heightfield
+
+Terrain from a height per column: islands, hills, volcanoes. Both tools take the same arguments; `heightfield_plan`
+answers the plan and changes nothing, `heightfield_region` applies it as **one undo step**.
+
+| Tool | What it does |
+|---|---|
+| `heightfield_plan` | Samples the field and packs it: which frames take which cells, the blocks it needs (size, bounds in map and world units, voxels, cells, runs), what does not fit and why, and the budget before and after (added blocks, the game's voxel cells, patch bytes, run voxels). The blocks lie on the Scene frame's lattice of `voxelSize`, so a `floor` off it snaps to the nearest lattice height and every height stands that much lower or higher: Caldera's floor -9 at voxel 2.5 snapped to -10, so a grid height of 5 stood at 4 (which the builders took for the draped skin's walking surface lying a unit under the grid and fudged with +1). `region.floor` answers `asked`, `lattice`, `shift`, `surface` (where a height h has its ground) and a `warning` when the snap moves the heights; `keepFloor: true` counts the heights from the floor as given (default off: the heights count from the lattice floor, as before). |
+| `heightfield_region` | The same plan, applied: frame fills and new blocks together. Refused when it does not fit, unless `partial`. Answers the plan, the new blocks' ids and names, and the patch usage. `keepFloor` and the floor report as heightfield_plan. |
+
+Arguments, all lengths and heights in `units` (`map` default, or `world`):
+
+- `voxelSize`: map units per voxel, 1-4 (default 1), always in map units: the new blocks' scale. The rectangle is
+  sampled one column per voxel on a lattice of that size from the Scene frame's origin, and heights become whole
+  voxels of it.
+- `min`, `max`: `[x, z]` corners of the rectangle in level coordinates. They snap to whole voxels of the lattice: at
+  `voxelSize` 1 a 96 x 96 map-unit rectangle is 9216 columns, at 2.5 it is 1444 (at most 1024 a side, 262 144 in all).
+- `floor`: the level `y` the columns stand on. Each column is filled from `floor` (less `baseDepth`, for a skirt under
+  the water line) up to `floor` + its height; a height under half a voxel leaves the column empty. `maxHeight` caps it.
+- The height, as either `expr` or `grid`:
+  - `expr` is a small expression language, parsed here (never run as code): numbers, `+ - * / ^` (right associative)
+    and parentheses; the variables `x`, `z` (from the rectangle's centre), `u`, `v` (0 to 1 across it), `r`, `theta`
+    (polar about the centre), `W`, `D` (its size), `R` (half the shorter side), `pi`, `e`; the functions `min`, `max`,
+    `abs`, `sqrt`, `sin`, `cos`, `tan`, `exp`, `log`, `floor`, `ceil`, `round`, `pow`, `atan2`, `clamp(v, lo, hi)`,
+    `lerp(a, b, t)`, `step(edge, v)`, `smoothstep(e0, e1, v)`, `noise2(x, z, seed)` (Perlin noise, about -1 to 1) and
+    `fbm(x, z, seed, octaves)`. Division by 0 gives 0. For example a volcano 44 high with a rough skin:
+    `max(0, 44*exp(-(r/26)^2) + 3*fbm(x/10, z/10, 7, 3))`.
+    Also `hypot(a, b[, c])`, `sign`, `mod(a, b)`, `fract`, `select(c, a, b)` (a where c > 0, else b). Bindings before
+    the expression, each ending in `;`: `let name = expr;` (computed once per column) and `fn name(a, b) = expr;` (a
+    function of its parameters, the column's variables and the lets), e.g.
+    `let cone = 44*exp(-(r/26)^2); fn bump(cx, cz, h) = h*exp(-((x-cx)^2+(z-cz)^2)/50); cone + bump(30, 0, 6)`. A name
+    is bound once and used after it is bound (a function calls only functions bound before it, so nothing recurses). At
+    most 8000 characters and 4000 parts.
+  - `grid` is rows of heights along `z` (row 0 at the `min` corner), columns along `x`, stretched over the rectangle
+    corner to corner and sampled bilinearly.
+- `crater`: `radius` and `depth` lower the heights inside by `depth * (1 - (d / radius)^2)`; `rim` adds a ridge at the
+  edge; `x`, `z` move its centre off the rectangle's.
+- `material` (0-63, default 0) and `materials`, up to 64 rules tried in order, the first whose bounds all hold wins:
+  `minHeight`/`maxHeight` (the voxel's height above `floor`), `minSlope`/`maxSlope` (the column's slope in degrees) and
+  `surface` (only the top n voxels of a column). For example snow above 30, grass on the top voxel where the slope is
+  under 40 degrees, rock elsewhere: `[{material: 3, surface: 1, maxSlope: 40}, {material: 2, minHeight: 30}]` with
+  `material: 1`.
+- `materials` rules may also bound `minDepth`/`maxDepth` (the voxel's depth under its column's top, in `units`: rock
+  under a skin, lava deep in a crater), `exposed` (true: only voxels with air above or beside them, cliff faces
+  included; false: only buried ones) and `jitter` {`amount`, `scale` (default 8), `seed`}: Perlin noise moves the rule's
+  `minHeight`/`maxHeight` by up to `amount`, so a band's edge wanders instead of running level round a cone.
+- `materials` rules may also be limited to a part of the field: `region` (areas, as `clip`: the column's centre in one of
+  them), `mask` (an expression of the column and the voxel: the expr variables and `h`, the column's height above the
+  floor, `y`, the voxel's, `depth` under the column's top, all in `units`, and `slope` in degrees; the rule applies
+  where it is above 0) and `noise` {`threshold` (default 0, about half the area), `scale` (default 8), `seed`,
+  `octaves`}: Perlin noise over x, z, so ash, scree or grass comes in patches. A lava flow down one flank:
+  `{material: 9, mask: "0.3 - abs(theta - 0.8) + 0.1*noise2(x/6, z/6, 3)", exposed: true}`. `masks` is a list of more
+  such expressions, of which at least one must be above 0 (and `mask` too, when given): ten lava tongues are one rule.
+- Edges between materials. A rule applies per voxel, so a band's or a road's edge is a staircase of whole voxels. A
+  rule's `feather` {`width`, `pattern`: `dither` (default, a 4 x 4 ordered pattern over x, z and y), `noise` (a hash per
+  voxel), `blue` (a 16 x 16 blue-noise tile: even, with neither the checkerboard nor clumps) or `perlin` (smooth noise:
+  the edge wanders in lobes), `cell`, `seed`} makes its mask(s) pass a threshold, and its `minHeight`/`maxHeight` move
+  by one, that varies per voxel within +-width/2 (the mask's own units; the call's units for heights): the edge becomes
+  a dithered band. `cell` (units) lays dither, noise and blue in squares of that size instead of single voxels (on a
+  2.5-map-unit skin the default makes a checkerboard of voxels that reads as crude: `cell: 5` makes patches of 2 x 2),
+  and is perlin's feature size (default 4 voxels).
+- `exclude` on a rule (areas, as `region`: circles and rectangles) and `excludeMask` (an expression in the mask's
+  language): the rule never applies there, whatever else holds. The Caldera iteration-10 grass rule (a height band on
+  gentle ground) put specks on the crater's ash floor, which lies in the same band; `exclude: [{x, z, radius}]` of the
+  crater keeps vegetation off it.
+- `edge` {`depth`} on a rule with an area (`region`, `mask`, `masks`, `noise` or `paths`): the rule's own boundary is
+  drawn between voxel centres. A surface voxel (the top `depth` of its column, default 1) that a later rule or the
+  default paints takes this rule's material as its second material on the corners where the rule holds: its area is
+  tested at the column's four corners in x and z (the height, slope and depth bounds stay the voxel's), the corner bits
+  set top and bottom. So a road's edge on a 30-40 degree flank, or a lava pool's shore, is the game's gradient along
+  where the path or mask really runs, not a sawtooth of whole 2.5-unit voxels; the rule's own voxels are unchanged.
+  It takes the voxel before the generic `blend`, and adds runs where it paints: Test the level.
+- `paths` on a rule: [{`points` ([x, z] level coordinates in the call's units, 2-512), `width`, `taper` (the width at
+  the end as a multiple of it, linear along the path), or `switchback` {`from`, `to`, `legs`, `spread`} instead of
+  points (a zigzag of `legs` straight legs between from and to, its turns `spread` / 2 to alternate sides)}]: the rule
+  applies only within width / 2 of one of them (feather moves that edge as a mask's). A road is one path instead of
+  tens of `sd()` segments in a mask string (about 45 a road on the Caldera bench, near the 8000-character limit).
+- `relax` (0-50 passes of a 3 x 3 mean) and `maxGradient` (degrees, 1-89: a slope limiter that moves each too-steep pair
+  of neighbouring columns toward each other by half the excess, so the volume stays) smooth the field's heights before
+  they become voxels; the plan's `region.slopeLimit` gives the passes and the steepest slope left. On a drape the skin
+  and its core follow the same limited surface. `blend: true` (or `{depth}`, 1-8
+  voxels, default 1) blends edges per corner, as the Erg panel's 2nd material brush does: each of the top `depth` voxels
+  of a column that touches another material (the 26 voxels round it, in the field) takes the most common such material
+  as its second material on the corners it shares with it, so the game draws a gradient across the boundary voxel
+  instead of a step. A drape compares its skin layer by layer. Blending adds runs where materials meet, and the corner
+  mask also shapes collision slightly: Test the level.
+- `edges`: how a height becomes whole voxels: `round` (default; a cone becomes concentric terraces), `dither` (a 4 x 4
+  ordered pattern) or `noise` (a hash per column): the terrace edges break up into a ragged line at the same cost. For
+  smooth slopes use `heightfield_drape` (below).
+- `packer`: `tiles` (default, a grid of 31 x 31 columns), `greedy` (tiles that start on the field's own columns: fewer
+  blocks for a ring or a sparse field) or `best` (both, keeping the fewer blocks). `costAt`: also plan the same field at
+  up to 8 voxel sizes and answer each one's blocks and cells (`costAt`), to choose a size first.
+- `reuseFrames`: `aligned` (default), `any` or `none`; see below.
+- `maxBlocks` and `maxCells`: add at most this many blocks, and blocks holding at most this many of the game's cells,
+  to keep some of each for other edits (castles).
+- `fitBudget`: when the field does not fit whole within `maxBlocks` and `maxCells` at `voxelSize`, take the smallest
+  coarser voxel size (steps of 0.25, up to 4) at which it does, instead of halving boxes until every block is spent (a
+  skirt with `maxCells` alone took 43 blocks on the Caldera bench). The answer's `fitted` gives the size taken and what
+  each size tried cost. With the two-call recipe below (a fine summit clipped, coarse lowlands excluding it), each call's
+  own `maxBlocks` and `fitBudget` choose a voxel size per region. `heightfield_drape` packs its own skin and core and
+  does not take it.
+- `partial`: when the blocks do not all fit, place the ones holding the most voxels instead of refusing. A block in a
+  stack is kept only when the block under it is, so nothing floats; the answer lists what was dropped.
+- `runsHeadroom`: leave this many of each new block's 2000 runs free for later edits (`sculpt_crater`, painted bands,
+  structures built into the blocks), which are refused when a block would pass 2000. Default 0; blocks halve sooner.
+- `centre`: `[x, z]`, the origin of the expression's `x`, `z`, `r` and `theta` (and the crater's default centre)
+  instead of the rectangle's centre, which snaps to the lattice of the voxel size.
+- `clip` and `exclude`: areas, each a circle (`x`, `z`, `radius`) or a rectangle (`min`, `max`). `clip` keeps only the
+  columns whose centre is inside one; `exclude` leaves out the columns lying wholly inside one.
+
+**Fine voxels where they matter.** The game's voxels are cubes (a word holds solid, a material and a second-material
+paint mask, no slope), so a coarse `voxelSize` makes every slope a staircase of its size. Detail costs cells, so spend
+it where it shows: two calls with the same rectangle, `expr` and `centre`, one coarse with `exclude: [circle]` and one
+fine with `clip: [circle]` (the same circle). They sample the same surface; the coarse field keeps the columns the
+circle only partly covers, so the two overlap at the edge and no gap opens. For example (tried on Multi.DinerMight) a
+240 x 240 island with a 56-high cone: the lowlands at 3 (16 blocks, 24 756 cells), the cone inside r 40 at 2.25 (9
+blocks, 24 479 cells); the whole island at 1.5 would need 195 696 cells. Use `x`, `z`, `r` in such an expression (`u`,
+`v`, `W`, `D` follow the snapped rectangle), and cap each call's `maxBlocks` so the two share the 64.
+
+**Packing.** Two budgets bind. A patch can add 64 blocks of at most 31 voxels a side (the game asserts on 32), each
+with at most 2000 runs. And the game counts the cells of every voxel frame of the level, base and added, solid or
+empty (X x Y x Z of each), in 16 bits: past 65 535 it crashes loading the map, so the whole box of every block counts,
+not its solid voxels. The base's frames already take 8 000-46 000 of them (`describe_level` `limits.voxelCells`; clearing
+base terrain frees none), which leaves room for roughly 230 x 230 columns one voxel thick, whatever the voxel size: a
+larger `voxelSize` covers more ground and height with the same cells, in coarser voxels. Blocks the project already
+has count against both. The rectangle is cut into 31 x 31 tiles (four offsets are tried each way and the fewest blocks
+kept); each tile is stacked in 31-high slices from its lowest cell, and each slice is trimmed to the box of the cells
+it needs. While those boxes hold more cells than are left (or `maxCells`), and blocks are left, the box whose halving
+(in x, z or y, each half trimmed again) saves the most cells is halved, so a cone's flanks cost about their slope
+rather than their tile's whole height. Inside a block a column of one material is one run, so a 31 x 31 block uses
+about 961; each extra material band a column crosses adds a run, and a block that passes 2000 is halved along its longer
+side, which costs blocks. When the field does not fit the answer says what binds first: `cell budget exceeded (N needed, M allowed)` when the
+cells do (the packer then spends blocks halving boxes, so a block count past 64 is a consequence), with
+`suggestedVoxelSize` (the smallest voxelSize, in steps of 0.25, at which the same field fits whole, and its blocks and
+cells), else the blocks it needs; then how many voxels would be missing and whether the peak is among them: shrink the
+rectangle, lower the heights or `baseDepth`, raise `voxelSize`, use fewer bands, or pass `partial`. For example on Multi.DinerMight (11 652 base cells, 53 883 left)
+an island 250 map units across with a cone 60 high is about 25 600 voxels at `voxelSize` 2.5: it packs into 17 blocks of
+50 215 cells, or with `maxCells: 40000` into 23 blocks of 39 926; at `voxelSize` 1 it would need over a million cells,
+and at 2 about 60 000 even after halving. It was played in the game: it loads, worms walk on it and weapons carve it.
+
+The `needed` cells of `cell budget exceeded (N needed, M allowed)` and of `budget.cells` are this packing's, after the
+packer halved boxes with every block it was allowed: not the least the field can cost, since more blocks, a coarser
+`voxelSize` or `fitBudget` change them. Do not size a budget from them; `costAt` and `fitBudget` give comparable
+figures.
+
+**Materials and the game's landscape mesh.** In that test a `surface: 1` rule (a one-voxel skin of grass over rock on
+every column) made the game's landscape combiner run out of vertices (`CombineLandscapeAction` asserts in the log and
+holes in the drawn terrain); the same island in height bands, or in one material, had none. The plan adds a `notes`
+entry when a surface rule covers more than 2500 columns: on a large field use `minHeight`/`maxHeight` or slope bands,
+and Test the level.
+
+**Frames as canvas.** The server accepts a `voxels` op on any base frame for any of its cells, empty or not, as long as
+each word is valid, so filling an empty base cell costs no block, only runs (2000 per frame) and patch bytes. Before
+adding blocks the plan fills the frames that overlap the field: a frame cell is filled when its centre is in the field,
+and a field cell is done when its centre is in a frame cell that is solid, before or after (cells already solid count
+as done, whatever their material). Frames named with SLIPPY, PERM or TEAMBASE are left alone, since the engine reads
+those names as tags, and so is a frame whose runs would pass 2000. A patch cannot move a base frame, so a frame helps
+only where it already lies. With `aligned` only frames on the Scene frame's lattice take part (translation-only, unit
+scale, whole-unit offset), whose cells are exactly the field's: in practice blocks added earlier, since none of the
+2234 voxel frames of Multi.DinerMight, Multi.NiceToSiege, Multi.StormTheCastle, Multi.HardDaysKnight and
+Multi.W3DIceIceMaybe is (all but 55 are rotated or scaled, and those 55 sit off the whole units). `any` also fills
+rotated and scaled frames that are not scaled under 0.9, which follows the field's surface only to within one of the
+frame's voxels; the answer marks them `approximate`. On a level with no Scene frame (Multi.W3DIceIceMaybe) no block can
+be added, so only frames can be filled.
+
+### drape
+
+| Tool | What it does |
+|---|---|
+| `heightfield_drape` | The heightfield tools' arguments (the field, `voxelSize`, `materials`, `clip`, `maxBlocks`, ...), plus `steepMaterial` {`material`, `minSlope` (default 50 degrees), `feather`} (below), raised as a smooth skin instead of voxel terraces: blocks of up to 31 x 31 columns, `thickness` voxels thick (1-8, default 2), whose **corner offsets** put each column on the field's height, over the stepped field cut just under the skin (`core`, default true; `false` leaves a hollow skin for about a fifth of the cells). `dryRun` answers the plan: the skin's blocks (size, columns, the offsets' range), the core's blocks and cells, the budget. One undo step. `skirtTo` (a level y in `units`) fills the core from there up to just under the skin, instead of from the floor, and gives a hollow skin (`core: false`) one: a rising sea then shows solid ground, not the skin's underside and its jagged edge (the sea floor, or at least 10 map units under the water's cap). `skirtTop` fills only under the columns whose skin dips to that level (its lowest corner less its thickness): the shore the sea reaches, at a fraction of the cells. The answer's `skirt` (columns) and `core` (`cells`, `neededCells`) are its cost. `dryRun` with `estimateSkirts` plans the same skin in each mode and answers each one's blocks and cells (`skirtEstimates`: hollow, core from the floor, `skirtTo`, and `skirtTo` with `skirtTop`). `relax` and `maxGradient` (as the heightfield tools) smooth and slope-limit the field before the skin and its core are cut. **The tiling.** The skin's blocks are 31 x 31 columns from the region's min corner; where four of them meet, the game lets mines and worms through the skin (Caldera v2 rounds 1 and 2), and the answer's `skin.meetingCorners` lists those corners. `tileOrigin` [x, z] puts a corner of the tiling there (snapped to the lattice); `cornersOff` {`paths` (the trails, polylines of [x, z] or [x, y, z]), `distance` (map units, default 4)} shifts the tiling (0-30 columns along x and z) so every meeting corner is at least `distance` from the paths where a shift does that (else as far as one can, with a `warning`), the fewest blocks first; `skin.tiling` answers the shift, the nearest corner's distance and the unshifted one's. Builders no longer need a plug under each corner near a trail. **Fine voxels along the trails.** `refine` {`voxelSize` (finer than the skin's), `paths` (the trails) with `distance` (default 4 map units), and/or `clip` areas} drapes the same field again at that voxel size over the zone within `distance` of the paths (or inside the areas) and leaves the coarse skin's columns lying wholly inside the zone out, so the two overlap by the coarse columns the zone only partly covers (the heightfield tools' clip-and-exclude recipe) and no gap opens: with one voxelSize for the whole skin a 2.5-unit column cannot hold a 5-wide trail bed and its banks, so the banks leaned into the bed and narrow ridges formed on the steep upper cone (Caldera v2 round 4). The fine skin's heights count from the coarse lattice's floor (`keepFloor`), so the surfaces meet; its `relax` passes are scaled by (voxelSize / refine.voxelSize)^2 so both smooth over the same distance; its tiling is shifted off the paths (`cornersOff`) unless `tileOrigin` is given; it is planned first and the coarse skin gets the blocks and cells the budget leaves. The answer's `refine` gives its columns, blocks, cells and `skin.meetingCorners` (probe them with `game_mine_drop`), `budget` both skins together; one undo step for both. Tried on the synthetic level: a 2.5 skin with a 1.25 skin 4 either side of a trail, the ground on the trail the fine skin's and 12 off it the coarse one's, both within a voxel of the cone. |
+
+**Cliffs.** A sheared skin voxel is drawn with its material's texture stretched up its face, so a top material (grass,
+ash) on a steep face shows as vertical streaks. `steepMaterial` gives every skin voxel of a column whose slope (from
+its four corners) is at least `minSlope` that material instead, whatever the `materials` rules say: cliffs in rock.
+`feather` (degrees) dithers the edge over minSlope +- feather / 2 (a 4 x 4 ordered pattern). The plan's
+`steepMaterial.columns` counts them. `sculpt_cone` takes it too.
+
+What the skirt modes cost, from a dry run on Multi.DinerMight (base terrain wiped) of a cone 30 high, `30*exp(-(r/30)^2)` over 120 x 120 map units at `voxelSize` 2.5 with `relax: 2` (2026-11-08; scale with the field): a hollow skin 3640 cells in 4 blocks; with its core from the floor 13 891 (8 blocks); `skirtTo: -6` (the hollow skin over ground from -6) 21 629; and with `skirtTop: 4` (only under the shore) 12 485. The skirt goes down to `skirtTo` everywhere it is filled, so it costs more than a core from a floor above that; `skirtTop` keeps it to the shore. Ask `estimateSkirts` for the field at hand.
+
+**Corner offsets.** Every voxel frame of a .xan has a HeightMap: a float per corner of its columns ((X+1) x (Z+1), in
+voxels). The game moves each column's vertices, its bottom too, up by the bilinear offset of the column's corners, and
+uses the moved columns for drawing and for collision (seen in the game on 2026-11-07: a 24 x 4 x 24 block with offsets
+rising 3, 6 and 20 voxels across it drew and collided as a sheared slab; worms stood on it, landRay heights matched the
+offsets exactly; the game's own maps use -1.9 to 3.6, for curved roofs). Neighbouring columns share a corner, so an
+offset cannot smooth a step between two columns of different heights: only a block whose columns are all the same
+height can follow a surface, which is what the skin is. A patch carries them on `addFrame` as `corners` (-64..64,
+written only when set); a block without them has zeros, as before. Tried on Multi.DinerMight: a cone 120 map units
+across, 30 high, at `voxelSize` 2 draped in 4 skin blocks (4608 cells) over 4 core blocks: smooth flanks in the game,
+worms placed with `xz` stood on them, and a bazooka dug into the skin.
+
+The skin is read at its sheared height by `query_ground`, the renders, `check_reachability`, `place_*` drops, the
+sculpt brushes (see terrain) and the Erg panel's drop to ground. `heightfield_region`'s frame filling leaves a draped
+block alone (its cells are not where its grid says), and so do the structure tools unless `drape: "sheared"`.
+The Erg panel's 3D view draws a draped block unsheared.
+
+**Sheared faces.** A sheared voxel face is not flat. `render_view` splits each into two triangles along its shorter
+diagonal (the split that folds it least) and culls and lights each by its own normal, so a skin's slopes shade by
+their steepness and a cut through a skin reads; before, every face was lit and culled as the flat face its grid says
+(a sheared top was lit as level ground, the dark triangular shards along gully and shelf cuts in the Caldera bench's
+renders). `lib/drape-mesh.ts` builds those triangles; its test cuts a slot through a 50-degree skin and checks that no
+triangle is degenerate or faces into the voxel. The game builds its own mesh from the voxels and the HeightMap; erg-mcp
+sets only the offsets.
+
+### cone
+
+| Tool | What it does |
+|---|---|
+| `sculpt_cone` | An organic cone (a volcano, a hill, a spire) at `at` [x, z] on `floor`, `radius` and `height`: a flank `profile` (`concave`, the default, (1 - t)^1.6 with t the distance from the axis as a fraction of the radius: steep top, long foot; `linear`; `convex`; `gaussian`; or points `[[t, h], ...]`), an outline that wanders by angle (`angleNoise` {amount, lobes, seed}: the radius times 1 + amount x fbm round the circle), roughness fading out at the summit and the foot (`surfaceNoise`), radial `gullies` {count, depth, width, angle} and a summit `crater` {radius, depth, rim}. `smooth` (default true) builds it with `heightfield_drape`, so the flanks are slopes in the game (corner offsets, drawn and collided), not stairs; `smooth: false` with `heightfield_region` (terraces; `edges`, `fitBudget`). It takes the heightfield tools' voxelSize, material, materials, maxBlocks, maxCells and the rest, answers theirs plus `cone.expr`, the expression used (to reuse in `heightfield_*` with the same `centre`), and is one undo step. |
+
+The game's voxels are cubes (a word has no slope or partial shape), so a smooth surface is the drape's corner offsets;
+an "edges: slope" wedge voxel does not exist in the engine.
+
+### road
+
+| Tool | What it does |
+|---|---|
+| `sculpt_road` | A road from `from` to `to` ([x, z]) that climbs no steeper than `maxGrade` (degrees, default 20), graded into the ground as one undo step. The centreline is marched over the ground (the highest solid top, a draped skin at its sheared height) a `step` at a time: straight for `to` where the ground climbs no steeper than the grade, else leaning off the uphill direction, to the side it first chose, by the angle at which the ground climbs at the grade (a road up a cone winds round it; it may turn as tight as the circle round `to` near it), until within three steps of `to` or `maxLength`; or, with `switchbacks`, a zigzag of that many legs whose turns lie `spread` / 2 to alternate sides. The road's own height follows the ground but changes by at most the grade a step, so a hump is cut and a dip filled (`deepestCut`, `deepestFill`). Grading: a draped skin (heightfield_drape, sculpt_cone) has the corner offsets within `width` / 2 of the centreline set to the road's height and blended back over `shoulder` (a smooth step), so the road is a smooth graded shelf in the game (drawn and collided); each skin block touched is replaced by the same voxels with its new corners (new ids). In undraped frames the voxels over the road are cut `headroom` high (default 3 map units) and empty cells `support` under it filled (default 1; existing frames only, no new blocks). Answers the `road` (stop, length, climb, steepest stretch), the `centreline` ([x, y, z], y the road's surface), `skins` (blocks and corners moved, the most raised and lowered, offsets clamped at 64 voxels), the voxels, and `paintPath` (paint_path's points and width, to surface it). `dryRun` changes nothing. |
+
+On a skin lowered more than its thickness the core under it would show: the cut carves the core's voxels that lie over
+the road; a skin raised more than its thickness leaves air under it (not seen until dug). Tested on the synthetic level:
+a 12-degree road up a draped cone stayed at 12 degrees, the skin's top under the centreline matched the road within a
+voxel, and one undo put every corner back.
+
+### place
+
+Spawns, level objects, the level's settings, the script, and shipping. Placing is the Erg panel's own code
+(`model/placing.ts`, `model/ground.ts`), so a placed object is what the palette places, and every edit is **one undo
+step**. Positions are in `units` (`world` default, or `map`); they are positions in the level, not in the detail's
+frame, and the answers repeat them in the same units (rotations in degrees). A point is `pos` `[x, y, z]`, or `xz`
+`[x, z]`, which starts above the whole level and drops straight onto the highest solid terrain below it (the panel's
+Drop to ground; under a roof, give `pos` and `drop` from below it instead). Drops use the voxels only: over empty space,
+or over a base map's non-voxel ground, they fail. An edit that would make the patch invalid is refused before it
+touches the undo stack.
+
+| Tool | What it does |
+|---|---|
+| `place_spawn_knots` | `mode` `knots` (default), `teams` or `random`, and `spawns`: `[{worm: 0-7 (0-15 with teams), pos or xz, drop, group}]`. `teams` (Erg's knots by team) starts each worm on `WORM<4 x team + its place in the team>` whatever slots the match deals: team 0 on WORM0-3, team 1 on WORM4-7, team 2 on WORM8-11, team 3 on WORM12-15, so with a castle per team every team starts in its own castle (the generated chunk counts each team's worms in slot order, as the game's set-up deals them; a two-team game needs WORM0-7). Tried on 2026-11-08 (testenv B, four human teams of two): every worm on its team's knot, `fromKnot` 0. An existing `WORMn` is moved, a missing one added. Answers the spawns, `missingKnots` (a match in `knots` mode needs all eight), `teams` (each team's worms, mean and lowest spawn height and, with a script `wum.sim.waterSchedule`, `earliestFloodTurn`; `ownTurns`: each worm's first and second own game turns in the engine's rotation (as check_flood) and the water at their start, `dry` when its ground is over it, and `wetBeforeSecondTurn` naming the worms that are not; WORMn is worm n % wormsPerTeam of team floor(n / wormsPerTeam), the Quick Game's human team WORM0-3) and `warnings`: the spawn checks below. `balance` (true or {`teams`, `wormsPerTeam`, `mode`}) deals the worm numbers again over the given positions so the teams stand alike: `height` (default) sorts them by the ground they stand on and snakes them over the teams (A B B A ...: equal sums for two), then swaps pairs between teams where a team had two spawns of one `group` (a castle) without widening the means by more than a map unit; `interleave` deals A B A B. In a team the lowest spawn gets worm 0, which moves first. The answer's `placed` gives each spawn's new worm and the one asked for (`was`). `snap: "tread"` moves a spawn whose point fails the tread checks (below) to the nearest point within 3 map units that passes, sampled every 0.25 (`snapped`: from, to, why; refused when there is none); without it the spawn is placed as asked and warned of, with the point it would snap to. |
+| `place_object` | `type` `crate` (`kind` weapon, health or utility; `contents`, `count`, `amount`, `hitpoints`, `parachute`), `health` (a health crate), `telepad` (a pair in a new group; `pos2` for the second pad, default 2 map units along x), `trigger` (`index`, `radius`, `teamCollect`, `teamDestroy`, `hitpoints`, `wormCollect`), `mine`, `oildrum`, `minefactory` (one per level; `activation`, `inactiveTurns`, `schemeMines`, `keepKnot`, `launchHeight`, `launchRadius`, `launchers`, as for `set_mine_factory`). `snap: "surface"` with `pos` (no drop) puts the object exactly on the top of the ground in its column, the highest solid top at most 1 map unit over `pos`'s y, a draped skin at its sheared height: no drop is involved, so a knot sits on a skin or a crater floor where it is put (the answer's `snapped`). Crate contents are the install's names (`kWeaponBazooka`); a short name that matches one is replaced by it, anything else is kept with a warning. Crates, telepads, triggers and the mine factory make the project format v2. A mine factory is checked as the game places it (below): the answer's `issues` carry `error:` lines for what loses it at load (and `factoryWillBeLost`) and a `warning:` to Test it; `move` of its knot answers the same check, `list_objects` and `save` too. `objects` places a list (up to 64, each with these fields and an optional `label`): each is its own undo step, and one that fails (nothing below to drop onto, no free knot) is listed in `failed` with its index, label and why while the rest are placed. |
+| `move` | `id` or `ids`, and `pos` (one detail) or `by` (an offset); `drop` drops the result. |
+| `rotate`, `scale` | `rot` (absolute) or `by`, in degrees about x, y, z; `scale` `[x,y,z]`, `uniform` or `by` (a factor). Refused for details in frames that swing in the game. |
+| `remove` | Delete details; an added level object's knot takes its object with it. |
+| `drop_to_ground` | Drop details onto the terrain below them. |
+| `list_objects` | Spawns, level objects with their settings, placed mines and drums (`role` and `search` pick other details), the object count, and the editor's checks (missing knots, objects under water, single telepads) followed by the spawn checks. World units (this tool's default) also give each position as `mapPos` in map units, the unit of check_reachability, query_ground and the other inspect tools. `outsideFrames` (`list`, the default; `summary`; `none`) says how the editor's "outside every terrain frame" warnings are given: after `remove_base_frames` the base's cameras, look-at points and props raise about 21 of them on Caldera, which `summary` puts in one line. |
+| `set_mine_factory` | The level's mine factory settings (one undo step): `throw` (this branch's Melange: `{minRange, maxRange, apex, pattern, avoidWater, targets, scatter, targetShare}`, `targets` as [x, z] in `units`, stored whole world units; `false` clears it, as does `launch: false`; a later call merges into the throw there, so one field can be changed): the mines are lobbed OUT from the launchers (or the factory) to landing points `minRange`-`maxRange` map units away over the whole island, `pattern` random, ring or targets (`targetShare` % at the `targets` within `scatter`, the castles say), the arc topping out `apex` over the higher end, a landing point in the sea drawn again with `avoidWater`, and Melange lands each mine where its flight first meets the land, so it rests on whatever it hits (see [erg.md](erg.md#the-mine-factory), Where a thrown mine lands); the answer's `launchPlan` gives each launch point's band, pattern, flight and sideways speed, and `game_mines {fire}` answers each thrown mine's `target`, `landing` (melange, engine, water, lost), `restFromTarget` and `held` (the hold on a landed mine: `rePins` put back after the engine moved it at rest, `velPins` rested again after a velocity with no blast about, `deflects` wall hits it was dropped off, `lifts` out of the land, `dropped` the engine's stale flight events kept from it (its launch arc's land, water and plane contacts, queued before Melange landed it: the "twin" that set held mines moving and sank them in rounds 1-3), `freed` by a blast, `frame` the land frame it rests on; erg.md, Where a thrown mine lands). The engine's payload pool holds 32 (mines, shells and grenades together) and the 33rd deletes the oldest, so a Melange fire is trimmed to the pool's room (one slot kept for a shot; the game logs `the mine factory's fire of 10 is trimmed to ...`): with `everyNTurns` the island fills to about 30 mines and later fires throw only what the worms have set off; `activation` under 30 is the game's own cap (erg.md, The payload pool). `launchers` (1-8 points in `units`, [x, y, z] or [x, z] on the top of the ground in that column; stored as whole world units; `[]` clears them, as does `launch: false`): a fire's mines are shared out over them, from a random one in turn, and each erupts straight up from a spot within `launchRadius` of its launcher (1 map unit over the launcher's height, the fire's spots kept 1.5 map units apart where they can be), tops out `launchHeight` (default 20) over it and falls back there (mines landing with a sideways speed sank into the voxel ground: see [erg.md](erg.md#the-mine-factory)), so they come from the sides of a caldera; stand each launcher on flat ground at least `launchRadius` wide where `game_mine_drop` says a mine holds (the engine runs one factory a match: a second trips its "Only allowed one mine factory at a time" assert, so these are the one factory's launch points; see [erg.md](erg.md#the-mine-factory)); the answer's `launchPlan` gives each launcher's distance to the factory, the eruption's top, the flight in seconds and `landsWithin` (the launch radius), and the factory check warns of a launcher under the water (its mines start in the sea) or over no ground. `launchHeight` (1-255 map units, 0 clears) and `launchRadius` (0-255; `launch: false` clears both): each mine of a fire appears that high over the factory at a random spot within the radius and falls round it, instead of the game's placement over random worms and objects (Melange 0.13+, see [erg.md](erg.md#the-mine-factory); place_object takes them too); `activation`, the mine target (0-255, game 20: at a turn start it fires when fewer mines than this are in the level, at most 10 at a time), `inactiveTurns` (0-255, game 7: turn starts it waits after it is placed and after each fire), `schemeMines: false` (the scheme's 15 random start mines are not placed, so mines come from the factory), `keepKnot: true` (when the game's drop from the knot misses, the factory stays at its knot instead of the match's stale point; Melange 0.13+), `everyNTurns` (1-254: a fire of 10 mines every N game turns whatever the level holds: activation 255 and inactiveTurns N, answered as `everyNTurns.mapsTo` with the turns it fires at; a fire waits on the mine count otherwise, which is how a target of 16 with 0 idle turns gave one volley in 15 turns on Caldera: see [erg.md](erg.md#the-mine-factory); the answer's `rule` says how the engine decides). A value equal to the game's is dropped. The game applies target and idle turns for that map's matches only (see [erg.md](erg.md#the-mine-factory)); since Melange 0.13 they are written again at the factory's own set-up, because the level-start write had been undone by then (the factory read the game's 20 and 7), and `test`'s `look.factory` says what the set-up found and wrote. The settings are the project's on the server that saved it: the iteration-6 Caldera build saved activation 16 into testenv C's `ProjectsDir`, and its Test in testenv B played B's own older `caldera` (activation 30, idle 1); build and Test against the same server's projects. `schemeMines: false` is honoured whatever the scheme (the level's chunk drops the mines bit of the match's scheme before the game's `lib_SetupMinesAndOildrums` reads it, the only place it places start mines) and the game's log says so at level start (`[levels] <stem>: the scheme's start mines are off`). The 15 `GameLogic.CreateRandomMine` an earlier critique counted were the menu's attract demo, a CPU match that ran before the Test: 18 Test matches of Caldera on 2026-11-08 placed none. With `keepKnot` the answer's `issues` give the placement checked again (the factory check below): a keepKnot factory whose knot stands on the ground's top loses the drop advisory there, and a knot over the ground keeps it with how far over it is (`place_object {pos, snap: "surface"}` or `move {drop: true}` puts it on the top). place_object's advisory for a factory without keepKnot names that call. (mines round 4) `throw.volley` (1-10) caps the mines a fire throws, whatever the engine's min(activation - mines, 10) asked, so the factory tops up in smaller volleys more often (Caldera: 4 every 3rd turn start); `throw.avoid` (up to 8 polylines of 2-32 [x, z] points in `units`, stored whole world units; the trails) with `throw.avoidRadius` (1-50 map units) draws a landing point within the radius of a line again, so the mines keep off the corridors the worms walk (a mine's blast reaches about 2.5 map units; Caldera uses 5 round beds 2.6 wide: round 3's mine blasts holed a trail's 7.5-thick shell over the hollow cone and two worms fell through and drowned). A held mine the sea rises over (1 map unit over its base) is let go and handed to the engine's own drowning (the payload's own water event, built and delivered as the queued one would be: `levels/factory.cpp`, kPostEvent), so it sinks and the factory's count drops; `game_probe`'s `factory.drowned` counts them and each such mine's `held.sunk` is true (round 3: 7 held mines lay under the sea alive, the count never dropped and the factory fired nothing after turn 12). |
+| `set_water`, `set_theme`, `set_time_of_day`, `set_surround_mode` | `level` in world units (-1000 to 1000) or `useDefault` (`set_water` answers `backdrop`: the lowest water that covers the base's ground planes, with a warning under it, see scenery); `theme`, and `materialFile` (`"theme"` for the theme's own file, a file name, or `"keep"`, the default: the voxels' materials are indices into the material file, which a theme change otherwise leaves as it is); `timeOfDay` (DAY, EVENING, NIGHT); `mode` copy, none, flat or paint. |
+| `set_water_look` | The water's look and the land's light in the level's matches, over the theme's: `opacity` (the water plane's alpha, 0-1), `reflection` (how much sky it reflects), `shade` (lighter or darker water), `landAmbient` / `landDiffuse` ([r, g, b] 0-255: a tint of the whole terrain) and any other field of the theme's `WaterPlaneTweaks` by name in `fields`. It writes one `wum.level.water{...}` call (Melange 0.13+, see [erg.md](erg.md#level-scripts)) in a marked block at the top of the level script, rewritten in place (or removed with `clear`); the rest of the script is left as it is. Tried in a Test on PREHISTORIC EVENING (2026-11-08): opacity 1 with reflection 0 made the grey-blue sea an opaque lavender, land light red turned the island red, shade 3 with opacity 0.35 a pale translucent sea, each from the next frame. The game has no fog or distance haze of its own (its shaders, `CG\Landscape.cg` and `water.cg`, have none): the haze seen in Tests on this machine is the Sunstone post-FX mod's (its `hdr` fog, aerial and haze per theme and time of day), which `test {postfx: false}` or `cleanMods` turns off for a Test; a level cannot change another mod's settings. |
+| `get_script`, `put_script` | The project's Lua script. `put_script` writes it to the server at once (not an undo step, not part of `save`) and answers `problems` with line numbers and `syntaxChecked`: the game compiles it with its own Lua 5.0, `Melange.exe` with a stock Lua 5.0.1 parser (older versions: `false`, checked on `test`). `wum.sim.announce(text, seconds)` puts a message on every player's screen (see [erg.md](erg.md#level-scripts)). |
+| `export` | `modId`, `name`, `version` (default 1.0.0), `mode` `source` (default, shareable) or `install` (built files, this machine only), `survivor`. Saves the project first when it has unsaved edits. |
+| `build` | `modId`: build a source-mode mod's levels into map files (game closed). |
+| `test` | `teams` (Melange of this branch): `[{human, worms}]`, two to four teams: every team human (the Quick Game's 2-4 player starts, QuickStartHvH ... HvHvHvH) or a human team then a computer team (QuickStartHvC, the default), each with `worms` 1-4 (the Quick Game's own four when left out), written into the match's set-up before the worms are dealt; the answer's `match` names the start. `[{human: true, worms: 2} x 4]` is four human teams of two and no computer team: every worm is the tester's (game_play_turns). Tried 2026-11-08: eight worms, two per team, the turns cycling through all four teams. The baseline takes `teams` too. `level.test` in the running game: saves first, follows the `erg` channel and waits for `playing` (`waitFor` `armed` stops at the armed state; `timeoutSec`, default 60). Answers every state with its time; `tod` picks the time of day, by default the project's own (`set_time_of_day`; without one the game loads Quick Game's DAY, which is how a NIGHT level came out in daylight). Once it plays, `look` says what the match applied: `timeOfDay` (`level.test.applied`: whether the frontend's value was cleared so the Test build's loaded, else `fellBack` and why) and `theme` (`wum.game.theme()`), and `warnings` names any that is not what was asked (the game also logs a warning). The match is the game's Quick Game (a human team against a computer team, its own scheme: turn time, team sizes and the scheme's options are not chosen here). Enabled content mods with sim code run in it beside the level script, and the answer names them (`simMods`). `simMods: "level-only"` is an isolated level Test: the other installed sim mods (Kindjal, Sandtide, ...) do not run in the match, only the level's chunk and script, so its asserts and behaviour are its own, and post-FX stays (it is `cleanMods` with `postfx: true`; `postfx: false` turns that off too); the answer's `isolated` says what ran (tried 2026-11-08: `look.simModsLoaded` was `erg:it8probe` alone, with kindjal and sandtide enabled). `cleanMods: true` makes the Test match a clean room: their sim code does not run in it (only the level's chunk and script) and the post-FX stack is off; `postfx: false` turns the post-FX stack off alone, and `postfx: true` keeps it with `cleanMods`. Both end with the Test match; the answer's `cleanRoom` (`simMods`, `postfx`: what runs) says what the game applied, and `look.simModsLoaded` (Melange 0.13+) the sim code actually loaded in the match, in load order (a clean room: only `erg:<project>`, the level script; the kindjal and sandtide lines an earlier critique saw were the menu's attract demo, a match of its own). `look.factory` gives the mine factory's set-up: each setting `written`, what `kMineFactoryData` `heldBefore`, and the drop (`dropWorld`: knot, settled, `landed`, `keptKnot`), with a warning when the set-up found other values than the level's or the drop missed without keepKnot. Launch-time content (weapon clones, file overrides, shader mods, client scripts) stays. A game without clean rooms (no `level.test.cleanRoom` method) still refuses `cleanMods` while such mods are enabled. Needs the game running at its main menu: a standalone `Melange.exe --serve` has no Test. `restart: true` from a running Test match leaves it first (`level.test.quit`, the game's own `GameLogic.QuitGame`, sent in the sim's tick), waits until the game is out of the match and tests again, retrying when the menu's attract demo gets in first: about 10 s from one match to the next (`restarted` in the answer), no game restart. Leaving a match writes the game's save (its statistics), as the game's own Quit does. Without `restart`, the game's refusal in a match ('the game must be at the frontend') comes back naming `restart: true` and `end_match`. **The built level.** `expectHash` (save's and export's `projectHash`, 8 or more hex digits) refuses the Test, with nothing started, when the game's project hashes otherwise; `source` (a project folder, an exported source pack or a .ergpatch.json file) is hashed and compared the same way, and `sync: true` writes the source's patch and script into the game's project (on its own server, then opens it again) before the Test, so a Test never plays a stale copy in another game's projects folder (the Caldera iteration-10 run tested the 12:47 build in B while the builder had exported to C). The answer's `projectCheck` says what was compared and done. **Vanilla baseline.** `map` (a game level, `Multi.DinerMight`) with `noLevel: true` tests the game's own level in the same Quick Game with no Erg level (level.test {base}, Melange 0.13+; no project needs to be open): it watches `turns` game turns (default 3), with `fire` fires the selected weapon on each human turn (Input.Fire held `fireMs`, default 700, through input.drive; a worm with no weapon selected, as the Quick Game's turns started in the Tests, fires nothing, and the answer says so), counts the game's ASSERT and GL ERROR lines (only those logged since the run started: the log channel's backlog is skipped) and diffs them against the last Erg Test run of this erg-mcp session (`compare`: signatures only in the Erg run, only in the baseline, in both, with counts per minute). Every Test counts them (test_asserts). Tried 2026-11-08 (testenv B): the baseline loaded Multi.DinerMight over the frontend's random pick and played 3 turns, end_match left it; neither it nor a Caldera Test logged an assert without a shot, while the menu's attract demo (vanilla maps, computer teams firing) logged `ASSERT(...) fail: 897 @ .\PayloadGraphicEntity.cpp` and `1187 @ .\ParticleEmitterEffectEntity.cpp` with each shot: the R2 asserts are the game's own weapon effects. `fire: "bazooka"` takes the bazooka from the weapon panel first (a right click opens it, a click takes its highlighted first cell, through the Automation module: the game window focused, `gameDir` or MELANGE_GAME_DIR), so the baseline fires a real shot; each turn's `weapon` says what was selected. `suddenDeath: false` (this branch's Melange) holds the round clock once the Test plays (`level.test.roundTime {hold: true}`: paused at once and again at every turn start until the Test ends; the turn clock runs as before), so a long harness run never meets the Quick Game's sudden death at 30 minutes, which raised the water past the level's cap and set every worm's health to 1 (Caldera v2 round 2); the answer's `roundClock` gives the round time left read before and after (the HUD's round clock stands at 29:59). The baseline takes it too. `baseline: true` is the vanilla baseline in one word (Multi.DinerMight, noLevel, `fire: "bazooka"`, 4 turns, `perf` 10 s, the other arguments as given: `teams`, `postfx`, so Sunstone stays on): it answers the asserts, the frame cost (`perf`: game_perf's fps and GPU frame time, labelled baseline, in the same session as the Erg run's) and the compare with this session's Erg run, and a fire that never happens is an error, not a quiet nil weapon (Caldera v2 round 3: every baseline turn's weapon stayed nil and R2 could not be scored). `fire: "bazooka"` takes the weapon through `level.test.selectWeapon` where the game has it (this branch: the weapon panel's own message in the sim, whatever window has the focus or what DirectInput reports) and only on an older game through the Automation panel clicks. Tried 2026-11-09 (testenv B, four human teams, Sunstone on): 3 of 3 human turns fired, each `selected: level.test.selectWeapon: kWeaponBazooka (1) (was nil)`, 4 turns in 72 s (185 s when the turns ran out before). |
+| `end_match` | Leave the running Test match for the menu (`level.test.quit`, as `restart` does) and wait until the menu is up, about 5 s (tried 2026-11-08: 4.6 s, and the next `test` played 5.5 s later). Answers `left: false` at the menu. Leaving writes the game's save, as the game's own Quit does. |
+| `test_asserts` | The game's ASSERT and GL ERROR lines of the Test matches this erg-mcp session started (the game's log channel, category engine), counted per run by signature (the line without its `* XBase |` or `***Error :` prefix): each Erg Test and each baseline (test {map, noLevel}), a run ending at end_match or the next test. Answers each run's total and top signatures and, with an Erg run and a baseline, their diff (`onlyErg`: the level's own; `onlyBaseline`; `both`: the game's own), so whether an assert is the level's is read from two runs. Every ended run is also kept in `Documents\Melange\erg-mcp\assert-runs.json` (the last 24, with the game build it ran in), and test_asserts and the baseline's compare read them back: a baseline run by one erg-mcp process and the Erg Test of a later one are compared (the last Erg run against the last baseline of the same game build; a run from the file says `savedRun`). Before, each process kept its own runs, and a tester that ran the baseline and the Erg Test in separate processes got no verdict (Caldera v2 round 2). `scope` (`session`, the default: the runs this erg-mcp process started; `all`: the runs file's too, each labelled `savedRun`): the compare pairs this session's Erg Test with this session's baseline, and says how many runs of earlier processes it left out (Caldera v2 round 3: a 4-assert baseline from 11:45 was paired with a 14:03 run). When this session has an Erg run and no baseline, the runs file's latest baseline of the same game build stands in, listed with the runs and said so in the compare's `standIn` (Caldera v2 round 4: the baseline ran in one erg-mcp process and the Erg Test in the next, and the default compare had no pair). The baseline's own `compare` still falls back to an earlier process's Erg run, labelled `compareFrom`. |
+| `levels_live` | `modId` and `on`: show a pack's levels without a restart (game running, offline, at the menu). |
+
+**The mine factory's drop.** When the match places the factory (`GameLogic.PlaceObjects`, `GameLogicService::CreateMineFactory`, then `MineFactoryLogicEntity`'s set-up at 0x5cf710), it drops from its knot onto the land below along a land sweep of at most 1000 world units (50 map) and takes the hit point. A sweep that hits nothing leaves the factory at whatever point the match's last sweep left (the game only asserts `bCollidesWithLand`); on its first update it explodes when the water is more than 10 world units over the point it settled on (0x5d0b52), and an explosion within its radius sets it off 100 ticks later. Either way it posts `MineFactory.Deleted` and fires no mine for the match. That is what happened to Caldera's factory in iteration 5: it settled at (211, -154, 2320) world, the same point every run, 2340 units from its knot and 134 under the sea, and exploded at load. Tests on 2026-11-08 (testenv B): the drop never landed on a draped skin (6 tries at 4 places, the knot flush or up to 5 map units over it), landed on undraped blocks 30-66 map units from the level's centre (a 4 x 1 x 4 pad on the skin, castle blocks: 5 of 5, each settling within a map unit under its knot), and missed undraped blocks inside Caldera's crater near the centre (1- and 3-voxel pads and a 6 x 4 x 6 block at scale 1.5: 5 tries); why the crater misses was not found. So `place_object`, `move`, `list_objects` and `save` answer an error for a knot over a draped skin, for no voxel ground within 50 map units under it, and for water (the level's, or the script's `wum.sim.waterSchedule` cap) more than half a map unit over the ground it lands on; otherwise a warning to Test it and call `game_mines {alive: true}`. A warning also names see-through holes within 6 map units of the knot (rays with no ground over the water, as `check_holes`): the mines land round the factory and fall through them.
+
+**Launchers, tried.** The game's own placement on a flat 60 x 60 island (2026-11-08, testenv B, three fires of 10, no
+launch settings) put every mine 11-36 map units from the factory, by the four worms in the corners: that is the "mines
+all over the island" a level without launch settings (or a public Melange) shows. Arcs thrown from launchers across
+Caldera's crater into the factory's radius lost 25 of 30 mines through the ground. With the launchers of this branch
+(2026-11-09, testenv B, Sunstone on, four human teams of two): four launchers on 6 x 6 pads low on the crater's inner
+walls (`bench/caldera`, `T.LAUNCHERS`), `launchHeight` 14, `launchRadius` 2, `everyNTurns` 3: three volleys on demand
+and the factory's own turn-start volley at game turn 3, each 9 of 10 mines at rest on the pads (6-18 map units from the
+plug on the near pads, 35-39 on the far ones, all inside the caldera), the tenth through the west edge of one pad;
+the shots show the mines rising from the pads. Five mines of the first volley were later set off by the mines of the
+next ones landing on them.
+
+**Mines through the ground, what the voxels say.** The round-3 Test's misses, read from the pack's voxels at each point
+(2026-11-09): at (44.7, -70.44) the mine fell from the top of `ergblock_12`, a **1.5-scale** castle block whose top is at
+10.5 there, down to the skin's sheared surface at 4.5 (the leak plug put there is under the skin, so it caught nothing);
+the launcher pads that held at four bearings and never at the other four are 1.5-scale blocks too, while the 1-scale
+plugs and pads held every mine; at (54.44, -58.17) and (-44.1, -34.3) the ground is a 2.5-unit skin cell whose corner
+lifts differ by 7 and 13 map units across the one cell (a quad folded steeper than 45 degrees) and the cell at
+(54.44, -58.17) also carries a per-corner blend. check_trail's `mineSuspects` names both kinds under a trail; neither is
+proven (the engine's land collision was not read), so `game_mine_drop {trails}` is still the test. A block of scale 1 or
+2 where a pad or plug must hold mines is the safe choice until the cause is found.
+
+**Ground a mine falls through.** `game_mine_drop` drops one mine on each of up to 64 points of the running Test and
+says which held: on Caldera half the crater's pads and most of its draped skin let them through (see
+[erg.md](erg.md#the-mine-factory)), so check a launcher's pad, and any spot a level's mines are meant to land on, there.
+
+**Where the mines land.** After a fire's mines come to rest the game logs one line each beside its `mines appeared,
+came to rest` line: `mine 3 of 10 (handle) rests at (x, y, z) map: 4.2 from the factory's axis, 1.5 under it; off the
+factory` (or `under the factory`, within 2.5 map units of its axis, and `, in the water`; a mine gone before it rested
+says drowned or gone and where it was last seen). game_mines' fire records add, with the open project, each mine's
+`where`: `water`, `under the factory`, `crater` (the ground rises 2 map units over the mine within 40 further out from
+the factory: a rim between it and the outside) or `outside`, and `belowFactory`, with `where` counting them per fire.
+`game_fire_shot` pins a camera for the fires: armed (its default pose looks down into the crater from 20 map units
+south and 25 over the knot), the game sets it `delayMs` after each fire (default 500: the mines in flight), reads the
+frame back into `<prefix>_<n>.png` and gives the camera back, for up to `max` fires, with no watch running
+(render.fireShot). Tried 2026-11-08 (testenv B, Caldera iteration 10, game_mines {fire}): 9 of the 10 mines came to rest
+in the crater (`crater`, from level with the factory to 11 map units under it), one fell to the sea and drowned, last
+seen at y 0.75 under the water at 1 (`water`: the y = 0.75 of the earlier critique is a mine in the sea, not on land);
+the pinned shot 0.5 s after the fire showed the mines falling round the factory into the crater.
+
+Since Melange 0.13 the factory can keep its knot (and since iteration 7 a keepKnot factory whose knot sits on a voxel top, within half a
+map unit, gets no advisory at all: whatever its sweep does it stands there; in the Caldera iteration-7 Test one on the
+crater floor stood exactly on its knot and fired): with `keepKnot` (set_mine_factory, place_object) a drop that misses
+(no hit, or a hit that is not under the knot: over a draped skin the sweep reported a hit 63 map units off, the match's
+stale point) leaves the factory at its knot, so put the knot on the surface with `place_object {pos, snap: "surface"}`.
+For such a factory the skin and no-land errors above are warnings, and the water is checked against the knot. Tried
+on 2026-11-08 (testenv B, a wiped Multi.DinerMight with a draped cone): without keepKnot the factory on the skin settled
+at (980, 30, 995) world, 64 map units from its knot (its mines still came from round the knot); with it, it stood on its
+knot (`fromKnot` 0), alive, and fired its 10 mines from there. The level script can also make mines itself:
+`wum.level.mine(pos [, vel])` and `wum.level.fireFactory{now = true}` (see [erg.md](erg.md#level-scripts)).
+
+**Spawn checks.** `list_objects` (after the editor's checks, in `issues`) and `place_spawn_knots` (in `warnings`) warn of
+a spawn whose turn camera may start inside a wall: a column within `wallRadius` (default 2.5 map units, 50 world)
+horizontally of the spawn that is solid at `cameraRise` (default 6 map units, 120 world) above the ground it stands on.
+The turn camera sits behind and above the worm; the 6 is an assumption, not read from the game. They also warn of a
+spawn standing on ground at or under the project's water level (the editor's own check looks at the knot's height, not
+the ground under it). Both read about 80 columns per spawn, so they run on every answer; both options are in the call's
+`units`.
+
+**Treads.** A spawn knot is where the game puts its worm, which then falls onto the ground under it. `list_objects`,
+`place_spawn_knots` (in `warnings`) and `save` (in `spawns`) also warn of a spawn knot, placed or moved in the project
+(the base's own knots stand on mesh and heightmap ground the voxels do not hold, and are left alone), that is inside
+solid ground (the hand-placed knot in Caldera's Pharos tower: `dropped: false`, the worm stuck), has no ground within
+3 map units under it, has less than 1.5 map units of air over its ground, or stands on an edge narrower than a worm
+(no ground at its height 0.4 map units out in one of eight directions: a spot rounded to 0.1 off a wall-walk's edge,
+where the worm slid off), each with the nearest point within 3 map units that passes; `place_spawn_knots {snap:
+"tread"}` moves them there and build_castle's `spawnSpots` are checked the same way (lib/spawn-check.ts `treadAt`).
+
+### inspect
+
+Read-only looks at the open level; none of these changes the project. Coordinates are map units unless `units` is
+`world`; `step` (the size of a sample) is in the same units. A region that leaves out an edge means the level's extent
+on that side. Ground is the highest solid voxel of a column over every voxel frame, read at the centre of each sample
+cell. A frame that is not rotated (moved, or scaled along its axes, as every added block whatever its scale) is read
+cell by cell (exact tops); a rotated one is sampled every half voxel (tops good to 0.25 voxel, and ground thinner than
+that can be missed). The renders tint each material with its real colour (`palette: "real"`, the default: the average
+of the material's texture, from the server; `"index"` gives a distinct hue per index to tell neighbours apart).
+
+| Tool | What it does |
+|---|---|
+| `heightmap_ascii` | Top-down text map (x right, z down, at most 200 x 200 cells): a character `0-9a-z` per cell for the top height in equal bands (listed in the key), `.` for no ground, `S` spawns, `C` crates, `T` telepads, `R` triggers, `F` the mine factory, `O` other placed objects (`markers: false` leaves them out). Rows are labelled with z and a ruler gives x. `x0`, `z0`, `x1`, `z1`, `units`, `step`. |
+| `render_topdown` | PNG top view as image content: tinted by material, shaded by height (`shading`: `both`, `height`, `material`), ground under the water level blue, markers as in the text map, axis ticks in the margin. The text part says how to turn a pixel into x and z, the material colours (with the record names) and where each marker is. `step`, `scale` (pixels per sample), region as above. The region may also be given as one object, `region: {x0, z0, x1, z1}` (render_view's form), in every tool that takes x0, z0, x1, z1; an edge given both ways must agree. |
+| `render_side` | PNG cross-section along the line `x0, z0` to `x1, z1`: every solid stretch (overhangs and caves show), water, objects within 1.5 voxels of the line, a y ruler and a distance ruler. `y0` and `y1` clip the height; `scale` is pixels per voxel. Ground of stacked or overlapping frames is one stretch: only its top (air above) gets the light edge, so block boundaries leave no seam. The text part has the top profile along the line. |
+| `query_ground` | One column `x`, `z`: the top of the highest solid voxel (map and world y), its frame and material (also at the top level as `frame`, `frameName` and `material`, as other tools answer them; `null` with no ground), `standOn` (the y a placed object rests on), whether it is under the water, and every solid stretch of the column. `below` asks for the ground under a height, such as the floor under a bridge. `mode: "atOrBelow"` with `y` makes `ground`, `standOn`, the frame and the material the floor a worm at `y` stands on (the top of the ground at or under y, within half a map unit over it, with the air over it), so an open gate's floor is the answer, not its lintel's top; `ground: null` when y is inside solid. `openings` lists the air between the column's merged stretches (floor, ceiling, height, `passable`: at least `headroom` high, default 1.5 map units), and `y` adds `passableAt`: the opening at that height (its floor the ground under it, within half a map unit) and whether a worm fits, so an open gate under a lintel (whose `standOn` is the lintel's top) answers passable and the wall beside it does not. |
+| `list_materials` | The level's material file (names in index order, solid voxels of each in the open project, the colour, `textured`: whether the server found its texture) and the theme's object palette (`name`, `resource`, `role`; `search`, `role`, `limit`). `only` leaves one half out. With no project open, pass `theme` (its own file is listed, `ThemeCamelot\ThemeCamelot.txt` for CAMELOT) and/or `materialFile`; with neither, it lists the themes and material files. A `materialFile` written with `/`, in another case, or that lost its backslash (`Mapsdinermight.txt`, a JSON `"\d"` read as `d`) is matched to the listed file, with a `note`; one that is not found answers the listed files. `materialFile: "theme"` is the theme's own file (`ThemePrehistoric\ThemePrehistoric.txt` for PREHISTORIC) of `theme`, else of `base`'s theme (a base level key: with no project open it also names the palette's theme), else of the open project's; with none of them it answers that path to give, not the server's "file must be a material file" (`preview_materials` takes the same). |
+| `preview_materials` | A swatch sheet (image content) of a material file: a tile per material in its real colour, labelled with its index, `?` where the texture was not found, and the list of names and colours. Default the open project's file; or `materialFile`, or a `theme`'s own. The tiles are in P01-P64 order (the file's record order, index 0-63: tile i is record P(i + 1)), each labelled with its index and its P slot (`materials[].slot`); a tile is the texture's mean colour (the server gives no texture image), so a thumbnail sheet needs the game's screenshots. |
+| `check_reachability` | Can each spawn walk to the summit? The `summary` names each start that does not get there, with why (`not: WORM3 (no ground under it ...)`). A start stands where build_castle's `spawnSpots` says it does: one standability rule (lib/reach.ts `standableAt`: ground within 1.5 map units of its y with 1.5 of air above, read at its exact x, z), matched to the walk graph's node of its own or a neighbouring column, so a thin wall-walk or a tower top between merlons that the graph's column centres miss is still a start. A worm-walk graph over the voxels: the tops of solid ground with `headroom` (default 1.5 map units) of air, a column every `step` (default 1), joined where a worm steps up at most `maxStep` (0.5) or climbs a riser of at most one voxel of the upper ground whose stair is no steeper than `maxSlope` (45 degrees): the riser over the tread above it, the flat run to the next riser in the direction walked, up to 8 voxels (`slopeOver: "tread"`, the default: the game draws a voxel staircase as a slope, so terraces are judged at their average slope and a cone of terraces passes at 30 degrees; `"riser"` judges each riser over one voxel, the rule before, under which no voxel staircase is under 45 degrees; a riser of two voxels is never a stair step; `"segment"` judges every climb over its own move, the rise over the horizontal step, and `"skin"` does that where either end is a draped skin's and `tread` elsewhere: a smooth skin has no treads, and its 62-78 degree cliff faces count as barriers instead of stairs), drops at most `maxDrop` (8), or with `maxGap` jumps a gap to ground no higher than `maxStep`; a diagonal step needs one side column walkable too. From every spawn knot (or `from` points) to the target (`target` x, z, radius: the highest ground there; default the highest ground of the region), or to any of `targets` ([{x, z, radius, name}]; `target: "nearest"` says the same): each start answers `reachedTarget`, the one its walk gets to first, and with `targetMode: "each"` `perTarget`, every target's own walk. Per spawn: `reachable`, the walk, `turns` (`ownTurns`: the least of the worm's own turns the walk takes, at `walkSpeed` (default 2.75 map units a second, 55 world: measured on worms walking level ground in a Test) times `turnTime` (default 45 s) a turn, walking the whole turn), waypoints and `path` (`length` along the ground, the steepest walked segment `maxSlope` in degrees, `maxStairSlope`, the steepest climb as the rules judge it, `maxStepUp`, `maxDrop`, `jumps`), or the closest point reached, `blockedAt` (where, and the climb that stops it) and `needs`. Ground at or under the project's water level is not walked. The walk itself is walking only; `needs` is a heuristic for what else would do: the search is run again with the rules widened to each utility in turn, cheapest first, and `needs.utility` names the first that gets there (`null`: none does): `jump` (gaps up to 3 map units, to ground no higher than `maxStep`), `girder` (gaps up to 8, steps and far sides up to 4 higher), `rope` (a climb up to 40 up the wall beside the worm, the wall being the anchor, and girder gaps), `jetpack` (up to 60 higher and 30 across, any drop). `needs.usedAt` is the route's first move the next cheaper rules refuse (`from`, `to`, `rise`, `across`), with the route's `path` and waypoints. `render: true` adds render_topdown's picture of the region (`palette`) with each start's route in its colour: the walk solid (to the target, or to the closest point reached), the utility route dashed, a ring where the utility is used, an X where the walk is blocked, the target ringed in white. `flood` checks a rising sea (as `check_flood`), `islets: true` adds `check_islets`' answer. Route constraints, to prove the roads are the climb: `materialSlopes` [{`materials`, `maxSlope`}] refuses any climb onto ground of those materials (its top voxel's) steeper than its maxSlope, small steps too (an ash or scree flank); `via` {`materials`, `mask` (the heightfield language of x, z, r, theta, `h` the ground's height and `material`), `mode`, `near`} marks the ground on the route (both conditions, where given): `mode: "only"` (default) walks on it alone, so reachable proves a way up along it, and `avoid` never on it, so not reachable proves it is the only way; ground within `near` (default 3 map units) of a start or the target is always walkable. The answer's `rules` repeats them (`via.routeSurfaces`). Both work in `check_flood` too. **The worm's body**: every route's `path.narrowest` is the narrowest gap it walks through (`width`, `at`): at each node of the route the free width at body height between the walls either side (solid over its ground + `maxStep` and under + `bodyHeight`, default headroom), the narrowest of four directions (along x, along z, the diagonals), up to 8 map units (wider is open, `null`); ground that falls away is no wall. `bodyWidth` (the worm's width; default 0, not enforced) refuses a step into, or a jump past, a gap narrower than that: a gate, a keep's door or the slot between two tower pillars. Without it the summary names the routes through gaps under 0.6 map units (a worm's body measured about 11 world units across, rounded up; its collision width is not read from the game). A jump never passes through a wall (a column over the take-off by more than the jump rises): before iteration 9 one could jump a wall one column thick. `route: true` adds each start's whole route column by column (`route`, at most 2000 points), for `game_walk {path}`. **Several starts with `via`**: each start is walked with only its own start's `near` zone free (and the targets'), never the other starts'; before, every start's zone was free on every walk, so a zone round one start bridged a gap off the route on another's walk and a check from several starts passed where the single spawn failed (Caldera v2 round 2). |
+| `check_flood` | A rising sea against the spawns: `check_reachability` with a flood. **Turns** count from 1: game turn n is the match's n-th turn start, the `turn` of `wum.sim.turnStarted`, `game_state`'s `turn` and a waterSchedule's `startTurn` n (its step lands at the start of that turn, before the handlers run); the answer's `flood.turnIndex` says so. **Whose turn**: the engine's rotation (lib/turns.ts; seen in Tests on 2026-11-08: turn 1 the human team's WORM0, then WORM4, WORM1, WORM5, ... for two teams of four: the teams alternate from team 0 and each moves its living worms in turn; a worm drowned at a turn start is skipped, so its team's others move sooner), or `turnOrder` (the WORMn numbers in the order a Test moved them from turn 1, repeated: `game_state`'s `turnLog.turnOrder`); `flood.turnOrder.firstTurns` lists the first 16. Each spawn knot's `moves.ownTurns` gives the water and its ground's clearance at the start of each of its worm's first own turns, and **`floodVerdict`** (PASS or FAIL in the `summary`, naming each failing spawn with its own turn, the game turn and the water) holds every spawn's ground more than `minDryMargin` (default 1.5 map units since iteration 8, 30 world: knock-back, slides and the computer team's walking move worms, and in the iteration-8 Test a worm drowned from ground 1.7 map units up; 0 is over the water at all, the rule before) over the water through its first `minOwnTurns` own turns (default 2), and fails a spawn knot of the match with no ground. **`flood.capReport`** gives every spawn's ground over the water's highest level (`overCap` in map and world units, nearest first) and names those within `capMargin` (default 3 map units) of it, and the summary names them too. The iteration-7 critique's "8/8 dry" was the best-case `escapes` count (a turn every `every`), not the rotation; the summary now gives both, and the verdict. The rest as before: The water is `schedule`, `wum.sim.waterSchedule`'s own options ({`startTurn`, `every`, `step`, `cap`, `from`, `units`}, world units unless `units: "map"`, with its rules: it steps at turn starts, only raises and stops at `cap`), or `"script"`: the project's whole script run turn by turn by Melange.exe's server (`level.script.water`, a stock Lua 5.0 with a stand-in for the match's `wum`: every waterSchedule call, those set from a `sim.turnStarted` handler (a second phase), `wum.sim.every`/`after` timers, `setData("Water.Level")` and `Water.RiseSpeed.Current`; the answer's `scriptSchedules` lists each call with its turn, `scriptErrors` what raised; Caldera's two phases come out as 48 world at turn 10 and 188 at turn 20); on the game's own server, which cannot run it, the script's first `wum.sim.waterSchedule{...}` call is read (its fields numbers, or number expressions of the script's top-level constants: `local FIRST = 5` outside any function and never assigned again, then `startTurn = FIRST`, `cap = CAP - 40`; `+ - * / % ^` and parentheses), with a `scriptWarnings` line when the script has more than one; or `levels` ([{turn, level}] in the call's units, map unless `units: "world"`, each from that turn on), or `rounds` ([{round, level}], the same by `wum.sim.round`'s rounds, which go up once every team has had a turn: round r from game turn (r - 1) x `teams` + 1, answered as `flood.levels` and `roundTurns`; a team wiped out makes the game's rounds shorter); `start` is the water before it (default the project's level). A script that sets the water by round from a `sim.turnStarted` handler (Caldera's) is run as it is by `"script"`: the server's stand-in gives the handler the round as the game counts it, `teams` turns a round (before iteration 9 it counted 8 turns a round, teams x worms, so a by-round script came out far too slow). On a server that cannot run the script (the game's own), a script that writes `Water.Level` from its own code is refused with the way out (connect through `MELANGE_GAME_DIR`, or pass `levels` or `rounds`) instead of being read as setting no water. A `levels` or `start` value more than 40 map units over the level's highest ground, in map units, is refused as world units given as map (Caldera's world levels read as map drowned every spawn at turn 1); the answer's `levelsUnits` repeats the units. Each start's worm walks `walkSpeed` x `turnTime` in each of its own turns, the first in game turn `firstTurn` (default 1), then every `every` turns (default 2: two teams; the best case, its team picking it each time). Per spawn, `flood`: `floodsAtTurn` (the first game turn, every team's turn counting one, the water reaches the ground it stands on), `floods` (that turn with the water and the ground in map and world units both), `ground`, `escapes` (a walk reaches the target with every place on it dry in the turn the worm gets there), `ownTurns`, `arrivesTurn` and `ownTurnsBeforeItFloods`, or why not and the highest dry ground it reaches and when that floods; and for a spawn knot `moves`, its worm's own moves: WORMn is worm n % `wormsPerTeam` of team floor(n / `wormsPerTeam`) (default the knots / `teams`, `teams` default 2), team 0 plays game turn 1 and a team moves its worms in turn, so a worm moves first in game turn 1 + team + teams x worm and then every teams x wormsPerTeam turns (`firstMove`, `every`, `ownMovesBeforeFlood`, `teamMovesBeforeFlood`, and `escapesOnOwnMoves`, the walk on those moves alone). The answer's `flood` repeats the schedule (`scheduleUnits`: a schedule is world units unless it says map; the answer's other lengths are the call's), the water at sample turns in both units, `highestWater`, and `warnings`: a spawn whose ground is at or within `margin` (default 1 map unit) of the water's top (it drowns there), one that floods before its worm's 2nd move, and one that floods before its move `minMoves` (default 3). On Caldera's iteration-5 schedule (startTurn 7, step 56, cap 820 world) the shore castles' spawns flood in game turn 8, before their worms' 2nd moves, not in turns 11-12 as its script's comment said, and the cap is over every castle's floor but the two high ones. **Escape and solve.** Each spawn knot also answers `flood.escape` (`escape: false` leaves it out): for each own turn of its worm (in the rotation of `teams` x `wormsPerTeam`: two teams of four move a worm every 8 game turns) while its spawn is dry by minDryMargin at the turn's start, the walk over the ground dry then to the nearest floor minDryMargin over the NEXT round's water (`floor`, `walk`, `ownTurnsToWalk`, `seconds` at walkSpeed) and whether it fits in that one turn; `latestLegalRound` is the last such turn's round whose walk fits: the spawn's ground may go under from the round after it. `solve` {`from`, `step`, `cap`, `rounds`} answers `flood.solvedSchedule`: the fastest sea by round that rises from round `from` by at most `step` a round to `cap` while every played spawn's ground stays minDryMargin over it through the round of its worm's minOwnTurns-th own turn (`heldBy` names the spawn that holds a round down), its levels ready to pass back as `rounds`. `solve` alone (no schedule) takes the level's water as the start. **Team knots** (`spawns.mode` teams, `place_spawn_knots {mode: "teams"}`): knot WORMk is team floor(k / 4)'s worm k % 4, which is the match's worm (slot) floor(k / 4) x `wormsPerTeam` + k % 4, and a knot past `wormsPerTeam` is not in the match; `teams` defaults to the teams that have knots and `wormsPerTeam` to 4, so give the Test's own (`wormsPerTeam: 2` for `test {teams: [{human: true, worms: 2}, ...]}`); `turnOrder` takes slots 0-15. Before, only WORM0-7 were read and two teams assumed, which failed a four-team map for nothing (Caldera v2 round 1); a level of `knots` spawns reads as before. |
+| `check_holes` | See-through holes in the ground of a region (x0, z0, x1, z1, or `around` {x, z, radius}: the crater floor under the mine factory): a ray straight down every `step` (default 0.5 map units); a column whose ray hits no solid voxel over `above` (default the project's water level, else 0) is a hole where the camera sees through the island (a plug cut out of a draped skin, a gap between a skin and an undraped block). Draped skins are read at their sheared height, rotated frames sampled. Answers `ok`, the hole columns and their share, the holes grouped (largest first: cells, area, centre, box, `through`: `low` ground under `above` or the `void`) and `seams`: side-by-side columns whose top stretches do not overlap in height (ground, but a crack seen from the side). place_object, list_objects and save warn of holes within 6 map units of the mine factory's knot (the mines fall through them). |
+| `check_trail` | The ground across walking trails, column by column: along each of `trails` (polylines of [x, z] or [x, y, z] in `units`; give y on a switchback, so the leg over or under is not taken for it; `names`) every `spacing` (default 0.25 map units) the trail's ground (the top at or under its own height) is compared with every column across the bed (`width`, default 5.2) and `margin` (default 1) either side: a column more than `maxDrop` (default 3) under it, or with no ground, is a `drop` (an edge a worm walks or is knocked off), and a column within `holeRadius` (default 1.5) of the centreline whose ray straight down meets no solid over the water (`above`) is a `hole`; a centreline with no ground is `noGround`. check_reachability's walk graph keeps to ground it can stand on, so it passed Caldera's trails while two worms fell 31 map units through the SW trail in round 1. Answers per trail `ok`, a `summary`, the runs of each finding (kind, side left or right of the way the trail runs, from/to along it, the worst drop and where, the trail's ground there) and `skinCorners`: corners within holeRadius + 0.6 of the centreline where four draped skin blocks meet (the round-1 fall was 1.1 map units off the SW trail's centreline at the corner of the crater's skin block, where every mine dropped in the game falls through too: probe them with `game_mine_drop {trails}`). The bench's build checks its trails with it (`out/trails.json`). Read-only. A column whose only ground is a bank rising from just over the trail's (its underside within twice the headroom of it: a cut wall, a skin's shell on the uphill side) is counted in the trail's `banks`, not as a drop; ground higher than that over nothing is an overhang over a drop and is one. Columns on a block's far edge are read as query_ground reads them: a point a hair under the edge (x -40 - 1e-12 on a skin tile ending at -40) rounded past the tile's last cell while the next tile starts only at -40, and Caldera v2 round 2's SW and NW trails showed false holes and no-ground drops at x or z -40 (lib/inspect-field.ts now keeps the cell in the block; every inspect tool reads columns that way). Each drop's `landing` is told apart (`drops` counts them): `trail` (it lands back on the trail's bed at the trail's own ground there: a harmless V-drop onto the leg under a hairpin), `exit` (a walk back onto the trail by the walking rules, with `exitLength`), `trap` (no walkable way back within 14 map units, or no ground at all under the edge: a trough a worm stays in, which fails the trail; `climbRefused` is the smallest climb out that was too high; the NW 6.1 drop of Caldera v2 round 3 is where team 3 got stuck) and `unknown`. With `walk` (default true) the trail is also walked: a worm on the centreline and on each of `walkOffsets` (default +-1.5 map units) moved sample by sample over the ground at the trail's own height, each move judged by check_reachability's rules (`maxStep` 0.5, `maxSlope` 45, a drop of 8, `bodyWidth` 0.6), so a ridge between two legs every column of which has ground is caught as a refused move (`walk[].blocked`: where, the rise and why; fails the trail). Where an offset line turns sharper than its offset allows (round a hairpin's tip) its point jumps; such a jump starts a new segment (`walk[].turns` counts them) instead of being judged as a move. `mineSuspects` lists ground of the kinds that let mines through in Tests (below): the top of a block of a non-whole scale, a skin cell sheared more than a voxel across itself; not proven causes, so probe them with game_mine_drop {trails}. `ok` is false for a trap, a hole, a bare stretch or a refused move, not for a harmless drop. **Free width.** At each sample the trail's free width is read too: the distance from the centreline, left and right, to the first column more than `edgeDrop` (default 1.5 map units) under the trail's ground or with no ground, out to `freeReach` (default 8). A stretch whose free width, both sides together, is under `minFreeWidth` (default 2) is a knife edge: `freeWidth.narrows` lists them (from/to along, the narrowest point, left and right), `freeWidth.narrowest` the trail's narrowest sample, `freeWidth.median` the usual width, and the summary names them. The SW summit leg a worm walked off in Caldera v2 round 4 was such a ridge: its banks fell away 1.5 within a worm's width of the centreline, which no drop over `maxDrop` showed. A knife edge does not fail `ok` (a bench decides); the summary makes it hard to miss. |
+| `check_support` | Whether the ground under a point is solid down to the base or a shell over a void, for the factory's knot and the mines' landing zone: every column within `radius` (default 2 map units) of `at` [x, z], a column every `step` (default 0.5), is read straight down (a draped skin at its sheared height); its top stretch (stacked and touching stretches merged) is solid when it reaches `downTo` (default the water level, else the bottom of the lowest voxel frame), else hollow. Answers the counts, the thinnest and deepest hollow columns (`thickness`, `voidBelow`), the column at the point and up to `limit` hollow columns. check_holes passes such a shell (its rays hit the skin); the factory check warns of one within 1.5 map units of the knot when the water level is known. |
+| `check_islets` | Terrain not joined to the main landmass: the solid voxels of every frame merged per column (a column every `step`), joined where side-by-side columns' stretches overlap in height (a corner alone does not join), split into pieces. The largest is the main landmass; every other piece is listed smallest first (`volume` in map units cubed, columns, bounds, top, its frames, `underWater`), and those under `minVolume` (default 50) are flagged `debris`: the coastal speckle and the detached offshore chunks a top view shows. Carve them with `fill_box_raw` or `clear_base_terrain` with a box. |
+
+The water line is drawn only when the project sets a water level; a level that keeps its own water height has none the
+editor knows, and the renders say so. The 100 x 100 surround terrain is not part of these views.
+
+### render
+
+A perspective look at the open level, to judge silhouettes (a volcano's cone, a castle's towers) before a Test.
+Read-only. Positions are map units unless `units` is `world`.
+
+| Tool | What it does |
+|---|---|
+| `render_view` | PNG 3/4 view (image content): every exposed face of every voxel frame, rotated and scaled ones through their own matrix, rasterised into a z-buffer in the material's real colour (`palette` as the inspect renders), lit per face by the time of day's sun (or moon) and an ambient term, so tops and each side of a voxel step differ; silhouette edges darkened (`edges`), the project's water level as a translucent plane, spawns and objects as small billboards in the top view's marker colours (hollow when terrain hides them), a sky gradient by `timeOfDay` (default the level's), optional `fog` (the distance that hides about 63 %). Camera: `pos` and `target`, `fov` (vertical, default 60, as `game_camera`); or `view` `nw`, `ne`, `sw`, `se` (default), from that side 35 degrees up at the distance that fits every frame's solid voxels in the level or a `region` (`clip` draws only what is inside it); `orbit` draws the four in a 2 x 2 sheet; `game` mimics the turn camera, 170 world units from `at` and 22 degrees up, on the side away from the level's middle. `azimuth` (degrees clockwise from north, -z), `elevation` and `distance` override a preset; `target` moves its centre. `width` x `height` default 960 x 540, at most 1920 x 1080; `antialias` renders 2 x 2 samples a pixel. The text part gives each camera in map and world units, the time taken, the frames drawn and each marker's pixel. A 960 x 540 view of the 400-frame synthetic level (117 000 cells, 45 000 faces) takes about 0.1 s, 0.2 s antialiased. A voxel with a second material on some of its top corners (the per-corner blend of `paint_path {blend}`, the panel's 2nd-material brush, heightfield `blend`) has its top drawn as two triangles, each the mix of the two materials by how many of its three corners carry the second one (0, 1/3, 2/3, 1), so a blended trail edge reads as a gradient of two or three steps instead of a flat tile of the first material: the game's own per-corner blend, approximated. |
+
+Faces are flat-shaded with no cast shadows (a draped block's per triangle, see drape), and only a voxel's first material is drawn (not the second-material paint),
+nor the base's scenery meshes or its heightmap ground. A face between two frames that touch is still drawn (hidden by
+the faces in front of it), so overlapping coplanar frames can flicker between their colours.
+
+### scenery
+
+The level's scenery details (the base map's meshes, glass and neon, grass tufts, lights, sounds, cameras) and copies
+of another base's pieces. A copied piece draws in the game but has **no collision** (it is not part of the landscape:
+worms and shots pass through it), so copies are decoration only; the Erg panel does not copy scenery for that reason.
+Build walls that matter with the structure tools. Removing a base detail is a `remove` op in the patch, as the panel's.
+
+| Tool | What it does |
+|---|---|
+| `list_scenery` | The open level's details that are not spawns or objects: id, name, resource, role, frame, whether the base has it, position, rotation, scale; counts per resource. Filters: `search`, `role`, `near` {x, z, radius} (nearest first), `box` {min, max}. |
+| `remove_scenery` | Remove such details by `ids` or by the same filters (at least one); `dryRun` lists them. One undo step. The surround ring is `set_surround_mode` (`none` removes it). |
+| `list_backdrop` | The base's backdrop among the level's details: each scenery detail's bounds from its preview mesh (the server's `/erg/assets/<key>.glb`, the Erg panel's own, through its node transforms and the detail's matrix), `plane` (flat and at least 40 map units both ways: a ground or table plane), `distant` (wholly outside the voxel frames that hold ground) or `large` (wider than half of them and a quarter of them the other way), and `coverLevel`: the lowest water that covers the planes that reach out past the level. `set_water` and `save` warn when the water is under it. |
+| `remove_backdrop` | Remove those pieces (all, `kinds`, `ids`, less `keep`); `dryRun`. One undo step. |
+| `list_base_scenery` | A base level's scenery pieces (default the open project's base; `Multi.StormTheCastle`, `Multi.NiceToSiege`, `Multi.HardDaysKnight` and the other Camelot maps for castle walls, towers, flags and statues), grouped by resource, with an example of each (its id, name, position, rotation and scale there). |
+| `list_scenery_types` | What kinds of pieces the bases have, by name: each kind (a detail's name without its engine tags and numbers: flag, pole, candle, ...) with the resources that draw it in each base, `text` such as `flag in Multi.NiceToSiege: CAMELOT16, CAMELOT19`, a count and an `exampleId` for `copy_base_scenery`. Default bases: every base of the open level's theme (or `theme`); or `bases`. `search` filters kinds, names and resources. |
+| `copy_base_scenery` | `copies`: up to 64 pieces, each `id` (a detail of that base) or `resource`, at `pos` or `xz` (dropped onto the voxels), with `rot` (degrees) and `scale` (default the source's: a number, `[x, y, z]`, or either as a string such as `"1.5"`; anything else is refused naming the copy and what a scale is). Names keep their engine tags (`VISIBLE_`, `MORTAL_`). Refused from a base of another theme unless `allowOtherTheme` (the game may not load another theme's meshes: Test it). One undo step. |
+
+**Multi.DinerMight's distant set is not reachable.** The yellow table plane the Caldera sea showed at -20 world, the green barrel, the pink buildings and the mushroom are none of DinerMight's 137 details (its 52 scenery details are the neon strips, grass tufts, signs, toolboxes and the juke box, none of them backdrop by their meshes) and none of its 558 voxel frames (checked 2026-11-08); Multi.StormTheCastle, Multi.NiceToSiege and Multi.CrateEscape have no backdrop among their details either. So `list_backdrop` finds nothing there, no patch op can remove the set, and the water check has no plane to measure. The base's databank keeps `Databank.CustomDetailBank` (BUILDING on DinerMight) whatever `set_theme` sets, which is a likely source; it is not verified, and Erg's patch has no field for it.
+
+**What is left of a wiped base.** `clear_base_terrain` empties the voxel frames, but not the base's heightmap ground
+(the `.hmp` surround, `copy` by default) or its details. On Multi.DinerMight the heightmap is the green hill the diner
+stands on: with the voxels wiped and the sea risen over it, it shows as a translucent green-grey mass under the water
+(seen in the game on 2026-11-07; with `set_surround_mode {mode: "none"}` it is gone). The base also keeps 137 details:
+cameras and look-at points (65), 27 `VISIBLE_NeonStrip` (`D05_02`, the thin pink lines left floating round the old diner
+at y 6-10), 20 `VISIBLE_MORTAL_Grass` tufts (`BUILDING14`) at y 2-4, lights, sounds and the juke box. For an island in
+an open sea: `set_surround_mode {mode: "none"}` (or `flat`, or `paint` it lower), then `remove_scenery {search: "Neon"}`
+and `{search: "Grass"}`; `list_scenery {near}` finds what else is near a point.
+
+### game
+
+A look at a Test while it plays, through the running game's Oasis: these run Lua in the game's client console
+(`lua.eval`), so they need the game running with Oasis writable and offline (the console refuses online matches
+unless `[LuaConsole] MatchConsoleOnline=1`). A Test match with an idle human team ends by itself after some minutes:
+keep waits short, and stop the game before a match you do not want recorded ends.
+
+| Tool | What it does |
+|---|---|
+| `game_state` | The scene (menu, loading, match), the turn (`turn` counted from 1 as `wum.sim.turnStarted` and check_flood count it: `wum.game.match().turnsStarted`, with the client's own `clientTurnIndex` beside it; team, the active worm's slot, phase, ai), the water level (world and map units), turn and round time left, sudden death, worms alive per team, the sim tick; `turnLog`, the turns game_state and game_wait have seen in this match (team and worm of each) and, once every turn from 1 was seen, `turnOrder` for check_flood; and `announcements` (from the game's log channel): the `wum.sim.announce` messages on the screen now (`secondsLeft`) and the last five (`secondsAgo`), each with `shownFrame` on a game that logs it (Melange 0.13+: the first frame it was drawn in at full opacity, `null` while it fades in). Tried on 2026-11-08: turns 1-4 read WORM0, WORM4, WORM1, WORM5, the turn matched the script's announced sim turn, and each announcement was on screen for its seconds. `announceShot: true` also shoots the game's own view (render.shot, not clean: the message is drawn with the HUD) when an announcement is on the screen and its `shownFrame` is logged, from a frame after it: `announcementShot` gives the path, frame and text (`prefix`, `width`). |
+| `game_wait` | Wait until `turn` turns have started (game turn `turn` is playing), or `seconds` pass (default 120), or the match ends; answers `game_state` and the `turnLog`. It looks every second, so it sees every turn. |
+| `game_camera` | Draw the frame from `pos` toward `target` (`shot: true` names its PNG `<prefix>_<name>`, as game_shots does) (map units unless `units: "world"`; `fov`) for `seconds` (at most 10), or until released with `hold: true` (erg-mcp sets it again every 4 s, as a `render.camera` override lasts at most 10 s; it ends at `clear`, `preset: "default"` or a pose without hold, at a `test`, or by itself when the game refuses it twice; `game_state` answers `camera.holding`; tried in the game on 2026-11-08: the overview held 22 s and through a `game_shots`), or `clear`. `preset`: `default` (the game's own camera: the override cleared) or `overview` (the open project's whole level from the south, 50 degrees down; `azimuth`, degrees clockwise from north, `elevation` and `distance`, in `units`, move it round the level's middle; game_shots' `cams` take them too). `fit` picks what the overview frames: `frames` (the default, as before: every voxel frame's box, which on a wiped base takes in its empty frames far past the island), `solid` (the solid voxels) or `island` (the solid voxels over the water), centred on it and as close as shows all of it in a 60 degree 16:9 view, times `margin` (default 1.1); `set_overview` makes one the project's default. The picture only: the game's camera, aiming and the match are untouched. It is the game's `render.camera`, owned by Oasis, so no mod needs to be enabled; on a game without it, a client mod's `wum.render.cameraOverride` (`mod`, default the first enabled mod with client code; `mod` also forces that path). `shot: true` also answers the frame as image content (`render.shot`, below). `preset: "overview"` with no project open (a baseline, test {map, noLevel}) frames the match's worms (their box padded 25 map units) instead of refusing. |
+| `set_overview` | The open project's overview framing for the rest of this erg-mcp session: `fit` (default `island`), `azimuth`, `elevation`, `distance`, `margin` as game_camera's; game_camera's and game_shots' `preset: "overview"` use it whenever a call does not say otherwise. Answers the pose and the box it frames. `clear: true` drops it. Tried on 2026-11-08: on a wiped Multi.DinerMight with a 26-unit block island the frames' overview showed the island small in the middle of the base's old extent; `fit: "island"` filled the picture with it (the first try framed a pole the base had left standing far off, hence the main landmass). Only the pictures: the game's own turn camera is not changed (the engine has no level camera bounds a level could set). |
+| `game_shots` | Several poses in one call: `cams` ({`pos`, `target`, `fov`} or {`preset`}, each with an optional `name`), each pointed with `render.camera` and read back from the first frames drawn from it (`settleFrames`, default 2) with `render.shot` into `Documents\Melange\shots\<prefix>_<name>.png`: every name is prefixed (`prefix`, default `erg_<yyyymmdd_hhmmss>` of the call) and one this erg-mcp wrote before gets `_2`, `_3` (`unique: false` overwrites), because the folder is shared by every run and agent (a bare `n` or `s` overwrote another run's). Before each shot the pose is confirmed from the drawn camera (`wum.render.camera`): when another client has the camera (another erg-mcp's held `game_camera`, which an overview from the north came out as in iteration 7) the pose is set again once and a warning names the pose drawn instead; an overview's answer gives its `azimuth` and `worldPos`. `onAnnounce` {`match` (a case-insensitive regular expression), `timeoutSec`} waits for a `wum.sim.announce` message to be on the screen (up now, or the next) and shoots at once, not clean (the message is drawn with the HUD primitives clean hides), answering the `announcement`; on a game that logs the frame each message is first drawn in at full opacity (`sim/announce.shown`, Melange 0.13+) it also waits for that record and reads every shot from a later frame, and the answer's `shownFrame`, `firstShotFrame` and `proof` say so (tried 2026-11-08: shown in frame 9765, 203 ms after the call, the shot from frame 9768): proof that a level script announced (tried on 2026-11-08: the turn-2 message in the shot 1.2 s after it came up), at `width` (default 960), about a tenth of a second a pose (three poses took 0.55 s in the game). `clean` (default true) hides the mods' `wum.draw` primitives for the shots, so a mod's HUD text is not in the evidence; the game's own HUD stays. The camera is given back at the end, or the last pose held 5 s with `hold` or until released with `holdLast`; a pose held by `game_camera {hold}` pauses for the shots and comes back after them. Answers the pictures (unless `images: false`) and their paths. `game_camera {shot: true}` is the one-call set-and-shoot. **waitPlay.** A turn's "Ready?" intro can draw its main view from another camera than the override (in the Caldera iteration-10 Test every castle shot taken in an intro showed the worm and the HUD, the pose only in the corner inset), so `waitPlay: true` has the game hold each pose until the turn is in play (render.camera {when: "play"}), set it then, and read the shot once it has been drawn `settleFrames` frames (default 6 with waitPlay; render.shot {requirePlay, afterCamera}); each shot answers its `phase`. It waits at most `waitSec` (default 60) a pose. Tried 2026-11-08: a pose asked for in a CPU turn's intro was read 2.9 s later in the play phase. `preset: "overview"` with no project open frames the match's worms (a baseline's overview failed with 'no project is open' in Caldera v2 round 1; explicit `pos`/`target` never needed a project). `preset: "castle"` (`at` the castle's centre on its court, `radius` its half size, default 14 map units, `team`) frames the castle and that team's living worms wherever they are (default the worms within 1.5 radii), from outside the island (away from x = z = 0) 55 degrees down unless `azimuth`/`elevation` say otherwise. `labels` (default true for preset castle) writes `<name>_labels.png` beside the shot: every living worm in view ringed in its team's colour (0 red, 1 blue, 2 green, 3 yellow) with its slot number over it, placed from the pose (the game's own name tags are too small to read in a wide shot), and answers each worm's place in the picture (`worms`: px, inView). `clearView: true` on a cam with `pos` and `target` checks the eye against the open project's voxels first (lib/eye.ts): an eye inside the ground, within 0.75 map units of it, or with voxels between it and the target is moved to the nearest one in open air with a clear view (raised, nearer or farther, turned round the target), and the shot's `eyeMoved` says how. |
+| `game_walk` | Walk the active worm of the running Test with the game's own keys along a route, given as one of `waypoints` (straight lines from one to the next, the walk before), `path` (a dense route, check_reachability `{route: true}`'s `route`: followed by pure pursuit, aiming `lookahead`, default 2 map units, along the route ahead of the point on it nearest the worm, so it turns round pillars and keep corners with the route instead of heading straight at the next waypoint) or `to` ([x, z]: the route is planned from the worm's own spot over the open project's voxels with check_reachability's walk graph, `bodyWidth` enforced (default 0.6 map units) and jumps over gaps of up to 2, and planned again from where it is after each round of recoveries, at most 4 times; `plans` lists them). With path or to, where it makes no progress for 0.6 s it tries in turn a jump, a side step (0.4 s square to the route, the side alternating) and a backflip (`recover: false`: only the jump), with the game's own jump and backflip keys read from its bindings (`Input.JumpPressed`, `Input.JumpBackPressed`; `keys` in the answer), and `reached` gives `along` and `of` (map units of the route). Every recovery's jump uses the bound jump key (in testenv B's game it is Space, which the waypoint walk's RETURN before was not). Tried on 2026-11-08 (testenv B, a block island on a wiped Multi.DinerMight): `to` planned a 14-unit route from the worm's spot and the worm `arrived` in 6.5 s. Then, as before, it reports how far it got: `reached` (waypoints reached, and whether the last), `stop` (`arrived`, the turn ended, the worm died, the timeout), where it ended, `toTarget`, the climb, the time, `jumps` and `stuckAt`, and `path` samples. The game moves a worm relative to the camera (W away from it, S toward it, A and D to its sides, the worm turning to face the way it walks; tried on 2026-11-08), so the walk holds the key or pair nearest the bearing to the next waypoint, read again every 0.12 s from the worm's position and the drawn camera's forward, and taps jump (RETURN) where the worm makes no progress for 0.6 s (`jump: false` not). It waits for a human team's turn in play (`worm`: that WORMn's; the Ready? intro is skipped). The keys go through Melange's Automation module, in test builds only (`[Automation] Enabled=1`; `<gameDir>\Melange\automation.txt`, `gameDir` or `MELANGE_GAME_DIR`), and the tool refuses when the game does not read that file. Tried on 2026-11-08 (testenv B, Multi.DinerMight): an L of two 7-map-unit legs, `arrived` in 5.6 s. **Driver.** `driver: "input"` (the default when the game has input.drive, Melange 0.13+) moves the worm with the game's own inputs, Input.MoveForward ... Pressed and Released as the keys bound to them post them, from the input service's tick (the Controls module's drive), held with a 0.5 s deadline renewed every step, so it works whatever window has the focus; `keys` is the Automation path (W A S D through DirectInput, which the game reads only with the focus: in the Caldera iteration-10 Test the window lost it a third of the time and W moved no worm). The answer's `driver` says which ran. With `path` and a project open, `replan` (default true): after each round of recoveries that leaves the worm stuck it walks a short way straight back off the heading it is stuck on, plans a route over the open project's voxels (the walk graph, the worm's width enforced) from where it is to the path a little further on (on the path's own height when it has y), and follows that before the rest of the path, at most 4 times a walk (the answer's `plans`): pursuit aims straight along the path, and jumps and side steps kept Ashgate's WORM2 against the keep's pillar for 4 turns in Caldera v2 round 1. |
+| `game_play_turns` | Play the turns of a Test with every human worm, one call for a whole run: `trails` (one route per team, `trails[t]` for team t, points [x, z] or [x, y, z] in `units`; give y on a switchback, whose legs over each other only y tells apart), `turns` or `rounds` (default 2 rounds: each living worm once a round), `walkSeconds` (default 20). For each turn it waits for a human team's turn in play (a computer team's turn is waited out), walks the active worm along its team's trail from the trail's point nearest the worm (game_walk's driver: the game's own inputs through input.drive, pure pursuit, jump, side step and backflip where it is stuck), shoots that worm at the start, middle and end of its walk (`shotPose` `near`, the default: each shot on the worm where it is then, every shot of the turn from the same side of its heading along the trail, 10 map units off and 11 up, over castle walls, so the ground behind it shows how far it went; `game`: the game's turn camera; `<prefix>_t<turn>_w<slot>_<start|mid|end>.png`; a walk that ends before half of `walkSeconds` takes no middle shot), then ends the turn: `end` `skip` (the default where the game has `level.test.endTurn`: `Timer.TurnTimedOut`, the turn timer's own message, as the timer running out does), `fire` (Input.Fire held `fireMs`; `weapon: "bazooka"` takes it from the weapon panel first through the Automation module, which needs the window focused and gameDir or MELANGE_GAME_DIR) or `wait`. Answers each turn (worm, team, from, to, along/of its trail, climb, stop, recoveries, shots, how it ended) and per worm its turns and how far along its trail it stood after each; a turn whose worm did not move at all has `stuck` (see the heightmap note below). Every human team's worm is driven the same way (input.drive posts the inputs the game's keys post, whatever team plays). `timeoutSec` (default 1800) caps the run. A worm more than 1.5 map units off its trail (a spawn in a courtyard) first walks a route planned over the open project's voxels to the trail's point nearest it (`approach`, default true with a project open: the turn's `approach` says what was planned), and a stuck worm replans round what holds it (`replan`, game_walk's). `announceShots` (default true) shoots the game's own view as each `wum.sim.announce` message is first drawn at full opacity during the run (`<prefix>_ann<n>.png`; the answer's `announcements` lists the text, the frame logged and the shot). The climb shots (shotPose near) check each eye against the open project's voxels (`clearView`, default true): an eye inside the cone's rock or behind a castle wall, as Caldera v2 round 2's `c1_t3_w0_start` and `c1_t1_w4_mid` were, is moved to the nearest eye in open air with a clear line of sight to the worm (raised, nearer or farther, turned round it), and the turn's `eyesMoved` lists the moves. `suddenDeath: false` holds the round clock for the run (as `test {suddenDeath: false}`; the answer's `roundClock`). `announcements` is always an array (`announcementsNote` says when none was drawn). `weapon` takes any engine weapon name (game_select_weapon) on this branch's Melange; `weaponVia` in each turn says how it was taken. **The run trace** (`trace`, default true): every worm's position is read about once a second through the whole run, beside the walk's own reads, and written to `Documents\Melange\erg-mcp\traces\<prefix>.json` (`traceFile`: wall time, sim tick, game turn, the active worm, each worm's slot, team, position and alive). The answer's `offTurnMoves` lists each worm that lost `fallDrop` (default 1.5 map units) of height or moved 2 while another worm played: from, to, drop, the seconds and the steepest sample drop (map units a second), its samples, and what the Test probe saw beside it in those ticks: explosions within 10 map units (source, the turn's weapon and worm: a `blast`), mines at rest within 4 (a `fall` beside one) and the worm's own death; `why` is the one-line reading. In Caldera v2 round 4 WORM5 dropped from 55.4 to 44.2 between its turns 21 and 29 and nothing said why. **Stuck points** (`stuckShots`, default true): a turn whose walk ended with the turn leaving play (settle: the worm fell or slid) or needed more than two jumps answers `stuckPoint`: the exact spot it was last stuck at (or left play from), its place along and off the trail, the ground under it in the project's voxels (top, frame, scale, draped) and a close shot of it from 4 map units off the side of the trail's heading (`<prefix>_t<turn>_w<slot>_stuck.png`), so a trail defect is located without guessing. **A lost answer.** A `lua.eval` whose answer is lost is sent once more (`luaEvalRetries` counts them); a walk that still fails has its turn's record finished from the worm's position read after the error, else the trace's last sample of it (`positionAfterError`), so no turn is left without a record (round 4, turn 74). |
+| `game_drive` | Hold the game's own inputs on the active worm for a while, whatever window has the focus: waits for a human team's turn in play (`worm`: that WORMn's), holds `inputs` (W, A, S, D: the camera-relative walk; Jump, Backflip, Fire (held: the power), AimUp, AimDown) for `seconds` through input.drive (posted from the game's input tick as their keys post them) and answers where the worm was before and after, how far it moved and climbed. Tried 2026-11-08 (testenv B, the window unfocused): W for 2 s walked WORM1 6 map units. |
+| `game_select_weapon` | Select a weapon for the active worm the engine's own way: `level.test.selectWeapon` (this branch's Melange) sends the weapon panel's own message, `Weapon.DelayedPanelChanged <id>` (the pick the panel sends replicated at 0x600d0c, which `WXWeaponPanelLogicEntity::HandleMessage` 0x603b70 turns into the worm's weapon), in the sim's tick, so the pick needs neither the panel, nor its clicks, nor DirectInput (the Automation module's injected mouse reported polls=0 in the Caldera v2 round-3 baseline and no weapon was ever taken). `weapon`: the engine's name (`kWeaponBazooka`, `bazooka`, `kWeaponGrenade`, `kUtilityNinjaRope` ...) or its id (1-68, the bazooka 1). Answers the worm's weapon read back (`wum.game.worms().weapon`), the name, how it was taken and in how long; an error when the worm's weapon did not change to it. An older game takes the bazooka alone, from the panel's first cell through the Automation module (test builds, the window focused, `gameDir`). Tried 2026-11-09 (testenv B): the bazooka on every baseline turn and a grenade (`kWeaponGrenade`, id 2) in 372 ms. |
+| `game_fire` | Fire the active worm's weapon: with `weapon` select it first (game_select_weapon), aim with Input.AimUp / Input.AimDown held `aimUpMs` / `aimDownMs`, then hold Input.Fire `fireMs` (the power; default 500), all through `input.drive`. Without `weapon` the worm's selected weapon must be one already (a turn starts with none: an error when it is nil). Answers the weapon fired, how it was selected and `fired`: whether the turn left its play phase after the shot (the game's retreat). Tried 2026-11-09: a grenade, `fired: true`, `phaseAfter: retreat`. |
+| `game_fire_shot` | Pin a camera for the mine factory's fires for the rest of the match (render.fireShot, Melange 0.13+): `arm: true` (the crater from 20 map units south and 25 over the open project's knot) or `pos` and `target`; each of the next `max` fires (default 4) is shot `delayMs` after it (default 500), held `holdFrames`, as `<prefix>_<n>.png`; `clear` disarms; with neither it answers the state and the shots taken (`images` as pictures). `max` goes to 512 (a game before this branch's Melange takes 32: arm it again within the session for more; the answer's `previousArming` lists the shots of the arming it replaced). `perFire` (1-12) shots a fire `everyMs` apart (default 250), and `track` (true: 12 map units, or a distance) chases the fire's first mine: each shot's eye that far from where the mine is then, on the pose's own bearing and a third of that over it, looking at it; where the mine is comes from its start, its upward speed and the gravity (the game's numbers: a launcher's mine rises `launchHeight` in about 1.5 s and falls back to its spot), so the mine fills the picture instead of a dot over the crater (Caldera v2 round 2's flight shots). |
+| `game_mines` | The mines of the running Test (the game's `Landmine` payloads, from Oasis `entities.list`; `[GameState] Enabled=1`) with their positions in `units` and their distance from the open project's factory knot, and with `watchSeconds` (at most 300) the mines that appear meanwhile (first seen: where they are launched from, high over the factory; the final list has where they landed) and the bus messages with Mine in their name (`GameLogic.StartMineFactory` at each turn start, `MineFactory.Start`, `.Fire`, `.FireEnd`, `GameLogic.PlaceMine`, ...). `untilFire` ends the watch 3 s after the factory's next `MineFactory.FireEnd`. A fire happens only at a turn start: set `inactiveTurns: 0` and a target above the level's mines, Test, and call `game_mines {untilFire: true, watchSeconds: 120}` (tried on 2026-11-08: a fire 72 s in, its 10 mines from 6 to 64 map units of the factory). A `GameLogic.StartMineFactory` or `MineFactory.Start` sent from outside a turn start (the match's Lua) did not make the factory fire. `fire: true` (or {`count`: 1-10}) fires it now (Melange 0.13+, `level.test.fireFactory`: its countdown set to 0 and its own turn-start handler called in the next sim tick; `count` fires that many whatever the target) and watches until the fire is out (untilFire; with `shotsOnFire` the volley is in the pictures); the answer's `onDemand` has the `trigger` (started, the mines in the level and the target it found, or why not) and the `fire`: each mine's `spawn` and `rest` and how far from the factory it rests, from the game's own record (`levels/factory.fired` on the session log, `game_probe`'s `factory.fires`). Tried 2026-11-08: 3 and 4 mines on demand, spawned 15 map units over the factory, at rest 2.4-5.8 from it. It waits up to 35 s for the fire's record (its mines at rest for 2.5 s each). The fire starts the countdown again, as a turn-start fire does. `alive: true` adds `factoryEntity`: whether the game's `MineFactoryLogicEntity` exists in the match, and with `entity.inspect` ([Oasis] RawInspect) where it settled (its own position, world units), how far that is from the project's knot, whether it has exploded or been hit, and its fire state; a factory far from its knot says so, and a missing one answers why it goes (see place). Tried on 2026-11-08: Caldera's crater factory was missing in every Test; a factory on a castle block was alive, settled 0.98 map units under its knot. `factoryEntity` also has `idleTurnsLeft`, the factory's own countdown (+0x88: set from `NumTurnsInactive` at its set-up and after each fire; each `GameLogic.StartMineFactory` takes one, and at 0 or under it fires when fewer mines than the target are in the level) and `minesToFire`. With `watchSeconds`, `trajectories: true` gives each new mine's samples (ms and position, every quarter second); entities.list reads the payload's position, which the game moves when the mine comes to rest, so a fired mine reads its launch point (72 map units up, in the Test) for about 2 s and then where it landed: launch and landing, not the arc. `shotsOnFire` {`count` (default 4), `everyMs` (500), `prefix`, `pos`/`target`, `width`, `images`} points the camera at the factory (60 map units south of its knot and 30 up, or `pos`/`target`) when `MineFactory.Fire` arrives and takes the shots (`render.shot`), so the mines are seen in flight; the camera is given back after. `fire`'s record is matched, not counted: the game keeps its last 8 fires, so once 8 were logged every later burst read "no fire record within 35 s" though the factory fired (Caldera v2 round 2); the trigger this call makes is the one that differs from the trigger before it, and its fire the first record not there before, from the trigger's tick on (within 45 s). `shotsOnFire.track` (true: 12 map units, or a distance) chases the fire's first mine with the game's fire camera (render.fireShot {track}, armed for this fire: `count` shots `everyMs` apart, default 400), refused while game_fire_shot is armed. |
+| `game_mine_drop` | Whether the ground holds a mine, in the running Test (`level.test.dropMines`, Melange of this branch): one mine at each of `points` (up to 64, [x, z] or [x, y, z] in `units`, default map; [x, z] starts `height`, default 8, over the open project's ground top there; `vel` world units per ms, default the factory's (0, -0.3, 0)); after `seconds` (default 10) each point is `held` (a new mine at rest within 1.5 map units, at most 1.5 under the ground top), `low` (one near but lower: it went through the top to something under it) or `gone` (none: through to the water and drowned, or set off), with the counts. Tried 2026-11-09 on Caldera: of eight launcher pads round the crater four held every mine and four none, run after run (see [erg.md](erg.md#the-mine-factory)). `trails` probes walking routes (a pre-test in a Test match of its own: the mines stay where they land, so end_match and Test again before walking the worms): a mine every `spacing` (default 3 map units) on each trail's centreline and one on each shoulder (`shoulder`, default 2.6), over the ground at the trail's own height (give y on a switchback), in batches of 64, skipping points within `avoidWorms` (default 4) of a living worm; per trail `ok`, the counts and each point that did not hold (along, side). Found 2026-11-09 with it and `points`: mines (and in round 1 two worms) fall through Caldera's skin within about 0.4 map units of each corner of the crater's skin block (`check_trail`'s `skinCorners`), every time, though the voxels are solid there; on a test island 2 x 2 skin blocks' corners (flat, sloped and steep, thickness 2 and 3) held every mine, so the cause is in the engine and not every corner has it: probe the corners near a trail. The game keeps about 30 mines and removes the oldest as new ones are made, so `trails` drops `batch` (default 24) at a time, dealt round the whole list, and reads each batch before the next (64 at once lost their first 30-odd without a blast, which read as `gone`); a mine that went off (an explosion the Test probe saw within 2.5 map units) is `setOff`, not a failure. Tried 2026-11-09 on Caldera (testenv B, Sunstone on, 512 probes): SE held every one; NE, SW and NW lost only the probes beside the corners of the crater's skin block ((37.8, -40.8), (-40.0, 38.6) and (-39.9, 38.3) where the round-1 worms fell, (-39.8, -41.0)) and one more on NW at (-44.1, -34.3). |
+| `game_perf` | The running game's frame cost over `seconds` (default 10), sampled every `everyMs` (default 200): fps and the CPU's busy time per frame (`wum.render.timing`) and the GPU's own time per frame (`gpuFrameMs`, the whole frame swap to swap, and its stages: Mirage's GPU timers, which `gltrace.gpu` reads, now also in `wum.render.timing().gpuMs`), as medians and 95th percentiles. testenv B is CPU-bound at about 36 fps on the menu and in every match (the CPU's busy time is most of each frame), so fps cannot show a graphics regression there: each run is kept under `label` (default the open project's id, or baseline with none open) and `against` (default the first run) answers the difference in GPU time with a verdict (not worse: within 15 % + 0.5 ms), and `cpuBound` says when fps follows the CPU. Every run is also written to `Documents\Melange\erg-mcp\perf-runs.json` (the last 24, with the game build), and `against` finds a label there when this process has none: the latest run of the same game build, else of any build with a note (a run from the file says `savedRun`); without `against` and no earlier run of this process, the file's latest run labelled baseline... of the same game stands in. Before, a baseline run by one erg-mcp process could not be compared with the next process's Erg run (Caldera v2 round 4: "no earlier game_perf run labelled baseline15 (runs: none)"). Read-only. |
+| `game_material_shots` | The in-game look of the open project's materials, with the plugins the Test runs with (Sunstone on): for each material exposed on the level (or `materials`) the project's voxels give its best patch (the ground sampled every `step`, default 2 map units: the flattest stretch with the most of that material round it), the camera is posed `distance` (default 6) map units off it, `elevation` (50) degrees down from `azimuth` (200: a little west of south), and a clean shot is read back (`<prefix>_mat<index>_<name>.png`; `images` adds the pictures); the middle 30 % of the shot's mean colour (`inGame`) is set against the material file's swatch (`preview_materials`' tile, the texture's mean): `delta` per channel, `lightness` (0-255) and `words` (lighter or darker, the colour cast it leans to). preview_materials' tile is not what the players see: the game lights and tiles the texture, and the Sunstone graphics plugin's landscape shader adds detail per texture class (its texture tags, `texture_tags.json`, keyed by the texture's digest: a `stone_rock` texture gets grime, and moss where its pits face the sky, by its wear parameter), which is how GreySlateFloor's warm grey tile came out pale off-white with green blotches in the Caldera v2 round-4 Test. Needs the Test match running and render.shot. Read-only. |
+| `game_probe` | What happened to the worms in the running (or last) Test, from the game's Test probe (`level.test.probe`, Melange 0.13+; the same records are on the session log as `levels/test.spawns` and `levels/test.death`): each worm at turn 1 (`WORMn` its slot, as game_state's worm; in a level with knot spawns its WORMn knot and `fromKnot`, how far from it the worm stood: a knot in solid or off an edge shows here), and each worm that died: game turn and tick, where, `lastAlive`, the water then and its feet over it (`feetOverWater`), and `cause`: `drown` (the engine's drowning state, or its feet under the water), or the source of the latest explosion that reached it (`mine`, `oildrum`, `crate`, `weapon` with the projectile and the weapon of the worm whose turn it was, `minefactory`, `worm`: a dying worm's own blast), or `fall` (its latest fall's drop), with `evidence`, `hits`, `falls` and `healthSteps`. The causes are inferred from what the probe saw (the game keeps no damage source); `explosions: true` lists the last 64 explosions with their sources, and `factory.fires` the mine factory's fires: each mine's spawn and where it ended up. On a game of this branch a mine is at rest once its position has not changed for 2.5 s (a pause in a bounce was taken for its rest before, which is how mines read y 0.75 under Caldera's factory while the shots showed them on the crater floor), and its mines are still watched for 3 minutes after the fire is logged: a mine that moves again (a blast, a slide) gets its new position (`movedAfterRest`), and one that goes gets its `fate`, `drowned` (gone from under the water, with the water then) or `destroyed` (set off or removed), with `goneTick`; `fates` counts them per fire (`resting`, `not seen to land`, `drowned`, `destroyed`), and each change is a `levels/factory.mine` record on the session log. A mine that goes before it landed (`gone before it landed`: the entity list still had its launch point) gets `likely` from the open project's ground under that point (drowned when there is none over the water). Tried on 2026-11-08 (testenv B): fires of 8 and 10 mines over a 26-unit block island, `launchRadius` 14 and 45: every mine at rest on the ground it fell on (y 3.01 and 3.51 on the block, 9.01 on its tower, the base's green hill round it), and 4 of the 10 `drowned` at y -0.25 under the sea at 0. Tried 2026-11-08 (testenv B, a rising sea on Multi.DinerMight): five drowned worms 0.5-0.95 map units under the water, one knocked 5.3 map units down by a bazooka onto ground the sea then covered, the factory's blast when the sea reached it. It checks check_flood against the match: the turn each worm drowned and the water then. |
+
+
+### testenv
+
+| Tool | What it does |
+|---|---|
+| `test_plugins` | A test game's plugins for a run, set on the files while the game is closed (plugins load at launch): `only` (e.g. `["sunstone"]`) turns those on and every other plugin in `<gameDir>\Mods` off (`Mods\thumper-state.json`); `install` (`[{id, from}]`) copies a plugin's folder (the one with `spice.json`, whose id must match) into `Mods\<id>` first and turns it on; `restore: true` puts back the state file and every folder it replaced (and removes one that was not there). The state before the first set-up is kept in `<gameDir>\Melange\erg-mcp\plugins-backup` until restore, so a second set-up never loses it. It refuses while a WormsMayhem.exe runs (`force` for another folder's game). `gameDir` defaults to MELANGE_GAME_DIR. |
+
+**Checks with Sunstone on.** Tests are judged with the Sunstone graphics plugin on and the gameplay plugins off:
+`test_plugins {gameDir, only: ["sunstone"], install: [{id: "sunstone", from: "<melange-plugins>\plugins\sunstone\mod"}]}`
+(take the folder from the repository's `origin/main`: a stale checkout installs an older Sunstone), launch the game,
+test, ..., close the game, `test_plugins {gameDir, restore: true}`. Tried on 2026-11-08 (testenv B): Sunstone 2.3.1
+installed over 2.0.3 with every other plugin off, `look.simModsLoaded` empty in the Test, and restore put back 2.0.3
+and the plugins that were on.
+
+**Four human teams, every worm steered.** The harness for a level with a castle per team, each step one call:
+
+1. `place_spawn_knots {mode: "teams", spawns: [...16]}` puts team t's knots WORM4t-WORM4t+3 in its castle; `save`.
+2. `test {teams: [{human: true, worms: 2}, {human: true, worms: 2}, {human: true, worms: 2}, {human: true, worms: 2}]}`.
+3. `game_probe`: each worm at turn 1 with `knotName` (its team's knot) and `fromKnot`.
+4. `game_play_turns {trails: [team 0's trail, ...], rounds: 2}`: every worm walks its team's trail, with shots.
+5. `test {map: "Multi.DinerMight", noLevel: true, teams: [...], turns: 4, fire: "bazooka", restart: true}`: the vanilla
+   baseline in the same set-up, then `test_asserts` compares the asserts.
+
+How the spawns work: the engine has no team spawns, but each worm's set-up data has a `Spawn` knot name, and the level's
+generated chunk (deterministic sim code, run in the level's `Initialise` before the worms are placed) writes
+`WORM<4 x TeamIndex + place>` into it, the place counted per team in slot order. Tried on 2026-11-08 in testenv B with
+Sunstone on and the other plugins off, on a 48-unit block island with a 12 x 12 castle in each corner (gates toward a
+ramp up a central summit, each team's trail out of its gate in a zigzag and up its ramp): all eight worms stood on
+their own team's knots (`fromKnot` 0) and none died; `game_play_turns {rounds: 2, walkSeconds: 12}` played 16 turns,
+two per worm, through all four teams, and seven of the eight worms reached the summit (6 map units up; `along` 36-38 of
+37-39) while one walked into a pit in its castle and stayed there with every recovery tried. The island shot with
+Sunstone on next to the same pose with `test {postfx: false}` shows the post-FX stack on and off.
+
+**A wiped base's heightmap ground.** `remove_base_frames` and `clear_base_terrain` empty the voxel frames but leave
+the base's heightmap ground (the surround), which can stand over a block island. A worm whose knot is under it spawns
+inside it and cannot walk, jump or backflip: in the first harness run no worm moved (the courtyards were 1.5 map units
+under the old DinerMight ground) and it looked like the input reached only one team. `set_surround_mode {mode:
+"none"}` removes it; game_play_turns names such a worm in the turn's `stuck`. The spawn checks do not see that ground.
+
+### blast
+
+Destructibility without aiming a worm through the weapon panel. The game sets an explosion off with its own
+`lib_CreateExplosion` (the `Explosion` data container and `Explosion.Construct`), which takes the position of a named
+detail of the level, so the points are look-at knots added to the level first.
+
+| Tool | What it does |
+|---|---|
+| `place_blast_points` | A look-at knot (`LOOKAT POINT`, which draws nothing; the level's own resource for it when it has one) named `ERGBLAST_<n>` at each of `points`. One undo step; `remove` deletes them. Save and Test (or `test {restart: true}`) before `test_explosion {game: true}`. |
+| `test_explosion` | An explosion of `radius` (the engine's land damage radius; a bazooka's is 35 world units) at `at`. Answers the voxel diff it carves, predicted from the project: the solid cells whose centre is within the radius, per frame (frames tagged PERM, which the engine never carves, are listed as permanent), the cells themselves with `cells: true`. `apply: true` carves them into the project (one undo step) for the renders. `game: true` also sets it off in the running Test at the `ERGBLAST_` knot within 1 map unit of `at` (`level.test.explode`, sent in the sim's tick; `wormDamage`, `wormRadius` and `impulse` default 0, so only the land is hit), with clean shots before and `settleMs` (default 3000) after. Tried on Multi.StormTheCastle on 2026-11-08: a 2.5-map-unit blast on top of a 6-voxel block left the crater the prediction gave. `from` puts the before and after shots' eye at a point (in `units`) looking at the explosion, such as outside a castle wall so the hole faces the camera; `prefix` names them (`<prefix>_before.png`, `<prefix>_after.png`). Without `from` the eye is 4 radii back (at least 8 map units) on the first of eight bearings (south first) and three heights whose line of sight to the point is clear of the project's voxels (the fixed south pose looked from inside Caldera's cone at a castle's uphill wall); the answer's `eye` gives it and a `warning` says when no clear pose (or `from`) was found. The Caldera bench places a blast point on each team castle's uphill wall (`bench/caldera/build.mjs`, `out/blasts.json`) and `play.mjs` sets each off with shots: the castles' destructibility (R4). A given `from` is checked the same way: an eye inside the ground, within 0.75 map units of it, or with voxels between it and the point (the Caldera v2 round-2 builder's blast cameras stood inside the volcano) is moved to the nearest one in open air with a clear view, and the answer's `eyeMoved` says how; `keepFrom: true` shoots from it as given. |
+
+<!-- end of erg-mcp tools -->
+
+Edits stay in memory until `save`, as in the panel; closing or reconnecting with unsaved edits is refused unless the
+tool is told to discard them. A failed tool answers with an error result (`isError`) that says why.
+
+## Limits
+
+The server's patch limits (see [erg.md](erg.md#limits)) apply as in the panel, and `describe_level` reports the usage:
+at most 64 added blocks of 1-31 voxels a side (scale 1-4), 2000 runs of voxel changes per frame, 20 000 ops, a 4 MB
+patch and 256 objects. Voxel edits that would pass the runs or size limit are refused before they are applied. The game
+adds two of its own: a voxel frame side over 31 asserts (a block of 32 from an older project still opens, and is named
+in `engineWarnings` and in the save's warnings), and more than 65 535 cells over all voxel frames (a trimmed base frame's kept box: `trim_base_frames`) crashes the game on
+load, so every tool that adds blocks refuses past it, `save` sends the server's warning, and `export`, `build` and
+`test` are refused by the server. The game's own maps are made of many small voxel frames (a few hundred, none longer
+than 31 voxels a side), not one large terrain grid.
+
+## Adding tools
+
+A tool group is one file in `tools/erg-mcp/src/tools/` that exports `tools`, an array of tools:
+
+```ts
+import type { Tool } from "../registry";
+
+export const tools: Tool[] = [{
+  name: "my_tool",                       // snake_case, unique across every group
+  description: "What it does, for the model.",
+  inputSchema: { type: "object", additionalProperties: false, required: ["frame"], properties: { frame: { type: "integer" } } },
+  handler(session, args) { /* ... */ },
+}];
+```
+
+`build.ps1` registers every file there; nothing else needs editing. The arguments are checked against `inputSchema`
+(types, `required`, `enum`, ranges, unknown keys, an unknown one answered with the argument it was probably meant to
+be: `scale: is not a known argument (did you mean blockScale?)`) before the handler runs. A handler returns a string, an object (sent
+as JSON), or `{ content: [...] }` with text and `image(bytes)` parts; it throws `ToolError` for a failure the model
+should read. It edits only through the open project's `EditorStore` (`session.store`): `store.exec(command)` with the
+editor's commands, so every edit is one undo step and `save` sends the panel's patch.
+
+- `src/session.ts`: `session.store`, `session.requireProject()`, `session.levels()`, `session.client()`.
+- `src/core.ts`: the editor's model, imported from the web app's sources (`web/src/sdk/erg` and the pure modules of
+  `web/src/panels/erg`). Import a single module there, never a barrel that also exports components; the build refuses
+  a bundle that pulls in three.js or Preact.
+- `src/lib/voxel.ts`: frame grids (`grids`, `grid`), cells (`getVoxel`, `setVoxel`, `voxelIndex`, `cellAt`, `cellCentre`), map,
+  world and grid coordinates (`toWorld`, `toMap`, `gridToMap`, `mapToGrid`, `gridToWorld`, `worldToGrid`), voxel words
+  (`isSolid`, `filled`, `carved`, `painted`, `withSecond`), the patch's runs (`columnRuns`, `encodeRuns`, `runBytes`),
+  limits (`usage`, `limitProblems`, `newFrameProblem`), and `VoxelEdit`, a batch of voxel writes committed as one
+  undoable step after the panel's checks (`set(..., second = true)` for a word with its own second material and corner
+  mask, which the level service accepts).
+
+Tests: `.\tools\erg-mcp\test.ps1` builds the bundle and runs `tools/erg-mcp/test/`: the MCP protocol, the tools
+against the mock Oasis server (`web/test/e2e/mock-server.mjs`) and the helpers on the synthetic levels.
+
+## Detail layer (sim-neutral decoration)
+
+Decoration that changes nothing the game simulates: rock detail, flora, smoke, steam and light, added as a separate pass
+after a map is built (the Caldera bench: `bench/caldera/detail.mjs` runs after `build.mjs` on the saved project and
+never edits `build.mjs` or `terrain.mjs`). Three tool groups serve it: `fingerprint`, `dress` and `scenery`.
+
+| Tool | What it does |
+|---|---|
+| `sim_fingerprint` | A sha256 (`sim`) of everything that can change what the simulation does, with a 16-hex hash per part (`parts`: `base`, `databank`, `kind`, `water`, `spawnMode`, `surround` (mode, and the painted heights and blend), `frames` (every frame with its transform, size, name tags and drape corners), `trims`, `objects` (with the mine factory's settings), `script` (the server's text, normalised), `voxels` (every frame's words masked to bits 0-1 and 8-23: occupancy and the second material's flags, material and corner mask, which shapes collision), `spawnKnots`, `objectKnots`, `cameras` (cameras and look-at points: the engine hash reads the logical camera, and `ERGBLAST_` knots are look-at points), `otherSimDetails`), and `visual`, the same over the channels below (`visualParts`: `scenery`, `light`, `emitter`, `sound`, `paint`: the primary material, bits 2-7, of solid voxels). Details are hashed by content, sorted, so new ids never change it. `against` (an earlier answer or its `sim`) answers `same` and the parts that differ; `detail: true` adds a hash per voxel frame (then `against` names the frames) and the sim details with why each is sim. `strict` counts emitters, sounds and paint as sim. About 15 ms on Caldera (577 voxel frames). |
+| `scenery_catalog` | The bases' visual-channel details by resource (default every game base; `bases`, `themes`, `roles`, `category` rock/flora/fx/none guessed from names, `search`): theme, role, kinds, count, the preview mesh's size (`meshSize`, and `size` at the example's scale), an example detail (id, name, position, rotation, scale) to copy. `includeSim` also lists the details the fingerprint counts as sim, with why. Works with no project open. |
+| `copy_base_details` | `copy_base_scenery` for every visual channel: copies of a base's scenery meshes, lights (`PNTLGHT r g b radius`), particle emitters (the name picks the effect) and sound effects, by `id`, at `pos` or `xz`, with `rot` and `scale`; refused for a detail the fingerprint counts as sim (a knot, a camera, a collision volume, a name tagged MORTAL, ...), so a dressing pass cannot change the sim through it. One undo step. |
+
+A detail is visual when its role (derived from its name and resource as the server does) is scenery, light, emitter or
+sound and its name carries no tag the engine may act on (MORTAL, COLLIDE, PERM, SLIPPY, TEAMBASE, and names of knots:
+WORM, CRATE, MINE, TRIG, TELEPAD, ERGBLAST, STATUE, SPAWN). Everything else, including role `other` (a name without
+VISIBLE/PROP/STANDIN), is sim.
+
+**Channel verdicts** (Caldera v2 round 4 in testenv D, 2026-11-09; the evidence is the round-0 run of
+`bench/caldera/detail-probe.mjs`, which placed 32 scenery copies from 20 bases of 9 themes, an orange point light, the
+volcano plume, two steam vents, a tall bonfire, thick steam, a smoke emitter, wind and creaking-tree sounds and a 4 x 1 x 4
+primary repaint, then played a Test of the dressed level and one of the undressed level with Sunstone on):
+
+| Channel | Verdict | Evidence |
+|---|---|---|
+| Scenery copies (VISIBLE_, no other tag) | neutral | No collision (worms and shots pass through: scenery section). Not read by the engine hash (worms, teams, projectiles, RNG states, camera). The fingerprint is the same with them (unit test; the probe). In the dressed Test every worm stood on the same knot at the same point at turn 1 (game_probe) as in the undressed one, and the entity list held the same entities but for the emitters. |
+| MORTAL_ scenery (most bases' grass tufts, TyrannoSawUs' rocks and bones) | sim | Explosions remove them (a sim event); not proven harmless, so the fingerprint and `copy_base_details` treat them as sim. |
+| Lights (`PNTLGHT ...`) | neutral | Render-only: no entity in the match's entity list (the dressed and undressed lists differ only by the emitters), no RNG movement (below). |
+| Sounds (`Sound Effect`) | neutral (audio) | No entity in the match's entity list; no RNG movement (below). The emitter-named ones (`Emitter_Snd...`) are emitters. |
+| Emitters (`EMITTER_...`, `Particle Emitter`) | neutral as far as can be measured; `strict` counts them sim | Each becomes a `ParticleEmitterEffectEntity` (an Other entity: dressed 30, undressed 24, the six new emitters; no worm, projectile or physics object). With them drawing in view, the logic RNG moved on 4 of 85 idle ticks against 3 of the same 85 ticks undressed (the same turn, team 2 worm 4), so no emitter draws the logic RNG per tick; the second RNG moved on 38 against 32. Two live Tests are seeded differently (the worms' names differ), so this is not a tick-for-tick proof: a Wormsign replay of an undressed match played on the dressed level (every tick's engine hash compared) is the strict proof, not run yet. |
+| Primary paint (bits 2-7 of a solid voxel) | neutral by data | The theme's material file (`ThemePrehistoric.txt`) holds texture names only (six lines per record, no physics field); slipperiness and indestructibility are frame-name tags (SLIPPY, PERM), not materials. Team 3's worms spawned beside the repainted patch of the Seawall court at the same points at turn 1 as without it. Not proven in play beyond that (no worm walked on it, no explosion compared). |
+| Second material, corner mask (bits 8-23), blends | sim | The corner mask shapes collision (docs/erg.md). `paint_* {blend: true}` and heightfield `blend` are sim. |
+
+**Limits found.** `paint_region` and `sculpt {mode: "paint"}` cannot repaint Caldera's draped skin: its words carry a
+second material, and the editor's paint check refuses a word whose bits 8-23 differ from the base word's (`0x444f43 is not
+a valid edit of the base word 0x0`), while paint_region answers "nothing to repaint"; the castles' undraped blocks repaint.
+The bases' details hold no trees, palms, ferns, vines, dead trees, large boulders, cliffs or crystals: only small props
+(grass, flowers, 1-2 unit rocks, eggs, skulls, cacti, mushrooms); big rocks are scaled copies. In the round-0 Test the
+copies did not stand where the editor put them: copies placed at y 8 map over the sea drew at the water's surface and
+offset from their grid cells (the contact sheet's tiles show neighbouring pieces), although `list_scenery` reads them at
+the asked position in frame 508 (`Worms`, the folder `targetFrame` picks for scenery on Caldera): check a copy's place in a
+Test before trusting it. `bench/caldera/detail-inventory.md` lists the candidates.
+
+## Detail layer, round 1 (rock): what the tools gained and what the game showed
+
+New in `dress.ts`: `surface_sample {points: [[x, z]], step, units}` answers the voxels' top, the slope and the normal at each point (up to 4000), so a scatter pass seats props on the real surface (the draped skin differs from the terrain formula by up to 10 map units on the flanks); `copy_base_details` gained `seat` (sink a scenery mesh by a fraction of its height, resting its lowest point on the point at 0), `tag` (appends `_<tag>` to scenery names so a pass can find and remove its own with `remove_scenery {search}`) and `frame` (the frame the copies go into).
+
+Findings (testenv D, Sunstone 2.3.1, 2026-11-09): the round-0 contact sheet's mismatched tiles came from shooting without `waitPlay` (the intro camera); with `waitPlay: true` every tile shows its own piece and copies stand where the editor puts them, other themes' pieces included (a mossy white boulder, gold twin rocks, tan nuggets, skulls, leafy plants all draw in the PREHISTORIC level). The round-0 limit that placement was wrong does not stand. A different slip was found in `build.mjs`: its four Camelot flags went in with `copy_base_scenery`'s default world units though the numbers are map units, so they stood 20 times too near the origin, inside the volcano; `detail.mjs`'s `flags` pass puts them where `build.mjs` meant. No base piece is dark basalt: rock pieces are pale (white-moss, tan, gold), so rock detail by scenery reads as bleached outcrops on the black cone. Bench: `detail-rock.mjs` (the rock pass), `detail-verify.mjs` (the readability check on the saved project).
+
+## Detail layer, round 2 (rock: scale, palette, three tiers): what the tools gained and what the game showed
+
+New: `render_view {scenery: true}` draws the level's scenery details (base pieces and copies) by their preview meshes,
+flat-shaded in each mesh's average texture colour, so a dressing pass is judged offline without a Test (the text part
+gives `scenery`: details, meshes drawn, triangles, resources with no mesh; lights and emitters are not drawn).
+`scenery_catalog` answers each scenery piece's `albedo` (#rrggbb, the average of its texture, the GLB's baseColorFactor)
+and `luminance` (0-1), with `sort: "dark" | "light"` and `maxLuminance`. Code: `src/lib/scenery-mesh.ts` (GLB triangles
+and colour), `src/lib/scenery-view.ts`, render-3d.ts's optional `meshes` input. Bench: `detail-keepout.mjs keepOutFoot`
+tests a prop's footprint ellipse (13 points) against the trail band (bed, shoulder and kerb out to `KERB.to`) and the
+other keep-outs instead of its seed point with a wide buffer.
+
+Findings (testenv D, Sunstone 2.3.1, 2026-11-09):
+- **Scale is honoured.** Horror5 copies at scale 0.93, 1.87, 3.74, 7.48 and 12.46 (3 to 40 map units) all drew where the
+  editor put them, seen from 60 to 400 map units away: no draw-distance or bounding cull. A strongly non-uniform scale
+  ([2, 6, 2]) draws but lights pale (its normals are stretched): keep squash mild.
+- **ARABIAN6 never draws in this level** (PREHISTORIC): five copies at scales 3.25 and 5, with the source's rotation and
+  upright, none showed; that is why round 1's 5x test rock "vanished". **Other themes' resources may resolve to something
+  else**: CAMELOT16 and CAMELOT19 (the castles' flags) draw as purple plant pods on the tower tops. A piece's offline
+  preview (by resource name) is therefore not proof of what the game draws: check each new resource once in a Test.
+- **The darkest rock**: Horror5 (Multi.W3DAppleCoreIsland, albedo #36374a, luminance 0.04) draws in game as a faceted
+  blue-grey boulder, darker and cooler than round 1's moss, tan and gold pieces, though lighter than its albedo suggests
+  under the game's lighting. The other dark pieces are dead trees (Horror2, Horror3, HORROR1) and props.
+- **The trails cover most of the cone**: seven switchback columns with legs 9.5 apart leave few flank spots for a
+  15-unit footprint, so heroes are searched (a 1.5-unit grid of each point's largest clear radius), not fixed.
+- Particle emitters are cut from the layer: their replay neutrality proof needs a Wormsign replay, which arms only for a
+  Quick Game from the main menu, not an Erg Test. Point lights stay (render-only).
+
+## Detail layer, round 3 (rock: kitbashed crags, seating, scree at slope breaks): what the tools gained and what the game showed
+
+New tool group `kitbash` (`src/tools/kitbash.ts`, pure code in `src/lib/scatter.ts`):
+
+| Tool | What it does |
+|---|---|
+| `place_crags` | Kitbashed crags from 1-4 interpenetrating copies of one base scenery mesh (`id`), one seeded unit per crag: `archetype` spire (a tall core, a shard out of its top, leaning shoulders), ledge (steps falling downhill), stack (a narrow column: sea stacks), tor (a squat stack of blocks) or single, `height` and `width` (map units) at `xz`. No piece is drawn more than `stretch` (default 2, at most 2.2) times taller than wide, because the mesh's normals light pale when stretched far. **Seating**: the ground is sampled under the footprint (the centre and 8 points round each piece). With `conform` (the default) each piece standing on the crag's base sinks `sink` of its own height (default 0.35; `[lo, hi]` picks one per crag) under the lowest sample beneath it, so a ledge steps down the slope; raised pieces move with the first piece. `conform: false` lowers the whole crag under the footprint's lowest sample instead. **Lean**: the crag tilts toward the ground's normal by `align` of the slope (default 0.5, spires and stacks 0.3), at most `maxTilt` (default 15) degrees, plus up to `jitter` (default 4) degrees of seeded wobble. `yaw` defaults to downhill. `dry: true` answers each crag's poses, footprint `radius`, `groundLow`, `groundSpread`, `bottom`, `top` and `above` (its top over the footprint's highest sample) without placing anything, so a pass can test the footprint against its keep-outs first. Names are tagged `_<tag>` (default dtl). One undo step. |
+
+`scenery_catalog` now answers `inLevel` when a project is open. It says whether a piece is known to draw in a level of the open level's theme, from `DRAW_CHECKS` in `lib/scatter.ts` (what Tests showed). A piece of the same theme answers "same theme". Any other piece answers "unchecked: check it once in a Test".
+
+Bench: `detail-rock.mjs` round 3 places every rock through `place_crags`. `detail.mjs`'s flags pass now removes the four Camelot flag copies, which drew as purple pods. Round 2's point lights are cut (they never showed). `detail-verify.mjs` now also tests each piece's footprint, and counts a piece under the water only when no piece within 4 of it shows above the water (a sea stack's sunk lower blocks are on purpose).
+
+Findings (testenv D, Sunstone 2.3.1, 2026-11-09):
+- **The cone has almost no free room for rock.** The trail band (bed, shoulder and kerb out to 7.5 from each centreline) of seven switchback columns with legs 9.5 apart covers nearly all of the flanks. Only 248 points of a 1.5-unit grid are dry, under 50 degrees and at least 2.8 from every keep-out. The summit's outer wall is a 70-degree cliff, where a crag seated under its lowest sample vanishes into the face. So the rock goes where there is room: flank pockets between the columns, the coast, the crater floor and walls between the pads, the tongue edges and the headlands.
+- **Seating under the lowest sample buries a crag on a slope**: on a 27-degree tread, a crag that sinks 35% of its height under the footprint's lowest sample has its top under the highest sample. That is why `conform` (each piece seated on its own ground) is the default. Scree and rubble also sink less (12-25%).
+- **Horror5 does not draw dark in the game.** Its preview albedo (#36374a) says nothing about the game's look: in a Test it is a pale blue-grey cobbled boulder, lighter than the basalt terrain. A material override cannot fix it either: Sunstone's scenery shader (`FixedFunction.FFFragmentMainTexLit.glsl`) colours a model by its texture times the light and never reads the XMaterial's Diffuse or Ambient. Darker rock needs a different texture, either a mod mesh bank (`src/assets/meshbank.h`, which levels cannot load yet) or an engine texture override. The probe found no dark in-game rock: Pirate5 and PIRATE10 draw as a yellow rock with red veins, and WILDWEST6 was not seen.
+
+## Detail layer, round 4 (rock: basalt tint, crater clumps, headland breakers, low scree): what the tools gained and what the game showed
+
+**Per-copy tint.** A scenery copy whose name ends in a tint tag, `_tint<rrggbb>` (`VISIBLE_dtl_tint3a302b`), is drawn recoloured
+toward that colour. The name is the scenery channel of `sim_fingerprint` (copies have no collision), so a tint never changes the
+sim (unit test `test/tint.test.ts`; Caldera's `sim` hash 2fab0781... before and after every pass). The pieces:
+
+| Where | What |
+|---|---|
+| erg-mcp `tint_scenery` (`src/tools/tint.ts`, `src/lib/tint.ts`) | Sets (or with `color: "none"` removes) the tag on scenery copies chosen by `ids`, `search` or `near`; `ramp` [[y, "#rrggbb"], ...] colours each copy by its height. Base details, lights, emitters and sounds are skipped. One undo step; `dryRun`. |
+| `copy_base_details {tint}`, `place_crags {tint}` | The same tag at placement: a call-wide `tint`, or one per copy / per crag. |
+| `render_view {scenery: true}` | A tinted copy draws in its tint offline (`scenery-mesh.ts`), so a pass is judged in the colour the game shows. |
+| Melange `MirageTints` (`src/render/mirage/tints.cpp`, `tints_logic.h`) | When a match's level changes, reads its `.xan`/`.XOM` from the engine's search roots (the Erg Test workspace, map packs, Data) and keeps every tinted detail's world position and scale. Before each draw of a GLSL replacement that declares `uniform vec4 mg_tint`, the draw's world matrix (the vertex program's `model * view` times the main camera's inverse view: the engine sends the object's transform in `view`, `model` is identity) is matched to the table: its position (map x 20) within 0.02 + 2% of the scale of a tinted detail and its scale within 4%. `mg_tint` is the colour with a = 1, else (1, 1, 1, 0). `tints.stats` and `tints.probe` (automation verbs) log the table and the matches. An Erg Test plays another level than `WXD.Level.Current` names, so the level hook now keeps the key it loaded (`levels::engine::LoadingLevelKey`). |
+| Sunstone (branch `sunstone-tint` of melange-plugins) | The four model shaders (`FixedFunction.FFFragmentMain{Lit,TexLit,LitCol,TexLitCol}`) declare `mg_tint`; at a = 1 the albedo becomes the colour times the texel's luminance / 0.5 (the texture's light and dark detail kept). a = 0 (every other draw, and a Melange that does not feed it) leaves the albedo alone, so other maps are unchanged. |
+
+Sunstone off, a tinted copy draws in its own texture (Horror5's pale blue-grey): checked in testenv D, no error, `tints.stats`
+0 lookups.
+
+**Clean shots hide the engine HUD.** Melange `MirageNoHud` (`src/render/mirage/nohud.cpp`): while a clean `render.shot` hides the
+mods' primitives (`draw::HiddenAt`, so `game_shots`/`game_camera` with `clean`, the default), the scene colour is copied aside at
+PostWorld (after the world and its post-FX) and back at Hud (after the engine HUD), so worm names, energy, team bars, timer and
+wind are not in the picture; the frame's Final post-FX still run. Only those frames.
+
+Bench (`detail-rock.mjs` round 4): every crag is tinted (`BASALT` #2e2724, #3a302b, #342b27, #30302c; mixed toward #4a2c24 within
+8 of the lava and on the crater floor); the crater holds a few large clumps (a 5-7 tor at the wall's foot with 2-3 blocks of
+1.9-3.5 leaning on it) and no crust round the lava lake (single blocks on the floor read as mines at any size); sea stacks and
+breakers must have dry land within 3.5 and 2 of their foot (no lone pieces in the sea); a low scree class of flat slabs (2.4-3.4
+times as wide as tall, a mid grey-brown #5c534b-#70665c) stands in the kerb band outside the walked bed and its shoulder
+(`detail-keepout.mjs keepOutLow`), showing 0.1-0.4 over the footprint's mean ground. `detail-verify.mjs` checks low pieces
+against the walked bed and flags anything under 1.7 tall on the open crater floor.
+
+Findings (testenv D, Sunstone 2.3.1 + `sunstone-tint`, 2026-11-09):
+- The engine's draw matrices: position in world units (map x 20) but the detail's own scale (not x 20).
+- Horror5 tinted #3a302b reads as dark basalt beside the cone's black rock; a slight warm cast is visible near the lava.
+- Low scree in the basalt colour read as black dots (mine-like) on the grey-green kerbs; as lighter flat slabs in tight
+  patches they read as stone, but are faint at gameplay distance.
+- The lone dark lump off the south-west shore in the oblique shot is not the detail layer: it is in the undressed level too
+  (build.mjs's voxels). The layer's own south stack now stands beside it.
+
+## Detail layer, round 5 (rock: landscape tint, cliff strata, clusters, lint): what the tools gained and what the game showed
+
+**Landscape tint.** A level may recolour one of its landscape TEXTURES (the tiles the voxels and drapes draw with), keeping the
+texture's detail: a scenery copy (no collision) named `..._landtint_ltint<16-hex texture digest><rrggbb>` carries the tag.
+
+| Where | What |
+|---|---|
+| erg-mcp `tint_landscape` (`src/tools/landtint.ts`, `src/lib/landtint.ts`) | `tints: [{texture: "P05" \| digest, color}]` or `{material: "path02" \| index, faces: side \| top \| all, color}`; color `"none"` removes; `list: true` answers the level's tints and the Prehistoric materials' tiles. One carrier per texture at scale 0.05 under the level (replaced, never stacked). The Prehistoric tiles' digests and ThemePrehistoric.txt's records are tables in `lib/landtint.ts` (digests by sunstone `tools/tag_digest.py --xom` on `Data\Bundles\Bundl16.xom`). |
+| Melange `MirageTints` + `MirageTexTags` | `tints_logic.h ParseLandTag`; the level's land tags are read with the per-copy tints. A GLSL replacement that declares `uniform vec4 mg_landTint` gets the colour (a = 1) of the texture bound on its texture0 unit, matched by its texture-tag digest (`textags::LastDigest()`); else (1, 1, 1, 0). Needs a texture-tag table loaded (Sunstone ships one). `tints.stats` logs the land tints and how many land draws were tinted. |
+| Sunstone (`sunstone-tint` branch) | `Landscape.LandscapeFragmentMain` / `HeightMapFragmentMain`: at a = 1 the albedo is the colour times the texel's luminance over the texture's mean (its smallest mip). |
+
+Neutral by construction: the carrier's name is the scenery channel of `sim_fingerprint`. Caldera's `sim` hash
+`60be5861...` was the same before and after every pass and after a save and reopen.
+
+**Cluster planning and lint** (`src/tools/cluster.ts`, `src/lib/cluster.ts`, `src/lib/dress-lint.ts`):
+
+| Tool | What it does |
+|---|---|
+| `plan_clusters` | Children with a size gradient round anchors on the real ground. `outcrop` gives 2-4 blocks on the downhill side, from 55% down to 30% of the anchor. `scree` gives a fan of 4-8 flat slabs (0.8-1.6) past the anchor's foot, the toe's the biggest. `skirt` puts debris on the contact line, more of it downhill. Answers crag specs for `place_crags`. Read-only. |
+| `lint_dressing` | Groups a layer's copies into clumps (as drawn, in their tint) and answers three things. First, mine suspects: a clump under 1.5 across, darker than linear luminance 0.12, on walkable dry ground. Second, contact: hovering or buried clumps. Third, density per band of ground height: clumps and pieces per 1000 square map units, the covered share and the size classes. Read-only. |
+
+Findings (testenv D, Sunstone 2.3.1 + `sunstone-tint`, 2026-11-09):
+- **The pale slivers were side textures.** The steep faces of a tile draw with its material's side texture. Prehistoric's
+  path02 and grass01 sides are P05 (#9b9893); rock02, grass02 and GreySlateFloor sides are P07 (#848387). Tinting those two
+  textures to #3b3531 and #46403b removed every pale blue-grey sliver from the flank, trail and castle shots (1221 of 10175
+  land draws tinted). Castles (P13, P18, P30), the trails' top (P10), sand (P11) and lava are other textures.
+- **There is almost no free gentle ground for medium rock.** A free-ground map of the island on 2.5-unit cells counted 1943
+  cells of trail bed and kerb band and 623 of castle and pad keep-outs. Outside those, 718 cells were over 58 degrees, 389
+  were 42-58 degrees and 321 were gentle. Switchback legs 9.5 apart leave nothing between them. Crags seated on the lowest
+  ground vanish into steep faces, and lava ribs on the gully banks (65-72 degree walls) did too. So the medium scale went
+  onto the cliffs: `bench/caldera/detail-cliff.mjs` sets strata of 2-4 blocks (1.8-4) centred on the face and sunk 45%
+  (`copy_base_details {seat}`). Ribs now stand on the bank's lip, the first ground under 58 degrees.
+- The tint is drawn as colour x texel luminance / 0.5, and Horror5's texels average 0.23, so a tint draws at about 45% of
+  its value: mid-grey scree needs about #a39b91.
+- Perf with Sunstone on (B's game closed, testenv D, oblique camera, 15 s): undressed 37.5 fps, GPU 4.6 ms p50; dressed
+  (308 pieces + land tint) 36.2 fps, GPU 6.3 ms p50 (p95 9.3). The game is CPU-bound at about 37 fps.
+
+## Detail layer, round 6 (rock vocabulary, coast, first flora): what the tools gained and what the game showed
+
+New tool group `ledge` (`src/tools/ledge.ts`, pure code in `src/lib/ledge.ts`, tests `test/ledge.test.ts`):
+
+| Tool | What it does |
+|---|---|
+| `place_aligned` | Copies of one base scenery mesh laid ALONG THE SURFACE: each piece a slab of `size` [length, thickness, depth] (any non-uniform size), its length along the slope's contour (or a `tangent`), its depth out of the face (the horizontal downhill pitched toward the normal by `pitch`, 0 a level shelf, 1 a plate on the face), sunk `embed` of its depth into the face; `pos` + `normal` (or `xz`, sampled), `lift`, `jitter`, `tint`, `dry` (answers each piece's `front`, top, bottom). |
+| `plan_ledges` | Strata for a region's steep faces (`box` or `centre` + `radius`, `exclude` circles, `minY`): faces are connected cells over `minSlope`; band heights absolute (`heights`), level and shared by every face (`spacing` + `offset`) or `count` per face; each band's contour traced, chained into polylines and cut into slabs (`length`, `gap`, `breaks`) to hand to `place_aligned`. Read-only. |
+| `find_crests` | Ridge-crest and cliff-top polylines (`kinds`), each point with its outward direction and drop: where crowns change the silhouette. Read-only. |
+| `lint_perched` | The clumps of a layer whose underside shows from given cameras (`cams` [{name, pos}]) over the ground beneath them: a block glued to a wall or hanging over a channel. Read-only. |
+
+Per-copy tint and non-uniform scale already existed (`copy_base_details {tint, scale: [x, y, z]}`); what was missing was
+the game honouring both at once (below).
+
+**Melange `MirageTints` matching** (`src/render/mirage/tints_logic.h`, selftests in `tests/shaders_selftest.cpp`): a draw is
+matched to its tinted detail by position and scale. The scale was the mean length of the matrix's rows against the mean
+of the detail's axis scales, which differ once a strongly non-uniform piece is turned (a [1.2, 0.3, 0.4] slab at any yaw),
+so `place_aligned` slabs drew untinted (Horror5's pale blue-grey). Both sides are now the RMS axis scale (rotation and
+layout invariant; equal to the old value for a uniform scale). And a draw within 0.002 map units of a tinted detail's
+origin is that detail whatever its scale: meshes with their own node scale (the Pirate grass tufts draw at 1/7.5 of the
+detail's) never matched (`tints.probe` showed every untinted draw at 0.000 map units was such a piece). In the round-6
+Test, 147312 of 209880 tint lookups matched (108936 of 214608 before the fixes, same level).
+
+Bench: `detail-ledge.mjs` (strata bands, replaces round 5's boulder `detail-cliff.mjs`), `detail-crown.mjs` (columnar
+crowns on crests and cliff tops), `detail-coast.mjs` (sea-stack groups with a size gradient, half-submerged blocks with
+their feet in the bed, stepped columns at the waterline, the shore castles' beaches left bare), `detail-flora.mjs` (grass
+clusters on the sand ring, the green patches and the castle aprons), `detail-perch.mjs` (`lint_perched` over the fixed
+camera set; removes what it flags). The rock palette is one charcoal-slate family (`BASALT`, `SCREE`, `STRATA`), none
+lighter than the castle stone; the headland breakers are gone (the coast pass does the waterline). Strata are tagged
+`_ldg` (they overhang their faces on purpose, so the perched lint, which reads `_dtl`, skips them), flora `_flo`;
+`detail-verify.mjs` checks all three.
+
+Findings (testenv D, Sunstone 2.3.1 + `sunstone-tint`, 2026-11-10):
+- **A level with too many details crashes the game at load.** Caldera dressed to 546 details (by the project's add and
+  remove ops; the game's own count is about 8 more) faulted twice at `WormsMayhem.exe+0x1d0fad` (a null read) while
+  loading, with 224 MB of the 2 GB address space free (largest block 63 MB; the game is not large-address-aware); 520
+  loaded, and so did each part of the layer alone. Not pinned to the count or to memory. `detail.mjs` keeps the level at
+  `DETAIL_BUDGET` (505, the fingerprint's count of sim and visual details; `DTL_BUDGET`) and the flora takes what is left.
+  The first flora (ENGLAND2/3, CAMELOT1, PIRATE1, WAR3 from four more bases) is not why: the layer without it loaded.
+- **A squashed boulder is a lens.** Horror5 flattened to a 3 : 1 : 0.6 slab draws as a disc ("mushroom cap") when it
+  stands half out of a face; mostly sunk (60%+) only its lip shows, but from the side the lip still reads as a lens, not a
+  bed of rock. Strata that read as layers need a slab mesh (a mod mesh bank) or many more, longer, overlapping pieces.
+- **Base `Multi.W3DAppleCoreIsland`'s PIRATE11-13** ("leafy", albedo #647b49) draw as pale rounded stones in this level:
+  not flora.
+- Sunstone off, the tinted rock draws in its own pale blue-grey texture and the flora in its own greens (no error).
+- `sim_fingerprint` with the game server gone answers a different `script` part instead of failing (round 6: a long
+  `find_crests` on the whole island, 86 s, outlived the server connection, and the pass was refused as a sim change).
+  `find_crests` now samples heights with one drop each (about 25 s on Caldera); keep regions small.
+
+## Detail layer, round 7 (the load crash pinned, strata rows, flora): what the tools gained and what the game showed
+
+**The load crash at `WormsMayhem+0x1d0fad` is the engine's mesh-instance pool.** A full-memory dump of a 600-detail Caldera
+(testenv D, `[Diagnostics] FullMemoryDumps=1`) logged `Xrm | Out of mesh instances - all 550 instances have been used!`
+just before the fault. The crash site is `OilDrumGraphicEntity` creating its mesh through the GRM's `CreateResource`
+wrapper (`0x6f3d95`, `ebp` = `0x80004005` in both round-6 dumps) and dereferencing the null instance. The pool
+(`0x6b2930`: count `0x97000c`, `0xd0` bytes per instance, free stack `0x970014`/`0x970018`) is sized once at start-up from
+the static property `GRM.MaxMeshes` = `"550"` in the `{name, value}` table at `0x853948`, read through `0x643427` by the
+GRM's init (`0x6afd7e`). Every drawn detail, worm hat, thrown mine and effect mesh takes one. So the crash depends on the
+count of drawn meshes, not on the bases, memory (the GRM's 7500-slot name table was 2979 full) or address space.
+
+- **Melange `[Fixes] MeshInstances`** (default 2000; 0 or 550 and under = vanilla; capped at 4000) points the property's
+  value at a larger number before the GRM starts (`src/gameplay/fixes.cpp`). It logs `GRM.MaxMeshes 2000` at install and
+  `the engine's mesh pool holds 2000 instances` once the app is up. The same 600-detail level that crashed then loaded and
+  played. It costs 208 bytes per instance (about 300 KB more) and touches graphics only. **A player without the fix still
+  crashes on a level over about 540 details:** the dressed Caldera needs Melange with this fix.
+- **erg-mcp `detail_budget`** (new group `budget`: `src/tools/budget.ts`, `src/lib/budget.ts`, `test/budget.test.ts`)
+  reports the open level's details (sim and visual) against that pool. It reads the pool from a game folder's
+  `Melange.ini` or takes `pool`. `reserve` (default 250) is what the match itself needs. It answers `headroom` and
+  `vanillaHeadroom`.
+- **`sim_fingerprint` fails hard on a lost connection.** Only an unknown-method answer (a server without
+  `level.script.get`, the mock) falls back to the scene's script metadata. A disconnect, timeout or fault is a tool error
+  (`test/fingerprint-dead.test.mjs` closes the mock mid-session).
+
+Bench (`detail.mjs`, budget 1100 details, which `detail_budget` reports at the end):
+- `detail-strata.mjs` replaces round 6's lens slabs (`detail-ledge.mjs` stays but no longer runs). `plan_ledges` bands
+  are scored by how squarely their face looks at the oblique and flank cameras. The best clear runs on 4-6 faces become
+  continuous rows of 4-8 overlapping chunks (3 : 1, 0.55 of a piece's length apart, level, sunk to a 25-30% lip) in a
+  near-black charcoal (`#232427`-`#2d2e31`). The tint is the only material control a copy has, so dark is the only way to
+  weaken the highlight.
+- `detail-cliff.mjs` (round 5's face piles) is back in the charcoal palette, tagged `_cpl`, so the perched lint leaves it
+  alone. That lint removed 160 of the piles in the first run.
+- The rock pass's headland breakers are back (the cliff-foot cluster). The scree and skirt tints are two steps darker:
+  round 6's "pale untinted stone beside the Harbour crag" was a foot-skirt piece at `#878b90`.
+- Coast: a strong size gradient (main stack 10-15 over the water, a middle one 4-6, small single blocks 1.6-2.6 standing on
+  the bed) and talus at the stacks' feet (blocks a quarter of the stack's width, feet on the bed, a lip over the water).
+- `detail-flora.mjs` was rewritten:
+  - Clustered masses: wall hedges, cliff feet, rock bases, lawns, green slopes, shore dunes and dry slopes.
+  - Each cluster is a core plus rings falling in size and density.
+  - Bushes grow only at walls, cliff feet, rock bases or on slopes. Lawns get only low pieces.
+  - One lush-to-straw palette.
+  - `detail-keepout.mjs keepOutFlora` lets plants grow against a castle's outer walls (0.6 from the footprint) and keeps
+    everything else as before.
+  - `detail-verify.mjs` checks plants with their own footprints.
+
+Findings (testenv D, Sunstone 2.3.1 + `sunstone-tint`, 2026-11-09):
+- **Theme substitution, checked in the game** (scratchpad `caldet/r7/caldet_r7_flora_check_sheet.png`):
+  - GhostHill's `WILDWEST18` grass draws as a dinosaur **skull** in this PREHISTORIC level, and its `WILDWEST1` cactus as
+    a big agave-like grass clump.
+  - `WILDWEST2` draws as a leafy bush with a trunk (true to the catalog).
+  - `ENGLAND2`/`ENGLAND3` draw as low round bushes.
+  - `CAMELOT1`, `HORROR1` and `ENGLAND1` all draw as the same small spiky tuft.
+  - `PREHISTORIC8` is a blue bulb flower that reads as a pickup.
+  - `ENGLAND7` daisies are invisible at gameplay distance.
+- The strata rows read as a dark contour line from the flank, but from that distance still as a chain of beads. The rock
+  mesh is round, so a ledge that reads as rock needs a slab mesh (a mod mesh bank).
+- Perf (oblique camera, Sunstone on, nothing else running), dressed against undressed:
+  - fps p50 34.8 against 36.9.
+  - CPU busy 30.6 against 30.5 ms per frame (the game is CPU-bound).
+  - GPU frame 8.4 against 4.9 ms.
+
+## Detail layer, round 8 (flora starts, rock cleanup, ship gate): what the tools gained and what the game showed
+
+New tool group `propcheck` (`src/tools/propcheck.ts`; pure code in `src/lib/prop-support.ts` and `src/lib/tint-jitter.ts`;
+tests in `test/propcheck.test.ts`):
+
+| Tool | What it does |
+|---|---|
+| `lint_support` | The ground support of a layer's props (`search` name fragments, default `_dtl`), read as drawn and grouped into clumps. Each clump's footprint is sampled on a grid. A sample is in contact where the ground reaches the clump's underside there. A clump on ground over `minSlope` (default 55 degrees) needs `minContact` (default 0.6) of its footprint in contact, or another clump under its downhill edge (talus or a ledge). Answers the unsupported clumps. Read-only. |
+| `surface_material` | The top voxel's primary material at up to 4000 points. Used to find where a painted band's cells change, such as the edges of the grass tiles. Read-only. |
+| `tint_variants` | Seeded hue, saturation and value jitter of a palette. With `falloff`, a colour gets darker and greyer toward a cluster's rim. |
+
+**Ship gate.** A level with more details than the vanilla 550-instance mesh pool can load now declares the Melange it needs:
+- `src/lib/ship-gate.ts` sets the limit: `VANILLA_SAFE_DETAILS` is 450, and `MESH_POOL_MELANGE` is the first release with `[Fixes] MeshInstances`.
+- `export` raises the pack's `spice.json` `melange.range` to `>=MESH_POOL_MELANGE` and answers `gate`. You can also pass your own `melangeRange`.
+- `level.export` (C++, `src/erg/pack.*`, `service.cpp`) takes an optional `melangeRange`. It is checked with `spice::ValidRange`, and the default is still `>=0.2.0`. There are selftests in `erg_pack_selftest`.
+- `detail_budget` answers `ship`.
+
+Every Melange since 0.2 checks the range before it offers a pack, so an older Melange refuses the dressed level instead of crashing in it. `MESH_POOL_MELANGE` is `0.14.0`, the release `[Fixes] MeshInstances` ships in.
+
+`lib/scatter.ts` `DRAW_CHECKS` gained the flora draw checks whose resource draws the same in every base:
+- WILDWEST1 draws as an agave clump.
+- WILDWEST2 draws as a leafy bush.
+- WILDWEST15 draws as a turtle shell.
+- WILDWEST16 draws as stacked bulbs.
+- WILDWEST18 draws as a skull.
+- ENGLAND7 is too small to see.
+
+Bench changes (`detail.mjs`; `build.mjs` and `terrain.mjs` are unchanged):
+- **Strata rows: removed.** The round-7 judge said a round rock mesh in a row reads as beads: "better none than necklaces". `detail-strata.mjs` and `detail-ledge.mjs` are deleted.
+- **Cliff piles** (`detail-cliff.mjs`) are now laid with `place_aligned`:
+  - They are chunky (1.2 : 0.9 : 1), because a flattened rock mesh read as a lens again in the first run.
+  - The long axis runs along the contour, pitched 0.2 into the slope and sunk 52-60% of its depth.
+  - They stand on faces of 45-60 degrees only. On near-vertical walls they floated: the judge's trail_NE cluster.
+  - One or two talus blocks sit at each pile's downhill foot, never on the crater floor.
+- **`detail-offshore.mjs`** groups the rock copies standing in the sea and removes the groups that are neither a mass nor touching the shore. Of two masses within 10 units of each other, only the bigger stays.
+- **`detail-support.mjs`** runs `lint_support` over `_dtl` and `_cpl` and removes the unsupported clumps.
+- **`detail-flora.mjs`** was rewritten. The pieces are listed in its header, and each was checked once in a Test (scratchpad `caldet/r8/caldet_r8_flora_check_sheet.png`).
+  - Bush silhouettes are now WILDWEST2 and StormTheCastle CAMELOT2/3.
+  - Flowering plants (CAMELOT3, CAMELOT4) are left untinted as accents.
+  - New low sprouts: Pirate3, Pirate1 and PIRATE1.
+  - Hedge bushes are seated 1.5 from a castle's footprint, so their footprint sits about 0.7 from the wall.
+  - Bushes grow only at walls, cliff feet and rock bases, never on the flat beach.
+  - Nothing grows on ground over 42 degrees. Low grass is allowed up to 55 degrees on the sand slopes under 4.
+  - Lawn-edge groups straddle the grass tiles' edges.
+  - Masses above 14 become hardy clumps (agave and grass).
+  - Each copy's tint is jittered by `tint_variants`.
+
+Findings (testenv D, Sunstone 2.3.1 with `sunstone-tint`, 2026-11-10):
+- **Theme substitution:**
+  - StormTheCastle CAMELOT2 and CAMELOT3 draw as leafy bushes.
+  - ThisGameDoesDragon and JoustAboutIt CAMELOT3 draw as a leafy flowering plant.
+  - JoustAboutIt CAMELOT10 is invisible.
+  - RobInTheHood CAMELOT1 draws as a spiky grass.
+  - DoomCanyon WILDWEST1 and WILDWEST2 draw as GhostHill's (an agave and a bush).
+  - EndOfTheLine WILDWEST15 draws as a turtle shell and WILDWEST16 as stacked bulbs: both are out.
+  - W3DAppleCoreIsland Pirate3 and W3DNobodyRidesForFree Pirate1 draw as low two-leaf sprouts.
+- **Most of the bright lawn tiles are inside keep-outs** (the castle aprons and courts, and the trail band). 284 tile-edge points were found, but only 13 edge groups were clear to plant. The checkerboard needs a terrain-paint change on the map side; this layer cannot fix it.
+- **Usable ground for plants is small.** The trails' bands, the castles and the steep cone leave about 200 cluster sites, so the island's flora is 213 pieces and the budget is not the limit.
+
+## Detail layer, round 9 (flora clumps, lawn tint, blunt coast, perf by category): what the tools gained and what the game showed
+
+New tool group `artpass` (`src/tools/artpass.ts`; pure code in `src/lib/contour.ts`, `src/lib/prop-pixels.ts` and `src/lib/perf-guard.ts`; tests in `test/artpass.test.ts`):
+
+| Tool | What it does |
+|---|---|
+| `plan_contour` | Contour-following placement sites. The ground is sampled on a grid over an area, iso-height lines are traced (marching squares) at given levels, and sites are laid along them every `spacing`, each with the ground normal, the horizontal contour `tangent` and the slope. Consecutive sites in a slope band form runs. The output feeds `place_aligned` directly. Read-only. |
+| `prop_pixels` | The on-screen size of a layer's props per camera: the projected diameter of each placed mesh's bounding sphere. Answers, per camera, the props in view, how many are under `minPx` (default 3) and the median size, plus `subPixel`: props under minPx in every camera that sees them. There is no occlusion test, so a prop behind the volcano counts as in view. Read-only. |
+| `game_overlap` | The WormsMayhem games running outside `gameDir`, each with its test folder. `clear` is true when there are none. |
+| `game_perf_guarded` | `game_perf` that refuses to measure while another folder's game runs. With `allowOverlap` it measures anyway, flags the run and labels it `_OVERLAP`. It checks again after the run. |
+
+Bench (`detail.mjs`; `build.mjs` and `terrain.mjs` are unchanged):
+- **Lawn tint** (`detail-lawn.mjs`). The lawn tiles are the top faces of grass01 and grass02 (textures P01 and P03, blends P02 and P04). `tint_landscape` pulls them from the saturated placeholder green to a muted olive green, a step darker than the plants. This is sim-neutral: a scenery carrier's name, proven by the fingerprint.
+  - The tiles' square EDGES cannot be fixed by this layer. The primary material (bits 2-7) is the per-cell paint and counts as visual, but on the draped skin the editor refuses a repaint, because the word carries a second material and corner mask (sim).
+  - **Terrain-paint request for the map (erg-mcp):** round off or break up the grass cells with per-corner blends or an irregular mask.
+- **Cliff piles** (`detail-cliff.mjs`) are drawn like the crater rim's rounded boulders:
+  - near-round proportions, at 0.6-0.8 of round 8's size
+  - sunk 60-65%, at any yaw
+  - at most 18 anchors, with one sibling each
+- **Coast** (`detail-coast.mjs`, `detail-offshore.mjs`):
+  - The stacks are squat tors 5-7.5 over the water, at least 0.7 as wide as their whole height, and never in water deeper than 3. They hug the headland.
+  - Each stack has a skirt of 3-5 boulders.
+  - The lone small stacks and the scattered half-submerged blocks are gone.
+  - The stepped causeway columns are no taller than they are wide.
+  - Offshore, a small group touching the shore is kept only when it has 3 or more pieces.
+- **Rock pass** (`detail-rock.mjs`): the flank heroes have no spire archetype (only ledges and tors, at most 14 tall). The sea stacks are tors.
+- **One rock tint per elevation band** (`detail-retint.mjs`). `tint_scenery {ramp}` sets a stepped ramp over every `_dtl`, `_cpl` and `_slb` copy: wet-dark at the waterline, then the lower cone, the middle cone, and the rim.
+- **Flank slabs** (`detail-slab.mjs`, `plan_contour`): **off by default** (`DTL_SLAB_MAX=0`).
+  - The judge asked for 25-45 degree ground. On Caldera that ground is the trails': a probe found 39 clear sites under 45 degrees against about 1500 at 45-75 degrees.
+  - On the steep faces, the rock mesh drawn as slabs read as a row of beads at 1.5x overlap, and as a chain of links at 2.6-3.3x (scratchpad `caldet/r9/caldet_r9_slab_trials.png`).
+  - A real slab or ledge mesh needs the mod mesh-bank import, which is not built.
+- **Flora** (`detail-flora.mjs`):
+  - Fewer, tighter clumps (members within 0.5-1.6 of the core), placed further apart.
+  - No plant under 0.36 tall. The low sprouts grow on the lawns only. The tile-edge sprinkles are gone.
+  - One height ramp: lush green on the shore, greens and aprons, then olive scrub, straw above 16, grey-straw ash above 22, and nothing above 27.
+  - The lower shore is lush (grass and flowers).
+  - An ash zone holds single straw tufts.
+  - The budget is shared out by zone in turn.
+  - No new pieces: every resource used was checked in game in rounds 7-8.
+- `DETAIL_BUDGET` is 580 (round 8: 1100). The dressed level holds 547 details (round 8: 573).
+
+Findings (testenv D, Sunstone 2.3.1 from `sunstone-tint`, 2026-11-10):
+- **Perf.** Oblique camera, Sunstone on, testenv B idle, `game_perf_guarded` with no overlap, gpuFrameMs p50:
+
+  | Level | gpuFrameMs p50 |
+  |---|---|
+  | undressed | 4.95, then 4.62 |
+  | rock only (304 props) | 6.08 |
+  | flora only (187 props) | 6.09 |
+  | both (438 props) | 6.57 |
+
+  The dressed level costs about +1.8 ms (under the judge's 2 ms). Most of it arrives with the first dressed props, not with each one. The game is CPU-bound at 36 fps either way.
+- `prop_pixels` at the fixed cameras: the flora's median size is 6.4 px at the oblique camera and 11-54 px at the others. 10 of 192 plants are under 3 px at the oblique, and none is under 3 px in every camera.
+- `MESH_POOL_MELANGE` stays at `0.14.0`, the release that carries `[Fixes] MeshInstances`.
+
+## Detail layer, round 10 (Caldera's own meshes, talus fans, flora vocabulary): what the tools gained and what the game showed
+
+**Mod meshes as level scenery work.** A scenery copy whose resource is a mod mesh (`<modId>.<Name>`, from a bank a content
+mod lists in its spice.json `meshes`, docs/spice.md) draws in a level like a vanilla piece: the engine creates level details
+by GRM name, so it finds the mod's descriptor. Shown in testenv D with Sunstone on (scratchpad
+`caldet/r10/caldet_r10_meshcheck_sheet.png`):
+- The banks loaded from the manifest at the menu (`[meshes] 3 bank(s) loaded from 1 mod(s), 3 mesh(es), sections 486, 487, 488`). This is the first in-game run of the manifest load; earlier it had only run through the `mesh.load` verb.
+- The meshes are registered in scene bin 8 (the module's default), while the game's own scenery uses bin 16 (`mesh.resolve HORROR5`). They draw anyway.
+- The per-copy tint (`_tint<rrggbb>`, Melange `mg_tint`) recolours them like any other copy.
+- A test mod without `melange.range` is moved to `Mods\.incompatible` at launch. Every content mod needs that field.
+
+New tool group `meshbank` (`src/tools/meshbank.ts`; pure code in `src/lib/slope-break.ts`; tests in `test/meshbank.test.ts`):
+
+| Tool | What it does |
+|---|---|
+| `place_mod_mesh` | Places scenery copies of a mod mesh. `resource` is `<modId>.<Name>` and `box` is its bounds in map units (the editor has no preview of a mod mesh). Each piece is either free (`pos`/`xz`, `rot`, `scale`) or aligned like `place_aligned` (`size`, normal, `tangent`, `pitch`, `embed`). Each copy is named `VISIBLE_<stem>_<tag>`, plus the tint tag: a visual scenery copy. |
+| `swap_mesh` | Re-points copies of one mesh at another. Each copy is rescaled per axis and moved so that the new mesh fills the old one's box (`toBox`, and `fromBox` or `fromBase`'s preview). Names, tints and rotations are kept. |
+| `plan_slope_break` | Finds the feet of steep faces: gentle ground (`footMax`, default 32 degrees) with a face (`faceMin`, default 45) rising at least `rise` above it within 2 x `probe` uphill. The sites are chained into runs along the contour, each with `down` (where a fan spreads). With `fans` it also answers graded talus fans (big at the toe, small at the apex, a half-buried skirt), each piece with its ground contact angle and `ok`. Read-only. |
+| `lint_contact` | The ground's contact angle under a layer's props. Lists those over `maxDeg` (default 50; `limit` how many), and removes them with `remove`. |
+
+**Caldera's meshes** (`bench/caldera/meshes/`):
+- `gen.mjs` writes three procedural, seeded models with their 128 x 128 mid-grey basalt textures:
+  - `caldera.Boulder`: a weathered boulder, 642 vertices, smooth normals. It replaces the 25-vertex HORROR5 shard.
+  - `caldera.Ledge`: three strata slabs, each stepped back from the one below.
+  - `caldera.Columns`: seven hexagonal basalt columns.
+- `build.mjs` turns each model into a bank with `xomtool convert --bundle`:
+  - The shader is copied from the game's HORROR5 (`Bundl31.xom`) with the new texture.
+  - The copied `XMaterial` is then made **matte**: Specular and Fresnel go from 0.3/0.275/0.175 at power 8 to 0. That sheen is what made the round-9 stacks read as glossy crystal under Sunstone's Blinn-Phong.
+- The banks are built output (they carry a copy of the game's shader). They are not committed. Build them with `tools\node\node.exe tools\erg-mcp\bench\caldera\meshes\build.mjs <outDir>`.
+- **To ship** them, the Caldera pack must list them under `meshes` in `pack/spice.json`. `ship.mjs` does that, and puts every mesh the level names into **one bank**, `assets/meshes/caldera.Rocks.xom` (`meshes/merge.mjs`): every bank a pack lists takes one of the 44 mod mesh sections all enabled mods share, so a map ships one bank, not one per mesh (Caldera's 8 banks left 2 of Kindjal's 38 unloaded). `ship.mjs --banks-only` re-ships the banks into the existing pack without an export.
+- Without the banks, the copies draw nothing. The level still loads, but the rock layer is missing.
+
+Bench (`detail.mjs`; `build.mjs` and `terrain.mjs` are unchanged):
+- **Cliff piles: off** (`DTL_CLIFF=1` turns them back on). The round-9 judge said they read as "strings of black beads stuck to near-vertical faces".
+- **Talus fans** (`detail-basalt.mjs` `talusPass`, `plan_slope_break`, tag `_tal`) at the slope break below each cliff, not on the face:
+  - big boulders at the toe, small ones at the apex, and a skirt of half-buried pieces
+  - no piece where the ground's contact angle is over 50 degrees
+  - on walkable ground (under 20 degrees) only a low skirt stone, and none on the open beach
+- **Strata ledges** (`ledgePass`, `plan_contour`, tag `_ldg`): one `caldera.Ledge` per site on the 45-75 degree faces.
+  - Each lies level along the contour and is sunk past half its depth.
+  - They are 6-9 long and 1.9-2.7 thick. At 3.4-5.6 long they read as dashes in game.
+  - They come in patches: never within 9 of another on a neighbouring contour.
+  - The footprint test now takes the yaw in degrees, as `keepOutFoot` expects (round 9's slab pass passed radians).
+- **Columns** (`columnsPass`, tag `_col`) on cliff tops. On Caldera every candidate was inside a keep-out (trail 26, castle 9, lava 6), so none were placed.
+- **Matte basalt everywhere** (`basaltPass`):
+  - Every HORROR5 copy left (the rock pass, the crowns, the coast stacks and their skirts) is swapped to `caldera.Boulder`.
+  - The rock pass's small stones (under 2.6 across) on ground over 50 degrees are removed. These were the beads on the faces.
+- **Offshore**: a mass that does not touch the shore stays only when it is a big stack (a piece of 8 or more across).
+- **Retint** covers `_tal`, `_ldg` and `_col` too. Every rock copy is tinted by band. Only the flowers are untinted, as accents on purpose.
+- **Flora** (`detail-flora.mjs`): three new pieces, each checked once in game (scratchpad `caldet/r10/caldet_r10_flora_check_sheet.png`):
+  - StormTheCastle CAMELOT4 draws as a low sprawling leafy weed (`weed`).
+  - WindyWizard CAMELOT10 draws as a spiky succulent with red tips (`succulent`, the dry slopes' "cactus"), not the mushrooms its name says.
+  - ThisGameDoesDragon / StormTheCastle CAMELOT1 draw as a fine spiky grass (`grass`).
+  - Out: W3DTreeVillageTrouble ENGLAND1 and W3DHelterSkelter ENGLAND3, tiny tufts.
+- Flora layout changes:
+  - Weeds and grass join the lush recipes, and the succulent joins the hardy ones.
+  - Shore clumps are tight, with nothing further than 1.1 from the core.
+  - The hardy zones (dry, ash and the trail pockets) take ground up to 48 degrees.
+  - Clumps are placed closer together on the shore, the greens, the cliff feet and the dry belt.
+- **No lone plants** (`detail-alone.mjs`): a plant below 14 with no other plant within 1.6 is removed. These were the judge's "single fern sprites" on the beach.
+- `DETAIL_BUDGET` is 820. The flora is limited by sites, not by the budget.
+
+Findings:
+- **Trail pockets do not exist on Caldera.** The judge asked for sheltered pockets on 20-45 degree benches by the trails' outer kerbs. The switchback legs are 9.5 apart (`TRAIL.legSep`), and the trail keep-out band is 7.5 plus the plants' pad. So the ground between two legs is inside one leg's band or the other's. The 24 pocket candidates found were all on the uphill (cut) side, so none were planted.
+- **Usable gentle ground is the limit for flora.** About 300 shore sites, 43 green, 31 cliff-foot, 20 dry. The cone's flanks are 45-75 degrees and stay bare of plants.
+
+**Request to the map (erg-mcp), the lawn edges.** The round-9 judge: "the square lawn tiles are still the loudest wrong shape in the castle shots: the bright squares at the Seawall and Strand fronts, and the green checker at Harbour left. Tinting cannot fix a hard 90-degree tile edge on organic sand." The detail layer cannot change them:
+- The tiles are the draped skin's primary material.
+- The editor refuses a repaint of a word that carries a second material and a corner mask (sim).
+- Asked of the map: blend the grass cells' corners into the sand (per-corner blends), or paint the lawns with an irregular, noise-edged mask instead of whole cells. Either way the patches' outlines would be rounded.
+- Shots: scratchpad `caldet/r10/shots/caldet_r10_castle_Seawall.png`, `caldet_r10_castle_Strand.png` and `caldet_r10_castle_Harbour.png`.

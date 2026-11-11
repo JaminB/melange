@@ -129,6 +129,100 @@ int __cdecl LTick(l5::State* L) {
     return 1;
 }
 
+// Counted at the turn start's first tick (NoteTurnStart), before sim.turnStarted runs; 0 before the first turn.
+int __cdecl LTurn(l5::State* L) {
+    l5::A().pushnumber(L, static_cast<float>(g.turns));
+    return 1;
+}
+
+int __cdecl LRound(l5::State* L) {
+    l5::A().pushnumber(L, static_cast<float>(g.rounds));
+    return 1;
+}
+
+// wum.sim.waterSchedule{...} options, read raw (no metamethods): absent, a number, or (*bad) anything else.
+bool OptNumber(l5::State* L, const char* key, float* out, bool* bad) {
+    const auto& a = l5::A();
+    a.pushstring(L, key);
+    a.rawget(L, 1);
+    const int t = a.type(L, -1);
+    if (t == l5::kTNumber) *out = a.tonumber(L, -1);
+    else if (t != l5::kTNil) *bad = true;
+    a.settop(L, -2);
+    return t == l5::kTNumber;
+}
+
+constexpr float kMaxWaterWorld = 10000;
+constexpr const char* kWaterKeys[] = {"startTurn", "every", "step", "cap", "from", "units"};
+
+// wum.sim.waterSchedule(opts) | (false) | (): sets, stops or reads this mod's schedule.
+int __cdecl LWaterSchedule(l5::State* L) {
+    const auto& a = l5::A();
+    const int mod = ModOf(L);
+    if (mod < 0 || mod >= static_cast<int>(g.mods.size())) return Fail(L, "wum.sim.waterSchedule: no mod");
+    Mod::Water& w = g.mods[mod].water;
+    if (a.gettop(L) == 0 || IsType(L, 1, l5::kTNil)) {
+        if (!w.on) {
+            a.pushnil(L);
+            return 1;
+        }
+        const uint32_t t = g.turns + 1;
+        const uint32_t next = t <= w.start ? w.start : w.start + (t - w.start + w.every - 1) / w.every * w.every;
+        a.pushnumber(L, static_cast<float>(next));
+        a.pushnumber(L, w.cap);
+        return 2;
+    }
+    if (IsType(L, 1, l5::kTBoolean) && !a.toboolean(L, 1)) {
+        a.pushboolean(L, w.on);
+        w.on = false;
+        return 1;
+    }
+    if (!IsType(L, 1, l5::kTTable)) return Fail(L, "wum.sim.waterSchedule: expected an options table, false or nothing");
+    a.pushnil(L);
+    while (a.next(L, 1)) {
+        bool known = false;
+        if (IsType(L, -2, l5::kTString))
+            for (const char* k : kWaterKeys) known |= std::strcmp(a.tostring(L, -2), k) == 0;
+        a.settop(L, -2);
+        if (!known) {
+            a.settop(L, 1);
+            return Fail(L, "wum.sim.waterSchedule: options are startTurn, every, step, cap, from and units");
+        }
+    }
+    float scale = 1;
+    a.pushstring(L, "units");
+    a.rawget(L, 1);
+    if (!IsType(L, -1, l5::kTNil)) {
+        const bool map = IsType(L, -1, l5::kTString) && std::strcmp(a.tostring(L, -1), "map") == 0;
+        const bool world = IsType(L, -1, l5::kTString) && std::strcmp(a.tostring(L, -1), "world") == 0;
+        if (!map && !world) return Fail(L, "wum.sim.waterSchedule: units must be \"world\" or \"map\"");
+        scale = map ? 20.0f : 1.0f;
+    }
+    a.settop(L, 1);
+    bool bad = false;
+    float start = 1, every = 1, step = 0, cap = 0, from = 0;
+    OptNumber(L, "startTurn", &start, &bad);
+    OptNumber(L, "every", &every, &bad);
+    const bool hasStep = OptNumber(L, "step", &step, &bad), hasCap = OptNumber(L, "cap", &cap, &bad);
+    const bool hasFrom = OptNumber(L, "from", &from, &bad);
+    if (bad) return Fail(L, "wum.sim.waterSchedule: startTurn, every, step, cap and from must be numbers");
+    if (!hasStep || !hasCap) return Fail(L, "wum.sim.waterSchedule: step and cap are required");
+    step *= scale, cap *= scale, from *= scale;
+    if (!Integral(start) || start < 1 || start > 16777216.0f) return Fail(L, "wum.sim.waterSchedule: startTurn must be a whole number of 1 or more");
+    if (!Integral(every) || every < 1 || every > 1000) return Fail(L, "wum.sim.waterSchedule: every must be a whole number from 1 to 1000");
+    if (!(step > 0 && step <= kMaxWaterWorld)) return Fail(L, "wum.sim.waterSchedule: step must be above 0 (at most 10000 world units)");
+    if (!(std::fabs(cap) <= kMaxWaterWorld) || (hasFrom && !(std::fabs(from) <= kMaxWaterWorld)))
+        return Fail(L, "wum.sim.waterSchedule: cap and from must be within -10000 and 10000 world units");
+    w = Mod::Water{};
+    w.on = true;
+    w.hasFrom = hasFrom;
+    w.start = static_cast<uint32_t>(start);
+    w.every = static_cast<uint32_t>(every);
+    w.step = step, w.cap = cap, w.from = from;
+    a.pushboolean(L, 1);
+    return 1;
+}
+
 int __cdecl LRandom(l5::State* L) {
     const auto& a = l5::A();
     const int mod = ModOf(L);
@@ -347,6 +441,38 @@ const char* SetDataAt(l5::State* L, const char* name, int v) {
     return rc ? "SetData failed" : nullptr;
 }
 
+const char* GetDataNumber(const char* name, float* out) {
+    const auto& a = l5::A();
+    int type = 0;
+    if (const char* why = DataPrecheck(name, &type)) return why;
+    if (type == 4) return "not a number";
+    if (!EnsureEngineRef(kGetData)) return "GetData is unavailable";
+    const int top = a.gettop(g.L);
+    const int run0 = l5::RunState();
+    SuspendBudget();
+    a.rawgeti(g.L, l5::kRegistry, g.engineRef[kGetData]);
+    a.pushstring(g.L, name);
+    const int rc = a.pcall(g.L, 1, 1, 0);
+    ResumeBudget();
+    const bool num = !rc && a.isnumber(g.L, -1);
+    if (num) *out = a.tonumber(g.L, -1);
+    a.settop(g.L, top);
+    if (run0 == 1 && l5::RunState() == 2) {
+        LOG_ERROR("[sim] getData('%s') halted the level script despite the pre-check (left halted)", name);
+        return "halted";
+    }
+    return rc ? "GetData failed" : num ? nullptr : "not a number";
+}
+
+const char* SetDataNumber(const char* name, float v) {
+    const auto& a = l5::A();
+    const int top = a.gettop(g.L);
+    a.pushnumber(g.L, v);
+    const char* why = SetDataAt(g.L, name, top + 1);
+    a.settop(g.L, top);
+    return why;
+}
+
 void CaptureEngineRefs() {
     for (int i = 0; i < 6; ++i) EnsureEngineRef(i);
 }
@@ -384,6 +510,9 @@ void PushWum(int mod) {
     SetFn(L, sim, "every", &LEvery, mod);
     SetFn(L, sim, "cancel", &LCancel, mod);
     SetFn(L, sim, "tick", &LTick, mod);
+    SetFn(L, sim, "turn", &LTurn, mod);
+    SetFn(L, sim, "round", &LRound, mod);
+    SetFn(L, sim, "waterSchedule", &LWaterSchedule, mod);
     SetFn(L, sim, "random", &LRandom, mod);
     SetFn(L, sim, "randomFloat", &LRandomFloat, mod);
     SetFn(L, sim, "send", &LSend, mod, -1);

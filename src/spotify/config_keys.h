@@ -1,5 +1,5 @@
 #pragma once
-// Melange.ini [Spotify] (Melange 0.13.0; 0.14.0: ClientId is an optional override, ReturnToGame), read by the Spotify
+// Melange.ini [Spotify] (Melange 0.13.0; 0.14.1: ClientId is an optional override, ReturnToGame), read by the Spotify
 // module (spotify.cpp). The first read writes each key's default, so a fresh ini documents them. Enabled belongs to the
 // module (modules::InstallAll); nothing here writes it. The Client ID set in the game (client_store.h) wins over
 // ClientId, which wins over the release's built-in app. Main thread.

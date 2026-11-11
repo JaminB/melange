@@ -45,6 +45,7 @@ std::vector<BundleEntry> g_bundles;  // desync-*.zip; not pinnable, share the sa
 int g_keepMatches = 20;
 uint32_t g_maxMB = 200;
 bool g_configured = false;
+bool g_prune = true;        // false with [Wormsign] Record=0: a launch that records nothing never deletes a replay (retention)
 
 // Also outside the unnamed namespace: Pin() (in melange::wormsign) builds the same sidecar path by qualified
 // name, library::PinnedMarker.
@@ -167,6 +168,7 @@ bool BuildEntry(const std::wstring& path, const WIN32_FIND_DATAW& fd, Entry* out
 // Deletes the oldest files once past KeepMatches or MaxMB; pinned and flagged files are never counted or deleted.
 // Called with g_mu held.
 void EnforceRetentionLocked() {
+    if (!g_prune) return;
     std::vector<size_t> idx(g_entries.size());
     for (size_t i = 0; i < idx.size(); ++i) idx[i] = i;
     std::sort(idx.begin(), idx.end(),
@@ -212,6 +214,7 @@ void EnforceRetentionLocked() {
 // budget rather than a separate ini key, and are never pinned or exempted the way a flagged recording is.
 // Called with g_mu held.
 void EnforceBundleRetentionLocked() {
+    if (!g_prune) return;
     std::vector<size_t> idx(g_bundles.size());
     for (size_t i = 0; i < idx.size(); ++i) idx[i] = i;
     std::sort(idx.begin(), idx.end(),
@@ -267,11 +270,13 @@ std::wstring ReplaysDir() {
 
 void SetReplaysDirForTests(const std::wstring& dir) { g_testDir = dir; }
 
-void Configure(int keepMatches, uint32_t maxMB) {
+void Configure(int keepMatches, uint32_t maxMB, bool prune) {
     std::lock_guard<std::mutex> lk(g_mu);
     g_keepMatches = (std::max)(1, keepMatches);
     g_maxMB = (std::max)(1u, maxMB);
     g_configured = true;
+    g_prune = prune;
+    if (!prune) LOG_INFO("[wormsign] library: retention is off this session ([Wormsign] Record=0: nothing is recorded, so nothing is pruned)");
     EnforceRetentionLocked();
     EnforceBundleRetentionLocked();
 }

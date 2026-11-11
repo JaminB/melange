@@ -189,7 +189,7 @@ bool BuildXan(const load::Loaded& base, const Scene& edited, const VoxelEdits& v
               *hm = obj.field("HeightMap"), *det = obj.field("Details"), *kids = obj.field("Children"), *vis = obj.field("Visible");
         if (!xs || !ys || !zs || !vox || !hm || !det || !kids || !xomutil::SetStr(obj, "Name", f.name) ||
             !xomutil::SetVec(obj, "Position", f.pos) || !xomutil::SetVec(obj, "Orientation", {0, 0, 0}) ||
-            !xomutil::SetVec(obj, "Scale", {1, 1, 1}) || !xomutil::SetVec(obj, "CentreOffset", {0, 0, 0}))
+            !xomutil::SetVec(obj, "Scale", f.scale) || !xomutil::SetVec(obj, "CentreOffset", {0, 0, 0}))
             return Fail(err, "frame " + std::to_string(f.id) + ": the base's frames have an unexpected shape");
         const std::vector<uint32_t> w = words != voxels.end() ? words->second : std::vector<uint32_t>(cells, 0);
         if (w.size() != cells) return Fail(err, "voxels: frame " + std::to_string(f.id) + " has another size");
@@ -200,6 +200,13 @@ bool BuildXan(const load::Loaded& base, const Scene& edited, const VoxelEdits& v
         zs->setInt(f.size[2]);
         vox->raw = Words(w);
         hm->raw.assign(corners * 4, 0);
+        if (!f.corners.empty()) {
+            if (f.corners.size() != corners) return Fail(err, "frame " + std::to_string(f.id) + ": corners do not match its size");
+            for (size_t i = 0; i < corners; ++i) {
+                const float c = static_cast<float>(f.corners[i]);
+                std::memcpy(hm->raw.data() + i * 4, &c, 4);
+            }
+        }
         det->items.clear();
         kids->items.clear();
         if (vis) vis->setInt(1);
@@ -229,6 +236,71 @@ bool BuildXan(const load::Loaded& base, const Scene& edited, const VoxelEdits& v
         Value* v = x.objects[cur[static_cast<size_t>(fid)] - 1].field("Voxels");
         if (!v || v->raw.size() != cells * 4) return Fail(err, "voxels: frame " + std::to_string(fid) + " has no voxel array");
         v->raw = Words(words);
+    }
+
+    // Trims, last: the kept box of each trimmed frame's (edited) voxels and corner offsets. A box holding solid cells
+    // moves the frame by the box's offset from the grid's centre, and its details and child frames back by as much, so
+    // everything stays where it was in the level; an empty box leaves the frame (and all on it) where it is.
+    for (const FrameTrim& t : edited.trims) {
+        const Frame* f = bs.FindFrame(t.frame);
+        if (!f || f->voxels < 0) return Fail(err, "trim: frame " + std::to_string(t.frame) + " is not a frame of the base with voxels");
+        xom::Object& o = x.objects[cur[static_cast<size_t>(t.frame)] - 1];
+        Value *xs = o.field("XSize"), *ys = o.field("YSize"), *zs = o.field("ZSize"), *vox = o.field("Voxels"), *hm = o.field("HeightMap");
+        if (!xs || !ys || !zs || !vox || !hm || vox->raw.size() != static_cast<size_t>(f->size[0]) * f->size[1] * f->size[2] * 4)
+            return Fail(err, "trim: frame " + std::to_string(t.frame) + " has an unexpected shape");
+        const std::vector<uint32_t> all = FromBytes(vox->raw);
+        const int X = f->size[0], Y = f->size[1], Z = f->size[2];
+        std::vector<uint32_t> kept;
+        kept.reserve(static_cast<size_t>(t.size[0]) * t.size[1] * t.size[2]);
+        bool held = false;
+        for (int z = t.min[2]; z < t.min[2] + t.size[2]; ++z)
+            for (int xx = t.min[0]; xx < t.min[0] + t.size[0]; ++xx)
+                for (int y = t.min[1]; y < t.min[1] + t.size[1]; ++y) {
+                    const uint32_t w = all[(static_cast<size_t>(z) * X + xx) * Y + y];
+                    held |= voxels::Solid(w);
+                    kept.push_back(w);
+                }
+        size_t solidAll = 0;
+        for (uint32_t w : all) solidAll += voxels::Solid(w);
+        size_t solidKept = 0;
+        for (uint32_t w : kept) solidKept += voxels::Solid(w);
+        if (solidKept != solidAll)
+            return Fail(err, "trim: frame " + std::to_string(t.frame) + " has " + std::to_string(solidAll - solidKept) +
+                                 " solid voxels outside its kept box (carve them or widen the box)");
+        if (hm->size() == static_cast<size_t>(X + 1) * (Z + 1)) {
+            const std::vector<uint8_t> before = hm->raw;
+            hm->raw.clear();
+            for (int z = t.min[2]; z <= t.min[2] + t.size[2]; ++z)
+                for (int xx = t.min[0]; xx <= t.min[0] + t.size[0]; ++xx) {
+                    const size_t at = (static_cast<size_t>(z) * (X + 1) + xx) * 4;
+                    hm->raw.insert(hm->raw.end(), before.begin() + at, before.begin() + at + 4);
+                }
+        }
+        xs->setInt(t.size[0]);
+        ys->setInt(t.size[1]);
+        zs->setInt(t.size[2]);
+        vox->raw = Words(kept);
+        if (!held) continue;
+        Vec3 d{};
+        for (int k = 0; k < 3; ++k) d[k] = t.min[k] + t.size[k] / 2.0 - f->size[k] / 2.0;
+        if (d == Vec3{0, 0, 0}) continue;
+        Frame local = *f;
+        local.pos = {0, 0, 0};
+        const Vec3 shift = Apply(FrameLocal(local), d);
+        Vec3 pos{};
+        if (!xomutil::GetVec(o, "Position", &pos) || !xomutil::SetVec(o, "Position", {pos[0] + shift[0], pos[1] + shift[1], pos[2] + shift[2]}))
+            return Fail(err, "trim: frame " + std::to_string(t.frame) + " has no position");
+        std::vector<uint32_t> back;
+        for (const char* list : {"Details", "Children"})
+            if (const Value* refs = o.field(list))
+                for (const Value& r : refs->items) back.push_back(r.asRef());
+        for (uint32_t ref : back) {
+            if (ref == 0 || ref > x.objects.size()) return Fail(err, "trim: frame " + std::to_string(t.frame) + " lists a bad reference");
+            xom::Object& c = x.objects[ref - 1];
+            Vec3 p{};
+            if (!xomutil::GetVec(c, "Position", &p) || !xomutil::SetVec(c, "Position", {p[0] - d[0], p[1] - d[1], p[2] - d[2]}))
+                return Fail(err, "trim: an object on frame " + std::to_string(t.frame) + " has no position");
+        }
     }
     return Serialize(x, ".xan", out, err);
 }
@@ -354,6 +426,30 @@ bool Apply(const load::Loaded& base, const Patch& p, const PatchRules& rules, Sc
                                          "]: a voxel may only be carved, filled or painted (second material and blend stay)");
             }
     }
+    // A trimmed frame keeps every solid voxel in its box, and no detail on it is tied to a voxel (voxelPos indexes the
+    // whole grid).
+    for (const FrameTrim& t : s.trims) {
+        const Frame* f = base.scene.FindFrame(t.frame);
+        auto ed = edits.find(t.frame);
+        auto blob = f ? base.blobs.find(f->voxels) : base.blobs.end();
+        if (!f || (ed == edits.end() && blob == base.blobs.end())) return Fail(err, "trimFrame: frame " + std::to_string(t.frame) + " has no voxels");
+        const std::vector<uint32_t> words = ed != edits.end() ? ed->second : FromBytes(blob->second);
+        const int X = f->size[0], Y = f->size[1];
+        size_t outside = 0;
+        for (size_t i = 0; i < words.size(); ++i) {
+            if (!voxels::Solid(words[i])) continue;
+            const int y = static_cast<int>(i % Y), xx = static_cast<int>(i / Y % X), z = static_cast<int>(i / Y / X);
+            outside += xx < t.min[0] || xx >= t.min[0] + t.size[0] || y < t.min[1] || y >= t.min[1] + t.size[1] || z < t.min[2] ||
+                       z >= t.min[2] + t.size[2];
+        }
+        if (outside)
+            return Fail(err, "trimFrame: frame " + std::to_string(t.frame) + " has " + std::to_string(outside) +
+                                 " solid voxels outside its kept box (carve them or widen the box)");
+        for (const Detail& d : s.details)
+            if (d.frame == t.frame && d.voxelPos != Vec3{0, 0, 0})
+                return Fail(err, "trimFrame: frame " + std::to_string(t.frame) + " holds detail '" + d.name +
+                                     "', tied to one of its voxels (voxelPos): remove the detail or leave the frame whole");
+    }
     if (s.hmp == HmpMode::Paint) {
         hmp::Surround sur;
         std::string why;
@@ -445,7 +541,7 @@ Patch Diff(const Scene& base, const Scene& edited, const VoxelEdits& voxels, con
         if (!f.isNew) continue;
         Op add;
         add.kind = Op::Kind::AddFrame;
-        add.newFrame = {f.id, f.parent, f.name, f.pos, f.size};
+        add.newFrame = {f.id, f.parent, f.name, f.pos, f.size, f.scale[0]};
         p.ops.push_back(std::move(add));
         auto ed = voxels.find(f.id);
         if (ed == voxels.end()) continue;
@@ -454,6 +550,13 @@ Patch Diff(const Scene& base, const Scene& edited, const VoxelEdits& voxels, con
         op.frame = f.id;
         op.runs = voxels::Runs(std::vector<uint32_t>(ed->second.size(), 0), ed->second);
         if (!op.runs.empty()) p.ops.push_back(std::move(op));
+    }
+    for (const FrameTrim& t : edited.trims) {
+        Op op;
+        op.kind = Op::Kind::TrimFrame;
+        op.frame = t.frame;
+        op.trim = t;
+        p.ops.push_back(std::move(op));
     }
     hmp::Surround painted, before;
     if (edited.hmp == HmpMode::Paint && voxels.hmp && hmp::Read(*voxels.hmp, &painted, nullptr)) {

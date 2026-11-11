@@ -2,7 +2,7 @@
 // (PKCE, a loopback listener), and sends every mod's Web API requests through one worker with a shared rate gate.
 // Presentation only, client VM only: nothing here reaches the match, the handshake or Wormsign.
 //
-// Melange 0.14.0: the Client ID in use is the first valid one of the ID set in the game (client_store.h), [Spotify]
+// Melange 0.14.1: the Client ID in use is the first valid one of the ID set in the game (client_store.h), [Spotify]
 // ClientId and the one built into the release (CMake MELANGE_SPOTIFY_CLIENT_ID); the built-in app redirects to the first
 // free one of 8780..8782. The browser's callback is answered once the sign-in finished, then the game is brought back to
 // the front. Spotify's "user not registered" 403 (an app in Development mode) becomes the error "not-allowlisted".

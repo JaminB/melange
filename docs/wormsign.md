@@ -39,6 +39,7 @@ The `wormsign.replay` test command does the same from scripts: `arm <file>`, `di
 
 | Setting (`[Wormsign]`) | Default | |
 |---|---|---|
+| `Record` | 1 | 0 records no match. Retention (`KeepMatches`, `MaxMB`) then prunes nothing either: a launch that records nothing never deletes a replay or a desync bundle (test launches with `Record=0` had pruned a player's recordings at every start, 118, 36 and 3 at a time), and the library view keeps the limits for the next recording launch |
 | `ReplayAnyContent` | 0 | 1 replays a recording made with different mod content |
 | `ReplayPassLocal` | 0 | 1 lets local-only inputs (the camera) through while a replay plays; by default every live input is ignored |
 | `HashCamera` | 0 | 1 adds the `melange.camera` contributor: the active logical camera in the mods hash of every tick (see [The logical camera](#the-logical-camera-melangecamera)) |

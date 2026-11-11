@@ -28,7 +28,10 @@ void OnBundleWritten(const std::wstring& path);
 // Install() calls it once at startup so Library() has data before the first match closes.
 void Rescan();
 
-void Configure(int keepMatches, uint32_t maxMB);
+// `prune` false (Record=0): the limits are kept for the library view, but no replay or bundle is ever deleted by
+// retention this session: a test launch that records nothing must not push a player's own recordings out (it pruned
+// 118 once, then 36, then 3 more in the Caldera v2 round-3 runs, every launch with Record=0).
+void Configure(int keepMatches, uint32_t maxMB, bool prune = true);
 
 // Copies `path` to `outPath` for sharing: SteamID-shaped numbers and IPv4 addresses in the file's JSON
 // (HEAD/SETP/NOTE/DVRG/ENGV) chunks are salted-hashed, and the current Windows user name is replaced with %USERNAME%,

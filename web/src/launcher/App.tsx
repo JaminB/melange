@@ -3,8 +3,8 @@ import { useEffect, useReducer, useState } from "preact/hooks";
 import type { Client, ClientState } from "../sdk/client";
 import { errorText, useConnection } from "../sdk/hooks";
 import { Store } from "../panels/store";
-import { launchLaaFailure, launcherStateOf, setupEventOf, setupStatusOf, updateEventOf, updateStatusOf, type LauncherState, type SetupStatus, type Theme, type UpdateStatus, type VanillaResult } from "./api";
-import { laaLaunchFailed } from "./copy";
+import { launchLaaFailure, launchWaitsForMaps, launcherStateOf, mapsEventOf, mapsStatusOf, type MapsStatus, setupEventOf, setupStatusOf, updateEventOf, updateStatusOf, type LauncherState, type SetupStatus, type Theme, type UpdateStatus, type VanillaResult } from "./api";
+import { laaLaunchFailed, mapsLine } from "./copy";
 import { VanillaDone } from "./components/VanillaDone";
 import { ExternalLinkIcon, GearIcon, LifeBuoyIcon, PlayIcon, PuzzleIcon, SparkleIcon, StoreIcon } from "./icons";
 import { Help } from "./pages/Help";
@@ -59,7 +59,10 @@ export function LauncherApp({ client }: { client: Client }) {
   const [launchError, setLaunchError] = useState<string>();
   const [launching, setLaunching] = useState(false);
   const [laaNotice, setLaaNotice] = useState<string>();
+  const [oasisError, setOasisError] = useState<string>();
   const [vanilla, setVanilla] = useState<VanillaResult>();
+  const [maps, setMaps] = useState<MapsStatus>();
+  const [waitingMaps, setWaitingMaps] = useState(false);
 
   useEffect(() => {
     if (!conn.open) return;
@@ -95,6 +98,22 @@ export function LauncherApp({ client }: { client: Client }) {
     });
   }, [conn.open, inWizard, client]);
 
+  // Map packs Melange.exe builds by itself: a status line while it builds, and the launch that waited for it.
+  useEffect(() => {
+    if (!conn.open || !client.has("maps.status")) return;
+    client.call<unknown>("maps.status").then((r) => setMaps(mapsStatusOf(r))).catch(() => {});
+    if (!client.has("maps")) return;
+    return client.subscribe<unknown>("maps", undefined, (m) => {
+      const ev = mapsEventOf(m);
+      if (ev.status) setMaps(ev.status);
+      if (ev.launch) {
+        setWaitingMaps(false);
+        setLaunching(false);
+        if (!ev.launch.ok) setLaunchError(ev.launch.error ?? "The game did not start.");
+      }
+    });
+  }, [conn.open, client]);
+
   const setTheme = (t: Theme) => {
     setLauncher((l) => (l ? { ...l, theme: t } : l));
     applyTheme(t);
@@ -119,11 +138,21 @@ export function LauncherApp({ client }: { client: Client }) {
     setLaaNotice(why ? laaLaunchFailed(why) : undefined);
   };
 
+  const openOasis = (panel?: string) => {
+    setOasisError(undefined);
+    client.call("launcher.openOasis", panel ? { panel } : {}).catch((e) => setOasisError(errorText(e)));
+  };
   const launch = async () => {
     setLaunching(true);
     setLaunchError(undefined);
     setLaaNotice(undefined);
-    try { noteLaa(await client.call<unknown>("launcher.launch")); } catch (e) { setLaunchError(errorText(e)); } finally { setLaunching(false); }
+    let waits = false;
+    try {
+      const r = await client.call<unknown>("launcher.launch");
+      waits = launchWaitsForMaps(r);
+      if (waits) setWaitingMaps(true);
+      else noteLaa(r);
+    } catch (e) { setLaunchError(errorText(e)); } finally { if (!waits) setLaunching(false); }
   };
 
   if (inWizard === undefined || !conn.open) {
@@ -163,7 +192,7 @@ export function LauncherApp({ client }: { client: Client }) {
         <span class="la-version muted">{launcher?.version}</span>
         <div class={`la-status-badge badge-${conn.state}`} role="status" aria-live="polite"><span class="dot" />{STATE_TEXT[conn.state]}</div>
         <button class="btn btn-primary la-launch" disabled={status?.running || launching} title={launchError} onClick={launch}>
-          <PlayIcon size={14} />{launching ? "Launching…" : runLabel}
+          <PlayIcon size={14} />{waitingMaps ? "Building maps…" : launching ? "Launching…" : runLabel}
         </button>
       </header>
       <div class="la-body">
@@ -173,15 +202,19 @@ export function LauncherApp({ client }: { client: Client }) {
               {p.icon(16)}<span class="la-tab-label">{p.label}</span>
             </button>
           ))}
-          <a class="la-tab" href="/#oasis" target="_blank" rel="noreferrer"><ExternalLinkIcon size={16} /><span class="la-tab-label">Oasis tools</span></a>
+          <button class="la-tab" data-open-oasis="" onClick={() => openOasis()}><ExternalLinkIcon size={16} /><span class="la-tab-label">Oasis tools</span></button>
+          <button class="la-tab" data-open-oasis="erg" onClick={() => openOasis("erg")}><ExternalLinkIcon size={16} /><span class="la-tab-label">Map editor (Erg)</span></button>
         </nav>
         <main class="la-content" aria-label={PAGES.find((p) => p.id === page)?.label}>
           <div class="la-content-inner">
+            {oasisError ? <p class="hint" role="status" data-oasis-error>{oasisError}</p> : null}
             {laaNotice ? <p class="hint" role="status" data-laa-launch-failed>{laaNotice}</p> : null}
+            {mapsLine(maps) ? <p class={`hint${maps?.active || waitingMaps ? "" : " warn"}`} role="status" aria-live="polite" data-maps-status={maps?.active ? "building" : "note"}>
+              {maps?.active ? <span class="spin" /> : null}{mapsLine(maps)}</p> : null}
             <UpdateBanner client={client} update={update} gameRunning={!!status?.running} />
             {importPlugin ? <Import client={client} plugin={importPlugin} onBack={() => setImportPlugin(undefined)} />
               : page === "home" ? <Home client={client} status={status} update={update} onFixGame={() => { dispatch({ type: "goto", step: "find" }); setInWizard(true); }}
-                                      onOpenPlugins={() => setPage("plugins")} onOpenSettings={() => setPage("settings")} />
+                                      onOpenPlugins={() => setPage("plugins")} onOpenErg={() => openOasis("erg")} onOpenSettings={() => setPage("settings")} />
               : page === "plugins" ? <Plugins client={client} status={status} onOpenStore={() => setPage("store")} onOpenImport={setImportPlugin} />
               : page === "store" ? <Store client={client} />
               : page === "settings" ? <Settings client={client} status={status} update={update} theme={launcher?.theme ?? "system"} onTheme={setTheme}

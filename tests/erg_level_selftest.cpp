@@ -26,6 +26,7 @@
 #include "erg/project.h"
 #include "erg/scene.h"
 #include "erg/service.h"
+#include "erg/stamp.h"
 #include "erg/voxels.h"
 #include "erg/xomutil.h"
 #include "levels/manifest.h"
@@ -706,6 +707,170 @@ erg::load::BaseFiles SceneBase() {
     return f;
 }
 
+// Trims (erg-patch/2 trimFrame, erg-scene/2 trims): a base frame's voxel box cut down in the build. The scene keeps the
+// whole grid; the built .xan holds the kept box, and the game's cell count drops by the rest.
+void TestTrims() {
+    const erg::load::BaseFiles f = Base();
+    erg::load::Loaded L;
+    std::string err;
+    Expect(erg::load::LoadScene(f, &L, &err), "trims: the base loads " + err);
+    erg::PatchRules rules;
+    rules.voxels = true;
+    rules.newFrames = true;
+    auto words = [&](int64_t id) {
+        std::vector<uint32_t> w;
+        erg::voxels::Decode(L.blobs.at(L.scene.FindFrame(id)->voxels), &w, nullptr);
+        return w;
+    };
+    auto carve = [&](int64_t id, const std::vector<size_t>& cells) {
+        erg::Op op;
+        op.kind = erg::Op::Kind::Voxels;
+        op.frame = id;
+        const std::vector<uint32_t> w = words(id);
+        for (size_t c : cells) op.runs.push_back({static_cast<uint32_t>(c), 1, erg::voxels::Carved(w[c])});
+        return op;
+    };
+    auto trim = [](int64_t id, std::array<int, 3> min, std::array<int, 3> size) {
+        erg::Op op;
+        op.kind = erg::Op::Kind::TrimFrame;
+        op.frame = id;
+        op.trim = {id, min, size};
+        return op;
+    };
+    auto built = [&](const erg::Scene& s, const erg::build::VoxelEdits& v, erg::load::Loaded* B, const std::string& what) {
+        std::vector<erg::build::File> files;
+        std::string e;
+        erg::load::BaseFiles out = f;
+        bool ok = erg::build::Build(L, s, v, {}, &files, &e);
+        if (ok) {
+            out.xan = FileBytes(files, "Maps/ergtest_synth.xan");
+            ok = erg::load::LoadScene(out, B, &e);
+        }
+        Expect(ok, "trims: " + what + " builds and loads " + e);
+        return ok;
+    };
+
+    // The ledge (2x2x2, Diner6 on it) carved empty and trimmed to one cell: 7 cells fewer, nothing moves.
+    erg::Patch p = EmptyPatch(L, "ergtest_synth");
+    p.ops = {carve(14, {0, 1, 2, 3, 4, 5, 6, 7}), trim(14, {0, 0, 0}, {1, 1, 1})};
+    erg::Patch back;
+    const std::string text = erg::WritePatch(p);
+    Expect(text.find("\"op\":\"trimFrame\",\"frame\":14,\"min\":[0,0,0],\"size\":[1,1,1]") != std::string::npos &&
+               erg::ParsePatch(text, &back, &err) && back.UsesV2() && back.ops[1].kind == erg::Op::Kind::TrimFrame &&
+               back.ops[1].trim.frame == 14 && back.ops[1].trim.size == std::array<int, 3>{1, 1, 1},
+           "trims: the op round-trips as /2 " + err);
+    erg::Scene s;
+    erg::build::VoxelEdits v;
+    Expect(erg::build::Apply(L, back, rules, &s, &v, &err) && s.trims.size() == 1 && erg::VoxelCells(s) == erg::VoxelCells(L.scene) - 7 &&
+               s.FindFrame(14)->size == std::array<int, 3>{2, 2, 2} && v.at(14).size() == 8,
+           "trims: applied, the scene keeps the whole grid and counts the kept box " + err);
+    erg::Scene sc;
+    Expect(erg::ParseScene(erg::WriteScene(s), &sc, &err) && sc.trims.size() == 1 && sc.trims[0].frame == 14 && erg::WriteScene(sc) == erg::WriteScene(s),
+           "trims: the scene document keeps them " + err);
+    Expect(erg::WriteScene(L.scene).find("trims") == std::string::npos, "trims: a scene without trims writes none");
+    const erg::Patch d = erg::build::Diff(L.scene, s, v, &L.blobs);
+    erg::Scene s2;
+    erg::build::VoxelEdits v2;
+    Expect(!d.ops.empty() && d.ops.back().kind == erg::Op::Kind::TrimFrame && erg::build::Apply(L, d, rules, &s2, &v2, &err) &&
+               erg::WriteScene(s2) == erg::WriteScene(s),
+           "trims: the diff re-applies to the same scene " + err);
+    erg::load::Loaded B;
+    if (built(s, v, &B, "an emptied ledge")) {
+        const erg::Frame* lf = B.scene.FindFrame(14);
+        Expect(lf && lf->size == std::array<int, 3>{1, 1, 1} && lf->pos == erg::Vec3{1, 1, 1} && B.blobs.at(lf->voxels).size() == 4 &&
+                   B.blobs.at(lf->heightMap).size() == 16 && ByName(B.scene, "Diner6") && ByName(B.scene, "Diner6")->pos == erg::Vec3{-4, 7.25, 12.5},
+               "trims: the built ledge is one empty cell where it was, its camera untouched");
+        Expect(erg::VoxelCells(B.scene) == erg::VoxelCells(s), "trims: the built level's cells are the count the scene gave");
+    }
+
+    // Solid cells outside the box are refused, in Apply and in Build.
+    erg::Patch q = EmptyPatch(L, "ergtest_synth");
+    q.ops = {trim(14, {0, 0, 0}, {1, 1, 1})};
+    Expect(!erg::build::Apply(L, q, rules, &s2, &v2, &err) && err.find("outside its kept box") != std::string::npos,
+           "trims: solid voxels outside the box are refused: " + err);
+    erg::Scene raw = L.scene;
+    raw.trims = {{14, {0, 0, 0}, {1, 1, 1}}};
+    std::vector<erg::build::File> none;
+    Expect(!erg::build::Build(L, raw, {}, {}, &none, &err) && err.find("outside its kept box") != std::string::npos,
+           "trims: Build refuses them too: " + err);
+
+    // The rotated, scaled tower (4x3x2) with its x = 0 slice carved, kept from x = 1: the frame moves by half a voxel along
+    // its own x, its details and its child frame back, so every kept voxel, detail and the ledge stay where they were.
+    std::vector<size_t> slice;
+    for (int z = 0; z < 2; ++z)
+        for (int y = 0; y < 3; ++y) slice.push_back(static_cast<size_t>(z) * 12 + y);
+    erg::Patch t = EmptyPatch(L, "ergtest_synth");
+    t.ops = {carve(13, slice), trim(13, {1, 0, 0}, {3, 3, 2})};
+    erg::Scene ts;
+    erg::build::VoxelEdits tv;
+    erg::load::Loaded TB;
+    Expect(erg::build::Apply(L, t, rules, &ts, &tv, &err) && erg::VoxelCells(ts) == erg::VoxelCells(L.scene) - 6, "trims: the tower applies " + err);
+    if (built(ts, tv, &TB, "a trimmed tower")) {
+        const erg::Frame* tf = TB.scene.FindFrame(13);
+        erg::Mat3x4 was{}, now{}, ledgeWas{}, ledgeNow{};
+        Expect(tf && tf->size == std::array<int, 3>{3, 3, 2} && erg::VoxelWorld(L.scene, 13, &was) && erg::VoxelWorld(TB.scene, 13, &now) &&
+                   erg::FrameWorld(L.scene, 14, &ledgeWas) && erg::FrameWorld(TB.scene, 14, &ledgeNow),
+               "trims: the built tower is 3x3x2");
+        double worst = 0;
+        for (int x = 0; x < 3; ++x)
+            for (int k = 0; k < 3; ++k) {
+                const erg::Vec3 a = erg::Apply(was, {x + 1.5, k * 0.5 + 0.5, 1.0}), b = erg::Apply(now, {x + 0.5, k * 0.5 + 0.5, 1.0});
+                for (int c = 0; c < 3; ++c) worst = std::max(worst, std::fabs(a[c] - b[c]));
+            }
+        const erg::Vec3 la = erg::Apply(ledgeWas, {0.3, 0.7, 0.2}), lb = erg::Apply(ledgeNow, {0.3, 0.7, 0.2});
+        for (int c = 0; c < 3; ++c) worst = std::max(worst, std::fabs(la[c] - lb[c]));
+        for (const char* name : {"VISIBLE_Toolbox", "Diner6"}) {
+            erg::Vec3 a{}, b{};
+            const erg::Detail *da = ByName(L.scene, name), *db = ByName(TB.scene, name);
+            Expect(da && db && erg::DetailWorld(L.scene, *da, &a) && erg::DetailWorld(TB.scene, *db, &b), std::string("trims: ") + name + " is placed");
+            for (int c = 0; c < 3; ++c) worst = std::max(worst, std::fabs(a[c] - b[c]));
+        }
+        Expect(worst < 1e-5, "trims: kept voxels, the ledge and the details stay in place (off by " + std::to_string(worst) + ")");
+        std::vector<uint32_t> kept;
+        erg::voxels::Decode(TB.blobs.at(tf->voxels), &kept, nullptr);
+        const std::vector<uint32_t>& all = tv.at(13);
+        bool same = kept.size() == 18;
+        for (int z = 0; z < 2 && same; ++z)
+            for (int x = 0; x < 3; ++x)
+                for (int y = 0; y < 3; ++y) same &= kept[(static_cast<size_t>(z) * 3 + x) * 3 + y] == all[(static_cast<size_t>(z) * 4 + x + 1) * 3 + y];
+        const std::vector<uint8_t>& hm = TB.blobs.at(tf->heightMap);
+        float c0 = 0, c11 = 0;
+        if (hm.size() == 12 * 4) {
+            std::memcpy(&c0, hm.data(), 4);
+            std::memcpy(&c11, hm.data() + 11 * 4, 4);
+        }
+        Expect(same && hm.size() == 12 * 4 && c0 == 0.25f && c11 == 14 * 0.25f, "trims: the kept voxels and corner offsets are the box's");
+    }
+
+    // Refusals: a box outside the grid, a new frame, the same frame twice, a /1 patch, a detail tied to a voxel.
+    auto refused = [&](const erg::Patch& r, const char* why, const char* what) {
+        erg::Patch parsed;
+        std::string e;
+        const bool ok = erg::ParsePatch(erg::WritePatch(r), &parsed, &e) && erg::build::Apply(L, parsed, rules, &s2, &v2, &e);
+        Expect(!ok && e.find(why) != std::string::npos, std::string("trims: ") + what + " is refused: " + e);
+    };
+    erg::Patch r = EmptyPatch(L, "ergtest_synth");
+    r.ops = {trim(14, {1, 0, 0}, {2, 2, 2})};
+    refused(r, "inside the frame", "a box past the grid");
+    erg::Op nf;
+    nf.kind = erg::Op::Kind::AddFrame;
+    nf.newFrame = {-1, 13, "ergblock_0", {2, 1, 3.5}, {3, 2, 4}};
+    r.ops = {nf, trim(-1, {0, 0, 0}, {1, 1, 1})};
+    erg::Patch rp;
+    Expect(!erg::ParsePatch(erg::WritePatch(r), &rp, &err) && err.find("frame") != std::string::npos, "trims: a new frame's id is refused: " + err);
+    r.ops = {carve(14, {0, 1, 2, 3, 4, 5, 6, 7}), trim(14, {0, 0, 0}, {1, 1, 1}), trim(14, {0, 0, 0}, {1, 1, 1})};
+    refused(r, "earlier op", "a second trim of a frame");
+    std::string v1 = erg::WritePatch(p);
+    v1.replace(v1.find("erg-patch/2"), 11, "erg-patch/1");
+    Expect(!erg::ParsePatch(v1, &rp, &err) && !err.empty(), "trims: a /1 patch has no trimFrame: " + err);
+    erg::Op tie;
+    tie.kind = erg::Op::Kind::Set;
+    tie.src = ByName(L.scene, "Diner6")->src.value();
+    tie.fields.voxelPos = erg::Vec3{1, 0, 0};
+    r.ops = {tie, carve(14, {0, 1, 2, 3, 4, 5, 6, 7}), trim(14, {0, 0, 0}, {1, 1, 1})};
+    refused(r, "voxelPos", "a frame holding a detail tied to a voxel");
+}
+
 void TestNewFrames() {
     const erg::load::BaseFiles f = SceneBase();
     erg::load::Loaded L;
@@ -778,6 +943,109 @@ void TestNewFrames() {
     refused("TeamBase1", 13, "TEAMBASE");
     refused("LEDGE", 13, "fresh");
     refused("ergblock_0", 12, "Scene frame");
+
+    // A scaled block: "scale" is written only when it is not 1, so an unscaled patch keeps its bytes.
+    Expect(erg::WritePatch(p).find("\"scale\"") == std::string::npos, "scaled frames: an unscaled block writes no scale");
+    erg::Patch sp = p;
+    sp.ops[0].newFrame.scale = 2.5;
+    const std::string stext = erg::WritePatch(sp);
+    erg::Patch sback;
+    Expect(stext.find("\"scale\":2.5") != std::string::npos && erg::ParsePatch(stext, &sback, &err) && sback.ops[0].newFrame.scale == 2.5,
+           "scaled frames: the scale round-trips " + err);
+    Expect(erg::build::Apply(L, sback, rules, &s, &v, &err) && s.FindFrame(-1) && s.FindFrame(-1)->scale == erg::Vec3{2.5, 2.5, 2.5} &&
+               erg::ValidateScene(s, &err),
+           "scaled frames: applied with that scale on every axis " + err);
+    erg::Scene sc;
+    Expect(erg::ParseScene(erg::WriteScene(s), &sc, &err) && sc.FindFrame(-1)->scale == erg::Vec3{2.5, 2.5, 2.5},
+           "scaled frames: the scene document keeps it " + err);
+    files.clear();
+    Expect(erg::build::Build(L, s, v, {}, &files, &err), "scaled frames: build " + err);
+    out.xan = FileBytes(files, "Maps/ergtest_synth.xan");
+    erg::load::Loaded SB;
+    const erg::Frame* sbuilt = nullptr;
+    if (erg::load::LoadScene(out, &SB, &err))
+        for (const auto& fr : SB.scene.frames)
+            if (fr.name == "ergblock_0") sbuilt = &fr;
+    Expect(sbuilt && sbuilt->scale == erg::Vec3{2.5, 2.5, 2.5} && sbuilt->pos == erg::Vec3{2, 1, 3.5},
+           "scaled frames: the .xan frame has the scale " + err);
+    const erg::Patch sd = erg::build::Diff(L.scene, s, v, &L.blobs);
+    Expect(!sd.ops.empty() && sd.ops[0].kind == erg::Op::Kind::AddFrame && sd.ops[0].newFrame.scale == 2.5, "scaled frames: the diff keeps the scale");
+    for (const char* bad : {"0.4", "4.5", "\"2\"", "[2,2,2]"}) {
+        std::string t = stext;
+        t.replace(t.find("\"scale\":2.5") + 8, 3, bad);
+        erg::Patch q;
+        std::string e;
+        Expect(!erg::ParsePatch(t, &q, &e) && e.find("scale") != std::string::npos, std::string("scaled frames: scale ") + bad + " is refused: " + e);
+    }
+    // Corner offsets: written into the built frame's HeightMap, (X+1)*(Z+1) floats; a block without them gets zeros.
+    {
+        erg::Patch cp = sback;
+        const auto& sz = cp.ops[0].newFrame.size;
+        const size_t n = static_cast<size_t>(sz[0] + 1) * (sz[2] + 1);
+        for (size_t i = 0; i < n; ++i) cp.ops[0].newFrame.corners.push_back(0.25 * static_cast<double>(i) - 1);
+        erg::Patch cback;
+        erg::Scene cs;
+        erg::build::VoxelEdits cv;
+        std::vector<erg::build::File> cf;
+        Expect(erg::ParsePatch(erg::WritePatch(cp), &cback, &err) && erg::build::Apply(L, cback, rules, &cs, &cv, &err) &&
+                   erg::build::Build(L, cs, cv, {}, &cf, &err),
+               "corners: applied and built " + err);
+        erg::load::BaseFiles cx = out;
+        cx.xan = FileBytes(cf, "Maps/ergtest_synth.xan");
+        erg::load::Loaded CB;
+        const erg::Frame* cb = nullptr;
+        if (erg::load::LoadScene(cx, &CB, &err))
+            for (const auto& fr : CB.scene.frames)
+                if (fr.name == "ergblock_0") cb = &fr;
+        bool same = cb && cb->heightMap >= 0 && CB.blobs.count(cb->heightMap) && CB.blobs[cb->heightMap].size() == n * 4;
+        for (size_t i = 0; same && i < n; ++i) {
+            float f = 0;
+            std::memcpy(&f, CB.blobs[cb->heightMap].data() + i * 4, 4);
+            same = f == static_cast<float>(cp.ops[0].newFrame.corners[i]);
+        }
+        Expect(same, "corners: the .xan frame's HeightMap holds them " + err);
+        bool zeros = sbuilt && sbuilt->heightMap >= 0 && SB.blobs.count(sbuilt->heightMap);
+        for (uint8_t b : zeros ? SB.blobs[sbuilt->heightMap] : std::vector<uint8_t>{}) zeros = zeros && b == 0;
+        Expect(zeros, "corners: a block without them has a HeightMap of zeros");
+    }
+    erg::Scene bent = s;
+    for (auto& fr : bent.frames)
+        if (fr.isNew) fr.scale = {2, 2, 1};
+    Expect(!erg::ValidateScene(bent, &err) && err.find("scale") != std::string::npos, "scaled frames: a scene refuses a non-uniform scale");
+
+    // A block of 32 a side loads (it drew in the game before the 31 limit was known) and warns; 33 is refused.
+    erg::Patch legacy = p;
+    legacy.ops[0].newFrame.size = {32, 2, 4};
+    legacy.ops[1].runs = {{0, 256, 3 | 5 << 2}};
+    erg::Patch lback;
+    Expect(erg::ParsePatch(erg::WritePatch(legacy), &lback, &err) && erg::build::Apply(L, lback, rules, &s, &v, &err) && erg::ValidateScene(s, &err),
+           "legacy blocks: a side of 32 still loads " + err);
+    std::vector<std::string> warn = erg::EngineWarnings(s);
+    Expect(warn.size() == 1 && warn[0].find("ergblock_0") != std::string::npos && warn[0].find("31") != std::string::npos,
+           "legacy blocks: and is named in a warning");
+    Expect(erg::CheckEngineLimits(s, &err), "legacy blocks: a side of 32 is not refused");
+    Expect(erg::build::Apply(L, p, rules, &s, &v, &err) && erg::EngineWarnings(s).empty(), "legacy blocks: 31 or less warns nothing");
+    legacy.ops[0].newFrame.size = {33, 2, 4};
+    Expect(!erg::ParsePatch(erg::WritePatch(legacy), &lback, &err) && err.find("size") != std::string::npos, "legacy blocks: 33 is refused");
+
+    // The engine's 16-bit cell count: X*Y*Z of every voxel frame, base and new, solid or empty.
+    const uint64_t baseCells = erg::VoxelCells(L.scene);
+    Expect(baseCells == 1 + 4 * 3 * 2 + 2 * 2 * 2, "cells: the base's voxel frames count, the 1x1x1 folder too");
+    erg::Patch big = EmptyPatch(L, "ergtest_synth");
+    for (int k = 0; k < 3; ++k) {
+        erg::Op a;
+        a.kind = erg::Op::Kind::AddFrame;
+        a.newFrame = {-1 - k, 13, "ergblock_" + std::to_string(k), {40.0 * k, 0, 0}, {31, 31, 22}};
+        big.ops.push_back(a);
+    }
+    const bool applied = erg::build::Apply(L, big, rules, &s, &v, &err);
+    Expect(applied && erg::VoxelCells(s) == baseCells + 3 * 31 * 31 * 22 && erg::CheckEngineLimits(s, &err), "cells: three 31x31x22 blocks fit " + err);
+    big.ops[2].newFrame.size = {31, 31, 31};
+    Expect(erg::build::Apply(L, big, rules, &s, &v, &err) && !erg::CheckEngineLimits(s, &err) && err.find("65535") != std::string::npos &&
+               err.find(std::to_string(erg::VoxelCells(s))) != std::string::npos,
+           "cells: a third block of 31 cubed passes 65535 and is refused " + err);
+    warn = erg::EngineWarnings(s);
+    Expect(warn.size() == 1 && warn[0].find("will refuse") != std::string::npos, "cells: and warns");
 }
 
 void TestNegative() {
@@ -1039,6 +1307,7 @@ void TestService(const std::wstring& root) {
     env.crcCollides = [](const std::string& n) { return _stricmp(n.c_str(), "SCRIPTS.XOM") == 0; };
     env.inSession = [raw](const std::string&) { return raw->inLobby; };
     env.readOnly = [raw] { return raw->oasisReadOnly; };
+    env.melangeVersion = "9.9.9";   // level.build stamps the pack (erg/stamp.h)
     // A stand-in for the engine's parser: "= =" is its one syntax error.
     env.compile = [](const std::string& text, int* line, std::string* message) {
         const size_t at = text.find("= =");
@@ -1092,6 +1361,22 @@ void TestService(const std::wstring& root) {
     Expect(r.ok && J(r.json).find("id")->str == "harbour2", "new: a free id");
     Expect(Call(S, "level.new", R"({"base":"Multi.Synth","slug":"Bad_Slug","title":"x"})").code == erg::service::kBadParams, "new: bad slug");
     Expect(Call(S, "level.new", R"({"base":"Multi.Nope","slug":"x","title":"x"})").code == erg::service::kBadParams, "new: unknown base");
+    {
+        const Json l = J(Call(S, "level.list", "{}").json);
+        const Json* dir = l.find("projectsDir");
+        Expect(dir && dir->kind == Json::Kind::String && !dir->str.empty(), "list: the projects folder");
+        auto d = Call(S, "level.delete", R"({"project":"harbour2"})");
+        bool gone = d.ok && J(d.json).find("deleted")->str == "harbour2";
+        for (const auto& pr : J(Call(S, "level.list", "{}").json).find("projects")->arr) gone &= pr.find("id")->str != "harbour2";
+        Expect(gone, "delete: the project is gone " + d.message);
+        Expect(Call(S, "level.delete", R"({"project":"harbour2"})").code == erg::service::kBadParams &&
+                   Call(S, "level.delete", R"({"project":"Bad_Slug"})").code == erg::service::kBadParams &&
+                   Call(S, "level.delete", "{}").code == erg::service::kBadParams,
+               "delete: an unknown project, a bad id, no id");
+        Expect(erg::service::Mutating("level.delete"), "delete: a mutating method");
+        d = Call(S, "level.new", R"({"base":"Multi.Synth","slug":"harbour","title":"Second"})");
+        Expect(d.ok && J(d.json).find("id")->str == "harbour2", "delete: the id is free again");
+    }
 
     r = Call(S, "level.load", R"({"project":"harbour"})");
     Expect(r.ok && erg::ParseScene(r.json, &scene, &err) && scene.stem == "ergtest_harbour" && scene.title == "Harbour Brawl",
@@ -1100,6 +1385,7 @@ void TestService(const std::wstring& root) {
         const Json loaded = J(r.json);
         const Json* pv = loaded.find("previews");
         Expect(pv && pv->kind == Json::Kind::Object, "load: the reply carries a previews object " + r.json.substr(0, 200));
+        Expect(Call(S, "level.delete", R"({"project":"harbour"})").code == erg::service::kPolicy, "delete: refused while the project is open");
     }
 
     const Json* patchJ = created.find("patch");
@@ -1197,6 +1483,43 @@ void TestService(const std::wstring& root) {
                              : sr.blobs.end();
         Expect(nf && nf->isNew && blob != sr.blobs.end() && blob->bytes.size() == 16 && static_cast<uint8_t>(blob->bytes[0]) == (3 | 2 << 2),
                "load project: the block and its voxels come back " + err + sr.message);
+
+        // Engine limits: a block of 32 a side saves with a warning naming it, loads, and still builds for Test.
+        const std::wstring ws = root + L"\\enginews";
+        erg::install::MakeDirs(ws);
+        erg::Patch side = block;
+        side.ops[side.ops.size() - 2].newFrame.size = {32, 1, 2};
+        sr = Call(S, "level.save", R"({"project":"harbour","patch":)" + erg::WritePatch(side) + "}");
+        const Json sw = sr.ok ? J(sr.json) : Json::Obj();
+        auto warns = [](const Json& w, const char* what) {
+            const Json* a = w.find("warnings");
+            return a && std::any_of(a->arr.begin(), a->arr.end(), [&](const Json& x) { return x.str.find(what) != std::string::npos; });
+        };
+        Expect(sr.ok && warns(sw, "block 'ergblock_0' is 32x1x2") && !warns(sw, "65535"),
+               "engine limits: a 32-side block saves with a warning that names it " + sr.message + sr.json.substr(0, 300));
+        Expect(Call(S, "level.load", R"({"project":"harbour"})").ok && S.s->BuildTest("harbour", ws).ok,
+               "engine limits: the 32-side project still loads and builds for Test");
+        // Past 65535 cells: saved with a warning, refused by Test, export (both modes) and level.build.
+        erg::Patch over = q;
+        for (int k = 0; k < 3; ++k) {
+            erg::Op a;
+            a.kind = erg::Op::Kind::AddFrame;
+            a.newFrame = {-1 - k, 13, "ergblock_" + std::to_string(k), {40.0 * k, 0, 0}, {31, 31, 31}};
+            over.ops.push_back(a);
+        }
+        sr = Call(S, "level.save", R"({"project":"harbour","patch":)" + erg::WritePatch(over) + "}");
+        const Json ow = sr.ok ? J(sr.json) : Json::Obj();
+        Expect(sr.ok && warns(ow, "crashes loading more than 65535") && !warns(ow, "asserts"),
+               "engine limits: over 65535 cells saves with a warning " + sr.message + sr.json.substr(0, 300));
+        Expect(Call(S, "level.load", R"({"project":"harbour"})").ok, "engine limits: the project still loads");
+        sr = S.s->BuildTest("harbour", ws);
+        Expect(!sr.ok && sr.code == erg::service::kBadParams && sr.message.find("65535") != std::string::npos,
+               "engine limits: Test refuses it " + sr.message);
+        for (const char* mode : {"source", "install"}) {
+            sr = Call(S, "level.export", std::string(R"({"project":"harbour","modId":"cells-over","name":"x","version":"1.0.0","mode":")") + mode + "\"}");
+            Expect(!sr.ok && sr.message.find("65535") != std::string::npos, std::string("engine limits: export ") + mode + " refuses it " + sr.message);
+        }
+        Expect(!std::filesystem::exists(std::filesystem::path(game + L"\\Mods\\cells-over")), "engine limits: nothing was written");
         sr = Call(S, "level.save", R"({"project":"harbour","patch":)" + erg::WritePatch(q) + "}");
         Expect(sr.ok, "save: without the block " + sr.message);
     }
@@ -1208,6 +1531,17 @@ void TestService(const std::wstring& root) {
         const Json* names = mats.find("names");
         Expect(names && names->arr.size() == 2 && names->arr[0].str == "Planks" && names->arr[1].str == "Girder",
                "materials: the record names of a level's material file " + r.message);
+        Expect(!mats.find("colors"), "materials: no colours unless asked");
+        r = Call(S, "level.materials", R"({"file":"Maps\\mats.txt","colors":true,"theme":"BUILDING"})");
+        const Json withColors = r.ok ? J(r.json) : Json();
+        const Json* colors = withColors.find("colors");
+        const Json* resolved = withColors.find("resolved");
+        bool hex = colors && colors->arr.size() == 2 && resolved && resolved->arr.size() == 2;
+        for (size_t i = 0; hex && i < colors->arr.size(); ++i)
+            hex = colors->arr[i].str.size() == 7 && colors->arr[i].str[0] == '#' && resolved->arr[i].kind == Json::Kind::Bool;
+        Expect(hex, "materials: colors gives a #rrggbb colour and resolved per record " + r.json.substr(0, 200) + r.message);
+        Expect(Call(S, "level.materials", R"({"file":"Maps\\mats.txt","colors":1})").code == erg::service::kBadParams, "materials: colors is a boolean");
+
         Expect(Call(S, "level.materials", R"({"file":"ThemeCamelot\\ThemeCamelot.txt"})").ok, "materials: a theme's file");
         Expect(Call(S, "level.materials", R"({"file":"..\\..\\x.txt"})").code == erg::service::kBadParams &&
                    Call(S, "level.materials", R"({"file":"Maps\\mats.xan"})").code == erg::service::kBadParams &&
@@ -1296,6 +1630,8 @@ void TestService(const std::wstring& root) {
         Expect(other.Lock("harbour") == erg::project::LockResult::Busy, "lock: another server sees the open project as busy");
         Expect(other.Lock("harbour2") == erg::project::LockResult::Ok, "lock: an unopened project is free");
         Expect(Call(S, "level.load", R"({"project":"harbour2"})").code == erg::service::kBusy, "lock: -32002 for a project another server holds");
+        Expect(Call(S, "level.delete", R"({"project":"harbour2"})").code == erg::service::kPolicy, "delete: refused while another server holds it");
+
     }
     Expect(Call(S, "level.close", R"({"project":"harbour"})").ok, "close");
     {
@@ -1502,6 +1838,50 @@ void TestService(const std::wstring& root) {
         S.packs.clear();
         RemoveTree(other);
     }
+    {
+        // The build stamp Melange.exe's auto-build reads (erg/stamp.h): written by level.build, stale when an input
+        // changes, missing without it or a level file, failed when the last build from today's inputs failed.
+        namespace st = erg::stamp;
+        melange::spice::Manifest m;
+        std::vector<melange::spice::Error> errs;
+        Expect(melange::spice::Parse(mod, &m, &errs), "stamp: the pack parses");
+        std::string in, why;
+        st::Record rec;
+        Expect(st::Read(mod, &rec) && rec.ok && rec.melange == "9.9.9" && !rec.inputs.empty(), "stamp: level.build wrote it");
+        Expect(st::Check(mod, m, "9.9.9", game, &in, &why) == st::State::Built && in == rec.inputs, "stamp: built " + why);
+        Expect(st::Check(mod, m, "9.9.9", game, &in, &why) == st::State::Built, "stamp: a second check is still built (cached hashes)");
+        Expect(st::Check(mod, m, "9.9.10", game, &in, &why) == st::State::Stale && why.find("9.9.9") != std::string::npos,
+               "stamp: another Melange version is stale " + why);
+        erg::Patch flat = pack;
+        flat.hmp = erg::HmpMode::None;
+        Put(mod + L"\\src\\harbour.ergpatch.json", erg::WritePatch(flat));
+        Expect(st::Check(mod, m, "9.9.9", game, &in, &why) == st::State::Stale, "stamp: a changed source patch is stale " + why);
+        Put(mod + L"\\src\\harbour.ergpatch.json", erg::WritePatch(pack));
+        Expect(st::Check(mod, m, "9.9.9", game, &in, &why) == st::State::Built, "stamp: the same bytes again are built " + why);
+        const std::wstring xom = mod + L"\\assets\\levels\\my_maps_harbour.XOM";
+        std::vector<uint8_t> keep;
+        erg::install::ReadFile(xom, 1u << 26, &keep, &err);
+        DeleteFileW(xom.c_str());
+        Expect(st::Check(mod, m, "9.9.9", game, &in, &why) == st::State::Missing && why.find("my_maps_harbour.XOM") != std::string::npos,
+               "stamp: a missing level file is missing " + why);
+        r = Call(S, "level.build", R"({"modId":"my-maps"})");
+        Expect(r.ok && r.json.find(R"("stamped":true)") != std::string::npos && st::Check(mod, m, "9.9.9", game, &in, &why) == st::State::Built,
+               "stamp: a rebuild is built again " + r.message);
+        st::Record failed;
+        failed.inputs = in;
+        failed.melange = "9.9.9";
+        failed.error = "boom";
+        Expect(st::Write(mod, failed), "stamp: a failure can be recorded");
+        Expect(st::Check(mod, m, "9.9.9", game, &in, &why) == st::State::Failed && why == "boom", "stamp: failed with today's inputs " + why);
+        Expect(st::Check(mod, m, "9.9.10", game, &in, &why) == st::State::Stale, "stamp: a failure is retried when an input changes " + why);
+        DeleteFileW((mod + L"\\" + st::kFile).c_str());
+        Expect(st::Check(mod, m, "9.9.9", game, &in, &why) == st::State::Missing, "stamp: no stamp is missing " + why);
+        melange::spice::Manifest none = m;
+        for (auto& l : none.levels) l.source.clear();
+        Expect(st::Check(mod, none, "9.9.9", game, &in, &why) == st::State::None, "stamp: a pack without sources needs nothing");
+        r = Call(S, "level.build", R"({"modId":"my-maps"})");
+        Expect(r.ok && st::Check(mod, m, "9.9.9", game, &in, &why) == st::State::Built, "stamp: built once more " + r.message);
+    }
     S.readOnly = true;
     Expect(Call(S, "level.build", R"({"modId":"my-maps"})").code == erg::service::kReadOnly, "build: -32003 while Mods is read-only");
     Expect(Call(S, "level.export", R"({"project":"harbour","modId":"my-maps","name":"x","version":"1.0.0","mode":"install"})").code ==
@@ -1540,7 +1920,7 @@ void TestService(const std::wstring& root) {
     Expect(Call(S, "level.close", R"({"project":"harbour"})").ok, "close: read-only");
     S.oasisReadOnly = false;
     Expect(Call(S, "level.nope", "{}").code == -32601 && Call(S, "level.list", "[1]").code == erg::service::kBadParams, "unknown method, bad params");
-    Expect(erg::service::Methods().size() == 13 && erg::service::Mutating("level.save") && erg::service::Mutating("level.script.put") && !erg::service::Mutating("level.script.get") && !erg::service::Mutating("level.load"), "methods");
+    Expect(erg::service::Methods().size() == 14 && erg::service::Mutating("level.delete") && erg::service::Mutating("level.save") && erg::service::Mutating("level.script.put") && !erg::service::Mutating("level.script.get") && !erg::service::Mutating("level.load"), "methods");
 }
 }  // namespace
 
@@ -1551,6 +1931,7 @@ int main() {
     TestScale();
     TestVoxels();
     TestNewFrames();
+    TestTrims();
     TestSurround();
     TestNegative();
     TestBank();

@@ -1,4 +1,4 @@
-// sandbox_selftest cases for wum.spotify (Melange 0.13; 0.14 adds the in-game setup, cancel and transfer). Included in
+// sandbox_selftest cases for wum.spotify (Melange 0.13; 0.14.1 adds the in-game setup, cancel and transfer). Included in
 // the test file's anonymous namespace after the helpers (SetMod, Eval, Frames, Expect, ExpectEq); defines TestSpotify(),
 // run before the docs check. The Spotify host is a fake (sandbox_fakes_spotify.inc), so these cases cover the binding:
 // argument types and values, the click (consumed by connect and openDashboard, kept by setClientId, pasteClientId and
@@ -239,7 +239,7 @@ void TestSpotify() {
     TestSpotifySetup();
 }
 
-// Melange 0.14: setup(), setClientId(), pasteClientId(), copy(), openDashboard(), cancel(), transfer(), status().app.
+// Melange 0.14.1: setup(), setClientId(), pasteClientId(), copy(), openDashboard(), cancel(), transfer(), status().app.
 void TestSpotifySetup() {
     namespace fs = fake_spotify;
     using spotify::logic::Op;
@@ -248,9 +248,9 @@ void TestSpotifySetup() {
     const std::string kId = "0123456789abcdefABCDEF0123456789";
     auto pair = [](const char* expr) { return std::string("local a, b = ") + expr + " return tostring(a) .. ':' .. tostring(b)"; };
 
-    // ---- detection: the 0.14 functions ship together
+    // ---- detection: the 0.14.1 functions ship together
     for (const char* fn : {"setup", "setClientId", "pasteClientId", "copy", "openDashboard", "cancel", "transfer"})
-        ExpectEq(Eval(nullptr, std::string("return type(wum.spotify.") + fn + ")"), "function", std::string("0.14: wum.spotify.") + fn);
+        ExpectEq(Eval(nullptr, std::string("return type(wum.spotify.") + fn + ")"), "function", std::string("0.14.1: wum.spotify.") + fn);
 
     // ---- setup(): a table, also in the console; app and appHint only when there is an app
     fs::g_setup = {"builtin", "wxyz", "http://127.0.0.1:8780/callback", true, false};

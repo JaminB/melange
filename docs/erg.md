@@ -9,17 +9,23 @@ and writes `Mods\`.
 ## Opening it
 
 Open Oasis (see [oasis.md](oasis.md)) and pick the *Erg* panel, either with the game running or from `Melange.exe`
-with it closed. Editing and building a pack work either way; **Test** needs the game running, at the main menu, and
-not in a lobby.
+with it closed. Shortcuts: `Melange.exe`'s *Map editor (Erg)* button (sidebar) or *Make a map* card (Home), and in the
+game the overlay menu item *Oasis > Map editor (Erg)* or the *Open map editor* button in the Oasis panel. Editing and
+building a pack work either way; **Test** needs the game running, at the main menu, and not in a lobby.
 
 ## Projects
 
 A project is one map you're editing: a base level plus your changes, saved under
-`Documents\Melange\erg\projects\<id>\`. Opening the panel lists the game's own multiplayer maps and any project you
+`Documents\Melange\erg\projects\<id>\` (or the folder `[Erg] ProjectsDir` in `Melange.ini` names: an absolute path, or
+one relative to the game folder such as `Melange\erg\projects`). The game and `Melange.exe` each read their own game
+folder's `Melange.ini`, so they share projects only when both name the same folder: **Test** runs in the game and reads
+the game's folder, so a project made by `Melange.exe` for another install (or with another `ProjectsDir`) is not there.
+Opening the panel lists the game's own multiplayer maps and any project you
 already started; pick one to start a new project from it, or an existing project to keep going. **Save** (Ctrl+S)
 writes the project atomically; until then your edits and the undo history live in the page, and unsaved edits come
 back as a draft if you reload it. Only one server (the game or `Melange.exe`, not both) can have a given project open at
-a time. Map packs that ship only their patches (see Export) are listed at the top with a **Build** button.
+a time. Map packs that ship only their patches (see Export) are listed at the top with a **Build** button; `Melange.exe`
+builds them by itself before the game starts (see [Building map packs automatically](#building-map-packs-automatically)).
 
 ## The view and tools
 
@@ -46,6 +52,12 @@ A map's spawn mode is either:
   map.
 - **Knots:** place up to 8 numbered markers (`WORM0`..`WORM7`); worm *i* always starts on marker *i*. Every match
   needs all 8, even in smaller games — the map simply won't use the markers past the worm count.
+- **Knots by team:** sixteen markers (`WORM0`..`WORM15`), four per team: team 1's worms start on `WORM0`..`WORM3`,
+  team 2's on `WORM4`..`WORM7`, team 3's on `WORM8`..`WORM11` and team 4's on `WORM12`..`WORM15`, the first worm of a
+  team on its first marker, whatever slots the match deals the worms (a game of four teams of two puts team 2 on
+  `WORM4` and `WORM5`, not on `WORM2` and `WORM3` as plain knots would). Put each team's four markers in its own base
+  and every team starts there. A two-team game needs `WORM0`..`WORM7`; the checks warn when `WORM8`..`WORM15` are
+  missing, which a third or fourth team needs. A team's fifth and sixth worms start at random.
 
 ![Diner Might with knot spawns: the outliner filtered to the eight WORM knots, WORM2 selected](images/erg/spawns.png)
 
@@ -57,7 +69,9 @@ A map's spawn mode is either:
 - **Telepad pairs** place two pads in one group: a worm on one pad comes out of the other.
 - **Triggers** have an index, a radius and the teams that collect or destroy them; a
   [level script](#level-scripts) reacts to them.
-- One **mine factory** per map. It replaces the scheme's own factory, so a match never has two.
+- One **mine factory** per map. It replaces the scheme's own factory, so a match never has two. Its Properties tab
+  sets the *mine target*, the *idle turns* and whether the scheme's own start mines are placed (see
+  [The mine factory](#the-mine-factory)).
 
 Crates, telepads, triggers and the mine factory sit on knots the game reads when the match starts. Using any of them
 saves the project as format v2 (see [Formats](#formats)).
@@ -65,6 +79,216 @@ saves the project as format v2 (see [Formats](#formats)).
 ![A crate, a telepad pair, a trigger and a mine factory placed on Diner Might, with the outliner showing only objects](images/erg/objects.png)
 
 ![The Properties tab for a placed crate: its kind, health, hit points and parachute](images/erg/properties.png)
+
+### The mine factory
+
+The factory is the game's own (`MineFactoryLogicEntity`), placed by `GameLogic.PlaceObjects` on the `minefactory` knot.
+How it behaves, from the game's code:
+
+- **It runs whatever the scheme says.** The match script (`stdvs`) reads the scheme's `MineFactoryOn` only once, in
+  its set-up, to decide whether to send `GameLogic.CreateRandMineFactory` (the scheme's factory at a random spot). The
+  map's chunk sets `MineFactoryOn = false` first, so there is never a second factory (the engine asserts on one). At
+  every turn start with two or more alliances left, `stdvs` sends `GameLogic.StartMineFactory`, and the engine passes it
+  to the level's factory, whichever made it, without looking at `MineFactoryOn`.
+- **It fires on a mine count, not a timer.** Each `StartMineFactory` counts down the *idle turns*
+  (`NumTurnsInactive`, 7 in the game's data; the count starts when the factory is placed). Once it reaches 0, the
+  factory checks at every turn start: it fires only when fewer mines than its *mine target* (`NumMineActivation`, 20)
+  are in the level, counting every mine (the scheme's, placed ones and its own), and then launches
+  min(target - mines, 10) of them and starts the idle count again. While the level holds 20 or more mines it does
+  nothing, turn after turn.
+- That is why a log shows `StartMineFactory` at every turn but only one fire: after its idle turns the factory tops
+  the level up to its target once (the scheme's 15 start mines and the map's placed ones already count), and while
+  those mines lie unexploded the count stays at the target, so the later checks do nothing. Start mines at or above
+  the target mean it never fires at all; to keep it busy, raise the target, lower the idle turns, or turn the
+  scheme's start mines off.
+- **It drops onto the land first.** When it is placed it drops from its knot onto the land below (a sweep of at most
+  1000 world units) and stands where it lands. A sweep that hits nothing leaves it at a stale point of the match, often
+  far away and under the sea; on Tests it never landed on a smooth (draped) skin, so stand it on an undraped block
+  (erg-mcp checks this, see [erg-mcp.md](erg-mcp.md)).
+- **Water destroys it.** When the water level rises more than 10 world units above where it stands it explodes
+  (`WXP_Explosion_MineMachine`) and is gone for the match.
+- **Where its mines go.** The game rains them onto the level's living worms and objects: each fire picks one of them at
+  random per mine, offsets it by a random angle and radius and drops the mine from high over it (0, -0.3, 0), so on
+  Caldera they landed 28-95 map units from a crater factory, at the worms. The game's data still names
+  `MineVelocityX/Y/Z`, but they are obsolete and unread. Since Melange 0.13 `launchHeight` and `launchRadius` put them
+  round the factory instead (below).
+
+The settings, all optional (unset keeps the game's value):
+
+| Setting | Game value | Effect |
+|---|---|---|
+| Mine target (`activation`) | 20 | Fires when fewer mines than this are in the level, topping up to it (at most 10 per fire). 0 never fires |
+| Idle turns (`inactiveTurns`) | 7 | Turn starts it waits after it is placed and after each fire. 0 checks every turn |
+| Scheme's start mines (`schemeMines`) | on | Off: the scheme's 15 random mines are not placed (its 10 oil drums still are, if the scheme has them), so mines come from the factory and the map's own placed mines only |
+| Stay at its knot (`keepKnot`, erg-mcp only) | off | On: when the factory's drop from its knot misses (no land under it, or a hit that is not under the knot, as over a draped skin), it stays at its knot instead of the stale point the game would leave it at (Melange 0.13+) |
+| Launch height (`launchHeight`, erg-mcp only) | unset | 1-255 map units: each mine of a fire appears this high over the factory and falls from there (20 when only the radius is set), instead of over a random worm or object (Melange 0.13+) |
+| Launch radius (`launchRadius`, erg-mcp only) | unset | 0-255 map units: the mines appear at random spots within this radius round the factory (an even spread over the disc), so they land round it: on a volcano, on the cone round the crater (Melange 0.13+). Tried on 2026-11-08 (Multi.DinerMight, height 25, radius 8): four fires of 10, 7, 2 and 7 mines, the mines at rest 5.7-14.4 map units from the factory |
+| Launchers (`launchers`, erg-mcp only) | none | 1-8 launch points (world units in the patch): a fire's mines are shared out over them, from a random one in turn, and each erupts straight up from a spot within the launch radius of its launcher (1 map unit over the launcher's height; a fire's spots kept 1.5 map units apart where they can be), tops out the launch height over it and falls back there. Stand each on flat ground at least the radius wide, where a dropped mine holds (below). Put them on the sides of a caldera and the mines come from there (Melange 0.13+ of the erg-mcp branch; an older Melange plays the game's placement) |
+| Throw (`throw`, erg-mcp only) | none | `{minRange, maxRange, apex, pattern, avoidWater, targets, scatter, targetShare}`: each mine of a fire is lobbed OUT from its launcher (the launchers in turn; without launchers, from the factory) to a landing point `minRange`-`maxRange` map units away (0-500; `maxRange` is the one required field), chosen by `pattern`: `random` (any bearing, an even spread over the band), `ring` (a fire's mines spread evenly round the compass) or `targets` (`targetShare` % of them, default 50, land within `scatter` map units, default 10, of one of up to 16 `targets`, [x, z] world units in the patch: the castles, say; the rest random). The ground at the landing point is read with the game's own land sweep, and with `avoidWater` (default true) a point in the sea is drawn again (6 draws, then that mine goes straight up). The arc tops out `apex` map units (default 15) over the higher of its ends: the velocity is the ballistic one for the engine's gravity. Melange then lands each mine itself where its flight first meets the land (below: **Where a thrown mine lands**), so it rests on whatever it hits, draped skins included, and leaves no sideways speed to slide or sink on (the erg-mcp branch's Melange; an older Melange plays the game's placement). `volley` (1-10): at most that many mines a fire, whatever the engine's min(target - mines, 10) asked, so the rain comes in smaller volleys more often; `avoid` (up to 8 polylines of 2-32 [x, z] whole world units: the trails) with `avoidRadius` (1-50 map units): a landing point within the radius of a line is drawn again, so the mines keep off the corridors worms walk (a mine's blast reaches about 2.5 map units). A held mine the rising sea covers (1 map unit over its base) is let go and handed to the engine's own drowning, so it sinks as a mine at rest would and the factory's count drops (below) |
+
+**One factory a match.** The engine keeps a single mine factory: a second one (the scheme's
+`GameLogic.CreateRandMineFactory` sent into a level that has its own) trips `ASSERT(m_MineFactoryId == kTaskIdInvalid &&
+"Only allowed one mine factory at a time")` in `GameLogicService.cpp` (tried 2026-11-08, testenv B), so a level cannot
+place several. Launchers are the one factory's launch points instead. The game's own placement is what scatters mines
+over the whole map: on a flat 60 x 60 island with four worms in its corners, three fires of 10 without a launch
+setting put every mine 11-36 map units from the factory, by the worms (`outside` in game_mines; with
+`launchRadius` 10 Caldera's round-11 fires stayed within 10). A public Melange without these settings plays the
+game's placement.
+
+**How a mine flies.** The velocity the game's mine maker takes is in world units per millisecond (the factory's own
+drop is (0, -0.3, 0), 300 world units a second down), and a mine falls at 2.5e-4 world units per ms² (250 world
+units, 12.5 map units, per second²): measured on 2026-11-08 with `wum.level.mine` throws of 0.05-0.8 from 20, 160 and
+560 world units over a flat island, every landing where that gravity puts it. A mine that lands moving sideways
+faster than about 0.05 world units/ms often sinks into the voxel ground (on a solid block it came to rest inside it, at
+the next layer; on Caldera's crater skin it fell through to the sea: arcs thrown across the crater from launchers on its
+walls lost 25 of 30 mines on 2026-11-08), while straight falls and near-vertical lobs rested on the top every time. That
+is why launchers erupt their mines straight up and land them round themselves, not across the map. (On 2026-11-09 four
+sideways landings of 0.05-0.3 world units/ms on a flat 1-unit block all rested on its top: the sinking is not a rule of
+the engine's bounce but another face of the fall-through below, which the throw's own landing side-steps.)
+
+**Where a thrown mine lands (the throw, 2026-11-09).** A thrown mine is not left to the engine's collision. The
+parabolic payload keeps its flight as a base (`m_vInitialPosition` +0x28, `m_vInitialVelocity` +0x34,
+`m_vAcceleration` +0x40, `m_tInitialTime` +0x1a0, `ParabolicPayloadLogicEntity`) and moves nothing until a collision
+re-bases it, so Melange knows where the mine is at any sim time. Every sim tick (`levels/factory.cpp`, GuideThrown) it
+sweeps the mine's step since the last tick with the engine's own straight land sweep (`gamestate::LandRay`, the
+camera's ray cast at 0x466ae0, the query's globals saved and put back) and, at the first hit on a top face, rests the
+mine there: its base 0.75 map units over the hit (the engine's own rest height: its collider sweeps from the bottom of
+the mine's sphere, so a base put on the land itself is half in it and the engine pops it out, which is what set 84 of
+the 120 held mines of the first round moving), the land frame the sweep hit written into the payload as its own land
+collision would (+0x190/+0x18c: the payload's expiry asks the landscape about that frame and the game asserts on a
+frame id past its list, LandscapeLogicEntity.cpp:1987, which crashed a second Test of one process in round 1 when a
+rested mine kept a fresh payload's garbage there), then the payload's own come-to-rest (`ParabolicPayloadLogicEntity`
+0x5758c0: the landing message, velocity and acceleration zeroed, the proximity fuse armed through the usual rest
+path). A hit on a wall or a ceiling (the face's normal within 60 degrees of level) does not rest the mine on the face:
+it is dropped from just off the face, still, under gravity, and the next hit (the floor at the wall's foot) lands it
+(after three such hits it rests on the face). If the engine collides first (a worm, an object, ground it does see),
+the mine is left where the engine rested it (lifted onto the land when its base is under it), or rested on the land
+within 2 map units of a bounce, else its new arc is followed; one that goes under the water is left to the engine's
+drowning.
+
+**A held mine the sea reaches (mines round 4, 2026-11-10).** The engine drowns a payload through its queued
+`Payload.CollideWithWater` only (solved at the launch, or after its own collision, for the arc's crossing of the water
+plane): a mine at rest on land has no crossing queued, so when the sea rises over it nothing happens, in the vanilla game
+too (testenv B: four mines the engine itself landed on Caldera's shore lay under a sea set 10 map units over them, alive,
+20 s later), and a held mine had its launch arc's water event dropped. In round 3's match 7 held mines lay under the sea
+alive, the factory's count never dropped below its target and it fired nothing after turn 12 (idleTurnsLeft -46). So
+every sim tick a held mine whose base is a map unit under the water is let go and handed to the engine's own drowning:
+the payload's event post (0x574c40: the message name's id, the ms from the flight's base time, the position, velocity and
+third vector a `PayloadEventMessage` carries) with 0 ms delivers the message to the payload at once (0x68b89e), and its
+handler for `Payload.CollideWithWater` (0x577cc4) runs the water contact (vtable +0x4c) from the payload's own position,
+as the queued event would. The water contact wants a payload in motion (a still one trips `PayloadLogicEntity.cpp:590`,
+`XVector3.h:683` and `ParabolicPayloadLogicEntity.cpp:625`, seen in the first try), so the mine is first set falling
+gently from where it lies, as one dropping into the sea would be. Checked in testenv B: 5 held mines under a sea set to
+10 map units went in 5 s with no assert, the level's count fell 24 to 19 and the factory's next turn-start fire threw 4
+more (`levels/factory.cpp`, kPostEvent; `game_probe`'s `factory.drowned` and each mine's `held.sunk`).
+
+A landed mine is then **held**, and the engine's own flight events for it are dropped. Why (found 2026-11-10,
+testenv B: the payload read every second through volleys, the session's bus log and the disassembly): a payload's
+flight events are queued ahead. At launch, and after each collision of its own, the payload's Update sweeps its
+parabola with the land sweep and solves its plane crossings (the water, the expiry and disarm planes), and for each
+builds a `PayloadEventMessage` (payloadId, the sim time, the position and velocity on the arc at that time) that the
+game's delayed-message pump posts when the time comes (`Payload.CollideWithLand`, `CollideWithWater`,
+`CollideWithExpiryPlane`, `CollideWithDisarmPlane`); the payload then acts on the message's contact (the bounce written
+into the parabola, the come-to-rest, the sinking). The payload itself holds only the current parabola (its 0x1c8 bytes
+and the memory round them hold no second copy; its rest record at +0x12c/+0x138/+0x1a8 is filled by the come-to-rest
+from the last sweep's globals, which Melange stills). So a mine Melange lands keeps the parabola Melange wrote while the
+events its launch queued still arrive at the OLD arc's contacts: `CollideWithLand` 5-8 ticks on at the ground the
+engine's sweep did see past the skin (round 1: 84 of 120 held mines "set moving"), then `CollideWithWater` at the sea
+floor 1-3 s later ("moved at rest" to the sea floor, the mine sunk in the engine's eyes; round 3: 99 of 158 mines). So
+Melange keeps those four events from the engine while a mine is held (a bus Post handler drops a message whose
+payloadId is a held mine, `bus::DropCurrent`): in the round-4 check of 60 thrown mines, 54 stale events were dropped and
+no held mine was set moving or moved (rounds 1-3: a third to two thirds of them). The genuine events of a mine at rest
+come another way (a blast's impulse, the water reaching it), so those still play, and a held mine moved
+at rest is still put back and one given a velocity rested again where it landed, unless an
+explosion went off within its own radius (plus 1.5 map units) of the mine in the last 15 ticks, which frees it (the
+blast's physics play, as for any mine). Every 50 ticks a held mine is checked against the land straight under it (a
+short sweep from just over the mine, so a roof further up is not seen) and lifted onto it when its base is under the
+top. The game's fire record (`factory.fired`, erg-mcp `game_mines`) says for each thrown mine its `target`, its
+`landing` (`melange`: landed at the sweep's hit; `engine`: the engine's own rest; `water`; `lost`), how far from its
+target it lies and, under `held`, how often it was put back (`rePins`), rested again (`velPins`), dropped off a wall
+(`deflects`), lifted (`lifts`), how many stale flight events were dropped (`dropped`), whether a blast freed it and the
+land frame it rests on.
+
+**The payload pool.** The engine keeps 32 slots for every `ParabolicPayloadLogicEntity` (mines, shells, grenades): a
+match's first payloads took handles 120-151 and the 33rd came back as 120 + 4096, the slot's next generation, and the
+mine that lay in that slot was deleted the instant the new one was made (round 3: every volley past about 30 live mines
+removed 4-10 of the earlier ones, `destroyed` in the fire record; a weapon shot does the same). So a Melange fire is
+trimmed to the pool's room with one slot kept for a shot (the log: `the mine factory's fire of 10 is trimmed to 3: 28
+payloads are live and the engine's pool holds 32`), and a level that fires on a turn count alone (`everyNTurns`:
+activation 255) fills the island to about 30 mines and then throws only what the worms have set off. A target under 30
+(`activation`) fires only while fewer mines than that lie about, the game's own way of staying under the pool.
+
+Why: the engine's own mine collision misses ground that the same sweep hits. In the game the mine's step is the
+collider service's (0x5150e0): the same land sweep (0x466ae0) over the next 20 ticks from the bottom of the mine's
+sphere, so a mine that falls through a frame is one that sweep did not report. On Caldera (2026-11-09, testenv B)
+`level.test.landRay` straight down found the ground top at all 84 probe columns (the four launcher pads, three rings in
+the crater, four rings on the flanks, to 0.03 map units of the project's top) while straight drops at the 28 pad
+columns all fell through and the other 56 held; on a 24-block test level (12 materials at scales 1 and 2) two blocks
+let 6 of 6 drops through in one match and held 16 of 16 drops in the next, the land sweep hitting them both times. So
+the miss is frame-wise and state-dependent, not a matter of material, scale, height or geometry; what state the game's
+own sweep carries between calls that Melange's does not (the land's broadphase mask and ray cache, which LandRay saves
+and restores around its own calls) was not pinned down. Landing thrown mines at Melange's own sweep hit is the fix at
+the layer Melange owns; the engine's drops and the game's own placement are untouched.
+The cause was found on 2026-11-10 (below, **Why ground let things through**): the land broadphase's frame mask
+goes out of step on a map whose base frames were removed, and Melange fixes it since then (`[LevelLandMask]`).
+
+**Ground a mine falls through.** A mine does not always stop on the voxels a worm stands on. On Caldera (2026-11-09,
+testenv B, erg-mcp's `game_mine_drop`: one mine dropped 8 map units over each point) the crater's draped skin let most
+dropped mines through to the base's ground under the sea, where they drowned, and so did whole 6 x 6 pads of solid
+undraped blocks: of eight pads round the crater at the same height, four held every mine dropped on them, run after
+run and in two builds that made them in another order, and four held none, while worms stood on all eight. Where it
+happens follows no rule found (not the frame, its order, its draping, the camera, nor the side of the map); a small
+flat island of one undraped block held all 30 mines of three volleys. So check the ground: drop mines on the spots a
+level's mines are meant to land on, and keep the launchers where they hold. One place it always happens on Caldera:
+within about 0.4 map units of each corner of the crater's skin block, where four draped skin blocks meet, every mine
+dropped fell through (10 of 10, twice), and in the Caldera v2 Test two worms walking the SW trail fell 31 map units
+through the skin 1.1 map units off its centreline at one of those corners; 0.6 units from the corner, and on the
+blocks' edges away from it, mines held. A test island's corners of 2 x 2 skin blocks (flat, sloped and steep, 2 and 3
+voxels thick) held every mine, so not every such corner does it and the cause is in the engine. erg-mcp's `check_trail`
+lists the skin corners near a trail and `game_mine_drop {trails}` probes a trail's centre and shoulders before worms
+are walked on it.
+
+**Why ground let things through (fixed).** The landscape keeps a tree of boxes over its frames; a sweep's broadphase
+walks it and writes one bit per land frame, and the sweep then tests the frames whose bit is set. A tree node that
+misses writes as many clear bits as it has land frames under it, but a leaf that passes always writes one set bit.
+In the game's own maps every leaf is a land frame (Multi.DinerMight: 517 of 517). Base frames Erg empties
+(`remove_base_frames`) are no longer land frames, yet the engine keeps some of them in the tree as leaves with no frame
+(Caldera: 69 of 157 leaves, the diner's old props inside the volcano). A sweep that passed one wrote a bit too many,
+every later land frame was tested in its neighbour's place, and the frames the sweep crossed were never tested: a
+straight drop over the crater floor hit it when it ended above world y 25 and hit nothing when it reached y 0, where
+an emptied diner frame's box starts. At a Caldera match start 66 columns of a 1-unit lattice had no ground at all,
+Air Strike bombs and the Concrete Donkey fell through the crater's skin and the shell under it to the sea, and mines
+fell through pads; a payload's parabolic sweep culls by the plane of its flight, so where that happened depended on
+its path (the "state" above). Melange's `LevelLandMask` module (on by default) sends such a leaf down the missed path,
+so it writes no bit; it acts only while a pack or Test level plays, and a tree with no such leaf sweeps exactly as
+before. With it the same scan found 0 no-ground columns (and 0 on a half-unit lattice).
+
+The target and the idle turns are the game's shared `kMineFactoryData`: Melange writes them when the map's match is
+set up and puts the game's values back when it ends, so no other map (and no other player's match) sees them. They
+need a game build Melange knows (the sim tweak store); on another build the map plays with the game's values and the
+log says so. *Scheme's start mines* is done by the map's own chunk, on the match's copy of the scheme, whatever the scheme's own
+setting, and the log says so when the level starts (`the scheme's start mines are off`).
+
+The level-start write alone did not reach the factory: by the time the match places it, `kMineFactoryData` holds the
+game's 20 and 7 again (Tests of 2026-11-08: a level asking for 16 and 3 found 20 and 7 at the factory's set-up, and its
+first fire came after the game's 7 idle turns). Since Melange 0.13 the factory's own set-up writes the level's values
+again just before it reads them, and the log says what it found and wrote (`the mine factory's set-up:
+kMineFactoryData.NumMineActivation 16 (was 20): ok, ...`) and where its drop put it; erg-mcp's `test` answers the same.
+
+**A fire every N turns.** Because a fire waits on the mine count, a target of 16 with idle turns 0 can give a single
+volley for a whole match (the level keeps 16 or more mines while they lie unexploded). For fires that depend on the
+turn count alone, set the target to 255 (the level never holds that many) and the idle turns to N: the countdown starts
+at N when the factory is placed and again after each fire, each turn start takes one, and at 0 it fires, 10 mines
+(the most a fire makes). erg-mcp's `set_mine_factory {everyNTurns: N}` sets exactly that. Tried on 2026-11-08
+(Multi.DinerMight, N = 2, launch height 15, radius 6): a fire of 10 at game turn 2, the mines at rest 2-6 map units
+from the factory, until the sea rose over the factory in turn 4 and it blew up; in another run a fire on demand in
+turn 2 started the countdown again, and the fires of 10 came at turns 3, 5 and 7.
+
+**Every fire is followed** (Melange 0.13+): the mines that appear in a fire, where each appeared and where it came to
+rest (or that it was gone), go to the session log as `levels/factory.fired` (`events.jsonl`) once they all rest, and to
+`level.test.probe`. In a Test, `level.test.fireFactory {count}` makes the factory fire at once, as at a turn start
+(its countdown set to 0 and its own turn-start handler called in the next sim tick; `count` 1-10 fires that many
+whatever the target): erg-mcp's `game_mines {fire}` shoots the volley.
 
 ## Water
 
@@ -85,9 +309,23 @@ the mode, shape, size and material; `[` and `]` resize the brush, and Alt-drag s
 column* takes the material of the terrain above. Fill and paint stay inside the piece of terrain the stroke started
 on.
 
-**Blocks.** *Add block* places a new solid block of the brush's size (1-32 voxels a side) and material: click the
-terrain and the block rests there, its corner snapped to whole map units. A block can be sculpted like any other
-terrain, and the *Terrain* tab lists the blocks with a *Remove* button. A map holds up to 64.
+**Blocks.** *Add block* places a new solid block of the brush's size (1-31 voxels a side) and material: click the
+terrain and the block rests there, its corner snapped to whole map units. *Scale* (0.5-4, default 1) makes each voxel
+that many map units across, so a block of 31 at scale 2.5 is about 78 map units wide for the same cost; the game's own
+maps use scales of 1.2-2.0. A block can be sculpted like any other terrain, and the *Terrain* tab lists the blocks with
+a *Remove* button. A map holds up to 64.
+
+**The cell budget.** The game counts every cell of every voxel frame of a map, solid or empty, base and added (X x Y x
+Z of each), and crashes loading a map past 65 535. The game's maps use about 8 000-46 000, and the *Terrain* tab shows
+the current count. *Add block* refuses a block that would pass it; a project over it (made by an older Melange) still
+opens and saves, with a warning, but Export, Build and Test refuse it. Clearing base terrain does not free cells (the
+frames stay); a larger scale covers more ground with the same cells. A base frame can be *trimmed* (erg-mcp's
+`trim_base_frames` and `remove_base_frames`; the patch's `trimFrame` op, the scene's `trims`): the built map keeps only
+a box of its grid, so only that box counts, and every solid voxel must be in it. A frame with no solid voxel is trimmed
+to one empty cell where it was (its details and child frames untouched); a box with solid voxels moves the frame by the
+box's offset from the grid's centre and its details and child frames back, so nothing moves in the map. The panel keeps
+the whole grid of a trimmed frame and shows the trimmed count; a fill outside the kept box makes saving refuse until the
+trim is widened or dropped. A frame holding a detail tied to one of its voxels (voxelPos) cannot be trimmed.
 
 **Second material (experimental).** *2nd material* paints one of the level's materials (named from its material file)
 over solid voxels; the voxels next to the brush take it on the corners they share, so it blends at the edge. *Remove*
@@ -119,10 +357,50 @@ Press **Test** to play the map as it stands, without exporting or restarting any
    the status line asks you to press Quick Game yourself — the override is already armed, so that press loads your
    map.
 
+The Test match is the Quick Game: a human team against a computer team. A test tool can ask for other teams
+(`level.test {teams}`, erg-mcp's `test {teams}`): two to four human teams, as the Quick Game's 2-4 player starts make,
+or a human team then a computer team, each with one to four worms. The worm counts are written into the match's
+set-up before the level script deals the worms, so a test of four human teams of two plays eight worms, and with
+knots by team each team starts on its own markers.
+
 ![The Test button and its time-of-day selector, starting at the project's NIGHT](images/erg/test.png)
 
 A Test map never appears to anyone else and never starts in an online match; it's for checking your own work before
-you export. Testing again after another edit simply overwrites the same private copy.
+you export.
+
+**Clean-room Test** (erg-mcp's `test` and the `level.test` call, not yet a button): `cleanMods` keeps every enabled
+content mod's sim code (`entry.sim`) out of the Test match, so only the map's own chunk and level script run, and
+turns the post-FX stack off; `postfx: false` turns the post-FX stack off alone (as the Post-FX panel's *Bypass all*
+does). Both last until the Test match ends, fails or is disarmed, and nothing is saved. What a mod installed at
+launch stays: its weapon clones and data, file overrides, shader mods and client scripts. Testing again after another edit simply overwrites the same private copy.
+
+**What happened to the worms** (Melange 0.13+): while a Test plays, the Test probe writes every worm's position at
+the first turn (`levels/test.spawns` in the session's `events.jsonl`) and, for each worm that dies, where, when (game
+turn and tick), the water then and the likely cause (`levels/test.death`): `drown` (the engine's drowning state, or its
+feet under the water), or the source of the latest explosion that reached it (`mine`, `oildrum`, `crate`, `weapon`
+with the projectile and the weapon of the worm whose turn it was, `minefactory`, `worm`: a dying worm's own blast), or
+`fall` (the drop of its latest fall), with its hits, falls and health changes. The cause is inferred from what the
+probe saw; the game keeps no damage source. `level.test.probe` answers the same (erg-mcp's `game_probe`). The probe
+only reads, so the match is the same with or without it. In Tests on 2026-11-08 it named the five drowned worms of a
+rising sea with the water 0.5-0.95 map units over their feet, a worm knocked down 5.3 map units by a bazooka onto
+ground the sea then covered, the factory's blast when the sea reached it and the 35-damage blasts of the drowned
+worms.
+
+**The camera inside the land** (Melange 0.14+): the game's cameras put their eye where its own maps leave room, and a
+map with a hollow mountain can put it inside one. On Caldera, before its crater floor got a slab, a Fatkins payload that
+bored through the volcano's shell drowned in the sea inside it, and the game's drown camera then held the eye inside
+the cone, looking at that sea, for about 8 seconds; the same cameras can also pass through a mountain for a frame or two
+between turns. Melange's `LevelCamera` module (on by default, `[LevelCamera] Enabled=0` turns it off) watches the drawn
+camera on pack and Test levels: when the eye is inside solid land, or more than `MinDepth` (default 300 world units,
+15 map units) under the land's top, it draws that frame from a camera moved out of the land. A camera looking at
+something in the open moves in along its own line of sight to `Clearance` (default 30 world units) short of the land,
+so it keeps the same view from closer; otherwise it is lifted over the land, by as much as its target is under it. Land
+over the eye alone is not enough: Caldera's castles have roofed courts where a worm's turn camera sits under the roof
+and sees the worm well, and that view is left as it is. It changes the picture only: the game's own camera (which
+aiming, the turn camera's next move and Wormsign use) is untouched, so a match plays the same with it on or off and
+players in one match may differ. It does nothing on the game's own maps. Cost: one land sweep a frame (a few
+microseconds), up to five while the eye is under land; frame time on Caldera was the same with it on, lifting, and off.
+The test verb `camera.lift probe x y z tx ty tz [frames] [raw]` draws what it does with a given camera pose.
 
 ## Level scripts
 
@@ -131,7 +409,7 @@ the same one a content mod's `entry.sim` gets (see *Sim scripts* in [developer-g
 after every mod's sim script and only when this map is the one being played. **Save script** (Ctrl+S) checks the text
 first and marks the line of any problem; Test saves it and runs the saved text, so an edit followed by another Test
 needs no restart. Export ships it as `sim/<slug>.lua` and names it in the level's `levels[].sim` in `spice.json`.
-`Melange.exe` checks only the script's size and encoding; the syntax is checked while the game is running.
+`Melange.exe` compiles it too (never runs it), with a stock Lua 5.0.1 parser, the same dialect as the game's.
 
 ![The Script tab with a short level script that floods the map when the goal trigger is collected](images/erg/script.png)
 
@@ -153,7 +431,41 @@ end)
 | `wum.level.knots` | Read-only table of the map's named knots, name → kind (no positions) |
 | `wum.level.trigger(knot [, opts])` | A trigger at a knot; `opts`: `index`, `radius`, `teamCollect`, `teamDestroy`, `hitpoints`, `wormCollect`. `true`, or `nil` and a reason |
 | `wum.level.crate(knot [, opts])` | A crate at a knot; `opts`: `kind` (`weapon`, `health`, `utility`), `contents`, `count`, `amount`, `hitpoints`, `parachute` |
-| `wum.events.on("sim.turnStarted", fn)` | `fn(name, turn)` at the first tick of each turn, on every machine at the same tick |
+| `wum.level.mine(pos [, vel])` | A mine at `pos` (`{x, y, z}` or `{x = .., y = .., z = ..}`, world units), moving at `vel` (default `{0, -0.3, 0}`, the factory's own), made by the game's own mine maker as the factory's mines are. `true`, or `nil` and a reason (`before the first turn`, `unavailable` on a game Melange does not know) |
+| `wum.level.fireFactory([{now = true}])` | The map's mine factory fires at the next turn start (its idle countdown is set to 0), when fewer mines than its target are in the level; `now` sends `GameLogic.StartMineFactory` at once, so it fires in this tick. `nil` and a reason when there is no factory, it has exploded or it is firing |
+| `wum.level.water([fields])` | The water's look (and the land's light) in this map's matches, over the theme's: fields of the theme's `WaterPlaneTweaks` (the resource `Water.TweakName` names, such as `Water.PREHISTORIC.EVENING`): `opacity` (`NearOpacity`, 0-1, the water plane's alpha), `reflection` (`ReflectionStrength`, the sky's reflection), `SubtractColourScale` (lighter or darker water), `LightAmbient` and `LightDiffuse` (`{r, g, b}` 0-255: the land's ambient and sun light, the landscape shader's own), and the others by name (`ReflectionContrast`, `SpecularContrast`, `SpecularPower`, `SkyBlendColor`, `NormalIntensity`, ...). `true`, or `nil` and why; with no argument, a table of every field's value. The game reads them every frame, so a turn handler can change them mid-match (tried 2026-11-08); the theme's values come back when the match ends. Render only: the match and Wormsign are untouched. Melange 0.13+ |
+| `wum.events.on("sim.turnStarted", fn)` | `fn(name, turn, round)` at the first tick of each turn, on every machine at the same tick. `turn` counts from 1, the match's n-th turn start: the same number as `wum.game.turn().index`, erg-mcp's `game_state` turn and `check_flood`'s game turns. In a Quick Game of two teams of four, turn 1 is the human team's WORM0, then WORM4, WORM1, WORM5, ... (the teams alternate, each moves its worms in turn) |
+| `wum.sim.turn()`, `wum.sim.round()` | Turns started in this match, and the round: it goes up when a team starts a turn it already had in the current round, so a team that is wiped out only shortens the round. Both 0 before the first turn |
+| `wum.sim.waterSchedule{startTurn, every, step, cap, from, units}` | Raises `Water.Level` at turn starts (see below) |
+| `wum.sim.announce(text [, seconds])` | Shows `text` (at most 160 bytes of UTF-8) centred near the top of every player's screen for `seconds` (0.5 to 15, default 4); up to three at once, the oldest replaced. Draws only: the match, Wormsign and replays are untouched, so it is safe in deterministic code. Detect it with `if wum.sim.announce then ... end`. The session log has `sim/announce` when it is called and (Melange 0.13+) `sim/announce.shown` with the first frame it is drawn in at full opacity, so a screenshot from a later frame shows it |
+
+**Rising water.** `wum.sim.waterSchedule{ startTurn = 3, step = 1, cap = 8, units = "map" }` raises the water by
+`step` at the start of turn 3 and of every turn after it (every `every` turns, default 1) until it reaches `cap`; with
+`from`, the first step sets the level to `from` and each later one to `from` plus the steps so far. It only ever
+raises (a level already higher, from sudden death for instance, is kept) and never passes `cap`. `units` is
+`"world"` (the default) or `"map"` (x20). It runs before the turn's `sim.turnStarted` handlers, so they see the new
+level; `wum.sim.waterSchedule()` returns the next turn it steps on and the cap (world units), or `nil` once it is done,
+and `wum.sim.waterSchedule(false)` stops it. One schedule per script; a new call replaces it. Bad options raise.
+
+```lua
+-- Mines from the crater: one dropped on turn 1, and the factory fired on turn 6 whatever its idle turns.
+wum.events.on("sim.turnStarted", function(name, turn)
+  if turn == 1 then wum.level.mine({x = 0, y = 900, z = 0}) end
+  if turn == 6 then wum.level.fireFactory({ now = true }) end
+end)
+```
+
+Both run in the sim, so every machine makes the same mines at the same tick (tried in a Test on 2026-11-08: the mine
+appeared at turn 1, and the factory, idle turns 3, fired its 10 mines at the start of turn 2).
+
+```lua
+-- Flood from turn 3, one map unit a turn, up to 8 map units (160 world); announce each round.
+wum.sim.waterSchedule{ startTurn = 3, step = 1, cap = 8, units = "map" }
+wum.events.on("sim.turnStarted", function(name, turn, round)
+  if round ~= lastRound and wum.sim.announce then wum.sim.announce("Round " .. round) end
+  lastRound = round
+end)
+```
 
 Everything else (`wum.events`, `wum.sim.*`, `wum.log`) is the sim script API. In logs and in Wormsign the script is
 named `<mod id>:<slug>` (`erg:<project>` while testing).
@@ -188,9 +500,27 @@ Either way you give the export a mod id, a display name and a version; exporting
 adds the new map alongside any others already in it (or updates it, if you export the same map again). Whether it
 needs a restart is covered under [Live packs](#live-packs); the dialog tells you.
 
-If you choose Source, the recipient enables the mod and either presses *Build* in Erg or runs its `build.ps1`, which
-needs nothing but their own game install; either produces byte-identical files to what Install would have written
-on your machine.
+If you choose Source, the recipient needs to do nothing: `Melange.exe` builds the pack the next time it starts (or
+before it launches the game), see below. Pressing *Build* in Erg or running its `build.ps1` does the same by hand. It
+needs nothing but their own game install, and every way produces byte-identical files to what Install would have
+written on your machine.
+
+### Building map packs automatically
+
+When `Melange.exe` starts, after the Store installs or updates a plugin, after a plugin is switched on, and when you
+press *Launch game*, it checks every enabled map pack whose maps ship as source (`levels` entries with a `source`
+patch) and builds the ones that are not built yet or are out of date, through the same `level.build` the *Build*
+button calls. Each build records what it was built from in `Mods\<id>\.ergbuild.json` (the sha256 of the Melange
+version, the game exe's size, `spice.json`, every source patch and every mesh bank); a pack is rebuilt only when one
+of those changes, so a second start builds nothing. The stamp sits in the mod's root folder, outside its assets, so it
+never changes the pack's multiplayer content hash.
+
+- A line over every page says what is happening ("Building map pack Foldspace (1/2)…"); a launch waits for the
+  builds and starts the game by itself once they end, whatever their outcome. `launcher.log` has `[maps]` lines.
+- Nothing is built while the game is running (the build writes under `Mods\`): the check waits until it closes.
+- A pack whose build fails stays not built, with its error on the Plugins page and the status line; it is not tried
+  again until the pack, Melange or the game changes, or you press *Build* in Erg. Other packs and the launch go on.
+- `[Erg] AutoBuildMaps=0` in `Melange.ini` turns this off (default `1`); the *Build* button keeps working.
 
 ## Playing an exported map
 
@@ -245,13 +575,22 @@ Survivor copy. Packs exported by an earlier Melange keep working unchanged.
 
 - Up to 32 maps in one mod, 128 across every enabled mod at once.
 - A map title is 1-40 plain-ASCII characters.
-- Up to 64 added blocks per map, each side 1-32 voxels.
+- Up to 64 added blocks per map, each side 1-31 voxels, scale 0.5-4 (0.75 played in the game; under 1 is finer than
+  the base map's voxels at the same cost per cell). A block may carry corner offsets (the patch's `addFrame.corners`,
+  the frame's HeightMap, -64..64 voxels), which the game uses to shear each column up for drawing and collision; erg-mcp's
+  `heightfield_drape` makes them, and the panel's 3D view draws such a block unsheared. The game asserts on a side of
+  32: a block of 32 made by an older Melange still opens, and saving names it in a warning (remove it and add it again
+  at 31).
+- At most 65 535 voxel cells per map, counted over every voxel frame (a trimmed base frame's kept box; see [the cell
+  budget](#terrain)): saving warns past it, and Export, Build and Test refuse.
+- The game draws terrain from a mesh with a vertex budget of its own. A large area where every column's top voxel is a
+  different material from the voxel under it (a one-voxel skin) has run out of it in a test (holes in the drawn
+  terrain, `CombineLandscapeAction` lines in the log); bands of material by height did not. Test large terrain.
 - A patch (your saved edits) is capped at 20 000 operations and 4 MB — enough for any hand-made edit; if you hit
   this, split the changes into more than one exported map.
 - Not yet supported:
   - per-team or story spawn points, and story or challenge map types;
   - editing the map's generated chunk (Erg rewrites it every export; use a [level script](#level-scripts));
-  - checking a level script's syntax outside the game: `Melange.exe` checks size and encoding only;
   - enabling a pack with level scripts without a restart (see [Live packs](#live-packs)).
 - A replay recorded on a Test map only plays back correctly while your Test workspace still has the same files —
   moving on to a different edit, or exporting for real, can make an older Test recording unplayable.
@@ -260,7 +599,8 @@ Survivor copy. Packs exported by an earlier Melange keep working unchanged.
 
 - **A map you enabled doesn't show up:** it needs a restart after being enabled, like any content mod; check the
   Mods page for "restart required".
-- **"Not built"** on a Source-form mod: press *Build* in Erg, or run the mod's `build.ps1`, then restart.
+- **"Not built"** on a Source-form mod: start the game from `Melange.exe`, which builds it first; or press *Build* in
+  Erg, or run the mod's `build.ps1`, then restart. If it stays not built, the Plugins page in `Melange.exe` shows why.
 - **Test is greyed out or missing:** the game needs to be running, sitting at the main menu, and not in a lobby;
   `Melange.exe` has no Test.
 - **A map is missing online, or a teammate's start is held:** everyone needs the exact same version of the mod; check

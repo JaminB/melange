@@ -2,7 +2,7 @@
 // The Spotify sign-in's redirect target (Melange 0.13.0): a one-shot HTTP listener on 127.0.0.1:<port>, bound
 // exclusively, that exists only while a sign-in runs (at most 3 minutes). It answers each request with a fixed page
 // (spotify_logic.h CallbackHttpResponse), accepts only GET /callback with Host 127.0.0.1:<port> and the sign-in's
-// state, and closes itself once the code (or a refusal) arrived. Melange 0.14: the browser's request that carried the
+// state, and closes itself once the code (or a refusal) arrived. Melange 0.14.1: the browser's request that carried the
 // code is held open and answered with Reply() once the sign-in finished, so its page says whether it worked. Oasis is not used: it needs its own token on every
 // request and its port floats. Winsock; no other dependency.
 #include <atomic>

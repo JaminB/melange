@@ -138,7 +138,9 @@ Json HmpRunsJson(const std::vector<HmpRun>& runs, bool blend) {
 bool Patch::UsesV2() const {
     if (survivor || !objects.empty() || script.present || hmp == HmpMode::Paint) return true;
     for (auto& op : ops)
-        if (op.kind == Op::Kind::AddFrame || op.kind == Op::Kind::Hmp || (op.kind == Op::Kind::Voxels && op.frame < 0)) return true;
+        if (op.kind == Op::Kind::AddFrame || op.kind == Op::Kind::Hmp || op.kind == Op::Kind::TrimFrame ||
+            (op.kind == Op::Kind::Voxels && op.frame < 0))
+            return true;
     return false;
 }
 
@@ -150,6 +152,7 @@ const char* OpName(Op::Kind k) {
         case Op::Kind::Voxels: return "voxels";
         case Op::Kind::AddFrame: return "addFrame";
         case Op::Kind::Hmp: return "hmp";
+        case Op::Kind::TrimFrame: return "trimFrame";
     }
     return "?";
 }
@@ -225,7 +228,7 @@ bool ParsePatch(std::string_view json, Patch* out, std::string* err) {
     if (const Json* sp = root.find("spawns")) {
         if (!Obj(sp, "spawns", err) || !OnlyKeys(*sp, {"mode"}, "spawns", err) || !GetString(*sp, "mode", "spawns", &mode, err))
             return false;
-        if (!ParseSpawnMode(mode, &p.spawns)) return Fail(err, "spawns.mode: must be \"random\" or \"knots\"");
+        if (!ParseSpawnMode(mode, &p.spawns)) return Fail(err, "spawns.mode: must be \"random\", \"knots\" or \"teams\"");
     }
     if (const Json* hmp = root.find("hmp")) {
         if (!Obj(hmp, "hmp", err) || !OnlyKeys(*hmp, {"mode"}, "hmp", err) || !GetString(*hmp, "mode", "hmp", &mode, err))
@@ -305,7 +308,7 @@ bool ParsePatch(std::string_view json, Patch* out, std::string* err) {
         } else if (v2 && kind == "addFrame") {
             op.kind = Op::Kind::AddFrame;
             FrameAdd& f = op.newFrame;
-            if (!OnlyKeys(o, {"op", "tmp", "parent", "name", "pos", "size"}, path, err) ||
+            if (!OnlyKeys(o, {"op", "tmp", "parent", "name", "pos", "size", "scale", "corners"}, path, err) ||
                 !GetInt(o, "tmp", path, -static_cast<int64_t>(kMaxNewFrames), -1, &f.tmp, err) ||
                 !GetInt(o, "parent", path, 1, 1 << 24, &f.parent, err) || !GetString(o, "name", path, &f.name, err) ||
                 !GetVec(o, "pos", path, &f.pos, err, true))
@@ -320,9 +323,12 @@ bool ParsePatch(std::string_view json, Patch* out, std::string* err) {
             for (int k = 0; k < 3; ++k) {
                 bool ok = false;
                 const int64_t v = size->arr[k].kind == Json::Kind::Number ? size->arr[k].asInt64(&ok) : -1;
-                if (!ok || v < 1 || v > static_cast<int64_t>(kMaxNewFrameSide)) return Fail(err, path + ".size: each size must be 1..32");
+                if (!ok || v < 1 || v > static_cast<int64_t>(kLegacyNewFrameSide)) return Fail(err, path + ".size: each size must be 1..32");
                 f.size[k] = static_cast<int>(v);
             }
+            if (const Json* sc = o.find("scale"); sc && !GetNumber(*sc, path + ".scale", kMinNewFrameScale, kMaxNewFrameScale, &f.scale, nullptr))
+                return Fail(err, path + ".scale: must be a number 0.5..4 (map units per voxel)");
+            if (!GetCorners(o, path, f.size, &f.corners, err)) return false;
         } else if (v2 && kind == "hmp") {
             op.kind = Op::Kind::Hmp;
             if (!OnlyKeys(o, {"op", "heights", "blend"}, path, err) ||
@@ -331,6 +337,10 @@ bool ParsePatch(std::string_view json, Patch* out, std::string* err) {
                 return false;
             if (op.heights.empty() && op.blend.empty()) return Fail(err, path + ": an hmp op changes at least one cell");
             if (p.hmp != HmpMode::Paint) return Fail(err, path + ": hmp ops need hmp.mode paint");
+        } else if (v2 && kind == "trimFrame") {
+            op.kind = Op::Kind::TrimFrame;
+            if (!OnlyKeys(o, {"op", "frame", "min", "size"}, path, err) || !ParseTrim(o, path, &op.trim, err)) return false;
+            op.frame = op.trim.frame;
         } else {
             return Fail(err, path + ".op: unknown op '" + kind + "'");
         }
@@ -408,12 +418,15 @@ std::string WritePatch(const Patch& p) {
                 Json size = Json::Arr();
                 for (int v : f.size) size.arr.push_back(Int(v));
                 o.set("size", std::move(size));
+                if (f.scale != 1) o.set("scale", Num(f.scale));
+                if (!f.corners.empty()) o.set("corners", CornersJson(f.corners));
                 break;
             }
             case Op::Kind::Hmp:
                 if (!op.heights.empty()) o.set("heights", HmpRunsJson(op.heights, false));
                 if (!op.blend.empty()) o.set("blend", HmpRunsJson(op.blend, true));
                 break;
+            case Op::Kind::TrimFrame: TrimFields(op.trim, &o); break;
         }
         ops.arr.push_back(std::move(o));
     }
@@ -438,6 +451,7 @@ bool ValidatePatch(const Patch& p, const Scene& base, const PatchRules& rules, s
     std::unordered_map<int64_t, bool> live;           // src -> still present
     std::unordered_map<int64_t, uint64_t> newCells;   // tmp -> voxels
     std::unordered_set<std::string> frameNames;       // upper case: a new frame's name is unused
+    std::unordered_set<int64_t> trimmed;
     for (auto& f : base.frames) frameNames.insert(Upper(f.name));
     for (auto& d : base.details)
         if (d.src) live[*d.src] = true;
@@ -497,6 +511,13 @@ bool ValidatePatch(const Patch& p, const Scene& base, const PatchRules& rules, s
             case Op::Kind::Hmp:
                 if (!rules.hmpPaint) return Fail(err, path + ": surround painting is not accepted by this version");
                 break;
+            case Op::Kind::TrimFrame: {
+                if (!rules.voxels) return Fail(err, path + ": trimFrame ops are not accepted by this version");
+                std::string why;
+                if (!ValidTrim(base, op.trim, &why)) return Fail(err, path + ": " + why);
+                if (!trimmed.insert(op.trim.frame).second) return Fail(err, path + ".frame: " + std::to_string(op.trim.frame) + " is trimmed by an earlier op");
+                break;
+            }
         }
     }
     if (!p.objects.empty()) {
@@ -589,10 +610,13 @@ bool ApplyPatch(Scene& s, const Patch& p, const PatchRules& rules, std::string* 
                 f.name = op.newFrame.name;
                 f.pos = op.newFrame.pos;
                 f.size = op.newFrame.size;
+                f.scale = {op.newFrame.scale, op.newFrame.scale, op.newFrame.scale};
+                f.corners = op.newFrame.corners;
                 f.isNew = true;
                 out.frames.push_back(std::move(f));
                 break;
             }
+            case Op::Kind::TrimFrame: out.trims.push_back(op.trim); break;
             case Op::Kind::Voxels:
             case Op::Kind::Hmp: break;
         }

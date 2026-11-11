@@ -142,4 +142,44 @@ inline EndReason Check(State& st, uint64_t now, bool inMatch, uint32_t matchSeri
     }
     return EndReason::None;
 }
+
+// Getting a camera out of the land (module LevelCamera, pack and Test levels only). The game's eye is buried when the
+// land's top over its column (world y; NaN: no land there) is more than kBuriedSlack over it.
+constexpr float kBuriedSlack = 2.f;  // world units; a grazing eye is left alone
+inline bool Buried(float y, float groundTop) { return groundTop > y + kBuriedSlack; }  // false for NaN
+// Land over the eye alone is not enough: a roofed court, an arch or a bridge has land over a camera that sees well.
+// The eye is moved only when it is inside solid land (a sweep that starts there hits at once: insideSolid) or deeper
+// than minDepth under the land's top (inside a hollow mountain: no roof is that thick over open space).
+inline bool InLand(float eyeY, float groundEye, bool insideSolid, float minDepth) {
+    return Buried(eyeY, groundEye) && (insideSolid || groundEye - eyeY > minDepth);
+}
+
+// When the target is in the open, the eye moves in along the target->eye line to `clearance` short of the first land
+// on it (tHit: 0..1 from the target, as LandRay returns it), so the same view of the target is kept from closer.
+// False when that leaves the eye nearer than kMinPull to the target (the land is right behind it): lift instead.
+constexpr float kMinPull = 100.f;  // 5 map units: closer, a worm fills the screen
+inline bool PullIn(const float eye[3], const float target[3], float tHit, float clearance, float outEye[3]) {
+    float d[3], len2 = 0.f;
+    for (int i = 0; i < 3; ++i) d[i] = eye[i] - target[i], len2 += d[i] * d[i];
+    const float len = std::sqrt(len2);
+    if (!(len > 0.f) || !(tHit >= 0.f && tHit <= 1.f)) return false;
+    const float keep = tHit * len - clearance;
+    if (!(keep >= kMinPull)) return false;
+    for (int i = 0; i < 3; ++i) outEye[i] = target[i] + d[i] * (keep / len);
+    return true;
+}
+
+// Otherwise the camera's rig moves up by its target's own burial (groundTarget over the target's column, NaN: none),
+// so a camera that frames a point under the land frames the land's top over that point the same way, and the eye is
+// kept `clearance` over the land at its own column (groundEye). False (out* untouched) when the eye is not buried.
+inline bool Lift(const float eye[3], const float target[3], float groundEye, float groundTarget, float clearance,
+                 float outEye[3], float outTarget[3]) {
+    if (!Buried(eye[1], groundEye)) return false;
+    const float dy = groundTarget > target[1] ? groundTarget - target[1] : 0.f;
+    for (int i = 0; i < 3; ++i) outEye[i] = eye[i], outTarget[i] = target[i];
+    outEye[1] += dy;
+    outTarget[1] += dy;
+    if (outEye[1] < groundEye + clearance) outEye[1] = groundEye + clearance;
+    return true;
+}
 }  // namespace melange::mirage::camoverride::logic

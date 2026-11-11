@@ -24,6 +24,15 @@ namespace names = melange::erg::names;
 namespace luagen = melange::erg::luagen;
 namespace lm = melange::levels::manifest;
 
+// A JSON array of n copies of v.
+static std::string Corners(int n, double v) {
+    char buf[32];
+    std::snprintf(buf, sizeof buf, "%g", v);
+    std::string out = "[";
+    for (int i = 0; i < n; ++i) out += (i ? std::string(",") : std::string()) + buf;
+    return out + "]";
+}
+
 namespace {
 int g_fail = 0, g_pass = 0;
 
@@ -636,6 +645,8 @@ void TestV2Model() {
         {Mutate(text, "\"name\":\"CRATE_1\"", "\"name\":\"CRATE_9\""), "a knot without its detail", "CRATE_1"},
         {Mutate(text, "\"parent\":1000", "\"parent\":1"), "a new frame under the root", "Scene"},
         {Mutate(text, "\"size\":[6,31,6]", "\"size\":[33,31,6]"), "a new frame of 33 voxels", "size"},
+        {Mutate(text, "\"scale\":[1,1,1],\"size\":[6,31,6]", "\"scale\":[2,2,1],\"size\":[6,31,6]"), "a new frame scaled unevenly", "scale"},
+        {Mutate(text, "\"scale\":[1,1,1],\"size\":[6,31,6]", "\"scale\":[5,5,5],\"size\":[6,31,6]"), "a new frame scaled past 4", "scale"},
     };
     for (auto& c : sceneCases) {
         erg::Scene out;
@@ -656,6 +667,11 @@ void TestV2Model() {
         {Mutate(ptext, "\"size\":[6,31,6]", "\"size\":[6,0,6]"), "a new frame side of 0", "size"},
         {Mutate(ptext, "\"size\":[6,31,6]", "\"size\":[6,31,33]"), "a new frame side of 33", "size"},
         {Mutate(ptext, "\"size\":[6,31,6]", "\"size\":[6,31]"), "a new frame size of two sides", "size"},
+        {Mutate(ptext, "\"size\":[6,31,6]", "\"size\":[6,31,6],\"scale\":0.49"), "a new frame scale under 0.5", "scale"},
+        {Mutate(ptext, "\"size\":[6,31,6]", "\"size\":[6,31,6],\"corners\":[0,1]"), "corners of another count", "corners"},
+        {Mutate(ptext, "\"size\":[6,31,6]", "\"size\":[6,31,6],\"corners\":" + Corners(49, 64.5)), "a corner offset past 64", "corners"},
+        {Mutate(ptext, "\"size\":[6,31,6]", "\"size\":[6,31,6],\"scale\":4.01"), "a new frame scale over 4", "scale"},
+        {Mutate(ptext, "\"size\":[6,31,6]", "\"size\":[6,31,6],\"scale\":[2,2,2]"), "a new frame scale as a vector", "scale"},
         {Mutate(ptext, "[0,64,23]", "[0,64,16777239]"), "a voxel value with bits 24-31 set", "bits 24-31"},
     };
     for (auto& c : patchCases) {
@@ -663,6 +679,37 @@ void TestV2Model() {
         Expect(c.json != ptext && c.json != v1Patch && !erg::ParsePatch(c.json, &out, &err) && err.find(c.needle) != std::string::npos,
                "patch refused: " + c.what + " (" + err + ")");
     }
+
+    // Kept readable for projects made before the engine's 31-voxel limit was known, and an optional uniform scale.
+    for (const auto& [from, to, what] : {std::tuple{"\"size\":[6,31,6]", "\"size\":[32,31,6]", "a legacy side of 32"},
+                                         std::tuple{"\"size\":[6,31,6]", "\"size\":[6,31,6],\"scale\":2.5", "a scale of 2.5"},
+                                         std::tuple{"\"size\":[6,31,6]", "\"size\":[6,31,6],\"scale\":0.5", "a scale of 0.5"}}) {
+        erg::Patch ok;
+        erg::Scene app = base;
+        Expect(erg::ParsePatch(Mutate(ptext, from, to), &ok, &err) && erg::ApplyPatch(app, ok, AllRules(), &err),
+               std::string("patch accepted: ") + what + " " + err);
+    }
+    // Corner offsets on a new frame: parsed, applied to the frame, written back and carried by the scene.
+    {
+        erg::Patch cp;
+        erg::Scene app = base;
+        const std::string ctext = Mutate(ptext, "\"size\":[6,31,6]", "\"size\":[6,31,6],\"corners\":" + Corners(49, -2.5));
+        Expect(erg::ParsePatch(ctext, &cp, &err) && erg::WritePatch(cp) == ctext && erg::ApplyPatch(app, cp, AllRules(), &err) &&
+                   app.FindFrame(-1)->corners.size() == 49 && app.FindFrame(-1)->corners[48] == -2.5,
+               "patch accepted: corners on a new frame " + err);
+        erg::Scene back, again;
+        Expect(erg::ParseScene(Mutate(text, "\"parent\":1000", "\"parent\":1000,\"corners\":" + Corners(49, -2.5)), &back, &err) &&
+                   back.FindFrame(-1)->corners.size() == 49 && erg::ParseScene(erg::WriteScene(back), &again, &err) &&
+                   again.FindFrame(-1)->corners == back.FindFrame(-1)->corners,
+               "the scene carries a new frame's corners: " + err);
+        erg::Scene onBase;
+        Expect(!erg::ParseScene(Mutate(text, "\"parent\":1000", "\"parent\":1000,\"corners\":[0]"), &onBase, &err) && err.find("corners") != std::string::npos,
+               "corners of the wrong count on a scene frame are refused (" + err + ")");
+    }
+    erg::Scene scaled;
+    Expect(erg::ParseScene(Mutate(text, "\"scale\":[1,1,1],\"size\":[6,31,6]", "\"scale\":[2.5,2.5,2.5],\"size\":[6,31,6]"), &scaled, &err) &&
+               scaled.FindFrame(-1)->scale[1] == 2.5,
+           "scene accepted: a new frame of scale 2.5 " + err);
 
     erg::Patch bad = pback;
     for (auto& op : bad.ops)
@@ -725,6 +772,22 @@ std::vector<luagen::ChunkSpec> ChunkBranches() {
     placed.placeObjects = true;
     placed.knots = true;
     out.push_back(placed);
+    luagen::ChunkSpec tuned = placed;
+    tuned.objects[0].factory.activation = 40;
+    tuned.objects[0].factory.inactiveTurns = 2;
+    tuned.objects[0].factory.schemeMines = false;
+    out.push_back(tuned);
+    luagen::ChunkSpec noMines = lone;
+    noMines.objects[0].factory.schemeMines = false;
+    out.push_back(noMines);
+    luagen::ChunkSpec teams;   // spawns.mode teams: each worm on its team's knot
+    teams.teams = true;
+    out.push_back(teams);
+    luagen::ChunkSpec teamsAll = noMines;
+    teamsAll.teams = true;
+    teamsAll.placeObjects = true;
+    teamsAll.water = 30;
+    out.push_back(teamsAll);
     all.objects.insert(all.objects.begin() + 2, factory);
     out.push_back(all);
     luagen::ChunkSpec max;
@@ -777,7 +840,7 @@ void TestChunkGrammar() {
     for (const auto& c : ChunkBranches()) {
         const std::string t = luagen::Text(stem, c), old = luagen::LegacyText(stem, c);
         std::string run;
-        const bool needsWrap = c.knots || c.placeObjects || !c.objects.empty();
+        const bool needsWrap = c.knots || c.teams || c.placeObjects || !c.objects.empty();
         // Nothing at top level touches a library function: Survivor's strict check runs before Initialise.
         const size_t init = t.find("function Initialise()\n");
         const std::string top = t.substr(0, init);
@@ -801,6 +864,20 @@ void TestChunkGrammar() {
         Expect(!luagen::Upgrade(stem, hybrid, &run, &why), "a legacy chunk with extra lines is refused");
     }
     Expect(!luagen::IsGenerated("other_stem", luagen::Text(stem, ChunkBranches().back()), &why), "a chunk of another stem is refused");
+    {
+        luagen::ChunkSpec t;
+        t.teams = true;
+        const std::string text = luagen::Text(stem, t);
+        Expect(text.find("for i = 0, 15 do\n") != std::string::npos &&
+                   text.find("if p < 4 then worm.Spawn = \"WORM\" .. (worm.TeamIndex * 4 + p) end\n") != std::string::npos &&
+                   text.find("worm.Spawn = \"WORM\" .. i\n") == std::string::npos,
+               "team spawns put each worm on WORM<4 x team + place>, not WORMi");
+        t.knots = true;
+        Expect(luagen::Text(stem, t).empty(), "knot and team spawns together are refused");
+        erg::SpawnMode m = erg::SpawnMode::Random;
+        Expect(erg::ParseSpawnMode("teams", &m) && m == erg::SpawnMode::Teams && std::string(erg::SpawnModeName(m)) == "teams",
+               "spawns.mode teams parses and names itself");
+    }
     luagen::ChunkSpec mf;
     erg::ObjectSpec f;
     f.knot = "minefactory";
@@ -868,6 +945,265 @@ void TestChunkGrammar() {
         }
         Expect(refused == 1000, std::string("1000 mutated ") + (legacy ? "legacy" : "deferred") + " chunks are refused (" +
                                     std::to_string(refused) + ")");
+    }
+}
+
+// The mine factory's settings: written only when set, through the patch and the scene, and into the chunk.
+void TestFactorySettings() {
+    std::string err, why;
+    const erg::Scene base = BaseV2();
+    erg::Patch p = SamplePatchV2(base);
+    erg::ObjectSpec f;
+    f.type = erg::ObjectType::MineFactory;
+    f.knot = "minefactory";
+    p.objects.push_back(f);
+    erg::Op add;
+    add.kind = erg::Op::Kind::Add;
+    add.frame = ObjectsFolder(base);
+    add.fields.name = "minefactory";
+    add.fields.resource = erg::kKnotResource;
+    add.fields.pos = erg::Vec3{9, 1, 2};
+    p.ops.insert(p.ops.begin(), add);
+    const std::string plain = erg::WritePatch(p);
+    Expect(plain.find("\"type\":\"minefactory\"}") != std::string::npos && plain.find("\"factory\"") == std::string::npos,
+           "a factory without settings is written as before");
+    p.objects.back().factory.activation = 30;
+    p.objects.back().factory.schemeMines = false;
+    const std::string text = erg::WritePatch(p);
+    erg::Patch back;
+    Expect(text.find("\"factory\":{\"activation\":30,\"schemeMines\":false}") != std::string::npos &&
+               erg::ParsePatch(text, &back, &err) && erg::WritePatch(back) == text,
+           "factory settings round-trip in the patch: " + err);
+    const erg::FactorySpec& bf = back.objects.back().factory;
+    Expect(bf.activation == 30 && !bf.inactiveTurns && !bf.schemeMines, "the settings parse back as set");
+    erg::Scene applied = base;
+    Expect(erg::ApplyPatch(applied, back, AllRules(), &err), "the patch with a tuned factory applies: " + err);
+    int64_t ref = 0;   // the blobs a served scene carries (as SceneV2 adds them)
+    for (auto& b : applied.blobs) ref = std::max(ref, b.ref + 1);
+    for (auto& fr : applied.frames)
+        if (fr.isNew) {
+            fr.voxels = ref;
+            applied.blobs.push_back({ref++, "voxels", fr.id, static_cast<uint64_t>(fr.size[0]) * fr.size[1] * fr.size[2] * 4});
+        }
+    applied.hmpRef = ref;
+    applied.blobs.push_back({ref, "hmp", 0, erg::kHmpBytes});
+    const std::string scene = erg::WriteScene(applied);
+    erg::Scene sback;
+    const bool parsed0 = erg::ParseScene(scene, &sback, &err);
+    Expect(parsed0 && erg::WriteScene(sback) == scene && !sback.objects.empty() && sback.objects.back().factory.activation == 30,
+           "and round-trips in the scene: " + err + (parsed0 ? "" : " (parse)") +
+               (scene.find("\"activation\":30") == std::string::npos ? " (not written)" : ""));
+    struct Case { std::string from, to, needle; };
+    for (const Case& c : {Case{"\"activation\":30", "\"activation\":256", "activation"},
+                          Case{"\"activation\":30", "\"activation\":-1", "activation"},
+                          Case{"\"activation\":30", "\"activation\":2.5", "activation"},
+                          Case{"\"schemeMines\":false", "\"schemeMines\":0", "schemeMines"},
+                          Case{"\"schemeMines\":false", "\"speed\":3", "unknown key"},
+                          Case{"\"factory\":{\"activation\":30,\"schemeMines\":false}", "\"factory\":7", "factory"}}) {
+        erg::Patch out;
+        const std::string bad = Mutate(text, c.from, c.to);
+        Expect(bad != text && !erg::ParsePatch(bad, &out, &err) && err.find(c.needle) != std::string::npos,
+               "factory refused: " + c.to + " (" + err + ")");
+    }
+
+    const std::string stem = "mymaps_objects";
+    luagen::ChunkSpec spec;
+    spec.objects = {f};
+    const std::string untuned = luagen::Text(stem, spec);
+    spec.objects[0].factory.activation = 15;
+    spec.objects[0].factory.inactiveTurns = 0;
+    spec.objects[0].factory.schemeMines = false;
+    const std::string tuned = luagen::Text(stem, spec);
+    luagen::ChunkSpec parsed;
+    Expect(tuned.starts_with("-- generated by Erg for mymaps_objects; edits are overwritten on export\n"
+                             "-- minefactory: activation=15 inactiveTurns=0\n") &&
+               tuned.find("        scheme.MineFactoryOn = false\n"
+                          "        if scheme.Objects == 1 then scheme.Objects = 0 elseif scheme.Objects == 3 then scheme.Objects = 2 end\n"
+                          "        CloseContainer(lock)\n") != std::string::npos,
+           "the chunk carries the settings line and drops the scheme's start mines");
+    Expect(luagen::IsGenerated(stem, tuned, &why) && luagen::Parse(stem, tuned, &parsed) && parsed.objects.size() == 1 &&
+               parsed.objects[0].factory.activation == 15 && parsed.objects[0].factory.inactiveTurns == 0 &&
+               !parsed.objects[0].factory.schemeMines,
+           "a tuned factory chunk verifies and parses back: " + why);
+    Expect(untuned.find("-- minefactory:") == std::string::npos && untuned.find("scheme.Objects") == std::string::npos,
+           "an untuned factory's chunk is the one older Melange wrote");
+    spec.objects[0].factory = {};
+    spec.objects[0].factory.inactiveTurns = 3;
+    const std::string idle = luagen::Text(stem, spec);
+    Expect(idle.find("\n-- minefactory: inactiveTurns=3\n") != std::string::npos && idle.find("scheme.Objects") == std::string::npos &&
+               luagen::IsGenerated(stem, idle, &why),
+           "only the set fields are written: " + why);
+    std::string run;
+    for (const auto& [from, to] : {std::pair{"activation=15", "activation=300"}, std::pair{"activation=15", "activation=015"},
+                                   std::pair{"activation=15 ", "activation=15  "}, std::pair{"activation=15", "speed=15"},
+                                   std::pair{"inactiveTurns=0", "inactiveTurns=0 activation=1"},
+                                   std::pair{"activation=15 inactiveTurns=0", "inactiveTurns=0 activation=15"}}) {
+        const std::string m = Mutate(tuned, from, to);
+        Expect(m != tuned && !luagen::Upgrade(stem, m, &run, &why), std::string("a hand-edited settings line is refused: ") + to);
+    }
+    // keepKnot: in the patch (written only when set), and on the settings line, alone or after the others
+    {
+        erg::Patch kp;
+        const std::string withKeep = Mutate(text, "\"schemeMines\":false}", "\"schemeMines\":false,\"keepKnot\":true}");
+        Expect(erg::ParsePatch(withKeep, &kp, &err) && kp.objects.back().factory.keepKnot && erg::WritePatch(kp) == withKeep,
+               "keepKnot round-trips in the patch: " + err);
+        Expect(!erg::ParsePatch(Mutate(text, "\"schemeMines\":false}", "\"schemeMines\":false,\"keepKnot\":1}"), &kp, &err),
+               "keepKnot must be a boolean");
+        spec.objects[0].factory = {};
+        spec.objects[0].factory.keepKnot = true;
+        const std::string keep = luagen::Text(stem, spec);
+        luagen::ChunkSpec kparsed;
+        Expect(keep.find("\n-- minefactory: keepKnot=1\n") != std::string::npos && luagen::IsGenerated(stem, keep, &why) &&
+                   luagen::Parse(stem, keep, &kparsed) && kparsed.objects[0].factory.keepKnot && !kparsed.objects[0].factory.Tweaks(),
+               "keepKnot alone writes the settings line and parses back: " + why);
+        spec.objects[0].factory.activation = 9;
+        const std::string both = luagen::Text(stem, spec);
+        Expect(both.find("\n-- minefactory: activation=9 keepKnot=1\n") != std::string::npos && luagen::IsGenerated(stem, both, &why),
+               "keepKnot follows the other settings: " + why);
+        Expect(!luagen::Upgrade(stem, Mutate(keep, "keepKnot=1", "keepKnot=2"), &run, &why), "keepKnot is 1 or absent");
+    }
+    // launchHeight / launchRadius: in the patch (written only when set, 1-255 and 0-255), and on the settings line
+    {
+        erg::Patch lp;
+        const std::string withLaunch = Mutate(text, "\"schemeMines\":false}", "\"schemeMines\":false,\"launchHeight\":20,\"launchRadius\":12}");
+        Expect(erg::ParsePatch(withLaunch, &lp, &err) && lp.objects.back().factory.launchHeight == 20 && lp.objects.back().factory.launchRadius == 12 &&
+                   erg::WritePatch(lp) == withLaunch,
+               "launchHeight and launchRadius round-trip in the patch: " + err);
+        Expect(!erg::ParsePatch(Mutate(text, "\"schemeMines\":false}", "\"schemeMines\":false,\"launchHeight\":0}"), &lp, &err), "launchHeight is 1 or more");
+        Expect(!erg::ParsePatch(Mutate(text, "\"schemeMines\":false}", "\"schemeMines\":false,\"launchRadius\":256}"), &lp, &err), "launchRadius is at most 255");
+        spec.objects[0].factory = {};
+        spec.objects[0].factory.launchRadius = 12;
+        const std::string launch = luagen::Text(stem, spec);
+        luagen::ChunkSpec lparsed;
+        Expect(launch.find("\n-- minefactory: launchRadius=12\n") != std::string::npos && luagen::IsGenerated(stem, launch, &why) &&
+                   luagen::Parse(stem, launch, &lparsed) && lparsed.objects[0].factory.launchRadius == 12 && !lparsed.objects[0].factory.launchHeight &&
+                   lparsed.objects[0].factory.Launch() && !lparsed.objects[0].factory.Tweaks(),
+               "launchRadius alone writes the settings line and parses back: " + why);
+        spec.objects[0].factory.keepKnot = true;
+        spec.objects[0].factory.launchHeight = 30;
+        const std::string all = luagen::Text(stem, spec);
+        Expect(all.find("\n-- minefactory: keepKnot=1 launchHeight=30 launchRadius=12\n") != std::string::npos && luagen::IsGenerated(stem, all, &why),
+               "the launch follows keepKnot: " + why);
+        Expect(!luagen::Upgrade(stem, Mutate(launch, "launchRadius=12", "launchHeight=0"), &run, &why), "launchHeight is 1 or more on the line");
+    }
+    // launchers: [[x, y, z], ...] world units in the patch (1-8, whole numbers), x:y:z/... on the settings line
+    {
+        erg::Patch lp;
+        const std::string withL = Mutate(text, "\"schemeMines\":false}", "\"schemeMines\":false,\"launchRadius\":10,\"launchers\":[[-300,900,40],[260,880,-120]]}");
+        Expect(erg::ParsePatch(withL, &lp, &err) && lp.objects.back().factory.launchers.size() == 2 &&
+                   lp.objects.back().factory.launchers[0] == std::array<int, 3>{-300, 900, 40} && erg::WritePatch(lp) == withL,
+               "launchers round-trip in the patch: " + err);
+        Expect(lp.objects.back().factory.Launch() && !lp.objects.back().factory.Default(), "launchers are a launch");
+        Expect(!erg::ParsePatch(Mutate(text, "\"schemeMines\":false}", "\"schemeMines\":false,\"launchers\":[]}"), &lp, &err), "launchers is not empty");
+        Expect(!erg::ParsePatch(Mutate(text, "\"schemeMines\":false}", "\"schemeMines\":false,\"launchers\":[[1,2]]}"), &lp, &err), "a launcher is [x, y, z]");
+        Expect(!erg::ParsePatch(Mutate(text, "\"schemeMines\":false}", "\"schemeMines\":false,\"launchers\":[[1.5,2,3]]}"), &lp, &err), "whole world units");
+        Expect(!erg::ParsePatch(Mutate(text, "\"schemeMines\":false}", "\"schemeMines\":false,\"launchers\":[[100001,2,3]]}"), &lp, &err), "within 100000");
+        Expect(!erg::ParsePatch(Mutate(text, "\"schemeMines\":false}",
+                                       "\"schemeMines\":false,\"launchers\":[[0,0,0],[0,0,0],[0,0,0],[0,0,0],[0,0,0],[0,0,0],[0,0,0],[0,0,0],[0,0,0]]}"),
+                                &lp, &err),
+               "at most 8 launchers");
+        spec.objects[0].factory = {};
+        spec.objects[0].factory.launchRadius = 10;
+        spec.objects[0].factory.launchers = {{-300, 900, 40}, {260, 880, -120}};
+        const std::string ltext = luagen::Text(stem, spec);
+        luagen::ChunkSpec lparsed;
+        Expect(ltext.find("\n-- minefactory: launchRadius=10 launchers=-300:900:40/260:880:-120\n") != std::string::npos &&
+                   luagen::IsGenerated(stem, ltext, &why) && luagen::Parse(stem, ltext, &lparsed) &&
+                   lparsed.objects[0].factory.launchers == spec.objects[0].factory.launchers,
+               "launchers go on the settings line and parse back: " + why);
+        Expect(!luagen::Upgrade(stem, Mutate(ltext, "launchers=-300:900:40/260:880:-120", "launchers=-300:900"), &run, &why), "a launcher on the line is x:y:z");
+        Expect(!luagen::Upgrade(stem, Mutate(ltext, "launchers=-300:900:40/260:880:-120", "launchers=-300:900:40/"), &run, &why), "no empty launcher");
+        spec.objects[0].factory.launchers.clear();
+        Expect(luagen::Text(stem, spec).find("launchers") == std::string::npos, "no launchers, no launchers key");
+    }
+    luagen::ChunkSpec noFactory;
+    noFactory.placeObjects = true;
+    std::string orphan2 = luagen::Text(stem, noFactory);
+    orphan2.insert(orphan2.find('\n') + 1, "-- minefactory: activation=5\n");
+    Expect(!luagen::IsGenerated(stem, orphan2, &why), "settings without a factory are refused");
+    // throw: {maxRange, minRange?, apex?, pattern?, avoidWater?, targets?, scatter?, targetShare?} in the patch (the defaults
+    // left out when written), "throw=min:max:apex:pattern:water:scatter:share targets=x:z/..." on the settings line
+    {
+        erg::Patch lp;
+        const std::string least = Mutate(text, "\"schemeMines\":false}", "\"schemeMines\":false,\"throw\":{\"maxRange\":40}}");
+        Expect(erg::ParsePatch(least, &lp, &err) && lp.objects.back().factory.throwing && lp.objects.back().factory.throwing->maxRange == 40 &&
+                   lp.objects.back().factory.throwing->minRange == 0 && lp.objects.back().factory.throwing->apex == 15 &&
+                   lp.objects.back().factory.throwing->pattern == erg::ThrowPattern::Random && lp.objects.back().factory.throwing->avoidWater &&
+                   lp.objects.back().factory.throwing->scatter == 10 && lp.objects.back().factory.throwing->targetShare == 50 && erg::WritePatch(lp) == least,
+               "a throw of maxRange alone round-trips with its defaults: " + err);
+        Expect(lp.objects.back().factory.Launch() && !lp.objects.back().factory.Default(), "a throw is a launch");
+        const std::string full = Mutate(text, "\"schemeMines\":false}",
+                                        "\"schemeMines\":false,\"throw\":{\"minRange\":20,\"maxRange\":110,\"apex\":20,\"pattern\":\"targets\",\"avoidWater\":false,"
+                                        "\"targets\":[[-1500,300],[1200,-800]],\"scatter\":12,\"targetShare\":40}}");
+        Expect(erg::ParsePatch(full, &lp, &err) && lp.objects.back().factory.throwing->pattern == erg::ThrowPattern::Targets &&
+                   lp.objects.back().factory.throwing->targets.size() == 2 && lp.objects.back().factory.throwing->targets[1] == std::array<int, 2>{1200, -800} &&
+                   !lp.objects.back().factory.throwing->avoidWater && erg::WritePatch(lp) == full,
+               "a full throw round-trips in the patch: " + err);
+        const std::string dflt = Mutate(text, "\"schemeMines\":false}", "\"schemeMines\":false,\"throw\":{\"minRange\":0,\"maxRange\":40,\"apex\":15,\"pattern\":\"random\"}}");
+        Expect(erg::ParsePatch(dflt, &lp, &err) && erg::WritePatch(lp) == least, "defaults given are left out when written");
+        Expect(!erg::ParsePatch(Mutate(text, "\"schemeMines\":false}", "\"schemeMines\":false,\"throw\":{\"minRange\":10}}"), &lp, &err), "a throw needs maxRange");
+        Expect(!erg::ParsePatch(Mutate(text, "\"schemeMines\":false}", "\"schemeMines\":false,\"throw\":{\"minRange\":50,\"maxRange\":40}}"), &lp, &err), "maxRange is not under minRange");
+        Expect(!erg::ParsePatch(Mutate(text, "\"schemeMines\":false}", "\"schemeMines\":false,\"throw\":{\"maxRange\":501}}"), &lp, &err), "maxRange is at most 500");
+        Expect(!erg::ParsePatch(Mutate(text, "\"schemeMines\":false}", "\"schemeMines\":false,\"throw\":{\"maxRange\":40,\"pattern\":\"spiral\"}}"), &lp, &err), "the pattern is named");
+        Expect(!erg::ParsePatch(Mutate(text, "\"schemeMines\":false}", "\"schemeMines\":false,\"throw\":{\"maxRange\":40,\"pattern\":\"targets\"}}"), &lp, &err), "pattern targets needs targets");
+        Expect(!erg::ParsePatch(Mutate(text, "\"schemeMines\":false}", "\"schemeMines\":false,\"throw\":{\"maxRange\":40,\"targets\":[[1.5,2]]}}"), &lp, &err), "targets are whole world units");
+        Expect(!erg::ParsePatch(Mutate(text, "\"schemeMines\":false}", "\"schemeMines\":false,\"throw\":{\"maxRange\":40,\"range\":1}}"), &lp, &err), "no unknown throw key");
+        // the settings line
+        luagen::ChunkSpec tspec = spec;
+        tspec.objects[0].factory = {};
+        erg::ThrowSpec th;
+        th.minRange = 20, th.maxRange = 110, th.apex = 20, th.pattern = erg::ThrowPattern::Targets, th.avoidWater = false, th.scatter = 12, th.targetShare = 40;
+        th.targets = {{-1500, 300}, {1200, -800}};
+        tspec.objects[0].factory.throwing = th;
+        tspec.objects[0].factory.launchers = {{-300, 900, 40}};
+        const std::string ttext = luagen::Text(stem, tspec);
+        luagen::ChunkSpec tparsed;
+        Expect(ttext.find("\n-- minefactory: launchers=-300:900:40 throw=20:110:20:targets:0:12:40 targets=-1500:300/1200:-800\n") != std::string::npos &&
+                   luagen::IsGenerated(stem, ttext, &why) && luagen::Parse(stem, ttext, &tparsed) && tparsed.objects[0].factory.throwing &&
+                   *tparsed.objects[0].factory.throwing == th && tparsed.objects[0].factory.launchers.size() == 1,
+               "the throw goes on the settings line after the launchers and parses back: " + why);
+        tspec.objects[0].factory.throwing->targets.clear();
+        tspec.objects[0].factory.throwing->pattern = erg::ThrowPattern::Ring;
+        tspec.objects[0].factory.launchers.clear();
+        const std::string ring = luagen::Text(stem, tspec);
+        Expect(ring.find("\n-- minefactory: throw=20:110:20:ring:0:12:40\n") != std::string::npos && ring.find("targets=") == std::string::npos &&
+                   luagen::IsGenerated(stem, ring, &why),
+               "a throw without targets writes no targets key: " + why);
+        Expect(!luagen::Upgrade(stem, Mutate(ring, "throw=20:110:20:ring:0:12:40", "throw=20:110:20:spiral:0:12:40"), &run, &why), "the pattern on the line is named");
+        Expect(!luagen::Upgrade(stem, Mutate(ring, "throw=20:110:20:ring:0:12:40", "throw=20:110:20:ring:2:12:40"), &run, &why), "avoidWater on the line is 0 or 1");
+        Expect(!luagen::Upgrade(stem, Mutate(ring, "throw=20:110:20:ring:0:12:40", "throw=20:110:20:ring:0:12"), &run, &why), "the throw on the line has every field");
+        Expect(!luagen::Upgrade(stem, Mutate(ring, "throw=20:110:20:ring:0:12:40", "throw=20:110:20:ring:0:12:40 targets=1:2 targets=3:4"), &run, &why), "targets once");
+        Expect(!luagen::Upgrade(stem, Mutate(ring, " throw=20:110:20:ring:0:12:40", " targets=1:2"), &run, &why), "targets need a throw");
+        // the volley cap and the avoid corridors (mines round 4): in the patch only when set, on the settings line as two more
+        // fields after targetShare (a line of the first seven is an older project's) and an avoid key of x:z/x:z lines split by '|'
+        const std::string corr = Mutate(text, "\"schemeMines\":false}",
+                                        "\"schemeMines\":false,\"throw\":{\"maxRange\":110,\"volley\":4,\"avoidRadius\":5,\"avoid\":[[[-1600,700],[-900,900],[-400,600]],[[600,-1500],[1000,-900]]]}}");
+        Expect(erg::ParsePatch(corr, &lp, &err) && lp.objects.back().factory.throwing->volley == 4 && lp.objects.back().factory.throwing->avoidRadius == 5 &&
+                   lp.objects.back().factory.throwing->avoid.size() == 2 && lp.objects.back().factory.throwing->avoid[0].size() == 3 &&
+                   lp.objects.back().factory.throwing->avoid[1][1] == std::array<int, 2>{1000, -900} && erg::WritePatch(lp) == corr,
+               "volley, avoidRadius and avoid round-trip in the patch: " + err);
+        Expect(!erg::ParsePatch(Mutate(text, "\"schemeMines\":false}", "\"schemeMines\":false,\"throw\":{\"maxRange\":40,\"volley\":11}}"), &lp, &err), "volley is at most 10");
+        Expect(!erg::ParsePatch(Mutate(text, "\"schemeMines\":false}", "\"schemeMines\":false,\"throw\":{\"maxRange\":40,\"avoidRadius\":51}}"), &lp, &err), "avoidRadius is at most 50");
+        Expect(!erg::ParsePatch(Mutate(text, "\"schemeMines\":false}", "\"schemeMines\":false,\"throw\":{\"maxRange\":40,\"avoid\":[[[1,2],[3,4]]]}}"), &lp, &err), "avoid needs avoidRadius");
+        Expect(!erg::ParsePatch(Mutate(text, "\"schemeMines\":false}", "\"schemeMines\":false,\"throw\":{\"maxRange\":40,\"avoidRadius\":5,\"avoid\":[[[1,2]]]}}"), &lp, &err), "an avoid line has 2 points or more");
+        Expect(!erg::ParsePatch(Mutate(text, "\"schemeMines\":false}", "\"schemeMines\":false,\"throw\":{\"maxRange\":40,\"avoidRadius\":5,\"avoid\":[[[1.5,2],[3,4]]]}}"), &lp, &err), "avoid points are whole world units");
+        tspec.objects[0].factory.throwing->volley = 4;
+        tspec.objects[0].factory.throwing->avoidRadius = 5;
+        tspec.objects[0].factory.throwing->avoid = {{{-1600, 700}, {-900, 900}, {-400, 600}}, {{600, -1500}, {1000, -900}}};
+        const std::string corrLine = luagen::Text(stem, tspec);
+        luagen::ChunkSpec cparsed;
+        Expect(corrLine.find("\n-- minefactory: throw=20:110:20:ring:0:12:40:4:5 avoid=-1600:700/-900:900/-400:600|600:-1500/1000:-900\n") != std::string::npos &&
+                   luagen::IsGenerated(stem, corrLine, &why) && luagen::Parse(stem, corrLine, &cparsed) && cparsed.objects[0].factory.throwing &&
+                   *cparsed.objects[0].factory.throwing == *tspec.objects[0].factory.throwing,
+               "the volley, avoid radius and avoid lines go on the settings line and parse back: " + why);
+        Expect(!luagen::Upgrade(stem, Mutate(corrLine, "throw=20:110:20:ring:0:12:40:4:5", "throw=20:110:20:ring:0:12:40:4"), &run, &why), "the volley and avoid radius come together");
+        Expect(!luagen::Upgrade(stem, Mutate(corrLine, "throw=20:110:20:ring:0:12:40:4:5", "throw=20:110:20:ring:0:12:40:0:0"), &run, &why), "both at their defaults are left off the line");
+        Expect(!luagen::Upgrade(stem, Mutate(corrLine, "throw=20:110:20:ring:0:12:40:4:5", "throw=20:110:20:ring:0:12:40:4:0"), &run, &why), "avoid lines need the radius");
+        Expect(!luagen::Upgrade(stem, Mutate(corrLine, " avoid=-1600:700/-900:900/-400:600|600:-1500/1000:-900", " avoid=-1600:700|600:-1500/1000:-900"), &run, &why), "an avoid line on the settings line has 2 points or more");
+        luagen::ChunkSpec oparsed;
+        Expect(luagen::Parse(stem, ring, &oparsed) && oparsed.objects[0].factory.throwing && oparsed.objects[0].factory.throwing->volley == 0 &&
+                   oparsed.objects[0].factory.throwing->avoidRadius == 0 && oparsed.objects[0].factory.throwing->avoid.empty(),
+               "an older line of seven throw fields parses with no volley and no avoid");
     }
 }
 
@@ -952,6 +1288,7 @@ int main(int argc, char** argv) {
     TestManifest();
     TestV2Model();
     TestChunkGrammar();
+    TestFactorySettings();
     TestManifestV2();
     Fixtures(std::string(MELANGE_SOURCE_DIR) + "/tests/fixtures/erg", write);
     printf("erg_scene_selftest: %d passed, %d failed\n", g_pass, g_fail);

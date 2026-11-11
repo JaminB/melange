@@ -9,6 +9,8 @@
 #include <string>
 
 #include "oasis/standalone/ini_edit.h"
+#include "oasis/standalone/lua_check.h"
+#include "oasis/standalone/water_sim.h"
 #include "oasis/standalone/mods_provider.h"
 #include "oasis/standalone/wormsign_provider.h"
 #include "tools/json_read.h"
@@ -257,10 +259,77 @@ void TestWormsign() {
 }
 }  // namespace
 
+// The level-script syntax check: the Lua 5.0 dialect (no # or //), a line and a message on an error, never running it.
+void TestLuaCheck() {
+    using melange::oasis::standalone::CompileLua50;
+    int line = -1;
+    std::string msg;
+    Expect(CompileLua50("", &line, &msg) && line == -1, "lua: an empty script compiles");
+    Expect(CompileLua50("local t = {}\nfor k, v in pairs(t) do t[k] = v end\nwum.sim.every(1, function() error('never run') end)\n", &line, &msg),
+           "lua: a 5.0 script compiles and is not run", msg);
+    Expect(!CompileLua50("local a = 1\nb = = 2\n", &line, &msg) && line == 2 && !msg.empty() && msg.find("script.lua") == std::string::npos,
+           "lua: a syntax error has its line and message", std::to_string(line) + " " + msg);
+    Expect(!CompileLua50("local t = {}\nlocal n = #t\n", &line, &msg) && line == 2, "lua: # is not Lua 5.0", msg);
+    Expect(!CompileLua50("if true then\n", &line, &msg) && line > 0, "lua: an unclosed block", msg);
+}
+
+// The water a level script makes by turn: two schedules (the second set from a turnStarted handler, as Caldera's
+// phase 2), a wum.sim.every timer stepping Water.Level, functions the stand-in does not know, and a raise.
+void TestWaterSim() {
+    using melange::oasis::standalone::SimulateWater;
+    using melange::oasis::standalone::WaterSim;
+    std::string json, err;
+    WaterSim o;
+    o.turns = 6;
+    o.ticksPerTurn = 100;
+    o.start = 36;
+    const char* phases =
+        "wum.sim.waterSchedule{ startTurn = 2, step = 6, cap = 48, units = \"world\" }\n"
+        "wum.events.on(\"sim.turnStarted\", function(name, turn)\n"
+        "  if turn == 4 then wum.sim.waterSchedule{ startTurn = 5, step = 1, cap = 100, units = \"map\" } end\n"
+        "  wum.sim.announce(\"hi\", 3)\n"
+        "end)\n";
+    Expect(SimulateWater(phases, o, &json, &err), "water: two phases run", err);
+    // turn 1: 36; 2: 42; 3: 48 (cap, stops); 4: 48 (phase 2 set in the handler, starts at 5); 5: 68; 6: 88
+    Expect(json.find("{\"turn\":3,\"world\":48") != std::string::npos && json.find("{\"turn\":5,\"world\":68") != std::string::npos &&
+               json.find("{\"turn\":6,\"world\":88") != std::string::npos,
+           "water: the first schedule caps, the second steps from its own start turn", json);
+    Expect(json.find("\"wum.sim.announce\":6") != std::string::npos, "water: unknown functions do nothing and are counted", json);
+    const char* every = "local n = 0\nwum.sim.every(50, function() n = n + 1; wum.sim.setData(\"Water.Level\", n * 10) end)\nerror('boom')\n";
+    o.start = 0;
+    Expect(SimulateWater(every, o, &json, &err), "water: a raise in the main chunk is reported, not fatal", err);
+    Expect(json.find("{\"turn\":2,\"world\":20,\"end\":40}") != std::string::npos && json.find("boom") != std::string::npos,
+           "water: every-timers step the water within turns", json);
+    // a level by round, set from a turnStarted handler (Caldera's script): the round goes up once every team had a turn,
+    // so with two teams turns 1-2 are round 1, 3-4 round 2, 5-6 round 3
+    const char* rounds =
+        "local LEVEL = { [1] = 20, [2] = 80, [3] = 140 }\n"
+        "wum.events.on(\"sim.turnStarted\", function(name, turn, round)\n"
+        "  if wum.sim.round() ~= round then error('round') end\n"
+        "  wum.sim.setData(\"Water.Level\", LEVEL[round] or 200)\n"
+        "end)\n";
+    WaterSim r;
+    r.turns = 6;
+    r.ticksPerTurn = 100;
+    Expect(SimulateWater(rounds, r, &json, &err) && json.find("{\"turn\":2,\"world\":20") != std::string::npos &&
+               json.find("{\"turn\":3,\"world\":80") != std::string::npos && json.find("{\"turn\":6,\"world\":140") != std::string::npos &&
+               json.find("\"errorCount\":0") != std::string::npos,
+           "water: rounds are the teams' (two by default)", json);
+    r.turnsPerRound = 3;
+    Expect(SimulateWater(rounds, r, &json, &err) && json.find("{\"turn\":3,\"world\":20") != std::string::npos &&
+               json.find("{\"turn\":4,\"world\":80") != std::string::npos,
+           "water: turnsPerRound sets the teams", json);
+    Expect(!SimulateWater("x = = 1", o, &json, &err) && !err.empty(), "water: a syntax error fails", err);
+    Expect(SimulateWater("while true do end", o, &json, &err) && json.find("too long") != std::string::npos, "water: an endless loop is cut off", json);
+}
+
 int main() {
     TestIni();
     TestMods();
     TestWormsign();
+    TestLuaCheck();
+    TestWaterSim();
+
     printf("oasis_standalone_selftest: %d passed, %d failed\n", g_pass, g_fail);
     return g_fail ? 1 : 0;
 }

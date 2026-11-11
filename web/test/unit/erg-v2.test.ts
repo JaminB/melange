@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import {
-  applyPatch, patchUsesV2, sceneUsesV2, toPatch, upgrade, validKnot, validatePatch, validatePatchObjects, validateScene,
+  CommandStack, SetTrims, applyPatch, patchUsesV2, sceneUsesV2, toPatch, upgrade, validKnot, validatePatch, validatePatchObjects, validateScene, voxelCells,
   type Patch, type Scene,
 } from "../../src/sdk/erg";
 
@@ -102,4 +102,85 @@ test("v2 refusals", () => {
   dup.objects!.push(dup.objects![0]);
   assert.equal(validatePatchObjects(dup, baseV2()).ok, false);
   assert.ok(validKnot("TP_3_12", "telepad", 3) && !validKnot("TP_3_12", "telepad", 2) && !validKnot("CRATE_256", "crate"));
+});
+
+test("mine factory settings are optional, range-checked and carried by applyPatch", () => {
+  const withFactory = (factory?: unknown) => {
+    const p = patchV2();
+    const frame = (p.ops.find((o) => o.op === "add") as { frame: number }).frame;
+    p.ops.unshift({ op: "add", frame, detail: { name: "minefactory", resource: "CheesyGrinWorm", pos: [9, 1, 2] } });
+    p.objects!.push((factory === undefined ? { knot: "minefactory", type: "minefactory" } : { knot: "minefactory", type: "minefactory", factory }) as never);
+    return p;
+  };
+  for (const f of [undefined, {}, { activation: 0 }, { activation: 255, inactiveTurns: 0, schemeMines: false }, { launchRadius: 10, launchers: [[-300, 900, 40], [260, 880, -120]] }]) {
+    const p = withFactory(f);
+    assert.ok(validatePatch(p).ok, `${JSON.stringify(f)}: ${validatePatch(p).errors.join("; ")}`);
+    assert.ok(validatePatchObjects(p, baseV2()).ok, validatePatchObjects(p, baseV2()).errors.join("; "));
+  }
+  for (const f of [{ activation: 256 }, { activation: 1.5 }, { inactiveTurns: -1 }, { schemeMines: 1 }, { speed: 3 }, 7, { launchers: [] }, { launchers: [[1, 2]] },
+    { launchers: [[1.5, 2, 3]] }, { launchers: [[100001, 0, 0]] }, { launchers: Array.from({ length: 9 }, () => [0, 0, 0]) }]) {
+    assert.equal(validatePatch(withFactory(f)).ok, false, JSON.stringify(f));
+  }
+  const edited = applyPatch(upgrade(baseV2()), withFactory({ activation: 12, schemeMines: false }));
+  assert.deepEqual(edited.objects!.at(-1), { knot: "minefactory", type: "minefactory", factory: { activation: 12, schemeMines: false } });
+  // the throw (erg-mcp's mines round 2): every field validates, the bad ones are refused, and a project saved by the
+  // panel keeps them all (applyPatch then toPatch round-trips the object as it came)
+  // (mines round 4) the volley cap and the avoid corridors: whole world units, at most 8 lines of 2-32 points, with their radius
+  const throwing = { activation: 255, inactiveTurns: 2, keepKnot: true, launchers: [[-300, 900, 40], [260, 880, -120]],
+    throw: { minRange: 20, maxRange: 115, apex: 25, pattern: "targets", avoidWater: true, scatter: 12, targetShare: 40, targets: [[652, -1456], [1424, 816], [-1538, 634], [-1510, -624]],
+      volley: 4, avoidRadius: 5, avoid: [[[696, -1554], [934, -1448], [1164, -1136], [1322, -858]], [[-1636, 676], [-1372, 836], [-1096, 1004]]] } };
+  for (const f of [throwing, { throw: { maxRange: 30 } }, { throw: { maxRange: 30, pattern: "ring", avoidWater: false } }, { throw: { maxRange: 30, volley: 10 } }]) {
+    const p = withFactory(f);
+    assert.ok(validatePatch(p).ok, `${JSON.stringify(f)}: ${validatePatch(p).errors.join("; ")}`);
+    assert.ok(validatePatchObjects(p, baseV2()).ok, validatePatchObjects(p, baseV2()).errors.join("; "));
+  }
+  for (const f of [{ throw: {} }, { throw: { maxRange: 0 } }, { throw: { minRange: 50, maxRange: 30 } }, { throw: { maxRange: 30, pattern: "spiral" } }, { throw: { maxRange: 30, pattern: "targets" } },
+    { throw: { maxRange: 30, targets: [[1.5, 2]] } }, { throw: { maxRange: 30, apex: 0 } }, { throw: { maxRange: 30, targetShare: 101 } }, { throw: { maxRange: 30, lift: 2 } },
+    { throw: { maxRange: 30, volley: 11 } }, { throw: { maxRange: 30, avoidRadius: 51 } }, { throw: { maxRange: 30, avoid: [[[1, 2], [3, 4]]] } }, { throw: { maxRange: 30, avoidRadius: 5, avoid: [[[1, 2]]] } },
+    { throw: { maxRange: 30, avoidRadius: 5, avoid: [[[1.5, 2], [3, 4]]] } }, { throw: { maxRange: 30, avoidRadius: 5, avoid: Array.from({ length: 9 }, () => [[0, 0], [1, 1]]) } }]) {
+    assert.equal(validatePatch(withFactory(f)).ok, false, JSON.stringify(f));
+  }
+  const thrown = applyPatch(upgrade(baseV2()), withFactory(throwing));
+  assert.deepEqual(thrown.objects!.at(-1), { knot: "minefactory", type: "minefactory", factory: throwing });
+  const back = toPatch(upgrade(baseV2()), thrown);
+  assert.deepEqual(back.objects!.find((o) => o.knot === "minefactory"), { knot: "minefactory", type: "minefactory", factory: throwing });
+  assert.ok(validatePatch(back).ok, validatePatch(back).errors.join("; "));
+  // the Erg panel's factory properties (ui/Properties.tsx put) set one field by spreading the rest, so the erg-mcp-only
+  // fields (launchers, throw with its volley and avoid) ride through an edit of the target in the panel
+  const panelEdit = { ...(thrown.objects!.at(-1) as unknown as { factory: Record<string, unknown> }).factory, activation: 12 };
+  const edited2 = applyPatch(upgrade(baseV2()), withFactory(panelEdit));
+  assert.deepEqual(edited2.objects!.at(-1), { knot: "minefactory", type: "minefactory", factory: { ...throwing, activation: 12 } });
+  assert.ok(validatePatch(toPatch(upgrade(baseV2()), edited2)).ok);
+});
+
+test("trims: a base frame's kept box counts in the cells, rides in the patch and the scene, and undoes", () => {
+  const base = upgrade(baseV2());
+  const edited = structuredClone(base);
+  const before = voxelCells(base);
+  const stack = new CommandStack(edited);
+  stack.exec(new SetTrims(new Map([[4, { frame: 4, min: [0, 0, 0], size: [1, 1, 1] }], [5, { frame: 5, min: [0, 1, 0], size: [2, 3, 4] }]])));
+  assert.equal(voxelCells(edited), before - (7 * 2 * 11 - 1) - (2 * 7 * 4 - 2 * 3 * 4));
+  assert.ok(sceneUsesV2(edited));
+  assert.ok(validateScene(edited).ok, validateScene(edited).errors.join("; "));
+  edited.stem = "mymaps_trims";
+  const p = toPatch(base, edited);
+  assert.equal(p.format, "erg-patch/2");
+  assert.deepEqual(p.ops.filter((o) => o.op === "trimFrame"), [
+    { op: "trimFrame", frame: 4, min: [0, 0, 0], size: [1, 1, 1] }, { op: "trimFrame", frame: 5, min: [0, 1, 0], size: [2, 3, 4] }]);
+  assert.ok(validatePatch(p).ok, validatePatch(p).errors.join("; "));
+  assert.deepEqual(applyPatch(base, p).trims, edited.trims);
+  stack.undo();
+  assert.equal(edited.trims, undefined);
+  assert.equal(voxelCells(edited), before);
+  assert.equal(toPatch(base, edited).format, "erg-patch/1");
+
+  const bad = (t: unknown) => validateScene({ ...structuredClone(edited), trims: [t] } as Scene).errors.join("; ");
+  assert.ok(/inside the frame/.test(bad({ frame: 4, min: [1, 0, 0], size: [7, 1, 1] })));
+  assert.ok(/no voxels/.test(bad({ frame: 1000, min: [0, 0, 0], size: [1, 1, 1] })));
+  assert.ok(/min/.test(bad({ frame: 4, min: [0, 0], size: [1, 1, 1] })));
+  const v1 = { ...p, format: "erg-patch/1" } as Patch;
+  assert.ok(/unknown op 'trimFrame'/.test(validatePatch(v1).errors.join("; ")));
+  const twice = structuredClone(p);
+  twice.ops.push({ op: "trimFrame", frame: 4, min: [0, 0, 0], size: [1, 1, 1] });
+  assert.ok(/trimmed by an earlier op/.test(validatePatch(twice).errors.join("; ")));
 });
