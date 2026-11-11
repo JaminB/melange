@@ -100,3 +100,49 @@ export function readWaterLook(script: string): WaterLook | null {
   }
   return out;
 }
+
+/** set_water_look presets: a named look as WaterPlaneTweaks fields, with the theme/time-of-day pairs it was seen to read
+ * right on in a Test. A preset on another pair still applies, and the answer says it is unverified there.
+ * What the fields can do (CG\water.cg, tried in a Test on ARABIAN DAY): the water's colour is the theme's blue ripple
+ * texture minus SubtractColourScale times its ripple layer (so a positive scale goes deeper blue then black, a negative one
+ * pale then white), plus ReflectionStrength times the sky map (blue by day) plus a grey highlight. water.cg reads
+ * neither SkyBlendColor nor the Light* colours, so the plane itself cannot be made warm: a sandy sea is pale and opaque,
+ * and a warm tint goes to the land's light (LightAmbient and LightDiffuse, which do colour the terrain). */
+export interface WaterPreset {
+  what: string;
+  fields: WaterLook;
+  verified: { theme: string; timeOfDay: string }[];
+}
+export const WATER_PRESETS: Record<string, WaterPreset> = {
+  sand: { what: "a pale opaque sea that hides what is under it: no sky reflection, a bleached shade, no highlight",
+    fields: { NearOpacity: 1, ReflectionStrength: 0, SubtractColourScale: -1.5, SpecularContrast: 0 },
+    verified: [{ theme: "ARABIAN", timeOfDay: "DAY" }] },
+  lava: { what: "a dark opaque sea, no reflection and no highlight (the glow is the tint on the land's light)",
+    fields: { NearOpacity: 1, ReflectionStrength: 0, SubtractColourScale: 2.5, SpecularContrast: 0 },
+    verified: [] },
+  murk: { what: "a dull near-opaque sea: a faint reflection, a darker shade, a weak highlight",
+    fields: { NearOpacity: 0.95, ReflectionStrength: 0.25, SubtractColourScale: 0.6, SpecularContrast: 0.3 },
+    verified: [] },
+};
+
+/** The land's light for a tint [r, g, b] 0-255: the sun is the tint, the ambient half of it. */
+export function tintLight(tint: number[]): WaterLook {
+  return { LightDiffuse: tint.slice(0, 3), LightAmbient: tint.slice(0, 3).map((x) => Math.round(x / 2)) };
+}
+
+/** The fields a preset expands to for a theme and time of day: the preset's, the tint's land light, then the explicit
+ * fields over both. verified says whether the preset was tried on this pair (the tint is the caller's own colour and is
+ * not part of it). */
+export function expandWaterPreset(name: string, tint: number[] | undefined, explicit: WaterLook, theme: string, timeOfDay: string):
+  { look: WaterLook; verified: boolean; overridden: string[]; note: string } {
+  const p = WATER_PRESETS[name];
+  if (!p) throw new Error(`preset '${name}' is not one of ${Object.keys(WATER_PRESETS).join(", ")}`);
+  const look: WaterLook = { ...p.fields, ...(tint ? tintLight(tint) : {}) };
+  const overridden = Object.keys(explicit).filter((k) => k in look);
+  Object.assign(look, explicit);
+  const verified = p.verified.some((v) => v.theme === theme && v.timeOfDay === timeOfDay);
+  const where = p.verified.map((v) => `${v.theme} ${v.timeOfDay}`).join(", ");
+  const note = verified ? `preset ${name} was tried in a Test on ${theme} ${timeOfDay}`
+    : `preset ${name} is UNVERIFIED on ${theme} ${timeOfDay}${where ? ` (tried on ${where})` : " (not tried in a Test anywhere yet)"}: its numbers are a starting point, Test and adjust`;
+  return { look, verified, overridden, note };
+}

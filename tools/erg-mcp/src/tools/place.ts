@@ -18,7 +18,7 @@ import { join } from "node:path";
 import { documentsDir } from "../oasis";
 import { automationFile, holdRoundClock, stopHold, tools as gameTools } from "./game";
 import { CAMERA_RISE, WALL_RADIUS, nearestTread, spawnWarnings, treadAt, treadWarnings } from "../lib/spawn-check";
-import { readWaterLook, waterLookProblems, withWaterLook, type WaterLook } from "../lib/water-look";
+import { expandWaterPreset, readWaterLook, waterLookProblems, WATER_PRESETS, withWaterLook, type WaterLook } from "../lib/water-look";
 import { checkFactory, factoryLines } from "../lib/factory-check";
 import { projectHash, readSource, storedThrow } from "../lib/project-hash";
 import { count, diff, fromSaved, mergeRuns, pairOf, summary, toSaved, type AssertRun, type SavedRun } from "../lib/assert-log";
@@ -1151,34 +1151,46 @@ export const tools: Tool[] = [
   },
   {
     name: "set_water_look",
-    description: "The water's look (and the land's light) in this level's matches, over the theme's: opacity (0 clear to 1 opaque: the water plane's alpha, NearOpacity), reflection (how much of the sky it reflects, ReflectionStrength), shade (SubtractColourScale: lighter or darker water), landAmbient / landDiffuse (the terrain's ambient and sun light, LightAmbient / LightDiffuse: a tint of the whole land), or any field of the theme's WaterPlaneTweaks by name in `fields` (ReflectionContrast, SpecularContrast, SpecularPower, LightSpecular [r, g, b], ...). Tried in a Test on PREHISTORIC EVENING: each takes effect in the next frame, also from a turn handler. It writes one wum.level.water{...} call (Melange 0.13+; an older game skips it) in a marked block at the top of the level script, which this tool rewrites or (clear) removes, leaving the rest of the script as it is; the game sets the fields when the match's level script starts and puts the theme's back when the match ends. The script is written at once (not an undo step). Render only: nothing the match plays changes. The theme's fog and distance haze are not here: the game's shaders (CG\\Landscape.cg, water.cg) have none, so the haze of a time of day is its sky and lighting (test {postfx: false} shows whether a post-FX mod adds more).",
+    description: "The water's look (and the land's light) in this level's matches, over the theme's (or a named `preset` of fields: sand, lava, murk): opacity (0 clear to 1 opaque: the water plane's alpha, NearOpacity), reflection (how much of the sky it reflects, ReflectionStrength), shade (SubtractColourScale: negative paler, positive darker), landAmbient / landDiffuse (the terrain's ambient and sun light, LightAmbient / LightDiffuse: a tint of the whole land), or any field of the theme's WaterPlaneTweaks by name in `fields` (ReflectionContrast, SpecularContrast, SpecularPower, LightSpecular [r, g, b], ...). Tried in a Test on PREHISTORIC EVENING: each takes effect in the next frame, also from a turn handler. It writes one wum.level.water{...} call (Melange 0.13+; an older game skips it) in a marked block at the top of the level script, which this tool rewrites or (clear) removes, leaving the rest of the script as it is; the game sets the fields when the match's level script starts and puts the theme's back when the match ends. The script is written at once (not an undo step). Render only: nothing the match plays changes. The theme's fog and distance haze are not here: the game's shaders (CG\\Landscape.cg, water.cg) have none, so the haze of a time of day is its sky and lighting (test {postfx: false} shows whether a post-FX mod adds more).",
     inputSchema: { type: "object", additionalProperties: false, properties: {
+      preset: { type: "string", enum: Object.keys(WATER_PRESETS), description: "A named look expanded to fields for the project's theme and time of day: sand (a pale opaque sea that hides what is under it: opacity 1, reflection 0, shade -1.5, no highlight; tried on ARABIAN DAY), lava (a dark opaque sea), murk (a dull near-opaque one); lava and murk are not tried anywhere yet. Explicit fields below override the preset's. The answer's preset says whether it is unverified for this theme and time of day." },
+      tint: { type: "array", items: { type: "number" }, minItems: 3, maxItems: 3, description: "With preset: [r, g, b] 0-255, a warm or cold tint of the land's light (LightDiffuse = the tint, LightAmbient = half of it). The water plane itself takes no colour (water.cg has none): its colour is the theme's texture, so the tint goes to the terrain; explicit landAmbient / landDiffuse override it." },
       opacity: { type: "number", minimum: 0, maximum: 1, description: "The water plane's alpha, NearOpacity (theme values about 0.6-0.9): 1 hides what is under the water, so a rising sea reads as a solid surface." },
       reflection: { type: "number", minimum: 0, maximum: 8, description: "ReflectionStrength: how much of the environment (sky) map the water reflects (0: the water shows its own texture only, which on PREHISTORIC EVENING turned it from grey-blue to lavender in a Test)." },
-      shade: { type: "number", minimum: -4, maximum: 4, description: "SubtractColourScale: how much of the ripple texture's darker layer is taken off the water's colour (higher: lighter, paler water; 3 with opacity 0.35 made it pale pink-white in a Test)." },
+      shade: { type: "number", minimum: -4, maximum: 4, description: "SubtractColourScale: how much of the ripple texture's darker layer is taken off the water's colour (per CG\water.cg: higher is darker, deep blue then black; negative is paler, white by -4: -1.5 gave a pale opaque sea on ARABIAN DAY)." },
       landAmbient: { type: "array", items: { type: "number" }, minItems: 3, maxItems: 3, description: "LightAmbient [r, g, b] 0-255: the land's ambient light (the landscape shader's globalAmbient, from the same tweaks): a tint of the whole terrain. In a Test red turned the island red." },
       landDiffuse: { type: "array", items: { type: "number" }, minItems: 3, maxItems: 3, description: "LightDiffuse [r, g, b] 0-255: the land's sunlight (globalDiffuse)." },
       fields: { type: "object", description: "More WaterPlaneTweaks fields by name: a number, or [r, g, b(, a)] 0-255 for a colour, [x, y, z] for a vector." },
       clear: { type: "boolean", description: "Remove the block: the theme's water again." },
     } },
-    async handler(s, a: { opacity?: number; reflection?: number; shade?: number; landAmbient?: number[]; landDiffuse?: number[]; fields?: WaterLook; clear?: boolean }) {
+    async handler(s, a: { preset?: string; tint?: number[]; opacity?: number; reflection?: number; shade?: number; landAmbient?: number[]; landDiffuse?: number[]; fields?: WaterLook; clear?: boolean }) {
       const p = s.requireProject();
-      const look: WaterLook = { ...(a.fields ?? {}) };
+      let look: WaterLook = { ...(a.fields ?? {}) };
       if (a.opacity !== undefined) look.NearOpacity = a.opacity;
       if (a.reflection !== undefined) look.ReflectionStrength = a.reflection;
       if (a.shade !== undefined) look.SubtractColourScale = a.shade;
       if (a.landAmbient !== undefined) look.LightAmbient = a.landAmbient;
       if (a.landDiffuse !== undefined) look.LightDiffuse = a.landDiffuse;
+      if (a.tint && !a.preset) throw new ToolError("tint goes with a preset");
+      if (a.preset && a.clear) throw new ToolError("clear removes the block: give no preset with it");
+      let preset: Record<string, unknown> | undefined;
+      if (a.preset) {
+        if (!(a.preset in WATER_PRESETS)) throw new ToolError(`preset '${a.preset}' is not one of ${Object.keys(WATER_PRESETS).join(", ")}`);
+        const d = p.store.scene.databank;
+        const e = expandWaterPreset(a.preset, a.tint, look, d.theme, d.timeOfDay);
+        look = e.look;
+        preset = { name: a.preset, theme: d.theme, timeOfDay: d.timeOfDay, verified: e.verified, ...(e.overridden.length ? { overridden: e.overridden } : {}), note: e.note };
+      }
       if (a.clear && Object.keys(look).length) throw new ToolError("clear removes the block: give no fields with it");
-      if (!a.clear && !Object.keys(look).length) throw new ToolError("give opacity, reflection, shade, landAmbient, landDiffuse or fields (or clear: true)");
+      if (!a.clear && !Object.keys(look).length) throw new ToolError("give a preset, opacity, reflection, shade, landAmbient, landDiffuse or fields (or clear: true)");
       const bad = waterLookProblems(look);
       if (bad.length) throw new ToolError(bad.join("; "));
       const before = (await p.erg.script()) ?? "";
       const text = withWaterLook(before, a.clear ? null : look);
-      if (text === before) return { changed: false, look: readWaterLook(before), note: "the script already sets this look" };
+      if (text === before) return { changed: false, look: readWaterLook(before), ...(preset ? { preset } : {}), note: "the script already sets this look" };
       const r = await p.erg.saveScript(text);
       if (!r.saved) throw new ToolError(`the server did not save the script: ${r.problems.map((x) => x.message ?? String(x)).join("; ")}`);
-      return { changed: true, look: a.clear ? null : look, was: readWaterLook(before), problems: r.problems, syntaxChecked: r.syntaxChecked ?? false,
+      return { changed: true, look: a.clear ? null : look, ...(preset ? { preset } : {}), was: readWaterLook(before), problems: r.problems, syntaxChecked: r.syntaxChecked ?? false,
         note: a.clear ? "the block is gone: the theme's water" : "a wum.level.water{...} block at the top of the level script (Melange 0.13+): Test to see it; the game logs each field it set ([levels] water look: <container>.<field> set)" };
     },
   },
