@@ -86,9 +86,15 @@ tools\node\node.exe tools\erg-mcp\bench\caldera\ship.mjs [--out <dir>] [--versio
 It does four things:
 1. It exports the dressed project. The export's ship gate raises `melange.range` to `>=0.14.0`, because 694 details are
    over the 450 that the vanilla 550-instance mesh pool loads. The pool is raised by `[Fixes] MeshInstances`.
-2. It builds the banks and copies the ones the level names into `assets/meshes/`. It refuses to continue if the level names
-   a mesh the pack would not ship.
-3. It lists those banks under `meshes` in `spice.json`.
+2. It builds the banks and merges the meshes the level names into ONE bank, `assets/meshes/caldera.Rocks.xom`
+   (`meshes/merge.mjs`; until 2026-11-10 it shipped one bank per mesh, 8 in all). It refuses to continue if the level
+   names a mesh the pack would not ship.
+3. It lists that bank under `meshes` in `spice.json`.
+
+One bank per map: every bank a pack lists takes one of the 44 mod mesh sections all enabled mods share, and Caldera's 8
+banks with Kindjal's 38 left Kindjal's SlugGun and StoneDonkey unloaded. The mesh names (`caldera.Boulder`, ...) are
+unchanged, so the level's copies still name them. `ship.mjs --banks-only` re-ships only the banks into the committed
+pack (no export; the patch stays byte-identical, so `sim_fingerprint` cannot change).
 4. It writes `.gitignore` as `assets/levels/`, so the banks are committed and the level builds are not.
 
 The committed `pack/` on this branch is now the dressed pack. A merge from `erg-mcp` that touches `pack/` is resolved by

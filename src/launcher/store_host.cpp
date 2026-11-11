@@ -9,6 +9,7 @@
 
 #include "core/log.h"
 #include "launcher/app.h"
+#include "launcher/autobuild.h"
 #include "launcher/rpc.h"
 #include "launcher/setup/engine.h"
 #include "launcher/setup/exe_check.h"
@@ -39,7 +40,11 @@ class LauncherHost final : public store::Host {
         const std::wstring dir = app::GameDir();
         return !dir.empty() && setup::CheckExe(dir).verdict == setup::Verdict::Ok ? "1077" : "";
     }
-    std::string Gate() override { return rpc::ImportRunning() ? "an import is running" : app::CachedGate(); }
+    std::string Gate() override {
+        if (rpc::ImportRunning()) return "an import is running";
+        if (autobuild::Busy()) return "map packs are being built";
+        return app::CachedGate();
+    }
     std::vector<store::LocalMod> InstalledMods() override {
         std::vector<store::LocalMod> out;
         const std::wstring dir = app::GameDir();
@@ -67,10 +72,15 @@ class LauncherHost final : public store::Host {
         }
         return out;
     }
-    void Placed(const std::string& id, bool enable) override { modsprov::SetEnabled(app::GameDir(), id, enable); }
+    // A new or updated plugin may be a map pack to build (autobuild.h).
+    void Placed(const std::string& id, bool enable) override {
+        modsprov::SetEnabled(app::GameDir(), id, enable);
+        autobuild::Request("a Store install");
+    }
     void Unload(const std::string&) override {}
     void Reload(const std::string& id, bool enable) override {
         if (enable) modsprov::SetEnabled(app::GameDir(), id, true);
+        autobuild::Request("a Store update");
     }
     // SetEnabled would refuse (the folder is gone) and leave a stale entry: drop it, its grant and its pins.
     void Forget(const std::string& id) override { modsprov::Forget(app::GameDir(), id); }

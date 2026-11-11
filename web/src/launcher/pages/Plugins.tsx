@@ -2,11 +2,11 @@ import { useEffect, useRef, useState } from "preact/hooks";
 import type { Client } from "../../sdk/client";
 import { errorText } from "../../sdk/hooks";
 import { hiddenText, modsOf, sourceText, stateText, stateTone, viewOf, visibleMods, type ModInfo, type ModsView, type Notice } from "../../panels/mods/model";
-import type { Importer, Setting, SetupStatus, Val } from "../api";
-import { importEventOf, importersOf, settingOf, valuesOf } from "../api";
+import type { Importer, MapsStatus, Setting, SetupStatus, Val } from "../api";
+import { importEventOf, importersOf, mapsEventOf, mapsStatusOf, settingOf, valuesOf } from "../api";
 import { Drawer } from "../components/Drawer";
 import { SettingControl } from "../components/SettingControl";
-import { busyNotice, importButtonLabel } from "../copy";
+import { busyNotice, importButtonLabel, mapPackText } from "../copy";
 import { StoreIcon } from "../icons";
 
 export function Plugins({ client, status, onOpenStore, onOpenImport }: {
@@ -20,12 +20,23 @@ export function Plugins({ client, status, onOpenStore, onOpenImport }: {
   const [busy, setBusy] = useState<string>();
   const [drawer, setDrawer] = useState<string>();
   const [view, setView] = useState<ModsView>({ showLocal: false, notices: [] });
+  const [maps, setMaps] = useState<MapsStatus>();
 
   const load = () => {
     client.call<unknown>("mods.list").then((v) => { setList(modsOf(v)); setError(undefined); }, (e) => setError(errorText(e)));
     if (client.has("mods.view")) client.call<unknown>("mods.view").then((v) => setView(viewOf(v)), () => {});
+    if (client.has("maps.status")) client.call<unknown>("maps.status").then((v) => setMaps(mapsStatusOf(v)), () => {});
   };
   useEffect(load, [client]);
+
+  // Map packs Melange.exe builds (autobuild): each pack's row says whether its maps are built.
+  useEffect(() => {
+    if (!client.has("maps")) return;
+    return client.subscribe<unknown>("maps", undefined, (m) => {
+      const ev = mapsEventOf(m);
+      if (ev.status) setMaps(ev.status);
+    });
+  }, [client]);
 
   // The compatibility sweep's Store half (an update or a removal) runs as a Store job: reload when one ends.
   useEffect(() => {
@@ -140,6 +151,8 @@ export function Plugins({ client, status, onOpenStore, onOpenImport }: {
             const job = importer?.job;
             const pct = job && job.total > 0 ? Math.round((job.bytes / job.total) * 100) : undefined;
             const importing = job && !["idle", "done", "error", "cancelled"].includes(job.phase);
+            const pack = maps?.packs.find((p) => p.id === m.id);
+            const packText = mapPackText(pack, maps?.enabled !== false);
             return (
               <li key={m.id} class="lp-row" data-plugin={m.id}>
                 <button class="lp-switch" role="switch" aria-checked={m.on} disabled={busy === m.id} aria-label={`${m.on ? "Disable" : "Enable"} ${m.name}`}
@@ -152,6 +165,7 @@ export function Plugins({ client, status, onOpenStore, onOpenImport }: {
                   <div class="lp-row-desc">
                     {m.authors ? `${m.authors} · ` : ""}<span class={`tone-${stateTone(m.state)}`}>{stateText(m.state)}</span>
                     {(m.state === "incompatible" || m.state === "blocked") && m.reason ? <span class="muted"> · {m.reason}</span> : null}
+                    {packText ? <span class={pack?.state === "failed" ? "tone-warn" : "muted"} data-map-pack={pack?.state}> · {packText}</span> : null}
                     {importing ? <span class="muted"> · Importing…{pct !== undefined ? ` ${pct}%` : ""}</span> : null}
                   </div>
                 </div>

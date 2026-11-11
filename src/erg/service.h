@@ -29,6 +29,8 @@ struct Env {
     // Compiles a level script without running it: false with the parser's line and message. Unset in oasis.exe, where
     // only the bytes are checked and the syntax waits for a Test in the game.
     std::function<bool(const std::string& text, int* line, std::string* message)> compile;
+    // The running Melange's version: level.build stamps the pack with its inputs (erg/stamp.h) when set.
+    std::string melangeVersion;
 };
 
 struct Blob {

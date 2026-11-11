@@ -13,6 +13,7 @@
 #include "core/dump_paths.h"
 #include "core/log.h"
 #include "launcher/app.h"
+#include "launcher/autobuild.h"
 #include "launcher/rpc.h"
 #include "launcher/setup/detect.h"
 #include "launcher/setup/engine.h"
@@ -60,52 +61,79 @@ void SetTheme(const Call& c, Result& r, void*) {
     r.json = "{}";
 }
 
-void Launch(const Call&, Result& r, void*) {
+// Starts the game: false with a JSON-RPC code and message when it cannot. *how is "steam" or "exe"; *laa is a 4 GB
+// switch change or "failed:<why>" (reported, never a reason not to launch).
+bool StartGame(std::string* how, std::string* laa, int* code, std::string* message) {
     const std::wstring game = app::GameDir();
-    if (game.empty()) return Fail(r, -32000, "Choose your game folder first.");
-    if (!FileExists(game + L"\\WormsMayhem.exe")) return Fail(r, -32000, "WormsMayhem.exe isn't in this folder.");
-    if (setup::GameRunning(game)) return Fail(r, -32000, "The game is already running.");
+    auto fail = [&](int c, const std::string& m) {
+        *code = c;
+        *message = m;
+        return false;
+    };
+    if (game.empty()) return fail(-32000, "Choose your game folder first.");
+    if (!FileExists(game + L"\\WormsMayhem.exe")) return fail(-32000, "WormsMayhem.exe isn't in this folder.");
+    if (setup::GameRunning(game)) return fail(-32000, "The game is already running.");
     // A Store job (an install, or the compatibility sweep updating a plugin) is changing Mods\ right now.
-    if (store::GetStatus().busy) return Fail(r, -32002, "Melange is updating your plugins. Try again in a moment.");
+    if (store::GetStatus().busy) return fail(-32002, "Melange is updating your plugins. Try again in a moment.");
     // The 4 GB mode follows Melange.ini just before the game starts, so Steam's "Verify files" (which restores the
     // stock exe) is undone here. A failure is reported, never a reason not to launch.
-    std::string laa;
     {
         const bool want = setup::IniWantsLaa(game);
         std::unique_lock lk(app::Tx(), std::try_to_lock);   // not while an install or a repair is writing the folder
         if (!lk.owns_lock()) {
-            laa = "failed:" + app::BusyMessage();
+            *laa = "failed:" + app::BusyMessage();
         } else if (want || setup::LaaMarkerPresent(game)) {
             const setup::LaaResult res = setup::EnsureLaa(app::MakeContext(), want);
             if (!res.ok) {
                 LOG_WARN("[laa] not applied at launch: %s", res.message.c_str());
-                laa = "failed:" + res.message;
+                *laa = "failed:" + res.message;
             } else if (res.changed) {
-                laa = res.state;
+                *laa = res.state;
             }
         }
     }
-    auto done = [&](const char* how) {
-        jsonmini::Obj o;
-        o.Str("how", how);
-        if (!laa.empty()) o.Str("laa", laa);
-        r.json = o.End();
-    };
     if (setup::StoreOf(game, setup::SystemRegistry()) == "steam") {
         const auto h = reinterpret_cast<INT_PTR>(ShellExecuteW(app::Window(), L"open", L"steam://rungameid/70600", nullptr, nullptr, SW_SHOWNORMAL));
-        if (h <= 32) return Fail(r, -32000, "Steam didn't start the game. Is Steam installed?");
-        done("steam");
-        return;
+        if (h <= 32) return fail(-32000, "Steam didn't start the game. Is Steam installed?");
+        *how = "steam";
+        return true;
     }
     std::wstring cmd = L"\"" + game + L"\\WormsMayhem.exe\"";
     STARTUPINFOW si{};
     si.cb = sizeof si;
     PROCESS_INFORMATION pi{};
     if (!CreateProcessW(nullptr, cmd.data(), nullptr, nullptr, FALSE, 0, nullptr, game.c_str(), &si, &pi))
-        return Fail(r, -32000, "Could not start the game: " + Win32Message(GetLastError()));
+        return fail(-32000, "Could not start the game: " + Win32Message(GetLastError()));
     CloseHandle(pi.hThread);
     CloseHandle(pi.hProcess);
-    done("exe");
+    *how = "exe";
+    return true;
+}
+
+void Launch(const Call&, Result& r, void*) {
+    const std::wstring game = app::GameDir();
+    if (game.empty()) return Fail(r, -32000, "Choose your game folder first.");
+    if (!FileExists(game + L"\\WormsMayhem.exe")) return Fail(r, -32000, "WormsMayhem.exe isn't in this folder.");
+    if (setup::GameRunning(game)) return Fail(r, -32000, "The game is already running.");
+    if (store::GetStatus().busy) return Fail(r, -32002, "Melange is updating your plugins. Try again in a moment.");
+    // Map packs to build first (autobuild.h): the game starts by itself once they are done, and the page follows the
+    // "maps" channel meanwhile.
+    if (autobuild::DeferLaunch([] {
+            std::string how, laa, message;
+            int code = 0;
+            const bool ok = StartGame(&how, &laa, &code, &message);
+            autobuild::LaunchDone(ok, message);
+        })) {
+        r.json = jsonmini::Obj().Str("how", "after-build").End();
+        return;
+    }
+    std::string how, laa, message;
+    int code = 0;
+    if (!StartGame(&how, &laa, &code, &message)) return Fail(r, code, message);
+    jsonmini::Obj o;
+    o.Str("how", how);
+    if (!laa.empty()) o.Str("laa", laa);
+    r.json = o.End();
 }
 
 void OpenPath(const Call& c, Result& r, void*) {

@@ -560,3 +560,41 @@ export function launchLaaFailure(v: unknown): string | undefined {
   const l = strOpt(obj(v), "laa");
   return l !== undefined && l.startsWith("failed:") ? l.slice(7).trim() || "unknown reason" : undefined;
 }
+
+// -- Map packs built by Melange.exe (`maps.status`, the "maps" channel; src/launcher/autobuild.h) ------------------
+// Every enabled plugin whose maps ship as Erg source, with its build state. `active` while a batch runs (`step` of
+// `of`, `current` the pack's name); `waitingLaunch` while a launch waits for it. The channel also sends
+// {launch: {ok, error}} when that waiting launch has run.
+export type MapPackState = "built" | "missing" | "stale" | "failed" | "queued" | "building" | "none";
+export interface MapPack { id: string; name: string; state: MapPackState; error?: string; }
+export interface MapsStatus { enabled: boolean; active: boolean; step: number; of: number; current: string; waitingLaunch: boolean; packs: MapPack[]; }
+export interface MapsEvent { status?: MapsStatus; launch?: { ok: boolean; error?: string }; }
+
+const MAP_STATES: MapPackState[] = ["built", "missing", "stale", "failed", "queued", "building", "none"];
+
+export function mapsStatusOf(v: unknown): MapsStatus {
+  const o = obj(v);
+  return {
+    enabled: o.enabled !== false, active: bool(o, "active"), step: num(o, "step"), of: num(o, "of"), current: str(o, "current"),
+    waitingLaunch: bool(o, "waitingLaunch"),
+    packs: arr(o, "packs").map((p) => {
+      const q = obj(p);
+      const s = str(q, "state") as MapPackState;
+      return { id: str(q, "id"), name: str(q, "name") || str(q, "id"), state: MAP_STATES.includes(s) ? s : "none", error: strOpt(q, "error") || undefined };
+    }).filter((p) => p.id),
+  };
+}
+
+export function mapsEventOf(v: unknown): MapsEvent {
+  const o = obj(v);
+  const out: MapsEvent = {};
+  if (o.status && typeof o.status === "object") out.status = mapsStatusOf(o.status);
+  if (o.launch && typeof o.launch === "object") {
+    const l = obj(o.launch);
+    out.launch = { ok: bool(l, "ok"), error: strOpt(l, "error") || undefined };
+  }
+  return out;
+}
+
+// launcher.launch answers {how: "after-build"} when the game waits for map packs to be built first.
+export function launchWaitsForMaps(v: unknown): boolean { return str(obj(v), "how") === "after-build"; }

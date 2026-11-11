@@ -24,7 +24,8 @@ Opening the panel lists the game's own multiplayer maps and any project you
 already started; pick one to start a new project from it, or an existing project to keep going. **Save** (Ctrl+S)
 writes the project atomically; until then your edits and the undo history live in the page, and unsaved edits come
 back as a draft if you reload it. Only one server (the game or `Melange.exe`, not both) can have a given project open at
-a time. Map packs that ship only their patches (see Export) are listed at the top with a **Build** button.
+a time. Map packs that ship only their patches (see Export) are listed at the top with a **Build** button; `Melange.exe`
+builds them by itself before the game starts (see [Building map packs automatically](#building-map-packs-automatically)).
 
 ## The view and tools
 
@@ -483,9 +484,27 @@ Either way you give the export a mod id, a display name and a version; exporting
 adds the new map alongside any others already in it (or updates it, if you export the same map again). Whether it
 needs a restart is covered under [Live packs](#live-packs); the dialog tells you.
 
-If you choose Source, the recipient enables the mod and either presses *Build* in Erg or runs its `build.ps1`, which
-needs nothing but their own game install; either produces byte-identical files to what Install would have written
-on your machine.
+If you choose Source, the recipient needs to do nothing: `Melange.exe` builds the pack the next time it starts (or
+before it launches the game), see below. Pressing *Build* in Erg or running its `build.ps1` does the same by hand. It
+needs nothing but their own game install, and every way produces byte-identical files to what Install would have
+written on your machine.
+
+### Building map packs automatically
+
+When `Melange.exe` starts, after the Store installs or updates a plugin, after a plugin is switched on, and when you
+press *Launch game*, it checks every enabled map pack whose maps ship as source (`levels` entries with a `source`
+patch) and builds the ones that are not built yet or are out of date, through the same `level.build` the *Build*
+button calls. Each build records what it was built from in `Mods\<id>\.ergbuild.json` (the sha256 of the Melange
+version, the game exe's size, `spice.json`, every source patch and every mesh bank); a pack is rebuilt only when one
+of those changes, so a second start builds nothing. The stamp sits in the mod's root folder, outside its assets, so it
+never changes the pack's multiplayer content hash.
+
+- A line over every page says what is happening ("Building map pack Foldspace (1/2)…"); a launch waits for the
+  builds and starts the game by itself once they end, whatever their outcome. `launcher.log` has `[maps]` lines.
+- Nothing is built while the game is running (the build writes under `Mods\`): the check waits until it closes.
+- A pack whose build fails stays not built, with its error on the Plugins page and the status line; it is not tried
+  again until the pack, Melange or the game changes, or you press *Build* in Erg. Other packs and the launch go on.
+- `[Erg] AutoBuildMaps=0` in `Melange.ini` turns this off (default `1`); the *Build* button keeps working.
 
 ## Playing an exported map
 
@@ -564,7 +583,8 @@ Survivor copy. Packs exported by an earlier Melange keep working unchanged.
 
 - **A map you enabled doesn't show up:** it needs a restart after being enabled, like any content mod; check the
   Mods page for "restart required".
-- **"Not built"** on a Source-form mod: press *Build* in Erg, or run the mod's `build.ps1`, then restart.
+- **"Not built"** on a Source-form mod: start the game from `Melange.exe`, which builds it first; or press *Build* in
+  Erg, or run the mod's `build.ps1`, then restart. If it stays not built, the Plugins page in `Melange.exe` shows why.
 - **Test is greyed out or missing:** the game needs to be running, sitting at the main menu, and not in a lobby;
   `Melange.exe` has no Test.
 - **A map is missing online, or a teammate's start is held:** everyone needs the exact same version of the mod; check

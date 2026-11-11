@@ -388,6 +388,63 @@ async function pluginsBusy(browser) {
   }
 }
 
+// Map packs Melange.exe builds by itself (src/launcher/autobuild.h): Launch game waits for an unbuilt pack, the status
+// line counts the build, the game starts by itself after it; a failed pack warns and does not hold the launch.
+async function mapsAutoBuild(browser) {
+  const mock = await startMock({ root, launcher: true });
+  const { page, errors } = await openPage(browser, mock, "maps-build");
+  try {
+    await attempt("maps: Plugins says an unbuilt pack is built before the game starts", async () => {
+      await page.waitForSelector(".la", { timeout: 10000 });
+      check("maps: no status line while nothing is building", (await page.locator("[data-maps-status]").count()) === 0);
+      await page.locator('[data-page-tab="plugins"]').click();
+      await page.waitForSelector('[data-plugin="big-crates"] [data-map-pack="missing"]', { timeout: 10000 });
+      const t = (await page.locator('[data-plugin="big-crates"] [data-map-pack]').textContent()) ?? "";
+      check("maps: the row says Melange builds it", /builds them before the game starts/.test(t), t);
+    });
+    await attempt("maps: Launch game builds first, shows progress, then starts the game", async () => {
+      await page.locator(".la-launch").click();
+      await page.waitForSelector('[data-maps-status="building"]', { timeout: 5000 });
+      await page.waitForFunction(() => /Big Crates/.test(document.querySelector("[data-maps-status]")?.textContent ?? ""), undefined, { timeout: 5000 });
+      const line = (await page.locator("[data-maps-status]").textContent()) ?? "";
+      check("maps: the status line names the pack and counts", /Building map pack Big Crates \(1\/1\)…/.test(line), line);
+      check("maps: the launch button says it is building", /Building maps/.test((await page.locator(".la-launch").textContent()) ?? ""));
+      check("maps: the game has not started yet", mock.state.launcher.launched === 0);
+      await shot(page, "40-maps-building");
+      await page.waitForSelector('[data-plugin="big-crates"] [data-map-pack="building"]', { timeout: 5000 });
+      await page.waitForFunction(() => !document.querySelector("[data-maps-status]"), undefined, { timeout: 10000 });
+      check("maps: the game started after the build", mock.state.launcher.launched === 1);
+      check("maps: the row no longer says not built", (await page.locator('[data-plugin="big-crates"] [data-map-pack]').count()) === 0);
+      check("maps: the launch button is back", !(await page.locator(".la-launch").isDisabled()));
+      check("maps: no launch error", !(await page.locator(".la-launch").getAttribute("title")));
+    });
+    check("maps-build scenario: no page errors", errors.length === 0, errors.join(" | "));
+  } finally {
+    await page.close();
+    await mock.close();
+  }
+  const mock2 = await startMock({ root, launcher: true });
+  const f = await openPage(browser, mock2, "maps-failed");
+  try {
+    await attempt("maps: a failed pack warns, keeps its error on Plugins, and never holds the launch", async () => {
+      await f.page.waitForSelector('[data-maps-status="note"]', { timeout: 10000 });
+      const line = (await f.page.locator("[data-maps-status]").textContent()) ?? "";
+      check("maps: the warning names the pack and its error", /Big Crates could not be built: caldera: the base level's sha256/.test(line), line);
+      await f.page.locator('[data-page-tab="plugins"]').click();
+      await f.page.waitForSelector('[data-plugin="big-crates"] [data-map-pack="failed"]', { timeout: 10000 });
+      check("maps: the row keeps the error", /sha256 does not match/.test((await f.page.locator('[data-plugin="big-crates"] [data-map-pack]').textContent()) ?? ""));
+      await shot(f.page, "41-maps-failed");
+      await f.page.locator(".la-launch").click();
+      await f.page.waitForTimeout(300);
+      check("maps: the game started at once", mock2.state.launcher.launched === 1);
+    });
+    check("maps-failed scenario: no page errors", f.errors.length === 0, f.errors.join(" | "));
+  } finally {
+    await f.page.close();
+    await mock2.close();
+  }
+}
+
 // -- Local content importer (spec §12): the Import page, against web/test/e2e/import-mock.mjs's "caravan" fixture --
 
 async function openImportPage(browser, importScenario) {
@@ -810,7 +867,7 @@ async function displaySettings(browser) {
 const browser = await chromium.launch({ channel: "msedge", headless: true });
 try {
   for (const scenario of [
-    foundInstallRecommended, notFound, wrongBuild, ualPresent, reshadeBackupAndRestore, installedHome, oasisLinks, helpExportLogs, pluginsBusy,
+    foundInstallRecommended, notFound, wrongBuild, ualPresent, reshadeBackupAndRestore, installedHome, oasisLinks, helpExportLogs, pluginsBusy, mapsAutoBuild,
     importDownloadFlow, importLocalFileFlow, importHashErrorFlow, importCancelFlow, importStaleAndDamaged, updateReady, restoreVanilla, displaySettings,
   ]) {
     try {

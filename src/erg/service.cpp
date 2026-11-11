@@ -1,4 +1,5 @@
 #include "erg/service.h"
+#include "erg/stamp.h"
 
 #include <algorithm>
 #include <cctype>
@@ -1050,9 +1051,23 @@ struct Service::Impl {
             o.set("files", std::move(files));
             levels.arr.push_back(std::move(o));
         }
+        // Every level is written: record what they were built from, so Melange.exe knows the pack is built
+        // (a stamp that cannot be written only means the next start builds it again).
+        bool stamped = false;
+        if (!env.melangeVersion.empty()) {
+            stamp::Record rec;
+            std::string why;
+            if (stamp::Inputs(dir, m, env.melangeVersion, env.gameDir, &rec.inputs, &why)) {
+                rec.ok = true;
+                rec.melange = env.melangeVersion;
+                rec.at = stamp::Now();
+                stamped = stamp::Write(dir, rec);
+            }
+        }
         Json out = Json::Obj();
         out.set("modId", Str(modId));
         out.set("dir", Str(install::Narrow(dir)));
+        out.set("stamped", Json::Bool(stamped));
         out.set("levels", std::move(levels));
         out.set("skipped", std::move(skipped));
         return Ok(out);
