@@ -1146,7 +1146,7 @@ New tool group `meshbank` (`src/tools/meshbank.ts`; pure code in `src/lib/slope-
   - The shader is copied from the game's HORROR5 (`Bundl31.xom`) with the new texture.
   - The copied `XMaterial` is then made **matte**: Specular and Fresnel go from 0.3/0.275/0.175 at power 8 to 0. That sheen is what made the round-9 stacks read as glossy crystal under Sunstone's Blinn-Phong.
 - The banks are built output (they carry a copy of the game's shader). They are not committed. Build them with `tools\node\node.exe tools\erg-mcp\bench\caldera\meshes\build.mjs <outDir>`.
-- **To ship** them, the Caldera pack must list them: copy the banks to `pack/assets/meshes/` and add `"meshes": [{"file": "assets/meshes/caldera.Boulder.xom"}, ...]` to `pack/spice.json`. `build.mjs`'s export writes that manifest, so this is the reconcile step on erg-mcp (not done here).
+- **To ship** them, the Caldera pack must list them under `meshes` in `pack/spice.json`. `ship.mjs` does that, and puts every mesh the level names into **one bank**, `assets/meshes/caldera.Rocks.xom` (`meshes/merge.mjs`): every bank a pack lists takes one of the 44 mod mesh sections all enabled mods share, so a map ships one bank, not one per mesh (Caldera's 8 banks left 2 of Kindjal's 38 unloaded). `ship.mjs --banks-only` re-ships the banks into the existing pack without an export.
 - Without the banks, the copies draw nothing. The level still loads, but the rock layer is missing.
 
 Bench (`detail.mjs`; `build.mjs` and `terrain.mjs` are unchanged):
