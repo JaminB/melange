@@ -227,6 +227,8 @@ the miss is frame-wise and state-dependent, not a matter of material, scale, hei
 own sweep carries between calls that Melange's does not (the land's broadphase mask and ray cache, which LandRay saves
 and restores around its own calls) was not pinned down. Landing thrown mines at Melange's own sweep hit is the fix at
 the layer Melange owns; the engine's drops and the game's own placement are untouched.
+The cause was found on 2026-11-10 (below, **Why ground let things through**): the land broadphase's frame mask
+goes out of step on a map whose base frames were removed, and Melange fixes it since then (`[LevelLandMask]`).
 
 **Ground a mine falls through.** A mine does not always stop on the voxels a worm stands on. On Caldera (2026-11-09,
 testenv B, erg-mcp's `game_mine_drop`: one mine dropped 8 map units over each point) the crater's draped skin let most
@@ -243,6 +245,21 @@ blocks' edges away from it, mines held. A test island's corners of 2 x 2 skin bl
 voxels thick) held every mine, so not every such corner does it and the cause is in the engine. erg-mcp's `check_trail`
 lists the skin corners near a trail and `game_mine_drop {trails}` probes a trail's centre and shoulders before worms
 are walked on it.
+
+**Why ground let things through (fixed).** The landscape keeps a tree of boxes over its frames; a sweep's broadphase
+walks it and writes one bit per land frame, and the sweep then tests the frames whose bit is set. A tree node that
+misses writes as many clear bits as it has land frames under it, but a leaf that passes always writes one set bit.
+In the game's own maps every leaf is a land frame (Multi.DinerMight: 517 of 517). Base frames Erg empties
+(`remove_base_frames`) are no longer land frames, yet the engine keeps some of them in the tree as leaves with no frame
+(Caldera: 69 of 157 leaves, the diner's old props inside the volcano). A sweep that passed one wrote a bit too many,
+every later land frame was tested in its neighbour's place, and the frames the sweep crossed were never tested: a
+straight drop over the crater floor hit it when it ended above world y 25 and hit nothing when it reached y 0, where
+an emptied diner frame's box starts. At a Caldera match start 66 columns of a 1-unit lattice had no ground at all,
+Air Strike bombs and the Concrete Donkey fell through the crater's skin and the shell under it to the sea, and mines
+fell through pads; a payload's parabolic sweep culls by the plane of its flight, so where that happened depended on
+its path (the "state" above). Melange's `LevelLandMask` module (on by default) sends such a leaf down the missed path,
+so it writes no bit; it acts only while a pack or Test level plays, and a tree with no such leaf sweeps exactly as
+before. With it the same scan found 0 no-ground columns (and 0 on a half-unit lattice).
 
 The target and the idle turns are the game's shared `kMineFactoryData`: Melange writes them when the map's match is
 set up and puts the game's values back when it ends, so no other map (and no other player's match) sees them. They
