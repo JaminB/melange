@@ -37,7 +37,7 @@ try {
   // too): the level camera low over the SW, drawn with the level's own sea and haze and the layer's meshes
   await call("set_level_camera", { view: "sw", elevation: 20, target: [0, 18, 0], fit: "island", margin: 1 });
   say("thumbnail", (await call("set_level_thumbnail", { render: { antialias: true, tints: true, waterLook: true, scenery: true }, size: 512 }, { soft: true })).text.slice(0, 120).replace(/\s+/g, " "));
-  const ex = await call("export", { modId: MOD, name: "Dustcrown", version: VERSION, mode: "source", survivor: false });
+  const ex = await call("export", { modId: MOD, name: "Dustcrown", version: VERSION, mode: "source", survivor: false, timeOfDay: "DAY" });
   gate = ex.json?.gate ?? null;
   say("export", ex.text.slice(0, 300));
   if (!gate?.gated) throw new Error(`the export's range is not gated: ${JSON.stringify(gate)}`);
