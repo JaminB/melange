@@ -2,19 +2,26 @@
 // Every new setting is off by default: the old calls give the old voxels.
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { readFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { test } from "node:test";
 // @ts-ignore: plain ESM test helper
 import { syntheticBlobs } from "../../../web/test/e2e/erg-mock.mjs";
 import { EditorStore, isSolid, material, maskOf, secondOf, type Loaded, type Scene } from "../src/core";
 import { applyDrape, planDrape } from "../src/lib/heightfield-drape";
 import { apply, planFit } from "../src/lib/heightfield-plan";
+import { IDENTITY, applyGrade, fitGrade, gradeMaterial, parseGrade } from "../src/lib/grade";
+import { colourDistance, facesOf, nearestMaterials } from "../src/lib/materials";
+import { assignSections, compareSets, freeBuiltSections, loadOrder, type BankIn, type ModIn } from "../src/lib/meshbank-lint";
 import { grids } from "../src/lib/voxel";
 import { validate } from "../src/registry";
 import { doorway, flatTunnel, tunnel } from "../src/lib/structures-shapes";
 import { tools as heightTools } from "../src/tools/heightline";
+import { tools as inspectTools } from "../src/tools/inspect";
 import { tools as mesaTools } from "../src/tools/mesa";
 import { tools as placeTools } from "../src/tools/place";
+import { tools as renderTools } from "../src/tools/render";
 import { tools as structureTools } from "../src/tools/structures";
 import type { Session } from "../src/session";
 
@@ -277,4 +284,179 @@ test("drape coast: the columns that dip to the sea take rimMaterial, before the 
   assert.equal((p3.report as any).coast.columns, 0);
   assert.deepEqual(words(st3), words(st0));
   assert.throws(() => planDrape(newStore(), { ...args, coast: { seaLevel: 2, rimMaterial: 99 } }), /rimMaterial/);
+});
+
+// ------------------------------------------------------------------ materials: the sides' colours
+
+/** A session whose server answers level.materials with tops and sides: 0 grass (rock sides), 1 rock, 2 sandstone, 3 sand. */
+function matSession(store: EditorStore, sides = true) {
+  const names = ["grass01", "rock01", "sandstone", "sand01"];
+  const colors = ["#4a8a30", "#808080", "#d8b070", "#e8d090"], sideColors = ["#808080", "#808080", "#c8a060", "#e0c888"];
+  const client = { call: async (m: string) => {
+    if (m !== "level.materials") throw new Error(`unexpected ${m}`);
+    return { file: "Maps\\t.txt", names, colors, resolved: [true, true, true, true], ...(sides ? { sideColors, sideResolved: [true, true, true, true] } : {}) };
+  } };
+  store.scene.databank.materialFile = "Maps\\t.txt";
+  return sessionOf(store, { project: { store }, client: async () => client, levels: async () => ({ themes: async () => ({ themes: [], materialFiles: ["Maps\\t.txt"], timesOfDay: [] }) }) });
+}
+
+test("colourDistance, facesOf and nearestMaterials: a wall of grass is rock; the sandstones come first for a sand colour", () => {
+  assert.equal(colourDistance([10, 20, 30], [10, 20, 30]), 0);
+  assert.ok(colourDistance([216, 176, 112], [200, 160, 96]) < 60 && colourDistance([216, 176, 112], [128, 128, 128]) > 100);
+  const rgb = (h: string) => [1, 3, 5].map((i) => parseInt(h.slice(i, i + 2), 16)) as [number, number, number];
+  const set = { file: "f", names: ["grass01", "rock01", "sandstone", "sand01"], colors: ["#4a8a30", "#808080", "#d8b070", "#e8d090"].map(rgb), resolved: [true, true, true, true],
+    side: ["#808080", "#808080", "#c8a060", "#e0c888"].map(rgb), sideResolved: [true, true, true, false] };
+  assert.equal(facesOf(set, 0).sideDiffers, true);
+  assert.equal(facesOf(set, 2).sideDiffers, false);
+  assert.equal(facesOf({ ...set, side: null }, 0).sideDiffers, false);
+  assert.deepEqual(nearestMaterials(set, rgb("#d0a868"), "side", 2).map((x) => x.name), ["sandstone", "grass01"], "sand01's side texture was not found: left out");
+  assert.deepEqual(nearestMaterials(set, rgb("#d0a868"), "top", 2).map((x) => x.name), ["sandstone", "sand01"]);
+  assert.deepEqual(nearestMaterials({ ...set, side: null }, rgb("#d0a868"), "side"), []);
+});
+
+test("list_materials: sideColour and sideDiffers per material, `like` finds a family; a server without sides answers as before", async () => {
+  const r = await callTool(inspectTools, "list_materials", matSession(newStore()), { only: "materials", like: "#d0a868" });
+  const list = r.materials.list;
+  assert.equal(list[0].sideColour, "#808080");
+  assert.equal(list[0].sideDiffers, true);
+  assert.equal(list[2].sideDiffers, undefined);
+  assert.equal(r.materials.nearest.face, "side");
+  assert.deepEqual(r.materials.nearest.materials.slice(0, 2).map((x: any) => x.index), [2, 3]);
+  const old = await callTool(inspectTools, "list_materials", matSession(newStore(), false), { only: "materials" });
+  assert.equal(old.materials.list[0].sideColour, undefined);
+  assert.equal(old.materials.sides, undefined);
+  assert.equal(old.materials.nearest, undefined);
+  await assert.rejects(callTool(inspectTools, "list_materials", matSession(newStore()), { only: "materials", like: "sand" }), /#rrggbb/);
+});
+
+test("build_mesa cliffLook: the bands' side colours, and a warning for a band whose sides are another material", async () => {
+  const bands = { strata: { step: 3, bands: [{ material: 0, thickness: 3 }, { material: 2, thickness: 3 }] } };
+  const r = await callTool(mesaTools, "build_mesa", matSession(newStore()), { ...MESA, ...bands, costOnly: true });
+  assert.deepEqual(r.cliffLook.materials.map((m: any) => [m.material, m.side, !!m.sideDiffers]), [[0, "#808080", true], [2, "#c8a060", false]]);
+  assert.match(r.cliffLook.warning, /0 \(grass01\) has sides/);
+  const ok = await callTool(mesaTools, "build_mesa", matSession(newStore()), { ...MESA, strata: { step: 3, bands: [{ material: 2, thickness: 3 }] }, costOnly: true });
+  assert.equal(ok.cliffLook.warning, undefined);
+  // no side colours from the server, or no bands: no cliffLook
+  assert.equal((await callTool(mesaTools, "build_mesa", matSession(newStore(), false), { ...MESA, ...bands, costOnly: true })).cliffLook, undefined);
+  assert.equal((await callTool(mesaTools, "build_mesa", sessionOf(newStore()), { ...MESA, costOnly: true })).cliffLook, undefined);
+});
+
+// ------------------------------------------------------------------ look grade, side textures in render_view
+
+test("fitGrade: recovers a gain and a saturation change from pairs; few pairs stay near the identity; parseGrade", () => {
+  // the "game": an affine map in linear light
+  const lin = (v: number) => { const c = v / 255; return c <= 0.04045 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4; };
+  const srgb = (v: number) => { const c = Math.max(0, Math.min(1, v)); return Math.round(255 * (c <= 0.0031308 ? c * 12.92 : 1.055 * c ** (1 / 2.4) - 0.055)); };
+  const game = (c: number[]) => [srgb(0.8 * lin(c[0]) + 0.02), srgb(1.1 * lin(c[1])), srgb(0.7 * lin(c[2]))] as [number, number, number];
+  const from: [number, number, number][] = [[216, 173, 106], [232, 208, 144], [128, 128, 128], [74, 138, 48], [60, 60, 90], [200, 80, 60], [150, 170, 160], [30, 30, 30]];
+  const g = fitGrade(from.map((c) => ({ from: c, to: game(c) })), { ridge: 1e-6, source: "test" });
+  assert.ok(g.residual < 2, `residual ${g.residual}`);
+  assert.equal(g.saturation, 1);
+  assert.deepEqual(g.gain!.map((v) => Math.round(v * 10) / 10), [0.8, 1.1, 0.7]);
+  // a saturation boost is found as one: grey stays grey, an ochre loses blue
+  const satUp = (c: number[]) => { const l = c.map(lin), L = 0.2126 * l[0] + 0.7152 * l[1] + 0.0722 * l[2]; return l.map((v) => srgb(L + 1.3 * (v - L))) as [number, number, number]; };
+  const gs = fitGrade(from.map((c) => ({ from: c, to: satUp(c) })), { ridge: 1e-6 });
+  assert.ok(Math.abs(gs.saturation! - 1.3) < 0.06 && gs.residual < 3, JSON.stringify(gs));
+  assert.deepEqual(applyGrade(gs, [128, 128, 128]).map((v) => Math.abs(v - 128) <= 2), [true, true, true]);
+  assert.ok(applyGrade(gs, [216, 173, 106])[2] < 100);
+  // a weightless pair does not pull the fit
+  const odd = fitGrade([...from.map((c) => ({ from: c, to: satUp(c) })), { from: [10, 200, 30] as [number, number, number], to: [255, 0, 255] as [number, number, number], weight: 0 }], { ridge: 1e-6 });
+  assert.ok(Math.abs(odd.saturation! - 1.3) < 0.06);
+  // gradeMaterial: a measured material still in its colour takes the game's colour; a changed one the fit (the tinted fit)
+  const gm = { ...g, measured: [{ material: 9, from: [216, 173, 106] as [number, number, number], to: [212, 176, 62] as [number, number, number], tinted: true }], tint: { m: [[1, 0, 0, 0], [0, 1, 0, 0], [0, 0, 0.5, 0]], pairs: 2, residual: 1 } };
+  assert.deepEqual(gradeMaterial(gm, 9, [217, 172, 106]), [212, 176, 62]);
+  assert.deepEqual(gradeMaterial(gm, 9, [150, 120, 90]), applyGrade(g, [150, 120, 90]));
+  assert.deepEqual(gradeMaterial(gm, 9, [150, 120, 90], true), applyGrade({ ...g, m: gm.tint.m }, [150, 120, 90]));
+  assert.deepEqual(gradeMaterial(gm, 4, [216, 173, 106]), applyGrade(g, [216, 173, 106]));
+  assert.equal(parseGrade(JSON.stringify({ grade: gm })).measured!.length, 1);
+  const q = applyGrade(g, [180, 150, 90]), want = game([180, 150, 90]);
+  assert.ok(q.every((v, i) => Math.abs(v - want[i]) <= 3), `${q} vs ${want}`);
+  assert.deepEqual(applyGrade(IDENTITY, [12, 200, 77]), [12, 200, 77]);
+  // two near-identical pairs cannot make a wild map: a far colour moves less than the pairs did
+  const few = fitGrade([{ from: [200, 160, 100], to: [230, 150, 60] }, { from: [205, 165, 100], to: [234, 155, 62] }]);
+  const far = applyGrade(few, [40, 60, 200]);
+  assert.ok(Math.abs(far[2] - 200) < 60 && far.every((v) => v >= 0 && v <= 255), String(far));
+  assert.throws(() => fitGrade([{ from: [1, 2, 3], to: [1, 2, 3] }]), /two/);
+  assert.deepEqual(parseGrade(JSON.stringify({ grade: g })).m, g.m);
+  assert.throws(() => parseGrade("{}"), /three rows/);
+});
+
+test("render_view grade and sideTextures: the picture changes only when asked; a missing grade is refused", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "erg-grade-"));
+  try {
+    const file = join(dir, "g.json");
+    writeFileSync(file, JSON.stringify({ grade: { m: [[1.4, 0, 0, 0], [0, 0.8, 0, 0], [0, 0, 0.5, 0]], pairs: 3, residual: 1, source: "test" } }));
+    const pic = async (s: Session, extra: Record<string, unknown>) => {
+      const t = renderTools.find((x) => x.name === "render_view")!;
+      assert.equal(validate(t.inputSchema as never, { width: 160, height: 90, markers: false, ...extra }), null);
+      const r: any = await t.handler(s, { width: 160, height: 90, markers: false, ...extra } as never);
+      return { png: createHash("sha1").update(Buffer.from(r.content[0].data, "base64")).digest("hex"), info: JSON.parse(r.content[1].text) };
+    };
+    const store = newStore();
+    const plain = await pic(matSession(store), {}), again = await pic(matSession(store), {});
+    assert.equal(plain.png, again.png);
+    assert.equal(plain.info.grade, undefined);
+    assert.equal(plain.info.sideTextures, undefined);
+    const graded = await pic(matSession(store), { grade: file });
+    assert.notEqual(graded.png, plain.png);
+    assert.equal(graded.info.grade.pairs, 3);
+    const sided = await pic(matSession(store), { sideTextures: true });
+    assert.notEqual(sided.png, plain.png);
+    assert.match(sided.info.sideTextures, /side texture/);
+    // a server without side colours draws as before, and says so
+    const old = await pic(matSession(store, false), { sideTextures: true }), oldPlain = await pic(matSession(store, false), {});
+    assert.equal(old.png, oldPlain.png);
+    assert.match(old.info.sideTextures, /no side colours/);
+    await assert.rejects(pic(matSession(store), { grade: join(dir, "none.json") }), /neither a built-in grade/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// ------------------------------------------------------------------ lint_mesh_banks
+
+test("assignSections: a bank keeps its built section while it is free, else the first free; past 44 nothing loads", () => {
+  const bank = (mod: string, n: number, section: number | null): BankIn => ({ mod, file: `b${n}.xom`, section, meshes: [`${mod}.M${n}`] });
+  // kindjal's 38 banks on 476..513, then a map's bank built on 486
+  const kindjal = Array.from({ length: 38 }, (_, i) => bank("kindjal", i, 476 + i));
+  const a = assignSections([...kindjal, bank("dustcrown", 0, 486)]);
+  assert.equal(a.relocated, 1);
+  const moved = a.banks.find((b) => b.mod === "dustcrown")!;
+  assert.equal(moved.resolved, 514);
+  assert.match(moved.why!, /section 486 is taken by kindjal\/b10\.xom/);
+  assert.equal(a.used, 39);
+  assert.equal(a.free, 5);
+  // the other way round the map keeps 486, kindjal's eleventh bank takes the next free one (487), which is the
+  // twelfth's, and so on: every bank from there moves up one
+  const b = assignSections([bank("dustcrown", 0, 486), ...kindjal]);
+  assert.equal(b.banks[0].resolved, 486);
+  const shifted = b.banks.filter((x) => x.relocated);
+  assert.equal(shifted.length, 28);
+  assert.deepEqual([shifted[0].file, shifted[0].resolved, shifted[27].file, shifted[27].resolved], ["b10.xom", 487, "b37.xom", 514]);
+  // built on a section nobody was built on: nothing moves either way
+  assert.equal(assignSections([...kindjal, bank("dustcrown", 0, 515)]).relocated, 0);
+  assert.deepEqual(freeBuiltSections([...kindjal, bank("dustcrown", 0, 486)]), [514, 515, 516, 517, 518, 519]);
+  // the budget: the 45th bank does not load; an unreadable bank burns nothing; a section out of range is moved
+  const many = assignSections(Array.from({ length: 46 }, (_, i) => bank("big", i, 476 + (i % 44))));
+  assert.equal(many.notLoaded, 2);
+  assert.equal(many.used, 44);
+  const odd = assignSections([{ ...bank("m", 0, null), error: "the file is missing" }, bank("m", 1, 30), { ...bank("m", 2, 500), meshes: ["other.X"] }]);
+  assert.deepEqual(odd.banks.map((x) => x.resolved), [null, 476, null]);
+  assert.match(odd.banks[2].why!, /outside the mod's own names/);
+  assert.deepEqual(assignSections([bank("a", 0, 480), { ...bank("b", 0, 481), meshes: ["b.M0"] }, { ...bank("b", 1, 482), meshes: ["b.M0"] }]).duplicateNames.map((d) => d.name), ["b.M0"]);
+});
+
+test("loadOrder: a mod after its dependencies, else by id; compareSets finds a bank that shifts with the plugin set", () => {
+  const mod = (id: string, deps: string[], sections: number[]): ModIn => ({ id, dependencies: deps, banks: sections.map((s, i) => ({ mod: id, file: `${i}.xom`, section: s, meshes: [`${id}.M${i}`] })) });
+  const kindjal = mod("kindjal", [], [476, 486]), sand = mod("sandtide", ["kindjal"], []), map = mod("foldspace", [], [486]), zed = mod("aaa", ["sandtide"], [476]);
+  assert.deepEqual(loadOrder([sand, kindjal, map]).map((m) => m.id), ["foldspace", "kindjal", "sandtide"]);
+  assert.deepEqual(loadOrder([zed, sand, kindjal]).map((m) => m.id), ["kindjal", "sandtide", "aaa"]);
+  const sets = [[map], [map, kindjal, sand]].map((mods, i) => ({ name: `s${i}`, assignment: assignSections(loadOrder(mods).flatMap((m) => m.banks)) }));
+  // foldspace loads first and keeps 486 in both; kindjal's second bank is the one that moves
+  assert.deepEqual(compareSets(sets, "foldspace").map((c) => [c.sections, c.shifts]), [[{ s0: 486, s1: 486 }, false]]);
+  assert.deepEqual(compareSets(sets, "kindjal").map((c) => [c.sections.s1, c.shifts]), [[476, false], [477, true]]);
+  // a map whose id sorts after the other mod is the one that moves
+  const late = mod("zmap", [], [486]);
+  const sets2 = [[late], [late, kindjal]].map((mods, i) => ({ name: `s${i}`, assignment: assignSections(loadOrder(mods).flatMap((m) => m.banks)) }));
+  assert.deepEqual(compareSets(sets2, "zmap").map((c) => [c.sections, c.shifts]), [[{ s0: 486, s1: 477 }, true]]);
 });

@@ -1551,6 +1551,14 @@ void TestService(const std::wstring& root) {
         for (size_t i = 0; hex && i < colors->arr.size(); ++i)
             hex = colors->arr[i].str.size() == 7 && colors->arr[i].str[0] == '#' && resolved->arr[i].kind == Json::Kind::Bool;
         Expect(hex, "materials: colors gives a #rrggbb colour and resolved per record " + r.json.substr(0, 200) + r.message);
+        // the sides' and the underside's textures (a record's second and third lines) have their own colours
+        const Json* side = withColors.find("sideColors");
+        const Json* sideRes = withColors.find("sideResolved");
+        const Json* bottom = withColors.find("bottomColors");
+        bool faces = side && side->arr.size() == 2 && sideRes && sideRes->arr.size() == 2 && bottom && bottom->arr.size() == 2;
+        for (size_t i = 0; faces && i < side->arr.size(); ++i)
+            faces = side->arr[i].str.size() == 7 && side->arr[i].str[0] == '#' && bottom->arr[i].str.size() == 7 && sideRes->arr[i].kind == Json::Kind::Bool;
+        Expect(faces, "materials: colors gives sideColors, sideResolved and bottomColors per record " + r.json.substr(0, 300));
         Expect(Call(S, "level.materials", R"({"file":"Maps\\mats.txt","colors":1})").code == erg::service::kBadParams, "materials: colors is a boolean");
 
         Expect(Call(S, "level.materials", R"({"file":"ThemeCamelot\\ThemeCamelot.txt"})").ok, "materials: a theme's file");

@@ -6,6 +6,11 @@ Erg: spawn areas dealt per match, and the map builder (erg-mcp) grown by a secon
 
 ### Added
 
+- Erg, for test tools: `level.test {level}` starts an **installed pack level** in a Quick Game (its built files, mesh
+  banks and pinned time of day, as from the menus), and `level.test {scheme: {name, fields}}` sets the match's game
+  style in `GM.SchemeData` before the level's set-up reads it, so a plugin that keys on the style (Sandtide's Sandworms)
+  plays in a Test. `level.materials {colors: true}` also answers the colour of the texture a material's sides draw
+  (`sideColors`): a cliff of `grass01` is rock.
 - Erg: **areas dealt per match** (`spawns.mode` `areas`). A level names spawn areas in groups with a deal pattern and
   opposite pairs; each match deals the teams onto areas from its seed, the same on every peer and in a replay
   (see [docs/erg.md](docs/erg.md)). A pack that uses it declares `"melange": {"range": ">=0.15.0"}`; the Erg export

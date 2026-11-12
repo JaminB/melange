@@ -3,6 +3,8 @@
 // a tread that is walkable or a sheer wall, a jitter per step); a talus skirt and strata material bands plus a cap are
 // optional. The surface is src/lib/mesa.ts; the packing, budget and undo are heightfield_region's.
 import { apply, planFit, type FieldArgs } from "../lib/heightfield-plan";
+import { facesOf, projectMaterials } from "../lib/materials";
+import { hex } from "../lib/inspect-png";
 import { mesaField, type MesaArgs } from "../lib/mesa";
 import { spansAt } from "../lib/inspect-field";
 import { ON_SKIN_PREFIX } from "../lib/structures-apply";
@@ -90,11 +92,25 @@ export const tools: Tool[] = [
       const m = mesaField(store, a, extra);
       const p = planFit(store, m.args);
       const out = { mesa: m.info, ...(seat ? { seat } : {}), exclude: m.circles, clip: m.circles };
-      if (a.costOnly || a.dryRun) return { ...out, ...p.report, applied: false };
-      const r = apply(store, p, undefined, a.onSkin ? ON_SKIN_PREFIX : undefined);
-      const u = usage(store);
-      return { ...out, ...p.report, applied: true, added: r.blocks, limits: { newFrames: u.newFrames, voxelCells: u.voxelCells, patchBytes: u.patchBytes, runsPerFrame: u.runsPerFrame },
-        undo: "undo takes the whole mesa out", next: "save" };
+      let result: Record<string, unknown>;
+      if (a.costOnly || a.dryRun) result = { ...out, ...p.report, applied: false };
+      else {
+        const r = apply(store, p, undefined, a.onSkin ? ON_SKIN_PREFIX : undefined);
+        const u = usage(store);
+        result = { ...out, ...p.report, applied: true, added: r.blocks, limits: { newFrames: u.newFrames, voxelCells: u.voxelCells, patchBytes: u.patchBytes, runsPerFrame: u.runsPerFrame },
+          undo: "undo takes the whole mesa out", next: "save" };
+      }
+      // a cliff shows each band's SIDE texture: say what each band's material draws there, and warn where it is not the
+      // material its top is (grass01's sides are rock: a "beds" mesa of sand tops read as grey cobbles in the game).
+      // Asked of the server only when the mesa names materials, after the edit: the answer is as before without them
+      const faceMats = [...new Set([...(a.strata?.bands ?? []).map((b) => b.material), ...(a.material !== undefined ? [a.material] : [])])];
+      if (!faceMats.length) return result;
+      return projectMaterials(s).then((set) => {
+        if (!set?.side) return result;
+        const cliff = faceMats.map((i) => { const f = facesOf(set, i); return { material: i, name: set.names[i] ?? null, top: f.top ? hex(f.top) : null, side: f.side ? hex(f.side) : null, ...(f.sideDiffers ? { sideDiffers: true } : {}) }; });
+        const off = cliff.filter((c) => c.sideDiffers);
+        return { ...result, cliffLook: { materials: cliff, ...(off.length ? { warning: `the cliff shows each material's side texture, and ${off.map((c) => `${c.material} (${c.name})`).join(", ")} ${off.length === 1 ? "has" : "have"} sides that read as another material than the top: pick the bands by sideColour (list_materials {like: "#rrggbb", face: "side"})` } : {}) } };
+      });
     },
   },
 ];

@@ -848,7 +848,9 @@ struct Service::Impl {
 
     // {file, base?, source?, colors?, theme?}: the record names of a level's material file, for second-material paint. A
     // pack level's own Maps\<stem>.txt is read from the pack. colors: true adds each record's colour (the average of its
-    // surface texture, looked up first in the theme's folder) and whether the texture was found ("resolved").
+    // surface texture, looked up first in the theme's folder) and whether the texture was found ("resolved"), and the same
+    // for the texture of its sides ("sideColors", "sideResolved": a record's second line) and of its underside
+    // ("bottomColors": its third).
     Reply Materials(const Json& p) {
         Reply r;
         std::string file, base, source, theme, err;
@@ -885,6 +887,18 @@ struct Service::Impl {
             }
             out.set("colors", std::move(c));
             out.set("resolved", std::move(res));
+            // a voxel's sides draw the record's second texture: a cliff of "grass" is rock
+            Json sc = Json::Arr(), sr = Json::Arr(), bc = Json::Arr();
+            preview::MaterialColors(theme, std::string(txt.begin(), txt.end()), &colors, &resolved, 1);
+            for (size_t i = 0; i < colors.size(); ++i) {
+                sc.arr.push_back(Str(colors[i]));
+                sr.arr.push_back(Json::Bool(resolved[i]));
+            }
+            preview::MaterialColors(theme, std::string(txt.begin(), txt.end()), &colors, &resolved, 2);
+            for (size_t i = 0; i < colors.size(); ++i) bc.arr.push_back(Str(colors[i]));
+            out.set("sideColors", std::move(sc));
+            out.set("sideResolved", std::move(sr));
+            out.set("bottomColors", std::move(bc));
         }
         return Ok(out);
     }

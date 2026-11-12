@@ -6,7 +6,11 @@
 // A clean-room Test (cleanMods, postfx: false) suppresses the sim mods on the Test level and turns the post-FX stack
 // off from the Test's start until it ends, fails or is disarmed; nothing is persisted. {teams: [{human, worms}, ...]}
 // picks the Quick Game's start (a human against a computer team, the default, or 2-4 human teams) and the worms each
-// team has (1-4; the Quick Game's own four when left out).
+// team has (1-4; the Quick Game's own four when left out). {level: "<key>"} arms a level a map pack registered (its
+// built files, its mesh banks and its pinned time of day, as a match from the menus loads it) instead of a project or a
+// game level. {scheme: {name, fields: {<field>: number | bool}}} sets the match's game style: the style's Name and plain
+// fields are written into GM.SchemeData when the match VM is made (levels::test::SetScheme), so a mod that keys on the
+// style plays as it does from the Game Style list; a style's per-weapon ammo is not set (erg-mcp gives weapons).
 #include <windows.h>
 
 #include <array>
@@ -180,12 +184,51 @@ bool ParseTeams(const json::Value& p, std::string* mode, std::array<uint8_t, 4>*
     return true;
 }
 
+// A pack level's key: the frontend's level name, as levels.live and the erg channel give it.
+bool ValidLevelKey(const std::string& k) {
+    if (k.size() < 3 || k.size() > 100) return false;
+    for (char ch : k)
+        if (!std::isalnum(static_cast<unsigned char>(ch)) && ch != '_' && ch != '-' && ch != '.') return false;
+    return true;
+}
+
+// scheme: {name: "FETXT.Scheme.Sandworms", fields: {RoundTime: 300000, SuddenDeath: 1, ...}} as the engine Lua that sets
+// them in GM.SchemeData. Names are identifiers and values numbers or booleans, so nothing of the caller's is code.
+bool ParseScheme(const json::Value& p, std::string* name, std::string* lua, Result& r) {
+    const json::Value* s = p.Get("scheme");
+    if (!s || s->IsNull()) return true;
+    if (!s->IsObject()) return Fail(r, rpc::kBadParams, "scheme: {name, fields: {<field>: number | bool}}");
+    if (!rpc::Str(*s, "name", name, r)) return false;
+    if (name->empty() || name->size() > 64) return Fail(r, rpc::kBadParams, "scheme.name: the style's Name key, 1-64 characters");
+    for (char ch : *name)
+        if (!std::isalnum(static_cast<unsigned char>(ch)) && ch != '.' && ch != '_')
+            return Fail(r, rpc::kBadParams, "scheme.name: letters, digits, '.' and '_' only");
+    std::string body = "local lock, s = EditContainer(\"GM.SchemeData\")\ns.Name = \"" + *name + "\"\n";
+    if (const json::Value* f = s->Get("fields"); f && !f->IsNull()) {
+        if (!f->IsObject() || f->members.size() > 64) return Fail(r, rpc::kBadParams, "scheme.fields: an object of at most 64 fields");
+        for (const auto& [k, v] : f->members) {
+            bool ident = !k.empty() && k.size() <= 32 && std::isalpha(static_cast<unsigned char>(k[0])) && k != "Name";
+            for (char ch : k) ident = ident && std::isalnum(static_cast<unsigned char>(ch));
+            if (!ident) return Fail(r, rpc::kBadParams, "scheme.fields: '" + k + "' is not a field name");
+            if (v.IsBool()) body += "s." + k + " = " + (v.boolean ? "true" : "false") + "\n";
+            else if (v.IsNumber() && v.number >= -1e9 && v.number <= 1e9) {
+                char num[40];
+                snprintf(num, sizeof num, "%.6g", v.number);
+                body += "s." + k + " = " + num + "\n";
+            } else return Fail(r, rpc::kBadParams, "scheme.fields." + k + ": a number or a boolean");
+        }
+    }
+    *lua = body + "CloseContainer(lock)\n";
+    return true;
+}
+
 void Test(const Call& c, Result& r, void*) {
     json::Value p;
-    std::string project, todText, base;
+    std::string project, todText, base, level, schemeName, schemeLua;
     bool cleanMods = false, postfxOn = true;
     if (!rpc::ParseParams(c, &p, r) || !rpc::Str(p, "project", &project, r, false) || !rpc::Str(p, "base", &base, r, false) ||
-        !rpc::Str(p, "tod", &todText, r, false) || !OptFlag(p, "cleanMods", &cleanMods, r))
+        !rpc::Str(p, "level", &level, r, false) || !rpc::Str(p, "tod", &todText, r, false) || !OptFlag(p, "cleanMods", &cleanMods, r) ||
+        !ParseScheme(p, &schemeName, &schemeLua, r))
         return;
     // cleanMods turns post-FX off too unless postfx: true says otherwise.
     postfxOn = !cleanMods;
@@ -193,7 +236,17 @@ void Test(const Call& c, Result& r, void*) {
     std::string mode;
     std::array<uint8_t, 4> worms{};
     if (!ParseTeams(p, &mode, &worms, r)) return;
-    if (project.empty() == base.empty()) {
+    if (!level.empty()) {
+        // a registered pack level: armed as a game level is, but it must be in the registry (Arm checks)
+        if (!project.empty() || !base.empty()) {
+            Fail(r, rpc::kBadParams, "give one of project, base or level");
+            return;
+        }
+        if (!ValidLevelKey(level)) {
+            Fail(r, rpc::kBadParams, "level must be a registered pack level's key (levels.live lists them)");
+            return;
+        }
+    } else if (project.empty() == base.empty()) {
         Fail(r, rpc::kBadParams, "give project (an Erg project) or base (a game level, Multi.<map>, for a baseline with no Erg level)");
         return;
     }
@@ -201,7 +254,7 @@ void Test(const Call& c, Result& r, void*) {
         Fail(r, rpc::kBadParams, "base must be a game level's key, Multi.<map> (list_bases lists them)");
         return;
     }
-    if (base.empty() && !erg::names::ValidSlug(project)) {
+    if (base.empty() && level.empty() && !erg::names::ValidSlug(project)) {
         Fail(r, rpc::kBadParams, "project must match [a-z0-9]{1,24}");
         return;
     }
@@ -223,8 +276,8 @@ void Test(const Call& c, Result& r, void*) {
         Fail(r, rpc::kBusy, "the game is loading a level; try again in a moment");
         return;
     }
-    std::string key = base;
-    if (base.empty()) {
+    std::string key = level.empty() ? base : level;
+    if (key.empty()) {
         std::string stem, title, err;
         if (!BuildTestLevel(project, todText, static_cast<uint64_t>(c.client), &stem, &title, &err)) {
             Fail(r, rpc::kRefused, err);
@@ -239,7 +292,8 @@ void Test(const Call& c, Result& r, void*) {
         }
     }
     if (!levels::ArmNextLevel(key.c_str(), levels::ArmOptions{120, tod, !base.empty()})) {
-        Fail(r, rpc::kRefused, base.empty() ? "could not arm the Test override" : "could not arm the game level (a lobby, or another Test pending)");
+        Fail(r, rpc::kRefused, !level.empty() ? "could not arm the pack level: it is not registered (is its pack enabled and built? levels.live), or a lobby or another Test is pending"
+                               : base.empty() ? "could not arm the Test override" : "could not arm the game level (a lobby, or another Test pending)");
         return;
     }
     {
@@ -248,6 +302,7 @@ void Test(const Call& c, Result& r, void*) {
         g_startMode = mode == erg::quickstart::kModes[0] ? "" : mode;
     }
     levels::test::SetTeamWorms(worms == std::array<uint8_t, 4>{} ? "" : key, worms);
+    levels::test::SetScheme(schemeLua.empty() ? "" : key, schemeName, schemeLua);
     simbridge::SetTestCleanRoom(cleanMods ? key : "");
     if (postfxOn) postfx::SetSuppressed(false);   // a clean room left over from an earlier Test that never ended
     if (cleanMods || !postfxOn)
@@ -262,9 +317,11 @@ void Test(const Call& c, Result& r, void*) {
         g_taps = 0;
     }
     if (!base.empty()) LOG_INFO("[erg] test: a baseline Test of the game's own %s (no Erg level)", key.c_str());
+    if (!level.empty()) LOG_INFO("[erg] test: a Test of the installed pack level %s%s%s", key.c_str(), schemeName.empty() ? "" : " in the game style ", schemeName.c_str());
     jsonmini::Arr wormsOut;
     for (uint8_t w : worms) wormsOut.Raw(std::to_string(w));
     r.json = jsonmini::Obj().Str("key", key).Str("state", quick ? "starting" : "armed").Bool("baseline", !base.empty())
+                 .Bool("packLevel", !level.empty()).Str("scheme", schemeName)
                  .Str("quickStart", mode.empty() ? erg::quickstart::kModes[0] : mode.c_str())
                  .Raw("teamWorms", wormsOut.End())
                  .Raw("cleanRoom", jsonmini::Obj().Bool("simMods", !cleanMods).Bool("postfx", postfxOn).End())
@@ -291,8 +348,10 @@ void Applied(const Call&, Result& r, void*) {
     const levels::test::TodApplied t = levels::test::LastTod();
     jsonmini::Arr mods;
     for (const std::string& id : simbridge::LoadedMods()) mods.Str(id);
+    const levels::test::SchemeApplied sc = levels::test::LastScheme();
     r.json = jsonmini::Obj().Str("key", t.key)
                  .Raw("tod", jsonmini::Obj().Str("asked", t.asked).Bool("applied", t.applied).Str("why", t.why).End())
+                 .Raw("scheme", jsonmini::Obj().Str("name", sc.name).Bool("applied", sc.applied).Str("error", sc.error).End())
                  .Raw("simMods", mods.End()).Raw("factory", levels::factory::ReportJson())
                  .End();
 }

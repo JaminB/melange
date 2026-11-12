@@ -380,6 +380,7 @@ std::string ThemeFolder(const std::string& theme) {
 
 struct MaterialRecord {
     std::string textureRef;  // the record's first line: the surface texture id, e.g. "C01"; "" if none (NULL)
+    std::string faceRef[3];  // its first three lines: the top's texture, the sides' and the underside's ("" for NULL)
 };
 
 // The theme's <ThemeName>.txt: 6-line records separated by blank lines; the first line names the surface texture
@@ -392,6 +393,10 @@ bool ParseMaterialFile(const std::string& text, std::vector<MaterialRecord>* out
             if (!block.empty()) {
                 const std::string tex = Trim(block[0]);
                 if (!tex.empty() && tex != "NULL") r.textureRef = tex;
+                for (size_t f = 0; f < 3 && f < block.size(); ++f) {
+                    const std::string face = Trim(block[f]);
+                    if (!face.empty() && face != "NULL") r.faceRef[f] = face;
+                }
             }
             out->push_back(std::move(r));
         }
@@ -653,10 +658,13 @@ bool Get(const std::string& key, const std::string& ext, Asset* out, std::string
     return true;
 }
 
-void MaterialColors(const std::string& theme, const std::string& text, std::vector<std::string>* colors, std::vector<bool>* resolved) {
+void MaterialColors(const std::string& theme, const std::string& text, std::vector<std::string>* colors, std::vector<bool>* resolved,
+                    int face) {
     static std::mutex mx;
     static std::map<std::string, std::pair<std::vector<std::string>, std::vector<bool>>> cache;
-    const std::string key = hashutil::Sha256Hex((theme + "|" + text).data(), theme.size() + 1 + text.size());
+    if (face < 0 || face > 2) face = 0;
+    const std::string keyText = std::to_string(face) + "|" + theme + "|" + text;
+    const std::string key = hashutil::Sha256Hex(keyText.data(), keyText.size());
     {
         std::lock_guard lk(mx);
         if (auto it = cache.find(key); it != cache.end()) {
@@ -673,7 +681,7 @@ void MaterialColors(const std::string& theme, const std::string& text, std::vect
     colors->assign(records.size(), std::string());
     resolved->assign(records.size(), false);
     for (size_t i = 0; i < records.size(); ++i) {
-        const std::string& ref = records[i].textureRef;
+        const std::string& ref = face ? records[i].faceRef[face] : records[i].textureRef;
         std::array<uint8_t, 3> c{};
         bool ok = false;
         if (indexed && !ref.empty()) {

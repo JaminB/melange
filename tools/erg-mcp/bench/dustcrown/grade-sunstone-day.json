@@ -1,0 +1,320 @@
+{
+ "note": "erg-mcp look grade (game_material_shots saveGrade): render_view {grade: <this file>}",
+ "grade": {
+  "m": [
+   [
+    0.56653,
+    0.09618,
+    0.00971,
+    0.17403
+   ],
+   [
+    0.03319,
+    0.73602,
+    0.01127,
+    0.14704
+   ],
+   [
+    0.03809,
+    0.12814,
+    0.72958,
+    -0.01839
+   ]
+  ],
+  "pairs": 14,
+  "residual": 25.8,
+  "saturation": 0.8,
+  "gain": [
+   0.672,
+   0.78,
+   0.896
+  ],
+  "source": "dustcrown, DAY, mods sunstone",
+  "measured": [
+   {
+    "material": 3,
+    "from": [
+     242,
+     227,
+     189
+    ],
+    "to": [
+     218,
+     213,
+     178
+    ],
+    "tinted": true
+   },
+   {
+    "material": 4,
+    "from": [
+     210,
+     187,
+     120
+    ],
+    "to": [
+     211,
+     201,
+     136
+    ]
+   },
+   {
+    "material": 5,
+    "from": [
+     195,
+     173,
+     111
+    ],
+    "to": [
+     223,
+     214,
+     161
+    ]
+   },
+   {
+    "material": 6,
+    "from": [
+     223,
+     183,
+     91
+    ],
+    "to": [
+     209,
+     200,
+     122
+    ]
+   },
+   {
+    "material": 8,
+    "from": [
+     236,
+     199,
+     106
+    ],
+    "to": [
+     216,
+     211,
+     149
+    ]
+   },
+   {
+    "material": 9,
+    "from": [
+     216,
+     173,
+     106
+    ],
+    "to": [
+     217,
+     180,
+     63
+    ],
+    "tinted": true
+   },
+   {
+    "material": 10,
+    "from": [
+     245,
+     208,
+     111
+    ],
+    "to": [
+     215,
+     210,
+     146
+    ]
+   },
+   {
+    "material": 12,
+    "from": [
+     240,
+     194,
+     100
+    ],
+    "to": [
+     218,
+     213,
+     141
+    ]
+   },
+   {
+    "material": 24,
+    "from": [
+     245,
+     208,
+     111
+    ],
+    "to": [
+     219,
+     214,
+     154
+    ]
+   },
+   {
+    "material": 25,
+    "from": [
+     193,
+     153,
+     39
+    ],
+    "to": [
+     207,
+     196,
+     58
+    ]
+   },
+   {
+    "material": 26,
+    "from": [
+     181,
+     143,
+     35
+    ],
+    "to": [
+     216,
+     208,
+     74
+    ]
+   },
+   {
+    "material": 30,
+    "from": [
+     213,
+     161,
+     91
+    ],
+    "to": [
+     126,
+     101,
+     72
+    ]
+   }
+  ],
+  "tint": {
+   "m": [
+    [
+     0.84984,
+     -0.08154,
+     -0.00823,
+     0.07789
+    ],
+    [
+     -0.02463,
+     0.80529,
+     -0.00836,
+     0.1034
+    ],
+    [
+     -0.03304,
+     -0.11116,
+     1.18037,
+     -0.0451
+    ]
+   ],
+   "pairs": 2,
+   "residual": 6.5
+  }
+ },
+ "pairs": [
+  {
+   "material": 0,
+   "from": "#f4c566",
+   "to": "#b0a072",
+   "graded": "#dfca77",
+   "weight": 0.5
+  },
+  {
+   "material": 3,
+   "from": "#f2e3bd",
+   "to": "#dad5b2",
+   "graded": "#e1e0b9",
+   "weight": 60,
+   "tinted": true
+  },
+  {
+   "material": 4,
+   "from": "#d2bb78",
+   "to": "#d3c988",
+   "graded": "#cac17e",
+   "weight": 17.3
+  },
+  {
+   "material": 5,
+   "from": "#c3ad6f",
+   "to": "#dfd6a1",
+   "graded": "#c0b773",
+   "weight": 14.7
+  },
+  {
+   "material": 6,
+   "from": "#dfb75b",
+   "to": "#d1c87a",
+   "graded": "#d1bf6b",
+   "weight": 6.9
+  },
+  {
+   "material": 8,
+   "from": "#ecc76a",
+   "to": "#d8d395",
+   "graded": "#dbcb79",
+   "weight": 11.7
+  },
+  {
+   "material": 9,
+   "from": "#d8ad6a",
+   "to": "#d9b43f",
+   "graded": "#ccb871",
+   "weight": 60,
+   "tinted": true
+  },
+  {
+   "material": 10,
+   "from": "#f5d06f",
+   "to": "#d7d292",
+   "graded": "#e1d27f",
+   "weight": 20
+  },
+  {
+   "material": 12,
+   "from": "#f0c264",
+   "to": "#dad58d",
+   "graded": "#ddc875",
+   "weight": 20
+  },
+  {
+   "material": 24,
+   "from": "#f5d06f",
+   "to": "#dbd69a",
+   "graded": "#e1d27f",
+   "weight": 20
+  },
+  {
+   "material": 25,
+   "from": "#c19927",
+   "to": "#cfc43a",
+   "graded": "#bdaa44",
+   "weight": 14.9
+  },
+  {
+   "material": 26,
+   "from": "#b58f23",
+   "to": "#d8d04a",
+   "graded": "#b5a33d",
+   "weight": 10.4
+  },
+  {
+   "material": 30,
+   "from": "#d5a15b",
+   "to": "#7e6548",
+   "graded": "#c9b065",
+   "weight": 16.7
+  },
+  {
+   "material": 38,
+   "from": "#7ea5ca",
+   "to": "#bcc593",
+   "graded": "#9cb1b6",
+   "weight": 0.5
+  }
+ ]
+}

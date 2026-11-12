@@ -50,6 +50,9 @@ TodApplied g_todLast;   // under g_mx
 std::string g_wormsKey;                // SetTeamWorms; under g_mx
 std::array<uint8_t, 4> g_worms{};
 bool g_wormsDue = false;               // the override for g_wormsKey was taken; written again at the VM's creation
+std::string g_schemeKey, g_schemeName, g_schemeLua;   // SetScheme; under g_mx
+bool g_schemeDue = false;              // the override for g_schemeKey was taken; run at the VM's creation
+SchemeApplied g_schemeLast;            // under g_mx
 
 bool Fail(char* err, size_t n, const std::string& why) {
     if (err && n) snprintf(err, n, "%s", why.c_str());
@@ -139,15 +142,44 @@ void RestoreTod() {
     LOG_INFO("[levels] test: %s restored to '%s': %s", kTodName, g_todOld.c_str(), ok ? "ok" : "FAILED");
 }
 
+// The Test's game style, in the VM that was just made: its own loadbuffer and pcall (a Lua error stays inside the pcall).
+// Main thread, under g_mx.
+void ApplyScheme(lua50::State* L) {
+    SchemeApplied s;
+    s.key = g_taken;
+    s.name = g_schemeName;
+    if (!L || !lua50::Check()) {
+        s.error = "the engine's Lua is not available";
+    } else {
+        const auto& a = lua50::A();
+        const int top = a.gettop(L);
+        if (a.loadbuffer(L, g_schemeLua.data(), g_schemeLua.size(), "=testScheme") || a.pcall(L, 0, 0, 0)) {
+            const char* e = a.tostring(L, -1);
+            s.error = e ? e : "the chunk failed";
+        } else {
+            s.applied = true;
+        }
+        a.settop(L, top);
+    }
+    if (s.applied) LOG_INFO("[levels] test: game style %s set in GM.SchemeData for %s", s.name.c_str(), s.key.c_str());
+    else LOG_WARN("[levels] test: the game style %s could not be set: %s; the Quick Game's own plays", s.name.c_str(), s.error.c_str());
+    jlog::Rec("levels", s.applied ? jlog::Level::Info : jlog::Level::Warn, "test_scheme").Str("key", s.key).Str("name", s.name).Str("error", s.error);
+    g_schemeLast = s;
+}
+
 // The match VM is created after SetUpLevelData has read the time of day: the frontend's value can go back now, before
 // anything else reads it. OnFrame's restore stays as the fallback.
-void OnContext(bool created, lua50::State*, void*) {
+void OnContext(bool created, lua50::State* L, void*) {
     if (!created) return;
     std::lock_guard lk(g_mx);
     RestoreTod();
     if (g_wormsDue) {
         g_wormsDue = false;
         WriteTeamWorms("the match VM");
+    }
+    if (g_schemeDue) {
+        g_schemeDue = false;
+        ApplyScheme(L);
     }
 }
 }  // namespace
@@ -229,6 +261,19 @@ void SetTeamWorms(const std::string& key, const std::array<uint8_t, 4>& worms) {
     g_wormsDue = false;
 }
 
+void SetScheme(const std::string& key, const std::string& name, const std::string& lua) {
+    std::lock_guard lk(g_mx);
+    g_schemeKey = key;
+    g_schemeName = name;
+    g_schemeLua = lua;
+    g_schemeDue = false;
+}
+
+SchemeApplied LastScheme() {
+    std::lock_guard lk(g_mx);
+    return g_schemeLast;
+}
+
 // A pack level's pinned time of day (spice.json levels[].timeOfDay), at its level set-up in any match, Versus and
 // network games too (every peer has the same pack, so the same pin): the frontend's value, which Versus picks at random,
 // is replaced for the set-up's read and put back when the match VM is made, as a Test's is. "level" clears it, so the
@@ -286,6 +331,11 @@ const char* Take(const char* frontendKey) {
             WriteTeamWorms("the level set-up");
             g_wormsDue = true;
             g_wormsKey.clear();
+        }
+        g_schemeLast = SchemeApplied{};
+        if (!g_schemeKey.empty() && g_schemeKey == k) {
+            g_schemeDue = true;
+            g_schemeKey.clear();
         }
     }
     snprintf(g_taken, sizeof g_taken, "%s", k.c_str());

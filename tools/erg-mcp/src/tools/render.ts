@@ -4,6 +4,8 @@ import type { Vec3 } from "../core";
 import { extentXZ, markers, waterMap, type Region } from "../lib/inspect-field";
 import { encodePng } from "../lib/inspect-png";
 import { landTintPreview, projectMaterials, tintFor, type PaletteMode } from "../lib/materials";
+import { applyGrade, gradeMaterial } from "../lib/grade";
+import { GRADE_NAMES, loadGrade } from "../lib/grade-file";
 import { MARKER_RGB, boxCorners, cameraAngles, fitDistance, gridCorner, lookFor, orbitCamera, renderView, type Camera, type View } from "../lib/render-3d";
 import { WORLD_PER_MAP, grids, isSolid, type Grid } from "../lib/voxel";
 import { ToolError, image, type Tool } from "../registry";
@@ -18,7 +20,7 @@ interface ViewArgs {
   azimuth?: number; elevation?: number; distance?: number;
   region?: { x0?: number; z0?: number; x1?: number; z1?: number }; clip?: boolean;
   width?: number; height?: number; fog?: number; timeOfDay?: "DAY" | "EVENING" | "NIGHT"; markers?: boolean; palette?: PaletteMode;
-  antialias?: boolean; edges?: boolean; scenery?: boolean; tints?: boolean;
+  antialias?: boolean; edges?: boolean; scenery?: boolean; tints?: boolean; grade?: string; sideTextures?: boolean;
 }
 
 const BEARING: Record<"nw" | "ne" | "sw" | "se", number> = { ne: 45, se: 135, sw: 225, nw: 315 };
@@ -118,12 +120,20 @@ export async function renderViewTool(s: Session, a: ViewArgs) {
 
   const set = await projectMaterials(s);
   const lt = a.tints ? landTintPreview(store, set, tintFor(set, a.palette)) : null;
-  const tint = lt?.tint ?? tintFor(set, a.palette);
+  const tint0 = lt?.tint ?? tintFor(set, a.palette);
   const real = a.palette !== "index" && !!set?.colors;
+  // grade: the colours as the game shows them (a grade fitted from game_material_shots' pairs); sideTextures: the faces
+  // that are not tops in the colour of the material's side texture
+  const grade = a.grade === undefined ? null : loadGrade(a.grade);
+  // a material the grade was measured on, still drawn in that colour, takes the game's colour as measured
+  const tintedSet = new Set((lt?.materials ?? []).map((m) => m.material));
+  const tint = grade ? (m: number) => gradeMaterial(grade.grade, m, tint0(m), tintedSet.has(m)) : tint0;
+  const sides = a.sideTextures && real && set?.side ? set.side : null;
+  const tintSide = sides ? (m: number) => { const c = sides[m] ?? tint0(m); return grade ? applyGrade(grade.grade, c) : c; } : undefined;
   const tod = a.timeOfDay ?? (store.scene.databank.timeOfDay || "DAY");
   const water = waterMap(store);
   const input = {
-    grids: gs, tint, look: lookFor(tod), water, markers: a.markers === false ? [] : markers(store),
+    grids: gs, tint, ...(tintSide ? { tintSide } : {}), ...(grade ? { normaliseTop: true } : {}), look: lookFor(tod), water, markers: a.markers === false ? [] : markers(store),
     fog: a.fog === undefined ? 0 : inMap(a.fog, u), clip: a.clip ? r : null, edges: a.edges,
     ...(a.scenery ? await sceneryMeshesFor(s, a.clip ? r : null) : {}),
   };
@@ -161,6 +171,10 @@ export async function renderViewTool(s: Session, a: ViewArgs) {
     framesDrawn: `${Math.max(...views.map((v) => v.framesDrawn))} of ${gs.length} voxel frames`,
     timeOfDay: tod,
     palette: real ? "real: each material's texture colour (the server's average of its surface texture)" : "index: a distinct hue per material index" + (a.palette === "index" ? "" : " (the server gave no material colours)"),
+    ...(grade ? { grade: { name: grade.name, pairs: grade.grade.pairs, residual: grade.grade.residual, ...(grade.grade.source ? { source: grade.grade.source } : {}),
+      ...(grade.grade.measured ? { measuredMaterials: grade.grade.measured.length } : {}), ...(grade.grade.tint ? { tintFit: { pairs: grade.grade.tint.pairs, residual: grade.grade.tint.residual } } : {}),
+      note: "a material the grade was measured on, still drawn in the colour it had then, is drawn in the colour the game showed; the others by the grade's fit (a saturation, a gain and an offset per channel in linear light; a tinted material by the fit over the tinted ones); the light is scaled so a level top in the sun is exactly that colour" } } : {}),
+    ...(a.sideTextures ? { sideTextures: sides ? "every face but a top is drawn in the colour of the material's side texture (a cliff of grass01 is rock)" : "the server gave no side colours (Melange 0.15+): the sides are drawn in the tops' colours" } : {}),
     ...(a.tints ? { tints: lt ? { materials: lt.materials, note: "each material whose top tile a tint_landscape carrier recolours is drawn in the tint's colour (what Sunstone draws; with Sunstone off the game shows the theme's textures)" } : "the level has no landscape tint on a top tile of its material file" } : {}),
     water: water === null ? "the level's own height (not known here, so not drawn)" : { map: r2(water), world: r2(water * WORLD_PER_MAP), drawn: "a translucent plane" },
     fog: input.fog ? { distance: r2(a.fog!), units: u ?? "map" } : "none",
@@ -203,6 +217,8 @@ export const tools: Tool[] = [
         markers: { type: "boolean", description: "Draw spawns and objects (default true)." },
         palette: { type: "string", enum: ["real", "index"], description: "Material colours: real (default; each material's texture colour) or index (a distinct hue per index)." },
         tints: { type: "boolean", description: "Preview the level's landscape tints (tint_landscape): a material whose top tile is tinted draws in the tint's colour (default false: the textures' own colours)." },
+        grade: { type: "string", description: "Draw the colours as the game shows them: the name of a built-in grade (" + GRADE_NAMES + ") or the path of a grade file game_material_shots {saveGrade} wrote in a match (with the plugins and the time of day the level is played in). A tint that reads ochre here can play as saturated orange: with a grade the picture shows the played colour. Default none: the textures' mean colours and the tints as written." },
+        sideTextures: { type: "boolean", description: "Draw every face but a top in the colour of the material's SIDE texture (a material's sides draw its second texture: a cliff, a wall or a strata band of grass01 is rock). Default false: the top's colour on every face, as before. Needs Melange 0.15+ on the server." },
         antialias: { type: "boolean", description: "Render at 2x2 samples per pixel (smoother edges, about 3-4 times slower; default false)." },
         edges: { type: "boolean", description: "Darken silhouette edges (default true)." },
         scenery: { type: "boolean", description: "Also draw the scenery details (copies included) by their preview meshes, flat-shaded in each mesh's average texture colour (default false; lights and emitters are not drawn). The text part then gives `scenery`: meshes drawn and resources with no mesh." },

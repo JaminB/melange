@@ -16,7 +16,9 @@ import { waterByTurn, type WaterSchedule } from "../lib/flood";
 import { checkSupport, type SupportColumn } from "../lib/support";
 import { scriptWater, type ScriptWater } from "../lib/script-water";
 import { pieces } from "../lib/islets";
-import { landTintPreview, loadMaterials, projectMaterials, resolveFile, themeFile, tintFor, type MaterialSet, type PaletteMode } from "../lib/materials";
+import { gradeMaterial } from "../lib/grade";
+import { loadGrade } from "../lib/grade-file";
+import { facesOf, landTintPreview, loadMaterials, nearestMaterials, projectMaterials, resolveFile, themeFile, tintFor, type MaterialSet, type PaletteMode } from "../lib/materials";
 import { WORLD_PER_MAP, grids, isSolid, material, tidy, type Grid } from "../lib/voxel";
 import { ExprError, compile } from "../lib/heightfield-expr";
 import { ToolError, image, type Content, type Schema, type Tool } from "../registry";
@@ -80,10 +82,14 @@ async function materialNames(s: Session): Promise<string[] | null> {
 const paletteSchema = { type: "string", enum: ["real", "index"], description: "Material colours: real (default; each material's texture colour, from the server) or index (a distinct hue per material index, to tell neighbouring materials apart)." } as const;
 
 /** How the renders tint materials, and what to say about it. */
-async function renderTint(s: Session, mode: PaletteMode | undefined, tints = false) {
+async function renderTint(s: Session, mode: PaletteMode | undefined, tints = false, grade?: string) {
   const set = await projectMaterials(s);
   const lt = tints ? landTintPreview(s.store, set, tintFor(set, mode)) : null;
-  const tint = lt?.tint ?? tintFor(set, mode);
+  const tint0 = lt?.tint ?? tintFor(set, mode);
+  // grade: the colours as the game shows them (render_view's)
+  const g = grade === undefined ? null : loadGrade(grade).grade;
+  const tintedSet = new Set((lt?.materials ?? []).map((m) => m.material));
+  const tint = g ? (m: number) => gradeMaterial(g, m, tint0(m), tintedSet.has(m)) : tint0;
   const real = mode !== "index" && !!set?.colors;
   const note = real ? "real: each material's texture colour (the server's average of its surface texture)" : mode === "index" ? "index: a distinct hue per material index" : "index: a distinct hue per material index (the server gave no material colours)";
   return { set, tint, note: lt ? `${note}; landscape tints previewed on ${lt.materials.map((m) => `${m.name} ${m.color}`).join(", ")}` : note };
@@ -198,7 +204,7 @@ export function drawTopdown(f: Field, scale: number, opts: { water: number | nul
   return { img, px: (x: number) => MARGIN + Math.round(((x - f.x0) / f.step) * scale), pz: (z: number) => MARGIN + Math.round(((z - f.z0) / f.step) * scale) };
 }
 
-export type TopdownArgs = RegionArgs & { step?: number; scale?: number; shading?: "both" | "height" | "material"; palette?: PaletteMode; tints?: boolean };
+export type TopdownArgs = RegionArgs & { step?: number; scale?: number; shading?: "both" | "height" | "material"; palette?: PaletteMode; tints?: boolean; grade?: string };
 
 /** render_topdown's picture of region r without its markers: the ground, the water and the axis ticks. */
 export async function topdownView(s: Session, gs: Grid[], r: Region, a: TopdownArgs) {
@@ -212,7 +218,7 @@ export async function topdownView(s: Session, gs: Grid[], r: Region, a: TopdownA
   const f = sampleField(gs, r, step);
   const water = waterMap(store);
   const shading = a.shading ?? "both";
-  const pal = await renderTint(s, a.palette, a.tints);
+  const pal = await renderTint(s, a.palette, a.tints, a.grade);
   const { img, px, pz } = drawTopdown(f, scale, { water, shading, tint: pal.tint });
   // axis ticks at a whole number of units, at least 36 pixels apart
   const tickStep = [1, 2, 5, 10, 20, 50, 100, 200, 500].find((t) => (t / step) * scale >= 36) ?? 1000;
@@ -1241,7 +1247,7 @@ export async function themeKeyword(s: Session, a: { materialFile?: string; theme
   return { materialFile: themeFile(t), theme: t, note: `materialFile "theme": the ${t.toUpperCase()} theme's own file, ${themeFile(t)}${a.base && !a.theme ? ` (${a.base}'s theme)` : ""}` };
 }
 
-export async function listMaterials(s: Session, a0: { materialFile?: string; theme?: string; base?: string; search?: string; role?: string; limit?: number; only?: "materials" | "palette" }) {
+export async function listMaterials(s: Session, a0: { materialFile?: string; theme?: string; base?: string; search?: string; role?: string; limit?: number; only?: "materials" | "palette"; like?: string; face?: "top" | "side"; nearest?: number }) {
   const kw = await themeKeyword(s, a0);
   const a = { ...a0, materialFile: kw.materialFile, theme: kw.theme };
   const levels = await s.levels();
@@ -1267,12 +1273,27 @@ export async function listMaterials(s: Session, a0: { materialFile?: string; the
       const files = await levels.themes().then((t) => t.materialFiles, () => [] as string[]);
       materials = { file, error: `the server could not read the material file: ${(m as { error?: string }).error}`, materialFiles: files };
     } else {
-      const tint = tintFor(m as MaterialSet);
+      const tint = tintFor(m as MaterialSet), set = m as MaterialSet;
+      // like: the materials nearest a colour on a face (side: what a cliff, a wall or a mesa's strata band shows)
+      let nearest: unknown;
+      if (a.like !== undefined) {
+        if (!/^#[0-9a-f]{6}$/i.test(a.like)) throw new ToolError("like: a colour #rrggbb");
+        const to = [1, 3, 5].map((i) => parseInt(a.like!.slice(i, i + 2), 16)) as Rgb, face = a.face ?? "side";
+        const found = nearestMaterials(set, to, face, a.nearest ?? 8);
+        nearest = { like: a.like.toLowerCase(), face, materials: found.map((x) => ({ index: x.index, name: x.name, colour: hex(x.colour), distance: x.distance })),
+          ...(found.length ? {} : { note: face === "side" && !set.side ? "this server gives no side colours (Melange 0.15+): face \"top\" compares the tops" : "the server gave no colours to compare" }),
+          reading: "distance: how far the face's mean colour is from `like` (0 the same; under about 60 reads as the same family). A mean colour says nothing of the pattern: game_material_shots shows each in the game" };
+      }
       materials = {
         file: m.file, ...(asked?.note || kw.note ? { note: [kw.note, asked?.note].filter(Boolean).join("; ") } : {}), ...(!a.materialFile && !store ? { from: `the theme's own file (${file})` } : {}),
-        list: m.names.map((name, index) => ({ index, name, ...(own ? { solidVoxels: counts.get(index) ?? 0 } : {}), colour: hex(tint(index)),
-          ...(m.resolved ? { textured: m.resolved[index] ?? false } : {}) }))
-          .filter((e) => !q || e.name.toLowerCase().includes(q)),
+        list: m.names.map((name, index) => {
+          const f = facesOf(set, index);
+          return { index, name, ...(own ? { solidVoxels: counts.get(index) ?? 0 } : {}), colour: hex(tint(index)),
+            ...(m.resolved ? { textured: m.resolved[index] ?? false } : {}),
+            ...(f.side ? { sideColour: hex(f.side), ...(f.sideDiffers ? { sideDiffers: true } : {}) } : {}) };
+        }).filter((e) => !q || e.name.toLowerCase().includes(q)),
+        ...(set.side ? { sides: "sideColour: the colour of the texture the material's SIDES draw (a cliff, a wall, a mesa's strata band); sideDiffers: it reads as another material than the top (grass01's sides are rock), so pick a band's material by sideColour" } : {}),
+        ...(nearest ? { nearest } : {}),
         colours: m.colors ? "each material's texture colour (the average of its surface texture; textured: false is a stand-in colour); the renders use them"
           : "distinct hues per index (the server gave no texture colours); the renders use them",
         ...(own ? { solidVoxels: "counts the open project" } : {}),
@@ -1348,6 +1369,7 @@ export const tools: Tool[] = [
         markers: { type: "boolean", description: "Draw spawns and objects (default true)." },
         palette: paletteSchema,
         tints: { type: "boolean", description: "Preview the level's landscape tints (tint_landscape): a material whose top tile is tinted draws in the tint's colour (default false)." },
+        grade: { type: "string", description: "Draw the colours as the game shows them: a built-in grade's name or a grade file (render_view's `grade`). Default none." },
       },
     },
     handler: (s, a) => renderTopdown(s, a),
@@ -1390,7 +1412,7 @@ export const tools: Tool[] = [
   },
   {
     name: "list_materials",
-    description: "The level's material file (the names of its up to 64 materials in index order, with how many solid voxels of each the open project has and the colour the renders use) and the theme's object palette (the names, resources and roles that can be placed). With no project open, pass theme and/or materialFile; with none at all, lists the themes and material files.",
+    description: "The level's material file (the names of its up to 64 materials in index order, with how many solid voxels of each the open project has, the colour the renders use and, on Melange 0.15+, `sideColour`: the colour of the texture its sides draw, with `sideDiffers` where a wall of it reads as another material than its top; `like` finds the materials nearest a colour) and the theme's object palette (the names, resources and roles that can be placed). With no project open, pass theme and/or materialFile; with none at all, lists the themes and material files.",
     inputSchema: {
       type: "object", additionalProperties: false,
       properties: {
@@ -1401,6 +1423,9 @@ export const tools: Tool[] = [
         role: { type: "string", enum: ["scenery", "spawn", "object", "camera", "light", "emitter", "sound", "collision", "marker", "other"], description: "Palette entries of this role." },
         limit: { type: "integer", minimum: 1, maximum: 2000, description: "Palette entries to list (default 200)." },
         only: { type: "string", enum: ["materials", "palette"], description: "Leave out the other half." },
+        like: { type: "string", description: "A colour #rrggbb: also answer `nearest`, the materials whose `face` is nearest it, nearest first (a palette of one family: the sandstones for a mesa's strata)." },
+        face: { type: "string", enum: ["top", "side"], description: "With like: the face compared. side (default): what a cliff, a wall and a strata band show; top: what the ground shows." },
+        nearest: { type: "integer", minimum: 1, maximum: 64, description: "With like: how many to answer (default 8)." },
       },
     },
     handler: (s, a) => listMaterials(s, a),
@@ -1427,21 +1452,29 @@ export const tools: Tool[] = [
       const own = !!store && file === store.scene.databank.materialFile;
       const m = await loadMaterials(s, file, theme, own ? { key: store!.scene.base.key, source: store!.scene.base.source } : undefined);
       if (!m.names.length) throw new ToolError(`${file} has no material records`);
-      const tint = tintFor(m), TW = 72, TH = 44, COLS = 8, rows = Math.ceil(m.names.length / COLS);
+      const tint = tintFor(m), TW = 72, TH = 44, COLS = 8, rows = Math.ceil(m.names.length / COLS), SIDE_H = 9;
       const img = new Raster(COLS * TW + 2, rows * TH + 2, [30, 30, 34]);
       m.names.forEach((_, i) => {
         const x = 2 + (i % COLS) * TW, y = 2 + Math.floor(i / COLS) * TH, c = tint(i);
         img.rect(x, y, TW - 2, TH - 2, c);
+        const sd = m.side?.[i];
+        if (sd) img.rect(x, y + TH - 2 - SIDE_H, TW - 2, SIDE_H, sd);
         const light = c[0] * 0.3 + c[1] * 0.59 + c[2] * 0.11 > 140;
         img.text(x + 3, y + 3, String(i), light ? [0, 0, 0] : [255, 255, 255]);
-        img.text(x + 3, y + TH - 13, `P${String(i + 1).padStart(2, "0")}`, light ? [0, 0, 0] : [255, 255, 255]);
+        const lightFoot = sd ? sd[0] * 0.3 + sd[1] * 0.59 + sd[2] * 0.11 > 140 : light;
+        img.text(x + 3, y + TH - 13, `P${String(i + 1).padStart(2, "0")}`, lightFoot ? [0, 0, 0] : [255, 255, 255]);
         if (m.resolved && !m.resolved[i]) img.text(x + TW - 14, y + TH - 13, "?", light ? [0, 0, 0] : [255, 255, 255]);
       });
       const info = {
         file: m.file, theme: theme ?? null, ...(asked?.note ? { note: asked.note } : {}),
         reading: `tiles in P01-P64 order (the file's record order): tile i (record P${"${String(i + 1).padStart(2, '0')}"}) is at column i % ${COLS}, row floor(i / ${COLS}); a '?' marks a material whose texture the server did not find (a stand-in colour); the colour is the texture's mean, the server serves no texture image`,
         colours: m.colors ? "each material's texture colour" : "the server gave no texture colours: distinct hues per index",
-        materials: m.names.map((name, index) => ({ index, slot: `P${String(index + 1).padStart(2, "0")}`, name, colour: hex(tint(index)), ...(m.resolved ? { textured: m.resolved[index] ?? false } : {}) })),
+        ...(m.side ? { sides: "the strip along a tile's foot is the colour of the texture the material's sides draw (a cliff, a wall, a strata band); sideDiffers: it reads as another material than the top" } : {}),
+        materials: m.names.map((name, index) => {
+          const f = facesOf(m, index);
+          return { index, slot: `P${String(index + 1).padStart(2, "0")}`, name, colour: hex(tint(index)), ...(m.resolved ? { textured: m.resolved[index] ?? false } : {}),
+            ...(f.side ? { sideColour: hex(f.side), ...(f.sideDiffers ? { sideDiffers: true } : {}) } : {}) };
+        }),
       };
       return { content: [image(img.png()), { type: "text", text: compact(info) }] };
     },

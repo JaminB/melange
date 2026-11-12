@@ -16,7 +16,9 @@ import { WORM_WIDTH } from "../lib/reach";
 import { clearEye } from "../lib/eye";
 import { Raster, decodePng, hex, type Rgb } from "../lib/inspect-png";
 import { centreColour, lookDelta, materialPatches } from "../lib/material-look";
-import { projectMaterials } from "../lib/materials";
+import { landTintPreview, projectMaterials, tintFor } from "../lib/materials";
+import { applyGrade, fitGrade } from "../lib/grade";
+import { eyeCandidates, quietState } from "../lib/harness-moves";
 import { TRACE_LUA, attributeMove, cleanTrace, describeMove, mergePerfRuns, offTurnMoves, parseTrace, pickPerfBase, type PerfRun, type PerfStat, type TraceSample } from "../lib/play-trace";
 import { documentsDir } from "../oasis";
 import { ToolError, image, type Content, type Tool } from "../registry";
@@ -142,7 +144,7 @@ const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 interface Orbit { azimuth?: number; elevation?: number; distance?: number; fit?: "frames" | "solid" | "island"; margin?: number; }
 /** set_overview's framing per project id: the overview's defaults for the rest of this erg-mcp session. */
 const overviewDefaults = new Map<string, Orbit>();
-interface Cam extends Orbit { pos?: number[]; target?: number[]; fov?: number; preset?: "default" | "overview" | "castle"; name?: string; at?: number[]; radius?: number; team?: number; clearView?: boolean; }
+interface Cam extends Orbit { pos?: number[]; target?: number[]; fov?: number; preset?: "default" | "overview" | "castle" | "worm"; name?: string; at?: number[]; radius?: number; team?: number; clearView?: boolean; worm?: number; }
 
 const orbitProps = {
   azimuth: { type: "number", minimum: -360, maximum: 360, description: "preset overview: the side it looks from, degrees clockwise from north (-z); default 180 (from the south)." },
@@ -1063,11 +1065,12 @@ export const tools: Tool[] = [
       properties: {
         cams: { type: "array", minItems: 1, maxItems: 24, items: { type: "object", additionalProperties: false, properties: {
           pos: vec3("Eye [x, y, z]."), target: vec3("Point looked at [x, y, z]."), fov: { type: "number", minimum: 5, maximum: 150 },
-          preset: { type: "string", enum: ["default", "overview", "castle"], description: "default: the game's own camera; overview: the whole level (with no project open, as in a baseline test {map, noLevel}: the box of the match's worms); castle: a wide pose on a castle and its worms (`at`, `radius`, `team`), labelled (labels)." },
+          preset: { type: "string", enum: ["default", "overview", "castle", "worm"], description: "worm: a close-up of a worm (`worm`: its slot; default the active one) from `distance` (default 7 map units), `elevation` (default 25) and `azimuth` (default: behind it), the eye pulled back, turned or raised until the game's own land sweep (level.test.landRay) finds nothing between it and the worm, so a worm in a court, under a roof or against a wall is not shot from inside the wall (the shot's eyeMoved says what changed). default: the game's own camera; overview: the whole level (with no project open, as in a baseline test {map, noLevel}: the box of the match's worms); castle: a wide pose on a castle and its worms (`at`, `radius`, `team`), labelled (labels)." },
           ...orbitProps,
           at: vec3("preset castle: the castle's centre [x, y, z] (its courtyard floor), in `units`."),
           radius: { type: "number", minimum: 1, description: "preset castle: the castle's half size (to its far corner), in `units` (default 14 map units)." },
           team: { type: "integer", minimum: 0, maximum: 3, description: "preset castle: also frame this team's living worms wherever they are (default: the worms within 1.5 radii)." },
+          worm: { type: "integer", minimum: 0, maximum: 15, description: "preset worm: the worm's slot (default the active worm)." },
           name: { type: "string", description: "The PNG's name after the prefix: <prefix>_<name> (default <prefix>_<n>)." },
           clearView: { type: "boolean", description: "With pos and target: check the eye against the open project's voxels first, and when it is inside the ground, within 0.75 map units of it, or has voxels between it and the target, move it to the nearest eye in open air with a clear view (raised, nearer or farther, turned round the target); the shot's eyeMoved says how (default false: as given)." } } } },
         units,
@@ -1078,6 +1081,8 @@ export const tools: Tool[] = [
         clean: { type: "boolean", description: "Hide the mods' wum.draw primitives in the shots (default true)." },
         width: { type: "integer", minimum: 64, maximum: 8192, description: "Scale every picture down to this width (default 960)." },
         settleFrames: { type: "integer", minimum: 1, maximum: 120, description: "Frames drawn from a pose before it is read (default 2; more lets particles and the water move on)." },
+        afterBlasts: { type: "object", additionalProperties: false, description: "Wait for the smoke to clear before the first pose: until the Test probe (level.test.probe) has seen no explosion for `quietSec` (default 5: an explosion's smoke and debris last about that long; the game has no particle count to read), at most `maxSec` (default 30). A shot taken right after an air strike or a jetpack's landing is full of smoke; this one is of what the blast left. The answer's settled says how long it waited.",
+          properties: { quietSec: { type: "number", minimum: 0.5, maximum: 30 }, maxSec: { type: "number", minimum: 1, maximum: 120 } } },
         waitPlay: { type: "boolean", description: "Take each pose only while the turn plays: the turn's \"Ready?\" intro draws its main view from another camera than the override (in the Caldera iteration-10 Test every castle shot taken in an intro showed the worm and the HUD), so the game holds the pose until the turn is in play (render.camera {when: \"play\"}), sets it then and the shot is read once it has been drawn settleFrames frames (default 6 with waitPlay). Each shot answers its phase. Waits at most waitSec per pose (default 60). Melange 0.13+: an older game takes the poses at once and the answer says so." },
         waitSec: { type: "number", minimum: 1, maximum: 300, description: "waitPlay: the longest wait for the turn to play, per pose (default 60)." },
         hold: { type: "boolean", description: "Keep the last pose for 5 s instead of giving the camera back." },
@@ -1087,7 +1092,7 @@ export const tools: Tool[] = [
       },
     },
     async handler(s, a: { cams: Cam[]; units?: "map" | "world"; prefix?: string; unique?: boolean; onAnnounce?: { match?: string; timeoutSec?: number }; clean?: boolean; width?: number; settleFrames?: number;
-      waitPlay?: boolean; waitSec?: number; hold?: boolean; holdLast?: boolean; images?: boolean; labels?: boolean }) {
+      waitPlay?: boolean; waitSec?: number; hold?: boolean; holdLast?: boolean; images?: boolean; labels?: boolean; afterBlasts?: { quietSec?: number; maxSec?: number } }) {
       if (!(await has(s, "render.camera")) || !(await has(s, "render.shot"))) throw new ToolError("game_shots needs the game's render.camera and render.shot (a Melange with them, running)");
       if (a.waitPlay && a.onAnnounce) throw new ToolError("waitPlay and onAnnounce both decide when to shoot: give one");
       const k = a.units === "world" ? 1 : WORLD_PER_MAP, t0 = Date.now(), settle = a.settleFrames ?? (a.waitPlay ? 6 : 2);
@@ -1100,6 +1105,24 @@ export const tools: Tool[] = [
       const ann = a.onAnnounce ? await waitAnnouncement(s, a.onAnnounce.match, (a.onAnnounce.timeoutSec ?? 60) * 1000) : null;
       const shownFrame = ann?.shown?.frame;
       const cleanShots = ann ? false : a.clean ?? true;
+      // afterBlasts: no explosion seen for quietSec, so the smoke of the last one has cleared
+      let settled: Record<string, unknown> | undefined;
+      if (a.afterBlasts) {
+        if (!(await has(s, "level.test.probe"))) throw new ToolError("afterBlasts reads the Test probe (level.test.probe): this game has none");
+        const quietMs = (a.afterBlasts.quietSec ?? 5) * 1000, maxMs = (a.afterBlasts.maxSec ?? 30) * 1000, tq = Date.now();
+        const seenNow = async () => (await (await s.client()).call<{ probe: { explosionsSeen: number } }>("level.test.probe", {}, 15000)).probe.explosionsSeen;
+        let q = quietState(await seenNow(), null, Date.now(), quietMs), blasts = 0;
+        // the first reading knows nothing of the last blast's time: it waits a whole quiet span from now
+        q = { ...q, last: { seen: q.last.seen, at: Date.now() }, quiet: false, waitMs: quietMs };
+        while (!q.quiet && Date.now() - tq < maxMs) {
+          await sleep(Math.min(500, Math.max(50, q.waitMs)));
+          const n = await seenNow();
+          if (n !== q.last.seen) blasts += n - q.last.seen;
+          q = quietState(n, q.last, Date.now(), quietMs);
+        }
+        settled = { quiet: q.quiet, waitedMs: Date.now() - tq, quietSec: quietMs / 1000, blastsWhileWaiting: blasts };
+        if (!q.quiet) warnings.push(`afterBlasts: explosions were still going after ${Math.round(maxMs / 1000)} s: shot anyway`);
+      }
       // a held pose pauses for the shots and comes back after them (unless they hold their own last pose)
       const paused = stopHold();
       let lastPose: Held["cam"] | null = null;
@@ -1112,7 +1135,31 @@ export const tools: Tool[] = [
             await clearCamera(s);
           } else {
             let framed: string[] | undefined;
-            const cam = c.preset === "overview" ? await overviewOf(s, c, k) : c.preset === "castle" ? await (async () => {
+            const cam = c.preset === "overview" ? await overviewOf(s, c, k) : c.preset === "worm" ? await (async () => {
+              // a worm's close-up: the first eye the game's own land sweep leaves a clear line from to the worm's head
+              const ws = await wormsNow(s), slot = c.worm ?? (await gameState(s)).worm;
+              const w = ws.find((x) => x.slot === slot);
+              if (!w) throw new ToolError(`cams[${i}]: no worm in slot ${slot} (preset worm: give worm, or shoot in a turn)`);
+              const head = [w.pos[0], w.pos[1] + 12, w.pos[2]], dist = (c.distance ?? 7 * WORLD_PER_MAP / k) * k;
+              const yaw = Number(await evalClient(s, `for _, x in ipairs(wum.game.worms() or {}) do if x.slot == ${slot} then return tostring(x.yaw or 0) end end return "0"`).catch(() => "0")) || 0;
+              // behind the worm: the bearing (clockwise from north, -z) of the point opposite its facing (sin yaw, cos yaw)
+              const az = c.azimuth ?? ((Math.atan2(-Math.sin(yaw), Math.cos(yaw)) * 180) / Math.PI + 360) % 360;
+              const cands = eyeCandidates(head, az, c.elevation ?? 25, dist);
+              let pick = cands[0], note: string | undefined;
+              if (await has(s, "level.test.landRay")) {
+                const client = await s.client();
+                let found = false;
+                for (let j = 0; j < cands.length && !found; j += 32) {
+                  const part = cands.slice(j, j + 32);
+                  const r = await client.call<{ rays: { hit: boolean }[] }>("level.test.landRay", { segments: part.map((e) => [...e.eye, ...head]) }, 30000);
+                  const n = r.rays.findIndex((x) => !x.hit);
+                  if (n >= 0) { pick = part[n]; found = true; if (j + n > 0) note = `to azimuth ${Math.round(pick.azimuth)}, elevation ${Math.round(pick.elevation)}, ${Math.round((pick.distance / WORLD_PER_MAP) * 10) / 10} map units off (the game's land sweep hit ground on the ${j + n} poses before it)`; }
+                }
+                if (!found) warnings.push(`${name}: no eye round WORM${slot} has a clear line to it by the game's land sweep (it is enclosed): shot as asked`);
+              } else warnings.push(`${name}: this game has no level.test.landRay: the worm's close-up is not checked against the land`);
+              if (note) moved.set(i, note);
+              return { pos: pick.eye, target: head, fov: c.fov ?? 55 };
+            })() : c.preset === "castle" ? await (async () => {
               if (!c.at) throw new ToolError(`cams[${i}]: preset castle needs at (the castle's centre)`);
               const cp = castlePose(c.at.map((x) => (x * k) / WORLD_PER_MAP), ((c.radius ?? 14 * WORLD_PER_MAP / k) * k) / WORLD_PER_MAP, await wormsNow(s), c.team, c.azimuth, c.elevation);
               framed = cp.worms;
@@ -1171,7 +1218,7 @@ export const tools: Tool[] = [
       }
       if (a.waitPlay && playSupported === false) warnings.push("this game cannot hold a pose until the turn plays (render.camera {when}, Melange 0.13+): the poses were taken at once and may show the turn's intro");
       const first = shots[0] as { frame?: number } | undefined;
-      parts.push({ type: "text", text: JSON.stringify({ shots, ms: Date.now() - t0, camera, ...(ann ? { announcement: { text: ann.text, ...(ann.mod ? { mod: ann.mod } : {}), seconds: ann.seconds, shownMsBeforeFirstShot: Math.max(0, t0 - ann.wall),
+      parts.push({ type: "text", text: JSON.stringify({ shots, ms: Date.now() - t0, camera, ...(settled ? { settled } : {}), ...(ann ? { announcement: { text: ann.text, ...(ann.mod ? { mod: ann.mod } : {}), seconds: ann.seconds, shownMsBeforeFirstShot: Math.max(0, t0 - ann.wall),
         ...(ann.shown ? { shownFrame: ann.shown.frame, shownMsAfterCall: ann.shown.msAfterCall, firstShotFrame: first?.frame, proof: first?.frame !== undefined && first.frame > ann.shown.frame
           ? `the game logged the message drawn at full opacity in frame ${ann.shown.frame}; every shot was read from a later frame while it was on the screen (${ann.seconds} s)` : "the shot's frame is not after the logged one" }
           : { shownFrame: null, shownNote: "this game does not log the frame a message is drawn in (announce.shown, Melange 0.13+): the shot was taken while the log says it is up" }) } } : {}),
@@ -2132,15 +2179,39 @@ export const tools: Tool[] = [
       seconds: { type: "number", minimum: 1, maximum: 120, description: "How long to sample (default 10)." },
       everyMs: { type: "integer", minimum: 50, maximum: 2000, description: "Sample spacing (default 200)." },
       label: { type: "string", description: "The run's name for comparing (default the open project's id, or baseline)." },
-      against: { type: "string", description: "Compare with this earlier run (default the first run of the session, when this is not it)." } } },
-    async handler(s, a: { seconds?: number; everyMs?: number; label?: string; against?: string }) {
+      against: { type: "string", description: "Compare with this earlier run (default the first run of the session, when this is not it)." },
+      pose: { type: "object", additionalProperties: false, description: "Hold one camera pose through the run, the same on any map, so a level and its baseline are measured from the same view: the camera stands `distance` (default 60 map units) from the middle of the match's living worms (or `at`: [x, y, z] in map units), `elevation` degrees up (default 35), on the bearing `azimuth` (default 180, from the south), fov `fov` (default 60). The game's own turn camera frames a different amount of land on every map and every turn, which is most of what an fps difference between two maps was. The run records the pose; a compare of runs with different poses says so. The camera is given back afterwards.",
+        properties: { at: { type: "array", items: { type: "number" }, minItems: 3, maxItems: 3 }, distance: { type: "number", minimum: 2, maximum: 400 }, elevation: { type: "number", minimum: 5, maximum: 89 }, azimuth: { type: "number", minimum: -360, maximum: 360 }, fov: { type: "number", minimum: 10, maximum: 120 } } } } },
+    async handler(s, a: { seconds?: number; everyMs?: number; label?: string; against?: string; pose?: { at?: number[]; distance?: number; elevation?: number; azimuth?: number; fov?: number } }) {
       const code = `local t = wum.render.timing() local g = t.gpuMs or {}
 return string.format("%.3f,%.3f,%.3f,%s,%s,%s,%s", t.fps, t.busyMsP50, t.frameMsP50, tostring(g.frame), tostring(g.world), tostring(g.postWorld), tostring(g.final))`;
       const st = await gameState(s).catch(() => null);
+      // pose: the same view on any map, held through the run (set again before an override runs out)
+      let poseKey: string | undefined, poseOut: Record<string, unknown> | undefined, cam: { pos: number[]; target: number[]; fov: number } | undefined;
+      if (a.pose) {
+        if (!(await has(s, "render.camera"))) throw new ToolError("pose needs the game's render.camera");
+        const ws = (await wormsNow(s)).filter((w) => w.alive);
+        const mid = a.pose.at ? a.pose.at.map((v) => v * WORLD_PER_MAP) : ws.length ? [0, 1, 2].map((i) => ws.reduce((n, w) => n + w.pos[i], 0) / ws.length) : null;
+        if (!mid) throw new ToolError("pose: no living worm to centre on (give pose.at)");
+        const d = (a.pose.distance ?? 60) * WORLD_PER_MAP, el = ((a.pose.elevation ?? 35) * Math.PI) / 180, az = ((a.pose.azimuth ?? 180) * Math.PI) / 180;
+        cam = { pos: [mid[0] + d * Math.cos(el) * Math.sin(az), mid[1] + d * Math.sin(el), mid[2] - d * Math.cos(el) * Math.cos(az)], target: mid, fov: a.pose.fov ?? 60 };
+        cam = overWater(cam, st?.water).pose;
+        poseKey = `${a.pose.at ? "at" : "worms"}:${a.pose.distance ?? 60}:${a.pose.elevation ?? 35}:${a.pose.azimuth ?? 180}:${a.pose.fov ?? 60}`;
+        poseOut = { centredOn: a.pose.at ? "at" : `the ${ws.length} living worms`, distance: a.pose.distance ?? 60, elevation: a.pose.elevation ?? 35, azimuth: a.pose.azimuth ?? 180, fov: a.pose.fov ?? 60,
+          worldPos: cam.pos.map((v) => Math.round(v)), worldTarget: cam.target.map((v) => Math.round(v)) };
+        await setCamera(s, cam, 600);
+        await sleep(600);   // the first frames from a new pose load what it sees
+      }
       const rows: number[][] = [], t0 = Date.now(), dur = (a.seconds ?? 10) * 1000, every = a.everyMs ?? 200;
-      while (Date.now() - t0 < dur) {
-        rows.push((await evalClient(s, code)).split(",").map((x) => (x === "nil" ? NaN : Number(x))));
-        await sleep(every);
+      let lastSet = Date.now();
+      try {
+        while (Date.now() - t0 < dur) {
+          if (cam && Date.now() - lastSet > 4000) { await setCamera(s, cam, 600).catch(() => undefined); lastSet = Date.now(); }
+          rows.push((await evalClient(s, code)).split(",").map((x) => (x === "nil" ? NaN : Number(x))));
+          await sleep(every);
+        }
+      } finally {
+        if (cam) await clearCamera(s).catch(() => undefined);
       }
       const stat = (i: number): PerfStat => {
         const v = rows.map((r) => r[i]).filter(Number.isFinite).sort((x, y) => x - y);
@@ -2149,7 +2220,7 @@ return string.format("%.3f,%.3f,%.3f,%s,%s,%s,%s", t.fps, t.busyMsP50, t.frameMs
       };
       const game = (await s.ensure()).build;
       const run: PerfRun = { label: a.label ?? s.project?.id ?? "baseline", scene: st?.scene ?? "?", seconds: Math.round((Date.now() - t0) / 100) / 10, samples: rows.length, startedAt: t0,
-        fps: stat(0), busyMs: stat(1), frameMs: stat(2), gpuFrameMs: stat(3), gpuWorldMs: stat(4), gpuPostWorldMs: stat(5), gpuFinalMs: stat(6), ...(game ? { game } : {}) };
+        fps: stat(0), busyMs: stat(1), frameMs: stat(2), gpuFrameMs: stat(3), gpuWorldMs: stat(4), gpuPostWorldMs: stat(5), gpuFinalMs: stat(6), ...(game ? { game } : {}), ...(poseKey ? { pose: poseKey } : {}) };
       const cpuBound = !!run.busyMs && !!run.frameMs && run.busyMs.p50! >= run.frameMs.p50! * 0.85;
       // the run to compare with: this session's, else an earlier process's from the runs file (pickPerfBase)
       const saved = savedPerfRuns(), pick = pickPerfBase(perfRuns, saved, a.against, game);
@@ -2160,10 +2231,14 @@ return string.format("%.3f,%.3f,%.3f,%s,%s,%s,%s", t.fps, t.busyMsP50, t.frameMs
       const d = (x: PerfStat, y: PerfStat) => (x?.p50 != null && y?.p50 != null ? Math.round((x.p50 - y.p50) * 100) / 100 : null);
       const compare = base && base !== run ? { against: base.label, ...(base.from === "saved" ? { savedRun: `an earlier erg-mcp process's run, ${new Date(base.startedAt).toISOString()}${base.game ? `, game ${base.game}` : ""}` } : {}),
         ...(pick.note ? { note: pick.note } : {}), gpuFrameMsDelta: d(run.gpuFrameMs, base.gpuFrameMs), fpsDelta: d(run.fps, base.fps), busyMsDelta: d(run.busyMs, base.busyMs),
+        // the CPU's side beside the GPU's: fps follows whichever is the larger part of the frame
+        cpu: run.busyMs?.p50 == null || base.busyMs?.p50 == null ? "no CPU busy times to compare" : run.busyMs.p50 <= base.busyMs.p50 * 1.15 + 0.5 ? `CPU busy time per frame not worse than ${base.label} (${run.busyMs.p50} against ${base.busyMs.p50} ms; within 15 % + 0.5 ms)` : `CPU busy time per frame worse than ${base.label} (${run.busyMs.p50} against ${base.busyMs.p50} ms)`,
+        samePose: (run.pose ?? null) === (base.pose ?? null) ? (run.pose ? "both runs held the same pose" : "neither run held a pose: each was measured from the game's own turn camera, which frames a different view on every map (pose makes them comparable)")
+          : `the runs were measured from different views (${run.pose ?? "the game's camera"} against ${base.pose ?? "the game's camera"}): not a fair compare`,
         verdict: run.gpuFrameMs?.p50 == null || base.gpuFrameMs?.p50 == null ? "no GPU times to compare (the timers are off or unsupported)"
           : run.gpuFrameMs.p50 <= base.gpuFrameMs.p50 * 1.15 + 0.5 ? `GPU time per frame not worse than ${base.label} (within 15 % + 0.5 ms)` : `GPU time per frame worse than ${base.label}` } : undefined;
       const { startedAt: _t, from: _f, ...out } = run;
-      return { ...out, ...(cpuBound ? { cpuBound: "the CPU's busy time is most of each frame: fps follows the CPU, not the drawing; compare gpuFrameMs" } : {}), ...(compare ? { compare } : {}),
+      return { ...out, ...(poseOut ? { pose: poseOut } : {}), ...(cpuBound ? { cpuBound: "the CPU's busy time is most of each frame: fps follows the CPU, not the drawing; compare gpuFrameMs" } : {}), ...(compare ? { compare } : {}),
         runs: perfRuns.map((r) => r.label), ...(saved.length ? { savedRuns: mergePerfRuns([], saved).map((r) => `${r.label} (${new Date(r.startedAt).toISOString()})`), runsFile: perfFile() } : {}),
         note: "gpuFrameMs: the GPU's time for the whole frame (swap to swap); busyMs: the CPU's time in the frame before SwapBuffers; medians (p50) and 95th percentiles of the samples; every run is kept in the runs file for `against` from another erg-mcp process" };
     },
@@ -2179,8 +2254,9 @@ return string.format("%.3f,%.3f,%.3f,%s,%s,%s,%s", t.fps, t.busyMsP50, t.frameMs
       elevation: { type: "number", minimum: 5, maximum: 89, description: "Degrees down at the patch (default 50)." },
       azimuth: { type: "number", minimum: 0, maximum: 360, description: "Where the eye stands, degrees clockwise from north (-z) of the patch (default 200: a little west of south, the sun behind)." },
       step: { type: "number", minimum: 0.5, maximum: 8, description: "The ground sample spacing for finding the patches, map units (default 2)." },
+      saveGrade: { type: "string", description: "Also fit a look grade from the shots and write it to this file (JSON): the map from each material's colour as the tools draw it (its landscape tint's colour where it has one, else its texture's mean) to the colour the shot shows, an affine map in linear light. render_view and render_topdown {grade: \"<this file>\"} then draw the level in the colours the game shows with these plugins and this time of day. At least two materials must be shot." },
       images: { type: "boolean", description: "Also answer the pictures (default false: the paths and colours)." } } },
-    async handler(s, a: { materials?: number[]; prefix?: string; width?: number; distance?: number; elevation?: number; azimuth?: number; step?: number; images?: boolean }) {
+    async handler(s, a: { materials?: number[]; prefix?: string; width?: number; distance?: number; elevation?: number; azimuth?: number; step?: number; images?: boolean; saveGrade?: string }) {
       s.requireProject();
       if (!(await has(s, "render.shot"))) throw new ToolError("game_material_shots needs the game's render.shot (Melange of this branch)");
       const st = await gameState(s);
@@ -2192,6 +2268,10 @@ return string.format("%.3f,%.3f,%.3f,%s,%s,%s,%s", t.fps, t.busyMsP50, t.frameMs
       const dist = (a.distance ?? 6) * W, el = ((a.elevation ?? 50) * Math.PI) / 180, az = ((a.azimuth ?? 200) * Math.PI) / 180;
       const dir = [Math.sin(az) * Math.cos(el), Math.sin(el), -Math.cos(az) * Math.cos(el)];
       const shots: Record<string, unknown>[] = [], pics: Content[] = [];
+      // the colour the tools draw each material in: its landscape tint's where it has one (what Sunstone draws)
+      const drawn = landTintPreview(s.store, mats, tintFor(mats))?.tint ?? tintFor(mats);
+      const tinted = new Set((landTintPreview(s.store, mats, tintFor(mats))?.materials ?? []).map((m) => m.material));
+      const pairs: { from: Rgb; to: Rgb; weight: number; material: number }[] = [];
       for (const p of patches) {
         const name = mats?.names[p.material], tidy = (name ?? `m${p.material}`).replace(/[^A-Za-z0-9]+/g, "_").replace(/^_+|_+$/g, "").slice(0, 24);
         const target = [p.at[0] * W, (p.at[1] + 0.3) * W, p.at[2] * W];
@@ -2208,6 +2288,9 @@ return string.format("%.3f,%.3f,%.3f,%s,%s,%s,%s", t.fps, t.busyMsP50, t.frameMs
           await clearCamera(s).catch(() => undefined);
           const img = decodePng(sh.png), inGame = centreColour(img.rgb, img.w, img.h);
           const swatch = mats?.colors?.[p.material] ?? null;
+          // a patch of few columns is mostly its neighbours in the shot: it counts for little; a tint's colour is exact
+          // (a texture's mean is not what Sunstone's sharper texture shows), so a tinted material counts three times
+          if (mats?.colors) pairs.push({ from: drawn(p.material), to: inGame, weight: Math.sqrt(Math.min(p.samples, 400)) * (tinted.has(p.material) ? 3 : 1) * (p.samples < 40 ? 0.1 : 1), material: p.material });
           Object.assign(rec, { shot: sh.path, frame: sh.frame, inGame: hex(inGame), ...(swatch ? { swatch: hex(swatch), ...lookDelta(swatch, inGame) } : { swatch: null, note: "the server gave no texture colour for this material" }) });
           if (a.images) pics.push(image(sh.png));
         } catch (e) {
@@ -2215,7 +2298,24 @@ return string.format("%.3f,%.3f,%.3f,%s,%s,%s,%s", t.fps, t.busyMsP50, t.frameMs
         }
         shots.push(rec);
       }
-      const out = { prefix, materials: shots, pose: { distance: a.distance ?? 6, elevation: a.elevation ?? 50, azimuth: a.azimuth ?? 200, fov: 50 }, units: "map",
+      let grade: Record<string, unknown> | undefined;
+      if (a.saveGrade !== undefined) {
+        if (pairs.length < 2) grade = { saved: false, why: `a grade needs at least two shot materials with a known colour (${pairs.length} here)` };
+        else {
+          const mods = await (await s.client()).call<{ id: string; on: boolean; state: string }[]>("mods.list", {}, 15000).then((l) => l.filter((m) => m.on && m.state === "enabled").map((m) => m.id), () => [] as string[]);
+          const g = fitGrade(pairs, { source: `${s.project?.id ?? "?"}, ${s.store.scene.databank.timeOfDay || "DAY"}, mods ${mods.join(" ") || "none"}` });
+          g.measured = pairs.filter((q) => q.weight >= 1).map((q) => ({ material: q.material, from: q.from, to: q.to, ...(tinted.has(q.material) ? { tinted: true } : {}) }));
+          const tp = pairs.filter((q) => tinted.has(q.material));
+          if (tp.length >= 2) { const tg = fitGrade(tp); g.tint = { m: tg.m, pairs: tg.pairs, residual: tg.residual }; }
+          mkdirSync(join(a.saveGrade, ".."), { recursive: true });
+          writeFileSync(a.saveGrade, JSON.stringify({ note: "erg-mcp look grade (game_material_shots saveGrade): render_view {grade: <this file>}", grade: g,
+            pairs: pairs.map((q) => ({ material: q.material, from: hex(q.from), to: hex(q.to), graded: hex(applyGrade(g, q.from)), weight: Math.round(q.weight * 10) / 10, ...(tinted.has(q.material) ? { tinted: true } : {}) })) }, null, 1));
+          grade = { saved: true, file: a.saveGrade, pairs: g.pairs, residual: g.residual, saturation: g.saturation, gain: g.gain, m: g.m, source: g.source, ...(g.tint ? { tintFit: g.tint } : {}),
+            fit: pairs.map((q) => ({ material: q.material, from: hex(q.from), game: hex(q.to), graded: hex(applyGrade(g, q.from)), ...(tinted.has(q.material) ? { tinted: true } : {}) })),
+            note: "a saturation about each colour's luminance, then a gain and an offset per channel, in linear light; residual: the fit's weighted RMS error on its own pairs (sRGB 0-255); fit: each material's colour as drawn, as the game showed it and as the grade maps it (tinted materials count three times, patches under 40 columns a tenth); the grade holds near these colours" };
+        }
+      }
+      const out = { prefix, materials: shots, ...(grade ? { grade } : {}), pose: { distance: a.distance ?? 6, elevation: a.elevation ?? 50, azimuth: a.azimuth ?? 200, fov: 50 }, units: "map",
         note: "inGame: the mean colour of the middle 30 % of the shot (the patch, lit as the match lights it, with the mods' detail); swatch: the material file's texture mean (preview_materials' tile); delta per channel, lightness 0-255, and the cast the shot leans to: what the players see of the material, not what the swatch sheet shows" };
       return a.images ? { content: [...pics, { type: "text", text: JSON.stringify(out) }] } : out;
     },
@@ -2297,3 +2397,6 @@ return string.format("%.3f,%.3f,%.3f,%s,%s,%s,%s", t.fps, t.busyMsP50, t.frameMs
     },
   },
 ];
+
+// the camera, the shot and the readers, for the other game tool groups (tools/moves.ts)
+export { clearCamera, evalClient, gameState, setCamera, shot };
