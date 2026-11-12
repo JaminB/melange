@@ -71,6 +71,9 @@ export interface Trap {
    * drop to were it dry. Its way out is into the water: a steep shore (a perch between the waterline and a face too
    * steep to climb), not a closed hollow, so filling basins never removes it (limit the shore's slope instead). */
   shore?: boolean;
+  /** A pit under a roof all over: every one of its nodes has solid over it in its own column (a hall inside a keep, a
+   * sealed cellar). With no start's walk reaching it, nothing falls into it either: a room, not a hole in the ground. */
+  roofed?: boolean;
 }
 
 export interface TrapOptions {
@@ -167,7 +170,9 @@ export function findTraps(S: Surfaces, o: ReachOptions, t: TrapOptions): { trapO
         }
       }
     }
-    return { nodes, area: nodes.length * S.step * S.step, floor: S.y[lowN], top, at: nodeAt(S, lowN), min, max, climbOut, exitAt, kind: climbOut === null ? "islet" : "pit", ...(shore ? { shore } : {}) };
+    // roofed: solid over every node, in its own column (the spans are highest first; one whose bottom is over the node)
+    const roofed = nodes.every((n) => { const c = S.cell[n]; for (let t = S.spanStart[c]; t < S.spanStart[c + 1]; t++) if (S.spanBottom[t] > S.y[n] + 1e-6) return true; return false; });
+    return { nodes, area: nodes.length * S.step * S.step, floor: S.y[lowN], top, at: nodeAt(S, lowN), min, max, climbOut, exitAt, kind: climbOut === null ? "islet" : "pit", ...(shore ? { shore } : {}), ...(roofed ? { roofed } : {}) };
   };
   const cand: (Trap | null)[] = closure.map((cl, c) => (cl ? make(c) : null));
   // closures nest (a pit in the floor of a pit, a pit on an islet): closure(q) lies inside closure(c) when q is in it.

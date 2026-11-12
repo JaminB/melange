@@ -451,7 +451,54 @@ export async function queryGround(s: Session, a: { x: number; z: number; units?:
 
 interface PitArgs extends RegionArgs { step?: number; maxStep?: number; maxSlope?: number; slopeOver?: "tread" | "riser" | "segment" | "skin"; headroom?: number; water?: boolean; maxGap?: number;
   maxArea?: number; minClimb?: number; from?: number[][]; bodyWidth?: number; islets?: boolean; limit?: number; maxDrop?: number; shore?: "list" | "skip";
-  fix?: boolean; fixMaxDepth?: number; fixPlace?: "existing" | "auto"; dryRun?: boolean; }
+  fix?: boolean; fixMaxDepth?: number; fixPlace?: "existing" | "auto"; dryRun?: boolean;
+  at?: number[]; radius?: number; exclude?: PitZone[]; enclosed?: "list" | "skip"; fixEnclosed?: boolean; }
+/** A zone check_pits leaves out: a box, or a disc round a point. */
+interface PitZone { x0?: number; z0?: number; x1?: number; z1?: number; at?: number[]; radius?: number; name?: string }
+
+/** check_pits' filters as a test on a pit's lowest point (map units): inside `at` + `radius` when given, and in no
+ * `exclude` zone. The pits are still found over the whole region, so one cut by a filter's edge is whole or left out. */
+function pitFilter(a: PitArgs): { keep(t: Trap): boolean; said: Record<string, unknown> | null } {
+  const k = a.units === "world" ? 1 / WORLD_PER_MAP : 1;
+  if (a.at !== undefined && (a.at.length < 2 || a.at.length > 3 || !a.at.every(Number.isFinite))) throw new ToolError("at: [x, z] or [x, y, z]");
+  if (a.radius !== undefined && a.at === undefined) throw new ToolError("radius goes with at");
+  const c = a.at ? [a.at[0] * k, a.at[a.at.length - 1] * k] : null, cr = (a.radius ?? 10 / k) * k;
+  const zones = (a.exclude ?? []).map((z, i) => {
+    if (z.at !== undefined) {
+      if (z.at.length < 2 || z.at.length > 3 || !z.at.every(Number.isFinite)) throw new ToolError(`exclude[${i}].at: [x, z] or [x, y, z]`);
+      const r = (z.radius ?? 5 / k) * k, x = z.at[0] * k, zz = z.at[z.at.length - 1] * k;
+      return (p: Vec3) => Math.hypot(p[0] - x, p[2] - zz) <= r;
+    }
+    if (z.x0 === undefined || z.x1 === undefined || z.z0 === undefined || z.z1 === undefined) throw new ToolError(`exclude[${i}]: {x0, z0, x1, z1} or {at, radius}`);
+    const x0 = Math.min(z.x0, z.x1) * k, x1 = Math.max(z.x0, z.x1) * k, z0 = Math.min(z.z0, z.z1) * k, z1 = Math.max(z.z0, z.z1) * k;
+    return (p: Vec3) => p[0] >= x0 && p[0] <= x1 && p[2] >= z0 && p[2] <= z1;
+  });
+  return { keep: (t) => (!c || Math.hypot(t.at[0] - c[0], t.at[2] - c[1]) <= cr) && !zones.some((z) => z(t.at)),
+    said: c || zones.length ? { ...(c ? { at: a.at, radius: a.radius ?? 10 / k } : {}), ...(zones.length ? { exclude: zones.length } : {}), note: "a pit is kept or left out whole, by its lowest point" } : null };
+}
+
+/** Whether a pit is an enclosed room: under a roof all over, and (when there are starts) no start's walk gets into it. */
+const isEnclosed = (t: Trap, reached: boolean) => !!t.roofed && !reached;
+
+/** The starts' walks into the traps: per trap, the names of the starts (spawn knots or `from`) that reach it. */
+function trapsReached(store: EditorStore, S: Surfaces, o: ReachOptions, gs: Grid[], found: { trapOf: Int32Array; traps: Trap[] }, a: PitArgs): { starts: { name: string; at: Vec3 }[]; by: string[][] } {
+  const u = a.units;
+  const starts: { name: string; at: Vec3 }[] = a.from
+    ? a.from.map((p, i) => {
+      if (p.length !== 3 || !p.every(Number.isFinite)) throw new ToolError(`from[${i}]: [x, y, z]`);
+      return { name: `from[${i}]`, at: [inMap(p[0], u), inMap(p[1], u), inMap(p[2], u)] as Vec3 };
+    })
+    : markers(store).filter((m) => m.kind === "spawn").map((m) => ({ name: m.name, at: m.pos }));
+  const by: string[][] = found.traps.map(() => []);
+  if (found.traps.length) for (const st of starts) {
+    const n0 = standing(S, st.at, o, gs);
+    if (n0 < 0) continue;
+    const q = search(S, n0, o), hit = new Set<number>();
+    for (let n = 0; n < S.nodes; n++) if (q.reached[n] && found.trapOf[n] >= 0) hit.add(found.trapOf[n]);
+    for (const id of hit) by[id].push(st.name);
+  }
+  return { starts, by };
+}
 
 /** check_pits {fix}: fills the level's pits as it stands now, whatever was built since the terrain's own fillBasins ran
  * (a structure's wall closing a trough, a boulder field ringing a hollow). Each pit's columns are filled from their
@@ -474,9 +521,14 @@ export function fixPits(store: EditorStore, a: PitArgs) {
     const S = surfaces(gs, r, step, o.headroom);
     const k2 = u === "world" ? WORLD_PER_MAP * WORLD_PER_MAP : 1;
     const found = findTraps(S, o, { maxArea: a.maxArea === undefined ? TRAP_AREA : a.maxArea / k2, minClimb: a.minClimb === undefined ? o.maxStep + 0.01 : inMap(a.minClimb, u) });
-    const pits = found.traps.filter((t) => t.kind === "pit" && !t.shore && t.exitAt);
+    // the same pits check_pits lists: the call's filters, and an enclosed room (a keep's hall: roofed, and no start
+    // walks into it) is never filled unless fixEnclosed says so (round 5 held the hall with a fixMaxDepth hack)
+    const flt = pitFilter(a), by = trapsReached(store, S, o, gs, found, a).by;
+    const cand = found.traps.map((t, i) => ({ t, i })).filter((x) => x.t.kind === "pit" && !x.t.shore && x.t.exitAt && flt.keep(x.t));
+    const pits = cand.filter((x) => a.fixEnclosed || !isEnclosed(x.t, by[x.i].length > 0)).map((x) => x.t);
     const shapes: Shape[] = [];
     skipped.length = 0;
+    for (const x of cand) if (!pits.includes(x.t)) skipped.push({ at: x.t.at.map((v) => r2(outUnit(v, u))), why: "an enclosed room (roofed, and no start walks into it): fixEnclosed fills it" });
     for (const t of pits) {
       if (t.climbOut! > maxDepth) { skipped.push({ at: t.at.map((v) => r2(outUnit(v, u))), why: `its climb out is ${r2(outUnit(t.climbOut!, u))}, over fixMaxDepth` }); continue; }
       for (const n of t.nodes) {
@@ -494,7 +546,7 @@ export function fixPits(store: EditorStore, a: PitArgs) {
     passes.push({ pass: pass + 1, pits: pits.length, columns: shapes.length, voxelsAdded: res.voxels.added, frames: res.frames, ...(res.newBlocks.length ? { newBlocks: res.newBlocks.map((b) => ({ id: b.id, name: b.name, cells: b.cells })) } : {}) });
     if (a.dryRun || !res.voxels.added) break;
     left = checkPits(store, { ...a, fix: false }) as typeof left;
-    if (!left.pits.length) break;
+    if (!(left.pits as { enclosed?: boolean }[]).some((p) => a.fixEnclosed || !p.enclosed)) break;
   }
   if (!a.dryRun && passes.length) left = checkPits(store, { ...a, fix: false }) as typeof left;
   return { ...left, fix: { before: first.pits.length, after: a.dryRun ? null : left.pits.length, voxelsAdded: added, passes, ...(skipped.length ? { skipped } : {}), dryRun: !!a.dryRun,
@@ -523,30 +575,22 @@ export function checkPits(store: EditorStore, a: PitArgs) {
   const found = findTraps(S, o, { maxArea: a.maxArea === undefined ? TRAP_AREA : a.maxArea / k2, minClimb: a.minClimb === undefined ? o.maxStep + 0.01 : inMap(a.minClimb, u) });
   const out = (p: Vec3) => p.map((v) => r2(outUnit(v, u)));
   // which starts (the spawn knots, or from) walk or drop into each: the walk from each under the caller's rules
-  const starts: { name: string; at: Vec3 }[] = a.from
-    ? a.from.map((p, i) => {
-      if (p.length !== 3 || !p.every(Number.isFinite)) throw new ToolError(`from[${i}]: [x, y, z]`);
-      return { name: `from[${i}]`, at: [inMap(p[0], u), inMap(p[1], u), inMap(p[2], u)] as Vec3 };
-    })
-    : markers(store).filter((m) => m.kind === "spawn").map((m) => ({ name: m.name, at: m.pos }));
-  const reachedBy: string[][] = found.traps.map(() => []);
-  if (found.traps.length) for (const st of starts) {
-    const n0 = standing(S, st.at, o, gs);
-    if (n0 < 0) continue;
-    const q = search(S, n0, o), hit = new Set<number>();
-    for (let n = 0; n < S.nodes; n++) if (q.reached[n] && found.trapOf[n] >= 0) hit.add(found.trapOf[n]);
-    for (const id of hit) reachedBy[id].push(st.name);
-  }
+  const { starts, by: reachedBy } = trapsReached(store, S, o, gs, found, a);
+  const flt = pitFilter(a);
   const rows = found.traps.map((t, i) => ({ t, by: reachedBy[i] }));
-  let pitRows = rows.filter((x) => x.t.kind === "pit").sort((x, y) => (y.by.length ? 1 : 0) - (x.by.length ? 1 : 0) || y.t.climbOut! - x.t.climbOut!);
+  let pitRows = rows.filter((x) => x.t.kind === "pit" && flt.keep(x.t)).sort((x, y) => (y.by.length ? 1 : 0) - (x.by.length ? 1 : 0) || y.t.climbOut! - x.t.climbOut!);
   const isl = rows.filter((x) => x.t.kind === "islet");
   const row = (x: { t: Trap; by: string[] }) => ({ at: out(x.t.at), floorY: r2(outUnit(x.t.floor, u)), ...(x.t.kind === "pit" ? { climbOut: r2(outUnit(x.t.climbOut!, u)), rimAt: out(x.t.exitAt!) } : {}),
     area: r2(x.t.area * k2), columns: x.t.nodes.length, box: { min: x.t.min.map((v) => r2(outUnit(v, u))), max: x.t.max.map((v) => r2(outUnit(v, u))) },
     ...(x.t.shore ? { shore: true } : {}),
+    ...(x.t.roofed ? { roofed: true } : {}), ...(x.t.kind === "pit" && isEnclosed(x.t, x.by.length > 0) ? { enclosed: true } : {}),
     ...(x.by.length ? { reachedFrom: x.by.slice(0, 16) } : {}) });
   // shore: "skip" leaves the shore perches out (their way out is the sea); the default lists them, tagged
   const shoreN = pitRows.filter((x) => x.t.shore).length;
   if (a.shore === "skip") pitRows = pitRows.filter((x) => !x.t.shore);
+  // enclosed: "skip" leaves the sealed rooms out (roofed, and no start walks into them); the default lists them, tagged
+  const enclosedN = pitRows.filter((x) => isEnclosed(x.t, x.by.length > 0)).length;
+  if (a.enclosed === "skip") pitRows = pitRows.filter((x) => !isEnclosed(x.t, x.by.length > 0));
   const limit = a.limit ?? 30, entered = pitRows.filter((x) => x.by.length).length;
   return {
     ok: pitRows.length === 0,
@@ -554,6 +598,8 @@ export function checkPits(store: EditorStore, a: PitArgs) {
       `; the deepest needs a climb of ${r2(outUnit(Math.max(...pitRows.map((x) => x.t.climbOut!)), u))}` : "no pit: every hollow has a walk out",
     pits: pitRows.slice(0, limit).map(row), ...(pitRows.length > limit ? { more: pitRows.length - limit } : {}),
     ...(shoreN ? { shore: { count: shoreN, listed: a.shore !== "skip", note: "pits tagged shore have wet ground beside them a step away: a perch on a steep shore whose way out is the sea, not a closed hollow. fillBasins does not fill them (the sea is their outlet); limit the shore's slope (maxGradient, a gentler coast) or pass shore: \"skip\"" } } : {}),
+    ...(enclosedN ? { enclosed: { count: enclosedN, listed: a.enclosed !== "skip", note: "pits tagged enclosed are rooms: under a roof all over (solid over every column of the floor) and walked into by no start, so nothing falls or walks in (a keep's sealed hall). fix leaves them (fixEnclosed fills them); enclosed: \"skip\" leaves them out of pits, ok and the summary" } } : {}),
+    ...(flt.said ? { filter: flt.said } : {}),
     islets: a.islets ? isl.slice(0, limit).map(row) : { count: isl.length, note: "ground with no other ground beside it (a rock in the sea, a ledge over the void): islets: true lists them" },
     rules: { step: r2(outUnit(step, u)), maxStep: r2(outUnit(o.maxStep, u)), maxSlope: o.maxSlope, slopeOver: o.slopeOver, maxGap: r2(outUnit(o.maxGap, u)), headroom: r2(outUnit(o.headroom, u)),
       maxArea: r2((a.maxArea === undefined ? TRAP_AREA : a.maxArea / k2) * k2), water: water === null ? "not used" : r2(outUnit(water, u)), units: u ?? "map",
@@ -1598,6 +1644,12 @@ export const tools: Tool[] = [
         limit: { type: "integer", minimum: 1, maximum: 200, description: "Pits listed (default 30), those a start reaches first, then the deepest." },
         fix: { type: "boolean", description: "Fill the pits found, as the level stands now (so it sees what was built after the terrain's own fillBasins ran: a wall that closes a trough, boulders ringing a hollow): each pit's columns are filled from their ground up to its rim (the ground its least climb out reaches) in the column's own top material, into the frames that are there (a draped skin's cells where the game draws them), then the level is read again; up to three passes, one undo step each. Shore perches are left (their way out is the sea). The answer is the check after the fill, with `fix` (before, after, voxelsAdded, passes). Default false: nothing is edited." },
         fixMaxDepth: { type: "number", minimum: 0, description: "With fix: leave a pit whose climb out is over this (default 4 map units: a sunken court is not a pit to fill)." },
+        fixEnclosed: { type: "boolean", description: "With fix: fill the enclosed rooms too (default false: a pit tagged `enclosed` is left and named under fix.skipped)." },
+        at: { type: "array", items: { type: "number" }, minItems: 2, maxItems: 3, description: "Only the pits whose lowest point is within `radius` of this [x, z] (or [x, y, z]); the pits are found over the whole region all the same, so none is cut by the edge." },
+        radius: { type: "number", minimum: 0.01, description: "With at (the call's units; default 10 map units)." },
+        exclude: { type: "array", maxItems: 32, description: "Zones whose pits are left out (of the list, ok, the summary and fix), each a box {x0, z0, x1, z1} or a disc {at: [x, z], radius (default 5 map units)}: a court sunk on purpose, a moat.",
+          items: { type: "object", additionalProperties: false, properties: { x0: { type: "number" }, z0: { type: "number" }, x1: { type: "number" }, z1: { type: "number" }, at: { type: "array", items: { type: "number" }, minItems: 2, maxItems: 3 }, radius: { type: "number", minimum: 0.01 }, name: { type: "string" } } } },
+        enclosed: { type: "string", enum: ["list", "skip"], description: "Enclosed rooms (a pit under a roof all over that no start's walk gets into: a keep's sealed hall): list (default; each tagged `enclosed: true`, counted under `enclosed`) or skip (left out of pits, ok and the summary). `roofed: true` alone marks a pit under a roof that a start does walk into." },
         fixPlace: { type: "string", enum: ["existing", "auto"], description: "With fix: existing (default) fills only cells of frames that exist; auto also adds a block where a pit lies under no frame's cells." },
         dryRun: { type: "boolean", description: "With fix: plan the first pass and edit nothing." },
       },

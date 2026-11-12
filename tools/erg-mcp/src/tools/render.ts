@@ -11,9 +11,11 @@ import { WORLD_PER_MAP, grids, isSolid, type Grid } from "../lib/voxel";
 import { ToolError, image, type Tool } from "../registry";
 import type { Session } from "../session";
 import { sceneryMeshesFor } from "../lib/scenery-view";
+import { HAZE_MODEL, hazeAt, hazeVerdict, levelLooks, seaOpacity, type LevelLooks } from "../lib/sea-look";
+import { levelCameraOf } from "../lib/level-camera";
 
 type Units = "map" | "world" | undefined;
-type Preset = "nw" | "ne" | "sw" | "se" | "orbit" | "game";
+type Preset = "nw" | "ne" | "sw" | "se" | "orbit" | "game" | "level";
 
 interface ViewArgs {
   view?: Preset; pos?: number[]; target?: number[]; at?: number[]; units?: "map" | "world"; fov?: number;
@@ -21,6 +23,7 @@ interface ViewArgs {
   region?: { x0?: number; z0?: number; x1?: number; z1?: number }; clip?: boolean;
   width?: number; height?: number; fog?: number; timeOfDay?: "DAY" | "EVENING" | "NIGHT"; markers?: boolean; palette?: PaletteMode;
   antialias?: boolean; edges?: boolean; scenery?: boolean; tints?: boolean; grade?: string; sideTextures?: boolean;
+  waterLook?: boolean; gameMatch?: boolean | { hidden?: number; seaBy?: "mod" | "game" };
 }
 
 const BEARING: Record<"nw" | "ne" | "sw" | "se", number> = { ne: 45, se: 135, sw: 225, nw: 315 };
@@ -67,9 +70,14 @@ function middle(ps: Vec3[]): Vec3 {
 }
 
 /** The cameras for the call (four for orbit), each with how it was chosen. */
-function cameras(a: ViewArgs, gs: Grid[], points: Vec3[], aspect: number): { cam: Camera; how: string }[] {
+function cameras(a: ViewArgs, gs: Grid[], points: Vec3[], aspect: number, level?: Camera | null): { cam: Camera; how: string }[] {
   const u = a.units, fov = a.fov ?? 60;
   const centre = middle(points);
+  if (a.view === "level") {
+    if (a.pos || a.target || a.at) throw new ToolError("view level is the pose set_level_camera set: no pos, target or at");
+    if (!level) throw new ToolError("view level: the open project has no level camera (set_level_camera)");
+    return [{ cam: { ...level, fov: a.fov ?? level.fov }, how: "level: set_level_camera's pose" }];
+  }
   if (a.pos) {
     if (a.view) throw new ToolError("give pos and target, or a view preset, not both");
     if (!a.target) throw new ToolError("pos needs a target");
@@ -116,7 +124,8 @@ export async function renderViewTool(s: Session, a: ViewArgs) {
   const orbit = a.view === "orbit";
   const tw = orbit ? Math.floor(W / 2) : W, th = orbit ? Math.floor(H / 2) : H;
   const points = framePoints(gs, r);
-  const cams = cameras(a, gs, points, tw / th);
+  const lc = s.project ? levelCameraOf(s.project.id) : null;
+  const cams = cameras(a, gs, points, tw / th, lc ? { pos: lc.pos.map((v) => v / WORLD_PER_MAP) as Vec3, target: lc.target.map((v) => v / WORLD_PER_MAP) as Vec3, fov: lc.fov } : null);
 
   const set = await projectMaterials(s);
   const lt = a.tints ? landTintPreview(store, set, tintFor(set, a.palette)) : null;
@@ -132,7 +141,22 @@ export async function renderViewTool(s: Session, a: ViewArgs) {
   const tintSide = sides ? (m: number) => { const c = sides[m] ?? tint0(m); return grade ? applyGrade(grade.grade, c) : c; } : undefined;
   const tod = a.timeOfDay ?? (store.scene.databank.timeOfDay || "DAY");
   const water = waterMap(store);
+  // waterLook (and gameMatch): the level's own sea material, opacity and haze, read from its script's set_water_look
+  // block; without them the picture is what it always was (a translucent blue plane, no haze)
+  const gm = a.gameMatch ? (typeof a.gameMatch === "object" ? a.gameMatch : {}) : null;
+  let looks: LevelLooks | null = null;
+  if (a.waterLook || gm) {
+    let script = "";
+    try { script = (await s.requireProject().erg.script()) ?? ""; } catch { /* a server without scripts: no looks */ }
+    looks = levelLooks(script);
+  }
+  const seaBy = gm?.seaBy ?? "mod";
+  const seaOp = looks ? seaOpacity(looks, seaBy) : null;
+  const seaIn = looks && (looks.sea || seaOp !== null) ? { ...(looks.sea && seaBy === "mod" ? { rgb: (grade ? applyGrade(grade.grade, looks.sea.albedo as [number, number, number]) : looks.sea.albedo) as [number, number, number] } : {}), opacity: seaOp ?? 0.75 } : undefined;
+  const hz = looks?.haze ?? null;
+  const hazeIn = hz ? { rgb: hz.color as [number, number, number], amount: hz.amount, at: (d: number) => hazeAt(d * WORLD_PER_MAP, hz) } : undefined;
   const input = {
+    ...(seaIn ? { sea: seaIn } : {}), ...(hazeIn ? { haze: hazeIn } : {}),
     grids: gs, tint, ...(tintSide ? { tintSide } : {}), ...(grade ? { normaliseTop: true } : {}), look: lookFor(tod), water, markers: a.markers === false ? [] : markers(store),
     fog: a.fog === undefined ? 0 : inMap(a.fog, u), clip: a.clip ? r : null, edges: a.edges,
     ...(a.scenery ? await sceneryMeshesFor(s, a.clip ? r : null) : {}),
@@ -175,8 +199,30 @@ export async function renderViewTool(s: Session, a: ViewArgs) {
       ...(grade.grade.measured ? { measuredMaterials: grade.grade.measured.length } : {}), ...(grade.grade.tint ? { tintFit: { pairs: grade.grade.tint.pairs, residual: grade.grade.tint.residual } } : {}),
       note: "a material the grade was measured on, still drawn in the colour it had then, is drawn in the colour the game showed; the others by the grade's fit (a saturation, a gain and an offset per channel in linear light; a tinted material by the fit over the tinted ones); the light is scaled so a level top in the sun is exactly that colour" } } : {}),
     ...(a.sideTextures ? { sideTextures: sides ? "every face but a top is drawn in the colour of the material's side texture (a cliff of grass01 is rock)" : "the server gave no side colours (Melange 0.15+): the sides are drawn in the tops' colours" } : {}),
+    ...(looks ? { waterLook: {
+      sea: looks.sea ? { albedo: looks.sea.albedo, opacity: looks.sea.opacity, drawn: seaBy === "mod" ? "a matte plane of this colour (what a water shader mod that honours the sea material draws: Sunstone 2.4+)" : "not drawn: seaBy game is the game's own water shader, which takes no colour" } : null,
+      opacity: seaOp === null ? "the theme's own (drawn at 0.75)" : seaOp,
+      haze: hz ? { ...hz, model: HAZE_MODEL.source, drawn: "the land and the sea fade to it with distance, and the band under the horizon is its colour (the game alone draws no haze)" } : null,
+      ...(!looks.sea && !looks.look && !hz ? { note: "the level's script has no set_water_look block: the picture is the plain one" } : {}) } } : {}),
+    ...(gm ? { gameMatch: (() => {
+      // the haze from each camera of this picture, and from the cameras a match and the harness show the level from
+      const land = tint0(0), dist = (c: Camera) => Math.hypot(c.pos[0] - c.target[0], c.pos[1] - c.target[1], c.pos[2] - c.target[2]) * WORLD_PER_MAP;
+      const ext2 = extentXZ(gs)!, span = Math.max(ext2.x1 - ext2.x0, ext2.z1 - ext2.z0) * WORLD_PER_MAP;
+      const from: { what: string; distance: number }[] = [
+        ...cams.map(({ cam, how }) => ({ what: `this picture's camera (${how})`, distance: dist(cam) })),
+        lc ? { what: "the level camera (set_level_camera)", distance: Math.hypot(lc.pos[0] - lc.target[0], lc.pos[1] - lc.target[1], lc.pos[2] - lc.target[2]) }
+          : { what: "the default overview (game_camera preset overview: 0.95 x the level's span)", distance: span * 0.95 },
+        { what: "the turn camera", distance: GAME_DISTANCE * WORLD_PER_MAP },
+      ];
+      const rows = hz ? from.map((f) => ({ from: f.what, ...hazeVerdict(f.distance, hz, { land, hidden: gm.hidden, what: f.what }) })) : [];
+      const warnings = [...rows.filter((r) => r.warning).map((r) => r.warning as string),
+        ...(seaOp !== null && seaOp < 0.995 ? [`the sea is drawn at opacity ${seaOp}: the land under it shows through near the shore (check_sea_opacity lists where; set_water_look {opaque: true})`] : []),
+        ...(seaOp === null && looks && !looks.sea ? ["the level sets no sea opacity: the theme's translucent water (set_water_look {opaque: true}, or a sea material)"] : [])];
+      return { ok: warnings.length === 0, haze: hz ? rows.map(({ warning: _w, ...r }) => r) : "the level has no haze", ...(warnings.length ? { warnings } : {}),
+        note: "the picture is drawn with the level's own sea and haze; the haze rows say how much of the land's colour the haze takes from each camera's distance (hidden: at or over the limit, default 0.33)" };
+    })() } : {}),
     ...(a.tints ? { tints: lt ? { materials: lt.materials, note: "each material whose top tile a tint_landscape carrier recolours is drawn in the tint's colour (what Sunstone draws; with Sunstone off the game shows the theme's textures)" } : "the level has no landscape tint on a top tile of its material file" } : {}),
-    water: water === null ? "the level's own height (not known here, so not drawn)" : { map: r2(water), world: r2(water * WORLD_PER_MAP), drawn: "a translucent plane" },
+    water: water === null ? "the level's own height (not known here, so not drawn)" : { map: r2(water), world: r2(water * WORLD_PER_MAP), drawn: seaIn ? `the level's sea at opacity ${seaIn.opacity} (waterLook)` : "a translucent plane" },
     fog: input.fog ? { distance: r2(a.fog!), units: u ?? "map" } : "none",
     region: { x: [r2(r.x0), r2(r.x1)], z: [r2(r.z0), r2(r.z1)], units: "map", clip: !!a.clip },
     ...("sceneryInfo" in input ? { scenery: input.sceneryInfo } : {}),
@@ -199,7 +245,7 @@ export const tools: Tool[] = [
     inputSchema: {
       type: "object", additionalProperties: false,
       properties: {
-        view: { type: "string", enum: ["nw", "ne", "sw", "se", "orbit", "game"], description: "Preset camera (default se when no pos): from that side, 35 degrees up, distance fitted to the level or region; orbit: all four sides in a 2x2 sheet; game: the turn camera looking at `at`." },
+        view: { type: "string", enum: ["nw", "ne", "sw", "se", "orbit", "game", "level"], description: "Preset camera (default se when no pos): from that side, 35 degrees up, distance fitted to the level or region; orbit: all four sides in a 2x2 sheet; game: the turn camera looking at `at`; level: the pose set_level_camera set for the open project." },
         pos: vec3("Eye [x, y, z] (with target; instead of view)."), target: vec3("Point looked at [x, y, z]; with a preset, the point it orbits (default the middle of the level or region)."),
         at: vec3("For view game: the point the turn camera looks at (a worm's spot)."),
         units: { type: "string", enum: ["map", "world"], description: "Unit of pos, target, at, distance, region and fog: map (a voxel; the default) or world (map x 20)." },
@@ -219,6 +265,9 @@ export const tools: Tool[] = [
         tints: { type: "boolean", description: "Preview the level's landscape tints (tint_landscape): a material whose top tile is tinted draws in the tint's colour (default false: the textures' own colours)." },
         grade: { type: "string", description: "Draw the colours as the game shows them: the name of a built-in grade (" + GRADE_NAMES + ") or the path of a grade file game_material_shots {saveGrade} wrote in a match (with the plugins and the time of day the level is played in). A tint that reads ochre here can play as saturated orange: with a grade the picture shows the played colour. Default none: the textures' mean colours and the tints as written." },
         sideTextures: { type: "boolean", description: "Draw every face but a top in the colour of the material's SIDE texture (a material's sides draw its second texture: a cliff, a wall or a strata band of grass01 is rock). Default false: the top's colour on every face, as before. Needs Melange 0.15+ on the server." },
+        waterLook: { type: "boolean", description: "Draw the level's own looks (set_water_look, read from the level script): the sea as its sea material's matte colour at its opacity (1 hides everything under it; without a sea material the water plane's `opacity`), and the level haze (the land and the sea fade to its colour with distance by Sunstone 2.4's model, amount, start and distance as set; the band under the horizon is the haze). Default false: the translucent blue plane and no haze, as before. The text part's `waterLook` says what was drawn." },
+        gameMatch: { description: "true, or {hidden (0-1, default 0.33), seaBy: \"mod\" (default: a water shader mod draws the sea material) | \"game\" (the game's own water shader: no sea colour, the plane's opacity)}: waterLook, plus `gameMatch` in the text part: how much of the land's colour the haze takes from this picture's camera, from the level camera (set_level_camera; else the default overview at 0.95 x the level's span) and from the turn camera, with a warning for each camera the haze hides the island from (`hidden` or more of its colour gone) and for a sea that is not opaque. Default off.",
+          anyOf: [{ type: "boolean" }, { type: "object", additionalProperties: false, properties: { hidden: { type: "number", minimum: 0.05, maximum: 1 }, seaBy: { type: "string", enum: ["mod", "game"] } } }] },
         antialias: { type: "boolean", description: "Render at 2x2 samples per pixel (smoother edges, about 3-4 times slower; default false)." },
         edges: { type: "boolean", description: "Darken silhouette edges (default true)." },
         scenery: { type: "boolean", description: "Also draw the scenery details (copies included) by their preview meshes, flat-shaded in each mesh's average texture colour (default false; lights and emitters are not drawn). The text part then gives `scenery`: meshes drawn and resources with no mesh." },

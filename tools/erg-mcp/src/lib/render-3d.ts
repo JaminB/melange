@@ -130,6 +130,12 @@ export interface ViewInput {
   clip?: Region | null;        // draw only voxels whose centre is in this xz box
   edges?: boolean;             // darken silhouette edges (default true)
   meshes?: { tris: ArrayLike<number>; rgb: Rgb }[];   // extra triangles (scenery meshes, map units, 9 numbers each), drawn two-sided in a flat colour
+  /** The level's sea material (set_water_look): the water plane as a matte surface of this colour at this opacity (1:
+   * nothing under it shows), instead of the translucent blue plane. `rgb` alone absent: the look's colour, this opacity. */
+  sea?: { rgb?: Rgb; opacity: number };
+  /** The level's haze: its colour, and how much of a point `dist` map units away it takes over land and over the sea
+   * (lib/sea-look's hazeAt). The band under the horizon and just over it is the haze's colour too. */
+  haze?: { rgb: Rgb; at(dist: number): { land: number; sea: number }; amount: number };
 }
 
 export interface PlacedMarker { kind: MarkerKind; name: string; pos: Vec3; px: [number, number]; visible: boolean; }
@@ -328,7 +334,8 @@ export function renderView(input: ViewInput, cam: Camera, w: number, h: number, 
   const edges = input.edges !== false;
   const water = input.water;
   const under = water !== null && E[1] < water;
-  const [hR, hG, hB] = look.horizon, [zR, zG, zB] = look.zenith, [bR, bG, bB] = look.below, [wR, wG, wB] = look.water;
+  const [hR, hG, hB] = look.horizon, [zR, zG, zB] = look.zenith, [bR, bG, bB] = look.below, [wR, wG, wB] = input.sea?.rgb ?? look.water;
+  const sea = input.sea, haze = input.haze;
   const farOf = (j: number, z0: number) => inv[j] <= 0 || 1 / inv[j] > z0 * 1.04 + 0.4 * ss;
   for (let py = 0; py < H; py++)
     for (let px = 0; px < W; px++) {
@@ -357,7 +364,13 @@ export function renderView(input: ViewInput, cam: Camera, w: number, h: number, 
         cG = hG + ((up ? zG : bG) - hG) * t;
         cB = hB + ((up ? zB : bB) - hB) * t;
         dist = Infinity;
+        // a level haze is the band under the horizon and thins out a few degrees over it (the mod's rim)
+        if (haze) {
+          const k = haze.amount * (up ? Math.exp(-22 * ry) : 1);
+          cR += (haze.rgb[0] - cR) * k; cG += (haze.rgb[1] - cG) * k; cB += (haze.rgb[2] - cB) * k;
+        }
       }
+      let onSea = false;
       // the water plane, translucent: more opaque with the depth of water the ray crosses, lighter at grazing angles
       if (water !== null && !under && Math.abs(ry) > 1e-9) {
         const t = (water - E[1]) / ry;           // distance along the unit ray
@@ -365,13 +378,24 @@ export function renderView(input: ViewInput, cam: Camera, w: number, h: number, 
           const fres = 0.45 * Math.pow(1 - Math.min(1, Math.abs(ry)), 4);
           const sR = wR + (hR - wR) * fres, sG = wG + (hG - wG) * fres, sB = wB + (hB - wB) * fres;
           let alpha: number;
-          if (dist === Infinity) { alpha = 0.7; cR = wR * 0.55; cG = wG * 0.55; cB = wB * 0.55; }   // open water: its deep colour under
-          else alpha = Math.min(0.88, 0.38 + 0.12 * (dist - t) * Math.abs(ry));
-          cR += (sR - cR) * alpha; cG += (sG - cG) * alpha; cB += (sB - cB) * alpha;
-          dist = t;
+          if (sea) {
+            // a sea material: matte, its own colour (when it names one), as opaque as it says whatever lies under it
+            alpha = dist === Infinity ? 1 : sea.opacity;
+            const m = sea.rgb ? [wR, wG, wB] : [sR, sG, sB];
+            cR += (m[0] - cR) * alpha; cG += (m[1] - cG) * alpha; cB += (m[2] - cB) * alpha;
+          } else {
+            if (dist === Infinity) { alpha = 0.7; cR = wR * 0.55; cG = wG * 0.55; cB = wB * 0.55; }   // open water: its deep colour under
+            else alpha = Math.min(0.88, 0.38 + 0.12 * (dist - t) * Math.abs(ry));
+            cR += (sR - cR) * alpha; cG += (sG - cG) * alpha; cB += (sB - cB) * alpha;
+          }
+          dist = t; onSea = true;
         }
       } else if (under && dist !== Infinity) {
         cR += (wR - cR) * 0.5; cG += (wG - cG) * 0.5; cB += (wB - cB) * 0.5;
+      }
+      if (haze && dist !== Infinity) {
+        const hk = haze.at(dist), k = onSea ? hk.sea : hk.land;
+        cR += (haze.rgb[0] - cR) * k; cG += (haze.rgb[1] - cG) * k; cB += (haze.rgb[2] - cB) * k;
       }
       if (fog && dist !== Infinity) {
         const k = 1 - Math.exp(-dist / fog);

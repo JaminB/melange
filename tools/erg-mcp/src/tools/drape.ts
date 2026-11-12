@@ -1,6 +1,7 @@
 // Tool group "drape": a heightfield as a smooth skin. Blocks of whole columns a few voxels thick whose corner offsets
 // (each block's HeightMap, which the game uses to move its columns up, drawn and for collision) carry the surface's
 // height, over the usual stepped field cut just under it. The planner is src/lib/heightfield-drape.ts.
+import { JUMP_RISE } from "../lib/crater-traps";
 import { applyDrape, planDrape, type DrapeArgs } from "../lib/heightfield-drape";
 import { usage } from "../lib/voxel";
 import type { Schema, Tool } from "../registry";
@@ -40,6 +41,8 @@ const schema: Schema & { type: "object" } = {
         paths: { type: "array", minItems: 1, maxItems: 32, items: { type: "array", minItems: 2, maxItems: 4000, items: { type: "array", items: { type: "number" }, minItems: 2, maxItems: 3 } }, description: "The trails, in units." },
         distance: { type: "number", minimum: 0.5, maximum: 40, description: "The zone's half width round the paths, in units (default 4 map units)." },
         clip: { type: "array", maxItems: 32, items: { type: "object", additionalProperties: false, properties: { x: { type: "number" }, z: { type: "number" }, radius: { type: "number", minimum: 0 }, min: { type: "array", items: { type: "number" }, minItems: 2, maxItems: 2 }, max: { type: "array", items: { type: "number" }, minItems: 2, maxItems: 2 } } }, description: "Areas (circles x, z, radius or rectangles min, max) also in the zone: a summit." } } },
+    craterSlope: { description: "Keep a blast's hole climbable, off by default: true, or {jump (map units, default 2.48: what a worm's jump rises), clear (default 0.25: the room over the lip), layers (default 1: the voxel layers a blast takes at its rim)}. The game cuts a crater out of a skin in whole voxels, so its walls are a voxel high: in a skin of 2.5-unit voxels a one-layer hole on level sand has walls a jump (2.48) does not clear, and the worm in it is stuck (check_crater_traps finds them). With craterSlope the skin's voxelSize is held to the largest quarter unit whose wall a jump clears ((jump - clear) / layers: 2 map units by the defaults); a voxelSize already at or under it is left alone. The game has no way to slope a crater's wall itself (the corner offsets move whole columns), so the walls stay steps: low enough to jump. The answer's `craterSlope` says the size asked and used and what it costs: the skin's cells at both (dryRun shows it before building).",
+      anyOf: [{ type: "boolean" }, { type: "object", additionalProperties: false, properties: { jump: { type: "number", minimum: 0.5, maximum: 10 }, clear: { type: "number", minimum: 0, maximum: 2 }, layers: { type: "integer", minimum: 1, maximum: 4 } } }] },
     dryRun: { type: "boolean", description: "Plan and report only." },
     estimateSkirts: { type: "boolean", description: "With dryRun: also plan the same skin as a hollow skin, with its full core, and (when skirtTo is given) with the skirt alone and with skirtTop, and answer each one's blocks and cells (skirtEstimates), to choose before building." },
   },
@@ -69,13 +72,25 @@ export const tools: Tool[] = [
     name: "heightfield_drape",
     description: "Raise a heightfield (the same arguments as heightfield_region) as a smooth skin instead of voxel terraces: blocks of up to 31 x 31 columns, `thickness` voxels thick, sheared by per-corner height offsets the game applies to drawing and collision (a cone's flanks become slopes, not rings), over the stepped field cut just under the skin (`core`). Skin blocks cost X*thickness*Z cells each. The skin is read at its sheared height by query_ground, the renders, check_reachability and drops; structures, heightfield fills and sculpt edit it unsheared, so build those before draping or away from it. `refine` drapes a finer skin along the trails (or in areas) and cuts the coarse one out there, in the same undo step. dryRun answers the plan. One undo step.",
     inputSchema: schema,
-    handler(s, a: DrapeArgs & { dryRun?: boolean; estimateSkirts?: boolean }) {
-      const { dryRun, estimateSkirts, ...args } = a;
+    handler(s, a: DrapeArgs & { dryRun?: boolean; estimateSkirts?: boolean; craterSlope?: boolean | { jump?: number; clear?: number; layers?: number } }) {
+      const { dryRun, estimateSkirts, craterSlope, ...args0 } = a;
+      let args: DrapeArgs = args0, crater: Record<string, unknown> | undefined;
+      if (craterSlope) {
+        // the largest quarter-unit voxel whose crater wall a jump clears; the skin as asked is planned too, for its cost
+        const o = typeof craterSlope === "object" ? craterSlope : {}, jump = o.jump ?? JUMP_RISE, clear = o.clear ?? 0.25, layers = o.layers ?? 1;
+        const cap = Math.max(0.5, Math.floor(((jump - clear) / layers) * 4) / 4), asked = args0.voxelSize ?? 1;
+        const cells = (x: DrapeArgs) => { try { const r = planDrape(s.store, x).report as { fits?: boolean; skin?: { blocks: number; cells: number } }; return { blocks: r.skin?.blocks ?? null, cells: r.skin?.cells ?? null, fits: !!r.fits }; } catch (e) { return { blocks: null, cells: null, fits: false, why: e instanceof Error ? e.message : String(e) }; } };
+        if (asked > cap + 1e-9) args = { ...args0, voxelSize: cap };
+        crater = { voxelSize: { asked, used: Math.min(asked, cap) }, wall: { asked: Math.round(asked * layers * 100) / 100, used: Math.round(Math.min(asked, cap) * layers * 100) / 100 }, jump, clear, layers,
+          ...(asked > cap + 1e-9 ? { skinAsAsked: cells(args0), note: `voxelSize ${asked} leaves crater walls of ${Math.round(asked * layers * 100) / 100}, which a jump of ${jump} does not clear with ${clear} to spare: the skin is built at ${cap}` }
+            : { note: `voxelSize ${asked} already leaves crater walls a jump of ${jump} clears with ${clear} to spare` }),
+          check: "check_crater_traps cuts trial craters into the built skin and walks out of them" };
+      }
       const p = planDrape(s.store, args);
-      if (dryRun) return { ...p.report, ...(estimateSkirts ? { skirtEstimates: skirtEstimates(s, args) } : {}), applied: false };
+      if (dryRun) return { ...p.report, ...(crater ? { craterSlope: crater } : {}), ...(estimateSkirts ? { skirtEstimates: skirtEstimates(s, args) } : {}), applied: false };
       const r = applyDrape(s.store, p);
       const u = usage(s.store);
-      return { ...p.report, applied: true, added: r.blocks, undo: "undo takes the whole drape out",
+      return { ...p.report, ...(crater ? { craterSlope: crater } : {}), applied: true, added: r.blocks, undo: "undo takes the whole drape out",
         limits: { newFrames: u.newFrames, voxelCells: u.voxelCells, patchBytes: u.patchBytes, runsPerFrame: u.runsPerFrame }, next: "save" };
     },
   },

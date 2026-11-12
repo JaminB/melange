@@ -1,6 +1,7 @@
 // A minimal MCP stdio client for the Caldera bench: spawns the erg-mcp bundle on the pinned Node and calls its tools
 // over JSON-RPC (one message per line). Shared by build.mjs and the experiments.
 import { spawn, spawnSync } from "node:child_process";
+import { existsSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -8,6 +9,10 @@ const HERE = path.dirname(fileURLToPath(import.meta.url));
 export const ROOT = path.resolve(HERE, "../../../..");
 
 export async function startServer() {
+  // the server this checkout builds, when it has one: MELANGE_GAME_DIR alone starts <game>\Melange.exe, a testenv's
+  // older copy that lacks what the branch added (Dustcrown round 5: a probe's server refused `spawns.areas`)
+  const own = path.join(ROOT, "build/x86-release/Melange.exe");
+  if (!process.env.MELANGE_EXE && existsSync(own)) process.env.MELANGE_EXE = own;
   const node = path.join(ROOT, "tools/node/node.exe");
   // the bundle is built from this checkout's sources whenever they are newer (never a stale dist)
   const b = spawnSync("powershell", ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", path.join(ROOT, "tools/erg-mcp/build.ps1"), "-IfStale"], { stdio: ["ignore", 2, 2] });

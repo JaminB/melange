@@ -144,7 +144,12 @@ export const tools: Tool[] = [
       if ((a.radius === undefined) === (a.radii === undefined)) throw new ToolError("give radius, or radii for an oval");
       const k = a.units === "world" ? 1 / 20 : 1, vs = a.voxelSize ?? 1, vu = vs / k;      // a voxel in call units
       const r = a.radius ?? Math.min(...a.radii!), rough = a.roughness ?? 0.5, seed = a.seed ?? 1;
-      const hv = Math.max(1, Math.round(a.height / vu));                                   // the face's height in voxels
+      // the face's height in voxels: `height`, or what mesa: {top, floor} say when they replace the outcrop's own seat
+      // (round 5: steps came from `height` while the mesa built was mesa.top - mesa.floor tall, twice the risers asked)
+      const mo = a.mesa as { top?: unknown; floor?: unknown; voxelSize?: unknown; units?: unknown } | undefined;
+      const own = typeof mo?.top === "number" && typeof mo?.floor === "number" && mo.top > mo.floor;
+      const mk = (mo?.units ?? a.units) === "world" ? 1 / 20 : 1, mvs = typeof mo?.voxelSize === "number" ? mo.voxelSize : vs;
+      const hv = own ? Math.max(1, Math.round((((mo!.top as number) - (mo!.floor as number)) * mk) / mvs)) : Math.max(1, Math.round(a.height / vu));
       const steps = a.steps ?? Math.max(1, Math.min(4, Math.floor(hv / 2)));
       const step = Math.max(1, Math.min(16, Math.round(hv / steps)));
       // each step stands a little inside the one under it, the whole stack within the inner third of the radius
@@ -174,6 +179,7 @@ export const tools: Tool[] = [
       if (bad) throw new ToolError(`build_outcrop's mesa: ${bad}`);
       const out = tools[0].handler(s, asked as never);
       const add = (res: unknown) => ({ ...(res as Record<string, unknown>), outcrop: { seat: { ground: Math.round((lo / k) * 1000) / 1000, sink: Math.round((sink / k) * 1000) / 1000 }, mesa: asked,
+        ...(own ? { face: { voxels: hv, steps, step, from: "mesa.top - mesa.floor" } } : {}),
         note: "built by build_mesa with these settings, as blocks of its own (ergonskin_N): its faces are `material`'s side texture and its crown and ledges capMaterial's top" } });
       return out instanceof Promise ? out.then(add) : add(out);
     },

@@ -9,6 +9,7 @@ import { areaFirstKnot, type SpawnArea } from "../core";
 import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { extentXZ, markers, spansAt } from "../lib/inspect-field";
+import { levelCameraOf } from "../lib/level-camera";
 import { grids } from "../lib/voxel";
 import { pieces } from "../lib/islets";
 import { cumulative, keyOfLabel, planWalk, pursue } from "../lib/walk-plan";
@@ -214,6 +215,9 @@ function overview(s: Session, o0: Orbit = {}, k = WORLD_PER_MAP): { pos: number[
   const given = Object.fromEntries(Object.entries({ azimuth: o0.azimuth, elevation: o0.elevation, distance: o0.distance, fit: o0.fit, margin: o0.margin }).filter(([, v]) => v !== undefined));
   // set_overview's defaults keep their distance in map units; a call's own is in its units
   const def = s.project ? overviewDefaults.get(s.project.id) : undefined;
+  // the level camera (set_level_camera) is the overview unless the call frames it its own way
+  const lc = s.project && !Object.keys(given).length ? levelCameraOf(s.project.id) : null;
+  if (lc) return { pos: [...lc.pos], target: [...lc.target], fov: lc.fov };
   const o: Orbit = { ...def, ...given, ...(given.distance === undefined && def?.distance !== undefined ? { distance: (def.distance * WORLD_PER_MAP) / k } : {}) };
   const gs = grids(s.store), e = extentXZ(gs);
   if (!e) throw new ToolError("preset overview needs the level's frames: open_project the level being tested");

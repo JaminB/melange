@@ -63,6 +63,57 @@ export function gradeMaterial(g: Grade, material: number, drawn: Rgb, tinted = f
   return applyGrade(tinted && g.tint ? { ...g, m: g.tint.m } : g, drawn);
 }
 
+/** How a previewed colour was arrived at (gradePreview): the measured record it is, the records it leans on, or the fit. */
+export interface GradeHow {
+  /** measured: the grade was measured on this colour; interpolated: the fit, bent toward the measured records near the
+   * colour; fit, tint fit, shade fit: the fit alone (no record near enough to say more). */
+  by: "measured" | "interpolated" | "fit" | "tint fit" | "shade fit";
+  fit: "fit" | "tint fit" | "shade fit";          // the fit under it
+  /** The nearest record used: the material it was measured on, the colour it was drawn in, what the game showed, and how
+   * far the previewed colour is from it (the largest channel difference, 0-255). */
+  record?: { material: number; from: Rgb; to: Rgb; distance: number; kind?: string };
+  records?: number;                                // how many records bent the fit
+  pull?: number;                                   // 0-1: how much of the records' measured offset the answer takes
+}
+
+/** A record's sway reaches this far in colour (the largest channel difference): past it the fit alone answers. */
+export const GRADE_REACH = 48;
+
+/** A colour's preview through a grade, in the sun or in shade, and how it was arrived at. gradeMaterial and gradeShade
+ * answer a record's own colour within 6 of it and the fit one step further, so a tint nudged by a few units jumped
+ * between the two (Dustcrown round 5: #cbae71 measured, #c9a468 by the fit). Here the fit is bent toward the measured
+ * records by their distance in colour: exactly a record's colour gives what the game showed, a colour between two
+ * records a blend of their measured offsets from the fit, and one further than GRADE_REACH from every record the fit
+ * alone. The records are this material's when it has any, else those measured the same way (tinted or not). Shade with
+ * a grade measured in the sun only answers null. */
+export function gradePreview(g: Grade, material: number, drawn: Rgb, light: "sun" | "shade" = "sun", tinted = false): { rgb: Rgb | null; how: GradeHow | null } {
+  const shade = light === "shade";
+  if (shade && !g.shade && !g.shadeMeasured?.length) return { rgb: null, how: null };
+  const fitName: GradeHow["fit"] = shade ? "shade fit" : tinted && g.tint ? "tint fit" : "fit";
+  const fitM = shade ? g.shade?.m : tinted && g.tint ? g.tint.m : g.m;
+  const fit = (c: Rgb): Rgb | null => (fitM ? applyGrade({ ...g, m: fitM }, c) : null);
+  const all = (shade ? g.shadeMeasured : g.measured) ?? [];
+  const own = material >= 0 ? all.filter((x) => x.material === material) : [];
+  const pool = own.length ? own : all.filter((x) => !!x.tinted === tinted);
+  const dist = (a: Rgb) => Math.max(Math.abs(a[0] - drawn[0]), Math.abs(a[1] - drawn[1]), Math.abs(a[2] - drawn[2]));
+  const near = pool.map((x) => ({ x, d: dist(x.from) })).filter((v) => v.d < GRADE_REACH).sort((a, b) => a.d - b.d);
+  const base = fit(drawn);
+  if (!near.length) return base ? { rgb: base, how: { by: fitName, fit: fitName } } : { rgb: null, how: null };
+  const rec = (v: (typeof near)[number]) => ({ material: v.x.material, from: v.x.from, to: v.x.to, distance: v.d, ...((v.x as { kind?: string }).kind ? { kind: (v.x as { kind?: string }).kind } : {}) });
+  if (near[0].d === 0 || !base) return { rgb: near[0].x.to, how: { by: "measured", fit: fitName, record: rec(near[0]), records: 1, pull: 1 } };
+  // Shepard's weights, each faded to nothing at GRADE_REACH: the nearest record's fade is how much of the offset holds
+  let ws = 0;
+  const off = [0, 0, 0];
+  for (const v of near) {
+    const fade = (1 - v.d / GRADE_REACH) ** 2, w = fade / v.d, f = fit(v.x.from)!;
+    ws += w;
+    for (let c = 0; c < 3; c++) off[c] += w * (v.x.to[c] - f[c]);
+  }
+  const pull = (1 - near[0].d / GRADE_REACH) ** 2;
+  const rgb = base.map((b, c) => Math.max(0, Math.min(255, Math.round(b + (off[c] / ws) * pull)))) as Rgb;
+  return { rgb, how: { by: "interpolated", fit: fitName, record: rec(near[0]), records: near.length, pull: Math.round(pull * 100) / 100 } };
+}
+
 const toLin = (v: number) => { const c = v / 255; return c <= 0.04045 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4; };
 const toSrgb = (v: number) => { const c = Math.max(0, Math.min(1, v)); return Math.round(255 * (c <= 0.0031308 ? c * 12.92 : 1.055 * c ** (1 / 2.4) - 0.055)); };
 

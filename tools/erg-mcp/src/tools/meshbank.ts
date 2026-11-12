@@ -12,6 +12,7 @@
 //                     caldera.Boulder), each copy rescaled per axis and moved so the new mesh fills the old one's box.
 import { AddDetail, Group, RemoveDetail, apply as applyMat, dropPoint, setMany, targetFrame, type Detail, type Vec3 } from "../core";
 import { meshBounds } from "../lib/backdrop";
+import { matchesSearch, searchSchema, searchTerms, type Search } from "../lib/detail-search";
 import { loadScene } from "./dress";
 import { DEG, commit, topOf, unitsSchema, type Units } from "../lib/place-geom";
 import { classifyDetail } from "../lib/sim-fingerprint";
@@ -166,15 +167,15 @@ export const tools: Tool[] = [
   },
   {
     name: "lint_contact",
-    description: "The ground's contact angle (degrees between the ground normal and up, sampled over `step` either side) under each scenery copy whose name or resource contains `search` (default _dtl): answers those over `maxDeg` (default 50: a prop there reads as stuck to a face, not resting on ground) and, with `remove`, removes them (one undo step). Props with no ground under them (over the sea) are counted apart and removed with `removeNoGround`.",
+    description: "The ground's contact angle (degrees between the ground normal and up, sampled over `step` either side) under each scenery copy whose name or resource contains `search` (a fragment or a list of them, default _dtl; lint_support reads it the same way): answers those over `maxDeg` (default 50: a prop there reads as stuck to a face, not resting on ground) and, with `remove`, removes them (one undo step). Props with no ground under them (over the sea) are counted apart and removed with `removeNoGround`.",
     inputSchema: { type: "object", additionalProperties: false, properties: {
-      search: { type: "string" }, maxDeg: { type: "number", minimum: 0, maximum: 90 }, step: { type: "number", minimum: 0.1, maximum: 5 },
+      search: searchSchema, maxDeg: { type: "number", minimum: 0, maximum: 90 }, step: { type: "number", minimum: 0.1, maximum: 5 },
       remove: { type: "boolean" }, removeNoGround: { type: "boolean" }, limit: { type: "integer", minimum: 1, maximum: 4000, description: "How many of the props over maxDeg to list (default 50)." }, units: unitsSchema,
     } },
-    handler(s, a: { search?: string; maxDeg?: number; step?: number; remove?: boolean; removeNoGround?: boolean; limit?: number; units?: Units }) {
+    handler(s, a: { search?: Search; maxDeg?: number; step?: number; remove?: boolean; removeNoGround?: boolean; limit?: number; units?: Units }) {
       const { store } = s.requireProject();
-      const k = (a.units ?? "world") === "map" ? 1 : 20, q = (a.search ?? "_dtl").toLowerCase(), max = a.maxDeg ?? 50, g = groundOf(s, a.step ?? 0.75);
-      const list = store.scene.details.filter((d: Detail) => d.src === null && `${d.name} ${d.resource}`.toLowerCase().includes(q) && classifyDetail(d).cls === "visual");
+      const k = (a.units ?? "world") === "map" ? 1 : 20, q = searchTerms(a.search), max = a.maxDeg ?? 50, g = groundOf(s, a.step ?? 0.75);
+      const list = store.scene.details.filter((d: Detail) => d.src === null && matchesSearch(d, q) && classifyDetail(d).cls === "visual");
       const over: { id: number; at: number[]; contact: number }[] = [], none: number[] = [];
       for (const d of list) {
         const p = store.frames.detailWorld(d), gg = g(p[0], p[2]);

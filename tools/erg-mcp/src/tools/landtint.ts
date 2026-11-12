@@ -7,7 +7,7 @@ import { commit } from "../lib/place-geom";
 import { classifyDetail } from "../lib/sim-fingerprint";
 import { tintHex } from "../lib/tint";
 import { carrierName, landTintsOf, linearToSrgb, materialTiles, srgbToLinearHex, textureDigest, tileTwins, tintTheme, type TintTheme } from "../lib/landtint";
-import { gradeMaterial, gradeShade, shadeDrift } from "../lib/grade";
+import { gradeMaterial, gradePreview, shadeDrift, type GradeHow } from "../lib/grade";
 import { loadGrade } from "../lib/grade-file";
 import { hex, type Rgb } from "../lib/inspect-png";
 import { loadScene } from "./dress";
@@ -30,7 +30,7 @@ export const tools: Tool[] = [
       id: { type: "integer", description: "The carrier: a scenery detail of that base (default its first visual scenery detail)." },
       colorSpace: { type: "string", enum: ["linear", "srgb"], description: "How `color` is read. linear (default, as before): the hex is written to the tag as it is, and Sunstone multiplies it in linear light, so it draws lighter than the hex looks. srgb: the hex is the colour you want to SEE (a picker's value); the tag gets its linear-light value and the answer gives both (`asked`, `color`)." },
       list: { type: "boolean" },
-      grade: { type: "string", description: "Preview each tint as the game plays it, in the sun and in shade: a grade file (game_material_shots {saveGrade, faces: [\"steep\", \"shade\"]}) or a built-in grade's name. Each tint then answers `plays`: sun (the colour by the grade's tinted fit, or as measured for that material), shade (by the grade's shade fit, or as measured; null when the grade was measured in the sun only) and `drift`, when the shade leaves the colour's family: redder (salmon, orange) or more saturated. With list: true it previews the level's tints as they are. Nothing else changes." },
+      grade: { type: "string", description: "Preview each tint as the game plays it, in the sun and in shade: a grade file (game_material_shots {saveGrade, faces: [\"steep\", \"shade\"]}) or a built-in grade's name. Each tint then answers `plays`: sun (the colour by the grade's tinted fit, or as measured for that material), shade (by the grade's shade fit, or as measured; null when the grade was measured in the sun only) and `drift`, when the shade leaves the colour's family: redder (salmon, orange) or more saturated; and `from`, what each colour rests on: measured (the grade was measured on exactly this colour: `record`), interpolated (the fit bent toward the measured records within 48 of the colour, so a tint a few units off a measured one does not jump from the record to the fit: `record` the nearest, `pull` how much of its measured offset holds, `records` how many took part) or the fit alone (fit, tint fit, shade fit). With list: true it previews the level's tints as they are. Nothing else changes." },
     } },
     async handler(s, a: { tints?: { texture?: string; material?: number | string; faces?: "side" | "top" | "all"; color: string }[]; theme?: TintTheme; base?: string; id?: number; list?: boolean; colorSpace?: "linear" | "srgb"; carrier?: "base" | "theme"; grade?: string }) {
       const { store } = s.requireProject();
@@ -40,8 +40,14 @@ export const tools: Tool[] = [
       const gr = a.grade !== undefined ? loadGrade(a.grade).grade : null;
       const plays = (tag: string, material = -1) => {
         if (!gr) return {};
-        const seen = linearToSrgb(tag) as Rgb, sun = gradeMaterial(gr, material, seen, true), shade = gradeShade(gr, material, seen), drift = shade ? shadeDrift(sun, shade) : null;
+        // the fit bent toward the measured records by their distance in colour (gradePreview): a tint a few units off a
+        // measured one no longer jumps from the record to the fit, and `from` says what each colour rests on
+        const seen = linearToSrgb(tag) as Rgb, ps = gradePreview(gr, material, seen, "sun", true), ph = gradePreview(gr, material, seen, "shade", true);
+        const sun = ps.rgb ?? gradeMaterial(gr, material, seen, true), shade = ph.rgb, drift = shade ? shadeDrift(sun, shade) : null;
+        const how = (h: GradeHow | null) => (h ? { by: h.by, ...(h.by === "interpolated" ? { fit: h.fit, pull: h.pull, records: h.records } : {}),
+          ...(h.record ? { record: { material: h.record.material, drawn: hex(h.record.from), played: hex(h.record.to), distance: h.record.distance, ...(h.record.kind ? { kind: h.record.kind } : {}) } } : {}) } : null);
         return { plays: { asSeen: hex(seen), sun: hex(sun), shade: shade ? hex(shade) : null, ...(drift ? { drift } : {}),
+          from: { sun: how(ps.how), shade: how(ph.how) },
           ...(shade ? {} : { note: "this grade was measured in the sun only: game_material_shots {faces: [\"steep\", \"shade\"], saveGrade} measures shade" }) } };
       };
       const carriers = () => store.scene.details.filter((d) => d.src === null && landTintsOf(d.name).length);

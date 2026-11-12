@@ -13,7 +13,7 @@ import {
 import {
   DEG, commit, detailInfo, findDetail, pointOut, pointToMap, resolvePoint, unitsSchema, vec3, type PointArgs, type Units,
 } from "../lib/place-geom";
-import { resolveFile, themeFile } from "../lib/materials";
+import { landTintPreview, projectMaterials, resolveFile, themeFile, tintFor } from "../lib/materials";
 import { runTest, type TestTeam } from "../lib/place-wait";
 import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -27,10 +27,11 @@ import { projectHash, readSource, storedThrow } from "../lib/project-hash";
 import { count, diff, fromSaved, mergeRuns, pairOf, summary, toSaved, type AssertRun, type SavedRun } from "../lib/assert-log";
 import { scheduleFromScript } from "../lib/flood";
 import { scriptWater } from "../lib/script-water";
+import { levelLooks, seaOpacity, seaShowsThrough, shallows } from "../lib/sea-look";
 import { rotation, slotOf } from "../lib/turns";
 import { waterBackdropWarning } from "../lib/backdrop";
 import { spansAt, waterMap } from "../lib/inspect-field";
-import { grids, tidy } from "../lib/voxel";
+import { grids, isSolid, tidy } from "../lib/voxel";
 import { ToolError, type Schema, type Tool } from "../registry";
 import type { Session } from "../session";
 import { validateExportForm } from "../../../../web/src/panels/erg/test/model";
@@ -1090,6 +1091,45 @@ export async function testMeshBanks(s: Session, id: string, store: EditorStore, 
     note: "level.test loads the banks of the project's meshes folder once a game launch, before the match starts: a bank changed since needs a game restart ([erg] test: mesh bank ... in Melange.log)" };
 }
 
+/** check_sea_opacity: does the sea of the open level, as its looks stand in `script`, let the land under it show near
+ * the shore? Read-only. */
+export async function checkSeaOpacity(s: Session, script: string, a: { depth?: number; step?: number; threshold?: number; units?: "map" | "world"; gameDir?: string; limit?: number } = {}) {
+  const p = s.requireProject(), store = p.store, k = a.units === "world" ? 1 / 20 : 1, r2 = (v: number) => Math.round((v / k) * 100) / 100;
+  const water = store.scene.water.level === null ? null : store.scene.water.level / 20;
+  if (water === null) return { ok: null, summary: "the project keeps the level's own water height, which is not known here: set_water first" };
+  const looks = levelLooks(script), mods = waterShaderMods(a.gameDir ?? process.env.MELANGE_GAME_DIR).filter((m) => m.enabled !== false);
+  const gsAll = grids(store).filter((g) => g.words.some(isSolid));
+  const sh = shallows(gsAll, water, (a.depth ?? 2 / k) * k, (a.step ?? 1 / k) * k);
+  const set = await projectMaterials(s).catch(() => null);
+  const tint = set ? landTintPreview(store, set, tintFor(set))?.tint ?? tintFor(set) : null;
+  // each way the sea is drawn: by a water shader mod that honours the sea material, and by the game's own shader
+  const judge = (by: "mod" | "game") => {
+    const op = seaOpacity(looks, by), v = seaShowsThrough(sh.cells, op, by === "mod" ? looks.sea?.albedo ?? null : null, tint, a.threshold);
+    return { by, opacity: op === null ? "the theme's own (about 0.6 to 0.9: not opaque)" : op, opaque: v.opaque, shallowsShowing: v.visible.length,
+      ...(v.worst ? { worst: { at: [r2(v.worst.at[0]), r2(v.worst.at[1])], depth: r2(v.worst.depth), ...(v.worst.bed ? { bed: `#${v.worst.bed.map((c) => c.toString(16).padStart(2, "0")).join("")}` } : {}), shift: v.worst.shift } } : {}),
+      first: v.visible.slice(0, a.limit ?? 12).map((c) => ({ at: [r2(c.x), r2(c.z)], depth: r2(c.depth), material: c.material })) };
+  };
+  const honoured = mods.some((m) => m.honoursSea), drawn: ("mod" | "game")[] = looks.sea && honoured ? ["mod", "game"] : looks.sea && !mods.length ? ["mod", "game"] : ["game"];
+  const rows = (looks.sea ? ["mod", "game"] as const : ["game"] as const).map(judge);
+  const bad = rows.filter((r) => !r.opaque && r.shallowsShowing > 0);
+  const fix = "set_water_look {opaque: true} makes the plane opaque for both (the water plane's opacity 1 and, with a sea material, its opacity 1); or raise the shallows over the water or drop them deeper than `depth` (a coast rim, fillBasins)";
+  return {
+    ok: bad.length === 0,
+    summary: !sh.cells.length ? "no ground lies within the depth under the water: nothing can show through"
+      : bad.length ? `${bad.map((r) => `${r.by === "mod" ? "drawn by a water shader mod (the sea material)" : "drawn by the game's own water shader"}: ${r.shallowsShowing} shallow column${r.shallowsShowing === 1 ? "" : "s"} show through a sea of opacity ${r.opacity}`).join("; ")}`
+        : "the sea is opaque however it is drawn: the shallows do not show",
+    water: { map: Math.round(water * 100) / 100, world: Math.round(water * 2000) / 100 },
+    shallows: { count: sh.cells.length, depth: r2((a.depth ?? 2 / k) * k), step: r2((a.step ?? 1 / k) * k), wetColumns: sh.wet, dryColumns: sh.dry, units: a.units ?? "map" },
+    sea: looks.sea ?? null, planeOpacity: typeof looks.look?.NearOpacity === "number" ? looks.look.NearOpacity : null,
+    drawnBy: rows,
+    ...(mods.length ? { shaderMods: mods.map((m) => ({ mod: m.mod, honoursSea: m.honoursSea, enabled: m.enabled })) } : {}),
+    ...(bad.length ? { fix } : {}),
+    note: "a shallow is ground at or under the water within `depth` of it. A sea that is not opaque lets its colour through: what reaches the eye moves the sea's colour by the bed's colour times (1 - opacity), and a column is listed when that is `threshold` (default 10 of 255) or more. " +
+      "Opacity is the whole of it: in a Test (Dustcrown round 5) the engine drew the water with the depth mask on and an opaque sea hid everything under it, and what read as a translucent skirt round the shore from the overview was the distance haze (render_view {gameMatch} checks that)" +
+      (drawn.length === 1 && looks.sea ? "; no enabled mod of the game folder honours the sea material, so the game's own shader draws the sea there" : ""),
+  };
+}
+
 /** The enabled mods of a game folder whose client script listens for the level haze (HAZE_EVENT); null when the folder
  * cannot be read. */
 export function hazeMods(gameDir: string | undefined): string[] | null {
@@ -1327,13 +1367,18 @@ export const tools: Tool[] = [
           color: { anyOf: [{ type: "string" }, { type: "array", items: { type: "number", minimum: 0, maximum: 255 }, minItems: 3, maxItems: 3 }] },
           amount: { type: "number", minimum: 0, maximum: 1 }, start: { type: "number", minimum: 0, maximum: 100000 }, distance: { type: "number", minimum: 0, maximum: 100000 } } }] },
       gameDir: { type: "string", description: "The game folder whose Mods are checked for water shader mods (default MELANGE_GAME_DIR)." },
+      opaque: { type: "boolean", description: "true: the sea hides everything under it however it is drawn: the water plane's opacity is set to 1 (NearOpacity, the game's own shader) and, with a sea material (this call's or the script's), its opacity too. Given alone it is added to the look, sea and haze the script already has. The answer's `seaOpacity` is check_sea_opacity's verdict after the change. An `opacity` or sea.opacity under 1 in the same call is refused. Default: not touched." },
       clear: { type: "boolean", description: "Remove the block: the theme's water again." },
     } },
     async handler(s, a: { preset?: string; tint?: number[]; opacity?: number; reflection?: number; shade?: number; landAmbient?: number[]; landDiffuse?: number[]; fields?: WaterLook; clear?: boolean;
       sea?: { albedo?: number[]; opacity?: number; reflection?: number; foam?: number }; gameDir?: string;
-      haze?: { color?: number[] | string; amount?: number; start?: number; distance?: number } | boolean }) {
+      haze?: { color?: number[] | string; amount?: number; start?: number; distance?: number } | boolean; opaque?: boolean }) {
       const p = s.requireProject();
       let look: WaterLook = { ...(a.fields ?? {}) };
+      if (a.opaque) {
+        if (a.clear) throw new ToolError("clear removes the block: give no opaque with it");
+        if ((a.opacity !== undefined && a.opacity < 1) || (a.sea?.opacity !== undefined && a.sea.opacity < 1) || (typeof look.NearOpacity === "number" && look.NearOpacity < 1)) throw new ToolError("opaque: true and an opacity under 1 contradict each other");
+      }
       if (a.opacity !== undefined) look.NearOpacity = a.opacity;
       if (a.reflection !== undefined) look.ReflectionStrength = a.reflection;
       if (a.shade !== undefined) look.SubtractColourScale = a.shade;
@@ -1366,8 +1411,11 @@ export const tools: Tool[] = [
         if (hl.problems.length) throw new ToolError(hl.problems.join("; "));
         haze = hl.haze!;
       }
-      const hazeOnly = a.haze !== undefined && !Object.keys(look).length && !sea && !a.clear;
+      // opaque alone, like a haze alone, is added to what the script has; then the plane and the sea material are opaque
+      const opaqueOnly = !!a.opaque && !Object.keys(look).length && !sea && !a.preset;
+      const hazeOnly = (a.haze !== undefined || opaqueOnly) && !Object.keys(look).length && !sea && !a.clear;
       if (hazeOnly) { look = readWaterLook(before) ?? {}; for (const k of ["Sea", "SeaKeep", "Haze", "HazeRange"]) delete look[k]; sea = readSea(before); }
+      if (a.opaque) { look.NearOpacity = 1; if (sea) sea = { ...sea, opacity: 1 }; }
       if (!a.clear && !Object.keys(look).length && !sea && a.haze === undefined) throw new ToolError("give a preset, opacity, reflection, shade, landAmbient, landDiffuse or fields, a sea or a haze (or clear: true)");
       const bad = waterLookProblems(look);
       if (bad.length) throw new ToolError(bad.join("; "));
@@ -1375,13 +1423,30 @@ export const tools: Tool[] = [
       // the water shader mods of the game folder: a look they do not read is said here, not found in a screenshot
       const mods = waterShaderMods(a.gameDir ?? process.env.MELANGE_GAME_DIR);
       const shader = a.clear ? {} : { ...(mods.length ? { shaderMods: mods } : {}), ...(() => { const w = shaderOverrideWarnings(mods, look, sea); return w.length ? { warnings: w } : {}; })() };
-      if (text === before) return { changed: false, look: readWaterLook(before), ...(readSea(before) ? { sea: readSea(before) } : {}), ...(readHaze(before) ? { haze: readHaze(before) } : {}), ...(preset ? { preset } : {}), ...shader, note: "the script already sets this look" };
+      const opq = a.opaque ? { seaOpacity: await checkSeaOpacity(s, text, { gameDir: a.gameDir }).then((c) => ({ ok: c.ok, summary: c.summary }), () => undefined) } : {};
+      if (text === before) return { changed: false, ...opq, look: readWaterLook(before), ...(readSea(before) ? { sea: readSea(before) } : {}), ...(readHaze(before) ? { haze: readHaze(before) } : {}), ...(preset ? { preset } : {}), ...shader, note: "the script already sets this look" };
       const r = await p.erg.saveScript(text);
       if (!r.saved) throw new ToolError(`the server did not save the script: ${r.problems.map((x) => x.message ?? String(x)).join("; ")}`);
-      return { changed: true, look: a.clear ? null : look, ...(sea ? { sea, seaEvent: SEA_EVENT } : {}), ...(haze ? { haze, hazeEvent: HAZE_EVENT, hazeNote: "the distance and the band under the horizon fade to this colour where a graphics mod honours it (Sunstone 2.4+); the game's own picture has no haze",
+      return { changed: true, ...opq, look: a.clear ? null : look, ...(sea ? { sea, seaEvent: SEA_EVENT } : {}), ...(haze ? { haze, hazeEvent: HAZE_EVENT, hazeNote: "the distance and the band under the horizon fade to this colour where a graphics mod honours it (Sunstone 2.4+); the game's own picture has no haze",
           ...(() => { const hm = hazeMods(a.gameDir ?? process.env.MELANGE_GAME_DIR); return hm === null ? {} : hm.length ? { hazeMods: hm } : { hazeWarning: `no enabled mod of the game folder listens for ${HAZE_EVENT}: the haze will not show there (Sunstone 2.4+ draws it)` }; })() } : {}), ...(preset ? { preset } : {}), was: readWaterLook(before), problems: r.problems, syntaxChecked: r.syntaxChecked ?? false, ...shader,
         note: a.clear ? "the block is gone: the theme's water" : "a wum.level.water{...} block at the top of the level script (Melange 0.13+): Test to see it; the game logs each field it set ([levels] water look: <container>.<field> set)" +
           (sea ? `; the sea material goes to client mods as the event ${SEA_EVENT} (Melange 0.15), which a water shader mod that honours it draws (shaderMods)` : "") };
+    },
+  },
+  {
+    name: "check_sea_opacity",
+    description: "Does the sea let the land under it show near the shore? Reads the level's looks from its script (set_water_look: the sea material's opacity, the water plane's `opacity`) and the ground at or under the project's water within `depth` of it (the shallows), and answers for each way the sea is drawn (a water shader mod that honours the sea material, and the game's own water shader) whether it is opaque and, when it is not, the shallow columns whose bed would show: the bed's colour (the material's, tints previewed) times (1 - opacity) against the sea's colour, listed when it moves the sea's colour by `threshold` or more. ok when nothing shows however the sea is drawn. set_water_look {opaque: true} is the fix it names. The haze that washes a shoreline out from a far camera is not this: render_view {gameMatch} checks it. Read-only.",
+    inputSchema: { type: "object", additionalProperties: false, properties: {
+      depth: { type: "number", minimum: 0.01, description: "How far under the water ground counts as a shallow (units; default 2 map units)." },
+      step: { type: "number", minimum: 0.25, maximum: 8, description: "Column spacing (units; default 1 map unit)." },
+      threshold: { type: "number", minimum: 0, maximum: 255, description: "A column is listed when the bed moves the sea's colour by this much or more, 0-255 (default 10)." },
+      limit: { type: "integer", minimum: 0, maximum: 200, description: "Shallow columns listed per way of drawing (default 12)." },
+      gameDir: { type: "string", description: "The game folder whose Mods are checked for water shader mods (default MELANGE_GAME_DIR)." },
+      units: { type: "string", enum: ["map", "world"] },
+    } },
+    async handler(s, a: { depth?: number; step?: number; threshold?: number; units?: "map" | "world"; gameDir?: string; limit?: number }) {
+      const p = s.requireProject();
+      return checkSeaOpacity(s, (await p.erg.script().catch(() => "")) ?? "", a);
     },
   },
   {
