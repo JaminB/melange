@@ -372,6 +372,41 @@ constexpr const char* kDriveInputs[] = {"Input.MoveForward", "Input.MoveBackward
                                          "Input.AimDown",     "Input.FireUtil",     "Input.Fire.Second", "Input.TurnLeft",
                                          "Input.TurnRight",   "Input.Jetpack.Forward", "Input.Jetpack.Back",
                                          "Input.Jetpack.Left", "Input.Jetpack.Right", "Input.Fuse", "Input.Bounce"};
+// While a girder is being placed, or a camera is flown by hand (the blimp view, a teleport's or a strike's target), the
+// keys are bound to other messages than the worm's (the UtilityGirder and CameraSelect control groups, 0x4e1a50 and the
+// group before it): Girder.Move.Forward.Pressed / .Released and their fellows move the girder, Girder.Raise / .Lower
+// lift it, Girder.Place and Girder.Cancel (a press with no release) set it down or give it up; Camera.ForwardPressed /
+// Released and their fellows move a hand-flown camera. Posted the same way, by the name before Pressed.
+struct DrivePair {
+    const char* name;      // what the drive is asked to hold
+    const char* pressed;   // the message a key press posts
+    const char* released;  // and its release ("" for a press with no release)
+};
+constexpr DrivePair kDrivePairs[] = {
+    {"Girder.Move.Forward", "Girder.Move.Forward.Pressed", "Girder.Move.Forward.Released"},
+    {"Girder.Move.Backward", "Girder.Move.Backward.Pressed", "Girder.Move.Backward.Released"},
+    {"Girder.Move.Left", "Girder.Move.Left.Pressed", "Girder.Move.Left.Released"},
+    {"Girder.Move.Right", "Girder.Move.Right.Pressed", "Girder.Move.Right.Released"},
+    {"Girder.Raise", "Girder.Raise.Pressed", "Girder.Raise.Released"},
+    {"Girder.Lower", "Girder.Lower.Pressed", "Girder.Lower.Released"},
+    {"Girder.Place", "Girder.Place", ""},
+    {"Girder.Cancel", "Girder.Cancel", ""},
+    {"Camera.Forward", "Camera.ForwardPressed", "Camera.ForwardReleased"},
+    {"Camera.Back", "Camera.BackPressed", "Camera.BackReleased"},
+    {"Camera.Left", "Camera.LeftPressed", "Camera.LeftReleased"},
+    {"Camera.Right", "Camera.RightPressed", "Camera.RightReleased"},
+    {"Camera.RotateLeft", "Camera.RotateLeftPressed", "Camera.RotateLeftReleased"},
+    {"Camera.RotateRight", "Camera.RotateRightPressed", "Camera.RotateRightReleased"},
+    {"Camera.RotateUp", "Camera.RotateUpPressed", "Camera.RotateUpReleased"},
+    {"Camera.RotateDown", "Camera.RotateDownPressed", "Camera.RotateDownReleased"},
+    {"Camera.ZoomIn", "Camera.ZoomInPressed", "Camera.ZoomInReleased"},
+    {"Camera.ZoomOut", "Camera.ZoomOutPressed", "Camera.ZoomOutReleased"},
+};
+const DrivePair* PairOf(const std::string& n) {
+    for (const DrivePair& p : kDrivePairs)
+        if (n == p.name) return &p;
+    return nullptr;
+}
 struct DriveInput {
     std::string name;
     ULONGLONG until = 0;   // held while now < until
@@ -413,9 +448,10 @@ void DriveTick(uint32_t svc) {
     const ULONGLONG now = GetTickCount64();
     for (DriveInput& d : g_drive) {
         const bool want = live && now < d.until;
-        if (want && !d.posted) d.posted = PostButton(svc, d.name + "Pressed");
+        const DrivePair* pair = PairOf(d.name);
+        if (want && !d.posted) d.posted = PostButton(svc, pair ? pair->pressed : d.name + "Pressed");
         else if (!want && d.posted) {
-            if (live) PostButton(svc, d.name + "Released");
+            if (live && !(pair && !*pair->released)) PostButton(svc, pair ? pair->released : d.name + "Released");
             d.posted = false;
         }
     }
@@ -626,7 +662,7 @@ bool Drive(const std::vector<std::string>& inputs, int ms, bool replace, std::st
     if (melange::handshake::lobby::Current() != 0) return *why = "not in a lobby or an online match", false;
     if (!melange::sim::InMatch()) return *why = "no match is running", false;
     for (const std::string& n : inputs)
-        if (std::find(std::begin(kDriveInputs), std::end(kDriveInputs), n) == std::end(kDriveInputs))
+        if (std::find(std::begin(kDriveInputs), std::end(kDriveInputs), n) == std::end(kDriveInputs) && !PairOf(n))
             return *why = n + " is not an input the drive holds", false;
     const ULONGLONG until = GetTickCount64() + static_cast<ULONGLONG>(ms < 0 ? 0 : ms);
     std::lock_guard lk(g_driveMx);

@@ -26,7 +26,8 @@ std::string StateJson() {
     return o.End();
 }
 
-// input.drive {hold: ["Input.MoveForward" | "MoveForward", ...], ms?: 1-5000 (default 250), replace?: true} |
+// input.drive {hold: ["Input.MoveForward" | "MoveForward" | "Girder.Move.Forward" | "Camera.Left", ...], ms?: 1-5000
+// (default 250), replace?: true} |
 // {release: true} | {} (the state)
 void Drive(const Call& c, Result& r, void*) {
     json::Value p;
@@ -49,7 +50,9 @@ void Drive(const Call& c, Result& r, void*) {
                 Fail(r, rpc::kBadParams, "hold: input names such as Input.MoveForward (or MoveForward)");
                 return;
             }
-            names.push_back(n.string.rfind("Input.", 0) == 0 ? n.string : "Input." + n.string);
+            // the girder's and the hand-flown camera's inputs keep their own names (Girder.Move.Forward, Camera.Left)
+            const bool own = n.string.rfind("Input.", 0) == 0 || n.string.rfind("Girder.", 0) == 0 || n.string.rfind("Camera.", 0) == 0;
+            names.push_back(own ? n.string : "Input." + n.string);
         }
     }
     if (release && !names.empty()) {
