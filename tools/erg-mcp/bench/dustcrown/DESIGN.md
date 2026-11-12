@@ -121,16 +121,20 @@ The palace is one composition, symmetric under a quarter turn, so no side is fav
     beds, gullies cut into a wobbled outline): a talus skirt to 10 (200 w), two sheer risers of 7.5 that step back 1.25
     (a ledge at 17.5, 350 w) and a top at 25 (500 w), so no ledge lies in the dead band. They are the only safe ground
     outside the palace, reached by jump, rope or jetpack, much as the palace is, but cheaper.
-  - Four **low mesas and outcrops**, NE, SW, and two off the axes, 8-14 across, tops 9-11 (L - 70 w or lower). They give
-    cover and a bit of height, and they are inside the curse.
+  - Four **low mesas and outcrops**, NE, SW, and two off the axes, 20-22 across, tops at 11.5 (230 w, L - 60 w). They give
+    cover and a bit of height, and they are inside the curse. Since round 4 they are outcrops in the dune skin itself: a
+    flattened, eroded dome over one steep sheared column of flank (darkyellowplaster by the skin's steepMaterial), with
+    darker courses of uneven thickness on the flanks (round 3's build_mesa terraces read as stacked slabs).
 - **Boulder fields**: six fields, one between each sand area and the palace and two by the low mesas. Each field is a
   pile of seven low rounded voxel domes (radius 1.8-3.2, 1-2 high over the sand, wider than tall: no stub pillars), plus
-  sim-neutral sandstone boulder, wedge and scree meshes from the Dustcrown mesh bank (no slabs: they read as plinth
-  blocks).
+  sim-neutral boulder and scree meshes from the Dustcrown mesh bank (no slabs: they read as plinth blocks; no wedges:
+  they read as pink slabs). The bank is a pale sandstone built on mod mesh section 514, which no Kindjal bank uses, so
+  the detail layer is the same with any plugin set (round 4: game_shot_compare differs only in the sky).
 - **The bed**: the rock shell under the dune skin stands at 2.2 or more inland (1.5 under the sand at least), so an air
   strike's crater bottoms out over the starting sea (1.0), not at it.
-- **The coast**: from radius 100 the dunes slope under the sea to the bed at -9 by about radius 112. The shore is sand on
-  sand, with the same material at the water's edge as in the sea's colour.
+- **The coast**: from radius 95 the dunes slope gently under the sea to -2.5 by about radius 111 (held off round the
+  refuges). The shore is sand on sand: the rim the sea meets is the crest's bleached sand (heightfield_drape coast),
+  blended inland, and the crest and trough masks stop at the coast (round 3's overview showed an orange cliff ring).
 
 ### 2.3 Spawns
 
@@ -191,8 +195,9 @@ Each area has four knots (WORM slots), so up to four worms a team.
 |---|---|
 | Dune slopes | Sand 24, sand01 10, SandBlend 23 at the edges |
 | Dune crests (bleached) | grass02blend 3, tinted cream #f2e3bd (sRGB) under Sunstone |
-| Troughs (ochre) and the spawn pads | path02 9, tinted a muted ochre #d8ad6a (sRGB; round 2b's #ce7a30 read as rust); path01 8 on the pads |
-| Mesa strata | rock01 4 and rock02 6 in alternating 2.5 bands, with blends 5/7 at the band edges |
+| Troughs (ochre) and the spawn pads | path02 9, the lowest 6% of each wave on ground under 22 degrees, tinted #d4b48e (sRGB; plays a muted ochre near #cfae7e in sun under Sunstone; round 3's #d8ad6a played a saturated #d9b43f, round 2b's #ce7a30 read as rust); path01 8 on the pads |
+| Refuge mesa strata | stone 12 and sandy-plaster 15 beds, each followed by a darkyellowplaster 57 course (rock01/rock02 drew a grey cobble on the cliffs) |
+| Low outcrops | stone 12, darkyellowplaster 57 courses and steep flanks |
 | Mesa caps | stone 12 |
 | Boulders | rock01 4 |
 | Palace plinth risers | darkyellowplaster 57 (ochre courses), Bricks 14 at the base course |

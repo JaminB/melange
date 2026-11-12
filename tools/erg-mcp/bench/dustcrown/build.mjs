@@ -36,13 +36,15 @@ const VERSION = "1.0.0";
 const SEA_ALBEDO = [255, 250, 180];
 // the dunes' tones under Sunstone (tint_landscape: each texture's mean becomes the colour), given as the colours to see
 // (colorSpace srgb). Round 2b's trough ochre (#ce7a30 linear) drew orange-red in the shade of the mesas, read as rust
-// or lava: the trough is now a muted ochre a step darker than the theme's sand, the crest a bleached cream
-const SAND_TINT = { trough: "#d8ad6a", crest: "#f2e3bd" };
+// or lava; round 3's #d8ad6a still played a saturated #d9b43f (grade-sunstone-day.json: Sunstone saturates a tint).
+// Round 4 asks the game for a muted ochre, about #cfae7e: the grade's tinted fit inverted gave #d8ae8f, which played
+// #d8ae74 in sun (a Test, Sunstone on) but salmon in shade; #d4b48e is a step less pink
+const SAND_TINT = { trough: process.env.DUSTCROWN_TROUGH || "#d4b48e", crest: "#f2e3bd" };
 const WORM_W = 0.6;                     // a worm's body, map units (check_reachability's bodyWidth)
 
 // Materials of the Arabian theme's own file (set_theme ARABIAN, materialFile "theme"; research/mat_arab.txt)
 const MAT = { grass2: 2, grass2b: 3, rock1: 4, rock1b: 5, rock2: 6, rock2b: 7, path1: 8, path2: 9, sand01: 10, sand01b: 11, stone: 12, bricks: 14, splaster: 15,
-  dome: 18, plaster: 21, sand: 24, gold: 25, goldEdge: 26, star: 30, tiles: 32, blue: 38, ochre: 57 };
+  dome: 18, plaster: 21, sand: 24, gold: 25, goldEdge: 26, star: 30, tiles: 32, blue: 38, ochre: 57, darkOchre: 57 };
 
 // ---- the numbers (DESIGN.md 1): the sea at start, the floor, the Crown's tip and the sand line ----
 const WATER_START = 20;                  // world units (1 map)
@@ -53,17 +55,22 @@ const LINE_W = WATER_START + 0.25 * (CROWN_TIP * 20 - WATER_START);   // 290 wor
 const BOX = 118;                         // the arena's half side
 const CLIP_R = 113;                      // the desert's skin is clipped to this circle (past it, the sea's opaque floor)
 
+// the sea's floor at the coast (map): the dunes slope under the sand sea (water 1) to here; round 3's -6 over 12 units
+// stood as a cliff ring round the island in the overviews
+const SEA_FLOOR = -2.5;
 // the spawn pads (sand areas) and the palace's courts, map units
 const PAD_R = 86;
 const SAND_AREAS = [["SAND W", -PAD_R, 0], ["SAND E", PAD_R, 0], ["SAND N", 0, -PAD_R], ["SAND S", 0, PAD_R]];
-// the mesas: refuges NW and SE above the line, four low ones under it (180-degree symmetric)
+// the mesas: refuges NW and SE above the line (build_mesa), four low ones under it (180-degree symmetric). The low ones are
+// outcrops in the desert's own skin (skin: true): a rounded, eroded cap over a steep smooth flank, so they read as worn
+// sandstone, not as round 3's stacked voxel slabs (low-mesa-W.png)
 const MESAS = [
   { name: "refuge NW", at: [-60, -60], radii: [15, 11], rotation: 45, top: 25, refuge: true, seed: 11 },
   { name: "refuge SE", at: [60, 60], radii: [15, 11], rotation: 45, top: 25, refuge: true, seed: 12 },
-  { name: "low NE", at: [56, -58], radius: 11, top: 9, seed: 13 },
-  { name: "low SW", at: [-56, 58], radius: 11, top: 9, seed: 14 },
-  { name: "low W", at: [-74, -30], radius: 10, top: 9, seed: 15 },
-  { name: "low E", at: [74, 30], radius: 10, top: 9, seed: 16 },
+  { name: "low NE", at: [56, -58], radius: 11, top: 11.5, seed: 13, skin: true },
+  { name: "low SW", at: [-56, 58], radius: 11, top: 11.5, seed: 14, skin: true },
+  { name: "low W", at: [-74, -30], radius: 10, top: 11.5, seed: 15, skin: true },
+  { name: "low E", at: [74, 30], radius: 10, top: 11.5, seed: 16, skin: true },
 ];
 const MESA_FLOOR = 4;                    // a mesa stands from under the sand (buried 2), so no gap opens at its foot
 // a refuge's ledges keep off the sand line's dead band (12.5-16.5): a high talus to 10 (200 w), then two even risers of 3
@@ -72,6 +79,7 @@ const MESA_FLOOR = 4;                    // a mesa stands from under the sand (b
 // check_height_line); the mesa lattice is the level's 2.5, whatever the floor
 const REFUGE_TALUS = 6;
 const mesaR = (m) => m.radius ?? Math.max(...m.radii);
+const OUTCROPS = MESAS.filter((m) => m.skin);
 // boulder fields: one between each sand area and the palace, two by the low mesas
 const FIELDS = [[-64, 8, 21], [64, -8, 22], [-8, -64, 23], [8, 64, 24], [36, -70, 25], [-36, 70, 26]];
 
@@ -91,21 +99,36 @@ const fadeLets = () => {
     "fn pad(px, pz) = smoothstep(7, 15, hypot(x - px, z - pz));",
     "fn ms(px, pz, rr) = smoothstep(rr + 1, rr + 7, hypot(x - px, z - pz));",
     `let m = smoothstep(50, 60, sq) * ${pads} * ${mesas};`,
-    // the coast: from about 100 the dunes slope under the sea, the shore wobbling with the bearing
+    // the coast: from about 95 the dunes slope gently under the sea, the shore wobbling with the bearing
     "let rc = 105 + 4 * noise2(x / 28, z / 28, 9);",
-    "let c = smoothstep(rc - 5, rc + 7, r);",
+    // (held off round the refuges, which stand out toward the shore: the coast's dip between their talus lobes left a
+    // notch a worm could not climb out of)
+    `let c = smoothstep(rc - 10, rc + 6, r) * ${MESAS.filter((q) => q.refuge).map((q) => `smoothstep(${f1(mesaR(q) + 7)}, ${f1(mesaR(q) + 13)}, hypot(x - ${q.at[0]}, z - ${q.at[1]}))`).join(" * ")};`,
+    // the low outcrops: od is the distance from the centre over the radius, roughened, so the rim is eroded into lobes;
+    // the flank falls over the outer twelfth (one skin column: a steep face, drawn in the steep material), the cap a
+    // flattened dome (12% down at the rim) with a little fbm relief
+    "fn od(px, pz, rr, s) = hypot(x - px, z - pz) / rr + 0.12 * noise2((x - px) / 4, (z - pz) / 4, s);",
+    "fn oc(px, pz, rr, s) = smoothstep(1, 0.92, od(px, pz, rr, s)) * (1 - 0.12 * clamp(od(px, pz, rr, s), 0, 1) ^ 2 + 0.08 * fbm((x - px) / 3, (z - pz) / 3, s, 2));",
+    `let o = max(${OUTCROPS.map((q) => `oc(${q.at[0]}, ${q.at[1]}, ${f1(mesaR(q))}, ${q.seed})`).join(", ")});`,
   ];
 };
-const landLet = () => `let land = ${SAND} + m * (${DUNE} + 0.4 * ridged(x, z, 40, 2, 5) + 0.5 * fbm(x / 45, z / 45, 3, 2) - 2.2);`;
-const desertExpr = () => [...fadeLets(), landLet(), `lerp(land, -6, c) - ${FLOOR}`].join(" ");
+const OUT_H = OUTCROPS[0].top - SAND;   // an outcrop's cap over the sand at its centre
+const landLet = () => `let land = ${SAND} + m * (${DUNE} + 0.4 * ridged(x, z, 40, 2, 5) + 0.5 * fbm(x / 45, z / 45, 3, 2) - 2.2) + ${f1(OUT_H)} * o;`;
+const desertExpr = () => [...fadeLets(), landLet(), `lerp(land, ${SEA_FLOOR}, c) - ${FLOOR}`].join(" ");
 // the bed: the shell's top 1.5 under the sand at least, and never under 2.2 inland, so a crater an air strike blows
 // through the skin bottoms out on rock 1.2 over the sea at its start (round 2's craters reached 0.68-1.03, the water 1.0)
 const BED_MIN = 2.2;
-const bedExpr = () => [...fadeLets(), landLet(), "let g = lerp(land, -6, c);", `min(g - 1.5, max(g - 6.5, ${BED_MIN} * (1 - c) + (g - 6.5) * c)) - ${FLOOR}`].join(" ");
+const bedExpr = () => [...fadeLets(), landLet(), `let g = lerp(land, ${SEA_FLOOR}, c);`, `min(g - 1.5, max(g - 6.5, ${BED_MIN} * (1 - c) + (g - 6.5) * c)) - ${FLOOR}`].join(" ");
 // the dune materials tied to the ridge line (a mask on the same dunes() as the height, with its edge drawn per corner):
-// the bleached crest is the top of each wave, the ochre trough its foot, both only where the dunes stand (m)
-const crestMask = () => [...fadeLets(), `min(m - 0.55, ${DUNE} - ${f1(0.8 * DUNE_H)})`].join(" ");
-const troughMask = () => [...fadeLets(), `min(m - 0.55, ${f1(0.14 * DUNE_H)} - ${DUNE})`].join(" ");
+// the bleached crest is the top of each wave, the ochre trough its foot, both only where the dunes stand (m) and inland
+// of the coast (c). Round 3's trough took the lowest 14% of each wave in two-voxel edges and drew as orange bands: the
+// trough is now the lowest 6% in one voxel's edge, a thin shading line at the foot of each lee face
+const crestMask = () => [...fadeLets(), `min(m - 0.55, 0.6 - c, ${DUNE} - ${f1(0.8 * DUNE_H)})`].join(" ");
+const troughMask = () => [...fadeLets(), `min(m - 0.65, 0.4 - c, ${f1(0.06 * DUNE_H)} - ${DUNE})`].join(" ");
+// the outcrops' rock (o, over the sand): bleached sandstone (the theme's stone tile) with darker courses of uneven
+// thickness following the height on the flanks (slope over 30), so they show bedding under a plain cap
+const outcropMask = () => [...fadeLets(), "o - 0.1"].join(" ");
+const courseMask = () => [...fadeLets(), `min(o - 0.1, slope - 30, 0.32 - fract((h - ${SAND - FLOOR}) / 1.15 + 0.45 * noise2(x / 5, z / 5, 6)))`].join(" ");
 
 // ---- the MCP client ----
 const say = (...a) => console.log(...a);
@@ -150,14 +173,22 @@ try {
     // spill height (the sea, at 1, is where everything drains to)
     fillBasins: { maxDepth: 0.5, outletBelow: WATER_START / 20 },
     material: MAT.sand, maxBlocks: 18,
+    // the rim the sea meets in the crest's bleached sand, blended inland (round 3's overview showed an orange cliff ring)
+    coast: { seaLevel: WATER_START / 20, rimMaterial: MAT.grass2b, band: 1, blendToSea: true },
+    // the outcrops' flanks (one sheared column, 60 degrees and more; the dunes' lee faces are about 35) in the darker
+    // sandstone, so they read as rock faces
+    steepMaterial: { material: MAT.darkOchre, minSlope: 58 },
     // crests in grass02blend (its own tile, A04: grass02's top is the sand's own image, so a tint of one is a tint of both)
     // and troughs in path02, each by a mask on the dunes' own wave with its edge per corner, so the bands follow the ridge
     // lines between voxel centres (round 2b's curvature rules painted whole 2.5-unit columns: saw-toothed stripes, and
     // they caught the dips at the mesas' feet, the orange splotches)
     materials: [
       { material: MAT.path1, region: padRegion, feather: { width: 1.5, pattern: "perlin", cell: 3 } },
+      { material: MAT.darkOchre, mask: courseMask() },
+      { material: MAT.stone, mask: outcropMask(), edge: { depth: 1 } },
       { material: MAT.grass2b, mask: crestMask(), edge: { depth: 2 } },
-      { material: MAT.path2, mask: troughMask(), edge: { depth: 2 } },
+      // gentle ground only: on a lee face (and in a shadow) the tint drew salmon in round 4's first Test
+      { material: MAT.path2, mask: troughMask(), edge: { depth: 1 }, maxSlope: 22 },
       { material: MAT.sand01, noise: { threshold: 0.3, scale: 16, seed: 4 }, feather: { width: 0.6, pattern: "perlin", cell: 5 } },
     ],
   };
@@ -186,19 +217,21 @@ try {
   for (const [n, x, z] of SAND_AREAS) padGround.push([n, round2(await groundOf(x, z))]);
   say("pad ground (design", SAND, ")", JSON.stringify(padGround));
 
-  // ---- the mesas, weathered: sedimentary beds (strata.style beds), gullies cut into the cliffs so the plan is lobed, a
-  // wobbled outline. Refuges: sheer risers of 7.5 that step back 1.25 each (a tapering butte, never a tread a worm walks up)
-  // over a talus skirt; low ones: two walkable ledges and a low talus, so they read as worn outcrops, not boxes ----
-  const strataBands = [{ material: MAT.rock1, thickness: 2.5 }, { material: MAT.rock2, thickness: 2.5 }, { material: MAT.rock1b, thickness: 1.5 }];
+  // ---- the refuge mesas, weathered: sedimentary beds (strata.style beds), gullies cut into the cliffs so the plan is
+  // lobed, a wobbled outline; sheer risers of 7.5 that step back 1.25 each (a tapering butte, never a tread a worm walks
+  // up) over a talus skirt. The beds are bleached sandstone: the theme's stone and sandy plaster tiles with a darker
+  // course (round 3's rock01/rock02 drew a grey cobble on the cliffs). The low mesas are in the skin (above) ----
+  const strataBands = [{ material: MAT.stone, thickness: 5 }, { material: MAT.darkOchre, thickness: 2.5 }, { material: MAT.splaster, thickness: 5 }, { material: MAT.darkOchre, thickness: 2.5 }];
   const ledges = [];
-  for (const m of MESAS) {
+  for (const m of MESAS.filter((q) => !q.skin)) {
     const shape = m.radii ? { kind: "ellipse", radii: m.radii, rotation: m.rotation } : { kind: "circle", radius: m.radius };
     const r = await call("build_mesa", { at: m.at, floor: MESA_FLOOR, top: m.top, shape, voxelSize: 2.5, wobble: { amount: m.refuge ? 2.5 : 2, scale: 7, seed: m.seed },
       gullies: { depth: m.refuge ? 3 : 2, spacing: m.refuge ? 7 : 6, seed: m.seed },
-      strata: { step: m.refuge ? 3 : 1, riserJitter: m.refuge ? 0 : 0.2, bands: strataBands, style: "beds", seed: m.seed },
+      strata: { step: m.refuge ? 3 : 1, riserJitter: m.refuge ? 0 : 0.2, bands: strataBands, style: "beds", seed: m.seed, feather: 0 },
       tread: m.refuge ? { walkable: false, width: 1.25, jitter: 0.8, seed: m.seed } : { width: 5, jitter: 1.2, seed: m.seed },
-      talus: m.refuge ? { height: REFUGE_TALUS, width: 7, material: MAT.rock1b } : { height: 1.25, width: 3, material: MAT.sand01b }, cap: { material: MAT.stone }, maxBlocks: 3 }, { soft: true });
+      talus: m.refuge ? { height: REFUGE_TALUS, width: 7, material: MAT.sand01b } : { height: 1.25, width: 3, material: MAT.sand01b }, cap: { material: MAT.stone }, maxBlocks: 3 }, { soft: true });
     if (r.err) throw new Error(`build_mesa ${m.name}: ${r.text.slice(0, 600)}`);
+    if (r.json.cliffLook?.warning) say("MESA CLIFF LOOK", m.name, r.json.cliffLook.warning);
     ledges.push([m.name, (r.json.mesa?.ledges ?? []).map((l) => [l.y?.world ?? l.y, l.width, l.walkable])]);
     say("mesa", m.name, JSON.stringify({ topY: r.json.mesa?.topY, steps: r.json.mesa?.steps, tread: r.json.mesa?.tread, added: r.json.added?.length, cells: r.json.limits?.voxelCells }));
   }
@@ -248,7 +281,7 @@ try {
   const COURT = 24;
   const GATE_W = 6;       // 4.5 snapped to 4 voxels (N, E) or 5 (S, W) of 1.5; 6 clears 6 at every gate (round 2)
   const castle = await call("build_castle", { at: [0, COURT, 0], size: [52, 52], wallHeight: 8, wallThickness: 3, towerShape: "round", towerRadius: 4, towerHeight: 22,
-    keep: true, keepSize: [24, 24], keepHeight: 16, gates: ["n", "e", "s", "w"].map((side, i) => ({ side, offset: i < 2 ? 13 : -13, width: GATE_W, height: 6 })),
+    keep: true, keepSize: [24, 24], keepHeight: 16, gates: ["n", "e", "s", "w"].map((side, i) => ({ side, offset: i < 2 ? 13 : -13, width: GATE_W, height: 6, bevel: 1.5 })),
     gateBelow: 0, crenellations: true, foundation: 0, material: MAT.stone, scale: 1.5, place: "new", packing: "parts",
     bands: [{ toY: 6, material: MAT.splaster }], trim: { course: { y: 6, material: MAT.goldEdge, height: 1.5 }, merlonCap: MAT.gold } }, { soft: true });
   if (castle.err) throw new Error(`build_castle: ${castle.text.slice(0, 800)}`);
@@ -312,6 +345,8 @@ try {
 
   // ---- the sea reads as sand; warm (not orange) land light ----
   // harsh sun: a warm-white diffuse and an ambient of half of it, so the shade sides of the dunes and risers read
+  // (round 3's pale blue ring past the sand sea is the far haze, not the water: SkyBlendColor in the sand's colour left it
+  // as it was in round 4's Test; no level setting reaches it yet)
   const wl = await call("set_water_look", { preset: "sand", landDiffuse: [255, 250, 238], landAmbient: [128, 125, 119], sea: { albedo: SEA_ALBEDO }, gameDir: process.env.DUSTCROWN_PLAY_DIR ?? GAME });
   say("water look", brief(wl, 500));
   if (wl.json?.warnings?.length) say("WATER LOOK WARNINGS", JSON.stringify(wl.json.warnings));
@@ -333,9 +368,14 @@ try {
   // ---- the detail layer (sim-neutral): Dustcrown's own sandstone rock meshes in ONE mod mesh bank (build_rock_bank; the
   // bank itself is written into the pack after the export), copies of them round the boulder fields and the mesas' feet.
   // sim_fingerprint before and after: decoration only. --no-detail leaves them out ----
-  // no slab: round 2b's flat slabs at the palace's foot read as plinth blocks or ruins
-  const ROCKS = [{ name: "Boulder", kind: "boulder" }, { name: "Wedge", kind: "wedge" }, { name: "Heap", kind: "scree", scree: { rocks: 9 } }];
-  const BANK = { id: MOD, palette: "sandstone", seed: 5, rocks: ROCKS };
+  // no slab: round 2b's flat slabs at the palace's foot read as plinth blocks or ruins; no wedge: round 3's wedges in the
+  // "sandstone" palette drew as big pink-brown slabs. A sandstone of the dunes' own family, a little dusted, its green
+  // near its red: under Sunstone [236, 200, 146] played near white and [206, 160, 102] pink-tan (round 4's installed
+  // runs), while the dunes play a greenish yellow. The bank is built on section 514:
+  // lint_mesh_banks found the default 486 moves Kindjal's BlastKeg, Shiv and StoneDonkey banks, so the look depended on
+  // the plugin set
+  const ROCKS = [{ name: "Boulder", kind: "boulder" }, { name: "Heap", kind: "scree", scree: { rocks: 9 } }];
+  const BANK = { id: MOD, palette: { base: [214, 192, 128], dust: [236, 224, 178], dustShare: 0.35 }, seed: 5, rocks: ROCKS, section: 514 };
   const fpBefore = await call("sim_fingerprint", {});
   let detail = { pieces: 0 };
   if (!flag("--no-detail")) {
@@ -347,11 +387,11 @@ try {
     const add = (name, x, z, sc) => (byMesh[name] ??= []).push({ xz: [round1(x), round1(z)], rot: [0, Math.round(rnd() * 360), 0], scale: [sc, round2(sc * (0.8 + rnd() * 0.3)), sc] });
     for (const [fx, fz] of FIELDS) for (let i = 0; i < 7; i++) {
       const a = rnd() * Math.PI * 2, d = 3 + rnd() * 8;
-      add(`${MOD}.${["Boulder", "Heap", "Boulder", "Wedge"][i % 4]}`, fx + Math.cos(a) * d, fz + Math.sin(a) * d, round2(1.2 + rnd() * 1.2));
+      add(`${MOD}.${["Boulder", "Heap"][i % 2]}`, fx + Math.cos(a) * d, fz + Math.sin(a) * d, round2(0.9 + rnd() * 0.8));
     }
     for (const m of MESAS) for (let i = 0; i < (m.refuge ? 6 : 3); i++) {
       const a = rnd() * Math.PI * 2, d = mesaR(m) + 1.5 + rnd() * 2.5;
-      add(`${MOD}.${i % 2 ? "Heap" : "Boulder"}`, m.at[0] + Math.cos(a) * d, m.at[1] + Math.sin(a) * d, round2(1.3 + rnd()));
+      add(`${MOD}.${i % 2 ? "Heap" : "Boulder"}`, m.at[0] + Math.cos(a) * d, m.at[1] + Math.sin(a) * d, round2(1 + 0.7 * rnd()));
     }
     for (const [name, pieces] of Object.entries(byMesh)) {
       const r = await call("place_mod_mesh", { resource: name, box: boxes[name], units: "map", pieces }, { soft: true });
