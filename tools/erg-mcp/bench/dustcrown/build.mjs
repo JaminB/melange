@@ -34,8 +34,11 @@ const VERSION = "1.0.0";
 // The sea material (set_water_look sea): the sand's own tone, so the sea continues the dunes (a water shader mod draws it:
 // Sunstone 2.4+; the game's own shader shows the sand preset's pale opaque sea)
 const SEA_ALBEDO = [255, 250, 180];
-// the dunes' tones under Sunstone (tint_landscape: each texture's mean becomes the colour)
-const SAND_TINT = { body: "#e6c893", trough: "#c47f3c", crest: "#f6eedb" };
+// the dunes' tones under Sunstone (tint_landscape: each texture's mean becomes the colour). Tried in a Test: a tint draws
+// far lighter than its hex (about the sRGB of that hex taken as linear: #c47f3c came out a flat orange and #f6eedb
+// white), and a tinted tile loses most of its detail, so the body keeps the theme's sand and these are the linear values
+// of an ochre #e8b878 and a pale #ecd9aa
+const SAND_TINT = { trough: "#ce7a30", crest: "#d6b167" };
 const WORM_W = 0.6;                     // a worm's body, map units (check_reachability's bodyWidth)
 
 // Materials of the Arabian theme's own file (set_theme ARABIAN, materialFile "theme"; research/mat_arab.txt)
@@ -279,10 +282,10 @@ try {
   say("water look", brief(wl, 500));
   if (wl.json?.warnings?.length) say("WATER LOOK WARNINGS", JSON.stringify(wl.json.warnings));
 
-  // ---- the sand's tones with Sunstone (tint_landscape, a visual channel): the body a warm, less lemon sand, the troughs
-  // (path02, A10) a deep ochre, the crests (grass02blend, A04) bleached; with Sunstone off the theme's own textures draw ----
+  // ---- the dunes' tones with Sunstone (tint_landscape, a visual channel): the troughs (path02, A10) ochre, the crests
+  // (grass02blend, A04) pale, the body the theme's own sand; with Sunstone off the theme's own textures draw ----
   const tn = await call("tint_landscape", { theme: "ARABIAN", base: "Multi.DesertOasis", tints: [
-    { material: "Sand", faces: "all", color: SAND_TINT.body }, { material: "path02", faces: "all", color: SAND_TINT.trough }, { material: "grass02blend", faces: "top", color: SAND_TINT.crest }] });
+    { material: "path02", faces: "all", color: SAND_TINT.trough }, { material: "grass02blend", faces: "top", color: SAND_TINT.crest }] });
   say("sand tints", JSON.stringify(tn.json?.tints));
 
   // ---- scenery copies from the Arabian bases (no collision): a fountain in each court, lamps on the wall-walk's corners ----
