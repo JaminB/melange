@@ -332,6 +332,13 @@ loads that theme's own height-map textures; it doesn't rewrite the terrain itsel
 every map in daytime, whatever the project's time of day says. To see the map at evening or night, pick that time
 for **Test** (see [Testing your map](#testing-your-map)).
 
+A map pack can **pin** its time of day (Melange 0.15+): `"timeOfDay": "DAY"` (or `EVENING`, `NIGHT`, or `level` for
+the built map's own) in the level's entry of `spice.json` makes every match of the map load at that time, Versus and
+network games included, where the game otherwise picks one at random. The same entry's `"image"` names a PNG in the
+pack that the game's map lists show as the map's picture, instead of the picture of the map it was built on
+([spice.md](spice.md)). erg-mcp writes both at export (`set_level_look`, `set_level_thumbnail`,
+[erg-mcp.md](erg-mcp.md)); the Erg panel's export does not ask for them yet, so add the two keys by hand there.
+
 ## Terrain
 
 Press **Sculpt**, then drag over the terrain to carve, fill or paint with a box or sphere brush (the *Terrain* tab sets

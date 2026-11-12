@@ -112,7 +112,10 @@ test("perTool answers each tool alone and needs names the one a target takes; li
   const d = await call(s, { from: [[515, 2, 520]], targets: [{ x: 530, z: 520, radius: 2 }] });
   assert.equal(d.limits.rope.length, TOOL_LIMITS.rope.length);
   assert.equal(TOOL_LIMITS.rope.length, 22.5, "Ninja.MaxLength 450 world units");
-  assert.ok(CALIBRATION.estimates.includes("jetpack.rise") && !CALIBRATION.estimates.includes("rope.length"));
+  // the jetpack was measured in the game (Dustcrown round 3); the girder is still an estimate
+  assert.ok(!CALIBRATION.estimates.includes("jetpack.rise") && CALIBRATION.estimates.includes("girder.length") && !CALIBRATION.estimates.includes("rope.length"));
+  assert.ok(/93\.8/.test(CALIBRATION.measured["jetpack.rise"]));
+  assert.deepEqual(TOOL_LIMITS.jetpack, { rise: 90, run: 60 });
   assert.equal(d.limits.girder.maxSlope, TOOL_LIMITS.girder.maxSlope);
 });
 

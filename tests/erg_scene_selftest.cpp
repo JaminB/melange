@@ -441,6 +441,27 @@ void TestManifest() {
     errs.clear();
     Expect(lm::Parse(Mod("maps", {L{"a", "A", "survivor", "", false, 0}}), &errs).empty(), "type survivor is refused");
     errs.clear();
+    {
+        // levels[].timeOfDay and levels[].image (Melange 0.15)
+        L look{"a", "A", "multi", "", false, 0};
+        look.timeOfDay = "NIGHT";
+        look.image = "thumb/a.png";
+        auto ok = lm::Parse(Mod("maps", {look}), &errs);
+        Expect(ok.size() == 1 && ok[0].timeOfDay == "NIGHT" && ok[0].image == "thumb/a.png" && errs.empty(), "timeOfDay and image parse");
+        look.timeOfDay = "level";
+        Expect(lm::Parse(Mod("maps", {look}), &errs).size() == 1, "timeOfDay level is accepted");
+        look.timeOfDay = "night";
+        Expect(lm::Parse(Mod("maps", {look}), &errs).empty() && !errs.empty(), "a timeOfDay in lower case is refused");
+        errs.clear();
+        look.timeOfDay = "";
+        for (const char* bad : {"../a.png", "thumb/a.tga", "C:/a.png", "/a.png", "thumb\\a.png", ".png"}) {
+            look.image = bad;
+            Expect(lm::Parse(Mod("maps", {look}), &errs).empty(), std::string("image ") + bad + " is refused");
+            errs.clear();
+        }
+        Expect(lm::ValidTimeOfDay("") && lm::ValidTimeOfDay("EVENING") && !lm::ValidTimeOfDay("Day") && lm::ValidImagePath("a/b/c.PNG"),
+               "the validators");
+    }
     Expect(lm::Parse(Mod("maps", {L{"a", "A", "multi", "", false, 0}, L{"a", "B", "multi", "", false, 0}}), &errs).empty(),
            "a duplicate slug is refused");
     errs.clear();

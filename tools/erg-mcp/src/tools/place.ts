@@ -35,6 +35,7 @@ import { ToolError, type Schema, type Tool } from "../registry";
 import type { Session } from "../session";
 import { validateExportForm } from "../../../../web/src/panels/erg/test/model";
 import { exportGate } from "../lib/ship-gate-export";
+import { levelLookOf, thumbnailFromFile } from "./levellook";
 
 const pointProps: Record<string, Schema> = {
   pos: vec3("Position [x, y, z] in the level (units, default world). Give this or xz."),
@@ -1384,18 +1385,41 @@ export const tools: Tool[] = [
       type: "object", additionalProperties: false, required: ["modId", "name"],
       properties: { modId, name: { type: "string", description: "Display name (1-64 printable characters)." }, version: { type: "string", description: "x.y.z (default 1.0.0)." },
         mode: { type: "string", enum: ["source", "install"] }, survivor: { type: "boolean", description: "Also list the level in Survivor's Prebuilt maps (default false)." },
+        timeOfDay: { type: "string", enum: ["DAY", "EVENING", "NIGHT", "level", "none"], description: "Pin the level's time of day in every match (spice.json levels[].timeOfDay, Melange 0.15+): DAY, EVENING or NIGHT, or level (the built level's own, set_time_of_day's). Default: what set_level_look {lock: true} set for this project (the level's own time of day, by name), else no pin. none: no pin whatever set_level_look says." },
+        thumbnail: { type: "string", description: "A PNG file for the level's picture in the map menus (levels[].image, Melange 0.15+): written into the pack as thumb/<level>.png. Default: set_level_thumbnail's picture for this project, else none (the base's picture shows). \"none\": no picture whatever set_level_thumbnail says." },
         melangeRange: { type: "string", description: "spice.json melange.range (a semver range such as \">=0.14.0\"). Default: \">=0.2.0\", raised automatically to the newest Melange a feature the level uses needs (lib/ship-gate.ts): more details than the vanilla mesh pool loads or meshes of the pack's own bank (0.14.0), spawns.mode areas (0.15.0). The answer's gate says which and why (needs), and warns when a range given here admits an older Melange than the level needs. A Melange the range does not admit quarantines the pack, and build says so." } },
     },
-    async handler(s, a: { modId: string; name: string; version?: string; mode?: "source" | "install"; survivor?: boolean; melangeRange?: string }) {
+    async handler(s, a: { modId: string; name: string; version?: string; mode?: "source" | "install"; survivor?: boolean; melangeRange?: string; timeOfDay?: string; thumbnail?: string }) {
       const p = s.requireProject();
+      // the level entry's look: export's own arguments, else what set_level_look and set_level_thumbnail set this session
+      const look = levelLookOf(p.id);
+      const tod = a.timeOfDay === "none" ? undefined : a.timeOfDay ?? (look.lock ? p.store.scene.databank.timeOfDay || "DAY" : undefined);
+      const thumb = a.thumbnail === "none" ? undefined : a.thumbnail !== undefined ? thumbnailFromFile(a.thumbnail) : look.thumbnail;
+      const image = thumb ? `thumb/${p.id}.png` : undefined;
+      const levelKeys = [...(tod ? ["timeOfDay"] : []), ...(image ? ["image"] : [])];
       const form = { modId: a.modId, name: a.name, version: a.version ?? "1.0.0", mode: a.mode ?? "source", survivor: !!a.survivor };
       const bad = validateExportForm(form);
       if (bad.length) throw new ToolError(bad.join("; "));
       const first = await savedFirst(s, "exported");
-      const gate = exportGate(p.store, a.melangeRange);
+      const gate = exportGate(p.store, a.melangeRange, levelKeys);
       const r = await (await s.client()).call<{ dir: string; files: string[]; restartRequired: boolean }>(
-        "level.export", { project: p.id, ...form, ...(gate.gated ? { melangeRange: gate.melangeRange } : {}) }, 120000);
-      return { ...r, mode: form.mode, gate, projectHash: await currentHash(s).catch(() => undefined), ...(first ? { savedFirst: true, warnings: first.warnings } : {}),
+        "level.export", { project: p.id, ...form, ...(gate.gated ? { melangeRange: gate.melangeRange } : {}), ...(tod ? { timeOfDay: tod } : {}), ...(image ? { image } : {}) }, 120000);
+      // a server older than these keys ignores them: say so instead of shipping a pack that silently lacks them
+      const levelLook: Record<string, unknown> = {};
+      if (levelKeys.length) {
+        let entry: Record<string, unknown> | undefined;
+        try { entry = (JSON.parse(fs.readFileSync(path.join(r.dir, "spice.json"), "utf8")).levels as Record<string, unknown>[]).find((l) => l.slug === p.id); } catch { entry = undefined; }
+        if (tod) levelLook.timeOfDay = entry?.timeOfDay === tod ? tod : { asked: tod, warning: "the server did not write levels[].timeOfDay (a Melange older than 0.15): no pin in this pack" };
+        if (image && thumb) {
+          if (entry?.image === image) {
+            fs.mkdirSync(path.join(r.dir, "thumb"), { recursive: true });
+            fs.writeFileSync(path.join(r.dir, image), thumb.png);
+            r.files = [...r.files, image];
+            levelLook.image = { file: image, from: thumb.from, bytes: thumb.png.length };
+          } else levelLook.image = { asked: image, warning: "the server did not write levels[].image (a Melange older than 0.15): no picture in this pack" };
+        }
+      }
+      return { ...r, mode: form.mode, gate, ...(levelKeys.length ? { levelLook } : {}), projectHash: await currentHash(s).catch(() => undefined), ...(first ? { savedFirst: true, warnings: first.warnings } : {}),
         ...(form.mode === "install" ? { note: "install exports contain modified game files: keep them on this machine" } : {}) };
     },
   },

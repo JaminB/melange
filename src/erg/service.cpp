@@ -918,6 +918,13 @@ struct Service::Impl {
         if (mode != "install" && mode != "source") return Err(kBadParams, "mode must be \"install\" or \"source\"");
         const Json* surv = p.find("survivor");
         if (surv && surv->kind != Json::Kind::Bool) return Err(kBadParams, "survivor must be a boolean");
+        // optional: the level entry's pinned time of day and its menu picture (a .png the caller puts in the pack)
+        const Json* tod = p.find("timeOfDay");
+        if (tod && (tod->kind != Json::Kind::String || tod->str.empty() || !levels::manifest::ValidTimeOfDay(tod->str)))
+            return Err(kBadParams, "timeOfDay must be \"DAY\", \"EVENING\", \"NIGHT\" or \"level\"");
+        const Json* image = p.find("image");
+        if (image && (image->kind != Json::Kind::String || !levels::manifest::ValidImagePath(image->str)))
+            return Err(kBadParams, "image must be a relative path to a .png inside the mod folder");
         const Json* mrange = p.find("melangeRange");   // optional: spice.json melange.range (default >=0.2.0)
         if (mrange && (mrange->kind != Json::Kind::String || mrange->str.size() > 64 || !spice::ValidRange(mrange->str)))
             return Err(kBadParams, "melangeRange must be a semver range such as \">=0.14.0\"");
@@ -952,6 +959,8 @@ struct Service::Impl {
         spec.source = mode == "source";
         spec.chunk = luagen::Needed(scene);
         spec.survivor = surv && surv->boolean;
+        if (tod) spec.timeOfDay = tod->str;
+        if (image) spec.image = image->str;
         if (mrange) spec.melangeRange = mrange->str;
         spec.patchJson = WritePatch(patch);
         spec.script = std::move(script);

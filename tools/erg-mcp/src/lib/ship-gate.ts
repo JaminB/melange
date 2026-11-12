@@ -17,10 +17,13 @@ export const MESH_POOL_MELANGE = "0.14.0";
 export const MESH_BANK_MELANGE = "0.14.0";
 /** The first Melange release with spawns.mode areas (an older one refuses the patch: `spawns: unknown key 'areas'`). */
 export const SPAWN_AREAS_MELANGE = "0.15.0";
+/** The first Melange release that reads a level entry's `timeOfDay` and `image` (an older one refuses the unknown key,
+ * and with it the whole pack): 0.15.0. */
+export const LEVEL_LOOK_MELANGE = "0.15.0";
 export const DEFAULT_RANGE = ">=0.2.0";
 
 /** What a level uses that sets its pack's least Melange. */
-export interface ShipFeatures { spawnAreas?: boolean; modMeshes?: string[]; }
+export interface ShipFeatures { spawnAreas?: boolean; modMeshes?: string[]; levelLook?: string[]; }
 
 const parts = (v: string) => v.split(".").map((n) => parseInt(n, 10) || 0);
 /** x.y.z compared: below 0 when a is older. */
@@ -38,6 +41,7 @@ export function shipRange(details: number, asked?: string, features: ShipFeature
   if (details > VANILLA_SAFE_DETAILS) needs.push({ feature: `${details} details: over the ${VANILLA_SAFE_DETAILS} the vanilla 550-instance mesh pool loads ([Fixes] MeshInstances)`, melange: MESH_POOL_MELANGE });
   if (features.modMeshes?.length) needs.push({ feature: `the pack's own meshes (${features.modMeshes.slice(0, 4).join(", ")}${features.modMeshes.length > 4 ? ", ..." : ""}: a mod mesh bank, spice.json meshes)`, melange: MESH_BANK_MELANGE });
   if (features.spawnAreas) needs.push({ feature: "spawns.mode areas (the seeded team-to-area deal)", melange: SPAWN_AREAS_MELANGE });
+  if (features.levelLook?.length) needs.push({ feature: `the level entry's ${features.levelLook.join(" and ")} (spice.json levels[])`, melange: LEVEL_LOOK_MELANGE });
   const least = needs.reduce<string | null>((v, n) => (v === null || compareVersions(n.melange, v) > 0 ? n.melange : v), null);
   // the old wording when the mesh pool alone gates it (Caldera's export)
   const why = !needs.length ? `${details} details: within the vanilla mesh pool`

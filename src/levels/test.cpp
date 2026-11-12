@@ -45,6 +45,7 @@ bool g_ctxSub = false;
 uint32_t g_attract = 0;
 bool g_todSet = false;
 std::string g_todOld;
+uint64_t g_todPinUntil = 0;        // a pack level's pin holds the value until the match VM is made (or this, a fallback)
 TodApplied g_todLast;   // under g_mx
 std::string g_wormsKey;                // SetTeamWorms; under g_mx
 std::array<uint8_t, 4> g_worms{};
@@ -133,6 +134,7 @@ bool ClearTod() {
 void RestoreTod() {
     if (!g_todSet) return;
     g_todSet = false;
+    g_todPinUntil = 0;
     const bool ok = engine::SetString(kTodName, g_todOld.c_str());
     LOG_INFO("[levels] test: %s restored to '%s': %s", kTodName, g_todOld.c_str(), ok ? "ok" : "FAILED");
 }
@@ -227,6 +229,26 @@ void SetTeamWorms(const std::string& key, const std::array<uint8_t, 4>& worms) {
     g_wormsDue = false;
 }
 
+// A pack level's pinned time of day (spice.json levels[].timeOfDay), at its level set-up in any match, Versus and
+// network games too (every peer has the same pack, so the same pin): the frontend's value, which Versus picks at random,
+// is replaced for the set-up's read and put back when the match VM is made, as a Test's is. "level" clears it, so the
+// built level's own Databank.TimeOfDay loads.
+void PinTod(const char* key, const std::string& tod) {
+    std::lock_guard lk(g_mx);
+    if (g_todSet || tod.empty()) return;   // a Test's own time of day is in already
+    std::string old;
+    const char* want = tod == "level" ? "" : tod.c_str();
+    if (!engine::GetString(kTodName, &old) || !engine::SetString(kTodName, want)) {
+        LOG_WARN("[levels] %s: its time of day (%s) could not be pinned; the frontend's value loads", key ? key : "?", tod.c_str());
+        return;
+    }
+    g_todSet = true;
+    g_todOld = old;
+    g_todPinUntil = GetTickCount64() + 120000;
+    LOG_INFO("[levels] %s: time of day pinned to %s (the frontend had '%s')", key ? key : "?", tod.c_str(), old.c_str());
+    jlog::Rec("levels", jlog::Level::Info, "tod_pin").Str("key", key ? key : "").Str("tod", tod).Str("frontend", old);
+}
+
 const char* Take(const char* frontendKey) {
     const engine::FrontendState fs = engine::ReadFrontend();
     Override::SetUp s;
@@ -287,7 +309,7 @@ void OnFrame(bool atFrontend) {
             case Override::Event::Abandoned: Queue(TestState::Failed, key, "the match did not start"); break;
             default: break;
         }
-        if (g_todSet && g_ovr.phase() != Override::Phase::Starting) RestoreTod();
+        if (g_todSet && g_ovr.phase() != Override::Phase::Starting && GetTickCount64() >= g_todPinUntil) RestoreTod();
     }
     if (atFrontend) {
         std::vector<Req> todo;

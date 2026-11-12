@@ -22,7 +22,8 @@ struct WeaponText { std::string weapon, name, help; int line = 0; };
 // weapons/manifest.cpp checks the file names and the clone names of every mod. An empty field means "not replaced".
 struct WeaponIcon { std::string weapon, panelIcon, hudIcon; int line = 0; };
 // One entry of the "levels" array, checked for shape only; levels/manifest.cpp checks slugs, stems and limits.
-struct Level { std::string slug, title, type = "multi", source; bool chunk = false; int line = 0; std::string sim; bool survivor = false; };
+struct Level { std::string slug, title, type = "multi", source; bool chunk = false; int line = 0; std::string sim; bool survivor = false;
+               std::string timeOfDay, image; };   // optional: the pinned time of day, the menu picture (levels/manifest.h)
 // One entry of "schemes" / "factoryWeapons": a data file in the mod folder, checked for shape only; schemes/builder.cpp reads it.
 struct DataFile { std::string file; int line = 0; };
 // One entry of "music": an MP3 for a music slot, checked for shape only; music/bank.cpp reads the file.

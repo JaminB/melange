@@ -155,6 +155,11 @@ bool WritePack(const PackSpec& spec, const std::wstring& dir, std::vector<std::s
     entry.Str("source", "src/" + spec.slug + ".ergpatch.json");
     const std::string simRel = "sim/" + spec.slug + ".lua";
     if (!spec.script.empty()) entry.Str("sim", simRel);
+    if (!levels::manifest::ValidTimeOfDay(spec.timeOfDay)) return Fail(err, "timeOfDay must be DAY, EVENING, NIGHT or level");
+    if (!spec.image.empty() && !levels::manifest::ValidImagePath(spec.image))
+        return Fail(err, "image must be a relative path to a .png inside the mod folder");
+    if (!spec.timeOfDay.empty()) entry.Str("timeOfDay", spec.timeOfDay);
+    if (!spec.image.empty()) entry.Str("image", spec.image);
     jsonmini::Arr levels;
     levels.Raw(entry.End());
     for (auto& lv : existing.levels) levels.Raw(Serialize(lv));

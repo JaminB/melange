@@ -39,7 +39,8 @@ std::vector<uint8_t> RegistryBank(const xom::Document& scripts, const std::vecto
     std::set<std::string> keys;
     for (const auto& e : entries) {
         if (!PrintableAscii(e.key, 1, 79) || !PrintableAscii(e.stem, 1, 63) || e.stem.find('.') != std::string::npos ||
-            !PrintableAscii(e.frontendName, 1, 79) || !PrintableAscii(e.scripts, 1, 127))
+            !PrintableAscii(e.frontendName, 1, 79) || !PrintableAscii(e.scripts, 1, 127) ||
+            (!e.frontendImage.empty() && !PrintableAscii(e.frontendImage, 1, 79)))
             return fail("registry entry '" + e.key + "': key, stem, name or scripts are not printable (or the stem has a '.')");
         if (!keys.insert(e.key).second) return fail("registry entry '" + e.key + "' is listed twice");
     }
@@ -95,7 +96,9 @@ std::vector<uint8_t> RegistryBank(const xom::Document& scripts, const std::vecto
             return fail("SCRIPTS.XOM: unexpected level entry shape");
         if (e.levelSection >= 0 && !SetInt(l, "LevelSection", e.levelSection))
             return fail("SCRIPTS.XOM: the level entry has no LevelSection");
-        strings.insert({e.key, e.stem, e.scripts, e.frontendName});
+        if (!e.frontendImage.empty() && !xomutil::SetStr(l, "Frontend_Image", e.frontendImage))
+            return fail("SCRIPTS.XOM: the level entry has no Frontend_Image");
+        strings.insert({e.key, e.stem, e.scripts, e.frontendName, e.frontendImage});
         d.objects.push_back(std::move(l));
     }
     strings.erase("");

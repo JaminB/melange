@@ -19,6 +19,7 @@ struct PackSpec {
     std::vector<File> levelFiles;                          // built by the level service
     std::string patchJson;
     std::string script;                                    // the level script as sim/<slug>.lua; "" for none
+    std::string timeOfDay, image;                          // the level entry's timeOfDay and image ("" = neither written)
     std::string melangeRange;                              // spice.json melange.range ("" = ">=0.2.0"): a level that needs a
                                                            // newer Melange (e.g. [Fixes] MeshInstances) says so here
 };

@@ -6,7 +6,10 @@
 import { cpSync, existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { execFileSync } from "node:child_process";
+import { createHash } from "node:crypto";
+import { documentsDir } from "../oasis";
 import { ToolError, type Tool } from "../registry";
+import type { Session } from "../session";
 
 interface Manifest { at: string; only: string[]; installed: { id: string; from: string; replaced: boolean }[]; }
 
@@ -43,7 +46,166 @@ function spiceOf(dir: string): { id: string; version: string } {
   return { id: j.id, version: typeof j.version === "string" ? j.version : "?" };
 }
 
+/** A game folder's projects folder: `[Erg] ProjectsDir` of its Melange.ini (the first such key), else Documents\Melange\erg\projects. */
+export function projectsDirOf(gameDir: string): { dir: string; from: string } {
+  const ini = join(gameDir, "Melange.ini");
+  if (existsSync(ini)) {
+    let section = "";
+    for (const line of readFileSync(ini, "utf8").split(/\r?\n/)) {
+      const sec = /^\s*\[([^\]]+)\]/.exec(line);
+      if (sec) { section = sec[1].trim().toLowerCase(); continue; }
+      const kv = /^\s*ProjectsDir\s*=\s*([^;\r\n]*)/i.exec(line);
+      if (kv && section === "erg" && kv[1].trim()) return { dir: kv[1].trim(), from: "[Erg] ProjectsDir of its Melange.ini" };
+    }
+  }
+  const docs = documentsDir();
+  if (!docs) throw new ToolError("no Documents\\Melange folder was found, and the game's Melange.ini sets no [Erg] ProjectsDir");
+  return { dir: join(docs, "Melange", "erg", "projects"), from: "Documents\\Melange\\erg\\projects (its Melange.ini sets no [Erg] ProjectsDir)" };
+}
+
+/** A folder's files (relative paths, sorted) hashed with their bytes: equal folders hash the same. */
+function folderHash(dir: string): { hash: string; files: number } {
+  const h = createHash("sha256"), names: string[] = [];
+  const walk = (d: string, rel: string) => {
+    for (const n of readdirSync(d).sort()) {
+      const f = join(d, n);
+      if (statSync(f).isDirectory()) walk(f, `${rel}${n}/`);
+      else names.push(`${rel}${n}`);
+    }
+  };
+  walk(dir, "");
+  for (const n of names) { h.update(n); h.update(readFileSync(join(dir, n))); }
+  return { hash: h.digest("hex").slice(0, 16), files: names.length };
+}
+
+/** Every *.png under `dir` (relative paths with '/'), and the text files a record could be in. */
+function evidenceFiles(dir: string): { pngs: { rel: string; bytes: number; mtimeMs: number }[]; texts: string[] } {
+  const pngs: { rel: string; bytes: number; mtimeMs: number }[] = [], texts: string[] = [];
+  const walk = (d: string, rel: string, depth: number) => {
+    for (const n of readdirSync(d)) {
+      const f = join(d, n);
+      let st;
+      try { st = statSync(f); } catch { continue; }
+      if (st.isDirectory()) { if (depth < 8) walk(f, `${rel}${n}/`, depth + 1); }
+      else if (/\.png$/i.test(n)) pngs.push({ rel: `${rel}${n}`, bytes: st.size, mtimeMs: st.mtimeMs });
+      else if (/\.(json|jsonl|md|txt|log|csv)$/i.test(n) && st.size <= 32 * 1024 * 1024) texts.push(f);
+    }
+  };
+  walk(dir, "", 0);
+  return { pngs, texts };
+}
+
+/** The PNG file names a text names (a probe record's `shot`, a log line's path): base names, lower case. */
+export function namedPngs(text: string): Set<string> {
+  const out = new Set<string>();
+  for (const m of text.matchAll(/[A-Za-z0-9_()-]+(?:\.[A-Za-z0-9_()-]+)*?\.png/gi)) out.add(m[0].toLowerCase());
+  return out;
+}
+
 export const tools: Tool[] = [{
+  name: "prune_evidence",
+  description: "Free disk in an evidence folder without losing the pictures its records point at: every *.png under `dir` whose file name appears in no record is a candidate, and a picture named in any record is kept. Records are the .json, .jsonl, .md, .txt, .log and .csv files under `dir` and under each of `refs` (more folders or files: a probe's JSON kept elsewhere, the run's log). Round 2's pruning by hand deleted the shot of the hole a worm died in, which the probe's record named. Candidates are removed oldest first until the folder's pictures take at most `keepMB` (default 0: every unreferenced one), never one younger than `minAgeMinutes` (default 0) or whose name holds one of `keep`. `dryRun` defaults to TRUE: it answers what would go; pass dryRun: false to delete. A folder inside a game's own folder (a testenv's Melange\\docshot or m1t, which hold other sessions' shots) is refused unless `prefix` limits the candidates to names that start with it.",
+  inputSchema: {
+    type: "object", additionalProperties: false, required: ["dir"],
+    properties: {
+      dir: { type: "string", description: "The evidence folder." },
+      refs: { type: "array", maxItems: 16, items: { type: "string" }, description: "More folders or files whose records name pictures to keep." },
+      keep: { type: "array", maxItems: 32, items: { type: "string" }, description: "Name fragments: a picture whose path holds one is kept." },
+      prefix: { type: "string", description: "Only pictures whose file name starts with this are candidates." },
+      keepMB: { type: "number", minimum: 0, description: "Stop when the folder's pictures take at most this (default 0: remove every unreferenced one)." },
+      minAgeMinutes: { type: "number", minimum: 0, description: "Never remove a picture younger than this (default 0)." },
+      dryRun: { type: "boolean", description: "Default true: only answer what would be removed." },
+    },
+  },
+  handler(_s: Session, a: { dir: string; refs?: string[]; keep?: string[]; prefix?: string; keepMB?: number; minAgeMinutes?: number; dryRun?: boolean }) {
+    if (!existsSync(a.dir) || !statSync(a.dir).isDirectory()) throw new ToolError(`no folder ${a.dir}`);
+    // inside a game's folder: other sessions' shots live there, so only a prefix's own files
+    for (let d = a.dir, i = 0; i < 6; i++) {
+      if (existsSync(join(d, "WormsMayhem.exe")) && !a.prefix) throw new ToolError(`${a.dir} is inside a game's folder (${d}): give prefix, so only this session's shots are candidates`);
+      const up = join(d, "..");
+      if (up === d) break;
+      d = up;
+    }
+    const ev = evidenceFiles(a.dir), named = new Set<string>();
+    const texts = [...ev.texts];
+    for (const r of a.refs ?? []) {
+      if (!existsSync(r)) throw new ToolError(`refs: no ${r}`);
+      if (statSync(r).isDirectory()) texts.push(...evidenceFiles(r).texts);
+      else texts.push(r);
+    }
+    for (const t of texts) { try { for (const n of namedPngs(readFileSync(t, "utf8"))) named.add(n); } catch { /* unreadable: names nothing */ } }
+    const base = (rel: string) => rel.slice(rel.lastIndexOf("/") + 1);
+    const now = Date.now(), minAge = (a.minAgeMinutes ?? 0) * 60000;
+    const total = ev.pngs.reduce((n, p) => n + p.bytes, 0);
+    const kept = { referenced: 0, byKeep: 0, young: 0, notPrefix: 0 };
+    const cand = ev.pngs.filter((p) => {
+      const b = base(p.rel);
+      if (named.has(b.toLowerCase())) { kept.referenced++; return false; }
+      if (a.prefix && !b.startsWith(a.prefix)) { kept.notPrefix++; return false; }
+      if (a.keep?.some((k) => p.rel.includes(k))) { kept.byKeep++; return false; }
+      if (now - p.mtimeMs < minAge) { kept.young++; return false; }
+      return true;
+    }).sort((x, y) => x.mtimeMs - y.mtimeMs);
+    const budget = (a.keepMB ?? 0) * 1024 * 1024, dry = a.dryRun !== false;
+    let left = total, freed = 0;
+    const gone: string[] = [];
+    for (const p of cand) {
+      if (left <= budget) break;
+      if (!dry) { try { rmSync(join(a.dir, p.rel)); } catch { continue; } }
+      left -= p.bytes; freed += p.bytes; gone.push(p.rel);
+    }
+    const mb = (v: number) => Math.round(v / 10485.76) / 100;
+    return { dir: a.dir, dryRun: dry, pictures: ev.pngs.length, records: texts.length, namedInRecords: named.size, kept,
+      [dry ? "wouldRemove" : "removed"]: gone.length, freedMB: mb(freed), beforeMB: mb(total), afterMB: mb(left), examples: gone.slice(0, 12),
+      note: dry ? "nothing was removed: pass dryRun: false to delete these" : "a picture named in any record was kept" };
+  },
+}, {
+  name: "push_project_to_game",
+  description: "Copy a saved project from the server it was built on into a test game's projects folder, so that game's Test plays the level just built: Test runs in the game and reads the game's own folder ([Erg] ProjectsDir of its Melange.ini, else Documents\\Melange\\erg\\projects), which is another folder than the one Melange.exe --serve for a different install keeps (Dustcrown's builds copied the folder by hand and edited the ini). `id` (default the open project) is read from the connected server's projectsDir, and copied over <game's projects folder>\\<id> (the folder it replaces is kept beside it as <id>.erg-mcp-old until the next push; `keepOld: false` drops it). Refused while the open project has unsaved edits (save first) and when both folders are the same one (nothing to do: `same: true`). Answers both folders and their content hash (equal after the copy). Then connect to the game and test {expectHash}. `dryRun` only answers where it would go.",
+  inputSchema: {
+    type: "object", additionalProperties: false,
+    properties: {
+      id: { type: "string", description: "Project id (default the open project)." },
+      gameDir: { type: "string", description: "The test game's folder, where WormsMayhem.exe is (default MELANGE_GAME_DIR)." },
+      from: { type: "string", description: "The projects folder to read from (default the connected server's projectsDir)." },
+      keepOld: { type: "boolean", description: "Keep the replaced folder as <id>.erg-mcp-old (default true)." },
+      dryRun: { type: "boolean" },
+    },
+  },
+  async handler(s: Session, a: { id?: string; gameDir?: string; from?: string; keepOld?: boolean; dryRun?: boolean }) {
+    const id = a.id ?? s.project?.id;
+    if (!id) throw new ToolError("give id, or open a project");
+    if (!/^[a-z0-9]{1,24}$/.test(id)) throw new ToolError("id is a project id: 1-24 characters a-z, 0-9");
+    if (s.project?.id === id && s.project.store.dirty) throw new ToolError("the open project has unsaved edits: save first (the copy is of the saved project)");
+    const game = gameDirOf(a.gameDir);
+    let fromDir = a.from;
+    if (!fromDir) {
+      const l = (await (await s.levels()).list()) as { projectsDir?: unknown };
+      if (typeof l.projectsDir !== "string") throw new ToolError("the server did not answer its projectsDir (an older Melange): give from");
+      fromDir = l.projectsDir;
+    }
+    const src = join(fromDir, id), to = projectsDirOf(game), dst = join(to.dir, id);
+    if (!existsSync(join(src, "project.ergpatch.json"))) throw new ToolError(`no saved project ${id} in ${fromDir} (no project.ergpatch.json)`);
+    const same = src.replace(/[\\/]+$/, "").toLowerCase() === dst.replace(/[\\/]+$/, "").toLowerCase();
+    const before = folderHash(src);
+    const out = { id, from: src, to: dst, gameProjectsDir: to.dir, gameProjectsDirFrom: to.from, hash: before.hash, files: before.files };
+    if (same) return { ...out, same: true, note: "the game reads the folder the server writes: nothing to copy" };
+    if (a.dryRun) return { ...out, dryRun: true, replaces: existsSync(dst) };
+    const old = `${dst}.erg-mcp-old`, tmp = `${dst}.erg-mcp-new`;
+    rmSync(tmp, { recursive: true, force: true });
+    mkdirSync(to.dir, { recursive: true });
+    cpSync(src, tmp, { recursive: true });
+    rmSync(old, { recursive: true, force: true });
+    const replaced = existsSync(dst);
+    if (replaced) renameSync(dst, old);
+    renameSync(tmp, dst);
+    if (replaced && a.keepOld === false) rmSync(old, { recursive: true, force: true });
+    const after = folderHash(dst);
+    if (after.hash !== before.hash) throw new ToolError(`the copy differs from the source (${after.hash} against ${before.hash})`);
+    return { ...out, copied: true, replaced, ...(replaced && a.keepOld !== false ? { old } : {}),
+      next: "connect to the game (it must run for Test), open_project, then test {expectHash: <save's projectHash>}" };
+  },
+}, {
   name: "test_plugins",
   description: "Set a test game's plugins for a run, and put them back after: `only` (e.g. [\"sunstone\"]) turns those plugins on and every other one off in <gameDir>\\Mods\\thumper-state.json; `install` ([{id, from}]) copies a plugin's folder (the one with spice.json, e.g. C:\\...\\melange-plugins\\plugins\\sunstone\\mod) into Mods\\<id> first, keeping the folder it replaces; `restore: true` puts back the state file and every replaced folder (and removes a plugin that was not there) from <gameDir>\\Melange\\erg-mcp\\plugins-backup. With neither it answers the plugins and whether a backup is waiting. The game must be closed (plugins load at launch): checks with Sunstone on are test_plugins {only: [\"sunstone\"]}, launch, test, ..., quit, test_plugins {restore: true}. A second set-up keeps the first backup, so restore always goes back to the state before the first.",
   inputSchema: {

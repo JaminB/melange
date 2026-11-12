@@ -365,9 +365,13 @@ bool VerbRaw(std::string_view args, void*) {
 // key, whatever window has the focus (an injected key goes through DirectInput, which the game reads only while it has
 // the focus, and a key held across a focus change is lost). Offline only; every input ends at its deadline or the
 // match's end.
+// The movement utilities have inputs of their own: Input.FireUtil is the utility's fire (it starts and stops a jetpack
+// and fires the rope, where Input.Fire is the weapon's), Input.Jetpack.* steer the pack, Input.TurnLeft/Right turn the worm.
 constexpr const char* kDriveInputs[] = {"Input.MoveForward", "Input.MoveBackward", "Input.MoveLeft", "Input.MoveRight",
                                          "Input.Jump",        "Input.JumpBack",     "Input.Fire",     "Input.AimUp",
-                                         "Input.AimDown"};
+                                         "Input.AimDown",     "Input.FireUtil",     "Input.Fire.Second", "Input.TurnLeft",
+                                         "Input.TurnRight",   "Input.Jetpack.Forward", "Input.Jetpack.Back",
+                                         "Input.Jetpack.Left", "Input.Jetpack.Right", "Input.Fuse", "Input.Bounce"};
 struct DriveInput {
     std::string name;
     ULONGLONG until = 0;   // held while now < until

@@ -19,6 +19,21 @@ Erg: spawn areas dealt per match, and the map builder (erg-mcp) grown by a secon
   client mods hear `melange.level.sea`, so a graphics mod that replaces the water shader can draw a sea of sand or lava
   (Sunstone 2.4 does). Render state only. erg-mcp: `set_water_look` `sea`.
 
+- Map packs: a level's `spice.json` entry may pin its time of day in every match (`"timeOfDay"`: `DAY`, `EVENING`,
+  `NIGHT` or `level`; Versus picks one at random otherwise) and name its picture for the game's map lists (`"image"`, a
+  PNG in the pack, shown instead of the picture of the map it was built on). See [docs/spice.md](docs/spice.md).
+  erg-mcp: `set_level_look`, `set_level_thumbnail` and `export`'s `timeOfDay` and `thumbnail`.
+- Test harness (erg-mcp): `input.drive` holds the utilities' own inputs (`Input.FireUtil`, a jetpack's thrust, and the
+  `Input.Jetpack.*` and turn inputs), `level.test.lua` runs engine Lua in the match VM at a sim tick and
+  `level.test.placeWorm` stands a worm at a point, all in a Test only. erg-mcp: `game_give_weapons`, `game_park_worm`,
+  `game_air_strike`, `game_ground_scan`, `game_end_turns`, `push_project_to_game`, `prune_evidence`; the jetpack's
+  reach in `check_tool_reach` is measured in the game.
+- erg-mcp builder: blended crest and trough edges on a drape (`blend`), `tint_landscape` `colorSpace: "srgb"`,
+  `carrier: "theme"` (a carrier piece of the level's own theme) and a tint preview in the renders, `build_mesa` `onSkin`, bedded strata and
+  gullies, shore perches told from pits (`check_pits`), `check_holes` along a walk.
+- `build.ps1 -Out <name>` builds into `build\<Config>-<name>` and `dist-<name>\`, so a second (private) build never
+  replaces `dist\`.
+
 ### Changed
 
 - `level.build` on a pack that needs a newer Melange says so (`needs Melange >=X and this is Melange Y`) instead of

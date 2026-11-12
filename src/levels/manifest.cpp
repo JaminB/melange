@@ -53,6 +53,9 @@ std::vector<LevelDecl> Parse(const spice::Manifest& m, std::vector<Error>* errs)
             fail("level '" + l.slug + "': sim must be a relative path under sim/ ending in .lua");
         if (!l.source.empty() && !SafeRel(l.source))
             fail("level '" + l.slug + "': source must be a relative path inside the mod folder");
+        if (!ValidTimeOfDay(l.timeOfDay)) fail("level '" + l.slug + "': timeOfDay must be DAY, EVENING, NIGHT or level");
+        if (!l.image.empty() && !ValidImagePath(l.image))
+            fail("level '" + l.slug + "': image must be a relative path to a .png inside the mod folder");
         LevelDecl d;
         d.mod = m.id;
         d.slug = l.slug;
@@ -63,6 +66,8 @@ std::vector<LevelDecl> Parse(const spice::Manifest& m, std::vector<Error>* errs)
         d.survivor = l.survivor;
         d.source = l.source;
         d.sim = l.sim;
+        d.timeOfDay = l.timeOfDay;
+        d.image = l.image;
         if (!erg::names::ValidStem(d.stem, prefix, &why)) fail("level '" + l.slug + "': " + why);
         out.push_back(std::move(d));
     }
@@ -101,6 +106,15 @@ std::vector<LevelDecl> Assign(const std::vector<std::vector<LevelDecl>>& perModI
         }
     }
     return out;
+}
+
+bool ValidTimeOfDay(const std::string& t) { return t.empty() || t == "DAY" || t == "EVENING" || t == "NIGHT" || t == "level"; }
+
+bool ValidImagePath(const std::string& p) {
+    if (!SafeRel(p) || p.find('\\') != std::string::npos || p.size() < 5) return false;
+    std::string ext = p.substr(p.size() - 4);
+    for (char& c : ext) c = static_cast<char>(c >= 'A' && c <= 'Z' ? c + 32 : c);
+    return ext == ".png";
 }
 
 std::vector<std::string> RequiredFiles(const LevelDecl& d) {

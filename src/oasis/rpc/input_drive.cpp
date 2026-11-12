@@ -40,8 +40,8 @@ void Drive(const Call& c, Result& r, void*) {
     const json::Value* hold = p.Get("hold");
     std::vector<std::string> names;
     if (hold && !hold->IsNull()) {
-        if (!hold->IsArray() || hold->items.size() > 9) {
-            Fail(r, rpc::kBadParams, "hold: an array of at most 9 input names");
+        if (!hold->IsArray() || hold->items.size() > 12) {
+            Fail(r, rpc::kBadParams, "hold: an array of at most 12 input names");
             return;
         }
         for (const json::Value& n : hold->items) {

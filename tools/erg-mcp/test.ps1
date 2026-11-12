@@ -11,6 +11,10 @@ if (-not $SkipBuild) {
     & powershell -NoProfile -ExecutionPolicy Bypass -File (Join-Path $here "build.ps1")
     if ($LASTEXITCODE) { throw "erg-mcp build failed" }
 }
+# a mesh bank a test or a tool call with a relative `out` leaves under tools\erg-mcp\out\meshes is removed afterwards,
+# unless the folder was there before this run (then it is somebody's own)
+$strayMeshes = Join-Path $here "out\meshes"
+$hadMeshes = Test-Path $strayMeshes
 $out = Join-Path $here "test\out"
 if (Test-Path $out) { Remove-Item -Recurse -Force $out }
 $ts = @(Get-ChildItem (Join-Path $here "test") -Filter *.test.ts | ForEach-Object { $_.FullName })
@@ -21,4 +25,10 @@ if ($ts.Count) {
 $files = @(Get-ChildItem (Join-Path $here "test") -Filter *.test.mjs | ForEach-Object { $_.FullName })
 if (Test-Path $out) { $files += @(Get-ChildItem $out -Filter *.mjs | ForEach-Object { $_.FullName }) }
 & $node --test --test-concurrency=1 @files
-if ($LASTEXITCODE) { exit 1 }
+$failed = $LASTEXITCODE
+if (-not $hadMeshes -and (Test-Path $strayMeshes)) {
+    Remove-Item -Recurse -Force $strayMeshes
+    $parent = Split-Path $strayMeshes -Parent
+    if (-not (Get-ChildItem $parent -Force)) { Remove-Item -Force $parent }
+}
+if ($failed) { exit 1 }

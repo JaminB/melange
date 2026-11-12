@@ -1412,7 +1412,7 @@ export const tools: Tool[] = [
     inputSchema: {
       type: "object", additionalProperties: false, required: ["inputs"],
       properties: {
-        inputs: { type: "array", minItems: 1, maxItems: 4, items: { type: "string", enum: ["W", "A", "S", "D", "Jump", "Backflip", "Fire", "AimUp", "AimDown"] }, description: "What to hold (two walk keys walk the diagonal)." },
+        inputs: { type: "array", minItems: 1, maxItems: 6, items: { type: "string", enum: ["W", "A", "S", "D", "Jump", "Backflip", "Fire", "AimUp", "AimDown", "FireUtil", "TurnLeft", "TurnRight", "JetForward", "JetBack", "JetLeft", "JetRight", "Fire2"] }, description: "What to hold (two walk keys walk the diagonal). FireUtil is the selected UTILITY's fire (Melange 0.15+): held, it is a jetpack's thrust (game_select_weapon kUtilityJetpack first; W, A, S, D steer it in the air and its fuel lasts 7.5 s of thrust), where Fire is the weapon's. TurnLeft and TurnRight turn the worm; JetForward, JetBack, JetLeft and JetRight are the jetpack's own steering inputs." },
         seconds: { type: "number", minimum: 0.05, maximum: 20, description: "How long to hold them (default 2)." },
         worm: { type: "integer", minimum: 0, maximum: 15, description: "Only this WORMn's turn (default the first human turn in play)." },
         waitSec: { type: "number", minimum: 1, maximum: 300, description: "Wait at most this long for the turn (default 90)." },
@@ -1421,7 +1421,8 @@ export const tools: Tool[] = [
     },
     async handler(s, a: { inputs: string[]; seconds?: number; worm?: number; waitSec?: number; units?: "map" | "world" }) {
       if (!(await has(s, "input.drive"))) throw new ToolError("game_drive needs the game's input.drive (Melange 0.13+ with the Controls module)");
-      const NAME: Record<string, string> = { W: "MoveForward", A: "MoveLeft", S: "MoveBackward", D: "MoveRight", Jump: "Jump", Backflip: "JumpBack", Fire: "Fire", AimUp: "AimUp", AimDown: "AimDown" };
+      const NAME: Record<string, string> = { W: "MoveForward", A: "MoveLeft", S: "MoveBackward", D: "MoveRight", Jump: "Jump", Backflip: "JumpBack", Fire: "Fire", AimUp: "AimUp", AimDown: "AimDown",
+        FireUtil: "FireUtil", TurnLeft: "TurnLeft", TurnRight: "TurnRight", JetForward: "Jetpack.Forward", JetBack: "Jetpack.Back", JetLeft: "Jetpack.Left", JetRight: "Jetpack.Right", Fire2: "Fire.Second" };
       const k = a.units === "world" ? 1 : 1 / WORLD_PER_MAP, out = (v: number) => Math.round(v * k * 100) / 100;
       const client = await s.client(), t0 = Date.now(), wait = (a.waitSec ?? 90) * 1000;
       type W = { x: number; y: number; z: number; slot: number; team: number; phase: string; ai: boolean; alive: boolean };

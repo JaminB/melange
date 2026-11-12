@@ -1116,6 +1116,17 @@ void TestBank() {
                    xu::Int(t.objects[4], "LevelSection") == 0 && xu::Str(t.objects[4], "Lock").empty() &&
                    xu::Str(t.objects[4], "Level_FileName") == "mymaps_b" && xu::Int(t.objects[4], "Theme_Type") == 5,
                "bank: a Survivor copy is type 3, unlocked, theme 5, in section 0, on the level's own files " + err);
+        // Frontend_Image: an entry's own picture; "" keeps the template's
+        auto pic = entries;
+        pic[1].frontendImage = "mymaps_b.tga";
+        xom::Document pd;
+        const std::vector<uint8_t> pb = erg::bank::RegistryBank(sd, pic, &err);
+        const size_t first = pic.size() + 1;   // the resources, the bank, then the level entries
+        Expect(!pb.empty() && xom::parse(pb.data(), pb.size(), pd, &err, strict) && xu::Str(pd.objects[first + 1], "Frontend_Image") == "mymaps_b.tga" &&
+                   xu::Str(pd.objects[first], "Frontend_Image") == xu::Str(t.objects[first], "Frontend_Image"),
+               "bank: frontendImage sets that entry's Frontend_Image and leaves the others the template's " + err);
+        pic[1].frontendImage = "bad\x01" "name";
+        Expect(erg::bank::RegistryBank(sd, pic, &err).empty(), "bank: an unprintable picture name is refused");
     }
     entries[1].stem = "my.maps";
     Expect(erg::bank::RegistryBank(sd, entries, &err).empty(), "bank: a stem with a dot is refused");
@@ -1756,6 +1767,36 @@ void TestService(const std::wstring& root) {
         Expect(Call(S, "level.export", R"({"project":"harbour","modId":"script-source","name":"x","version":"1.0.0","mode":"source","survivor":1})").code ==
                    erg::service::kBadParams,
                "export: survivor must be a boolean");
+        // the level entry's pinned time of day and its menu picture
+        r = Call(S, "level.export",
+                 R"({"project":"harbour","modId":"script-source","name":"x","version":"1.0.0","mode":"source","timeOfDay":"NIGHT","image":"thumb/harbour.png"})");
+        spice.clear();
+        Expect(r.ok && erg::install::ReadFile(game + L"\\Mods\\script-source\\spice.json", 1u << 20, &spice, &err) &&
+                   std::string(spice.begin(), spice.end()).find(R"("timeOfDay":"NIGHT")") != std::string::npos &&
+                   std::string(spice.begin(), spice.end()).find(R"("image":"thumb/harbour.png")") != std::string::npos,
+               "export: timeOfDay and image go into the level's entry " + r.message);
+        {
+            melange::spice::Manifest pm;
+            std::vector<melange::spice::Error> perrs;
+            Expect(melange::spice::Parse(game + L"\\Mods\\script-source", &pm, &perrs) && pm.levels.size() == 1 && pm.levels[0].timeOfDay == "NIGHT" &&
+                       pm.levels[0].image == "thumb/harbour.png",
+                   "export: the manifest with timeOfDay and image parses back");
+        }
+        r = Call(S, "level.export", R"({"project":"harbour","modId":"script-source","name":"x","version":"1.0.0","mode":"source"})");
+        spice.clear();
+        Expect(r.ok && erg::install::ReadFile(game + L"\\Mods\\script-source\\spice.json", 1u << 20, &spice, &err) &&
+                   std::string(spice.begin(), spice.end()).find("timeOfDay") == std::string::npos &&
+                   std::string(spice.begin(), spice.end()).find("\"image\"") == std::string::npos,
+               "export: without them neither key is written");
+        Expect(Call(S, "level.export", R"({"project":"harbour","modId":"script-source","name":"x","version":"1.0.0","mode":"source","timeOfDay":"DUSK"})").code ==
+                   erg::service::kBadParams,
+               "export: timeOfDay must be DAY, EVENING, NIGHT or level");
+        Expect(Call(S, "level.export", R"({"project":"harbour","modId":"script-source","name":"x","version":"1.0.0","mode":"source","image":"../x.png"})").code ==
+                   erg::service::kBadParams,
+               "export: image must stay inside the mod folder");
+        Expect(Call(S, "level.export", R"({"project":"harbour","modId":"script-source","name":"x","version":"1.0.0","mode":"source","image":"thumb/x.tga"})").code ==
+                   erg::service::kBadParams,
+               "export: image must be a .png");
         RemoveTree(game + L"\\Mods\\script-install");
         RemoveTree(game + L"\\Mods\\script-source");
         Expect(Call(S, "level.close", R"({"project":"harbour"})").ok, "close after the script cases");

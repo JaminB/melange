@@ -51,6 +51,7 @@ const char* Decide(const char* frontendKey, void*) {
     ++g_starts;
     lv::LevelInfo info{};
     const bool known = lv::registry::Find(key, &info);
+    if (known && info.source == lv::Source::Pack) lv::registry::PinTimeOfDay(key);
     eng::Details d;
     std::string stem = known ? info.stem : "";
     if (stem.empty() && eng::LevelDetails(key, &d)) stem = d.file;

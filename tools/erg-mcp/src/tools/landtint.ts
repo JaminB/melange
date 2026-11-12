@@ -22,12 +22,13 @@ export const tools: Tool[] = [
         color: { type: "string", description: "\"#rrggbb\" (the texture's mean becomes this), or \"none\" to remove." },
       } } },
       theme: { type: "string", enum: ["PREHISTORIC", "ARABIAN"], description: "Whose material records `material` names, and whose tile names the answer uses first (default the open level's theme when it is one of these, else PREHISTORIC)." },
-      base: { type: "string", description: "Base to take the carrier piece from (default the open project's base when its theme is the level's, else the first game base of the level's theme with a scenery piece; the answer's `carrier` says which)." },
+      base: { type: "string", description: "Base to take the carrier piece from (default the open project's base)." },
+      carrier: { type: "string", enum: ["base", "theme"], description: "Where the carrier piece comes from when base and id are not given: base (default, as before: the open project's base's first visual scenery piece) or theme (a piece of the level's OWN theme: the project's base when its theme is the level's, else the first game base of the level's theme with a scenery piece, so a level whose theme was changed with set_theme keeps no mesh of its base's theme). The answer's `carrier` says which piece was taken." },
       id: { type: "integer", description: "The carrier: a scenery detail of that base (default its first visual scenery detail)." },
       colorSpace: { type: "string", enum: ["linear", "srgb"], description: "How `color` is read. linear (default, as before): the hex is written to the tag as it is, and Sunstone multiplies it in linear light, so it draws lighter than the hex looks. srgb: the hex is the colour you want to SEE (a picker's value); the tag gets its linear-light value and the answer gives both (`asked`, `color`)." },
       list: { type: "boolean" },
     } },
-    async handler(s, a: { tints?: { texture?: string; material?: number | string; faces?: "side" | "top" | "all"; color: string }[]; theme?: TintTheme; base?: string; id?: number; list?: boolean; colorSpace?: "linear" | "srgb" }) {
+    async handler(s, a: { tints?: { texture?: string; material?: number | string; faces?: "side" | "top" | "all"; color: string }[]; theme?: TintTheme; base?: string; id?: number; list?: boolean; colorSpace?: "linear" | "srgb"; carrier?: "base" | "theme" }) {
       const { store } = s.requireProject();
       const theme: TintTheme = a.theme ?? tintTheme(store.scene.databank.theme) ?? "PREHISTORIC";
       const carriers = () => store.scene.details.filter((d) => d.src === null && landTintsOf(d.name).length);
@@ -51,14 +52,16 @@ export const tools: Tool[] = [
           }
         } catch (e) { throw new ToolError(`tints[${i}].${(e as Error).message}`); }
       });
-      // The carrier: a piece of the level's OWN theme, so a level whose theme was changed (set_theme) keeps no mesh of
-      // its base's theme in the pack. The project's base when its theme is the level's (as before), else the first game
-      // base of the level's theme that has a visual scenery piece.
+      // The carrier: the base's first visual scenery piece (the default, as before: Caldera's committed pack carries
+      // DinerMight's sign under its Prehistoric volcano and must build byte for byte), or with carrier: "theme" a piece
+      // of the level's OWN theme, so a level whose theme was changed (set_theme) keeps no mesh of its base's theme: the
+      // project's base when its theme is the level's, else the first game base of that theme with a scenery piece.
       const isScenery = (d: Scene["details"][number]) => { const c = classifyDetail(d); return c.cls === "visual" && c.role === "scenery"; };
       let key = a.base ?? store.scene.base.key, carrierWhy = a.base ? "base given" : "the project's base";
       let scene = await loadScene(s, key);
       const levelTheme = String(store.scene.databank.theme ?? "").toUpperCase();
-      if (a.base === undefined && a.id === undefined && levelTheme) {
+      if (a.carrier === "theme" && (a.base !== undefined || a.id !== undefined)) throw new ToolError("carrier: \"theme\" picks the piece itself: give it without base and id");
+      if (a.carrier === "theme" && levelTheme) {
         const lv = await s.levels();
         const bases = typeof (lv as { list?: unknown }).list === "function" ? (await lv.list()).bases.filter((b) => b.source === "game") : [];
         const own = bases.find((b) => b.key === key);

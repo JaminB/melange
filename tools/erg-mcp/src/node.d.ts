@@ -43,7 +43,7 @@ declare module "node:path" {
   export function basename(p: string): string;
 }
 declare module "node:crypto" {
-  export interface Hash { update(data: string): Hash; digest(enc: "hex"): string; }
+  export interface Hash { update(data: string | Uint8Array): Hash; digest(enc: "hex"): string; }
   export function createHash(alg: "sha256"): Hash;
 }
 declare module "node:child_process" {

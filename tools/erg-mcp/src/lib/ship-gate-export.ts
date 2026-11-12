@@ -12,8 +12,9 @@ export function shipFeatures(store: Parameters<typeof simFingerprint>[0]): ShipF
   return { spawnAreas: store.scene.spawns.mode === "areas", ...(meshes.length ? { modMeshes: meshes } : {}) };
 }
 
-export function exportGate(store: Parameters<typeof simFingerprint>[0], asked?: string) {
+/** `levelLook`: the level-entry keys this export writes (timeOfDay, image), which an older Melange refuses. */
+export function exportGate(store: Parameters<typeof simFingerprint>[0], asked?: string, levelLook: string[] = []) {
   const c = simFingerprint(store, "").counts;
   const details = (c.simDetails ?? 0) + (c.scenery ?? 0) + (c.light ?? 0) + (c.emitter ?? 0) + (c.sound ?? 0);
-  return { details, ...shipRange(details, asked, shipFeatures(store)) };
+  return { details, ...shipRange(details, asked, { ...shipFeatures(store), ...(levelLook.length ? { levelLook } : {}) }) };
 }

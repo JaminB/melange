@@ -72,6 +72,7 @@ struct TodApplied {
     bool applied = false;
 };
 TodApplied LastTod();
+void PinTod(const char* key, const std::string& tod);   // a pack level's levels[].timeOfDay, at its level set-up
 // Worms per team for the Test of `key` (0: the Quick Game's own count, four): written into GM.GameInitData's
 // T1..T4_NumOfWorms when the override is taken and again when the match VM is created, before the level's Initialise
 // sets the worms up (lib_SetupMultiplayerWormsAndTeams). An empty key clears it.

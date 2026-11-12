@@ -49,7 +49,7 @@ test("srgbToLinearHex and back: a picker's colour becomes the tag's linear value
   assert.deepEqual(linearToSrgb(lin).map((v, i) => Math.abs(v - [0xe8, 0xb8, 0x78][i]) <= 2), [true, true, true], lin);
 });
 
-test("tint_landscape: the carrier comes from a base of the level's own theme; colorSpace srgb; the answer says so", async () => {
+test("tint_landscape: carrier theme takes a piece of the level's own theme (the base's by default); colorSpace srgb", async () => {
   const store = newStore();
   store.scene.databank.theme = "ARABIAN";
   const mk = (name: string) => {
@@ -65,7 +65,13 @@ test("tint_landscape: the carrier comes from a base of the level's own theme; co
   ];
   const levels = { loadBase: async (k: string) => ({ scene: scenes[k] }), list: async () => ({ bases, projects: [] }) };
   const s = sessionOf(store, { client: async () => levels, levels: async () => levels });
-  const r = await callTool(landtintTools as never, "tint_landscape", s, { tints: [{ texture: "A11", color: "#e8b878" }], colorSpace: "srgb" });
+  // the default is the project's base, whatever its theme (Caldera's committed pack depends on it)
+  const r0 = await callTool(landtintTools as never, "tint_landscape", s, { tints: [{ texture: "A11", color: "#102030" }] });
+  assert.equal(r0.carrier.base, store.scene.base.key);
+  assert.equal(r0.carrier.why, "the project's base");
+  store.undo();
+  await assert.rejects(() => callTool(landtintTools as never, "tint_landscape", s, { tints: [{ texture: "A11", color: "#102030" }], carrier: "theme", base: "Multi.Other" }), /without base and id/);
+  const r = await callTool(landtintTools as never, "tint_landscape", s, { tints: [{ texture: "A11", color: "#e8b878" }], colorSpace: "srgb", carrier: "theme" });
   assert.equal(r.carrier.base, "Multi.Oasis");
   assert.match(r.carrier.why, /ARABIAN/);
   assert.equal(r.tints[0].asked, "#e8b878");
@@ -81,7 +87,7 @@ test("tint_landscape: the carrier comes from a base of the level's own theme; co
   assert.equal(r2.tints[0].asked, undefined);
   store.undo();
   bases[0].theme = "ARABIAN";
-  const r3 = await callTool(landtintTools as never, "tint_landscape", s, { tints: [{ texture: "A11", color: "#102030" }] });
+  const r3 = await callTool(landtintTools as never, "tint_landscape", s, { tints: [{ texture: "A11", color: "#102030" }], carrier: "theme" });
   assert.equal(r3.carrier.base, store.scene.base.key);
 });
 
@@ -225,4 +231,108 @@ test("check_holes along: only the walk's corridor is read, finer by default, and
   assert.equal(clear.ok, true);
   await assert.rejects(() => callTool(inspectTools as never, "check_holes", s, { along: [[112, 114], [138, 114]], around: { x: 1, z: 1, radius: 2 } }), /along or around/);
   await assert.rejects(() => callTool(inspectTools as never, "check_holes", s, { width: 3 }), /width goes with along/);
+});
+
+// ------------------------------------------------------------------ the level's look, the test game's folders, evidence
+
+import { mkdirSync, mkdtempSync, existsSync, readFileSync as readBytes, rmSync, writeFileSync, utimesSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { encodePng } from "../src/lib/inspect-png";
+import { shipRange } from "../src/lib/ship-gate";
+import { CALIBRATION, JETPACK_CEILING, TOOL_LIMITS } from "../src/lib/tool-reach";
+import { checkPng, levelLookOf, tools as lookTools } from "../src/tools/levellook";
+import { namedPngs, projectsDirOf, tools as envTools } from "../src/tools/testenv";
+
+test("set_level_look and set_level_thumbnail keep the pin and the picture per project; the ship gate asks for 0.15", async () => {
+  const st = newStore(), s = sessionOf(st);
+  (s as unknown as { requireProject: () => unknown }).requireProject = () => ({ store: st, id: "lookproj", info: {} });
+  const a = await callTool(lookTools as never, "set_level_look", s, {});
+  assert.equal(a.locked, false);
+  const b = await callTool(lookTools as never, "set_level_look", s, { timeOfDay: "NIGHT", lock: true });
+  assert.equal(b.timeOfDay, "NIGHT");
+  assert.equal(b.locked, true);
+  assert.equal(st.scene.databank.timeOfDay, "NIGHT");
+  assert.equal(levelLookOf("lookproj").lock, true);
+  assert.equal((await callTool(lookTools as never, "set_level_look", s, { lock: false })).locked, false);
+  // a picture from a file, checked; a file that is no PNG is refused
+  const dir = mkdtempSync(join(tmpdir(), "erg-look-"));
+  try {
+    const png = encodePng(64, 48, new Uint8Array(64 * 48 * 3).fill(120));
+    assert.deepEqual(checkPng(png, "x"), { width: 64, height: 48 });
+    writeFileSync(join(dir, "shot.png"), png);
+    writeFileSync(join(dir, "not.png"), "hello");
+    const t = await callTool(lookTools as never, "set_level_thumbnail", s, { from: join(dir, "shot.png") });
+    assert.equal(t.thumbnail.width, 64);
+    assert.equal(levelLookOf("lookproj").thumbnail!.png.length, png.length);
+    await assert.rejects(() => callTool(lookTools as never, "set_level_thumbnail", s, { from: join(dir, "not.png") }), /not a PNG/);
+    await assert.rejects(() => callTool(lookTools as never, "set_level_thumbnail", s, { from: join(dir, "shot.png"), clear: true }), /one of/);
+    assert.equal((await callTool(lookTools as never, "set_level_thumbnail", s, { clear: true })).thumbnail, null);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+  const g = shipRange(10, undefined, { levelLook: ["timeOfDay", "image"] });
+  assert.equal(g.melangeRange, ">=0.15.0");
+  assert.match(g.why, /timeOfDay and image/);
+  assert.equal(shipRange(10).melangeRange, ">=0.2.0", "no key, no gate");
+});
+
+test("push_project_to_game copies the saved project into the game's own projects folder and keeps what it replaces", async () => {
+  const root = mkdtempSync(join(tmpdir(), "erg-push-"));
+  try {
+    const game = join(root, "game"), src = join(root, "server-projects"), dst = join(root, "game-projects");
+    mkdirSync(join(game, "Mods"), { recursive: true });
+    writeFileSync(join(game, "WormsMayhem.exe"), "x");
+    writeFileSync(join(game, "Melange.ini"), `[Oasis]\r\nProjectsDir=wrong\r\n[Erg]\r\nEnabled=1\r\nProjectsDir=${dst}\r\n`);
+    assert.equal(projectsDirOf(game).dir, dst, "the [Erg] section's key, not another section's");
+    mkdirSync(join(src, "pushme"), { recursive: true });
+    writeFileSync(join(src, "pushme", "project.ergpatch.json"), "{\"v\":2}");
+    writeFileSync(join(src, "pushme", "script.lua"), "-- s");
+    mkdirSync(join(dst, "pushme"), { recursive: true });
+    writeFileSync(join(dst, "pushme", "project.ergpatch.json"), "{\"v\":1}");
+    const s = { project: null, levels: async () => ({ list: async () => ({ projectsDir: src }) }) } as unknown as Session;
+    const dry = await callTool(envTools as never, "push_project_to_game", s, { id: "pushme", gameDir: game, dryRun: true });
+    assert.equal(dry.replaces, true);
+    assert.equal(readBytes(join(dst, "pushme", "project.ergpatch.json"), "utf8"), "{\"v\":1}", "a dry run copies nothing");
+    const r = await callTool(envTools as never, "push_project_to_game", s, { id: "pushme", gameDir: game });
+    assert.equal(r.copied, true);
+    assert.equal(r.files, 2);
+    assert.equal(readBytes(join(dst, "pushme", "project.ergpatch.json"), "utf8"), "{\"v\":2}");
+    assert.equal(readBytes(join(dst, "pushme.erg-mcp-old", "project.ergpatch.json"), "utf8"), "{\"v\":1}");
+    assert.equal((await callTool(envTools as never, "push_project_to_game", s, { id: "pushme", gameDir: game, from: dst })).same, true);
+    await assert.rejects(() => callTool(envTools as never, "push_project_to_game", s, { id: "nosuch", gameDir: game }), /no saved project/);
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("prune_evidence keeps every picture a record names, is a dry run by default and needs a prefix inside a game's folder", async () => {
+  const root = mkdtempSync(join(tmpdir(), "erg-prune-"));
+  try {
+    const ev = join(root, "ev");
+    mkdirSync(join(ev, "shots"), { recursive: true });
+    const png = encodePng(8, 8, new Uint8Array(8 * 8 * 3));
+    for (const n of ["hole_S.png", "a.png", "b.png", "keepme_c.png"]) writeFileSync(join(ev, "shots", n), png);
+    utimesSync(join(ev, "shots", "a.png"), new Date(Date.now() - 7200e3), new Date(Date.now() - 7200e3));
+    writeFileSync(join(ev, "probe.json"), JSON.stringify({ deaths: [{ worm: 4, shot: "C:/x/shots/hole_S.png" }] }));
+    assert.deepEqual([...namedPngs("see shots/Hole_S.png and x.PNG, not y.jpg")], ["hole_s.png", "x.png"]);
+    const s = {} as Session;
+    const dry = await callTool(envTools as never, "prune_evidence", s, { dir: ev, keep: ["keepme"] });
+    assert.equal(dry.dryRun, true);
+    assert.equal(dry.wouldRemove, 2);
+    assert.deepEqual(dry.kept, { referenced: 1, byKeep: 1, young: 0, notPrefix: 0 });
+    assert.ok(existsSync(join(ev, "shots", "a.png")), "a dry run removes nothing");
+    const young = await callTool(envTools as never, "prune_evidence", s, { dir: ev, keep: ["keepme"], minAgeMinutes: 60, dryRun: false });
+    assert.equal(young.removed, 1, "only the old one");
+    assert.ok(!existsSync(join(ev, "shots", "a.png")) && existsSync(join(ev, "shots", "b.png")));
+    const all = await callTool(envTools as never, "prune_evidence", s, { dir: ev, dryRun: false });
+    assert.equal(all.removed, 2);
+    assert.ok(existsSync(join(ev, "shots", "hole_S.png")), "the picture the probe names is kept");
+    // inside a game's folder: only with a prefix
+    writeFileSync(join(root, "WormsMayhem.exe"), "x");
+    await assert.rejects(() => callTool(envTools as never, "prune_evidence", s, { dir: ev }), /prefix/);
+    assert.equal((await callTool(envTools as never, "prune_evidence", s, { dir: ev, prefix: "zz" })).wouldRemove, 0);
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("the jetpack's limits are the game's measured ones, under its ceiling", () => {
+  assert.deepEqual(TOOL_LIMITS.jetpack, { rise: 90, run: 60 });
+  assert.equal(JETPACK_CEILING, 100);
+  assert.deepEqual(CALIBRATION.estimates, ["girder.length", "girder.maxSlope"]);
 });

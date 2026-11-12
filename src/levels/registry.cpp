@@ -19,6 +19,7 @@
 #include <vector>
 
 #include "assets/crcsafe.h"
+#include "assets/icons.h"
 #include "core/config.h"
 #include "core/events.h"
 #include "core/game.h"
@@ -56,6 +57,7 @@ struct Level {
     std::string modVersion;
     bool chunk = false;
     std::string chunkText;     // the last accepted chunk, served from the cache root
+    std::string tod;           // levels[].timeOfDay: "" or DAY, EVENING, NIGHT, level
 };
 
 std::mutex g_mx;                                        // g_levels, g_sources
@@ -250,6 +252,57 @@ bool ServeChunk(const std::string& stem, const std::string& text) {
     return WriteAtomic(p, std::vector<uint8_t>(text.begin(), text.end()));
 }
 
+// levels[].image: the mod's PNG as the 256 x 256 32-bit TGA the frontend's level pictures are (Data/Frontend/Levels,
+// which it opens by bare name through the search paths), written to the cache root as <stem>.tga: the middle square of
+// the picture, area-averaged down (or repeated up). False with *why when the PNG cannot be used; the level then keeps
+// the template's picture.
+bool ServeImage(const fs::path& modDir, const manifest::LevelDecl& d, std::string* name, std::string* why) {
+    constexpr int kSide = 256;
+    std::vector<uint8_t> rgba;
+    int w = 0, h = 0;
+    if (!manifest::ValidImagePath(d.image)) {
+        *why = "not a relative .png path";
+        return false;
+    }
+    if (!assets::icons::DecodePngFile((modDir / game::Widen(d.image)).wstring(), 4096, &rgba, &w, &h, why)) return false;
+    const int side = std::min(w, h), x0 = (w - side) / 2, y0 = (h - side) / 2;
+    std::vector<uint8_t> tga(18 + kSide * kSide * 4 + 26, 0);
+    tga[2] = 2;                                     // uncompressed true colour
+    tga[12] = kSide & 0xff; tga[13] = kSide >> 8;
+    tga[14] = kSide & 0xff; tga[15] = kSide >> 8;
+    tga[16] = 32;
+    tga[17] = 8;                                    // 8 alpha bits, rows bottom-up, as the game's own files
+    for (int y = 0; y < kSide; ++y)
+        for (int x = 0; x < kSide; ++x) {
+            const int sx0 = x0 + x * side / kSide, sx1 = std::max(sx0 + 1, x0 + (x + 1) * side / kSide);
+            const int sy0 = y0 + y * side / kSide, sy1 = std::max(sy0 + 1, y0 + (y + 1) * side / kSide);
+            uint32_t sum[3] = {0, 0, 0}, n = 0;
+            for (int sy = sy0; sy < sy1; ++sy)
+                for (int sx = sx0; sx < sx1; ++sx, ++n) {
+                    const uint8_t* px = &rgba[(static_cast<size_t>(sy) * w + sx) * 4];
+                    sum[0] += px[0]; sum[1] += px[1]; sum[2] += px[2];
+                }
+            uint8_t* out = &tga[18 + (static_cast<size_t>(kSide - 1 - y) * kSide + x) * 4];
+            out[0] = static_cast<uint8_t>(sum[2] / n);   // B G R A
+            out[1] = static_cast<uint8_t>(sum[1] / n);
+            out[2] = static_cast<uint8_t>(sum[0] / n);
+            out[3] = 255;
+        }
+    std::memcpy(&tga[tga.size() - 18], "TRUEVISION-XFILE.", 18);
+    *name = d.stem + ".tga";
+    const fs::path p = CacheDir() / game::Widen(*name);
+    {
+        std::ifstream f(p, std::ios::binary);
+        const std::vector<uint8_t> have((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
+        if (have == tga) return true;
+    }
+    if (!WriteAtomic(p, tga)) {
+        *why = "cannot write Melange/cache/" + *name;
+        return false;
+    }
+    return true;
+}
+
 void SetChunk(const std::string& stem, const std::string& text) {
     std::lock_guard lk(g_mx);
     for (auto& l : g_levels)
@@ -282,6 +335,11 @@ int LoadPack(const roots::PackVerdict& v, const fs::path& root, const fs::path& 
         en.stem = d.stem;
         en.frontendName = "FETXT." + d.stem;
         en.scripts = ScriptList(manifest::Scripts(d));
+        if (!d.image.empty()) {
+            std::string image, why;
+            if (ServeImage(modDir, d, &image, &why)) en.frontendImage = image;
+            else LOG_WARN("[levels] %s: the picture %s is not used (%s); the template's shows", d.stem.c_str(), d.image.c_str(), why.c_str());
+        }
         entries.push_back(en);
         titles.push_back(d.title);
         if (d.survivor) {
@@ -539,11 +597,13 @@ void Declare(const Level& l) {
 void DeclarePack(const manifest::LevelDecl& d, const fs::path& root, const std::string& version, bool live) {
     Level l = MakeLevel(erg::names::Key(d.stem), d.stem, d.mod, d.title, Source::Pack, root, version, d.chunk);
     l.info.live = live;
+    l.tod = d.timeOfDay;
     Declare(l);
     if (!d.survivor) return;
     Level t = MakeLevel(manifest::TwinKey(d.stem), d.stem, d.mod, d.title, Source::Pack, root, version,
                         d.chunk && manifest::kSurvivorRunsChunk);
     t.info.live = live;
+    t.tod = d.timeOfDay;
     t.info.levelType = 3;
     Copy(t.info.levelKind, sizeof t.info.levelKind, "survivor");
     Declare(t);
@@ -689,6 +749,17 @@ bool Arm(const char* key, const ArmOptions& o) { return test::Arm(key, o); }
 void Disarm() { test::Disarm("disarmed"); }
 bool Armed(char* key, size_t keyLen) { return test::Armed(key, keyLen); }
 const char* TakeOverride(const char* frontendKey) { return test::Take(frontendKey); }
+
+void PinTimeOfDay(const char* key) {
+    if (!key) return;
+    std::string tod;
+    {
+        std::lock_guard lk(g_mx);
+        for (const auto& l : g_levels)
+            if (l.info.source == Source::Pack && std::strcmp(l.info.key, key) == 0) tod = l.tod;
+    }
+    if (!tod.empty()) test::PinTod(key, tod);
+}
 
 bool Keep(const char* key, uint32_t) {
     Source s;

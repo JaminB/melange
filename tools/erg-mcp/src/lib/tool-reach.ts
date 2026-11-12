@@ -28,9 +28,10 @@ export interface ToolLimits {
 }
 
 /** The limits in map units. The rope's is the game's own number (Ninja.MaxLength 450 world units, Data/Tweak/TWEAK.XOM); the
- * jetpack's and the girder's are estimates no game test has measured yet (see CALIBRATION). */
+ * jetpack's were measured in the game (Dustcrown round 3, testenv B, game_drive FireUtil: see CALIBRATION); the girder's
+ * are estimates no game test has measured yet. */
 export const TOOL_LIMITS: ToolLimits = {
-  jetpack: { rise: 30, run: 40 },
+  jetpack: { rise: 90, run: 60 },
   rope: { length: 22.5 },
   girder: { length: 6, maxSlope: 45 },
 };
@@ -40,12 +41,20 @@ export const TOOL_LIMITS: ToolLimits = {
  * sets GirdersDontEndTurn. */
 export const USES_PER_TURN: Record<MoveTool, number> = { jetpack: 1, rope: 5, girder: 1 };
 
+/** The jetpack's ceiling, map units of absolute height: Jetpack.MaxAltitude is 2000 world units, and a flight held on
+ * full thrust from the sand (y 6) topped out at 99.8 (Dustcrown round 3). No landing above it is flown to. */
+export const JETPACK_CEILING = 100;
+
 /** Where the limits come from, for the answer. */
 export const CALIBRATION = {
   status: "partial",
   fromGameData: { "rope.length": "22.5 map units = Ninja.MaxLength 450 world units (Data/Tweak/TWEAK.XOM); the rope is also shot up to Ninja.NumShots = 5 times a turn" },
-  estimates: ["jetpack.rise", "jetpack.run", "girder.length", "girder.maxSlope"],
-  note: "the jetpack's and the girder's numbers are estimates: the game's input.drive cannot fly a jetpack or place a girder, so no game test has measured them (the jetpack's Jetpack.InitFuel is 7500 and its Jetpack.MaxAltitude 2000 world units = 100 map, neither gives a reach on its own). Confirm a plan in the game and pass limits.* from what it shows.",
+  measured: {
+    "jetpack.rise": "90: full thrust (Input.FireUtil held) from the sand at y 6 rose 3.8 map units in 1 s, 14.8 in 2 s, 30.7 in 3 s, 52.8 in 4 s and 73 in 5 s, and topped out 93.8 up at 6.9 s, under the ceiling (Jetpack.MaxAltitude 2000 world units = y 100 map, JETPACK_CEILING); the fuel (Jetpack.InitFuel 7500) is 7.5 s of thrust",
+    "jetpack.run": "60: 3 s of thrust with forward held flew 23.8 along and 27.9 up, and coasting on with forward alone it came down 54 from its take-off, with 4.5 s of fuel left; a full tank flies further, so this is a floor",
+  },
+  estimates: ["girder.length", "girder.maxSlope"],
+  note: "the jetpack's numbers were measured in the game (Dustcrown round 3: testenv B, a Test of Dustcrown, game_select_weapon kUtilityJetpack then input.drive Input.FireUtil with and without Input.MoveForward, positions read ten times a second). The rise and run are still charged against each other (rise / 90 + run / 60 <= 1), which is under what one tank does: a flight that fails here may still be flown. The girder's numbers are estimates: no harness move places a girder yet. Pass limits.* to try others.",
 };
 
 /** The air a hop needs round the worm's path, map units: the body's height. */
@@ -170,7 +179,7 @@ export function toolReach(S: Surfaces, starts: number[], o: ReachOptions, opt: R
         cellsAround(pa[0], pa[2], J.run, (b) => {
           if (!fresh(b)) return;
           const pb = nodeAt(S, b), rise = pb[1] - pa[1], run = Math.hypot(pb[0] - pa[0], pb[2] - pa[2]);
-          if (run > J.run || rise > J.rise) return;
+          if (run > J.run || rise > J.rise || pb[1] > JETPACK_CEILING) return;
           const ratio = rise > 0 ? rise / J.rise + run / J.run : run / J.run;
           if (ratio > 1) return;
           const cur = best.get(b);

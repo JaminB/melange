@@ -2,6 +2,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <string>
+#include <vector>
 
 // Panel icons: a mod's PNG goes into one of atlas 3's free sub-icons (9..15), written at every upload of
 // "Weapon Panel Icons3". The atlas is stored bottom-up, RGB8: sub-icon k is file row 3-k/4, column k%4, 64x64
@@ -14,6 +15,9 @@ constexpr size_t kSubBytes = kSize * kSize * 3;    // one sub-icon of the RGB8 a
 // Box-filters a w*h RGBA8 image down to 64x64 RGBA8. w must equal h, be a multiple of 64, and be at most 4096
 // (the mod-parser size cap). Pure.
 bool Downscale(const uint8_t* rgba, int w, int h, uint8_t out[kSize * kSize * 4], std::string* err);
+// A PNG file of any shape up to maxSide a side, decoded to RGBA (the level pictures of levels/registry.cpp). The
+// header is read first, so an oversized picture is refused before anything is allocated for it.
+bool DecodePngFile(const std::wstring& path, int maxSide, std::vector<uint8_t>* rgba, int* w, int* h, std::string* err);
 
 // Alpha-blends a 64x64 RGBA8 icon into sub-icon `sub` (0..15) of a 256x256 RGB8 atlas buffer (196608 bytes),
 // flipping the icon's row order so it lands upright in the bottom-up buffer. Pure; touches only that sub-icon's
