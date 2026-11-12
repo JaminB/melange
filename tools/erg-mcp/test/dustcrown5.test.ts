@@ -515,6 +515,6 @@ test("game_use_tool takes a rope plan and game_crater_look its points; both refu
   // a server with no input.drive: the rope says what it needs
   const s = { ensure: async () => ({ methods: [] }) } as unknown as Session;
   await assert.rejects(Promise.resolve().then(() => use.handler(s, { weapon: "rope", target: [0, 18, 0] } as never)), /needs the game's input\.drive/);
-  // teleport and girder are still refused, and say why
-  await assert.rejects(Promise.resolve().then(() => use.handler(s, { weapon: "teleport", target: [0, 18, 0] } as never)), /cannot drive the teleport yet/);
+  // the teleport is refused, and says why (round 6: the game has none)
+  await assert.rejects(Promise.resolve().then(() => use.handler(s, { weapon: "teleport", target: [0, 18, 0] } as never)), /no teleport weapon/);
 });

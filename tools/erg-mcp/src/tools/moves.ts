@@ -5,12 +5,17 @@
 // in a named game style; game_shot_compare keeps a pose's shot per plugin set and diffs them across launches;
 // game_spawn_deals reads the spawn-area deal each peer of a network game logged and says whether they agree. The pure
 // parts are lib/harness-moves.ts. Positions are map units unless `units` says world.
-import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { appendFileSync, existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { compareDeals, facingOf, imageDiff, jetStep, parseSpawnDeals, riserVerdict, turnPulse, wrapDeg, yawToward, type RiserTry } from "../lib/harness-moves";
+import { aimAt, aimDir, bandGroups, compareDeals, comparePositions, facingOf, gameLine, girderHold, imageDiff, jetStep, landscapeIndex, localnetRoute, muzzleOf, parseSpawnDeals, riserVerdict, solveHook, turnPulse, versusRoute, wrapDeg, yawToward, type BandSurface, type FanHit, type RiserTry, type VersusTeam } from "../lib/harness-moves";
+import { landBounds, heightLine } from "../lib/height-line";
+import { nodeAt, surfaces } from "../lib/reach";
+import { extentXZ, waterMap } from "../lib/inspect-field";
+import { grids, isSolid } from "../lib/voxel";
 import { decodePng, encodePng } from "../lib/inspect-png";
 import { colourReads, pixelReads } from "../lib/exposed-core";
-import { documentsDir } from "../oasis";
+import { documentsDir, open as openOasis, urlFile } from "../oasis";
 import { ToolError, image, type Content, type Tool } from "../registry";
 import type { Session } from "../session";
 import { clearCamera, evalClient, gameState, selectWeapon, setCamera, shot, walkKeys } from "./game";
@@ -132,7 +137,148 @@ function shotDir(): string {
 
 const unitsProp = { type: "string", enum: ["map", "world"], description: "Units of the positions given and answered: map (default) or world (map x 20)." } as const;
 
-interface RopePlan { aimSec?: number; release?: boolean; refire?: number; steps?: { do: "shorten" | "lengthen" | "swingForward" | "swingBackward" | "swingLeft" | "swingRight" | "wait" | "jump"; sec?: number; until?: "still" }[] }
+/** The game's data values by a name prefix (state.vars, at most one call a second: the calls are spaced here). */
+let lastVars = 0;
+async function gameVars(s: Session, prefix: string): Promise<Record<string, unknown>> {
+  const wait = lastVars + 1100 - Date.now();
+  if (wait > 0) await sleep(wait);
+  const r = await (await s.client()).call<{ name: string; value: unknown }[]>("state.vars", { prefix }, 15000).finally(() => { lastVars = Date.now(); });
+  return Object.fromEntries(r.map((v) => [v.name, v.value]));
+}
+
+/** The rope's length, world units (Ninja.MaxLength, Data\Tweak\TWEAK.XOM). */
+const ROPE_LENGTH = 450;
+/** Where the rope leaves a worm, over its feet (world units): the hook lands where a ray from here at the aim meets land. */
+const MUZZLE_UP = 0.5 * W;
+
+/** game_use_tool {weapon: "girder"}: the girder steered to a point and set down. Picking the girder puts the game in its
+ * UtilityGirder control group, where the keys move the girder (Girder.Move.*.Pressed / .Released), lift it (Girder.Raise,
+ * Girder.Lower) and set it down (Girder.Place); the drive posts those as a key does. The girder's place is the game's
+ * own Girder.Position (state.vars, read once a second), so the steering is closed: two short pulses measure what Forward
+ * and Right move it by (they follow the girder camera), then each step holds the inputs for as long as the rest of the
+ * way takes. Round 3 sent the same messages from the match VM and nothing moved: they are the input service's. */
+async function useGirder(s: Session, a: { target: number[]; worm?: number; arrive?: number; waitSec?: number; maxSec?: number; units?: "map" | "world"; girder?: { place?: boolean; lift?: number } }) {
+  for (const m of ["input.drive", "state.vars", "level.test.landRay"]) if (!(await has(s, m))) throw new ToolError(`game_use_tool {weapon: "girder"} needs the game's ${m} (Test with this branch's Melange)`);
+  const k = a.units === "world" ? 1 : W, out = (p: number[]) => p.map((v) => r2(v / k));
+  const target = a.target.map((v) => v * k), tol = (a.arrive ?? 0.6 * W / k) * k, lift = (a.girder?.lift ?? 0) * k;
+  const w = await turnOf(s, a.worm, a.waitSec ?? 60);
+  const sel = await selectWeapon(s, "kUtilityGirder");
+  await sleep(500);
+  const groups = await evalClient(s, `return table.concat(wum.input.groups() or {}, ",")`).catch(() => "");
+  if (!/UtilityGirder/.test(groups)) throw new ToolError(`the girder was not taken (the control groups are ${groups || "unknown"}, not UtilityGirder): the scheme may give none (game_give_weapons {kit: "movement"}), or the turn is not this worm's`);
+  const read = async () => {
+    const v = await gameVars(s, "Girder.");
+    const p = v["Girder.Position"];
+    if (!Array.isArray(p) || p.length !== 3) throw new ToolError("the game answers no Girder.Position");
+    return { pos: p as number[], placed: Number(v["Girder.TotalNumberPlaced"] ?? 0) };
+  };
+  const hold = async (inputs: string[], ms: number) => { await drive(s, inputs, ms); await sleep(ms + 150); };
+  const t0 = Date.now(), maxMs = (a.maxSec ?? 40) * 1000, steps: Record<string, unknown>[] = [], notes: string[] = [];
+  let g = await read();
+  const start = g, placed0 = g.placed, maxDist = Number((await gameVars(s, "Weapon.Girder."))["Weapon.Girder.MaxDistance"] ?? 300);
+  // the two axes, per millisecond in plan, from a pulse each (the rest of a pulse's move is kept)
+  const PULSE = 300;
+  const pulse = async (input: string) => { const b = g.pos; await hold([input], PULSE); g = await read(); return [(g.pos[0] - b[0]) / PULSE, (g.pos[2] - b[2]) / PULSE, (g.pos[1] - b[1]) / PULSE]; };
+  let fAx = await pulse("Girder.Move.Forward"), rAx = await pulse("Girder.Move.Right");
+  if (Math.hypot(fAx[0], fAx[1]) < 1e-5 || Math.hypot(rAx[0], rAx[1]) < 1e-5) {
+    // a girder held at its range's edge does not move outward: measure the other way
+    const fb = await pulse("Girder.Move.Backward"), rl = await pulse("Girder.Move.Left");
+    if (Math.hypot(fAx[0], fAx[1]) < 1e-5) fAx = fb.map((v) => -v);
+    if (Math.hypot(rAx[0], rAx[1]) < 1e-5) rAx = rl.map((v) => -v);
+  }
+  let upRate = 0, why = "maxSec";
+  while (Date.now() - t0 < maxMs) {
+    const ex = target[0] - g.pos[0], ez = target[2] - g.pos[2], ey = target[1] + lift - g.pos[1];
+    steps.push({ at: out(g.pos), offPlan: r2(Math.hypot(ex, ez) / k), offHeight: r2(ey / k) });
+    if (Math.hypot(ex, ez) <= tol && Math.abs(ey) <= tol) { why = "at the target"; break; }
+    const now = await active(s);
+    if (!now || now.slot !== w.slot || now.phase !== "play") { why = "the turn left play"; break; }
+    if (Math.hypot(ex, ez) > tol) {
+      const h = girderHold([ex, ez], fAx, rAx);
+      if (!h) { why = "the girder's two moves are parallel: it cannot be steered"; break; }
+      const before = g.pos;
+      // one axis at a time, at most 2.5 s a hold: the game's own speed, re-read after each
+      const fm = Math.max(-2500, Math.min(2500, h.forwardMs)), rm = Math.max(-2500, Math.min(2500, h.rightMs));
+      if (Math.abs(fm) >= 30) await hold([fm > 0 ? "Girder.Move.Forward" : "Girder.Move.Backward"], Math.abs(fm));
+      if (Math.abs(rm) >= 30) await hold([rm > 0 ? "Girder.Move.Right" : "Girder.Move.Left"], Math.abs(rm));
+      g = await read();
+      if (Math.hypot(g.pos[0] - before[0], g.pos[2] - before[2]) < 0.02 * W && Math.abs(fm) + Math.abs(rm) > 200) { why = `the girder does not move further (${r2(Math.hypot(g.pos[0] - w.pos[0], g.pos[2] - w.pos[2]) / W)} map units from the worm; Weapon.Girder.MaxDistance is ${r2(maxDist / W)})`; break; }
+      continue;
+    }
+    // the height: Raise and Lower, their rate from the first pulse
+    const dir = ey > 0 ? "Girder.Raise" : "Girder.Lower", by = g.pos[1];
+    const ms = upRate > 1e-6 ? Math.max(60, Math.min(2500, Math.abs(ey) / upRate)) : 300;
+    await hold([dir], ms);
+    g = await read();
+    const moved = Math.abs(g.pos[1] - by);
+    if (moved < 0.01 * W) { notes.push(`${dir} did not move the girder's height (it rests on what is under it): placed at the height it has`); steps.push({ at: out(g.pos), offPlan: r2(Math.hypot(target[0] - g.pos[0], target[2] - g.pos[2]) / k), offHeight: r2((target[1] + lift - g.pos[1]) / k) }); why = "at the target in plan"; break; }
+    upRate = moved / ms;
+  }
+  await drive(s, [], 0).catch(() => undefined);
+  let placed = false, top: number | null = null;
+  if (a.girder?.place !== false && /^at the target/.test(why)) {
+    await hold(["Girder.Place"], 200);
+    await sleep(900);
+    const after = await gameVars(s, "Girder.");
+    placed = Number(after["Girder.TotalNumberPlaced"] ?? 0) > placed0;
+    if (!placed) notes.push("Girder.Place was sent and the game's count of girders did not rise: the spot is refused (the girder drew red: inside land or a worm, or with nothing to rest on)");
+    const [hit] = await rays(s, [[g.pos[0], g.pos[1] + 6 * W, g.pos[2], g.pos[0], g.pos[1] - 6 * W, g.pos[2]]]);
+    top = hit ? hit[1] : null;
+  }
+  const off = Math.hypot(g.pos[0] - target[0], g.pos[1] - target[1] - lift, g.pos[2] - target[2]);
+  return { weapon: "girder", worm: `WORM${w.slot}`, selected: sel.name ?? sel.weapon, from: out(start.pos), target: out(target), at: out(g.pos), offTarget: r2(off / k), placed, reached: placed && off <= tol * 1.5,
+    ...(top !== null ? { topAfter: r2(top / k) } : {}), stop: why, seconds: r2((Date.now() - t0) / 1000),
+    steering: { forwardPerSec: [r2((fAx[0] * 1000) / k), r2((fAx[1] * 1000) / k)], rightPerSec: [r2((rAx[0] * 1000) / k), r2((rAx[1] * 1000) / k)], ...(upRate ? { raisePerSec: r2((upRate * 1000) / k) } : {}) },
+    wormDistance: r2(Math.hypot(g.pos[0] - w.pos[0], g.pos[2] - w.pos[2]) / k), maxDistance: r2(maxDist / k), steps: steps.slice(-12), units: a.units ?? "map",
+    ...(notes.length ? { notes } : {}),
+    note: "the girder is steered by its own inputs (Girder.Move.Forward / Backward / Left / Right, Girder.Raise / Lower: the input service's messages while the girder is held) to the game's own Girder.Position, read once a second, and set down with Girder.Place; placed: the game's Girder.TotalNumberPlaced rose. A shot shows it (game_shots {cams: [{pos, target}]})" };
+}
+
+/** The multi levels of the enabled packs of a game folder: their mod, slug and title (the landscape list shows titles). */
+function packLevels(game: string): { mod: string; slug: string; title: string }[] {
+  const titles: { mod: string; slug: string; title: string }[] = [];
+  let enabled: Record<string, boolean> = {};
+  try { enabled = JSON.parse(readFileSync(join(game, "Mods", "thumper-state.json"), "utf8")).enabled ?? {}; } catch { /* no state: every mod counts */ }
+  for (const id of readdirSync(join(game, "Mods"))) {
+    const sp = join(game, "Mods", id, "spice.json");
+    if (id.startsWith(".") || !existsSync(sp) || enabled[id] === false) continue;
+    try { for (const l of (JSON.parse(readFileSync(sp, "utf8").replace(/^\uFEFF/, "")) as { levels?: { slug?: string; title?: string; type?: string }[] }).levels ?? []) if (l.title && (l.type ?? "multi") === "multi") titles.push({ mod: id, slug: l.slug ?? "", title: l.title }); } catch { /* not a manifest */ }
+  }
+  return titles;
+}
+
+/** The process id of the WormsMayhem.exe that runs from a game folder, or 0. */
+function gamePid(game: string): number {
+  try {
+    const out = execFileSync("powershell", ["-NoProfile", "-Command", "Get-CimInstance Win32_Process -Filter \"Name='WormsMayhem.exe'\" | ForEach-Object { \"$($_.ProcessId)|$($_.ExecutablePath)\" }"], { encoding: "utf8", timeout: 20000 });
+    const want = join(game, "WormsMayhem.exe").toLowerCase().replace(/\//g, "\\");
+    const hit = out.split(/\r?\n/).map((l) => l.split("|")).find((v) => (v[1] ?? "").toLowerCase().replace(/\//g, "\\") === want);
+    return hit ? +hit[0] : 0;
+  } catch { return 0; }
+}
+
+/** Whether a game folder's Melange.ini turns the private build's Automation queue on. */
+function automationOn(game: string): boolean {
+  let ini = "";
+  try { ini = readFileSync(join(game, "Melange.ini"), "utf8"); } catch { return false; }
+  return /^\s*Enabled\s*=\s*1/m.test(/\[Automation\]([^[]*)/.exec(ini)?.[1] ?? "");
+}
+
+/** Automation commands queued to a game (its Melange\automation.<pid>.txt) and waited for: the log lines since. */
+async function automate(game: string, pid: number, cmds: string[], timeoutMs: number): Promise<{ done: boolean; lines: string[] }> {
+  const log = join(game, "Melange", "Melange.log"), marker = `ergauto-${Date.now().toString(36)}${Math.floor(Math.random() * 1e4)}`;
+  const from = existsSync(log) ? readFileSync(log, "utf8").split(/\r?\n/).length : 0;
+  appendFileSync(join(game, "Melange", `automation.${pid}.txt`), [...cmds, `log ${marker}`].join("\n") + "\n");
+  const t0 = Date.now();
+  for (;;) {
+    await sleep(1000);
+    const lines = readFileSync(log, "utf8").split(/\r?\n/).slice(from);
+    if (lines.some((l) => l.includes(`LOG ${marker}`))) return { done: true, lines };
+    if (Date.now() - t0 > timeoutMs) return { done: false, lines };
+  }
+}
+
+interface RopePlan { aimSec?: number; hook?: number[]; solve?: boolean | { over?: number; reach?: number }; releaseOver?: boolean; release?: boolean; refire?: number; steps?: { do: "shorten" | "lengthen" | "swingForward" | "swingBackward" | "swingLeft" | "swingRight" | "wait" | "jump"; sec?: number; until?: "still" }[] }
 const ROPE_MSG: Record<string, string> = { shorten: "NinjaRope.Shorten", lengthen: "NinjaRope.Lengthen", swingForward: "NinjaRope.SwingForward", swingBackward: "NinjaRope.SwingBackward",
   swingLeft: "NinjaRope.SwingLeft", swingRight: "NinjaRope.SwingRight" };
 
@@ -145,29 +291,70 @@ async function useRope(s: Session, a: { target: number[]; worm?: number; arrive?
   for (const m of ["input.drive", "level.test.lua"]) if (!(await has(s, m))) throw new ToolError(`game_use_tool needs the game's ${m} (Test with this branch's Melange)`);
   const k = a.units === "world" ? 1 : W, out = (p: number[]) => p.map((v) => r2(v / k));
   const target = a.target.map((v) => v * k), arrive = (a.arrive ?? 1.5 * W / k) * k, plan = a.rope ?? {};
-  const steps = plan.steps ?? [{ do: "shorten" as const, sec: 4, until: "still" as const }, { do: "swingForward" as const, sec: 0.8 }];
+  // a solved aim (hook or solve): the aim is written, not swept, and the steps default to a climb that lets go over the ledge
+  const solved = plan.hook !== undefined || !!plan.solve;
+  if (plan.hook !== undefined && plan.solve) throw new ToolError("rope: give hook (the point to hook) or solve (find it), not both");
+  if (solved && plan.aimSec !== undefined) throw new ToolError("rope: aimSec is the swept aim; with hook or solve the aim is solved");
+  const steps = plan.steps ?? (solved ? [{ do: "shorten" as const, sec: 6, until: "still" as const }] : [{ do: "shorten" as const, sec: 4, until: "still" as const }, { do: "swingForward" as const, sec: 0.8 }]);
+  const releaseOver = plan.releaseOver ?? solved;
   const w = await turnOf(s, a.worm, a.waitSec ?? 60);
   // the worm turns first: a turn after the pick left the rope unfired (round 5)
-  const want = yawToward([w.pos[0], w.pos[2]], [target[0], target[2]]);
-  const faced = want === null ? null : await face(s, want, 15, 8000);
+  const want = yawToward([w.pos[0], w.pos[2]], plan.hook ? [plan.hook[0] * k, plan.hook[2] * k] : [target[0], target[2]]);
+  const faced = want === null ? null : await face(s, want, solved ? 4 : 15, 8000);
   const sel = await selectWeapon(s, "kUtilityNinjaRope");
   await sleep(300);
   const here = async () => (await active(s))?.pos ?? null;
   const msg = (m: string) => tickLua(s, `SendMessage("${m}") return "sent"`);
   const shots: Record<string, unknown>[] = [], notes: string[] = [];
   let pos = w.pos, why = "done";
+  /** The aim solved for a shot from `p`: the pitch written into the worm's WeaponAngle, and where the hook should land. */
+  const solveAim = async (p: number[]): Promise<{ pitch: number; hook: number[] | null; how: string } | { fail: string }> => {
+    const now = await active(s), yaw = now?.yaw ?? want ?? 0, mz = muzzleOf(p, MUZZLE_UP);
+    const ray = async (pitch: number) => { const d = aimDir(yaw, pitch); return (await rays(s, [[...mz, mz[0] + d[0] * ROPE_LENGTH, mz[1] + d[1] * ROPE_LENGTH, mz[2] + d[2] * ROPE_LENGTH]]))[0]; };
+    if (plan.hook) {
+      const at = plan.hook.map((v) => v * k), aim = aimAt(mz, at);
+      if (aim.distance > ROPE_LENGTH) return { fail: `the hook point is ${r2(aim.distance / k)} from the worm, further than the rope (${r2(ROPE_LENGTH / k)})` };
+      return { pitch: aim.pitch, hook: await ray(aim.pitch), how: "aimed at the hook point" };
+    }
+    // a fan of rays at the worm's own yaw, from the target's elevation up, a degree apart
+    // and the same fan from just over its feet: the line the worm itself is pulled along
+    const lo = aimAt(mz, target).pitch, fan: FanHit[] = [], body: FanHit[] = [], segs: number[][] = [], low: number[][] = [], pitches: number[] = [], ft = [p[0], p[1] + 0.1 * W, p[2]];
+    for (let deg = Math.max(-20, Math.floor((lo * 180) / Math.PI)); deg <= 88; deg++) {
+      const pt = (deg * Math.PI) / 180, d = aimDir(yaw, pt);
+      pitches.push(pt);
+      segs.push([...mz, mz[0] + d[0] * ROPE_LENGTH, mz[1] + d[1] * ROPE_LENGTH, mz[2] + d[2] * ROPE_LENGTH]);
+      low.push([...ft, ft[0] + d[0] * ROPE_LENGTH, ft[1] + d[1] * ROPE_LENGTH, ft[2] + d[2] * ROPE_LENGTH]);
+    }
+    (await rays(s, segs)).forEach((at, i) => fan.push({ pitch: pitches[i], at }));
+    (await rays(s, low)).forEach((at, i) => body.push({ pitch: pitches[i], at }));
+    const so = typeof plan.solve === "object" ? plan.solve : {};
+    const r = solveHook(mz, target, fan, { over: (so.over ?? 0.75 * W / k) * k, reach: (so.reach ?? 4 * W / k) * k, lipBack: 0.5 * W }, body);
+    if (!r.hit) return { fail: r.why };
+    return { pitch: r.hit.pitch, hook: r.hit.at, how: `the lowest ray that meets land over the ledge: ${r2(r.height / k)} over the target, ${r2(r.plan / k)} from it in plan` };
+  };
   for (let shotN = 0; shotN <= (plan.refire ?? 0); shotN++) {
     const from = pos;
-    // the aim comes up from where it is, then the utility's fire throws the hook
-    if ((plan.aimSec ?? 1.2) > 0 && shotN === 0) await drive(s, ["AimUp"], (plan.aimSec ?? 1.2) * 1000).then(() => sleep((plan.aimSec ?? 1.2) * 1000 + 100));
+    let aim: { pitch: number; hook: number[] | null; how: string } | null = null;
+    if (solved) {
+      const r = await solveAim(pos);
+      if ("fail" in r) { why = `no hook: ${r.fail}`; shots.push({ from: out(from), solved: false, why: r.fail }); break; }
+      aim = r;
+      // the aim itself: the worm's own WeaponAngle, written at a sim tick (AimUp and AimDown move the same number)
+      await tickLua(s, `local lock, c = EditContainer("Worm.Data${String(w.slot).padStart(2, "0")}") c.WeaponAngle = ${aim.pitch.toFixed(5)} CloseContainer(lock) return "aimed"`);
+      await sleep(150);
+    } else if ((plan.aimSec ?? 1.2) > 0 && shotN === 0) await drive(s, ["AimUp"], (plan.aimSec ?? 1.2) * 1000).then(() => sleep((plan.aimSec ?? 1.2) * 1000 + 100));   // the aim comes up from where it is
+    // the utility's fire throws the hook
     await drive(s, ["FireUtil"], 250);
     await sleep(900);
     await drive(s, [], 0).catch(() => undefined);
     const hooked = await here();
     if (!hooked) { why = "the turn left play"; break; }
     const trace: { do: string; sec: number; at: number[] }[] = [];
-    let maxY = hooked[1];
+    let maxY = hooked[1], letGo: number[] | null = null;
+    // the timed release: over the ledge (higher than the target, and near it in plan) the rope is let go at once
+    const overLedge = (p: number[]) => releaseOver && p[1] >= target[1] + 0.25 * W && Math.hypot(p[0] - target[0], p[2] - target[2]) <= Math.max(arrive, 2.5 * W);
     for (const st of steps) {
+      if (letGo) break;
       const ms = Math.min(6000, (st.sec ?? 1) * 1000), m = ROPE_MSG[st.do];
       if (m) await msg(`${m}.On`);
       else if (st.do === "jump") await drive(s, ["Jump", "MoveForward"], ms);
@@ -178,10 +365,12 @@ async function useRope(s: Session, a: { target: number[]; worm?: number; arrive?
         const p = await here();
         if (!p) break;
         maxY = Math.max(maxY, p[1]);
+        if (overLedge(p)) { letGo = p; last = p; break; }
         const moved = Math.hypot(p[0] - last[0], p[1] - last[1], p[2] - last[2]);
         stillFor = moved < 0.05 * W ? stillFor + (Date.now() - lastT) : 0;
         last = p; lastT = Date.now();
-        if (st.until === "still" && stillFor >= 600) break;
+        // still: not before the rope has had time to take up its slack (a long rope starts slowly)
+        if (st.until === "still" && stillFor >= 600 && Date.now() - t0 >= Math.min(ms, 1500)) break;
       }
       if (m) await msg(`${m}.Off`);
       pos = last;
@@ -201,7 +390,8 @@ async function useRope(s: Session, a: { target: number[]; worm?: number; arrive?
       pos = last;
     }
     const rose = hooked[1] - from[1], pulled = Math.hypot(hooked[0] - from[0], hooked[2] - from[2]);
-    shots.push({ from: out(from), afterFire: out(hooked), ...(rose < 0.05 * W && pulled < 0.05 * W ? { hooked: "the worm did not move at the shot: the hook may have found nothing (a higher or lower aim, or nearer the wall)" } : {}),
+    shots.push({ from: out(from), ...(aim ? { aim: { pitchDeg: r2((aim.pitch * 180) / Math.PI), how: aim.how, hook: aim.hook ? out(aim.hook) : null, ...(aim.hook ? {} : { warning: "no land along the aim within the rope's length: the hook finds nothing" }) } } : {}),
+      ...(letGo ? { letGoAt: out(letGo) } : {}), afterFire: out(hooked), ...(rose < 0.05 * W && pulled < 0.05 * W && !aim ? { hooked: "the worm did not move at the shot: the hook may have found nothing (a higher or lower aim, or nearer the wall)" } : {}),
       steps: trace, maxY: r2(maxY / k), ...(plan.release !== false ? { landed: out(pos) } : { hangsAt: out(pos) }) });
     const now = await active(s);
     if (!now || now.slot !== w.slot || now.phase !== "play") { why = "the turn left play"; break; }
@@ -210,9 +400,9 @@ async function useRope(s: Session, a: { target: number[]; worm?: number; arrive?
   const off = Math.hypot(pos[0] - target[0], pos[1] - target[1], pos[2] - target[2]);
   if (sel && (sel as { selected?: boolean }).selected === false) notes.push("the rope was not selected (the scheme may give none: game_give_weapons {kit: \"movement\"})");
   return { weapon: "rope", worm: w.slot, from: out(w.pos), target: out(target), ...(faced ? { faced: { yaw: faced.yaw, error: faced.error, ok: faced.ok } } : {}),
-    aimSec: plan.aimSec ?? 1.2, shots, end: out(pos), climbed: r2((pos[1] - w.pos[1]) / k), offTarget: r2(off / k), reached: off <= arrive, stop: why, units: a.units ?? "map",
+    ...(solved ? { aim: plan.hook ? "hook" : "solve" } : { aimSec: plan.aimSec ?? 1.2 }), shots, end: out(pos), climbed: r2((pos[1] - w.pos[1]) / k), offTarget: r2(off / k), reached: off <= arrive, stop: why, units: a.units ?? "map",
     ...(notes.length ? { notes } : {}),
-    note: "the rope is fired with the utility's fire after the aim was raised aimSec, then worked by its own messages in the match VM (NinjaRope.Shorten / Lengthen / Swing*.On and .Off) and let go with NinjaRope.Kill; afterFire is where the worm hung once the hook held, landed where it rested. reached: within `arrive` of the target" };
+    note: (solved ? "the aim is solved, not swept: the pitch from the worm's rope hand (half a map unit over its feet) to the hook is written into the worm's WeaponAngle at a sim tick, and the hook is where the game's land sweep along that aim meets land (hook); with solve the hook is the lowest ray of a fan toward the target that meets land over the ledge. The rope is let go as soon as the worm is over the ledge (letGoAt). Then it is" : "the rope is fired with the utility's fire after the aim was raised aimSec, then") + " worked by its own messages in the match VM (NinjaRope.Shorten / Lengthen / Swing*.On and .Off) and let go with NinjaRope.Kill; afterFire is where the worm hung once the hook held, landed where it rested. reached: within `arrive` of the target" };
 }
 
 /** game_crater_look: each crater shot straight down and read. */
@@ -292,24 +482,33 @@ export const tools: Tool[] = [
   },
   {
     name: "game_use_tool",
-    description: "Use a movement tool with the active worm of the running Test toward a target and answer where the worm landed: the in-game check of check_tool_reach. `weapon: \"jetpack\"`: the worm takes the jetpack (game_select_weapon: the scheme must give one, or game_give_weapons {kit: \"movement\"}), turns to the target (game_face), then flies: Input.FireUtil is the thrust and the walk inputs steer (Input.MoveForward and its three fellows, camera-relative: what the game accepts in flight), posted from the game's input tick and chosen again every 120 ms from the worm's place: a lob, because a jetpack only pushes while it thrusts: straight up until the worm is half of `clearance` (default 3 map units) over the target's height (a worm steered at a wall from its foot is held against it and burns its tank there), then thrust and steering together until the speed it has would carry it to the target as it falls, then no thrust: it coasts over and drops once within `arrive` (default 1.5) of it in plan. Thrust is capped at 7.3 s (a tank is 7.5). It ends when the worm rests, the turn leaves play, or `maxSec` (default 14; a full tank is about 7.5 s of thrust). `target`: [x, y, z], y the ground to land on. Answers the landing, its distance from the target in plan and in height, the highest point and the time: `reached` when it rests within `arrive` + 1.5 of the target and within 1.5 of its height. `weapon: \"rope\"`: the worm turns to the target, takes the ninja rope, raises its aim `rope.aimSec` and fires (the hook holds on what the aim meets: a wall's face, not open sky over its top), then works the rope by `rope.steps`, the rope's own messages sent in the match VM (shorten reels in, lengthen lets out, swing* swings; default: shorten until still, then swing forward), lets go and waits to rest; the answer's shots give where it hung after the fire, each step's end, the highest it was and where it landed, and `reached` when that is within `arrive` of the target. `weapon: \"teleport\" | \"girder\"` are refused with what is known: the build has no way to place their cursor from a script yet (see docs/erg-mcp.md, Dustcrown round 5).",
+    description: "Use a movement tool with the active worm of the running Test toward a target and answer where the worm landed: the in-game check of check_tool_reach. `weapon: \"jetpack\"`: the worm takes the jetpack (game_select_weapon: the scheme must give one, or game_give_weapons {kit: \"movement\"}), turns to the target (game_face), then flies: Input.FireUtil is the thrust and the walk inputs steer (Input.MoveForward and its three fellows, camera-relative: what the game accepts in flight), posted from the game's input tick and chosen again every 120 ms from the worm's place: a lob, because a jetpack only pushes while it thrusts: straight up until the worm is half of `clearance` (default 3 map units) over the target's height (a worm steered at a wall from its foot is held against it and burns its tank there), then thrust and steering together until the speed it has would carry it to the target as it falls, then no thrust: it coasts over and drops once within `arrive` (default 1.5) of it in plan. Thrust is capped at 7.3 s (a tank is 7.5). It ends when the worm rests, the turn leaves play, or `maxSec` (default 14; a full tank is about 7.5 s of thrust). `target`: [x, y, z], y the ground to land on. Answers the landing, its distance from the target in plan and in height, the highest point and the time: `reached` when it rests within `arrive` + 1.5 of the target and within 1.5 of its height. `weapon: \"rope\"`: the worm turns to the target, takes the ninja rope, raises its aim `rope.aimSec` and fires (the hook holds on what the aim meets: a wall's face, not open sky over its top), then works the rope by `rope.steps`, the rope's own messages sent in the match VM (shorten reels in, lengthen lets out, swing* swings; default: shorten until still, then swing forward), lets go and waits to rest; the answer's shots give where it hung after the fire, each step's end, the highest it was and where it landed, and `reached` when that is within `arrive` of the target. `weapon: \"girder\"`: the worm takes the girder and it is steered to `target` (where its middle goes; `girder.lift` holds it that far over the target's y) by its own inputs, Girder.Move.Forward / Backward / Left / Right and Girder.Raise / Lower held through input.drive, with the game's own Girder.Position read once a second (state.vars) to close the loop, then set down with Girder.Place (`girder.place: false` only steers). It answers where the girder is, `placed` (the game's count of girders rose; false when the spot is refused: the girder draws red inside land or a worm), the top of the ground there afterwards and the steering it measured. The game's girder is a platform about 4.5 x 4.5 map units that floats where it is put, within Weapon.Girder.MaxDistance (15 map units) of the worm; no input turns it. With `rope.hook` or `rope.solve` the rope's aim is solved instead of swept. `weapon: \"teleport\"` is refused: this game has no teleport weapon.",
     inputSchema: { type: "object", additionalProperties: false, required: ["weapon", "target"], properties: {
       weapon: { type: "string", enum: ["jetpack", "teleport", "rope", "girder"] },
       target: { type: "array", items: { type: "number" }, minItems: 3, maxItems: 3 },
       rope: { type: "object", additionalProperties: false, description: "weapon rope: how it is driven. aimSec: how long the aim is raised from level before the shot (Input.AimUp held; default 1.2: steeply up at a wall a couple of units away). steps: what the worm does on the rope, in order, each {do: shorten | lengthen | swingForward | swingBackward | swingLeft | swingRight | wait | jump (the jump key with the walk-forward key, held sec: a hop off the rope), sec (at most 6), until: \"still\" (stop early once the worm has not moved 0.15 map units in 0.6 s)}: the rope's own messages, NinjaRope.Shorten.On / .Off and the rest, sent in the match VM. Default: shorten until still (at most 4 s), swing forward 0.8 s. release (default true): let go at the end (NinjaRope.Kill) and wait for the worm to rest. refire: after the release, fire again and run the steps again this many times (default 0; a scheme gives a rope several shots), each from where the worm then is.",
         properties: { aimSec: { type: "number", minimum: 0, maximum: 5 }, release: { type: "boolean" }, refire: { type: "integer", minimum: 0, maximum: 5 },
+          hook: { type: "array", items: { type: "number" }, minItems: 3, maxItems: 3, description: "A solved aim instead of aimSec: the point the hook should land on [x, y, z] (the wall under a lip, an overhang, the next riser's face). The worm turns to it, the pitch from its rope hand to the point is written into its own aim (the worm container's WeaponAngle, the number AimUp and AimDown move) and the shot's answer gives `aim`: the pitch and where the game's land sweep along that aim meets land (the hook as the game will find it)." },
+          solve: { description: "A solved aim with the hook found too: true, or {over (how far over the target's height the hook must be; default 0.75 map units), reach (how far from the target in plan; default 4 map units)}. A fan of rays from the worm toward the target, a degree apart from the target's elevation up, each as long as the rope; the hook is the lowest ray that meets land over the ledge and not short of it (a hook on the riser's own face hangs the worm on the face). When none does the answer says why (stand further back, nothing over the ledge).",
+            anyOf: [{ type: "boolean" }, { type: "object", additionalProperties: false, properties: { over: { type: "number", minimum: 0 }, reach: { type: "number", minimum: 0.1 } } }] },
+          releaseOver: { type: "boolean", description: "Let the rope go the moment the worm is over the ledge: higher than the target by a quarter map unit and within `arrive` (at least 2.5 map units) of it in plan, whatever step is running (default true with hook or solve, else false)." },
           steps: { type: "array", maxItems: 16, items: { type: "object", additionalProperties: false, required: ["do"], properties: {
             do: { type: "string", enum: ["shorten", "lengthen", "swingForward", "swingBackward", "swingLeft", "swingRight", "wait", "jump"] }, sec: { type: "number", minimum: 0.05, maximum: 6 }, until: { type: "string", enum: ["still"] } } } } } },
+      girder: { type: "object", additionalProperties: false, description: "weapon girder: place (default true): set it down once it is at the target (false: steer only and answer where it is); lift: how far over the target's y the girder's own position is held (units; default 0: the target is where the girder's middle goes).",
+        properties: { place: { type: "boolean" }, lift: { type: "number" } } },
       worm: { type: "integer", minimum: 0, maximum: 15 },
       clearance: { type: "number", minimum: 0.5, maximum: 40 }, arrive: { type: "number", minimum: 0.3, maximum: 20 }, maxSec: { type: "number", minimum: 2, maximum: 40 },
       waitSec: { type: "number", minimum: 1, maximum: 300 },
       units: unitsProp,
     } },
-    async handler(s: Session, a: { weapon: "jetpack" | "teleport" | "rope" | "girder"; target: number[]; worm?: number; clearance?: number; arrive?: number; maxSec?: number; waitSec?: number; units?: "map" | "world"; rope?: RopePlan }) {
+    async handler(s: Session, a: { weapon: "jetpack" | "teleport" | "rope" | "girder"; target: number[]; worm?: number; clearance?: number; arrive?: number; maxSec?: number; waitSec?: number; units?: "map" | "world"; rope?: RopePlan; girder?: { place?: boolean; lift?: number } }) {
       if (a.weapon === "rope") return useRope(s, a);
-      if (a.weapon !== "jetpack") throw new ToolError(`game_use_tool cannot drive the ${a.weapon} yet: ${a.weapon === "teleport" ? "the teleport's target is a cursor the player moves, and no input or message of this build places it from a script (game_park_worm puts a worm on a spot without the weapon)"
-        : a.weapon === "girder" ? "Girder.Place and the Girder.Move messages sent from the match VM did nothing in round 3, and the fire inputs leave the cursor on the worm, where a girder is refused"
-        : ""}. The jetpack and the rope are driven`);
+      if (a.weapon === "girder") return useGirder(s, a);
+      // Worms Ultimate Mayhem has no teleport to fire: its weapon table (ids 1-68) holds kUtilityJetpack, kUtilityNinjaRope,
+      // kUtilityGirder and kUtilityParachute and no teleport (level.test.selectWeapon refuses kUtilityTeleport and
+      // kWeaponTeleport; the binary's Weapon.CreateTeleportCursor and the inventory's Teleport count are leftovers of
+      // Worms 3D). A worm changes place without walking only by a telepad of the level or by the three tools above
+      if (a.weapon === "teleport") throw new ToolError("this game has no teleport weapon: its weapon table holds no kUtilityTeleport or kWeaponTeleport (level.test.selectWeapon refuses both; the inventory's Teleport count and the binary's Weapon.CreateTeleportCursor are leftovers the game never uses), so a teleport cannot be tested or required of a map. What moves a worm without a walk is the jetpack, the rope and the girder (all driven here), and a level's own telepads (place_object {kind: \"telepad\"}); game_park_worm puts a worm on a spot for a check");
       if (!(await has(s, "input.drive"))) throw new ToolError("game_use_tool needs the game's input.drive (Melange 0.13+ with the Controls module)");
       const k = a.units === "world" ? 1 : W, out = (p: number[]) => p.map((v) => r2(v / k));
       const target = a.target.map((v) => v * k), clear = (a.clearance ?? 3 * W / k) * k, arrive = (a.arrive ?? 1.5 * W / k) * k;
@@ -578,6 +777,251 @@ export const tools: Tool[] = [
           note: "one peer: its matches' deals in order; give two peers' logs to compare a network match" };
       }
       return { ...compareDeals(peers, a.last ?? 1), note: "agree: every peer logged the same seed and the same areas for the match; matches are counted from each log's end (fromEnd 1 is the newest)" };
+    },
+  },
+  {
+    name: "game_line_clearance",
+    description: "Where a height line (Sandtide's sand line) falls against the ground as the GAME reads it, in the running Test: check_height_line's in-game twin. The line is `y`, or a `fraction` of the land's box (`preset: \"sandtide\"`: 0.25) over its base computed from the game's own numbers (Land.MinBounds and Land.MaxBounds, the box the engine built, and the match's water: the base is the water when the land reaches under it, else the land's lowest point). Then the game's land sweep (level.test.landRay) reads every column of a lattice (`step`, default 1 map unit) over the land: the top of the ground, and under anything that stands over the band the surfaces inside it (a court under a roof, a ledge under an overhang: the sweep is restarted under each hit), each kept when a worm has room to stand on it (`headroom`, default 1.5 map units of air). Answers every standable surface within `band` (default 40 world units) of the line, grouped, with the nearest one's distance to the line above and below it, `clear` when none is in the band, and (with the project open) `tools`: check_height_line's own line and its count of surfaces in the band for the same lattice, and where the two disagree. Read-only; a Test only.",
+    inputSchema: { type: "object", additionalProperties: false, properties: {
+      preset: { type: "string", enum: ["sandtide"] }, fraction: { type: "number", minimum: 0.01, maximum: 1 }, y: { type: "number", description: "A fixed line height (units)." },
+      band: { type: "number", minimum: 0, description: "How close to the line counts (units; default 40 world = 2 map units)." },
+      step: { type: "number", minimum: 0.25, maximum: 8, description: "Column spacing (units; default 1 map unit)." },
+      headroom: { type: "number", minimum: 0.25, description: "Air a worm needs over a surface (units; default 1.5 map units)." },
+      x0: { type: "number" }, z0: { type: "number" }, x1: { type: "number" }, z1: { type: "number" },
+      limit: { type: "integer", minimum: 0, maximum: 200, description: "Groups listed (default 20), the nearest to the line first." },
+      units: unitsProp,
+    } },
+    async handler(s: Session, a: { preset?: "sandtide"; fraction?: number; y?: number; band?: number; step?: number; headroom?: number; x0?: number; z0?: number; x1?: number; z1?: number; limit?: number; units?: "map" | "world" }) {
+      for (const m of ["level.test.landRay", "state.vars"]) if (!(await has(s, m))) throw new ToolError(`game_line_clearance needs the game's ${m} (a running Test)`);
+      if ([a.preset !== undefined, a.fraction !== undefined, a.y !== undefined].filter(Boolean).length !== 1) throw new ToolError("give one of preset (\"sandtide\"), fraction or y");
+      const k = a.units === "world" ? 1 : W, o1 = (v: number) => r2(v / k), both = (v: number) => ({ map: r2(v / W), world: r2(v) });
+      // the game's own land box and water
+      const land = await gameVars(s, "Land."), st = await gameState(s);
+      const lo = land["Land.MinBounds"] as number[] | undefined, hi = land["Land.MaxBounds"] as number[] | undefined;
+      if (!Array.isArray(lo) || !Array.isArray(hi)) throw new ToolError("the game answers no Land.MinBounds / Land.MaxBounds: is a match playing?");
+      const water = typeof st.water === "number" ? st.water : null;
+      const gl = a.y !== undefined ? { line: a.y * k, base: NaN, baseKind: "given" as const } : gameLine(lo[1], hi[1], water, a.preset === "sandtide" ? 0.25 : a.fraction!);
+      const band = (a.band ?? 40 / k) * k, step = (a.step ?? W / k) * k, headroom = (a.headroom ?? 1.5 * W / k) * k;
+      const x0 = a.x0 !== undefined ? a.x0 * k : lo[0], x1 = a.x1 !== undefined ? a.x1 * k : hi[0], z0 = a.z0 !== undefined ? a.z0 * k : lo[2], z1 = a.z1 !== undefined ? a.z1 * k : hi[2];
+      const cols: number[][] = [];
+      for (let z = Math.min(z0, z1) + step / 2; z < Math.max(z0, z1); z += step) for (let x = Math.min(x0, x1) + step / 2; x < Math.max(x0, x1); x += step) cols.push([x, z]);
+      if (!cols.length) throw new ToolError("the region is empty");
+      if (cols.length > 90000) throw new ToolError(`${cols.length} columns is too many (at most 90000): a larger step or a smaller region`);
+      const top = hi[1] + 5 * W, lineLo = gl.line - band, lineHi = gl.line + band;
+      // pass 1: the top of every column
+      const tops = await rays(s, cols.map(([x, z]) => [x, top, z, x, lineLo - 1, z]));
+      const surf: BandSurface[] = [];
+      let groundCols = 0, raysCast = cols.length;
+      // pass 2: under what stands over the band, the surfaces inside it: the sweep restarted half a map unit under
+      // each hit until it leaves the solid, and a surface kept when the air over it is headroom high
+      const deeper: { x: number; z: number; from: number }[] = [];
+      tops.forEach((h, i) => {
+        if (!h) return;
+        groundCols++;
+        const [x, z] = cols[i];
+        if (h[1] <= lineHi && h[1] >= lineLo && (water === null || h[1] > water)) surf.push({ x, z, y: h[1], covered: false });
+        else if (h[1] > lineHi) deeper.push({ x, z, from: h[1] });
+      });
+      const STEP = 0.5 * W;
+      let front = deeper.map((d) => ({ ...d, y: Math.min(d.from - STEP, lineHi + headroom), roof: d.from }));
+      for (let pass = 0; pass < 80 && front.length; pass++) {
+        const hits = await rays(s, front.map((f) => [f.x, f.y, f.z, f.x, lineLo - 1, f.z]));
+        raysCast += front.length;
+        const next: typeof front = [];
+        front.forEach((f, i) => {
+          const h = hits[i];
+          if (!h) return;                                   // nothing more under it down to the band's floor
+          if (f.y - h[1] < 0.02 * W) { if (f.y - STEP > lineLo) next.push({ ...f, y: f.y - STEP }); return; }   // started in solid: go on down
+          // open air from f.y down to the hit: a floor under a roof
+          if (h[1] <= lineHi && h[1] >= lineLo && f.y - h[1] >= headroom - STEP && (water === null || h[1] > water)) surf.push({ x: f.x, z: f.z, y: h[1], covered: true });
+          if (h[1] - STEP > lineLo) next.push({ ...f, y: h[1] - STEP });
+        });
+        front = next;
+      }
+      const groups = bandGroups(surf, gl.line, 4 * W);
+      const above = surf.filter((p) => p.y >= gl.line).map((p) => p.y - gl.line), below = surf.filter((p) => p.y < gl.line).map((p) => gl.line - p.y);
+      // the tools' own reading for the same lattice, with the project open
+      let tools: Record<string, unknown> | undefined;
+      if (s.project) {
+        const gs = grids(s.store).filter((g) => g.words.some(isSolid)), lb = landBounds(gs), ext = extentXZ(gs);
+        if (lb && ext) {
+          const hl = a.y !== undefined ? { line: (a.y * k) / W } : heightLine(lb, waterMap(s.store), { fraction: a.preset === "sandtide" ? 0.25 : a.fraction });
+          const S = surfaces(gs, { x0: Math.min(x0, x1) / W, z0: Math.min(z0, z1) / W, x1: Math.max(x0, x1) / W, z1: Math.max(z0, z1) / W }, step / W, headroom / W);
+          let n = 0;
+          const own = new Set<string>();
+          for (let i = 0; i < S.nodes; i++) { const p = nodeAt(S, i); if (Math.abs(p[1] - hl.line) <= band / W) { n++; own.add(`${Math.floor(p[0] / 4)},${Math.floor(p[2] / 4)}`); } }
+          const game = new Set(surf.map((p) => `${Math.floor(p.x / W / 4)},${Math.floor(p.z / W / 4)}`));
+          const onlyGame = [...game].filter((c) => !own.has(c)), onlyTools = [...own].filter((c) => !game.has(c));
+          const cell = (c: string) => c.split(",").map((v) => o1((+v * 4 + 2) * W));
+          tools = { line: both(hl.line * W), lineApart: both(gl.line - hl.line * W), surfacesInBand: n, groups: own.size,
+            agrees: Math.abs(gl.line - hl.line * W) <= 0.05 * W && !onlyGame.length && !onlyTools.length,
+            ...(onlyGame.length ? { onlyInGame: onlyGame.slice(0, 12).map(cell) } : {}), ...(onlyTools.length ? { onlyInTools: onlyTools.slice(0, 12).map(cell) } : {}),
+            landBounds: { minY: both(lb.minY * W), maxY: both(lb.maxY * W) },
+            note: "check_height_line's line and its surfaces within the band on the same lattice; lineApart: the game's line less the tools' (the game's land box against the project's frames); onlyInGame / onlyInTools: 4-unit cells where one reads a surface in the band and the other none" };
+        }
+      }
+      const limit = a.limit ?? 20;
+      return {
+        clear: surf.length === 0,
+        summary: surf.length ? `${surf.length} standable surface columns lie within ${o1(band)} of the line (${groups.length} groups): the nearest is ${o1(Math.min(...surf.map((p) => Math.abs(p.y - gl.line))))} from it` : `no standable surface lies within ${o1(band)} of the line`,
+        line: both(gl.line), ...(a.y === undefined ? { base: { ...both(gl.base), kind: gl.baseKind }, fraction: a.preset === "sandtide" ? 0.25 : a.fraction } : {}),
+        gameLand: { minY: both(lo[1]), maxY: both(hi[1]), water: water === null ? null : both(water) },
+        band: both(band),
+        nearest: { above: above.length ? both(Math.min(...above)) : null, below: below.length ? both(Math.min(...below)) : null },
+        surfaces: { inBand: surf.length, covered: surf.filter((p) => p.covered).length, groups: groups.slice(0, limit).map((g) => ({ at: g.at.map(o1), columns: g.columns, y: { min: both(g.minY), max: both(g.maxY) }, toLine: both(g.nearest), ...(g.covered ? { covered: g.covered } : {}) })),
+          ...(groups.length > limit ? { more: groups.length - limit } : {}) },
+        scan: { columns: cols.length, reachingBand: groundCols, standingOverBand: deeper.length, rays: raysCast, step: o1(step), headroom: o1(headroom), units: a.units ?? "map" },
+        ...(tools ? { tools } : {}),
+        note: "the game's own land sweep, column by column: toLine is a group's nearest surface less the line (over 0: above it, where Sandtide's curse does not land; under 0: below it). covered: surfaces under something (found by restarting the sweep under each hit). Sandtide logs its own line (`sandtide: sand line at Y`) when it is on",
+      };
+    },
+  },
+  {
+    name: "game_start_versus",
+    description: "Start a Versus > Deathmatch match on an INSTALLED level through the game's own menus, as a player does: main menu, Local Game, Versus, Deathmatch, the teams, the landscape from the list, the grenade. game_start_level arms a level and starts a Quick Game without the menus; this is the route the frontend takes, with its own team set-up, its landscape list (the level must be listed under Prebuilt) and its random time of day (which a pack's pinned one then overrides, and the log says so). The keys are sent by the private build's Automation module (`[Automation] Enabled=1` and `RunInBackground=1` in the game's Melange.ini: a file queue the game reads, so it needs no window focus); a public build has none and the tool says so. The game must be at its MAIN MENU (after a launch: `dismiss: 1` presses RETURN first when the language prompt shows; after a match, leave it first). `teams`: 2 to 4, each {human: true} (a player team of the save, in the save's order) or {human: false, cpu: \"easy\" | \"normal\" | \"hard\"}. `level`: its title as the list shows it (default: the pack's level title from Mods\\<modId>\\spice.json). It answers the keys sent, then waits for the match and reads the game's log: the level that loaded, its time of day line and its spawn-area deal.",
+    inputSchema: { type: "object", additionalProperties: false, required: ["teams"], properties: {
+      modId: { type: "string" }, level: { type: "string", description: "The level's title in the landscape list (or its slug with modId)." },
+      teams: { type: "array", minItems: 2, maxItems: 4, items: { type: "object", additionalProperties: false, properties: { human: { type: "boolean" }, cpu: { type: "string", enum: ["easy", "normal", "hard"] } } } },
+      humanTeams: { type: "integer", minimum: 0, maximum: 16, description: "How many player teams the save has (default 4: the game's own four)." },
+      landscapeIndex: { type: "integer", minimum: 0, maximum: 200, description: "Override: how many DOWNs from the top of the landscape list (default: worked out from the installed packs' titles)." },
+      dismiss: { type: "integer", minimum: 0, maximum: 3, description: "RETURNs pressed first, 4 s apart (a language prompt at the first launch)." },
+      gameDir: { type: "string" }, pid: { type: "integer", description: "The game's process id (default: the WormsMayhem.exe that runs from gameDir)." },
+      dryRun: { type: "boolean", description: "Answer the key presses and send nothing." },
+      timeoutSec: { type: "integer", minimum: 10, maximum: 300 },
+    } },
+    async handler(s: Session, a: { modId?: string; level?: string; teams: VersusTeam[]; humanTeams?: number; landscapeIndex?: number; dismiss?: number; gameDir?: string; pid?: number; dryRun?: boolean; timeoutSec?: number }) {
+      const game = a.gameDir ?? process.env.MELANGE_GAME_DIR;
+      if (!game || !existsSync(join(game, "Mods"))) throw new ToolError("give gameDir (or set MELANGE_GAME_DIR): the game's folder");
+      // the enabled packs' level titles, and the wanted one's
+      const titles = packLevels(game);
+      const mine = titles.find((t) => (!a.modId || t.mod === a.modId) && (a.level === undefined || t.title.toLowerCase() === a.level.toLowerCase() || t.slug === a.level));
+      const title = mine?.title ?? a.level;
+      if (!title) throw new ToolError(`no level to pick: give level (a title in the landscape list)${a.modId ? `; ${a.modId} has no enabled multi level in ${game}\\Mods` : ""}`);
+      const index = a.landscapeIndex ?? landscapeIndex(title, titles.map((t) => t.title));
+      if (index < 0) throw new ToolError(`'${title}' is not among the prebuilt landscapes this tool knows (the game's four and the enabled packs': ${titles.map((t) => t.title).join(", ") || "none"}): is the pack installed and enabled? landscapeIndex overrides`);
+      let keys: string[];
+      try { keys = versusRoute(a.teams, index, { humanTeams: a.humanTeams, dismiss: a.dismiss }); } catch (e) { throw new ToolError((e as Error).message); }
+      const plan = { level: title, ...(mine ? { modId: mine.mod, key: `Multi.${mine.mod}_${mine.slug}` } : {}), landscapeIndex: index, teams: a.teams.length, keyPresses: keys.filter((k) => k.startsWith("key")).length,
+        seconds: Math.round(keys.filter((k) => k.startsWith("wait")).reduce((n, k) => n + +k.split(" ")[1], 0) / 1000) };
+      if (a.dryRun) return { dryRun: true, ...plan, keys };
+      // the Automation queue: a private module of the game's build
+      if (!automationOn(game)) throw new ToolError(`the game's Melange.ini has no [Automation] Enabled=1: the menus are driven through the private build's Automation module (a public build has none; game_start_level starts a Quick Game without the menus)`);
+      const st = await gameState(s);
+      if (st.scene === "match") throw new ToolError("a match is running: the route starts at the main menu (end_match leaves a Test; a Versus match is left from its pause menu, or restart the game)");
+      const pid = a.pid ?? gamePid(game);
+      if (!pid) throw new ToolError(`no WormsMayhem.exe runs from ${game}: give pid`);
+      const log = join(game, "Melange", "Melange.log"), marker = `ergversus-${Date.now().toString(36)}`;
+      const lines0 = existsSync(log) ? readFileSync(log, "utf8").split(/\r?\n/).length : 0;
+      appendFileSync(join(game, "Melange", `automation.${pid}.txt`), [...keys, `log ${marker}`].join("\n") + "\n");
+      const t0 = Date.now(), limit = ((a.timeoutSec ?? 60) + plan.seconds) * 1000;
+      let sent = false, scene = "", tail: string[] = [];
+      while (Date.now() - t0 < limit) {
+        await sleep(1500);
+        tail = readFileSync(log, "utf8").split(/\r?\n/).slice(lines0);
+        if (!sent && tail.some((l) => l.includes(`LOG ${marker}`))) sent = true;
+        if (sent) { scene = (await gameState(s).catch(() => ({ scene: "" }))).scene ?? ""; if (scene === "match" && tail.some((l) => /spawn areas: seed|\[sim\] \d+ forwarded/.test(l))) break; }
+      }
+      const pick = (re: RegExp) => { const l = [...tail].reverse().find((x) => re.test(x)); return l ? l.replace(/^.*?INFO\s+/, "") : null; };
+      const loaded = pick(/\[levels\] land mask fix on \(|\[levels\] camera lift on \(/), key = /\((Multi\.[^)]+)\)/.exec(loaded ?? "")?.[1] ?? null;
+      const right = !!key && (!mine || key === `Multi.${mine.mod}_${mine.slug}`);
+      return { started: scene === "match", ...plan, sent, pid, loaded: key,
+        ...(scene === "match" && !key ? { warning: "a match started and the log names no pack level: the list's highlight was not on the level (a pack's level logs `land mask fix on (Multi.<mod>_<slug>)`); check landscapeIndex with a shot" } : {}),
+        ...(key && !right ? { warning: `the match loaded ${key}, not ${mine ? `Multi.${mine.mod}_${mine.slug}` : title}: the landscape list's order differs from what was worked out (landscapeIndex overrides)` } : {}),
+        timeOfDay: pick(/time of day pinned/), spawnDeal: pick(/spawn areas: seed/), seconds: Math.round((Date.now() - t0) / 1000),
+        ...(scene !== "match" ? { note: sent ? "the keys were sent and no match is running: the game was not at its main menu, or a prompt was in the way (dismiss), or the save has other teams (humanTeams). game_shots or a window grab shows where the menus are" : "the game did not read the Automation queue in time (is this the private build, and the pid the game's?)" } : {}) };
+    },
+  },
+  {
+    name: "game_localnet_match",
+    description: "A two-peer network match on an installed level, driven on two running games of this machine over LocalNet (the private build's lobby and P2P over localhost), and the two peers' spawn deals and worm positions compared: the check that both machines deal a level's spawn areas alike (spawns.mode areas: each peer deals from the match's seed itself). `host` and `join`: {gameDir, pid} of two games at their MAIN MENUS, each with `[LocalNet] Enabled=1` and its own Name, `[Automation] Enabled=1` and `RunInBackground=1` in its Melange.ini, the same build and the same enabled mods with the level's pack among them (the testenv's business: back up what you change, `[Wormsign] Record=0`, and the Steam save both write). The host goes Network Game, its team, Create Match (Deathmatch, Standard, 2 players), and in the lobby picks the landscape from the list; the joiner goes Network Game, its team, Custom Match and joins the match found; both press the grenade. Then it waits for both to be in the game and answers `deal` (each peer's `spawn areas: seed ..., N teams -> areas [...]` log line, compared: agree) and `positions` (every worm's place as each peer reads it, through each game's Oasis: started here when a peer's is not up, and Documents\\Melange\\oasis_url.txt put back). dryRun answers the key presses. The match is left running: stop the games (or play on).",
+    inputSchema: { type: "object", additionalProperties: false, required: ["host", "join"], properties: {
+      host: { type: "object", additionalProperties: false, required: ["gameDir"], properties: { gameDir: { type: "string" }, pid: { type: "integer" }, team: { type: "integer", minimum: 0, maximum: 15, description: "Its place in the Select Team list (default 0)." }, url: { type: "string", description: "Its Oasis launch URL, when it is up already." } } },
+      join: { type: "object", additionalProperties: false, required: ["gameDir"], properties: { gameDir: { type: "string" }, pid: { type: "integer" }, team: { type: "integer", minimum: 0, maximum: 15, description: "Default 1." }, url: { type: "string" } } },
+      modId: { type: "string" }, level: { type: "string", description: "The level's title in the landscape list (default: modId's level)." },
+      landscapeIndex: { type: "integer", minimum: 0, maximum: 200 },
+      positions: { type: "boolean", description: "Compare the worms' positions through each peer's Oasis (default true)." },
+      dryRun: { type: "boolean" }, timeoutSec: { type: "integer", minimum: 20, maximum: 600 },
+    } },
+    async handler(_s: Session, a: { host: { gameDir: string; pid?: number; team?: number; url?: string }; join: { gameDir: string; pid?: number; team?: number; url?: string }; modId?: string; level?: string; landscapeIndex?: number;
+      positions?: boolean; dryRun?: boolean; timeoutSec?: number }) {
+      for (const p of [a.host, a.join]) if (!existsSync(join(p.gameDir, "Mods"))) throw new ToolError(`${p.gameDir}: not a game folder (no Mods)`);
+      if (a.host.gameDir.toLowerCase() === a.join.gameDir.toLowerCase()) throw new ToolError("host and join are two game folders");
+      const titles = packLevels(a.host.gameDir);
+      const mine = titles.find((t) => (!a.modId || t.mod === a.modId) && (a.level === undefined || t.title.toLowerCase() === a.level.toLowerCase() || t.slug === a.level));
+      const title = mine?.title ?? a.level;
+      if (!title) throw new ToolError("no level to pick: give level (a title in the landscape list) or modId");
+      const index = a.landscapeIndex ?? landscapeIndex(title, titles.map((t) => t.title));
+      if (index < 0) throw new ToolError(`'${title}' is not among the host's prebuilt landscapes (the game's four and its enabled packs': ${titles.map((t) => t.title).join(", ") || "none"})`);
+      const key = mine ? `Multi.${mine.mod}_${mine.slug}` : null;
+      const hostKeys = localnetRoute("host", { team: a.host.team ?? 0, landscape: index }), bootKeys = localnetRoute("joinBoot", { team: a.join.team ?? 1 }), joinKeys = localnetRoute("joinFind");
+      if (a.dryRun) return { dryRun: true, level: title, key, landscapeIndex: index, host: hostKeys, joinBoot: bootKeys, joinFind: joinKeys, hostReady: localnetRoute("hostReady"), joinReady: localnetRoute("joinReady") };
+      // the join side must have the level too, or its lobby refuses the map
+      if (mine && !packLevels(a.join.gameDir).some((t) => t.mod === mine.mod && t.slug === mine.slug)) throw new ToolError(`the joiner's folder has no enabled ${mine.mod} pack with the level ${mine.slug}: both peers need the same packs`);
+      const peers = [{ name: "host", ...a.host }, { name: "join", ...a.join }].map((p) => {
+        if (!automationOn(p.gameDir)) throw new ToolError(`${p.gameDir}: its Melange.ini has no [Automation] Enabled=1 (the private build's key queue)`);
+        const ini = (() => { try { return readFileSync(join(p.gameDir, "Melange.ini"), "utf8"); } catch { return ""; } })();
+        if (!/^\s*Enabled\s*=\s*1/m.test(/\[LocalNet\]([^[]*)/.exec(ini)?.[1] ?? "")) throw new ToolError(`${p.gameDir}: its Melange.ini has no [LocalNet] Enabled=1: without it the game would open a real Steam lobby`);
+        const pid = p.pid ?? gamePid(p.gameDir);
+        if (!pid) throw new ToolError(`no WormsMayhem.exe runs from ${p.gameDir}: start it (and give pid)`);
+        return { ...p, pid, log: join(p.gameDir, "Melange", "Melange.log") };
+      });
+      const [H, J] = peers, t0 = Date.now(), limit = (a.timeoutSec ?? 120) * 1000;
+      const lobbies = (p: typeof H) => (readFileSync(p.log, "utf8").match(/-> WaitingGameStart\(lobby\)/g) ?? []).length;
+      const ingame = (p: typeof H) => (readFileSync(p.log, "utf8").match(/-> InGame/g) ?? []).length;
+      const waitFor = async (what: string, test: () => boolean, ms: number) => { const t = Date.now(); while (!test()) { if (Date.now() - t > ms) throw new ToolError(`${what} did not happen within ${Math.round(ms / 1000)} s: a window grab of each game shows where its menus are (was each at its main menu?)`); await sleep(1000); } };
+      const steps: string[] = [];
+      const l0 = [lobbies(H), lobbies(J)], g0 = [ingame(H), ingame(J)];
+      // both leave their main menus at once (a game idle there starts its demo match within a minute)
+      const [hr, br] = await Promise.all([automate(H.gameDir, H.pid, hostKeys, 120000), automate(J.gameDir, J.pid, bootKeys, 60000)]);
+      if (!br.done) throw new ToolError("the joiner did not read its Automation queue (is it the private build, and the pid the game's?)");
+      if (!hr.done) throw new ToolError("the host did not read its Automation queue (is it the private build, and the pid the game's?)");
+      await waitFor("the host's lobby", () => lobbies(H) > l0[0], 30000);
+      steps.push("the host is in its lobby with the landscape picked");
+      const refused = hr.lines.concat(readFileSync(H.log, "utf8").split(/\r?\n/).slice(-40)).find((l) => /is not a level registered/.test(l));
+      const jr = await automate(J.gameDir, J.pid, joinKeys, 120000);
+      if (!jr.done) throw new ToolError("the joiner did not read its Automation queue");
+      await waitFor("the joiner's lobby", () => lobbies(J) > l0[1], 40000);
+      steps.push("the joiner is in the lobby");
+      await automate(J.gameDir, J.pid, localnetRoute("joinReady"), 30000);
+      await automate(H.gameDir, H.pid, localnetRoute("hostReady"), 30000);
+      await waitFor("the match on both peers", () => ingame(H) > g0[0] && ingame(J) > g0[1], limit);
+      steps.push("both peers are in the game");
+      await sleep(2500);
+      const dealOf = (p: typeof H) => ({ name: p.name, deals: parseSpawnDeals(readFileSync(p.log, "utf8")) });
+      const deal = compareDeals([dealOf(H), dealOf(J)], 1);
+      const loaded = peers.map((p) => { const m = [...readFileSync(p.log, "utf8").matchAll(/land mask fix on \((Multi\.[^)]+)\)/g)].pop(); return m ? m[1] : null; });
+      // the worms as each peer reads them, through its own Oasis
+      let positions: Record<string, unknown> | undefined;
+      if (a.positions !== false) {
+        // the shared url file (a game's launch deletes it, so it may not be there yet): kept and put back
+        const dd = documentsDir(), uf = urlFile() ?? (dd ? join(dd, "Melange", "oasis_url.txt") : null), keep = uf && existsSync(uf) ? readFileSync(uf, "utf8") : null;
+        const WORMS = `local o = "" for _, w in ipairs(wum.game.worms()) do o = o .. string.format("%d,%d,%.2f,%.2f,%.2f;", w.slot, w.team, w.pos.x, w.pos.y, w.pos.z) end return o`;
+        const read = async (p: typeof H) => {
+          let url = p.url;
+          if (!url) {
+            // oasis.start writes the shared url file: read this peer's from it at once
+            await automate(p.gameDir, p.pid, ["oasis.start", "wait 800"], 20000);
+            await sleep(800);
+            url = uf && existsSync(uf) ? readFileSync(uf, "utf8").trim() : undefined;
+          }
+          if (!url) throw new Error("no Oasis URL");
+          const c = await openOasis(url, p.name);
+          try {
+            const r = await c.client.call<{ ok: boolean; text: string }>("lua.eval", { target: "client", code: WORMS }, 15000);
+            return (r.text ?? "").split(";").filter(Boolean).map((x) => x.split(",").map(Number)).map((v) => ({ slot: v[0], team: v[1], pos: [r2(v[2] / W), r2(v[3] / W), r2(v[4] / W)] }));
+          } finally { (c.client as { close?: () => void }).close?.(); }
+        };
+        try {
+          const hw = await read(H), jw = await read(J), cmp = comparePositions(hw, jw);
+          positions = { ...cmp, host: hw.map((w) => `${w.slot}:t${w.team}:(${w.pos.join(", ")})`).join(" "), units: "map" };
+        } catch (e) { positions = { error: `the worms could not be read through the peers' Oasis: ${(e as Error).message}` }; }
+        finally { if (uf && keep !== null) writeFileSync(uf, keep); }
+      }
+      return { ok: deal.agree && (!positions || positions.agree !== false) && (!key || loaded.every((k) => k === key)), level: title, key, loaded: { host: loaded[0], join: loaded[1] },
+        deal, ...(positions ? { positions } : {}), steps, seconds: Math.round((Date.now() - t0) / 1000),
+        ...(refused ? { hostLobbyNote: refused.replace(/^.*?(INFO|WARN)\s+/, "") + " (the lobby's remembered landscape, before this one was picked)" } : {}),
+        ...(key && !loaded.every((k) => k === key) ? { warning: `a peer loaded ${loaded.join(" / ")}, not ${key}: the landscape list's order differs from what was worked out (landscapeIndex overrides)` } : {}),
+        note: "deal.agree: both peers logged the same seed and the same areas for the match; positions.agree: every worm stands at the same place on both. The match is still running on both games" };
     },
   },
 ];

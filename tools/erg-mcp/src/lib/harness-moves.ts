@@ -130,3 +130,161 @@ export function quietState(seen: number, last: { seen: number; at: number } | nu
   const since = now - st.at;
   return { last: st, quiet: since >= quietMs, waitMs: Math.max(0, quietMs - since) };
 }
+
+// ------------------------------------------------------------------ round 6: the rope's solved aim, the girder's steering
+
+/** Where a worm's rope leaves it: over its feet (world or map units alike: `up` in the same unit; half a map unit). */
+export const muzzleOf = (pos: number[], up: number): number[] => [pos[0], pos[1] + up, pos[2]];
+
+/** The aim that points from `from` at `at`: the pitch (radians over the horizon, what the worm's WeaponAngle holds) and
+ * the yaw (degrees, 0 toward +z, 90 toward +x), and the straight distance. */
+export function aimAt(from: number[], at: number[]): { pitch: number; yaw: number | null; distance: number } {
+  const dx = at[0] - from[0], dy = at[1] - from[1], dz = at[2] - from[2], h = Math.hypot(dx, dz);
+  return { pitch: Math.atan2(dy, h), yaw: h < 1e-6 ? null : Math.atan2(dx, dz) * DEG, distance: Math.hypot(dx, dy, dz) };
+}
+
+/** The unit direction of a yaw (degrees) and a pitch (radians). */
+export const aimDir = (yaw: number, pitch: number): number[] => [Math.sin(yaw / DEG) * Math.cos(pitch), Math.sin(pitch), Math.cos(yaw / DEG) * Math.cos(pitch)];
+
+export interface FanHit { pitch: number; at: number[] | null; }   // a ray of the fan: its pitch (radians) and where it met land
+
+/** The rope's hook for a ledge: of a fan of rays from the worm toward the target (one yaw, rising pitches, each ray as
+ * long as the rope), the hit a worm let down from lands on the ledge: the land is met OVER the target's height by at
+ * least `over`, no further than `reach` in plan from the target (a point over the ledge: the next riser's face, an
+ * overhang), and at or beyond the ledge's lip as seen from the worm (`lipBack`: how far short of the target's own
+ * distance a hook may be). The lowest such pitch is taken: the shortest swing. Null with the reason when no ray does. */
+export function solveHook(muzzle: number[], target: number[], fan: FanHit[], o: { over: number; reach: number; lipBack: number }, body?: FanHit[]):
+  { hit: FanHit; height: number; plan: number } | { hit: null; why: string } {
+  const dT = Math.hypot(target[0] - muzzle[0], target[2] - muzzle[2]);
+  let under = 0, short = 0, far = 0, miss = 0, dragged = 0;
+  // `body`: the same fan from the worm's feet. The rope pulls the worm along its own line, and where the line from its
+  // feet meets land short of the ledge the worm is dragged into the face under the lip and held there (a rope whose
+  // own line just clears a lip did that in round 6: the worm rose to 0.7 under the ledge and no further)
+  const bodyAt = new Map((body ?? []).map((b) => [Math.round(b.pitch * 1e4), b.at]));
+  for (const f of [...fan].sort((a, b) => a.pitch - b.pitch)) {
+    if (!f.at) { miss++; continue; }
+    const d = Math.hypot(f.at[0] - muzzle[0], f.at[2] - muzzle[2]), plan = Math.hypot(f.at[0] - target[0], f.at[2] - target[2]);
+    if (f.at[1] < target[1] + o.over) { under++; continue; }
+    if (d < dT - o.lipBack) { short++; continue; }
+    if (plan > o.reach) { far++; continue; }
+    const b = bodyAt.get(Math.round(f.pitch * 1e4));
+    if (b && Math.hypot(b[0] - muzzle[0], b[2] - muzzle[2]) < dT - o.lipBack) { dragged++; continue; }
+    return { hit: f, height: f.at[1] - target[1], plan };
+  }
+  if (dragged) return { hit: null, why: `${dragged} ray${dragged === 1 ? "" : "s"} hook land over the ledge, but the line from the worm's feet along the same aim meets the face under the lip first: the rope would drag the worm into the face and hold it under the ledge. Stand further back from the riser (or lower), so the worm's own line clears the lip too` };
+  const why = !fan.length ? "no ray" : short && !far ? `every ray that meets land over the ledge meets it short of the ledge (${short}: the riser's own face, under or at its lip): a hook there hangs the worm on the face, not over the ledge. Stand further back so the line clears the lip`
+    : far ? `the land over the ledge is met too far past the target (${far} rays): aim at a nearer target or move closer`
+      : under && miss ? `the rays that clear the ledge's lip meet nothing within the rope's length (${miss} pass over whatever stands behind it), and the others meet land under the ledge's height: from further back a lower aim clears the lip and meets the face behind the ledge; with nothing behind the ledge a rope has nothing to hold`
+        : under === fan.length - miss && under ? "every ray meets land under the ledge's height: nothing stands over the ledge within the rope's length (a rope needs something above to hold)"
+        : "no ray of the fan meets land over the ledge";
+  return { hit: null, why };
+}
+
+/** The girder's two steering axes from two measured pulses: `f` and `r` are what a held Forward and a held Right moved
+ * it in plan per millisecond ([x, z] each). Answers how long to hold each (negative: the opposite input) to move it by
+ * `err` ([x, z]); null when the two pulses are parallel or too small to steer by. */
+export function girderHold(err: number[], f: number[], r: number[]): { forwardMs: number; rightMs: number } | null {
+  const det = f[0] * r[1] - f[1] * r[0];
+  if (Math.abs(det) < 1e-12) return null;
+  return { forwardMs: (err[0] * r[1] - err[1] * r[0]) / det, rightMs: (f[0] * err[1] - f[1] * err[0]) / det };
+}
+
+/** A hazard line by the land's box as the GAME reads it (Sandtide's rule): the base is the water when the land reaches
+ * under it, else the land's lowest point; the line is base + fraction x (top - base). */
+export function gameLine(landMinY: number, landMaxY: number, water: number | null, fraction: number): { line: number; base: number; baseKind: "water" | "landMin" } {
+  const wet = water !== null && landMinY < water && water < landMaxY;
+  const base = wet ? water! : landMinY;
+  return { line: base + fraction * (landMaxY - base), base, baseKind: wet ? "water" : "landMin" };
+}
+
+export interface BandSurface { x: number; z: number; y: number; covered: boolean; }
+/** Surfaces within `band` of a line, grouped on a grid of `cell`: each group's place, how many columns, its heights and
+ * its nearest distance to the line (signed: over 0 above it), the nearest first. */
+export function bandGroups(surf: BandSurface[], line: number, cell: number): { at: number[]; columns: number; minY: number; maxY: number; nearest: number; covered: number }[] {
+  const m = new Map<string, { n: number; x: number; z: number; lo: number; hi: number; near: number; cov: number }>();
+  for (const s of surf) {
+    const key = `${Math.floor(s.x / cell)},${Math.floor(s.z / cell)}`;
+    const g = m.get(key) ?? { n: 0, x: 0, z: 0, lo: Infinity, hi: -Infinity, near: Infinity, cov: 0 };
+    g.n++; g.x += s.x; g.z += s.z; g.lo = Math.min(g.lo, s.y); g.hi = Math.max(g.hi, s.y); if (s.covered) g.cov++;
+    if (Math.abs(s.y - line) < Math.abs(g.near)) g.near = s.y - line;
+    m.set(key, g);
+  }
+  return [...m.values()].sort((a, b) => Math.abs(a.near) - Math.abs(b.near)).map((g) => ({ at: [g.x / g.n, g.z / g.n], columns: g.n, minY: g.lo, maxY: g.hi, nearest: g.near, covered: g.cov }));
+}
+
+// ------------------------------------------------------------------ round 6: the Versus menu route
+
+/** The game's own prebuilt landscapes in the Versus landscape list (build #1077), which lists the five random themes,
+ * then "Prebuilt" in alphabetical order with the map packs' levels among them, then the Worms 3D maps. */
+export const STOCK_PREBUILT = ["Desert Oasis", "Riverboat Harbour", "This Game Does Dragon", "Wormwigs Big Rig Jig"];
+export const RANDOM_THEMES = 5;
+
+/** How many times DOWN is pressed from the top of the landscape list to reach `title`: the random themes, then its
+ * place among the prebuilt titles (the game's and the installed packs') in alphabetical order. -1 when it is not there. */
+export function landscapeIndex(title: string, packTitles: string[]): number {
+  const all = [...new Set([...STOCK_PREBUILT, ...packTitles])].sort((a, b) => a.toLowerCase().localeCompare(b.toLowerCase()));
+  const i = all.findIndex((t) => t.toLowerCase() === title.toLowerCase());
+  return i < 0 ? -1 : RANDOM_THEMES + i;
+}
+
+export interface VersusTeam { human?: boolean; cpu?: "easy" | "normal" | "hard"; }
+
+/** The key presses that take the game from its main menu into a Versus Deathmatch on a landscape (Automation's `key`
+ * and `wait` commands). Every list is walked from its top (UP as often as it is long: the lists do not wrap), so the
+ * route does not depend on where the highlight was left. `humanTeams`: how many player teams the save has (they are
+ * listed first in the team list, and a chosen one leaves it; the CPU teams follow: Easy, Normal, Hard). */
+export function versusRoute(teams: VersusTeam[], landscape: number, o: { humanTeams?: number; dismiss?: number } = {}): string[] {
+  const out: string[] = [], key = (k: string, n = 1, wait = 280) => { for (let i = 0; i < n; i++) out.push(`key ${k}`, `wait ${wait}`); };
+  let humansLeft = o.humanTeams ?? 4;
+  for (let i = 0; i < (o.dismiss ?? 0); i++) { out.push("key RETURN", "wait 4000"); }   // a prompt in the way (the language, a notice)
+  key("UP", 6); out.push("key RETURN", "wait 3000");                 // main menu: Local Game
+  key("UP", 6); key("DOWN", 4); out.push("key RETURN", "wait 3500");  // Local Game: Versus (the fifth entry)
+  key("UP", 6); out.push("key RETURN", "wait 4000");                 // the game type: Deathmatch (the first)
+  teams.forEach((t, i) => {
+    if (i) key("DOWN");                                              // the next team slot
+    out.push("key RETURN", "wait 1500");                             // its list of teams
+    key("UP", 12, 120);
+    if (t.human === false) key("DOWN", humansLeft + ["easy", "normal", "hard"].indexOf(t.cpu ?? "normal"));
+    else { if (humansLeft <= 0) throw new Error(`team ${i}: the save has no player team left (humanTeams)`); humansLeft--; }
+    out.push("key RETURN", "wait 1500");
+  });
+  out.push("key LEFT", "wait 800", "key RETURN", "wait 3000");       // the landscape, and its list
+  key("UP", 48, 90); key("DOWN", landscape); out.push("wait 400", "key RETURN", "wait 2500");
+  out.push("key DOWN", "wait 400", "key DOWN", "wait 600", "key RIGHT", "wait 600", "key RETURN");   // the back arrow, the grenade beside it: start
+  return out;
+}
+
+/** The key presses of a two-peer network match (LocalNet), each from the game's main menu (seen in the game, build
+ * #1077): Network Game, the player's team from the Select Team list, then for the host Create Match (Deathmatch,
+ * Standard, Max Players 2: the first of its list) into the lobby and the landscape picked there, for the joiner Custom
+ * Match, the search and the first match found. The joiner's route is in two parts: joinBoot takes it to the Network Game
+ * menu at once (a game left at its main menu starts its demo match after a minute), joinFind searches once the host's
+ * lobby is up. `ready`: the grenade, which the joiner's highlight is on when it enters the lobby and the host reaches
+ * from the landscape. */
+export function localnetRoute(role: "host" | "joinBoot" | "joinFind" | "hostReady" | "joinReady", o: { team?: number; landscape?: number } = {}): string[] {
+  const out: string[] = [], key = (k: string, n = 1, wait = 280) => { for (let i = 0; i < n; i++) out.push(`key ${k}`, `wait ${wait}`); };
+  if (role === "joinReady") return ["key RETURN", "wait 1500"];
+  if (role === "hostReady") { key("DOWN", 2, 400); out.push("key RIGHT", "wait 600", "key RETURN", "wait 1500"); return out; }
+  if (role === "joinFind") { key("UP", 4); key("DOWN", 2); out.push("key RETURN", "wait 3500", "key RETURN", "wait 7000", "key RETURN", "wait 6000"); return out; }   // Custom Match, search, join the first
+  key("UP", 6); key("DOWN"); out.push("key RETURN", "wait 5000");      // main menu: Network Game; the Select Team list takes a moment
+  key("UP", 6, 120); key("DOWN", o.team ?? 0); out.push("key RETURN", "wait 5000");
+  if (role === "host") {
+    key("UP", 4);
+    key("DOWN", 3); out.push("key RETURN", "wait 4000");               // Create Match
+    key("UP", 4); key("DOWN", 2); out.push("key RETURN", "wait 1500", "key RETURN", "wait 1000");   // Max Players: 2
+    key("DOWN", 2); out.push("key RETURN", "wait 6000");               // the tick: into the lobby, the highlight on the grenade
+    out.push("key LEFT", "wait 400"); key("UP", 2, 400); out.push("key RETURN", "wait 3000");       // the landscape and its list
+    key("UP", 48, 90); key("DOWN", o.landscape ?? 0); out.push("wait 400", "key RETURN", "wait 2500");
+  }
+  return out;
+}
+
+/** Worm positions as two peers read them ("slot:team:x,y,z" rows), compared: the worms that differ by more than `tol`. */
+export function comparePositions(a: { slot: number; team: number; pos: number[] }[], b: { slot: number; team: number; pos: number[] }[], tol = 0.05) {
+  const rows = a.map((w) => {
+    const o = b.find((x) => x.slot === w.slot);
+    const apart = o ? Math.hypot(w.pos[0] - o.pos[0], w.pos[1] - o.pos[1], w.pos[2] - o.pos[2]) : null;
+    return { worm: w.slot, team: w.team, host: w.pos, join: o?.pos ?? null, apart, same: apart !== null && apart <= tol && o!.team === w.team };
+  });
+  return { agree: rows.length > 0 && rows.length === b.length && rows.every((r) => r.same), worms: rows.length, differ: rows.filter((r) => !r.same) };
+}

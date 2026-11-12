@@ -15,6 +15,13 @@ Erg: spawn areas dealt per match, and the map builder (erg-mcp) grown by a secon
   opposite pairs; each match deals the teams onto areas from its seed, the same on every peer and in a replay
   (see [docs/erg.md](docs/erg.md)). A pack that uses it declares `"melange": {"range": ">=0.15.0"}`; the Erg export
   writes that range by itself.
+- `input.drive` (the test tools' drive) also holds the girder's own inputs (`Girder.Move.Forward`, `Girder.Raise`,
+  `Girder.Place`, ...) and a hand-flown camera's (`Camera.Forward`, ...), which the keys post in those control groups.
+- erg-mcp, round 6 of Dustcrown: `set_level_camera`, `render_view {waterLook, gameMatch}` (the level's sea and haze in
+  the offline picture, and a warning when the haze hides the island from the overview), `check_sea_opacity`,
+  `check_crater_traps` and `heightfield_drape {craterSlope}`, `describe_dunes`, `check_pits` filters and enclosed rooms;
+  for tests `game_use_tool` drives the girder and aims the rope by a solved angle, `game_line_clearance`,
+  `game_start_versus` (the Versus menus) and `game_localnet_match` (two peers' spawn deals compared).
 - erg-mcp (the map builder for AI agents, [docs/erg-mcp.md](docs/erg-mcp.md)): `build_compound`, `build_mesa`,
   `build_rock_bank`, `check_height_line`, `check_tool_reach`, `check_pits`, tower roofs, material bands and trim,
   `dunes()` and `ridged()` height expressions, `fillBasins`, water look presets, and `tools/erg-mcp/bench/gate.ps1`

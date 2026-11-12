@@ -1419,3 +1419,86 @@ Round 4 left seventeen gaps. Each change below is additive and off by default; w
 - **A scripted two-peer LocalNet match.** Not built: it needs two games running at once.
 - **Rope onto step 2.** The drive works; the route from the riser's foot does not reach. A hook on step 3's face from the back of step 1's ledge is the geometry left to try.
 - **Sea opacity and depth fade.** Nothing to change: the sea is opaque and writes depth.
+
+## Dustcrown round 6: what the tools gained
+
+Round 5 left seventeen gaps: twelve in the builder, five in the test harness. Each change below is additive and off by
+default; what is not closed is named at the end.
+
+### Builder
+
+| Tool | What changed |
+| --- | --- |
+| `set_level_thumbnail` | `render: {pos, target}` draws from that camera. It was refused: the `se` preset was added to every render and `render_view` takes a pose or a preset, not both. With no camera of its own the render takes the level camera when one is set, else `se`. |
+| `set_level_camera` (new) | One pose that shows the whole level, chosen by its builder: `pos` and `target`, or a side (`view`: n, ne, e, se, s, sw, w, nw; or `azimuth`) with `elevation` (default 40), the distance fitted to `fit` (`island`, the default: the land over the project's water, so the sea bed, a shell under the skin and a wiped base's empty frames do not pull it back; or `solid`) times `margin`. Kept per project for the session, like `set_level_look`. `game_camera` and `game_shots {preset: "overview"}` use it (unless the call frames its own), and so do `render_view {view: "level"}`, `set_level_thumbnail {render}` and `render_view {gameMatch}`. It edits nothing in the level, and the game's own cameras are not moved by it: a match still opens on the game's turn camera. On Dustcrown `{view: "s", elevation: 40}` stands 4 564 world units back where the fitted `se` view stands 6 151. |
+| `render_view` | `waterLook: true` draws the level's own looks, read from its script's `set_water_look` block: the sea as its sea material's matte colour at its opacity (1 hides everything under it; without a sea material the water plane's `opacity`), and the level haze (the land and the sea fade to its colour with distance, the band under the horizon is its colour). The haze follows Sunstone 2.4's own formula (`postfx/hdr/lin.frag`: land haze 0.6 x (1 - exp(-(distance - start) / range)) x amount, start 400 and range 3 000 world units unless the level names its own). `gameMatch: true` (or `{hidden, seaBy}`) is `waterLook` plus a verdict: how much of the land's colour the haze takes from this picture's camera, from the level camera (else the default overview at 0.95 x the level's span) and from the turn camera, with a warning for each camera the haze hides the island from (a third of its colour or more, by default) and for a sea that is not opaque. `view: "level"` is `set_level_camera`'s pose. Without the flags the picture is what it was. |
+| `check_sea_opacity` (new), `set_water_look {opaque}` | Does the sea let the land under it show near the shore? The lint reads the looks and the ground at or under the water within `depth` (default 2 map units), and answers for each way the sea is drawn (a water shader mod that honours the sea material, and the game's own shader) whether it is opaque and which shallow columns would show (the bed's colour times 1 - opacity against the sea's). `set_water_look {opaque: true}` sets the water plane's opacity and the sea material's to 1, keeping what else the script has, and answers the lint's verdict. Opacity is the whole of it: an opaque sea hides everything under it in the game (round 5), and what read as a translucent skirt from the overview was the haze, which `gameMatch` checks. |
+| `check_crater_traps` (new) | Cuts trial craters into copies of the level's voxels and walks out of each with a jump (2.48) as the step a worm takes. A hole the walk does not leave is a `trap` when its floor is shorter than a run-up (`room`, default 3) or its wall higher than a backflip rises (`backflip`, default 3.5), else `tight`. The craters are tried at `points`, `along` a route, or on a lattice over the ground the spawns' walks reach (the draped skin blocks by default), each moved to the middle of the ground column under it, where a blast takes the most. `radius`, or `weapon` for the game's own land damage radius (`bazooka` and `worm` 1.75, `oildrum` 2.25, `crate` 3, `explosion` 3.5); the default is a bazooka's. It answers the traps, the tight ones, spots a blast cuts off by the sea, and `fix`: the voxel height that keeps the walls under a jump. On Dustcrown's round 5 skin (2.5-unit voxels) a bazooka's blast is a trap at 120 of 958 trial spots, and a radius of 3 leaves 34 tight holes of 400 and no trap. |
+| `heightfield_drape` | `craterSlope: true` (or `{jump, clear, layers}`) holds the skin's `voxelSize` to the largest quarter unit whose crater wall a jump clears ((jump - clear) / layers: 2 map units by the defaults) and answers the size asked and used and the skin's cells at both. The name is the request's; the walls stay steps, low enough to jump: nothing a level holds makes the game slope a crater's wall. A Dustcrown-sized skin costs 25 776 cells at 2 against 16 656 at 2.5; where that does not fit, `refine {voxelSize: 2, clip, paths}` pays for the finer voxels only on the pads and the walks. |
+| `check_pits` | `at` + `radius` and `exclude` (boxes or discs) keep or leave pits whole, by their lowest point. A pit under a roof all over is `roofed`; one that no start's walk gets into as well is `enclosed` (a keep's sealed hall): counted apart, left out with `enclosed: "skip"`, and never filled by `fix` unless `fixEnclosed` (round 5 kept the hall with a `fixMaxDepth` hack). On Dustcrown it tags two sealed rooms of the palace. |
+| `build_outcrop` | With `mesa: {top, floor}` the face's steps come from that height (and `mesa.voxelSize`), not from `height`: the answer's `outcrop.face` says the voxels, steps and step. |
+| `lint_support`, `lint_contact` | One `search` for both: a fragment or a list of them, matched against a copy's name or its resource (the mesh it draws), whatever the case. `lint_support {remove: true}` removes every copy of the unsupported clumps in one undo step, as `lint_contact`'s `remove` does. |
+| `tint_landscape {grade}` | Each previewed colour answers `from`: `measured` (the grade was measured on exactly this colour: the record), `interpolated` (the fit bent toward the measured records within 48 of the colour: the nearest record, `pull`, how many took part) or the fit alone. A tint a few units off a measured one no longer jumps from the record to the fit. |
+| `describe_dunes` (new) | Do the dunes read as crested dunes? Along lines across the dune field (given, or laid along both axes and the one that crosses more crests taken) every crest answers its slope break (how far the surface turns at the top), slip-face angle, windward angle, the flat of its top, its wavelength, how far its top colour stands off its trough's in brightness (tints previewed, through a `grade` when given) and whether it rises over the eye of a worm in the trough. Each is judged against `rules` (a break of 38 degrees, a slip face of 26, the two sides 8 apart, a top no flatter than 3 map units, a contrast of 18) and names what it misses. On Dustcrown's round 5 skin: 8 crests across, none crested: the median slope break is 34 degrees (the rule asks 38), the slip face 24 (26), the windward side 10, the top flat for 3.25 map units (3); the crest stands 29 off its trough in brightness as drawn and 16 through the Sunstone day grade (18). The round's "crisp dunes" fall just short on every count. |
+| `bench/caldera/mcpclient.mjs` | `startServer` sets `MELANGE_EXE` to this checkout's `build\x86-release\Melange.exe` when the caller set none and the file is there: a probe that only named `MELANGE_GAME_DIR` started the testenv's older copy, which refused `spawns.areas`. |
+
+### Test harness
+
+| Tool | What it does |
+| --- | --- |
+| `game_use_tool {weapon: "girder"}` | The girder is steered to `target` and set down. Picking the girder puts the game in its `UtilityGirder` control group, where the keys post `Girder.Move.Forward.Pressed` / `.Released` and their fellows, `Girder.Raise`, `Girder.Lower` and `Girder.Place`; `input.drive` now holds those by name (`Girder.Move.Forward`, `Girder.Raise`, `Girder.Place`, and the hand-flown camera's `Camera.Forward` and fellows), posted from the input service's tick as a key posts them. The girder's place is the game's own `Girder.Position` (`state.vars`, once a second), so the steering is closed: a pulse each of Forward and Right measures the two axes (they follow the girder camera), then each step holds the inputs for as long as the rest of the way takes. `placed`: the game's `Girder.TotalNumberPlaced` rose. |
+| `game_use_tool {weapon: "rope", rope: {hook \| solve}}` | A solved aim. `hook: [x, y, z]` aims straight at a point; `solve: true` finds the hook for a ledge: a fan of rays from the worm toward the target, a degree apart and as long as the rope (the game's land sweep), and the lowest ray that meets land over the ledge, not short of it, whose line from the worm's feet clears the lip too (a rope whose own line just clears a lip drags the worm into the face under it). The pitch is written into the worm's own aim (its data container's `WeaponAngle`, the number `AimUp` and `AimDown` move) at a sim tick. `releaseOver` (default with a solved aim) lets the rope go the moment the worm is over the ledge. The answer has the pitch, the hook as the sweep finds it, where the worm let go and where it landed. |
+| `game_use_tool {weapon: "teleport"}` | Refused with the reason: the game has no teleport weapon (below). |
+| `game_line_clearance` (new) | `check_height_line`'s in-game twin: the line from the game's own `Land.MinBounds`, `Land.MaxBounds` and water, then the land sweep down every column of a lattice, restarted under each hit so courts under roofs are read, and every standable surface within `band` (default 40 world units) of the line, grouped, with the tools' own count on the same lattice beside it. |
+| `game_start_versus` (new) | Starts a Versus > Deathmatch match on an installed level through the game's own menus: main menu, Local Game, Versus, Deathmatch, the teams (player teams of the save, or CPU easy, normal, hard), the landscape from the list (the five random themes, then Prebuilt in alphabetical order with the packs' levels among them), the grenade. The keys go through the private build's Automation queue (`[Automation] Enabled=1`, `RunInBackground=1`), so it needs no window focus; a public build has none and the tool says so. It answers the level that loaded, its time of day line and its spawn-area deal, from the game's log. |
+| `game_localnet_match` (new) | A two-peer network match on two running games of this machine over LocalNet, and the peers compared: the host creates a Deathmatch for two and picks the landscape in the lobby, the joiner finds and joins it, both ready up; then each peer's `spawn areas: seed ...` line (`deal.agree`) and every worm's place as each peer reads it through its own Oasis (`positions.agree`). |
+
+`input.drive` is Melange's (the Controls module's drive, [oasis.md](oasis.md)); the rest is erg-mcp.
+
+### What the game showed (testenv B, and D as the second peer; the private build of this branch, Sunstone 2.4; 2026-11-12)
+
+- **Craters are boxes.** The land read back with the game's own sweep on a 0.5 lattice before and after a blast: a
+  radius of 1.75 at the middle of a 2.5-unit skin column took that one column, 2.5 deep, with vertical walls; the same
+  blast on a column's corner took nothing; a radius of 3.5 took 2 x 3 columns, one layer. That is the voxels whose
+  centres lie in the sphere, whole: what `test_explosion` predicts and `check_crater_traps` cuts.
+- **A one-column hole holds a worm.** From its floor (3.5, the rim at 6): a forward jump rose 2.55, to the rim's height
+  and no further across, three times; a backflip and a standing jump rose 3.5 and came straight down, four times. In
+  the 5 x 7.5 hole a forward jump from 3 units back got out, and a backflip did, of six tries. A jump's rise against a
+  riser was measured as 2.48 (round 4); from a hole's floor a backflip rises 3.5.
+- **No teleport.** `level.test.selectWeapon` refuses `kUtilityTeleport` and `kWeaponTeleport`: the game's weapon table
+  (ids 1 to 68) has the jetpack, the rope, the girder and the parachute and no teleport. The binary's
+  `Weapon.CreateTeleportCursor` and the inventory's `Teleport` count (which `game_give_weapons` can still set) are
+  leftovers of Worms 3D. A map cannot require a teleport; a level's own telepads are the nearest thing.
+- **The girder.** Steered from 8 map units away to within 0.4 of the target in plan in 10 s (4 to 5 map units a second, 1.2 a
+  pulse of Raise) and set down: a platform about 4.5 x 4.5 map units and 2.4 thick, floating where it is put, its top
+  at 9.6 over ground at 6 (`x7_girder_g.png`). At the plinth's face the same call answered `placed: false`: the girder
+  drew red against the wall and `Girder.Place` was refused. `Weapon.Girder.MaxDistance` is 300 world units.
+- **The rope, solved.** From step 1's outer edge (-41.6, 12, -22) toward step 2's ledge: the fan found riser 3's face at
+  (-30.0, 23.0), a pitch of 42 degrees; the worm was reeled over step 2's lip, let go at (-33.0, 20.8) and landed on
+  step 2 at (-30.7, 18.0): 5.96 up, `reached: true` (`x5_rope_w.png`). The first try, before the foot line was checked,
+  hooked through a gate's notch and held the worm 0.7 under the ledge.
+- **The sand line.** `game_line_clearance {preset: "sandtide"}`: the game's land box is -400 to 1 110 world, the water
+  20, the line 292.5: the same line `check_height_line` gives, and no standable surface within 40 of it by either. Laid
+  on step 1's ledge (y 12) as a check of the scan itself: 1 944 columns in the band by the game and 1 944 by the tools,
+  72 of them under cover.
+- **Versus by the menus.** Dustcrown is listed under Prebuilt between Desert Oasis and Riverboat Harbour. A three-team
+  Deathmatch (two player teams, CPU easy) loaded `Multi.dustcrown_dustcrown`, `time of day pinned to DAY (the frontend
+  had 'RANDOM')`, `spawn areas: seed 02059dd2, 3 teams -> areas [0, 1, 4]`: the two player teams on the west and east
+  sand pads, the third in the palace courts. An earlier start dealt `seed b19301b3 -> [4, 1, 0]`.
+- **Two peers agree.** Three LocalNet matches (D hosting, B joining): `seed d0102765 -> [3, 2]`, `a63ad85a -> [2, 3]`,
+  `8fb513da -> [1, 0]`, each line the same on both peers, and in the third all eight worms at the same places on both
+  (team 0 on the east pad, team 1 on the west). Two teams were always dealt two opposite sand areas.
+- A game started after the Steam save was put back shows a language prompt before its main menu (`dismiss: 1`); a game
+  left at its main menu starts its demo match after about a minute.
+
+### Not closed
+
+- **A start camera in the game.** `set_level_camera` frames the tools' and the harness's views. Nothing in Melange moves
+  the game's own camera at a match's start, and the pose is kept for the session only (it is not in the project or the
+  pack).
+- **Sloped crater walls.** The engine cuts whole voxels; `craterSlope` keeps the steps low instead. A 2-unit skin's
+  hole has not been tried in a Test.
+- **A girder's angle.** The game's girder inputs move, lift and place it; none turns it, so `game_use_tool` takes a
+  place and no angle.
+- **Network matches of three and four peers**, and a network match's landscape other than by its place in the list.
+- `check_tool_reach` still models a girder as a span on foot; the platform's measured size and range are in its notes.

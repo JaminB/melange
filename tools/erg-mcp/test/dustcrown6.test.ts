@@ -263,7 +263,7 @@ test("carveCrater: the cells whose centres lie in the sphere go, in a copy; the 
   });
 });
 
-const RULES = { jump: JUMP_RISE, maxSlope: 45, step: 1, headroom: 1.5, water: null, margin: 5 };
+const RULES = { jump: JUMP_RISE, maxSlope: 45, step: 0.5, headroom: 1.5, water: null, margin: 5 };
 
 test("craterVerdict: a hole in level ground of 2.5-unit voxels is a trap; in 2-unit voxels a jump clears it; a hole on a slope lets out downhill", async () => {
   // coarse flat ground: one layer goes, the walls are 2.5 all round
@@ -271,14 +271,24 @@ test("craterVerdict: a hole in level ground of 2.5-unit voxels is a trap; in 2-u
   await slab(coarse, 10, 2.5);
   const g25 = grids(coarse).filter((g) => g.frame.new);
   const v = craterVerdict(g25, [600, 10, 0], { radius: 3 }, RULES);
-  assert.deepEqual([v.trap, v.wasOpen, v.layers, v.voxel, v.depth, v.wall], [true, true, 1, 2.5, 2.5, 2.5]);
+  assert.deepEqual([v.trap, v.tight, v.wasOpen, v.layers, v.voxel, v.depth, v.wall], [false, true, true, 1, 2.5, 2.5, 2.5]);
+  // the hole a radius of 3 leaves here is 5 across: room for a run-up, so it is tight, not a trap; a bazooka's one-column
+  // hole (2.5 across) is a trap, as it was in the game, and so is the wide hole for a worm that needs more room
+  assert.ok(v.floorSpan >= 3 && v.floorSpan <= 6, `span ${v.floorSpan}`);
+  const one = craterVerdict(g25, [601.25, 10, 1.25], { radius: 1.75 }, RULES);
+  assert.deepEqual([one.trap, one.tight, one.carved, one.wall], [true, false, 1, 2.5]);
+  assert.ok(one.floorSpan < 3, `span ${one.floorSpan}`);
+  assert.equal(craterVerdict(g25, [600, 10, 0], { radius: 3 }, { ...RULES, room: 8 }).trap, true);
+  assert.equal(craterVerdict(g25, [600, 10, 0], { radius: 3 }, { ...RULES, backflip: 2.49 }).trap, true);
+  // a bazooka on a column's corner takes no voxel at all (as in the game)
+  assert.equal(craterVerdict(g25, [600, 10, 0], { radius: 1.75 }, RULES).carved, 0);
   // the same hole in 2-unit voxels
   const fine = newStore();
   await slab(fine, 10, 2);
   const w = craterVerdict(grids(fine).filter((g) => g.frame.new), [600, 10, 0], { radius: 3 }, RULES);
-  assert.deepEqual([w.trap, w.layers, w.voxel], [false, 1, 2]);
-  // a worm that jumps 3 gets out of the coarse hole
-  assert.equal(craterVerdict(g25, [600, 10, 0], { radius: 3 }, { ...RULES, jump: 3 }).trap, false);
+  assert.deepEqual([w.trap, w.tight, w.layers, w.voxel], [false, false, 1, 2]);
+  // a worm that jumps 3 walks out of the coarse hole
+  assert.deepEqual([craterVerdict(g25, [600, 10, 0], { radius: 3 }, { ...RULES, jump: 3 }).trap, craterVerdict(g25, [600, 10, 0], { radius: 3 }, { ...RULES, jump: 3 }).tight], [false, false]);
   // a draped slope of the same voxels: the wall on the downhill side is lower than a voxel
   const dune = newStore();
   skin(dune, "8 + x * 0.4");
@@ -286,11 +296,12 @@ test("craterVerdict: a hole in level ground of 2.5-unit voxels is a trap; in 2-u
   const d = craterVerdict(gd, [730, top, 0], { radius: 3 }, RULES);
   assert.equal(d.trap, false);
   assert.ok(d.carved > 0);
-  // and the level stretch of a draped skin traps, as the slab does
+  // and the level stretch of a draped skin closes, as the slab does: a one-column hole is a trap
   const pad = newStore();
   skin(pad, "8");
   const gp = grids(pad).filter((g) => g.frame.new);
-  assert.equal(craterVerdict(gp, [730, spansAt(gp, 730, 0)[0].top, 0], { radius: 3 }, RULES).trap, true);
+  const pv = craterVerdict(gp, [731.25, spansAt(gp, 731.25, 1.25)[0].top, 1.25], { radius: 1.75 }, RULES);
+  assert.deepEqual([pv.trap, pv.carved], [true, 1]);
   // the advice: the voxel a jump clears with a quarter unit to spare
   assert.deepEqual([trapAdvice([v], JUMP_RISE)!.voxelSize, trapAdvice([v], JUMP_RISE)!.layers, trapAdvice([], JUMP_RISE)], [2, 1, null]);
 });
@@ -299,28 +310,43 @@ test("check_crater_traps: the traps of a flat coarse skin, the fix it names, and
   const st = newStore();
   skin(st, "8");
   const before = words(st);
-  const r = checkCraterTraps(grids(st), { x0: 705, z0: -25, x1: 755, z1: 25, spacing: 10 }, [], null) as any;
+  // a bazooka's blast on a lattice whose points lie on column corners: each is moved to its column's middle, and every
+  // one-column hole is a trap; as given (snap none) the blasts take nothing and the skin would pass
+  const LAT = { x0: 700, z0: -30, x1: 750, z1: 20, spacing: 10, weapon: "bazooka" };
+  const raw = checkCraterTraps(grids(st), { ...LAT, snap: "none" }, [], null) as any;
+  assert.deepEqual([raw.ok, raw.craters.carvedNothing], [true, raw.craters.tried]);
+  const r = checkCraterTraps(grids(st), LAT, [], null) as any;
   assert.equal(r.ok, false);
   assert.equal(r.traps.length, r.craters.tried);
-  assert.deepEqual([r.traps[0].wall, r.traps[0].layers, r.traps[0].voxel, r.fix.voxelSize, r.craters.frames], [2.5, 1, 2.5, 2, "skin"]);
+  assert.deepEqual([r.traps[0].wall, r.traps[0].layers, r.traps[0].voxel, r.traps[0].carvedCells, r.fix.voxelSize, r.craters.frames, r.craters.radius], [2.5, 1, 2.5, 1, 2, "skin", 1.75]);
   assert.equal(words(st), before);
+  // a radius of 3 leaves holes 5 across: closed to a jump, tight, and ok (no trap); the default radius is a bazooka's
+  const wide = checkCraterTraps(grids(st), { x0: 705, z0: -25, x1: 755, z1: 25, spacing: 10, radius: 3 }, [], null) as any;
+  assert.equal((checkCraterTraps(grids(st), { x0: 700, z0: -30, x1: 750, z1: 20, spacing: 10 }, [], null) as any).craters.radius, 1.75);
+  assert.deepEqual([wide.ok, wide.traps.length, wide.tight.count, wide.fix.voxelSize], [true, 0, wide.craters.tried, 2]);
+  assert.match(wide.summary, /are tight/);
   const ok = newStore();
   skin(ok, "8", 2);
-  assert.equal((checkCraterTraps(grids(ok), { x0: 705, z0: -25, x1: 755, z1: 25, spacing: 10 }, [], null) as any).ok, true);
-  // points and a route; a weapon's radius; a radius with a weapon is refused
-  const p = checkCraterTraps(grids(st), { points: [[730, 0]], weapon: "bazooka" }, [], null) as any;
+  const fine = checkCraterTraps(grids(ok), { ...LAT, x0: 701, z0: -29, x1: 751, z1: 21 }, [], null) as any;
+  assert.deepEqual([fine.ok, fine.traps.length, fine.tight], [true, 0, undefined]);
+  // points and a route; a weapon's radius; a blast on a column's corner takes nothing, and that is said; a radius with a weapon is refused
+  const p = checkCraterTraps(grids(st), { points: [[731.25, 1.25]], weapon: "bazooka" }, [], null) as any;
   assert.deepEqual([p.craters.tried, p.craters.weapon, p.traps.length], [1, "bazooka", 1]);
+  const corner = checkCraterTraps(grids(st), { points: [[730, 0]], weapon: "bazooka" }, [], null) as any;
+  assert.deepEqual([corner.ok, corner.craters.carvedNothing], [true, 1]);
+  assert.match(corner.craters.carvedNothingNote, /corner/);
   assert.equal((checkCraterTraps(grids(st), { along: [[710, 0], [750, 0]], spacing: 10 }, [], null) as any).craters.tried, 5);
-  assert.throws(() => checkCraterTraps(grids(st), { radius: 2, weapon: "mine" }, [], null), /not both/);
-  // only ground a spawn's walk reaches: a spawn on the skin keeps the lattice, one far off the level drops it
-  const on = checkCraterTraps(grids(st), { x0: 705, z0: -25, x1: 755, z1: 25, spacing: 10 }, [[730, 8, 0]], null) as any;
+  assert.throws(() => checkCraterTraps(grids(st), { radius: 2, weapon: "crate" }, [], null), /not both/);
+  assert.throws(() => checkCraterTraps(grids(st), { weapon: "nuke" }, [], null), /is not one of/);
+  // only ground a spawn's walk reaches: a spawn on the skin keeps the lattice
+  const on = checkCraterTraps(grids(st), LAT, [[730, 8, 0]], null) as any;
   assert.equal(on.craters.tried, r.craters.tried);
   assert.match(on.craters.how, /a spawn's walk reaches/);
-  // the tool answers through the registry
-  const t = await callTool(craterTools as never, "check_crater_traps", sessionOf(st), { points: [[730, 0]], units: "world", radius: 60 }).catch((e: Error) => e);
+  // the tool answers through the registry, in world units
+  const t = await callTool(craterTools as never, "check_crater_traps", sessionOf(st), { points: [[731.25, 1.25]], units: "world", radius: 35 }).catch((e: Error) => e);
   assert.ok(t instanceof Error, "points in world units land off the skin");
-  const tw = await callTool(craterTools as never, "check_crater_traps", sessionOf(st), { points: [[14600, 0]], units: "world", radius: 60 });
-  assert.deepEqual([tw.traps.length, tw.traps[0].wall, tw.rules.jump], [1, 50, 49.6]);
+  const tw = await callTool(craterTools as never, "check_crater_traps", sessionOf(st), { points: [[14625, 25]], units: "world", radius: 35 });
+  assert.deepEqual([tw.traps.length, tw.traps[0].wall, tw.rules.jump, tw.rules.backflip, tw.rules.room], [1, 50, 49.6, 70, 60]);
 });
 
 test("heightfield_drape craterSlope: the voxel is held to what a jump clears, and says what it costs; off by default and at a fine size it changes nothing", async () => {
@@ -334,8 +360,10 @@ test("heightfield_drape craterSlope: the voxel is held to what a jump clears, an
   assert.deepEqual([dry.craterSlope.voxelSize, dry.craterSlope.wall, dry.applied], [{ asked: 2.5, used: 2 }, { asked: 2.5, used: 2 }, false]);
   assert.ok(dry.skin.cells > dry.craterSlope.skinAsAsked.cells, "the finer skin costs more cells, and says so");
   await callTool(drapeTools as never, "heightfield_drape", sessionOf(onS), { ...base, voxelSize: 2.5, craterSlope: true });
-  assert.equal((checkCraterTraps(grids(onS), { x0: 705, z0: -25, x1: 755, z1: 25, spacing: 10 }, [], null) as any).ok, true);
-  assert.equal((checkCraterTraps(grids(plainS), { x0: 705, z0: -25, x1: 755, z1: 25, spacing: 10 }, [], null) as any).ok, false);
+  // the finer skin has no trap and no tight hole; the coarse one has both kinds
+  const built = checkCraterTraps(grids(onS), { x0: 701, z0: -29, x1: 751, z1: 21, spacing: 10, weapon: "bazooka" }, [], null) as any;
+  assert.deepEqual([built.ok, built.traps.length, built.tight], [true, 0, undefined]);
+  assert.equal((checkCraterTraps(grids(plainS), { x0: 700, z0: -30, x1: 750, z1: 20, spacing: 10, weapon: "bazooka" }, [], null) as any).ok, false);
   // a size already under the cap is left alone; the rule's own numbers move the cap
   const fine = await callTool(drapeTools as never, "heightfield_drape", sessionOf(fineS), { ...base, voxelSize: 1.5, craterSlope: true });
   assert.deepEqual([fine.craterSlope.voxelSize, fine.craterSlope.skinAsAsked], [{ asked: 1.5, used: 1.5 }, undefined]);

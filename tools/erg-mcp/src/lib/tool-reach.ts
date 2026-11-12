@@ -54,6 +54,7 @@ export const CALIBRATION = {
     "jetpack.run": "60: 3 s of thrust with forward held flew 23.8 along and 27.9 up, and coasting on with forward alone it came down 54 from its take-off, with 4.5 s of fuel left; a full tank flies further, so this is a floor",
   },
   estimates: ["girder.length", "girder.maxSlope"],
+  girderInGame: "measured in a Test of Dustcrown (round 6, game_use_tool {weapon: \"girder\"}): the girder is a platform about 4.5 x 4.5 map units and 2.4 thick, set down anywhere within Weapon.Girder.MaxDistance (300 world = 15 map units) of the worm, in the air too, where it meets no land and no worm (it draws red and Girder.Place is refused otherwise); it is steered at 4 to 5 map units a second and lifted 1.2 a pulse. The span and slope above are still the estimate of what one girder bridges for a worm on foot",
   note: "the jetpack's numbers were measured in the game (Dustcrown round 3: testenv B, a Test of Dustcrown, game_select_weapon kUtilityJetpack then input.drive Input.FireUtil with and without Input.MoveForward, positions read ten times a second). The rise and run are still charged against each other (rise / 90 + run / 60 <= 1), which is under what one tank does: a flight that fails here may still be flown. The girder's numbers are estimates: no harness move places a girder yet. Pass limits.* to try others.",
 };
 
