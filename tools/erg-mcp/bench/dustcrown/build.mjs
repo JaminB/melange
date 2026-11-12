@@ -34,10 +34,12 @@ const VERSION = "1.0.0";
 // The sea material (set_water_look sea): the sand's own tone, so the sea continues the dunes (a water shader mod draws it:
 // Sunstone 2.4+; the game's own shader shows the sand preset's pale opaque sea)
 const SEA_ALBEDO = [255, 250, 180];
+// the dunes' tones under Sunstone (tint_landscape: each texture's mean becomes the colour)
+const SAND_TINT = { body: "#e6c893", trough: "#c47f3c", crest: "#f6eedb" };
 const WORM_W = 0.6;                     // a worm's body, map units (check_reachability's bodyWidth)
 
 // Materials of the Arabian theme's own file (set_theme ARABIAN, materialFile "theme"; research/mat_arab.txt)
-const MAT = { grass2: 2, rock1: 4, rock1b: 5, rock2: 6, rock2b: 7, path1: 8, path2: 9, sand01: 10, stone: 12, bricks: 14, splaster: 15,
+const MAT = { grass2: 2, grass2b: 3, rock1: 4, rock1b: 5, rock2: 6, rock2b: 7, path1: 8, path2: 9, sand01: 10, stone: 12, bricks: 14, splaster: 15,
   dome: 18, plaster: 21, sand: 24, gold: 25, goldEdge: 26, star: 30, tiles: 32, blue: 38, ochre: 57 };
 
 // ---- the numbers (DESIGN.md 1): the sea at start, the floor, the Crown's tip and the sand line ----
@@ -77,8 +79,8 @@ const desertExpr = (lower = 0) => {
     "fn ms(px, pz, rr) = smoothstep(rr + 1, rr + 7, hypot(x - px, z - pz));",
     // the dunes die down in a ring 8 wide round the plinth (no crest leans on a riser), at the pads and at the mesas' feet
     `let m = smoothstep(50, 60, sq) * ${pads} * ${mesas};`,
-    // transverse dunes, crests NNE-SSW (wind from the west), 18 apart, 3.2 high with a slip face, ridged crest lines, a broad swell
-    "let d = dunes(x, z, 15, 18, 3.2, 0.7, 7) + 0.8 * ridged(x, z, 22, 3, 5) + 0.6 * fbm(x / 45, z / 45, 3, 2);",
+    // transverse dunes, crests NNE-SSW (wind from the west), 18 apart, 3.6 high with a slip face, ridged crest lines, a broad swell
+    "let d = dunes(x, z, 15, 18, 3.6, 0.7, 7) + 0.8 * ridged(x, z, 22, 3, 5) + 0.6 * fbm(x / 45, z / 45, 3, 2);",
     `let land = ${SAND} + m * (d - 1.9);`,
     // the coast: from about 100 the dunes slope under the sea, the shore wobbling with the bearing
     "let rc = 105 + 4 * noise2(x / 28, z / 28, 9);",
@@ -132,7 +134,8 @@ try {
       { material: MAT.path1, region: padRegion, feather: { width: 1.5, pattern: "perlin", cell: 3 } },
       { material: MAT.sand01, noise: { threshold: 0.25, scale: 16, seed: 4 }, feather: { width: 0.6, pattern: "perlin", cell: 5 } },
     ],
-    crestMaterial: { material: MAT.grass2, minCurvature: 0.035, feather: 0.015 },
+    // crests in grass02blend (its own tile, A04: grass02's top is the sand's own image, so a tint of one is a tint of both)
+    crestMaterial: { material: MAT.grass2b, minCurvature: 0.035, feather: 0.015 },
     troughMaterial: { material: MAT.path2, minCurvature: 0.03, feather: 0.015 },
   };
   // the shell under the skin: the same surface 6.5 lower in 4-unit voxels, 3 thick, over the playable desert, so a hole dug
@@ -214,8 +217,9 @@ try {
   // ---- the curtain, corner towers and keep on step 3 (court floor 24): sandy plaster below a gold course, plaster above,
   // gold merlon caps; a gate a side, pinwheeled into the courts (N into NE, E into SE, S into SW, W into NW) ----
   const COURT = 24;
+  const GATE_W = 6;       // 4.5 snapped to 4 voxels (N, E) or 5 (S, W) of 1.5; 6 clears 6 at every gate (round 2)
   const castle = await call("build_castle", { at: [0, COURT, 0], size: [52, 52], wallHeight: 8, wallThickness: 3, towerShape: "round", towerRadius: 4, towerHeight: 22,
-    keep: true, keepSize: [24, 24], keepHeight: 16, gates: [{ side: "n", offset: 13, width: 4.5, height: 6 }, { side: "e", offset: 13, width: 4.5, height: 6 }, { side: "s", offset: -13, width: 4.5, height: 6 }, { side: "w", offset: -13, width: 4.5, height: 6 }],
+    keep: true, keepSize: [24, 24], keepHeight: 16, gates: ["n", "e", "s", "w"].map((side, i) => ({ side, offset: i < 2 ? 13 : -13, width: GATE_W, height: 6 })),
     gateBelow: 0, crenellations: true, foundation: 0, material: MAT.plaster, scale: 1.5, place: "new", packing: "parts",
     bands: [{ toY: 6, material: MAT.splaster }], trim: { course: { y: 6, material: MAT.goldEdge, height: 1.5 }, merlonCap: MAT.gold } }, { soft: true });
   if (castle.err) throw new Error(`build_castle: ${castle.text.slice(0, 800)}`);
@@ -238,6 +242,11 @@ try {
     ...merlons,
   ] }, { soft: true });
   say("crown", crown.err ? crown.text.slice(0, 400) : JSON.stringify({ tipY: crown.json.structureInfo?.tipY, cells: crown.json.cells }));
+  // the Crown's gold cap: a low dome in 0.75-unit voxels inside the merlon ring, its top level with the merlons' (55, the
+  // tallest point, which sets Sandtide's line)
+  const cap = await call("build_compound", { at: [0, 52, 0], scale: 0.75, place: "new", packing: "fit", maxBlocks: 1, material: MAT.gold,
+    shapes: [{ kind: "dome", radius: 4.5, height: 3 }] }, { soft: true });
+  say("crown cap", cap.err ? cap.text.slice(0, 300) : JSON.stringify({ tipY: cap.json.structureInfo?.tipY, cells: cap.json.cells?.newBlocks }));
   // onion domes on the corner towers (structureInfo.towers: each top floor's centre), in voxels of 0.75 so they read as
   // domes, not stacked tiles (the castle's own 1.5 gives a radius of 3 voxels); a gold finial
   for (const [i, t] of (castle.json.structureInfo?.towers ?? []).entries()) {
@@ -265,9 +274,16 @@ try {
   say("spawns", JSON.stringify({ deal: ps.json?.deal, warnings: ps.json?.warnings, missing: ps.json?.missingKnots, snapped: ps.json?.snapped }).slice(0, 1500));
 
   // ---- the sea reads as sand; warm (not orange) land light ----
-  const wl = await call("set_water_look", { preset: "sand", landDiffuse: [255, 244, 225], sea: { albedo: SEA_ALBEDO }, gameDir: process.env.DUSTCROWN_PLAY_DIR ?? GAME });
+  // harsh sun: a warm-white diffuse and an ambient of half of it, so the shade sides of the dunes and risers read
+  const wl = await call("set_water_look", { preset: "sand", landDiffuse: [255, 250, 238], landAmbient: [128, 125, 119], sea: { albedo: SEA_ALBEDO }, gameDir: process.env.DUSTCROWN_PLAY_DIR ?? GAME });
   say("water look", brief(wl, 500));
   if (wl.json?.warnings?.length) say("WATER LOOK WARNINGS", JSON.stringify(wl.json.warnings));
+
+  // ---- the sand's tones with Sunstone (tint_landscape, a visual channel): the body a warm, less lemon sand, the troughs
+  // (path02, A10) a deep ochre, the crests (grass02blend, A04) bleached; with Sunstone off the theme's own textures draw ----
+  const tn = await call("tint_landscape", { theme: "ARABIAN", base: "Multi.DesertOasis", tints: [
+    { material: "Sand", faces: "all", color: SAND_TINT.body }, { material: "path02", faces: "all", color: SAND_TINT.trough }, { material: "grass02blend", faces: "top", color: SAND_TINT.crest }] });
+  say("sand tints", JSON.stringify(tn.json?.tints));
 
   // ---- scenery copies from the Arabian bases (no collision): a fountain in each court, lamps on the wall-walk's corners ----
   const copies = [
