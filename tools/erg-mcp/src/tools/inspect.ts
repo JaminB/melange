@@ -16,7 +16,7 @@ import { waterByTurn, type WaterSchedule } from "../lib/flood";
 import { checkSupport, type SupportColumn } from "../lib/support";
 import { scriptWater, type ScriptWater } from "../lib/script-water";
 import { pieces } from "../lib/islets";
-import { loadMaterials, projectMaterials, resolveFile, themeFile, tintFor, type MaterialSet, type PaletteMode } from "../lib/materials";
+import { landTintPreview, loadMaterials, projectMaterials, resolveFile, themeFile, tintFor, type MaterialSet, type PaletteMode } from "../lib/materials";
 import { WORLD_PER_MAP, grids, isSolid, material, tidy, type Grid } from "../lib/voxel";
 import { ExprError, compile } from "../lib/heightfield-expr";
 import { ToolError, image, type Content, type Schema, type Tool } from "../registry";
@@ -80,11 +80,13 @@ async function materialNames(s: Session): Promise<string[] | null> {
 const paletteSchema = { type: "string", enum: ["real", "index"], description: "Material colours: real (default; each material's texture colour, from the server) or index (a distinct hue per material index, to tell neighbouring materials apart)." } as const;
 
 /** How the renders tint materials, and what to say about it. */
-async function renderTint(s: Session, mode: PaletteMode | undefined) {
+async function renderTint(s: Session, mode: PaletteMode | undefined, tints = false) {
   const set = await projectMaterials(s);
-  const tint = tintFor(set, mode);
+  const lt = tints ? landTintPreview(s.store, set, tintFor(set, mode)) : null;
+  const tint = lt?.tint ?? tintFor(set, mode);
   const real = mode !== "index" && !!set?.colors;
-  return { set, tint, note: real ? "real: each material's texture colour (the server's average of its surface texture)" : mode === "index" ? "index: a distinct hue per material index" : "index: a distinct hue per material index (the server gave no material colours)" };
+  const note = real ? "real: each material's texture colour (the server's average of its surface texture)" : mode === "index" ? "index: a distinct hue per material index" : "index: a distinct hue per material index (the server gave no material colours)";
+  return { set, tint, note: lt ? `${note}; landscape tints previewed on ${lt.materials.map((m) => `${m.name} ${m.color}`).join(", ")}` : note };
 }
 
 const regionInfo = (r: Region, u: Units) => ({
@@ -196,7 +198,7 @@ export function drawTopdown(f: Field, scale: number, opts: { water: number | nul
   return { img, px: (x: number) => MARGIN + Math.round(((x - f.x0) / f.step) * scale), pz: (z: number) => MARGIN + Math.round(((z - f.z0) / f.step) * scale) };
 }
 
-export type TopdownArgs = RegionArgs & { step?: number; scale?: number; shading?: "both" | "height" | "material"; palette?: PaletteMode };
+export type TopdownArgs = RegionArgs & { step?: number; scale?: number; shading?: "both" | "height" | "material"; palette?: PaletteMode; tints?: boolean };
 
 /** render_topdown's picture of region r without its markers: the ground, the water and the axis ticks. */
 export async function topdownView(s: Session, gs: Grid[], r: Region, a: TopdownArgs) {
@@ -210,7 +212,7 @@ export async function topdownView(s: Session, gs: Grid[], r: Region, a: TopdownA
   const f = sampleField(gs, r, step);
   const water = waterMap(store);
   const shading = a.shading ?? "both";
-  const pal = await renderTint(s, a.palette);
+  const pal = await renderTint(s, a.palette, a.tints);
   const { img, px, pz } = drawTopdown(f, scale, { water, shading, tint: pal.tint });
   // axis ticks at a whole number of units, at least 36 pixels apart
   const tickStep = [1, 2, 5, 10, 20, 50, 100, 200, 500].find((t) => (t / step) * scale >= 36) ?? 1000;
@@ -440,7 +442,7 @@ export async function queryGround(s: Session, a: { x: number; z: number; units?:
 // ------------------------------------------------------------------ check_pits
 
 interface PitArgs extends RegionArgs { step?: number; maxStep?: number; maxSlope?: number; slopeOver?: "tread" | "riser" | "segment" | "skin"; headroom?: number; water?: boolean; maxGap?: number;
-  maxArea?: number; minClimb?: number; from?: number[][]; bodyWidth?: number; islets?: boolean; limit?: number; maxDrop?: number; }
+  maxArea?: number; minClimb?: number; from?: number[][]; bodyWidth?: number; islets?: boolean; limit?: number; maxDrop?: number; shore?: "list" | "skip"; }
 
 /** The pits of the open level (lib/pits): closed hollows a worm walks or drops into and cannot walk out of. */
 export function checkPits(store: EditorStore, a: PitArgs) {
@@ -477,17 +479,22 @@ export function checkPits(store: EditorStore, a: PitArgs) {
     for (const id of hit) reachedBy[id].push(st.name);
   }
   const rows = found.traps.map((t, i) => ({ t, by: reachedBy[i] }));
-  const pitRows = rows.filter((x) => x.t.kind === "pit").sort((x, y) => (y.by.length ? 1 : 0) - (x.by.length ? 1 : 0) || y.t.climbOut! - x.t.climbOut!);
+  let pitRows = rows.filter((x) => x.t.kind === "pit").sort((x, y) => (y.by.length ? 1 : 0) - (x.by.length ? 1 : 0) || y.t.climbOut! - x.t.climbOut!);
   const isl = rows.filter((x) => x.t.kind === "islet");
   const row = (x: { t: Trap; by: string[] }) => ({ at: out(x.t.at), floorY: r2(outUnit(x.t.floor, u)), ...(x.t.kind === "pit" ? { climbOut: r2(outUnit(x.t.climbOut!, u)), rimAt: out(x.t.exitAt!) } : {}),
     area: r2(x.t.area * k2), columns: x.t.nodes.length, box: { min: x.t.min.map((v) => r2(outUnit(v, u))), max: x.t.max.map((v) => r2(outUnit(v, u))) },
+    ...(x.t.shore ? { shore: true } : {}),
     ...(x.by.length ? { reachedFrom: x.by.slice(0, 16) } : {}) });
+  // shore: "skip" leaves the shore perches out (their way out is the sea); the default lists them, tagged
+  const shoreN = pitRows.filter((x) => x.t.shore).length;
+  if (a.shore === "skip") pitRows = pitRows.filter((x) => !x.t.shore);
   const limit = a.limit ?? 30, entered = pitRows.filter((x) => x.by.length).length;
   return {
     ok: pitRows.length === 0,
     summary: pitRows.length ? `${pitRows.length} pit${pitRows.length === 1 ? "" : "s"} a worm cannot walk out of` + (starts.length ? `, ${entered} of them walked or dropped into from a start` : "") +
       `; the deepest needs a climb of ${r2(outUnit(Math.max(...pitRows.map((x) => x.t.climbOut!)), u))}` : "no pit: every hollow has a walk out",
     pits: pitRows.slice(0, limit).map(row), ...(pitRows.length > limit ? { more: pitRows.length - limit } : {}),
+    ...(shoreN ? { shore: { count: shoreN, listed: a.shore !== "skip", note: "pits tagged shore have wet ground beside them a step away: a perch on a steep shore whose way out is the sea, not a closed hollow. fillBasins does not fill them (the sea is their outlet); limit the shore's slope (maxGradient, a gentler coast) or pass shore: \"skip\"" } } : {}),
     islets: a.islets ? isl.slice(0, limit).map(row) : { count: isl.length, note: "ground with no other ground beside it (a rock in the sea, a ledge over the void): islets: true lists them" },
     rules: { step: r2(outUnit(step, u)), maxStep: r2(outUnit(o.maxStep, u)), maxSlope: o.maxSlope, slopeOver: o.slopeOver, maxGap: r2(outUnit(o.maxGap, u)), headroom: r2(outUnit(o.headroom, u)),
       maxArea: r2((a.maxArea === undefined ? TRAP_AREA : a.maxArea / k2) * k2), water: water === null ? "not used" : r2(outUnit(water, u)), units: u ?? "map",
@@ -498,6 +505,19 @@ export function checkPits(store: EditorStore, a: PitArgs) {
 
 /** save's advisory lists pits whose least climb out is at least this (map units): a worm's own jump clears less. */
 export const ADVISORY_CLIMB = 1.5;
+
+/** save's `pitsMinor`: the pits between a step and ADVISORY_CLIMB that a spawn's walk gets into, counted (a worm jumps
+ * out of them; a walk test or a CPU worm can still sit in one), with the shore perches apart. Null when there is none. */
+export function minorPits(store: EditorStore): { count: number; shore: number; deepest: number; examples: number[][]; note: string } | null {
+  try {
+    const r = checkPits(store, { units: "map" }) as { pits: { at: number[]; climbOut?: number; shore?: boolean; reachedFrom?: string[] }[] };
+    const knots = markers(store).some((m) => m.kind === "spawn");
+    const minor = r.pits.filter((p) => (p.climbOut ?? 0) < ADVISORY_CLIMB && (!knots || p.reachedFrom?.length));
+    if (!minor.length) return null;
+    return { count: minor.length, shore: minor.filter((p) => p.shore).length, deepest: Math.max(...minor.map((p) => p.climbOut ?? 0)), examples: minor.slice(0, 4).map((p) => p.at),
+      note: `pits a step (0.5) to ${ADVISORY_CLIMB} map units deep that a spawn's walk gets into: a jump leaves them, a walk does not (check_pits lists them; shore: perches on a steep shore, whose way out is the sea)` };
+  } catch { return null; }
+}
 
 /** save's advisory: the pits of the level as warning lines (at most `limit`), nothing when there is none or the level
  * is too large to read quickly. */
@@ -1327,6 +1347,7 @@ export const tools: Tool[] = [
         shading: { type: "string", enum: ["both", "height", "material"], description: "both (default): material tint with relief; height: grey relief only; material: flat tints." },
         markers: { type: "boolean", description: "Draw spawns and objects (default true)." },
         palette: paletteSchema,
+        tints: { type: "boolean", description: "Preview the level's landscape tints (tint_landscape): a material whose top tile is tinted draws in the tint's colour (default false)." },
       },
     },
     handler: (s, a) => renderTopdown(s, a),
@@ -1487,6 +1508,7 @@ export const tools: Tool[] = [
         maxDrop: { type: "number", minimum: 0, description: "The longest drop a start's walk takes for reachedFrom (default 8 map units); the pits themselves are found with every drop allowed." },
         from: { type: "array", maxItems: 64, items: { type: "array", items: { type: "number" }, minItems: 3, maxItems: 3 }, description: "Start points [x, y, z] for reachedFrom, instead of the spawn knots." },
         islets: { type: "boolean", description: "List the islets too (default: only their count)." },
+        shore: { type: "string", enum: ["list", "skip"], description: "Shore perches (a pit with wet ground a step away: its way out is the sea, a steep shore rather than a hollow): list (default; each tagged `shore: true`, counted under `shore`) or skip (left out of pits, ok and the summary)." },
         limit: { type: "integer", minimum: 1, maximum: 200, description: "Pits listed (default 30), those a start reaches first, then the deepest." },
       },
     },
@@ -1563,23 +1585,48 @@ export const tools: Tool[] = [
         ...regionProps,
         around: { type: "object", additionalProperties: false, required: ["x", "z", "radius"], properties: { x: { type: "number" }, z: { type: "number" }, radius: { type: "number", minimum: 0.1 } },
           description: "A circle instead of (or inside) the region, in the call's units." },
-        step: { type: "number", minimum: 0.1, maximum: 8, description: "Ray spacing in the call's units (default 0.5 map units)." },
+        along: { type: "array", minItems: 2, maxItems: 4000, items: { type: "array", items: { type: "number" }, minItems: 2, maxItems: 3 },
+          description: "A walk instead of a region: waypoints ([x, z] or [x, y, z] in the call's units, e.g. check_reachability's `waypoints` or the route a tester steers). Only the corridor within `width` / 2 of the polyline is read, at a `step` of 0.25 map units unless given: finer than any skin's voxels, so a seam between two skin blocks or a one-cell hole on the walk shows. Each hole and seam answers `alongAt`, its distance along the walk." },
+        width: { type: "number", minimum: 0.1, maximum: 40, description: "along: the corridor's width in the call's units (default 2 map units: a worm's body and a little either side)." },
+        step: { type: "number", minimum: 0.1, maximum: 8, description: "Ray spacing in the call's units (default 0.5 map units; 0.25 with along)." },
         above: { type: "number", description: "A ray must hit ground over this height (the call's units; default the project's water level, else 0)." },
         seams: { type: "boolean", description: "Also look for seams (default true)." },
         limit: { type: "integer", minimum: 1, maximum: 200, description: "Hole groups to list (default 20)." },
       },
     },
-    handler(s, a: RegionArgs & { around?: { x: number; z: number; radius: number }; step?: number; above?: number; seams?: boolean; limit?: number }) {
+    handler(s, a: RegionArgs & { around?: { x: number; z: number; radius: number }; along?: number[][]; width?: number; step?: number; above?: number; seams?: boolean; limit?: number }) {
       const gs = grids(s.store), u = a.units;
       const c = a.around && { x: inMap(a.around.x, u), z: inMap(a.around.z, u), r: inMap(a.around.radius, u) };
       const fa = flatRegion(a);
-      const r = c && fa.x0 === undefined && fa.x1 === undefined && fa.z0 === undefined && fa.z1 === undefined
+      // along: the walk's corridor, in map units ([x, z] or [x, y, z] waypoints)
+      const path = a.along?.map((q, i) => {
+        if (!q.every(Number.isFinite)) throw new ToolError(`along[${i}]: [x, z] or [x, y, z]`);
+        return [inMap(q[0], u), inMap(q[q.length - 1], u)] as [number, number];
+      });
+      if (path && c) throw new ToolError("give along or around, not both");
+      if (a.width !== undefined && !path) throw new ToolError("width goes with along");
+      const half = path ? (a.width === undefined ? 2 : inMap(a.width, u)) / 2 : 0;
+      // the nearest point of the walk: its distance from (x, z) and how far along the walk it is
+      const nearPath = (x: number, z: number): { d: number; along: number } => {
+        let best = { d: Infinity, along: 0 }, run = 0;
+        for (let i = 1; i < path!.length; i++) {
+          const [ax, az] = path![i - 1], [bx, bz] = path![i], ex = bx - ax, ez = bz - az, len = Math.hypot(ex, ez);
+          const t = len ? Math.max(0, Math.min(1, ((x - ax) * ex + (z - az) * ez) / (len * len))) : 0;
+          const d = Math.hypot(x - (ax + ex * t), z - (az + ez * t));
+          if (d < best.d) best = { d, along: run + len * t };
+          run += len;
+        }
+        return best;
+      };
+      const r = path
+        ? { x0: Math.min(...path.map((q) => q[0])) - half, z0: Math.min(...path.map((q) => q[1])) - half, x1: Math.max(...path.map((q) => q[0])) + half, z1: Math.max(...path.map((q) => q[1])) + half }
+        : c && fa.x0 === undefined && fa.x1 === undefined && fa.z0 === undefined && fa.z1 === undefined
         ? { x0: c.x - c.r, z0: c.z - c.r, x1: c.x + c.r, z1: c.z + c.r } : region(gs, a);
-      const step = a.step === undefined ? 0.5 : inMap(a.step, u);
+      const step = a.step === undefined ? (path ? 0.25 : 0.5) : inMap(a.step, u);
       const cols = Math.ceil((r.x1 - r.x0) / step) * Math.ceil((r.z1 - r.z0) / step);
       if (cols > 1_000_000) throw new ToolError(`${cols} columns is too many (at most 1000000): use a larger step or a smaller region`);
       const water = waterMap(s.store), above = a.above !== undefined ? inMap(a.above, u) : water ?? 0;
-      const rep = findHoles(gs, r, step, above, c ? (x, z) => Math.hypot(x - c.x, z - c.z) <= c.r : undefined);
+      const rep = findHoles(gs, r, step, above, path ? (x, z) => nearPath(x, z).d <= half : c ? (x, z) => Math.hypot(x - c.x, z - c.z) <= c.r : undefined);
       const o = (v: number) => r2(outUnit(v, u)), xz = (p: [number, number]) => [o(p[0]), o(p[1])];
       const seams = a.seams !== false;
       return compact({
@@ -1587,11 +1634,11 @@ export const tools: Tool[] = [
         summary: `${rep.holes} of ${rep.columns} rays (${Math.round(rep.fraction * 1000) / 10} %) hit no ground over ${o(above)}` +
           (rep.clusters.length ? `, in ${rep.clusters.length} hole${rep.clusters.length > 1 ? "s" : ""} (largest ${o(rep.clusters[0].area * (u === "world" ? WORLD_PER_MAP : 1))} ${u === "world" ? "world" : "map"} units square at ${xz(rep.clusters[0].centre).join(", ")})` : "") +
           (seams ? `; ${rep.seamCount} seam${rep.seamCount === 1 ? "" : "s"}` : ""),
-        region: regionInfo(r, u), ...(c ? { around: a.around } : {}), step: o(step), above: o(above),
+        region: regionInfo(r, u), ...(c ? { around: a.around } : {}), ...(path ? { along: { waypoints: path.length, width: o(half * 2), note: "only the corridor round the walk was read; alongAt is the distance along it" } } : {}), step: o(step), above: o(above),
         aboveNote: a.above !== undefined ? "as given" : water !== null ? "the project's water level" : "0 (the project keeps the level's own water height)",
         holes: { columns: rep.holes, of: rep.columns, groups: rep.clusters.slice(0, a.limit ?? 20).map((h) => ({ cells: h.cells, area: r2(h.area * (u === "world" ? WORLD_PER_MAP * WORLD_PER_MAP : 1)),
-          centre: xz(h.centre), min: xz(h.min), max: xz(h.max), through: h.through })), groupCount: rep.clusters.length },
-        ...(seams ? { seams: { count: rep.seamCount, examples: rep.seams.slice(0, 20).map((m) => ({ at: xz(m.at), gap: o(m.gap), tops: m.tops.map(o) })) } } : {}),
+          centre: xz(h.centre), min: xz(h.min), max: xz(h.max), through: h.through, ...(path ? { alongAt: o(nearPath(h.centre[0], h.centre[1]).along) } : {}) })), groupCount: rep.clusters.length },
+        ...(seams ? { seams: { count: rep.seamCount, examples: rep.seams.slice(0, 20).map((m) => ({ at: xz(m.at), gap: o(m.gap), tops: m.tops.map(o), ...(path ? { alongAt: o(nearPath(m.at[0], m.at[1]).along) } : {}) })) } } : {}),
       });
     },
   },

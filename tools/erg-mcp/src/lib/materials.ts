@@ -3,6 +3,7 @@
 // voxels with these colours; servers without them (older ones, the mock) fall back to distinct index hues.
 import type { Session } from "../session";
 import { hex, materialTint, type Rgb } from "./inspect-png";
+import { landTintsOf, tintTheme, tintedMaterialColours } from "./landtint";
 
 export interface MaterialSet {
   file: string;
@@ -76,6 +77,17 @@ export function tintFor(set: MaterialSet | null, mode: PaletteMode = "real"): (m
   if (mode === "index" || !set?.colors) return materialTint;
   const c = set.colors;
   return (m) => c[m] ?? materialTint(m);
+}
+
+/** tintFor with the level's landscape tints laid over it (the renders' `tints: true`): a material whose top tile a
+ * tint_landscape carrier recolours draws in that colour. Null when the level has no tint the theme's records name. */
+export function landTintPreview(store: { scene: { details: { name: string; src: unknown }[]; databank: { theme?: string | null } } }, set: MaterialSet | null, base: (m: number) => Rgb): { tint: (m: number) => Rgb; materials: { material: number; name: string; color: string }[] } | null {
+  const theme = tintTheme(store.scene.databank.theme) ?? "PREHISTORIC";
+  const tints = store.scene.details.filter((d) => d.src === null).flatMap((d) => landTintsOf(d.name, theme));
+  if (!set || !tints.length) return null;
+  const over = tintedMaterialColours(set.names, tints, theme);
+  if (!over.size) return null;
+  return { tint: (m) => over.get(m) ?? base(m), materials: [...over].map(([m, c]) => ({ material: m, name: set.names[m], color: hex(c) })) };
 }
 
 export const colourOf = (tint: (m: number) => Rgb, m: number) => hex(tint(m));

@@ -3,7 +3,7 @@
 import type { Vec3 } from "../core";
 import { extentXZ, markers, waterMap, type Region } from "../lib/inspect-field";
 import { encodePng } from "../lib/inspect-png";
-import { projectMaterials, tintFor, type PaletteMode } from "../lib/materials";
+import { landTintPreview, projectMaterials, tintFor, type PaletteMode } from "../lib/materials";
 import { MARKER_RGB, boxCorners, cameraAngles, fitDistance, gridCorner, lookFor, orbitCamera, renderView, type Camera, type View } from "../lib/render-3d";
 import { WORLD_PER_MAP, grids, isSolid, type Grid } from "../lib/voxel";
 import { ToolError, image, type Tool } from "../registry";
@@ -18,7 +18,7 @@ interface ViewArgs {
   azimuth?: number; elevation?: number; distance?: number;
   region?: { x0?: number; z0?: number; x1?: number; z1?: number }; clip?: boolean;
   width?: number; height?: number; fog?: number; timeOfDay?: "DAY" | "EVENING" | "NIGHT"; markers?: boolean; palette?: PaletteMode;
-  antialias?: boolean; edges?: boolean; scenery?: boolean;
+  antialias?: boolean; edges?: boolean; scenery?: boolean; tints?: boolean;
 }
 
 const BEARING: Record<"nw" | "ne" | "sw" | "se", number> = { ne: 45, se: 135, sw: 225, nw: 315 };
@@ -117,7 +117,8 @@ export async function renderViewTool(s: Session, a: ViewArgs) {
   const cams = cameras(a, gs, points, tw / th);
 
   const set = await projectMaterials(s);
-  const tint = tintFor(set, a.palette);
+  const lt = a.tints ? landTintPreview(store, set, tintFor(set, a.palette)) : null;
+  const tint = lt?.tint ?? tintFor(set, a.palette);
   const real = a.palette !== "index" && !!set?.colors;
   const tod = a.timeOfDay ?? (store.scene.databank.timeOfDay || "DAY");
   const water = waterMap(store);
@@ -160,6 +161,7 @@ export async function renderViewTool(s: Session, a: ViewArgs) {
     framesDrawn: `${Math.max(...views.map((v) => v.framesDrawn))} of ${gs.length} voxel frames`,
     timeOfDay: tod,
     palette: real ? "real: each material's texture colour (the server's average of its surface texture)" : "index: a distinct hue per material index" + (a.palette === "index" ? "" : " (the server gave no material colours)"),
+    ...(a.tints ? { tints: lt ? { materials: lt.materials, note: "each material whose top tile a tint_landscape carrier recolours is drawn in the tint's colour (what Sunstone draws; with Sunstone off the game shows the theme's textures)" } : "the level has no landscape tint on a top tile of its material file" } : {}),
     water: water === null ? "the level's own height (not known here, so not drawn)" : { map: r2(water), world: r2(water * WORLD_PER_MAP), drawn: "a translucent plane" },
     fog: input.fog ? { distance: r2(a.fog!), units: u ?? "map" } : "none",
     region: { x: [r2(r.x0), r2(r.x1)], z: [r2(r.z0), r2(r.z1)], units: "map", clip: !!a.clip },
@@ -200,6 +202,7 @@ export const tools: Tool[] = [
         timeOfDay: { type: "string", enum: ["DAY", "EVENING", "NIGHT"], description: "Sky and light (default the level's)." },
         markers: { type: "boolean", description: "Draw spawns and objects (default true)." },
         palette: { type: "string", enum: ["real", "index"], description: "Material colours: real (default; each material's texture colour) or index (a distinct hue per index)." },
+        tints: { type: "boolean", description: "Preview the level's landscape tints (tint_landscape): a material whose top tile is tinted draws in the tint's colour (default false: the textures' own colours)." },
         antialias: { type: "boolean", description: "Render at 2x2 samples per pixel (smoother edges, about 3-4 times slower; default false)." },
         edges: { type: "boolean", description: "Darken silhouette edges (default true)." },
         scenery: { type: "boolean", description: "Also draw the scenery details (copies included) by their preview meshes, flat-shaded in each mesh's average texture colour (default false; lights and emitters are not drawn). The text part then gives `scenery`: meshes drawn and resources with no mesh." },

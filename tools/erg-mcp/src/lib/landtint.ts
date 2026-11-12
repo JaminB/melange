@@ -152,3 +152,41 @@ export function landTintsOf(name: string, theme: TintTheme = "PREHISTORIC"): Lan
 export function carrierName(sourceName: string, digest: string, color: string): string {
   return `${sourceName.replace(LTINT_RE, "")}_landtint_ltint${digest.toLowerCase()}${color.replace(/^#/, "").toLowerCase()}`;
 }
+
+/** "#rrggbb" read as an sRGB colour -> the linear-light value the tag carries. Sunstone's landscape shader multiplies
+ * the tag's colour in linear light and the game's output is then gamma-encoded, so a tag written with the hex a picker
+ * shows draws far lighter than it (Dustcrown round 2b: #c47f3c a flat orange, #f6eedb white). */
+export function srgbToLinearHex(color: string): string {
+  const h = color.replace(/^#/, "");
+  let out = "#";
+  for (let i = 0; i < 3; i++) {
+    const v = parseInt(h.slice(2 * i, 2 * i + 2), 16) / 255;
+    const lin = v <= 0.04045 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4;
+    out += Math.round(lin * 255).toString(16).padStart(2, "0");
+  }
+  return out;
+}
+
+/** The inverse: a tag's linear colour -> the sRGB colour it draws as (for the renders' preview). */
+export function linearToSrgb(color: string): [number, number, number] {
+  const h = color.replace(/^#/, "");
+  return [0, 1, 2].map((i) => {
+    const v = parseInt(h.slice(2 * i, 2 * i + 2), 16) / 255;
+    return Math.round((v <= 0.0031308 ? v * 12.92 : 1.055 * v ** (1 / 2.4) - 0.055) * 255);
+  }) as [number, number, number];
+}
+
+/** The renders' tint preview: for each material of a material file (its record names, in index order) whose TOP tile a
+ * land tint recolours, the colour the tint draws it as (the texture's mean becomes the tag's colour, shown in sRGB).
+ * Records are matched by name against `theme`'s, so a file in another order still previews the right materials. */
+export function tintedMaterialColours(names: string[], tints: LandTint[], theme: TintTheme): Map<number, [number, number, number]> {
+  const out = new Map<number, [number, number, number]>();
+  if (!tints.length) return out;
+  const recs = TINT_THEMES[theme].materials, tiles: Record<string, string> = TINT_THEMES[theme].tiles;
+  names.forEach((n, m) => {
+    const r = recs.find((x) => x[4].toLowerCase() === String(n).toLowerCase());
+    const t = r && tints.find((x) => x.digest === tiles[r[0]]);
+    if (t) out.set(m, linearToSrgb(t.color));
+  });
+  return out;
+}

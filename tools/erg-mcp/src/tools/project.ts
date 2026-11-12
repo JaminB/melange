@@ -4,7 +4,7 @@ import { grids, limitProblems, tidy, toWorld, usage } from "../lib/voxel";
 import { ToolError, type Tool } from "../registry";
 import type { Session } from "../session";
 import { currentHash, factoryReport, spawnTreadWarnings } from "./place";
-import { pitWarnings } from "./inspect";
+import { minorPits, pitWarnings } from "./inspect";
 import { waterShaderMods } from "./place";
 import { readSea, readWaterLook, shaderOverrideWarnings } from "../lib/water-look";
 import { backdropOf, coverLevel, waterBackdropWarning } from "../lib/backdrop";
@@ -258,7 +258,7 @@ export const tools: Tool[] = [
       // spawn knots a worm cannot stand on (in solid, no ground near under it, on an edge): saved all the same, and said so
       const spawns = (() => { try { return spawnTreadWarnings(s.store); } catch { return [] as string[]; } })();
       // pits a worm cannot walk out of (check_pits with its defaults): advisory
-      const pits = pitWarnings(s.store);
+      const pits = pitWarnings(s.store), pitsMinor = minorPits(s.store);
       // a water look (set_water_look) that an enabled water shader mod of the game folder does not draw: advisory
       const waterLook = await (async () => {
         const script = (await s.requireProject().erg.script()) ?? "";
@@ -267,7 +267,7 @@ export const tools: Tool[] = [
       })().catch(() => [] as string[]);
       // the hash test {expectHash} checks the game's project against (the patch and the script, not the stem or title)
       const projectHash = await currentHash(s).catch(() => undefined);
-      return { ...r, ...(projectHash ? { projectHash } : {}), ...(factory.length ? { factory } : {}), ...(sea?.warning ? { water: sea } : {}), ...(spawns.length ? { spawns } : {}), ...(pits.length ? { pits } : {}), ...(waterLook.length ? { waterLook } : {}), ...pokeReport(s.store), ...state(s), patchBytes: usage(s.store).patchBytes.used };
+      return { ...r, ...(projectHash ? { projectHash } : {}), ...(factory.length ? { factory } : {}), ...(sea?.warning ? { water: sea } : {}), ...(spawns.length ? { spawns } : {}), ...(pits.length ? { pits } : {}), ...(pitsMinor ? { pitsMinor } : {}), ...(waterLook.length ? { waterLook } : {}), ...pokeReport(s.store), ...state(s), patchBytes: usage(s.store).patchBytes.used };
     },
   },
   {

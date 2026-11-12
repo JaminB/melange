@@ -67,6 +67,10 @@ export interface Trap {
   climbOut: number | null;
   exitAt: Vec3 | null;             // where that climb is (the ground climbed onto)
   kind: "pit" | "islet";
+  /** A pit beside the sea: one of its nodes has ground at or under the water in the next column that it could step or
+   * drop to were it dry. Its way out is into the water: a steep shore (a perch between the waterline and a face too
+   * steep to climb), not a closed hollow, so filling basins never removes it (limit the shore's slope instead). */
+  shore?: boolean;
 }
 
 export interface TrapOptions {
@@ -142,6 +146,7 @@ export function findTraps(S: Surfaces, o: ReachOptions, t: TrapOptions): { trapO
     for (const q of own) for (const n of members[q]) nodes.push(n);
     let lowN = nodes[0], top = -Infinity, climbOut: number | null = null, exitAt: Vec3 | null = null;
     const min: [number, number] = [Infinity, Infinity], max: [number, number] = [-Infinity, -Infinity];
+    let shore = false;
     for (const n of nodes) {
       if (S.y[n] < S.y[lowN]) lowN = n;
       top = Math.max(top, S.y[n]);
@@ -154,13 +159,15 @@ export function findTraps(S: Surfaces, o: ReachOptions, t: TrapOptions): { trapO
         if (ni < 0 || nj < 0 || ni >= S.w || nj >= S.h) continue;
         const nc = nj * S.w + ni;
         for (let b = S.start[nc]; b < S.start[nc + 1]; b++) {
+          // wet ground beside it, no higher than a step up: the sea is this node's way out
+          if (ro.water !== null && S.y[b] <= ro.water && S.y[b] <= S.y[n] + ro.maxStep + 1e-6) shore = true;
           if (!dry(b) || own.has(comp[b])) continue;
           const rise = S.y[b] - S.y[n];
           if (rise > 0 && (climbOut === null || rise < climbOut)) { climbOut = rise; exitAt = nodeAt(S, b); }
         }
       }
     }
-    return { nodes, area: nodes.length * S.step * S.step, floor: S.y[lowN], top, at: nodeAt(S, lowN), min, max, climbOut, exitAt, kind: climbOut === null ? "islet" : "pit" };
+    return { nodes, area: nodes.length * S.step * S.step, floor: S.y[lowN], top, at: nodeAt(S, lowN), min, max, climbOut, exitAt, kind: climbOut === null ? "islet" : "pit", ...(shore ? { shore } : {}) };
   };
   const cand: (Trap | null)[] = closure.map((cl, c) => (cl ? make(c) : null));
   // closures nest (a pit in the floor of a pit, a pit on an islet): closure(q) lies inside closure(c) when q is in it.

@@ -9,7 +9,7 @@
 // Under the skin the core (optional, default on) is the usual stepped field cut down to floor(lowest corner - 0.25), so
 // its steps stay inside the skin; it is planned and packed by heightfield-plan (its cells, blocks and frames as there).
 // The skin's corner heights are the mean of the field's heights of the columns round each corner.
-import { AddFrame, Group, LIMITS, blockFrames, cellBudget, filled, validNewFrameScale, type Command, type EditorStore, type Frame, type Vec3 } from "../core";
+import { AddFrame, CORNER_BIT, Group, LIMITS, blockFrames, cellBudget, filled, material, secondOf, validNewFrameScale, withSecond, type Command, type EditorStore, type Frame, type Vec3 } from "../core";
 import { ToolError } from "../registry";
 import { floorReport, plan, planCommands, sampleField, SIDE, type Area, type Field, type FieldArgs, type Plan } from "./heightfield-plan";
 import { WORLD_PER_MAP, tidy } from "./voxel";
@@ -57,7 +57,11 @@ export interface SteepMaterial { material: number; minSlope?: number; feather?: 
  * (over +minCurvature) troughMaterial, in every skin voxel; steepMaterial wins over both and a crest over a trough.
  * minCurvature is per map unit (default 0.01: a dune of 6 map units over a 40-unit wavelength reads about 0.07 at its
  * crest). feather (same unit) dithers the edge over minCurvature +- feather / 2 as steepMaterial's does. */
-export interface CurveMaterial { material: number; minCurvature?: number; radius?: number; feather?: number; }
+export interface CurveMaterial { material: number; minCurvature?: number; radius?: number; feather?: number;
+  /** Soften the rule's edge: a column beside the rule's columns takes the material as its SECOND material on the corners
+   * it shares with them (the game's per-corner blend), so the edge is a gradient along the crest line instead of a
+   * saw-tooth of whole columns. Default off. */
+  blend?: boolean; }
 
 interface Curve { H: ArrayLike<number>; W: number; nx: number; nz: number; s: number; crest?: CurveMaterial; trough?: CurveMaterial; }
 
@@ -80,6 +84,31 @@ function curveRule(c: Curve, i: number, k: number): "crest" | "trough" | undefin
     if (fe <= 0 ? cv >= min : cv >= min - fe / 2 + (fe * (BAYER[(k % 4) * 4 + (i % 4)] + 0.5)) / 16) return name;
   }
   return undefined;
+}
+
+/** CurveMaterial.blend: for a column the curvature rules leave alone, the first blended rule (crest first) that holds on
+ * a column sharing a corner with it, and those corners' mask bits (top and bottom), or null. Steep columns are not
+ * crest or trough (steepMaterial wins), so they lend no corner. */
+function softEdge(f: Field, c: Curve, steep: { H: ArrayLike<number>; W: number; m: SteepMaterial } | undefined, i: number, k: number): { material: number; bits: number } | null {
+  for (const name of ["crest", "trough"] as const) {
+    const r = c[name];
+    if (!r?.blend) continue;
+    let bits = 0;
+    for (let cz = 0; cz < 2; cz++)
+      for (let cx = 0; cx < 2; cx++) {
+        let touch = false;
+        for (let dz = cz - 1; dz <= cz && !touch; dz++)
+          for (let dx = cx - 1; dx <= cx && !touch; dx++) {
+            const a = i + dx, b = k + dz;
+            if ((!dx && !dz) || a < 0 || b < 0 || a >= f.nx || b >= f.nz || !live(f, b * f.nx + a)) continue;
+            if (steep && isSteep(steep, a, b)) continue;
+            if (curveRule(c, a, b) === name) touch = true;
+          }
+        if (touch) bits |= (1 << CORNER_BIT[1][cz][cx]) | (1 << CORNER_BIT[0][cz][cx]);
+      }
+    if (bits) return { material: r.material, bits };
+  }
+  return null;
 }
 
 // a 4 x 4 ordered (Bayer) pattern, 0..15
@@ -217,7 +246,12 @@ function skinWords(f: Field, t: Tile, T: number, steep?: { H: ArrayLike<number>;
         continue;
       }
       // Materials as the stepped field would give its top T voxels, so height bands and surface rules carry over.
-      for (let y = 0; y < T; y++) w[(z * X + x) * T + y] = f.wordAt(c, f.hi[c] - T + y, true);
+      const soft = curve && softEdge(f, curve, steep, t.x0 + x, t.z0 + z);
+      for (let y = 0; y < T; y++) {
+        const own = f.wordAt(c, f.hi[c] - T + y, true);
+        // a voxel the field already blends keeps its own second material
+        w[(z * X + x) * T + y] = soft && material(own) !== soft.material && secondOf(own) < 0 ? withSecond(own, soft.material, soft.bits) : own;
+      }
     }
   return w;
 }
@@ -400,9 +434,14 @@ function planDrapeOne(store: EditorStore, a: DrapeArgs): DrapePlan {
       const r = curveRule(curve, i, k);
       if (r) count[r]++;
     }
-    const part = (r: CurveMaterial | undefined, n: number) => r ? { material: r.material, minCurvature: r.minCurvature ?? 0.01, radius: num(r.radius ?? f.s), ...(r.feather ? { feather: r.feather } : {}), columns: n } : undefined;
+    const part = (r: CurveMaterial | undefined, n: number) => r ? { material: r.material, minCurvature: r.minCurvature ?? 0.01, radius: num(r.radius ?? f.s), ...(r.feather ? { feather: r.feather } : {}), ...(r.blend ? { blend: true } : {}), columns: n } : undefined;
+    let blended = 0;
+    if (curve.crest?.blend || curve.trough?.blend)
+      for (const t of ts) for (let k = t.z0; k < t.z1; k++) for (let i = t.x0; i < t.x1; i++)
+        if (live(f, k * f.nx + i) && !(steep && isSteep(steep, i, k)) && !curveRule(curve, i, k) && softEdge(f, curve, steep, i, k)) blended++;
     Object.assign(report, { curveMaterials: { ...(curve.crest ? { crest: part(curve.crest, count.crest) } : {}), ...(curve.trough ? { trough: part(curve.trough, count.trough) } : {}),
-      note: "skin columns whose surface curves up (crest) or down (trough) by at least minCurvature per map unit take that material in every skin voxel, steepMaterial first" } });
+      ...(blended ? { blendedEdge: blended } : {}),
+      note: "skin columns whose surface curves up (crest) or down (trough) by at least minCurvature per map unit take that material in every skin voxel, steepMaterial first" + (blended ? "; blendedEdge: the columns beside them that take it as their second material on the shared corners (blend: a gradient instead of a step)" : "") } });
   }
   return { field: f, T, tiles: ts, core, report, steep, curve };
 }

@@ -55,7 +55,8 @@ const BASE = { at: [520, 0], floor: 0, top: 12, shape: { kind: "circle", radius:
 test("build_mesa is registered with a strict schema", () => {
   assert.ok(tool);
   assert.equal(tool.inputSchema.additionalProperties, false);
-  assert.deepEqual((tool.inputSchema as any).required, ["floor", "top", "shape"]);
+  // floor is asked for by the handler unless onSkin seats the mesa (Dustcrown round 3)
+  assert.deepEqual((tool.inputSchema as any).required, ["top", "shape"]);
   assert.deepEqual((tool.inputSchema as any).properties.shape.properties.kind.enum, ["circle", "ellipse", "polygon"]);
   for (const k of ["costOnly", "maxCells", "maxBlocks", "talus", "cap", "strata", "tread", "wobble"]) assert.ok((tool.inputSchema as any).properties[k], k);
 });

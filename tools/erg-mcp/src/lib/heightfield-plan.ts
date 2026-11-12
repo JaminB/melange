@@ -1255,11 +1255,11 @@ let strokes = -1_000_000;
 
 /** Applies a plan that fits as one undo step: the frame fills, then the blocks. */
 /** `extra` adds commands to the same undo step, given the block ids and names taken so far (heightfield_drape's skin). */
-export function apply(store: EditorStore, p: Plan, extra?: (ids: Set<number>, names: Set<string>) => Command[]): { blocks: { id: number; name: string }[] } {
+export function apply(store: EditorStore, p: Plan, extra?: (ids: Set<number>, names: Set<string>) => Command[], prefix = "ergblock"): { blocks: { id: number; name: string }[] } {
   if (!p.fits) throw new ToolError(p.why ?? "the heightfield does not fit");
   const names = new Set(store.scene.frames.map((fr) => fr.name.toLowerCase()));
   const ids = new Set(blockFrames(store.scene).map((fr) => fr.id));
-  const { cmds, blocks: made } = planCommands(store, p, { ids, names });
+  const { cmds, blocks: made } = planCommands(store, p, { ids, names }, prefix);
   if (extra) cmds.push(...extra(ids, names));
   if (!cmds.length) throw new ToolError(p.why ? `nothing could be placed: ${p.why}` : "the field is already solid: nothing to place");
   const before = new Set(store.problems());
@@ -1275,7 +1275,7 @@ export function apply(store: EditorStore, p: Plan, extra?: (ids: Set<number>, na
 /** A plan's commands (the frame fills, then its blocks), not yet run: `taken` holds the block ids and names used so far
  * and gets the new ones, so several plans go into one undo step (heightfield_drape's refine: a coarse skin and a fine
  * one along the trails). */
-export function planCommands(store: EditorStore, p: Plan, taken: { ids: Set<number>; names: Set<string> }): { cmds: Command[]; blocks: { id: number; name: string }[] } {
+export function planCommands(store: EditorStore, p: Plan, taken: { ids: Set<number>; names: Set<string> }, prefix = "ergblock"): { cmds: Command[]; blocks: { id: number; name: string }[] } {
   const f = p.field;
   const cmds: Command[] = [];
   const changes = new Map<number, Map<number, [number, number]>>();
@@ -1285,10 +1285,10 @@ export function planCommands(store: EditorStore, p: Plan, taken: { ids: Set<numb
   const made: { id: number; name: string }[] = [];
   let n = 0, tmp = -1;
   for (const pc of p.kept) {
-    while (names.has(`ergblock_${n}`)) n++;
+    while (names.has(`${prefix}_${n}`)) n++;
     while (ids.has(tmp)) tmp--;
     if (tmp < -LIMITS.newFrames) throw new ToolError(`a level holds at most ${LIMITS.newFrames} added blocks`);
-    const name = `ergblock_${n}`;
+    const name = `${prefix}_${n}`;
     names.add(name);
     ids.add(tmp);
     const size: Vec3 = [pc.x1 - pc.x0, pc.y1 - pc.y0, pc.z1 - pc.z0], s = f.s;

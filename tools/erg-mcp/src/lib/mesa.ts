@@ -22,7 +22,14 @@ export interface MesaArgs {
   top: number;
   shape: MesaShape;
   wobble?: { amount: number; scale?: number; seed?: number };
-  strata?: { step?: number; riserJitter?: number; bands?: { material: number; thickness: number }[]; bandJitter?: { amount: number; scale?: number; seed?: number } };
+  strata?: { step?: number; riserJitter?: number; bands?: { material: number; thickness: number }[]; bandJitter?: { amount: number; scale?: number; seed?: number };
+    /** bands (default): the bands repeat as given, level and of even thickness. beds: sedimentary beds, each band's
+     * thickness varied 0.4-1.6 x by `seed`, every edge wandering (bandJitter, default a third of the mean thickness)
+     * and dithered (`feather`, default one voxel, blue noise), so a small mesa does not read as a striped cube. */
+    style?: "bands" | "beds"; seed?: number; feather?: number };
+  /** Gullies: notches weathered into the cliff. Noise along the outline cuts it back by up to `depth` (units) in
+   * alcoves about `spacing` apart (default 3 x depth), all the way up, so the plan is lobed instead of a disc or box. */
+  gullies?: { depth: number; spacing?: number; seed?: number };
   tread?: { walkable?: boolean; width?: number; jitter?: number; scale?: number; seed?: number };
   talus?: { height?: number; width?: number; material?: number; profile?: "linear" | "concave" };
   cap?: { material: number; depth?: number };
@@ -144,6 +151,9 @@ export function mesaField(store: EditorStore, a: MesaArgs, extra: Partial<FieldA
     bx0 = Math.min(...pts.map((p) => p[0])); bx1 = Math.max(...pts.map((p) => p[0]));
     bz0 = Math.min(...pts.map((p) => p[1])); bz1 = Math.max(...pts.map((p) => p[1]));
   }
+  const gul = a.gullies;
+  if (gul && !(gul.depth >= 0 && (gul.spacing === undefined || gul.spacing > 0))) throw new ToolError("gullies: depth 0 or more, spacing above 0");
+  const gulD = (gul?.depth ?? 0) * k, gulS = (gul?.spacing ?? 3 * (gul?.depth ?? 1)) * k * 0.5, gulSeed = (gul?.seed ?? 0) + 733;
   const reach = wobAmt + talusW + 2 * s;                           // the footprint's margin round the outline's box
   bx0 -= reach; bx1 += reach; bz0 -= reach; bz1 += reach;
 
@@ -164,6 +174,11 @@ export function mesaField(store: EditorStore, a: MesaArgs, extra: Partial<FieldA
       const x = (i0 + c + 0.5) * s + t[0], z = (j0 + b + 0.5) * s + t[2];
       let d = dist(x, z);
       if (wobAmt) d += wobAmt * clamp1(0.9 * (noise2(x / wobScale, z / wobScale, (wob?.seed ?? 1)) + 0.5 * noise2((2 * x) / wobScale, (2 * z) / wobScale, (wob?.seed ?? 1) + 5)));
+      if (gulD) {
+        // only the cut side of the noise, sharpened: narrow alcoves between broad buttresses
+        const g = Math.max(0, clamp1(1.6 * noise2(x / gulS, z / gulS, gulSeed)) - 0.1) / 0.9;
+        d -= gulD * g * g;
+      }
       let h = 0, lv = -1;
       for (let i = 0; i < n; i++) {
         const j = jitM ? jitM * clamp1(noise2(x / jScale, z / jScale, seed + 17 * (i + 1))) : 0;
@@ -203,15 +218,24 @@ export function mesaField(store: EditorStore, a: MesaArgs, extra: Partial<FieldA
       if (!Number.isInteger(b.material) || b.material < 0 || b.material > 63) throw new ToolError(`strata.bands[${i}].material: a material is 0-63`);
       if (!(b.thickness > 0)) throw new ToolError(`strata.bands[${i}].thickness is above 0`);
     });
-    const period = bands.reduce((p, b) => p + b.thickness, 0), bj = st.bandJitter;
+    const period = bands.reduce((p, b) => p + b.thickness, 0);
+    const beds = st.style === "beds";
+    if (st.style !== undefined && st.style !== "bands" && !beds) throw new ToolError("strata.style: bands or beds");
+    if (st.feather !== undefined && !(st.feather >= 0)) throw new ToolError("strata.feather is 0 or more");
+    const bj = st.bandJitter ?? (beds ? { amount: period / bands.length / 3, scale: Math.max(6, 4 * s) * ku, seed: st.seed ?? 0 } : undefined);
+    const fe = st.feather ?? (beds ? s * ku : 0);
     let y = 0;
     for (let guard = 0; ; guard++) {
-      const b = bands[guard % bands.length], last = y + b.thickness >= (Hm * ku) - 1e-6;
+      const b = bands[guard % bands.length];
+      // a bed's thickness: the band's, varied 0.4-1.6 x by the seed (never under a voxel, so every bed shows)
+      const th = beds ? Math.max(s * ku, b.thickness * (1 + 0.6 * clamp1(1.8 * noise2(guard * 2.3 + 0.7, 1.3, (st.seed ?? 0) + 311)))) : b.thickness;
+      const last = y + th >= (Hm * ku) - 1e-6;
       if (rules.length > 62) throw new ToolError(`the strata bands make more than 60 rules: thicker bands (a period is ${round3(period)} for ${round3(Hm * ku)} of height)`);
-      rules.push({ material: b.material, minHeight: y, ...(last ? {} : { maxHeight: y + b.thickness }),
-        ...(bj ? { jitter: { amount: bj.amount, scale: bj.scale, seed: (bj.seed ?? 0) + guard } } : {}) });
+      rules.push({ material: b.material, minHeight: y, ...(last ? {} : { maxHeight: y + th }),
+        ...(bj ? { jitter: { amount: bj.amount, scale: bj.scale, seed: (bj.seed ?? 0) + guard } } : {}),
+        ...(fe > 0 ? { feather: { width: fe, pattern: "blue" as const, seed: (st.seed ?? 0) + guard } } : {}) });
       bandCount++;
-      y += b.thickness;
+      y += th;
       if (last) break;
     }
   }
@@ -261,7 +285,8 @@ export function mesaField(store: EditorStore, a: MesaArgs, extra: Partial<FieldA
     ledges,
     plateau: { columns: plateauCols, area: round3(plateauCols * s * s * ku * ku), deepest: um(plateauMax) },
     talus: ta ? { height: um(talusH), width: um(talusW), profile: ta.profile ?? "linear" } : null,
-    strataBands: bandCount,
+    strataBands: bandCount, ...(st.style === "beds" ? { strataStyle: "beds" } : {}),
+    ...(gulD ? { gullies: { depth: um(gulD), spacing: um(gulS * 2) } } : {}),
     ...(plateauCols < 9 ? { warning: `the plateau is only ${plateauCols} column${plateauCols === 1 ? "" : "s"}: a tower, not a mesa (fewer or narrower steps, or a larger outline, leave a top to stand on)` } : {}),
     footprint: { min, max, units: a.units ?? "map", columns: [nx, nz], circles: count },
   };
