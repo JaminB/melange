@@ -5,6 +5,11 @@
 // texture, the Light* colours light it. Its fields are found by name in the container class's field list
 // (weapons/fields.cpp), so their offsets are the engine's own. A write is put back when the match's VM closes (the
 // container is the theme's resource and outlives the match). Render state only: the sim never reads it.
+//
+// The sea material (Melange 0.15): water.cg takes its colour from the theme's water texture, so no field makes a sea of
+// sand or lava. Sea = {r, g, b[, opacity]} and SeaKeep = {reflection, foam} are not engine fields: they are kept here
+// and told to client mods as the event melange.level.sea {on, r, g, b, opacity, reflection, foam}, which a mod that
+// replaces the water shader draws (docs/erg.md "Sea material"). The match's end sends {on = false}.
 #include <windows.h>
 
 #include <cmath>
@@ -17,9 +22,11 @@
 #include "core/log.h"
 #include "core/mem.h"
 #include "core/module.h"
+#include "lua/event_names.h"
 #include "lua/sim/bridge_internal.h"
 #include "lua/sim/sim_core.h"
 #include "melange/gamestate.h"
+#include "melange/lua.h"
 #include "weapons/engine.h"
 #include "weapons/fields.h"
 
@@ -44,8 +51,45 @@ constexpr const char* kNames[] = {
     "NearOpacity", "ReflectionStrength", "ReflectionContrast", "SubtractColourScale", "SpecularContrast", "SpecularPower",
     "SpecularFadeScale", "TextureScale", "LandSpecularPower", "LandFresnelPower", "SkyBlendColor", "LightAmbient",
     "LightDiffuse", "LightSpecular", "LightFresnel", "LandFresnelColour", "NormalIntensity", "NormalIntensity1",
-    "LightDirection", nullptr,
+    "LightDirection", "Sea", "SeaKeep", nullptr,
 };
+
+// The sea material of the running match (main thread): the colour 0-255, the rest 0-1.
+struct Sea {
+    bool on = false;
+    float r = 0, g = 0, b = 0, opacity = 1, reflection = 0, foam = 0;
+};
+Sea g_sea;
+
+void PostSea() {
+    char json[192];
+    if (g_sea.on)
+        snprintf(json, sizeof json, "{\"on\":true,\"r\":%g,\"g\":%g,\"b\":%g,\"opacity\":%g,\"reflection\":%g,\"foam\":%g}", g_sea.r, g_sea.g,
+                 g_sea.b, g_sea.opacity, g_sea.reflection, g_sea.foam);
+    else
+        snprintf(json, sizeof json, "{\"on\":false}");
+    melange::lua::PostEvent(melange::sandbox::ev::kLevelSea, json);
+}
+
+// Sea = {r, g, b[, opacity]} or SeaKeep = {reflection, foam}: nullptr, or why not.
+const char* SetSea(const char* field, const float* v, int n) {
+    if (std::strcmp(field, "Sea") == 0) {
+        if (n < 3 || n > 4) return "must be {r, g, b[, opacity]}: the colour 0-255, the opacity 0-1";
+        for (int i = 0; i < 3; ++i)
+            if (!(v[i] >= 0 && v[i] <= 255)) return "colour parts must be 0-255";
+        if (n == 4 && !(v[3] >= 0 && v[3] <= 1)) return "the opacity must be 0-1";
+        g_sea.on = true;
+        g_sea.r = v[0], g_sea.g = v[1], g_sea.b = v[2];
+        g_sea.opacity = n == 4 ? v[3] : 1.0f;
+        LOG_INFO("[levels] water look: sea material %g %g %g, opacity %g", g_sea.r, g_sea.g, g_sea.b, g_sea.opacity);
+    } else {
+        if (n != 2) return "must be {reflection, foam}, each 0-1";
+        if (!(v[0] >= 0 && v[0] <= 1) || !(v[1] >= 0 && v[1] <= 1)) return "reflection and foam must be 0-1";
+        g_sea.reflection = v[0], g_sea.foam = v[1];
+    }
+    if (g_sea.on) PostSea();
+    return nullptr;
+}
 
 size_t Bytes(Kind k) { return k == Kind::F32 ? 4 : k == Kind::Rgb ? 3 : k == Kind::Rgba ? 4 : 12; }
 
@@ -84,6 +128,7 @@ uintptr_t FieldAt(uintptr_t c, const char* field) {
 }
 
 const char* Set(const char* field, const float* v, int n) {
+    if (std::strcmp(field, "Sea") == 0 || std::strcmp(field, "SeaKeep") == 0) return SetSea(field, v, n);
     const Known* k = Find(field);
     if (!k) return "not a water field";
     std::string name;
@@ -129,6 +174,16 @@ const char* Set(const char* field, const float* v, int n) {
 }
 
 int Get(const char* field, float out[4]) {
+    if (std::strcmp(field, "Sea") == 0) {
+        if (!g_sea.on) return -1;
+        out[0] = g_sea.r, out[1] = g_sea.g, out[2] = g_sea.b, out[3] = g_sea.opacity;
+        return 4;
+    }
+    if (std::strcmp(field, "SeaKeep") == 0) {
+        if (!g_sea.on) return -1;
+        out[0] = g_sea.reflection, out[1] = g_sea.foam;
+        return 2;
+    }
     const Known* k = Find(field);
     const uintptr_t c = k ? Container(nullptr) : 0;
     const uintptr_t at = c ? FieldAt(c, field) : 0;
@@ -149,6 +204,11 @@ int Get(const char* field, float out[4]) {
 
 // Before the match's VM closes: the theme's values back.
 void OnMatch(bool begin, void*) {
+    if (!begin && g_sea.on) {
+        g_sea = Sea{};
+        PostSea();
+        LOG_INFO("[levels] water look: the sea material is off again");
+    }
     if (begin || g_saved.empty()) return;
     for (const Saved& s : g_saved) mem::Write(s.at, s.bytes.data(), s.bytes.size());
     LOG_INFO("[levels] water look: %zu field(s) of the theme's water put back", g_saved.size());

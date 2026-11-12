@@ -988,8 +988,19 @@ struct Service::Impl {
         std::vector<spice::Error> errs;
         if (!spice::Parse(dir, &m, &errs) || m.id != modId)
             return Err(kBadParams, "no mod '" + modId + "' with a valid spice.json" + (errs.empty() ? "" : ": " + errs.front().text));
+        // A pack this Melange is too old for is quarantined at launch (store/compat): say that here, where a builder
+        // meets it first, instead of building levels the game then refuses.
+        if (!env.melangeVersion.empty() && !m.melangeRange.empty() && spice::ValidRange(m.melangeRange) &&
+            !spice::SemverSatisfies(env.melangeVersion, m.melangeRange))
+            return Err(kBadParams, "mod '" + modId + "' needs Melange " + m.melangeRange + " and this is Melange " + env.melangeVersion +
+                                       ": the pack is quarantined until Melange is updated, so its levels are not built");
         install::Pack pack;
-        if (!install::PackFromManifest(m, dir, &pack)) return Err(kBadParams, "mod '" + modId + "' declares no valid levels");
+        if (!install::PackFromManifest(m, dir, &pack)) {
+            std::vector<levels::manifest::Error> lerrs;
+            levels::manifest::Parse(m, &lerrs);
+            return Err(kBadParams, "mod '" + modId + "' declares no valid levels" +
+                                       (m.levels.empty() ? ": its spice.json lists none" : lerrs.empty() ? "" : ": " + lerrs.front().text));
+        }
         const std::wstring root = install::LevelRoot(pack);
         // Every level is built once to check it, then built again and written one at a time, so only one level's
         // files are held at once and nothing is written unless all of them build.

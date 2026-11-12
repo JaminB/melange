@@ -58,7 +58,7 @@ A map's spawn mode is either:
   `WORM4` and `WORM5`, not on `WORM2` and `WORM3` as plain knots would). Put each team's four markers in its own base
   and every team starts there. A two-team game needs `WORM0`..`WORM7`; the checks warn when `WORM8`..`WORM15` are
   missing, which a third or fourth team needs. A team's fifth and sixth worms start at random.
-- **Areas dealt per match** (Melange after 0.14.1): named spawn areas, each in a group (for example four `sand` areas and one
+- **Areas dealt per match** (Melange 0.15): named spawn areas, each in a group (for example four `sand` areas and one
   `palace`), with 1-8 markers each (at most 8 areas and 32 markers, `WORM0`..`WORM31`: area 1's markers first, then
   area 2's, and so on). At the start of every match Melange deals each team one area from the match's seed, so every
   machine of a network game and a replay deal the same: first the **deal pattern**'s groups in order (each an unused
@@ -305,6 +305,25 @@ whatever the target): erg-mcp's `game_mines {fire}` shoots the volley.
 
 Set a water level or leave it at the map's own default. The number is in world units, with sea level at 0; on Diner
 Might, 150 floods nearly everything.
+
+### Sea material
+
+The game's water shader takes its colour from the theme's blue water texture, so the water settings can make a sea pale
+or dark but never sand, lava or tar. A level whose sea is not water says so with a **sea material** (Melange 0.15), and
+a graphics mod that replaces the water shader draws it. The contract has two ends:
+
+- The level script calls `wum.level.water{Sea = {r, g, b, opacity}, SeaKeep = {reflection, foam}}`. `r`, `g`, `b` are
+  the sea's colour, 0-255, as it should read in daylight. `opacity` is 0-1 (default 1, which hides what is under the
+  sea). `SeaKeep` says how much of the shader's sky reflection and shore foam the sea keeps, each 0-1 (default 0: a
+  matte surface). erg-mcp's `set_water_look` writes the call for `sea: {albedo, opacity, reflection, foam}`, in a call
+  of its own so an older Melange, which refuses the unknown field, still sets the rest of the look.
+- Melange sends client mods the event `melange.level.sea` with `{on = true, r, g, b, opacity, reflection, foam}`, and
+  `{on = false}` when the match ends. A water shader mod listens with `wum.events.on("melange.level.sea", fn)` and
+  draws the sea as that matte colour while it is on. Sunstone 2.4 does.
+
+Nothing the simulation reads changes: the sea still rises and drowns as water does, and a replay or another peer
+without such a mod plays the same match. Without a water shader mod the game's own water draws, so set the water's own
+look as well (an opaque pale sea: erg-mcp's `sand` preset).
 
 ## Theme and time of day
 

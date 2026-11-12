@@ -81,6 +81,10 @@ Names:
   - `melange.match.start` `{online}`, `melange.match.end`.
   - `melange.mods.changed`: the mod list changed.
   - `melange.reload` `{id}`: a mod was hot-reloaded.
+  - `melange.level.sea` `{on, r, g, b, opacity, reflection, foam}` (Melange 0.15): the level's sea material, set by its
+    script with `wum.level.water{Sea = {r, g, b, opacity}, SeaKeep = {reflection, foam}}` (the colour 0-255, the rest
+    0-1), and `{on = false}` when the match ends. A mod that replaces the water shader draws the sea as that matte
+    colour ([erg.md](erg.md#sea-material)).
   - `melange.turnHold` `{ticks, tick, roundMsLeft}` and `melange.turnHoldEnd` `{ticks, tick, roundMsLeft}`: a sim mod
     held the next turn start with `wum.sim.holdTurn` (`ticks` is the hold's length, or at the end the ticks held;
     `tick` the sim tick; `roundMsLeft` the round clock, which does not run during the hold). See the developer guide's

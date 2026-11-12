@@ -5,6 +5,8 @@ import { ToolError, type Tool } from "../registry";
 import type { Session } from "../session";
 import { currentHash, factoryReport, spawnTreadWarnings } from "./place";
 import { pitWarnings } from "./inspect";
+import { waterShaderMods } from "./place";
+import { readSea, readWaterLook, shaderOverrideWarnings } from "../lib/water-look";
 import { backdropOf, coverLevel, waterBackdropWarning } from "../lib/backdrop";
 import { drapePokes, onSkinBlocks, pokeLines } from "../lib/drape-pokes";
 import { landBounds } from "../lib/height-line";
@@ -257,9 +259,15 @@ export const tools: Tool[] = [
       const spawns = (() => { try { return spawnTreadWarnings(s.store); } catch { return [] as string[]; } })();
       // pits a worm cannot walk out of (check_pits with its defaults): advisory
       const pits = pitWarnings(s.store);
+      // a water look (set_water_look) that an enabled water shader mod of the game folder does not draw: advisory
+      const waterLook = await (async () => {
+        const script = (await s.requireProject().erg.script()) ?? "";
+        const look = readWaterLook(script), sea = readSea(script);
+        return look || sea ? shaderOverrideWarnings(waterShaderMods(process.env.MELANGE_GAME_DIR), look, sea) : [];
+      })().catch(() => [] as string[]);
       // the hash test {expectHash} checks the game's project against (the patch and the script, not the stem or title)
       const projectHash = await currentHash(s).catch(() => undefined);
-      return { ...r, ...(projectHash ? { projectHash } : {}), ...(factory.length ? { factory } : {}), ...(sea?.warning ? { water: sea } : {}), ...(spawns.length ? { spawns } : {}), ...(pits.length ? { pits } : {}), ...pokeReport(s.store), ...state(s), patchBytes: usage(s.store).patchBytes.used };
+      return { ...r, ...(projectHash ? { projectHash } : {}), ...(factory.length ? { factory } : {}), ...(sea?.warning ? { water: sea } : {}), ...(spawns.length ? { spawns } : {}), ...(pits.length ? { pits } : {}), ...(waterLook.length ? { waterLook } : {}), ...pokeReport(s.store), ...state(s), patchBytes: usage(s.store).patchBytes.used };
     },
   },
   {

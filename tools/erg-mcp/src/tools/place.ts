@@ -2,6 +2,8 @@
 // oil drums, moving, turning, scaling and removing them, the level's settings (water, theme, time of day, spawn and
 // surround modes), the level script, and shipping the level (export, build, test, live packs). Placing uses the Erg
 // panel's own model (model/placing.ts, ground.ts), so a placed object is the one the palette places.
+import fs from "node:fs";
+import path from "node:path";
 import {
   AddDetail, AddObjects, AREA_KNOTS, BUILTIN, Group, KNOT_RESOURCE, KNOTS, LIMITS, TEAM_KNOTS, PAD_SPACING, RemoveDetail, SPAWN_AREA_LIMITS, SetDetail, SetLevel, SetObject, THEMES, TIMES_OF_DAY,
   areaFirstKnot, catalogOf, checkScene, defaultObject, nextObjectKnot, nextTelepadGroup, objectOf, place, spawnsProblems, targetFrame,
@@ -19,7 +21,7 @@ import { documentsDir } from "../oasis";
 import { automationFile, holdRoundClock, stopHold, tools as gameTools } from "./game";
 import { CAMERA_RISE, WALL_RADIUS, nearestTread, spawnWarnings, treadAt, treadWarnings } from "../lib/spawn-check";
 import { dealPreview } from "../lib/spawn-deal";
-import { expandWaterPreset, readWaterLook, waterLookProblems, WATER_PRESETS, withWaterLook, type WaterLook } from "../lib/water-look";
+import { expandWaterPreset, readSea, readWaterLook, seaLook, shaderOverrideWarnings, waterLookProblems, SEA_EVENT, WATER_PRESETS, withWaterLook, type SeaLook, type WaterLook, type WaterShaderMod } from "../lib/water-look";
 import { checkFactory, factoryLines } from "../lib/factory-check";
 import { projectHash, readSource, storedThrow } from "../lib/project-hash";
 import { count, diff, fromSaved, mergeRuns, pairOf, summary, toSaved, type AssertRun, type SavedRun } from "../lib/assert-log";
@@ -1056,6 +1058,26 @@ export function teamsLine(teams?: TestTeam[]): string {
 
 const modId: Schema = { type: "string", description: "Mod id: a-z, 0-9, '-' and '_' (it becomes the pack prefix; 'ergtest' is reserved)." };
 
+/** The mods of a game folder that replace the water plane's shader (Mods\<id>\shaders\Water.*.glsl), whether each is
+ * enabled (Mods\thumper-state.json) and whether its shader or client script names the sea material's message. */
+export function waterShaderMods(gameDir: string | undefined): WaterShaderMod[] {
+  if (!gameDir) return [];
+  const modsDir = path.join(gameDir, "Mods"), out: WaterShaderMod[] = [];
+  let enabled: Record<string, boolean> | null = null;
+  try { enabled = JSON.parse(fs.readFileSync(path.join(modsDir, "thumper-state.json"), "utf8")).enabled ?? null; } catch { enabled = null; }
+  let ids: string[] = [];
+  try { ids = fs.readdirSync(modsDir).filter((n) => fs.statSync(path.join(modsDir, n)).isDirectory()); } catch { return []; }
+  for (const id of ids.sort()) {
+    let files: string[] = [];
+    try { files = fs.readdirSync(path.join(modsDir, id, "shaders")).filter((f) => /^Water\..*\.glsl$/i.test(f)); } catch { continue; }
+    if (!files.length) continue;
+    const texts = [...files.map((f) => path.join(modsDir, id, "shaders", f)), path.join(modsDir, id, "client", "init.lua")];
+    const honours = texts.some((f) => { try { return fs.readFileSync(f, "utf8").includes(SEA_EVENT); } catch { return false; } });
+    out.push({ mod: id, file: `shaders\\${files[0]}`, honoursSea: honours, enabled: enabled && id in enabled ? !!enabled[id] : null });
+  }
+  return out;
+}
+
 export const tools: Tool[] = [
   {
     name: "place_spawn_knots",
@@ -1249,9 +1271,16 @@ export const tools: Tool[] = [
       landAmbient: { type: "array", items: { type: "number" }, minItems: 3, maxItems: 3, description: "LightAmbient [r, g, b] 0-255: the land's ambient light (the landscape shader's globalAmbient, from the same tweaks): a tint of the whole terrain. In a Test red turned the island red." },
       landDiffuse: { type: "array", items: { type: "number" }, minItems: 3, maxItems: 3, description: "LightDiffuse [r, g, b] 0-255: the land's sunlight (globalDiffuse)." },
       fields: { type: "object", description: "More WaterPlaneTweaks fields by name: a number, or [r, g, b(, a)] 0-255 for a colour, [x, y, z] for a vector." },
+      sea: { type: "object", additionalProperties: false, required: ["albedo"], description: "The sea material: the water plane as a matte surface of one colour (a sand sea, lava, tar), which the game's own water shader cannot draw (its colour is the theme's blue texture: the sand preset is pale, never tan). The level script sets it with wum.level.water{Sea = {r, g, b, opacity}, SeaKeep = {reflection, foam}} (Melange 0.15; an older one skips it), Melange tells client mods with the event melange.level.sea, and a mod that replaces the water shader draws it: Sunstone 2.4+ does (opaque albedo lit by the sun, no reflection, refraction or foam unless asked). Without such a mod the fields and preset still apply, so give both: {preset: \"sand\", sea: {albedo: [214, 190, 140]}}. The answer's shaderMods lists the installed water shader mods of gameDir and whether each honours it.",
+        properties: { albedo: { type: "array", items: { type: "number", minimum: 0, maximum: 255 }, minItems: 3, maxItems: 3, description: "[r, g, b] 0-255, as the colour should read in daylight." },
+          opacity: { type: "number", minimum: 0, maximum: 1, description: "Default 1: nothing under the sea shows." },
+          reflection: { type: "number", minimum: 0, maximum: 1, description: "How much of the shader's sky reflection is kept (default 0)." },
+          foam: { type: "number", minimum: 0, maximum: 1, description: "How much of the shader's shore foam is kept (default 0)." } } },
+      gameDir: { type: "string", description: "The game folder whose Mods are checked for water shader mods (default MELANGE_GAME_DIR)." },
       clear: { type: "boolean", description: "Remove the block: the theme's water again." },
     } },
-    async handler(s, a: { preset?: string; tint?: number[]; opacity?: number; reflection?: number; shade?: number; landAmbient?: number[]; landDiffuse?: number[]; fields?: WaterLook; clear?: boolean }) {
+    async handler(s, a: { preset?: string; tint?: number[]; opacity?: number; reflection?: number; shade?: number; landAmbient?: number[]; landDiffuse?: number[]; fields?: WaterLook; clear?: boolean;
+      sea?: { albedo?: number[]; opacity?: number; reflection?: number; foam?: number }; gameDir?: string }) {
       const p = s.requireProject();
       let look: WaterLook = { ...(a.fields ?? {}) };
       if (a.opacity !== undefined) look.NearOpacity = a.opacity;
@@ -1269,17 +1298,27 @@ export const tools: Tool[] = [
         look = e.look;
         preset = { name: a.preset, theme: d.theme, timeOfDay: d.timeOfDay, verified: e.verified, ...(e.overridden.length ? { overridden: e.overridden } : {}), note: e.note };
       }
-      if (a.clear && Object.keys(look).length) throw new ToolError("clear removes the block: give no fields with it");
-      if (!a.clear && !Object.keys(look).length) throw new ToolError("give a preset, opacity, reflection, shade, landAmbient, landDiffuse or fields (or clear: true)");
+      if (a.clear && (Object.keys(look).length || a.sea)) throw new ToolError("clear removes the block: give no fields with it");
+      let sea: SeaLook | null = null;
+      if (a.sea !== undefined) {
+        const sl = seaLook(a.sea ?? {});
+        if (sl.problems.length) throw new ToolError(sl.problems.join("; "));
+        sea = sl.sea!;
+      }
+      if (!a.clear && !Object.keys(look).length && !sea) throw new ToolError("give a preset, opacity, reflection, shade, landAmbient, landDiffuse or fields, or a sea (or clear: true)");
       const bad = waterLookProblems(look);
       if (bad.length) throw new ToolError(bad.join("; "));
       const before = (await p.erg.script()) ?? "";
-      const text = withWaterLook(before, a.clear ? null : look);
-      if (text === before) return { changed: false, look: readWaterLook(before), ...(preset ? { preset } : {}), note: "the script already sets this look" };
+      const text = withWaterLook(before, a.clear ? null : look, sea);
+      // the water shader mods of the game folder: a look they do not read is said here, not found in a screenshot
+      const mods = waterShaderMods(a.gameDir ?? process.env.MELANGE_GAME_DIR);
+      const shader = a.clear ? {} : { ...(mods.length ? { shaderMods: mods } : {}), ...(() => { const w = shaderOverrideWarnings(mods, look, sea); return w.length ? { warnings: w } : {}; })() };
+      if (text === before) return { changed: false, look: readWaterLook(before), ...(readSea(before) ? { sea: readSea(before) } : {}), ...(preset ? { preset } : {}), ...shader, note: "the script already sets this look" };
       const r = await p.erg.saveScript(text);
       if (!r.saved) throw new ToolError(`the server did not save the script: ${r.problems.map((x) => x.message ?? String(x)).join("; ")}`);
-      return { changed: true, look: a.clear ? null : look, ...(preset ? { preset } : {}), was: readWaterLook(before), problems: r.problems, syntaxChecked: r.syntaxChecked ?? false,
-        note: a.clear ? "the block is gone: the theme's water" : "a wum.level.water{...} block at the top of the level script (Melange 0.13+): Test to see it; the game logs each field it set ([levels] water look: <container>.<field> set)" };
+      return { changed: true, look: a.clear ? null : look, ...(sea ? { sea, seaEvent: SEA_EVENT } : {}), ...(preset ? { preset } : {}), was: readWaterLook(before), problems: r.problems, syntaxChecked: r.syntaxChecked ?? false, ...shader,
+        note: a.clear ? "the block is gone: the theme's water" : "a wum.level.water{...} block at the top of the level script (Melange 0.13+): Test to see it; the game logs each field it set ([levels] water look: <container>.<field> set)" +
+          (sea ? `; the sea material goes to client mods as the event ${SEA_EVENT} (Melange 0.15), which a water shader mod that honours it draws (shaderMods)` : "") };
     },
   },
   {

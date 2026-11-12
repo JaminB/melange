@@ -17,7 +17,7 @@
 // sim_fingerprint check: the meshes are decoration only).
 import fs from "node:fs";
 import path from "node:path";
-import zlib from "node:zlib";
+
 import { fileURLToPath } from "node:url";
 import { startServer, ROOT } from "../caldera/mcpclient.mjs";
 
@@ -31,9 +31,9 @@ process.env.MELANGE_EXE ??= path.join(ROOT, "build/x86-release/Melange.exe");
 const ID = process.env.DUSTCROWN_ID || "dustcrown";
 const MOD = "dustcrown";
 const VERSION = "1.0.0";
-// spawns.mode areas is on this branch after 0.14.1; the range the current build satisfies (a range it does not satisfy
-// quarantines the pack: `build` answered "declares no valid levels"). Packaging raises it to the release that carries areas.
-const MELANGE_RANGE = ">=0.14.1";
+// The sea material (set_water_look sea): the sand's own tone, so the sea continues the dunes (a water shader mod draws it:
+// Sunstone 2.4+; the game's own shader shows the sand preset's pale opaque sea)
+const SEA_ALBEDO = [255, 250, 180];
 const WORM_W = 0.6;                     // a worm's body, map units (check_reachability's bodyWidth)
 
 // Materials of the Arabian theme's own file (set_theme ARABIAN, materialFile "theme"; research/mat_arab.txt)
@@ -124,6 +124,9 @@ try {
   const skin = {
     min: [-BOX, -BOX], max: [BOX, BOX], centre: [0, 0], floor: FLOOR, keepFloor: true, voxelSize: 2.5, thickness: 3, core: false,
     expr: desertExpr(), clip: [{ x: 0, z: 0, radius: CLIP_R }], exclude: [{ min: [-40, -40], max: [40, 40] }],
+    // no closed basins deeper than a worm's step: a trough a pad's flat ring or a mesa's foot cuts off is filled to its
+    // spill height (the sea, at 1, is where everything drains to)
+    fillBasins: { maxDepth: 0.5, outletBelow: WATER_START / 20 },
     material: MAT.sand, maxBlocks: 18,
     materials: [
       { material: MAT.path1, region: padRegion, feather: { width: 1.5, pattern: "perlin", cell: 3 } },
@@ -135,10 +138,12 @@ try {
   // the shell under the skin: the same surface 6.5 lower in 4-unit voxels, 3 thick, over the playable desert, so a hole dug
   // through the skin lands on rock instead of falling to the sea bed (Caldera's lesson)
   const shell = { min: [-100, -100], max: [100, 100], centre: [0, 0], floor: FLOOR, keepFloor: true, voxelSize: 4, thickness: 3, core: false,
-    expr: desertExpr(6.5), clip: [{ x: 0, z: 0, radius: 100 }], material: MAT.rock1, maxBlocks: 6 };
+    expr: desertExpr(6.5), clip: [{ x: 0, z: 0, radius: 100 }], material: MAT.rock1, maxBlocks: 6,
+    fillBasins: { maxDepth: 0.5, outletBelow: WATER_START / 20 - 6.5 } };
   const plan = await call("heightfield_drape", { ...skin, dryRun: true });
   fs.writeFileSync(path.join(OUT, "plan-skin.json"), plan.text);
   say("skin plan", JSON.stringify({ fits: plan.json.fits, why: plan.json.why, skin: { blocks: plan.json.skin?.blocks, cells: plan.json.skin?.cells }, curve: plan.json.curveMaterials, peak: plan.json.region?.peak, floor: plan.json.region?.floor }));
+  say("skin basins", JSON.stringify(plan.json.region?.basins ?? null).slice(0, 900));
   const splan = await call("heightfield_drape", { ...shell, dryRun: true });
   say("shell plan", JSON.stringify({ fits: splan.json.fits, why: splan.json.why, skin: { blocks: splan.json.skin?.blocks, cells: splan.json.skin?.cells } }));
   if (flag("--plan")) { await call("close", { discard: true }, { soft: true }); throw new Error("--plan: stopped"); }
@@ -186,7 +191,8 @@ try {
       lows.push(g);
       shapes.push({ kind: "dome", radius: rad, height: ht + 1, at: [round1(bx - fx), round1(g - 1), round1(bz - fz)], material: i % 3 ? MAT.rock1 : MAT.rock2 });
     }
-    const r = await call("build_compound", { at: [fx, 0, fz], shapes, scale: 1, place: "new", packing: "fit", maxBlocks: 1 }, { soft: true });
+    // onSkin: boulders stand on the dunes on purpose (save's drape.pokes advisory is for plugs that should lie under a skin)
+    const r = await call("build_compound", { at: [fx, 0, fz], shapes, scale: 1, place: "new", packing: "fit", maxBlocks: 1, onSkin: true }, { soft: true });
     say("boulders", fi, fx, fz, r.err ? r.text.slice(0, 300) : JSON.stringify({ cells: r.json.cells?.newBlocks, blocks: r.json.newBlocks?.length }));
   }
 
@@ -232,16 +238,17 @@ try {
     ...merlons,
   ] }, { soft: true });
   say("crown", crown.err ? crown.text.slice(0, 400) : JSON.stringify({ tipY: crown.json.structureInfo?.tipY, cells: crown.json.cells }));
-  const towerTops = spots.filter((q) => q.kind === "tower").map((q) => q.at);
-  for (const [i, t] of towerTops.entries()) {
-    const blue = (t[0] > 0) === (t[2] < 0);      // NE and SW blue mosaic, the other two dome tile
-    const r = await call("build_compound", { at: [round2(t[0]), round2(t[1]), round2(t[2])], scale: 1.5, place: "new", packing: "fit", maxBlocks: 1, material: blue ? MAT.blue : MAT.dome,
-      shapes: [{ kind: "dome", radius: 4.5, height: 4.5, bands: [{ fromY: 3, toY: 4.5, material: MAT.gold }] }] }, { soft: true });
-    say("dome", i, JSON.stringify(t), r.err ? r.text.slice(0, 300) : JSON.stringify({ tipY: r.json.structureInfo?.tipY, cells: r.json.cells?.newBlocks }));
+  // onion domes on the corner towers (structureInfo.towers: each top floor's centre), in voxels of 0.75 so they read as
+  // domes, not stacked tiles (the castle's own 1.5 gives a radius of 3 voxels); a gold finial
+  for (const [i, t] of (castle.json.structureInfo?.towers ?? []).entries()) {
+    const blue = t.corner === "ne" || t.corner === "sw";      // NE and SW blue mosaic, the other two dome tile
+    const r = await call("build_compound", { at: t.at, scale: 0.75, place: "new", packing: "fit", maxBlocks: 1, material: blue ? MAT.blue : MAT.dome,
+      shapes: [{ kind: "dome", profile: "onion", radius: 4.5, height: 7.5, bands: [{ fromY: 6, toY: 7.5, material: MAT.gold }] }] }, { soft: true });
+    say("dome", i, t.corner, JSON.stringify(t.at), r.err ? r.text.slice(0, 300) : JSON.stringify({ tipY: r.json.structureInfo?.tipY, cells: r.json.cells?.newBlocks }));
   }
-  // the courts' floors in star mosaic (the ground at court height inside the curtain). depth 2: paint_region takes a voxel
-  // whose CENTRE is within depth of the top, and the plinth's 3-unit voxels have theirs 1.5 down (depth 1 painted nothing)
-  say("courts", brief(await call("paint_region", { shapes: [{ min: [-23, -23], max: [23, 23] }], mask: `${COURT + 0.5} - h`, material: MAT.star, depth: 2, units: "map" }, { soft: true }), 200));
+  // the courts' floors in star mosaic (the ground at court height inside the curtain): the top voxel of each column,
+  // whatever its frame's scale (depthFrom top; by its centre the plinth's 3-unit voxels are 1.5 down)
+  say("courts", brief(await call("paint_region", { shapes: [{ min: [-23, -23], max: [23, 23] }], mask: `${COURT + 0.5} - h`, material: MAT.star, depth: 1, depthFrom: "top", units: "map" }, { soft: true }), 200));
 
   // ---- floating bits ----
   const isl = await call("check_islets", {}, { soft: true });
@@ -258,7 +265,9 @@ try {
   say("spawns", JSON.stringify({ deal: ps.json?.deal, warnings: ps.json?.warnings, missing: ps.json?.missingKnots, snapped: ps.json?.snapped }).slice(0, 1500));
 
   // ---- the sea reads as sand; warm (not orange) land light ----
-  say("water look", brief(await call("set_water_look", { preset: "sand", landDiffuse: [255, 244, 225] }), 500));
+  const wl = await call("set_water_look", { preset: "sand", landDiffuse: [255, 244, 225], sea: { albedo: SEA_ALBEDO }, gameDir: process.env.DUSTCROWN_PLAY_DIR ?? GAME });
+  say("water look", brief(wl, 500));
+  if (wl.json?.warnings?.length) say("WATER LOOK WARNINGS", JSON.stringify(wl.json.warnings));
 
   // ---- scenery copies from the Arabian bases (no collision): a fountain in each court, lamps on the wall-walk's corners ----
   const copies = [
@@ -305,6 +314,8 @@ try {
   const sv = await call("save");
   say("save", brief(sv, 900));
   if (sv.json?.warnings?.length) say("SAVE WARNINGS", JSON.stringify(sv.json.warnings));
+  for (const k of ["pits", "waterLook", "spawns", "factory"]) if (sv.json?.[k]?.length) say(`SAVE ADVISORY ${k}`, JSON.stringify(sv.json[k]));
+  if (sv.json?.drape?.pokes?.length) say("SAVE ADVISORY drape.pokes", JSON.stringify(sv.json.drape.warnings));
   const d = await call("describe_level", { limit: 100 });
   fs.writeFileSync(path.join(OUT, "describe.json"), d.text);
   say("cells", JSON.stringify(d.json.limits.voxelCells), "blocks", JSON.stringify(d.json.limits.newFrames), "engineWarnings", JSON.stringify(d.json.engineWarnings), "problems", JSON.stringify(d.json.problems ?? []));
@@ -312,9 +323,9 @@ try {
   const lo = await call("list_objects", { units: "map", outsideFrames: "summary" });
   fs.writeFileSync(path.join(OUT, "objects.json"), lo.text);
 
-  // ---- the sand line (DESIGN.md 1): check_height_line at the design's fixed line, and Sandtide's preset as the tool reads
-  // the land box (describe_level landBounds counts the emptied base frames, so its preset line is not the game's: the
-  // tester reads `sandtide: sand line at Y` from the game's log) ----
+  // ---- the sand line (DESIGN.md 1): check_height_line at the design's fixed line, and Sandtide's preset from the land box
+  // (landBounds leaves out the emptied base frames, as the game's box does; the tester still reads `sandtide: sand line at
+  // Y` from the game's log) ----
   const LINE_MAP = LINE_W / 20;
   const hl = await call("check_height_line", { y: LINE_MAP, units: "map", limit: 40 });
   fs.writeFileSync(path.join(OUT, "heightline.json"), hl.text);
@@ -322,11 +333,16 @@ try {
   say("near-line groups", JSON.stringify((hl.json.surfaces?.nearGroups ?? []).slice(0, 12)));
   const hp = await call("check_height_line", { preset: "sandtide" });
   say("sandtide preset (tool's box)", JSON.stringify({ line: hp.json.line, landBounds: hp.json.landBounds }));
+  if (Math.abs((hp.json.line?.world ?? 0) - LINE_W) > 20) throw new Error(`Sandtide's line by the land box is ${hp.json.line?.world} w, over 20 from the design's ${LINE_W}`);
 
   // ---- reachability on foot: every sand area to every other and to the palace's foot; none to step 2 ----
   const PADS = SAND_AREAS.map(([name, x, z]) => ({ name, x, z, radius: 4 }));
   const FEET = [["foot N", 0, -45], ["foot E", 45, 0], ["foot S", 0, 45], ["foot W", -45, 0]].map(([name, x, z]) => ({ name, x, z, radius: 2 }));
-  const reach = await call("check_reachability", { maxSlope: 45, bodyWidth: WORM_W, targets: [...PADS, ...FEET], targetMode: "each", render: true }, { soft: true });
+  // ---- pits: no hollow a worm walks into and cannot leave ----
+  const pits = await call("check_pits", { bodyWidth: WORM_W }, { soft: true });
+  fs.writeFileSync(path.join(OUT, "pits.json"), pits.text);
+  say("pits", pits.err ? pits.text.slice(0, 400) : JSON.stringify({ ok: pits.json.ok, summary: pits.json.summary, pits: (pits.json.pits ?? []).slice(0, 6) }).slice(0, 1200));
+  const reach = await call("check_reachability", { maxSlope: 45, bodyWidth: WORM_W, slopeOver: "skin", traps: "report", targets: [...PADS, ...FEET], targetMode: "each", render: true }, { soft: true });
   img(reach, "reach-foot");
   fs.writeFileSync(path.join(OUT, "reach-foot.json"), reach.text);
   say("reach on foot", brief(reach, 900));
@@ -347,7 +363,7 @@ try {
   // ---- the tester's waypoints: each sand area's walk to the palace's nearest foot, the palace spawns' walk to the next court ----
   const waypoints = [];
   const walk = async (label, from, to, target) => {
-    const w = await call("check_reachability", { maxSlope: 45, bodyWidth: WORM_W, from: [from], target }, { soft: true });
+    const w = await call("check_reachability", { maxSlope: 45, bodyWidth: WORM_W, slopeOver: "skin", centre: true, from: [from], target }, { soft: true });
     const sp = w.json?.spawns?.[0] ?? w.json?.starts?.[0] ?? null;
     waypoints.push({ area: label, from, to, reachable: sp?.reachable ?? null, length: sp?.path?.length ?? null, waypoints: sp?.waypoints ?? sp?.path?.waypoints ?? null });
   };
@@ -369,10 +385,7 @@ try {
   }
   await shot("refuge-NW", "render_view", { pos: [-95, 30, -20], target: [-60, 12, -60], fov: 50, fog: 900, antialias: true });
   for (const [name, args] of [["side-ew", { x0: -BOX, z0: 0, x1: BOX, z1: 0 }], ["side-diag", { x0: -BOX * 0.7, z0: -BOX * 0.7, x1: BOX * 0.7, z1: BOX * 0.7 }]]) {
-    const r = await call("render_side", { ...args, y0: -15, y1: 60, scale: 6, units: "map" }, { soft: true });
-    // the sand line drawn over the cut (render_side draws the water but no other height line)
-    if (r.images[0]) fs.writeFileSync(path.join(OUT, `${name}.png`), hline(Buffer.from(r.images[0].data, "base64"), r.json.image, 60, LINE_MAP, [220, 40, 30]));
-    say("render", name, r.err ? r.text.slice(0, 200) : "ok");
+    await shot(name, "render_side", { ...args, y0: -15, y1: 60, scale: 6, units: "map", lines: [{ y: LINE_MAP, colour: [220, 40, 30], label: `sand line ${LINE_W} w` }] });
   }
   fs.writeFileSync(path.join(OUT, "heightmap.txt"), (await call("heightmap_ascii", { step: 3 })).text);
 
@@ -396,11 +409,8 @@ try {
       spice.meshes = rb.json.spice.meshes;
       fs.writeFileSync(spiceFile, JSON.stringify(spice));
     }
-    // the export's range (>=0.2.0) knows neither the mesh bank (Melange 0.14.0) nor spawns.mode areas: an older Melange
-    // cannot build the level
-    const spiceFile = path.join(pack, "spice.json"), spice = JSON.parse(fs.readFileSync(spiceFile, "utf8"));
-    spice.melange = { ...spice.melange, range: MELANGE_RANGE };
-    fs.writeFileSync(spiceFile, JSON.stringify(spice));
+    // the export wrote the range the level's features need (gate.needs: spawn areas, the pack's own meshes)
+    if (!ex.json?.gate?.gated) throw new Error(`the export's range is not gated: ${JSON.stringify(ex.json?.gate)}`);
     fs.writeFileSync(path.join(pack, ".gitignore"), "assets/levels/\n");
     say("pack", pack, JSON.stringify(ex.json?.gate ?? null));
   }
@@ -412,38 +422,4 @@ try {
   fs.writeFileSync(path.join(OUT, "calls.json"), JSON.stringify(log, null, 1));
   say("MCP tool calls:", stats.calls);
   await stop();
-}
-
-// A dashed horizontal line across a render_side PNG at map height y (its y ruler: topMargin + (y1 - y) x pixelsPerVoxelY,
-// a voxel being one map unit). A minimal PNG reader and writer (8-bit RGB or RGBA, no interlace).
-function hline(png, info, y1, y, rgb) {
-  let p = 8, ihdr = null;
-  const idat = [];
-  while (p < png.length) {
-    const len = png.readUInt32BE(p), type = png.toString("ascii", p + 4, p + 8), data = png.subarray(p + 8, p + 8 + len);
-    if (type === "IHDR") ihdr = { w: data.readUInt32BE(0), h: data.readUInt32BE(4), depth: data[8], ct: data[9], il: data[12] };
-    if (type === "IDAT") idat.push(data);
-    p += 12 + len;
-  }
-  if (!ihdr || ihdr.depth !== 8 || ihdr.il !== 0 || ![2, 6].includes(ihdr.ct)) return png;
-  const bpp = ihdr.ct === 6 ? 4 : 3, stride = ihdr.w * bpp, raw = zlib.inflateSync(Buffer.concat(idat)), px = Buffer.alloc(stride * ihdr.h);
-  for (let r = 0; r < ihdr.h; r++) {
-    const f = raw[r * (stride + 1)], src = raw.subarray(r * (stride + 1) + 1, (r + 1) * (stride + 1)), o = r * stride;
-    for (let i = 0; i < stride; i++) {
-      const a = i >= bpp ? px[o + i - bpp] : 0, b = r ? px[o - stride + i] : 0, c = r && i >= bpp ? px[o - stride + i - bpp] : 0;
-      const pa = Math.abs(b - c), pb = Math.abs(a - c), pc = Math.abs(a + b - 2 * c);
-      px[o + i] = (src[i] + [0, a, b, (a + b) >> 1, pa <= pb && pa <= pc ? a : pb <= pc ? b : c][f]) & 255;
-    }
-  }
-  const row = Math.round(info.topMargin + (y1 - y) * info.pixelsPerVoxelY);
-  for (const rr of [row - 1, row, row + 1]) if (rr >= 0 && rr < ihdr.h) for (let x = info.leftMargin; x < ihdr.w; x++) if ((x >> 3) % 2 === 0) px.set(rgb, rr * stride + x * bpp);
-  const rows = Buffer.alloc((stride + 1) * ihdr.h);
-  for (let r = 0; r < ihdr.h; r++) px.copy(rows, r * (stride + 1) + 1, r * stride, (r + 1) * stride);
-  const crcT = [];
-  for (let n = 0; n < 256; n++) { let c = n; for (let k = 0; k < 8; k++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1; crcT[n] = c >>> 0; }
-  const crc = (b) => { let c = 0xffffffff; for (const v of b) c = crcT[(c ^ v) & 255] ^ (c >>> 8); return (c ^ 0xffffffff) >>> 0; };
-  const chunk = (type, data) => { const out = Buffer.alloc(12 + data.length); out.writeUInt32BE(data.length, 0); out.write(type, 4, "ascii"); data.copy(out, 8); out.writeUInt32BE(crc(out.subarray(4, 8 + data.length)), 8 + data.length); return out; };
-  const hdr = Buffer.alloc(13);
-  hdr.writeUInt32BE(ihdr.w, 0); hdr.writeUInt32BE(ihdr.h, 4); hdr[8] = 8; hdr[9] = ihdr.ct;
-  return Buffer.concat([png.subarray(0, 8), chunk("IHDR", hdr), chunk("IDAT", zlib.deflateSync(rows)), chunk("IEND", Buffer.alloc(0))]);
 }

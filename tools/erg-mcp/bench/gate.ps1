@@ -11,9 +11,12 @@
 #             reported as known and do not fail the gate. jlog_selftest is run once more when it fails (its badpath case
 #             flakes).
 #   ergmcp    tools\erg-mcp\test.ps1
-#   caldera   the Caldera bench rebuilt from scratch (build.mjs, detail.mjs, ship.mjs into a scratch folder, project id
-#             gatecal in -GameDir, about 8 minutes) and compared byte for byte with the committed bench\caldera\pack:
-#             no change to the builder may change what an existing map builds to.
+#   caldera   the Caldera bench rebuilt from scratch (build.mjs --no-export, detail.mjs, ship.mjs into a scratch folder,
+#             about 8 minutes) and compared byte for byte with the committed bench\caldera\pack: no change to the
+#             builder may change what an existing map builds to. It builds a scratch project, gatecal, so the game
+#             folder's own caldera project is left alone; a level's file names and stem carry its project id, so the
+#             id is put back to caldera in the scratch pack's text files before the compare (the mesh bank is compared
+#             as it is).
 # build.ps1 regenerates THIRD_PARTY.md; the gate puts the committed one back when that is the only change to it.
 # Exit code 0 when every step passed (known self-test failures aside). Logs: <Out>\<step>.log; summary: <Out>\gate.json.
 param(
@@ -42,7 +45,7 @@ function Record([string]$name, [string]$state, [string]$note, [double]$seconds) 
 # Runs a child PowerShell script (or an exe) with its output in <Out>\<log>; answers the exit code.
 function Run([string]$log, [string]$file, [string[]]$arguments) {
     $path = Join-Path $Out $log
-    $quoted = @($arguments | ForEach-Object { if ($_ -match 's') { "`"$_`"" } else { $_ } })
+    $quoted = @($arguments | Where-Object { $null -ne $_ -and $_ -ne "" } | ForEach-Object { if ($_ -match '\s') { "`"$_`"" } else { $_ } })
     if ($file -like "*.ps1") { $exe = "powershell.exe"; $argv = @("-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "`"$file`"") + $quoted }
     else { $exe = $file; $argv = $quoted }
     $so = "$path.out"; $se = "$path.err"
@@ -123,13 +126,23 @@ Step "caldera" {
     New-Item -ItemType Directory -Force $work | Out-Null
     $env:MELANGE_GAME_DIR = $GameDir; $env:CALDERA_ID = "gatecal"
     $bench = Join-Path $here "caldera"
-    foreach ($s in @(@("build.mjs", @("--out", "$work\build")), @("detail.mjs", @("--out", "$work\detail", "--build-out", "$work\build", "--project", "gatecal")),
+    $committed = Join-Path $bench "pack"
+    if (& git -C $root status --porcelain -- $committed) { throw "bench\caldera\pack has uncommitted changes: the compare is against the committed pack" }
+    # build.mjs --no-export: without it the build writes its own (undressed) export over the committed pack
+    foreach ($s in @(@("build.mjs", @("--out", "$work\build", "--no-export")), @("detail.mjs", @("--out", "$work\detail", "--build-out", "$work\build", "--project", "gatecal")),
             @("ship.mjs", @("--out", "$work\pack", "--project", "gatecal", "--game", $GameDir)))) {
         $c = Run "caldera-$($s[0]).log" $node (@((Join-Path $bench $s[0])) + $s[1])
         if ($c) { return @{ state = "FAIL"; note = "$($s[0]) exit $c; " + (Tail "caldera-$($s[0]).log") } }
     }
+    if (& git -C $root status --porcelain -- $committed) { & git -C $root checkout -- $committed; throw "the bench wrote into bench\caldera\pack (put back): it must build into the scratch folder only" }
+    # the scratch project's id back to caldera: the patch's file name, and the id in every text file
+    $enc = New-Object System.Text.UTF8Encoding $false
+    Get-ChildItem -Recurse -File "$work\pack" | Where-Object { $_.Extension -in ".json", ".ps1", ".lua" } | ForEach-Object {
+        $t = [IO.File]::ReadAllText($_.FullName, $enc)
+        if ($t.Contains("gatecal")) { [IO.File]::WriteAllText($_.FullName, $t.Replace("gatecal", "caldera"), $enc) }
+        if ($_.Name.Contains("gatecal")) { Rename-Item $_.FullName ($_.Name.Replace("gatecal", "caldera")) }
+    }
     # byte for byte against the committed pack (built levels are per machine and not committed)
-    $committed = Join-Path $bench "pack"
     $list = { param($d) Get-ChildItem -Recurse -File $d | Where-Object { $_.FullName -notmatch '\\assets\\levels\\' } | ForEach-Object { $_.FullName.Substring($d.Length + 1) } | Sort-Object }
     $a = @(& $list $committed); $b = @(& $list "$work\pack")
     $diff = @()

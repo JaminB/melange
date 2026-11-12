@@ -1,5 +1,29 @@
 # Changelog
 
+## 0.15.0
+
+Erg: spawn areas dealt per match, and the map builder (erg-mcp) grown by a second map, Dustcrown.
+
+### Added
+
+- Erg: **areas dealt per match** (`spawns.mode` `areas`). A level names spawn areas in groups with a deal pattern and
+  opposite pairs; each match deals the teams onto areas from its seed, the same on every peer and in a replay
+  (see [docs/erg.md](docs/erg.md)). A pack that uses it declares `"melange": {"range": ">=0.15.0"}`; the Erg export
+  writes that range by itself.
+- erg-mcp (the map builder for AI agents, [docs/erg-mcp.md](docs/erg-mcp.md)): `build_compound`, `build_mesa`,
+  `build_rock_bank`, `check_height_line`, `check_tool_reach`, `check_pits`, tower roofs, material bands and trim,
+  `dunes()` and `ridged()` height expressions, `fillBasins`, water look presets, and `tools/erg-mcp/bench/gate.ps1`
+  (every check a builder change must pass, with the Caldera bench rebuilt and compared byte for byte).
+
+- Sea materials: a level's script sets `wum.level.water{Sea = {r, g, b, opacity}, SeaKeep = {reflection, foam}}` and
+  client mods hear `melange.level.sea`, so a graphics mod that replaces the water shader can draw a sea of sand or lava
+  (Sunstone 2.4 does). Render state only. erg-mcp: `set_water_look` `sea`.
+
+### Changed
+
+- `level.build` on a pack that needs a newer Melange says so (`needs Melange >=X and this is Melange Y`) instead of
+  `declares no valid levels`.
+
 ## 0.14.1
 
 In-game Spotify setup with a built-in Client ID.

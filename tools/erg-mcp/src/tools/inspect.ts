@@ -457,7 +457,9 @@ export function checkPits(store: EditorStore, a: PitArgs) {
   if (!S.nodes) throw new ToolError("no ground in the region");
   const k2 = u === "world" ? WORLD_PER_MAP * WORLD_PER_MAP : 1;
   if (a.maxArea !== undefined && !(a.maxArea > 0)) throw new ToolError("maxArea is an area over 0");
-  const found = findTraps(S, o, { maxArea: a.maxArea === undefined ? TRAP_AREA : a.maxArea / k2, minClimb: a.minClimb === undefined ? 0 : inMap(a.minClimb, u) });
+  // a "pit" whose least climb out is no more than a step is not held by its height (a shoreline column whose only dry
+  // neighbours are diagonal, a slot narrower than the body): left out unless minClimb asks for less
+  const found = findTraps(S, o, { maxArea: a.maxArea === undefined ? TRAP_AREA : a.maxArea / k2, minClimb: a.minClimb === undefined ? o.maxStep + 0.01 : inMap(a.minClimb, u) });
   const out = (p: Vec3) => p.map((v) => r2(outUnit(v, u)));
   // which starts (the spawn knots, or from) walk or drop into each: the walk from each under the caller's rules
   const starts: { name: string; at: Vec3 }[] = a.from
@@ -495,16 +497,19 @@ export function checkPits(store: EditorStore, a: PitArgs) {
 }
 
 /** save's advisory lists pits whose least climb out is at least this (map units): a worm's own jump clears less. */
-export const ADVISORY_CLIMB = 1;
+export const ADVISORY_CLIMB = 1.5;
 
 /** save's advisory: the pits of the level as warning lines (at most `limit`), nothing when there is none or the level
  * is too large to read quickly. */
-export function pitWarnings(store: EditorStore, limit = 6): string[] {
+export function pitWarnings(store: EditorStore, limit = 6, onlyReached = true): string[] {
   try {
     const r = checkPits(store, { units: "map", minClimb: ADVISORY_CLIMB }) as { pits: { at: number[]; climbOut?: number; area: number; reachedFrom?: string[] }[]; more?: number };
+    // with spawn knots, only the pits a worm's walk gets into (a sealed room nobody enters is no trap); without, all
+    const knots = onlyReached && markers(store).some((m) => m.kind === "spawn");
+    if (knots) r.pits = r.pits.filter((p) => p.reachedFrom?.length);
     const lines = r.pits.slice(0, limit).map((p) => `a pit at (${p.at[0]}, ${p.at[2]}), floor y ${p.at[1]}: ${p.area} map units squared, the least climb out is ${p.climbOut}` +
       (p.reachedFrom?.length ? `; a worm from ${p.reachedFrom.slice(0, 4).join(", ")} walks or drops into it` : "") + " (check_pits; heightfield fillBasins fills such hollows)");
-    const rest = r.pits.length - lines.length + (r.more ?? 0);
+    const rest = r.pits.length - lines.length + (knots ? 0 : r.more ?? 0);
     return rest > 0 ? [...lines, `${rest} more pit${rest === 1 ? "" : "s"}: check_pits lists them`] : lines;
   } catch {
     return [];
@@ -991,7 +996,7 @@ export async function checkReachability(s: Session, a: ReachArgs) {
   // the routes that cross one (report) or kept off the routes (avoid: the start's own and the targets' stay walkable)
   if (a.traps !== undefined && a.traps !== "report" && a.traps !== "avoid") throw new ToolError("traps: \"report\" or \"avoid\"");
   if (a.trapArea !== undefined && !(a.trapArea > 0)) throw new ToolError("trapArea is an area over 0");
-  const tp = a.traps ? findTraps(S, o, { maxArea: a.trapArea === undefined ? TRAP_AREA : a.trapArea / (u === "world" ? WORLD_PER_MAP * WORLD_PER_MAP : 1), minClimb: 0 }) : null;
+  const tp = a.traps ? findTraps(S, o, { maxArea: a.trapArea === undefined ? TRAP_AREA : a.trapArea / (u === "world" ? WORLD_PER_MAP * WORLD_PER_MAP : 1), minClimb: o.maxStep + 0.01 }) : null;
   const pits = tp ? tp.traps.map((t, i) => ({ i, t })).filter((x) => x.t.kind === "pit") : [];
   const trapOut = (t: Trap) => ({ at: out(t.at), floorY: r2(outUnit(t.floor, u)), climbOut: r2(outUnit(t.climbOut!, u)), rimAt: out(t.exitAt!), area: r2(t.area * (u === "world" ? WORLD_PER_MAP * WORLD_PER_MAP : 1)), columns: t.nodes.length });
   const crossed = (path: number[]) => {
@@ -1478,7 +1483,7 @@ export const tools: Tool[] = [
         bodyWidth: { type: "number", minimum: 0, description: "The worm's width: gaps narrower are not walked (default: not enforced)." },
         water: { type: "boolean", description: "Ground at or under the project's water level is not ground (default true)." },
         maxArea: { type: "number", minimum: 0.01, description: "A closed area up to this size is a pit, in the call's units squared (default 400 map units squared)." },
-        minClimb: { type: "number", minimum: 0, description: "Leave out pits whose least climb out is under this (the call's units; default 0)." },
+        minClimb: { type: "number", minimum: 0, description: "Leave out pits whose least climb out is under this (the call's units; default just over maxStep: a hollow no higher than a step is held by something else, a waterline column or a slot narrower than the body, and is not a pit)." },
         maxDrop: { type: "number", minimum: 0, description: "The longest drop a start's walk takes for reachedFrom (default 8 map units); the pits themselves are found with every drop allowed." },
         from: { type: "array", maxItems: 64, items: { type: "array", items: { type: "number" }, minItems: 3, maxItems: 3 }, description: "Start points [x, y, z] for reachedFrom, instead of the spawn knots." },
         islets: { type: "boolean", description: "List the islets too (default: only their count)." },

@@ -1814,6 +1814,26 @@ void TestService(const std::wstring& root) {
         S.inLobby = false;
     }
     {
+        // a pack that needs a newer Melange (the test's is 9.9.9): refused with the range, not "no valid levels"
+        const std::wstring newer = game + L"\\Mods\\newer-maps";
+        Put(newer + L"\\spice.json", std::string(R"({"spiceVersion":1,"id":"newer-maps","version":"1.0.0","name":"Newer maps","melange":{"range":">=10.0.0"},)"
+                                                 R"("kind":"content","entry":{},"levels":[{"slug":"harbour","title":"Harbour","source":"src/h.ergpatch.json"}]})"));
+        erg::Patch np = pack;
+        np.stem = "newer_maps_harbour";
+        Put(newer + L"\\src\\h.ergpatch.json", erg::WritePatch(np));
+        r = Call(S, "level.build", R"({"modId":"newer-maps"})");
+        Expect(!r.ok && r.code == erg::service::kBadParams && r.message.find("needs Melange >=10.0.0") != std::string::npos &&
+                   r.message.find("9.9.9") != std::string::npos && r.message.find("quarantined") != std::string::npos &&
+                   !erg::install::Exists(newer + L"\\assets\\levels\\newer_maps_harbour.XOM"),
+               "build: a pack whose melange.range this Melange does not satisfy says so " + r.message);
+        // a pack with no levels says that it lists none
+        Put(newer + L"\\spice.json", std::string(R"({"spiceVersion":1,"id":"newer-maps","version":"1.0.0","name":"Newer maps","melange":{"range":">=0.1.0"},)"
+                                                 R"("kind":"content","entry":{}})"));
+        r = Call(S, "level.build", R"({"modId":"newer-maps"})");
+        Expect(!r.ok && r.message.find("lists none") != std::string::npos, "build: a pack without levels says it lists none " + r.message);
+        RemoveTree(newer);
+    }
+    {
         const std::wstring other = game + L"\\Mods\\data-maps";
         Put(other + L"\\spice.json", std::string(R"({"spiceVersion":1,"id":"data-maps","version":"1.0.0","name":"Data maps","melange":{"range":">=0.1.0"},)"
                                                  R"("kind":"content","assets":{"root":"data"},)"

@@ -18,6 +18,7 @@ import { search, surfaces, type ReachOptions } from "../src/lib/reach";
 import { SPAWN_AREAS_MELANGE, rangeFloor, shipRange } from "../src/lib/ship-gate";
 import { shipFeatures } from "../src/lib/ship-gate-export";
 import { VoxelEdit, grids } from "../src/lib/voxel";
+import { parseSea, readSea, readWaterLook, seaFields, seaLook, shaderOverrideWarnings, waterLookBlock, withWaterLook } from "../src/lib/water-look";
 import { tools as inspectTools, checkPits, pitWarnings } from "../src/tools/inspect";
 import { tools as mesaTools } from "../src/tools/mesa";
 import { describe } from "../src/tools/project";
@@ -62,6 +63,43 @@ function cells(store: EditorStore): Map<string, number> {
 /** A flat slab [x0, x1) x [z0, z1), `h` thick from y 0, far from the synthetic level's own frames. */
 const slab = (s: Session, x0: number, x1: number, z0: number, z1: number, h: number, extra: Record<string, unknown> = {}) =>
   call(s, "build_compound", { at: [(x0 + x1) / 2, 0, (z0 + z1) / 2], place: "new", material: 3, shapes: [{ kind: "box", size: [x1 - x0, z1 - z0], height: h }], ...extra });
+
+// ------------------------------------------------------------------ 1: the sea material
+
+test("the sea material: the block sets Sea and SeaKeep in a call of its own, reads back, and leaves a look without one as it was", () => {
+  const look = { NearOpacity: 1, ReflectionStrength: 0 };
+  const old = waterLookBlock(look);
+  assert.equal(old.includes("Sea ="), false);
+  assert.equal(old.split("\n").length, 6);                       // the block as it always was
+  const sl = seaLook({ albedo: [214.4, 190, 140] });
+  assert.deepEqual(sl.sea, { albedo: [214, 190, 140], opacity: 1, reflection: 0, foam: 0 });
+  assert.equal(seaFields(sl.sea!), "Sea = {214, 190, 140, 1}, SeaKeep = {0, 0}");
+  const script = withWaterLook("-- my script\nlocal x = 1\n", look, sl.sea);
+  assert.equal(script.split("wum.level.water{").length, 3);                 // the look, then the sea in a call of its own
+  assert.ok(script.includes("wum.level.water{Sea = {214, 190, 140, 1}, SeaKeep = {0, 0}}"));
+  assert.ok(script.endsWith("-- my script\nlocal x = 1\n"));
+  assert.deepEqual(readSea(script), sl.sea);
+  assert.deepEqual(readWaterLook(script), look);
+  // a sea alone: no wum.level.water call; rewritten in place; cleared
+  const only = withWaterLook(script, null, { ...sl.sea!, foam: 0.5 });
+  assert.equal(only.split("wum.level.water{").length, 2);
+  assert.equal(readSea(only)!.foam, 0.5);
+  assert.equal(withWaterLook(only, null), "-- my script\nlocal x = 1\n");
+  assert.deepEqual(seaLook({ albedo: [1, 2] as any, foam: 2 }).problems, ["sea.albedo: [r, g, b] 0-255", "sea.foam: 0-1"]);
+  assert.equal(parseSea("Sea = {1, 2}"), null);
+});
+
+test("shaderOverrideWarnings: a water shader mod that does not honour the sea, one that does, a disabled one", () => {
+  const sea = seaLook({ albedo: [214, 190, 140] }).sea!;
+  const old = { mod: "sunstone", file: "shaders/Water.WaterFragmentMain.glsl", honoursSea: false, enabled: true };
+  assert.match(shaderOverrideWarnings([old], { NearOpacity: 1 }, sea)[0], /the sea material is not drawn while sunstone is enabled.*does not listen for melange\.level\.sea/);
+  assert.deepEqual(shaderOverrideWarnings([{ ...old, honoursSea: true }], { NearOpacity: 1 }, sea), []);
+  assert.deepEqual(shaderOverrideWarnings([{ ...old, enabled: false }], { NearOpacity: 1 }, sea), []);
+  // fields alone under a shader mod: it may ignore them; the land's light alone is not the water's business
+  assert.match(shaderOverrideWarnings([old], { NearOpacity: 1 }, null)[0], /sunstone is enabled and its .* replaces the water shader/);
+  assert.deepEqual(shaderOverrideWarnings([old], { LightDiffuse: [1, 2, 3] }, null), []);
+  assert.match(shaderOverrideWarnings([{ ...old, enabled: null }], null, sea)[0], /installed \(its enabled state is not known\)/);
+});
 
 // ------------------------------------------------------------------ 7: landBounds
 
@@ -304,7 +342,8 @@ test("check_pits finds a sheer pit, its floor and the climb out, and the start t
   // the tool, and save's advisory lines
   const t = await call(s, "check_pits", REGION);
   assert.equal(t.pits.length, 1);
-  assert.match(pitWarnings(store).join("\n"), /a pit at \(61\d(\.\d+)?, \d(\.\d+)?\), floor y 3: 25 map units squared, the least climb out is 3/);
+  assert.equal(pitWarnings(store).some((l) => l.includes("floor y 3: 25")), false);   // no spawn knot walks into it: not in save's advisory
+  assert.match(pitWarnings(store, 6, false).join("\n"), /a pit at \(61\d(\.\d+)?, \d(\.\d+)?\), floor y 3: 25 map units squared, the least climb out is 3/);
 });
 
 test("check_pits: a plateau and a stair are no pits; a ramp out of the pit clears it", async () => {
@@ -445,4 +484,26 @@ test("heightfield_drape fillBasins: a closed hollow is filled to its spill heigh
   const pd = planDrape(session().store, args({ fillBasins: { outletBelow: 2 } }));
   assert.equal((pd.report.region as any).basins.columnsRaised, 0);
   assert.throws(() => planDrape(session().store, args({ fillBasins: { maxDepth: -1 } })), /maxDepth/);
+});
+
+test("waterShaderMods: the game folder's water shader mods, enabled state and whether they name melange.level.sea", async () => {
+  const fs = await import("node:fs"), os = await import("node:os"), path = await import("node:path");
+  const { waterShaderMods } = await import("../src/tools/place");
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ergsea-"));
+  try {
+    const put = (rel: string, text: string) => { const f = path.join(dir, "Mods", rel); fs.mkdirSync(path.dirname(f), { recursive: true }); fs.writeFileSync(f, text); };
+    put("thumper-state.json", JSON.stringify({ version: 1, enabled: { old: true, off: false } }));
+    put("old/shaders/Water.WaterFragmentMain.glsl", "void main() {}");
+    put("old/client/init.lua", "-- nothing");
+    put("off/shaders/Water.WaterFragmentMain.glsl", "void main() {}");
+    put("new/shaders/Water.WaterFragmentMain.glsl", "uniform vec4 sea;");
+    put("new/client/init.lua", "wum.events.on(\"melange.level.sea\", f)");
+    put("plain/shaders/Landscape.LandscapeFragmentMain.glsl", "void main() {}");
+    assert.deepEqual(waterShaderMods(dir), [
+      { mod: "new", file: path.win32.join("shaders", "Water.WaterFragmentMain.glsl"), honoursSea: true, enabled: null },
+      { mod: "off", file: path.win32.join("shaders", "Water.WaterFragmentMain.glsl"), honoursSea: false, enabled: false },
+      { mod: "old", file: path.win32.join("shaders", "Water.WaterFragmentMain.glsl"), honoursSea: false, enabled: true }]);
+    assert.deepEqual(waterShaderMods(undefined), []);
+    assert.deepEqual(waterShaderMods(path.join(dir, "nowhere")), []);
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
 });

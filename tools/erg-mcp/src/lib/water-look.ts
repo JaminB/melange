@@ -32,6 +32,36 @@ export const WATER_FIELDS: Record<string, { kind: "number" | "rgb" | "rgba" | "v
 
 export type WaterLook = Record<string, number | number[]>;
 
+/** The sea material (set_water_look `sea`): what the water plane should look like as a surface of its own, which the
+ * game's CG\water.cg cannot draw (its colour is the theme's blue texture) and a water shader mod can. The level script
+ * sets it with wum.level.water{Sea = {r, g, b, opacity}, SeaKeep = {reflection, foam}} (Melange 0.15: the colour 0-255,
+ * the rest 0-1), and Melange tells client mods with the event SEA_EVENT; a mod that replaces the water shader (Sunstone
+ * 2.4+) listens for it (wum.events.on) and draws the sea as that matte colour. docs/erg.md "Sea material" is the contract. */
+export interface SeaLook { albedo: number[]; opacity: number; reflection: number; foam: number; }
+export const SEA_EVENT = "melange.level.sea";
+
+/** A sea look checked and its defaults filled in (opaque, no reflection, no foam); the problems in words. */
+export function seaLook(v: { albedo?: number[]; opacity?: number; reflection?: number; foam?: number }): { sea?: SeaLook; problems: string[] } {
+  const problems: string[] = [];
+  if (!Array.isArray(v.albedo) || v.albedo.length !== 3 || v.albedo.some((x) => typeof x !== "number" || !(x >= 0 && x <= 255))) problems.push("sea.albedo: [r, g, b] 0-255");
+  for (const k of ["opacity", "reflection", "foam"] as const)
+    if (v[k] !== undefined && !(typeof v[k] === "number" && v[k]! >= 0 && v[k]! <= 1)) problems.push(`sea.${k}: 0-1`);
+  if (problems.length) return { problems };
+  return { sea: { albedo: v.albedo!.map((x) => Math.round(x)), opacity: v.opacity ?? 1, reflection: v.reflection ?? 0, foam: v.foam ?? 0 }, problems };
+}
+
+/** The fields of the script's call for a sea look. */
+export const seaFields = (s: SeaLook) => { const n = (x: number) => String(Math.round(x * 1000) / 1000); return `Sea = {${[...s.albedo, s.opacity].map(n).join(", ")}}, SeaKeep = {${n(s.reflection)}, ${n(s.foam)}}`; };
+
+/** The call's fields back to a sea look (null: not one). */
+export function parseSea(fields: string): SeaLook | null {
+  const m = /Sea = \{([^}]*)\}, SeaKeep = \{([^}]*)\}/.exec(fields);
+  if (!m) return null;
+  const p = m[1].split(",").map((x) => Number(x.trim())), k = m[2].split(",").map((x) => Number(x.trim()));
+  if (p.length !== 4 || k.length !== 2 || [...p, ...k].some((x) => !Number.isFinite(x))) return null;
+  return { albedo: p.slice(0, 3), opacity: p[3], reflection: k[0], foam: k[1] };
+}
+
 /** Checks a look: known fields with values of their kind. The problems in words (empty: fine). */
 export function waterLookProblems(look: WaterLook): string[] {
   const out: string[] = [];
@@ -52,17 +82,26 @@ export function waterLookProblems(look: WaterLook): string[] {
 
 const num = (v: number) => String(Math.round(v * 10000) / 10000);
 
-/** The block for a look (sorted fields, so the same look is the same text). */
-export function waterLookBlock(look: WaterLook): string {
+/** The block for a look (sorted fields, so the same look is the same text) and, with `sea`, the sea material's message.
+ * Without a sea the block is what it always was. */
+export function waterLookBlock(look: WaterLook, sea?: SeaLook | null): string {
   const fields = Object.keys(look).sort().map((k) => {
     const v = look[k];
     return `${k} = ${Array.isArray(v) ? `{${v.map(num).join(", ")}}` : num(v)}`;
   });
   return [WATER_LOOK_BEGIN,
-    "if wum.level and wum.level.water then",
-    `  local ok, why = wum.level.water{${fields.join(", ")}}`,
-    "  if not ok then wum.log.warn(\"water look: \" .. tostring(why)) end",
-    "end",
+    ...(fields.length ? [
+      "if wum.level and wum.level.water then",
+      `  local ok, why = wum.level.water{${fields.join(", ")}}`,
+      "  if not ok then wum.log.warn(\"water look: \" .. tostring(why)) end",
+      "end"] : []),
+    // a call of its own: an older Melange refuses the unknown field, and the look above is set all the same
+    ...(sea ? [
+      "-- the sea material (docs/erg.md, Melange 0.15): a water shader mod draws the sea as this matte colour",
+      "if wum.level and wum.level.water then",
+      `  local ok, why = wum.level.water{${seaFields(sea)}}`,
+      "  if not ok then wum.log.info(\"sea material: \" .. tostring(why)) end",
+      "end"] : []),
     WATER_LOOK_END].join("\n");
 }
 
@@ -79,12 +118,37 @@ function blockAt(script: string): [number, number] | null {
 }
 
 /** The script with the block for `look` at its top (an earlier block replaced where it was), or without one (null). */
-export function withWaterLook(script: string, look: WaterLook | null): string {
+export function withWaterLook(script: string, look: WaterLook | null, sea?: SeaLook | null): string {
   const at = blockAt(script);
   const rest = at ? script.slice(0, at[0]) + script.slice(at[1]) : script;
-  if (!look || !Object.keys(look).length) return rest;
-  const block = waterLookBlock(look) + "\n";
+  if ((!look || !Object.keys(look).length) && !sea) return rest;
+  const block = waterLookBlock(look ?? {}, sea) + "\n";
   return at ? script.slice(0, at[0]) + block + script.slice(at[1]) : block + rest;
+}
+
+/** The sea material a script's block sends, or null. */
+export function readSea(script: string): SeaLook | null {
+  const at = blockAt(script);
+  if (!at) return null;
+  return parseSea(script.slice(at[0], at[1]));
+}
+
+/** A mod that replaces the water plane's shader (shaders\Water.*.glsl), and whether its files name SEA_EVENT. */
+export interface WaterShaderMod { mod: string; file: string; honoursSea: boolean; enabled: boolean | null; }
+
+/** What the water looks of a level meet in a game folder: the mods whose water shader draws the plane instead of the
+ * game's, as warning lines. A shader mod ignores the WaterPlaneTweaks fields it does not read, and draws a sea material
+ * only when it listens for SEA_EVENT. */
+export function shaderOverrideWarnings(mods: WaterShaderMod[], look: WaterLook | null, sea: SeaLook | null): string[] {
+  const out: string[] = [];
+  for (const m of mods.filter((x) => x.enabled !== false)) {
+    const on = m.enabled === null ? "installed (its enabled state is not known)" : "enabled";
+    if (sea && !m.honoursSea) out.push(`the sea material is not drawn while ${m.mod} is ${on}: its ${m.file} replaces the water shader and does not listen for ${SEA_EVENT} (a ${m.mod} that honours the sea material, or the mod off, shows it)`);
+    else if (!sea && look && Object.keys(look).some((k) => !k.startsWith("Light")))
+      out.push(`${m.mod} is ${on} and its ${m.file} replaces the water shader: it draws its own water and may ignore these fields (NearOpacity, ReflectionStrength, SubtractColourScale: the game's CG\\water.cg reads them)` +
+        (m.honoursSea ? `; it honours the sea material (set_water_look sea: {albedo}), which says the colour outright` : ""));
+  }
+  return out;
 }
 
 /** The look a script's block sets, or null without one. */

@@ -3,4 +3,9 @@ if wum.level and wum.level.water then
   local ok, why = wum.level.water{LightDiffuse = {255, 244, 225}, NearOpacity = 1, ReflectionStrength = 0, SpecularContrast = 0, SubtractColourScale = -1.5}
   if not ok then wum.log.warn("water look: " .. tostring(why)) end
 end
+-- the sea material (docs/erg.md, Melange 0.15): a water shader mod draws the sea as this matte colour
+if wum.level and wum.level.water then
+  local ok, why = wum.level.water{Sea = {255, 250, 180, 1}, SeaKeep = {0, 0}}
+  if not ok then wum.log.info("sea material: " .. tostring(why)) end
+end
 -- erg-mcp set_water_look: end
