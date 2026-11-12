@@ -13,7 +13,7 @@ import { schema as field } from "./heightfield";
 const pair = (what: string): Schema => ({ type: "array", items: { type: "number" }, minItems: 2, maxItems: 2, description: what });
 const material: Schema = { type: "integer", minimum: 0, maximum: 63 };
 // heightfield_region's own settings that a mesa takes as they are
-const pass = ["voxelSize", "keepFloor", "material", "baseDepth", "reuseFrames", "maxBlocks", "maxCells", "partial", "runsHeadroom", "edges", "packer", "fitBudget", "costAt", "blend", "clip", "exclude"];
+const pass = ["voxelSize", "keepFloor", "floorLattice", "material", "baseDepth", "reuseFrames", "maxBlocks", "maxCells", "partial", "runsHeadroom", "edges", "packer", "fitBudget", "costAt", "blend", "clip", "exclude"];
 
 const schema: Schema & { type: "object" } = {
   type: "object", additionalProperties: false, required: ["top", "shape"],
@@ -46,6 +46,9 @@ const schema: Schema & { type: "object" } = {
       properties: { height: { type: "number", minimum: 0.01 }, width: { type: "number", minimum: 0.01 }, material, profile: { type: "string", enum: ["linear", "concave"] } } },
     cap: { type: "object", additionalProperties: false, required: ["material"], description: "The plateau's top `depth` voxels (1-8, default 1) in this material (stone, caprock).",
       properties: { material, depth: { type: "integer", minimum: 1, maximum: 8 } } },
+    ledgeAt: { type: "array", maxItems: 63, items: { type: "number" }, description: "The steps' tops as absolute level ys (units), lowest first, in place of even risers (strata.step then only sets the default tread): one step per entry, then the plateau. Each is built on the nearest whole voxel (the answer's ledges and ledgeAt.built say where); with floorLattice those are floor + whole voxels, so a ledge asked a whole number of voxels over the floor is built exactly there." },
+    avoidBand: { type: "object", additionalProperties: false, required: ["y", "band"], description: "A hazard band the ledges stay out of (Sandtide's sand line and check_height_line's band): no step's top is built within `band` of the level y `y` (units). A step that would be moves to the nearest voxel level outside the band that keeps a riser of a voxel to its neighbours, or is left out; the answer's avoidBand.moved lists each. The plateau's top is as asked (a warning when it is inside).",
+      properties: { y: { type: "number" }, band: { type: "number", minimum: 0 } } },
     costOnly: { type: "boolean", description: "Plan and report only (blocks, cells, what is left of the budget): nothing is edited. With maxCells it says whether the mesa fits. dryRun is the same." },
     dryRun: { type: "boolean", description: "As costOnly." },
   },

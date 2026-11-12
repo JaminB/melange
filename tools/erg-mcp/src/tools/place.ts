@@ -191,7 +191,8 @@ function spawnState(store: EditorStore, units: Units) {
   const scene = store.scene;
   const spawns = scene.details.filter((d) => d.role === "spawn").map((d) => detailInfo(store, d, units));
   const have = new Set(scene.details.map((d) => d.name));
-  return { spawnMode: scene.spawns.mode, spawns, missingKnots: neededKnots(scene.spawns).filter((k) => !have.has(k)) };
+  // positions: every knot's place by name, whether this call moved it or not (the same numbers as placed[].pos and spawns[].pos)
+  return { spawnMode: scene.spawns.mode, spawns, positions: Object.fromEntries(spawns.map((d) => [d.name, d.pos])), missingKnots: neededKnots(scene.spawns).filter((k) => !have.has(k)) };
 }
 
 interface AreaArg { name: string; group: string; knots: PointArgs[]; }

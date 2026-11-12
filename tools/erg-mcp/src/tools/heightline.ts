@@ -13,7 +13,7 @@ const CLUSTER = 4;
 const BAND_WORLD = 40;
 
 interface Args {
-  preset?: "sandtide"; fraction?: number; y?: number; band?: number; water?: number; step?: number; limit?: number;
+  preset?: "sandtide"; fraction?: number; y?: number; design?: number; band?: number; water?: number; step?: number; limit?: number;
   x0?: number; z0?: number; x1?: number; z1?: number; units?: "map" | "world";
 }
 
@@ -26,6 +26,7 @@ export const tools: Tool[] = [{
       preset: { type: "string", enum: ["sandtide"], description: "sandtide: fraction 0.25 (Sandtide's LINE_FRACTION)." },
       fraction: { type: "number", minimum: 0.01, maximum: 1, description: "The line's height as a fraction of (maxY - base)." },
       y: { type: "number", description: "A fixed line height in the call's units instead of a fraction." },
+      design: { type: "number", description: "The height the level was designed for (the call's units; Dustcrown's 290 world), beside the line the land box gives: every spawn and near group then answers its distance to both (`margin`, `designMargin`; `toLine`, `toDesign`), `design` says how far apart the two lines are, and a spawn or a surface within the band of either is flagged. The land box moves whenever a block is added over or under the rest, so the two drift apart between builds." },
       band: { type: "number", minimum: 0, description: "How close to the line counts as near (the call's units; default 40 world = 2 map units)." },
       water: { type: "number", description: "The water at start in the call's units, when the project keeps the level's own (describe_level water.map is null there): without it the base is minY." },
       step: { type: "number", minimum: 0.25, maximum: 16, description: "Column spacing for the surfaces (the call's units; default: the level fits in about 250000 columns, at least 1 map unit)." },
@@ -46,6 +47,9 @@ export const tools: Tool[] = [{
     const water = a.water !== undefined ? inMap(a.water) : waterMap(store);
     const h = heightLine(lb, water, { fraction: a.preset === "sandtide" ? 0.25 : a.fraction, y: a.y === undefined ? undefined : inMap(a.y) });
     const band = a.band !== undefined ? inMap(a.band) : BAND_WORLD / WORLD_PER_MAP;
+    // the design line: a second height, checked as the first is
+    const design = a.design === undefined ? null : inMap(a.design);
+    const nearDesign = (y: number) => design !== null && Math.abs(y - design) <= band;
     const ext = extentXZ(gs)!;
     const reg: Region = { x0: a.x0 === undefined ? ext.x0 : inMap(a.x0), z0: a.z0 === undefined ? ext.z0 : inMap(a.z0),
       x1: a.x1 === undefined ? ext.x1 : inMap(a.x1), z1: a.z1 === undefined ? ext.z1 : inMap(a.z1) };
@@ -58,21 +62,25 @@ export const tools: Tool[] = [{
 
     // surfaces: counts by side, and the near ones grouped
     const count: Record<Side, number> = { below: 0, near: 0, above: 0 };
-    let lo = Infinity, hi = -Infinity;
+    let lo = Infinity, hi = -Infinity, designNear = 0;
     const groups = new Map<string, { n: number; x: number; z: number; lo: number; hi: number }>();
     for (let n = 0; n < S.nodes; n++) {
       const [x, y, z] = nodeAt(S, n);
       const side = sideOf(y, h.line, band);
       count[side]++;
       lo = Math.min(lo, y); hi = Math.max(hi, y);
-      if (side !== "near") continue;
+      if (nearDesign(y)) designNear++;
+      if (side !== "near" && !nearDesign(y)) continue;
       const key = `${Math.floor(x / CLUSTER)},${Math.floor(z / CLUSTER)}`;
       const g = groups.get(key) ?? { n: 0, x: 0, z: 0, lo: Infinity, hi: -Infinity };
       g.n++; g.x += x; g.z += z; g.lo = Math.min(g.lo, y); g.hi = Math.max(g.hi, y);
       groups.set(key, g);
     }
     const area = step * step;
-    const near = [...groups.values()].sort((p, q) => q.n - p.n).map((g) => ({ at: [out(g.x / g.n), out(g.z / g.n)], surfaceY: { min: both(g.lo), max: both(g.hi) }, area: r2(g.n * area), columns: g.n }));
+    // a group's distance to a line: 0 when the line is within its heights, else from its nearer end (above the line: over 0)
+    const gap = (g: { lo: number; hi: number }, line: number) => (g.lo <= line && g.hi >= line ? 0 : g.lo > line ? g.lo - line : g.hi - line);
+    const near = [...groups.values()].sort((p, q) => q.n - p.n).map((g) => ({ at: [out(g.x / g.n), out(g.z / g.n)], surfaceY: { min: both(g.lo), max: both(g.hi) }, area: r2(g.n * area), columns: g.n,
+      ...(design !== null ? { toLine: both(gap(g, h.line)), toDesign: both(gap(g, design)) } : {}) }));
 
     // spawn knots: the knot and the ground under it
     const spawns = markers(store).filter((m) => m.kind === "spawn").map((m) => {
@@ -80,16 +88,21 @@ export const tools: Tool[] = [{
       const ground = n >= 0 ? nodeAt(S, n)[1] : null;
       const y = ground ?? p[1];
       const side = sideOf(y, h.line, band);
-      return { name: m.name, at: [out(p[0]), out(p[2])], knotY: both(p[1]), groundY: ground === null ? null : both(ground), side, margin: both(y - h.line) };
+      return { name: m.name, at: [out(p[0]), out(p[2])], knotY: both(p[1]), groundY: ground === null ? null : both(ground), side, margin: both(y - h.line),
+        ...(design !== null ? { designSide: sideOf(y, design, band), designMargin: both(y - design) } : {}) };
     });
-    const flagged = { spawns: spawns.filter((p) => p.side === "near").map((p) => ({ name: p.name, at: p.at, groundY: p.groundY ?? p.knotY })),
-      surfaceGroups: near.length, surfaceArea: r2(count.near * area) };
+    const flagged = { spawns: spawns.filter((p) => p.side === "near" || (p as { designSide?: Side }).designSide === "near").map((p) => ({ name: p.name, at: p.at, groundY: p.groundY ?? p.knotY })),
+      surfaceGroups: near.length, surfaceArea: r2(count.near * area), ...(design !== null ? { designSurfaceArea: r2(designNear * area) } : {}) };
     const warnings = lineWarnings(lb, water, h, S.nodes ? lo : null, S.nodes ? hi : null);
     if (flagged.spawns.length) warnings.push(`${flagged.spawns.length} spawn knot(s) within ${out(band)} ${a.units ?? "map"} units of the line: ${flagged.spawns.map((p) => p.name).join(", ")}`);
     const cap = a.limit ?? 20;
     const bySide = (side: Side) => spawns.filter((p) => p.side === side).length;
     return {
       line: both(h.line), base: { ...both(h.base), kind: h.baseKind }, fraction: h.fraction,
+      ...(design !== null ? { design: { line: both(design), apart: both(h.line - design), withinBand: Math.abs(h.line - design) <= band,
+        spawns: { below: spawns.filter((p) => (p as { designSide?: Side }).designSide === "below").length, near: spawns.filter((p) => (p as { designSide?: Side }).designSide === "near").length, above: spawns.filter((p) => (p as { designSide?: Side }).designSide === "above").length },
+        surfacesNear: { columns: designNear, area: r2(designNear * area) },
+        note: "apart: the land-box line less the design line (over 0: the game's line is higher than designed); margin and toLine count from the land-box line, designMargin and toDesign from the design line" } } : {}),
       landBounds: { minY: both(lb.minY), maxY: both(lb.maxY), minFrame: lb.minFrame, maxFrame: lb.maxFrame, emptyFramesSkipped: lb.emptySkipped },
       water: water === null ? "the level's own height (not known here; pass water): the base is minY" : both(water),
       band: both(band),
@@ -97,7 +110,7 @@ export const tools: Tool[] = [{
       surfaces: { step: r2(step), sampled: S.nodes, below: { columns: count.below, area: r2(count.below * area) }, near: { columns: count.near, area: r2(count.near * area) }, above: { columns: count.above, area: r2(count.above * area) },
         lowest: S.nodes ? both(lo) : null, highest: S.nodes ? both(hi) : null, nearGroups: near.slice(0, cap), nearGroupsListed: Math.min(cap, near.length) },
       flagged,
-      ok: !flagged.spawns.length && !count.near,
+      ok: !flagged.spawns.length && !count.near && !designNear,
       warnings,
       note: "inspection only; below the line is where Sandtide's curse lands, above is safe. The game's own line is in its log: `sandtide: sand line at Y`.",
     };

@@ -7,8 +7,9 @@ import type { Schema, Tool } from "../registry";
 import type { Session } from "../session";
 import { schema as field } from "./heightfield";
 
-// fitBudget is heightfield_region's: a drape packs its skin and core itself
-const { fitBudget: _fit, ...fieldProps } = field.properties!;
+// fitBudget is heightfield_region's: a drape packs its skin and core itself; so is floorLattice (a skin's corners carry
+// its heights exactly, off any lattice)
+const { fitBudget: _fit, floorLattice: _lattice, ...fieldProps } = field.properties!;
 
 /** crestMaterial / troughMaterial: a material by local curvature of the skin (steepMaterial wins over both). */
 const curve = (what: string, rule: string): Schema => ({ type: "object", additionalProperties: false, required: ["material"],
@@ -27,6 +28,9 @@ const schema: Schema & { type: "object" } = {
       properties: { material: { type: "integer", minimum: 0, maximum: 63 }, minSlope: { type: "number", minimum: 1, maximum: 89, description: "Degrees (default 50)." }, feather: { type: "number", minimum: 0, maximum: 40, description: "Degrees of dithered edge (default 0)." } } },
     crestMaterial: curve("Dune crests", "a skin column whose surface curves up (a ridge: the Laplacian of the skin's heights under -minCurvature) takes its material in every skin voxel"),
     troughMaterial: curve("The hollows between dunes", "a skin column whose surface curves down (a hollow: the Laplacian over minCurvature) takes its material in every skin voxel"),
+    coast: { type: "object", additionalProperties: false, required: ["seaLevel", "rimMaterial"], description: "The island's rim against a recoloured sea, off by default: a skin column whose lowest corner is at or under seaLevel + band takes rimMaterial in every skin voxel, before steepMaterial and the crest and trough rules, so the shore is the sea's colour whatever its slope (a sand sea otherwise shows the shore's cliff or trough material as a ring round the island). blendToSea: the columns inland of the rim take rimMaterial as their second material on the corners they share with it (the game's per-corner blend), so the rim fades into the land. The answer's coast counts the columns.",
+      properties: { seaLevel: { type: "number", description: "The water's level y (units) at the match's start." }, rimMaterial: { type: "integer", minimum: 0, maximum: 63 },
+        band: { type: "number", minimum: 0, description: "How far over seaLevel the rim reaches (units; default one voxel)." }, blendToSea: { type: "boolean" } } },
     tileOrigin: { type: "array", items: { type: "number" }, minItems: 2, maxItems: 2, description: "[x, z] in units: a corner of the skin's tiling (its blocks of 31 x 31 columns) falls here, snapped to the lattice, instead of at the region's min corner. Where four skin blocks meet the game lets mines and worms through (Caldera v2): put those corners where no one walks." },
     cornersOff: { type: "object", additionalProperties: false, required: ["paths"], description: "Instead of tileOrigin: the tiling shifted (0-30 columns along x and z) so every corner where four skin blocks meet is at least `distance` (map units, default 4) from `paths` (the trails: polylines of [x, z] or [x, y, z] in units) where a shift does that, else as far as one can; the fewest blocks first. The answer's skin.tiling gives the shift and the nearest corner's distance (unshifted: without the shift), skin.meetingCorners lists the corners: no plug under a corner near a trail is needed.",
       properties: { paths: { type: "array", minItems: 1, maxItems: 32, items: { type: "array", minItems: 2, maxItems: 4000, items: { type: "array", items: { type: "number" }, minItems: 2, maxItems: 3 } } },

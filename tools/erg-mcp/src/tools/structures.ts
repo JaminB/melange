@@ -209,7 +209,10 @@ function run(s: Session, a: Common, anchor: Vec3, structure: string, make: (k: n
       structureInfo: plan.info, note: "nothing was changed; cells are the game's voxel cells (X x Y x Z of each new block) the structure's new blocks take, which must fit in levelCellsFree" };
   }
   const r = applyPlan(store, plan, { place: a.place ?? "auto", dryRun: !!a.dryRun, blockScale: bs, packing: a.packing, drape: a.drape, maxBlocks: a.maxBlocks, maxCells: a.maxCells, onSkin: a.onSkin });
-  return { structure, material: mat, ...(a.material === undefined ? { materialNote: "chosen from the voxels near the structure; pass material to set it" } : {}), ...r, ...(costAt ? { costAt } : {}),
+  // a dig that fills nothing (no lining, no rim, no floor slab laid) has no material: the one found near it is not
+  // reported as chosen
+  const filled = plan.shapes.some((sh) => sh.op !== "carve") && r.voxels.added + r.voxels.repainted > 0;
+  return { structure, ...(filled ? { material: mat, ...(a.material === undefined ? { materialNote: "chosen from the voxels near the structure; pass material to set it" } : {}) } : {}), ...r, ...(costAt ? { costAt } : {}),
     structureInfo: plan.info, undo: r.dryRun || !r.voxels.changed ? undefined : "undo reverts the whole structure in one step; save writes it" };
 }
 
@@ -446,9 +449,9 @@ export const tools: Tool[] = [
         gateWidth: { type: "number", minimum: 2, description: "Default 4." },
         gateHeight: { type: "number", minimum: 2, description: "Default 5 (round-topped from 3 wide)." },
         gateBelow: { anyOf: [{ type: "number", minimum: 0 }, { type: "string", enum: ["auto"] }], description: "Carve the gate's floor this far (units) under the floor at its outer face, rising to the floor at the inner face: a ramp down to lower ground outside instead of a sill. auto: the floor less the ground 1.5 map units outside the gate's middle, at most the passage's length (45 degrees). Default auto with `ground`, else 0." },
-        gates: { type: "array", minItems: 1, maxItems: 8, description: "Several gates instead of `gate`: each {side, width, height (defaults gateWidth, gateHeight), offset (along the side from its middle, default 0), below (as gateBelow; default auto)}. The keep's door faces the first.",
+        gates: { type: "array", minItems: 1, maxItems: 8, description: "Several gates instead of `gate`: each {side, width, height (defaults gateWidth, gateHeight), offset (along the side from its middle, default 0), below (as gateBelow; default auto), bevel (a canted head instead of the round or square one: the two top corners cut at 45 degrees, this far in from each; not for a gate cut open to the wall's top)}. The keep's door faces the first.",
           items: { type: "object", additionalProperties: false, required: ["side"], properties: {
-            side: { type: "string", enum: [...SIDES] }, width: { type: "number", minimum: 2 }, height: { type: "number", minimum: 2 }, offset: { type: "number" },
+            side: { type: "string", enum: [...SIDES] }, width: { type: "number", minimum: 2 }, height: { type: "number", minimum: 2 }, offset: { type: "number" }, bevel: { type: "number", minimum: 0 },
             below: { anyOf: [{ type: "number", minimum: 0 }, { type: "string", enum: ["auto"] }] } } } },
         seat: { type: "boolean", description: "Seat it on the ground: fill under the walls, towers and keep (not the courtyard) from the ground up to the floor, column by column, where the ground is lower than the floor (down to seatDepth). The cheap replacement for a whole-footprint foundation on a slope." },
         seatDepth: { type: "number", minimum: 0.5, description: "The deepest seat fill under the floor (units; default 8 map units): columns with no ground that close are left open." },
@@ -537,7 +540,8 @@ export const tools: Tool[] = [
               const pm = placePoint(sc(loc, v), at, a.rotation ?? 0), top = spansAt(gs, pm[0], pm[2], at[1] + 0.5)[0];
               if (top && top.top < at[1]) below = Math.min(pass, (at[1] - top.top) / v);
             } else below = Math.min(pass, want * k);
-            return { side: g.side, width: w, height: h, shift, below };
+            const bevel = (g as { bevel?: number }).bevel;
+            return { side: g.side, width: w, height: h, shift, below, ...(bevel ? { bevel: bevel * k } : {}) };
           }) : undefined;
         if (gateList) spec.gates = gateList;
         // a gate as high as the wall (or leaving a lintel under a voxel) would leave the merlons over it floating: the
@@ -562,7 +566,7 @@ export const tools: Tool[] = [
         return { label: "Build castle", shapes, notes, info: { size: [m(size[0]), m(size[1])], wallHeight: m(wh), wallThickness: m(t), towerRadius: m(tr),
           towerHeight: m(spec.towerHeight), towers, keep: keepSize ? [m(keepSize[0]), m(keepSize[1])] : null,
           gate: gate ? { side: gate, width: m(spec.gateWidth), height: m(spec.gateHeight) } : null,
-          ...(gateList ? { gates: gateList.map((g) => ({ side: g.side, width: m(g.width), height: m(g.height), offset: m(g.shift), below: m(g.below) })) } : {}),
+          ...(gateList ? { gates: gateList.map((g) => ({ side: g.side, width: m(g.width), height: m(g.height), offset: m(g.shift), below: m(g.below), ...(g.bevel ? { bevel: m(g.bevel) } : {}) })) } : {}),
           ...(a.seat ? { seat: { depth: a.seatDepth ?? 8 } } : {}),
           ...(spec.keepAt ? { keepAt: [m(spec.keepAt[0]), m(spec.keepAt[1])], keepDoor: spec.keepDoor } : {}),
           ...(laneOut ? { lane: { ...laneOut.info, width: m(laneOut.info.width), centre: m(laneOut.info.centre) } } : {}),
@@ -891,10 +895,11 @@ export const tools: Tool[] = [
         headroom: { type: "number", minimum: 1.5, description: "floor flat: floor to roof. Default 2 x radius (at least 2; a worm is about 1.2 tall)." },
         maxSlope: { type: "number", minimum: 0, maximum: 60, description: "floor flat: the steepest segment allowed, in degrees. Default 40 (worms walk about 45)." },
         floorThickness: { type: "number", minimum: 0, description: "floor flat: thickness of the floor slab under the floor, filled only where empty (in the structure's material). Default 1; 0 for none." },
+        caps: { type: "string", enum: ["round", "flat"], description: "The bore's two ends. round (default): it runs a radius past the first and the last point (a dome-ended bore). flat: it stops at the plane through each, square to the tunnel there, so a mouth is flush with a wall's face and a passage through a wall does not bite a half sphere out of what is behind it; the lining stops there too." },
         ...common,
       },
     },
-    handler(s, a: Common & { points: Vec3[]; radius?: number; shape?: "round" | "square"; liningMaterial?: number; liningThickness?: number; floor?: "bore" | "flat"; headroom?: number; maxSlope?: number; floorThickness?: number }) {
+    handler(s, a: Common & { points: Vec3[]; radius?: number; shape?: "round" | "square"; liningMaterial?: number; liningThickness?: number; floor?: "bore" | "flat"; headroom?: number; maxSlope?: number; floorThickness?: number; caps?: "round" | "flat" }) {
       a.points.forEach((p, i) => finite(p, `points[${i}]`));
       const flat = a.floor === "flat";
       if (!flat && (a.headroom !== undefined || a.maxSlope !== undefined || a.floorThickness !== undefined)) throw new ToolError("headroom, maxSlope and floorThickness are for floor \"flat\"");
@@ -916,11 +921,11 @@ export const tools: Tool[] = [
           if (steepest > maxSlope + 1e-9)
             throw new ToolError(`segment ${at} (points ${at} -> ${at + 1}) slopes ${steepest.toFixed(1)} degrees (maxSlope ${maxSlope}): add points to lengthen it, or zigzag`);
           const headroom = U(a.headroom, Math.max(2 * r, 2)), floorT = U(a.floorThickness, 1);
-          return { label: "Dig tunnel", shapes: flatTunnel({ points: pts, radius: r, shape: a.shape ?? "round", headroom, floor: floorT, material: mat, lining }), notes: [],
-            info: { length: tidy([length, 0, 0])[0], radius: r, lined: !!lining, floor: "flat", headroom, floorThickness: floorT, steepestDegrees: tidy([steepest, 0, 0])[0] } };
+          return { label: "Dig tunnel", shapes: flatTunnel({ points: pts, radius: r, shape: a.shape ?? "round", headroom, floor: floorT, material: mat, lining, caps: a.caps }), notes: [],
+            info: { length: tidy([length, 0, 0])[0], radius: r, lined: !!lining, floor: "flat", headroom, floorThickness: floorT, ...(a.caps ? { caps: a.caps } : {}), steepestDegrees: tidy([steepest, 0, 0])[0] } };
         }
         void mat;
-        return { label: "Dig tunnel", shapes: tunnel(pts, r, a.shape ?? "round", lining), notes: [], info: { length: tidy([length, 0, 0])[0], radius: r, lined: !!lining } };
+        return { label: "Dig tunnel", shapes: tunnel(pts, r, a.shape ?? "round", lining, a.caps), notes: [], info: { length: tidy([length, 0, 0])[0], radius: r, lined: !!lining, ...(a.caps ? { caps: a.caps } : {}) } };
       });
     },
   },

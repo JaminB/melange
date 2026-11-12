@@ -33,6 +33,12 @@ export interface MesaArgs {
   tread?: { walkable?: boolean; width?: number; jitter?: number; scale?: number; seed?: number };
   talus?: { height?: number; width?: number; material?: number; profile?: "linear" | "concave" };
   cap?: { material: number; depth?: number };
+  /** The steps' tops as absolute level ys (call units), lowest first, in place of even risers: the mesa has one step per
+   * entry and the plateau. Each is built on the nearest whole voxel (the answer's ledges say where). */
+  ledgeAt?: number[];
+  /** No step's top within `band` of the level y `y` (a hazard line: Sandtide's sand line): a step that would be built
+   * there moves to the nearest voxel level outside the band that keeps a riser to its neighbours, or is left out. */
+  avoidBand?: { y: number; band: number };
   voxelSize?: number;
   keepFloor?: boolean;
 }
@@ -112,16 +118,58 @@ export function mesaField(store: EditorStore, a: MesaArgs, extra: Partial<FieldA
   const talusW = ta ? (ta.width ?? 2.5 * talusH * ku) * k : 0;
   if (ta && !(talusH > 0)) throw new ToolError("talus needs room: the mesa is no higher than one riser");
   const Hs = Hm - talusH;                                          // the cliff's height above the talus
-  const n = Math.max(1, Math.round(Hs / riser0));
-  if (n > 64) throw new ToolError(`${n} strata steps: raise strata.step`);
+  const nEven = Math.max(1, Math.round(Hs / riser0));
+  if (nEven > 64) throw new ToolError(`${nEven} strata steps: raise strata.step`);
   // the steps' heights above the floor: the risers vary by riserJitter and always add up to the cliff
   const weights: number[] = [];
-  for (let i = 0; i < n; i++) weights.push(1 + rj * clamp1(noise2(i * 3.7 + 0.5, 0.5, (tr.seed ?? 0) + 91)) );
+  for (let i = 0; i < nEven; i++) weights.push(1 + rj * clamp1(noise2(i * 3.7 + 0.5, 0.5, (tr.seed ?? 0) + 91)) );
   const wsum = weights.reduce((p, c) => p + c, 0);
   const level: number[] = [];
   let acc = 0;
-  for (let i = 0; i < n; i++) { acc += weights[i]; level.push(talusH + (Hs * acc) / wsum); }
-  level[n - 1] = Hm;
+  for (let i = 0; i < nEven; i++) { acc += weights[i]; level.push(talusH + (Hs * acc) / wsum); }
+  level[nEven - 1] = Hm;
+  // the floor on the voxel lattice, as sampleField counts it: a height h (map units over the floor) is built at builtY(h)
+  const { t: tScene } = sceneLattice(store);
+  const t = extra.floorLattice ? [tScene[0], a.floor * k, tScene[2]] : tScene;
+  const keepFloor = a.keepFloor ?? true;
+  const floorExact = (a.floor * k - t[1]) / s, lift = keepFloor ? floorExact - Math.round(floorExact) : 0;
+  const vox = (hUnits: number) => Math.round(hUnits * kv + (hUnits * kv > 0 ? lift : 0));
+  const builtY = (h: number) => (Math.round(floorExact) + vox(h * ku)) * s + t[1];
+  // ledgeAt: the steps' tops as given, each on its nearest voxel; avoidBand: none within the band of a hazard line
+  const yToH = (y: number) => y - a.floor * k;                     // a level y (map) as a height over the floor
+  let ledgeNote: Record<string, unknown> | undefined;
+  if (a.ledgeAt !== undefined) {
+    if (!Array.isArray(a.ledgeAt) || a.ledgeAt.length > 63 || !a.ledgeAt.every(Number.isFinite)) throw new ToolError("ledgeAt: up to 63 level ys, lowest first");
+    const hs = a.ledgeAt.map((y) => yToH(y * k));
+    hs.forEach((h, i) => {
+      const under = i ? hs[i - 1] : talusH;
+      if (!(h - under >= s - 1e-9)) throw new ToolError(`ledgeAt[${i}] (${a.ledgeAt![i]}) is less than a voxel (${round3(s * ku)}) over ${i ? `ledgeAt[${i - 1}]` : ta ? "the talus' top" : "the floor"}`);
+    });
+    if (hs.length && !(Hm - hs[hs.length - 1] >= s - 1e-9)) throw new ToolError(`ledgeAt's last (${a.ledgeAt[a.ledgeAt.length - 1]}) is less than a voxel under top`);
+    level.length = 0;
+    level.push(...hs, Hm);
+    ledgeNote = { asked: a.ledgeAt.slice(), built: hs.map((h) => round3(builtY(h) * ku)) };
+  }
+  const avoided: { from: number; to: number | null }[] = [];
+  if (a.avoidBand !== undefined) {
+    const av = a.avoidBand;
+    if (!av || !Number.isFinite(av.y) || !(av.band >= 0)) throw new ToolError("avoidBand: {y, band}, band 0 or more");
+    const Y = av.y * k, B = av.band * k, inBand = (y: number) => Math.abs(y - Y) < B - 1e-9;
+    for (let i = 0; i < level.length - 1; i++) {
+      const y = builtY(level[i]);
+      if (!inBand(y)) continue;
+      // the nearest voxel levels under and over the band, a riser clear of the neighbours (the step under as moved)
+      const lowLim = builtY(i ? level[i - 1] : talusH) + s, highLim = builtY(level[i + 1]) - s;
+      let dn = y, up = y;
+      while (inBand(dn)) dn -= s;
+      while (inBand(up)) up += s;
+      const okDn = dn >= lowLim - 1e-9, okUp = up <= highLim + 1e-9;
+      const to = okDn && okUp ? (y - dn <= up - y ? dn : up) : okDn ? dn : okUp ? up : null;
+      avoided.push({ from: round3(y * ku), to: to === null ? null : round3(to * ku) });
+      if (to === null) { level.splice(i, 1); i--; } else level[i] = level[i] + (to - y);
+    }
+  }
+  const n = level.length;
   const inset = (i: number) => i * wM;                             // step i (0-based) starts this far inside the outline (0: sheer)
 
   // the outline
@@ -158,7 +206,6 @@ export function mesaField(store: EditorStore, a: MesaArgs, extra: Partial<FieldA
   bx0 -= reach; bx1 += reach; bz0 -= reach; bz1 += reach;
 
   // the field's rectangle, on the Scene frame's lattice (as sampleField snaps it), and the columns in it
-  const { t } = sceneLattice(store);
   const i0 = Math.floor((bx0 - t[0]) / s), i1 = Math.ceil((bx1 - t[0]) / s), j0 = Math.floor((bz0 - t[2]) / s), j1 = Math.ceil((bz1 - t[2]) / s);
   const nx = i1 - i0, nz = j1 - j0;
   if (nx > (MAX_GRID - 1) / 2 || nz > (MAX_GRID - 1) / 2)
@@ -201,9 +248,6 @@ export function mesaField(store: EditorStore, a: MesaArgs, extra: Partial<FieldA
   for (let r = 0; r < rows; r += 2) for (let c = 0; c < cols; c++) grid[r][c] = grid[Math.min(rows - 1, r + 1)][c];
 
   // the floor's lift, as sampleField counts it (keepFloor), to place the rules' thresholds on the voxel the field rounds to
-  const keepFloor = a.keepFloor ?? true;
-  const floorExact = (a.floor * k - t[1]) / s, lift = keepFloor ? floorExact - Math.round(floorExact) : 0;
-  const vox = (hUnits: number) => Math.round(hUnits * kv + (hUnits * kv > 0 ? lift : 0));
   const rules: MaterialRule[] = [];
   if (a.cap) {
     const depth = a.cap.depth ?? 1;
@@ -268,7 +312,6 @@ export function mesaField(store: EditorStore, a: MesaArgs, extra: Partial<FieldA
   const args: FieldArgs = { ...extra, units: a.units ?? "map", voxelSize: s, min, max, floor: a.floor, keepFloor, grid, materials: rules };
   const um = (v: number) => round3(v * ku);
   // the exposed step tops as built: each level rounds to whole voxels over the lattice floor (the field's own rounding)
-  const builtY = (h: number) => (Math.round(floorExact) + vox(h * ku)) * s + t[1];
   const stepWidth = (i: number) => (i === n - 1 ? null : wM);
   const ledges = [
     ...(ta ? [{ kind: "talus top" as const, h: talusH, width: null as number | null, walk: false }] : []),
@@ -286,6 +329,10 @@ export function mesaField(store: EditorStore, a: MesaArgs, extra: Partial<FieldA
     plateau: { columns: plateauCols, area: round3(plateauCols * s * s * ku * ku), deepest: um(plateauMax) },
     talus: ta ? { height: um(talusH), width: um(talusW), profile: ta.profile ?? "linear" } : null,
     strataBands: bandCount, ...(st.style === "beds" ? { strataStyle: "beds" } : {}),
+    ...(ledgeNote ? { ledgeAt: ledgeNote } : {}),
+    ...(a.avoidBand ? { avoidBand: { y: a.avoidBand.y, band: a.avoidBand.band, moved: avoided, note: avoided.length ? "steps that would be built inside the band: moved to the nearest voxel level outside it (to), or left out (to: null)" : "no step's top was inside the band",
+      ...(Math.abs(builtY(Hm) - a.avoidBand.y * k) < a.avoidBand.band * k ? { warning: "the plateau's top is inside the band (top is as asked: raise or lower it)" } : {}) } } : {}),
+    ...(extra.floorLattice ? { lattice: { y: "floor", note: "the voxel lattice starts at floor: every ledge is floor + whole voxels" } } : {}),
     ...(gulD ? { gullies: { depth: um(gulD), spacing: um(gulS * 2) } } : {}),
     ...(plateauCols < 9 ? { warning: `the plateau is only ${plateauCols} column${plateauCols === 1 ? "" : "s"}: a tower, not a mesa (fewer or narrower steps, or a larger outline, leave a top to stand on)` } : {}),
     footprint: { min, max, units: a.units ?? "map", columns: [nx, nz], circles: count },

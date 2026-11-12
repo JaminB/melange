@@ -149,19 +149,22 @@ export function placePoint(p: Vec3, at: Vec3, yawDeg = 0): Vec3 {
 /** A door or gate through the wall of a rectangle (half sizes hw along x, hd along z, walls `wallT` thick) on `side`,
  * centred on the side (`shift` along it). Round-topped when the opening is at least 3 wide and 2 higher than half its
  * width. `below` carves its floor that far under y0 at the outer face, rising to y0 at the inner face: a ramp down to
- * ground outside that is lower than the floor, instead of a sill as high as the difference. */
-export function doorway(hw: number, hd: number, wallT: number, side: Side, width: number, height: number, y0 = 0, shift = 0, below = 0, square = false): Shape {
+ * ground outside that is lower than the floor, instead of a sill as high as the difference. `bevel` cants the head
+ * instead: the two top corners are cut at 45 degrees, `bevel` in from each (at most half the width and the height). */
+export function doorway(hw: number, hd: number, wallT: number, side: Side, width: number, height: number, y0 = 0, shift = 0, below = 0, square = false, bevel = 0): Shape {
   const alongX = side === "n" || side === "s";
   const outer = (alongX ? hd : hw) + 1, inner = (alongX ? hd : hw) - wallT - 1;
   const sign = side === "s" || side === "e" ? 1 : -1;
   const d0 = sign > 0 ? inner : -outer, d1 = sign > 0 ? outer : -inner;
-  const r = width / 2, arched = !square && width >= 3 && height >= r + 2;
+  const bv = Math.max(0, Math.min(bevel, width / 2, height));
+  const r = width / 2, arched = !bv && !square && width >= 3 && height >= r + 2;
   const ux0 = -r + shift, ux1 = r + shift;
   // the floor of the opening at depth d across the wall: y0 at the inner face, y0 - below at the outer face
   const floorAt = (d: number) => (below > 0 ? y0 - below * Math.min(1, Math.max(0, (sign * d - inner) / (outer - inner))) : y0);
   const hit = (x: number, y: number, z: number) => {
     const u = (alongX ? x : z) - shift, d = alongX ? z : x;
     if (d < d0 || d >= d1 || u < -r || u >= r || y < floorAt(d) || y >= y0 + height) return false;
+    if (bv) return r - Math.abs(u) + (y0 + height - y) >= bv;
     if (!arched || y < y0 + height - r) return true;
     const dy = y - (y0 + height - r);
     return u * u + dy * dy <= r * r;
@@ -396,7 +399,7 @@ export function castleTowers(c: CastleSpec): { corner: TowerCorner; at: Vec3; ro
   return out;
 }
 
-export interface GateSpec { side: Side; width: number; height: number; shift: number; below: number; }
+export interface GateSpec { side: Side; width: number; height: number; shift: number; below: number; bevel?: number; }
 
 /** A curtain wall on a rectangle with a tower on each corner, an optional keep in the courtyard and a gate (or gates). */
 export function castle(c: CastleSpec): Shape[] {
@@ -432,7 +435,7 @@ export function castle(c: CastleSpec): Shape[] {
   // open to the top of the merlon row instead, square
   const open = (h: number) => h >= c.wallHeight - 1 - 1e-9;
   const gh = (h: number) => (open(h) ? c.wallHeight + 2 : h);
-  if (c.gates) for (const g of c.gates) out.push(doorway(hw, hd, t, g.side, g.width, gh(g.height), 0, g.shift, g.below, open(g.height)));
+  if (c.gates) for (const g of c.gates) out.push(doorway(hw, hd, t, g.side, g.width, gh(g.height), 0, g.shift, g.below, open(g.height), open(g.height) ? 0 : g.bevel ?? 0));
   else if (c.gate) out.push(doorway(hw, hd, t, c.gate, c.gateWidth, gh(c.gateHeight), 0, 0, 0, open(c.gateHeight)));
   return out;
 }
@@ -550,8 +553,13 @@ export function crater(c: CraterSpec): Shape[] {
 }
 
 /** The tunnel as shapes: a lining shell of `lining` thickness (fill) round every segment, then the bore (carve). */
-export function tunnel(points: Vec3[], radius: number, shape: "round" | "square", lining: { material: number; thickness: number } | null): Shape[] {
+export function tunnel(points: Vec3[], radius: number, shape: "round" | "square", lining: { material: number; thickness: number } | null, caps: "round" | "flat" = "round"): Shape[] {
   const out: Shape[] = [];
+  // caps flat: the bore stops at the plane through its first and its last point, square to the segment there (a mouth
+  // flush with a wall's face); round (default) runs a radius past them
+  const seg = points.map((p, i) => i + 1 < points.length && Math.hypot(points[i + 1][0] - p[0], points[i + 1][1] - p[1], points[i + 1][2] - p[2]) > 1e-6);
+  const first = seg.indexOf(true), last = seg.lastIndexOf(true);
+  const past = (i: number, t: number) => caps === "flat" && ((i === first && t < 0) || (i === last && t > 1));
   const parts = (r: number, op: Op, mat: number): Shape[] => {
     const s: Shape[] = [];
     for (let i = 0; i + 1 < points.length; i++) {
@@ -566,7 +574,9 @@ export function tunnel(points: Vec3[], radius: number, shape: "round" | "square"
         s.push({
           op, mat, min, max,
           hit: (x, y, z) => {
-            const t = Math.min(1, Math.max(0, ((x - a[0]) * dx + (y - a[1]) * dy + (z - a[2]) * dz) / len2));
+            const t0 = ((x - a[0]) * dx + (y - a[1]) * dy + (z - a[2]) * dz) / len2;
+            if (past(i, t0)) return false;
+            const t = Math.min(1, Math.max(0, t0));
             const ex = x - a[0] - t * dx, ey = y - a[1] - t * dy, ez = z - a[2] - t * dz;
             return ex * ex + ey * ey + ez * ez < r * r;
           },
@@ -575,7 +585,9 @@ export function tunnel(points: Vec3[], radius: number, shape: "round" | "square"
         s.push({
           op, mat, min, max,
           hit: (x, y, z) => {
-            const t = Math.min(1, Math.max(0, ((x - a[0]) * dx + (y - a[1]) * dy + (z - a[2]) * dz) / len2));
+            const t0 = ((x - a[0]) * dx + (y - a[1]) * dy + (z - a[2]) * dz) / len2;
+            if (past(i, t0)) return false;
+            const t = Math.min(1, Math.max(0, t0));
             const px = x - a[0] - t * dx, pz = z - a[2] - t * dz;
             const v = -px * uz + pz * ux;                         // sideways in plan, off the line
             const dyLine = y - (a[1] + t * dy);
@@ -599,6 +611,7 @@ export interface FlatTunnelSpec {
   floor: number;                // thickness of the floor slab filled under it where it is empty (0: none)
   material: number;             // the floor slab's
   lining: { material: number; thickness: number } | null;
+  caps?: "round" | "flat";     // flat: the bore stops at the plane through its first and last point (default round)
 }
 
 /** A tunnel with a flat, walkable floor (dig_tunnel floor "flat"): per segment, a cell's distance from the segment in plan
@@ -606,6 +619,8 @@ export interface FlatTunnelSpec {
  * cells: a floor across a gap, not a repaint of the rock), then the bore. */
 export function flatTunnel(t: FlatTunnelSpec): Shape[] {
   const r = t.radius, H = t.headroom, out: Shape[] = [];
+  const segs = t.points.map((p, i) => i + 1 < t.points.length && Math.hypot(t.points[i + 1][0] - p[0], t.points[i + 1][2] - p[2]) > 1e-6);
+  const firstSeg = segs.indexOf(true), lastSeg = segs.lastIndexOf(true);
   const parts = (op: Op, mat: number, grow: number, below: number, slab: boolean): Shape[] => {
     const s: Shape[] = [];
     for (let i = 0; i + 1 < t.points.length; i++) {
@@ -618,7 +633,9 @@ export function flatTunnel(t: FlatTunnelSpec): Shape[] {
       s.push({
         op, mat, min, max, ...(slab ? { keep: true } : {}),
         hit: (x, y, z) => {
-          const f = Math.min(1, Math.max(0, ((x - a[0]) * dx + (z - a[2]) * dz) / hl2));
+          const f0 = ((x - a[0]) * dx + (z - a[2]) * dz) / hl2;
+          if (t.caps === "flat" && ((i === firstSeg && f0 < 0) || (i === lastSeg && f0 > 1))) return false;
+          const f = Math.min(1, Math.max(0, f0));
           const px = x - a[0] - f * dx, pz = z - a[2] - f * dz, d2 = px * px + pz * pz;
           if (d2 >= R * R) return false;
           const h = y - (a[1] + f * dy);

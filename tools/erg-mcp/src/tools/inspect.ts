@@ -1136,7 +1136,7 @@ export async function checkReachability(s: Session, a: ReachArgs) {
     if (hit >= 0) {
       const path = pathTo(q, hit);
       routes.push({ name: st.name, start: st.at, walk: path, utility: [], usedAt: null, blocked: [] });
-      return { ...base, ...which, walk: r2(outUnit(q.dist[hit], u)), turns: turnsFor(q.dist[hit]), waypoints: thin(path), path: statsOut(path), ...routeOut(path), ...each, ...(floodOut ? { flood: floodOut } : {}) };
+      return { ...base, ...which, walk: r2(outUnit(q.dist[hit], u)), turns: turnsFor(q.dist[hit]), waypoints: thin(path), along: thin(path).map((p) => [p[0], p[2]]), path: statsOut(path), ...routeOut(path), ...each, ...(floodOut ? { flood: floodOut } : {}) };
     }
     // where it is stopped: the reached ground nearest the target with a climb too high next to it
     const stops: { n: number; d: number }[] = [];

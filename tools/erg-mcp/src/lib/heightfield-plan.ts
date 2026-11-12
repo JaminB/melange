@@ -28,7 +28,7 @@ import {
 } from "../core";
 import { ToolError } from "../registry";
 import { PATCH_BUDGET, WORLD_PER_MAP, grids, runBytes, tidy, type Grid } from "./voxel";
-import { compile, fbm, noise2, ExprError, type Vars } from "./heightfield-expr";
+import { bindingsOf, compile, fbm, noise2, ExprError, type Vars } from "./heightfield-expr";
 import { GROUND, OUTLET, WALL, basins, fillBasins, spillLevels } from "./basins";
 
 export type Units = "map" | "world";
@@ -135,6 +135,8 @@ export interface FieldArgs {
   max: [number, number];
   floor: number;                            // y the columns stand on
   keepFloor?: boolean;                      // heights from floor as given, not from the lattice height it snaps to
+  maskLets?: boolean;                       // the material rules' masks see the height expression's let and fn bindings
+  floorLattice?: boolean;                   // the blocks' voxel lattice starts at floor in y (not on the Scene frame's): every top is floor + whole voxels
   expr?: string;
   grid?: number[][];                        // rows along z (row 0 at min z), columns along x
   maxHeight?: number;
@@ -245,6 +247,7 @@ export interface Field {
   floor: number;                            // floor cell (scene y)
   floorAsked: number;                       // the floor asked for, map y (the heights count from floorAsked with keepFloor)
   keepFloor: boolean;
+  yShift?: number;                          // floorLattice: the blocks' lattice stands this far (map y) over the Scene frame's
   runLimit: number;                         // runs a new block may hold: the limit less runsHeadroom
   lo: Int32Array; hi: Int32Array;           // per column [lo, hi): hi <= lo is no column
   height: Float32Array;                     // per column, voxels above the floor (after crater, cap)
@@ -284,7 +287,11 @@ export function sampleField(store: EditorStore, a: FieldArgs): Field {
   const s = a.voxelSize ?? 1;
   if (!validNewFrameScale(s)) throw new ToolError(`voxelSize is ${LIMITS.newFrameScale.min}-${LIMITS.newFrameScale.max} map units per voxel`);
   const kv = k / s;                         // voxels per region unit
-  const { id: sceneId, t } = sceneLattice(store);
+  const { id: sceneId, t: t0 } = sceneLattice(store);
+  // floorLattice: the y lattice passes through the floor, so a top is floor + whole voxels wherever the Scene frame sits
+  // (a 2.5-unit mesa's ledges are no longer pulled onto the Scene's 2.5 lattice); the blocks then share no frame with the
+  // level's own lattice, which reuseFrames' fill already tells apart
+  const t: Vec3 = a.floorLattice ? [t0[0], a.floor * k, t0[2]] : t0;
   if (!!a.expr === !!a.grid) throw new ToolError("give the height as either expr or grid");
   const i0 = Math.round((Math.min(a.min[0], a.max[0]) * k - t[0]) / s), i1 = Math.round((Math.max(a.min[0], a.max[0]) * k - t[0]) / s);
   const j0 = Math.round((Math.min(a.min[1], a.max[1]) * k - t[2]) / s), j1 = Math.round((Math.max(a.min[1], a.max[1]) * k - t[2]) / s);
@@ -459,11 +466,19 @@ export function sampleField(store: EditorStore, a: FieldArgs): Field {
   // a rule's region, mask and noise, prepared once: the areas in map units, the mask compiled
   const ruleRegion = rules.map((r, i) => (r.region ? areas(r.region, `materials[${i}].region`) : null));
   const ruleExclude = rules.map((r, i) => (r.exclude ? areas(r.exclude, `materials[${i}].exclude`) : null));
+  // maskLets: the height expression's bindings stand in front of every mask, so a mask names the lets and calls the fns
+  // the heights were made of (a dune field's `let d = dunes(...)` as a crest mask) instead of repeating them
+  if (a.maskLets && a.expr === undefined) throw new ToolError("maskLets: the masks see the bindings of expr, and the height is a grid here");
+  const lets = a.maskLets ? bindingsOf(a.expr!) : "";
   const maskFn = (src: string, path: string) => {
     try {
-      return compile(src, MASK_VARIABLES) as unknown as (v: Record<string, number>) => number;
+      return compile(lets ? `${lets} ${src}` : src, MASK_VARIABLES) as unknown as (v: Record<string, number>) => number;
     } catch (e) {
-      if (e instanceof ExprError) throw new ToolError(`${path}: ${e.message}`);
+      if (e instanceof ExprError) {
+        // a place inside the mask's own text; one inside the bindings is a name both of them bind
+        const at = e.at - (lets ? lets.length + 1 : 0);
+        throw new ToolError(lets ? `${path}: ${e.message.replace(/ \(at character \d+\)$/, "")} (${at >= 0 ? `at character ${at + 1}` : "in expr's bindings, which maskLets puts in front of the mask"})` : `${path}: ${e.message}`);
+      }
       throw e;
     }
   };
@@ -652,7 +667,7 @@ export function sampleField(store: EditorStore, a: FieldArgs): Field {
     }
     return null;
   };
-  const field: Field = { k, s, t, sceneId, i0, j0, nx, nz, floor, floorAsked: a.floor * k, keepFloor: !!a.keepFloor, runLimit, lo, hi, height, slope, materialAt, ...(limited ? { limited } : {}), ...(basinFill ? { basins: basinFill } : {}),
+  const field: Field = { k, s, t, sceneId, i0, j0, nx, nz, floor, floorAsked: a.floor * k, keepFloor: !!a.keepFloor, ...(a.floorLattice ? { yShift: t[1] - t0[1] } : {}), runLimit, lo, hi, height, slope, materialAt, ...(limited ? { limited } : {}), ...(basinFill ? { basins: basinFill } : {}),
     wordAt(col: number, y: number, layered = false) {
       if (edgeDepth && hi[col] - 1 - y < edgeDepth) {
         const e = edgeWord(col, y);
@@ -1293,7 +1308,7 @@ export function planCommands(store: EditorStore, p: Plan, taken: { ids: Set<numb
     ids.add(tmp);
     const size: Vec3 = [pc.x1 - pc.x0, pc.y1 - pc.y0, pc.z1 - pc.z0], s = f.s;
     const frame: Frame = { id: tmp, new: true, parent: f.sceneId!, name,
-      pos: [(f.i0 + pc.x0 + size[0] / 2) * s, (pc.y0 + size[1] / 2) * s, (f.j0 + pc.z0 + size[2] / 2) * s],
+      pos: [(f.i0 + pc.x0 + size[0] / 2) * s, (pc.y0 + size[1] / 2) * s + (f.yShift ?? 0), (f.j0 + pc.z0 + size[2] / 2) * s],
       rot: [0, 0, 0], scale: [s, s, s], size, voxels: store.freshRef(), heightMap: null, folder: false };
     cmds.push(new AddFrame(store.voxels, frame, words(f, p.canvas, pc)));
     made.push({ id: tmp, name });

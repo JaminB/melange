@@ -166,6 +166,13 @@ type Fn = (v: Vars) => number;
 
 const KEYWORDS = ["let", "fn"];
 
+/** The bindings of an expression: its `let` and `fn` statements up to the last ';' (every statement ends in one, and a
+ * ';' stands nowhere else), or "" when it has none. A mask compiled with them in front sees the same names. */
+export function bindingsOf(src: string): string {
+  const i = src.lastIndexOf(";");
+  return i < 0 ? "" : src.slice(0, i + 1);
+}
+
 /** Compiles an expression to a function of the column's variables, or throws an ExprError saying where it is wrong.
  * `extra` names more variables the caller puts in the object it passes (a mask's h, y and d). */
 export function compile(src: string, extra: readonly string[] = []): Fn {
