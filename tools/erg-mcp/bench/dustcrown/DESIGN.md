@@ -104,7 +104,9 @@ The palace is one composition, symmetric under a quarter turn, so no side is fav
   lead from the courts to the wing roofs (32), and on to the wall-walk and the keep's roof.
 - **Air strikes and holes**: the plinths are solid to the floor. The court floors are step 3's solid top. The keep's hall
   has a floor, so a bomb through the roof lands in a room, never in a void. No hollow structure has an opening to empty
-  space below the courts.
+  space below the courts. Every structure has a sandstone core (`coreMaterial` sandy-plaster 15, one voxel in from its
+  own faces) and step 1's buried base course is the same, so a crater opens onto rock (`check_exposed_core`: round 4's
+  Bricks base band showed its white and blue top tile at the floor of a crater down plinth 1's ledge).
 
 ### 2.2 The desert
 
@@ -113,20 +115,26 @@ The palace is one composition, symmetric under a quarter turn, so no side is fav
 - **Dunes**: a transverse dune field with crests running NNE-SSW and the wind from the west. Each dune has a gentle
   windward slope (about 12 degrees, 78% of the wave) and a steeper slip face (about 35 degrees, walkable). The crest
   spacing is 34 and the crests stand about 5 over the troughs, never above 11 (220 w, L - 70 w); a 2.5-unit skin holds
-  that profile (round 2b's 18-wide dunes were 7 columns a wave and read as stripes). The bleached crest and the ochre
-  trough are masks on the same `dunes()` wave as the height, edged per corner, so they follow the ridge lines. The ridged crests bend round the
+  that profile (round 2b's 18-wide dunes were 7 columns a wave and read as stripes). Only a long, low fbm swell (0.3)
+  lies over the wave: round 4's `ridged()` noise broke the crests into lumps and facets. The bleached crest and the ochre
+  trough are masks on the same `dunes()` wave as the height, edged per corner (the trough's slope bound too, `edge.soft`,
+  and its edge dithered), so they follow the ridge lines with no square patches. The crests bend round the
   mesas and die down within 8 of the palace ring and within 6 of each spawn pad. A worm can cross every dune on foot.
 - **Mesas** (terraced sandstone, 2.5 strata, `heightfield_region` terraces, cliff not drape):
   - Two **refuge mesas**, NW (-60, -60) and SE (60, 60), each about 30 x 22 at the foot, weathered buttes (sedimentary
     beds, gullies cut into a wobbled outline): a talus skirt to 10 (200 w), two sheer risers of 7.5 that step back 1.25
     (a ledge at 17.5, 350 w) and a top at 25 (500 w), so no ledge lies in the dead band. They are the only safe ground
     outside the palace, reached by jump, rope or jetpack, much as the palace is, but cheaper.
-  - Four **low mesas and outcrops**, NE, SW, and two off the axes, 20-22 across, tops at 11.5 (230 w, L - 60 w). They give
-    cover and a bit of height, and they are inside the curse. Since round 4 they are outcrops in the dune skin itself: a
-    flattened, eroded dome over one steep sheared column of flank (darkyellowplaster by the skin's steepMaterial), with
-    darker courses of uneven thickness on the flanks (round 3's build_mesa terraces read as stacked slabs).
-- **Boulder fields**: six fields, one between each sand area and the palace and two by the low mesas. Each field is a
-  pile of seven low rounded voxel domes (radius 1.8-3.2, 1-2 high over the sand, wider than tall: no stub pillars), plus
+  - Four **low mesas and outcrops**, NE, SW, and two off the axes, 20-22 across with their sand, crowns at 11.25 (225 w,
+    L - 65 w). They give cover and a bit of height, and they are inside the curse. Since round 5 each is a rock outcrop
+    (`build_outcrop`, 1.25 voxels, its own block): a wobbled, gullied outline of 0.8 of the radius, one sheer face from 5
+    to 10 in stone 12 with darkyellowplaster 57 courses, a domed and pitted stone crown, standing out of a sand apron the
+    skin banks up 1.25 round it, so about 2.75 of banded face breaks through the sand. Round 4's outcrops sculpted into
+    the skin took its sand on top and read as sand hills.
+- **Boulder fields**: six fields, one beside each sand area's walk to the palace (off the axis, so none stands in the
+  line of sight to a plinth: round 4's N field read as stairs up plinth 1) and two by the low mesas. Each field is
+  `build_boulder_field`: six low boulders of one voxel layer (radius 1-2), 1.5 apart, none within 6 of a riser
+  (`lint_scatter_stairs` passes: nothing stacked, no foothold), plus about twelve
   sim-neutral boulder and scree meshes from the Dustcrown mesh bank (no slabs: they read as plinth blocks; no wedges:
   they read as pink slabs). The bank is a pale sandstone built on mod mesh section 514, which no Kindjal bank uses, so
   the detail layer is the same with any plugin set (round 4: game_shot_compare differs only in the sky).
@@ -171,7 +179,9 @@ Each area has four knots (WORM slots), so up to four worms a team.
 - The map sets only the start level, 20 w. It has no level script water schedule, and it sets nothing else on the sea.
 - **The sea reads as sand**: `set_water_look` sets opacity 1, reflection 0, shade lighter, a sandy sky blend
   (target about #e3c27e, matched to Sand 24 under DAY light) and low specular. It is tuned with `game_shots` until the
-  coast reads as dunes running into a flat sand plain with no blue. Sunstone's haze is left as it is.
+  coast reads as dunes running into a flat sand plain with no blue. Since round 5 the level sets its haze in the sand's
+  dust (`set_water_look {haze: {color: [240, 228, 176], start: 3000, distance: 9000}}`, Melange 0.15, honoured by
+  Sunstone 2.4+): round 4's pale blue ring and the "ghost" dunes were Sunstone's aerial haze toward the sky's horizon.
 
 ### 2.5 Crates, mines, objects
 
@@ -195,12 +205,13 @@ Each area has four knots (WORM slots), so up to four worms a team.
 |---|---|
 | Dune slopes | Sand 24, sand01 10, SandBlend 23 at the edges |
 | Dune crests (bleached) | grass02blend 3, tinted cream #f2e3bd (sRGB) under Sunstone |
-| Troughs (ochre) and the spawn pads | path02 9, the lowest 6% of each wave on ground under 22 degrees, tinted #d4b48e (sRGB; plays a muted ochre near #cfae7e in sun under Sunstone; round 3's #d8ad6a played a saturated #d9b43f, round 2b's #ce7a30 read as rust); path01 8 on the pads |
+| Troughs (ochre) and the spawn pads | path02 9, the lowest 6% of each wave on ground under 22 degrees, tinted #d8b896 (sRGB; `tint_landscape {grade}` through the shade grade: plays #ceb17c in sun and #90775b in shade, no drift; round 4's #d4b48e, round 3's #d8ad6a played a saturated #d9b43f, round 2b's #ce7a30 read as rust); path01 8 on the pads |
 | Refuge mesa strata | stone 12 and sandy-plaster 15 beds, each followed by a darkyellowplaster 57 course (rock01/rock02 drew a grey cobble on the cliffs) |
-| Low outcrops | stone 12, darkyellowplaster 57 courses and steep flanks |
+| Low outcrops | stone 12 face and crown, darkyellowplaster 57 courses (build_outcrop bands) |
 | Mesa caps | stone 12 |
-| Boulders | rock01 4 |
-| Palace plinth risers | darkyellowplaster 57 (ochre courses), Bricks 14 at the base course |
+| Boulders | rock01 4 and stone 12, one voxel layer; the shapes are the bank's boulder and scree meshes |
+| Palace plinth risers | darkyellowplaster 57 (ochre courses), sandy-plaster 15 at the buried base course |
+| Structure cores | sandy-plaster 15 (`coreMaterial`) |
 | Plinth treads and ledges | stone 12 |
 | Curtain, towers, wings, keep, Crown | sandy-plaster 15 below a GoldEdging 26 course, stone 12 (bleached sandstone) above; Plaster 21 read as grey concrete |
 | Merlon caps and the Crown's crown | Gold 25, GoldEdging 26 |
