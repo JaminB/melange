@@ -1,6 +1,6 @@
 // The export's ship gate (lib/ship-gate.ts) over the open project: the detail count detail_budget answers, and the
 // features that set the pack's least Melange (spawn areas, the pack's own meshes).
-import { shipRange, type ShipFeatures } from "./ship-gate";
+import { lacking, rangeFloor, shipRange, type ShipFeatures } from "./ship-gate";
 import { simFingerprint } from "./sim-fingerprint";
 
 /** A scenery resource of a mod's own mesh bank: `<mod id>.<Name>` (the engine's own have no dot). */
@@ -17,4 +17,14 @@ export function exportGate(store: Parameters<typeof simFingerprint>[0], asked?: 
   const c = simFingerprint(store, "").counts;
   const details = (c.simDetails ?? 0) + (c.scenery ?? 0) + (c.light ?? 0) + (c.emitter ?? 0) + (c.sound ?? 0);
   return { details, ...shipRange(details, asked, { ...shipFeatures(store), ...(levelLook.length ? { levelLook } : {}) }) };
+}
+
+/** What the open project uses that a Melange of `build` does not know: the features, each with its release. */
+export function projectLacks(store: Parameters<typeof simFingerprint>[0], build: string | undefined | null): { feature: string; melange: string }[] {
+  return lacking(build, exportGate(store).needs ?? singleNeed(store));
+}
+/** shipRange leaves `needs` out when the only need is the detail count: say it here. */
+function singleNeed(store: Parameters<typeof simFingerprint>[0]): { feature: string; melange: string }[] {
+  const g = exportGate(store), v = rangeFloor(g.melangeRange);
+  return g.gated && v ? [{ feature: g.why, melange: v }] : [];
 }

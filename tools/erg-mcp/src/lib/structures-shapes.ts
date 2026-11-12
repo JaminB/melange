@@ -150,20 +150,29 @@ export function placePoint(p: Vec3, at: Vec3, yawDeg = 0): Vec3 {
  * centred on the side (`shift` along it). Round-topped when the opening is at least 3 wide and 2 higher than half its
  * width. `below` carves its floor that far under y0 at the outer face, rising to y0 at the inner face: a ramp down to
  * ground outside that is lower than the floor, instead of a sill as high as the difference. `bevel` cants the head
- * instead: the two top corners are cut at 45 degrees, `bevel` in from each (at most half the width and the height). */
-export function doorway(hw: number, hd: number, wallT: number, side: Side, width: number, height: number, y0 = 0, shift = 0, below = 0, square = false, bevel = 0): Shape {
+ * instead: the two top corners are cut at 45 degrees, `bevel` in from each (at most half the width and the height).
+ * `jambBevel` splays the jambs: each of the opening's four upright edges (a jamb at a face of the wall) is cut at 45
+ * degrees in plan, that far in from the face and along it (at most half the wall), up to where the head starts. */
+export function doorway(hw: number, hd: number, wallT: number, side: Side, width: number, height: number, y0 = 0, shift = 0, below = 0, square = false, bevel = 0, jambBevel = 0): Shape {
   const alongX = side === "n" || side === "s";
   const outer = (alongX ? hd : hw) + 1, inner = (alongX ? hd : hw) - wallT - 1;
   const sign = side === "s" || side === "e" ? 1 : -1;
   const d0 = sign > 0 ? inner : -outer, d1 = sign > 0 ? outer : -inner;
   const bv = Math.max(0, Math.min(bevel, width / 2, height));
   const r = width / 2, arched = !bv && !square && width >= 3 && height >= r + 2;
-  const ux0 = -r + shift, ux1 = r + shift;
+  const jb = Math.max(0, Math.min(jambBevel, wallT / 2)), faceIn = inner + 1, faceOut = outer - 1;
+  const ux0 = -r - jb + shift, ux1 = r + jb + shift;
   // the floor of the opening at depth d across the wall: y0 at the inner face, y0 - below at the outer face
   const floorAt = (d: number) => (below > 0 ? y0 - below * Math.min(1, Math.max(0, (sign * d - inner) / (outer - inner))) : y0);
   const hit = (x: number, y: number, z: number) => {
     const u = (alongX ? x : z) - shift, d = alongX ? z : x;
-    if (d < d0 || d >= d1 || u < -r || u >= r || y < floorAt(d) || y >= y0 + height) return false;
+    if (d < d0 || d >= d1 || y < floorAt(d) || y >= y0 + height) return false;
+    if (jb && (u < -r || u >= r)) {
+      // the splay: wider by jb at each face, back to the opening's own width jb into the wall; under the head only
+      const sd = sign * d, face = Math.min(Math.abs(sd - faceIn), Math.abs(faceOut - sd));
+      return Math.abs(u) - r + face <= jb + 1e-9 && y < y0 + height - (bv || (arched ? r : 0));
+    }
+    if (u < -r || u >= r) return false;
     if (bv) return r - Math.abs(u) + (y0 + height - y) >= bv;
     if (!arched || y < y0 + height - r) return true;
     const dy = y - (y0 + height - r);
@@ -399,7 +408,7 @@ export function castleTowers(c: CastleSpec): { corner: TowerCorner; at: Vec3; ro
   return out;
 }
 
-export interface GateSpec { side: Side; width: number; height: number; shift: number; below: number; bevel?: number; }
+export interface GateSpec { side: Side; width: number; height: number; shift: number; below: number; bevel?: number; jambBevel?: number; }
 
 /** A curtain wall on a rectangle with a tower on each corner, an optional keep in the courtyard and a gate (or gates). */
 export function castle(c: CastleSpec): Shape[] {
@@ -435,7 +444,7 @@ export function castle(c: CastleSpec): Shape[] {
   // open to the top of the merlon row instead, square
   const open = (h: number) => h >= c.wallHeight - 1 - 1e-9;
   const gh = (h: number) => (open(h) ? c.wallHeight + 2 : h);
-  if (c.gates) for (const g of c.gates) out.push(doorway(hw, hd, t, g.side, g.width, gh(g.height), 0, g.shift, g.below, open(g.height), open(g.height) ? 0 : g.bevel ?? 0));
+  if (c.gates) for (const g of c.gates) out.push(doorway(hw, hd, t, g.side, g.width, gh(g.height), 0, g.shift, g.below, open(g.height), open(g.height) ? 0 : g.bevel ?? 0, g.jambBevel ?? 0));
   else if (c.gate) out.push(doorway(hw, hd, t, c.gate, c.gateWidth, gh(c.gateHeight), 0, 0, 0, open(c.gateHeight)));
   return out;
 }

@@ -9,7 +9,7 @@ import { mesaField, type MesaArgs } from "../lib/mesa";
 import { spansAt } from "../lib/inspect-field";
 import { ON_SKIN_PREFIX } from "../lib/structures-apply";
 import { grids, usage } from "../lib/voxel";
-import { ToolError, type Schema, type Tool } from "../registry";
+import { ToolError, validate, type Schema, type Tool } from "../registry";
 import { schema as field } from "./heightfield";
 
 const pair = (what: string): Schema => ({ type: "array", items: { type: "number" }, minItems: 2, maxItems: 2, description: what });
@@ -46,8 +46,9 @@ const schema: Schema & { type: "object" } = {
       properties: { walkable: { type: "boolean" }, width: { type: "number", minimum: 0.01 }, jitter: { type: "number", minimum: 0 }, scale: { type: "number", minimum: 0.01 }, seed: { type: "integer" } } },
     talus: { type: "object", additionalProperties: false, description: "A skirt of scree round the foot, off by default: it rises to `height` (units; default two risers) at the cliff and falls to nothing `width` out (default 2.5 x height: a slope of about 22 degrees), `profile` linear (default) or concave; `material` paints it (its columns are those no higher than the skirt). The cliff starts on top of the skirt, so the strata count the cliff only.",
       properties: { height: { type: "number", minimum: 0.01 }, width: { type: "number", minimum: 0.01 }, material, profile: { type: "string", enum: ["linear", "concave"] } } },
-    cap: { type: "object", additionalProperties: false, required: ["material"], description: "The plateau's top `depth` voxels (1-8, default 1) in this material (stone, caprock).",
-      properties: { material, depth: { type: "integer", minimum: 1, maximum: 8 } } },
+    cap: { type: "object", additionalProperties: false, required: ["material"], description: "The plateau's top `depth` voxels (1-8, default 1) in this material (stone, caprock). dome (units): the plateau swells by this much at its deepest point and falls to nothing at its edge, a rock hump instead of a table (`top` is then the plateau's edge; the answer's mesa.cap.crownY is the crown). erosion {amount, scale, seed}: noise pits the plateau by up to amount (units; never down to the step under it), over features about scale across. treads: true puts the cap's material on every step's top too (every column that stands on a step), so no ledge of the cliff reads as sand. All off by default.",
+      properties: { material, depth: { type: "integer", minimum: 1, maximum: 8 }, dome: { type: "number", minimum: 0 }, treads: { type: "boolean" },
+        erosion: { type: "object", additionalProperties: false, required: ["amount"], properties: { amount: { type: "number", minimum: 0 }, scale: { type: "number", minimum: 0.01 }, seed: { type: "integer" } } } } },
     ledgeAt: { type: "array", maxItems: 63, items: { type: "number" }, description: "The steps' tops as absolute level ys (units), lowest first, in place of even risers (strata.step then only sets the default tread): one step per entry, then the plateau. Each is built on the nearest whole voxel (the answer's ledges and ledgeAt.built say where); with floorLattice those are floor + whole voxels, so a ledge asked a whole number of voxels over the floor is built exactly there." },
     avoidBand: { type: "object", additionalProperties: false, required: ["y", "band"], description: "A hazard band the ledges stay out of (Sandtide's sand line and check_height_line's band): no step's top is built within `band` of the level y `y` (units). A step that would be moves to the nearest voxel level outside the band that keeps a riser of a voxel to its neighbours, or is left out; the answer's avoidBand.moved lists each. The plateau's top is as asked (a warning when it is inside).",
       properties: { y: { type: "number" }, band: { type: "number", minimum: 0 } } },
@@ -111,6 +112,70 @@ export const tools: Tool[] = [
         const off = cliff.filter((c) => c.sideDiffers);
         return { ...result, cliffLook: { materials: cliff, ...(off.length ? { warning: `the cliff shows each material's side texture, and ${off.map((c) => `${c.material} (${c.name})`).join(", ")} ${off.length === 1 ? "has" : "have"} sides that read as another material than the top: pick the bands by sideColour (list_materials {like: "#rrggbb", face: "side"})` } : {}) } };
       });
+    },
+  },
+  {
+    name: "build_outcrop",
+    description: "A rock outcrop that reads as rock: a small build_mesa with the settings an outcrop wants, seated on the ground it stands on. A wobbled, gullied outline of `radius` (or `radii` and `rotation`), a sheer stepped face in `material` (its SIDE texture is what the face shows: pick it with list_materials {like, face: \"side\"}), a domed and pitted crown, and `capMaterial` (default `material`) on the crown and on every step's top, so no ledge reads as sand; `bands` gives strata instead of one rock. It is built as its own blocks named ergonskin_N (an outcrop sculpted into a draped skin takes the skin's sand on its top and reads as a sand hill: this one keeps its rock face and cap). `height` is the crown's edge over the lowest ground under it. Every build_mesa setting can be given in `mesa` and wins over the outcrop's own; the answer is build_mesa's, with `outcrop` (what was asked of it).",
+    inputSchema: {
+      type: "object", additionalProperties: false, required: ["at", "height", "material"],
+      properties: {
+        units: field.properties!.units,
+        at: pair("[x, z] of its centre."),
+        radius: { type: "number", minimum: 0.5, description: "A round outcrop's radius at the foot." },
+        radii: pair("[rx, rz] of an oval one, instead of radius."), rotation: { type: "number", description: "An oval's turn, degrees." },
+        height: { type: "number", minimum: 0.5, description: "The crown's edge over the lowest ground under the outline (units); the dome rises over it." },
+        material, capMaterial: material,
+        bands: { type: "array", minItems: 1, maxItems: 8, description: "Strata instead of one rock: [{material, thickness}] from the foot up, as sedimentary beds.", items: { type: "object", additionalProperties: false, required: ["material", "thickness"], properties: { material, thickness: { type: "number", minimum: 0.01 } } } },
+        steps: { type: "integer", minimum: 1, maximum: 8, description: "How many steps the face has (default: one per 2 voxels of height, at most 4)." },
+        dome: { type: "number", minimum: 0, description: "The crown's swell (units; default a quarter of height, 0 for a flat top)." },
+        roughness: { type: "number", minimum: 0, maximum: 1, description: "How broken the outline is: 0 a plain disc, 1 deep alcoves (default 0.5)." },
+        seed: { type: "integer" },
+        voxelSize: { type: "number", minimum: 0.5, maximum: 4, description: "Map units per voxel (default 1; 2 or more for a large outcrop on a tight cell budget)." },
+        sink: { type: "number", minimum: 0, description: "How far the foot is sunk under the lowest ground (units; default one voxel)." },
+        maxBlocks: field.properties!.maxBlocks, maxCells: field.properties!.maxCells,
+        mesa: { type: "object", description: "build_mesa settings that replace the outcrop's own (strata, tread, gullies, wobble, cap, talus, floor, ...)." },
+        costOnly: { type: "boolean" }, dryRun: { type: "boolean" },
+      },
+    },
+    handler(s, a: { units?: "map" | "world"; at: [number, number]; radius?: number; radii?: [number, number]; rotation?: number; height: number; material: number; capMaterial?: number;
+      bands?: { material: number; thickness: number }[]; steps?: number; dome?: number; roughness?: number; seed?: number; voxelSize?: number; sink?: number; maxBlocks?: number; maxCells?: number;
+      mesa?: Record<string, unknown>; costOnly?: boolean; dryRun?: boolean }) {
+      if ((a.radius === undefined) === (a.radii === undefined)) throw new ToolError("give radius, or radii for an oval");
+      const k = a.units === "world" ? 1 / 20 : 1, vs = a.voxelSize ?? 1, vu = vs / k;      // a voxel in call units
+      const r = a.radius ?? Math.min(...a.radii!), rough = a.roughness ?? 0.5, seed = a.seed ?? 1;
+      const hv = Math.max(1, Math.round(a.height / vu));                                   // the face's height in voxels
+      const steps = a.steps ?? Math.max(1, Math.min(4, Math.floor(hv / 2)));
+      const step = Math.max(1, Math.min(16, Math.round(hv / steps)));
+      // each step stands a little inside the one under it, the whole stack within the inner third of the radius
+      const setback = Math.max(vu * 0.5, (r * 0.35) / Math.max(1, steps));
+      // seat it as build_mesa's onSkin does, so `height` is over the ground and `top` is a level y
+      const gs = grids(s.store), rr = a.radius ?? Math.max(...a.radii!);
+      let lo = Infinity;
+      for (let z = (a.at[1] - rr) * k; z <= (a.at[1] + rr) * k + 1e-6; z += Math.max(0.5, vs / 2)) for (let x = (a.at[0] - rr) * k; x <= (a.at[0] + rr) * k + 1e-6; x += Math.max(0.5, vs / 2)) {
+        const top = spansAt(gs, x, z)[0];
+        if (top) lo = Math.min(lo, top.top);
+      }
+      if (lo === Infinity) throw new ToolError("no ground under the outcrop (give mesa: {floor, top})");
+      const sink = a.sink === undefined ? vs : a.sink * k, floor = (lo - sink) / k;
+      const asked = {
+        units: a.units ?? "map", at: a.at, floor, top: floor + sink / k + a.height, voxelSize: vs, floorLattice: true, onSkin: true,
+        shape: a.radius !== undefined ? { kind: "circle", radius: a.radius } : { kind: "ellipse", radii: a.radii, rotation: a.rotation ?? 0 },
+        material: a.material,
+        ...(rough > 0 ? { wobble: { amount: r * 0.3 * rough, scale: Math.max(2 * vu, r * 0.9), seed }, gullies: { depth: r * 0.45 * rough, spacing: Math.max(3 * vu, r * 0.8), seed: seed + 1 } } : {}),
+        strata: { step, riserJitter: 0.35, ...(a.bands ? { bands: a.bands, style: "beds", seed: seed + 2 } : {}) },
+        tread: { walkable: false, width: setback, jitter: setback * 0.4, seed: seed + 3 },
+        cap: { material: a.capMaterial ?? a.material, depth: 1, treads: true, dome: a.dome ?? a.height / 4, erosion: { amount: vu, scale: Math.max(3 * vu, r * 0.5), seed: seed + 4 } },
+        ...(a.maxBlocks !== undefined ? { maxBlocks: a.maxBlocks } : {}), ...(a.maxCells !== undefined ? { maxCells: a.maxCells } : {}),
+        ...(a.costOnly ? { costOnly: true } : {}), ...(a.dryRun ? { dryRun: true } : {}),
+        ...(a.mesa ?? {}),
+      };
+      const bad = validate(schema, asked);
+      if (bad) throw new ToolError(`build_outcrop's mesa: ${bad}`);
+      const out = tools[0].handler(s, asked as never);
+      const add = (res: unknown) => ({ ...(res as Record<string, unknown>), outcrop: { seat: { ground: Math.round((lo / k) * 1000) / 1000, sink: Math.round((sink / k) * 1000) / 1000 }, mesa: asked,
+        note: "built by build_mesa with these settings, as blocks of its own (ergonskin_N): its faces are `material`'s side texture and its crown and ledges capMaterial's top" } });
+      return out instanceof Promise ? out.then(add) : add(out);
     },
   },
 ];

@@ -11,6 +11,8 @@ import { EDGE_DROP, FREE_REACH, MIN_FREE_WIDTH, checkTrail, classifyDrops, trail
 const median = (v: number[]) => { if (!v.length) return 0; const s = [...v].sort((a, b) => a - b); return s[Math.floor(s.length / 2)]; };
 import { UTILITY_REACH, WORM_WIDTH, centredPath, classify, nodeAt, ownTurn, pathStats, pathTo, search, standableAt, standing, surfaces, turnAt, type FloodRules, type ReachOptions, type Surfaces } from "../lib/reach";
 import { findTraps, type Trap } from "../lib/pits";
+import { applyPlan } from "../lib/structures-apply";
+import type { Shape } from "../lib/structures-shapes";
 import { rotation, slotOf } from "../lib/turns";
 import { waterByTurn, type WaterSchedule } from "../lib/flood";
 import { checkSupport, type SupportColumn } from "../lib/support";
@@ -448,7 +450,58 @@ export async function queryGround(s: Session, a: { x: number; z: number; units?:
 // ------------------------------------------------------------------ check_pits
 
 interface PitArgs extends RegionArgs { step?: number; maxStep?: number; maxSlope?: number; slopeOver?: "tread" | "riser" | "segment" | "skin"; headroom?: number; water?: boolean; maxGap?: number;
-  maxArea?: number; minClimb?: number; from?: number[][]; bodyWidth?: number; islets?: boolean; limit?: number; maxDrop?: number; shore?: "list" | "skip"; }
+  maxArea?: number; minClimb?: number; from?: number[][]; bodyWidth?: number; islets?: boolean; limit?: number; maxDrop?: number; shore?: "list" | "skip";
+  fix?: boolean; fixMaxDepth?: number; fixPlace?: "existing" | "auto"; dryRun?: boolean; }
+
+/** check_pits {fix}: fills the level's pits as it stands now, whatever was built since the terrain's own fillBasins ran
+ * (a structure's wall closing a trough, a boulder field ringing a hollow). Each pit's columns are filled from their
+ * ground up to its rim (the ground its least climb out reaches), in each column's own top material, into the frames
+ * that are there (a draped skin's cells where the game draws them), one undo step a pass; a pit a pass leaves (coarse
+ * voxels end short of the rim, a frame has no room over the pit) is filled a half voxel higher in the next, three
+ * passes at most. Shore perches are not pits to fill (their way out is the sea) and a pit deeper than fixMaxDepth is
+ * left for a look. */
+export function fixPits(store: EditorStore, a: PitArgs) {
+  const u = a.units, L = (v: number | undefined, d: number) => (v === undefined ? d : inMap(v, u));
+  const step = L(a.step, 1), maxStep = L(a.maxStep, 0.5), maxDepth = L(a.fixMaxDepth, 4);
+  const first = checkPits(store, { ...a, fix: false }) as { pits: unknown[]; summary: string };
+  const passes: Record<string, unknown>[] = [];
+  let added = 0, left: { summary: string; pits: unknown[] } = first;
+  const skipped: { at: number[]; why: string }[] = [];
+  for (let pass = 0; pass < 3; pass++) {
+    const gs = grids(store), r = region(gs.filter((g) => g.words.some(isSolid)), a);
+    const o: ReachOptions = { step, maxStep, maxSlope: a.maxSlope ?? 45, maxDrop: L(a.maxDrop, 8), maxGap: L(a.maxGap, 0), headroom: L(a.headroom, 1.5), water: a.water === false ? null : waterMap(store),
+      slopeOver: a.slopeOver ?? "skin", ...(a.bodyWidth ? { bodyWidth: L(a.bodyWidth, 0) } : {}) };
+    const S = surfaces(gs, r, step, o.headroom);
+    const k2 = u === "world" ? WORLD_PER_MAP * WORLD_PER_MAP : 1;
+    const found = findTraps(S, o, { maxArea: a.maxArea === undefined ? TRAP_AREA : a.maxArea / k2, minClimb: a.minClimb === undefined ? o.maxStep + 0.01 : inMap(a.minClimb, u) });
+    const pits = found.traps.filter((t) => t.kind === "pit" && !t.shore && t.exitAt);
+    const shapes: Shape[] = [];
+    skipped.length = 0;
+    for (const t of pits) {
+      if (t.climbOut! > maxDepth) { skipped.push({ at: t.at.map((v) => r2(outUnit(v, u))), why: `its climb out is ${r2(outUnit(t.climbOut!, u))}, over fixMaxDepth` }); continue; }
+      for (const n of t.nodes) {
+        const c = S.cell[n], cx = c % S.w, cz = (c - cx) / S.w, x = r.x0 + (cx + 0.5) * step, z = r.z0 + (cz + 0.5) * step;
+        // to the rim, and a half voxel more each further pass
+        const to = t.exitAt![1] - 1e-3 + pass * 0.5 * S.voxel[n];
+        if (to <= S.y[n]) continue;
+        const mat = S.material[n] >= 0 ? S.material[n] : 0, y0 = S.y[n] - 1e-3;
+        shapes.push({ op: "fill", mat, keep: true, min: [x - step / 2, y0, z - step / 2], max: [x + step / 2, to, z + step / 2], hit: () => true });
+      }
+    }
+    if (!shapes.length) break;
+    const res = applyPlan(store, { label: "Fill pits", shapes, info: {}, notes: [] }, { place: a.fixPlace ?? "existing", dryRun: !!a.dryRun, drape: "sheared", onSkin: true });
+    added += res.voxels.added;
+    passes.push({ pass: pass + 1, pits: pits.length, columns: shapes.length, voxelsAdded: res.voxels.added, frames: res.frames, ...(res.newBlocks.length ? { newBlocks: res.newBlocks.map((b) => ({ id: b.id, name: b.name, cells: b.cells })) } : {}) });
+    if (a.dryRun || !res.voxels.added) break;
+    left = checkPits(store, { ...a, fix: false }) as typeof left;
+    if (!left.pits.length) break;
+  }
+  if (!a.dryRun && passes.length) left = checkPits(store, { ...a, fix: false }) as typeof left;
+  return { ...left, fix: { before: first.pits.length, after: a.dryRun ? null : left.pits.length, voxelsAdded: added, passes, ...(skipped.length ? { skipped } : {}), dryRun: !!a.dryRun,
+    place: a.fixPlace ?? "existing",
+    undo: a.dryRun || !added ? undefined : `${passes.filter((p) => p.voxelsAdded).length} undo step(s): one a pass`,
+    note: "each pit's columns were filled from their ground to its rim in the column's own material, into the frames that are there" + ((a.fixPlace ?? "existing") === "existing" ? " (a pit under no frame's cells is left: fixPlace \"auto\" plugs it with a new block)" : "") + "; shore perches are not filled (their way out is the sea)" } };
+}
 
 /** The pits of the open level (lib/pits): closed hollows a worm walks or drops into and cannot walk out of. */
 export function checkPits(store: EditorStore, a: PitArgs) {
@@ -1543,9 +1596,13 @@ export const tools: Tool[] = [
         islets: { type: "boolean", description: "List the islets too (default: only their count)." },
         shore: { type: "string", enum: ["list", "skip"], description: "Shore perches (a pit with wet ground a step away: its way out is the sea, a steep shore rather than a hollow): list (default; each tagged `shore: true`, counted under `shore`) or skip (left out of pits, ok and the summary)." },
         limit: { type: "integer", minimum: 1, maximum: 200, description: "Pits listed (default 30), those a start reaches first, then the deepest." },
+        fix: { type: "boolean", description: "Fill the pits found, as the level stands now (so it sees what was built after the terrain's own fillBasins ran: a wall that closes a trough, boulders ringing a hollow): each pit's columns are filled from their ground up to its rim (the ground its least climb out reaches) in the column's own top material, into the frames that are there (a draped skin's cells where the game draws them), then the level is read again; up to three passes, one undo step each. Shore perches are left (their way out is the sea). The answer is the check after the fill, with `fix` (before, after, voxelsAdded, passes). Default false: nothing is edited." },
+        fixMaxDepth: { type: "number", minimum: 0, description: "With fix: leave a pit whose climb out is over this (default 4 map units: a sunken court is not a pit to fill)." },
+        fixPlace: { type: "string", enum: ["existing", "auto"], description: "With fix: existing (default) fills only cells of frames that exist; auto also adds a block where a pit lies under no frame's cells." },
+        dryRun: { type: "boolean", description: "With fix: plan the first pass and edit nothing." },
       },
     },
-    handler: (s, a) => checkPits(s.store, a),
+    handler: (s, a) => (a.fix ? fixPits(s.store, a) : checkPits(s.store, a)),
   },
   {
     name: "check_flood",

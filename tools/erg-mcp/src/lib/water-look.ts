@@ -62,6 +62,39 @@ export function parseSea(fields: string): SeaLook | null {
   return { albedo: p.slice(0, 3), opacity: p[3], reflection: k[0], foam: k[1] };
 }
 
+/** The level haze (set_water_look `haze`): the colour the far distance and the band under the horizon fade to. The
+ * game has no fog of its own; a graphics mod's haze takes the sky's horizon colour (Sunstone: a pale blue ring round a
+ * sand sea, and the dome's rim below the horizon in the sky's blue). The level script sets wum.level.water{Haze = {r, g,
+ * b, amount}, HazeRange = {start, distance}} (Melange 0.15: the colour 0-255, amount 0-1, the range in world units, 0
+ * the mod's own) and Melange tells client mods with HAZE_EVENT; Sunstone 2.4+ then hazes toward that colour. */
+export interface HazeLook { color: number[]; amount: number; start: number; distance: number; }
+export const HAZE_EVENT = "melange.level.haze";
+
+/** A haze look checked and its defaults filled in (the whole of the mod's haze colour replaced, the mod's own range). */
+export function hazeLook(v: { color?: number[] | string; amount?: number; start?: number; distance?: number }): { haze?: HazeLook; problems: string[] } {
+  const problems: string[] = [];
+  let color = v.color;
+  if (typeof color === "string") color = /^#[0-9a-fA-F]{6}$/.test(color) ? [1, 3, 5].map((i) => parseInt((color as string).slice(i, i + 2), 16)) : undefined;
+  if (!Array.isArray(color) || color.length !== 3 || color.some((x) => typeof x !== "number" || !(x >= 0 && x <= 255))) problems.push("haze.color: [r, g, b] 0-255 or \"#rrggbb\"");
+  if (v.amount !== undefined && !(typeof v.amount === "number" && v.amount >= 0 && v.amount <= 1)) problems.push("haze.amount: 0-1");
+  for (const k of ["start", "distance"] as const)
+    if (v[k] !== undefined && !(typeof v[k] === "number" && v[k]! >= 0 && v[k]! <= 100000)) problems.push(`haze.${k}: 0-100000 world units`);
+  if (problems.length) return { problems };
+  return { haze: { color: (color as number[]).map((x) => Math.round(x)), amount: v.amount ?? 1, start: v.start ?? 0, distance: v.distance ?? 0 }, problems };
+}
+
+/** The fields of the script's call for a haze look. */
+export const hazeFields = (h: HazeLook) => { const n = (x: number) => String(Math.round(x * 1000) / 1000); return `Haze = {${[...h.color, h.amount].map(n).join(", ")}}, HazeRange = {${n(h.start)}, ${n(h.distance)}}`; };
+
+/** The call's fields back to a haze look (null: not one). */
+export function parseHaze(fields: string): HazeLook | null {
+  const m = /Haze = \{([^}]*)\}, HazeRange = \{([^}]*)\}/.exec(fields);
+  if (!m) return null;
+  const p = m[1].split(",").map((x) => Number(x.trim())), k = m[2].split(",").map((x) => Number(x.trim()));
+  if (p.length !== 4 || k.length !== 2 || [...p, ...k].some((x) => !Number.isFinite(x))) return null;
+  return { color: p.slice(0, 3), amount: p[3], start: k[0], distance: k[1] };
+}
+
 /** Checks a look: known fields with values of their kind. The problems in words (empty: fine). */
 export function waterLookProblems(look: WaterLook): string[] {
   const out: string[] = [];
@@ -82,9 +115,9 @@ export function waterLookProblems(look: WaterLook): string[] {
 
 const num = (v: number) => String(Math.round(v * 10000) / 10000);
 
-/** The block for a look (sorted fields, so the same look is the same text) and, with `sea`, the sea material's message.
- * Without a sea the block is what it always was. */
-export function waterLookBlock(look: WaterLook, sea?: SeaLook | null): string {
+/** The block for a look (sorted fields, so the same look is the same text) and, with `sea`, the sea material's message,
+ * and with `haze` the level haze's. Without a sea and a haze the block is what it always was. */
+export function waterLookBlock(look: WaterLook, sea?: SeaLook | null, haze?: HazeLook | null): string {
   const fields = Object.keys(look).sort().map((k) => {
     const v = look[k];
     return `${k} = ${Array.isArray(v) ? `{${v.map(num).join(", ")}}` : num(v)}`;
@@ -102,6 +135,12 @@ export function waterLookBlock(look: WaterLook, sea?: SeaLook | null): string {
       `  local ok, why = wum.level.water{${seaFields(sea)}}`,
       "  if not ok then wum.log.info(\"sea material: \" .. tostring(why)) end",
       "end"] : []),
+    ...(haze ? [
+      "-- the level haze (docs/erg.md, Melange 0.15): a graphics mod hazes the distance and the horizon band toward this colour",
+      "if wum.level and wum.level.water then",
+      `  local ok, why = wum.level.water{${hazeFields(haze)}}`,
+      "  if not ok then wum.log.info(\"level haze: \" .. tostring(why)) end",
+      "end"] : []),
     WATER_LOOK_END].join("\n");
 }
 
@@ -118,11 +157,11 @@ function blockAt(script: string): [number, number] | null {
 }
 
 /** The script with the block for `look` at its top (an earlier block replaced where it was), or without one (null). */
-export function withWaterLook(script: string, look: WaterLook | null, sea?: SeaLook | null): string {
+export function withWaterLook(script: string, look: WaterLook | null, sea?: SeaLook | null, haze?: HazeLook | null): string {
   const at = blockAt(script);
   const rest = at ? script.slice(0, at[0]) + script.slice(at[1]) : script;
-  if ((!look || !Object.keys(look).length) && !sea) return rest;
-  const block = waterLookBlock(look ?? {}, sea) + "\n";
+  if ((!look || !Object.keys(look).length) && !sea && !haze) return rest;
+  const block = waterLookBlock(look ?? {}, sea, haze) + "\n";
   return at ? script.slice(0, at[0]) + block + script.slice(at[1]) : block + rest;
 }
 
@@ -131,6 +170,13 @@ export function readSea(script: string): SeaLook | null {
   const at = blockAt(script);
   if (!at) return null;
   return parseSea(script.slice(at[0], at[1]));
+}
+
+/** The level haze a script's block sends, or null. */
+export function readHaze(script: string): HazeLook | null {
+  const at = blockAt(script);
+  if (!at) return null;
+  return parseHaze(script.slice(at[0], at[1]));
 }
 
 /** A mod that replaces the water plane's shader (shaders\Water.*.glsl), and whether its files name SEA_EVENT. */

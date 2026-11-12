@@ -8,6 +8,8 @@ import { join } from "node:path";
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { documentsDir } from "../oasis";
+import { gameBuild } from "../lib/game-build";
+import { projectLacks } from "../lib/ship-gate-export";
 import { ToolError, type Tool } from "../registry";
 import type { Session } from "../session";
 
@@ -201,8 +203,11 @@ export const tools: Tool[] = [{
     renameSync(tmp, dst);
     if (replaced && a.keepOld === false) rmSync(old, { recursive: true, force: true });
     const after = folderHash(dst);
+    // the game's own build against what the project uses (an older melange.asi refuses the project at Test)
+    const gb = gameBuild(game), lacks = gb && s.project?.id === id ? projectLacks(s.project.store, gb.version) : [];
     if (after.hash !== before.hash) throw new ToolError(`the copy differs from the source (${after.hash} against ${before.hash})`);
-    return { ...out, copied: true, replaced, ...(replaced && a.keepOld !== false ? { old } : {}),
+    return { ...out, copied: true, replaced, ...(replaced && a.keepOld !== false ? { old } : {}), ...(gb ? { gameBuild: gb.version } : {}),
+      ...(lacks.length ? { warning: `the game's melange.asi is Melange ${gb!.version}, older than this project needs: ${lacks.map((n) => `${n.feature} (${n.melange})`).join("; ")}: put the build of this branch there before Test` } : {}),
       next: "connect to the game (it must run for Test), open_project, then test {expectHash: <save's projectHash>}" };
   },
 }, {

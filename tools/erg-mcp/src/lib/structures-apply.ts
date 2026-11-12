@@ -22,6 +22,8 @@ export type Packing = "tiles" | "parts" | "fit";
 /** New blocks named with this prefix (`onSkin: true`) are structures that stand on a draped skin on purpose (boulders, a
  * kerb, a low plinth): save's drape.pokes advisory leaves them out (lib/drape-pokes). The default prefix is ergblock. */
 export const ON_SKIN_PREFIX = "ergonskin";
+/** A boulder field's blocks: on a skin on purpose (so the prefix above), and told from a mesa's by this one. */
+export const SCATTER_PREFIX = "ergonskin_scatter";
 
 /** packing "parts": a block at least this many cells whose box holds a voxel in less than a third of them is named in
  * the notes (four wings sharing a part number packed as one 4500-cell block round an empty court). */
@@ -30,6 +32,8 @@ export const SPARSE_BLOCK_CELLS = 512;
 export interface ApplyOptions { place: Place; dryRun: boolean; blockScale?: number; packing?: Packing; drape?: "skip" | "sheared"; maxBlocks?: number; maxCells?: number;
   /** New blocks are named ergonskin_N instead of ergblock_N (ON_SKIN_PREFIX). */
   onSkin?: boolean;
+  /** With onSkin: ergonskin_scatter_N (SCATTER_PREFIX), a boulder field's block, which lint_scatter_stairs reads. */
+  scatter?: boolean;
   /** Commands of the same undo step, applied first (sculpt_road's re-graded skin blocks). */
   extra?: Command[]; }
 
@@ -335,7 +339,7 @@ export function applyPlan(store: EditorStore, plan: Plan, opt: ApplyOptions): St
       const used = new Set(store.scene.frames.map((f) => f.id)), names = new Set(store.scene.frames.map((f) => f.name.toLowerCase()));
       const ids = {
         next() { let id = -1; while (used.has(id)) id--; used.add(id); return id; },
-        name() { const p = opt.onSkin ? ON_SKIN_PREFIX : "ergblock"; let n = 0; while (names.has(`${p}_${n}`)) n++; names.add(`${p}_${n}`); return `${p}_${n}`; },
+        name() { const p = opt.scatter ? SCATTER_PREFIX : opt.onSkin ? ON_SKIN_PREFIX : "ergblock"; let n = 0; while (names.has(`${p}_${n}`)) n++; names.add(`${p}_${n}`); return `${p}_${n}`; },
       };
       const side = LIMITS.newFrameSide;
       const idx = (i: number, j: number, k: number) => (k * dim[0] + i) * dim[1] + j;

@@ -6,7 +6,10 @@ import { AddDetail, Group, RemoveDetail, targetFrame, type Scene, type Vec3 } fr
 import { commit } from "../lib/place-geom";
 import { classifyDetail } from "../lib/sim-fingerprint";
 import { tintHex } from "../lib/tint";
-import { carrierName, landTintsOf, materialTiles, srgbToLinearHex, textureDigest, tileTwins, tintTheme, type TintTheme } from "../lib/landtint";
+import { carrierName, landTintsOf, linearToSrgb, materialTiles, srgbToLinearHex, textureDigest, tileTwins, tintTheme, type TintTheme } from "../lib/landtint";
+import { gradeMaterial, gradeShade, shadeDrift } from "../lib/grade";
+import { loadGrade } from "../lib/grade-file";
+import { hex, type Rgb } from "../lib/inspect-png";
 import { loadScene } from "./dress";
 import { ToolError, type Tool } from "../registry";
 
@@ -27,18 +30,28 @@ export const tools: Tool[] = [
       id: { type: "integer", description: "The carrier: a scenery detail of that base (default its first visual scenery detail)." },
       colorSpace: { type: "string", enum: ["linear", "srgb"], description: "How `color` is read. linear (default, as before): the hex is written to the tag as it is, and Sunstone multiplies it in linear light, so it draws lighter than the hex looks. srgb: the hex is the colour you want to SEE (a picker's value); the tag gets its linear-light value and the answer gives both (`asked`, `color`)." },
       list: { type: "boolean" },
+      grade: { type: "string", description: "Preview each tint as the game plays it, in the sun and in shade: a grade file (game_material_shots {saveGrade, faces: [\"steep\", \"shade\"]}) or a built-in grade's name. Each tint then answers `plays`: sun (the colour by the grade's tinted fit, or as measured for that material), shade (by the grade's shade fit, or as measured; null when the grade was measured in the sun only) and `drift`, when the shade leaves the colour's family: redder (salmon, orange) or more saturated. With list: true it previews the level's tints as they are. Nothing else changes." },
     } },
-    async handler(s, a: { tints?: { texture?: string; material?: number | string; faces?: "side" | "top" | "all"; color: string }[]; theme?: TintTheme; base?: string; id?: number; list?: boolean; colorSpace?: "linear" | "srgb"; carrier?: "base" | "theme" }) {
+    async handler(s, a: { tints?: { texture?: string; material?: number | string; faces?: "side" | "top" | "all"; color: string }[]; theme?: TintTheme; base?: string; id?: number; list?: boolean; colorSpace?: "linear" | "srgb"; carrier?: "base" | "theme"; grade?: string }) {
       const { store } = s.requireProject();
       const theme: TintTheme = a.theme ?? tintTheme(store.scene.databank.theme) ?? "PREHISTORIC";
+      // grade: a tint's colour as the game plays it in the sun and in shade (`tag` is the tag's linear hex; material -1
+      // when the tint names a texture, so only the fits apply)
+      const gr = a.grade !== undefined ? loadGrade(a.grade).grade : null;
+      const plays = (tag: string, material = -1) => {
+        if (!gr) return {};
+        const seen = linearToSrgb(tag) as Rgb, sun = gradeMaterial(gr, material, seen, true), shade = gradeShade(gr, material, seen), drift = shade ? shadeDrift(sun, shade) : null;
+        return { plays: { asSeen: hex(seen), sun: hex(sun), shade: shade ? hex(shade) : null, ...(drift ? { drift } : {}),
+          ...(shade ? {} : { note: "this grade was measured in the sun only: game_material_shots {faces: [\"steep\", \"shade\"], saveGrade} measures shade" }) } };
+      };
       const carriers = () => store.scene.details.filter((d) => d.src === null && landTintsOf(d.name).length);
       const current = () => carriers().flatMap((d) => landTintsOf(d.name, theme).map((t) => ({ ...t, id: d.id })));
       if (a.list || !a.tints) {
         if (!a.list) throw new ToolError("give tints, or list: true");
         const listed = theme === "ARABIAN" ? [0, 2, 3, 4, 6, 8, 9, 10, 11, 12, 15, 24, 57] : [0, 2, 4, 6, 8, 9, 10, 12, 16, 19, 27, 49, 50, 51];
-        return { tints: current(), theme, materials: listed.map((m) => ({ ...materialTiles(m, "all", theme), side: materialTiles(m, "side", theme).tiles })) };
+        return { tints: current().map((t) => ({ ...t, ...plays(t.color) })), theme, materials: listed.map((m) => ({ ...materialTiles(m, "all", theme), side: materialTiles(m, "side", theme).tiles })) };
       }
-      const want = new Map<string, { color: string | null; asked?: string; texture: string | null; from: string }>();
+      const want = new Map<string, { color: string | null; asked?: string; texture: string | null; from: string; material?: number }>();
       a.tints.forEach((t, i) => {
         let color: string | null = null, asked: string | undefined;
         try { if (t.color !== "none") color = `#${tintHex(t.color, `tints[${i}].color`)}`; } catch (e) { throw new ToolError((e as Error).message); }
@@ -48,7 +61,7 @@ export const tools: Tool[] = [
           if (t.texture !== undefined) { const d = textureDigest(t.texture, theme); want.set(d.digest, { color, asked, texture: d.texture, from: t.texture }); }
           else {
             const m = materialTiles(t.material!, t.faces ?? "side", theme);
-            for (const tile of m.tiles) { const d = textureDigest(tile, theme); want.set(d.digest, { color, asked, texture: d.texture, from: `${m.name} ${t.faces ?? "side"}` }); }
+            for (const tile of m.tiles) { const d = textureDigest(tile, theme); want.set(d.digest, { color, asked, texture: d.texture, from: `${m.name} ${t.faces ?? "side"}`, material: m.index }); }
           }
         } catch (e) { throw new ToolError(`tints[${i}].${(e as Error).message}`); }
       });
@@ -93,7 +106,7 @@ export const tools: Tool[] = [
           cmds.push(new AddDetail(frame, { name, resource: src.resource, pos: store.frames.toLocal(frame, at), rot: [0, 0, 0], scale: [0.05, 0.05, 0.05] }));
         }
         const twins = tileTwins(digest, theme);
-        out.push({ digest, texture: w.texture, from: w.from, color: w.color ?? "none", ...(w.asked ? { asked: w.asked, colorSpace: "srgb" } : {}), ...(twins.length > 1 ? { sameImage: twins } : {}) });
+        out.push({ digest, texture: w.texture, from: w.from, color: w.color ?? "none", ...(w.asked ? { asked: w.asked, colorSpace: "srgb" } : {}), ...(twins.length > 1 ? { sameImage: twins } : {}), ...(w.color ? plays(w.color, w.material) : {}) });
       }
       if (cmds.length) commit(store, cmds.length === 1 ? cmds[0] : new Group(`Tint ${want.size} landscape textures`, cmds));
       return { tints: out, level: current(), carrier: { base: key, id: src.id, name: src.name, resource: src.resource, why: carrierWhy }, note: "drawn by Sunstone's landscape shaders (Melange MirageTints, mg_landTint); sim_fingerprint is unchanged", undo: "undo restores the previous tints" };

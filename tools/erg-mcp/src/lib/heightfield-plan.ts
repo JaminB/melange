@@ -49,7 +49,10 @@ export interface MaterialRule {
   paths?: PathMask[];                       // only within a path's width of one of these polylines (roads, switchbacks)
   exclude?: Area[];                         // never in these areas (the crater floor for a grass rule)
   excludeMask?: string;                     // never where this expression is above 0
-  edge?: { depth?: number };                // the rule's own edge per corner: a voxel outside it with corners inside takes it as second material
+  // the rule's own edge per corner: a voxel outside it with corners inside takes it as second material. soft: the slope
+  // bounds are tested per corner too (a corner passes when any column that shares it does), so a column the rule's
+  // minSlope / maxSlope leaves out fades into its neighbours instead of ending on a column's square edge
+  edge?: { depth?: number; soft?: boolean };
 }
 
 /** How a feathered rule's threshold varies: dither (a 4 x 4 ordered pattern over x, z and y), noise (a hash), blue (a
@@ -486,9 +489,10 @@ export function sampleField(store: EditorStore, a: FieldArgs): Field {
   const ruleExcludeMask = rules.map((r, i) => (r.excludeMask === undefined ? null : maskFn(r.excludeMask, `materials[${i}].excludeMask`)));
   rules.forEach((r, i) => {
     if (r.edge && (typeof r.edge !== "object" || (r.edge.depth !== undefined && !(Number.isInteger(r.edge.depth) && r.edge.depth >= 1 && r.edge.depth <= 8))))
-      throw new ToolError(`materials[${i}].edge: {depth}, depth 1-8 voxels`);
-    if (r.edge && !(r.region || r.mask !== undefined || r.masks || r.noise || r.paths))
-      throw new ToolError(`materials[${i}].edge: the rule needs an area to have an edge (region, mask, masks, noise or paths)`);
+      throw new ToolError(`materials[${i}].edge: {depth, soft}, depth 1-8 voxels`);
+    if (r.edge && r.edge.soft !== undefined && typeof r.edge.soft !== "boolean") throw new ToolError(`materials[${i}].edge.soft is true or false`);
+    if (r.edge && !(r.region || r.mask !== undefined || r.masks || r.noise || r.paths || (r.edge.soft && (r.minSlope !== undefined || r.maxSlope !== undefined))))
+      throw new ToolError(`materials[${i}].edge: the rule needs an area to have an edge (region, mask, masks, noise or paths${r.edge.soft ? ", or a slope bound" : "; or, with soft, a slope bound"})`);
   });
   const ruleMasks = rules.map((r, i) => {
     if (r.masks === undefined) return null;
@@ -570,7 +574,19 @@ export function sampleField(store: EditorStore, a: FieldArgs): Field {
   // Whether rule ri holds for the voxel at height y of column col; `at` (map x, z) moves the rule's area tests (region,
   // paths, noise, masks, exclusions) to another point of the column (a corner, for the rule's edge), the height, slope
   // and depth bounds staying the voxel's. `exposed` is the voxel's, worked out once by the caller when a rule asks.
-  const holds = (r: MaterialRule, ri: number, col: number, y: number, exp: { v?: boolean }, at?: [number, number]) => {
+  // edge.soft: the slope bounds at a column's corner (ci, cj: the lattice point) hold when they do for any of the up to
+  // four columns that share it
+  const slopeOkAt = (r: MaterialRule, ci: number, cj: number) => {
+    for (let dz = -1; dz <= 0; dz++) for (let dx = -1; dx <= 0; dx++) {
+      const a2 = ci + dx, b2 = cj + dz;
+      if (a2 < 0 || b2 < 0 || a2 >= nx || b2 >= nz) continue;
+      const c2 = b2 * nx + a2;
+      if (!(hi[c2] > lo[c2])) continue;
+      if ((r.minSlope === undefined || slope[c2] >= r.minSlope) && (r.maxSlope === undefined || slope[c2] <= r.maxSlope)) return true;
+    }
+    return false;
+  };
+  const holds = (r: MaterialRule, ri: number, col: number, y: number, exp: { v?: boolean }, at?: [number, number], corner?: [number, number]) => {
     const above = (y + 0.5 - floor) / kv, fromTop = hi[col] - 1 - y, sl = slope[col], depth = (hi[col] - y - 0.5) / kv;
     let shift = 0;
     if (r.jitter && (r.minHeight !== undefined || r.maxHeight !== undefined)) {
@@ -587,8 +603,11 @@ export function sampleField(store: EditorStore, a: FieldArgs): Field {
     }
     if (r.minHeight !== undefined && above < r.minHeight + shift) return false;
     if (r.maxHeight !== undefined && above >= r.maxHeight + shift) return false;
-    if (r.minSlope !== undefined && sl < r.minSlope) return false;
-    if (r.maxSlope !== undefined && sl > r.maxSlope) return false;
+    if (corner && r.edge?.soft) { if (!slopeOkAt(r, corner[0], corner[1])) return false; }
+    else {
+      if (r.minSlope !== undefined && sl < r.minSlope) return false;
+      if (r.maxSlope !== undefined && sl > r.maxSlope) return false;
+    }
     if (r.surface !== undefined && fromTop >= r.surface) return false;
     if (r.minDepth !== undefined && depth < r.minDepth) return false;
     if (r.maxDepth !== undefined && depth >= r.maxDepth) return false;
@@ -661,7 +680,7 @@ export function sampleField(store: EditorStore, a: FieldArgs): Field {
       let bits = 0;
       for (let cz = 0; cz < 2; cz++)
         for (let cx = 0; cx < 2; cx++)
-          if (holds(r, ri, col, y, exp, [(i0 + ai + cx) * s + t[0], (j0 + bj + cz) * s + t[2]]))
+          if (holds(r, ri, col, y, exp, [(i0 + ai + cx) * s + t[0], (j0 + bj + cz) * s + t[2]], [ai + cx, bj + cz]))
             bits |= (1 << CORNER_BIT[1][cz][cx]) | (1 << CORNER_BIT[0][cz][cx]);
       if (bits) return withSecond(filled(mat), r.material, bits);
     }

@@ -15,9 +15,9 @@ import { cumulative, keyOfLabel, planWalk, pursue } from "../lib/walk-plan";
 import { WORM_WIDTH } from "../lib/reach";
 import { clearEye } from "../lib/eye";
 import { Raster, decodePng, hex, type Rgb } from "../lib/inspect-png";
-import { centreColour, lookDelta, materialPatches } from "../lib/material-look";
+import { centreColour, facePatches, lookDelta, luma, materialPatches, type PatchKind } from "../lib/material-look";
 import { landTintPreview, projectMaterials, tintFor } from "../lib/materials";
-import { applyGrade, fitGrade } from "../lib/grade";
+import { applyGrade, fitGrade, shadeDrift } from "../lib/grade";
 import { eyeCandidates, quietState } from "../lib/harness-moves";
 import { TRACE_LUA, attributeMove, cleanTrace, describeMove, mergePerfRuns, offTurnMoves, parseTrace, pickPerfBase, type PerfRun, type PerfStat, type TraceSample } from "../lib/play-trace";
 import { documentsDir } from "../oasis";
@@ -2255,8 +2255,9 @@ return string.format("%.3f,%.3f,%.3f,%s,%s,%s,%s", t.fps, t.busyMsP50, t.frameMs
       azimuth: { type: "number", minimum: 0, maximum: 360, description: "Where the eye stands, degrees clockwise from north (-z) of the patch (default 200: a little west of south, the sun behind)." },
       step: { type: "number", minimum: 0.5, maximum: 8, description: "The ground sample spacing for finding the patches, map units (default 2)." },
       saveGrade: { type: "string", description: "Also fit a look grade from the shots and write it to this file (JSON): the map from each material's colour as the tools draw it (its landscape tint's colour where it has one, else its texture's mean) to the colour the shot shows, an affine map in linear light. render_view and render_topdown {grade: \"<this file>\"} then draw the level in the colours the game shows with these plugins and this time of day. At least two materials must be shot." },
+      faces: { type: "array", maxItems: 2, items: { type: "string", enum: ["steep", "shade"] }, description: "Also shoot each material where it is not a flat sunlit top (default none, as before): steep, its stretches on ground steeper than 30 degrees, one per way the slope faces (n, e, s, w), shot from downhill; shade, its flat stretches at the foot of ground 3 map units or more higher, one per side. Each material's record then has `faces` (each shot's colour and brightness) and `shade`: the darkest of them when it is at least a tenth darker than the flat shot, with `drift` when the shade leaves the colour's family (redder: salmon or orange; or more saturated). With saveGrade the grade also holds a shade fit (render colours for shade: tint_landscape {grade} previews each tint in sun and in shade). Up to eight more shots a material." },
       images: { type: "boolean", description: "Also answer the pictures (default false: the paths and colours)." } } },
-    async handler(s, a: { materials?: number[]; prefix?: string; width?: number; distance?: number; elevation?: number; azimuth?: number; step?: number; images?: boolean; saveGrade?: string }) {
+    async handler(s, a: { materials?: number[]; prefix?: string; width?: number; distance?: number; elevation?: number; azimuth?: number; step?: number; images?: boolean; saveGrade?: string; faces?: PatchKind[] }) {
       s.requireProject();
       if (!(await has(s, "render.shot"))) throw new ToolError("game_material_shots needs the game's render.shot (Melange of this branch)");
       const st = await gameState(s);
@@ -2298,6 +2299,47 @@ return string.format("%.3f,%.3f,%.3f,%s,%s,%s,%s", t.fps, t.busyMsP50, t.frameMs
         }
         shots.push(rec);
       }
+      // the same materials off the flat and out of the sun: steep faces by the way they fall, flat ground under a wall
+      const shadePairs: { from: Rgb; to: Rgb; weight: number; material: number; kind: string }[] = [];
+      if (a.faces?.length) {
+        const FACE_AZ = { n: 0, e: 90, s: 180, w: 270 } as const;
+        for (const fp of facePatches(gs, { only: patches.map((p) => p.material), step: a.step ?? 2, water, kinds: a.faces })) {
+          const rec = shots.find((r) => r.material === fp.material);
+          if (!rec || rec.error) continue;
+          const name = String(rec.name ?? `m${fp.material}`).replace(/[^A-Za-z0-9]+/g, "_").slice(0, 16);
+          // a steep face is looked at from the side it falls toward, lower; a shaded flat as the flat one is
+          const faz = fp.kind === "steep" ? (FACE_AZ[fp.facing] * Math.PI) / 180 : az, fel = fp.kind === "steep" ? (25 * Math.PI) / 180 : el;
+          const fdir = [Math.sin(faz) * Math.cos(fel), Math.sin(fel), -Math.cos(faz) * Math.cos(fel)];
+          const target = [fp.at[0] * W, (fp.at[1] + 0.3) * W, fp.at[2] * W];
+          let pose = { pos: [target[0] + fdir[0] * dist, target[1] + fdir[1] * dist, target[2] + fdir[2] * dist], target };
+          const ce = clearEye(gs, pose.pos.map((v) => v / W), pose.target.map((v) => v / W), { skip: 1 });
+          if (ce.moved) pose = { ...pose, pos: ce.eye.map((v) => v * W) };
+          const ow = overWater(pose, st.water);
+          if (ow.lifted) pose = ow.pose;
+          const face: Record<string, unknown> = { kind: fp.kind, facing: fp.facing, at: fp.at, ...(fp.slope !== undefined ? { slope: fp.slope } : {}) };
+          try {
+            const set = await setCamera(s, { ...pose, fov: 50 }, 40);
+            const sh = await shot(s, uniqueName(prefix, `mat${fp.material}_${name}_${fp.kind}${fp.facing}`), { clean: true, width: a.width ?? 640, minFrame: set.frame !== undefined ? set.frame + 2 : undefined });
+            await clearCamera(s).catch(() => undefined);
+            const img = decodePng(sh.png), c = centreColour(img.rgb, img.w, img.h, 0.2);
+            Object.assign(face, { shot: sh.path, inGame: hex(c), luma: Math.round(luma(c)), rgb: c });
+            if (a.images) pics.push(image(sh.png));
+          } catch (e) { face.error = (e as Error).message; }
+          ((rec.faces ??= []) as Record<string, unknown>[]).push(face);
+        }
+        for (const rec of shots) {
+          const faces = ((rec.faces ?? []) as { rgb?: Rgb; luma?: number; kind: string; facing: string }[]).filter((f) => f.rgb);
+          const lit = pairs.find((q) => q.material === rec.material);
+          if (!faces.length || !lit) continue;
+          const dark = faces.reduce((p, c) => (c.luma! < p.luma! ? c : p));
+          if (dark.luma! <= 0.9 * luma(lit.to)) {
+            const drift = shadeDrift(lit.to, dark.rgb!);
+            rec.shade = { inGame: hex(dark.rgb!), from: `${dark.kind} ${dark.facing}`, darker: Math.round(100 - (100 * dark.luma!) / Math.max(1, luma(lit.to))), ...(drift ? { drift } : {}) };
+            shadePairs.push({ from: lit.from, to: dark.rgb!, weight: lit.weight, material: lit.material, kind: `${dark.kind} ${dark.facing}` });
+          } else rec.shade = { none: "no face of it shot here is a tenth darker than its flat sunlit patch" };
+          for (const f of faces) delete (f as { rgb?: Rgb }).rgb;
+        }
+      }
       let grade: Record<string, unknown> | undefined;
       if (a.saveGrade !== undefined) {
         if (pairs.length < 2) grade = { saved: false, why: `a grade needs at least two shot materials with a known colour (${pairs.length} here)` };
@@ -2307,10 +2349,12 @@ return string.format("%.3f,%.3f,%.3f,%s,%s,%s,%s", t.fps, t.busyMsP50, t.frameMs
           g.measured = pairs.filter((q) => q.weight >= 1).map((q) => ({ material: q.material, from: q.from, to: q.to, ...(tinted.has(q.material) ? { tinted: true } : {}) }));
           const tp = pairs.filter((q) => tinted.has(q.material));
           if (tp.length >= 2) { const tg = fitGrade(tp); g.tint = { m: tg.m, pairs: tg.pairs, residual: tg.residual }; }
+          if (shadePairs.length) g.shadeMeasured = shadePairs.map((q) => ({ material: q.material, from: q.from, to: q.to, kind: q.kind, ...(tinted.has(q.material) ? { tinted: true } : {}) }));
+          if (shadePairs.length >= 2) { const sg = fitGrade(shadePairs); g.shade = { m: sg.m, pairs: sg.pairs, residual: sg.residual }; }
           mkdirSync(join(a.saveGrade, ".."), { recursive: true });
           writeFileSync(a.saveGrade, JSON.stringify({ note: "erg-mcp look grade (game_material_shots saveGrade): render_view {grade: <this file>}", grade: g,
             pairs: pairs.map((q) => ({ material: q.material, from: hex(q.from), to: hex(q.to), graded: hex(applyGrade(g, q.from)), weight: Math.round(q.weight * 10) / 10, ...(tinted.has(q.material) ? { tinted: true } : {}) })) }, null, 1));
-          grade = { saved: true, file: a.saveGrade, pairs: g.pairs, residual: g.residual, saturation: g.saturation, gain: g.gain, m: g.m, source: g.source, ...(g.tint ? { tintFit: g.tint } : {}),
+          grade = { saved: true, file: a.saveGrade, pairs: g.pairs, residual: g.residual, saturation: g.saturation, gain: g.gain, m: g.m, source: g.source, ...(g.tint ? { tintFit: g.tint } : {}), ...(g.shade ? { shadeFit: g.shade } : a.faces?.length ? { shadeFit: null, shadeNote: `${shadePairs.length} material(s) had a shaded patch: a shade fit needs two` } : {}),
             fit: pairs.map((q) => ({ material: q.material, from: hex(q.from), game: hex(q.to), graded: hex(applyGrade(g, q.from)), ...(tinted.has(q.material) ? { tinted: true } : {}) })),
             note: "a saturation about each colour's luminance, then a gain and an offset per channel, in linear light; residual: the fit's weighted RMS error on its own pairs (sRGB 0-255); fit: each material's colour as drawn, as the game showed it and as the grade maps it (tinted materials count three times, patches under 40 columns a tenth); the grade holds near these colours" };
         }

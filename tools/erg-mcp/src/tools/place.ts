@@ -21,7 +21,7 @@ import { documentsDir } from "../oasis";
 import { automationFile, holdRoundClock, stopHold, tools as gameTools } from "./game";
 import { CAMERA_RISE, WALL_RADIUS, nearestTread, spawnWarnings, treadAt, treadWarnings } from "../lib/spawn-check";
 import { dealPreview } from "../lib/spawn-deal";
-import { expandWaterPreset, readSea, readWaterLook, seaLook, shaderOverrideWarnings, waterLookProblems, SEA_EVENT, WATER_PRESETS, withWaterLook, type SeaLook, type WaterLook, type WaterShaderMod } from "../lib/water-look";
+import { expandWaterPreset, hazeLook, readHaze, readSea, readWaterLook, seaLook, shaderOverrideWarnings, waterLookProblems, HAZE_EVENT, SEA_EVENT, WATER_PRESETS, withWaterLook, type HazeLook, type SeaLook, type WaterLook, type WaterShaderMod } from "../lib/water-look";
 import { checkFactory, factoryLines } from "../lib/factory-check";
 import { projectHash, readSource, storedThrow } from "../lib/project-hash";
 import { count, diff, fromSaved, mergeRuns, pairOf, summary, toSaved, type AssertRun, type SavedRun } from "../lib/assert-log";
@@ -34,7 +34,8 @@ import { grids, tidy } from "../lib/voxel";
 import { ToolError, type Schema, type Tool } from "../registry";
 import type { Session } from "../session";
 import { validateExportForm } from "../../../../web/src/panels/erg/test/model";
-import { exportGate } from "../lib/ship-gate-export";
+import { exportGate, shipFeatures } from "../lib/ship-gate-export";
+import { lacking, versionOf } from "../lib/ship-gate";
 import { levelLookOf, thumbnailFromFile } from "./levellook";
 
 const pointProps: Record<string, Schema> = {
@@ -1062,6 +1063,35 @@ const modId: Schema = { type: "string", description: "Mod id: a-z, 0-9, '-' and 
 
 /** The mods of a game folder that replace the water plane's shader (Mods\<id>\shaders\Water.*.glsl), whether each is
  * enabled (Mods\thumper-state.json) and whether its shader or client script names the sea material's message. */
+/** A Test's mesh banks: the files given are copied into the project's meshes folder (which level.test loads), and the
+ * mods whose meshes the project places are checked against the banks there. Undefined when the project places none
+ * and none was given. */
+export async function testMeshBanks(s: Session, id: string, store: EditorStore, files?: string[]) {
+  const mods = [...new Set((shipFeatures(store).modMeshes ?? []).map((m) => m.slice(0, m.indexOf("."))))];
+  if (!mods.length && !files?.length) return undefined;
+  const dirs = (await (await s.levels()).list()) as { projectsDir?: unknown };
+  const root = typeof dirs.projectsDir === "string" ? dirs.projectsDir : null;
+  if (!root || !existsSync(join(root, id))) {
+    if (files?.length) throw new ToolError(root ? `the project's folder ${join(root, id)} is not on this machine: meshBanks copies into it` : "the server did not answer its projectsDir (an older Melange): meshBanks needs it");
+    return { warning: `the project places meshes of ${mods.join(", ")}: a Test draws them only when that mod is installed and on, or its bank is in the project's meshes folder (not checked: the projects folder is not readable here)` };
+  }
+  const dir = join(root, id, "meshes"), copied: string[] = [];
+  for (const f of files ?? []) {
+    if (!/\.xom$/i.test(f) || !existsSync(f)) throw new ToolError(`meshBanks: no .xom file ${f}`);
+    mkdirSync(dir, { recursive: true });
+    const to = join(dir, path.basename(f)), bytes = readFileSync(f);
+    const old = existsSync(to) ? readFileSync(to) : null;
+    if (!old || old.length !== bytes.length || old.some((v, i) => v !== bytes[i])) { writeFileSync(to, bytes); copied.push(path.basename(f)); }
+  }
+  const have = existsSync(dir) ? fs.readdirSync(dir).filter((f) => /\.xom$/i.test(f)).sort() : [];
+  const missing = mods.filter((m) => !have.some((f) => f.slice(0, f.indexOf(".")) === m));
+  const oldServer = lacking(s.conn?.build, [{ melange: "0.15.0" }]).length > 0;
+  return { dir, banks: have, ...(copied.length ? { copied } : {}),
+    ...(missing.length ? { warning: `the project places meshes of ${missing.join(", ")} and no ${missing.map((m) => `${m}.*.xom`).join(" or ")} is in its meshes folder: they will NOT draw in this Test unless that mod is installed and on in the game (test {meshBanks: ["<the bank .xom>"]} copies one there; build_rock_bank writes it)` } : {}),
+    ...(oldServer && have.length ? { serverNote: `the server is Melange ${versionOf(s.conn?.build)}: a Test loads a project's meshes folder from 0.15.0` } : {}),
+    note: "level.test loads the banks of the project's meshes folder once a game launch, before the match starts: a bank changed since needs a game restart ([erg] test: mesh bank ... in Melange.log)" };
+}
+
 export function waterShaderMods(gameDir: string | undefined): WaterShaderMod[] {
   if (!gameDir) return [];
   const modsDir = path.join(gameDir, "Mods"), out: WaterShaderMod[] = [];
@@ -1275,14 +1305,19 @@ export const tools: Tool[] = [
       fields: { type: "object", description: "More WaterPlaneTweaks fields by name: a number, or [r, g, b(, a)] 0-255 for a colour, [x, y, z] for a vector." },
       sea: { type: "object", additionalProperties: false, required: ["albedo"], description: "The sea material: the water plane as a matte surface of one colour (a sand sea, lava, tar), which the game's own water shader cannot draw (its colour is the theme's blue texture: the sand preset is pale, never tan). The level script sets it with wum.level.water{Sea = {r, g, b, opacity}, SeaKeep = {reflection, foam}} (Melange 0.15; an older one skips it), Melange tells client mods with the event melange.level.sea, and a mod that replaces the water shader draws it: Sunstone 2.4+ does (opaque albedo lit by the sun, no reflection, refraction or foam unless asked). Without such a mod the fields and preset still apply, so give both: {preset: \"sand\", sea: {albedo: [214, 190, 140]}}. The answer's shaderMods lists the installed water shader mods of gameDir and whether each honours it.",
         properties: { albedo: { type: "array", items: { type: "number", minimum: 0, maximum: 255 }, minItems: 3, maxItems: 3, description: "[r, g, b] 0-255, as the colour should read in daylight." },
-          opacity: { type: "number", minimum: 0, maximum: 1, description: "Default 1: nothing under the sea shows." },
+          opacity: { type: "number", minimum: 0, maximum: 1, description: "Default 1: nothing under the sea shows, and what stands in it ends at a crisp waterline." },
           reflection: { type: "number", minimum: 0, maximum: 1, description: "How much of the shader's sky reflection is kept (default 0)." },
           foam: { type: "number", minimum: 0, maximum: 1, description: "How much of the shader's shore foam is kept (default 0)." } } },
+      haze: { description: "The level haze: the colour the far distance and the band under the horizon fade to, {color: [r, g, b] or \"#rrggbb\", amount (0-1, default 1: how far the mod's own haze colour gives way to it), start, distance (world units; 0, the default: the mod's own range)}, or false to take the level's haze off. The game has no fog of its own; a graphics mod hazes toward the sky's horizon colour (with Sunstone a sand sea is ringed in pale blue and meets a blue band under the horizon), and with a haze the level says the colour itself: the script sets wum.level.water{Haze, HazeRange} (Melange 0.15) and Melange sends melange.level.haze, which Sunstone 2.4+ honours. Given alone it is added to the look and sea the script already has; left out, the script's haze stays.",
+        anyOf: [{ type: "boolean" }, { type: "object", additionalProperties: false, required: ["color"], properties: {
+          color: { anyOf: [{ type: "string" }, { type: "array", items: { type: "number", minimum: 0, maximum: 255 }, minItems: 3, maxItems: 3 }] },
+          amount: { type: "number", minimum: 0, maximum: 1 }, start: { type: "number", minimum: 0, maximum: 100000 }, distance: { type: "number", minimum: 0, maximum: 100000 } } }] },
       gameDir: { type: "string", description: "The game folder whose Mods are checked for water shader mods (default MELANGE_GAME_DIR)." },
       clear: { type: "boolean", description: "Remove the block: the theme's water again." },
     } },
     async handler(s, a: { preset?: string; tint?: number[]; opacity?: number; reflection?: number; shade?: number; landAmbient?: number[]; landDiffuse?: number[]; fields?: WaterLook; clear?: boolean;
-      sea?: { albedo?: number[]; opacity?: number; reflection?: number; foam?: number }; gameDir?: string }) {
+      sea?: { albedo?: number[]; opacity?: number; reflection?: number; foam?: number }; gameDir?: string;
+      haze?: { color?: number[] | string; amount?: number; start?: number; distance?: number } | boolean }) {
       const p = s.requireProject();
       let look: WaterLook = { ...(a.fields ?? {}) };
       if (a.opacity !== undefined) look.NearOpacity = a.opacity;
@@ -1300,25 +1335,36 @@ export const tools: Tool[] = [
         look = e.look;
         preset = { name: a.preset, theme: d.theme, timeOfDay: d.timeOfDay, verified: e.verified, ...(e.overridden.length ? { overridden: e.overridden } : {}), note: e.note };
       }
-      if (a.clear && (Object.keys(look).length || a.sea)) throw new ToolError("clear removes the block: give no fields with it");
+      if (a.clear && (Object.keys(look).length || a.sea || a.haze)) throw new ToolError("clear removes the block: give no fields with it");
       let sea: SeaLook | null = null;
       if (a.sea !== undefined) {
         const sl = seaLook(a.sea ?? {});
         if (sl.problems.length) throw new ToolError(sl.problems.join("; "));
         sea = sl.sea!;
       }
-      if (!a.clear && !Object.keys(look).length && !sea) throw new ToolError("give a preset, opacity, reflection, shade, landAmbient, landDiffuse or fields, or a sea (or clear: true)");
+      const before = (await p.erg.script()) ?? "";
+      // haze: the level's own; left out, the script's haze stays (a look set again keeps it); false takes it off. Given
+      // alone it is added to the look and sea the script has
+      if (a.haze === true) throw new ToolError("haze: {color, amount, start, distance}, or false to take it off");
+      let haze: HazeLook | null = a.clear || a.haze === false ? null : readHaze(before);
+      if (a.haze) {
+        const hl = hazeLook(a.haze);
+        if (hl.problems.length) throw new ToolError(hl.problems.join("; "));
+        haze = hl.haze!;
+      }
+      const hazeOnly = a.haze !== undefined && !Object.keys(look).length && !sea && !a.clear;
+      if (hazeOnly) { look = readWaterLook(before) ?? {}; for (const k of ["Sea", "SeaKeep", "Haze", "HazeRange"]) delete look[k]; sea = readSea(before); }
+      if (!a.clear && !Object.keys(look).length && !sea && a.haze === undefined) throw new ToolError("give a preset, opacity, reflection, shade, landAmbient, landDiffuse or fields, a sea or a haze (or clear: true)");
       const bad = waterLookProblems(look);
       if (bad.length) throw new ToolError(bad.join("; "));
-      const before = (await p.erg.script()) ?? "";
-      const text = withWaterLook(before, a.clear ? null : look, sea);
+      const text = withWaterLook(before, a.clear ? null : look, sea, haze);
       // the water shader mods of the game folder: a look they do not read is said here, not found in a screenshot
       const mods = waterShaderMods(a.gameDir ?? process.env.MELANGE_GAME_DIR);
       const shader = a.clear ? {} : { ...(mods.length ? { shaderMods: mods } : {}), ...(() => { const w = shaderOverrideWarnings(mods, look, sea); return w.length ? { warnings: w } : {}; })() };
-      if (text === before) return { changed: false, look: readWaterLook(before), ...(readSea(before) ? { sea: readSea(before) } : {}), ...(preset ? { preset } : {}), ...shader, note: "the script already sets this look" };
+      if (text === before) return { changed: false, look: readWaterLook(before), ...(readSea(before) ? { sea: readSea(before) } : {}), ...(readHaze(before) ? { haze: readHaze(before) } : {}), ...(preset ? { preset } : {}), ...shader, note: "the script already sets this look" };
       const r = await p.erg.saveScript(text);
       if (!r.saved) throw new ToolError(`the server did not save the script: ${r.problems.map((x) => x.message ?? String(x)).join("; ")}`);
-      return { changed: true, look: a.clear ? null : look, ...(sea ? { sea, seaEvent: SEA_EVENT } : {}), ...(preset ? { preset } : {}), was: readWaterLook(before), problems: r.problems, syntaxChecked: r.syntaxChecked ?? false, ...shader,
+      return { changed: true, look: a.clear ? null : look, ...(sea ? { sea, seaEvent: SEA_EVENT } : {}), ...(haze ? { haze, hazeEvent: HAZE_EVENT, hazeNote: "the distance and the band under the horizon fade to this colour where a graphics mod honours it (Sunstone 2.4+); the game's own picture has no haze" } : {}), ...(preset ? { preset } : {}), was: readWaterLook(before), problems: r.problems, syntaxChecked: r.syntaxChecked ?? false, ...shader,
         note: a.clear ? "the block is gone: the theme's water" : "a wum.level.water{...} block at the top of the level script (Melange 0.13+): Test to see it; the game logs each field it set ([levels] water look: <container>.<field> set)" +
           (sea ? `; the sea material goes to client mods as the event ${SEA_EVENT} (Melange 0.15), which a water shader mod that honours it draws (shaderMods)` : "") };
     },
@@ -1437,6 +1483,7 @@ export const tools: Tool[] = [
       type: "object", additionalProperties: false,
       properties: { tod: { type: "string", enum: TIMES_OF_DAY, description: "Time of day for this Test (default the project's own: set_time_of_day). The answer's `look` says what the match applied (time of day and theme) and `warnings` names a fallback." },
         waitFor: { type: "string", enum: ["playing", "armed"], description: "State to wait for (default playing)." },
+        meshBanks: { type: "array", maxItems: 8, items: { type: "string" }, description: "The project's own mesh banks for the Test (.xom files, as build_rock_bank writes: <id>.<Bank>.xom): each is copied into the project's meshes folder (<projectsDir>\\<project>\\meshes), which a Test loads before it starts (Melange 0.15: level.test loads <project>\\meshes\\*.xom once a launch; a changed bank needs a game restart), so the Test shows the detail meshes an installed pack shows. Without it the folder is used as it is; the answer's meshBanks lists the banks there and warns when the project places a mod's meshes and no bank of that mod is in the folder (they do not draw in the Test unless that mod is installed and on)." },
         timeoutSec: { type: "integer", minimum: 1, maximum: 600, description: "Stop waiting after this long (default 60)." },
         cleanMods: { type: "boolean", description: "A clean room for this Test match only: enabled content mods' sim code (entry.sim) does not run, only the level script, and the post-FX stack is off (unless postfx: true), so asserts and lighting belong to the map. Nothing is changed on disk; launch-time content (weapon clones, file overrides, shader mods, client scripts) stays. On a game build without clean rooms it refuses while such mods are enabled." },
         postfx: { type: "boolean", description: "false: the post-FX stack (every effect and code pass, like the Post-FX panel's Bypass all) is off for this Test match; true with cleanMods keeps it on. Default: on, or off with cleanMods." },
@@ -1461,7 +1508,7 @@ export const tools: Tool[] = [
     },
     async handler(s, a0: { tod?: TimeOfDay; waitFor?: "playing" | "armed"; timeoutSec?: number; cleanMods?: boolean; postfx?: boolean; restart?: boolean; simMods?: "all" | "level-only";
       expectHash?: string; source?: string; sync?: boolean; map?: string; noLevel?: boolean; turns?: number; fire?: boolean | "bazooka"; fireMs?: number; teams?: TestTeam[]; gameDir?: string;
-      suddenDeath?: boolean; baseline?: boolean; perf?: boolean | number }) {
+      suddenDeath?: boolean; baseline?: boolean; perf?: boolean | number; meshBanks?: string[] }) {
       if (a0.baseline) a0 = { map: "Multi.DinerMight", noLevel: true, fire: "bazooka", turns: 4, perf: true, ...a0 };
       if (a0.map !== undefined || a0.noLevel) {
         const b = await runBaseline(s, a0);
@@ -1498,6 +1545,7 @@ export const tools: Tool[] = [
         throw new ToolError(`content mods with sim code are enabled and would run in the Test: ${simMods.join(", ")}. This game build has no clean-room Test: disable them in the game (they apply at the next launch) for a clean run, or leave out cleanMods`);
       const first = await savedFirst(s, "tested");
       const sec = a.timeoutSec ?? 60;
+      const meshBanks = await testMeshBanks(s, p.id, p.store, a0.meshBanks).catch((e: Error) => { if (e instanceof ToolError) throw e; return undefined; });
       // the project's own time of day unless one is given: without it the frontend's (Quick Game: DAY) loads
       const db = p.store.scene.databank, tod = a.tod ?? (TIMES_OF_DAY.includes(db.timeOfDay as TimeOfDay) ? (db.timeOfDay as TimeOfDay) : undefined);
       // the game refuses a Test outside its frontend: say how to get there instead of its bare refusal
@@ -1524,7 +1572,7 @@ export const tools: Tool[] = [
         script: run.final === "playing" && !!(await (async () => (await p.erg.script()) ?? "")().catch(() => "")).trim() }) : null;
       const roundClock = a0.suddenDeath === false && run.final === "playing" ? await holdRoundClock(s).catch((e: Error) => ({ held: false, note: e.message })) : undefined;
       return { ...run, ...(roundClock ? { roundClock } : {}), ...(a0.simMods ? { isolated: a0.simMods === "level-only" ? (suppressed || !simMods.length ? "level only: no other sim mod runs in this match" : "level only was asked, but the game did not apply a clean room (cleanRoom)") : "all sim mods" } : {}),
-        ...(first ? { savedFirst: true } : {}), ...(restarted ? { restarted } : {}), ...(projectCheck ? { projectCheck } : {}),
+        ...(first ? { savedFirst: true } : {}), ...(restarted ? { restarted } : {}), ...(projectCheck ? { projectCheck } : {}), ...(meshBanks ? { meshBanks } : {}),
         ...(look ? { look: look.look, ...(look.warnings.length ? { warnings: look.warnings } : {}) } : {}),
         ...(simMods.length ? suppressed ? { simMods, simModsNote: "these mods' sim code is suppressed in this Test match (clean room)" }
           : { simMods, simModsNote: "these mods' sim code runs in this match beside the level script" } : {}),

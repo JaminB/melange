@@ -56,3 +56,32 @@ export function shipRange(details: number, asked?: string, features: ShipFeature
   if (least !== null) return { melangeRange: `>=${least}`, gated: true, why, ...(needs.length > 1 || details <= VANILLA_SAFE_DETAILS ? { needs } : {}) };
   return { melangeRange: DEFAULT_RANGE, gated: false, why };
 }
+
+/** What this erg-mcp writes or calls that a Melange older than `melange` does not know: connect lists the ones the
+ * connected server (and the game folder's own build) lacks, so an old Melange.exe is found at connect and not at the
+ * first save, build or Test that trips over it (Dustcrown round 4: `spawns: unknown key 'areas'` at a late build). */
+export const ERG_FEATURES: { feature: string; melange: string; tools: string }[] = [
+  { feature: "a pack's own mesh banks and the raised mesh pool", melange: MESH_BANK_MELANGE, tools: "build_rock_bank, place_mod_mesh, a level over 450 details" },
+  { feature: "spawn areas (spawns.mode areas)", melange: SPAWN_AREAS_MELANGE, tools: "place_spawn_knots {mode: \"areas\"}" },
+  { feature: "a level entry's timeOfDay and image", melange: LEVEL_LOOK_MELANGE, tools: "set_level_look, set_level_thumbnail, export" },
+  { feature: "the sea material and the level haze (wum.level.water Sea, Haze)", melange: "0.15.0", tools: "set_water_look {sea, haze}" },
+  { feature: "a material's side colours", melange: "0.15.0", tools: "list_materials sideColour, render_view sideTextures" },
+  { feature: "the Test harness's level.test.lua, placeWorm and a level started in a named style", melange: "0.15.0", tools: "game_give_weapons, game_park_worm, game_air_strike, game_start_level" },
+];
+
+/** The version in a build string ("0.15.0", "0.15.0-private+abc"), or null. */
+export const versionOf = (build: string | undefined | null): string | null => /(\d+\.\d+\.\d+)/.exec(build ?? "")?.[1] ?? null;
+
+/** The features of `list` a Melange of `build` lacks (none when the build is unknown). */
+export function lacking<T extends { melange: string }>(build: string | undefined | null, list: T[]): T[] {
+  const v = versionOf(build);
+  return v === null ? [] : list.filter((f) => compareVersions(v, f.melange) < 0);
+}
+
+/** One warning line for a Melange that lacks features, or null. `what`: "the server", "the game in <dir>". */
+export function lackWarning(what: string, build: string | undefined | null, list: { feature: string; melange: string }[], subject = "this erg-mcp"): string | null {
+  const l = lacking(build, list);
+  if (!l.length) return null;
+  const least = l.reduce((v, f) => (compareVersions(f.melange, v) > 0 ? f.melange : v), "0.0.0");
+  return `${what} is Melange ${versionOf(build)}, older than ${subject} needs (${least}+): it does not know ${l.map((f) => `${f.feature} (${f.melange})`).join("; ")}`;
+}

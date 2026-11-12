@@ -5,7 +5,9 @@
 import { buildBank } from "../lib/rockbank";
 import { PALETTES, ROCK_KINDS, buildRocks, type Palette, type RockSpec } from "../lib/rockmesh";
 import { registerModMesh } from "../lib/scenery-mesh";
-import { ToolError, type Schema, type Tool } from "../registry";
+import { loadGrade } from "../lib/grade-file";
+import { rockSheet } from "../lib/rock-preview";
+import { ToolError, image, type Schema, type Tool } from "../registry";
 
 const rgb: Schema = { type: "array", items: { type: "integer", minimum: 0, maximum: 255 }, minItems: 3, maxItems: 3 };
 const paletteSchema: Schema = {
@@ -18,6 +20,7 @@ const NAME = /^[A-Za-z0-9_.-]{1,96}$/, ID = /^[a-z0-9][a-z0-9_-]{0,63}$/;
 interface Args {
   id: string; rocks?: RockSpec[]; palette?: string | Palette; seed?: number; out?: string; bank?: string; section?: number;
   gameDir?: string; xomtool?: string; keepSource?: boolean; dryRun?: boolean; register?: boolean;
+  preview?: boolean | { grade?: string; ground?: string; cell?: number };
 }
 
 export const tools: Tool[] = [
@@ -47,6 +50,8 @@ export const tools: Tool[] = [
       keepSource: { type: "boolean", description: "Keep the glTF and PNG sources in <out>/src (default false)." },
       dryRun: { type: "boolean", description: "Plan and register only: write nothing even with `out`." },
       register: { type: "boolean", description: "Register the rocks for render_view {scenery: true} (default true)." },
+      preview: { description: "A picture of the palette before (or with) the build: true, or {grade, ground, cell}. Every rock is drawn flat shaded on the ground's colour, its sides in the palette's stone and its upward faces under its dust; `grade` (a grade file from game_material_shots {saveGrade}, or a built-in's name) draws the colours as the game plays them, `ground` (\"#rrggbb\", the colour the ground plays in: a material's inGame from game_material_shots) is the background, and each rock then answers `contrast`: how far its lit top and its shaded side stand from the ground in brightness (0-255; a lit top under about 12 from it reads by its shadow only). The picture is image content; with no `out` nothing is written.",
+        anyOf: [{ type: "boolean" }, { type: "object", additionalProperties: false, properties: { grade: { type: "string" }, ground: { type: "string" }, cell: { type: "integer", minimum: 64, maximum: 320 } } }] },
     } },
     handler(_s, a: Args) {
       if (!ID.test(a.id)) throw new ToolError(`id "${a.id}": lowercase letters, digits, "_" and "-", starting with a letter or digit`);
@@ -61,16 +66,29 @@ export const tools: Tool[] = [
       const mesh = (r: (typeof built.rocks)[number]) => ({ name: `${a.id}.${r.name}`, kind: r.kind, seed: r.seed, vertices: r.mesh.vertices, triangles: r.mesh.triangles, box: r.box });
       if (a.register !== false) for (const r of built.rocks) registerModMesh(`${a.id}.${r.name}`, r.tris, r.albedo);
       const registered = a.register !== false ? "render_view {scenery: true} draws these" : "not registered";
+      // preview: the palette as the game plays it, on the ground's colour
+      let sheet: ReturnType<typeof rockSheet> | null = null, pv: Record<string, unknown> | undefined;
+      if (a.preview) {
+        const po = typeof a.preview === "object" ? a.preview : {};
+        const gr = po.grade !== undefined ? loadGrade(po.grade) : null;
+        if (po.ground !== undefined && !/^#[0-9a-fA-F]{6}$/.test(po.ground)) throw new ToolError("preview.ground is \"#rrggbb\"");
+        const ground = po.ground ? [1, 3, 5].map((i) => parseInt(po.ground!.slice(i, i + 2), 16)) as [number, number, number] : null;
+        sheet = rockSheet(built.rocks, { grade: gr?.grade ?? null, ground, cell: po.cell });
+        const faint = sheet.swatches.filter((w) => w.contrast && w.contrast.sun < 12).map((w) => w.name);
+        pv = { rocks: sheet.swatches, size: [sheet.width, sheet.height], ...(gr ? { grade: gr.name } : { grade: null, note: "no grade: the palette's own colours (a grade file from game_material_shots {saveGrade} draws them as the game plays them)" }),
+          ...(ground ? { ground: po.ground } : {}), ...(faint.length ? { warning: `${faint.join(", ")} ${faint.length === 1 ? "has" : "have"} lit faces less than 12 of 255 from the ground in brightness: the rock reads by its shadow only (a darker or a paler stone)` } : {}) };
+      }
+      const withSheet = (o: Record<string, unknown>) => (sheet ? { content: [image(sheet.png), { type: "text" as const, text: JSON.stringify({ ...o, preview: pv }) }] } : o);
       if (!a.out || a.dryRun) {
-        return { written: false, meshes: built.rocks.map(mesh), textures: built.textures.size, registered,
+        return withSheet({ written: false, meshes: built.rocks.map(mesh), textures: built.textures.size, registered,
           spice: { meshes: [{ file: `assets/meshes/${a.id}.${a.bank ?? "Rocks"}.xom` }] },
-          next: "give `out` to write the bank, then place_mod_mesh with resource and box from meshes" };
+          next: "give `out` to write the bank, then place_mod_mesh with resource and box from meshes" });
       }
       let r;
       try { r = buildBank(a.out, { id: a.id, rocks, palette: a.palette, seed: a.seed, bank: a.bank, section: a.section, gameDir: a.gameDir, xomtool: a.xomtool, keepSource: a.keepSource }, built); }
       catch (e) { throw new ToolError(`building the bank failed: ${(e as Error).message}`); }
-      return { written: true, file: r.file, bytes: r.bytes, section: r.section, meshes: r.meshes, textures: built.textures.size, registered, spice: r.spice,
-        next: "copy the bank to the pack's assets/meshes/ and list it under spice.json `meshes` (docs/spice.md), then place_mod_mesh with resource and box from meshes" };
+      return withSheet({ written: true, file: r.file, bytes: r.bytes, section: r.section, meshes: r.meshes, textures: built.textures.size, registered, spice: r.spice,
+        next: "copy the bank to the pack's assets/meshes/ and list it under spice.json `meshes` (docs/spice.md), then place_mod_mesh with resource and box from meshes" });
     },
   },
 ];

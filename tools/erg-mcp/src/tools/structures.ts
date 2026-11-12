@@ -6,6 +6,7 @@ import { sampleField, spansAt } from "../lib/inspect-field";
 import { standableAt, standing, surfaces } from "../lib/reach";
 import { nearestTread, treadAt } from "../lib/spawn-check";
 import { applyPlan, dominantMaterial, type Packing } from "../lib/structures-apply";
+import { withCore } from "../lib/exposed-core";
 import {
   SIDES, arch, bridge, planBounds, castle, castleSpots, crater, flatTunnel, hasStyle, keep, lane, laneCut, place, placePoint, scaled, tower, tunnel, wallSegment, type Plan, type Shape,
   type GateSpec, type MatStyle, type Side, type Spot,
@@ -39,6 +40,8 @@ const common: Record<string, Schema> = {
   costOnly: { type: "boolean", description: "Change nothing and answer only what the structure costs: its new blocks and the game's cells with each packing (tiles, parts, fit) at the call's blockScale, and at each costAt scale, and which fits the level's cells left. Cheaper to read than a dryRun." },
   costAt: { type: "array", items: { type: "number", minimum: 0.5, maximum: 4 }, minItems: 1, maxItems: 8, description: "Also plan the same structure all in new blocks (place \"new\") at each of these blockScales, changing nothing, and answer each one's blocks and the game's cells (costAt: [{blockScale, blocks, cells, fits}]), to choose a scale before building: a castle at 1.5 costs about 30 % of its cells at 1." },
   scale: { type: "number", minimum: 0.5, maximum: 4, description: "The same as blockScale (build_castle's name for it): map units per voxel of the new blocks." },
+  coreMaterial: { type: "integer", minimum: 0, maximum: 63, description: "Bedrock inside the structure: every filled cell deeper than coreDepth under the structure's own surface (up, down and to the four sides; the ground under it counts as solid, and doorways, niches and other carves keep their faces) takes this material instead of the face's, bands and trim included. A crater then opens onto it, drawn by its top texture, instead of onto whatever band lies there (a brick band's top can be a pale tile that reads as a hole to the sky: check_exposed_core finds those). Unset, nothing changes." },
+  coreDepth: { type: "number", minimum: 0.01, description: "How deep the face material goes before coreMaterial starts, in the call's units (default one voxel of the blocks: blockScale / scale, else 1 map unit)." },
 };
 const foundation: Schema = { type: "integer", minimum: 0, maximum: 32, description: "A whole number of the structure's voxels (of `scale`, so 2 at scale 1.5 is 3 map units) of solid filled below the base (y) so the structure reaches the ground. Default 0. A castle's fills its whole footprint (a 24 x 20 castle with foundation 4: about 2000-3000 cells); seat fills under the walls and towers only." };
 const rotation: Schema = { type: "number", description: "Yaw in degrees about the structure's centre (counter-clockwise seen from above; 0 = sides parallel to the map axes). Default 0." };
@@ -161,7 +164,9 @@ function settle(s: Session, a: { at: Vec3; ground?: "max" | "mean" | "min"; sink
 }
 
 interface Common { material?: number; place?: "auto" | "existing" | "new"; dryRun?: boolean; units?: "map" | "world"; blockScale?: number; packing?: Packing; drape?: "skip" | "sheared"; costAt?: number[];
-  maxBlocks?: number; maxCells?: number; costOnly?: boolean; scale?: number; onSkin?: boolean; }
+  maxBlocks?: number; maxCells?: number; costOnly?: boolean; scale?: number; onSkin?: boolean; coreMaterial?: number; coreDepth?: number;
+  /** build_boulder_field's own: the new blocks are named ergonskin_scatter_N (not in any schema). */
+  scatter?: boolean; }
 
 /** `scale` as the other tools' name for blockScale (build_castle takes scale, build_wall and build_tower blockScale):
  * both are accepted on every structure tool; given both, they must agree. build_castle's own scale also lays its design
@@ -181,6 +186,13 @@ function run(s: Session, a: Common, anchor: Vec3, structure: string, make: (k: n
   const mat = a.material ?? dominantMaterial(store, at) ?? 1;
   const plan = make(k, mat, (v, d) => (v === undefined ? d : v * k));
   const bs = blockScaleOf(a);
+  if (a.coreDepth !== undefined && a.coreMaterial === undefined) throw new ToolError("coreDepth is the depth coreMaterial starts at: give coreMaterial");
+  if (a.coreMaterial !== undefined) {
+    // bedrock under the faces: the fills' material deeper than coreDepth under the plan's own surface
+    const depth = a.coreDepth === undefined ? bs ?? 1 : a.coreDepth * k;
+    plan.shapes = withCore(plan.shapes, a.coreMaterial, depth);
+    plan.info = { ...plan.info, core: { material: a.coreMaterial, depth: tidy([depth / k, 0, 0])[0], note: "cells deeper than this under the structure's surface are the core material: a crater opens onto it (check_exposed_core cuts trial craters)" } };
+  }
   // each scale's cost first, while nothing has changed
   const costAt = a.costAt?.map((sc0) => {
     try {
@@ -208,7 +220,7 @@ function run(s: Session, a: Common, anchor: Vec3, structure: string, make: (k: n
       ...(cheapest ? { cheapest: { packing: cheapest.packing, cells: cheapest.cells, blocks: cheapest.blocks } } : { cheapest: null }), ...(costAt ? { costAt } : {}),
       structureInfo: plan.info, note: "nothing was changed; cells are the game's voxel cells (X x Y x Z of each new block) the structure's new blocks take, which must fit in levelCellsFree" };
   }
-  const r = applyPlan(store, plan, { place: a.place ?? "auto", dryRun: !!a.dryRun, blockScale: bs, packing: a.packing, drape: a.drape, maxBlocks: a.maxBlocks, maxCells: a.maxCells, onSkin: a.onSkin });
+  const r = applyPlan(store, plan, { place: a.place ?? "auto", dryRun: !!a.dryRun, blockScale: bs, packing: a.packing, drape: a.drape, maxBlocks: a.maxBlocks, maxCells: a.maxCells, onSkin: a.onSkin, scatter: a.scatter });
   // a dig that fills nothing (no lining, no rim, no floor slab laid) has no material: the one found near it is not
   // reported as chosen
   const filled = plan.shapes.some((sh) => sh.op !== "carve") && r.voxels.added + r.voxels.repainted > 0;
@@ -449,9 +461,9 @@ export const tools: Tool[] = [
         gateWidth: { type: "number", minimum: 2, description: "Default 4." },
         gateHeight: { type: "number", minimum: 2, description: "Default 5 (round-topped from 3 wide)." },
         gateBelow: { anyOf: [{ type: "number", minimum: 0 }, { type: "string", enum: ["auto"] }], description: "Carve the gate's floor this far (units) under the floor at its outer face, rising to the floor at the inner face: a ramp down to lower ground outside instead of a sill. auto: the floor less the ground 1.5 map units outside the gate's middle, at most the passage's length (45 degrees). Default auto with `ground`, else 0." },
-        gates: { type: "array", minItems: 1, maxItems: 8, description: "Several gates instead of `gate`: each {side, width, height (defaults gateWidth, gateHeight), offset (along the side from its middle, default 0), below (as gateBelow; default auto), bevel (a canted head instead of the round or square one: the two top corners cut at 45 degrees, this far in from each; not for a gate cut open to the wall's top)}. The keep's door faces the first.",
+        gates: { type: "array", minItems: 1, maxItems: 8, description: "Several gates instead of `gate`: each {side, width, height (defaults gateWidth, gateHeight), offset (along the side from its middle, default 0), below (as gateBelow; default auto), bevel (a canted head instead of the round or square one: the two top corners cut at 45 degrees, this far in from each; not for a gate cut open to the wall's top), jambBevel (splayed jambs: the opening's four upright edges cut at 45 degrees in plan, this far in from each face of the wall, at most half its thickness, up to where the head starts)}. The keep's door faces the first.",
           items: { type: "object", additionalProperties: false, required: ["side"], properties: {
-            side: { type: "string", enum: [...SIDES] }, width: { type: "number", minimum: 2 }, height: { type: "number", minimum: 2 }, offset: { type: "number" }, bevel: { type: "number", minimum: 0 },
+            side: { type: "string", enum: [...SIDES] }, width: { type: "number", minimum: 2 }, height: { type: "number", minimum: 2 }, offset: { type: "number" }, bevel: { type: "number", minimum: 0 }, jambBevel: { type: "number", minimum: 0 },
             below: { anyOf: [{ type: "number", minimum: 0 }, { type: "string", enum: ["auto"] }] } } } },
         seat: { type: "boolean", description: "Seat it on the ground: fill under the walls, towers and keep (not the courtyard) from the ground up to the floor, column by column, where the ground is lower than the floor (down to seatDepth). The cheap replacement for a whole-footprint foundation on a slope." },
         seatDepth: { type: "number", minimum: 0.5, description: "The deepest seat fill under the floor (units; default 8 map units): columns with no ground that close are left open." },
@@ -540,8 +552,8 @@ export const tools: Tool[] = [
               const pm = placePoint(sc(loc, v), at, a.rotation ?? 0), top = spansAt(gs, pm[0], pm[2], at[1] + 0.5)[0];
               if (top && top.top < at[1]) below = Math.min(pass, (at[1] - top.top) / v);
             } else below = Math.min(pass, want * k);
-            const bevel = (g as { bevel?: number }).bevel;
-            return { side: g.side, width: w, height: h, shift, below, ...(bevel ? { bevel: bevel * k } : {}) };
+            const bevel = (g as { bevel?: number }).bevel, jamb = (g as { jambBevel?: number }).jambBevel;
+            return { side: g.side, width: w, height: h, shift, below, ...(bevel ? { bevel: bevel * k } : {}), ...(jamb ? { jambBevel: jamb * k } : {}) };
           }) : undefined;
         if (gateList) spec.gates = gateList;
         // a gate as high as the wall (or leaving a lintel under a voxel) would leave the merlons over it floating: the
@@ -566,7 +578,7 @@ export const tools: Tool[] = [
         return { label: "Build castle", shapes, notes, info: { size: [m(size[0]), m(size[1])], wallHeight: m(wh), wallThickness: m(t), towerRadius: m(tr),
           towerHeight: m(spec.towerHeight), towers, keep: keepSize ? [m(keepSize[0]), m(keepSize[1])] : null,
           gate: gate ? { side: gate, width: m(spec.gateWidth), height: m(spec.gateHeight) } : null,
-          ...(gateList ? { gates: gateList.map((g) => ({ side: g.side, width: m(g.width), height: m(g.height), offset: m(g.shift), below: m(g.below), ...(g.bevel ? { bevel: m(g.bevel) } : {}) })) } : {}),
+          ...(gateList ? { gates: gateList.map((g) => ({ side: g.side, width: m(g.width), height: m(g.height), offset: m(g.shift), below: m(g.below), ...(g.bevel ? { bevel: m(g.bevel) } : {}), ...(g.jambBevel ? { jambBevel: m(g.jambBevel) } : {}) })) } : {}),
           ...(a.seat ? { seat: { depth: a.seatDepth ?? 8 } } : {}),
           ...(spec.keepAt ? { keepAt: [m(spec.keepAt[0]), m(spec.keepAt[1])], keepDoor: spec.keepDoor } : {}),
           ...(laneOut ? { lane: { ...laneOut.info, width: m(laneOut.info.width), centre: m(laneOut.info.centre) } } : {}),

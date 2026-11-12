@@ -10,6 +10,9 @@ import { readSea, readWaterLook, shaderOverrideWarnings } from "../lib/water-loo
 import { backdropOf, coverLevel, waterBackdropWarning } from "../lib/backdrop";
 import { drapePokes, onSkinBlocks, pokeLines } from "../lib/drape-pokes";
 import { landBounds } from "../lib/height-line";
+import { gameBuild } from "../lib/game-build";
+import { ERG_FEATURES, lackWarning, versionOf } from "../lib/ship-gate";
+import { projectLacks } from "../lib/ship-gate-export";
 
 const discard = { type: "boolean", description: "Drop unsaved edits of the open project instead of refusing." } as const;
 
@@ -144,7 +147,15 @@ export const tools: Tool[] = [
       // a served Melange.exe is the game folder's own unless MELANGE_EXE names another: often older than this erg-mcp
       const warnings = c.via.startsWith("Melange.exe --serve") && !process.env.MELANGE_EXE
         ? ["MELANGE_EXE is unset, so the game folder's own Melange.exe serves: when it is older than this erg-mcp it refuses newer project formats (open_project of a team-spawn project fails with spawns.mode: must be \"random\" or \"knots\"); set MELANGE_EXE to the Melange.exe built with this erg-mcp"] : [];
-      return { connected: true, via: c.via, url: masked(c.url), server: c.server, ...(c.build ? { build: c.build } : {}), ...(warnings.length ? { warnings } : {}), ergMethods: c.methods.filter((m) => m.startsWith("level")),
+      // an old Melange found here, not at the first save, build or Test that trips over it: the server's own version,
+      // and the build of the game folder a Test or an installed level would run in (MELANGE_GAME_DIR, or gameDir)
+      const fix = "set MELANGE_EXE to the Melange.exe built with this erg-mcp (and put that build's melange.asi in the test game)";
+      const sw = lackWarning("the server", c.build, ERG_FEATURES);
+      if (sw) warnings.push(`${sw}. ${fix}`);
+      const game = gameBuild(a.gameDir ?? process.env.MELANGE_GAME_DIR);
+      const gw = game ? lackWarning(`the game's melange.asi in ${game.dir}`, game.version, ERG_FEATURES) : null;
+      if (gw) warnings.push(`${gw}: a Test or an installed level there runs that build`);
+      return { connected: true, via: c.via, url: masked(c.url), server: c.server, ...(c.build ? { build: c.build } : {}), ...(game ? { gameBuild: game } : {}), ...(warnings.length ? { warnings } : {}), ergMethods: c.methods.filter((m) => m.startsWith("level")),
         test: c.methods.includes("level.test") ? "level.test is available (the game is running)" : "no level.test: start the game for Test",
         ...(dir ? { projectsDir: dir, projectsNote: PROJECTS_NOTE } : {}) };
     },
@@ -217,7 +228,14 @@ export const tools: Tool[] = [
       const t0 = Date.now();
       await s.open(a.id, a.discard);
       const d = describe(s, { limit: 0 });
-      return { opened: a.id, ms: Date.now() - t0, project: d.project, theme: d.theme, timeOfDay: d.timeOfDay, water: d.water,
+      // what the project uses that the connected server, or the game a Test would run in, is too old for
+      const build = s.conn?.build, game = gameBuild(process.env.MELANGE_GAME_DIR);
+      const needs = projectLacks(s.store, build), gameNeeds = game ? projectLacks(s.store, game.version) : [];
+      const older = [
+        ...(needs.length ? [`the server (Melange ${versionOf(build)}) is older than this project needs: ${needs.map((n) => `${n.feature} (${n.melange})`).join("; ")}: a save, build or export here can fail or write a pack it cannot load`] : []),
+        ...(gameNeeds.length ? [`the game's melange.asi in ${game!.dir} (Melange ${game!.version}) is older than this project needs: ${gameNeeds.map((n) => `${n.feature} (${n.melange})`).join("; ")}: a Test or the installed level there fails to load`] : []),
+      ];
+      return { opened: a.id, ms: Date.now() - t0, ...(older.length ? { warnings: older } : {}), project: d.project, theme: d.theme, timeOfDay: d.timeOfDay, water: d.water,
         voxelFrames: d.voxelFrames.total, extent: d.extent, spawns: d.spawns.length, objects: d.objects.length, details: d.details.total, problems: d.problems,
         next: "describe_level for frames, bounds and limits" };
     },

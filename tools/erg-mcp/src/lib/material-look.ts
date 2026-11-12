@@ -74,3 +74,60 @@ export function lookDelta(swatch: Rgb, inGame: Rgb): { delta: Rgb; lightness: nu
   const light = Math.abs(dl) < 12 ? "about as light as the swatch" : dl > 0 ? `${dl > 60 ? "much " : ""}lighter (+${dl}) than the swatch` : `${dl < -60 ? "much " : ""}darker (${dl}) than the swatch`;
   return { delta, lightness: dl, cast, words: `${light}${cast !== "none" ? `, with a ${cast} cast` : ""}` };
 }
+
+export type PatchKind = "steep" | "shade";
+export interface FacePatch extends Patch { kind: PatchKind; facing: "n" | "e" | "s" | "w"; slope?: number; }
+
+/** More patches of each material than the flat sunlit one, for a grade that knows shade: `steep` are stretches of the
+ * material on ground steeper than `minSlope` (default 30 degrees), one per way the slope faces (n, e, s, w: the side it
+ * falls toward), and `shade` are flat stretches at the foot of ground at least `wall` (default 3 map units) higher
+ * within `reach` (default 4) on that side. Which of them the sun reaches depends on the level's light, so the shots
+ * are told apart by their brightness afterwards (the darkest is the shade). Up to four of each kind a material. */
+export function facePatches(gs: Grid[], o: { step?: number; only?: number[]; water?: number | null; kinds?: PatchKind[]; minSlope?: number; wall?: number; reach?: number } = {}): FacePatch[] {
+  const ext = extentXZ(gs);
+  if (!ext) return [];
+  const step = o.step ?? 2, want = o.only ? new Set(o.only) : null, kinds = new Set(o.kinds ?? ["steep", "shade"]);
+  const W = Math.max(1, Math.ceil((ext.x1 - ext.x0) / step)), H = Math.max(1, Math.ceil((ext.z1 - ext.z0) / step));
+  const mat = new Int16Array(W * H).fill(-1), top = new Float32Array(W * H).fill(NaN);
+  for (let j = 0; j < H; j++)
+    for (let i = 0; i < W; i++) {
+      const sp = spansAt(gs, ext.x0 + (i + 0.5) * step, ext.z0 + (j + 0.5) * step)[0];
+      if (!sp || (o.water !== undefined && o.water !== null && sp.top <= o.water)) continue;
+      mat[j * W + i] = sp.material;
+      top[j * W + i] = sp.top;
+    }
+  const at = (i: number, j: number) => (i < 0 || j < 0 || i >= W || j >= H ? NaN : top[j * W + i]);
+  const tan = Math.tan(((o.minSlope ?? 30) * Math.PI) / 180), wall = o.wall ?? 3, reach = Math.max(1, Math.round((o.reach ?? 4) / step));
+  const DIRS = [["n", 0, -1], ["e", 1, 0], ["s", 0, 1], ["w", -1, 0]] as const;
+  const best = new Map<string, FacePatch>(), counts = new Map<number, number>();
+  for (let j = 0; j < H; j++)
+    for (let i = 0; i < W; i++) {
+      const m = mat[j * W + i];
+      if (m < 0 || (want && !want.has(m))) continue;
+      counts.set(m, (counts.get(m) ?? 0) + 1);
+      const h = top[j * W + i], hx0 = at(i - 1, j), hx1 = at(i + 1, j), hz0 = at(i, j - 1), hz1 = at(i, j + 1);
+      if ([hx0, hx1, hz0, hz1].some(Number.isNaN)) continue;
+      const gx = (hx1 - hx0) / (2 * step), gz = (hz1 - hz0) / (2 * step), slope = Math.hypot(gx, gz);
+      const same = [[1, 0], [-1, 0], [0, 1], [0, -1]].filter(([di, dj]) => mat[(j + dj) * W + i + di] === m).length;
+      const put = (kind: PatchKind, facing: FacePatch["facing"], score: number, sl?: number) => {
+        const key = `${m}|${kind}|${facing}`, cur = best.get(key);
+        if (!cur || score > cur.columns) best.set(key, { material: m, kind, facing, at: [ext.x0 + (i + 0.5) * step, h, ext.z0 + (j + 0.5) * step], columns: score, samples: 0, ...(sl !== undefined ? { slope: Math.round((Math.atan(sl) * 180) / Math.PI) } : {}) });
+      };
+      if (kinds.has("steep") && slope >= tan && slope < 4) {
+        // the side the ground falls toward (downhill is against the gradient)
+        const facing = Math.abs(gx) > Math.abs(gz) ? (gx > 0 ? "w" : "e") : gz > 0 ? "n" : "s";
+        put("steep", facing, same * 10 - Math.abs(slope - 1.2 * tan), slope);
+      } else if (kinds.has("shade") && slope < 0.35) {
+        for (const [facing, di, dj] of DIRS) {
+          let rise = 0;
+          for (let r = 1; r <= reach; r++) { const t = at(i + di * r, j + dj * r); if (!Number.isNaN(t)) rise = Math.max(rise, t - h); }
+          if (rise >= wall) put("shade", facing, same * 10 + Math.min(rise, 12));
+        }
+      }
+    }
+  return [...best.values()].map((p) => ({ ...p, at: p.at.map((v) => Math.round(v * 100) / 100) as [number, number, number], samples: counts.get(p.material) ?? 0 }))
+    .sort((a, b) => a.material - b.material || a.kind.localeCompare(b.kind) || a.facing.localeCompare(b.facing));
+}
+
+/** A colour's brightness, 0-255 (Rec. 709 on the sRGB bytes: enough to rank shots of one material). */
+export const luma = (c: Rgb) => 0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2];

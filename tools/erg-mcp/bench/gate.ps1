@@ -1,6 +1,6 @@
 # Gate 1 in one command: everything a map-builder change must pass before it is reported, with one line per step and a
 # JSON summary. Run it from anywhere in the checkout with the game in -GameDir closed:
-#   .\tools\erg-mcp\bench\gate.ps1 [-GameDir <test install>] [-Out <dir>] [-Skip build,web,...] [-Only caldera]
+#   .\tools\erg-mcp\bench\gate.ps1 [-GameDir <test install>] [-Out <dir>] [-Skip build,web,...] [-Only web,panels,erg]
 # Steps (names for -Skip / -Only):
 #   build     .\build.ps1 (melange.asi, Melange.exe, the web app)
 #   web       scripts\web\test.ps1 (unit)
@@ -34,6 +34,9 @@ if (-not $Out) { $Out = Join-Path $root "out\gate" }
 New-Item -ItemType Directory -Force $Out | Out-Null
 $node = Join-Path $root "tools\node\node.exe"
 $steps = @("build", "web", "panels", "erg", "selftest", "ergmcp", "caldera")
+# powershell -File passes "-Only web,panels,erg" as ONE string (only -Command parses the commas as an array): split them
+$Skip = @($Skip | ForEach-Object { "$_" -split '[,;\s]+' } | Where-Object { $_ })
+$Only = @($Only | ForEach-Object { "$_" -split '[,;\s]+' } | Where-Object { $_ })
 foreach ($n in @($Skip + $Only)) { if ($steps -notcontains $n) { throw "unknown step '$n' (steps: $($steps -join ', '))" } }
 $results = New-Object System.Collections.ArrayList
 
@@ -115,7 +118,7 @@ Step "selftest" {
 }
 Step "ergmcp" {
     $c = Run "ergmcp.log" (Join-Path $here "..\test.ps1") @()
-    $sum = (Get-Content (Join-Path $Out "ergmcp.log") | Where-Object { $_ -match '(tests|pass|fail) d+s*$' }) -join ", "
+    $sum = (Get-Content (Join-Path $Out "ergmcp.log") | Where-Object { $_ -match '(tests|pass|fail) \d+\s*$' }) -join ", "
     return @{ state = $(if ($c) { "FAIL" } else { "pass" }); note = $sum -replace '[^\x20-\x7e]', '' }
 }
 Step "caldera" {

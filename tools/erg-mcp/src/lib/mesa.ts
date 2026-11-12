@@ -32,7 +32,11 @@ export interface MesaArgs {
   gullies?: { depth: number; spacing?: number; seed?: number };
   tread?: { walkable?: boolean; width?: number; jitter?: number; scale?: number; seed?: number };
   talus?: { height?: number; width?: number; material?: number; profile?: "linear" | "concave" };
-  cap?: { material: number; depth?: number };
+  /** The top. material and depth: the plateau's top voxels. dome (units): the plateau swells by this much at its
+   * deepest point, falling to nothing at its edge (a rock hump instead of a table: `top` is then the plateau's edge).
+   * erosion: noise pits the plateau by up to `amount` (units; never down to the step under it). treads: the cap's
+   * material on every step's top as well as the plateau's, so no ledge of the cliff reads as sand. */
+  cap?: { material: number; depth?: number; dome?: number; erosion?: { amount: number; scale?: number; seed?: number }; treads?: boolean };
   /** The steps' tops as absolute level ys (call units), lowest first, in place of even risers: the mesa has one step per
    * entry and the plateau. Each is built on the nearest whole voxel (the answer's ledges say where). */
   ledgeAt?: number[];
@@ -216,6 +220,11 @@ export function mesaField(store: EditorStore, a: MesaArgs, extra: Partial<FieldA
   const hMap = new Float32Array(nx * nz);
   let plateauMax = -Infinity, plateauCols = 0;
   const pts: [number, number][] = [];
+  // cap.dome and cap.erosion reshape the plateau after the outline is known: its columns and how deep each lies in it
+  const capIn = a.cap, domeM = (capIn?.dome ?? 0) * k, ero = capIn?.erosion;
+  if (capIn?.dome !== undefined && !(capIn.dome >= 0)) throw new ToolError("cap.dome is 0 or more");
+  if (ero && !(ero.amount >= 0 && (ero.scale === undefined || ero.scale > 0))) throw new ToolError("cap.erosion: amount 0 or more, scale above 0");
+  const plateau: { b: number; c: number; d: number; x: number; z: number }[] = [];
   for (let b = 0; b < nz; b++)
     for (let c = 0; c < nx; c++) {
       const x = (i0 + c + 0.5) * s + t[0], z = (j0 + b + 0.5) * s + t[2];
@@ -236,12 +245,29 @@ export function mesaField(store: EditorStore, a: MesaArgs, extra: Partial<FieldA
         const e = -d / talusW;
         return e >= 1 ? 0 : talusH * (ta.profile === "concave" ? (1 - e) ** 1.6 : 1 - e);
       })();
-      if (lv === n - 1) { plateauMax = Math.max(plateauMax, d); plateauCols++; }
+      if (lv === n - 1) {
+        plateauMax = Math.max(plateauMax, d); plateauCols++;
+        if (domeM || ero) plateau.push({ b, c, d: d - inset(n - 1), x, z });
+      }
       hMap[b * nx + c] = h;
       const hu = h * ku;
       grid[2 * b + 1][2 * c + 1] = hu;
       if (h > 0) pts.push([x, z]);
     }
+  // the dome's swell and the erosion's pits, on the plateau's columns only
+  let capTop = Hm, capLow = Hm;
+  const eroM = ero ? Math.min(ero.amount * k, Math.max(0, Hm - (n > 1 ? level[n - 2] : talusH) - s)) : 0;
+  if (plateau.length) {
+    const deepest = Math.max(s, ...plateau.map((q) => q.d)), eScale = (ero?.scale ?? Math.max(4, 3 * s) * ku) * k;
+    for (const q of plateau) {
+      const e = Math.min(1, Math.max(0, q.d) / deepest);
+      let h = Hm + domeM * (1 - (1 - e) * (1 - e));
+      if (eroM) h -= eroM * Math.max(0, clamp1(1.6 * noise2(q.x / eScale, q.z / eScale, (ero!.seed ?? 0) + 419)));
+      capTop = Math.max(capTop, h); capLow = Math.min(capLow, h);
+      hMap[q.b * nx + q.c] = h;
+      grid[2 * q.b + 1][2 * q.c + 1] = h * ku;
+    }
+  }
   if (!plateauCols) throw new ToolError(`the plateau is gone: ${n} steps of ${round3(wM * ku)} tread need an outline at least ${round3(inset(n - 1) * ku)} deep (raise strata.step to ${Math.min(16, step + 1)} for fewer steps, reduce tread.width, use a finer voxelSize, or make the mesa larger)`);
   // the even samples (column corners) carry their neighbour's height; the field never reads them but through rounding
   for (let r = 0; r < rows; r++) for (let c = 0; c < cols; c += 2) grid[r][c] = grid[r][Math.min(cols - 1, c + 1)] ?? 0;
@@ -252,7 +278,11 @@ export function mesaField(store: EditorStore, a: MesaArgs, extra: Partial<FieldA
   if (a.cap) {
     const depth = a.cap.depth ?? 1;
     if (!Number.isInteger(depth) || depth < 1 || depth > 8) throw new ToolError("cap.depth is 1-8 voxels");
-    rules.push({ material: a.cap.material, surface: depth, mask: `h - ${(vox(Hm * ku) - 0.5) / kv}` });
+    if (a.cap.treads !== undefined && typeof a.cap.treads !== "boolean") throw new ToolError("cap.treads is true or false");
+    // the plateau's columns: at the plateau's height, or with erosion every column over the step under it; treads:
+    // every column that stands on a step (over the talus)
+    const from = a.cap.treads ? (vox(talusH * ku) + 0.5) / kv : eroM ? (vox((n > 1 ? level[n - 2] : talusH) * ku) + 0.5) / kv : (vox(Hm * ku) - 0.5) / kv;
+    rules.push({ material: a.cap.material, surface: depth, mask: `h - ${from}` });
   }
   if (ta?.material !== undefined) rules.push({ material: ta.material, mask: `${(vox(talusH * ku) + 0.5) / kv} - h` });
   const bands = st.bands ?? [];
@@ -329,6 +359,9 @@ export function mesaField(store: EditorStore, a: MesaArgs, extra: Partial<FieldA
     plateau: { columns: plateauCols, area: round3(plateauCols * s * s * ku * ku), deepest: um(plateauMax) },
     talus: ta ? { height: um(talusH), width: um(talusW), profile: ta.profile ?? "linear" } : null,
     strataBands: bandCount, ...(st.style === "beds" ? { strataStyle: "beds" } : {}),
+    ...(a.cap && (domeM || eroM || a.cap.treads) ? { cap: { ...(domeM ? { dome: um(domeM), crownY: { map: round3(builtY(capTop)), world: round3(builtY(capTop) * WORLD_PER_MAP) } } : {}),
+      ...(eroM ? { erosion: um(eroM), lowestY: { map: round3(builtY(capLow)), world: round3(builtY(capLow) * WORLD_PER_MAP) } } : {}), ...(a.cap.treads ? { treads: true } : {}),
+      ...(domeM ? { note: "topY is the plateau's edge; the dome's crown is crownY (plan a height line against that)" } : {}) } } : {}),
     ...(ledgeNote ? { ledgeAt: ledgeNote } : {}),
     ...(a.avoidBand ? { avoidBand: { y: a.avoidBand.y, band: a.avoidBand.band, moved: avoided, note: avoided.length ? "steps that would be built inside the band: moved to the nearest voxel level outside it (to), or left out (to: null)" : "no step's top was inside the band",
       ...(Math.abs(builtY(Hm) - a.avoidBand.y * k) < a.avoidBand.band * k ? { warning: "the plateau's top is inside the band (top is as asked: raise or lower it)" } : {}) } } : {}),
