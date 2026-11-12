@@ -1188,7 +1188,7 @@ New tool group `meshbank` (`src/tools/meshbank.ts`; pure code in `src/lib/slope-
 
 | Tool | What it does |
 |---|---|
-| `place_mod_mesh` | Places scenery copies of a mod mesh. `resource` is `<modId>.<Name>` and `box` is its bounds in map units (the editor has no preview of a mod mesh). Each piece is either free (`pos`/`xz`, `rot`, `scale`) or aligned like `place_aligned` (`size`, normal, `tangent`, `pitch`, `embed`). Each copy is named `VISIBLE_<stem>_<tag>`, plus the tint tag: a visual scenery copy. |
+| `place_mod_mesh` | Places scenery copies of a mod mesh. `resource` is `<modId>.<Name>` and `box` is its bounds in map units (the editor has no preview of a mod mesh). Each piece is either free (`pos`/`xz`, `rot`, `scale`) or aligned like `place_aligned` (`size`, normal, `tangent`, `pitch`, `embed`). Each copy is named `VISIBLE_<stem>_<tag>`, plus the tint tag: a visual scenery copy. A free piece's `rot` is stored as given, which is **radians** (the detail format's unit; an aligned piece's pose is computed in degrees and converted); `rotUnits: "degrees"` (Dustcrown detail round 1) converts a free piece's `rot` from degrees, the default stays radians so no earlier call changes. |
 | `swap_mesh` | Re-points copies of one mesh at another. Each copy is rescaled per axis and moved so that the new mesh fills the old one's box (`toBox`, and `fromBox` or `fromBase`'s preview). Names, tints and rotations are kept. |
 | `plan_slope_break` | Finds the feet of steep faces: gentle ground (`footMax`, default 32 degrees) with a face (`faceMin`, default 45) rising at least `rise` above it within 2 x `probe` uphill. The sites are chained into runs along the contour, each with `down` (where a fan spreads). With `fans` it also answers graded talus fans (big at the toe, small at the apex, a half-buried skirt), each piece with its ground contact angle and `ok`. Read-only. |
 | `lint_contact` | The ground's contact angle under a layer's props. Lists those over `maxDeg` (default 50; `limit` how many), and removes them with `remove`. |
@@ -1502,3 +1502,51 @@ default; what is not closed is named at the end.
   place and no angle.
 - **Network matches of three and four peers**, and a network match's landscape other than by its place in the list.
 - `check_tool_reach` still models a girder as a span on foot; the platform's measured size and range are in its notes.
+
+## Dustcrown detail layer, round 1: what the tools gained and what the game showed
+
+The first dressing pass of Dustcrown (`bench/dustcrown/detail.mjs`, passes in `detail-passes.mjs`, the one mesh bank in
+`meshes/bank.mjs`, `ship.mjs`; DETAIL.md there). It adds 400 scenery copies (the saved level has 627 details in all) and
+changes nothing the simulation reads.
+
+### Builder
+
+| Tool | What changed |
+| --- | --- |
+| `place_mod_mesh` | `rotUnits: "radians" \| "degrees"`. A free piece's `rot` was documented as degrees and stored as given, which is radians: `rot: [0, 90, 0]` turned a mesh 90 radians (116 degrees), and a lean of `[1.5, 0, 1.5]` tilted a stem 86 degrees (the first Dustcrown hoodoos lay on their sides: `list_scenery` shows the stored rotation in degrees, 13 160 for a yaw). Every earlier call, Caldera's detail layer among them, was written for radians (its yaws are random), so the default is unchanged and `"degrees"` converts. `freeRot` is the one place the choice is made (test/meshbank.test.ts). |
+
+### What the game showed (testenv B, the private build of this branch, Sunstone 2.4.0 from `sunstone-sea`, 2026-11-12)
+
+- **A running game loads a mesh bank once.** `test {meshBanks}` copies the project's bank into its `meshes` folder on every
+  call, but a game that has already loaded `dustcrown.Rocks.xom` keeps the first one in memory: a rebuilt bank with new
+  palettes (the Obelisk's gold, the Boulder's warmer stone) and a mesh the first bank lacked (Spike) showed nothing new
+  until the game was restarted. Judge a palette or a new mesh on a fresh launch.
+- **Palettes.** The baked albedo plays cooler than its bytes: the round-4 Boulder `[214, 192, 128]` played an olive grey
+  beside the dunes, `[190, 152, 100]` (green over red 0.8) a pink brown, and `[228, 184, 116]` a warm brown sandstone.
+  `build_rock_bank {preview}` through the Sunstone day grade shows a greener stone than the game draws (the Slit's near-black
+  came out olive in the sheet and plays as a dark slot). Gold needs a deep base: `[226, 170, 60]` with dust drew cream,
+  `[206, 138, 28]` draws gold.
+- **A stretched shard is a plank.** The shard hull is lopsided; stretched four times tall it read as a pink leaning slab
+  in the game, and thin ones as crystals. Hoodoos are built from two Boulders instead (a stem stretched tall, a flat cap
+  wider than it: `[0.5, 1.9, 0.45]` and `[1, 0.5, 0.95]`), which reads as a balanced rock. The bank holds at most six
+  meshes: `build_rock_bank` converts mesh *i* on section hint + *i* and xomtool takes 476..519, so a section of 514 fails the
+  seventh (the first draft's eight meshes failed at "section 520").
+- **Other themes' pieces are not what their names say.** A contact row of 24 pieces from other themes' bases
+  (`allowOtherTheme`: cacti, skulls, grass, the Camelot banner and flag, a Lunar grass, a Tutorial weed) in the ARABIAN
+  level drew hookah vases, a basket lid, a red cushion, a fruit stand, a brazier and a white blob, and no cactus, skull or
+  grass: the theme's number seems to be what the level resolves (CAMELOT16 drew where an ARABIAN16 vase would), which was
+  not proven. Pieces of the level's own theme draw as catalogued. The
+  ARABIAN cushion (ARABIAN15, `Multi.CarpetCapers` id 8: 1 x 0.34 x 0.96) stood on its edge and stretched (`rot [90, yaw, 0]`,
+  scale `[2.4, 1, 5.6]`) is a red and gold tapestry; the editor's `render_view {scenery: true}` and the game agree on its
+  turn.
+- **Cost.** The Test of the dressed level against the same level undressed (the game's own turn camera, Sunstone on):
+  GPU frame 4.76 ms against 3.25 ms (p50), CPU busy 30.63 against 30.69 ms, fps 36 against 34.35 (the CPU bound: fps
+  follows the CPU, not the drawing). 400 copies of five small meshes and one prop cost 1.5 ms of GPU time.
+
+### Not closed
+
+- Cacti, skulls and dry grass of the other themes do not draw as themselves (above): the flora is a mesh of its own (the
+  Spike, a dry-straw shard clump), which reads as spiky yucca, not as a cactus.
+- The Boulder's shapes are the round-4 ones (the first two meshes keep their seeds); a mesh of a rock with a flat
+  stratified face would need a mesh kind the bank does not have (the Strata kind lies along faces and read as a ledge in
+  Caldera).

@@ -24,6 +24,7 @@ import path from "node:path";
 
 import { fileURLToPath } from "node:url";
 import { startServer, ROOT } from "../caldera/mcpclient.mjs";
+import { BANK } from "./meshes/bank.mjs";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const argv = process.argv.slice(2);
@@ -485,8 +486,8 @@ try {
   // runs), while the dunes play a greenish yellow. The bank is built on section 514:
   // lint_mesh_banks found the default 486 moves Kindjal's BlastKeg, Shiv and StoneDonkey banks, so the look depended on
   // the plugin set
-  const ROCKS = [{ name: "Boulder", kind: "boulder" }, { name: "Heap", kind: "scree", scree: { rocks: 9 } }];
-  const BANK = { id: MOD, palette: { base: [214, 192, 128], dust: [236, 224, 178], dustShare: 0.35 }, seed: 5, rocks: ROCKS, section: 514 };
+  // (the bank's meshes and palettes live in meshes/bank.mjs, which the detail layer and its ship script share: Boulder and
+  // Heap first, so their shapes are the ones these fields were built with)
   const fpBefore = await call("sim_fingerprint", {});
   let detail = { pieces: 0 };
   if (!flag("--no-detail")) {

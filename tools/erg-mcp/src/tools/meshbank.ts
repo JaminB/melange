@@ -32,6 +32,13 @@ const r3 = (v: number) => Math.round(v * 1000) / 1000;
 /** A mod mesh's name: "<modId>.<Name>" (docs/spice.md: every name in a bank starts with the mod's id and a dot). */
 export const MOD_MESH = /^[a-z0-9][a-z0-9_-]{0,63}\.[A-Za-z0-9_.-]{1,96}$/;
 
+/** A free piece's rotation as the detail stores it (radians): taken as given by default (what every call before `rotUnits` was
+ *  written for), or converted from degrees. */
+export function freeRot(rot: number[] | undefined, units?: "radians" | "degrees"): Vec3 {
+  const r = rot ?? [0, 0, 0];
+  return (units === "degrees" ? r.map((v) => v / DEG) : r) as Vec3;
+}
+
 /** The voxels' ground (map units) with the slope and normal from the top `h` either side (ledge.ts's, kept local). */
 function groundOf(s: Session, h = 0.75) {
   const store = s.store!, top = topOf(store), vox = (id: number) => store.voxelsOf({ id });
@@ -65,7 +72,7 @@ const v3s = { type: "array", items: { type: "number" }, minItems: 3, maxItems: 3
 export const tools: Tool[] = [
   {
     name: "place_mod_mesh",
-    description: "Place scenery copies of a MOD MESH: `resource` \"<modId>.<Name>\" from a mesh bank a content mod loads (its spice.json `meshes`; docs/spice.md), `box` its bounds {min, max} in map units (the bank's meshes.json; the editor has no preview of a mod mesh, so the size comes from here). Each piece is either FREE (`pos` or `xz` dropped onto the voxels, `rot` degrees, `scale`) or ALIGNED like place_aligned (`size` [length, thickness, depth], the ground normal sampled at `xz` or given, `tangent`, `pitch`, `embed`, `lift`, `jitter`). The detail is named VISIBLE_<stem>_<tag> (+ the tint tag): a visual scenery copy (no collision; sim_fingerprint's scenery part). The mesh draws only where the mod's bank is loaded (the level's pack must ship it). Ship ONE bank per map holding all its meshes (bench/caldera/meshes/merge.mjs joins one-mesh banks): every bank takes one of the 44 mod mesh sections all enabled mods share. `dry` answers the poses. One undo step.",
+    description: "Place scenery copies of a MOD MESH: `resource` \"<modId>.<Name>\" from a mesh bank a content mod loads (its spice.json `meshes`; docs/spice.md), `box` its bounds {min, max} in map units (the bank's meshes.json; the editor has no preview of a mod mesh, so the size comes from here). Each piece is either FREE (`pos` or `xz` dropped onto the voxels, `rot` about x, y, z, `scale`: `rot` is taken as RADIANS unless `rotUnits` is \"degrees\", which is what every earlier call was written for; the stored detail's rot is in radians, `list_scenery` shows it in degrees) or ALIGNED like place_aligned (`size` [length, thickness, depth], the ground normal sampled at `xz` or given, `tangent`, `pitch`, `embed`, `lift`, `jitter`). The detail is named VISIBLE_<stem>_<tag> (+ the tint tag): a visual scenery copy (no collision; sim_fingerprint's scenery part). The mesh draws only where the mod's bank is loaded (the level's pack must ship it). Ship ONE bank per map holding all its meshes (bench/caldera/meshes/merge.mjs joins one-mesh banks): every bank takes one of the 44 mod mesh sections all enabled mods share. `dry` answers the poses. One undo step.",
     inputSchema: { type: "object", additionalProperties: false, required: ["resource", "box", "pieces"], properties: {
       resource: { type: "string" },
       box: { type: "object", additionalProperties: false, required: ["min", "max"], properties: { min: v3s, max: v3s } },
@@ -78,8 +85,9 @@ export const tools: Tool[] = [
       } } },
       pitch: { type: "number", minimum: 0, maximum: 1 }, embed: { type: "number", minimum: 0, maximum: 0.95 }, tint: { type: "string" },
       tag: { type: "string" }, dry: { type: "boolean" }, units: unitsSchema,
+      rotUnits: { enum: ["radians", "degrees"], description: "The unit of a free piece's `rot` (default radians, as every call so far has been written: an aligned piece's pose is computed in degrees and needs no unit). With degrees, [0, 90, 0] turns a piece a quarter turn; as radians it turns it 90 rad (about 116 degrees), which only a random yaw can use." },
     } },
-    handler(s, a: { resource: string; box: { min: number[]; max: number[] }; stem?: string; tag?: string; dry?: boolean; units?: Units; pitch?: number; embed?: number; tint?: string;
+    handler(s, a: { resource: string; rotUnits?: "radians" | "degrees"; box: { min: number[]; max: number[] }; stem?: string; tag?: string; dry?: boolean; units?: Units; pitch?: number; embed?: number; tint?: string;
       pieces: { xz?: number[]; pos?: number[]; rot?: number[]; scale?: number[]; size?: number[]; normal?: number[]; tangent?: number[]; pitch?: number; embed?: number; lift?: number; jitter?: number[]; tint?: string }[] }) {
       const { store } = s.requireProject();
       if (!MOD_MESH.test(a.resource)) throw new ToolError(`resource '${a.resource}': a mod mesh is "<modId>.<Name>" (lower-case mod id, a dot, the mesh name)`);
@@ -113,7 +121,7 @@ export const tools: Tool[] = [
           else if (p.xz) { const gg = g(p.xz[0] / k, p.xz[1] / k); if (!gg) { skipped.push({ i, why: "no ground" }); return; } at = [p.xz[0] / k, gg.y, p.xz[1] / k]; }
           else throw new ToolError(`pieces[${i}]: give xz or pos (and size for an aligned piece)`);
           const sc = p.scale ?? [1, 1, 1];
-          const rot = (p.rot ?? [0, 0, 0]) as Vec3;
+          const rot = freeRot(p.rot, a.rotUnits);
           cmds.push(new AddDetail(frame, { name, resource: a.resource, pos: store.frames.toLocal(frame, at), rot, scale: sc as Vec3 }));
           out.push({ i, name, at: at.map((v) => r2(v * k)), rot, scale: sc });
         }
