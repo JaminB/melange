@@ -23,6 +23,17 @@ Erg: spawn areas dealt per match, and the map builder (erg-mcp) grown by a secon
 - Sea materials: a level's script sets `wum.level.water{Sea = {r, g, b, opacity}, SeaKeep = {reflection, foam}}` and
   client mods hear `melange.level.sea`, so a graphics mod that replaces the water shader can draw a sea of sand or lava
   (Sunstone 2.4 does). Render state only. erg-mcp: `set_water_look` `sea`.
+- Level haze: `wum.level.water{Haze = {r, g, b, amount}, HazeRange = {start, distance}}` and the event
+  `melange.level.haze`, so a graphics mod's distance haze takes the level's colour instead of the sky's blue (a sand
+  sea no longer runs out into a pale blue ring; Sunstone 2.4 honours it). Render state only. erg-mcp: `set_water_look`
+  `haze`.
+- Erg Test loads a project's own mesh banks (`<projects>\<project>\meshes\*.xom`, and `level.test {meshBanks}`), so
+  a map's detail meshes draw in a Test as they do from its installed pack.
+- erg-mcp: `coreMaterial` on the structure tools and `check_exposed_core` (what craters show), `build_outcrop` and
+  `build_mesa`'s `cap` dome, erosion and treads, `build_boulder_field` and `lint_scatter_stairs`, `check_pits {fix}`,
+  `edge.soft` on material rules, `gates[].jambBevel`, a shade fit in the look grade (`game_material_shots {faces}`,
+  `tint_landscape {grade}`), `build_rock_bank {preview}`, `game_use_tool {weapon: "rope"}`, `game_crater_look`, and a
+  warning at `connect` and `open_project` when the Melange served or installed is older than the project needs.
 
 - Map packs: a level's `spice.json` entry may pin its time of day in every match (`"timeOfDay"`: `DAY`, `EVENING`,
   `NIGHT` or `level`; Versus picks one at random otherwise) and name its picture for the game's map lists (`"image"`, a

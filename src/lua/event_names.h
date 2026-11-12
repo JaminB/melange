@@ -33,4 +33,5 @@ inline constexpr const char kUi[] = "melange.ui";      // {weaponPanel, pause, r
 // wum.level.water's sea material (every listener, Melange 0.15): {on = true, r, g, b, opacity, reflection, foam} when
 // a level sets one (the colour 0-255, the rest 0-1), {on = false} when the match ends
 inline constexpr const char kLevelSea[] = "melange.level.sea";
+inline constexpr const char kLevelHaze[] = "melange.level.haze";
 }  // namespace melange::sandbox::ev

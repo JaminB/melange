@@ -85,6 +85,10 @@ Names:
     script with `wum.level.water{Sea = {r, g, b, opacity}, SeaKeep = {reflection, foam}}` (the colour 0-255, the rest
     0-1), and `{on = false}` when the match ends. A mod that replaces the water shader draws the sea as that matte
     colour ([erg.md](erg.md#sea-material)).
+  - `melange.level.haze` `{on, r, g, b, amount, start, distance}` (Melange 0.15): the level's haze, set by its script
+    with `wum.level.water{Haze = {r, g, b, amount}, HazeRange = {start, distance}}` (the colour 0-255, amount 0-1, the
+    range in world units, 0 for the mod's own), and `{on = false}` when the match ends. A graphics mod with a haze
+    fades the distance and the band under the horizon toward that colour ([erg.md](erg.md#level-haze)).
   - `melange.turnHold` `{ticks, tick, roundMsLeft}` and `melange.turnHoldEnd` `{ticks, tick, roundMsLeft}`: a sim mod
     held the next turn start with `wum.sim.holdTurn` (`ticks` is the hold's length, or at the end the ticks held;
     `tick` the sim tick; `roundMsLeft` the round clock, which does not run during the hold). See the developer guide's

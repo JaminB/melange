@@ -10,6 +10,12 @@
 // sand or lava. Sea = {r, g, b[, opacity]} and SeaKeep = {reflection, foam} are not engine fields: they are kept here
 // and told to client mods as the event melange.level.sea {on, r, g, b, opacity, reflection, foam}, which a mod that
 // replaces the water shader draws (docs/erg.md "Sea material"). The match's end sends {on = false}.
+//
+// The level haze (Melange 0.15): the colour the far distance and the band under the horizon fade to is a graphics mod's
+// own (the game has no fog; Sunstone hazes toward the sky's horizon colour, which rings a sand sea in pale blue). Haze =
+// {r, g, b[, amount]} and HazeRange = {start, distance} are kept the same way and told as melange.level.haze {on, r, g,
+// b, amount, start, distance}: the colour 0-255, amount 0-1 (how far the mod's own haze colour gives way to it),
+// start and distance in world units (0: the mod's own).
 #include <windows.h>
 
 #include <cmath>
@@ -51,7 +57,7 @@ constexpr const char* kNames[] = {
     "NearOpacity", "ReflectionStrength", "ReflectionContrast", "SubtractColourScale", "SpecularContrast", "SpecularPower",
     "SpecularFadeScale", "TextureScale", "LandSpecularPower", "LandFresnelPower", "SkyBlendColor", "LightAmbient",
     "LightDiffuse", "LightSpecular", "LightFresnel", "LandFresnelColour", "NormalIntensity", "NormalIntensity1",
-    "LightDirection", "Sea", "SeaKeep", nullptr,
+    "LightDirection", "Sea", "SeaKeep", "Haze", "HazeRange", nullptr,
 };
 
 // The sea material of the running match (main thread): the colour 0-255, the rest 0-1.
@@ -69,6 +75,43 @@ void PostSea() {
     else
         snprintf(json, sizeof json, "{\"on\":false}");
     melange::lua::PostEvent(melange::sandbox::ev::kLevelSea, json);
+}
+
+// The level haze of the running match (main thread): the colour 0-255, amount 0-1, the range in world units (0: the mod's).
+struct Haze {
+    bool on = false;
+    float r = 0, g = 0, b = 0, amount = 1, start = 0, distance = 0;
+};
+Haze g_haze;
+
+void PostHaze() {
+    char json[192];
+    if (g_haze.on)
+        snprintf(json, sizeof json, "{\"on\":true,\"r\":%g,\"g\":%g,\"b\":%g,\"amount\":%g,\"start\":%g,\"distance\":%g}", g_haze.r, g_haze.g, g_haze.b,
+                 g_haze.amount, g_haze.start, g_haze.distance);
+    else
+        snprintf(json, sizeof json, "{\"on\":false}");
+    melange::lua::PostEvent(melange::sandbox::ev::kLevelHaze, json);
+}
+
+// Haze = {r, g, b[, amount]} or HazeRange = {start, distance}: nullptr, or why not.
+const char* SetHaze(const char* field, const float* v, int n) {
+    if (std::strcmp(field, "Haze") == 0) {
+        if (n < 3 || n > 4) return "must be {r, g, b[, amount]}: the colour 0-255, the amount 0-1";
+        for (int i = 0; i < 3; ++i)
+            if (!(v[i] >= 0 && v[i] <= 255)) return "colour parts must be 0-255";
+        if (n == 4 && !(v[3] >= 0 && v[3] <= 1)) return "the amount must be 0-1";
+        g_haze.on = true;
+        g_haze.r = v[0], g_haze.g = v[1], g_haze.b = v[2];
+        g_haze.amount = n == 4 ? v[3] : 1.0f;
+        LOG_INFO("[levels] water look: level haze %g %g %g, amount %g", g_haze.r, g_haze.g, g_haze.b, g_haze.amount);
+    } else {
+        if (n != 2) return "must be {start, distance}, world units (0: the mod's own)";
+        if (!(v[0] >= 0 && v[0] <= 100000) || !(v[1] >= 0 && v[1] <= 100000)) return "start and distance must be 0-100000 world units";
+        g_haze.start = v[0], g_haze.distance = v[1];
+    }
+    if (g_haze.on) PostHaze();
+    return nullptr;
 }
 
 // Sea = {r, g, b[, opacity]} or SeaKeep = {reflection, foam}: nullptr, or why not.
@@ -129,6 +172,7 @@ uintptr_t FieldAt(uintptr_t c, const char* field) {
 
 const char* Set(const char* field, const float* v, int n) {
     if (std::strcmp(field, "Sea") == 0 || std::strcmp(field, "SeaKeep") == 0) return SetSea(field, v, n);
+    if (std::strcmp(field, "Haze") == 0 || std::strcmp(field, "HazeRange") == 0) return SetHaze(field, v, n);
     const Known* k = Find(field);
     if (!k) return "not a water field";
     std::string name;
@@ -184,6 +228,16 @@ int Get(const char* field, float out[4]) {
         out[0] = g_sea.reflection, out[1] = g_sea.foam;
         return 2;
     }
+    if (std::strcmp(field, "Haze") == 0) {
+        if (!g_haze.on) return -1;
+        out[0] = g_haze.r, out[1] = g_haze.g, out[2] = g_haze.b, out[3] = g_haze.amount;
+        return 4;
+    }
+    if (std::strcmp(field, "HazeRange") == 0) {
+        if (!g_haze.on) return -1;
+        out[0] = g_haze.start, out[1] = g_haze.distance;
+        return 2;
+    }
     const Known* k = Find(field);
     const uintptr_t c = k ? Container(nullptr) : 0;
     const uintptr_t at = c ? FieldAt(c, field) : 0;
@@ -208,6 +262,11 @@ void OnMatch(bool begin, void*) {
         g_sea = Sea{};
         PostSea();
         LOG_INFO("[levels] water look: the sea material is off again");
+    }
+    if (!begin && g_haze.on) {
+        g_haze = Haze{};
+        PostHaze();
+        LOG_INFO("[levels] water look: the level haze is off again");
     }
     if (begin || g_saved.empty()) return;
     for (const Saved& s : g_saved) mem::Write(s.at, s.bytes.data(), s.bytes.size());

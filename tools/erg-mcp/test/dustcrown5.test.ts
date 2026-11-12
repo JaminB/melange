@@ -13,7 +13,7 @@ import { test } from "node:test";
 import { syntheticBlobs } from "../../../web/test/e2e/erg-mock.mjs";
 import { EditorStore, isSolid, material, maskOf, secondOf, type Loaded, type Scene } from "../src/core";
 import { lintStairs, planField, riserNear, type FieldSpec } from "../src/lib/boulders";
-import { colourReads, exposedCore, withCore } from "../src/lib/exposed-core";
+import { colourReads, exposedCore, pixelReads, withCore } from "../src/lib/exposed-core";
 import { peVersion } from "../src/lib/game-build";
 import { fitGrade, gradeShade, parseGrade, shadeDrift } from "../src/lib/grade";
 import { apply, planFit } from "../src/lib/heightfield-plan";
@@ -490,4 +490,31 @@ test("test's mesh banks: the files are copied into the project's meshes folder a
     assert.equal(((await testMeshBanks(s, "t", st, [join(dir, "dc.Rocks.xom")])) as any).copied, undefined);
     await assert.rejects(testMeshBanks(s, "t", st, [join(dir, "nope.xom")]), /no \.xom file/);
   } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+// ------------------------------------------------------------------ the harness: crater looks, the rope's plan
+
+test("pixelReads: the middle of a picture, pixel by pixel; a lilac floor in a sand frame is told", () => {
+  const w = 20, h = 20, rgb = new Uint8Array(w * h * 3);
+  for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
+    const inside = x >= 8 && x < 12 && y >= 7 && y < 13, c = inside ? [226, 222, 244] : [214, 190, 140];
+    rgb.set(c, (y * w + x) * 3);
+  }
+  const r = pixelReads(rgb, w, h, 0.3);
+  assert.equal(r.pixels, 36);
+  assert.ok(r.share.blue > 0.6 && r.share.earth < 0.4 && r.share.white === 0, JSON.stringify(r.share));
+  assert.deepEqual(pixelReads(new Uint8Array(w * h * 3).fill(120), w, h).share, { earth: 1, blue: 0, white: 0 });
+});
+
+test("game_use_tool takes a rope plan and game_crater_look its points; both refuse without a game", async () => {
+  const { tools: moveTools } = await import("../src/tools/moves");
+  const use = moveTools.find((t) => t.name === "game_use_tool")!, look = moveTools.find((t) => t.name === "game_crater_look")!;
+  assert.equal(validate(use.inputSchema as never, { weapon: "rope", target: [0, 18, 0], rope: { aimSec: 1, refire: 1, steps: [{ do: "shorten", sec: 3, until: "still" }, { do: "swingForward", sec: 0.8 }, { do: "jump" }] } }), null);
+  assert.match(validate(use.inputSchema as never, { weapon: "rope", target: [0, 18, 0], rope: { steps: [{ do: "climb" }] } })!, /must be one of shorten/);
+  assert.equal(validate(look.inputSchema as never, { points: [[1, 2, 3]], height: 9, flag: ["blue"] }), null);
+  // a server with no input.drive: the rope says what it needs
+  const s = { ensure: async () => ({ methods: [] }) } as unknown as Session;
+  await assert.rejects(Promise.resolve().then(() => use.handler(s, { weapon: "rope", target: [0, 18, 0] } as never)), /needs the game's input\.drive/);
+  // teleport and girder are still refused, and say why
+  await assert.rejects(Promise.resolve().then(() => use.handler(s, { weapon: "teleport", target: [0, 18, 0] } as never)), /cannot drive the teleport yet/);
 });

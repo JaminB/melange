@@ -111,3 +111,18 @@ export function exposedCore(gs: Grid[], points: Vec3[], radius: number, passes: 
   });
   return { finds: [...finds.values()].sort((a, b) => b.voxels - a.voxels), carved: carvedPer };
 }
+
+/** A picture's middle (the box `part` of its width and height round the centre), read pixel by pixel: the mean colour and
+ * the share that reads as earth, blue and white (colourReads). For a shot straight down into a crater. */
+export function pixelReads(rgb: Uint8Array, w: number, h: number, part = 0.3): { mean: [number, number, number]; pixels: number; share: Record<Reads, number> } {
+  const x0 = Math.floor((w * (1 - part)) / 2), x1 = Math.ceil((w * (1 + part)) / 2), y0 = Math.floor((h * (1 - part)) / 2), y1 = Math.ceil((h * (1 + part)) / 2);
+  const n: Record<Reads, number> = { earth: 0, blue: 0, white: 0 };
+  let r = 0, g = 0, b = 0, c = 0;
+  for (let y = y0; y < y1; y++) for (let x = x0; x < x1; x++) {
+    const i = (y * w + x) * 3;
+    r += rgb[i]; g += rgb[i + 1]; b += rgb[i + 2]; c++;
+    n[colourReads([rgb[i], rgb[i + 1], rgb[i + 2]])]++;
+  }
+  const d = Math.max(1, c), sh = (v: number) => Math.round((v / d) * 1000) / 1000;
+  return { mean: [Math.round(r / d), Math.round(g / d), Math.round(b / d)], pixels: c, share: { earth: sh(n.earth), blue: sh(n.blue), white: sh(n.white) } };
+}

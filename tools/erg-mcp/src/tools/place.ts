@@ -1061,8 +1061,6 @@ export function teamsLine(teams?: TestTeam[]): string {
 
 const modId: Schema = { type: "string", description: "Mod id: a-z, 0-9, '-' and '_' (it becomes the pack prefix; 'ergtest' is reserved)." };
 
-/** The mods of a game folder that replace the water plane's shader (Mods\<id>\shaders\Water.*.glsl), whether each is
- * enabled (Mods\thumper-state.json) and whether its shader or client script names the sea material's message. */
 /** A Test's mesh banks: the files given are copied into the project's meshes folder (which level.test loads), and the
  * mods whose meshes the project places are checked against the banks there. Undefined when the project places none
  * and none was given. */
@@ -1092,6 +1090,22 @@ export async function testMeshBanks(s: Session, id: string, store: EditorStore, 
     note: "level.test loads the banks of the project's meshes folder once a game launch, before the match starts: a bank changed since needs a game restart ([erg] test: mesh bank ... in Melange.log)" };
 }
 
+/** The enabled mods of a game folder whose client script listens for the level haze (HAZE_EVENT); null when the folder
+ * cannot be read. */
+export function hazeMods(gameDir: string | undefined): string[] | null {
+  if (!gameDir) return null;
+  const modsDir = path.join(gameDir, "Mods");
+  let enabled: Record<string, boolean> = {};
+  try { enabled = JSON.parse(fs.readFileSync(path.join(modsDir, "thumper-state.json"), "utf8")).enabled ?? {}; } catch { return null; }
+  const out: string[] = [];
+  for (const id of Object.keys(enabled).filter((k) => enabled[k]).sort()) {
+    try { if (fs.readFileSync(path.join(modsDir, id, "client", "init.lua"), "utf8").includes(HAZE_EVENT)) out.push(id); } catch { /* no client script */ }
+  }
+  return out;
+}
+
+/** The mods of a game folder that replace the water plane's shader (Mods\<id>\shaders\Water.*.glsl), whether each is
+ * enabled (Mods\thumper-state.json) and whether its shader or client script names the sea material's message. */
 export function waterShaderMods(gameDir: string | undefined): WaterShaderMod[] {
   if (!gameDir) return [];
   const modsDir = path.join(gameDir, "Mods"), out: WaterShaderMod[] = [];
@@ -1364,7 +1378,8 @@ export const tools: Tool[] = [
       if (text === before) return { changed: false, look: readWaterLook(before), ...(readSea(before) ? { sea: readSea(before) } : {}), ...(readHaze(before) ? { haze: readHaze(before) } : {}), ...(preset ? { preset } : {}), ...shader, note: "the script already sets this look" };
       const r = await p.erg.saveScript(text);
       if (!r.saved) throw new ToolError(`the server did not save the script: ${r.problems.map((x) => x.message ?? String(x)).join("; ")}`);
-      return { changed: true, look: a.clear ? null : look, ...(sea ? { sea, seaEvent: SEA_EVENT } : {}), ...(haze ? { haze, hazeEvent: HAZE_EVENT, hazeNote: "the distance and the band under the horizon fade to this colour where a graphics mod honours it (Sunstone 2.4+); the game's own picture has no haze" } : {}), ...(preset ? { preset } : {}), was: readWaterLook(before), problems: r.problems, syntaxChecked: r.syntaxChecked ?? false, ...shader,
+      return { changed: true, look: a.clear ? null : look, ...(sea ? { sea, seaEvent: SEA_EVENT } : {}), ...(haze ? { haze, hazeEvent: HAZE_EVENT, hazeNote: "the distance and the band under the horizon fade to this colour where a graphics mod honours it (Sunstone 2.4+); the game's own picture has no haze",
+          ...(() => { const hm = hazeMods(a.gameDir ?? process.env.MELANGE_GAME_DIR); return hm === null ? {} : hm.length ? { hazeMods: hm } : { hazeWarning: `no enabled mod of the game folder listens for ${HAZE_EVENT}: the haze will not show there (Sunstone 2.4+ draws it)` }; })() } : {}), ...(preset ? { preset } : {}), was: readWaterLook(before), problems: r.problems, syntaxChecked: r.syntaxChecked ?? false, ...shader,
         note: a.clear ? "the block is gone: the theme's water" : "a wum.level.water{...} block at the top of the level script (Melange 0.13+): Test to see it; the game logs each field it set ([levels] water look: <container>.<field> set)" +
           (sea ? `; the sea material goes to client mods as the event ${SEA_EVENT} (Melange 0.15), which a water shader mod that honours it draws (shaderMods)` : "") };
     },

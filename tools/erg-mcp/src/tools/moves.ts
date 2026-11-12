@@ -9,6 +9,7 @@ import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 
 import { join } from "node:path";
 import { compareDeals, facingOf, imageDiff, jetStep, parseSpawnDeals, riserVerdict, turnPulse, wrapDeg, yawToward, type RiserTry } from "../lib/harness-moves";
 import { decodePng, encodePng } from "../lib/inspect-png";
+import { colourReads, pixelReads } from "../lib/exposed-core";
 import { documentsDir } from "../oasis";
 import { ToolError, image, type Content, type Tool } from "../registry";
 import type { Session } from "../session";
@@ -131,7 +132,141 @@ function shotDir(): string {
 
 const unitsProp = { type: "string", enum: ["map", "world"], description: "Units of the positions given and answered: map (default) or world (map x 20)." } as const;
 
+interface RopePlan { aimSec?: number; release?: boolean; refire?: number; steps?: { do: "shorten" | "lengthen" | "swingForward" | "swingBackward" | "swingLeft" | "swingRight" | "wait" | "jump"; sec?: number; until?: "still" }[] }
+const ROPE_MSG: Record<string, string> = { shorten: "NinjaRope.Shorten", lengthen: "NinjaRope.Lengthen", swingForward: "NinjaRope.SwingForward", swingBackward: "NinjaRope.SwingBackward",
+  swingLeft: "NinjaRope.SwingLeft", swingRight: "NinjaRope.SwingRight" };
+
+/** game_use_tool {weapon: "rope"}: the ninja rope fired up at what the worm faces and worked by its own messages. The
+ * game's input layer turns the walk and aim keys into NinjaRope.Shorten / Lengthen / Swing*.On and .Off while a rope
+ * hangs; sent in the match VM (level.test.lua) they reel and swing it whatever the window's focus (Dustcrown round 4
+ * hooked a rope and could not climb it: the drive had no rope input). Measured in round 5: Shorten took a worm hooked
+ * from step 1 up 1.3 map units in half a second, Lengthen put it back. */
+async function useRope(s: Session, a: { target: number[]; worm?: number; arrive?: number; waitSec?: number; units?: "map" | "world"; rope?: RopePlan }) {
+  for (const m of ["input.drive", "level.test.lua"]) if (!(await has(s, m))) throw new ToolError(`game_use_tool needs the game's ${m} (Test with this branch's Melange)`);
+  const k = a.units === "world" ? 1 : W, out = (p: number[]) => p.map((v) => r2(v / k));
+  const target = a.target.map((v) => v * k), arrive = (a.arrive ?? 1.5 * W / k) * k, plan = a.rope ?? {};
+  const steps = plan.steps ?? [{ do: "shorten" as const, sec: 4, until: "still" as const }, { do: "swingForward" as const, sec: 0.8 }];
+  const w = await turnOf(s, a.worm, a.waitSec ?? 60);
+  // the worm turns first: a turn after the pick left the rope unfired (round 5)
+  const want = yawToward([w.pos[0], w.pos[2]], [target[0], target[2]]);
+  const faced = want === null ? null : await face(s, want, 15, 8000);
+  const sel = await selectWeapon(s, "kUtilityNinjaRope");
+  await sleep(300);
+  const here = async () => (await active(s))?.pos ?? null;
+  const msg = (m: string) => tickLua(s, `SendMessage("${m}") return "sent"`);
+  const shots: Record<string, unknown>[] = [], notes: string[] = [];
+  let pos = w.pos, why = "done";
+  for (let shotN = 0; shotN <= (plan.refire ?? 0); shotN++) {
+    const from = pos;
+    // the aim comes up from where it is, then the utility's fire throws the hook
+    if ((plan.aimSec ?? 1.2) > 0 && shotN === 0) await drive(s, ["AimUp"], (plan.aimSec ?? 1.2) * 1000).then(() => sleep((plan.aimSec ?? 1.2) * 1000 + 100));
+    await drive(s, ["FireUtil"], 250);
+    await sleep(900);
+    await drive(s, [], 0).catch(() => undefined);
+    const hooked = await here();
+    if (!hooked) { why = "the turn left play"; break; }
+    const trace: { do: string; sec: number; at: number[] }[] = [];
+    let maxY = hooked[1];
+    for (const st of steps) {
+      const ms = Math.min(6000, (st.sec ?? 1) * 1000), m = ROPE_MSG[st.do];
+      if (m) await msg(`${m}.On`);
+      else if (st.do === "jump") await drive(s, ["Jump", "MoveForward"], ms);
+      const t0 = Date.now();
+      let last = (await here()) ?? pos, stillFor = 0, lastT = t0;
+      while (Date.now() - t0 < ms) {
+        await sleep(150);
+        const p = await here();
+        if (!p) break;
+        maxY = Math.max(maxY, p[1]);
+        const moved = Math.hypot(p[0] - last[0], p[1] - last[1], p[2] - last[2]);
+        stillFor = moved < 0.05 * W ? stillFor + (Date.now() - lastT) : 0;
+        last = p; lastT = Date.now();
+        if (st.until === "still" && stillFor >= 600) break;
+      }
+      if (m) await msg(`${m}.Off`);
+      pos = last;
+      trace.push({ do: st.do, sec: r2((Date.now() - t0) / 1000), at: out(last) });
+    }
+    if (plan.release !== false) {
+      await msg("NinjaRope.Kill");
+      // down to rest: the worm has not moved for 0.6 s (at most 6 s)
+      let last = (await here()) ?? pos, still = 0;
+      for (let i = 0; i < 40 && still < 4; i++) {
+        await sleep(150);
+        const p = await here();
+        if (!p) break;
+        still = Math.hypot(p[0] - last[0], p[1] - last[1], p[2] - last[2]) < 0.03 * W ? still + 1 : 0;
+        last = p;
+      }
+      pos = last;
+    }
+    const rose = hooked[1] - from[1], pulled = Math.hypot(hooked[0] - from[0], hooked[2] - from[2]);
+    shots.push({ from: out(from), afterFire: out(hooked), ...(rose < 0.05 * W && pulled < 0.05 * W ? { hooked: "the worm did not move at the shot: the hook may have found nothing (a higher or lower aim, or nearer the wall)" } : {}),
+      steps: trace, maxY: r2(maxY / k), ...(plan.release !== false ? { landed: out(pos) } : { hangsAt: out(pos) }) });
+    const now = await active(s);
+    if (!now || now.slot !== w.slot || now.phase !== "play") { why = "the turn left play"; break; }
+    if (!now.alive) { why = "the worm died"; break; }
+  }
+  const off = Math.hypot(pos[0] - target[0], pos[1] - target[1], pos[2] - target[2]);
+  if (sel && (sel as { selected?: boolean }).selected === false) notes.push("the rope was not selected (the scheme may give none: game_give_weapons {kit: \"movement\"})");
+  return { weapon: "rope", worm: w.slot, from: out(w.pos), target: out(target), ...(faced ? { faced: { yaw: faced.yaw, error: faced.error, ok: faced.ok } } : {}),
+    aimSec: plan.aimSec ?? 1.2, shots, end: out(pos), climbed: r2((pos[1] - w.pos[1]) / k), offTarget: r2(off / k), reached: off <= arrive, stop: why, units: a.units ?? "map",
+    ...(notes.length ? { notes } : {}),
+    note: "the rope is fired with the utility's fire after the aim was raised aimSec, then worked by its own messages in the match VM (NinjaRope.Shorten / Lengthen / Swing*.On and .Off) and let go with NinjaRope.Kill; afterFire is where the worm hung once the hook held, landed where it rested. reached: within `arrive` of the target" };
+}
+
+/** game_crater_look: each crater shot straight down and read. */
+interface CraterArgs { points?: number[][]; last?: number; height?: number; part?: number; minShare?: number; flag?: ("blue" | "white")[]; prefix?: string; width?: number; fov?: number; images?: boolean; units?: "map" | "world"; }
+
 export const tools: Tool[] = [
+  {
+    name: "game_crater_look",
+    description: "What the craters of the running Test show: for each explosion the Test probe has seen (the `last` of them, default 12; or `points`), the camera is put `height` map units straight over it looking down, a clean shot is taken, and the middle of the picture (`part` of its width and height) is read pixel by pixel: the mean colour and the share of pixels that read as earth, as blue (cyan to violet, pale lilac included) and as white (bright and nearly grey). A crater whose blue and white share is `minShare` or more is flagged: its floor reads as a hole to the sky (the top texture of the band it opened onto: check_exposed_core finds those before a build, the structure tools' coreMaterial fixes them). Run it after game_air_strike, test_explosion {game: true} or a volley; ok when none is flagged.",
+    inputSchema: { type: "object", additionalProperties: false, properties: {
+      points: { type: "array", maxItems: 48, items: { type: "array", items: { type: "number" }, minItems: 3, maxItems: 3 }, description: "Crater centres [x, y, z] in `units` instead of the probe's explosions." },
+      last: { type: "integer", minimum: 1, maximum: 48, description: "How many of the probe's latest explosions (default 12)." },
+      height: { type: "number", minimum: 2, maximum: 80, description: "The eye's height over the point, map units (default 9)." },
+      part: { type: "number", minimum: 0.05, maximum: 1, description: "The share of the picture's width and height read, round its centre (default 0.3)." },
+      minShare: { type: "number", minimum: 0, maximum: 1, description: "Flag a crater whose flagged pixels are this share or more (default 0.2)." },
+      flag: { type: "array", items: { type: "string", enum: ["blue", "white"] }, description: "What counts (default both)." },
+      prefix: { type: "string" }, width: { type: "integer", minimum: 160, maximum: 1920 }, fov: { type: "number", minimum: 10, maximum: 120 },
+      images: { type: "boolean" }, units: { type: "string", enum: ["map", "world"] },
+    } },
+    async handler(s: Session, a: CraterArgs) {
+      const st = await gameState(s);
+      if (st.scene !== "match") throw new ToolError(`no match is running (scene ${st.scene}): test the project and set off the explosions first`);
+      const k = a.units === "world" ? 1 / 20 : 1, W = 20;
+      let pts: { at: number[]; source?: string; turn?: number }[];
+      if (a.points?.length) pts = a.points.map((p) => ({ at: [p[0] * k, p[1] * k, p[2] * k] }));
+      else {
+        const pr = (await (await s.client()).call<{ probe: { explosions: { turn: number; source: string; at: number[] }[] } }>("level.test.probe", {}, 15000)).probe;
+        pts = pr.explosions.slice(-(a.last ?? 12)).map((e) => ({ at: e.at, source: e.source, turn: e.turn }));
+        if (!pts.length) throw new ToolError("the Test probe has seen no explosion in this match: set one off first (game_air_strike, test_explosion {game: true}), or give points");
+      }
+      const flagOn = new Set(a.flag ?? ["blue", "white"]), minShare = a.minShare ?? 0.2, h = a.height ?? 9, prefix = a.prefix ?? `erg_${Date.now().toString(36)}_crater`;
+      const rows: Record<string, unknown>[] = [], pics: Content[] = [];
+      for (const [i, p] of pts.entries()) {
+        const row: Record<string, unknown> = { at: p.at.map((v) => Math.round((v / k) * 100) / 100), ...(p.source ? { source: p.source, turn: p.turn } : {}) };
+        try {
+          // straight down, a hair off the vertical so the camera's up is defined
+          const set = await setCamera(s, { pos: [p.at[0] * W, (p.at[1] + h) * W, p.at[2] * W + 2], target: [p.at[0] * W, (p.at[1] - 2) * W, p.at[2] * W], fov: a.fov ?? 50 }, 40);
+          const sh = await shot(s, `${prefix}_${i}`, { clean: true, width: a.width ?? 480, minFrame: set.frame !== undefined ? set.frame + 2 : undefined });
+          const img = decodePng(sh.png), rd = pixelReads(img.rgb, img.w, img.h, a.part ?? 0.3);
+          const bad = (flagOn.has("blue") ? rd.share.blue : 0) + (flagOn.has("white") ? rd.share.white : 0);
+          Object.assign(row, { shot: sh.path, mean: `#${rd.mean.map((v) => v.toString(16).padStart(2, "0")).join("")}`, meanReads: colourReads(rd.mean), share: rd.share, ...(bad >= minShare ? { flagged: true } : {}) });
+          if (a.images) pics.push(image(sh.png));
+        } catch (e) { row.error = (e as Error).message; }
+        rows.push(row);
+      }
+      await clearCamera(s).catch(() => undefined);
+      const flagged = rows.filter((r) => r.flagged), failed = rows.filter((r) => r.error);
+      const out = { ok: flagged.length === 0 && failed.length < rows.length, craters: rows.length, flagged: flagged.length,
+        summary: flagged.length ? `${flagged.length} of ${rows.length} craters show a floor that reads as sky or ice (blue or white pixels over ${Math.round(minShare * 100)} % of the middle of the shot)` : `${rows.length - failed.length} craters read as earth`,
+        rows, ...(flagged.length ? { fix: "check_exposed_core names the material and the face; the structure's coreMaterial (or a band whose top reads as earth) fixes it" } : {}),
+        note: "each crater shot from straight over it; the middle of the picture read pixel by pixel (blue: cyan to violet, pale lilac included; white: bright and nearly grey)" };
+      return a.images ? { content: [...pics, { type: "text" as const, text: JSON.stringify(out) }] } : out;
+    },
+  },
   {
     name: "game_face",
     description: "Turn the active worm of the running Test to face a heading or a point, before a jetpack flight, a rope, a jump or a shot (a jetpack flies the way the worm faces: Dustcrown's SAND S flight failed because the worm faced away from the palace). `yaw`: degrees, 0 toward +z and 90 toward +x (a worm's own yaw: its facing is (sin, cos)); or `towards`: [x, z] or [x, y, z]. It waits for a human turn in play (`worm`: that WORMn's), then turns with the game's own inputs posted from its input tick (input.drive: Input.TurnLeft / TurnRight in pulses sized from the turn rate it measures; where those do not turn the worm, short taps of the walk keys toward the heading, which turn a worm before it steps), reading the worm's yaw after each until it is within `tolerance` degrees (default 12). Answers the yaw reached, the error, the pulses, the method and how far the worm moved (a walk tap can step it). No keyboard and no window focus involved.",
@@ -157,19 +292,24 @@ export const tools: Tool[] = [
   },
   {
     name: "game_use_tool",
-    description: "Use a movement tool with the active worm of the running Test toward a target and answer where the worm landed: the in-game check of check_tool_reach. `weapon: \"jetpack\"`: the worm takes the jetpack (game_select_weapon: the scheme must give one, or game_give_weapons {kit: \"movement\"}), turns to the target (game_face), then flies: Input.FireUtil is the thrust and the walk inputs steer (Input.MoveForward and its three fellows, camera-relative: what the game accepts in flight), posted from the game's input tick and chosen again every 120 ms from the worm's place: a lob, because a jetpack only pushes while it thrusts: straight up until the worm is half of `clearance` (default 3 map units) over the target's height (a worm steered at a wall from its foot is held against it and burns its tank there), then thrust and steering together until the speed it has would carry it to the target as it falls, then no thrust: it coasts over and drops once within `arrive` (default 1.5) of it in plan. Thrust is capped at 7.3 s (a tank is 7.5). It ends when the worm rests, the turn leaves play, or `maxSec` (default 14; a full tank is about 7.5 s of thrust). `target`: [x, y, z], y the ground to land on. Answers the landing, its distance from the target in plan and in height, the highest point and the time: `reached` when it rests within `arrive` + 1.5 of the target and within 1.5 of its height. `weapon: \"teleport\" | \"rope\" | \"girder\"` are refused with what is known: the build has no way to place their cursor or fire them from a script yet (see docs/erg-mcp.md, Dustcrown round 4).",
+    description: "Use a movement tool with the active worm of the running Test toward a target and answer where the worm landed: the in-game check of check_tool_reach. `weapon: \"jetpack\"`: the worm takes the jetpack (game_select_weapon: the scheme must give one, or game_give_weapons {kit: \"movement\"}), turns to the target (game_face), then flies: Input.FireUtil is the thrust and the walk inputs steer (Input.MoveForward and its three fellows, camera-relative: what the game accepts in flight), posted from the game's input tick and chosen again every 120 ms from the worm's place: a lob, because a jetpack only pushes while it thrusts: straight up until the worm is half of `clearance` (default 3 map units) over the target's height (a worm steered at a wall from its foot is held against it and burns its tank there), then thrust and steering together until the speed it has would carry it to the target as it falls, then no thrust: it coasts over and drops once within `arrive` (default 1.5) of it in plan. Thrust is capped at 7.3 s (a tank is 7.5). It ends when the worm rests, the turn leaves play, or `maxSec` (default 14; a full tank is about 7.5 s of thrust). `target`: [x, y, z], y the ground to land on. Answers the landing, its distance from the target in plan and in height, the highest point and the time: `reached` when it rests within `arrive` + 1.5 of the target and within 1.5 of its height. `weapon: \"rope\"`: the worm turns to the target, takes the ninja rope, raises its aim `rope.aimSec` and fires (the hook holds on what the aim meets: a wall's face, not open sky over its top), then works the rope by `rope.steps`, the rope's own messages sent in the match VM (shorten reels in, lengthen lets out, swing* swings; default: shorten until still, then swing forward), lets go and waits to rest; the answer's shots give where it hung after the fire, each step's end, the highest it was and where it landed, and `reached` when that is within `arrive` of the target. `weapon: \"teleport\" | \"girder\"` are refused with what is known: the build has no way to place their cursor from a script yet (see docs/erg-mcp.md, Dustcrown round 5).",
     inputSchema: { type: "object", additionalProperties: false, required: ["weapon", "target"], properties: {
       weapon: { type: "string", enum: ["jetpack", "teleport", "rope", "girder"] },
       target: { type: "array", items: { type: "number" }, minItems: 3, maxItems: 3 },
+      rope: { type: "object", additionalProperties: false, description: "weapon rope: how it is driven. aimSec: how long the aim is raised from level before the shot (Input.AimUp held; default 1.2: steeply up at a wall a couple of units away). steps: what the worm does on the rope, in order, each {do: shorten | lengthen | swingForward | swingBackward | swingLeft | swingRight | wait | jump (the jump key with the walk-forward key, held sec: a hop off the rope), sec (at most 6), until: \"still\" (stop early once the worm has not moved 0.15 map units in 0.6 s)}: the rope's own messages, NinjaRope.Shorten.On / .Off and the rest, sent in the match VM. Default: shorten until still (at most 4 s), swing forward 0.8 s. release (default true): let go at the end (NinjaRope.Kill) and wait for the worm to rest. refire: after the release, fire again and run the steps again this many times (default 0; a scheme gives a rope several shots), each from where the worm then is.",
+        properties: { aimSec: { type: "number", minimum: 0, maximum: 5 }, release: { type: "boolean" }, refire: { type: "integer", minimum: 0, maximum: 5 },
+          steps: { type: "array", maxItems: 16, items: { type: "object", additionalProperties: false, required: ["do"], properties: {
+            do: { type: "string", enum: ["shorten", "lengthen", "swingForward", "swingBackward", "swingLeft", "swingRight", "wait", "jump"] }, sec: { type: "number", minimum: 0.05, maximum: 6 }, until: { type: "string", enum: ["still"] } } } } } },
       worm: { type: "integer", minimum: 0, maximum: 15 },
       clearance: { type: "number", minimum: 0.5, maximum: 40 }, arrive: { type: "number", minimum: 0.3, maximum: 20 }, maxSec: { type: "number", minimum: 2, maximum: 40 },
       waitSec: { type: "number", minimum: 1, maximum: 300 },
       units: unitsProp,
     } },
-    async handler(s: Session, a: { weapon: "jetpack" | "teleport" | "rope" | "girder"; target: number[]; worm?: number; clearance?: number; arrive?: number; maxSec?: number; waitSec?: number; units?: "map" | "world" }) {
+    async handler(s: Session, a: { weapon: "jetpack" | "teleport" | "rope" | "girder"; target: number[]; worm?: number; clearance?: number; arrive?: number; maxSec?: number; waitSec?: number; units?: "map" | "world"; rope?: RopePlan }) {
+      if (a.weapon === "rope") return useRope(s, a);
       if (a.weapon !== "jetpack") throw new ToolError(`game_use_tool cannot drive the ${a.weapon} yet: ${a.weapon === "teleport" ? "the teleport's target is a cursor the player moves, and no input or message of this build places it from a script (game_park_worm puts a worm on a spot without the weapon)"
         : a.weapon === "girder" ? "Girder.Place and the Girder.Move messages sent from the match VM did nothing in round 3, and the fire inputs leave the cursor on the worm, where a girder is refused"
-        : "a rope needs an aim and a swing steered frame by frame; only its length is known to check_tool_reach"}. The jetpack is driven`);
+        : ""}. The jetpack and the rope are driven`);
       if (!(await has(s, "input.drive"))) throw new ToolError("game_use_tool needs the game's input.drive (Melange 0.13+ with the Controls module)");
       const k = a.units === "world" ? 1 : W, out = (p: number[]) => p.map((v) => r2(v / k));
       const target = a.target.map((v) => v * k), clear = (a.clearance ?? 3 * W / k) * k, arrive = (a.arrive ?? 1.5 * W / k) * k;

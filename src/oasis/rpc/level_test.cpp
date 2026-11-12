@@ -19,7 +19,9 @@
 #include <filesystem>
 #include <mutex>
 #include <string>
+#include <vector>
 
+#include "assets/meshbank.h"
 #include "core/events.h"
 #include "core/game.h"
 #include "core/log.h"
@@ -29,6 +31,7 @@
 #include "levels/factory.h"
 #include "levels/test.h"
 #include "lua/sim/bridge_internal.h"
+#include "melange/jlog.h"
 #include "melange/levels.h"
 #include "melange/postfx.h"
 #include "mods/lobby.h"
@@ -55,6 +58,40 @@ struct CleanRoom {
     bool mods = false, postfx = true;
 };
 CleanRoom g_clean;   // the Test that asked for one; under g_mx
+// Mesh banks a Test asked for ({meshBanks: [{file, mod}]}): a project's own detail meshes, which an installed pack loads
+// from its spice.json at launch and a Test of the project otherwise never has (its rocks did not draw). Loaded on the
+// main thread at the frontend, before the Quick Game is posted; once a launch each (a section is burnt by one attempt,
+// and a loaded mesh's name stays live in the GRM, so a changed bank needs a restart).
+struct TestBank {
+    std::string file, mod;
+};
+std::vector<TestBank> g_banks;        // queued; under g_mx
+std::vector<std::string> g_banksDone;  // every file tried this launch, lower case; main thread
+
+void LoadTestBanks() {
+    std::vector<TestBank> banks;
+    {
+        std::lock_guard lk(g_mx);
+        banks.swap(g_banks);
+    }
+    for (const TestBank& b : banks) {
+        std::string low = b.file;
+        for (char& ch : low) ch = static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
+        bool done = false;
+        for (const std::string& d : g_banksDone) done |= d == low;
+        if (done) {
+            LOG_INFO("[erg] test: mesh bank %s was loaded earlier this launch (a changed bank needs a restart)", b.file.c_str());
+            continue;
+        }
+        g_banksDone.push_back(low);
+        std::string err;
+        uint16_t section = 0;
+        const bool ok = assets::meshes::LoadModBank(game::Widen(b.file), b.mod, &err, assets::meshes::kSceneBinWeapons, &section, true);
+        if (ok) LOG_INFO("[erg] test: mesh bank %s (%s) loaded as section %u", b.file.c_str(), b.mod.c_str(), static_cast<unsigned>(section));
+        else LOG_WARN("[erg] test: mesh bank %s (%s) not loaded: %s", b.file.c_str(), b.mod.c_str(), err.c_str());
+        jlog::Rec("erg", ok ? jlog::Level::Info : jlog::Level::Warn, "test_bank").Str("file", b.file).Str("mod", b.mod).Bool("ok", ok).Uint("section", section).Str("error", err);
+    }
+}
 
 bool OptFlag(const json::Value& v, const char* key, bool* out, Result& r) {
     const json::Value* m = v.Get(key);
@@ -99,6 +136,7 @@ void OnFrame() {
     g_loading = levels::engine::Loading();
     g_inLobby = handshake::lobby::Current() != 0;
     g_quickOk = front && erg::quickstart::Available();
+    if (front && !attract && !g_loading) LoadTestBanks();
     std::string key;
     bool demoWon = false;
     {
@@ -236,6 +274,33 @@ void Test(const Call& c, Result& r, void*) {
     std::string mode;
     std::array<uint8_t, 4> worms{};
     if (!ParseTeams(p, &mode, &worms, r)) return;
+    // meshBanks: [{file, mod}], absolute .xom paths and the mod id their mesh names start with
+    std::vector<TestBank> banks;
+    if (const json::Value* mbv = p.Get("meshBanks"); mbv && !mbv->IsNull()) {
+        if (!mbv->IsArray() || mbv->items.size() > 8) {
+            Fail(r, rpc::kBadParams, "meshBanks: up to 8 of {file, mod}");
+            return;
+        }
+        for (const json::Value& e : mbv->items) {
+            TestBank b;
+            if (!e.IsObject()) {
+                Fail(r, rpc::kBadParams, "meshBanks: each is {file, mod}");
+                return;
+            }
+            if (!rpc::Str(e, "file", &b.file, r, true) || !rpc::Str(e, "mod", &b.mod, r, true)) return;
+            std::error_code ec;
+            const std::filesystem::path path(game::Widen(b.file));
+            if (!path.is_absolute() || path.extension() != L".xom" || !std::filesystem::is_regular_file(path, ec)) {
+                Fail(r, rpc::kBadParams, "meshBanks: file must be the absolute path of a .xom mesh bank that exists");
+                return;
+            }
+            if (b.mod.empty() || b.mod.size() > 64 || b.mod.find_first_not_of("abcdefghijklmnopqrstuvwxyz0123456789_-") != std::string::npos) {
+                Fail(r, rpc::kBadParams, "meshBanks: mod is a mod id (a-z, 0-9, _ and -)");
+                return;
+            }
+            banks.push_back(std::move(b));
+        }
+    }
     if (!level.empty()) {
         // a registered pack level: armed as a game level is, but it must be in the registry (Arm checks)
         if (!project.empty() || !base.empty()) {
@@ -285,11 +350,17 @@ void Test(const Call& c, Result& r, void*) {
         }
         DeleteShadows(stem);
         key = erg::names::Key(stem);
+        // the project's own mesh banks (its meshes folder), after the ones the call named
+        for (auto& [file, mod] : ProjectMeshBanks(project)) banks.push_back(TestBank{file, mod});
         char regErr[256] = {};
         if (!levels::RegisterTest(stem.c_str(), title.c_str(), regErr, sizeof regErr)) {
             Fail(r, rpc::kRefused, regErr);
             return;
         }
+    }
+    if (!banks.empty()) {
+        std::lock_guard lk(g_mx);
+        for (TestBank& b : banks) g_banks.push_back(b);
     }
     if (!levels::ArmNextLevel(key.c_str(), levels::ArmOptions{120, tod, !base.empty()})) {
         Fail(r, rpc::kRefused, !level.empty() ? "could not arm the pack level: it is not registered (is its pack enabled and built? levels.live), or a lobby or another Test is pending"
@@ -324,6 +395,7 @@ void Test(const Call& c, Result& r, void*) {
                  .Bool("packLevel", !level.empty()).Str("scheme", schemeName)
                  .Str("quickStart", mode.empty() ? erg::quickstart::kModes[0] : mode.c_str())
                  .Raw("teamWorms", wormsOut.End())
+                 .Int("meshBanks", static_cast<long long>(banks.size()))
                  .Raw("cleanRoom", jsonmini::Obj().Bool("simMods", !cleanMods).Bool("postfx", postfxOn).End())
                  .End();
 }

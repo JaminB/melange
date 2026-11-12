@@ -325,6 +325,23 @@ Nothing the simulation reads changes: the sea still rises and drowns as water do
 without such a mod plays the same match. Without a water shader mod the game's own water draws, so set the water's own
 look as well (an opaque pale sea: erg-mcp's `sand` preset).
 
+### Level haze
+
+The game has no fog. A graphics mod's haze takes the sky's horizon colour, so the far distance of any level fades to a
+pale blue: right over water, wrong over a sea of sand (the sea ran out into a blue ring, and the island seen from far
+off was washed in blue). A level says what its distance fades to with a **level haze** (Melange 0.15), the sea
+material's sibling:
+
+- The level script calls `wum.level.water{Haze = {r, g, b, amount}, HazeRange = {start, distance}}`. `r`, `g`, `b` are
+  the haze's colour, 0-255. `amount` is 0-1 (default 1): how far the mod's own haze colour gives way to it. `start`
+  and `distance` are the fog's range in world units; 0 (the default) leaves the mod's own. erg-mcp's `set_water_look`
+  writes the call for `haze: {color, amount, start, distance}`, in a call of its own.
+- Melange sends client mods the event `melange.level.haze` with `{on = true, r, g, b, amount, start, distance}`, and
+  `{on = false}` when the match ends. Sunstone 2.4 hazes the land, the far sea and the band under the horizon toward
+  that colour.
+
+Render state only, as the sea material is.
+
 ## Theme and time of day
 
 Changing the theme swaps the terrain's material and texture set (for example, Camelot's stone-and-banner look) and
@@ -393,6 +410,13 @@ Press **Test** to play the map as it stands, without exporting or restarting any
 4. If your game build supports starting a match from the editor directly, Test starts Quick Game itself. Otherwise
    the status line asks you to press Quick Game yourself — the override is already armed, so that press loads your
    map.
+
+A project's own mesh banks load for a Test too (Melange 0.15): every `.xom` in the project's `meshes` folder
+(`<projects>\<project>\meshes\<mod id>.<Bank>.xom`, at most eight) is loaded before the match starts, once a game
+launch, so detail meshes of the map's own bank draw in a Test as they do from the installed pack. Without the folder a
+Test shows them only when the pack is installed and on. A bank changed since it was loaded needs a game restart.
+`level.test {meshBanks: [{file, mod}]}` names banks anywhere on disk; erg-mcp's `test {meshBanks}` copies files into
+the folder.
 
 The Test match is the Quick Game: a human team against a computer team. A test tool can ask for other teams
 (`level.test {teams}`, erg-mcp's `test {teams}`): two to four human teams, as the Quick Game's 2-4 player starts make,
@@ -470,7 +494,7 @@ end)
 | `wum.level.crate(knot [, opts])` | A crate at a knot; `opts`: `kind` (`weapon`, `health`, `utility`), `contents`, `count`, `amount`, `hitpoints`, `parachute` |
 | `wum.level.mine(pos [, vel])` | A mine at `pos` (`{x, y, z}` or `{x = .., y = .., z = ..}`, world units), moving at `vel` (default `{0, -0.3, 0}`, the factory's own), made by the game's own mine maker as the factory's mines are. `true`, or `nil` and a reason (`before the first turn`, `unavailable` on a game Melange does not know) |
 | `wum.level.fireFactory([{now = true}])` | The map's mine factory fires at the next turn start (its idle countdown is set to 0), when fewer mines than its target are in the level; `now` sends `GameLogic.StartMineFactory` at once, so it fires in this tick. `nil` and a reason when there is no factory, it has exploded or it is firing |
-| `wum.level.water([fields])` | The water's look (and the land's light) in this map's matches, over the theme's: fields of the theme's `WaterPlaneTweaks` (the resource `Water.TweakName` names, such as `Water.PREHISTORIC.EVENING`): `opacity` (`NearOpacity`, 0-1, the water plane's alpha), `reflection` (`ReflectionStrength`, the sky's reflection), `SubtractColourScale` (lighter or darker water), `LightAmbient` and `LightDiffuse` (`{r, g, b}` 0-255: the land's ambient and sun light, the landscape shader's own), and the others by name (`ReflectionContrast`, `SpecularContrast`, `SpecularPower`, `SkyBlendColor`, `NormalIntensity`, ...). `true`, or `nil` and why; with no argument, a table of every field's value. The game reads them every frame, so a turn handler can change them mid-match (tried 2026-11-08); the theme's values come back when the match ends. Render only: the match and Wormsign are untouched. Melange 0.13+ |
+| `wum.level.water([fields])` | The water's look (and the land's light) in this map's matches, over the theme's: fields of the theme's `WaterPlaneTweaks` (the resource `Water.TweakName` names, such as `Water.PREHISTORIC.EVENING`): `opacity` (`NearOpacity`, 0-1, the water plane's alpha), `reflection` (`ReflectionStrength`, the sky's reflection), `SubtractColourScale` (lighter or darker water), `LightAmbient` and `LightDiffuse` (`{r, g, b}` 0-255: the land's ambient and sun light, the landscape shader's own), `Sea` / `SeaKeep` and `Haze` / `HazeRange` (the sea material and the level haze above: kept by Melange and told to client mods, not fields of the theme), and the others by name (`ReflectionContrast`, `SpecularContrast`, `SpecularPower`, `SkyBlendColor`, `NormalIntensity`, ...). `true`, or `nil` and why; with no argument, a table of every field's value. The game reads them every frame, so a turn handler can change them mid-match (tried 2026-11-08); the theme's values come back when the match ends. Render only: the match and Wormsign are untouched. Melange 0.13+ |
 | `wum.events.on("sim.turnStarted", fn)` | `fn(name, turn, round)` at the first tick of each turn, on every machine at the same tick. `turn` counts from 1, the match's n-th turn start: the same number as `wum.game.turn().index`, erg-mcp's `game_state` turn and `check_flood`'s game turns. In a Quick Game of two teams of four, turn 1 is the human team's WORM0, then WORM4, WORM1, WORM5, ... (the teams alternate, each moves its worms in turn) |
 | `wum.sim.turn()`, `wum.sim.round()` | Turns started in this match, and the round: it goes up when a team starts a turn it already had in the current round, so a team that is wiped out only shortens the round. Both 0 before the first turn |
 | `wum.sim.waterSchedule{startTurn, every, step, cap, from, units}` | Raises `Water.Level` at turn starts (see below) |

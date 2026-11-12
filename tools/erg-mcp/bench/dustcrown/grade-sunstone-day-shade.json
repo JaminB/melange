@@ -1,0 +1,536 @@
+{
+ "note": "erg-mcp look grade (game_material_shots saveGrade): render_view {grade: <this file>}",
+ "grade": {
+  "m": [
+   [
+    0.51416,
+    0.14444,
+    0.01458,
+    0.16474
+   ],
+   [
+    0.04772,
+    0.68428,
+    0.01621,
+    0.14366
+   ],
+   [
+    0.05291,
+    0.17799,
+    0.59866,
+    -0.02928
+   ]
+  ],
+  "pairs": 15,
+  "residual": 22.9,
+  "saturation": 0.7,
+  "gain": [
+   0.673,
+   0.748,
+   0.83
+  ],
+  "source": "dustcrown, DAY, mods sunstone",
+  "measured": [
+   {
+    "material": 3,
+    "from": [
+     242,
+     227,
+     189
+    ],
+    "to": [
+     213,
+     208,
+     174
+    ],
+    "tinted": true
+   },
+   {
+    "material": 4,
+    "from": [
+     210,
+     187,
+     120
+    ],
+    "to": [
+     201,
+     192,
+     146
+    ]
+   },
+   {
+    "material": 6,
+    "from": [
+     223,
+     183,
+     91
+    ],
+    "to": [
+     175,
+     162,
+     108
+    ]
+   },
+   {
+    "material": 8,
+    "from": [
+     236,
+     199,
+     106
+    ],
+    "to": [
+     218,
+     213,
+     149
+    ]
+   },
+   {
+    "material": 9,
+    "from": [
+     212,
+     180,
+     142
+    ],
+    "to": [
+     216,
+     181,
+     107
+    ],
+    "tinted": true
+   },
+   {
+    "material": 10,
+    "from": [
+     245,
+     208,
+     111
+    ],
+    "to": [
+     218,
+     214,
+     148
+    ]
+   },
+   {
+    "material": 11,
+    "from": [
+     243,
+     207,
+     111
+    ],
+    "to": [
+     220,
+     214,
+     147
+    ]
+   },
+   {
+    "material": 12,
+    "from": [
+     240,
+     194,
+     100
+    ],
+    "to": [
+     215,
+     210,
+     139
+    ]
+   },
+   {
+    "material": 24,
+    "from": [
+     245,
+     208,
+     111
+    ],
+    "to": [
+     218,
+     214,
+     164
+    ]
+   },
+   {
+    "material": 25,
+    "from": [
+     193,
+     153,
+     39
+    ],
+    "to": [
+     207,
+     196,
+     57
+    ]
+   },
+   {
+    "material": 26,
+    "from": [
+     181,
+     143,
+     35
+    ],
+    "to": [
+     220,
+     213,
+     75
+    ]
+   },
+   {
+    "material": 30,
+    "from": [
+     213,
+     161,
+     91
+    ],
+    "to": [
+     132,
+     106,
+     76
+    ]
+   },
+   {
+    "material": 57,
+    "from": [
+     202,
+     143,
+     69
+    ],
+    "to": [
+     217,
+     205,
+     123
+    ]
+   }
+  ],
+  "tint": {
+   "m": [
+    [
+     0.70629,
+     -0.04683,
+     -0.00473,
+     0.15655
+    ],
+    [
+     -0.01628,
+     0.78744,
+     -0.00553,
+     0.07714
+    ],
+    [
+     -0.02239,
+     -0.07532,
+     1.15084,
+     -0.0978
+    ]
+   ],
+   "pairs": 2,
+   "residual": 8.2
+  },
+  "shadeMeasured": [
+   {
+    "material": 3,
+    "from": [
+     242,
+     227,
+     189
+    ],
+    "to": [
+     169,
+     155,
+     112
+    ],
+    "kind": "shade w",
+    "tinted": true
+   },
+   {
+    "material": 4,
+    "from": [
+     210,
+     187,
+     120
+    ],
+    "to": [
+     115,
+     102,
+     64
+    ],
+    "kind": "steep w"
+   },
+   {
+    "material": 6,
+    "from": [
+     223,
+     183,
+     91
+    ],
+    "to": [
+     155,
+     141,
+     102
+    ],
+    "kind": "steep w"
+   },
+   {
+    "material": 9,
+    "from": [
+     212,
+     180,
+     142
+    ],
+    "to": [
+     167,
+     134,
+     70
+    ],
+    "kind": "steep s",
+    "tinted": true
+   },
+   {
+    "material": 10,
+    "from": [
+     245,
+     208,
+     111
+    ],
+    "to": [
+     120,
+     91,
+     40
+    ],
+    "kind": "steep s"
+   },
+   {
+    "material": 11,
+    "from": [
+     243,
+     207,
+     111
+    ],
+    "to": [
+     127,
+     106,
+     47
+    ],
+    "kind": "steep s"
+   },
+   {
+    "material": 12,
+    "from": [
+     240,
+     194,
+     100
+    ],
+    "to": [
+     166,
+     143,
+     76
+    ],
+    "kind": "shade n"
+   },
+   {
+    "material": 24,
+    "from": [
+     245,
+     208,
+     111
+    ],
+    "to": [
+     139,
+     122,
+     65
+    ],
+    "kind": "steep e"
+   },
+   {
+    "material": 25,
+    "from": [
+     193,
+     153,
+     39
+    ],
+    "to": [
+     137,
+     115,
+     14
+    ],
+    "kind": "steep w"
+   },
+   {
+    "material": 26,
+    "from": [
+     181,
+     143,
+     35
+    ],
+    "to": [
+     99,
+     75,
+     0
+    ],
+    "kind": "shade n"
+   },
+   {
+    "material": 30,
+    "from": [
+     213,
+     161,
+     91
+    ],
+    "to": [
+     124,
+     93,
+     48
+    ],
+    "kind": "steep e"
+   },
+   {
+    "material": 57,
+    "from": [
+     202,
+     143,
+     69
+    ],
+    "to": [
+     183,
+     131,
+     60
+    ],
+    "kind": "steep s"
+   }
+  ],
+  "shade": {
+   "m": [
+    [
+     0.48279,
+     0.03748,
+     0.00378,
+     -0.07269
+    ],
+    [
+     0.01242,
+     0.56775,
+     0.00422,
+     -0.09793
+    ],
+    [
+     0.01279,
+     0.04301,
+     0.54563,
+     -0.09086
+    ]
+   ],
+   "pairs": 12,
+   "residual": 26.3
+  }
+ },
+ "pairs": [
+  {
+   "material": 3,
+   "from": "#f2e3bd",
+   "to": "#d5d0ae",
+   "graded": "#dfddb4",
+   "weight": 60,
+   "tinted": true
+  },
+  {
+   "material": 4,
+   "from": "#d2bb78",
+   "to": "#c9c092",
+   "graded": "#c7be7d",
+   "weight": 7.9
+  },
+  {
+   "material": 6,
+   "from": "#dfb75b",
+   "to": "#afa26c",
+   "graded": "#cebc6e",
+   "weight": 6.4
+  },
+  {
+   "material": 8,
+   "from": "#ecc76a",
+   "to": "#dad595",
+   "graded": "#d7c87c",
+   "weight": 11.7
+  },
+  {
+   "material": 9,
+   "from": "#d4b48e",
+   "to": "#d8b56b",
+   "graded": "#c7ba89",
+   "weight": 58.9,
+   "tinted": true
+  },
+  {
+   "material": 10,
+   "from": "#f5d06f",
+   "to": "#dad694",
+   "graded": "#decf83",
+   "weight": 20
+  },
+  {
+   "material": 11,
+   "from": "#f3cf6f",
+   "to": "#dcd693",
+   "graded": "#dcce82",
+   "weight": 14.7
+  },
+  {
+   "material": 12,
+   "from": "#f0c264",
+   "to": "#d7d28b",
+   "graded": "#d9c578",
+   "weight": 20
+  },
+  {
+   "material": 15,
+   "from": "#f0bb54",
+   "to": "#d0c86a",
+   "graded": "#d8c06f",
+   "weight": 0.5
+  },
+  {
+   "material": 24,
+   "from": "#f5d06f",
+   "to": "#dad6a4",
+   "graded": "#decf83",
+   "weight": 20
+  },
+  {
+   "material": 25,
+   "from": "#c19927",
+   "to": "#cfc439",
+   "graded": "#b9a74a",
+   "weight": 14.9
+  },
+  {
+   "material": 26,
+   "from": "#b58f23",
+   "to": "#dcd54b",
+   "graded": "#b1a042",
+   "weight": 10.4
+  },
+  {
+   "material": 30,
+   "from": "#d5a15b",
+   "to": "#846a4c",
+   "graded": "#c5ae66",
+   "weight": 16.7
+  },
+  {
+   "material": 38,
+   "from": "#7ea5ca",
+   "to": "#b3be94",
+   "graded": "#9daeaa",
+   "weight": 0.5
+  },
+  {
+   "material": 57,
+   "from": "#ca8f45",
+   "to": "#d9cd7b",
+   "graded": "#bda253",
+   "weight": 7.7
+  }
+ ]
+}

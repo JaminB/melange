@@ -165,6 +165,8 @@ test("quietState: quiet once no explosion was seen for the span; a new one start
 
 test("game_use_tool refuses the tools it cannot drive, saying why", async () => {
   const h = tool("game_use_tool").handler as (s: Session, a: unknown) => Promise<unknown>;
-  for (const [w, why] of [["teleport", /cursor/], ["girder", /Girder\.Place/], ["rope", /swing/]] as const)
+  for (const [w, why] of [["teleport", /cursor/], ["girder", /Girder\.Place/]] as const)
     await assert.rejects(h({} as Session, { weapon: w, target: [0, 0, 0] }), why);
+  // the rope is driven (round 5): with no game it asks for the game's inputs instead of refusing the tool
+  await assert.rejects(Promise.resolve().then(() => h({ ensure: async () => ({ methods: [] }) } as unknown as Session, { weapon: "rope", target: [0, 0, 0] })), /needs the game's input\.drive/);
 });
