@@ -6,8 +6,10 @@
 // (build_compound tiers), a crenellated curtain with four domed corner towers and a keep (build_castle, bands and trim),
 // cross wings that cut the court into four, and the Crown tower, the tallest frame, which
 // sets Sandtide's sand line. Five spawn areas (four in the sand, one on the palace) dealt per match (place_spawn_knots areas).
-// The sea is the game's own: it starts at 20 world units and rises only in the scheme's sudden death; a level haze in the
-// sand's dust (set_water_look haze) runs it out to the horizon.
+// The sea is the game's own: it starts at 20 world units and rises only in the scheme's sudden death, opaque (set_water_look
+// opaque); a light level haze in the sand's dust (set_water_look haze) runs it out to the horizon. Round 6: the walks in
+// from the sand areas in 2-unit voxels (refine: no crater a jump cannot leave), a gold cornice on step 2's lip for the
+// rope, gold portals and sills at the gates, the level camera low over the SW (set_level_camera).
 //
 //   tools\node\node.exe tools\erg-mcp\bench\dustcrown\build.mjs [--out <dir>] [--plan] [--terrain] [--no-export] [--keep-mod] [--no-detail]
 //
@@ -45,7 +47,13 @@ const HAZE = [240, 228, 176];
 // #d8ae74 in sun (a Test, Sunstone on) but salmon in shade. Round 5 picks it by tint_landscape's preview through the
 // shade grade (grade-sunstone-day-shade.json): #d8b896 plays #ceb17c in the sun and #90775b in shade, no drift (round 4's
 // #d4b48e played a yellower #d8b56b and #a78646)
-const SAND_TINT = { trough: process.env.DUSTCROWN_TROUGH || "#d8b896", crest: "#f2e3bd" };
+// Round 6: the crests' #f2e3bd played #d5d0ae, duller than the untinted body's #dad6a4 (describe_dunes: crest and trough 0-5
+// apart in brightness), so the body is tinted a warm mid sand (#dcc69a plays #d0bd81), the crest near white (#fff4dc plays
+// #e8e2d1, on its side tile too: a sharp crest's voxels draw their side faces) and the trough a darker ochre (#c9a682
+// plays #cba75d in sun, #906e3c in shade), each read through the shade grade by tint_landscape {grade}
+const SAND_TINT = { trough: process.env.DUSTCROWN_TROUGH || "#c9a682", crest: "#fff4dc", body: "#dcc69a" };
+const SAND_TINTS = () => [{ material: "path02", faces: "all", color: SAND_TINT.trough }, { material: "grass02blend", faces: "all", color: SAND_TINT.crest },
+  { material: "Sand", faces: "all", color: SAND_TINT.body }];
 const WORM_W = 0.6;                     // a worm's body, map units (check_reachability's bodyWidth)
 
 // Materials of the Arabian theme's own file (set_theme ARABIAN, materialFile "theme"; research/mat_arab.txt)
@@ -54,7 +62,10 @@ const MAT = { grass2: 2, grass2b: 3, rock1: 4, rock1b: 5, rock2: 6, rock2b: 7, p
 
 // ---- the numbers (DESIGN.md 1): the sea at start, the floor, the Crown's tip and the sand line ----
 const WATER_START = 20;                  // world units (1 map)
-const FLOOR = -9;                        // the skin's floor (map): heights count from it exactly (keepFloor)
+// the skin's floor (map): heights count from it exactly (keepFloor). Round 6: on both skins' lattices (2.5 and the walks'
+// refine at 2): with round 5's -9 the coarse lattice snapped to -10 and keepFloor lifted its heights by 1, but refine
+// counts the fine skin's heights from the coarse lattice's floor, so the walks' fine skin stood 1 under the field (the pads at 5)
+const FLOOR = -10;
 const SAND = 6;                          // the sand floor (map) at the pads and round the palace
 const CROWN_TIP = 55;                    // map: the tallest frame's top, which sets Sandtide's line
 const LINE_W = WATER_START + 0.25 * (CROWN_TIP * 20 - WATER_START);   // 290 world units
@@ -92,6 +103,17 @@ const OUTCROPS = MESAS.filter((m) => m.skin);
 const OUT_K = 0.8, OUT_FLOOR = 5, OUT_TOP = 10, OUT_DOME = 1.25, OUT_APRON = 1.25, OUT_VOXEL = 1.25;
 // boulder fields: one beside each sand area's walk to the palace (off the axis, so none stands in the line of sight to a
 // plinth: round 4's N field read as stairs up plinth 1, t4b_areaN.png), two by the low mesas
+// each sand area's walk to the palace's foot (straight in along its axis: the waypoints the tester steers by), and the
+// targets check_reachability tries: the pads and the four feet
+const ROUTES = SAND_AREAS.map(([name, x, z]) => [name, [[x, z], [Math.sign(x) * 45, Math.sign(z) * 45]]]);
+const PADS_FEET = () => [...SAND_AREAS.map(([name, x, z]) => ({ name, x, z, radius: 4 })),
+  ...[["foot N", 0, -45], ["foot E", 45, 0], ["foot S", 0, 45], ["foot W", -45, 0]].map(([name, x, z]) => ({ name, x, z, radius: 2 }))];
+// lines across the dune field for describe_dunes (along x, across the NNE-SSW crests; off the walks' fine skin)
+const DUNE_LINES = [-80, -66, 66, 80].map((z) => [-100, z, 100, z]);
+// low shots that frame the dune field itself (round 5's dunesLow framed the plinth): along the wind across the N field's
+// crests, and down the S field's slip faces from the east
+const DUNE_SHOTS = { "dunes-field-S": { pos: [104, 10, 86], target: [0, 5, 74] }, "dunes-field-W": { pos: [-104, 12, 48], target: [-60, 5, 0] },
+  "dunes-field-high": { pos: [-120, 30, 100], target: [-60, 5, 40] } };
 const FIELDS = [[-66, 22, 21], [66, -22, 22], [-24, -68, 23], [24, 68, 24], [36, -72, 25], [-36, 72, 26]];
 
 // ---- the desert's height (map y above FLOOR), one expression for the skin and, raised to a bed, the shell under it ----
@@ -99,8 +121,11 @@ const f1 = (v) => (Math.round(v * 10) / 10).toString();
 // transverse dunes, crests NNE-SSW (wind from the west): 34 apart and 5.5 high, so a 2.5-unit skin holds the profile: a
 // long stoss slope (78% of the wavelength, about 12 degrees) up to a sharp crest and a short lee face (about 35 degrees,
 // walkable). Round 2b's 18 x 3.6 dunes were 7 skin columns a wave and read as tinted stripes, not ridges
-const DUNE = "dunes(x, z, 15, 34, 5.5, 0.8, 7)";
-const DUNE_H = 5.5;
+// Round 6: asym 0.95 (a windward ramp of about 83% of the wave and a slip face of 17%) and 6 high: round 5's 0.8 x 5.5 measured
+// a slope break of 34 degrees at the crest and a lee of 24 (describe_dunes: rolled over, no slip face); this skin gives
+// a break of 53 and a lee of 35, still a walk
+const DUNE_H = Number(process.env.DUSTCROWN_DUNE_H ?? 6);
+const DUNE = process.env.DUSTCROWN_DUNE ?? `dunes(x, z, 15, 34, ${DUNE_H}, 0.95, 7)`;
 // the fade the dunes die down by: a ring 8 wide round the plinth (no crest leans on a riser), the pads, the mesas' feet
 const fadeLets = () => {
   const pads = SAND_AREAS.map(([, x, z]) => `pad(${x}, ${z})`).join(" * ");
@@ -132,10 +157,14 @@ const BED_MIN = 2.2;
 const bedExpr = () => [...fadeLets(), landLet(), `let g = lerp(land, ${SEA_FLOOR}, c);`, `min(g - 1.5, max(g - 6.5, ${BED_MIN} * (1 - c) + (g - 6.5) * c)) - ${FLOOR}`].join(" ");
 // the dune materials tied to the ridge line (a mask on the same dunes() as the height, with its edge drawn per corner):
 // the bleached crest is the top of each wave, the ochre trough its foot, both only where the dunes stand (m) and inland
-// of the coast (c). Round 3's trough took the lowest 14% of each wave in two-voxel edges and drew as orange bands: the
-// trough is now the lowest 6% in one voxel's edge, a thin shading line at the foot of each lee face
-const crestMask = () => [...fadeLets(), `min(m - 0.55, 0.6 - c, ${DUNE} - ${f1(0.8 * DUNE_H)})`].join(" ");
-const troughMask = () => [...fadeLets(), `min(m - 0.65, 0.4 - c, ${f1(0.06 * DUNE_H)} - ${DUNE})`].join(" ");
+// of the coast (c). Round 3's trough took the lowest 14% of each wave in two-voxel edges and drew as orange bands, round
+// 5's lowest 6% dithered (feather) drew as pixel squares: the trough is the lowest 12% (TROUGH_K) in one voxel's soft edge,
+// no dither, and round 5's sand01 noise patches (soft blotches) are gone
+// the crest band the top 28% of each wave (a band a column or two wide behind the slip face's brink: crests vary 80-100% of
+// the height along their line, and round 5's top 20% missed the low ones), the trough the lowest 12%
+const CREST_K = Number(process.env.DUSTCROWN_CREST ?? 0.72), TROUGH_K = Number(process.env.DUSTCROWN_TROUGHK ?? 0.12);
+const crestMask = () => [...fadeLets(), `min(m - 0.55, 0.6 - c, ${DUNE} - ${f1(CREST_K * DUNE_H)})`].join(" ");
+const troughMask = () => [...fadeLets(), `min(m - 0.65, 0.4 - c, ${f1(TROUGH_K * DUNE_H)} - ${DUNE})`].join(" ");
 // (the outcrops' rock is its own blocks now, build_outcrop: the skin's apron round it is sand)
 
 // ---- the MCP client ----
@@ -181,6 +210,10 @@ try {
     // spill height (the sea, at 1, is where everything drains to)
     fillBasins: { maxDepth: 0.5, outletBelow: WATER_START / 20 },
     material: MAT.sand, maxBlocks: 18,
+    // the pads and the four walks in to the palace in 2-unit voxels (refine): a bazooka's crater in the 2.5-unit skin is a
+    // box a jump (2.48) does not leave (round 5: WORM1 sat in one on the N walk; check_crater_traps found 26 of 88 trial
+    // craters along the walks traps), in 2-unit voxels its walls are a jump's
+    ...(process.env.DUSTCROWN_NO_REFINE ? {} : { refine: { voxelSize: 2, paths: ROUTES.map(([, r]) => r), distance: 5, clip: SAND_AREAS.map(([, x, z]) => ({ x, z, radius: 10 })) } }),
     // the rim the sea meets in the crest's bleached sand, blended inland (round 3's overview showed an orange cliff ring)
     coast: { seaLevel: WATER_START / 20, rimMaterial: MAT.grass2b, band: 1, blendToSea: true },
     // anything sheared steeper than 58 degrees (the dunes' lee faces are about 35) in the darker sandstone
@@ -195,8 +228,8 @@ try {
       // gentle ground only: on a lee face (and in a shadow) the tint drew salmon in round 4's first Test. The slope bound
       // is tested per corner (edge.soft), so the trough no longer ends on whole 2.5-unit columns (round 4's orange squares,
       // g5_field.png), and its mask's edge is dithered
-      { material: MAT.path2, mask: troughMask(), edge: { depth: 1, soft: true }, maxSlope: 22, feather: { width: 0.8, pattern: "perlin", cell: 4 } },
-      { material: MAT.sand01, noise: { threshold: 0.3, scale: 16, seed: 4 }, feather: { width: 0.6, pattern: "perlin", cell: 5 } },
+      { material: MAT.path2, mask: troughMask(), edge: { depth: 1, soft: true }, maxSlope: 22, ...(process.env.DUSTCROWN_FEATHER ? { feather: { width: 0.8, pattern: "perlin", cell: 4 } } : {}) },
+      ...(process.env.DUSTCROWN_BLOTCH ? [{ material: MAT.sand01, noise: { threshold: 0.3, scale: 16, seed: 4 }, feather: { width: 0.6, pattern: "perlin", cell: 5 } }] : []),
     ],
   };
   // the shell under the skin, in 4-unit voxels, 3 thick, over the playable desert, so a hole dug through the skin lands on
@@ -253,9 +286,18 @@ try {
     say("outcrop", m.name, JSON.stringify({ topY: r.json.mesa?.topY, crownY: r.json.mesa?.cap?.crownY, steps: r.json.mesa?.steps, added: r.json.added?.length, cells: r.json.limits?.voxelCells }));
   }
   if (flag("--terrain")) {
+    await call("tint_landscape", { theme: "ARABIAN", carrier: "theme", colorSpace: "srgb", tints: SAND_TINTS() });
+    const dd = await call("describe_dunes", { lines: DUNE_LINES, grade: path.join(HERE, "grade-sunstone-day-shade.json") }, { soft: true });
+    fs.writeFileSync(path.join(OUT, "t-dunes.json"), dd.text);
+    say("dunes", dd.err ? dd.text.slice(0, 400) : JSON.stringify({ summary: dd.json.summary, median: dd.json.field?.median }));
+    for (const [name, route] of ROUTES) {
+      const ct = await call("check_crater_traps", { along: route, spacing: 2, limit: 4 }, { soft: true });
+      say("crater traps", name, ct.err ? ct.text.slice(0, 300) : JSON.stringify({ summary: ct.json.summary, traps: ct.json.traps?.length, tight: ct.json.tight?.length }));
+    }
     await shot("t-topdown", "render_topdown", { step: 1, scale: 3 });
     await shot("t-view-se", "render_view", { view: "se", fog: 900 });
     await shot("t-low", "render_view", { pos: [-112, 16, 30], target: [-40, 6, 0], fov: 55, fog: 900 });
+    for (const [n, a] of Object.entries(DUNE_SHOTS)) await shot(`t-${n}`, "render_view", { ...a, fov: 55, fog: 900, antialias: true, tints: true });
     await call("close", { discard: true }, { soft: true }); throw new Error("--plan: --terrain stopped");
   }
 
@@ -295,11 +337,22 @@ try {
     ...niches.map((n) => ({ ...n, at: [n.at[0], n.at[1] - 3, n.at[2]] })),
   ] });
   say("plinth", JSON.stringify({ info: plinth.json.structureInfo?.tipY, cells: plinth.json.cells, blocks: plinth.json.newBlocks?.map((b) => [b.id, b.cells]) }));
+  // the rope's hold (round 6): a gold cornice round step 2's lip, one 1.5-unit voxel out over step 1 (36 to 37.5) and one
+  // high under the ledge (16.5 to 18), so a rope fired from step 1 hooks it or the lip over it and a worm reeled up is
+  // over step 2's edge; step 1 keeps 4.5 clear in front of it. Its underside is no foothold (4.5 over step 1, out of a
+  // jump's 2.48) and its top is step 2's own ledge, clear of the sand line's dead band (12.5-16.5)
+  const corn = (along, at, part) => ({ kind: "box", size: along ? [75, 1.5] : [1.5, 72], height: 1.5, at, part });
+  const cornice = await call("build_compound", { at: [0, 16.5, 0], scale: 1.5, place: "new", packing: "parts", maxBlocks: 8, material: MAT.goldEdge, shapes: [
+    corn(true, [0, 0, -36.75], 1), corn(true, [0, 0, 36.75], 2), corn(false, [-36.75, 0, 0], 3), corn(false, [36.75, 0, 0], 4)] }, { soft: true });
+  if (cornice.err) throw new Error(`cornice: ${cornice.text.slice(0, 600)}`);
+  say("cornice", JSON.stringify({ cells: cornice.json.cells, blocks: cornice.json.newBlocks?.map((b) => [b.id, b.cells]) }));
 
   // ---- the curtain, corner towers and keep on step 3 (court floor 24): sandy plaster below a gold course, bleached
   // sandstone (the theme's stone tile) above (round 2b's Plaster read as grey concrete), gold merlon caps; a gate a side,
   // pinwheeled into the courts (N into NE, E into SE, S into SW, W into NW) ----
   const COURT = 24;
+  // the gates: [x, z] of each on the curtain's outer face, and the way into the court
+  const GATES = [[13, -26, 0, 1], [26, 13, -1, 0], [-13, 26, 0, -1], [-26, -13, 1, 0]];
   const GATE_W = 6;       // 4.5 snapped to 4 voxels (N, E) or 5 (S, W) of 1.5; 6 clears 6 at every gate (round 2)
   const castle = await call("build_castle", { at: [0, COURT, 0], size: [52, 52], wallHeight: 8, wallThickness: 3, towerShape: "round", towerRadius: 4, towerHeight: 22,
     keep: true, keepSize: [24, 24], keepHeight: 16, gates: ["n", "e", "s", "w"].map((side, i) => ({ side, offset: i < 2 ? 13 : -13, width: GATE_W, height: 6, bevel: 1.5 })),
@@ -312,10 +365,19 @@ try {
   // the gates' court side bevelled: a flat-floored bore 9 wide and 6 high through the inner half of each gate's wall, so
   // the jambs step back where a worm walking out turns into the gate (round 2: a palace worm stuck 3-5 times a run on the
   // N gate's inner corner at (10, -22.5)); the outer half keeps the 6-wide gate
-  for (const [gx, gz, ix, iz] of [[13, -26, 0, 1], [26, 13, -1, 0], [-13, 26, 0, -1], [-26, -13, 1, 0]]) {
+  for (const [gx, gz, ix, iz] of GATES) {
     const r = await call("dig_tunnel", { points: [[gx + ix * 1.5, COURT, gz + iz * 1.5], [gx + ix * 6, COURT, gz + iz * 6]], radius: 4.5, shape: "square", floor: "flat", headroom: 6, floorThickness: 0, units: "map" }, { soft: true });
     say("gate bevel", gx, gz, r.err ? r.text.slice(0, 300) : brief(r, 200));
   }
+
+  // the gates' portals (round 6): the wall 6 either side of each gate and over it, court floor to the gold course's top,
+  // painted gold, so a palace worm sees the way out from its court (round 5: the E and W gates are at z 13 and -13, and a
+  // tester's worm walked into the plain wall at z 7.5). A paint only: no new block
+  const portals = GATES.map(([gx, gz, ix, iz]) => {
+    const a = [gx + ix * -0.5, gz + iz * -0.5], b = [gx + ix * 3.5, gz + iz * 3.5];
+    return ix === 0 ? { min: [gx - 6, Math.min(a[1], b[1])], max: [gx + 6, Math.max(a[1], b[1])] } : { min: [Math.min(a[0], b[0]), gz - 6], max: [Math.max(a[0], b[0]), gz + 6] };
+  });
+  say("gate portals", brief(await call("paint_region", { shapes: portals, mask: `min(y - ${COURT + 0.2}, ${COURT + 7.4} - y)`, material: MAT.gold, depth: 12, depthFrom: "top", units: "map" }, { soft: true }), 300));
 
   // ---- the cross wings (galleries 6 wide from the keep to the curtain's mid-sides, roof 32) with an arch through each at
   // court level, so the four courts join; the Crown on the keep's roof; dome caps on the corner towers ----
@@ -349,6 +411,13 @@ try {
   // the courts' floors in star mosaic (the ground at court height inside the curtain): the top voxel of each column,
   // whatever its frame's scale (depthFrom top; by its centre the plinth's 3-unit voxels are 1.5 down)
   say("courts", brief(await call("paint_region", { shapes: [{ min: [-23, -23], max: [23, 23] }], mask: `${COURT + 0.5} - h`, material: MAT.star, depth: 1, depthFrom: "top", units: "map" }, { soft: true }), 200));
+  // a gold threshold on each court's floor (round 6), gate-wide and 6 deep in front of its gate, so the way out reads from
+  // the turn camera over a palace worm as well as at its eye (the portal)
+  const sills = GATES.map(([gx, gz, ix, iz]) => {
+    const a = [gx + ix * 3, gz + iz * 3], b = [gx + ix * 9, gz + iz * 9];
+    return ix === 0 ? { min: [gx - 3, Math.min(a[1], b[1])], max: [gx + 3, Math.max(a[1], b[1])] } : { min: [Math.min(a[0], b[0]), gz - 3], max: [Math.max(a[0], b[0]), gz + 3] };
+  });
+  say("gate sills", brief(await call("paint_region", { shapes: sills, mask: `${COURT + 0.5} - h`, material: MAT.gold, depth: 1, depthFrom: "top", units: "map" }, { soft: true }), 200));
 
   // ---- floating bits ----
   const isl = await call("check_islets", {}, { soft: true });
@@ -375,22 +444,34 @@ try {
   // harsh sun: a warm-white diffuse and an ambient of half of it, so the shade sides of the dunes and risers read. The
   // level haze in the sand's dust: round 4's pale blue ring round the sand sea and the "ghost" dunes under it were
   // Sunstone's aerial haze toward the sky's horizon colour (erg-mcp.md, round 5); it starts at 3000 w and thickens over
-  // 9000, so the island itself stays clear and the sea runs out into dust (Melange 0.15, Sunstone 2.4)
-  const wl = await call("set_water_look", { preset: "sand", landDiffuse: [255, 250, 238], landAmbient: [128, 125, 119], sea: { albedo: SEA_ALBEDO },
-    haze: { color: HAZE, amount: 1, start: 3000, distance: 9000 }, gameDir: process.env.DUSTCROWN_PLAY_DIR ?? GAME });
+  // 9000, so the island itself stays clear and the sea runs out into dust (Melange 0.15, Sunstone 2.4). Round 6: round 5's
+  // amount 1 from 3000 veiled the overview and the turn camera in a flat pale fog (r5b_ov.png): 0.4 from 6000, which
+  // render_view {gameMatch} checks against the level camera and the turn camera. The sea opaque (set_water_look
+  // {opaque}: the plane's opacity and the sea material's 1), checked by check_sea_opacity
+  const wl = await call("set_water_look", { preset: "sand", landDiffuse: [255, 250, 238], landAmbient: [128, 125, 119], sea: { albedo: SEA_ALBEDO, opacity: 1 },
+    haze: { color: HAZE, amount: 0.4, start: 6000, distance: 9000 }, opaque: true, gameDir: process.env.DUSTCROWN_PLAY_DIR ?? GAME });
   say("water look", brief(wl, 500));
   if (wl.json?.warnings?.length) say("WATER LOOK WARNINGS", JSON.stringify(wl.json.warnings));
+  const so = await call("check_sea_opacity", {}, { soft: true });
+  fs.writeFileSync(path.join(OUT, "sea-opacity.json"), so.text);
+  say("sea opacity", so.err ? so.text.slice(0, 300) : brief(so, 500));
+  if (!so.err && so.json.ok === false) throw new Error(`check_sea_opacity: ${so.text.slice(0, 600)}`);
+  // the level camera (set_level_camera): low over the SW quadrant, about 20 degrees up, the palace against the sky. The
+  // tools' overview, the thumbnail and the harness's overview shots take it; the game's own start camera is not moved by it
+  say("level camera", brief(await call("set_level_camera", { view: "sw", elevation: 20, target: [0, 18, 0], fit: "island", margin: 1 }), 400));
 
   // ---- the dunes' tones with Sunstone (tint_landscape, a visual channel): the troughs (path02, A10) ochre, the crests
-  // (grass02blend, A04) pale, the body the theme's own sand; with Sunstone off the theme's own textures draw ----
-  const tn = await call("tint_landscape", { theme: "ARABIAN", carrier: "theme", colorSpace: "srgb", tints: [
-    { material: "path02", faces: "all", color: SAND_TINT.trough }, { material: "grass02blend", faces: "top", color: SAND_TINT.crest }] });
+  // (grass02blend, A04 and its side A08) near white, the body (Sand, A11) a warm mid sand; with Sunstone off the theme's
+  // own textures draw ----
+  const tn = await call("tint_landscape", { theme: "ARABIAN", carrier: "theme", colorSpace: "srgb", tints: SAND_TINTS(), grade: path.join(HERE, "grade-sunstone-day-shade.json") });
   say("sand tints", tn.err ? tn.text.slice(0, 400) : JSON.stringify({ tints: tn.json?.tints, carrier: tn.json?.carrier }));
 
   // ---- scenery copies from the Arabian bases (no collision): a fountain in each court, lamps on the wall-walk's corners ----
   const copies = [
     ...[[17.5, -17.5], [17.5, 17.5], [-17.5, 17.5], [-17.5, -17.5]].map(([x, z]) => ({ resource: "ARABIAN19", xz: [x, z] })),
     ...[[0, -24.5], [24.5, 0], [0, 24.5], [-24.5, 0]].map(([x, z]) => ({ resource: "ARABIAN9", xz: [x, z] })),
+    // a lamp either side of each gate on the court side (round 6), beside its gold portal
+    ...GATES.flatMap(([gx, gz, ix, iz]) => [-5, 5].map((t) => ({ resource: "ARABIAN9", xz: [gx + ix * 4.5 + (ix === 0 ? t : 0), gz + iz * 4.5 + (iz === 0 ? t : 0)] }))),
   ];
   const sc = await call("copy_base_scenery", { base: "Multi.DesertOasis", units: "map", copies }, { soft: true });
   say("scenery", sc.err ? "REFUSED " + sc.text.slice(0, 400) : brief(sc, 300));
@@ -501,6 +582,22 @@ try {
   img(tr, "tool-reach");
   fs.writeFileSync(path.join(OUT, "tool-reach.json"), tr.text);
   say("tool reach", tr.err ? tr.text.slice(0, 600) : JSON.stringify(tr.json.summary).slice(0, 1500));
+  // ---- craters on the walks: a bazooka's crater along each sand area's walk in (the 2-unit refine) and over the ground the
+  // spawns' walks reach, none a trap (round 5's WORM1 sat in a 2.5-deep box on the N walk) ----
+  const craters = {};
+  for (const [name, route] of ROUTES) {
+    const ct = await call("check_crater_traps", { along: route, spacing: 2, limit: 4 }, { soft: true });
+    craters[name] = ct.err ? ct.text.slice(0, 200) : { summary: ct.json.summary, traps: ct.json.traps?.length ?? 0, tight: ct.json.tight?.length ?? 0 };
+  }
+  const ctl = await call("check_crater_traps", { limit: 12 }, { soft: true });
+  fs.writeFileSync(path.join(OUT, "crater-traps.json"), ctl.text);
+  craters.lattice = ctl.err ? ctl.text.slice(0, 200) : { summary: ctl.json.summary, traps: ctl.json.traps?.length ?? 0, tight: ctl.json.tight?.length ?? 0 };
+  say("crater traps", JSON.stringify(craters));
+  if (ROUTES.some(([n]) => craters[n]?.traps)) throw new Error(`a crater trap on a walk: ${JSON.stringify(craters)}`);
+  // ---- the dunes read as crested dunes (describe_dunes through the Sunstone shade grade) ----
+  const dd = await call("describe_dunes", { lines: DUNE_LINES, grade: path.join(HERE, "grade-sunstone-day-shade.json") }, { soft: true });
+  fs.writeFileSync(path.join(OUT, "dunes.json"), dd.text);
+  say("dunes", dd.err ? dd.text.slice(0, 400) : JSON.stringify({ summary: dd.json.summary, median: dd.json.field?.median }));
   const is = await call("check_islets", {}, { soft: true });
   fs.writeFileSync(path.join(OUT, "islets.json"), is.text);
   say("islets", brief(is, 400));
@@ -531,27 +628,36 @@ try {
 
   // ---- renders ----
   await shot("topdown", "render_topdown", { step: 1, scale: 3 });
-  await shot("overview-se", "render_view", { view: "se", fog: 900, antialias: true });
-  await shot("overview-nw", "render_view", { view: "nw", fog: 900, antialias: true });
-  // low overviews: the palace against the sky from about 18 degrees up, as the level's opening camera frames it
-  await shot("overview-low-sw", "render_view", { pos: [-170, 62, 150], target: [0, 8, 0], fov: 55, fog: 900, antialias: true, tints: true });
-  await shot("overview-low-ne", "render_view", { pos: [170, 62, -150], target: [0, 8, 0], fov: 55, fog: 900, antialias: true, tints: true });
-  await shot("palace-se", "render_view", { pos: [90, 70, 90], target: [0, 26, 0], fov: 50, fog: 900, antialias: true });
-  await shot("palace-nw", "render_view", { pos: [-80, 45, -95], target: [0, 28, 0], fov: 50, fog: 900, antialias: true });
-  await shot("palace-courts", "render_view", { pos: [34, 70, 46], target: [0, 24, 0], fov: 55, antialias: true });
+  // round 6: the renders draw the level's own sea and haze (waterLook) and the tints, as a match with Sunstone plays them;
+  // the level camera's shot answers gameMatch, the haze's verdict for it and the turn camera
+  const LOOK = { antialias: true, tints: true, waterLook: true };
+  const lv = await shot("overview-level", "render_view", { view: "level", ...LOOK, gameMatch: true });
+  fs.writeFileSync(path.join(OUT, "overview-level.json"), lv.text);
+  say("game match", lv.err ? "" : JSON.stringify(lv.json?.gameMatch ?? null).slice(0, 900));
+  await shot("overview-se", "render_view", { view: "se", ...LOOK });
+  await shot("overview-nw", "render_view", { view: "nw", ...LOOK });
+  await shot("overview-low-ne", "render_view", { pos: [170, 62, -150], target: [0, 8, 0], fov: 55, ...LOOK });
+  await shot("palace-se", "render_view", { pos: [90, 70, 90], target: [0, 26, 0], fov: 50, ...LOOK });
+  await shot("palace-nw", "render_view", { pos: [-80, 45, -95], target: [0, 28, 0], fov: 50, ...LOOK });
+  await shot("palace-courts", "render_view", { pos: [34, 70, 46], target: [0, 24, 0], fov: 55, ...LOOK });
+  // step 1 and the gold cornice over it (the rope's hold), from step 1's outer edge on the W side
+  await shot("palace-cornice-W", "render_view", { pos: [-48, 15, -14], target: [-36, 17, 4], fov: 60, ...LOOK });
+  // the E and W gates' gold portals from the courts they open from (SE and NW), and the N gate
+  await shot("gate-E-court", "render_view", { pos: [12, 28, 4], target: [24, 26, 13], fov: 60, ...LOOK });
+  await shot("gate-W-court", "render_view", { pos: [-12, 28, -4], target: [-24, 26, -13], fov: 60, ...LOOK });
+  await shot("gate-N-inner", "render_view", { pos: [12, 30, -12], target: [13, 25, -24], fov: 60, ...LOOK });
   for (const [name, x, z] of SAND_AREAS) {
     const k = Math.hypot(x, z), ux = x / k, uz = z / k;
-    await shot(`area-${name.split(" ")[1]}`, "render_view", { pos: [round1(x + ux * 14), 12, round1(z + uz * 14)], target: [0, 26, 0], fov: 55, fog: 900, antialias: true });
+    await shot(`area-${name.split(" ")[1]}`, "render_view", { pos: [round1(x + ux * 14), 12, round1(z + uz * 14)], target: [0, 26, 0], fov: 55, ...LOOK });
   }
-  await shot("refuge-NW", "render_view", { pos: [-95, 30, -20], target: [-60, 12, -60], fov: 50, fog: 900, antialias: true });
-  await shot("refuge-SE-tints", "render_view", { pos: [95, 26, 30], target: [60, 12, 60], fov: 50, fog: 900, antialias: true, tints: true });
-  await shot("low-mesa-W", "render_view", { pos: [-96, 14, -14], target: [-74, 7, -30], fov: 50, fog: 900, antialias: true, tints: true });
-  await shot("low-mesa-NE", "render_view", { pos: [74, 13, -36], target: [56, 8, -58], fov: 50, fog: 900, antialias: true, tints: true });
-  for (const [fi, [fx, fz]] of FIELDS.slice(0, 4).entries()) await shot(`field-${fi}`, "render_view", { pos: [round1(fx * 1.25 + 6), 11, round1(fz * 1.25 + 6)], target: [fx, 6, fz], fov: 55, fog: 900, antialias: true, tints: true });
-  await shot("dunes-low-tints", "render_view", { pos: [-48, 13, 26], target: [-95, 5, 60], fov: 60, fog: 900, antialias: true, tints: true });
-  await shot("dunes-across", "render_view", { pos: [-20, 14, 96], target: [-85, 5, 40], fov: 60, fog: 900, antialias: true, tints: true });
-  await shot("overview-se-tints", "render_view", { view: "se", fog: 900, antialias: true, tints: true });
-  await shot("gate-N-inner", "render_view", { pos: [12, 30, -12], target: [13, 25, -24], fov: 60, antialias: true });
+  await shot("refuge-NW", "render_view", { pos: [-95, 30, -20], target: [-60, 12, -60], fov: 50, ...LOOK });
+  await shot("refuge-SE", "render_view", { pos: [95, 26, 30], target: [60, 12, 60], fov: 50, ...LOOK });
+  await shot("low-mesa-W", "render_view", { pos: [-96, 14, -14], target: [-74, 7, -30], fov: 50, ...LOOK });
+  await shot("low-mesa-NE", "render_view", { pos: [74, 13, -36], target: [56, 8, -58], fov: 50, ...LOOK });
+  for (const [fi, [fx, fz]] of FIELDS.slice(0, 4).entries()) await shot(`field-${fi}`, "render_view", { pos: [round1(fx * 1.25 + 6), 11, round1(fz * 1.25 + 6)], target: [fx, 6, fz], fov: 55, ...LOOK });
+  // the dune field itself, low (round 5's dunesLow framed the plinth), and the shore where the dunes run under the sand sea
+  for (const [n, a] of Object.entries(DUNE_SHOTS)) await shot(n, "render_view", { ...a, fov: 55, ...LOOK });
+  await shot("shore-SW", "render_view", { pos: [-92, 9, 74], target: [-60, 3, 40], fov: 55, ...LOOK });
   for (const [name, args] of [["side-ew", { x0: -BOX, z0: 0, x1: BOX, z1: 0 }], ["side-diag", { x0: -BOX * 0.7, z0: -BOX * 0.7, x1: BOX * 0.7, z1: BOX * 0.7 }]]) {
     await shot(name, "render_side", { ...args, y0: -15, y1: 60, scale: 6, units: "map", lines: [{ y: LINE_MAP, colour: [220, 40, 30], label: `sand line ${LINE_W} w` },
       { y: LINE_MAP - 2, colour: [240, 150, 40], dash: true, label: "dead band -40 w" }, { y: LINE_MAP + 2, colour: [240, 150, 40], dash: true, label: "dead band +40 w" },
@@ -560,7 +666,8 @@ try {
   fs.writeFileSync(path.join(OUT, "heightmap.txt"), (await call("heightmap_ascii", { step: 3 })).text);
 
   // ---- the level's picture in the game's map lists (the diner's otherwise) ----
-  const th = await call("set_level_thumbnail", { render: { view: "se", elevation: 20, target: [0, 12, 0], fov: 55, fog: 900, antialias: true, tints: true }, size: 512 }, { soft: true });
+  // (the level camera's pose: set_level_camera above)
+  const th = await call("set_level_thumbnail", { render: { ...LOOK }, size: 512 }, { soft: true });
   say("thumbnail", th.err ? th.text.slice(0, 300) : brief(th, 200));
 
   // ---- source export, copied next to this script, with the one mesh bank ----

@@ -305,3 +305,24 @@ These are general tools that Dustcrown needs and that any later map can reuse. T
    arc (rise and run limits), a ninja rope (anchor faces within its length) or a girder span reaches a named target
    surface. Its limits are calibrated once by game tests and listed in the docs. It reports estimates, which the game
    tests confirm.
+
+## 7. Round 6 changes (from the round 5 critique)
+
+- **Sea**: `set_water_look {opaque: true}` (the plane's opacity and the sea material's 1); `check_sea_opacity` passes for
+  both ways of drawing the sea. The haze is cut to amount 0.4 from 6 000 world units (round 5: 1 from 3 000);
+  `render_view {gameMatch}` says the haze takes none of the land's colour from the level camera or the turn camera.
+- **Dunes**: `dunes(x, z, 15, 34, 6, 0.95, 7)` (round 5: 5.5 high, asym 0.8). The crest band is the top 28 % of each wave,
+  the trough the lowest 12 % with no dither (round 5's feathered trough drew pixel squares); the sand01 noise blotches are
+  gone. Tints (through the Sunstone shade grade): body `Sand` #dcc69a (plays #d0bd81), crest `grass02blend` #fff4dc on all
+  faces (plays #e8e2d1; a sharp crest's voxels draw their side tile), trough `path02` #c9a682 (plays #cba75d, shade
+  #906e3c). `describe_dunes` along z = -80, -66, 66, 80: median slope break 50 degrees, lee 35, windward 15, contrast 31.
+- **Craters on the walks**: the pads and the four walks in to the palace are draped again in 2-unit voxels
+  (`heightfield_drape {refine}`): `check_crater_traps` finds no trap along any walk (round 5: 26 of 88). The floor moved
+  from -9 to -10, on both lattices: refine counts the fine skin from the coarse lattice's floor, which with an off-lattice
+  floor and keepFloor put the fine skin 1 under the field.
+- **Rope**: a gold cornice round step 2's lip, 1.5 out over step 1 and 1.5 high (16.5 to 18); step 1 keeps 4.5 clear.
+- **Gates**: each gate's wall 6 either side and over it is painted gold (a portal), with a gold sill 6 deep on the court
+  floor in front of it and a lamp either side on the court side. The E gate is at z 13, the W gate at z -13.
+- **Camera**: `set_level_camera {view: sw, elevation: 20, target: [0, 18, 0]}` frames the tools' overview and the
+  thumbnail. The game's own start camera is not moved by it.
+- Budget: 62 513 cells, 59 blocks (the refine adds 6, the cornice 8).

@@ -10,7 +10,7 @@ if wum.level and wum.level.water then
 end
 -- the level haze (docs/erg.md, Melange 0.15): a graphics mod hazes the distance and the horizon band toward this colour
 if wum.level and wum.level.water then
-  local ok, why = wum.level.water{Haze = {240, 228, 176, 1}, HazeRange = {3000, 9000}}
+  local ok, why = wum.level.water{Haze = {240, 228, 176, 0.4}, HazeRange = {6000, 9000}}
   if not ok then wum.log.info("level haze: " .. tostring(why)) end
 end
 -- erg-mcp set_water_look: end
