@@ -84,11 +84,11 @@ The palace is one composition, symmetric under a quarter turn, so no side is fav
 | Step 1 (lowest plinth) | 84 x 84 | 12 / 240 | L - 50 w: below. A foothold, but a cursed one. | Solid, scale 3, from the floor at 0 |
 | Step 2 | 72 x 72 (6 deep ledge) | 18 / 360 | L + 70 w: safe | Solid, scale 3 |
 | Step 3 (the palace terrace) | 60 x 60 (6 deep ledge) | 24 / 480 | L + 190 w | Solid, scale 3 |
-| Curtain wall, 3 thick | 52 x 52 on step 3 | wall-walk 32, merlons 34 | safe | Scale 1.5, crenellated, one gate per side |
+| Curtain wall, 3 thick | 52 x 52 on step 3 | wall-walk 32, merlons 34 | safe | Scale 1.5, crenellated, one gate per side (6 wide, opened to 9 by a flat bore so no jamb catches a worm) |
 | Four courtyards (L-shaped quadrants, about 11 wide) | inside the curtain | floor 24 / 480 | safe | Floor of step 3, StarMosaic paving, a fountain each |
 | Two cross wings (galleries, 6 wide) | keep to the curtain's mid-sides | roof 32 | safe | Hollow, scale 1.5, an arch through each at court level |
 | Keep (great hall) | 24 x 24 at the centre | roof terrace 40 | safe | Hollow hall, roof 2 voxels thick, windows |
-| Four corner towers, round, radius 4 | on the curtain's corners | 46, dome caps to 50 | safe | Hollow, crenellated, BlueMosaic or DomeTile caps |
+| Four corner towers, round, radius 4 | on the curtain's corners | 46, onion domes to 53.5 | safe | Hollow, crenellated; BlueMosaic domes NE and SW, Gold domes NW and SE |
 | The Crown (central tower), radius 6 | rises from the keep | tip 55 / 1100 = T | defines L | Gold-trimmed crown of merlons |
 
 - **Sheer walls**: every riser is vertical and 6 high (step 1 stands 6 over the sand at its foot, 5.5-6.5 as the dunes
@@ -111,18 +111,24 @@ The palace is one composition, symmetric under a quarter turn, so no side is fav
 - **Floor**: the sand floor stands at 5-7 (100-140 w). It is 80-120 w above W, so the sudden-death sea reaches it a few
   turns after it starts to rise.
 - **Dunes**: a transverse dune field with crests running NNE-SSW and the wind from the west. Each dune has a gentle
-  windward slope (12-20 degrees) and a steeper slip face (28-34 degrees, still walkable at 38). The crest spacing is
-  14-20, and the crests stand 2-4 over the troughs, never above 11 (220 w, L - 70 w). The ridged crests bend round the
+  windward slope (about 12 degrees, 78% of the wave) and a steeper slip face (about 35 degrees, walkable). The crest
+  spacing is 34 and the crests stand about 5 over the troughs, never above 11 (220 w, L - 70 w); a 2.5-unit skin holds
+  that profile (round 2b's 18-wide dunes were 7 columns a wave and read as stripes). The bleached crest and the ochre
+  trough are masks on the same `dunes()` wave as the height, edged per corner, so they follow the ridge lines. The ridged crests bend round the
   mesas and die down within 8 of the palace ring and within 6 of each spawn pad. A worm can cross every dune on foot.
 - **Mesas** (terraced sandstone, 2.5 strata, `heightfield_region` terraces, cliff not drape):
-  - Two **refuge mesas**, NW (-62, -62) and SE (62, 62), each about 22 x 16 with a top at 19-21 (380-420 w, L + 90 w or
-    more). They are the only safe ground outside the palace. Their sides are terraced cliffs whose treads are too narrow
-    to walk, so reaching them takes a jump, rope or jetpack, much as the palace does, but they are cheaper to reach.
+  - Two **refuge mesas**, NW (-60, -60) and SE (60, 60), each about 30 x 22 at the foot, weathered buttes (sedimentary
+    beds, gullies cut into a wobbled outline): a talus skirt to 10 (200 w), two sheer risers of 7.5 that step back 1.25
+    (a ledge at 17.5, 350 w) and a top at 25 (500 w), so no ledge lies in the dead band. They are the only safe ground
+    outside the palace, reached by jump, rope or jetpack, much as the palace is, but cheaper.
   - Four **low mesas and outcrops**, NE, SW, and two off the axes, 8-14 across, tops 9-11 (L - 70 w or lower). They give
     cover and a bit of height, and they are inside the curse.
-- **Boulder fields**: six fields, one between each sand area and the palace and two by the low mesas. Each field holds
-  voxel boulders (1.5-3 high, walkable round) for cover, plus sim-neutral sandstone boulder meshes from the Dustcrown
-  mesh bank for the look.
+- **Boulder fields**: six fields, one between each sand area and the palace and two by the low mesas. Each field is a
+  pile of seven low rounded voxel domes (radius 1.8-3.2, 1-2 high over the sand, wider than tall: no stub pillars), plus
+  sim-neutral sandstone boulder, wedge and scree meshes from the Dustcrown mesh bank (no slabs: they read as plinth
+  blocks).
+- **The bed**: the rock shell under the dune skin stands at 2.2 or more inland (1.5 under the sand at least), so an air
+  strike's crater bottoms out over the starting sea (1.0), not at it.
 - **The coast**: from radius 100 the dunes slope under the sea to the bed at -9 by about radius 112. The shore is sand on
   sand, with the same material at the water's edge as in the sea's colour.
 
@@ -175,25 +181,26 @@ Each area has four knots (WORM slots), so up to four worms a team.
 
 - **Base and theme**: `new_project` on Multi.DinerMight, then clear, remove and trim the base terrain (as Caldera does),
   then `set_theme ARABIAN` with `materialFile: "theme"`.
-- **Time of day**: DAY, for a high harsh sun. EVENING is the alternative only if DAY's sky washes out the palace in the
-  overview (decide from one Test pair of shots).
+- **Time of day**: DAY, for a high harsh sun, pinned for every match (`set_level_look {timeOfDay: DAY, lock: true}`,
+  spice.json `levels[].timeOfDay`): round 2's Versus matches drew NIGHT and EVENING and the map took a violet wash. The
+  pack carries its own menu picture (`set_level_thumbnail`, `thumb/dustcrown.png`).
 - **Land light**: a slight warm `landDiffuse` (about 255, 244, 225), tuned in game. It must not push the palace orange.
 - **Materials (ThemeArabian indices)**:
 
 | Where | Material |
 |---|---|
 | Dune slopes | Sand 24, sand01 10, SandBlend 23 at the edges |
-| Dune crests (bleached) | grass02 2 (#f5d06f) |
-| Troughs and the spawn pads (ochre) | path02 9 (#e2b35a), path01 8 |
+| Dune crests (bleached) | grass02blend 3, tinted cream #f2e3bd (sRGB) under Sunstone |
+| Troughs (ochre) and the spawn pads | path02 9, tinted a muted ochre #d8ad6a (sRGB; round 2b's #ce7a30 read as rust); path01 8 on the pads |
 | Mesa strata | rock01 4 and rock02 6 in alternating 2.5 bands, with blends 5/7 at the band edges |
 | Mesa caps | stone 12 |
 | Boulders | rock01 4 |
 | Palace plinth risers | darkyellowplaster 57 (ochre courses), Bricks 14 at the base course |
 | Plinth treads and ledges | stone 12 |
-| Curtain, wings, keep | sandy-plaster 15 (+16 blend) below, Plaster 21 above a GoldEdging 26 course |
+| Curtain, towers, wings, keep, Crown | sandy-plaster 15 below a GoldEdging 26 course, stone 12 (bleached sandstone) above; Plaster 21 read as grey concrete |
 | Merlon caps and the Crown's crown | Gold 25, GoldEdging 26 |
 | Court floors | StarMosaic 30, PlainTiles 32 at the edges |
-| Tower dome caps | BlueMosaic 38 (two opposite towers) and DomeTile 18 (the other two) |
+| Tower dome caps | BlueMosaic 38 (NE, SW) and Gold 25 (NW, SE); DomeTile 18 read as red brick |
 | The keep's door and windows | Door1 33, Window1 34 |
 
   Material names are not matched to their looks: check them once with `game_material_shots` before the palace pass.
